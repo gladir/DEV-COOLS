@@ -1,0 +1,1133 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}
+
+{\footnote # IDH_MODULA2_01}
+{\footnote $ Modula-2 - PRESENTATION}
+{\footnote K Modula-2 presentation;Niklaus Wirth;ETH Zurich;Lilith;Medos-2;PIM-4;ISO 10514;Modula-2 R10}
+\b\fs24 PRESENTATION \b0\fs20\par
+\par
+Modula-2 a ete concu en 1977-1979 par Niklaus Wirth a l'ETH\par
+Zurich comme successeur de Pascal pour la programmation\par
+systeme. Il a servi a implementer le systeme d'exploitation\par
+Medos-2 pour la station de travail Lilith (1980).\par
+\par
+Modula-2 introduit plusieurs concepts importants :\par
+\par
+{\f1   - Modularite : compilation separee avec interface/}\par
+{\f1     implementation explicites}\par
+{\f1   - Coroutines pour la programmation concurrente legere}\par
+{\f1   - Acces direct au materiel via le module SYSTEM}\par
+{\f1   - Procedures comme types (variables-procedure)}\par
+{\f1   - Verifications strictes a la compilation}\par
+\par
+Modula-2 est un langage :\par
+\par
+{\f1   - Imperatif et structure par blocs}\par
+{\f1   - Compile, a typage statique tres fort}\par
+{\f1   - Modulaire (DEFINITION + IMPLEMENTATION MODULE)}\par
+{\f1   - Sensible a la casse (mots-cles MAJUSCULES obligatoires)}\par
+{\f1   - A mise en page libre}\par
+{\f1   - Avec types unsigned (CARDINAL)}\par
+\par
+Versions et standards :\par
+\par
+{\f1   - Modula-2 original    : Wirth, 1979}\par
+{\f1   - Modula-2 revise      : Wirth, 1984}\par
+{\f1   - ISO Modula-2 (PIM-4) : ISO 10514-1:1996}\par
+{\f1   - Modula-2 R10         : revision modernisee, 2010}\par
+\par
+Extensions de fichiers reconnues :\par
+\par
+{\f1   .def     Fichier DEFINITION MODULE (interface)}\par
+{\f1   .mod     Fichier IMPLEMENTATION MODULE ou PROGRAM MODULE}\par
+{\f1   .sym     Fichier de symboles compile}\par
+{\f1   .obj     Fichier objet}\par
+\par
+\par
+\par
+\b Sections suivantes : \b0\par
+\par
+{\f1  2. STRUCTURE D'UN PROGRAMME}     {\uldb [Aller]}{\v IDH_MODULA2_02}\par
+{\f1  3. STRUCTURE LEXICALE}     {\uldb [Aller]}{\v IDH_MODULA2_03}\par
+{\f1  4. TYPES DE DONNEES}     {\uldb [Aller]}{\v IDH_MODULA2_04}\par
+{\f1  5. DECLARATIONS}     {\uldb [Aller]}{\v IDH_MODULA2_05}\par
+{\f1  6. OPERATEURS}     {\uldb [Aller]}{\v IDH_MODULA2_06}\par
+{\f1  7. STRUCTURES DE CONTROLE}     {\uldb [Aller]}{\v IDH_MODULA2_07}\par
+{\f1  8. PROCEDURES}     {\uldb [Aller]}{\v IDH_MODULA2_08}\par
+{\f1  9. MODULES}     {\uldb [Aller]}{\v IDH_MODULA2_09}\par
+{\f1 10. POINTEURS ET ALLOCATION DYNAMIQUE}     {\uldb [Aller]}{\v IDH_MODULA2_10}\par
+{\f1 11. COROUTINES}     {\uldb [Aller]}{\v IDH_MODULA2_11}\par
+{\f1 12. PROCEDURES STANDARD}     {\uldb [Aller]}{\v IDH_MODULA2_12}\par
+{\f1 13. BIBLIOTHEQUES STANDARD}     {\uldb [Aller]}{\v IDH_MODULA2_13}\par
+{\f1 14. EVOLUTIONS DU LANGAGE}     {\uldb [Aller]}{\v IDH_MODULA2_14}\par
+{\f1 15. COMPILATEUR DU PROJET (MODII86.PAS)}     {\uldb [Aller]}{\v IDH_MODULA2_15}\par
+{\f1 16. CONVERTISSEURS DU PROJET}     {\uldb [Aller]}{\v IDH_MODULA2_16}\par
+{\f1 17. EXEMPLES}     {\uldb [Aller]}{\v IDH_MODULA2_17}\par
+{\f1 18. INFLUENCE}     {\uldb [Aller]}{\v IDH_MODULA2_18}\par
+{\f1 19. REFERENCES}     {\uldb [Aller]}{\v IDH_MODULA2_19}\par
+\par
+{\uldb Suivant >>}{\v IDH_MODULA2_02}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_MODULA2_02}
+{\footnote $ Modula-2 - STRUCTURE D'UN PROGRAMME}
+{\footnote K Modula-2 structure programme;MODULE;DEFINITION MODULE;IMPLEMENTATION MODULE;BEGIN;END}
+\b\fs24 STRUCTURE D'UN PROGRAMME \b0\fs20\par
+\par
+Un programme Modula-2 est constitue d'un module principal\par
+(program module) et de zero ou plusieurs modules de\par
+bibliotheque (library modules). Chaque module de bibliotheque\par
+se compose d'un module de DEFINITION (interface publique) et\par
+d'un module d'IMPLEMENTATION (corps prive).\par
+\par
+\par
+\b 2.1 Module principal \b0\par
+\par
+{\f1   MODULE NomProgramme;}\par
+{\f1     FROM InOut IMPORT WriteString, WriteLn;}\par
+{\f1   BEGIN}\par
+{\f1     WriteString("Hello, World!"); WriteLn}\par
+{\f1   END NomProgramme.}\par
+\par
+Le nom apres END doit correspondre au nom apres MODULE.\par
+\par
+\par
+\b 2.2 DEFINITION MODULE \b0\par
+\par
+{\f1   DEFINITION MODULE Pile;}\par
+{\f1     EXPORT QUALIFIED Empiler, Depiler, Vide;}\par
+\par
+{\f1     PROCEDURE Empiler(x: INTEGER);}\par
+{\f1     PROCEDURE Depiler(): INTEGER;}\par
+{\f1     PROCEDURE Vide(): BOOLEAN;}\par
+{\f1   END Pile.}\par
+\par
+\par
+\b 2.3 IMPLEMENTATION MODULE \b0\par
+\par
+{\f1   IMPLEMENTATION MODULE Pile;}\par
+{\f1     VAR}\par
+{\f1       stack: ARRAY [0..99] OF INTEGER;}\par
+{\f1       sp: CARDINAL;}\par
+\par
+{\f1     PROCEDURE Empiler(x: INTEGER);}\par
+{\f1     BEGIN}\par
+{\f1       stack[sp] := x; INC(sp)}\par
+{\f1     END Empiler;}\par
+\par
+{\f1     PROCEDURE Depiler(): INTEGER;}\par
+{\f1     BEGIN}\par
+{\f1       DEC(sp); RETURN stack[sp]}\par
+{\f1     END Depiler;}\par
+\par
+{\f1     PROCEDURE Vide(): BOOLEAN;}\par
+{\f1     BEGIN}\par
+{\f1       RETURN sp = 0}\par
+{\f1     END Vide;}\par
+\par
+{\f1   BEGIN}\par
+{\f1     sp := 0                  (* initialisation *)}\par
+{\f1   END Pile.}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_MODULA2_01}     {\uldb Suivant >>}{\v IDH_MODULA2_03}     {\uldb Table des matieres}{\v IDH_MODULA2_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_MODULA2_03}
+{\footnote $ Modula-2 - STRUCTURE LEXICALE}
+{\footnote K Modula-2 structure lexicale;identificateurs;mots reserves;litteraux;commentaires imbricables;sensible casse}
+\b\fs24 STRUCTURE LEXICALE \b0\fs20\par
+\par
+\par
+\b 3.1 Jeu de caracteres \b0\par
+\par
+Modula-2 utilise ASCII / Latin-1. Tous les mots-cles sont en\par
+MAJUSCULES (sensible a la casse strictement).\par
+\par
+\par
+\b 3.2 Commentaires \b0\par
+\par
+Une seule forme, imbricable :\par
+\par
+{\f1   (* commentaire, sur une ou plusieurs lignes,}\par
+{\f1      imbricable (* comme ceci *) *)}\par
+\par
+\par
+\b 3.3 Identificateurs \b0\par
+\par
+Suite de lettres et chiffres commencant par une lettre.\par
+Sensibles a la casse. Pas d'underscore dans la norme.\par
+\par
+\par
+\b 3.4 Mots reserves (40) \b0\par
+\par
+{\f1   AND        DIV          IMPLEMENTATION  POINTER    SET}\par
+{\f1   ARRAY      DO           IMPORT          PROCEDURE  THEN}\par
+{\f1   BEGIN      ELSE         IN              QUALIFIED  TO}\par
+{\f1   BY         ELSIF        LOOP            RECORD     TYPE}\par
+{\f1   CASE       END          MOD             REPEAT     UNTIL}\par
+{\f1   CONST      EXIT         MODULE          RETURN     VAR}\par
+{\f1   DEFINITION EXPORT       NOT             FOR        WHILE}\par
+{\f1   FROM       IF           OF              FROM       WITH}\par
+{\f1   OR}\par
+\par
+Mots-cles standard (toujours utilisables comme identifiants\par
+si redeclares) : BITSET, BOOLEAN, CARDINAL, CHAR, FALSE,\par
+INTEGER, LONGINT, LONGREAL, NIL, PROC, REAL, TRUE.\par
+\par
+\par
+\b 3.5 Literaux \b0\par
+\par
+{\f1   - Entiers       : 42, 2AH (hexa, suffixe H), 52B (octal,}\par
+{\f1                     suffixe B), 1110B (variantes)}\par
+{\f1   - Reels         : 3.14, 3.14E2, 3.14E-2}\par
+{\f1   - Caractere     : 'A', 41C (caractere octal/decimal,}\par
+{\f1                     suffixe C)}\par
+{\f1   - Chaine        : "texte", 'texte' (sans imbrication}\par
+{\f1                     des memes guillemets)}\par
+{\f1   - Booleen       : TRUE, FALSE}\par
+{\f1   - Ensemble      : \{1, 3, 5..7\}, BITSET\{0, 3, 7\}}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_MODULA2_02}     {\uldb Suivant >>}{\v IDH_MODULA2_04}     {\uldb Table des matieres}{\v IDH_MODULA2_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_MODULA2_04}
+{\footnote $ Modula-2 - TYPES DE DONNEES}
+{\footnote K Modula-2 types donnees;BOOLEAN;CHAR;INTEGER;CARDINAL;LONGINT;LONGREAL;BITSET;ARRAY;RECORD;variantes;POINTER;SET;types procedure;tableaux ouverts}
+\b\fs24 TYPES DE DONNEES \b0\fs20\par
+\par
+\par
+\b 4.1 Types simples standard \b0\par
+\par
+{\f1   Type        Description              Taille typique}\par
+{\f1   ----        -----------              --------------}\par
+{\f1   BOOLEAN     TRUE / FALSE             1}\par
+{\f1   CHAR        caractere                1}\par
+{\f1   INTEGER     entier signe             2 ou 4}\par
+{\f1   CARDINAL    entier NON SIGNE         2 ou 4}\par
+{\f1   LONGINT     entier signe long        4 ou 8}\par
+{\f1   LONGCARD    entier non signe long    4 ou 8}\par
+{\f1   REAL        flottant simple          4}\par
+{\f1   LONGREAL    flottant double          8}\par
+{\f1   BITSET      ensemble de bits 0..N-1  2 ou 4}\par
+\par
+\par
+\b 4.2 Types enumeres \b0\par
+\par
+{\f1   TYPE Couleur = (Rouge, Vert, Bleu, Jaune);}\par
+{\f1   TYPE Jour = (Lundi, Mardi, Mercredi, Jeudi,}\par
+{\f1                Vendredi, Samedi, Dimanche);}\par
+\par
+Operations : ORD, VAL, INC, DEC.\par
+\par
+\par
+\b 4.3 Sous-intervalles \b0\par
+\par
+{\f1   TYPE Note = [0..20];}\par
+{\f1   TYPE Lettre = ['A'..'Z'];}\par
+{\f1   TYPE Travail = [Lundi..Vendredi];}\par
+\par
+\par
+\b 4.4 Tableaux : ARRAY \b0\par
+\par
+{\f1   TYPE Vecteur = ARRAY [0..99] OF REAL;}\par
+{\f1   TYPE Matrice = ARRAY [1..10], [1..10] OF REAL;}\par
+{\f1   TYPE String = ARRAY [0..255] OF CHAR;}\par
+\par
+\par
+\b 4.5 Enregistrements : RECORD \b0\par
+\par
+{\f1   TYPE Date = RECORD}\par
+{\f1     annee: CARDINAL;}\par
+{\f1     mois: [1..12];}\par
+{\f1     jour: [1..31]}\par
+{\f1   END;}\par
+\par
+Avec variantes (union discriminee) :\par
+\par
+{\f1   TYPE Forme = RECORD}\par
+{\f1     CASE genre: (cercle, rectangle) OF}\par
+{\f1       cercle: rayon: REAL}\par
+{\f1       |}\par
+{\f1       rectangle: largeur, hauteur: REAL}\par
+{\f1     END}\par
+{\f1   END;}\par
+\par
+\par
+\b 4.6 Ensembles : SET \b0\par
+\par
+{\f1   TYPE Ensemble = SET OF [0..31];}\par
+{\f1   TYPE Petits = SET OF Couleur;}\par
+\par
+Le type predefini BITSET = SET OF [0..15] (ou 31).\par
+\par
+\par
+\b 4.7 Pointeurs : POINTER TO \b0\par
+\par
+{\f1   TYPE PNoeud = POINTER TO Noeud;}\par
+{\f1   TYPE Noeud = RECORD}\par
+{\f1     val: INTEGER;}\par
+{\f1     suiv: PNoeud}\par
+{\f1   END;}\par
+\par
+Allocation/liberation explicite via ALLOCATE/DEALLOCATE\par
+(module Storage).\par
+\par
+\par
+\b 4.8 Types procedure \b0\par
+\par
+{\f1   TYPE Callback = PROCEDURE(CARDINAL): BOOLEAN;}\par
+{\f1   VAR f: Callback;}\par
+\par
+Une variable f peut contenir une procedure de signature\par
+compatible.\par
+\par
+\par
+\b 4.9 Tableaux ouverts (parametres) \b0\par
+\par
+{\f1   PROCEDURE Somme(VAR v: ARRAY OF INTEGER): INTEGER;}\par
+\par
+Le nombre d'elements s'obtient via HIGH(v) (dernier indice).\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_MODULA2_03}     {\uldb Suivant >>}{\v IDH_MODULA2_05}     {\uldb Table des matieres}{\v IDH_MODULA2_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_MODULA2_05}
+{\footnote $ Modula-2 - DECLARATIONS}
+{\footnote K Modula-2 declarations;CONST;TYPE;VAR;ordre declarations}
+\b\fs24 DECLARATIONS \b0\fs20\par
+\par
+Ordre obligatoire dans un module ou une procedure :\par
+\par
+{\f1   CONST      declarations de constantes}\par
+{\f1   TYPE       declarations de types}\par
+{\f1   VAR        declarations de variables}\par
+{\f1   PROCEDURE  declarations de procedures}\par
+{\f1   MODULE     modules locaux (rares)}\par
+\par
+\par
+\b 5.1 Constantes : CONST \b0\par
+\par
+{\f1   CONST}\par
+{\f1     PI = 3.14159;}\par
+{\f1     MAX = 1000;}\par
+{\f1     LF = 12C;            (* caractere de code octal 12 *)}\par
+{\f1     BORNE = MAX - 1;}\par
+\par
+\par
+\b 5.2 Types : TYPE \b0\par
+\par
+{\f1   TYPE}\par
+{\f1     Compteur = CARDINAL;}\par
+{\f1     Nom = ARRAY [0..31] OF CHAR;}\par
+{\f1     PListe = POINTER TO Noeud;}\par
+{\f1     Noeud = RECORD}\par
+{\f1       val: INTEGER;}\par
+{\f1       suiv: PListe}\par
+{\f1     END;}\par
+\par
+\par
+\b 5.3 Variables : VAR \b0\par
+\par
+{\f1   VAR}\par
+{\f1     x, y: INTEGER;}\par
+{\f1     nom: Nom;}\par
+{\f1     tete: PListe;}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_MODULA2_04}     {\uldb Suivant >>}{\v IDH_MODULA2_06}     {\uldb Table des matieres}{\v IDH_MODULA2_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_MODULA2_06}
+{\footnote $ Modula-2 - OPERATEURS}
+{\footnote K Modula-2 operateurs;arithmetique;DIV;MOD;relationnel;different #;logique;ensemble;IN;precedence}
+\b\fs24 OPERATEURS \b0\fs20\par
+\par
+\par
+\b 6.1 Operateurs arithmetiques \b0\par
+\par
+{\f1   +    addition (unaire/binaire)}\par
+{\f1   -    soustraction (unaire/binaire)}\par
+{\f1   *    multiplication}\par
+{\f1   /    division reelle}\par
+{\f1   DIV  division entiere}\par
+{\f1   MOD  modulo}\par
+\par
+DIV et MOD : leurs resultats sont definis seulement pour les\par
+operandes positifs (limitation Modula-2 classique).\par
+\par
+\par
+\b 6.2 Operateurs relationnels \b0\par
+\par
+{\f1   =    egal}\par
+{\f1   #    different (ou <>)}\par
+{\f1   <    inferieur}\par
+{\f1   >    superieur}\par
+{\f1   <=   inferieur ou egal}\par
+{\f1   >=   superieur ou egal}\par
+{\f1   IN   appartenance a un ensemble}\par
+\par
+\par
+\b 6.3 Operateurs logiques \b0\par
+\par
+{\f1   AND  ET logique (court-circuit, alias &)}\par
+{\f1   OR   OU logique (court-circuit, alias l'absence de NOT)}\par
+{\f1   NOT  NON logique (alias ~)}\par
+\par
+\par
+\b 6.4 Operateurs sur ensembles \b0\par
+\par
+{\f1   +    union}\par
+{\f1   -    difference}\par
+{\f1   *    intersection}\par
+{\f1   /    difference symetrique}\par
+{\f1   IN   appartenance}\par
+\par
+\par
+\b 6.5 Affectation \b0\par
+\par
+{\f1   :=    affectation}\par
+\par
+\par
+\b 6.6 Precedence (decroissante) \b0\par
+\par
+{\f1   1. NOT  ~}\par
+{\f1   2. *  /  DIV  MOD  AND  &}\par
+{\f1   3. +  -  OR}\par
+{\f1   4. =  #  <  <=  >  >=  IN}\par
+{\f1   5. := (le moins prioritaire)}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_MODULA2_05}     {\uldb Suivant >>}{\v IDH_MODULA2_07}     {\uldb Table des matieres}{\v IDH_MODULA2_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_MODULA2_07}
+{\footnote $ Modula-2 - STRUCTURES DE CONTROLE}
+{\footnote K Modula-2 structures controle;IF;ELSIF;CASE;WHILE;REPEAT;FOR;BY;LOOP;EXIT;WITH;RETURN}
+\b\fs24 STRUCTURES DE CONTROLE \b0\fs20\par
+\par
+\par
+\b 7.1 Selection : IF \b0\par
+\par
+{\f1   IF condition THEN}\par
+{\f1     instructions}\par
+{\f1   ELSIF condition2 THEN}\par
+{\f1     instructions}\par
+{\f1   ELSE}\par
+{\f1     instructions}\par
+{\f1   END}\par
+\par
+\par
+\b 7.2 Selection : CASE \b0\par
+\par
+{\f1   CASE expression OF}\par
+{\f1     val1: instructions |}\par
+{\f1     val2, val3: instructions |}\par
+{\f1     a..b: instructions}\par
+{\f1   ELSE}\par
+{\f1     instructions}\par
+{\f1   END}\par
+\par
+\par
+\b 7.3 Iteration : WHILE \b0\par
+\par
+{\f1   WHILE condition DO}\par
+{\f1     instructions}\par
+{\f1   END}\par
+\par
+\par
+\b 7.4 Iteration : REPEAT \b0\par
+\par
+{\f1   REPEAT}\par
+{\f1     instructions}\par
+{\f1   UNTIL condition}\par
+\par
+\par
+\b 7.5 Iteration : FOR \b0\par
+\par
+{\f1   FOR i := init TO fin DO}\par
+{\f1     instructions}\par
+{\f1   END}\par
+\par
+{\f1   FOR i := init TO fin BY pas DO}\par
+{\f1     instructions}\par
+{\f1   END}\par
+\par
+\par
+\b 7.6 Boucle infinie : LOOP / EXIT \b0\par
+\par
+{\f1   LOOP}\par
+{\f1     instructions;}\par
+{\f1     IF condition THEN EXIT END;}\par
+{\f1     autres instructions}\par
+{\f1   END}\par
+\par
+EXIT sort de la boucle LOOP la plus interne.\par
+\par
+\par
+\b 7.7 WITH \b0\par
+\par
+Acces simplifie aux champs d'un RECORD :\par
+\par
+{\f1   WITH personne DO}\par
+{\f1     nom := "Jean";}\par
+{\f1     age := 42}\par
+{\f1   END}\par
+\par
+\par
+\b 7.8 RETURN \b0\par
+\par
+{\f1   RETURN              (* dans procedure sans valeur *)}\par
+{\f1   RETURN expression   (* dans fonction *)}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_MODULA2_06}     {\uldb Suivant >>}{\v IDH_MODULA2_08}     {\uldb Table des matieres}{\v IDH_MODULA2_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_MODULA2_08}
+{\footnote $ Modula-2 - PROCEDURES}
+{\footnote K Modula-2 procedures;parametres;VAR;tableau ouvert;HIGH;recursivite;types procedure;FORWARD}
+\b\fs24 PROCEDURES \b0\fs20\par
+\par
+\par
+\b 8.1 Declaration \b0\par
+\par
+{\f1   PROCEDURE nom(param1: type1; VAR param2: type2): typeRetour;}\par
+{\f1     (* declarations locales *)}\par
+{\f1   BEGIN}\par
+{\f1     (* corps *)}\par
+{\f1     RETURN expression}\par
+{\f1   END nom;}\par
+\par
+Sans valeur de retour, omettre `: typeRetour` et le RETURN\par
+de valeur.\par
+\par
+\par
+\b 8.2 Passage de parametres \b0\par
+\par
+{\f1   - Par valeur     : param: type        (defaut, copie)}\par
+{\f1   - Par reference  : VAR param: type    (modifiable)}\par
+\par
+Les tableaux ouverts (ARRAY OF T) sont passes par reference\par
+implicite ; on ne peut pas modifier directement leurs\par
+elements sauf si declares VAR.\par
+\par
+\par
+\b 8.3 Tableaux ouverts \b0\par
+\par
+{\f1   PROCEDURE Somme(v: ARRAY OF INTEGER): INTEGER;}\par
+{\f1     VAR i: CARDINAL; s: INTEGER;}\par
+{\f1   BEGIN}\par
+{\f1     s := 0;}\par
+{\f1     FOR i := 0 TO HIGH(v) DO INC(s, v[i]) END;}\par
+{\f1     RETURN s}\par
+{\f1   END Somme;}\par
+\par
+HIGH(v) retourne le dernier indice (taille - 1).\par
+\par
+\par
+\b 8.4 Procedures comme types \b0\par
+\par
+{\f1   TYPE Fn = PROCEDURE(REAL): REAL;}\par
+{\f1   VAR f: Fn;}\par
+{\f1   ...}\par
+{\f1   f := Sin;             (* sans parentheses : reference *)}\par
+{\f1   y := f(x);            (* appel *)}\par
+\par
+\par
+\b 8.5 Forward / recursivite \b0\par
+\par
+Toute procedure est implicitement recursive ; pas de\par
+declaration FORWARD necessaire car Modula-2 fait deux passes\par
+sur le source.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_MODULA2_07}     {\uldb Suivant >>}{\v IDH_MODULA2_09}     {\uldb Table des matieres}{\v IDH_MODULA2_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_MODULA2_09}
+{\footnote $ Modula-2 - MODULES}
+{\footnote K Modula-2 modules;DEFINITION MODULE;IMPLEMENTATION MODULE;EXPORT QUALIFIED;FROM IMPORT;IMPORT;modules locaux}
+\b\fs24 MODULES \b0\fs20\par
+\par
+\par
+\b 9.1 Module de definition (interface) \b0\par
+\par
+{\f1   DEFINITION MODULE Math;}\par
+{\f1     EXPORT QUALIFIED Pi, Racine, Carre;}\par
+\par
+{\f1     CONST Pi = 3.14159265;}\par
+\par
+{\f1     PROCEDURE Racine(x: REAL): REAL;}\par
+{\f1     PROCEDURE Carre(x: REAL): REAL;}\par
+\par
+{\f1   END Math.}\par
+\par
+EXPORT QUALIFIED rend les noms accessibles seulement via la\par
+notation `Math.Pi`, `Math.Racine`.\par
+\par
+\par
+\b 9.2 Module d'implementation \b0\par
+\par
+{\f1   IMPLEMENTATION MODULE Math;}\par
+{\f1     PROCEDURE Racine(x: REAL): REAL;}\par
+{\f1     BEGIN}\par
+{\f1       (* methode de Newton *)}\par
+{\f1       ...}\par
+{\f1     END Racine;}\par
+\par
+{\f1     PROCEDURE Carre(x: REAL): REAL;}\par
+{\f1     BEGIN}\par
+{\f1       RETURN x * x}\par
+{\f1     END Carre;}\par
+\par
+{\f1   BEGIN}\par
+{\f1     (* corps d'initialisation, optionnel *)}\par
+{\f1   END Math.}\par
+\par
+\par
+\b 9.3 Importation \b0\par
+\par
+{\f1   FROM Math IMPORT Pi, Racine;        (* import direct *)}\par
+{\f1   IMPORT Math;                        (* import qualifie *)}\par
+{\f1   FROM Math IMPORT ALL;               (* tout (non-standard) *)}\par
+\par
+Apres FROM ... IMPORT, on accede directement aux noms ;\par
+apres IMPORT Math, on doit ecrire `Math.Pi`.\par
+\par
+\par
+\b 9.4 Modules locaux \b0\par
+\par
+Un module peut etre declare a l'interieur d'un autre :\par
+\par
+{\f1   PROCEDURE Externe;}\par
+\par
+{\f1     MODULE Interne;}\par
+{\f1       EXPORT compteur, Incrementer;}\par
+\par
+{\f1       VAR compteur: CARDINAL;}\par
+\par
+{\f1       PROCEDURE Incrementer;}\par
+{\f1       BEGIN INC(compteur) END Incrementer;}\par
+\par
+{\f1     BEGIN compteur := 0}\par
+{\f1     END Interne;}\par
+\par
+{\f1   BEGIN}\par
+{\f1     ...}\par
+{\f1     Incrementer}\par
+{\f1   END Externe;}\par
+\par
+Utilises pour encapsuler des variables d'etat localement.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_MODULA2_08}     {\uldb Suivant >>}{\v IDH_MODULA2_10}     {\uldb Table des matieres}{\v IDH_MODULA2_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_MODULA2_10}
+{\footnote $ Modula-2 - POINTEURS ET ALLOCATION DYNAMIQUE}
+{\footnote K Modula-2 pointeurs;POINTER TO;NEW;DISPOSE;ALLOCATE;DEALLOCATE;Storage;NIL;dereferencement}
+\b\fs24 POINTEURS ET ALLOCATION DYNAMIQUE \b0\fs20\par
+\par
+\par
+\b 10.1 Declaration \b0\par
+\par
+{\f1   TYPE PNoeud = POINTER TO Noeud;}\par
+{\f1   TYPE Noeud = RECORD}\par
+{\f1     val: INTEGER;}\par
+{\f1     suiv: PNoeud}\par
+{\f1   END;}\par
+\par
+{\f1   VAR p: PNoeud;}\par
+\par
+\par
+\b 10.2 Allocation : ALLOCATE \b0\par
+\par
+L'allocation se fait via la procedure standard NEW, qui\par
+delegue a ALLOCATE du module Storage :\par
+\par
+{\f1   FROM Storage IMPORT ALLOCATE, DEALLOCATE;}\par
+\par
+{\f1   NEW(p);             (* alloue *p *)}\par
+{\f1   p^.val := 42;}\par
+{\f1   p^.suiv := NIL;}\par
+\par
+\par
+\b 10.3 Liberation : DEALLOCATE \b0\par
+\par
+{\f1   DISPOSE(p);         (* libere *p *)}\par
+\par
+\par
+\b 10.4 Dereferencement \b0\par
+\par
+{\f1   p^                  (* objet pointe *)}\par
+{\f1   p^.val              (* champ val *)}\par
+\par
+\par
+\b 10.5 NIL \b0\par
+\par
+Constante du pointeur nul. Tout pointeur peut etre compare a\par
+NIL avec = ou #.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_MODULA2_09}     {\uldb Suivant >>}{\v IDH_MODULA2_11}     {\uldb Table des matieres}{\v IDH_MODULA2_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_MODULA2_11}
+{\footnote $ Modula-2 - COROUTINES}
+{\footnote K Modula-2 coroutines;PROCESS;NEWPROCESS;TRANSFER;IOTRANSFER;SYSTEM;concurrence cooperative}
+\b\fs24 COROUTINES \b0\fs20\par
+\par
+Modula-2 supporte les coroutines (procedures concurrentes\par
+cooperatives) via le module SYSTEM :\par
+\par
+{\f1   FROM SYSTEM IMPORT PROCESS, NEWPROCESS, TRANSFER;}\par
+\par
+{\f1   VAR p1, p2: PROCESS;}\par
+{\f1       pile1, pile2: ARRAY [0..1023] OF WORD;}\par
+\par
+{\f1   PROCEDURE Coroutine1;}\par
+{\f1   BEGIN}\par
+{\f1     LOOP}\par
+{\f1       WriteString("A"); TRANSFER(p1, p2)}\par
+{\f1     END}\par
+{\f1   END Coroutine1;}\par
+\par
+{\f1   PROCEDURE Coroutine2;}\par
+{\f1   BEGIN}\par
+{\f1     LOOP}\par
+{\f1       WriteString("B"); TRANSFER(p2, p1)}\par
+{\f1     END}\par
+{\f1   END Coroutine2;}\par
+\par
+{\f1   BEGIN}\par
+{\f1     NEWPROCESS(Coroutine1, ADR(pile1), SIZE(pile1), p1);}\par
+{\f1     NEWPROCESS(Coroutine2, ADR(pile2), SIZE(pile2), p2);}\par
+{\f1     TRANSFER(p2, p1)}\par
+{\f1   END Main.}\par
+\par
+{\f1   - NEWPROCESS  : initialise un processus avec une pile}\par
+{\f1   - TRANSFER    : passe le controle d'un processus a un autre}\par
+{\f1   - IOTRANSFER  : variante avec attente d'interruption}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_MODULA2_10}     {\uldb Suivant >>}{\v IDH_MODULA2_12}     {\uldb Table des matieres}{\v IDH_MODULA2_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_MODULA2_12}
+{\footnote $ Modula-2 - PROCEDURES STANDARD}
+{\footnote K Modula-2 procedures standard;ABS;CAP;CHR;ORD;ODD;INC;DEC;INCL;EXCL;HIGH;SIZE;NEW;DISPOSE;FLOAT;TRUNC;ROUND;HALT;ADR;TSIZE}
+\b\fs24 PROCEDURES STANDARD \b0\fs20\par
+\par
+\par
+\b 12.1 Procedures sur entiers \b0\par
+\par
+{\f1   ABS(x)        valeur absolue}\par
+{\f1   CAP(c)        majuscule d'un CHAR}\par
+{\f1   CHR(n)        caractere de code n}\par
+{\f1   ORD(x)        valeur ordinale}\par
+{\f1   ODD(x)        TRUE si impair}\par
+{\f1   INC(x)        x := x + 1}\par
+{\f1   INC(x, n)     x := x + n}\par
+{\f1   DEC(x)        x := x - 1}\par
+{\f1   DEC(x, n)     x := x - n}\par
+\par
+\par
+\b 12.2 Procedures sur ensembles \b0\par
+\par
+{\f1   INCL(s, x)    ajoute x a s}\par
+{\f1   EXCL(s, x)    retire x de s}\par
+\par
+\par
+\b 12.3 Procedures sur tableaux \b0\par
+\par
+{\f1   HIGH(v)       dernier indice}\par
+{\f1   SIZE(v)       taille en octets}\par
+\par
+\par
+\b 12.4 Allocation \b0\par
+\par
+{\f1   NEW(p)        delegue a ALLOCATE}\par
+{\f1   DISPOSE(p)    delegue a DEALLOCATE}\par
+\par
+\par
+\b 12.5 Conversion \b0\par
+\par
+{\f1   CHR(n)        CARDINAL -> CHAR}\par
+{\f1   ORD(x)        type -> CARDINAL}\par
+{\f1   FLOAT(x)      INTEGER/CARDINAL -> REAL}\par
+{\f1   TRUNC(x)      REAL -> CARDINAL (troncature)}\par
+{\f1   ROUND(x)      REAL -> CARDINAL (arrondi)}\par
+\par
+\par
+\b 12.6 Procedures HALT et fin \b0\par
+\par
+{\f1   HALT          termine le programme}\par
+\par
+\par
+\b 12.7 Procedures du module SYSTEM \b0\par
+\par
+{\f1   ADR(x)        adresse de x}\par
+{\f1   SIZE(T)       taille du type T}\par
+{\f1   TSIZE(T)      taille du type T (variant size)}\par
+{\f1   WORD          type "mot machine"}\par
+{\f1   ADDRESS       type adresse}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_MODULA2_11}     {\uldb Suivant >>}{\v IDH_MODULA2_13}     {\uldb Table des matieres}{\v IDH_MODULA2_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_MODULA2_13}
+{\footnote $ Modula-2 - BIBLIOTHEQUES STANDARD}
+{\footnote K Modula-2 bibliotheques;InOut;MathLib0;Strings;Storage;SYSTEM;WriteString;WriteCard;WriteInt;ReadString}
+\b\fs24 BIBLIOTHEQUES STANDARD \b0\fs20\par
+\par
+Modula-2 ISO definit une bibliotheque standard. Bibliotheques\par
+"de fait" historiques :\par
+\par
+\par
+\b 13.1 InOut (PIM) \b0\par
+\par
+{\f1   WriteString(s)    ecrit une chaine}\par
+{\f1   WriteLn           saut de ligne}\par
+{\f1   WriteCard(n, w)   ecrit CARDINAL sur w caracteres}\par
+{\f1   WriteInt(n, w)    ecrit INTEGER sur w caracteres}\par
+{\f1   WriteReal(x, w)   ecrit REAL sur w caracteres}\par
+{\f1   Write(c)          ecrit un caractere}\par
+{\f1   ReadString(s)     lit une chaine}\par
+{\f1   ReadCard(n)       lit un CARDINAL}\par
+{\f1   ReadInt(n)        lit un INTEGER}\par
+{\f1   Read(c)           lit un caractere}\par
+\par
+\par
+\b 13.2 MathLib0 \b0\par
+\par
+{\f1   sqrt, exp, ln, sin, cos, arctan, real, entier}\par
+\par
+\par
+\b 13.3 Strings \b0\par
+\par
+{\f1   Length, Concat, Compare, Copy, Pos, Delete, Insert}\par
+\par
+\par
+\b 13.4 Storage \b0\par
+\par
+{\f1   ALLOCATE(p, n)}\par
+{\f1   DEALLOCATE(p, n)}\par
+\par
+\par
+\b 13.5 SYSTEM \b0\par
+\par
+Types et procedures de bas niveau :\par
+{\f1   WORD, BYTE, ADDRESS, PROCESS}\par
+{\f1   ADR, SIZE, TSIZE}\par
+{\f1   NEWPROCESS, TRANSFER, IOTRANSFER}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_MODULA2_12}     {\uldb Suivant >>}{\v IDH_MODULA2_14}     {\uldb Table des matieres}{\v IDH_MODULA2_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_MODULA2_14}
+{\footnote $ Modula-2 - EVOLUTIONS DU LANGAGE}
+{\footnote K Modula-2 evolutions;Modula-2 original 1979;Modula-2 revise 1984;PIM-4 1988;ISO 10514 1996;Modula-2 R10 2010}
+\b\fs24 EVOLUTIONS DU LANGAGE \b0\fs20\par
+\par
+\par
+\b 14.1 Modula-2 original (1979) \b0\par
+\par
+Version Wirth initiale, utilisee pour le systeme Medos-2 sur\par
+Lilith.\par
+\par
+\par
+\b 14.2 Modula-2 revise (1984) \b0\par
+\par
+Quelques ajustements : EXPORT QUALIFIED implicite, types\par
+LONGINT/LONGREAL.\par
+\par
+\par
+\b 14.3 PIM-4 (Programming in Modula-2, 4eme edition, 1988) \b0\par
+\par
+{\f1   - Suppression d'EXPORT (implicite via DEFINITION)}\par
+{\f1   - Tableaux ouverts en parametres}\par
+{\f1   - HIGH() pour tableaux ouverts}\par
+\par
+\par
+\b 14.4 ISO Modula-2 (1996) \b0\par
+\par
+ISO/IEC 10514-1 : standardisation officielle. Ajoute :\par
+\par
+{\f1   - Generics (templates)}\par
+{\f1   - Exceptions (RAISE / EXCEPT)}\par
+{\f1   - Modules de bibliotheque standard normalises}\par
+{\f1   - Caractere ISO Latin-1 obligatoire}\par
+\par
+\par
+\b 14.5 Modula-2 R10 (2010) \b0\par
+\par
+Revision modernisee de Modula-2 par B. Kowarsch. Ajoute :\par
+{\f1   - Types unsigned modernes}\par
+{\f1   - Surcharge limitee}\par
+{\f1   - Conservation de la simplicite originale}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_MODULA2_13}     {\uldb Suivant >>}{\v IDH_MODULA2_15}     {\uldb Table des matieres}{\v IDH_MODULA2_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_MODULA2_15}
+{\footnote $ Modula-2 - COMPILATEUR DU PROJET (MODII86.PAS)}
+{\footnote K Modula-2 compilateur projet;MODII86.PAS;MS-DOS;assembleur 8086;MASM;modele SMALL}
+\b\fs24 COMPILATEUR DU PROJET (MODII86.PAS) \b0\fs20\par
+\par
+MODII86.PAS - Compilateur Modula-2 vers assembleur 8086\par
+\par
+{\f1   Cible             : MS-DOS, assembleur MASM .MODEL SMALL}\par
+{\f1   Modele memoire    : SMALL (code 64KO, donnees 64KO)}\par
+{\f1   Dialecte          : Modula-2 PIM-4 (sous-ensemble)}\par
+{\f1   Sortie            : fichier .ASM, assemblable avec MASM}\par
+\par
+{\f1   Fonctionnalites :}\par
+{\f1     - Modules DEFINITION et IMPLEMENTATION}\par
+{\f1     - Types BOOLEAN, CHAR, INTEGER, CARDINAL, REAL}\par
+{\f1     - ARRAY (fixe et ouvert), RECORD, POINTER, SET}\par
+{\f1     - Procedures et fonctions}\par
+{\f1     - Structures IF, CASE, WHILE, REPEAT, FOR, LOOP/EXIT}\par
+{\f1     - WITH, sous-intervalles, enumerations}\par
+{\f1     - Importation FROM ... IMPORT, IMPORT ...}\par
+{\f1     - Coroutines basiques (NEWPROCESS, TRANSFER)}\par
+{\f1     - InOut, Storage, SYSTEM partiels}\par
+\par
+{\f1   Limitations :}\par
+{\f1     - LONGINT/LONGREAL non supportes (32-bit non standard)}\par
+{\f1     - Pas de generiques (extension ISO)}\par
+{\f1     - Pas d'exceptions (extension ISO)}\par
+{\f1     - Modules locaux non supportes}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_MODULA2_14}     {\uldb Suivant >>}{\v IDH_MODULA2_16}     {\uldb Table des matieres}{\v IDH_MODULA2_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_MODULA2_16}
+{\footnote $ Modula-2 - CONVERTISSEURS DU PROJET}
+{\footnote K Modula-2 convertisseurs;ADA2MOD2.PAS;PAS2MOD2.PAS;Ada vers Modula-2;Pascal vers Modula-2}
+\b\fs24 CONVERTISSEURS DU PROJET \b0\fs20\par
+\par
+\par
+\b 16.1 ADA2MOD2.PAS - Ada vers Modula-2 \b0\par
+\par
+Convertit Ada (sous-ensemble) vers Modula-2 :\par
+\par
+{\f1   - package -> DEFINITION MODULE}\par
+{\f1   - package body -> IMPLEMENTATION MODULE}\par
+{\f1   - procedure/function -> PROCEDURE}\par
+{\f1   - record -> RECORD}\par
+{\f1   - if/elsif/else -> IF/ELSIF/ELSE}\par
+\par
+\par
+\b 16.2 PAS2MOD2.PAS - Pascal vers Modula-2 \b0\par
+\par
+Convertit Turbo Pascal (sous-ensemble) vers Modula-2 :\par
+\par
+{\f1   - unit -> DEFINITION + IMPLEMENTATION MODULE}\par
+{\f1   - program -> MODULE}\par
+{\f1   - var/const/type -> VAR/CONST/TYPE}\par
+{\f1   - begin/end -> BEGIN/END}\par
+{\f1   - := identique}\par
+{\f1   - writeln -> WriteString + WriteLn}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_MODULA2_15}     {\uldb Suivant >>}{\v IDH_MODULA2_17}     {\uldb Table des matieres}{\v IDH_MODULA2_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_MODULA2_17}
+{\footnote $ Modula-2 - EXEMPLES}
+{\footnote K Modula-2 exemples;Hello World;Factorielle;liste chainee;module pile;DEFINITION;IMPLEMENTATION}
+\b\fs24 EXEMPLES \b0\fs20\par
+\par
+\par
+\b 17.1 Hello, World! \b0\par
+\par
+{\f1   MODULE Hello;}\par
+{\f1     FROM InOut IMPORT WriteString, WriteLn;}\par
+{\f1   BEGIN}\par
+{\f1     WriteString("Hello, World!"); WriteLn}\par
+{\f1   END Hello.}\par
+\par
+\par
+\b 17.2 Factorielle recursive \b0\par
+\par
+{\f1   MODULE Fact;}\par
+{\f1     FROM InOut IMPORT WriteString, WriteCard, WriteLn;}\par
+\par
+{\f1     PROCEDURE Factorielle(n: CARDINAL): CARDINAL;}\par
+{\f1     BEGIN}\par
+{\f1       IF n <= 1 THEN RETURN 1}\par
+{\f1       ELSE RETURN n * Factorielle(n - 1)}\par
+{\f1       END}\par
+{\f1     END Factorielle;}\par
+\par
+{\f1     VAR i: CARDINAL;}\par
+{\f1   BEGIN}\par
+{\f1     FOR i := 0 TO 10 DO}\par
+{\f1       WriteCard(i, 3); WriteString(" -> ");}\par
+{\f1       WriteCard(Factorielle(i), 8); WriteLn}\par
+{\f1     END}\par
+{\f1   END Fact.}\par
+\par
+\par
+\b 17.3 Liste chainee \b0\par
+\par
+{\f1   MODULE Liste;}\par
+{\f1     FROM Storage IMPORT ALLOCATE;}\par
+{\f1     FROM InOut IMPORT WriteInt, WriteLn;}\par
+\par
+{\f1     TYPE}\par
+{\f1       PNoeud = POINTER TO Noeud;}\par
+{\f1       Noeud = RECORD}\par
+{\f1         val: INTEGER;}\par
+{\f1         suiv: PNoeud}\par
+{\f1       END;}\par
+\par
+{\f1     VAR tete: PNoeud;}\par
+\par
+{\f1     PROCEDURE Ajouter(v: INTEGER);}\par
+{\f1       VAR n: PNoeud;}\par
+{\f1     BEGIN}\par
+{\f1       NEW(n);}\par
+{\f1       n^.val := v;}\par
+{\f1       n^.suiv := tete;}\par
+{\f1       tete := n}\par
+{\f1     END Ajouter;}\par
+\par
+{\f1     PROCEDURE Afficher;}\par
+{\f1       VAR p: PNoeud;}\par
+{\f1     BEGIN}\par
+{\f1       p := tete;}\par
+{\f1       WHILE p # NIL DO}\par
+{\f1         WriteInt(p^.val, 4);}\par
+{\f1         p := p^.suiv}\par
+{\f1       END;}\par
+{\f1       WriteLn}\par
+{\f1     END Afficher;}\par
+\par
+{\f1   BEGIN}\par
+{\f1     tete := NIL;}\par
+{\f1     Ajouter(1); Ajouter(2); Ajouter(3);}\par
+{\f1     Afficher}\par
+{\f1   END Liste.}\par
+\par
+\par
+\b 17.4 Module de pile \b0\par
+\par
+{\f1   DEFINITION MODULE Pile;}\par
+{\f1     EXPORT QUALIFIED Push, Pop, Empty;}\par
+\par
+{\f1     PROCEDURE Push(x: INTEGER);}\par
+{\f1     PROCEDURE Pop(): INTEGER;}\par
+{\f1     PROCEDURE Empty(): BOOLEAN;}\par
+{\f1   END Pile.}\par
+\par
+{\f1   IMPLEMENTATION MODULE Pile;}\par
+{\f1     VAR}\par
+{\f1       data: ARRAY [0..99] OF INTEGER;}\par
+{\f1       sp: CARDINAL;}\par
+\par
+{\f1     PROCEDURE Push(x: INTEGER);}\par
+{\f1     BEGIN}\par
+{\f1       data[sp] := x; INC(sp)}\par
+{\f1     END Push;}\par
+\par
+{\f1     PROCEDURE Pop(): INTEGER;}\par
+{\f1     BEGIN}\par
+{\f1       DEC(sp); RETURN data[sp]}\par
+{\f1     END Pop;}\par
+\par
+{\f1     PROCEDURE Empty(): BOOLEAN;}\par
+{\f1     BEGIN}\par
+{\f1       RETURN sp = 0}\par
+{\f1     END Empty;}\par
+\par
+{\f1   BEGIN}\par
+{\f1     sp := 0}\par
+{\f1   END Pile.}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_MODULA2_16}     {\uldb Suivant >>}{\v IDH_MODULA2_18}     {\uldb Table des matieres}{\v IDH_MODULA2_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_MODULA2_18}
+{\footnote $ Modula-2 - INFLUENCE}
+{\footnote K Modula-2 influence;Oberon;Modula-3;Ada;Component Pascal;comparaison Pascal}
+\b\fs24 INFLUENCE \b0\fs20\par
+\par
+Modula-2 a influence directement :\par
+\par
+{\f1   - Oberon (Wirth, 1988) - successeur direct}\par
+{\f1   - Modula-3 (DEC SRC, 1988) - avec POO, exceptions, threads}\par
+{\f1   - Ada (DoD, 1983) - emprunte certaines idees modulaires}\par
+{\f1   - Component Pascal (Oberon Microsystems, 1997)}\par
+\par
+Comparaison Modula-2 / Pascal :\par
+\par
+{\f1   Aspect             Pascal              Modula-2}\par
+{\f1   ------             ------              --------}\par
+{\f1   Modularite         programme unique    modules separes}\par
+{\f1   Sensibilite casse  non                 oui (mots-cles MAJ)}\par
+{\f1   CARDINAL           non                 oui (entier unsigned)}\par
+{\f1   Tableaux ouverts   non                 oui}\par
+{\f1   Procedure type     non                 oui}\par
+{\f1   Coroutines         non                 oui}\par
+{\f1   Importation        uses (TP)           FROM/IMPORT}\par
+{\f1   Hex/octal          $FF / non           0FFH / 377B}\par
+{\f1   Caractere          'A', #65            'A', 41C}\par
+{\f1   Different          <>                  # (ou <>)}\par
+{\f1   Boucle infinie     non                 LOOP/EXIT}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_MODULA2_17}     {\uldb Suivant >>}{\v IDH_MODULA2_19}     {\uldb Table des matieres}{\v IDH_MODULA2_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_MODULA2_19}
+{\footnote $ Modula-2 - REFERENCES}
+{\footnote K Modula-2 references;bibliographie;Wirth PIM-4;ISO 10514-1;King;Modula-2 R10}
+\b\fs24 REFERENCES \b0\fs20\par
+\par
+{\f1   - Wirth, N.              "Programming in Modula-2",}\par
+{\f1                            Springer-Verlag, 1982 (1ere ed.).}\par
+{\f1   - Wirth, N.              "Programming in Modula-2", 4th}\par
+{\f1                            corrected ed., Springer, 1988.}\par
+{\f1                            (la reference PIM-4)}\par
+{\f1   - ISO/IEC 10514-1:1996   "Information technology -}\par
+{\f1                            Programming languages - Part 1:}\par
+{\f1                            Modula-2 - Base Language".}\par
+{\f1   - King, K.N.             "Modula-2: A Complete Guide",}\par
+{\f1                            D.C. Heath, 1988.}\par
+{\f1   - Wirth, N.              "The Programming Language}\par
+{\f1                            Modula-2", Report 36, ETH Zurich,}\par
+{\f1                            1980.}\par
+{\f1   - Cooper, D.             "Standard Pascal vs. Modula-2",}\par
+{\f1                            BYTE, Aug. 1984.}\par
+{\f1   - Site                   https://www.modula2.org}\par
+{\f1   - Modula-2 R10           https://modula-2.info}\par
+
+\par
+{\uldb << Precedent}{\v IDH_MODULA2_18}     {\uldb Table des matieres}{\v IDH_MODULA2_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+}

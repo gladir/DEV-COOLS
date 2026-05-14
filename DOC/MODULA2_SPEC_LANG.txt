@@ -1,0 +1,1026 @@
+Modula-2 - Specifications du langage
+============================================================
+Compilateurs : MODII86.PAS  (Modula-2 vers assembleur 8086)
+Convertisseurs : ADA2MOD2.PAS (Ada vers Modula-2)
+                 PAS2MOD2.PAS (Pascal vers Modula-2)
+Reference   : "Programming in Modula-2", Niklaus Wirth,
+              Springer-Verlag, 1982 (1ere ed.), 4eme ed.
+              corrigee 1988.
+              ISO/IEC 10514-1:1996 - Modula-2 standard.
+Version     : 1.0 - 2026
+
+============================================================
+1. PRESENTATION
+============================================================
+
+Modula-2 a ete concu en 1977-1979 par Niklaus Wirth a l'ETH
+Zurich comme successeur de Pascal pour la programmation
+systeme. Il a servi a implementer le systeme d'exploitation
+Medos-2 pour la station de travail Lilith (1980).
+
+Modula-2 introduit plusieurs concepts importants :
+
+  - Modularite : compilation separee avec interface/
+    implementation explicites
+  - Coroutines pour la programmation concurrente legere
+  - Acces direct au materiel via le module SYSTEM
+  - Procedures comme types (variables-procedure)
+  - Verifications strictes a la compilation
+
+Modula-2 est un langage :
+
+  - Imperatif et structure par blocs
+  - Compile, a typage statique tres fort
+  - Modulaire (DEFINITION + IMPLEMENTATION MODULE)
+  - Sensible a la casse (mots-cles MAJUSCULES obligatoires)
+  - A mise en page libre
+  - Avec types unsigned (CARDINAL)
+
+Versions et standards :
+
+  - Modula-2 original    : Wirth, 1979
+  - Modula-2 revise      : Wirth, 1984
+  - ISO Modula-2 (PIM-4) : ISO 10514-1:1996
+  - Modula-2 R10         : revision modernisee, 2010
+
+Extensions de fichiers reconnues :
+
+  .def     Fichier DEFINITION MODULE (interface)
+  .mod     Fichier IMPLEMENTATION MODULE ou PROGRAM MODULE
+  .sym     Fichier de symboles compile
+  .obj     Fichier objet
+
+
+============================================================
+2. STRUCTURE D'UN PROGRAMME
+============================================================
+
+Un programme Modula-2 est constitue d'un module principal
+(program module) et de zero ou plusieurs modules de
+bibliotheque (library modules). Chaque module de bibliotheque
+se compose d'un module de DEFINITION (interface publique) et
+d'un module d'IMPLEMENTATION (corps prive).
+
+2.1 Module principal
+--------------------
+
+  MODULE NomProgramme;
+    FROM InOut IMPORT WriteString, WriteLn;
+  BEGIN
+    WriteString("Hello, World!"); WriteLn
+  END NomProgramme.
+
+Le nom apres END doit correspondre au nom apres MODULE.
+
+2.2 DEFINITION MODULE
+---------------------
+
+  DEFINITION MODULE Pile;
+    EXPORT QUALIFIED Empiler, Depiler, Vide;
+
+    PROCEDURE Empiler(x: INTEGER);
+    PROCEDURE Depiler(): INTEGER;
+    PROCEDURE Vide(): BOOLEAN;
+  END Pile.
+
+2.3 IMPLEMENTATION MODULE
+-------------------------
+
+  IMPLEMENTATION MODULE Pile;
+    VAR
+      stack: ARRAY [0..99] OF INTEGER;
+      sp: CARDINAL;
+
+    PROCEDURE Empiler(x: INTEGER);
+    BEGIN
+      stack[sp] := x; INC(sp)
+    END Empiler;
+
+    PROCEDURE Depiler(): INTEGER;
+    BEGIN
+      DEC(sp); RETURN stack[sp]
+    END Depiler;
+
+    PROCEDURE Vide(): BOOLEAN;
+    BEGIN
+      RETURN sp = 0
+    END Vide;
+
+  BEGIN
+    sp := 0                  (* initialisation *)
+  END Pile.
+
+
+============================================================
+3. STRUCTURE LEXICALE
+============================================================
+
+3.1 Jeu de caracteres
+---------------------
+
+Modula-2 utilise ASCII / Latin-1. Tous les mots-cles sont en
+MAJUSCULES (sensible a la casse strictement).
+
+3.2 Commentaires
+----------------
+
+Une seule forme, imbricable :
+
+  (* commentaire, sur une ou plusieurs lignes,
+     imbricable (* comme ceci *) *)
+
+3.3 Identificateurs
+-------------------
+
+Suite de lettres et chiffres commencant par une lettre.
+Sensibles a la casse. Pas d'underscore dans la norme.
+
+3.4 Mots reserves (40)
+----------------------
+
+  AND        DIV          IMPLEMENTATION  POINTER    SET
+  ARRAY      DO           IMPORT          PROCEDURE  THEN
+  BEGIN      ELSE         IN              QUALIFIED  TO
+  BY         ELSIF        LOOP            RECORD     TYPE
+  CASE       END          MOD             REPEAT     UNTIL
+  CONST      EXIT         MODULE          RETURN     VAR
+  DEFINITION EXPORT       NOT             FOR        WHILE
+  FROM       IF           OF              FROM       WITH
+  OR
+
+Mots-cles standard (toujours utilisables comme identifiants
+si redeclares) : BITSET, BOOLEAN, CARDINAL, CHAR, FALSE,
+INTEGER, LONGINT, LONGREAL, NIL, PROC, REAL, TRUE.
+
+3.5 Literaux
+------------
+
+  - Entiers       : 42, 2AH (hexa, suffixe H), 52B (octal,
+                    suffixe B), 1110B (variantes)
+  - Reels         : 3.14, 3.14E2, 3.14E-2
+  - Caractere     : 'A', 41C (caractere octal/decimal,
+                    suffixe C)
+  - Chaine        : "texte", 'texte' (sans imbrication
+                    des memes guillemets)
+  - Booleen       : TRUE, FALSE
+  - Ensemble      : {1, 3, 5..7}, BITSET{0, 3, 7}
+
+
+============================================================
+4. TYPES DE DONNEES
+============================================================
+
+4.1 Types simples standard
+--------------------------
+
+  Type        Description              Taille typique
+  ----        -----------              --------------
+  BOOLEAN     TRUE / FALSE             1
+  CHAR        caractere                1
+  INTEGER     entier signe             2 ou 4
+  CARDINAL    entier NON SIGNE         2 ou 4
+  LONGINT     entier signe long        4 ou 8
+  LONGCARD    entier non signe long    4 ou 8
+  REAL        flottant simple          4
+  LONGREAL    flottant double          8
+  BITSET      ensemble de bits 0..N-1  2 ou 4
+
+4.2 Types enumeres
+------------------
+
+  TYPE Couleur = (Rouge, Vert, Bleu, Jaune);
+  TYPE Jour = (Lundi, Mardi, Mercredi, Jeudi,
+               Vendredi, Samedi, Dimanche);
+
+Operations : ORD, VAL, INC, DEC.
+
+4.3 Sous-intervalles
+--------------------
+
+  TYPE Note = [0..20];
+  TYPE Lettre = ['A'..'Z'];
+  TYPE Travail = [Lundi..Vendredi];
+
+4.4 Tableaux : ARRAY
+--------------------
+
+  TYPE Vecteur = ARRAY [0..99] OF REAL;
+  TYPE Matrice = ARRAY [1..10], [1..10] OF REAL;
+  TYPE String = ARRAY [0..255] OF CHAR;
+
+4.5 Enregistrements : RECORD
+----------------------------
+
+  TYPE Date = RECORD
+    annee: CARDINAL;
+    mois: [1..12];
+    jour: [1..31]
+  END;
+
+Avec variantes (union discriminee) :
+
+  TYPE Forme = RECORD
+    CASE genre: (cercle, rectangle) OF
+      cercle: rayon: REAL
+      |
+      rectangle: largeur, hauteur: REAL
+    END
+  END;
+
+4.6 Ensembles : SET
+-------------------
+
+  TYPE Ensemble = SET OF [0..31];
+  TYPE Petits = SET OF Couleur;
+
+Le type predefini BITSET = SET OF [0..15] (ou 31).
+
+4.7 Pointeurs : POINTER TO
+--------------------------
+
+  TYPE PNoeud = POINTER TO Noeud;
+  TYPE Noeud = RECORD
+    val: INTEGER;
+    suiv: PNoeud
+  END;
+
+Allocation/liberation explicite via ALLOCATE/DEALLOCATE
+(module Storage).
+
+4.8 Types procedure
+-------------------
+
+  TYPE Callback = PROCEDURE(CARDINAL): BOOLEAN;
+  VAR f: Callback;
+
+Une variable f peut contenir une procedure de signature
+compatible.
+
+4.9 Tableaux ouverts (parametres)
+---------------------------------
+
+  PROCEDURE Somme(VAR v: ARRAY OF INTEGER): INTEGER;
+
+Le nombre d'elements s'obtient via HIGH(v) (dernier indice).
+
+
+============================================================
+5. DECLARATIONS
+============================================================
+
+Ordre obligatoire dans un module ou une procedure :
+
+  CONST      declarations de constantes
+  TYPE       declarations de types
+  VAR        declarations de variables
+  PROCEDURE  declarations de procedures
+  MODULE     modules locaux (rares)
+
+5.1 Constantes : CONST
+----------------------
+
+  CONST
+    PI = 3.14159;
+    MAX = 1000;
+    LF = 12C;            (* caractere de code octal 12 *)
+    BORNE = MAX - 1;
+
+5.2 Types : TYPE
+----------------
+
+  TYPE
+    Compteur = CARDINAL;
+    Nom = ARRAY [0..31] OF CHAR;
+    PListe = POINTER TO Noeud;
+    Noeud = RECORD
+      val: INTEGER;
+      suiv: PListe
+    END;
+
+5.3 Variables : VAR
+-------------------
+
+  VAR
+    x, y: INTEGER;
+    nom: Nom;
+    tete: PListe;
+
+
+============================================================
+6. OPERATEURS
+============================================================
+
+6.1 Operateurs arithmetiques
+----------------------------
+
+  +    addition (unaire/binaire)
+  -    soustraction (unaire/binaire)
+  *    multiplication
+  /    division reelle
+  DIV  division entiere
+  MOD  modulo
+
+DIV et MOD : leurs resultats sont definis seulement pour les
+operandes positifs (limitation Modula-2 classique).
+
+6.2 Operateurs relationnels
+---------------------------
+
+  =    egal
+  #    different (ou <>)
+  <    inferieur
+  >    superieur
+  <=   inferieur ou egal
+  >=   superieur ou egal
+  IN   appartenance a un ensemble
+
+6.3 Operateurs logiques
+-----------------------
+
+  AND  ET logique (court-circuit, alias &)
+  OR   OU logique (court-circuit, alias l'absence de NOT)
+  NOT  NON logique (alias ~)
+
+6.4 Operateurs sur ensembles
+----------------------------
+
+  +    union
+  -    difference
+  *    intersection
+  /    difference symetrique
+  IN   appartenance
+
+6.5 Affectation
+---------------
+
+  :=    affectation
+
+6.6 Precedence (decroissante)
+-----------------------------
+
+  1. NOT  ~
+  2. *  /  DIV  MOD  AND  &
+  3. +  -  OR
+  4. =  #  <  <=  >  >=  IN
+  5. := (le moins prioritaire)
+
+
+============================================================
+7. STRUCTURES DE CONTROLE
+============================================================
+
+7.1 Selection : IF
+------------------
+
+  IF condition THEN
+    instructions
+  ELSIF condition2 THEN
+    instructions
+  ELSE
+    instructions
+  END
+
+7.2 Selection : CASE
+--------------------
+
+  CASE expression OF
+    val1: instructions |
+    val2, val3: instructions |
+    a..b: instructions
+  ELSE
+    instructions
+  END
+
+7.3 Iteration : WHILE
+---------------------
+
+  WHILE condition DO
+    instructions
+  END
+
+7.4 Iteration : REPEAT
+----------------------
+
+  REPEAT
+    instructions
+  UNTIL condition
+
+7.5 Iteration : FOR
+-------------------
+
+  FOR i := init TO fin DO
+    instructions
+  END
+
+  FOR i := init TO fin BY pas DO
+    instructions
+  END
+
+7.6 Boucle infinie : LOOP / EXIT
+--------------------------------
+
+  LOOP
+    instructions;
+    IF condition THEN EXIT END;
+    autres instructions
+  END
+
+EXIT sort de la boucle LOOP la plus interne.
+
+7.7 WITH
+--------
+
+Acces simplifie aux champs d'un RECORD :
+
+  WITH personne DO
+    nom := "Jean";
+    age := 42
+  END
+
+7.8 RETURN
+----------
+
+  RETURN              (* dans procedure sans valeur *)
+  RETURN expression   (* dans fonction *)
+
+
+============================================================
+8. PROCEDURES
+============================================================
+
+8.1 Declaration
+---------------
+
+  PROCEDURE nom(param1: type1; VAR param2: type2): typeRetour;
+    (* declarations locales *)
+  BEGIN
+    (* corps *)
+    RETURN expression
+  END nom;
+
+Sans valeur de retour, omettre `: typeRetour` et le RETURN
+de valeur.
+
+8.2 Passage de parametres
+-------------------------
+
+  - Par valeur     : param: type        (defaut, copie)
+  - Par reference  : VAR param: type    (modifiable)
+
+Les tableaux ouverts (ARRAY OF T) sont passes par reference
+implicite ; on ne peut pas modifier directement leurs
+elements sauf si declares VAR.
+
+8.3 Tableaux ouverts
+--------------------
+
+  PROCEDURE Somme(v: ARRAY OF INTEGER): INTEGER;
+    VAR i: CARDINAL; s: INTEGER;
+  BEGIN
+    s := 0;
+    FOR i := 0 TO HIGH(v) DO INC(s, v[i]) END;
+    RETURN s
+  END Somme;
+
+HIGH(v) retourne le dernier indice (taille - 1).
+
+8.4 Procedures comme types
+--------------------------
+
+  TYPE Fn = PROCEDURE(REAL): REAL;
+  VAR f: Fn;
+  ...
+  f := Sin;             (* sans parentheses : reference *)
+  y := f(x);            (* appel *)
+
+8.5 Forward / recursivite
+-------------------------
+
+Toute procedure est implicitement recursive ; pas de
+declaration FORWARD necessaire car Modula-2 fait deux passes
+sur le source.
+
+
+============================================================
+9. MODULES
+============================================================
+
+9.1 Module de definition (interface)
+------------------------------------
+
+  DEFINITION MODULE Math;
+    EXPORT QUALIFIED Pi, Racine, Carre;
+
+    CONST Pi = 3.14159265;
+
+    PROCEDURE Racine(x: REAL): REAL;
+    PROCEDURE Carre(x: REAL): REAL;
+
+  END Math.
+
+EXPORT QUALIFIED rend les noms accessibles seulement via la
+notation `Math.Pi`, `Math.Racine`.
+
+9.2 Module d'implementation
+---------------------------
+
+  IMPLEMENTATION MODULE Math;
+    PROCEDURE Racine(x: REAL): REAL;
+    BEGIN
+      (* methode de Newton *)
+      ...
+    END Racine;
+
+    PROCEDURE Carre(x: REAL): REAL;
+    BEGIN
+      RETURN x * x
+    END Carre;
+
+  BEGIN
+    (* corps d'initialisation, optionnel *)
+  END Math.
+
+9.3 Importation
+---------------
+
+  FROM Math IMPORT Pi, Racine;        (* import direct *)
+  IMPORT Math;                        (* import qualifie *)
+  FROM Math IMPORT ALL;               (* tout (non-standard) *)
+
+Apres FROM ... IMPORT, on accede directement aux noms ;
+apres IMPORT Math, on doit ecrire `Math.Pi`.
+
+9.4 Modules locaux
+------------------
+
+Un module peut etre declare a l'interieur d'un autre :
+
+  PROCEDURE Externe;
+
+    MODULE Interne;
+      EXPORT compteur, Incrementer;
+
+      VAR compteur: CARDINAL;
+
+      PROCEDURE Incrementer;
+      BEGIN INC(compteur) END Incrementer;
+
+    BEGIN compteur := 0
+    END Interne;
+
+  BEGIN
+    ...
+    Incrementer
+  END Externe;
+
+Utilises pour encapsuler des variables d'etat localement.
+
+
+============================================================
+10. POINTEURS ET ALLOCATION DYNAMIQUE
+============================================================
+
+10.1 Declaration
+----------------
+
+  TYPE PNoeud = POINTER TO Noeud;
+  TYPE Noeud = RECORD
+    val: INTEGER;
+    suiv: PNoeud
+  END;
+
+  VAR p: PNoeud;
+
+10.2 Allocation : ALLOCATE
+--------------------------
+
+L'allocation se fait via la procedure standard NEW, qui
+delegue a ALLOCATE du module Storage :
+
+  FROM Storage IMPORT ALLOCATE, DEALLOCATE;
+
+  NEW(p);             (* alloue *p *)
+  p^.val := 42;
+  p^.suiv := NIL;
+
+10.3 Liberation : DEALLOCATE
+----------------------------
+
+  DISPOSE(p);         (* libere *p *)
+
+10.4 Dereferencement
+--------------------
+
+  p^                  (* objet pointe *)
+  p^.val              (* champ val *)
+
+10.5 NIL
+--------
+
+Constante du pointeur nul. Tout pointeur peut etre compare a
+NIL avec = ou #.
+
+
+============================================================
+11. COROUTINES
+============================================================
+
+Modula-2 supporte les coroutines (procedures concurrentes
+cooperatives) via le module SYSTEM :
+
+  FROM SYSTEM IMPORT PROCESS, NEWPROCESS, TRANSFER;
+
+  VAR p1, p2: PROCESS;
+      pile1, pile2: ARRAY [0..1023] OF WORD;
+
+  PROCEDURE Coroutine1;
+  BEGIN
+    LOOP
+      WriteString("A"); TRANSFER(p1, p2)
+    END
+  END Coroutine1;
+
+  PROCEDURE Coroutine2;
+  BEGIN
+    LOOP
+      WriteString("B"); TRANSFER(p2, p1)
+    END
+  END Coroutine2;
+
+  BEGIN
+    NEWPROCESS(Coroutine1, ADR(pile1), SIZE(pile1), p1);
+    NEWPROCESS(Coroutine2, ADR(pile2), SIZE(pile2), p2);
+    TRANSFER(p2, p1)
+  END Main.
+
+  - NEWPROCESS  : initialise un processus avec une pile
+  - TRANSFER    : passe le controle d'un processus a un autre
+  - IOTRANSFER  : variante avec attente d'interruption
+
+
+============================================================
+12. PROCEDURES STANDARD
+============================================================
+
+12.1 Procedures sur entiers
+---------------------------
+
+  ABS(x)        valeur absolue
+  CAP(c)        majuscule d'un CHAR
+  CHR(n)        caractere de code n
+  ORD(x)        valeur ordinale
+  ODD(x)        TRUE si impair
+  INC(x)        x := x + 1
+  INC(x, n)     x := x + n
+  DEC(x)        x := x - 1
+  DEC(x, n)     x := x - n
+
+12.2 Procedures sur ensembles
+-----------------------------
+
+  INCL(s, x)    ajoute x a s
+  EXCL(s, x)    retire x de s
+
+12.3 Procedures sur tableaux
+----------------------------
+
+  HIGH(v)       dernier indice
+  SIZE(v)       taille en octets
+
+12.4 Allocation
+---------------
+
+  NEW(p)        delegue a ALLOCATE
+  DISPOSE(p)    delegue a DEALLOCATE
+
+12.5 Conversion
+---------------
+
+  CHR(n)        CARDINAL -> CHAR
+  ORD(x)        type -> CARDINAL
+  FLOAT(x)      INTEGER/CARDINAL -> REAL
+  TRUNC(x)      REAL -> CARDINAL (troncature)
+  ROUND(x)      REAL -> CARDINAL (arrondi)
+
+12.6 Procedures HALT et fin
+---------------------------
+
+  HALT          termine le programme
+
+12.7 Procedures du module SYSTEM
+--------------------------------
+
+  ADR(x)        adresse de x
+  SIZE(T)       taille du type T
+  TSIZE(T)      taille du type T (variant size)
+  WORD          type "mot machine"
+  ADDRESS       type adresse
+
+
+============================================================
+13. BIBLIOTHEQUES STANDARD
+============================================================
+
+Modula-2 ISO definit une bibliotheque standard. Bibliotheques
+"de fait" historiques :
+
+13.1 InOut (PIM)
+----------------
+
+  WriteString(s)    ecrit une chaine
+  WriteLn           saut de ligne
+  WriteCard(n, w)   ecrit CARDINAL sur w caracteres
+  WriteInt(n, w)    ecrit INTEGER sur w caracteres
+  WriteReal(x, w)   ecrit REAL sur w caracteres
+  Write(c)          ecrit un caractere
+  ReadString(s)     lit une chaine
+  ReadCard(n)       lit un CARDINAL
+  ReadInt(n)        lit un INTEGER
+  Read(c)           lit un caractere
+
+13.2 MathLib0
+-------------
+
+  sqrt, exp, ln, sin, cos, arctan, real, entier
+
+13.3 Strings
+------------
+
+  Length, Concat, Compare, Copy, Pos, Delete, Insert
+
+13.4 Storage
+------------
+
+  ALLOCATE(p, n)
+  DEALLOCATE(p, n)
+
+13.5 SYSTEM
+-----------
+
+Types et procedures de bas niveau :
+  WORD, BYTE, ADDRESS, PROCESS
+  ADR, SIZE, TSIZE
+  NEWPROCESS, TRANSFER, IOTRANSFER
+
+
+============================================================
+14. EVOLUTIONS DU LANGAGE
+============================================================
+
+14.1 Modula-2 original (1979)
+-----------------------------
+
+Version Wirth initiale, utilisee pour le systeme Medos-2 sur
+Lilith.
+
+14.2 Modula-2 revise (1984)
+---------------------------
+
+Quelques ajustements : EXPORT QUALIFIED implicite, types
+LONGINT/LONGREAL.
+
+14.3 PIM-4 (Programming in Modula-2, 4eme edition, 1988)
+--------------------------------------------------------
+
+  - Suppression d'EXPORT (implicite via DEFINITION)
+  - Tableaux ouverts en parametres
+  - HIGH() pour tableaux ouverts
+
+14.4 ISO Modula-2 (1996)
+------------------------
+
+ISO/IEC 10514-1 : standardisation officielle. Ajoute :
+
+  - Generics (templates)
+  - Exceptions (RAISE / EXCEPT)
+  - Modules de bibliotheque standard normalises
+  - Caractere ISO Latin-1 obligatoire
+
+14.5 Modula-2 R10 (2010)
+------------------------
+
+Revision modernisee de Modula-2 par B. Kowarsch. Ajoute :
+  - Types unsigned modernes
+  - Surcharge limitee
+  - Conservation de la simplicite originale
+
+
+============================================================
+15. COMPILATEUR DU PROJET (MODII86.PAS)
+============================================================
+
+MODII86.PAS - Compilateur Modula-2 vers assembleur 8086
+-------------------------------------------------------
+
+  Cible             : MS-DOS, assembleur MASM .MODEL SMALL
+  Modele memoire    : SMALL (code 64KO, donnees 64KO)
+  Dialecte          : Modula-2 PIM-4 (sous-ensemble)
+  Sortie            : fichier .ASM, assemblable avec MASM
+
+  Fonctionnalites :
+    - Modules DEFINITION et IMPLEMENTATION
+    - Types BOOLEAN, CHAR, INTEGER, CARDINAL, REAL
+    - ARRAY (fixe et ouvert), RECORD, POINTER, SET
+    - Procedures et fonctions
+    - Structures IF, CASE, WHILE, REPEAT, FOR, LOOP/EXIT
+    - WITH, sous-intervalles, enumerations
+    - Importation FROM ... IMPORT, IMPORT ...
+    - Coroutines basiques (NEWPROCESS, TRANSFER)
+    - InOut, Storage, SYSTEM partiels
+
+  Limitations :
+    - LONGINT/LONGREAL non supportes (32-bit non standard)
+    - Pas de generiques (extension ISO)
+    - Pas d'exceptions (extension ISO)
+    - Modules locaux non supportes
+
+
+============================================================
+16. CONVERTISSEURS DU PROJET
+============================================================
+
+16.1 ADA2MOD2.PAS - Ada vers Modula-2
+-------------------------------------
+
+Convertit Ada (sous-ensemble) vers Modula-2 :
+
+  - package -> DEFINITION MODULE
+  - package body -> IMPLEMENTATION MODULE
+  - procedure/function -> PROCEDURE
+  - record -> RECORD
+  - if/elsif/else -> IF/ELSIF/ELSE
+
+16.2 PAS2MOD2.PAS - Pascal vers Modula-2
+----------------------------------------
+
+Convertit Turbo Pascal (sous-ensemble) vers Modula-2 :
+
+  - unit -> DEFINITION + IMPLEMENTATION MODULE
+  - program -> MODULE
+  - var/const/type -> VAR/CONST/TYPE
+  - begin/end -> BEGIN/END
+  - := identique
+  - writeln -> WriteString + WriteLn
+
+
+============================================================
+17. EXEMPLES
+============================================================
+
+17.1 Hello, World!
+------------------
+
+  MODULE Hello;
+    FROM InOut IMPORT WriteString, WriteLn;
+  BEGIN
+    WriteString("Hello, World!"); WriteLn
+  END Hello.
+
+17.2 Factorielle recursive
+--------------------------
+
+  MODULE Fact;
+    FROM InOut IMPORT WriteString, WriteCard, WriteLn;
+
+    PROCEDURE Factorielle(n: CARDINAL): CARDINAL;
+    BEGIN
+      IF n <= 1 THEN RETURN 1
+      ELSE RETURN n * Factorielle(n - 1)
+      END
+    END Factorielle;
+
+    VAR i: CARDINAL;
+  BEGIN
+    FOR i := 0 TO 10 DO
+      WriteCard(i, 3); WriteString(" -> ");
+      WriteCard(Factorielle(i), 8); WriteLn
+    END
+  END Fact.
+
+17.3 Liste chainee
+------------------
+
+  MODULE Liste;
+    FROM Storage IMPORT ALLOCATE;
+    FROM InOut IMPORT WriteInt, WriteLn;
+
+    TYPE
+      PNoeud = POINTER TO Noeud;
+      Noeud = RECORD
+        val: INTEGER;
+        suiv: PNoeud
+      END;
+
+    VAR tete: PNoeud;
+
+    PROCEDURE Ajouter(v: INTEGER);
+      VAR n: PNoeud;
+    BEGIN
+      NEW(n);
+      n^.val := v;
+      n^.suiv := tete;
+      tete := n
+    END Ajouter;
+
+    PROCEDURE Afficher;
+      VAR p: PNoeud;
+    BEGIN
+      p := tete;
+      WHILE p # NIL DO
+        WriteInt(p^.val, 4);
+        p := p^.suiv
+      END;
+      WriteLn
+    END Afficher;
+
+  BEGIN
+    tete := NIL;
+    Ajouter(1); Ajouter(2); Ajouter(3);
+    Afficher
+  END Liste.
+
+17.4 Module de pile
+-------------------
+
+  DEFINITION MODULE Pile;
+    EXPORT QUALIFIED Push, Pop, Empty;
+
+    PROCEDURE Push(x: INTEGER);
+    PROCEDURE Pop(): INTEGER;
+    PROCEDURE Empty(): BOOLEAN;
+  END Pile.
+
+  IMPLEMENTATION MODULE Pile;
+    VAR
+      data: ARRAY [0..99] OF INTEGER;
+      sp: CARDINAL;
+
+    PROCEDURE Push(x: INTEGER);
+    BEGIN
+      data[sp] := x; INC(sp)
+    END Push;
+
+    PROCEDURE Pop(): INTEGER;
+    BEGIN
+      DEC(sp); RETURN data[sp]
+    END Pop;
+
+    PROCEDURE Empty(): BOOLEAN;
+    BEGIN
+      RETURN sp = 0
+    END Empty;
+
+  BEGIN
+    sp := 0
+  END Pile.
+
+
+============================================================
+18. INFLUENCE
+============================================================
+
+Modula-2 a influence directement :
+
+  - Oberon (Wirth, 1988) - successeur direct
+  - Modula-3 (DEC SRC, 1988) - avec POO, exceptions, threads
+  - Ada (DoD, 1983) - emprunte certaines idees modulaires
+  - Component Pascal (Oberon Microsystems, 1997)
+
+Comparaison Modula-2 / Pascal :
+
+  Aspect             Pascal              Modula-2
+  ------             ------              --------
+  Modularite         programme unique    modules separes
+  Sensibilite casse  non                 oui (mots-cles MAJ)
+  CARDINAL           non                 oui (entier unsigned)
+  Tableaux ouverts   non                 oui
+  Procedure type     non                 oui
+  Coroutines         non                 oui
+  Importation        uses (TP)           FROM/IMPORT
+  Hex/octal          $FF / non           0FFH / 377B
+  Caractere          'A', #65            'A', 41C
+  Different          <>                  # (ou <>)
+  Boucle infinie     non                 LOOP/EXIT
+
+
+============================================================
+19. REFERENCES
+============================================================
+
+  - Wirth, N.              "Programming in Modula-2",
+                           Springer-Verlag, 1982 (1ere ed.).
+  - Wirth, N.              "Programming in Modula-2", 4th
+                           corrected ed., Springer, 1988.
+                           (la reference PIM-4)
+  - ISO/IEC 10514-1:1996   "Information technology -
+                           Programming languages - Part 1:
+                           Modula-2 - Base Language".
+  - King, K.N.             "Modula-2: A Complete Guide",
+                           D.C. Heath, 1988.
+  - Wirth, N.              "The Programming Language
+                           Modula-2", Report 36, ETH Zurich,
+                           1980.
+  - Cooper, D.             "Standard Pascal vs. Modula-2",
+                           BYTE, Aug. 1984.
+  - Site                   https://www.modula2.org
+  - Modula-2 R10           https://modula-2.info

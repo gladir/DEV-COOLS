@@ -1,0 +1,1187 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}
+
+{\footnote # IDH_OBERON_01}
+{\footnote $ Oberon - PRESENTATION}
+{\footnote K Oberon presentation;Niklaus Wirth;ETH Zurich;Modula-2;Oberon-2;Oberon-07;Active Oberon}
+\b\fs24 PRESENTATION \b0\fs20\par
+\par
+Oberon a ete concu entre 1985 et 1988 par Niklaus Wirth et\par
+Juerg Gutknecht a l'ETH Zurich, comme successeur direct de\par
+Modula-2. Wirth recherchait un langage plus simple, integrant\par
+les concepts d'extension de type (heritage) tout en eliminant\par
+les constructions jugees superflues. Oberon a egalement donne\par
+son nom au systeme d'exploitation Oberon developpe en\par
+parallele.\par
+\par
+Le langage a ete revise plusieurs fois :\par
+\par
+{\f1   - Oberon (1988)       : version originale}\par
+{\f1   - Oberon-2 (1991)     : ajout des methodes liees au type,}\par
+{\f1                           champs READ-ONLY exportes, FOR loop}\par
+{\f1   - Oberon-07 (2007)    : simplification, retour aux racines}\par
+{\f1   - Active Oberon (2002): concurrence, Active Objects}\par
+\par
+Oberon est un langage :\par
+\par
+{\f1   - Imperatif et structure par blocs}\par
+{\f1   - Compile, a typage statique fort}\par
+{\f1   - Modulaire (module = unite de compilation)}\par
+{\f1   - Oriente objet (extension de type, methodes)}\par
+{\f1   - Avec collecteur automatique (garbage collector)}\par
+{\f1   - Sensible a la casse}\par
+{\f1   - A mise en page libre}\par
+\par
+Caracteristiques notables :\par
+\par
+{\f1   - Syntaxe minimaliste (33 mots reserves en Oberon-07)}\par
+{\f1   - Extension de type via RECORD}\par
+{\f1   - Liaison dynamique via procedures liees au type}\par
+{\f1   - Garbage collector pour pointeurs sur RECORD/tableaux}\par
+{\f1   - Pas de generiques (suprimes par souci de simplicite)}\par
+{\f1   - Pas d'exceptions (verifications explicites)}\par
+\par
+Extensions de fichiers reconnues :\par
+\par
+{\f1   .Mod      Fichier module Oberon (convention ETH)}\par
+{\f1   .ob       Fichier source Oberon (variante)}\par
+{\f1   .obn      Fichier source Oberon (variante)}\par
+{\f1   .Sym      Fichier de symboles compil?? (export)}\par
+{\f1   .Obj      Fichier objet}\par
+\par
+\par
+\par
+\b Sections suivantes : \b0\par
+\par
+{\f1  2. STRUCTURE D'UN PROGRAMME}     {\uldb [Aller]}{\v IDH_OBERON_02}\par
+{\f1  3. STRUCTURE LEXICALE}     {\uldb [Aller]}{\v IDH_OBERON_03}\par
+{\f1  4. TYPES DE DONNEES}     {\uldb [Aller]}{\v IDH_OBERON_04}\par
+{\f1  5. DECLARATIONS}     {\uldb [Aller]}{\v IDH_OBERON_05}\par
+{\f1  6. OPERATEURS}     {\uldb [Aller]}{\v IDH_OBERON_06}\par
+{\f1  7. STRUCTURES DE CONTROLE}     {\uldb [Aller]}{\v IDH_OBERON_07}\par
+{\f1  8. PROCEDURES}     {\uldb [Aller]}{\v IDH_OBERON_08}\par
+{\f1  9. TABLEAUX}     {\uldb [Aller]}{\v IDH_OBERON_09}\par
+{\f1 10. ENREGISTREMENTS}     {\uldb [Aller]}{\v IDH_OBERON_10}\par
+{\f1 11. POINTEURS ET ALLOCATION DYNAMIQUE}     {\uldb [Aller]}{\v IDH_OBERON_11}\par
+{\f1 12. MODULES}     {\uldb [Aller]}{\v IDH_OBERON_12}\par
+{\f1 13. PROCEDURES STANDARD}     {\uldb [Aller]}{\v IDH_OBERON_13}\par
+{\f1 14. EXCEPTIONS ET GESTION D'ERREURS}     {\uldb [Aller]}{\v IDH_OBERON_14}\par
+{\f1 15. SYSTEM (PROCEDURES BAS NIVEAU)}     {\uldb [Aller]}{\v IDH_OBERON_15}\par
+{\f1 16. EVOLUTIONS DU LANGAGE}     {\uldb [Aller]}{\v IDH_OBERON_16}\par
+{\f1 17. COMPILATEURS DU PROJET}     {\uldb [Aller]}{\v IDH_OBERON_17}\par
+{\f1 18. CONVERTISSEURS DU PROJET}     {\uldb [Aller]}{\v IDH_OBERON_18}\par
+{\f1 19. EXEMPLES}     {\uldb [Aller]}{\v IDH_OBERON_19}\par
+{\f1 20. SYSTEME OBERON}     {\uldb [Aller]}{\v IDH_OBERON_20}\par
+{\f1 21. INFLUENCE}     {\uldb [Aller]}{\v IDH_OBERON_21}\par
+{\f1 22. REFERENCES}     {\uldb [Aller]}{\v IDH_OBERON_22}\par
+\par
+{\uldb Suivant >>}{\v IDH_OBERON_02}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_OBERON_02}
+{\footnote $ Oberon - STRUCTURE D'UN PROGRAMME}
+{\footnote K Oberon structure programme;MODULE;IMPORT;BEGIN;END}
+\b\fs24 STRUCTURE D'UN PROGRAMME \b0\fs20\par
+\par
+Un programme Oberon est un MODULE. Chaque module est l'unite\par
+de compilation et de portee. Il n'y a pas de programme\par
+"principal" distinct : un module peut etre execute par\par
+appel d'une de ses procedures exportees, ou il contient un\par
+corps qui s'execute a l'initialisation.\par
+\par
+{\f1   MODULE NomModule;}\par
+{\f1     IMPORT M1, M2 := AutreModule;}\par
+\par
+{\f1     CONST ...}\par
+{\f1     TYPE ...}\par
+{\f1     VAR ...}\par
+{\f1     PROCEDURE ...}\par
+\par
+{\f1   BEGIN}\par
+{\f1     (* corps d'initialisation, optionnel *)}\par
+{\f1   END NomModule.}\par
+\par
+Le nom apres END doit etre identique au nom du module.\par
+\par
+Exemple complet :\par
+\par
+{\f1   MODULE Hello;}\par
+{\f1     IMPORT Out;}\par
+{\f1   BEGIN}\par
+{\f1     Out.String("Hello, World!"); Out.Ln}\par
+{\f1   END Hello.}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_OBERON_01}     {\uldb Suivant >>}{\v IDH_OBERON_03}     {\uldb Table des matieres}{\v IDH_OBERON_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_OBERON_03}
+{\footnote $ Oberon - STRUCTURE LEXICALE}
+{\footnote K Oberon structure lexicale;identificateurs;mots reserves;litteraux;commentaires;export asterisque}
+\b\fs24 STRUCTURE LEXICALE \b0\fs20\par
+\par
+\par
+\b 3.1 Jeu de caracteres \b0\par
+\par
+Oberon utilise traditionnellement l'ASCII / Latin-1. Les\par
+litteraux caractere et chaine acceptent les caracteres\par
+imprimables.\par
+\par
+\par
+\b 3.2 Commentaires \b0\par
+\par
+Une seule forme, imbricable :\par
+\par
+{\f1   (* commentaire, sur une ou plusieurs lignes,}\par
+{\f1      et peut etre imbrique (* comme ceci *) *)}\par
+\par
+\par
+\b 3.3 Identificateurs \b0\par
+\par
+Suite de lettres, chiffres et underscores, commencant par\par
+une lettre. Sensibles a la casse. Les identifiants exportes\par
+sont marques par un asterisque (`*`) en suffixe lors de la\par
+declaration :\par
+\par
+{\f1   PROCEDURE Maximum*(a, b: INTEGER): INTEGER;}\par
+\par
+L'asterisque indique qu'un autre module peut acceder a\par
+l'identifiant via la notation pointee `Module.Nom`.\par
+\par
+\par
+\b 3.4 Mots reserves (Oberon-07) \b0\par
+\par
+{\f1   ARRAY    DIV       IS         OF        PROCEDURE  TO}\par
+{\f1   BEGIN    DO        MOD        OR        RECORD     TRUE}\par
+{\f1   BY       ELSE      MODULE     POINTER   REPEAT     TYPE}\par
+{\f1   CASE     ELSIF     NIL        PROCEDURE RETURN     UNTIL}\par
+{\f1   CONST    END       OF                              VAR}\par
+{\f1   FALSE    FOR                                       WHILE}\par
+{\f1   IF       IMPORT                                    WITH}\par
+{\f1   IN       THEN}\par
+\par
+Oberon-07 a 33 mots reserves. Oberon classique (1988) en a\par
+quelques uns en plus : LOOP, EXIT, WITH (cas sur type).\par
+\par
+\par
+\b 3.5 Literaux \b0\par
+\par
+{\f1   - Entiers       : 42, 0FFH (hexa, suffixe H)}\par
+{\f1   - Reels         : 3.14, 3.14E2, 3.14E-2}\par
+{\f1   - Caractere     : 'A', "A", 41X (caractere hexa)}\par
+{\f1   - Chaine        : "texte", 'autre texte'}\par
+{\f1   - Booleen       : TRUE, FALSE}\par
+{\f1   - Ensemble      : \{1, 3, 5..7\}}\par
+{\f1   - NIL (pointeur)}\par
+\par
+\par
+\b 3.6 Separateurs \b0\par
+\par
+{\f1   ( ) [ ] \{ \} ; , : . .. := | & ~ < > <= >= = # + - * /}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_OBERON_02}     {\uldb Suivant >>}{\v IDH_OBERON_04}     {\uldb Table des matieres}{\v IDH_OBERON_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_OBERON_04}
+{\footnote $ Oberon - TYPES DE DONNEES}
+{\footnote K Oberon types donnees;BOOLEAN;CHAR;SHORTINT;INTEGER;LONGINT;REAL;LONGREAL;SET;BYTE;ARRAY;RECORD;POINTER}
+\b\fs24 TYPES DE DONNEES \b0\fs20\par
+\par
+\par
+\b 4.1 Types de base \b0\par
+\par
+{\f1   Type        Description              Taille typique}\par
+{\f1   ----        -----------              --------------}\par
+{\f1   BOOLEAN     TRUE / FALSE             1}\par
+{\f1   CHAR        caractere                1}\par
+{\f1   SHORTINT    entier 8-bit signe       1}\par
+{\f1   INTEGER     entier 16/32-bit signe   2 ou 4}\par
+{\f1   LONGINT     entier 32/64-bit signe   4 ou 8}\par
+{\f1   REAL        flottant simple          4}\par
+{\f1   LONGREAL    flottant double          8}\par
+{\f1   SET         ensemble de bits 0..N-1  4}\par
+{\f1   BYTE        octet 0..255             1   (Oberon-07)}\par
+\par
+\par
+\b 4.2 Tableaux \b0\par
+\par
+{\f1   ARRAY N OF T            tableau a taille fixe}\par
+{\f1   ARRAY OF T              tableau ouvert (parametre)}\par
+{\f1   ARRAY N, M OF T         tableau multidimensionnel}\par
+\par
+\par
+\b 4.3 Enregistrements (RECORD) \b0\par
+\par
+{\f1   RECORD}\par
+{\f1     champ1: type1;}\par
+{\f1     champ2: type2 *}\par
+{\f1   END}\par
+\par
+Le `*` apres un champ marque l'export. L'extension de type\par
+(heritage) s'ecrit :\par
+\par
+{\f1   RECORD (TypeBase)}\par
+{\f1     nouveauChamp: type}\par
+{\f1   END}\par
+\par
+\par
+\b 4.4 Pointeurs \b0\par
+\par
+{\f1   POINTER TO type}\par
+\par
+Les pointeurs ne peuvent pointer que vers RECORD ou ARRAY.\par
+Les variables pointeur sont allouees via NEW et liberees\par
+automatiquement par le ramasse-miettes.\par
+\par
+\par
+\b 4.5 Procedures (types-procedure) \b0\par
+\par
+{\f1   PROCEDURE(parametres): typeRetour}\par
+\par
+Variables et parametres peuvent etre des types-procedure :\par
+\par
+{\f1   TYPE Callback = PROCEDURE(x: INTEGER): INTEGER;}\par
+\par
+\par
+\b 4.6 Ensembles (SET) \b0\par
+\par
+Ensemble de bits 0..31 (ou 0..MAX(SET)). Operations :\par
+\par
+{\f1   + union}\par
+{\f1   * intersection}\par
+{\f1   - difference}\par
+{\f1   / difference symetrique}\par
+{\f1   IN test d'appartenance}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_OBERON_03}     {\uldb Suivant >>}{\v IDH_OBERON_05}     {\uldb Table des matieres}{\v IDH_OBERON_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_OBERON_05}
+{\footnote $ Oberon - DECLARATIONS}
+{\footnote K Oberon declarations;CONST;TYPE;VAR;export}
+\b\fs24 DECLARATIONS \b0\fs20\par
+\par
+Ordre obligatoire dans un module ou une procedure :\par
+\par
+{\f1   CONST ... ;}\par
+{\f1   TYPE  ... ;}\par
+{\f1   VAR   ... ;}\par
+{\f1   PROCEDURE ... ;}\par
+\par
+\par
+\b 5.1 Constantes : CONST \b0\par
+\par
+{\f1   CONST}\par
+{\f1     PI = 3.14159;}\par
+{\f1     MAX = 100;}\par
+{\f1     LF = 0AX;            (* caractere *)}\par
+\par
+\par
+\b 5.2 Types : TYPE \b0\par
+\par
+{\f1   TYPE}\par
+{\f1     Date = RECORD}\par
+{\f1       annee: INTEGER;}\par
+{\f1       mois, jour: SHORTINT}\par
+{\f1     END;}\par
+\par
+{\f1     Liste = POINTER TO Noeud;}\par
+{\f1     Noeud = RECORD}\par
+{\f1       val: INTEGER;}\par
+{\f1       suiv: Liste}\par
+{\f1     END;}\par
+\par
+Note : on peut faire reference a un type encore non declare\par
+si c'est via POINTER TO. Resolution differee a la fin du\par
+bloc TYPE.\par
+\par
+\par
+\b 5.3 Variables : VAR \b0\par
+\par
+{\f1   VAR}\par
+{\f1     x, y: INTEGER;}\par
+{\f1     nom: ARRAY 32 OF CHAR;}\par
+{\f1     compteur*: INTEGER;   (* exporte *)}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_OBERON_04}     {\uldb Suivant >>}{\v IDH_OBERON_06}     {\uldb Table des matieres}{\v IDH_OBERON_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_OBERON_06}
+{\footnote $ Oberon - OPERATEURS}
+{\footnote K Oberon operateurs;arithmetique;DIV;MOD;relationnel;logique;ensemble;IN;IS;precedence}
+\b\fs24 OPERATEURS \b0\fs20\par
+\par
+\par
+\b 6.1 Operateurs arithmetiques \b0\par
+\par
+{\f1   +    addition (unaire/binaire)}\par
+{\f1   -    soustraction (unaire/binaire)}\par
+{\f1   *    multiplication}\par
+{\f1   /    division reelle}\par
+{\f1   DIV  division entiere}\par
+{\f1   MOD  modulo}\par
+\par
+\par
+\b 6.2 Operateurs relationnels \b0\par
+\par
+{\f1   =    egal}\par
+{\f1   #    different}\par
+{\f1   <    inferieur}\par
+{\f1   >    superieur}\par
+{\f1   <=   inferieur ou egal}\par
+{\f1   >=   superieur ou egal}\par
+{\f1   IN   appartenance a un ensemble}\par
+{\f1   IS   test de type dynamique}\par
+\par
+\par
+\b 6.3 Operateurs logiques \b0\par
+\par
+{\f1   &    ET logique (court-circuit)}\par
+{\f1   OR   OU logique (court-circuit)}\par
+{\f1   ~    NON logique}\par
+\par
+\par
+\b 6.4 Operateurs sur ensembles \b0\par
+\par
+{\f1   +    union}\par
+{\f1   -    difference}\par
+{\f1   *    intersection}\par
+{\f1   /    difference symetrique}\par
+{\f1   IN   appartenance}\par
+\par
+\par
+\b 6.5 Affectation \b0\par
+\par
+{\f1   :=    affectation}\par
+\par
+\par
+\b 6.6 Precedence (decroissante) \b0\par
+\par
+{\f1   1. ~ (unaire)}\par
+{\f1   2. * / DIV MOD &}\par
+{\f1   3. + - OR}\par
+{\f1   4. = # < <= > >= IN IS}\par
+{\f1   5. & (le mot OR a meme niveau que +/-)}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_OBERON_05}     {\uldb Suivant >>}{\v IDH_OBERON_07}     {\uldb Table des matieres}{\v IDH_OBERON_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_OBERON_07}
+{\footnote $ Oberon - STRUCTURES DE CONTROLE}
+{\footnote K Oberon structures controle;IF;ELSIF;CASE;WHILE;REPEAT;FOR;LOOP;EXIT;WITH;RETURN}
+\b\fs24 STRUCTURES DE CONTROLE \b0\fs20\par
+\par
+\par
+\b 7.1 Selection \b0\par
+\par
+{\f1   IF condition THEN}\par
+{\f1     instructions}\par
+{\f1   ELSIF condition2 THEN}\par
+{\f1     instructions}\par
+{\f1   ELSE}\par
+{\f1     instructions}\par
+{\f1   END}\par
+\par
+{\f1   CASE expression OF}\par
+{\f1     val1: instructions}\par
+{\f1   | val2, val3: instructions}\par
+{\f1   | a..b: instructions}\par
+{\f1   ELSE}\par
+{\f1     instructions}\par
+{\f1   END}\par
+\par
+Le CASE de type (Oberon classique) :\par
+\par
+{\f1   WITH v: T DO}\par
+{\f1     (* v traite comme de type T dans ce bloc *)}\par
+{\f1   END}\par
+\par
+\par
+\b 7.2 Iteration \b0\par
+\par
+{\f1   WHILE condition DO instructions END}\par
+\par
+{\f1   REPEAT instructions UNTIL condition}\par
+\par
+{\f1   FOR i := init TO fin DO instructions END}\par
+{\f1   FOR i := init TO fin BY pas DO instructions END}\par
+{\f1   (* introduit en Oberon-2 *)}\par
+\par
+{\f1   LOOP instructions END}\par
+{\f1   (* boucle infinie, sortie par EXIT - Oberon original *)}\par
+\par
+\par
+\b 7.3 Saut \b0\par
+\par
+{\f1   RETURN [expression]}\par
+{\f1   EXIT                  (* sort de la boucle LOOP, Oberon orig. *)}\par
+\par
+Pas de BREAK ni de GOTO en Oberon-07.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_OBERON_06}     {\uldb Suivant >>}{\v IDH_OBERON_08}     {\uldb Table des matieres}{\v IDH_OBERON_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_OBERON_08}
+{\footnote $ Oberon - PROCEDURES}
+{\footnote K Oberon procedures;parametres;VAR;tableau ouvert;recursivite;procedure liee type;methode;receveur}
+\b\fs24 PROCEDURES \b0\fs20\par
+\par
+\par
+\b 8.1 Declaration \b0\par
+\par
+{\f1   PROCEDURE nom(param1: type1; VAR param2: type2): typeRetour;}\par
+{\f1     (* declarations locales *)}\par
+{\f1   BEGIN}\par
+{\f1     (* corps *)}\par
+{\f1     RETURN expression}\par
+{\f1   END nom;}\par
+\par
+Le nom apres END doit etre identique. Sans valeur de retour,\par
+omettre `: typeRetour` et `RETURN`.\par
+\par
+\par
+\b 8.2 Passage de parametres \b0\par
+\par
+{\f1   - Par valeur     : param: type        (defaut, copie)}\par
+{\f1   - Par reference  : VAR param: type    (modifiable)}\par
+\par
+Les ARRAY OF T sont toujours passes par reference implicite\par
+(open array) :\par
+\par
+{\f1   PROCEDURE Somme(v: ARRAY OF INTEGER): INTEGER;}\par
+{\f1     VAR i, s: INTEGER;}\par
+{\f1   BEGIN s := 0;}\par
+{\f1     FOR i := 0 TO LEN(v) - 1 DO INC(s, v[i]) END;}\par
+{\f1     RETURN s}\par
+{\f1   END Somme;}\par
+\par
+\par
+\b 8.3 Recursivite \b0\par
+\par
+Toute procedure est intrinsequement recursive. Les\par
+predeclarations ne sont pas necessaires : Oberon utilise une\par
+analyse a deux passes.\par
+\par
+\par
+\b 8.4 Procedures liees au type (Oberon-2/-07) \b0\par
+\par
+Methodes associees a un type RECORD :\par
+\par
+{\f1   TYPE Forme* = RECORD END;}\par
+\par
+{\f1   PROCEDURE (VAR f: Forme) Aire*(): REAL;}\par
+{\f1   BEGIN RETURN 0}\par
+{\f1   END Aire;}\par
+\par
+{\f1   TYPE Cercle* = RECORD (Forme) r: REAL END;}\par
+\par
+{\f1   PROCEDURE (VAR c: Cercle) Aire*(): REAL;}\par
+{\f1   BEGIN RETURN 3.14159 * c.r * c.r}\par
+{\f1   END Aire;}\par
+\par
+Liaison dynamique a l'appel via le type effectif du receveur.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_OBERON_07}     {\uldb Suivant >>}{\v IDH_OBERON_09}     {\uldb Table des matieres}{\v IDH_OBERON_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_OBERON_09}
+{\footnote $ Oberon - TABLEAUX}
+{\footnote K Oberon tableaux;ARRAY;LEN;tableau ouvert;tableau dynamique;NEW;POINTER TO ARRAY}
+\b\fs24 TABLEAUX \b0\fs20\par
+\par
+\par
+\b 9.1 Declaration \b0\par
+\par
+{\f1   VAR}\par
+{\f1     t: ARRAY 100 OF INTEGER;}\par
+{\f1     m: ARRAY 10, 20 OF REAL;}\par
+{\f1     s: ARRAY 32 OF CHAR;           (* chaine "limitee" *)}\par
+\par
+\par
+\b 9.2 Acces aux elements \b0\par
+\par
+{\f1   t[0]}\par
+{\f1   m[i, j]                      (* notation Oberon *)}\par
+{\f1   m[i][j]                      (* equivalent *)}\par
+\par
+\par
+\b 9.3 Tableaux ouverts \b0\par
+\par
+Parametre de procedure de taille indeterminee :\par
+\par
+{\f1   PROCEDURE Inverser(VAR v: ARRAY OF INTEGER);}\par
+{\f1     VAR i, j, t: INTEGER;}\par
+{\f1   BEGIN}\par
+{\f1     i := 0; j := LEN(v) - 1;}\par
+{\f1     WHILE i < j DO}\par
+{\f1       t := v[i]; v[i] := v[j]; v[j] := t;}\par
+{\f1       INC(i); DEC(j)}\par
+{\f1     END}\par
+{\f1   END Inverser;}\par
+\par
+`LEN(v)` retourne le nombre d'elements.\par
+\par
+\par
+\b 9.4 Tableaux dynamiques (Oberon-07) \b0\par
+\par
+{\f1   TYPE PVec = POINTER TO ARRAY OF INTEGER;}\par
+{\f1   VAR v: PVec;}\par
+{\f1   BEGIN}\par
+{\f1     NEW(v, 100);          (* tableau de 100 INTEGER *)}\par
+{\f1     v[42] := 7}\par
+{\f1     (* libere automatiquement *)}\par
+{\f1   END}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_OBERON_08}     {\uldb Suivant >>}{\v IDH_OBERON_10}     {\uldb Table des matieres}{\v IDH_OBERON_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_OBERON_10}
+{\footnote $ Oberon - ENREGISTREMENTS}
+{\footnote K Oberon enregistrements;RECORD;extension type;heritage;IS;type guard}
+\b\fs24 ENREGISTREMENTS \b0\fs20\par
+\par
+\par
+\b 10.1 Declaration \b0\par
+\par
+{\f1   TYPE Personne* = RECORD}\par
+{\f1     nom*: ARRAY 32 OF CHAR;}\par
+{\f1     age*: INTEGER;}\par
+{\f1     interne: BOOLEAN              (* non exporte *)}\par
+{\f1   END;}\par
+\par
+\par
+\b 10.2 Acces aux champs \b0\par
+\par
+{\f1   VAR p: Personne;}\par
+{\f1   p.nom := "Jean";}\par
+{\f1   p.age := 42;}\par
+\par
+\par
+\b 10.3 Extension de type (heritage) \b0\par
+\par
+{\f1   TYPE Etudiant* = RECORD (Personne)}\par
+{\f1     matricule*: INTEGER;}\par
+{\f1     moyenne*: REAL}\par
+{\f1   END;}\par
+\par
+Etudiant herite de tous les champs de Personne.\par
+\par
+\par
+\b 10.4 Test de type dynamique : IS \b0\par
+\par
+{\f1   IF p IS Etudiant THEN}\par
+{\f1     e := p(Etudiant);              (* type guard *)}\par
+{\f1     e.matricule := 12345}\par
+{\f1   END}\par
+\par
+\par
+\b 10.5 Garde de type : v(T) \b0\par
+\par
+L'expression `v(T)` est un "type guard" : elle teste que la\par
+valeur dynamique de v est compatible avec T et retourne v vu\par
+comme de type T. Une erreur d'execution survient si non\par
+compatible.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_OBERON_09}     {\uldb Suivant >>}{\v IDH_OBERON_11}     {\uldb Table des matieres}{\v IDH_OBERON_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_OBERON_11}
+{\footnote $ Oberon - POINTEURS ET ALLOCATION DYNAMIQUE}
+{\footnote K Oberon pointeurs;POINTER TO;NEW;NIL;garbage collector;ramasse-miettes}
+\b\fs24 POINTEURS ET ALLOCATION DYNAMIQUE \b0\fs20\par
+\par
+\par
+\b 11.1 Declaration \b0\par
+\par
+{\f1   TYPE}\par
+{\f1     Noeud = RECORD}\par
+{\f1       val: INTEGER;}\par
+{\f1       suiv: Liste}\par
+{\f1     END;}\par
+{\f1     Liste = POINTER TO Noeud;}\par
+\par
+{\f1   VAR p: Liste;}\par
+\par
+\par
+\b 11.2 Allocation \b0\par
+\par
+{\f1   NEW(p);             (* alloue un nouvel objet *)}\par
+{\f1   p.val := 42;}\par
+{\f1   p.suiv := NIL;}\par
+\par
+Pour les tableaux dynamiques (Oberon-07) :\par
+\par
+{\f1   NEW(p, taille);}\par
+\par
+\par
+\b 11.3 Liberation \b0\par
+\par
+Pas de DISPOSE ni de FREE : le ramasse-miettes recupere les\par
+objets devenus inaccessibles. NIL est utilise pour rompre\par
+les references.\par
+\par
+\par
+\b 11.4 Test de nullite \b0\par
+\par
+{\f1   IF p # NIL THEN ... END}\par
+{\f1   IF p = NIL THEN ... END}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_OBERON_10}     {\uldb Suivant >>}{\v IDH_OBERON_12}     {\uldb Table des matieres}{\v IDH_OBERON_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_OBERON_12}
+{\footnote $ Oberon - MODULES}
+{\footnote K Oberon modules;MODULE;IMPORT;export;asterisque;visibilite lecture seule;initialisation}
+\b\fs24 MODULES \b0\fs20\par
+\par
+\par
+\b 12.1 Declaration \b0\par
+\par
+{\f1   MODULE MonModule;}\par
+{\f1     IMPORT IO := Out, Math;}\par
+\par
+{\f1     CONST PI* = 3.14159;}\par
+{\f1     TYPE  Point* = RECORD x*, y*: REAL END;}\par
+{\f1     VAR   compteur: INTEGER;}\par
+\par
+{\f1     PROCEDURE Distance*(VAR a, b: Point): REAL;}\par
+{\f1     BEGIN}\par
+{\f1       RETURN Math.sqrt((a.x - b.x) * (a.x - b.x)}\par
+{\f1                      + (a.y - b.y) * (a.y - b.y))}\par
+{\f1     END Distance;}\par
+\par
+{\f1   BEGIN}\par
+{\f1     compteur := 0}\par
+{\f1   END MonModule.}\par
+\par
+\par
+\b 12.2 Exportation \b0\par
+\par
+L'asterisque `*` apres un nom le marque comme exporte :\par
+\par
+{\f1   CONST PI* = 3.14159;}\par
+{\f1   VAR x*: INTEGER;}\par
+{\f1   PROCEDURE F*(...);}\par
+\par
+Variante Oberon-2 : `-` (export en lecture seule) :\par
+\par
+{\f1   VAR compteur-: INTEGER;       (* lu hors module, ecrit dedans *)}\par
+\par
+\par
+\b 12.3 Importation \b0\par
+\par
+{\f1   IMPORT Module1, Alias := Module2;}\par
+\par
+L'acces aux noms exportes se fait via `Module.Nom` ou\par
+`Alias.Nom`.\par
+\par
+\par
+\b 12.4 Initialisation \b0\par
+\par
+Le corps du module (entre BEGIN et END) s'execute une seule\par
+fois, lors du premier chargement. Pratique pour initialiser\par
+les variables globales.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_OBERON_11}     {\uldb Suivant >>}{\v IDH_OBERON_13}     {\uldb Table des matieres}{\v IDH_OBERON_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_OBERON_13}
+{\footnote $ Oberon - PROCEDURES STANDARD}
+{\footnote K Oberon procedures standard;INC;DEC;ABS;ODD;LEN;ORD;CHR;NEW;HALT;INCL;EXCL;Out;In}
+\b\fs24 PROCEDURES STANDARD \b0\fs20\par
+\par
+\par
+\b 13.1 Procedures sur entiers \b0\par
+\par
+{\f1   INC(x)         x := x + 1}\par
+{\f1   INC(x, n)      x := x + n}\par
+{\f1   DEC(x)         x := x - 1}\par
+{\f1   DEC(x, n)      x := x - n}\par
+{\f1   ABS(x)         valeur absolue}\par
+{\f1   ODD(x)         TRUE si x impair}\par
+{\f1   ASH(x, n)      decalage arithmetique}\par
+{\f1   ENTIER(x)      partie entiere de REAL}\par
+\par
+\par
+\b 13.2 Procedures sur ensembles \b0\par
+\par
+{\f1   INCL(s, x)     ajoute x a s}\par
+{\f1   EXCL(s, x)     retire x de s}\par
+\par
+\par
+\b 13.3 Procedures sur tableaux \b0\par
+\par
+{\f1   LEN(t)         nombre d'elements}\par
+\par
+\par
+\b 13.4 Procedures de conversion \b0\par
+\par
+{\f1   ORD(c)         valeur ordinale d'un CHAR/BOOLEAN}\par
+{\f1   CHR(n)         caractere de code n}\par
+{\f1   SHORT(x)       conversion vers type plus court}\par
+{\f1   LONG(x)        conversion vers type plus long}\par
+\par
+\par
+\b 13.5 Procedures d'allocation \b0\par
+\par
+{\f1   NEW(p)         alloue *p}\par
+{\f1   NEW(p, n)      alloue tableau de n elements}\par
+\par
+\par
+\b 13.6 Procedures d'I/O (module Out) \b0\par
+\par
+{\f1   Out.Char(c)        ecrit un caractere}\par
+{\f1   Out.String(s)      ecrit une chaine}\par
+{\f1   Out.Int(n, w)      ecrit entier sur w colonnes}\par
+{\f1   Out.Real(x, w)     ecrit reel sur w colonnes}\par
+{\f1   Out.Ln             saut de ligne}\par
+\par
+{\f1   In.Open            initialise l'entree}\par
+{\f1   In.Char(c)         lit un caractere}\par
+{\f1   In.Int(n)          lit un entier}\par
+{\f1   In.String(s)       lit une chaine}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_OBERON_12}     {\uldb Suivant >>}{\v IDH_OBERON_14}     {\uldb Table des matieres}{\v IDH_OBERON_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_OBERON_14}
+{\footnote $ Oberon - EXCEPTIONS ET GESTION D'ERREURS}
+{\footnote K Oberon exceptions;erreurs execution;HALT;verification bornes}
+\b\fs24 EXCEPTIONS ET GESTION D'ERREURS \b0\fs20\par
+\par
+Oberon classique et Oberon-07 N'ONT PAS de mecanisme\par
+d'exceptions. La verification est explicite :\par
+\par
+{\f1   - Verifier les valeurs de retour}\par
+{\f1   - Tester les pointeurs avant dereferencement}\par
+{\f1   - Verifier les bornes avant indexation (le compilateur}\par
+{\f1     inserre normalement des verifications automatiques)}\par
+\par
+Erreurs d'execution detectees automatiquement :\par
+{\f1   - Acces hors bornes (HALT 1)}\par
+{\f1   - Dereferencement NIL (HALT 2)}\par
+{\f1   - Type guard echoue (HALT 3)}\par
+{\f1   - Division par zero (HALT 4)}\par
+{\f1   - Debordement (HALT 5)}\par
+\par
+La procedure standard `HALT(code)` termine le programme avec\par
+un code d'erreur :\par
+\par
+{\f1   IF v[i] < 0 THEN HALT(100) END}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_OBERON_13}     {\uldb Suivant >>}{\v IDH_OBERON_15}     {\uldb Table des matieres}{\v IDH_OBERON_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_OBERON_15}
+{\footnote $ Oberon - SYSTEM (PROCEDURES BAS NIVEAU)}
+{\footnote K Oberon SYSTEM;bas niveau;GET;PUT;MOVE;ADR;VAL;SIZE}
+\b\fs24 SYSTEM (PROCEDURES BAS NIVEAU) \b0\fs20\par
+\par
+Le module SYSTEM expose des operations de bas niveau,\par
+utilisees uniquement pour la programmation systeme :\par
+\par
+{\f1   SYSTEM.GET(adr, v)         lit un mot a l'adresse adr}\par
+{\f1   SYSTEM.PUT(adr, v)         ecrit un mot a l'adresse adr}\par
+{\f1   SYSTEM.MOVE(src, dst, n)   copie n octets}\par
+{\f1   SYSTEM.ADR(v)              adresse de v}\par
+{\f1   SYSTEM.VAL(T, x)           reinterpretation de x en type T}\par
+{\f1   SYSTEM.SIZE(T)             taille de T en octets}\par
+\par
+L'utilisation de SYSTEM contourne la verification de type ;\par
+elle doit etre limitee aux modules de bas niveau (pilotes,\par
+allocateur).\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_OBERON_14}     {\uldb Suivant >>}{\v IDH_OBERON_16}     {\uldb Table des matieres}{\v IDH_OBERON_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_OBERON_16}
+{\footnote $ Oberon - EVOLUTIONS DU LANGAGE}
+{\footnote K Oberon evolutions;Oberon 1988;Oberon-2 1991;Oberon-07;Active Oberon;Component Pascal}
+\b\fs24 EVOLUTIONS DU LANGAGE \b0\fs20\par
+\par
+\par
+\b 16.1 Oberon (1988) \b0\par
+\par
+Version originale : modules, RECORD, extension de type,\par
+methodes via type-procedure dans le RECORD, LOOP/EXIT.\par
+\par
+\par
+\b 16.2 Oberon-2 (1991) \b0\par
+\par
+{\f1   - Procedures liees au type (notation receveur)}\par
+{\f1   - Boucle FOR}\par
+{\f1   - Champs export en lecture seule (-)}\par
+{\f1   - Tableaux ouverts en variables (pas seulement parametres)}\par
+\par
+\par
+\b 16.3 Oberon-07 (2007, rev. 2016) \b0\par
+\par
+Simplification radicale (33 mots reserves) :\par
+\par
+{\f1   - Retrait de LOOP/EXIT}\par
+{\f1   - Retrait de WITH (remplace par garde de type)}\par
+{\f1   - Retrait de RETURN au milieu d'une procedure}\par
+{\f1     (RETURN seulement en derniere instruction)}\par
+{\f1   - Tableaux dynamiques via NEW(p, n)}\par
+{\f1   - Procedures liees au type retenues}\par
+{\f1   - Retrait de FOR (puis reintroduit dans rev. 2016)}\par
+\par
+\par
+\b 16.4 Active Oberon (2002) \b0\par
+\par
+Ajout de la concurrence :\par
+\par
+{\f1   - Active objects (objets actifs avec thread propre)}\par
+{\f1   - Mecanismes de synchronisation (AWAIT)}\par
+{\f1   - Utilise dans le systeme A2 / Bluebottle}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_OBERON_15}     {\uldb Suivant >>}{\v IDH_OBERON_17}     {\uldb Table des matieres}{\v IDH_OBERON_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_OBERON_17}
+{\footnote $ Oberon - COMPILATEURS DU PROJET}
+{\footnote K Oberon compilateurs projet;OBERON86.PAS;OBERCW32.PAS}
+\b\fs24 COMPILATEURS DU PROJET \b0\fs20\par
+\par
+\par
+\b 17.1 OBERON86.PAS - Compilateur Oberon vers 8086 \b0\par
+\par
+{\f1   Cible             : MS-DOS, assembleur MASM .MODEL SMALL}\par
+{\f1   Modele memoire    : SMALL (code 64KO, donnees 64KO)}\par
+{\f1   Dialecte          : Oberon-07 (sous-ensemble)}\par
+{\f1   Sortie            : fichier .ASM, assemblable avec MASM}\par
+\par
+{\f1   Fonctionnalites :}\par
+{\f1     - Modules, IMPORT, export par *}\par
+{\f1     - Types BOOLEAN, CHAR, INTEGER, REAL, SET}\par
+{\f1     - ARRAY (fixe et ouvert), RECORD, POINTER}\par
+{\f1     - Procedures, procedures liees au type}\par
+{\f1     - Structures IF, CASE, WHILE, REPEAT, FOR}\par
+{\f1     - Garbage collector simple}\par
+\par
+{\f1   Limitations :}\par
+{\f1     - LONGINT 16 bits seulement (cible 8086)}\par
+{\f1     - Tableaux dynamiques limites}\par
+{\f1     - Module SYSTEM partiel}\par
+\par
+\par
+\b 17.2 OBERCW32.PAS - Compilateur Oberon vers Win32 \b0\par
+\par
+{\f1   Cible             : Windows 32 bits (PE)}\par
+{\f1   Sortie            : fichier .EXE PE32}\par
+{\f1   Dialecte          : Oberon-07 complet}\par
+\par
+{\f1   Fonctionnalites :}\par
+{\f1     - Types complets (INTEGER 32-bit, LONGINT 64-bit)}\par
+{\f1     - Tableaux dynamiques NEW(p, n)}\par
+{\f1     - Garbage collector base sur marquage}\par
+{\f1     - Bibliotheque Out, In, Math}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_OBERON_16}     {\uldb Suivant >>}{\v IDH_OBERON_18}     {\uldb Table des matieres}{\v IDH_OBERON_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_OBERON_18}
+{\footnote $ Oberon - CONVERTISSEURS DU PROJET}
+{\footnote K Oberon convertisseurs;C2OBERON.PAS;ADA2OBER.PAS;PAS2OBER.PAS;OBER2PAS.PAS;OBER2CS.PAS;OBER2ADA.PAS;OBERON2C.PAS}
+\b\fs24 CONVERTISSEURS DU PROJET \b0\fs20\par
+\par
+\par
+\b 18.1 C2OBERON.PAS - C vers Oberon \b0\par
+\par
+Convertit un sous-ensemble de C en Oberon :\par
+\par
+{\f1   - struct -> RECORD}\par
+{\f1   - typedef -> TYPE}\par
+{\f1   - if/else -> IF/ELSE}\par
+{\f1   - while/for -> WHILE/FOR}\par
+{\f1   - * pointer -> POINTER TO}\par
+\par
+\par
+\b 18.2 ADA2OBER.PAS - Ada vers Oberon \b0\par
+\par
+{\f1   - package -> MODULE}\par
+{\f1   - procedure/function -> PROCEDURE}\par
+{\f1   - record -> RECORD}\par
+{\f1   - if/elsif/else -> IF/ELSIF/ELSE}\par
+{\f1   - loop / while -> LOOP/WHILE}\par
+\par
+\par
+\b 18.3 PAS2OBER.PAS - Pascal vers Oberon \b0\par
+\par
+{\f1   - program/unit -> MODULE}\par
+{\f1   - procedure/function -> PROCEDURE}\par
+{\f1   - record -> RECORD}\par
+{\f1   - var/const -> VAR/CONST}\par
+{\f1   - begin/end -> BEGIN/END}\par
+{\f1   - := identique}\par
+\par
+\par
+\b 18.4 OBER2PAS.PAS - Oberon vers Pascal \b0\par
+\par
+Conversion inverse vers Turbo Pascal.\par
+\par
+\par
+\b 18.5 OBER2CS.PAS - Oberon vers C# \b0\par
+\par
+{\f1   - MODULE -> namespace + class statique}\par
+{\f1   - RECORD -> struct/class}\par
+{\f1   - extension de type -> heritage de classe}\par
+{\f1   - procedure liee au type -> methode}\par
+\par
+\par
+\b 18.6 OBER2ADA.PAS - Oberon vers Ada \b0\par
+\par
+Conversion inverse vers Ada 95/2012.\par
+\par
+\par
+\b 18.7 OBERON2C.PAS - Oberon vers C \b0\par
+\par
+Conversion vers C ANSI :\par
+\par
+{\f1   - MODULE -> .c + .h}\par
+{\f1   - RECORD -> struct}\par
+{\f1   - procedure liee au type -> vtable}\par
+{\f1   - garbage collector via Boehm GC ou simulation}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_OBERON_17}     {\uldb Suivant >>}{\v IDH_OBERON_19}     {\uldb Table des matieres}{\v IDH_OBERON_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_OBERON_19}
+{\footnote $ Oberon - EXEMPLES}
+{\footnote K Oberon exemples;Hello World;Factorielle;liste chainee;extension type;polymorphisme;tri insertion}
+\b\fs24 EXEMPLES \b0\fs20\par
+\par
+\par
+\b 19.1 Hello, World! \b0\par
+\par
+{\f1   MODULE Hello;}\par
+{\f1     IMPORT Out;}\par
+{\f1   BEGIN}\par
+{\f1     Out.String("Hello, World!"); Out.Ln}\par
+{\f1   END Hello.}\par
+\par
+\par
+\b 19.2 Factorielle recursive \b0\par
+\par
+{\f1   MODULE Fact;}\par
+{\f1     IMPORT Out;}\par
+\par
+{\f1     PROCEDURE Factorielle(n: INTEGER): INTEGER;}\par
+{\f1     BEGIN}\par
+{\f1       IF n <= 1 THEN RETURN 1}\par
+{\f1       ELSE RETURN n * Factorielle(n - 1)}\par
+{\f1       END}\par
+{\f1     END Factorielle;}\par
+\par
+{\f1     PROCEDURE Test*;}\par
+{\f1       VAR i: INTEGER;}\par
+{\f1     BEGIN}\par
+{\f1       FOR i := 0 TO 10 DO}\par
+{\f1         Out.Int(i, 3); Out.String(" -> ");}\par
+{\f1         Out.Int(Factorielle(i), 8); Out.Ln}\par
+{\f1       END}\par
+{\f1     END Test;}\par
+\par
+{\f1   END Fact.}\par
+\par
+\par
+\b 19.3 Liste chainee \b0\par
+\par
+{\f1   MODULE Liste;}\par
+{\f1     IMPORT Out;}\par
+\par
+{\f1     TYPE}\par
+{\f1       PNoeud* = POINTER TO Noeud;}\par
+{\f1       Noeud* = RECORD val*: INTEGER; suiv*: PNoeud END;}\par
+\par
+{\f1     PROCEDURE Ajouter*(VAR tete: PNoeud; v: INTEGER);}\par
+{\f1       VAR n: PNoeud;}\par
+{\f1     BEGIN}\par
+{\f1       NEW(n);}\par
+{\f1       n.val := v;}\par
+{\f1       n.suiv := tete;}\par
+{\f1       tete := n}\par
+{\f1     END Ajouter;}\par
+\par
+{\f1     PROCEDURE Afficher*(tete: PNoeud);}\par
+{\f1     BEGIN}\par
+{\f1       WHILE tete # NIL DO}\par
+{\f1         Out.Int(tete.val, 4);}\par
+{\f1         tete := tete.suiv}\par
+{\f1       END;}\par
+{\f1       Out.Ln}\par
+{\f1     END Afficher;}\par
+\par
+{\f1   END Liste.}\par
+\par
+\par
+\b 19.4 Extension de type et polymorphisme \b0\par
+\par
+{\f1   MODULE Formes;}\par
+{\f1     IMPORT Out, Math;}\par
+\par
+{\f1     TYPE}\par
+{\f1       Forme* = RECORD END;}\par
+{\f1       PCercle* = POINTER TO Cercle;}\par
+{\f1       Cercle* = RECORD (Forme) r*: REAL END;}\par
+{\f1       PRectangle* = POINTER TO Rectangle;}\par
+{\f1       Rectangle* = RECORD (Forme) l*, h*: REAL END;}\par
+\par
+{\f1     PROCEDURE (VAR f: Forme) Aire*(): REAL;}\par
+{\f1     BEGIN RETURN 0}\par
+{\f1     END Aire;}\par
+\par
+{\f1     PROCEDURE (VAR c: Cercle) Aire*(): REAL;}\par
+{\f1     BEGIN RETURN 3.14159 * c.r * c.r}\par
+{\f1     END Aire;}\par
+\par
+{\f1     PROCEDURE (VAR r: Rectangle) Aire*(): REAL;}\par
+{\f1     BEGIN RETURN r.l * r.h}\par
+{\f1     END Aire;}\par
+\par
+{\f1   END Formes.}\par
+\par
+\par
+\b 19.5 Tri par insertion \b0\par
+\par
+{\f1   PROCEDURE Trier(VAR a: ARRAY OF INTEGER);}\par
+{\f1     VAR i, j, t: INTEGER;}\par
+{\f1   BEGIN}\par
+{\f1     FOR i := 1 TO LEN(a) - 1 DO}\par
+{\f1       t := a[i]; j := i;}\par
+{\f1       WHILE (j > 0) & (a[j-1] > t) DO}\par
+{\f1         a[j] := a[j-1]; DEC(j)}\par
+{\f1       END;}\par
+{\f1       a[j] := t}\par
+{\f1     END}\par
+{\f1   END Trier;}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_OBERON_18}     {\uldb Suivant >>}{\v IDH_OBERON_20}     {\uldb Table des matieres}{\v IDH_OBERON_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_OBERON_20}
+{\footnote $ Oberon - SYSTEME OBERON}
+{\footnote K Oberon Systeme;Oberon System;ETH;Native Oberon;Bluebottle;A2;Project Oberon}
+\b\fs24 SYSTEME OBERON \b0\fs20\par
+\par
+Le langage Oberon a ete developpe conjointement avec un\par
+systeme d'exploitation portant le meme nom :\par
+\par
+{\f1   - Oberon System (ETH Zurich, 1988)}\par
+{\f1   - Oberon V4 (1992)}\par
+{\f1   - Native Oberon (1995, sans systeme hote)}\par
+{\f1   - Oberon for Linux / Windows (ports)}\par
+{\f1   - Bluebottle / A2 (Active Oberon, 2002)}\par
+{\f1   - Project Oberon 2013 (reedition complete par Wirth)}\par
+\par
+Le systeme Oberon repose sur :\par
+\par
+{\f1   - Une interface a base de texte (commandes Module.Procedure)}\par
+{\f1   - Le tracking via une zone de viseur ("viewer")}\par
+{\f1   - Le ramasse-miettes integre}\par
+{\f1   - L'edition de liens dynamique au chargement de module}\par
+{\f1   - Aucun systeme de fichiers hierarchique (initialement)}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_OBERON_19}     {\uldb Suivant >>}{\v IDH_OBERON_21}     {\uldb Table des matieres}{\v IDH_OBERON_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_OBERON_21}
+{\footnote $ Oberon - INFLUENCE}
+{\footnote K Oberon influence;Component Pascal;Zonnon;Go;Modula-2 difference}
+\b\fs24 INFLUENCE \b0\fs20\par
+\par
+Oberon a influence plusieurs langages :\par
+\par
+{\f1   - Component Pascal (Oberon Microsystems, 1997)}\par
+{\f1   - Zonnon (ETH, 2003)}\par
+{\f1   - Active Oberon (ETH, 2002)}\par
+{\f1   - Go (Google, 2009) : Robert Griesemer, ancien doctorant}\par
+{\f1     de Wirth, a apporte les concepts de modules, garbage}\par
+{\f1     collection et methodes liees au type}\par
+{\f1   - Nim, certains aspects de Rust pour la simplicite}\par
+\par
+Differences principales entre Oberon et Modula-2 :\par
+\par
+{\f1   Aspect              Modula-2          Oberon}\par
+{\f1   ------              --------          ------}\par
+{\f1   Modules             DEFINITION/IMPL.  Module unique}\par
+{\f1                       separes           avec export *}\par
+{\f1   Heritage            non               RECORD (T)}\par
+{\f1   Methodes            non               procedures liees}\par
+{\f1   Garbage collector   non               oui}\par
+{\f1   Pointeurs           sur tout type     RECORD / ARRAY}\par
+{\f1   EXPORT             explicite          marqueur *}\par
+{\f1   Verbosite          plus              moins}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_OBERON_20}     {\uldb Suivant >>}{\v IDH_OBERON_22}     {\uldb Table des matieres}{\v IDH_OBERON_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_OBERON_22}
+{\footnote $ Oberon - REFERENCES}
+{\footnote K Oberon references;bibliographie;Wirth;Reiser;Mossenbock;Project Oberon;Oberon Microsystems}
+\b\fs24 REFERENCES \b0\fs20\par
+\par
+{\f1   - Wirth, N.              "The Programming Language Oberon",}\par
+{\f1                            Software - Practice and Experience,}\par
+{\f1                            18(7), pp. 671-690, July 1988.}\par
+{\f1   - Wirth, N.              "The Programming Language Oberon}\par
+{\f1                            (Revised Oberon)", ETH Zurich,}\par
+{\f1                            Oct. 2016.}\par
+{\f1   - Wirth, N.; Reiser, M.  "Programming in Oberon - Steps}\par
+{\f1                            Beyond Pascal and Modula",}\par
+{\f1                            Addison-Wesley, 1992.}\par
+{\f1   - Reiser, M.             "The Oberon System - User Guide}\par
+{\f1                            and Programmer's Manual",}\par
+{\f1                            Addison-Wesley, 1991.}\par
+{\f1   - Wirth, N.; Gutknecht J."Project Oberon - The Design of}\par
+{\f1                            an Operating System, a Compiler}\par
+{\f1                            and a Computer", 2nd ed., 2013.}\par
+{\f1                            (disponible librement en PDF)}\par
+{\f1   - Mossenbock, H.         "Object-Oriented Programming in}\par
+{\f1                            Oberon-2", Springer, 1995.}\par
+{\f1   - Site officiel ETH      https://oberon.ethz.ch}\par
+{\f1   - Project Oberon         https://projectoberon.com}\par
+{\f1   - Oberon Microsystems    https://www.oberon.ch}\par
+
+\par
+{\uldb << Precedent}{\v IDH_OBERON_21}     {\uldb Table des matieres}{\v IDH_OBERON_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+}

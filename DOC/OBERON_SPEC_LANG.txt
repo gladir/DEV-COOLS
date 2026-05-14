@@ -1,0 +1,1067 @@
+Oberon - Specifications du langage
+============================================================
+Compilateurs : OBERON86.PAS (Oberon vers assembleur 8086, MS-DOS)
+               OBERCW32.PAS (Oberon vers Win32 PE 32 bits)
+Convertisseurs : C2OBERON.PAS  (C vers Oberon)
+                 ADA2OBER.PAS  (Ada vers Oberon)
+                 PAS2OBER.PAS  (Pascal vers Oberon)
+                 OBER2PAS.PAS  (Oberon vers Pascal)
+                 OBER2CS.PAS   (Oberon vers C#)
+                 OBER2ADA.PAS  (Oberon vers Ada)
+                 OBERON2C.PAS  (Oberon vers C)
+Reference   : "The Programming Language Oberon",
+              Niklaus Wirth, 1988 (revue 1990, 2007, 2016).
+              "Programming in Oberon - A Tutorial",
+              N. Wirth & M. Reiser, Addison-Wesley, 1992.
+Version     : 1.0 - 2026
+
+============================================================
+1. PRESENTATION
+============================================================
+
+Oberon a ete concu entre 1985 et 1988 par Niklaus Wirth et
+Juerg Gutknecht a l'ETH Zurich, comme successeur direct de
+Modula-2. Wirth recherchait un langage plus simple, integrant
+les concepts d'extension de type (heritage) tout en eliminant
+les constructions jugees superflues. Oberon a egalement donne
+son nom au systeme d'exploitation Oberon developpe en
+parallele.
+
+Le langage a ete revise plusieurs fois :
+
+  - Oberon (1988)       : version originale
+  - Oberon-2 (1991)     : ajout des methodes liees au type,
+                          champs READ-ONLY exportes, FOR loop
+  - Oberon-07 (2007)    : simplification, retour aux racines
+  - Active Oberon (2002): concurrence, Active Objects
+
+Oberon est un langage :
+
+  - Imperatif et structure par blocs
+  - Compile, a typage statique fort
+  - Modulaire (module = unite de compilation)
+  - Oriente objet (extension de type, methodes)
+  - Avec collecteur automatique (garbage collector)
+  - Sensible a la casse
+  - A mise en page libre
+
+Caracteristiques notables :
+
+  - Syntaxe minimaliste (33 mots reserves en Oberon-07)
+  - Extension de type via RECORD
+  - Liaison dynamique via procedures liees au type
+  - Garbage collector pour pointeurs sur RECORD/tableaux
+  - Pas de generiques (suprimes par souci de simplicite)
+  - Pas d'exceptions (verifications explicites)
+
+Extensions de fichiers reconnues :
+
+  .Mod      Fichier module Oberon (convention ETH)
+  .ob       Fichier source Oberon (variante)
+  .obn      Fichier source Oberon (variante)
+  .Sym      Fichier de symboles compilé (export)
+  .Obj      Fichier objet
+
+
+============================================================
+2. STRUCTURE D'UN PROGRAMME
+============================================================
+
+Un programme Oberon est un MODULE. Chaque module est l'unite
+de compilation et de portee. Il n'y a pas de programme
+"principal" distinct : un module peut etre execute par
+appel d'une de ses procedures exportees, ou il contient un
+corps qui s'execute a l'initialisation.
+
+  MODULE NomModule;
+    IMPORT M1, M2 := AutreModule;
+
+    CONST ...
+    TYPE ...
+    VAR ...
+    PROCEDURE ...
+
+  BEGIN
+    (* corps d'initialisation, optionnel *)
+  END NomModule.
+
+Le nom apres END doit etre identique au nom du module.
+
+Exemple complet :
+
+  MODULE Hello;
+    IMPORT Out;
+  BEGIN
+    Out.String("Hello, World!"); Out.Ln
+  END Hello.
+
+
+============================================================
+3. STRUCTURE LEXICALE
+============================================================
+
+3.1 Jeu de caracteres
+---------------------
+
+Oberon utilise traditionnellement l'ASCII / Latin-1. Les
+litteraux caractere et chaine acceptent les caracteres
+imprimables.
+
+3.2 Commentaires
+----------------
+
+Une seule forme, imbricable :
+
+  (* commentaire, sur une ou plusieurs lignes,
+     et peut etre imbrique (* comme ceci *) *)
+
+3.3 Identificateurs
+-------------------
+
+Suite de lettres, chiffres et underscores, commencant par
+une lettre. Sensibles a la casse. Les identifiants exportes
+sont marques par un asterisque (`*`) en suffixe lors de la
+declaration :
+
+  PROCEDURE Maximum*(a, b: INTEGER): INTEGER;
+
+L'asterisque indique qu'un autre module peut acceder a
+l'identifiant via la notation pointee `Module.Nom`.
+
+3.4 Mots reserves (Oberon-07)
+-----------------------------
+
+  ARRAY    DIV       IS         OF        PROCEDURE  TO
+  BEGIN    DO        MOD        OR        RECORD     TRUE
+  BY       ELSE      MODULE     POINTER   REPEAT     TYPE
+  CASE     ELSIF     NIL        PROCEDURE RETURN     UNTIL
+  CONST    END       OF                              VAR
+  FALSE    FOR                                       WHILE
+  IF       IMPORT                                    WITH
+  IN       THEN
+
+Oberon-07 a 33 mots reserves. Oberon classique (1988) en a
+quelques uns en plus : LOOP, EXIT, WITH (cas sur type).
+
+3.5 Literaux
+------------
+
+  - Entiers       : 42, 0FFH (hexa, suffixe H)
+  - Reels         : 3.14, 3.14E2, 3.14E-2
+  - Caractere     : 'A', "A", 41X (caractere hexa)
+  - Chaine        : "texte", 'autre texte'
+  - Booleen       : TRUE, FALSE
+  - Ensemble      : {1, 3, 5..7}
+  - NIL (pointeur)
+
+3.6 Separateurs
+---------------
+
+  ( ) [ ] { } ; , : . .. := | & ~ < > <= >= = # + - * /
+
+
+============================================================
+4. TYPES DE DONNEES
+============================================================
+
+4.1 Types de base
+-----------------
+
+  Type        Description              Taille typique
+  ----        -----------              --------------
+  BOOLEAN     TRUE / FALSE             1
+  CHAR        caractere                1
+  SHORTINT    entier 8-bit signe       1
+  INTEGER     entier 16/32-bit signe   2 ou 4
+  LONGINT     entier 32/64-bit signe   4 ou 8
+  REAL        flottant simple          4
+  LONGREAL    flottant double          8
+  SET         ensemble de bits 0..N-1  4
+  BYTE        octet 0..255             1   (Oberon-07)
+
+4.2 Tableaux
+------------
+
+  ARRAY N OF T            tableau a taille fixe
+  ARRAY OF T              tableau ouvert (parametre)
+  ARRAY N, M OF T         tableau multidimensionnel
+
+4.3 Enregistrements (RECORD)
+----------------------------
+
+  RECORD
+    champ1: type1;
+    champ2: type2 *
+  END
+
+Le `*` apres un champ marque l'export. L'extension de type
+(heritage) s'ecrit :
+
+  RECORD (TypeBase)
+    nouveauChamp: type
+  END
+
+4.4 Pointeurs
+-------------
+
+  POINTER TO type
+
+Les pointeurs ne peuvent pointer que vers RECORD ou ARRAY.
+Les variables pointeur sont allouees via NEW et liberees
+automatiquement par le ramasse-miettes.
+
+4.5 Procedures (types-procedure)
+--------------------------------
+
+  PROCEDURE(parametres): typeRetour
+
+Variables et parametres peuvent etre des types-procedure :
+
+  TYPE Callback = PROCEDURE(x: INTEGER): INTEGER;
+
+4.6 Ensembles (SET)
+-------------------
+
+Ensemble de bits 0..31 (ou 0..MAX(SET)). Operations :
+
+  + union
+  * intersection
+  - difference
+  / difference symetrique
+  IN test d'appartenance
+
+
+============================================================
+5. DECLARATIONS
+============================================================
+
+Ordre obligatoire dans un module ou une procedure :
+
+  CONST ... ;
+  TYPE  ... ;
+  VAR   ... ;
+  PROCEDURE ... ;
+
+5.1 Constantes : CONST
+----------------------
+
+  CONST
+    PI = 3.14159;
+    MAX = 100;
+    LF = 0AX;            (* caractere *)
+
+5.2 Types : TYPE
+----------------
+
+  TYPE
+    Date = RECORD
+      annee: INTEGER;
+      mois, jour: SHORTINT
+    END;
+
+    Liste = POINTER TO Noeud;
+    Noeud = RECORD
+      val: INTEGER;
+      suiv: Liste
+    END;
+
+Note : on peut faire reference a un type encore non declare
+si c'est via POINTER TO. Resolution differee a la fin du
+bloc TYPE.
+
+5.3 Variables : VAR
+-------------------
+
+  VAR
+    x, y: INTEGER;
+    nom: ARRAY 32 OF CHAR;
+    compteur*: INTEGER;   (* exporte *)
+
+
+============================================================
+6. OPERATEURS
+============================================================
+
+6.1 Operateurs arithmetiques
+----------------------------
+
+  +    addition (unaire/binaire)
+  -    soustraction (unaire/binaire)
+  *    multiplication
+  /    division reelle
+  DIV  division entiere
+  MOD  modulo
+
+6.2 Operateurs relationnels
+---------------------------
+
+  =    egal
+  #    different
+  <    inferieur
+  >    superieur
+  <=   inferieur ou egal
+  >=   superieur ou egal
+  IN   appartenance a un ensemble
+  IS   test de type dynamique
+
+6.3 Operateurs logiques
+-----------------------
+
+  &    ET logique (court-circuit)
+  OR   OU logique (court-circuit)
+  ~    NON logique
+
+6.4 Operateurs sur ensembles
+----------------------------
+
+  +    union
+  -    difference
+  *    intersection
+  /    difference symetrique
+  IN   appartenance
+
+6.5 Affectation
+---------------
+
+  :=    affectation
+
+6.6 Precedence (decroissante)
+-----------------------------
+
+  1. ~ (unaire)
+  2. * / DIV MOD &
+  3. + - OR
+  4. = # < <= > >= IN IS
+  5. & (le mot OR a meme niveau que +/-)
+
+
+============================================================
+7. STRUCTURES DE CONTROLE
+============================================================
+
+7.1 Selection
+-------------
+
+  IF condition THEN
+    instructions
+  ELSIF condition2 THEN
+    instructions
+  ELSE
+    instructions
+  END
+
+  CASE expression OF
+    val1: instructions
+  | val2, val3: instructions
+  | a..b: instructions
+  ELSE
+    instructions
+  END
+
+Le CASE de type (Oberon classique) :
+
+  WITH v: T DO
+    (* v traite comme de type T dans ce bloc *)
+  END
+
+7.2 Iteration
+-------------
+
+  WHILE condition DO instructions END
+
+  REPEAT instructions UNTIL condition
+
+  FOR i := init TO fin DO instructions END
+  FOR i := init TO fin BY pas DO instructions END
+  (* introduit en Oberon-2 *)
+
+  LOOP instructions END
+  (* boucle infinie, sortie par EXIT - Oberon original *)
+
+7.3 Saut
+--------
+
+  RETURN [expression]
+  EXIT                  (* sort de la boucle LOOP, Oberon orig. *)
+
+Pas de BREAK ni de GOTO en Oberon-07.
+
+
+============================================================
+8. PROCEDURES
+============================================================
+
+8.1 Declaration
+---------------
+
+  PROCEDURE nom(param1: type1; VAR param2: type2): typeRetour;
+    (* declarations locales *)
+  BEGIN
+    (* corps *)
+    RETURN expression
+  END nom;
+
+Le nom apres END doit etre identique. Sans valeur de retour,
+omettre `: typeRetour` et `RETURN`.
+
+8.2 Passage de parametres
+-------------------------
+
+  - Par valeur     : param: type        (defaut, copie)
+  - Par reference  : VAR param: type    (modifiable)
+
+Les ARRAY OF T sont toujours passes par reference implicite
+(open array) :
+
+  PROCEDURE Somme(v: ARRAY OF INTEGER): INTEGER;
+    VAR i, s: INTEGER;
+  BEGIN s := 0;
+    FOR i := 0 TO LEN(v) - 1 DO INC(s, v[i]) END;
+    RETURN s
+  END Somme;
+
+8.3 Recursivite
+---------------
+
+Toute procedure est intrinsequement recursive. Les
+predeclarations ne sont pas necessaires : Oberon utilise une
+analyse a deux passes.
+
+8.4 Procedures liees au type (Oberon-2/-07)
+-------------------------------------------
+
+Methodes associees a un type RECORD :
+
+  TYPE Forme* = RECORD END;
+
+  PROCEDURE (VAR f: Forme) Aire*(): REAL;
+  BEGIN RETURN 0
+  END Aire;
+
+  TYPE Cercle* = RECORD (Forme) r: REAL END;
+
+  PROCEDURE (VAR c: Cercle) Aire*(): REAL;
+  BEGIN RETURN 3.14159 * c.r * c.r
+  END Aire;
+
+Liaison dynamique a l'appel via le type effectif du receveur.
+
+
+============================================================
+9. TABLEAUX
+============================================================
+
+9.1 Declaration
+---------------
+
+  VAR
+    t: ARRAY 100 OF INTEGER;
+    m: ARRAY 10, 20 OF REAL;
+    s: ARRAY 32 OF CHAR;           (* chaine "limitee" *)
+
+9.2 Acces aux elements
+----------------------
+
+  t[0]
+  m[i, j]                      (* notation Oberon *)
+  m[i][j]                      (* equivalent *)
+
+9.3 Tableaux ouverts
+--------------------
+
+Parametre de procedure de taille indeterminee :
+
+  PROCEDURE Inverser(VAR v: ARRAY OF INTEGER);
+    VAR i, j, t: INTEGER;
+  BEGIN
+    i := 0; j := LEN(v) - 1;
+    WHILE i < j DO
+      t := v[i]; v[i] := v[j]; v[j] := t;
+      INC(i); DEC(j)
+    END
+  END Inverser;
+
+`LEN(v)` retourne le nombre d'elements.
+
+9.4 Tableaux dynamiques (Oberon-07)
+-----------------------------------
+
+  TYPE PVec = POINTER TO ARRAY OF INTEGER;
+  VAR v: PVec;
+  BEGIN
+    NEW(v, 100);          (* tableau de 100 INTEGER *)
+    v[42] := 7
+    (* libere automatiquement *)
+  END
+
+
+============================================================
+10. ENREGISTREMENTS
+============================================================
+
+10.1 Declaration
+----------------
+
+  TYPE Personne* = RECORD
+    nom*: ARRAY 32 OF CHAR;
+    age*: INTEGER;
+    interne: BOOLEAN              (* non exporte *)
+  END;
+
+10.2 Acces aux champs
+---------------------
+
+  VAR p: Personne;
+  p.nom := "Jean";
+  p.age := 42;
+
+10.3 Extension de type (heritage)
+---------------------------------
+
+  TYPE Etudiant* = RECORD (Personne)
+    matricule*: INTEGER;
+    moyenne*: REAL
+  END;
+
+Etudiant herite de tous les champs de Personne.
+
+10.4 Test de type dynamique : IS
+--------------------------------
+
+  IF p IS Etudiant THEN
+    e := p(Etudiant);              (* type guard *)
+    e.matricule := 12345
+  END
+
+10.5 Garde de type : v(T)
+-------------------------
+
+L'expression `v(T)` est un "type guard" : elle teste que la
+valeur dynamique de v est compatible avec T et retourne v vu
+comme de type T. Une erreur d'execution survient si non
+compatible.
+
+
+============================================================
+11. POINTEURS ET ALLOCATION DYNAMIQUE
+============================================================
+
+11.1 Declaration
+----------------
+
+  TYPE
+    Noeud = RECORD
+      val: INTEGER;
+      suiv: Liste
+    END;
+    Liste = POINTER TO Noeud;
+
+  VAR p: Liste;
+
+11.2 Allocation
+---------------
+
+  NEW(p);             (* alloue un nouvel objet *)
+  p.val := 42;
+  p.suiv := NIL;
+
+Pour les tableaux dynamiques (Oberon-07) :
+
+  NEW(p, taille);
+
+11.3 Liberation
+---------------
+
+Pas de DISPOSE ni de FREE : le ramasse-miettes recupere les
+objets devenus inaccessibles. NIL est utilise pour rompre
+les references.
+
+11.4 Test de nullite
+--------------------
+
+  IF p # NIL THEN ... END
+  IF p = NIL THEN ... END
+
+
+============================================================
+12. MODULES
+============================================================
+
+12.1 Declaration
+----------------
+
+  MODULE MonModule;
+    IMPORT IO := Out, Math;
+
+    CONST PI* = 3.14159;
+    TYPE  Point* = RECORD x*, y*: REAL END;
+    VAR   compteur: INTEGER;
+
+    PROCEDURE Distance*(VAR a, b: Point): REAL;
+    BEGIN
+      RETURN Math.sqrt((a.x - b.x) * (a.x - b.x)
+                     + (a.y - b.y) * (a.y - b.y))
+    END Distance;
+
+  BEGIN
+    compteur := 0
+  END MonModule.
+
+12.2 Exportation
+----------------
+
+L'asterisque `*` apres un nom le marque comme exporte :
+
+  CONST PI* = 3.14159;
+  VAR x*: INTEGER;
+  PROCEDURE F*(...);
+
+Variante Oberon-2 : `-` (export en lecture seule) :
+
+  VAR compteur-: INTEGER;       (* lu hors module, ecrit dedans *)
+
+12.3 Importation
+----------------
+
+  IMPORT Module1, Alias := Module2;
+
+L'acces aux noms exportes se fait via `Module.Nom` ou
+`Alias.Nom`.
+
+12.4 Initialisation
+-------------------
+
+Le corps du module (entre BEGIN et END) s'execute une seule
+fois, lors du premier chargement. Pratique pour initialiser
+les variables globales.
+
+
+============================================================
+13. PROCEDURES STANDARD
+============================================================
+
+13.1 Procedures sur entiers
+---------------------------
+
+  INC(x)         x := x + 1
+  INC(x, n)      x := x + n
+  DEC(x)         x := x - 1
+  DEC(x, n)      x := x - n
+  ABS(x)         valeur absolue
+  ODD(x)         TRUE si x impair
+  ASH(x, n)      decalage arithmetique
+  ENTIER(x)      partie entiere de REAL
+
+13.2 Procedures sur ensembles
+-----------------------------
+
+  INCL(s, x)     ajoute x a s
+  EXCL(s, x)     retire x de s
+
+13.3 Procedures sur tableaux
+----------------------------
+
+  LEN(t)         nombre d'elements
+
+13.4 Procedures de conversion
+-----------------------------
+
+  ORD(c)         valeur ordinale d'un CHAR/BOOLEAN
+  CHR(n)         caractere de code n
+  SHORT(x)       conversion vers type plus court
+  LONG(x)        conversion vers type plus long
+
+13.5 Procedures d'allocation
+----------------------------
+
+  NEW(p)         alloue *p
+  NEW(p, n)      alloue tableau de n elements
+
+13.6 Procedures d'I/O (module Out)
+----------------------------------
+
+  Out.Char(c)        ecrit un caractere
+  Out.String(s)      ecrit une chaine
+  Out.Int(n, w)      ecrit entier sur w colonnes
+  Out.Real(x, w)     ecrit reel sur w colonnes
+  Out.Ln             saut de ligne
+
+  In.Open            initialise l'entree
+  In.Char(c)         lit un caractere
+  In.Int(n)          lit un entier
+  In.String(s)       lit une chaine
+
+
+============================================================
+14. EXCEPTIONS ET GESTION D'ERREURS
+============================================================
+
+Oberon classique et Oberon-07 N'ONT PAS de mecanisme
+d'exceptions. La verification est explicite :
+
+  - Verifier les valeurs de retour
+  - Tester les pointeurs avant dereferencement
+  - Verifier les bornes avant indexation (le compilateur
+    inserre normalement des verifications automatiques)
+
+Erreurs d'execution detectees automatiquement :
+  - Acces hors bornes (HALT 1)
+  - Dereferencement NIL (HALT 2)
+  - Type guard echoue (HALT 3)
+  - Division par zero (HALT 4)
+  - Debordement (HALT 5)
+
+La procedure standard `HALT(code)` termine le programme avec
+un code d'erreur :
+
+  IF v[i] < 0 THEN HALT(100) END
+
+
+============================================================
+15. SYSTEM (PROCEDURES BAS NIVEAU)
+============================================================
+
+Le module SYSTEM expose des operations de bas niveau,
+utilisees uniquement pour la programmation systeme :
+
+  SYSTEM.GET(adr, v)         lit un mot a l'adresse adr
+  SYSTEM.PUT(adr, v)         ecrit un mot a l'adresse adr
+  SYSTEM.MOVE(src, dst, n)   copie n octets
+  SYSTEM.ADR(v)              adresse de v
+  SYSTEM.VAL(T, x)           reinterpretation de x en type T
+  SYSTEM.SIZE(T)             taille de T en octets
+
+L'utilisation de SYSTEM contourne la verification de type ;
+elle doit etre limitee aux modules de bas niveau (pilotes,
+allocateur).
+
+
+============================================================
+16. EVOLUTIONS DU LANGAGE
+============================================================
+
+16.1 Oberon (1988)
+------------------
+
+Version originale : modules, RECORD, extension de type,
+methodes via type-procedure dans le RECORD, LOOP/EXIT.
+
+16.2 Oberon-2 (1991)
+--------------------
+
+  - Procedures liees au type (notation receveur)
+  - Boucle FOR
+  - Champs export en lecture seule (-)
+  - Tableaux ouverts en variables (pas seulement parametres)
+
+16.3 Oberon-07 (2007, rev. 2016)
+--------------------------------
+
+Simplification radicale (33 mots reserves) :
+
+  - Retrait de LOOP/EXIT
+  - Retrait de WITH (remplace par garde de type)
+  - Retrait de RETURN au milieu d'une procedure
+    (RETURN seulement en derniere instruction)
+  - Tableaux dynamiques via NEW(p, n)
+  - Procedures liees au type retenues
+  - Retrait de FOR (puis reintroduit dans rev. 2016)
+
+16.4 Active Oberon (2002)
+-------------------------
+
+Ajout de la concurrence :
+
+  - Active objects (objets actifs avec thread propre)
+  - Mecanismes de synchronisation (AWAIT)
+  - Utilise dans le systeme A2 / Bluebottle
+
+
+============================================================
+17. COMPILATEURS DU PROJET
+============================================================
+
+17.1 OBERON86.PAS - Compilateur Oberon vers 8086
+------------------------------------------------
+
+  Cible             : MS-DOS, assembleur MASM .MODEL SMALL
+  Modele memoire    : SMALL (code 64KO, donnees 64KO)
+  Dialecte          : Oberon-07 (sous-ensemble)
+  Sortie            : fichier .ASM, assemblable avec MASM
+
+  Fonctionnalites :
+    - Modules, IMPORT, export par *
+    - Types BOOLEAN, CHAR, INTEGER, REAL, SET
+    - ARRAY (fixe et ouvert), RECORD, POINTER
+    - Procedures, procedures liees au type
+    - Structures IF, CASE, WHILE, REPEAT, FOR
+    - Garbage collector simple
+
+  Limitations :
+    - LONGINT 16 bits seulement (cible 8086)
+    - Tableaux dynamiques limites
+    - Module SYSTEM partiel
+
+17.2 OBERCW32.PAS - Compilateur Oberon vers Win32
+-------------------------------------------------
+
+  Cible             : Windows 32 bits (PE)
+  Sortie            : fichier .EXE PE32
+  Dialecte          : Oberon-07 complet
+
+  Fonctionnalites :
+    - Types complets (INTEGER 32-bit, LONGINT 64-bit)
+    - Tableaux dynamiques NEW(p, n)
+    - Garbage collector base sur marquage
+    - Bibliotheque Out, In, Math
+
+
+============================================================
+18. CONVERTISSEURS DU PROJET
+============================================================
+
+18.1 C2OBERON.PAS - C vers Oberon
+---------------------------------
+
+Convertit un sous-ensemble de C en Oberon :
+
+  - struct -> RECORD
+  - typedef -> TYPE
+  - if/else -> IF/ELSE
+  - while/for -> WHILE/FOR
+  - * pointer -> POINTER TO
+
+18.2 ADA2OBER.PAS - Ada vers Oberon
+-----------------------------------
+
+  - package -> MODULE
+  - procedure/function -> PROCEDURE
+  - record -> RECORD
+  - if/elsif/else -> IF/ELSIF/ELSE
+  - loop / while -> LOOP/WHILE
+
+18.3 PAS2OBER.PAS - Pascal vers Oberon
+--------------------------------------
+
+  - program/unit -> MODULE
+  - procedure/function -> PROCEDURE
+  - record -> RECORD
+  - var/const -> VAR/CONST
+  - begin/end -> BEGIN/END
+  - := identique
+
+18.4 OBER2PAS.PAS - Oberon vers Pascal
+--------------------------------------
+
+Conversion inverse vers Turbo Pascal.
+
+18.5 OBER2CS.PAS - Oberon vers C#
+---------------------------------
+
+  - MODULE -> namespace + class statique
+  - RECORD -> struct/class
+  - extension de type -> heritage de classe
+  - procedure liee au type -> methode
+
+18.6 OBER2ADA.PAS - Oberon vers Ada
+-----------------------------------
+
+Conversion inverse vers Ada 95/2012.
+
+18.7 OBERON2C.PAS - Oberon vers C
+---------------------------------
+
+Conversion vers C ANSI :
+
+  - MODULE -> .c + .h
+  - RECORD -> struct
+  - procedure liee au type -> vtable
+  - garbage collector via Boehm GC ou simulation
+
+
+============================================================
+19. EXEMPLES
+============================================================
+
+19.1 Hello, World!
+------------------
+
+  MODULE Hello;
+    IMPORT Out;
+  BEGIN
+    Out.String("Hello, World!"); Out.Ln
+  END Hello.
+
+19.2 Factorielle recursive
+--------------------------
+
+  MODULE Fact;
+    IMPORT Out;
+
+    PROCEDURE Factorielle(n: INTEGER): INTEGER;
+    BEGIN
+      IF n <= 1 THEN RETURN 1
+      ELSE RETURN n * Factorielle(n - 1)
+      END
+    END Factorielle;
+
+    PROCEDURE Test*;
+      VAR i: INTEGER;
+    BEGIN
+      FOR i := 0 TO 10 DO
+        Out.Int(i, 3); Out.String(" -> ");
+        Out.Int(Factorielle(i), 8); Out.Ln
+      END
+    END Test;
+
+  END Fact.
+
+19.3 Liste chainee
+------------------
+
+  MODULE Liste;
+    IMPORT Out;
+
+    TYPE
+      PNoeud* = POINTER TO Noeud;
+      Noeud* = RECORD val*: INTEGER; suiv*: PNoeud END;
+
+    PROCEDURE Ajouter*(VAR tete: PNoeud; v: INTEGER);
+      VAR n: PNoeud;
+    BEGIN
+      NEW(n);
+      n.val := v;
+      n.suiv := tete;
+      tete := n
+    END Ajouter;
+
+    PROCEDURE Afficher*(tete: PNoeud);
+    BEGIN
+      WHILE tete # NIL DO
+        Out.Int(tete.val, 4);
+        tete := tete.suiv
+      END;
+      Out.Ln
+    END Afficher;
+
+  END Liste.
+
+19.4 Extension de type et polymorphisme
+---------------------------------------
+
+  MODULE Formes;
+    IMPORT Out, Math;
+
+    TYPE
+      Forme* = RECORD END;
+      PCercle* = POINTER TO Cercle;
+      Cercle* = RECORD (Forme) r*: REAL END;
+      PRectangle* = POINTER TO Rectangle;
+      Rectangle* = RECORD (Forme) l*, h*: REAL END;
+
+    PROCEDURE (VAR f: Forme) Aire*(): REAL;
+    BEGIN RETURN 0
+    END Aire;
+
+    PROCEDURE (VAR c: Cercle) Aire*(): REAL;
+    BEGIN RETURN 3.14159 * c.r * c.r
+    END Aire;
+
+    PROCEDURE (VAR r: Rectangle) Aire*(): REAL;
+    BEGIN RETURN r.l * r.h
+    END Aire;
+
+  END Formes.
+
+19.5 Tri par insertion
+----------------------
+
+  PROCEDURE Trier(VAR a: ARRAY OF INTEGER);
+    VAR i, j, t: INTEGER;
+  BEGIN
+    FOR i := 1 TO LEN(a) - 1 DO
+      t := a[i]; j := i;
+      WHILE (j > 0) & (a[j-1] > t) DO
+        a[j] := a[j-1]; DEC(j)
+      END;
+      a[j] := t
+    END
+  END Trier;
+
+
+============================================================
+20. SYSTEME OBERON
+============================================================
+
+Le langage Oberon a ete developpe conjointement avec un
+systeme d'exploitation portant le meme nom :
+
+  - Oberon System (ETH Zurich, 1988)
+  - Oberon V4 (1992)
+  - Native Oberon (1995, sans systeme hote)
+  - Oberon for Linux / Windows (ports)
+  - Bluebottle / A2 (Active Oberon, 2002)
+  - Project Oberon 2013 (reedition complete par Wirth)
+
+Le systeme Oberon repose sur :
+
+  - Une interface a base de texte (commandes Module.Procedure)
+  - Le tracking via une zone de viseur ("viewer")
+  - Le ramasse-miettes integre
+  - L'edition de liens dynamique au chargement de module
+  - Aucun systeme de fichiers hierarchique (initialement)
+
+
+============================================================
+21. INFLUENCE
+============================================================
+
+Oberon a influence plusieurs langages :
+
+  - Component Pascal (Oberon Microsystems, 1997)
+  - Zonnon (ETH, 2003)
+  - Active Oberon (ETH, 2002)
+  - Go (Google, 2009) : Robert Griesemer, ancien doctorant
+    de Wirth, a apporte les concepts de modules, garbage
+    collection et methodes liees au type
+  - Nim, certains aspects de Rust pour la simplicite
+
+Differences principales entre Oberon et Modula-2 :
+
+  Aspect              Modula-2          Oberon
+  ------              --------          ------
+  Modules             DEFINITION/IMPL.  Module unique
+                      separes           avec export *
+  Heritage            non               RECORD (T)
+  Methodes            non               procedures liees
+  Garbage collector   non               oui
+  Pointeurs           sur tout type     RECORD / ARRAY
+  EXPORT             explicite          marqueur *
+  Verbosite          plus              moins
+
+
+============================================================
+22. REFERENCES
+============================================================
+
+  - Wirth, N.              "The Programming Language Oberon",
+                           Software - Practice and Experience,
+                           18(7), pp. 671-690, July 1988.
+  - Wirth, N.              "The Programming Language Oberon
+                           (Revised Oberon)", ETH Zurich,
+                           Oct. 2016.
+  - Wirth, N.; Reiser, M.  "Programming in Oberon - Steps
+                           Beyond Pascal and Modula",
+                           Addison-Wesley, 1992.
+  - Reiser, M.             "The Oberon System - User Guide
+                           and Programmer's Manual",
+                           Addison-Wesley, 1991.
+  - Wirth, N.; Gutknecht J."Project Oberon - The Design of
+                           an Operating System, a Compiler
+                           and a Computer", 2nd ed., 2013.
+                           (disponible librement en PDF)
+  - Mossenbock, H.         "Object-Oriented Programming in
+                           Oberon-2", Springer, 1995.
+  - Site officiel ETH      https://oberon.ethz.ch
+  - Project Oberon         https://projectoberon.com
+  - Oberon Microsystems    https://www.oberon.ch
