@@ -1,0 +1,851 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}
+
+{\footnote # IDH_TPSTRS_01}
+{\footnote $ Unite Strings (PChar) - CHA??NES PASCAL vs CHA??NES PChar}
+{\footnote K Turbo Pascal;Unite Strings (PChar);CHA??NES PASCAL vs CHA??NES PChar}
+\b\fs24 CHA??NES PASCAL vs CHA??NES PChar \b0\fs20\par
+\par
+{\f1   --- Cha??ne Pascal (String) ---}\par
+{\f1   - Premier octet = longueur (0..255)}\par
+{\f1   - Pas de terminateur}\par
+{\f1   - Longueur maximale : 255 caract??res}\par
+{\f1   - Type : String, String[N]}\par
+\par
+{\f1   --- Cha??ne PChar (ASCIIZ) ---}\par
+{\f1   - Pas d'octet de longueur}\par
+{\f1   - Termin??e par un caract??re nul (#0)}\par
+{\f1   - Longueur maximale : th??oriquement illimit??e (65 535 en mode r??el)}\par
+{\f1   - Type : PChar = ^Char}\par
+\par
+{\f1   L'unit?? Strings permet de travailler avec les cha??nes PChar et}\par
+{\f1   de convertir entre les deux formats (StrPCopy, StrPas).}\par
+\par
+\par
+\b Sections suivantes : \b0\par
+\par
+{\f1  2. LONGUEUR ET FIN DE CHA??NE}     {\uldb [Aller]}{\v IDH_TPSTRS_02}\par
+{\f1  3. COPIE ET D??PLACEMENT}     {\uldb [Aller]}{\v IDH_TPSTRS_03}\par
+{\f1  4. CONCAT??NATION}     {\uldb [Aller]}{\v IDH_TPSTRS_04}\par
+{\f1  5. COMPARAISON}     {\uldb [Aller]}{\v IDH_TPSTRS_05}\par
+{\f1  6. RECHERCHE}     {\uldb [Aller]}{\v IDH_TPSTRS_06}\par
+{\f1  7. CONVERSION DE CASSE}     {\uldb [Aller]}{\v IDH_TPSTRS_07}\par
+{\f1  8. CONVERSION String ??? PChar}     {\uldb [Aller]}{\v IDH_TPSTRS_08}\par
+{\f1  9. ALLOCATION DYNAMIQUE}     {\uldb [Aller]}{\v IDH_TPSTRS_09}\par
+{\f1 10. CORRESPONDANCE AVEC LA BIBLIOTH??QUE C}     {\uldb [Aller]}{\v IDH_TPSTRS_10}\par
+{\f1 11. EXEMPLES COMPLETS}     {\uldb [Aller]}{\v IDH_TPSTRS_11}\par
+{\f1 12. NOTES D'IMPL??MENTATION}     {\uldb [Aller]}{\v IDH_TPSTRS_12}\par
+{\f1 13. R??CAPITULATIF DE L'INTERFACE}     {\uldb [Aller]}{\v IDH_TPSTRS_13}\par
+{\f1 14. R??SUM?? PAR CAT??GORIE}     {\uldb [Aller]}{\v IDH_TPSTRS_14}\par
+\par
+{\uldb Suivant >>}{\v IDH_TPSTRS_02}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPSTRS_02}
+{\footnote $ Unite Strings (PChar) - LONGUEUR ET FIN DE CHA??NE}
+{\footnote K Turbo Pascal;Unite Strings (PChar);LONGUEUR ET FIN DE CHA??NE}
+\b\fs24 LONGUEUR ET FIN DE CHA??NE \b0\fs20\par
+\par
+{\f1   function StrLen(Str : PChar) : Word;}\par
+{\f1   Retourne le nombre de caract??res dans Str, sans compter le}\par
+{\f1   terminateur nul.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Str  Cha??ne source (ASCIIZ)}\par
+{\f1   Retour :}\par
+{\f1     Nombre de caract??res (0 si cha??ne vide)}\par
+\par
+{\f1   ??quivalent C : strlen()}\par
+\par
+{\f1   Exemple :}\par
+{\f1     var P : PChar;}\par
+{\f1     begin}\par
+{\f1       P := 'Hello';}\par
+{\f1       WriteLn(StrLen(P));  \{ ??? 5 \}}\par
+{\f1     end;}\par
+\par
+{\f1   Impl??mentation : utilise l'instruction x86 REPNE SCASB pour}\par
+{\f1   rechercher le #0, tr??s rapide (traitement par octet mat??riel).}\par
+\par
+{\f1   function StrEnd(Str : PChar) : PChar;}\par
+{\f1   Retourne un pointeur vers le caract??re nul (#0) qui termine Str.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Str  Cha??ne source (ASCIIZ)}\par
+{\f1   Retour :}\par
+{\f1     Pointeur vers le terminateur nul de Str}\par
+\par
+{\f1   StrEnd(Str) est ??quivalent ?? Str + StrLen(Str), mais plus}\par
+{\f1   efficace car il ne traverse la cha??ne qu'une seule fois.}\par
+\par
+{\f1   Utile pour concat??ner efficacement des cha??nes :}\par
+{\f1     StrCopy(StrEnd(Dest), Source);}\par
+{\f1     \{ ??quivalent ?? StrCat(Dest, Source) mais permet d'encha??ner \}}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPSTRS_01}     {\uldb Suivant >>}{\v IDH_TPSTRS_03}     {\uldb Sommaire}{\v IDH_TPSTRS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPSTRS_03}
+{\footnote $ Unite Strings (PChar) - COPIE ET D??PLACEMENT}
+{\footnote K Turbo Pascal;Unite Strings (PChar);COPIE ET D??PLACEMENT}
+\b\fs24 COPIE ET D??PLACEMENT \b0\fs20\par
+\par
+{\f1   function StrMove(Dest, Source : PChar; Count : Word) : PChar;}\par
+{\f1   Copie exactement Count caract??res de Source vers Dest.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Dest    Tampon destination}\par
+{\f1     Source  Tampon source}\par
+{\f1     Count   Nombre exact d'octets ?? copier}\par
+{\f1   Retour :}\par
+{\f1     Dest}\par
+\par
+{\f1   Les zones Source et Dest PEUVENT se chevaucher : StrMove g??re}\par
+{\f1   correctement les recouvrements (copie arri??re si n??cessaire).}\par
+\par
+{\f1   ATTENTION : StrMove ne tient pas compte du terminateur nul.}\par
+{\f1   C'est une copie brute d'octets, similaire ?? Move() ou memmove().}\par
+\par
+{\f1   ??quivalent C : memmove()}\par
+\par
+{\f1   function StrCopy(Dest, Source : PChar) : PChar;}\par
+{\f1   Copie Source (y compris le terminateur nul) dans Dest.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Dest    Tampon destination (doit avoir assez d'espace)}\par
+{\f1     Source  Cha??ne source (ASCIIZ)}\par
+{\f1   Retour :}\par
+{\f1     Dest}\par
+\par
+{\f1   ATTENTION : le tampon Dest doit ??tre assez grand pour contenir}\par
+{\f1   Source. Aucune v??rification de d??bordement n'est effectu??e.}\par
+\par
+{\f1   ??quivalent C : strcpy()}\par
+\par
+{\f1   Exemple :}\par
+{\f1     var Buf : array[0..79] of Char;}\par
+{\f1     begin}\par
+{\f1       StrCopy(Buf, 'Hello, World!');}\par
+{\f1       WriteLn(StrPas(Buf));}\par
+{\f1     end;}\par
+\par
+{\f1   function StrECopy(Dest, Source : PChar) : PChar;}\par
+{\f1   Copie Source dans Dest et retourne un pointeur vers la FIN de}\par
+{\f1   la cha??ne copi??e (le terminateur nul de Dest).}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Dest    Tampon destination}\par
+{\f1     Source  Cha??ne source (ASCIIZ)}\par
+{\f1   Retour :}\par
+{\f1     StrEnd(Dest) ??? pointeur vers le #0 de Dest apr??s la copie}\par
+\par
+{\f1   Cela permet d'encha??ner efficacement plusieurs copies :}\par
+{\f1     P := StrECopy(Buf, 'Hello');}\par
+{\f1     P := StrECopy(P, ', ');}\par
+{\f1     StrCopy(P, 'World!');}\par
+{\f1     \{ Buf = 'Hello, World!' \}}\par
+\par
+{\f1   Plus efficace que des appels multiples ?? StrCat car chaque}\par
+{\f1   appel ne retraverse pas toute la cha??ne Dest.}\par
+\par
+{\f1   function StrLCopy(Dest, Source : PChar; MaxLen : Word) : PChar;}\par
+{\f1   Copie au maximum MaxLen caract??res de Source vers Dest, puis}\par
+{\f1   ajoute un terminateur nul.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Dest    Tampon destination (taille >= MaxLen + 1)}\par
+{\f1     Source  Cha??ne source (ASCIIZ)}\par
+{\f1     MaxLen  Nombre maximal de caract??res ?? copier}\par
+{\f1   Retour :}\par
+{\f1     Dest}\par
+\par
+{\f1   Si Source contient moins de MaxLen caract??res, seuls ceux-ci}\par
+{\f1   sont copi??s (plus le #0). Sinon, exactement MaxLen caract??res}\par
+{\f1   sont copi??s suivis d'un #0.}\par
+\par
+{\f1   ??quivalent C : strncpy() (mais avec terminaison garantie)}\par
+\par
+{\f1   Exemple :}\par
+{\f1     var Buf : array[0..10] of Char;}\par
+{\f1     begin}\par
+{\f1       StrLCopy(Buf, 'Turbo Pascal 7.0', 10);}\par
+{\f1       WriteLn(StrPas(Buf));  \{ ??? 'Turbo Pasc' \}}\par
+{\f1     end;}\par
+\par
+{\f1   function StrPCopy(Dest : PChar; Source : String) : PChar;}\par
+{\f1   Copie une cha??ne Pascal (String) dans un tampon PChar (ASCIIZ).}\par
+{\f1   Ajoute automatiquement le terminateur nul.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Dest    Tampon destination (taille >= Length(Source) + 1)}\par
+{\f1     Source  Cha??ne Pascal source}\par
+{\f1   Retour :}\par
+{\f1     Dest}\par
+\par
+{\f1   C'est la fonction de conversion String ??? PChar.}\par
+\par
+{\f1   Exemple :}\par
+{\f1     var}\par
+{\f1       S   : String;}\par
+{\f1       Buf : array[0..255] of Char;}\par
+{\f1     begin}\par
+{\f1       S := 'Bonjour';}\par
+{\f1       StrPCopy(Buf, S);}\par
+{\f1       \{ Buf contient maintenant 'Bonjour'#0 \}}\par
+{\f1     end;}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPSTRS_02}     {\uldb Suivant >>}{\v IDH_TPSTRS_04}     {\uldb Sommaire}{\v IDH_TPSTRS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPSTRS_04}
+{\footnote $ Unite Strings (PChar) - CONCAT??NATION}
+{\footnote K Turbo Pascal;Unite Strings (PChar);CONCAT??NATION}
+\b\fs24 CONCAT??NATION \b0\fs20\par
+\par
+{\f1   function StrCat(Dest, Source : PChar) : PChar;}\par
+{\f1   Ajoute une copie de Source ?? la fin de Dest.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Dest    Cha??ne destination (ASCIIZ, doit avoir assez d'espace)}\par
+{\f1     Source  Cha??ne source (ASCIIZ)}\par
+{\f1   Retour :}\par
+{\f1     Dest}\par
+\par
+{\f1   ??quivalent de : Dest := Dest + Source en cha??nes Pascal.}\par
+{\f1   ??quivalent C : strcat()}\par
+\par
+{\f1   Fonctionnement interne : appelle StrEnd(Dest) puis}\par
+{\f1   StrCopy(StrEnd(Dest), Source).}\par
+\par
+{\f1   ATTENTION : Dest doit avoir assez d'espace pour contenir la}\par
+{\f1   cha??ne r??sultante (StrLen(Dest) + StrLen(Source) + 1 octets).}\par
+\par
+{\f1   Exemple :}\par
+{\f1     var Buf : array[0..79] of Char;}\par
+{\f1     begin}\par
+{\f1       StrCopy(Buf, 'Hello');}\par
+{\f1       StrCat(Buf, ', ');}\par
+{\f1       StrCat(Buf, 'World!');}\par
+{\f1       WriteLn(StrPas(Buf));  \{ ??? 'Hello, World!' \}}\par
+{\f1     end;}\par
+\par
+{\f1   function StrLCat(Dest, Source : PChar; MaxLen : Word) : PChar;}\par
+{\f1   Ajoute au maximum MaxLen - StrLen(Dest) caract??res de Source}\par
+{\f1   ?? la fin de Dest.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Dest    Cha??ne destination (ASCIIZ)}\par
+{\f1     Source  Cha??ne source (ASCIIZ)}\par
+{\f1     MaxLen  Longueur maximale TOTALE de la cha??ne r??sultante}\par
+{\f1   Retour :}\par
+{\f1     Dest}\par
+\par
+{\f1   La cha??ne r??sultante ne d??passera pas MaxLen caract??res (plus}\par
+{\f1   le terminateur nul). Emp??che les d??bordements de tampon.}\par
+\par
+{\f1   ??quivalent C : strncat() (mais avec s??mantique de longueur}\par
+{\f1   totale au lieu de caract??res ajout??s)}\par
+\par
+{\f1   Exemple :}\par
+{\f1     var Buf : array[0..19] of Char;}\par
+{\f1     begin}\par
+{\f1       StrCopy(Buf, 'Hello');}\par
+{\f1       StrLCat(Buf, ', World! This is a long string', 19);}\par
+{\f1       WriteLn(StrPas(Buf));  \{ ??? 'Hello, World! This' (19 car.) \}}\par
+{\f1     end;}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPSTRS_03}     {\uldb Suivant >>}{\v IDH_TPSTRS_05}     {\uldb Sommaire}{\v IDH_TPSTRS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPSTRS_05}
+{\footnote $ Unite Strings (PChar) - COMPARAISON}
+{\footnote K Turbo Pascal;Unite Strings (PChar);COMPARAISON}
+\b\fs24 COMPARAISON \b0\fs20\par
+\par
+{\f1   function StrComp(Str1, Str2 : PChar) : Integer;}\par
+{\f1   Compare Str1 et Str2 (sensible ?? la casse).}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Str1, Str2  Cha??nes ?? comparer (ASCIIZ)}\par
+{\f1   Retour :}\par
+{\f1     < 0  si Str1 < Str2  (ordre lexicographique ASCII)}\par
+{\f1       0  si Str1 = Str2}\par
+{\f1     > 0  si Str1 > Str2}\par
+\par
+{\f1   La comparaison est bas??e sur les valeurs ASCII des caract??res.}\par
+{\f1   Les majuscules (65..90) sont INF??RIEURES aux minuscules (97..122).}\par
+\par
+{\f1   ??quivalent C : strcmp()}\par
+\par
+{\f1   Exemple :}\par
+{\f1     if StrComp(P1, P2) = 0 then}\par
+{\f1       WriteLn('Cha??nes identiques');}\par
+\par
+{\f1   function StrIComp(Str1, Str2 : PChar) : Integer;}\par
+{\f1   Compare Str1 et Str2 sans tenir compte de la casse.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Str1, Str2  Cha??nes ?? comparer (ASCIIZ)}\par
+{\f1   Retour :}\par
+{\f1     M??me convention que StrComp}\par
+\par
+{\f1   Les lettres 'a'..'z' sont converties en 'A'..'Z' avant}\par
+{\f1   comparaison. Seuls les caract??res ASCII standard sont}\par
+{\f1   convertis (pas les caract??res accentu??s).}\par
+\par
+{\f1   ??quivalent C : stricmp() / strcasecmp()}\par
+\par
+{\f1   Exemple :}\par
+{\f1     if StrIComp('Hello', 'HELLO') = 0 then}\par
+{\f1       WriteLn('Identiques');  \{ ??? Identiques \}}\par
+\par
+{\f1   function StrLComp(Str1, Str2 : PChar; MaxLen : Word) : Integer;}\par
+{\f1   Compare au maximum MaxLen caract??res de Str1 et Str2}\par
+{\f1   (sensible ?? la casse).}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Str1, Str2  Cha??nes ?? comparer}\par
+{\f1     MaxLen      Nombre maximal de caract??res ?? comparer}\par
+{\f1   Retour :}\par
+{\f1     M??me convention que StrComp}\par
+\par
+{\f1   Utile pour comparer des pr??fixes de cha??nes.}\par
+\par
+{\f1   ??quivalent C : strncmp()}\par
+\par
+{\f1   Exemple :}\par
+{\f1     if StrLComp('Turbo Pascal', 'Turbo C', 5) = 0 then}\par
+{\f1       WriteLn('M??me pr??fixe');  \{ ??? M??me pr??fixe (les 5 premiers) \}}\par
+\par
+{\f1   function StrLIComp(Str1, Str2 : PChar; MaxLen : Word) : Integer;}\par
+{\f1   Compare au maximum MaxLen caract??res de Str1 et Str2, sans}\par
+{\f1   tenir compte de la casse.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Str1, Str2  Cha??nes ?? comparer}\par
+{\f1     MaxLen      Nombre maximal de caract??res ?? comparer}\par
+{\f1   Retour :}\par
+{\f1     M??me convention que StrComp}\par
+\par
+{\f1   Combinaison de StrLComp et StrIComp.}\par
+\par
+{\f1   ??quivalent C : strnicmp() / strncasecmp()}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPSTRS_04}     {\uldb Suivant >>}{\v IDH_TPSTRS_06}     {\uldb Sommaire}{\v IDH_TPSTRS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPSTRS_06}
+{\footnote $ Unite Strings (PChar) - RECHERCHE}
+{\footnote K Turbo Pascal;Unite Strings (PChar);RECHERCHE}
+\b\fs24 RECHERCHE \b0\fs20\par
+\par
+{\f1   function StrScan(Str : PChar; Chr : Char) : PChar;}\par
+{\f1   Recherche la PREMI??RE occurrence d'un caract??re dans une cha??ne.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Str  Cha??ne source (ASCIIZ)}\par
+{\f1     Chr  Caract??re ?? rechercher}\par
+{\f1   Retour :}\par
+{\f1     Pointeur vers la premi??re occurrence de Chr dans Str,}\par
+{\f1     ou nil si Chr n'est pas trouv??.}\par
+\par
+{\f1   NOTE : le terminateur nul (#0) est consid??r?? comme faisant}\par
+{\f1   partie de la cha??ne. StrScan(Str, #0) retourne donc toujours}\par
+{\f1   un pointeur vers le terminateur (??quivalent ?? StrEnd).}\par
+\par
+{\f1   ??quivalent C : strchr()}\par
+\par
+{\f1   Exemple :}\par
+{\f1     var P : PChar;}\par
+{\f1     begin}\par
+{\f1       P := StrScan('Hello, World!', ',');}\par
+{\f1       if P <> nil then}\par
+{\f1         WriteLn(StrPas(P));  \{ ??? ', World!' \}}\par
+{\f1     end;}\par
+\par
+{\f1   function StrRScan(Str : PChar; Chr : Char) : PChar;}\par
+{\f1   Recherche la DERNI??RE occurrence d'un caract??re dans une cha??ne.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Str  Cha??ne source (ASCIIZ)}\par
+{\f1     Chr  Caract??re ?? rechercher}\par
+{\f1   Retour :}\par
+{\f1     Pointeur vers la derni??re occurrence de Chr dans Str,}\par
+{\f1     ou nil si Chr n'est pas trouv??.}\par
+\par
+{\f1   Le terminateur nul est consid??r?? comme faisant partie de la}\par
+{\f1   cha??ne (m??me comportement que StrScan).}\par
+\par
+{\f1   ??quivalent C : strrchr()}\par
+\par
+{\f1   Exemple :}\par
+{\f1     var P : PChar;}\par
+{\f1     begin}\par
+{\f1       P := StrRScan('C:\\TP\\BIN\\TURBO.EXE', '\\');}\par
+{\f1       if P <> nil then}\par
+{\f1         WriteLn(StrPas(P));  \{ ??? '\\TURBO.EXE' \}}\par
+{\f1     end;}\par
+\par
+{\f1   Impl??mentation : parcourt la cha??ne vers l'avant pour trouver}\par
+{\f1   le #0, puis recule avec STD et REPNE SCASB.}\par
+\par
+{\f1   function StrPos(Str1, Str2 : PChar) : PChar;}\par
+{\f1   Recherche la premi??re occurrence d'une sous-cha??ne dans une}\par
+{\f1   cha??ne.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Str1  Cha??ne dans laquelle chercher (ASCIIZ)}\par
+{\f1     Str2  Sous-cha??ne ?? rechercher (ASCIIZ)}\par
+{\f1   Retour :}\par
+{\f1     Pointeur vers la premi??re occurrence de Str2 dans Str1,}\par
+{\f1     ou nil si Str2 n'est pas trouv??.}\par
+\par
+{\f1   Si Str2 est une cha??ne vide, retourne nil.}\par
+\par
+{\f1   ??quivalent C : strstr()}\par
+\par
+{\f1   Exemple :}\par
+{\f1     var P : PChar;}\par
+{\f1     begin}\par
+{\f1       P := StrPos('Turbo Pascal 7.0', 'Pascal');}\par
+{\f1       if P <> nil then}\par
+{\f1         WriteLn(StrPas(P));  \{ ??? 'Pascal 7.0' \}}\par
+{\f1     end;}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPSTRS_05}     {\uldb Suivant >>}{\v IDH_TPSTRS_07}     {\uldb Sommaire}{\v IDH_TPSTRS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPSTRS_07}
+{\footnote $ Unite Strings (PChar) - CONVERSION DE CASSE}
+{\footnote K Turbo Pascal;Unite Strings (PChar);CONVERSION DE CASSE}
+\b\fs24 CONVERSION DE CASSE \b0\fs20\par
+\par
+{\f1   function StrUpper(Str : PChar) : PChar;}\par
+{\f1   Convertit tous les caract??res minuscules ('a'..'z') de Str en}\par
+{\f1   majuscules ('A'..'Z'). Modifie la cha??ne en place.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Str  Cha??ne ?? convertir (ASCIIZ, modifi??e en place)}\par
+{\f1   Retour :}\par
+{\f1     Str (le m??me pointeur)}\par
+\par
+{\f1   Seuls les caract??res ASCII standard sont convertis}\par
+{\f1   (soustraction de $20). Les caract??res accentu??s, chiffres}\par
+{\f1   et symboles ne sont pas modifi??s.}\par
+\par
+{\f1   ??quivalent C : strupr()}\par
+\par
+{\f1   Exemple :}\par
+{\f1     var Buf : array[0..79] of Char;}\par
+{\f1     begin}\par
+{\f1       StrCopy(Buf, 'Hello, World!');}\par
+{\f1       StrUpper(Buf);}\par
+{\f1       WriteLn(StrPas(Buf));  \{ ??? 'HELLO, WORLD!' \}}\par
+{\f1     end;}\par
+\par
+{\f1   function StrLower(Str : PChar) : PChar;}\par
+{\f1   Convertit tous les caract??res majuscules ('A'..'Z') de Str en}\par
+{\f1   minuscules ('a'..'z'). Modifie la cha??ne en place.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Str  Cha??ne ?? convertir (ASCIIZ, modifi??e en place)}\par
+{\f1   Retour :}\par
+{\f1     Str (le m??me pointeur)}\par
+\par
+{\f1   Seuls les caract??res ASCII standard sont convertis}\par
+{\f1   (ajout de $20).}\par
+\par
+{\f1   ??quivalent C : strlwr()}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPSTRS_06}     {\uldb Suivant >>}{\v IDH_TPSTRS_08}     {\uldb Sommaire}{\v IDH_TPSTRS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPSTRS_08}
+{\footnote $ Unite Strings (PChar) - CONVERSION String ??? PChar}
+{\footnote K Turbo Pascal;Unite Strings (PChar);CONVERSION String ??? PChar}
+\b\fs24 CONVERSION String ??? PChar \b0\fs20\par
+\par
+{\f1   function StrPas(Str : PChar) : String;}\par
+{\f1   Convertit une cha??ne PChar (ASCIIZ) en cha??ne Pascal (String).}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Str  Cha??ne source (ASCIIZ)}\par
+{\f1   Retour :}\par
+{\f1     Cha??ne Pascal correspondante}\par
+\par
+{\f1   Si Str contient plus de 255 caract??res, seuls les 255 premiers}\par
+{\f1   sont copi??s (limite du type String).}\par
+\par
+{\f1   C'est la fonction de conversion PChar ??? String.}\par
+\par
+{\f1   Exemple :}\par
+{\f1     var}\par
+{\f1       P : PChar;}\par
+{\f1       S : String;}\par
+{\f1     begin}\par
+{\f1       P := 'Bonjour';}\par
+{\f1       S := StrPas(P);}\par
+{\f1       WriteLn(S);        \{ ??? Bonjour \}}\par
+{\f1       WriteLn(Length(S)); \{ ??? 7 \}}\par
+{\f1     end;}\par
+\par
+{\f1   function StrPCopy(Dest : PChar; Source : String) : PChar;}\par
+{\f1   (Document??e en section 3 ??? Copie et d??placement)}\par
+\par
+{\f1   C'est la fonction de conversion String ??? PChar.}\par
+\par
+{\f1   R??sum?? : copie une cha??ne Pascal dans un tampon PChar en}\par
+{\f1   ajoutant le terminateur nul.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPSTRS_07}     {\uldb Suivant >>}{\v IDH_TPSTRS_09}     {\uldb Sommaire}{\v IDH_TPSTRS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPSTRS_09}
+{\footnote $ Unite Strings (PChar) - ALLOCATION DYNAMIQUE}
+{\footnote K Turbo Pascal;Unite Strings (PChar);ALLOCATION DYNAMIQUE}
+\b\fs24 ALLOCATION DYNAMIQUE \b0\fs20\par
+\par
+{\f1   function StrNew(Str : PChar) : PChar;}\par
+{\f1   Alloue une copie de Str sur le tas (heap) et retourne un}\par
+{\f1   pointeur vers la copie.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Str  Cha??ne source (ASCIIZ), ou nil}\par
+{\f1   Retour :}\par
+{\f1     Pointeur vers la copie allou??e, ou nil}\par
+\par
+{\f1   Cas particuliers :}\par
+{\f1     - Si Str = nil ??? retourne nil (pas d'allocation)}\par
+{\f1     - Si Str^ = #0 (cha??ne vide) ??? retourne nil (pas d'allocation)}\par
+\par
+{\f1   La m??moire allou??e fait StrLen(Str) + 1 octets (pour le #0).}\par
+{\f1   L'allocation est effectu??e via GetMem.}\par
+\par
+{\f1   Pour lib??rer la m??moire, utiliser StrDispose (pas FreeMem}\par
+{\f1   directement, bien que fonctionnellement ??quivalent).}\par
+\par
+{\f1   ??quivalent C : strdup()}\par
+\par
+{\f1   Exemple :}\par
+{\f1     var P, Q : PChar;}\par
+{\f1     begin}\par
+{\f1       P := 'Original';}\par
+{\f1       Q := StrNew(P);       \{ Q pointe vers une copie sur le tas \}}\par
+{\f1       WriteLn(StrPas(Q));   \{ ??? 'Original' \}}\par
+{\f1       StrDispose(Q);        \{ lib??rer la m??moire \}}\par
+{\f1     end;}\par
+\par
+{\f1   Impl??mentation :}\par
+{\f1     function StrNew(Str: PChar): PChar;}\par
+{\f1     var L: Word; P: PChar;}\par
+{\f1     begin}\par
+{\f1       StrNew := nil;}\par
+{\f1       if (Str <> nil) and (Str^ <> #0) then}\par
+{\f1       begin}\par
+{\f1         L := StrLen(Str) + 1;}\par
+{\f1         GetMem(P, L);}\par
+{\f1         if P <> nil then StrNew := StrMove(P, Str, L);}\par
+{\f1       end;}\par
+{\f1     end;}\par
+\par
+{\f1   procedure StrDispose(Str : PChar);}\par
+{\f1   Lib??re une cha??ne pr??c??demment allou??e par StrNew.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Str  Pointeur retourn?? par StrNew, ou nil}\par
+\par
+{\f1   Si Str = nil, StrDispose ne fait rien (appel s??r).}\par
+\par
+{\f1   La taille lib??r??e est calcul??e automatiquement comme}\par
+{\f1   StrLen(Str) + 1 (via FreeMem).}\par
+\par
+{\f1   IMPORTANT : ne pas appeler StrDispose sur une cha??ne qui n'a}\par
+{\f1   pas ??t?? allou??e par StrNew (ou GetMem avec la m??me taille).}\par
+\par
+{\f1   Impl??mentation :}\par
+{\f1     procedure StrDispose(Str: PChar);}\par
+{\f1     begin}\par
+{\f1       if Str <> nil then FreeMem(Str, StrLen(Str) + 1);}\par
+{\f1     end;}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPSTRS_08}     {\uldb Suivant >>}{\v IDH_TPSTRS_10}     {\uldb Sommaire}{\v IDH_TPSTRS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPSTRS_10}
+{\footnote $ Unite Strings (PChar) - CORRESPONDANCE AVEC LA BIBLIOTH??QUE C}
+{\footnote K Turbo Pascal;Unite Strings (PChar);CORRESPONDANCE AVEC LA BIBLIOTH??QUE C}
+\b\fs24 CORRESPONDANCE AVEC LA BIBLIOTH??QUE C \b0\fs20\par
+\par
+{\f1   Unit?? Strings              Biblioth??que C (string.h)}\par
+{\f1   -------------------------  -------------------------}\par
+{\f1   StrLen(Str)                strlen(str)}\par
+{\f1   StrEnd(Str)                str + strlen(str)}\par
+{\f1   StrMove(D, S, N)           memmove(d, s, n)}\par
+{\f1   StrCopy(D, S)              strcpy(d, s)}\par
+{\f1   StrECopy(D, S)             strcpy(d,s); d+strlen(s)}\par
+{\f1   StrLCopy(D, S, N)          strncpy(d, s, n)}\par
+{\f1   StrPCopy(D, S)             ??? (conversion Pascal???C)}\par
+{\f1   StrCat(D, S)               strcat(d, s)}\par
+{\f1   StrLCat(D, S, N)           strncat (s??mantique diff.)}\par
+{\f1   StrComp(S1, S2)            strcmp(s1, s2)}\par
+{\f1   StrIComp(S1, S2)           stricmp / strcasecmp}\par
+{\f1   StrLComp(S1, S2, N)        strncmp(s1, s2, n)}\par
+{\f1   StrLIComp(S1, S2, N)       strnicmp / strncasecmp}\par
+{\f1   StrScan(S, C)              strchr(s, c)}\par
+{\f1   StrRScan(S, C)             strrchr(s, c)}\par
+{\f1   StrPos(S1, S2)             strstr(s1, s2)}\par
+{\f1   StrUpper(S)                strupr(s)}\par
+{\f1   StrLower(S)                strlwr(s)}\par
+{\f1   StrPas(S)                  ??? (conversion C???Pascal)}\par
+{\f1   StrNew(S)                  strdup(s)}\par
+{\f1   StrDispose(S)              free(s)}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPSTRS_09}     {\uldb Suivant >>}{\v IDH_TPSTRS_11}     {\uldb Sommaire}{\v IDH_TPSTRS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPSTRS_11}
+{\footnote $ Unite Strings (PChar) - EXEMPLES COMPLETS}
+{\footnote K Turbo Pascal;Unite Strings (PChar);EXEMPLES COMPLETS}
+\b\fs24 EXEMPLES COMPLETS \b0\fs20\par
+\par
+{\f1   --- Exemple 1 : Manipulation de base ---}\par
+\par
+{\f1   program StringsDemo;}\par
+{\f1   uses Strings;}\par
+{\f1   var}\par
+{\f1     Buf : array[0..255] of Char;}\par
+{\f1     P   : PChar;}\par
+{\f1   begin}\par
+{\f1     StrCopy(Buf, 'Turbo');}\par
+{\f1     StrCat(Buf, ' ');}\par
+{\f1     StrCat(Buf, 'Pascal');}\par
+{\f1     WriteLn(StrPas(Buf));       \{ ??? 'Turbo Pascal' \}}\par
+{\f1     WriteLn('Longueur : ', StrLen(Buf)); \{ ??? 12 \}}\par
+\par
+{\f1     P := StrScan(Buf, ' ');}\par
+{\f1     if P <> nil then}\par
+{\f1       WriteLn('Apr??s espace : ', StrPas(P)); \{ ??? ' Pascal' \}}\par
+{\f1   end.}\par
+\par
+{\f1   --- Exemple 2 : Concat??nation efficace avec StrECopy ---}\par
+\par
+{\f1   program EfficientConcat;}\par
+{\f1   uses Strings;}\par
+{\f1   var}\par
+{\f1     Buf : array[0..255] of Char;}\par
+{\f1     P   : PChar;}\par
+{\f1   begin}\par
+{\f1     P := StrECopy(Buf, 'Fichier : ');}\par
+{\f1     P := StrECopy(P, 'C:\\TP\\BIN\\');}\par
+{\f1     StrCopy(P, 'TURBO.EXE');}\par
+{\f1     WriteLn(StrPas(Buf));}\par
+{\f1     \{ ??? 'Fichier : C:\\TP\\BIN\\TURBO.EXE' \}}\par
+{\f1   end.}\par
+\par
+{\f1   --- Exemple 3 : Comparaison insensible ?? la casse ---}\par
+\par
+{\f1   program CaseCompare;}\par
+{\f1   uses Strings;}\par
+{\f1   var}\par
+{\f1     A, B : array[0..79] of Char;}\par
+{\f1   begin}\par
+{\f1     StrCopy(A, 'Hello World');}\par
+{\f1     StrCopy(B, 'HELLO WORLD');}\par
+\par
+{\f1     if StrComp(A, B) <> 0 then}\par
+{\f1       WriteLn('StrComp : diff??rentes');}\par
+\par
+{\f1     if StrIComp(A, B) = 0 then}\par
+{\f1       WriteLn('StrIComp : identiques');}\par
+\par
+{\f1     if StrLIComp(A, B, 5) = 0 then}\par
+{\f1       WriteLn('5 premiers car. identiques (insensible casse)');}\par
+{\f1   end.}\par
+\par
+{\f1   --- Exemple 4 : Allocation dynamique ---}\par
+\par
+{\f1   program DynamicStrings;}\par
+{\f1   uses Strings;}\par
+{\f1   var}\par
+{\f1     Original : PChar;}\par
+{\f1     Copie    : PChar;}\par
+{\f1   begin}\par
+{\f1     Original := 'Cha??ne originale';}\par
+\par
+{\f1     Copie := StrNew(Original);}\par
+{\f1     if Copie <> nil then}\par
+{\f1     begin}\par
+{\f1       WriteLn(StrPas(Copie));}\par
+{\f1       WriteLn('Taille en m??moire : ', StrLen(Copie) + 1, ' octets');}\par
+{\f1       StrUpper(Copie);}\par
+{\f1       WriteLn(StrPas(Copie));  \{ ??? 'CHA??NE ORIGINALE' \}}\par
+{\f1       StrDispose(Copie);}\par
+{\f1     end;}\par
+{\f1   end.}\par
+\par
+{\f1   --- Exemple 5 : Conversion String ??? PChar ---}\par
+\par
+{\f1   program ConvertDemo;}\par
+{\f1   uses Strings;}\par
+{\f1   var}\par
+{\f1     PascalStr : String;}\par
+{\f1     Buf       : array[0..255] of Char;}\par
+{\f1   begin}\par
+{\f1     \{ String ??? PChar \}}\par
+{\f1     PascalStr := 'Bonjour le monde';}\par
+{\f1     StrPCopy(Buf, PascalStr);}\par
+{\f1     WriteLn('PChar : ', StrPas(Buf));}\par
+{\f1     WriteLn('Longueur : ', StrLen(Buf));}\par
+\par
+{\f1     \{ PChar ??? String \}}\par
+{\f1     StrCopy(Buf, 'Au revoir');}\par
+{\f1     PascalStr := StrPas(Buf);}\par
+{\f1     WriteLn('String : ', PascalStr);}\par
+{\f1     WriteLn('Length : ', Length(PascalStr));}\par
+{\f1   end.}\par
+\par
+{\f1   --- Exemple 6 : Extraction de nom de fichier ---}\par
+\par
+{\f1   program ExtractFileName;}\par
+{\f1   uses Strings;}\par
+{\f1   var}\par
+{\f1     Path : PChar;}\par
+{\f1     P    : PChar;}\par
+{\f1   begin}\par
+{\f1     Path := 'C:\\TP\\BIN\\TURBO.EXE';}\par
+\par
+{\f1     \{ Trouver le dernier '\\' \}}\par
+{\f1     P := StrRScan(Path, '\\');}\par
+{\f1     if P <> nil then}\par
+{\f1     begin}\par
+{\f1       Inc(P);  \{ avancer apr??s le '\\' \}}\par
+{\f1       WriteLn('Nom fichier : ', StrPas(P));  \{ ??? TURBO.EXE \}}\par
+{\f1     end;}\par
+\par
+{\f1     \{ Trouver 'BIN' dans le chemin \}}\par
+{\f1     P := StrPos(Path, 'BIN');}\par
+{\f1     if P <> nil then}\par
+{\f1       WriteLn('Trouv?? ?? partir de : ', StrPas(P));}\par
+{\f1       \{ ??? BIN\\TURBO.EXE \}}\par
+{\f1   end.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPSTRS_10}     {\uldb Suivant >>}{\v IDH_TPSTRS_12}     {\uldb Sommaire}{\v IDH_TPSTRS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPSTRS_12}
+{\footnote $ Unite Strings (PChar) - NOTES D'IMPL??MENTATION}
+{\footnote K Turbo Pascal;Unite Strings (PChar);NOTES D'IMPL??MENTATION}
+\b\fs24 NOTES D'IMPL??MENTATION \b0\fs20\par
+\par
+{\f1   Toutes les fonctions (sauf StrNew et StrDispose) sont impl??ment??es}\par
+{\f1   en assembleur x86 inline pour une performance maximale.}\par
+\par
+{\f1   Techniques utilis??es :}\par
+{\f1   - CLD + REPNE SCASB : recherche rapide du terminateur nul}\par
+{\f1   - REP MOVSB : copie rapide de blocs d'octets}\par
+{\f1   - STD + REPNE SCASB : recherche arri??re (StrRScan)}\par
+{\f1   - REPE CMPSB : comparaison rapide de cha??nes}\par
+{\f1   - D??tection de chevauchement (StrMove) avec copie arri??re}\par
+\par
+{\f1   Conventions de retour :}\par
+{\f1   - Les fonctions retournant PChar placent le r??sultat dans}\par
+{\f1     DX:AX (segment:offset, format far pointer).}\par
+{\f1   - Les fonctions retournant Integer placent le r??sultat dans AX.}\par
+{\f1   - StrPas retourne le r??sultat via @Result (param??tre cach??).}\par
+\par
+{\f1   StrNew et StrDispose sont impl??ment??es en Pascal (pas en}\par
+{\f1   assembleur) car elles appellent GetMem/FreeMem.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPSTRS_11}     {\uldb Suivant >>}{\v IDH_TPSTRS_13}     {\uldb Sommaire}{\v IDH_TPSTRS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPSTRS_13}
+{\footnote $ Unite Strings (PChar) - R??CAPITULATIF DE L'INTERFACE}
+{\footnote K Turbo Pascal;Unite Strings (PChar);R??CAPITULATIF DE L'INTERFACE}
+\b\fs24 R??CAPITULATIF DE L'INTERFACE \b0\fs20\par
+\par
+{\f1   --- Longueur et fin ---}\par
+{\f1   Function  StrLen(Str : PChar) : Word;}\par
+{\f1   Function  StrEnd(Str : PChar) : PChar;}\par
+\par
+{\f1   --- Copie et d??placement ---}\par
+{\f1   Function  StrMove(Dest, Source : PChar; Count : Word) : PChar;}\par
+{\f1   Function  StrCopy(Dest, Source : PChar) : PChar;}\par
+{\f1   Function  StrECopy(Dest, Source : PChar) : PChar;}\par
+{\f1   Function  StrLCopy(Dest, Source : PChar; MaxLen : Word) : PChar;}\par
+{\f1   Function  StrPCopy(Dest : PChar; Source : String) : PChar;}\par
+\par
+{\f1   --- Concat??nation ---}\par
+{\f1   Function  StrCat(Dest, Source : PChar) : PChar;}\par
+{\f1   Function  StrLCat(Dest, Source : PChar; MaxLen : Word) : PChar;}\par
+\par
+{\f1   --- Comparaison ---}\par
+{\f1   Function  StrComp(Str1, Str2 : PChar) : Integer;}\par
+{\f1   Function  StrIComp(Str1, Str2 : PChar) : Integer;}\par
+{\f1   Function  StrLComp(Str1, Str2 : PChar; MaxLen : Word) : Integer;}\par
+{\f1   Function  StrLIComp(Str1, Str2 : PChar; MaxLen : Word) : Integer;}\par
+\par
+{\f1   --- Recherche ---}\par
+{\f1   Function  StrScan(Str : PChar; Chr : Char) : PChar;}\par
+{\f1   Function  StrRScan(Str : PChar; Chr : Char) : PChar;}\par
+{\f1   Function  StrPos(Str1, Str2 : PChar) : PChar;}\par
+\par
+{\f1   --- Conversion de casse ---}\par
+{\f1   Function  StrUpper(Str : PChar) : PChar;}\par
+{\f1   Function  StrLower(Str : PChar) : PChar;}\par
+\par
+{\f1   --- Conversion String ??? PChar ---}\par
+{\f1   Function  StrPas(Str : PChar) : String;}\par
+{\f1   \{ StrPCopy est aussi une conversion, list??e en Copie \}}\par
+\par
+{\f1   --- Allocation dynamique ---}\par
+{\f1   Function  StrNew(Str : PChar) : PChar;}\par
+{\f1   Procedure StrDispose(Str : PChar);}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPSTRS_12}     {\uldb Suivant >>}{\v IDH_TPSTRS_14}     {\uldb Sommaire}{\v IDH_TPSTRS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPSTRS_14}
+{\footnote $ Unite Strings (PChar) - R??SUM?? PAR CAT??GORIE}
+{\footnote K Turbo Pascal;Unite Strings (PChar);R??SUM?? PAR CAT??GORIE}
+\b\fs24 R??SUM?? PAR CAT??GORIE \b0\fs20\par
+\par
+{\f1   Cat??gorie                   Nombre   Fonctions}\par
+{\f1   -------------------------   ------   ----------------------------------}\par
+{\f1   Longueur / Fin                 2     StrLen, StrEnd}\par
+{\f1   Copie / D??placement            5     StrMove, StrCopy, StrECopy,}\par
+{\f1                                        StrLCopy, StrPCopy}\par
+{\f1   Concat??nation                  2     StrCat, StrLCat}\par
+{\f1   Comparaison                    4     StrComp, StrIComp,}\par
+{\f1                                        StrLComp, StrLIComp}\par
+{\f1   Recherche                      3     StrScan, StrRScan, StrPos}\par
+{\f1   Conversion de casse            2     StrUpper, StrLower}\par
+{\f1   Conversion String ??? PChar      1     StrPas (+ StrPCopy ci-dessus)}\par
+{\f1   Allocation dynamique           2     StrNew, StrDispose}\par
+{\f1   -------------------------   ------   ----------------------------------}\par
+{\f1   TOTAL                         21     fonctions et proc??dures}\par
+\par
+{\f1   Types export??s : 0}\par
+{\f1   Variables export??es : 0}\par
+{\f1   Constantes export??es : 0}\par
+\par
+{\f1   L'unit?? Strings est purement proc??durale : elle ne d??clare}\par
+{\f1   aucun type, variable ou constante.}\par
+\par
+{\f1   Fin du document - Unit?? STRINGS - Turbo Pascal 7.0}\par
+
+\par
+{\uldb << Precedent}{\v IDH_TPSTRS_13}     {\uldb Sommaire}{\v IDH_TPSTRS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+}

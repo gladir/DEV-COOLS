@@ -1,0 +1,1882 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}
+
+{\footnote # IDH_TPOBJ_01}
+{\footnote $ Programmation Objet - CONSTANTES - MODES D'ACC??S TSTREAM}
+{\footnote K Turbo Pascal;Programmation Objet;CONSTANTES - MODES D'ACC??S TSTREAM}
+\b\fs24 CONSTANTES - MODES D'ACC??S TSTREAM \b0\fs20\par
+\par
+{\f1   Ces constantes d??finissent le mode d'ouverture des flux fichier}\par
+{\f1   (TDosStream, TBufStream). Elles correspondent aux fonctions}\par
+{\f1   DOS INT 21h (AH=3Ch pour cr??ation, AH=3Dh pour ouverture).}\par
+\par
+{\f1   Constante      Valeur    Description}\par
+{\f1   -----------    -------   ------------------------------------------}\par
+{\f1   stCreate       $3C00     Cr??er un nouveau fichier}\par
+{\f1   stOpenRead     $3D00     Ouvrir en lecture seule}\par
+{\f1   stOpenWrite    $3D01     Ouvrir en ??criture seule}\par
+{\f1   stOpen         $3D02     Ouvrir en lecture et ??criture}\par
+\par
+{\f1   Utilisation :}\par
+{\f1     var S : TBufStream;}\par
+{\f1     S.Init('DATA.DAT', stOpenRead, 1024);  \{ lecture seule \}}\par
+{\f1     S.Init('NEW.DAT', stCreate, 1024);     \{ cr??er \}}\par
+\par
+\par
+\b Sections suivantes : \b0\par
+\par
+{\f1  2. CONSTANTES - CODES D'ERREUR TSTREAM}     {\uldb [Aller]}{\v IDH_TPOBJ_02}\par
+{\f1  3. CONSTANTES - TCOLLECTION}     {\uldb [Aller]}{\v IDH_TPOBJ_03}\par
+{\f1  4. CONSTANTE - VMT}     {\uldb [Aller]}{\v IDH_TPOBJ_04}\par
+{\f1  5. CONSTANTE - STREAMERROR}     {\uldb [Aller]}{\v IDH_TPOBJ_05}\par
+{\f1  6. CONSTANTES - ??TAT EMS}     {\uldb [Aller]}{\v IDH_TPOBJ_06}\par
+{\f1  7. CONSTANTES - ENREGISTREMENTS DE FLUX (TStreamRec)}     {\uldb [Aller]}{\v IDH_TPOBJ_07}\par
+{\f1  8. TYPES - ENREGISTREMENTS DE CONVERSION}     {\uldb [Aller]}{\v IDH_TPOBJ_08}\par
+{\f1  9. TYPES - CHA??NES ET ENSEMBLES}     {\uldb [Aller]}{\v IDH_TPOBJ_09}\par
+{\f1 10. TYPES - TABLEAUX G??N??RAUX}     {\uldb [Aller]}{\v IDH_TPOBJ_10}\par
+{\f1 11. TYPE - TITEMLIST (TABLEAU DE COLLECTION)}     {\uldb [Aller]}{\v IDH_TPOBJ_11}\par
+{\f1 12. TYPE - TSTREAMREC}     {\uldb [Aller]}{\v IDH_TPOBJ_12}\par
+{\f1 13. OBJET TOBJECT}     {\uldb [Aller]}{\v IDH_TPOBJ_13}\par
+{\f1 14. OBJET TSTREAM}     {\uldb [Aller]}{\v IDH_TPOBJ_14}\par
+{\f1 15. OBJET TDOSSTREAM}     {\uldb [Aller]}{\v IDH_TPOBJ_15}\par
+{\f1 16. OBJET TBUFSTREAM}     {\uldb [Aller]}{\v IDH_TPOBJ_16}\par
+{\f1 17. OBJET TEMSSTREAM}     {\uldb [Aller]}{\v IDH_TPOBJ_17}\par
+{\f1 18. OBJET TCOLLECTION}     {\uldb [Aller]}{\v IDH_TPOBJ_18}\par
+{\f1 19. OBJET TSORTEDCOLLECTION}     {\uldb [Aller]}{\v IDH_TPOBJ_19}\par
+{\f1 20. OBJET TSTRINGCOLLECTION}     {\uldb [Aller]}{\v IDH_TPOBJ_20}\par
+{\f1 21. OBJET TRESOURCECOLLECTION}     {\uldb [Aller]}{\v IDH_TPOBJ_21}\par
+{\f1 22. OBJET TRESOURCEFILE}     {\uldb [Aller]}{\v IDH_TPOBJ_22}\par
+{\f1 23. OBJET TSTRINGLIST}     {\uldb [Aller]}{\v IDH_TPOBJ_23}\par
+{\f1 24. OBJET TSTRLISTMAKER}     {\uldb [Aller]}{\v IDH_TPOBJ_24}\par
+{\f1 25. OBJET TPOINT}     {\uldb [Aller]}{\v IDH_TPOBJ_25}\par
+{\f1 26. OBJET TRECT}     {\uldb [Aller]}{\v IDH_TPOBJ_26}\par
+{\f1 27. ROUTINES - CHA??NES DYNAMIQUES}     {\uldb [Aller]}{\v IDH_TPOBJ_27}\par
+{\f1 28. ROUTINES - OP??RATIONS LONGINT}     {\uldb [Aller]}{\v IDH_TPOBJ_28}\par
+{\f1 29. ROUTINES - GESTION DES TYPES DE FLUX}     {\uldb [Aller]}{\v IDH_TPOBJ_29}\par
+{\f1 30. ROUTINE - ABSTRACT}     {\uldb [Aller]}{\v IDH_TPOBJ_30}\par
+{\f1 31. HI??RARCHIE DES OBJETS}     {\uldb [Aller]}{\v IDH_TPOBJ_31}\par
+{\f1 32. EXEMPLES COMPLETS}     {\uldb [Aller]}{\v IDH_TPOBJ_32}\par
+{\f1 33. R??CAPITULATIF DE L'INTERFACE}     {\uldb [Aller]}{\v IDH_TPOBJ_33}\par
+{\f1 34. R??SUM?? PAR CAT??GORIE}     {\uldb [Aller]}{\v IDH_TPOBJ_34}\par
+\par
+{\uldb Suivant >>}{\v IDH_TPOBJ_02}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOBJ_02}
+{\footnote $ Programmation Objet - CONSTANTES - CODES D'ERREUR TSTREAM}
+{\footnote K Turbo Pascal;Programmation Objet;CONSTANTES - CODES D'ERREUR TSTREAM}
+\b\fs24 CONSTANTES - CODES D'ERREUR TSTREAM \b0\fs20\par
+\par
+{\f1   Les codes d'erreur sont stock??s dans le champ Status du flux.}\par
+{\f1   Une valeur diff??rente de stOk indique une erreur.}\par
+\par
+{\f1   Constante       Valeur   Description}\par
+{\f1   -------------   ------   ------------------------------------------}\par
+{\f1   stOk               0     Pas d'erreur}\par
+{\f1   stError           -1     Erreur d'acc??s g??n??rale}\par
+{\f1   stInitError       -2     Impossible d'initialiser le flux}\par
+{\f1   stReadError       -3     Lecture au-del?? de la fin du flux}\par
+{\f1   stWriteError      -4     Impossible d'??tendre le flux (??criture)}\par
+{\f1   stGetError        -5     Lecture d'un type d'objet non enregistr??}\par
+{\f1   stPutError        -6     ??criture d'un type d'objet non enregistr??}\par
+\par
+{\f1   V??rification d'erreur typique :}\par
+{\f1     S.Read(Buf, SizeOf(Buf));}\par
+{\f1     if S.Status <> stOk then}\par
+{\f1       WriteLn('Erreur de lecture : ', S.Status);}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOBJ_01}     {\uldb Suivant >>}{\v IDH_TPOBJ_03}     {\uldb Sommaire}{\v IDH_TPOBJ_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOBJ_03}
+{\footnote $ Programmation Objet - CONSTANTES - TCOLLECTION}
+{\footnote K Turbo Pascal;Programmation Objet;CONSTANTES - TCOLLECTION}
+\b\fs24 CONSTANTES - TCOLLECTION \b0\fs20\par
+\par
+{\f1   Constante            Valeur                  Description}\par
+{\f1   ------------------   ---------------------   -------------------------}\par
+{\f1   MaxCollectionSize    65520 div SizeOf(Ptr)   Nombre max. d'??l??ments}\par
+{\f1   coIndexError         -1                      Index hors intervalle}\par
+{\f1   coOverflow           -2                      D??bordement (m??moire)}\par
+\par
+{\f1   MaxCollectionSize vaut 16380 (car SizeOf(Pointer) = 4 sur x86).}\par
+{\f1   C'est le nombre maximal de pointeurs dans le tableau Items.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOBJ_02}     {\uldb Suivant >>}{\v IDH_TPOBJ_04}     {\uldb Sommaire}{\v IDH_TPOBJ_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOBJ_04}
+{\footnote $ Programmation Objet - CONSTANTE - VMT}
+{\footnote K Turbo Pascal;Programmation Objet;CONSTANTE - VMT}
+\b\fs24 CONSTANTE - VMT \b0\fs20\par
+\par
+{\f1   Constante       Valeur   Description}\par
+{\f1   -----------     ------   ------------------------------------------}\par
+{\f1   vmtHeaderSize      8     Taille de l'en-t??te de la VMT (Virtual}\par
+{\f1                            Method Table) en octets}\par
+\par
+{\f1   La VMT contient : taille de l'objet (Word), taille n??gatif}\par
+{\f1   (Word), et pointeur vers le parent (Pointer) = 8 octets avant}\par
+{\f1   le tableau des m??thodes virtuelles.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOBJ_03}     {\uldb Suivant >>}{\v IDH_TPOBJ_05}     {\uldb Sommaire}{\v IDH_TPOBJ_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOBJ_05}
+{\footnote $ Programmation Objet - CONSTANTE - STREAMERROR}
+{\footnote K Turbo Pascal;Programmation Objet;CONSTANTE - STREAMERROR}
+\b\fs24 CONSTANTE - STREAMERROR \b0\fs20\par
+\par
+{\f1   const StreamError : Pointer = nil;}\par
+{\f1   Pointeur vers une proc??dure de gestion d'erreur de flux.}\par
+{\f1   Si non nil, cette proc??dure est appel??e par TStream.Error}\par
+{\f1   avec les param??tres Code et Info.}\par
+\par
+{\f1   Type attendu :}\par
+{\f1     procedure StreamErrorProc(var S: TStream); far;}\par
+\par
+{\f1   Exemple :}\par
+{\f1     procedure MonErreurFlux(var S: TStream); far;}\par
+{\f1     begin}\par
+{\f1       WriteLn('Erreur flux : ', S.Status, ' Info: ', S.ErrorInfo);}\par
+{\f1       S.Reset;}\par
+{\f1     end;}\par
+{\f1     \{ ... \}}\par
+{\f1     StreamError := @MonErreurFlux;}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOBJ_04}     {\uldb Suivant >>}{\v IDH_TPOBJ_06}     {\uldb Sommaire}{\v IDH_TPOBJ_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOBJ_06}
+{\footnote $ Programmation Objet - CONSTANTES - ??TAT EMS}
+{\footnote K Turbo Pascal;Programmation Objet;CONSTANTES - ??TAT EMS}
+\b\fs24 CONSTANTES - ??TAT EMS \b0\fs20\par
+\par
+{\f1   const EmsCurHandle : Word = $FFFF;}\par
+{\f1   const EmsCurPage   : Word = $FFFF;}\par
+{\f1   Variables d'??tat interne pour TEmsStream. Permettent d'optimiser}\par
+{\f1   les acc??s EMS en conservant le dernier handle et la derni??re}\par
+{\f1   page mapp??e. Valeur initiale $FFFF = aucun handle/page actif.}\par
+\par
+{\f1   Ces variables ne doivent normalement pas ??tre modifi??es}\par
+{\f1   directement par le programmeur.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOBJ_05}     {\uldb Suivant >>}{\v IDH_TPOBJ_07}     {\uldb Sommaire}{\v IDH_TPOBJ_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOBJ_07}
+{\footnote $ Programmation Objet - CONSTANTES - ENREGISTREMENTS DE FLUX (TStreamRec)}
+{\footnote K Turbo Pascal;Programmation Objet;CONSTANTES - ENREGISTREMENTS DE FLUX (TStreamRec)}
+\b\fs24 CONSTANTES - ENREGISTREMENTS DE FLUX (TStreamRec) \b0\fs20\par
+\par
+{\f1   Les constantes typ??es suivantes enregistrent les types d'objets}\par
+{\f1   s??rialisables aupr??s du syst??me de flux. Chaque TStreamRec}\par
+{\f1   contient le num??ro de type, le lien VMT, et les pointeurs}\par
+{\f1   vers les m??thodes Load et Store.}\par
+\par
+{\f1   RCollection : TStreamRec}\par
+{\f1     ObjType  = 50}\par
+{\f1     VmtLink  = Ofs(TypeOf(TCollection)^)}\par
+{\f1     Load     = @TCollection.Load}\par
+{\f1     Store    = @TCollection.Store}\par
+\par
+{\f1   RStringCollection : TStreamRec}\par
+{\f1     ObjType  = 51}\par
+{\f1     VmtLink  = Ofs(TypeOf(TStringCollection)^)}\par
+{\f1     Load     = @TStringCollection.Load}\par
+{\f1     Store    = @TStringCollection.Store}\par
+\par
+{\f1   RStringList : TStreamRec}\par
+{\f1     ObjType  = 52}\par
+{\f1     VmtLink  = Ofs(TypeOf(TStringList)^)}\par
+{\f1     Load     = @TStringList.Load}\par
+{\f1     Store    = nil  (lecture seule)}\par
+\par
+{\f1   RStrListMaker : TStreamRec}\par
+{\f1     ObjType  = 52  (m??me num??ro que RStringList)}\par
+{\f1     VmtLink  = Ofs(TypeOf(TStrListMaker)^)}\par
+{\f1     Load     = nil  (??criture seule)}\par
+{\f1     Store    = @TStrListMaker.Store}\par
+\par
+{\f1   Note : RStringList et RStrListMaker partagent le m??me ObjType}\par
+{\f1   (52) car ils repr??sentent le m??me format de donn??es : l'un lit,}\par
+{\f1   l'autre ??crit.}\par
+\par
+{\f1   Pour enregistrer ces types :}\par
+{\f1     RegisterType(RCollection);}\par
+{\f1     RegisterType(RStringCollection);}\par
+{\f1     \{ ou simplement : RegisterObjects; \}}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOBJ_06}     {\uldb Suivant >>}{\v IDH_TPOBJ_08}     {\uldb Sommaire}{\v IDH_TPOBJ_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOBJ_08}
+{\footnote $ Programmation Objet - TYPES - ENREGISTREMENTS DE CONVERSION}
+{\footnote K Turbo Pascal;Programmation Objet;TYPES - ENREGISTREMENTS DE CONVERSION}
+\b\fs24 TYPES - ENREGISTREMENTS DE CONVERSION \b0\fs20\par
+\par
+{\f1   WordRec = record}\par
+{\f1     Lo, Hi : Byte;}\par
+{\f1   end;}\par
+{\f1   Permet d'acc??der individuellement aux octets bas et haut d'un}\par
+{\f1   Word. Utile pour le transtypage :}\par
+{\f1     var W : Word;}\par
+{\f1     WordRec(W).Lo := $FF;}\par
+{\f1     WordRec(W).Hi := $00;}\par
+\par
+{\f1   LongRec = record}\par
+{\f1     Lo, Hi : Word;}\par
+{\f1   end;}\par
+{\f1   Permet d'acc??der individuellement aux mots bas et haut d'un}\par
+{\f1   LongInt. Utile pour le transtypage :}\par
+{\f1     var L : LongInt;}\par
+{\f1     LongRec(L).Lo := $1234;}\par
+{\f1     LongRec(L).Hi := $5678;  \{ L = $56781234 \}}\par
+\par
+{\f1   PtrRec = record}\par
+{\f1     Ofs, Seg : Word;}\par
+{\f1   end;}\par
+{\f1   Permet d'acc??der au segment et ?? l'offset d'un pointeur far.}\par
+{\f1   Utile pour la manipulation de pointeurs :}\par
+{\f1     var P : Pointer;}\par
+{\f1     PtrRec(P).Seg := DSeg;}\par
+{\f1     PtrRec(P).Ofs := 0;}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOBJ_07}     {\uldb Suivant >>}{\v IDH_TPOBJ_09}     {\uldb Sommaire}{\v IDH_TPOBJ_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOBJ_09}
+{\footnote $ Programmation Objet - TYPES - CHA??NES ET ENSEMBLES}
+{\footnote K Turbo Pascal;Programmation Objet;TYPES - CHA??NES ET ENSEMBLES}
+\b\fs24 TYPES - CHA??NES ET ENSEMBLES \b0\fs20\par
+\par
+{\f1   PString = ^String;}\par
+{\f1   Pointeur vers une cha??ne Pascal (String[255]). Utilis??}\par
+{\f1   massivement pour stocker des cha??nes allou??es dynamiquement}\par
+{\f1   sur le tas via NewStr/DisposeStr.}\par
+\par
+{\f1   PCharSet = ^TCharSet;}\par
+{\f1   TCharSet = Set of Char;}\par
+{\f1   Ensemble de caract??res et pointeur associ??. Utile pour les}\par
+{\f1   op??rations de filtrage et de validation de caract??res.}\par
+\par
+{\f1   FNameStr = String[79];}\par
+{\f1   Type cha??ne pour les noms de fichiers DOS (max 79 caract??res :}\par
+{\f1   chemin complet avec lecteur, r??pertoire et nom 8.3).}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOBJ_08}     {\uldb Suivant >>}{\v IDH_TPOBJ_10}     {\uldb Sommaire}{\v IDH_TPOBJ_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOBJ_10}
+{\footnote $ Programmation Objet - TYPES - TABLEAUX G??N??RAUX}
+{\footnote K Turbo Pascal;Programmation Objet;TYPES - TABLEAUX G??N??RAUX}
+\b\fs24 TYPES - TABLEAUX G??N??RAUX \b0\fs20\par
+\par
+{\f1   PByteArray = ^TByteArray;}\par
+{\f1   TByteArray = array[0..32767] of Byte;}\par
+{\f1   Tableau d'octets de taille maximale (32 Ko). Utilis?? avec un}\par
+{\f1   pointeur pour acc??der ?? des blocs de m??moire de taille}\par
+{\f1   arbitraire. Le pointeur PByteArray permet l'indexation :}\par
+{\f1     PByteArray(MonPtr)^[I] := Valeur;}\par
+\par
+{\f1   PWordArray = ^TWordArray;}\par
+{\f1   TWordArray = array[0..16383] of Word;}\par
+{\f1   Tableau de mots de taille maximale (32 Ko = 16384 ?? 2 octets).}\par
+{\f1   M??me usage que TByteArray mais pour des valeurs 16 bits :}\par
+{\f1     PWordArray(MonPtr)^[I] := Valeur;}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOBJ_09}     {\uldb Suivant >>}{\v IDH_TPOBJ_11}     {\uldb Sommaire}{\v IDH_TPOBJ_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOBJ_11}
+{\footnote $ Programmation Objet - TYPE - TITEMLIST (TABLEAU DE COLLECTION)}
+{\footnote K Turbo Pascal;Programmation Objet;TYPE - TITEMLIST (TABLEAU DE COLLECTION)}
+\b\fs24 TYPE - TITEMLIST (TABLEAU DE COLLECTION) \b0\fs20\par
+\par
+{\f1   PItemList = ^TItemList;}\par
+{\f1   TItemList = array[0..MaxCollectionSize - 1] of Pointer;}\par
+{\f1   Tableau de pointeurs utilis?? internement par TCollection pour}\par
+{\f1   stocker les ??l??ments. La taille maximale est}\par
+{\f1   MaxCollectionSize = 16380 ??l??ments.}\par
+\par
+{\f1   Ce type n'est normalement pas utilis?? directement ; il est}\par
+{\f1   acc??d?? via le champ Items de TCollection.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOBJ_10}     {\uldb Suivant >>}{\v IDH_TPOBJ_12}     {\uldb Sommaire}{\v IDH_TPOBJ_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOBJ_12}
+{\footnote $ Programmation Objet - TYPE - TSTREAMREC}
+{\footnote K Turbo Pascal;Programmation Objet;TYPE - TSTREAMREC}
+\b\fs24 TYPE - TSTREAMREC \b0\fs20\par
+\par
+{\f1   PStreamRec = ^TStreamRec;}\par
+{\f1   TStreamRec = record}\par
+{\f1     ObjType  : Word;      Identifiant unique du type d'objet}\par
+{\f1     VmtLink  : Word;      Offset de la VMT dans le segment de donn??es}\par
+{\f1     Load     : Pointer;   Pointeur vers le constructeur Load}\par
+{\f1     Store    : Pointer;   Pointeur vers la m??thode Store}\par
+{\f1     Next     : Word;      Cha??ne vers l'enregistrement suivant}\par
+{\f1   end;}\par
+{\f1   Structure d'enregistrement permettant au syst??me de flux de}\par
+{\f1   reconna??tre les types d'objets lors de la s??rialisation et}\par
+{\f1   de la d??s??rialisation.}\par
+\par
+{\f1   Chaque objet s??rialisable doit avoir un TStreamRec avec un}\par
+{\f1   ObjType unique. Les enregistrements forment une liste cha??n??e}\par
+{\f1   via le champ Next.}\par
+\par
+{\f1   L'enregistrement se fait par RegisterType :}\par
+{\f1     const}\par
+{\f1       RMonObjet : TStreamRec = (}\par
+{\f1         ObjType: 100;}\par
+{\f1         VmtLink: Ofs(TypeOf(TMonObjet)^);}\par
+{\f1         Load:    @TMonObjet.Load;}\par
+{\f1         Store:   @TMonObjet.Store);}\par
+{\f1     \{ ... \}}\par
+{\f1     RegisterType(RMonObjet);}\par
+\par
+{\f1   Convention de num??rotation ObjType :}\par
+{\f1     0..99     R??serv?? pour Turbo Pascal / Turbo Vision}\par
+{\f1     100+      Disponible pour les applications utilisateur}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOBJ_11}     {\uldb Suivant >>}{\v IDH_TPOBJ_13}     {\uldb Sommaire}{\v IDH_TPOBJ_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOBJ_13}
+{\footnote $ Programmation Objet - OBJET TOBJECT}
+{\footnote K Turbo Pascal;Programmation Objet;OBJET TOBJECT}
+\b\fs24 OBJET TOBJECT \b0\fs20\par
+\par
+{\f1   PObject = ^TObject;}\par
+{\f1   TObject = object}\par
+{\f1     constructor Init;}\par
+{\f1     procedure   Free;}\par
+{\f1     destructor  Done; virtual;}\par
+{\f1   end;}\par
+{\f1   Objet racine de toute la hi??rarchie. Tout objet de l'unit??}\par
+{\f1   Objects descend de TObject.}\par
+\par
+{\f1   constructor Init;}\par
+{\f1   Constructeur de base. Initialise l'objet (la VMT est connect??e}\par
+{\f1   automatiquement par le compilateur lors de l'appel au}\par
+{\f1   constructeur). Ne fait rien d'autre dans TObject.}\par
+\par
+{\f1   procedure Free;}\par
+{\f1   Lib??re l'objet s'il n'est pas nil. Appelle le destructeur Done}\par
+{\f1   puis lib??re la m??moire sur le tas. ??quivalent s??r de :}\par
+{\f1     if @Self <> nil then Dispose(PObject(@Self), Done);}\par
+\par
+{\f1   Toujours utiliser Free plut??t que Dispose directement pour}\par
+{\f1   ??viter les erreurs sur pointeurs nil.}\par
+\par
+{\f1   destructor Done; virtual;}\par
+{\f1   Destructeur virtuel. Ne fait rien dans TObject. Doit ??tre}\par
+{\f1   surcharg?? dans les descendants pour lib??rer les ressources}\par
+{\f1   (m??moire allou??e, fichiers ouverts, etc.).}\par
+\par
+{\f1   Exemple :}\par
+{\f1     type}\par
+{\f1       PMonObjet = ^TMonObjet;}\par
+{\f1       TMonObjet = object(TObject)}\par
+{\f1         Nom : PString;}\par
+{\f1         constructor Init(const ANom : String);}\par
+{\f1         destructor Done; virtual;}\par
+{\f1       end;}\par
+\par
+{\f1     constructor TMonObjet.Init(const ANom : String);}\par
+{\f1     begin}\par
+{\f1       inherited Init;}\par
+{\f1       Nom := NewStr(ANom);}\par
+{\f1     end;}\par
+\par
+{\f1     destructor TMonObjet.Done;}\par
+{\f1     begin}\par
+{\f1       DisposeStr(Nom);}\par
+{\f1       inherited Done;}\par
+{\f1     end;}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOBJ_12}     {\uldb Suivant >>}{\v IDH_TPOBJ_14}     {\uldb Sommaire}{\v IDH_TPOBJ_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOBJ_14}
+{\footnote $ Programmation Objet - OBJET TSTREAM}
+{\footnote K Turbo Pascal;Programmation Objet;OBJET TSTREAM}
+\b\fs24 OBJET TSTREAM \b0\fs20\par
+\par
+{\f1   PStream = ^TStream;}\par
+{\f1   TStream = object(TObject)}\par
+{\f1     Status    : Integer;    Code d'erreur courant (stOk si OK)}\par
+{\f1     ErrorInfo : Integer;    Information suppl??mentaire sur l'erreur}\par
+{\f1     ...}\par
+{\f1   end;}\par
+{\f1   Classe abstraite de flux de donn??es. D??finit l'interface commune}\par
+{\f1   pour tous les flux (fichier, m??moire, EMS). Les m??thodes Read}\par
+{\f1   et Write sont virtuelles et doivent ??tre impl??ment??es par les}\par
+{\f1   descendants.}\par
+\par
+{\f1   TStream est le c??ur du syst??me de persistance d'objets de}\par
+{\f1   Turbo Pascal.}\par
+\par
+{\f1   --- Champs ---}\par
+\par
+{\f1   Status : Integer}\par
+{\f1     Code d'erreur courant. Vaut stOk (0) si aucune erreur.}\par
+{\f1     Apr??s une erreur, toutes les op??rations sont ignor??es jusqu'??}\par
+{\f1     l'appel de Reset.}\par
+\par
+{\f1   ErrorInfo : Integer}\par
+{\f1     Information compl??mentaire sur l'erreur (par exemple, le code}\par
+{\f1     d'erreur DOS en cas d'erreur de fichier).}\par
+\par
+{\f1   --- M??thodes ---}\par
+\par
+{\f1   procedure CopyFrom(var S : TStream; Count : LongInt);}\par
+{\f1   Copie Count octets depuis le flux S vers le flux courant (Self).}\par
+{\f1   Utilise un tampon interne pour la copie.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     S      Flux source}\par
+{\f1     Count  Nombre d'octets ?? copier}\par
+\par
+{\f1   procedure Error(Code, Info : Integer); virtual;}\par
+{\f1   Appel??e en cas d'erreur. Met ?? jour Status et ErrorInfo. Si}\par
+{\f1   StreamError n'est pas nil, appelle la proc??dure point??e.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Code  Code d'erreur (stError, stReadError, etc.)}\par
+{\f1     Info  Information compl??mentaire}\par
+\par
+{\f1   Peut ??tre surcharg??e pour un traitement d'erreur personnalis??.}\par
+\par
+{\f1   procedure Flush; virtual;}\par
+{\f1   Vide le tampon du flux (??crit les donn??es en attente). Ne fait}\par
+{\f1   rien dans TStream ; surcharg??e dans TBufStream.}\par
+\par
+{\f1   function Get : PObject;}\par
+{\f1   Lit un objet depuis le flux et retourne un pointeur vers}\par
+{\f1   l'objet cr????. L'objet doit avoir ??t?? pr??alablement ??crit}\par
+{\f1   avec Put, et son type doit ??tre enregistr?? (RegisterType).}\par
+\par
+{\f1   Retour :}\par
+{\f1     Pointeur vers l'objet lu (PObject), nil en cas d'erreur}\par
+\par
+{\f1   M??canisme :}\par
+{\f1     1. Lit le num??ro ObjType depuis le flux}\par
+{\f1     2. Recherche le TStreamRec correspondant}\par
+{\f1     3. Appelle le constructeur Load de l'objet}\par
+{\f1     4. Retourne le pointeur}\par
+\par
+{\f1   function GetPos : LongInt; virtual;}\par
+{\f1   Retourne la position courante dans le flux (en octets).}\par
+{\f1   Abstraite dans TStream ; doit ??tre surcharg??e.}\par
+\par
+{\f1   function GetSize : LongInt; virtual;}\par
+{\f1   Retourne la taille totale du flux (en octets).}\par
+{\f1   Abstraite dans TStream ; doit ??tre surcharg??e.}\par
+\par
+{\f1   procedure Put(P : PObject);}\par
+{\f1   ??crit un objet dans le flux. Le type de l'objet doit ??tre}\par
+{\f1   enregistr?? (RegisterType).}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     P  Pointeur vers l'objet ?? ??crire}\par
+\par
+{\f1   M??canisme :}\par
+{\f1     1. Identifie le type de l'objet via sa VMT}\par
+{\f1     2. ??crit le num??ro ObjType dans le flux}\par
+{\f1     3. Appelle la m??thode Store de l'objet}\par
+\par
+{\f1   procedure Read(var Buf; Count : Word); virtual;}\par
+{\f1   Lit Count octets depuis le flux dans Buf. M??thode abstraite ;}\par
+{\f1   doit ??tre surcharg??e dans les descendants.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Buf    Tampon destination}\par
+{\f1     Count  Nombre d'octets ?? lire}\par
+\par
+{\f1   function ReadStr : PString;}\par
+{\f1   Lit une cha??ne depuis le flux. Alloue la m??moire et retourne}\par
+{\f1   un PString. La cha??ne a ??t?? pr??c??demment ??crite par WriteStr.}\par
+\par
+{\f1   Retour :}\par
+{\f1     PString pointant vers la cha??ne lue (allou??e sur le tas)}\par
+\par
+{\f1   procedure Reset;}\par
+{\f1   R??initialise l'??tat d'erreur du flux. Met Status et ErrorInfo}\par
+{\f1   ?? 0. Doit ??tre appel?? apr??s une erreur pour reprendre les}\par
+{\f1   op??rations.}\par
+\par
+{\f1   procedure Seek(Pos : LongInt); virtual;}\par
+{\f1   Positionne le flux ?? l'offset Pos (en octets, base 0).}\par
+{\f1   Abstraite dans TStream ; doit ??tre surcharg??e.}\par
+\par
+{\f1   procedure Truncate; virtual;}\par
+{\f1   Tronque le flux ?? la position courante. Tout ce qui suit}\par
+{\f1   est supprim??. Abstraite dans TStream.}\par
+\par
+{\f1   procedure Write(var Buf; Count : Word); virtual;}\par
+{\f1   ??crit Count octets depuis Buf dans le flux. M??thode abstraite ;}\par
+{\f1   doit ??tre surcharg??e dans les descendants.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Buf    Tampon source}\par
+{\f1     Count  Nombre d'octets ?? ??crire}\par
+\par
+{\f1   procedure WriteStr(P : PString);}\par
+{\f1   ??crit une cha??ne dans le flux ?? partir d'un PString.}\par
+{\f1   La cha??ne peut ??tre relue ult??rieurement par ReadStr.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     P  Pointeur vers la cha??ne ?? ??crire}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOBJ_13}     {\uldb Suivant >>}{\v IDH_TPOBJ_15}     {\uldb Sommaire}{\v IDH_TPOBJ_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOBJ_15}
+{\footnote $ Programmation Objet - OBJET TDOSSTREAM}
+{\footnote K Turbo Pascal;Programmation Objet;OBJET TDOSSTREAM}
+\b\fs24 OBJET TDOSSTREAM \b0\fs20\par
+\par
+{\f1   PDosStream = ^TDosStream;}\par
+{\f1   TDosStream = object(TStream)}\par
+{\f1     Handle : Word;    Handle de fichier DOS}\par
+{\f1     ...}\par
+{\f1   end;}\par
+{\f1   Flux bas?? sur un fichier DOS, sans tampon. Chaque lecture ou}\par
+{\f1   ??criture provoque un appel syst??me DOS. Pour de meilleures}\par
+{\f1   performances, utiliser TBufStream.}\par
+\par
+{\f1   --- Champ ---}\par
+\par
+{\f1   Handle : Word}\par
+{\f1     Handle de fichier DOS retourn?? par INT 21h lors de l'ouverture.}\par
+\par
+{\f1   --- M??thodes ---}\par
+\par
+{\f1   constructor Init(FileName : FNameStr; Mode : Word);}\par
+{\f1   Ouvre ou cr??e un fichier.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     FileName  Nom du fichier (chemin complet ou relatif)}\par
+{\f1     Mode      Mode d'acc??s (stCreate, stOpenRead, stOpenWrite,}\par
+{\f1               stOpen)}\par
+\par
+{\f1   En cas d'??chec, Status est mis ?? stInitError.}\par
+\par
+{\f1   Exemple :}\par
+{\f1     var S : TDosStream;}\par
+{\f1     S.Init('DATA.DAT', stOpenRead);}\par
+{\f1     if S.Status <> stOk then}\par
+{\f1       WriteLn('Erreur ouverture');}\par
+\par
+{\f1   destructor Done; virtual;}\par
+{\f1   Ferme le fichier DOS et lib??re les ressources.}\par
+\par
+{\f1   function GetPos : LongInt; virtual;}\par
+{\f1   Retourne la position courante dans le fichier (appel DOS).}\par
+\par
+{\f1   function GetSize : LongInt; virtual;}\par
+{\f1   Retourne la taille du fichier en octets.}\par
+\par
+{\f1   procedure Read(var Buf; Count : Word); virtual;}\par
+{\f1   Lit Count octets depuis le fichier. Si moins d'octets sont}\par
+{\f1   disponibles, Status est mis ?? stReadError.}\par
+\par
+{\f1   procedure Seek(Pos : LongInt); virtual;}\par
+{\f1   Positionne le pointeur de fichier ?? l'offset Pos.}\par
+\par
+{\f1   procedure Truncate; virtual;}\par
+{\f1   Tronque le fichier ?? la position courante.}\par
+\par
+{\f1   procedure Write(var Buf; Count : Word); virtual;}\par
+{\f1   ??crit Count octets dans le fichier. En cas d'erreur d'??criture}\par
+{\f1   (disque plein, etc.), Status est mis ?? stWriteError.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOBJ_14}     {\uldb Suivant >>}{\v IDH_TPOBJ_16}     {\uldb Sommaire}{\v IDH_TPOBJ_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOBJ_16}
+{\footnote $ Programmation Objet - OBJET TBUFSTREAM}
+{\footnote K Turbo Pascal;Programmation Objet;OBJET TBUFSTREAM}
+\b\fs24 OBJET TBUFSTREAM \b0\fs20\par
+\par
+{\f1   PBufStream = ^TBufStream;}\par
+{\f1   TBufStream = object(TDosStream)}\par
+{\f1     Buffer  : Pointer;    Pointeur vers le tampon}\par
+{\f1     BufSize : Word;       Taille du tampon en octets}\par
+{\f1     BufPtr  : Word;       Position courante dans le tampon}\par
+{\f1     BufEnd  : Word;       Fin des donn??es dans le tampon}\par
+{\f1     ...}\par
+{\f1   end;}\par
+{\f1   Flux fichier avec tampon en m??moire. Descendant de TDosStream}\par
+{\f1   avec ajout d'un tampon pour r??duire les appels syst??me DOS.}\par
+{\f1   C'est le type de flux le plus couramment utilis??.}\par
+\par
+{\f1   --- Champs ---}\par
+\par
+{\f1   Buffer : Pointer}\par
+{\f1     Pointeur vers le tampon allou?? sur le tas.}\par
+\par
+{\f1   BufSize : Word}\par
+{\f1     Taille du tampon en octets. Typiquement 1024 ou 4096.}\par
+\par
+{\f1   BufPtr : Word}\par
+{\f1     Position de lecture/??criture courante dans le tampon.}\par
+\par
+{\f1   BufEnd : Word}\par
+{\f1     Nombre d'octets valides dans le tampon.}\par
+\par
+{\f1   --- M??thodes ---}\par
+\par
+{\f1   constructor Init(FileName : FNameStr; Mode, Size : Word);}\par
+{\f1   Ouvre un fichier avec un tampon de la taille sp??cifi??e.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     FileName  Nom du fichier}\par
+{\f1     Mode      Mode d'acc??s (stCreate, stOpen, etc.)}\par
+{\f1     Size      Taille du tampon en octets}\par
+\par
+{\f1   Le tampon est allou?? sur le tas. Si l'allocation ??choue,}\par
+{\f1   Status est mis ?? stInitError.}\par
+\par
+{\f1   Exemple :}\par
+{\f1     var S : TBufStream;}\par
+{\f1     S.Init('DATA.DAT', stOpen, 4096);  \{ tampon de 4 Ko \}}\par
+\par
+{\f1   destructor Done; virtual;}\par
+{\f1   Vide le tampon (Flush), ferme le fichier et lib??re le tampon.}\par
+\par
+{\f1   procedure Flush; virtual;}\par
+{\f1   ??crit le contenu du tampon dans le fichier si des donn??es}\par
+{\f1   sont en attente d'??criture. Doit ??tre appel?? explicitement}\par
+{\f1   si l'on veut garantir que les donn??es sont sur le disque}\par
+{\f1   avant la fermeture.}\par
+\par
+{\f1   function GetPos : LongInt; virtual;}\par
+{\f1   Retourne la position logique (tenant compte du tampon).}\par
+\par
+{\f1   function GetSize : LongInt; virtual;}\par
+{\f1   Retourne la taille du fichier.}\par
+\par
+{\f1   procedure Read(var Buf; Count : Word); virtual;}\par
+{\f1   Lit via le tampon. Peut n??cessiter plusieurs remplissages du}\par
+{\f1   tampon si Count > BufSize.}\par
+\par
+{\f1   procedure Seek(Pos : LongInt); virtual;}\par
+{\f1   Positionne le flux. Si la position est dans le tampon courant,}\par
+{\f1   aucun appel DOS n'est n??cessaire.}\par
+\par
+{\f1   procedure Truncate; virtual;}\par
+{\f1   Vide le tampon et tronque le fichier.}\par
+\par
+{\f1   procedure Write(var Buf; Count : Word); virtual;}\par
+{\f1   ??crit via le tampon. Le tampon est vid?? automatiquement quand}\par
+{\f1   il est plein.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOBJ_15}     {\uldb Suivant >>}{\v IDH_TPOBJ_17}     {\uldb Sommaire}{\v IDH_TPOBJ_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOBJ_17}
+{\footnote $ Programmation Objet - OBJET TEMSSTREAM}
+{\footnote K Turbo Pascal;Programmation Objet;OBJET TEMSSTREAM}
+\b\fs24 OBJET TEMSSTREAM \b0\fs20\par
+\par
+{\f1   PEmsStream = ^TEmsStream;}\par
+{\f1   TEmsStream = object(TStream)}\par
+{\f1     Handle    : Word;      Handle EMS}\par
+{\f1     PageCount : Word;      Nombre de pages allou??es}\par
+{\f1     Size      : LongInt;   Taille des donn??es}\par
+{\f1     Position  : LongInt;   Position courante}\par
+{\f1     ...}\par
+{\f1   end;}\par
+{\f1   Flux stock?? en m??moire EMS (Expanded Memory Specification).}\par
+{\f1   Permet d'utiliser la m??moire ??tendue au-del?? des 640 Ko}\par
+{\f1   conventionnels du DOS comme flux de donn??es.}\par
+\par
+{\f1   --- Champs ---}\par
+\par
+{\f1   Handle : Word}\par
+{\f1     Handle EMS allou?? par le gestionnaire EMM.}\par
+\par
+{\f1   PageCount : Word}\par
+{\f1     Nombre de pages EMS de 16 Ko allou??es.}\par
+\par
+{\f1   Size : LongInt}\par
+{\f1     Taille courante des donn??es dans le flux.}\par
+\par
+{\f1   Position : LongInt}\par
+{\f1     Position courante de lecture/??criture.}\par
+\par
+{\f1   --- M??thodes ---}\par
+\par
+{\f1   constructor Init(MinSize, MaxSize : LongInt);}\par
+{\f1   Alloue des pages EMS pour le flux.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     MinSize  Taille minimale requise (en octets)}\par
+{\f1     MaxSize  Taille maximale souhait??e (en octets)}\par
+\par
+{\f1   Le nombre de pages allou??es est suffisant pour MaxSize, avec}\par
+{\f1   un minimum de MinSize. En cas d'??chec, Status = stInitError.}\par
+\par
+{\f1   Exemple :}\par
+{\f1     var S : TEmsStream;}\par
+{\f1     S.Init(8192, 65536);  \{ 8 Ko min, 64 Ko max \}}\par
+\par
+{\f1   destructor Done; virtual;}\par
+{\f1   Lib??re les pages EMS allou??es.}\par
+\par
+{\f1   function GetPos : LongInt; virtual;}\par
+{\f1   Retourne la position courante dans le flux EMS.}\par
+\par
+{\f1   function GetSize : LongInt; virtual;}\par
+{\f1   Retourne la taille des donn??es dans le flux EMS.}\par
+\par
+{\f1   procedure Read(var Buf; Count : Word); virtual;}\par
+{\f1   Lit des donn??es depuis la m??moire EMS.}\par
+\par
+{\f1   procedure Seek(Pos : LongInt); virtual;}\par
+{\f1   Positionne le pointeur dans le flux EMS.}\par
+\par
+{\f1   procedure Truncate; virtual;}\par
+{\f1   Tronque le flux ?? la position courante.}\par
+\par
+{\f1   procedure Write(var Buf; Count : Word); virtual;}\par
+{\f1   ??crit des donn??es dans la m??moire EMS. Si la capacit?? est}\par
+{\f1   insuffisante, Status est mis ?? stWriteError.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOBJ_16}     {\uldb Suivant >>}{\v IDH_TPOBJ_18}     {\uldb Sommaire}{\v IDH_TPOBJ_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOBJ_18}
+{\footnote $ Programmation Objet - OBJET TCOLLECTION}
+{\footnote K Turbo Pascal;Programmation Objet;OBJET TCOLLECTION}
+\b\fs24 OBJET TCOLLECTION \b0\fs20\par
+\par
+{\f1   PCollection = ^TCollection;}\par
+{\f1   TCollection = object(TObject)}\par
+{\f1     Items : PItemList;    Tableau de pointeurs}\par
+{\f1     Count : Integer;      Nombre d'??l??ments}\par
+{\f1     Limit : Integer;      Capacit?? courante du tableau}\par
+{\f1     Delta : Integer;      Incr??ment de croissance}\par
+{\f1     ...}\par
+{\f1   end;}\par
+{\f1   Collection polymorphique d'objets. ??quivalent d'une liste}\par
+{\f1   dynamique de pointeurs avec gestion automatique de la taille.}\par
+{\f1   C'est le conteneur fondamental de Turbo Pascal / Turbo Vision.}\par
+\par
+{\f1   --- Champs ---}\par
+\par
+{\f1   Items : PItemList}\par
+{\f1     Pointeur vers le tableau de pointeurs (??l??ments).}\par
+\par
+{\f1   Count : Integer}\par
+{\f1     Nombre d'??l??ments actuellement dans la collection.}\par
+\par
+{\f1   Limit : Integer}\par
+{\f1     Capacit?? courante (taille allou??e du tableau Items).}\par
+\par
+{\f1   Delta : Integer}\par
+{\f1     Nombre d'??l??ments ajout??s lors d'un agrandissement automatique.}\par
+{\f1     Si Delta = 0, la collection ne peut pas cro??tre au-del?? de}\par
+{\f1     Limit.}\par
+\par
+{\f1   --- Constructeurs/Destructeur ---}\par
+\par
+{\f1   constructor Init(ALimit, ADelta : Integer);}\par
+{\f1   Cr??e une collection vide.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     ALimit  Capacit?? initiale}\par
+{\f1     ADelta  Incr??ment de croissance (0 = taille fixe)}\par
+\par
+{\f1   Exemple :}\par
+{\f1     var C : PCollection;}\par
+{\f1     C := New(PCollection, Init(100, 10));}\par
+{\f1     \{ 100 ??l??ments initiaux, croissance par 10 \}}\par
+\par
+{\f1   constructor Load(var S : TStream);}\par
+{\f1   Charge une collection depuis un flux. Chaque ??l??ment est lu}\par
+{\f1   par la m??thode virtuelle GetItem.}\par
+\par
+{\f1   destructor Done; virtual;}\par
+{\f1   Lib??re tous les ??l??ments (via FreeAll) et le tableau Items.}\par
+\par
+{\f1   --- Acc??s par index ---}\par
+\par
+{\f1   function At(Index : Integer) : Pointer;}\par
+{\f1   Retourne l'??l??ment ?? l'index donn?? (base 0).}\par
+{\f1   Appelle Error(coIndexError, Index) si l'index est invalide.}\par
+\par
+{\f1   procedure AtDelete(Index : Integer);}\par
+{\f1   Supprime l'??l??ment ?? l'index sans le lib??rer. Les ??l??ments}\par
+{\f1   suivants sont d??cal??s.}\par
+\par
+{\f1   procedure AtFree(Index : Integer);}\par
+{\f1   Supprime l'??l??ment ?? l'index ET le lib??re (via FreeItem).}\par
+\par
+{\f1   procedure AtInsert(Index : Integer; Item : Pointer);}\par
+{\f1   Ins??re un ??l??ment ?? l'index. Les ??l??ments suivants sont d??cal??s.}\par
+{\f1   La collection cro??t si n??cessaire (si Delta > 0).}\par
+\par
+{\f1   procedure AtPut(Index : Integer; Item : Pointer);}\par
+{\f1   Remplace l'??l??ment ?? l'index par Item (sans lib??rer l'ancien).}\par
+\par
+{\f1   --- Recherche et suppression ---}\par
+\par
+{\f1   procedure Delete(Item : Pointer);}\par
+{\f1   Supprime la premi??re occurrence de Item sans le lib??rer.}\par
+{\f1   Utilise IndexOf pour trouver l'??l??ment.}\par
+\par
+{\f1   procedure DeleteAll;}\par
+{\f1   Vide la collection sans lib??rer les ??l??ments. Met Count ?? 0.}\par
+\par
+{\f1   procedure Free(Item : Pointer);}\par
+{\f1   Supprime la premi??re occurrence de Item ET le lib??re.}\par
+\par
+{\f1   procedure FreeAll;}\par
+{\f1   Lib??re tous les ??l??ments (via FreeItem) et vide la collection.}\par
+\par
+{\f1   function IndexOf(Item : Pointer) : Integer; virtual;}\par
+{\f1   Retourne l'index d'un ??l??ment, ou -1 si non trouv??.}\par
+{\f1   Recherche lin??aire par comparaison de pointeurs.}\par
+\par
+{\f1   --- Insertion ---}\par
+\par
+{\f1   procedure Insert(Item : Pointer); virtual;}\par
+{\f1   Ajoute un ??l??ment ?? la fin de la collection.}\par
+\par
+{\f1   --- It??ration ---}\par
+\par
+{\f1   function FirstThat(Test : Pointer) : Pointer;}\par
+{\f1   Retourne le premier ??l??ment pour lequel la fonction Test}\par
+{\f1   retourne True. Parcourt la collection du d??but ?? la fin.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Test  Pointeur vers une fonction : function(P: Pointer):}\par
+{\f1           Boolean; far;}\par
+\par
+{\f1   Retour :}\par
+{\f1     Pointeur vers le premier ??l??ment correspondant, nil si aucun.}\par
+\par
+{\f1   procedure ForEach(Action : Pointer);}\par
+{\f1   Appelle Action pour chaque ??l??ment de la collection.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Action  Pointeur vers une proc??dure : procedure(P: Pointer);}\par
+{\f1             far;}\par
+\par
+{\f1   Exemple :}\par
+{\f1     procedure AfficherNom(P : PMonObjet); far;}\par
+{\f1     begin}\par
+{\f1       WriteLn(P^.Nom^);}\par
+{\f1     end;}\par
+{\f1     \{ ... \}}\par
+{\f1     MaCollection^.ForEach(@AfficherNom);}\par
+\par
+{\f1   function LastThat(Test : Pointer) : Pointer;}\par
+{\f1   Comme FirstThat, mais parcourt la collection de la fin vers}\par
+{\f1   le d??but. Retourne le dernier ??l??ment correspondant.}\par
+\par
+{\f1   --- Gestion m??moire ---}\par
+\par
+{\f1   procedure FreeItem(Item : Pointer); virtual;}\par
+{\f1   Lib??re un ??l??ment. Par d??faut, appelle PObject(Item)^.Free.}\par
+{\f1   Surcharger pour les ??l??ments qui ne sont pas des TObject.}\par
+\par
+{\f1   --- S??rialisation ---}\par
+\par
+{\f1   function GetItem(var S : TStream) : Pointer; virtual;}\par
+{\f1   Lit un ??l??ment depuis un flux. Par d??faut, appelle S.Get.}\par
+{\f1   Surcharger pour des ??l??ments non-objet.}\par
+\par
+{\f1   procedure PutItem(var S : TStream; Item : Pointer); virtual;}\par
+{\f1   ??crit un ??l??ment dans un flux. Par d??faut, appelle S.Put(Item).}\par
+\par
+{\f1   procedure Store(var S : TStream);}\par
+{\f1   Sauvegarde la collection dans un flux. ??crit Count, Limit,}\par
+{\f1   Delta puis chaque ??l??ment via PutItem.}\par
+\par
+{\f1   --- Gestion de capacit?? ---}\par
+\par
+{\f1   procedure Pack;}\par
+{\f1   Supprime les entr??es nil du tableau (compacte la collection).}\par
+\par
+{\f1   procedure SetLimit(ALimit : Integer); virtual;}\par
+{\f1   Redimensionne le tableau Items ?? ALimit ??l??ments.}\par
+\par
+{\f1   --- Erreur ---}\par
+\par
+{\f1   procedure Error(Code, Info : Integer); virtual;}\par
+{\f1   Appel??e en cas d'erreur de collection. Par d??faut, provoque}\par
+{\f1   une erreur d'ex??cution (RunError 212).}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Code  coIndexError (-1) ou coOverflow (-2)}\par
+{\f1     Info  Information compl??mentaire (index fautif, etc.)}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOBJ_17}     {\uldb Suivant >>}{\v IDH_TPOBJ_19}     {\uldb Sommaire}{\v IDH_TPOBJ_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOBJ_19}
+{\footnote $ Programmation Objet - OBJET TSORTEDCOLLECTION}
+{\footnote K Turbo Pascal;Programmation Objet;OBJET TSORTEDCOLLECTION}
+\b\fs24 OBJET TSORTEDCOLLECTION \b0\fs20\par
+\par
+{\f1   PSortedCollection = ^TSortedCollection;}\par
+{\f1   TSortedCollection = object(TCollection)}\par
+{\f1     Duplicates : Boolean;   Autoriser les doublons}\par
+{\f1     ...}\par
+{\f1   end;}\par
+{\f1   Collection tri??e avec recherche binaire. Les ??l??ments sont}\par
+{\f1   maintenus en ordre selon la m??thode Compare. La recherche}\par
+{\f1   et l'insertion sont en O(log n) gr??ce ?? la dichotomie.}\par
+\par
+{\f1   --- Champ ---}\par
+\par
+{\f1   Duplicates : Boolean}\par
+{\f1     Si True, les doublons sont autoris??s.}\par
+{\f1     Si False (d??faut), Insert ignore les doublons.}\par
+\par
+{\f1   --- M??thodes ---}\par
+\par
+{\f1   constructor Load(var S : TStream);}\par
+{\f1   Charge une collection tri??e depuis un flux, incluant le champ}\par
+{\f1   Duplicates.}\par
+\par
+{\f1   function Compare(Key1, Key2 : Pointer) : Integer; virtual;}\par
+{\f1   Compare deux cl??s. DOIT ??tre surcharg??e dans les descendants.}\par
+\par
+{\f1   Retour :}\par
+{\f1     < 0  si Key1 < Key2}\par
+{\f1     = 0  si Key1 = Key2}\par
+{\f1     > 0  si Key1 > Key2}\par
+\par
+{\f1   function IndexOf(Item : Pointer) : Integer; virtual;}\par
+{\f1   Recherche binaire. Retourne l'index ou -1.}\par
+\par
+{\f1   procedure Insert(Item : Pointer); virtual;}\par
+{\f1   Ins??re en conservant l'ordre de tri. Si Duplicates = False}\par
+{\f1   et l'??l??ment existe d??j??, l'insertion est ignor??e.}\par
+\par
+{\f1   function KeyOf(Item : Pointer) : Pointer; virtual;}\par
+{\f1   Retourne la cl?? de tri d'un ??l??ment. Par d??faut, retourne}\par
+{\f1   Item lui-m??me. Surcharger si la cl?? est un sous-champ.}\par
+\par
+{\f1   function Search(Key : Pointer; var Index : Integer) : Boolean;}\par
+{\f1     virtual;}\par
+{\f1   Recherche binaire d'une cl??.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Key    Cl?? recherch??e}\par
+{\f1     Index  (sortie) Index trouv?? ou point d'insertion}\par
+\par
+{\f1   Retour :}\par
+{\f1     True si trouv??, False sinon}\par
+\par
+{\f1   procedure Store(var S : TStream);}\par
+{\f1   Sauvegarde la collection tri??e (incluant Duplicates).}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOBJ_18}     {\uldb Suivant >>}{\v IDH_TPOBJ_20}     {\uldb Sommaire}{\v IDH_TPOBJ_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOBJ_20}
+{\footnote $ Programmation Objet - OBJET TSTRINGCOLLECTION}
+{\footnote K Turbo Pascal;Programmation Objet;OBJET TSTRINGCOLLECTION}
+\b\fs24 OBJET TSTRINGCOLLECTION \b0\fs20\par
+\par
+{\f1   PStringCollection = ^TStringCollection;}\par
+{\f1   TStringCollection = object(TSortedCollection)}\par
+{\f1     ...}\par
+{\f1   end;}\par
+{\f1   Collection tri??e de cha??nes Pascal (PString). Tri}\par
+{\f1   alphab??tique par d??faut. C'est la sp??cialisation la plus}\par
+{\f1   courante de TSortedCollection.}\par
+\par
+{\f1   function Compare(Key1, Key2 : Pointer) : Integer; virtual;}\par
+{\f1   Comparaison alphab??tique de deux cha??nes (PString).}\par
+\par
+{\f1   procedure FreeItem(Item : Pointer); virtual;}\par
+{\f1   Lib??re une cha??ne via DisposeStr.}\par
+\par
+{\f1   function GetItem(var S : TStream) : Pointer; virtual;}\par
+{\f1   Lit une cha??ne depuis un flux via S.ReadStr.}\par
+\par
+{\f1   procedure PutItem(var S : TStream; Item : Pointer); virtual;}\par
+{\f1   ??crit une cha??ne dans un flux via S.WriteStr.}\par
+\par
+{\f1   Exemple :}\par
+{\f1     var SC : PStringCollection;}\par
+{\f1     SC := New(PStringCollection, Init(50, 10));}\par
+{\f1     SC^.Insert(NewStr('Pomme'));}\par
+{\f1     SC^.Insert(NewStr('Banane'));}\par
+{\f1     SC^.Insert(NewStr('Cerise'));}\par
+{\f1     \{ SC contient : Banane, Cerise, Pomme (tri??) \}}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOBJ_19}     {\uldb Suivant >>}{\v IDH_TPOBJ_21}     {\uldb Sommaire}{\v IDH_TPOBJ_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOBJ_21}
+{\footnote $ Programmation Objet - OBJET TRESOURCECOLLECTION}
+{\footnote K Turbo Pascal;Programmation Objet;OBJET TRESOURCECOLLECTION}
+\b\fs24 OBJET TRESOURCECOLLECTION \b0\fs20\par
+\par
+{\f1   PResourceCollection = ^TResourceCollection;}\par
+{\f1   TResourceCollection = object(TStringCollection)}\par
+{\f1     ...}\par
+{\f1   end;}\par
+{\f1   Collection tri??e d'enregistrements de ressources. Utilis??e}\par
+{\f1   en interne par TResourceFile pour maintenir l'index des}\par
+{\f1   ressources (cl?? = nom, valeur = position dans le flux).}\par
+\par
+{\f1   procedure FreeItem(Item : Pointer); virtual;}\par
+{\f1   Lib??re un enregistrement de ressource et sa cl??.}\par
+\par
+{\f1   function GetItem(var S : TStream) : Pointer; virtual;}\par
+{\f1   Lit un enregistrement de ressource depuis le flux.}\par
+\par
+{\f1   function KeyOf(Item : Pointer) : Pointer; virtual;}\par
+{\f1   Retourne la cl?? (nom) de l'enregistrement de ressource.}\par
+\par
+{\f1   procedure PutItem(var S : TStream; Item : Pointer); virtual;}\par
+{\f1   ??crit un enregistrement de ressource dans le flux.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOBJ_20}     {\uldb Suivant >>}{\v IDH_TPOBJ_22}     {\uldb Sommaire}{\v IDH_TPOBJ_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOBJ_22}
+{\footnote $ Programmation Objet - OBJET TRESOURCEFILE}
+{\footnote K Turbo Pascal;Programmation Objet;OBJET TRESOURCEFILE}
+\b\fs24 OBJET TRESOURCEFILE \b0\fs20\par
+\par
+{\f1   PResourceFile = ^TResourceFile;}\par
+{\f1   TResourceFile = object(TObject)}\par
+{\f1     Stream   : PStream;    Flux sous-jacent}\par
+{\f1     Modified : Boolean;    Indicateur de modification}\par
+{\f1     ...}\par
+{\f1   end;}\par
+{\f1   Gestionnaire de fichier de ressources. Permet de stocker et}\par
+{\f1   retrouver des objets par nom (cl?? de type String) dans un flux.}\par
+{\f1   C'est un dictionnaire persistant d'objets.}\par
+\par
+{\f1   --- Champs ---}\par
+\par
+{\f1   Stream : PStream}\par
+{\f1     Pointeur vers le flux sous-jacent (pass?? au constructeur).}\par
+\par
+{\f1   Modified : Boolean}\par
+{\f1     True si des modifications ont ??t?? apport??es depuis le dernier}\par
+{\f1     Flush.}\par
+\par
+{\f1   --- M??thodes ---}\par
+\par
+{\f1   constructor Init(AStream : PStream);}\par
+{\f1   Initialise le fichier de ressources sur un flux existant.}\par
+{\f1   Lit l'index des ressources depuis le flux.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     AStream  Pointeur vers un flux ouvert (TBufStream, etc.)}\par
+\par
+{\f1   Exemple :}\par
+{\f1     var}\par
+{\f1       S  : PBufStream;}\par
+{\f1       RF : TResourceFile;}\par
+{\f1     begin}\par
+{\f1       S := New(PBufStream, Init('APP.RES', stOpen, 4096));}\par
+{\f1       RF.Init(S);}\par
+{\f1     end;}\par
+\par
+{\f1   destructor Done; virtual;}\par
+{\f1   ??crit les modifications (Flush) et lib??re les ressources.}\par
+{\f1   Note : ne ferme PAS le flux ; c'est au programmeur de le faire.}\par
+\par
+{\f1   function Count : Integer;}\par
+{\f1   Retourne le nombre de ressources dans le fichier.}\par
+\par
+{\f1   procedure Delete(Key : String);}\par
+{\f1   Supprime une ressource par son nom.}\par
+\par
+{\f1   procedure Flush;}\par
+{\f1   ??crit l'index mis ?? jour dans le flux si Modified = True.}\par
+\par
+{\f1   function Get(Key : String) : PObject;}\par
+{\f1   Lit et retourne l'objet associ?? ?? la cl?? Key.}\par
+\par
+{\f1   Retour :}\par
+{\f1     PObject pointant vers l'objet charg??, nil si non trouv??.}\par
+\par
+{\f1   function KeyAt(I : Integer) : String;}\par
+{\f1   Retourne le nom (cl??) de la ressource ?? l'index I.}\par
+\par
+{\f1   procedure Put(Item : PObject; Key : String);}\par
+{\f1   Stocke un objet avec le nom Key. Si la cl?? existe d??j??,}\par
+{\f1   l'ancienne valeur est remplac??e.}\par
+\par
+{\f1   function SwitchTo(AStream : PStream; Pack : Boolean) : PStream;}\par
+{\f1   Transf??re le fichier de ressources vers un autre flux.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     AStream  Nouveau flux destination}\par
+{\f1     Pack     Si True, compacte le fichier (??limine l'espace}\par
+{\f1              des ressources supprim??es)}\par
+\par
+{\f1   Retour :}\par
+{\f1     Pointeur vers l'ancien flux}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOBJ_21}     {\uldb Suivant >>}{\v IDH_TPOBJ_23}     {\uldb Sommaire}{\v IDH_TPOBJ_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOBJ_23}
+{\footnote $ Programmation Objet - OBJET TSTRINGLIST}
+{\footnote K Turbo Pascal;Programmation Objet;OBJET TSTRINGLIST}
+\b\fs24 OBJET TSTRINGLIST \b0\fs20\par
+\par
+{\f1   TStrIndexRec = record}\par
+{\f1     Key, Count, Offset : Word;}\par
+{\f1   end;}\par
+\par
+{\f1   PStrIndex = ^TStrIndex;}\par
+{\f1   TStrIndex = array[0..9999] of TStrIndexRec;}\par
+\par
+{\f1   PStringList = ^TStringList;}\par
+{\f1   TStringList = object(TObject)}\par
+{\f1     ...}\par
+{\f1   end;}\par
+{\f1   Liste de cha??nes index??es par num??ro (Word). Permet un acc??s}\par
+{\f1   rapide ?? des cha??nes stock??es dans un flux, group??es par blocs}\par
+{\f1   pour l'efficacit?? de lecture. Lecture seule.}\par
+\par
+{\f1   Utilis??e typiquement pour les messages d'interface, les textes}\par
+{\f1   d'aide, etc.}\par
+\par
+{\f1   TStrIndexRec : chaque entr??e d'index contient la cl?? de d??but,}\par
+{\f1   le nombre de cha??nes dans le bloc, et l'offset dans le flux.}\par
+\par
+{\f1   constructor Load(var S : TStream);}\par
+{\f1   Charge la liste de cha??nes depuis un flux.}\par
+\par
+{\f1   destructor Done; virtual;}\par
+{\f1   Lib??re la m??moire de l'index.}\par
+\par
+{\f1   function Get(Key : Word) : String;}\par
+{\f1   Retourne la cha??ne associ??e au num??ro Key.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Key  Num??ro de la cha??ne (Word)}\par
+\par
+{\f1   Retour :}\par
+{\f1     Cha??ne Pascal, ou cha??ne vide si la cl?? n'existe pas.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOBJ_22}     {\uldb Suivant >>}{\v IDH_TPOBJ_24}     {\uldb Sommaire}{\v IDH_TPOBJ_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOBJ_24}
+{\footnote $ Programmation Objet - OBJET TSTRLISTMAKER}
+{\footnote K Turbo Pascal;Programmation Objet;OBJET TSTRLISTMAKER}
+\b\fs24 OBJET TSTRLISTMAKER \b0\fs20\par
+\par
+{\f1   PStrListMaker = ^TStrListMaker;}\par
+{\f1   TStrListMaker = object(TObject)}\par
+{\f1     ...}\par
+{\f1   end;}\par
+{\f1   Objet compagnon de TStringList pour la cr??ation de listes de}\par
+{\f1   cha??nes. ??criture seule (contrairement ?? TStringList qui est}\par
+{\f1   lecture seule).}\par
+\par
+{\f1   constructor Init(AStrSize, AIndexSize : Word);}\par
+{\f1   Initialise le cr??ateur de liste de cha??nes.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     AStrSize    Taille du tampon de cha??nes (octets)}\par
+{\f1     AIndexSize  Taille du tampon d'index (octets)}\par
+\par
+{\f1   Exemple :}\par
+{\f1     var}\par
+{\f1       SLM : TStrListMaker;}\par
+{\f1     begin}\par
+{\f1       SLM.Init(4096, 256);}\par
+{\f1       SLM.Put(0, 'Premier message');}\par
+{\f1       SLM.Put(1, 'Deuxi??me message');}\par
+{\f1       SLM.Put(2, 'Troisi??me message');}\par
+{\f1       SLM.Store(MonFlux);}\par
+{\f1       SLM.Done;}\par
+{\f1     end;}\par
+\par
+{\f1   destructor Done; virtual;}\par
+{\f1   Lib??re les tampons de cha??nes et d'index.}\par
+\par
+{\f1   procedure Put(Key : Word; S : String);}\par
+{\f1   Ajoute une cha??ne avec le num??ro Key.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Key  Num??ro de la cha??ne}\par
+{\f1     S    Contenu de la cha??ne}\par
+\par
+{\f1   Note : les cl??s doivent ??tre ajout??es par ordre croissant.}\par
+\par
+{\f1   procedure Store(var S : TStream);}\par
+{\f1   ??crit la liste compl??te dans le flux S.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOBJ_23}     {\uldb Suivant >>}{\v IDH_TPOBJ_25}     {\uldb Sommaire}{\v IDH_TPOBJ_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOBJ_25}
+{\footnote $ Programmation Objet - OBJET TPOINT}
+{\footnote K Turbo Pascal;Programmation Objet;OBJET TPOINT}
+\b\fs24 OBJET TPOINT \b0\fs20\par
+\par
+{\f1   TPoint = object}\par
+{\f1     X, Y : Integer;}\par
+{\f1   end;}\par
+{\f1   Point g??om??trique ?? coordonn??es enti??res. Objet simple sans}\par
+{\f1   m??thode, utilis?? comme composant de TRect et dans Turbo Vision}\par
+{\f1   pour les positions d'??cran.}\par
+\par
+{\f1   Champs :}\par
+{\f1     X  Coordonn??e horizontale}\par
+{\f1     Y  Coordonn??e verticale}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOBJ_24}     {\uldb Suivant >>}{\v IDH_TPOBJ_26}     {\uldb Sommaire}{\v IDH_TPOBJ_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOBJ_26}
+{\footnote $ Programmation Objet - OBJET TRECT}
+{\footnote K Turbo Pascal;Programmation Objet;OBJET TRECT}
+\b\fs24 OBJET TRECT \b0\fs20\par
+\par
+{\f1   TRect = object}\par
+{\f1     A, B : TPoint;    A = coin sup??rieur gauche,}\par
+{\f1                        B = coin inf??rieur droit (exclusif)}\par
+{\f1     ...}\par
+{\f1   end;}\par
+{\f1   Rectangle d??fini par deux points. Convention : le point B est}\par
+{\f1   exclusif (le rectangle va de A.X ?? B.X-1 et de A.Y ?? B.Y-1),}\par
+{\f1   similaire aux rectangles Windows.}\par
+\par
+{\f1   --- Champs ---}\par
+\par
+{\f1   A : TPoint}\par
+{\f1     Coin sup??rieur gauche (inclus).}\par
+\par
+{\f1   B : TPoint}\par
+{\f1     Coin inf??rieur droit (exclus).}\par
+\par
+{\f1   --- M??thodes ---}\par
+\par
+{\f1   procedure Assign(XA, YA, XB, YB : Integer);}\par
+{\f1   Assigne les coordonn??es du rectangle.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     XA, YA  Coin sup??rieur gauche}\par
+{\f1     XB, YB  Coin inf??rieur droit}\par
+\par
+{\f1   Exemple :}\par
+{\f1     var R : TRect;}\par
+{\f1     R.Assign(10, 5, 70, 20);}\par
+\par
+{\f1   procedure Copy(R : TRect);}\par
+{\f1   Copie les coordonn??es du rectangle R dans Self.}\par
+\par
+{\f1   procedure Move(ADX, ADY : Integer);}\par
+{\f1   D??place le rectangle de (ADX, ADY) pixels/caract??res.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     ADX  D??placement horizontal}\par
+{\f1     ADY  D??placement vertical}\par
+\par
+{\f1   procedure Grow(ADX, ADY : Integer);}\par
+{\f1   Agrandit (ou r??duit) le rectangle dans les deux directions.}\par
+{\f1   A est d??plac?? de (-ADX, -ADY) et B de (+ADX, +ADY).}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     ADX  Expansion horizontale}\par
+{\f1     ADY  Expansion verticale}\par
+\par
+{\f1   Exemple :}\par
+{\f1     R.Grow(1, 1);   \{ agrandir d'un pixel de chaque c??t?? \}}\par
+{\f1     R.Grow(-2, -2); \{ r??duire de 2 pixels de chaque c??t?? \}}\par
+\par
+{\f1   procedure Intersect(R : TRect);}\par
+{\f1   Remplace Self par l'intersection de Self et R. Si les}\par
+{\f1   rectangles ne se chevauchent pas, le r??sultat est vide.}\par
+\par
+{\f1   procedure Union(R : TRect);}\par
+{\f1   Remplace Self par l'union de Self et R (plus petit rectangle}\par
+{\f1   contenant les deux).}\par
+\par
+{\f1   function Contains(P : TPoint) : Boolean;}\par
+{\f1   Teste si le point P est ?? l'int??rieur du rectangle.}\par
+\par
+{\f1   Retour :}\par
+{\f1     True si A.X <= P.X < B.X et A.Y <= P.Y < B.Y}\par
+\par
+{\f1   function Equals(R : TRect) : Boolean;}\par
+{\f1   Teste si deux rectangles sont identiques.}\par
+\par
+{\f1   function Empty : Boolean;}\par
+{\f1   Teste si le rectangle est vide (largeur ou hauteur <= 0).}\par
+\par
+{\f1   Retour :}\par
+{\f1     True si A.X >= B.X ou A.Y >= B.Y}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOBJ_25}     {\uldb Suivant >>}{\v IDH_TPOBJ_27}     {\uldb Sommaire}{\v IDH_TPOBJ_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOBJ_27}
+{\footnote $ Programmation Objet - ROUTINES - CHA??NES DYNAMIQUES}
+{\footnote K Turbo Pascal;Programmation Objet;ROUTINES - CHA??NES DYNAMIQUES}
+\b\fs24 ROUTINES - CHA??NES DYNAMIQUES \b0\fs20\par
+\par
+{\f1   function NewStr(const S : String) : PString;}\par
+{\f1   Alloue une cha??ne sur le tas et retourne un PString.}\par
+{\f1   Si S est vide, retourne nil.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     S  Cha??ne ?? copier}\par
+\par
+{\f1   Retour :}\par
+{\f1     PString pointant vers la copie, ou nil si S = ''}\par
+\par
+{\f1   La m??moire allou??e est exactement Length(S) + 1 octets}\par
+{\f1   (longueur + contenu), ??conomisant la m??moire par rapport}\par
+{\f1   ?? un String[255] de 256 octets.}\par
+\par
+{\f1   Exemple :}\par
+{\f1     var P : PString;}\par
+{\f1     P := NewStr('Bonjour');}\par
+{\f1     WriteLn(P^);          \{ affiche "Bonjour" \}}\par
+{\f1     DisposeStr(P);}\par
+\par
+{\f1   procedure DisposeStr(P : PString);}\par
+{\f1   Lib??re une cha??ne allou??e par NewStr.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     P  Pointeur vers la cha??ne (peut ??tre nil)}\par
+\par
+{\f1   Si P est nil, ne fait rien.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOBJ_26}     {\uldb Suivant >>}{\v IDH_TPOBJ_28}     {\uldb Sommaire}{\v IDH_TPOBJ_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOBJ_28}
+{\footnote $ Programmation Objet - ROUTINES - OP??RATIONS LONGINT}
+{\footnote K Turbo Pascal;Programmation Objet;ROUTINES - OP??RATIONS LONGINT}
+\b\fs24 ROUTINES - OP??RATIONS LONGINT \b0\fs20\par
+\par
+{\f1   function LongMul(X, Y : Integer) : LongInt;}\par
+{\f1     Inline($5A/$58/$F7/$EA);}\par
+{\f1   Multiplication de deux Integer retournant un LongInt.}\par
+{\f1   ??vite le d??passement (overflow) qui surviendrait avec une}\par
+{\f1   simple multiplication Integer ?? Integer.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     X, Y  Op??randes Integer}\par
+\par
+{\f1   Retour :}\par
+{\f1     Produit LongInt (X ?? Y)}\par
+\par
+{\f1   Impl??mentation : instruction IMUL DX:AX (assembleur inline).}\par
+\par
+{\f1   Exemple :}\par
+{\f1     var L : LongInt;}\par
+{\f1     L := LongMul(30000, 2);  \{ L = 60000, pas de d??passement \}}\par
+\par
+{\f1   function LongDiv(X : LongInt; Y : Integer) : Integer;}\par
+{\f1     Inline($59/$58/$5A/$F7/$F9);}\par
+{\f1   Division d'un LongInt par un Integer retournant un Integer.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     X  Dividende (LongInt)}\par
+{\f1     Y  Diviseur (Integer, non nul)}\par
+\par
+{\f1   Retour :}\par
+{\f1     Quotient Integer (X div Y)}\par
+\par
+{\f1   Impl??mentation : instruction IDIV CX (assembleur inline).}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOBJ_27}     {\uldb Suivant >>}{\v IDH_TPOBJ_29}     {\uldb Sommaire}{\v IDH_TPOBJ_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOBJ_29}
+{\footnote $ Programmation Objet - ROUTINES - GESTION DES TYPES DE FLUX}
+{\footnote K Turbo Pascal;Programmation Objet;ROUTINES - GESTION DES TYPES DE FLUX}
+\b\fs24 ROUTINES - GESTION DES TYPES DE FLUX \b0\fs20\par
+\par
+{\f1   procedure RegisterType(var S : TStreamRec);}\par
+{\f1   Enregistre un type d'objet pour la s??rialisation. Apr??s}\par
+{\f1   l'enregistrement, le type peut ??tre lu/??crit par Get/Put.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     S  Enregistrement TStreamRec d??crivant le type}\par
+\par
+{\f1   Chaque type doit avoir un ObjType unique. Si un ObjType d??j??}\par
+{\f1   enregistr?? est utilis??, une erreur d'ex??cution se produit.}\par
+\par
+{\f1   Exemple :}\par
+{\f1     RegisterType(RCollection);}\par
+{\f1     RegisterType(RStringCollection);}\par
+\par
+{\f1   procedure RegisterObjects;}\par
+{\f1   Enregistre tous les types d'objets standard de l'unit?? Objects :}\par
+{\f1   TCollection, TStringCollection, TStringList et TStrListMaker.}\par
+\par
+{\f1   ??quivalent ?? :}\par
+{\f1     RegisterType(RCollection);}\par
+{\f1     RegisterType(RStringCollection);}\par
+{\f1     RegisterType(RStringList);}\par
+{\f1     RegisterType(RStrListMaker);}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOBJ_28}     {\uldb Suivant >>}{\v IDH_TPOBJ_30}     {\uldb Sommaire}{\v IDH_TPOBJ_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOBJ_30}
+{\footnote $ Programmation Objet - ROUTINE - ABSTRACT}
+{\footnote K Turbo Pascal;Programmation Objet;ROUTINE - ABSTRACT}
+\b\fs24 ROUTINE - ABSTRACT \b0\fs20\par
+\par
+{\f1   procedure Abstract;}\par
+{\f1   Provoque une erreur d'ex??cution (RunError 211 : Abstract method}\par
+{\f1   called). Doit ??tre appel??e dans les m??thodes virtuelles}\par
+{\f1   abstraites qui n'ont pas d'impl??mentation dans la classe de}\par
+{\f1   base.}\par
+\par
+{\f1   En Turbo Pascal, il n'y a pas de mot-cl?? ?? abstract ?? comme}\par
+{\f1   en Delphi. La convention est d'appeler cette proc??dure :}\par
+\par
+{\f1     function TSortedCollection.Compare(Key1, Key2: Pointer):}\par
+{\f1       Integer;}\par
+{\f1     begin}\par
+{\f1       Abstract;  \{ doit ??tre surcharg??e \}}\par
+{\f1       Compare := 0;}\par
+{\f1     end;}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOBJ_29}     {\uldb Suivant >>}{\v IDH_TPOBJ_31}     {\uldb Sommaire}{\v IDH_TPOBJ_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOBJ_31}
+{\footnote $ Programmation Objet - HI??RARCHIE DES OBJETS}
+{\footnote K Turbo Pascal;Programmation Objet;HI??RARCHIE DES OBJETS}
+\b\fs24 HI??RARCHIE DES OBJETS \b0\fs20\par
+\par
+{\f1   TObject}\par
+{\f1   ????????? TStream}\par
+{\f1   ???   ????????? TDosStream}\par
+{\f1   ???   ???   ????????? TBufStream}\par
+{\f1   ???   ????????? TEmsStream}\par
+{\f1   ????????? TCollection}\par
+{\f1   ???   ????????? TSortedCollection}\par
+{\f1   ???       ????????? TStringCollection}\par
+{\f1   ???           ????????? TResourceCollection}\par
+{\f1   ????????? TResourceFile}\par
+{\f1   ????????? TStringList}\par
+{\f1   ????????? TStrListMaker}\par
+\par
+{\f1   Types g??om??triques (sans parent TObject) :}\par
+{\f1   TPoint}\par
+{\f1   TRect}\par
+\par
+{\f1   Types d'enregistrement :}\par
+{\f1   WordRec, LongRec, PtrRec}\par
+{\f1   TStreamRec, TStrIndexRec}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOBJ_30}     {\uldb Suivant >>}{\v IDH_TPOBJ_32}     {\uldb Sommaire}{\v IDH_TPOBJ_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOBJ_32}
+{\footnote $ Programmation Objet - EXEMPLES COMPLETS}
+{\footnote K Turbo Pascal;Programmation Objet;EXEMPLES COMPLETS}
+\b\fs24 EXEMPLES COMPLETS \b0\fs20\par
+\par
+{\f1   --- Exemple 1 : Collection simple ---}\par
+\par
+{\f1   program CollectionDemo;}\par
+{\f1   uses Objects;}\par
+{\f1   type}\par
+{\f1     PAnimal = ^TAnimal;}\par
+{\f1     TAnimal = object(TObject)}\par
+{\f1       Nom : PString;}\par
+{\f1       Pattes : Integer;}\par
+{\f1       constructor Init(const ANom : String; APattes : Integer);}\par
+{\f1       destructor Done; virtual;}\par
+{\f1     end;}\par
+\par
+{\f1   constructor TAnimal.Init(const ANom: String; APattes: Integer);}\par
+{\f1   begin}\par
+{\f1     inherited Init;}\par
+{\f1     Nom := NewStr(ANom);}\par
+{\f1     Pattes := APattes;}\par
+{\f1   end;}\par
+\par
+{\f1   destructor TAnimal.Done;}\par
+{\f1   begin}\par
+{\f1     DisposeStr(Nom);}\par
+{\f1     inherited Done;}\par
+{\f1   end;}\par
+\par
+{\f1   procedure AfficherAnimal(P : PAnimal); far;}\par
+{\f1   begin}\par
+{\f1     WriteLn(P^.Nom^, ' : ', P^.Pattes, ' pattes');}\par
+{\f1   end;}\par
+\par
+{\f1   var}\par
+{\f1     C : PCollection;}\par
+{\f1   begin}\par
+{\f1     C := New(PCollection, Init(10, 5));}\par
+{\f1     C^.Insert(New(PAnimal, Init('Chat', 4)));}\par
+{\f1     C^.Insert(New(PAnimal, Init('Poulet', 2)));}\par
+{\f1     C^.Insert(New(PAnimal, Init('Araign??e', 8)));}\par
+\par
+{\f1     WriteLn('Nombre d''animaux : ', C^.Count);}\par
+{\f1     C^.ForEach(@AfficherAnimal);}\par
+\par
+{\f1     Dispose(C, Done);}\par
+{\f1   end.}\par
+\par
+{\f1   --- Exemple 2 : Collection tri??e de cha??nes ---}\par
+\par
+{\f1   program StringCollDemo;}\par
+{\f1   uses Objects;}\par
+\par
+{\f1   procedure AfficherStr(P : PString); far;}\par
+{\f1   begin}\par
+{\f1     if P <> nil then WriteLn(P^);}\par
+{\f1   end;}\par
+\par
+{\f1   var}\par
+{\f1     SC : PStringCollection;}\par
+{\f1   begin}\par
+{\f1     SC := New(PStringCollection, Init(20, 5));}\par
+{\f1     SC^.Insert(NewStr('Orange'));}\par
+{\f1     SC^.Insert(NewStr('Pomme'));}\par
+{\f1     SC^.Insert(NewStr('Banane'));}\par
+{\f1     SC^.Insert(NewStr('Cerise'));}\par
+{\f1     SC^.Insert(NewStr('Ananas'));}\par
+\par
+{\f1     WriteLn('Fruits tri??s :');}\par
+{\f1     SC^.ForEach(@AfficherStr);}\par
+{\f1     \{ Affiche : Ananas, Banane, Cerise, Orange, Pomme \}}\par
+\par
+{\f1     Dispose(SC, Done);}\par
+{\f1   end.}\par
+\par
+{\f1   --- Exemple 3 : Flux fichier avec tampon ---}\par
+\par
+{\f1   program StreamDemo;}\par
+{\f1   uses Objects;}\par
+{\f1   var}\par
+{\f1     S   : TBufStream;}\par
+{\f1     I   : Integer;}\par
+{\f1     Buf : array[1..100] of Integer;}\par
+{\f1   begin}\par
+{\f1     \{ ??criture \}}\par
+{\f1     S.Init('DONNEES.DAT', stCreate, 1024);}\par
+{\f1     for I := 1 to 100 do}\par
+{\f1       Buf[I] := I * I;}\par
+{\f1     S.Write(Buf, SizeOf(Buf));}\par
+{\f1     S.Done;}\par
+\par
+{\f1     \{ Lecture \}}\par
+{\f1     FillChar(Buf, SizeOf(Buf), 0);}\par
+{\f1     S.Init('DONNEES.DAT', stOpenRead, 1024);}\par
+{\f1     S.Read(Buf, SizeOf(Buf));}\par
+{\f1     if S.Status = stOk then}\par
+{\f1       for I := 1 to 5 do}\par
+{\f1         WriteLn('Buf[', I, '] = ', Buf[I]);}\par
+{\f1     S.Done;}\par
+{\f1   end.}\par
+\par
+{\f1   --- Exemple 4 : S??rialisation d'objets (Get/Put) ---}\par
+\par
+{\f1   program SerialDemo;}\par
+{\f1   uses Objects;}\par
+\par
+{\f1   const}\par
+{\f1     RMyRec : TStreamRec = (}\par
+{\f1       ObjType: 100;}\par
+{\f1       VmtLink: Ofs(TypeOf(TStringCollection)^);}\par
+{\f1       Load:    @TStringCollection.Load;}\par
+{\f1       Store:   @TStringCollection.Store);}\par
+\par
+{\f1   var}\par
+{\f1     S  : TBufStream;}\par
+{\f1     SC : PStringCollection;}\par
+{\f1     P  : PString;}\par
+{\f1     I  : Integer;}\par
+{\f1   begin}\par
+{\f1     RegisterType(RCollection);}\par
+{\f1     RegisterType(RStringCollection);}\par
+\par
+{\f1     \{ ??criture \}}\par
+{\f1     SC := New(PStringCollection, Init(10, 5));}\par
+{\f1     SC^.Insert(NewStr('Alpha'));}\par
+{\f1     SC^.Insert(NewStr('Beta'));}\par
+{\f1     SC^.Insert(NewStr('Gamma'));}\par
+\par
+{\f1     S.Init('STRINGS.DAT', stCreate, 1024);}\par
+{\f1     S.Put(SC);}\par
+{\f1     S.Done;}\par
+{\f1     Dispose(SC, Done);}\par
+\par
+{\f1     \{ Lecture \}}\par
+{\f1     S.Init('STRINGS.DAT', stOpenRead, 1024);}\par
+{\f1     SC := PStringCollection(S.Get);}\par
+{\f1     S.Done;}\par
+\par
+{\f1     if SC <> nil then}\par
+{\f1     begin}\par
+{\f1       WriteLn('Cha??nes relues :');}\par
+{\f1       for I := 0 to SC^.Count - 1 do}\par
+{\f1       begin}\par
+{\f1         P := SC^.At(I);}\par
+{\f1         if P <> nil then WriteLn('  ', P^);}\par
+{\f1       end;}\par
+{\f1       Dispose(SC, Done);}\par
+{\f1     end;}\par
+{\f1   end.}\par
+\par
+{\f1   --- Exemple 5 : Rectangles ---}\par
+\par
+{\f1   program RectDemo;}\par
+{\f1   uses Objects;}\par
+{\f1   var}\par
+{\f1     R1, R2 : TRect;}\par
+{\f1     P      : TPoint;}\par
+{\f1   begin}\par
+{\f1     R1.Assign(10, 10, 50, 40);}\par
+{\f1     R2.Assign(30, 20, 70, 60);}\par
+\par
+{\f1     WriteLn('R1 vide ? ', R1.Empty);}\par
+\par
+{\f1     P.X := 35; P.Y := 25;}\par
+{\f1     WriteLn('R1 contient (35,25) ? ', R1.Contains(P));}\par
+\par
+{\f1     R1.Intersect(R2);}\par
+{\f1     WriteLn('Intersection : (',}\par
+{\f1       R1.A.X, ',', R1.A.Y, ') - (',}\par
+{\f1       R1.B.X, ',', R1.B.Y, ')');}\par
+{\f1     \{ R??sultat : (30,20) - (50,40) \}}\par
+{\f1   end.}\par
+\par
+{\f1   --- Exemple 6 : Liste de cha??nes (StringList) ---}\par
+\par
+{\f1   program StringListDemo;}\par
+{\f1   uses Objects;}\par
+{\f1   var}\par
+{\f1     S   : TBufStream;}\par
+{\f1     SLM : TStrListMaker;}\par
+{\f1     SL  : PStringList;}\par
+{\f1   begin}\par
+{\f1     RegisterType(RStringList);}\par
+{\f1     RegisterType(RStrListMaker);}\par
+\par
+{\f1     \{ Cr??ation \}}\par
+{\f1     S.Init('MESSAGES.DAT', stCreate, 1024);}\par
+{\f1     SLM.Init(2048, 256);}\par
+{\f1     SLM.Put(0, 'Erreur inconnue');}\par
+{\f1     SLM.Put(1, 'Fichier non trouv??');}\par
+{\f1     SLM.Put(2, 'Acc??s refus??');}\par
+{\f1     SLM.Put(3, 'M??moire insuffisante');}\par
+{\f1     SLM.Store(S);}\par
+{\f1     SLM.Done;}\par
+{\f1     S.Done;}\par
+\par
+{\f1     \{ Lecture \}}\par
+{\f1     S.Init('MESSAGES.DAT', stOpenRead, 1024);}\par
+{\f1     SL := New(PStringList, Load(S));}\par
+{\f1     WriteLn(SL^.Get(0));  \{ Erreur inconnue \}}\par
+{\f1     WriteLn(SL^.Get(2));  \{ Acc??s refus?? \}}\par
+{\f1     Dispose(SL, Done);}\par
+{\f1     S.Done;}\par
+{\f1   end.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOBJ_31}     {\uldb Suivant >>}{\v IDH_TPOBJ_33}     {\uldb Sommaire}{\v IDH_TPOBJ_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOBJ_33}
+{\footnote $ Programmation Objet - R??CAPITULATIF DE L'INTERFACE}
+{\footnote K Turbo Pascal;Programmation Objet;R??CAPITULATIF DE L'INTERFACE}
+\b\fs24 R??CAPITULATIF DE L'INTERFACE \b0\fs20\par
+\par
+{\f1   --- Constantes d'acc??s ---}\par
+{\f1   stCreate       = $3C00}\par
+{\f1   stOpenRead     = $3D00}\par
+{\f1   stOpenWrite    = $3D01}\par
+{\f1   stOpen         = $3D02}\par
+\par
+{\f1   --- Constantes d'erreur flux ---}\par
+{\f1   stOk           =  0}\par
+{\f1   stError        = -1}\par
+{\f1   stInitError    = -2}\par
+{\f1   stReadError    = -3}\par
+{\f1   stWriteError   = -4}\par
+{\f1   stGetError     = -5}\par
+{\f1   stPutError     = -6}\par
+\par
+{\f1   --- Constantes collection ---}\par
+{\f1   MaxCollectionSize = 65520 div SizeOf(Pointer)}\par
+{\f1   coIndexError   = -1}\par
+{\f1   coOverflow     = -2}\par
+\par
+{\f1   --- Constante VMT ---}\par
+{\f1   vmtHeaderSize  = 8}\par
+\par
+{\f1   --- Constantes typ??es ---}\par
+{\f1   StreamError    : Pointer = nil}\par
+{\f1   EmsCurHandle   : Word = $FFFF}\par
+{\f1   EmsCurPage     : Word = $FFFF}\par
+{\f1   RCollection    : TStreamRec (ObjType 50)}\par
+{\f1   RStringCollection : TStreamRec (ObjType 51)}\par
+{\f1   RStringList    : TStreamRec (ObjType 52)}\par
+{\f1   RStrListMaker  : TStreamRec (ObjType 52)}\par
+\par
+{\f1   --- Types d'enregistrement ---}\par
+{\f1   WordRec        (Lo, Hi : Byte)}\par
+{\f1   LongRec        (Lo, Hi : Word)}\par
+{\f1   PtrRec         (Ofs, Seg : Word)}\par
+{\f1   TStreamRec     (ObjType, VmtLink, Load, Store, Next)}\par
+{\f1   TStrIndexRec   (Key, Count, Offset : Word)}\par
+{\f1   FNameStr       = String[79]}\par
+\par
+{\f1   --- Types pointeur ---}\par
+{\f1   PString, PCharSet, PByteArray, PWordArray}\par
+{\f1   PObject, PStream, PDosStream, PBufStream, PEmsStream}\par
+{\f1   PCollection, PSortedCollection, PStringCollection}\par
+{\f1   PResourceCollection, PResourceFile}\par
+{\f1   PStringList, PStrListMaker, PItemList, PStreamRec}\par
+{\f1   PStrIndex}\par
+\par
+{\f1   --- Types ensemble/tableau ---}\par
+{\f1   TCharSet       = Set of Char}\par
+{\f1   TByteArray     = array[0..32767] of Byte}\par
+{\f1   TWordArray     = array[0..16383] of Word}\par
+{\f1   TItemList      = array[0..MaxCollectionSize-1] of Pointer}\par
+{\f1   TStrIndex      = array[0..9999] of TStrIndexRec}\par
+\par
+{\f1   --- Objets ---}\par
+{\f1   TObject        (Init, Free, Done)}\par
+{\f1   TStream        (CopyFrom, Error, Flush, Get, GetPos, GetSize,}\par
+{\f1                   Put, Read, ReadStr, Reset, Seek, Truncate,}\par
+{\f1                   Write, WriteStr)}\par
+{\f1   TDosStream     (Init, Done, GetPos, GetSize, Read, Seek,}\par
+{\f1                   Truncate, Write)}\par
+{\f1   TBufStream     (Init, Done, Flush, GetPos, GetSize, Read,}\par
+{\f1                   Seek, Truncate, Write)}\par
+{\f1   TEmsStream     (Init, Done, GetPos, GetSize, Read, Seek,}\par
+{\f1                   Truncate, Write)}\par
+{\f1   TCollection    (Init, Load, Done, At, AtDelete, AtFree,}\par
+{\f1                   AtInsert, AtPut, Delete, DeleteAll, Error,}\par
+{\f1                   FirstThat, ForEach, Free, FreeAll, FreeItem,}\par
+{\f1                   GetItem, IndexOf, Insert, LastThat, Pack,}\par
+{\f1                   PutItem, SetLimit, Store)}\par
+{\f1   TSortedCollection (Load, Compare, IndexOf, Insert, KeyOf,}\par
+{\f1                      Search, Store)}\par
+{\f1   TStringCollection (Compare, FreeItem, GetItem, PutItem)}\par
+{\f1   TResourceCollection (FreeItem, GetItem, KeyOf, PutItem)}\par
+{\f1   TResourceFile  (Init, Done, Count, Delete, Flush, Get, KeyAt,}\par
+{\f1                   Put, SwitchTo)}\par
+{\f1   TStringList    (Load, Done, Get)}\par
+{\f1   TStrListMaker  (Init, Done, Put, Store)}\par
+{\f1   TPoint         (X, Y)}\par
+{\f1   TRect          (Assign, Copy, Move, Grow, Intersect, Union,}\par
+{\f1                   Contains, Equals, Empty)}\par
+\par
+{\f1   --- Routines globales ---}\par
+{\f1   Function  NewStr(const S : String) : PString;}\par
+{\f1   Procedure DisposeStr(P : PString);}\par
+{\f1   Function  LongMul(X, Y : Integer) : LongInt;}\par
+{\f1   Function  LongDiv(X : LongInt; Y : Integer) : Integer;}\par
+{\f1   Procedure RegisterType(var S : TStreamRec);}\par
+{\f1   Procedure Abstract;}\par
+{\f1   Procedure RegisterObjects;}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOBJ_32}     {\uldb Suivant >>}{\v IDH_TPOBJ_34}     {\uldb Sommaire}{\v IDH_TPOBJ_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOBJ_34}
+{\footnote $ Programmation Objet - R??SUM?? PAR CAT??GORIE}
+{\footnote K Turbo Pascal;Programmation Objet;R??SUM?? PAR CAT??GORIE}
+\b\fs24 R??SUM?? PAR CAT??GORIE \b0\fs20\par
+\par
+{\f1   Cat??gorie                   Nombre   ??l??ments}\par
+{\f1   -------------------------   ------   ----------------------------------}\par
+{\f1   Objets                         14   TObject, TStream, TDosStream,}\par
+{\f1                                       TBufStream, TEmsStream,}\par
+{\f1                                       TCollection, TSortedCollection,}\par
+{\f1                                       TStringCollection,}\par
+{\f1                                       TResourceCollection,}\par
+{\f1                                       TResourceFile, TStringList,}\par
+{\f1                                       TStrListMaker, TPoint, TRect}\par
+{\f1   Types d'enregistrement          5   WordRec, LongRec, PtrRec,}\par
+{\f1                                       TStreamRec, TStrIndexRec}\par
+{\f1   Types pointeur                 17   PString, PCharSet, PByteArray,}\par
+{\f1                                       PWordArray, PObject, PStream,}\par
+{\f1                                       PDosStream, PBufStream,}\par
+{\f1                                       PEmsStream, PCollection,}\par
+{\f1                                       PSortedCollection,}\par
+{\f1                                       PStringCollection,}\par
+{\f1                                       PResourceCollection,}\par
+{\f1                                       PResourceFile, PStringList,}\par
+{\f1                                       PStrListMaker, PItemList,}\par
+{\f1                                       PStreamRec, PStrIndex}\par
+{\f1   Types ensemble/tableau          5   TCharSet, TByteArray, TWordArray,}\par
+{\f1                                       TItemList, TStrIndex, FNameStr}\par
+{\f1   Constantes simples             14   stCreate..stOpen (4),}\par
+{\f1                                       stOk..stPutError (7),}\par
+{\f1                                       MaxCollectionSize,}\par
+{\f1                                       coIndexError, coOverflow,}\par
+{\f1                                       vmtHeaderSize}\par
+{\f1   Constantes typ??es               7   StreamError, EmsCurHandle,}\par
+{\f1                                       EmsCurPage, RCollection,}\par
+{\f1                                       RStringCollection, RStringList,}\par
+{\f1                                       RStrListMaker}\par
+{\f1   Routines globales               7   NewStr, DisposeStr, LongMul,}\par
+{\f1                                       LongDiv, RegisterType, Abstract,}\par
+{\f1                                       RegisterObjects}\par
+{\f1   -------------------------   ------   ----------------------------------}\par
+{\f1   TOTAL constantes simples       14}\par
+{\f1   TOTAL constantes typ??es         7}\par
+{\f1   TOTAL types                    27   (14 objets + 5 records + 3 types}\par
+{\f1                                        array + 1 set + 1 string +}\par
+{\f1                                        17 pointeurs)}\par
+{\f1   TOTAL routines globales         7}\par
+{\f1   TOTAL m??thodes (~)             90+  (dans les 14 objets)}\par
+{\f1   D??pendance : aucune (unit?? autonome)}\par
+\par
+{\f1   Fin du document - Unit?? OBJECTS - Turbo Pascal 7.0}\par
+
+\par
+{\uldb << Precedent}{\v IDH_TPOBJ_33}     {\uldb Sommaire}{\v IDH_TPOBJ_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+}

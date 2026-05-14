@@ -1,0 +1,1135 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}
+
+{\footnote # IDH_TPSYS_01}
+{\footnote $ Unite System - CONSTANTES PREDEFINIES}
+{\footnote K Turbo Pascal;Unite System;CONSTANTES PREDEFINIES}
+\b\fs24 CONSTANTES PREDEFINIES \b0\fs20\par
+\par
+\par
+\b 1.1 Constantes de recouvrement (Overlay) \b0\par
+\par
+{\f1   Const}\par
+{\f1     OvrCodeList  : Word    = 0;       \{ Liste de code de recouvrement      \}}\par
+{\f1     OvrHeapSize  : Word    = 0;       \{ Taille du tampon de recouvrement   \}}\par
+{\f1     OvrDebugPtr  : Pointer = nil;     \{ Crochet du debogueur overlay       \}}\par
+{\f1     OvrHeapOrg   : Word    = 0;       \{ Origine du tampon de recouvrement  \}}\par
+{\f1     OvrHeapPtr   : Word    = 0;       \{ Pointeur du tampon de recouvrement \}}\par
+{\f1     OvrHeapEnd   : Word    = 0;       \{ Fin du tampon de recouvrement      \}}\par
+{\f1     OvrLoadList  : Word    = 0;       \{ Liste de chargement overlays       \}}\par
+{\f1     OvrDosHandle : Word    = 0;       \{ Handle DOS du fichier overlay      \}}\par
+{\f1     OvrEmsHandle : Word    = $FFFF;   \{ Handle EMS du recouvrement         \}}\par
+\par
+{\f1   Les recouvrements (overlays) permettent a un programme de depasser}\par
+{\f1   la limite de 640 Ko en chargeant/dechargeant des portions de code}\par
+{\f1   a la demande. Sur Win32, ces constantes ne sont plus utilisees.}\par
+\par
+\par
+\b 1.2 Constantes du tas (Heap) \b0\par
+\par
+{\f1   Const}\par
+{\f1     HeapOrg   : Pointer = nil;   \{ Adresse de debut du tas               \}}\par
+{\f1     HeapPtr   : Pointer = nil;   \{ Pointeur courant d'allocation du tas  \}}\par
+{\f1     HeapEnd   : Pointer = nil;   \{ Adresse de fin du tas                 \}}\par
+{\f1     FreeList  : Pointer = nil;   \{ Tete de la liste de blocs libres      \}}\par
+{\f1     FreeZero  : Pointer = nil;   \{ Sentinelle (doit etre zero)           \}}\par
+{\f1     HeapError : Pointer = nil;   \{ Fonction d'erreur du gestionnaire     \}}\par
+\par
+{\f1   Le tas est la zone memoire utilisee par New() et GetMem() pour les}\par
+{\f1   allocations dynamiques. HeapPtr avance vers HeapEnd. Quand un bloc}\par
+{\f1   est libere (Dispose/FreeMem), il est ajoute a FreeList.}\par
+\par
+{\f1   HeapError peut etre assigne a une fonction personnalisee :}\par
+{\f1     Function MyHeapFunc(Size : Word) : Integer; Far;}\par
+{\f1     \{ Retourne 0 pour generer une erreur runtime \}}\par
+{\f1     \{ Retourne 1 pour retourner nil             \}}\par
+{\f1     \{ Retourne 2 pour re-essayer l'allocation   \}}\par
+\par
+\par
+\b 1.3 Constantes de controle du programme \b0\par
+\par
+{\f1   Const}\par
+{\f1     ExitProc   : Pointer = nil;   \{ Adresse de la procedure de sortie    \}}\par
+{\f1     ExitCode   : Integer = 0;     \{ Code de sortie du programme          \}}\par
+{\f1     ErrorAddr  : Pointer = nil;   \{ Adresse de l'erreur d'execution      \}}\par
+\par
+{\f1   ExitProc permet de chainer des procedures de sortie (nettoyage) :}\par
+{\f1     Var SaveExit : Pointer;}\par
+{\f1     Procedure MyExit; Far;}\par
+{\f1     Begin}\par
+{\f1       ExitProc := SaveExit;    \{ restaurer l'ancien ExitProc \}}\par
+{\f1       \{ ... nettoyage ... \}}\par
+{\f1     End;}\par
+{\f1     Begin}\par
+{\f1       SaveExit := ExitProc;}\par
+{\f1       ExitProc := @MyExit;}\par
+{\f1     End.}\par
+\par
+{\f1   ExitCode contient le code de sortie apres Halt(N) ou en fin de}\par
+{\f1   programme. ErrorAddr est non-nil si une erreur runtime s'est produite.}\par
+\par
+\par
+\b 1.4 Constantes systeme \b0\par
+\par
+{\f1   Const}\par
+{\f1     PrefixSeg  : Word    = 0;    \{ Segment du PSP (Program Segment Prefix) \}}\par
+{\f1     StackLimit : Word    = 0;    \{ Limite basse du pointeur de pile         \}}\par
+{\f1     InOutRes   : Integer = 0;    \{ Resultat de la derniere operation I/O    \}}\par
+{\f1     RandSeed   : Longint = 0;    \{ Graine du generateur aleatoire          \}}\par
+{\f1     FileMode   : Byte    = 2;    \{ Mode d'ouverture par defaut pour Reset   \}}\par
+{\f1     Test8087   : Byte    = 0;    \{ Type de coprocesseur detecte             \}}\par
+\par
+{\f1   InOutRes : mis a zero par IoResult, contient le code d'erreur de}\par
+{\f1   la derniere operation I/O quand \{$I-\} est actif :}\par
+{\f1     0   = pas d'erreur}\par
+{\f1     2   = fichier non trouve}\par
+{\f1     3   = chemin non trouve}\par
+{\f1     4   = trop de fichiers ouverts}\par
+{\f1     5   = acces refuse}\par
+{\f1     100 = erreur de lecture disque}\par
+{\f1     101 = erreur d'ecriture disque}\par
+{\f1     102 = fichier non assigne (Assign non appele)}\par
+{\f1     103 = fichier non ouvert}\par
+{\f1     104 = fichier pas ouvert en lecture}\par
+{\f1     105 = fichier pas ouvert en ecriture}\par
+{\f1     106 = format de nombre invalide}\par
+\par
+{\f1   FileMode controle le mode d'acces pour Reset() :}\par
+{\f1     0 = lecture seule}\par
+{\f1     1 = ecriture seule}\par
+{\f1     2 = lecture/ecriture (defaut)}\par
+\par
+{\f1   Test8087 indique le type de coprocesseur :}\par
+{\f1     0 = aucun coprocesseur}\par
+{\f1     1 = 8087}\par
+{\f1     2 = 80287}\par
+{\f1     3 = 80387 ou superieur}\par
+\par
+{\f1   RandSeed est la graine du generateur pseudo-aleatoire. Assigner une}\par
+{\f1   valeur fixe produit une sequence reproductible. Randomize initialise}\par
+{\f1   RandSeed a partir de l'horloge systeme.}\par
+\par
+\par
+\b Sections suivantes : \b0\par
+\par
+{\f1  2. VARIABLES PREDEFINIES}     {\uldb [Aller]}{\v IDH_TPSYS_02}\par
+{\f1  3. TYPES PREDEFINIS}     {\uldb [Aller]}{\v IDH_TPSYS_03}\par
+{\f1  4. PROCEDURES ET FONCTIONS - E/S FICHIER}     {\uldb [Aller]}{\v IDH_TPSYS_04}\par
+{\f1  5. PROCEDURES ET FONCTIONS - CHAINES}     {\uldb [Aller]}{\v IDH_TPSYS_05}\par
+{\f1  6. PROCEDURES ET FONCTIONS - ARITHMETIQUE}     {\uldb [Aller]}{\v IDH_TPSYS_06}\par
+{\f1  7. PROCEDURES ET FONCTIONS - ORDINAUX}     {\uldb [Aller]}{\v IDH_TPSYS_07}\par
+{\f1  8. PROCEDURES ET FONCTIONS - MEMOIRE ET POINTEURS}     {\uldb [Aller]}{\v IDH_TPSYS_08}\par
+{\f1  9. PROCEDURES ET FONCTIONS - REGISTRES ET SEGMENTS}     {\uldb [Aller]}{\v IDH_TPSYS_09}\par
+{\f1 10. PROCEDURES ET FONCTIONS - REPERTOIRES}     {\uldb [Aller]}{\v IDH_TPSYS_10}\par
+{\f1 11. PROCEDURES ET FONCTIONS - ENSEMBLES}     {\uldb [Aller]}{\v IDH_TPSYS_11}\par
+{\f1 12. PROCEDURES ET FONCTIONS - CONTROLE DU PROGRAMME}     {\uldb [Aller]}{\v IDH_TPSYS_12}\par
+{\f1 13. PROCEDURES ET FONCTIONS - ALEATOIRE}     {\uldb [Aller]}{\v IDH_TPSYS_13}\par
+{\f1 14. PROCEDURES ET FONCTIONS - PARAMETRES DU PROGRAMME}     {\uldb [Aller]}{\v IDH_TPSYS_14}\par
+{\f1 15. INTERFACE COMPLETE}     {\uldb [Aller]}{\v IDH_TPSYS_15}\par
+{\f1 16. RESUME PAR CATEGORIE}     {\uldb [Aller]}{\v IDH_TPSYS_16}\par
+\par
+{\uldb Suivant >>}{\v IDH_TPSYS_02}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPSYS_02}
+{\footnote $ Unite System - VARIABLES PREDEFINIES}
+{\footnote K Turbo Pascal;Unite System;VARIABLES PREDEFINIES}
+\b\fs24 VARIABLES PREDEFINIES \b0\fs20\par
+\par
+\par
+\b 2.1 Fichiers standard \b0\par
+\par
+{\f1   Var}\par
+{\f1     Input  : Text;   \{ Fichier de l'entree standard (stdin)  \}}\par
+{\f1     Output : Text;   \{ Fichier de la sortie standard (stdout) \}}\par
+\par
+{\f1   Input et Output sont les fichiers texte pred??finis. Quand Read/ReadLn}\par
+{\f1   ou Write/WriteLn sont appeles sans argument fichier, ils utilisent}\par
+{\f1   respectivement Input et Output.}\par
+\par
+{\f1   WriteLn('Bonjour');         \{ ecrit dans Output = stdout \}}\par
+{\f1   ReadLn(S);                  \{ lit depuis Input = stdin   \}}\par
+{\f1   WriteLn(Output, 'Bonjour'); \{ equivalent explicite        \}}\par
+\par
+\par
+\b 2.2 Sauvegarde des vecteurs d'interruption \b0\par
+\par
+{\f1   Var}\par
+{\f1     SaveInt00 : Pointer;   \{ Division par zero               \}}\par
+{\f1     SaveInt02 : Pointer;   \{ NMI (Non-Maskable Interrupt)    \}}\par
+{\f1     SaveInt09 : Pointer;   \{ Clavier                         \}}\par
+{\f1     SaveInt1B : Pointer;   \{ Ctrl+Break                      \}}\par
+{\f1     SaveInt21 : Pointer;   \{ Services DOS                    \}}\par
+{\f1     SaveInt23 : Pointer;   \{ Ctrl+C handler                  \}}\par
+{\f1     SaveInt24 : Pointer;   \{ Erreur critique DOS             \}}\par
+{\f1     SaveInt34 : Pointer;   \{ Emulation 8087 (34-3E)          \}}\par
+{\f1     SaveInt35 : Pointer;}\par
+{\f1     SaveInt36 : Pointer;}\par
+{\f1     SaveInt37 : Pointer;}\par
+{\f1     SaveInt38 : Pointer;}\par
+{\f1     SaveInt39 : Pointer;}\par
+{\f1     SaveInt3A : Pointer;}\par
+{\f1     SaveInt3B : Pointer;}\par
+{\f1     SaveInt3C : Pointer;}\par
+{\f1     SaveInt3D : Pointer;}\par
+{\f1     SaveInt3E : Pointer;}\par
+{\f1     SaveInt3F : Pointer;   \{ Overlay manager                 \}}\par
+{\f1     SaveInt75 : Pointer;   \{ IRQ 13 (coprocesseur math)      \}}\par
+\par
+{\f1   Au demarrage, le runtime sauvegarde les vecteurs d'interruption}\par
+{\f1   qu'il modifie. A la sortie, il les restaure. Sur Win32, ces}\par
+{\f1   variables n'ont plus de sens (pas d'interruptions DOS).}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPSYS_01}     {\uldb Suivant >>}{\v IDH_TPSYS_03}     {\uldb Sommaire}{\v IDH_TPSYS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPSYS_03}
+{\footnote $ Unite System - TYPES PREDEFINIS}
+{\footnote K Turbo Pascal;Unite System;TYPES PREDEFINIS}
+\b\fs24 TYPES PREDEFINIS \b0\fs20\par
+\par
+{\f1   Le langage Turbo Pascal definit les types suivants dans System :}\par
+\par
+{\f1   Types ordinaux :}\par
+{\f1     Integer   = -32768..32767        (16 bits signe)}\par
+{\f1     Word      = 0..65535             (16 bits non signe)}\par
+{\f1     Byte      = 0..255               (8 bits non signe)}\par
+{\f1     ShortInt  = -128..127            (8 bits signe)}\par
+{\f1     LongInt   = -2147483648..2147483647  (32 bits signe)}\par
+{\f1     Boolean   = False..True          (8 bits, 0 ou 1)}\par
+{\f1     Char      = #0..#255             (8 bits, un caractere)}\par
+\par
+{\f1   Types reels :}\par
+{\f1     Real      = 6 octets (format specifique Turbo Pascal)}\par
+{\f1     Single    = 4 octets IEEE 754 (requiert coprocesseur)}\par
+{\f1     Double    = 8 octets IEEE 754 (requiert coprocesseur)}\par
+{\f1     Extended  = 10 octets IEEE 754 (requiert coprocesseur)}\par
+{\f1     Comp      = 8 octets entier 64 bits (requiert coprocesseur)}\par
+\par
+{\f1   Types chaines :}\par
+{\f1     String    = ShortString, String[255] par defaut}\par
+{\f1     String[N] = chaine de N caracteres max (N = 1..255)}\par
+{\f1     PChar     = ^Char (pointeur vers chaine ASCIIZ,}\par
+{\f1                         disponible a partir de TP 7.0)}\par
+\par
+{\f1   Types pointeurs :}\par
+{\f1     Pointer   = pointeur generique non type (Seg:Ofs en real mode)}\par
+\par
+{\f1   Types fichiers :}\par
+{\f1     Text      = fichier texte (TextRec, 256 octets en real mode)}\par
+{\f1     File      = fichier non type (FileRec)}\par
+{\f1     File of T = fichier type (enregistrements de type T)}\par
+\par
+{\f1   Constantes speciales :}\par
+{\f1     True      = Boolean(1)}\par
+{\f1     False     = Boolean(0)}\par
+{\f1     Nil       = pointeur nul}\par
+{\f1     MaxInt    = 32767        \{ valeur maximale d'un Integer \}}\par
+{\f1     MaxLongInt = 2147483647  \{ valeur maximale d'un LongInt (TP7) \}}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPSYS_02}     {\uldb Suivant >>}{\v IDH_TPSYS_04}     {\uldb Sommaire}{\v IDH_TPSYS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPSYS_04}
+{\footnote $ Unite System - PROCEDURES ET FONCTIONS - E/S FICHIER}
+{\footnote K Turbo Pascal;Unite System;PROCEDURES ET FONCTIONS - E/S FICHIER}
+\b\fs24 PROCEDURES ET FONCTIONS - E/S FICHIER \b0\fs20\par
+\par
+{\f1   Les procedures d'E/S fichier sont le coeur de la gestion des fichiers}\par
+{\f1   en Turbo Pascal. Elles s'appliquent aux types Text, File et File of T.}\par
+\par
+\par
+\b 4.1 Assignation et ouverture \b0\par
+\par
+{\f1   Procedure Assign(Var fich : File; nomfich : String);}\par
+{\f1     - Associe une variable fichier a un nom de fichier sur disque}\par
+{\f1     - Doit etre appelee AVANT Reset, Rewrite ou Append}\par
+{\f1     - Exemple : Assign(F, 'DONNEES.TXT');}\par
+\par
+{\f1   Procedure Reset(Var fich : File);}\par
+{\f1     - Ouvre un fichier existant}\par
+{\f1     - Pour Text : ouvre en lecture seule}\par
+{\f1     - Pour File : ouvre en lecture/ecriture (selon FileMode)}\par
+{\f1     - Pour File of T : ouvre en lecture/ecriture}\par
+{\f1     - Le pointeur de fichier est positionne au debut}\par
+{\f1     - Erreur si le fichier n'existe pas}\par
+{\f1     - Exemple : Reset(F);}\par
+\par
+{\f1   Procedure Rewrite(Var fich : File);}\par
+{\f1     - Cree un nouveau fichier (ou ecrase un existant)}\par
+{\f1     - Pour Text : ouvre en ecriture seule}\par
+{\f1     - Pour File : cree avec taille de bloc = 128 octets par defaut}\par
+{\f1     - Le fichier est vide apres l'appel}\par
+{\f1     - Exemple : Rewrite(F);}\par
+\par
+{\f1   Procedure Append(Var fich : Text);}\par
+{\f1     - Ouvre un fichier texte EXISTANT en mode ajout}\par
+{\f1     - Le pointeur se positionne a la fin du fichier}\par
+{\f1     - Les ecritures s'ajoutent apres le contenu existant}\par
+{\f1     - Ne fonctionne qu'avec le type Text}\par
+{\f1     - Exemple : Append(F);}\par
+\par
+\par
+\b 4.2 Lecture \b0\par
+\par
+{\f1   Procedure Read(var1, var2, ...);}\par
+{\f1   Procedure Read(Var fich : Text; var1, var2, ...);}\par
+{\f1     - Lit des valeurs depuis un fichier texte (ou stdin)}\par
+{\f1     - Les types supportes : Integer, LongInt, Real, Char, String}\par
+{\f1     - Pour Integer/Real : saute les espaces, lit un nombre}\par
+{\f1     - Pour Char : lit un seul caractere}\par
+{\f1     - Pour String : lit jusqu'a CR/LF (sans le consommer)}\par
+{\f1     - Sans argument fich, lit depuis Input (stdin)}\par
+{\f1     - Exemple : Read(F, Nom, Age);}\par
+\par
+{\f1   Procedure ReadLn(var1, var2, ...);}\par
+{\f1   Procedure ReadLn(Var fich : Text; var1, var2, ...);}\par
+{\f1     - Comme Read, mais consomme aussi le reste de la ligne (CR/LF)}\par
+{\f1     - ReadLn sans arguments avance d'une ligne}\par
+{\f1     - Ne fonctionne qu'avec Text (pas File of T)}\par
+{\f1     - Exemple : ReadLn(F, S);}\par
+\par
+{\f1   Procedure BlockRead(Var fich : File; Var buf; count : Word;}\par
+{\f1                        Var result : Word);}\par
+{\f1     - Lit count enregistrements dans buf}\par
+{\f1     - result recoit le nombre d'enregistrements effectivement lus}\par
+{\f1     - Pour fichiers non types (File) avec taille de bloc}\par
+{\f1     - Exemple : BlockRead(F, Buffer, SizeOf(Buffer), BytesRead);}\par
+\par
+\par
+\b 4.3 Ecriture \b0\par
+\par
+{\f1   Procedure Write(var1, var2, ...);}\par
+{\f1   Procedure Write(Var fich : Text; var1, var2, ...);}\par
+{\f1     - Ecrit des valeurs dans un fichier texte (ou stdout)}\par
+{\f1     - Supporte le formatage : Write(N:8) ou Write(R:10:2)}\par
+{\f1     - Types supportes : Integer, LongInt, Real, Char, String, Boolean}\par
+{\f1     - Sans argument fich, ecrit dans Output (stdout)}\par
+{\f1     - Exemple : Write(F, 'Nom = ', Nom);}\par
+\par
+{\f1   Procedure WriteLn(var1, var2, ...);}\par
+{\f1   Procedure WriteLn(Var fich : Text; var1, var2, ...);}\par
+{\f1     - Comme Write, mais ajoute CR+LF a la fin}\par
+{\f1     - WriteLn sans arguments ecrit une ligne vide}\par
+{\f1     - Ne fonctionne qu'avec Text (pas File of T)}\par
+{\f1     - Exemple : WriteLn(F, 'Total = ', Total:10:2);}\par
+\par
+{\f1   Procedure BlockWrite(Var fich : File; Var buf; count : Word;}\par
+{\f1                         Var result : Word);}\par
+{\f1     - Ecrit count enregistrements depuis buf}\par
+{\f1     - result recoit le nombre d'enregistrements effectivement ecrits}\par
+{\f1     - Pour fichiers non types (File) avec taille de bloc}\par
+{\f1     - Exemple : BlockWrite(F, Buffer, BytesRead, BytesWritten);}\par
+\par
+\par
+\b 4.4 Fermeture et controle \b0\par
+\par
+{\f1   Procedure Close(Var fich : File);}\par
+{\f1     - Ferme un fichier ouvert}\par
+{\f1     - Vide le tampon d'ecriture avant de fermer}\par
+{\f1     - Doit etre appelee apres toute utilisation}\par
+{\f1     - Exemple : Close(F);}\par
+\par
+{\f1   Procedure Flush(Var fich : Text);}\par
+{\f1     - Vide le tampon d'ecriture d'un fichier texte}\par
+{\f1     - Les donnees en tampon sont ecrites sur disque}\par
+{\f1     - Ne fonctionne qu'avec Text}\par
+{\f1     - Exemple : Flush(F);}\par
+\par
+\par
+\b 4.5 Tests d'etat \b0\par
+\par
+{\f1   Function Eof(Var fich : File) : Boolean;}\par
+{\f1   Function Eof : Boolean;}\par
+{\f1     - Retourne True si la fin du fichier est atteinte}\par
+{\f1     - Sans argument : teste Eof(Input) = stdin}\par
+{\f1     - Pour Text : True quand aucun caractere ne peut etre lu}\par
+{\f1     - Pour File : True quand FilePos = FileSize}\par
+{\f1     - Exemple : While Not Eof(F) Do ReadLn(F, S);}\par
+\par
+{\f1   Function Eoln(Var fich : Text) : Boolean;}\par
+{\f1   Function Eoln : Boolean;}\par
+{\f1     - Retourne True si le caractere courant est CR ou LF}\par
+{\f1     - Ne fonctionne qu'avec Text}\par
+{\f1     - Sans argument : teste Eoln(Input)}\par
+{\f1     - Exemple : While Not Eoln(F) Do Read(F, Ch);}\par
+\par
+{\f1   Function SeekEof(Var fich : Text) : Boolean;}\par
+{\f1     - Comme Eof mais saute les espaces, tabulations et lignes vides}\par
+{\f1     - Utile pour lire des nombres separes par des blancs}\par
+{\f1     - Ne fonctionne qu'avec Text}\par
+{\f1     - Exemple : While Not SeekEof(F) Do Read(F, N);}\par
+\par
+{\f1   Function SeekEoln(Var fich : Text) : Boolean;}\par
+{\f1     - Comme Eoln mais saute les espaces et tabulations}\par
+{\f1     - Ne fonctionne qu'avec Text}\par
+\par
+{\f1   Function IoResult : Word;}\par
+{\f1     - Retourne le code d'erreur de la derniere operation I/O}\par
+{\f1     - Remet InOutRes a 0 apres l'appel}\par
+{\f1     - Requiert la directive \{$I-\} pour ne pas generer d'erreur runtime}\par
+{\f1     - 0 = succes, autre = code d'erreur (voir section 1.4)}\par
+{\f1     - Exemple :}\par
+{\f1         \{$I-\}}\par
+{\f1         Reset(F);}\par
+{\f1         If IoResult <> 0 Then WriteLn('Erreur ouverture');}\par
+{\f1         \{$I+\}}\par
+\par
+\par
+\b 4.6 Positionnement \b0\par
+\par
+{\f1   Procedure Seek(Var fich : File; Pos : LongInt);}\par
+{\f1     - Positionne le pointeur de fichier a l'enregistrement Pos}\par
+{\f1     - Pos = 0 pour le debut du fichier}\par
+{\f1     - Ne fonctionne PAS avec Text}\par
+{\f1     - Exemple : Seek(F, 0);  \{ retour au debut \}}\par
+\par
+{\f1   Function FilePos(Var fich : File) : LongInt;}\par
+{\f1     - Retourne la position courante dans le fichier}\par
+{\f1     - Pour File : en nombre d'enregistrements}\par
+{\f1     - Ne fonctionne PAS avec Text}\par
+{\f1     - Exemple : Pos := FilePos(F);}\par
+\par
+{\f1   Function FileSize(Var fich : File) : LongInt;}\par
+{\f1     - Retourne la taille du fichier en nombre d'enregistrements}\par
+{\f1     - Pour File of T : nombre d'enregistrements de type T}\par
+{\f1     - Pour File : nombre de blocs de 128 octets (par defaut)}\par
+{\f1     - Ne fonctionne PAS avec Text}\par
+{\f1     - Exemple : N := FileSize(F);}\par
+\par
+{\f1   Procedure Truncate(Var fich : File);}\par
+{\f1     - Tronque le fichier a la position courante}\par
+{\f1     - Tout ce qui suit la position courante est supprime}\par
+{\f1     - Ne fonctionne PAS avec Text}\par
+{\f1     - Exemple : Seek(F, 10); Truncate(F);}\par
+\par
+\par
+\b 4.7 Gestion fichier \b0\par
+\par
+{\f1   Procedure Rename(Var fich : File; nouveaunom : String);}\par
+{\f1     - Renomme un fichier (doit etre ferme)}\par
+{\f1     - Exemple : Close(F); Rename(F, 'NOUVEAU.TXT');}\par
+\par
+{\f1   Procedure Erase(Var fich : File);}\par
+{\f1     - Supprime un fichier du disque (doit etre ferme)}\par
+{\f1     - Exemple : Close(F); Erase(F);}\par
+\par
+\par
+\b 4.8 Tampon texte \b0\par
+\par
+{\f1   Procedure SetTextBuf(Var fich : Text; Var buffer; Taille : Word);}\par
+{\f1   Procedure SetTextBuf(Var fich : Text; Var buffer);}\par
+{\f1     - Assigne un tampon personnalise a un fichier texte}\par
+{\f1     - Doit etre appele ENTRE Assign et Reset/Rewrite}\par
+{\f1     - Si Taille est omise, utilise SizeOf(buffer)}\par
+{\f1     - Ameliore les performances pour les gros fichiers}\par
+{\f1     - Exemple :}\par
+{\f1         Var Buf : Array[0..4095] Of Char;}\par
+{\f1         Assign(F, 'GROS.TXT');}\par
+{\f1         SetTextBuf(F, Buf);}\par
+{\f1         Reset(F);}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPSYS_03}     {\uldb Suivant >>}{\v IDH_TPSYS_05}     {\uldb Sommaire}{\v IDH_TPSYS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPSYS_05}
+{\footnote $ Unite System - PROCEDURES ET FONCTIONS - CHAINES}
+{\footnote K Turbo Pascal;Unite System;PROCEDURES ET FONCTIONS - CHAINES}
+\b\fs24 PROCEDURES ET FONCTIONS - CHAINES \b0\fs20\par
+\par
+{\f1   Ces fonctions operent sur les types String (Pascal ShortString).}\par
+{\f1   Voir DOC\\TURBOPASCAL_STRING.txt pour les details complets.}\par
+\par
+\par
+\b 5.1 Fonctions de chaines \b0\par
+\par
+{\f1   Function Length(ch : String) : Integer;}\par
+{\f1     - Retourne la longueur de la chaine (valeur de ch[0])}\par
+{\f1     - Exemple : Length('TEST') = 4}\par
+\par
+{\f1   Function Copy(S : String; Index, Count : Integer) : String;}\par
+{\f1     - Retourne une sous-chaine de Count caracteres a partir de Index}\par
+{\f1     - Index est 1-based (S[1] = premier caractere)}\par
+{\f1     - Exemple : Copy('ABCDEF', 2, 3) = 'BCD'}\par
+\par
+{\f1   Function Pos(search, source : String) : Integer;}\par
+{\f1     - Retourne la position de search dans source (1-based)}\par
+{\f1     - Retourne 0 si non trouve}\par
+{\f1     - Exemple : Pos('CD', 'ABCDEF') = 3}\par
+\par
+{\f1   Function Concat(ch1, ch2, ... : String) : String;}\par
+{\f1     - Concatene plusieurs chaines}\par
+{\f1     - Equivalent a ch1 + ch2 + ...}\par
+{\f1     - Tronque a 255 caracteres si necessaire}\par
+{\f1     - Exemple : Concat('AB', 'CD') = 'ABCD'}\par
+\par
+{\f1   Function UpCase(ch : Char) : Char;}\par
+{\f1     - Convertit un caractere minuscule a-z en majuscule A-Z}\par
+{\f1     - Les autres caracteres ne sont pas modifies}\par
+{\f1     - Ne gere PAS les caracteres accentues}\par
+{\f1     - Exemple : UpCase('a') = 'A'}\par
+\par
+\par
+\b 5.2 Procedures de chaines \b0\par
+\par
+{\f1   Procedure Delete(Var S : String; Pos, nbre : Integer);}\par
+{\f1     - Supprime nbre caracteres de S a partir de Pos}\par
+{\f1     - Modifie S en place}\par
+{\f1     - Exemple : S := 'ABCDEF'; Delete(S, 2, 3); \{ S = 'AEF' \}}\par
+\par
+{\f1   Procedure Insert(ch1 : String; Var ch2 : String; pos : Integer);}\par
+{\f1     - Insere ch1 dans ch2 a la position pos}\par
+{\f1     - Modifie ch2 en place}\par
+{\f1     - Exemple : S := 'AEF'; Insert('BCD', S, 2); \{ S = 'ABCDEF' \}}\par
+\par
+{\f1   Procedure Str(nbre : <type>; Var ch : String);}\par
+{\f1   Procedure Str(nbre : <type>:largeur; Var ch : String);}\par
+{\f1   Procedure Str(nbre : <type>:largeur:decimales; Var ch : String);}\par
+{\f1     - Convertit un nombre en chaine}\par
+{\f1     - Supporte Integer, LongInt, Real avec formatage optionnel}\par
+{\f1     - Exemple : Str(42, S);       \{ S = '42'     \}}\par
+{\f1     - Exemple : Str(3.14:6:2, S); \{ S = '  3.14' \}}\par
+\par
+{\f1   Procedure Val(ch : String; Var nbre; Var err : Integer);}\par
+{\f1     - Convertit une chaine en nombre (Integer, LongInt ou Real)}\par
+{\f1     - err = 0 si la conversion reussit}\par
+{\f1     - err = position du premier caractere invalide sinon}\par
+{\f1     - Exemple : Val('42', N, Err);  \{ N = 42, Err = 0 \}}\par
+{\f1     - Exemple : Val('3X', N, Err);  \{ N = ?, Err = 2  \}}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPSYS_04}     {\uldb Suivant >>}{\v IDH_TPSYS_06}     {\uldb Sommaire}{\v IDH_TPSYS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPSYS_06}
+{\footnote $ Unite System - PROCEDURES ET FONCTIONS - ARITHMETIQUE}
+{\footnote K Turbo Pascal;Unite System;PROCEDURES ET FONCTIONS - ARITHMETIQUE}
+\b\fs24 PROCEDURES ET FONCTIONS - ARITHMETIQUE \b0\fs20\par
+\par
+\par
+\b 6.1 Fonctions entieres \b0\par
+\par
+{\f1   Function Abs(n : Integer) : Integer;}\par
+{\f1   Function Abs(n : Real) : Real;}\par
+{\f1     - Retourne la valeur absolue de n}\par
+{\f1     - Exemple : Abs(-5) = 5}\par
+\par
+{\f1   Function Sqr(x : Integer) : Integer;}\par
+{\f1   Function Sqr(x : Real) : Real;}\par
+{\f1     - Retourne le carre de x (x * x)}\par
+{\f1     - Exemple : Sqr(3) = 9}\par
+\par
+{\f1   Function Odd(i : LongInt) : Boolean;}\par
+{\f1     - Retourne True si i est impair}\par
+{\f1     - Equivalent a (i And 1) = 1}\par
+{\f1     - Exemple : Odd(3) = True, Odd(4) = False}\par
+\par
+\par
+\b 6.2 Fonctions reelles \b0\par
+\par
+{\f1   Function Sqrt(r : Real) : Real;}\par
+{\f1     - Retourne la racine carree de r}\par
+{\f1     - r doit etre >= 0}\par
+{\f1     - Exemple : Sqrt(9.0) = 3.0}\par
+\par
+{\f1   Function Sin(r : Real) : Real;}\par
+{\f1     - Retourne le sinus de r (r en radians)}\par
+\par
+{\f1   Function Cos(r : Real) : Real;}\par
+{\f1     - Retourne le cosinus de r (r en radians)}\par
+\par
+{\f1   Function ArcTan(r : Real) : Real;}\par
+{\f1     - Retourne l'arc tangente de r (en radians)}\par
+\par
+{\f1   Function Exp(r : Real) : Real;}\par
+{\f1     - Retourne e^r (exponentielle)}\par
+\par
+{\f1   Function Ln(r : Real) : Real;}\par
+{\f1     - Retourne le logarithme neperien de r}\par
+{\f1     - r doit etre > 0}\par
+\par
+{\f1   Function Frac(r : Real) : Real;}\par
+{\f1     - Retourne la partie fractionnaire de r}\par
+{\f1     - Exemple : Frac(3.14) = 0.14}\par
+\par
+{\f1   Function Int(r : Real) : Real;}\par
+{\f1     - Retourne la partie entiere de r (comme Real)}\par
+{\f1     - Exemple : Int(3.14) = 3.0}\par
+\par
+\par
+\b 6.3 Fonctions de conversion \b0\par
+\par
+{\f1   Function Round(n : Real) : LongInt;}\par
+{\f1     - Arrondit un reel a l'entier le plus proche}\par
+{\f1     - Exemple : Round(3.6) = 4, Round(3.4) = 3}\par
+\par
+{\f1   Function Trunc(r : Real) : LongInt;}\par
+{\f1     - Tronque un reel (supprime la partie decimale)}\par
+{\f1     - Exemple : Trunc(3.9) = 3, Trunc(-3.9) = -3}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPSYS_05}     {\uldb Suivant >>}{\v IDH_TPSYS_07}     {\uldb Sommaire}{\v IDH_TPSYS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPSYS_07}
+{\footnote $ Unite System - PROCEDURES ET FONCTIONS - ORDINAUX}
+{\footnote K Turbo Pascal;Unite System;PROCEDURES ET FONCTIONS - ORDINAUX}
+\b\fs24 PROCEDURES ET FONCTIONS - ORDINAUX \b0\fs20\par
+\par
+{\f1   Function Ord(s) : LongInt;}\par
+{\f1     - Retourne la valeur ordinale de s}\par
+{\f1     - Pour Char : code ASCII (Ord('A') = 65)}\par
+{\f1     - Pour Boolean : Ord(False) = 0, Ord(True) = 1}\par
+{\f1     - Pour enumeration : indice dans le type}\par
+{\f1     - Exemple : Ord(S[0]) = longueur de la chaine S}\par
+\par
+{\f1   Function Chr(i : Byte) : Char;}\par
+{\f1     - Retourne le caractere de code ASCII i}\par
+{\f1     - Inverse de Ord pour les Char}\par
+{\f1     - Exemple : Chr(65) = 'A', Chr(13) = CR}\par
+\par
+{\f1   Function Pred(s) : <meme type>;}\par
+{\f1     - Retourne le predecesseur de s}\par
+{\f1     - Pour Integer : Pred(N) = N - 1}\par
+{\f1     - Pour Char : Pred('B') = 'A'}\par
+{\f1     - Pour enumeration : element precedent}\par
+{\f1     - Erreur si s est le premier element du type}\par
+\par
+{\f1   Function Succ(s) : <meme type>;}\par
+{\f1     - Retourne le successeur de s}\par
+{\f1     - Pour Integer : Succ(N) = N + 1}\par
+{\f1     - Pour Char : Succ('A') = 'B'}\par
+{\f1     - Erreur si s est le dernier element du type}\par
+\par
+{\f1   Procedure Inc(Var s);}\par
+{\f1   Procedure Inc(Var s; n : LongInt);}\par
+{\f1     - Incremente s de 1 (ou de n)}\par
+{\f1     - Plus efficace que s := s + 1 (genere INC en assembleur)}\par
+{\f1     - Fonctionne avec tous les types ordinaux et pointeurs}\par
+{\f1     - Exemple : Inc(I);      \{ I := I + 1 \}}\par
+{\f1     - Exemple : Inc(I, 5);   \{ I := I + 5 \}}\par
+\par
+{\f1   Procedure Dec(Var s);}\par
+{\f1   Procedure Dec(Var s; n : LongInt);}\par
+{\f1     - Decremente s de 1 (ou de n)}\par
+{\f1     - Plus efficace que s := s - 1 (genere DEC en assembleur)}\par
+{\f1     - Exemple : Dec(I);      \{ I := I - 1 \}}\par
+{\f1     - Exemple : Dec(I, 5);   \{ I := I - 5 \}}\par
+\par
+{\f1   Function Hi(i : Word) : Byte;}\par
+{\f1     - Retourne l'octet de poids fort de i}\par
+{\f1     - Equivalent a (i Shr 8) And $FF}\par
+{\f1     - Exemple : Hi($1234) = $12}\par
+\par
+{\f1   Function Lo(i : Word) : Byte;}\par
+{\f1     - Retourne l'octet de poids faible de i}\par
+{\f1     - Equivalent a i And $FF}\par
+{\f1     - Exemple : Lo($1234) = $34}\par
+\par
+{\f1   Function Swap(i : Word) : Word;}\par
+{\f1     - Echange les octets haut et bas de i}\par
+{\f1     - Exemple : Swap($1234) = $3412}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPSYS_06}     {\uldb Suivant >>}{\v IDH_TPSYS_08}     {\uldb Sommaire}{\v IDH_TPSYS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPSYS_08}
+{\footnote $ Unite System - PROCEDURES ET FONCTIONS - MEMOIRE ET POINTEURS}
+{\footnote K Turbo Pascal;Unite System;PROCEDURES ET FONCTIONS - MEMOIRE ET POINTEURS}
+\b\fs24 PROCEDURES ET FONCTIONS - MEMOIRE ET POINTEURS \b0\fs20\par
+\par
+\par
+\b 8.1 Allocation dynamique \b0\par
+\par
+{\f1   Procedure New(Var p : Pointer);}\par
+{\f1   Procedure New(Var p : Pointer; Init : Constructor);}\par
+{\f1     - Alloue un bloc de memoire sur le tas de taille SizeOf(p^)}\par
+{\f1     - p recoit l'adresse du bloc alloue}\par
+{\f1     - La forme avec constructeur est pour les objets}\par
+{\f1     - Exemple : New(P);    \{ alloue SizeOf(P^) octets \}}\par
+\par
+{\f1   Procedure Dispose(Var p : Pointer);}\par
+{\f1   Procedure Dispose(Var p : Pointer; Destructor);}\par
+{\f1     - Libere la memoire allouee par New}\par
+{\f1     - La forme avec destructeur est pour les objets}\par
+{\f1     - p devient invalide apres l'appel}\par
+{\f1     - Exemple : Dispose(P);}\par
+\par
+{\f1   Procedure GetMem(Var p : Pointer; t : Word);}\par
+{\f1     - Alloue t octets sur le tas}\par
+{\f1     - Plus flexible que New (taille variable)}\par
+{\f1     - Exemple : GetMem(P, 100);  \{ alloue 100 octets \}}\par
+\par
+{\f1   Procedure FreeMem(Var p : Pointer; t : Word);}\par
+{\f1     - Libere t octets precedemment alloues par GetMem}\par
+{\f1     - t DOIT etre identique a la taille passee a GetMem}\par
+{\f1     - Exemple : FreeMem(P, 100);}\par
+\par
+{\f1   Procedure Mark(Var p : Pointer);}\par
+{\f1     - Enregistre l'etat courant du tas dans p}\par
+{\f1     - Utilise avec Release (methode ancienne)}\par
+{\f1     - Deconseille : utiliser New/Dispose ou GetMem/FreeMem}\par
+\par
+{\f1   Procedure Release(Var p : Pointer);}\par
+{\f1     - Libere toute la memoire du tas depuis la position Mark}\par
+{\f1     - Toutes les allocations apres Mark sont perdues}\par
+{\f1     - Deconseille : utiliser New/Dispose ou GetMem/FreeMem}\par
+\par
+\par
+\b 8.2 Information memoire \b0\par
+\par
+{\f1   Function MaxAvail : LongInt;}\par
+{\f1     - Retourne la taille du plus grand bloc contigu libre sur le tas}\par
+{\f1     - En octets}\par
+{\f1     - Exemple : If MaxAvail > 1000 Then GetMem(P, 1000);}\par
+\par
+{\f1   Function MemAvail : LongInt;}\par
+{\f1     - Retourne la memoire totale libre sur le tas (tous blocs)}\par
+{\f1     - En octets}\par
+{\f1     - MemAvail >= MaxAvail}\par
+\par
+\par
+\b 8.3 Fonctions de pointeur \b0\par
+\par
+{\f1   Function Addr(x) : Pointer;}\par
+{\f1     - Retourne l'adresse de x (equivalent a @x)}\par
+{\f1     - Exemple : P := Addr(MaVariable);}\par
+\par
+{\f1   Function Assigned(Var P) : Boolean;}\par
+{\f1     - Retourne True si P n'est pas nil}\par
+{\f1     - Equivalent a P <> nil mais plus lisible}\par
+{\f1     - Disponible a partir de TP 7.0}\par
+{\f1     - Exemple : If Assigned(P) Then P^.DoSomething;}\par
+\par
+{\f1   Function Ptr(seg, ofs : Word) : Pointer;}\par
+{\f1     - Construit un pointeur a partir d'un segment et d'un offset}\par
+{\f1     - Specifique au mode reel 16 bits}\par
+{\f1     - Exemple : P := Ptr($B800, 0);  \{ debut de la memoire video \}}\par
+\par
+{\f1   Function Ofs(ident) : Word;}\par
+{\f1     - Retourne l'offset d'un identifiant dans son segment}\par
+{\f1     - Specifique au mode reel 16 bits}\par
+{\f1     - Exemple : WriteLn(Ofs(MaVar));}\par
+\par
+{\f1   Function Seg(ident) : Word;     \{ Note : non dans l'interface ci-dessus \}}\par
+{\f1     - Retourne le segment d'un identifiant}\par
+{\f1     - Specifique au mode reel 16 bits}\par
+\par
+\par
+\b 8.4 Operations sur la memoire \b0\par
+\par
+{\f1   Procedure Move(Const orig; Var dest; nbre : Word);}\par
+{\f1     - Copie nbre octets de orig vers dest}\par
+{\f1     - Les zones peuvent se chevaucher (copie dans le bon sens)}\par
+{\f1     - Plus rapide que boucle manuelle (utilise REP MOVSB/MOVSD)}\par
+{\f1     - Exemple : Move(Source, Dest, SizeOf(Source));}\par
+\par
+{\f1   Procedure FillChar(Var tampon; nbre : Word; val : Byte);}\par
+{\f1   Procedure FillChar(Var tampon; nbre : Word; val : Char);}\par
+{\f1     - Remplit nbre octets de tampon avec la valeur val}\par
+{\f1     - Utilise pour initialiser des buffers a zero}\par
+{\f1     - Exemple : FillChar(Buffer, SizeOf(Buffer), 0);}\par
+{\f1     - Exemple : FillChar(S, SizeOf(S), ' ');}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPSYS_07}     {\uldb Suivant >>}{\v IDH_TPSYS_09}     {\uldb Sommaire}{\v IDH_TPSYS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPSYS_09}
+{\footnote $ Unite System - PROCEDURES ET FONCTIONS - REGISTRES ET SEGMENTS}
+{\footnote K Turbo Pascal;Unite System;PROCEDURES ET FONCTIONS - REGISTRES ET SEGMENTS}
+\b\fs24 PROCEDURES ET FONCTIONS - REGISTRES ET SEGMENTS \b0\fs20\par
+\par
+{\f1   Function CSeg : Word;}\par
+{\f1     - Retourne le segment de code courant (CS)}\par
+{\f1     - Specifique au mode reel 16 bits}\par
+\par
+{\f1   Function DSeg : Word;}\par
+{\f1     - Retourne le segment de donnees courant (DS)}\par
+{\f1     - Specifique au mode reel 16 bits}\par
+\par
+{\f1   Function SSeg : Word;}\par
+{\f1     - Retourne le segment de pile courant (SS)}\par
+{\f1     - Specifique au mode reel 16 bits}\par
+\par
+{\f1   Function SPtr : Word;}\par
+{\f1     - Retourne le pointeur de pile courant (SP)}\par
+{\f1     - Specifique au mode reel 16 bits}\par
+\par
+{\f1   NOTE : en Win32 (mode protege 32 bits a plat), CSeg, DSeg, SSeg}\par
+{\f1   et SPtr ne sont plus significatifs. Les segments sont tous = 0}\par
+{\f1   ou ont des selecteurs systeme.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPSYS_08}     {\uldb Suivant >>}{\v IDH_TPSYS_10}     {\uldb Sommaire}{\v IDH_TPSYS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPSYS_10}
+{\footnote $ Unite System - PROCEDURES ET FONCTIONS - REPERTOIRES}
+{\footnote K Turbo Pascal;Unite System;PROCEDURES ET FONCTIONS - REPERTOIRES}
+\b\fs24 PROCEDURES ET FONCTIONS - REPERTOIRES \b0\fs20\par
+\par
+{\f1   Procedure ChDir(rep : String);}\par
+{\f1     - Change le repertoire courant}\par
+{\f1     - Exemple : ChDir('C:\\PROJETS');}\par
+\par
+{\f1   Procedure MkDir(reper : String);}\par
+{\f1     - Cree un nouveau repertoire}\par
+{\f1     - Exemple : MkDir('C:\\PROJETS\\NOUVEAU');}\par
+\par
+{\f1   Procedure RmDir(reper : String);}\par
+{\f1     - Supprime un repertoire (doit etre vide)}\par
+{\f1     - Exemple : RmDir('C:\\PROJETS\\ANCIEN');}\par
+\par
+{\f1   Procedure GetDir(unite : Word; Var reper : String);}\par
+{\f1     - Retourne le repertoire courant d'un lecteur}\par
+{\f1     - unite = 0 pour le lecteur courant, 1=A, 2=B, 3=C, etc.}\par
+{\f1     - Exemple : GetDir(0, S);  \{ S = 'C:\\PROJETS' \}}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPSYS_09}     {\uldb Suivant >>}{\v IDH_TPSYS_11}     {\uldb Sommaire}{\v IDH_TPSYS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPSYS_11}
+{\footnote $ Unite System - PROCEDURES ET FONCTIONS - ENSEMBLES}
+{\footnote K Turbo Pascal;Unite System;PROCEDURES ET FONCTIONS - ENSEMBLES}
+\b\fs24 PROCEDURES ET FONCTIONS - ENSEMBLES \b0\fs20\par
+\par
+{\f1   Procedure Include(Var S : Set of T; I : T);}\par
+{\f1     - Ajoute l'element I a l'ensemble S}\par
+{\f1     - Plus efficace que S := S + [I]}\par
+{\f1     - Disponible a partir de TP 7.0}\par
+{\f1     - Exemple : Include(MonSet, 'A');}\par
+\par
+{\f1   Procedure Exclude(Var S : Set of T; I : T);}\par
+{\f1     - Retire l'element I de l'ensemble S}\par
+{\f1     - Plus efficace que S := S - [I]}\par
+{\f1     - Disponible a partir de TP 7.0}\par
+{\f1     - Exemple : Exclude(MonSet, 'A');}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPSYS_10}     {\uldb Suivant >>}{\v IDH_TPSYS_12}     {\uldb Sommaire}{\v IDH_TPSYS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPSYS_12}
+{\footnote $ Unite System - PROCEDURES ET FONCTIONS - CONTROLE DU PROGRAMME}
+{\footnote K Turbo Pascal;Unite System;PROCEDURES ET FONCTIONS - CONTROLE DU PROGRAMME}
+\b\fs24 PROCEDURES ET FONCTIONS - CONTROLE DU PROGRAMME \b0\fs20\par
+\par
+{\f1   Procedure Halt;}\par
+{\f1   Procedure Halt(nbre : Word);}\par
+{\f1     - Termine le programme immediatement}\par
+{\f1     - nbre = code de sortie (0 par defaut = pas d'erreur)}\par
+{\f1     - Les procedures ExitProc sont executees}\par
+{\f1     - Les fichiers ne sont PAS fermes automatiquement}\par
+{\f1     - Exemple : Halt(1);  \{ sortie avec erreur \}}\par
+\par
+{\f1   Procedure RunError(nbre : Word);}\par
+{\f1     - Genere une erreur d'execution avec le code nbre}\par
+{\f1     - Affiche le message d'erreur et termine le programme}\par
+{\f1     - Codes courants :}\par
+{\f1         1   = invalide function number}\par
+{\f1         2   = file not found}\par
+{\f1         3   = path not found}\par
+{\f1         4   = too many open files}\par
+{\f1         5   = file access denied}\par
+{\f1         6   = invalid file handle}\par
+{\f1         12  = invalid file access code}\par
+{\f1         15  = invalid drive number}\par
+{\f1         16  = cannot remove current directory}\par
+{\f1         17  = cannot rename across drives}\par
+{\f1         100 = disk read error}\par
+{\f1         101 = disk write error}\par
+{\f1         102 = file not assigned}\par
+{\f1         103 = file not open}\par
+{\f1         104 = file not open for input}\par
+{\f1         105 = file not open for output}\par
+{\f1         106 = invalid numeric format}\par
+{\f1         150 = disk is write-protected}\par
+{\f1         151 = bad drive request struct length}\par
+{\f1         152 = drive not ready}\par
+{\f1         154 = CRC error in data}\par
+{\f1         156 = disk seek error}\par
+{\f1         157 = unknown media type}\par
+{\f1         158 = sector not found}\par
+{\f1         159 = printer out of paper}\par
+{\f1         160 = device write fault}\par
+{\f1         161 = device read fault}\par
+{\f1         162 = hardware failure}\par
+{\f1         200 = division by zero}\par
+{\f1         201 = range check error}\par
+{\f1         202 = stack overflow error}\par
+{\f1         203 = heap overflow error}\par
+{\f1         204 = invalid pointer operation}\par
+{\f1         205 = floating-point overflow}\par
+{\f1         206 = floating-point underflow}\par
+{\f1         207 = invalid floating-point operation}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPSYS_11}     {\uldb Suivant >>}{\v IDH_TPSYS_13}     {\uldb Sommaire}{\v IDH_TPSYS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPSYS_13}
+{\footnote $ Unite System - PROCEDURES ET FONCTIONS - ALEATOIRE}
+{\footnote K Turbo Pascal;Unite System;PROCEDURES ET FONCTIONS - ALEATOIRE}
+\b\fs24 PROCEDURES ET FONCTIONS - ALEATOIRE \b0\fs20\par
+\par
+{\f1   Function Random(max : Word) : Word;}\par
+{\f1   Function Random : Real;}\par
+{\f1     - Retourne un nombre pseudo-aleatoire}\par
+{\f1     - Random(N) retourne un Word dans [0..N-1]}\par
+{\f1     - Random (sans argument) retourne un Real dans [0.0..1.0[}\par
+{\f1     - Utilise RandSeed comme graine}\par
+{\f1     - Exemple : D := Random(6) + 1;  \{ de 1en : 1..6 \}}\par
+\par
+{\f1   Procedure Randomize;}\par
+{\f1     - Initialise RandSeed a partir de l'horloge systeme}\par
+{\f1     - Doit etre appele une seule fois, au debut du programme}\par
+{\f1     - Sans appel a Randomize, RandSeed = 0 et la sequence}\par
+{\f1       pseudo-aleatoire est toujours la meme}\par
+{\f1     - Exemple :}\par
+{\f1         Randomize;}\par
+{\f1         WriteLn(Random(100));}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPSYS_12}     {\uldb Suivant >>}{\v IDH_TPSYS_14}     {\uldb Sommaire}{\v IDH_TPSYS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPSYS_14}
+{\footnote $ Unite System - PROCEDURES ET FONCTIONS - PARAMETRES DU PROGRAMME}
+{\footnote K Turbo Pascal;Unite System;PROCEDURES ET FONCTIONS - PARAMETRES DU PROGRAMME}
+\b\fs24 PROCEDURES ET FONCTIONS - PARAMETRES DU PROGRAMME \b0\fs20\par
+\par
+{\f1   Function ParamCount : Word;}\par
+{\f1     - Retourne le nombre de parametres de la ligne de commande}\par
+{\f1     - Le nom du programme n'est PAS compte}\par
+{\f1     - Exemple : If ParamCount = 0 Then WriteLn('Usage: ...');}\par
+\par
+{\f1   Function ParamStr(N : Word) : String;}\par
+{\f1     - Retourne le N-ieme parametre de la ligne de commande}\par
+{\f1     - ParamStr(0) = nom et chemin du programme}\par
+{\f1     - ParamStr(1) = premier parametre, etc.}\par
+{\f1     - NOTE : ParamStr n'est PAS dans l'interface System standard,}\par
+{\f1       mais est une procedure intrinseque du runtime.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPSYS_13}     {\uldb Suivant >>}{\v IDH_TPSYS_15}     {\uldb Sommaire}{\v IDH_TPSYS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPSYS_15}
+{\footnote $ Unite System - INTERFACE COMPLETE}
+{\footnote K Turbo Pascal;Unite System;INTERFACE COMPLETE}
+\b\fs24 INTERFACE COMPLETE \b0\fs20\par
+\par
+{\f1   Unit System;}\par
+\par
+{\f1   INTERFACE}\par
+\par
+{\f1   Const}\par
+{\f1     OvrCodeList  : Word    = 0;}\par
+{\f1     OvrHeapSize  : Word    = 0;}\par
+{\f1     OvrDebugPtr  : Pointer = nil;}\par
+{\f1     OvrHeapOrg   : Word    = 0;}\par
+{\f1     OvrHeapPtr   : Word    = 0;}\par
+{\f1     OvrHeapEnd   : Word    = 0;}\par
+{\f1     OvrLoadList  : Word    = 0;}\par
+{\f1     OvrDosHandle : Word    = 0;}\par
+{\f1     OvrEmsHandle : Word    = $FFFF;}\par
+{\f1     HeapOrg      : Pointer = nil;}\par
+{\f1     HeapPtr      : Pointer = nil;}\par
+{\f1     HeapEnd      : Pointer = nil;}\par
+{\f1     FreeList     : Pointer = nil;}\par
+{\f1     FreeZero     : Pointer = nil;}\par
+{\f1     HeapError    : Pointer = nil;}\par
+{\f1     ExitProc     : Pointer = nil;}\par
+{\f1     ExitCode     : Integer = 0;}\par
+{\f1     ErrorAddr    : Pointer = nil;}\par
+{\f1     PrefixSeg    : Word    = 0;}\par
+{\f1     StackLimit   : Word    = 0;}\par
+{\f1     InOutRes     : Integer = 0;}\par
+{\f1     RandSeed     : Longint = 0;}\par
+{\f1     FileMode     : Byte    = 2;}\par
+{\f1     Test8087     : Byte    = 0;}\par
+\par
+{\f1   Var}\par
+{\f1     Input     : Text;}\par
+{\f1     Output    : Text;}\par
+{\f1     SaveInt00 : Pointer;}\par
+{\f1     SaveInt02 : Pointer;}\par
+{\f1     SaveInt09 : Pointer;}\par
+{\f1     SaveInt1B : Pointer;}\par
+{\f1     SaveInt21 : Pointer;}\par
+{\f1     SaveInt23 : Pointer;}\par
+{\f1     SaveInt24 : Pointer;}\par
+{\f1     SaveInt34 : Pointer;}\par
+{\f1     SaveInt35 : Pointer;}\par
+{\f1     SaveInt36 : Pointer;}\par
+{\f1     SaveInt37 : Pointer;}\par
+{\f1     SaveInt38 : Pointer;}\par
+{\f1     SaveInt39 : Pointer;}\par
+{\f1     SaveInt3A : Pointer;}\par
+{\f1     SaveInt3B : Pointer;}\par
+{\f1     SaveInt3C : Pointer;}\par
+{\f1     SaveInt3D : Pointer;}\par
+{\f1     SaveInt3E : Pointer;}\par
+{\f1     SaveInt3F : Pointer;}\par
+{\f1     SaveInt75 : Pointer;}\par
+\par
+{\f1   \{ --- Arithmetique --- \}}\par
+{\f1   Function  Abs(n : Integer) : Integer;}\par
+{\f1   Function  Abs(n : Real) : Real;}\par
+{\f1   Function  Sqr(x : Integer) : Integer;}\par
+{\f1   Function  Sqr(x : Real) : Real;}\par
+{\f1   Function  Sqrt(r : Real) : Real;}\par
+{\f1   Function  Sin(r : Real) : Real;}\par
+{\f1   Function  Cos(r : Real) : Real;}\par
+{\f1   Function  ArcTan(r : Real) : Real;}\par
+{\f1   Function  Exp(r : Real) : Real;}\par
+{\f1   Function  Ln(r : Real) : Real;}\par
+{\f1   Function  Frac(r : Real) : Real;}\par
+{\f1   Function  Int(r : Real) : Real;}\par
+{\f1   Function  Round(n : Real) : LongInt;}\par
+{\f1   Function  Trunc(r : Real) : LongInt;}\par
+{\f1   Function  Odd(i : LongInt) : Boolean;}\par
+{\f1   Function  Random(max : Word) : Word;}\par
+{\f1   Procedure Randomize;}\par
+\par
+{\f1   \{ --- Ordinaux --- \}}\par
+{\f1   Function  Ord(s) : LongInt;}\par
+{\f1   Function  Chr(i : Byte) : Char;}\par
+{\f1   Function  Pred(s : <type>) : <type>;}\par
+{\f1   Function  Succ(s : <type>) : <type>;}\par
+{\f1   Procedure Inc(Var s);}\par
+{\f1   Procedure Inc(Var s; n : LongInt);}\par
+{\f1   Procedure Dec(Var s);}\par
+{\f1   Procedure Dec(Var s; n : LongInt);}\par
+{\f1   Function  Hi(i : Word) : Byte;}\par
+{\f1   Function  Lo(i : Word) : Byte;}\par
+{\f1   Function  Swap(i : Word) : Word;}\par
+{\f1   Function  UpCase(ch : Char) : Char;}\par
+\par
+{\f1   \{ --- Chaines --- \}}\par
+{\f1   Function  Length(ch : String) : Integer;}\par
+{\f1   Function  Copy(S : String; Index, Count : Integer) : String;}\par
+{\f1   Function  Pos(search, source : String) : Integer;}\par
+{\f1   Function  Concat(ch1, ch2, ... : String) : String;}\par
+{\f1   Procedure Delete(Var S : String; Pos, nbre : Integer);}\par
+{\f1   Procedure Insert(ch1 : String; Var ch2 : String; pos : Integer);}\par
+{\f1   Procedure Str(nbre : <format>; Var ch : String);}\par
+{\f1   Procedure Val(ch : String; Var nbre; Var err : Integer);}\par
+\par
+{\f1   \{ --- E/S Fichier --- \}}\par
+{\f1   Procedure Assign(Var fich : File; nomfich : String);}\par
+{\f1   Procedure Reset(Var fich : File);}\par
+{\f1   Procedure Rewrite(Var fich : File);}\par
+{\f1   Procedure Append(Var fich : Text);}\par
+{\f1   Procedure Close(Var fich : File);}\par
+{\f1   Procedure Flush(Var fich : Text);}\par
+{\f1   Procedure Read(var1, var2, ...);}\par
+{\f1   Procedure Read(Var fich : Text; var1, var2, ...);}\par
+{\f1   Procedure ReadLn(var1, var2, ...);}\par
+{\f1   Procedure ReadLn(Var fich : Text; var1, var2, ...);}\par
+{\f1   Procedure Write(var1, var2, ...);}\par
+{\f1   Procedure Write(Var fich : Text; var1, var2, ...);}\par
+{\f1   Procedure WriteLn(var1, var2, ...);}\par
+{\f1   Procedure WriteLn(Var fich : Text; var1, var2, ...);}\par
+{\f1   Procedure BlockRead(Var fich : File; Var x; enrs : Word;}\par
+{\f1                        Var enrs_lus : Word);}\par
+{\f1   Procedure BlockWrite(Var fich : File; Var x; enrs : Word;}\par
+{\f1                         Var enrs_ecrit : Word);}\par
+{\f1   Function  Eof(Var fich : File) : Boolean;}\par
+{\f1   Function  Eoln(Var fich : Text) : Boolean;}\par
+{\f1   Function  SeekEof(Var fich : Text) : Boolean;}\par
+{\f1   Function  SeekEoln(Var fich : Text) : Boolean;}\par
+{\f1   Function  IoResult : Word;}\par
+{\f1   Procedure Seek(Var fich : File; nbre : LongInt);}\par
+{\f1   Function  FilePos(Var fich : File) : LongInt;}\par
+{\f1   Function  FileSize(Var fich : File) : LongInt;}\par
+{\f1   Procedure Truncate(Var fich : File);}\par
+{\f1   Procedure Rename(Var fich : File; nouveaunom : String);}\par
+{\f1   Procedure Erase(Var fich : File);}\par
+{\f1   Procedure SetTextBuf(Var fich : Text; Var buffer; Taille : Word);}\par
+\par
+{\f1   \{ --- Memoire et pointeurs --- \}}\par
+{\f1   Procedure New(Var p : Pointer);}\par
+{\f1   Procedure Dispose(Var p : Pointer);}\par
+{\f1   Procedure GetMem(Var p : Pointer; t : Word);}\par
+{\f1   Procedure FreeMem(Var p : Pointer; t : Word);}\par
+{\f1   Procedure Mark(Var p : Pointer);}\par
+{\f1   Procedure Release(Var p : Pointer);}\par
+{\f1   Function  MaxAvail : LongInt;}\par
+{\f1   Function  MemAvail : LongInt;}\par
+{\f1   Function  Addr(x) : Pointer;}\par
+{\f1   Function  Assigned(Var P) : Boolean;}\par
+{\f1   Function  Ptr(seg, ofs : Word) : Pointer;}\par
+{\f1   Function  Ofs(ident) : Word;}\par
+{\f1   Procedure Move(Const orig; Var dest; nbre : Word);}\par
+{\f1   Procedure FillChar(Var tampon; nbre : Word; val : Byte);}\par
+\par
+{\f1   \{ --- Repertoires --- \}}\par
+{\f1   Procedure ChDir(rep : String);}\par
+{\f1   Procedure MkDir(reper : String);}\par
+{\f1   Procedure RmDir(reper : String);}\par
+{\f1   Procedure GetDir(unite : Word; Var reper : String);}\par
+\par
+{\f1   \{ --- Ensembles (TP7) --- \}}\par
+{\f1   Procedure Include(Var S : Set of T; I : T);}\par
+{\f1   Procedure Exclude(Var S : Set of T; I : T);}\par
+\par
+{\f1   \{ --- Segments (mode reel 16 bits) --- \}}\par
+{\f1   Function  CSeg : Word;}\par
+{\f1   Function  DSeg : Word;}\par
+{\f1   Function  SSeg : Word;}\par
+{\f1   Function  SPtr : Word;}\par
+\par
+{\f1   \{ --- Controle --- \}}\par
+{\f1   Procedure Halt;}\par
+{\f1   Procedure Halt(nbre : Word);}\par
+{\f1   Procedure RunError(nbre : Word);}\par
+{\f1   Function  ParamCount : Word;}\par
+\par
+{\f1   IMPLEMENTATION}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPSYS_14}     {\uldb Suivant >>}{\v IDH_TPSYS_16}     {\uldb Sommaire}{\v IDH_TPSYS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPSYS_16}
+{\footnote $ Unite System - RESUME PAR CATEGORIE}
+{\footnote K Turbo Pascal;Unite System;RESUME PAR CATEGORIE}
+\b\fs24 RESUME PAR CATEGORIE \b0\fs20\par
+\par
+{\f1   CATEGORIE             | PROCEDURES/FONCTIONS}\par
+{\f1   ----------------------+--------------------------------------------}\par
+{\f1   E/S Fichier ouverture | Assign, Reset, Rewrite, Append, Close}\par
+{\f1   E/S Fichier tests     | Eof, Eoln, SeekEof, SeekEoln, IoResult}\par
+{\f1   E/S Fichier lecture   | Read, ReadLn, BlockRead}\par
+{\f1   E/S Fichier ecriture  | Write, WriteLn, BlockWrite, Flush}\par
+{\f1   E/S Fichier position  | Seek, FilePos, FileSize, Truncate}\par
+{\f1   E/S Fichier gestion   | Rename, Erase, SetTextBuf}\par
+{\f1   Chaines               | Length, Copy, Pos, Concat, Delete, Insert}\par
+{\f1   Conversions chaine    | Str, Val, Chr, Ord, UpCase}\par
+{\f1   Arithmetique          | Abs, Sqr, Sqrt, Sin, Cos, ArcTan, Exp, Ln}\par
+{\f1   Reel                  | Frac, Int, Round, Trunc}\par
+{\f1   Ordinaux              | Ord, Chr, Pred, Succ, Inc, Dec, Odd}\par
+{\f1   Bits et octets        | Hi, Lo, Swap}\par
+{\f1   Memoire               | New, Dispose, GetMem, FreeMem, Mark, Release}\par
+{\f1   Info memoire           | MaxAvail, MemAvail}\par
+{\f1   Pointeurs             | Addr, Assigned, Ptr, Ofs}\par
+{\f1   Bloc memoire          | Move, FillChar}\par
+{\f1   Repertoires           | ChDir, MkDir, RmDir, GetDir}\par
+{\f1   Ensembles             | Include, Exclude}\par
+{\f1   Segments              | CSeg, DSeg, SSeg, SPtr}\par
+{\f1   Aleatoire             | Random, Randomize}\par
+{\f1   Controle              | Halt, RunError}\par
+{\f1   Parametres programme  | ParamCount, ParamStr}\par
+\par
+{\f1   FIN DU DOCUMENT}\par
+
+\par
+{\uldb << Precedent}{\v IDH_TPSYS_15}     {\uldb Sommaire}{\v IDH_TPSYS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+}

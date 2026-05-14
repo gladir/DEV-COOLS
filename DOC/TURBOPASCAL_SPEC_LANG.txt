@@ -1,0 +1,1728 @@
+==============================================================================
+  TURBOPASCAL_SPEC_LANG.txt
+  Specifications du langage de programmation Turbo Pascal
+  Reference Borland Turbo Pascal versions 1.0 a 7.0
+  Compatible Free Pascal mode -Mtp dans le projet DEV-COOLS
+==============================================================================
+
+Table des matieres
+------------------
+
+  1.  Introduction et historique
+  2.  Versions de Turbo Pascal
+  3.  Environnement de developpement integre (IDE)
+  4.  Structure d un programme
+  5.  Lexique et conventions
+  6.  Types de donnees scalaires
+  7.  Types structures
+  8.  Pointeurs
+  9.  Declarations const, var, type
+  10. Operateurs et expressions
+  11. Instructions
+  12. Procedures et fonctions
+  13. Chaines de caracteres
+  14. Tableaux
+  15. Records (et records variants)
+  16. Ensembles (Set)
+  17. Fichiers
+  18. Unites (Units)
+  19. Objets (Pascal Objet, TP 5.5+)
+  20. Directives de compilation
+  21. Code assembleur inline (asm)
+  22. Bibliotheque standard
+  23. Unite System
+  24. Unite Crt
+  25. Unite Dos
+  26. Unite Graph
+  27. Unite Overlay
+  28. Memoire et modeles
+  29. Gestion des interruptions
+  30. Compatibilite Free Pascal mode -Mtp
+  31. Exemples complets
+  32. Differences avec Standard Pascal (ISO 7185)
+  33. Ressources dans le projet
+  34. Bibliographie
+
+==============================================================================
+  1. Introduction et historique
+==============================================================================
+
+  Turbo Pascal est un compilateur Pascal et un environnement de
+  developpement integre (IDE) cree par Anders Hejlsberg et publie par
+  Borland International a partir de novembre 1983. Concu initialement
+  comme un sous-ensemble pratique du Pascal standard d Niklaus Wirth,
+  il a impose un standard de fait pour le developpement Pascal sur
+  micro-ordinateurs durant les annees 1980 et 1990.
+
+  Caracteristiques marquantes a sa sortie :
+
+    - Prix tres bas (49.95 $US contre plusieurs milliers pour les
+      concurrents) qui a democratise le Pascal.
+    - Vitesse de compilation exceptionnelle (single-pass).
+    - IDE plein ecran integre avec editeur, compilateur, debugueur.
+    - Empreinte memoire minimale (~30 ko pour la version 1.0).
+    - Generation directe de code machine (pas de byte-code).
+    - Compilation a la memoire (.COM ou .EXE genere instantanement).
+
+  L histoire de Turbo Pascal est etroitement liee a celle de Borland :
+
+    - 1981 : Hejlsberg ecrit "Compas Pascal" pour CP/M.
+    - 1983 : Borland l achete et le commercialise sous le nom
+             "Turbo Pascal" (le mot "turbo" referent au moteur boostes
+             des voitures de l epoque).
+    - 1995 : Borland arrete la ligne pour se concentrer sur Delphi.
+
+  Turbo Pascal a directement engendre Delphi (1995) qui reprend son
+  modele d unites et de programmation objet, etendu par un framework
+  visuel (VCL).
+
+==============================================================================
+  2. Versions de Turbo Pascal
+==============================================================================
+
+  Resume des versions historiques :
+
+    Version  Annee  Plates-formes        Nouveautes majeures
+    -------  -----  -------------------  -------------------------------
+    1.0      1983   CP/M-80, MS-DOS      Premier release commercial
+    2.0      1984   CP/M-80, MS-DOS      Optimisations diverses
+    3.0      1985   CP/M-80, MS-DOS      Graphics, overlays
+    4.0      1987   MS-DOS               Unites (separate compilation),
+                                         nouvelle IDE plein ecran
+    5.0      1988   MS-DOS               Debugueur integre,
+                                         overlays ameliores
+    5.5      1989   MS-DOS               Objets (POO), heritage simple,
+                                         methodes virtuelles, VMT
+    6.0      1990   MS-DOS               Turbo Vision (framework TUI),
+                                         IDE 2 fenetres
+    7.0      1992   MS-DOS               Strings >255 (option), code 32 bits
+                                         protege, IDE encore amelioree
+    7.01     1994   MS-DOS               Derniere version, corrections
+
+  Versions specialisees :
+
+    - Turbo Pascal for Windows (1991) : cible Windows 3.x.
+    - Turbo Pascal for Mac (1986) : cible Macintosh.
+    - Borland Pascal 7.0 (1992) : equivalent professionnel avec modes
+      reel, protege et Windows.
+
+  Le projet DEV-COOLS cible specifiquement la compatibilite Turbo
+  Pascal 7.0, qui represente l aboutissement de la ligne classique
+  et reste la reference pour la programmation DOS.
+
+==============================================================================
+  3. Environnement de developpement integre (IDE)
+==============================================================================
+
+  3.1 Composants
+  --------------
+
+  L IDE Turbo Pascal regroupe :
+
+    - Editeur plein ecran inspire de WordStar (touches Ctrl-K).
+    - Compilateur en memoire ou sur disque.
+    - Debugueur integre (TP 5.0+) avec points d arret, pas a pas,
+      surveillance de variables.
+    - Aide en ligne contextuelle (F1) tres complete.
+    - Gestionnaire de fichiers .PAS, .TPU (unite compilee), .EXE.
+
+  3.2 Touches principales
+  -----------------------
+
+    F2     : sauver
+    F3     : ouvrir
+    F5     : agrandir / restaurer fenetre
+    F6     : fenetre suivante
+    F7     : pas a pas avec entree dans procedure
+    F8     : pas a pas sans entrer dans procedure
+    F9     : compiler vers EXE
+    F10    : menu principal
+    Ctrl-F2 : reinitialiser le programme
+    Ctrl-F7 : ajouter une expression a surveiller
+    Ctrl-F9 : compiler et executer
+
+  3.3 Menus typiques
+  ------------------
+
+    File   : New, Open, Save, Print, Exit
+    Edit   : Cut, Copy, Paste, Find, Replace
+    Search : recherche dans le source
+    Run    : Run, Reset, Step Over, Trace Into, Go to Cursor
+    Compile : Compile, Make, Build, Target
+    Debug  : Breakpoints, Watches, Call Stack, Evaluate
+    Tools  : utilitaires externes
+    Options : repertoires, parametres de compilation
+    Window : gestion des fenetres
+    Help   : aide en ligne
+
+==============================================================================
+  4. Structure d un programme
+==============================================================================
+
+  4.1 Programme principal
+  -----------------------
+
+    Program HelloWorld;
+
+    Uses Crt;
+
+    Const
+      MAX = 100;
+
+    Type
+      TArr = Array[1..MAX] Of Integer;
+
+    Var
+      I : Integer;
+      T : TArr;
+
+    Procedure Init;
+    Var J : Integer;
+    Begin
+      For J := 1 To MAX Do T[J] := 0;
+    End;
+
+    Begin
+      ClrScr;
+      Init;
+      WriteLn('Bonjour, monde !');
+      ReadKey;
+    End.
+
+  4.2 Ordre canonique d un programme Pascal
+  -----------------------------------------
+
+    Program <nom>;
+    Uses <unites>;
+    Const ...
+    Type ...
+    Var ...
+    Procedure / Function ...
+    Begin
+      <instructions>
+    End.
+
+  Sous Turbo Pascal, les sections const, type, var et procedure /
+  function peuvent etre repetees dans n importe quel ordre (extension
+  par rapport au Pascal standard).
+
+  4.3 Point final
+  ---------------
+
+  Le programme se termine par "End." (un point) et non "End;" (un
+  point-virgule). Les blocs internes (procedures, fonctions, begin
+  imbriques) finissent par "End;".
+
+==============================================================================
+  5. Lexique et conventions
+==============================================================================
+
+  5.1 Identificateurs
+  -------------------
+
+  Un identificateur commence par une lettre ou un caractere souligne,
+  suit avec lettres, chiffres ou soulignes. Sensible a la casse : NON
+  (Pascal est insensible a la casse).
+
+    nom    Nom    NOM        { tous identiques }
+
+  Longueur significative : 63 caracteres en TP 7.0.
+
+  5.2 Mots reserves
+  -----------------
+
+  Les mots reserves ne peuvent pas etre utilises comme identificateurs :
+
+    absolute       and            array         asm           begin
+    case           const          constructor   destructor    div
+    do             downto         else          end           file
+    for            function       goto          if            implementation
+    in             inherited      inline        interface     interrupt
+    label          mod            nil           not           object
+    of             or             packed        procedure     program
+    record         repeat         set           shl           shr
+    string         then           to            type          unit
+    until          uses           var           virtual       while
+    with           xor
+
+  5.3 Directives standard (mots reconnus mais redefinissables)
+  ------------------------------------------------------------
+
+    abstract       assembler      cdecl         exit          export
+    external       far            forward       near          near
+    private        protected      public        published     register
+
+  5.4 Commentaires
+  ----------------
+
+  Trois formes equivalentes :
+
+    { commentaire avec accolades }
+    (* commentaire avec parentheses-etoiles *)
+
+  Les commentaires // jusqu en fin de ligne ne font pas partie de
+  Turbo Pascal classique mais sont reconnus par Free Pascal -Mtp.
+
+  Les commentaires sont non imbricables si on melange { } et (* *) avec
+  les memes delimiteurs, mais on peut imbriquer { (* *) } et (* { } *).
+
+  5.5 Litteraux
+  -------------
+
+  Entiers :
+    42        { decimal }
+    -100
+    $1A       { hexadecimal }
+    $FFFF
+
+  Reels :
+    3.14
+    -1.5E-10
+    2.5e+3
+
+  Caracteres :
+    'A'
+    ''''           { apostrophe }
+    #65            { caractere de code 65 = 'A' }
+    #$0D           { code 13 = CR }
+    ^M             { code Ctrl-M = 13 }
+
+  Chaines :
+    'Bonjour'
+    'L''ami'       { apostrophe doublee }
+    'Pre'#9'Post'  { concatenation avec #9 = TAB }
+
+  Booleens :
+    True   False
+
+  Pointeur nul :
+    nil
+
+==============================================================================
+  6. Types de donnees scalaires
+==============================================================================
+
+  6.1 Types entiers
+  -----------------
+
+    Type        Taille   Plage
+    --------    ------   ----------------------------
+    ShortInt    1 octet   -128..127
+    Byte        1 octet   0..255
+    Integer     2 octets  -32768..32767
+    Word        2 octets  0..65535
+    LongInt     4 octets  -2147483648..2147483647
+    Comp        8 octets  -2E63..2E63 (avec coprocesseur)
+
+  Sous Free Pascal -Mtp, Integer reste 16 bits par defaut comme en TP.
+
+  6.2 Types reels
+  ---------------
+
+    Type        Taille   Plage approximative
+    --------    ------   ----------------------------
+    Real        6 octets  2.9E-39..1.7E38, 11-12 chiffres
+    Single      4 octets  IEEE 754 simple precision
+    Double      8 octets  IEEE 754 double precision
+    Extended    10 octets  IEEE 754 etendue (80387)
+    Comp        8 octets  entier 64 bits (manipule par FPU)
+
+  Real est le seul type reel disponible sans coprocesseur 8087 ; les
+  autres requierent {$N+}.
+
+  6.3 Type Char
+  -------------
+
+  Caractere ASCII 8 bits :
+
+    Var C : Char;
+    C := 'A';
+    C := #65;     { equivalent }
+    WriteLn(Ord(C), ' ', C);    { 65 A }
+
+  6.4 Type Boolean
+  ----------------
+
+  Valeurs True (1) et False (0) representees sur 1 octet :
+
+    Var B : Boolean;
+    B := True;
+    If B Then ...
+
+  6.5 Type enumere
+  ----------------
+
+    Type
+      TJour = (Lundi, Mardi, Mercredi, Jeudi, Vendredi, Samedi, Dimanche);
+
+    Var J : TJour;
+    J := Mardi;
+    WriteLn(Ord(J));     { 1 }
+
+  Les valeurs sont representees par 0, 1, 2... sur 1 ou 2 octets selon
+  le nombre de valeurs.
+
+  6.6 Sous-intervalles
+  --------------------
+
+  On peut definir un sous-intervalle d un type ordinal :
+
+    Type
+      TDigit = 0..9;
+      TLettreMaj = 'A'..'Z';
+      TSemaine = Lundi..Vendredi;
+
+  Avec {$R+}, les acces hors borne declenchent une erreur d execution.
+
+==============================================================================
+  7. Types structures
+==============================================================================
+
+  Couverts dans les sections suivantes :
+
+    - Chaines (String) : section 13
+    - Tableaux (Array) : section 14
+    - Records          : section 15
+    - Ensembles (Set)  : section 16
+    - Fichiers (File)  : section 17
+    - Pointeurs        : section 8
+    - Objets           : section 19
+
+==============================================================================
+  8. Pointeurs
+==============================================================================
+
+  8.1 Declaration
+  ---------------
+
+    Type
+      PInt = ^Integer;
+      PNode = ^TNode;
+      TNode = Record
+        Valeur : Integer;
+        Suiv   : PNode;
+      End;
+
+    Var P : PInt;
+
+  Note : on peut declarer un pointeur vers un type non encore defini,
+  a condition que ce type soit defini dans la meme section Type
+  (forward declaration de type).
+
+  8.2 Allocation et liberation
+  ----------------------------
+
+    New(P);        { alloue sizeof(Integer^) }
+    P^ := 42;
+    WriteLn(P^);
+    Dispose(P);
+
+  Pour les blocs typees plus complexes :
+
+    GetMem(P, 1024);     { alloue 1024 octets sur le tas }
+    FreeMem(P, 1024);
+
+  8.3 Pointeur generique
+  ----------------------
+
+    Var
+      P : Pointer;          { sans type }
+
+    P := Addr(MaVar);
+
+  Pour utiliser le contenu, on doit caster :
+
+    Integer(P^);
+
+  8.4 Adresses et indirection
+  ---------------------------
+
+    @X        { ou Addr(X), adresse de X }
+    P^        { dereferencement }
+
+==============================================================================
+  9. Declarations const, var, type
+==============================================================================
+
+  9.1 Constantes
+  --------------
+
+    Const
+      MAX     = 100;
+      PI      = 3.14159265;
+      TITRE   = 'Mon Programme';
+      ESPACES = '   ';
+
+  Constantes typees (initialisation au demarrage, variables modifiables
+  selon $J) :
+
+    Const
+      Buffer : Array[1..5] Of Integer = (10, 20, 30, 40, 50);
+      Origine : TPoint = (X: 0; Y: 0);
+      Compteur : Integer = 0;   { modifiable }
+
+  9.2 Variables
+  -------------
+
+    Var
+      I, J   : Integer;
+      Nom    : String[40];
+      Actif  : Boolean;
+      T      : Array[1..10] Of Real;
+
+  9.3 Variables absolues
+  ----------------------
+
+  Variable a une adresse memoire fixe :
+
+    Var Crayon : Byte Absolute $0040:$0017;
+
+  9.4 Types
+  ---------
+
+    Type
+      TPoint = Record X, Y : Integer; End;
+      TTab   = Array[1..100] Of Integer;
+      PNode  = ^TNode;
+      TNode  = Record V : Integer; Suiv : PNode; End;
+
+==============================================================================
+  10. Operateurs et expressions
+==============================================================================
+
+  10.1 Operateurs arithmetiques
+  -----------------------------
+
+    +    addition
+    -    soustraction
+    *    multiplication
+    /    division reelle (resultat reel)
+    div  division entiere
+    mod  reste de division entiere
+
+  10.2 Operateurs relationnels
+  ----------------------------
+
+    =    egal
+    <>   different
+    <    inferieur
+    <=   inferieur ou egal
+    >    superieur
+    >=   superieur ou egal
+    in   appartenance a un ensemble
+
+  10.3 Operateurs logiques et bit-a-bit
+  -------------------------------------
+
+  Selon que les operandes sont Boolean ou entier :
+
+    and  ET
+    or   OU
+    xor  OU exclusif
+    not  NON
+    shl  decalage gauche (entiers)
+    shr  decalage droite (entiers)
+
+  10.4 Operateur de chaine
+  ------------------------
+
+    +    concatenation (String + String)
+
+  10.5 Precedence
+  ---------------
+
+  De la plus haute a la plus basse :
+
+    1. @, Not
+    2. *, /, div, mod, and, shl, shr
+    3. +, -, or, xor
+    4. =, <>, <, <=, >, >=, in
+
+  Utiliser des parentheses pour les expressions logiques mixtes.
+
+==============================================================================
+  11. Instructions
+==============================================================================
+
+  11.1 Affectation
+  ----------------
+
+    X := 42;
+    Nom := 'Bob';
+
+  11.2 If / Then / Else
+  ---------------------
+
+    If X > 0 Then
+      WriteLn('positif')
+    Else If X < 0 Then
+      WriteLn('negatif')
+    Else
+      WriteLn('nul');
+
+  Attention : pas de ";" avant Else.
+
+  11.3 Case
+  ---------
+
+    Case J Of
+      Lundi..Vendredi : WriteLn('semaine');
+      Samedi, Dimanche : WriteLn('weekend');
+    Else
+      WriteLn('inconnu');
+    End;
+
+  11.4 For
+  --------
+
+    For I := 1 To 10 Do
+      WriteLn(I);
+
+    For I := 10 DownTo 1 Do
+      WriteLn(I);
+
+    For I := 1 To N Do Begin
+      ...
+    End;
+
+  11.5 While
+  ----------
+
+    While X > 0 Do Begin
+      X := X - 1;
+    End;
+
+  11.6 Repeat / Until
+  -------------------
+
+    Repeat
+      X := X + 1;
+    Until X >= 10;
+
+  11.7 With
+  ---------
+
+    With Personne Do Begin
+      Nom    := 'Alice';
+      Age    := 30;
+    End;
+
+  11.8 Goto et Label
+  ------------------
+
+    Label 100;
+
+    Begin
+      ...
+      Goto 100;
+      ...
+    100:
+      WriteLn('cible');
+    End.
+
+  Decommande : utiliser Exit, Break (TP6+), Continue (TP6+) a la place.
+
+  11.9 Exit, Break, Continue, Halt
+  --------------------------------
+
+    Exit       : sort de la procedure / fonction courante.
+    Break      : sort de la boucle courante (TP 6+).
+    Continue   : passe a l iteration suivante (TP 6+).
+    Halt(code) : termine le programme.
+
+==============================================================================
+  12. Procedures et fonctions
+==============================================================================
+
+  12.1 Procedure
+  --------------
+
+    Procedure Salut(Nom : String);
+    Begin
+      WriteLn('Bonjour ', Nom);
+    End;
+
+  12.2 Fonction
+  -------------
+
+    Function Carre(N : Integer) : LongInt;
+    Begin
+      Carre := LongInt(N) * N;
+    End;
+
+  Le nom de la fonction sert de variable de retour. Free Pascal -Mtp
+  accepte aussi Result comme synonyme.
+
+  12.3 Parametres
+  ---------------
+
+  Par valeur (defaut) :
+
+    Procedure P1(X : Integer);
+
+  Par reference (Var) :
+
+    Procedure Echange(Var A, B : Integer);
+    Var T : Integer;
+    Begin
+      T := A; A := B; B := T;
+    End;
+
+  Tableau ouvert (TP 7+) :
+
+    Procedure AfficheTab(Const T : Array Of Integer);
+    Var I : Integer;
+    Begin
+      For I := Low(T) To High(T) Do WriteLn(T[I]);
+    End;
+
+  12.4 Forward
+  ------------
+
+  Pour des routines mutuellement recursives :
+
+    Function Pair(N : Integer) : Boolean; Forward;
+
+    Function Impair(N : Integer) : Boolean;
+    Begin
+      If N = 0 Then Impair := False
+      Else Impair := Pair(N - 1);
+    End;
+
+    Function Pair(N : Integer) : Boolean;
+    Begin
+      If N = 0 Then Pair := True
+      Else Pair := Impair(N - 1);
+    End;
+
+  12.5 Procedures imbriquees
+  --------------------------
+
+  Une procedure peut etre declaree localement a une autre :
+
+    Procedure Externe;
+    Var X : Integer;
+
+       Procedure Interne;
+       Begin
+         X := X + 1;
+       End;
+
+    Begin
+      X := 0;
+      Interne;
+      WriteLn(X);
+    End;
+
+  12.6 Procedures externes et inline
+  ----------------------------------
+
+    Procedure DOS_INT(N : Byte); External;
+    Procedure NOP; Inline($90);
+
+  12.7 Recursivite
+  ----------------
+
+  Toutes les procedures et fonctions peuvent etre recursives :
+
+    Function Fact(N : Integer) : LongInt;
+    Begin
+      If N <= 1 Then Fact := 1
+      Else Fact := N * Fact(N - 1);
+    End;
+
+==============================================================================
+  13. Chaines de caracteres
+==============================================================================
+
+  13.1 Type String
+  ----------------
+
+  Le type String represente une chaine de caracteres de longueur
+  variable jusqu a 255 octets. La longueur courante est stockee dans
+  l octet 0 :
+
+    Var S : String;       { = String[255] }
+    Var S2 : String[40];  { longueur max 40 }
+
+  Acces :
+    S := 'Bonjour';
+    WriteLn(Length(S));   { 7 }
+    WriteLn(S[1]);        { 'B' }
+    WriteLn(Ord(S[0]));   { 7 = longueur }
+
+  13.2 Operations
+  ---------------
+
+    Length(s)         longueur courante
+    Concat(s1, s2)    concatenation (ou +)
+    Copy(s, i, n)     sous-chaine
+    Pos(sub, s)       position (0 si absent)
+    Delete(s, i, n)   suppression dans s
+    Insert(sub, s, i) insertion dans s
+    UpCase(c)         majuscule (caractere uniquement)
+    Str(v, s)         variable -> chaine
+    Val(s, v, code)   chaine -> variable
+
+  13.3 Concatenation
+  ------------------
+
+    S := 'Hello, ' + 'World!' + #10;
+
+  13.4 Comparaison
+  ----------------
+
+  Les chaines se comparent caractere par caractere :
+
+    If S1 = S2 Then ...
+    If S1 < S2 Then ...     { ordre lexicographique }
+
+  13.5 PChar (TP 7.0+)
+  --------------------
+
+  Chaine ASCIIZ a la mode C (sans byte de longueur, terminee par #0) :
+
+    Var P : PChar;
+    P := 'Hello';     { litteral converti }
+
+==============================================================================
+  14. Tableaux
+==============================================================================
+
+  14.1 Declaration
+  ----------------
+
+    Var T : Array[1..10] Of Integer;
+    Var M : Array[0..9, 0..9] Of Real;
+
+    Type
+      TVecteur = Array[1..N] Of Real;
+      TMatrice = Array[1..N, 1..N] Of Real;
+
+  Les bornes peuvent etre tout type ordinal :
+
+    Var Notes : Array['A'..'E'] Of Integer;
+    Var Heures : Array[TJour] Of Integer;
+
+  14.2 Acces
+  ----------
+
+    T[1] := 42;
+    M[3, 4] := 0.5;
+
+  Avec {$R+}, les acces hors borne provoquent une erreur d execution.
+
+  14.3 Tableaux ouverts (TP 7.0+)
+  -------------------------------
+
+  Pour passer un tableau de taille variable a une procedure :
+
+    Procedure Imprime(Const T : Array Of Integer);
+    Var I : Integer;
+    Begin
+      For I := Low(T) To High(T) Do WriteLn(T[I]);
+    End;
+
+  14.4 Tableaux dynamiques
+  ------------------------
+
+  Turbo Pascal classique ne propose pas de tableaux dynamiques (ajoutes
+  en Delphi 4 et Free Pascal mode Delphi). En TP, on utilise des
+  pointeurs et GetMem :
+
+    Type
+      PArray = ^TArray;
+      TArray = Array[0..MAXINT div sizeof(Integer) - 1] Of Integer;
+
+    Var P : PArray;
+    GetMem(P, N * SizeOf(Integer));
+    P^[I] := ...;
+    FreeMem(P, N * SizeOf(Integer));
+
+==============================================================================
+  15. Records (et records variants)
+==============================================================================
+
+  15.1 Record simple
+  ------------------
+
+    Type
+      TPoint = Record
+        X, Y : Integer;
+      End;
+
+    Var P : TPoint;
+    P.X := 10;
+    P.Y := 20;
+
+  15.2 Record imbrique
+  --------------------
+
+    Type
+      TAdresse = Record
+        Rue   : String[60];
+        Ville : String[40];
+      End;
+
+      TPersonne = Record
+        Nom     : String[40];
+        Age     : Byte;
+        Adresse : TAdresse;
+      End;
+
+    Var P : TPersonne;
+    P.Adresse.Ville := 'Quebec';
+
+  15.3 Record variant
+  -------------------
+
+  Plusieurs interpretations memoire d un meme espace (comme union en C) :
+
+    Type
+      TForme = Record
+        Couleur : Word;
+        Case Sorte : (Cercle, Rectangle, Triangle) Of
+          Cercle    : (Rayon : Integer);
+          Rectangle : (Largeur, Hauteur : Integer);
+          Triangle  : (A, B, C : Integer);
+      End;
+
+  La balise (Sorte) est optionnelle. Si elle est presente, c est un
+  champ accessible.
+
+  15.4 Acces par With
+  -------------------
+
+    With P Do Begin
+      Nom := 'Alice';
+      Age := 30;
+    End;
+
+==============================================================================
+  16. Ensembles (Set)
+==============================================================================
+
+  16.1 Declaration
+  ----------------
+
+    Type
+      TSetJour = Set Of TJour;
+      TSetByte = Set Of Byte;
+      TSetChar = Set Of Char;
+
+    Var Ouvrables : TSetJour;
+
+  Le type de base doit etre ordinal et compter au plus 256 valeurs.
+
+  16.2 Operations
+  ---------------
+
+    Ouvrables := [Lundi, Mardi, Mercredi, Jeudi, Vendredi];
+    If Jour In Ouvrables Then ...
+    Ouvrables := Ouvrables + [Samedi];     { union }
+    Ouvrables := Ouvrables - [Vendredi];   { difference }
+    Ouvrables := Ouvrables * [Lundi..Vendredi];  { intersection }
+
+  16.3 Comparaison
+  ----------------
+
+    A = B       egalite
+    A <= B      inclusion (A est sous-ensemble de B)
+    A >= B      A est sur-ensemble de B
+    X In A      appartenance
+
+==============================================================================
+  17. Fichiers
+==============================================================================
+
+  17.1 Types de fichiers
+  ----------------------
+
+    Var
+      F  : File;             { fichier non type (octets bruts) }
+      T  : Text;             { fichier texte ASCII }
+      FI : File Of Integer;  { fichier typee }
+
+  17.2 Operations communes
+  ------------------------
+
+    Assign(F, 'data.txt');     associe nom physique au handle
+    Reset(F);                  ouvre en lecture
+    Rewrite(F);                ouvre en ecriture (cree/tronque)
+    Append(T);                 ouvre Text en ajout
+    Read(F, v); Write(F, v);   lecture / ecriture
+    ReadLn(T, s); WriteLn(T, s);   pour les fichiers texte
+    Close(F);                  ferme
+    Eof(F)                     fin de fichier
+    SeekEof(T)                 fin en sautant les espaces
+    Rename(F, 'new.txt');      renomme
+    Erase(F);                  efface
+
+  17.3 Fichiers typees (acces aleatoire)
+  --------------------------------------
+
+    Var FI : File Of Integer;
+    Assign(FI, 'donnees.dat');
+    Rewrite(FI);
+    For I := 1 To 100 Do Write(FI, I * 10);
+    Close(FI);
+
+    Reset(FI);
+    Seek(FI, 50);    { positionne sur le 51e enregistrement }
+    Read(FI, V);
+    Close(FI);
+
+  17.4 Fichiers non types
+  -----------------------
+
+    Reset(F, 512);    { taille bloc 512 octets }
+    BlockRead(F, Buffer, NumBlocks, NumRead);
+    BlockWrite(F, Buffer, NumBlocks, NumWritten);
+
+  17.5 Verification des E/S
+  -------------------------
+
+  Avec {$I+} (defaut), les erreurs declenchent une exception d execution.
+  Avec {$I-}, on lit le code via IOResult :
+
+    {$I-}
+    Reset(F);
+    {$I+}
+    If IOResult <> 0 Then ...
+
+==============================================================================
+  18. Unites (Units)
+==============================================================================
+
+  Les unites permettent la compilation separee, introduites en TP 4.0.
+  Une unite est compilee en fichier .TPU et reutilisable.
+
+  18.1 Structure d une unite
+  --------------------------
+
+    Unit MaUnite;
+
+    Interface
+      { declarations visibles depuis l exterieur }
+      Const PI = 3.14159;
+      Type TVecteur = Record X, Y : Real End;
+      Procedure Salut(N : String);
+      Function Carre(N : Integer) : LongInt;
+
+    Implementation
+      { code }
+      Procedure Salut(N : String);
+      Begin
+        WriteLn('Bonjour ', N);
+      End;
+      Function Carre(N : Integer) : LongInt;
+      Begin
+        Carre := LongInt(N) * N;
+      End;
+
+    Begin
+      { code d initialisation (optionnel) }
+    End.
+
+  18.2 Utilisation
+  ----------------
+
+    Program TestUnit;
+    Uses MaUnite;
+    Begin
+      Salut('Alice');
+      WriteLn(Carre(7));
+    End.
+
+  18.3 Unites standard de TP
+  --------------------------
+
+    System    : automatiquement Used dans tout programme
+    Crt       : ecran texte, clavier, son
+    Dos       : appels DOS, environnement, dates
+    Graph     : graphismes BGI (CGA, EGA, VGA)
+    Printer   : sortie imprimante (Lst : Text)
+    Strings   : manipulation de PChar
+    Overlay   : gestion des overlays
+    WinDos    : version Windows (TP for Windows)
+
+==============================================================================
+  19. Objets (Pascal Objet, TP 5.5+)
+==============================================================================
+
+  19.1 Declaration d un objet
+  ---------------------------
+
+    Type
+      TAnimal = Object
+        Nom : String[20];
+        Constructor Init(N : String);
+        Procedure Parle; Virtual;
+        Destructor Done; Virtual;
+      End;
+
+      TChien = Object(TAnimal)
+        Procedure Parle; Virtual;
+      End;
+
+  19.2 Implementation
+  -------------------
+
+    Constructor TAnimal.Init(N : String);
+    Begin
+      Nom := N;
+    End;
+
+    Procedure TAnimal.Parle;
+    Begin
+      WriteLn(Nom, ' fait un bruit');
+    End;
+
+    Destructor TAnimal.Done;
+    Begin
+    End;
+
+    Procedure TChien.Parle;
+    Begin
+      WriteLn(Nom, ' : Ouaf !');
+    End;
+
+  19.3 Utilisation
+  ----------------
+
+    Var
+      A : TAnimal;
+      C : TChien;
+
+    Begin
+      A.Init('Beta');
+      A.Parle;          { Beta fait un bruit }
+      C.Init('Rex');
+      C.Parle;          { Rex : Ouaf ! }
+      A.Done; C.Done;
+    End.
+
+  19.4 Pointeurs sur objets
+  -------------------------
+
+    Type PAnimal = ^TAnimal;
+
+    Var P : PAnimal;
+    New(P, Init('Polly'));
+    P^.Parle;
+    Dispose(P, Done);
+
+  19.5 Methodes virtuelles
+  ------------------------
+
+  Marquees Virtual, elles utilisent une VMT (Virtual Method Table)
+  pour le polymorphisme dynamique. Un objet doit avoir au moins un
+  constructeur pour initialiser sa VMT.
+
+  19.6 Heritage
+  -------------
+
+  Heritage simple (un seul ancetre). Mot-cle Inherited pour appeler
+  la methode de l ancetre :
+
+    Procedure TChien.Parle;
+    Begin
+      Inherited Parle;
+      WriteLn(Nom, ' : Ouaf !');
+    End;
+
+==============================================================================
+  20. Directives de compilation
+==============================================================================
+
+  Les directives sont des commentaires speciaux $... :
+
+    {$R+}    verifie les bornes (Range checking)
+    {$R-}    desactive (par defaut)
+    {$I+}    verifie les E/S (par defaut)
+    {$I-}    laisse IOResult
+    {$Q+}    verifie le depassement entier (Overflow)
+    {$Q-}    desactive (defaut)
+    {$S+}    verifie la pile (Stack checking)
+    {$S-}    desactive
+    {$N+}    utilise le coprocesseur 8087/80387 pour les reels
+    {$E+}    emule le 8087 logiciellement
+    {$B+}    evalue completement les expressions booleennes
+    {$B-}    court-circuit (defaut)
+    {$F+}    procedures Far par defaut
+    {$X+}    syntaxe etendue (resultat de fonction ignorable)
+    {$V+}    verification stricte des Var-parametres String
+    {$M ss,hp,hpmax}  taille pile, tas min, tas max
+    {$I fichier}  inclusion d un fichier
+    {$DEFINE sym} {$UNDEF sym}
+    {$IFDEF sym} {$ELSE} {$ENDIF}
+    {$IFNDEF sym} {$ENDIF}
+    {$L file.obj}  lie un fichier OBJ
+    {$O+}    overlays autorises
+    {$A+}    aligne les variables sur des mots
+
+==============================================================================
+  21. Code assembleur inline (asm)
+==============================================================================
+
+  Turbo Pascal 6.0+ permet d ecrire de l assembleur 8086 inline :
+
+    Procedure PutPix(X, Y : Integer; C : Byte); Assembler;
+    Asm
+      Mov   AX, 0A000h
+      Mov   ES, AX
+      Mov   AX, Y
+      Mov   BX, 320
+      Mul   BX
+      Add   AX, X
+      Mov   DI, AX
+      Mov   AL, C
+      Mov   ES:[DI], AL
+    End;
+
+  Caracteristiques :
+
+    - Les noms de variables Pascal sont accessibles.
+    - On peut utiliser les directives Assembler (TP 6) ou simplement
+      Asm ... End; (TP 7).
+    - Tous les registres 8086/80186/80286/80386/80486 sont supportes.
+    - Les instructions sont assemblees au format MASM.
+
+==============================================================================
+  22. Bibliotheque standard
+==============================================================================
+
+  Fonctions integrees (toujours disponibles sans Uses) :
+
+  Arithmetiques :
+    Abs, Sqr, Sqrt, Exp, Ln, Pi, Sin, Cos, ArcTan, Round, Trunc,
+    Frac, Int, Random, Randomize
+
+  Ordinaux :
+    Inc, Dec, Pred, Succ, Ord, Chr, Odd, High, Low
+
+  Chaines :
+    Length, Concat, Copy, Pos, Delete, Insert, UpCase, Str, Val
+
+  Pointeurs et memoire :
+    New, Dispose, GetMem, FreeMem, Mark, Release, SizeOf, Addr, Ptr,
+    Seg, Ofs, Move, FillChar
+
+  E/S :
+    Write, WriteLn, Read, ReadLn, Eof, Eoln, Assign, Reset, Rewrite,
+    Append, Close, IOResult, Seek, FilePos, FileSize, Rename, Erase,
+    BlockRead, BlockWrite
+
+  Programme :
+    Exit, Halt, RunError, ParamCount, ParamStr, ExitCode, ExitProc
+
+==============================================================================
+  23. Unite System
+==============================================================================
+
+  L unite System est automatiquement utilisee dans tout programme TP.
+  Elle declare les types de base et la plupart des routines integrees.
+
+  Variables predefinies :
+
+    Input       : Text       { stdin }
+    Output      : Text       { stdout }
+    ErrOutput   : Text       { stderr - TP 7 }
+    StackLimit  : Integer
+    HeapPtr     : Pointer    { sommet du tas }
+    FreePtr     : Pointer    { liste libre }
+    HeapOrg     : Pointer
+    HeapEnd     : Pointer
+    HeapError   : Function   { gestionnaire d erreur d allocation }
+    ExitProc    : Pointer    { procedure de sortie }
+    ExitCode    : Integer
+    ErrorAddr   : Pointer
+    PrefixSeg   : Word       { segment PSP }
+    OvrCodeList : Word
+    OvrHeapSize : Word
+    Test8087    : Byte
+
+  Voir DOC/TURBOPASCAL_SYSTEM.txt pour le detail.
+
+==============================================================================
+  24. Unite Crt
+==============================================================================
+
+  Operations sur l ecran texte et le clavier :
+
+    ClrScr;             efface l ecran
+    GotoXY(x, y);       positionne le curseur (1-based)
+    WhereX, WhereY;     position courante
+    TextColor(c);       couleur du texte
+    TextBackground(c);  couleur de fond
+    HighVideo, LowVideo, NormVideo
+    Window(x1,y1,x2,y2);  definit une fenetre virtuelle
+    KeyPressed;         True si touche dispo
+    ReadKey;            lit un caractere sans Enter
+    Delay(ms);          attend ms millisecondes
+    Sound(hz); NoSound;  son par le speaker PC
+    DelLine, InsLine;
+    TextMode(m);        change le mode video
+    AssignCrt(F);       associe un Text a l ecran
+
+  Constantes de couleur (0..15) : Black, Blue, Green, Cyan, Red,
+  Magenta, Brown, LightGray, DarkGray, LightBlue, LightGreen,
+  LightCyan, LightRed, LightMagenta, Yellow, White.
+
+  Voir DOC/TURBOPASCAL_CRT.txt.
+
+==============================================================================
+  25. Unite Dos
+==============================================================================
+
+  Acces aux fonctionnalites du systeme DOS :
+
+    GetTime(h, m, s, hs);   heure courante
+    SetTime(h, m, s, hs);   regle l heure
+    GetDate(y, m, d, dow);  date courante
+    SetDate(y, m, d);       regle la date
+    GetFAttr(F, attr);      attributs fichier
+    SetFAttr(F, attr);
+    GetFTime(F, time);
+    SetFTime(F, time);
+    PackTime, UnpackTime;
+    FindFirst(path, attr, s);  recherche fichier
+    FindNext(s);
+    Intr(int, regs);        appel d interruption
+    MsDos(regs);            appel INT 21h
+    GetIntVec(n, p);
+    SetIntVec(n, p);
+    Exec(prog, args);       execute un sous-programme
+    GetEnv(name);           variable d environnement
+    EnvCount, EnvStr;
+    SwapVectors;            pour Exec
+
+  Voir DOC/TURBOPASCAL_DOS.txt.
+
+==============================================================================
+  26. Unite Graph
+==============================================================================
+
+  Bibliotheque BGI (Borland Graphics Interface) pour les modes
+  graphiques CGA, EGA, VGA, Hercules :
+
+    InitGraph(drv, mode, path);   initialise le mode graphique
+    CloseGraph;
+    GetMaxX, GetMaxY;
+    PutPixel(x, y, c);
+    GetPixel(x, y);
+    Line(x1, y1, x2, y2);
+    Circle(x, y, r);
+    Rectangle(x1, y1, x2, y2);
+    Bar, Bar3D;
+    Ellipse, Arc;
+    FloodFill(x, y, border);
+    SetColor(c); SetBkColor(c);
+    SetFillStyle(p, c);
+    SetLineStyle(s, p, w);
+    OutText(s); OutTextXY(x, y, s);
+    SetTextStyle(font, dir, size);
+    GetImage, PutImage;
+    DetectGraph(drv, mode);
+
+  Voir DOC/TURBOPASCAL_GRAPH.txt pour Graph TP 5+ et
+  DOC/TURBOPASCAL_GRAPH3.txt pour Graph3 (TP 3 simplifie).
+
+==============================================================================
+  27. Unite Overlay
+==============================================================================
+
+  Permet de decouper un programme en modules charges a la demande,
+  pour depasser la limite des 640 ko de DOS :
+
+    OvrInit(file);          initialise le gestionnaire
+    OvrInitEMS;             utilise EMS si disponible
+    OvrSetBuf(size);        taille du tampon
+    OvrGetBuf;
+    OvrSetRetry, OvrGetRetry;
+    OvrLoadList, OvrFileMode;
+
+  Unites en overlay : compilees avec {$O+}, utilisation par {$O unit}.
+  Voir DOC/TURBOPASCAL_OVERLAY.txt.
+
+==============================================================================
+  28. Memoire et modeles
+==============================================================================
+
+  28.1 Modele memoire DOS
+  -----------------------
+
+  Turbo Pascal cible le mode reel 8086 avec un seul modele :
+
+    - 1 segment de code (CS, 64 ko max par unite)
+    - 1 segment de donnees (DS, 64 ko)
+    - 1 segment de pile (SS, taille fixee par $M)
+    - Tas (heap) entre la fin de DS et la fin de la memoire
+
+  Les pointeurs sont Far par defaut (4 octets) sauf optimisation.
+
+  28.2 Pointeurs Near et Far
+  --------------------------
+
+    Type
+      PNear = ^Integer;       { 2 octets, segment courant }
+      PFar  = ^Integer;       { 4 octets, seg:off }
+
+  TP genere du code Far pour les unites par defaut.
+
+  28.3 Tas (Heap)
+  ---------------
+
+    HeapOrg    debut du tas
+    HeapPtr    sommet courant
+    HeapEnd    fin reservee
+    FreePtr    liste libre (libere par Dispose)
+
+  Allocation par New, GetMem, liberation par Dispose, FreeMem.
+
+  Mark / Release : marqueur historique du sommet, pour liberer en
+  bloc (deconseille avec FreePtr).
+
+==============================================================================
+  29. Gestion des interruptions
+==============================================================================
+
+  29.1 Procedure d interruption
+  -----------------------------
+
+    Procedure GestionnaireTimer; Interrupt;
+    Begin
+      Inc(Compteur);
+    End;
+
+  Le mot-cle Interrupt empile correctement les registres a l entree
+  et IRET a la sortie.
+
+  29.2 Installation
+  -----------------
+
+    Var Ancien : Procedure;
+
+    Begin
+      GetIntVec($1C, @Ancien);
+      SetIntVec($1C, Addr(GestionnaireTimer));
+      ...
+      { restaurer avant Halt }
+      SetIntVec($1C, @Ancien);
+    End.
+
+  29.3 INT 21h appel direct
+  -------------------------
+
+    Var R : Registers;
+    R.AH := $02;
+    R.DL := Ord('A');
+    Intr($21, R);
+
+==============================================================================
+  30. Compatibilite Free Pascal mode -Mtp
+==============================================================================
+
+  Free Pascal (FPC) propose un mode de compatibilite Turbo Pascal
+  active par l option -Mtp ou la directive {$MODE TP}.
+
+  Particularites du mode -Mtp :
+
+    - Integer reste 16 bits (comme en TP).
+    - String par defaut = String[255].
+    - Pas de tableaux dynamiques ni d Ansistring (sauf via TP unit).
+    - Constantes hex $9000..$FFFF sont des Integer signes -> negatives.
+    - Procedure Inherited fonctionne comme TP.
+    - Objects (Object) supportes (en plus de class).
+    - Unites .tpu remplacees par .ppu (incompatibilite binaire).
+    - Code 32 bits (DPMI / Win32 / Linux 32 / Linux 64), pas reel 16
+      bits.
+
+  Pieges connus avec -Mtp :
+
+    - Constantes hex et comparaisons LongInt :
+        If LongVar > $9000 Then ...  { faux : $9000 = -28672 }
+      Solution : utiliser decimal ou LongInt($9000) avec precaution.
+
+    - Multiplication tronquee a 16 bits si la variable cible est
+      Integer :
+        Disp : Integer;
+        Disp := LongInt(A) * B;     { tronque ! }
+
+    - Records non packed alignent Pointer sur 4 octets.
+
+    - Function dans une condition = appel recursif :
+        If MaFonc Then ...    { invoque MaFonc recursivement }
+      Solution : utiliser une variable locale ou Result.
+
+  Voir le fichier user memory fpc-mtp-pitfalls.md pour les details.
+
+  30.1 Compilation
+  ----------------
+
+    fpc -Mtp programme.pas
+
+  Ou avec directive en tete de fichier :
+
+    {$MODE TP}
+
+==============================================================================
+  31. Exemples complets
+==============================================================================
+
+  31.1 Hello World
+  ----------------
+
+    Program Hello;
+    Begin
+      WriteLn('Hello, World!');
+    End.
+
+  31.2 Factorielle recursive
+  --------------------------
+
+    Program Factorielle;
+    Function Fact(N : Integer) : LongInt;
+    Begin
+      If N <= 1 Then Fact := 1
+      Else Fact := N * Fact(N - 1);
+    End;
+
+    Var I : Integer;
+    Begin
+      For I := 1 To 10 Do
+        WriteLn(I:2, '! = ', Fact(I));
+    End.
+
+  31.3 Tri a bulles
+  -----------------
+
+    Program TriBulles;
+    Const N = 10;
+    Var T : Array[1..N] Of Integer;
+        I, J, Tmp : Integer;
+    Begin
+      For I := 1 To N Do T[I] := Random(100);
+      For I := 1 To N - 1 Do
+        For J := 1 To N - I Do
+          If T[J] > T[J + 1] Then Begin
+            Tmp      := T[J];
+            T[J]     := T[J + 1];
+            T[J + 1] := Tmp;
+          End;
+      For I := 1 To N Do Write(T[I]:4);
+      WriteLn;
+    End.
+
+  31.4 Lecture / ecriture de fichier texte
+  ----------------------------------------
+
+    Program FicTxt;
+    Var F : Text;
+        S : String;
+    Begin
+      Assign(F, 'data.txt');
+      Rewrite(F);
+      WriteLn(F, 'Ligne 1');
+      WriteLn(F, 'Ligne 2');
+      Close(F);
+
+      Assign(F, 'data.txt');
+      Reset(F);
+      While Not Eof(F) Do Begin
+        ReadLn(F, S);
+        WriteLn(S);
+      End;
+      Close(F);
+    End.
+
+  31.5 Unite simple
+  -----------------
+
+    Unit Math;
+    Interface
+      Function Carre(N : Integer) : LongInt;
+      Function Cube(N : Integer) : LongInt;
+    Implementation
+      Function Carre(N : Integer) : LongInt;
+      Begin
+        Carre := LongInt(N) * N;
+      End;
+      Function Cube(N : Integer) : LongInt;
+      Begin
+        Cube := Carre(N) * N;
+      End;
+    End.
+
+    Program TestMath;
+    Uses Math;
+    Begin
+      WriteLn(Carre(7));     { 49 }
+      WriteLn(Cube(5));      { 125 }
+    End.
+
+  31.6 Objet et heritage
+  ----------------------
+
+    Program TestObj;
+    Type
+      TForme = Object
+        Constructor Init;
+        Procedure Dessine; Virtual;
+        Function Aire : Real; Virtual;
+        Destructor Done; Virtual;
+      End;
+
+      TCercle = Object(TForme)
+        R : Real;
+        Constructor Init(R0 : Real);
+        Procedure Dessine; Virtual;
+        Function Aire : Real; Virtual;
+      End;
+
+    Constructor TForme.Init;
+    Begin
+    End;
+
+    Procedure TForme.Dessine;
+    Begin
+      WriteLn('forme generique');
+    End;
+
+    Function TForme.Aire : Real;
+    Begin
+      Aire := 0;
+    End;
+
+    Destructor TForme.Done;
+    Begin
+    End;
+
+    Constructor TCercle.Init(R0 : Real);
+    Begin
+      Inherited Init;
+      R := R0;
+    End;
+
+    Procedure TCercle.Dessine;
+    Begin
+      WriteLn('cercle de rayon ', R:0:2);
+    End;
+
+    Function TCercle.Aire : Real;
+    Begin
+      Aire := Pi * R * R;
+    End;
+
+    Var F : TForme;
+        C : TCercle;
+    Begin
+      F.Init;  F.Dessine;
+      C.Init(2.5); C.Dessine;
+      WriteLn('aire : ', C.Aire:0:2);
+      F.Done; C.Done;
+    End.
+
+==============================================================================
+  32. Differences avec Standard Pascal (ISO 7185)
+==============================================================================
+
+    Aspect              Standard Pascal    Turbo Pascal
+    -----------------   ----------------   --------------------------
+    Casse               insensible         insensible
+    Strings             tableau de char    type String dedie [n]
+    Chaines litterales  packed array       String automatique
+    Modulo entier       mod                mod (+ div)
+    Hexadecimal         non                $1A (TP)
+    Pointeurs           ^T                 ^T (+ Pointer, Far/Near)
+    Set                 limite             Set Of Byte ou Char etc.
+    Unites              non                Unit / Interface / Implementation
+    Assembleur inline   non                Asm ... End;
+    Includes            non                {$I file}
+    Conditionnel        non                {$IFDEF ...}
+    Operateurs bit      non                and/or/xor sur entiers
+    Objets              non                Object (TP 5.5+)
+    Procedures imbriquees  oui             oui
+    Sections multiples  non                oui (const/type/var n importe ou)
+    Forward             oui                oui
+    Tableaux ouverts    non                oui (TP 7+)
+    Result              non                oui (FPC -Mtp)
+    Halt/Exit/Break     non                oui
+    Goto                limite              illimite
+    IOResult            non                oui (avec {$I-})
+
+==============================================================================
+  33. Ressources dans le projet
+==============================================================================
+
+  Documentation thematique du projet DEV-COOLS :
+
+    DOC/TURBOPASCAL_SPEC_LANG.txt   le present document (vue d ensemble)
+    DOC/TURBOPASCAL_SYSTEM.txt      unite System
+    DOC/TURBOPASCAL_CRT.txt         unite Crt
+    DOC/TURBOPASCAL_DOS.txt         unite Dos
+    DOC/TURBOPASCAL_GRAPH.txt       unite Graph (BGI)
+    DOC/TURBOPASCAL_GRAPH3.txt      Graph3 (TP 3)
+    DOC/TURBOPASCAL_OVERLAY.txt     unite Overlay
+    DOC/TURBOPASCAL_OBJECTS.txt     programmation objet
+    DOC/TURBOPASCAL_PRINTER.txt     unite Printer
+    DOC/TURBOPASCAL_STRING.txt      type String
+    DOC/TURBOPASCAL_STRINGS.txt     unite Strings (PChar)
+    DOC/TURBOPASCAL_MEMORY.txt      gestion memoire
+    DOC/TURBOPASCAL_WINDOS.txt      unite WinDos (TP for Windows)
+    DOC/TURBOPASCAL_TURBO3.txt      compatibilite TP3
+
+  Compilateurs et outils dans le projet :
+
+    DEVENV.PAS               IDE et emulateur DOS pour TP
+    PSP86.PAS, PSPCW32.PAS   compilateurs PSP
+    PAS2*.PAS                convertisseurs Pascal vers autres langages
+    *.PAS                    plus de 300 outils ecrits en Pascal
+
+==============================================================================
+  34. Bibliographie
+==============================================================================
+
+  Manuels Borland :
+
+    - Borland International, "Turbo Pascal 7.0 User s Guide", 1992.
+    - Borland International, "Turbo Pascal 7.0 Language Guide", 1992.
+    - Borland International, "Turbo Pascal 7.0 Programmer s Reference",
+      1992.
+    - Borland International, "Turbo Pascal 7.0 Programming Guide",
+      1992.
+
+  Ouvrages classiques :
+
+    - O Brien, Stephen K., "Turbo Pascal 7 : The Complete Reference",
+      McGraw-Hill, 1993. ISBN 0-07-881946-2.
+
+    - Swan, Tom, "Mastering Turbo Pascal 6", Howard Sams, 1991.
+
+    - Schildt, Herbert, "Advanced Turbo Pascal", McGraw-Hill, 1989.
+
+    - Jensen, Kathleen et Wirth, Niklaus, "Pascal User Manual and
+      Report", Springer-Verlag, 1974 (Pascal de reference).
+
+    - Wirth, Niklaus, "Algorithms + Data Structures = Programs",
+      Prentice-Hall, 1976.
+
+  Sur Free Pascal (mode -Mtp) :
+
+    - Free Pascal Team, "Free Pascal Reference Guide", 2024.
+    - Free Pascal Team, "Free Pascal Programmer s Guide", 2024.
+
+  Standards :
+
+    - ISO 7185 : Pascal standard (1990).
+    - ISO 10206 : Extended Pascal (1991).
+
+  Ressources en ligne :
+
+    - https://www.freepascal.org/
+    - https://wiki.freepascal.org/Turbo_Pascal
+    - https://en.wikipedia.org/wiki/Turbo_Pascal
+
+==============================================================================
+  Fin du document TURBOPASCAL_SPEC_LANG.txt
+==============================================================================

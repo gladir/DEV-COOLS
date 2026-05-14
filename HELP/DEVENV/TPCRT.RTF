@@ -1,0 +1,829 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}
+
+{\footnote # IDH_TPCRT_01}
+{\footnote $ Unite Crt - CONSTANTES - MODES CRT}
+{\footnote K Turbo Pascal;Unite Crt;CONSTANTES - MODES CRT}
+\b\fs24 CONSTANTES - MODES CRT \b0\fs20\par
+\par
+{\f1   Les constantes de mode definissent le type d'affichage texte.}\par
+{\f1   Elles sont utilisees avec la procedure TextMode.}\par
+\par
+{\f1   Const}\par
+{\f1     BW40    = 0;     \{ Adaptateur couleur, 40x25, noir/blanc      \}}\par
+{\f1     CO40    = 1;     \{ Adaptateur couleur, 40x25, couleur          \}}\par
+{\f1     BW80    = 2;     \{ Adaptateur couleur, 80x25, noir/blanc      \}}\par
+{\f1     CO80    = 3;     \{ Adaptateur couleur, 80x25, couleur          \}}\par
+{\f1     Mono    = 7;     \{ Adaptateur monochrome, 80x25                \}}\par
+{\f1     Font8x8 = 256;  \{ Police 8x8 supplementaire en ROM (EGA/VGA)  \}}\par
+\par
+{\f1   Constantes de compatibilite Turbo Pascal 3.0 :}\par
+\par
+{\f1     C40 = CO40;      \{ Alias pour CO40 \}}\par
+{\f1     C80 = CO80;      \{ Alias pour CO80 \}}\par
+\par
+{\f1   Le mode par defaut au demarrage est CO80 (80 colonnes, 25 lignes,}\par
+{\f1   couleur). Font8x8 peut etre combine avec OR pour obtenir 43 ou}\par
+{\f1   50 lignes sur EGA/VGA : TextMode(CO80 + Font8x8).}\par
+\par
+{\f1   NOTE : en Win32, les modes 40 colonnes ne sont generalement pas}\par
+{\f1   supportes. Le mode standard est 80x25 via la console Windows.}\par
+\par
+\par
+\b Sections suivantes : \b0\par
+\par
+{\f1  2. CONSTANTES - COULEURS}     {\uldb [Aller]}{\v IDH_TPCRT_02}\par
+{\f1  3. VARIABLES}     {\uldb [Aller]}{\v IDH_TPCRT_03}\par
+{\f1  4. PROCEDURES ET FONCTIONS - CLAVIER}     {\uldb [Aller]}{\v IDH_TPCRT_04}\par
+{\f1  5. PROCEDURES ET FONCTIONS - ECRAN}     {\uldb [Aller]}{\v IDH_TPCRT_05}\par
+{\f1  6. PROCEDURES - COULEURS ET ATTRIBUTS}     {\uldb [Aller]}{\v IDH_TPCRT_06}\par
+{\f1  7. PROCEDURES - SON}     {\uldb [Aller]}{\v IDH_TPCRT_07}\par
+{\f1  8. PROCEDURE - TEMPORISATION}     {\uldb [Aller]}{\v IDH_TPCRT_08}\par
+{\f1  9. FREQUENCES DES NOTES MUSICALES}     {\uldb [Aller]}{\v IDH_TPCRT_09}\par
+{\f1 10. TABLEAU DES ATTRIBUTS COULEUR COURANTS}     {\uldb [Aller]}{\v IDH_TPCRT_10}\par
+{\f1 11. EXEMPLES D'UTILISATION}     {\uldb [Aller]}{\v IDH_TPCRT_11}\par
+{\f1 12. NOTES D'IMPLEMENTATION POUR TPCW32}     {\uldb [Aller]}{\v IDH_TPCRT_12}\par
+{\f1 13. INTERFACE COMPLETE}     {\uldb [Aller]}{\v IDH_TPCRT_13}\par
+\par
+{\uldb Suivant >>}{\v IDH_TPCRT_02}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPCRT_02}
+{\footnote $ Unite Crt - CONSTANTES - COULEURS}
+{\footnote K Turbo Pascal;Unite Crt;CONSTANTES - COULEURS}
+\b\fs24 CONSTANTES - COULEURS \b0\fs20\par
+\par
+{\f1   Les couleurs sont codees sur 4 bits (0-15) pour le premier plan}\par
+{\f1   et 3 bits (0-7) pour l'arriere-plan. L'attribut complet est :}\par
+\par
+{\f1     TextAttr = (Arriere-plan Shl 4) Or Premier_plan Or Blink}\par
+\par
+\par
+\b 2.1 Couleurs de premier plan ET d'arriere-plan (0-7) \b0\par
+\par
+{\f1   Const}\par
+{\f1     Black      = 0;    \{ Noir         \}}\par
+{\f1     Blue       = 1;    \{ Bleu         \}}\par
+{\f1     Green      = 2;    \{ Vert         \}}\par
+{\f1     Cyan       = 3;    \{ Cyan         \}}\par
+{\f1     Red        = 4;    \{ Rouge        \}}\par
+{\f1     Magenta    = 5;    \{ Magenta      \}}\par
+{\f1     Brown      = 6;    \{ Marron       \}}\par
+{\f1     LightGray  = 7;    \{ Gris clair   \}}\par
+\par
+{\f1   Ces 8 couleurs peuvent etre utilisees a la fois pour le premier}\par
+{\f1   plan (TextColor) et pour l'arriere-plan (TextBackground).}\par
+\par
+\par
+\b 2.2 Couleurs de premier plan uniquement (8-15) \b0\par
+\par
+{\f1   Const}\par
+{\f1     DarkGray      = 8;    \{ Gris fonce       \}}\par
+{\f1     LightBlue     = 9;    \{ Bleu clair       \}}\par
+{\f1     LightGreen    = 10;   \{ Vert clair       \}}\par
+{\f1     LightCyan     = 11;   \{ Cyan clair       \}}\par
+{\f1     LightRed      = 12;   \{ Rouge clair      \}}\par
+{\f1     LightMagenta  = 13;   \{ Magenta clair    \}}\par
+{\f1     Yellow        = 14;   \{ Jaune            \}}\par
+{\f1     White         = 15;   \{ Blanc            \}}\par
+\par
+{\f1   Ces couleurs ne peuvent etre utilisees que pour le premier plan.}\par
+{\f1   L'arriere-plan n'accepte que les valeurs 0-7.}\par
+\par
+\par
+\b 2.3 Attribut de clignotement \b0\par
+\par
+{\f1   Const}\par
+{\f1     Blink = 128;   \{ Clignotement du texte \}}\par
+\par
+{\f1   Peut etre ajoute a la couleur du premier plan par OR :}\par
+{\f1     TextColor(Red + Blink);   \{ texte rouge clignotant \}}\par
+\par
+{\f1   NOTE : le clignotement ne fonctionne pas sur tous les systemes.}\par
+{\f1   En Win32, il est generalement ignore par la console.}\par
+\par
+\par
+\b 2.4 Encodage de l'attribut texte (TextAttr) \b0\par
+\par
+{\f1     Bit 7     : Clignotement (Blink)}\par
+{\f1     Bits 6-4  : Couleur d'arriere-plan (0-7)}\par
+{\f1     Bits 3-0  : Couleur de premier plan (0-15)}\par
+\par
+{\f1     Exemples :}\par
+{\f1       $07 = LightGray sur Black      (defaut)}\par
+{\f1       $1E = Yellow sur Blue}\par
+{\f1       $4F = White sur Red}\par
+{\f1       $70 = Black sur LightGray      (video inverse)}\par
+{\f1       $8F = White sur Black + Blink}\par
+\par
+{\f1     Calcul : TextAttr := (Background Shl 4) Or Foreground;}\par
+{\f1     Avec clignotement : TextAttr := (Background Shl 4) Or Foreground Or $80;}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPCRT_01}     {\uldb Suivant >>}{\v IDH_TPCRT_03}     {\uldb Sommaire}{\v IDH_TPCRT_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPCRT_03}
+{\footnote $ Unite Crt - VARIABLES}
+{\footnote K Turbo Pascal;Unite Crt;VARIABLES}
+\b\fs24 VARIABLES \b0\fs20\par
+\par
+{\f1   Var}\par
+{\f1     CheckBreak  : Boolean;   \{ Active la detection de Ctrl+Break     \}}\par
+{\f1     CheckEOF    : Boolean;   \{ Active la detection de Ctrl+Z (EOF)   \}}\par
+{\f1     DirectVideo : Boolean;   \{ Active l'ecriture directe en memoire  \}}\par
+{\f1     CheckSnow   : Boolean;   \{ Active le filtre anti-neige CGA       \}}\par
+{\f1     LastMode    : Word;      \{ Dernier mode texte utilise             \}}\par
+{\f1     TextAttr    : Byte;      \{ Attribut de texte courant              \}}\par
+{\f1     WindMin     : Word;      \{ Coin superieur gauche de la fenetre    \}}\par
+{\f1     WindMax     : Word;      \{ Coin inferieur droit de la fenetre     \}}\par
+\par
+\par
+\b 3.1 CheckBreak (defaut : True) \b0\par
+\par
+{\f1   Quand True, une pression sur Ctrl+Break interrompt le programme.}\par
+{\f1   Mettre a False pour ignorer Ctrl+Break :}\par
+{\f1     CheckBreak := False;}\par
+\par
+\par
+\b 3.2 CheckEOF (defaut : False) \b0\par
+\par
+{\f1   Quand True, Ctrl+Z est interprete comme fin de fichier (EOF)}\par
+{\f1   lors de la lecture depuis la console. Par defaut, Ctrl+Z est}\par
+{\f1   traite comme un caractere normal.}\par
+\par
+\par
+\b 3.3 DirectVideo (defaut : True) \b0\par
+\par
+{\f1   Quand True, Write et WriteLn ecrivent directement dans la memoire}\par
+{\f1   video ($B800:0000) au lieu de passer par les appels BIOS. C'est}\par
+{\f1   beaucoup plus rapide mais ne fonctionne pas via connexion serie.}\par
+{\f1   NOTE : en Win32, cette variable est ignoree (utilise l'API Console).}\par
+\par
+\par
+\b 3.4 CheckSnow (defaut : True sur CGA) \b0\par
+\par
+{\f1   Quand True, les ecritures en memoire video attendent le retrace}\par
+{\f1   vertical pour eviter la "neige" sur les anciennes cartes CGA.}\par
+{\f1   Inutile sur EGA, VGA et Win32.}\par
+\par
+\par
+\b 3.5 LastMode \b0\par
+\par
+{\f1   Contient le mode texte actif au moment de l'initialisation de CRT.}\par
+{\f1   Utilise pour restaurer le mode original :}\par
+{\f1     TextMode(LastMode);}\par
+\par
+\par
+\b 3.6 TextAttr \b0\par
+\par
+{\f1   Attribut de couleur utilise par toutes les operations d'ecriture.}\par
+{\f1   Modifie par TextColor, TextBackground, LowVideo, HighVideo,}\par
+{\f1   NormVideo. Peut aussi etre assigne directement :}\par
+{\f1     TextAttr := Yellow + Blue * 16;  \{ jaune sur bleu \}}\par
+\par
+\par
+\b 3.7 WindMin et WindMax \b0\par
+\par
+{\f1   Definissent la fenetre texte active. Format encode :}\par
+{\f1     WindMin := Lo(X1-1) Or (Hi(Y1-1) Shl 8);}\par
+{\f1     WindMax := Lo(X2-1) Or (Hi(Y2-1) Shl 8);}\par
+\par
+{\f1   Modifiees par Window(). Les coordonnees GotoXY et WhereX/WhereY}\par
+{\f1   sont relatives a cette fenetre.}\par
+\par
+{\f1   Extraction des coordonnees :}\par
+{\f1     X1 := Lo(WindMin) + 1;   Y1 := Hi(WindMin) + 1;}\par
+{\f1     X2 := Lo(WindMax) + 1;   Y2 := Hi(WindMax) + 1;}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPCRT_02}     {\uldb Suivant >>}{\v IDH_TPCRT_04}     {\uldb Sommaire}{\v IDH_TPCRT_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPCRT_04}
+{\footnote $ Unite Crt - PROCEDURES ET FONCTIONS - CLAVIER}
+{\footnote K Turbo Pascal;Unite Crt;PROCEDURES ET FONCTIONS - CLAVIER}
+\b\fs24 PROCEDURES ET FONCTIONS - CLAVIER \b0\fs20\par
+\par
+\par
+\b 4.1 Lecture du clavier \b0\par
+\par
+{\f1   Function KeyPressed : Boolean;}\par
+{\f1     - Retourne True si une touche est disponible dans le tampon}\par
+{\f1     - Ne retire PAS la touche du tampon}\par
+{\f1     - Utilisee pour tester sans bloquer l'execution}\par
+{\f1     - Exemple :}\par
+{\f1         While Not KeyPressed Do}\par
+{\f1           \{ ... animations ... \};}\par
+{\f1         Ch := ReadKey;}\par
+\par
+{\f1   Function ReadKey : Char;}\par
+{\f1     - Attend et retourne un caractere du clavier}\par
+{\f1     - Le caractere N'EST PAS affiche a l'ecran (pas d'echo)}\par
+{\f1     - Bloquante : attend jusqu'a ce qu'une touche soit pressee}\par
+{\f1     - Pour les touches speciales (F1-F12, fleches, etc.) :}\par
+{\f1         Premier appel retourne #0 (Chr(0))}\par
+{\f1         Deuxieme appel retourne le code etendu (scan code)}\par
+{\f1     - Exemple simple :}\par
+{\f1         Ch := ReadKey;}\par
+{\f1         WriteLn('Vous avez tape : ', Ch);}\par
+{\f1     - Exemple touches speciales :}\par
+{\f1         Ch := ReadKey;}\par
+{\f1         If Ch = #0 Then}\par
+{\f1         Begin}\par
+{\f1           Ch := ReadKey;  \{ lire le scan code \}}\par
+{\f1           Case Ord(Ch) Of}\par
+{\f1             59 : WriteLn('F1');}\par
+{\f1             60 : WriteLn('F2');}\par
+{\f1             72 : WriteLn('Fleche Haut');}\par
+{\f1             75 : WriteLn('Fleche Gauche');}\par
+{\f1             77 : WriteLn('Fleche Droite');}\par
+{\f1             80 : WriteLn('Fleche Bas');}\par
+{\f1           End;}\par
+{\f1         End;}\par
+\par
+{\f1   Codes etendus des touches speciales (second octet apres #0) :}\par
+\par
+{\f1     Touche        | Code  | Touche         | Code}\par
+{\f1     --------------+-------+----------------+------}\par
+{\f1     F1            |  59   | Shift+F1       |  84}\par
+{\f1     F2            |  60   | Shift+F2       |  85}\par
+{\f1     F3            |  61   | Shift+F3       |  86}\par
+{\f1     F4            |  62   | Shift+F4       |  87}\par
+{\f1     F5            |  63   | Shift+F5       |  88}\par
+{\f1     F6            |  64   | Shift+F6       |  89}\par
+{\f1     F7            |  65   | Shift+F7       |  90}\par
+{\f1     F8            |  66   | Shift+F8       |  91}\par
+{\f1     F9            |  67   | Shift+F9       |  92}\par
+{\f1     F10           |  68   | Shift+F10      |  93}\par
+{\f1     Home          |  71   | Ctrl+F1        |  94}\par
+{\f1     Fleche Haut   |  72   | Ctrl+F2        |  95}\par
+{\f1     Page Up       |  73   | Ctrl+F3        |  96}\par
+{\f1     Fleche Gauche |  75   | Ctrl+F4        |  97}\par
+{\f1     Fleche Droite |  77   | Ctrl+F5        |  98}\par
+{\f1     End           |  79   | Ctrl+F6        |  99}\par
+{\f1     Fleche Bas    |  80   | Ctrl+F7        | 100}\par
+{\f1     Page Down     |  81   | Ctrl+F8        | 101}\par
+{\f1     Insert        |  82   | Ctrl+F9        | 102}\par
+{\f1     Delete        |  83   | Ctrl+F10       | 103}\par
+{\f1     Alt+F1        | 104   | Ctrl+Home      | 119}\par
+{\f1     Alt+F2        | 105   | Ctrl+End       | 117}\par
+{\f1     Alt+F3        | 106   | Ctrl+PgUp      | 132}\par
+{\f1     Alt+F4        | 107   | Ctrl+PgDn      | 118}\par
+{\f1     Alt+F5        | 108   | Ctrl+Gauche    | 115}\par
+{\f1     Alt+F6        | 109   | Ctrl+Droite    | 116}\par
+{\f1     Alt+F7        | 110   |}\par
+{\f1     Alt+F8        | 111   |}\par
+{\f1     Alt+F9        | 112   |}\par
+{\f1     Alt+F10       | 113   |}\par
+\par
+\par
+\b 4.2 Assignation CRT \b0\par
+\par
+{\f1   Procedure AssignCrt(Var F : Text);}\par
+{\f1     - Associe un fichier texte a la sortie CRT}\par
+{\f1     - Apres Rewrite(F), les Write/WriteLn sur F utilisent CRT}\par
+{\f1     - Plus rapide que la sortie standard car bypass le DOS}\par
+{\f1     - Utile pour rediriger la sortie vers la console CRT}\par
+{\f1     - Exemple :}\par
+{\f1         Var F : Text;}\par
+{\f1         AssignCrt(F);}\par
+{\f1         Rewrite(F);}\par
+{\f1         WriteLn(F, 'Sortie via CRT');}\par
+{\f1         Close(F);}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPCRT_03}     {\uldb Suivant >>}{\v IDH_TPCRT_05}     {\uldb Sommaire}{\v IDH_TPCRT_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPCRT_05}
+{\footnote $ Unite Crt - PROCEDURES ET FONCTIONS - ECRAN}
+{\footnote K Turbo Pascal;Unite Crt;PROCEDURES ET FONCTIONS - ECRAN}
+\b\fs24 PROCEDURES ET FONCTIONS - ECRAN \b0\fs20\par
+\par
+\par
+\b 5.1 Mode texte \b0\par
+\par
+{\f1   Procedure TextMode(Mode : Integer);}\par
+{\f1     - Change le mode texte de l'ecran}\par
+{\f1     - Efface l'ecran et reinitialise la fenetre}\par
+{\f1     - TextAttr est remis a $07 (LightGray sur Black)}\par
+{\f1     - WindMin/WindMax sont remis a plein ecran}\par
+{\f1     - LastMode est mis a jour avec le mode precedent}\par
+{\f1     - Modes valides : BW40, CO40, BW80, CO80, Mono}\par
+{\f1     - Peut etre combine avec Font8x8 :}\par
+{\f1         TextMode(CO80 + Font8x8);  \{ 80x50 sur VGA \}}\par
+{\f1     - Exemple : TextMode(CO80);}\par
+\par
+\par
+\b 5.2 Fenetre texte \b0\par
+\par
+{\f1   Procedure Window(X1, Y1, X2, Y2 : Byte);}\par
+{\f1     - Definit une fenetre texte (zone de sortie)}\par
+{\f1     - X1,Y1 = coin superieur gauche (1,1 = haut gauche ecran)}\par
+{\f1     - X2,Y2 = coin inferieur droit}\par
+{\f1     - Toutes les coordonnees deviennent relatives a la fenetre}\par
+{\f1     - Le curseur est deplace en (1,1) de la fenetre}\par
+{\f1     - Le defilement se fait a l'interieur de la fenetre}\par
+{\f1     - Exemple :}\par
+{\f1         Window(10, 5, 70, 20);  \{ fenetre de 61x16 \}}\par
+{\f1         ClrScr;                 \{ efface seulement la fenetre \}}\par
+{\f1         WriteLn('Dans la fenetre');}\par
+{\f1     - Pour restaurer le plein ecran :}\par
+{\f1         Window(1, 1, 80, 25);}\par
+\par
+\par
+\b 5.3 Positionnement du curseur \b0\par
+\par
+{\f1   Procedure GotoXY(X, Y : Byte);}\par
+{\f1     - Deplace le curseur a la position (X, Y)}\par
+{\f1     - Coordonnees relatives a la fenetre active}\par
+{\f1     - X = colonne (1 = gauche), Y = ligne (1 = haut)}\par
+{\f1     - Exemple : GotoXY(1, 1);  \{ coin superieur gauche \}}\par
+\par
+{\f1   Function WhereX : Byte;}\par
+{\f1     - Retourne la colonne courante du curseur (1-based)}\par
+{\f1     - Relative a la fenetre active}\par
+{\f1     - Exemple : Col := WhereX;}\par
+\par
+{\f1   Function WhereY : Byte;}\par
+{\f1     - Retourne la ligne courante du curseur (1-based)}\par
+{\f1     - Relative a la fenetre active}\par
+{\f1     - Exemple : Lig := WhereY;}\par
+\par
+\par
+\b 5.4 Effacement \b0\par
+\par
+{\f1   Procedure ClrScr;}\par
+{\f1     - Efface la fenetre texte active}\par
+{\f1     - Remplit avec des espaces et l'attribut TextAttr courant}\par
+{\f1     - Deplace le curseur en (1, 1) de la fenetre}\par
+{\f1     - Si aucune fenetre n'est definie, efface tout l'ecran}\par
+{\f1     - Exemple :}\par
+{\f1         TextBackground(Blue);}\par
+{\f1         ClrScr;  \{ ecran bleu \}}\par
+\par
+{\f1   Procedure ClrEol;}\par
+{\f1     - Efface depuis le curseur jusqu'a la fin de la ligne}\par
+{\f1     - Remplit avec des espaces et l'attribut TextAttr courant}\par
+{\f1     - Le curseur ne bouge pas}\par
+{\f1     - Exemple :}\par
+{\f1         GotoXY(10, 5);}\par
+{\f1         ClrEol;  \{ efface colonnes 10 a 80 sur la ligne 5 \}}\par
+\par
+\par
+\b 5.5 Insertion et suppression de lignes \b0\par
+\par
+{\f1   Procedure InsLine;}\par
+{\f1     - Insere une ligne vide a la position du curseur}\par
+{\f1     - La ligne courante et celles en dessous descendent d'une ligne}\par
+{\f1     - La derniere ligne de la fenetre est perdue}\par
+{\f1     - La nouvelle ligne est remplie avec TextAttr courant}\par
+{\f1     - Le curseur ne bouge pas}\par
+{\f1     - Exemple :}\par
+{\f1         GotoXY(1, 5);}\par
+{\f1         InsLine;  \{ insere une ligne vide en ligne 5 \}}\par
+\par
+{\f1   Procedure DelLine;}\par
+{\f1     - Supprime la ligne a la position du curseur}\par
+{\f1     - Les lignes en dessous remontent d'une ligne}\par
+{\f1     - La derniere ligne de la fenetre est remplie de blancs}\par
+{\f1     - Le curseur ne bouge pas}\par
+{\f1     - Exemple :}\par
+{\f1         GotoXY(1, 5);}\par
+{\f1         DelLine;  \{ supprime la ligne 5 \}}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPCRT_04}     {\uldb Suivant >>}{\v IDH_TPCRT_06}     {\uldb Sommaire}{\v IDH_TPCRT_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPCRT_06}
+{\footnote $ Unite Crt - PROCEDURES - COULEURS ET ATTRIBUTS}
+{\footnote K Turbo Pascal;Unite Crt;PROCEDURES - COULEURS ET ATTRIBUTS}
+\b\fs24 PROCEDURES - COULEURS ET ATTRIBUTS \b0\fs20\par
+\par
+{\f1   Procedure TextColor(Color : Byte);}\par
+{\f1     - Change la couleur du premier plan (0-15)}\par
+{\f1     - Peut inclure Blink (128) : TextColor(Red + Blink)}\par
+{\f1     - Modifie les bits 0-3 et 7 de TextAttr}\par
+{\f1     - N'affecte pas le texte deja affiche}\par
+{\f1     - Exemple : TextColor(Yellow);}\par
+\par
+{\f1   Procedure TextBackground(Color : Byte);}\par
+{\f1     - Change la couleur d'arriere-plan (0-7)}\par
+{\f1     - Modifie les bits 4-6 de TextAttr}\par
+{\f1     - N'affecte pas le texte deja affiche}\par
+{\f1     - Exemple : TextBackground(Blue);}\par
+\par
+{\f1   Procedure LowVideo;}\par
+{\f1     - Desactive le bit d'intensite du premier plan}\par
+{\f1     - Remet les couleurs 8-15 a 0-7 (version sombre)}\par
+{\f1     - Equivalent a : TextAttr := TextAttr And $F7;}\par
+{\f1     - Exemple :}\par
+{\f1         TextColor(White);   \{ couleur 15 \}}\par
+{\f1         LowVideo;           \{ devient LightGray (couleur 7) \}}\par
+\par
+{\f1   Procedure HighVideo;}\par
+{\f1     - Active le bit d'intensite du premier plan}\par
+{\f1     - Force les couleurs 0-7 vers 8-15 (version claire)}\par
+{\f1     - Equivalent a : TextAttr := TextAttr Or $08;}\par
+{\f1     - Exemple :}\par
+{\f1         TextColor(Red);     \{ couleur 4 \}}\par
+{\f1         HighVideo;          \{ devient LightRed (couleur 12) \}}\par
+\par
+{\f1   Procedure NormVideo;}\par
+{\f1     - Restaure l'attribut texte normal (celui du demarrage)}\par
+{\f1     - Remet TextAttr a la valeur initiale lors du lancement}\par
+{\f1     - Typiquement $07 (LightGray sur Black)}\par
+{\f1     - Exemple :}\par
+{\f1         TextColor(Yellow);}\par
+{\f1         TextBackground(Blue);}\par
+{\f1         WriteLn('Colore');}\par
+{\f1         NormVideo;}\par
+{\f1         WriteLn('Normal');}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPCRT_05}     {\uldb Suivant >>}{\v IDH_TPCRT_07}     {\uldb Sommaire}{\v IDH_TPCRT_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPCRT_07}
+{\footnote $ Unite Crt - PROCEDURES - SON}
+{\footnote K Turbo Pascal;Unite Crt;PROCEDURES - SON}
+\b\fs24 PROCEDURES - SON \b0\fs20\par
+\par
+{\f1   Procedure Sound(Hz : Word);}\par
+{\f1     - Active le haut-parleur interne a la frequence Hz (en Hertz)}\par
+{\f1     - Le son continue indefiniment jusqu'a l'appel de NoSound}\par
+{\f1     - Sur PC, utilise le timer 8253 canal 2}\par
+{\f1     - Exemple : Sound(440);  \{ La 440 Hz \}}\par
+\par
+{\f1   Procedure NoSound;}\par
+{\f1     - Desactive le haut-parleur interne}\par
+{\f1     - Doit etre appele apres Sound pour arreter le son}\par
+{\f1     - Exemple :}\par
+{\f1         Sound(1000);}\par
+{\f1         Delay(500);    \{ attendre 500 ms \}}\par
+{\f1         NoSound;}\par
+\par
+{\f1   NOTE : en Win32, Sound peut etre emule par l'API Beep(Hz, Duration)}\par
+{\f1   mais le comportement asynchrone (son continu) n'est pas toujours}\par
+{\f1   reproduit. La paire Sound/Delay/NoSound est le patron typique.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPCRT_06}     {\uldb Suivant >>}{\v IDH_TPCRT_08}     {\uldb Sommaire}{\v IDH_TPCRT_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPCRT_08}
+{\footnote $ Unite Crt - PROCEDURE - TEMPORISATION}
+{\footnote K Turbo Pascal;Unite Crt;PROCEDURE - TEMPORISATION}
+\b\fs24 PROCEDURE - TEMPORISATION \b0\fs20\par
+\par
+{\f1   Procedure Delay(MS : Word);}\par
+{\f1     - Attend MS millisecondes environ}\par
+{\f1     - Bloquante : le programme est suspendu pendant la duree}\par
+{\f1     - Precision limitee (depend du timer systeme)}\par
+{\f1     - En DOS, utilise une boucle calibree sur le timer 8253}\par
+{\f1     - En Win32, peut etre emule par Sleep(MS)}\par
+{\f1     - MS est un Word : valeur maximale = 65535 ms (~65 secondes)}\par
+{\f1     - Exemple :}\par
+{\f1         WriteLn('Debut');}\par
+{\f1         Delay(2000);        \{ attendre 2 secondes \}}\par
+{\f1         WriteLn('Fin');}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPCRT_07}     {\uldb Suivant >>}{\v IDH_TPCRT_09}     {\uldb Sommaire}{\v IDH_TPCRT_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPCRT_09}
+{\footnote $ Unite Crt - FREQUENCES DES NOTES MUSICALES}
+{\footnote K Turbo Pascal;Unite Crt;FREQUENCES DES NOTES MUSICALES}
+\b\fs24 FREQUENCES DES NOTES MUSICALES \b0\fs20\par
+\par
+{\f1   Pour utiliser Sound() avec des notes musicales, voici les}\par
+{\f1   frequences standard (La 440 Hz, temperament egal) :}\par
+\par
+{\f1   Note    | Octave 3 | Octave 4 | Octave 5 | Octave 6}\par
+{\f1   --------+----------+----------+----------+---------}\par
+{\f1   Do (C)  |   131    |   262    |   523    |  1047}\par
+{\f1   Re (D)  |   147    |   294    |   587    |  1175}\par
+{\f1   Mi (E)  |   165    |   330    |   659    |  1319}\par
+{\f1   Fa (F)  |   175    |   349    |   698    |  1397}\par
+{\f1   Sol (G) |   196    |   392    |   784    |  1568}\par
+{\f1   La (A)  |   220    |   440    |   880    |  1760}\par
+{\f1   Si (B)  |   247    |   494    |   988    |  1976}\par
+\par
+{\f1   Exemple - gamme de Do majeur :}\par
+\par
+{\f1     Const Notes : Array[1..8] Of Word =}\par
+{\f1       (262, 294, 330, 349, 392, 440, 494, 523);}\par
+{\f1     Var I : Integer;}\par
+{\f1     Begin}\par
+{\f1       For I := 1 To 8 Do}\par
+{\f1       Begin}\par
+{\f1         Sound(Notes[I]);}\par
+{\f1         Delay(200);}\par
+{\f1       End;}\par
+{\f1       NoSound;}\par
+{\f1     End.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPCRT_08}     {\uldb Suivant >>}{\v IDH_TPCRT_10}     {\uldb Sommaire}{\v IDH_TPCRT_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPCRT_10}
+{\footnote $ Unite Crt - TABLEAU DES ATTRIBUTS COULEUR COURANTS}
+{\footnote K Turbo Pascal;Unite Crt;TABLEAU DES ATTRIBUTS COULEUR COURANTS}
+\b\fs24 TABLEAU DES ATTRIBUTS COULEUR COURANTS \b0\fs20\par
+\par
+{\f1   TextAttr | Premier plan  | Arriere-plan  | Aspect}\par
+{\f1   ---------+---------------+---------------+----------------------------}\par
+{\f1     $07    | LightGray (7) | Black (0)     | Gris sur noir (defaut)}\par
+{\f1     $0F    | White (15)    | Black (0)     | Blanc sur noir}\par
+{\f1     $1E    | Yellow (14)   | Blue (1)      | Jaune sur bleu}\par
+{\f1     $1F    | White (15)    | Blue (1)      | Blanc sur bleu}\par
+{\f1     $2A    | LightGreen(10)| Green (2)     | Vert clair sur vert}\par
+{\f1     $4E    | Yellow (14)   | Red (4)       | Jaune sur rouge}\par
+{\f1     $4F    | White (15)    | Red (4)       | Blanc sur rouge}\par
+{\f1     $70    | Black (0)     | LightGray (7) | Noir sur gris (inverse)}\par
+{\f1     $74    | Red (4)       | LightGray (7) | Rouge sur gris}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPCRT_09}     {\uldb Suivant >>}{\v IDH_TPCRT_11}     {\uldb Sommaire}{\v IDH_TPCRT_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPCRT_11}
+{\footnote $ Unite Crt - EXEMPLES D'UTILISATION}
+{\footnote K Turbo Pascal;Unite Crt;EXEMPLES D'UTILISATION}
+\b\fs24 EXEMPLES D'UTILISATION \b0\fs20\par
+\par
+\par
+\b 11.1 Programme de base avec CRT \b0\par
+\par
+{\f1   Program DemoCrt;}\par
+{\f1   Uses Crt;}\par
+{\f1   Var Ch : Char;}\par
+{\f1   Begin}\par
+{\f1     ClrScr;}\par
+{\f1     TextColor(Yellow);}\par
+{\f1     TextBackground(Blue);}\par
+{\f1     ClrScr;}\par
+{\f1     GotoXY(30, 12);}\par
+{\f1     WriteLn('Appuyez sur une touche...');}\par
+{\f1     Ch := ReadKey;}\par
+{\f1     NormVideo;}\par
+{\f1     ClrScr;}\par
+{\f1   End.}\par
+\par
+\par
+\b 11.2 Fenetre avec bordure \b0\par
+\par
+{\f1   Program DemoFenetre;}\par
+{\f1   Uses Crt;}\par
+{\f1   Var I : Integer;}\par
+{\f1   Begin}\par
+{\f1     ClrScr;}\par
+{\f1     \{ Dessiner la bordure \}}\par
+{\f1     TextColor(White);}\par
+{\f1     TextBackground(Blue);}\par
+{\f1     For I := 10 To 70 Do}\par
+{\f1     Begin}\par
+{\f1       GotoXY(I, 5);  Write(Chr(196));     \{ ligne horizontale haut \}}\par
+{\f1       GotoXY(I, 20); Write(Chr(196));     \{ ligne horizontale bas  \}}\par
+{\f1     End;}\par
+{\f1     For I := 5 To 20 Do}\par
+{\f1     Begin}\par
+{\f1       GotoXY(10, I); Write(Chr(179));     \{ ligne verticale gauche \}}\par
+{\f1       GotoXY(70, I); Write(Chr(179));     \{ ligne verticale droite \}}\par
+{\f1     End;}\par
+{\f1     GotoXY(10, 5);  Write(Chr(218));      \{ coin haut gauche       \}}\par
+{\f1     GotoXY(70, 5);  Write(Chr(191));      \{ coin haut droit        \}}\par
+{\f1     GotoXY(10, 20); Write(Chr(192));      \{ coin bas gauche        \}}\par
+{\f1     GotoXY(70, 20); Write(Chr(217));      \{ coin bas droit         \}}\par
+{\f1     \{ Contenu de la fenetre \}}\par
+{\f1     Window(11, 6, 69, 19);}\par
+{\f1     ClrScr;}\par
+{\f1     WriteLn('Contenu de la fenetre');}\par
+{\f1     ReadKey;}\par
+{\f1     Window(1, 1, 80, 25);}\par
+{\f1     NormVideo;}\par
+{\f1     ClrScr;}\par
+{\f1   End.}\par
+\par
+\par
+\b 11.3 Attente avec animation \b0\par
+\par
+{\f1   Program DemoAnim;}\par
+{\f1   Uses Crt;}\par
+{\f1   Const Spinner : Array[1..4] Of Char = ('|', '/', '-', '\\');}\par
+{\f1   Var I : Integer;}\par
+{\f1   Begin}\par
+{\f1     ClrScr;}\par
+{\f1     Write('Chargement... ');}\par
+{\f1     I := 1;}\par
+{\f1     While Not KeyPressed Do}\par
+{\f1     Begin}\par
+{\f1       Write(Spinner[I], #8);   \{ afficher puis reculer \}}\par
+{\f1       Inc(I);}\par
+{\f1       If I > 4 Then I := 1;}\par
+{\f1       Delay(100);}\par
+{\f1     End;}\par
+{\f1     ReadKey;  \{ consommer la touche \}}\par
+{\f1     WriteLn('Termine !');}\par
+{\f1   End.}\par
+\par
+\par
+\b 11.4 Son et melodie \b0\par
+\par
+{\f1   Program DemoSon;}\par
+{\f1   Uses Crt;}\par
+{\f1   Begin}\par
+{\f1     WriteLn('Bip !');}\par
+{\f1     Sound(1000);}\par
+{\f1     Delay(200);}\par
+{\f1     NoSound;}\par
+{\f1     Delay(100);}\par
+{\f1     Sound(1500);}\par
+{\f1     Delay(200);}\par
+{\f1     NoSound;}\par
+{\f1     WriteLn('Fin');}\par
+{\f1   End.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPCRT_10}     {\uldb Suivant >>}{\v IDH_TPCRT_12}     {\uldb Sommaire}{\v IDH_TPCRT_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPCRT_12}
+{\footnote $ Unite Crt - NOTES D'IMPLEMENTATION POUR TPCW32}
+{\footnote K Turbo Pascal;Unite Crt;NOTES D'IMPLEMENTATION POUR TPCW32}
+\b\fs24 NOTES D'IMPLEMENTATION POUR TPCW32 \b0\fs20\par
+\par
+\par
+\b 12.1 Emulation en Win32 \b0\par
+\par
+{\f1   En Win32, l'unite CRT n'a pas acces direct a la memoire video.}\par
+{\f1   Les fonctions sont emulees via l'API Console Windows :}\par
+\par
+{\f1   Fonction CRT        | API Win32 correspondante}\par
+{\f1   ---------------------+------------------------------------------}\par
+{\f1   ClrScr              | FillConsoleOutputCharacterA +}\par
+{\f1                       | FillConsoleOutputAttribute +}\par
+{\f1                       | SetConsoleCursorPosition}\par
+{\f1   ClrEol              | FillConsoleOutputCharacterA +}\par
+{\f1                       | FillConsoleOutputAttribute}\par
+{\f1   GotoXY              | SetConsoleCursorPosition}\par
+{\f1   WhereX / WhereY     | GetConsoleScreenBufferInfo}\par
+{\f1   TextColor           | SetConsoleTextAttribute}\par
+{\f1   TextBackground      | SetConsoleTextAttribute}\par
+{\f1   KeyPressed          | PeekConsoleInputA / GetNumberOfConsoleInputEvents}\par
+{\f1   ReadKey             | ReadConsoleInputA}\par
+{\f1   Sound               | Beep (kernel32.dll)}\par
+{\f1   NoSound             | (rien, Beep est synchrone en Win32)}\par
+{\f1   Delay               | Sleep (kernel32.dll)}\par
+{\f1   Window              | SetConsoleWindowInfo / ScrollConsoleScreenBuffer}\par
+{\f1   InsLine / DelLine   | ScrollConsoleScreenBufferA}\par
+{\f1   TextMode            | SetConsoleScreenBufferSize}\par
+\par
+\par
+\b 12.2 Variables en memoire \b0\par
+\par
+{\f1   Les variables CRT sont stockees dans le segment de donnees :}\par
+\par
+{\f1     CHECKBREAK  DD 1           ; Boolean (True par defaut)}\par
+{\f1     CHECKEOF    DD 0           ; Boolean (False par defaut)}\par
+{\f1     DIRECTVIDEO DD 1           ; Boolean (True par defaut)}\par
+{\f1     CHECKSNOW   DD 0           ; Boolean (False en Win32)}\par
+{\f1     LASTMODE    DD 3           ; Word (CO80 par defaut)}\par
+{\f1     TEXTATTR    DD 7           ; Byte ($07 = LightGray/Black)}\par
+{\f1     WINDMIN     DD 0           ; Word (0,0 = encode de 1,1)}\par
+{\f1     WINDMAX     DD 184Fh       ; Word (79,24 = 80x25)}\par
+\par
+\par
+\b 12.3 Mapping des couleurs CRT vers Console Windows \b0\par
+\par
+{\f1   Les couleurs CRT (0-15) mappent directement vers les attributs}\par
+{\f1   de la console Windows car l'encodage est identique :}\par
+\par
+{\f1     CRT Color  | Valeur | Win32 Console Attribute}\par
+{\f1     -----------+--------+-------------------------}\par
+{\f1     Black      |   0    | 0}\par
+{\f1     Blue       |   1    | FOREGROUND_BLUE (1)}\par
+{\f1     Green      |   2    | FOREGROUND_GREEN (2)}\par
+{\f1     Cyan       |   3    | FOREGROUND_GREEN | FOREGROUND_BLUE (3)}\par
+{\f1     Red        |   4    | FOREGROUND_RED (4)}\par
+{\f1     Magenta    |   5    | FOREGROUND_RED | FOREGROUND_BLUE (5)}\par
+{\f1     Brown      |   6    | FOREGROUND_RED | FOREGROUND_GREEN (6)}\par
+{\f1     LightGray  |   7    | FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE (7)}\par
+{\f1     DarkGray   |   8    | FOREGROUND_INTENSITY (8)}\par
+{\f1     LightBlue  |   9    | FOREGROUND_BLUE | FOREGROUND_INTENSITY (9)}\par
+{\f1     LightGreen |  10    | FOREGROUND_GREEN | FOREGROUND_INTENSITY (10)}\par
+{\f1     LightCyan  |  11    | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY}\par
+{\f1     LightRed   |  12    | FOREGROUND_RED | FOREGROUND_INTENSITY (12)}\par
+{\f1     LightMagenta| 13    | FOREGROUND_RED | FOREGROUND_BLUE | FOREGROUND_INTENSITY}\par
+{\f1     Yellow     |  14    | FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY}\par
+{\f1     White      |  15    | Toutes les composantes + INTENSITY (15)}\par
+\par
+{\f1   L'arriere-plan utilise les memes bits decales de 4 :}\par
+{\f1     BACKGROUND_BLUE = $10, BACKGROUND_GREEN = $20, etc.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPCRT_11}     {\uldb Suivant >>}{\v IDH_TPCRT_13}     {\uldb Sommaire}{\v IDH_TPCRT_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPCRT_13}
+{\footnote $ Unite Crt - INTERFACE COMPLETE}
+{\footnote K Turbo Pascal;Unite Crt;INTERFACE COMPLETE}
+\b\fs24 INTERFACE COMPLETE \b0\fs20\par
+\par
+{\f1   Unit Crt;}\par
+\par
+{\f1   \{$D-,I-,S-\}}\par
+\par
+{\f1   INTERFACE}\par
+\par
+{\f1   Const}\par
+{\f1     \{ Modes CRT \}}\par
+{\f1     BW40     = 0;}\par
+{\f1     CO40     = 1;}\par
+{\f1     BW80     = 2;}\par
+{\f1     CO80     = 3;}\par
+{\f1     Mono     = 7;}\par
+{\f1     Font8x8  = 256;}\par
+\par
+{\f1     \{ Compatibilite TP 3.0 \}}\par
+{\f1     C40 = CO40;}\par
+{\f1     C80 = CO80;}\par
+\par
+{\f1     \{ Couleurs premier plan et arriere-plan \}}\par
+{\f1     Black        = 0;}\par
+{\f1     Blue         = 1;}\par
+{\f1     Green        = 2;}\par
+{\f1     Cyan         = 3;}\par
+{\f1     Red          = 4;}\par
+{\f1     Magenta      = 5;}\par
+{\f1     Brown        = 6;}\par
+{\f1     LightGray    = 7;}\par
+\par
+{\f1     \{ Couleurs premier plan uniquement \}}\par
+{\f1     DarkGray     = 8;}\par
+{\f1     LightBlue    = 9;}\par
+{\f1     LightGreen   = 10;}\par
+{\f1     LightCyan    = 11;}\par
+{\f1     LightRed     = 12;}\par
+{\f1     LightMagenta = 13;}\par
+{\f1     Yellow       = 14;}\par
+{\f1     White        = 15;}\par
+\par
+{\f1     \{ Clignotement \}}\par
+{\f1     Blink = 128;}\par
+\par
+{\f1   Var}\par
+{\f1     CheckBreak  : Boolean;}\par
+{\f1     CheckEOF    : Boolean;}\par
+{\f1     DirectVideo : Boolean;}\par
+{\f1     CheckSnow   : Boolean;}\par
+{\f1     LastMode    : Word;}\par
+{\f1     TextAttr    : Byte;}\par
+{\f1     WindMin     : Word;}\par
+{\f1     WindMax     : Word;}\par
+\par
+{\f1   \{ Clavier \}}\par
+{\f1   Procedure AssignCrt(Var F : Text);}\par
+{\f1   Function  KeyPressed : Boolean;}\par
+{\f1   Function  ReadKey : Char;}\par
+\par
+{\f1   \{ Mode et fenetre \}}\par
+{\f1   Procedure TextMode(Mode : Integer);}\par
+{\f1   Procedure Window(X1, Y1, X2, Y2 : Byte);}\par
+\par
+{\f1   \{ Curseur \}}\par
+{\f1   Procedure GotoXY(X, Y : Byte);}\par
+{\f1   Function  WhereX : Byte;}\par
+{\f1   Function  WhereY : Byte;}\par
+\par
+{\f1   \{ Effacement \}}\par
+{\f1   Procedure ClrScr;}\par
+{\f1   Procedure ClrEol;}\par
+\par
+{\f1   \{ Lignes \}}\par
+{\f1   Procedure InsLine;}\par
+{\f1   Procedure DelLine;}\par
+\par
+{\f1   \{ Couleurs et attributs \}}\par
+{\f1   Procedure TextColor(Color : Byte);}\par
+{\f1   Procedure TextBackground(Color : Byte);}\par
+{\f1   Procedure LowVideo;}\par
+{\f1   Procedure HighVideo;}\par
+{\f1   Procedure NormVideo;}\par
+\par
+{\f1   \{ Temporisation et son \}}\par
+{\f1   Procedure Delay(MS : Word);}\par
+{\f1   Procedure Sound(Hz : Word);}\par
+{\f1   Procedure NoSound;}\par
+\par
+{\f1   IMPLEMENTATION}\par
+\par
+{\f1   FIN DU DOCUMENT}\par
+
+\par
+{\uldb << Precedent}{\v IDH_TPCRT_12}     {\uldb Sommaire}{\v IDH_TPCRT_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+}

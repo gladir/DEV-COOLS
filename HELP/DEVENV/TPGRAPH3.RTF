@@ -1,0 +1,916 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}
+
+{\footnote # IDH_TPGR3_01}
+{\footnote $ Unite Graph3 (TP 3) - D??PENDANCE}
+{\footnote K Turbo Pascal;Unite Graph3 (TP 3);D??PENDANCE}
+\b\fs24 D??PENDANCE \b0\fs20\par
+\par
+{\f1   L'unit?? Graph3 utilise l'unit?? Crt dans sa clause Uses :}\par
+\par
+{\f1     Uses Crt;}\par
+\par
+{\f1   L'inclusion de Graph3 entra??ne automatiquement l'inclusion de}\par
+{\f1   Crt. Les routines CRT (ClrScr, GotoXY, ReadKey, Delay, Sound,}\par
+{\f1   etc.) sont donc disponibles sans l'ajouter explicitement.}\par
+\par
+\par
+\b Sections suivantes : \b0\par
+\par
+{\f1  2. CONSTANTES - DIRECTIONS TURTLE}     {\uldb [Aller]}{\v IDH_TPGR3_02}\par
+{\f1  3. INITIALISATION DU MODE GRAPHIQUE}     {\uldb [Aller]}{\v IDH_TPGR3_03}\par
+{\f1  4. CONFIGURATION DES COULEURS}     {\uldb [Aller]}{\v IDH_TPGR3_04}\par
+{\f1  5. FEN??TRE GRAPHIQUE}     {\uldb [Aller]}{\v IDH_TPGR3_05}\par
+{\f1  6. PRIMITIVES DE DESSIN}     {\uldb [Aller]}{\v IDH_TPGR3_06}\par
+{\f1  7. REMPLISSAGE}     {\uldb [Aller]}{\v IDH_TPGR3_07}\par
+{\f1  8. CAPTURE ET RESTITUTION D'IMAGES}     {\uldb [Aller]}{\v IDH_TPGR3_08}\par
+{\f1  9. TURTLE GRAPHICS - PR??SENTATION}     {\uldb [Aller]}{\v IDH_TPGR3_09}\par
+{\f1 10. TURTLE GRAPHICS - D??PLACEMENT}     {\uldb [Aller]}{\v IDH_TPGR3_10}\par
+{\f1 11. TURTLE GRAPHICS - ORIENTATION}     {\uldb [Aller]}{\v IDH_TPGR3_11}\par
+{\f1 12. TURTLE GRAPHICS - STYLO ET COULEUR}     {\uldb [Aller]}{\v IDH_TPGR3_12}\par
+{\f1 13. TURTLE GRAPHICS - VISIBILIT?? ET D??LAI}     {\uldb [Aller]}{\v IDH_TPGR3_13}\par
+{\f1 14. TURTLE GRAPHICS - FEN??TRE ET LIMITES}     {\uldb [Aller]}{\v IDH_TPGR3_14}\par
+{\f1 15. TURTLE GRAPHICS - POSITION}     {\uldb [Aller]}{\v IDH_TPGR3_15}\par
+{\f1 16. EXEMPLES COMPLETS}     {\uldb [Aller]}{\v IDH_TPGR3_16}\par
+{\f1 17. COMPARAISON GRAPH3 vs GRAPH (BGI)}     {\uldb [Aller]}{\v IDH_TPGR3_17}\par
+{\f1 18. R??CAPITULATIF DE L'INTERFACE}     {\uldb [Aller]}{\v IDH_TPGR3_18}\par
+{\f1 19. R??SUM?? PAR CAT??GORIE}     {\uldb [Aller]}{\v IDH_TPGR3_19}\par
+\par
+{\uldb Suivant >>}{\v IDH_TPGR3_02}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGR3_02}
+{\footnote $ Unite Graph3 (TP 3) - CONSTANTES - DIRECTIONS TURTLE}
+{\footnote K Turbo Pascal;Unite Graph3 (TP 3);CONSTANTES - DIRECTIONS TURTLE}
+\b\fs24 CONSTANTES - DIRECTIONS TURTLE \b0\fs20\par
+\par
+{\f1   Les constantes de direction d??finissent les angles cardinaux}\par
+{\f1   pour la tortue graphique (turtle graphics). Les angles sont}\par
+{\f1   en degr??s, mesur??s dans le sens horaire ?? partir du nord.}\par
+\par
+{\f1   Constante   Valeur   Description}\par
+{\f1   ---------   ------   -----------}\par
+{\f1   North          0     Nord (haut de l'??cran)}\par
+{\f1   East          90     Est (droite)}\par
+{\f1   South        180     Sud (bas de l'??cran)}\par
+{\f1   West         270     Ouest (gauche)}\par
+\par
+{\f1   Note : la convention d'angle est celle de la boussole (0?? = nord,}\par
+{\f1   sens horaire), diff??rente de la convention math??matique usuelle}\par
+{\f1   (0?? = est, sens anti-horaire).}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGR3_01}     {\uldb Suivant >>}{\v IDH_TPGR3_03}     {\uldb Sommaire}{\v IDH_TPGR3_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGR3_03}
+{\footnote $ Unite Graph3 (TP 3) - INITIALISATION DU MODE GRAPHIQUE}
+{\footnote K Turbo Pascal;Unite Graph3 (TP 3);INITIALISATION DU MODE GRAPHIQUE}
+\b\fs24 INITIALISATION DU MODE GRAPHIQUE \b0\fs20\par
+\par
+{\f1   procedure GraphMode;}\par
+{\f1   Active le mode graphique CGA couleur 320??200 pixels, 4 couleurs}\par
+{\f1   (palette par d??faut). Correspond au mode BIOS vid??o 04h.}\par
+\par
+{\f1   L'??cran est effac?? et le syst??me graphique est initialis??.}\par
+{\f1   Le mode texte peut ??tre restaur?? avec TextMode (unit?? Crt).}\par
+\par
+{\f1   ??quivalent TP3 : GraphMode activait le mode 320??200.}\par
+\par
+{\f1   procedure GraphColorMode;}\par
+{\f1   Active le mode graphique CGA couleur 320??200 pixels, 4 couleurs.}\par
+{\f1   Synonyme fonctionnel de GraphMode.}\par
+\par
+{\f1   Ce mode offre 4 couleurs simultan??es choisies parmi deux}\par
+{\f1   palettes CGA pr??d??finies (voir Palette).}\par
+\par
+{\f1   R??solution : 320 ?? 200 pixels}\par
+{\f1   Couleurs   : 4 (couleur de fond + 3 couleurs de palette)}\par
+\par
+{\f1   procedure HiRes;}\par
+{\f1   Active le mode graphique CGA haute r??solution 640??200 pixels,}\par
+{\f1   monochrome (noir et blanc). Correspond au mode BIOS vid??o 06h.}\par
+\par
+{\f1   R??solution : 640 ?? 200 pixels}\par
+{\f1   Couleurs   : 2 (noir et blanc)}\par
+\par
+{\f1   procedure HiResColor(Color : Integer);}\par
+{\f1   Active le mode haute r??solution 640??200 et d??finit la couleur}\par
+{\f1   de premier plan.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Color  Couleur de premier plan (0..15)}\par
+\par
+{\f1   En mode HiRes standard, seul le blanc est utilis??. HiResColor}\par
+{\f1   permet de choisir une autre couleur sur les adaptateurs}\par
+{\f1   compatibles.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGR3_02}     {\uldb Suivant >>}{\v IDH_TPGR3_04}     {\uldb Sommaire}{\v IDH_TPGR3_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGR3_04}
+{\footnote $ Unite Graph3 (TP 3) - CONFIGURATION DES COULEURS}
+{\footnote K Turbo Pascal;Unite Graph3 (TP 3);CONFIGURATION DES COULEURS}
+\b\fs24 CONFIGURATION DES COULEURS \b0\fs20\par
+\par
+{\f1   procedure Palette(N : Integer);}\par
+{\f1   S??lectionne la palette CGA ?? utiliser en mode 320??200.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     N  Num??ro de palette (0..3)}\par
+\par
+{\f1   Les palettes CGA standard sont :}\par
+{\f1     Palette 0 : Fond, Vert,    Rouge,    Jaune/Brun}\par
+{\f1     Palette 1 : Fond, Cyan,    Magenta,  Blanc}\par
+{\f1     Palette 2 : Fond, Vert clair, Rouge clair, Jaune}\par
+{\f1     Palette 3 : Fond, Cyan clair, Magenta clair, Blanc intense}\par
+\par
+{\f1   La couleur 0 est toujours la couleur de fond.}\par
+\par
+{\f1   procedure GraphBackground(Color : Integer);}\par
+{\f1   D??finit la couleur de fond en mode graphique.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Color  Couleur de fond (0..15)}\par
+\par
+{\f1   Les 16 couleurs de fond CGA sont :}\par
+{\f1     0 = Noir          8 = Gris fonc??}\par
+{\f1     1 = Bleu          9 = Bleu clair}\par
+{\f1     2 = Vert         10 = Vert clair}\par
+{\f1     3 = Cyan         11 = Cyan clair}\par
+{\f1     4 = Rouge        12 = Rouge clair}\par
+{\f1     5 = Magenta      13 = Magenta clair}\par
+{\f1     6 = Brun         14 = Jaune}\par
+{\f1     7 = Gris clair   15 = Blanc}\par
+\par
+{\f1   procedure ColorTable(C1, C2, C3, C4 : Integer);}\par
+{\f1   Red??finit la table de correspondance des couleurs. Permet de}\par
+{\f1   remapper les 4 indices de couleur (0..3) vers d'autres valeurs.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     C1  Couleur assign??e ?? l'indice 0}\par
+{\f1     C2  Couleur assign??e ?? l'indice 1}\par
+{\f1     C3  Couleur assign??e ?? l'indice 2}\par
+{\f1     C4  Couleur assign??e ?? l'indice 3}\par
+\par
+{\f1   Exemple :}\par
+{\f1     ColorTable(0, 3, 1, 2);  \{ inverser les couleurs 1 et 3 \}}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGR3_03}     {\uldb Suivant >>}{\v IDH_TPGR3_05}     {\uldb Sommaire}{\v IDH_TPGR3_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGR3_05}
+{\footnote $ Unite Graph3 (TP 3) - FEN??TRE GRAPHIQUE}
+{\footnote K Turbo Pascal;Unite Graph3 (TP 3);FEN??TRE GRAPHIQUE}
+\b\fs24 FEN??TRE GRAPHIQUE \b0\fs20\par
+\par
+{\f1   procedure GraphWindow(X1, Y1, X2, Y2 : Integer);}\par
+{\f1   D??finit une fen??tre de d??coupage (clipping) pour les op??rations}\par
+{\f1   graphiques. Les dessins en dehors de cette zone sont tronqu??s.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     X1, Y1  Coin sup??rieur gauche (pixels)}\par
+{\f1     X2, Y2  Coin inf??rieur droit (pixels)}\par
+\par
+{\f1   Coordonn??es valides :}\par
+{\f1     Mode 320??200 : X1,X2 dans 0..319, Y1,Y2 dans 0..199}\par
+{\f1     Mode 640??200 : X1,X2 dans 0..639, Y1,Y2 dans 0..199}\par
+\par
+{\f1   Pour restaurer la fen??tre plein ??cran :}\par
+{\f1     GraphWindow(0, 0, 319, 199);   \{ mode 320??200 \}}\par
+{\f1     GraphWindow(0, 0, 639, 199);   \{ mode 640??200 \}}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGR3_04}     {\uldb Suivant >>}{\v IDH_TPGR3_06}     {\uldb Sommaire}{\v IDH_TPGR3_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGR3_06}
+{\footnote $ Unite Graph3 (TP 3) - PRIMITIVES DE DESSIN}
+{\footnote K Turbo Pascal;Unite Graph3 (TP 3);PRIMITIVES DE DESSIN}
+\b\fs24 PRIMITIVES DE DESSIN \b0\fs20\par
+\par
+{\f1   procedure Plot(X, Y, Color : Integer);}\par
+{\f1   Allume un pixel ?? la position (X, Y) avec la couleur sp??cifi??e.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     X      Coordonn??e horizontale (pixels)}\par
+{\f1     Y      Coordonn??e verticale (pixels)}\par
+{\f1     Color  Couleur du pixel (0..3 en 320??200, 0..1 en 640??200)}\par
+\par
+{\f1   Exemple :}\par
+{\f1     Plot(160, 100, 1);  \{ pixel au centre, couleur 1 \}}\par
+\par
+{\f1   function GetDotColor(X, Y : Integer) : Integer;}\par
+{\f1   Retourne la couleur du pixel ?? la position (X, Y).}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     X  Coordonn??e horizontale}\par
+{\f1     Y  Coordonn??e verticale}\par
+\par
+{\f1   Retour :}\par
+{\f1     Couleur du pixel (0..3 en 320??200, 0..1 en 640??200)}\par
+\par
+{\f1   procedure Draw(X1, Y1, X2, Y2, Color : Integer);}\par
+{\f1   Trace une ligne droite entre deux points.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     X1, Y1  Point de d??part}\par
+{\f1     X2, Y2  Point d'arriv??e}\par
+{\f1     Color   Couleur de la ligne}\par
+\par
+{\f1   Utilise l'algorithme de Bresenham pour le trac??.}\par
+\par
+{\f1   Exemple :}\par
+{\f1     Draw(0, 0, 319, 199, 2);  \{ diagonale, couleur 2 \}}\par
+\par
+{\f1   procedure Arc(X, Y, Angle, Radius, Color : Integer);}\par
+{\f1   Trace un arc de cercle.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     X, Y    Centre de l'arc}\par
+{\f1     Angle   ??tendue angulaire en degr??s}\par
+{\f1     Radius  Rayon en pixels}\par
+{\f1     Color   Couleur de l'arc}\par
+\par
+{\f1   L'arc commence ?? la direction courante de la tortue et s'??tend}\par
+{\f1   sur Angle degr??s.}\par
+\par
+{\f1   procedure Circle(X, Y, Radius, Color : Integer);}\par
+{\f1   Trace un cercle complet.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     X, Y    Centre du cercle}\par
+{\f1     Radius  Rayon en pixels}\par
+{\f1     Color   Couleur du cercle}\par
+\par
+{\f1   Note : le rapport d'aspect CGA (320??200 avec pixels non carr??s)}\par
+{\f1   peut rendre le cercle l??g??rement ovale. Le ratio d'aspect est}\par
+{\f1   compens?? automatiquement.}\par
+\par
+{\f1   Exemple :}\par
+{\f1     Circle(160, 100, 50, 3);  \{ cercle au centre, rayon 50 \}}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGR3_05}     {\uldb Suivant >>}{\v IDH_TPGR3_07}     {\uldb Sommaire}{\v IDH_TPGR3_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGR3_07}
+{\footnote $ Unite Graph3 (TP 3) - REMPLISSAGE}
+{\footnote K Turbo Pascal;Unite Graph3 (TP 3);REMPLISSAGE}
+\b\fs24 REMPLISSAGE \b0\fs20\par
+\par
+{\f1   procedure FillScreen(Color : Integer);}\par
+{\f1   Remplit tout l'??cran graphique avec la couleur sp??cifi??e.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Color  Couleur de remplissage (0..3 ou 0..1)}\par
+\par
+{\f1   ??quivalent rapide d'un effacement d'??cran en graphique :}\par
+{\f1     FillScreen(0);  \{ fond noir \}}\par
+\par
+{\f1   procedure FillShape(X, Y, FillCol, BorderCol : Integer);}\par
+{\f1   Remplit une zone ferm??e par remplissage par diffusion (flood}\par
+{\f1   fill) ?? partir du point (X, Y).}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     X, Y       Point de d??part du remplissage (int??rieur)}\par
+{\f1     FillCol    Couleur de remplissage}\par
+{\f1     BorderCol  Couleur de la bordure (limite du remplissage)}\par
+\par
+{\f1   Le remplissage s'??tend dans toutes les directions jusqu'??}\par
+{\f1   rencontrer des pixels de couleur BorderCol.}\par
+\par
+{\f1   Exemple :}\par
+{\f1     Circle(160, 100, 50, 1);}\par
+{\f1     FillShape(160, 100, 2, 1);  \{ remplir le cercle \}}\par
+\par
+{\f1   procedure FillPattern(X1, Y1, X2, Y2, Color : Integer);}\par
+{\f1   Remplit un rectangle avec le motif de remplissage courant.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     X1, Y1  Coin sup??rieur gauche}\par
+{\f1     X2, Y2  Coin inf??rieur droit}\par
+{\f1     Color   Couleur du motif}\par
+\par
+{\f1   Le motif est d??fini par la proc??dure Pattern.}\par
+\par
+{\f1   procedure Pattern(var P);}\par
+{\f1   D??finit le motif de remplissage utilis?? par FillPattern.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     P  Tampon de 8 octets d??crivant le motif 8??8 pixels}\par
+\par
+{\f1   Le motif est un tableau de 8 octets. Chaque octet repr??sente}\par
+{\f1   une ligne du motif, chaque bit un pixel (1 = allum??, 0 = ??teint).}\par
+\par
+{\f1   Exemple :}\par
+{\f1     var}\par
+{\f1       Pat : array[0..7] of Byte;}\par
+{\f1     begin}\par
+{\f1       Pat[0] := $AA;  \{ 10101010 \}}\par
+{\f1       Pat[1] := $55;  \{ 01010101 \}}\par
+{\f1       Pat[2] := $AA;  \{ 10101010 \}}\par
+{\f1       Pat[3] := $55;  \{ 01010101 \}}\par
+{\f1       Pat[4] := $AA;}\par
+{\f1       Pat[5] := $55;}\par
+{\f1       Pat[6] := $AA;}\par
+{\f1       Pat[7] := $55;}\par
+{\f1       Pattern(Pat);   \{ motif en damier \}}\par
+{\f1     end;}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGR3_06}     {\uldb Suivant >>}{\v IDH_TPGR3_08}     {\uldb Sommaire}{\v IDH_TPGR3_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGR3_08}
+{\footnote $ Unite Graph3 (TP 3) - CAPTURE ET RESTITUTION D'IMAGES}
+{\footnote K Turbo Pascal;Unite Graph3 (TP 3);CAPTURE ET RESTITUTION D'IMAGES}
+\b\fs24 CAPTURE ET RESTITUTION D'IMAGES \b0\fs20\par
+\par
+{\f1   procedure GetPic(var Buffer; X1, Y1, X2, Y2 : Integer);}\par
+{\f1   Capture une zone rectangulaire de l'??cran dans un tampon m??moire.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Buffer     Tampon destination (non typ??)}\par
+{\f1     X1, Y1     Coin sup??rieur gauche de la zone}\par
+{\f1     X2, Y2     Coin inf??rieur droit de la zone}\par
+\par
+{\f1   La taille du tampon n??cessaire d??pend de la zone et du mode :}\par
+{\f1     Mode 320??200 : ((X2-X1+1) * (Y2-Y1+1) + 3) div 4 + 6 octets}\par
+{\f1     Mode 640??200 : ((X2-X1+1) * (Y2-Y1+1) + 7) div 8 + 6 octets}\par
+{\f1   (approximation ; pr??voir un tampon large)}\par
+\par
+{\f1   procedure PutPic(var Buffer; X, Y : Integer);}\par
+{\f1   Affiche une image pr??c??demment captur??e par GetPic.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Buffer  Tampon contenant l'image (rempli par GetPic)}\par
+{\f1     X, Y    Position d'affichage (coin sup??rieur gauche)}\par
+\par
+{\f1   Exemple :}\par
+{\f1     var}\par
+{\f1       Buf : array[0..2047] of Byte;}\par
+{\f1     begin}\par
+{\f1       Circle(50, 50, 20, 1);}\par
+{\f1       GetPic(Buf, 30, 30, 70, 70);  \{ capturer le cercle \}}\par
+{\f1       PutPic(Buf, 200, 100);         \{ afficher ailleurs \}}\par
+{\f1     end;}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGR3_07}     {\uldb Suivant >>}{\v IDH_TPGR3_09}     {\uldb Sommaire}{\v IDH_TPGR3_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGR3_09}
+{\footnote $ Unite Graph3 (TP 3) - TURTLE GRAPHICS - PR??SENTATION}
+{\footnote K Turbo Pascal;Unite Graph3 (TP 3);TURTLE GRAPHICS - PR??SENTATION}
+\b\fs24 TURTLE GRAPHICS - PR??SENTATION \b0\fs20\par
+\par
+{\f1   L'unit?? Graph3 inclut un syst??me complet de ?? tortue graphique ??}\par
+{\f1   inspir?? du langage Logo. La tortue est un curseur invisible ou}\par
+{\f1   visible qui se d??place sur l'??cran, laissant une trace (ou non)}\par
+{\f1   selon que le stylo est abaiss?? (PenDown) ou relev?? (PenUp).}\par
+\par
+{\f1   Concepts fondamentaux :}\par
+{\f1   - La tortue a une position (X, Y) et une direction (Heading)}\par
+{\f1   - Elle avance (Forwd) ou recule (Back) dans sa direction}\par
+{\f1   - Elle tourne ?? gauche (TurnLeft) ou ?? droite (TurnRight)}\par
+{\f1   - Le stylo trace ou non (PenDown / PenUp)}\par
+{\f1   - Elle peut ??tre visible (ShowTurtle) ou cach??e (HideTurtle)}\par
+{\f1   - Le mode Wrap/NoWrap contr??le le retour automatique}\par
+\par
+{\f1   Direction initiale :}\par
+{\f1     La tortue commence orient??e vers le Nord (Heading = 0),}\par
+{\f1     position au centre de l'??cran.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGR3_08}     {\uldb Suivant >>}{\v IDH_TPGR3_10}     {\uldb Sommaire}{\v IDH_TPGR3_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGR3_10}
+{\footnote $ Unite Graph3 (TP 3) - TURTLE GRAPHICS - D??PLACEMENT}
+{\footnote K Turbo Pascal;Unite Graph3 (TP 3);TURTLE GRAPHICS - D??PLACEMENT}
+\b\fs24 TURTLE GRAPHICS - D??PLACEMENT \b0\fs20\par
+\par
+{\f1   procedure Forwd(Dist : Integer);}\par
+{\f1   Avance la tortue de Dist pixels dans sa direction courante.}\par
+{\f1   Si le stylo est abaiss?? (PenDown), une ligne est trac??e.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Dist  Distance en pixels (positif = en avant)}\par
+\par
+{\f1   Exemple :}\par
+{\f1     Forwd(50);  \{ avancer de 50 pixels \}}\par
+\par
+{\f1   procedure Back(Dist : Integer);}\par
+{\f1   Recule la tortue de Dist pixels (direction oppos??e au cap).}\par
+{\f1   Si le stylo est abaiss??, une ligne est trac??e.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Dist  Distance en pixels (positif = en arri??re)}\par
+\par
+{\f1   ??quivalent ?? : Forwd(-Dist)  ou  TurnRight(180); Forwd(Dist);}\par
+{\f1                                     TurnRight(180);}\par
+\par
+{\f1   procedure Home;}\par
+{\f1   Ram??ne la tortue au centre de l'??cran (ou centre de la fen??tre}\par
+{\f1   tortue) et r??initialise sa direction au Nord (Heading = 0).}\par
+{\f1   Si le stylo est abaiss??, une ligne est trac??e depuis la}\par
+{\f1   position courante jusqu'au centre.}\par
+\par
+{\f1   procedure SetPosition(X, Y : Integer);}\par
+{\f1   D??place la tortue ?? la position absolue (X, Y). Si le stylo}\par
+{\f1   est abaiss??, une ligne est trac??e.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     X  Coordonn??e horizontale (pixels)}\par
+{\f1     Y  Coordonn??e verticale (pixels)}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGR3_09}     {\uldb Suivant >>}{\v IDH_TPGR3_11}     {\uldb Sommaire}{\v IDH_TPGR3_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGR3_11}
+{\footnote $ Unite Graph3 (TP 3) - TURTLE GRAPHICS - ORIENTATION}
+{\footnote K Turbo Pascal;Unite Graph3 (TP 3);TURTLE GRAPHICS - ORIENTATION}
+\b\fs24 TURTLE GRAPHICS - ORIENTATION \b0\fs20\par
+\par
+{\f1   procedure SetHeading(Angle : Integer);}\par
+{\f1   D??finit la direction absolue de la tortue.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Angle  Direction en degr??s (0 = Nord, sens horaire)}\par
+\par
+{\f1   Exemple :}\par
+{\f1     SetHeading(East);   \{ orienter vers la droite \}}\par
+{\f1     SetHeading(0);      \{ orienter vers le haut \}}\par
+\par
+{\f1   procedure TurnLeft(Angle : Integer);}\par
+{\f1   Tourne la tortue vers la gauche (sens anti-horaire).}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Angle  Angle de rotation en degr??s}\par
+\par
+{\f1   Exemple :}\par
+{\f1     TurnLeft(90);  \{ tourner ?? gauche de 90?? \}}\par
+\par
+{\f1   procedure TurnRight(Angle : Integer);}\par
+{\f1   Tourne la tortue vers la droite (sens horaire).}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Angle  Angle de rotation en degr??s}\par
+\par
+{\f1   Exemple :}\par
+{\f1     TurnRight(45);  \{ tourner ?? droite de 45?? \}}\par
+\par
+{\f1   function Heading : Integer;}\par
+{\f1   Retourne la direction courante de la tortue en degr??s.}\par
+\par
+{\f1   Retour :}\par
+{\f1     Angle en degr??s (0..359), 0 = Nord, sens horaire}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGR3_10}     {\uldb Suivant >>}{\v IDH_TPGR3_12}     {\uldb Sommaire}{\v IDH_TPGR3_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGR3_12}
+{\footnote $ Unite Graph3 (TP 3) - TURTLE GRAPHICS - STYLO ET COULEUR}
+{\footnote K Turbo Pascal;Unite Graph3 (TP 3);TURTLE GRAPHICS - STYLO ET COULEUR}
+\b\fs24 TURTLE GRAPHICS - STYLO ET COULEUR \b0\fs20\par
+\par
+{\f1   procedure PenDown;}\par
+{\f1   Abaisse le stylo de la tortue. Tout d??placement ult??rieur}\par
+{\f1   laissera une trace ?? l'??cran.}\par
+\par
+{\f1   C'est l'??tat par d??faut au d??marrage.}\par
+\par
+{\f1   procedure PenUp;}\par
+{\f1   Rel??ve le stylo de la tortue. Les d??placements ne laissent}\par
+{\f1   plus de trace. Utile pour repositionner la tortue sans dessiner.}\par
+\par
+{\f1   Exemple :}\par
+{\f1     PenUp;}\par
+{\f1     SetPosition(100, 50);  \{ d??placer sans tracer \}}\par
+{\f1     PenDown;}\par
+{\f1     Forwd(80);             \{ tracer une ligne \}}\par
+\par
+{\f1   procedure SetPenColor(Color : Integer);}\par
+{\f1   D??finit la couleur du stylo de la tortue.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Color  Couleur du trait (0..3 en 320??200, 0..1 en 640??200)}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGR3_11}     {\uldb Suivant >>}{\v IDH_TPGR3_13}     {\uldb Sommaire}{\v IDH_TPGR3_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGR3_13}
+{\footnote $ Unite Graph3 (TP 3) - TURTLE GRAPHICS - VISIBILIT?? ET D??LAI}
+{\footnote K Turbo Pascal;Unite Graph3 (TP 3);TURTLE GRAPHICS - VISIBILIT?? ET D??LAI}
+\b\fs24 TURTLE GRAPHICS - VISIBILIT?? ET D??LAI \b0\fs20\par
+\par
+{\f1   procedure ShowTurtle;}\par
+{\f1   Rend la tortue visible ?? l'??cran. La tortue est repr??sent??e}\par
+{\f1   par un petit curseur triangulaire orient?? dans sa direction.}\par
+\par
+{\f1   procedure HideTurtle;}\par
+{\f1   Rend la tortue invisible. Les d??placements et trac??s continuent}\par
+{\f1   normalement, mais le curseur tortue n'est pas affich??.}\par
+{\f1   Pr??f??rable pour les dessins complexes (plus rapide).}\par
+\par
+{\f1   function TurtleThere : Boolean;}\par
+{\f1   Indique si la tortue est visible.}\par
+\par
+{\f1   Retour :}\par
+{\f1     True   La tortue est visible (apr??s ShowTurtle)}\par
+{\f1     False  La tortue est cach??e (apr??s HideTurtle)}\par
+\par
+{\f1   procedure TurtleDelay(_Delay : Integer);}\par
+{\f1   D??finit un d??lai (en millisecondes) entre chaque pas de la}\par
+{\f1   tortue. Permet de ralentir le trac?? pour observer l'animation.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     _Delay  D??lai en millisecondes (0 = pas de d??lai)}\par
+\par
+{\f1   Exemple :}\par
+{\f1     TurtleDelay(50);  \{ 50 ms entre chaque pas \}}\par
+{\f1     Forwd(100);       \{ ligne trac??e lentement \}}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGR3_12}     {\uldb Suivant >>}{\v IDH_TPGR3_14}     {\uldb Sommaire}{\v IDH_TPGR3_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGR3_14}
+{\footnote $ Unite Graph3 (TP 3) - TURTLE GRAPHICS - FEN??TRE ET LIMITES}
+{\footnote K Turbo Pascal;Unite Graph3 (TP 3);TURTLE GRAPHICS - FEN??TRE ET LIMITES}
+\b\fs24 TURTLE GRAPHICS - FEN??TRE ET LIMITES \b0\fs20\par
+\par
+{\f1   procedure TurtleWindow(X, Y, W, H : Integer);}\par
+{\f1   D??finit la zone de la fen??tre tortue (zone dans laquelle la}\par
+{\f1   tortue peut se d??placer).}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     X  Coordonn??e X du coin sup??rieur gauche}\par
+{\f1     Y  Coordonn??e Y du coin sup??rieur gauche}\par
+{\f1     W  Largeur de la fen??tre en pixels}\par
+{\f1     H  Hauteur de la fen??tre en pixels}\par
+\par
+{\f1   La tortue est repositionn??e au centre de cette fen??tre.}\par
+\par
+{\f1   procedure Wrap;}\par
+{\f1   Active le mode ?? retour automatique ??. Quand la tortue sort}\par
+{\f1   d'un bord de la fen??tre, elle r??appara??t du c??t?? oppos??}\par
+{\f1   (comportement toro??dal).}\par
+\par
+{\f1   C'est le comportement par d??faut.}\par
+\par
+{\f1   procedure NoWrap;}\par
+{\f1   D??sactive le retour automatique. Quand la tortue sort de la}\par
+{\f1   fen??tre, elle continue hors de l'??cran (le trac?? est tronqu??).}\par
+\par
+{\f1   procedure ClearScreen;}\par
+{\f1   Efface l'??cran graphique et r??initialise la tortue (position}\par
+{\f1   au centre, direction Nord, stylo abaiss??).}\par
+\par
+{\f1   ??quivalent combin?? de FillScreen(0) + Home.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGR3_13}     {\uldb Suivant >>}{\v IDH_TPGR3_15}     {\uldb Sommaire}{\v IDH_TPGR3_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGR3_15}
+{\footnote $ Unite Graph3 (TP 3) - TURTLE GRAPHICS - POSITION}
+{\footnote K Turbo Pascal;Unite Graph3 (TP 3);TURTLE GRAPHICS - POSITION}
+\b\fs24 TURTLE GRAPHICS - POSITION \b0\fs20\par
+\par
+{\f1   function Xcor : Integer;}\par
+{\f1   Retourne la coordonn??e X courante de la tortue.}\par
+\par
+{\f1   Retour :}\par
+{\f1     Position horizontale en pixels}\par
+\par
+{\f1   function Ycor : Integer;}\par
+{\f1   Retourne la coordonn??e Y courante de la tortue.}\par
+\par
+{\f1   Retour :}\par
+{\f1     Position verticale en pixels}\par
+\par
+{\f1   Exemple :}\par
+{\f1     WriteLn('Position : ', Xcor, ', ', Ycor);}\par
+{\f1     WriteLn('Direction : ', Heading, '??');}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGR3_14}     {\uldb Suivant >>}{\v IDH_TPGR3_16}     {\uldb Sommaire}{\v IDH_TPGR3_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGR3_16}
+{\footnote $ Unite Graph3 (TP 3) - EXEMPLES COMPLETS}
+{\footnote K Turbo Pascal;Unite Graph3 (TP 3);EXEMPLES COMPLETS}
+\b\fs24 EXEMPLES COMPLETS \b0\fs20\par
+\par
+{\f1   --- Exemple 1 : Dessin de base en mode CGA ---}\par
+\par
+{\f1   program DessinCGA;}\par
+{\f1   uses Graph3;}\par
+{\f1   begin}\par
+{\f1     GraphColorMode;        \{ 320??200, 4 couleurs \}}\par
+{\f1     Palette(1);            \{ cyan, magenta, blanc \}}\par
+{\f1     GraphBackground(0);    \{ fond noir \}}\par
+\par
+{\f1     Draw(10, 10, 310, 190, 1);   \{ diagonale cyan \}}\par
+{\f1     Circle(160, 100, 80, 2);     \{ cercle magenta \}}\par
+{\f1     Plot(160, 100, 3);           \{ pixel central blanc \}}\par
+\par
+{\f1     FillShape(160, 50, 3, 2);    \{ remplir haut du cercle \}}\par
+\par
+{\f1     ReadLn;}\par
+{\f1     TextMode(C80);}\par
+{\f1   end.}\par
+\par
+{\f1   --- Exemple 2 : Carr?? en turtle graphics ---}\par
+\par
+{\f1   program CarreTurtle;}\par
+{\f1   uses Graph3;}\par
+{\f1   var}\par
+{\f1     I : Integer;}\par
+{\f1   begin}\par
+{\f1     GraphColorMode;}\par
+{\f1     HideTurtle;}\par
+{\f1     SetPenColor(1);}\par
+\par
+{\f1     for I := 1 to 4 do}\par
+{\f1     begin}\par
+{\f1       Forwd(60);}\par
+{\f1       TurnRight(90);}\par
+{\f1     end;}\par
+\par
+{\f1     ReadLn;}\par
+{\f1     TextMode(C80);}\par
+{\f1   end.}\par
+\par
+{\f1   --- Exemple 3 : Spirale avec la tortue ---}\par
+\par
+{\f1   program Spirale;}\par
+{\f1   uses Graph3;}\par
+{\f1   var}\par
+{\f1     I : Integer;}\par
+{\f1   begin}\par
+{\f1     GraphColorMode;}\par
+{\f1     HideTurtle;}\par
+{\f1     SetPenColor(2);}\par
+{\f1     TurtleDelay(10);}\par
+\par
+{\f1     for I := 1 to 100 do}\par
+{\f1     begin}\par
+{\f1       Forwd(I);}\par
+{\f1       TurnRight(91);}\par
+{\f1     end;}\par
+\par
+{\f1     ReadLn;}\par
+{\f1     TextMode(C80);}\par
+{\f1   end.}\par
+\par
+{\f1   --- Exemple 4 : ??toile ?? 5 branches ---}\par
+\par
+{\f1   program Etoile;}\par
+{\f1   uses Graph3;}\par
+{\f1   var}\par
+{\f1     I : Integer;}\par
+{\f1   begin}\par
+{\f1     GraphColorMode;}\par
+{\f1     HideTurtle;}\par
+{\f1     SetPenColor(3);}\par
+\par
+{\f1     for I := 1 to 5 do}\par
+{\f1     begin}\par
+{\f1       Forwd(80);}\par
+{\f1       TurnRight(144);}\par
+{\f1     end;}\par
+\par
+{\f1     ReadLn;}\par
+{\f1     TextMode(C80);}\par
+{\f1   end.}\par
+\par
+{\f1   --- Exemple 5 : Capture et restitution d'image ---}\par
+\par
+{\f1   program CaptureImage;}\par
+{\f1   uses Graph3;}\par
+{\f1   var}\par
+{\f1     Buf : array[0..4095] of Byte;}\par
+{\f1   begin}\par
+{\f1     GraphColorMode;}\par
+\par
+{\f1     Circle(50, 50, 30, 1);}\par
+{\f1     FillShape(50, 50, 2, 1);}\par
+\par
+{\f1     GetPic(Buf, 20, 20, 80, 80);    \{ capturer la zone \}}\par
+{\f1     PutPic(Buf, 150, 80);           \{ copier ailleurs \}}\par
+{\f1     PutPic(Buf, 230, 120);          \{ et encore ailleurs \}}\par
+\par
+{\f1     ReadLn;}\par
+{\f1     TextMode(C80);}\par
+{\f1   end.}\par
+\par
+{\f1   --- Exemple 6 : Flocon de Koch (r??cursif) ---}\par
+\par
+{\f1   program Flocon;}\par
+{\f1   uses Graph3;}\par
+\par
+{\f1     procedure Koch(Longueur, Profondeur : Integer);}\par
+{\f1     begin}\par
+{\f1       if Profondeur = 0 then}\par
+{\f1         Forwd(Longueur)}\par
+{\f1       else}\par
+{\f1       begin}\par
+{\f1         Koch(Longueur div 3, Profondeur - 1);}\par
+{\f1         TurnLeft(60);}\par
+{\f1         Koch(Longueur div 3, Profondeur - 1);}\par
+{\f1         TurnRight(120);}\par
+{\f1         Koch(Longueur div 3, Profondeur - 1);}\par
+{\f1         TurnLeft(60);}\par
+{\f1         Koch(Longueur div 3, Profondeur - 1);}\par
+{\f1       end;}\par
+{\f1     end;}\par
+\par
+{\f1   var}\par
+{\f1     I : Integer;}\par
+{\f1   begin}\par
+{\f1     HiRes;}\par
+{\f1     HideTurtle;}\par
+{\f1     PenUp;}\par
+{\f1     SetPosition(100, 50);}\par
+{\f1     PenDown;}\par
+{\f1     SetHeading(East);}\par
+\par
+{\f1     for I := 1 to 3 do}\par
+{\f1     begin}\par
+{\f1       Koch(240, 3);}\par
+{\f1       TurnRight(120);}\par
+{\f1     end;}\par
+\par
+{\f1     ReadLn;}\par
+{\f1     TextMode(C80);}\par
+{\f1   end.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGR3_15}     {\uldb Suivant >>}{\v IDH_TPGR3_17}     {\uldb Sommaire}{\v IDH_TPGR3_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGR3_17}
+{\footnote $ Unite Graph3 (TP 3) - COMPARAISON GRAPH3 vs GRAPH (BGI)}
+{\footnote K Turbo Pascal;Unite Graph3 (TP 3);COMPARAISON GRAPH3 vs GRAPH (BGI)}
+\b\fs24 COMPARAISON GRAPH3 vs GRAPH (BGI) \b0\fs20\par
+\par
+{\f1   Graph3 (TP3 compat.)       Graph (BGI, TP4+)}\par
+{\f1   ------------------------   ----------------------------}\par
+{\f1   GraphMode / GraphColorMode InitGraph + SetGraphMode}\par
+{\f1   HiRes / HiResColor         InitGraph (mode haute r??s.)}\par
+{\f1   Palette(N)                  SetPalette / SetAllPalette}\par
+{\f1   GraphBackground(C)          SetBkColor(C)}\par
+{\f1   GraphWindow(...)            SetViewPort(...)}\par
+{\f1   Plot(X,Y,C)                PutPixel(X,Y,C)}\par
+{\f1   GetDotColor(X,Y)           GetPixel(X,Y)}\par
+{\f1   Draw(X1,Y1,X2,Y2,C)       Line(X1,Y1,X2,Y2)}\par
+{\f1   Circle(X,Y,R,C)            Circle(X,Y,R)}\par
+{\f1   Arc(X,Y,A,R,C)             Arc(X,Y,Start,End,R)}\par
+{\f1   FillShape(X,Y,FC,BC)       FloodFill(X,Y,Border)}\par
+{\f1   FillScreen(C)               ClearDevice / Bar(...)}\par
+{\f1   GetPic / PutPic             GetImage / PutImage}\par
+{\f1   Pattern + FillPattern       SetFillPattern + Bar}\par
+{\f1   ColorTable                  SetPalette}\par
+{\f1   Turtle Graphics             (pas d'??quivalent BGI)}\par
+\par
+{\f1   Avantages de Graph3 :}\par
+{\f1   - Turtle graphics int??gr?? (absent dans Graph/BGI)}\par
+{\f1   - API plus simple (couleur en param??tre direct)}\par
+{\f1   - Compatibilit?? directe avec le code TP3}\par
+\par
+{\f1   Avantages de Graph (BGI) :}\par
+{\f1   - Support multi-adaptateur (EGA, VGA, Hercules...)}\par
+{\f1   - R??solutions et palettes bien plus ??tendues}\par
+{\f1   - Pilotes graphiques chargeables (.BGI)}\par
+{\f1   - API plus riche (polices, remplissage avanc??, etc.)}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGR3_16}     {\uldb Suivant >>}{\v IDH_TPGR3_18}     {\uldb Sommaire}{\v IDH_TPGR3_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGR3_18}
+{\footnote $ Unite Graph3 (TP 3) - R??CAPITULATIF DE L'INTERFACE}
+{\footnote K Turbo Pascal;Unite Graph3 (TP 3);R??CAPITULATIF DE L'INTERFACE}
+\b\fs24 R??CAPITULATIF DE L'INTERFACE \b0\fs20\par
+\par
+{\f1   --- Constantes ---}\par
+{\f1   North = 0          Direction nord (haut)}\par
+{\f1   East  = 90         Direction est (droite)}\par
+{\f1   South = 180        Direction sud (bas)}\par
+{\f1   West  = 270        Direction ouest (gauche)}\par
+\par
+{\f1   --- Initialisation ---}\par
+{\f1   Procedure GraphMode;}\par
+{\f1   Procedure GraphColorMode;}\par
+{\f1   Procedure HiRes;}\par
+{\f1   Procedure HiResColor(Color : Integer);}\par
+\par
+{\f1   --- Couleurs ---}\par
+{\f1   Procedure Palette(N : Integer);}\par
+{\f1   Procedure GraphBackground(Color : Integer);}\par
+{\f1   Procedure ColorTable(C1, C2, C3, C4 : Integer);}\par
+\par
+{\f1   --- Fen??tre graphique ---}\par
+{\f1   Procedure GraphWindow(X1, Y1, X2, Y2 : Integer);}\par
+\par
+{\f1   --- Primitives de dessin ---}\par
+{\f1   Procedure Plot(X, Y, Color : Integer);}\par
+{\f1   Function  GetDotColor(X, Y : Integer) : Integer;}\par
+{\f1   Procedure Draw(X1, Y1, X2, Y2, Color : Integer);}\par
+{\f1   Procedure Arc(X, Y, Angle, Radius, Color : Integer);}\par
+{\f1   Procedure Circle(X, Y, Radius, Color : Integer);}\par
+\par
+{\f1   --- Remplissage ---}\par
+{\f1   Procedure FillScreen(Color : Integer);}\par
+{\f1   Procedure FillShape(X, Y, FillCol, BorderCol : Integer);}\par
+{\f1   Procedure FillPattern(X1, Y1, X2, Y2, Color : Integer);}\par
+{\f1   Procedure Pattern(var P);}\par
+\par
+{\f1   --- Capture d'image ---}\par
+{\f1   Procedure GetPic(var Buffer; X1, Y1, X2, Y2 : Integer);}\par
+{\f1   Procedure PutPic(var Buffer; X, Y : Integer);}\par
+\par
+{\f1   --- Turtle : d??placement ---}\par
+{\f1   Procedure Forwd(Dist : Integer);}\par
+{\f1   Procedure Back(Dist : Integer);}\par
+{\f1   Procedure Home;}\par
+{\f1   Procedure SetPosition(X, Y : Integer);}\par
+\par
+{\f1   --- Turtle : orientation ---}\par
+{\f1   Procedure SetHeading(Angle : Integer);}\par
+{\f1   Procedure TurnLeft(Angle : Integer);}\par
+{\f1   Procedure TurnRight(Angle : Integer);}\par
+{\f1   Function  Heading : Integer;}\par
+\par
+{\f1   --- Turtle : stylo ---}\par
+{\f1   Procedure PenDown;}\par
+{\f1   Procedure PenUp;}\par
+{\f1   Procedure SetPenColor(Color : Integer);}\par
+\par
+{\f1   --- Turtle : visibilit?? et d??lai ---}\par
+{\f1   Procedure ShowTurtle;}\par
+{\f1   Procedure HideTurtle;}\par
+{\f1   Function  TurtleThere : Boolean;}\par
+{\f1   Procedure TurtleDelay(_Delay : Integer);}\par
+\par
+{\f1   --- Turtle : fen??tre et limites ---}\par
+{\f1   Procedure TurtleWindow(X, Y, W, H : Integer);}\par
+{\f1   Procedure Wrap;}\par
+{\f1   Procedure NoWrap;}\par
+{\f1   Procedure ClearScreen;}\par
+\par
+{\f1   --- Turtle : position ---}\par
+{\f1   Function  Xcor : Integer;}\par
+{\f1   Function  Ycor : Integer;}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGR3_17}     {\uldb Suivant >>}{\v IDH_TPGR3_19}     {\uldb Sommaire}{\v IDH_TPGR3_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGR3_19}
+{\footnote $ Unite Graph3 (TP 3) - R??SUM?? PAR CAT??GORIE}
+{\footnote K Turbo Pascal;Unite Graph3 (TP 3);R??SUM?? PAR CAT??GORIE}
+\b\fs24 R??SUM?? PAR CAT??GORIE \b0\fs20\par
+\par
+{\f1   Cat??gorie                   Nombre   ??l??ments}\par
+{\f1   -------------------------   ------   ----------------------------------}\par
+{\f1   Initialisation graphique       4     GraphMode, GraphColorMode,}\par
+{\f1                                        HiRes, HiResColor}\par
+{\f1   Configuration couleurs         3     Palette, GraphBackground,}\par
+{\f1                                        ColorTable}\par
+{\f1   Fen??tre graphique              1     GraphWindow}\par
+{\f1   Primitives de dessin           5     Plot, GetDotColor, Draw,}\par
+{\f1                                        Arc, Circle}\par
+{\f1   Remplissage                    4     FillScreen, FillShape,}\par
+{\f1                                        FillPattern, Pattern}\par
+{\f1   Capture d'image                2     GetPic, PutPic}\par
+{\f1   Turtle - d??placement           4     Forwd, Back, Home, SetPosition}\par
+{\f1   Turtle - orientation           4     SetHeading, TurnLeft, TurnRight,}\par
+{\f1                                        Heading}\par
+{\f1   Turtle - stylo                 3     PenDown, PenUp, SetPenColor}\par
+{\f1   Turtle - visibilit??/d??lai      4     ShowTurtle, HideTurtle,}\par
+{\f1                                        TurtleThere, TurtleDelay}\par
+{\f1   Turtle - fen??tre/limites       4     TurtleWindow, Wrap, NoWrap,}\par
+{\f1                                        ClearScreen}\par
+{\f1   Turtle - position              2     Xcor, Ycor}\par
+{\f1   -------------------------   ------   ----------------------------------}\par
+{\f1   TOTAL proc??dures/fonctions    40}\par
+\par
+{\f1   Constantes export??es : 4   (North, East, South, West)}\par
+{\f1   Variables export??es : 0}\par
+{\f1   Types export??s : 0}\par
+{\f1   D??pendance : Crt}\par
+\par
+{\f1   Fin du document - Unit?? GRAPH3 - Turbo Pascal 7.0}\par
+
+\par
+{\uldb << Precedent}{\v IDH_TPGR3_18}     {\uldb Sommaire}{\v IDH_TPGR3_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+}

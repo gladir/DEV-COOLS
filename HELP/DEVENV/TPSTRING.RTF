@@ -1,0 +1,503 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}
+
+{\footnote # IDH_TPSTR_01}
+{\footnote $ Type String - FORMAT MEMOIRE}
+{\footnote K Turbo Pascal;Type String;FORMAT MEMOIRE}
+\b\fs24 FORMAT MEMOIRE \b0\fs20\par
+\par
+{\f1   STRING (ShortString / Pascal String)}\par
+{\f1   Format : [Octet 0 = Longueur] [Octet 1..N = Caracteres]}\par
+\par
+{\f1   Offset :  0    1    2    3    4    5}\par
+{\f1   Contenu: [04] ['T'] ['E'] ['S'] ['T'] [??]}\par
+\par
+{\f1   - S[0] contient la LONGUEUR (type Char, valeur ordinale 0..255)}\par
+{\f1   - S[1] est le PREMIER caractere}\par
+{\f1   - S[N] est le DERNIER caractere (N = Ord(S[0]))}\par
+{\f1   - Taille maximale : 255 caracteres + 1 octet de longueur = 256 octets}\par
+{\f1   - PAS de terminateur NUL requis (mais peut etre present)}\par
+{\f1   - Declaration : Var S : String;         \{ String[255] par defaut \}}\par
+{\f1                   Var S : String[80];     \{ max 80 caracteres      \}}\par
+\par
+{\f1   PChar (Pointeur vers Char / C String / ASCIIZ)}\par
+{\f1   Format : [Char 0] [Char 1] ... [Char N] [NUL]}\par
+\par
+{\f1   Offset :  0    1    2    3    4}\par
+{\f1   Contenu: ['T'] ['E'] ['S'] ['T'] [00]}\par
+\par
+{\f1   - P[0] est le PREMIER caractere (ici 'T' = 84)}\par
+{\f1   - P^ est aussi le premier caractere}\par
+{\f1   - La chaine se termine par un octet NUL (valeur 0)}\par
+{\f1   - Pas de limite de taille intrinseque (sauf memoire disponible)}\par
+{\f1   - Declaration : Var P : PChar;}\par
+{\f1   - Compatible avec les API C et Windows}\par
+\par
+\par
+\b Sections suivantes : \b0\par
+\par
+{\f1  2. RESUME DES DIFFERENCES}     {\uldb [Aller]}{\v IDH_TPSTR_02}\par
+{\f1  3. FONCTIONS STRING (Unite System - toujours disponibles)}     {\uldb [Aller]}{\v IDH_TPSTR_03}\par
+{\f1  4. FONCTIONS PCHAR (Unite Strings - doit etre declaree dans Uses)}     {\uldb [Aller]}{\v IDH_TPSTR_04}\par
+{\f1  5. FONCTIONS DE CONVERSION String <-> PChar}     {\uldb [Aller]}{\v IDH_TPSTR_05}\par
+{\f1  6. TABLE RECAPITULATIVE - NE PAS MELANGER}     {\uldb [Aller]}{\v IDH_TPSTR_06}\par
+{\f1  7. EXEMPLES COMPARATIFS}     {\uldb [Aller]}{\v IDH_TPSTR_07}\par
+{\f1  8. REGLES POUR LE COMPILATEUR TPCW32}     {\uldb [Aller]}{\v IDH_TPSTR_08}\par
+\par
+{\uldb Suivant >>}{\v IDH_TPSTR_02}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPSTR_02}
+{\footnote $ Type String - RESUME DES DIFFERENCES}
+{\footnote K Turbo Pascal;Type String;RESUME DES DIFFERENCES}
+\b\fs24 RESUME DES DIFFERENCES \b0\fs20\par
+\par
+{\f1   Propriete          | String              | PChar}\par
+{\f1   -------------------+---------------------+---------------------}\par
+{\f1   Type               | ShortString         | ^Char (pointeur)}\par
+{\f1   Longueur max       | 255 caracteres      | Illimitee (memoire)}\par
+{\f1   Stockage longueur  | S[0] (1 octet)      | Aucun (NUL termine)}\par
+{\f1   Premier caractere  | S[1]                | P[0] ou P^}\par
+{\f1   Acces S[0]/P[0]    | Longueur            | Premier caractere}\par
+{\f1   Terminaison        | Pas de NUL requis   | NUL obligatoire}\par
+{\f1   Taille memoire     | Ord(S[0]) + 1       | StrLen(P) + 1}\par
+{\f1   Unite requise      | Aucune (System)     | Strings (unite)}\par
+{\f1   Passage par valeur | Copie complete      | Copie du pointeur}\par
+{\f1   Indexation base    | 1 (S[1] = 1er char) | 0 (P[0] = 1er char)}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPSTR_01}     {\uldb Suivant >>}{\v IDH_TPSTR_03}     {\uldb Sommaire}{\v IDH_TPSTR_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPSTR_03}
+{\footnote $ Type String - FONCTIONS STRING (Unite System - toujours disponibles)}
+{\footnote K Turbo Pascal;Type String;FONCTIONS STRING (Unite System - toujours disponibles)}
+\b\fs24 FONCTIONS STRING (Unite System - toujours disponibles) \b0\fs20\par
+\par
+{\f1   Ces fonctions operent sur le type STRING (Pascal String avec S[0]=longueur).}\par
+{\f1   Elles font partie de l'unite System et sont toujours disponibles.}\par
+\par
+\par
+\b 3.1 Fonctions retournant une valeur \b0\par
+\par
+{\f1   Function Length(S : String) : Integer;}\par
+{\f1     - Retourne la longueur de S (equivalent a Ord(S[0]))}\par
+{\f1     - Exemple : Length('TEST') = 4}\par
+\par
+{\f1   Function Copy(S : String; Pos : Integer; Len : Integer) : String;}\par
+{\f1     - Retourne une sous-chaine de S}\par
+{\f1     - Pos : position de depart (1-based)}\par
+{\f1     - Len : nombre de caracteres a copier}\par
+{\f1     - Exemple : Copy('ABCDEF', 2, 3) = 'BCD'}\par
+\par
+{\f1   Function Pos(SubStr : String; S : String) : Integer;}\par
+{\f1     - Retourne la position de SubStr dans S (1-based), 0 si non trouve}\par
+{\f1     - Exemple : Pos('CD', 'ABCDEF') = 3}\par
+\par
+{\f1   Function Concat(S1 : String; S2 : String; ...) : String;}\par
+{\f1     - Concatene plusieurs chaines (equivalent a S1 + S2 + ...)}\par
+{\f1     - Exemple : Concat('AB', 'CD', 'EF') = 'ABCDEF'}\par
+\par
+{\f1   Function Chr(X : Byte) : Char;}\par
+{\f1     - Retourne le caractere correspondant au code ASCII X}\par
+{\f1     - Exemple : Chr(65) = 'A'}\par
+\par
+{\f1   Function Ord(C : Char) : Integer;}\par
+{\f1     - Retourne le code ASCII du caractere C}\par
+{\f1     - Exemple : Ord('A') = 65}\par
+{\f1     - Exemple : Ord(S[0]) = longueur de la chaine S}\par
+\par
+{\f1   Function Upcase(C : Char) : Char;}\par
+{\f1     - Retourne le caractere en majuscule}\par
+{\f1     - Exemple : Upcase('a') = 'A'}\par
+\par
+\par
+\b 3.2 Procedures modifiant une chaine \b0\par
+\par
+{\f1   Procedure Delete(Var S : String; Pos : Integer; Len : Integer);}\par
+{\f1     - Supprime Len caracteres de S a partir de Pos}\par
+{\f1     - Modifie S directement (passage par reference)}\par
+{\f1     - Exemple : S := 'ABCDEF'; Delete(S, 2, 3); \{ S = 'AEF' \}}\par
+\par
+{\f1   Procedure Insert(Source : String; Var Dest : String; Pos : Integer);}\par
+{\f1     - Insere Source dans Dest a la position Pos}\par
+{\f1     - Modifie Dest directement (passage par reference)}\par
+{\f1     - Exemple : S := 'AEF'; Insert('BCD', S, 2); \{ S = 'ABCDEF' \}}\par
+\par
+{\f1   Procedure Str(X : Integer; Var S : String);}\par
+{\f1   Procedure Str(X : Real; Var S : String);}\par
+{\f1   Procedure Str(X : Integer:Width; Var S : String);}\par
+{\f1   Procedure Str(X : Real:Width:Decimals; Var S : String);}\par
+{\f1     - Convertit un nombre en sa representation chaine}\par
+{\f1     - Exemple : Str(42, S); \{ S = '42' \}}\par
+\par
+{\f1   Procedure Val(S : String; Var V : Integer; Var Code : Integer);}\par
+{\f1   Procedure Val(S : String; Var V : Real; Var Code : Integer);}\par
+{\f1     - Convertit une chaine en nombre}\par
+{\f1     - Code = 0 si OK, sinon position de l'erreur}\par
+{\f1     - Exemple : Val('42', N, Err); \{ N = 42, Err = 0 \}}\par
+\par
+\par
+\b 3.3 Operateurs sur String \b0\par
+\par
+{\f1   S1 + S2          Concatenation    'AB' + 'CD' = 'ABCD'}\par
+{\f1   S1 = S2          Egalite          'ABC' = 'ABC' -> True}\par
+{\f1   S1 <> S2         Inegalite        'ABC' <> 'DEF' -> True}\par
+{\f1   S1 < S2          Inferieur        'ABC' < 'DEF' -> True}\par
+{\f1   S1 > S2          Superieur        'DEF' > 'ABC' -> True}\par
+{\f1   S1 <= S2         Inf ou egal}\par
+{\f1   S1 >= S2         Sup ou egal}\par
+{\f1   S[N]             Acces caractere  S[0] = longueur, S[1] = 1er char}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPSTR_02}     {\uldb Suivant >>}{\v IDH_TPSTR_04}     {\uldb Sommaire}{\v IDH_TPSTR_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPSTR_04}
+{\footnote $ Type String - FONCTIONS PCHAR (Unite Strings - doit etre declaree dans Uses)}
+{\footnote K Turbo Pascal;Type String;FONCTIONS PCHAR (Unite Strings - doit etre declaree dans Uses)}
+\b\fs24 FONCTIONS PCHAR (Unite Strings - doit etre declaree dans Uses) \b0\fs20\par
+\par
+{\f1   Ces fonctions operent sur le type PCHAR (chaines C, ASCIIZ, terminees}\par
+{\f1   par NUL). Elles sont dans l'unite STRINGS et doivent etre importees :}\par
+\par
+{\f1     Uses Strings;}\par
+\par
+{\f1   ATTENTION : Les noms commencent par "Str" (convention C).}\par
+{\f1   NE PAS confondre avec les fonctions String de l'unite System.}\par
+\par
+\par
+\b 4.1 Fonctions de mesure et recherche \b0\par
+\par
+{\f1   Function StrLen(S : PChar) : Word;}\par
+{\f1     - Retourne la longueur de la chaine (nombre de chars avant NUL)}\par
+{\f1     - Equivalent C : strlen()}\par
+{\f1     - Exemple : StrLen('TEST') = 4}\par
+\par
+{\f1   Function StrPos(S1 : PChar; S2 : PChar) : PChar;}\par
+{\f1     - Cherche S2 dans S1, retourne pointeur ou NIL}\par
+{\f1     - Equivalent C : strstr()}\par
+{\f1     - Exemple : StrPos(P, 'CD') -> pointeur vers 'CD...'}\par
+\par
+{\f1   Function StrScan(S : PChar; C : Char) : PChar;}\par
+{\f1     - Cherche le caractere C dans S, retourne pointeur ou NIL}\par
+{\f1     - Equivalent C : strchr()}\par
+{\f1     - Exemple : StrScan(P, 'C') -> pointeur vers 'C...'}\par
+\par
+{\f1   Function StrRScan(S : PChar; C : Char) : PChar;}\par
+{\f1     - Cherche la derniere occurrence de C dans S}\par
+{\f1     - Equivalent C : strrchr()}\par
+\par
+{\f1   Function StrEnd(S : PChar) : PChar;}\par
+{\f1     - Retourne pointeur vers le NUL terminal}\par
+{\f1     - Exemple : StrEnd(P) pointe sur le #0 final}\par
+\par
+\par
+\b 4.2 Fonctions de copie \b0\par
+\par
+{\f1   Function StrCopy(Dest : PChar; Source : PChar) : PChar;}\par
+{\f1     - Copie Source vers Dest, retourne Dest}\par
+{\f1     - Equivalent C : strcpy()}\par
+{\f1     - ATTENTION : pas de verification de debordement !}\par
+\par
+{\f1   Function StrLCopy(Dest : PChar; Source : PChar; MaxLen : Word) : PChar;}\par
+{\f1     - Copie au maximum MaxLen caracteres de Source vers Dest}\par
+{\f1     - Equivalent C : strncpy()}\par
+\par
+{\f1   Function StrMove(Dest : PChar; Source : PChar; Count : Word) : PChar;}\par
+{\f1     - Copie exactement Count octets (peut inclure des NUL)}\par
+{\f1     - Equivalent C : memmove()}\par
+\par
+{\f1   Function StrECopy(Dest : PChar; Source : PChar) : PChar;}\par
+{\f1     - Copie et retourne pointeur vers le NUL de fin dans Dest}\par
+{\f1     - (Utile pour concatenation rapide)}\par
+\par
+{\f1   Function StrPCopy(Dest : PChar; Source : String) : PChar;}\par
+{\f1     - Copie une String Pascal vers un buffer PChar}\par
+{\f1     - CONVERSION String -> PChar}\par
+{\f1     - Exemple : StrPCopy(P, S);}\par
+\par
+{\f1   Function StrPas(S : PChar) : String;}\par
+{\f1     - Convertit un PChar en String Pascal}\par
+{\f1     - CONVERSION PChar -> String}\par
+{\f1     - Exemple : S := StrPas(P);}\par
+\par
+\par
+\b 4.3 Fonctions de concatenation \b0\par
+\par
+{\f1   Function StrCat(Dest : PChar; Source : PChar) : PChar;}\par
+{\f1     - Ajoute Source a la fin de Dest, retourne Dest}\par
+{\f1     - Equivalent C : strcat()}\par
+\par
+{\f1   Function StrLCat(Dest : PChar; Source : PChar; MaxLen : Word) : PChar;}\par
+{\f1     - Concatenation limitee a MaxLen caracteres total}\par
+{\f1     - Equivalent C : strncat() (avec semantique differente)}\par
+\par
+\par
+\b 4.4 Fonctions de comparaison \b0\par
+\par
+{\f1   Function StrComp(S1 : PChar; S2 : PChar) : Integer;}\par
+{\f1     - Compare S1 et S2 (sensible a la casse)}\par
+{\f1     - Retourne <0, 0, >0 (comme strcmp en C)}\par
+{\f1     - Equivalent C : strcmp()}\par
+\par
+{\f1   Function StrIComp(S1 : PChar; S2 : PChar) : Integer;}\par
+{\f1     - Compare sans tenir compte de la casse}\par
+{\f1     - Equivalent C : stricmp() / strcasecmp()}\par
+\par
+{\f1   Function StrLComp(S1 : PChar; S2 : PChar; MaxLen : Word) : Integer;}\par
+{\f1     - Compare au maximum MaxLen caracteres}\par
+{\f1     - Equivalent C : strncmp()}\par
+\par
+{\f1   Function StrLIComp(S1 : PChar; S2 : PChar; MaxLen : Word) : Integer;}\par
+{\f1     - Compare MaxLen caracteres sans casse}\par
+{\f1     - Equivalent C : strnicmp()}\par
+\par
+\par
+\b 4.5 Fonctions de transformation \b0\par
+\par
+{\f1   Function StrUpper(S : PChar) : PChar;}\par
+{\f1     - Convertit en majuscules (modifie en place), retourne S}\par
+{\f1     - Equivalent C : strupr()}\par
+\par
+{\f1   Function StrLower(S : PChar) : PChar;}\par
+{\f1     - Convertit en minuscules (modifie en place), retourne S}\par
+{\f1     - Equivalent C : strlwr()}\par
+\par
+\par
+\b 4.6 Fonctions d'allocation \b0\par
+\par
+{\f1   Function StrNew(S : PChar) : PChar;}\par
+{\f1     - Alloue une copie de S sur le heap, retourne le pointeur}\par
+{\f1     - Equivalent C : strdup()}\par
+\par
+{\f1   Procedure StrDispose(S : PChar);}\par
+{\f1     - Libere une chaine allouee par StrNew}\par
+{\f1     - Equivalent C : free()}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPSTR_03}     {\uldb Suivant >>}{\v IDH_TPSTR_05}     {\uldb Sommaire}{\v IDH_TPSTR_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPSTR_05}
+{\footnote $ Type String - FONCTIONS DE CONVERSION String <-> PChar}
+{\footnote K Turbo Pascal;Type String;FONCTIONS DE CONVERSION String <-> PChar}
+\b\fs24 FONCTIONS DE CONVERSION String <-> PChar \b0\fs20\par
+\par
+{\f1   PChar -> String :   S := StrPas(P);          \{ Unite Strings \}}\par
+{\f1   String -> PChar :   StrPCopy(P, S);          \{ Unite Strings \}}\par
+{\f1   String -> PChar :   P := @S[1];              \{ Astuce, pas officiel \}}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPSTR_04}     {\uldb Suivant >>}{\v IDH_TPSTR_06}     {\uldb Sommaire}{\v IDH_TPSTR_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPSTR_06}
+{\footnote $ Type String - TABLE RECAPITULATIVE - NE PAS MELANGER}
+{\footnote K Turbo Pascal;Type String;TABLE RECAPITULATIVE - NE PAS MELANGER}
+\b\fs24 TABLE RECAPITULATIVE - NE PAS MELANGER \b0\fs20\par
+\par
+{\f1   OPERATION         | STRING (System)      | PCHAR (Strings)}\par
+{\f1   ------------------+----------------------+----------------------}\par
+{\f1   Longueur          | Length(S)            | StrLen(P)}\par
+{\f1   Copie             | Copy(S,Pos,Len)      | StrCopy(D,S)}\par
+{\f1   Copie limitee     | (n/a)                | StrLCopy(D,S,Max)}\par
+{\f1   Position          | Pos(Sub,S)           | StrPos(S,Sub)}\par
+{\f1   Concatenation     | Concat(S1,S2) ou +   | StrCat(D,S)}\par
+{\f1   Concat limitee    | (n/a)                | StrLCat(D,S,Max)}\par
+{\f1   Comparaison       | S1 = S2  (operateur) | StrComp(S1,S2)}\par
+{\f1   Comp sans casse   | (n/a)                | StrIComp(S1,S2)}\par
+{\f1   Suppression       | Delete(S,Pos,Len)    | (n/a, faire a la main)}\par
+{\f1   Insertion         | Insert(Src,Dst,Pos)  | (n/a, faire a la main)}\par
+{\f1   Num -> Chaine     | Str(N, S)            | (n/a)}\par
+{\f1   Chaine -> Num     | Val(S, N, Err)       | (n/a)}\par
+{\f1   Majuscule char    | Upcase(C)            | StrUpper(P)}\par
+{\f1   Minuscule         | (n/a)                | StrLower(P)}\par
+{\f1   Premier char      | S[1]                 | P[0] ou P^}\par
+{\f1   Longueur byte     | S[0] = Ord->longueur | (n/a, pas de S[0])}\par
+{\f1   Allocation heap   | (n/a)                | StrNew(P)}\par
+{\f1   Liberation heap   | (n/a)                | StrDispose(P)}\par
+{\f1   Conv Str->PChar   | (n/a)                | StrPCopy(P, S)}\par
+{\f1   Conv PChar->Str   | (n/a)                | StrPas(P)}\par
+{\f1   Fin de chaine     | (n/a)                | StrEnd(P)}\par
+{\f1   Chercher char     | (n/a)                | StrScan(P, C)}\par
+{\f1   Chercher dernier  | (n/a)                | StrRScan(P, C)}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPSTR_05}     {\uldb Suivant >>}{\v IDH_TPSTR_07}     {\uldb Sommaire}{\v IDH_TPSTR_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPSTR_07}
+{\footnote $ Type String - EXEMPLES COMPARATIFS}
+{\footnote K Turbo Pascal;Type String;EXEMPLES COMPARATIFS}
+\b\fs24 EXEMPLES COMPARATIFS \b0\fs20\par
+\par
+\par
+\b 7.1 Exemple String \b0\par
+\par
+{\f1   Program TestString;}\par
+{\f1   Var S : String;}\par
+{\f1   Begin}\par
+{\f1     S := 'TEST';}\par
+{\f1     WriteLn('Length = ', Length(S));     \{ 4 \}}\par
+{\f1     WriteLn('S[0] = ', Ord(S[0]));      \{ 4 = longueur \}}\par
+{\f1     WriteLn('S[1] = ', S[1]);           \{ 'T' = premier caractere \}}\par
+{\f1     WriteLn('Copy = ', Copy(S, 2, 2));  \{ 'ES' \}}\par
+{\f1     WriteLn('Pos = ', Pos('ST', S));    \{ 3 \}}\par
+{\f1     Delete(S, 1, 2);                    \{ S = 'ST' \}}\par
+{\f1     Insert('BE', S, 1);                 \{ S = 'BEST' \}}\par
+{\f1   End.}\par
+\par
+\par
+\b 7.2 Exemple PChar \b0\par
+\par
+{\f1   Program TestPChar;}\par
+{\f1   Uses Strings;}\par
+{\f1   Var}\par
+{\f1     P : PChar;}\par
+{\f1     Buf : Array[0..255] Of Char;}\par
+{\f1   Begin}\par
+{\f1     P := 'TEST';}\par
+{\f1     WriteLn('StrLen = ', StrLen(P));    \{ 4 \}}\par
+{\f1     WriteLn('P[0] = ', Ord(P[0]));     \{ 84 = Ord('T') = premier char \}}\par
+{\f1     WriteLn('P[1] = ', P[1]);          \{ 'E' = deuxieme caractere \}}\par
+{\f1     StrCopy(Buf, P);                   \{ Buf = 'TEST'#0 \}}\par
+{\f1     StrCat(Buf, '!');                  \{ Buf = 'TEST!'#0 \}}\par
+{\f1     WriteLn(StrComp(P, 'TEST'));       \{ 0 = egal \}}\par
+{\f1   End.}\par
+\par
+\par
+\b 7.3 Sortie attendue du programme test_length.pas \b0\par
+\par
+{\f1   Program TestLength;}\par
+{\f1   Uses Strings;}\par
+{\f1   Var}\par
+{\f1     S : String;}\par
+{\f1     P : PChar;}\par
+{\f1   BEGIN}\par
+{\f1     S := 'TEST';}\par
+{\f1     P := 'TEST';}\par
+{\f1     WriteLn('Length(''TEST'')=S[0], S[0]=4:');}\par
+{\f1     WriteLn('Length(''TEST'')=', Length(S));   \{ 4 \}}\par
+{\f1     WriteLn('S[0]=', Ord(S[0]));              \{ 4 = LONGUEUR \}}\par
+{\f1     WriteLn;}\par
+{\f1     WriteLn('StrLen(''TEST'')=4, P[0]=84');}\par
+{\f1     WriteLn('StrLen(''TEST'')=', StrLen(P));  \{ 4 \}}\par
+{\f1     WriteLn('P[0]=', Ord(P[0]));              \{ 84 = Ord('T') \}}\par
+{\f1   END.}\par
+\par
+{\f1   Sortie :}\par
+{\f1     Length('TEST')=S[0], S[0]=4:}\par
+{\f1     Length('TEST')=4}\par
+{\f1     S[0]=4}\par
+\par
+{\f1     StrLen('TEST')=4, P[0]=84}\par
+{\f1     StrLen('TEST')=4}\par
+{\f1     P[0]=84}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPSTR_06}     {\uldb Suivant >>}{\v IDH_TPSTR_08}     {\uldb Sommaire}{\v IDH_TPSTR_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPSTR_08}
+{\footnote $ Type String - REGLES POUR LE COMPILATEUR TPCW32}
+{\footnote K Turbo Pascal;Type String;REGLES POUR LE COMPILATEUR TPCW32}
+\b\fs24 REGLES POUR LE COMPILATEUR TPCW32 \b0\fs20\par
+\par
+\par
+\b 8.1 Stockage des constantes String en memoire \b0\par
+\par
+{\f1   Une constante String 'TEST' doit etre emise comme :}\par
+{\f1     _TPK_1  DB 4,'TEST',0       ; 4 = longueur, 0 = NUL (optionnel)}\par
+\par
+{\f1   Une constante PChar 'TEST' doit etre emise comme :}\par
+{\f1     _TPK_2  DB 'TEST',0         ; pas de longueur, juste ASCIIZ}\par
+\par
+\par
+\b 8.2 Affectation S := 'chaine' \b0\par
+\par
+{\f1   STRCPY pour String : copie S[0] (longueur) + S[1..N] (contenu)}\par
+{\f1     - Source : pointe sur l'octet de longueur}\par
+{\f1     - Destination : pointe sur l'octet de longueur de la variable}\par
+{\f1     - Copie Ord(Source[0]) + 1 octets minimum}\par
+\par
+{\f1   Pour PChar : copie jusqu'au NUL terminal (lstrcpyA ou boucle ASCIIZ)}\par
+\par
+\par
+\b 8.3 Length(S) vs StrLen(P) \b0\par
+\par
+{\f1   Length(S) pour String :}\par
+{\f1     MOVZX EAX, BYTE PTR [ESI]    ; lire S[0] = longueur}\par
+{\f1     ; EAX = longueur, c'est tout}\par
+\par
+{\f1   StrLen(P) pour PChar :}\par
+{\f1     PUSH EAX}\par
+{\f1     CALL lstrlenA                 ; appel API Windows}\par
+{\f1     ; ou boucle manuelle jusqu'au NUL}\par
+\par
+\par
+\b 8.4 Acces par index S[N] vs P[N] \b0\par
+\par
+{\f1   S[0] sur String = longueur :}\par
+{\f1     LEA EAX,[S]          ; adresse de base = S[0]}\par
+{\f1     MOVZX EAX,BYTE PTR [EAX]   ; lire l'octet de longueur}\par
+\par
+{\f1   S[1] sur String = premier caractere :}\par
+{\f1     LEA EAX,[S]}\par
+{\f1     MOVZX EAX,BYTE PTR [EAX+1]}\par
+\par
+{\f1   P[0] sur PChar = premier caractere :}\par
+{\f1     MOV EAX,[P]          ; charger le pointeur}\par
+{\f1     MOVZX EAX,BYTE PTR [EAX]   ; lire premier char}\par
+\par
+\par
+\b 8.5 WriteLn et PRINTSTR \b0\par
+\par
+{\f1   Pour afficher une String :}\par
+{\f1     - ESI pointe sur S[0]}\par
+{\f1     - Lire longueur = MOVZX ECX, BYTE PTR [ESI]}\par
+{\f1     - Buffer a afficher = ESI + 1}\par
+{\f1     - WriteFile(hStdout, ESI+1, ECX, ...)}\par
+\par
+{\f1   Pour afficher un PChar (PRINTSTR_AZ) :}\par
+{\f1     - ESI pointe sur le premier caractere}\par
+{\f1     - Calculer longueur en bouclant jusqu'au NUL}\par
+{\f1     - WriteFile(hStdout, ESI, longueur, ...)}\par
+\par
+{\f1   Pour les buffers internes (NUMBUF, CRLF, TRUE_STR, FALSE_STR) :}\par
+{\f1     - Ces buffers sont ASCIIZ (pas de longueur prefixee)}\par
+{\f1     - Utiliser PRINTSTR_AZ (version ASCIIZ) pour les afficher}\par
+\par
+\par
+\b 8.6 Routines runtime a distinguer \b0\par
+\par
+{\f1   _TPRT_PRINTSTR     : afficher String Pascal (ESI = ptr, S[0]=len)}\par
+{\f1   _TPRT_PRINTSTR_AZ  : afficher PChar ASCIIZ (ESI = ptr, termine NUL)}\par
+{\f1   _TPRT_STRASSIGN    : copier String Pascal pour affectation S := expr}\par
+{\f1                         (ESI = source, EDI = destination)}\par
+{\f1   _TPRT_STRCPY       : StrCopy PChar ASCIIZ (ESI=src, EDI=dest) -> EAX}\par
+{\f1                         = fonction StrCopy() de l'unite Strings}\par
+{\f1   _TPRT_LENGTH       : longueur String Pascal (lire S[0]) -> EAX}\par
+{\f1                         = fonction Length() de System}\par
+{\f1   _TPRT_STRLEN       : longueur PChar ASCIIZ (boucle NUL) -> EAX}\par
+{\f1                         = fonction StrLen() de l'unite Strings}\par
+{\f1   _TPRT_CONCAT       : concatener deux String Pascal}\par
+{\f1   _TPRT_STRCOMPARE   : comparer deux String Pascal (operateurs =, <>, <, >, <=, >=)}\par
+{\f1                         = comparaison String de System}\par
+{\f1   _TPRT_STRCMP        : comparer deux PChar ASCIIZ (registres ESI/EDI)}\par
+{\f1                         = fonction StrComp() de l'unite Strings}\par
+{\f1   _TPRT_COPY         : sous-chaine String Pascal -> STRBUF1}\par
+{\f1                         = fonction Copy() de System}\par
+{\f1   _TPRT_POS          : position sous-chaine dans String Pascal}\par
+{\f1                         = fonction Pos() de System}\par
+{\f1   _TPRT_DELETE        : supprimer dans String Pascal (modifie S[0])}\par
+{\f1   _TPRT_INSERT        : inserer dans String Pascal (modifie S[0])}\par
+\par
+{\f1   Pour PChar : utiliser les API Windows (lstrlenA, lstrcpyA, etc.)}\par
+{\f1   ou les wrappers de l'unite Strings.}\par
+\par
+{\f1   FIN DU DOCUMENT}\par
+
+\par
+{\uldb << Precedent}{\v IDH_TPSTR_07}     {\uldb Sommaire}{\v IDH_TPSTR_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+}

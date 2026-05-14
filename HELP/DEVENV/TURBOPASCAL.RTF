@@ -1,0 +1,1906 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}
+
+{\footnote # IDH_TP_01}
+{\footnote $ Turbo Pascal - Introduction et historique}
+{\footnote K Turbo Pascal;Turbo Pascal;Introduction et historique}
+\b\fs24 Introduction et historique \b0\fs20\par
+\par
+{\f1   Turbo Pascal est un compilateur Pascal et un environnement de}\par
+{\f1   developpement integre (IDE) cree par Anders Hejlsberg et publie par}\par
+{\f1   Borland International a partir de novembre 1983. Concu initialement}\par
+{\f1   comme un sous-ensemble pratique du Pascal standard d Niklaus Wirth,}\par
+{\f1   il a impose un standard de fait pour le developpement Pascal sur}\par
+{\f1   micro-ordinateurs durant les annees 1980 et 1990.}\par
+\par
+{\f1   Caracteristiques marquantes a sa sortie :}\par
+\par
+{\f1     - Prix tres bas (49.95 $US contre plusieurs milliers pour les}\par
+{\f1       concurrents) qui a democratise le Pascal.}\par
+{\f1     - Vitesse de compilation exceptionnelle (single-pass).}\par
+{\f1     - IDE plein ecran integre avec editeur, compilateur, debugueur.}\par
+{\f1     - Empreinte memoire minimale (~30 ko pour la version 1.0).}\par
+{\f1     - Generation directe de code machine (pas de byte-code).}\par
+{\f1     - Compilation a la memoire (.COM ou .EXE genere instantanement).}\par
+\par
+{\f1   L histoire de Turbo Pascal est etroitement liee a celle de Borland :}\par
+\par
+{\f1     - 1981 : Hejlsberg ecrit "Compas Pascal" pour CP/M.}\par
+{\f1     - 1983 : Borland l achete et le commercialise sous le nom}\par
+{\f1              "Turbo Pascal" (le mot "turbo" referent au moteur boostes}\par
+{\f1              des voitures de l epoque).}\par
+{\f1     - 1995 : Borland arrete la ligne pour se concentrer sur Delphi.}\par
+\par
+{\f1   Turbo Pascal a directement engendre Delphi (1995) qui reprend son}\par
+{\f1   modele d unites et de programmation objet, etendu par un framework}\par
+{\f1   visuel (VCL).}\par
+\par
+\par
+\b Sections suivantes : \b0\par
+\par
+{\f1  2. Versions de Turbo Pascal}     {\uldb [Aller]}{\v IDH_TP_02}\par
+{\f1  3. Environnement de developpement integre (IDE)}     {\uldb [Aller]}{\v IDH_TP_03}\par
+{\f1  4. Structure d un programme}     {\uldb [Aller]}{\v IDH_TP_04}\par
+{\f1  5. Lexique et conventions}     {\uldb [Aller]}{\v IDH_TP_05}\par
+{\f1  6. Types de donnees scalaires}     {\uldb [Aller]}{\v IDH_TP_06}\par
+{\f1  7. Types structures}     {\uldb [Aller]}{\v IDH_TP_07}\par
+{\f1  8. Pointeurs}     {\uldb [Aller]}{\v IDH_TP_08}\par
+{\f1  9. Declarations const, var, type}     {\uldb [Aller]}{\v IDH_TP_09}\par
+{\f1 10. Operateurs et expressions}     {\uldb [Aller]}{\v IDH_TP_10}\par
+{\f1 11. Instructions}     {\uldb [Aller]}{\v IDH_TP_11}\par
+{\f1 12. Procedures et fonctions}     {\uldb [Aller]}{\v IDH_TP_12}\par
+{\f1 13. Chaines de caracteres}     {\uldb [Aller]}{\v IDH_TP_13}\par
+{\f1 14. Tableaux}     {\uldb [Aller]}{\v IDH_TP_14}\par
+{\f1 15. Records (et records variants)}     {\uldb [Aller]}{\v IDH_TP_15}\par
+{\f1 16. Ensembles (Set)}     {\uldb [Aller]}{\v IDH_TP_16}\par
+{\f1 17. Fichiers}     {\uldb [Aller]}{\v IDH_TP_17}\par
+{\f1 18. Unites (Units)}     {\uldb [Aller]}{\v IDH_TP_18}\par
+{\f1 19. Objets (Pascal Objet, TP 5.5+)}     {\uldb [Aller]}{\v IDH_TP_19}\par
+{\f1 20. Directives de compilation}     {\uldb [Aller]}{\v IDH_TP_20}\par
+{\f1 21. Code assembleur inline (asm)}     {\uldb [Aller]}{\v IDH_TP_21}\par
+{\f1 22. Bibliotheque standard}     {\uldb [Aller]}{\v IDH_TP_22}\par
+{\f1 23. Unite System}     {\uldb [Aller]}{\v IDH_TP_23}\par
+{\f1 24. Unite Crt}     {\uldb [Aller]}{\v IDH_TP_24}\par
+{\f1 25. Unite Dos}     {\uldb [Aller]}{\v IDH_TP_25}\par
+{\f1 26. Unite Graph}     {\uldb [Aller]}{\v IDH_TP_26}\par
+{\f1 27. Unite Overlay}     {\uldb [Aller]}{\v IDH_TP_27}\par
+{\f1 28. Memoire et modeles}     {\uldb [Aller]}{\v IDH_TP_28}\par
+{\f1 29. Gestion des interruptions}     {\uldb [Aller]}{\v IDH_TP_29}\par
+{\f1 30. Compatibilite Free Pascal mode -Mtp}     {\uldb [Aller]}{\v IDH_TP_30}\par
+{\f1 31. Exemples complets}     {\uldb [Aller]}{\v IDH_TP_31}\par
+{\f1 32. Differences avec Standard Pascal (ISO 7185)}     {\uldb [Aller]}{\v IDH_TP_32}\par
+{\f1 33. Ressources dans le projet}     {\uldb [Aller]}{\v IDH_TP_33}\par
+{\f1 34. Bibliographie}     {\uldb [Aller]}{\v IDH_TP_34}\par
+\par
+\b Unites et sujets connexes : \b0\par
+\par
+{\f1    Unite System                 (TURBOPASCAL_SYSTEM)}     {\uldb [Aller]}{\v IDH_TPSYS_01}\par
+{\f1    Unite Crt                    (TURBOPASCAL_CRT)}     {\uldb [Aller]}{\v IDH_TPCRT_01}\par
+{\f1    Unite Dos                    (TURBOPASCAL_DOS)}     {\uldb [Aller]}{\v IDH_TPDOS_01}\par
+{\f1    Unite Graph (BGI)            (TURBOPASCAL_GRAPH)}     {\uldb [Aller]}{\v IDH_TPGRAPH_01}\par
+{\f1    Unite Graph3 (TP 3)          (TURBOPASCAL_GRAPH3)}     {\uldb [Aller]}{\v IDH_TPGR3_01}\par
+{\f1    Unite Overlay                (TURBOPASCAL_OVERLAY)}     {\uldb [Aller]}{\v IDH_TPOVL_01}\par
+{\f1    Programmation Objet          (TURBOPASCAL_OBJECTS)}     {\uldb [Aller]}{\v IDH_TPOBJ_01}\par
+{\f1    Unite Printer                (TURBOPASCAL_PRINTER)}     {\uldb [Aller]}{\v IDH_TPPRT_01}\par
+{\f1    Type String                  (TURBOPASCAL_STRING)}     {\uldb [Aller]}{\v IDH_TPSTR_01}\par
+{\f1    Unite Strings (PChar)        (TURBOPASCAL_STRINGS)}     {\uldb [Aller]}{\v IDH_TPSTRS_01}\par
+{\f1    Gestion Memoire              (TURBOPASCAL_MEMORY)}     {\uldb [Aller]}{\v IDH_TPMEM_01}\par
+{\f1    Unite WinDos                 (TURBOPASCAL_WINDOS)}     {\uldb [Aller]}{\v IDH_TPWIN_01}\par
+{\f1    Compatibilite TP3            (TURBOPASCAL_TURBO3)}     {\uldb [Aller]}{\v IDH_TPT3_01}\par
+\par
+{\uldb Suivant >>}{\v IDH_TP_02}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TP_02}
+{\footnote $ Turbo Pascal - Versions de Turbo Pascal}
+{\footnote K Turbo Pascal;Turbo Pascal;Versions de Turbo Pascal}
+\b\fs24 Versions de Turbo Pascal \b0\fs20\par
+\par
+{\f1   Resume des versions historiques :}\par
+\par
+{\f1     Version  Annee  Plates-formes        Nouveautes majeures}\par
+{\f1     -------  -----  -------------------  -------------------------------}\par
+{\f1     1.0      1983   CP/M-80, MS-DOS      Premier release commercial}\par
+{\f1     2.0      1984   CP/M-80, MS-DOS      Optimisations diverses}\par
+{\f1     3.0      1985   CP/M-80, MS-DOS      Graphics, overlays}\par
+{\f1     4.0      1987   MS-DOS               Unites (separate compilation),}\par
+{\f1                                          nouvelle IDE plein ecran}\par
+{\f1     5.0      1988   MS-DOS               Debugueur integre,}\par
+{\f1                                          overlays ameliores}\par
+{\f1     5.5      1989   MS-DOS               Objets (POO), heritage simple,}\par
+{\f1                                          methodes virtuelles, VMT}\par
+{\f1     6.0      1990   MS-DOS               Turbo Vision (framework TUI),}\par
+{\f1                                          IDE 2 fenetres}\par
+{\f1     7.0      1992   MS-DOS               Strings >255 (option), code 32 bits}\par
+{\f1                                          protege, IDE encore amelioree}\par
+{\f1     7.01     1994   MS-DOS               Derniere version, corrections}\par
+\par
+{\f1   Versions specialisees :}\par
+\par
+{\f1     - Turbo Pascal for Windows (1991) : cible Windows 3.x.}\par
+{\f1     - Turbo Pascal for Mac (1986) : cible Macintosh.}\par
+{\f1     - Borland Pascal 7.0 (1992) : equivalent professionnel avec modes}\par
+{\f1       reel, protege et Windows.}\par
+\par
+{\f1   Le projet DEV-COOLS cible specifiquement la compatibilite Turbo}\par
+{\f1   Pascal 7.0, qui represente l aboutissement de la ligne classique}\par
+{\f1   et reste la reference pour la programmation DOS.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TP_01}     {\uldb Suivant >>}{\v IDH_TP_03}     {\uldb Sommaire}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TP_03}
+{\footnote $ Turbo Pascal - Environnement de developpement integre (IDE)}
+{\footnote K Turbo Pascal;Turbo Pascal;Environnement de developpement integre (IDE)}
+\b\fs24 Environnement de developpement integre (IDE) \b0\fs20\par
+\par
+\par
+\b 3.1 Composants \b0\par
+\par
+{\f1   L IDE Turbo Pascal regroupe :}\par
+\par
+{\f1     - Editeur plein ecran inspire de WordStar (touches Ctrl-K).}\par
+{\f1     - Compilateur en memoire ou sur disque.}\par
+{\f1     - Debugueur integre (TP 5.0+) avec points d arret, pas a pas,}\par
+{\f1       surveillance de variables.}\par
+{\f1     - Aide en ligne contextuelle (F1) tres complete.}\par
+{\f1     - Gestionnaire de fichiers .PAS, .TPU (unite compilee), .EXE.}\par
+\par
+\par
+\b 3.2 Touches principales \b0\par
+\par
+{\f1     F2     : sauver}\par
+{\f1     F3     : ouvrir}\par
+{\f1     F5     : agrandir / restaurer fenetre}\par
+{\f1     F6     : fenetre suivante}\par
+{\f1     F7     : pas a pas avec entree dans procedure}\par
+{\f1     F8     : pas a pas sans entrer dans procedure}\par
+{\f1     F9     : compiler vers EXE}\par
+{\f1     F10    : menu principal}\par
+{\f1     Ctrl-F2 : reinitialiser le programme}\par
+{\f1     Ctrl-F7 : ajouter une expression a surveiller}\par
+{\f1     Ctrl-F9 : compiler et executer}\par
+\par
+\par
+\b 3.3 Menus typiques \b0\par
+\par
+{\f1     File   : New, Open, Save, Print, Exit}\par
+{\f1     Edit   : Cut, Copy, Paste, Find, Replace}\par
+{\f1     Search : recherche dans le source}\par
+{\f1     Run    : Run, Reset, Step Over, Trace Into, Go to Cursor}\par
+{\f1     Compile : Compile, Make, Build, Target}\par
+{\f1     Debug  : Breakpoints, Watches, Call Stack, Evaluate}\par
+{\f1     Tools  : utilitaires externes}\par
+{\f1     Options : repertoires, parametres de compilation}\par
+{\f1     Window : gestion des fenetres}\par
+{\f1     Help   : aide en ligne}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TP_02}     {\uldb Suivant >>}{\v IDH_TP_04}     {\uldb Sommaire}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TP_04}
+{\footnote $ Turbo Pascal - Structure d un programme}
+{\footnote K Turbo Pascal;Turbo Pascal;Structure d un programme}
+\b\fs24 Structure d un programme \b0\fs20\par
+\par
+\par
+\b 4.1 Programme principal \b0\par
+\par
+{\f1     Program HelloWorld;}\par
+\par
+{\f1     Uses Crt;}\par
+\par
+{\f1     Const}\par
+{\f1       MAX = 100;}\par
+\par
+{\f1     Type}\par
+{\f1       TArr = Array[1..MAX] Of Integer;}\par
+\par
+{\f1     Var}\par
+{\f1       I : Integer;}\par
+{\f1       T : TArr;}\par
+\par
+{\f1     Procedure Init;}\par
+{\f1     Var J : Integer;}\par
+{\f1     Begin}\par
+{\f1       For J := 1 To MAX Do T[J] := 0;}\par
+{\f1     End;}\par
+\par
+{\f1     Begin}\par
+{\f1       ClrScr;}\par
+{\f1       Init;}\par
+{\f1       WriteLn('Bonjour, monde !');}\par
+{\f1       ReadKey;}\par
+{\f1     End.}\par
+\par
+\par
+\b 4.2 Ordre canonique d un programme Pascal \b0\par
+\par
+{\f1     Program <nom>;}\par
+{\f1     Uses <unites>;}\par
+{\f1     Const ...}\par
+{\f1     Type ...}\par
+{\f1     Var ...}\par
+{\f1     Procedure / Function ...}\par
+{\f1     Begin}\par
+{\f1       <instructions>}\par
+{\f1     End.}\par
+\par
+{\f1   Sous Turbo Pascal, les sections const, type, var et procedure /}\par
+{\f1   function peuvent etre repetees dans n importe quel ordre (extension}\par
+{\f1   par rapport au Pascal standard).}\par
+\par
+\par
+\b 4.3 Point final \b0\par
+\par
+{\f1   Le programme se termine par "End." (un point) et non "End;" (un}\par
+{\f1   point-virgule). Les blocs internes (procedures, fonctions, begin}\par
+{\f1   imbriques) finissent par "End;".}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TP_03}     {\uldb Suivant >>}{\v IDH_TP_05}     {\uldb Sommaire}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TP_05}
+{\footnote $ Turbo Pascal - Lexique et conventions}
+{\footnote K Turbo Pascal;Turbo Pascal;Lexique et conventions}
+\b\fs24 Lexique et conventions \b0\fs20\par
+\par
+\par
+\b 5.1 Identificateurs \b0\par
+\par
+{\f1   Un identificateur commence par une lettre ou un caractere souligne,}\par
+{\f1   suit avec lettres, chiffres ou soulignes. Sensible a la casse : NON}\par
+{\f1   (Pascal est insensible a la casse).}\par
+\par
+{\f1     nom    Nom    NOM        \{ tous identiques \}}\par
+\par
+{\f1   Longueur significative : 63 caracteres en TP 7.0.}\par
+\par
+\par
+\b 5.2 Mots reserves \b0\par
+\par
+{\f1   Les mots reserves ne peuvent pas etre utilises comme identificateurs :}\par
+\par
+{\f1     absolute       and            array         asm           begin}\par
+{\f1     case           const          constructor   destructor    div}\par
+{\f1     do             downto         else          end           file}\par
+{\f1     for            function       goto          if            implementation}\par
+{\f1     in             inherited      inline        interface     interrupt}\par
+{\f1     label          mod            nil           not           object}\par
+{\f1     of             or             packed        procedure     program}\par
+{\f1     record         repeat         set           shl           shr}\par
+{\f1     string         then           to            type          unit}\par
+{\f1     until          uses           var           virtual       while}\par
+{\f1     with           xor}\par
+\par
+\par
+\b 5.3 Directives standard (mots reconnus mais redefinissables) \b0\par
+\par
+{\f1     abstract       assembler      cdecl         exit          export}\par
+{\f1     external       far            forward       near          near}\par
+{\f1     private        protected      public        published     register}\par
+\par
+\par
+\b 5.4 Commentaires \b0\par
+\par
+{\f1   Trois formes equivalentes :}\par
+\par
+{\f1     \{ commentaire avec accolades \}}\par
+{\f1     (* commentaire avec parentheses-etoiles *)}\par
+\par
+{\f1   Les commentaires // jusqu en fin de ligne ne font pas partie de}\par
+{\f1   Turbo Pascal classique mais sont reconnus par Free Pascal -Mtp.}\par
+\par
+{\f1   Les commentaires sont non imbricables si on melange \{ \} et (* *) avec}\par
+{\f1   les memes delimiteurs, mais on peut imbriquer \{ (* *) \} et (* \{ \} *).}\par
+\par
+\par
+\b 5.5 Litteraux \b0\par
+\par
+{\f1   Entiers :}\par
+{\f1     42        \{ decimal \}}\par
+{\f1     -100}\par
+{\f1     $1A       \{ hexadecimal \}}\par
+{\f1     $FFFF}\par
+\par
+{\f1   Reels :}\par
+{\f1     3.14}\par
+{\f1     -1.5E-10}\par
+{\f1     2.5e+3}\par
+\par
+{\f1   Caracteres :}\par
+{\f1     'A'}\par
+{\f1     ''''           \{ apostrophe \}}\par
+{\f1     #65            \{ caractere de code 65 = 'A' \}}\par
+{\f1     #$0D           \{ code 13 = CR \}}\par
+{\f1     ^M             \{ code Ctrl-M = 13 \}}\par
+\par
+{\f1   Chaines :}\par
+{\f1     'Bonjour'}\par
+{\f1     'L''ami'       \{ apostrophe doublee \}}\par
+{\f1     'Pre'#9'Post'  \{ concatenation avec #9 = TAB \}}\par
+\par
+{\f1   Booleens :}\par
+{\f1     True   False}\par
+\par
+{\f1   Pointeur nul :}\par
+{\f1     nil}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TP_04}     {\uldb Suivant >>}{\v IDH_TP_06}     {\uldb Sommaire}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TP_06}
+{\footnote $ Turbo Pascal - Types de donnees scalaires}
+{\footnote K Turbo Pascal;Turbo Pascal;Types de donnees scalaires}
+\b\fs24 Types de donnees scalaires \b0\fs20\par
+\par
+\par
+\b 6.1 Types entiers \b0\par
+\par
+{\f1     Type        Taille   Plage}\par
+{\f1     --------    ------   ----------------------------}\par
+{\f1     ShortInt    1 octet   -128..127}\par
+{\f1     Byte        1 octet   0..255}\par
+{\f1     Integer     2 octets  -32768..32767}\par
+{\f1     Word        2 octets  0..65535}\par
+{\f1     LongInt     4 octets  -2147483648..2147483647}\par
+{\f1     Comp        8 octets  -2E63..2E63 (avec coprocesseur)}\par
+\par
+{\f1   Sous Free Pascal -Mtp, Integer reste 16 bits par defaut comme en TP.}\par
+\par
+\par
+\b 6.2 Types reels \b0\par
+\par
+{\f1     Type        Taille   Plage approximative}\par
+{\f1     --------    ------   ----------------------------}\par
+{\f1     Real        6 octets  2.9E-39..1.7E38, 11-12 chiffres}\par
+{\f1     Single      4 octets  IEEE 754 simple precision}\par
+{\f1     Double      8 octets  IEEE 754 double precision}\par
+{\f1     Extended    10 octets  IEEE 754 etendue (80387)}\par
+{\f1     Comp        8 octets  entier 64 bits (manipule par FPU)}\par
+\par
+{\f1   Real est le seul type reel disponible sans coprocesseur 8087 ; les}\par
+{\f1   autres requierent \{$N+\}.}\par
+\par
+\par
+\b 6.3 Type Char \b0\par
+\par
+{\f1   Caractere ASCII 8 bits :}\par
+\par
+{\f1     Var C : Char;}\par
+{\f1     C := 'A';}\par
+{\f1     C := #65;     \{ equivalent \}}\par
+{\f1     WriteLn(Ord(C), ' ', C);    \{ 65 A \}}\par
+\par
+\par
+\b 6.4 Type Boolean \b0\par
+\par
+{\f1   Valeurs True (1) et False (0) representees sur 1 octet :}\par
+\par
+{\f1     Var B : Boolean;}\par
+{\f1     B := True;}\par
+{\f1     If B Then ...}\par
+\par
+\par
+\b 6.5 Type enumere \b0\par
+\par
+{\f1     Type}\par
+{\f1       TJour = (Lundi, Mardi, Mercredi, Jeudi, Vendredi, Samedi, Dimanche);}\par
+\par
+{\f1     Var J : TJour;}\par
+{\f1     J := Mardi;}\par
+{\f1     WriteLn(Ord(J));     \{ 1 \}}\par
+\par
+{\f1   Les valeurs sont representees par 0, 1, 2... sur 1 ou 2 octets selon}\par
+{\f1   le nombre de valeurs.}\par
+\par
+\par
+\b 6.6 Sous-intervalles \b0\par
+\par
+{\f1   On peut definir un sous-intervalle d un type ordinal :}\par
+\par
+{\f1     Type}\par
+{\f1       TDigit = 0..9;}\par
+{\f1       TLettreMaj = 'A'..'Z';}\par
+{\f1       TSemaine = Lundi..Vendredi;}\par
+\par
+{\f1   Avec \{$R+\}, les acces hors borne declenchent une erreur d execution.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TP_05}     {\uldb Suivant >>}{\v IDH_TP_07}     {\uldb Sommaire}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TP_07}
+{\footnote $ Turbo Pascal - Types structures}
+{\footnote K Turbo Pascal;Turbo Pascal;Types structures}
+\b\fs24 Types structures \b0\fs20\par
+\par
+{\f1   Couverts dans les sections suivantes :}\par
+\par
+{\f1     - Chaines (String) : section 13}\par
+{\f1     - Tableaux (Array) : section 14}\par
+{\f1     - Records          : section 15}\par
+{\f1     - Ensembles (Set)  : section 16}\par
+{\f1     - Fichiers (File)  : section 17}\par
+{\f1     - Pointeurs        : section 8}\par
+{\f1     - Objets           : section 19}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TP_06}     {\uldb Suivant >>}{\v IDH_TP_08}     {\uldb Sommaire}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TP_08}
+{\footnote $ Turbo Pascal - Pointeurs}
+{\footnote K Turbo Pascal;Turbo Pascal;Pointeurs}
+\b\fs24 Pointeurs \b0\fs20\par
+\par
+\par
+\b 8.1 Declaration \b0\par
+\par
+{\f1     Type}\par
+{\f1       PInt = ^Integer;}\par
+{\f1       PNode = ^TNode;}\par
+{\f1       TNode = Record}\par
+{\f1         Valeur : Integer;}\par
+{\f1         Suiv   : PNode;}\par
+{\f1       End;}\par
+\par
+{\f1     Var P : PInt;}\par
+\par
+{\f1   Note : on peut declarer un pointeur vers un type non encore defini,}\par
+{\f1   a condition que ce type soit defini dans la meme section Type}\par
+{\f1   (forward declaration de type).}\par
+\par
+\par
+\b 8.2 Allocation et liberation \b0\par
+\par
+{\f1     New(P);        \{ alloue sizeof(Integer^) \}}\par
+{\f1     P^ := 42;}\par
+{\f1     WriteLn(P^);}\par
+{\f1     Dispose(P);}\par
+\par
+{\f1   Pour les blocs typees plus complexes :}\par
+\par
+{\f1     GetMem(P, 1024);     \{ alloue 1024 octets sur le tas \}}\par
+{\f1     FreeMem(P, 1024);}\par
+\par
+\par
+\b 8.3 Pointeur generique \b0\par
+\par
+{\f1     Var}\par
+{\f1       P : Pointer;          \{ sans type \}}\par
+\par
+{\f1     P := Addr(MaVar);}\par
+\par
+{\f1   Pour utiliser le contenu, on doit caster :}\par
+\par
+{\f1     Integer(P^);}\par
+\par
+\par
+\b 8.4 Adresses et indirection \b0\par
+\par
+{\f1     @X        \{ ou Addr(X), adresse de X \}}\par
+{\f1     P^        \{ dereferencement \}}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TP_07}     {\uldb Suivant >>}{\v IDH_TP_09}     {\uldb Sommaire}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TP_09}
+{\footnote $ Turbo Pascal - Declarations const, var, type}
+{\footnote K Turbo Pascal;Turbo Pascal;Declarations const, var, type}
+\b\fs24 Declarations const, var, type \b0\fs20\par
+\par
+\par
+\b 9.1 Constantes \b0\par
+\par
+{\f1     Const}\par
+{\f1       MAX     = 100;}\par
+{\f1       PI      = 3.14159265;}\par
+{\f1       TITRE   = 'Mon Programme';}\par
+{\f1       ESPACES = '   ';}\par
+\par
+{\f1   Constantes typees (initialisation au demarrage, variables modifiables}\par
+{\f1   selon $J) :}\par
+\par
+{\f1     Const}\par
+{\f1       Buffer : Array[1..5] Of Integer = (10, 20, 30, 40, 50);}\par
+{\f1       Origine : TPoint = (X: 0; Y: 0);}\par
+{\f1       Compteur : Integer = 0;   \{ modifiable \}}\par
+\par
+\par
+\b 9.2 Variables \b0\par
+\par
+{\f1     Var}\par
+{\f1       I, J   : Integer;}\par
+{\f1       Nom    : String[40];}\par
+{\f1       Actif  : Boolean;}\par
+{\f1       T      : Array[1..10] Of Real;}\par
+\par
+\par
+\b 9.3 Variables absolues \b0\par
+\par
+{\f1   Variable a une adresse memoire fixe :}\par
+\par
+{\f1     Var Crayon : Byte Absolute $0040:$0017;}\par
+\par
+\par
+\b 9.4 Types \b0\par
+\par
+{\f1     Type}\par
+{\f1       TPoint = Record X, Y : Integer; End;}\par
+{\f1       TTab   = Array[1..100] Of Integer;}\par
+{\f1       PNode  = ^TNode;}\par
+{\f1       TNode  = Record V : Integer; Suiv : PNode; End;}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TP_08}     {\uldb Suivant >>}{\v IDH_TP_10}     {\uldb Sommaire}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TP_10}
+{\footnote $ Turbo Pascal - Operateurs et expressions}
+{\footnote K Turbo Pascal;Turbo Pascal;Operateurs et expressions}
+\b\fs24 Operateurs et expressions \b0\fs20\par
+\par
+\par
+\b 10.1 Operateurs arithmetiques \b0\par
+\par
+{\f1     +    addition}\par
+{\f1     -    soustraction}\par
+{\f1     *    multiplication}\par
+{\f1     /    division reelle (resultat reel)}\par
+{\f1     div  division entiere}\par
+{\f1     mod  reste de division entiere}\par
+\par
+\par
+\b 10.2 Operateurs relationnels \b0\par
+\par
+{\f1     =    egal}\par
+{\f1     <>   different}\par
+{\f1     <    inferieur}\par
+{\f1     <=   inferieur ou egal}\par
+{\f1     >    superieur}\par
+{\f1     >=   superieur ou egal}\par
+{\f1     in   appartenance a un ensemble}\par
+\par
+\par
+\b 10.3 Operateurs logiques et bit-a-bit \b0\par
+\par
+{\f1   Selon que les operandes sont Boolean ou entier :}\par
+\par
+{\f1     and  ET}\par
+{\f1     or   OU}\par
+{\f1     xor  OU exclusif}\par
+{\f1     not  NON}\par
+{\f1     shl  decalage gauche (entiers)}\par
+{\f1     shr  decalage droite (entiers)}\par
+\par
+\par
+\b 10.4 Operateur de chaine \b0\par
+\par
+{\f1     +    concatenation (String + String)}\par
+\par
+\par
+\b 10.5 Precedence \b0\par
+\par
+{\f1   De la plus haute a la plus basse :}\par
+\par
+{\f1     1. @, Not}\par
+{\f1     2. *, /, div, mod, and, shl, shr}\par
+{\f1     3. +, -, or, xor}\par
+{\f1     4. =, <>, <, <=, >, >=, in}\par
+\par
+{\f1   Utiliser des parentheses pour les expressions logiques mixtes.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TP_09}     {\uldb Suivant >>}{\v IDH_TP_11}     {\uldb Sommaire}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TP_11}
+{\footnote $ Turbo Pascal - Instructions}
+{\footnote K Turbo Pascal;Turbo Pascal;Instructions}
+\b\fs24 Instructions \b0\fs20\par
+\par
+\par
+\b 11.1 Affectation \b0\par
+\par
+{\f1     X := 42;}\par
+{\f1     Nom := 'Bob';}\par
+\par
+\par
+\b 11.2 If / Then / Else \b0\par
+\par
+{\f1     If X > 0 Then}\par
+{\f1       WriteLn('positif')}\par
+{\f1     Else If X < 0 Then}\par
+{\f1       WriteLn('negatif')}\par
+{\f1     Else}\par
+{\f1       WriteLn('nul');}\par
+\par
+{\f1   Attention : pas de ";" avant Else.}\par
+\par
+\par
+\b 11.3 Case \b0\par
+\par
+{\f1     Case J Of}\par
+{\f1       Lundi..Vendredi : WriteLn('semaine');}\par
+{\f1       Samedi, Dimanche : WriteLn('weekend');}\par
+{\f1     Else}\par
+{\f1       WriteLn('inconnu');}\par
+{\f1     End;}\par
+\par
+\par
+\b 11.4 For \b0\par
+\par
+{\f1     For I := 1 To 10 Do}\par
+{\f1       WriteLn(I);}\par
+\par
+{\f1     For I := 10 DownTo 1 Do}\par
+{\f1       WriteLn(I);}\par
+\par
+{\f1     For I := 1 To N Do Begin}\par
+{\f1       ...}\par
+{\f1     End;}\par
+\par
+\par
+\b 11.5 While \b0\par
+\par
+{\f1     While X > 0 Do Begin}\par
+{\f1       X := X - 1;}\par
+{\f1     End;}\par
+\par
+\par
+\b 11.6 Repeat / Until \b0\par
+\par
+{\f1     Repeat}\par
+{\f1       X := X + 1;}\par
+{\f1     Until X >= 10;}\par
+\par
+\par
+\b 11.7 With \b0\par
+\par
+{\f1     With Personne Do Begin}\par
+{\f1       Nom    := 'Alice';}\par
+{\f1       Age    := 30;}\par
+{\f1     End;}\par
+\par
+\par
+\b 11.8 Goto et Label \b0\par
+\par
+{\f1     Label 100;}\par
+\par
+{\f1     Begin}\par
+{\f1       ...}\par
+{\f1       Goto 100;}\par
+{\f1       ...}\par
+{\f1     100:}\par
+{\f1       WriteLn('cible');}\par
+{\f1     End.}\par
+\par
+{\f1   Decommande : utiliser Exit, Break (TP6+), Continue (TP6+) a la place.}\par
+\par
+\par
+\b 11.9 Exit, Break, Continue, Halt \b0\par
+\par
+{\f1     Exit       : sort de la procedure / fonction courante.}\par
+{\f1     Break      : sort de la boucle courante (TP 6+).}\par
+{\f1     Continue   : passe a l iteration suivante (TP 6+).}\par
+{\f1     Halt(code) : termine le programme.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TP_10}     {\uldb Suivant >>}{\v IDH_TP_12}     {\uldb Sommaire}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TP_12}
+{\footnote $ Turbo Pascal - Procedures et fonctions}
+{\footnote K Turbo Pascal;Turbo Pascal;Procedures et fonctions}
+\b\fs24 Procedures et fonctions \b0\fs20\par
+\par
+\par
+\b 12.1 Procedure \b0\par
+\par
+{\f1     Procedure Salut(Nom : String);}\par
+{\f1     Begin}\par
+{\f1       WriteLn('Bonjour ', Nom);}\par
+{\f1     End;}\par
+\par
+\par
+\b 12.2 Fonction \b0\par
+\par
+{\f1     Function Carre(N : Integer) : LongInt;}\par
+{\f1     Begin}\par
+{\f1       Carre := LongInt(N) * N;}\par
+{\f1     End;}\par
+\par
+{\f1   Le nom de la fonction sert de variable de retour. Free Pascal -Mtp}\par
+{\f1   accepte aussi Result comme synonyme.}\par
+\par
+\par
+\b 12.3 Parametres \b0\par
+\par
+{\f1   Par valeur (defaut) :}\par
+\par
+{\f1     Procedure P1(X : Integer);}\par
+\par
+{\f1   Par reference (Var) :}\par
+\par
+{\f1     Procedure Echange(Var A, B : Integer);}\par
+{\f1     Var T : Integer;}\par
+{\f1     Begin}\par
+{\f1       T := A; A := B; B := T;}\par
+{\f1     End;}\par
+\par
+{\f1   Tableau ouvert (TP 7+) :}\par
+\par
+{\f1     Procedure AfficheTab(Const T : Array Of Integer);}\par
+{\f1     Var I : Integer;}\par
+{\f1     Begin}\par
+{\f1       For I := Low(T) To High(T) Do WriteLn(T[I]);}\par
+{\f1     End;}\par
+\par
+\par
+\b 12.4 Forward \b0\par
+\par
+{\f1   Pour des routines mutuellement recursives :}\par
+\par
+{\f1     Function Pair(N : Integer) : Boolean; Forward;}\par
+\par
+{\f1     Function Impair(N : Integer) : Boolean;}\par
+{\f1     Begin}\par
+{\f1       If N = 0 Then Impair := False}\par
+{\f1       Else Impair := Pair(N - 1);}\par
+{\f1     End;}\par
+\par
+{\f1     Function Pair(N : Integer) : Boolean;}\par
+{\f1     Begin}\par
+{\f1       If N = 0 Then Pair := True}\par
+{\f1       Else Pair := Impair(N - 1);}\par
+{\f1     End;}\par
+\par
+\par
+\b 12.5 Procedures imbriquees \b0\par
+\par
+{\f1   Une procedure peut etre declaree localement a une autre :}\par
+\par
+{\f1     Procedure Externe;}\par
+{\f1     Var X : Integer;}\par
+\par
+{\f1        Procedure Interne;}\par
+{\f1        Begin}\par
+{\f1          X := X + 1;}\par
+{\f1        End;}\par
+\par
+{\f1     Begin}\par
+{\f1       X := 0;}\par
+{\f1       Interne;}\par
+{\f1       WriteLn(X);}\par
+{\f1     End;}\par
+\par
+\par
+\b 12.6 Procedures externes et inline \b0\par
+\par
+{\f1     Procedure DOS_INT(N : Byte); External;}\par
+{\f1     Procedure NOP; Inline($90);}\par
+\par
+\par
+\b 12.7 Recursivite \b0\par
+\par
+{\f1   Toutes les procedures et fonctions peuvent etre recursives :}\par
+\par
+{\f1     Function Fact(N : Integer) : LongInt;}\par
+{\f1     Begin}\par
+{\f1       If N <= 1 Then Fact := 1}\par
+{\f1       Else Fact := N * Fact(N - 1);}\par
+{\f1     End;}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TP_11}     {\uldb Suivant >>}{\v IDH_TP_13}     {\uldb Sommaire}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TP_13}
+{\footnote $ Turbo Pascal - Chaines de caracteres}
+{\footnote K Turbo Pascal;Turbo Pascal;Chaines de caracteres}
+\b\fs24 Chaines de caracteres \b0\fs20\par
+\par
+\par
+\b 13.1 Type String \b0\par
+\par
+{\f1   Le type String represente une chaine de caracteres de longueur}\par
+{\f1   variable jusqu a 255 octets. La longueur courante est stockee dans}\par
+{\f1   l octet 0 :}\par
+\par
+{\f1     Var S : String;       \{ = String[255] \}}\par
+{\f1     Var S2 : String[40];  \{ longueur max 40 \}}\par
+\par
+{\f1   Acces :}\par
+{\f1     S := 'Bonjour';}\par
+{\f1     WriteLn(Length(S));   \{ 7 \}}\par
+{\f1     WriteLn(S[1]);        \{ 'B' \}}\par
+{\f1     WriteLn(Ord(S[0]));   \{ 7 = longueur \}}\par
+\par
+\par
+\b 13.2 Operations \b0\par
+\par
+{\f1     Length(s)         longueur courante}\par
+{\f1     Concat(s1, s2)    concatenation (ou +)}\par
+{\f1     Copy(s, i, n)     sous-chaine}\par
+{\f1     Pos(sub, s)       position (0 si absent)}\par
+{\f1     Delete(s, i, n)   suppression dans s}\par
+{\f1     Insert(sub, s, i) insertion dans s}\par
+{\f1     UpCase(c)         majuscule (caractere uniquement)}\par
+{\f1     Str(v, s)         variable -> chaine}\par
+{\f1     Val(s, v, code)   chaine -> variable}\par
+\par
+\par
+\b 13.3 Concatenation \b0\par
+\par
+{\f1     S := 'Hello, ' + 'World!' + #10;}\par
+\par
+\par
+\b 13.4 Comparaison \b0\par
+\par
+{\f1   Les chaines se comparent caractere par caractere :}\par
+\par
+{\f1     If S1 = S2 Then ...}\par
+{\f1     If S1 < S2 Then ...     \{ ordre lexicographique \}}\par
+\par
+\par
+\b 13.5 PChar (TP 7.0+) \b0\par
+\par
+{\f1   Chaine ASCIIZ a la mode C (sans byte de longueur, terminee par #0) :}\par
+\par
+{\f1     Var P : PChar;}\par
+{\f1     P := 'Hello';     \{ litteral converti \}}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TP_12}     {\uldb Suivant >>}{\v IDH_TP_14}     {\uldb Sommaire}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TP_14}
+{\footnote $ Turbo Pascal - Tableaux}
+{\footnote K Turbo Pascal;Turbo Pascal;Tableaux}
+\b\fs24 Tableaux \b0\fs20\par
+\par
+\par
+\b 14.1 Declaration \b0\par
+\par
+{\f1     Var T : Array[1..10] Of Integer;}\par
+{\f1     Var M : Array[0..9, 0..9] Of Real;}\par
+\par
+{\f1     Type}\par
+{\f1       TVecteur = Array[1..N] Of Real;}\par
+{\f1       TMatrice = Array[1..N, 1..N] Of Real;}\par
+\par
+{\f1   Les bornes peuvent etre tout type ordinal :}\par
+\par
+{\f1     Var Notes : Array['A'..'E'] Of Integer;}\par
+{\f1     Var Heures : Array[TJour] Of Integer;}\par
+\par
+\par
+\b 14.2 Acces \b0\par
+\par
+{\f1     T[1] := 42;}\par
+{\f1     M[3, 4] := 0.5;}\par
+\par
+{\f1   Avec \{$R+\}, les acces hors borne provoquent une erreur d execution.}\par
+\par
+\par
+\b 14.3 Tableaux ouverts (TP 7.0+) \b0\par
+\par
+{\f1   Pour passer un tableau de taille variable a une procedure :}\par
+\par
+{\f1     Procedure Imprime(Const T : Array Of Integer);}\par
+{\f1     Var I : Integer;}\par
+{\f1     Begin}\par
+{\f1       For I := Low(T) To High(T) Do WriteLn(T[I]);}\par
+{\f1     End;}\par
+\par
+\par
+\b 14.4 Tableaux dynamiques \b0\par
+\par
+{\f1   Turbo Pascal classique ne propose pas de tableaux dynamiques (ajoutes}\par
+{\f1   en Delphi 4 et Free Pascal mode Delphi). En TP, on utilise des}\par
+{\f1   pointeurs et GetMem :}\par
+\par
+{\f1     Type}\par
+{\f1       PArray = ^TArray;}\par
+{\f1       TArray = Array[0..MAXINT div sizeof(Integer) - 1] Of Integer;}\par
+\par
+{\f1     Var P : PArray;}\par
+{\f1     GetMem(P, N * SizeOf(Integer));}\par
+{\f1     P^[I] := ...;}\par
+{\f1     FreeMem(P, N * SizeOf(Integer));}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TP_13}     {\uldb Suivant >>}{\v IDH_TP_15}     {\uldb Sommaire}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TP_15}
+{\footnote $ Turbo Pascal - Records (et records variants)}
+{\footnote K Turbo Pascal;Turbo Pascal;Records (et records variants)}
+\b\fs24 Records (et records variants) \b0\fs20\par
+\par
+\par
+\b 15.1 Record simple \b0\par
+\par
+{\f1     Type}\par
+{\f1       TPoint = Record}\par
+{\f1         X, Y : Integer;}\par
+{\f1       End;}\par
+\par
+{\f1     Var P : TPoint;}\par
+{\f1     P.X := 10;}\par
+{\f1     P.Y := 20;}\par
+\par
+\par
+\b 15.2 Record imbrique \b0\par
+\par
+{\f1     Type}\par
+{\f1       TAdresse = Record}\par
+{\f1         Rue   : String[60];}\par
+{\f1         Ville : String[40];}\par
+{\f1       End;}\par
+\par
+{\f1       TPersonne = Record}\par
+{\f1         Nom     : String[40];}\par
+{\f1         Age     : Byte;}\par
+{\f1         Adresse : TAdresse;}\par
+{\f1       End;}\par
+\par
+{\f1     Var P : TPersonne;}\par
+{\f1     P.Adresse.Ville := 'Quebec';}\par
+\par
+\par
+\b 15.3 Record variant \b0\par
+\par
+{\f1   Plusieurs interpretations memoire d un meme espace (comme union en C) :}\par
+\par
+{\f1     Type}\par
+{\f1       TForme = Record}\par
+{\f1         Couleur : Word;}\par
+{\f1         Case Sorte : (Cercle, Rectangle, Triangle) Of}\par
+{\f1           Cercle    : (Rayon : Integer);}\par
+{\f1           Rectangle : (Largeur, Hauteur : Integer);}\par
+{\f1           Triangle  : (A, B, C : Integer);}\par
+{\f1       End;}\par
+\par
+{\f1   La balise (Sorte) est optionnelle. Si elle est presente, c est un}\par
+{\f1   champ accessible.}\par
+\par
+\par
+\b 15.4 Acces par With \b0\par
+\par
+{\f1     With P Do Begin}\par
+{\f1       Nom := 'Alice';}\par
+{\f1       Age := 30;}\par
+{\f1     End;}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TP_14}     {\uldb Suivant >>}{\v IDH_TP_16}     {\uldb Sommaire}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TP_16}
+{\footnote $ Turbo Pascal - Ensembles (Set)}
+{\footnote K Turbo Pascal;Turbo Pascal;Ensembles (Set)}
+\b\fs24 Ensembles (Set) \b0\fs20\par
+\par
+\par
+\b 16.1 Declaration \b0\par
+\par
+{\f1     Type}\par
+{\f1       TSetJour = Set Of TJour;}\par
+{\f1       TSetByte = Set Of Byte;}\par
+{\f1       TSetChar = Set Of Char;}\par
+\par
+{\f1     Var Ouvrables : TSetJour;}\par
+\par
+{\f1   Le type de base doit etre ordinal et compter au plus 256 valeurs.}\par
+\par
+\par
+\b 16.2 Operations \b0\par
+\par
+{\f1     Ouvrables := [Lundi, Mardi, Mercredi, Jeudi, Vendredi];}\par
+{\f1     If Jour In Ouvrables Then ...}\par
+{\f1     Ouvrables := Ouvrables + [Samedi];     \{ union \}}\par
+{\f1     Ouvrables := Ouvrables - [Vendredi];   \{ difference \}}\par
+{\f1     Ouvrables := Ouvrables * [Lundi..Vendredi];  \{ intersection \}}\par
+\par
+\par
+\b 16.3 Comparaison \b0\par
+\par
+{\f1     A = B       egalite}\par
+{\f1     A <= B      inclusion (A est sous-ensemble de B)}\par
+{\f1     A >= B      A est sur-ensemble de B}\par
+{\f1     X In A      appartenance}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TP_15}     {\uldb Suivant >>}{\v IDH_TP_17}     {\uldb Sommaire}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TP_17}
+{\footnote $ Turbo Pascal - Fichiers}
+{\footnote K Turbo Pascal;Turbo Pascal;Fichiers}
+\b\fs24 Fichiers \b0\fs20\par
+\par
+\par
+\b 17.1 Types de fichiers \b0\par
+\par
+{\f1     Var}\par
+{\f1       F  : File;             \{ fichier non type (octets bruts) \}}\par
+{\f1       T  : Text;             \{ fichier texte ASCII \}}\par
+{\f1       FI : File Of Integer;  \{ fichier typee \}}\par
+\par
+\par
+\b 17.2 Operations communes \b0\par
+\par
+{\f1     Assign(F, 'data.txt');     associe nom physique au handle}\par
+{\f1     Reset(F);                  ouvre en lecture}\par
+{\f1     Rewrite(F);                ouvre en ecriture (cree/tronque)}\par
+{\f1     Append(T);                 ouvre Text en ajout}\par
+{\f1     Read(F, v); Write(F, v);   lecture / ecriture}\par
+{\f1     ReadLn(T, s); WriteLn(T, s);   pour les fichiers texte}\par
+{\f1     Close(F);                  ferme}\par
+{\f1     Eof(F)                     fin de fichier}\par
+{\f1     SeekEof(T)                 fin en sautant les espaces}\par
+{\f1     Rename(F, 'new.txt');      renomme}\par
+{\f1     Erase(F);                  efface}\par
+\par
+\par
+\b 17.3 Fichiers typees (acces aleatoire) \b0\par
+\par
+{\f1     Var FI : File Of Integer;}\par
+{\f1     Assign(FI, 'donnees.dat');}\par
+{\f1     Rewrite(FI);}\par
+{\f1     For I := 1 To 100 Do Write(FI, I * 10);}\par
+{\f1     Close(FI);}\par
+\par
+{\f1     Reset(FI);}\par
+{\f1     Seek(FI, 50);    \{ positionne sur le 51e enregistrement \}}\par
+{\f1     Read(FI, V);}\par
+{\f1     Close(FI);}\par
+\par
+\par
+\b 17.4 Fichiers non types \b0\par
+\par
+{\f1     Reset(F, 512);    \{ taille bloc 512 octets \}}\par
+{\f1     BlockRead(F, Buffer, NumBlocks, NumRead);}\par
+{\f1     BlockWrite(F, Buffer, NumBlocks, NumWritten);}\par
+\par
+\par
+\b 17.5 Verification des E/S \b0\par
+\par
+{\f1   Avec \{$I+\} (defaut), les erreurs declenchent une exception d execution.}\par
+{\f1   Avec \{$I-\}, on lit le code via IOResult :}\par
+\par
+{\f1     \{$I-\}}\par
+{\f1     Reset(F);}\par
+{\f1     \{$I+\}}\par
+{\f1     If IOResult <> 0 Then ...}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TP_16}     {\uldb Suivant >>}{\v IDH_TP_18}     {\uldb Sommaire}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TP_18}
+{\footnote $ Turbo Pascal - Unites (Units)}
+{\footnote K Turbo Pascal;Turbo Pascal;Unites (Units)}
+\b\fs24 Unites (Units) \b0\fs20\par
+\par
+{\f1   Les unites permettent la compilation separee, introduites en TP 4.0.}\par
+{\f1   Une unite est compilee en fichier .TPU et reutilisable.}\par
+\par
+\par
+\b 18.1 Structure d une unite \b0\par
+\par
+{\f1     Unit MaUnite;}\par
+\par
+{\f1     Interface}\par
+{\f1       \{ declarations visibles depuis l exterieur \}}\par
+{\f1       Const PI = 3.14159;}\par
+{\f1       Type TVecteur = Record X, Y : Real End;}\par
+{\f1       Procedure Salut(N : String);}\par
+{\f1       Function Carre(N : Integer) : LongInt;}\par
+\par
+{\f1     Implementation}\par
+{\f1       \{ code \}}\par
+{\f1       Procedure Salut(N : String);}\par
+{\f1       Begin}\par
+{\f1         WriteLn('Bonjour ', N);}\par
+{\f1       End;}\par
+{\f1       Function Carre(N : Integer) : LongInt;}\par
+{\f1       Begin}\par
+{\f1         Carre := LongInt(N) * N;}\par
+{\f1       End;}\par
+\par
+{\f1     Begin}\par
+{\f1       \{ code d initialisation (optionnel) \}}\par
+{\f1     End.}\par
+\par
+\par
+\b 18.2 Utilisation \b0\par
+\par
+{\f1     Program TestUnit;}\par
+{\f1     Uses MaUnite;}\par
+{\f1     Begin}\par
+{\f1       Salut('Alice');}\par
+{\f1       WriteLn(Carre(7));}\par
+{\f1     End.}\par
+\par
+\par
+\b 18.3 Unites standard de TP \b0\par
+\par
+{\f1     System    : automatiquement Used dans tout programme}\par
+{\f1     Crt       : ecran texte, clavier, son}\par
+{\f1     Dos       : appels DOS, environnement, dates}\par
+{\f1     Graph     : graphismes BGI (CGA, EGA, VGA)}\par
+{\f1     Printer   : sortie imprimante (Lst : Text)}\par
+{\f1     Strings   : manipulation de PChar}\par
+{\f1     Overlay   : gestion des overlays}\par
+{\f1     WinDos    : version Windows (TP for Windows)}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TP_17}     {\uldb Suivant >>}{\v IDH_TP_19}     {\uldb Sommaire}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TP_19}
+{\footnote $ Turbo Pascal - Objets (Pascal Objet, TP 5.5+)}
+{\footnote K Turbo Pascal;Turbo Pascal;Objets (Pascal Objet, TP 5.5+)}
+\b\fs24 Objets (Pascal Objet, TP 5.5+) \b0\fs20\par
+\par
+\par
+\b 19.1 Declaration d un objet \b0\par
+\par
+{\f1     Type}\par
+{\f1       TAnimal = Object}\par
+{\f1         Nom : String[20];}\par
+{\f1         Constructor Init(N : String);}\par
+{\f1         Procedure Parle; Virtual;}\par
+{\f1         Destructor Done; Virtual;}\par
+{\f1       End;}\par
+\par
+{\f1       TChien = Object(TAnimal)}\par
+{\f1         Procedure Parle; Virtual;}\par
+{\f1       End;}\par
+\par
+\par
+\b 19.2 Implementation \b0\par
+\par
+{\f1     Constructor TAnimal.Init(N : String);}\par
+{\f1     Begin}\par
+{\f1       Nom := N;}\par
+{\f1     End;}\par
+\par
+{\f1     Procedure TAnimal.Parle;}\par
+{\f1     Begin}\par
+{\f1       WriteLn(Nom, ' fait un bruit');}\par
+{\f1     End;}\par
+\par
+{\f1     Destructor TAnimal.Done;}\par
+{\f1     Begin}\par
+{\f1     End;}\par
+\par
+{\f1     Procedure TChien.Parle;}\par
+{\f1     Begin}\par
+{\f1       WriteLn(Nom, ' : Ouaf !');}\par
+{\f1     End;}\par
+\par
+\par
+\b 19.3 Utilisation \b0\par
+\par
+{\f1     Var}\par
+{\f1       A : TAnimal;}\par
+{\f1       C : TChien;}\par
+\par
+{\f1     Begin}\par
+{\f1       A.Init('Beta');}\par
+{\f1       A.Parle;          \{ Beta fait un bruit \}}\par
+{\f1       C.Init('Rex');}\par
+{\f1       C.Parle;          \{ Rex : Ouaf ! \}}\par
+{\f1       A.Done; C.Done;}\par
+{\f1     End.}\par
+\par
+\par
+\b 19.4 Pointeurs sur objets \b0\par
+\par
+{\f1     Type PAnimal = ^TAnimal;}\par
+\par
+{\f1     Var P : PAnimal;}\par
+{\f1     New(P, Init('Polly'));}\par
+{\f1     P^.Parle;}\par
+{\f1     Dispose(P, Done);}\par
+\par
+\par
+\b 19.5 Methodes virtuelles \b0\par
+\par
+{\f1   Marquees Virtual, elles utilisent une VMT (Virtual Method Table)}\par
+{\f1   pour le polymorphisme dynamique. Un objet doit avoir au moins un}\par
+{\f1   constructeur pour initialiser sa VMT.}\par
+\par
+\par
+\b 19.6 Heritage \b0\par
+\par
+{\f1   Heritage simple (un seul ancetre). Mot-cle Inherited pour appeler}\par
+{\f1   la methode de l ancetre :}\par
+\par
+{\f1     Procedure TChien.Parle;}\par
+{\f1     Begin}\par
+{\f1       Inherited Parle;}\par
+{\f1       WriteLn(Nom, ' : Ouaf !');}\par
+{\f1     End;}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TP_18}     {\uldb Suivant >>}{\v IDH_TP_20}     {\uldb Sommaire}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TP_20}
+{\footnote $ Turbo Pascal - Directives de compilation}
+{\footnote K Turbo Pascal;Turbo Pascal;Directives de compilation}
+\b\fs24 Directives de compilation \b0\fs20\par
+\par
+{\f1   Les directives sont des commentaires speciaux $... :}\par
+\par
+{\f1     \{$R+\}    verifie les bornes (Range checking)}\par
+{\f1     \{$R-\}    desactive (par defaut)}\par
+{\f1     \{$I+\}    verifie les E/S (par defaut)}\par
+{\f1     \{$I-\}    laisse IOResult}\par
+{\f1     \{$Q+\}    verifie le depassement entier (Overflow)}\par
+{\f1     \{$Q-\}    desactive (defaut)}\par
+{\f1     \{$S+\}    verifie la pile (Stack checking)}\par
+{\f1     \{$S-\}    desactive}\par
+{\f1     \{$N+\}    utilise le coprocesseur 8087/80387 pour les reels}\par
+{\f1     \{$E+\}    emule le 8087 logiciellement}\par
+{\f1     \{$B+\}    evalue completement les expressions booleennes}\par
+{\f1     \{$B-\}    court-circuit (defaut)}\par
+{\f1     \{$F+\}    procedures Far par defaut}\par
+{\f1     \{$X+\}    syntaxe etendue (resultat de fonction ignorable)}\par
+{\f1     \{$V+\}    verification stricte des Var-parametres String}\par
+{\f1     \{$M ss,hp,hpmax\}  taille pile, tas min, tas max}\par
+{\f1     \{$I fichier\}  inclusion d un fichier}\par
+{\f1     \{$DEFINE sym\} \{$UNDEF sym\}}\par
+{\f1     \{$IFDEF sym\} \{$ELSE\} \{$ENDIF\}}\par
+{\f1     \{$IFNDEF sym\} \{$ENDIF\}}\par
+{\f1     \{$L file.obj\}  lie un fichier OBJ}\par
+{\f1     \{$O+\}    overlays autorises}\par
+{\f1     \{$A+\}    aligne les variables sur des mots}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TP_19}     {\uldb Suivant >>}{\v IDH_TP_21}     {\uldb Sommaire}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TP_21}
+{\footnote $ Turbo Pascal - Code assembleur inline (asm)}
+{\footnote K Turbo Pascal;Turbo Pascal;Code assembleur inline (asm)}
+\b\fs24 Code assembleur inline (asm) \b0\fs20\par
+\par
+{\f1   Turbo Pascal 6.0+ permet d ecrire de l assembleur 8086 inline :}\par
+\par
+{\f1     Procedure PutPix(X, Y : Integer; C : Byte); Assembler;}\par
+{\f1     Asm}\par
+{\f1       Mov   AX, 0A000h}\par
+{\f1       Mov   ES, AX}\par
+{\f1       Mov   AX, Y}\par
+{\f1       Mov   BX, 320}\par
+{\f1       Mul   BX}\par
+{\f1       Add   AX, X}\par
+{\f1       Mov   DI, AX}\par
+{\f1       Mov   AL, C}\par
+{\f1       Mov   ES:[DI], AL}\par
+{\f1     End;}\par
+\par
+{\f1   Caracteristiques :}\par
+\par
+{\f1     - Les noms de variables Pascal sont accessibles.}\par
+{\f1     - On peut utiliser les directives Assembler (TP 6) ou simplement}\par
+{\f1       Asm ... End; (TP 7).}\par
+{\f1     - Tous les registres 8086/80186/80286/80386/80486 sont supportes.}\par
+{\f1     - Les instructions sont assemblees au format MASM.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TP_20}     {\uldb Suivant >>}{\v IDH_TP_22}     {\uldb Sommaire}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TP_22}
+{\footnote $ Turbo Pascal - Bibliotheque standard}
+{\footnote K Turbo Pascal;Turbo Pascal;Bibliotheque standard}
+\b\fs24 Bibliotheque standard \b0\fs20\par
+\par
+{\f1   Fonctions integrees (toujours disponibles sans Uses) :}\par
+\par
+{\f1   Arithmetiques :}\par
+{\f1     Abs, Sqr, Sqrt, Exp, Ln, Pi, Sin, Cos, ArcTan, Round, Trunc,}\par
+{\f1     Frac, Int, Random, Randomize}\par
+\par
+{\f1   Ordinaux :}\par
+{\f1     Inc, Dec, Pred, Succ, Ord, Chr, Odd, High, Low}\par
+\par
+{\f1   Chaines :}\par
+{\f1     Length, Concat, Copy, Pos, Delete, Insert, UpCase, Str, Val}\par
+\par
+{\f1   Pointeurs et memoire :}\par
+{\f1     New, Dispose, GetMem, FreeMem, Mark, Release, SizeOf, Addr, Ptr,}\par
+{\f1     Seg, Ofs, Move, FillChar}\par
+\par
+{\f1   E/S :}\par
+{\f1     Write, WriteLn, Read, ReadLn, Eof, Eoln, Assign, Reset, Rewrite,}\par
+{\f1     Append, Close, IOResult, Seek, FilePos, FileSize, Rename, Erase,}\par
+{\f1     BlockRead, BlockWrite}\par
+\par
+{\f1   Programme :}\par
+{\f1     Exit, Halt, RunError, ParamCount, ParamStr, ExitCode, ExitProc}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TP_21}     {\uldb Suivant >>}{\v IDH_TP_23}     {\uldb Sommaire}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TP_23}
+{\footnote $ Turbo Pascal - Unite System}
+{\footnote K Turbo Pascal;Turbo Pascal;Unite System}
+\b\fs24 Unite System \b0\fs20\par
+\par
+{\f1   L unite System est automatiquement utilisee dans tout programme TP.}\par
+{\f1   Elle declare les types de base et la plupart des routines integrees.}\par
+\par
+{\f1   Variables predefinies :}\par
+\par
+{\f1     Input       : Text       \{ stdin \}}\par
+{\f1     Output      : Text       \{ stdout \}}\par
+{\f1     ErrOutput   : Text       \{ stderr - TP 7 \}}\par
+{\f1     StackLimit  : Integer}\par
+{\f1     HeapPtr     : Pointer    \{ sommet du tas \}}\par
+{\f1     FreePtr     : Pointer    \{ liste libre \}}\par
+{\f1     HeapOrg     : Pointer}\par
+{\f1     HeapEnd     : Pointer}\par
+{\f1     HeapError   : Function   \{ gestionnaire d erreur d allocation \}}\par
+{\f1     ExitProc    : Pointer    \{ procedure de sortie \}}\par
+{\f1     ExitCode    : Integer}\par
+{\f1     ErrorAddr   : Pointer}\par
+{\f1     PrefixSeg   : Word       \{ segment PSP \}}\par
+{\f1     OvrCodeList : Word}\par
+{\f1     OvrHeapSize : Word}\par
+{\f1     Test8087    : Byte}\par
+\par
+{\f1   Voir DOC/TURBOPASCAL_SYSTEM.txt pour le detail.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TP_22}     {\uldb Suivant >>}{\v IDH_TP_24}     {\uldb Sommaire}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TP_24}
+{\footnote $ Turbo Pascal - Unite Crt}
+{\footnote K Turbo Pascal;Turbo Pascal;Unite Crt}
+\b\fs24 Unite Crt \b0\fs20\par
+\par
+{\f1   Operations sur l ecran texte et le clavier :}\par
+\par
+{\f1     ClrScr;             efface l ecran}\par
+{\f1     GotoXY(x, y);       positionne le curseur (1-based)}\par
+{\f1     WhereX, WhereY;     position courante}\par
+{\f1     TextColor(c);       couleur du texte}\par
+{\f1     TextBackground(c);  couleur de fond}\par
+{\f1     HighVideo, LowVideo, NormVideo}\par
+{\f1     Window(x1,y1,x2,y2);  definit une fenetre virtuelle}\par
+{\f1     KeyPressed;         True si touche dispo}\par
+{\f1     ReadKey;            lit un caractere sans Enter}\par
+{\f1     Delay(ms);          attend ms millisecondes}\par
+{\f1     Sound(hz); NoSound;  son par le speaker PC}\par
+{\f1     DelLine, InsLine;}\par
+{\f1     TextMode(m);        change le mode video}\par
+{\f1     AssignCrt(F);       associe un Text a l ecran}\par
+\par
+{\f1   Constantes de couleur (0..15) : Black, Blue, Green, Cyan, Red,}\par
+{\f1   Magenta, Brown, LightGray, DarkGray, LightBlue, LightGreen,}\par
+{\f1   LightCyan, LightRed, LightMagenta, Yellow, White.}\par
+\par
+{\f1   Voir DOC/TURBOPASCAL_CRT.txt.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TP_23}     {\uldb Suivant >>}{\v IDH_TP_25}     {\uldb Sommaire}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TP_25}
+{\footnote $ Turbo Pascal - Unite Dos}
+{\footnote K Turbo Pascal;Turbo Pascal;Unite Dos}
+\b\fs24 Unite Dos \b0\fs20\par
+\par
+{\f1   Acces aux fonctionnalites du systeme DOS :}\par
+\par
+{\f1     GetTime(h, m, s, hs);   heure courante}\par
+{\f1     SetTime(h, m, s, hs);   regle l heure}\par
+{\f1     GetDate(y, m, d, dow);  date courante}\par
+{\f1     SetDate(y, m, d);       regle la date}\par
+{\f1     GetFAttr(F, attr);      attributs fichier}\par
+{\f1     SetFAttr(F, attr);}\par
+{\f1     GetFTime(F, time);}\par
+{\f1     SetFTime(F, time);}\par
+{\f1     PackTime, UnpackTime;}\par
+{\f1     FindFirst(path, attr, s);  recherche fichier}\par
+{\f1     FindNext(s);}\par
+{\f1     Intr(int, regs);        appel d interruption}\par
+{\f1     MsDos(regs);            appel INT 21h}\par
+{\f1     GetIntVec(n, p);}\par
+{\f1     SetIntVec(n, p);}\par
+{\f1     Exec(prog, args);       execute un sous-programme}\par
+{\f1     GetEnv(name);           variable d environnement}\par
+{\f1     EnvCount, EnvStr;}\par
+{\f1     SwapVectors;            pour Exec}\par
+\par
+{\f1   Voir DOC/TURBOPASCAL_DOS.txt.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TP_24}     {\uldb Suivant >>}{\v IDH_TP_26}     {\uldb Sommaire}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TP_26}
+{\footnote $ Turbo Pascal - Unite Graph}
+{\footnote K Turbo Pascal;Turbo Pascal;Unite Graph}
+\b\fs24 Unite Graph \b0\fs20\par
+\par
+{\f1   Bibliotheque BGI (Borland Graphics Interface) pour les modes}\par
+{\f1   graphiques CGA, EGA, VGA, Hercules :}\par
+\par
+{\f1     InitGraph(drv, mode, path);   initialise le mode graphique}\par
+{\f1     CloseGraph;}\par
+{\f1     GetMaxX, GetMaxY;}\par
+{\f1     PutPixel(x, y, c);}\par
+{\f1     GetPixel(x, y);}\par
+{\f1     Line(x1, y1, x2, y2);}\par
+{\f1     Circle(x, y, r);}\par
+{\f1     Rectangle(x1, y1, x2, y2);}\par
+{\f1     Bar, Bar3D;}\par
+{\f1     Ellipse, Arc;}\par
+{\f1     FloodFill(x, y, border);}\par
+{\f1     SetColor(c); SetBkColor(c);}\par
+{\f1     SetFillStyle(p, c);}\par
+{\f1     SetLineStyle(s, p, w);}\par
+{\f1     OutText(s); OutTextXY(x, y, s);}\par
+{\f1     SetTextStyle(font, dir, size);}\par
+{\f1     GetImage, PutImage;}\par
+{\f1     DetectGraph(drv, mode);}\par
+\par
+{\f1   Voir DOC/TURBOPASCAL_GRAPH.txt pour Graph TP 5+ et}\par
+{\f1   DOC/TURBOPASCAL_GRAPH3.txt pour Graph3 (TP 3 simplifie).}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TP_25}     {\uldb Suivant >>}{\v IDH_TP_27}     {\uldb Sommaire}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TP_27}
+{\footnote $ Turbo Pascal - Unite Overlay}
+{\footnote K Turbo Pascal;Turbo Pascal;Unite Overlay}
+\b\fs24 Unite Overlay \b0\fs20\par
+\par
+{\f1   Permet de decouper un programme en modules charges a la demande,}\par
+{\f1   pour depasser la limite des 640 ko de DOS :}\par
+\par
+{\f1     OvrInit(file);          initialise le gestionnaire}\par
+{\f1     OvrInitEMS;             utilise EMS si disponible}\par
+{\f1     OvrSetBuf(size);        taille du tampon}\par
+{\f1     OvrGetBuf;}\par
+{\f1     OvrSetRetry, OvrGetRetry;}\par
+{\f1     OvrLoadList, OvrFileMode;}\par
+\par
+{\f1   Unites en overlay : compilees avec \{$O+\}, utilisation par \{$O unit\}.}\par
+{\f1   Voir DOC/TURBOPASCAL_OVERLAY.txt.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TP_26}     {\uldb Suivant >>}{\v IDH_TP_28}     {\uldb Sommaire}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TP_28}
+{\footnote $ Turbo Pascal - Memoire et modeles}
+{\footnote K Turbo Pascal;Turbo Pascal;Memoire et modeles}
+\b\fs24 Memoire et modeles \b0\fs20\par
+\par
+\par
+\b 28.1 Modele memoire DOS \b0\par
+\par
+{\f1   Turbo Pascal cible le mode reel 8086 avec un seul modele :}\par
+\par
+{\f1     - 1 segment de code (CS, 64 ko max par unite)}\par
+{\f1     - 1 segment de donnees (DS, 64 ko)}\par
+{\f1     - 1 segment de pile (SS, taille fixee par $M)}\par
+{\f1     - Tas (heap) entre la fin de DS et la fin de la memoire}\par
+\par
+{\f1   Les pointeurs sont Far par defaut (4 octets) sauf optimisation.}\par
+\par
+\par
+\b 28.2 Pointeurs Near et Far \b0\par
+\par
+{\f1     Type}\par
+{\f1       PNear = ^Integer;       \{ 2 octets, segment courant \}}\par
+{\f1       PFar  = ^Integer;       \{ 4 octets, seg:off \}}\par
+\par
+{\f1   TP genere du code Far pour les unites par defaut.}\par
+\par
+\par
+\b 28.3 Tas (Heap) \b0\par
+\par
+{\f1     HeapOrg    debut du tas}\par
+{\f1     HeapPtr    sommet courant}\par
+{\f1     HeapEnd    fin reservee}\par
+{\f1     FreePtr    liste libre (libere par Dispose)}\par
+\par
+{\f1   Allocation par New, GetMem, liberation par Dispose, FreeMem.}\par
+\par
+{\f1   Mark / Release : marqueur historique du sommet, pour liberer en}\par
+{\f1   bloc (deconseille avec FreePtr).}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TP_27}     {\uldb Suivant >>}{\v IDH_TP_29}     {\uldb Sommaire}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TP_29}
+{\footnote $ Turbo Pascal - Gestion des interruptions}
+{\footnote K Turbo Pascal;Turbo Pascal;Gestion des interruptions}
+\b\fs24 Gestion des interruptions \b0\fs20\par
+\par
+\par
+\b 29.1 Procedure d interruption \b0\par
+\par
+{\f1     Procedure GestionnaireTimer; Interrupt;}\par
+{\f1     Begin}\par
+{\f1       Inc(Compteur);}\par
+{\f1     End;}\par
+\par
+{\f1   Le mot-cle Interrupt empile correctement les registres a l entree}\par
+{\f1   et IRET a la sortie.}\par
+\par
+\par
+\b 29.2 Installation \b0\par
+\par
+{\f1     Var Ancien : Procedure;}\par
+\par
+{\f1     Begin}\par
+{\f1       GetIntVec($1C, @Ancien);}\par
+{\f1       SetIntVec($1C, Addr(GestionnaireTimer));}\par
+{\f1       ...}\par
+{\f1       \{ restaurer avant Halt \}}\par
+{\f1       SetIntVec($1C, @Ancien);}\par
+{\f1     End.}\par
+\par
+\par
+\b 29.3 INT 21h appel direct \b0\par
+\par
+{\f1     Var R : Registers;}\par
+{\f1     R.AH := $02;}\par
+{\f1     R.DL := Ord('A');}\par
+{\f1     Intr($21, R);}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TP_28}     {\uldb Suivant >>}{\v IDH_TP_30}     {\uldb Sommaire}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TP_30}
+{\footnote $ Turbo Pascal - Compatibilite Free Pascal mode -Mtp}
+{\footnote K Turbo Pascal;Turbo Pascal;Compatibilite Free Pascal mode -Mtp}
+\b\fs24 Compatibilite Free Pascal mode -Mtp \b0\fs20\par
+\par
+{\f1   Free Pascal (FPC) propose un mode de compatibilite Turbo Pascal}\par
+{\f1   active par l option -Mtp ou la directive \{$MODE TP\}.}\par
+\par
+{\f1   Particularites du mode -Mtp :}\par
+\par
+{\f1     - Integer reste 16 bits (comme en TP).}\par
+{\f1     - String par defaut = String[255].}\par
+{\f1     - Pas de tableaux dynamiques ni d Ansistring (sauf via TP unit).}\par
+{\f1     - Constantes hex $9000..$FFFF sont des Integer signes -> negatives.}\par
+{\f1     - Procedure Inherited fonctionne comme TP.}\par
+{\f1     - Objects (Object) supportes (en plus de class).}\par
+{\f1     - Unites .tpu remplacees par .ppu (incompatibilite binaire).}\par
+{\f1     - Code 32 bits (DPMI / Win32 / Linux 32 / Linux 64), pas reel 16}\par
+{\f1       bits.}\par
+\par
+{\f1   Pieges connus avec -Mtp :}\par
+\par
+{\f1     - Constantes hex et comparaisons LongInt :}\par
+{\f1         If LongVar > $9000 Then ...  \{ faux : $9000 = -28672 \}}\par
+{\f1       Solution : utiliser decimal ou LongInt($9000) avec precaution.}\par
+\par
+{\f1     - Multiplication tronquee a 16 bits si la variable cible est}\par
+{\f1       Integer :}\par
+{\f1         Disp : Integer;}\par
+{\f1         Disp := LongInt(A) * B;     \{ tronque ! \}}\par
+\par
+{\f1     - Records non packed alignent Pointer sur 4 octets.}\par
+\par
+{\f1     - Function dans une condition = appel recursif :}\par
+{\f1         If MaFonc Then ...    \{ invoque MaFonc recursivement \}}\par
+{\f1       Solution : utiliser une variable locale ou Result.}\par
+\par
+{\f1   Voir le fichier user memory fpc-mtp-pitfalls.md pour les details.}\par
+\par
+\par
+\b 30.1 Compilation \b0\par
+\par
+{\f1     fpc -Mtp programme.pas}\par
+\par
+{\f1   Ou avec directive en tete de fichier :}\par
+\par
+{\f1     \{$MODE TP\}}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TP_29}     {\uldb Suivant >>}{\v IDH_TP_31}     {\uldb Sommaire}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TP_31}
+{\footnote $ Turbo Pascal - Exemples complets}
+{\footnote K Turbo Pascal;Turbo Pascal;Exemples complets}
+\b\fs24 Exemples complets \b0\fs20\par
+\par
+\par
+\b 31.1 Hello World \b0\par
+\par
+{\f1     Program Hello;}\par
+{\f1     Begin}\par
+{\f1       WriteLn('Hello, World!');}\par
+{\f1     End.}\par
+\par
+\par
+\b 31.2 Factorielle recursive \b0\par
+\par
+{\f1     Program Factorielle;}\par
+{\f1     Function Fact(N : Integer) : LongInt;}\par
+{\f1     Begin}\par
+{\f1       If N <= 1 Then Fact := 1}\par
+{\f1       Else Fact := N * Fact(N - 1);}\par
+{\f1     End;}\par
+\par
+{\f1     Var I : Integer;}\par
+{\f1     Begin}\par
+{\f1       For I := 1 To 10 Do}\par
+{\f1         WriteLn(I:2, '! = ', Fact(I));}\par
+{\f1     End.}\par
+\par
+\par
+\b 31.3 Tri a bulles \b0\par
+\par
+{\f1     Program TriBulles;}\par
+{\f1     Const N = 10;}\par
+{\f1     Var T : Array[1..N] Of Integer;}\par
+{\f1         I, J, Tmp : Integer;}\par
+{\f1     Begin}\par
+{\f1       For I := 1 To N Do T[I] := Random(100);}\par
+{\f1       For I := 1 To N - 1 Do}\par
+{\f1         For J := 1 To N - I Do}\par
+{\f1           If T[J] > T[J + 1] Then Begin}\par
+{\f1             Tmp      := T[J];}\par
+{\f1             T[J]     := T[J + 1];}\par
+{\f1             T[J + 1] := Tmp;}\par
+{\f1           End;}\par
+{\f1       For I := 1 To N Do Write(T[I]:4);}\par
+{\f1       WriteLn;}\par
+{\f1     End.}\par
+\par
+\par
+\b 31.4 Lecture / ecriture de fichier texte \b0\par
+\par
+{\f1     Program FicTxt;}\par
+{\f1     Var F : Text;}\par
+{\f1         S : String;}\par
+{\f1     Begin}\par
+{\f1       Assign(F, 'data.txt');}\par
+{\f1       Rewrite(F);}\par
+{\f1       WriteLn(F, 'Ligne 1');}\par
+{\f1       WriteLn(F, 'Ligne 2');}\par
+{\f1       Close(F);}\par
+\par
+{\f1       Assign(F, 'data.txt');}\par
+{\f1       Reset(F);}\par
+{\f1       While Not Eof(F) Do Begin}\par
+{\f1         ReadLn(F, S);}\par
+{\f1         WriteLn(S);}\par
+{\f1       End;}\par
+{\f1       Close(F);}\par
+{\f1     End.}\par
+\par
+\par
+\b 31.5 Unite simple \b0\par
+\par
+{\f1     Unit Math;}\par
+{\f1     Interface}\par
+{\f1       Function Carre(N : Integer) : LongInt;}\par
+{\f1       Function Cube(N : Integer) : LongInt;}\par
+{\f1     Implementation}\par
+{\f1       Function Carre(N : Integer) : LongInt;}\par
+{\f1       Begin}\par
+{\f1         Carre := LongInt(N) * N;}\par
+{\f1       End;}\par
+{\f1       Function Cube(N : Integer) : LongInt;}\par
+{\f1       Begin}\par
+{\f1         Cube := Carre(N) * N;}\par
+{\f1       End;}\par
+{\f1     End.}\par
+\par
+{\f1     Program TestMath;}\par
+{\f1     Uses Math;}\par
+{\f1     Begin}\par
+{\f1       WriteLn(Carre(7));     \{ 49 \}}\par
+{\f1       WriteLn(Cube(5));      \{ 125 \}}\par
+{\f1     End.}\par
+\par
+\par
+\b 31.6 Objet et heritage \b0\par
+\par
+{\f1     Program TestObj;}\par
+{\f1     Type}\par
+{\f1       TForme = Object}\par
+{\f1         Constructor Init;}\par
+{\f1         Procedure Dessine; Virtual;}\par
+{\f1         Function Aire : Real; Virtual;}\par
+{\f1         Destructor Done; Virtual;}\par
+{\f1       End;}\par
+\par
+{\f1       TCercle = Object(TForme)}\par
+{\f1         R : Real;}\par
+{\f1         Constructor Init(R0 : Real);}\par
+{\f1         Procedure Dessine; Virtual;}\par
+{\f1         Function Aire : Real; Virtual;}\par
+{\f1       End;}\par
+\par
+{\f1     Constructor TForme.Init;}\par
+{\f1     Begin}\par
+{\f1     End;}\par
+\par
+{\f1     Procedure TForme.Dessine;}\par
+{\f1     Begin}\par
+{\f1       WriteLn('forme generique');}\par
+{\f1     End;}\par
+\par
+{\f1     Function TForme.Aire : Real;}\par
+{\f1     Begin}\par
+{\f1       Aire := 0;}\par
+{\f1     End;}\par
+\par
+{\f1     Destructor TForme.Done;}\par
+{\f1     Begin}\par
+{\f1     End;}\par
+\par
+{\f1     Constructor TCercle.Init(R0 : Real);}\par
+{\f1     Begin}\par
+{\f1       Inherited Init;}\par
+{\f1       R := R0;}\par
+{\f1     End;}\par
+\par
+{\f1     Procedure TCercle.Dessine;}\par
+{\f1     Begin}\par
+{\f1       WriteLn('cercle de rayon ', R:0:2);}\par
+{\f1     End;}\par
+\par
+{\f1     Function TCercle.Aire : Real;}\par
+{\f1     Begin}\par
+{\f1       Aire := Pi * R * R;}\par
+{\f1     End;}\par
+\par
+{\f1     Var F : TForme;}\par
+{\f1         C : TCercle;}\par
+{\f1     Begin}\par
+{\f1       F.Init;  F.Dessine;}\par
+{\f1       C.Init(2.5); C.Dessine;}\par
+{\f1       WriteLn('aire : ', C.Aire:0:2);}\par
+{\f1       F.Done; C.Done;}\par
+{\f1     End.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TP_30}     {\uldb Suivant >>}{\v IDH_TP_32}     {\uldb Sommaire}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TP_32}
+{\footnote $ Turbo Pascal - Differences avec Standard Pascal (ISO 7185)}
+{\footnote K Turbo Pascal;Turbo Pascal;Differences avec Standard Pascal (ISO 7185)}
+\b\fs24 Differences avec Standard Pascal (ISO 7185) \b0\fs20\par
+\par
+{\f1     Aspect              Standard Pascal    Turbo Pascal}\par
+{\f1     -----------------   ----------------   --------------------------}\par
+{\f1     Casse               insensible         insensible}\par
+{\f1     Strings             tableau de char    type String dedie [n]}\par
+{\f1     Chaines litterales  packed array       String automatique}\par
+{\f1     Modulo entier       mod                mod (+ div)}\par
+{\f1     Hexadecimal         non                $1A (TP)}\par
+{\f1     Pointeurs           ^T                 ^T (+ Pointer, Far/Near)}\par
+{\f1     Set                 limite             Set Of Byte ou Char etc.}\par
+{\f1     Unites              non                Unit / Interface / Implementation}\par
+{\f1     Assembleur inline   non                Asm ... End;}\par
+{\f1     Includes            non                \{$I file\}}\par
+{\f1     Conditionnel        non                \{$IFDEF ...\}}\par
+{\f1     Operateurs bit      non                and/or/xor sur entiers}\par
+{\f1     Objets              non                Object (TP 5.5+)}\par
+{\f1     Procedures imbriquees  oui             oui}\par
+{\f1     Sections multiples  non                oui (const/type/var n importe ou)}\par
+{\f1     Forward             oui                oui}\par
+{\f1     Tableaux ouverts    non                oui (TP 7+)}\par
+{\f1     Result              non                oui (FPC -Mtp)}\par
+{\f1     Halt/Exit/Break     non                oui}\par
+{\f1     Goto                limite              illimite}\par
+{\f1     IOResult            non                oui (avec \{$I-\})}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TP_31}     {\uldb Suivant >>}{\v IDH_TP_33}     {\uldb Sommaire}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TP_33}
+{\footnote $ Turbo Pascal - Ressources dans le projet}
+{\footnote K Turbo Pascal;Turbo Pascal;Ressources dans le projet}
+\b\fs24 Ressources dans le projet \b0\fs20\par
+\par
+{\f1   Documentation thematique du projet DEV-COOLS :}\par
+\par
+{\f1     DOC/TURBOPASCAL_SPEC_LANG.txt   le present document (vue d ensemble)}\par
+{\f1     DOC/TURBOPASCAL_SYSTEM.txt      unite System}\par
+{\f1     DOC/TURBOPASCAL_CRT.txt         unite Crt}\par
+{\f1     DOC/TURBOPASCAL_DOS.txt         unite Dos}\par
+{\f1     DOC/TURBOPASCAL_GRAPH.txt       unite Graph (BGI)}\par
+{\f1     DOC/TURBOPASCAL_GRAPH3.txt      Graph3 (TP 3)}\par
+{\f1     DOC/TURBOPASCAL_OVERLAY.txt     unite Overlay}\par
+{\f1     DOC/TURBOPASCAL_OBJECTS.txt     programmation objet}\par
+{\f1     DOC/TURBOPASCAL_PRINTER.txt     unite Printer}\par
+{\f1     DOC/TURBOPASCAL_STRING.txt      type String}\par
+{\f1     DOC/TURBOPASCAL_STRINGS.txt     unite Strings (PChar)}\par
+{\f1     DOC/TURBOPASCAL_MEMORY.txt      gestion memoire}\par
+{\f1     DOC/TURBOPASCAL_WINDOS.txt      unite WinDos (TP for Windows)}\par
+{\f1     DOC/TURBOPASCAL_TURBO3.txt      compatibilite TP3}\par
+\par
+{\f1   Compilateurs et outils dans le projet :}\par
+\par
+{\f1     DEVENV.PAS               IDE et emulateur DOS pour TP}\par
+{\f1     PSP86.PAS, PSPCW32.PAS   compilateurs PSP}\par
+{\f1     PAS2*.PAS                convertisseurs Pascal vers autres langages}\par
+{\f1     *.PAS                    plus de 300 outils ecrits en Pascal}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TP_32}     {\uldb Suivant >>}{\v IDH_TP_34}     {\uldb Sommaire}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TP_34}
+{\footnote $ Turbo Pascal - Bibliographie}
+{\footnote K Turbo Pascal;Turbo Pascal;Bibliographie}
+\b\fs24 Bibliographie \b0\fs20\par
+\par
+{\f1   Manuels Borland :}\par
+\par
+{\f1     - Borland International, "Turbo Pascal 7.0 User s Guide", 1992.}\par
+{\f1     - Borland International, "Turbo Pascal 7.0 Language Guide", 1992.}\par
+{\f1     - Borland International, "Turbo Pascal 7.0 Programmer s Reference",}\par
+{\f1       1992.}\par
+{\f1     - Borland International, "Turbo Pascal 7.0 Programming Guide",}\par
+{\f1       1992.}\par
+\par
+{\f1   Ouvrages classiques :}\par
+\par
+{\f1     - O Brien, Stephen K., "Turbo Pascal 7 : The Complete Reference",}\par
+{\f1       McGraw-Hill, 1993. ISBN 0-07-881946-2.}\par
+\par
+{\f1     - Swan, Tom, "Mastering Turbo Pascal 6", Howard Sams, 1991.}\par
+\par
+{\f1     - Schildt, Herbert, "Advanced Turbo Pascal", McGraw-Hill, 1989.}\par
+\par
+{\f1     - Jensen, Kathleen et Wirth, Niklaus, "Pascal User Manual and}\par
+{\f1       Report", Springer-Verlag, 1974 (Pascal de reference).}\par
+\par
+{\f1     - Wirth, Niklaus, "Algorithms + Data Structures = Programs",}\par
+{\f1       Prentice-Hall, 1976.}\par
+\par
+{\f1   Sur Free Pascal (mode -Mtp) :}\par
+\par
+{\f1     - Free Pascal Team, "Free Pascal Reference Guide", 2024.}\par
+{\f1     - Free Pascal Team, "Free Pascal Programmer s Guide", 2024.}\par
+\par
+{\f1   Standards :}\par
+\par
+{\f1     - ISO 7185 : Pascal standard (1990).}\par
+{\f1     - ISO 10206 : Extended Pascal (1991).}\par
+\par
+{\f1   Ressources en ligne :}\par
+\par
+{\f1     - https://www.freepascal.org/}\par
+{\f1     - https://wiki.freepascal.org/Turbo_Pascal}\par
+{\f1     - https://en.wikipedia.org/wiki/Turbo_Pascal}\par
+\par
+{\f1   Fin du document TURBOPASCAL_SPEC_LANG.txt}\par
+
+\par
+{\uldb << Precedent}{\v IDH_TP_33}     {\uldb Sommaire}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+}

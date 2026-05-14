@@ -1,0 +1,465 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}
+
+{\footnote # IDH_TPT3_01}
+{\footnote $ Compatibilite TP3 - D??PENDANCE}
+{\footnote K Turbo Pascal;Compatibilite TP3;D??PENDANCE}
+\b\fs24 D??PENDANCE \b0\fs20\par
+\par
+{\f1   L'unit?? Turbo3 utilise l'unit?? Crt dans sa clause Uses :}\par
+\par
+{\f1     Uses Crt;}\par
+\par
+{\f1   Cela signifie que l'inclusion de Turbo3 entra??ne automatiquement}\par
+{\f1   l'inclusion de Crt. Les routines CRT (ClrScr, GotoXY, ReadKey,}\par
+{\f1   etc.) sont donc disponibles sans ajouter Crt explicitement.}\par
+\par
+\par
+\b Sections suivantes : \b0\par
+\par
+{\f1  2. VARIABLES}     {\uldb [Aller]}{\v IDH_TPT3_02}\par
+{\f1  3. CLAVIER (AssignKbd)}     {\uldb [Aller]}{\v IDH_TPT3_03}\par
+{\f1  4. M??MOIRE (MemAvail, MaxAvail)}     {\uldb [Aller]}{\v IDH_TPT3_04}\par
+{\f1  5. OP??RATIONS SUR FICHIERS VOLUMINEUX}     {\uldb [Aller]}{\v IDH_TPT3_05}\par
+{\f1  6. ATTRIBUTS VID??O}     {\uldb [Aller]}{\v IDH_TPT3_06}\par
+{\f1  7. R??SULTAT D'E/S (IOresult)}     {\uldb [Aller]}{\v IDH_TPT3_07}\par
+{\f1  8. MIGRATION DE TURBO PASCAL 3.0 VERS 7.0}     {\uldb [Aller]}{\v IDH_TPT3_08}\par
+{\f1  9. EXEMPLES}     {\uldb [Aller]}{\v IDH_TPT3_09}\par
+{\f1 10. R??CAPITULATIF DE L'INTERFACE}     {\uldb [Aller]}{\v IDH_TPT3_10}\par
+{\f1 11. R??SUM?? PAR CAT??GORIE}     {\uldb [Aller]}{\v IDH_TPT3_11}\par
+\par
+{\uldb Suivant >>}{\v IDH_TPT3_02}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPT3_02}
+{\footnote $ Compatibilite TP3 - VARIABLES}
+{\footnote K Turbo Pascal;Compatibilite TP3;VARIABLES}
+\b\fs24 VARIABLES \b0\fs20\par
+\par
+{\f1   Kbd : Text;}\par
+{\f1   Variable fichier texte pr??-assign??e au clavier, similaire ?? la}\par
+{\f1   variable Kbd de Turbo Pascal 3.0.}\par
+\par
+{\f1   En Turbo Pascal 3.0, la lecture depuis Kbd permettait de lire}\par
+{\f1   les caract??res du clavier sans ??cho ?? l'??cran. Cette variable}\par
+{\f1   reproduit ce comportement.}\par
+\par
+{\f1   Utilisation typique (compatibilit?? TP3) :}\par
+{\f1     Read(Kbd, Ch);   \{ lire un caract??re sans ??cho \}}\par
+\par
+{\f1   Dans le code moderne, pr??f??rer ReadKey de l'unit?? Crt.}\par
+\par
+{\f1   CBreak : Boolean absolute CheckBreak;}\par
+{\f1   Alias de la variable CheckBreak de l'unit?? Crt. En Turbo Pascal}\par
+{\f1   3.0, la variable s'appelait CBreak. Cette d??claration ?? absolute ??}\par
+{\f1   fait que CBreak et CheckBreak partagent exactement le m??me}\par
+{\f1   emplacement m??moire.}\par
+\par
+{\f1   CBreak = True  ??? le programme peut ??tre interrompu par Ctrl-Break}\par
+{\f1   CBreak = False ??? Ctrl-Break est ignor??}\par
+\par
+{\f1   ??quivalent moderne : CheckBreak (unit?? Crt).}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPT3_01}     {\uldb Suivant >>}{\v IDH_TPT3_03}     {\uldb Sommaire}{\v IDH_TPT3_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPT3_03}
+{\footnote $ Compatibilite TP3 - CLAVIER (AssignKbd)}
+{\footnote K Turbo Pascal;Compatibilite TP3;CLAVIER (AssignKbd)}
+\b\fs24 CLAVIER (AssignKbd) \b0\fs20\par
+\par
+{\f1   procedure AssignKbd(var F : Text);}\par
+{\f1   Assigne un fichier texte au pilote de clavier sans ??cho.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     F  Variable fichier texte ?? assigner}\par
+\par
+{\f1   Apr??s AssignKbd, le fichier peut ??tre ouvert avec Reset puis}\par
+{\f1   utilis?? avec Read/ReadLn pour lire des caract??res du clavier}\par
+{\f1   sans qu'ils soient affich??s ?? l'??cran.}\par
+\par
+{\f1   C'est la proc??dure utilis??e en interne pour initialiser la}\par
+{\f1   variable Kbd.}\par
+\par
+{\f1   Exemple :}\par
+{\f1     var}\par
+{\f1       F  : Text;}\par
+{\f1       Ch : Char;}\par
+{\f1     begin}\par
+{\f1       AssignKbd(F);}\par
+{\f1       Reset(F);}\par
+{\f1       Write('Entrez un caract??re (pas d''??cho) : ');}\par
+{\f1       Read(F, Ch);}\par
+{\f1       WriteLn;}\par
+{\f1       WriteLn('Vous avez tap?? : ', Ch);}\par
+{\f1       Close(F);}\par
+{\f1     end;}\par
+\par
+{\f1   Dans le code moderne, pr??f??rer ReadKey :}\par
+{\f1     Ch := ReadKey;  \{ ??quivalent, plus simple \}}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPT3_02}     {\uldb Suivant >>}{\v IDH_TPT3_04}     {\uldb Sommaire}{\v IDH_TPT3_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPT3_04}
+{\footnote $ Compatibilite TP3 - M??MOIRE (MemAvail, MaxAvail)}
+{\footnote K Turbo Pascal;Compatibilite TP3;M??MOIRE (MemAvail, MaxAvail)}
+\b\fs24 M??MOIRE (MemAvail, MaxAvail) \b0\fs20\par
+\par
+{\f1   function MemAvail : Integer;}\par
+{\f1   Retourne la m??moire libre totale sur le tas (heap), en type}\par
+{\f1   Integer (sign?? 16 bits, -32768..32767).}\par
+\par
+{\f1   En Turbo Pascal 3.0, MemAvail retournait un Integer repr??sentant}\par
+{\f1   le nombre de paragraphes (blocs de 16 octets) libres.}\par
+\par
+{\f1   Dans les versions 4.0+, la fonction standard MemAvail retourne}\par
+{\f1   un LongInt (octets). Cette version Turbo3 red??finit MemAvail}\par
+{\f1   pour retourner un Integer, reproduisant le comportement TP3.}\par
+\par
+{\f1   ATTENTION : la valeur est en paragraphes (unit??s de 16 octets)}\par
+{\f1   dans l'interpr??tation TP3. La m??moire r??elle libre est donc}\par
+{\f1   MemAvail * 16 octets (si interpr??t?? comme en TP3).}\par
+\par
+{\f1   Note : pour le code moderne, utiliser la fonction standard}\par
+{\f1   MemAvail (retourne un LongInt en octets) sans l'unit?? Turbo3.}\par
+\par
+{\f1   function MaxAvail : Integer;}\par
+{\f1   Retourne la taille du plus grand bloc contigu libre sur le tas,}\par
+{\f1   en type Integer (sign?? 16 bits).}\par
+\par
+{\f1   M??me remarque que MemAvail : cette version red??finit MaxAvail}\par
+{\f1   pour la compatibilit?? TP3 (Integer au lieu de LongInt).}\par
+\par
+{\f1   Note : pour le code moderne, utiliser la fonction standard}\par
+{\f1   MaxAvail (retourne un LongInt en octets) sans l'unit?? Turbo3.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPT3_03}     {\uldb Suivant >>}{\v IDH_TPT3_05}     {\uldb Sommaire}{\v IDH_TPT3_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPT3_05}
+{\footnote $ Compatibilite TP3 - OP??RATIONS SUR FICHIERS VOLUMINEUX}
+{\footnote K Turbo Pascal;Compatibilite TP3;OP??RATIONS SUR FICHIERS VOLUMINEUX}
+\b\fs24 OP??RATIONS SUR FICHIERS VOLUMINEUX \b0\fs20\par
+\par
+{\f1   En Turbo Pascal 3.0, les fonctions FileSize, FilePos et Seek}\par
+{\f1   utilisaient le type Integer, limitant l'acc??s aux 32 767 premiers}\par
+{\f1   enregistrements. Les fonctions LongFileSize, LongFilePos et}\par
+{\f1   LongSeek de l'unit?? Turbo3 utilisent le type Real pour permettre}\par
+{\f1   l'acc??s ?? des fichiers de plus de 32 767 enregistrements.}\par
+\par
+{\f1   Note : dans le code moderne (TP 4.0+), FileSize et FilePos}\par
+{\f1   retournent un LongInt et Seek accepte un LongInt, rendant ces}\par
+{\f1   fonctions Long* obsol??tes.}\par
+\par
+{\f1   function LongFileSize(var F) : Real;}\par
+{\f1   Retourne le nombre d'enregistrements dans un fichier, sous}\par
+{\f1   forme de valeur Real.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     F  Variable fichier (typ?? ou non typ??), ouverte}\par
+\par
+{\f1   Retour :}\par
+{\f1     Nombre total d'enregistrements (Real)}\par
+\par
+{\f1   ??quivalent moderne : FileSize(F) retourne un LongInt.}\par
+\par
+{\f1   Pour un fichier non typ?? avec BlockRead/BlockWrite :}\par
+{\f1     taille_octets := LongFileSize(F) * RecSize;}\par
+\par
+{\f1   function LongFilePos(var F) : Real;}\par
+{\f1   Retourne la position courante dans un fichier, sous forme de}\par
+{\f1   valeur Real (num??ro d'enregistrement, base 0).}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     F  Variable fichier (typ?? ou non typ??), ouverte}\par
+\par
+{\f1   Retour :}\par
+{\f1     Position courante (Real), 0 = d??but du fichier}\par
+\par
+{\f1   ??quivalent moderne : FilePos(F) retourne un LongInt.}\par
+\par
+{\f1   procedure LongSeek(var F; Pos : Real);}\par
+{\f1   Positionne le pointeur de fichier ?? l'enregistrement sp??cifi??.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     F    Variable fichier (typ?? ou non typ??), ouverte}\par
+{\f1     Pos  Position cible (Real), base 0}\par
+\par
+{\f1   ??quivalent moderne : Seek(F, Position) avec un LongInt.}\par
+\par
+{\f1   Exemple :}\par
+{\f1     var}\par
+{\f1       F   : file of Byte;}\par
+{\f1       Pos : Real;}\par
+{\f1     begin}\par
+{\f1       Assign(F, 'BIGFILE.DAT');}\par
+{\f1       Reset(F);}\par
+{\f1       Pos := LongFileSize(F) - 1;  \{ dernier enregistrement \}}\par
+{\f1       LongSeek(F, Pos);}\par
+{\f1       \{ ... lire le dernier octet ... \}}\par
+{\f1       Close(F);}\par
+{\f1     end;}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPT3_04}     {\uldb Suivant >>}{\v IDH_TPT3_06}     {\uldb Sommaire}{\v IDH_TPT3_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPT3_06}
+{\footnote $ Compatibilite TP3 - ATTRIBUTS VID??O}
+{\footnote K Turbo Pascal;Compatibilite TP3;ATTRIBUTS VID??O}
+\b\fs24 ATTRIBUTS VID??O \b0\fs20\par
+\par
+{\f1   Les trois proc??dures vid??o ci-dessous reproduisent le}\par
+{\f1   comportement de Turbo Pascal 3.0 pour les attributs d'??cran.}\par
+{\f1   Elles sont des enveloppes (wrappers) autour des proc??dures}\par
+{\f1   homonymes de l'unit?? Crt.}\par
+\par
+{\f1   procedure NormVideo;}\par
+{\f1   Restaure les attributs vid??o normaux (couleur par d??faut}\par
+{\f1   d??tect??e au d??marrage du programme). R??initialise TextAttr}\par
+{\f1   ?? sa valeur de d??marrage.}\par
+\par
+{\f1   En TP3, NormVideo activait le texte normal (pas gras, pas}\par
+{\f1   clignotant). Le comportement est maintenu.}\par
+\par
+{\f1   procedure HighVideo;}\par
+{\f1   Active le mode vid??o haute intensit?? (texte brillant/gras).}\par
+{\f1   Met le bit d'intensit?? haute dans TextAttr.}\par
+\par
+{\f1   En TP3, HighVideo rendait le texte plus lumineux sur les}\par
+{\f1   moniteurs monochromes et couleur.}\par
+\par
+{\f1   procedure LowVideo;}\par
+{\f1   Active le mode vid??o basse intensit?? (texte att??nu??).}\par
+{\f1   Retire le bit d'intensit?? haute dans TextAttr.}\par
+\par
+{\f1   Note : ces trois proc??dures sont identiques ?? celles de l'unit??}\par
+{\f1   Crt. L'unit?? Turbo3 les r??-exporte simplement pour assurer que}\par
+{\f1   le code TP3 compile sans modification.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPT3_05}     {\uldb Suivant >>}{\v IDH_TPT3_07}     {\uldb Sommaire}{\v IDH_TPT3_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPT3_07}
+{\footnote $ Compatibilite TP3 - R??SULTAT D'E/S (IOresult)}
+{\footnote K Turbo Pascal;Compatibilite TP3;R??SULTAT D'E/S (IOresult)}
+\b\fs24 R??SULTAT D'E/S (IOresult) \b0\fs20\par
+\par
+{\f1   function IOresult : Integer;}\par
+{\f1   Retourne le code d'erreur de la derni??re op??ration d'E/S,}\par
+{\f1   sous forme d'Integer (compatibilit?? TP3).}\par
+\par
+{\f1   En Turbo Pascal 3.0, IOresult retournait un Integer avec des}\par
+{\f1   codes d'erreur diff??rents de ceux des versions ult??rieures.}\par
+{\f1   Cette fonction de l'unit?? Turbo3 mappe les codes d'erreur}\par
+{\f1   modernes vers les codes TP3 pour la compatibilit??.}\par
+\par
+{\f1   Retour :}\par
+{\f1     0  Pas d'erreur}\par
+{\f1     Autre  Code d'erreur (conventions TP3)}\par
+\par
+{\f1   Apr??s lecture, la valeur est r??initialis??e ?? 0 (m??me}\par
+{\f1   comportement que la fonction standard IOResult).}\par
+\par
+{\f1   Dans le code moderne, utiliser directement la fonction}\par
+{\f1   standard IOResult (qui retourne un Integer avec les codes}\par
+{\f1   d'erreur TP 4.0+).}\par
+\par
+{\f1   Exemple (style TP3) :}\par
+{\f1     \{$I-\}}\par
+{\f1     Assign(F, 'FICHIER.DAT');}\par
+{\f1     Reset(F);}\par
+{\f1     if IOresult <> 0 then}\par
+{\f1       WriteLn('Erreur d''ouverture du fichier');}\par
+{\f1     \{$I+\}}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPT3_06}     {\uldb Suivant >>}{\v IDH_TPT3_08}     {\uldb Sommaire}{\v IDH_TPT3_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPT3_08}
+{\footnote $ Compatibilite TP3 - MIGRATION DE TURBO PASCAL 3.0 VERS 7.0}
+{\footnote K Turbo Pascal;Compatibilite TP3;MIGRATION DE TURBO PASCAL 3.0 VERS 7.0}
+\b\fs24 MIGRATION DE TURBO PASCAL 3.0 VERS 7.0 \b0\fs20\par
+\par
+{\f1   L'unit?? Turbo3 facilite la migration mais n'est qu'une aide}\par
+{\f1   transitoire. Voici les ??quivalences pour le code moderne :}\par
+\par
+{\f1   Code TP3 (avec Turbo3)        Code TP7 moderne}\par
+{\f1   ----------------------------  ----------------------------}\par
+{\f1   Read(Kbd, Ch);                Ch := ReadKey;}\par
+{\f1   CBreak := False;              CheckBreak := False;}\par
+{\f1   MemAvail  (Integer, parag.)   MemAvail  (LongInt, octets)}\par
+{\f1   MaxAvail  (Integer, parag.)   MaxAvail  (LongInt, octets)}\par
+{\f1   LongFileSize(F)               FileSize(F)  : LongInt}\par
+{\f1   LongFilePos(F)                FilePos(F)   : LongInt}\par
+{\f1   LongSeek(F, Pos)              Seek(F, Pos) : LongInt}\par
+{\f1   NormVideo                     NormVideo (unit?? Crt)}\par
+{\f1   HighVideo                     HighVideo (unit?? Crt)}\par
+{\f1   LowVideo                      LowVideo  (unit?? Crt)}\par
+{\f1   IOresult                      IOResult (codes TP4+)}\par
+\par
+{\f1   Recommandation : apr??s avoir compil?? avec succ??s un programme}\par
+{\f1   TP3 en ajoutant ?? Uses Turbo3 ??, remplacer progressivement les}\par
+{\f1   appels Turbo3 par leurs ??quivalents modernes, puis retirer}\par
+{\f1   l'unit?? Turbo3 de la clause Uses.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPT3_07}     {\uldb Suivant >>}{\v IDH_TPT3_09}     {\uldb Sommaire}{\v IDH_TPT3_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPT3_09}
+{\footnote $ Compatibilite TP3 - EXEMPLES}
+{\footnote K Turbo Pascal;Compatibilite TP3;EXEMPLES}
+\b\fs24 EXEMPLES \b0\fs20\par
+\par
+{\f1   --- Exemple 1 : Programme typique TP3 migr?? ---}\par
+\par
+{\f1   program OldProgram;}\par
+{\f1   uses Turbo3;}\par
+{\f1   var}\par
+{\f1     Ch   : Char;}\par
+{\f1     F    : file of Integer;}\par
+{\f1     Size : Real;}\par
+{\f1   begin}\par
+{\f1     CBreak := False;}\par
+\par
+{\f1     Write('Appuyez sur une touche : ');}\par
+{\f1     Read(Kbd, Ch);}\par
+{\f1     WriteLn;}\par
+{\f1     WriteLn('Touche : ', Ch);}\par
+\par
+{\f1     WriteLn('M??moire libre : ', MemAvail, ' (unit??s TP3)');}\par
+{\f1     WriteLn('Plus grand bloc : ', MaxAvail, ' (unit??s TP3)');}\par
+\par
+{\f1     Assign(F, 'DATA.DAT');}\par
+{\f1     \{$I-\}}\par
+{\f1     Reset(F);}\par
+{\f1     if IOresult = 0 then}\par
+{\f1     begin}\par
+{\f1       Size := LongFileSize(F);}\par
+{\f1       WriteLn('Taille fichier : ', Size:0:0, ' enregistrements');}\par
+{\f1       Close(F);}\par
+{\f1     end}\par
+{\f1     else}\par
+{\f1       WriteLn('Fichier non trouv??');}\par
+{\f1     \{$I+\}}\par
+{\f1   end.}\par
+\par
+{\f1   --- Exemple 2 : Utilisation des attributs vid??o ---}\par
+\par
+{\f1   program VideoDemo;}\par
+{\f1   uses Turbo3;}\par
+{\f1   begin}\par
+{\f1     NormVideo;}\par
+{\f1     WriteLn('Texte normal');}\par
+\par
+{\f1     HighVideo;}\par
+{\f1     WriteLn('Texte haute intensit??');}\par
+\par
+{\f1     LowVideo;}\par
+{\f1     WriteLn('Texte basse intensit??');}\par
+\par
+{\f1     NormVideo;}\par
+{\f1   end.}\par
+\par
+{\f1   --- Exemple 3 : Navigation dans un gros fichier ---}\par
+\par
+{\f1   program BigFileNav;}\par
+{\f1   uses Turbo3;}\par
+{\f1   var}\par
+{\f1     F   : file of Byte;}\par
+{\f1     B   : Byte;}\par
+{\f1     Pos : Real;}\par
+{\f1   begin}\par
+{\f1     Assign(F, 'BIGFILE.BIN');}\par
+{\f1     \{$I-\}}\par
+{\f1     Reset(F);}\par
+{\f1     \{$I+\}}\par
+{\f1     if IOresult <> 0 then}\par
+{\f1     begin}\par
+{\f1       WriteLn('Erreur ouverture');}\par
+{\f1       Halt(1);}\par
+{\f1     end;}\par
+\par
+{\f1     WriteLn('Taille : ', LongFileSize(F):0:0, ' octets');}\par
+\par
+{\f1     \{ Aller au milieu du fichier \}}\par
+{\f1     Pos := LongFileSize(F) / 2;}\par
+{\f1     LongSeek(F, Pos);}\par
+{\f1     WriteLn('Position : ', LongFilePos(F):0:0);}\par
+\par
+{\f1     Read(F, B);}\par
+{\f1     WriteLn('Octet lu : ', B);}\par
+\par
+{\f1     Close(F);}\par
+{\f1   end.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPT3_08}     {\uldb Suivant >>}{\v IDH_TPT3_10}     {\uldb Sommaire}{\v IDH_TPT3_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPT3_10}
+{\footnote $ Compatibilite TP3 - R??CAPITULATIF DE L'INTERFACE}
+{\footnote K Turbo Pascal;Compatibilite TP3;R??CAPITULATIF DE L'INTERFACE}
+\b\fs24 R??CAPITULATIF DE L'INTERFACE \b0\fs20\par
+\par
+{\f1   --- Variables ---}\par
+{\f1   Kbd    : Text                         Fichier clavier sans ??cho}\par
+{\f1   CBreak : Boolean absolute CheckBreak  Alias de CheckBreak}\par
+\par
+{\f1   --- Clavier ---}\par
+{\f1   Procedure AssignKbd(var F : Text);}\par
+\par
+{\f1   --- M??moire ---}\par
+{\f1   Function  MemAvail : Integer;}\par
+{\f1   Function  MaxAvail : Integer;}\par
+\par
+{\f1   --- Fichiers volumineux ---}\par
+{\f1   Function  LongFileSize(var F) : Real;}\par
+{\f1   Function  LongFilePos(var F) : Real;}\par
+{\f1   Procedure LongSeek(var F; Pos : Real);}\par
+\par
+{\f1   --- Vid??o ---}\par
+{\f1   Procedure NormVideo;}\par
+{\f1   Procedure HighVideo;}\par
+{\f1   Procedure LowVideo;}\par
+\par
+{\f1   --- E/S ---}\par
+{\f1   Function  IOresult : Integer;}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPT3_09}     {\uldb Suivant >>}{\v IDH_TPT3_11}     {\uldb Sommaire}{\v IDH_TPT3_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPT3_11}
+{\footnote $ Compatibilite TP3 - R??SUM?? PAR CAT??GORIE}
+{\footnote K Turbo Pascal;Compatibilite TP3;R??SUM?? PAR CAT??GORIE}
+\b\fs24 R??SUM?? PAR CAT??GORIE \b0\fs20\par
+\par
+{\f1   Cat??gorie                   Nombre   ??l??ments}\par
+{\f1   -------------------------   ------   ----------------------------------}\par
+{\f1   Clavier                        1     AssignKbd}\par
+{\f1   M??moire                        2     MemAvail, MaxAvail}\par
+{\f1   Fichiers volumineux             3     LongFileSize, LongFilePos,}\par
+{\f1                                        LongSeek}\par
+{\f1   Attributs vid??o                 3     NormVideo, HighVideo, LowVideo}\par
+{\f1   R??sultat E/S                    1     IOresult}\par
+{\f1   -------------------------   ------   ----------------------------------}\par
+{\f1   TOTAL proc??dures/fonctions     10}\par
+\par
+{\f1   Variables export??es : 2    (Kbd, CBreak)}\par
+{\f1   Types export??s : 0}\par
+{\f1   Constantes export??es : 0}\par
+{\f1   D??pendance : Crt}\par
+\par
+{\f1   Fin du document - Unit?? TURBO3 - Turbo Pascal 7.0}\par
+
+\par
+{\uldb << Precedent}{\v IDH_TPT3_10}     {\uldb Sommaire}{\v IDH_TPT3_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+}

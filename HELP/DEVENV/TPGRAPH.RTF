@@ -1,0 +1,1551 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}
+
+{\footnote # IDH_TPGRAPH_01}
+{\footnote $ Unite Graph (BGI) - CODES D'ERREUR (GraphResult)}
+{\footnote K Turbo Pascal;Unite Graph (BGI);CODES D'ERREUR (GraphResult)}
+\b\fs24 CODES D'ERREUR (GraphResult) \b0\fs20\par
+\par
+{\f1   GraphResult retourne un entier indiquant le r??sultat de la derni??re}\par
+{\f1   op??ration graphique. Apr??s lecture, la valeur est r??initialis??e ??}\par
+{\f1   grOk (0).}\par
+\par
+{\f1   Constante             Valeur   Signification}\par
+{\f1   --------------------  ------   ------------------------------------------}\par
+{\f1   grOk                     0     Pas d'erreur}\par
+{\f1   grNoInitGraph           -1     Graphique non initialis?? (InitGraph)}\par
+{\f1   grNotDetected           -2     Mat??riel graphique non d??tect??}\par
+{\f1   grFileNotFound          -3     Fichier pilote (.BGI) non trouv??}\par
+{\f1   grInvalidDriver         -4     Fichier pilote invalide}\par
+{\f1   grNoLoadMem             -5     M??moire insuffisante pour charger le pilote}\par
+{\f1   grNoScanMem             -6     M??moire insuffisante (scan fill)}\par
+{\f1   grNoFloodMem            -7     M??moire insuffisante (flood fill)}\par
+{\f1   grFontNotFound          -8     Fichier de police (.CHR) non trouv??}\par
+{\f1   grNoFontMem             -9     M??moire insuffisante pour charger la police}\par
+{\f1   grInvalidMode          -10     Mode graphique invalide pour le pilote}\par
+{\f1   grError                -11     Erreur graphique g??n??rique}\par
+{\f1   grIOerror              -12     Erreur d'entr??e/sortie graphique}\par
+{\f1   grInvalidFont          -13     Fichier de police invalide}\par
+{\f1   grInvalidFontNum       -14     Num??ro de police invalide}\par
+{\f1   grInvalidVersion       -18     Version du pilote invalide}\par
+\par
+{\f1   Exemple :}\par
+{\f1     InitGraph(Gd, Gm, '');}\par
+{\f1     ErrCode := GraphResult;}\par
+{\f1     if ErrCode <> grOk then}\par
+{\f1     begin}\par
+{\f1       WriteLn('Erreur graphique : ', GraphErrorMsg(ErrCode));}\par
+{\f1       Halt(1);}\par
+{\f1     end;}\par
+\par
+\par
+\b Sections suivantes : \b0\par
+\par
+{\f1  2. PILOTES GRAPHIQUES (GraphDriver)}     {\uldb [Aller]}{\v IDH_TPGRAPH_02}\par
+{\f1  3. MODES GRAPHIQUES}     {\uldb [Aller]}{\v IDH_TPGRAPH_03}\par
+{\f1  4. COULEURS STANDARD (0..15)}     {\uldb [Aller]}{\v IDH_TPGRAPH_04}\par
+{\f1  5. COULEURS EGA POUR IBM 8514}     {\uldb [Aller]}{\v IDH_TPGRAPH_05}\par
+{\f1  6. STYLES ET LARGEURS DE LIGNE}     {\uldb [Aller]}{\v IDH_TPGRAPH_06}\par
+{\f1  7. POLICES DE CARACT??RES}     {\uldb [Aller]}{\v IDH_TPGRAPH_07}\par
+{\f1  8. MOTIFS DE REMPLISSAGE}     {\uldb [Aller]}{\v IDH_TPGRAPH_08}\par
+{\f1  9. OP??RATEURS BitBlt (PutImage)}     {\uldb [Aller]}{\v IDH_TPGRAPH_09}\par
+{\f1 10. JUSTIFICATION DU TEXTE}     {\uldb [Aller]}{\v IDH_TPGRAPH_10}\par
+{\f1 11. CONSTANTES DIVERSES}     {\uldb [Aller]}{\v IDH_TPGRAPH_11}\par
+{\f1 12. TYPES}     {\uldb [Aller]}{\v IDH_TPGRAPH_12}\par
+{\f1 13. VARIABLES}     {\uldb [Aller]}{\v IDH_TPGRAPH_13}\par
+{\f1 14. INITIALISATION ET FERMETURE}     {\uldb [Aller]}{\v IDH_TPGRAPH_14}\par
+{\f1 15. INFORMATION ET GESTION DES PILOTES}     {\uldb [Aller]}{\v IDH_TPGRAPH_15}\par
+{\f1 16. INFORMATION SUR LES MODES}     {\uldb [Aller]}{\v IDH_TPGRAPH_16}\par
+{\f1 17. POSITION COURANTE ET DIMENSIONS}     {\uldb [Aller]}{\v IDH_TPGRAPH_17}\par
+{\f1 18. VIEWPORT ET PAGES}     {\uldb [Aller]}{\v IDH_TPGRAPH_18}\par
+{\f1 19. DESSIN DE BASE (PIXELS ET LIGNES)}     {\uldb [Aller]}{\v IDH_TPGRAPH_19}\par
+{\f1 20. FORMES G??OM??TRIQUES}     {\uldb [Aller]}{\v IDH_TPGRAPH_20}\par
+{\f1 21. REMPLISSAGE}     {\uldb [Aller]}{\v IDH_TPGRAPH_21}\par
+{\f1 22. COULEURS ET PALETTE}     {\uldb [Aller]}{\v IDH_TPGRAPH_22}\par
+{\f1 23. RAPPORT D'ASPECT}     {\uldb [Aller]}{\v IDH_TPGRAPH_23}\par
+{\f1 24. IMAGES (BITMAP)}     {\uldb [Aller]}{\v IDH_TPGRAPH_24}\par
+{\f1 25. TEXTE GRAPHIQUE}     {\uldb [Aller]}{\v IDH_TPGRAPH_25}\par
+{\f1 26. EXEMPLES COMPLETS}     {\uldb [Aller]}{\v IDH_TPGRAPH_26}\par
+{\f1 27. R??CAPITULATIF DE L'INTERFACE}     {\uldb [Aller]}{\v IDH_TPGRAPH_27}\par
+{\f1 28. R??SUM?? PAR CAT??GORIE}     {\uldb [Aller]}{\v IDH_TPGRAPH_28}\par
+\par
+{\uldb Suivant >>}{\v IDH_TPGRAPH_02}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGRAPH_02}
+{\footnote $ Unite Graph (BGI) - PILOTES GRAPHIQUES (GraphDriver)}
+{\footnote K Turbo Pascal;Unite Graph (BGI);PILOTES GRAPHIQUES (GraphDriver)}
+\b\fs24 PILOTES GRAPHIQUES (GraphDriver) \b0\fs20\par
+\par
+{\f1   Constantes identifiant les pilotes BGI. Pass??es ?? InitGraph ou}\par
+{\f1   retourn??es par DetectGraph.}\par
+\par
+{\f1   Constante       Valeur   Carte graphique}\par
+{\f1   -------------   ------   ----------------------------}\par
+{\f1   Detect             0     Auto-d??tection du mat??riel}\par
+{\f1   CGA                1     CGA (Color Graphics Adapter)}\par
+{\f1   MCGA               2     MCGA (Multi-Color GA)}\par
+{\f1   EGA                3     EGA (Enhanced GA)}\par
+{\f1   EGA64              4     EGA avec 64 Ko de m??moire}\par
+{\f1   EGAMono            5     EGA monochrome}\par
+{\f1   IBM8514            6     IBM 8514/A}\par
+{\f1   HercMono           7     Hercules monochrome}\par
+{\f1   ATT400             8     AT&T 400}\par
+{\f1   VGA                9     VGA (Video GA)}\par
+{\f1   PC3270            10     PC 3270}\par
+\par
+{\f1   CurrentDriver = -128 : valeur sp??ciale pass??e ?? GetModeRange pour}\par
+{\f1   obtenir la plage de modes du pilote actuellement utilis??.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGRAPH_01}     {\uldb Suivant >>}{\v IDH_TPGRAPH_03}     {\uldb Sommaire}{\v IDH_TPGRAPH_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGRAPH_03}
+{\footnote $ Unite Graph (BGI) - MODES GRAPHIQUES}
+{\footnote K Turbo Pascal;Unite Graph (BGI);MODES GRAPHIQUES}
+\b\fs24 MODES GRAPHIQUES \b0\fs20\par
+\par
+{\f1   Chaque pilote supporte un ou plusieurs modes graphiques. Le mode est}\par
+{\f1   pass?? en second param??tre ?? InitGraph ou ?? SetGraphMode.}\par
+\par
+{\f1   --- CGA (pilote 1) ---}\par
+{\f1   CGAC0     = 0    320x200  4 couleurs  palette 0  1 page}\par
+{\f1   CGAC1     = 1    320x200  4 couleurs  palette 1  1 page}\par
+{\f1   CGAC2     = 2    320x200  4 couleurs  palette 2  1 page}\par
+{\f1   CGAC3     = 3    320x200  4 couleurs  palette 3  1 page}\par
+{\f1   CGAHi     = 4    640x200  2 couleurs             1 page}\par
+\par
+{\f1   --- MCGA (pilote 2) ---}\par
+{\f1   MCGAC0    = 0    320x200  4 couleurs  palette 0  1 page}\par
+{\f1   MCGAC1    = 1    320x200  4 couleurs  palette 1  1 page}\par
+{\f1   MCGAC2    = 2    320x200  4 couleurs  palette 2  1 page}\par
+{\f1   MCGAC3    = 3    320x200  4 couleurs  palette 3  1 page}\par
+{\f1   MCGAMed   = 4    640x200  2 couleurs             1 page}\par
+{\f1   MCGAHi    = 5    640x480  2 couleurs             1 page}\par
+\par
+{\f1   --- EGA (pilote 3) ---}\par
+{\f1   EGALo     = 0    640x200  16 couleurs            4 pages}\par
+{\f1   EGAHi     = 1    640x350  16 couleurs            2 pages}\par
+\par
+{\f1   --- EGA64 (pilote 4) ---}\par
+{\f1   EGA64Lo   = 0    640x200  16 couleurs            1 page}\par
+{\f1   EGA64Hi   = 1    640x350   4 couleurs            1 page}\par
+\par
+{\f1   --- EGAMono (pilote 5) ---}\par
+{\f1   EGAMonoHi = 3    640x350  monochr.   64Ko=1p, 256Ko=2p}\par
+\par
+{\f1   --- IBM8514 (pilote 6) ---}\par
+{\f1   IBM8514Lo = 0    640x480  256 couleurs}\par
+{\f1   IBM8514Hi = 1   1024x768  256 couleurs}\par
+\par
+{\f1   --- HercMono (pilote 7) ---}\par
+{\f1   HercMonoHi= 0    720x348  monochrome             2 pages}\par
+\par
+{\f1   --- ATT400 (pilote 8) ---}\par
+{\f1   ATT400C0  = 0    320x200  4 couleurs  palette 0  1 page}\par
+{\f1   ATT400C1  = 1    320x200  4 couleurs  palette 1  1 page}\par
+{\f1   ATT400C2  = 2    320x200  4 couleurs  palette 2  1 page}\par
+{\f1   ATT400C3  = 3    320x200  4 couleurs  palette 3  1 page}\par
+{\f1   ATT400Med = 4    640x200  2 couleurs             1 page}\par
+{\f1   ATT400Hi  = 5    640x400  2 couleurs             1 page}\par
+\par
+{\f1   --- VGA (pilote 9) ---}\par
+{\f1   VGALo     = 0    640x200  16 couleurs            4 pages}\par
+{\f1   VGAMed    = 1    640x350  16 couleurs            2 pages}\par
+{\f1   VGAHi     = 2    640x480  16 couleurs            1 page}\par
+\par
+{\f1   --- PC3270 (pilote 10) ---}\par
+{\f1   PC3270Hi  = 0    720x350  monochrome             1 page}\par
+\par
+{\f1   Palettes CGA :}\par
+{\f1     Palette 0 : LightGreen, LightRed, Yellow}\par
+{\f1     Palette 1 : LightCyan, LightMagenta, White}\par
+{\f1     Palette 2 : Green, Red, Brown}\par
+{\f1     Palette 3 : Cyan, Magenta, LightGray}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGRAPH_02}     {\uldb Suivant >>}{\v IDH_TPGRAPH_04}     {\uldb Sommaire}{\v IDH_TPGRAPH_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGRAPH_04}
+{\footnote $ Unite Graph (BGI) - COULEURS STANDARD (0..15)}
+{\footnote K Turbo Pascal;Unite Graph (BGI);COULEURS STANDARD (0..15)}
+\b\fs24 COULEURS STANDARD (0..15) \b0\fs20\par
+\par
+{\f1   Constantes de couleur utilis??es avec SetColor, SetBkColor,}\par
+{\f1   SetPalette, SetAllPalette, SetFillStyle, etc.}\par
+\par
+{\f1   Constante       Valeur   Couleur}\par
+{\f1   -------------   ------   -------------------------}\par
+{\f1   Black              0     Noir}\par
+{\f1   Blue               1     Bleu}\par
+{\f1   Green              2     Vert}\par
+{\f1   Cyan               3     Cyan}\par
+{\f1   Red                4     Rouge}\par
+{\f1   Magenta            5     Magenta}\par
+{\f1   Brown              6     Marron}\par
+{\f1   LightGray          7     Gris clair}\par
+{\f1   DarkGray           8     Gris fonc??}\par
+{\f1   LightBlue          9     Bleu clair}\par
+{\f1   LightGreen        10     Vert clair}\par
+{\f1   LightCyan         11     Cyan clair}\par
+{\f1   LightRed          12     Rouge clair}\par
+{\f1   LightMagenta      13     Magenta clair}\par
+{\f1   Yellow            14     Jaune}\par
+{\f1   White             15     Blanc}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGRAPH_03}     {\uldb Suivant >>}{\v IDH_TPGRAPH_05}     {\uldb Sommaire}{\v IDH_TPGRAPH_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGRAPH_05}
+{\footnote $ Unite Graph (BGI) - COULEURS EGA POUR IBM 8514}
+{\footnote K Turbo Pascal;Unite Graph (BGI);COULEURS EGA POUR IBM 8514}
+\b\fs24 COULEURS EGA POUR IBM 8514 \b0\fs20\par
+\par
+{\f1   Constantes permettant de d??finir les couleurs EGA standard sur la}\par
+{\f1   carte IBM 8514 sans conna??tre leurs valeurs de palette internes.}\par
+\par
+{\f1   Constante            Valeur   Couleur}\par
+{\f1   -------------------  ------   -------------------}\par
+{\f1   EGABlack                0     Noir}\par
+{\f1   EGABlue                 1     Bleu}\par
+{\f1   EGAGreen                2     Vert}\par
+{\f1   EGACyan                 3     Cyan}\par
+{\f1   EGARed                  4     Rouge}\par
+{\f1   EGAMagenta              5     Magenta}\par
+{\f1   EGABrown               20     Marron}\par
+{\f1   EGALightgray            7     Gris clair}\par
+{\f1   EGADarkgray            56     Gris fonc??}\par
+{\f1   EGALightblue           57     Bleu clair}\par
+{\f1   EGALightgreen          58     Vert clair}\par
+{\f1   EGALightcyan           59     Cyan clair}\par
+{\f1   EGALightred            60     Rouge clair}\par
+{\f1   EGALightmagenta        61     Magenta clair}\par
+{\f1   EGAYellow              62     Jaune}\par
+{\f1   EGAWhite               63     Blanc}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGRAPH_04}     {\uldb Suivant >>}{\v IDH_TPGRAPH_06}     {\uldb Sommaire}{\v IDH_TPGRAPH_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGRAPH_06}
+{\footnote $ Unite Graph (BGI) - STYLES ET LARGEURS DE LIGNE}
+{\footnote K Turbo Pascal;Unite Graph (BGI);STYLES ET LARGEURS DE LIGNE}
+\b\fs24 STYLES ET LARGEURS DE LIGNE \b0\fs20\par
+\par
+{\f1   Utilis??s avec SetLineStyle et GetLineSettings.}\par
+\par
+{\f1   --- Styles de ligne ---}\par
+{\f1   SolidLn    = 0    Ligne continue       ________________}\par
+{\f1   DottedLn   = 1    Ligne pointill??e     . . . . . . . .}\par
+{\f1   CenterLn   = 2    Ligne mixte          _ . _ . _ . _ .}\par
+{\f1   DashedLn   = 3    Ligne tiret??e        - - - - - - - -}\par
+{\f1   UserBitLn  = 4    Style utilisateur    (motif 16 bits)}\par
+\par
+{\f1   --- Largeurs de ligne ---}\par
+{\f1   NormWidth  = 1    ??paisseur normale (1 pixel)}\par
+{\f1   ThickWidth = 3    ??paisseur ??paisse (3 pixels)}\par
+\par
+{\f1   Le motif utilisateur (UserBitLn) est un word de 16 bits : chaque bit}\par
+{\f1   ?? 1 trace un pixel, chaque bit ?? 0 laisse un espace. Le motif se}\par
+{\f1   r??p??te le long de la ligne.}\par
+\par
+{\f1   Exemple :}\par
+{\f1     SetLineStyle(UserBitLn, $F0F0, NormWidth);}\par
+{\f1     \{ Motif binaire : 1111000011110000 = tirets de 4 pixels \}}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGRAPH_05}     {\uldb Suivant >>}{\v IDH_TPGRAPH_07}     {\uldb Sommaire}{\v IDH_TPGRAPH_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGRAPH_07}
+{\footnote $ Unite Graph (BGI) - POLICES DE CARACT??RES}
+{\footnote K Turbo Pascal;Unite Graph (BGI);POLICES DE CARACT??RES}
+\b\fs24 POLICES DE CARACT??RES \b0\fs20\par
+\par
+{\f1   Utilis??es avec SetTextStyle et GetTextSettings.}\par
+\par
+{\f1   --- Polices ---}\par
+{\f1   DefaultFont   = 0    Police bitmap 8x8 (int??gr??e au pilote)}\par
+{\f1   TriplexFont   = 1    Police vectorielle Triplex (TRIP.CHR)}\par
+{\f1   SmallFont     = 2    Police vectorielle Small (LITT.CHR)}\par
+{\f1   SansSerifFont = 3    Police vectorielle Sans-Serif (SANS.CHR)}\par
+{\f1   GothicFont    = 4    Police vectorielle Gothic (GOTH.CHR)}\par
+\par
+{\f1   La DefaultFont est une police bitmap point par point. Les polices}\par
+{\f1   1 ?? 4 sont des polices vectorielles (stroked) charg??es depuis des}\par
+{\f1   fichiers .CHR, redimensionnables sans perte de qualit??.}\par
+\par
+{\f1   --- Directions ---}\par
+{\f1   HorizDir = 0    Texte horizontal (gauche ??? droite)}\par
+{\f1   VertDir  = 1    Texte vertical (bas ??? haut)}\par
+\par
+{\f1   --- Taille ---}\par
+{\f1   UserCharSize = 0    Taille d??finie par SetUserCharSize}\par
+\par
+{\f1   Pour les polices vectorielles, CharSize = 1..10 est un facteur}\par
+{\f1   multiplicateur. CharSize = UserCharSize (0) active la taille}\par
+{\f1   personnalis??e d??finie par SetUserCharSize.}\par
+\par
+{\f1   Pour DefaultFont, CharSize multiplie la matrice 8x8 :}\par
+{\f1     CharSize = 1 ??? 8x8, CharSize = 2 ??? 16x16, etc.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGRAPH_06}     {\uldb Suivant >>}{\v IDH_TPGRAPH_08}     {\uldb Sommaire}{\v IDH_TPGRAPH_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGRAPH_08}
+{\footnote $ Unite Graph (BGI) - MOTIFS DE REMPLISSAGE}
+{\footnote K Turbo Pascal;Unite Graph (BGI);MOTIFS DE REMPLISSAGE}
+\b\fs24 MOTIFS DE REMPLISSAGE \b0\fs20\par
+\par
+{\f1   Utilis??s avec SetFillStyle et GetFillSettings.}\par
+\par
+{\f1   Constante         Valeur  Description}\par
+{\f1   ----------------  ------  ------------------------------------------}\par
+{\f1   EmptyFill            0    Remplissage en couleur de fond}\par
+{\f1   SolidFill            1    Remplissage en couleur unie}\par
+{\f1   LineFill             2    Remplissage par lignes horizontales ---}\par
+{\f1   LtSlashFill          3    Remplissage par barres fines ///}\par
+{\f1   SlashFill            4    Remplissage par barres ??paisses ///}\par
+{\f1   BkSlashFill          5    Remplissage par barres ??paisses \\\\\\}\par
+{\f1   LtBkSlashFill        6    Remplissage par barres fines \\\\\\}\par
+{\f1   HatchFill            7    Remplissage hachur?? l??ger}\par
+{\f1   XHatchFill           8    Remplissage hachur?? crois??}\par
+{\f1   InterleaveFill       9    Remplissage par lignes entrelac??es}\par
+{\f1   WideDotFill         10    Points largement espac??s}\par
+{\f1   CloseDotFill        11    Points ??troitement espac??s}\par
+{\f1   UserFill            12    Motif d??fini par l'utilisateur}\par
+\par
+{\f1   Le motif utilisateur (UserFill) est d??fini par SetFillPattern :}\par
+{\f1   un tableau de 8 octets formant une matrice 8x8. Chaque bit ?? 1}\par
+{\f1   trace un pixel en couleur de remplissage, chaque bit ?? 0 utilise}\par
+{\f1   la couleur de fond.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGRAPH_07}     {\uldb Suivant >>}{\v IDH_TPGRAPH_09}     {\uldb Sommaire}{\v IDH_TPGRAPH_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGRAPH_09}
+{\footnote $ Unite Graph (BGI) - OP??RATEURS BitBlt (PutImage)}
+{\footnote K Turbo Pascal;Unite Graph (BGI);OP??RATEURS BitBlt (PutImage)}
+\b\fs24 OP??RATEURS BitBlt (PutImage) \b0\fs20\par
+\par
+{\f1   Constantes d??terminant comment l'image est combin??e avec les pixels}\par
+{\f1   existants lors de l'appel ?? PutImage.}\par
+\par
+{\f1   Constante     Valeur  Op??ration         Effet}\par
+{\f1   ----------    ------  --------          ---------------------------------}\par
+{\f1   NormalPut        0    MOV               Copie directe (alias CopyPut)}\par
+{\f1   CopyPut          0    MOV               Copie directe}\par
+{\f1   XORPut           1    XOR               OU exclusif (r??versible)}\par
+{\f1   OrPut            2    OR                OU logique}\par
+{\f1   AndPut           3    AND               ET logique}\par
+{\f1   NotPut           4    NOT               Inversion puis copie}\par
+\par
+{\f1   XORPut est particuli??rement utile pour l'animation : appliquer}\par
+{\f1   deux fois la m??me image au m??me endroit restaure le fond original.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGRAPH_08}     {\uldb Suivant >>}{\v IDH_TPGRAPH_10}     {\uldb Sommaire}{\v IDH_TPGRAPH_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGRAPH_10}
+{\footnote $ Unite Graph (BGI) - JUSTIFICATION DU TEXTE}
+{\footnote K Turbo Pascal;Unite Graph (BGI);JUSTIFICATION DU TEXTE}
+\b\fs24 JUSTIFICATION DU TEXTE \b0\fs20\par
+\par
+{\f1   Constantes utilis??es avec SetTextJustify.}\par
+\par
+{\f1   --- Justification horizontale ---}\par
+{\f1   LeftText   = 0    Texte align?? ?? gauche du point courant}\par
+{\f1   CenterText = 1    Texte centr?? sur le point courant}\par
+{\f1   RightText  = 2    Texte align?? ?? droite du point courant}\par
+\par
+{\f1   --- Justification verticale ---}\par
+{\f1   BottomText = 0    Texte au-dessus du point courant}\par
+{\f1   CenterText = 1    Texte centr?? verticalement}\par
+{\f1   TopText    = 2    Texte en dessous du point courant}\par
+\par
+{\f1   La justification par d??faut est (LeftText, TopText).}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGRAPH_09}     {\uldb Suivant >>}{\v IDH_TPGRAPH_11}     {\uldb Sommaire}{\v IDH_TPGRAPH_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGRAPH_11}
+{\footnote $ Unite Graph (BGI) - CONSTANTES DIVERSES}
+{\footnote K Turbo Pascal;Unite Graph (BGI);CONSTANTES DIVERSES}
+\b\fs24 CONSTANTES DIVERSES \b0\fs20\par
+\par
+{\f1   --- Capture (Clipping) ---}\par
+{\f1   ClipOn  = True     Activer le clipping dans le viewport}\par
+{\f1   ClipOff = False    D??sactiver le clipping dans le viewport}\par
+\par
+{\f1   --- Bar3D ---}\par
+{\f1   TopOn  = True      Dessiner le sommet de la barre 3D}\par
+{\f1   TopOff = False     Ne pas dessiner le sommet (barres empil??es)}\par
+\par
+{\f1   --- MaxColors ---}\par
+{\f1   MaxColors = 15     Indice maximal du tableau Colors de PaletteType}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGRAPH_10}     {\uldb Suivant >>}{\v IDH_TPGRAPH_12}     {\uldb Sommaire}{\v IDH_TPGRAPH_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGRAPH_12}
+{\footnote $ Unite Graph (BGI) - TYPES}
+{\footnote K Turbo Pascal;Unite Graph (BGI);TYPES}
+\b\fs24 TYPES \b0\fs20\par
+\par
+{\f1   --- PaletteType ---}\par
+{\f1     PaletteType = record}\par
+{\f1       Size   : Byte;                        \{ nombre de couleurs \}}\par
+{\f1       Colors : array[0..MaxColors] of ShortInt;  \{ valeurs palette \}}\par
+{\f1     end;}\par
+\par
+{\f1   Utilis?? par GetPalette, GetDefaultPalette. Size indique le nombre}\par
+{\f1   d'entr??es valides. Colors[i] contient la valeur de couleur mat??rielle}\par
+{\f1   pour l'entr??e logique i.}\par
+\par
+{\f1   --- LineSettingsType ---}\par
+{\f1     LineSettingsType = record}\par
+{\f1       LineStyle : Word;     \{ SolidLn..UserBitLn \}}\par
+{\f1       Pattern   : Word;     \{ motif 16 bits si UserBitLn \}}\par
+{\f1       Thickness : Word;     \{ NormWidth ou ThickWidth \}}\par
+{\f1     end;}\par
+\par
+{\f1   Retourn?? par GetLineSettings.}\par
+\par
+{\f1   --- TextSettingsType ---}\par
+{\f1     TextSettingsType = record}\par
+{\f1       Font      : Word;    \{ DefaultFont..GothicFont \}}\par
+{\f1       Direction : Word;    \{ HorizDir ou VertDir \}}\par
+{\f1       CharSize  : Word;    \{ facteur de taille 1..10 ou 0=User \}}\par
+{\f1       Horiz     : Word;    \{ LeftText, CenterText, RightText \}}\par
+{\f1       Vert      : Word;    \{ BottomText, CenterText, TopText \}}\par
+{\f1     end;}\par
+\par
+{\f1   Retourn?? par GetTextSettings.}\par
+\par
+{\f1   --- FillSettingsType ---}\par
+{\f1     FillSettingsType = record}\par
+{\f1       Pattern : Word;      \{ EmptyFill..UserFill \}}\par
+{\f1       Color   : Word;      \{ couleur de remplissage \}}\par
+{\f1     end;}\par
+\par
+{\f1   Retourn?? par GetFillSettings. D??crit le style de remplissage}\par
+{\f1   pr??d??fini actuellement actif.}\par
+\par
+{\f1   --- FillPatternType ---}\par
+{\f1     FillPatternType = array[1..8] of Byte;}\par
+\par
+{\f1   Motif de remplissage d??fini par l'utilisateur : matrice 8x8 bits.}\par
+{\f1   Chaque octet repr??sente une ligne de 8 pixels (MSB ?? gauche).}\par
+{\f1   Utilis?? par SetFillPattern et GetFillPattern.}\par
+\par
+{\f1   --- PointType ---}\par
+{\f1     PointType = record}\par
+{\f1       X, Y : Integer;}\par
+{\f1     end;}\par
+\par
+{\f1   Coordonn??es d'un point. Utilis?? par DrawPoly et FillPoly pour}\par
+{\f1   d??finir les sommets du polygone (tableau de PointType).}\par
+\par
+{\f1   --- ViewPortType ---}\par
+{\f1     ViewPortType = record}\par
+{\f1       x1, y1, x2, y2 : Integer;    \{ coins du viewport \}}\par
+{\f1       Clip            : Boolean;    \{ clipping actif \}}\par
+{\f1     end;}\par
+\par
+{\f1   Retourn?? par GetViewSettings. D??crit le viewport courant.}\par
+\par
+{\f1   --- ArcCoordsType ---}\par
+{\f1     ArcCoordsType = record}\par
+{\f1       X, Y           : Integer;    \{ centre de l'arc \}}\par
+{\f1       Xstart, Ystart : Integer;    \{ point de d??part \}}\par
+{\f1       Xend, Yend     : Integer;    \{ point d'arriv??e \}}\par
+{\f1     end;}\par
+\par
+{\f1   Retourn?? par GetArcCoords apr??s un appel ?? Arc. Fournit les}\par
+{\f1   coordonn??es exactes du centre et des extr??mit??s pour permettre}\par
+{\f1   de tracer des lignes raccord??es ?? l'arc.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGRAPH_11}     {\uldb Suivant >>}{\v IDH_TPGRAPH_13}     {\uldb Sommaire}{\v IDH_TPGRAPH_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGRAPH_13}
+{\footnote $ Unite Graph (BGI) - VARIABLES}
+{\footnote K Turbo Pascal;Unite Graph (BGI);VARIABLES}
+\b\fs24 VARIABLES \b0\fs20\par
+\par
+{\f1   GraphGetMemPtr  : Pointer}\par
+{\f1     Pointeur vers une routine d'allocation m??moire personnalis??e.}\par
+{\f1     Permet de remplacer l'allocateur par d??faut du tas pour les}\par
+{\f1     op??rations graphiques internes.}\par
+{\f1     Signature attendue : procedure(Size : Word) retournant un pointeur.}\par
+\par
+{\f1   GraphFreeMemPtr : Pointer}\par
+{\f1     Pointeur vers une routine de lib??ration m??moire personnalis??e.}\par
+{\f1     Permet de remplacer le d??sallocateur par d??faut du tas.}\par
+{\f1     Signature attendue : procedure(P : Pointer; Size : Word).}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGRAPH_12}     {\uldb Suivant >>}{\v IDH_TPGRAPH_14}     {\uldb Sommaire}{\v IDH_TPGRAPH_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGRAPH_14}
+{\footnote $ Unite Graph (BGI) - INITIALISATION ET FERMETURE}
+{\footnote K Turbo Pascal;Unite Graph (BGI);INITIALISATION ET FERMETURE}
+\b\fs24 INITIALISATION ET FERMETURE \b0\fs20\par
+\par
+{\f1   procedure DetectGraph(var GraphDriver, GraphMode : Integer);}\par
+{\f1   D??tecte le mat??riel graphique install?? et retourne le pilote et}\par
+{\f1   le mode graphique les plus appropri??s.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     GraphDriver  [sortie]  Code du pilote d??tect?? (CGA..PC3270)}\par
+{\f1     GraphMode    [sortie]  Mode graphique le plus ??lev?? pour ce pilote}\par
+\par
+{\f1   Si aucun mat??riel n'est d??tect??, GraphDriver = grNotDetected (-2).}\par
+{\f1   DetectGraph ne modifie pas l'??tat graphique : elle ne fait que}\par
+{\f1   tester le mat??riel.}\par
+\par
+{\f1   Exemple :}\par
+{\f1     DetectGraph(Gd, Gm);}\par
+{\f1     WriteLn('Pilote d??tect?? : ', Gd, ' Mode : ', Gm);}\par
+\par
+{\f1   procedure InitGraph(var GraphDriver : Integer;}\par
+{\f1                       var GraphMode   : Integer;}\par
+{\f1                       PathToDriver    : String);}\par
+{\f1   Initialise le mode graphique.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     GraphDriver  [entr??e/sortie]  }\par
+{\f1       - En entr??e : Detect (0) pour auto-d??tection,}\par
+{\f1         ou un code de pilote sp??cifique (CGA..PC3270).}\par
+{\f1       - En sortie : le pilote effectivement utilis??.}\par
+{\f1     GraphMode    [entr??e/sortie]}\par
+{\f1       - En entr??e : le mode souhait?? (ignor?? si Detect).}\par
+{\f1       - En sortie : le mode effectivement activ??.}\par
+{\f1     PathToDriver}\par
+{\f1       - Chemin vers les fichiers .BGI et .CHR.}\par
+{\f1       - '' (cha??ne vide) = r??pertoire courant.}\par
+\par
+{\f1   Fonctionnement :}\par
+{\f1     1. Si GraphDriver = Detect, appelle DetectGraph en interne.}\par
+{\f1     2. Charge le fichier pilote .BGI correspondant.}\par
+{\f1     3. Active le mode graphique.}\par
+{\f1     4. Initialise toutes les valeurs par d??faut (GraphDefaults).}\par
+\par
+{\f1   V??rifier toujours GraphResult apr??s InitGraph.}\par
+\par
+{\f1   Exemple :}\par
+{\f1     Gd := Detect;}\par
+{\f1     InitGraph(Gd, Gm, 'C:\\TP\\BGI');}\par
+{\f1     if GraphResult <> grOk then Halt(1);}\par
+\par
+{\f1   procedure CloseGraph;}\par
+{\f1   Ferme le mode graphique, lib??re la m??moire allou??e au pilote et}\par
+{\f1   aux polices, et restaure le mode texte pr??c??dent.}\par
+\par
+{\f1   ?? appeler syst??matiquement avant la fin du programme graphique.}\par
+\par
+{\f1   procedure RestoreCrtMode;}\par
+{\f1   Restaure temporairement le mode vid??o texte qui ??tait actif avant}\par
+{\f1   InitGraph, sans lib??rer les ressources graphiques. Permet d'afficher}\par
+{\f1   du texte en mode console, puis de revenir en mode graphique avec}\par
+{\f1   SetGraphMode.}\par
+\par
+{\f1   Exemple :}\par
+{\f1     RestoreCrtMode;}\par
+{\f1     WriteLn('Mode texte temporaire');}\par
+{\f1     ReadLn;}\par
+{\f1     SetGraphMode(GetGraphMode);}\par
+\par
+{\f1   procedure SetGraphMode(Mode : Integer);}\par
+{\f1   Active un mode graphique du pilote courant et r??initialise toutes}\par
+{\f1   les valeurs par d??faut (??quivalent ?? un GraphDefaults implicite).}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Mode  Mode graphique valide pour le pilote charg??.}\par
+\par
+{\f1   procedure GraphDefaults;}\par
+{\f1   R??initialise tous les param??tres graphiques ?? leurs valeurs par}\par
+{\f1   d??faut :}\par
+{\f1     - Viewport = ??cran entier, clipping activ??}\par
+{\f1     - Position courante = (0, 0)}\par
+{\f1     - Palette = palette par d??faut du pilote}\par
+{\f1     - Couleur de dessin = GetMaxColor}\par
+{\f1     - Couleur de fond = 0}\par
+{\f1     - Style de ligne = SolidLn, NormWidth}\par
+{\f1     - Style de remplissage = SolidFill, GetMaxColor}\par
+{\f1     - Police = DefaultFont, HorizDir, taille 1}\par
+{\f1     - Justification texte = LeftText, TopText}\par
+{\f1     - Mode d'??criture = CopyPut}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGRAPH_13}     {\uldb Suivant >>}{\v IDH_TPGRAPH_15}     {\uldb Sommaire}{\v IDH_TPGRAPH_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGRAPH_15}
+{\footnote $ Unite Graph (BGI) - INFORMATION ET GESTION DES PILOTES}
+{\footnote K Turbo Pascal;Unite Graph (BGI);INFORMATION ET GESTION DES PILOTES}
+\b\fs24 INFORMATION ET GESTION DES PILOTES \b0\fs20\par
+\par
+{\f1   function GraphErrorMsg(ErrorCode : Integer) : String;}\par
+{\f1   Retourne un message d'erreur en anglais correspondant ?? un code}\par
+{\f1   d'erreur GraphResult.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     ErrorCode  Code d'erreur (grOk..grInvalidVersion)}\par
+{\f1   Retour :     Cha??ne descriptive de l'erreur.}\par
+\par
+{\f1   Exemple :}\par
+{\f1     WriteLn(GraphErrorMsg(GraphResult));}\par
+\par
+{\f1   function GraphResult : Integer;}\par
+{\f1   Retourne le code d'erreur de la derni??re op??ration graphique.}\par
+{\f1   Apr??s lecture, la valeur interne est r??initialis??e ?? grOk (0).}\par
+\par
+{\f1   Important : lire GraphResult dans une variable locale car la}\par
+{\f1   prochaine lecture retournera toujours grOk.}\par
+\par
+{\f1   function GetDriverName : String;}\par
+{\f1   Retourne le nom du pilote graphique courant (ex: 'EGAVGA').}\par
+\par
+{\f1   function RegisterBGIdriver(Driver : Pointer) : Integer;}\par
+{\f1   Enregistre un pilote BGI li?? en m??moire (via BINOBJ et \{$L\}).}\par
+{\f1   Retourne un num??ro de pilote interne, ou un code d'erreur n??gatif.}\par
+\par
+{\f1   Cela ??vite de charger le fichier .BGI depuis le disque.}\par
+\par
+{\f1   function RegisterBGIfont(Font : Pointer) : Integer;}\par
+{\f1   Enregistre une police CHR li??e en m??moire (via BINOBJ et \{$L\}).}\par
+{\f1   Retourne un num??ro de police, ou un code d'erreur n??gatif.}\par
+\par
+{\f1   function InstallUserDriver(DriverFileName : String;}\par
+{\f1                              AutoDetectPtr  : Pointer) : Integer;}\par
+{\f1   Installe un pilote BGI tiers non standard. Le pilote est ajout??}\par
+{\f1   ?? la table interne des pilotes.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     DriverFileName  Nom du fichier .BGI (sans chemin)}\par
+{\f1     AutoDetectPtr   Pointeur vers la fonction d'auto-d??tection,}\par
+{\f1                     ou nil si pas d'auto-d??tection.}\par
+{\f1   Retour :          Num??ro de pilote attribu??.}\par
+\par
+{\f1   function InstallUserFont(FontFileName : String) : Integer;}\par
+{\f1   Installe une police vectorielle .CHR suppl??mentaire. La police}\par
+{\f1   est ajout??e ?? la table interne des polices.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     FontFileName  Nom du fichier .CHR}\par
+{\f1   Retour :        Num??ro de police attribu?? (utilisable avec}\par
+{\f1                   SetTextStyle).}\par
+\par
+{\f1   procedure SetGraphBufSize(BufSize : Word);}\par
+{\f1   D??finit la taille du tampon interne utilis?? pour le scan-fill}\par
+{\f1   et le flood-fill. Par d??faut : 4096 octets. Doit ??tre appel??}\par
+{\f1   AVANT InitGraph.}\par
+\par
+{\f1   Des remplissages complexes (grandes zones, formes irr??guli??res)}\par
+{\f1   peuvent n??cessiter un tampon plus grand.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGRAPH_14}     {\uldb Suivant >>}{\v IDH_TPGRAPH_16}     {\uldb Sommaire}{\v IDH_TPGRAPH_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGRAPH_16}
+{\footnote $ Unite Graph (BGI) - INFORMATION SUR LES MODES}
+{\footnote K Turbo Pascal;Unite Graph (BGI);INFORMATION SUR LES MODES}
+\b\fs24 INFORMATION SUR LES MODES \b0\fs20\par
+\par
+{\f1   function GetMaxMode : Integer;}\par
+{\f1   Retourne le num??ro du mode graphique le plus ??lev?? pour le pilote}\par
+{\f1   courant. Les modes valides vont de 0 ?? GetMaxMode.}\par
+\par
+{\f1   procedure GetModeRange(GraphDriver : Integer;}\par
+{\f1                          var LoMode, HiMode : Integer);}\par
+{\f1   Retourne la plage de modes valides pour un pilote donn??.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     GraphDriver  Code de pilote (CGA..PC3270), ou CurrentDriver (-128)}\par
+{\f1                  pour le pilote courant.}\par
+{\f1     LoMode       [sortie]  Mode le plus bas}\par
+{\f1     HiMode       [sortie]  Mode le plus ??lev??}\par
+\par
+{\f1   Si le pilote est invalide, LoMode et HiMode valent -1.}\par
+\par
+{\f1   function GetModeName(GraphMode : Integer) : String;}\par
+{\f1   Retourne le nom d'un mode graphique sous forme de cha??ne}\par
+{\f1   (ex: '640x200 EGA' ou '640x480 VGA').}\par
+\par
+{\f1   function GetGraphMode : Integer;}\par
+{\f1   Retourne le num??ro du mode graphique actuellement actif.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGRAPH_15}     {\uldb Suivant >>}{\v IDH_TPGRAPH_17}     {\uldb Sommaire}{\v IDH_TPGRAPH_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGRAPH_17}
+{\footnote $ Unite Graph (BGI) - POSITION COURANTE ET DIMENSIONS}
+{\footnote K Turbo Pascal;Unite Graph (BGI);POSITION COURANTE ET DIMENSIONS}
+\b\fs24 POSITION COURANTE ET DIMENSIONS \b0\fs20\par
+\par
+{\f1   function GetX : Integer;}\par
+{\f1   Retourne la coordonn??e X de la position courante du curseur}\par
+{\f1   graphique (CP), relative au viewport courant.}\par
+\par
+{\f1   function GetY : Integer;}\par
+{\f1   Retourne la coordonn??e Y de la position courante (CP), relative}\par
+{\f1   au viewport courant.}\par
+\par
+{\f1   function GetMaxX : Integer;}\par
+{\f1   Retourne la r??solution horizontale maximale - 1.}\par
+{\f1   Pour VGAHi : GetMaxX = 639 (r??solution 640).}\par
+\par
+{\f1   function GetMaxY : Integer;}\par
+{\f1   Retourne la r??solution verticale maximale - 1.}\par
+{\f1   Pour VGAHi : GetMaxY = 479 (r??solution 480).}\par
+\par
+{\f1   procedure MoveTo(X, Y : Integer);}\par
+{\f1   D??place la position courante (CP) en (X, Y) sans rien dessiner.}\par
+\par
+{\f1   procedure MoveRel(Dx, Dy : Integer);}\par
+{\f1   D??place la position courante de fa??on relative : CP ??? CP + (Dx, Dy).}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGRAPH_16}     {\uldb Suivant >>}{\v IDH_TPGRAPH_18}     {\uldb Sommaire}{\v IDH_TPGRAPH_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGRAPH_18}
+{\footnote $ Unite Graph (BGI) - VIEWPORT ET PAGES}
+{\footnote K Turbo Pascal;Unite Graph (BGI);VIEWPORT ET PAGES}
+\b\fs24 VIEWPORT ET PAGES \b0\fs20\par
+\par
+{\f1   procedure SetViewPort(x1, y1, x2, y2 : Integer; Clip : Boolean);}\par
+{\f1   D??finit une fen??tre de visualisation (viewport) rectangulaire.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     x1, y1  Coin sup??rieur gauche (coordonn??es absolues ??cran)}\par
+{\f1     x2, y2  Coin inf??rieur droit}\par
+{\f1     Clip    ClipOn (True) = activer le clipping au viewport}\par
+{\f1             ClipOff (False) = dessin hors limites autoris??}\par
+\par
+{\f1   Apr??s appel, la position courante est r??initialis??e ?? (0, 0)}\par
+{\f1   et toutes les coordonn??es de dessin sont relatives au viewport.}\par
+\par
+{\f1   Exemple :}\par
+{\f1     SetViewPort(10, 10, 310, 190, ClipOn);}\par
+\par
+{\f1   procedure GetViewSettings(var ViewPort : ViewPortType);}\par
+{\f1   Retourne les param??tres du viewport courant.}\par
+\par
+{\f1   procedure ClearDevice;}\par
+{\f1   Efface tout l'??cran graphique (toutes les pages), r??initialise}\par
+{\f1   le viewport ?? l'??cran entier et la position courante ?? (0, 0).}\par
+\par
+{\f1   procedure ClearViewPort;}\par
+{\f1   Efface uniquement le contenu du viewport courant en le remplissant}\par
+{\f1   avec la couleur de fond. La position courante est remise ?? (0, 0).}\par
+\par
+{\f1   procedure SetVisualPage(Page : Word);}\par
+{\f1   D??finit la page vid??o affich??e ?? l'??cran. Disponible uniquement}\par
+{\f1   pour les modes supportant plusieurs pages.}\par
+\par
+{\f1   procedure SetActivePage(Page : Word);}\par
+{\f1   D??finit la page vid??o sur laquelle les op??rations de dessin}\par
+{\f1   s'effectuent. Permet le double-buffering :}\par
+{\f1     - Dessiner sur une page inactive (SetActivePage)}\par
+{\f1     - Afficher l'autre page (SetVisualPage)}\par
+{\f1     - Alterner pour une animation fluide.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGRAPH_17}     {\uldb Suivant >>}{\v IDH_TPGRAPH_19}     {\uldb Sommaire}{\v IDH_TPGRAPH_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGRAPH_19}
+{\footnote $ Unite Graph (BGI) - DESSIN DE BASE (PIXELS ET LIGNES)}
+{\footnote K Turbo Pascal;Unite Graph (BGI);DESSIN DE BASE (PIXELS ET LIGNES)}
+\b\fs24 DESSIN DE BASE (PIXELS ET LIGNES) \b0\fs20\par
+\par
+{\f1   procedure PutPixel(X, Y : Integer; Pixel : Word);}\par
+{\f1   Dessine un pixel de couleur Pixel ?? la position (X, Y).}\par
+\par
+{\f1   function GetPixel(X, Y : Integer) : Word;}\par
+{\f1   Retourne la couleur du pixel ?? la position (X, Y).}\par
+\par
+{\f1   procedure SetWriteMode(WriteMode : Integer);}\par
+{\f1   D??finit le mode d'??criture pour Line, LineTo, LineRel, Rectangle,}\par
+{\f1   DrawPoly.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     WriteMode  CopyPut (0) = copie directe (par d??faut)}\par
+{\f1                XORPut  (1) = OU exclusif avec le fond}\par
+\par
+{\f1   Note : SetWriteMode n'affecte que les lignes, pas les remplissages}\par
+{\f1   ni le texte.}\par
+\par
+{\f1   procedure Line(x1, y1, x2, y2 : Integer);}\par
+{\f1   Trace une ligne du point (x1, y1) au point (x2, y2).}\par
+{\f1   N'affecte pas la position courante (CP).}\par
+\par
+{\f1   procedure LineTo(X, Y : Integer);}\par
+{\f1   Trace une ligne de la position courante (CP) au point (X, Y),}\par
+{\f1   puis d??place CP en (X, Y).}\par
+\par
+{\f1   procedure LineRel(Dx, Dy : Integer);}\par
+{\f1   Trace une ligne de CP ?? CP + (Dx, Dy), puis d??place CP.}\par
+\par
+{\f1   procedure GetLineSettings(var LineInfo : LineSettingsType);}\par
+{\f1   Retourne les param??tres actuels du style de ligne.}\par
+\par
+{\f1   procedure SetLineStyle(LineStyle : Word;}\par
+{\f1                          Pattern   : Word;}\par
+{\f1                          Thickness : Word);}\par
+{\f1   D??finit le style de trait pour toutes les lignes.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     LineStyle   SolidLn, DottedLn, CenterLn, DashedLn, UserBitLn}\par
+{\f1     Pattern     Motif 16 bits (utilis?? seulement avec UserBitLn)}\par
+{\f1     Thickness   NormWidth (1) ou ThickWidth (3)}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGRAPH_18}     {\uldb Suivant >>}{\v IDH_TPGRAPH_20}     {\uldb Sommaire}{\v IDH_TPGRAPH_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGRAPH_20}
+{\footnote $ Unite Graph (BGI) - FORMES G??OM??TRIQUES}
+{\footnote K Turbo Pascal;Unite Graph (BGI);FORMES G??OM??TRIQUES}
+\b\fs24 FORMES G??OM??TRIQUES \b0\fs20\par
+\par
+{\f1   procedure Rectangle(x1, y1, x2, y2 : Integer);}\par
+{\f1   Dessine un rectangle non rempli avec le style de ligne courant.}\par
+\par
+{\f1   procedure Bar(x1, y1, x2, y2 : Integer);}\par
+{\f1   Dessine un rectangle rempli avec le motif et la couleur de}\par
+{\f1   remplissage courants. Pas de contour.}\par
+\par
+{\f1   procedure Bar3D(x1, y1, x2, y2 : Integer;}\par
+{\f1                   Depth : Word; Top : Boolean);}\par
+{\f1   Dessine une barre 3D (parall??l??pip??de) avec une face remplie}\par
+{\f1   et un effet de profondeur.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     x1,y1,x2,y2  Rectangle de la face avant}\par
+{\f1     Depth         Profondeur en pixels du c??t?? 3D}\par
+{\f1     Top           TopOn = dessiner le sommet}\par
+{\f1                   TopOff = ne pas dessiner le sommet (empilage)}\par
+\par
+{\f1   Formule pour la profondeur typique :}\par
+{\f1     Depth := (x2 - x1) div 4;}\par
+\par
+{\f1   Exemple d'empilement de barres :}\par
+{\f1     Bar3D(10, 100, 50, 200, 10, TopOff);  \{ barre du bas \}}\par
+{\f1     Bar3D(10, 50, 50, 100, 10, TopOn);    \{ barre du haut \}}\par
+\par
+{\f1   procedure DrawPoly(NumPoints : Word; var PolyPoints);}\par
+{\f1   Dessine le contour d'un polygone (non rempli).}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     NumPoints   Nombre de sommets}\par
+{\f1     PolyPoints  Tableau non typ?? de PointType}\par
+\par
+{\f1   Pour fermer le polygone, le dernier point doit ??tre identique}\par
+{\f1   au premier. NumPoints doit donc inclure ce point de fermeture.}\par
+\par
+{\f1   Exemple :}\par
+{\f1     var Pts : array[1..4] of PointType;}\par
+{\f1     begin}\par
+{\f1       Pts[1].X := 10; Pts[1].Y := 10;}\par
+{\f1       Pts[2].X := 100; Pts[2].Y := 10;}\par
+{\f1       Pts[3].X := 50; Pts[3].Y := 80;}\par
+{\f1       Pts[4] := Pts[1];  \{ fermer le polygone \}}\par
+{\f1       DrawPoly(4, Pts);}\par
+{\f1     end;}\par
+\par
+{\f1   procedure FillPoly(NumPoints : Word; var PolyPoints);}\par
+{\f1   Dessine et remplit un polygone avec le motif de remplissage}\par
+{\f1   courant. Le polygone est automatiquement ferm?? (pas besoin de}\par
+{\f1   dupliquer le premier point).}\par
+\par
+{\f1   procedure Circle(X, Y : Integer; Radius : Word);}\par
+{\f1   Dessine un cercle de centre (X, Y) et de rayon Radius.}\par
+{\f1   Utilise le rapport d'aspect courant pour corriger la d??formation}\par
+{\f1   due aux pixels non carr??s.}\par
+\par
+{\f1   procedure Arc(X, Y : Integer;}\par
+{\f1                 StAngle, EndAngle, Radius : Word);}\par
+{\f1   Dessine un arc de cercle.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     X, Y       Centre}\par
+{\f1     StAngle    Angle de d??part en degr??s (0 = droite, 90 = haut)}\par
+{\f1     EndAngle   Angle de fin en degr??s}\par
+{\f1     Radius     Rayon}\par
+\par
+{\f1   Convention d'angles : sens anti-horaire, 0?? = Est (???),}\par
+{\f1   90?? = Nord (???), 180?? = Ouest (???), 270?? = Sud (???).}\par
+\par
+{\f1   Cas sp??cial : StAngle = 0 et EndAngle = 360 dessine un cercle}\par
+{\f1   complet.}\par
+\par
+{\f1   procedure GetArcCoords(var ArcCoords : ArcCoordsType);}\par
+{\f1   Retourne les coordonn??es du dernier arc dessin?? (centre et}\par
+{\f1   extr??mit??s). Utile pour raccorder des lignes aux extr??mit??s}\par
+{\f1   d'un arc.}\par
+\par
+{\f1   Exemple :}\par
+{\f1     Arc(200, 150, 0, 90, 50);}\par
+{\f1     GetArcCoords(AC);}\par
+{\f1     Line(AC.Xstart, AC.Ystart, AC.Xend, AC.Yend);}\par
+\par
+{\f1   procedure Ellipse(X, Y : Integer;}\par
+{\f1                     StAngle, EndAngle : Word;}\par
+{\f1                     XRadius, YRadius  : Word);}\par
+{\f1   Dessine un arc d'ellipse (contour, non rempli).}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     X, Y       Centre}\par
+{\f1     StAngle    Angle de d??part}\par
+{\f1     EndAngle   Angle de fin}\par
+{\f1     XRadius    Rayon horizontal}\par
+{\f1     YRadius    Rayon vertical}\par
+\par
+{\f1   StAngle = 0 et EndAngle = 360 dessine une ellipse compl??te.}\par
+\par
+{\f1   procedure FillEllipse(X, Y : Integer;}\par
+{\f1                         XRadius, YRadius : Word);}\par
+{\f1   Dessine et remplit une ellipse compl??te avec le motif de}\par
+{\f1   remplissage courant.}\par
+\par
+{\f1   procedure PieSlice(X, Y : Integer;}\par
+{\f1                      StAngle, EndAngle, Radius : Word);}\par
+{\f1   Dessine et remplit une part de camembert (secteur circulaire).}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     X, Y       Centre}\par
+{\f1     StAngle    Angle de d??part}\par
+{\f1     EndAngle   Angle de fin}\par
+{\f1     Radius     Rayon}\par
+\par
+{\f1   Le secteur est d??limit?? par deux rayons et un arc, puis rempli}\par
+{\f1   avec le motif courant.}\par
+\par
+{\f1   procedure Sector(X, Y : Integer;}\par
+{\f1                    StAngle, EndAngle,}\par
+{\f1                    XRadius, YRadius : Word);}\par
+{\f1   Dessine et remplit un secteur elliptique (part de camembert}\par
+{\f1   avec des rayons diff??rents en X et Y).}\par
+\par
+{\f1   procedure FloodFill(X, Y : Integer; Border : Word);}\par
+{\f1   Remplit une zone ferm??e ?? partir du point (X, Y).}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     X, Y     Point de d??part du remplissage (graine)}\par
+{\f1     Border   Couleur de la fronti??re qui d??limite la zone}\par
+\par
+{\f1   Le remplissage s'??tend dans toutes les directions jusqu'??}\par
+{\f1   rencontrer des pixels de couleur Border ou le bord de l'??cran.}\par
+{\f1   Utilise le motif de remplissage courant.}\par
+\par
+{\f1   Attention : la zone doit ??tre compl??tement ferm??e, sinon le}\par
+{\f1   remplissage d??borde dans les zones adjacentes.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGRAPH_19}     {\uldb Suivant >>}{\v IDH_TPGRAPH_21}     {\uldb Sommaire}{\v IDH_TPGRAPH_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGRAPH_21}
+{\footnote $ Unite Graph (BGI) - REMPLISSAGE}
+{\footnote K Turbo Pascal;Unite Graph (BGI);REMPLISSAGE}
+\b\fs24 REMPLISSAGE \b0\fs20\par
+\par
+{\f1   procedure GetFillSettings(var FillInfo : FillSettingsType);}\par
+{\f1   Retourne le motif et la couleur de remplissage pr??d??fini courant.}\par
+\par
+{\f1   procedure GetFillPattern(var FillPattern : FillPatternType);}\par
+{\f1   Retourne le motif de remplissage utilisateur courant (8 octets).}\par
+\par
+{\f1   procedure SetFillStyle(Pattern : Word; Color : Word);}\par
+{\f1   D??finit le motif de remplissage pr??d??fini et sa couleur.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Pattern   EmptyFill..CloseDotFill (0..11)}\par
+{\f1     Color     Couleur de remplissage (0..GetMaxColor)}\par
+\par
+{\f1   Note : pour utiliser un motif utilisateur (UserFill = 12),}\par
+{\f1   employer SetFillPattern au lieu de SetFillStyle.}\par
+\par
+{\f1   procedure SetFillPattern(Pattern : FillPatternType;}\par
+{\f1                            Color   : Word);}\par
+{\f1   D??finit un motif de remplissage personnalis??.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Pattern  Tableau de 8 octets (matrice 8x8 bits)}\par
+{\f1     Color    Couleur de remplissage}\par
+\par
+{\f1   Chaque octet repr??sente une ligne horizontale du motif :}\par
+{\f1     bit 7 (MSB) = pixel le plus ?? gauche}\par
+{\f1     bit 0 (LSB) = pixel le plus ?? droite}\par
+\par
+{\f1   Exemple (damier) :}\par
+{\f1     var P : FillPatternType;}\par
+{\f1     begin}\par
+{\f1       P[1] := $AA;  \{ 10101010 \}}\par
+{\f1       P[2] := $55;  \{ 01010101 \}}\par
+{\f1       P[3] := $AA;}\par
+{\f1       P[4] := $55;}\par
+{\f1       P[5] := $AA;}\par
+{\f1       P[6] := $55;}\par
+{\f1       P[7] := $AA;}\par
+{\f1       P[8] := $55;}\par
+{\f1       SetFillPattern(P, White);}\par
+{\f1     end;}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGRAPH_20}     {\uldb Suivant >>}{\v IDH_TPGRAPH_22}     {\uldb Sommaire}{\v IDH_TPGRAPH_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGRAPH_22}
+{\footnote $ Unite Graph (BGI) - COULEURS ET PALETTE}
+{\footnote K Turbo Pascal;Unite Graph (BGI);COULEURS ET PALETTE}
+\b\fs24 COULEURS ET PALETTE \b0\fs20\par
+\par
+{\f1   procedure SetColor(Color : Word);}\par
+{\f1   D??finit la couleur de dessin utilis??e par les lignes, contours,}\par
+{\f1   et le texte.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Color  Couleur logique (0..GetMaxColor)}\par
+\par
+{\f1   function GetColor : Word;}\par
+{\f1   Retourne la couleur de dessin courante.}\par
+\par
+{\f1   procedure SetBkColor(ColorNum : Word);}\par
+{\f1   D??finit la couleur de fond de l'??cran graphique.}\par
+\par
+{\f1   function GetBkColor : Word;}\par
+{\f1   Retourne la couleur de fond courante.}\par
+\par
+{\f1   function GetMaxColor : Word;}\par
+{\f1   Retourne la valeur maximale de couleur utilisable avec le pilote}\par
+{\f1   et le mode courants. Pour VGA 16 couleurs : GetMaxColor = 15.}\par
+{\f1   Pour IBM8514 256 couleurs : GetMaxColor = 255.}\par
+\par
+{\f1   procedure SetPalette(ColorNum : Word; Color : ShortInt);}\par
+{\f1   Modifie une seule entr??e de la palette.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     ColorNum  Num??ro de l'entr??e palette (0..GetMaxColor)}\par
+{\f1     Color     Nouvelle valeur de couleur mat??rielle}\par
+\par
+{\f1   Le changement est imm??diat : tous les pixels utilisant cette}\par
+{\f1   entr??e changent instantan??ment de couleur ?? l'??cran.}\par
+\par
+{\f1   procedure SetAllPalette(var Palette);}\par
+{\f1   Modifie toutes les entr??es de la palette en une seule op??ration.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Palette  Structure non typ??e commen??ant par un Word (Size)}\par
+{\f1              suivi de Size valeurs ShortInt.}\par
+\par
+{\f1   Une valeur de -1 dans une entr??e signifie "ne pas modifier".}\par
+\par
+{\f1   procedure GetPalette(var Palette : PaletteType);}\par
+{\f1   Retourne la palette courante.}\par
+\par
+{\f1   function GetPaletteSize : Integer;}\par
+{\f1   Retourne le nombre d'entr??es de la palette courante.}\par
+{\f1   ??quivalent ?? Palette.Size apr??s GetPalette.}\par
+\par
+{\f1   procedure GetDefaultPalette(var Palette : PaletteType);}\par
+{\f1   Retourne la palette par d??faut du pilote (telle qu'initialis??e}\par
+{\f1   par InitGraph).}\par
+\par
+{\f1   procedure SetRGBPalette(ColorNum,}\par
+{\f1                           RedValue, GreenValue, BlueValue : Integer);}\par
+{\f1   D??finit une entr??e de palette en composantes RVB.}\par
+{\f1   Disponible uniquement pour les pilotes IBM8514 et VGA 256 couleurs.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     ColorNum    Num??ro de l'entr??e (0..255)}\par
+{\f1     RedValue    Composante rouge (0..63), bits 0..5 utilis??s}\par
+{\f1     GreenValue  Composante verte (0..63)}\par
+{\f1     BlueValue   Composante bleue (0..63)}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGRAPH_21}     {\uldb Suivant >>}{\v IDH_TPGRAPH_23}     {\uldb Sommaire}{\v IDH_TPGRAPH_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGRAPH_23}
+{\footnote $ Unite Graph (BGI) - RAPPORT D'ASPECT}
+{\footnote K Turbo Pascal;Unite Graph (BGI);RAPPORT D'ASPECT}
+\b\fs24 RAPPORT D'ASPECT \b0\fs20\par
+\par
+{\f1   procedure GetAspectRatio(var Xasp, Yasp : Word);}\par
+{\f1   Retourne le rapport d'aspect courant utilis?? pour corriger les}\par
+{\f1   cercles et arcs (pixels non carr??s sur certains modes).}\par
+\par
+{\f1   Le rapport est exprim?? en deux valeurs : pour obtenir un cercle}\par
+{\f1   parfait, le rayon Y effectif = Radius * (Xasp / Yasp).}\par
+\par
+{\f1   procedure SetAspectRatio(Xasp, Yasp : Word);}\par
+{\f1   Modifie le rapport d'aspect. Utile si le ratio d??tect??}\par
+{\f1   automatiquement ne produit pas des cercles parfaits.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Xasp, Yasp  Nouvelles valeurs du rapport (typiquement ~10000)}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGRAPH_22}     {\uldb Suivant >>}{\v IDH_TPGRAPH_24}     {\uldb Sommaire}{\v IDH_TPGRAPH_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGRAPH_24}
+{\footnote $ Unite Graph (BGI) - IMAGES (BITMAP)}
+{\footnote K Turbo Pascal;Unite Graph (BGI);IMAGES (BITMAP)}
+\b\fs24 IMAGES (BITMAP) \b0\fs20\par
+\par
+{\f1   function ImageSize(x1, y1, x2, y2 : Integer) : Word;}\par
+{\f1   Calcule la taille m??moire en octets n??cessaire pour stocker}\par
+{\f1   l'image rectangulaire d??finie par (x1,y1)-(x2,y2).}\par
+\par
+{\f1   Le r??sultat inclut l'en-t??te interne (4 octets : largeur et}\par
+{\f1   hauteur sur 2 mots).}\par
+\par
+{\f1   Si la taille d??passe 64 Ko - 1 (65535), retourne 0 et}\par
+{\f1   GraphResult = grError.}\par
+\par
+{\f1   procedure GetImage(x1, y1, x2, y2 : Integer; var BitMap);}\par
+{\f1   Capture l'image rectangulaire de l'??cran dans un tampon m??moire.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     x1,y1,x2,y2  Rectangle source}\par
+{\f1     BitMap        Tampon non typ?? (doit avoir au moins}\par
+{\f1                   ImageSize(x1,y1,x2,y2) octets)}\par
+\par
+{\f1   Le tampon est habituellement allou?? dynamiquement :}\par
+{\f1     Size := ImageSize(x1, y1, x2, y2);}\par
+{\f1     GetMem(P, Size);}\par
+{\f1     GetImage(x1, y1, x2, y2, P^);}\par
+\par
+{\f1   procedure PutImage(X, Y : Integer; var BitMap; BitBlt : Word);}\par
+{\f1   Affiche une image pr??c??demment captur??e par GetImage.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     X, Y      Position du coin sup??rieur gauche}\par
+{\f1     BitMap    Tampon contenant l'image (format GetImage)}\par
+{\f1     BitBlt    Op??rateur de combinaison :}\par
+{\f1               CopyPut (0), XORPut (1), OrPut (2),}\par
+{\f1               AndPut (3), NotPut (4)}\par
+\par
+{\f1   Exemple d'animation par XOR :}\par
+{\f1     GetImage(10, 10, 40, 40, Buf^);}\par
+{\f1     PutImage(10, 10, Buf^, XORPut);  \{ effacer \}}\par
+{\f1     PutImage(20, 10, Buf^, XORPut);  \{ afficher ?? nouvelle position \}}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGRAPH_23}     {\uldb Suivant >>}{\v IDH_TPGRAPH_25}     {\uldb Sommaire}{\v IDH_TPGRAPH_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGRAPH_25}
+{\footnote $ Unite Graph (BGI) - TEXTE GRAPHIQUE}
+{\footnote K Turbo Pascal;Unite Graph (BGI);TEXTE GRAPHIQUE}
+\b\fs24 TEXTE GRAPHIQUE \b0\fs20\par
+\par
+{\f1   procedure OutText(TextString : String);}\par
+{\f1   Affiche une cha??ne ?? la position courante (CP).}\par
+{\f1   Avec la police par d??faut (DefaultFont) en direction horizontale,}\par
+{\f1   CP avance apr??s le texte. Avec les polices vectorielles, CP}\par
+{\f1   n'avance que si la justification est (LeftText, TopText).}\par
+\par
+{\f1   procedure OutTextXY(X, Y : Integer; TextString : String);}\par
+{\f1   Affiche une cha??ne ?? la position sp??cifi??e (X, Y).}\par
+{\f1   Ne modifie pas la position courante (CP).}\par
+\par
+{\f1   procedure SetTextStyle(Font, Direction : Word; CharSize : Word);}\par
+{\f1   D??finit la police, la direction et la taille du texte.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Font       DefaultFont, TriplexFont, SmallFont,}\par
+{\f1                SansSerifFont, GothicFont, ou police utilisateur}\par
+{\f1     Direction  HorizDir (0) ou VertDir (1)}\par
+{\f1     CharSize   1..10 = facteur multiplicateur}\par
+{\f1                0 (UserCharSize) = taille d??finie par SetUserCharSize}\par
+\par
+{\f1   procedure SetUserCharSize(MultX, DivX, MultY, DivY : Word);}\par
+{\f1   D??finit une taille de caract??re personnalis??e pour les polices}\par
+{\f1   vectorielles.}\par
+\par
+{\f1   Le facteur d'??chelle horizontal = MultX / DivX}\par
+{\f1   Le facteur d'??chelle vertical   = MultY / DivY}\par
+\par
+{\f1   Actif uniquement quand CharSize = UserCharSize (0) dans}\par
+{\f1   SetTextStyle.}\par
+\par
+{\f1   Exemple :}\par
+{\f1     SetTextStyle(TriplexFont, HorizDir, UserCharSize);}\par
+{\f1     SetUserCharSize(3, 1, 2, 1);  \{ 3x horizontal, 2x vertical \}}\par
+\par
+{\f1   procedure SetTextJustify(Horiz, Vert : Word);}\par
+{\f1   D??finit l'alignement du texte par rapport au point d'affichage.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Horiz  LeftText (0), CenterText (1), RightText (2)}\par
+{\f1     Vert   BottomText (0), CenterText (1), TopText (2)}\par
+\par
+{\f1   Par d??faut : (LeftText, TopText) = le texte commence en haut}\par
+{\f1   ?? gauche du point.}\par
+\par
+{\f1   procedure GetTextSettings(var TextInfo : TextSettingsType);}\par
+{\f1   Retourne les param??tres de texte courants (police, direction,}\par
+{\f1   taille, justification).}\par
+\par
+{\f1   function TextHeight(TextString : String) : Word;}\par
+{\f1   Retourne la hauteur en pixels de la cha??ne avec les param??tres}\par
+{\f1   de texte courants. Utile pour calculer l'espacement des lignes.}\par
+\par
+{\f1   function TextWidth(TextString : String) : Word;}\par
+{\f1   Retourne la largeur en pixels de la cha??ne avec les param??tres}\par
+{\f1   de texte courants. Utile pour centrer du texte ou v??rifier}\par
+{\f1   qu'il tient dans un viewport.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGRAPH_24}     {\uldb Suivant >>}{\v IDH_TPGRAPH_26}     {\uldb Sommaire}{\v IDH_TPGRAPH_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGRAPH_26}
+{\footnote $ Unite Graph (BGI) - EXEMPLES COMPLETS}
+{\footnote K Turbo Pascal;Unite Graph (BGI);EXEMPLES COMPLETS}
+\b\fs24 EXEMPLES COMPLETS \b0\fs20\par
+\par
+{\f1   --- Exemple 1 : Programme graphique minimal ---}\par
+\par
+{\f1   program GraphDemo;}\par
+{\f1   uses Graph;}\par
+{\f1   var}\par
+{\f1     Gd, Gm : Integer;}\par
+{\f1   begin}\par
+{\f1     Gd := Detect;}\par
+{\f1     InitGraph(Gd, Gm, '');}\par
+{\f1     if GraphResult <> grOk then}\par
+{\f1     begin}\par
+{\f1       WriteLn('Erreur : ', GraphErrorMsg(GraphResult));}\par
+{\f1       Halt(1);}\par
+{\f1     end;}\par
+\par
+{\f1     SetColor(Yellow);}\par
+{\f1     Rectangle(10, 10, GetMaxX - 10, GetMaxY - 10);}\par
+{\f1     Circle(GetMaxX div 2, GetMaxY div 2, 100);}\par
+{\f1     OutTextXY(10, GetMaxY - 30, 'Appuyez sur Entree...');}\par
+{\f1     ReadLn;}\par
+{\f1     CloseGraph;}\par
+{\f1   end.}\par
+\par
+{\f1   --- Exemple 2 : Barres color??es avec remplissage ---}\par
+\par
+{\f1   program BarChart;}\par
+{\f1   uses Graph;}\par
+{\f1   var}\par
+{\f1     Gd, Gm, I : Integer;}\par
+{\f1   begin}\par
+{\f1     Gd := Detect;}\par
+{\f1     InitGraph(Gd, Gm, '');}\par
+{\f1     if GraphResult <> grOk then Halt(1);}\par
+\par
+{\f1     for I := 0 to 10 do}\par
+{\f1     begin}\par
+{\f1       SetFillStyle(I, White);}\par
+{\f1       Bar(I * 50 + 10, 50, I * 50 + 50, 300);}\par
+{\f1       Rectangle(I * 50 + 10, 50, I * 50 + 50, 300);}\par
+{\f1     end;}\par
+\par
+{\f1     ReadLn;}\par
+{\f1     CloseGraph;}\par
+{\f1   end.}\par
+\par
+{\f1   --- Exemple 3 : Animation par double buffering ---}\par
+\par
+{\f1   program Animation;}\par
+{\f1   uses Graph, Crt;}\par
+{\f1   var}\par
+{\f1     Gd, Gm, X, Page : Integer;}\par
+{\f1   begin}\par
+{\f1     Gd := VGA; Gm := VGALo;  \{ 4 pages disponibles \}}\par
+{\f1     InitGraph(Gd, Gm, '');}\par
+{\f1     if GraphResult <> grOk then Halt(1);}\par
+\par
+{\f1     X := 0;}\par
+{\f1     Page := 0;}\par
+{\f1     while not KeyPressed do}\par
+{\f1     begin}\par
+{\f1       SetActivePage(1 - Page);}\par
+{\f1       ClearDevice;}\par
+{\f1       SetColor(LightCyan);}\par
+{\f1       Circle(X, 100, 30);}\par
+{\f1       SetVisualPage(1 - Page);}\par
+{\f1       Page := 1 - Page;}\par
+{\f1       X := (X + 2) mod GetMaxX;}\par
+{\f1       Delay(20);}\par
+{\f1     end;}\par
+\par
+{\f1     CloseGraph;}\par
+{\f1   end.}\par
+\par
+{\f1   --- Exemple 4 : Camembert (PieSlice) ---}\par
+\par
+{\f1   program PieChart;}\par
+{\f1   uses Graph;}\par
+{\f1   var}\par
+{\f1     Gd, Gm : Integer;}\par
+{\f1   begin}\par
+{\f1     Gd := Detect;}\par
+{\f1     InitGraph(Gd, Gm, '');}\par
+{\f1     if GraphResult <> grOk then Halt(1);}\par
+\par
+{\f1     SetFillStyle(SolidFill, Red);}\par
+{\f1     PieSlice(320, 240, 0, 120, 100);}\par
+\par
+{\f1     SetFillStyle(SolidFill, Green);}\par
+{\f1     PieSlice(320, 240, 120, 240, 100);}\par
+\par
+{\f1     SetFillStyle(SolidFill, Blue);}\par
+{\f1     PieSlice(320, 240, 240, 360, 100);}\par
+\par
+{\f1     ReadLn;}\par
+{\f1     CloseGraph;}\par
+{\f1   end.}\par
+\par
+{\f1   --- Exemple 5 : Capture et affichage d'image ---}\par
+\par
+{\f1   program ImageDemo;}\par
+{\f1   uses Graph;}\par
+{\f1   var}\par
+{\f1     Gd, Gm : Integer;}\par
+{\f1     P       : Pointer;}\par
+{\f1     Size    : Word;}\par
+{\f1   begin}\par
+{\f1     Gd := Detect;}\par
+{\f1     InitGraph(Gd, Gm, '');}\par
+{\f1     if GraphResult <> grOk then Halt(1);}\par
+\par
+{\f1     \{ Dessiner un objet \}}\par
+{\f1     SetColor(Yellow);}\par
+{\f1     SetFillStyle(SolidFill, Red);}\par
+{\f1     FillEllipse(50, 50, 30, 20);}\par
+\par
+{\f1     \{ Capturer \}}\par
+{\f1     Size := ImageSize(20, 30, 80, 70);}\par
+{\f1     GetMem(P, Size);}\par
+{\f1     GetImage(20, 30, 80, 70, P^);}\par
+\par
+{\f1     \{ Dupliquer \}}\par
+{\f1     PutImage(200, 100, P^, CopyPut);}\par
+{\f1     PutImage(300, 200, P^, XORPut);}\par
+\par
+{\f1     ReadLn;}\par
+{\f1     FreeMem(P, Size);}\par
+{\f1     CloseGraph;}\par
+{\f1   end.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGRAPH_25}     {\uldb Suivant >>}{\v IDH_TPGRAPH_27}     {\uldb Sommaire}{\v IDH_TPGRAPH_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGRAPH_27}
+{\footnote $ Unite Graph (BGI) - R??CAPITULATIF DE L'INTERFACE}
+{\footnote K Turbo Pascal;Unite Graph (BGI);R??CAPITULATIF DE L'INTERFACE}
+\b\fs24 R??CAPITULATIF DE L'INTERFACE \b0\fs20\par
+\par
+{\f1   --- Fonctions d'erreur et information ---}\par
+{\f1   Function  GraphErrorMsg(ErrorCode : Integer) : String;}\par
+{\f1   Function  GraphResult : Integer;}\par
+{\f1   Procedure DetectGraph(var GraphDriver, GraphMode : Integer);}\par
+{\f1   Function  GetDriverName : String;}\par
+\par
+{\f1   --- Initialisation / Fermeture ---}\par
+{\f1   Procedure InitGraph(var GraphDriver : Integer;}\par
+{\f1                       var GraphMode : Integer;}\par
+{\f1                       PathToDriver : String);}\par
+{\f1   Procedure CloseGraph;}\par
+{\f1   Procedure RestoreCrtMode;}\par
+{\f1   Procedure SetGraphMode(Mode : Integer);}\par
+{\f1   Function  GetGraphMode : Integer;}\par
+{\f1   Procedure GraphDefaults;}\par
+\par
+{\f1   --- Pilotes et polices ---}\par
+{\f1   Function  RegisterBGIdriver(Driver : Pointer) : Integer;}\par
+{\f1   Function  RegisterBGIfont(Font : Pointer) : Integer;}\par
+{\f1   Function  InstallUserDriver(DriverFileName : String;}\par
+{\f1                               AutoDetectPtr : Pointer) : Integer;}\par
+{\f1   Function  InstallUserFont(FontFileName : String) : Integer;}\par
+{\f1   Procedure SetGraphBufSize(BufSize : Word);}\par
+\par
+{\f1   --- Modes ---}\par
+{\f1   Function  GetMaxMode : Integer;}\par
+{\f1   Procedure GetModeRange(GraphDriver : Integer;}\par
+{\f1                          var LoMode, HiMode : Integer);}\par
+{\f1   Function  GetModeName(GraphMode : Integer) : String;}\par
+\par
+{\f1   --- Position et dimensions ---}\par
+{\f1   Function  GetX : Integer;}\par
+{\f1   Function  GetY : Integer;}\par
+{\f1   Function  GetMaxX : Integer;}\par
+{\f1   Function  GetMaxY : Integer;}\par
+{\f1   Procedure MoveTo(X, Y : Integer);}\par
+{\f1   Procedure MoveRel(Dx, Dy : Integer);}\par
+\par
+{\f1   --- Viewport et pages ---}\par
+{\f1   Procedure SetViewPort(x1, y1, x2, y2 : Integer; Clip : Boolean);}\par
+{\f1   Procedure GetViewSettings(var ViewPort : ViewPortType);}\par
+{\f1   Procedure ClearDevice;}\par
+{\f1   Procedure ClearViewPort;}\par
+{\f1   Procedure SetVisualPage(Page : Word);}\par
+{\f1   Procedure SetActivePage(Page : Word);}\par
+\par
+{\f1   --- Pixels et lignes ---}\par
+{\f1   Procedure PutPixel(X, Y : Integer; Pixel : Word);}\par
+{\f1   Function  GetPixel(X, Y : Integer) : Word;}\par
+{\f1   Procedure SetWriteMode(WriteMode : Integer);}\par
+{\f1   Procedure Line(x1, y1, x2, y2 : Integer);}\par
+{\f1   Procedure LineTo(X, Y : Integer);}\par
+{\f1   Procedure LineRel(Dx, Dy : Integer);}\par
+{\f1   Procedure GetLineSettings(var LineInfo : LineSettingsType);}\par
+{\f1   Procedure SetLineStyle(LineStyle, Pattern, Thickness : Word);}\par
+\par
+{\f1   --- Formes ---}\par
+{\f1   Procedure Rectangle(x1, y1, x2, y2 : Integer);}\par
+{\f1   Procedure Bar(x1, y1, x2, y2 : Integer);}\par
+{\f1   Procedure Bar3D(x1, y1, x2, y2 : Integer;}\par
+{\f1                   Depth : Word; Top : Boolean);}\par
+{\f1   Procedure DrawPoly(NumPoints : Word; var PolyPoints);}\par
+{\f1   Procedure FillPoly(NumPoints : Word; var PolyPoints);}\par
+{\f1   Procedure Circle(X, Y : Integer; Radius : Word);}\par
+{\f1   Procedure Arc(X, Y : Integer;}\par
+{\f1                 StAngle, EndAngle, Radius : Word);}\par
+{\f1   Procedure GetArcCoords(var ArcCoords : ArcCoordsType);}\par
+{\f1   Procedure Ellipse(X, Y : Integer;}\par
+{\f1                     StAngle, EndAngle, XRadius, YRadius : Word);}\par
+{\f1   Procedure FillEllipse(X, Y : Integer; XRadius, YRadius : Word);}\par
+{\f1   Procedure PieSlice(X, Y : Integer;}\par
+{\f1                      StAngle, EndAngle, Radius : Word);}\par
+{\f1   Procedure Sector(X, Y : Integer;}\par
+{\f1                    StAngle, EndAngle, XRadius, YRadius : Word);}\par
+{\f1   Procedure FloodFill(X, Y : Integer; Border : Word);}\par
+\par
+{\f1   --- Remplissage ---}\par
+{\f1   Procedure GetFillSettings(var FillInfo : FillSettingsType);}\par
+{\f1   Procedure GetFillPattern(var FillPattern : FillPatternType);}\par
+{\f1   Procedure SetFillStyle(Pattern, Color : Word);}\par
+{\f1   Procedure SetFillPattern(Pattern : FillPatternType; Color : Word);}\par
+\par
+{\f1   --- Couleurs et palette ---}\par
+{\f1   Procedure SetColor(Color : Word);}\par
+{\f1   Function  GetColor : Word;}\par
+{\f1   Procedure SetBkColor(ColorNum : Word);}\par
+{\f1   Function  GetBkColor : Word;}\par
+{\f1   Function  GetMaxColor : Word;}\par
+{\f1   Procedure SetPalette(ColorNum : Word; Color : ShortInt);}\par
+{\f1   Procedure SetAllPalette(var Palette);}\par
+{\f1   Procedure GetPalette(var Palette : PaletteType);}\par
+{\f1   Function  GetPaletteSize : Integer;}\par
+{\f1   Procedure GetDefaultPalette(var Palette : PaletteType);}\par
+{\f1   Procedure SetRGBPalette(ColorNum,}\par
+{\f1                           RedValue, GreenValue, BlueValue : Integer);}\par
+\par
+{\f1   --- Rapport d'aspect ---}\par
+{\f1   Procedure GetAspectRatio(var Xasp, Yasp : Word);}\par
+{\f1   Procedure SetAspectRatio(Xasp, Yasp : Word);}\par
+\par
+{\f1   --- Images ---}\par
+{\f1   Function  ImageSize(x1, y1, x2, y2 : Integer) : Word;}\par
+{\f1   Procedure GetImage(x1, y1, x2, y2 : Integer; var BitMap);}\par
+{\f1   Procedure PutImage(X, Y : Integer; var BitMap; BitBlt : Word);}\par
+\par
+{\f1   --- Texte graphique ---}\par
+{\f1   Procedure OutText(TextString : String);}\par
+{\f1   Procedure OutTextXY(X, Y : Integer; TextString : String);}\par
+{\f1   Procedure SetTextStyle(Font, Direction, CharSize : Word);}\par
+{\f1   Procedure SetUserCharSize(MultX, DivX, MultY, DivY : Word);}\par
+{\f1   Procedure SetTextJustify(Horiz, Vert : Word);}\par
+{\f1   Procedure GetTextSettings(var TextInfo : TextSettingsType);}\par
+{\f1   Function  TextHeight(TextString : String) : Word;}\par
+{\f1   Function  TextWidth(TextString : String) : Word;}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPGRAPH_26}     {\uldb Suivant >>}{\v IDH_TPGRAPH_28}     {\uldb Sommaire}{\v IDH_TPGRAPH_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPGRAPH_28}
+{\footnote $ Unite Graph (BGI) - R??SUM?? PAR CAT??GORIE}
+{\footnote K Turbo Pascal;Unite Graph (BGI);R??SUM?? PAR CAT??GORIE}
+\b\fs24 R??SUM?? PAR CAT??GORIE \b0\fs20\par
+\par
+{\f1   Cat??gorie                   Nombre   Routines}\par
+{\f1   -------------------------   ------   ----------------------------------}\par
+{\f1   Erreur / Information           4     GraphErrorMsg, GraphResult,}\par
+{\f1                                        DetectGraph, GetDriverName}\par
+{\f1   Initialisation / Fermeture     5     InitGraph, CloseGraph,}\par
+{\f1                                        RestoreCrtMode, SetGraphMode,}\par
+{\f1                                        GraphDefaults}\par
+{\f1   Pilotes / Polices              4     RegisterBGIdriver,}\par
+{\f1                                        RegisterBGIfont,}\par
+{\f1                                        InstallUserDriver,}\par
+{\f1                                        InstallUserFont}\par
+{\f1   Modes                          4     GetMaxMode, GetModeRange,}\par
+{\f1                                        GetModeName, GetGraphMode}\par
+{\f1   Tampon                         1     SetGraphBufSize}\par
+{\f1   Position / Dimensions          6     GetX, GetY, GetMaxX, GetMaxY,}\par
+{\f1                                        MoveTo, MoveRel}\par
+{\f1   Viewport / Pages               6     SetViewPort, GetViewSettings,}\par
+{\f1                                        ClearDevice, ClearViewPort,}\par
+{\f1                                        SetVisualPage, SetActivePage}\par
+{\f1   Pixels / Lignes                7     PutPixel, GetPixel,}\par
+{\f1                                        SetWriteMode, Line, LineTo,}\par
+{\f1                                        LineRel, SetLineStyle}\par
+{\f1   Info lignes                    1     GetLineSettings}\par
+{\f1   Formes                        11     Rectangle, Bar, Bar3D,}\par
+{\f1                                        DrawPoly, FillPoly, Circle,}\par
+{\f1                                        Arc, Ellipse, FillEllipse,}\par
+{\f1                                        PieSlice, Sector}\par
+{\f1   Info arcs                      1     GetArcCoords}\par
+{\f1   Remplissage libre              1     FloodFill}\par
+{\f1   Remplissage r??glages           4     GetFillSettings,}\par
+{\f1                                        GetFillPattern, SetFillStyle,}\par
+{\f1                                        SetFillPattern}\par
+{\f1   Couleurs / Palette            10     SetColor, GetColor, SetBkColor,}\par
+{\f1                                        GetBkColor, GetMaxColor,}\par
+{\f1                                        SetPalette, SetAllPalette,}\par
+{\f1                                        GetPalette, GetPaletteSize,}\par
+{\f1                                        GetDefaultPalette}\par
+{\f1   RVB                            1     SetRGBPalette}\par
+{\f1   Aspect                         2     GetAspectRatio, SetAspectRatio}\par
+{\f1   Images                         3     ImageSize, GetImage, PutImage}\par
+{\f1   Texte graphique                7     OutText, OutTextXY,}\par
+{\f1                                        SetTextStyle, SetUserCharSize,}\par
+{\f1                                        SetTextJustify,}\par
+{\f1                                        GetTextSettings, TextHeight,}\par
+{\f1                                        TextWidth}\par
+{\f1   -------------------------   ------   ----------------------------------}\par
+{\f1   TOTAL                         78     proc??dures et fonctions}\par
+\par
+{\f1   Types export??s : 8  (PaletteType, LineSettingsType,}\par
+{\f1                        TextSettingsType, FillSettingsType,}\par
+{\f1                        FillPatternType, PointType,}\par
+{\f1                        ViewPortType, ArcCoordsType)}\par
+\par
+{\f1   Variables export??es : 2  (GraphGetMemPtr, GraphFreeMemPtr)}\par
+\par
+{\f1   Constantes export??es : ~120 (codes erreur, pilotes, modes,}\par
+{\f1                                couleurs, styles, polices, motifs,}\par
+{\f1                                op??rateurs BitBlt, justification)}\par
+\par
+{\f1   Fin du document - Unit?? GRAPH - Turbo Pascal 7.0}\par
+
+\par
+{\uldb << Precedent}{\v IDH_TPGRAPH_27}     {\uldb Sommaire}{\v IDH_TPGRAPH_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+}

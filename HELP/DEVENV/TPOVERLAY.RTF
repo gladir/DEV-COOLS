@@ -1,0 +1,655 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}
+
+{\footnote # IDH_TPOVL_01}
+{\footnote $ Unite Overlay - CODES D'ERREUR (OvrResult)}
+{\footnote K Turbo Pascal;Unite Overlay;CODES D'ERREUR (OvrResult)}
+\b\fs24 CODES D'ERREUR (OvrResult) \b0\fs20\par
+\par
+{\f1   Apr??s chaque appel ?? une proc??dure de l'unit?? Overlay, la variable}\par
+{\f1   OvrResult contient un code indiquant le r??sultat de l'op??ration.}\par
+\par
+{\f1   Constante         Valeur   Signification}\par
+{\f1   ----------------  ------   ------------------------------------------}\par
+{\f1   ovrOk                 0    Op??ration r??ussie}\par
+{\f1   ovrError             -1    Erreur g??n??rale du gestionnaire d'overlays}\par
+{\f1   ovrNotFound          -2    Fichier overlay (.OVR) non trouv??}\par
+{\f1   ovrNoMemory          -3    M??moire insuffisante pour le tampon overlay}\par
+{\f1   ovrIOError           -4    Erreur d'entr??e/sortie sur le fichier .OVR}\par
+{\f1   ovrNoEMSDriver      -5    Pilote EMS (EMM386, QEMM...) non install??}\par
+{\f1   ovrNoEMSMemory      -6    M??moire EMS insuffisante}\par
+\par
+{\f1   Exemple :}\par
+{\f1     OvrInit('MONPROG.OVR');}\par
+{\f1     if OvrResult <> ovrOk then}\par
+{\f1     begin}\par
+{\f1       WriteLn('Erreur overlay : ', OvrResult);}\par
+{\f1       Halt(1);}\par
+{\f1     end;}\par
+\par
+\par
+\b Sections suivantes : \b0\par
+\par
+{\f1  2. VARIABLES TYP??ES (CONSTANTES INITIALIS??ES)}     {\uldb [Aller]}{\v IDH_TPOVL_02}\par
+{\f1  3. TYPE}     {\uldb [Aller]}{\v IDH_TPOVL_03}\par
+{\f1  4. VARIABLE}     {\uldb [Aller]}{\v IDH_TPOVL_04}\par
+{\f1  5. INITIALISATION (OvrInit)}     {\uldb [Aller]}{\v IDH_TPOVL_05}\par
+{\f1  6. INITIALISATION EMS (OvrInitEMS)}     {\uldb [Aller]}{\v IDH_TPOVL_06}\par
+{\f1  7. GESTION DU TAMPON OVERLAY}     {\uldb [Aller]}{\v IDH_TPOVL_07}\par
+{\f1  8. ZONE DE R??ESSAI (Retry Area)}     {\uldb [Aller]}{\v IDH_TPOVL_08}\par
+{\f1  9. EFFACEMENT DU TAMPON (OvrClearBuf)}     {\uldb [Aller]}{\v IDH_TPOVL_09}\par
+{\f1 10. ARCHITECTURE DES OVERLAYS}     {\uldb [Aller]}{\v IDH_TPOVL_10}\par
+{\f1 11. OPTIMISATION DES PERFORMANCES}     {\uldb [Aller]}{\v IDH_TPOVL_11}\par
+{\f1 12. EXEMPLES COMPLETS}     {\uldb [Aller]}{\v IDH_TPOVL_12}\par
+{\f1 13. R??CAPITULATIF DE L'INTERFACE}     {\uldb [Aller]}{\v IDH_TPOVL_13}\par
+{\f1 14. R??SUM?? PAR CAT??GORIE}     {\uldb [Aller]}{\v IDH_TPOVL_14}\par
+\par
+{\uldb Suivant >>}{\v IDH_TPOVL_02}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOVL_02}
+{\footnote $ Unite Overlay - VARIABLES TYP??ES (CONSTANTES INITIALIS??ES)}
+{\footnote K Turbo Pascal;Unite Overlay;VARIABLES TYP??ES (CONSTANTES INITIALIS??ES)}
+\b\fs24 VARIABLES TYP??ES (CONSTANTES INITIALIS??ES) \b0\fs20\par
+\par
+{\f1   OvrResult : Integer = 0;}\par
+{\f1   Code de retour de la derni??re op??ration overlay. Initialis?? ??}\par
+{\f1   ovrOk (0). Mis ?? jour apr??s chaque appel ?? OvrInit, OvrInitEMS,}\par
+{\f1   OvrSetBuf, OvrSetRetry et OvrClearBuf.}\par
+\par
+{\f1   Toujours v??rifier OvrResult apr??s les appels critiques,}\par
+{\f1   notamment OvrInit et OvrInitEMS.}\par
+\par
+{\f1   OvrEmsPages : Word = 0;}\par
+{\f1   Nombre de pages EMS allou??es pour les overlays apr??s un appel}\par
+{\f1   r??ussi ?? OvrInitEMS. Chaque page EMS fait 16 Ko.}\par
+\par
+{\f1   Si OvrInitEMS n'a pas ??t?? appel?? ou a ??chou??, OvrEmsPages = 0.}\par
+\par
+{\f1   Exemple :}\par
+{\f1     OvrInitEMS;}\par
+{\f1     if OvrResult = ovrOk then}\par
+{\f1       WriteLn(OvrEmsPages, ' pages EMS allou??es (',}\par
+{\f1               OvrEmsPages * 16, ' Ko)')}\par
+{\f1     else}\par
+{\f1       WriteLn('EMS non disponible, utilisation du disque');}\par
+\par
+{\f1   OvrTrapCount : Word = 0;}\par
+{\f1   Compteur du nombre total d'appels intercept??s (traps) vers des}\par
+{\f1   unit??s overlay. Chaque fois qu'une proc??dure ou fonction d'une}\par
+{\f1   unit?? overlay est appel??e et que l'unit?? n'est pas en m??moire,}\par
+{\f1   un trap est d??clench?? pour charger l'unit??.}\par
+\par
+{\f1   Ce compteur est utile pour mesurer la performance et optimiser}\par
+{\f1   la taille du tampon overlay. Un OvrTrapCount ??lev?? indique des}\par
+{\f1   rechargements fr??quents (thrashing).}\par
+\par
+{\f1   OvrLoadCount : Word = 0;}\par
+{\f1   Compteur du nombre total de chargements effectifs d'unit??s}\par
+{\f1   overlay depuis le fichier .OVR ou la m??moire EMS. Un chargement}\par
+{\f1   se produit quand l'unit?? appel??e n'est pas pr??sente dans le}\par
+{\f1   tampon.}\par
+\par
+{\f1   La diff??rence entre OvrTrapCount et OvrLoadCount indique le}\par
+{\f1   nombre de fois o?? une unit?? ??tait d??j?? en m??moire lors du trap}\par
+{\f1   (aucun chargement n??cessaire).}\par
+\par
+{\f1   Optimisation : si OvrLoadCount est proche de OvrTrapCount,}\par
+{\f1   le tampon est trop petit et les unit??s sont constamment}\par
+{\f1   recharg??es. Augmenter la taille du tampon avec OvrSetBuf.}\par
+\par
+{\f1   OvrFileMode : Byte = 0;}\par
+{\f1   Mode d'ouverture du fichier overlay. Par d??faut 0 (lecture}\par
+{\f1   seule). Correspond au mode pass?? ?? l'ouverture DOS du fichier}\par
+{\f1   .OVR.}\par
+\par
+{\f1   Valeurs courantes :}\par
+{\f1     0 = Lecture seule (par d??faut)}\par
+{\f1     $40 = Deny-none (partage r??seau, permet l'acc??s concurrent)}\par
+\par
+{\f1   Sur un r??seau, si plusieurs instances du programme doivent}\par
+{\f1   acc??der au m??me fichier .OVR, d??finir OvrFileMode := $40}\par
+{\f1   avant d'appeler OvrInit.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOVL_01}     {\uldb Suivant >>}{\v IDH_TPOVL_03}     {\uldb Sommaire}{\v IDH_TPOVL_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOVL_03}
+{\footnote $ Unite Overlay - TYPE}
+{\footnote K Turbo Pascal;Unite Overlay;TYPE}
+\b\fs24 TYPE \b0\fs20\par
+\par
+{\f1   OvrReadFunc = Function(OvrSeg : Word) : Integer;}\par
+{\f1   Type de fonction de lecture personnalis??e pour le chargement des}\par
+{\f1   overlays.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     OvrSeg  Segment m??moire o?? charger l'unit?? overlay}\par
+{\f1   Retour :}\par
+{\f1     ovrOk (0) si le chargement a r??ussi,}\par
+{\f1     ou un code d'erreur n??gatif en cas d'??chec.}\par
+\par
+{\f1   Ce type est utilis?? par la variable OvrReadBuf pour permettre ??}\par
+{\f1   l'utilisateur de remplacer la routine de lecture standard du}\par
+{\f1   gestionnaire d'overlays (par exemple pour lire les overlays}\par
+{\f1   depuis un fichier compress??, crypt??, ou un support non standard).}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOVL_02}     {\uldb Suivant >>}{\v IDH_TPOVL_04}     {\uldb Sommaire}{\v IDH_TPOVL_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOVL_04}
+{\footnote $ Unite Overlay - VARIABLE}
+{\footnote K Turbo Pascal;Unite Overlay;VARIABLE}
+\b\fs24 VARIABLE \b0\fs20\par
+\par
+{\f1   OvrReadBuf : OvrReadFunc;}\par
+{\f1   Pointeur vers la fonction de lecture des overlays. Par d??faut,}\par
+{\f1   pointe vers la routine interne qui lit depuis le fichier .OVR.}\par
+\par
+{\f1   En assignant une fonction personnalis??e ?? OvrReadBuf, il est}\par
+{\f1   possible de modifier enti??rement le m??canisme de chargement}\par
+{\f1   des overlays.}\par
+\par
+{\f1   Exemple (concept) :}\par
+{\f1     function MyOvrRead(OvrSeg : Word) : Integer; far;}\par
+{\f1     begin}\par
+{\f1       \{ Charger l'overlay depuis une source personnalis??e \}}\par
+{\f1       \{ vers le segment OvrSeg \}}\par
+{\f1       MyOvrRead := ovrOk;}\par
+{\f1     end;}\par
+\par
+{\f1     begin}\par
+{\f1       OvrInit('MONPROG.OVR');}\par
+{\f1       if OvrResult = ovrOk then}\par
+{\f1         OvrReadBuf := MyOvrRead;}\par
+{\f1     end;}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOVL_03}     {\uldb Suivant >>}{\v IDH_TPOVL_05}     {\uldb Sommaire}{\v IDH_TPOVL_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOVL_05}
+{\footnote $ Unite Overlay - INITIALISATION (OvrInit)}
+{\footnote K Turbo Pascal;Unite Overlay;INITIALISATION (OvrInit)}
+\b\fs24 INITIALISATION (OvrInit) \b0\fs20\par
+\par
+{\f1   procedure OvrInit(FileName : String);}\par
+{\f1   Initialise le gestionnaire d'overlays et ouvre le fichier}\par
+{\f1   overlay sp??cifi??.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     FileName  Nom du fichier overlay (.OVR)}\par
+\par
+{\f1   Cette proc??dure DOIT ??tre appel??e avant tout appel ?? une unit??}\par
+{\f1   overlay. Elle est typiquement la premi??re instruction du}\par
+{\f1   programme principal.}\par
+\par
+{\f1   Fonctionnement :}\par
+{\f1     1. Ouvre le fichier .OVR avec le mode OvrFileMode.}\par
+{\f1     2. V??rifie la validit?? du fichier overlay.}\par
+{\f1     3. Initialise le tampon overlay en m??moire conventionnelle.}\par
+{\f1     4. Pr??pare les tables de trap pour chaque unit?? overlay.}\par
+\par
+{\f1   R??sultat dans OvrResult :}\par
+{\f1     ovrOk        Initialisation r??ussie}\par
+{\f1     ovrNotFound  Fichier .OVR non trouv??}\par
+{\f1     ovrError     Fichier invalide ou incompatible}\par
+{\f1     ovrIOError   Erreur de lecture du fichier}\par
+\par
+{\f1   IMPORTANT :}\par
+{\f1   - Le fichier .OVR est g??n??r?? automatiquement par le compilateur}\par
+{\f1     lors de la compilation du programme utilisant des unit??s \{$O+\}.}\par
+{\f1   - Le fichier .OVR reste ouvert pendant toute l'ex??cution du}\par
+{\f1     programme (sauf si OvrInitEMS est utilis?? avec succ??s).}\par
+{\f1   - Si le fichier .OVR se trouve dans le m??me r??pertoire que}\par
+{\f1     l'ex??cutable, on peut utiliser ParamStr(0) pour construire}\par
+{\f1     le chemin.}\par
+\par
+{\f1   Exemple :}\par
+{\f1     program MonProg;}\par
+{\f1     uses Overlay, Unite1, Unite2;}\par
+{\f1     \{$O Unite1\}}\par
+{\f1     \{$O Unite2\}}\par
+{\f1     begin}\par
+{\f1       OvrInit('MONPROG.OVR');}\par
+{\f1       if OvrResult <> ovrOk then}\par
+{\f1       begin}\par
+{\f1         WriteLn('Erreur d''initialisation overlay : ', OvrResult);}\par
+{\f1         Halt(1);}\par
+{\f1       end;}\par
+{\f1       \{ Le programme peut maintenant appeler Unite1 et Unite2 \}}\par
+{\f1     end.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOVL_04}     {\uldb Suivant >>}{\v IDH_TPOVL_06}     {\uldb Sommaire}{\v IDH_TPOVL_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOVL_06}
+{\footnote $ Unite Overlay - INITIALISATION EMS (OvrInitEMS)}
+{\footnote K Turbo Pascal;Unite Overlay;INITIALISATION EMS (OvrInitEMS)}
+\b\fs24 INITIALISATION EMS (OvrInitEMS) \b0\fs20\par
+\par
+{\f1   procedure OvrInitEMS;}\par
+{\f1   Copie le contenu du fichier overlay dans la m??moire EMS}\par
+{\f1   (Expanded Memory Specification).}\par
+\par
+{\f1   Cette proc??dure doit ??tre appel??e APR??S OvrInit. Si elle}\par
+{\f1   r??ussit, les overlays sont charg??s depuis l'EMS au lieu du}\par
+{\f1   fichier disque, ce qui est consid??rablement plus rapide}\par
+{\f1   (acc??s m??moire au lieu d'acc??s disque).}\par
+\par
+{\f1   Fonctionnement :}\par
+{\f1     1. V??rifie la pr??sence d'un pilote EMS (EMM386, QEMM...).}\par
+{\f1     2. Calcule le nombre de pages EMS n??cessaires.}\par
+{\f1     3. Alloue les pages EMS.}\par
+{\f1     4. Copie le contenu du fichier .OVR dans l'EMS.}\par
+{\f1     5. Ferme le fichier .OVR (plus n??cessaire).}\par
+\par
+{\f1   R??sultat dans OvrResult :}\par
+{\f1     ovrOk            Copie en EMS r??ussie}\par
+{\f1     ovrNoEMSDriver   Aucun pilote EMS install??}\par
+{\f1     ovrNoEMSMemory   M??moire EMS insuffisante}\par
+{\f1     ovrError         Gestionnaire overlay non initialis??}\par
+\par
+{\f1   Apr??s un appel r??ussi :}\par
+{\f1     - OvrEmsPages contient le nombre de pages allou??es.}\par
+{\f1     - Le fichier .OVR est ferm??.}\par
+{\f1     - Les chargements sont quasi-instantan??s.}\par
+\par
+{\f1   Si OvrInitEMS ??choue, le programme continue de fonctionner}\par
+{\f1   normalement en chargeant les overlays depuis le disque. Il}\par
+{\f1   est donc courant d'ignorer l'??chec :}\par
+\par
+{\f1   Exemple :}\par
+{\f1     OvrInit('MONPROG.OVR');}\par
+{\f1     if OvrResult <> ovrOk then Halt(1);}\par
+\par
+{\f1     OvrInitEMS;}\par
+{\f1     \{ Ignorer le r??sultat : le disque sera utilis?? si pas d'EMS \}}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOVL_05}     {\uldb Suivant >>}{\v IDH_TPOVL_07}     {\uldb Sommaire}{\v IDH_TPOVL_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOVL_07}
+{\footnote $ Unite Overlay - GESTION DU TAMPON OVERLAY}
+{\footnote K Turbo Pascal;Unite Overlay;GESTION DU TAMPON OVERLAY}
+\b\fs24 GESTION DU TAMPON OVERLAY \b0\fs20\par
+\par
+{\f1   Le tampon overlay est une zone de m??moire conventionnelle o??}\par
+{\f1   les unit??s overlay sont charg??es pour ex??cution. Sa taille}\par
+{\f1   d??termine directement la performance du programme :}\par
+{\f1     - Tampon trop petit ??? rechargements fr??quents (thrashing)}\par
+{\f1     - Tampon trop grand ??? moins de m??moire pour le tas (heap)}\par
+\par
+{\f1   La taille minimale du tampon est celle de la plus grande unit??}\par
+{\f1   overlay du programme. La taille par d??faut est cette taille}\par
+{\f1   minimale.}\par
+\par
+{\f1   procedure OvrSetBuf(Size : LongInt);}\par
+{\f1   D??finit la taille du tampon overlay.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Size  Nouvelle taille en octets}\par
+\par
+{\f1   La taille est arrondie au paragraphe sup??rieur (multiple de 16).}\par
+{\f1   Si Size est inf??rieure ?? la taille minimale requise (la plus}\par
+{\f1   grande unit?? overlay), l'appel est ignor?? et OvrResult = ovrError.}\par
+\par
+{\f1   La m??moire du tampon est prise sur le tas (heap). Augmenter le}\par
+{\f1   tampon r??duit la m??moire disponible pour New, GetMem, etc.}\par
+\par
+{\f1   R??sultat dans OvrResult :}\par
+{\f1     ovrOk        Taille modifi??e avec succ??s}\par
+{\f1     ovrNoMemory  M??moire insuffisante pour la taille demand??e}\par
+{\f1     ovrError     Taille trop petite ou gestionnaire non initialis??}\par
+\par
+{\f1   Exemple :}\par
+{\f1     OvrInit('MONPROG.OVR');}\par
+{\f1     if OvrResult <> ovrOk then Halt(1);}\par
+\par
+{\f1     OvrSetBuf(128 * 1024);  \{ 128 Ko pour le tampon overlay \}}\par
+{\f1     if OvrResult <> ovrOk then}\par
+{\f1       WriteLn('Tampon r??duit, continuation avec taille par d??faut');}\par
+\par
+{\f1   function OvrGetBuf : LongInt;}\par
+{\f1   Retourne la taille actuelle du tampon overlay en octets.}\par
+\par
+{\f1   Retour :}\par
+{\f1     Taille du tampon en octets (0 si le gestionnaire n'est pas}\par
+{\f1     initialis??).}\par
+\par
+{\f1   Exemple :}\par
+{\f1     WriteLn('Tampon overlay : ', OvrGetBuf, ' octets');}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOVL_06}     {\uldb Suivant >>}{\v IDH_TPOVL_08}     {\uldb Sommaire}{\v IDH_TPOVL_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOVL_08}
+{\footnote $ Unite Overlay - ZONE DE R??ESSAI (Retry Area)}
+{\footnote K Turbo Pascal;Unite Overlay;ZONE DE R??ESSAI (Retry Area)}
+\b\fs24 ZONE DE R??ESSAI (Retry Area) \b0\fs20\par
+\par
+{\f1   La zone de r??essai (retry area) est une extension du tampon}\par
+{\f1   overlay. Les unit??s qui sont retir??es du tampon principal pour}\par
+{\f1   faire place ?? d'autres ne sont pas imm??diatement supprim??es :}\par
+{\f1   elles sont d??plac??es vers la zone de r??essai. Si elles sont}\par
+{\f1   rappel??es avant d'??tre ??cras??es, elles peuvent ??tre recharg??es}\par
+{\f1   instantan??ment depuis cette zone, sans acc??s disque ni EMS.}\par
+\par
+{\f1   Ce m??canisme est un cache LRU (Least Recently Used) qui r??duit}\par
+{\f1   consid??rablement le nombre de chargements effectifs, surtout}\par
+{\f1   quand plusieurs unit??s overlay s'appellent mutuellement.}\par
+\par
+{\f1   procedure OvrSetRetry(Size : LongInt);}\par
+{\f1   D??finit la taille de la zone de r??essai.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Size  Taille en octets de la zone de r??essai}\par
+\par
+{\f1   Par d??faut, la zone de r??essai a une taille de 0 (d??sactiv??e).}\par
+{\f1   La m??moire est prise sur le tas.}\par
+\par
+{\f1   R??sultat dans OvrResult :}\par
+{\f1     ovrOk        Taille modifi??e avec succ??s}\par
+{\f1     ovrNoMemory  M??moire insuffisante}\par
+{\f1     ovrError     Gestionnaire non initialis??}\par
+\par
+{\f1   Exemple :}\par
+{\f1     OvrSetBuf(64 * 1024);     \{ 64 Ko tampon principal \}}\par
+{\f1     OvrSetRetry(64 * 1024);   \{ 64 Ko zone de r??essai \}}\par
+\par
+{\f1   function OvrGetRetry : LongInt;}\par
+{\f1   Retourne la taille actuelle de la zone de r??essai en octets.}\par
+\par
+{\f1   Retour :}\par
+{\f1     Taille de la zone en octets (0 si d??sactiv??e ou gestionnaire}\par
+{\f1     non initialis??).}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOVL_07}     {\uldb Suivant >>}{\v IDH_TPOVL_09}     {\uldb Sommaire}{\v IDH_TPOVL_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOVL_09}
+{\footnote $ Unite Overlay - EFFACEMENT DU TAMPON (OvrClearBuf)}
+{\footnote K Turbo Pascal;Unite Overlay;EFFACEMENT DU TAMPON (OvrClearBuf)}
+\b\fs24 EFFACEMENT DU TAMPON (OvrClearBuf) \b0\fs20\par
+\par
+{\f1   procedure OvrClearBuf;}\par
+{\f1   Efface le contenu du tampon overlay et de la zone de r??essai.}\par
+{\f1   Toutes les unit??s overlay charg??es sont marqu??es comme non}\par
+{\f1   pr??sentes. Le prochain appel ?? une unit?? overlay d??clenchera}\par
+{\f1   un rechargement depuis le disque ou l'EMS.}\par
+\par
+{\f1   Cette proc??dure remet ??galement OvrTrapCount et OvrLoadCount}\par
+{\f1   ?? z??ro.}\par
+\par
+{\f1   Utilisation typique :}\par
+{\f1     - Apr??s un changement de phase du programme, pour lib??rer}\par
+{\f1       le tampon des unit??s de la phase pr??c??dente.}\par
+{\f1     - Pour remettre ?? z??ro les compteurs de performance.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOVL_08}     {\uldb Suivant >>}{\v IDH_TPOVL_10}     {\uldb Sommaire}{\v IDH_TPOVL_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOVL_10}
+{\footnote $ Unite Overlay - ARCHITECTURE DES OVERLAYS}
+{\footnote K Turbo Pascal;Unite Overlay;ARCHITECTURE DES OVERLAYS}
+\b\fs24 ARCHITECTURE DES OVERLAYS \b0\fs20\par
+\par
+{\f1   --- Principe de fonctionnement ---}\par
+\par
+{\f1   1. Le compilateur g??n??re un fichier .OVR contenant le code des}\par
+{\f1      unit??s marqu??es \{$O+\}. Le fichier .EXE ne contient que des}\par
+{\f1      ?? stubs ?? (traps) pour chaque proc??dure/fonction overlay.}\par
+\par
+{\f1   2. Quand le programme appelle une proc??dure overlay, le trap}\par
+{\f1      intercepte l'appel et invoque le gestionnaire d'overlays.}\par
+\par
+{\f1   3. Le gestionnaire v??rifie si l'unit?? est d??j?? en m??moire :}\par
+{\f1      - Si oui : l'ex??cution continue directement.}\par
+{\f1      - Si non : l'unit?? est charg??e dans le tampon depuis le}\par
+{\f1        fichier .OVR ou l'EMS, en ??vin??ant si n??cessaire une}\par
+{\f1        autre unit??.}\par
+\par
+{\f1   4. L'unit?? ??vinc??e est :}\par
+{\f1      - Plac??e dans la zone de r??essai (si configur??e et si}\par
+{\f1        l'espace le permet).}\par
+{\f1      - Ou simplement abandonn??e (sera recharg??e au prochain appel).}\par
+\par
+{\f1   --- Directives de compilation ---}\par
+\par
+{\f1   \{$O+\}  Active le mode overlay pour l'unit?? courante.}\par
+{\f1          Plac?? dans l'unit?? elle-m??me.}\par
+\par
+{\f1   \{$O NomUnite\}  D??clare que NomUnite est une unit?? overlay.}\par
+{\f1                   Plac?? dans le programme principal, apr??s Uses.}\par
+\par
+{\f1   --- Contraintes ---}\par
+\par
+{\f1   - Seules les unit??s peuvent ??tre des overlays (pas le programme}\par
+{\f1     principal).}\par
+{\f1   - Les unit??s overlay ne peuvent pas avoir de sections}\par
+{\f1     d'initialisation qui acc??dent ?? des ressources persistantes}\par
+{\f1     (les sections init sont ex??cut??es au chargement).}\par
+{\f1   - Les proc??dures/fonctions inline (\{$F-\}) sont automatiquement}\par
+{\f1     converties en far (\{$F+\}) dans les unit??s overlay.}\par
+{\f1   - Les unit??s System, Overlay, Crt, et Dos ne peuvent pas ??tre}\par
+{\f1     des overlays.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOVL_09}     {\uldb Suivant >>}{\v IDH_TPOVL_11}     {\uldb Sommaire}{\v IDH_TPOVL_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOVL_11}
+{\footnote $ Unite Overlay - OPTIMISATION DES PERFORMANCES}
+{\footnote K Turbo Pascal;Unite Overlay;OPTIMISATION DES PERFORMANCES}
+\b\fs24 OPTIMISATION DES PERFORMANCES \b0\fs20\par
+\par
+{\f1   --- Dimensionner le tampon ---}\par
+\par
+{\f1   Taille minimale = taille de la plus grande unit?? overlay.}\par
+{\f1   Taille recommand??e = somme des 2-3 plus grandes unit??s appel??es}\par
+{\f1   simultan??ment.}\par
+\par
+{\f1   Utiliser OvrTrapCount et OvrLoadCount pour mesurer :}\par
+{\f1     - OvrLoadCount / OvrTrapCount ??? 1.0 ??? thrashing s??v??re,}\par
+{\f1       augmenter le tampon.}\par
+{\f1     - OvrLoadCount / OvrTrapCount < 0.5 ??? bon comportement.}\par
+{\f1     - OvrLoadCount / OvrTrapCount ??? 0   ??? tampon suffisamment}\par
+{\f1       grand pour contenir toutes les unit??s actives.}\par
+\par
+{\f1   --- Utiliser l'EMS ---}\par
+\par
+{\f1   OvrInitEMS ??limine les acc??s disque. C'est l'optimisation la}\par
+{\f1   plus efficace, car le chargement depuis l'EMS est quasi-}\par
+{\f1   instantan?? compar?? au disque.}\par
+\par
+{\f1   --- Utiliser la zone de r??essai ---}\par
+\par
+{\f1   La zone de r??essai est un cache LRU tr??s efficace pour les}\par
+{\f1   programmes qui alternent fr??quemment entre un petit nombre}\par
+{\f1   d'unit??s overlay.}\par
+\par
+{\f1   --- Organisation des unit??s ---}\par
+\par
+{\f1   Regrouper dans une m??me unit?? les proc??dures qui sont}\par
+{\f1   toujours appel??es ensemble. S??parer les fonctionnalit??s}\par
+{\f1   rarement utilis??es dans des unit??s distinctes.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOVL_10}     {\uldb Suivant >>}{\v IDH_TPOVL_12}     {\uldb Sommaire}{\v IDH_TPOVL_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOVL_12}
+{\footnote $ Unite Overlay - EXEMPLES COMPLETS}
+{\footnote K Turbo Pascal;Unite Overlay;EXEMPLES COMPLETS}
+\b\fs24 EXEMPLES COMPLETS \b0\fs20\par
+\par
+{\f1   --- Exemple 1 : Initialisation basique ---}\par
+\par
+{\f1   program OverlayDemo;}\par
+{\f1   uses Overlay, MonUnite1, MonUnite2;}\par
+{\f1   \{$O MonUnite1\}}\par
+{\f1   \{$O MonUnite2\}}\par
+{\f1   begin}\par
+{\f1     OvrInit('OVERLAYDEMO.OVR');}\par
+{\f1     if OvrResult <> ovrOk then}\par
+{\f1     begin}\par
+{\f1       case OvrResult of}\par
+{\f1         ovrNotFound : WriteLn('Fichier .OVR non trouv??');}\par
+{\f1         ovrNoMemory : WriteLn('M??moire insuffisante');}\par
+{\f1         ovrIOError  : WriteLn('Erreur E/S');}\par
+{\f1       else}\par
+{\f1         WriteLn('Erreur overlay : ', OvrResult);}\par
+{\f1       end;}\par
+{\f1       Halt(1);}\par
+{\f1     end;}\par
+\par
+{\f1     \{ Appels normaux aux unit??s overlay \}}\par
+{\f1     Procedure1DeMonUnite1;}\par
+{\f1     Procedure1DeMonUnite2;}\par
+{\f1   end.}\par
+\par
+{\f1   --- Exemple 2 : Avec EMS et tampon ??largi ---}\par
+\par
+{\f1   program OverlayEMS;}\par
+{\f1   uses Overlay, Phase1, Phase2, Phase3;}\par
+{\f1   \{$O Phase1\}}\par
+{\f1   \{$O Phase2\}}\par
+{\f1   \{$O Phase3\}}\par
+{\f1   begin}\par
+{\f1     OvrInit('OVERLAYEMS.OVR');}\par
+{\f1     if OvrResult <> ovrOk then Halt(1);}\par
+\par
+{\f1     \{ Tenter d'utiliser l'EMS \}}\par
+{\f1     OvrInitEMS;}\par
+{\f1     if OvrResult = ovrOk then}\par
+{\f1       WriteLn('Overlays en EMS : ', OvrEmsPages, ' pages')}\par
+{\f1     else}\par
+{\f1     begin}\par
+{\f1       WriteLn('EMS non disponible, augmentation du tampon...');}\par
+{\f1       OvrSetBuf(96 * 1024);  \{ 96 Ko \}}\par
+{\f1       OvrSetRetry(32 * 1024); \{ 32 Ko zone de r??essai \}}\par
+{\f1     end;}\par
+\par
+{\f1     \{ Ex??cution du programme \}}\par
+{\f1     ExecuterPhase1;}\par
+{\f1     ExecuterPhase2;}\par
+{\f1     ExecuterPhase3;}\par
+\par
+{\f1     \{ Statistiques \}}\par
+{\f1     WriteLn('Traps : ', OvrTrapCount);}\par
+{\f1     WriteLn('Chargements : ', OvrLoadCount);}\par
+{\f1     WriteLn('Tampon : ', OvrGetBuf, ' octets');}\par
+{\f1     WriteLn('Zone r??essai : ', OvrGetRetry, ' octets');}\par
+{\f1   end.}\par
+\par
+{\f1   --- Exemple 3 : Mesure de performance ---}\par
+\par
+{\f1   program OverlayPerf;}\par
+{\f1   uses Overlay, UnitA, UnitB;}\par
+{\f1   \{$O UnitA\}}\par
+{\f1   \{$O UnitB\}}\par
+{\f1   var}\par
+{\f1     Ratio : Real;}\par
+{\f1   begin}\par
+{\f1     OvrInit('OVERLAYPERF.OVR');}\par
+{\f1     if OvrResult <> ovrOk then Halt(1);}\par
+\par
+{\f1     OvrSetBuf(48 * 1024);}\par
+\par
+{\f1     \{ Phase de travail \}}\par
+{\f1     AppelerDiversesFonctions;}\par
+\par
+{\f1     \{ Analyser les performances \}}\par
+{\f1     if OvrTrapCount > 0 then}\par
+{\f1     begin}\par
+{\f1       Ratio := OvrLoadCount / OvrTrapCount;}\par
+{\f1       WriteLn('Traps : ', OvrTrapCount);}\par
+{\f1       WriteLn('Chargements : ', OvrLoadCount);}\par
+{\f1       WriteLn('Ratio charge/trap : ', Ratio:5:2);}\par
+{\f1       if Ratio > 0.5 then}\par
+{\f1         WriteLn('ATTENTION : thrashing d??tect??, augmenter le tampon')}\par
+{\f1       else}\par
+{\f1         WriteLn('Performance correcte');}\par
+{\f1     end;}\par
+{\f1   end.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOVL_11}     {\uldb Suivant >>}{\v IDH_TPOVL_13}     {\uldb Sommaire}{\v IDH_TPOVL_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOVL_13}
+{\footnote $ Unite Overlay - R??CAPITULATIF DE L'INTERFACE}
+{\footnote K Turbo Pascal;Unite Overlay;R??CAPITULATIF DE L'INTERFACE}
+\b\fs24 R??CAPITULATIF DE L'INTERFACE \b0\fs20\par
+\par
+{\f1   --- Constantes de codes d'erreur ---}\par
+{\f1   ovrOk           =  0    Pas d'erreur}\par
+{\f1   ovrError        = -1    Erreur g??n??rale}\par
+{\f1   ovrNotFound     = -2    Fichier .OVR non trouv??}\par
+{\f1   ovrNoMemory     = -3    M??moire insuffisante}\par
+{\f1   ovrIOError      = -4    Erreur d'entr??e/sortie}\par
+{\f1   ovrNoEMSDriver  = -5    Pilote EMS absent}\par
+{\f1   ovrNoEMSMemory  = -6    M??moire EMS insuffisante}\par
+\par
+{\f1   --- Variables typ??es ---}\par
+{\f1   OvrResult    : Integer = 0    Code retour derni??re op??ration}\par
+{\f1   OvrEmsPages  : Word = 0       Pages EMS allou??es}\par
+{\f1   OvrTrapCount : Word = 0       Compteur de traps}\par
+{\f1   OvrLoadCount : Word = 0       Compteur de chargements}\par
+{\f1   OvrFileMode  : Byte = 0       Mode d'ouverture fichier .OVR}\par
+\par
+{\f1   --- Type ---}\par
+{\f1   OvrReadFunc = Function(OvrSeg : Word) : Integer;}\par
+\par
+{\f1   --- Variable ---}\par
+{\f1   OvrReadBuf : OvrReadFunc      Fonction de lecture personnalis??e}\par
+\par
+{\f1   --- Proc??dures et fonctions ---}\par
+{\f1   Procedure OvrInit(FileName : String);}\par
+{\f1   Procedure OvrInitEMS;}\par
+{\f1   Procedure OvrSetBuf(Size : LongInt);}\par
+{\f1   Function  OvrGetBuf : LongInt;}\par
+{\f1   Procedure OvrSetRetry(Size : LongInt);}\par
+{\f1   Function  OvrGetRetry : LongInt;}\par
+{\f1   Procedure OvrClearBuf;}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPOVL_12}     {\uldb Suivant >>}{\v IDH_TPOVL_14}     {\uldb Sommaire}{\v IDH_TPOVL_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPOVL_14}
+{\footnote $ Unite Overlay - R??SUM?? PAR CAT??GORIE}
+{\footnote K Turbo Pascal;Unite Overlay;R??SUM?? PAR CAT??GORIE}
+\b\fs24 R??SUM?? PAR CAT??GORIE \b0\fs20\par
+\par
+{\f1   Cat??gorie                   Nombre   ??l??ments}\par
+{\f1   -------------------------   ------   ----------------------------------}\par
+{\f1   Initialisation                 2     OvrInit, OvrInitEMS}\par
+{\f1   Tampon overlay                 2     OvrSetBuf, OvrGetBuf}\par
+{\f1   Zone de r??essai                2     OvrSetRetry, OvrGetRetry}\par
+{\f1   Effacement                     1     OvrClearBuf}\par
+{\f1   -------------------------   ------   ----------------------------------}\par
+{\f1   TOTAL proc??dures/fonctions     7}\par
+\par
+{\f1   Constantes d'erreur : 7   (ovrOk..ovrNoEMSMemory)}\par
+\par
+{\f1   Variables typ??es : 5       (OvrResult, OvrEmsPages,}\par
+{\f1                               OvrTrapCount, OvrLoadCount,}\par
+{\f1                               OvrFileMode)}\par
+\par
+{\f1   Types export??s : 1         (OvrReadFunc)}\par
+\par
+{\f1   Variables export??es : 1    (OvrReadBuf)}\par
+\par
+{\f1   Fin du document - Unit?? OVERLAY - Turbo Pascal 7.0}\par
+
+\par
+{\uldb << Precedent}{\v IDH_TPOVL_13}     {\uldb Sommaire}{\v IDH_TPOVL_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+}

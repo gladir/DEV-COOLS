@@ -1,0 +1,1232 @@
+==============================================================================
+  ASP_SPEC_LANG.txt
+  Specifications du langage ASP 3.0 (Active Server Pages)
+  Reference au convertisseur ASC2ASP.PAS du projet DEV-COOLS
+==============================================================================
+
+Table des matieres
+------------------
+
+  1.  Introduction
+  2.  Historique
+  3.  Architecture et modele d execution
+  4.  Structure d un fichier .asp
+  5.  Balises ASP
+  6.  Directives de page
+  7.  Langages de script (VBScript et JScript)
+  8.  Objets intrinseques
+  9.  Objet Request
+  10. Objet Response
+  11. Objet Server
+  12. Objet Session
+  13. Objet Application
+  14. Objet ASPError
+  15. Objet ObjectContext
+  16. Inclusions Server-Side Include (SSI)
+  17. Connexion aux bases de donnees (ADO)
+  18. Cookies et etat client
+  19. Fichiers global.asa
+  20. Composants COM et CreateObject
+  21. Gestion des erreurs
+  22. Securite
+  23. Performances et tampons
+  24. Differences ASP / ASP.NET
+  25. Le convertisseur ASC2ASP.PAS
+  26. Exemples complets
+  27. Migration vers PSP (Pascal Server Pages)
+  28. Ressources dans le projet
+  29. Bibliographie
+
+==============================================================================
+  1. Introduction
+==============================================================================
+
+  ASP (Active Server Pages) est une technologie de developpement web cote
+  serveur creee par Microsoft. Elle permet de generer dynamiquement des
+  pages HTML en intercalant du code de script (VBScript ou JScript) dans
+  du HTML statique, le tout execute par le serveur Internet Information
+  Services (IIS) avant l envoi au client.
+
+  ASP 3.0 est la derniere version du framework "Classic ASP", incluse
+  dans IIS 5.0 (Windows 2000) et IIS 5.1 (Windows XP), puis IIS 6.0
+  (Windows Server 2003). Elle a ete remplacee progressivement par
+  ASP.NET (2002) mais reste supportee dans IIS 7.x, 8.x et 10.
+
+  Le langage ASP n est pas un langage de programmation a proprement
+  parler : c est un modele de page qui mele HTML et code de script.
+  Le langage de script par defaut est VBScript, mais JScript (la version
+  Microsoft de JavaScript) est aussi supporte. D autres scripteurs ActiveX
+  peuvent etre installes (PerlScript, PythonScript, etc.).
+
+  Caracteristiques principales :
+
+    - Balises <% %> pour le code serveur.
+    - Balises <%= %> pour ecrire la valeur d une expression.
+    - Directive <%@ Language=... %> pour choisir le scripteur.
+    - 7 objets intrinseques : Request, Response, Server, Session,
+      Application, ASPError, ObjectContext.
+    - Acces aux donnees via ADO (ActiveX Data Objects).
+    - Composants COM via Server.CreateObject.
+    - Etat utilisateur via cookies et Session.
+    - Fichier global.asa pour les evenements d application.
+
+==============================================================================
+  2. Historique
+==============================================================================
+
+  2.1 Chronologie
+  ---------------
+
+    - 1996 : Microsoft acquiert Aspect Software Engineering et incorpore
+             leur technologie "Denali" dans IIS.
+    - dec 1996 : Sortie d ASP 1.0 avec IIS 3.0.
+    - 1997 : ASP 2.0 avec IIS 4.0 (Windows NT 4 Option Pack).
+    - 2000 : ASP 3.0 avec IIS 5.0 (Windows 2000).
+    - 2002 : ASP.NET 1.0 introduit, mais Classic ASP reste supporte.
+    - 2003 : IIS 6.0 (Windows Server 2003) supporte ASP 3.0.
+    - 2008 : IIS 7.0 (Windows Server 2008) conserve la compatibilite.
+    - 2020+ : IIS 10 (Windows Server 2019/2022) supporte encore ASP 3.0
+              en mode compatibilite.
+
+  2.2 Origine du nom
+  ------------------
+
+  "Active Server Pages" reflete trois idees fondatrices :
+
+    - "Active" : pages dynamiques (par opposition aux pages statiques).
+    - "Server" : execution cote serveur (avant envoi au client).
+    - "Pages"  : modele oriente document (fichier .asp = une page).
+
+  2.3 Influences et descendants
+  -----------------------------
+
+  ASP a influence ou inspire :
+
+    - JSP (JavaServer Pages) chez Sun (1999).
+    - PHP a adopte un modele similaire d incorporation.
+    - PSP (Pascal Server Pages) du projet DEV-COOLS.
+    - ColdFusion (Allaire) partage la philosophie balise.
+    - ASP.NET conserve la syntaxe <% %> mais avec compilation.
+
+==============================================================================
+  3. Architecture et modele d execution
+==============================================================================
+
+  3.1 Le moteur ASP
+  -----------------
+
+  Le moteur ASP est implemente dans asp.dll, un ISAPI extension pour IIS.
+  Quand IIS recoit une requete pour un fichier .asp :
+
+    1. IIS charge asp.dll (s il ne l est deja).
+    2. asp.dll lit le fichier .asp.
+    3. Le contenu est decoupe en blocs : HTML statique vs scripts.
+    4. Les scripts sont interpretes par le scripteur ActiveX correspondant
+       (vbscript.dll ou jscript.dll).
+    5. Le HTML est emis directement, les scripts produisent du HTML
+       dynamiquement via Response.Write.
+    6. Tout est concatene et renvoye comme reponse HTTP.
+
+  3.2 Cycle de vie d une requete
+  ------------------------------
+
+    1. global.asa : Application_OnStart si premiere requete.
+    2. global.asa : Session_OnStart si nouvelle session.
+    3. Execution du fichier .asp demande.
+    4. Envoi de la reponse au client.
+    5. Session_OnEnd a l expiration (par defaut 20 minutes).
+    6. Application_OnEnd a l arret de l application IIS.
+
+  3.3 Etat (state)
+  ----------------
+
+  ASP propose deux niveaux d etat :
+
+    - Application : partage entre toutes les sessions actives.
+    - Session     : propre a chaque utilisateur (identifie par cookie
+                    ASPSESSIONID).
+
+  Les variables sont stockees dans des collections en memoire IIS.
+
+==============================================================================
+  4. Structure d un fichier .asp
+==============================================================================
+
+  4.1 Fichier minimal
+  -------------------
+
+    <%@ Language="VBScript" %>
+    <html>
+      <head><title>Hello ASP</title></head>
+      <body>
+        <% Response.Write "Bonjour le monde !" %>
+      </body>
+    </html>
+
+  4.2 Conventions
+  ---------------
+
+  Un fichier ASP est identifie par l extension .asp. Il contient :
+
+    - Une directive de page optionnelle (<%@ ... %>) en premiere ligne.
+    - Du HTML statique (envoye tel quel).
+    - Des blocs de script (<% ... %>).
+    - Des expressions inline (<%= ... %>).
+    - Des inclusions SSI (<!--#include ... -->).
+
+  4.3 Encodage
+  ------------
+
+  ASP 3.0 supporte plusieurs encodages via la directive @CodePage :
+
+    <%@ Language="VBScript" CodePage="65001" %>      <!-- UTF-8 -->
+    <%@ Language="VBScript" CodePage="1252" %>       <!-- Windows-1252 -->
+
+  L attribut LCID definit la locale pour le formatage des dates et
+  nombres :
+
+    <%@ Language="VBScript" LCID="1036" %>           <!-- fr-FR -->
+
+==============================================================================
+  5. Balises ASP
+==============================================================================
+
+  5.1 Bloc de script <% ... %>
+  ----------------------------
+
+  Contient du code execute cote serveur :
+
+    <%
+      Dim i
+      For i = 1 To 10
+        Response.Write i & "<br>"
+      Next
+    %>
+
+  5.2 Expression inline <%= ... %>
+  --------------------------------
+
+  Ecrit la valeur d une expression directement dans la sortie HTML :
+
+    <p>Date : <%= Now() %></p>
+
+  Equivalent a :
+
+    <p>Date : <% Response.Write Now() %></p>
+
+  5.3 Script cote client / serveur explicite
+  -----------------------------------------
+
+  La balise <SCRIPT> avec attribut RUNAT="SERVER" execute le script
+  cote serveur (alternative aux balises <% %>) :
+
+    <SCRIPT LANGUAGE="VBScript" RUNAT="SERVER">
+      Sub MaProc(x)
+        Response.Write "Valeur : " & x
+      End Sub
+    </SCRIPT>
+
+  Sans RUNAT="SERVER", la balise <SCRIPT> est envoyee au client comme
+  script client (executee par le navigateur).
+
+  5.4 Commentaire ASP
+  -------------------
+
+  En VBScript : apostrophe simple
+    <% ' Ceci est un commentaire %>
+    <% Rem Commentaire %>
+
+  En JScript : // ou /* */
+    <% // commentaire %>
+    <% /* commentaire bloc */ %>
+
+==============================================================================
+  6. Directives de page
+==============================================================================
+
+  Les directives <%@ ... %> doivent etre placees en premiere ligne du
+  fichier .asp.
+
+  6.1 @Language
+  -------------
+
+  Definit le langage de script par defaut de la page :
+
+    <%@ Language="VBScript" %>
+    <%@ Language="JScript" %>
+    <%@ Language="PerlScript" %>
+
+  Par defaut : VBScript.
+
+  6.2 @CodePage
+  -------------
+
+  Page de codes pour interpreter les caracteres du fichier et les
+  chaines envoyees au client :
+
+    <%@ CodePage="65001" %>     <!-- UTF-8 -->
+    <%@ CodePage="1252" %>      <!-- Windows-1252 (latin1) -->
+    <%@ CodePage="932" %>       <!-- Shift-JIS japonais -->
+
+  6.3 @LCID
+  ---------
+
+  Identificateur de locale (Microsoft LCID) :
+
+    <%@ LCID="1033" %>     <!-- en-US -->
+    <%@ LCID="1036" %>     <!-- fr-FR -->
+    <%@ LCID="3084" %>     <!-- fr-CA -->
+
+  6.4 @EnableSessionState
+  -----------------------
+
+  Active ou desactive l etat de session pour cette page :
+
+    <%@ EnableSessionState=True %>      <!-- defaut -->
+    <%@ EnableSessionState=False %>
+
+  Desactiver Session ameliore les performances pour les pages publiques
+  ne necessitant pas d etat utilisateur.
+
+  6.5 @Transaction
+  ----------------
+
+  Definit le mode transactionnel MTS/COM+ :
+
+    <%@ Transaction="Required" %>
+    <%@ Transaction="Requires_New" %>
+    <%@ Transaction="Supported" %>
+    <%@ Transaction="Not_Supported" %>
+
+==============================================================================
+  7. Langages de script (VBScript et JScript)
+==============================================================================
+
+  7.1 VBScript
+  ------------
+
+  VBScript (Visual Basic Scripting Edition) est le langage par defaut.
+  Syntaxe inspiree de Visual Basic.
+
+  Variables :
+    Dim x, y
+    x = 10
+    y = "Bonjour"
+
+  Conditionnelles :
+    If x > 0 Then
+      Response.Write "positif"
+    ElseIf x < 0 Then
+      Response.Write "negatif"
+    Else
+      Response.Write "nul"
+    End If
+
+  Boucles :
+    For i = 1 To 10
+      Response.Write i
+    Next
+
+    For Each item In collection
+      Response.Write item
+    Next
+
+    Do While x > 0
+      x = x - 1
+    Loop
+
+  Procedures et fonctions :
+    Sub MaProc(arg)
+      Response.Write arg
+    End Sub
+
+    Function Double(n)
+      Double = n * 2
+    End Function
+
+  7.2 JScript
+  -----------
+
+  JScript est l implementation Microsoft de JavaScript / ECMAScript.
+
+    <%@ Language="JScript" %>
+    <%
+      var i;
+      for (i = 1; i <= 10; i++) {
+        Response.Write(i + "<br>");
+      }
+    %>
+
+  7.3 Choix du langage
+  --------------------
+
+  VBScript est plus repandu en ASP classique pour :
+    - Affinite avec Visual Basic.
+    - Acces direct a CDate, CLng, FormatNumber...
+
+  JScript est plus prise pour :
+    - Syntaxe C-like.
+    - Cohenrece client/serveur (meme syntaxe).
+    - Manipulation JSON (par eval).
+
+==============================================================================
+  8. Objets intrinseques
+==============================================================================
+
+  ASP 3.0 fournit 7 objets intrinseques accessibles depuis tout script
+  sans instanciation :
+
+    Objet           Role
+    --------------- ----------------------------------------------------
+    Request         Donnees envoyees par le client (formulaire, URL,
+                    cookies, en-tetes, certificat client)
+    Response        Donnees envoyees au client (HTML, en-tetes, cookies,
+                    redirection)
+    Server          Utilitaires serveur (CreateObject, HTMLEncode,
+                    URLEncode, MapPath, ScriptTimeout)
+    Session         Etat propre a un utilisateur
+    Application     Etat partage entre toutes les sessions
+    ASPError        Informations sur la derniere erreur (introduit en ASP 3.0)
+    ObjectContext   Coordination COM+/MTS (transactions)
+
+==============================================================================
+  9. Objet Request
+==============================================================================
+
+  L objet Request expose les donnees envoyees par le client.
+
+  9.1 Collections
+  ---------------
+
+    Request.QueryString    : parametres de l URL (apres ?)
+    Request.Form           : parametres POST de formulaire
+    Request.Cookies        : cookies envoyes par le client
+    Request.ServerVariables : variables d environnement et en-tetes HTTP
+    Request.ClientCertificate : certificat client SSL (si present)
+
+  Exemple :
+    <% Dim nom
+       nom = Request.QueryString("nom")
+       Response.Write "Bonjour " & nom %>
+
+  URL : page.asp?nom=Alice
+
+  9.2 Proprietes
+  --------------
+
+    Request.TotalBytes     : taille du corps de requete
+    Request.QueryString.Count  : nombre de parametres
+
+  9.3 Methodes
+  ------------
+
+    Request.BinaryRead(n)  : lit n octets du corps brut (upload)
+
+  9.4 Acces direct (raccourci)
+  ----------------------------
+
+  Request("nom") cherche dans toutes les collections, dans l ordre :
+  QueryString, Form, Cookies, ClientCertificate, ServerVariables.
+
+  9.5 ServerVariables courantes
+  -----------------------------
+
+    REMOTE_ADDR        : IP du client
+    REMOTE_HOST        : nom DNS du client
+    HTTP_USER_AGENT    : navigateur du client
+    HTTP_REFERER       : page d origine
+    SERVER_NAME        : nom du serveur
+    SCRIPT_NAME        : chemin de la page courante
+    REQUEST_METHOD     : GET, POST, ...
+    QUERY_STRING       : chaine apres ? dans l URL
+    HTTPS              : "on" si SSL active
+
+==============================================================================
+  10. Objet Response
+==============================================================================
+
+  10.1 Methodes
+  -------------
+
+    Response.Write(s)         : ecrit s dans le flux
+    Response.Redirect(url)    : redirige vers url (HTTP 302)
+    Response.End              : termine immediatement la generation
+    Response.Clear            : vide le tampon non envoye
+    Response.Flush            : envoie le tampon au client
+    Response.AddHeader(n, v)  : ajoute un en-tete HTTP
+    Response.AppendToLog(s)   : ajoute s au journal IIS
+    Response.BinaryWrite(b)   : ecrit des donnees binaires
+    Response.PICS(s)          : en-tete PICS (vieillissant)
+
+  10.2 Proprietes
+  ---------------
+
+    Response.Buffer         : True pour tamponner (defaut True en ASP 3.0)
+    Response.CacheControl   : valeur de l en-tete Cache-Control
+    Response.Charset        : encodage envoye
+    Response.ContentType    : MIME type (defaut text/html)
+    Response.Expires        : minutes avant expiration cache
+    Response.ExpiresAbsolute : date d expiration absolue
+    Response.Status         : ligne de statut HTTP (ex "404 Not Found")
+    Response.IsClientConnected : True si le client est encore connecte
+    Response.Cookies        : collection de cookies a renvoyer
+
+  10.3 Exemples
+  -------------
+
+  Redirection :
+    <% Response.Redirect "autre.asp" %>
+
+  Telechargement de fichier :
+    <%
+      Response.ContentType = "application/octet-stream"
+      Response.AddHeader "Content-Disposition", "attachment; filename=data.bin"
+      Response.BinaryWrite buffer
+    %>
+
+  Page JSON :
+    <%
+      Response.ContentType = "application/json"
+      Response.Write "{""ok"":true}"
+    %>
+
+==============================================================================
+  11. Objet Server
+==============================================================================
+
+  11.1 Methodes
+  -------------
+
+    Server.CreateObject(progid)  : instancie un composant COM
+    Server.HTMLEncode(s)         : echappe HTML (&lt; &gt; &quot; ...)
+    Server.URLEncode(s)          : echappe URL (espace -> %20)
+    Server.URLPathEncode(s)      : encode comme chemin URL
+    Server.MapPath(p)            : chemin virtuel -> chemin physique
+    Server.Execute(p)            : execute une autre page .asp
+    Server.Transfer(p)           : transfere l execution (no redirect)
+    Server.GetLastError          : retourne l objet ASPError
+
+  11.2 Proprietes
+  ---------------
+
+    Server.ScriptTimeout         : timeout du script en secondes (defaut 90)
+
+  11.3 Exemples
+  -------------
+
+    <%
+      Dim conn
+      Set conn = Server.CreateObject("ADODB.Connection")
+      conn.Open "..."
+    %>
+
+    <% Response.Write Server.HTMLEncode("<script>alert(1)</script>") %>
+    <!-- affiche : &lt;script&gt;alert(1)&lt;/script&gt; -->
+
+    <% chemin = Server.MapPath("/images/logo.png") %>
+    <!-- ex : C:\inetpub\wwwroot\images\logo.png -->
+
+==============================================================================
+  12. Objet Session
+==============================================================================
+
+  12.1 Stockage par utilisateur
+  -----------------------------
+
+  L objet Session conserve des donnees entre les requetes d un meme
+  utilisateur, identifie par un cookie ASPSESSIONID (HTTP-only).
+
+    <% Session("Utilisateur") = "Alice" %>
+    <% Response.Write Session("Utilisateur") %>
+
+  12.2 Proprietes
+  ---------------
+
+    Session.SessionID      : identifiant unique de la session
+    Session.Timeout        : duree d inactivite en minutes (defaut 20)
+    Session.LCID           : LCID specifique a la session
+    Session.CodePage       : page de codes specifique
+
+  12.3 Methodes
+  -------------
+
+    Session.Abandon                  : termine la session
+    Session.Contents.Remove(nom)     : enleve une variable
+    Session.Contents.RemoveAll       : vide toutes les variables
+    Session.StaticObjects            : objets <OBJECT> declares dans global.asa
+
+  12.4 Evenements (global.asa)
+  ----------------------------
+
+    Sub Session_OnStart
+      ' Premiere requete de la session
+    End Sub
+
+    Sub Session_OnEnd
+      ' Apres expiration / Abandon
+    End Sub
+
+  12.5 Bonnes pratiques
+  ---------------------
+
+    - Eviter d y stocker des objets COM apartment-threaded (perte de
+      l avantage de pooling).
+    - Ne stocker que des donnees serialisables et legeres.
+    - Desactiver Session pour les pages publiques (@EnableSessionState=False).
+
+==============================================================================
+  13. Objet Application
+==============================================================================
+
+  13.1 Stockage global
+  --------------------
+
+  L objet Application est partage entre tous les utilisateurs et toutes
+  les sessions de l application IIS :
+
+    <% Application("CompteurVisites") = Application("CompteurVisites") + 1 %>
+
+  Comme plusieurs threads peuvent ecrire simultanement, utiliser
+  Application.Lock / Application.UnLock :
+
+    <%
+      Application.Lock
+      Application("Compteur") = Application("Compteur") + 1
+      Application.UnLock
+    %>
+
+  13.2 Evenements (global.asa)
+  ----------------------------
+
+    Sub Application_OnStart
+      ' Premier demarrage de l application IIS
+      Application("CompteurVisites") = 0
+    End Sub
+
+    Sub Application_OnEnd
+      ' Arret de l application
+    End Sub
+
+==============================================================================
+  14. Objet ASPError
+==============================================================================
+
+  Introduit en ASP 3.0, l objet ASPError fournit des informations sur
+  la derniere erreur survenue dans la page :
+
+    ASPCode         : code d erreur ASP
+    Number          : numero d erreur COM
+    Source          : ligne source de l erreur
+    Category        : "ASP", "Microsoft VBScript runtime error", etc.
+    File            : fichier .asp ou s est produite l erreur
+    Line            : ligne dans le fichier
+    Column          : colonne
+    Description     : description courte
+    ASPDescription  : description detaillee ASP
+
+  Acces via Server.GetLastError, typiquement dans une page d erreur
+  configuree dans IIS :
+
+    <%
+      Dim err
+      Set err = Server.GetLastError
+      Response.Write "<h1>Erreur</h1>"
+      Response.Write err.File & " ligne " & err.Line & "<br>"
+      Response.Write err.Description
+    %>
+
+==============================================================================
+  15. Objet ObjectContext
+==============================================================================
+
+  Sert d interface avec COM+ / MTS pour les transactions distribuees :
+
+    ObjectContext.SetComplete    ' valider
+    ObjectContext.SetAbort       ' annuler
+
+  Combine avec la directive de page :
+
+    <%@ Transaction="Required" %>
+
+  Genere les evenements :
+
+    Sub OnTransactionCommit
+      ' apres validation reussie
+    End Sub
+
+    Sub OnTransactionAbort
+      ' apres annulation
+    End Sub
+
+==============================================================================
+  16. Inclusions Server-Side Include (SSI)
+==============================================================================
+
+  ASP supporte les directives SSI heritees d IIS pour inclure d autres
+  fichiers a la compilation :
+
+    <!--#include file="header.asp" -->
+    <!--#include virtual="/inc/footer.asp" -->
+
+  Difference entre les deux formes :
+
+    - file=    : chemin relatif au fichier courant (sans remonter
+                 au-dessus de l arborescence).
+    - virtual= : chemin virtuel depuis la racine du site IIS.
+
+  Les inclusions sont resolues AVANT l execution. Il n est pas possible
+  de definir le nom du fichier dynamiquement :
+
+    <!-- INCORRECT -->
+    <!--#include file="<%= nom %>" -->
+
+  Pour inclusion dynamique, utiliser Server.Execute(p).
+
+==============================================================================
+  17. Connexion aux bases de donnees (ADO)
+==============================================================================
+
+  ADO (ActiveX Data Objects) est la bibliotheque d acces aux donnees
+  utilisee par ASP classique. Objets principaux :
+
+    ADODB.Connection   : connexion a une base de donnees
+    ADODB.Recordset    : ensemble de lignes
+    ADODB.Command      : commande SQL avec parametres
+    ADODB.Stream       : flux binaire
+
+  17.1 Exemple complet
+  --------------------
+
+    <%
+      Dim conn, rs
+      Set conn = Server.CreateObject("ADODB.Connection")
+      conn.Open "Provider=SQLOLEDB;Data Source=.;Initial Catalog=Test;" & _
+                "User Id=sa;Password=secret;"
+
+      Set rs = conn.Execute("SELECT id, nom FROM clients")
+      Do While Not rs.EOF
+        Response.Write rs("id") & " - " & rs("nom") & "<br>"
+        rs.MoveNext
+      Loop
+
+      rs.Close : Set rs = Nothing
+      conn.Close : Set conn = Nothing
+    %>
+
+  17.2 Commandes parametrees
+  --------------------------
+
+    <%
+      Dim cmd
+      Set cmd = Server.CreateObject("ADODB.Command")
+      cmd.ActiveConnection = conn
+      cmd.CommandText = "SELECT * FROM clients WHERE id = ?"
+      cmd.Parameters.Append cmd.CreateParameter("p1", 3, 1, 4, idClient)
+      Set rs = cmd.Execute
+    %>
+
+  Eviter la concatenation de chaines dans le SQL (injection SQL).
+
+==============================================================================
+  18. Cookies et etat client
+==============================================================================
+
+  18.1 Ecrire un cookie
+  ---------------------
+
+    <%
+      Response.Cookies("Utilisateur") = "Alice"
+      Response.Cookies("Utilisateur").Expires = DateAdd("d", 30, Now)
+      Response.Cookies("Utilisateur").Path = "/"
+      Response.Cookies("Utilisateur").Secure = True
+    %>
+
+  18.2 Lire un cookie
+  -------------------
+
+    <% nom = Request.Cookies("Utilisateur") %>
+
+  18.3 Cookies multivaleurs (cles)
+  --------------------------------
+
+    <%
+      Response.Cookies("Preferences")("Theme") = "sombre"
+      Response.Cookies("Preferences")("Lang") = "fr"
+    %>
+
+  18.4 Securite
+  -------------
+
+    Response.Cookies("Token").HttpOnly = True    ' IIS 6+ : pas accessible JS
+    Response.Cookies("Token").Secure = True      ' HTTPS uniquement
+
+==============================================================================
+  19. Fichiers global.asa
+==============================================================================
+
+  Le fichier global.asa, place a la racine de l application virtuelle,
+  contient les gestionnaires d evenements globaux et les declarations
+  d objets persistants :
+
+    <SCRIPT LANGUAGE="VBScript" RUNAT="SERVER">
+
+      Sub Application_OnStart
+        Application("DateDemarrage") = Now
+        Application("CompteurVisites") = 0
+      End Sub
+
+      Sub Application_OnEnd
+      End Sub
+
+      Sub Session_OnStart
+        Session.Timeout = 30
+        Session("DateLogin") = Now
+      End Sub
+
+      Sub Session_OnEnd
+      End Sub
+
+    </SCRIPT>
+
+  Declaration d objet d application :
+
+    <OBJECT RUNAT="SERVER" SCOPE="Application"
+            ID="Counters" PROGID="MSWC.Counters">
+    </OBJECT>
+
+==============================================================================
+  20. Composants COM et CreateObject
+==============================================================================
+
+  20.1 Server.CreateObject
+  ------------------------
+
+  Instancie un composant COM via son ProgID :
+
+    Set fso = Server.CreateObject("Scripting.FileSystemObject")
+    Set dict = Server.CreateObject("Scripting.Dictionary")
+
+  Difference avec CreateObject standard : Server.CreateObject participe
+  a l environnement ASP (transactions, contexte session).
+
+  20.2 Composants COM courants
+  ----------------------------
+
+    Scripting.FileSystemObject : fichiers et repertoires
+    Scripting.Dictionary       : table associative
+    MSWC.AdRotator             : rotation de bannieres
+    MSWC.BrowserCapabilities   : detection navigateur
+    MSWC.NextLink              : navigation page suivante / precedente
+    MSWC.PageCounter           : compteur de visites
+    CDO.Message (CDO.NewMail)  : envoi d emails
+    MSXML2.ServerXMLHTTP       : requetes HTTP cote serveur
+    MSXML2.DOMDocument         : XML DOM
+
+  20.3 Liberation
+  ---------------
+
+    Set fso = Nothing
+
+  Decremente le compteur de references COM.
+
+==============================================================================
+  21. Gestion des erreurs
+==============================================================================
+
+  21.1 On Error Resume Next (VBScript)
+  ------------------------------------
+
+    <%
+      On Error Resume Next
+      Dim x
+      x = 1 / 0
+      If Err.Number <> 0 Then
+        Response.Write "Erreur : " & Err.Description
+        Err.Clear
+      End If
+    %>
+
+  21.2 try/catch (JScript)
+  ------------------------
+
+    <%@ Language="JScript" %>
+    <%
+      try {
+        var x = 1 / 0;
+      } catch (e) {
+        Response.Write("Erreur : " + e.message);
+      }
+    %>
+
+  21.3 Page d erreur globale
+  --------------------------
+
+  Configurer dans IIS : Custom Errors -> 500;100 -> /errors/500.asp.
+  La page recoit Server.GetLastError pour afficher les details.
+
+  21.4 Server.GetLastError
+  ------------------------
+
+    <%
+      Dim err
+      Set err = Server.GetLastError
+      If err.ASPCode <> "" Then
+        Response.Write "Code ASP : " & err.ASPCode & "<br>"
+        Response.Write "Fichier : " & err.File & "<br>"
+        Response.Write "Ligne : " & err.Line
+      End If
+    %>
+
+==============================================================================
+  22. Securite
+==============================================================================
+
+  22.1 Injection SQL
+  ------------------
+
+  Toujours utiliser des commandes parametrees ADODB.Command. Ne jamais
+  concatener Request.QueryString ou Request.Form dans une requete SQL.
+
+  22.2 XSS (Cross-Site Scripting)
+  -------------------------------
+
+  Echapper toute donnee utilisateur avant de l ecrire dans le HTML :
+
+    <%= Server.HTMLEncode(Request("nom")) %>
+
+  22.3 Authentification
+  ---------------------
+
+  IIS supporte plusieurs modes :
+
+    - Anonyme (compte IUSR).
+    - Basic (mot de passe en clair, a utiliser sous HTTPS).
+    - Digest (hash MD5).
+    - NTLM / Kerberos (Integrated Windows Authentication).
+    - Forms (cookie + page de login custom en ASP).
+
+  Acces a l utilisateur authentifie :
+
+    <% user = Request.ServerVariables("AUTH_USER") %>
+
+  22.4 Permissions sur le repertoire
+  ----------------------------------
+
+  Le compte IUSR (anonyme) doit avoir lecture/execution sur le repertoire
+  des .asp, mais pas ecriture. Le repertoire de logs doit etre en
+  ecriture pour le compte de l application pool.
+
+==============================================================================
+  23. Performances et tampons
+==============================================================================
+
+  23.1 Tampon de reponse
+  ----------------------
+
+  En ASP 3.0, Response.Buffer = True par defaut. Toute sortie est
+  accumulee jusqu a la fin du script (ou un Response.Flush). Avantages :
+
+    - Possibilite de Response.Redirect en cours de page.
+    - Possibilite de Response.Clear pour annuler la sortie.
+    - Possibilite de calculer Content-Length avant envoi.
+
+  23.2 Flush manuel
+  -----------------
+
+  Pour des pages longues, on peut envoyer des morceaux progressivement :
+
+    <%
+      Response.Write "<html><body>"
+      Response.Flush
+      ' traitement long ...
+      Response.Write "<p>Resultat : " & res & "</p>"
+      Response.Write "</body></html>"
+    %>
+
+  23.3 Pool de threads
+  --------------------
+
+  IIS gere un pool de threads worker pour ASP. Eviter les blocages
+  longs (acces reseau, BDD lente) qui consomment des threads.
+
+  23.4 Application Pool
+  ---------------------
+
+  Sur IIS 6.0+, chaque site peut avoir son propre pool d application
+  (Application Pool), isole, avec :
+
+    - Recyclage automatique (apres N requetes ou T minutes).
+    - Identite distincte (compte de service).
+    - Mode 32 bits ou 64 bits.
+
+==============================================================================
+  24. Differences ASP / ASP.NET
+==============================================================================
+
+    Aspect                 ASP 3.0              ASP.NET
+    --------------------   -------------------  -----------------------
+    Modele                 page de script       page compilee
+    Langages               VBScript, JScript    VB.NET, C#, F#, ...
+    Compilation            interpretee          JIT (cache .NET)
+    Typage                 dynamique            statique
+    Objets intrinseques    7 objets             plus etendus
+    Etat session           memoire IIS          memoire ou hors-proc
+    Vue                    HTML + <%%>          Web Forms, Razor, MVC
+    Controles              <input> brut         WebControls / Server controls
+    Validation             manuelle             validators integres
+    Performance            moyenne              elevee (compile)
+    Heritage OO            limite (Class)       complet (.NET)
+    Acces donnees          ADO COM              ADO.NET (managed)
+    Securite               IIS + manuel         forms auth, identity
+    Cache                  manuel               cache integre
+
+==============================================================================
+  25. Le convertisseur ASC2ASP.PAS
+==============================================================================
+
+  Le projet DEV-COOLS contient l outil ASC2ASP.PAS qui convertit un
+  fichier texte ASCII (ou HTML statique) en page ASP. Utile pour
+  generer des templates ou ajouter automatiquement des en-tetes et
+  pieds de page dynamiques.
+
+  Utilisation :
+
+    fpc -Mtp ASC2ASP.PAS
+    ASC2ASP input.html output.asp
+
+  Le programme insere :
+
+    - Une directive <%@ Language="VBScript" CodePage="65001" %>.
+    - Le contenu HTML original.
+    - Optionnellement des balises <% %> de placeholder.
+
+  Note : DEV-COOLS ne fournit PAS de compilateur ASP complet (la suite
+  IIS de Microsoft etant requise pour executer .asp en production).
+  Pour developper des pages serveur compilables avec les outils du
+  projet, utiliser PSP (Pascal Server Pages, compile par PSP86.PAS
+  ou PSPCW32.PAS).
+
+==============================================================================
+  26. Exemples complets
+==============================================================================
+
+  26.1 Hello World
+  ----------------
+
+    <%@ Language="VBScript" %>
+    <html>
+      <head><title>Hello ASP</title></head>
+      <body>
+        <% Response.Write "Bonjour le monde !" %>
+      </body>
+    </html>
+
+  26.2 Formulaire et validation
+  -----------------------------
+
+    <%@ Language="VBScript" %>
+    <html>
+    <body>
+      <%
+        If Request.ServerVariables("REQUEST_METHOD") = "POST" Then
+          Dim nom : nom = Request.Form("nom")
+          If Len(nom) = 0 Then
+            Response.Write "<p style='color:red'>Nom obligatoire</p>"
+          Else
+            Response.Write "<p>Bonjour " & Server.HTMLEncode(nom) & "</p>"
+          End If
+        End If
+      %>
+      <form method="post">
+        <input type="text" name="nom" />
+        <input type="submit" value="Envoyer" />
+      </form>
+    </body>
+    </html>
+
+  26.3 Liste depuis base de donnees
+  ---------------------------------
+
+    <%@ Language="VBScript" %>
+    <html><body>
+    <%
+      Dim conn, rs
+      Set conn = Server.CreateObject("ADODB.Connection")
+      conn.Open "Provider=SQLOLEDB;Data Source=.;Initial Catalog=Test;Trusted_Connection=Yes;"
+
+      Set rs = conn.Execute("SELECT id, nom FROM clients ORDER BY nom")
+      Response.Write "<table>"
+      Do While Not rs.EOF
+        Response.Write "<tr><td>" & rs("id") & "</td><td>" & _
+                       Server.HTMLEncode(rs("nom")) & "</td></tr>"
+        rs.MoveNext
+      Loop
+      Response.Write "</table>"
+
+      rs.Close : conn.Close
+      Set rs = Nothing : Set conn = Nothing
+    %>
+    </body></html>
+
+  26.4 Authentification par session
+  ---------------------------------
+
+  login.asp :
+    <%@ Language="VBScript" %>
+    <%
+      If Request.ServerVariables("REQUEST_METHOD") = "POST" Then
+        If Request.Form("user") = "admin" And Request.Form("pwd") = "secret" Then
+          Session("Auth") = True
+          Session("User") = "admin"
+          Response.Redirect "secure.asp"
+        End If
+      End If
+    %>
+    <form method="post">
+      <input type="text"     name="user" />
+      <input type="password" name="pwd"  />
+      <input type="submit"   value="Login" />
+    </form>
+
+  secure.asp :
+    <%@ Language="VBScript" %>
+    <%
+      If Not Session("Auth") Then
+        Response.Redirect "login.asp"
+        Response.End
+      End If
+    %>
+    <p>Bienvenue <%= Session("User") %></p>
+
+  26.5 Compteur de visites (Application)
+  --------------------------------------
+
+  global.asa :
+    <SCRIPT LANGUAGE="VBScript" RUNAT="SERVER">
+      Sub Application_OnStart
+        Application("Visites") = 0
+      End Sub
+    </SCRIPT>
+
+  page.asp :
+    <%@ Language="VBScript" %>
+    <%
+      Application.Lock
+      Application("Visites") = Application("Visites") + 1
+      Application.UnLock
+    %>
+    <p>Vous etes le visiteur <%= Application("Visites") %></p>
+
+  26.6 Telechargement de fichier
+  ------------------------------
+
+    <%@ Language="VBScript" %>
+    <%
+      Dim fso, ts, contenu
+      Set fso = Server.CreateObject("Scripting.FileSystemObject")
+      Set ts = fso.OpenTextFile(Server.MapPath("data.txt"), 1)
+      contenu = ts.ReadAll
+      ts.Close
+
+      Response.ContentType = "text/plain"
+      Response.AddHeader "Content-Disposition", "attachment; filename=data.txt"
+      Response.Write contenu
+    %>
+
+==============================================================================
+  27. Migration vers PSP (Pascal Server Pages)
+==============================================================================
+
+  Le projet DEV-COOLS propose PSP (Pascal Server Pages) comme alternative
+  Pascal native a ASP. Equivalences principales :
+
+    ASP                            PSP
+    ----------------------------   -----------------------------
+    <%@ Language="VBScript" %>     <%@ Language="PascalScript" %>
+    <% Response.Write x %>         <% Write(x); %>
+    <%= expr %>                    <%= expr %>
+    Server.CreateObject("...")     CreateObject('...')
+    Server.HTMLEncode(s)           HTMLEncode(s)   (utilitaire)
+    Server.MapPath(p)              MapPath(p)
+    Server.URLEncode(s)            URLEncode(s)
+    Session("k") = v               (a implementer en utilisateur)
+    Application("k") = v           (a implementer en utilisateur)
+    Response.Redirect "x"          WriteLn('Location: x');
+                                   WriteLn;     { en mode CGI }
+    Response.End                   Halt
+    Request.QueryString("k")       ParamStr() ou variables env CGI
+
+  Compilateurs PSP :
+
+    PSP86.PAS    : cible DOS 16 bits (assembleur 8086)
+    PSPCW32.PAS  : cible Win32 (binaire natif CGI)
+
+  Voir DOC/PSP_SPEC_LANG.txt pour les details.
+
+==============================================================================
+  28. Ressources dans le projet
+==============================================================================
+
+  Le projet DEV-COOLS ne fournit pas un compilateur ASP a part entiere
+  (IIS est requis), mais propose :
+
+    ASC2ASP.PAS         : convertisseur ASCII / HTML -> page .asp
+    PSP86.PAS           : alternative Pascal Server Pages (DOS)
+    PSPCW32.PAS         : alternative Pascal Server Pages (Win32)
+    SAMPLES/PSP/        : exemples PSP transposables en ASP
+
+  Outils connexes :
+
+    BROWSER.PAS         : navigateur HTML simple
+    IIS.PAS             : utilitaires lies a IIS
+
+  Documentation :
+
+    DOC/ASP_SPEC_LANG.txt    : le present document
+    DOC/PSP_SPEC_LANG.txt    : Pascal Server Pages
+    DOC/JSP_SPEC_LANG.txt    : JavaServer Pages (si present)
+    DEVENV.HLP               : aide en ligne integree
+
+==============================================================================
+  29. Bibliographie
+==============================================================================
+
+  Ouvrages de reference :
+
+    - Homer, Alex; Sussman, Dave; Francis, Brian; "Professional Active
+      Server Pages 3.0", Wrox Press, 1999. ISBN 1-861002-61-0.
+
+    - Mitchell, Scott; "Designing Active Server Pages", O Reilly, 2000.
+      ISBN 0-596-00044-8.
+
+    - Buser, David et al., "Beginning Active Server Pages 3.0",
+      Wrox Press, 1999. ISBN 1-861003-38-2.
+
+    - Weissinger, A. Keyton, "ASP in a Nutshell", O Reilly, 2000.
+
+    - Kingsley-Hughes, Adrian; "Beginning VBScript", Wrox Press, 1999.
+
+  Documentation Microsoft :
+
+    - Microsoft Corporation, "Active Server Pages 3.0 Reference",
+      MSDN Library, 2000.
+
+    - Microsoft Corporation, "VBScript 5.6 Language Reference", MSDN.
+
+    - Microsoft Corporation, "Internet Information Services 5.0 Resource
+      Guide", Microsoft Press, 2000.
+
+  Standards et RFC :
+
+    - RFC 3875 : The Common Gateway Interface (CGI) Version 1.1.
+    - RFC 2109 : HTTP State Management Mechanism (Cookies).
+    - RFC 2616 : Hypertext Transfer Protocol -- HTTP/1.1.
+
+  Ressources en ligne :
+
+    - https://learn.microsoft.com/en-us/previous-versions/iis/6.0-sdk/
+    - https://en.wikipedia.org/wiki/Active_Server_Pages
+
+==============================================================================
+  Fin du document ASP_SPEC_LANG.txt
+==============================================================================

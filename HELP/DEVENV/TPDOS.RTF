@@ -1,0 +1,1150 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}
+
+{\footnote # IDH_TPDOS_01}
+{\footnote $ Unite Dos - CONSTANTES - DRAPEAUX DU PROCESSEUR}
+{\footnote K Turbo Pascal;Unite Dos;CONSTANTES - DRAPEAUX DU PROCESSEUR}
+\b\fs24 CONSTANTES - DRAPEAUX DU PROCESSEUR \b0\fs20\par
+\par
+{\f1   Ces constantes representent les bits du registre FLAGS du processeur}\par
+{\f1   x86. Elles sont utilisees avec le champ Flags de l'enregistrement}\par
+{\f1   Registers lors d'appels a Intr ou MsDos.}\par
+\par
+{\f1   Const}\par
+{\f1     FCarry     = $0001;   \{ Bit 0  : drapeau de retenue (Carry)      \}}\par
+{\f1     FParity    = $0004;   \{ Bit 2  : drapeau de parite                \}}\par
+{\f1     FAuxiliary = $0010;   \{ Bit 4  : drapeau de retenue auxiliaire    \}}\par
+{\f1     FZero      = $0040;   \{ Bit 6  : drapeau zero                     \}}\par
+{\f1     FSign      = $0080;   \{ Bit 7  : drapeau de signe                 \}}\par
+{\f1     FOverflow  = $0800;   \{ Bit 11 : drapeau de depassement           \}}\par
+\par
+{\f1   Utilisation typique :}\par
+{\f1     MsDos(Regs);}\par
+{\f1     If (Regs.Flags And FCarry) <> 0 Then}\par
+{\f1       WriteLn('Erreur DOS');}\par
+\par
+\par
+\b Sections suivantes : \b0\par
+\par
+{\f1  2. CONSTANTES - MODES DE FICHIER}     {\uldb [Aller]}{\v IDH_TPDOS_02}\par
+{\f1  3. CONSTANTES - ATTRIBUTS DE FICHIER}     {\uldb [Aller]}{\v IDH_TPDOS_03}\par
+{\f1  4. TYPES - CHAINES SPECIALISEES}     {\uldb [Aller]}{\v IDH_TPDOS_04}\par
+{\f1  5. TYPES - ENREGISTREMENT REGISTERS}     {\uldb [Aller]}{\v IDH_TPDOS_05}\par
+{\f1  6. TYPES - ENREGISTREMENTS DE FICHIER}     {\uldb [Aller]}{\v IDH_TPDOS_06}\par
+{\f1  7. VARIABLE DOSERROR}     {\uldb [Aller]}{\v IDH_TPDOS_07}\par
+{\f1  8. PROCEDURES ET FONCTIONS - VERSION DOS}     {\uldb [Aller]}{\v IDH_TPDOS_08}\par
+{\f1  9. PROCEDURES - INTERRUPTIONS DOS}     {\uldb [Aller]}{\v IDH_TPDOS_09}\par
+{\f1 10. PROCEDURES - DATE ET HEURE}     {\uldb [Aller]}{\v IDH_TPDOS_10}\par
+{\f1 11. PROCEDURES - CONTROLE SYSTEME}     {\uldb [Aller]}{\v IDH_TPDOS_11}\par
+{\f1 12. PROCEDURES ET FONCTIONS - ESPACE DISQUE}     {\uldb [Aller]}{\v IDH_TPDOS_12}\par
+{\f1 13. PROCEDURES - ATTRIBUTS ET HORODATAGE DE FICHIERS}     {\uldb [Aller]}{\v IDH_TPDOS_13}\par
+{\f1 14. PROCEDURES - RECHERCHE DE FICHIERS}     {\uldb [Aller]}{\v IDH_TPDOS_14}\par
+{\f1 15. PROCEDURES - CONVERSION DATE/HEURE}     {\uldb [Aller]}{\v IDH_TPDOS_15}\par
+{\f1 16. PROCEDURES - VECTEURS D'INTERRUPTION}     {\uldb [Aller]}{\v IDH_TPDOS_16}\par
+{\f1 17. PROCEDURES ET FONCTIONS - CHEMINS ET FICHIERS}     {\uldb [Aller]}{\v IDH_TPDOS_17}\par
+{\f1 18. PROCEDURES ET FONCTIONS - ENVIRONNEMENT}     {\uldb [Aller]}{\v IDH_TPDOS_18}\par
+{\f1 19. PROCEDURES ET FONCTIONS - EXECUTION DE PROGRAMMES}     {\uldb [Aller]}{\v IDH_TPDOS_19}\par
+{\f1 20. EXEMPLES D'UTILISATION}     {\uldb [Aller]}{\v IDH_TPDOS_20}\par
+{\f1 21. NOTES D'IMPLEMENTATION POUR TPCW32}     {\uldb [Aller]}{\v IDH_TPDOS_21}\par
+{\f1 22. INTERFACE COMPLETE}     {\uldb [Aller]}{\v IDH_TPDOS_22}\par
+{\f1 23. RESUME PAR CATEGORIE}     {\uldb [Aller]}{\v IDH_TPDOS_23}\par
+\par
+{\uldb Suivant >>}{\v IDH_TPDOS_02}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPDOS_02}
+{\footnote $ Unite Dos - CONSTANTES - MODES DE FICHIER}
+{\footnote K Turbo Pascal;Unite Dos;CONSTANTES - MODES DE FICHIER}
+\b\fs24 CONSTANTES - MODES DE FICHIER \b0\fs20\par
+\par
+{\f1   Ces constantes representent l'etat interne d'une variable fichier}\par
+{\f1   (champ Mode de FileRec et TextRec). Elles permettent de verifier}\par
+{\f1   si un fichier est ouvert, ferme, ou dans quel mode.}\par
+\par
+{\f1   Const}\par
+{\f1     fmClosed = $D7B0;   \{ Fichier ferme                              \}}\par
+{\f1     fmInput  = $D7B1;   \{ Fichier ouvert en lecture (Reset sur Text)  \}}\par
+{\f1     fmOutput = $D7B2;   \{ Fichier ouvert en ecriture (Rewrite)        \}}\par
+{\f1     fmInOut  = $D7B3;   \{ Fichier ouvert en lecture/ecriture (Reset)   \}}\par
+\par
+{\f1   Utilisation typique :}\par
+{\f1     Var F : Text;}\par
+{\f1     If TextRec(F).Mode = fmInput Then}\par
+{\f1       WriteLn('Fichier ouvert en lecture');}\par
+\par
+{\f1   NOTE : ces valeurs "magiques" ($D7Bx) sont specifiques au runtime}\par
+{\f1   Turbo Pascal. Elles evitent une confusion avec des valeurs courantes}\par
+{\f1   (0, 1, 2, 3).}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPDOS_01}     {\uldb Suivant >>}{\v IDH_TPDOS_03}     {\uldb Sommaire}{\v IDH_TPDOS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPDOS_03}
+{\footnote $ Unite Dos - CONSTANTES - ATTRIBUTS DE FICHIER}
+{\footnote K Turbo Pascal;Unite Dos;CONSTANTES - ATTRIBUTS DE FICHIER}
+\b\fs24 CONSTANTES - ATTRIBUTS DE FICHIER \b0\fs20\par
+\par
+{\f1   Ces constantes representent les attributs de fichier DOS. Elles}\par
+{\f1   sont utilisees avec FindFirst, GetFAttr et SetFAttr.}\par
+\par
+{\f1   Const}\par
+{\f1     ReadOnly  = $01;   \{ Fichier en lecture seule                     \}}\par
+{\f1     Hidden    = $02;   \{ Fichier cache                                \}}\par
+{\f1     SysFile   = $04;   \{ Fichier systeme                              \}}\par
+{\f1     VolumeID  = $08;   \{ Etiquette de volume                          \}}\par
+{\f1     Directory = $10;   \{ Repertoire                                    \}}\par
+{\f1     Archive   = $20;   \{ Bit d'archivage (modifie depuis sauvegarde)  \}}\par
+{\f1     AnyFile   = $3F;   \{ Tous les attributs combines                   \}}\par
+\par
+{\f1   Les attributs peuvent etre combines par OR :}\par
+{\f1     FindFirst('*.*', ReadOnly + Hidden + Archive, SR);}\par
+{\f1     FindFirst('*.*', AnyFile, SR);  \{ cherche tout \}}\par
+\par
+{\f1   Pour tester un attribut :}\par
+{\f1     If (SR.Attr And Directory) <> 0 Then}\par
+{\f1       WriteLn(SR.Name, ' est un repertoire');}\par
+\par
+{\f1   Correspondance avec les attributs Win32 :}\par
+{\f1     ReadOnly  -> FILE_ATTRIBUTE_READONLY  ($01)}\par
+{\f1     Hidden    -> FILE_ATTRIBUTE_HIDDEN    ($02)}\par
+{\f1     SysFile   -> FILE_ATTRIBUTE_SYSTEM    ($04)}\par
+{\f1     Directory -> FILE_ATTRIBUTE_DIRECTORY ($10)}\par
+{\f1     Archive   -> FILE_ATTRIBUTE_ARCHIVE   ($20)}\par
+{\f1     VolumeID n'a pas d'equivalent direct en Win32.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPDOS_02}     {\uldb Suivant >>}{\v IDH_TPDOS_04}     {\uldb Sommaire}{\v IDH_TPDOS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPDOS_04}
+{\footnote $ Unite Dos - TYPES - CHAINES SPECIALISEES}
+{\footnote K Turbo Pascal;Unite Dos;TYPES - CHAINES SPECIALISEES}
+\b\fs24 TYPES - CHAINES SPECIALISEES \b0\fs20\par
+\par
+{\f1   type}\par
+{\f1     ComStr  = String[127];   \{ Ligne de commande (max 127 caracteres)   \}}\par
+{\f1     PathStr = String[79];    \{ Chemin complet (unite:rep\\nom.ext)        \}}\par
+{\f1     DirStr  = String[67];    \{ Unite et repertoire (C:\\REP\\SOUS\\)       \}}\par
+{\f1     NameStr = String[8];     \{ Nom de fichier seul (max 8 caracteres)   \}}\par
+{\f1     ExtStr  = String[4];     \{ Extension avec point (.PAS, .EXE)        \}}\par
+\par
+{\f1   Ces types sont adaptes aux limites du systeme de fichiers DOS (8.3).}\par
+{\f1   Ils sont utilises par les procedures FSplit, FSearch, FExpand et Exec.}\par
+\par
+{\f1   Exemple :}\par
+{\f1     Var}\par
+{\f1       Dir  : DirStr;}\par
+{\f1       Name : NameStr;}\par
+{\f1       Ext  : ExtStr;}\par
+{\f1     FSplit('C:\\TP\\BIN\\TPC.EXE', Dir, Name, Ext);}\par
+{\f1     \{ Dir = 'C:\\TP\\BIN\\', Name = 'TPC', Ext = '.EXE' \}}\par
+\par
+{\f1   NOTE : en Win32 avec noms longs, ces tailles peuvent etre}\par
+{\f1   insuffisantes. Les implementations modernes utilisent souvent}\par
+{\f1   String[255] a la place.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPDOS_03}     {\uldb Suivant >>}{\v IDH_TPDOS_05}     {\uldb Sommaire}{\v IDH_TPDOS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPDOS_05}
+{\footnote $ Unite Dos - TYPES - ENREGISTREMENT REGISTERS}
+{\footnote K Turbo Pascal;Unite Dos;TYPES - ENREGISTREMENT REGISTERS}
+\b\fs24 TYPES - ENREGISTREMENT REGISTERS \b0\fs20\par
+\par
+{\f1   type}\par
+{\f1     Registers = record}\par
+{\f1       case Integer of}\par
+{\f1         0: (AX, BX, CX, DX, BP, SI, DI, DS, ES, Flags : Word);}\par
+{\f1         1: (AL, AH, BL, BH, CL, CH, DL, DH : Byte);}\par
+{\f1     end;}\par
+\par
+{\f1   Enregistrement a variantes (union) representant les registres du}\par
+{\f1   processeur x86 en mode 16 bits. Utilise avec Intr et MsDos.}\par
+\par
+{\f1   La variante 0 donne acces aux registres 16 bits complets.}\par
+{\f1   La variante 1 donne acces aux octets bas (xL) et hauts (xH)}\par
+{\f1   des registres AX, BX, CX, DX.}\par
+\par
+{\f1   Exemple :}\par
+{\f1     Var Regs : Registers;}\par
+{\f1     Regs.AH := $30;            \{ fonction : obtenir version DOS \}}\par
+{\f1     MsDos(Regs);}\par
+{\f1     WriteLn('DOS ', Regs.AL, '.', Regs.AH);}\par
+\par
+{\f1   NOTE : en Win32, Intr et MsDos ne sont plus fonctionnels. Les}\par
+{\f1   appels DOS doivent etre remplaces par les API Windows.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPDOS_04}     {\uldb Suivant >>}{\v IDH_TPDOS_06}     {\uldb Sommaire}{\v IDH_TPDOS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPDOS_06}
+{\footnote $ Unite Dos - TYPES - ENREGISTREMENTS DE FICHIER}
+{\footnote K Turbo Pascal;Unite Dos;TYPES - ENREGISTREMENTS DE FICHIER}
+\b\fs24 TYPES - ENREGISTREMENTS DE FICHIER \b0\fs20\par
+\par
+\par
+\b 6.1 FileRec (fichier type et non-type) \b0\par
+\par
+{\f1   type}\par
+{\f1     FileRec = record}\par
+{\f1       Handle   : Word;                   \{ Handle fichier DOS/Win32   \}}\par
+{\f1       Mode     : Word;                   \{ Mode (fmClosed/Input/...)  \}}\par
+{\f1       RecSize  : Word;                   \{ Taille d'enregistrement    \}}\par
+{\f1       Private  : Array[1..26] Of Byte;   \{ Donnees internes runtime   \}}\par
+{\f1       UserData : Array[1..16] Of Byte;   \{ Donnees utilisateur        \}}\par
+{\f1       Name     : Array[0..79] Of Char;   \{ Nom du fichier (ASCIIZ)    \}}\par
+{\f1     end;}\par
+\par
+{\f1   Structure interne d'une variable File et File of T. Permet}\par
+{\f1   d'inspecter ou modifier les champs internes :}\par
+{\f1     Var F : File;}\par
+{\f1     WriteLn('Handle = ', FileRec(F).Handle);}\par
+{\f1     WriteLn('Nom = ', FileRec(F).Name);}\par
+\par
+{\f1   RecSize est positionne par Reset(F, N) ou Rewrite(F, N).}\par
+{\f1   Par defaut, RecSize = 128 pour File, SizeOf(T) pour File of T.}\par
+\par
+\par
+\b 6.2 TextRec et TextBuf (fichier texte) \b0\par
+\par
+{\f1   type}\par
+{\f1     TextBuf = Array[0..127] Of Char;}\par
+\par
+{\f1     TextRec = record}\par
+{\f1       Handle    : Word;            \{ Handle fichier DOS/Win32      \}}\par
+{\f1       Mode      : Word;            \{ Mode (fmClosed/Input/Output)  \}}\par
+{\f1       BufSize   : Word;            \{ Taille du tampon              \}}\par
+{\f1       Private   : Word;            \{ Donnees internes              \}}\par
+{\f1       BufPos    : Word;            \{ Position dans le tampon        \}}\par
+{\f1       BufEnd    : Word;            \{ Fin des donnees dans tampon    \}}\par
+{\f1       BufPtr    : ^TextBuf;        \{ Pointeur vers le tampon        \}}\par
+{\f1       OpenFunc  : Pointer;         \{ Fonction d'ouverture           \}}\par
+{\f1       InOutFunc : Pointer;         \{ Fonction de lecture/ecriture   \}}\par
+{\f1       FlushFunc : Pointer;         \{ Fonction de vidage tampon      \}}\par
+{\f1       CloseFunc : Pointer;         \{ Fonction de fermeture          \}}\par
+{\f1       UserData  : Array[1..16] Of Byte;  \{ Donnees utilisateur     \}}\par
+{\f1       Name      : Array[0..79] Of Char;  \{ Nom du fichier (ASCIIZ) \}}\par
+{\f1       Buffer    : TextBuf;         \{ Tampon integre (128 octets)    \}}\par
+{\f1     end;}\par
+\par
+{\f1   Structure interne d'une variable Text. Le tampon integre fait}\par
+{\f1   128 octets par defaut. SetTextBuf peut rediriger BufPtr vers}\par
+{\f1   un tampon plus grand.}\par
+\par
+{\f1   Les quatre pointeurs de fonction (OpenFunc, InOutFunc, FlushFunc,}\par
+{\f1   CloseFunc) permettent de creer des pilotes de peripheriques texte}\par
+{\f1   personnalises (device drivers).}\par
+\par
+\par
+\b 6.3 SearchRec (recherche de fichiers) \b0\par
+\par
+{\f1   type}\par
+{\f1     SearchRec = record}\par
+{\f1       Fill : Array[1..21] Of Byte;  \{ Donnees internes DOS (DTA)    \}}\par
+{\f1       Attr : Byte;                  \{ Attributs du fichier trouve    \}}\par
+{\f1       Time : LongInt;               \{ Date/heure (format compacte)  \}}\par
+{\f1       Size : LongInt;               \{ Taille en octets               \}}\par
+{\f1       Name : String[12];            \{ Nom du fichier (format 8.3)    \}}\par
+{\f1     end;}\par
+\par
+{\f1   Utilise par FindFirst et FindNext. Le champ Fill contient les}\par
+{\f1   donnees internes du DOS (DTA = Disk Transfer Area) necessaires}\par
+{\f1   pour FindNext.}\par
+\par
+{\f1   Le champ Time est au format compacte DOS (voir PackTime/UnpackTime).}\par
+{\f1   Le champ Name contient le nom en format 8.3 (ex: 'HELLO.PAS').}\par
+\par
+\par
+\b 6.4 DateTime (date et heure) \b0\par
+\par
+{\f1   type}\par
+{\f1     DateTime = record}\par
+{\f1       Year  : Word;   \{ Annee (1980..2099)  \}}\par
+{\f1       Month : Word;   \{ Mois (1..12)        \}}\par
+{\f1       Day   : Word;   \{ Jour (1..31)        \}}\par
+{\f1       Hour  : Word;   \{ Heure (0..23)       \}}\par
+{\f1       Min   : Word;   \{ Minute (0..59)      \}}\par
+{\f1       Sec   : Word;   \{ Seconde (0..59)     \}}\par
+{\f1     end;}\par
+\par
+{\f1   Utilise par UnpackTime et PackTime pour convertir entre l'horodatage}\par
+{\f1   compacte DOS (LongInt) et des champs lisibles.}\par
+\par
+{\f1   Format compacte DOS du LongInt :}\par
+{\f1     Bits 0-4   : Secondes / 2 (0..29 -> 0..58 secondes)}\par
+{\f1     Bits 5-10  : Minutes (0..59)}\par
+{\f1     Bits 11-15 : Heures (0..23)}\par
+{\f1     Bits 16-20 : Jour (1..31)}\par
+{\f1     Bits 21-24 : Mois (1..12)}\par
+{\f1     Bits 25-31 : Annee - 1980 (0..119 -> 1980..2099)}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPDOS_05}     {\uldb Suivant >>}{\v IDH_TPDOS_07}     {\uldb Sommaire}{\v IDH_TPDOS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPDOS_07}
+{\footnote $ Unite Dos - VARIABLE DOSERROR}
+{\footnote K Turbo Pascal;Unite Dos;VARIABLE DOSERROR}
+\b\fs24 VARIABLE DOSERROR \b0\fs20\par
+\par
+{\f1   Var}\par
+{\f1     DosError : Integer;}\par
+\par
+{\f1   Contient le code d'erreur de la derniere operation de l'unite DOS.}\par
+{\f1   Mis a jour par FindFirst, FindNext, Exec et d'autres procedures.}\par
+\par
+{\f1   Codes d'erreur DOS courants :}\par
+{\f1     0   = Pas d'erreur}\par
+{\f1     2   = Fichier non trouve}\par
+{\f1     3   = Chemin non trouve}\par
+{\f1     5   = Acces refuse}\par
+{\f1     6   = Handle invalide}\par
+{\f1     8   = Memoire insuffisante}\par
+{\f1     10  = Environnement invalide}\par
+{\f1     11  = Format invalide}\par
+{\f1     18  = Plus de fichiers (FindNext epuise)}\par
+\par
+{\f1   Exemple :}\par
+{\f1     FindFirst('*.PAS', AnyFile, SR);}\par
+{\f1     If DosError <> 0 Then}\par
+{\f1       WriteLn('Aucun fichier .PAS trouve');}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPDOS_06}     {\uldb Suivant >>}{\v IDH_TPDOS_08}     {\uldb Sommaire}{\v IDH_TPDOS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPDOS_08}
+{\footnote $ Unite Dos - PROCEDURES ET FONCTIONS - VERSION DOS}
+{\footnote K Turbo Pascal;Unite Dos;PROCEDURES ET FONCTIONS - VERSION DOS}
+\b\fs24 PROCEDURES ET FONCTIONS - VERSION DOS \b0\fs20\par
+\par
+{\f1   Function DosVersion : Word;}\par
+{\f1     - Retourne le numero de version du DOS}\par
+{\f1     - Lo(DosVersion) = numero majeur}\par
+{\f1     - Hi(DosVersion) = numero mineur}\par
+{\f1     - Exemple :}\par
+{\f1         V := DosVersion;}\par
+{\f1         WriteLn('DOS ', Lo(V), '.', Hi(V));}\par
+{\f1         \{ DOS 6.22 -> Lo=6, Hi=22 \}}\par
+\par
+{\f1   NOTE : en Win32, retourne generalement la version de}\par
+{\f1   compatibilite DOS du sous-systeme Windows.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPDOS_07}     {\uldb Suivant >>}{\v IDH_TPDOS_09}     {\uldb Sommaire}{\v IDH_TPDOS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPDOS_09}
+{\footnote $ Unite Dos - PROCEDURES - INTERRUPTIONS DOS}
+{\footnote K Turbo Pascal;Unite Dos;PROCEDURES - INTERRUPTIONS DOS}
+\b\fs24 PROCEDURES - INTERRUPTIONS DOS \b0\fs20\par
+\par
+{\f1   Procedure Intr(IntNo : Byte; Var Regs : Registers);}\par
+{\f1     - Execute l'interruption logicielle IntNo}\par
+{\f1     - Les registres sont charges depuis Regs avant l'appel}\par
+{\f1     - Les registres sont sauvegardes dans Regs apres l'appel}\par
+{\f1     - Permet d'appeler n'importe quel service BIOS ou DOS}\par
+{\f1     - Exemple (INT 10h, service 0 = changer mode video) :}\par
+{\f1         Regs.AH := $00;}\par
+{\f1         Regs.AL := $13;     \{ mode 320x200x256 \}}\par
+{\f1         Intr($10, Regs);}\par
+\par
+{\f1   Procedure MsDos(Var Regs : Registers);}\par
+{\f1     - Equivalent a Intr($21, Regs)}\par
+{\f1     - Appelle directement l'interruption DOS (INT 21h)}\par
+{\f1     - Plus lisible que Intr($21, Regs)}\par
+{\f1     - Exemple (obtenir version DOS) :}\par
+{\f1         Regs.AH := $30;}\par
+{\f1         MsDos(Regs);}\par
+{\f1         WriteLn('Version = ', Regs.AL, '.', Regs.AH);}\par
+\par
+{\f1   NOTE : en Win32, ces procedures ne sont plus fonctionnelles.}\par
+{\f1   Les interruptions DOS ne sont pas disponibles en mode protege}\par
+{\f1   Win32. Elles doivent etre remplacees par les API Windows.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPDOS_08}     {\uldb Suivant >>}{\v IDH_TPDOS_10}     {\uldb Sommaire}{\v IDH_TPDOS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPDOS_10}
+{\footnote $ Unite Dos - PROCEDURES - DATE ET HEURE}
+{\footnote K Turbo Pascal;Unite Dos;PROCEDURES - DATE ET HEURE}
+\b\fs24 PROCEDURES - DATE ET HEURE \b0\fs20\par
+\par
+{\f1   Procedure GetDate(Var Year, Month, Day, DayOfWeek : Word);}\par
+{\f1     - Retourne la date systeme courante}\par
+{\f1     - Year  : annee (1980..2099)}\par
+{\f1     - Month : mois (1..12)}\par
+{\f1     - Day   : jour du mois (1..31)}\par
+{\f1     - DayOfWeek : jour de la semaine (0=Dimanche, 1=Lundi, ..., 6=Samedi)}\par
+{\f1     - Exemple :}\par
+{\f1         GetDate(Y, M, D, DOW);}\par
+{\f1         WriteLn('Date : ', D, '/', M, '/', Y);}\par
+\par
+{\f1   Procedure SetDate(Year, Month, Day : Word);}\par
+{\f1     - Modifie la date systeme}\par
+{\f1     - Requiert les privileges administrateur sur certains systemes}\par
+{\f1     - Exemple : SetDate(2026, 3, 13);}\par
+\par
+{\f1   Procedure GetTime(Var Hour, Minute, Second, Sec100 : Word);}\par
+{\f1     - Retourne l'heure systeme courante}\par
+{\f1     - Hour   : heure (0..23)}\par
+{\f1     - Minute : minute (0..59)}\par
+{\f1     - Second : seconde (0..59)}\par
+{\f1     - Sec100 : centiemes de seconde (0..99)}\par
+{\f1     - Exemple :}\par
+{\f1         GetTime(H, Mi, S, S100);}\par
+{\f1         WriteLn('Heure : ', H, ':', Mi, ':', S);}\par
+\par
+{\f1   Procedure SetTime(Hour, Minute, Second, Sec100 : Word);}\par
+{\f1     - Modifie l'heure systeme}\par
+{\f1     - Requiert les privileges administrateur sur certains systemes}\par
+{\f1     - Exemple : SetTime(14, 30, 0, 0);}\par
+\par
+{\f1   API Win32 correspondantes :}\par
+{\f1     GetDate -> GetLocalTime (structure SYSTEMTIME)}\par
+{\f1     SetDate -> SetLocalTime}\par
+{\f1     GetTime -> GetLocalTime}\par
+{\f1     SetTime -> SetLocalTime}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPDOS_09}     {\uldb Suivant >>}{\v IDH_TPDOS_11}     {\uldb Sommaire}{\v IDH_TPDOS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPDOS_11}
+{\footnote $ Unite Dos - PROCEDURES - CONTROLE SYSTEME}
+{\footnote K Turbo Pascal;Unite Dos;PROCEDURES - CONTROLE SYSTEME}
+\b\fs24 PROCEDURES - CONTROLE SYSTEME \b0\fs20\par
+\par
+{\f1   Procedure GetCBreak(Var Break : Boolean);}\par
+{\f1     - Retourne l'etat du Ctrl+Break DOS}\par
+{\f1     - True = le DOS verifie Ctrl+C/Break a chaque appel systeme}\par
+{\f1     - False = verification uniquement lors des E/S console}\par
+{\f1     - Exemple :}\par
+{\f1         GetCBreak(B);}\par
+{\f1         WriteLn('Ctrl+Break = ', B);}\par
+\par
+{\f1   Procedure SetCBreak(Break : Boolean);}\par
+{\f1     - Active ou desactive la verification etendue Ctrl+Break}\par
+{\f1     - Exemple : SetCBreak(False);  \{ ignorer Ctrl+Break \}}\par
+\par
+{\f1   Procedure GetVerify(Var Verify : Boolean);}\par
+{\f1     - Retourne l'etat de la verification d'ecriture disque}\par
+{\f1     - True = le DOS relit chaque secteur ecrit pour verification}\par
+{\f1     - False = pas de relecture (plus rapide mais moins sur)}\par
+\par
+{\f1   Procedure SetVerify(Verify : Boolean);}\par
+{\f1     - Active ou desactive la verification d'ecriture disque}\par
+{\f1     - Exemple : SetVerify(True);  \{ activer la verification \}}\par
+\par
+{\f1   NOTE : en Win32, GetCBreak/SetCBreak et GetVerify/SetVerify}\par
+{\f1   n'ont plus de sens. Elles peuvent etre implementees comme}\par
+{\f1   des stubs (ne rien faire / retourner une valeur par defaut).}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPDOS_10}     {\uldb Suivant >>}{\v IDH_TPDOS_12}     {\uldb Sommaire}{\v IDH_TPDOS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPDOS_12}
+{\footnote $ Unite Dos - PROCEDURES ET FONCTIONS - ESPACE DISQUE}
+{\footnote K Turbo Pascal;Unite Dos;PROCEDURES ET FONCTIONS - ESPACE DISQUE}
+\b\fs24 PROCEDURES ET FONCTIONS - ESPACE DISQUE \b0\fs20\par
+\par
+{\f1   Function DiskFree(Drive : Byte) : LongInt;}\par
+{\f1     - Retourne l'espace libre en octets sur le lecteur Drive}\par
+{\f1     - Drive : 0 = lecteur courant, 1 = A:, 2 = B:, 3 = C:, etc.}\par
+{\f1     - Retourne -1 si le lecteur est invalide}\par
+{\f1     - Exemple :}\par
+{\f1         Free := DiskFree(3);     \{ espace libre sur C: \}}\par
+{\f1         WriteLn('Libre : ', Free, ' octets');}\par
+{\f1     - NOTE : limite a 2 Go (LongInt = 32 bits signe)}\par
+\par
+{\f1   Function DiskSize(Drive : Byte) : LongInt;}\par
+{\f1     - Retourne la capacite totale en octets du lecteur Drive}\par
+{\f1     - Meme convention que DiskFree pour Drive}\par
+{\f1     - Retourne -1 si le lecteur est invalide}\par
+{\f1     - Exemple :}\par
+{\f1         Total := DiskSize(3);    \{ taille totale de C: \}}\par
+{\f1         WriteLn('Total : ', Total, ' octets');}\par
+\par
+{\f1   API Win32 correspondante :}\par
+{\f1     GetDiskFreeSpaceA(root, sectPerClust, bytesPerSect,}\par
+{\f1                       freeClust, totalClust)}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPDOS_11}     {\uldb Suivant >>}{\v IDH_TPDOS_13}     {\uldb Sommaire}{\v IDH_TPDOS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPDOS_13}
+{\footnote $ Unite Dos - PROCEDURES - ATTRIBUTS ET HORODATAGE DE FICHIERS}
+{\footnote K Turbo Pascal;Unite Dos;PROCEDURES - ATTRIBUTS ET HORODATAGE DE FICHIERS}
+\b\fs24 PROCEDURES - ATTRIBUTS ET HORODATAGE DE FICHIERS \b0\fs20\par
+\par
+\par
+\b 13.1 Attributs de fichier \b0\par
+\par
+{\f1   Procedure GetFAttr(Var F; Var Attr : Word);}\par
+{\f1     - Retourne les attributs du fichier associe a F}\par
+{\f1     - F doit avoir ete associe par Assign (pas necessairement ouvert)}\par
+{\f1     - Attr recoit la combinaison des attributs (ReadOnly, Hidden, etc.)}\par
+{\f1     - Met a jour DosError en cas d'erreur}\par
+{\f1     - Exemple :}\par
+{\f1         Assign(F, 'TEST.PAS');}\par
+{\f1         GetFAttr(F, A);}\par
+{\f1         If DosError = 0 Then}\par
+{\f1         Begin}\par
+{\f1           If (A And ReadOnly) <> 0 Then WriteLn('Lecture seule');}\par
+{\f1           If (A And Hidden) <> 0 Then WriteLn('Cache');}\par
+{\f1           If (A And Directory) <> 0 Then WriteLn('Repertoire');}\par
+{\f1         End;}\par
+\par
+{\f1   Procedure SetFAttr(Var F; Attr : Word);}\par
+{\f1     - Modifie les attributs du fichier associe a F}\par
+{\f1     - F doit etre ferme}\par
+{\f1     - Met a jour DosError en cas d'erreur}\par
+{\f1     - Exemple :}\par
+{\f1         Assign(F, 'TEST.PAS');}\par
+{\f1         SetFAttr(F, ReadOnly + Archive);}\par
+\par
+{\f1   API Win32 correspondantes :}\par
+{\f1     GetFAttr -> GetFileAttributesA}\par
+{\f1     SetFAttr -> SetFileAttributesA}\par
+\par
+\par
+\b 13.2 Horodatage de fichier \b0\par
+\par
+{\f1   Procedure GetFTime(Var F; Var Time : LongInt);}\par
+{\f1     - Retourne la date/heure de derniere modification du fichier F}\par
+{\f1     - F doit etre OUVERT (apres Reset ou Rewrite)}\par
+{\f1     - Time est au format compacte DOS (voir PackTime/UnpackTime)}\par
+{\f1     - Met a jour DosError en cas d'erreur}\par
+{\f1     - Exemple :}\par
+{\f1         Assign(F, 'TEST.PAS');}\par
+{\f1         Reset(F);}\par
+{\f1         GetFTime(F, T);}\par
+{\f1         UnpackTime(T, DT);}\par
+{\f1         WriteLn('Date : ', DT.Day, '/', DT.Month, '/', DT.Year);}\par
+{\f1         Close(F);}\par
+\par
+{\f1   Procedure SetFTime(Var F; Time : LongInt);}\par
+{\f1     - Modifie la date/heure de derniere modification du fichier F}\par
+{\f1     - F doit etre OUVERT}\par
+{\f1     - Time est au format compacte DOS}\par
+{\f1     - Exemple :}\par
+{\f1         PackTime(DT, T);}\par
+{\f1         SetFTime(F, T);}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPDOS_12}     {\uldb Suivant >>}{\v IDH_TPDOS_14}     {\uldb Sommaire}{\v IDH_TPDOS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPDOS_14}
+{\footnote $ Unite Dos - PROCEDURES - RECHERCHE DE FICHIERS}
+{\footnote K Turbo Pascal;Unite Dos;PROCEDURES - RECHERCHE DE FICHIERS}
+\b\fs24 PROCEDURES - RECHERCHE DE FICHIERS \b0\fs20\par
+\par
+{\f1   Procedure FindFirst(Path : PathStr; Attr : Word; Var F : SearchRec);}\par
+{\f1     - Recherche le premier fichier correspondant au masque Path}\par
+{\f1     - Path peut contenir des jokers : '*' et '?'}\par
+{\f1     - Attr specifie les attributs a inclure dans la recherche}\par
+{\f1     - F recoit les informations du premier fichier trouve}\par
+{\f1     - Met a jour DosError : 0 = trouve, 18 = aucun fichier}\par
+{\f1     - Exemple :}\par
+{\f1         FindFirst('*.PAS', AnyFile, SR);}\par
+{\f1         While DosError = 0 Do}\par
+{\f1         Begin}\par
+{\f1           WriteLn(SR.Name, ' (', SR.Size, ' octets)');}\par
+{\f1           FindNext(SR);}\par
+{\f1         End;}\par
+\par
+{\f1   Procedure FindNext(Var F : SearchRec);}\par
+{\f1     - Recherche le fichier suivant apres FindFirst}\par
+{\f1     - F doit etre le meme SearchRec passe a FindFirst}\par
+{\f1     - Met a jour DosError : 0 = trouve, 18 = plus de fichiers}\par
+{\f1     - Exemple : voir FindFirst ci-dessus}\par
+\par
+{\f1   Remarque sur les attributs :}\par
+{\f1     - Les fichiers normaux (sans attributs speciaux) sont toujours}\par
+{\f1       inclus dans la recherche, independamment du parametre Attr}\par
+{\f1     - Attr specifie les fichiers SUPPLEMENTAIRES a inclure}\par
+{\f1     - Pour trouver uniquement les repertoires, il faut filtrer :}\par
+{\f1         FindFirst('*.*', Directory, SR);}\par
+{\f1         While DosError = 0 Do}\par
+{\f1         Begin}\par
+{\f1           If (SR.Attr And Directory) <> 0 Then}\par
+{\f1             WriteLn('[', SR.Name, ']');}\par
+{\f1           FindNext(SR);}\par
+{\f1         End;}\par
+\par
+{\f1   API Win32 correspondantes :}\par
+{\f1     FindFirst -> FindFirstFileA (retourne un handle)}\par
+{\f1     FindNext  -> FindNextFileA}\par
+{\f1     (apres la boucle) -> FindClose (liberer le handle)}\par
+\par
+{\f1   ATTENTION : en Win32, il faut appeler FindClose apres la}\par
+{\f1   boucle de recherche pour liberer les ressources. En DOS,}\par
+{\f1   ce n'est pas necessaire (le DTA est un simple tampon).}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPDOS_13}     {\uldb Suivant >>}{\v IDH_TPDOS_15}     {\uldb Sommaire}{\v IDH_TPDOS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPDOS_15}
+{\footnote $ Unite Dos - PROCEDURES - CONVERSION DATE/HEURE}
+{\footnote K Turbo Pascal;Unite Dos;PROCEDURES - CONVERSION DATE/HEURE}
+\b\fs24 PROCEDURES - CONVERSION DATE/HEURE \b0\fs20\par
+\par
+{\f1   Procedure UnpackTime(P : LongInt; Var T : DateTime);}\par
+{\f1     - Convertit un horodatage compacte DOS en champs lisibles}\par
+{\f1     - P : horodatage au format compacte (de GetFTime ou SearchRec.Time)}\par
+{\f1     - T : enregistrement DateTime avec Year, Month, Day, Hour, Min, Sec}\par
+{\f1     - Exemple :}\par
+{\f1         UnpackTime(SR.Time, DT);}\par
+{\f1         WriteLn(DT.Year, '-', DT.Month, '-', DT.Day, ' ',}\par
+{\f1                 DT.Hour, ':', DT.Min, ':', DT.Sec);}\par
+\par
+{\f1   Procedure PackTime(Var T : DateTime; Var P : LongInt);}\par
+{\f1     - Convertit des champs DateTime en horodatage compacte DOS}\par
+{\f1     - T : enregistrement avec les champs a compacter}\par
+{\f1     - P : recoit l'horodatage compacte}\par
+{\f1     - Exemple :}\par
+{\f1         DT.Year := 2026; DT.Month := 3; DT.Day := 13;}\par
+{\f1         DT.Hour := 14; DT.Min := 30; DT.Sec := 0;}\par
+{\f1         PackTime(DT, T);}\par
+\par
+{\f1   Formule de conversion :}\par
+{\f1     Pack :}\par
+{\f1       P := (Sec Shr 1) Or (Min Shl 5) Or (Hour Shl 11) Or}\par
+{\f1            (Day Shl 16) Or (Month Shl 21) Or ((Year - 1980) Shl 25);}\par
+\par
+{\f1     Unpack :}\par
+{\f1       Sec   := (P And $1F) * 2;}\par
+{\f1       Min   := (P Shr 5) And $3F;}\par
+{\f1       Hour  := (P Shr 11) And $1F;}\par
+{\f1       Day   := (P Shr 16) And $1F;}\par
+{\f1       Month := (P Shr 21) And $0F;}\par
+{\f1       Year  := (P Shr 25) And $7F + 1980;}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPDOS_14}     {\uldb Suivant >>}{\v IDH_TPDOS_16}     {\uldb Sommaire}{\v IDH_TPDOS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPDOS_16}
+{\footnote $ Unite Dos - PROCEDURES - VECTEURS D'INTERRUPTION}
+{\footnote K Turbo Pascal;Unite Dos;PROCEDURES - VECTEURS D'INTERRUPTION}
+\b\fs24 PROCEDURES - VECTEURS D'INTERRUPTION \b0\fs20\par
+\par
+{\f1   Procedure GetIntVec(IntNo : Byte; Var Vector : Pointer);}\par
+{\f1     - Retourne l'adresse du vecteur d'interruption IntNo}\par
+{\f1     - IntNo : numero d'interruption (0..255)}\par
+{\f1     - Vector : recoit l'adresse du handler}\par
+{\f1     - Exemple :}\par
+{\f1         GetIntVec($1C, OldTimer);  \{ sauver le timer user tick \}}\par
+\par
+{\f1   Procedure SetIntVec(IntNo : Byte; Vector : Pointer);}\par
+{\f1     - Installe un nouveau vecteur d'interruption}\par
+{\f1     - IntNo : numero d'interruption (0..255)}\par
+{\f1     - Vector : adresse du nouveau handler}\par
+{\f1     - ATTENTION : le handler doit etre declare avec la directive Far}\par
+{\f1       et doit etre une procedure d'interruption}\par
+{\f1     - Exemple :}\par
+{\f1         SetIntVec($1C, @MyTimerHandler);}\par
+\par
+{\f1   Procedure SwapVectors;}\par
+{\f1     - Echange les vecteurs d'interruption sauvegardes par le runtime}\par
+{\f1       avec les vecteurs courants}\par
+{\f1     - Doit etre appelee AVANT et APRES Exec pour que le programme}\par
+{\f1       execute puisse fonctionner correctement}\par
+{\f1     - Exemple :}\par
+{\f1         SwapVectors;}\par
+{\f1         Exec('COMMAND.COM', '/C DIR');}\par
+{\f1         SwapVectors;}\par
+\par
+{\f1   NOTE : en Win32, les vecteurs d'interruption ne sont pas accessibles.}\par
+{\f1   Ces procedures sont des stubs (ne font rien) ou provoquent une erreur.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPDOS_15}     {\uldb Suivant >>}{\v IDH_TPDOS_17}     {\uldb Sommaire}{\v IDH_TPDOS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPDOS_17}
+{\footnote $ Unite Dos - PROCEDURES ET FONCTIONS - CHEMINS ET FICHIERS}
+{\footnote K Turbo Pascal;Unite Dos;PROCEDURES ET FONCTIONS - CHEMINS ET FICHIERS}
+\b\fs24 PROCEDURES ET FONCTIONS - CHEMINS ET FICHIERS \b0\fs20\par
+\par
+{\f1   Function FSearch(Path : PathStr; DirList : String) : PathStr;}\par
+{\f1     - Recherche un fichier dans une liste de repertoires}\par
+{\f1     - Path : nom du fichier a chercher}\par
+{\f1     - DirList : liste de repertoires separes par ';'}\par
+{\f1     - Retourne le chemin complet si trouve, '' (vide) sinon}\par
+{\f1     - Cherche d'abord dans le repertoire courant}\par
+{\f1     - Exemple :}\par
+{\f1         S := FSearch('TPC.EXE', GetEnv('PATH'));}\par
+{\f1         If S <> '' Then}\par
+{\f1           WriteLn('Trouve : ', S)}\par
+{\f1         Else}\par
+{\f1           WriteLn('Non trouve');}\par
+\par
+{\f1   Function FExpand(Path : PathStr) : PathStr;}\par
+{\f1     - Developpe un chemin relatif en chemin absolu complet}\par
+{\f1     - Ajoute l'unite et le repertoire courants si necessaire}\par
+{\f1     - Convertit en majuscules (convention DOS)}\par
+{\f1     - Resout les '.' et '..'}\par
+{\f1     - Exemple :}\par
+{\f1         WriteLn(FExpand('TEST.PAS'));}\par
+{\f1         \{ -> 'C:\\TP\\PROJETS\\TEST.PAS' \}}\par
+\par
+{\f1   Procedure FSplit(Path : PathStr; Var Dir : DirStr;}\par
+{\f1                    Var Name : NameStr; Var Ext : ExtStr);}\par
+{\f1     - Decompose un chemin en ses composantes}\par
+{\f1     - Dir  : unite + repertoire (avec '\\' final)}\par
+{\f1     - Name : nom du fichier (sans extension)}\par
+{\f1     - Ext  : extension (avec le '.')}\par
+{\f1     - Exemple :}\par
+{\f1         FSplit('C:\\TP\\BIN\\TPC.EXE', Dir, Name, Ext);}\par
+{\f1         \{ Dir = 'C:\\TP\\BIN\\', Name = 'TPC', Ext = '.EXE' \}}\par
+{\f1     - Si une composante est absente, la chaine est vide :}\par
+{\f1         FSplit('TEST', Dir, Name, Ext);}\par
+{\f1         \{ Dir = '', Name = 'TEST', Ext = '' \}}\par
+\par
+{\f1   API Win32 correspondante :}\par
+{\f1     FExpand -> GetFullPathNameA}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPDOS_16}     {\uldb Suivant >>}{\v IDH_TPDOS_18}     {\uldb Sommaire}{\v IDH_TPDOS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPDOS_18}
+{\footnote $ Unite Dos - PROCEDURES ET FONCTIONS - ENVIRONNEMENT}
+{\footnote K Turbo Pascal;Unite Dos;PROCEDURES ET FONCTIONS - ENVIRONNEMENT}
+\b\fs24 PROCEDURES ET FONCTIONS - ENVIRONNEMENT \b0\fs20\par
+\par
+{\f1   Function EnvCount : Integer;}\par
+{\f1     - Retourne le nombre de variables d'environnement}\par
+{\f1     - Exemple :}\par
+{\f1         WriteLn('Variables : ', EnvCount);}\par
+\par
+{\f1   Function EnvStr(Index : Integer) : String;}\par
+{\f1     - Retourne la N-ieme variable d'environnement (1-based)}\par
+{\f1     - Format : 'NOM=VALEUR'}\par
+{\f1     - Exemple :}\par
+{\f1         For I := 1 To EnvCount Do}\par
+{\f1           WriteLn(EnvStr(I));}\par
+{\f1         \{ Affiche toutes les variables d'environnement \}}\par
+\par
+{\f1   Function GetEnv(EnvVar : String) : String;}\par
+{\f1     - Retourne la valeur d'une variable d'environnement}\par
+{\f1     - EnvVar : nom de la variable (insensible a la casse)}\par
+{\f1     - Retourne '' si la variable n'existe pas}\par
+{\f1     - Exemple :}\par
+{\f1         WriteLn('PATH = ', GetEnv('PATH'));}\par
+{\f1         WriteLn('HOME = ', GetEnv('HOME'));}\par
+\par
+{\f1   API Win32 correspondante :}\par
+{\f1     GetEnv -> GetEnvironmentVariableA}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPDOS_17}     {\uldb Suivant >>}{\v IDH_TPDOS_19}     {\uldb Sommaire}{\v IDH_TPDOS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPDOS_19}
+{\footnote $ Unite Dos - PROCEDURES ET FONCTIONS - EXECUTION DE PROGRAMMES}
+{\footnote K Turbo Pascal;Unite Dos;PROCEDURES ET FONCTIONS - EXECUTION DE PROGRAMMES}
+\b\fs24 PROCEDURES ET FONCTIONS - EXECUTION DE PROGRAMMES \b0\fs20\par
+\par
+{\f1   Procedure Exec(Path : PathStr; ComLine : ComStr);}\par
+{\f1     - Execute un programme externe}\par
+{\f1     - Path : chemin du programme a executer (.EXE ou .COM)}\par
+{\f1     - ComLine : ligne de commande a passer au programme}\par
+{\f1     - Bloquant : attend la fin du programme}\par
+{\f1     - Met a jour DosError : 0 = succes, autre = erreur}\par
+{\f1     - DosExitCode retourne le code de sortie apres Exec}\par
+{\f1     - IMPORTANT : appeler SwapVectors avant et apres Exec}\par
+{\f1     - Exemple :}\par
+{\f1         SwapVectors;}\par
+{\f1         Exec(GetEnv('COMSPEC'), '/C DIR *.PAS');}\par
+{\f1         SwapVectors;}\par
+{\f1         If DosError <> 0 Then}\par
+{\f1           WriteLn('Erreur exec : ', DosError)}\par
+{\f1         Else}\par
+{\f1           WriteLn('Code retour : ', Lo(DosExitCode));}\par
+\par
+{\f1   Function DosExitCode : Word;}\par
+{\f1     - Retourne le code de sortie du dernier programme execute par Exec}\par
+{\f1     - Lo(DosExitCode) : code de sortie du programme (Halt(N))}\par
+{\f1     - Hi(DosExitCode) : methode de terminaison :}\par
+{\f1         0 = terminaison normale}\par
+{\f1         1 = termine par Ctrl+C}\par
+{\f1         2 = termine par erreur critique}\par
+{\f1         3 = termine par programme resident (TSR)}\par
+{\f1     - Exemple :}\par
+{\f1         If Lo(DosExitCode) = 0 Then}\par
+{\f1           WriteLn('Programme termine normalement');}\par
+\par
+{\f1   Procedure Keep(ExitCode : Word);}\par
+{\f1     - Termine le programme et le rend resident en memoire (TSR)}\par
+{\f1     - ExitCode : code de sortie}\par
+{\f1     - Le programme reste en memoire apres sa terminaison}\par
+{\f1     - Utilise pour les pilotes residentiels et les utilitaires TSR}\par
+{\f1     - Equivalent a l'interruption DOS INT 21h, fonction 31h}\par
+{\f1     - Exemple :}\par
+{\f1         Keep(0);  \{ rester en memoire avec code de sortie 0 \}}\par
+\par
+{\f1   NOTE : Keep n'a pas de sens en Win32. Exec est emule par}\par
+{\f1   CreateProcessA + WaitForSingleObject + GetExitCodeProcess.}\par
+\par
+{\f1   API Win32 correspondantes :}\par
+{\f1     Exec         -> CreateProcessA + WaitForSingleObject}\par
+{\f1     DosExitCode  -> GetExitCodeProcess}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPDOS_18}     {\uldb Suivant >>}{\v IDH_TPDOS_20}     {\uldb Sommaire}{\v IDH_TPDOS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPDOS_20}
+{\footnote $ Unite Dos - EXEMPLES D'UTILISATION}
+{\footnote K Turbo Pascal;Unite Dos;EXEMPLES D'UTILISATION}
+\b\fs24 EXEMPLES D'UTILISATION \b0\fs20\par
+\par
+\par
+\b 20.1 Lister les fichiers d'un repertoire \b0\par
+\par
+{\f1   Program ListDir;}\par
+{\f1   Uses Dos;}\par
+{\f1   Var}\par
+{\f1     SR : SearchRec;}\par
+{\f1     DT : DateTime;}\par
+{\f1   Begin}\par
+{\f1     FindFirst('*.*', AnyFile, SR);}\par
+{\f1     While DosError = 0 Do}\par
+{\f1     Begin}\par
+{\f1       UnpackTime(SR.Time, DT);}\par
+{\f1       Write(SR.Name:14);}\par
+{\f1       If (SR.Attr And Directory) <> 0 Then}\par
+{\f1         Write('<REP>':10)}\par
+{\f1       Else}\par
+{\f1         Write(SR.Size:10);}\par
+{\f1       WriteLn('  ', DT.Day:2, '/', DT.Month:2, '/', DT.Year);}\par
+{\f1       FindNext(SR);}\par
+{\f1     End;}\par
+{\f1   End.}\par
+\par
+\par
+\b 20.2 Obtenir la date et l'heure \b0\par
+\par
+{\f1   Program DateHeure;}\par
+{\f1   Uses Dos;}\par
+{\f1   Const Jours : Array[0..6] Of String[9] =}\par
+{\f1     ('Dimanche','Lundi','Mardi','Mercredi',}\par
+{\f1      'Jeudi','Vendredi','Samedi');}\par
+{\f1   Var Y, M, D, DOW, H, Mi, S, S100 : Word;}\par
+{\f1   Begin}\par
+{\f1     GetDate(Y, M, D, DOW);}\par
+{\f1     GetTime(H, Mi, S, S100);}\par
+{\f1     WriteLn(Jours[DOW], ' ', D, '/', M, '/', Y);}\par
+{\f1     WriteLn(H, ':', Mi, ':', S, '.', S100);}\par
+{\f1   End.}\par
+\par
+\par
+\b 20.3 Decomposer un chemin de fichier \b0\par
+\par
+{\f1   Program DecomposeChemin;}\par
+{\f1   Uses Dos;}\par
+{\f1   Var}\par
+{\f1     Dir  : DirStr;}\par
+{\f1     Name : NameStr;}\par
+{\f1     Ext  : ExtStr;}\par
+{\f1     Full : PathStr;}\par
+{\f1   Begin}\par
+{\f1     Full := FExpand(ParamStr(1));}\par
+{\f1     FSplit(Full, Dir, Name, Ext);}\par
+{\f1     WriteLn('Chemin complet : ', Full);}\par
+{\f1     WriteLn('Repertoire     : ', Dir);}\par
+{\f1     WriteLn('Nom            : ', Name);}\par
+{\f1     WriteLn('Extension      : ', Ext);}\par
+{\f1   End.}\par
+\par
+\par
+\b 20.4 Executer un programme externe \b0\par
+\par
+{\f1   Program LancerProg;}\par
+{\f1   Uses Dos;}\par
+{\f1   Begin}\par
+{\f1     SwapVectors;}\par
+{\f1     Exec(GetEnv('COMSPEC'), '/C DIR *.PAS /W');}\par
+{\f1     SwapVectors;}\par
+{\f1     If DosError <> 0 Then}\par
+{\f1       WriteLn('Erreur : ', DosError)}\par
+{\f1     Else}\par
+{\f1       WriteLn('Code retour : ', Lo(DosExitCode));}\par
+{\f1   End.}\par
+\par
+\par
+\b 20.5 Afficher les variables d'environnement \b0\par
+\par
+{\f1   Program AfficherEnv;}\par
+{\f1   Uses Dos;}\par
+{\f1   Var I : Integer;}\par
+{\f1   Begin}\par
+{\f1     WriteLn('Nombre de variables : ', EnvCount);}\par
+{\f1     WriteLn;}\par
+{\f1     For I := 1 To EnvCount Do}\par
+{\f1       WriteLn(EnvStr(I));}\par
+{\f1     WriteLn;}\par
+{\f1     WriteLn('PATH = ', GetEnv('PATH'));}\par
+{\f1   End.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPDOS_19}     {\uldb Suivant >>}{\v IDH_TPDOS_21}     {\uldb Sommaire}{\v IDH_TPDOS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPDOS_21}
+{\footnote $ Unite Dos - NOTES D'IMPLEMENTATION POUR TPCW32}
+{\footnote K Turbo Pascal;Unite Dos;NOTES D'IMPLEMENTATION POUR TPCW32}
+\b\fs24 NOTES D'IMPLEMENTATION POUR TPCW32 \b0\fs20\par
+\par
+\par
+\b 21.1 Emulation en Win32 \b0\par
+\par
+{\f1   Fonction DOS             | API Win32 correspondante}\par
+{\f1   -------------------------+----------------------------------------}\par
+{\f1   DosVersion               | GetVersion / GetVersionExA}\par
+{\f1   GetDate / SetDate        | GetLocalTime / SetLocalTime}\par
+{\f1   GetTime / SetTime        | GetLocalTime / SetLocalTime}\par
+{\f1   DiskFree / DiskSize      | GetDiskFreeSpaceA}\par
+{\f1   GetFAttr                 | GetFileAttributesA}\par
+{\f1   SetFAttr                 | SetFileAttributesA}\par
+{\f1   FindFirst                | FindFirstFileA}\par
+{\f1   FindNext                 | FindNextFileA}\par
+{\f1   (fin de recherche)       | FindClose}\par
+{\f1   FExpand                  | GetFullPathNameA}\par
+{\f1   GetEnv                   | GetEnvironmentVariableA}\par
+{\f1   Exec                     | CreateProcessA + WaitForSingleObject}\par
+{\f1   DosExitCode              | GetExitCodeProcess}\par
+{\f1   Intr / MsDos             | (non supportees, stubs)}\par
+{\f1   GetIntVec / SetIntVec    | (non supportees, stubs)}\par
+{\f1   SwapVectors              | (stub, pas necessaire)}\par
+{\f1   Keep                     | (non supportee)}\par
+{\f1   GetCBreak / SetCBreak    | (stubs)}\par
+{\f1   GetVerify / SetVerify    | (stubs)}\par
+\par
+\par
+\b 21.2 Structure SearchRec en Win32 \b0\par
+\par
+{\f1   En Win32, FindFirstFileA retourne un handle et remplit une}\par
+{\f1   structure WIN32_FIND_DATAA. L'implementation doit :}\par
+{\f1   1. Stocker le handle FindFirstFile dans le champ Fill}\par
+{\f1   2. Convertir WIN32_FIND_DATAA vers SearchRec :}\par
+{\f1      - Attr = dwFileAttributes (masque avec $3F)}\par
+{\f1      - Size = nFileSizeLow}\par
+{\f1      - Time = conversion FileTime -> DOS packed time}\par
+{\f1      - Name = cFileName (tronque a 12 caracteres si > 8.3)}\par
+\par
+\par
+\b 21.3 Conversion DateTime en Win32 \b0\par
+\par
+{\f1   Win32 utilise SYSTEMTIME (Year, Month, Day, Hour, Minute,}\par
+{\f1   Second, Milliseconds) et FILETIME (64 bits depuis 1601).}\par
+{\f1   La conversion entre le format DOS compact et SYSTEMTIME est :}\par
+\par
+{\f1     DOS -> SYSTEMTIME :}\par
+{\f1       Appeler UnpackTime puis remplir SYSTEMTIME.}\par
+\par
+{\f1     SYSTEMTIME -> DOS :}\par
+{\f1       Remplir DateTime depuis SYSTEMTIME puis appeler PackTime.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPDOS_20}     {\uldb Suivant >>}{\v IDH_TPDOS_22}     {\uldb Sommaire}{\v IDH_TPDOS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPDOS_22}
+{\footnote $ Unite Dos - INTERFACE COMPLETE}
+{\footnote K Turbo Pascal;Unite Dos;INTERFACE COMPLETE}
+\b\fs24 INTERFACE COMPLETE \b0\fs20\par
+\par
+{\f1   Unit Dos;}\par
+\par
+{\f1   \{$D-,I-,S-,O+\}}\par
+\par
+{\f1   INTERFACE}\par
+\par
+{\f1   Const}\par
+{\f1     \{ Drapeaux du processeur \}}\par
+{\f1     FCarry     = $0001;}\par
+{\f1     FParity    = $0004;}\par
+{\f1     FAuxiliary = $0010;}\par
+{\f1     FZero      = $0040;}\par
+{\f1     FSign      = $0080;}\par
+{\f1     FOverflow  = $0800;}\par
+\par
+{\f1     \{ Modes de fichier \}}\par
+{\f1     fmClosed = $D7B0;}\par
+{\f1     fmInput  = $D7B1;}\par
+{\f1     fmOutput = $D7B2;}\par
+{\f1     fmInOut  = $D7B3;}\par
+\par
+{\f1     \{ Attributs de fichier \}}\par
+{\f1     ReadOnly  = $01;}\par
+{\f1     Hidden    = $02;}\par
+{\f1     SysFile   = $04;}\par
+{\f1     VolumeID  = $08;}\par
+{\f1     Directory = $10;}\par
+{\f1     Archive   = $20;}\par
+{\f1     AnyFile   = $3F;}\par
+\par
+{\f1   Type}\par
+{\f1     ComStr  = String[127];}\par
+{\f1     PathStr = String[79];}\par
+{\f1     DirStr  = String[67];}\par
+{\f1     NameStr = String[8];}\par
+{\f1     ExtStr  = String[4];}\par
+\par
+{\f1     Registers = record}\par
+{\f1       case Integer of}\par
+{\f1         0: (AX, BX, CX, DX, BP, SI, DI, DS, ES, Flags : Word);}\par
+{\f1         1: (AL, AH, BL, BH, CL, CH, DL, DH : Byte);}\par
+{\f1     end;}\par
+\par
+{\f1     FileRec = record}\par
+{\f1       Handle   : Word;}\par
+{\f1       Mode     : Word;}\par
+{\f1       RecSize  : Word;}\par
+{\f1       Private  : Array[1..26] Of Byte;}\par
+{\f1       UserData : Array[1..16] Of Byte;}\par
+{\f1       Name     : Array[0..79] Of Char;}\par
+{\f1     end;}\par
+\par
+{\f1     TextBuf = Array[0..127] Of Char;}\par
+\par
+{\f1     TextRec = record}\par
+{\f1       Handle    : Word;}\par
+{\f1       Mode      : Word;}\par
+{\f1       BufSize   : Word;}\par
+{\f1       Private   : Word;}\par
+{\f1       BufPos    : Word;}\par
+{\f1       BufEnd    : Word;}\par
+{\f1       BufPtr    : ^TextBuf;}\par
+{\f1       OpenFunc  : Pointer;}\par
+{\f1       InOutFunc : Pointer;}\par
+{\f1       FlushFunc : Pointer;}\par
+{\f1       CloseFunc : Pointer;}\par
+{\f1       UserData  : Array[1..16] Of Byte;}\par
+{\f1       Name      : Array[0..79] Of Char;}\par
+{\f1       Buffer    : TextBuf;}\par
+{\f1     end;}\par
+\par
+{\f1     SearchRec = record}\par
+{\f1       Fill : Array[1..21] Of Byte;}\par
+{\f1       Attr : Byte;}\par
+{\f1       Time : LongInt;}\par
+{\f1       Size : LongInt;}\par
+{\f1       Name : String[12];}\par
+{\f1     end;}\par
+\par
+{\f1     DateTime = record}\par
+{\f1       Year, Month, Day, Hour, Min, Sec : Word;}\par
+{\f1     end;}\par
+\par
+{\f1   Var}\par
+{\f1     DosError : Integer;}\par
+\par
+{\f1   \{ Version et interruptions \}}\par
+{\f1   Function  DosVersion : Word;}\par
+{\f1   Procedure Intr(IntNo : Byte; Var Regs : Registers);}\par
+{\f1   Procedure MsDos(Var Regs : Registers);}\par
+\par
+{\f1   \{ Date et heure \}}\par
+{\f1   Procedure GetDate(Var Year, Month, Day, DayOfWeek : Word);}\par
+{\f1   Procedure SetDate(Year, Month, Day : Word);}\par
+{\f1   Procedure GetTime(Var Hour, Minute, Second, Sec100 : Word);}\par
+{\f1   Procedure SetTime(Hour, Minute, Second, Sec100 : Word);}\par
+\par
+{\f1   \{ Controle systeme \}}\par
+{\f1   Procedure GetCBreak(Var Break : Boolean);}\par
+{\f1   Procedure SetCBreak(Break : Boolean);}\par
+{\f1   Procedure GetVerify(Var Verify : Boolean);}\par
+{\f1   Procedure SetVerify(Verify : Boolean);}\par
+\par
+{\f1   \{ Espace disque \}}\par
+{\f1   Function  DiskFree(Drive : Byte) : LongInt;}\par
+{\f1   Function  DiskSize(Drive : Byte) : LongInt;}\par
+\par
+{\f1   \{ Attributs et horodatage \}}\par
+{\f1   Procedure GetFAttr(Var F; Var Attr : Word);}\par
+{\f1   Procedure SetFAttr(Var F; Attr : Word);}\par
+{\f1   Procedure GetFTime(Var F; Var Time : LongInt);}\par
+{\f1   Procedure SetFTime(Var F; Time : LongInt);}\par
+\par
+{\f1   \{ Recherche de fichiers \}}\par
+{\f1   Procedure FindFirst(Path : PathStr; Attr : Word; Var F : SearchRec);}\par
+{\f1   Procedure FindNext(Var F : SearchRec);}\par
+\par
+{\f1   \{ Conversion date/heure \}}\par
+{\f1   Procedure UnpackTime(P : LongInt; Var T : DateTime);}\par
+{\f1   Procedure PackTime(Var T : DateTime; Var P : LongInt);}\par
+\par
+{\f1   \{ Vecteurs d'interruption \}}\par
+{\f1   Procedure GetIntVec(IntNo : Byte; Var Vector : Pointer);}\par
+{\f1   Procedure SetIntVec(IntNo : Byte; Vector : Pointer);}\par
+{\f1   Procedure SwapVectors;}\par
+\par
+{\f1   \{ Chemins et fichiers \}}\par
+{\f1   Function  FSearch(Path : PathStr; DirList : String) : PathStr;}\par
+{\f1   Function  FExpand(Path : PathStr) : PathStr;}\par
+{\f1   Procedure FSplit(Path : PathStr; Var Dir : DirStr;}\par
+{\f1                    Var Name : NameStr; Var Ext : ExtStr);}\par
+\par
+{\f1   \{ Environnement \}}\par
+{\f1   Function  EnvCount : Integer;}\par
+{\f1   Function  EnvStr(Index : Integer) : String;}\par
+{\f1   Function  GetEnv(EnvVar : String) : String;}\par
+\par
+{\f1   \{ Execution de programmes \}}\par
+{\f1   Procedure Exec(Path : PathStr; ComLine : ComStr);}\par
+{\f1   Function  DosExitCode : Word;}\par
+{\f1   Procedure Keep(ExitCode : Word);}\par
+\par
+{\f1   IMPLEMENTATION}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPDOS_21}     {\uldb Suivant >>}{\v IDH_TPDOS_23}     {\uldb Sommaire}{\v IDH_TPDOS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPDOS_23}
+{\footnote $ Unite Dos - RESUME PAR CATEGORIE}
+{\footnote K Turbo Pascal;Unite Dos;RESUME PAR CATEGORIE}
+\b\fs24 RESUME PAR CATEGORIE \b0\fs20\par
+\par
+{\f1   CATEGORIE              | ELEMENTS}\par
+{\f1   -----------------------+-------------------------------------------}\par
+{\f1   Drapeaux processeur    | FCarry, FParity, FAuxiliary, FZero,}\par
+{\f1                          | FSign, FOverflow}\par
+{\f1   Modes fichier          | fmClosed, fmInput, fmOutput, fmInOut}\par
+{\f1   Attributs fichier      | ReadOnly, Hidden, SysFile, VolumeID,}\par
+{\f1                          | Directory, Archive, AnyFile}\par
+{\f1   Types chaines          | ComStr, PathStr, DirStr, NameStr, ExtStr}\par
+{\f1   Types enregistrements  | Registers, FileRec, TextRec, TextBuf,}\par
+{\f1                          | SearchRec, DateTime}\par
+{\f1   Variable               | DosError}\par
+{\f1   Version DOS            | DosVersion}\par
+{\f1   Interruptions          | Intr, MsDos}\par
+{\f1   Date et heure          | GetDate, SetDate, GetTime, SetTime}\par
+{\f1   Controle systeme       | GetCBreak, SetCBreak, GetVerify, SetVerify}\par
+{\f1   Espace disque          | DiskFree, DiskSize}\par
+{\f1   Attributs fichier      | GetFAttr, SetFAttr}\par
+{\f1   Horodatage fichier     | GetFTime, SetFTime}\par
+{\f1   Recherche fichiers     | FindFirst, FindNext}\par
+{\f1   Conversion date        | UnpackTime, PackTime}\par
+{\f1   Vecteurs interruption  | GetIntVec, SetIntVec, SwapVectors}\par
+{\f1   Chemins                | FSearch, FExpand, FSplit}\par
+{\f1   Environnement          | EnvCount, EnvStr, GetEnv}\par
+{\f1   Execution programmes   | Exec, DosExitCode, Keep}\par
+\par
+{\f1   FIN DU DOCUMENT}\par
+
+\par
+{\uldb << Precedent}{\v IDH_TPDOS_22}     {\uldb Sommaire}{\v IDH_TPDOS_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+}

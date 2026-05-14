@@ -1,0 +1,370 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}
+
+{\footnote # IDH_TPPRT_01}
+{\footnote $ Unite Printer - D??PENDANCE}
+{\footnote K Turbo Pascal;Unite Printer;D??PENDANCE}
+\b\fs24 D??PENDANCE \b0\fs20\par
+\par
+{\f1   L'unit?? Printer n'a aucune d??pendance. Elle n'utilise aucune}\par
+{\f1   autre unit?? dans sa clause Uses.}\par
+\par
+\par
+\b Sections suivantes : \b0\par
+\par
+{\f1  2. VARIABLE}     {\uldb [Aller]}{\v IDH_TPPRT_02}\par
+{\f1  3. UTILISATION DE BASE}     {\uldb [Aller]}{\v IDH_TPPRT_03}\par
+{\f1  4. GESTION D'ERREURS}     {\uldb [Aller]}{\v IDH_TPPRT_04}\par
+{\f1  5. CARACT??RES DE CONTR??LE COURANTS}     {\uldb [Aller]}{\v IDH_TPPRT_05}\par
+{\f1  6. EXEMPLES}     {\uldb [Aller]}{\v IDH_TPPRT_06}\par
+{\f1  7. REDIRECTION VERS UN AUTRE PORT}     {\uldb [Aller]}{\v IDH_TPPRT_07}\par
+{\f1  8. COMPARAISON AVEC LES ALTERNATIVES}     {\uldb [Aller]}{\v IDH_TPPRT_08}\par
+{\f1  9. NOTES TECHNIQUES}     {\uldb [Aller]}{\v IDH_TPPRT_09}\par
+{\f1 10. R??CAPITULATIF DE L'INTERFACE}     {\uldb [Aller]}{\v IDH_TPPRT_10}\par
+{\f1 11. R??SUM?? PAR CAT??GORIE}     {\uldb [Aller]}{\v IDH_TPPRT_11}\par
+\par
+{\uldb Suivant >>}{\v IDH_TPPRT_02}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPPRT_02}
+{\footnote $ Unite Printer - VARIABLE}
+{\footnote K Turbo Pascal;Unite Printer;VARIABLE}
+\b\fs24 VARIABLE \b0\fs20\par
+\par
+{\f1   var Lst : Text;}\par
+{\f1   Variable fichier texte pr??-assign??e et pr??-ouverte au}\par
+{\f1   p??riph??rique d'impression par d??faut du DOS (LPT1:).}\par
+\par
+{\f1   ?? l'initialisation de l'unit?? (section initialization),}\par
+{\f1   Lst est automatiquement :}\par
+{\f1     1. Assign??e au p??riph??rique 'LPT1' (AssignLst ou Assign)}\par
+{\f1     2. Ouverte en ??criture (Rewrite)}\par
+\par
+{\f1   Le programme peut imm??diatement ??crire sur l'imprimante}\par
+{\f1   sans aucune op??ration pr??alable.}\par
+\par
+{\f1   Le nom ?? Lst ?? vient de ?? Listing ?? ou ?? List device ??,}\par
+{\f1   terme historique d??signant l'imprimante dans les syst??mes}\par
+{\f1   CP/M et premiers DOS.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPPRT_01}     {\uldb Suivant >>}{\v IDH_TPPRT_03}     {\uldb Sommaire}{\v IDH_TPPRT_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPPRT_03}
+{\footnote $ Unite Printer - UTILISATION DE BASE}
+{\footnote K Turbo Pascal;Unite Printer;UTILISATION DE BASE}
+\b\fs24 UTILISATION DE BASE \b0\fs20\par
+\par
+{\f1   L'utilisation est identique ?? celle de Write/WriteLn avec}\par
+{\f1   n'importe quel fichier texte :}\par
+\par
+{\f1     Write(Lst, expression);       \{ ??crire sans saut de ligne \}}\par
+{\f1     WriteLn(Lst, expression);     \{ ??crire avec saut de ligne \}}\par
+{\f1     WriteLn(Lst);                 \{ saut de ligne seul \}}\par
+\par
+{\f1   Toutes les sp??cifications de format standard fonctionnent :}\par
+\par
+{\f1     WriteLn(Lst, Valeur:10);       \{ largeur de champ \}}\par
+{\f1     WriteLn(Lst, Reel:10:2);       \{ d??cimales \}}\par
+{\f1     WriteLn(Lst, 'Texte':20);      \{ cadrage ?? droite \}}\par
+\par
+{\f1   Le caract??re de saut de page (form feed) peut ??tre envoy??}\par
+{\f1   pour ??jecter la page courante :}\par
+\par
+{\f1     Write(Lst, #12);               \{ saut de page (FF) \}}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPPRT_02}     {\uldb Suivant >>}{\v IDH_TPPRT_04}     {\uldb Sommaire}{\v IDH_TPPRT_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPPRT_04}
+{\footnote $ Unite Printer - GESTION D'ERREURS}
+{\footnote K Turbo Pascal;Unite Printer;GESTION D'ERREURS}
+\b\fs24 GESTION D'ERREURS \b0\fs20\par
+\par
+{\f1   Comme l'unit?? est compil??e avec \{$I-\}, les erreurs d'E/S ne}\par
+{\f1   provoquent pas d'arr??t imm??diat du programme. Cependant, le}\par
+{\f1   programme utilisateur doit g??rer les erreurs potentielles :}\par
+\par
+{\f1   - Imprimante ??teinte ou d??connect??e}\par
+{\f1   - Imprimante hors ligne}\par
+{\f1   - Plus de papier}\par
+{\f1   - Erreur de port parall??le}\par
+\par
+{\f1   Pour v??rifier les erreurs :}\par
+\par
+{\f1     \{$I-\}}\par
+{\f1     WriteLn(Lst, 'Test impression');}\par
+{\f1     if IOResult <> 0 then}\par
+{\f1       WriteLn('Erreur d''imprimante !');}\par
+{\f1     \{$I+\}}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPPRT_03}     {\uldb Suivant >>}{\v IDH_TPPRT_05}     {\uldb Sommaire}{\v IDH_TPPRT_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPPRT_05}
+{\footnote $ Unite Printer - CARACT??RES DE CONTR??LE COURANTS}
+{\footnote K Turbo Pascal;Unite Printer;CARACT??RES DE CONTR??LE COURANTS}
+\b\fs24 CARACT??RES DE CONTR??LE COURANTS \b0\fs20\par
+\par
+{\f1   Les codes de contr??le suivants sont fr??quemment envoy??s ??}\par
+{\f1   l'imprimante via Lst :}\par
+\par
+{\f1   Code   Valeur   Description}\par
+{\f1   ----   ------   ------------------------------------------}\par
+{\f1   BEL      #7     Signal sonore (certaines imprimantes)}\par
+{\f1   BS       #8     Retour arri??re (backspace)}\par
+{\f1   HT       #9     Tabulation horizontale}\par
+{\f1   LF      #10     Saut de ligne (line feed)}\par
+{\f1   FF      #12     Saut de page (form feed)}\par
+{\f1   CR      #13     Retour chariot (carriage return)}\par
+{\f1   ESC     #27     D??but de s??quence d'??chappement}\par
+\par
+{\f1   Les s??quences d'??chappement (ESC + commande) d??pendent du}\par
+{\f1   mod??le d'imprimante. Exemples courants (Epson/compatible) :}\par
+\par
+{\f1     Write(Lst, #27, 'E');          \{ gras activ?? \}}\par
+{\f1     Write(Lst, #27, 'F');          \{ gras d??sactiv?? \}}\par
+{\f1     Write(Lst, #27, '0');          \{ interligne 1/8 pouce \}}\par
+{\f1     Write(Lst, #27, '2');          \{ interligne 1/6 pouce \}}\par
+{\f1     Write(Lst, #27, #15);         \{ mode condens?? \}}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPPRT_04}     {\uldb Suivant >>}{\v IDH_TPPRT_06}     {\uldb Sommaire}{\v IDH_TPPRT_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPPRT_06}
+{\footnote $ Unite Printer - EXEMPLES}
+{\footnote K Turbo Pascal;Unite Printer;EXEMPLES}
+\b\fs24 EXEMPLES \b0\fs20\par
+\par
+{\f1   --- Exemple 1 : Impression simple ---}\par
+\par
+{\f1   program ImprimerTexte;}\par
+{\f1   uses Printer;}\par
+{\f1   begin}\par
+{\f1     WriteLn(Lst, 'Bonjour depuis Turbo Pascal !');}\par
+{\f1     WriteLn(Lst, '============================');}\par
+{\f1     WriteLn(Lst);}\par
+{\f1     WriteLn(Lst, 'Date : ', Date);}\par
+{\f1     Write(Lst, #12);  \{ ??jecter la page \}}\par
+{\f1   end.}\par
+\par
+{\f1   --- Exemple 2 : Impression d'un tableau ---}\par
+\par
+{\f1   program ImprimerTableau;}\par
+{\f1   uses Printer;}\par
+{\f1   var}\par
+{\f1     I : Integer;}\par
+{\f1   begin}\par
+{\f1     WriteLn(Lst, '  N    N??     N??');}\par
+{\f1     WriteLn(Lst, '---  -----  ------');}\par
+{\f1     for I := 1 to 20 do}\par
+{\f1       WriteLn(Lst, I:3, I*I:7, I*I*I:8);}\par
+{\f1     Write(Lst, #12);}\par
+{\f1   end.}\par
+\par
+{\f1   --- Exemple 3 : Impression d'un fichier texte ---}\par
+\par
+{\f1   program ImprimerFichier;}\par
+{\f1   uses Printer;}\par
+{\f1   var}\par
+{\f1     F    : Text;}\par
+{\f1     Line : String;}\par
+{\f1     Page : Integer;}\par
+{\f1     Num  : Integer;}\par
+{\f1   begin}\par
+{\f1     Assign(F, ParamStr(1));}\par
+{\f1     \{$I-\}}\par
+{\f1     Reset(F);}\par
+{\f1     \{$I+\}}\par
+{\f1     if IOResult <> 0 then}\par
+{\f1     begin}\par
+{\f1       WriteLn('Fichier non trouv?? : ', ParamStr(1));}\par
+{\f1       Halt(1);}\par
+{\f1     end;}\par
+\par
+{\f1     Page := 1;}\par
+{\f1     Num := 0;}\par
+{\f1     WriteLn(Lst, 'Fichier : ', ParamStr(1),}\par
+{\f1             '  Page ', Page);}\par
+{\f1     WriteLn(Lst, '----------------------------------------');}\par
+\par
+{\f1     while not Eof(F) do}\par
+{\f1     begin}\par
+{\f1       ReadLn(F, Line);}\par
+{\f1       Inc(Num);}\par
+{\f1       WriteLn(Lst, Num:4, ' | ', Line);}\par
+{\f1       if Num mod 60 = 0 then}\par
+{\f1       begin}\par
+{\f1         Write(Lst, #12);  \{ saut de page \}}\par
+{\f1         Inc(Page);}\par
+{\f1         WriteLn(Lst, 'Fichier : ', ParamStr(1),}\par
+{\f1                 '  Page ', Page);}\par
+{\f1         WriteLn(Lst, '-------------------------------');}\par
+{\f1       end;}\par
+{\f1     end;}\par
+\par
+{\f1     Write(Lst, #12);  \{ ??jecter derni??re page \}}\par
+{\f1     Close(F);}\par
+{\f1   end.}\par
+\par
+{\f1   --- Exemple 4 : Gestion d'erreur d'impression ---}\par
+\par
+{\f1   program SafePrint;}\par
+{\f1   uses Printer;}\par
+\par
+{\f1     function PrinterReady : Boolean;}\par
+{\f1     begin}\par
+{\f1       \{$I-\}}\par
+{\f1       Write(Lst, '');}\par
+{\f1       PrinterReady := (IOResult = 0);}\par
+{\f1       \{$I+\}}\par
+{\f1     end;}\par
+\par
+{\f1   begin}\par
+{\f1     if not PrinterReady then}\par
+{\f1     begin}\par
+{\f1       WriteLn('Imprimante non pr??te !');}\par
+{\f1       WriteLn('V??rifiez la connexion et l''alimentation.');}\par
+{\f1       Halt(1);}\par
+{\f1     end;}\par
+\par
+{\f1     WriteLn(Lst, 'Impression r??ussie.');}\par
+{\f1     Write(Lst, #12);}\par
+{\f1   end.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPPRT_05}     {\uldb Suivant >>}{\v IDH_TPPRT_07}     {\uldb Sommaire}{\v IDH_TPPRT_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPPRT_07}
+{\footnote $ Unite Printer - REDIRECTION VERS UN AUTRE PORT}
+{\footnote K Turbo Pascal;Unite Printer;REDIRECTION VERS UN AUTRE PORT}
+\b\fs24 REDIRECTION VERS UN AUTRE PORT \b0\fs20\par
+\par
+{\f1   Par d??faut, Lst est connect?? ?? LPT1. Pour imprimer sur un}\par
+{\f1   autre port, il est possible de fermer Lst et de le r??assigner :}\par
+\par
+{\f1     Close(Lst);}\par
+{\f1     Assign(Lst, 'LPT2');}\par
+{\f1     Rewrite(Lst);}\par
+{\f1     WriteLn(Lst, 'Impression sur LPT2');}\par
+\par
+{\f1   Ou vers un fichier pour tester sans imprimante :}\par
+\par
+{\f1     Close(Lst);}\par
+{\f1     Assign(Lst, 'SORTIE.PRN');}\par
+{\f1     Rewrite(Lst);}\par
+{\f1     WriteLn(Lst, 'Sortie redirig??e vers fichier');}\par
+{\f1     Close(Lst);}\par
+\par
+{\f1   Ports disponibles sous DOS :}\par
+{\f1     LPT1  Premier port parall??le (= PRN)}\par
+{\f1     LPT2  Deuxi??me port parall??le}\par
+{\f1     LPT3  Troisi??me port parall??le}\par
+{\f1     COM1  Premier port s??rie}\par
+{\f1     COM2  Deuxi??me port s??rie}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPPRT_06}     {\uldb Suivant >>}{\v IDH_TPPRT_08}     {\uldb Sommaire}{\v IDH_TPPRT_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPPRT_08}
+{\footnote $ Unite Printer - COMPARAISON AVEC LES ALTERNATIVES}
+{\footnote K Turbo Pascal;Unite Printer;COMPARAISON AVEC LES ALTERNATIVES}
+\b\fs24 COMPARAISON AVEC LES ALTERNATIVES \b0\fs20\par
+\par
+{\f1   M??thode                    Avantage / Inconv??nient}\par
+{\f1   -------------------------  -----------------------------------}\par
+{\f1   Uses Printer; (Lst)        Le plus simple, pr??t ?? l'emploi}\par
+{\f1   Assign(F,'LPT1');Rewrite   Contr??le total, choix du port}\par
+{\f1   Assign(F,'PRN');Rewrite    Identique ?? LPT1, nom alternatif}\par
+{\f1   INT 17h (BIOS)             Acc??s bas niveau, caract??re par}\par
+{\f1                              caract??re}\par
+{\f1   Port[$378] (direct)        Acc??s mat??riel direct, tr??s rapide}\par
+{\f1                              mais non portable}\par
+\par
+{\f1   L'unit?? Printer est recommand??e pour la grande majorit?? des}\par
+{\f1   besoins d'impression en Turbo Pascal.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPPRT_07}     {\uldb Suivant >>}{\v IDH_TPPRT_09}     {\uldb Sommaire}{\v IDH_TPPRT_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPPRT_09}
+{\footnote $ Unite Printer - NOTES TECHNIQUES}
+{\footnote K Turbo Pascal;Unite Printer;NOTES TECHNIQUES}
+\b\fs24 NOTES TECHNIQUES \b0\fs20\par
+\par
+{\f1   - La section d'initialisation de l'unit?? ex??cute}\par
+{\f1     automatiquement l'??quivalent de :}\par
+{\f1       Assign(Lst, 'LPT1');}\par
+{\f1       Rewrite(Lst);}\par
+\par
+{\f1   - Lst est un fichier texte standard avec un tampon de 128}\par
+{\f1     octets. L'impression est tamponn??e : les donn??es ne sont}\par
+{\f1     envoy??es ?? l'imprimante que lorsque le tampon est plein ou}\par
+{\f1     lors d'un WriteLn (qui provoque un flush).}\par
+\par
+{\f1   - Il n'est pas n??cessaire de fermer Lst ?? la fin du programme :}\par
+{\f1     la section de finalisation de l'unit?? s'en charge. Cependant,}\par
+{\f1     un Close(Lst) explicite peut ??tre utile pour forcer l'envoi}\par
+{\f1     des derni??res donn??es tamponn??es.}\par
+\par
+{\f1   - Sous DOS, l'impression via LPT1 est bloquante : si}\par
+{\f1     l'imprimante n'est pas pr??te, le programme se bloque jusqu'??}\par
+{\f1     ce qu'elle le devienne (ou que l'utilisateur annule via}\par
+{\f1     Ctrl-Break).}\par
+\par
+{\f1   - L'unit?? est compatible avec les overlays ($O+) et peut}\par
+{\f1     ??tre plac??e dans un overlay si n??cessaire.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPPRT_08}     {\uldb Suivant >>}{\v IDH_TPPRT_10}     {\uldb Sommaire}{\v IDH_TPPRT_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPPRT_10}
+{\footnote $ Unite Printer - R??CAPITULATIF DE L'INTERFACE}
+{\footnote K Turbo Pascal;Unite Printer;R??CAPITULATIF DE L'INTERFACE}
+\b\fs24 R??CAPITULATIF DE L'INTERFACE \b0\fs20\par
+\par
+{\f1   --- Variables ---}\par
+{\f1   Lst : Text          Fichier texte pr??-assign?? ?? LPT1}\par
+\par
+{\f1   --- Constantes ---}\par
+{\f1   (aucune)}\par
+\par
+{\f1   --- Types ---}\par
+{\f1   (aucun)}\par
+\par
+{\f1   --- Proc??dures/Fonctions ---}\par
+{\f1   (aucune)}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPPRT_09}     {\uldb Suivant >>}{\v IDH_TPPRT_11}     {\uldb Sommaire}{\v IDH_TPPRT_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPPRT_11}
+{\footnote $ Unite Printer - R??SUM?? PAR CAT??GORIE}
+{\footnote K Turbo Pascal;Unite Printer;R??SUM?? PAR CAT??GORIE}
+\b\fs24 R??SUM?? PAR CAT??GORIE \b0\fs20\par
+\par
+{\f1   Cat??gorie                   Nombre   ??l??ments}\par
+{\f1   -------------------------   ------   ----------------------------------}\par
+{\f1   Variables export??es             1    Lst}\par
+{\f1   Constantes export??es            0}\par
+{\f1   Types export??s                  0}\par
+{\f1   Proc??dures/Fonctions            0}\par
+{\f1   -------------------------   ------   ----------------------------------}\par
+{\f1   TOTAL ??l??ments export??s         1}\par
+\par
+{\f1   D??pendance : aucune}\par
+\par
+{\f1   Fin du document - Unit?? PRINTER - Turbo Pascal 7.0}\par
+
+\par
+{\uldb << Precedent}{\v IDH_TPPRT_10}     {\uldb Sommaire}{\v IDH_TPPRT_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+}

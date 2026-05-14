@@ -1,0 +1,620 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}
+
+{\footnote # IDH_TPMEM_01}
+{\footnote $ Gestion Memoire - CONSTANTES}
+{\footnote K Turbo Pascal;Gestion Memoire;CONSTANTES}
+\b\fs24 CONSTANTES \b0\fs20\par
+\par
+{\f1   const MaxHeapSize : Word = 655360 div 16;   \{ = 40960 \}}\par
+{\f1   Taille maximale du tas en paragraphes (unit??s de 16 octets).}\par
+{\f1   Valeur par d??faut : 40960 paragraphes = 655 360 octets = 640 Ko.}\par
+\par
+{\f1   D??termine la quantit?? maximale de m??moire DOS que le programme}\par
+{\f1   r??serve pour le tas. Peut ??tre r??duite avant l'appel ??}\par
+{\f1   InitMemory pour lib??rer de la m??moire DOS pour d'autres usages}\par
+{\f1   (ex??cution de programmes enfants via Exec, par exemple).}\par
+\par
+{\f1   Exemple :}\par
+{\f1     MaxHeapSize := 320000 div 16;  \{ limiter ?? ~320 Ko \}}\par
+{\f1     InitMemory;}\par
+\par
+{\f1   const LowMemSize : Word = 4096 div 16;     \{ = 256 \}}\par
+{\f1   Seuil de m??moire basse en paragraphes. Valeur par d??faut :}\par
+{\f1   256 paragraphes = 4 096 octets = 4 Ko.}\par
+\par
+{\f1   Quand la m??moire libre du tas descend en dessous de ce seuil,}\par
+{\f1   la fonction LowMemory retourne True, signalant que le programme}\par
+{\f1   doit lib??rer de la m??moire ou refuser de nouvelles allocations.}\par
+\par
+{\f1   Ce seuil est la ?? zone de s??curit?? ?? : tant qu'il reste au}\par
+{\f1   moins LowMemSize paragraphes libres, le syst??me fonctionne}\par
+{\f1   normalement. En dessous, les caches sont automatiquement}\par
+{\f1   lib??r??s.}\par
+\par
+{\f1   const MaxBufMem : Word = 65536 div 16;     \{ = 4096 \}}\par
+{\f1   Quantit?? maximale de m??moire allouable aux tampons (buffers)}\par
+{\f1   en paragraphes. Valeur par d??faut : 4096 paragraphes =}\par
+{\f1   65 536 octets = 64 Ko.}\par
+\par
+{\f1   Limite la m??moire totale que les tampons (NewBuffer) peuvent}\par
+{\f1   consommer. Si cette limite est atteinte, les nouvelles}\par
+{\f1   demandes de tampon ??chouent ou les tampons existants sont}\par
+{\f1   r??duits.}\par
+\par
+\par
+\b Sections suivantes : \b0\par
+\par
+{\f1  2. ARCHITECTURE M??MOIRE}     {\uldb [Aller]}{\v IDH_TPMEM_02}\par
+{\f1  3. INITIALISATION ET FINALISATION}     {\uldb [Aller]}{\v IDH_TPMEM_03}\par
+{\f1  4. V??RIFICATION DE M??MOIRE BASSE}     {\uldb [Aller]}{\v IDH_TPMEM_04}\par
+{\f1  5. ALLOCATION DE M??MOIRE PERMANENTE}     {\uldb [Aller]}{\v IDH_TPMEM_05}\par
+{\f1  6. GESTION DES CACHES}     {\uldb [Aller]}{\v IDH_TPMEM_06}\par
+{\f1  7. GESTION DES TAMPONS (BUFFERS)}     {\uldb [Aller]}{\v IDH_TPMEM_07}\par
+{\f1  8. M??MOIRE TAMPON BAS NIVEAU}     {\uldb [Aller]}{\v IDH_TPMEM_08}\par
+{\f1  9. GESTION DE LA LIMITE M??MOIRE DOS}     {\uldb [Aller]}{\v IDH_TPMEM_09}\par
+{\f1 10. PRIORIT?? DE LIB??RATION}     {\uldb [Aller]}{\v IDH_TPMEM_10}\par
+{\f1 11. EXEMPLES}     {\uldb [Aller]}{\v IDH_TPMEM_11}\par
+{\f1 12. R??CAPITULATIF DE L'INTERFACE}     {\uldb [Aller]}{\v IDH_TPMEM_12}\par
+{\f1 13. R??SUM?? PAR CAT??GORIE}     {\uldb [Aller]}{\v IDH_TPMEM_13}\par
+\par
+{\uldb Suivant >>}{\v IDH_TPMEM_02}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPMEM_02}
+{\footnote $ Gestion Memoire - ARCHITECTURE M??MOIRE}
+{\footnote K Turbo Pascal;Gestion Memoire;ARCHITECTURE M??MOIRE}
+\b\fs24 ARCHITECTURE M??MOIRE \b0\fs20\par
+\par
+{\f1   Le gestionnaire de m??moire de Turbo Vision organise le tas}\par
+{\f1   en trois zones de priorit?? d??croissante :}\par
+\par
+{\f1   ?????????????????????????????????????????????????????????????????????????????????????????????????????????  Adresse haute}\par
+{\f1   ???  M??moire DOS libre              ???  (au-dessus de MemTop)}\par
+{\f1   ?????????????????????????????????????????????????????????????????????????????????????????????????????????  ??? MemTop (SetMemTop)}\par
+{\f1   ???  Tampons (Buffers)              ???  Lib??rables, redim.}\par
+{\f1   ?????????????????????????????????????????????????????????????????????????????????????????????????????????}\par
+{\f1   ???  Caches                         ???  Lib??rables auto.}\par
+{\f1   ?????????????????????????????????????????????????????????????????????????????????????????????????????????}\par
+{\f1   ???  M??moire permanente             ???  Allocations normales}\par
+{\f1   ?????????????????????????????????????????????????????????????????????????????????????????????????????????}\par
+{\f1   ???  Zone de s??curit?? (LowMemSize) ???  R??serve}\par
+{\f1   ?????????????????????????????????????????????????????????????????????????????????????????????????????????}\par
+{\f1   ???  Variables globales, pile       ???  Adresse basse}\par
+{\f1   ?????????????????????????????????????????????????????????????????????????????????????????????????????????}\par
+\par
+{\f1   Quand une allocation permanente ne trouve plus assez de}\par
+{\f1   m??moire, le gestionnaire lib??re d'abord les caches, puis}\par
+{\f1   r??duit les tampons, pour satisfaire la demande.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPMEM_01}     {\uldb Suivant >>}{\v IDH_TPMEM_03}     {\uldb Sommaire}{\v IDH_TPMEM_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPMEM_03}
+{\footnote $ Gestion Memoire - INITIALISATION ET FINALISATION}
+{\footnote K Turbo Pascal;Gestion Memoire;INITIALISATION ET FINALISATION}
+\b\fs24 INITIALISATION ET FINALISATION \b0\fs20\par
+\par
+{\f1   procedure InitMemory;}\par
+{\f1   Initialise le gestionnaire de m??moire de Turbo Vision. Doit}\par
+{\f1   ??tre appel??e au d??but du programme, avant toute utilisation}\par
+{\f1   des fonctions de cette unit??.}\par
+\par
+{\f1   Actions :}\par
+{\f1   - Installe le gestionnaire de tas personnalis?? (HeapError)}\par
+{\f1   - Configure la taille maximale du tas selon MaxHeapSize}\par
+{\f1   - Initialise les listes de caches et de tampons}\par
+\par
+{\f1   Note : dans une application Turbo Vision standard, InitMemory}\par
+{\f1   est appel??e automatiquement par TApplication.Init. Il n'est}\par
+{\f1   n??cessaire de l'appeler explicitement que si l'on utilise}\par
+{\f1   l'unit?? Memory sans Turbo Vision.}\par
+\par
+{\f1   procedure DoneMemory;}\par
+{\f1   Finalise le gestionnaire de m??moire. Lib??re toutes les}\par
+{\f1   ressources internes (caches, tampons) et restaure le}\par
+{\f1   gestionnaire de tas standard.}\par
+\par
+{\f1   Doit ??tre appel??e ?? la fin du programme, apr??s la derni??re}\par
+{\f1   utilisation des fonctions m??moire.}\par
+\par
+{\f1   Note : TApplication.Done appelle DoneMemory automatiquement.}\par
+\par
+{\f1   procedure InitDosMem;}\par
+{\f1   Initialise la gestion de la m??moire DOS conventionnelle.}\par
+{\f1   R??duit l'allocation m??moire du programme ?? MaxHeapSize}\par
+{\f1   paragraphes, lib??rant le reste pour le DOS.}\par
+\par
+{\f1   Utilis??e en conjonction avec SetMemTop pour lib??rer de la}\par
+{\f1   m??moire avant d'ex??cuter un programme enfant (Exec).}\par
+\par
+{\f1   Typiquement appel??e par InitMemory en interne.}\par
+\par
+{\f1   procedure DoneDosMem;}\par
+{\f1   Finalise la gestion de la m??moire DOS. Restaure l'allocation}\par
+{\f1   m??moire compl??te du programme.}\par
+\par
+{\f1   Typiquement appel??e par DoneMemory en interne.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPMEM_02}     {\uldb Suivant >>}{\v IDH_TPMEM_04}     {\uldb Sommaire}{\v IDH_TPMEM_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPMEM_04}
+{\footnote $ Gestion Memoire - V??RIFICATION DE M??MOIRE BASSE}
+{\footnote K Turbo Pascal;Gestion Memoire;V??RIFICATION DE M??MOIRE BASSE}
+\b\fs24 V??RIFICATION DE M??MOIRE BASSE \b0\fs20\par
+\par
+{\f1   function LowMemory : Boolean;}\par
+{\f1   Indique si la m??moire disponible est en dessous du seuil}\par
+{\f1   de s??curit?? (LowMemSize).}\par
+\par
+{\f1   Retour :}\par
+{\f1     True   La m??moire est basse (< LowMemSize paragraphes}\par
+{\f1            libres). Des caches ont peut-??tre ??t?? lib??r??s pour}\par
+{\f1            satisfaire la derni??re allocation.}\par
+{\f1     False  La m??moire est suffisante.}\par
+\par
+{\f1   Utilisation typique :}\par
+{\f1     P := MemAlloc(MonSize);}\par
+{\f1     if LowMemory then}\par
+{\f1     begin}\par
+{\f1       \{ Annuler l'allocation ou alerter l'utilisateur \}}\par
+{\f1       FreeMem(P, MonSize);}\par
+{\f1       MessageBox('M??moire insuffisante', nil, mfError);}\par
+{\f1     end;}\par
+\par
+{\f1   Note : apr??s un retour True, il est recommand?? de lib??rer}\par
+{\f1   des ressources (fermer des fen??tres, etc.) et de r??essayer.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPMEM_03}     {\uldb Suivant >>}{\v IDH_TPMEM_05}     {\uldb Sommaire}{\v IDH_TPMEM_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPMEM_05}
+{\footnote $ Gestion Memoire - ALLOCATION DE M??MOIRE PERMANENTE}
+{\footnote K Turbo Pascal;Gestion Memoire;ALLOCATION DE M??MOIRE PERMANENTE}
+\b\fs24 ALLOCATION DE M??MOIRE PERMANENTE \b0\fs20\par
+\par
+{\f1   function MemAlloc(Size : Word) : Pointer;}\par
+{\f1   Alloue Size octets de m??moire permanente sur le tas.}\par
+{\f1   Si la m??moire est insuffisante, les caches sont lib??r??s}\par
+{\f1   automatiquement pour tenter de satisfaire la demande.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Size  Nombre d'octets ?? allouer}\par
+\par
+{\f1   Retour :}\par
+{\f1     Pointeur vers le bloc allou??, ou nil si l'allocation}\par
+{\f1     a ??chou?? m??me apr??s lib??ration des caches.}\par
+\par
+{\f1   Diff??rence avec GetMem :}\par
+{\f1   - GetMem provoque une erreur d'ex??cution si la m??moire est}\par
+{\f1     insuffisante (sauf HeapError personnalis??).}\par
+{\f1   - MemAlloc retourne nil et lib??re d'abord les caches.}\par
+\par
+{\f1   Exemple :}\par
+{\f1     P := MemAlloc(1024);}\par
+{\f1     if P = nil then}\par
+{\f1       WriteLn('Pas assez de m??moire')}\par
+{\f1     else}\par
+{\f1     begin}\par
+{\f1       \{ utiliser P \}}\par
+{\f1       FreeMem(P, 1024);}\par
+{\f1     end;}\par
+\par
+{\f1   function MemAllocSeg(Size : Word) : Pointer;}\par
+{\f1   Alloue Size octets de m??moire permanente, align??e sur une}\par
+{\f1   fronti??re de segment (offset = 0). Le pointeur retourn?? a}\par
+{\f1   toujours un offset de 0.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     Size  Nombre d'octets ?? allouer (max 65 521 octets,}\par
+{\f1           car 15 octets suppl??mentaires peuvent ??tre n??cessaires}\par
+{\f1           pour l'alignement)}\par
+\par
+{\f1   Retour :}\par
+{\f1     Pointeur align?? sur segment (Ofs = 0), ou nil si ??chec.}\par
+\par
+{\f1   Utile pour les blocs qui doivent ??tre align??s sur 16 octets}\par
+{\f1   (acc??s DMA, tampons vid??o, etc.).}\par
+\par
+{\f1   La m??moire allou??e par MemAllocSeg doit ??tre lib??r??e avec}\par
+{\f1   FreeMem en utilisant la taille r??elle allou??e (Size + padding).}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPMEM_04}     {\uldb Suivant >>}{\v IDH_TPMEM_06}     {\uldb Sommaire}{\v IDH_TPMEM_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPMEM_06}
+{\footnote $ Gestion Memoire - GESTION DES CACHES}
+{\footnote K Turbo Pascal;Gestion Memoire;GESTION DES CACHES}
+\b\fs24 GESTION DES CACHES \b0\fs20\par
+\par
+{\f1   Les caches sont des blocs de m??moire que le gestionnaire peut}\par
+{\f1   lib??rer automatiquement quand la m??moire permanente devient}\par
+{\f1   insuffisante. Ils sont id??aux pour les donn??es recalculables}\par
+{\f1   ou rechargeable (fichiers relus du disque, calculs r??p??tables).}\par
+\par
+{\f1   Quand le gestionnaire a besoin de m??moire, il lib??re les}\par
+{\f1   caches dans l'ordre inverse de leur cr??ation (LIFO : le plus}\par
+{\f1   r??cent d'abord).}\par
+\par
+{\f1   procedure NewCache(var P : Pointer; Size : Word);}\par
+{\f1   Alloue un bloc de m??moire cache.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     P     (sortie) Pointeur vers le bloc allou??}\par
+{\f1     Size  Nombre d'octets ?? allouer}\par
+\par
+{\f1   Apr??s l'appel, P pointe vers le bloc si l'allocation r??ussit,}\par
+{\f1   ou P = nil si la m??moire est insuffisante.}\par
+\par
+{\f1   ATTENTION : le pointeur P peut devenir nil ?? tout moment si}\par
+{\f1   le gestionnaire d??cide de lib??rer le cache pour satisfaire}\par
+{\f1   une allocation permanente. Il faut donc TOUJOURS v??rifier}\par
+{\f1   P <> nil avant d'acc??der au cache.}\par
+\par
+{\f1   Exemple :}\par
+{\f1     var}\par
+{\f1       MonCache : Pointer;}\par
+{\f1     begin}\par
+{\f1       NewCache(MonCache, 8192);}\par
+{\f1       if MonCache <> nil then}\par
+{\f1       begin}\par
+{\f1         \{ remplir le cache \}}\par
+{\f1         FillChar(MonCache^, 8192, 0);}\par
+{\f1       end;}\par
+{\f1       \{ ... plus tard ... \}}\par
+{\f1       if MonCache <> nil then}\par
+{\f1         \{ le cache est encore valide, l'utiliser \}}\par
+{\f1       else}\par
+{\f1         \{ le cache a ??t?? lib??r??, recalculer/recharger \}}\par
+{\f1     end;}\par
+\par
+{\f1   procedure DisposeCache(P : Pointer);}\par
+{\f1   Lib??re explicitement un bloc de m??moire cache.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     P  Pointeur vers le bloc cache (obtenu par NewCache)}\par
+\par
+{\f1   Si P est nil (cache d??j?? lib??r?? automatiquement), ne fait}\par
+{\f1   rien. Sinon, lib??re le bloc et le retire de la liste des}\par
+{\f1   caches.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPMEM_05}     {\uldb Suivant >>}{\v IDH_TPMEM_07}     {\uldb Sommaire}{\v IDH_TPMEM_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPMEM_07}
+{\footnote $ Gestion Memoire - GESTION DES TAMPONS (BUFFERS)}
+{\footnote K Turbo Pascal;Gestion Memoire;GESTION DES TAMPONS (BUFFERS)}
+\b\fs24 GESTION DES TAMPONS (BUFFERS) \b0\fs20\par
+\par
+{\f1   Les tampons sont des blocs de m??moire de taille variable,}\par
+{\f1   lib??rables et redimensionnables. Ils ont une priorit??}\par
+{\f1   inf??rieure aux caches : les tampons sont r??duits ou lib??r??s}\par
+{\f1   en dernier recours, apr??s les caches.}\par
+\par
+{\f1   La quantit?? totale de m??moire allou??e aux tampons est limit??e}\par
+{\f1   par MaxBufMem.}\par
+\par
+{\f1   procedure NewBuffer(var P : Pointer; Size : Word);}\par
+{\f1   Alloue un nouveau tampon.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     P     (sortie) Pointeur vers le tampon allou??}\par
+{\f1     Size  Taille souhait??e en octets}\par
+\par
+{\f1   Si la m??moire est insuffisante ou si MaxBufMem est d??pass??,}\par
+{\f1   P est mis ?? nil.}\par
+\par
+{\f1   procedure DisposeBuffer(P : Pointer);}\par
+{\f1   Lib??re un tampon pr??c??demment allou?? par NewBuffer.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     P  Pointeur vers le tampon}\par
+\par
+{\f1   function GetBufferSize(P : Pointer) : Word;}\par
+{\f1   Retourne la taille courante d'un tampon.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     P  Pointeur vers le tampon}\par
+\par
+{\f1   Retour :}\par
+{\f1     Taille en octets du tampon}\par
+\par
+{\f1   Note : la taille peut ??tre inf??rieure ?? celle demand??e lors}\par
+{\f1   de NewBuffer si le tampon a ??t?? r??duit par SetBufferSize.}\par
+\par
+{\f1   function SetBufferSize(P : Pointer; Size : Word) : Boolean;}\par
+{\f1   Redimensionne un tampon existant.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     P     Pointeur vers le tampon}\par
+{\f1     Size  Nouvelle taille souhait??e en octets}\par
+\par
+{\f1   Retour :}\par
+{\f1     True   Le redimensionnement a r??ussi}\par
+{\f1     False  La nouvelle taille n'a pas pu ??tre allou??e}\par
+\par
+{\f1   Les donn??es existantes sont pr??serv??es jusqu'??}\par
+{\f1   Min(ancienne taille, nouvelle taille).}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPMEM_06}     {\uldb Suivant >>}{\v IDH_TPMEM_08}     {\uldb Sommaire}{\v IDH_TPMEM_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPMEM_08}
+{\footnote $ Gestion Memoire - M??MOIRE TAMPON BAS NIVEAU}
+{\footnote K Turbo Pascal;Gestion Memoire;M??MOIRE TAMPON BAS NIVEAU}
+\b\fs24 M??MOIRE TAMPON BAS NIVEAU \b0\fs20\par
+\par
+{\f1   procedure GetBufMem(var P : Pointer; Size : Word);}\par
+{\f1   Alloue un bloc de m??moire pour tampon ?? un niveau plus bas}\par
+{\f1   que NewBuffer. Utilis??e en interne par le gestionnaire de}\par
+{\f1   tampons.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     P     (sortie) Pointeur vers le bloc allou??}\par
+{\f1     Size  Nombre d'octets ?? allouer}\par
+\par
+{\f1   Si l'allocation ??choue, P est mis ?? nil.}\par
+\par
+{\f1   procedure FreeBufMem(P : Pointer);}\par
+{\f1   Lib??re un bloc allou?? par GetBufMem.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     P  Pointeur vers le bloc ?? lib??rer}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPMEM_07}     {\uldb Suivant >>}{\v IDH_TPMEM_09}     {\uldb Sommaire}{\v IDH_TPMEM_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPMEM_09}
+{\footnote $ Gestion Memoire - GESTION DE LA LIMITE M??MOIRE DOS}
+{\footnote K Turbo Pascal;Gestion Memoire;GESTION DE LA LIMITE M??MOIRE DOS}
+\b\fs24 GESTION DE LA LIMITE M??MOIRE DOS \b0\fs20\par
+\par
+{\f1   procedure SetMemTop(MemTop : Pointer);}\par
+{\f1   D??finit la limite haute de la m??moire utilis??e par le}\par
+{\f1   programme. Toute la m??moire au-dessus de MemTop est rendue}\par
+{\f1   au DOS et peut ??tre utilis??e par des programmes enfants}\par
+{\f1   lanc??s via Exec.}\par
+\par
+{\f1   Param??tres :}\par
+{\f1     MemTop  Pointeur marquant la limite haute du tas}\par
+\par
+{\f1   Utilisation typique pour Exec :}\par
+{\f1     var}\par
+{\f1       OldMemTop : Pointer;}\par
+{\f1     begin}\par
+{\f1       OldMemTop := Ptr(HeapOrg.Seg, HeapOrg.Ofs);}\par
+{\f1       SetMemTop(HeapPtr);  \{ r??duire au strict n??cessaire \}}\par
+{\f1       Exec('COMMAND.COM', '/C DIR');}\par
+{\f1       SetMemTop(OldMemTop);  \{ restaurer \}}\par
+{\f1     end;}\par
+\par
+{\f1   ATTENTION : ne pas placer MemTop en dessous de HeapPtr, cela}\par
+{\f1   corromprait le tas. SetMemTop est normalement utilis??e en}\par
+{\f1   conjonction avec InitDosMem/DoneDosMem.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPMEM_08}     {\uldb Suivant >>}{\v IDH_TPMEM_10}     {\uldb Sommaire}{\v IDH_TPMEM_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPMEM_10}
+{\footnote $ Gestion Memoire - PRIORIT?? DE LIB??RATION}
+{\footnote K Turbo Pascal;Gestion Memoire;PRIORIT?? DE LIB??RATION}
+\b\fs24 PRIORIT?? DE LIB??RATION \b0\fs20\par
+\par
+{\f1   Quand une allocation permanente (MemAlloc, New, GetMem) ne}\par
+{\f1   peut pas ??tre satisfaite, le gestionnaire de m??moire tente}\par
+{\f1   de lib??rer de la m??moire dans cet ordre :}\par
+\par
+{\f1   1. Lib??rer les caches (du plus r??cent au plus ancien)}\par
+{\f1   2. R??duire les tampons}\par
+{\f1   3. Si toujours insuffisant : retourner nil (MemAlloc) ou}\par
+{\f1      d??clencher une erreur d'ex??cution (GetMem/New)}\par
+\par
+{\f1   Ce m??canisme permet aux applications Turbo Vision de g??rer}\par
+{\f1   gracieusement les situations de m??moire limit??e.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPMEM_09}     {\uldb Suivant >>}{\v IDH_TPMEM_11}     {\uldb Sommaire}{\v IDH_TPMEM_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPMEM_11}
+{\footnote $ Gestion Memoire - EXEMPLES}
+{\footnote K Turbo Pascal;Gestion Memoire;EXEMPLES}
+\b\fs24 EXEMPLES \b0\fs20\par
+\par
+{\f1   --- Exemple 1 : Utilisation basique ---}\par
+\par
+{\f1   program MemDemo;}\par
+{\f1   uses Memory;}\par
+{\f1   var}\par
+{\f1     P : Pointer;}\par
+{\f1   begin}\par
+{\f1     MaxHeapSize := 320000 div 16;  \{ limiter ?? ~320 Ko \}}\par
+{\f1     LowMemSize := 8192 div 16;    \{ seuil de 8 Ko \}}\par
+{\f1     InitMemory;}\par
+\par
+{\f1     P := MemAlloc(4096);}\par
+{\f1     if P <> nil then}\par
+{\f1     begin}\par
+{\f1       WriteLn('4 Ko allou??s avec succ??s');}\par
+{\f1       if LowMemory then}\par
+{\f1         WriteLn('ATTENTION : m??moire basse !')}\par
+{\f1       else}\par
+{\f1         WriteLn('M??moire OK');}\par
+{\f1       FreeMem(P, 4096);}\par
+{\f1     end}\par
+{\f1     else}\par
+{\f1       WriteLn('Allocation ??chou??e');}\par
+\par
+{\f1     DoneMemory;}\par
+{\f1   end.}\par
+\par
+{\f1   --- Exemple 2 : Cache de donn??es ---}\par
+\par
+{\f1   program CacheDemo;}\par
+{\f1   uses Memory;}\par
+{\f1   var}\par
+{\f1     Cache : Pointer;}\par
+{\f1     Data  : Pointer;}\par
+{\f1   begin}\par
+{\f1     InitMemory;}\par
+\par
+{\f1     \{ Allouer un cache de 16 Ko \}}\par
+{\f1     NewCache(Cache, 16384);}\par
+{\f1     if Cache <> nil then}\par
+{\f1       WriteLn('Cache allou?? : 16 Ko');}\par
+\par
+{\f1     \{ Allocation permanente qui pourrait lib??rer le cache \}}\par
+{\f1     Data := MemAlloc(32768);}\par
+{\f1     if Data <> nil then}\par
+{\f1     begin}\par
+{\f1       WriteLn('32 Ko allou??s');}\par
+{\f1       FreeMem(Data, 32768);}\par
+{\f1     end;}\par
+\par
+{\f1     \{ V??rifier si le cache est toujours valide \}}\par
+{\f1     if Cache <> nil then}\par
+{\f1     begin}\par
+{\f1       WriteLn('Cache encore en m??moire');}\par
+{\f1       DisposeCache(Cache);}\par
+{\f1     end}\par
+{\f1     else}\par
+{\f1       WriteLn('Cache lib??r?? automatiquement');}\par
+\par
+{\f1     DoneMemory;}\par
+{\f1   end.}\par
+\par
+{\f1   --- Exemple 3 : Tampons redimensionnables ---}\par
+\par
+{\f1   program BufferDemo;}\par
+{\f1   uses Memory;}\par
+{\f1   var}\par
+{\f1     Buf : Pointer;}\par
+{\f1   begin}\par
+{\f1     MaxBufMem := 32768 div 16;  \{ limiter tampons ?? 32 Ko \}}\par
+{\f1     InitMemory;}\par
+\par
+{\f1     NewBuffer(Buf, 8192);}\par
+{\f1     if Buf <> nil then}\par
+{\f1     begin}\par
+{\f1       WriteLn('Tampon : ', GetBufferSize(Buf), ' octets');}\par
+\par
+{\f1       if SetBufferSize(Buf, 16384) then}\par
+{\f1         WriteLn('Agrandi ?? : ', GetBufferSize(Buf), ' octets')}\par
+{\f1       else}\par
+{\f1         WriteLn('Impossible d''agrandir');}\par
+\par
+{\f1       DisposeBuffer(Buf);}\par
+{\f1     end;}\par
+\par
+{\f1     DoneMemory;}\par
+{\f1   end.}\par
+\par
+{\f1   --- Exemple 4 : Pr??paration pour Exec ---}\par
+\par
+{\f1   program ExecDemo;}\par
+{\f1   uses Memory, Dos;}\par
+{\f1   begin}\par
+{\f1     InitMemory;}\par
+\par
+{\f1     \{ Lib??rer la m??moire au-dessus du tas pour Exec \}}\par
+{\f1     SetMemTop(HeapPtr);}\par
+\par
+{\f1     SwapVectors;}\par
+{\f1     Exec(GetEnv('COMSPEC'), '/C DIR');}\par
+{\f1     SwapVectors;}\par
+\par
+{\f1     if DosError <> 0 then}\par
+{\f1       WriteLn('Erreur Exec : ', DosError)}\par
+{\f1     else}\par
+{\f1       WriteLn('Code retour : ', DosExitCode);}\par
+\par
+{\f1     DoneMemory;}\par
+{\f1   end.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPMEM_10}     {\uldb Suivant >>}{\v IDH_TPMEM_12}     {\uldb Sommaire}{\v IDH_TPMEM_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPMEM_12}
+{\footnote $ Gestion Memoire - R??CAPITULATIF DE L'INTERFACE}
+{\footnote K Turbo Pascal;Gestion Memoire;R??CAPITULATIF DE L'INTERFACE}
+\b\fs24 R??CAPITULATIF DE L'INTERFACE \b0\fs20\par
+\par
+{\f1   --- Constantes typ??es ---}\par
+{\f1   MaxHeapSize : Word = 655360 div 16    Taille max. du tas}\par
+{\f1   LowMemSize  : Word = 4096 div 16     Seuil m??moire basse}\par
+{\f1   MaxBufMem   : Word = 65536 div 16    Max. m??moire tampons}\par
+\par
+{\f1   --- Initialisation/Finalisation ---}\par
+{\f1   Procedure InitMemory;}\par
+{\f1   Procedure DoneMemory;}\par
+{\f1   Procedure InitDosMem;}\par
+{\f1   Procedure DoneDosMem;}\par
+\par
+{\f1   --- V??rification ---}\par
+{\f1   Function  LowMemory : Boolean;}\par
+\par
+{\f1   --- Allocation permanente ---}\par
+{\f1   Function  MemAlloc(Size : Word) : Pointer;}\par
+{\f1   Function  MemAllocSeg(Size : Word) : Pointer;}\par
+\par
+{\f1   --- Caches ---}\par
+{\f1   Procedure NewCache(var P : Pointer; Size : Word);}\par
+{\f1   Procedure DisposeCache(P : Pointer);}\par
+\par
+{\f1   --- Tampons ---}\par
+{\f1   Procedure NewBuffer(var P : Pointer; Size : Word);}\par
+{\f1   Procedure DisposeBuffer(P : Pointer);}\par
+{\f1   Function  GetBufferSize(P : Pointer) : Word;}\par
+{\f1   Function  SetBufferSize(P : Pointer; Size : Word) : Boolean;}\par
+\par
+{\f1   --- M??moire tampon bas niveau ---}\par
+{\f1   Procedure GetBufMem(var P : Pointer; Size : Word);}\par
+{\f1   Procedure FreeBufMem(P : Pointer);}\par
+\par
+{\f1   --- Limite m??moire DOS ---}\par
+{\f1   Procedure SetMemTop(MemTop : Pointer);}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_TPMEM_11}     {\uldb Suivant >>}{\v IDH_TPMEM_13}     {\uldb Sommaire}{\v IDH_TPMEM_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_TPMEM_13}
+{\footnote $ Gestion Memoire - R??SUM?? PAR CAT??GORIE}
+{\footnote K Turbo Pascal;Gestion Memoire;R??SUM?? PAR CAT??GORIE}
+\b\fs24 R??SUM?? PAR CAT??GORIE \b0\fs20\par
+\par
+{\f1   Cat??gorie                   Nombre   ??l??ments}\par
+{\f1   -------------------------   ------   ----------------------------------}\par
+{\f1   Initialisation/Finalisation    4     InitMemory, DoneMemory,}\par
+{\f1                                        InitDosMem, DoneDosMem}\par
+{\f1   V??rification                   1     LowMemory}\par
+{\f1   Allocation permanente          2     MemAlloc, MemAllocSeg}\par
+{\f1   Gestion des caches             2     NewCache, DisposeCache}\par
+{\f1   Gestion des tampons            4     NewBuffer, DisposeBuffer,}\par
+{\f1                                        GetBufferSize, SetBufferSize}\par
+{\f1   M??moire tampon bas niveau      2     GetBufMem, FreeBufMem}\par
+{\f1   Limite m??moire DOS             1     SetMemTop}\par
+{\f1   -------------------------   ------   ----------------------------------}\par
+{\f1   TOTAL proc??dures/fonctions    16}\par
+\par
+{\f1   Constantes typ??es export??es : 3   (MaxHeapSize, LowMemSize,}\par
+{\f1                                      MaxBufMem)}\par
+{\f1   Variables export??es : 0}\par
+{\f1   Types export??s : 0}\par
+{\f1   D??pendance : aucune (unit?? autonome)}\par
+\par
+{\f1   Fin du document - Unit?? MEMORY - Turbo Pascal 7.0}\par
+
+\par
+{\uldb << Precedent}{\v IDH_TPMEM_12}     {\uldb Sommaire}{\v IDH_TPMEM_01}     {\uldb Turbo Pascal}{\v IDH_TP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+}
