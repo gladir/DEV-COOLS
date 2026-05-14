@@ -6,7 +6,7 @@
 
 [OPTIONS]
 TITLE=Aide de DEVENV - Clone de Visual Studio
-COPYRIGHT=(C) 2026 Sylvain Maltais - GLADIR.com
+COPYRIGHT=2026 Sylvain Maltais - gladir.com
 COMPRESS=TRUE
 CONTENTS=IDH_INDEX
 WARNING=3
@@ -17,6 +17,7 @@ REPORT=ON
 DEVENV.RTF
 LANGAGES.RTF
 EMULATEURS.RTF
+ABAP.RTF
 
 [MAP]
 IDH_INDEX           = 1
@@ -31,6 +32,26 @@ IDH_LANGAGES        = 20
 IDH_LANG_CSHARP     = 21
 IDH_LANG_VBNET      = 22
 IDH_LANG_PASCAL     = 23
+IDH_ABAP_01         = 2401
+IDH_ABAP_02         = 2402
+IDH_ABAP_03         = 2403
+IDH_ABAP_04         = 2404
+IDH_ABAP_05         = 2405
+IDH_ABAP_06         = 2406
+IDH_ABAP_07         = 2407
+IDH_ABAP_08         = 2408
+IDH_ABAP_09         = 2409
+IDH_ABAP_10         = 2410
+IDH_ABAP_11         = 2411
+IDH_ABAP_12         = 2412
+IDH_ABAP_13         = 2413
+IDH_ABAP_14         = 2414
+IDH_ABAP_15         = 2415
+IDH_ABAP_16         = 2416
+IDH_ABAP_17         = 2417
+IDH_ABAP_18         = 2418
+IDH_ABAP_19         = 2419
+IDH_ABAP_20         = 2420
 IDH_EMULATEURS      = 30
 IDH_EMU_NES         = 31
 IDH_EMU_AMIGA       = 32

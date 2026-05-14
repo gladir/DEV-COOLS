@@ -7074,7 +7074,8 @@ End;
 Function HlpvFindFile(Name: String): LongInt;
 Var
  DirStart: LongInt;
- PagePos, PagePtr, NEntries, I, J, NL: Integer;
+ PagePtr, J: LongInt;
+ PagePos, NEntries, I, NL: Integer;
  EntName: String;
  EntOfs: LongInt;
 Begin
