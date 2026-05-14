@@ -1,0 +1,1613 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}
+
+{\footnote # IDH_CPP_01}
+{\footnote $ C++ - PRESENTATION}
+{\footnote K C++ presentation;Stroustrup;Bell Labs;ISO 14882;C++98;C++03;C++11;C++14;C++17;C++20;C++23}
+\b\fs24 PRESENTATION \b0\fs20\par
+\par
+Le langage C++ a ete concu a partir de 1979 par Bjarne\par
+Stroustrup aux Bell Labs sous le nom de "C with Classes". Il\par
+a ete renomme C++ en 1983 et standardise une premiere fois en\par
+1998 par l'ISO (ISO/IEC 14882:1998, dit "C++98"). Des revisions\par
+successives ont enrichi le langage : C++03, C++11, C++14, C++17,\par
+C++20 et C++23.\par
+\par
+C++ est un langage :\par
+\par
+{\f1   - Multi-paradigme : procedural, oriente objet, generique,}\par
+{\f1     fonctionnel (lambdas)}\par
+{\f1   - Compatible source largement avec C (sur-ensemble proche}\par
+{\f1     du C89, divergences C99/C11)}\par
+{\f1   - Compile, a typage statique fort}\par
+{\f1   - De bas niveau (acces direct a la memoire) et haut niveau}\par
+{\f1     (templates, STL, exceptions)}\par
+{\f1   - Sans collecteur automatique (gestion deterministe via}\par
+{\f1     constructeurs/destructeurs - RAII)}\par
+{\f1   - Indifferent a la mise en page (free-form)}\par
+{\f1   - Sensible a la casse}\par
+\par
+Le compilateur fourni dans ce projet (CPP86.PAS) implemente un\par
+sous-ensemble representatif de C++98 cible MS-DOS / assembleur\par
+8086. Voir section 22 pour les details et limitations.\par
+\par
+Extensions de fichiers reconnues :\par
+\par
+{\f1   .cpp   Fichier source C++}\par
+{\f1   .cxx   Fichier source C++ (variante)}\par
+{\f1   .cc    Fichier source C++ (variante UNIX)}\par
+{\f1   .C     Fichier source C++ (variante UNIX historique)}\par
+{\f1   .h     Fichier d'en-tete (header C/C++)}\par
+{\f1   .hpp   Fichier d'en-tete C++}\par
+{\f1   .hxx   Fichier d'en-tete C++ (variante)}\par
+{\f1   .ipp   Fichier d'en-tete inline / template}\par
+{\f1   .o     Fichier objet (sortie d'assemblage)}\par
+\par
+\par
+\par
+\b Sections suivantes : \b0\par
+\par
+{\f1  2. STRUCTURE D'UN PROGRAMME}     {\uldb [Aller]}{\v IDH_CPP_02}\par
+{\f1  3. STRUCTURE LEXICALE}     {\uldb [Aller]}{\v IDH_CPP_03}\par
+{\f1  4. TYPES DE DONNEES}     {\uldb [Aller]}{\v IDH_CPP_04}\par
+{\f1  5. DECLARATIONS DE VARIABLES}     {\uldb [Aller]}{\v IDH_CPP_05}\par
+{\f1  6. OPERATEURS}     {\uldb [Aller]}{\v IDH_CPP_06}\par
+{\f1  7. STRUCTURES DE CONTROLE}     {\uldb [Aller]}{\v IDH_CPP_07}\par
+{\f1  8. FONCTIONS}     {\uldb [Aller]}{\v IDH_CPP_08}\par
+{\f1  9. TABLEAUX}     {\uldb [Aller]}{\v IDH_CPP_09}\par
+{\f1 10. POINTEURS ET REFERENCES}     {\uldb [Aller]}{\v IDH_CPP_10}\par
+{\f1 11. CLASSES ET OBJETS}     {\uldb [Aller]}{\v IDH_CPP_11}\par
+{\f1 12. HERITAGE}     {\uldb [Aller]}{\v IDH_CPP_12}\par
+{\f1 13. SURCHARGE D'OPERATEURS}     {\uldb [Aller]}{\v IDH_CPP_13}\par
+{\f1 14. TEMPLATES (GENERICITE)}     {\uldb [Aller]}{\v IDH_CPP_14}\par
+{\f1 15. ESPACES DE NOMS (NAMESPACES)}     {\uldb [Aller]}{\v IDH_CPP_15}\par
+{\f1 16. EXCEPTIONS}     {\uldb [Aller]}{\v IDH_CPP_16}\par
+{\f1 17. BIBLIOTHEQUE STANDARD STL}     {\uldb [Aller]}{\v IDH_CPP_17}\par
+{\f1 18. PREPROCESSEUR}     {\uldb [Aller]}{\v IDH_CPP_18}\par
+{\f1 19. STYLES DE PROGRAMMATION C++}     {\uldb [Aller]}{\v IDH_CPP_19}\par
+{\f1 20. EVOLUTIONS DU LANGAGE}     {\uldb [Aller]}{\v IDH_CPP_20}\par
+{\f1 21. COMPILATION ET EDITION DE LIENS}     {\uldb [Aller]}{\v IDH_CPP_21}\par
+{\f1 22. COMPILATEUR DU PROJET (CPP86.PAS)}     {\uldb [Aller]}{\v IDH_CPP_22}\par
+{\f1 23. EXEMPLES}     {\uldb [Aller]}{\v IDH_CPP_23}\par
+{\f1 24. REFERENCES}     {\uldb [Aller]}{\v IDH_CPP_24}\par
+\par
+{\uldb Suivant >>}{\v IDH_CPP_02}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CPP_02}
+{\footnote $ C++ - STRUCTURE D'UN PROGRAMME}
+{\footnote K C++ structure programme;main;translation unit;namespace;include}
+\b\fs24 STRUCTURE D'UN PROGRAMME \b0\fs20\par
+\par
+Un programme C++ est constitue d'une ou plusieurs unites de\par
+traduction (translation units). Chaque unite est compilee\par
+independamment et les fichiers objet sont lies par l'editeur\par
+de liens.\par
+\par
+Toute unite contient au choix :\par
+\par
+{\f1   - Des directives du preprocesseur (#include, #define, ...)}\par
+{\f1   - Des declarations d'espaces de noms (namespace)}\par
+{\f1   - Des declarations de types (class, struct, enum, typedef,}\par
+{\f1     using)}\par
+{\f1   - Des declarations de templates}\par
+{\f1   - Des declarations globales (variables, prototypes)}\par
+{\f1   - Des definitions de fonctions, classes, methodes}\par
+\par
+Le point d'entree obligatoire d'un programme executable est la\par
+fonction main, en portee globale :\par
+\par
+{\f1   int main() \{}\par
+{\f1       // corps du programme}\par
+{\f1       return 0;}\par
+{\f1   \}}\par
+\par
+ou avec arguments :\par
+\par
+{\f1   int main(int argc, char *argv[]) \{}\par
+{\f1       return 0;}\par
+{\f1   \}}\par
+\par
+Contrairement a C, C++ autorise l'omission de l'instruction\par
+return en fin de main : le compilateur insere implicitement\par
+return 0;.\par
+\par
+Programme minimal "Hello, World!" en C++98 :\par
+\par
+{\f1   #include <iostream>}\par
+{\f1   int main() \{}\par
+{\f1       std::cout << "Hello, World!" << std::endl;}\par
+{\f1       return 0;}\par
+{\f1   \}}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_CPP_01}     {\uldb Suivant >>}{\v IDH_CPP_03}     {\uldb Table des matieres}{\v IDH_CPP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CPP_03}
+{\footnote $ C++ - STRUCTURE LEXICALE}
+{\footnote K C++ structure lexicale;identificateurs;mots reserves;litteraux;commentaires;digraphes;nullptr;true;false}
+\b\fs24 STRUCTURE LEXICALE \b0\fs20\par
+\par
+\par
+\b 3.1 Jeu de caracteres \b0\par
+\par
+Le jeu source de base comprend les 96 caracteres :\par
+{\f1   - 26 lettres minuscules a-z}\par
+{\f1   - 26 lettres majuscules A-Z}\par
+{\f1   - 10 chiffres 0-9}\par
+{\f1   - les caracteres _ \{ \} [ ] # ( ) < > % : ; . ? * + - / ^ &}\par
+{\f1     | ~ ! = , \\ " '}\par
+{\f1   - espace, tabulation horizontale, tabulation verticale,}\par
+{\f1     saut de page et saut de ligne}\par
+\par
+C++ supporte aussi les caracteres universels \\uXXXX et\par
+\\UXXXXXXXX dans les identifiants (C++98+).\par
+\par
+\par
+\b 3.2 Commentaires \b0\par
+\par
+Deux formes :\par
+\par
+{\f1   /* commentaire bloc, non imbricable */}\par
+{\f1   // commentaire ligne, jusqu'a fin de ligne}\par
+\par
+\par
+\b 3.3 Identificateurs \b0\par
+\par
+Suite de lettres, chiffres et underscores, ne commencant pas\par
+par un chiffre. Sensibles a la casse. Les identifiants en\par
+double underscore (__name) et ceux commencant par un underscore\par
+suivi d'une majuscule (_Name) sont reserves a l'implementation.\par
+\par
+\par
+\b 3.4 Mots reserves (C++98) \b0\par
+\par
+{\f1   asm        do         if              return        typedef}\par
+{\f1   auto       double     inline          short         typeid}\par
+{\f1   bool       dynamic_cast int           signed        typename}\par
+{\f1   break      else       long            sizeof        union}\par
+{\f1   case       enum       mutable         static        unsigned}\par
+{\f1   catch      explicit   namespace       static_cast   using}\par
+{\f1   char       export     new             struct        virtual}\par
+{\f1   class      extern     operator        switch        void}\par
+{\f1   const      false      private         template      volatile}\par
+{\f1   const_cast float      protected       this          wchar_t}\par
+{\f1   continue   for        public          throw         while}\par
+{\f1   default    friend     register        true}\par
+{\f1   delete     goto       reinterpret_cast try}\par
+\par
+Operateurs alternatifs (digraphes) : and, and_eq, bitand,\par
+bitor, compl, not, not_eq, or, or_eq, xor, xor_eq.\par
+\par
+C++11 ajoute : alignas, alignof, char16_t, char32_t, constexpr,\par
+decltype, noexcept, nullptr, static_assert, thread_local.\par
+\par
+\par
+\b 3.5 Literaux \b0\par
+\par
+Identiques a C avec extensions :\par
+\par
+{\f1   - Entiers : 42, 0x2A, 052, 42L, 42LL (C++11), 42U}\par
+{\f1   - Flottants : 3.14, 3.14e2, 3.14f, 3.14L}\par
+{\f1   - Caractere : 'A', '\\n', '\\x41', L'A' (wchar_t), u'A'}\par
+{\f1     (char16_t, C++11), U'A' (char32_t, C++11)}\par
+{\f1   - Chaine : "texte", L"texte", "txt1" "txt2" (concat),}\par
+{\f1     u8"utf8" (C++11), R"(brut)" (C++11)}\par
+{\f1   - Booleen : true, false}\par
+{\f1   - Pointeur nul : 0, NULL, nullptr (C++11)}\par
+\par
+\par
+\b 3.6 Separateurs et ponctuation \b0\par
+\par
+{\f1   ( ) [ ] \{ \} ; , : :: . -> ... ? .* ->*}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_CPP_02}     {\uldb Suivant >>}{\v IDH_CPP_04}     {\uldb Table des matieres}{\v IDH_CPP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CPP_04}
+{\footnote $ C++ - TYPES DE DONNEES}
+{\footnote K C++ types donnees;bool;char;wchar_t;short;int;long;long long;float;double;void;enum;enum class;typedef;using;const;volatile;mutable;constexpr}
+\b\fs24 TYPES DE DONNEES \b0\fs20\par
+\par
+\par
+\b 4.1 Types fondamentaux \b0\par
+\par
+{\f1   Type            Description                Taille typique}\par
+{\f1   ----            -----------                --------------}\par
+{\f1   bool            booleen (true/false)       1}\par
+{\f1   char            caractere                  1}\par
+{\f1   signed char     caractere signe            1}\par
+{\f1   unsigned char   caractere non-signe        1}\par
+{\f1   wchar_t         caractere large            2 ou 4}\par
+{\f1   short           entier court               2}\par
+{\f1   int             entier                     2 ou 4}\par
+{\f1   long            entier long                4}\par
+{\f1   long long       entier tres long (C++11)   8}\par
+{\f1   float           flottant simple            4}\par
+{\f1   double          flottant double            8}\par
+{\f1   long double     flottant etendu            8/10/12/16}\par
+{\f1   void            absence de type            -}\par
+\par
+Modificateurs : signed, unsigned, short, long.\par
+\par
+\par
+\b 4.2 Types composes \b0\par
+\par
+{\f1   - Pointeur  T*}\par
+{\f1   - Reference T&         (lvalue)}\par
+{\f1   - Reference T&&        (rvalue, C++11)}\par
+{\f1   - Tableau   T[N]}\par
+{\f1   - Fonction  T(args)}\par
+{\f1   - Membre    T C::*}\par
+{\f1   - Tableau de longueur variable : NON (extension GCC)}\par
+\par
+\par
+\b 4.3 Types definis par l'utilisateur \b0\par
+\par
+{\f1   - struct  (membres publics par defaut)}\par
+{\f1   - class   (membres prives par defaut)}\par
+{\f1   - union}\par
+{\f1   - enum    (enum classique)}\par
+{\f1   - enum class (C++11, fortement type)}\par
+{\f1   - typedef et using (alias de type, using C++11)}\par
+\par
+Exemple :\par
+\par
+{\f1   enum Couleur \{ ROUGE, VERT, BLEU \};}\par
+{\f1   enum class Direction \{ NORD, SUD, EST, OUEST \}; // C++11}\par
+\par
+{\f1   typedef unsigned long size_t;}\par
+{\f1   using size_t = unsigned long;                   // C++11}\par
+\par
+\par
+\b 4.4 Qualificatifs cv \b0\par
+\par
+{\f1   const     valeur non modifiable}\par
+{\f1   volatile  acces non optimisable}\par
+{\f1   mutable   modifiable meme dans un objet const}\par
+{\f1   constexpr constante d'expression (C++11)}\par
+\par
+Exemples :\par
+\par
+{\f1   const int N = 100;}\par
+{\f1   volatile int *port;}\par
+{\f1   class C \{ mutable int cache; \};}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_CPP_03}     {\uldb Suivant >>}{\v IDH_CPP_05}     {\uldb Table des matieres}{\v IDH_CPP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CPP_05}
+{\footnote $ C++ - DECLARATIONS DE VARIABLES}
+{\footnote K C++ declarations variables;auto;register;static;extern;thread_local;initialisation uniforme}
+\b\fs24 DECLARATIONS DE VARIABLES \b0\fs20\par
+\par
+Syntaxe generale :\par
+\par
+{\f1   [modificateurs] type identifiant [= initialiseur];}\par
+\par
+Initialisations :\par
+\par
+{\f1   int x = 42;            // copie}\par
+{\f1   int y(42);             // directe (style C++)}\par
+{\f1   int z\{42\};             // uniforme (C++11)}\par
+{\f1   int a = \{42\};          // copie-liste (C++11)}\par
+\par
+Variables locales sans initialisation : valeur indeterminee\par
+pour les types fondamentaux. Pour les objets de classe, le\par
+constructeur par defaut est appele.\par
+\par
+Declarations multiples :\par
+\par
+{\f1   int a, b, c = 0;       // a et b non initialises, c = 0}\par
+\par
+Mots-cles de stockage :\par
+\par
+{\f1   auto      duree automatique (defaut local) ;}\par
+{\f1             C++11 : deduction de type}\par
+{\f1   register  suggestion registre (deprecie C++11)}\par
+{\f1   static    duree statique}\par
+{\f1   extern    declaration externe}\par
+{\f1   thread_local duree par thread (C++11)}\par
+\par
+C++11 : deduction par auto :\par
+\par
+{\f1   auto i = 42;         // int}\par
+{\f1   auto s = "hello";    // const char *}\par
+{\f1   auto d = 3.14;       // double}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_CPP_04}     {\uldb Suivant >>}{\v IDH_CPP_06}     {\uldb Table des matieres}{\v IDH_CPP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CPP_06}
+{\footnote $ C++ - OPERATEURS}
+{\footnote K C++ operateurs;arithmetique;relationnel;logique;bit a bit;new;delete;sizeof;typeid;static_cast;dynamic_cast;const_cast;reinterpret_cast;surcharge}
+\b\fs24 OPERATEURS \b0\fs20\par
+\par
+\par
+\b 6.1 Operateurs arithmetiques \b0\par
+\par
+{\f1   +  addition (unaire/binaire)}\par
+{\f1   -  soustraction (unaire/binaire)}\par
+{\f1   *  multiplication}\par
+{\f1   /  division}\par
+{\f1   %  modulo (entiers uniquement)}\par
+{\f1   ++ incrementation (prefixe/postfixe)}\par
+{\f1   -- decrementation (prefixe/postfixe)}\par
+\par
+\par
+\b 6.2 Operateurs relationnels \b0\par
+\par
+{\f1   ==  egal}\par
+{\f1   !=  different}\par
+{\f1   <   inferieur}\par
+{\f1   >   superieur}\par
+{\f1   <=  inferieur ou egal}\par
+{\f1   >=  superieur ou egal}\par
+{\f1   <=> trois voies (C++20)}\par
+\par
+\par
+\b 6.3 Operateurs logiques \b0\par
+\par
+{\f1   &&  ET logique (court-circuit)}\par
+{\f1   ||  OU logique (court-circuit)}\par
+{\f1   !   NON logique}\par
+{\f1   and, or, not (digraphes)}\par
+\par
+\par
+\b 6.4 Operateurs bit-a-bit \b0\par
+\par
+{\f1   &   ET}\par
+{\f1   |   OU}\par
+{\f1   ^   OU exclusif}\par
+{\f1   ~   complement}\par
+{\f1   <<  decalage gauche}\par
+{\f1   >>  decalage droit}\par
+\par
+\par
+\b 6.5 Operateurs d'affectation \b0\par
+\par
+{\f1   =  +=  -=  *=  /=  %=  &=  |=  ^=  <<=  >>=}\par
+\par
+\par
+\b 6.6 Operateurs C++ specifiques \b0\par
+\par
+{\f1   ::          resolution de portee}\par
+{\f1   .           acces membre (objet)}\par
+{\f1   ->          acces membre (pointeur)}\par
+{\f1   .*          acces membre via pointeur sur membre}\par
+{\f1   ->*         acces membre via pointeur sur pointeur sur membre}\par
+{\f1   new         allocation dynamique}\par
+{\f1   new[]       allocation tableau dynamique}\par
+{\f1   delete      desallocation}\par
+{\f1   delete[]    desallocation tableau}\par
+{\f1   typeid      identification de type a l'execution (RTTI)}\par
+{\f1   sizeof      taille en octets}\par
+{\f1   alignof     alignement (C++11)}\par
+{\f1   noexcept    operateur de non-exception (C++11)}\par
+{\f1   static_cast      conversion statique}\par
+{\f1   dynamic_cast     conversion dynamique (RTTI)}\par
+{\f1   const_cast       suppression de const/volatile}\par
+{\f1   reinterpret_cast reinterpretation binaire}\par
+\par
+\par
+\b 6.7 Operateurs divers \b0\par
+\par
+{\f1   ?:          expression conditionnelle}\par
+{\f1   ,           operateur virgule}\par
+{\f1   []          indexation}\par
+{\f1   ()          appel de fonction / conversion}\par
+{\f1   throw       lancement d'exception}\par
+\par
+\par
+\b 6.8 Surcharge d'operateurs \b0\par
+\par
+C++ permet la surcharge de la plupart des operateurs comme\par
+fonctions membres ou non-membres :\par
+\par
+{\f1   class Vec \{}\par
+{\f1       int x, y;}\par
+{\f1   public:}\par
+{\f1       Vec operator+(const Vec& v) const \{}\par
+{\f1           return Vec\{x+v.x, y+v.y\};}\par
+{\f1       \}}\par
+{\f1       Vec& operator+=(const Vec& v);}\par
+{\f1       bool operator==(const Vec& v) const;}\par
+{\f1   \};}\par
+\par
+Operateurs non surchargeables : :: . .* ?: sizeof typeid.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_CPP_05}     {\uldb Suivant >>}{\v IDH_CPP_07}     {\uldb Table des matieres}{\v IDH_CPP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CPP_07}
+{\footnote $ C++ - STRUCTURES DE CONTROLE}
+{\footnote K C++ structures controle;if;else;switch;case;while;do;for;range-for;break;continue;return;goto;try;catch;throw}
+\b\fs24 STRUCTURES DE CONTROLE \b0\fs20\par
+\par
+\par
+\b 7.1 Selection \b0\par
+\par
+{\f1   if (expression) instruction}\par
+{\f1   if (expression) instruction else instruction}\par
+{\f1   if (init; condition) ...    // C++17}\par
+{\f1   if constexpr (expr) ...     // C++17}\par
+\par
+{\f1   switch (expression) \{}\par
+{\f1       case constante: instructions; break;}\par
+{\f1       case constante: instructions; break;}\par
+{\f1       ...}\par
+{\f1       default: instructions;}\par
+{\f1   \}}\par
+\par
+\par
+\b 7.2 Iteration \b0\par
+\par
+{\f1   while (expression) instruction}\par
+{\f1   do instruction while (expression);}\par
+{\f1   for (init; condition; iteration) instruction}\par
+{\f1   for (declaration : range) instruction      // C++11}\par
+\par
+Exemple range-for :\par
+\par
+{\f1   int t[] = \{1, 2, 3, 4, 5\};}\par
+{\f1   for (int x : t) std::cout << x;}\par
+\par
+\par
+\b 7.3 Saut \b0\par
+\par
+{\f1   break;}\par
+{\f1   continue;}\par
+{\f1   return [expression];}\par
+{\f1   goto etiquette;}\par
+\par
+\par
+\b 7.4 Instructions composees \b0\par
+\par
+{\f1   \{ instructions \}      // bloc, definit une portee}\par
+\par
+\par
+\b 7.5 Gestion d'exceptions \b0\par
+\par
+{\f1   try \{}\par
+{\f1       // code susceptible de lever une exception}\par
+{\f1   \} catch (Type1 e) \{}\par
+{\f1       // gestion specifique}\par
+{\f1   \} catch (Type2& e) \{}\par
+{\f1       // gestion par reference}\par
+{\f1   \} catch (...) \{}\par
+{\f1       // gestion generique}\par
+{\f1   \}}\par
+\par
+{\f1   throw expression;   // levee}\par
+{\f1   throw;              // re-levee dans un catch}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_CPP_06}     {\uldb Suivant >>}{\v IDH_CPP_08}     {\uldb Table des matieres}{\v IDH_CPP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CPP_08}
+{\footnote $ C++ - FONCTIONS}
+{\footnote K C++ fonctions;parametres;reference;valeur;defaut;surcharge;inline;membre;lambda;constexpr}
+\b\fs24 FONCTIONS \b0\fs20\par
+\par
+\par
+\b 8.1 Declaration et definition \b0\par
+\par
+{\f1   type nom(parametres);              // declaration / prototype}\par
+{\f1   type nom(parametres) \{ corps \}     // definition}\par
+\par
+Exemple :\par
+\par
+{\f1   int max(int a, int b) \{}\par
+{\f1       return (a > b) ? a : b;}\par
+{\f1   \}}\par
+\par
+\par
+\b 8.2 Passage de parametres \b0\par
+\par
+{\f1   - Par valeur     :  void f(int x);}\par
+{\f1   - Par pointeur   :  void f(int *x);}\par
+{\f1   - Par reference  :  void f(int &x);            // C++ only}\par
+{\f1   - Par reference const : void f(const T &x);}\par
+{\f1   - Par rvalue ref :  void f(T &&x);             // C++11}\par
+\par
+\par
+\b 8.3 Valeurs par defaut \b0\par
+\par
+{\f1   int connect(const char *host, int port = 80);}\par
+{\f1   connect("server");      // utilise port = 80}\par
+\par
+\par
+\b 8.4 Surcharge de fonctions \b0\par
+\par
+Plusieurs fonctions peuvent partager le meme nom si leurs\par
+signatures (types/nombre des parametres) different :\par
+\par
+{\f1   int max(int a, int b);}\par
+{\f1   double max(double a, double b);}\par
+{\f1   const char *max(const char *a, const char *b);}\par
+\par
+\par
+\b 8.5 Fonctions inline \b0\par
+\par
+{\f1   inline int carre(int x) \{ return x * x; \}}\par
+\par
+Suggere au compilateur d'expanser le corps au point d'appel.\par
+\par
+\par
+\b 8.6 Fonctions membres \b0\par
+\par
+Definies dans une classe ou hors classe avec :: :\par
+\par
+{\f1   class Point \{}\par
+{\f1   public:}\par
+{\f1       void deplacer(int dx, int dy);}\par
+{\f1   \};}\par
+\par
+{\f1   void Point::deplacer(int dx, int dy) \{}\par
+{\f1       x += dx; y += dy;}\par
+{\f1   \}}\par
+\par
+\par
+\b 8.7 Lambdas (C++11) \b0\par
+\par
+{\f1   [capture](parametres) -> type \{ corps \}}\par
+\par
+Exemple :\par
+\par
+{\f1   auto add = [](int a, int b) \{ return a + b; \};}\par
+{\f1   int s = add(2, 3);}\par
+\par
+Captures :\par
+\par
+{\f1   [=]   capture par valeur}\par
+{\f1   [&]   capture par reference}\par
+{\f1   [x]   capture x par valeur}\par
+{\f1   [&x]  capture x par reference}\par
+{\f1   [this] capture this}\par
+\par
+\par
+\b 8.8 constexpr (C++11/14) \b0\par
+\par
+{\f1   constexpr int factorielle(int n) \{}\par
+{\f1       return (n <= 1) ? 1 : n * factorielle(n - 1);}\par
+{\f1   \}}\par
+{\f1   int t[factorielle(5)];   // calcul a la compilation}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_CPP_07}     {\uldb Suivant >>}{\v IDH_CPP_09}     {\uldb Table des matieres}{\v IDH_CPP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CPP_09}
+{\footnote $ C++ - TABLEAUX}
+{\footnote K C++ tableaux;array;vector;multidimensionnel;std::array;std::vector}
+\b\fs24 TABLEAUX \b0\fs20\par
+\par
+\par
+\b 9.1 Declaration \b0\par
+\par
+{\f1   type nom[taille];}\par
+{\f1   int t[10];}\par
+{\f1   int m[3][4];}\par
+\par
+\par
+\b 9.2 Initialisation \b0\par
+\par
+{\f1   int t[5] = \{1, 2, 3, 4, 5\};}\par
+{\f1   int v[] = \{10, 20, 30\};}\par
+{\f1   int m[2][3] = \{\{1,2,3\}, \{4,5,6\}\};}\par
+{\f1   int z[100] = \{0\};      // tous a 0}\par
+\par
+\par
+\b 9.3 std::array (C++11) \b0\par
+\par
+Conteneur a taille fixe sans degradation en pointeur :\par
+\par
+{\f1   #include <array>}\par
+{\f1   std::array<int, 5> t = \{1, 2, 3, 4, 5\};}\par
+{\f1   for (int x : t) std::cout << x;}\par
+\par
+\par
+\b 9.4 std::vector \b0\par
+\par
+Tableau dynamique a taille variable :\par
+\par
+{\f1   #include <vector>}\par
+{\f1   std::vector<int> v;}\par
+{\f1   v.push_back(42);}\par
+{\f1   v.resize(100);}\par
+{\f1   for (size_t i = 0; i < v.size(); ++i)}\par
+{\f1       std::cout << v[i];}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_CPP_08}     {\uldb Suivant >>}{\v IDH_CPP_10}     {\uldb Table des matieres}{\v IDH_CPP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CPP_10}
+{\footnote $ C++ - POINTEURS ET REFERENCES}
+{\footnote K C++ pointeurs;references;rvalue reference;unique_ptr;shared_ptr;weak_ptr;new;delete;placement new}
+\b\fs24 POINTEURS ET REFERENCES \b0\fs20\par
+\par
+\par
+\b 10.1 Pointeurs \b0\par
+\par
+Identiques a C :\par
+\par
+{\f1   int *p;}\par
+{\f1   int x = 10;}\par
+{\f1   p = &x;}\par
+{\f1   *p = 20;}\par
+\par
+\par
+\b 10.2 References \b0\par
+\par
+Alias d'une variable existante, initialise obligatoirement :\par
+\par
+{\f1   int x = 10;}\par
+{\f1   int &r = x;        // r est un alias de x}\par
+{\f1   r = 20;            // x vaut maintenant 20}\par
+\par
+Differences avec les pointeurs :\par
+\par
+{\f1   - Doit etre initialisee a la declaration}\par
+{\f1   - Ne peut etre reaffectee a un autre objet}\par
+{\f1   - Ne peut etre nulle}\par
+{\f1   - Pas de syntaxe de dereferencement (utilisation directe)}\par
+\par
+\par
+\b 10.3 References constantes \b0\par
+\par
+{\f1   const int &r = x;       // lecture seule}\par
+{\f1   void f(const std::string &s);   // passage efficace}\par
+\par
+\par
+\b 10.4 References rvalue (C++11) \b0\par
+\par
+{\f1   int &&rr = 42;}\par
+{\f1   void g(std::string &&s);     // semantique de mouvement}\par
+\par
+\par
+\b 10.5 Pointeurs intelligents (C++11) \b0\par
+\par
+{\f1   std::unique_ptr<T>   propriete exclusive}\par
+{\f1   std::shared_ptr<T>   propriete partagee (comptage)}\par
+{\f1   std::weak_ptr<T>     reference faible}\par
+\par
+{\f1   #include <memory>}\par
+{\f1   std::unique_ptr<int> p(new int(42));}\par
+{\f1   std::shared_ptr<Foo> sp = std::make_shared<Foo>();}\par
+\par
+\par
+\b 10.6 new / delete \b0\par
+\par
+{\f1   T *p = new T;            // un objet}\par
+{\f1   T *t = new T[N];         // tableau de N objets}\par
+{\f1   delete p;}\par
+{\f1   delete[] t;}\par
+\par
+{\f1   // Placement new}\par
+{\f1   void *mem = ::operator new(sizeof(T));}\par
+{\f1   T *q = new (mem) T(args);}\par
+{\f1   q->~T();}\par
+{\f1   ::operator delete(mem);}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_CPP_09}     {\uldb Suivant >>}{\v IDH_CPP_11}     {\uldb Table des matieres}{\v IDH_CPP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CPP_11}
+{\footnote $ C++ - CLASSES ET OBJETS}
+{\footnote K C++ classes;objets;struct;class;public;private;protected;constructeur;destructeur;RAII;this;static;mutable}
+\b\fs24 CLASSES ET OBJETS \b0\fs20\par
+\par
+\par
+\b 11.1 Declaration de classe \b0\par
+\par
+{\f1   class Point \{}\par
+{\f1   private:}\par
+{\f1       int x, y;}\par
+{\f1   public:}\par
+{\f1       Point();                    // constructeur par defaut}\par
+{\f1       Point(int x, int y);        // constructeur parametre}\par
+{\f1       Point(const Point& p);      // constructeur de copie}\par
+{\f1       ~Point();                   // destructeur}\par
+{\f1       void deplacer(int dx, int dy);}\par
+{\f1       int getX() const;           // methode const}\par
+{\f1       int getY() const;}\par
+{\f1   \};}\par
+\par
+\par
+\b 11.2 Specificateurs d'acces \b0\par
+\par
+{\f1   public      accessible depuis l'exterieur}\par
+{\f1   private     accessible uniquement par la classe (defaut)}\par
+{\f1   protected   accessible par la classe et ses derivees}\par
+\par
+\par
+\b 11.3 struct vs class \b0\par
+\par
+Identiques sauf :\par
+{\f1   - struct : membres publics par defaut}\par
+{\f1   - class  : membres prives par defaut}\par
+\par
+\par
+\b 11.4 Constructeurs \b0\par
+\par
+{\f1   Point::Point() : x(0), y(0) \{ \}                  // defaut}\par
+{\f1   Point::Point(int x, int y) : x(x), y(y) \{ \}      // parametre}\par
+{\f1   Point::Point(const Point& p) : x(p.x), y(p.y) \{\} // copie}\par
+\par
+C++11 : delegation et = default / = delete :\par
+\par
+{\f1   Point() : Point(0, 0) \{ \}       // delegation}\par
+{\f1   Point() = default;}\par
+{\f1   Point(const Point&) = delete;   // copie interdite}\par
+\par
+\par
+\b 11.5 Destructeur \b0\par
+\par
+{\f1   ~Point() \{ /* liberation des ressources */ \}}\par
+\par
+Appele automatiquement lors de la destruction de l'objet\par
+(sortie de bloc, delete, fin de programme).\par
+\par
+\par
+\b 11.6 RAII (Resource Acquisition Is Initialization) \b0\par
+\par
+Idiome fondamental : associer la duree de vie d'une ressource\par
+a celle d'un objet. Acquisition dans le constructeur,\par
+liberation dans le destructeur.\par
+\par
+{\f1   class Fichier \{}\par
+{\f1       FILE *f;}\par
+{\f1   public:}\par
+{\f1       Fichier(const char *nom) \{ f = fopen(nom, "r"); \}}\par
+{\f1       ~Fichier() \{ if (f) fclose(f); \}}\par
+{\f1   \};}\par
+\par
+\par
+\b 11.7 Membres statiques \b0\par
+\par
+{\f1   class Compteur \{}\par
+{\f1   public:}\par
+{\f1       static int total;}\par
+{\f1       static int nouveau();}\par
+{\f1   \};}\par
+{\f1   int Compteur::total = 0;}\par
+{\f1   int Compteur::nouveau() \{ return ++total; \}}\par
+\par
+\par
+\b 11.8 Membres const et mutable \b0\par
+\par
+Methode const : ne modifie pas l'objet.\par
+\par
+{\f1   int getX() const \{ return x; \}}\par
+\par
+Membre mutable : modifiable depuis methode const.\par
+\par
+{\f1   mutable int cache;}\par
+\par
+\par
+\b 11.9 this \b0\par
+\par
+Pointeur implicite vers l'objet courant dans les methodes\par
+non-statiques.\par
+\par
+{\f1   Point& Point::operator=(const Point& p) \{}\par
+{\f1       if (this != &p) \{}\par
+{\f1           x = p.x; y = p.y;}\par
+{\f1       \}}\par
+{\f1       return *this;}\par
+{\f1   \}}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_CPP_10}     {\uldb Suivant >>}{\v IDH_CPP_12}     {\uldb Table des matieres}{\v IDH_CPP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CPP_12}
+{\footnote $ C++ - HERITAGE}
+{\footnote K C++ heritage;virtual;override;final;polymorphisme;abstract;virtual destructor;heritage multiple;heritage virtuel}
+\b\fs24 HERITAGE \b0\fs20\par
+\par
+\par
+\b 12.1 Heritage simple \b0\par
+\par
+{\f1   class Animal \{}\par
+{\f1   public:}\par
+{\f1       virtual void crier() const;}\par
+{\f1       virtual ~Animal() \{ \}}\par
+{\f1   \};}\par
+\par
+{\f1   class Chien : public Animal \{}\par
+{\f1   public:}\par
+{\f1       void crier() const \{ std::cout << "Wouaf!"; \}}\par
+{\f1   \};}\par
+\par
+Specificateurs d'heritage :\par
+\par
+{\f1   public     IS-A (preferable)}\par
+{\f1   protected  rare}\par
+{\f1   private    HAS-A via implementation}\par
+\par
+\par
+\b 12.2 Heritage multiple \b0\par
+\par
+{\f1   class C : public A, public B \{ \};}\par
+\par
+\par
+\b 12.3 Fonctions virtuelles \b0\par
+\par
+{\f1   virtual void f();        // peut etre redefinie}\par
+{\f1   virtual void f() = 0;    // virtuelle pure (abstraite)}\par
+{\f1   void f() override;       // C++11 : redefinition explicite}\par
+{\f1   void f() final;          // C++11 : ne peut etre redefinie}\par
+\par
+Une classe avec au moins une methode virtuelle pure est dite\par
+abstraite : on ne peut l'instancier.\par
+\par
+\par
+\b 12.4 Polymorphisme \b0\par
+\par
+Appel dynamique via pointeur/reference de la classe de base :\par
+\par
+{\f1   Animal *a = new Chien();}\par
+{\f1   a->crier();    // appelle Chien::crier (virtuelle)}\par
+{\f1   delete a;}\par
+\par
+\par
+\b 12.5 Destructeur virtuel \b0\par
+\par
+Obligatoire dans toute classe destinee a etre derivee :\par
+\par
+{\f1   virtual ~Base() \{ \}}\par
+\par
+Sinon, delete via pointeur de base = comportement indefini.\par
+\par
+\par
+\b 12.6 Heritage virtuel \b0\par
+\par
+Resout le probleme du "diamant" :\par
+\par
+{\f1   class A \{ \};}\par
+{\f1   class B : virtual public A \{ \};}\par
+{\f1   class C : virtual public A \{ \};}\par
+{\f1   class D : public B, public C \{ \};   // un seul A}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_CPP_11}     {\uldb Suivant >>}{\v IDH_CPP_13}     {\uldb Table des matieres}{\v IDH_CPP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CPP_13}
+{\footnote $ C++ - SURCHARGE D'OPERATEURS}
+{\footnote K C++ surcharge operateurs;operator+;operator=;operator++;operator<<;friend;foncteur}
+\b\fs24 SURCHARGE D'OPERATEURS \b0\fs20\par
+\par
+Operateurs courants surchargeables :\par
+\par
+{\f1   +  -  *  /  %  ^  &  |  ~  !  =  <  >}\par
+{\f1   += -= *= /= %= ^= &= |= <<  >>  <<= >>=  ==  !=}\par
+{\f1   <= >= && || ++ -- ,  ->*  ->  ()  []  new delete}\par
+\par
+Exemple complet :\par
+\par
+{\f1   class Complex \{}\par
+{\f1       double re, im;}\par
+{\f1   public:}\par
+{\f1       Complex(double r=0, double i=0): re(r), im(i) \{\}}\par
+{\f1       Complex operator+(const Complex& c) const \{}\par
+{\f1           return Complex(re+c.re, im+c.im);}\par
+{\f1       \}}\par
+{\f1       Complex& operator+=(const Complex& c) \{}\par
+{\f1           re += c.re; im += c.im; return *this;}\par
+{\f1       \}}\par
+{\f1       bool operator==(const Complex& c) const \{}\par
+{\f1           return re == c.re && im == c.im;}\par
+{\f1       \}}\par
+{\f1       friend std::ostream& operator<<(}\par
+{\f1           std::ostream& os, const Complex& c);}\par
+{\f1   \};}\par
+\par
+{\f1   std::ostream& operator<<(std::ostream& os, const Complex& c)\{}\par
+{\f1       return os << c.re << "+" << c.im << "i";}\par
+{\f1   \}}\par
+\par
+Operateurs speciaux :\par
+\par
+{\f1   - operator= (affectation) : retourne *this}\par
+{\f1   - operator++/-- : version prefixe et postfixe distinguees}\par
+{\f1   - operator() : foncteur (objet appelable)}\par
+{\f1   - operator-> : retourne pointeur ou objet avec operator->}\par
+{\f1   - operator[] : indexation}\par
+{\f1   - operator T() : conversion vers T}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_CPP_12}     {\uldb Suivant >>}{\v IDH_CPP_14}     {\uldb Table des matieres}{\v IDH_CPP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CPP_14}
+{\footnote $ C++ - TEMPLATES (GENERICITE)}
+{\footnote K C++ templates;genericite;template typename;classe template;fonction template;specialisation;variadique}
+\b\fs24 TEMPLATES (GENERICITE) \b0\fs20\par
+\par
+\par
+\b 14.1 Templates de fonctions \b0\par
+\par
+{\f1   template <typename T>}\par
+{\f1   T max(T a, T b) \{}\par
+{\f1       return (a > b) ? a : b;}\par
+{\f1   \}}\par
+\par
+{\f1   int n = max(3, 7);          // T deduit = int}\par
+{\f1   double d = max(3.5, 2.1);   // T deduit = double}\par
+{\f1   int m = max<int>(3, 7);     // T explicite}\par
+\par
+\par
+\b 14.2 Templates de classes \b0\par
+\par
+{\f1   template <typename T>}\par
+{\f1   class Pile \{}\par
+{\f1       T *data;}\par
+{\f1       int n;}\par
+{\f1   public:}\par
+{\f1       Pile();}\par
+{\f1       void push(const T& v);}\par
+{\f1       T pop();}\par
+{\f1   \};}\par
+\par
+{\f1   template <typename T>}\par
+{\f1   void Pile<T>::push(const T& v) \{ /* ... */ \}}\par
+\par
+{\f1   Pile<int> pi;}\par
+{\f1   Pile<std::string> ps;}\par
+\par
+\par
+\b 14.3 Parametres non-type \b0\par
+\par
+{\f1   template <typename T, int N>}\par
+{\f1   class TableauFixe \{}\par
+{\f1       T data[N];}\par
+{\f1   \};}\par
+{\f1   TableauFixe<int, 100> t;}\par
+\par
+\par
+\b 14.4 Specialisations \b0\par
+\par
+{\f1   template <typename T>}\par
+{\f1   class Tampon \{ /* generique */ \};}\par
+\par
+{\f1   template <>}\par
+{\f1   class Tampon<bool> \{ /* specialisation pour bool */ \};}\par
+\par
+\par
+\b 14.5 Parametres variadiques (C++11) \b0\par
+\par
+{\f1   template <typename... Args>}\par
+{\f1   void print(Args... args) \{}\par
+{\f1       // ...}\par
+{\f1   \}}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_CPP_13}     {\uldb Suivant >>}{\v IDH_CPP_15}     {\uldb Table des matieres}{\v IDH_CPP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CPP_15}
+{\footnote $ C++ - ESPACES DE NOMS (NAMESPACES)}
+{\footnote K C++ namespaces;namespace;using;alias;std;anonyme}
+\b\fs24 ESPACES DE NOMS (NAMESPACES) \b0\fs20\par
+\par
+\par
+\b 15.1 Declaration \b0\par
+\par
+{\f1   namespace math \{}\par
+{\f1       const double PI = 3.14159;}\par
+{\f1       double sqrt(double x);}\par
+{\f1   \}}\par
+\par
+{\f1   double r = math::sqrt(2.0);}\par
+\par
+\par
+\b 15.2 Espace anonyme \b0\par
+\par
+Equivalent a static en C : portee fichier.\par
+\par
+{\f1   namespace \{}\par
+{\f1       int interne = 0;}\par
+{\f1   \}}\par
+\par
+\par
+\b 15.3 Directives using \b0\par
+\par
+{\f1   using namespace math;        // tout le namespace}\par
+{\f1   using math::PI;              // un seul nom}\par
+{\f1   using AliasPI = math::PI;    // (C++11 pour alias de type)}\par
+\par
+Eviter using namespace std; dans les en-tetes.\par
+\par
+\par
+\b 15.4 Alias de namespace \b0\par
+\par
+{\f1   namespace longue_lib = ma::tres::longue::bibliotheque;}\par
+{\f1   longue_lib::fonction();}\par
+\par
+\par
+\b 15.5 Espace std \b0\par
+\par
+Tout la bibliotheque standard reside dans std::\par
+\par
+{\f1   std::cout, std::string, std::vector, std::map, ...}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_CPP_14}     {\uldb Suivant >>}{\v IDH_CPP_16}     {\uldb Table des matieres}{\v IDH_CPP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CPP_16}
+{\footnote $ C++ - EXCEPTIONS}
+{\footnote K C++ exceptions;try;catch;throw;noexcept;std::exception;hierarchie}
+\b\fs24 EXCEPTIONS \b0\fs20\par
+\par
+\par
+\b 16.1 Levee et capture \b0\par
+\par
+{\f1   try \{}\par
+{\f1       if (x < 0)}\par
+{\f1           throw std::invalid_argument("x negatif");}\par
+{\f1       // ...}\par
+{\f1   \}}\par
+{\f1   catch (const std::invalid_argument& e) \{}\par
+{\f1       std::cerr << e.what() << std::endl;}\par
+{\f1   \}}\par
+{\f1   catch (const std::exception& e) \{}\par
+{\f1       std::cerr << "Erreur: " << e.what();}\par
+{\f1   \}}\par
+{\f1   catch (...) \{}\par
+{\f1       std::cerr << "Erreur inconnue";}\par
+{\f1   \}}\par
+\par
+\par
+\b 16.2 Hierarchie standard \b0\par
+\par
+{\f1   std::exception}\par
+{\f1    |-- std::logic_error}\par
+{\f1    |    |-- std::invalid_argument}\par
+{\f1    |    |-- std::out_of_range}\par
+{\f1    |    |-- std::length_error}\par
+{\f1    |    +-- std::domain_error}\par
+{\f1    |-- std::runtime_error}\par
+{\f1    |    |-- std::range_error}\par
+{\f1    |    |-- std::overflow_error}\par
+{\f1    |    +-- std::underflow_error}\par
+{\f1    |-- std::bad_alloc}\par
+{\f1    |-- std::bad_cast}\par
+{\f1    |-- std::bad_typeid}\par
+{\f1    +-- std::bad_exception}\par
+\par
+\par
+\b 16.3 Specifications d'exception \b0\par
+\par
+C++98/03 (depreciees C++11) :\par
+\par
+{\f1   void f() throw();              // ne leve rien}\par
+{\f1   void f() throw(std::exception);}\par
+\par
+C++11 :\par
+\par
+{\f1   void f() noexcept;             // ne leve pas}\par
+{\f1   void f() noexcept(false);      // peut lever}\par
+\par
+\par
+\b 16.4 Re-levee \b0\par
+\par
+{\f1   catch (...) \{}\par
+{\f1       // nettoyage}\par
+{\f1       throw;       // re-leve l'exception courante}\par
+{\f1   \}}\par
+\par
+\par
+\b 16.5 RAII et exceptions \b0\par
+\par
+Les destructeurs sont appeles lors du deroulement de la pile.\par
+Utiliser des objets RAII (smart pointers, lock_guard) pour\par
+liberer proprement les ressources sur exception.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_CPP_15}     {\uldb Suivant >>}{\v IDH_CPP_17}     {\uldb Table des matieres}{\v IDH_CPP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CPP_17}
+{\footnote $ C++ - BIBLIOTHEQUE STANDARD STL}
+{\footnote K C++ STL;bibliotheque standard;vector;list;map;set;deque;string;algorithm;iterator;foncteur;flux;iostream}
+\b\fs24 BIBLIOTHEQUE STANDARD STL \b0\fs20\par
+\par
+\par
+\b 17.1 Conteneurs \b0\par
+\par
+{\f1   <vector>       std::vector<T>          tableau dynamique}\par
+{\f1   <deque>        std::deque<T>           file double}\par
+{\f1   <list>         std::list<T>            liste chainee}\par
+{\f1   <forward_list> std::forward_list<T>    liste simple (C++11)}\par
+{\f1   <array>        std::array<T,N>         tableau fixe (C++11)}\par
+{\f1   <set>          std::set<T>             ensemble trie}\par
+{\f1   <multiset>     std::multiset<T>        ensemble trie multi}\par
+{\f1   <map>          std::map<K,V>           dictionnaire trie}\par
+{\f1   <multimap>     std::multimap<K,V>      dico trie multi}\par
+{\f1   <unordered_set> std::unordered_set<T>  ensemble hash (C++11)}\par
+{\f1   <unordered_map> std::unordered_map     dico hash (C++11)}\par
+{\f1   <stack>        std::stack<T>           pile}\par
+{\f1   <queue>        std::queue<T>           file}\par
+{\f1   <queue>        std::priority_queue<T>  file de priorite}\par
+\par
+\par
+\b 17.2 Iterateurs \b0\par
+\par
+Categories : input, output, forward, bidirectional,\par
+random-access (et contiguous en C++17).\par
+\par
+{\f1   std::vector<int>::iterator it;}\par
+{\f1   for (it = v.begin(); it != v.end(); ++it)}\par
+{\f1       std::cout << *it;}\par
+\par
+{\f1   // Range-for (C++11) equivalent}\par
+{\f1   for (auto& x : v) std::cout << x;}\par
+\par
+\par
+\b 17.3 Algorithmes \b0\par
+\par
+En-tete <algorithm> : sort, find, copy, transform, accumulate,\par
+for_each, count, min, max, remove, replace, reverse, unique,\par
+binary_search, etc.\par
+\par
+{\f1   std::sort(v.begin(), v.end());}\par
+{\f1   auto it = std::find(v.begin(), v.end(), 42);}\par
+{\f1   int s = std::accumulate(v.begin(), v.end(), 0);}\par
+\par
+\par
+\b 17.4 Foncteurs \b0\par
+\par
+En-tete <functional> : less, greater, plus, multiplies,\par
+function, bind, etc.\par
+\par
+{\f1   std::sort(v.begin(), v.end(), std::greater<int>());}\par
+\par
+\par
+\b 17.5 Chaines \b0\par
+\par
+En-tete <string> : std::string, std::wstring.\par
+\par
+{\f1   std::string s = "Hello";}\par
+{\f1   s += ", World!";}\par
+{\f1   s.length();}\par
+{\f1   s.substr(0, 5);}\par
+{\f1   s.find("World");}\par
+{\f1   s.replace(0, 5, "Bye");}\par
+\par
+\par
+\b 17.6 Flux \b0\par
+\par
+En-tete <iostream>, <fstream>, <sstream>.\par
+\par
+{\f1   std::cin >> n;}\par
+{\f1   std::cout << "x = " << x << std::endl;}\par
+{\f1   std::ifstream f("data.txt");}\par
+{\f1   std::ofstream o("out.txt");}\par
+{\f1   std::stringstream ss;}\par
+{\f1   ss << "val=" << 42;}\par
+\par
+\par
+\b 17.7 Utilitaires (C++11+) \b0\par
+\par
+{\f1   <memory>       smart pointers}\par
+{\f1   <utility>      pair, move, forward, swap}\par
+{\f1   <tuple>        tuple}\par
+{\f1   <chrono>       horodatage et durees}\par
+{\f1   <thread>       threads}\par
+{\f1   <mutex>        verrous}\par
+{\f1   <atomic>       operations atomiques}\par
+{\f1   <regex>        expressions regulieres}\par
+{\f1   <random>       generateurs pseudo-aleatoires}\par
+{\f1   <filesystem>   systeme de fichiers (C++17)}\par
+{\f1   <optional>     valeur optionnelle (C++17)}\par
+{\f1   <variant>      union typee (C++17)}\par
+{\f1   <any>          conteneur de type (C++17)}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_CPP_16}     {\uldb Suivant >>}{\v IDH_CPP_18}     {\uldb Table des matieres}{\v IDH_CPP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CPP_18}
+{\footnote $ C++ - PREPROCESSEUR}
+{\footnote K C++ preprocesseur;include;define;ifdef;pragma;__cplusplus;__FILE__;__LINE__}
+\b\fs24 PREPROCESSEUR \b0\fs20\par
+\par
+Identique a C, avec les directives :\par
+\par
+{\f1   #include <fichier>      inclusion systeme}\par
+{\f1   #include "fichier"      inclusion utilisateur}\par
+{\f1   #define NOM valeur      macro objet}\par
+{\f1   #define MAC(x) ...      macro fonction}\par
+{\f1   #undef NOM              annulation}\par
+{\f1   #if / #ifdef / #ifndef  compilation conditionnelle}\par
+{\f1   #else / #elif / #endif}\par
+{\f1   #error msg              erreur de compilation}\par
+{\f1   #pragma directive       directive d'implementation}\par
+{\f1   #line N "fichier"       indication de ligne}\par
+\par
+Macros predefinies :\par
+\par
+{\f1   __FILE__       fichier source}\par
+{\f1   __LINE__       numero de ligne}\par
+{\f1   __DATE__       date de compilation}\par
+{\f1   __TIME__       heure de compilation}\par
+{\f1   __cplusplus    version C++ (199711L, 201103L, 201402L,}\par
+{\f1                  201703L, 202002L, 202302L)}\par
+{\f1   __func__       nom de fonction (C++11)}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_CPP_17}     {\uldb Suivant >>}{\v IDH_CPP_19}     {\uldb Table des matieres}{\v IDH_CPP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CPP_19}
+{\footnote $ C++ - STYLES DE PROGRAMMATION C++}
+{\footnote K C++ paradigmes;procedural;oriente objet;generique;fonctionnel;meta-programmation}
+\b\fs24 STYLES DE PROGRAMMATION C++ \b0\fs20\par
+\par
+\par
+\b 19.1 Procedural \b0\par
+\par
+Heritage direct de C : fonctions, structures, pointeurs.\par
+\par
+\par
+\b 19.2 Oriente objet \b0\par
+\par
+Encapsulation (classes, acces public/private/protected),\par
+heritage, polymorphisme (fonctions virtuelles).\par
+\par
+\par
+\b 19.3 Generique \b0\par
+\par
+Templates de fonctions et de classes, STL.\par
+\par
+\par
+\b 19.4 Fonctionnel (C++11+) \b0\par
+\par
+Lambdas, std::function, std::bind, algorithms higher-order.\par
+\par
+\par
+\b 19.5 Meta-programmation \b0\par
+\par
+Templates avec specialisations, SFINAE, type traits\par
+(<type_traits>), constexpr.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_CPP_18}     {\uldb Suivant >>}{\v IDH_CPP_20}     {\uldb Table des matieres}{\v IDH_CPP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CPP_20}
+{\footnote $ C++ - EVOLUTIONS DU LANGAGE}
+{\footnote K C++ evolutions;C++98;C++03;C++11;C++14;C++17;C++20;C++23;auto;lambda;concepts;modules;coroutines}
+\b\fs24 EVOLUTIONS DU LANGAGE \b0\fs20\par
+\par
+\par
+\b 20.1 C++98 / C++03 \b0\par
+\par
+Base : classes, templates, STL, exceptions, RTTI, namespaces.\par
+\par
+\par
+\b 20.2 C++11 \b0\par
+\par
+{\f1   - auto (deduction), decltype}\par
+{\f1   - Range-for, nullptr}\par
+{\f1   - Lambdas}\par
+{\f1   - Move semantics, rvalue references (&&)}\par
+{\f1   - Initialisation uniforme \{\}, listes d'initialisation}\par
+{\f1   - constexpr}\par
+{\f1   - enum class}\par
+{\f1   - Smart pointers (unique_ptr, shared_ptr)}\par
+{\f1   - std::thread, std::mutex, std::atomic}\par
+{\f1   - Templates variadiques}\par
+{\f1   - override, final, = default, = delete}\par
+{\f1   - static_assert}\par
+{\f1   - noexcept}\par
+{\f1   - Litteraux definis par l'utilisateur}\par
+\par
+\par
+\b 20.3 C++14 \b0\par
+\par
+{\f1   - Lambdas generiques (auto en parametres)}\par
+{\f1   - Deduction du type de retour pour fonctions ordinaires}\par
+{\f1   - constexpr etendu}\par
+{\f1   - Separateurs numeriques (1'000'000)}\par
+{\f1   - std::make_unique}\par
+\par
+\par
+\b 20.4 C++17 \b0\par
+\par
+{\f1   - if constexpr, if (init; cond)}\par
+{\f1   - structured bindings : auto [a, b] = paire;}\par
+{\f1   - std::optional, std::variant, std::any}\par
+{\f1   - std::filesystem}\par
+{\f1   - Inline variables}\par
+{\f1   - Templates a parametres deduits}\par
+\par
+\par
+\b 20.5 C++20 \b0\par
+\par
+{\f1   - Concepts (contraintes sur templates)}\par
+{\f1   - Modules}\par
+{\f1   - Coroutines}\par
+{\f1   - Operateur three-way <=>}\par
+{\f1   - Ranges}\par
+{\f1   - constinit, consteval}\par
+\par
+\par
+\b 20.6 C++23 \b0\par
+\par
+{\f1   - std::expected}\par
+{\f1   - std::print}\par
+{\f1   - Deducing this}\par
+{\f1   - Extension de constexpr}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_CPP_19}     {\uldb Suivant >>}{\v IDH_CPP_21}     {\uldb Table des matieres}{\v IDH_CPP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CPP_21}
+{\footnote $ C++ - COMPILATION ET EDITION DE LIENS}
+{\footnote K C++ compilation;edition liens;name mangling;extern C;phases traduction}
+\b\fs24 COMPILATION ET EDITION DE LIENS \b0\fs20\par
+\par
+\par
+\b 21.1 Phases de traduction \b0\par
+\par
+{\f1   1. Pre-traitement : substitution des macros, inclusion}\par
+{\f1      des fichiers d'en-tete.}\par
+{\f1   2. Compilation : analyse lexicale, syntaxique, semantique,}\par
+{\f1      generation d'assemblage ou de code objet.}\par
+{\f1   3. Assemblage : conversion en fichier objet (.o, .obj).}\par
+{\f1   4. Edition de liens : resolution des symboles, generation}\par
+{\f1      de l'executable ou de la bibliotheque.}\par
+\par
+\par
+\b 21.2 Nommage compose (name mangling) \b0\par
+\par
+Pour distinguer les surcharges de fonctions et methodes, le\par
+compilateur encode les types des parametres dans le symbole\par
+genere (mangling). Exemple Itanium ABI :\par
+\par
+{\f1   void f(int)     ->  _Z1fi}\par
+{\f1   void f(double)  ->  _Z1fd}\par
+{\f1   Point::Point()  ->  _ZN5PointC1Ev}\par
+\par
+Pour interfacer avec C : extern "C".\par
+\par
+\par
+\b 21.3 extern "C" \b0\par
+\par
+{\f1   extern "C" \{}\par
+{\f1       void fonction_c(int x);}\par
+{\f1   \}}\par
+{\f1   extern "C" int api(void);}\par
+\par
+Desactive le mangling pour ces declarations.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_CPP_20}     {\uldb Suivant >>}{\v IDH_CPP_22}     {\uldb Table des matieres}{\v IDH_CPP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CPP_22}
+{\footnote $ C++ - COMPILATEUR DU PROJET (CPP86.PAS)}
+{\footnote K C++ compilateurs projet;CPP86.PAS}
+\b\fs24 COMPILATEUR DU PROJET (CPP86.PAS) \b0\fs20\par
+\par
+CPP86.PAS - Compilateur C++ vers assembleur 8086\par
+\par
+{\f1   Cible             : MS-DOS, assembleur MASM .MODEL SMALL}\par
+{\f1   Modele memoire    : SMALL (code 64KO, donnees 64KO)}\par
+{\f1   Sous-ensemble     : C++98 partiel}\par
+{\f1   Sortie            : fichier .ASM, assemblable avec MASM}\par
+\par
+{\f1   Fonctionnalites supportees :}\par
+{\f1     - Types fondamentaux : char, short, int, long, float,}\par
+{\f1       double (au niveau lexical), void, bool}\par
+{\f1     - Pointeurs, references}\par
+{\f1     - struct, class, union, enum}\par
+{\f1     - Fonctions, surcharge, parametres par defaut}\par
+{\f1     - Operateurs, surcharge d'operateurs basique}\par
+{\f1     - Classes : constructeurs, destructeurs, methodes}\par
+{\f1     - Heritage simple, fonctions virtuelles}\par
+{\f1     - Templates simples (instanciation a la demande)}\par
+{\f1     - namespace, using}\par
+{\f1     - Preprocesseur #include / #define / #if}\par
+{\f1     - Compilation conditionnelle}\par
+\par
+{\f1   Limitations :}\par
+{\f1     - Pas de RTTI (typeid, dynamic_cast)}\par
+{\f1     - Pas de gestion d'exceptions completes}\par
+{\f1     - STL minimale (string, vector simples)}\par
+{\f1     - Pas de templates variadiques}\par
+{\f1     - Pas de C++11+ (lambdas, auto, ...)}\par
+\par
+{\f1   Invocation :}\par
+{\f1     CPP86 <source.cpp> [sortie.asm] [-v] [-d] [-w]}\par
+{\f1       -v : mode verbeux}\par
+{\f1       -d : debug}\par
+{\f1       -w : affiche les avertissements}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_CPP_21}     {\uldb Suivant >>}{\v IDH_CPP_23}     {\uldb Table des matieres}{\v IDH_CPP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CPP_23}
+{\footnote $ C++ - EXEMPLES}
+{\footnote K C++ exemples;Hello World;Fibonacci;classe Point;template Pile;polymorphisme}
+\b\fs24 EXEMPLES \b0\fs20\par
+\par
+\par
+\b 23.1 Hello, World! \b0\par
+\par
+{\f1   #include <iostream>}\par
+{\f1   int main() \{}\par
+{\f1       std::cout << "Hello, World!" << std::endl;}\par
+{\f1       return 0;}\par
+{\f1   \}}\par
+\par
+\par
+\b 23.2 Fibonacci recursif \b0\par
+\par
+{\f1   #include <iostream>}\par
+\par
+{\f1   unsigned long fibonacci(unsigned int n) \{}\par
+{\f1       if (n < 2) return n;}\par
+{\f1       return fibonacci(n - 1) + fibonacci(n - 2);}\par
+{\f1   \}}\par
+\par
+{\f1   int main() \{}\par
+{\f1       for (unsigned int i = 0; i < 10; ++i)}\par
+{\f1           std::cout << fibonacci(i) << " ";}\par
+{\f1       std::cout << std::endl;}\par
+{\f1       return 0;}\par
+{\f1   \}}\par
+\par
+\par
+\b 23.3 Classe Point avec surcharge \b0\par
+\par
+{\f1   #include <iostream>}\par
+\par
+{\f1   class Point \{}\par
+{\f1       double x, y;}\par
+{\f1   public:}\par
+{\f1       Point(double x = 0, double y = 0) : x(x), y(y) \{ \}}\par
+{\f1       Point operator+(const Point& p) const \{}\par
+{\f1           return Point(x + p.x, y + p.y);}\par
+{\f1       \}}\par
+{\f1       friend std::ostream& operator<<(}\par
+{\f1           std::ostream& os, const Point& p) \{}\par
+{\f1           return os << "(" << p.x << ", " << p.y << ")";}\par
+{\f1       \}}\par
+{\f1   \};}\par
+\par
+{\f1   int main() \{}\par
+{\f1       Point a(1, 2), b(3, 4);}\par
+{\f1       Point c = a + b;}\par
+{\f1       std::cout << a << " + " << b << " = " << c << std::endl;}\par
+{\f1       return 0;}\par
+{\f1   \}}\par
+\par
+\par
+\b 23.4 Template de pile \b0\par
+\par
+{\f1   template <typename T>}\par
+{\f1   class Pile \{}\par
+{\f1       T data[100];}\par
+{\f1       int n;}\par
+{\f1   public:}\par
+{\f1       Pile() : n(0) \{ \}}\par
+{\f1       void push(const T& v) \{ data[n++] = v; \}}\par
+{\f1       T pop() \{ return data[--n]; \}}\par
+{\f1       bool vide() const \{ return n == 0; \}}\par
+{\f1   \};}\par
+\par
+{\f1   int main() \{}\par
+{\f1       Pile<int> p;}\par
+{\f1       p.push(1); p.push(2); p.push(3);}\par
+{\f1       while (!p.vide())}\par
+{\f1           std::cout << p.pop() << " ";}\par
+{\f1       return 0;}\par
+{\f1   \}}\par
+\par
+\par
+\b 23.5 Heritage et polymorphisme \b0\par
+\par
+{\f1   #include <iostream>}\par
+\par
+{\f1   class Forme \{}\par
+{\f1   public:}\par
+{\f1       virtual double aire() const = 0;}\par
+{\f1       virtual ~Forme() \{ \}}\par
+{\f1   \};}\par
+\par
+{\f1   class Cercle : public Forme \{}\par
+{\f1       double r;}\par
+{\f1   public:}\par
+{\f1       Cercle(double r) : r(r) \{ \}}\par
+{\f1       double aire() const \{ return 3.14159 * r * r; \}}\par
+{\f1   \};}\par
+\par
+{\f1   class Rectangle : public Forme \{}\par
+{\f1       double l, h;}\par
+{\f1   public:}\par
+{\f1       Rectangle(double l, double h) : l(l), h(h) \{ \}}\par
+{\f1       double aire() const \{ return l * h; \}}\par
+{\f1   \};}\par
+\par
+{\f1   int main() \{}\par
+{\f1       Forme *formes[2] = \{}\par
+{\f1           new Cercle(5),}\par
+{\f1           new Rectangle(3, 4)}\par
+{\f1       \};}\par
+{\f1       for (int i = 0; i < 2; ++i) \{}\par
+{\f1           std::cout << formes[i]->aire() << std::endl;}\par
+{\f1           delete formes[i];}\par
+{\f1       \}}\par
+{\f1       return 0;}\par
+{\f1   \}}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_CPP_22}     {\uldb Suivant >>}{\v IDH_CPP_24}     {\uldb Table des matieres}{\v IDH_CPP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CPP_24}
+{\footnote $ C++ - REFERENCES}
+{\footnote K C++ references;bibliographie;Stroustrup;Meyers;Vandevoorde;isocpp;cppreference}
+\b\fs24 REFERENCES \b0\fs20\par
+\par
+{\f1   - ISO/IEC 14882:1998     Programming languages - C++ (C++98)}\par
+{\f1   - ISO/IEC 14882:2003     C++03}\par
+{\f1   - ISO/IEC 14882:2011     C++11}\par
+{\f1   - ISO/IEC 14882:2014     C++14}\par
+{\f1   - ISO/IEC 14882:2017     C++17}\par
+{\f1   - ISO/IEC 14882:2020     C++20}\par
+{\f1   - ISO/IEC 14882:2023     C++23}\par
+{\f1   - Stroustrup, B.         "The C++ Programming Language",}\par
+{\f1                            4th ed., Addison-Wesley, 2013.}\par
+{\f1   - Stroustrup, B.         "A Tour of C++", 3rd ed.,}\par
+{\f1                            Addison-Wesley, 2022.}\par
+{\f1   - Meyers, S.             "Effective C++", 3rd ed.,}\par
+{\f1                            Addison-Wesley, 2005.}\par
+{\f1   - Meyers, S.             "Effective Modern C++",}\par
+{\f1                            O'Reilly, 2014.}\par
+{\f1   - Vandevoorde, D.;       "C++ Templates: The Complete}\par
+{\f1     Josuttis, N.            Guide", 2nd ed., Addison-Wesley,}\par
+{\f1                             2017.}\par
+{\f1   - Site officiel ISO C++  https://isocpp.org}\par
+{\f1   - Reference en ligne     https://en.cppreference.com}\par
+
+\par
+{\uldb << Precedent}{\v IDH_CPP_23}     {\uldb Table des matieres}{\v IDH_CPP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+}

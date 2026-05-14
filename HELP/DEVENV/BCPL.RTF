@@ -1,0 +1,1007 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}
+
+{\footnote # IDH_BCPL_01}
+{\footnote $ BCPL - PRESENTATION}
+{\footnote K BCPL presentation;Martin Richards;Cambridge;CPL;TRIPOS;Xerox Alto;langage B;Ken Thompson}
+\b\fs24 PRESENTATION \b0\fs20\par
+\par
+BCPL (Basic Combined Programming Language) a ete concu en 1966\par
+par Martin Richards a l'Universite de Cambridge comme une\par
+simplification du langage CPL. Il a ete utilise pour ecrire\par
+des systemes d'exploitation (TRIPOS), des compilateurs et le\par
+systeme d'exploitation original de Xerox Alto. BCPL est\par
+l'ancetre direct du langage B (Ken Thompson, 1969) qui a lui-\par
+meme donne naissance au langage C (Dennis Ritchie, 1972).\par
+\par
+BCPL est un langage :\par
+\par
+{\f1   - Imperatif et structure par blocs}\par
+{\f1   - Compile via un code intermediaire (OCODE puis INTCODE)}\par
+{\f1   - Typeless : un seul type, le "mot machine" (word)}\par
+{\f1   - Sans typage statique : interpretation du mot selon l'usage}\par
+{\f1   - Indifferent a la mise en page (free-form)}\par
+{\f1   - Sensible a la casse (mots-cles en majuscules par tradition)}\par
+\par
+Caracteristiques notables :\par
+\par
+{\f1   - Tout est un mot machine (word, typiquement 16/32/64 bits)}\par
+{\f1   - Les pointeurs sont des indices de mots dans la memoire}\par
+{\f1   - Pas de distinction entre entier, pointeur, fonction}\par
+{\f1   - Tableaux et chaines manipules via pointeurs vers mots}\par
+{\f1   - Compilation portable via le code intermediaire OCODE}\par
+\par
+Extensions de fichiers reconnues :\par
+\par
+{\f1   .b      Fichier source BCPL}\par
+{\f1   .bcpl   Fichier source BCPL (variante)}\par
+{\f1   .h      Fichier d'en-tete BCPL}\par
+{\f1   .o      Fichier objet}\par
+\par
+\par
+\par
+\b Sections suivantes : \b0\par
+\par
+{\f1  2. STRUCTURE D'UN PROGRAMME}     {\uldb [Aller]}{\v IDH_BCPL_02}\par
+{\f1  3. STRUCTURE LEXICALE}     {\uldb [Aller]}{\v IDH_BCPL_03}\par
+{\f1  4. TYPES DE DONNEES}     {\uldb [Aller]}{\v IDH_BCPL_04}\par
+{\f1  5. DECLARATIONS}     {\uldb [Aller]}{\v IDH_BCPL_05}\par
+{\f1  6. OPERATEURS}     {\uldb [Aller]}{\v IDH_BCPL_06}\par
+{\f1  7. STRUCTURES DE CONTROLE}     {\uldb [Aller]}{\v IDH_BCPL_07}\par
+{\f1  8. PROCEDURES ET FONCTIONS}     {\uldb [Aller]}{\v IDH_BCPL_08}\par
+{\f1  9. VECTEURS (TABLEAUX)}     {\uldb [Aller]}{\v IDH_BCPL_09}\par
+{\f1 10. CHAINES DE CARACTERES}     {\uldb [Aller]}{\v IDH_BCPL_10}\par
+{\f1 11. ENTREES / SORTIES}     {\uldb [Aller]}{\v IDH_BCPL_11}\par
+{\f1 12. SECTIONS ET COMPILATION SEPAREE}     {\uldb [Aller]}{\v IDH_BCPL_12}\par
+{\f1 13. CODE INTERMEDIAIRE OCODE / INTCODE}     {\uldb [Aller]}{\v IDH_BCPL_13}\par
+{\f1 14. EXEMPLES}     {\uldb [Aller]}{\v IDH_BCPL_14}\par
+{\f1 15. COMPILATEUR DU PROJET (BCPL86.PAS)}     {\uldb [Aller]}{\v IDH_BCPL_15}\par
+{\f1 16. CONVERTISSEURS DU PROJET}     {\uldb [Aller]}{\v IDH_BCPL_16}\par
+{\f1 17. INFLUENCE HISTORIQUE}     {\uldb [Aller]}{\v IDH_BCPL_17}\par
+{\f1 18. REFERENCES}     {\uldb [Aller]}{\v IDH_BCPL_18}\par
+\par
+{\uldb Suivant >>}{\v IDH_BCPL_02}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_BCPL_02}
+{\footnote $ BCPL - STRUCTURE D'UN PROGRAMME}
+{\footnote K BCPL structure programme;START;LET;BE;GET;LIBHDR}
+\b\fs24 STRUCTURE D'UN PROGRAMME \b0\fs20\par
+\par
+Un programme BCPL est constitue d'une suite de declarations\par
+globales : constantes (MANIFEST), variables/vecteurs globaux\par
+(GLOBAL, STATIC) et fonctions/procedures (LET).\par
+\par
+Le point d'entree par convention est la fonction START :\par
+\par
+{\f1   LET START() BE}\par
+{\f1   $(}\par
+{\f1     WRITES("Hello, World!*N")}\par
+{\f1   $)}\par
+\par
+ou avec retour de valeur :\par
+\par
+{\f1   LET START() = VALOF}\par
+{\f1   $(}\par
+{\f1     WRITES("Hello, World!*N")}\par
+{\f1     RESULTIS 0}\par
+{\f1   $)}\par
+\par
+Le delimiteur de bloc historique est `$(` ... `$)` (BCPL\par
+n'utilise pas \{ \}). Les implementations modernes acceptent\par
+souvent aussi `\{` ... `\}` comme synonymes.\par
+\par
+Exemple complet :\par
+\par
+{\f1   GET "LIBHDR"}\par
+\par
+{\f1   LET START() BE}\par
+{\f1   $(}\par
+{\f1     LET I = 0}\par
+{\f1     FOR I = 1 TO 10 DO}\par
+{\f1       WRITEF("Carre de %N = %N*N", I, I*I)}\par
+{\f1   $)}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_BCPL_01}     {\uldb Suivant >>}{\v IDH_BCPL_03}     {\uldb Table des matieres}{\v IDH_BCPL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_BCPL_03}
+{\footnote $ BCPL - STRUCTURE LEXICALE}
+{\footnote K BCPL structure lexicale;identificateurs;mots reserves;litteraux;commentaires;echappement;asterisque}
+\b\fs24 STRUCTURE LEXICALE \b0\fs20\par
+\par
+\par
+\b 3.1 Jeu de caracteres \b0\par
+\par
+BCPL utilise traditionnellement l'ASCII. Les chaines et\par
+caracteres acceptent les sequences d'echappement avec `*`\par
+(non `\\` comme en C) :\par
+\par
+{\f1   *N    nouvelle ligne (newline)}\par
+{\f1   *T    tabulation}\par
+{\f1   *S    espace}\par
+{\f1   *B    retour arriere (backspace)}\par
+{\f1   *P    saut de page (page)}\par
+{\f1   *C    retour chariot}\par
+{\f1   *E    escape}\par
+{\f1   *0    caractere nul}\par
+{\f1   **    asterisque litteral}\par
+{\f1   *"    guillemet}\par
+{\f1   *'    apostrophe}\par
+{\f1   *XHH  caractere hexadecimal (HH)}\par
+\par
+\par
+\b 3.2 Commentaires \b0\par
+\par
+Deux formes :\par
+\par
+{\f1   // commentaire ligne, jusqu'a fin de ligne}\par
+{\f1   /* commentaire bloc, non imbricable */}\par
+\par
+\par
+\b 3.3 Identificateurs \b0\par
+\par
+Suite de lettres, chiffres et points, commencant par une\par
+lettre. La convention historique utilise des majuscules pour\par
+les mots-cles et minuscules pour les identifiants.\par
+\par
+\par
+\b 3.4 Mots reserves \b0\par
+\par
+{\f1   AND          FALSE        MANIFEST     RETURN       VALOF}\par
+{\f1   BE           FINISH       MATCH        SECTION      VEC}\par
+{\f1   BREAK        FOR          MOD          SLCT         WHILE}\par
+{\f1   BY           GET          NEEDS        STATIC}\par
+{\f1   CASE         GLOBAL       NIL          SWITCHON}\par
+{\f1   DEFAULT      GOTO         NOT          TABLE}\par
+{\f1   DO           IF           OF           TEST}\par
+{\f1   EQ           INTO         OR           THEN}\par
+{\f1   EQV          LET          REM          TO}\par
+{\f1   EVERY        LOOP         REPEAT       TRUE}\par
+{\f1   EXTERNAL     LV           RESULTIS     UNLESS}\par
+\par
+Operateurs textuels : ABS, NEQ, LS, LE, GR, GE, XOR, REM,\par
+LSHIFT, RSHIFT.\par
+\par
+\par
+\b 3.5 Literaux \b0\par
+\par
+{\f1   - Entiers       : 42, #b1010 (binaire), #o755 (octal),}\par
+{\f1                     #x2A ou #X2A (hexa)}\par
+{\f1   - Caractere     : 'A', '*N', '*X41'}\par
+{\f1   - Chaine        : "texte", "ligne1*N"}\par
+{\f1   - Booleen       : TRUE (= -1), FALSE (= 0)}\par
+{\f1   - Mot nul       : NIL ou 0}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_BCPL_02}     {\uldb Suivant >>}{\v IDH_BCPL_04}     {\uldb Table des matieres}{\v IDH_BCPL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_BCPL_04}
+{\footnote $ BCPL - TYPES DE DONNEES}
+{\footnote K BCPL types donnees;word;mot machine;typeless;vecteur;chaine;booleen;TRUE;FALSE}
+\b\fs24 TYPES DE DONNEES \b0\fs20\par
+\par
+\par
+\b 4.1 Type unique : le mot machine \b0\par
+\par
+BCPL n'a qu'un seul type fondamental : le mot machine (word).\par
+Sa taille depend de l'implementation :\par
+\par
+{\f1   - 16 bits sur PDP-11, 8086}\par
+{\f1   - 32 bits sur VAX, 80386+}\par
+{\f1   - 64 bits sur architectures modernes}\par
+\par
+Un mot peut etre interprete au choix comme :\par
+\par
+{\f1   - Entier signe ou non signe}\par
+{\f1   - Pointeur (indice de mot dans la memoire)}\par
+{\f1   - Caractere (un par mot ou un par octet via PACKSTRING)}\par
+{\f1   - Booleen (0 = FALSE, autre = TRUE, convention -1)}\par
+{\f1   - Adresse de fonction}\par
+\par
+L'interpretation est determinee par les operateurs appliques\par
+au mot, jamais par une declaration de type.\par
+\par
+\par
+\b 4.2 Tableaux (vecteurs) \b0\par
+\par
+Un vecteur est un bloc contigu de mots adressable par un\par
+pointeur sur son premier element.\par
+\par
+{\f1   LET V = VEC 10        // vecteur de 11 mots (indices 0..10)}\par
+{\f1   V!0 := 42             // affectation premier element}\par
+{\f1   V!1 := V!0 + 1}\par
+\par
+Operateur `!` (subscript) : `V!I` = element d'indice I du\par
+vecteur V.\par
+\par
+\par
+\b 4.3 Chaines de caracteres \b0\par
+\par
+Une chaine BCPL traditionnelle est un vecteur ou :\par
+{\f1   - Le mot d'indice 0 contient la longueur}\par
+{\f1   - Les mots suivants contiennent les caracteres (un par mot)}\par
+\par
+{\f1   LET S = "ABC"}\par
+{\f1   // S!0 = 3, S!1 = 'A', S!2 = 'B', S!3 = 'C'}\par
+\par
+Variante "packed" : un octet par caractere dans le mot, accede\par
+via PACKSTRING / UNPACKSTRING ou l'operateur `%`.\par
+\par
+\par
+\b 4.4 Booleens \b0\par
+\par
+Convention :\par
+{\f1   - FALSE = 0}\par
+{\f1   - TRUE  = -1 (tous les bits a 1)}\par
+\par
+Les operateurs logiques bit-a-bit sur ces valeurs donnent les\par
+operations booleennes.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_BCPL_03}     {\uldb Suivant >>}{\v IDH_BCPL_05}     {\uldb Table des matieres}{\v IDH_BCPL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_BCPL_05}
+{\footnote $ BCPL - DECLARATIONS}
+{\footnote K BCPL declarations;MANIFEST;GLOBAL;STATIC;LET;EXTERNAL;TABLE;VEC}
+\b\fs24 DECLARATIONS \b0\fs20\par
+\par
+\par
+\b 5.1 Constantes : MANIFEST \b0\par
+\par
+Constantes nommees sans stockage (substitution lexicale) :\par
+\par
+{\f1   MANIFEST}\par
+{\f1   $(}\par
+{\f1     MAX = 100}\par
+{\f1     MIN = 0}\par
+{\f1     LF  = '*N'}\par
+{\f1   $)}\par
+\par
+\par
+\b 5.2 Variables globales : GLOBAL \b0\par
+\par
+Variables dans le vecteur global (acces par indice fixe) :\par
+\par
+{\f1   GLOBAL}\par
+{\f1   $(}\par
+{\f1     COMPTEUR : 100}\par
+{\f1     TOTAL    : 101}\par
+{\f1   $)}\par
+\par
+L'indice (100, 101, ...) est attribue explicitement.\par
+\par
+\par
+\b 5.3 Variables statiques : STATIC \b0\par
+\par
+Variables a duree statique, locales a la section :\par
+\par
+{\f1   STATIC}\par
+{\f1   $(}\par
+{\f1     BUFFER = VEC 256}\par
+{\f1     POS    = 0}\par
+{\f1   $)}\par
+\par
+\par
+\b 5.4 Variables locales : LET \b0\par
+\par
+{\f1   LET X = 10}\par
+{\f1   LET A, B, C = 1, 2, 3}\par
+{\f1   LET V = VEC 100        // vecteur local de 101 mots}\par
+\par
+\par
+\b 5.5 Variables externes : EXTERNAL \b0\par
+\par
+{\f1   EXTERNAL}\par
+{\f1   $(}\par
+{\f1     WRITEF}\par
+{\f1     READN}\par
+{\f1     SYS}\par
+{\f1   $)}\par
+\par
+\par
+\b 5.6 Tables : TABLE \b0\par
+\par
+Table constante a initialisation :\par
+\par
+{\f1   LET PRIMES = TABLE 2, 3, 5, 7, 11, 13, 17, 19, 23, 29}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_BCPL_04}     {\uldb Suivant >>}{\v IDH_BCPL_06}     {\uldb Table des matieres}{\v IDH_BCPL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_BCPL_06}
+{\footnote $ BCPL - OPERATEURS}
+{\footnote K BCPL operateurs;arithmetique;relationnel;logique;bit a bit;subscript;LV;adresse;conditionnel;affectation}
+\b\fs24 OPERATEURS \b0\fs20\par
+\par
+\par
+\b 6.1 Operateurs arithmetiques \b0\par
+\par
+{\f1   +    addition (unaire/binaire)}\par
+{\f1   -    soustraction (unaire/binaire)}\par
+{\f1   *    multiplication}\par
+{\f1   /    division entiere}\par
+{\f1   REM  reste (modulo), aussi MOD ou %}\par
+{\f1   ABS  valeur absolue (unaire)}\par
+\par
+\par
+\b 6.2 Operateurs relationnels \b0\par
+\par
+Symboliques :       Textuels :\par
+{\f1   =     egal          EQ}\par
+{\f1   ~=    different     NEQ}\par
+{\f1   <     inferieur     LS}\par
+{\f1   <=    inf. ou egal  LE}\par
+{\f1   >     superieur     GR}\par
+{\f1   >=    sup. ou egal  GE}\par
+\par
+\par
+\b 6.3 Operateurs logiques (booleens) \b0\par
+\par
+{\f1   &    ou AND   ET logique (court-circuit)}\par
+{\f1   |    ou OR    OU logique (court-circuit)}\par
+{\f1   ~    ou NOT   negation}\par
+{\f1   EQV           equivalence}\par
+{\f1   XOR           OU exclusif}\par
+\par
+\par
+\b 6.4 Operateurs bit-a-bit \b0\par
+\par
+{\f1   &    ET binaire (sur les bits)}\par
+{\f1   |    OU binaire}\par
+{\f1   ~    complement}\par
+{\f1   XOR  OU exclusif}\par
+{\f1   <<   ou LSHIFT  decalage gauche}\par
+{\f1   >>   ou RSHIFT  decalage droit}\par
+\par
+Note : en BCPL `&`, `|`, `~` operent toujours bit-a-bit ; les\par
+operations booleennes reposent sur la convention TRUE=-1.\par
+\par
+\par
+\b 6.5 Operateurs de pointeur / vecteur \b0\par
+\par
+{\f1   V!I    element I du vecteur V       (subscript)}\par
+{\f1   V%I    octet I de la chaine V       (byte subscript)}\par
+{\f1   !P     contenu pointe par P         (deref, P!0)}\par
+{\f1   LV X   adresse de X                 (lvalue)}\par
+{\f1   @X     adresse de X                 (synonyme moderne)}\par
+\par
+\par
+\b 6.6 Operateur conditionnel \b0\par
+\par
+{\f1   E1 -> E2, E3       // si E1 alors E2 sinon E3}\par
+\par
+Exemple :\par
+\par
+{\f1   LET MAX = A > B -> A, B}\par
+\par
+\par
+\b 6.7 Affectation \b0\par
+\par
+{\f1   X := expression}\par
+\par
+`:=` est l'affectation (et non `=` qui est l'egalite).\par
+\par
+Affectations multiples :\par
+\par
+{\f1   A, B, C := 1, 2, 3}\par
+{\f1   A, B    := B, A      // echange}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_BCPL_05}     {\uldb Suivant >>}{\v IDH_BCPL_07}     {\uldb Table des matieres}{\v IDH_BCPL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_BCPL_07}
+{\footnote $ BCPL - STRUCTURES DE CONTROLE}
+{\footnote K BCPL structures controle;IF;TEST;UNLESS;SWITCHON;CASE;WHILE;UNTIL;FOR;REPEAT;BREAK;LOOP;VALOF;RESULTIS;GOTO}
+\b\fs24 STRUCTURES DE CONTROLE \b0\fs20\par
+\par
+\par
+\b 7.1 Selection \b0\par
+\par
+{\f1   IF condition DO instruction}\par
+{\f1   IF condition THEN instruction}\par
+\par
+{\f1   UNLESS condition DO instruction}\par
+{\f1   // equivalent a IF NOT condition DO ...}\par
+\par
+{\f1   TEST condition}\par
+{\f1     THEN instruction1}\par
+{\f1     ELSE instruction2}\par
+\par
+SWITCHON (selection multiple) :\par
+\par
+{\f1   SWITCHON expression INTO}\par
+{\f1   $(}\par
+{\f1     CASE valeur1 : instruction; ENDCASE}\par
+{\f1     CASE valeur2 : instruction; ENDCASE}\par
+{\f1     DEFAULT      : instruction; ENDCASE}\par
+{\f1   $)}\par
+\par
+\par
+\b 7.2 Iteration \b0\par
+\par
+{\f1   WHILE condition DO instruction}\par
+{\f1   UNTIL condition DO instruction}\par
+\par
+{\f1   instruction REPEATWHILE condition}\par
+{\f1   instruction REPEATUNTIL condition}\par
+{\f1   instruction REPEAT                 // boucle infinie}\par
+\par
+{\f1   FOR variable = init TO fin DO instruction}\par
+{\f1   FOR variable = init TO fin BY pas DO instruction}\par
+\par
+\par
+\b 7.3 Saut \b0\par
+\par
+{\f1   BREAK         // sortie de la boucle courante}\par
+{\f1   LOOP          // saut a l'iteration suivante}\par
+{\f1   RETURN        // retour de procedure (sans valeur)}\par
+{\f1   RESULTIS E    // retour de fonction (avec valeur E)}\par
+{\f1   GOTO etiquette}\par
+{\f1   FINISH        // termine le programme}\par
+\par
+\par
+\b 7.4 Blocs \b0\par
+\par
+{\f1   $(  instruction1}\par
+{\f1       instruction2}\par
+{\f1       ...}\par
+{\f1    $)}\par
+\par
+Equivalents modernes : `\{ ... \}`.\par
+\par
+\par
+\b 7.5 VALOF / RESULTIS \b0\par
+\par
+Un bloc-expression qui retourne une valeur :\par
+\par
+{\f1   LET ABS(X) = VALOF}\par
+{\f1   $(}\par
+{\f1     IF X < 0 THEN RESULTIS -X}\par
+{\f1     RESULTIS X}\par
+{\f1   $)}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_BCPL_06}     {\uldb Suivant >>}{\v IDH_BCPL_08}     {\uldb Table des matieres}{\v IDH_BCPL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_BCPL_08}
+{\footnote $ BCPL - PROCEDURES ET FONCTIONS}
+{\footnote K BCPL procedures;fonctions;LET;BE;VALOF;RESULTIS;AND;mutual recursion;parametres;reference}
+\b\fs24 PROCEDURES ET FONCTIONS \b0\fs20\par
+\par
+\par
+\b 8.1 Procedures (sans retour) \b0\par
+\par
+{\f1   LET nom(params) BE corps}\par
+\par
+Exemple :\par
+\par
+{\f1   LET AFFICHER(N) BE}\par
+{\f1   $(}\par
+{\f1     WRITEF("Valeur = %N*N", N)}\par
+{\f1   $)}\par
+\par
+\par
+\b 8.2 Fonctions (avec retour) \b0\par
+\par
+{\f1   LET nom(params) = expression}\par
+\par
+ou avec un bloc VALOF :\par
+\par
+{\f1   LET nom(params) = VALOF}\par
+{\f1   $(}\par
+{\f1     ...}\par
+{\f1     RESULTIS valeur}\par
+{\f1   $)}\par
+\par
+Exemple :\par
+\par
+{\f1   LET CARRE(X) = X * X}\par
+\par
+{\f1   LET FACTORIELLE(N) = N < 2 -> 1, N * FACTORIELLE(N-1)}\par
+\par
+\par
+\b 8.3 Definitions multiples : AND \b0\par
+\par
+{\f1   LET PAIR(N)   = N = 0 -> TRUE,  IMPAIR(N-1)}\par
+{\f1   AND IMPAIR(N) = N = 0 -> FALSE, PAIR(N-1)}\par
+\par
+Le mot-cle `AND` lie des fonctions mutuellement recursives.\par
+\par
+\par
+\b 8.4 Passage de parametres \b0\par
+\par
+Tous les parametres sont passes par valeur (les valeurs sont\par
+copiees dans des variables locales). Pour passer par\par
+reference, passer un pointeur (LV X / @X) :\par
+\par
+{\f1   LET ECHANGER(P, Q) BE}\par
+{\f1   $(}\par
+{\f1     LET T = !P}\par
+{\f1     !P := !Q}\par
+{\f1     !Q := T}\par
+{\f1   $)}\par
+\par
+{\f1   ECHANGER(LV A, LV B)}\par
+\par
+\par
+\b 8.5 Fonctions comme valeurs \b0\par
+\par
+L'identifiant d'une fonction designe son adresse (un mot\par
+machine). On peut donc stocker une fonction dans une variable\par
+ou un vecteur :\par
+\par
+{\f1   LET F = CARRE}\par
+{\f1   LET R = F(7)         // appelle CARRE(7), R = 49}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_BCPL_07}     {\uldb Suivant >>}{\v IDH_BCPL_09}     {\uldb Table des matieres}{\v IDH_BCPL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_BCPL_09}
+{\footnote $ BCPL - VECTEURS (TABLEAUX)}
+{\footnote K BCPL vecteurs;tableaux;VEC;TABLE;subscript;GETVEC;FREEVEC;multidimensionnel}
+\b\fs24 VECTEURS (TABLEAUX) \b0\fs20\par
+\par
+\par
+\b 9.1 Declaration \b0\par
+\par
+{\f1   LET V = VEC 10       // vecteur local de 11 mots (0..10)}\par
+\par
+`VEC N` alloue N+1 mots dans la pile (indices 0..N).\par
+\par
+\par
+\b 9.2 Acces aux elements \b0\par
+\par
+{\f1   V!0   premier element}\par
+{\f1   V!I   element d'indice I}\par
+\par
+Operateur subscript : `V!I` est equivalent a `!(V+I)`. La base\par
+d'un vecteur est l'adresse de son premier mot.\par
+\par
+\par
+\b 9.3 Initialisation \b0\par
+\par
+{\f1   LET T = TABLE 1, 2, 3, 4, 5}\par
+\par
+Cree une table en lecture seule contenant les 5 valeurs.\par
+\par
+\par
+\b 9.4 Allocation dynamique \b0\par
+\par
+Via les fonctions de bibliotheque (GETVEC / FREEVEC) :\par
+\par
+{\f1   LET V = GETVEC(100)}\par
+{\f1   ... utilisation ...}\par
+{\f1   FREEVEC(V)}\par
+\par
+\par
+\b 9.5 Tableaux multidimensionnels \b0\par
+\par
+Pas de support direct. On utilise des vecteurs de pointeurs\par
+vers vecteurs :\par
+\par
+{\f1   LET MATRICE = VEC 10}\par
+{\f1   FOR I = 0 TO 10 DO}\par
+{\f1     MATRICE!I := GETVEC(10)}\par
+{\f1   MATRICE!2!3 := 42}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_BCPL_08}     {\uldb Suivant >>}{\v IDH_BCPL_10}     {\uldb Table des matieres}{\v IDH_BCPL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_BCPL_10}
+{\footnote $ BCPL - CHAINES DE CARACTERES}
+{\footnote K BCPL chaines;caracteres;PACKSTRING;UNPACKSTRING;COMPSTRING;COPYSTRING;CONCAT;WRITES;WRITEF}
+\b\fs24 CHAINES DE CARACTERES \b0\fs20\par
+\par
+\par
+\b 10.1 Representation \b0\par
+\par
+Une chaine BCPL est un vecteur dont le mot 0 contient la\par
+longueur et les mots suivants contiennent les caracteres :\par
+\par
+{\f1   LET S = "BCPL"}\par
+{\f1   // S!0 = 4 (longueur)}\par
+{\f1   // S!1 = 'B'}\par
+{\f1   // S!2 = 'C'}\par
+{\f1   // S!3 = 'P'}\par
+{\f1   // S!4 = 'L'}\par
+\par
+\par
+\b 10.2 Acces \b0\par
+\par
+{\f1   LET N = S!0           // longueur}\par
+{\f1   LET C = S!I           // I-eme caractere}\par
+\par
+\par
+\b 10.3 Chaines compactees (PACKSTRING) \b0\par
+\par
+Plusieurs caracteres par mot. Operateur `%` :\par
+\par
+{\f1   S%I     // I-eme octet (caractere) de la chaine compactee}\par
+\par
+\par
+\b 10.4 Fonctions de bibliotheque \b0\par
+\par
+{\f1   COMPSTRING(S1, S2)    compare deux chaines}\par
+{\f1   COPYSTRING(SRC, DST)  copie}\par
+{\f1   CONCAT(S1, S2, R)     concatene S1 et S2 dans R}\par
+{\f1   WRITES(S)             ecrit une chaine}\par
+{\f1   WRITEF(FMT, ...)      ecriture formatee}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_BCPL_09}     {\uldb Suivant >>}{\v IDH_BCPL_11}     {\uldb Table des matieres}{\v IDH_BCPL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_BCPL_11}
+{\footnote $ BCPL - ENTREES / SORTIES}
+{\footnote K BCPL entrees sorties;WRITES;WRITEN;WRITEF;WRCH;RDCH;READN;FINDINPUT;FINDOUTPUT}
+\b\fs24 ENTREES / SORTIES \b0\fs20\par
+\par
+\par
+\b 11.1 Sorties \b0\par
+\par
+{\f1   WRITES(S)             ecrit une chaine}\par
+{\f1   WRITEN(N)             ecrit un entier}\par
+{\f1   WRITEF(FMT, ARGS...)  ecriture formatee}\par
+{\f1   WRCH(C)               ecrit un caractere}\par
+{\f1   NEWLINE()             saut de ligne}\par
+\par
+Specificateurs WRITEF :\par
+\par
+{\f1   %N    entier}\par
+{\f1   %S    chaine}\par
+{\f1   %C    caractere}\par
+{\f1   %X    hexadecimal}\par
+{\f1   %O    octal}\par
+{\f1   %B    binaire}\par
+{\f1   %P    pad / espacement}\par
+\par
+\par
+\b 11.2 Entrees \b0\par
+\par
+{\f1   RDCH()                lit un caractere}\par
+{\f1   READN()               lit un entier}\par
+{\f1   READSTREAM(S)         lit une chaine}\par
+\par
+\par
+\b 11.3 Fichiers \b0\par
+\par
+{\f1   FINDINPUT(NOM)        ouvre en lecture}\par
+{\f1   FINDOUTPUT(NOM)       ouvre en ecriture}\par
+{\f1   SELECTINPUT(FLUX)     selectionne flux de lecture}\par
+{\f1   SELECTOUTPUT(FLUX)    selectionne flux d'ecriture}\par
+{\f1   ENDREAD()             ferme le flux d'entree}\par
+{\f1   ENDWRITE()            ferme le flux de sortie}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_BCPL_10}     {\uldb Suivant >>}{\v IDH_BCPL_12}     {\uldb Table des matieres}{\v IDH_BCPL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_BCPL_12}
+{\footnote $ BCPL - SECTIONS ET COMPILATION SEPAREE}
+{\footnote K BCPL sections;compilation separee;GET;SECTION;EXTERNAL;GLOBAL}
+\b\fs24 SECTIONS ET COMPILATION SEPAREE \b0\fs20\par
+\par
+Un programme BCPL peut etre decoupe en sections compilees\par
+separement, equivalentes aux unites de compilation C.\par
+\par
+\par
+\b 12.1 Importation : GET \b0\par
+\par
+{\f1   GET "LIBHDR"}\par
+{\f1   GET "MYHEADER.H"}\par
+\par
+\par
+\b 12.2 Identifiants exportes : SECTION \b0\par
+\par
+{\f1   SECTION "MODULE"}\par
+\par
+{\f1   GLOBAL}\par
+{\f1   $(}\par
+{\f1     MA_FONCTION : 200}\par
+{\f1   $)}\par
+\par
+{\f1   LET MA_FONCTION(X) = ...}\par
+\par
+\par
+\b 12.3 Identifiants importes : EXTERNAL \b0\par
+\par
+{\f1   EXTERNAL}\par
+{\f1   $(}\par
+{\f1     WRITEF : 80}\par
+{\f1     READN  : 81}\par
+{\f1     SYS    : 82}\par
+{\f1   $)}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_BCPL_11}     {\uldb Suivant >>}{\v IDH_BCPL_13}     {\uldb Table des matieres}{\v IDH_BCPL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_BCPL_13}
+{\footnote $ BCPL - CODE INTERMEDIAIRE OCODE / INTCODE}
+{\footnote K BCPL OCODE;INTCODE;code intermediaire;machine virtuelle pile;portable}
+\b\fs24 CODE INTERMEDIAIRE OCODE / INTCODE \b0\fs20\par
+\par
+BCPL est traditionnellement compile en deux temps :\par
+\par
+{\f1   1. Source BCPL  ->  OCODE  (Object code, machine virtuelle}\par
+{\f1                               de pile)}\par
+{\f1   2. OCODE        ->  INTCODE  (code reorganise pour la cible)}\par
+{\f1   3. INTCODE      ->  Code natif (assembleur cible)}\par
+\par
+Cette architecture rend BCPL tres portable : il suffit de\par
+porter le generateur final INTCODE -> cible.\par
+\par
+OCODE est un code de pile compose d'instructions a un octet\par
+suivies eventuellement d'operandes (entiers ou etiquettes).\par
+\par
+Quelques instructions OCODE :\par
+\par
+{\f1   LP n    Load Parameter n}\par
+{\f1   LL L    Load Label L (charger adresse)}\par
+{\f1   LN n    Load Number n}\par
+{\f1   STG n   Store Global n}\par
+{\f1   JT L    Jump if True to L}\par
+{\f1   JF L    Jump if False to L}\par
+{\f1   RTRN    Return}\par
+{\f1   FNAP    Function Apply}\par
+{\f1   PLUS    addition}\par
+{\f1   MULT    multiplication}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_BCPL_12}     {\uldb Suivant >>}{\v IDH_BCPL_14}     {\uldb Table des matieres}{\v IDH_BCPL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_BCPL_14}
+{\footnote $ BCPL - EXEMPLES}
+{\footnote K BCPL exemples;Hello World;Factorielle;Fibonacci;tri insertion;recherche chaine}
+\b\fs24 EXEMPLES \b0\fs20\par
+\par
+\par
+\b 14.1 Hello, World! \b0\par
+\par
+{\f1   GET "LIBHDR"}\par
+\par
+{\f1   LET START() BE}\par
+{\f1     WRITES("Hello, World!*N")}\par
+\par
+\par
+\b 14.2 Factorielle recursive \b0\par
+\par
+{\f1   GET "LIBHDR"}\par
+\par
+{\f1   LET FACT(N) = N < 2 -> 1, N * FACT(N - 1)}\par
+\par
+{\f1   LET START() BE}\par
+{\f1   $(}\par
+{\f1     LET I = 0}\par
+{\f1     FOR I = 0 TO 10 DO}\par
+{\f1       WRITEF("FACT(%N) = %N*N", I, FACT(I))}\par
+{\f1   $)}\par
+\par
+\par
+\b 14.3 Fibonacci iteratif \b0\par
+\par
+{\f1   GET "LIBHDR"}\par
+\par
+{\f1   LET FIB(N) = VALOF}\par
+{\f1   $(}\par
+{\f1     LET A, B = 0, 1}\par
+{\f1     LET I = 0}\par
+{\f1     FOR I = 1 TO N DO}\par
+{\f1     $(}\par
+{\f1       LET T = A + B}\par
+{\f1       A := B}\par
+{\f1       B := T}\par
+{\f1     $)}\par
+{\f1     RESULTIS A}\par
+{\f1   $)}\par
+\par
+{\f1   LET START() BE}\par
+{\f1   $(}\par
+{\f1     LET I = 0}\par
+{\f1     FOR I = 0 TO 10 DO}\par
+{\f1       WRITEF("FIB(%N) = %N*N", I, FIB(I))}\par
+{\f1   $)}\par
+\par
+\par
+\b 14.4 Tri par insertion d'un vecteur \b0\par
+\par
+{\f1   LET TRI(V, N) BE}\par
+{\f1   $(}\par
+{\f1     LET I = 0}\par
+{\f1     FOR I = 1 TO N - 1 DO}\par
+{\f1     $(}\par
+{\f1       LET J = I}\par
+{\f1       WHILE J > 0 & V!(J-1) > V!J DO}\par
+{\f1       $(}\par
+{\f1         LET T = V!J}\par
+{\f1         V!J     := V!(J-1)}\par
+{\f1         V!(J-1) := T}\par
+{\f1         J := J - 1}\par
+{\f1       $)}\par
+{\f1     $)}\par
+{\f1   $)}\par
+\par
+\par
+\b 14.5 Recherche dans une chaine \b0\par
+\par
+{\f1   LET CHERCHER(S, C) = VALOF}\par
+{\f1   $(}\par
+{\f1     LET I = 0}\par
+{\f1     FOR I = 1 TO S!0 DO}\par
+{\f1       IF S!I = C THEN RESULTIS I}\par
+{\f1     RESULTIS 0}\par
+{\f1   $)}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_BCPL_13}     {\uldb Suivant >>}{\v IDH_BCPL_15}     {\uldb Table des matieres}{\v IDH_BCPL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_BCPL_15}
+{\footnote $ BCPL - COMPILATEUR DU PROJET (BCPL86.PAS)}
+{\footnote K BCPL compilateurs projet;BCPL86.PAS}
+\b\fs24 COMPILATEUR DU PROJET (BCPL86.PAS) \b0\fs20\par
+\par
+BCPL86.PAS - Compilateur BCPL vers assembleur 8086\par
+\par
+{\f1   Cible             : MS-DOS, assembleur MASM .MODEL SMALL}\par
+{\f1   Modele memoire    : SMALL (code 64KO, donnees 64KO)}\par
+{\f1   Taille de mot     : 16 bits}\par
+{\f1   Sortie            : fichier .ASM, assemblable avec MASM}\par
+\par
+{\f1   Fonctionnalites supportees :}\par
+{\f1     - Declarations LET, MANIFEST, GLOBAL, STATIC, EXTERNAL}\par
+{\f1     - Vecteurs VEC, TABLE}\par
+{\f1     - Operateurs arithmetiques, logiques, relationnels}\par
+{\f1     - Operateurs ! (subscript), LV / @ (lvalue)}\par
+{\f1     - Structures de controle IF/TEST/UNLESS, WHILE/UNTIL/FOR,}\par
+{\f1       REPEAT, SWITCHON, BREAK, LOOP}\par
+{\f1     - Fonctions et procedures (LET ... = / LET ... BE)}\par
+{\f1     - Mutual recursion (AND)}\par
+{\f1     - VALOF / RESULTIS}\par
+{\f1     - Blocs $( ... $) et \{ ... \}}\par
+{\f1     - Sections (SECTION, GET, EXTERNAL)}\par
+{\f1     - Sorties WRITES, WRITEN, WRITEF (sous-ensemble)}\par
+\par
+{\f1   Limitations :}\par
+{\f1     - Pas de OCODE / INTCODE intermediaire (compilation}\par
+{\f1       directe vers 8086)}\par
+{\f1     - Chaines : longueur dans le mot 0, caracteres dans}\par
+{\f1       mots suivants (1 caractere par mot)}\par
+{\f1     - Pas de chaines compactees (operateur %)}\par
+{\f1     - Pas d'allocation dynamique GETVEC / FREEVEC (utilisez}\par
+{\f1       les vecteurs locaux ou STATIC)}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_BCPL_14}     {\uldb Suivant >>}{\v IDH_BCPL_16}     {\uldb Table des matieres}{\v IDH_BCPL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_BCPL_16}
+{\footnote $ BCPL - CONVERTISSEURS DU PROJET}
+{\footnote K BCPL convertisseurs;ASC2BCPL.PAS;ADA2BCPL.PAS;PAS2BCPL.PAS;transpileur}
+\b\fs24 CONVERTISSEURS DU PROJET \b0\fs20\par
+\par
+\par
+\b 16.1 ASC2BCPL.PAS - Texte ASCII vers BCPL \b0\par
+\par
+Convertit un fichier texte en chaine BCPL initialisee :\par
+\par
+{\f1   LET MESSAGE = TABLE 'B', 'C', 'P', 'L', '*N', 0}\par
+\par
+\par
+\b 16.2 ADA2BCPL.PAS - Ada vers BCPL \b0\par
+\par
+Transpileur Ada (sous-ensemble) vers BCPL.\par
+\par
+{\f1   - procedure -> LET ... BE}\par
+{\f1   - function  -> LET ... =}\par
+{\f1   - if/elsif/else -> TEST / ELSE}\par
+{\f1   - loop / while  -> WHILE / UNTIL / FOR}\par
+\par
+\par
+\b 16.3 PAS2BCPL.PAS - Pascal vers BCPL \b0\par
+\par
+Transpileur Pascal (sous-ensemble) vers BCPL.\par
+\par
+{\f1   - procedure -> LET ... BE}\par
+{\f1   - function  -> LET ... =}\par
+{\f1   - var       -> LET}\par
+{\f1   - const     -> MANIFEST}\par
+{\f1   - begin/end -> $(  $)}\par
+{\f1   - := -> := (identique)}\par
+{\f1   - read/write -> READN / WRITES / WRITEN}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_BCPL_15}     {\uldb Suivant >>}{\v IDH_BCPL_17}     {\uldb Table des matieres}{\v IDH_BCPL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_BCPL_17}
+{\footnote $ BCPL - INFLUENCE HISTORIQUE}
+{\footnote K BCPL influence historique;langage B;langage C;Ken Thompson;Dennis Ritchie;Brian Kernighan;TRIPOS;Xerox Alto}
+\b\fs24 INFLUENCE HISTORIQUE \b0\fs20\par
+\par
+BCPL est l'ancetre direct du langage B (Ken Thompson, Bell\par
+Labs, 1969), lui-meme ancetre du langage C (Dennis Ritchie,\par
+1972). De nombreuses caracteristiques de C proviennent de\par
+BCPL :\par
+\par
+{\f1   - Compilation a deux temps (preprocesseur + compilateur)}\par
+{\f1   - Convention des sequences d'echappement (renommees `*` -> `\\`)}\par
+{\f1   - Distinction expression / instruction (VALOF / \{ \})}\par
+{\f1   - Operateurs courts symboliques}\par
+{\f1   - Programmation systeme et bas niveau}\par
+\par
+Differences principales entre BCPL et C :\par
+\par
+{\f1   Aspect            BCPL                 C}\par
+{\f1   ------            ----                 ---}\par
+{\f1   Types             Un seul (word)       Multiples}\par
+{\f1   Egalite           =                    ==}\par
+{\f1   Affectation       :=                   =}\par
+{\f1   Negation logique  ~ ou NOT             !}\par
+{\f1   AND/OR logique    & / |                && / ||}\par
+{\f1   AND/OR binaire    & / |                & / |}\par
+{\f1   Echappement       *N, **               \\n, \\\\}\par
+{\f1   Blocs             $( ... $)            \{ ... \}}\par
+{\f1   Subscript         V!I                  V[I]}\par
+{\f1   Reference         LV X, @X             &X}\par
+{\f1   Dereference       !P                   *P}\par
+{\f1   Commentaires      //, /* */            /* */, // (C99)}\par
+{\f1   Vrai              -1                   1}\par
+{\f1   Chaines           taille+caracteres    octets + '\\0'}\par
+\par
+BCPL a egalement influence :\par
+{\f1   - Le systeme d'exploitation TRIPOS (Cambridge)}\par
+{\f1   - Le systeme original de Xerox Alto}\par
+{\f1   - Le premier "Hello World" publie par Brian Kernighan}\par
+{\f1     (1972) etait en BCPL}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_BCPL_16}     {\uldb Suivant >>}{\v IDH_BCPL_18}     {\uldb Table des matieres}{\v IDH_BCPL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_BCPL_18}
+{\footnote $ BCPL - REFERENCES}
+{\footnote K BCPL references;bibliographie;Martin Richards;Whitby-Strevens;BCPL Reference Manual;Cintsys}
+\b\fs24 REFERENCES \b0\fs20\par
+\par
+{\f1   - Richards, M.            "BCPL Reference Manual",}\par
+{\f1                             MIT Project MAC, M-352, 1967.}\par
+{\f1   - Richards, M.;           "BCPL - The Language and its}\par
+{\f1     Whitby-Strevens, C.      Compiler", Cambridge University}\par
+{\f1                              Press, 1979.}\par
+{\f1   - Richards, M.            "The BCPL Cintsys and Cintpos}\par
+{\f1                              User Guide", Cambridge, 2024.}\par
+{\f1   - Site officiel           https://www.bcpl.cl.cam.ac.uk}\par
+{\f1   - Kernighan, B.           "A Tutorial Introduction to the}\par
+{\f1                              Language B", Bell Labs, 1973.}\par
+{\f1                              (cousin direct de BCPL)}\par
+
+\par
+{\uldb << Precedent}{\v IDH_BCPL_17}     {\uldb Table des matieres}{\v IDH_BCPL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+}

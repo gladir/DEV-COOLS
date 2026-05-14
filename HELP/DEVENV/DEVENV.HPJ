@@ -29,6 +29,7 @@ ALGOL68.RTF
 C.RTF
 PASCAL.RTF
 CPP.RTF
+BCPL.RTF
 
 [MAP]
 IDH_INDEX           = 1
@@ -278,6 +279,24 @@ IDH_CPP_21          = 3521
 IDH_CPP_22          = 3522
 IDH_CPP_23          = 3523
 IDH_CPP_24          = 3524
+IDH_BCPL_01         = 3601
+IDH_BCPL_02         = 3602
+IDH_BCPL_03         = 3603
+IDH_BCPL_04         = 3604
+IDH_BCPL_05         = 3605
+IDH_BCPL_06         = 3606
+IDH_BCPL_07         = 3607
+IDH_BCPL_08         = 3608
+IDH_BCPL_09         = 3609
+IDH_BCPL_10         = 3610
+IDH_BCPL_11         = 3611
+IDH_BCPL_12         = 3612
+IDH_BCPL_13         = 3613
+IDH_BCPL_14         = 3614
+IDH_BCPL_15         = 3615
+IDH_BCPL_16         = 3616
+IDH_BCPL_17         = 3617
+IDH_BCPL_18         = 3618
 IDH_EMULATEURS      = 30
 IDH_EMU_NES         = 31
 IDH_EMU_AMIGA       = 32

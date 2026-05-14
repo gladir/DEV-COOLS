@@ -1,0 +1,908 @@
+BCPL - Specifications du langage
+============================================================
+Compilateurs : BCPL86.PAS  (BCPL vers assembleur 8086, MS-DOS)
+Convertisseurs : ASC2BCPL.PAS (texte vers BCPL)
+                 ADA2BCPL.PAS (Ada vers BCPL)
+                 PAS2BCPL.PAS (Pascal vers BCPL)
+Reference   : "BCPL - The Language and its Compiler",
+              Martin Richards et Colin Whitby-Strevens,
+              Cambridge University Press, 1979.
+              "BCPL Reference Manual", Martin Richards,
+              MIT Project MAC, M-352, 1967.
+Version     : 1.0 - 2026
+
+============================================================
+1. PRESENTATION
+============================================================
+
+BCPL (Basic Combined Programming Language) a ete concu en 1966
+par Martin Richards a l'Universite de Cambridge comme une
+simplification du langage CPL. Il a ete utilise pour ecrire
+des systemes d'exploitation (TRIPOS), des compilateurs et le
+systeme d'exploitation original de Xerox Alto. BCPL est
+l'ancetre direct du langage B (Ken Thompson, 1969) qui a lui-
+meme donne naissance au langage C (Dennis Ritchie, 1972).
+
+BCPL est un langage :
+
+  - Imperatif et structure par blocs
+  - Compile via un code intermediaire (OCODE puis INTCODE)
+  - Typeless : un seul type, le "mot machine" (word)
+  - Sans typage statique : interpretation du mot selon l'usage
+  - Indifferent a la mise en page (free-form)
+  - Sensible a la casse (mots-cles en majuscules par tradition)
+
+Caracteristiques notables :
+
+  - Tout est un mot machine (word, typiquement 16/32/64 bits)
+  - Les pointeurs sont des indices de mots dans la memoire
+  - Pas de distinction entre entier, pointeur, fonction
+  - Tableaux et chaines manipules via pointeurs vers mots
+  - Compilation portable via le code intermediaire OCODE
+
+Extensions de fichiers reconnues :
+
+  .b      Fichier source BCPL
+  .bcpl   Fichier source BCPL (variante)
+  .h      Fichier d'en-tete BCPL
+  .o      Fichier objet
+
+
+============================================================
+2. STRUCTURE D'UN PROGRAMME
+============================================================
+
+Un programme BCPL est constitue d'une suite de declarations
+globales : constantes (MANIFEST), variables/vecteurs globaux
+(GLOBAL, STATIC) et fonctions/procedures (LET).
+
+Le point d'entree par convention est la fonction START :
+
+  LET START() BE
+  $(
+    WRITES("Hello, World!*N")
+  $)
+
+ou avec retour de valeur :
+
+  LET START() = VALOF
+  $(
+    WRITES("Hello, World!*N")
+    RESULTIS 0
+  $)
+
+Le delimiteur de bloc historique est `$(` ... `$)` (BCPL
+n'utilise pas { }). Les implementations modernes acceptent
+souvent aussi `{` ... `}` comme synonymes.
+
+Exemple complet :
+
+  GET "LIBHDR"
+
+  LET START() BE
+  $(
+    LET I = 0
+    FOR I = 1 TO 10 DO
+      WRITEF("Carre de %N = %N*N", I, I*I)
+  $)
+
+
+============================================================
+3. STRUCTURE LEXICALE
+============================================================
+
+3.1 Jeu de caracteres
+---------------------
+
+BCPL utilise traditionnellement l'ASCII. Les chaines et
+caracteres acceptent les sequences d'echappement avec `*`
+(non `\` comme en C) :
+
+  *N    nouvelle ligne (newline)
+  *T    tabulation
+  *S    espace
+  *B    retour arriere (backspace)
+  *P    saut de page (page)
+  *C    retour chariot
+  *E    escape
+  *0    caractere nul
+  **    asterisque litteral
+  *"    guillemet
+  *'    apostrophe
+  *XHH  caractere hexadecimal (HH)
+
+3.2 Commentaires
+----------------
+
+Deux formes :
+
+  // commentaire ligne, jusqu'a fin de ligne
+  /* commentaire bloc, non imbricable */
+
+3.3 Identificateurs
+-------------------
+
+Suite de lettres, chiffres et points, commencant par une
+lettre. La convention historique utilise des majuscules pour
+les mots-cles et minuscules pour les identifiants.
+
+3.4 Mots reserves
+-----------------
+
+  AND          FALSE        MANIFEST     RETURN       VALOF
+  BE           FINISH       MATCH        SECTION      VEC
+  BREAK        FOR          MOD          SLCT         WHILE
+  BY           GET          NEEDS        STATIC
+  CASE         GLOBAL       NIL          SWITCHON
+  DEFAULT      GOTO         NOT          TABLE
+  DO           IF           OF           TEST
+  EQ           INTO         OR           THEN
+  EQV          LET          REM          TO
+  EVERY        LOOP         REPEAT       TRUE
+  EXTERNAL     LV           RESULTIS     UNLESS
+
+Operateurs textuels : ABS, NEQ, LS, LE, GR, GE, XOR, REM,
+LSHIFT, RSHIFT.
+
+3.5 Literaux
+------------
+
+  - Entiers       : 42, #b1010 (binaire), #o755 (octal),
+                    #x2A ou #X2A (hexa)
+  - Caractere     : 'A', '*N', '*X41'
+  - Chaine        : "texte", "ligne1*N"
+  - Booleen       : TRUE (= -1), FALSE (= 0)
+  - Mot nul       : NIL ou 0
+
+
+============================================================
+4. TYPES DE DONNEES
+============================================================
+
+4.1 Type unique : le mot machine
+--------------------------------
+
+BCPL n'a qu'un seul type fondamental : le mot machine (word).
+Sa taille depend de l'implementation :
+
+  - 16 bits sur PDP-11, 8086
+  - 32 bits sur VAX, 80386+
+  - 64 bits sur architectures modernes
+
+Un mot peut etre interprete au choix comme :
+
+  - Entier signe ou non signe
+  - Pointeur (indice de mot dans la memoire)
+  - Caractere (un par mot ou un par octet via PACKSTRING)
+  - Booleen (0 = FALSE, autre = TRUE, convention -1)
+  - Adresse de fonction
+
+L'interpretation est determinee par les operateurs appliques
+au mot, jamais par une declaration de type.
+
+4.2 Tableaux (vecteurs)
+-----------------------
+
+Un vecteur est un bloc contigu de mots adressable par un
+pointeur sur son premier element.
+
+  LET V = VEC 10        // vecteur de 11 mots (indices 0..10)
+  V!0 := 42             // affectation premier element
+  V!1 := V!0 + 1
+
+Operateur `!` (subscript) : `V!I` = element d'indice I du
+vecteur V.
+
+4.3 Chaines de caracteres
+-------------------------
+
+Une chaine BCPL traditionnelle est un vecteur ou :
+  - Le mot d'indice 0 contient la longueur
+  - Les mots suivants contiennent les caracteres (un par mot)
+
+  LET S = "ABC"
+  // S!0 = 3, S!1 = 'A', S!2 = 'B', S!3 = 'C'
+
+Variante "packed" : un octet par caractere dans le mot, accede
+via PACKSTRING / UNPACKSTRING ou l'operateur `%`.
+
+4.4 Booleens
+------------
+
+Convention :
+  - FALSE = 0
+  - TRUE  = -1 (tous les bits a 1)
+
+Les operateurs logiques bit-a-bit sur ces valeurs donnent les
+operations booleennes.
+
+
+============================================================
+5. DECLARATIONS
+============================================================
+
+5.1 Constantes : MANIFEST
+-------------------------
+
+Constantes nommees sans stockage (substitution lexicale) :
+
+  MANIFEST
+  $(
+    MAX = 100
+    MIN = 0
+    LF  = '*N'
+  $)
+
+5.2 Variables globales : GLOBAL
+-------------------------------
+
+Variables dans le vecteur global (acces par indice fixe) :
+
+  GLOBAL
+  $(
+    COMPTEUR : 100
+    TOTAL    : 101
+  $)
+
+L'indice (100, 101, ...) est attribue explicitement.
+
+5.3 Variables statiques : STATIC
+--------------------------------
+
+Variables a duree statique, locales a la section :
+
+  STATIC
+  $(
+    BUFFER = VEC 256
+    POS    = 0
+  $)
+
+5.4 Variables locales : LET
+---------------------------
+
+  LET X = 10
+  LET A, B, C = 1, 2, 3
+  LET V = VEC 100        // vecteur local de 101 mots
+
+5.5 Variables externes : EXTERNAL
+---------------------------------
+
+  EXTERNAL
+  $(
+    WRITEF
+    READN
+    SYS
+  $)
+
+5.6 Tables : TABLE
+------------------
+
+Table constante a initialisation :
+
+  LET PRIMES = TABLE 2, 3, 5, 7, 11, 13, 17, 19, 23, 29
+
+
+============================================================
+6. OPERATEURS
+============================================================
+
+6.1 Operateurs arithmetiques
+----------------------------
+
+  +    addition (unaire/binaire)
+  -    soustraction (unaire/binaire)
+  *    multiplication
+  /    division entiere
+  REM  reste (modulo), aussi MOD ou %
+  ABS  valeur absolue (unaire)
+
+6.2 Operateurs relationnels
+---------------------------
+
+Symboliques :       Textuels :
+  =     egal          EQ
+  ~=    different     NEQ
+  <     inferieur     LS
+  <=    inf. ou egal  LE
+  >     superieur     GR
+  >=    sup. ou egal  GE
+
+6.3 Operateurs logiques (booleens)
+----------------------------------
+
+  &    ou AND   ET logique (court-circuit)
+  |    ou OR    OU logique (court-circuit)
+  ~    ou NOT   negation
+  EQV           equivalence
+  XOR           OU exclusif
+
+6.4 Operateurs bit-a-bit
+------------------------
+
+  &    ET binaire (sur les bits)
+  |    OU binaire
+  ~    complement
+  XOR  OU exclusif
+  <<   ou LSHIFT  decalage gauche
+  >>   ou RSHIFT  decalage droit
+
+Note : en BCPL `&`, `|`, `~` operent toujours bit-a-bit ; les
+operations booleennes reposent sur la convention TRUE=-1.
+
+6.5 Operateurs de pointeur / vecteur
+------------------------------------
+
+  V!I    element I du vecteur V       (subscript)
+  V%I    octet I de la chaine V       (byte subscript)
+  !P     contenu pointe par P         (deref, P!0)
+  LV X   adresse de X                 (lvalue)
+  @X     adresse de X                 (synonyme moderne)
+
+6.6 Operateur conditionnel
+--------------------------
+
+  E1 -> E2, E3       // si E1 alors E2 sinon E3
+
+Exemple :
+
+  LET MAX = A > B -> A, B
+
+6.7 Affectation
+---------------
+
+  X := expression
+
+`:=` est l'affectation (et non `=` qui est l'egalite).
+
+Affectations multiples :
+
+  A, B, C := 1, 2, 3
+  A, B    := B, A      // echange
+
+
+============================================================
+7. STRUCTURES DE CONTROLE
+============================================================
+
+7.1 Selection
+-------------
+
+  IF condition DO instruction
+  IF condition THEN instruction
+
+  UNLESS condition DO instruction
+  // equivalent a IF NOT condition DO ...
+
+  TEST condition
+    THEN instruction1
+    ELSE instruction2
+
+SWITCHON (selection multiple) :
+
+  SWITCHON expression INTO
+  $(
+    CASE valeur1 : instruction; ENDCASE
+    CASE valeur2 : instruction; ENDCASE
+    DEFAULT      : instruction; ENDCASE
+  $)
+
+7.2 Iteration
+-------------
+
+  WHILE condition DO instruction
+  UNTIL condition DO instruction
+
+  instruction REPEATWHILE condition
+  instruction REPEATUNTIL condition
+  instruction REPEAT                 // boucle infinie
+
+  FOR variable = init TO fin DO instruction
+  FOR variable = init TO fin BY pas DO instruction
+
+7.3 Saut
+--------
+
+  BREAK         // sortie de la boucle courante
+  LOOP          // saut a l'iteration suivante
+  RETURN        // retour de procedure (sans valeur)
+  RESULTIS E    // retour de fonction (avec valeur E)
+  GOTO etiquette
+  FINISH        // termine le programme
+
+7.4 Blocs
+---------
+
+  $(  instruction1
+      instruction2
+      ...
+   $)
+
+Equivalents modernes : `{ ... }`.
+
+7.5 VALOF / RESULTIS
+--------------------
+
+Un bloc-expression qui retourne une valeur :
+
+  LET ABS(X) = VALOF
+  $(
+    IF X < 0 THEN RESULTIS -X
+    RESULTIS X
+  $)
+
+
+============================================================
+8. PROCEDURES ET FONCTIONS
+============================================================
+
+8.1 Procedures (sans retour)
+----------------------------
+
+  LET nom(params) BE corps
+
+Exemple :
+
+  LET AFFICHER(N) BE
+  $(
+    WRITEF("Valeur = %N*N", N)
+  $)
+
+8.2 Fonctions (avec retour)
+---------------------------
+
+  LET nom(params) = expression
+
+ou avec un bloc VALOF :
+
+  LET nom(params) = VALOF
+  $(
+    ...
+    RESULTIS valeur
+  $)
+
+Exemple :
+
+  LET CARRE(X) = X * X
+
+  LET FACTORIELLE(N) = N < 2 -> 1, N * FACTORIELLE(N-1)
+
+8.3 Definitions multiples : AND
+-------------------------------
+
+  LET PAIR(N)   = N = 0 -> TRUE,  IMPAIR(N-1)
+  AND IMPAIR(N) = N = 0 -> FALSE, PAIR(N-1)
+
+Le mot-cle `AND` lie des fonctions mutuellement recursives.
+
+8.4 Passage de parametres
+-------------------------
+
+Tous les parametres sont passes par valeur (les valeurs sont
+copiees dans des variables locales). Pour passer par
+reference, passer un pointeur (LV X / @X) :
+
+  LET ECHANGER(P, Q) BE
+  $(
+    LET T = !P
+    !P := !Q
+    !Q := T
+  $)
+
+  ECHANGER(LV A, LV B)
+
+8.5 Fonctions comme valeurs
+---------------------------
+
+L'identifiant d'une fonction designe son adresse (un mot
+machine). On peut donc stocker une fonction dans une variable
+ou un vecteur :
+
+  LET F = CARRE
+  LET R = F(7)         // appelle CARRE(7), R = 49
+
+
+============================================================
+9. VECTEURS (TABLEAUX)
+============================================================
+
+9.1 Declaration
+---------------
+
+  LET V = VEC 10       // vecteur local de 11 mots (0..10)
+
+`VEC N` alloue N+1 mots dans la pile (indices 0..N).
+
+9.2 Acces aux elements
+----------------------
+
+  V!0   premier element
+  V!I   element d'indice I
+
+Operateur subscript : `V!I` est equivalent a `!(V+I)`. La base
+d'un vecteur est l'adresse de son premier mot.
+
+9.3 Initialisation
+------------------
+
+  LET T = TABLE 1, 2, 3, 4, 5
+
+Cree une table en lecture seule contenant les 5 valeurs.
+
+9.4 Allocation dynamique
+------------------------
+
+Via les fonctions de bibliotheque (GETVEC / FREEVEC) :
+
+  LET V = GETVEC(100)
+  ... utilisation ...
+  FREEVEC(V)
+
+9.5 Tableaux multidimensionnels
+-------------------------------
+
+Pas de support direct. On utilise des vecteurs de pointeurs
+vers vecteurs :
+
+  LET MATRICE = VEC 10
+  FOR I = 0 TO 10 DO
+    MATRICE!I := GETVEC(10)
+  MATRICE!2!3 := 42
+
+
+============================================================
+10. CHAINES DE CARACTERES
+============================================================
+
+10.1 Representation
+-------------------
+
+Une chaine BCPL est un vecteur dont le mot 0 contient la
+longueur et les mots suivants contiennent les caracteres :
+
+  LET S = "BCPL"
+  // S!0 = 4 (longueur)
+  // S!1 = 'B'
+  // S!2 = 'C'
+  // S!3 = 'P'
+  // S!4 = 'L'
+
+10.2 Acces
+----------
+
+  LET N = S!0           // longueur
+  LET C = S!I           // I-eme caractere
+
+10.3 Chaines compactees (PACKSTRING)
+------------------------------------
+
+Plusieurs caracteres par mot. Operateur `%` :
+
+  S%I     // I-eme octet (caractere) de la chaine compactee
+
+10.4 Fonctions de bibliotheque
+------------------------------
+
+  COMPSTRING(S1, S2)    compare deux chaines
+  COPYSTRING(SRC, DST)  copie
+  CONCAT(S1, S2, R)     concatene S1 et S2 dans R
+  WRITES(S)             ecrit une chaine
+  WRITEF(FMT, ...)      ecriture formatee
+
+
+============================================================
+11. ENTREES / SORTIES
+============================================================
+
+11.1 Sorties
+------------
+
+  WRITES(S)             ecrit une chaine
+  WRITEN(N)             ecrit un entier
+  WRITEF(FMT, ARGS...)  ecriture formatee
+  WRCH(C)               ecrit un caractere
+  NEWLINE()             saut de ligne
+
+Specificateurs WRITEF :
+
+  %N    entier
+  %S    chaine
+  %C    caractere
+  %X    hexadecimal
+  %O    octal
+  %B    binaire
+  %P    pad / espacement
+
+11.2 Entrees
+------------
+
+  RDCH()                lit un caractere
+  READN()               lit un entier
+  READSTREAM(S)         lit une chaine
+
+11.3 Fichiers
+-------------
+
+  FINDINPUT(NOM)        ouvre en lecture
+  FINDOUTPUT(NOM)       ouvre en ecriture
+  SELECTINPUT(FLUX)     selectionne flux de lecture
+  SELECTOUTPUT(FLUX)    selectionne flux d'ecriture
+  ENDREAD()             ferme le flux d'entree
+  ENDWRITE()            ferme le flux de sortie
+
+
+============================================================
+12. SECTIONS ET COMPILATION SEPAREE
+============================================================
+
+Un programme BCPL peut etre decoupe en sections compilees
+separement, equivalentes aux unites de compilation C.
+
+12.1 Importation : GET
+----------------------
+
+  GET "LIBHDR"
+  GET "MYHEADER.H"
+
+12.2 Identifiants exportes : SECTION
+------------------------------------
+
+  SECTION "MODULE"
+
+  GLOBAL
+  $(
+    MA_FONCTION : 200
+  $)
+
+  LET MA_FONCTION(X) = ...
+
+12.3 Identifiants importes : EXTERNAL
+-------------------------------------
+
+  EXTERNAL
+  $(
+    WRITEF : 80
+    READN  : 81
+    SYS    : 82
+  $)
+
+
+============================================================
+13. CODE INTERMEDIAIRE OCODE / INTCODE
+============================================================
+
+BCPL est traditionnellement compile en deux temps :
+
+  1. Source BCPL  ->  OCODE  (Object code, machine virtuelle
+                              de pile)
+  2. OCODE        ->  INTCODE  (code reorganise pour la cible)
+  3. INTCODE      ->  Code natif (assembleur cible)
+
+Cette architecture rend BCPL tres portable : il suffit de
+porter le generateur final INTCODE -> cible.
+
+OCODE est un code de pile compose d'instructions a un octet
+suivies eventuellement d'operandes (entiers ou etiquettes).
+
+Quelques instructions OCODE :
+
+  LP n    Load Parameter n
+  LL L    Load Label L (charger adresse)
+  LN n    Load Number n
+  STG n   Store Global n
+  JT L    Jump if True to L
+  JF L    Jump if False to L
+  RTRN    Return
+  FNAP    Function Apply
+  PLUS    addition
+  MULT    multiplication
+
+
+============================================================
+14. EXEMPLES
+============================================================
+
+14.1 Hello, World!
+------------------
+
+  GET "LIBHDR"
+
+  LET START() BE
+    WRITES("Hello, World!*N")
+
+14.2 Factorielle recursive
+--------------------------
+
+  GET "LIBHDR"
+
+  LET FACT(N) = N < 2 -> 1, N * FACT(N - 1)
+
+  LET START() BE
+  $(
+    LET I = 0
+    FOR I = 0 TO 10 DO
+      WRITEF("FACT(%N) = %N*N", I, FACT(I))
+  $)
+
+14.3 Fibonacci iteratif
+-----------------------
+
+  GET "LIBHDR"
+
+  LET FIB(N) = VALOF
+  $(
+    LET A, B = 0, 1
+    LET I = 0
+    FOR I = 1 TO N DO
+    $(
+      LET T = A + B
+      A := B
+      B := T
+    $)
+    RESULTIS A
+  $)
+
+  LET START() BE
+  $(
+    LET I = 0
+    FOR I = 0 TO 10 DO
+      WRITEF("FIB(%N) = %N*N", I, FIB(I))
+  $)
+
+14.4 Tri par insertion d'un vecteur
+-----------------------------------
+
+  LET TRI(V, N) BE
+  $(
+    LET I = 0
+    FOR I = 1 TO N - 1 DO
+    $(
+      LET J = I
+      WHILE J > 0 & V!(J-1) > V!J DO
+      $(
+        LET T = V!J
+        V!J     := V!(J-1)
+        V!(J-1) := T
+        J := J - 1
+      $)
+    $)
+  $)
+
+14.5 Recherche dans une chaine
+------------------------------
+
+  LET CHERCHER(S, C) = VALOF
+  $(
+    LET I = 0
+    FOR I = 1 TO S!0 DO
+      IF S!I = C THEN RESULTIS I
+    RESULTIS 0
+  $)
+
+
+============================================================
+15. COMPILATEUR DU PROJET (BCPL86.PAS)
+============================================================
+
+BCPL86.PAS - Compilateur BCPL vers assembleur 8086
+--------------------------------------------------
+
+  Cible             : MS-DOS, assembleur MASM .MODEL SMALL
+  Modele memoire    : SMALL (code 64KO, donnees 64KO)
+  Taille de mot     : 16 bits
+  Sortie            : fichier .ASM, assemblable avec MASM
+
+  Fonctionnalites supportees :
+    - Declarations LET, MANIFEST, GLOBAL, STATIC, EXTERNAL
+    - Vecteurs VEC, TABLE
+    - Operateurs arithmetiques, logiques, relationnels
+    - Operateurs ! (subscript), LV / @ (lvalue)
+    - Structures de controle IF/TEST/UNLESS, WHILE/UNTIL/FOR,
+      REPEAT, SWITCHON, BREAK, LOOP
+    - Fonctions et procedures (LET ... = / LET ... BE)
+    - Mutual recursion (AND)
+    - VALOF / RESULTIS
+    - Blocs $( ... $) et { ... }
+    - Sections (SECTION, GET, EXTERNAL)
+    - Sorties WRITES, WRITEN, WRITEF (sous-ensemble)
+
+  Limitations :
+    - Pas de OCODE / INTCODE intermediaire (compilation
+      directe vers 8086)
+    - Chaines : longueur dans le mot 0, caracteres dans
+      mots suivants (1 caractere par mot)
+    - Pas de chaines compactees (operateur %)
+    - Pas d'allocation dynamique GETVEC / FREEVEC (utilisez
+      les vecteurs locaux ou STATIC)
+
+
+============================================================
+16. CONVERTISSEURS DU PROJET
+============================================================
+
+16.1 ASC2BCPL.PAS - Texte ASCII vers BCPL
+-----------------------------------------
+
+Convertit un fichier texte en chaine BCPL initialisee :
+
+  LET MESSAGE = TABLE 'B', 'C', 'P', 'L', '*N', 0
+
+16.2 ADA2BCPL.PAS - Ada vers BCPL
+---------------------------------
+
+Transpileur Ada (sous-ensemble) vers BCPL.
+
+  - procedure -> LET ... BE
+  - function  -> LET ... =
+  - if/elsif/else -> TEST / ELSE
+  - loop / while  -> WHILE / UNTIL / FOR
+
+16.3 PAS2BCPL.PAS - Pascal vers BCPL
+------------------------------------
+
+Transpileur Pascal (sous-ensemble) vers BCPL.
+
+  - procedure -> LET ... BE
+  - function  -> LET ... =
+  - var       -> LET
+  - const     -> MANIFEST
+  - begin/end -> $(  $)
+  - := -> := (identique)
+  - read/write -> READN / WRITES / WRITEN
+
+
+============================================================
+17. INFLUENCE HISTORIQUE
+============================================================
+
+BCPL est l'ancetre direct du langage B (Ken Thompson, Bell
+Labs, 1969), lui-meme ancetre du langage C (Dennis Ritchie,
+1972). De nombreuses caracteristiques de C proviennent de
+BCPL :
+
+  - Compilation a deux temps (preprocesseur + compilateur)
+  - Convention des sequences d'echappement (renommees `*` -> `\`)
+  - Distinction expression / instruction (VALOF / { })
+  - Operateurs courts symboliques
+  - Programmation systeme et bas niveau
+
+Differences principales entre BCPL et C :
+
+  Aspect            BCPL                 C
+  ------            ----                 ---
+  Types             Un seul (word)       Multiples
+  Egalite           =                    ==
+  Affectation       :=                   =
+  Negation logique  ~ ou NOT             !
+  AND/OR logique    & / |                && / ||
+  AND/OR binaire    & / |                & / |
+  Echappement       *N, **               \n, \\
+  Blocs             $( ... $)            { ... }
+  Subscript         V!I                  V[I]
+  Reference         LV X, @X             &X
+  Dereference       !P                   *P
+  Commentaires      //, /* */            /* */, // (C99)
+  Vrai              -1                   1
+  Chaines           taille+caracteres    octets + '\0'
+
+BCPL a egalement influence :
+  - Le systeme d'exploitation TRIPOS (Cambridge)
+  - Le systeme original de Xerox Alto
+  - Le premier "Hello World" publie par Brian Kernighan
+    (1972) etait en BCPL
+
+
+============================================================
+18. REFERENCES
+============================================================
+
+  - Richards, M.            "BCPL Reference Manual",
+                            MIT Project MAC, M-352, 1967.
+  - Richards, M.;           "BCPL - The Language and its
+    Whitby-Strevens, C.      Compiler", Cambridge University
+                             Press, 1979.
+  - Richards, M.            "The BCPL Cintsys and Cintpos
+                             User Guide", Cambridge, 2024.
+  - Site officiel           https://www.bcpl.cl.cam.ac.uk
+  - Kernighan, B.           "A Tutorial Introduction to the
+                             Language B", Bell Labs, 1973.
+                             (cousin direct de BCPL)

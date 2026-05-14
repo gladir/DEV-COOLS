@@ -5295,7 +5295,7 @@ Begin
  { Menu Aide }
  InitMenu(MainMenuBar.Menus[8], 'Aide');
  AddMenuItem(MainMenuBar.Menus[8], 'A propos de DEVENV', '', 900);
- AddMenuItem(MainMenuBar.Menus[8], 'Documentation en ligne', '', 901);
+ AddMenuItem(MainMenuBar.Menus[8], 'Documentation en ligne', 'F1', 901);
  AddMenuSeparator(MainMenuBar.Menus[8]);
  AddMenuItem(MainMenuBar.Menus[8], 'Raccourcis clavier', '', 910);
  AddMenuItem(MainMenuBar.Menus[8], 'Bienvenue', '', 911);
@@ -49621,8 +49621,8 @@ Begin
     TryQuit;
     Exit;
    End;
-   $3B: Begin { F1 : aide (stub) }
-    { A implementer }
+   $3B: Begin { F1 : Documentation en ligne }
+    OpenHelpFile('DEVENV.HLP', '');
     Exit;
    End;
    $3F: Begin { F5 : demarrer le debogage }

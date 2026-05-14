@@ -1,0 +1,1414 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}
+
+{\footnote # IDH_PASCAL_01}
+{\footnote $ Pascal - PRESENTATION}
+{\footnote K Pascal presentation;Wirth;ETH;Turbo Pascal;Delphi;Free Pascal;FPC}
+\b\fs24 PRESENTATION \b0\fs20\par
+\par
+Le langage Pascal a ete concu en 1968-1970 par Niklaus Wirth a\par
+l'Ecole polytechnique federale de Zurich (ETH Zurich) comme un\par
+langage destine a l'enseignement de la programmation structuree.\par
+Sa premiere implementation a ete realisee en 1970 sur un\par
+CDC 6000.\par
+\par
+Le langage a connu plusieurs etapes importantes :\par
+\par
+{\f1   - 1970 : Pascal original (Wirth)}\par
+{\f1   - 1983 : Borland Turbo Pascal 1.0 (DOS, CP/M)}\par
+{\f1   - 1990 : ISO 7185 (Pascal standard)}\par
+{\f1   - 1991 : ISO 10206 (Extended Pascal, modules, objets)}\par
+{\f1   - 1992 : Turbo Pascal 7.0 (derniere version DOS)}\par
+{\f1   - 1995 : Delphi 1 (Object Pascal, RAD Windows)}\par
+{\f1   - 1997 : Free Pascal (FPC, multi-plateforme libre)}\par
+\par
+Pascal est un langage :\par
+\par
+{\f1   - Imperatif et structure par blocs}\par
+{\f1   - Compile, a typage statique fort}\par
+{\f1   - Sensible aux declarations (declarer avant utiliser)}\par
+{\f1   - Insensible a la casse}\par
+{\f1   - Indifferent a la mise en page (free-form)}\par
+{\f1   - Conforme au principe "tout doit etre declare"}\par
+\par
+Extensions de fichiers reconnues :\par
+\par
+{\f1   .pas    Fichier source Pascal}\par
+{\f1   .pp     Fichier source Free Pascal}\par
+{\f1   .dpr    Programme principal Delphi}\par
+{\f1   .dpk    Package Delphi}\par
+{\f1   .lpr    Programme principal Lazarus}\par
+{\f1   .inc    Fichier inclus ($I)}\par
+{\f1   .ppu    Unite compilee Free Pascal}\par
+{\f1   .tpu    Unite compilee Turbo Pascal}\par
+\par
+\par
+\par
+\b Sections suivantes : \b0\par
+\par
+{\f1  2. STRUCTURE D'UN PROGRAMME}     {\uldb [Aller]}{\v IDH_PASCAL_02}\par
+{\f1  3. STRUCTURE LEXICALE}     {\uldb [Aller]}{\v IDH_PASCAL_03}\par
+{\f1  4. TYPES DE DONNEES}     {\uldb [Aller]}{\v IDH_PASCAL_04}\par
+{\f1  5. DECLARATIONS DE VARIABLES}     {\uldb [Aller]}{\v IDH_PASCAL_05}\par
+{\f1  6. OPERATEURS ET EXPRESSIONS}     {\uldb [Aller]}{\v IDH_PASCAL_06}\par
+{\f1  7. STRUCTURES DE CONTROLE}     {\uldb [Aller]}{\v IDH_PASCAL_07}\par
+{\f1  8. PROCEDURES ET FONCTIONS}     {\uldb [Aller]}{\v IDH_PASCAL_08}\par
+{\f1  9. TABLEAUX}     {\uldb [Aller]}{\v IDH_PASCAL_09}\par
+{\f1 10. ENREGISTREMENTS (RECORDS)}     {\uldb [Aller]}{\v IDH_PASCAL_10}\par
+{\f1 11. ENSEMBLES (SETS)}     {\uldb [Aller]}{\v IDH_PASCAL_11}\par
+{\f1 12. CHAINES DE CARACTERES}     {\uldb [Aller]}{\v IDH_PASCAL_12}\par
+{\f1 13. FICHIERS}     {\uldb [Aller]}{\v IDH_PASCAL_13}\par
+{\f1 14. UNITES (UNITS)}     {\uldb [Aller]}{\v IDH_PASCAL_14}\par
+{\f1 15. POINTEURS ET ALLOCATION DYNAMIQUE}     {\uldb [Aller]}{\v IDH_PASCAL_15}\par
+{\f1 16. OBJETS (TURBO PASCAL)}     {\uldb [Aller]}{\v IDH_PASCAL_16}\par
+{\f1 17. CLASSES (DELPHI / FPC OBJFPC)}     {\uldb [Aller]}{\v IDH_PASCAL_17}\par
+{\f1 18. EXCEPTIONS}     {\uldb [Aller]}{\v IDH_PASCAL_18}\par
+{\f1 19. GENERIQUES (DELPHI 2009+ / FPC)}     {\uldb [Aller]}{\v IDH_PASCAL_19}\par
+{\f1 20. DIRECTIVES DE COMPILATION}     {\uldb [Aller]}{\v IDH_PASCAL_20}\par
+{\f1 21. BIBLIOTHEQUE STANDARD}     {\uldb [Aller]}{\v IDH_PASCAL_21}\par
+{\f1 22. COMPILATEURS DU PROJET}     {\uldb [Aller]}{\v IDH_PASCAL_22}\par
+{\f1 23. EXEMPLE COMPLET}     {\uldb [Aller]}{\v IDH_PASCAL_23}\par
+{\f1 24. REFERENCES}     {\uldb [Aller]}{\v IDH_PASCAL_24}\par
+\par
+{\uldb Suivant >>}{\v IDH_PASCAL_02}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PASCAL_02}
+{\footnote $ Pascal - STRUCTURE D'UN PROGRAMME}
+{\footnote K Pascal structure programme;program;begin;end;uses}
+\b\fs24 STRUCTURE D'UN PROGRAMME \b0\fs20\par
+\par
+Un programme Pascal complet a la forme suivante :\par
+\par
+{\f1   program NomDuProgramme;}\par
+\par
+{\f1   uses Crt, Dos;             \{ unites importees \}}\par
+\par
+{\f1   const}\par
+{\f1     PI = 3.14159265;}\par
+\par
+{\f1   type}\par
+{\f1     TPoint = record x, y: Integer end;}\par
+\par
+{\f1   var}\par
+{\f1     i: Integer;}\par
+{\f1     msg: string;}\par
+\par
+{\f1   procedure Saluer(nom: string);}\par
+{\f1   begin}\par
+{\f1     WriteLn('Bonjour, ', nom)}\par
+{\f1   end;}\par
+\par
+{\f1   begin                       \{ corps principal \}}\par
+{\f1     Saluer('monde');}\par
+{\f1     ReadLn}\par
+{\f1   end.}\par
+\par
+Sections obligatoires :\par
+\par
+{\f1   - L'en-tete program ... ; (optionnel en FPC).}\par
+{\f1   - Le bloc principal entre begin et end.}\par
+{\f1   - Le point final apres le end terminal.}\par
+\par
+Les sections uses, const, type, var, procedure et function sont\par
+toutes facultatives mais doivent apparaitre dans cet ordre\par
+relatif (avec des repetitions autorisees en FPC).\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PASCAL_01}     {\uldb Suivant >>}{\v IDH_PASCAL_03}     {\uldb Table des matieres}{\v IDH_PASCAL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PASCAL_03}
+{\footnote $ Pascal - STRUCTURE LEXICALE}
+{\footnote K Pascal structure lexicale;identificateurs;mots reserves;litteraux;commentaires;directives}
+\b\fs24 STRUCTURE LEXICALE \b0\fs20\par
+\par
+\par
+\b 3.1 Identificateurs \b0\par
+\par
+Un identificateur commence par une lettre ou un soulignement,\par
+suivi de lettres, chiffres ou soulignements. La casse est NON\par
+significative :\par
+\par
+{\f1   Total      total      TOTAL    \{ meme identificateur \}}\par
+{\f1   _index     x1         Nom_Long}\par
+\par
+Longueur significative : 63 caracteres en FPC (8 en Turbo Pascal\par
+original).\par
+\par
+\par
+\b 3.2 Mots reserves \b0\par
+\par
+Mots reserves standard ISO 7185 :\par
+\par
+{\f1   and        array      begin      case       const}\par
+{\f1   div        do         downto     else       end}\par
+{\f1   file       for        function   goto       if}\par
+{\f1   in         label      mod        nil        not}\par
+{\f1   of         or         packed     procedure  program}\par
+{\f1   record     repeat     set        then       to}\par
+{\f1   type       until      var        while      with}\par
+\par
+Mots reserves Turbo Pascal / Delphi / FPC supplementaires :\par
+\par
+{\f1   asm        constructor  destructor  implementation  inline}\par
+{\f1   interface  library      object      private        public}\par
+{\f1   raise      shl          shr         string         try}\par
+{\f1   except     finally      unit        uses           xor}\par
+{\f1   property   class        inherited   self           is}\par
+{\f1   as         on           out         operator       finalization}\par
+{\f1   initialization}\par
+\par
+\par
+\b 3.3 Litteraux \b0\par
+\par
+Entiers :\par
+\par
+{\f1   42              decimal}\par
+{\f1   $2A             hexadecimal (prefixe $)}\par
+{\f1   &52             octal       (FPC, prefixe &)}\par
+{\f1   %101010         binaire     (FPC, prefixe %)}\par
+{\f1   1000000         (souligne pas accepte)}\par
+\par
+Reels :\par
+\par
+{\f1   3.14    .5(invalide)    0.5    1E10    2.5E-3   3.14E0}\par
+\par
+Caracteres :\par
+\par
+{\f1   'A'     ''''      #13      #$0A    'A'#13#10}\par
+\par
+Chaines :\par
+\par
+{\f1   'Bonjour'                concatenation : 'A' + 'B'}\par
+{\f1   'Il a dit ''bonjour'''   doubles apostrophes pour echappement}\par
+{\f1   'Ligne'#13#10            controle integre}\par
+\par
+\par
+\b 3.4 Commentaires \b0\par
+\par
+Trois formes equivalentes :\par
+\par
+{\f1   \{ commentaire entre accolades \}}\par
+{\f1   (* commentaire vieux style *)}\par
+{\f1   // commentaire fin de ligne   (FPC, Delphi)}\par
+\par
+Les commentaires ne sont pas imbricables, sauf si on alterne\par
+les delimiteurs (\{ ... (* ... *) ... \}).\par
+\par
+\par
+\b 3.5 Directives de compilation \b0\par
+\par
+Sous forme de commentaires speciaux commencant par $ :\par
+\par
+{\f1   \{$I+\}              activer la verification d'E/S}\par
+{\f1   \{$R+\}              activer la verification des bornes}\par
+{\f1   \{$M 16384,0,65535\} parametres de pile / tas (Turbo)}\par
+{\f1   \{$I fichier.inc\}   inclure un fichier}\par
+{\f1   \{$IFDEF SYMB\} ... \{$ENDIF\}}\par
+{\f1   \{$MODE TP\}         (FPC) mode de compatibilite}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PASCAL_02}     {\uldb Suivant >>}{\v IDH_PASCAL_04}     {\uldb Table des matieres}{\v IDH_PASCAL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PASCAL_04}
+{\footnote $ Pascal - TYPES DE DONNEES}
+{\footnote K Pascal types donnees;Integer;Byte;Word;Char;Boolean;Real;String;set;array;record;pointer;enumeration}
+\b\fs24 TYPES DE DONNEES \b0\fs20\par
+\par
+\par
+\b 4.1 Types ordinaux \b0\par
+\par
+{\f1   Byte            0..255           (8 bits)}\par
+{\f1   ShortInt        -128..127        (8 bits signe)}\par
+{\f1   Word            0..65535         (16 bits)}\par
+{\f1   SmallInt        -32768..32767    (16 bits signe)}\par
+{\f1   LongWord        0..2^32-1        (32 bits)}\par
+{\f1   LongInt         -2^31..2^31-1    (32 bits signe)}\par
+{\f1   Int64           -2^63..2^63-1    (64 bits)}\par
+{\f1   QWord           0..2^64-1        (64 bits)}\par
+{\f1   Integer         taille naturelle (16 bits en TP, 32 en FPC)}\par
+{\f1   Cardinal        Integer non signe}\par
+{\f1   Boolean         (False, True)}\par
+{\f1   Char            caractere ASCII / ANSI (1 octet)}\par
+{\f1   WideChar        caractere UTF-16 (2 octets)}\par
+\par
+\par
+\b 4.2 Types reels \b0\par
+\par
+{\f1   Real            type reel par defaut (8 octets en FPC)}\par
+{\f1   Single          32 bits IEEE 754}\par
+{\f1   Double          64 bits IEEE 754}\par
+{\f1   Extended        80 bits (x87 FPU)}\par
+{\f1   Comp            entier 64 bits stocke en virgule flottante}\par
+{\f1   Currency        decimal 64 bits, 4 decimales}\par
+\par
+\par
+\b 4.3 Types structures \b0\par
+\par
+{\f1   Array           tableaux statiques ou dynamiques}\par
+{\f1   Record          enregistrements (champs nommes)}\par
+{\f1   Set             ensembles d'un type ordinal}\par
+{\f1   File            fichiers typed ou non}\par
+{\f1   String          chaines de caracteres}\par
+{\f1   Object          types objets (Turbo Pascal)}\par
+{\f1   Class           classes (Delphi, FPC modes objet)}\par
+\par
+\par
+\b 4.4 Types pointeurs \b0\par
+\par
+{\f1   Pointer         pointeur generique non type}\par
+{\f1   ^T              pointeur sur un T (ex: ^Integer)}\par
+{\f1   PChar           pointeur sur caractere (chaine C)}\par
+{\f1   PAnsiChar       pointeur sur AnsiChar}\par
+{\f1   PWideChar       pointeur sur WideChar}\par
+\par
+\par
+\b 4.5 Types enumeres \b0\par
+\par
+{\f1   type}\par
+{\f1     TJour = (Lundi, Mardi, Mercredi, Jeudi,}\par
+{\f1              Vendredi, Samedi, Dimanche);}\par
+{\f1     TCouleur = (Rouge, Vert, Bleu);}\par
+\par
+Les valeurs ont une representation entiere a partir de 0 et\par
+peuvent etre converties via Ord() et Pred() / Succ().\par
+\par
+\par
+\b 4.6 Intervalles (subranges) \b0\par
+\par
+{\f1   type}\par
+{\f1     TJour    = 1..31;}\par
+{\f1     TLettre  = 'A'..'Z';}\par
+{\f1     TMois    = Janvier..Decembre;}\par
+\par
+\par
+\b 4.7 Type string \b0\par
+\par
+Plusieurs variantes selon implementation :\par
+\par
+{\f1   string           string par defaut (255 ou AnsiString)}\par
+{\f1   string[N]        chaine courte de N caracteres max}\par
+{\f1   ShortString      string[255], 256 octets, compteur en [0]}\par
+{\f1   AnsiString       chaine longue dynamique avec compteur, refcount}\par
+{\f1   UnicodeString    chaine UTF-16 dynamique (Delphi 2009+)}\par
+{\f1   WideString       chaine UTF-16 (compatible OLE BSTR)}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PASCAL_03}     {\uldb Suivant >>}{\v IDH_PASCAL_05}     {\uldb Table des matieres}{\v IDH_PASCAL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PASCAL_05}
+{\footnote $ Pascal - DECLARATIONS DE VARIABLES}
+{\footnote K Pascal declarations variables;var;const;constantes typees}
+\b\fs24 DECLARATIONS DE VARIABLES \b0\fs20\par
+\par
+Forme generale :\par
+\par
+{\f1   var}\par
+{\f1     identificateur1 [, identificateur2 ...] : type;}\par
+\par
+Exemples :\par
+\par
+{\f1   var}\par
+{\f1     i, j, k       : Integer;}\par
+{\f1     nom           : string;}\par
+{\f1     note          : Real;}\par
+{\f1     Tab           : array[1..100] of Integer;}\par
+{\f1     Lettres       : set of 'A'..'Z';}\par
+{\f1     Point         : record x, y: Integer end;}\par
+\par
+Initialisation a la declaration (FPC / Delphi) :\par
+\par
+{\f1   var}\par
+{\f1     Compteur : Integer = 0;}\par
+{\f1     PI       : Real    = 3.14159265;}\par
+{\f1     Msg      : string  = 'Bonjour';}\par
+\par
+Constantes :\par
+\par
+{\f1   const}\par
+{\f1     MAX_LIGNES = 100;}\par
+{\f1     Salut      = 'Hello';}\par
+{\f1     PI         : Real = 3.14159265;   \{ constante typee \}}\par
+\par
+Constantes typees comme variables initialisees (sauf si\par
+\{$WRITEABLECONST OFF\}).\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PASCAL_04}     {\uldb Suivant >>}{\v IDH_PASCAL_06}     {\uldb Table des matieres}{\v IDH_PASCAL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PASCAL_06}
+{\footnote $ Pascal - OPERATEURS ET EXPRESSIONS}
+{\footnote K Pascal operateurs;arithmetique;relationnel;logique;ensemble;chaine;div;mod;shl;shr;precedence}
+\b\fs24 OPERATEURS ET EXPRESSIONS \b0\fs20\par
+\par
+\par
+\b 6.1 Operateurs arithmetiques \b0\par
+\par
+{\f1   +    addition          a + b}\par
+{\f1   -    soustraction      a - b   (ou unaire -a)}\par
+{\f1   *    multiplication    a * b}\par
+{\f1   /    division reelle   a / b     (toujours Real)}\par
+{\f1   div  division entiere  a div b}\par
+{\f1   mod  modulo            a mod b}\par
+\par
+\par
+\b 6.2 Operateurs relationnels \b0\par
+\par
+{\f1   =     egalite}\par
+{\f1   <>    difference}\par
+{\f1   <     inferieur}\par
+{\f1   >     superieur}\par
+{\f1   <=    inferieur ou egal}\par
+{\f1   >=    superieur ou egal}\par
+{\f1   in    appartenance a un ensemble}\par
+\par
+Tous renvoient un Boolean.\par
+\par
+\par
+\b 6.3 Operateurs logiques / bit a bit \b0\par
+\par
+Sur Boolean : court-circuit selon $B+/$B-.\par
+Sur entiers : operations bit a bit.\par
+\par
+{\f1   and    ET     a and b}\par
+{\f1   or     OU     a or b}\par
+{\f1   xor    OU exclusif}\par
+{\f1   not    NON    not a}\par
+{\f1   shl    decalage gauche  a shl n}\par
+{\f1   shr    decalage droite  a shr n}\par
+\par
+\par
+\b 6.4 Operateurs sur ensembles \b0\par
+\par
+{\f1   +     union           [1,2] + [3,4]   ->  [1..4]}\par
+{\f1   -     difference      [1..5] - [2,4]  ->  [1,3,5]}\par
+{\f1   *     intersection    [1..5] * [3..8] ->  [3,4,5]}\par
+{\f1   <=    inclusion       A <= B  (A sous-ensemble de B)}\par
+{\f1   >=    inclusion inverse}\par
+{\f1   in    appartenance    x in [1,3,5]}\par
+\par
+\par
+\b 6.5 Operateur de chaine \b0\par
+\par
+{\f1   +     concatenation   'Hello, ' + 'World'}\par
+\par
+\par
+\b 6.6 Affectation \b0\par
+\par
+{\f1   :=    affectation     i := 10;}\par
+\par
+(Note : '=' est strictement le test d'egalite.)\par
+\par
+\par
+\b 6.7 Precedence (de la plus haute a la plus basse) \b0\par
+\par
+{\f1   1.  not, @, +unaire, -unaire}\par
+{\f1   2.  *, /, div, mod, and, shl, shr}\par
+{\f1   3.  +, -, or, xor}\par
+{\f1   4.  =, <>, <, >, <=, >=, in}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PASCAL_05}     {\uldb Suivant >>}{\v IDH_PASCAL_07}     {\uldb Table des matieres}{\v IDH_PASCAL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PASCAL_07}
+{\footnote $ Pascal - STRUCTURES DE CONTROLE}
+{\footnote K Pascal structures controle;if;then;else;case;while;repeat;until;for;break;continue;exit;halt;goto}
+\b\fs24 STRUCTURES DE CONTROLE \b0\fs20\par
+\par
+\par
+\b 7.1 Instruction if \b0\par
+\par
+{\f1   if expression then}\par
+{\f1     instruction}\par
+{\f1   [else}\par
+{\f1     instruction]}\par
+\par
+Forme avec bloc :\par
+\par
+{\f1   if (n > 0) and (n < 100) then}\par
+{\f1   begin}\par
+{\f1     WriteLn('valide');}\par
+{\f1     Inc(Total)}\par
+{\f1   end}\par
+{\f1   else}\par
+{\f1     WriteLn('hors limites');}\par
+\par
+Pas de point-virgule entre l'instruction et le else.\par
+\par
+\par
+\b 7.2 Instruction case \b0\par
+\par
+{\f1   case expression of}\par
+{\f1     valeur1 : instruction1;}\par
+{\f1     valeur2, valeur3 : instruction2;}\par
+{\f1     intervalle1..intervalle2 : instruction3;}\par
+{\f1   else}\par
+{\f1     instruction par defaut}\par
+{\f1   end;}\par
+\par
+L'expression doit etre de type ordinal.\par
+\par
+\par
+\b 7.3 Boucle while \b0\par
+\par
+{\f1   while expression do}\par
+{\f1     instruction;}\par
+\par
+\par
+\b 7.4 Boucle repeat \b0\par
+\par
+{\f1   repeat}\par
+{\f1     instructions}\par
+{\f1   until expression;}\par
+\par
+Le corps est execute au moins une fois ; sortie quand\par
+l'expression devient vraie.\par
+\par
+\par
+\b 7.5 Boucle for \b0\par
+\par
+{\f1   for variable := debut to fin do}\par
+{\f1     instruction;}\par
+\par
+{\f1   for variable := debut downto fin do}\par
+{\f1     instruction;}\par
+\par
+{\f1   for element in collection do      \{ FPC, Delphi 2005+ \}}\par
+{\f1     instruction;}\par
+\par
+La variable de boucle ne doit pas etre modifiee dans le corps.\par
+\par
+\par
+\b 7.6 Branchements \b0\par
+\par
+{\f1   break          sortir de la boucle courante}\par
+{\f1   continue       passer a l'iteration suivante}\par
+{\f1   exit           sortir de la procedure / fonction}\par
+{\f1   exit(valeur)   exit avec valeur de retour (FPC)}\par
+{\f1   halt           arret du programme (avec code optionnel)}\par
+{\f1   goto label     saut a une etiquette declaree label}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PASCAL_06}     {\uldb Suivant >>}{\v IDH_PASCAL_08}     {\uldb Table des matieres}{\v IDH_PASCAL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PASCAL_08}
+{\footnote $ Pascal - PROCEDURES ET FONCTIONS}
+{\footnote K Pascal procedures;fonctions;parametres;var;const;out;overload;forward;recursivite}
+\b\fs24 PROCEDURES ET FONCTIONS \b0\fs20\par
+\par
+\par
+\b 8.1 Procedure \b0\par
+\par
+{\f1   procedure NomProc(p1: Type1; p2: Type2);}\par
+{\f1   var locale: Integer;}\par
+{\f1   begin}\par
+{\f1     \{ corps \}}\par
+{\f1   end;}\par
+\par
+Appelee comme instruction : NomProc(a, b);\par
+\par
+\par
+\b 8.2 Fonction \b0\par
+\par
+{\f1   function NomFct(p1: Type1): TypeRetour;}\par
+{\f1   begin}\par
+{\f1     \{ ... \}}\par
+{\f1     NomFct := valeur;        \{ affectation a la fonction \}}\par
+{\f1     \{ ou en FPC/Delphi : \}}\par
+{\f1     Result := valeur;}\par
+{\f1   end;}\par
+\par
+\par
+\b 8.3 Modes de passage des parametres \b0\par
+\par
+{\f1   par valeur      procedure P(x: Integer);}\par
+{\f1                   Copie ; les modifications de x ne sont pas}\par
+{\f1                   visibles a l'exterieur.}\par
+\par
+{\f1   par variable    procedure P(var x: Integer);}\par
+{\f1                   Reference ; les modifications affectent}\par
+{\f1                   l'appelant.}\par
+\par
+{\f1   par constante   procedure P(const x: TGros);}\par
+{\f1                   Lecture seule. Peut etre passe par}\par
+{\f1                   reference pour efficacite.}\par
+\par
+{\f1   parametre out   procedure P(out x: Integer);}\par
+{\f1                   Sortie seulement (FPC, Delphi). Pas}\par
+{\f1                   d'initialisation supposee.}\par
+\par
+\par
+\b 8.4 Parametres par defaut \b0\par
+\par
+{\f1   procedure P(x: Integer; y: Integer = 0; s: string = '');}\par
+\par
+\par
+\b 8.5 Surcharge (overload) \b0\par
+\par
+En FPC / Delphi, plusieurs procedures/fonctions peuvent partager\par
+le meme nom si elles different par leurs parametres :\par
+\par
+{\f1   procedure Print(x: Integer); overload;}\par
+{\f1   procedure Print(x: Real);    overload;}\par
+{\f1   procedure Print(s: string);  overload;}\par
+\par
+\par
+\b 8.6 Procedures imbriquees \b0\par
+\par
+Les procedures peuvent etre definies dans le corps d'une autre\par
+procedure ; elles ont acces aux variables locales du parent\par
+(portee lexicale).\par
+\par
+\par
+\b 8.7 Recursivite \b0\par
+\par
+Pleinement supportee. La declaration forward permet la\par
+declaration anticipee pour la recursivite mutuelle :\par
+\par
+{\f1   procedure A(n: Integer); forward;}\par
+{\f1   procedure B(n: Integer);}\par
+{\f1   begin if n > 0 then A(n-1) end;}\par
+{\f1   procedure A(n: Integer);}\par
+{\f1   begin if n > 0 then B(n-1) end;}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PASCAL_07}     {\uldb Suivant >>}{\v IDH_PASCAL_09}     {\uldb Table des matieres}{\v IDH_PASCAL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PASCAL_09}
+{\footnote $ Pascal - TABLEAUX}
+{\footnote K Pascal tableaux;array;statiques;dynamiques;SetLength;open array}
+\b\fs24 TABLEAUX \b0\fs20\par
+\par
+\par
+\b 9.1 Tableaux statiques \b0\par
+\par
+{\f1   var}\par
+{\f1     v: array[1..10] of Integer;}\par
+{\f1     m: array[1..3, 1..4] of Real;}\par
+{\f1     Mots: array['A'..'Z'] of string;}\par
+\par
+Acces : v[i], m[i, j] ou m[i][j].\par
+\par
+\par
+\b 9.2 Tableaux dynamiques (FPC / Delphi) \b0\par
+\par
+{\f1   var t: array of Integer;}\par
+{\f1   begin}\par
+{\f1     SetLength(t, 100);     \{ allocation \}}\par
+{\f1     t[0] := 42;}\par
+{\f1     SetLength(t, 0);       \{ liberation \}}\par
+{\f1   end;}\par
+\par
+Pour tableaux 2D dynamiques : array of array of T.\par
+\par
+\par
+\b 9.3 Constantes tableaux \b0\par
+\par
+{\f1   const}\par
+{\f1     Jours: array[1..7] of string = (}\par
+{\f1       'Lundi', 'Mardi', 'Mercredi', 'Jeudi',}\par
+{\f1       'Vendredi', 'Samedi', 'Dimanche');}\par
+\par
+\par
+\b 9.4 Open arrays (parametre tableau ouvert) \b0\par
+\par
+{\f1   procedure Sum(const v: array of Integer): Integer;}\par
+{\f1   var i, s: Integer;}\par
+{\f1   begin}\par
+{\f1     s := 0;}\par
+{\f1     for i := Low(v) to High(v) do s := s + v[i];}\par
+{\f1     Sum := s}\par
+{\f1   end;}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PASCAL_08}     {\uldb Suivant >>}{\v IDH_PASCAL_10}     {\uldb Table des matieres}{\v IDH_PASCAL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PASCAL_10}
+{\footnote $ Pascal - ENREGISTREMENTS (RECORDS)}
+{\footnote K Pascal records;enregistrements;with;variant;packed}
+\b\fs24 ENREGISTREMENTS (RECORDS) \b0\fs20\par
+\par
+\par
+\b 10.1 Declaration \b0\par
+\par
+{\f1   type}\par
+{\f1     TPoint = record}\par
+{\f1       x, y: Integer}\par
+{\f1     end;}\par
+{\f1     TPersonne = record}\par
+{\f1       Nom    : string[40];}\par
+{\f1       Age    : Byte;}\par
+{\f1       Salaire: Real}\par
+{\f1     end;}\par
+\par
+\par
+\b 10.2 Acces \b0\par
+\par
+{\f1   var p: TPoint;}\par
+{\f1   begin}\par
+{\f1     p.x := 10;}\par
+{\f1     p.y := 20;}\par
+{\f1   end;}\par
+\par
+\par
+\b 10.3 With \b0\par
+\par
+Raccourcit l'acces aux champs (a utiliser avec moderation) :\par
+\par
+{\f1   with p do begin}\par
+{\f1     x := 0;}\par
+{\f1     y := 0}\par
+{\f1   end;}\par
+\par
+\par
+\b 10.4 Records variants \b0\par
+\par
+{\f1   type}\par
+{\f1     TFigure = record}\par
+{\f1       Couleur: Byte;}\par
+{\f1       case Forme: Integer of}\par
+{\f1         0: (Rayon: Real);                \{ cercle \}}\par
+{\f1         1: (Largeur, Hauteur: Integer);  \{ rectangle \}}\par
+{\f1         2: (X1, Y1, X2, Y2: Integer);    \{ ligne \}}\par
+{\f1     end;}\par
+\par
+Les champs des differents cas partagent le meme espace memoire.\par
+\par
+\par
+\b 10.5 Packed record \b0\par
+\par
+{\f1   type TEntete = packed record}\par
+{\f1     Marqueur: array[1..4] of Char;}\par
+{\f1     Version : Word;}\par
+{\f1     Taille  : LongInt}\par
+{\f1   end;}\par
+\par
+Aucun alignement insere entre les champs.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PASCAL_09}     {\uldb Suivant >>}{\v IDH_PASCAL_11}     {\uldb Table des matieres}{\v IDH_PASCAL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PASCAL_11}
+{\footnote $ Pascal - ENSEMBLES (SETS)}
+{\footnote K Pascal ensembles;set;set of;union;intersection;in}
+\b\fs24 ENSEMBLES (SETS) \b0\fs20\par
+\par
+\par
+\b 11.1 Declaration \b0\par
+\par
+{\f1   type TLettres = set of 'A'..'Z';}\par
+{\f1   type TJours   = set of (Lundi, Mardi, Mercredi, Jeudi,}\par
+{\f1                           Vendredi, Samedi, Dimanche);}\par
+\par
+\par
+\b 11.2 Constantes / litteraux \b0\par
+\par
+{\f1   Voyelles  := ['A','E','I','O','U','Y'];}\par
+{\f1   Chiffres  := ['0'..'9'];}\par
+{\f1   Vide      := [];}\par
+\par
+\par
+\b 11.3 Operations \b0\par
+\par
+{\f1   if c in ['A'..'Z'] then ...}\par
+{\f1   V1 + V2     union}\par
+{\f1   V1 - V2     difference}\par
+{\f1   V1 * V2     intersection}\par
+{\f1   V1 <= V2    V1 sous-ensemble de V2}\par
+\par
+La taille d'un ensemble est limitee a 256 elements (Byte/Char).\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PASCAL_10}     {\uldb Suivant >>}{\v IDH_PASCAL_12}     {\uldb Table des matieres}{\v IDH_PASCAL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PASCAL_12}
+{\footnote $ Pascal - CHAINES DE CARACTERES}
+{\footnote K Pascal chaines;string;ShortString;AnsiString;Length;Copy;Pos;Delete;Insert}
+\b\fs24 CHAINES DE CARACTERES \b0\fs20\par
+\par
+\par
+\b 12.1 Type string \b0\par
+\par
+Le type string varie selon la directive :\par
+\par
+{\f1   \{$H+\}    string = AnsiString (longue, defaut FPC/Delphi)}\par
+{\f1   \{$H-\}    string = ShortString[255]}\par
+\par
+\par
+\b 12.2 Manipulation \b0\par
+\par
+{\f1   s := 'Bonjour';}\par
+{\f1   s := s + ' monde';}\par
+{\f1   Length(s)               longueur courante}\par
+{\f1   s[1]                    premier caractere (indexe a 1)}\par
+{\f1   Copy(s, 1, 3)           sous-chaine}\par
+{\f1   Pos('jour', s)          recherche (0 si absent)}\par
+{\f1   Delete(s, 4, 2)         suppression dans s}\par
+{\f1   Insert('XX', s, 3)      insertion}\par
+{\f1   UpCase(c)               majuscule (caractere unique)}\par
+{\f1   Concat(s1, s2, s3)      equivalent a s1+s2+s3}\par
+\par
+\par
+\b 12.3 Conversions \b0\par
+\par
+{\f1   Str(x, s);              entier ou reel vers chaine}\par
+{\f1   Val(s, x, code);        chaine vers numerique}\par
+{\f1   IntToStr(n)             FPC/Delphi}\par
+{\f1   StrToInt(s)             FPC/Delphi}\par
+{\f1   FloatToStr(x)           FPC/Delphi}\par
+{\f1   StrToFloat(s)           FPC/Delphi}\par
+{\f1   Format('%d %s', [n,s])  FPC/Delphi}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PASCAL_11}     {\uldb Suivant >>}{\v IDH_PASCAL_13}     {\uldb Table des matieres}{\v IDH_PASCAL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PASCAL_13}
+{\footnote $ Pascal - FICHIERS}
+{\footnote K Pascal fichiers;file of;Text;BlockRead;Assign;Reset;Rewrite;Read;Write;Eof}
+\b\fs24 FICHIERS \b0\fs20\par
+\par
+\par
+\b 13.1 Fichiers typed \b0\par
+\par
+{\f1   type TEnreg = record n: Integer; nom: string[40] end;}\par
+{\f1   var f: file of TEnreg;}\par
+{\f1       r: TEnreg;}\par
+\par
+{\f1   Assign(f, 'data.dat');}\par
+{\f1   Rewrite(f);             \{ creation \}}\par
+{\f1   Write(f, r);}\par
+{\f1   Close(f);}\par
+\par
+{\f1   Reset(f);               \{ ouverture lecture/ecriture \}}\par
+{\f1   while not Eof(f) do Read(f, r);}\par
+{\f1   Close(f);}\par
+\par
+\par
+\b 13.2 Fichiers texte \b0\par
+\par
+{\f1   var f: Text;}\par
+{\f1   Assign(f, 'rapport.txt');}\par
+{\f1   Rewrite(f);}\par
+{\f1   WriteLn(f, 'Ligne 1');}\par
+{\f1   Close(f);}\par
+\par
+{\f1   Reset(f);}\par
+{\f1   while not Eof(f) do begin}\par
+{\f1     ReadLn(f, ligne);}\par
+{\f1     WriteLn(ligne)}\par
+{\f1   end;}\par
+{\f1   Close(f);}\par
+\par
+\par
+\b 13.3 Fichiers non typed \b0\par
+\par
+{\f1   var f: file;}\par
+{\f1   Assign(f, 'image.bin');}\par
+{\f1   Reset(f, 1);            \{ taille de bloc = 1 octet \}}\par
+{\f1   BlockRead(f, buf, n, lus);}\par
+{\f1   Close(f);}\par
+\par
+\par
+\b 13.4 Fonctions I/O \b0\par
+\par
+{\f1   Eof(f)         fin de fichier}\par
+{\f1   Eoln(f)        fin de ligne (text)}\par
+{\f1   Seek(f, pos)   positionnement (typed/non-typed)}\par
+{\f1   FilePos(f)     position courante}\par
+{\f1   FileSize(f)    taille en enregistrements}\par
+{\f1   IOResult       code d'erreur (avec \{$I-\})}\par
+{\f1   Erase(f)       supprimer fichier}\par
+{\f1   Rename(f, s)   renommer}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PASCAL_12}     {\uldb Suivant >>}{\v IDH_PASCAL_14}     {\uldb Table des matieres}{\v IDH_PASCAL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PASCAL_14}
+{\footnote $ Pascal - UNITES (UNITS)}
+{\footnote K Pascal unites;unit;interface;implementation;initialization;finalization;uses}
+\b\fs24 UNITES (UNITS) \b0\fs20\par
+\par
+\par
+\b 14.1 Structure d'une unite \b0\par
+\par
+{\f1   unit Geometrie;}\par
+\par
+{\f1   interface}\par
+\par
+{\f1   type}\par
+{\f1     TPoint = record x, y: Real end;}\par
+\par
+{\f1   function Distance(a, b: TPoint): Real;}\par
+{\f1   procedure Translation(var p: TPoint; dx, dy: Real);}\par
+\par
+{\f1   implementation}\par
+\par
+{\f1   uses Math;}\par
+\par
+{\f1   function Distance(a, b: TPoint): Real;}\par
+{\f1   begin}\par
+{\f1     Distance := Sqrt(Sqr(a.x-b.x) + Sqr(a.y-b.y))}\par
+{\f1   end;}\par
+\par
+{\f1   procedure Translation(var p: TPoint; dx, dy: Real);}\par
+{\f1   begin}\par
+{\f1     p.x := p.x + dx;}\par
+{\f1     p.y := p.y + dy}\par
+{\f1   end;}\par
+\par
+{\f1   initialization}\par
+{\f1     \{ code execute au chargement (FPC/Delphi) \}}\par
+\par
+{\f1   finalization}\par
+{\f1     \{ code execute a la fin (FPC/Delphi) \}}\par
+\par
+{\f1   end.}\par
+\par
+\par
+\b 14.2 Sections \b0\par
+\par
+{\f1   interface       declarations visibles aux clients}\par
+{\f1   implementation  corps des procedures, declarations privees}\par
+{\f1   initialization  bloc d'initialisation}\par
+{\f1   finalization    bloc de nettoyage}\par
+\par
+\par
+\b 14.3 Importation \b0\par
+\par
+{\f1   uses Crt, Dos, SysUtils, Math;}\par
+\par
+L'ordre dans uses peut etre significatif (ordre d'initialisation).\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PASCAL_13}     {\uldb Suivant >>}{\v IDH_PASCAL_15}     {\uldb Table des matieres}{\v IDH_PASCAL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PASCAL_15}
+{\footnote $ Pascal - POINTEURS ET ALLOCATION DYNAMIQUE}
+{\footnote K Pascal pointeurs;allocation dynamique;New;Dispose;GetMem;FreeMem;nil;reference}
+\b\fs24 POINTEURS ET ALLOCATION DYNAMIQUE \b0\fs20\par
+\par
+\par
+\b 15.1 Declaration \b0\par
+\par
+{\f1   type}\par
+{\f1     PInt   = ^Integer;}\par
+{\f1     PNoeud = ^TNoeud;}\par
+{\f1     TNoeud = record}\par
+{\f1       valeur : Integer;}\par
+{\f1       suivant: PNoeud}\par
+{\f1     end;}\par
+\par
+{\f1   var p: PInt;}\par
+\par
+\par
+\b 15.2 Allocation \b0\par
+\par
+Style Turbo Pascal :\par
+\par
+{\f1   New(p);            \{ alloue sizeof(Integer) \}}\par
+{\f1   p^ := 42;          \{ dereference \}}\par
+{\f1   Dispose(p);        \{ libere \}}\par
+\par
+Pour un tampon arbitraire :\par
+\par
+{\f1   GetMem(p, 1024);}\par
+{\f1   FreeMem(p, 1024);}\par
+\par
+\par
+\b 15.3 Nil \b0\par
+\par
+{\f1   p := nil;}\par
+{\f1   if p <> nil then ...}\par
+\par
+\par
+\b 15.4 Operateurs lies aux pointeurs \b0\par
+\par
+{\f1   @x       adresse de la variable x}\par
+{\f1   p^       contenu pointe par p}\par
+{\f1   Addr(x)  equivalent de @x}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PASCAL_14}     {\uldb Suivant >>}{\v IDH_PASCAL_16}     {\uldb Table des matieres}{\v IDH_PASCAL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PASCAL_16}
+{\footnote $ Pascal - OBJETS (TURBO PASCAL)}
+{\footnote K Pascal objets;object;virtual;constructor;destructor;heritage;Turbo Pascal}
+\b\fs24 OBJETS (TURBO PASCAL) \b0\fs20\par
+\par
+\par
+\b 16.1 Declaration \b0\par
+\par
+{\f1   type}\par
+{\f1     TForme = object}\par
+{\f1       x, y: Integer;}\par
+{\f1       constructor Init(ax, ay: Integer);}\par
+{\f1       procedure Affiche; virtual;}\par
+{\f1       destructor Done; virtual;}\par
+{\f1     end;}\par
+\par
+{\f1     TCercle = object(TForme)}\par
+{\f1       Rayon: Integer;}\par
+{\f1       constructor Init(ax, ay, ar: Integer);}\par
+{\f1       procedure Affiche; virtual;}\par
+{\f1     end;}\par
+\par
+\par
+\b 16.2 Implementation \b0\par
+\par
+{\f1   constructor TForme.Init(ax, ay: Integer);}\par
+{\f1   begin}\par
+{\f1     x := ax; y := ay}\par
+{\f1   end;}\par
+\par
+{\f1   procedure TForme.Affiche;}\par
+{\f1   begin}\par
+{\f1     WriteLn('Forme en (', x, ',', y, ')')}\par
+{\f1   end;}\par
+\par
+\par
+\b 16.3 Allocation \b0\par
+\par
+Statique :\par
+\par
+{\f1   var c: TCercle;}\par
+{\f1   c.Init(10, 20, 5);}\par
+\par
+Dynamique :\par
+\par
+{\f1   var pc: ^TCercle;}\par
+{\f1   New(pc, Init(10, 20, 5));}\par
+{\f1   pc^.Affiche;}\par
+{\f1   Dispose(pc, Done);}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PASCAL_15}     {\uldb Suivant >>}{\v IDH_PASCAL_17}     {\uldb Table des matieres}{\v IDH_PASCAL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PASCAL_17}
+{\footnote $ Pascal - CLASSES (DELPHI / FPC OBJFPC)}
+{\footnote K Pascal classes;class;TObject;private;protected;public;published;property;Delphi;FPC}
+\b\fs24 CLASSES (DELPHI / FPC OBJFPC) \b0\fs20\par
+\par
+\par
+\b 17.1 Declaration \b0\par
+\par
+{\f1   type}\par
+{\f1     TForme = class}\par
+{\f1     private}\par
+{\f1       FX, FY: Integer;}\par
+{\f1     public}\par
+{\f1       constructor Create(ax, ay: Integer);}\par
+{\f1       destructor  Destroy; override;}\par
+{\f1       procedure   Affiche; virtual;}\par
+{\f1       property    X: Integer read FX write FX;}\par
+{\f1     end;}\par
+\par
+{\f1     TCercle = class(TForme)}\par
+{\f1     private}\par
+{\f1       FRayon: Integer;}\par
+{\f1     public}\par
+{\f1       constructor Create(ax, ay, ar: Integer);}\par
+{\f1       procedure   Affiche; override;}\par
+{\f1     end;}\par
+\par
+\par
+\b 17.2 Sections de visibilite \b0\par
+\par
+{\f1   private        visible uniquement dans l'unite}\par
+{\f1   protected      visible dans la classe + descendants}\par
+{\f1   public         visible partout}\par
+{\f1   published      idem public + RTTI publiee}\par
+\par
+\par
+\b 17.3 Creation et destruction \b0\par
+\par
+{\f1   var c: TCercle;}\par
+{\f1   begin}\par
+{\f1     c := TCercle.Create(10, 20, 5);}\par
+{\f1     try}\par
+{\f1       c.Affiche;}\par
+{\f1     finally}\par
+{\f1       c.Free}\par
+{\f1     end;}\par
+{\f1   end;}\par
+\par
+\par
+\b 17.4 Heritage et polymorphisme \b0\par
+\par
+Toutes les classes Delphi/FPC heritent de TObject. Les methodes\par
+virtuelles sont declarees avec virtual et surchargees avec\par
+override.\par
+\par
+\par
+\b 17.5 Proprietes \b0\par
+\par
+{\f1   property Nom: string read FNom write SetNom;}\par
+{\f1   property Items[I: Integer]: TObject read GetItem; default;}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PASCAL_16}     {\uldb Suivant >>}{\v IDH_PASCAL_18}     {\uldb Table des matieres}{\v IDH_PASCAL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PASCAL_18}
+{\footnote $ Pascal - EXCEPTIONS}
+{\footnote K Pascal exceptions;try;except;finally;raise;Exception;EConvertError}
+\b\fs24 EXCEPTIONS \b0\fs20\par
+\par
+\par
+\b 18.1 try/except \b0\par
+\par
+{\f1   try}\par
+{\f1     valeur := StrToInt(s);}\par
+{\f1   except}\par
+{\f1     on E: EConvertError do}\par
+{\f1       WriteLn('Format invalide: ', E.Message);}\par
+{\f1     on E: Exception do}\par
+{\f1       WriteLn('Erreur: ', E.Message);}\par
+{\f1   end;}\par
+\par
+\par
+\b 18.2 try/finally \b0\par
+\par
+{\f1   L := TList.Create;}\par
+{\f1   try}\par
+{\f1     L.Add(...);}\par
+{\f1     ...}\par
+{\f1   finally}\par
+{\f1     L.Free;}\par
+{\f1   end;}\par
+\par
+\par
+\b 18.3 Lever une exception \b0\par
+\par
+{\f1   raise EConvertError.Create('Donnee invalide');}\par
+\par
+\par
+\b 18.4 Combinaison \b0\par
+\par
+{\f1   try}\par
+{\f1     try}\par
+{\f1       ...}\par
+{\f1     except}\par
+{\f1       on E: Exception do begin}\par
+{\f1         Log(E.Message);}\par
+{\f1         raise;          \{ re-lever la meme exception \}}\par
+{\f1       end;}\par
+{\f1     end;}\par
+{\f1   finally}\par
+{\f1     Cleanup;}\par
+{\f1   end;}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PASCAL_17}     {\uldb Suivant >>}{\v IDH_PASCAL_19}     {\uldb Table des matieres}{\v IDH_PASCAL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PASCAL_19}
+{\footnote $ Pascal - GENERIQUES (DELPHI 2009+ / FPC)}
+{\footnote K Pascal generiques;generics;TListe;specialize;Delphi;FPC}
+\b\fs24 GENERIQUES (DELPHI 2009+ / FPC) \b0\fs20\par
+\par
+\par
+\b 19.1 Type generique \b0\par
+\par
+{\f1   type}\par
+{\f1     TListe<T> = class}\par
+{\f1     private}\par
+{\f1       FItems: array of T;}\par
+{\f1       FCount: Integer;}\par
+{\f1     public}\par
+{\f1       procedure Add(const item: T);}\par
+{\f1       function  Get(I: Integer): T;}\par
+{\f1       property  Count: Integer read FCount;}\par
+{\f1     end;}\par
+\par
+\par
+\b 19.2 Utilisation \b0\par
+\par
+{\f1   var ListeEntiers: TListe<Integer>;}\par
+{\f1   begin}\par
+{\f1     ListeEntiers := TListe<Integer>.Create;}\par
+{\f1     ListeEntiers.Add(42);}\par
+{\f1     ...}\par
+{\f1   end;}\par
+\par
+FPC mode objfpc utilise une syntaxe legerement differente avec\par
+generic et specialize.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PASCAL_18}     {\uldb Suivant >>}{\v IDH_PASCAL_20}     {\uldb Table des matieres}{\v IDH_PASCAL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PASCAL_20}
+{\footnote $ Pascal - DIRECTIVES DE COMPILATION}
+{\footnote K Pascal directives compilation;MODE;IFDEF;DEFINE;UNDEF;I+;R+;H+;Q+}
+\b\fs24 DIRECTIVES DE COMPILATION \b0\fs20\par
+\par
+\par
+\b 20.1 Directives globales \b0\par
+\par
+{\f1   \{$MODE TP\}            mode Turbo Pascal}\par
+{\f1   \{$MODE OBJFPC\}        mode FPC objet (defaut)}\par
+{\f1   \{$MODE DELPHI\}        mode Delphi compatibilite}\par
+{\f1   \{$MODE ISO\}           ISO 7185 strict}\par
+\par
+\par
+\b 20.2 Directives locales \b0\par
+\par
+{\f1   \{$I+\} \{$I-\}           E/S verifiee / non verifiee}\par
+{\f1   \{$R+\} \{$R-\}           bornes verifiees / non}\par
+{\f1   \{$Q+\} \{$Q-\}           overflow entier verifie / non}\par
+{\f1   \{$B+\} \{$B-\}           Boolean court-circuit OFF / ON}\par
+{\f1   \{$H+\} \{$H-\}           string long / court (255)}\par
+{\f1   \{$M tailles\}          (TP) tailles pile et tas}\par
+{\f1   \{$DEFINE SYMB\}        definir un symbole}\par
+{\f1   \{$UNDEF  SYMB\}        retirer un symbole}\par
+\par
+\par
+\b 20.3 Inclusion conditionnelle \b0\par
+\par
+{\f1   \{$IFDEF WINDOWS\}}\par
+{\f1     uses Windows;}\par
+{\f1   \{$ENDIF\}}\par
+{\f1   \{$IFNDEF FPC\}}\par
+{\f1     type AnsiString = string;}\par
+{\f1   \{$ENDIF\}}\par
+{\f1   \{$IF FPC_VERSION >= 3\} ... \{$ENDIF\}}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PASCAL_19}     {\uldb Suivant >>}{\v IDH_PASCAL_21}     {\uldb Table des matieres}{\v IDH_PASCAL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PASCAL_21}
+{\footnote $ Pascal - BIBLIOTHEQUE STANDARD}
+{\footnote K Pascal bibliotheque standard;System;Crt;Dos;SysUtils;Math;Strings}
+\b\fs24 BIBLIOTHEQUE STANDARD \b0\fs20\par
+\par
+\par
+\b 21.1 Unite System (automatique) \b0\par
+\par
+Toujours implicitement chargee. Contient :\par
+\par
+{\f1   Write, WriteLn, Read, ReadLn, Str, Val,}\par
+{\f1   Length, Copy, Pos, Delete, Insert, Concat,}\par
+{\f1   Abs, Sqr, Sqrt, Sin, Cos, ArcTan, Exp, Ln,}\par
+{\f1   Trunc, Round, Frac, Int, Inc, Dec, Odd,}\par
+{\f1   Ord, Chr, Pred, Succ,}\par
+{\f1   New, Dispose, GetMem, FreeMem,}\par
+{\f1   Assign, Reset, Rewrite, Close, Read, Write,}\par
+{\f1   Eof, Eoln, Seek, FilePos, FileSize, IOResult,}\par
+{\f1   Halt, Exit, Break, Continue,}\par
+{\f1   Random, Randomize,}\par
+{\f1   ParamCount, ParamStr,}\par
+{\f1   Move, FillChar,}\par
+{\f1   Hi, Lo, Swap.}\par
+\par
+\par
+\b 21.2 Unite Crt (Turbo / FPC) \b0\par
+\par
+E/S console plein ecran :\par
+\par
+{\f1   ClrScr, GotoXY, WhereX, WhereY,}\par
+{\f1   TextColor, TextBackground, TextAttr,}\par
+{\f1   KeyPressed, ReadKey, Delay, Sound, NoSound.}\par
+\par
+\par
+\b 21.3 Unite Dos (Turbo / FPC) \b0\par
+\par
+Acces aux services DOS / fichiers / repertoires :\par
+\par
+{\f1   GetDate, GetTime, SetDate, SetTime,}\par
+{\f1   FindFirst, FindNext, FindClose,}\par
+{\f1   DiskFree, DiskSize, Exec, GetEnv,}\par
+{\f1   Intr, MsDos, GetIntVec, SetIntVec.}\par
+\par
+\par
+\b 21.4 Unite SysUtils (Delphi / FPC) \b0\par
+\par
+Bibliotheque generale Delphi :\par
+\par
+{\f1   IntToStr, StrToInt, FloatToStr, StrToFloat,}\par
+{\f1   IntToHex, Format, FormatDateTime,}\par
+{\f1   Now, Date, Time, DateToStr, TimeToStr,}\par
+{\f1   UpperCase, LowerCase, Trim, TrimLeft, TrimRight,}\par
+{\f1   StringReplace, AnsiCompareText, SameText,}\par
+{\f1   FileExists, DirectoryExists, ChangeFileExt,}\par
+{\f1   ExtractFileName, ExtractFilePath, ExtractFileExt,}\par
+{\f1   Exception, raise, try/except/finally.}\par
+\par
+\par
+\b 21.5 Unite Math (FPC / Delphi) \b0\par
+\par
+Fonctions mathematiques avancees :\par
+\par
+{\f1   Power, IntPower, Log10, Log2, LogN,}\par
+{\f1   Min, Max, Sign, IfThen,}\par
+{\f1   Mean, Sum, Variance, StdDev,}\par
+{\f1   Floor, Ceil, RoundTo,}\par
+{\f1   ArcSin, ArcCos, ArcTan2, Tan, Cot,}\par
+{\f1   Sinh, Cosh, Tanh.}\par
+\par
+\par
+\b 21.6 Unite Strings (FPC / Delphi) \b0\par
+\par
+Manipulation de chaines C (PChar) :\par
+\par
+{\f1   StrLen, StrCopy, StrComp, StrCat,}\par
+{\f1   StrPas, StrPCopy, StrEnd, StrPos.}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PASCAL_20}     {\uldb Suivant >>}{\v IDH_PASCAL_22}     {\uldb Table des matieres}{\v IDH_PASCAL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PASCAL_22}
+{\footnote $ Pascal - COMPILATEURS DU PROJET}
+{\footnote K Pascal compilateurs projet;PASCAL.PAS;PASC86.PAS;PASCW32.PAS;TPCW32.PAS}
+\b\fs24 COMPILATEURS DU PROJET \b0\fs20\par
+\par
+\par
+\b 22.1 PC8086.PAS \b0\par
+\par
+Compilateur generant de l'assembleur 8086 (MASM .MODEL SMALL)\par
+pour MS-DOS. Cible un processeur Intel 8086 en mode reel 16 bits.\par
+Sous-ensemble Pascal supporte :\par
+\par
+{\f1   - Types : Integer (16 bits), LongInt, Byte, Char, Boolean}\par
+{\f1   - String (ShortString)}\par
+{\f1   - Tableaux statiques uni- et bi-dimensionnels}\par
+{\f1   - Records (sans variant)}\par
+{\f1   - Procedures et functions (passage valeur et var)}\par
+{\f1   - Structures de controle completes}\par
+{\f1   - Unite System minimale (Write, Read, etc.)}\par
+\par
+\par
+\b 22.2 PASCW32.PAS \b0\par
+\par
+Compilateur Pascal vers binaire Win32 PE 32 bits. Genere\par
+directement un executable .EXE Windows utilisant KERNEL32.DLL.\par
+Supporte un sous-ensemble proche de Turbo Pascal 7.0 avec\par
+Integer 32 bits.\par
+\par
+\par
+\b 22.3 TPCW32.PAS \b0\par
+\par
+Compilateur Turbo Pascal compatible Win32. Implemente le mode\par
+\{$MODE TP\} et utilise un emulateur d'unite Crt / Dos pour la\par
+console Windows.\par
+\par
+\par
+\b 22.4 TPCW32.PAS \b0\par
+\par
+Compilateur VAX Pascal compatible Win32.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PASCAL_21}     {\uldb Suivant >>}{\v IDH_PASCAL_23}     {\uldb Table des matieres}{\v IDH_PASCAL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PASCAL_23}
+{\footnote $ Pascal - EXEMPLE COMPLET}
+{\footnote K Pascal exemple complet;Fibonacci;programme exemple}
+\b\fs24 EXEMPLE COMPLET \b0\fs20\par
+\par
+Programme calculant la suite de Fibonacci :\par
+\par
+{\f1   program Fibonacci;}\par
+\par
+{\f1   uses Crt;}\par
+\par
+{\f1   function Fib(n: Integer): LongInt;}\par
+{\f1   begin}\par
+{\f1     if n < 2 then}\par
+{\f1       Fib := n}\par
+{\f1     else}\par
+{\f1       Fib := Fib(n-1) + Fib(n-2)}\par
+{\f1   end;}\par
+\par
+{\f1   var}\par
+{\f1     i, n: Integer;}\par
+\par
+{\f1   begin}\par
+{\f1     ClrScr;}\par
+{\f1     Write('Entrez n : '); ReadLn(n);}\par
+{\f1     WriteLn('Suite de Fibonacci jusqu''a F(', n, ') :');}\par
+{\f1     for i := 0 to n do}\par
+{\f1       WriteLn('  F(', i:2, ') = ', Fib(i));}\par
+{\f1     ReadLn}\par
+{\f1   end.}\par
+\par
+Compilation et execution sous Free Pascal :\par
+\par
+{\f1   fpc fibonacci.pas}\par
+{\f1   ./fibonacci}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PASCAL_22}     {\uldb Suivant >>}{\v IDH_PASCAL_24}     {\uldb Table des matieres}{\v IDH_PASCAL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PASCAL_24}
+{\footnote $ Pascal - REFERENCES}
+{\footnote K Pascal references;bibliographie;Wirth;Jensen;ISO 7185;Turbo Pascal Reference;Cantu}
+\b\fs24 REFERENCES \b0\fs20\par
+\par
+{\f1   - Niklaus Wirth : "The Programming Language Pascal"}\par
+{\f1     (1971), Acta Informatica 1, pp. 35-63.}\par
+\par
+{\f1   - Kathleen Jensen, Niklaus Wirth : "Pascal User Manual and}\par
+{\f1     Report" (1ere ed. 1974, 4eme ed. 1991). Springer-Verlag.}\par
+{\f1     Reference historique du langage.}\par
+\par
+{\f1   - ISO 7185:1990 : Information technology - Programming}\par
+{\f1     languages - Pascal.}\par
+\par
+{\f1   - ISO 10206:1991 : Information technology - Programming}\par
+{\f1     languages - Extended Pascal.}\par
+\par
+{\f1   - Borland International : "Turbo Pascal 7.0 Programmer's}\par
+{\f1     Reference" (1992).}\par
+\par
+{\f1   - Marco Cantu : "Object Pascal Handbook" (2014). Reference}\par
+{\f1     moderne pour Delphi et FPC.}\par
+\par
+{\f1   - Free Pascal Reference Guide : documentation officielle}\par
+{\f1     en ligne sur www.freepascal.org/docs.html.}\par
+\par
+{\f1   - Michael van Canneyt : "Free Pascal Language Reference"}\par
+{\f1     (Free Pascal Compiler Documentation, 2026).}\par
+
+\par
+{\uldb << Precedent}{\v IDH_PASCAL_23}     {\uldb Table des matieres}{\v IDH_PASCAL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+}
