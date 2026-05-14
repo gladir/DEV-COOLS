@@ -1,0 +1,775 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}
+
+{\footnote # IDH_FORTRAN77_01}
+{\footnote $ FORTRAN 77 - Presentation generale}
+{\footnote K FORTRAN 77 presentation;John Backus;IBM 704;ANSI X3.9-1978;ISO 1539:1980;FORTRAN II;FORTRAN IV;FORTRAN 66;Fortran 90;calcul scientifique;LAPACK;BLAS}
+\b\fs24 Presentation generale \b0\fs20\par
+\par
+FORTRAN (FORmula TRANslation) est l'un des plus anciens langages de\par
+programmation de haut niveau encore en usage. Concu par John Backus chez IBM\par
+entre 1954 et 1957 pour l'IBM 704, il a domine le calcul scientifique pendant\par
+plus de 30 ans et reste tres present dans les bibliotheques numeriques (LAPACK,\par
+BLAS, NAG, ARPACK) et les codes de simulation (CFD, meteo, mecanique des\par
+solides, physique des plasmas, climat).\par
+\par
+Historique :\par
+- 1954-1957 : conception et premiere implementation FORTRAN sur IBM 704.\par
+- 1958 : FORTRAN II (sous-programmes SUBROUTINE/FUNCTION).\par
+- 1962 : FORTRAN IV (suppression des dependances machine de FORTRAN II).\par
+- 1966 : FORTRAN 66 (ANSI X3.9-1966) - premiere norme.\par
+- 1978 : FORTRAN 77 (ANSI X3.9-1978, ISO 1539:1980) - ce document.\par
+- 1991 : Fortran 90 (formes libres, modules, allocations dynamiques).\par
+- 1997 : Fortran 95 (FORALL, WHERE, PURE).\par
+- 2004/2010/2018/2023 : Fortran 2003, 2008, 2018, 2023 (POO, coarrays, etc.).\par
+\par
+FORTRAN 77 marque une etape majeure : ajout des blocs IF/THEN/ELSE/ENDIF, du\par
+type CHARACTER, des E/S a acces direct, des fichiers nommes, et de la\par
+parametrisation des constantes via PARAMETER.\par
+\par
+Caracteristiques distinctives :\par
+- Langage compile a typage statique fort (typage implicite par lettre initiale\par
+{\f1   sauf si declare).}\par
+- Optimisation aggressive possible (pas d'aliasing par defaut dans la norme).\par
+- Format colonne fixe heritier des cartes perforees IBM (80 colonnes).\par
+- Tableaux multidimensionnels natifs avec stockage column-major.\par
+- Arithmetique flottante normalisee (REAL, DOUBLE PRECISION, COMPLEX).\par
+- Sous-programmes SUBROUTINE et FUNCTION avec passage par reference.\par
+- COMMON blocks pour partage de donnees inter-modules.\par
+\par
+\par
+\par
+\b Sections suivantes : \b0\par
+\par
+{\f1  2. Structure d'un programme FORTRAN 77}     {\uldb [Aller]}{\v IDH_FORTRAN77_02}\par
+{\f1  3. Format colonne fixe et caracteristiques lexicales}     {\uldb [Aller]}{\v IDH_FORTRAN77_03}\par
+{\f1  4. Types de donnees}     {\uldb [Aller]}{\v IDH_FORTRAN77_04}\par
+{\f1  5. Operateurs}     {\uldb [Aller]}{\v IDH_FORTRAN77_05}\par
+{\f1  6. Instructions de controle}     {\uldb [Aller]}{\v IDH_FORTRAN77_06}\par
+{\f1  7. Sous-programmes : SUBROUTINE et FUNCTION}     {\uldb [Aller]}{\v IDH_FORTRAN77_07}\par
+{\f1  8. COMMON blocks}     {\uldb [Aller]}{\v IDH_FORTRAN77_08}\par
+{\f1  9. Entrees/sorties}     {\uldb [Aller]}{\v IDH_FORTRAN77_09}\par
+{\f1 10. Fonctions intrinseques}     {\uldb [Aller]}{\v IDH_FORTRAN77_10}\par
+{\f1 11. Operations sur CHARACTER}     {\uldb [Aller]}{\v IDH_FORTRAN77_11}\par
+{\f1 12. Extensions courantes (MIL-STD-1753, VAX, IBM)}     {\uldb [Aller]}{\v IDH_FORTRAN77_12}\par
+{\f1 13. Le compilateur F77C86.PAS}     {\uldb [Aller]}{\v IDH_FORTRAN77_13}\par
+{\f1 14. Exemples de programmes}     {\uldb [Aller]}{\v IDH_FORTRAN77_14}\par
+{\f1 15. Bonnes pratiques en FORTRAN 77}     {\uldb [Aller]}{\v IDH_FORTRAN77_15}\par
+{\f1 16. Influence et heritage}     {\uldb [Aller]}{\v IDH_FORTRAN77_16}\par
+{\f1 17. References}     {\uldb [Aller]}{\v IDH_FORTRAN77_17}\par
+\par
+{\uldb Suivant >>}{\v IDH_FORTRAN77_02}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_FORTRAN77_02}
+{\footnote $ FORTRAN 77 - Structure d'un programme FORTRAN 77}
+{\footnote K FORTRAN 77 structure programme;PROGRAM;SUBROUTINE;FUNCTION;BLOCK DATA;IMPLICIT;ordre instructions;END}
+\b\fs24 Structure d'un programme FORTRAN 77 \b0\fs20\par
+\par
+Un programme FORTRAN 77 se compose d'unites de programme :\par
+- 1 PROGRAM principal (optionnel, le nom peut etre omis).\par
+- 0 ou plusieurs SUBROUTINE (sous-programmes sans valeur de retour).\par
+- 0 ou plusieurs FUNCTION (sous-programmes avec valeur de retour).\par
+- 0 ou plusieurs BLOCK DATA (initialisation de COMMON).\par
+\par
+Forme generale d'une unite :\par
+\par
+{\f1         PROGRAM HELLO}\par
+{\f1         IMPLICIT NONE}\par
+{\f1         INTEGER I}\par
+{\f1         REAL X}\par
+C       Instructions executables\par
+{\f1         I = 10}\par
+{\f1         X = 3.14}\par
+{\f1         WRITE(*,*) 'I = ', I, ' X = ', X}\par
+{\f1         STOP}\par
+{\f1         END}\par
+\par
+Ordre des instructions dans une unite :\par
+1. Instruction d'en-tete (PROGRAM/SUBROUTINE/FUNCTION/BLOCK DATA).\par
+2. IMPLICIT (optionnel).\par
+3. PARAMETER, declarations de type (INTEGER, REAL, ...), COMMON, EXTERNAL,\par
+{\f1    INTRINSIC, SAVE, DIMENSION, EQUIVALENCE, DATA.}\par
+4. Instructions FORMAT et de fonctions-instruction (statement functions).\par
+5. Instructions executables.\par
+6. END (obligatoire en derniere ligne).\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_FORTRAN77_01}     {\uldb Suivant >>}{\v IDH_FORTRAN77_03}     {\uldb Table des matieres}{\v IDH_FORTRAN77_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_FORTRAN77_03}
+{\footnote $ FORTRAN 77 - Format colonne fixe et caracteristiques lexicales}
+{\footnote K FORTRAN 77 format colonne fixe;colonnes 1-5 1-6 7-72 73-80;label;continuation;commentaire C *;identificateurs;typage implicite;litteraux Hollerith}
+\b\fs24 Format colonne fixe et caracteristiques lexicales \b0\fs20\par
+\par
+Le format source FORTRAN 77 est strictement colonne :\par
+\par
+{\f1   Colonnes 1     : C ou * = commentaire ; chiffre/lettre = label si col. 1-5}\par
+{\f1   Colonnes 1-5   : etiquette numerique (label) 1..99999}\par
+{\f1   Colonne  6     : caractere de continuation (non blanc, non zero)}\par
+{\f1                    indique que la ligne continue la precedente}\par
+{\f1   Colonnes 7-72  : instructions FORTRAN}\par
+{\f1   Colonnes 73-80 : sequenceur (ignore par le compilateur)}\par
+\par
+Exemples :\par
+\par
+{\f1   C This is a comment in column 1}\par
+{\f1         WRITE(*,*) 'Premiere ligne, ',}\par
+{\f1        +           'suite sur la deuxieme'}\par
+{\f1    100  FORMAT(I5,2X,F10.3)}\par
+\par
+Identificateurs :\par
+- 1 a 6 caracteres (norme stricte), lettres et chiffres, commencent par lettre.\par
+- Insensibles a la casse (souvent ecrits en majuscules par convention).\par
+- Beaucoup de compilateurs etendent a 31+ caracteres et acceptent _ et $.\par
+\par
+Typage implicite par defaut (sauf IMPLICIT NONE) :\par
+- I, J, K, L, M, N : INTEGER\par
+- A-H, O-Z         : REAL\par
+\par
+Litteraux :\par
+- Entiers : 42, -17, +255\par
+- Reels simple : 3.14, 1.5E-3, 1E6\par
+- Reels double : 3.14D0, 1.5D-3\par
+- Complexes : (1.0, 2.0)\par
+- Logiques : .TRUE., .FALSE.\par
+- Chaines : 'BONJOUR', 'L''APOSTROPHE' (doublee)\par
+- Hollerith (legacy) : 7HBONJOUR (compte de caracteres + H)\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_FORTRAN77_02}     {\uldb Suivant >>}{\v IDH_FORTRAN77_04}     {\uldb Table des matieres}{\v IDH_FORTRAN77_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_FORTRAN77_04}
+{\footnote $ FORTRAN 77 - Types de donnees}
+{\footnote K FORTRAN 77 types donnees;INTEGER;REAL;DOUBLE PRECISION;COMPLEX;LOGICAL;CHARACTER;DIMENSION;column-major;PARAMETER;DATA;EQUIVALENCE}
+\b\fs24 Types de donnees \b0\fs20\par
+\par
+FORTRAN 77 definit six types intrinseques :\par
+\par
+{\f1   INTEGER            "entier signe, typiquement 16 ou 32 bits"}\par
+{\f1   REAL               "flottant simple precision (32 bits IEEE)"}\par
+{\f1   DOUBLE PRECISION   "flottant double precision (64 bits IEEE)"}\par
+{\f1   COMPLEX            "nombre complexe (2 x REAL)"}\par
+{\f1   LOGICAL            "booleen (.TRUE./.FALSE.)"}\par
+{\f1   CHARACTER          "chaine de caracteres a longueur fixe"}\par
+\par
+Exemples de declarations :\par
+\par
+{\f1         INTEGER I, J, COUNT}\par
+{\f1         REAL X, Y, Z}\par
+{\f1         DOUBLE PRECISION PI}\par
+{\f1         COMPLEX Z1, Z2}\par
+{\f1         LOGICAL DONE, FOUND}\par
+{\f1         CHARACTER*10 NOM}\par
+{\f1         CHARACTER*(*) MESSAGE     ! longueur heritee du parametre}\par
+\par
+Tableaux (DIMENSION) :\par
+- Stockage column-major : T(I,J) varie d'abord sur I.\par
+- Indice par defaut commence a 1.\par
+\par
+{\f1         DIMENSION A(100), B(10,20), C(0:9, -5:5)}\par
+{\f1         REAL MAT(3,3)}\par
+{\f1         INTEGER VECT(100)}\par
+\par
+PARAMETER (constantes nommees) :\par
+\par
+{\f1         INTEGER NMAX}\par
+{\f1         PARAMETER (NMAX = 100)}\par
+{\f1         REAL PI}\par
+{\f1         PARAMETER (PI = 3.14159265)}\par
+\par
+DATA (initialisation statique) :\par
+\par
+{\f1         INTEGER I, J}\par
+{\f1         REAL T(5)}\par
+{\f1         DATA I, J /10, 20/}\par
+{\f1         DATA T /1.0, 2.0, 3.0, 4.0, 5.0/}\par
+{\f1         DATA (T(K), K=1,5) /5*0.0/    ! repetition}\par
+\par
+EQUIVALENCE (alias de stockage) :\par
+\par
+{\f1         REAL A(100), B(100)}\par
+{\f1         EQUIVALENCE (A(1), B(1))      ! meme zone memoire}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_FORTRAN77_03}     {\uldb Suivant >>}{\v IDH_FORTRAN77_05}     {\uldb Table des matieres}{\v IDH_FORTRAN77_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_FORTRAN77_05}
+{\footnote $ FORTRAN 77 - Operateurs}
+{\footnote K FORTRAN 77 operateurs;arithmetique;**;.EQ. .NE. .LT. .LE. .GT. .GE.;.NOT. .AND. .OR. .EQV. .NEQV.;concatenation //;precedence;conversions implicites}
+\b\fs24 Operateurs \b0\fs20\par
+\par
+Arithmetiques : + - * / **         (** = puissance)\par
+Relationnels  : .EQ. .NE. .LT. .LE. .GT. .GE.\par
+Logiques      : .NOT. .AND. .OR. .EQV. .NEQV.\par
+Caracteres    : //                 (concatenation)\par
+Affectation   : =\par
+\par
+Precedence (du plus prioritaire au moins) :\par
+{\f1   1. **         (associativite droite : 2**3**2 = 2**(3**2) = 512)}\par
+{\f1   2. * /}\par
+{\f1   3. + - (unaires puis binaires)}\par
+{\f1   4. //}\par
+{\f1   5. .EQ. .NE. .LT. .LE. .GT. .GE.}\par
+{\f1   6. .NOT.}\par
+{\f1   7. .AND.}\par
+{\f1   8. .OR.}\par
+{\f1   9. .EQV. .NEQV.}\par
+\par
+Conversions implicites : INTEGER -> REAL -> DOUBLE PRECISION -> COMPLEX dans\par
+les expressions mixtes.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_FORTRAN77_04}     {\uldb Suivant >>}{\v IDH_FORTRAN77_06}     {\uldb Table des matieres}{\v IDH_FORTRAN77_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_FORTRAN77_06}
+{\footnote $ FORTRAN 77 - Instructions de controle}
+{\footnote K FORTRAN 77 controle;IF logique;IF arithmetique;IF THEN ELSE END IF;DO;CONTINUE;GOTO;GOTO calcule;STOP;END;PAUSE;RETURN}
+\b\fs24 Instructions de controle \b0\fs20\par
+\par
+6.1 Affectation\par
+{\f1         X = 3.14}\par
+{\f1         T(I) = T(I) + 1.0}\par
+{\f1         NOM = 'DUPONT'}\par
+\par
+6.2 IF logique (une ligne)\par
+{\f1         IF (X .GT. 0.0) Y = SQRT(X)}\par
+\par
+6.3 IF arithmetique (legacy FORTRAN II/IV, deprecie)\par
+{\f1         IF (X) 10, 20, 30}\par
+C       saute en 10 si X<0, 20 si X=0, 30 si X>0\par
+\par
+6.4 IF/THEN/ELSE/ENDIF (bloc, ajoute en FORTRAN 77)\par
+{\f1         IF (X .GT. 0.0) THEN}\par
+{\f1           Y = LOG(X)}\par
+{\f1         ELSE IF (X .EQ. 0.0) THEN}\par
+{\f1           Y = 0.0}\par
+{\f1         ELSE}\par
+{\f1           Y = -1.0}\par
+{\f1         END IF}\par
+\par
+6.5 DO (boucle iterative)\par
+{\f1         DO 10 I = 1, 100}\par
+{\f1           SOMME = SOMME + T(I)}\par
+{\f1    10   CONTINUE}\par
+\par
+Avec pas explicite :\par
+{\f1         DO 20 I = 100, 1, -1}\par
+{\f1           T(I) = 0.0}\par
+{\f1    20   CONTINUE}\par
+\par
+Forme DO/END DO (extension MIL-STD-1753, tres repandue) :\par
+{\f1         DO I = 1, N}\par
+{\f1           T(I) = I * I}\par
+{\f1         END DO}\par
+\par
+6.6 GOTO\par
+{\f1         GOTO 100}\par
+{\f1         GOTO (10, 20, 30), I      ! GOTO calcule}\par
+{\f1         GOTO LBL, (10, 20, 30)    ! GOTO assigne (deprecie)}\par
+\par
+6.7 CONTINUE\par
+{\f1         Instruction nulle, sert souvent de point d'arrivee pour DO ou GOTO.}\par
+\par
+6.8 STOP et END\par
+{\f1         STOP                       ! arret normal}\par
+{\f1         STOP 'MESSAGE'             ! arret avec message}\par
+{\f1         STOP 99                    ! code de sortie}\par
+{\f1         END                        ! fin d'unite (obligatoire)}\par
+\par
+6.9 PAUSE\par
+{\f1         PAUSE 'APPUYEZ SUR ENTREE' ! suspend l'execution (deprecie)}\par
+\par
+6.10 RETURN\par
+{\f1         RETURN                     ! retour de SUBROUTINE/FUNCTION}\par
+{\f1         RETURN 1                   ! retour alternatif (alternate return)}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_FORTRAN77_05}     {\uldb Suivant >>}{\v IDH_FORTRAN77_07}     {\uldb Table des matieres}{\v IDH_FORTRAN77_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_FORTRAN77_07}
+{\footnote $ FORTRAN 77 - Sous-programmes : SUBROUTINE et FUNCTION}
+{\footnote K FORTRAN 77 sous-programmes;SUBROUTINE;FUNCTION;CALL;passage par reference;statement function;EXTERNAL;INTRINSIC;SAVE}
+\b\fs24 Sous-programmes : SUBROUTINE et FUNCTION \b0\fs20\par
+\par
+7.1 SUBROUTINE\par
+\par
+{\f1         SUBROUTINE ECHANGE (A, B)}\par
+{\f1         REAL A, B, T}\par
+{\f1         T = A}\par
+{\f1         A = B}\par
+{\f1         B = T}\par
+{\f1         RETURN}\par
+{\f1         END}\par
+\par
+Appel :\par
+{\f1         CALL ECHANGE (X, Y)}\par
+\par
+7.2 FUNCTION\par
+\par
+{\f1         REAL FUNCTION CARRE (X)}\par
+{\f1         REAL X}\par
+{\f1         CARRE = X * X}\par
+{\f1         RETURN}\par
+{\f1         END}\par
+\par
+Appel : Y = CARRE(3.0)\par
+\par
+7.3 Type de retour explicite\par
+\par
+{\f1         DOUBLE PRECISION FUNCTION FACT(N)}\par
+{\f1         INTEGER N, I}\par
+{\f1         FACT = 1.0D0}\par
+{\f1         DO 10 I = 2, N}\par
+{\f1           FACT = FACT * I}\par
+{\f1    10   CONTINUE}\par
+{\f1         RETURN}\par
+{\f1         END}\par
+\par
+7.4 Passage de parametres : toujours par reference (call by reference).\par
+\par
+7.5 Statement function (fonction d'instruction, sur une ligne)\par
+\par
+{\f1         REAL F, X}\par
+{\f1         F(X) = X*X + 2.0*X + 1.0}\par
+{\f1         Y = F(3.0)}\par
+\par
+7.6 EXTERNAL et INTRINSIC\par
+\par
+{\f1         EXTERNAL MAFONC}\par
+{\f1         INTRINSIC SIN, COS}\par
+{\f1         CALL INTEGRE (MAFONC, A, B, RES)}\par
+\par
+7.7 SAVE\par
+Garantit que les variables locales conservent leur valeur entre appels.\par
+\par
+{\f1         SUBROUTINE COMPTE}\par
+{\f1         INTEGER N}\par
+{\f1         SAVE N}\par
+{\f1         DATA N /0/}\par
+{\f1         N = N + 1}\par
+{\f1         END}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_FORTRAN77_06}     {\uldb Suivant >>}{\v IDH_FORTRAN77_08}     {\uldb Table des matieres}{\v IDH_FORTRAN77_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_FORTRAN77_08}
+{\footnote $ FORTRAN 77 - COMMON blocks}
+{\footnote K FORTRAN 77 COMMON;blank common;named common;BLOCK DATA;partage variables;layout memoire}
+\b\fs24 COMMON blocks \b0\fs20\par
+\par
+Les blocs COMMON permettent de partager des variables entre plusieurs unites\par
+de programme.\par
+\par
+Forme blank common :\par
+{\f1         COMMON A, B, C}\par
+\par
+Forme nommee :\par
+{\f1         COMMON /BLOC1/ X, Y, Z(100)}\par
+{\f1         COMMON /CONST/ PI, E}\par
+\par
+BLOCK DATA pour initialiser :\par
+\par
+{\f1         BLOCK DATA}\par
+{\f1         COMMON /CONST/ PI, E}\par
+{\f1         DATA PI, E /3.14159265, 2.71828183/}\par
+{\f1         END}\par
+\par
+Regle d'or : tous les COMMON portant le meme nom doivent avoir le meme layout\par
+memoire (sequence et types compatibles) dans chaque unite.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_FORTRAN77_07}     {\uldb Suivant >>}{\v IDH_FORTRAN77_09}     {\uldb Table des matieres}{\v IDH_FORTRAN77_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_FORTRAN77_09}
+{\footnote $ FORTRAN 77 - Entrees/sorties}
+{\footnote K FORTRAN 77 entrees sorties;WRITE;READ;FORMAT;list-directed;OPEN;CLOSE;ACCESS DIRECT;IOSTAT;REWIND;BACKSPACE;ENDFILE;INQUIRE}
+\b\fs24 Entrees/sorties \b0\fs20\par
+\par
+9.1 E/S formatees\par
+\par
+{\f1   WRITE(unit, format) liste}\par
+{\f1   READ (unit, format) liste}\par
+\par
+Unite : 5 = clavier (defaut READ), 6 = ecran (defaut WRITE), * = standard.\par
+\par
+{\f1         WRITE(*, 100) I, X}\par
+{\f1    100  FORMAT(1X, 'I = ', I5, ' X = ', F10.3)}\par
+\par
+Codes FORMAT courants :\par
+- Iw            entier sur w colonnes\par
+- Fw.d          flottant largeur w, d decimales\par
+- Ew.d          notation scientifique\par
+- Dw.d          double precision scientifique\par
+- Gw.d          format general (F ou E selon valeur)\par
+- Aw            chaine de w caracteres\par
+- Lw            logique\par
+- nX            n espaces\par
+- Tn            tabulation a la colonne n\par
+- /             nouvelle ligne\par
+- '...'         texte litteral\par
+- nH...         Hollerith (legacy)\par
+- (...)         groupe repete : 3(I5,2X)\par
+\par
+9.2 E/S liste-dirigee (list-directed)\par
+\par
+{\f1         WRITE(*, *) 'BONJOUR ', NOM, I, X}\par
+{\f1         READ (*, *) I, J, X}\par
+\par
+9.3 E/S sur fichier\par
+\par
+{\f1         OPEN(UNIT=10, FILE='DONNEES.TXT', STATUS='OLD',}\par
+{\f1        +     ACCESS='SEQUENTIAL', FORM='FORMATTED')}\par
+{\f1         READ(10, 200) I, X}\par
+{\f1         CLOSE(10)}\par
+\par
+Mots-cles OPEN :\par
+- STATUS = 'OLD' / 'NEW' / 'SCRATCH' / 'UNKNOWN'\par
+- ACCESS = 'SEQUENTIAL' / 'DIRECT'\par
+- FORM   = 'FORMATTED' / 'UNFORMATTED'\par
+- RECL   = longueur d'enregistrement (acces direct)\par
+- IOSTAT = variable d'erreur (0 = OK)\par
+- ERR    = etiquette de branchement en cas d'erreur\par
+\par
+9.4 Acces direct\par
+\par
+{\f1         OPEN(UNIT=20, FILE='BASE.DAT', ACCESS='DIRECT',}\par
+{\f1        +     RECL=80, FORM='UNFORMATTED')}\par
+{\f1         READ(20, REC=42) ENREG}\par
+{\f1         WRITE(20, REC=42) ENREG_MODIFIE}\par
+\par
+9.5 Autres instructions E/S\par
+- REWIND(unit)   : retour en debut de fichier\par
+- BACKSPACE(unit): recul d'un enregistrement\par
+- ENDFILE(unit)  : ecrit une marque de fin\par
+- INQUIRE        : interroge l'etat d'un fichier/unite\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_FORTRAN77_08}     {\uldb Suivant >>}{\v IDH_FORTRAN77_10}     {\uldb Table des matieres}{\v IDH_FORTRAN77_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_FORTRAN77_10}
+{\footnote $ FORTRAN 77 - Fonctions intrinseques}
+{\footnote K FORTRAN 77 fonctions intrinseques;ABS;SQRT;EXP;LOG;SIN COS TAN;INT REAL DBLE CMPLX;MAX MIN MOD;LEN INDEX ICHAR CHAR;formes typees DABS DSQRT}
+\b\fs24 Fonctions intrinseques \b0\fs20\par
+\par
+Mathematiques generiques (selection) :\par
+{\f1   ABS(X)         valeur absolue}\par
+{\f1   SQRT(X)        racine carree}\par
+{\f1   EXP(X)         exponentielle}\par
+{\f1   LOG(X) / ALOG  logarithme naturel}\par
+{\f1   LOG10(X)       logarithme decimal}\par
+{\f1   SIN(X) COS(X) TAN(X) ASIN(X) ACOS(X) ATAN(X) ATAN2(Y,X)}\par
+{\f1   SINH(X) COSH(X) TANH(X)}\par
+\par
+Conversion :\par
+{\f1   INT(X)         vers INTEGER (troncature)}\par
+{\f1   REAL(I)        vers REAL}\par
+{\f1   DBLE(X)        vers DOUBLE PRECISION}\par
+{\f1   CMPLX(A,B)     vers COMPLEX}\par
+{\f1   NINT(X)        arrondi vers entier le plus proche}\par
+{\f1   IFIX(X)        legacy : INT pour REAL}\par
+\par
+Manipulation :\par
+{\f1   MAX(...)       maximum}\par
+{\f1   MIN(...)       minimum}\par
+{\f1   MOD(A,B)       reste}\par
+{\f1   SIGN(A,B)      copie le signe de B sur A}\par
+{\f1   DIM(A,B)       positive difference (max(A-B, 0))}\par
+\par
+Chaines :\par
+{\f1   LEN(S)         longueur}\par
+{\f1   INDEX(S, SUB)  position de SUB dans S}\par
+{\f1   ICHAR(C)       code ASCII}\par
+{\f1   CHAR(N)        caractere de code N}\par
+{\f1   LGE/LGT/LLE/LLT comparaisons lexicales}\par
+\par
+Formes typees specifiques (FORTRAN 77 distingue les formes par precision) :\par
+{\f1   IABS, DABS, CABS    ! INTEGER, DOUBLE, COMPLEX}\par
+{\f1   DSQRT, CSQRT}\par
+{\f1   DSIN, DCOS, CSIN}\par
+{\f1   AMAX0, AMAX1, MAX0, MAX1, DMAX1}\par
+{\f1   AMIN0, AMIN1, MIN0, MIN1, DMIN1}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_FORTRAN77_09}     {\uldb Suivant >>}{\v IDH_FORTRAN77_11}     {\uldb Table des matieres}{\v IDH_FORTRAN77_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_FORTRAN77_11}
+{\footnote $ FORTRAN 77 - Operations sur CHARACTER}
+{\footnote K FORTRAN 77 CHARACTER;concatenation //;sous-chaine substring;comparaison lexicale LGE LGT LLE LLT}
+\b\fs24 Operations sur CHARACTER \b0\fs20\par
+\par
+Concatenation :\par
+{\f1         CHARACTER*20 NOM}\par
+{\f1         NOM = 'JEAN' // ' ' // 'DUPONT'}\par
+\par
+Sous-chaine :\par
+{\f1         CHARACTER*10 S}\par
+{\f1         S = 'BONJOUR'}\par
+{\f1         WRITE(*,*) S(1:4)              ! 'BONJ'}\par
+\par
+Comparaison :\par
+{\f1         IF (S1 .EQ. S2) ...}\par
+{\f1         IF (LGE(S1, 'M')) ...          ! comparaison lexicale}\par
+\par
+Affectation : si la chaine de droite est plus courte, completion par espaces a\par
+droite ; si plus longue, troncature.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_FORTRAN77_10}     {\uldb Suivant >>}{\v IDH_FORTRAN77_12}     {\uldb Table des matieres}{\v IDH_FORTRAN77_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_FORTRAN77_12}
+{\footnote $ FORTRAN 77 - Extensions courantes (MIL-STD-1753, VAX, IBM)}
+{\footnote K FORTRAN 77 extensions;MIL-STD-1753;DO WHILE;END DO;IMPLICIT NONE;INTEGER*1 INTEGER*2 INTEGER*4;INCLUDE;NAMELIST;VAX;IBM}
+\b\fs24 Extensions courantes (MIL-STD-1753, VAX, IBM) \b0\fs20\par
+\par
+Ces extensions ne sont pas dans la norme stricte mais largement supportees :\par
+- DO/END DO sans label.\par
+- DO WHILE (condition) / END DO.\par
+- IMPLICIT NONE.\par
+- INTEGER*1, INTEGER*2, INTEGER*4, INTEGER*8, REAL*4, REAL*8.\par
+- Identificateurs > 6 caracteres avec underscore.\par
+- INCLUDE 'fichier.inc' (similaire au #include en C).\par
+- BYTE, LOGICAL*1.\par
+- Commentaires en ligne avec !.\par
+- Constantes hexa : Z'1A' ou '1A'X.\par
+- POINTER (extensions Cray, DEC).\par
+- NAMELIST (E/S structurees nommees).\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_FORTRAN77_11}     {\uldb Suivant >>}{\v IDH_FORTRAN77_13}     {\uldb Table des matieres}{\v IDH_FORTRAN77_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_FORTRAN77_13}
+{\footnote $ FORTRAN 77 - Le compilateur F77C86.PAS}
+{\footnote K FORTRAN 77 compilateur projet;F77C86.PAS;DOS 8086;MASM;COM EXE;IEEE 754}
+\b\fs24 Le compilateur F77C86.PAS \b0\fs20\par
+\par
+F77C86.PAS du projet DEV-COOLS est un compilateur FORTRAN 77 cible 8086 DOS :\par
+- Generation .COM (small) et .EXE (large) via assembleur MASM.\par
+- Types supportes : INTEGER (16/32 bits), REAL (32 bits IEEE 754),\par
+{\f1   DOUBLE PRECISION (64 bits emule logiciel), LOGICAL, CHARACTER, COMPLEX.}\par
+- Bibliotheque mathematique en virgule flottante (sans 80x87 obligatoire).\par
+- E/S formatees subset : I, F, E, A, X, /, '...'.\par
+- DO labelles et DO/END DO.\par
+- IF block, GOTO, CALL, FUNCTION, SUBROUTINE.\par
+- COMMON nommes et blanks.\par
+- DATA et PARAMETER.\par
+- Conventions d'appel reference comme la norme.\par
+\par
+Extensions reconnues : IMPLICIT NONE, ! commentaires, INCLUDE.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_FORTRAN77_12}     {\uldb Suivant >>}{\v IDH_FORTRAN77_14}     {\uldb Table des matieres}{\v IDH_FORTRAN77_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_FORTRAN77_14}
+{\footnote $ FORTRAN 77 - Exemples de programmes}
+{\footnote K FORTRAN 77 exemples;Hello;tableau;moyenne;factorielle;equation second degre;produit matriciel;lecture fichier}
+\b\fs24 Exemples de programmes \b0\fs20\par
+\par
+14.1 Hello World\par
+\par
+{\f1         PROGRAM HELLO}\par
+{\f1         WRITE(*,*) 'BONJOUR LE MONDE'}\par
+{\f1         STOP}\par
+{\f1         END}\par
+\par
+14.2 Somme et moyenne d'un tableau\par
+\par
+{\f1         PROGRAM MOYEN}\par
+{\f1         IMPLICIT NONE}\par
+{\f1         INTEGER N, I}\par
+{\f1         PARAMETER (N = 10)}\par
+{\f1         REAL T(N), SOMME, MOY}\par
+{\f1         DATA T /1.0, 2.0, 3.0, 4.0, 5.0,}\par
+{\f1        +        6.0, 7.0, 8.0, 9.0, 10.0/}\par
+{\f1         SOMME = 0.0}\par
+{\f1         DO 10 I = 1, N}\par
+{\f1           SOMME = SOMME + T(I)}\par
+{\f1    10   CONTINUE}\par
+{\f1         MOY = SOMME / REAL(N)}\par
+{\f1         WRITE(*, 100) SOMME, MOY}\par
+{\f1   100   FORMAT(' SOMME = ', F10.3, ' MOYENNE = ', F10.3)}\par
+{\f1         STOP}\par
+{\f1         END}\par
+\par
+14.3 Factorielle (recursivite INTERDITE en FORTRAN 77, donc iterative)\par
+\par
+{\f1         INTEGER FUNCTION FACT (N)}\par
+{\f1         INTEGER N, I, P}\par
+{\f1         P = 1}\par
+{\f1         DO 10 I = 2, N}\par
+{\f1           P = P * I}\par
+{\f1    10   CONTINUE}\par
+{\f1         FACT = P}\par
+{\f1         RETURN}\par
+{\f1         END}\par
+\par
+{\f1         PROGRAM TESTFC}\par
+{\f1         INTEGER FACT, N}\par
+{\f1         DO 20 N = 0, 10}\par
+{\f1           WRITE(*,*) N, '! = ', FACT(N)}\par
+{\f1    20   CONTINUE}\par
+{\f1         STOP}\par
+{\f1         END}\par
+\par
+14.4 Resolution d'une equation du second degre\par
+\par
+{\f1         PROGRAM QUAD}\par
+{\f1         IMPLICIT NONE}\par
+{\f1         REAL A, B, C, DELTA, X1, X2}\par
+{\f1         WRITE(*,*) 'A, B, C ?'}\par
+{\f1         READ(*,*) A, B, C}\par
+{\f1         DELTA = B*B - 4.0*A*C}\par
+{\f1         IF (DELTA .GT. 0.0) THEN}\par
+{\f1           X1 = (-B + SQRT(DELTA)) / (2.0*A)}\par
+{\f1           X2 = (-B - SQRT(DELTA)) / (2.0*A)}\par
+{\f1           WRITE(*,*) 'X1 = ', X1, ' X2 = ', X2}\par
+{\f1         ELSE IF (DELTA .EQ. 0.0) THEN}\par
+{\f1           WRITE(*,*) 'X = ', -B / (2.0*A)}\par
+{\f1         ELSE}\par
+{\f1           WRITE(*,*) 'PAS DE RACINE REELLE'}\par
+{\f1         END IF}\par
+{\f1         STOP}\par
+{\f1         END}\par
+\par
+14.5 Produit matriciel\par
+\par
+{\f1         SUBROUTINE PRODMAT (A, B, C, N)}\par
+{\f1         INTEGER N, I, J, K}\par
+{\f1         REAL A(N,N), B(N,N), C(N,N), S}\par
+{\f1         DO 30 I = 1, N}\par
+{\f1           DO 20 J = 1, N}\par
+{\f1             S = 0.0}\par
+{\f1             DO 10 K = 1, N}\par
+{\f1               S = S + A(I,K) * B(K,J)}\par
+{\f1    10       CONTINUE}\par
+{\f1             C(I,J) = S}\par
+{\f1    20     CONTINUE}\par
+{\f1    30   CONTINUE}\par
+{\f1         RETURN}\par
+{\f1         END}\par
+\par
+14.6 Lecture d'un fichier sequentiel\par
+\par
+{\f1         PROGRAM LECTFICH}\par
+{\f1         IMPLICIT NONE}\par
+{\f1         INTEGER I, IOS}\par
+{\f1         REAL X}\par
+{\f1         OPEN(10, FILE='DONNEES.TXT', STATUS='OLD')}\par
+{\f1    10   READ(10, *, IOSTAT=IOS) I, X}\par
+{\f1         IF (IOS .NE. 0) GOTO 20}\par
+{\f1           WRITE(*,*) I, X}\par
+{\f1           GOTO 10}\par
+{\f1    20   CLOSE(10)}\par
+{\f1         STOP}\par
+{\f1         END}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_FORTRAN77_13}     {\uldb Suivant >>}{\v IDH_FORTRAN77_15}     {\uldb Table des matieres}{\v IDH_FORTRAN77_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_FORTRAN77_15}
+{\footnote $ FORTRAN 77 - Bonnes pratiques en FORTRAN 77}
+{\footnote K FORTRAN 77 bonnes pratiques;IMPLICIT NONE;PARAMETER;indentation;IOSTAT;deprecies;GOTO;ASSIGN;PAUSE}
+\b\fs24 Bonnes pratiques en FORTRAN 77 \b0\fs20\par
+\par
+- TOUJOURS utiliser IMPLICIT NONE et declarer explicitement chaque variable.\par
+- Utiliser PARAMETER pour les constantes magiques.\par
+- Indenter les blocs IF/DO meme si le format colonne n'y oblige pas.\par
+- Preferer DO/END DO aux DO labelles si l'extension est disponible.\par
+- Eviter GOTO, IF arithmetique, ASSIGN/GOTO assigne, PAUSE (deprecies des 1990).\par
+- Mettre les COMMON et DATA dans un fichier .INC partage via INCLUDE.\par
+- Verifier IOSTAT systematiquement apres OPEN/READ/WRITE/CLOSE.\par
+- Ne pas modifier les parametres d'une FUNCTION (effet de bord interdit norme).\par
+- Utiliser DOUBLE PRECISION pour les calculs numeriques sensibles.\par
+- Eviter EQUIVALENCE sauf pour interfaces materielles tres specifiques.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_FORTRAN77_14}     {\uldb Suivant >>}{\v IDH_FORTRAN77_16}     {\uldb Table des matieres}{\v IDH_FORTRAN77_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_FORTRAN77_16}
+{\footnote $ FORTRAN 77 - Influence et heritage}
+{\footnote K FORTRAN 77 influence;LAPACK;BLAS;NAG;IMSL;LINPACK;EISPACK;ARPACK;MINPACK;CERNLIB;ANSYS;NASTRAN;gfortran;Intel Fortran;LFortran}
+\b\fs24 Influence et heritage \b0\fs20\par
+\par
+FORTRAN 77 a directement influence ou est utilise dans :\par
+- LAPACK / BLAS : algebre lineaire numerique (Reference BLAS en Fortran 77).\par
+- NAG, IMSL : bibliotheques numeriques commerciales.\par
+- LINPACK, EISPACK : ancetres de LAPACK.\par
+- ARPACK : valeurs propres pour matrices creuses.\par
+- MINPACK : moindres carres non lineaires.\par
+- Codes climat (NCAR CCM, ECMWF IFS), meteo (WRF), CFD (OpenFOAM en C++ mais\par
+{\f1   appelle Fortran), physique des particules (CERNLIB).}\par
+- ANSYS, NASTRAN, ABAQUS (cores historiques).\par
+\par
+Fortran moderne (90/95/2003/2008/2018) reste compatible ascendant : un\par
+programme FORTRAN 77 correct compile et fonctionne avec un compilateur\par
+Fortran 2018 actuel (gfortran, Intel Fortran ifx, NVIDIA HPC SDK).\par
+\par
+Compilateurs modernes :\par
+- gfortran (GCC).\par
+- Intel oneAPI Fortran (ifx, anciennement ifort).\par
+- NVIDIA HPC SDK Fortran (nvfortran).\par
+- IBM XL Fortran.\par
+- LFortran (recent, modulaire, LLVM).\par
+- Open64, Cray Fortran (CCE).\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_FORTRAN77_15}     {\uldb Suivant >>}{\v IDH_FORTRAN77_17}     {\uldb Table des matieres}{\v IDH_FORTRAN77_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_FORTRAN77_17}
+{\footnote $ FORTRAN 77 - References}
+{\footnote K FORTRAN 77 references;bibliographie;ANSI X3.9-1978;ISO 1539:1980;MIL-STD-1753;Metcalf Reid;Numerical Recipes;Backus}
+\b\fs24 References \b0\fs20\par
+\par
+- ANSI X3.9-1978 : "American National Standard Programming Language FORTRAN",\par
+{\f1   ANSI, 1978.}\par
+- ISO 1539:1980 : "Programming languages - FORTRAN" (adoption ISO du standard\par
+{\f1   ANSI 77).}\par
+- MIL-STD-1753 : "FORTRAN, DoD Supplement to American National Standard\par
+{\f1   X3.9-1978", US DoD, 1978.}\par
+- Metcalf, M.; Reid, J. : "FORTRAN 77 Featuring Structured and Disciplined\par
+{\f1   Programming", Oxford University Press, 1985.}\par
+- Kernighan, B.W.; Plauger, P.J. : "The Elements of Programming Style"\par
+{\f1   (exemples FORTRAN).}\par
+- Press, W.H.; Teukolsky, S.A.; Vetterling, W.T.; Flannery, B.P. :\par
+{\f1   "Numerical Recipes in FORTRAN 77 - The Art of Scientific Computing",}\par
+{\f1   Cambridge University Press, 2eme ed. 1992.}\par
+- Backus, J. : "The History of FORTRAN I, II and III", ACM SIGPLAN Notices,\par
+{\f1   Vol. 13 No. 8, 1978.}\par
+- "FORTRAN Automatic Coding System for the IBM 704", IBM, 1956 (manuel\par
+{\f1   original par John Backus).}\par
+\par
+{\f1                               FIN DU DOCUMENT}\par
+
+\par
+{\uldb << Precedent}{\v IDH_FORTRAN77_16}     {\uldb Table des matieres}{\v IDH_FORTRAN77_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+}

@@ -1,0 +1,680 @@
+================================================================================
+                  SPECIFICATIONS DU LANGAGE DE PROGRAMMATION FORTRAN 77
+================================================================================
+
+Document de reference pour l'integration dans le systeme d'aide DEVENV.HLP.
+Couvre la norme ANSI X3.9-1978 (FORTRAN 77, ISO 1539:1980) ainsi que les
+extensions courantes (MIL-STD-1753, VAX, IBM). Le compilateur F77C86.PAS du
+projet DEV-COOLS implemente un sous-ensemble proche de la norme.
+
+
+================================================================================
+1. Presentation generale
+================================================================================
+
+FORTRAN (FORmula TRANslation) est l'un des plus anciens langages de
+programmation de haut niveau encore en usage. Concu par John Backus chez IBM
+entre 1954 et 1957 pour l'IBM 704, il a domine le calcul scientifique pendant
+plus de 30 ans et reste tres present dans les bibliotheques numeriques (LAPACK,
+BLAS, NAG, ARPACK) et les codes de simulation (CFD, meteo, mecanique des
+solides, physique des plasmas, climat).
+
+Historique :
+- 1954-1957 : conception et premiere implementation FORTRAN sur IBM 704.
+- 1958 : FORTRAN II (sous-programmes SUBROUTINE/FUNCTION).
+- 1962 : FORTRAN IV (suppression des dependances machine de FORTRAN II).
+- 1966 : FORTRAN 66 (ANSI X3.9-1966) - premiere norme.
+- 1978 : FORTRAN 77 (ANSI X3.9-1978, ISO 1539:1980) - ce document.
+- 1991 : Fortran 90 (formes libres, modules, allocations dynamiques).
+- 1997 : Fortran 95 (FORALL, WHERE, PURE).
+- 2004/2010/2018/2023 : Fortran 2003, 2008, 2018, 2023 (POO, coarrays, etc.).
+
+FORTRAN 77 marque une etape majeure : ajout des blocs IF/THEN/ELSE/ENDIF, du
+type CHARACTER, des E/S a acces direct, des fichiers nommes, et de la
+parametrisation des constantes via PARAMETER.
+
+Caracteristiques distinctives :
+- Langage compile a typage statique fort (typage implicite par lettre initiale
+  sauf si declare).
+- Optimisation aggressive possible (pas d'aliasing par defaut dans la norme).
+- Format colonne fixe heritier des cartes perforees IBM (80 colonnes).
+- Tableaux multidimensionnels natifs avec stockage column-major.
+- Arithmetique flottante normalisee (REAL, DOUBLE PRECISION, COMPLEX).
+- Sous-programmes SUBROUTINE et FUNCTION avec passage par reference.
+- COMMON blocks pour partage de donnees inter-modules.
+
+
+================================================================================
+2. Structure d'un programme FORTRAN 77
+================================================================================
+
+Un programme FORTRAN 77 se compose d'unites de programme :
+- 1 PROGRAM principal (optionnel, le nom peut etre omis).
+- 0 ou plusieurs SUBROUTINE (sous-programmes sans valeur de retour).
+- 0 ou plusieurs FUNCTION (sous-programmes avec valeur de retour).
+- 0 ou plusieurs BLOCK DATA (initialisation de COMMON).
+
+Forme generale d'une unite :
+
+        PROGRAM HELLO
+        IMPLICIT NONE
+        INTEGER I
+        REAL X
+C       Instructions executables
+        I = 10
+        X = 3.14
+        WRITE(*,*) 'I = ', I, ' X = ', X
+        STOP
+        END
+
+Ordre des instructions dans une unite :
+1. Instruction d'en-tete (PROGRAM/SUBROUTINE/FUNCTION/BLOCK DATA).
+2. IMPLICIT (optionnel).
+3. PARAMETER, declarations de type (INTEGER, REAL, ...), COMMON, EXTERNAL,
+   INTRINSIC, SAVE, DIMENSION, EQUIVALENCE, DATA.
+4. Instructions FORMAT et de fonctions-instruction (statement functions).
+5. Instructions executables.
+6. END (obligatoire en derniere ligne).
+
+
+================================================================================
+3. Format colonne fixe et caracteristiques lexicales
+================================================================================
+
+Le format source FORTRAN 77 est strictement colonne :
+
+  Colonnes 1     : C ou * = commentaire ; chiffre/lettre = label si col. 1-5
+  Colonnes 1-5   : etiquette numerique (label) 1..99999
+  Colonne  6     : caractere de continuation (non blanc, non zero)
+                   indique que la ligne continue la precedente
+  Colonnes 7-72  : instructions FORTRAN
+  Colonnes 73-80 : sequenceur (ignore par le compilateur)
+
+Exemples :
+
+  C This is a comment in column 1
+        WRITE(*,*) 'Premiere ligne, ',
+       +           'suite sur la deuxieme'
+   100  FORMAT(I5,2X,F10.3)
+
+Identificateurs :
+- 1 a 6 caracteres (norme stricte), lettres et chiffres, commencent par lettre.
+- Insensibles a la casse (souvent ecrits en majuscules par convention).
+- Beaucoup de compilateurs etendent a 31+ caracteres et acceptent _ et $.
+
+Typage implicite par defaut (sauf IMPLICIT NONE) :
+- I, J, K, L, M, N : INTEGER
+- A-H, O-Z         : REAL
+
+Litteraux :
+- Entiers : 42, -17, +255
+- Reels simple : 3.14, 1.5E-3, 1E6
+- Reels double : 3.14D0, 1.5D-3
+- Complexes : (1.0, 2.0)
+- Logiques : .TRUE., .FALSE.
+- Chaines : 'BONJOUR', 'L''APOSTROPHE' (doublee)
+- Hollerith (legacy) : 7HBONJOUR (compte de caracteres + H)
+
+
+================================================================================
+4. Types de donnees
+================================================================================
+
+FORTRAN 77 definit six types intrinseques :
+
+  INTEGER            "entier signe, typiquement 16 ou 32 bits"
+  REAL               "flottant simple precision (32 bits IEEE)"
+  DOUBLE PRECISION   "flottant double precision (64 bits IEEE)"
+  COMPLEX            "nombre complexe (2 x REAL)"
+  LOGICAL            "booleen (.TRUE./.FALSE.)"
+  CHARACTER          "chaine de caracteres a longueur fixe"
+
+Exemples de declarations :
+
+        INTEGER I, J, COUNT
+        REAL X, Y, Z
+        DOUBLE PRECISION PI
+        COMPLEX Z1, Z2
+        LOGICAL DONE, FOUND
+        CHARACTER*10 NOM
+        CHARACTER*(*) MESSAGE     ! longueur heritee du parametre
+
+Tableaux (DIMENSION) :
+- Stockage column-major : T(I,J) varie d'abord sur I.
+- Indice par defaut commence a 1.
+
+        DIMENSION A(100), B(10,20), C(0:9, -5:5)
+        REAL MAT(3,3)
+        INTEGER VECT(100)
+
+PARAMETER (constantes nommees) :
+
+        INTEGER NMAX
+        PARAMETER (NMAX = 100)
+        REAL PI
+        PARAMETER (PI = 3.14159265)
+
+DATA (initialisation statique) :
+
+        INTEGER I, J
+        REAL T(5)
+        DATA I, J /10, 20/
+        DATA T /1.0, 2.0, 3.0, 4.0, 5.0/
+        DATA (T(K), K=1,5) /5*0.0/    ! repetition
+
+EQUIVALENCE (alias de stockage) :
+
+        REAL A(100), B(100)
+        EQUIVALENCE (A(1), B(1))      ! meme zone memoire
+
+
+================================================================================
+5. Operateurs
+================================================================================
+
+Arithmetiques : + - * / **         (** = puissance)
+Relationnels  : .EQ. .NE. .LT. .LE. .GT. .GE.
+Logiques      : .NOT. .AND. .OR. .EQV. .NEQV.
+Caracteres    : //                 (concatenation)
+Affectation   : =
+
+Precedence (du plus prioritaire au moins) :
+  1. **         (associativite droite : 2**3**2 = 2**(3**2) = 512)
+  2. * /
+  3. + - (unaires puis binaires)
+  4. //
+  5. .EQ. .NE. .LT. .LE. .GT. .GE.
+  6. .NOT.
+  7. .AND.
+  8. .OR.
+  9. .EQV. .NEQV.
+
+Conversions implicites : INTEGER -> REAL -> DOUBLE PRECISION -> COMPLEX dans
+les expressions mixtes.
+
+
+================================================================================
+6. Instructions de controle
+================================================================================
+
+6.1 Affectation
+        X = 3.14
+        T(I) = T(I) + 1.0
+        NOM = 'DUPONT'
+
+6.2 IF logique (une ligne)
+        IF (X .GT. 0.0) Y = SQRT(X)
+
+6.3 IF arithmetique (legacy FORTRAN II/IV, deprecie)
+        IF (X) 10, 20, 30
+C       saute en 10 si X<0, 20 si X=0, 30 si X>0
+
+6.4 IF/THEN/ELSE/ENDIF (bloc, ajoute en FORTRAN 77)
+        IF (X .GT. 0.0) THEN
+          Y = LOG(X)
+        ELSE IF (X .EQ. 0.0) THEN
+          Y = 0.0
+        ELSE
+          Y = -1.0
+        END IF
+
+6.5 DO (boucle iterative)
+        DO 10 I = 1, 100
+          SOMME = SOMME + T(I)
+   10   CONTINUE
+
+Avec pas explicite :
+        DO 20 I = 100, 1, -1
+          T(I) = 0.0
+   20   CONTINUE
+
+Forme DO/END DO (extension MIL-STD-1753, tres repandue) :
+        DO I = 1, N
+          T(I) = I * I
+        END DO
+
+6.6 GOTO
+        GOTO 100
+        GOTO (10, 20, 30), I      ! GOTO calcule
+        GOTO LBL, (10, 20, 30)    ! GOTO assigne (deprecie)
+
+6.7 CONTINUE
+        Instruction nulle, sert souvent de point d'arrivee pour DO ou GOTO.
+
+6.8 STOP et END
+        STOP                       ! arret normal
+        STOP 'MESSAGE'             ! arret avec message
+        STOP 99                    ! code de sortie
+        END                        ! fin d'unite (obligatoire)
+
+6.9 PAUSE
+        PAUSE 'APPUYEZ SUR ENTREE' ! suspend l'execution (deprecie)
+
+6.10 RETURN
+        RETURN                     ! retour de SUBROUTINE/FUNCTION
+        RETURN 1                   ! retour alternatif (alternate return)
+
+
+================================================================================
+7. Sous-programmes : SUBROUTINE et FUNCTION
+================================================================================
+
+7.1 SUBROUTINE
+
+        SUBROUTINE ECHANGE (A, B)
+        REAL A, B, T
+        T = A
+        A = B
+        B = T
+        RETURN
+        END
+
+Appel :
+        CALL ECHANGE (X, Y)
+
+7.2 FUNCTION
+
+        REAL FUNCTION CARRE (X)
+        REAL X
+        CARRE = X * X
+        RETURN
+        END
+
+Appel : Y = CARRE(3.0)
+
+7.3 Type de retour explicite
+
+        DOUBLE PRECISION FUNCTION FACT(N)
+        INTEGER N, I
+        FACT = 1.0D0
+        DO 10 I = 2, N
+          FACT = FACT * I
+   10   CONTINUE
+        RETURN
+        END
+
+7.4 Passage de parametres : toujours par reference (call by reference).
+
+7.5 Statement function (fonction d'instruction, sur une ligne)
+
+        REAL F, X
+        F(X) = X*X + 2.0*X + 1.0
+        Y = F(3.0)
+
+7.6 EXTERNAL et INTRINSIC
+
+        EXTERNAL MAFONC
+        INTRINSIC SIN, COS
+        CALL INTEGRE (MAFONC, A, B, RES)
+
+7.7 SAVE
+Garantit que les variables locales conservent leur valeur entre appels.
+
+        SUBROUTINE COMPTE
+        INTEGER N
+        SAVE N
+        DATA N /0/
+        N = N + 1
+        END
+
+
+================================================================================
+8. COMMON blocks
+================================================================================
+
+Les blocs COMMON permettent de partager des variables entre plusieurs unites
+de programme.
+
+Forme blank common :
+        COMMON A, B, C
+
+Forme nommee :
+        COMMON /BLOC1/ X, Y, Z(100)
+        COMMON /CONST/ PI, E
+
+BLOCK DATA pour initialiser :
+
+        BLOCK DATA
+        COMMON /CONST/ PI, E
+        DATA PI, E /3.14159265, 2.71828183/
+        END
+
+Regle d'or : tous les COMMON portant le meme nom doivent avoir le meme layout
+memoire (sequence et types compatibles) dans chaque unite.
+
+
+================================================================================
+9. Entrees/sorties
+================================================================================
+
+9.1 E/S formatees
+
+  WRITE(unit, format) liste
+  READ (unit, format) liste
+
+Unite : 5 = clavier (defaut READ), 6 = ecran (defaut WRITE), * = standard.
+
+        WRITE(*, 100) I, X
+   100  FORMAT(1X, 'I = ', I5, ' X = ', F10.3)
+
+Codes FORMAT courants :
+- Iw            entier sur w colonnes
+- Fw.d          flottant largeur w, d decimales
+- Ew.d          notation scientifique
+- Dw.d          double precision scientifique
+- Gw.d          format general (F ou E selon valeur)
+- Aw            chaine de w caracteres
+- Lw            logique
+- nX            n espaces
+- Tn            tabulation a la colonne n
+- /             nouvelle ligne
+- '...'         texte litteral
+- nH...         Hollerith (legacy)
+- (...)         groupe repete : 3(I5,2X)
+
+9.2 E/S liste-dirigee (list-directed)
+
+        WRITE(*, *) 'BONJOUR ', NOM, I, X
+        READ (*, *) I, J, X
+
+9.3 E/S sur fichier
+
+        OPEN(UNIT=10, FILE='DONNEES.TXT', STATUS='OLD',
+       +     ACCESS='SEQUENTIAL', FORM='FORMATTED')
+        READ(10, 200) I, X
+        CLOSE(10)
+
+Mots-cles OPEN :
+- STATUS = 'OLD' / 'NEW' / 'SCRATCH' / 'UNKNOWN'
+- ACCESS = 'SEQUENTIAL' / 'DIRECT'
+- FORM   = 'FORMATTED' / 'UNFORMATTED'
+- RECL   = longueur d'enregistrement (acces direct)
+- IOSTAT = variable d'erreur (0 = OK)
+- ERR    = etiquette de branchement en cas d'erreur
+
+9.4 Acces direct
+
+        OPEN(UNIT=20, FILE='BASE.DAT', ACCESS='DIRECT',
+       +     RECL=80, FORM='UNFORMATTED')
+        READ(20, REC=42) ENREG
+        WRITE(20, REC=42) ENREG_MODIFIE
+
+9.5 Autres instructions E/S
+- REWIND(unit)   : retour en debut de fichier
+- BACKSPACE(unit): recul d'un enregistrement
+- ENDFILE(unit)  : ecrit une marque de fin
+- INQUIRE        : interroge l'etat d'un fichier/unite
+
+
+================================================================================
+10. Fonctions intrinseques
+================================================================================
+
+Mathematiques generiques (selection) :
+  ABS(X)         valeur absolue
+  SQRT(X)        racine carree
+  EXP(X)         exponentielle
+  LOG(X) / ALOG  logarithme naturel
+  LOG10(X)       logarithme decimal
+  SIN(X) COS(X) TAN(X) ASIN(X) ACOS(X) ATAN(X) ATAN2(Y,X)
+  SINH(X) COSH(X) TANH(X)
+
+Conversion :
+  INT(X)         vers INTEGER (troncature)
+  REAL(I)        vers REAL
+  DBLE(X)        vers DOUBLE PRECISION
+  CMPLX(A,B)     vers COMPLEX
+  NINT(X)        arrondi vers entier le plus proche
+  IFIX(X)        legacy : INT pour REAL
+
+Manipulation :
+  MAX(...)       maximum
+  MIN(...)       minimum
+  MOD(A,B)       reste
+  SIGN(A,B)      copie le signe de B sur A
+  DIM(A,B)       positive difference (max(A-B, 0))
+
+Chaines :
+  LEN(S)         longueur
+  INDEX(S, SUB)  position de SUB dans S
+  ICHAR(C)       code ASCII
+  CHAR(N)        caractere de code N
+  LGE/LGT/LLE/LLT comparaisons lexicales
+
+Formes typees specifiques (FORTRAN 77 distingue les formes par precision) :
+  IABS, DABS, CABS    ! INTEGER, DOUBLE, COMPLEX
+  DSQRT, CSQRT
+  DSIN, DCOS, CSIN
+  AMAX0, AMAX1, MAX0, MAX1, DMAX1
+  AMIN0, AMIN1, MIN0, MIN1, DMIN1
+
+
+================================================================================
+11. Operations sur CHARACTER
+================================================================================
+
+Concatenation :
+        CHARACTER*20 NOM
+        NOM = 'JEAN' // ' ' // 'DUPONT'
+
+Sous-chaine :
+        CHARACTER*10 S
+        S = 'BONJOUR'
+        WRITE(*,*) S(1:4)              ! 'BONJ'
+
+Comparaison :
+        IF (S1 .EQ. S2) ...
+        IF (LGE(S1, 'M')) ...          ! comparaison lexicale
+
+Affectation : si la chaine de droite est plus courte, completion par espaces a
+droite ; si plus longue, troncature.
+
+
+================================================================================
+12. Extensions courantes (MIL-STD-1753, VAX, IBM)
+================================================================================
+
+Ces extensions ne sont pas dans la norme stricte mais largement supportees :
+- DO/END DO sans label.
+- DO WHILE (condition) / END DO.
+- IMPLICIT NONE.
+- INTEGER*1, INTEGER*2, INTEGER*4, INTEGER*8, REAL*4, REAL*8.
+- Identificateurs > 6 caracteres avec underscore.
+- INCLUDE 'fichier.inc' (similaire au #include en C).
+- BYTE, LOGICAL*1.
+- Commentaires en ligne avec !.
+- Constantes hexa : Z'1A' ou '1A'X.
+- POINTER (extensions Cray, DEC).
+- NAMELIST (E/S structurees nommees).
+
+
+================================================================================
+13. Le compilateur F77C86.PAS
+================================================================================
+
+F77C86.PAS du projet DEV-COOLS est un compilateur FORTRAN 77 cible 8086 DOS :
+- Generation .COM (small) et .EXE (large) via assembleur MASM.
+- Types supportes : INTEGER (16/32 bits), REAL (32 bits IEEE 754),
+  DOUBLE PRECISION (64 bits emule logiciel), LOGICAL, CHARACTER, COMPLEX.
+- Bibliotheque mathematique en virgule flottante (sans 80x87 obligatoire).
+- E/S formatees subset : I, F, E, A, X, /, '...'.
+- DO labelles et DO/END DO.
+- IF block, GOTO, CALL, FUNCTION, SUBROUTINE.
+- COMMON nommes et blanks.
+- DATA et PARAMETER.
+- Conventions d'appel reference comme la norme.
+
+Extensions reconnues : IMPLICIT NONE, ! commentaires, INCLUDE.
+
+
+================================================================================
+14. Exemples de programmes
+================================================================================
+
+14.1 Hello World
+
+        PROGRAM HELLO
+        WRITE(*,*) 'BONJOUR LE MONDE'
+        STOP
+        END
+
+14.2 Somme et moyenne d'un tableau
+
+        PROGRAM MOYEN
+        IMPLICIT NONE
+        INTEGER N, I
+        PARAMETER (N = 10)
+        REAL T(N), SOMME, MOY
+        DATA T /1.0, 2.0, 3.0, 4.0, 5.0,
+       +        6.0, 7.0, 8.0, 9.0, 10.0/
+        SOMME = 0.0
+        DO 10 I = 1, N
+          SOMME = SOMME + T(I)
+   10   CONTINUE
+        MOY = SOMME / REAL(N)
+        WRITE(*, 100) SOMME, MOY
+  100   FORMAT(' SOMME = ', F10.3, ' MOYENNE = ', F10.3)
+        STOP
+        END
+
+14.3 Factorielle (recursivite INTERDITE en FORTRAN 77, donc iterative)
+
+        INTEGER FUNCTION FACT (N)
+        INTEGER N, I, P
+        P = 1
+        DO 10 I = 2, N
+          P = P * I
+   10   CONTINUE
+        FACT = P
+        RETURN
+        END
+
+        PROGRAM TESTFC
+        INTEGER FACT, N
+        DO 20 N = 0, 10
+          WRITE(*,*) N, '! = ', FACT(N)
+   20   CONTINUE
+        STOP
+        END
+
+14.4 Resolution d'une equation du second degre
+
+        PROGRAM QUAD
+        IMPLICIT NONE
+        REAL A, B, C, DELTA, X1, X2
+        WRITE(*,*) 'A, B, C ?'
+        READ(*,*) A, B, C
+        DELTA = B*B - 4.0*A*C
+        IF (DELTA .GT. 0.0) THEN
+          X1 = (-B + SQRT(DELTA)) / (2.0*A)
+          X2 = (-B - SQRT(DELTA)) / (2.0*A)
+          WRITE(*,*) 'X1 = ', X1, ' X2 = ', X2
+        ELSE IF (DELTA .EQ. 0.0) THEN
+          WRITE(*,*) 'X = ', -B / (2.0*A)
+        ELSE
+          WRITE(*,*) 'PAS DE RACINE REELLE'
+        END IF
+        STOP
+        END
+
+14.5 Produit matriciel
+
+        SUBROUTINE PRODMAT (A, B, C, N)
+        INTEGER N, I, J, K
+        REAL A(N,N), B(N,N), C(N,N), S
+        DO 30 I = 1, N
+          DO 20 J = 1, N
+            S = 0.0
+            DO 10 K = 1, N
+              S = S + A(I,K) * B(K,J)
+   10       CONTINUE
+            C(I,J) = S
+   20     CONTINUE
+   30   CONTINUE
+        RETURN
+        END
+
+14.6 Lecture d'un fichier sequentiel
+
+        PROGRAM LECTFICH
+        IMPLICIT NONE
+        INTEGER I, IOS
+        REAL X
+        OPEN(10, FILE='DONNEES.TXT', STATUS='OLD')
+   10   READ(10, *, IOSTAT=IOS) I, X
+        IF (IOS .NE. 0) GOTO 20
+          WRITE(*,*) I, X
+          GOTO 10
+   20   CLOSE(10)
+        STOP
+        END
+
+
+================================================================================
+15. Bonnes pratiques en FORTRAN 77
+================================================================================
+
+- TOUJOURS utiliser IMPLICIT NONE et declarer explicitement chaque variable.
+- Utiliser PARAMETER pour les constantes magiques.
+- Indenter les blocs IF/DO meme si le format colonne n'y oblige pas.
+- Preferer DO/END DO aux DO labelles si l'extension est disponible.
+- Eviter GOTO, IF arithmetique, ASSIGN/GOTO assigne, PAUSE (deprecies des 1990).
+- Mettre les COMMON et DATA dans un fichier .INC partage via INCLUDE.
+- Verifier IOSTAT systematiquement apres OPEN/READ/WRITE/CLOSE.
+- Ne pas modifier les parametres d'une FUNCTION (effet de bord interdit norme).
+- Utiliser DOUBLE PRECISION pour les calculs numeriques sensibles.
+- Eviter EQUIVALENCE sauf pour interfaces materielles tres specifiques.
+
+
+================================================================================
+16. Influence et heritage
+================================================================================
+
+FORTRAN 77 a directement influence ou est utilise dans :
+- LAPACK / BLAS : algebre lineaire numerique (Reference BLAS en Fortran 77).
+- NAG, IMSL : bibliotheques numeriques commerciales.
+- LINPACK, EISPACK : ancetres de LAPACK.
+- ARPACK : valeurs propres pour matrices creuses.
+- MINPACK : moindres carres non lineaires.
+- Codes climat (NCAR CCM, ECMWF IFS), meteo (WRF), CFD (OpenFOAM en C++ mais
+  appelle Fortran), physique des particules (CERNLIB).
+- ANSYS, NASTRAN, ABAQUS (cores historiques).
+
+Fortran moderne (90/95/2003/2008/2018) reste compatible ascendant : un
+programme FORTRAN 77 correct compile et fonctionne avec un compilateur
+Fortran 2018 actuel (gfortran, Intel Fortran ifx, NVIDIA HPC SDK).
+
+Compilateurs modernes :
+- gfortran (GCC).
+- Intel oneAPI Fortran (ifx, anciennement ifort).
+- NVIDIA HPC SDK Fortran (nvfortran).
+- IBM XL Fortran.
+- LFortran (recent, modulaire, LLVM).
+- Open64, Cray Fortran (CCE).
+
+
+================================================================================
+17. References
+================================================================================
+
+- ANSI X3.9-1978 : "American National Standard Programming Language FORTRAN",
+  ANSI, 1978.
+- ISO 1539:1980 : "Programming languages - FORTRAN" (adoption ISO du standard
+  ANSI 77).
+- MIL-STD-1753 : "FORTRAN, DoD Supplement to American National Standard
+  X3.9-1978", US DoD, 1978.
+- Metcalf, M.; Reid, J. : "FORTRAN 77 Featuring Structured and Disciplined
+  Programming", Oxford University Press, 1985.
+- Kernighan, B.W.; Plauger, P.J. : "The Elements of Programming Style"
+  (exemples FORTRAN).
+- Press, W.H.; Teukolsky, S.A.; Vetterling, W.T.; Flannery, B.P. :
+  "Numerical Recipes in FORTRAN 77 - The Art of Scientific Computing",
+  Cambridge University Press, 2eme ed. 1992.
+- Backus, J. : "The History of FORTRAN I, II and III", ACM SIGPLAN Notices,
+  Vol. 13 No. 8, 1978.
+- "FORTRAN Automatic Coding System for the IBM 704", IBM, 1956 (manuel
+  original par John Backus).
+
+================================================================================
+                              FIN DU DOCUMENT
+================================================================================
