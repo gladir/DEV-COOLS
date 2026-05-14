@@ -1,0 +1,1377 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}
+
+{\footnote # IDH_MODULA3_01}
+{\footnote $ Modula-3 - PRESENTATION}
+{\footnote K Modula-3 presentation;Cardelli;Nelson;DEC SRC;Olivetti;Modula-2+;Cedar;SRC Modula-3;CM3}
+\b\fs24 PRESENTATION \b0\fs20\par
+\par
+Modula-3 a ete concu entre 1986 et 1989 chez Digital Equipment\par
+Corporation Systems Research Center (DEC SRC) et Olivetti\par
+Research Center par Luca Cardelli, Jim Donahue, Mick Jordan,\par
+Bill Kalsow et Greg Nelson. Il prolonge Modula-2+ et integre\par
+les idees de Cedar (Xerox PARC).\par
+\par
+Modula-3 reunit en un seul langage homogene :\par
+\par
+{\f1   - Modularite forte (interfaces/implementations separees)}\par
+{\f1   - Programmation orientee objet par sous-typage avec}\par
+{\f1     OBJECT et methodes liees}\par
+{\f1   - Securite memoire avec ramasse-miettes (garbage collector)}\par
+{\f1   - Threads natifs avec moniteurs (MUTEX, CONDITION)}\par
+{\f1   - Exceptions structurees (TRY/EXCEPT/FINALLY)}\par
+{\f1   - Generiques (modules parametres)}\par
+{\f1   - Code "non securise" isole dans UNSAFE INTERFACE/MODULE}\par
+{\f1   - Pickles (serialisation), Network Objects (RPC)}\par
+\par
+Modula-3 est un langage :\par
+\par
+{\f1   - Compile, a typage statique tres fort}\par
+{\f1   - Sensible a la casse (mots-cles MAJUSCULES obligatoires)}\par
+{\f1   - Imperatif + objet + concurrent}\par
+{\f1   - Modulaire (INTERFACE + MODULE)}\par
+{\f1   - Avec gestion automatique de la memoire}\par
+{\f1   - Petit (langage de base d'environ 50 mots reserves)}\par
+\par
+Histoire et implementations :\par
+\par
+{\f1   - 1988    : premier rapport, langage stabilise}\par
+{\f1   - 1989    : SRC Modula-3, compilateur de reference}\par
+{\f1   - 1991    : livre de Nelson, definition finale}\par
+{\f1   - 1992    : Modula-3 Language Definition (rev. 1.0)}\par
+{\f1   - 1994    : DEC SRC M3, CM3 (Critical Mass)}\par
+{\f1   - 2000    : Compaq M3 (apres rachat de DEC)}\par
+{\f1   - 2002    : CM3 open source via Critical Mass Inc.}\par
+{\f1   - 2010+   : Maintenance communautaire (modula3.elegosoft.com)}\par
+\par
+Extensions de fichiers reconnues :\par
+\par
+{\f1   .i3      Fichier INTERFACE (specification publique)}\par
+{\f1   .m3      Fichier MODULE (implementation)}\par
+{\f1   .ig      Fichier INTERFACE generique}\par
+{\f1   .mg      Fichier MODULE generique}\par
+{\f1   .io      Fichier interface compilee (objet)}\par
+{\f1   .mo      Fichier module compile (objet)}\par
+\par
+\par
+\par
+\b Sections suivantes : \b0\par
+\par
+{\f1  2. STRUCTURE D'UN PROGRAMME}     {\uldb [Aller]}{\v IDH_MODULA3_02}\par
+{\f1  3. STRUCTURE LEXICALE}     {\uldb [Aller]}{\v IDH_MODULA3_03}\par
+{\f1  4. TYPES DE DONNEES}     {\uldb [Aller]}{\v IDH_MODULA3_04}\par
+{\f1  5. DECLARATIONS}     {\uldb [Aller]}{\v IDH_MODULA3_05}\par
+{\f1  6. OPERATEURS}     {\uldb [Aller]}{\v IDH_MODULA3_06}\par
+{\f1  7. STRUCTURES DE CONTROLE}     {\uldb [Aller]}{\v IDH_MODULA3_07}\par
+{\f1  8. PROCEDURES}     {\uldb [Aller]}{\v IDH_MODULA3_08}\par
+{\f1  9. OBJETS ET ORIENTE OBJET}     {\uldb [Aller]}{\v IDH_MODULA3_09}\par
+{\f1 10. EXCEPTIONS}     {\uldb [Aller]}{\v IDH_MODULA3_10}\par
+{\f1 11. CONCURRENCE (THREADS)}     {\uldb [Aller]}{\v IDH_MODULA3_11}\par
+{\f1 12. GENERIQUES}     {\uldb [Aller]}{\v IDH_MODULA3_12}\par
+{\f1 13. INTERFACES UNSAFE}     {\uldb [Aller]}{\v IDH_MODULA3_13}\par
+{\f1 14. PROCEDURES STANDARD}     {\uldb [Aller]}{\v IDH_MODULA3_14}\par
+{\f1 15. BIBLIOTHEQUES STANDARD}     {\uldb [Aller]}{\v IDH_MODULA3_15}\par
+{\f1 16. EVOLUTIONS DU LANGAGE}     {\uldb [Aller]}{\v IDH_MODULA3_16}\par
+{\f1 17. COMPILATEUR DU PROJET (MODIII86.PAS)}     {\uldb [Aller]}{\v IDH_MODULA3_17}\par
+{\f1 18. CONVERTISSEURS DU PROJET}     {\uldb [Aller]}{\v IDH_MODULA3_18}\par
+{\f1 19. EXEMPLES}     {\uldb [Aller]}{\v IDH_MODULA3_19}\par
+{\f1 20. INFLUENCE}     {\uldb [Aller]}{\v IDH_MODULA3_20}\par
+{\f1 21. REFERENCES}     {\uldb [Aller]}{\v IDH_MODULA3_21}\par
+\par
+{\uldb Suivant >>}{\v IDH_MODULA3_02}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_MODULA3_02}
+{\footnote $ Modula-3 - STRUCTURE D'UN PROGRAMME}
+{\footnote K Modula-3 structure programme;MODULE;INTERFACE;EXPORTS Main;IMPORT;BEGIN;END}
+\b\fs24 STRUCTURE D'UN PROGRAMME \b0\fs20\par
+\par
+Un programme Modula-3 se compose d'au moins un MODULE\par
+principal et de zero ou plusieurs paires INTERFACE/MODULE de\par
+bibliotheque. Le point d'entree est le module marque\par
+EXPORTS Main.\par
+\par
+\par
+\b 2.1 Module principal \b0\par
+\par
+{\f1   MODULE Hello EXPORTS Main;}\par
+{\f1   IMPORT IO;}\par
+{\f1   BEGIN}\par
+{\f1     IO.Put("Hello, World!\\n")}\par
+{\f1   END Hello.}\par
+\par
+\par
+\b 2.2 INTERFACE \b0\par
+\par
+L'interface decrit la specification visible publiquement :\par
+\par
+{\f1   INTERFACE Pile;}\par
+\par
+{\f1   TYPE T <: REFANY;}\par
+\par
+{\f1   PROCEDURE New(): T;}\par
+{\f1   PROCEDURE Push(s: T; x: INTEGER);}\par
+{\f1   PROCEDURE Pop(s: T): INTEGER;}\par
+{\f1   PROCEDURE Empty(s: T): BOOLEAN;}\par
+\par
+{\f1   END Pile.}\par
+\par
+\par
+\b 2.3 MODULE \b0\par
+\par
+Le module implemente une ou plusieurs interfaces :\par
+\par
+{\f1   MODULE Pile;}\par
+\par
+{\f1   REVEAL T = BRANDED OBJECT}\par
+{\f1     data: REF ARRAY OF INTEGER;}\par
+{\f1     sp: INTEGER;}\par
+{\f1   END;}\par
+\par
+{\f1   PROCEDURE New(): T =}\par
+{\f1     VAR s := NEW(T);}\par
+{\f1     BEGIN}\par
+{\f1       s.data := NEW(REF ARRAY OF INTEGER, 100);}\par
+{\f1       s.sp := 0;}\par
+{\f1       RETURN s}\par
+{\f1     END New;}\par
+\par
+{\f1   PROCEDURE Push(s: T; x: INTEGER) =}\par
+{\f1     BEGIN}\par
+{\f1       s.data[s.sp] := x;}\par
+{\f1       INC(s.sp)}\par
+{\f1     END Push;}\par
+\par
+{\f1   PROCEDURE Pop(s: T): INTEGER =}\par
+{\f1     BEGIN}\par
+{\f1       DEC(s.sp);}\par
+{\f1       RETURN s.data[s.sp]}\par
+{\f1     END Pop;}\par
+\par
+{\f1   PROCEDURE Empty(s: T): BOOLEAN =}\par
+{\f1     BEGIN}\par
+{\f1       RETURN s.sp = 0}\par
+{\f1     END Empty;}\par
+\par
+{\f1   BEGIN}\par
+{\f1   END Pile.}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_MODULA3_01}     {\uldb Suivant >>}{\v IDH_MODULA3_03}     {\uldb Table des matieres}{\v IDH_MODULA3_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_MODULA3_03}
+{\footnote $ Modula-3 - STRUCTURE LEXICALE}
+{\footnote K Modula-3 structure lexicale;identificateurs;mots reserves;litteraux;commentaires imbricables;sensible casse}
+\b\fs24 STRUCTURE LEXICALE \b0\fs20\par
+\par
+\par
+\b 3.1 Jeu de caracteres \b0\par
+\par
+ISO Latin-1. Tous les mots-cles sont en MAJUSCULES (sensible\par
+a la casse).\par
+\par
+\par
+\b 3.2 Commentaires \b0\par
+\par
+Une seule forme, imbricable :\par
+\par
+{\f1   (* commentaire (* imbrique *) sur plusieurs lignes *)}\par
+\par
+\par
+\b 3.3 Identificateurs \b0\par
+\par
+Lettre suivie de lettres, chiffres et underscores. Sensible\par
+a la casse. Identifiants reserves de la norme : ABS, ADR,\par
+ADRSIZE, BITSIZE, BYTESIZE, CEILING, DEC, DISPOSE, FIRST,\par
+FLOAT, FLOOR, INC, ISTYPE, LAST, LOOPHOLE, MAX, MIN, NARROW,\par
+NEW, NUMBER, ORD, ROUND, SUBARRAY, TRUNC, TYPECODE, VAL.\par
+\par
+\par
+\b 3.4 Mots reserves (54) \b0\par
+\par
+{\f1   AND        ARRAY      AS         BEGIN      BITS}\par
+{\f1   BRANDED    BY         CASE       CONST      DIV}\par
+{\f1   DO         ELSE       ELSIF      END        EVAL}\par
+{\f1   EXCEPT     EXCEPTION  EXIT       EXPORTS    FINALLY}\par
+{\f1   FOR        FROM       GENERIC    IF         IMPORT}\par
+{\f1   IN         INTERFACE  LOCK       LOOP       METHODS}\par
+{\f1   MOD        MODULE     NOT        OBJECT     OF}\par
+{\f1   OR         OVERRIDES  PROCEDURE  RAISE      RAISES}\par
+{\f1   READONLY   RECORD     REF        REPEAT     RETURN}\par
+{\f1   REVEAL     SET        THEN       TO         TRY}\par
+{\f1   TYPE       TYPECASE   UNSAFE     UNTIL      UNTRACED}\par
+{\f1   VALUE      VAR        WHILE      WITH}\par
+\par
+\par
+\b 3.5 Literaux \b0\par
+\par
+{\f1   - Entiers     : 42, 16_FF (radix 16), 2_1010 (radix 2)}\par
+{\f1   - Longs       : 100L (suffixe L pour LONGINT)}\par
+{\f1   - Reels       : 3.14, 3.14E2, 1.0D-10 (D=LONGREAL),}\par
+{\f1                   2.5X1 (X=EXTENDED, si supporte)}\par
+{\f1   - Caractere   : 'A', '\\n', '\\t', '\\\\', '\\''}\par
+{\f1                   '\\101' (octal), '\\x41' (hexa)}\par
+{\f1   - Texte       : "Hello\\n" (de type TEXT)}\par
+{\f1   - Booleen     : TRUE, FALSE}\par
+{\f1   - NIL         : reference nulle}\par
+{\f1   - Ensemble    : SET OF [0..7]\{1, 3, 5\}}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_MODULA3_02}     {\uldb Suivant >>}{\v IDH_MODULA3_04}     {\uldb Table des matieres}{\v IDH_MODULA3_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_MODULA3_04}
+{\footnote $ Modula-3 - TYPES DE DONNEES}
+{\footnote K Modula-3 types donnees;INTEGER;LONGINT;CARDINAL;BOOLEAN;CHAR;REAL;LONGREAL;EXTENDED;TEXT;ARRAY;RECORD;SET;REF;REFANY;OBJECT;BITS FOR}
+\b\fs24 TYPES DE DONNEES \b0\fs20\par
+\par
+\par
+\b 4.1 Types ordinaux predefinis \b0\par
+\par
+{\f1   Type        Description              Taille typique}\par
+{\f1   ----        -----------              --------------}\par
+{\f1   INTEGER     entier signe natif       32 ou 64 bits}\par
+{\f1   LONGINT     entier long signe        64 bits}\par
+{\f1   CARDINAL    INTEGER >= 0             sous-type}\par
+{\f1   BOOLEAN     \{FALSE, TRUE\}            1}\par
+{\f1   CHAR        caractere ISO Latin-1    1}\par
+\par
+\par
+\b 4.2 Types flottants \b0\par
+\par
+{\f1   REAL       flottant simple precision (32 bits)}\par
+{\f1   LONGREAL   flottant double precision (64 bits)}\par
+{\f1   EXTENDED   flottant precision etendue (80+ bits)}\par
+\par
+\par
+\b 4.3 Types ordinaux definis \b0\par
+\par
+Enumeres :\par
+\par
+{\f1   TYPE Couleur = \{Rouge, Vert, Bleu\};}\par
+\par
+Sous-intervalles :\par
+\par
+{\f1   TYPE Note = [0..20];}\par
+{\f1   TYPE Lettre = ['A'..'Z'];}\par
+\par
+\par
+\b 4.4 Type TEXT \b0\par
+\par
+Le type TEXT est le type chaine standard, immuable, gere par\par
+le GC (analogue a String Java) :\par
+\par
+{\f1   VAR s: TEXT := "Bonjour";}\par
+\par
+Operations : Text.Length, Text.Cat, Text.Equal, Text.Sub,\par
+Text.GetChar.\par
+\par
+\par
+\b 4.5 Tableaux : ARRAY \b0\par
+\par
+Tableaux a taille fixe :\par
+\par
+{\f1   TYPE Vec = ARRAY [0..9] OF REAL;}\par
+{\f1   TYPE Mat = ARRAY [1..10], [1..10] OF REAL;}\par
+\par
+Tableaux ouverts (taille a l'execution) :\par
+\par
+{\f1   TYPE Buffer = ARRAY OF CHAR;}\par
+\par
+NUMBER(t) donne le nombre d'elements, FIRST(t) et LAST(t)\par
+les bornes.\par
+\par
+\par
+\b 4.6 Enregistrements : RECORD \b0\par
+\par
+{\f1   TYPE Date = RECORD}\par
+{\f1     annee: INTEGER;}\par
+{\f1     mois: [1..12];}\par
+{\f1     jour: [1..31]}\par
+{\f1   END;}\par
+\par
+Avec champs par defaut :\par
+\par
+{\f1   TYPE Config = RECORD}\par
+{\f1     largeur: INTEGER := 80;}\par
+{\f1     hauteur: INTEGER := 25;}\par
+{\f1     nom: TEXT := ""}\par
+{\f1   END;}\par
+\par
+Pas de variantes (utiliser OBJECT pour le polymorphisme).\par
+\par
+\par
+\b 4.7 Ensembles : SET \b0\par
+\par
+{\f1   TYPE Petits = SET OF [0..31];}\par
+{\f1   TYPE Couleurs = SET OF Couleur;}\par
+\par
+\par
+\b 4.8 References : REF \b0\par
+\par
+Pointeur gere par le ramasse-miettes (traced) :\par
+\par
+{\f1   TYPE PNoeud = REF Noeud;}\par
+{\f1   TYPE Noeud = RECORD}\par
+{\f1     val: INTEGER;}\par
+{\f1     suiv: PNoeud}\par
+{\f1   END;}\par
+\par
+REFANY est la super-classe de toutes les references tracees.\par
+\par
+{\f1   VAR x: REFANY;}\par
+\par
+UNTRACED REF : pointeur non gere par GC (utilisation\par
+restreinte aux modules UNSAFE).\par
+\par
+\par
+\b 4.9 Objets : OBJECT \b0\par
+\par
+Les objets combinent champs (fields) et methodes :\par
+\par
+{\f1   TYPE Animal = OBJECT}\par
+{\f1     nom: TEXT;}\par
+{\f1   METHODS}\par
+{\f1     crier() := DefaultCrier;}\par
+{\f1     bouger();}\par
+{\f1   END;}\par
+\par
+Sous-typage par extension :\par
+\par
+{\f1   TYPE Chien = Animal OBJECT}\par
+{\f1     race: TEXT;}\par
+{\f1   OVERRIDES}\par
+{\f1     crier := ChienCrier;}\par
+{\f1   END;}\par
+\par
+REFANY <: tout REF/OBJECT trace.\par
+\par
+\par
+\b 4.10 Procedures comme types \b0\par
+\par
+{\f1   TYPE Comparateur = PROCEDURE(a, b: INTEGER): INTEGER;}\par
+{\f1   VAR cmp: Comparateur := MaComparaison;}\par
+\par
+\par
+\b 4.11 BITS FOR \b0\par
+\par
+Specifie la representation binaire compactee :\par
+\par
+{\f1   TYPE Octet = BITS 8 FOR [0..255];}\par
+{\f1   TYPE Drapeaux = BITS 16 FOR SET OF [0..15];}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_MODULA3_03}     {\uldb Suivant >>}{\v IDH_MODULA3_05}     {\uldb Table des matieres}{\v IDH_MODULA3_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_MODULA3_05}
+{\footnote $ Modula-3 - DECLARATIONS}
+{\footnote K Modula-3 declarations;CONST;TYPE;VAR;OPAQUE;REVEAL;ordre libre}
+\b\fs24 DECLARATIONS \b0\fs20\par
+\par
+Les declarations apparaissent dans un ordre libre (contrairement\par
+a Modula-2) :\par
+\par
+\par
+\b 5.1 Constantes : CONST \b0\par
+\par
+{\f1   CONST}\par
+{\f1     Pi = 3.14159265;}\par
+{\f1     Max = 1000;}\par
+{\f1     Saluer = "Bonjour";}\par
+\par
+\par
+\b 5.2 Types : TYPE \b0\par
+\par
+{\f1   TYPE}\par
+{\f1     Nom = TEXT;}\par
+{\f1     Age = [0..150];}\par
+{\f1     Liste = REF Noeud;}\par
+{\f1     Noeud = RECORD}\par
+{\f1       val: INTEGER;}\par
+{\f1       suiv: Liste}\par
+{\f1     END;}\par
+\par
+\par
+\b 5.3 Variables : VAR \b0\par
+\par
+{\f1   VAR}\par
+{\f1     x, y: INTEGER;}\par
+{\f1     nom: TEXT := "anonyme";        (* avec initialisation *)}\par
+{\f1     tete: Liste := NIL;}\par
+\par
+\par
+\b 5.4 Type opaque : OPAQUE / REVEAL \b0\par
+\par
+Une interface peut declarer un type opaque ; l'implementation\par
+le revele :\par
+\par
+{\f1   (* dans Pile.i3 : *)}\par
+{\f1   TYPE T <: REFANY;}\par
+\par
+{\f1   (* dans Pile.m3 : *)}\par
+{\f1   REVEAL T = BRANDED OBJECT data: ... END;}\par
+\par
+Le client voit T comme REFANY ; seul le module Pile connait\par
+sa structure interne.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_MODULA3_04}     {\uldb Suivant >>}{\v IDH_MODULA3_06}     {\uldb Table des matieres}{\v IDH_MODULA3_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_MODULA3_06}
+{\footnote $ Modula-3 - OPERATEURS}
+{\footnote K Modula-3 operateurs;arithmetique;DIV;MOD;relationnel;sous-type;logique court-circuit;ensemble;concatenation;precedence}
+\b\fs24 OPERATEURS \b0\fs20\par
+\par
+\par
+\b 6.1 Arithmetiques \b0\par
+\par
+{\f1   +    -    *    /    DIV    MOD}\par
+\par
+DIV et MOD sont definis pour tous les operandes (y compris\par
+negatifs) : a = (a DIV b) * b + (a MOD b) et le signe de\par
+(a MOD b) suit celui de b.\par
+\par
+\par
+\b 6.2 Relationnels \b0\par
+\par
+{\f1   =    #    <    <=    >    >=}\par
+{\f1   IN   appartenance ensemble}\par
+{\f1   <:   est sous-type de (sur types)}\par
+\par
+\par
+\b 6.3 Logiques (court-circuit) \b0\par
+\par
+{\f1   AND   ET court-circuit}\par
+{\f1   OR    OU court-circuit}\par
+{\f1   NOT   negation}\par
+\par
+\par
+\b 6.4 Operateurs sur ensembles \b0\par
+\par
+{\f1   +    union}\par
+{\f1   -    difference}\par
+{\f1   *    intersection}\par
+{\f1   /    difference symetrique}\par
+\par
+\par
+\b 6.5 Concatenation \b0\par
+\par
+{\f1   &    concatenation de TEXT}\par
+{\f1        (alternative a Text.Cat)}\par
+\par
+\par
+\b 6.6 Affectation \b0\par
+\par
+{\f1   :=    affectation (les expressions ne renvoient pas}\par
+{\f1         de valeur cote gauche)}\par
+\par
+\par
+\b 6.7 Precedence (decroissante) \b0\par
+\par
+{\f1   1. NOT}\par
+{\f1   2. *  /  DIV  MOD  AND}\par
+{\f1   3. +  -  OR  &}\par
+{\f1   4. =  #  <  <=  >  >=  IN}\par
+{\f1   5. (l'affectation := n'est pas une expression)}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_MODULA3_05}     {\uldb Suivant >>}{\v IDH_MODULA3_07}     {\uldb Table des matieres}{\v IDH_MODULA3_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_MODULA3_07}
+{\footnote $ Modula-3 - STRUCTURES DE CONTROLE}
+{\footnote K Modula-3 structures controle;IF;ELSIF;CASE;WHILE;REPEAT;FOR;BY;LOOP;EXIT;WITH;TYPECASE;RETURN}
+\b\fs24 STRUCTURES DE CONTROLE \b0\fs20\par
+\par
+\par
+\b 7.1 Selection : IF \b0\par
+\par
+{\f1   IF condition THEN}\par
+{\f1     instructions}\par
+{\f1   ELSIF condition2 THEN}\par
+{\f1     instructions}\par
+{\f1   ELSE}\par
+{\f1     instructions}\par
+{\f1   END}\par
+\par
+\par
+\b 7.2 Selection : CASE \b0\par
+\par
+{\f1   CASE expression OF}\par
+{\f1   | val1 => instructions}\par
+{\f1   | val2, val3 => instructions}\par
+{\f1   | a..b => instructions}\par
+{\f1   ELSE}\par
+{\f1     instructions}\par
+{\f1   END}\par
+\par
+Note la barre verticale `|` separant les branches.\par
+\par
+\par
+\b 7.3 Iteration : WHILE \b0\par
+\par
+{\f1   WHILE condition DO}\par
+{\f1     instructions}\par
+{\f1   END}\par
+\par
+\par
+\b 7.4 Iteration : REPEAT \b0\par
+\par
+{\f1   REPEAT}\par
+{\f1     instructions}\par
+{\f1   UNTIL condition}\par
+\par
+\par
+\b 7.5 Iteration : FOR \b0\par
+\par
+{\f1   FOR i := init TO fin DO}\par
+{\f1     instructions}\par
+{\f1   END}\par
+\par
+{\f1   FOR i := init TO fin BY pas DO}\par
+{\f1     instructions}\par
+{\f1   END}\par
+\par
+La variable i est implicitement declaree, locale a la boucle.\par
+\par
+\par
+\b 7.6 Boucle infinie : LOOP / EXIT \b0\par
+\par
+{\f1   LOOP}\par
+{\f1     instructions;}\par
+{\f1     IF condition THEN EXIT END;}\par
+{\f1     autres}\par
+{\f1   END}\par
+\par
+\par
+\b 7.7 WITH \b0\par
+\par
+Renomme une expression dans un bloc :\par
+\par
+{\f1   WITH n = SQRT(x*x + y*y) DO}\par
+{\f1     IO.PutReal(n);}\par
+{\f1     IO.PutReal(n * 2.0)}\par
+{\f1   END}\par
+\par
+\par
+\b 7.8 TYPECASE \b0\par
+\par
+Dispatch sur le type dynamique d'une reference :\par
+\par
+{\f1   TYPECASE animal OF}\par
+{\f1   | Chien(c) => c.aboyer()}\par
+{\f1   | Chat(c) => c.miauler()}\par
+{\f1   ELSE}\par
+{\f1     animal.crier()}\par
+{\f1   END}\par
+\par
+\par
+\b 7.9 RETURN \b0\par
+\par
+{\f1   RETURN              (* procedure sans valeur *)}\par
+{\f1   RETURN expression   (* fonction *)}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_MODULA3_06}     {\uldb Suivant >>}{\v IDH_MODULA3_08}     {\uldb Table des matieres}{\v IDH_MODULA3_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_MODULA3_08}
+{\footnote $ Modula-3 - PROCEDURES}
+{\footnote K Modula-3 procedures;parametres;VALUE;VAR;READONLY;valeurs defaut;parametres nommes;RAISES;premiere classe}
+\b\fs24 PROCEDURES \b0\fs20\par
+\par
+\par
+\b 8.1 Declaration \b0\par
+\par
+{\f1   PROCEDURE nom(p1: T1; VAR p2: T2; READONLY p3: T3): TR}\par
+{\f1     RAISES \{E1, E2\} =}\par
+{\f1   VAR locale: INTEGER;}\par
+{\f1   BEGIN}\par
+{\f1     instructions;}\par
+{\f1     RETURN expression}\par
+{\f1   END nom;}\par
+\par
+\par
+\b 8.2 Modes de parametres \b0\par
+\par
+{\f1   VALUE       par valeur (defaut, mot-cle VALUE optionnel)}\par
+{\f1   VAR         par reference (modifiable)}\par
+{\f1   READONLY    par reference constante (non modifiable)}\par
+\par
+\par
+\b 8.3 Valeurs par defaut \b0\par
+\par
+{\f1   PROCEDURE Ecrire(s: TEXT; nouveauLigne: BOOLEAN := TRUE)}\par
+{\f1     = ...}\par
+\par
+Appel : Ecrire("Bonjour");  (* nouveauLigne = TRUE *)\par
+\par
+\par
+\b 8.4 Parametres nommes \b0\par
+\par
+{\f1   Ecrire(s := "Bonjour", nouveauLigne := FALSE);}\par
+\par
+\par
+\b 8.5 RAISES \b0\par
+\par
+Liste explicite des exceptions susceptibles d'etre levees :\par
+\par
+{\f1   PROCEDURE Lire(): INTEGER RAISES \{EOF, IOError\} = ...}\par
+\par
+Une procedure sans RAISES ne peut lever AUCUNE exception\par
+(verification a la compilation).\par
+\par
+{\f1   PROCEDURE Pure(): INTEGER RAISES \{\} = ...}\par
+\par
+\par
+\b 8.6 Procedures de premiere classe \b0\par
+\par
+{\f1   TYPE Fn = PROCEDURE(REAL): REAL;}\par
+{\f1   VAR f: Fn := Sin;}\par
+{\f1   ...}\par
+{\f1   y := f(x);}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_MODULA3_07}     {\uldb Suivant >>}{\v IDH_MODULA3_09}     {\uldb Table des matieres}{\v IDH_MODULA3_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_MODULA3_09}
+{\footnote $ Modula-3 - OBJETS ET ORIENTE OBJET}
+{\footnote K Modula-3 objets;OBJECT;METHODS;OVERRIDES;heritage;sous-typage;NEW;NARROW;ISTYPE;BRANDED;self}
+\b\fs24 OBJETS ET ORIENTE OBJET \b0\fs20\par
+\par
+\par
+\b 9.1 Definition d'objet \b0\par
+\par
+{\f1   TYPE Animal = OBJECT}\par
+{\f1     nom: TEXT;}\par
+{\f1     age: INTEGER;}\par
+{\f1   METHODS}\par
+{\f1     crier(): TEXT := DefaultCri;}\par
+{\f1     decrire();}\par
+{\f1   END;}\par
+\par
+\par
+\b 9.2 Heritage et OVERRIDES \b0\par
+\par
+{\f1   TYPE Chien = Animal OBJECT}\par
+{\f1     race: TEXT;}\par
+{\f1   OVERRIDES}\par
+{\f1     crier := ChienCrier;}\par
+{\f1     decrire := ChienDecrire;}\par
+{\f1   END;}\par
+\par
+\par
+\b 9.3 Methodes : signature \b0\par
+\par
+Une methode a un parametre implicite self du type de l'objet :\par
+\par
+{\f1   PROCEDURE ChienCrier(self: Chien): TEXT =}\par
+{\f1     BEGIN}\par
+{\f1       RETURN "Wouf"}\par
+{\f1     END ChienCrier;}\par
+\par
+\par
+\b 9.4 Construction : NEW \b0\par
+\par
+{\f1   VAR a: Animal := NEW(Animal, nom := "Rex", age := 3);}\par
+\par
+NEW peut prendre des initialisateurs nommes pour les champs.\par
+\par
+\par
+\b 9.5 Appel de methode \b0\par
+\par
+{\f1   IO.Put(a.crier())}\par
+\par
+\par
+\b 9.6 Type guard NARROW et ISTYPE \b0\par
+\par
+{\f1   IF ISTYPE(a, Chien) THEN}\par
+{\f1     VAR c := NARROW(a, Chien);}\par
+{\f1     BEGIN}\par
+{\f1       IO.Put(c.race)}\par
+{\f1     END}\par
+{\f1   END}\par
+\par
+\par
+\b 9.7 BRANDED OBJECT \b0\par
+\par
+Marque un type comme distinct meme s'il a la meme structure.\par
+Garantit l'identite nominale pour les types opaques :\par
+\par
+{\f1   TYPE T = BRANDED "Pile.T" OBJECT}\par
+{\f1     data: REF ARRAY OF INTEGER}\par
+{\f1   END;}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_MODULA3_08}     {\uldb Suivant >>}{\v IDH_MODULA3_10}     {\uldb Table des matieres}{\v IDH_MODULA3_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_MODULA3_10}
+{\footnote $ Modula-3 - EXCEPTIONS}
+{\footnote K Modula-3 exceptions;EXCEPTION;RAISE;TRY;EXCEPT;FINALLY;parametres exception}
+\b\fs24 EXCEPTIONS \b0\fs20\par
+\par
+\par
+\b 10.1 Declaration \b0\par
+\par
+{\f1   EXCEPTION}\par
+{\f1     EOF;}\par
+{\f1     IOError(TEXT);            (* avec parametre *)}\par
+\par
+\par
+\b 10.2 Levee : RAISE \b0\par
+\par
+{\f1   RAISE EOF;}\par
+{\f1   RAISE IOError("Fichier introuvable");}\par
+\par
+\par
+\b 10.3 Gestion : TRY ... EXCEPT \b0\par
+\par
+{\f1   TRY}\par
+{\f1     Lire(...);}\par
+{\f1   EXCEPT}\par
+{\f1   | EOF => IO.Put("Fin de fichier")}\par
+{\f1   | IOError(msg) => IO.Put("Erreur: " & msg)}\par
+{\f1   ELSE}\par
+{\f1     IO.Put("Autre erreur")}\par
+{\f1   END}\par
+\par
+\par
+\b 10.4 Code de nettoyage : TRY ... FINALLY \b0\par
+\par
+{\f1   TRY}\par
+{\f1     OuvrirFichier(f);}\par
+{\f1     Traiter(f)}\par
+{\f1   FINALLY}\par
+{\f1     FermerFichier(f)}\par
+{\f1   END}\par
+\par
+Le bloc FINALLY s'execute dans tous les cas (fin normale ou\par
+exception propagee). Combinable avec EXCEPT :\par
+\par
+{\f1   TRY}\par
+{\f1     TRY}\par
+{\f1       Lire()}\par
+{\f1     EXCEPT}\par
+{\f1     | EOF => (* ignorer *)}\par
+{\f1     END}\par
+{\f1   FINALLY}\par
+{\f1     Nettoyer()}\par
+{\f1   END}\par
+\par
+\par
+\b 10.5 Exceptions standard \b0\par
+\par
+{\f1   Thread.Alerted, Wr.Failure, Rd.Failure, RuntimeError.E.}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_MODULA3_09}     {\uldb Suivant >>}{\v IDH_MODULA3_11}     {\uldb Table des matieres}{\v IDH_MODULA3_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_MODULA3_11}
+{\footnote $ Modula-3 - CONCURRENCE (THREADS)}
+{\footnote K Modula-3 concurrence;Thread;Fork;Join;Mutex;Condition;LOCK;Wait;Signal;Broadcast;Closure}
+\b\fs24 CONCURRENCE (THREADS) \b0\fs20\par
+\par
+Modula-3 supporte les threads natifs avec moniteurs.\par
+\par
+\par
+\b 11.1 Module Thread \b0\par
+\par
+{\f1   FROM Thread IMPORT T, Fork, Join, Closure;}\par
+\par
+{\f1   TYPE Tache = Closure OBJECT}\par
+{\f1     n: INTEGER;}\par
+{\f1   OVERRIDES}\par
+{\f1     apply := Faire;}\par
+{\f1   END;}\par
+\par
+{\f1   PROCEDURE Faire(self: Tache): REFANY =}\par
+{\f1     BEGIN}\par
+{\f1       ...;}\par
+{\f1       RETURN NIL}\par
+{\f1     END Faire;}\par
+\par
+{\f1   ...}\par
+{\f1   VAR t: Thread.T := Fork(NEW(Tache, n := 42));}\par
+{\f1   EVAL Join(t);}\par
+\par
+\par
+\b 11.2 Mutex et Condition \b0\par
+\par
+{\f1   FROM Thread IMPORT Mutex, Condition, Acquire, Release,}\par
+{\f1                      Wait, Signal, Broadcast;}\par
+\par
+{\f1   VAR m: Mutex := NEW(Mutex);}\par
+{\f1       c: Condition := NEW(Condition);}\par
+\par
+\par
+\b 11.3 LOCK \b0\par
+\par
+Section critique exclusive sur un MUTEX :\par
+\par
+{\f1   LOCK m DO}\par
+{\f1     (* code protege *)}\par
+{\f1     Wait(m, c)}\par
+{\f1   END}\par
+\par
+LOCK est equivalent a Acquire(m) ... TRY ... FINALLY Release(m).\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_MODULA3_10}     {\uldb Suivant >>}{\v IDH_MODULA3_12}     {\uldb Table des matieres}{\v IDH_MODULA3_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_MODULA3_12}
+{\footnote $ Modula-3 - GENERIQUES}
+{\footnote K Modula-3 generiques;GENERIC INTERFACE;GENERIC MODULE;instanciation;parametre interface}
+\b\fs24 GENERIQUES \b0\fs20\par
+\par
+Modula-3 supporte les modules generiques parametres par des\par
+interfaces.\par
+\par
+\par
+\b 12.1 Interface generique \b0\par
+\par
+{\f1   GENERIC INTERFACE Pile(Element);}\par
+{\f1   (* Element doit etre une interface declarant TYPE T = ... *)}\par
+\par
+{\f1   TYPE T <: REFANY;}\par
+\par
+{\f1   PROCEDURE Push(s: T; x: Element.T);}\par
+{\f1   PROCEDURE Pop(s: T): Element.T;}\par
+\par
+{\f1   END Pile.}\par
+\par
+\par
+\b 12.2 Module generique \b0\par
+\par
+{\f1   GENERIC MODULE Pile(Element);}\par
+\par
+{\f1   REVEAL T = BRANDED OBJECT}\par
+{\f1     data: REF ARRAY OF Element.T;}\par
+{\f1     sp: INTEGER;}\par
+{\f1   END;}\par
+\par
+{\f1   PROCEDURE Push(s: T; x: Element.T) =}\par
+{\f1     ...}\par
+\par
+{\f1   END Pile.}\par
+\par
+\par
+\b 12.3 Instanciation \b0\par
+\par
+{\f1   INTERFACE PileInt = Pile(IntElt) END.}\par
+{\f1   MODULE PileInt = Pile(IntElt) END.}\par
+\par
+(IntElt est une interface qui declare TYPE T = INTEGER.)\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_MODULA3_11}     {\uldb Suivant >>}{\v IDH_MODULA3_13}     {\uldb Table des matieres}{\v IDH_MODULA3_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_MODULA3_13}
+{\footnote $ Modula-3 - INTERFACES UNSAFE}
+{\footnote K Modula-3 unsafe;UNSAFE;LOOPHOLE;UNTRACED REF;ADR;SUBARRAY;safe}
+\b\fs24 INTERFACES UNSAFE \b0\fs20\par
+\par
+Les modules ordinaires sont securises : pas de pointeur libre,\par
+verification des bornes, GC actif. Les operations dangereuses\par
+sont reservees aux modules marques UNSAFE.\par
+\par
+{\f1   UNSAFE INTERFACE Memoire;}\par
+{\f1     PROCEDURE Allouer(taille: INTEGER): ADDRESS;}\par
+{\f1     PROCEDURE Liberer(p: ADDRESS);}\par
+{\f1   END Memoire.}\par
+\par
+{\f1   UNSAFE MODULE Memoire;}\par
+{\f1     PROCEDURE Allouer(...) = ...}\par
+{\f1   END Memoire.}\par
+\par
+Operations unsafe :\par
+\par
+{\f1   - LOOPHOLE(x, T)   : cast de type sans verification}\par
+{\f1   - UNTRACED REF     : pointeur non gere par GC}\par
+{\f1   - ADR(x)           : adresse memoire}\par
+{\f1   - SUBARRAY(...)    : sous-tableau partage}\par
+{\f1   - Acces a des modules systeme (RTHeapRep, etc.)}\par
+\par
+Un module SAFE ne peut importer un UNSAFE.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_MODULA3_12}     {\uldb Suivant >>}{\v IDH_MODULA3_14}     {\uldb Table des matieres}{\v IDH_MODULA3_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_MODULA3_14}
+{\footnote $ Modula-3 - PROCEDURES STANDARD}
+{\footnote K Modula-3 procedures standard;ABS;MAX;MIN;INC;DEC;ORD;VAL;FLOAT;TRUNC;ROUND;CEILING;FLOOR;NUMBER;FIRST;LAST;NEW;DISPOSE;ISTYPE;NARROW;TYPECODE;BITSIZE;BYTESIZE}
+\b\fs24 PROCEDURES STANDARD \b0\fs20\par
+\par
+\par
+\b 14.1 Sur entiers \b0\par
+\par
+{\f1   ABS(x)        valeur absolue}\par
+{\f1   MAX(x, y)     maximum}\par
+{\f1   MIN(x, y)     minimum}\par
+{\f1   INC(x)        x := x + 1}\par
+{\f1   INC(x, n)     x := x + n}\par
+{\f1   DEC(x)        x := x - 1}\par
+{\f1   DEC(x, n)     x := x - n}\par
+{\f1   ORD(x)        valeur ordinale}\par
+{\f1   VAL(n, T)     n-ieme valeur du type T}\par
+\par
+\par
+\b 14.2 Sur flottants \b0\par
+\par
+{\f1   FLOAT(x, T)   conversion vers REAL/LONGREAL/EXTENDED}\par
+{\f1   TRUNC(x)      troncature vers INTEGER}\par
+{\f1   ROUND(x)      arrondi vers INTEGER}\par
+{\f1   CEILING(x)    plafond}\par
+{\f1   FLOOR(x)      plancher}\par
+\par
+\par
+\b 14.3 Sur tableaux \b0\par
+\par
+{\f1   NUMBER(t)     nombre d'elements}\par
+{\f1   FIRST(t)      premier indice/valeur}\par
+{\f1   LAST(t)       dernier indice/valeur}\par
+{\f1   SUBARRAY(t, s, n)  sous-tableau}\par
+\par
+\par
+\b 14.4 Sur references et objets \b0\par
+\par
+{\f1   NEW(T, ...)   allocation}\par
+{\f1   DISPOSE(p)    liberation (UNTRACED uniquement)}\par
+{\f1   ISTYPE(r, T)  test de type}\par
+{\f1   NARROW(r, T)  conversion verifiee}\par
+{\f1   TYPECODE(r)   code numerique du type}\par
+{\f1   ADR(x)        adresse (UNSAFE)}\par
+{\f1   ADRSIZE(x)    taille adresse}\par
+\par
+\par
+\b 14.5 Sur ensembles \b0\par
+\par
+{\f1   INCL(s, x)    ajoute x a s}\par
+{\f1   EXCL(s, x)    retire x de s}\par
+\par
+\par
+\b 14.6 Cast (UNSAFE) \b0\par
+\par
+{\f1   LOOPHOLE(x, T)    transmutation sans verification}\par
+{\f1   BITSIZE(x)        taille en bits}\par
+{\f1   BYTESIZE(x)       taille en octets}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_MODULA3_13}     {\uldb Suivant >>}{\v IDH_MODULA3_15}     {\uldb Table des matieres}{\v IDH_MODULA3_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_MODULA3_15}
+{\footnote $ Modula-3 - BIBLIOTHEQUES STANDARD}
+{\footnote K Modula-3 bibliotheques;IO;Text;Wr;Rd;Stdio;Thread;Fmt;Lex;Math;OS;Pickle;NetObj;Network Objects}
+\b\fs24 BIBLIOTHEQUES STANDARD \b0\fs20\par
+\par
+\par
+\b 15.1 IO \b0\par
+\par
+Entrees/sorties simples :\par
+\par
+{\f1   IO.Put(t: TEXT)             ecrit du texte}\par
+{\f1   IO.PutInt(n: INTEGER)       ecrit un entier}\par
+{\f1   IO.PutReal(x: REAL)         ecrit un reel}\par
+{\f1   IO.GetInt(): INTEGER        lit un entier}\par
+{\f1   IO.GetLine(): TEXT          lit une ligne}\par
+\par
+\par
+\b 15.2 Text \b0\par
+\par
+Manipulation des TEXT :\par
+\par
+{\f1   Text.Length(t)}\par
+{\f1   Text.Cat(t1, t2)}\par
+{\f1   Text.Equal(t1, t2)}\par
+{\f1   Text.Sub(t, start, length)}\par
+{\f1   Text.GetChar(t, i)}\par
+\par
+\par
+\b 15.3 Wr et Rd \b0\par
+\par
+Flux d'ecriture (Writer) et de lecture (Reader) :\par
+\par
+{\f1   Stdio.stdout, Stdio.stderr, Stdio.stdin}\par
+{\f1   Wr.PutText, Wr.PutChar, Wr.Flush}\par
+{\f1   Rd.GetChar, Rd.GetText, Rd.EOF}\par
+\par
+\par
+\b 15.4 Thread \b0\par
+\par
+Threads, Mutex, Condition, voir section 11.\par
+\par
+\par
+\b 15.5 Fmt \b0\par
+\par
+Formatage de valeurs en TEXT :\par
+\par
+{\f1   Fmt.Int(n), Fmt.Real(x), Fmt.Bool(b)}\par
+\par
+\par
+\b 15.6 Lex \b0\par
+\par
+Analyse lexicale :\par
+\par
+{\f1   Lex.Int(r), Lex.Real(r), Lex.Skip(r, ...)}\par
+\par
+\par
+\b 15.7 Math \b0\par
+\par
+{\f1   Math.sqrt, Math.exp, Math.log, Math.sin, Math.cos}\par
+\par
+\par
+\b 15.8 OS, Process, Pipe \b0\par
+\par
+Interaction avec le systeme d'exploitation.\par
+\par
+\par
+\b 15.9 Pickle \b0\par
+\par
+Serialisation generique d'objets en flots binaires :\par
+\par
+{\f1   Pickle.Write(wr, obj)}\par
+{\f1   Pickle.Read(rd): REFANY}\par
+\par
+\par
+\b 15.10 Network Objects \b0\par
+\par
+Appels distants sur objets (RPC transparent) via NetObj.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_MODULA3_14}     {\uldb Suivant >>}{\v IDH_MODULA3_16}     {\uldb Table des matieres}{\v IDH_MODULA3_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_MODULA3_16}
+{\footnote $ Modula-3 - EVOLUTIONS DU LANGAGE}
+{\footnote K Modula-3 evolutions;Cedar;Modula-2+;SRC 1988;Modula-3 1989;SRC M3;CM3;PM3;EzM3;statut actuel}
+\b\fs24 EVOLUTIONS DU LANGAGE \b0\fs20\par
+\par
+\par
+\b 16.1 Cedar et Modula-2+ (1980-1985) \b0\par
+\par
+Travaux precurseurs au Xerox PARC (Cedar) et DEC SRC\par
+(Modula-2+) sur l'extension de Modula-2 vers la\par
+concurrence et la securite memoire.\par
+\par
+\par
+\b 16.2 Modula-3 SRC (1988) \b0\par
+\par
+Premier rapport "Modula-3 Report" par Cardelli et al.\par
+\par
+\par
+\b 16.3 Definition finale (1989, rev. 1992) \b0\par
+\par
+Stabilisation dans le SRC Research Report 52.\par
+\par
+\par
+\b 16.4 SRC M3 et CM3 \b0\par
+\par
+{\f1   - SRC Modula-3 : compilateur de reference DEC}\par
+{\f1   - CM3 : Critical Mass Modula-3, plus moderne}\par
+{\f1   - PM3 : Polytechnique Modula-3 (Montreal)}\par
+{\f1   - EzM3 : version simplifiee embarquee}\par
+\par
+\par
+\b 16.5 Statut actuel \b0\par
+\par
+Modula-3 n'a jamais perce commercialement, mais reste\par
+influent : son design (objets+threads+GC+exceptions+\par
+generiques+modules) a directement inspire Java, C# et,\par
+plus tard, Go.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_MODULA3_15}     {\uldb Suivant >>}{\v IDH_MODULA3_17}     {\uldb Table des matieres}{\v IDH_MODULA3_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_MODULA3_17}
+{\footnote $ Modula-3 - COMPILATEUR DU PROJET (MODIII86.PAS)}
+{\footnote K Modula-3 compilateur projet;MODIII86.PAS;MS-DOS;assembleur 8086;MASM;modele LARGE}
+\b\fs24 COMPILATEUR DU PROJET (MODIII86.PAS) \b0\fs20\par
+\par
+MODIII86.PAS - Compilateur Modula-3 vers assembleur 8086\par
+\par
+{\f1   Cible             : MS-DOS, assembleur MASM .MODEL LARGE}\par
+{\f1   Modele memoire    : LARGE (segments multiples 64KO)}\par
+{\f1   Dialecte          : Modula-3 SRC (sous-ensemble)}\par
+{\f1   Sortie            : fichier .ASM, assemblable avec MASM}\par
+\par
+{\f1   Fonctionnalites :}\par
+{\f1     - INTERFACE et MODULE}\par
+{\f1     - Types INTEGER, CARDINAL, BOOLEAN, CHAR, REAL, TEXT}\par
+{\f1     - ARRAY (fixe et ouvert), RECORD, REF, SET, OBJECT}\par
+{\f1     - Procedures avec VALUE/VAR/READONLY}\par
+{\f1     - Structures IF, CASE, WHILE, REPEAT, FOR, LOOP/EXIT}\par
+{\f1     - WITH, TYPECASE}\par
+{\f1     - Exceptions : RAISE, TRY/EXCEPT/FINALLY}\par
+{\f1     - Sous-typage par OBJECT/OVERRIDES}\par
+{\f1     - RAISES \{\} pour verification statique}\par
+{\f1     - IMPORT FROM, EXPORTS Main}\par
+{\f1     - GC simplifie (compteur de references)}\par
+\par
+{\f1   Limitations :}\par
+{\f1     - Threads et MUTEX/LOCK non supportes}\par
+{\f1     - Generiques (GENERIC) non supportes}\par
+{\f1     - UNSAFE limite au module SYSTEM}\par
+{\f1     - Pas de Network Objects, pas de Pickle}\par
+{\f1     - LONGREAL et EXTENDED non supportes}\par
+{\f1     - TEXT limite a 255 caracteres}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_MODULA3_16}     {\uldb Suivant >>}{\v IDH_MODULA3_18}     {\uldb Table des matieres}{\v IDH_MODULA3_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_MODULA3_18}
+{\footnote $ Modula-3 - CONVERTISSEURS DU PROJET}
+{\footnote K Modula-3 convertisseurs;ADA2MOD3.PAS;PAS2MOD3.PAS;Ada vers Modula-3;Pascal vers Modula-3}
+\b\fs24 CONVERTISSEURS DU PROJET \b0\fs20\par
+\par
+\par
+\b 18.1 ADA2MOD3.PAS - Ada vers Modula-3 \b0\par
+\par
+Convertit Ada (sous-ensemble) vers Modula-3 :\par
+\par
+{\f1   - package spec -> INTERFACE}\par
+{\f1   - package body -> MODULE}\par
+{\f1   - tagged record -> OBJECT}\par
+{\f1   - exception/raise -> EXCEPTION/RAISE}\par
+{\f1   - access type -> REF}\par
+{\f1   - generic package -> GENERIC INTERFACE/MODULE}\par
+\par
+\par
+\b 18.2 PAS2MOD3.PAS - Pascal vers Modula-3 \b0\par
+\par
+Convertit Turbo Pascal (sous-ensemble) vers Modula-3 :\par
+\par
+{\f1   - unit -> INTERFACE + MODULE}\par
+{\f1   - program -> MODULE EXPORTS Main}\par
+{\f1   - object/class -> OBJECT}\par
+{\f1   - try/except -> TRY/EXCEPT}\par
+{\f1   - try/finally -> TRY/FINALLY}\par
+{\f1   - string -> TEXT}\par
+{\f1   - writeln -> IO.Put avec \\n}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_MODULA3_17}     {\uldb Suivant >>}{\v IDH_MODULA3_19}     {\uldb Table des matieres}{\v IDH_MODULA3_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_MODULA3_19}
+{\footnote $ Modula-3 - EXEMPLES}
+{\footnote K Modula-3 exemples;Hello World;Factorielle;heritage objets;exception finally;thread simple}
+\b\fs24 EXEMPLES \b0\fs20\par
+\par
+\par
+\b 19.1 Hello, World! \b0\par
+\par
+{\f1   MODULE Hello EXPORTS Main;}\par
+{\f1   IMPORT IO;}\par
+{\f1   BEGIN}\par
+{\f1     IO.Put("Hello, World!\\n")}\par
+{\f1   END Hello.}\par
+\par
+\par
+\b 19.2 Factorielle recursive \b0\par
+\par
+{\f1   MODULE Fact EXPORTS Main;}\par
+{\f1   IMPORT IO, Fmt;}\par
+\par
+{\f1   PROCEDURE Factorielle(n: CARDINAL): CARDINAL =}\par
+{\f1     BEGIN}\par
+{\f1       IF n <= 1 THEN RETURN 1}\par
+{\f1       ELSE RETURN n * Factorielle(n - 1)}\par
+{\f1       END}\par
+{\f1     END Factorielle;}\par
+\par
+{\f1   BEGIN}\par
+{\f1     FOR i := 0 TO 10 DO}\par
+{\f1       IO.Put(Fmt.Int(i) & " -> " &}\par
+{\f1              Fmt.Int(Factorielle(i)) & "\\n")}\par
+{\f1     END}\par
+{\f1   END Fact.}\par
+\par
+\par
+\b 19.3 Hierarchie d'objets \b0\par
+\par
+{\f1   MODULE Animaux EXPORTS Main;}\par
+{\f1   IMPORT IO;}\par
+\par
+{\f1   TYPE}\par
+{\f1     Animal = OBJECT}\par
+{\f1       nom: TEXT;}\par
+{\f1     METHODS}\par
+{\f1       crier(): TEXT;}\par
+{\f1     END;}\par
+\par
+{\f1     Chien = Animal OBJECT}\par
+{\f1     OVERRIDES}\par
+{\f1       crier := ChienCri;}\par
+{\f1     END;}\par
+\par
+{\f1     Chat = Animal OBJECT}\par
+{\f1     OVERRIDES}\par
+{\f1       crier := ChatCri;}\par
+{\f1     END;}\par
+\par
+{\f1   PROCEDURE ChienCri(self: Chien): TEXT =}\par
+{\f1     BEGIN RETURN "Wouf!" END ChienCri;}\par
+\par
+{\f1   PROCEDURE ChatCri(self: Chat): TEXT =}\par
+{\f1     BEGIN RETURN "Miaou!" END ChatCri;}\par
+\par
+{\f1   VAR a: Animal;}\par
+{\f1   BEGIN}\par
+{\f1     a := NEW(Chien, nom := "Rex");}\par
+{\f1     IO.Put(a.nom & " dit " & a.crier() & "\\n");}\par
+{\f1     a := NEW(Chat, nom := "Felix");}\par
+{\f1     IO.Put(a.nom & " dit " & a.crier() & "\\n")}\par
+{\f1   END Animaux.}\par
+\par
+\par
+\b 19.4 Exception et finally \b0\par
+\par
+{\f1   MODULE Fichier EXPORTS Main;}\par
+{\f1   IMPORT IO;}\par
+\par
+{\f1   EXCEPTION}\par
+{\f1     Erreur(TEXT);}\par
+\par
+{\f1   PROCEDURE Lire(nom: TEXT) RAISES \{Erreur\} =}\par
+{\f1     BEGIN}\par
+{\f1       IF Text.Equal(nom, "") THEN}\par
+{\f1         RAISE Erreur("Nom vide")}\par
+{\f1       END}\par
+{\f1     END Lire;}\par
+\par
+{\f1   BEGIN}\par
+{\f1     TRY}\par
+{\f1       TRY}\par
+{\f1         Lire("")}\par
+{\f1       EXCEPT}\par
+{\f1       | Erreur(msg) => IO.Put("Erreur: " & msg & "\\n")}\par
+{\f1       END}\par
+{\f1     FINALLY}\par
+{\f1       IO.Put("Termine.\\n")}\par
+{\f1     END}\par
+{\f1   END Fichier.}\par
+\par
+\par
+\b 19.5 Thread simple \b0\par
+\par
+{\f1   MODULE Concurrent EXPORTS Main;}\par
+{\f1   IMPORT IO, Thread;}\par
+\par
+{\f1   TYPE Tache = Thread.Closure OBJECT}\par
+{\f1     id: INTEGER;}\par
+{\f1   OVERRIDES}\par
+{\f1     apply := Faire;}\par
+{\f1   END;}\par
+\par
+{\f1   PROCEDURE Faire(self: Tache): REFANY =}\par
+{\f1     BEGIN}\par
+{\f1       IO.Put("Tache " & Fmt.Int(self.id) & "\\n");}\par
+{\f1       RETURN NIL}\par
+{\f1     END Faire;}\par
+\par
+{\f1   VAR t1, t2: Thread.T;}\par
+{\f1   BEGIN}\par
+{\f1     t1 := Thread.Fork(NEW(Tache, id := 1));}\par
+{\f1     t2 := Thread.Fork(NEW(Tache, id := 2));}\par
+{\f1     EVAL Thread.Join(t1);}\par
+{\f1     EVAL Thread.Join(t2)}\par
+{\f1   END Concurrent.}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_MODULA3_18}     {\uldb Suivant >>}{\v IDH_MODULA3_20}     {\uldb Table des matieres}{\v IDH_MODULA3_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_MODULA3_20}
+{\footnote $ Modula-3 - INFLUENCE}
+{\footnote K Modula-3 influence;Java;C#;Python;Go;comparaison Modula-2}
+\b\fs24 INFLUENCE \b0\fs20\par
+\par
+Modula-3 a directement influence :\par
+\par
+{\f1   - Java (1995)   : objets traces+GC, exceptions, threads,}\par
+{\f1                     interfaces, generiques (plus tard)}\par
+{\f1   - C# (2000)     : structure du langage, exceptions,}\par
+{\f1                     delegates (procedures-types)}\par
+{\f1   - Python        : exceptions}\par
+{\f1   - Go (2009)     : modularite stricte, simplicite,}\par
+{\f1                     importation explicite}\par
+\par
+Comparaison Modula-3 / Modula-2 :\par
+\par
+{\f1   Aspect          Modula-2          Modula-3}\par
+{\f1   ------          --------          --------}\par
+{\f1   Objets          non               OBJECT/METHODS/OVERRIDES}\par
+{\f1   Exceptions      non               TRY/EXCEPT/FINALLY/RAISE}\par
+{\f1   Threads         coroutines        Thread/Mutex/Condition}\par
+{\f1   GC              non               oui (REF traces)}\par
+{\f1   Generiques     non               GENERIC INTERFACE/MODULE}\par
+{\f1   Interfaces      DEFINITION MODULE INTERFACE}\par
+{\f1   Type opaque     limite            <: REFANY + REVEAL}\par
+{\f1   Cast            CAST              LOOPHOLE (UNSAFE)}\par
+{\f1   Unsafe          partout           isole UNSAFE INTERFACE}\par
+{\f1   TEXT            ARRAY OF CHAR     type TEXT immuable+GC}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_MODULA3_19}     {\uldb Suivant >>}{\v IDH_MODULA3_21}     {\uldb Table des matieres}{\v IDH_MODULA3_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_MODULA3_21}
+{\footnote $ Modula-3 - REFERENCES}
+{\footnote K Modula-3 references;bibliographie;Cardelli;Nelson;Harbison;SRC Report 52;CM3}
+\b\fs24 REFERENCES \b0\fs20\par
+\par
+{\f1   - Cardelli, L., Donahue, J., Glassman, L., Jordan, M.,}\par
+{\f1     Kalsow, B., Nelson, G.}\par
+{\f1     "Modula-3 Language Definition",}\par
+{\f1     DEC SRC Research Report 52, 1989 (rev. 1992).}\par
+\par
+{\f1   - Nelson, G. (ed.)}\par
+{\f1     "Systems Programming with Modula-3",}\par
+{\f1     Prentice-Hall, 1991.}\par
+{\f1     ISBN 0-13-590464-1.}\par
+\par
+{\f1   - Harbison, S.P.}\par
+{\f1     "Modula-3",}\par
+{\f1     Prentice-Hall, 1992.}\par
+{\f1     ISBN 0-13-596404-0.}\par
+\par
+{\f1   - Site officiel       https://www.modula3.org}\par
+{\f1   - Implementation CM3  https://github.com/modula3/cm3}\par
+{\f1   - Communaute          modula3.elegosoft.com}\par
+\par
+{\f1   - "Modula-3: An Overview", Cardelli, IEEE 1989.}\par
+{\f1   - "Modula-3 Report (revised)", DEC SRC, 1992.}\par
+
+\par
+{\uldb << Precedent}{\v IDH_MODULA3_20}     {\uldb Table des matieres}{\v IDH_MODULA3_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+}

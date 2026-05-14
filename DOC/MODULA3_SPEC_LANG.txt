@@ -1,0 +1,1259 @@
+Modula-3 - Specifications du langage
+============================================================
+Compilateurs : MODIII86.PAS  (Modula-3 vers assembleur 8086)
+Convertisseurs : ADA2MOD3.PAS (Ada vers Modula-3)
+                 PAS2MOD3.PAS (Pascal vers Modula-3)
+Reference   : "Systems Programming with Modula-3",
+              Greg Nelson (ed.), Prentice-Hall, 1991.
+              "Modula-3 Language Definition", Cardelli,
+              Donahue, Glassman, Jordan, Kalsow, Nelson,
+              SRC Research Report 52, 1989 (rev. 1992).
+Version     : 1.0 - 2026
+
+============================================================
+1. PRESENTATION
+============================================================
+
+Modula-3 a ete concu entre 1986 et 1989 chez Digital Equipment
+Corporation Systems Research Center (DEC SRC) et Olivetti
+Research Center par Luca Cardelli, Jim Donahue, Mick Jordan,
+Bill Kalsow et Greg Nelson. Il prolonge Modula-2+ et integre
+les idees de Cedar (Xerox PARC).
+
+Modula-3 reunit en un seul langage homogene :
+
+  - Modularite forte (interfaces/implementations separees)
+  - Programmation orientee objet par sous-typage avec
+    OBJECT et methodes liees
+  - Securite memoire avec ramasse-miettes (garbage collector)
+  - Threads natifs avec moniteurs (MUTEX, CONDITION)
+  - Exceptions structurees (TRY/EXCEPT/FINALLY)
+  - Generiques (modules parametres)
+  - Code "non securise" isole dans UNSAFE INTERFACE/MODULE
+  - Pickles (serialisation), Network Objects (RPC)
+
+Modula-3 est un langage :
+
+  - Compile, a typage statique tres fort
+  - Sensible a la casse (mots-cles MAJUSCULES obligatoires)
+  - Imperatif + objet + concurrent
+  - Modulaire (INTERFACE + MODULE)
+  - Avec gestion automatique de la memoire
+  - Petit (langage de base d'environ 50 mots reserves)
+
+Histoire et implementations :
+
+  - 1988    : premier rapport, langage stabilise
+  - 1989    : SRC Modula-3, compilateur de reference
+  - 1991    : livre de Nelson, definition finale
+  - 1992    : Modula-3 Language Definition (rev. 1.0)
+  - 1994    : DEC SRC M3, CM3 (Critical Mass)
+  - 2000    : Compaq M3 (apres rachat de DEC)
+  - 2002    : CM3 open source via Critical Mass Inc.
+  - 2010+   : Maintenance communautaire (modula3.elegosoft.com)
+
+Extensions de fichiers reconnues :
+
+  .i3      Fichier INTERFACE (specification publique)
+  .m3      Fichier MODULE (implementation)
+  .ig      Fichier INTERFACE generique
+  .mg      Fichier MODULE generique
+  .io      Fichier interface compilee (objet)
+  .mo      Fichier module compile (objet)
+
+
+============================================================
+2. STRUCTURE D'UN PROGRAMME
+============================================================
+
+Un programme Modula-3 se compose d'au moins un MODULE
+principal et de zero ou plusieurs paires INTERFACE/MODULE de
+bibliotheque. Le point d'entree est le module marque
+EXPORTS Main.
+
+2.1 Module principal
+--------------------
+
+  MODULE Hello EXPORTS Main;
+  IMPORT IO;
+  BEGIN
+    IO.Put("Hello, World!\n")
+  END Hello.
+
+2.2 INTERFACE
+-------------
+
+L'interface decrit la specification visible publiquement :
+
+  INTERFACE Pile;
+
+  TYPE T <: REFANY;
+
+  PROCEDURE New(): T;
+  PROCEDURE Push(s: T; x: INTEGER);
+  PROCEDURE Pop(s: T): INTEGER;
+  PROCEDURE Empty(s: T): BOOLEAN;
+
+  END Pile.
+
+2.3 MODULE
+----------
+
+Le module implemente une ou plusieurs interfaces :
+
+  MODULE Pile;
+
+  REVEAL T = BRANDED OBJECT
+    data: REF ARRAY OF INTEGER;
+    sp: INTEGER;
+  END;
+
+  PROCEDURE New(): T =
+    VAR s := NEW(T);
+    BEGIN
+      s.data := NEW(REF ARRAY OF INTEGER, 100);
+      s.sp := 0;
+      RETURN s
+    END New;
+
+  PROCEDURE Push(s: T; x: INTEGER) =
+    BEGIN
+      s.data[s.sp] := x;
+      INC(s.sp)
+    END Push;
+
+  PROCEDURE Pop(s: T): INTEGER =
+    BEGIN
+      DEC(s.sp);
+      RETURN s.data[s.sp]
+    END Pop;
+
+  PROCEDURE Empty(s: T): BOOLEAN =
+    BEGIN
+      RETURN s.sp = 0
+    END Empty;
+
+  BEGIN
+  END Pile.
+
+
+============================================================
+3. STRUCTURE LEXICALE
+============================================================
+
+3.1 Jeu de caracteres
+---------------------
+
+ISO Latin-1. Tous les mots-cles sont en MAJUSCULES (sensible
+a la casse).
+
+3.2 Commentaires
+----------------
+
+Une seule forme, imbricable :
+
+  (* commentaire (* imbrique *) sur plusieurs lignes *)
+
+3.3 Identificateurs
+-------------------
+
+Lettre suivie de lettres, chiffres et underscores. Sensible
+a la casse. Identifiants reserves de la norme : ABS, ADR,
+ADRSIZE, BITSIZE, BYTESIZE, CEILING, DEC, DISPOSE, FIRST,
+FLOAT, FLOOR, INC, ISTYPE, LAST, LOOPHOLE, MAX, MIN, NARROW,
+NEW, NUMBER, ORD, ROUND, SUBARRAY, TRUNC, TYPECODE, VAL.
+
+3.4 Mots reserves (54)
+----------------------
+
+  AND        ARRAY      AS         BEGIN      BITS
+  BRANDED    BY         CASE       CONST      DIV
+  DO         ELSE       ELSIF      END        EVAL
+  EXCEPT     EXCEPTION  EXIT       EXPORTS    FINALLY
+  FOR        FROM       GENERIC    IF         IMPORT
+  IN         INTERFACE  LOCK       LOOP       METHODS
+  MOD        MODULE     NOT        OBJECT     OF
+  OR         OVERRIDES  PROCEDURE  RAISE      RAISES
+  READONLY   RECORD     REF        REPEAT     RETURN
+  REVEAL     SET        THEN       TO         TRY
+  TYPE       TYPECASE   UNSAFE     UNTIL      UNTRACED
+  VALUE      VAR        WHILE      WITH
+
+3.5 Literaux
+------------
+
+  - Entiers     : 42, 16_FF (radix 16), 2_1010 (radix 2)
+  - Longs       : 100L (suffixe L pour LONGINT)
+  - Reels       : 3.14, 3.14E2, 1.0D-10 (D=LONGREAL),
+                  2.5X1 (X=EXTENDED, si supporte)
+  - Caractere   : 'A', '\n', '\t', '\\', '\''
+                  '\101' (octal), '\x41' (hexa)
+  - Texte       : "Hello\n" (de type TEXT)
+  - Booleen     : TRUE, FALSE
+  - NIL         : reference nulle
+  - Ensemble    : SET OF [0..7]{1, 3, 5}
+
+
+============================================================
+4. TYPES DE DONNEES
+============================================================
+
+4.1 Types ordinaux predefinis
+-----------------------------
+
+  Type        Description              Taille typique
+  ----        -----------              --------------
+  INTEGER     entier signe natif       32 ou 64 bits
+  LONGINT     entier long signe        64 bits
+  CARDINAL    INTEGER >= 0             sous-type
+  BOOLEAN     {FALSE, TRUE}            1
+  CHAR        caractere ISO Latin-1    1
+
+4.2 Types flottants
+-------------------
+
+  REAL       flottant simple precision (32 bits)
+  LONGREAL   flottant double precision (64 bits)
+  EXTENDED   flottant precision etendue (80+ bits)
+
+4.3 Types ordinaux definis
+--------------------------
+
+Enumeres :
+
+  TYPE Couleur = {Rouge, Vert, Bleu};
+
+Sous-intervalles :
+
+  TYPE Note = [0..20];
+  TYPE Lettre = ['A'..'Z'];
+
+4.4 Type TEXT
+-------------
+
+Le type TEXT est le type chaine standard, immuable, gere par
+le GC (analogue a String Java) :
+
+  VAR s: TEXT := "Bonjour";
+
+Operations : Text.Length, Text.Cat, Text.Equal, Text.Sub,
+Text.GetChar.
+
+4.5 Tableaux : ARRAY
+--------------------
+
+Tableaux a taille fixe :
+
+  TYPE Vec = ARRAY [0..9] OF REAL;
+  TYPE Mat = ARRAY [1..10], [1..10] OF REAL;
+
+Tableaux ouverts (taille a l'execution) :
+
+  TYPE Buffer = ARRAY OF CHAR;
+
+NUMBER(t) donne le nombre d'elements, FIRST(t) et LAST(t)
+les bornes.
+
+4.6 Enregistrements : RECORD
+----------------------------
+
+  TYPE Date = RECORD
+    annee: INTEGER;
+    mois: [1..12];
+    jour: [1..31]
+  END;
+
+Avec champs par defaut :
+
+  TYPE Config = RECORD
+    largeur: INTEGER := 80;
+    hauteur: INTEGER := 25;
+    nom: TEXT := ""
+  END;
+
+Pas de variantes (utiliser OBJECT pour le polymorphisme).
+
+4.7 Ensembles : SET
+-------------------
+
+  TYPE Petits = SET OF [0..31];
+  TYPE Couleurs = SET OF Couleur;
+
+4.8 References : REF
+--------------------
+
+Pointeur gere par le ramasse-miettes (traced) :
+
+  TYPE PNoeud = REF Noeud;
+  TYPE Noeud = RECORD
+    val: INTEGER;
+    suiv: PNoeud
+  END;
+
+REFANY est la super-classe de toutes les references tracees.
+
+  VAR x: REFANY;
+
+UNTRACED REF : pointeur non gere par GC (utilisation
+restreinte aux modules UNSAFE).
+
+4.9 Objets : OBJECT
+-------------------
+
+Les objets combinent champs (fields) et methodes :
+
+  TYPE Animal = OBJECT
+    nom: TEXT;
+  METHODS
+    crier() := DefaultCrier;
+    bouger();
+  END;
+
+Sous-typage par extension :
+
+  TYPE Chien = Animal OBJECT
+    race: TEXT;
+  OVERRIDES
+    crier := ChienCrier;
+  END;
+
+REFANY <: tout REF/OBJECT trace.
+
+4.10 Procedures comme types
+---------------------------
+
+  TYPE Comparateur = PROCEDURE(a, b: INTEGER): INTEGER;
+  VAR cmp: Comparateur := MaComparaison;
+
+4.11 BITS FOR
+-------------
+
+Specifie la representation binaire compactee :
+
+  TYPE Octet = BITS 8 FOR [0..255];
+  TYPE Drapeaux = BITS 16 FOR SET OF [0..15];
+
+
+============================================================
+5. DECLARATIONS
+============================================================
+
+Les declarations apparaissent dans un ordre libre (contrairement
+a Modula-2) :
+
+5.1 Constantes : CONST
+----------------------
+
+  CONST
+    Pi = 3.14159265;
+    Max = 1000;
+    Saluer = "Bonjour";
+
+5.2 Types : TYPE
+----------------
+
+  TYPE
+    Nom = TEXT;
+    Age = [0..150];
+    Liste = REF Noeud;
+    Noeud = RECORD
+      val: INTEGER;
+      suiv: Liste
+    END;
+
+5.3 Variables : VAR
+-------------------
+
+  VAR
+    x, y: INTEGER;
+    nom: TEXT := "anonyme";        (* avec initialisation *)
+    tete: Liste := NIL;
+
+5.4 Type opaque : OPAQUE / REVEAL
+---------------------------------
+
+Une interface peut declarer un type opaque ; l'implementation
+le revele :
+
+  (* dans Pile.i3 : *)
+  TYPE T <: REFANY;
+
+  (* dans Pile.m3 : *)
+  REVEAL T = BRANDED OBJECT data: ... END;
+
+Le client voit T comme REFANY ; seul le module Pile connait
+sa structure interne.
+
+
+============================================================
+6. OPERATEURS
+============================================================
+
+6.1 Arithmetiques
+-----------------
+
+  +    -    *    /    DIV    MOD
+
+DIV et MOD sont definis pour tous les operandes (y compris
+negatifs) : a = (a DIV b) * b + (a MOD b) et le signe de
+(a MOD b) suit celui de b.
+
+6.2 Relationnels
+----------------
+
+  =    #    <    <=    >    >=
+  IN   appartenance ensemble
+  <:   est sous-type de (sur types)
+
+6.3 Logiques (court-circuit)
+----------------------------
+
+  AND   ET court-circuit
+  OR    OU court-circuit
+  NOT   negation
+
+6.4 Operateurs sur ensembles
+----------------------------
+
+  +    union
+  -    difference
+  *    intersection
+  /    difference symetrique
+
+6.5 Concatenation
+-----------------
+
+  &    concatenation de TEXT
+       (alternative a Text.Cat)
+
+6.6 Affectation
+---------------
+
+  :=    affectation (les expressions ne renvoient pas
+        de valeur cote gauche)
+
+6.7 Precedence (decroissante)
+-----------------------------
+
+  1. NOT
+  2. *  /  DIV  MOD  AND
+  3. +  -  OR  &
+  4. =  #  <  <=  >  >=  IN
+  5. (l'affectation := n'est pas une expression)
+
+
+============================================================
+7. STRUCTURES DE CONTROLE
+============================================================
+
+7.1 Selection : IF
+------------------
+
+  IF condition THEN
+    instructions
+  ELSIF condition2 THEN
+    instructions
+  ELSE
+    instructions
+  END
+
+7.2 Selection : CASE
+--------------------
+
+  CASE expression OF
+  | val1 => instructions
+  | val2, val3 => instructions
+  | a..b => instructions
+  ELSE
+    instructions
+  END
+
+Note la barre verticale `|` separant les branches.
+
+7.3 Iteration : WHILE
+---------------------
+
+  WHILE condition DO
+    instructions
+  END
+
+7.4 Iteration : REPEAT
+----------------------
+
+  REPEAT
+    instructions
+  UNTIL condition
+
+7.5 Iteration : FOR
+-------------------
+
+  FOR i := init TO fin DO
+    instructions
+  END
+
+  FOR i := init TO fin BY pas DO
+    instructions
+  END
+
+La variable i est implicitement declaree, locale a la boucle.
+
+7.6 Boucle infinie : LOOP / EXIT
+--------------------------------
+
+  LOOP
+    instructions;
+    IF condition THEN EXIT END;
+    autres
+  END
+
+7.7 WITH
+--------
+
+Renomme une expression dans un bloc :
+
+  WITH n = SQRT(x*x + y*y) DO
+    IO.PutReal(n);
+    IO.PutReal(n * 2.0)
+  END
+
+7.8 TYPECASE
+------------
+
+Dispatch sur le type dynamique d'une reference :
+
+  TYPECASE animal OF
+  | Chien(c) => c.aboyer()
+  | Chat(c) => c.miauler()
+  ELSE
+    animal.crier()
+  END
+
+7.9 RETURN
+----------
+
+  RETURN              (* procedure sans valeur *)
+  RETURN expression   (* fonction *)
+
+
+============================================================
+8. PROCEDURES
+============================================================
+
+8.1 Declaration
+---------------
+
+  PROCEDURE nom(p1: T1; VAR p2: T2; READONLY p3: T3): TR
+    RAISES {E1, E2} =
+  VAR locale: INTEGER;
+  BEGIN
+    instructions;
+    RETURN expression
+  END nom;
+
+8.2 Modes de parametres
+-----------------------
+
+  VALUE       par valeur (defaut, mot-cle VALUE optionnel)
+  VAR         par reference (modifiable)
+  READONLY    par reference constante (non modifiable)
+
+8.3 Valeurs par defaut
+----------------------
+
+  PROCEDURE Ecrire(s: TEXT; nouveauLigne: BOOLEAN := TRUE)
+    = ...
+
+Appel : Ecrire("Bonjour");  (* nouveauLigne = TRUE *)
+
+8.4 Parametres nommes
+---------------------
+
+  Ecrire(s := "Bonjour", nouveauLigne := FALSE);
+
+8.5 RAISES
+----------
+
+Liste explicite des exceptions susceptibles d'etre levees :
+
+  PROCEDURE Lire(): INTEGER RAISES {EOF, IOError} = ...
+
+Une procedure sans RAISES ne peut lever AUCUNE exception
+(verification a la compilation).
+
+  PROCEDURE Pure(): INTEGER RAISES {} = ...
+
+8.6 Procedures de premiere classe
+---------------------------------
+
+  TYPE Fn = PROCEDURE(REAL): REAL;
+  VAR f: Fn := Sin;
+  ...
+  y := f(x);
+
+
+============================================================
+9. OBJETS ET ORIENTE OBJET
+============================================================
+
+9.1 Definition d'objet
+----------------------
+
+  TYPE Animal = OBJECT
+    nom: TEXT;
+    age: INTEGER;
+  METHODS
+    crier(): TEXT := DefaultCri;
+    decrire();
+  END;
+
+9.2 Heritage et OVERRIDES
+-------------------------
+
+  TYPE Chien = Animal OBJECT
+    race: TEXT;
+  OVERRIDES
+    crier := ChienCrier;
+    decrire := ChienDecrire;
+  END;
+
+9.3 Methodes : signature
+------------------------
+
+Une methode a un parametre implicite self du type de l'objet :
+
+  PROCEDURE ChienCrier(self: Chien): TEXT =
+    BEGIN
+      RETURN "Wouf"
+    END ChienCrier;
+
+9.4 Construction : NEW
+----------------------
+
+  VAR a: Animal := NEW(Animal, nom := "Rex", age := 3);
+
+NEW peut prendre des initialisateurs nommes pour les champs.
+
+9.5 Appel de methode
+--------------------
+
+  IO.Put(a.crier())
+
+9.6 Type guard NARROW et ISTYPE
+-------------------------------
+
+  IF ISTYPE(a, Chien) THEN
+    VAR c := NARROW(a, Chien);
+    BEGIN
+      IO.Put(c.race)
+    END
+  END
+
+9.7 BRANDED OBJECT
+------------------
+
+Marque un type comme distinct meme s'il a la meme structure.
+Garantit l'identite nominale pour les types opaques :
+
+  TYPE T = BRANDED "Pile.T" OBJECT
+    data: REF ARRAY OF INTEGER
+  END;
+
+
+============================================================
+10. EXCEPTIONS
+============================================================
+
+10.1 Declaration
+----------------
+
+  EXCEPTION
+    EOF;
+    IOError(TEXT);            (* avec parametre *)
+
+10.2 Levee : RAISE
+------------------
+
+  RAISE EOF;
+  RAISE IOError("Fichier introuvable");
+
+10.3 Gestion : TRY ... EXCEPT
+-----------------------------
+
+  TRY
+    Lire(...);
+  EXCEPT
+  | EOF => IO.Put("Fin de fichier")
+  | IOError(msg) => IO.Put("Erreur: " & msg)
+  ELSE
+    IO.Put("Autre erreur")
+  END
+
+10.4 Code de nettoyage : TRY ... FINALLY
+----------------------------------------
+
+  TRY
+    OuvrirFichier(f);
+    Traiter(f)
+  FINALLY
+    FermerFichier(f)
+  END
+
+Le bloc FINALLY s'execute dans tous les cas (fin normale ou
+exception propagee). Combinable avec EXCEPT :
+
+  TRY
+    TRY
+      Lire()
+    EXCEPT
+    | EOF => (* ignorer *)
+    END
+  FINALLY
+    Nettoyer()
+  END
+
+10.5 Exceptions standard
+------------------------
+
+  Thread.Alerted, Wr.Failure, Rd.Failure, RuntimeError.E.
+
+
+============================================================
+11. CONCURRENCE (THREADS)
+============================================================
+
+Modula-3 supporte les threads natifs avec moniteurs.
+
+11.1 Module Thread
+------------------
+
+  FROM Thread IMPORT T, Fork, Join, Closure;
+
+  TYPE Tache = Closure OBJECT
+    n: INTEGER;
+  OVERRIDES
+    apply := Faire;
+  END;
+
+  PROCEDURE Faire(self: Tache): REFANY =
+    BEGIN
+      ...;
+      RETURN NIL
+    END Faire;
+
+  ...
+  VAR t: Thread.T := Fork(NEW(Tache, n := 42));
+  EVAL Join(t);
+
+11.2 Mutex et Condition
+-----------------------
+
+  FROM Thread IMPORT Mutex, Condition, Acquire, Release,
+                     Wait, Signal, Broadcast;
+
+  VAR m: Mutex := NEW(Mutex);
+      c: Condition := NEW(Condition);
+
+11.3 LOCK
+---------
+
+Section critique exclusive sur un MUTEX :
+
+  LOCK m DO
+    (* code protege *)
+    Wait(m, c)
+  END
+
+LOCK est equivalent a Acquire(m) ... TRY ... FINALLY Release(m).
+
+
+============================================================
+12. GENERIQUES
+============================================================
+
+Modula-3 supporte les modules generiques parametres par des
+interfaces.
+
+12.1 Interface generique
+------------------------
+
+  GENERIC INTERFACE Pile(Element);
+  (* Element doit etre une interface declarant TYPE T = ... *)
+
+  TYPE T <: REFANY;
+
+  PROCEDURE Push(s: T; x: Element.T);
+  PROCEDURE Pop(s: T): Element.T;
+
+  END Pile.
+
+12.2 Module generique
+---------------------
+
+  GENERIC MODULE Pile(Element);
+
+  REVEAL T = BRANDED OBJECT
+    data: REF ARRAY OF Element.T;
+    sp: INTEGER;
+  END;
+
+  PROCEDURE Push(s: T; x: Element.T) =
+    ...
+
+  END Pile.
+
+12.3 Instanciation
+------------------
+
+  INTERFACE PileInt = Pile(IntElt) END.
+  MODULE PileInt = Pile(IntElt) END.
+
+(IntElt est une interface qui declare TYPE T = INTEGER.)
+
+
+============================================================
+13. INTERFACES UNSAFE
+============================================================
+
+Les modules ordinaires sont securises : pas de pointeur libre,
+verification des bornes, GC actif. Les operations dangereuses
+sont reservees aux modules marques UNSAFE.
+
+  UNSAFE INTERFACE Memoire;
+    PROCEDURE Allouer(taille: INTEGER): ADDRESS;
+    PROCEDURE Liberer(p: ADDRESS);
+  END Memoire.
+
+  UNSAFE MODULE Memoire;
+    PROCEDURE Allouer(...) = ...
+  END Memoire.
+
+Operations unsafe :
+
+  - LOOPHOLE(x, T)   : cast de type sans verification
+  - UNTRACED REF     : pointeur non gere par GC
+  - ADR(x)           : adresse memoire
+  - SUBARRAY(...)    : sous-tableau partage
+  - Acces a des modules systeme (RTHeapRep, etc.)
+
+Un module SAFE ne peut importer un UNSAFE.
+
+
+============================================================
+14. PROCEDURES STANDARD
+============================================================
+
+14.1 Sur entiers
+----------------
+
+  ABS(x)        valeur absolue
+  MAX(x, y)     maximum
+  MIN(x, y)     minimum
+  INC(x)        x := x + 1
+  INC(x, n)     x := x + n
+  DEC(x)        x := x - 1
+  DEC(x, n)     x := x - n
+  ORD(x)        valeur ordinale
+  VAL(n, T)     n-ieme valeur du type T
+
+14.2 Sur flottants
+------------------
+
+  FLOAT(x, T)   conversion vers REAL/LONGREAL/EXTENDED
+  TRUNC(x)      troncature vers INTEGER
+  ROUND(x)      arrondi vers INTEGER
+  CEILING(x)    plafond
+  FLOOR(x)      plancher
+
+14.3 Sur tableaux
+-----------------
+
+  NUMBER(t)     nombre d'elements
+  FIRST(t)      premier indice/valeur
+  LAST(t)       dernier indice/valeur
+  SUBARRAY(t, s, n)  sous-tableau
+
+14.4 Sur references et objets
+-----------------------------
+
+  NEW(T, ...)   allocation
+  DISPOSE(p)    liberation (UNTRACED uniquement)
+  ISTYPE(r, T)  test de type
+  NARROW(r, T)  conversion verifiee
+  TYPECODE(r)   code numerique du type
+  ADR(x)        adresse (UNSAFE)
+  ADRSIZE(x)    taille adresse
+
+14.5 Sur ensembles
+------------------
+
+  INCL(s, x)    ajoute x a s
+  EXCL(s, x)    retire x de s
+
+14.6 Cast (UNSAFE)
+------------------
+
+  LOOPHOLE(x, T)    transmutation sans verification
+  BITSIZE(x)        taille en bits
+  BYTESIZE(x)       taille en octets
+
+
+============================================================
+15. BIBLIOTHEQUES STANDARD
+============================================================
+
+15.1 IO
+-------
+
+Entrees/sorties simples :
+
+  IO.Put(t: TEXT)             ecrit du texte
+  IO.PutInt(n: INTEGER)       ecrit un entier
+  IO.PutReal(x: REAL)         ecrit un reel
+  IO.GetInt(): INTEGER        lit un entier
+  IO.GetLine(): TEXT          lit une ligne
+
+15.2 Text
+---------
+
+Manipulation des TEXT :
+
+  Text.Length(t)
+  Text.Cat(t1, t2)
+  Text.Equal(t1, t2)
+  Text.Sub(t, start, length)
+  Text.GetChar(t, i)
+
+15.3 Wr et Rd
+-------------
+
+Flux d'ecriture (Writer) et de lecture (Reader) :
+
+  Stdio.stdout, Stdio.stderr, Stdio.stdin
+  Wr.PutText, Wr.PutChar, Wr.Flush
+  Rd.GetChar, Rd.GetText, Rd.EOF
+
+15.4 Thread
+-----------
+
+Threads, Mutex, Condition, voir section 11.
+
+15.5 Fmt
+--------
+
+Formatage de valeurs en TEXT :
+
+  Fmt.Int(n), Fmt.Real(x), Fmt.Bool(b)
+
+15.6 Lex
+--------
+
+Analyse lexicale :
+
+  Lex.Int(r), Lex.Real(r), Lex.Skip(r, ...)
+
+15.7 Math
+---------
+
+  Math.sqrt, Math.exp, Math.log, Math.sin, Math.cos
+
+15.8 OS, Process, Pipe
+----------------------
+
+Interaction avec le systeme d'exploitation.
+
+15.9 Pickle
+-----------
+
+Serialisation generique d'objets en flots binaires :
+
+  Pickle.Write(wr, obj)
+  Pickle.Read(rd): REFANY
+
+15.10 Network Objects
+---------------------
+
+Appels distants sur objets (RPC transparent) via NetObj.
+
+
+============================================================
+16. EVOLUTIONS DU LANGAGE
+============================================================
+
+16.1 Cedar et Modula-2+ (1980-1985)
+-----------------------------------
+
+Travaux precurseurs au Xerox PARC (Cedar) et DEC SRC
+(Modula-2+) sur l'extension de Modula-2 vers la
+concurrence et la securite memoire.
+
+16.2 Modula-3 SRC (1988)
+------------------------
+
+Premier rapport "Modula-3 Report" par Cardelli et al.
+
+16.3 Definition finale (1989, rev. 1992)
+----------------------------------------
+
+Stabilisation dans le SRC Research Report 52.
+
+16.4 SRC M3 et CM3
+------------------
+
+  - SRC Modula-3 : compilateur de reference DEC
+  - CM3 : Critical Mass Modula-3, plus moderne
+  - PM3 : Polytechnique Modula-3 (Montreal)
+  - EzM3 : version simplifiee embarquee
+
+16.5 Statut actuel
+------------------
+
+Modula-3 n'a jamais perce commercialement, mais reste
+influent : son design (objets+threads+GC+exceptions+
+generiques+modules) a directement inspire Java, C# et,
+plus tard, Go.
+
+
+============================================================
+17. COMPILATEUR DU PROJET (MODIII86.PAS)
+============================================================
+
+MODIII86.PAS - Compilateur Modula-3 vers assembleur 8086
+--------------------------------------------------------
+
+  Cible             : MS-DOS, assembleur MASM .MODEL LARGE
+  Modele memoire    : LARGE (segments multiples 64KO)
+  Dialecte          : Modula-3 SRC (sous-ensemble)
+  Sortie            : fichier .ASM, assemblable avec MASM
+
+  Fonctionnalites :
+    - INTERFACE et MODULE
+    - Types INTEGER, CARDINAL, BOOLEAN, CHAR, REAL, TEXT
+    - ARRAY (fixe et ouvert), RECORD, REF, SET, OBJECT
+    - Procedures avec VALUE/VAR/READONLY
+    - Structures IF, CASE, WHILE, REPEAT, FOR, LOOP/EXIT
+    - WITH, TYPECASE
+    - Exceptions : RAISE, TRY/EXCEPT/FINALLY
+    - Sous-typage par OBJECT/OVERRIDES
+    - RAISES {} pour verification statique
+    - IMPORT FROM, EXPORTS Main
+    - GC simplifie (compteur de references)
+
+  Limitations :
+    - Threads et MUTEX/LOCK non supportes
+    - Generiques (GENERIC) non supportes
+    - UNSAFE limite au module SYSTEM
+    - Pas de Network Objects, pas de Pickle
+    - LONGREAL et EXTENDED non supportes
+    - TEXT limite a 255 caracteres
+
+
+============================================================
+18. CONVERTISSEURS DU PROJET
+============================================================
+
+18.1 ADA2MOD3.PAS - Ada vers Modula-3
+-------------------------------------
+
+Convertit Ada (sous-ensemble) vers Modula-3 :
+
+  - package spec -> INTERFACE
+  - package body -> MODULE
+  - tagged record -> OBJECT
+  - exception/raise -> EXCEPTION/RAISE
+  - access type -> REF
+  - generic package -> GENERIC INTERFACE/MODULE
+
+18.2 PAS2MOD3.PAS - Pascal vers Modula-3
+----------------------------------------
+
+Convertit Turbo Pascal (sous-ensemble) vers Modula-3 :
+
+  - unit -> INTERFACE + MODULE
+  - program -> MODULE EXPORTS Main
+  - object/class -> OBJECT
+  - try/except -> TRY/EXCEPT
+  - try/finally -> TRY/FINALLY
+  - string -> TEXT
+  - writeln -> IO.Put avec \n
+
+
+============================================================
+19. EXEMPLES
+============================================================
+
+19.1 Hello, World!
+------------------
+
+  MODULE Hello EXPORTS Main;
+  IMPORT IO;
+  BEGIN
+    IO.Put("Hello, World!\n")
+  END Hello.
+
+19.2 Factorielle recursive
+--------------------------
+
+  MODULE Fact EXPORTS Main;
+  IMPORT IO, Fmt;
+
+  PROCEDURE Factorielle(n: CARDINAL): CARDINAL =
+    BEGIN
+      IF n <= 1 THEN RETURN 1
+      ELSE RETURN n * Factorielle(n - 1)
+      END
+    END Factorielle;
+
+  BEGIN
+    FOR i := 0 TO 10 DO
+      IO.Put(Fmt.Int(i) & " -> " &
+             Fmt.Int(Factorielle(i)) & "\n")
+    END
+  END Fact.
+
+19.3 Hierarchie d'objets
+------------------------
+
+  MODULE Animaux EXPORTS Main;
+  IMPORT IO;
+
+  TYPE
+    Animal = OBJECT
+      nom: TEXT;
+    METHODS
+      crier(): TEXT;
+    END;
+
+    Chien = Animal OBJECT
+    OVERRIDES
+      crier := ChienCri;
+    END;
+
+    Chat = Animal OBJECT
+    OVERRIDES
+      crier := ChatCri;
+    END;
+
+  PROCEDURE ChienCri(self: Chien): TEXT =
+    BEGIN RETURN "Wouf!" END ChienCri;
+
+  PROCEDURE ChatCri(self: Chat): TEXT =
+    BEGIN RETURN "Miaou!" END ChatCri;
+
+  VAR a: Animal;
+  BEGIN
+    a := NEW(Chien, nom := "Rex");
+    IO.Put(a.nom & " dit " & a.crier() & "\n");
+    a := NEW(Chat, nom := "Felix");
+    IO.Put(a.nom & " dit " & a.crier() & "\n")
+  END Animaux.
+
+19.4 Exception et finally
+-------------------------
+
+  MODULE Fichier EXPORTS Main;
+  IMPORT IO;
+
+  EXCEPTION
+    Erreur(TEXT);
+
+  PROCEDURE Lire(nom: TEXT) RAISES {Erreur} =
+    BEGIN
+      IF Text.Equal(nom, "") THEN
+        RAISE Erreur("Nom vide")
+      END
+    END Lire;
+
+  BEGIN
+    TRY
+      TRY
+        Lire("")
+      EXCEPT
+      | Erreur(msg) => IO.Put("Erreur: " & msg & "\n")
+      END
+    FINALLY
+      IO.Put("Termine.\n")
+    END
+  END Fichier.
+
+19.5 Thread simple
+------------------
+
+  MODULE Concurrent EXPORTS Main;
+  IMPORT IO, Thread;
+
+  TYPE Tache = Thread.Closure OBJECT
+    id: INTEGER;
+  OVERRIDES
+    apply := Faire;
+  END;
+
+  PROCEDURE Faire(self: Tache): REFANY =
+    BEGIN
+      IO.Put("Tache " & Fmt.Int(self.id) & "\n");
+      RETURN NIL
+    END Faire;
+
+  VAR t1, t2: Thread.T;
+  BEGIN
+    t1 := Thread.Fork(NEW(Tache, id := 1));
+    t2 := Thread.Fork(NEW(Tache, id := 2));
+    EVAL Thread.Join(t1);
+    EVAL Thread.Join(t2)
+  END Concurrent.
+
+
+============================================================
+20. INFLUENCE
+============================================================
+
+Modula-3 a directement influence :
+
+  - Java (1995)   : objets traces+GC, exceptions, threads,
+                    interfaces, generiques (plus tard)
+  - C# (2000)     : structure du langage, exceptions,
+                    delegates (procedures-types)
+  - Python        : exceptions
+  - Go (2009)     : modularite stricte, simplicite,
+                    importation explicite
+
+Comparaison Modula-3 / Modula-2 :
+
+  Aspect          Modula-2          Modula-3
+  ------          --------          --------
+  Objets          non               OBJECT/METHODS/OVERRIDES
+  Exceptions      non               TRY/EXCEPT/FINALLY/RAISE
+  Threads         coroutines        Thread/Mutex/Condition
+  GC              non               oui (REF traces)
+  Generiques     non               GENERIC INTERFACE/MODULE
+  Interfaces      DEFINITION MODULE INTERFACE
+  Type opaque     limite            <: REFANY + REVEAL
+  Cast            CAST              LOOPHOLE (UNSAFE)
+  Unsafe          partout           isole UNSAFE INTERFACE
+  TEXT            ARRAY OF CHAR     type TEXT immuable+GC
+
+
+============================================================
+21. REFERENCES
+============================================================
+
+  - Cardelli, L., Donahue, J., Glassman, L., Jordan, M.,
+    Kalsow, B., Nelson, G.
+    "Modula-3 Language Definition",
+    DEC SRC Research Report 52, 1989 (rev. 1992).
+
+  - Nelson, G. (ed.)
+    "Systems Programming with Modula-3",
+    Prentice-Hall, 1991.
+    ISBN 0-13-590464-1.
+
+  - Harbison, S.P.
+    "Modula-3",
+    Prentice-Hall, 1992.
+    ISBN 0-13-596404-0.
+
+  - Site officiel       https://www.modula3.org
+  - Implementation CM3  https://github.com/modula3/cm3
+  - Communaute          modula3.elegosoft.com
+
+  - "Modula-3: An Overview", Cardelli, IEEE 1989.
+  - "Modula-3 Report (revised)", DEC SRC, 1992.
