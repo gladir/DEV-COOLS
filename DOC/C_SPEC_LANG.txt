@@ -1,0 +1,2671 @@
+C - Specifications du langage
+============================================================
+Compilateurs : C.PAS       (interpreteur / tokeniseur)
+               CC8086.PAS  (C vers assembleur 8086, MS-DOS)
+               CC09.PAS    (C vers assembleur Motorola 6809)
+               CC6502.PAS  (C vers assembleur MOS 6502)
+               CCW32.PAS   (C vers Win32 PE 32 bits)
+               CCJASMIN.PAS(C vers JASMIN / bytecode JVM)
+Reference   : ANSI X3.159-1989 (C89), ISO/IEC 9899:1990 (C90)
+Version     : 1.0 - 2026
+
+============================================================
+1. PRESENTATION
+============================================================
+
+Le langage C a ete concu entre 1969 et 1973 par Dennis Ritchie
+aux Bell Labs pour la reecriture du systeme UNIX. Il a ete
+standardise une premiere fois en 1989 par l'ANSI (X3.159-1989,
+dit "C89") puis adopte par l'ISO en 1990 (ISO/IEC 9899:1990,
+dit "C90"). Des revisions ulterieures sont apparues : C99 (1999),
+C11 (2011), C17 (2018) et C23 (2024).
+
+C est un langage :
+
+  - Imperatif et structure par blocs
+  - Compile, a typage statique faible
+  - De bas niveau (acces direct a la memoire via pointeurs)
+  - Sans gestion automatique de la memoire
+  - Indifferent a la mise en page (free-form)
+  - Sensible a la casse
+
+Les compilateurs fournis dans ce projet implementent un sous-
+ensemble large de C89, suffisant pour la programmation systeme,
+les utilitaires en ligne de commande et l'enseignement. Les
+specificites de chaque compilateur (tailles d'entier, types
+disponibles, conventions d'appel) sont detaillees a la section
+22.
+
+Extensions de fichiers reconnues :
+
+  .c     Fichier source C
+  .h     Fichier d'en-tete (header)
+  .i     Fichier source pre-traite
+  .o     Fichier objet (sortie d'assemblage)
+
+
+============================================================
+2. STRUCTURE D'UN PROGRAMME
+============================================================
+
+Un programme C est constitue d'une ou plusieurs unites de
+traduction (translation units). Chaque unite est compilee
+independamment et les fichiers objet resultants sont lies par
+l'editeur de liens pour former un executable.
+
+Toute unite contient au choix :
+
+  - Des directives du preprocesseur  (#include, #define, ...)
+  - Des declarations de types         (typedef, struct, ...)
+  - Des declarations globales         (variables, prototypes)
+  - Des definitions de fonctions
+
+Le point d'entree obligatoire d'un programme executable est la
+fonction main :
+
+  int main(void) {
+      /* corps du programme */
+      return 0;
+  }
+
+ou avec arguments :
+
+  int main(int argc, char *argv[]) {
+      return 0;
+  }
+
+La valeur retournee par main devient le code de sortie du
+processus (0 = succes, non-zero = erreur).
+
+
+============================================================
+3. STRUCTURE LEXICALE
+============================================================
+
+3.1 Jeu de caracteres
+---------------------
+C utilise par defaut le jeu source de base de l'ANSI : 26 lettres
+latines (majuscules et minuscules), 10 chiffres, le caractere de
+soulignement, et 29 signes de ponctuation. Les caracteres de
+controle utilises sont l'espace, la tabulation horizontale, la
+tabulation verticale, le saut de ligne et le saut de page.
+
+3.2 Identificateurs
+-------------------
+Un identificateur commence par une lettre ou un soulignement,
+suivi de lettres, chiffres ou soulignements. La casse est
+significative :
+
+  total      Total      _i      x1      lecture_buffer
+
+Les identificateurs commencant par un soulignement sont reserves
+a l'implementation au niveau du fichier. La norme garantit la
+distinction sur au moins 31 caracteres pour les identificateurs
+internes et 6 caracteres (insensibles a la casse) pour les
+identificateurs externes (en C89).
+
+3.3 Mots reserves
+-----------------
+Les mots cles suivants ne peuvent etre utilises comme
+identificateurs :
+
+  auto       break      case       char       const
+  continue   default    do         double     else
+  enum       extern     float      for        goto
+  if         int        long       register   return
+  short      signed     sizeof     static     struct
+  switch     typedef    union      unsigned   void
+  volatile   while
+
+Mots cles ajoutes en C99 : inline, restrict, _Bool, _Complex,
+_Imaginary.
+
+3.4 Litteraux
+-------------
+Entiers :
+
+  42              decimal
+  0x2A            hexadecimal (prefixe 0x ou 0X)
+  052             octal       (prefixe 0)
+  42L  42UL  42LL suffixes long, unsigned long, long long
+
+Flottants :
+
+  3.14    .5     2.    1e10    1.5E-3    3.14f    3.14L
+
+Caracteres :
+
+  'A'     '\n'     '\t'     '\\'     '\''     '\0'     '\x1B'
+
+Chaines :
+
+  "Bonjour"           "ligne 1\nligne 2"
+  "concatenation "    "automatique"     /* equivalent a un seul "..." */
+
+3.5 Commentaires
+----------------
+Style C (multi-lignes) :
+
+  /* Ceci est un commentaire
+     sur plusieurs lignes */
+
+Style C99 (fin de ligne, accepte par la plupart des C89 modernes) :
+
+  // commentaire de fin de ligne
+
+Les commentaires ne peuvent pas etre imbriques.
+
+
+============================================================
+4. TYPES DE DONNEES
+============================================================
+
+4.1 Types entiers
+-----------------
+  char            >= 8  bits   (signe ou non selon plateforme)
+  signed char     >= 8  bits   (signe explicite)
+  unsigned char   >= 8  bits   (non signe)
+  short           >= 16 bits
+  int             >= 16 bits, typiquement la "taille naturelle"
+  long            >= 32 bits
+  long long       >= 64 bits   (C99)
+
+Variantes unsigned/signed disponibles pour short, int, long et
+long long.
+
+4.2 Types flottants
+-------------------
+  float           simple precision (>= 32 bits)
+  double          double precision (>= 64 bits)
+  long double     precision etendue (>= double)
+
+4.3 Type void
+-------------
+Type "vide" indiquant l'absence de valeur. Utilise comme :
+
+  - Type de retour d'une fonction qui ne retourne rien
+  - Liste de parametres vide : int f(void);
+  - Type generique de pointeur : void *p;
+
+4.4 Types derives
+-----------------
+A partir des types de base, on construit :
+
+  Tableaux       int  v[10];
+  Pointeurs      int *p;
+  Fonctions      int f(int);
+  Structures     struct point { int x, y; };
+  Unions         union  data  { int i; float f; };
+  Enumerations   enum   color { RED, GREEN, BLUE };
+
+4.5 Qualificateurs de type
+--------------------------
+  const          La variable ne peut etre modifiee apres init.
+  volatile       Le compilateur ne doit pas optimiser les acces.
+  restrict       (C99) Pas d'aliasing via le pointeur.
+
+4.6 Conversions
+---------------
+Implicites (promotions, conversions usuelles arithmetiques) :
+
+  char/short  -> int  dans les expressions
+  int   -> long, long -> long long
+  entier -> flottant si l'autre operande est flottant
+
+Explicites (cast) :
+
+  (int)3.14            -> 3
+  (char *)0x1000       -> pointeur
+  (void)expr           -> ignorer la valeur
+
+
+============================================================
+5. DECLARATIONS DE VARIABLES
+============================================================
+
+Forme generale :
+
+  [classe-stockage] [qualificateurs] type declarateur [, ...];
+
+Exemples :
+
+  int           i, j, k;
+  static int    compteur = 0;
+  const double  PI = 3.14159265;
+  extern char  *nom;
+  register int  i;
+  unsigned long size;
+
+Classes de stockage :
+
+  auto      Par defaut pour variable locale (pile).
+  static    Duree de vie = programme ; portee restreinte.
+  extern    Reference une definition d'une autre unite.
+  register  Indication d'allocation en registre (rare).
+
+Une variable globale non initialisee est mise a zero. Une
+variable locale automatique a une valeur indeterminee.
+
+
+============================================================
+6. OPERATEURS ET EXPRESSIONS
+============================================================
+
+6.1 Operateurs arithmetiques
+----------------------------
+  +    addition          a + b
+  -    soustraction      a - b   (ou unaire -a)
+  *    multiplication    a * b
+  /    division          a / b   (entiere si operandes entiers)
+  %    modulo            a % b   (entier seulement)
+  ++   incrementation    ++i  i++
+  --   decrementation    --i  i--
+
+6.2 Operateurs relationnels et logiques
+---------------------------------------
+  ==  !=                 egalite, difference
+  <   >   <=   >=        comparaisons
+  &&  ||  !              ET / OU / NON logiques (court-circuit)
+
+Les operandes "true" valent != 0. Les operateurs renvoient 0 ou 1.
+
+6.3 Operateurs bit a bit
+------------------------
+  &   ET binaire           a & b
+  |   OU binaire           a | b
+  ^   OU exclusif binaire  a ^ b
+  ~   complement a 1       ~a
+  <<  decalage gauche      a << n
+  >>  decalage droite      a >> n  (arith. si signe)
+
+6.4 Operateurs d'affectation
+----------------------------
+  =                  affectation simple
+  +=  -=  *=  /=  %=
+  &=  |=  ^=  <<=  >>=
+
+  Exemple : a += 5;  /* equivalent a a = a + 5 */
+
+6.5 Operateurs particuliers
+---------------------------
+  ?:           conditionnel ternaire
+               cond ? expr_si_vrai : expr_si_faux
+  ,            sequence d'expressions
+  sizeof       taille en octets    sizeof(int)  sizeof x
+  &  *         adresse / dereferencement
+  .   ->       acces membre struct (valeur / pointeur)
+  []           indexation tableau
+  ()           appel de fonction
+
+6.6 Precedence des operateurs (la plus haute en premier)
+--------------------------------------------------------
+   1.  ()  []  ->  .                           gauche-droite
+   2.  !  ~  ++  --  +(unaire)  -(unaire)
+       (cast)  *  &  sizeof                    droite-gauche
+   3.  *  /  %                                 gauche-droite
+   4.  +  -                                    gauche-droite
+   5.  <<  >>                                  gauche-droite
+   6.  <  <=  >  >=                            gauche-droite
+   7.  ==  !=                                  gauche-droite
+   8.  &                                       gauche-droite
+   9.  ^                                       gauche-droite
+  10.  |                                       gauche-droite
+  11.  &&                                      gauche-droite
+  12.  ||                                      gauche-droite
+  13.  ?:                                      droite-gauche
+  14.  =  +=  -=  *=  /=  %=  &=  ...          droite-gauche
+  15.  ,                                       gauche-droite
+
+
+============================================================
+7. STRUCTURES DE CONTROLE
+============================================================
+
+7.1 Instruction if
+------------------
+  if (expression)
+      instruction
+  else
+      autre_instruction
+
+Le else s'attache au if le plus proche non encore associe.
+
+7.2 Instruction switch
+----------------------
+  switch (expression) {
+  case valeur1:
+      instructions;
+      break;
+  case valeur2:
+      instructions;
+      break;
+  default:
+      instructions;
+  }
+
+Sans break, l'execution "tombe" sur le case suivant
+(fall-through). L'expression de switch doit etre de type
+entier ; les valeurs des case sont des constantes entieres.
+
+7.3 Boucle while
+----------------
+  while (expression)
+      instruction
+
+7.4 Boucle do...while
+---------------------
+  do
+      instruction
+  while (expression);
+
+Le corps est execute au moins une fois.
+
+7.5 Boucle for
+--------------
+  for (init; condition; iteration)
+      instruction
+
+Chacune des trois parties peut etre vide :
+
+  for (;;) { ... }   /* boucle infinie */
+
+7.6 Branchements
+----------------
+  break       Sortir de la boucle ou switch courant.
+  continue    Passer a l'iteration suivante.
+  goto label  Saut inconditionnel a une etiquette de la
+              meme fonction.
+  return [e]  Quitter la fonction (avec valeur si non void).
+
+
+============================================================
+8. FONCTIONS
+============================================================
+
+8.1 Declaration et definition
+-----------------------------
+Prototype (declaration) :
+
+  int  somme(int a, int b);
+  void affiche(const char *msg);
+  int  printf(const char *fmt, ...);
+
+Definition :
+
+  int somme(int a, int b)
+  {
+      return a + b;
+  }
+
+8.2 Passage des arguments
+-------------------------
+Les arguments sont passes par VALEUR. Pour modifier une variable
+de l'appelant, on passe son adresse :
+
+  void increment(int *p) { (*p)++; }
+  int  n = 5;
+  increment(&n);   /* n vaut 6 */
+
+8.3 Tableaux comme arguments
+----------------------------
+Un tableau passe en argument se decompose en pointeur sur son
+premier element. Les deux formes suivantes sont equivalentes :
+
+  void f(int v[]);
+  void f(int *v);
+
+La taille du tableau doit etre transmise separement.
+
+8.4 Fonctions a nombre variable d'arguments
+-------------------------------------------
+Declarees avec ... et manipulees via <stdarg.h> :
+
+  #include <stdarg.h>
+  int sum(int n, ...)
+  {
+      va_list ap;
+      int s = 0, i;
+      va_start(ap, n);
+      for (i = 0; i < n; i++)
+          s += va_arg(ap, int);
+      va_end(ap);
+      return s;
+  }
+
+8.5 Recursivite
+---------------
+Les fonctions peuvent etre recursives directement ou
+indirectement (mutuelle). Chaque appel cree son propre cadre de
+pile avec ses propres variables locales.
+
+
+============================================================
+9. TABLEAUX
+============================================================
+
+9.1 Declaration
+---------------
+  int   v[10];                  /* 10 entiers, indices 0..9     */
+  char  msg[] = "Bonjour";      /* taille deduite : 8 (avec \0) */
+  int   m[3][4];                /* matrice 3 lignes, 4 colonnes */
+
+9.2 Acces
+---------
+  v[0]      premier element
+  v[9]      dernier
+  m[i][j]   element (i,j) d'une matrice
+
+Aucun controle de borne n'est effectue a l'execution. Acceder a
+v[10] dans int v[10] est un comportement indefini.
+
+9.3 Initialisation
+------------------
+  int v[5] = {1, 2, 3, 4, 5};
+  int v[5] = {0};             /* tout a zero      */
+  int m[2][3] = {
+      {1, 2, 3},
+      {4, 5, 6}
+  };
+
+9.4 Tableaux et pointeurs
+-------------------------
+Pour un tableau v et un indice i :
+
+  v[i]   est equivalent a   *(v + i)
+  &v[i]  est equivalent a   v + i
+
+Le nom du tableau est converti en pointeur sur son premier
+element dans la plupart des contextes (sauf sizeof et &).
+
+
+============================================================
+10. POINTEURS
+============================================================
+
+10.1 Declaration et initialisation
+----------------------------------
+  int  *p;            /* pointeur sur int                */
+  int   n = 10;
+  p = &n;             /* p pointe sur n                  */
+  *p = 20;            /* modifie n                       */
+
+10.2 Pointeur NULL
+------------------
+La constante NULL (definie dans <stddef.h>) represente un
+pointeur "vers rien". Toute dereference de NULL est indefinie.
+
+  int *p = NULL;
+  if (p != NULL) { ... }
+
+10.3 Arithmetique des pointeurs
+-------------------------------
+Pour un pointeur p de type T * et un entier n :
+
+  p + n     pointe n elements plus loin
+  p - n     pointe n elements plus tot
+  p1 - p2   nombre d'elements entre p1 et p2 (meme tableau)
+
+Le pas est sizeof(T) octets.
+
+10.4 Pointeurs et const
+-----------------------
+  const int *p;       /* pointeur vers entier const     */
+  int * const p;      /* pointeur const vers entier     */
+  const int * const p;/* tout est const                 */
+
+10.5 Pointeurs de fonction
+--------------------------
+  int (*pf)(int, int);    /* pointeur sur fonction       */
+  pf = somme;
+  printf("%d\n", pf(3, 4));
+
+10.6 Allocation dynamique
+-------------------------
+Voir <stdlib.h> :
+
+  int *t = malloc(n * sizeof(int));
+  if (t == NULL) { /* echec */ }
+  ...
+  free(t);
+
+
+============================================================
+11. STRUCTURES, UNIONS, ENUMERATIONS
+============================================================
+
+11.1 Structures
+---------------
+  struct point {
+      int x;
+      int y;
+  };
+
+  struct point p1 = {10, 20};
+  struct point p2 = { .x = 5, .y = 7 };   /* designators C99 */
+
+  p1.x = 30;
+  printf("%d %d\n", p1.x, p1.y);
+
+Avec typedef :
+
+  typedef struct {
+      double r;
+      double i;
+  } complex;
+
+  complex c = {1.0, -2.0};
+
+11.2 Pointeurs sur structure
+----------------------------
+  struct point *pp = &p1;
+  pp->x = 100;          /* equivalent a (*pp).x = 100 */
+
+11.3 Unions
+-----------
+Une union reserve un emplacement assez grand pour le plus gros
+de ses champs ; tous ses champs partagent le meme stockage.
+
+  union variant {
+      int    i;
+      float  f;
+      char   s[16];
+  };
+
+11.4 Enumerations
+-----------------
+  enum couleur { ROUGE, VERT, BLEU };          /* 0, 1, 2     */
+  enum signal  { OK = 0, ERR = -1, WARN = 1 };
+
+Les valeurs sont des constantes entieres.
+
+11.5 Champs de bits
+-------------------
+  struct flags {
+      unsigned actif      : 1;
+      unsigned mode       : 3;
+      unsigned reserve    : 4;
+  };
+
+
+============================================================
+12. PREPROCESSEUR
+============================================================
+
+Le preprocesseur traite le source AVANT la compilation. Toutes
+les directives commencent par # en colonne 1 (ou apres des
+espaces).
+
+12.1 Inclusion de fichiers
+--------------------------
+  #include <stdio.h>      /* en-tete systeme */
+  #include "monfich.h"    /* en-tete local   */
+
+12.2 Macros
+-----------
+Sans parametre :
+
+  #define PI       3.14159265
+  #define BUFSIZE  1024
+
+Avec parametres :
+
+  #define MAX(a,b)   ((a) > (b) ? (a) : (b))
+  #define CARRE(x)   ((x) * (x))
+
+12.3 Compilation conditionnelle
+-------------------------------
+  #ifdef  SYMBOLE      ... #endif
+  #ifndef SYMBOLE      ... #endif
+  #if    expression    ... #elif ...  #else ...  #endif
+  #undef SYMBOLE
+
+12.4 Operateurs # et ##
+-----------------------
+  #x       transforme x en chaine ("nom")
+  a##b     concatene les jetons a et b (collage)
+
+12.5 Macros predefinies
+-----------------------
+  __FILE__         nom du fichier source courant
+  __LINE__         numero de ligne courant
+  __DATE__         date de compilation     ("Apr 14 2026")
+  __TIME__         heure de compilation    ("12:34:56")
+  __STDC__         vaut 1 en mode ANSI strict
+  __func__         (C99) nom de la fonction courante
+
+
+============================================================
+13. CHAINES DE CARACTERES
+============================================================
+
+Une chaine est un tableau de char termine par un octet nul '\0'.
+
+  char s[] = "Bonjour";   /* { 'B','o','n','j','o','u','r','\0' } */
+
+13.1 Fonctions principales (<string.h>)
+---------------------------------------
+  size_t strlen(const char *s);
+  char  *strcpy(char *dst, const char *src);
+  char  *strncpy(char *dst, const char *src, size_t n);
+  char  *strcat(char *dst, const char *src);
+  int    strcmp(const char *a, const char *b);
+  int    strncmp(const char *a, const char *b, size_t n);
+  char  *strchr(const char *s, int c);
+  char  *strstr(const char *s, const char *sub);
+
+13.2 Fonctions memoire
+----------------------
+  void  *memcpy (void *dst, const void *src, size_t n);
+  void  *memmove(void *dst, const void *src, size_t n);
+  void  *memset (void *p, int c, size_t n);
+  int    memcmp (const void *a, const void *b, size_t n);
+
+13.3 Conversions (<stdlib.h>)
+-----------------------------
+  int    atoi (const char *s);
+  long   atol (const char *s);
+  double atof (const char *s);
+  long   strtol(const char *s, char **endptr, int base);
+
+
+============================================================
+14. ENTREES / SORTIES STANDARD
+============================================================
+
+14.1 Flux standard (<stdio.h>)
+------------------------------
+  stdin    entree standard       (clavier par defaut)
+  stdout   sortie standard       (ecran par defaut)
+  stderr   sortie d'erreur       (ecran, non bufferisee)
+
+14.2 Sortie formatee
+--------------------
+  int printf (const char *fmt, ...);
+  int fprintf(FILE *f, const char *fmt, ...);
+  int sprintf(char *buf, const char *fmt, ...);
+
+Specificateurs de format :
+
+  %d  %i      entier decimal signe
+  %u          entier decimal non signe
+  %o  %x  %X  octal / hexa minuscules / hexa majuscules
+  %c          caractere
+  %s          chaine
+  %f  %e  %g  flottant decimal / scientifique / general
+  %p          pointeur
+  %%          litteral %
+
+Modificateurs : largeur, precision, l (long), h (short),
+ll (long long, C99), drapeaux ('-' '+' ' ' '0' '#').
+
+14.3 Entree formatee
+--------------------
+  int scanf (const char *fmt, ...);
+  int fscanf(FILE *f, const char *fmt, ...);
+  int sscanf(const char *s, const char *fmt, ...);
+
+14.4 Acces aux fichiers
+-----------------------
+  FILE  *fopen (const char *path, const char *mode);
+  int    fclose(FILE *f);
+  int    fgetc (FILE *f);
+  int    fputc (int c, FILE *f);
+  char  *fgets (char *s, int n, FILE *f);
+  int    fputs (const char *s, FILE *f);
+  size_t fread (void *p, size_t sz, size_t n, FILE *f);
+  size_t fwrite(const void *p, size_t sz, size_t n, FILE *f);
+  int    fseek (FILE *f, long ofs, int whence);
+  long   ftell (FILE *f);
+  void   rewind(FILE *f);
+  int    feof  (FILE *f);
+  int    ferror(FILE *f);
+
+Modes : "r" "w" "a" "r+" "w+" "a+" (ajouter "b" pour binaire).
+
+
+============================================================
+15. BIBLIOTHEQUE STANDARD ANSI
+============================================================
+
+Selection des en-tetes les plus utilises :
+
+  <stddef.h>     types size_t, ptrdiff_t, constante NULL,
+                 macro offsetof.
+  <stdio.h>      entrees/sorties bufferisees (FILE *).
+  <stdlib.h>     allocation memoire, conversions de chaines,
+                 controle de processus (exit, atexit, system,
+                 getenv).
+  <string.h>     manipulation de chaines et de blocs memoire.
+  <ctype.h>      tests sur caracteres (isalpha, isdigit, ...).
+  <math.h>       fonctions mathematiques (sin, cos, sqrt, ...).
+  <time.h>       date et heure (time, clock, strftime, ...).
+  <assert.h>     macro assert(condition).
+  <errno.h>      variable errno et codes d'erreur.
+  <limits.h>     INT_MAX, CHAR_BIT, ... bornes des types.
+  <float.h>      DBL_EPSILON, FLT_MAX, ... limites flottantes.
+  <setjmp.h>     setjmp / longjmp (sauts non-locaux).
+  <signal.h>     gestion des signaux.
+  <stdarg.h>     listes d'arguments variables.
+
+C99 ajoute notamment <stdbool.h>, <stdint.h>, <complex.h>,
+<tgmath.h>, <inttypes.h>.
+
+
+============================================================
+16. ALLOCATION DYNAMIQUE
+============================================================
+
+  void  *malloc (size_t taille);
+  void  *calloc (size_t n, size_t taille);   /* zero-initialise */
+  void  *realloc(void *p, size_t nouvelle_taille);
+  void   free   (void *p);
+
+Regles fondamentales :
+
+  - Toujours tester la valeur retournee par malloc/calloc/realloc.
+  - Chaque malloc doit avoir UN seul free correspondant.
+  - free(NULL) est legal et ne fait rien.
+  - L'acces a une zone apres free est un comportement indefini.
+  - free deux fois la meme zone est un comportement indefini.
+
+Exemple :
+
+  size_t n = 100;
+  int *t = malloc(n * sizeof *t);
+  if (!t) { perror("malloc"); exit(1); }
+  for (size_t i = 0; i < n; i++) t[i] = (int)i;
+  free(t);
+
+
+============================================================
+17. PORTEE, DUREE DE VIE ET LIAISON
+============================================================
+
+17.1 Portees
+------------
+  - Portee de bloc        : variable locale a un bloc { ... }
+  - Portee de fonction    : etiquettes goto
+  - Portee de prototype   : parametres d'une declaration
+  - Portee de fichier     : declarations hors fonction
+
+17.2 Durees de vie
+------------------
+  - Automatique : creee a l'entree du bloc, detruite a la
+                  sortie (variables locales standard).
+  - Statique    : duree de vie = programme (globales et
+                  locales static).
+  - Allouee     : controlee par malloc/free.
+
+17.3 Liaisons (linkage)
+-----------------------
+  - Externe  : visible depuis d'autres unites de traduction
+               (fonctions par defaut, globales sans static).
+  - Interne  : visible uniquement dans l'unite (declaration
+               static au niveau fichier).
+  - Sans liaison : locale a une fonction.
+
+
+============================================================
+18. ENTREES/SORTIES BAS NIVEAU (POSIX)
+============================================================
+
+Non normalisees par C89, mais largement disponibles sur UNIX
+et compatibles. Definies dans <unistd.h> et <fcntl.h> :
+
+  int   open (const char *path, int flags, ...);
+  int   close(int fd);
+  ssize_t read (int fd, void *buf, size_t n);
+  ssize_t write(int fd, const void *buf, size_t n);
+  off_t lseek(int fd, off_t ofs, int whence);
+
+Descripteurs predefinis :
+
+  0    STDIN_FILENO
+  1    STDOUT_FILENO
+  2    STDERR_FILENO
+
+
+============================================================
+19. ASSERTIONS, ERREURS ET CODES DE SORTIE
+============================================================
+
+19.1 Assertions (<assert.h>)
+----------------------------
+  assert(condition);
+
+Si la condition est fausse, le programme affiche un message
+sur stderr et appelle abort(). Definir NDEBUG avant l'inclusion
+de <assert.h> desactive toutes les assertions.
+
+19.2 Codes d'erreur (<errno.h>)
+-------------------------------
+La variable globale errno est positionnee par certaines fonctions
+de la bibliotheque pour indiquer la cause d'un echec. Codes
+classiques :
+
+  EDOM       argument hors domaine
+  ERANGE     resultat hors limites
+  EINVAL     argument invalide
+  ENOMEM     plus de memoire
+  ENOENT     fichier introuvable
+  EACCES     permission refusee
+
+19.3 Sortie de programme
+------------------------
+  exit(code);       termine le programme en libérant les flux
+  _Exit(code);      termine sans appels atexit (C99)
+  abort();          terminaison anormale (genere SIGABRT)
+  atexit(fn);       enregistre une fonction a appeler a la sortie
+
+Codes conventionnels :
+
+  EXIT_SUCCESS      succes (defini dans <stdlib.h>, vaut 0)
+  EXIT_FAILURE      echec  (defini dans <stdlib.h>)
+
+
+============================================================
+20. EVOLUTIONS DU STANDARD
+============================================================
+
+C99 - ISO/IEC 9899:1999
+  - Commentaires // de fin de ligne
+  - Type long long et entiers de largeur fixe (<stdint.h>)
+  - Type _Bool et en-tete <stdbool.h>
+  - Initialiseurs designes : { .x = 1, .y = 2 }
+  - Composites litteraux : (struct point){1,2}
+  - Tableaux a longueur variable (VLA) : int v[n];
+  - Fonctions inline
+  - Variable __func__
+  - <complex.h>, <tgmath.h>, <inttypes.h>
+
+C11 - ISO/IEC 9899:2011
+  - _Static_assert, _Generic
+  - Threads (<threads.h>), atomics (<stdatomic.h>)
+  - Macros sans tableau a longueur variable obligatoire
+  - Suppression de gets
+
+C17 - ISO/IEC 9899:2018
+  - Corrections techniques uniquement (pas d'ajout
+    significatif a C11).
+
+C23 - ISO/IEC 9899:2024
+  - Mot cle bool, true, false integres
+  - Litteraux binaires 0b...
+  - Separateur de chiffres '
+  - Attributs [[...]]
+  - typeof, typeof_unqual
+  - Bibliotheque <stdbit.h>
+
+
+============================================================
+21. COMPILATION ET LIEN
+============================================================
+
+Pipeline classique d'un programme C :
+
+  source.c   --(preprocessing)-->  source.i
+  source.i   --(compilation)--->   source.s   (assembleur)
+  source.s   --(assembly)------>   source.o   (objet)
+  source.o   --(linking)------->   programme  (executable)
+
+Phases d'un compilateur C :
+
+  1. Trigraphes et concatenation des lignes de continuation
+  2. Tokenisation
+  3. Preprocessing (directives #)
+  4. Conversion des litteraux et des chaines
+  5. Concatenation des chaines adjacentes
+  6. Analyse syntaxique et semantique
+  7. Generation de code
+  8. Edition de liens (resolution des symboles externes)
+
+Outils GNU classiques :
+
+  cpp        preprocesseur seul
+  cc1        compilateur (vers assembleur)
+  as         assembleur
+  ld         editeur de liens
+  ar         creation de bibliotheques statiques (.a)
+  nm         liste les symboles d'un fichier objet
+
+
+============================================================
+22. COMPILATEURS DU PROJET
+============================================================
+
+22.1 C.PAS
+----------
+Tokeniseur / coloriseur syntaxique du langage C. Ne genere pas
+de code executable ; sert de base aux autres compilateurs et
+a l'editeur DEVENV pour la coloration syntaxique des fichiers
+.c et .h.
+
+22.2 CC8086.PAS
+---------------
+Compilateur generant de l'assembleur 8086 (MASM .MODEL SMALL)
+pour MS-DOS. Cible un processeur Intel 8086 en mode reel 16
+bits. Sous-ensemble C89 implemente :
+
+  - Types : char, short, int (16 bits), long (32 bits)
+  - Pointeurs near (16 bits, modele small)
+  - Structures et unions
+  - Tableaux uni- et bi-dimensionnels
+  - Fonctions avec parametres et retour
+  - Preprocesseur : #define, #include, #ifdef
+  - Bibliotheque minimale : printf, scanf, exit
+
+22.3 CC09.PAS
+-------------
+Compilateur C vers assembleur Motorola 6809 (style EDTASM /
+TSC). Convient pour le developpement sur TRS-80 Color
+Computer, Dragon 32/64 et systemes OS-9. Pas de FPU : flottants
+en logiciel.
+
+22.4 CC6502.PAS
+---------------
+Compilateur C vers assembleur MOS 6502 (style ca65 / cc65).
+Cible : Apple II, Commodore 64, Atari 800, NES, BBC Micro.
+Sous-ensemble C reduit (pas de long, pas de double).
+
+22.5 CCW32.PAS
+--------------
+Compilateur C vers binaire Win32 PE 32 bits. Genere directement
+un executable .EXE Windows utilisant KERNEL32.DLL pour les
+sorties console et les appels systeme.
+
+22.6 CCJASMIN.PAS
+-----------------
+Compilateur experimental C vers JASMIN (assembleur JVM). Le
+fichier .j genere peut ensuite etre assemble en classfile .class
+pour la machine virtuelle Java.
+
+
+============================================================
+23. EXEMPLE COMPLET
+============================================================
+
+Programme calculant la suite de Fibonacci :
+
+  #include <stdio.h>
+  #include <stdlib.h>
+
+  long fib(int n)
+  {
+      if (n < 2) return n;
+      return fib(n - 1) + fib(n - 2);
+  }
+
+  int main(int argc, char *argv[])
+  {
+      int n = (argc > 1) ? atoi(argv[1]) : 10;
+      int i;
+
+      printf("Suite de Fibonacci jusqu'a F(%d) :\n", n);
+      for (i = 0; i <= n; i++)
+          printf("  F(%2d) = %ld\n", i, fib(i));
+
+      return 0;
+  }
+
+Compilation et execution sous DOS (CC8086) :
+
+  CC8086 fib.c
+  MASM   fib.asm
+  LINK   fib.obj
+  fib 15
+
+
+============================================================
+24. TABLEAU DES FONCTIONS STANDARD
+============================================================
+
+Cette section liste les fonctions de la bibliotheque standard
+ANSI C (C89/C90), regroupees par en-tete d'origine. Format :
+
+  Nom                 En-tete         Description
+
+24.1 <assert.h>
+---------------
+  assert              <assert.h>      Verifie une condition en debug ; sinon
+                                      affiche un message et appelle abort().
+
+24.2 <ctype.h>  (classification et conversion de caracteres)
+------------------------------------------------------------
+  isalnum             <ctype.h>       Vrai si lettre ou chiffre.
+  isalpha             <ctype.h>       Vrai si lettre.
+  iscntrl             <ctype.h>       Vrai si caractere de controle.
+  isdigit             <ctype.h>       Vrai si chiffre 0..9.
+  isgraph             <ctype.h>       Vrai si imprimable sauf espace.
+  islower             <ctype.h>       Vrai si lettre minuscule.
+  isprint             <ctype.h>       Vrai si caractere imprimable.
+  ispunct             <ctype.h>       Vrai si ponctuation.
+  isspace             <ctype.h>       Vrai si espace, tab, saut de ligne...
+  isupper             <ctype.h>       Vrai si lettre majuscule.
+  isxdigit            <ctype.h>       Vrai si chiffre hexadecimal.
+  tolower             <ctype.h>       Convertit en minuscule.
+  toupper             <ctype.h>       Convertit en majuscule.
+
+24.3 <errno.h>
+--------------
+  errno               <errno.h>       Variable contenant le dernier code
+                                      d'erreur (macro lvalue).
+
+24.4 <locale.h>
+---------------
+  setlocale           <locale.h>      Selectionne la locale courante.
+  localeconv          <locale.h>      Retourne les conventions numeriques.
+
+24.5 <math.h>  (fonctions mathematiques double)
+-----------------------------------------------
+  acos                <math.h>        Arc cosinus.
+  asin                <math.h>        Arc sinus.
+  atan                <math.h>        Arc tangente.
+  atan2               <math.h>        Arc tangente de y/x (4 quadrants).
+  ceil                <math.h>        Plafond (plus petit entier >= x).
+  cos                 <math.h>        Cosinus.
+  cosh                <math.h>        Cosinus hyperbolique.
+  exp                 <math.h>        Exponentielle e^x.
+  fabs                <math.h>        Valeur absolue flottante.
+  floor               <math.h>        Plancher (plus grand entier <= x).
+  fmod                <math.h>        Reste flottant de x/y.
+  frexp               <math.h>        Decompose en mantisse * 2^exp.
+  ldexp               <math.h>        Calcule x * 2^exp.
+  log                 <math.h>        Logarithme naturel.
+  log10               <math.h>        Logarithme decimal.
+  modf                <math.h>        Separe partie entiere et fractionnaire.
+  pow                 <math.h>        Puissance x^y.
+  sin                 <math.h>        Sinus.
+  sinh                <math.h>        Sinus hyperbolique.
+  sqrt                <math.h>        Racine carree.
+  tan                 <math.h>        Tangente.
+  tanh                <math.h>        Tangente hyperbolique.
+
+24.6 <setjmp.h>
+---------------
+  setjmp              <setjmp.h>      Sauvegarde le contexte (saut non local).
+  longjmp             <setjmp.h>      Restaure un contexte sauvegarde.
+
+24.7 <signal.h>
+---------------
+  signal              <signal.h>      Installe un gestionnaire de signal.
+  raise               <signal.h>      Envoie un signal au processus courant.
+
+24.8 <stdarg.h>  (arguments variables)
+--------------------------------------
+  va_start            <stdarg.h>      Initialise une liste d'arguments.
+  va_arg              <stdarg.h>      Extrait l'argument suivant.
+  va_end              <stdarg.h>      Termine la liste.
+  va_copy             <stdarg.h>      (C99) Duplique une liste va_list.
+
+24.9 <stdio.h>  (entrees / sorties bufferisees)
+-----------------------------------------------
+  clearerr            <stdio.h>       Efface les indicateurs d'erreur/EOF.
+  fclose              <stdio.h>       Ferme un flux.
+  feof                <stdio.h>       Teste l'indicateur de fin de fichier.
+  ferror              <stdio.h>       Teste l'indicateur d'erreur.
+  fflush              <stdio.h>       Vide le buffer de sortie.
+  fgetc               <stdio.h>       Lit un caractere d'un flux.
+  fgetpos             <stdio.h>       Sauvegarde la position courante.
+  fgets               <stdio.h>       Lit une ligne (max n caracteres).
+  fopen               <stdio.h>       Ouvre un fichier.
+  fprintf             <stdio.h>       Sortie formatee vers un flux.
+  fputc               <stdio.h>       Ecrit un caractere dans un flux.
+  fputs               <stdio.h>       Ecrit une chaine dans un flux.
+  fread               <stdio.h>       Lit un bloc binaire.
+  freopen             <stdio.h>       Reouvre un flux sur un autre fichier.
+  fscanf              <stdio.h>       Entree formatee depuis un flux.
+  fseek               <stdio.h>       Positionne le curseur dans un flux.
+  fsetpos             <stdio.h>       Restaure une position sauvegardee.
+  ftell               <stdio.h>       Retourne la position courante.
+  fwrite              <stdio.h>       Ecrit un bloc binaire.
+  getc                <stdio.h>       Lit un caractere (souvent macro).
+  getchar             <stdio.h>       Lit un caractere de stdin.
+  gets                <stdio.h>       Lit une ligne de stdin (DEPRECIE).
+  perror              <stdio.h>       Affiche message + erreur systeme.
+  printf              <stdio.h>       Sortie formatee vers stdout.
+  putc                <stdio.h>       Ecrit un caractere (souvent macro).
+  putchar             <stdio.h>       Ecrit un caractere sur stdout.
+  puts                <stdio.h>       Ecrit une chaine + \n sur stdout.
+  remove              <stdio.h>       Supprime un fichier.
+  rename              <stdio.h>       Renomme un fichier.
+  rewind              <stdio.h>       Repositionne au debut du flux.
+  scanf               <stdio.h>       Entree formatee depuis stdin.
+  setbuf              <stdio.h>       Definit le buffer d'un flux.
+  setvbuf             <stdio.h>       Definit le mode de bufferisation.
+  sprintf             <stdio.h>       Sortie formatee dans une chaine.
+  sscanf              <stdio.h>       Entree formatee depuis une chaine.
+  tmpfile             <stdio.h>       Cree un fichier temporaire.
+  tmpnam              <stdio.h>       Genere un nom de fichier temporaire.
+  ungetc              <stdio.h>       Remet un caractere dans le flux.
+  vfprintf            <stdio.h>       fprintf avec va_list.
+  vprintf             <stdio.h>       printf avec va_list.
+  vsprintf            <stdio.h>       sprintf avec va_list.
+
+24.10 <stdlib.h>  (utilitaires generaux)
+----------------------------------------
+  abort               <stdlib.h>      Terminaison anormale (SIGABRT).
+  abs                 <stdlib.h>      Valeur absolue d'un int.
+  atexit              <stdlib.h>      Enregistre une fn appelee a exit.
+  atof                <stdlib.h>      Convertit chaine en double.
+  atoi                <stdlib.h>      Convertit chaine en int.
+  atol                <stdlib.h>      Convertit chaine en long.
+  bsearch             <stdlib.h>      Recherche dichotomique dans tableau trie.
+  calloc              <stdlib.h>      Alloue et initialise a zero.
+  div                 <stdlib.h>      Division entiere avec quotient et reste.
+  exit                <stdlib.h>      Terminaison normale du programme.
+  free                <stdlib.h>      Libere une zone allouee.
+  getenv              <stdlib.h>      Lit une variable d'environnement.
+  labs                <stdlib.h>      Valeur absolue d'un long.
+  ldiv                <stdlib.h>      Division entiere (long).
+  malloc              <stdlib.h>      Allocation dynamique de memoire.
+  mblen               <stdlib.h>      Longueur d'un caractere multi-octet.
+  mbstowcs            <stdlib.h>      Convertit chaine multi-oct en wchar.
+  mbtowc              <stdlib.h>      Convertit un car. multi-oct en wchar.
+  qsort               <stdlib.h>      Tri rapide d'un tableau.
+  rand                <stdlib.h>      Genere un nombre pseudo-aleatoire.
+  realloc             <stdlib.h>      Redimensionne une allocation.
+  srand               <stdlib.h>      Initialise le generateur aleatoire.
+  strtod              <stdlib.h>      Convertit chaine en double (parsing).
+  strtol              <stdlib.h>      Convertit chaine en long avec base.
+  strtoul             <stdlib.h>      Convertit chaine en unsigned long.
+  system              <stdlib.h>      Execute une commande shell.
+  wcstombs            <stdlib.h>      Convertit chaine wchar en multi-oct.
+  wctomb              <stdlib.h>      Convertit wchar en multi-oct.
+
+24.11 <string.h>  (chaines et memoire)
+--------------------------------------
+  memchr              <string.h>      Recherche un octet dans un bloc.
+  memcmp              <string.h>      Compare deux blocs memoire.
+  memcpy              <string.h>      Copie un bloc (zones disjointes).
+  memmove             <string.h>      Copie un bloc (zones recouvrantes OK).
+  memset              <string.h>      Remplit un bloc avec une valeur.
+  strcat              <string.h>      Concatene deux chaines.
+  strchr              <string.h>      Premiere occurrence d'un caractere.
+  strcmp              <string.h>      Compare deux chaines.
+  strcoll             <string.h>      Compare selon la locale.
+  strcpy              <string.h>      Copie une chaine.
+  strcspn             <string.h>      Longueur du prefixe sans ces caracteres.
+  strerror            <string.h>      Message d'erreur a partir d'un code.
+  strlen              <string.h>      Longueur d'une chaine (sans \0).
+  strncat             <string.h>      Concatene au plus n caracteres.
+  strncmp             <string.h>      Compare au plus n caracteres.
+  strncpy             <string.h>      Copie au plus n caracteres.
+  strpbrk             <string.h>      Premiere occurrence d'un car. d'un set.
+  strrchr             <string.h>      Derniere occurrence d'un caractere.
+  strspn              <string.h>      Longueur du prefixe avec ces caracteres.
+  strstr              <string.h>      Recherche d'une sous-chaine.
+  strtok              <string.h>      Decoupe une chaine en jetons.
+  strxfrm             <string.h>      Transforme pour strcmp en locale.
+
+24.12 <time.h>
+--------------
+  asctime             <time.h>        Convertit struct tm en chaine.
+  clock               <time.h>        Temps CPU consomme depuis le debut.
+  ctime               <time.h>        Convertit time_t en chaine.
+  difftime            <time.h>        Difference entre deux time_t.
+  gmtime              <time.h>        time_t vers struct tm (UTC).
+  localtime           <time.h>        time_t vers struct tm (locale).
+  mktime              <time.h>        struct tm vers time_t.
+  strftime            <time.h>        Formate une date dans une chaine.
+  time                <time.h>        Retourne l'heure courante.
+
+24.13 Fonctions C99 et plus recentes (selection)
+------------------------------------------------
+  snprintf            <stdio.h>       (C99) sprintf avec limite de taille.
+  vsnprintf           <stdio.h>       (C99) vsprintf avec limite de taille.
+  strtoll             <stdlib.h>      (C99) strtol pour long long.
+  strtoull            <stdlib.h>      (C99) strtoul pour unsigned long long.
+  llabs               <stdlib.h>      (C99) valeur absolue long long.
+  lldiv               <stdlib.h>      (C99) division long long.
+  atoll               <stdlib.h>      (C99) atoi pour long long.
+  acosh               <math.h>        (C99) arc cosinus hyperbolique.
+  asinh               <math.h>        (C99) arc sinus hyperbolique.
+  atanh               <math.h>        (C99) arc tangente hyperbolique.
+  cbrt                <math.h>        (C99) racine cubique.
+  copysign            <math.h>        (C99) recopie le signe.
+  erf                 <math.h>        (C99) fonction d'erreur.
+  exp2                <math.h>        (C99) 2^x.
+  expm1               <math.h>        (C99) exp(x) - 1, precis pres de 0.
+  hypot               <math.h>        (C99) sqrt(x*x + y*y).
+  log1p               <math.h>        (C99) log(1+x), precis pres de 0.
+  log2                <math.h>        (C99) logarithme base 2.
+  nearbyint           <math.h>        (C99) arrondi a l'entier (round mode).
+  remainder           <math.h>        (C99) reste IEEE 754.
+  round               <math.h>        (C99) arrondi a l'entier le plus proche.
+  trunc               <math.h>        (C99) troncature vers zero.
+
+24.14 Fonctions POSIX courantes (non ANSI)
+------------------------------------------
+  open                <fcntl.h>       Ouvre un descripteur de fichier.
+  close               <unistd.h>      Ferme un descripteur.
+  read                <unistd.h>      Lit des octets bruts.
+  write               <unistd.h>      Ecrit des octets bruts.
+  lseek               <unistd.h>      Positionne dans un descripteur.
+  unlink              <unistd.h>      Supprime un fichier.
+  access              <unistd.h>      Teste l'accessibilite d'un fichier.
+  stat                <sys/stat.h>    Recupere les attributs d'un fichier.
+  fstat               <sys/stat.h>    stat sur un descripteur.
+  chmod               <sys/stat.h>    Change les permissions.
+  fork                <unistd.h>      Cree un processus fils.
+  execv               <unistd.h>      Remplace le processus par un programme.
+  wait                <sys/wait.h>    Attend la fin d'un fils.
+  pipe                <unistd.h>      Cree un tube de communication.
+  dup                 <unistd.h>      Duplique un descripteur.
+  dup2                <unistd.h>      Duplique vers un descripteur donne.
+
+Note : la liste C89 est exhaustive ; les listes C99 et POSIX sont
+une selection des fonctions les plus utilisees. Pour les details
+complets (signatures, codes d'erreur, comportements), se referer
+aux pages de manuel POSIX ou a la norme ISO C correspondante.
+
+
+============================================================
+25. DEFINITIONS DETAILLEES DES FONCTIONS
+============================================================
+
+Chaque fonction est presentee dans le format :
+
+  Description : role general.
+  Syntaxe     : prototype ANSI.
+  Parametres  : signification de chaque argument.
+  Retour      : valeur retournee et conditions d'erreur.
+  Exemple     : usage minimal.
+
+------------------------------------------------------------
+25.1 <assert.h>
+------------------------------------------------------------
+
+assert
+  Description : Verifie une expression en mode debug. Si elle
+                est fausse, affiche un message diagnostique sur
+                stderr puis appelle abort(). Desactive si NDEBUG
+                est defini.
+  Syntaxe     : void assert(int expression);
+  Parametres  : expression - condition booleenne a verifier.
+  Retour      : aucun (macro).
+  Exemple     :
+                assert(p != NULL);
+                assert(n > 0 && n < 100);
+
+------------------------------------------------------------
+25.2 <ctype.h>
+------------------------------------------------------------
+
+isalnum
+  Description : Teste si le caractere est alphanumerique.
+  Syntaxe     : int isalnum(int c);
+  Parametres  : c - caractere a tester (unsigned char ou EOF).
+  Retour      : non zero si vrai, 0 sinon.
+  Exemple     : if (isalnum(c)) putchar(c);
+
+isalpha
+  Description : Teste si le caractere est une lettre.
+  Syntaxe     : int isalpha(int c);
+  Parametres  : c - caractere a tester.
+  Retour      : non zero si lettre, 0 sinon.
+  Exemple     : while (isalpha(*s)) s++;
+
+iscntrl
+  Description : Teste si le caractere est un caractere de
+                controle (codes 0..31 et 127 en ASCII).
+  Syntaxe     : int iscntrl(int c);
+  Parametres  : c - caractere a tester.
+  Retour      : non zero si controle, 0 sinon.
+  Exemple     : if (iscntrl(c)) printf("^%c", c + '@');
+
+isdigit
+  Description : Teste si le caractere est un chiffre 0..9.
+  Syntaxe     : int isdigit(int c);
+  Parametres  : c - caractere a tester.
+  Retour      : non zero si chiffre, 0 sinon.
+  Exemple     : while (isdigit(*p)) n = n*10 + (*p++ - '0');
+
+isgraph
+  Description : Teste si le caractere est imprimable et non
+                espace.
+  Syntaxe     : int isgraph(int c);
+  Parametres  : c - caractere a tester.
+  Retour      : non zero si vrai, 0 sinon.
+  Exemple     : if (isgraph(c)) putchar(c);
+
+islower
+  Description : Teste si le caractere est une minuscule.
+  Syntaxe     : int islower(int c);
+  Parametres  : c - caractere a tester.
+  Retour      : non zero si minuscule, 0 sinon.
+  Exemple     : if (islower(c)) c = toupper(c);
+
+isprint
+  Description : Teste si le caractere est imprimable (espace
+                inclus).
+  Syntaxe     : int isprint(int c);
+  Parametres  : c - caractere a tester.
+  Retour      : non zero si imprimable, 0 sinon.
+  Exemple     : if (isprint(c)) putchar(c); else putchar('.');
+
+ispunct
+  Description : Teste si le caractere est ponctuation
+                (imprimable, ni espace ni alphanumerique).
+  Syntaxe     : int ispunct(int c);
+  Parametres  : c - caractere a tester.
+  Retour      : non zero si ponctuation, 0 sinon.
+  Exemple     : if (ispunct(c)) ponct_count++;
+
+isspace
+  Description : Teste si le caractere est un espace blanc
+                (' ', '\t', '\n', '\v', '\f', '\r').
+  Syntaxe     : int isspace(int c);
+  Parametres  : c - caractere a tester.
+  Retour      : non zero si espace blanc, 0 sinon.
+  Exemple     : while (isspace(*p)) p++;
+
+isupper
+  Description : Teste si le caractere est une majuscule.
+  Syntaxe     : int isupper(int c);
+  Parametres  : c - caractere a tester.
+  Retour      : non zero si majuscule, 0 sinon.
+  Exemple     : if (isupper(c)) c = tolower(c);
+
+isxdigit
+  Description : Teste si le caractere est un chiffre
+                hexadecimal (0..9, a..f, A..F).
+  Syntaxe     : int isxdigit(int c);
+  Parametres  : c - caractere a tester.
+  Retour      : non zero si hexa, 0 sinon.
+  Exemple     : while (isxdigit(*p)) p++;
+
+tolower
+  Description : Convertit une majuscule en minuscule.
+  Syntaxe     : int tolower(int c);
+  Parametres  : c - caractere a convertir.
+  Retour      : caractere converti, ou c si pas majuscule.
+  Exemple     : while (*s) { *s = tolower(*s); s++; }
+
+toupper
+  Description : Convertit une minuscule en majuscule.
+  Syntaxe     : int toupper(int c);
+  Parametres  : c - caractere a convertir.
+  Retour      : caractere converti, ou c si pas minuscule.
+  Exemple     : while (*s) { *s = toupper(*s); s++; }
+
+------------------------------------------------------------
+25.3 <locale.h>
+------------------------------------------------------------
+
+setlocale
+  Description : Selectionne ou interroge la locale courante.
+  Syntaxe     : char *setlocale(int category, const char *locale);
+  Parametres  : category - LC_ALL, LC_COLLATE, LC_CTYPE,
+                           LC_MONETARY, LC_NUMERIC, LC_TIME.
+                locale   - nom ("C", "fr_FR.UTF-8", "" pour
+                           valeur d'environnement, NULL pour
+                           interroger).
+  Retour      : chaine identifiant la locale ou NULL si echec.
+  Exemple     : setlocale(LC_ALL, "");
+
+localeconv
+  Description : Retourne les conventions numeriques et monetaires
+                de la locale courante.
+  Syntaxe     : struct lconv *localeconv(void);
+  Parametres  : aucun.
+  Retour      : pointeur sur struct lconv statique.
+  Exemple     :
+                struct lconv *p = localeconv();
+                printf("Decimal: %s\n", p->decimal_point);
+
+------------------------------------------------------------
+25.4 <math.h>
+------------------------------------------------------------
+
+Toutes les fonctions <math.h> de C89 prennent et retournent un
+double. En cas d'erreur de domaine, errno=EDOM et le resultat
+est implementation-defined. En cas d'erreur de plage, errno=
+ERANGE et le resultat est HUGE_VAL ou 0.
+
+acos
+  Description : Arc cosinus (radians) de x dans [-1, 1].
+  Syntaxe     : double acos(double x);
+  Parametres  : x - valeur dans [-1, 1].
+  Retour      : angle dans [0, PI] en radians.
+  Exemple     : double a = acos(0.5);   /* PI/3 */
+
+asin
+  Description : Arc sinus (radians) de x dans [-1, 1].
+  Syntaxe     : double asin(double x);
+  Parametres  : x - valeur dans [-1, 1].
+  Retour      : angle dans [-PI/2, PI/2].
+  Exemple     : double a = asin(1.0);   /* PI/2 */
+
+atan
+  Description : Arc tangente de x.
+  Syntaxe     : double atan(double x);
+  Parametres  : x - valeur reelle.
+  Retour      : angle dans (-PI/2, PI/2).
+  Exemple     : double a = atan(1.0);   /* PI/4 */
+
+atan2
+  Description : Arc tangente de y/x sur les 4 quadrants.
+  Syntaxe     : double atan2(double y, double x);
+  Parametres  : y, x - coordonnees.
+  Retour      : angle dans (-PI, PI].
+  Exemple     : double a = atan2(1.0, 1.0);  /* PI/4 */
+
+ceil
+  Description : Plafond : plus petit entier >= x.
+  Syntaxe     : double ceil(double x);
+  Parametres  : x - valeur reelle.
+  Retour      : ceil(x).
+  Exemple     : ceil(3.2)   /* 4.0 */
+
+cos
+  Description : Cosinus de x exprime en radians.
+  Syntaxe     : double cos(double x);
+  Parametres  : x - angle en radians.
+  Retour      : valeur dans [-1, 1].
+  Exemple     : double c = cos(0.0);   /* 1.0 */
+
+cosh
+  Description : Cosinus hyperbolique de x.
+  Syntaxe     : double cosh(double x);
+  Parametres  : x - valeur reelle.
+  Retour      : (e^x + e^-x)/2.
+  Exemple     : cosh(0.0)   /* 1.0 */
+
+exp
+  Description : Exponentielle e^x.
+  Syntaxe     : double exp(double x);
+  Parametres  : x - exposant.
+  Retour      : e^x.
+  Exemple     : exp(1.0)   /* ~2.71828 */
+
+fabs
+  Description : Valeur absolue d'un flottant.
+  Syntaxe     : double fabs(double x);
+  Parametres  : x - valeur reelle.
+  Retour      : |x|.
+  Exemple     : fabs(-3.5)  /* 3.5 */
+
+floor
+  Description : Plancher : plus grand entier <= x.
+  Syntaxe     : double floor(double x);
+  Parametres  : x - valeur reelle.
+  Retour      : floor(x).
+  Exemple     : floor(3.7)  /* 3.0 */
+
+fmod
+  Description : Reste flottant de x/y de meme signe que x.
+  Syntaxe     : double fmod(double x, double y);
+  Parametres  : x - numerateur. y - denominateur.
+  Retour      : x - n*y avec n entier ; 0 si y=0 (erreur).
+  Exemple     : fmod(5.3, 2.0)  /* 1.3 */
+
+frexp
+  Description : Decompose x en mantisse f et exposant 2^e :
+                x = f * 2^e avec 0.5 <= |f| < 1.
+  Syntaxe     : double frexp(double x, int *exp);
+  Parametres  : x   - valeur. exp - sortie de l'exposant.
+  Retour      : mantisse normalisee.
+  Exemple     :
+                int e;
+                double m = frexp(8.0, &e);  /* m=0.5, e=4 */
+
+ldexp
+  Description : Calcule x * 2^exp.
+  Syntaxe     : double ldexp(double x, int exp);
+  Parametres  : x - mantisse. exp - exposant.
+  Retour      : x * 2^exp.
+  Exemple     : ldexp(0.5, 4)  /* 8.0 */
+
+log
+  Description : Logarithme naturel (base e).
+  Syntaxe     : double log(double x);
+  Parametres  : x - reel strictement positif.
+  Retour      : ln(x).
+  Exemple     : log(2.71828)  /* ~1.0 */
+
+log10
+  Description : Logarithme decimal (base 10).
+  Syntaxe     : double log10(double x);
+  Parametres  : x - reel strictement positif.
+  Retour      : log10(x).
+  Exemple     : log10(1000.0)  /* 3.0 */
+
+modf
+  Description : Separe la partie entiere et la partie
+                fractionnaire de x.
+  Syntaxe     : double modf(double x, double *iptr);
+  Parametres  : x    - valeur. iptr - sortie de la partie ent.
+  Retour      : partie fractionnaire de meme signe que x.
+  Exemple     :
+                double i, f = modf(3.75, &i);  /* i=3.0 f=0.75 */
+
+pow
+  Description : Puissance x^y.
+  Syntaxe     : double pow(double x, double y);
+  Parametres  : x - base. y - exposant.
+  Retour      : x^y. Erreur si x<0 et y non entier.
+  Exemple     : pow(2.0, 10.0)  /* 1024.0 */
+
+sin
+  Description : Sinus de x en radians.
+  Syntaxe     : double sin(double x);
+  Parametres  : x - angle en radians.
+  Retour      : valeur dans [-1, 1].
+  Exemple     : sin(0.0)  /* 0.0 */
+
+sinh
+  Description : Sinus hyperbolique de x.
+  Syntaxe     : double sinh(double x);
+  Parametres  : x - valeur reelle.
+  Retour      : (e^x - e^-x)/2.
+  Exemple     : sinh(0.0)  /* 0.0 */
+
+sqrt
+  Description : Racine carree non negative.
+  Syntaxe     : double sqrt(double x);
+  Parametres  : x - reel >= 0.
+  Retour      : sqrt(x). Erreur si x<0.
+  Exemple     : sqrt(2.0)  /* ~1.41421 */
+
+tan
+  Description : Tangente de x en radians.
+  Syntaxe     : double tan(double x);
+  Parametres  : x - angle en radians.
+  Retour      : tan(x).
+  Exemple     : tan(0.0)  /* 0.0 */
+
+tanh
+  Description : Tangente hyperbolique de x.
+  Syntaxe     : double tanh(double x);
+  Parametres  : x - valeur reelle.
+  Retour      : tanh(x) dans (-1, 1).
+  Exemple     : tanh(0.0)  /* 0.0 */
+
+------------------------------------------------------------
+25.5 <setjmp.h>
+------------------------------------------------------------
+
+setjmp
+  Description : Sauvegarde l'environnement d'execution (pile,
+                registres) pour un saut non local ulterieur.
+  Syntaxe     : int setjmp(jmp_buf env);
+  Parametres  : env - tampon de sauvegarde.
+  Retour      : 0 au premier appel ; non zero si revenu par
+                longjmp.
+  Exemple     :
+                jmp_buf buf;
+                if (setjmp(buf) == 0) {
+                    /* code normal */
+                    longjmp(buf, 1);
+                } else {
+                    /* gestion d'erreur */
+                }
+
+longjmp
+  Description : Saut non local au point d'un setjmp precedent.
+  Syntaxe     : void longjmp(jmp_buf env, int val);
+  Parametres  : env - environnement sauvegarde par setjmp.
+                val - valeur retournee par setjmp (>=1).
+  Retour      : ne revient pas.
+  Exemple     : longjmp(buf, 1);
+
+------------------------------------------------------------
+25.6 <signal.h>
+------------------------------------------------------------
+
+signal
+  Description : Installe un gestionnaire pour un signal.
+  Syntaxe     : void (*signal(int sig, void (*func)(int)))(int);
+  Parametres  : sig  - SIGINT, SIGTERM, SIGSEGV, ...
+                func - SIG_DFL, SIG_IGN ou fonction.
+  Retour      : ancien gestionnaire ou SIG_ERR si erreur.
+  Exemple     :
+                void handler(int s) { printf("signal %d\n",s); }
+                signal(SIGINT, handler);
+
+raise
+  Description : Envoie un signal au processus courant.
+  Syntaxe     : int raise(int sig);
+  Parametres  : sig - numero du signal.
+  Retour      : 0 si succes, non zero sinon.
+  Exemple     : raise(SIGINT);
+
+------------------------------------------------------------
+25.7 <stdarg.h>
+------------------------------------------------------------
+
+va_start
+  Description : Initialise une liste d'arguments variables.
+  Syntaxe     : void va_start(va_list ap, last_named);
+  Parametres  : ap         - liste a initialiser.
+                last_named - dernier parametre nomme.
+  Retour      : aucun.
+
+va_arg
+  Description : Recupere l'argument suivant et avance le
+                pointeur de liste.
+  Syntaxe     : type va_arg(va_list ap, type);
+  Parametres  : ap   - liste. type - type attendu.
+  Retour      : valeur du type demande.
+
+va_end
+  Description : Termine l'utilisation d'une liste d'arguments.
+  Syntaxe     : void va_end(va_list ap);
+  Parametres  : ap - liste a fermer.
+  Retour      : aucun.
+
+Exemple complet (somme d'un nombre variable d'entiers) :
+
+  int sum(int n, ...) {
+      va_list ap; int s = 0, i;
+      va_start(ap, n);
+      for (i = 0; i < n; i++) s += va_arg(ap, int);
+      va_end(ap);
+      return s;
+  }
+
+------------------------------------------------------------
+25.8 <stdio.h>
+------------------------------------------------------------
+
+clearerr
+  Description : Efface les indicateurs d'erreur et EOF.
+  Syntaxe     : void clearerr(FILE *stream);
+  Parametres  : stream - flux concerne.
+  Retour      : aucun.
+  Exemple     : clearerr(fp);
+
+fclose
+  Description : Ferme un flux ; vide ses buffers.
+  Syntaxe     : int fclose(FILE *stream);
+  Parametres  : stream - flux a fermer.
+  Retour      : 0 si succes, EOF sinon.
+  Exemple     : fclose(fp);
+
+feof
+  Description : Teste si la fin de fichier a ete atteinte.
+  Syntaxe     : int feof(FILE *stream);
+  Parametres  : stream - flux.
+  Retour      : non zero si EOF, 0 sinon.
+  Exemple     : while (!feof(fp)) { ... }
+
+ferror
+  Description : Teste si une erreur est presente sur le flux.
+  Syntaxe     : int ferror(FILE *stream);
+  Parametres  : stream - flux.
+  Retour      : non zero si erreur, 0 sinon.
+  Exemple     : if (ferror(fp)) perror("read");
+
+fflush
+  Description : Force l'ecriture du buffer de sortie.
+  Syntaxe     : int fflush(FILE *stream);
+  Parametres  : stream - flux (NULL = tous les flux sortie).
+  Retour      : 0 si succes, EOF sinon.
+  Exemple     : fflush(stdout);
+
+fgetc
+  Description : Lit un caractere d'un flux.
+  Syntaxe     : int fgetc(FILE *stream);
+  Parametres  : stream - flux.
+  Retour      : caractere lu (unsigned char) ou EOF.
+  Exemple     : while ((c = fgetc(fp)) != EOF) putchar(c);
+
+fgetpos
+  Description : Sauvegarde la position courante du flux.
+  Syntaxe     : int fgetpos(FILE *stream, fpos_t *pos);
+  Parametres  : stream - flux. pos - destination.
+  Retour      : 0 si succes, non zero sinon.
+  Exemple     : fpos_t p; fgetpos(fp, &p);
+
+fgets
+  Description : Lit une ligne (jusqu'a n-1 caracteres ou '\n').
+  Syntaxe     : char *fgets(char *s, int n, FILE *stream);
+  Parametres  : s - tampon. n - taille. stream - flux.
+  Retour      : s en cas de succes, NULL en fin/erreur.
+  Exemple     : fgets(buf, sizeof buf, stdin);
+
+fopen
+  Description : Ouvre un fichier dans un mode donne.
+  Syntaxe     : FILE *fopen(const char *path, const char *mode);
+  Parametres  : path - chemin. mode - "r","w","a","r+","w+",
+                       "a+", suffixe "b" pour binaire.
+  Retour      : FILE * ou NULL si echec (errno positionne).
+  Exemple     :
+                FILE *f = fopen("data.txt", "r");
+                if (!f) { perror("fopen"); exit(1); }
+
+fprintf
+  Description : Ecriture formatee dans un flux.
+  Syntaxe     : int fprintf(FILE *stream, const char *fmt, ...);
+  Parametres  : stream - flux. fmt - chaine de format.
+  Retour      : nombre de caracteres ecrits, ou negatif si erreur.
+  Exemple     : fprintf(stderr, "Erreur: %s\n", msg);
+
+fputc
+  Description : Ecrit un caractere dans un flux.
+  Syntaxe     : int fputc(int c, FILE *stream);
+  Parametres  : c - caractere. stream - flux.
+  Retour      : c en cas de succes, EOF sinon.
+  Exemple     : fputc('\n', fp);
+
+fputs
+  Description : Ecrit une chaine dans un flux (sans '\n' ajoute).
+  Syntaxe     : int fputs(const char *s, FILE *stream);
+  Parametres  : s - chaine. stream - flux.
+  Retour      : non negatif si succes, EOF sinon.
+  Exemple     : fputs("Bonjour\n", fp);
+
+fread
+  Description : Lit n blocs binaires de taille sz.
+  Syntaxe     : size_t fread(void *ptr, size_t sz, size_t n,
+                              FILE *stream);
+  Parametres  : ptr - destination. sz - taille d'un bloc.
+                n - nombre de blocs. stream - flux.
+  Retour      : nombre de blocs effectivement lus.
+  Exemple     : fread(buf, 1, sizeof buf, fp);
+
+freopen
+  Description : Reouvre un flux sur un autre fichier.
+  Syntaxe     : FILE *freopen(const char *path, const char *mode,
+                              FILE *stream);
+  Parametres  : path, mode - comme fopen. stream - flux existant.
+  Retour      : stream en cas de succes, NULL sinon.
+  Exemple     : freopen("out.txt", "w", stdout);
+
+fscanf
+  Description : Entree formatee depuis un flux.
+  Syntaxe     : int fscanf(FILE *stream, const char *fmt, ...);
+  Parametres  : stream - flux. fmt - format. ... - pointeurs.
+  Retour      : nombre de conversions reussies, ou EOF.
+  Exemple     : fscanf(fp, "%d %d", &a, &b);
+
+fseek
+  Description : Positionne le curseur dans un flux.
+  Syntaxe     : int fseek(FILE *stream, long offset, int whence);
+  Parametres  : stream - flux. offset - decalage.
+                whence - SEEK_SET, SEEK_CUR, SEEK_END.
+  Retour      : 0 si succes, non zero sinon.
+  Exemple     : fseek(fp, 0L, SEEK_END);
+
+fsetpos
+  Description : Restaure une position sauvegardee par fgetpos.
+  Syntaxe     : int fsetpos(FILE *stream, const fpos_t *pos);
+  Parametres  : stream - flux. pos - position sauvegardee.
+  Retour      : 0 si succes, non zero sinon.
+  Exemple     : fsetpos(fp, &saved);
+
+ftell
+  Description : Retourne la position courante du flux.
+  Syntaxe     : long ftell(FILE *stream);
+  Parametres  : stream - flux.
+  Retour      : position en octets, -1L si erreur.
+  Exemple     : long pos = ftell(fp);
+
+fwrite
+  Description : Ecrit n blocs binaires de taille sz.
+  Syntaxe     : size_t fwrite(const void *ptr, size_t sz,
+                              size_t n, FILE *stream);
+  Parametres  : ptr - source. sz - taille. n - nombre.
+                stream - flux.
+  Retour      : nombre de blocs ecrits.
+  Exemple     : fwrite(buf, sizeof(int), 100, fp);
+
+getc
+  Description : Lit un caractere d'un flux (souvent macro).
+  Syntaxe     : int getc(FILE *stream);
+  Parametres  : stream - flux.
+  Retour      : caractere ou EOF.
+  Exemple     : c = getc(fp);
+
+getchar
+  Description : Lit un caractere de stdin.
+  Syntaxe     : int getchar(void);
+  Parametres  : aucun.
+  Retour      : caractere lu ou EOF.
+  Exemple     : while ((c = getchar()) != EOF) putchar(c);
+
+gets
+  Description : Lit une ligne de stdin (sans verification de
+                taille). DEPRECIE : utiliser fgets.
+  Syntaxe     : char *gets(char *s);
+  Parametres  : s - tampon (risque de debordement !).
+  Retour      : s ou NULL.
+  Exemple     : (a eviter)
+
+perror
+  Description : Affiche un message d'erreur systeme sur stderr.
+  Syntaxe     : void perror(const char *prefix);
+  Parametres  : prefix - texte ajoute devant le message d'errno.
+  Retour      : aucun.
+  Exemple     : perror("fopen");
+
+printf
+  Description : Sortie formatee vers stdout.
+  Syntaxe     : int printf(const char *fmt, ...);
+  Parametres  : fmt - format. ... - arguments.
+  Retour      : nombre de caracteres ecrits, negatif si erreur.
+  Exemple     : printf("Resultat: %d\n", x);
+
+putc
+  Description : Ecrit un caractere dans un flux (souvent macro).
+  Syntaxe     : int putc(int c, FILE *stream);
+  Parametres  : c - caractere. stream - flux.
+  Retour      : c ou EOF.
+  Exemple     : putc('\n', fp);
+
+putchar
+  Description : Ecrit un caractere sur stdout.
+  Syntaxe     : int putchar(int c);
+  Parametres  : c - caractere.
+  Retour      : c ou EOF.
+  Exemple     : putchar('A');
+
+puts
+  Description : Ecrit une chaine + '\n' sur stdout.
+  Syntaxe     : int puts(const char *s);
+  Parametres  : s - chaine.
+  Retour      : non negatif si succes, EOF sinon.
+  Exemple     : puts("Bonjour");
+
+remove
+  Description : Supprime un fichier.
+  Syntaxe     : int remove(const char *path);
+  Parametres  : path - chemin du fichier.
+  Retour      : 0 si succes, non zero sinon.
+  Exemple     : remove("tmp.txt");
+
+rename
+  Description : Renomme un fichier.
+  Syntaxe     : int rename(const char *old, const char *new);
+  Parametres  : old - ancien nom. new - nouveau nom.
+  Retour      : 0 si succes, non zero sinon.
+  Exemple     : rename("a.txt", "b.txt");
+
+rewind
+  Description : Repositionne au debut du flux et efface erreurs.
+  Syntaxe     : void rewind(FILE *stream);
+  Parametres  : stream - flux.
+  Retour      : aucun.
+  Exemple     : rewind(fp);
+
+scanf
+  Description : Entree formatee depuis stdin.
+  Syntaxe     : int scanf(const char *fmt, ...);
+  Parametres  : fmt - format. ... - pointeurs sur destinations.
+  Retour      : nombre de conversions reussies, EOF en fin.
+  Exemple     : scanf("%d", &n);
+
+setbuf
+  Description : Definit le buffer d'un flux (NULL = aucun buf).
+  Syntaxe     : void setbuf(FILE *stream, char *buf);
+  Parametres  : stream - flux. buf - tampon de BUFSIZ ou NULL.
+  Retour      : aucun.
+  Exemple     : setbuf(stdout, NULL);
+
+setvbuf
+  Description : Definit le mode de bufferisation.
+  Syntaxe     : int setvbuf(FILE *stream, char *buf,
+                            int mode, size_t size);
+  Parametres  : mode - _IOFBF (full), _IOLBF (ligne), _IONBF.
+  Retour      : 0 si succes, non zero sinon.
+  Exemple     : setvbuf(stdout, NULL, _IOLBF, 0);
+
+sprintf
+  Description : Ecriture formatee dans une chaine (sans limite).
+  Syntaxe     : int sprintf(char *s, const char *fmt, ...);
+  Parametres  : s - destination. fmt - format. ... - args.
+  Retour      : nombre de caracteres ecrits (sans '\0').
+  Exemple     : sprintf(buf, "x=%d", n);
+
+sscanf
+  Description : Entree formatee depuis une chaine.
+  Syntaxe     : int sscanf(const char *s, const char *fmt, ...);
+  Parametres  : s - source. fmt - format. ... - pointeurs.
+  Retour      : nombre de conversions reussies, EOF en fin.
+  Exemple     : sscanf("12 34", "%d %d", &a, &b);
+
+tmpfile
+  Description : Cree un fichier temporaire (binaire "wb+")
+                supprime a la fermeture.
+  Syntaxe     : FILE *tmpfile(void);
+  Parametres  : aucun.
+  Retour      : FILE * ou NULL si echec.
+  Exemple     : FILE *t = tmpfile();
+
+tmpnam
+  Description : Genere un nom de fichier temporaire unique.
+  Syntaxe     : char *tmpnam(char *s);
+  Parametres  : s - tampon de L_tmpnam octets, ou NULL.
+  Retour      : pointeur sur le nom.
+  Exemple     : char name[L_tmpnam]; tmpnam(name);
+
+ungetc
+  Description : Remet un caractere dans le flux pour le
+                prochain fgetc.
+  Syntaxe     : int ungetc(int c, FILE *stream);
+  Parametres  : c - caractere a remettre. stream - flux.
+  Retour      : c ou EOF.
+  Exemple     : ungetc(c, fp);
+
+vfprintf
+  Description : fprintf prenant une va_list.
+  Syntaxe     : int vfprintf(FILE *stream, const char *fmt,
+                             va_list ap);
+  Parametres  : stream, fmt - comme fprintf. ap - va_list.
+  Retour      : nombre de caracteres ecrits, negatif si erreur.
+  Exemple     :
+                void log_err(const char *fmt, ...) {
+                    va_list ap; va_start(ap, fmt);
+                    vfprintf(stderr, fmt, ap);
+                    va_end(ap);
+                }
+
+vprintf
+  Description : printf prenant une va_list.
+  Syntaxe     : int vprintf(const char *fmt, va_list ap);
+  Parametres  : fmt - format. ap - liste.
+  Retour      : nombre de caracteres ecrits.
+  Exemple     : voir vfprintf.
+
+vsprintf
+  Description : sprintf prenant une va_list.
+  Syntaxe     : int vsprintf(char *s, const char *fmt, va_list ap);
+  Parametres  : s, fmt, ap.
+  Retour      : nombre de caracteres ecrits.
+  Exemple     : voir vfprintf.
+
+------------------------------------------------------------
+25.9 <stdlib.h>
+------------------------------------------------------------
+
+abort
+  Description : Termine immediatement le programme (SIGABRT).
+  Syntaxe     : void abort(void);
+  Parametres  : aucun.
+  Retour      : ne revient pas.
+  Exemple     : if (fatal) abort();
+
+abs
+  Description : Valeur absolue d'un int.
+  Syntaxe     : int abs(int n);
+  Parametres  : n - entier signe.
+  Retour      : |n|.
+  Exemple     : abs(-7)  /* 7 */
+
+atexit
+  Description : Enregistre une fonction appelee a exit().
+  Syntaxe     : int atexit(void (*func)(void));
+  Parametres  : func - fonction sans argument ni retour.
+  Retour      : 0 si succes, non zero sinon.
+  Exemple     : atexit(cleanup);
+
+atof
+  Description : Convertit une chaine en double.
+  Syntaxe     : double atof(const char *s);
+  Parametres  : s - chaine numerique.
+  Retour      : valeur double, 0.0 si invalide.
+  Exemple     : double x = atof("3.14");
+
+atoi
+  Description : Convertit une chaine en int.
+  Syntaxe     : int atoi(const char *s);
+  Parametres  : s - chaine numerique decimale.
+  Retour      : valeur int, 0 si invalide.
+  Exemple     : int n = atoi("42");
+
+atol
+  Description : Convertit une chaine en long.
+  Syntaxe     : long atol(const char *s);
+  Parametres  : s - chaine numerique decimale.
+  Retour      : valeur long, 0 si invalide.
+  Exemple     : long n = atol("1000000");
+
+bsearch
+  Description : Recherche dichotomique dans un tableau trie.
+  Syntaxe     : void *bsearch(const void *key, const void *base,
+                              size_t n, size_t sz,
+                              int (*cmp)(const void *,
+                                         const void *));
+  Parametres  : key - cle. base - tableau. n - nb d'elements.
+                sz - taille d'un element. cmp - comparateur.
+  Retour      : pointeur sur element trouve, NULL sinon.
+  Exemple     :
+                int *p = bsearch(&k, t, n, sizeof(int), cmp);
+
+calloc
+  Description : Alloue n*size octets initialises a zero.
+  Syntaxe     : void *calloc(size_t n, size_t size);
+  Parametres  : n - nombre. size - taille unitaire.
+  Retour      : pointeur ou NULL si echec.
+  Exemple     : int *t = calloc(100, sizeof *t);
+
+div
+  Description : Division entiere avec quotient et reste.
+  Syntaxe     : div_t div(int num, int denom);
+  Parametres  : num - numerateur. denom - denominateur.
+  Retour      : struct div_t { int quot, rem; }.
+  Exemple     : div_t r = div(17, 5);  /* quot=3 rem=2 */
+
+exit
+  Description : Terminaison normale, vide les flux, appelle
+                les handlers atexit.
+  Syntaxe     : void exit(int status);
+  Parametres  : status - code de sortie (0 ou EXIT_SUCCESS,
+                EXIT_FAILURE).
+  Retour      : ne revient pas.
+  Exemple     : exit(EXIT_SUCCESS);
+
+free
+  Description : Libere une zone allouee par malloc/calloc/realloc.
+  Syntaxe     : void free(void *ptr);
+  Parametres  : ptr - pointeur (NULL toleree).
+  Retour      : aucun.
+  Exemple     : free(p);
+
+getenv
+  Description : Lit une variable d'environnement.
+  Syntaxe     : char *getenv(const char *name);
+  Parametres  : name - nom de la variable.
+  Retour      : valeur (pointeur) ou NULL si absente.
+  Exemple     : char *h = getenv("HOME");
+
+labs
+  Description : Valeur absolue d'un long.
+  Syntaxe     : long labs(long n);
+  Parametres  : n - entier long.
+  Retour      : |n|.
+  Exemple     : labs(-100000L);
+
+ldiv
+  Description : Division entiere (long) avec quot et reste.
+  Syntaxe     : ldiv_t ldiv(long num, long denom);
+  Parametres  : num, denom.
+  Retour      : struct ldiv_t { long quot, rem; }.
+  Exemple     : ldiv_t r = ldiv(100L, 7L);
+
+malloc
+  Description : Allocation dynamique non initialisee.
+  Syntaxe     : void *malloc(size_t size);
+  Parametres  : size - nombre d'octets.
+  Retour      : pointeur ou NULL si echec.
+  Exemple     : int *p = malloc(sizeof *p);
+
+mblen
+  Description : Longueur en octets d'un caractere multi-octet.
+  Syntaxe     : int mblen(const char *s, size_t n);
+  Parametres  : s - chaine. n - max d'octets.
+  Retour      : 1..n, 0 si '\0', -1 si invalide.
+  Exemple     : int l = mblen(s, MB_CUR_MAX);
+
+mbstowcs
+  Description : Convertit chaine multi-octet en wchar_t.
+  Syntaxe     : size_t mbstowcs(wchar_t *dst, const char *src,
+                                size_t n);
+  Parametres  : dst, src, n.
+  Retour      : nombre de wchar produits.
+  Exemple     : mbstowcs(wbuf, "abc", 16);
+
+mbtowc
+  Description : Convertit un caractere multi-octet en wchar_t.
+  Syntaxe     : int mbtowc(wchar_t *pwc, const char *s, size_t n);
+  Parametres  : pwc - destination. s - source. n - max octets.
+  Retour      : nombre d'octets consommes.
+
+qsort
+  Description : Tri rapide generique d'un tableau.
+  Syntaxe     : void qsort(void *base, size_t n, size_t sz,
+                           int (*cmp)(const void *,
+                                      const void *));
+  Parametres  : base - tableau. n - elements. sz - taille
+                unitaire. cmp - comparateur (-,0,+).
+  Retour      : aucun.
+  Exemple     :
+                int cmp(const void *a, const void *b) {
+                    return *(int *)a - *(int *)b;
+                }
+                qsort(t, n, sizeof *t, cmp);
+
+rand
+  Description : Generateur de nombres pseudo-aleatoires.
+  Syntaxe     : int rand(void);
+  Parametres  : aucun.
+  Retour      : entier dans [0, RAND_MAX].
+  Exemple     : int r = rand() % 100;
+
+realloc
+  Description : Redimensionne une zone allouee. Le contenu
+                est preserve (jusqu'au min des deux tailles).
+  Syntaxe     : void *realloc(void *ptr, size_t size);
+  Parametres  : ptr - ancienne zone (NULL = comme malloc).
+                size - nouvelle taille.
+  Retour      : nouvelle zone ou NULL (l'ancienne reste valide).
+  Exemple     :
+                int *tmp = realloc(t, n2 * sizeof *t);
+                if (tmp) t = tmp;
+
+srand
+  Description : Initialise le generateur de rand().
+  Syntaxe     : void srand(unsigned int seed);
+  Parametres  : seed - graine.
+  Retour      : aucun.
+  Exemple     : srand((unsigned)time(NULL));
+
+strtod
+  Description : Convertit une chaine en double avec parsing.
+  Syntaxe     : double strtod(const char *s, char **endptr);
+  Parametres  : s - chaine. endptr - pointe sur le 1er car non
+                consomme (peut etre NULL).
+  Retour      : valeur double ; HUGE_VAL en cas de overflow.
+  Exemple     :
+                char *e;
+                double x = strtod("3.14xyz", &e);
+
+strtol
+  Description : Convertit une chaine en long, base configurable.
+  Syntaxe     : long strtol(const char *s, char **endptr,
+                            int base);
+  Parametres  : s - chaine. endptr - sortie. base - 0,2..36.
+  Retour      : valeur long ; errno=ERANGE si overflow.
+  Exemple     : long n = strtol("0xFF", NULL, 0);
+
+strtoul
+  Description : Convertit une chaine en unsigned long.
+  Syntaxe     : unsigned long strtoul(const char *s,
+                                       char **endptr, int base);
+  Parametres  : comme strtol.
+  Retour      : valeur unsigned long.
+  Exemple     : unsigned long u = strtoul("4000000000", NULL, 10);
+
+system
+  Description : Execute une commande via le shell.
+  Syntaxe     : int system(const char *command);
+  Parametres  : command - chaine (NULL pour tester le shell).
+  Retour      : code de retour (implementation-defined).
+  Exemple     : system("ls -l");
+
+wcstombs
+  Description : Convertit chaine wchar en multi-octet.
+  Syntaxe     : size_t wcstombs(char *dst, const wchar_t *src,
+                                size_t n);
+  Parametres  : dst, src, n.
+  Retour      : nombre d'octets produits.
+
+wctomb
+  Description : Convertit un wchar_t en multi-octet.
+  Syntaxe     : int wctomb(char *s, wchar_t wc);
+  Parametres  : s - destination. wc - caractere.
+  Retour      : nombre d'octets ecrits ou -1.
+
+------------------------------------------------------------
+25.10 <string.h>
+------------------------------------------------------------
+
+memchr
+  Description : Cherche un octet dans un bloc memoire.
+  Syntaxe     : void *memchr(const void *s, int c, size_t n);
+  Parametres  : s - bloc. c - octet. n - taille a examiner.
+  Retour      : pointeur sur 1ere occurrence ou NULL.
+  Exemple     : void *p = memchr(buf, 0, 256);
+
+memcmp
+  Description : Compare deux blocs memoire octet par octet.
+  Syntaxe     : int memcmp(const void *a, const void *b, size_t n);
+  Parametres  : a, b - blocs. n - taille a comparer.
+  Retour      : <0, 0 ou >0.
+  Exemple     : if (memcmp(a, b, 16) == 0) ...
+
+memcpy
+  Description : Copie n octets de src vers dst (NON recouvrants).
+  Syntaxe     : void *memcpy(void *dst, const void *src, size_t n);
+  Parametres  : dst, src, n.
+  Retour      : dst.
+  Exemple     : memcpy(dst, src, n);
+
+memmove
+  Description : Copie n octets (zones eventuellement recouvr.).
+  Syntaxe     : void *memmove(void *dst, const void *src, size_t n);
+  Parametres  : dst, src, n.
+  Retour      : dst.
+  Exemple     : memmove(a+1, a, n);
+
+memset
+  Description : Remplit n octets avec la valeur c.
+  Syntaxe     : void *memset(void *s, int c, size_t n);
+  Parametres  : s - bloc. c - octet. n - taille.
+  Retour      : s.
+  Exemple     : memset(buf, 0, sizeof buf);
+
+strcat
+  Description : Concatene src a la fin de dst (dst doit avoir
+                la place).
+  Syntaxe     : char *strcat(char *dst, const char *src);
+  Parametres  : dst, src.
+  Retour      : dst.
+  Exemple     : strcat(buf, " suffix");
+
+strchr
+  Description : Premiere occurrence de c dans s.
+  Syntaxe     : char *strchr(const char *s, int c);
+  Parametres  : s - chaine. c - caractere.
+  Retour      : pointeur ou NULL si absent.
+  Exemple     : char *p = strchr(s, '/');
+
+strcmp
+  Description : Compare deux chaines lexicographiquement.
+  Syntaxe     : int strcmp(const char *a, const char *b);
+  Parametres  : a, b - chaines.
+  Retour      : <0, 0 ou >0.
+  Exemple     : if (strcmp(s, "exit") == 0) break;
+
+strcoll
+  Description : Compare deux chaines selon la locale courante.
+  Syntaxe     : int strcoll(const char *a, const char *b);
+  Parametres  : a, b.
+  Retour      : <0, 0 ou >0.
+  Exemple     : strcoll("etre", "evidence");
+
+strcpy
+  Description : Copie src dans dst (avec '\0').
+  Syntaxe     : char *strcpy(char *dst, const char *src);
+  Parametres  : dst, src.
+  Retour      : dst.
+  Exemple     : strcpy(buf, "Bonjour");
+
+strcspn
+  Description : Longueur du prefixe ne contenant AUCUN des
+                caracteres de reject.
+  Syntaxe     : size_t strcspn(const char *s, const char *reject);
+  Parametres  : s, reject.
+  Retour      : longueur du prefixe.
+  Exemple     : size_t n = strcspn(s, " \t\n");
+
+strerror
+  Description : Message d'erreur correspondant a un code errno.
+  Syntaxe     : char *strerror(int errnum);
+  Parametres  : errnum - valeur de errno.
+  Retour      : pointeur sur chaine statique.
+  Exemple     : printf("%s\n", strerror(errno));
+
+strlen
+  Description : Longueur d'une chaine (sans le '\0').
+  Syntaxe     : size_t strlen(const char *s);
+  Parametres  : s - chaine.
+  Retour      : nombre d'octets avant '\0'.
+  Exemple     : size_t l = strlen("hello");  /* 5 */
+
+strncat
+  Description : Concatene au plus n caracteres de src a dst.
+  Syntaxe     : char *strncat(char *dst, const char *src, size_t n);
+  Parametres  : dst, src, n.
+  Retour      : dst (toujours termine par '\0').
+  Exemple     : strncat(buf, src, 10);
+
+strncmp
+  Description : Compare au plus n caracteres.
+  Syntaxe     : int strncmp(const char *a, const char *b, size_t n);
+  Parametres  : a, b, n.
+  Retour      : <0, 0 ou >0.
+  Exemple     : if (strncmp(s, "http://", 7) == 0) ...
+
+strncpy
+  Description : Copie au plus n caracteres. Si src plus court,
+                complete avec '\0'. PAS toujours termine.
+  Syntaxe     : char *strncpy(char *dst, const char *src, size_t n);
+  Parametres  : dst, src, n.
+  Retour      : dst.
+  Exemple     :
+                strncpy(buf, src, sizeof buf);
+                buf[sizeof buf - 1] = '\0';
+
+strpbrk
+  Description : Premiere position contenant un caractere de set.
+  Syntaxe     : char *strpbrk(const char *s, const char *set);
+  Parametres  : s, set.
+  Retour      : pointeur ou NULL.
+  Exemple     : char *p = strpbrk(s, ",;");
+
+strrchr
+  Description : Derniere occurrence de c dans s.
+  Syntaxe     : char *strrchr(const char *s, int c);
+  Parametres  : s, c.
+  Retour      : pointeur ou NULL.
+  Exemple     : char *ext = strrchr(name, '.');
+
+strspn
+  Description : Longueur du prefixe ne contenant QUE les
+                caracteres de accept.
+  Syntaxe     : size_t strspn(const char *s, const char *accept);
+  Parametres  : s, accept.
+  Retour      : longueur du prefixe.
+  Exemple     : size_t n = strspn(s, "0123456789");
+
+strstr
+  Description : Recherche d'une sous-chaine.
+  Syntaxe     : char *strstr(const char *s, const char *sub);
+  Parametres  : s - chaine. sub - sous-chaine.
+  Retour      : pointeur ou NULL.
+  Exemple     : if (strstr(s, "error")) ...
+
+strtok
+  Description : Decoupe une chaine en jetons selon des
+                delimiteurs (modifie la chaine source !).
+  Syntaxe     : char *strtok(char *s, const char *delim);
+  Parametres  : s - chaine (NULL pour iterer). delim - liste.
+  Retour      : pointeur sur jeton suivant ou NULL.
+  Exemple     :
+                for (p = strtok(s, " ,"); p; p = strtok(NULL, " ,"))
+                    puts(p);
+
+strxfrm
+  Description : Transforme s selon la locale pour que strcmp
+                donne le meme resultat que strcoll.
+  Syntaxe     : size_t strxfrm(char *dst, const char *src, size_t n);
+  Parametres  : dst, src, n.
+  Retour      : longueur necessaire (sans '\0').
+
+------------------------------------------------------------
+25.11 <time.h>
+------------------------------------------------------------
+
+asctime
+  Description : Convertit une struct tm en chaine lisible.
+  Syntaxe     : char *asctime(const struct tm *tm);
+  Parametres  : tm - date eclatee.
+  Retour      : chaine "Sun Apr 14 12:34:56 2026\n".
+  Exemple     : printf("%s", asctime(localtime(&t)));
+
+clock
+  Description : Temps CPU consomme depuis le debut du programme.
+  Syntaxe     : clock_t clock(void);
+  Parametres  : aucun.
+  Retour      : clock_t (diviser par CLOCKS_PER_SEC pour
+                obtenir des secondes).
+  Exemple     :
+                clock_t t0 = clock();
+                /* ... */
+                double s = (clock() - t0) / (double)CLOCKS_PER_SEC;
+
+ctime
+  Description : Convertit time_t en chaine lisible (locale).
+  Syntaxe     : char *ctime(const time_t *t);
+  Parametres  : t - pointeur sur l'heure.
+  Retour      : chaine equivalente a asctime(localtime(t)).
+  Exemple     : printf("%s", ctime(&now));
+
+difftime
+  Description : Difference entre deux time_t en secondes.
+  Syntaxe     : double difftime(time_t t1, time_t t0);
+  Parametres  : t1, t0.
+  Retour      : t1 - t0 en secondes (double).
+  Exemple     : double d = difftime(t_end, t_start);
+
+gmtime
+  Description : Convertit time_t en struct tm UTC.
+  Syntaxe     : struct tm *gmtime(const time_t *t);
+  Parametres  : t.
+  Retour      : pointeur sur struct tm statique.
+  Exemple     : struct tm *u = gmtime(&now);
+
+localtime
+  Description : Convertit time_t en struct tm locale.
+  Syntaxe     : struct tm *localtime(const time_t *t);
+  Parametres  : t.
+  Retour      : pointeur sur struct tm statique.
+  Exemple     : struct tm *l = localtime(&now);
+
+mktime
+  Description : Convertit struct tm (locale) en time_t et
+                normalise les champs.
+  Syntaxe     : time_t mktime(struct tm *tm);
+  Parametres  : tm - date eclatee.
+  Retour      : time_t ou -1 si impossible.
+  Exemple     : time_t t = mktime(&tm);
+
+strftime
+  Description : Formate une date dans une chaine selon un
+                modele "%Y-%m-%d %H:%M:%S" etc.
+  Syntaxe     : size_t strftime(char *s, size_t max,
+                                 const char *fmt,
+                                 const struct tm *tm);
+  Parametres  : s - tampon. max - taille. fmt - format.
+                tm - date.
+  Retour      : longueur ecrite (sans '\0') ou 0.
+  Exemple     :
+                char buf[64];
+                strftime(buf, sizeof buf, "%F %T", localtime(&now));
+
+time
+  Description : Retourne l'heure systeme courante (secondes
+                depuis l'epoque).
+  Syntaxe     : time_t time(time_t *t);
+  Parametres  : t - pointeur de sortie (peut etre NULL).
+  Retour      : time_t ou (time_t)-1 si erreur.
+  Exemple     : time_t now = time(NULL);
+
+------------------------------------------------------------
+25.12 Fonctions C99 et plus recentes
+------------------------------------------------------------
+
+snprintf
+  Description : sprintf bornant l'ecriture a n octets ('\0'
+                inclus). Recommandee a la place de sprintf.
+  Syntaxe     : int snprintf(char *s, size_t n, const char *fmt, ...);
+  Parametres  : s, n, fmt, ...
+  Retour      : nombre de caracteres qui auraient ete ecrits
+                sans la troncature.
+  Exemple     : snprintf(buf, sizeof buf, "x=%d", n);
+
+vsnprintf
+  Description : snprintf prenant une va_list.
+  Syntaxe     : int vsnprintf(char *s, size_t n, const char *fmt,
+                              va_list ap);
+  Parametres  : s, n, fmt, ap.
+  Retour      : nb de caracteres souhaites.
+
+strtoll
+  Description : strtol pour long long.
+  Syntaxe     : long long strtoll(const char *s, char **endptr,
+                                   int base);
+  Retour      : valeur long long.
+
+strtoull
+  Description : strtoul pour unsigned long long.
+  Syntaxe     : unsigned long long strtoull(const char *s,
+                                             char **endptr, int base);
+
+llabs
+  Description : Valeur absolue d'un long long.
+  Syntaxe     : long long llabs(long long n);
+
+lldiv
+  Description : Division long long avec quot et reste.
+  Syntaxe     : lldiv_t lldiv(long long num, long long denom);
+
+atoll
+  Description : atoi pour long long.
+  Syntaxe     : long long atoll(const char *s);
+
+acosh, asinh, atanh
+  Description : Inverses hyperboliques.
+  Syntaxe     : double acosh(double x);
+                double asinh(double x);
+                double atanh(double x);
+
+cbrt
+  Description : Racine cubique.
+  Syntaxe     : double cbrt(double x);
+  Exemple     : cbrt(27.0)  /* 3.0 */
+
+copysign
+  Description : Retourne |x| avec le signe de y.
+  Syntaxe     : double copysign(double x, double y);
+
+erf
+  Description : Fonction d'erreur gaussienne.
+  Syntaxe     : double erf(double x);
+
+exp2
+  Description : 2^x.
+  Syntaxe     : double exp2(double x);
+
+expm1
+  Description : exp(x) - 1, precis pres de 0.
+  Syntaxe     : double expm1(double x);
+
+hypot
+  Description : sqrt(x*x + y*y) sans overflow intermediaire.
+  Syntaxe     : double hypot(double x, double y);
+  Exemple     : hypot(3.0, 4.0)  /* 5.0 */
+
+log1p
+  Description : log(1+x), precis pres de 0.
+  Syntaxe     : double log1p(double x);
+
+log2
+  Description : Logarithme base 2.
+  Syntaxe     : double log2(double x);
+
+nearbyint
+  Description : Arrondi a l'entier selon le mode courant (sans
+                exception "inexact").
+  Syntaxe     : double nearbyint(double x);
+
+remainder
+  Description : Reste IEEE 754 (mode "round to nearest even").
+  Syntaxe     : double remainder(double x, double y);
+
+round
+  Description : Arrondi a l'entier le plus proche (away from 0).
+  Syntaxe     : double round(double x);
+  Exemple     : round(2.5)  /* 3.0 */
+
+trunc
+  Description : Troncature vers zero.
+  Syntaxe     : double trunc(double x);
+  Exemple     : trunc(-2.7)  /* -2.0 */
+
+------------------------------------------------------------
+25.13 Fonctions POSIX courantes
+------------------------------------------------------------
+
+open
+  Description : Ouvre un descripteur de fichier bas niveau.
+  Syntaxe     : int open(const char *path, int flags, ...);
+  Parametres  : path - chemin. flags - O_RDONLY, O_WRONLY,
+                O_RDWR, O_CREAT, O_TRUNC, O_APPEND, ...
+                Mode (3e arg) requis si O_CREAT.
+  Retour      : fd >= 0 ou -1 (errno).
+  Exemple     : int fd = open("data", O_RDONLY);
+
+close
+  Description : Ferme un descripteur.
+  Syntaxe     : int close(int fd);
+  Retour      : 0 ou -1.
+  Exemple     : close(fd);
+
+read
+  Description : Lit n octets bruts d'un descripteur.
+  Syntaxe     : ssize_t read(int fd, void *buf, size_t n);
+  Retour      : nb d'octets lus, 0 = EOF, -1 = erreur.
+  Exemple     : ssize_t r = read(fd, buf, sizeof buf);
+
+write
+  Description : Ecrit n octets bruts vers un descripteur.
+  Syntaxe     : ssize_t write(int fd, const void *buf, size_t n);
+  Retour      : nb d'octets ecrits ou -1.
+  Exemple     : write(STDOUT_FILENO, "hi\n", 3);
+
+lseek
+  Description : Positionne le curseur d'un descripteur.
+  Syntaxe     : off_t lseek(int fd, off_t offset, int whence);
+  Parametres  : whence - SEEK_SET, SEEK_CUR, SEEK_END.
+  Retour      : nouvelle position ou -1.
+
+unlink
+  Description : Supprime un fichier (un lien).
+  Syntaxe     : int unlink(const char *path);
+  Retour      : 0 ou -1.
+
+access
+  Description : Teste les droits sur un fichier.
+  Syntaxe     : int access(const char *path, int mode);
+  Parametres  : mode - F_OK, R_OK, W_OK, X_OK.
+  Retour      : 0 si autorise, -1 sinon.
+
+stat
+  Description : Recupere les attributs d'un fichier.
+  Syntaxe     : int stat(const char *path, struct stat *buf);
+  Retour      : 0 ou -1.
+  Exemple     :
+                struct stat st;
+                if (stat("f", &st) == 0)
+                    printf("size=%ld\n", (long)st.st_size);
+
+fstat
+  Description : stat() sur un descripteur ouvert.
+  Syntaxe     : int fstat(int fd, struct stat *buf);
+
+chmod
+  Description : Change les permissions d'un fichier.
+  Syntaxe     : int chmod(const char *path, mode_t mode);
+  Retour      : 0 ou -1.
+
+fork
+  Description : Cree un processus fils (copie du parent).
+  Syntaxe     : pid_t fork(void);
+  Retour      : 0 dans le fils, pid du fils dans le parent,
+                -1 si echec.
+
+execv, execl, execvp, ...
+  Description : Remplace l'image du processus courant par un
+                programme.
+  Syntaxe     : int execv(const char *path, char *const argv[]);
+  Retour      : ne revient pas si succes ; -1 si echec.
+
+wait
+  Description : Attend la fin d'un processus fils.
+  Syntaxe     : pid_t wait(int *status);
+  Retour      : pid du fils ou -1.
+
+pipe
+  Description : Cree une paire de descripteurs (tube).
+  Syntaxe     : int pipe(int fd[2]);
+  Parametres  : fd[0] = lecture, fd[1] = ecriture.
+  Retour      : 0 ou -1.
+
+dup
+  Description : Duplique un descripteur (plus petit fd libre).
+  Syntaxe     : int dup(int oldfd);
+  Retour      : nouveau fd ou -1.
+
+dup2
+  Description : Duplique vers un descripteur donne (ferme
+                newfd si necessaire).
+  Syntaxe     : int dup2(int oldfd, int newfd);
+  Retour      : newfd ou -1.
+  Exemple     : dup2(fd, STDOUT_FILENO);  /* rediriger stdout */
+
+
+============================================================
+26. REFERENCES
+============================================================
+
+  - Brian W. Kernighan, Dennis M. Ritchie : "The C Programming
+    Language" (1ere ed. 1978, 2eme ed. 1988). Prentice Hall.
+    "K&R" - reference historique du langage.
+
+  - ANSI X3.159-1989 : American National Standard for
+    Programming Languages - C.
+
+  - ISO/IEC 9899:1990 : Information technology - Programming
+    languages - C (norme internationale equivalente).
+
+  - ISO/IEC 9899:1999 (C99), 9899:2011 (C11), 9899:2018 (C17),
+    9899:2024 (C23).
+
+  - P. J. Plauger : "The Standard C Library" (1991). Prentice
+    Hall. Implementation de reference de la bibliotheque.
+
+  - Peter van der Linden : "Expert C Programming - Deep C
+    Secrets" (1994). Prentice Hall. Etude approfondie des
+    pieges classiques.
