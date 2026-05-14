@@ -655,20 +655,22 @@ Begin
  End;
 End;
 
-(* Recupere le texte d'un footnote RTF jusqu'au '}' fermant equilibre *)
-Function ReadGroup(Var F:Text):TStr255;
+(* Recupere le texte d'un footnote RTF jusqu'au '}' fermant equilibre.
+   ConsumedBytes recoit le nombre exact d'octets lus depuis F. *)
+Function ReadGroup(Var F:Text;Var ConsumedBytes:LongInt):TStr255;
 Var Ch:Char; Depth:Integer; R:TStr255;
 Begin
- R:=''; Depth:=1;
+ R:=''; Depth:=1; ConsumedBytes:=0;
  While(Not Eof(F))And(Depth>0)Do Begin
-  Read(F,Ch);
+  Read(F,Ch); Inc(ConsumedBytes);
   If Ch='\' Then Begin
    { ignorer la sequence de controle }
    If Not Eof(F) Then Begin
-    Read(F,Ch);
+    Read(F,Ch); Inc(ConsumedBytes);
     If(Ch>='a')And(Ch<='z')Then
-     While(Not Eof(F))And(((Ch>='a')And(Ch<='z'))Or((Ch>='0')And(Ch<='9'))Or(Ch='-'))Do
-      Read(F,Ch);
+     While(Not Eof(F))And(((Ch>='a')And(Ch<='z'))Or((Ch>='0')And(Ch<='9'))Or(Ch='-'))Do Begin
+      Read(F,Ch); Inc(ConsumedBytes);
+     End;
     If Ch=' ' Then { delim consumed }
     Else Begin
      If Ch='{' Then Inc(Depth)
@@ -688,7 +690,7 @@ End;
 Procedure ScanRTF(FileIdx:Integer);
 Var F:Text; Ch,Nx:Char; Buf:TStr80; HasTopic:Boolean;
     T:TTopic; FN:Char; Body:TStr255;
-    Sz:LongInt;
+    Sz,GroupBytes:LongInt;
 Begin
  If Not RtfFiles[FileIdx].Exists Then Exit;
  EmitVerbose('Scan: '+RtfFiles[FileIdx].Name);
@@ -728,8 +730,8 @@ Begin
       qui PRECEDE \footnote dans la source, mais en pratique
       Word place \chftn juste avant. On scanne le contenu du groupe
       a la recherche du marqueur # $ K + * en debut. }
-    Body:=ReadGroup(F);
-    Inc(Sz,Length(Body)+2);
+    Body:=ReadGroup(F,GroupBytes);
+    Inc(Sz,GroupBytes);
     { Le contenu est typiquement: '# IDH_INDEX' ou simplement
       le texte de la note avec le caractere de reference recupere
       via le caractere qui precedait. Pour la robustesse on
@@ -978,7 +980,10 @@ Begin
        (LongInt(Src^[SrcPos+1]) Shl 4) Xor
         LongInt(Src^[SrcPos+2])) And (LZ_HASH_SIZE-1);
    Cand:=Head[H];
-   Limit:=SrcPos-LZ_WIN_SIZE;
+   { Offset encode sur 12 bits : 1..4095. Cand doit etre > SrcPos-4096
+     pour que BestOfs := SrcPos-Cand reste <= 4095. Sinon l offset 4096
+     est code comme 0, ce qui equivaut a "fin de flux" pour le decodeur. }
+   Limit:=SrcPos-LZ_WIN_SIZE+1;
    If Limit<0 Then Limit:=0;
    While(Cand>=Limit)And(Cand>=0)Do Begin
     { Verifier le match }

@@ -19,6 +19,10 @@ LANGAGES.RTF
 EMULATEURS.RTF
 ABAP.RTF
 ADA.RTF
+AWK.RTF
+LUA.RTF
+PHP.RTF
+RAKU.RTF
 
 [MAP]
 IDH_INDEX           = 1
@@ -70,6 +74,70 @@ IDH_ADA_14          = 2514
 IDH_ADA_15          = 2515
 IDH_ADA_16          = 2516
 IDH_ADA_17          = 2517
+IDH_AWK_01          = 2601
+IDH_AWK_02          = 2602
+IDH_AWK_03          = 2603
+IDH_AWK_04          = 2604
+IDH_AWK_05          = 2605
+IDH_AWK_06          = 2606
+IDH_AWK_07          = 2607
+IDH_AWK_08          = 2608
+IDH_AWK_09          = 2609
+IDH_AWK_10          = 2610
+IDH_AWK_11          = 2611
+IDH_AWK_12          = 2612
+IDH_AWK_13          = 2613
+IDH_AWK_14          = 2614
+IDH_LUA_01          = 2701
+IDH_LUA_02          = 2702
+IDH_LUA_03          = 2703
+IDH_LUA_04          = 2704
+IDH_LUA_05          = 2705
+IDH_LUA_06          = 2706
+IDH_LUA_07          = 2707
+IDH_LUA_08          = 2708
+IDH_LUA_09          = 2709
+IDH_LUA_10          = 2710
+IDH_LUA_11          = 2711
+IDH_LUA_12          = 2712
+IDH_LUA_13          = 2713
+IDH_PHP_01          = 2801
+IDH_PHP_02          = 2802
+IDH_PHP_03          = 2803
+IDH_PHP_04          = 2804
+IDH_PHP_05          = 2805
+IDH_PHP_06          = 2806
+IDH_PHP_07          = 2807
+IDH_PHP_08          = 2808
+IDH_PHP_09          = 2809
+IDH_PHP_10          = 2810
+IDH_PHP_11          = 2811
+IDH_PHP_12          = 2812
+IDH_PHP_13          = 2813
+IDH_PHP_14          = 2814
+IDH_PHP_15          = 2815
+IDH_PHP_16          = 2816
+IDH_PHP_17          = 2817
+IDH_PHP_18          = 2818
+IDH_RAKU_01         = 2901
+IDH_RAKU_02         = 2902
+IDH_RAKU_03         = 2903
+IDH_RAKU_04         = 2904
+IDH_RAKU_05         = 2905
+IDH_RAKU_06         = 2906
+IDH_RAKU_07         = 2907
+IDH_RAKU_08         = 2908
+IDH_RAKU_09         = 2909
+IDH_RAKU_10         = 2910
+IDH_RAKU_11         = 2911
+IDH_RAKU_12         = 2912
+IDH_RAKU_13         = 2913
+IDH_RAKU_14         = 2914
+IDH_RAKU_15         = 2915
+IDH_RAKU_16         = 2916
+IDH_RAKU_17         = 2917
+IDH_RAKU_18         = 2918
+IDH_RAKU_19         = 2919
 IDH_EMULATEURS      = 30
 IDH_EMU_NES         = 31
 IDH_EMU_AMIGA       = 32
