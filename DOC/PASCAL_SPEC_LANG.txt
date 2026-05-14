@@ -1,0 +1,1192 @@
+Pascal - Specifications du langage
+============================================================
+Compilateurs : PC8086.PAS    (Pascal vers assembleur 8086)
+               PASCW32.PAS   (Pascal vers binaire Win32 PE)
+               TPCW32.PAS    (Turbo Pascal compatible Win32)
+               VAXPCW32.PAS  (VAX Pascal compatible Win32)
+Reference   : ISO 7185:1990 (Pascal Standard)
+               ISO 10206:1991 (Extended Pascal)
+               Borland Turbo Pascal 7.0 (1992)
+               Free Pascal / Delphi (extensions modernes)
+Version     : 1.0 - 2026
+
+============================================================
+1. PRESENTATION
+============================================================
+
+Le langage Pascal a ete concu en 1968-1970 par Niklaus Wirth a
+l'Ecole polytechnique federale de Zurich (ETH Zurich) comme un
+langage destine a l'enseignement de la programmation structuree.
+Sa premiere implementation a ete realisee en 1970 sur un
+CDC 6000.
+
+Le langage a connu plusieurs etapes importantes :
+
+  - 1970 : Pascal original (Wirth)
+  - 1983 : Borland Turbo Pascal 1.0 (DOS, CP/M)
+  - 1990 : ISO 7185 (Pascal standard)
+  - 1991 : ISO 10206 (Extended Pascal, modules, objets)
+  - 1992 : Turbo Pascal 7.0 (derniere version DOS)
+  - 1995 : Delphi 1 (Object Pascal, RAD Windows)
+  - 1997 : Free Pascal (FPC, multi-plateforme libre)
+
+Pascal est un langage :
+
+  - Imperatif et structure par blocs
+  - Compile, a typage statique fort
+  - Sensible aux declarations (declarer avant utiliser)
+  - Insensible a la casse
+  - Indifferent a la mise en page (free-form)
+  - Conforme au principe "tout doit etre declare"
+
+Extensions de fichiers reconnues :
+
+  .pas    Fichier source Pascal
+  .pp     Fichier source Free Pascal
+  .dpr    Programme principal Delphi
+  .dpk    Package Delphi
+  .lpr    Programme principal Lazarus
+  .inc    Fichier inclus ($I)
+  .ppu    Unite compilee Free Pascal
+  .tpu    Unite compilee Turbo Pascal
+
+
+============================================================
+2. STRUCTURE D'UN PROGRAMME
+============================================================
+
+Un programme Pascal complet a la forme suivante :
+
+  program NomDuProgramme;
+
+  uses Crt, Dos;             { unites importees }
+
+  const
+    PI = 3.14159265;
+
+  type
+    TPoint = record x, y: Integer end;
+
+  var
+    i: Integer;
+    msg: string;
+
+  procedure Saluer(nom: string);
+  begin
+    WriteLn('Bonjour, ', nom)
+  end;
+
+  begin                       { corps principal }
+    Saluer('monde');
+    ReadLn
+  end.
+
+Sections obligatoires :
+
+  - L'en-tete program ... ; (optionnel en FPC).
+  - Le bloc principal entre begin et end.
+  - Le point final apres le end terminal.
+
+Les sections uses, const, type, var, procedure et function sont
+toutes facultatives mais doivent apparaitre dans cet ordre
+relatif (avec des repetitions autorisees en FPC).
+
+
+============================================================
+3. STRUCTURE LEXICALE
+============================================================
+
+3.1 Identificateurs
+-------------------
+Un identificateur commence par une lettre ou un soulignement,
+suivi de lettres, chiffres ou soulignements. La casse est NON
+significative :
+
+  Total      total      TOTAL    { meme identificateur }
+  _index     x1         Nom_Long
+
+Longueur significative : 63 caracteres en FPC (8 en Turbo Pascal
+original).
+
+3.2 Mots reserves
+-----------------
+Mots reserves standard ISO 7185 :
+
+  and        array      begin      case       const
+  div        do         downto     else       end
+  file       for        function   goto       if
+  in         label      mod        nil        not
+  of         or         packed     procedure  program
+  record     repeat     set        then       to
+  type       until      var        while      with
+
+Mots reserves Turbo Pascal / Delphi / FPC supplementaires :
+
+  asm        constructor  destructor  implementation  inline
+  interface  library      object      private        public
+  raise      shl          shr         string         try
+  except     finally      unit        uses           xor
+  property   class        inherited   self           is
+  as         on           out         operator       finalization
+  initialization
+
+3.3 Litteraux
+-------------
+Entiers :
+
+  42              decimal
+  $2A             hexadecimal (prefixe $)
+  &52             octal       (FPC, prefixe &)
+  %101010         binaire     (FPC, prefixe %)
+  1000000         (souligne pas accepte)
+
+Reels :
+
+  3.14    .5(invalide)    0.5    1E10    2.5E-3   3.14E0
+
+Caracteres :
+
+  'A'     ''''      #13      #$0A    'A'#13#10
+
+Chaines :
+
+  'Bonjour'                concatenation : 'A' + 'B'
+  'Il a dit ''bonjour'''   doubles apostrophes pour echappement
+  'Ligne'#13#10            controle integre
+
+3.4 Commentaires
+----------------
+Trois formes equivalentes :
+
+  { commentaire entre accolades }
+  (* commentaire vieux style *)
+  // commentaire fin de ligne   (FPC, Delphi)
+
+Les commentaires ne sont pas imbricables, sauf si on alterne
+les delimiteurs ({ ... (* ... *) ... }).
+
+3.5 Directives de compilation
+-----------------------------
+Sous forme de commentaires speciaux commencant par $ :
+
+  {$I+}              activer la verification d'E/S
+  {$R+}              activer la verification des bornes
+  {$M 16384,0,65535} parametres de pile / tas (Turbo)
+  {$I fichier.inc}   inclure un fichier
+  {$IFDEF SYMB} ... {$ENDIF}
+  {$MODE TP}         (FPC) mode de compatibilite
+
+
+============================================================
+4. TYPES DE DONNEES
+============================================================
+
+4.1 Types ordinaux
+------------------
+  Byte            0..255           (8 bits)
+  ShortInt        -128..127        (8 bits signe)
+  Word            0..65535         (16 bits)
+  SmallInt        -32768..32767    (16 bits signe)
+  LongWord        0..2^32-1        (32 bits)
+  LongInt         -2^31..2^31-1    (32 bits signe)
+  Int64           -2^63..2^63-1    (64 bits)
+  QWord           0..2^64-1        (64 bits)
+  Integer         taille naturelle (16 bits en TP, 32 en FPC)
+  Cardinal        Integer non signe
+  Boolean         (False, True)
+  Char            caractere ASCII / ANSI (1 octet)
+  WideChar        caractere UTF-16 (2 octets)
+
+4.2 Types reels
+---------------
+  Real            type reel par defaut (8 octets en FPC)
+  Single          32 bits IEEE 754
+  Double          64 bits IEEE 754
+  Extended        80 bits (x87 FPU)
+  Comp            entier 64 bits stocke en virgule flottante
+  Currency        decimal 64 bits, 4 decimales
+
+4.3 Types structures
+--------------------
+  Array           tableaux statiques ou dynamiques
+  Record          enregistrements (champs nommes)
+  Set             ensembles d'un type ordinal
+  File            fichiers typed ou non
+  String          chaines de caracteres
+  Object          types objets (Turbo Pascal)
+  Class           classes (Delphi, FPC modes objet)
+
+4.4 Types pointeurs
+-------------------
+  Pointer         pointeur generique non type
+  ^T              pointeur sur un T (ex: ^Integer)
+  PChar           pointeur sur caractere (chaine C)
+  PAnsiChar       pointeur sur AnsiChar
+  PWideChar       pointeur sur WideChar
+
+4.5 Types enumeres
+------------------
+  type
+    TJour = (Lundi, Mardi, Mercredi, Jeudi,
+             Vendredi, Samedi, Dimanche);
+    TCouleur = (Rouge, Vert, Bleu);
+
+Les valeurs ont une representation entiere a partir de 0 et
+peuvent etre converties via Ord() et Pred() / Succ().
+
+4.6 Intervalles (subranges)
+---------------------------
+  type
+    TJour    = 1..31;
+    TLettre  = 'A'..'Z';
+    TMois    = Janvier..Decembre;
+
+4.7 Type string
+---------------
+Plusieurs variantes selon implementation :
+
+  string           string par defaut (255 ou AnsiString)
+  string[N]        chaine courte de N caracteres max
+  ShortString      string[255], 256 octets, compteur en [0]
+  AnsiString       chaine longue dynamique avec compteur, refcount
+  UnicodeString    chaine UTF-16 dynamique (Delphi 2009+)
+  WideString       chaine UTF-16 (compatible OLE BSTR)
+
+
+============================================================
+5. DECLARATIONS DE VARIABLES
+============================================================
+
+Forme generale :
+
+  var
+    identificateur1 [, identificateur2 ...] : type;
+
+Exemples :
+
+  var
+    i, j, k       : Integer;
+    nom           : string;
+    note          : Real;
+    Tab           : array[1..100] of Integer;
+    Lettres       : set of 'A'..'Z';
+    Point         : record x, y: Integer end;
+
+Initialisation a la declaration (FPC / Delphi) :
+
+  var
+    Compteur : Integer = 0;
+    PI       : Real    = 3.14159265;
+    Msg      : string  = 'Bonjour';
+
+Constantes :
+
+  const
+    MAX_LIGNES = 100;
+    Salut      = 'Hello';
+    PI         : Real = 3.14159265;   { constante typee }
+
+Constantes typees comme variables initialisees (sauf si
+{$WRITEABLECONST OFF}).
+
+
+============================================================
+6. OPERATEURS ET EXPRESSIONS
+============================================================
+
+6.1 Operateurs arithmetiques
+----------------------------
+  +    addition          a + b
+  -    soustraction      a - b   (ou unaire -a)
+  *    multiplication    a * b
+  /    division reelle   a / b     (toujours Real)
+  div  division entiere  a div b
+  mod  modulo            a mod b
+
+6.2 Operateurs relationnels
+---------------------------
+  =     egalite
+  <>    difference
+  <     inferieur
+  >     superieur
+  <=    inferieur ou egal
+  >=    superieur ou egal
+  in    appartenance a un ensemble
+
+Tous renvoient un Boolean.
+
+6.3 Operateurs logiques / bit a bit
+-----------------------------------
+Sur Boolean : court-circuit selon $B+/$B-.
+Sur entiers : operations bit a bit.
+
+  and    ET     a and b
+  or     OU     a or b
+  xor    OU exclusif
+  not    NON    not a
+  shl    decalage gauche  a shl n
+  shr    decalage droite  a shr n
+
+6.4 Operateurs sur ensembles
+----------------------------
+  +     union           [1,2] + [3,4]   ->  [1..4]
+  -     difference      [1..5] - [2,4]  ->  [1,3,5]
+  *     intersection    [1..5] * [3..8] ->  [3,4,5]
+  <=    inclusion       A <= B  (A sous-ensemble de B)
+  >=    inclusion inverse
+  in    appartenance    x in [1,3,5]
+
+6.5 Operateur de chaine
+-----------------------
+  +     concatenation   'Hello, ' + 'World'
+
+6.6 Affectation
+---------------
+  :=    affectation     i := 10;
+
+(Note : '=' est strictement le test d'egalite.)
+
+6.7 Precedence (de la plus haute a la plus basse)
+-------------------------------------------------
+  1.  not, @, +unaire, -unaire
+  2.  *, /, div, mod, and, shl, shr
+  3.  +, -, or, xor
+  4.  =, <>, <, >, <=, >=, in
+
+
+============================================================
+7. STRUCTURES DE CONTROLE
+============================================================
+
+7.1 Instruction if
+------------------
+  if expression then
+    instruction
+  [else
+    instruction]
+
+Forme avec bloc :
+
+  if (n > 0) and (n < 100) then
+  begin
+    WriteLn('valide');
+    Inc(Total)
+  end
+  else
+    WriteLn('hors limites');
+
+Pas de point-virgule entre l'instruction et le else.
+
+7.2 Instruction case
+--------------------
+  case expression of
+    valeur1 : instruction1;
+    valeur2, valeur3 : instruction2;
+    intervalle1..intervalle2 : instruction3;
+  else
+    instruction par defaut
+  end;
+
+L'expression doit etre de type ordinal.
+
+7.3 Boucle while
+----------------
+  while expression do
+    instruction;
+
+7.4 Boucle repeat
+-----------------
+  repeat
+    instructions
+  until expression;
+
+Le corps est execute au moins une fois ; sortie quand
+l'expression devient vraie.
+
+7.5 Boucle for
+--------------
+  for variable := debut to fin do
+    instruction;
+
+  for variable := debut downto fin do
+    instruction;
+
+  for element in collection do      { FPC, Delphi 2005+ }
+    instruction;
+
+La variable de boucle ne doit pas etre modifiee dans le corps.
+
+7.6 Branchements
+----------------
+  break          sortir de la boucle courante
+  continue       passer a l'iteration suivante
+  exit           sortir de la procedure / fonction
+  exit(valeur)   exit avec valeur de retour (FPC)
+  halt           arret du programme (avec code optionnel)
+  goto label     saut a une etiquette declaree label
+
+
+============================================================
+8. PROCEDURES ET FONCTIONS
+============================================================
+
+8.1 Procedure
+-------------
+  procedure NomProc(p1: Type1; p2: Type2);
+  var locale: Integer;
+  begin
+    { corps }
+  end;
+
+Appelee comme instruction : NomProc(a, b);
+
+8.2 Fonction
+------------
+  function NomFct(p1: Type1): TypeRetour;
+  begin
+    { ... }
+    NomFct := valeur;        { affectation a la fonction }
+    { ou en FPC/Delphi : }
+    Result := valeur;
+  end;
+
+8.3 Modes de passage des parametres
+-----------------------------------
+  par valeur      procedure P(x: Integer);
+                  Copie ; les modifications de x ne sont pas
+                  visibles a l'exterieur.
+
+  par variable    procedure P(var x: Integer);
+                  Reference ; les modifications affectent
+                  l'appelant.
+
+  par constante   procedure P(const x: TGros);
+                  Lecture seule. Peut etre passe par
+                  reference pour efficacite.
+
+  parametre out   procedure P(out x: Integer);
+                  Sortie seulement (FPC, Delphi). Pas
+                  d'initialisation supposee.
+
+8.4 Parametres par defaut
+-------------------------
+  procedure P(x: Integer; y: Integer = 0; s: string = '');
+
+8.5 Surcharge (overload)
+------------------------
+En FPC / Delphi, plusieurs procedures/fonctions peuvent partager
+le meme nom si elles different par leurs parametres :
+
+  procedure Print(x: Integer); overload;
+  procedure Print(x: Real);    overload;
+  procedure Print(s: string);  overload;
+
+8.6 Procedures imbriquees
+-------------------------
+Les procedures peuvent etre definies dans le corps d'une autre
+procedure ; elles ont acces aux variables locales du parent
+(portee lexicale).
+
+8.7 Recursivite
+---------------
+Pleinement supportee. La declaration forward permet la
+declaration anticipee pour la recursivite mutuelle :
+
+  procedure A(n: Integer); forward;
+  procedure B(n: Integer);
+  begin if n > 0 then A(n-1) end;
+  procedure A(n: Integer);
+  begin if n > 0 then B(n-1) end;
+
+
+============================================================
+9. TABLEAUX
+============================================================
+
+9.1 Tableaux statiques
+----------------------
+  var
+    v: array[1..10] of Integer;
+    m: array[1..3, 1..4] of Real;
+    Mots: array['A'..'Z'] of string;
+
+Acces : v[i], m[i, j] ou m[i][j].
+
+9.2 Tableaux dynamiques (FPC / Delphi)
+--------------------------------------
+  var t: array of Integer;
+  begin
+    SetLength(t, 100);     { allocation }
+    t[0] := 42;
+    SetLength(t, 0);       { liberation }
+  end;
+
+Pour tableaux 2D dynamiques : array of array of T.
+
+9.3 Constantes tableaux
+-----------------------
+  const
+    Jours: array[1..7] of string = (
+      'Lundi', 'Mardi', 'Mercredi', 'Jeudi',
+      'Vendredi', 'Samedi', 'Dimanche');
+
+9.4 Open arrays (parametre tableau ouvert)
+------------------------------------------
+  procedure Sum(const v: array of Integer): Integer;
+  var i, s: Integer;
+  begin
+    s := 0;
+    for i := Low(v) to High(v) do s := s + v[i];
+    Sum := s
+  end;
+
+
+============================================================
+10. ENREGISTREMENTS (RECORDS)
+============================================================
+
+10.1 Declaration
+----------------
+  type
+    TPoint = record
+      x, y: Integer
+    end;
+    TPersonne = record
+      Nom    : string[40];
+      Age    : Byte;
+      Salaire: Real
+    end;
+
+10.2 Acces
+----------
+  var p: TPoint;
+  begin
+    p.x := 10;
+    p.y := 20;
+  end;
+
+10.3 With
+---------
+Raccourcit l'acces aux champs (a utiliser avec moderation) :
+
+  with p do begin
+    x := 0;
+    y := 0
+  end;
+
+10.4 Records variants
+---------------------
+  type
+    TFigure = record
+      Couleur: Byte;
+      case Forme: Integer of
+        0: (Rayon: Real);                { cercle }
+        1: (Largeur, Hauteur: Integer);  { rectangle }
+        2: (X1, Y1, X2, Y2: Integer);    { ligne }
+    end;
+
+Les champs des differents cas partagent le meme espace memoire.
+
+10.5 Packed record
+------------------
+  type TEntete = packed record
+    Marqueur: array[1..4] of Char;
+    Version : Word;
+    Taille  : LongInt
+  end;
+
+Aucun alignement insere entre les champs.
+
+
+============================================================
+11. ENSEMBLES (SETS)
+============================================================
+
+11.1 Declaration
+----------------
+  type TLettres = set of 'A'..'Z';
+  type TJours   = set of (Lundi, Mardi, Mercredi, Jeudi,
+                          Vendredi, Samedi, Dimanche);
+
+11.2 Constantes / litteraux
+---------------------------
+  Voyelles  := ['A','E','I','O','U','Y'];
+  Chiffres  := ['0'..'9'];
+  Vide      := [];
+
+11.3 Operations
+---------------
+  if c in ['A'..'Z'] then ...
+  V1 + V2     union
+  V1 - V2     difference
+  V1 * V2     intersection
+  V1 <= V2    V1 sous-ensemble de V2
+
+La taille d'un ensemble est limitee a 256 elements (Byte/Char).
+
+
+============================================================
+12. CHAINES DE CARACTERES
+============================================================
+
+12.1 Type string
+----------------
+Le type string varie selon la directive :
+
+  {$H+}    string = AnsiString (longue, defaut FPC/Delphi)
+  {$H-}    string = ShortString[255]
+
+12.2 Manipulation
+-----------------
+  s := 'Bonjour';
+  s := s + ' monde';
+  Length(s)               longueur courante
+  s[1]                    premier caractere (indexe a 1)
+  Copy(s, 1, 3)           sous-chaine
+  Pos('jour', s)          recherche (0 si absent)
+  Delete(s, 4, 2)         suppression dans s
+  Insert('XX', s, 3)      insertion
+  UpCase(c)               majuscule (caractere unique)
+  Concat(s1, s2, s3)      equivalent a s1+s2+s3
+
+12.3 Conversions
+----------------
+  Str(x, s);              entier ou reel vers chaine
+  Val(s, x, code);        chaine vers numerique
+  IntToStr(n)             FPC/Delphi
+  StrToInt(s)             FPC/Delphi
+  FloatToStr(x)           FPC/Delphi
+  StrToFloat(s)           FPC/Delphi
+  Format('%d %s', [n,s])  FPC/Delphi
+
+
+============================================================
+13. FICHIERS
+============================================================
+
+13.1 Fichiers typed
+-------------------
+  type TEnreg = record n: Integer; nom: string[40] end;
+  var f: file of TEnreg;
+      r: TEnreg;
+
+  Assign(f, 'data.dat');
+  Rewrite(f);             { creation }
+  Write(f, r);
+  Close(f);
+
+  Reset(f);               { ouverture lecture/ecriture }
+  while not Eof(f) do Read(f, r);
+  Close(f);
+
+13.2 Fichiers texte
+-------------------
+  var f: Text;
+  Assign(f, 'rapport.txt');
+  Rewrite(f);
+  WriteLn(f, 'Ligne 1');
+  Close(f);
+
+  Reset(f);
+  while not Eof(f) do begin
+    ReadLn(f, ligne);
+    WriteLn(ligne)
+  end;
+  Close(f);
+
+13.3 Fichiers non typed
+-----------------------
+  var f: file;
+  Assign(f, 'image.bin');
+  Reset(f, 1);            { taille de bloc = 1 octet }
+  BlockRead(f, buf, n, lus);
+  Close(f);
+
+13.4 Fonctions I/O
+------------------
+  Eof(f)         fin de fichier
+  Eoln(f)        fin de ligne (text)
+  Seek(f, pos)   positionnement (typed/non-typed)
+  FilePos(f)     position courante
+  FileSize(f)    taille en enregistrements
+  IOResult       code d'erreur (avec {$I-})
+  Erase(f)       supprimer fichier
+  Rename(f, s)   renommer
+
+
+============================================================
+14. UNITES (UNITS)
+============================================================
+
+14.1 Structure d'une unite
+--------------------------
+  unit Geometrie;
+
+  interface
+
+  type
+    TPoint = record x, y: Real end;
+
+  function Distance(a, b: TPoint): Real;
+  procedure Translation(var p: TPoint; dx, dy: Real);
+
+  implementation
+
+  uses Math;
+
+  function Distance(a, b: TPoint): Real;
+  begin
+    Distance := Sqrt(Sqr(a.x-b.x) + Sqr(a.y-b.y))
+  end;
+
+  procedure Translation(var p: TPoint; dx, dy: Real);
+  begin
+    p.x := p.x + dx;
+    p.y := p.y + dy
+  end;
+
+  initialization
+    { code execute au chargement (FPC/Delphi) }
+
+  finalization
+    { code execute a la fin (FPC/Delphi) }
+
+  end.
+
+14.2 Sections
+-------------
+  interface       declarations visibles aux clients
+  implementation  corps des procedures, declarations privees
+  initialization  bloc d'initialisation
+  finalization    bloc de nettoyage
+
+14.3 Importation
+----------------
+  uses Crt, Dos, SysUtils, Math;
+
+L'ordre dans uses peut etre significatif (ordre d'initialisation).
+
+
+============================================================
+15. POINTEURS ET ALLOCATION DYNAMIQUE
+============================================================
+
+15.1 Declaration
+----------------
+  type
+    PInt   = ^Integer;
+    PNoeud = ^TNoeud;
+    TNoeud = record
+      valeur : Integer;
+      suivant: PNoeud
+    end;
+
+  var p: PInt;
+
+15.2 Allocation
+---------------
+Style Turbo Pascal :
+
+  New(p);            { alloue sizeof(Integer) }
+  p^ := 42;          { dereference }
+  Dispose(p);        { libere }
+
+Pour un tampon arbitraire :
+
+  GetMem(p, 1024);
+  FreeMem(p, 1024);
+
+15.3 Nil
+--------
+  p := nil;
+  if p <> nil then ...
+
+15.4 Operateurs lies aux pointeurs
+----------------------------------
+  @x       adresse de la variable x
+  p^       contenu pointe par p
+  Addr(x)  equivalent de @x
+
+
+============================================================
+16. OBJETS (TURBO PASCAL)
+============================================================
+
+16.1 Declaration
+----------------
+  type
+    TForme = object
+      x, y: Integer;
+      constructor Init(ax, ay: Integer);
+      procedure Affiche; virtual;
+      destructor Done; virtual;
+    end;
+
+    TCercle = object(TForme)
+      Rayon: Integer;
+      constructor Init(ax, ay, ar: Integer);
+      procedure Affiche; virtual;
+    end;
+
+16.2 Implementation
+-------------------
+  constructor TForme.Init(ax, ay: Integer);
+  begin
+    x := ax; y := ay
+  end;
+
+  procedure TForme.Affiche;
+  begin
+    WriteLn('Forme en (', x, ',', y, ')')
+  end;
+
+16.3 Allocation
+---------------
+Statique :
+
+  var c: TCercle;
+  c.Init(10, 20, 5);
+
+Dynamique :
+
+  var pc: ^TCercle;
+  New(pc, Init(10, 20, 5));
+  pc^.Affiche;
+  Dispose(pc, Done);
+
+
+============================================================
+17. CLASSES (DELPHI / FPC OBJFPC)
+============================================================
+
+17.1 Declaration
+----------------
+  type
+    TForme = class
+    private
+      FX, FY: Integer;
+    public
+      constructor Create(ax, ay: Integer);
+      destructor  Destroy; override;
+      procedure   Affiche; virtual;
+      property    X: Integer read FX write FX;
+    end;
+
+    TCercle = class(TForme)
+    private
+      FRayon: Integer;
+    public
+      constructor Create(ax, ay, ar: Integer);
+      procedure   Affiche; override;
+    end;
+
+17.2 Sections de visibilite
+---------------------------
+  private        visible uniquement dans l'unite
+  protected      visible dans la classe + descendants
+  public         visible partout
+  published      idem public + RTTI publiee
+
+17.3 Creation et destruction
+----------------------------
+  var c: TCercle;
+  begin
+    c := TCercle.Create(10, 20, 5);
+    try
+      c.Affiche;
+    finally
+      c.Free
+    end;
+  end;
+
+17.4 Heritage et polymorphisme
+------------------------------
+Toutes les classes Delphi/FPC heritent de TObject. Les methodes
+virtuelles sont declarees avec virtual et surchargees avec
+override.
+
+17.5 Proprietes
+---------------
+  property Nom: string read FNom write SetNom;
+  property Items[I: Integer]: TObject read GetItem; default;
+
+
+============================================================
+18. EXCEPTIONS
+============================================================
+
+18.1 try/except
+---------------
+  try
+    valeur := StrToInt(s);
+  except
+    on E: EConvertError do
+      WriteLn('Format invalide: ', E.Message);
+    on E: Exception do
+      WriteLn('Erreur: ', E.Message);
+  end;
+
+18.2 try/finally
+----------------
+  L := TList.Create;
+  try
+    L.Add(...);
+    ...
+  finally
+    L.Free;
+  end;
+
+18.3 Lever une exception
+------------------------
+  raise EConvertError.Create('Donnee invalide');
+
+18.4 Combinaison
+----------------
+  try
+    try
+      ...
+    except
+      on E: Exception do begin
+        Log(E.Message);
+        raise;          { re-lever la meme exception }
+      end;
+    end;
+  finally
+    Cleanup;
+  end;
+
+
+============================================================
+19. GENERIQUES (DELPHI 2009+ / FPC)
+============================================================
+
+19.1 Type generique
+-------------------
+  type
+    TListe<T> = class
+    private
+      FItems: array of T;
+      FCount: Integer;
+    public
+      procedure Add(const item: T);
+      function  Get(I: Integer): T;
+      property  Count: Integer read FCount;
+    end;
+
+19.2 Utilisation
+----------------
+  var ListeEntiers: TListe<Integer>;
+  begin
+    ListeEntiers := TListe<Integer>.Create;
+    ListeEntiers.Add(42);
+    ...
+  end;
+
+FPC mode objfpc utilise une syntaxe legerement differente avec
+generic et specialize.
+
+
+============================================================
+20. DIRECTIVES DE COMPILATION
+============================================================
+
+20.1 Directives globales
+------------------------
+  {$MODE TP}            mode Turbo Pascal
+  {$MODE OBJFPC}        mode FPC objet (defaut)
+  {$MODE DELPHI}        mode Delphi compatibilite
+  {$MODE ISO}           ISO 7185 strict
+
+20.2 Directives locales
+-----------------------
+  {$I+} {$I-}           E/S verifiee / non verifiee
+  {$R+} {$R-}           bornes verifiees / non
+  {$Q+} {$Q-}           overflow entier verifie / non
+  {$B+} {$B-}           Boolean court-circuit OFF / ON
+  {$H+} {$H-}           string long / court (255)
+  {$M tailles}          (TP) tailles pile et tas
+  {$DEFINE SYMB}        definir un symbole
+  {$UNDEF  SYMB}        retirer un symbole
+
+20.3 Inclusion conditionnelle
+-----------------------------
+  {$IFDEF WINDOWS}
+    uses Windows;
+  {$ENDIF}
+  {$IFNDEF FPC}
+    type AnsiString = string;
+  {$ENDIF}
+  {$IF FPC_VERSION >= 3} ... {$ENDIF}
+
+
+============================================================
+21. BIBLIOTHEQUE STANDARD
+============================================================
+
+21.1 Unite System (automatique)
+-------------------------------
+Toujours implicitement chargee. Contient :
+
+  Write, WriteLn, Read, ReadLn, Str, Val,
+  Length, Copy, Pos, Delete, Insert, Concat,
+  Abs, Sqr, Sqrt, Sin, Cos, ArcTan, Exp, Ln,
+  Trunc, Round, Frac, Int, Inc, Dec, Odd,
+  Ord, Chr, Pred, Succ,
+  New, Dispose, GetMem, FreeMem,
+  Assign, Reset, Rewrite, Close, Read, Write,
+  Eof, Eoln, Seek, FilePos, FileSize, IOResult,
+  Halt, Exit, Break, Continue,
+  Random, Randomize,
+  ParamCount, ParamStr,
+  Move, FillChar,
+  Hi, Lo, Swap.
+
+21.2 Unite Crt (Turbo / FPC)
+----------------------------
+E/S console plein ecran :
+
+  ClrScr, GotoXY, WhereX, WhereY,
+  TextColor, TextBackground, TextAttr,
+  KeyPressed, ReadKey, Delay, Sound, NoSound.
+
+21.3 Unite Dos (Turbo / FPC)
+----------------------------
+Acces aux services DOS / fichiers / repertoires :
+
+  GetDate, GetTime, SetDate, SetTime,
+  FindFirst, FindNext, FindClose,
+  DiskFree, DiskSize, Exec, GetEnv,
+  Intr, MsDos, GetIntVec, SetIntVec.
+
+21.4 Unite SysUtils (Delphi / FPC)
+----------------------------------
+Bibliotheque generale Delphi :
+
+  IntToStr, StrToInt, FloatToStr, StrToFloat,
+  IntToHex, Format, FormatDateTime,
+  Now, Date, Time, DateToStr, TimeToStr,
+  UpperCase, LowerCase, Trim, TrimLeft, TrimRight,
+  StringReplace, AnsiCompareText, SameText,
+  FileExists, DirectoryExists, ChangeFileExt,
+  ExtractFileName, ExtractFilePath, ExtractFileExt,
+  Exception, raise, try/except/finally.
+
+21.5 Unite Math (FPC / Delphi)
+------------------------------
+Fonctions mathematiques avancees :
+
+  Power, IntPower, Log10, Log2, LogN,
+  Min, Max, Sign, IfThen,
+  Mean, Sum, Variance, StdDev,
+  Floor, Ceil, RoundTo,
+  ArcSin, ArcCos, ArcTan2, Tan, Cot,
+  Sinh, Cosh, Tanh.
+
+21.6 Unite Strings (FPC / Delphi)
+---------------------------------
+Manipulation de chaines C (PChar) :
+
+  StrLen, StrCopy, StrComp, StrCat,
+  StrPas, StrPCopy, StrEnd, StrPos.
+
+
+============================================================
+22. COMPILATEURS DU PROJET
+============================================================
+
+22.1 PC8086.PAS
+---------------
+Compilateur generant de l'assembleur 8086 (MASM .MODEL SMALL)
+pour MS-DOS. Cible un processeur Intel 8086 en mode reel 16 bits.
+Sous-ensemble Pascal supporte :
+
+  - Types : Integer (16 bits), LongInt, Byte, Char, Boolean
+  - String (ShortString)
+  - Tableaux statiques uni- et bi-dimensionnels
+  - Records (sans variant)
+  - Procedures et functions (passage valeur et var)
+  - Structures de controle completes
+  - Unite System minimale (Write, Read, etc.)
+
+22.2 PASCW32.PAS
+----------------
+Compilateur Pascal vers binaire Win32 PE 32 bits. Genere
+directement un executable .EXE Windows utilisant KERNEL32.DLL.
+Supporte un sous-ensemble proche de Turbo Pascal 7.0 avec
+Integer 32 bits.
+
+22.3 TPCW32.PAS
+---------------
+Compilateur Turbo Pascal compatible Win32. Implemente le mode
+{$MODE TP} et utilise un emulateur d'unite Crt / Dos pour la
+console Windows.
+
+22.4 TPCW32.PAS
+---------------
+Compilateur VAX Pascal compatible Win32.
+
+
+============================================================
+23. EXEMPLE COMPLET
+============================================================
+
+Programme calculant la suite de Fibonacci :
+
+  program Fibonacci;
+
+  uses Crt;
+
+  function Fib(n: Integer): LongInt;
+  begin
+    if n < 2 then
+      Fib := n
+    else
+      Fib := Fib(n-1) + Fib(n-2)
+  end;
+
+  var
+    i, n: Integer;
+
+  begin
+    ClrScr;
+    Write('Entrez n : '); ReadLn(n);
+    WriteLn('Suite de Fibonacci jusqu''a F(', n, ') :');
+    for i := 0 to n do
+      WriteLn('  F(', i:2, ') = ', Fib(i));
+    ReadLn
+  end.
+
+Compilation et execution sous Free Pascal :
+
+  fpc fibonacci.pas
+  ./fibonacci
+
+
+============================================================
+24. REFERENCES
+============================================================
+
+  - Niklaus Wirth : "The Programming Language Pascal"
+    (1971), Acta Informatica 1, pp. 35-63.
+
+  - Kathleen Jensen, Niklaus Wirth : "Pascal User Manual and
+    Report" (1ere ed. 1974, 4eme ed. 1991). Springer-Verlag.
+    Reference historique du langage.
+
+  - ISO 7185:1990 : Information technology - Programming
+    languages - Pascal.
+
+  - ISO 10206:1991 : Information technology - Programming
+    languages - Extended Pascal.
+
+  - Borland International : "Turbo Pascal 7.0 Programmer's
+    Reference" (1992).
+
+  - Marco Cantu : "Object Pascal Handbook" (2014). Reference
+    moderne pour Delphi et FPC.
+
+  - Free Pascal Reference Guide : documentation officielle
+    en ligne sur www.freepascal.org/docs.html.
+
+  - Michael van Canneyt : "Free Pascal Language Reference"
+    (Free Pascal Compiler Documentation, 2026).
