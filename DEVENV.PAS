@@ -6962,6 +6962,7 @@ Begin
 End;
 
 { Hash WinHelp (identique a HC.HashContext) }
+{$PUSH}{$Q-}{$R-}
 Function HlpvHashContext(S: String): LongInt;
 Var I: Integer; H: LongInt;
 Begin
@@ -6970,6 +6971,7 @@ Begin
   H := H * 43 + Ord(HlpvUpCh(S[I]));
  HlpvHashContext := H;
 End;
+{$POP}
 
 { Decompression LZ77 (inverse de HC.PAS LZ77Compress)
   Format :
