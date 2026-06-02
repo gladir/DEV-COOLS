@@ -16979,7 +16979,7 @@ Begin
   CGCAtBlockTerm := (CurTokType = TOK_EOF) Or
                     CGCIsKW(KW_END)  Or CGCIsKW(KW_ELSE) Or
                     CGCIsKW(KW_NEXT) Or CGCIsKW(KW_WEND) Or
-                    CGCIsKW(KW_LOOP);
+                    CGCIsKW(KW_LOOP) Or CGCIsKW(KW_CASE);
 End;
 
 Function CGCCanStartExpr : Boolean;
@@ -17911,6 +17911,127 @@ Begin
 End;
 
 { ============================================================ }
+{ Select Case <expr>                                           }
+{   Case <items>     -> body                                   }
+{   Case Else        -> body                                   }
+{ End Select                                                   }
+{ Items : valeur | expr1 To expr2 | Is op valeur, separes par , }
+{ ============================================================ }
+Procedure CGCParseSelect;
+Var
+  ScrOfs                : LongInt;
+  LEnd, LMatch, LNext   : TString;
+  LFail                 : TString;
+  Op                    : Integer;
+  CC                    : Integer;
+  HasElse               : Boolean;
+Begin
+  LexNextToken;          { eat 'Select' }
+  If Not CGCIsKW(KW_CASE) Then
+    FatalError('Palier SelectCase: "Case" attendu apres Select (ligne ' +
+               ItoS(CurTokLine) + ')');
+  LexNextToken;          { eat 'Case' }
+
+  CGCParseExpr;
+  ScrOfs := CGCAddLocal('@sc_' + ItoS(CGCLabSeq));
+  AsmMovMemBPReg(ScrOfs, R_EAX);
+
+  LEnd    := CGCNewLabel('selEnd');
+  HasElse := False;
+
+  CGCSkipNewlines;
+  While CGCIsKW(KW_CASE) Do
+  Begin
+    LexNextToken;        { eat 'Case' }
+
+    If CGCIsKW(KW_ELSE) Then
+    Begin
+      LexNextToken;
+      CGCSkipNewlines;
+      CGCParseStatementBlock(KW_END, KW_NONE);
+      HasElse := True;
+      Break;
+    End;
+
+    LMatch := CGCNewLabel('selM');
+    LNext  := CGCNewLabel('selN');
+
+    Repeat
+      If CGCIsKW(KW_IS) Then
+      Begin
+        LexNextToken;
+        Op := CurTokType;
+        If (Op <> TOK_EQ) And (Op <> TOK_NE) And
+           (Op <> TOK_LT) And (Op <> TOK_LE) And
+           (Op <> TOK_GT) And (Op <> TOK_GE) Then
+          FatalError('Palier SelectCase: operateur attendu apres Is (ligne ' +
+                     ItoS(CurTokLine) + ')');
+        LexNextToken;
+        CGCParseExpr;                       { EAX = valeur }
+        AsmMovRegMemBP(R_ECX, ScrOfs);      { ECX = scrutinee }
+        AsmCmpRegReg(R_ECX, R_EAX);
+        Case Op Of
+          TOK_EQ : CC := CC_E;
+          TOK_NE : CC := CC_NE;
+          TOK_LT : CC := CC_L;
+          TOK_LE : CC := CC_LE;
+          TOK_GT : CC := CC_G;
+        Else       CC := CC_GE;
+        End;
+        AsmJcc(CC, LMatch);
+      End
+      Else
+      Begin
+        CGCParseExpr;                       { EAX = expr1 }
+        If CGCIsKW(KW_TO) Then
+        Begin
+          AsmPushReg(R_EAX);                { sauve borne basse }
+          LexNextToken;
+          CGCParseExpr;                     { EAX = expr2 (high) }
+          AsmPopReg(R_ECX);                 { ECX = low }
+          AsmMovRegMemBP(R_EDX, ScrOfs);
+          LFail := CGCNewLabel('selF');
+          AsmCmpRegReg(R_EDX, R_ECX);
+          AsmJcc(CC_L, LFail);              { scr < low -> fail }
+          AsmCmpRegReg(R_EDX, R_EAX);
+          AsmJcc(CC_LE, LMatch);            { scr <= high -> match }
+          AsmLabel(LFail);
+        End
+        Else
+        Begin
+          AsmMovRegMemBP(R_ECX, ScrOfs);
+          AsmCmpRegReg(R_ECX, R_EAX);
+          AsmJcc(CC_E, LMatch);
+        End;
+      End;
+      If CurTokType = TOK_COMMA Then LexNextToken
+      Else Break;
+    Until False;
+
+    AsmJmpLbl(LNext);
+    AsmLabel(LMatch);
+    CGCSkipNewlines;
+    CGCParseStatementBlock(KW_END, KW_NONE);
+    AsmJmpLbl(LEnd);
+    AsmLabel(LNext);
+
+    CGCSkipNewlines;
+  End;
+
+  AsmLabel(LEnd);
+  If HasElse Then ;       { silence warning }
+
+  If Not CGCIsKW(KW_END) Then
+    FatalError('Palier SelectCase: "End Select" attendu (ligne ' +
+               ItoS(CurTokLine) + ')');
+  LexNextToken;
+  If Not CGCIsKW(KW_SELECT) Then
+    FatalError('Palier SelectCase: "End Select" attendu (ligne ' +
+               ItoS(CurTokLine) + ')');
+  LexNextToken;
+End;
+
+{ ============================================================ }
 { Palier D : boucles For / While / Do                          }
 { ============================================================ }
 
@@ -18610,6 +18731,8 @@ Begin
     CGCParseErase
   Else If CGCIsKW(KW_IF) Then
     CGCParseIf
+  Else If CGCIsKW(KW_SELECT) Then
+    CGCParseSelect
   Else If CGCIsKW(KW_FOR) Then
     CGCParseFor
   Else If CGCIsKW(KW_WHILE) Then
