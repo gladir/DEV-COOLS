@@ -1391,6 +1391,7 @@ Begin
   Else If U = 'EXPLICIT'   Then IsKeyword := KW_EXPLICIT
   Else If U = 'FALSE'      Then IsKeyword := KW_FALSE
   Else If U = 'FOR'        Then IsKeyword := KW_FOR
+  Else If U = 'FREEFILE'   Then IsKeyword := KW_FREEFILE
   Else If U = 'FRIEND'     Then IsKeyword := KW_FRIEND
   Else If U = 'FUNCTION'   Then IsKeyword := KW_FUNCTION
   Else If U = 'GET'        Then IsKeyword := KW_GET
@@ -1575,6 +1576,7 @@ Begin
     KW_EXPLICIT   : KeywordName := 'Explicit';
     KW_FALSE      : KeywordName := 'False';
     KW_FOR        : KeywordName := 'For';
+    KW_FREEFILE   : KeywordName := 'FreeFile';
     KW_FRIEND     : KeywordName := 'Friend';
     KW_FUNCTION   : KeywordName := 'Function';
     KW_GET        : KeywordName := 'Get';
@@ -15355,6 +15357,10 @@ Const
   { MOV [EBP + idx_r32*4 + disp32], r32                          }
   IK_MOV_MEMBP_IDX4_REG = 42;
 
+  { ----- Palier J phase 5 : Resume / Resume Next -------------- }
+  IK_JMP_MEMABS         = 43;   { JMP DWORD PTR [abs32]          }
+  IK_MOV_MEMABS_IMM_LBL = 44;   { MOV DWORD PTR [Imm], lblVA32   }
+
   { Sous-codes ALU (champ reg du ModR/M pour formes /r) }
   ALU_ADD = 0;
   ALU_OR  = 1;
@@ -15761,6 +15767,12 @@ Begin AsmAddInstr(IK_MOV_REG_MEMABS, R, 0, Abs, -1); End;
 Procedure AsmMovMemAbsReg(Abs : LongInt; R : Integer);
 Begin AsmAddInstr(IK_MOV_MEMABS_REG, R, 0, Abs, -1); End;
 
+Procedure AsmJmpMemAbs(Abs : LongInt);
+Begin AsmAddInstr(IK_JMP_MEMABS, 0, 0, Abs, -1); End;
+
+Procedure AsmMovMemAbsImmLbl(Abs : LongInt; Const N : TString);
+Begin AsmAddInstr(IK_MOV_MEMABS_IMM_LBL, 0, 0, Abs, AsmGetOrAddLabel(N)); End;
+
 Procedure AsmLeaRegMemBP(R : Integer; Disp : LongInt);
 Begin AsmAddInstr(IK_LEA_REG_MEMBP, R, 0, Disp, -1); End;
 
@@ -15895,6 +15907,8 @@ Begin
                          Then AsmInstrSize := 4 Else AsmInstrSize := 7;
     IK_MOV_REG_MEMBP_IDX4 : AsmInstrSize := 7;
     IK_MOV_MEMBP_IDX4_REG : AsmInstrSize := 7;
+    IK_JMP_MEMABS      : AsmInstrSize := 6;
+    IK_MOV_MEMABS_IMM_LBL : AsmInstrSize := 10;
   Else
     AsmInstrSize := 0;
   End;
@@ -16275,6 +16289,32 @@ Begin
           AsmEmitByte($85 Or ((AsmInstrs[I].R1 And 7) Shl 3));
           AsmEmitDWord(AsmInstrs[I].Imm);
         End;
+
+      IK_JMP_MEMABS:
+        Begin
+          { FF /4 modrm=00:100:101 (=$25) abs32 -> JMP DWORD PTR [abs] }
+          AsmEmitByte($FF);
+          AsmEmitByte($25);
+          AsmEmitDWord(AsmInstrs[I].Imm);
+        End;
+
+      IK_MOV_MEMABS_IMM_LBL:
+        Begin
+          { C7 /0 modrm=00:000:101 (=$05) abs32 imm32                  }
+          { imm32 = VA du label cible (pour Resume Next)               }
+          AsmEmitByte($C7);
+          AsmEmitByte($05);
+          AsmEmitDWord(AsmInstrs[I].Imm);   { adresse de destination   }
+          K := AsmInstrs[I].LblIdx;
+          If (K >= 0) And (K < AsmLabelCnt) And AsmLabels[K].Defined Then
+            Target := PE_IMG_BASE + PE_TEXT_RVA + AsmLabels[K].Ofs
+          Else
+          Begin
+            WarnMsg('Asm: MOV [abs],lblVA vers label non defini');
+            Target := 0;
+          End;
+          AsmEmitDWord(Target);
+        End;
     End;
   End;
 End;
@@ -16357,6 +16397,9 @@ Var
   { Palier H : tableaux 1D Long sur la pile }
   CGCArrays        : Array[0..CGC_MAX_ARRAY-1] Of TCGCArray;
   CGCArrayCnt      : Integer;
+  { Palier J : etat On Error de la proc courante                  }
+  CGCErrHandler    : TString;       { '' = aucun, sinon nom du label }
+  CGCErrResumeNext : Boolean;       { On Error Resume Next actif    }
 
 { ------------------------------------------------------------ }
 { Helpers locaux/labels                                         }
@@ -16389,6 +16432,14 @@ Function CGCNewLabel(Const Pfx : TString) : TString;
 Begin
   Inc(CGCLabSeq);
   CGCNewLabel := Pfx + '_' + ItoS(CGCLabSeq);
+End;
+
+{ Palier J : label utilisateur (LABEL: et GoTo LABEL).               }
+{ Le nom est uniformise et prefixe par l index de proc pour eviter   }
+{ les collisions entre procedures distinctes.                         }
+Function CGCUserLabel(Const N : TString) : TString;
+Begin
+  CGCUserLabel := '_uL_' + ItoS(CGCCurProc + 1) + '_' + UpCaseStr(N);
 End;
 
 { ------------------------------------------------------------ }
@@ -16519,6 +16570,8 @@ End;
 
 Procedure CGCParseExpr; Forward;
 Procedure CGCEmitCall(PIdx : Integer); Forward;
+Procedure CGCEmitErrDispatch; Forward;
+Procedure CGCEmitSetStrLit(Const PtrSym, LenSym, Msg : TString); Forward;
 
 { ------------------------------------------------------------ }
 { ParsePrim : litteral entier, parens, ou identificateur        }
@@ -16562,6 +16615,32 @@ Begin
     CGCParseExpr;
     If CurTokType <> TOK_RPAREN Then
       FatalError('Palier I: ")" attendue (ligne ' + ItoS(CurTokLine) + ')');
+    LexNextToken;
+  End
+  Else If CGCIsKW(KW_FREEFILE) Then
+  Begin
+    { Palier J phase 6 : FreeFile -> 1 (stub) }
+    LexNextToken;
+    AsmMovRegImm(R_EAX, 1);
+  End
+  Else If CGCIsKW(KW_ERR) Then
+  Begin
+    { Palier J : Err.Number en expression (Err.Description/Source        }
+    { sont des chaines, traitees specialement dans Print).                }
+    LexNextToken;
+    If CurTokType <> TOK_DOT Then
+      FatalError('Palier J: "." attendu apres Err (ligne ' +
+                 ItoS(CurTokLine) + ')');
+    LexNextToken;
+    If (CurTokType <> TOK_IDENT) And (CurTokType <> TOK_KEYWORD) Then
+      FatalError('Palier J: propriete Err attendue (ligne ' +
+                 ItoS(CurTokLine) + ')');
+    If UpCaseStr(CurTokStr) = 'NUMBER' Then
+      AsmMovRegMemAbs(R_EAX, AsmDataVA('@ERRNUM'))
+    Else
+      FatalError('Palier J: Err.' + CurTokStr +
+                 ' non utilisable comme valeur Long (ligne ' +
+                 ItoS(CurTokLine) + ')');
     LexNextToken;
   End
   Else If CurTokType = TOK_IDENT Then
@@ -16654,6 +16733,7 @@ End;
 
 Procedure CGCParseMul;
 Var Op : Integer;
+    LDivOk : TString;
 Begin
   CGCParseUnary;
   While (CurTokType = TOK_STAR) Or (CurTokType = TOK_BACKSLASH) Or
@@ -16670,11 +16750,32 @@ Begin
       TOK_STAR     : AsmImulRegReg(R_EAX, R_ECX);
       TOK_BACKSLASH:
         Begin
+          { Palier J phase 4 : trap div-by-zero (Err.Number=11) }
+          LDivOk := CGCNewLabel('divok');
+          AsmTestRegReg(R_ECX, R_ECX);
+          AsmJcc(CC_NE, LDivOk);
+          AsmMovRegImm(R_EAX, 11);
+          AsmMovMemAbsReg(AsmDataVA('@ERRNUM'), R_EAX);
+          CGCEmitSetStrLit('@ERRDESC_PTR', '@ERRDESC_LEN',
+                           'Division by zero');
+          CGCEmitSetStrLit('@ERRSRC_PTR', '@ERRSRC_LEN', '');
+          CGCEmitErrDispatch;
+          AsmLabel(LDivOk);
           AsmCdq;
           AsmIdivReg(R_ECX);        { EAX = quot, EDX = reste }
         End;
       -1:
         Begin
+          LDivOk := CGCNewLabel('modok');
+          AsmTestRegReg(R_ECX, R_ECX);
+          AsmJcc(CC_NE, LDivOk);
+          AsmMovRegImm(R_EAX, 11);
+          AsmMovMemAbsReg(AsmDataVA('@ERRNUM'), R_EAX);
+          CGCEmitSetStrLit('@ERRDESC_PTR', '@ERRDESC_LEN',
+                           'Division by zero');
+          CGCEmitSetStrLit('@ERRSRC_PTR', '@ERRSRC_LEN', '');
+          CGCEmitErrDispatch;
+          AsmLabel(LDivOk);
           AsmCdq;
           AsmIdivReg(R_ECX);
           AsmMovRegReg(R_EAX, R_EDX);
@@ -16780,6 +16881,7 @@ End;
 { ------------------------------------------------------------ }
 
 Procedure CGCParseStatement; Forward;
+Procedure CGCParseStmtBody; Forward;
 
 { Tout token qui ferme un bloc d instructions structure (If/For/    }
 { While/Do/Sub). Le parser de bloc s arrete et laisse le parent      }
@@ -16799,7 +16901,8 @@ Begin
     (CurTokType = TOK_INTEGER) Or (CurTokType = TOK_LONG)   Or
     (CurTokType = TOK_STRING)  Or (CurTokType = TOK_LPAREN) Or
     (CurTokType = TOK_IDENT)   Or (CurTokType = TOK_MINUS)  Or
-    CGCIsKW(KW_NOT) Or CGCIsKW(KW_CSTR);
+    CGCIsKW(KW_NOT) Or CGCIsKW(KW_CSTR) Or CGCIsKW(KW_ERR) Or
+    CGCIsKW(KW_FREEFILE);
 End;
 
 Procedure CGCParseStatementBlock(Const StopKW1, StopKW2 : Integer);
@@ -17279,6 +17382,37 @@ Begin
       AsmCallLbl('__print_str');
       LexNextToken;
     End
+    Else If CGCIsKW(KW_ERR) Then
+    Begin
+      { Palier J : Err.Description / Err.Source -> __print_str    }
+      {           Err.Number                    -> __print_long   }
+      LexNextToken;
+      If CurTokType <> TOK_DOT Then
+        FatalError('Palier J: "." attendu apres Err');
+      LexNextToken;
+      If (CurTokType <> TOK_IDENT) And (CurTokType <> TOK_KEYWORD) Then
+        FatalError('Palier J: propriete Err attendue');
+      If UpCaseStr(CurTokStr) = 'NUMBER' Then
+      Begin
+        AsmMovRegMemAbs(R_EAX, AsmDataVA('@ERRNUM'));
+        AsmCallLbl('__print_long');
+      End
+      Else If UpCaseStr(CurTokStr) = 'DESCRIPTION' Then
+      Begin
+        AsmMovRegMemAbs(R_EAX, AsmDataVA('@ERRDESC_PTR'));
+        AsmMovRegMemAbs(R_EDX, AsmDataVA('@ERRDESC_LEN'));
+        AsmCallLbl('__print_str');
+      End
+      Else If UpCaseStr(CurTokStr) = 'SOURCE' Then
+      Begin
+        AsmMovRegMemAbs(R_EAX, AsmDataVA('@ERRSRC_PTR'));
+        AsmMovRegMemAbs(R_EDX, AsmDataVA('@ERRSRC_LEN'));
+        AsmCallLbl('__print_str');
+      End
+      Else
+        FatalError('Palier J: Err.' + CurTokStr + ' inconnu');
+      LexNextToken;
+    End
     Else
     Begin
       CGCParseExpr;
@@ -17610,6 +17744,263 @@ End;
 { Exit For / Exit Do / Exit Sub                                 }
 { ------------------------------------------------------------ }
 
+Procedure CGCParseGoto;
+Var Nm : TString;
+Begin
+  LexNextToken;          { eat "GoTo" }
+  If CurTokType <> TOK_IDENT Then
+    FatalError('Palier J: nom de label attendu apres GoTo (ligne ' +
+               ItoS(CurTokLine) + ')');
+  Nm := CurTokStr;
+  LexNextToken;
+  AsmJmpLbl(CGCUserLabel(Nm));
+End;
+
+{ Palier J phase 6 : Open "filename" For Input As #N                  }
+{ Stub minimal : appelle CreateFileA(GENERIC_READ, ., OPEN_EXISTING,  }
+{ FILE_ATTRIBUTE_NORMAL). Si retour = -1, Err.Number=53 et dispatch.  }
+{ Sinon, CloseHandle immediatement (existence verifiee) ; le N est    }
+{ accepte mais ignore.                                                 }
+Procedure CGCParseOpen;
+Var LOk : TString;
+Begin
+  LexNextToken;          { eat "Open" }
+  CGCParseExpr;          { EAX = ptr filename }
+  AsmPushReg(R_EAX);     { sauvegarder ptr filename pour CreateFileA }
+  { Skip tokens jusqu apres "As #N" : For Input | Output | Append etc }
+  While (CurTokType <> TOK_NEWLINE) And (CurTokType <> TOK_EOF) And
+        (Not ((CurTokType = TOK_KEYWORD) And (CurTokNum = KW_AS))) Do
+    LexNextToken;
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_AS) Then
+    LexNextToken;
+  { Optionnel : '#' suivi du numero }
+  If CurTokType = TOK_HASH Then LexNextToken;
+  CGCParseExpr;          { evalue le N et ignore }
+  { Pop ptr filename dans EAX (restaure depuis le PUSH initial) }
+  AsmPopReg(R_EAX);
+  { CreateFileA(filename, GENERIC_READ=0x80000000, share=0, sec=0,    }
+  { OPEN_EXISTING=3, FILE_ATTRIBUTE_NORMAL=0x80, hTpl=0)              }
+  AsmMovRegImm(R_ECX, 0);
+  AsmPushReg(R_ECX);                  { hTemplateFile = 0           }
+  AsmMovRegImm(R_ECX, $80);
+  AsmPushReg(R_ECX);                  { dwFlagsAndAttributes        }
+  AsmMovRegImm(R_ECX, 3);
+  AsmPushReg(R_ECX);                  { dwCreationDisposition       }
+  AsmMovRegImm(R_ECX, 0);
+  AsmPushReg(R_ECX);                  { lpSecurityAttributes = NULL }
+  AsmMovRegImm(R_ECX, 0);
+  AsmPushReg(R_ECX);                  { dwShareMode = 0             }
+  AsmMovRegImm(R_ECX, LongInt($80000000));
+  AsmPushReg(R_ECX);                  { dwDesiredAccess GENERIC_READ}
+  AsmPushReg(R_EAX);                  { lpFileName                  }
+  AsmCallIAT(4);                      { CreateFileA                 }
+  { EAX = handle (ou -1 = INVALID_HANDLE_VALUE)                      }
+  LOk := CGCNewLabel('opnok');
+  AsmCmpRegImm(R_EAX, -1);
+  AsmJcc(CC_NE, LOk);
+  { Failed : Err.Number=53, Description, dispatch }
+  AsmMovRegImm(R_EAX, 53);
+  AsmMovMemAbsReg(AsmDataVA('@ERRNUM'), R_EAX);
+  CGCEmitSetStrLit('@ERRDESC_PTR', '@ERRDESC_LEN',
+                   'File not found');
+  CGCEmitSetStrLit('@ERRSRC_PTR', '@ERRSRC_LEN', '');
+  CGCEmitErrDispatch;
+  AsmLabel(LOk);
+  { Succes : on referme immediatement (stub : on n implemente pas    }
+  { la lecture). EAX a deja le handle.                                }
+  AsmPushReg(R_EAX);
+  AsmCallIAT(5);                      { CloseHandle                 }
+End;
+
+{ Palier J phase 6 : Close [#N] -> no-op (consomme le N s il est la). }
+Procedure CGCParseClose;
+Begin
+  LexNextToken;          { eat "Close" }
+  If CurTokType = TOK_HASH Then LexNextToken;
+  If (CurTokType <> TOK_NEWLINE) And (CurTokType <> TOK_EOF) And
+     (CurTokType <> TOK_COLON) Then
+    CGCParseExpr;        { evalue puis ignore }
+End;
+
+{ Reset Err.Number = 0, Description = "", Source = "" }
+Procedure CGCEmitErrClear;
+Begin
+  AsmMovRegImm(R_EAX, 0);
+  AsmMovMemAbsReg(AsmDataVA('@ERRNUM'),      R_EAX);
+  AsmMovMemAbsReg(AsmDataVA('@ERRDESC_PTR'), R_EAX);
+  AsmMovMemAbsReg(AsmDataVA('@ERRDESC_LEN'), R_EAX);
+  AsmMovMemAbsReg(AsmDataVA('@ERRSRC_PTR'),  R_EAX);
+  AsmMovMemAbsReg(AsmDataVA('@ERRSRC_LEN'),  R_EAX);
+End;
+
+{ Charger un litteral chaine et stocker ptr/len dans deux symboles. }
+{ Si CurTok n est pas une chaine, on stocke ptr=0 / len=0.           }
+Procedure CGCEmitStoreStrLit(Const PtrSym, LenSym : TString);
+Var Lit : Integer;
+Begin
+  If CurTokType = TOK_STRING Then
+  Begin
+    Lit := StrAddLit(CurTokStr);
+    AsmMovRegStrRVA(R_EAX, Lit);
+    AsmMovMemAbsReg(AsmDataVA(PtrSym), R_EAX);
+    AsmMovRegImm(R_EAX, Length(CurTokStr));
+    AsmMovMemAbsReg(AsmDataVA(LenSym), R_EAX);
+    LexNextToken;
+  End
+  Else
+  Begin
+    AsmMovRegImm(R_EAX, 0);
+    AsmMovMemAbsReg(AsmDataVA(PtrSym), R_EAX);
+    AsmMovMemAbsReg(AsmDataVA(LenSym), R_EAX);
+    CGCParseExpr;     { evalue puis ignore (compat) }
+  End;
+End;
+
+{ Palier J : emet l assignation des slots PtrSym/LenSym a une chaine  }
+{ litterale fournie au compile-time (ex: "Division by zero").         }
+Procedure CGCEmitSetStrLit(Const PtrSym, LenSym, Msg : TString);
+Var Lit : Integer;
+Begin
+  If Msg = '' Then
+  Begin
+    AsmMovRegImm(R_EAX, 0);
+    AsmMovMemAbsReg(AsmDataVA(PtrSym), R_EAX);
+    AsmMovMemAbsReg(AsmDataVA(LenSym), R_EAX);
+  End
+  Else
+  Begin
+    Lit := StrAddLit(Msg);
+    AsmMovRegStrRVA(R_EAX, Lit);
+    AsmMovMemAbsReg(AsmDataVA(PtrSym), R_EAX);
+    AsmMovRegImm(R_EAX, Length(Msg));
+    AsmMovMemAbsReg(AsmDataVA(LenSym), R_EAX);
+  End;
+End;
+
+{ Palier J : emission inline du dispatch d erreur. Branche selon      }
+{ l etat statique CGCErrHandler / CGCErrResumeNext courant.            }
+Procedure CGCEmitErrDispatch;
+Begin
+  If CGCErrResumeNext Then
+    AsmJmpMemAbs(AsmDataVA('@RESUME_ADDR'))
+  Else If CGCErrHandler <> '' Then
+  Begin
+    { Sauvegarde adresse de continuation pour "Resume Next" }
+    AsmMovRegMemAbs(R_EAX, AsmDataVA('@RESUME_ADDR'));
+    AsmMovMemAbsReg(AsmDataVA('@RESUME_SAVED'), R_EAX);
+    AsmJmpLbl(CGCErrHandler);
+  End
+  Else
+  Begin
+    { Pas de handler : abort avec ExitProcess(Err.Number) }
+    AsmMovRegMemAbs(R_EAX, AsmDataVA('@ERRNUM'));
+    AsmPushReg(R_EAX);
+    AsmCallIAT(0);     { ExitProcess }
+    AsmInt3;
+  End;
+End;
+
+{ Palier J : On Error GoTo LABEL | On Error GoTo 0 | On Error Resume Next }
+Procedure CGCParseOnError;
+Var Nm : TString;
+Begin
+  LexNextToken;       { eat "On" }
+  If Not CGCIsKW(KW_ERROR) Then
+    FatalError('Palier J: "Error" attendu apres "On" (ligne ' +
+               ItoS(CurTokLine) + ')');
+  LexNextToken;       { eat "Error" }
+  If CGCIsKW(KW_GOTO) Then
+  Begin
+    LexNextToken;
+    If (CurTokType = TOK_INTEGER) And (CurTokNum = 0) Then
+    Begin
+      LexNextToken;
+      CGCErrHandler    := '';
+      CGCErrResumeNext := False;
+      Exit;
+    End;
+    If CurTokType <> TOK_IDENT Then
+      FatalError('Palier J: nom de label ou 0 attendu apres "GoTo"');
+    Nm := CurTokStr;
+    LexNextToken;
+    CGCErrHandler    := CGCUserLabel(Nm);
+    CGCErrResumeNext := False;
+    Exit;
+  End;
+  If CGCIsKW(KW_RESUME) Then
+  Begin
+    LexNextToken;
+    If (CurTokType = TOK_IDENT) And (UpCaseStr(CurTokStr) = 'NEXT') Then
+      LexNextToken
+    Else If CGCIsKW(KW_NEXT) Then
+      LexNextToken
+    Else
+      FatalError('Palier J: "Next" attendu apres "On Error Resume"');
+    CGCErrHandler    := '';
+    CGCErrResumeNext := True;
+    Exit;
+  End;
+  FatalError('Palier J: forme de "On Error" inconnue');
+End;
+
+{ Palier J : Resume [Next] -> JMP [@RESUME_SAVED] (Phase 5)            }
+Procedure CGCParseResume;
+Begin
+  LexNextToken;       { eat "Resume" }
+  If (CurTokType = TOK_IDENT) And (UpCaseStr(CurTokStr) = 'NEXT') Then
+    LexNextToken
+  Else If CGCIsKW(KW_NEXT) Then
+    LexNextToken;
+  AsmJmpMemAbs(AsmDataVA('@RESUME_SAVED'));
+End;
+
+{ Palier J : Err.Method args                                          }
+Procedure CGCParseErrStmt;
+Var Method : TString;
+Begin
+  LexNextToken;          { eat "Err" }
+  If CurTokType <> TOK_DOT Then
+    FatalError('Palier J: "." attendu apres Err');
+  LexNextToken;
+  If (CurTokType <> TOK_IDENT) And (CurTokType <> TOK_KEYWORD) Then
+    FatalError('Palier J: methode Err attendue');
+  Method := UpCaseStr(CurTokStr);
+  LexNextToken;
+
+  If Method = 'CLEAR' Then
+  Begin
+    CGCEmitErrClear;
+    Exit;
+  End;
+
+  If Method = 'RAISE' Then
+  Begin
+    { Err.Raise Number [, Source [, Description]] }
+    CGCParseExpr;          { EAX = Number }
+    AsmMovMemAbsReg(AsmDataVA('@ERRNUM'), R_EAX);
+    { Reset desc/source par defaut }
+    AsmMovRegImm(R_EAX, 0);
+    AsmMovMemAbsReg(AsmDataVA('@ERRSRC_PTR'),  R_EAX);
+    AsmMovMemAbsReg(AsmDataVA('@ERRSRC_LEN'),  R_EAX);
+    AsmMovMemAbsReg(AsmDataVA('@ERRDESC_PTR'), R_EAX);
+    AsmMovMemAbsReg(AsmDataVA('@ERRDESC_LEN'), R_EAX);
+    If CurTokType = TOK_COMMA Then
+    Begin
+      LexNextToken;
+      CGCEmitStoreStrLit('@ERRSRC_PTR', '@ERRSRC_LEN');
+      If CurTokType = TOK_COMMA Then
+      Begin
+        LexNextToken;
+        CGCEmitStoreStrLit('@ERRDESC_PTR', '@ERRDESC_LEN');
+      End;
+    End;
+    CGCEmitErrDispatch;
+    Exit;
+  End;
+
+  FatalError('Palier J: Err.' + Method + ' non supporte');
+End;
+
 Procedure CGCParseExitStmt;
 Var Idx : Integer; Kind : Integer;
 Begin
@@ -17642,7 +18033,7 @@ Begin
   AsmJmpLbl(CGCBreakLbl[Idx]);
 End;
 
-Procedure CGCParseStatement;
+Procedure CGCParseStmtBody;
 Var Nm : TString; PI : Integer; AIdx : Integer;
 Begin
   CGCSkipNewlines;
@@ -17662,6 +18053,18 @@ Begin
     CGCParseDo
   Else If CGCIsKW(KW_EXIT) Then
     CGCParseExitStmt
+  Else If CGCIsKW(KW_GOTO) Then
+    CGCParseGoto
+  Else If CGCIsKW(KW_ON) Then
+    CGCParseOnError
+  Else If CGCIsKW(KW_RESUME) Then
+    CGCParseResume
+  Else If CGCIsKW(KW_ERR) Then
+    CGCParseErrStmt
+  Else If CGCIsKW(KW_OPEN) Then
+    CGCParseOpen
+  Else If CGCIsKW(KW_CLOSE) Then
+    CGCParseClose
   Else If (CurTokType = TOK_IDENT) And
           (UpCaseStr(CurTokStr) = 'EXITPROCESS') Then
     CGCParseExitProcess
@@ -17719,12 +18122,42 @@ Begin
     Else
     Begin
       LexNextToken;
+      { Palier J : label VB en debut d instruction (NAME:) }
+      If CurTokType = TOK_COLON Then
+      Begin
+        AsmLabel(CGCUserLabel(Nm));
+        LexNextToken;
+        Exit;
+      End;
       CGCParseAssign(Nm);
     End;
   End
   Else
     FatalError('Palier C: instruction inattendue "' + CurTokStr +
                '" (ligne ' + ItoS(CurTokLine) + ')');
+End;
+
+{ Palier J phase 5 : wrapper qui place @RESUME_ADDR avant chaque       }
+{ instruction quand un handler ou Resume Next est actif. Le label     }
+{ Lresume est emis apres l instruction et constitue le point de       }
+{ continuation pour Resume Next.                                       }
+Procedure CGCParseStatement;
+Var Lresume : TString;
+    NeedRsm : Boolean;
+Begin
+  NeedRsm := (CGCErrHandler <> '') Or CGCErrResumeNext;
+  { Ne pas instrumenter "On Error" lui-meme : changement d etat. }
+  If NeedRsm And ((CurTokType = TOK_KEYWORD) And
+                  ((CurTokNum = KW_ON) Or (CurTokNum = KW_RESUME))) Then
+    NeedRsm := False;
+  If NeedRsm Then
+  Begin
+    Lresume := CGCNewLabel('rsm');
+    AsmMovMemAbsImmLbl(AsmDataVA('@RESUME_ADDR'), Lresume);
+  End;
+  CGCParseStmtBody;
+  If NeedRsm Then
+    AsmLabel(Lresume);
 End;
 
 { ------------------------------------------------------------ }
@@ -17883,6 +18316,8 @@ Var
   SavedRetOfs  : LongInt;
   SavedFrameIx : Integer;
   SavedArrCnt  : Integer;
+  SavedErrHnd  : TString;
+  SavedErrRsm  : Boolean;
 Begin
   { Sauvegarder l etat courant }
   SavedLocCnt  := CGCLocalCnt;
@@ -17893,12 +18328,16 @@ Begin
   SavedRetOfs  := CGCRetvalOfs;
   SavedFrameIx := CGCFrameInstrIdx;
   SavedArrCnt  := CGCArrayCnt;
+  SavedErrHnd  := CGCErrHandler;
+  SavedErrRsm  := CGCErrResumeNext;
 
   CGCLocalCnt  := 0;
   CGCFrameSize := 0;
   CGCExitDone  := False;
   CGCCurProc   := PIdx;
   CGCArrayCnt  := 0;
+  CGCErrHandler    := '';
+  CGCErrResumeNext := False;
   ExitLab      := CGCNewLabel('procExit');
   CGCExitLabel := ExitLab;
   CGCRetvalOfs := 0;
@@ -17964,6 +18403,8 @@ Begin
   CGCRetvalOfs     := SavedRetOfs;
   CGCFrameInstrIdx := SavedFrameIx;
   CGCArrayCnt      := SavedArrCnt;
+  CGCErrHandler    := SavedErrHnd;
+  CGCErrResumeNext := SavedErrRsm;
 End;
 
 { ------------------------------------------------------------ }
@@ -18114,6 +18555,8 @@ Begin
   CGCExitLabel     := '';
   CGCRetvalOfs     := 0;
   CGCArrayCnt      := 0;
+  CGCErrHandler    := '';
+  CGCErrResumeNext := False;
 
   { Imports pre-enregistres :                                  }
   {   func 0 = kernel32.ExitProcess (toujours present)         }
@@ -18125,10 +18568,21 @@ Begin
   { Palier F : runtime console pour Print / Debug.Print         }
   ImpAddFunc(DK, 'GetStdHandle');
   ImpAddFunc(DK, 'WriteFile');
+  { Palier J phase 6 : Open / Close minimal                     }
+  ImpAddFunc(DK, 'CreateFileA');
+  ImpAddFunc(DK, 'CloseHandle');
 
   { Globals .data du runtime Print }
   AsmDefineData('@HSTDOUT',  4);
   AsmDefineData('@PRINTBUF', 16);
+  { Palier J : objet Err global }
+  AsmDefineData('@ERRNUM',      4);
+  AsmDefineData('@ERRDESC_PTR', 4);
+  AsmDefineData('@ERRDESC_LEN', 4);
+  AsmDefineData('@ERRSRC_PTR',  4);
+  AsmDefineData('@ERRSRC_LEN',  4);
+  AsmDefineData('@RESUME_ADDR', 4);
+  AsmDefineData('@RESUME_SAVED', 4);
   { CRLF en .rdata via le pool de litteraux }
   CGCCRLFLit := StrAddLit(Chr(13) + Chr(10));
 
