@@ -1326,6 +1326,8 @@ Const
   KW_LOF        = 182;    { LOF (taille de fichier)                  }
   KW_LOC        = 183;    { Loc (position courante)                  }
   KW_FREEFILE   = 184;    { FreeFile (prochain numero disponible)    }
+  KW_OUTPUT     = 185;    { Output (mode Open For Output)            }
+  KW_APPEND     = 186;    { Append (mode Open For Append)            }
 
   { Token special pour mot-cle reconnu }
   TOK_KEYWORD   = 50;     { mot-cle VB6 reconnu                     }
@@ -1343,6 +1345,8 @@ Begin
   U := UpCaseStr(S);
   { Mots-cles du langage }
   If      U = 'AND'        Then IsKeyword := KW_AND
+  Else If U = 'APPEND'     Then IsKeyword := KW_APPEND
+  Else If U = 'EOF'        Then IsKeyword := KW_EOF2
   Else If U = 'AS'         Then IsKeyword := KW_AS
   Else If U = 'BOOLEAN'    Then IsKeyword := KW_BOOLEAN
   Else If U = 'BYREF'      Then IsKeyword := KW_BYREF
@@ -1409,6 +1413,7 @@ Begin
   Else If U = 'LEN'        Then IsKeyword := KW_LEN
   Else If U = 'LET'        Then IsKeyword := KW_LET
   Else If U = 'LIKE'       Then IsKeyword := KW_LIKE
+  Else If U = 'LINE'       Then IsKeyword := KW_LINE
   Else If U = 'LONG'       Then IsKeyword := KW_LONG
   Else If U = 'LOOP'       Then IsKeyword := KW_LOOP
   Else If U = 'LSET'       Then IsKeyword := KW_LSET
@@ -1425,6 +1430,7 @@ Begin
   Else If U = 'OPTION'     Then IsKeyword := KW_OPTION
   Else If U = 'OPTIONAL'   Then IsKeyword := KW_OPTIONAL
   Else If U = 'OR'         Then IsKeyword := KW_OR
+  Else If U = 'OUTPUT'     Then IsKeyword := KW_OUTPUT
   Else If U = 'PARAMARRAY' Then IsKeyword := KW_PARAMARRAY
   Else If U = 'PRESERVE'   Then IsKeyword := KW_PRESERVE
   Else If U = 'PRINT'      Then IsKeyword := KW_PRINT
@@ -1610,6 +1616,9 @@ Begin
     KW_OPTION     : KeywordName := 'Option';
     KW_OPTIONAL   : KeywordName := 'Optional';
     KW_OR         : KeywordName := 'Or';
+    KW_OUTPUT     : KeywordName := 'Output';
+    KW_APPEND     : KeywordName := 'Append';
+    KW_EOF2       : KeywordName := 'EOF';
     KW_PARAMARRAY : KeywordName := 'ParamArray';
     KW_PRESERVE   : KeywordName := 'Preserve';
     KW_PRINT      : KeywordName := 'Print';
@@ -15361,6 +15370,10 @@ Const
   IK_JMP_MEMABS         = 43;   { JMP DWORD PTR [abs32]          }
   IK_MOV_MEMABS_IMM_LBL = 44;   { MOV DWORD PTR [Imm], lblVA32   }
 
+  { ----- FILEIO : acces memoire indirect via registre ---------- }
+  IK_MOV_MEMREG_REG     = 45;   { MOV [r32], r32  (R1=mem,R2=src)}
+  IK_MOV_REG_MEMREG     = 46;   { MOV r32, [r32]  (R1=dst,R2=mem)}
+
   { Sous-codes ALU (champ reg du ModR/M pour formes /r) }
   ALU_ADD = 0;
   ALU_OR  = 1;
@@ -15773,6 +15786,12 @@ Begin AsmAddInstr(IK_JMP_MEMABS, 0, 0, Abs, -1); End;
 Procedure AsmMovMemAbsImmLbl(Abs : LongInt; Const N : TString);
 Begin AsmAddInstr(IK_MOV_MEMABS_IMM_LBL, 0, 0, Abs, AsmGetOrAddLabel(N)); End;
 
+Procedure AsmMovMemRegReg(MemR, SrcR : Integer);
+Begin AsmAddInstr(IK_MOV_MEMREG_REG, MemR, SrcR, 0, -1); End;
+
+Procedure AsmMovRegMemReg(DstR, MemR : Integer);
+Begin AsmAddInstr(IK_MOV_REG_MEMREG, DstR, MemR, 0, -1); End;
+
 Procedure AsmLeaRegMemBP(R : Integer; Disp : LongInt);
 Begin AsmAddInstr(IK_LEA_REG_MEMBP, R, 0, Disp, -1); End;
 
@@ -15909,6 +15928,8 @@ Begin
     IK_MOV_MEMBP_IDX4_REG : AsmInstrSize := 7;
     IK_JMP_MEMABS      : AsmInstrSize := 6;
     IK_MOV_MEMABS_IMM_LBL : AsmInstrSize := 10;
+    IK_MOV_MEMREG_REG  : AsmInstrSize := 2;
+    IK_MOV_REG_MEMREG  : AsmInstrSize := 2;
   Else
     AsmInstrSize := 0;
   End;
@@ -16315,6 +16336,23 @@ Begin
           End;
           AsmEmitDWord(Target);
         End;
+
+      IK_MOV_MEMREG_REG:
+        Begin
+          { 89 /r mod=00 reg=R2(src) rm=R1(memreg).                  }
+          { R1 != ESP(4), != EBP(5) sinon SIB/disp requis.           }
+          AsmEmitByte($89);
+          AsmEmitByte(((AsmInstrs[I].R2 And 7) Shl 3) Or
+                      (AsmInstrs[I].R1 And 7));
+        End;
+
+      IK_MOV_REG_MEMREG:
+        Begin
+          { 8B /r mod=00 reg=R1(dst) rm=R2(memreg).                  }
+          AsmEmitByte($8B);
+          AsmEmitByte(((AsmInstrs[I].R1 And 7) Shl 3) Or
+                      (AsmInstrs[I].R2 And 7));
+        End;
     End;
   End;
 End;
@@ -16357,6 +16395,7 @@ Type
   TCGCLocal = Record
     Name : TString;
     Ofs  : LongInt;     { offset depuis EBP : negatif (local) ou positif (param) }
+    Kind : Integer;     { 0=Long (4 octets), 1=String (4 longueur + 256 buffer) }
   End;
 
   TCGCProc = Record
@@ -16414,7 +16453,24 @@ Begin
   CGCFrameSize := CGCFrameSize + 4;
   CGCLocals[CGCLocalCnt].Name := U;
   CGCLocals[CGCLocalCnt].Ofs  := -CGCFrameSize;
+  CGCLocals[CGCLocalCnt].Kind := 0;
   CGCAddLocal := -CGCFrameSize;
+  Inc(CGCLocalCnt);
+End;
+
+{ Allouer une variable String : 4 octets longueur + 256 octets data. }
+{ Ofs retourne pointe sur la longueur ; data en [Ofs+4..Ofs+259].     }
+Function CGCAddLocalString(Const N : TString) : LongInt;
+Var U : TString;
+Begin
+  U := UpCaseStr(N);
+  If CGCLocalCnt >= CGC_MAX_LOCAL Then
+    FatalError('Palier C: trop de variables locales');
+  CGCFrameSize := CGCFrameSize + 260;
+  CGCLocals[CGCLocalCnt].Name := U;
+  CGCLocals[CGCLocalCnt].Ofs  := -CGCFrameSize;
+  CGCLocals[CGCLocalCnt].Kind := 1;
+  CGCAddLocalString := -CGCFrameSize;
   Inc(CGCLocalCnt);
 End;
 
@@ -16508,6 +16564,7 @@ Begin
     FatalError('Palier G: trop de parametres');
   CGCLocals[CGCLocalCnt].Name := U;
   CGCLocals[CGCLocalCnt].Ofs  := Ofs;
+  CGCLocals[CGCLocalCnt].Kind := 0;
   Inc(CGCLocalCnt);
 End;
 
@@ -16535,6 +16592,20 @@ Begin
   If CGCIsKW(KW_AS) Then
   Begin
     LexNextToken;
+    If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then
+      LexNextToken;
+  End;
+End;
+
+{ Variante : retourne 1 si "As String" detecte, 0 sinon. }
+Function CGCEatTypeAnnotKind : Integer;
+Begin
+  CGCEatTypeAnnotKind := 0;
+  If CGCIsKW(KW_AS) Then
+  Begin
+    LexNextToken;
+    If CGCIsKW(KW_STRING) Then
+      CGCEatTypeAnnotKind := 1;
     If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then
       LexNextToken;
   End;
@@ -16619,9 +16690,25 @@ Begin
   End
   Else If CGCIsKW(KW_FREEFILE) Then
   Begin
-    { Palier J phase 6 : FreeFile -> 1 (stub) }
+    { FILEIO : scanner @FILEHND pour le premier slot N >= 1 dont      }
+    { le contenu vaut -1. Retourne EAX = N (1..255), ou 0 si plein.  }
     LexNextToken;
-    AsmMovRegImm(R_EAX, 1);
+    AsmCallLbl('__file_freefile');
+  End
+  Else If CGCIsKW(KW_EOF2) Then
+  Begin
+    { FILEIO : EOF(N) -> 0/-1 (TRUE = -1) selon ReadFile peek.        }
+    LexNextToken;
+    If CurTokType <> TOK_LPAREN Then
+      FatalError('Palier FILEIO: "(" attendue apres EOF (ligne ' +
+                 ItoS(CurTokLine) + ')');
+    LexNextToken;
+    CGCParseExpr;          { EAX = N }
+    If CurTokType <> TOK_RPAREN Then
+      FatalError('Palier FILEIO: ")" attendue dans EOF (ligne ' +
+                 ItoS(CurTokLine) + ')');
+    LexNextToken;
+    AsmCallLbl('__file_eof');
   End
   Else If CGCIsKW(KW_ERR) Then
   Begin
@@ -16902,7 +16989,7 @@ Begin
     (CurTokType = TOK_STRING)  Or (CurTokType = TOK_LPAREN) Or
     (CurTokType = TOK_IDENT)   Or (CurTokType = TOK_MINUS)  Or
     CGCIsKW(KW_NOT) Or CGCIsKW(KW_CSTR) Or CGCIsKW(KW_ERR) Or
-    CGCIsKW(KW_FREEFILE);
+    CGCIsKW(KW_FREEFILE) Or CGCIsKW(KW_EOF2);
 End;
 
 Procedure CGCParseStatementBlock(Const StopKW1, StopKW2 : Integer);
@@ -16994,8 +17081,10 @@ Begin
     Exit;
   End;
 
-  CGCEatTypeAnnot;
-  CGCAddLocal(Nm);
+  If CGCEatTypeAnnotKind = 1 Then
+    CGCAddLocalString(Nm)
+  Else
+    CGCAddLocal(Nm);
 End;
 
 { Palier H : ReDim NAME(N)  ou  ReDim NAME(Lo To Hi)                  }
@@ -17277,7 +17366,7 @@ Var
 Begin
   WrFile := ImpFindFunc('WriteFile');
   PBufVA := AsmDataVA('@PRINTBUF');
-  HOutVA := AsmDataVA('@HSTDOUT');
+  HOutVA := AsmDataVA('@CUROUT');
 
   { ----- __print_str(EAX = ptr, EDX = len) ----- }
   AsmLabel('__print_str');
@@ -17346,6 +17435,239 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
+{ FILEIO : helpers runtime pour Open/Close/Print#/Write#/Line   }
+{ Input/EOF.                                                    }
+{ ------------------------------------------------------------ }
+Procedure CGCEmitFileIOHelpers;
+Var
+  CrFile, ClFile, RdFile, SpFile : Integer;
+  HndVA, COutVA, HStdVA, BufVA, NRdVA, PkVA : LongInt;
+  L1, L2 : TString;
+Begin
+  CrFile := ImpFindFunc('CreateFileA');
+  ClFile := ImpFindFunc('CloseHandle');
+  RdFile := ImpFindFunc('ReadFile');
+  SpFile := ImpFindFunc('SetFilePointer');
+  HndVA  := AsmDataVA('@FILEHND');
+  COutVA := AsmDataVA('@CUROUT');
+  HStdVA := AsmDataVA('@HSTDOUT');
+  BufVA  := AsmDataVA('@LINEBUF');
+  NRdVA  := AsmDataVA('@NREAD');
+  PkVA   := AsmDataVA('@PEEKBUF');
+  If CrFile = 0 Then ;     { silence unused warnings }
+  If ClFile = 0 Then ;
+  If SpFile = 0 Then ;
+
+  { ----- __fileio_init(EAX=base, ECX=count) : remplit DWords avec -1 ----- }
+  AsmLabel('__fileio_init');
+  AsmPushReg(R_EBX);
+  AsmMovRegReg(R_EBX, R_EAX);          { ebx = ptr courant }
+  L1 := CGCNewLabel('fioiL');
+  L2 := CGCNewLabel('fioiD');
+  AsmLabel(L1);
+  AsmTestRegReg(R_ECX, R_ECX);
+  AsmJcc(CC_E, L2);
+  AsmMovRegImm(R_EAX, -1);
+  AsmMovMemRegReg(R_EBX, R_EAX);       { mov [ebx], eax }
+  AsmAddRegImm(R_EBX, 4);
+  AsmDecReg(R_ECX);
+  AsmJmpLbl(L1);
+  AsmLabel(L2);
+  AsmPopReg(R_EBX);
+  AsmRet;
+
+  { ----- __file_slot_addr(EAX=N) -> EAX = adresse de FILEHND[N] ----- }
+  AsmLabel('__file_slot_addr');
+  AsmShlRegImm(R_EAX, 2);              { *4 }
+  AsmAddRegImm(R_EAX, HndVA);          { + base }
+  AsmRet;
+
+  { ----- __file_freefile : EAX = premier slot 1..255 dont [slot]=-1 (ou 0)}
+  AsmLabel('__file_freefile');
+  AsmPushReg(R_EBX);
+  AsmMovRegImm(R_ECX, 1);              { ecx = N (1-based) }
+  L1 := CGCNewLabel('ffL');
+  L2 := CGCNewLabel('ffD');
+  AsmLabel(L1);
+  AsmCmpRegImm(R_ECX, 256);
+  AsmJcc(CC_GE, L2);
+  AsmMovRegReg(R_EBX, R_ECX);
+  AsmShlRegImm(R_EBX, 2);
+  AsmAddRegImm(R_EBX, HndVA);
+  AsmMovRegMemReg(R_EAX, R_EBX);       { eax = [slot] }
+  AsmCmpRegImm(R_EAX, -1);
+  AsmJcc(CC_E, L2);                    { libre -> sortir }
+  AsmIncReg(R_ECX);
+  AsmJmpLbl(L1);
+  AsmLabel(L2);
+  AsmCmpRegImm(R_ECX, 256);
+  L1 := CGCNewLabel('ffOk');
+  AsmJcc(CC_L, L1);
+  AsmMovRegImm(R_ECX, 0);              { plein -> 0 }
+  AsmLabel(L1);
+  AsmMovRegReg(R_EAX, R_ECX);
+  AsmPopReg(R_EBX);
+  AsmRet;
+
+  { ----- __file_eof(EAX=N) : EOF -> EAX = -1 (TRUE) sinon 0           ----- }
+  { Strategie : ReadFile(handle, @PEEKBUF, 1, @NREAD, NULL) ;          }
+  { Si nread=0 alors -1, sinon SetFilePointer(handle,-1,NULL,FILE_CUR=1)}
+  AsmLabel('__file_eof');
+  AsmCallLbl('__file_slot_addr');      { eax = &slot }
+  AsmMovRegMemReg(R_EAX, R_EAX);       { eax = handle }
+  AsmPushReg(R_EAX);                   { sauve handle }
+  { ReadFile(handle, &PEEKBUF, 1, &NREAD, NULL) }
+  AsmPushImm(0);                       { lpOverlapped }
+  AsmPushImm(NRdVA);                   { lpNumberOfBytesRead }
+  AsmPushImm(1);                       { nNumberOfBytesToRead }
+  AsmPushImm(PkVA);                    { lpBuffer }
+  AsmPushReg(R_EAX);                   { hFile }
+  AsmCallIAT(RdFile);
+  AsmMovRegMemAbs(R_EAX, NRdVA);
+  AsmPopReg(R_ECX);                    { restaure handle }
+  AsmTestRegReg(R_EAX, R_EAX);
+  L1 := CGCNewLabel('eofY');
+  AsmJcc(CC_E, L1);                    { nread = 0 -> TRUE }
+  { Pas EOF : reculer le pointeur de 1 octet }
+  AsmPushImm(1);                       { dwMoveMethod = FILE_CURRENT }
+  AsmPushImm(0);                       { lpDistanceToMoveHigh = NULL }
+  AsmPushImm(-1);                      { lDistanceToMove = -1 }
+  AsmPushReg(R_ECX);                   { hFile }
+  AsmCallIAT(SpFile);
+  AsmMovRegImm(R_EAX, 0);              { FALSE }
+  L2 := CGCNewLabel('eofD');
+  AsmJmpLbl(L2);
+  AsmLabel(L1);
+  AsmMovRegImm(R_EAX, -1);             { TRUE }
+  AsmLabel(L2);
+  AsmRet;
+
+  { ----- __file_setout(EAX=N) : @CUROUT := FILEHND[N] (sauve ancien) ----- }
+  { Convention : empile l ancien @CUROUT puis le remplace.            }
+  { Le retour pop l adresse de retour, donc on utilise une autre      }
+  { strategie : sauvegarder dans EBX (caller-saved par convention     }
+  { interne ici : non utilise par les emetteurs Print).                }
+  AsmLabel('__file_setout');
+  AsmCallLbl('__file_slot_addr');
+  AsmMovRegMemReg(R_EAX, R_EAX);       { eax = handle }
+  AsmMovMemAbsReg(COutVA, R_EAX);
+  AsmRet;
+
+  { ----- __file_resetout : @CUROUT := @HSTDOUT                       ----- }
+  AsmLabel('__file_resetout');
+  AsmMovRegMemAbs(R_EAX, HStdVA);
+  AsmMovMemAbsReg(COutVA, R_EAX);
+  AsmRet;
+
+  { ----- __file_close(EAX=N) : CloseHandle(FILEHND[N]) ; FILEHND[N]:=-1   }
+  AsmLabel('__file_close');
+  AsmPushReg(R_EAX);                   { sauve N }
+  AsmCallLbl('__file_slot_addr');      { eax = &slot }
+  AsmPushReg(R_EAX);                   { sauve &slot }
+  AsmMovRegMemReg(R_EAX, R_EAX);       { handle }
+  AsmCmpRegImm(R_EAX, -1);
+  L1 := CGCNewLabel('clSk');
+  AsmJcc(CC_E, L1);
+  AsmPushReg(R_EAX);
+  AsmCallIAT(ClFile);
+  AsmLabel(L1);
+  AsmPopReg(R_ECX);                    { ecx = &slot }
+  AsmMovRegImm(R_EAX, -1);
+  AsmMovMemRegReg(R_ECX, R_EAX);       { slot := -1 }
+  AsmPopReg(R_EAX);                    { restaure N (inutile) }
+  AsmRet;
+
+  { ----- __linebuf_read(EAX=N) : lit ligne dans @LINEBUF, @LINEBUF_LEN}
+  { Lecture caractere par caractere via ReadFile jusqu a \n ou EOF.    }
+  AsmLabel('__linebuf_read');
+  AsmCallLbl('__file_slot_addr');
+  AsmMovRegMemReg(R_EAX, R_EAX);       { eax = handle }
+  AsmPushReg(R_EBX);
+  AsmPushReg(R_ESI);
+  AsmMovRegReg(R_ESI, R_EAX);          { esi = handle }
+  AsmMovRegImm(R_EBX, 0);              { ebx = longueur courante }
+  L1 := CGCNewLabel('lrL');
+  L2 := CGCNewLabel('lrD');
+  AsmLabel(L1);
+  AsmCmpRegImm(R_EBX, 256);
+  AsmJcc(CC_GE, L2);                   { buffer plein -> sortir }
+  { ReadFile(esi, @LINEBUF + ebx, 1, @NREAD, NULL) }
+  AsmPushImm(0);
+  AsmPushImm(NRdVA);
+  AsmPushImm(1);
+  AsmMovRegImm(R_EAX, BufVA);
+  AsmAddRegReg(R_EAX, R_EBX);
+  AsmPushReg(R_EAX);
+  AsmPushReg(R_ESI);
+  AsmCallIAT(RdFile);
+  AsmTestRegReg(R_EAX, R_EAX);
+  AsmJcc(CC_E, L2);                    { ReadFile rate -> sortir }
+  AsmMovRegMemAbs(R_EAX, NRdVA);
+  AsmTestRegReg(R_EAX, R_EAX);
+  AsmJcc(CC_E, L2);                    { 0 octet lu -> EOF }
+  { Lit l octet a la position ebx pour tester \n / \r }
+  AsmMovRegImm(R_EAX, BufVA);
+  AsmAddRegReg(R_EAX, R_EBX);
+  AsmMovRegMemReg(R_ECX, R_EAX);
+  AsmAluRegImm(ALU_AND, R_ECX, $FF);
+  AsmCmpRegImm(R_ECX, 10);             { \n }
+  AsmJcc(CC_E, L2);                    { fin de ligne }
+  AsmCmpRegImm(R_ECX, 13);             { \r }
+  AsmJcc(CC_E, L1);                    { skip mais ne pas inc ebx }
+  AsmIncReg(R_EBX);                    { car valide -> avancer }
+  AsmJmpLbl(L1);
+  AsmLabel(L2);
+  AsmMovMemAbsReg(AsmDataVA('@LINEBUF_LEN'), R_EBX);
+  AsmPopReg(R_ESI);
+  AsmPopReg(R_EBX);
+  AsmRet;
+
+  { ----- __linebuf_copy_to_var(EAX = ptr to len-field of String var)   }
+  { Stocke @LINEBUF_LEN dans [EAX], puis copie 64 dwords (256 octets)  }
+  { de @LINEBUF dans [EAX+4..]                                         }
+  AsmLabel('__linebuf_copy_to_var');
+  AsmPushReg(R_EBX);
+  AsmPushReg(R_ESI);
+  AsmPushReg(R_EDI);
+  AsmMovRegReg(R_EBX, R_EAX);          { ebx = ptr len }
+  AsmMovRegMemAbs(R_EAX, AsmDataVA('@LINEBUF_LEN'));
+  AsmMovMemRegReg(R_EBX, R_EAX);       { [ebx] := len }
+  AsmMovRegReg(R_EDI, R_EBX);
+  AsmAddRegImm(R_EDI, 4);              { edi = ebx + 4 (dst data) }
+  AsmMovRegImm(R_ESI, AsmDataVA('@LINEBUF'));
+  AsmMovRegImm(R_ECX, 64);             { 64 dwords = 256 octets }
+  L1 := CGCNewLabel('lcL');
+  AsmLabel(L1);
+  AsmMovRegMemReg(R_EAX, R_ESI);
+  AsmMovMemRegReg(R_EDI, R_EAX);
+  AsmAddRegImm(R_ESI, 4);
+  AsmAddRegImm(R_EDI, 4);
+  AsmDecReg(R_ECX);
+  AsmJcc(CC_NE, L1);
+  AsmPopReg(R_EDI);
+  AsmPopReg(R_ESI);
+  AsmPopReg(R_EBX);
+  AsmRet;
+
+  { ----- __file_close_all : ferme tous les slots (1..255) -------- }
+  AsmLabel('__file_close_all');
+  AsmPushReg(R_EBX);
+  AsmMovRegImm(R_EBX, 1);
+  L1 := CGCNewLabel('clA');
+  L2 := CGCNewLabel('clD');
+  AsmLabel(L1);
+  AsmCmpRegImm(R_EBX, 256);
+  AsmJcc(CC_GE, L2);
+  AsmMovRegReg(R_EAX, R_EBX);
+  AsmCallLbl('__file_close');
+  AsmIncReg(R_EBX);
+  AsmJmpLbl(L1);
+  AsmLabel(L2);
+  AsmPopReg(R_EBX);
+  AsmRet;
+End;
+
+{ ------------------------------------------------------------ }
 { Palier F : Print / Debug.Print expr [, expr]...               }
 { Append CRLF a la fin (sauf si le terminateur est ;).          }
 { ------------------------------------------------------------ }
@@ -17353,6 +17675,8 @@ Procedure CGCParsePrint;
 Var
   Lit, Len  : Integer;
   Suppress  : Boolean;
+  IsFile    : Boolean;
+  LI        : Integer;
 Begin
   { Cas Debug.Print : token courant = KW_DEBUG.                }
   { Cas Print : token courant = KW_PRINT.                       }
@@ -17368,6 +17692,17 @@ Begin
   End
   Else
     LexNextToken;                      { eat Print }
+
+  { FILEIO : Print #N, ... -> rediriger vers FILEHND[N] }
+  IsFile := False;
+  If CurTokType = TOK_HASH Then
+  Begin
+    LexNextToken;
+    CGCParseExpr;          { EAX = N }
+    AsmCallLbl('__file_setout');
+    IsFile := True;
+    If CurTokType = TOK_COMMA Then LexNextToken;
+  End;
 
   Suppress := False;
 
@@ -17413,6 +17748,23 @@ Begin
         FatalError('Palier J: Err.' + CurTokStr + ' inconnu');
       LexNextToken;
     End
+    Else If CurTokType = TOK_IDENT Then
+    Begin
+      LI := CGCFindLocal(CurTokStr);
+      If (LI >= 0) And (CGCLocals[LI].Kind = 1) Then
+      Begin
+        { Variable String : EAX = ptr buffer, EDX = longueur }
+        AsmMovRegMemBP(R_EDX, CGCLocals[LI].Ofs);
+        AsmLeaRegMemBP(R_EAX, CGCLocals[LI].Ofs + 4);
+        AsmCallLbl('__print_str');
+        LexNextToken;
+      End
+      Else
+      Begin
+        CGCParseExpr;
+        AsmCallLbl('__print_long');
+      End;
+    End
     Else
     Begin
       CGCParseExpr;
@@ -17450,6 +17802,9 @@ Begin
     AsmMovRegImm(R_EDX, 2);
     AsmCallLbl('__print_str');
   End;
+
+  If IsFile Then
+    AsmCallLbl('__file_resetout');
 End;
 
 
@@ -17756,70 +18111,223 @@ Begin
   AsmJmpLbl(CGCUserLabel(Nm));
 End;
 
-{ Palier J phase 6 : Open "filename" For Input As #N                  }
-{ Stub minimal : appelle CreateFileA(GENERIC_READ, ., OPEN_EXISTING,  }
-{ FILE_ATTRIBUTE_NORMAL). Si retour = -1, Err.Number=53 et dispatch.  }
-{ Sinon, CloseHandle immediatement (existence verifiee) ; le N est    }
-{ accepte mais ignore.                                                 }
+{ FILEIO : Open "filename" For Input|Output|Append As [#] N            }
+{ Implementation reelle : CreateFileA, stocke handle dans              }
+{ FILEHND[N]. Si echec -> Err.Number=53.                                }
 Procedure CGCParseOpen;
-Var LOk : TString;
+Var
+  LOk    : TString;
+  Mode   : Integer;       { 0=Input, 1=Output, 2=Append }
+  Access : LongInt;
+  Disp   : LongInt;
+  CrFile, SpFile : Integer;
 Begin
+  CrFile := ImpFindFunc('CreateFileA');
+  SpFile := ImpFindFunc('SetFilePointer');
   LexNextToken;          { eat "Open" }
+
+  { On utilise EBX et ESI (callee-saved par stdcall) pour       }
+  { conserver filename et N pendant les appels.                  }
+  AsmPushReg(R_EBX);
+  AsmPushReg(R_ESI);
+
   CGCParseExpr;          { EAX = ptr filename }
-  AsmPushReg(R_EAX);     { sauvegarder ptr filename pour CreateFileA }
-  { Skip tokens jusqu apres "As #N" : For Input | Output | Append etc }
-  While (CurTokType <> TOK_NEWLINE) And (CurTokType <> TOK_EOF) And
-        (Not ((CurTokType = TOK_KEYWORD) And (CurTokNum = KW_AS))) Do
+  AsmMovRegReg(R_EBX, R_EAX);
+
+  { For (Input | Output | Append) }
+  Mode := 0;
+  If CGCIsKW(KW_FOR) Then
+  Begin
     LexNextToken;
-  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_AS) Then
-    LexNextToken;
-  { Optionnel : '#' suivi du numero }
+    If CGCIsKW(KW_INPUT) Then
+    Begin Mode := 0; LexNextToken; End
+    Else If CGCIsKW(KW_OUTPUT) Then
+    Begin Mode := 1; LexNextToken; End
+    Else If CGCIsKW(KW_APPEND) Then
+    Begin Mode := 2; LexNextToken; End
+    Else
+      FatalError('FILEIO: Input/Output/Append attendu (ligne ' +
+                 ItoS(CurTokLine) + ')');
+  End;
+
+  { As [#] N }
+  If Not CGCIsKW(KW_AS) Then
+    FatalError('FILEIO: "As" attendu dans Open (ligne ' +
+               ItoS(CurTokLine) + ')');
+  LexNextToken;
   If CurTokType = TOK_HASH Then LexNextToken;
-  CGCParseExpr;          { evalue le N et ignore }
-  { Pop ptr filename dans EAX (restaure depuis le PUSH initial) }
-  AsmPopReg(R_EAX);
-  { CreateFileA(filename, GENERIC_READ=0x80000000, share=0, sec=0,    }
-  { OPEN_EXISTING=3, FILE_ATTRIBUTE_NORMAL=0x80, hTpl=0)              }
-  AsmMovRegImm(R_ECX, 0);
-  AsmPushReg(R_ECX);                  { hTemplateFile = 0           }
-  AsmMovRegImm(R_ECX, $80);
-  AsmPushReg(R_ECX);                  { dwFlagsAndAttributes        }
-  AsmMovRegImm(R_ECX, 3);
-  AsmPushReg(R_ECX);                  { dwCreationDisposition       }
-  AsmMovRegImm(R_ECX, 0);
-  AsmPushReg(R_ECX);                  { lpSecurityAttributes = NULL }
-  AsmMovRegImm(R_ECX, 0);
-  AsmPushReg(R_ECX);                  { dwShareMode = 0             }
-  AsmMovRegImm(R_ECX, LongInt($80000000));
-  AsmPushReg(R_ECX);                  { dwDesiredAccess GENERIC_READ}
-  AsmPushReg(R_EAX);                  { lpFileName                  }
-  AsmCallIAT(4);                      { CreateFileA                 }
-  { EAX = handle (ou -1 = INVALID_HANDLE_VALUE)                      }
+  CGCParseExpr;          { EAX = N }
+  AsmMovRegReg(R_ESI, R_EAX);
+
+  Case Mode Of
+    1: Begin Access := $40000000; Disp := 2; End;
+    2: Begin Access := $40000000; Disp := 4; End;
+  Else Begin Access := LongInt($80000000); Disp := 3; End;
+  End;
+
+  { CreateFileA(filename=EBX, access, 0, NULL, disp, 0x80, NULL) }
+  AsmPushImm(0);                        { hTemplateFile }
+  AsmPushImm($80);                      { dwFlagsAndAttributes }
+  AsmPushImm(Disp);                     { dwCreationDisposition }
+  AsmPushImm(0);                        { lpSecurityAttributes }
+  AsmPushImm(0);                        { dwShareMode }
+  AsmMovRegImm(R_EAX, Access);
+  AsmPushReg(R_EAX);                    { dwDesiredAccess }
+  AsmPushReg(R_EBX);                    { lpFileName }
+  AsmCallIAT(CrFile);
+  { EAX = handle (ou -1) }
   LOk := CGCNewLabel('opnok');
   AsmCmpRegImm(R_EAX, -1);
   AsmJcc(CC_NE, LOk);
-  { Failed : Err.Number=53, Description, dispatch }
+  { Echec : restaurer EBX/ESI puis Err 53, dispatch }
+  AsmPopReg(R_ESI);
+  AsmPopReg(R_EBX);
   AsmMovRegImm(R_EAX, 53);
   AsmMovMemAbsReg(AsmDataVA('@ERRNUM'), R_EAX);
-  CGCEmitSetStrLit('@ERRDESC_PTR', '@ERRDESC_LEN',
-                   'File not found');
+  CGCEmitSetStrLit('@ERRDESC_PTR', '@ERRDESC_LEN', 'File not found');
   CGCEmitSetStrLit('@ERRSRC_PTR', '@ERRSRC_LEN', '');
   CGCEmitErrDispatch;
   AsmLabel(LOk);
-  { Succes : on referme immediatement (stub : on n implemente pas    }
-  { la lecture). EAX a deja le handle.                                }
-  AsmPushReg(R_EAX);
-  AsmCallIAT(5);                      { CloseHandle                 }
+  { Succes : stocker handle dans FILEHND[ESI] }
+  AsmMovRegReg(R_ECX, R_ESI);
+  AsmShlRegImm(R_ECX, 2);
+  AsmAddRegImm(R_ECX, AsmDataVA('@FILEHND'));
+  AsmMovMemRegReg(R_ECX, R_EAX);
+
+  { Mode Append : SetFilePointer(handle, 0, NULL, FILE_END=2) }
+  If Mode = 2 Then
+  Begin
+    AsmPushImm(2);
+    AsmPushImm(0);
+    AsmPushImm(0);
+    AsmPushReg(R_EAX);
+    AsmCallIAT(SpFile);
+  End;
+
+  AsmPopReg(R_ESI);
+  AsmPopReg(R_EBX);
 End;
 
-{ Palier J phase 6 : Close [#N] -> no-op (consomme le N s il est la). }
+{ FILEIO : Close [#N] -> ferme un fichier (ou tous si N absent). }
 Procedure CGCParseClose;
 Begin
   LexNextToken;          { eat "Close" }
   If CurTokType = TOK_HASH Then LexNextToken;
-  If (CurTokType <> TOK_NEWLINE) And (CurTokType <> TOK_EOF) And
-     (CurTokType <> TOK_COLON) Then
-    CGCParseExpr;        { evalue puis ignore }
+  If (CurTokType = TOK_NEWLINE) Or (CurTokType = TOK_EOF) Or
+     (CurTokType = TOK_COLON) Then
+  Begin
+    AsmCallLbl('__file_close_all');
+    Exit;
+  End;
+  CGCParseExpr;          { EAX = N }
+  AsmCallLbl('__file_close');
+End;
+
+{ FILEIO : Write #N, args -> CSV. Strings entourees de guillemets,    }
+{ args separes par virgule, ligne terminee par CRLF.                   }
+Procedure CGCParseWrite;
+Var
+  Lit, Len : Integer;
+  First    : Boolean;
+  Quote    : Integer;
+Begin
+  LexNextToken;          { eat "Write" }
+  If CurTokType <> TOK_HASH Then
+    FatalError('FILEIO: "#" attendu apres Write (ligne ' +
+               ItoS(CurTokLine) + ')');
+  LexNextToken;
+  CGCParseExpr;          { EAX = N }
+  AsmCallLbl('__file_setout');
+  If CurTokType = TOK_COMMA Then LexNextToken;
+
+  Quote := StrAddLit('"');
+  First := True;
+  While CGCCanStartExpr Do
+  Begin
+    If Not First Then
+    Begin
+      Lit := StrAddLit(',');
+      AsmMovRegStrRVA(R_EAX, Lit);
+      AsmMovRegImm(R_EDX, 1);
+      AsmCallLbl('__print_str');
+    End;
+    If CurTokType = TOK_STRING Then
+    Begin
+      AsmMovRegStrRVA(R_EAX, Quote);
+      AsmMovRegImm(R_EDX, 1);
+      AsmCallLbl('__print_str');
+      Lit := StrAddLit(CurTokStr);
+      Len := Length(CurTokStr);
+      AsmMovRegStrRVA(R_EAX, Lit);
+      AsmMovRegImm(R_EDX, Len);
+      AsmCallLbl('__print_str');
+      AsmMovRegStrRVA(R_EAX, Quote);
+      AsmMovRegImm(R_EDX, 1);
+      AsmCallLbl('__print_str');
+      LexNextToken;
+    End
+    Else
+    Begin
+      CGCParseExpr;
+      AsmCallLbl('__print_long');
+    End;
+    First := False;
+    If CurTokType = TOK_COMMA Then
+    Begin LexNextToken; Continue; End;
+    Break;
+  End;
+  { CRLF }
+  AsmMovRegStrRVA(R_EAX, CGCCRLFLit);
+  AsmMovRegImm(R_EDX, 2);
+  AsmCallLbl('__print_str');
+  AsmCallLbl('__file_resetout');
+End;
+
+{ FILEIO : Line Input #N, sLine                                        }
+{ Lit une ligne (jusqu a CR/LF) dans @LINEBUF / @LINEBUF_LEN puis      }
+{ copie dans la variable String sLine si declaree As String.           }
+Procedure CGCParseLineInput;
+Var
+  Nm : TString;
+  LI : Integer;
+Begin
+  LexNextToken;          { eat "Line" }
+  If Not CGCIsKW(KW_INPUT) Then
+    FatalError('FILEIO: "Input" attendu apres "Line" (ligne ' +
+               ItoS(CurTokLine) + ')');
+  LexNextToken;
+  If CurTokType <> TOK_HASH Then
+    FatalError('FILEIO: "#" attendu (ligne ' + ItoS(CurTokLine) + ')');
+  LexNextToken;
+  CGCParseExpr;          { EAX = N }
+  AsmCallLbl('__linebuf_read');
+
+  If CurTokType <> TOK_COMMA Then
+    FatalError('FILEIO: "," attendu apres N (ligne ' +
+               ItoS(CurTokLine) + ')');
+  LexNextToken;
+  If CurTokType <> TOK_IDENT Then
+    FatalError('FILEIO: variable attendue apres "," (ligne ' +
+               ItoS(CurTokLine) + ')');
+  Nm := CurTokStr;
+  LexNextToken;
+  LI := CGCFindLocal(Nm);
+  If LI < 0 Then
+    FatalError('FILEIO: variable "' + Nm + '" non declaree (ligne ' +
+               ItoS(CurTokLine) + ')');
+  If CGCLocals[LI].Kind = 1 Then
+  Begin
+    { Copier @LINEBUF (jusqu a 256 bytes) dans buffer de sLine et    }
+    { stocker @LINEBUF_LEN dans le slot longueur.                     }
+    AsmLeaRegMemBP(R_EAX, CGCLocals[LI].Ofs);
+    AsmCallLbl('__linebuf_copy_to_var');
+  End
+  Else
+  Begin
+    { Variable Long : on stocke juste @LINEBUF_LEN. }
+    AsmMovRegMemAbs(R_EAX, AsmDataVA('@LINEBUF_LEN'));
+    AsmMovMemBPReg(CGCLocals[LI].Ofs, R_EAX);
+  End;
 End;
 
 { Reset Err.Number = 0, Description = "", Source = "" }
@@ -18065,6 +18573,10 @@ Begin
     CGCParseOpen
   Else If CGCIsKW(KW_CLOSE) Then
     CGCParseClose
+  Else If CGCIsKW(KW_WRITE) Then
+    CGCParseWrite
+  Else If CGCIsKW(KW_LINE) Then
+    CGCParseLineInput
   Else If (CurTokType = TOK_IDENT) And
           (UpCaseStr(CurTokStr) = 'EXITPROCESS') Then
     CGCParseExitProcess
@@ -18571,10 +19083,21 @@ Begin
   { Palier J phase 6 : Open / Close minimal                     }
   ImpAddFunc(DK, 'CreateFileA');
   ImpAddFunc(DK, 'CloseHandle');
+  { FILEIO : ReadFile + SetFilePointer pour Line Input / EOF    }
+  ImpAddFunc(DK, 'ReadFile');
+  ImpAddFunc(DK, 'SetFilePointer');
 
   { Globals .data du runtime Print }
   AsmDefineData('@HSTDOUT',  4);
+  AsmDefineData('@CUROUT',   4);
   AsmDefineData('@PRINTBUF', 16);
+  { FILEIO : table de handles indexes par numero de fichier (1..255) }
+  AsmDefineData('@FILEHND',  1024);
+  { FILEIO : buffer Line Input partage + longueur courante           }
+  AsmDefineData('@LINEBUF',  260);
+  AsmDefineData('@LINEBUF_LEN', 4);
+  AsmDefineData('@PEEKBUF',  4);
+  AsmDefineData('@NREAD',    4);
   { Palier J : objet Err global }
   AsmDefineData('@ERRNUM',      4);
   AsmDefineData('@ERRDESC_PTR', 4);
@@ -18594,6 +19117,7 @@ Begin
 
   { Sous-routines runtime du Palier F (avant _start) }
   CGCEmitPrintHelpers;
+  CGCEmitFileIOHelpers;
 
   { Palier G : emission des Sub/Function utilisateur (avant _start) }
   CGCPass2UserProcs;
@@ -18605,6 +19129,11 @@ Begin
   AsmPushImm(-11);
   AsmCallIAT(ImpFindFunc('GetStdHandle'));
   AsmMovMemAbsReg(AsmDataVA('@HSTDOUT'), R_EAX);
+  AsmMovMemAbsReg(AsmDataVA('@CUROUT'), R_EAX);
+  { FILEIO : remplir @FILEHND[0..255] avec -1 (INVALID_HANDLE_VALUE) }
+  AsmMovRegImm(R_ECX, 256);
+  AsmMovRegImm(R_EAX, AsmDataVA('@FILEHND'));
+  AsmCallLbl('__fileio_init');
 
   { Pass 2 : corps de Sub Main }
   CGCPass2SubMain;
