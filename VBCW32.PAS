@@ -17177,12 +17177,69 @@ Begin
 End;
 
 Procedure CGCParseAssign(Const Nm : TString);
-Var Idx, DOf : Integer;
+Var
+  Idx, DOf : Integer;
+  Lit, Len, DwCount, SrcLI : Integer;
+  L        : TString;
 Begin
   { CurTok devrait etre "=" }
   If CurTokType <> TOK_EQ Then
     FatalError('Palier C: "=" attendu (ligne ' + ItoS(CurTokLine) + ')');
   LexNextToken;
+  { FILEIO : assignation a une variable String locale (Kind=1) :   }
+  { gerer specialement le RHS = litteral chaine ou autre String.   }
+  Idx := CGCFindLocal(Nm);
+  If (Idx >= 0) And (CGCLocals[Idx].Kind = 1) Then
+  Begin
+    If CurTokType = TOK_STRING Then
+    Begin
+      Lit := StrAddLit(CurTokStr);
+      Len := Length(CurTokStr);
+      LexNextToken;
+      AsmMovRegImm(R_EAX, Len);
+      AsmMovMemBPReg(CGCLocals[Idx].Ofs, R_EAX);
+      DwCount := (Len + 3) Div 4;
+      If DwCount > 0 Then
+      Begin
+        AsmMovRegStrRVA(R_ESI, Lit);
+        AsmLeaRegMemBP(R_EDI, CGCLocals[Idx].Ofs + 4);
+        AsmMovRegImm(R_ECX, DwCount);
+        L := CGCNewLabel('saL');
+        AsmLabel(L);
+        AsmMovRegMemReg(R_EAX, R_ESI);
+        AsmMovMemRegReg(R_EDI, R_EAX);
+        AsmAddRegImm(R_ESI, 4);
+        AsmAddRegImm(R_EDI, 4);
+        AsmDecReg(R_ECX);
+        AsmJcc(CC_NE, L);
+      End;
+      Exit;
+    End;
+    If CurTokType = TOK_IDENT Then
+    Begin
+      SrcLI := CGCFindLocal(CurTokStr);
+      If (SrcLI >= 0) And (CGCLocals[SrcLI].Kind = 1) Then
+      Begin
+        LexNextToken;
+        { Copie length + 64 dwords (256 octets) de src vers dst }
+        AsmMovRegMemBP(R_EAX, CGCLocals[SrcLI].Ofs);
+        AsmMovMemBPReg(CGCLocals[Idx].Ofs, R_EAX);
+        AsmLeaRegMemBP(R_ESI, CGCLocals[SrcLI].Ofs + 4);
+        AsmLeaRegMemBP(R_EDI, CGCLocals[Idx].Ofs + 4);
+        AsmMovRegImm(R_ECX, 64);
+        L := CGCNewLabel('scL');
+        AsmLabel(L);
+        AsmMovRegMemReg(R_EAX, R_ESI);
+        AsmMovMemRegReg(R_EDI, R_EAX);
+        AsmAddRegImm(R_ESI, 4);
+        AsmAddRegImm(R_EDI, 4);
+        AsmDecReg(R_ECX);
+        AsmJcc(CC_NE, L);
+        Exit;
+      End;
+    End;
+    { Fallback : RHS Long -> stocke comme longueur (rare). }
+  End;
   CGCParseExpr;
   { Palier G : assignation au nom de la fonction courante }
   If (CGCCurProc >= 0) And CGCProcs[CGCCurProc].IsFunc And
