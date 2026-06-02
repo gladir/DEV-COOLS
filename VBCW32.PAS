@@ -16550,6 +16550,20 @@ Begin
       FatalError('Palier C: ")" attendue (ligne ' + ItoS(CurTokLine) + ')');
     LexNextToken;
   End
+  Else If CGCIsKW(KW_CSTR) Then
+  Begin
+    { CStr(x) : identite (le runtime n'a pas de type String separe ;     }
+    { la valeur Long produite est interpretee comme telle par Print/&). }
+    LexNextToken;
+    If CurTokType <> TOK_LPAREN Then
+      FatalError('Palier I: "(" attendue apres CStr (ligne ' +
+                 ItoS(CurTokLine) + ')');
+    LexNextToken;
+    CGCParseExpr;
+    If CurTokType <> TOK_RPAREN Then
+      FatalError('Palier I: ")" attendue (ligne ' + ItoS(CurTokLine) + ')');
+    LexNextToken;
+  End
   Else If CurTokType = TOK_IDENT Then
   Begin
     Nm := CurTokStr;
@@ -16785,7 +16799,7 @@ Begin
     (CurTokType = TOK_INTEGER) Or (CurTokType = TOK_LONG)   Or
     (CurTokType = TOK_STRING)  Or (CurTokType = TOK_LPAREN) Or
     (CurTokType = TOK_IDENT)   Or (CurTokType = TOK_MINUS)  Or
-    CGCIsKW(KW_NOT);
+    CGCIsKW(KW_NOT) Or CGCIsKW(KW_CSTR);
 End;
 
 Procedure CGCParseStatementBlock(Const StopKW1, StopKW2 : Integer);
@@ -16817,6 +16831,21 @@ Begin
   If CurTokType = TOK_LPAREN Then
   Begin
     LexNextToken;
+    { Cas dynamique : Dim NAME() As TYPE -> placeholder, ReDim allouera }
+    If CurTokType = TOK_RPAREN Then
+    Begin
+      LexNextToken;
+      CGCEatTypeAnnot;
+      { Enregistrer un tableau avec Count=0 (non encore alloue) }
+      If CGCArrayCnt >= CGC_MAX_ARRAY Then
+        FatalError('Palier H: trop de tableaux locaux');
+      CGCArrays[CGCArrayCnt].Name    := UpCaseStr(Nm);
+      CGCArrays[CGCArrayCnt].BaseOfs := 0;
+      CGCArrays[CGCArrayCnt].Lo      := 0;
+      CGCArrays[CGCArrayCnt].Count   := 0;
+      Inc(CGCArrayCnt);
+      Exit;
+    End;
     { Lire premiere borne (entier signe) }
     Neg := False;
     If CurTokType = TOK_MINUS Then
@@ -16864,6 +16893,95 @@ Begin
 
   CGCEatTypeAnnot;
   CGCAddLocal(Nm);
+End;
+
+{ Palier H : ReDim NAME(N)  ou  ReDim NAME(Lo To Hi)                  }
+{ Le tableau doit avoir ete declare via Dim NAME() (Count=0).         }
+{ Allocation de Count*4 octets sur le frame courant.                   }
+Procedure CGCParseReDim;
+Var
+  Nm        : TString;
+  Lo, Hi, N : LongInt;
+  Neg       : Boolean;
+  AIdx      : Integer;
+Begin
+  LexNextToken;     { eat "ReDim" }
+  { Tolerer "Preserve" comme no-op (on realloue toujours a partir de zero) }
+  If (CurTokType = TOK_IDENT) And (UpCaseStr(CurTokStr) = 'PRESERVE') Then
+    LexNextToken;
+  If CurTokType <> TOK_IDENT Then
+    FatalError('Palier H: nom de tableau attendu apres ReDim');
+  Nm := CurTokStr;
+  AIdx := CGCFindArray(Nm);
+  If AIdx < 0 Then
+    FatalError('Palier H: ReDim sur tableau inconnu "' + Nm + '"');
+  LexNextToken;
+  If CurTokType <> TOK_LPAREN Then
+    FatalError('Palier H: "(" attendue apres ReDim "' + Nm + '"');
+  LexNextToken;
+
+  Neg := False;
+  If CurTokType = TOK_MINUS Then
+  Begin Neg := True; LexNextToken; End;
+  If (CurTokType <> TOK_INTEGER) And (CurTokType <> TOK_LONG) Then
+    FatalError('Palier H: borne entiere attendue (ligne ' +
+               ItoS(CurTokLine) + ')');
+  Lo := CurTokNum;
+  If Neg Then Lo := -Lo;
+  LexNextToken;
+
+  If CGCIsKW(KW_TO) Then
+  Begin
+    LexNextToken;
+    Neg := False;
+    If CurTokType = TOK_MINUS Then
+    Begin Neg := True; LexNextToken; End;
+    If (CurTokType <> TOK_INTEGER) And (CurTokType <> TOK_LONG) Then
+      FatalError('Palier H: borne entiere attendue (ligne ' +
+                 ItoS(CurTokLine) + ')');
+    Hi := CurTokNum;
+    If Neg Then Hi := -Hi;
+    LexNextToken;
+  End
+  Else
+  Begin
+    Hi := Lo;
+    Lo := 0;
+  End;
+
+  If CurTokType <> TOK_RPAREN Then
+    FatalError('Palier H: ")" attendue dans ReDim (ligne ' +
+               ItoS(CurTokLine) + ')');
+  LexNextToken;
+  CGCEatTypeAnnot;       { tolerer "As Long" optionnel }
+
+  N := Hi - Lo + 1;
+  If N <= 0 Then
+    FatalError('Palier H: bornes inversees pour "' + Nm + '"');
+
+  { Si deja alloue avec la meme taille, on reuse simplement.            }
+  { Sinon on alloue une nouvelle zone de pile (l ancienne est laissee). }
+  If CGCArrays[AIdx].Count <> N Then
+  Begin
+    CGCFrameSize := CGCFrameSize + N * 4;
+    CGCArrays[AIdx].BaseOfs := -CGCFrameSize;
+  End;
+  CGCArrays[AIdx].Lo    := Lo;
+  CGCArrays[AIdx].Count := N;
+End;
+
+{ Palier H : Erase NAME -> no-op (la memoire de pile est liberee a la }
+{ sortie de la procedure de toute facon).                              }
+Procedure CGCParseErase;
+Var Nm : TString;
+Begin
+  LexNextToken;     { eat "Erase" }
+  If CurTokType <> TOK_IDENT Then
+    FatalError('Palier H: nom de tableau attendu apres Erase');
+  Nm := CurTokStr;
+  If CGCFindArray(Nm) < 0 Then
+    FatalError('Palier H: Erase sur tableau inconnu "' + Nm + '"');
+  LexNextToken;
 End;
 
 Procedure CGCParseAssign(Const Nm : TString);
@@ -17179,6 +17297,12 @@ Begin
       Continue;
     End;
     If CurTokType = TOK_COMMA Then
+    Begin
+      LexNextToken;
+      Continue;
+    End;
+    { Palier I : "&" concatene des items dans le meme Print sans CRLF }
+    If CurTokType = TOK_AMP Then
     Begin
       LexNextToken;
       Continue;
@@ -17524,6 +17648,10 @@ Begin
   CGCSkipNewlines;
   If CGCIsKW(KW_DIM) Then
     CGCParseDimLocal
+  Else If CGCIsKW(KW_REDIM) Then
+    CGCParseReDim
+  Else If CGCIsKW(KW_ERASE) Then
+    CGCParseErase
   Else If CGCIsKW(KW_IF) Then
     CGCParseIf
   Else If CGCIsKW(KW_FOR) Then
