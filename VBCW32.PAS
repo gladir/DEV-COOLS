@@ -15349,6 +15349,12 @@ Const
   { ----- Palier G : MOV [ESP+disp], r32 (passage d args) ----- }
   IK_MOV_MEMESP_REG   = 40;
 
+  { ----- Palier H : tableaux 1D Long sur la pile -------------- }
+  { MOV r32, [EBP + idx_r32*4 + disp32]                          }
+  IK_MOV_REG_MEMBP_IDX4 = 41;
+  { MOV [EBP + idx_r32*4 + disp32], r32                          }
+  IK_MOV_MEMBP_IDX4_REG = 42;
+
   { Sous-codes ALU (champ reg du ModR/M pour formes /r) }
   ALU_ADD = 0;
   ALU_OR  = 1;
@@ -15830,6 +15836,12 @@ Begin AsmAddInstr(IK_MOV_REG_STRRVA, R, 0, LitIdx, -1); End;
 Procedure AsmMovMemEspReg(Disp : LongInt; R : Integer);
 Begin AsmAddInstr(IK_MOV_MEMESP_REG, R, 0, Disp, -1); End;
 
+Procedure AsmMovRegMemBPIdx4(Dst, Idx : Integer; Disp : LongInt);
+Begin AsmAddInstr(IK_MOV_REG_MEMBP_IDX4, Dst, Idx, Disp, -1); End;
+
+Procedure AsmMovMemBPIdx4Reg(Idx, Src : Integer; Disp : LongInt);
+Begin AsmAddInstr(IK_MOV_MEMBP_IDX4_REG, Idx, Src, Disp, -1); End;
+
 { ------------------------------------------------------------ }
 { AsmInstrSize : taille encodee d une instruction               }
 { ------------------------------------------------------------ }
@@ -15881,6 +15893,8 @@ Begin
     IK_MOV_REG_STRRVA  : AsmInstrSize := 5;
     IK_MOV_MEMESP_REG  : If (I.Imm >= -128) And (I.Imm <= 127)
                          Then AsmInstrSize := 4 Else AsmInstrSize := 7;
+    IK_MOV_REG_MEMBP_IDX4 : AsmInstrSize := 7;
+    IK_MOV_MEMBP_IDX4_REG : AsmInstrSize := 7;
   Else
     AsmInstrSize := 0;
   End;
@@ -16243,6 +16257,24 @@ Begin
             AsmEmitDWord(AsmInstrs[I].Imm);
           End;
         End;
+
+      IK_MOV_REG_MEMBP_IDX4:
+        Begin
+          { 8B /r mod=10 reg=R1(dst) rm=100 SIB scale=10 idx=R2 base=101(EBP) disp32 }
+          AsmEmitByte($8B);
+          AsmEmitByte($84 Or ((AsmInstrs[I].R1 And 7) Shl 3));
+          AsmEmitByte($85 Or ((AsmInstrs[I].R2 And 7) Shl 3));
+          AsmEmitDWord(AsmInstrs[I].Imm);
+        End;
+
+      IK_MOV_MEMBP_IDX4_REG:
+        Begin
+          { 89 /r mod=10 reg=R2(src) rm=100 SIB scale=10 idx=R1 base=101(EBP) disp32 }
+          AsmEmitByte($89);
+          AsmEmitByte($84 Or ((AsmInstrs[I].R2 And 7) Shl 3));
+          AsmEmitByte($85 Or ((AsmInstrs[I].R1 And 7) Shl 3));
+          AsmEmitDWord(AsmInstrs[I].Imm);
+        End;
     End;
   End;
 End;
@@ -16279,6 +16311,7 @@ Const
   CGC_MAX_LOCAL = 64;
   CGC_MAX_PROC  = 32;
   CGC_MAX_PARAM = 8;
+  CGC_MAX_ARRAY = 32;
 
 Type
   TCGCLocal = Record
@@ -16291,6 +16324,15 @@ Type
     IsFunc    : Boolean;
     ParamCnt  : Integer;
     ParamName : Array[0..CGC_MAX_PARAM-1] Of TString;
+  End;
+
+  { Palier H : tableau 1D Long sur la pile                       }
+  { BaseOfs = offset BP-relatif de l element [Lo]                }
+  TCGCArray = Record
+    Name    : TString;
+    BaseOfs : LongInt;
+    Lo      : LongInt;
+    Count   : LongInt;
   End;
 
 Var
@@ -16312,6 +16354,9 @@ Var
   CGCCurProc       : Integer;       { index dans CGCProcs ou -1 (Main) }
   CGCExitLabel     : TString;       { label de l epilogue de la proc courante }
   CGCRetvalOfs     : LongInt;       { offset du retval cache (Function) }
+  { Palier H : tableaux 1D Long sur la pile }
+  CGCArrays        : Array[0..CGC_MAX_ARRAY-1] Of TCGCArray;
+  CGCArrayCnt      : Integer;
 
 { ------------------------------------------------------------ }
 { Helpers locaux/labels                                         }
@@ -16344,6 +16389,39 @@ Function CGCNewLabel(Const Pfx : TString) : TString;
 Begin
   Inc(CGCLabSeq);
   CGCNewLabel := Pfx + '_' + ItoS(CGCLabSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ Palier H : table des tableaux 1D Long                         }
+{ ------------------------------------------------------------ }
+
+Function CGCFindArray(Const N : TString) : Integer;
+Var I : Integer; U : TString;
+Begin
+  U := UpCaseStr(N);
+  CGCFindArray := -1;
+  For I := 0 To CGCArrayCnt - 1 Do
+    If CGCArrays[I].Name = U Then
+    Begin CGCFindArray := I; Exit; End;
+End;
+
+{ Reserve Count*4 octets sur la pile et enregistre l element [Lo] }
+{ a l offset BP-relatif retourne. Retourne BaseOfs.                }
+Function CGCAddArray(Const N : TString; Lo, Count : LongInt) : LongInt;
+Var U : TString;
+Begin
+  U := UpCaseStr(N);
+  If CGCArrayCnt >= CGC_MAX_ARRAY Then
+    FatalError('Palier H: trop de tableaux locaux');
+  If Count <= 0 Then
+    FatalError('Palier H: bornes de tableau invalides');
+  CGCFrameSize := CGCFrameSize + Count * 4;
+  CGCArrays[CGCArrayCnt].Name    := U;
+  CGCArrays[CGCArrayCnt].BaseOfs := -CGCFrameSize;   { = element [Lo] }
+  CGCArrays[CGCArrayCnt].Lo      := Lo;
+  CGCArrays[CGCArrayCnt].Count   := Count;
+  CGCAddArray := -CGCFrameSize;
+  Inc(CGCArrayCnt);
 End;
 
 { ------------------------------------------------------------ }
@@ -16452,6 +16530,7 @@ Var
   Idx, DOf : Integer;
   Nm       : TString;
   PI       : Integer;
+  AIdx     : Integer;
 Begin
   If (CurTokType = TOK_INTEGER) Or (CurTokType = TOK_LONG) Then
   Begin
@@ -16490,6 +16569,24 @@ Begin
     Begin
       LexNextToken;
       CGCEmitCall(PI);
+      Exit;
+    End;
+    AIdx := CGCFindArray(Nm);
+    If AIdx >= 0 Then
+    Begin
+      LexNextToken;     { eat ident }
+      If CurTokType <> TOK_LPAREN Then
+        FatalError('Palier H: "(" attendue apres tableau "' + Nm +
+                   '" (ligne ' + ItoS(CurTokLine) + ')');
+      LexNextToken;
+      CGCParseExpr;
+      If CGCArrays[AIdx].Lo <> 0 Then
+        AsmAluRegImm(ALU_SUB, R_EAX, CGCArrays[AIdx].Lo);
+      AsmMovRegMemBPIdx4(R_EAX, R_EAX, CGCArrays[AIdx].BaseOfs);
+      If CurTokType <> TOK_RPAREN Then
+        FatalError('Palier H: ")" attendue (ligne ' +
+                   ItoS(CurTokLine) + ')');
+      LexNextToken;
       Exit;
     End;
     Idx := CGCFindLocal(Nm);
@@ -16705,13 +16802,66 @@ Begin
 End;
 
 Procedure CGCParseDimLocal;
-Var Nm : TString;
+Var
+  Nm        : TString;
+  Lo, Hi, N : LongInt;
+  Neg       : Boolean;
 Begin
   LexNextToken;     { eat "Dim" }
   If CurTokType <> TOK_IDENT Then
     FatalError('Palier C: nom de variable attendu apres Dim');
   Nm := CurTokStr;
   LexNextToken;
+
+  { Palier H : Dim NAME(LO TO HI) As TYPE  ou  Dim NAME(N) As TYPE }
+  If CurTokType = TOK_LPAREN Then
+  Begin
+    LexNextToken;
+    { Lire premiere borne (entier signe) }
+    Neg := False;
+    If CurTokType = TOK_MINUS Then
+    Begin Neg := True; LexNextToken; End;
+    If (CurTokType <> TOK_INTEGER) And (CurTokType <> TOK_LONG) Then
+      FatalError('Palier H: borne entiere attendue (ligne ' +
+                 ItoS(CurTokLine) + ')');
+    Lo := CurTokNum;
+    If Neg Then Lo := -Lo;
+    LexNextToken;
+
+    If CGCIsKW(KW_TO) Then
+    Begin
+      LexNextToken;
+      Neg := False;
+      If CurTokType = TOK_MINUS Then
+      Begin Neg := True; LexNextToken; End;
+      If (CurTokType <> TOK_INTEGER) And (CurTokType <> TOK_LONG) Then
+        FatalError('Palier H: borne entiere attendue (ligne ' +
+                   ItoS(CurTokLine) + ')');
+      Hi := CurTokNum;
+      If Neg Then Hi := -Hi;
+      LexNextToken;
+    End
+    Else
+    Begin
+      { Dim a(N) -> Lo=0, Hi=N }
+      Hi := Lo;
+      Lo := 0;
+    End;
+
+    If CurTokType <> TOK_RPAREN Then
+      FatalError('Palier H: ")" attendue dans Dim (ligne ' +
+                 ItoS(CurTokLine) + ')');
+    LexNextToken;
+
+    N := Hi - Lo + 1;
+    If N <= 0 Then
+      FatalError('Palier H: bornes inversees pour "' + Nm + '"');
+
+    CGCEatTypeAnnot;
+    CGCAddArray(Nm, Lo, N);
+    Exit;
+  End;
+
   CGCEatTypeAnnot;
   CGCAddLocal(Nm);
 End;
@@ -17369,7 +17519,7 @@ Begin
 End;
 
 Procedure CGCParseStatement;
-Var Nm : TString; PI : Integer;
+Var Nm : TString; PI : Integer; AIdx : Integer;
 Begin
   CGCSkipNewlines;
   If CGCIsKW(KW_DIM) Then
@@ -17395,6 +17545,31 @@ Begin
   Else If CurTokType = TOK_IDENT Then
   Begin
     Nm := CurTokStr;
+    AIdx := CGCFindArray(Nm);
+    If AIdx >= 0 Then
+    Begin
+      { Palier H : ecriture arr(i) = expr }
+      LexNextToken;          { eat ident }
+      If CurTokType <> TOK_LPAREN Then
+        FatalError('Palier H: "(" attendue apres "' + Nm + '"');
+      LexNextToken;
+      CGCParseExpr;          { EAX = i }
+      If CGCArrays[AIdx].Lo <> 0 Then
+        AsmAluRegImm(ALU_SUB, R_EAX, CGCArrays[AIdx].Lo);
+      AsmPushReg(R_EAX);
+      If CurTokType <> TOK_RPAREN Then
+        FatalError('Palier H: ")" attendue (ligne ' +
+                   ItoS(CurTokLine) + ')');
+      LexNextToken;
+      If CurTokType <> TOK_EQ Then
+        FatalError('Palier H: "=" attendue (ligne ' +
+                   ItoS(CurTokLine) + ')');
+      LexNextToken;
+      CGCParseExpr;          { EAX = valeur }
+      AsmPopReg(R_ECX);      { ECX = index }
+      AsmMovMemBPIdx4Reg(R_ECX, R_EAX, CGCArrays[AIdx].BaseOfs);
+      Exit;
+    End;
     PI := CGCFindProc(Nm);
     { Palier G : appel d une Sub utilisateur (statement-level) }
     If (PI >= 0) And (Not CGCProcs[PI].IsFunc) Then
@@ -17579,6 +17754,7 @@ Var
   SavedExitLab : TString;
   SavedRetOfs  : LongInt;
   SavedFrameIx : Integer;
+  SavedArrCnt  : Integer;
 Begin
   { Sauvegarder l etat courant }
   SavedLocCnt  := CGCLocalCnt;
@@ -17588,11 +17764,13 @@ Begin
   SavedExitLab := CGCExitLabel;
   SavedRetOfs  := CGCRetvalOfs;
   SavedFrameIx := CGCFrameInstrIdx;
+  SavedArrCnt  := CGCArrayCnt;
 
   CGCLocalCnt  := 0;
   CGCFrameSize := 0;
   CGCExitDone  := False;
   CGCCurProc   := PIdx;
+  CGCArrayCnt  := 0;
   ExitLab      := CGCNewLabel('procExit');
   CGCExitLabel := ExitLab;
   CGCRetvalOfs := 0;
@@ -17657,6 +17835,7 @@ Begin
   CGCExitLabel     := SavedExitLab;
   CGCRetvalOfs     := SavedRetOfs;
   CGCFrameInstrIdx := SavedFrameIx;
+  CGCArrayCnt      := SavedArrCnt;
 End;
 
 { ------------------------------------------------------------ }
@@ -17806,6 +17985,7 @@ Begin
   CGCCurProc       := -1;
   CGCExitLabel     := '';
   CGCRetvalOfs     := 0;
+  CGCArrayCnt      := 0;
 
   { Imports pre-enregistres :                                  }
   {   func 0 = kernel32.ExitProcess (toujours present)         }
