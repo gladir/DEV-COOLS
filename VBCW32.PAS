@@ -536,7 +536,7 @@
             Point d entree : _VBRT_INIT (initialiser runtime) et
               _VBRT_EXIT (terminer programme, ExitProcess)
 
-  TODO 21 - ECRIVAIN BINAIRE PE (GENERATION .EXE WINDOWS 32 BITS) [A FAIRE]
+  TODO 21 - ECRIVAIN BINAIRE PE (GENERATION .EXE WINDOWS 32 BITS) [IMPLEMENTE]
             Procedure WritePE(const outfile: String)
             Generer un executable PE Windows 32 bits complet :
             En-tete DOS (MZ stub) : 64 octets + message DOS
@@ -671,6 +671,7 @@
 
 Program VBCW32;
 
+{$R-}
 {$IFDEF FPC}
   {$MODE TP}
   {$H-}
@@ -15215,6 +15216,3052 @@ Begin
   GetOptBufferCount := OptBufferCount;
 End;
 
+{ ============================================================ }
+{ TODO 21 - ECRIVAIN BINAIRE PE (.EXE WIN32)     [IMPLEMENTE] }
+{ ============================================================ }
+{                                                              }
+{ Genere un executable PE Windows 32 bits minimal mais complet }
+{ et conforme. La structure produite est :                     }
+{                                                              }
+{   [0x000] En-tete DOS (MZ) + DOS stub                        }
+{   [0x080] Signature 'PE\0\0'                                 }
+{   [0x084] En-tete COFF (20 octets)                           }
+{   [0x098] En-tete Optionnel PE32 (224 octets)                }
+{   [0x178] En-tete .text (40 octets)                          }
+{   [0x1A0] En-tete .rdata (40 octets)                         }
+{   [0x200] Section .text  (code)                              }
+{   [0x400] Section .rdata (Import Directory + IAT + noms)     }
+{                                                              }
+{ Note : tant que le generateur de code (TODOs 09-19) n a pas  }
+{ produit de bytes machine pour le corps du programme,         }
+{ la section .text contient un stub minimal :                  }
+{   PUSH 0                                                     }
+{   CALL DWORD PTR [IAT_ExitProcess]                           }
+{ Resultat : un .EXE valide qui se lance et termine avec       }
+{ ExitProcess(0). C est la base sur laquelle les TODOs futurs  }
+{ (assembleur interne pour traduire l ASM emis en bytes) vont  }
+{ greffer le vrai code.                                        }
+{ ============================================================ }
+
+Const
+  PE_BUF_SIZE       = 262144;
+  PE_HEADERS_SIZE   = $200;       { 512 - SizeOfHeaders / FileAlign  }
+  PE_TEXT_FILEPOS   = $200;       { offset disque de .text           }
+  PE_TEXT_RVA       = $1000;      { RVA de .text                     }
+
+  { Dispositions internes a .rdata (offsets relatifs au debut) }
+  RD_IDT_OFS        = $00;        { Import Directory Table   }
+  RD_ILT_OFS        = $28;        { Import Lookup Table      }
+  RD_IAT_OFS        = $30;        { Import Address Table     }
+  RD_HINT_OFS       = $38;        { Hint/Name "ExitProcess"  }
+  RD_DLLNAME_OFS    = $46;        { "kernel32.dll"           }
+  RD_USED_SIZE      = $53;        { 83 octets utiles         }
+
+{ ============================================================ }
+{ Layout PE dynamique : positions et tailles ajustees a la     }
+{ taille reelle du code et des donnees (multiples de FileAlign }
+{ et SectionAlign).                                            }
+{ ============================================================ }
+Var
+  PE_TEXT_RAWSZ    : LongInt;     { SizeOfRawData de .text     }
+  PE_TEXT_VSZ      : LongInt;     { occupation virtuelle .text }
+  PE_RDATA_FILEPOS : LongInt;
+  PE_RDATA_RVA     : LongInt;
+  PE_RDATA_RAWSZ   : LongInt;
+  PE_DATA_FILEPOS  : LongInt;
+  PE_DATA_RVA      : LongInt;
+  PE_DATA_RAWSZ    : LongInt;
+  PE_FILE_TOTAL    : LongInt;
+  PE_SIZE_OF_IMAGE : LongInt;
+
+{ ============================================================ }
+{ TODO 26 - MINI-ASSEMBLEUR x86 INTERNE             [PALIER A] }
+{ ============================================================ }
+{                                                              }
+{ Convertit une queue d instructions structurees en bytes      }
+{ machine 80386 injectables dans la section .text d un PE.     }
+{                                                              }
+{ Le palier A couvre le sous-ensemble strictement requis pour  }
+{ amorcer un programme : PUSH imm, CALL [IAT], INT3, plus les  }
+{ primitives qui seront sollicitees par les paliers suivants   }
+{ (MOV reg/imm, MOV reg/reg, XOR, RET, RET imm16, ADD/SUB ESP, }
+{ JMP near, CALL near, PUSH/POP reg).                          }
+{                                                              }
+{ Les paliers B-F etendront ce module avec :                   }
+{   - acces memoire [reg+disp], [lbl], [lbl+reg]               }
+{   - relocations DIR32 vers .data/.rdata                      }
+{   - sauts conditionnels Jcc et resolution near/short         }
+{   - operations arithmetiques completes IMUL/IDIV/CMP/TEST    }
+{                                                              }
+{ Algorithme : 2 passes.                                       }
+{   Pass 1 : calculer la taille de chaque instruction et fixer }
+{            l offset de chaque label dans .text.              }
+{   Pass 2 : emettre les bytes en resolvant les CALL/JMP       }
+{            relatifs grace aux offsets de la pass 1.          }
+{ ============================================================ }
+
+Const
+  AS_MAX_INSTR = 32768;
+  AS_MAX_LBL   = 2048;
+  AS_MAX_CODE  = 32768;
+
+  { Genres d instructions }
+  IK_LABEL       = 0;
+  IK_PUSH_IMM    = 1;
+  IK_PUSH_REG    = 2;
+  IK_POP_REG     = 3;
+  IK_MOV_REG_IMM = 4;
+  IK_MOV_REG_REG = 5;
+  IK_XOR_REG_REG = 6;
+  IK_CALL_IAT    = 7;   { CALL DWORD PTR [IAT slot]            }
+  IK_CALL_LBL    = 8;   { CALL near rel32                       }
+  IK_RET         = 9;
+  IK_RET_IMM     = 10;
+  IK_ADD_ESP_IMM = 11;
+  IK_SUB_ESP_IMM = 12;
+  IK_JMP_LBL     = 13;  { JMP near rel32                        }
+  IK_INT3        = 14;
+
+  { ----- Palier B : encoders memoire/arithmetique/controle --- }
+  IK_MOV_REG_MEMBP    = 20;   { MOV r32, [EBP+disp]            }
+  IK_MOV_MEMBP_REG    = 21;   { MOV [EBP+disp], r32            }
+  IK_MOV_REG_MEMABS   = 22;   { MOV r32, [abs32]               }
+  IK_MOV_MEMABS_REG   = 23;   { MOV [abs32], r32               }
+  IK_LEA_REG_MEMBP    = 24;   { LEA r32, [EBP+disp]            }
+  IK_LEA_REG_MEMABS   = 25;   { LEA r32, [abs32]               }
+  IK_ALU_REG_REG      = 26;   { ALU op r32, r32 (op via R1Aux) }
+  IK_ALU_REG_IMM      = 27;   { ALU op r32, imm32 (op via Aux) }
+  IK_IMUL_REG_REG     = 28;
+  IK_IDIV_REG         = 29;
+  IK_CDQ              = 30;
+  IK_TEST_REG_REG     = 31;
+  IK_NEG_REG          = 32;
+  IK_NOT_REG          = 33;
+  IK_MOVZX_REG_BMEMBP = 34;   { MOVZX r32, BYTE PTR [EBP+disp] }
+  IK_JCC_LBL          = 35;   { Jcc near rel32 (cond via R1)   }
+  IK_INC_REG          = 36;
+  IK_DEC_REG          = 37;
+  IK_SHL_REG_IMM      = 38;   { SHL r32, imm8                  }
+
+  { ----- Palier E : litteraux chaine en .rdata ----- }
+  IK_MOV_REG_STRRVA   = 39;   { MOV r32, RVA(strlit[Imm])      }
+
+  { ----- Palier G : MOV [ESP+disp], r32 (passage d args) ----- }
+  IK_MOV_MEMESP_REG   = 40;
+
+  { Sous-codes ALU (champ reg du ModR/M pour formes /r) }
+  ALU_ADD = 0;
+  ALU_OR  = 1;
+  ALU_AND = 4;
+  ALU_SUB = 5;
+  ALU_XOR = 6;
+  ALU_CMP = 7;
+
+  { Codes de condition pour Jcc (low nibble apres 0F 8x) }
+  CC_O   = $0;  CC_NO  = $1;
+  CC_B   = $2;  CC_NB  = $3;   { unsigned <  /  >=  }
+  CC_E   = $4;  CC_NE  = $5;   { = / <>             }
+  CC_BE  = $6;  CC_A   = $7;   { unsigned <= / >    }
+  CC_S   = $8;  CC_NS  = $9;
+  CC_P   = $A;  CC_NP  = $B;
+  CC_L   = $C;  CC_GE  = $D;   { signed < / >=      }
+  CC_LE  = $E;  CC_G   = $F;   { signed <= / >      }
+
+  { Encodage de registre 32 bits (champ reg/rm de ModR/M) }
+  R_EAX = 0; R_ECX = 1; R_EDX = 2; R_EBX = 3;
+  R_ESP = 4; R_EBP = 5; R_ESI = 6; R_EDI = 7;
+
+Type
+  TAsmInstr = Record
+    Kind   : Integer;
+    R1, R2 : Integer;
+    Aux    : Integer;     { sous-opcode ALU, code de condition }
+    Imm    : LongInt;
+    LblIdx : Integer;
+    Ofs    : LongInt;     { offset dans .text - calcule pass 1 }
+    Size   : Integer;     { taille encodee en octets           }
+  End;
+
+  TAsmLabelRec = Record
+    Name    : TString;
+    Ofs     : LongInt;
+    Defined : Boolean;
+  End;
+
+  TAsmDataSym = Record
+    Name : TString;
+    Ofs  : LongInt;
+    Size : LongInt;
+  End;
+
+Var
+  AsmInstrs       : Array[0..AS_MAX_INSTR-1] Of TAsmInstr;
+  AsmInstrCount   : Integer;
+  AsmLabels       : Array[0..AS_MAX_LBL-1] Of TAsmLabelRec;
+  AsmLabelCnt     : Integer;
+  AsmCode         : Array[0..AS_MAX_CODE-1] Of Byte;
+  AsmCodeSize     : LongInt;
+  AsmDataSyms     : Array[0..AS_MAX_LBL-1] Of TAsmDataSym;
+  AsmDataSymCnt   : Integer;
+  AsmDataSecSize  : LongInt;
+  AsmDataBuf      : Array[0..AS_MAX_CODE-1] Of Byte;
+
+{ ------------------------------------------------------------ }
+{ AsmInit : reinitialiser la queue d instructions               }
+{ ------------------------------------------------------------ }
+
+Procedure AsmInit;
+Begin
+  AsmInstrCount := 0;
+  AsmLabelCnt   := 0;
+  AsmCodeSize   := 0;
+  AsmDataSymCnt := 0;
+  AsmDataSecSize   := 0;
+  { Initialiser les RVA fixes pour qu AsmDataVA/StrLitVA renvoient }
+  { les bonnes adresses pendant le codegen (avant AsmAssemble).    }
+  PE_RDATA_RVA  := PE_TEXT_RVA  + PE_SEC_ALIGN;
+  PE_DATA_RVA   := PE_RDATA_RVA + PE_SEC_ALIGN;
+End;
+
+{ ------------------------------------------------------------ }
+{ AsmFindLabel / AsmGetOrAddLabel                               }
+{ ------------------------------------------------------------ }
+
+Function AsmFindLabel(Const N : TString) : Integer;
+Var I : Integer;
+Begin
+  AsmFindLabel := -1;
+  For I := 0 To AsmLabelCnt - 1 Do
+    If AsmLabels[I].Name = N Then
+    Begin
+      AsmFindLabel := I;
+      Exit;
+    End;
+End;
+
+Function AsmGetOrAddLabel(Const N : TString) : Integer;
+Var Idx : Integer;
+Begin
+  Idx := AsmFindLabel(N);
+  If Idx < 0 Then
+  Begin
+    If AsmLabelCnt >= AS_MAX_LBL Then
+    Begin
+      AsmGetOrAddLabel := -1;
+      Exit;
+    End;
+    AsmLabels[AsmLabelCnt].Name    := N;
+    AsmLabels[AsmLabelCnt].Ofs     := 0;
+    AsmLabels[AsmLabelCnt].Defined := False;
+    Idx := AsmLabelCnt;
+    Inc(AsmLabelCnt);
+  End;
+  AsmGetOrAddLabel := Idx;
+End;
+
+{ ------------------------------------------------------------ }
+{ AsmAddInstr : ajouter une instruction a la queue              }
+{ ------------------------------------------------------------ }
+
+Procedure AsmAddInstr(Kind, R1, R2 : Integer; Imm : LongInt;
+                      LblIdx : Integer);
+Begin
+  If AsmInstrCount >= AS_MAX_INSTR Then Exit;
+  AsmInstrs[AsmInstrCount].Kind   := Kind;
+  AsmInstrs[AsmInstrCount].R1     := R1;
+  AsmInstrs[AsmInstrCount].R2     := R2;
+  AsmInstrs[AsmInstrCount].Aux    := 0;
+  AsmInstrs[AsmInstrCount].Imm    := Imm;
+  AsmInstrs[AsmInstrCount].LblIdx := LblIdx;
+  AsmInstrs[AsmInstrCount].Ofs    := 0;
+  AsmInstrs[AsmInstrCount].Size   := 0;
+  Inc(AsmInstrCount);
+End;
+
+Procedure AsmAddInstrAux(Kind, R1, R2, Aux : Integer; Imm : LongInt;
+                         LblIdx : Integer);
+Begin
+  If AsmInstrCount >= AS_MAX_INSTR Then Exit;
+  AsmInstrs[AsmInstrCount].Kind   := Kind;
+  AsmInstrs[AsmInstrCount].R1     := R1;
+  AsmInstrs[AsmInstrCount].R2     := R2;
+  AsmInstrs[AsmInstrCount].Aux    := Aux;
+  AsmInstrs[AsmInstrCount].Imm    := Imm;
+  AsmInstrs[AsmInstrCount].LblIdx := LblIdx;
+  AsmInstrs[AsmInstrCount].Ofs    := 0;
+  AsmInstrs[AsmInstrCount].Size   := 0;
+  Inc(AsmInstrCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ Symboles de donnees (.data)                                  }
+{ ------------------------------------------------------------ }
+
+Function AsmDefineData(Const N : TString; Sz : LongInt) : LongInt;
+Var Aligned : LongInt;
+Begin
+  { Alignement DWord }
+  Aligned := (AsmDataSecSize + 3) And (Not 3);
+  If AsmDataSymCnt >= AS_MAX_LBL Then
+  Begin
+    AsmDefineData := -1;
+    Exit;
+  End;
+  AsmDataSyms[AsmDataSymCnt].Name := N;
+  AsmDataSyms[AsmDataSymCnt].Ofs  := Aligned;
+  AsmDataSyms[AsmDataSymCnt].Size := Sz;
+  Inc(AsmDataSymCnt);
+  AsmDataSecSize := Aligned + Sz;
+  AsmDefineData := Aligned;
+End;
+
+Function AsmFindData(Const N : TString) : Integer;
+Var I : Integer;
+Begin
+  AsmFindData := -1;
+  For I := 0 To AsmDataSymCnt - 1 Do
+    If AsmDataSyms[I].Name = N Then
+    Begin
+      AsmFindData := I;
+      Exit;
+    End;
+End;
+
+Function AsmDataVA(Const N : TString) : LongInt;
+Var Idx : Integer;
+Begin
+  Idx := AsmFindData(N);
+  If Idx < 0 Then
+  Begin
+    WarnMsg('Asm: symbole de donnees inconnu "' + N + '"');
+    AsmDataVA := 0;
+  End
+  Else
+    AsmDataVA := PE_IMG_BASE + PE_DATA_RVA + AsmDataSyms[Idx].Ofs;
+End;
+
+{ ============================================================ }
+{ Palier E : table d imports multi-DLL et litteraux chaine     }
+{ ============================================================ }
+
+Const
+  IMP_MAX_DLL  = 8;
+  IMP_MAX_FUNC = 64;
+  STR_MAX_LIT  = 128;
+
+Type
+  TImpDLL = Record
+    Name     : TString;
+    NumFuncs : Integer;
+    ILTOfs   : LongInt;
+    IATOfs   : LongInt;
+    NameOfs  : LongInt;
+  End;
+
+  TImpFunc = Record
+    Name    : TString;
+    DLLIdx  : Integer;
+    HintOfs : LongInt;
+    IATOfs  : LongInt;
+  End;
+
+  TStrLit = Record
+    Text : TString;
+    Ofs  : LongInt;
+  End;
+
+Var
+  ImpDLLs       : Array[0..IMP_MAX_DLL-1] Of TImpDLL;
+  ImpDLLCnt     : Integer;
+  ImpFuncs      : Array[0..IMP_MAX_FUNC-1] Of TImpFunc;
+  ImpFuncCnt    : Integer;
+  ImpRDataSize  : LongInt;
+  StrLits       : Array[0..STR_MAX_LIT-1] Of TStrLit;
+  StrLitCnt     : Integer;
+
+Procedure ImpReset;
+Begin
+  ImpDLLCnt    := 0;
+  ImpFuncCnt   := 0;
+  ImpRDataSize := 0;
+  StrLitCnt    := 0;
+End;
+
+Function ImpAddDLL(Const N : TString) : Integer;
+Var I : Integer;
+Begin
+  For I := 0 To ImpDLLCnt - 1 Do
+    If UpCaseStr(ImpDLLs[I].Name) = UpCaseStr(N) Then
+    Begin ImpAddDLL := I; Exit; End;
+  If ImpDLLCnt >= IMP_MAX_DLL Then
+    FatalError('Palier E: trop de DLL importees');
+  ImpDLLs[ImpDLLCnt].Name     := N;
+  ImpDLLs[ImpDLLCnt].NumFuncs := 0;
+  ImpAddDLL := ImpDLLCnt;
+  Inc(ImpDLLCnt);
+End;
+
+Function ImpFindFunc(Const N : TString) : Integer;
+Var I : Integer;
+Begin
+  ImpFindFunc := -1;
+  For I := 0 To ImpFuncCnt - 1 Do
+    If UpCaseStr(ImpFuncs[I].Name) = UpCaseStr(N) Then
+    Begin ImpFindFunc := I; Exit; End;
+End;
+
+Function ImpAddFunc(DLLIdx : Integer; Const N : TString) : Integer;
+Var Idx : Integer;
+Begin
+  Idx := ImpFindFunc(N);
+  If Idx >= 0 Then
+  Begin ImpAddFunc := Idx; Exit; End;
+  If ImpFuncCnt >= IMP_MAX_FUNC Then
+    FatalError('Palier E: trop de fonctions importees');
+  ImpFuncs[ImpFuncCnt].Name   := N;
+  ImpFuncs[ImpFuncCnt].DLLIdx := DLLIdx;
+  Inc(ImpDLLs[DLLIdx].NumFuncs);
+  ImpAddFunc := ImpFuncCnt;
+  Inc(ImpFuncCnt);
+End;
+
+{ Calcule les offsets dans .rdata pour IDT/ILT/IAT/HintName/    }
+{ DLLNames/StringPool. A appeler avant AsmAssemble (pour les    }
+{ encodages CALL_IAT et MOV_REG_STRRVA) et avant PEEmitRData.   }
+
+Procedure ImpBuildLayout;
+Var Cur : LongInt; I, J : Integer;
+Begin
+  Cur := 20 * (ImpDLLCnt + 1);   { IDT + terminator }
+  For I := 0 To ImpDLLCnt - 1 Do
+  Begin
+    ImpDLLs[I].ILTOfs := Cur;
+    Cur := Cur + 4 * (ImpDLLs[I].NumFuncs + 1);
+    ImpDLLs[I].IATOfs := Cur;
+    For J := 0 To ImpFuncCnt - 1 Do
+      If ImpFuncs[J].DLLIdx = I Then
+      Begin
+        ImpFuncs[J].IATOfs := Cur;
+        Cur := Cur + 4;
+      End;
+    Cur := Cur + 4;     { null terminator }
+  End;
+  { Hint/Name entries }
+  For J := 0 To ImpFuncCnt - 1 Do
+  Begin
+    ImpFuncs[J].HintOfs := Cur;
+    Cur := Cur + 2 + Length(ImpFuncs[J].Name) + 1;
+    If (Cur And 1) <> 0 Then Inc(Cur);
+  End;
+  For I := 0 To ImpDLLCnt - 1 Do
+  Begin
+    ImpDLLs[I].NameOfs := Cur;
+    Cur := Cur + Length(ImpDLLs[I].Name) + 1;
+  End;
+  { String literal pool }
+  For J := 0 To StrLitCnt - 1 Do
+  Begin
+    StrLits[J].Ofs := Cur;
+    Cur := Cur + Length(StrLits[J].Text) + 1;
+  End;
+  ImpRDataSize := Cur;
+End;
+
+Function ImpFuncIATVA(Idx : Integer) : LongInt;
+Begin
+  ImpFuncIATVA := PE_IMG_BASE + PE_RDATA_RVA + ImpFuncs[Idx].IATOfs;
+End;
+
+Function StrAddLit(Const S : TString) : Integer;
+Var I : Integer;
+Begin
+  For I := 0 To StrLitCnt - 1 Do
+    If StrLits[I].Text = S Then
+    Begin StrAddLit := I; Exit; End;
+  If StrLitCnt >= STR_MAX_LIT Then
+    FatalError('Palier E: trop de litteraux chaine');
+  StrLits[StrLitCnt].Text := S;
+  StrAddLit := StrLitCnt;
+  Inc(StrLitCnt);
+End;
+
+Function StrLitVA(Idx : Integer) : LongInt;
+Begin
+  StrLitVA := PE_IMG_BASE + PE_RDATA_RVA + StrLits[Idx].Ofs;
+End;
+
+{ ------------------------------------------------------------ }
+{ Helpers de haut niveau                                        }
+{ ------------------------------------------------------------ }
+
+Procedure AsmLabel(Const N : TString);
+Begin
+  AsmAddInstr(IK_LABEL, 0, 0, 0, AsmGetOrAddLabel(N));
+End;
+
+Procedure AsmPushImm(V : LongInt);
+Begin AsmAddInstr(IK_PUSH_IMM, 0, 0, V, -1); End;
+
+Procedure AsmPushReg(R : Integer);
+Begin AsmAddInstr(IK_PUSH_REG, R, 0, 0, -1); End;
+
+Procedure AsmPopReg(R : Integer);
+Begin AsmAddInstr(IK_POP_REG, R, 0, 0, -1); End;
+
+Procedure AsmMovRegImm(R : Integer; V : LongInt);
+Begin AsmAddInstr(IK_MOV_REG_IMM, R, 0, V, -1); End;
+
+Procedure AsmMovRegReg(Dst, Src : Integer);
+Begin AsmAddInstr(IK_MOV_REG_REG, Dst, Src, 0, -1); End;
+
+Procedure AsmXorRegReg(Dst, Src : Integer);
+Begin AsmAddInstr(IK_XOR_REG_REG, Dst, Src, 0, -1); End;
+
+Procedure AsmCallIAT(Slot : LongInt);
+Begin AsmAddInstr(IK_CALL_IAT, 0, 0, Slot, -1); End;
+
+Procedure AsmCallLbl(Const N : TString);
+Begin AsmAddInstr(IK_CALL_LBL, 0, 0, 0, AsmGetOrAddLabel(N)); End;
+
+Procedure AsmRet;
+Begin AsmAddInstr(IK_RET, 0, 0, 0, -1); End;
+
+Procedure AsmRetImm(V : LongInt);
+Begin AsmAddInstr(IK_RET_IMM, 0, 0, V, -1); End;
+
+Procedure AsmAddEspImm(V : LongInt);
+Begin AsmAddInstr(IK_ADD_ESP_IMM, 0, 0, V, -1); End;
+
+Procedure AsmSubEspImm(V : LongInt);
+Begin AsmAddInstr(IK_SUB_ESP_IMM, 0, 0, V, -1); End;
+
+Procedure AsmJmpLbl(Const N : TString);
+Begin AsmAddInstr(IK_JMP_LBL, 0, 0, 0, AsmGetOrAddLabel(N)); End;
+
+Procedure AsmInt3;
+Begin AsmAddInstr(IK_INT3, 0, 0, 0, -1); End;
+
+{ ----- Palier B : helpers haut-niveau ----- }
+
+Procedure AsmMovRegMemBP(R : Integer; Disp : LongInt);
+Begin AsmAddInstr(IK_MOV_REG_MEMBP, R, 0, Disp, -1); End;
+
+Procedure AsmMovMemBPReg(Disp : LongInt; R : Integer);
+Begin AsmAddInstr(IK_MOV_MEMBP_REG, R, 0, Disp, -1); End;
+
+Procedure AsmMovRegMemAbs(R : Integer; Abs : LongInt);
+Begin AsmAddInstr(IK_MOV_REG_MEMABS, R, 0, Abs, -1); End;
+
+Procedure AsmMovMemAbsReg(Abs : LongInt; R : Integer);
+Begin AsmAddInstr(IK_MOV_MEMABS_REG, R, 0, Abs, -1); End;
+
+Procedure AsmLeaRegMemBP(R : Integer; Disp : LongInt);
+Begin AsmAddInstr(IK_LEA_REG_MEMBP, R, 0, Disp, -1); End;
+
+Procedure AsmLeaRegMemAbs(R : Integer; Abs : LongInt);
+Begin AsmAddInstr(IK_LEA_REG_MEMABS, R, 0, Abs, -1); End;
+
+Procedure AsmAluRegReg(Subop, Dst, Src : Integer);
+Begin AsmAddInstrAux(IK_ALU_REG_REG, Dst, Src, Subop, 0, -1); End;
+
+Procedure AsmAluRegImm(Subop, Dst : Integer; V : LongInt);
+Begin AsmAddInstrAux(IK_ALU_REG_IMM, Dst, 0, Subop, V, -1); End;
+
+Procedure AsmAddRegReg(Dst, Src : Integer);
+Begin AsmAluRegReg(ALU_ADD, Dst, Src); End;
+
+Procedure AsmSubRegReg(Dst, Src : Integer);
+Begin AsmAluRegReg(ALU_SUB, Dst, Src); End;
+
+Procedure AsmAndRegReg(Dst, Src : Integer);
+Begin AsmAluRegReg(ALU_AND, Dst, Src); End;
+
+Procedure AsmOrRegReg(Dst, Src : Integer);
+Begin AsmAluRegReg(ALU_OR, Dst, Src); End;
+
+Procedure AsmCmpRegReg(A, B : Integer);
+Begin AsmAluRegReg(ALU_CMP, A, B); End;
+
+Procedure AsmAddRegImm(R : Integer; V : LongInt);
+Begin AsmAluRegImm(ALU_ADD, R, V); End;
+
+Procedure AsmSubRegImm(R : Integer; V : LongInt);
+Begin AsmAluRegImm(ALU_SUB, R, V); End;
+
+Procedure AsmCmpRegImm(R : Integer; V : LongInt);
+Begin AsmAluRegImm(ALU_CMP, R, V); End;
+
+Procedure AsmImulRegReg(Dst, Src : Integer);
+Begin AsmAddInstr(IK_IMUL_REG_REG, Dst, Src, 0, -1); End;
+
+Procedure AsmIdivReg(R : Integer);
+Begin AsmAddInstr(IK_IDIV_REG, R, 0, 0, -1); End;
+
+Procedure AsmCdq;
+Begin AsmAddInstr(IK_CDQ, 0, 0, 0, -1); End;
+
+Procedure AsmTestRegReg(A, B : Integer);
+Begin AsmAddInstr(IK_TEST_REG_REG, A, B, 0, -1); End;
+
+Procedure AsmNegReg(R : Integer);
+Begin AsmAddInstr(IK_NEG_REG, R, 0, 0, -1); End;
+
+Procedure AsmNotReg(R : Integer);
+Begin AsmAddInstr(IK_NOT_REG, R, 0, 0, -1); End;
+
+Procedure AsmMovzxRegBMemBP(R : Integer; Disp : LongInt);
+Begin AsmAddInstr(IK_MOVZX_REG_BMEMBP, R, 0, Disp, -1); End;
+
+Procedure AsmJcc(Cond : Integer; Const N : TString);
+Begin AsmAddInstrAux(IK_JCC_LBL, Cond, 0, 0, 0, AsmGetOrAddLabel(N)); End;
+
+Procedure AsmIncReg(R : Integer);
+Begin AsmAddInstr(IK_INC_REG, R, 0, 0, -1); End;
+
+Procedure AsmDecReg(R : Integer);
+Begin AsmAddInstr(IK_DEC_REG, R, 0, 0, -1); End;
+
+Procedure AsmShlRegImm(R : Integer; V : LongInt);
+Begin AsmAddInstr(IK_SHL_REG_IMM, R, 0, V, -1); End;
+
+Procedure AsmMovRegStrRVA(R : Integer; LitIdx : Integer);
+Begin AsmAddInstr(IK_MOV_REG_STRRVA, R, 0, LitIdx, -1); End;
+
+Procedure AsmMovMemEspReg(Disp : LongInt; R : Integer);
+Begin AsmAddInstr(IK_MOV_MEMESP_REG, R, 0, Disp, -1); End;
+
+{ ------------------------------------------------------------ }
+{ AsmInstrSize : taille encodee d une instruction               }
+{ ------------------------------------------------------------ }
+
+Function AsmInstrSize(Const I : TAsmInstr) : Integer;
+Begin
+  Case I.Kind Of
+    IK_LABEL       : AsmInstrSize := 0;
+    IK_PUSH_IMM    : If (I.Imm >= -128) And (I.Imm <= 127)
+                     Then AsmInstrSize := 2 Else AsmInstrSize := 5;
+    IK_PUSH_REG    : AsmInstrSize := 1;
+    IK_POP_REG     : AsmInstrSize := 1;
+    IK_MOV_REG_IMM : AsmInstrSize := 5;
+    IK_MOV_REG_REG : AsmInstrSize := 2;
+    IK_XOR_REG_REG : AsmInstrSize := 2;
+    IK_CALL_IAT    : AsmInstrSize := 6;
+    IK_CALL_LBL    : AsmInstrSize := 5;
+    IK_RET         : AsmInstrSize := 1;
+    IK_RET_IMM     : AsmInstrSize := 3;
+    IK_ADD_ESP_IMM : If (I.Imm >= -128) And (I.Imm <= 127)
+                     Then AsmInstrSize := 3 Else AsmInstrSize := 6;
+    IK_SUB_ESP_IMM : If (I.Imm >= -128) And (I.Imm <= 127)
+                     Then AsmInstrSize := 3 Else AsmInstrSize := 6;
+    IK_JMP_LBL     : AsmInstrSize := 5;
+    IK_INT3        : AsmInstrSize := 1;
+
+    { ----- Palier B ----- }
+    IK_MOV_REG_MEMBP, IK_MOV_MEMBP_REG, IK_LEA_REG_MEMBP:
+      If (I.Imm >= -128) And (I.Imm <= 127)
+      Then AsmInstrSize := 3 Else AsmInstrSize := 6;
+    IK_MOV_REG_MEMABS, IK_MOV_MEMABS_REG, IK_LEA_REG_MEMABS:
+      AsmInstrSize := 6;
+    IK_ALU_REG_REG     : AsmInstrSize := 2;
+    IK_ALU_REG_IMM     : If (I.Imm >= -128) And (I.Imm <= 127)
+                         Then AsmInstrSize := 3 Else AsmInstrSize := 6;
+    IK_IMUL_REG_REG    : AsmInstrSize := 3;
+    IK_IDIV_REG        : AsmInstrSize := 2;
+    IK_CDQ             : AsmInstrSize := 1;
+    IK_TEST_REG_REG    : AsmInstrSize := 2;
+    IK_NEG_REG         : AsmInstrSize := 2;
+    IK_NOT_REG         : AsmInstrSize := 2;
+    IK_MOVZX_REG_BMEMBP: If (I.Imm >= -128) And (I.Imm <= 127)
+                         Then AsmInstrSize := 4 Else AsmInstrSize := 7;
+    IK_JCC_LBL         : AsmInstrSize := 6;
+    IK_INC_REG         : AsmInstrSize := 1;
+    IK_DEC_REG         : AsmInstrSize := 1;
+    IK_SHL_REG_IMM     : If I.Imm = 1 Then AsmInstrSize := 2
+                         Else AsmInstrSize := 3;
+    IK_MOV_REG_STRRVA  : AsmInstrSize := 5;
+    IK_MOV_MEMESP_REG  : If (I.Imm >= -128) And (I.Imm <= 127)
+                         Then AsmInstrSize := 4 Else AsmInstrSize := 7;
+  Else
+    AsmInstrSize := 0;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ Emission bas niveau dans AsmCode                              }
+{ ------------------------------------------------------------ }
+
+Procedure AsmEmitByte(B : Byte);
+Begin
+  If AsmCodeSize >= AS_MAX_CODE Then Exit;
+  AsmCode[AsmCodeSize] := B;
+  Inc(AsmCodeSize);
+End;
+
+Procedure AsmEmitWord(W : LongInt);
+Begin
+  AsmEmitByte(W And $FF);
+  AsmEmitByte((W Shr 8) And $FF);
+End;
+
+Procedure AsmEmitDWord(D : LongInt);
+Begin
+  AsmEmitByte(D And $FF);
+  AsmEmitByte((D Shr 8) And $FF);
+  AsmEmitByte((D Shr 16) And $FF);
+  AsmEmitByte((D Shr 24) And $FF);
+End;
+
+{ ------------------------------------------------------------ }
+{ AsmAssemble : 2-pass, transforme la queue en bytes machine    }
+{ ------------------------------------------------------------ }
+
+Procedure PEComputeLayout; Forward;
+
+Procedure AsmAssemble;
+Var
+  I, K   : Integer;
+  Ofs    : LongInt;
+  Target : LongInt;
+  Disp   : LongInt;
+  IatVA  : LongInt;
+Begin
+  { ----- Pass 1 : tailles + offsets de labels ----- }
+  Ofs := 0;
+  For I := 0 To AsmInstrCount - 1 Do
+  Begin
+    AsmInstrs[I].Ofs  := Ofs;
+    AsmInstrs[I].Size := AsmInstrSize(AsmInstrs[I]);
+    If AsmInstrs[I].Kind = IK_LABEL Then
+    Begin
+      K := AsmInstrs[I].LblIdx;
+      If (K >= 0) And (K < AsmLabelCnt) Then
+      Begin
+        AsmLabels[K].Ofs     := Ofs;
+        AsmLabels[K].Defined := True;
+      End;
+    End;
+    Inc(Ofs, AsmInstrs[I].Size);
+  End;
+
+  { Apres Pass 1, la taille totale du code est connue.           }
+  { Calculer le layout PE pour que StrLitVA/ImpFuncIATVA/         }
+  { AsmDataVA emettent les bonnes RVAs en Pass 2.                 }
+  AsmCodeSize := Ofs;
+  PEComputeLayout;
+
+  { ----- Pass 2 : emission des bytes ----- }
+  AsmCodeSize := 0;
+  For I := 0 To AsmInstrCount - 1 Do
+  Begin
+    Case AsmInstrs[I].Kind Of
+      IK_LABEL : ;   { rien a emettre }
+
+      IK_PUSH_IMM:
+        If (AsmInstrs[I].Imm >= -128) And (AsmInstrs[I].Imm <= 127) Then
+        Begin
+          AsmEmitByte($6A);
+          AsmEmitByte(AsmInstrs[I].Imm And $FF);
+        End
+        Else
+        Begin
+          AsmEmitByte($68);
+          AsmEmitDWord(AsmInstrs[I].Imm);
+        End;
+
+      IK_PUSH_REG:
+        AsmEmitByte($50 Or (AsmInstrs[I].R1 And 7));
+
+      IK_POP_REG:
+        AsmEmitByte($58 Or (AsmInstrs[I].R1 And 7));
+
+      IK_MOV_REG_IMM:
+        Begin
+          AsmEmitByte($B8 Or (AsmInstrs[I].R1 And 7));
+          AsmEmitDWord(AsmInstrs[I].Imm);
+        End;
+
+      IK_MOV_REG_REG:
+        Begin
+          { 89 /r : MOV r/m32, r32  -> dst = R1, src = R2  }
+          AsmEmitByte($89);
+          AsmEmitByte($C0 Or ((AsmInstrs[I].R2 And 7) Shl 3) Or
+                      (AsmInstrs[I].R1 And 7));
+        End;
+
+      IK_XOR_REG_REG:
+        Begin
+          AsmEmitByte($31);
+          AsmEmitByte($C0 Or ((AsmInstrs[I].R2 And 7) Shl 3) Or
+                      (AsmInstrs[I].R1 And 7));
+        End;
+
+      IK_CALL_IAT:
+        Begin
+          AsmEmitByte($FF); AsmEmitByte($15);
+          IatVA := ImpFuncIATVA(AsmInstrs[I].Imm);
+          AsmEmitDWord(IatVA);
+        End;
+
+      IK_CALL_LBL:
+        Begin
+          AsmEmitByte($E8);
+          K := AsmInstrs[I].LblIdx;
+          If (K >= 0) And (K < AsmLabelCnt) And AsmLabels[K].Defined Then
+          Begin
+            Target := AsmLabels[K].Ofs;
+            Disp   := Target - (AsmInstrs[I].Ofs + 5);
+          End
+          Else
+          Begin
+            WarnMsg('Asm: CALL vers label non defini');
+            Disp := 0;
+          End;
+          AsmEmitDWord(Disp);
+        End;
+
+      IK_RET:
+        AsmEmitByte($C3);
+
+      IK_RET_IMM:
+        Begin
+          AsmEmitByte($C2);
+          AsmEmitWord(AsmInstrs[I].Imm And $FFFF);
+        End;
+
+      IK_ADD_ESP_IMM, IK_SUB_ESP_IMM:
+        If (AsmInstrs[I].Imm >= -128) And (AsmInstrs[I].Imm <= 127) Then
+        Begin
+          AsmEmitByte($83);
+          If AsmInstrs[I].Kind = IK_ADD_ESP_IMM Then
+            AsmEmitByte($C4)
+          Else
+            AsmEmitByte($EC);
+          AsmEmitByte(AsmInstrs[I].Imm And $FF);
+        End
+        Else
+        Begin
+          AsmEmitByte($81);
+          If AsmInstrs[I].Kind = IK_ADD_ESP_IMM Then
+            AsmEmitByte($C4)
+          Else
+            AsmEmitByte($EC);
+          AsmEmitDWord(AsmInstrs[I].Imm);
+        End;
+
+      IK_JMP_LBL:
+        Begin
+          AsmEmitByte($E9);
+          K := AsmInstrs[I].LblIdx;
+          If (K >= 0) And (K < AsmLabelCnt) And AsmLabels[K].Defined Then
+          Begin
+            Target := AsmLabels[K].Ofs;
+            Disp   := Target - (AsmInstrs[I].Ofs + 5);
+          End
+          Else
+          Begin
+            WarnMsg('Asm: JMP vers label non defini');
+            Disp := 0;
+          End;
+          AsmEmitDWord(Disp);
+        End;
+
+      IK_INT3:
+        AsmEmitByte($CC);
+
+      { ----- Palier B : memoire BP-relative ----- }
+      IK_MOV_REG_MEMBP, IK_MOV_MEMBP_REG, IK_LEA_REG_MEMBP:
+        Begin
+          { Opcodes : 8B (load), 89 (store), 8D (lea) }
+          Case AsmInstrs[I].Kind Of
+            IK_MOV_REG_MEMBP : AsmEmitByte($8B);
+            IK_MOV_MEMBP_REG : AsmEmitByte($89);
+            IK_LEA_REG_MEMBP : AsmEmitByte($8D);
+          End;
+          { ModR/M : mod = 01 (disp8) ou 10 (disp32), reg = R1, rm = 101 (EBP) }
+          If (AsmInstrs[I].Imm >= -128) And (AsmInstrs[I].Imm <= 127) Then
+          Begin
+            AsmEmitByte($40 Or ((AsmInstrs[I].R1 And 7) Shl 3) Or 5);
+            AsmEmitByte(AsmInstrs[I].Imm And $FF);
+          End
+          Else
+          Begin
+            AsmEmitByte($80 Or ((AsmInstrs[I].R1 And 7) Shl 3) Or 5);
+            AsmEmitDWord(AsmInstrs[I].Imm);
+          End;
+        End;
+
+      { ----- Palier B : memoire absolue [disp32] ----- }
+      IK_MOV_REG_MEMABS, IK_MOV_MEMABS_REG, IK_LEA_REG_MEMABS:
+        Begin
+          Case AsmInstrs[I].Kind Of
+            IK_MOV_REG_MEMABS: AsmEmitByte($8B);
+            IK_MOV_MEMABS_REG: AsmEmitByte($89);
+            IK_LEA_REG_MEMABS: AsmEmitByte($8D);
+          End;
+          { ModR/M : mod = 00, reg = R1, rm = 101 (disp32 only) }
+          AsmEmitByte((AsmInstrs[I].R1 And 7) Shl 3 Or 5);
+          AsmEmitDWord(AsmInstrs[I].Imm);
+        End;
+
+      { ----- Palier B : ALU reg, reg ----- }
+      IK_ALU_REG_REG:
+        Begin
+          { opcode = (subop << 3) | 1 : ADD=$01 OR=$09 AND=$21 SUB=$29 XOR=$31 CMP=$39 }
+          AsmEmitByte((AsmInstrs[I].Aux Shl 3) Or $01);
+          AsmEmitByte($C0 Or ((AsmInstrs[I].R2 And 7) Shl 3) Or
+                      (AsmInstrs[I].R1 And 7));
+        End;
+
+      { ----- Palier B : ALU reg, imm ----- }
+      IK_ALU_REG_IMM:
+        Begin
+          If (AsmInstrs[I].Imm >= -128) And (AsmInstrs[I].Imm <= 127) Then
+          Begin
+            AsmEmitByte($83);
+            AsmEmitByte($C0 Or ((AsmInstrs[I].Aux And 7) Shl 3) Or
+                        (AsmInstrs[I].R1 And 7));
+            AsmEmitByte(AsmInstrs[I].Imm And $FF);
+          End
+          Else
+          Begin
+            AsmEmitByte($81);
+            AsmEmitByte($C0 Or ((AsmInstrs[I].Aux And 7) Shl 3) Or
+                        (AsmInstrs[I].R1 And 7));
+            AsmEmitDWord(AsmInstrs[I].Imm);
+          End;
+        End;
+
+      IK_IMUL_REG_REG:
+        Begin
+          AsmEmitByte($0F); AsmEmitByte($AF);
+          AsmEmitByte($C0 Or ((AsmInstrs[I].R1 And 7) Shl 3) Or
+                      (AsmInstrs[I].R2 And 7));
+        End;
+
+      IK_IDIV_REG:
+        Begin
+          AsmEmitByte($F7);
+          AsmEmitByte($F8 Or (AsmInstrs[I].R1 And 7));
+        End;
+
+      IK_CDQ:
+        AsmEmitByte($99);
+
+      IK_TEST_REG_REG:
+        Begin
+          AsmEmitByte($85);
+          AsmEmitByte($C0 Or ((AsmInstrs[I].R2 And 7) Shl 3) Or
+                      (AsmInstrs[I].R1 And 7));
+        End;
+
+      IK_NEG_REG:
+        Begin
+          AsmEmitByte($F7);
+          AsmEmitByte($D8 Or (AsmInstrs[I].R1 And 7));
+        End;
+
+      IK_NOT_REG:
+        Begin
+          AsmEmitByte($F7);
+          AsmEmitByte($D0 Or (AsmInstrs[I].R1 And 7));
+        End;
+
+      IK_MOVZX_REG_BMEMBP:
+        Begin
+          AsmEmitByte($0F); AsmEmitByte($B6);
+          If (AsmInstrs[I].Imm >= -128) And (AsmInstrs[I].Imm <= 127) Then
+          Begin
+            AsmEmitByte($40 Or ((AsmInstrs[I].R1 And 7) Shl 3) Or 5);
+            AsmEmitByte(AsmInstrs[I].Imm And $FF);
+          End
+          Else
+          Begin
+            AsmEmitByte($80 Or ((AsmInstrs[I].R1 And 7) Shl 3) Or 5);
+            AsmEmitDWord(AsmInstrs[I].Imm);
+          End;
+        End;
+
+      IK_JCC_LBL:
+        Begin
+          AsmEmitByte($0F);
+          AsmEmitByte($80 Or (AsmInstrs[I].R1 And $0F));
+          K := AsmInstrs[I].LblIdx;
+          If (K >= 0) And (K < AsmLabelCnt) And AsmLabels[K].Defined Then
+          Begin
+            Target := AsmLabels[K].Ofs;
+            Disp   := Target - (AsmInstrs[I].Ofs + 6);
+          End
+          Else
+          Begin
+            WarnMsg('Asm: Jcc vers label non defini');
+            Disp := 0;
+          End;
+          AsmEmitDWord(Disp);
+        End;
+
+      IK_INC_REG:
+        AsmEmitByte($40 Or (AsmInstrs[I].R1 And 7));
+
+      IK_DEC_REG:
+        AsmEmitByte($48 Or (AsmInstrs[I].R1 And 7));
+
+      IK_SHL_REG_IMM:
+        Begin
+          If AsmInstrs[I].Imm = 1 Then
+          Begin
+            AsmEmitByte($D1);
+            AsmEmitByte($E0 Or (AsmInstrs[I].R1 And 7));
+          End
+          Else
+          Begin
+            AsmEmitByte($C1);
+            AsmEmitByte($E0 Or (AsmInstrs[I].R1 And 7));
+            AsmEmitByte(AsmInstrs[I].Imm And $FF);
+          End;
+        End;
+
+      IK_MOV_REG_STRRVA:
+        Begin
+          AsmEmitByte($B8 Or (AsmInstrs[I].R1 And 7));
+          AsmEmitDWord(StrLitVA(AsmInstrs[I].Imm));
+        End;
+
+      IK_MOV_MEMESP_REG:
+        Begin
+          { 89 /r mod=01/10 reg=R1 rm=100 SIB=24 disp }
+          AsmEmitByte($89);
+          If (AsmInstrs[I].Imm >= -128) And (AsmInstrs[I].Imm <= 127) Then
+          Begin
+            AsmEmitByte($44 Or ((AsmInstrs[I].R1 And 7) Shl 3));
+            AsmEmitByte($24);
+            AsmEmitByte(AsmInstrs[I].Imm And $FF);
+          End
+          Else
+          Begin
+            AsmEmitByte($84 Or ((AsmInstrs[I].R1 And 7) Shl 3));
+            AsmEmitByte($24);
+            AsmEmitDWord(AsmInstrs[I].Imm);
+          End;
+        End;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AsmGetLabelOfs : offset d un label dans .text (ou -1)         }
+{ ------------------------------------------------------------ }
+
+Function AsmGetLabelOfs(Const N : TString) : LongInt;
+Var Idx : Integer;
+Begin
+  Idx := AsmFindLabel(N);
+  If (Idx >= 0) And AsmLabels[Idx].Defined Then
+    AsmGetLabelOfs := AsmLabels[Idx].Ofs
+  Else
+    AsmGetLabelOfs := -1;
+End;
+
+{ ------------------------------------------------------------ }
+{ CodeGenEntryPoint : generer le stub de demarrage              }
+{                                                               }
+{ Palier A : juste PUSH 0 / CALL ExitProcess.                   }
+{ Palier B : demo encoders memoire/arithm sur .data globale.    }
+{ Palier C : mini-parser/codegen pour Sub Main + globals +      }
+{   variables locales + expressions arithm/relat/logiques +     }
+{   If/Then/Else/End If + intrinseque ExitProcess.              }
+{ ------------------------------------------------------------ }
+
+{ ============================================================ }
+{ Mini-codegen Palier C : etat                                  }
+{ ============================================================ }
+
+Const
+  CGC_MAX_LOCAL = 64;
+  CGC_MAX_PROC  = 32;
+  CGC_MAX_PARAM = 8;
+
+Type
+  TCGCLocal = Record
+    Name : TString;
+    Ofs  : LongInt;     { offset depuis EBP : negatif (local) ou positif (param) }
+  End;
+
+  TCGCProc = Record
+    Name      : TString;
+    IsFunc    : Boolean;
+    ParamCnt  : Integer;
+    ParamName : Array[0..CGC_MAX_PARAM-1] Of TString;
+  End;
+
+Var
+  CGCLocalCnt      : Integer;
+  CGCLocals        : Array[0..CGC_MAX_LOCAL-1] Of TCGCLocal;
+  CGCFrameSize     : LongInt;
+  CGCFrameInstrIdx : Integer;       { index de SUB ESP, X a patcher    }
+  CGCExitDone      : Boolean;       { ExitProcess deja emis ?           }
+  CGCLabSeq        : Integer;
+  { Pile de labels de sortie pour Exit For / Exit Do }
+  CGCBreakLbl      : Array[0..31] Of TString;
+  CGCBreakKind     : Array[0..31] Of Integer;   { KW_FOR ou KW_DO }
+  CGCBreakTop      : Integer;
+  { Palier F : index dans StrLits[] pour la sequence CRLF }
+  CGCCRLFLit       : Integer;
+  { Palier G : table des Sub/Function utilisateur }
+  CGCProcs         : Array[0..CGC_MAX_PROC-1] Of TCGCProc;
+  CGCProcCnt       : Integer;
+  CGCCurProc       : Integer;       { index dans CGCProcs ou -1 (Main) }
+  CGCExitLabel     : TString;       { label de l epilogue de la proc courante }
+  CGCRetvalOfs     : LongInt;       { offset du retval cache (Function) }
+
+{ ------------------------------------------------------------ }
+{ Helpers locaux/labels                                         }
+{ ------------------------------------------------------------ }
+
+Function CGCAddLocal(Const N : TString) : LongInt;
+Var U : TString;
+Begin
+  U := UpCaseStr(N);
+  If CGCLocalCnt >= CGC_MAX_LOCAL Then
+    FatalError('Palier C: trop de variables locales');
+  CGCFrameSize := CGCFrameSize + 4;
+  CGCLocals[CGCLocalCnt].Name := U;
+  CGCLocals[CGCLocalCnt].Ofs  := -CGCFrameSize;
+  CGCAddLocal := -CGCFrameSize;
+  Inc(CGCLocalCnt);
+End;
+
+Function CGCFindLocal(Const N : TString) : Integer;
+Var I : Integer; U : TString;
+Begin
+  U := UpCaseStr(N);
+  CGCFindLocal := -1;
+  For I := 0 To CGCLocalCnt - 1 Do
+    If CGCLocals[I].Name = U Then
+    Begin CGCFindLocal := I; Exit; End;
+End;
+
+Function CGCNewLabel(Const Pfx : TString) : TString;
+Begin
+  Inc(CGCLabSeq);
+  CGCNewLabel := Pfx + '_' + ItoS(CGCLabSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ Palier G : table des procedures utilisateur                  }
+{ ------------------------------------------------------------ }
+
+Function CGCFindProc(Const N : TString) : Integer;
+Var I : Integer; U : TString;
+Begin
+  U := UpCaseStr(N);
+  CGCFindProc := -1;
+  For I := 0 To CGCProcCnt - 1 Do
+    If UpCaseStr(CGCProcs[I].Name) = U Then
+    Begin CGCFindProc := I; Exit; End;
+End;
+
+Function CGCAddProc(Const N : TString; IsFunc : Boolean) : Integer;
+Begin
+  If CGCProcCnt >= CGC_MAX_PROC Then
+    FatalError('Palier G: trop de procedures utilisateur');
+  CGCProcs[CGCProcCnt].Name     := N;
+  CGCProcs[CGCProcCnt].IsFunc   := IsFunc;
+  CGCProcs[CGCProcCnt].ParamCnt := 0;
+  CGCAddProc := CGCProcCnt;
+  Inc(CGCProcCnt);
+End;
+
+Procedure CGCAddParam(Const N : TString; Ofs : LongInt);
+Var U : TString;
+Begin
+  U := UpCaseStr(N);
+  If CGCLocalCnt >= CGC_MAX_LOCAL Then
+    FatalError('Palier G: trop de parametres');
+  CGCLocals[CGCLocalCnt].Name := U;
+  CGCLocals[CGCLocalCnt].Ofs  := Ofs;
+  Inc(CGCLocalCnt);
+End;
+
+{ ------------------------------------------------------------ }
+{ Helpers de parsing (sur le lexer existant)                    }
+{ ------------------------------------------------------------ }
+
+Function CGCIsKW(KW : Integer) : Boolean;
+Begin
+  CGCIsKW := ((CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD)) And
+             (IsKeyword(CurTokStr) = KW);
+End;
+
+Procedure CGCSkipNewlines;
+Begin
+  While CurTokType = TOK_NEWLINE Do LexNextToken;
+End;
+
+{ Avale une annotation "As <Type>" si presente.                 }
+{ <Type> peut etre TOK_IDENT (type utilisateur) ou TOK_KEYWORD  }
+{ (Long/Integer/Boolean/...). On consomme un seul nom de type.   }
+
+Procedure CGCEatTypeAnnot;
+Begin
+  If CGCIsKW(KW_AS) Then
+  Begin
+    LexNextToken;
+    If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then
+      LexNextToken;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ Sauter jusqu a "End Sub" / "End Function" / "End Property"    }
+{ pour les procedures autres que Sub Main.                      }
+{ ------------------------------------------------------------ }
+
+Procedure CGCSkipToEndProc;
+Begin
+  While CurTokType <> TOK_EOF Do
+  Begin
+    If CGCIsKW(KW_END) Then
+    Begin
+      LexNextToken;
+      If CGCIsKW(KW_SUB) Or CGCIsKW(KW_FUNCTION) Or
+         CGCIsKW(KW_PROPERTY) Then
+      Begin
+        LexNextToken;
+        Exit;
+      End;
+    End
+    Else
+      LexNextToken;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ Forward                                                       }
+{ ------------------------------------------------------------ }
+
+Procedure CGCParseExpr; Forward;
+Procedure CGCEmitCall(PIdx : Integer); Forward;
+
+{ ------------------------------------------------------------ }
+{ ParsePrim : litteral entier, parens, ou identificateur        }
+{ Resultat dans EAX.                                            }
+{ ------------------------------------------------------------ }
+
+Procedure CGCParsePrim;
+Var
+  Idx, DOf : Integer;
+  Nm       : TString;
+  PI       : Integer;
+Begin
+  If (CurTokType = TOK_INTEGER) Or (CurTokType = TOK_LONG) Then
+  Begin
+    AsmMovRegImm(R_EAX, CurTokNum);
+    LexNextToken;
+  End
+  Else If CurTokType = TOK_STRING Then
+  Begin
+    AsmMovRegStrRVA(R_EAX, StrAddLit(CurTokStr));
+    LexNextToken;
+  End
+  Else If CurTokType = TOK_LPAREN Then
+  Begin
+    LexNextToken;
+    CGCParseExpr;
+    If CurTokType <> TOK_RPAREN Then
+      FatalError('Palier C: ")" attendue (ligne ' + ItoS(CurTokLine) + ')');
+    LexNextToken;
+  End
+  Else If CurTokType = TOK_IDENT Then
+  Begin
+    Nm := CurTokStr;
+    { Auto-reference : Function lit son propre @RETVAL si pas de "(" }
+    If (CGCCurProc >= 0) And CGCProcs[CGCCurProc].IsFunc And
+       (UpCaseStr(Nm) = UpCaseStr(CGCProcs[CGCCurProc].Name)) Then
+    Begin
+      LexNextToken;
+      If CurTokType = TOK_LPAREN Then
+        CGCEmitCall(CGCCurProc)
+      Else
+        AsmMovRegMemBP(R_EAX, CGCRetvalOfs);
+      Exit;
+    End;
+    PI := CGCFindProc(Nm);
+    If (PI >= 0) And CGCProcs[PI].IsFunc Then
+    Begin
+      LexNextToken;
+      CGCEmitCall(PI);
+      Exit;
+    End;
+    Idx := CGCFindLocal(Nm);
+    If Idx >= 0 Then
+    Begin
+      AsmMovRegMemBP(R_EAX, CGCLocals[Idx].Ofs);
+      LexNextToken;
+    End
+    Else
+    Begin
+      DOf := AsmFindData(Nm);
+      If DOf < 0 Then
+        FatalError('Palier C: identificateur inconnu "' + Nm +
+                   '" (ligne ' + ItoS(CurTokLine) + ')');
+      AsmMovRegMemAbs(R_EAX, AsmDataVA(Nm));
+      LexNextToken;
+    End;
+  End
+  Else
+    FatalError('Palier C: expression attendue (ligne ' +
+               ItoS(CurTokLine) + ')');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseUnary : -expr, Not expr                                  }
+{ ------------------------------------------------------------ }
+
+Procedure CGCParseUnary;
+Begin
+  If CurTokType = TOK_MINUS Then
+  Begin
+    LexNextToken;
+    CGCParseUnary;
+    AsmNegReg(R_EAX);
+  End
+  Else If CGCIsKW(KW_NOT) Then
+  Begin
+    LexNextToken;
+    CGCParseUnary;
+    AsmNotReg(R_EAX);
+  End
+  Else
+    CGCParsePrim;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseMul : * / \ Mod                                          }
+{ Convention : EAX = gauche, on PUSH, on calcule droit dans EAX,}
+{ MOV ECX,EAX puis POP EAX, donc EAX=gauche / ECX=droit.        }
+{ ------------------------------------------------------------ }
+
+Procedure CGCParseMul;
+Var Op : Integer;
+Begin
+  CGCParseUnary;
+  While (CurTokType = TOK_STAR) Or (CurTokType = TOK_BACKSLASH) Or
+        CGCIsKW(KW_MOD) Do
+  Begin
+    Op := CurTokType;
+    If CGCIsKW(KW_MOD) Then Op := -1;
+    LexNextToken;
+    AsmPushReg(R_EAX);
+    CGCParseUnary;
+    AsmMovRegReg(R_ECX, R_EAX);     { ECX = droit }
+    AsmPopReg(R_EAX);               { EAX = gauche }
+    Case Op Of
+      TOK_STAR     : AsmImulRegReg(R_EAX, R_ECX);
+      TOK_BACKSLASH:
+        Begin
+          AsmCdq;
+          AsmIdivReg(R_ECX);        { EAX = quot, EDX = reste }
+        End;
+      -1:
+        Begin
+          AsmCdq;
+          AsmIdivReg(R_ECX);
+          AsmMovRegReg(R_EAX, R_EDX);
+        End;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseAdd : + -                                                }
+{ ------------------------------------------------------------ }
+
+Procedure CGCParseAdd;
+Var Op : Integer;
+Begin
+  CGCParseMul;
+  While (CurTokType = TOK_PLUS) Or (CurTokType = TOK_MINUS) Do
+  Begin
+    Op := CurTokType;
+    LexNextToken;
+    AsmPushReg(R_EAX);
+    CGCParseMul;
+    AsmMovRegReg(R_ECX, R_EAX);
+    AsmPopReg(R_EAX);
+    Case Op Of
+      TOK_PLUS  : AsmAluRegReg(ALU_ADD, R_EAX, R_ECX);
+      TOK_MINUS : AsmAluRegReg(ALU_SUB, R_EAX, R_ECX);
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseRel : = <> < > <= >=                                     }
+{ Resultat : 0 (False) ou -1 (True) dans EAX                    }
+{ ------------------------------------------------------------ }
+
+Procedure CGCParseRel;
+Var Op, Cc : Integer; LKeep : TString;
+Begin
+  CGCParseAdd;
+  If (CurTokType = TOK_EQ) Or (CurTokType = TOK_NE) Or
+     (CurTokType = TOK_LT) Or (CurTokType = TOK_GT) Or
+     (CurTokType = TOK_LE) Or (CurTokType = TOK_GE) Then
+  Begin
+    Op := CurTokType;
+    LexNextToken;
+    AsmPushReg(R_EAX);
+    CGCParseAdd;
+    AsmMovRegReg(R_ECX, R_EAX);
+    AsmPopReg(R_EAX);
+    AsmAluRegReg(ALU_CMP, R_EAX, R_ECX);   { CMP gauche, droit }
+    Case Op Of
+      TOK_EQ : Cc := CC_E;
+      TOK_NE : Cc := CC_NE;
+      TOK_LT : Cc := CC_L;
+      TOK_GT : Cc := CC_G;
+      TOK_LE : Cc := CC_LE;
+      TOK_GE : Cc := CC_GE;
+    Else Cc := CC_E;
+    End;
+    LKeep := CGCNewLabel('cmpKeep');
+    AsmMovRegImm(R_EAX, -1);     { suppose vrai }
+    AsmJcc(Cc, LKeep);            { si vrai, garder -1 }
+    AsmMovRegImm(R_EAX, 0);
+    AsmLabel(LKeep);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseAndExpr / ParseOrExpr : And/Or bitwise                   }
+{ ------------------------------------------------------------ }
+
+Procedure CGCParseAndExpr;
+Begin
+  CGCParseRel;
+  While CGCIsKW(KW_AND) Do
+  Begin
+    LexNextToken;
+    AsmPushReg(R_EAX);
+    CGCParseRel;
+    AsmMovRegReg(R_ECX, R_EAX);
+    AsmPopReg(R_EAX);
+    AsmAluRegReg(ALU_AND, R_EAX, R_ECX);
+  End;
+End;
+
+Procedure CGCParseExpr;
+Begin
+  CGCParseAndExpr;
+  While CGCIsKW(KW_OR) Do
+  Begin
+    LexNextToken;
+    AsmPushReg(R_EAX);
+    CGCParseAndExpr;
+    AsmMovRegReg(R_ECX, R_EAX);
+    AsmPopReg(R_EAX);
+    AsmAluRegReg(ALU_OR, R_EAX, R_ECX);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ Statement : Dim local, assignation, If, ExitProcess           }
+{ ------------------------------------------------------------ }
+
+Procedure CGCParseStatement; Forward;
+
+{ Tout token qui ferme un bloc d instructions structure (If/For/    }
+{ While/Do/Sub). Le parser de bloc s arrete et laisse le parent      }
+{ consommer son propre terminateur (End/Next/Wend/Loop/Else).        }
+
+Function CGCAtBlockTerm : Boolean;
+Begin
+  CGCAtBlockTerm := (CurTokType = TOK_EOF) Or
+                    CGCIsKW(KW_END)  Or CGCIsKW(KW_ELSE) Or
+                    CGCIsKW(KW_NEXT) Or CGCIsKW(KW_WEND) Or
+                    CGCIsKW(KW_LOOP);
+End;
+
+Function CGCCanStartExpr : Boolean;
+Begin
+  CGCCanStartExpr :=
+    (CurTokType = TOK_INTEGER) Or (CurTokType = TOK_LONG)   Or
+    (CurTokType = TOK_STRING)  Or (CurTokType = TOK_LPAREN) Or
+    (CurTokType = TOK_IDENT)   Or (CurTokType = TOK_MINUS)  Or
+    CGCIsKW(KW_NOT);
+End;
+
+Procedure CGCParseStatementBlock(Const StopKW1, StopKW2 : Integer);
+Begin
+  { StopKW1/StopKW2 sont conserves pour compat ; en pratique on        }
+  { utilise CGCAtBlockTerm qui couvre tous les terminateurs.           }
+  If (StopKW1 = StopKW2) Then ;   { silence unused warning             }
+  CGCSkipNewlines;
+  While Not CGCAtBlockTerm Do
+  Begin
+    CGCParseStatement;
+    CGCSkipNewlines;
+  End;
+End;
+
+Procedure CGCParseDimLocal;
+Var Nm : TString;
+Begin
+  LexNextToken;     { eat "Dim" }
+  If CurTokType <> TOK_IDENT Then
+    FatalError('Palier C: nom de variable attendu apres Dim');
+  Nm := CurTokStr;
+  LexNextToken;
+  CGCEatTypeAnnot;
+  CGCAddLocal(Nm);
+End;
+
+Procedure CGCParseAssign(Const Nm : TString);
+Var Idx, DOf : Integer;
+Begin
+  { CurTok devrait etre "=" }
+  If CurTokType <> TOK_EQ Then
+    FatalError('Palier C: "=" attendu (ligne ' + ItoS(CurTokLine) + ')');
+  LexNextToken;
+  CGCParseExpr;
+  { Palier G : assignation au nom de la fonction courante }
+  If (CGCCurProc >= 0) And CGCProcs[CGCCurProc].IsFunc And
+     (UpCaseStr(Nm) = UpCaseStr(CGCProcs[CGCCurProc].Name)) Then
+  Begin
+    AsmMovMemBPReg(CGCRetvalOfs, R_EAX);
+    Exit;
+  End;
+  Idx := CGCFindLocal(Nm);
+  If Idx >= 0 Then
+    AsmMovMemBPReg(CGCLocals[Idx].Ofs, R_EAX)
+  Else
+  Begin
+    DOf := AsmFindData(Nm);
+    If DOf < 0 Then
+      FatalError('Palier C: assignation a un identificateur inconnu "' +
+                 Nm + '" (ligne ' + ItoS(CurTokLine) + ')');
+    AsmMovMemAbsReg(AsmDataVA(Nm), R_EAX);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ Palier G : emission d un appel a une Sub/Function utilisateur }
+{ Le lexer est sur "(" (parens optionnelles si zero param) ou   }
+{ sur le premier token d argument (forme statement Sub a, b).   }
+{ Convention cdecl : caller pousse args left-to-right via       }
+{ MOV [ESP+disp], reg, puis CALL, puis ADD ESP, N*4.            }
+{ Resultat (Function) dans EAX.                                  }
+{ ------------------------------------------------------------ }
+Procedure CGCEmitCall(PIdx : Integer);
+Var
+  HasParen   : Boolean;
+  N, I       : Integer;
+  ArgsExpect : Integer;
+Begin
+  ArgsExpect := CGCProcs[PIdx].ParamCnt;
+  HasParen   := (CurTokType = TOK_LPAREN);
+  If HasParen Then LexNextToken;
+
+  { Reserver l espace pour les args (toujours, meme si 0) }
+  If ArgsExpect > 0 Then
+    AsmAluRegImm(ALU_SUB, R_ESP, ArgsExpect * 4);
+
+  N := 0;
+  If HasParen Then
+  Begin
+    If CurTokType <> TOK_RPAREN Then
+    Begin
+      Repeat
+        If N >= ArgsExpect Then
+          FatalError('Palier G: trop d arguments pour "' +
+                     CGCProcs[PIdx].Name + '"');
+        CGCParseExpr;
+        AsmMovMemEspReg(N * 4, R_EAX);
+        Inc(N);
+        If CurTokType = TOK_COMMA Then LexNextToken
+        Else Break;
+      Until False;
+    End;
+    If CurTokType <> TOK_RPAREN Then
+      FatalError('Palier G: ")" attendue dans appel');
+    LexNextToken;
+  End
+  Else
+  Begin
+    { Forme statement : Sub args (sans parens) }
+    If (ArgsExpect > 0) And (Not CGCAtBlockTerm) And
+       (CurTokType <> TOK_EOF) Then
+    Begin
+      Repeat
+        If N >= ArgsExpect Then Break;
+        CGCParseExpr;
+        AsmMovMemEspReg(N * 4, R_EAX);
+        Inc(N);
+        If CurTokType = TOK_COMMA Then LexNextToken
+        Else Break;
+      Until False;
+    End;
+  End;
+
+  If N <> ArgsExpect Then
+    FatalError('Palier G: nombre d arguments incorrect pour "' +
+               CGCProcs[PIdx].Name + '" (' + ItoS(N) + ' au lieu de ' +
+               ItoS(ArgsExpect) + ')');
+
+  AsmCallLbl('_proc_' + UpCaseStr(CGCProcs[PIdx].Name));
+
+  { cdecl : caller cleanup }
+  If ArgsExpect > 0 Then
+    AsmAluRegImm(ALU_ADD, R_ESP, ArgsExpect * 4);
+
+  { I non utilise mais conserve pour clarte }
+  If False Then I := 0;
+End;
+
+Procedure CGCParseExitProcess;
+Begin
+  LexNextToken;       { eat "ExitProcess" }
+  If CurTokType = TOK_LPAREN Then
+  Begin
+    LexNextToken;
+    CGCParseExpr;
+    If CurTokType <> TOK_RPAREN Then
+      FatalError('Palier C: ")" attendue apres ExitProcess(...)');
+    LexNextToken;
+  End
+  Else
+    CGCParseExpr;
+  AsmPushReg(R_EAX);
+  AsmCallIAT(0);
+  AsmInt3;
+  CGCExitDone := True;
+End;
+
+{ ------------------------------------------------------------ }
+{ Palier E : MessageBox text, title (intrinseque user32)        }
+{ ------------------------------------------------------------ }
+Procedure CGCParseMessageBox;
+Var
+  HasParen      : Boolean;
+  TextOfs, TitOfs : LongInt;
+  FuncIdx       : Integer;
+  Idx           : Integer;
+Begin
+  LexNextToken;       { eat "MessageBox" }
+  HasParen := (CurTokType = TOK_LPAREN);
+  If HasParen Then LexNextToken;
+
+  Idx := CGCFindLocal('@MSGBOX_TEXT');
+  If Idx < 0 Then
+    FatalError('Palier E: scratch @MSGBOX_TEXT non reserve');
+  TextOfs := CGCLocals[Idx].Ofs;
+  Idx := CGCFindLocal('@MSGBOX_TITLE');
+  If Idx < 0 Then
+    FatalError('Palier E: scratch @MSGBOX_TITLE non reserve');
+  TitOfs := CGCLocals[Idx].Ofs;
+
+  CGCParseExpr;                       { texte -> EAX }
+  AsmMovMemBPReg(TextOfs, R_EAX);
+
+  If CurTokType <> TOK_COMMA Then
+    FatalError('Palier E: "," attendue dans MessageBox (ligne ' +
+               ItoS(CurTokLine) + ')');
+  LexNextToken;
+
+  CGCParseExpr;                       { titre -> EAX }
+  AsmMovMemBPReg(TitOfs, R_EAX);
+
+  If HasParen Then
+  Begin
+    If CurTokType <> TOK_RPAREN Then
+      FatalError('Palier E: ")" attendue apres MessageBox(...)');
+    LexNextToken;
+  End;
+
+  FuncIdx := ImpFindFunc('MessageBoxA');
+  If FuncIdx < 0 Then
+    FatalError('Palier E: MessageBoxA non importe');
+
+  { Args en stdcall (droite a gauche) : uType, title, text, hWnd }
+  AsmPushImm(0);                      { uType = MB_OK }
+  AsmMovRegMemBP(R_EAX, TitOfs);
+  AsmPushReg(R_EAX);                  { lpCaption    }
+  AsmMovRegMemBP(R_EAX, TextOfs);
+  AsmPushReg(R_EAX);                  { lpText       }
+  AsmPushImm(0);                      { hWnd = NULL  }
+  AsmCallIAT(FuncIdx);
+End;
+
+{ ------------------------------------------------------------ }
+{ Palier F : sous-routines runtime pour Print / Debug.Print     }
+{ Emet __print_str(EAX=ptr, EDX=len) et __print_long(EAX=val)   }
+{ AVANT le label _start (atteignables uniquement via CALL).     }
+{ ------------------------------------------------------------ }
+Procedure CGCEmitPrintHelpers;
+Var
+  WrFile      : Integer;
+  PBufVA      : LongInt;
+  HOutVA      : LongInt;
+  LSingle, LDone, LPos : TString;
+Begin
+  WrFile := ImpFindFunc('WriteFile');
+  PBufVA := AsmDataVA('@PRINTBUF');
+  HOutVA := AsmDataVA('@HSTDOUT');
+
+  { ----- __print_str(EAX = ptr, EDX = len) ----- }
+  AsmLabel('__print_str');
+  AsmPushImm(0);                       { lpOverlapped         }
+  AsmPushImm(0);                       { lpNumberOfBytesWritten}
+  AsmPushReg(R_EDX);                   { nNumberOfBytesToWrite}
+  AsmPushReg(R_EAX);                   { lpBuffer             }
+  AsmMovRegMemAbs(R_EAX, HOutVA);
+  AsmPushReg(R_EAX);                   { hFile                }
+  AsmCallIAT(WrFile);
+  AsmRet;
+
+  { ----- __print_char(EAX = char, low byte) ----- }
+  AsmLabel('__print_char');
+  AsmMovMemAbsReg(PBufVA, R_EAX);      { stocker car comme DWord, octet bas }
+  AsmPushImm(0);
+  AsmPushImm(0);
+  AsmPushImm(1);                       { len = 1              }
+  AsmPushImm(PBufVA);                  { lpBuffer             }
+  AsmMovRegMemAbs(R_EAX, HOutVA);
+  AsmPushReg(R_EAX);
+  AsmCallIAT(WrFile);
+  AsmRet;
+
+  { ----- __print_long(EAX = signed value) ----- }
+  AsmLabel('__print_long');
+  LPos    := CGCNewLabel('plPos');
+  LSingle := CGCNewLabel('plSingle');
+  LDone   := CGCNewLabel('plDone');
+  AsmPushReg(R_EBP);
+  AsmMovRegReg(R_EBP, R_ESP);
+  AsmPushReg(R_EBX);
+  AsmMovRegReg(R_EBX, R_EAX);          { ebx = value          }
+
+  AsmTestRegReg(R_EAX, R_EAX);
+  AsmJcc(CC_NS, LPos);                 { si >= 0 -> LPos      }
+  { Negatif : afficher '-' puis abs }
+  AsmMovRegImm(R_EAX, Ord('-'));
+  AsmCallLbl('__print_char');
+  AsmNegReg(R_EBX);
+
+  AsmLabel(LPos);
+  AsmMovRegReg(R_EAX, R_EBX);
+  AsmAluRegImm(ALU_CMP, R_EAX, 10);
+  AsmJcc(CC_L, LSingle);               { < 10 -> single digit }
+
+  { eax >= 10 : diviser par 10, recurser sur le quotient }
+  AsmCdq;
+  AsmMovRegImm(R_ECX, 10);
+  AsmIdivReg(R_ECX);                   { eax=q, edx=r         }
+  AsmPushReg(R_EDX);                   { sauver le reste      }
+  AsmCallLbl('__print_long');          { afficher le quotient }
+  AsmPopReg(R_EAX);                    { eax = reste          }
+  AsmAluRegImm(ALU_ADD, R_EAX, Ord('0'));
+  AsmCallLbl('__print_char');
+  AsmJmpLbl(LDone);
+
+  AsmLabel(LSingle);
+  AsmAluRegImm(ALU_ADD, R_EAX, Ord('0'));
+  AsmCallLbl('__print_char');
+
+  AsmLabel(LDone);
+  AsmPopReg(R_EBX);
+  AsmPopReg(R_EBP);
+  AsmRet;
+End;
+
+{ ------------------------------------------------------------ }
+{ Palier F : Print / Debug.Print expr [, expr]...               }
+{ Append CRLF a la fin (sauf si le terminateur est ;).          }
+{ ------------------------------------------------------------ }
+Procedure CGCParsePrint;
+Var
+  Lit, Len  : Integer;
+  Suppress  : Boolean;
+Begin
+  { Cas Debug.Print : token courant = KW_DEBUG.                }
+  { Cas Print : token courant = KW_PRINT.                       }
+  If CGCIsKW(KW_DEBUG) Then
+  Begin
+    LexNextToken;
+    If CurTokType <> TOK_DOT Then
+      FatalError('Palier F: "." attendu apres Debug');
+    LexNextToken;
+    If Not CGCIsKW(KW_PRINT) Then
+      FatalError('Palier F: "Print" attendu apres "Debug."');
+    LexNextToken;
+  End
+  Else
+    LexNextToken;                      { eat Print }
+
+  Suppress := False;
+
+  While CGCCanStartExpr Do
+  Begin
+    If CurTokType = TOK_STRING Then
+    Begin
+      Lit := StrAddLit(CurTokStr);
+      Len := Length(CurTokStr);
+      AsmMovRegStrRVA(R_EAX, Lit);
+      AsmMovRegImm(R_EDX, Len);
+      AsmCallLbl('__print_str');
+      LexNextToken;
+    End
+    Else
+    Begin
+      CGCParseExpr;
+      AsmCallLbl('__print_long');
+    End;
+
+    If CurTokType = TOK_SEMI Then
+    Begin
+      LexNextToken;
+      { Si plus rien a printer, le ; final supprime le CRLF.    }
+      If Not CGCCanStartExpr Then
+      Begin
+        Suppress := True;
+        Break;
+      End;
+      Continue;
+    End;
+    If CurTokType = TOK_COMMA Then
+    Begin
+      LexNextToken;
+      Continue;
+    End;
+    Break;
+  End;
+
+  If Not Suppress Then
+  Begin
+    AsmMovRegStrRVA(R_EAX, CGCCRLFLit);
+    AsmMovRegImm(R_EDX, 2);
+    AsmCallLbl('__print_str');
+  End;
+End;
+
+
+Procedure CGCParseIf;
+Var
+  LElse, LEnd : TString;
+  HasElse     : Boolean;
+Begin
+  LexNextToken;            { eat "If" }
+  CGCParseExpr;
+  If Not CGCIsKW(KW_THEN) Then
+    FatalError('Palier C: "Then" attendu (ligne ' + ItoS(CurTokLine) + ')');
+  LexNextToken;
+  If CurTokType <> TOK_NEWLINE Then
+  Begin
+    { Lexer ne retourne pas TOK_NEWLINE : on accepte simplement Then }
+  End;
+  CGCSkipNewlines;
+
+  LElse := CGCNewLabel('ifElse');
+  LEnd  := CGCNewLabel('ifEnd');
+
+  AsmAluRegReg(ALU_OR, R_EAX, R_EAX);   { TEST EAX,EAX equivalent (OR) }
+  AsmJcc(CC_E, LElse);                  { JZ Else                       }
+
+  CGCParseStatementBlock(KW_ELSE, KW_END);
+
+  HasElse := CGCIsKW(KW_ELSE);
+  If HasElse Then
+  Begin
+    AsmJmpLbl(LEnd);
+    AsmLabel(LElse);
+    LexNextToken;
+    CGCParseStatementBlock(KW_END, KW_NONE);
+    AsmLabel(LEnd);
+  End
+  Else
+    AsmLabel(LElse);
+
+  { On doit etre sur "End" }
+  If Not CGCIsKW(KW_END) Then
+    FatalError('Palier C: "End If" attendu');
+  LexNextToken;
+  If Not CGCIsKW(KW_IF) Then
+    FatalError('Palier C: "End If" attendu');
+  LexNextToken;
+End;
+
+{ ============================================================ }
+{ Palier D : boucles For / While / Do                          }
+{ ============================================================ }
+
+Procedure CGCBreakPush(Const Lbl : TString; Kind : Integer);
+Begin
+  If CGCBreakTop >= 32 Then
+    FatalError('Palier D: trop de boucles imbriquees');
+  CGCBreakLbl[CGCBreakTop]  := Lbl;
+  CGCBreakKind[CGCBreakTop] := Kind;
+  Inc(CGCBreakTop);
+End;
+
+Procedure CGCBreakPop;
+Begin
+  Dec(CGCBreakTop);
+End;
+
+Function CGCBreakFind(Kind : Integer) : Integer;
+Var I : Integer;
+Begin
+  CGCBreakFind := -1;
+  For I := CGCBreakTop - 1 DownTo 0 Do
+    If CGCBreakKind[I] = Kind Then
+    Begin CGCBreakFind := I; Exit; End;
+End;
+
+{ ------------------------------------------------------------ }
+{ For I = a To b [Step k] / Next [I]                            }
+{ Strategie : on calcule b et k UNE fois en debut, dans des     }
+{ slots locaux temporaires (ajoutes au cadre).                  }
+{   I = a                                                       }
+{   _limit = b                                                  }
+{   _step  = k    (defaut 1)                                    }
+{ Lstart:                                                       }
+{   if step >= 0 then if I > limit goto Lend                    }
+{   else            if I < limit goto Lend                      }
+{   <body>                                                      }
+{ Lcont:                                                        }
+{   I = I + step                                                }
+{   goto Lstart                                                 }
+{ Lend:                                                          }
+{ ------------------------------------------------------------ }
+
+Procedure CGCParseFor;
+Var
+  Nm                : TString;
+  Idx               : Integer;
+  IOfs, LimOfs, StpOfs : LongInt;
+  LStart, LEnd, LBod, LNeg, LDone : TString;
+Begin
+  LexNextToken;          { eat "For" }
+  If CurTokType <> TOK_IDENT Then
+    FatalError('Palier D: nom de variable attendu apres For');
+  Nm := CurTokStr;
+  LexNextToken;
+  Idx := CGCFindLocal(Nm);
+  If Idx < 0 Then
+    IOfs := CGCAddLocal(Nm)
+  Else
+    IOfs := CGCLocals[Idx].Ofs;
+
+  If CurTokType <> TOK_EQ Then
+    FatalError('Palier D: "=" attendu dans For');
+  LexNextToken;
+
+  CGCParseExpr;          { initiale dans EAX }
+  AsmMovMemBPReg(IOfs, R_EAX);
+
+  If Not CGCIsKW(KW_TO) Then
+    FatalError('Palier D: "To" attendu dans For');
+  LexNextToken;
+
+  { Limite -> slot temporaire }
+  LimOfs := CGCAddLocal('@for_lim_' + ItoS(CGCLabSeq));
+  CGCParseExpr;
+  AsmMovMemBPReg(LimOfs, R_EAX);
+
+  { Step -> slot temporaire (defaut 1) }
+  StpOfs := CGCAddLocal('@for_stp_' + ItoS(CGCLabSeq));
+  If CGCIsKW(KW_STEP) Then
+  Begin
+    LexNextToken;
+    CGCParseExpr;
+  End
+  Else
+    AsmMovRegImm(R_EAX, 1);
+  AsmMovMemBPReg(StpOfs, R_EAX);
+
+  LStart := CGCNewLabel('forStart');
+  LBod   := CGCNewLabel('forBody');
+  LNeg   := CGCNewLabel('forNeg');
+  LDone  := CGCNewLabel('forDone');
+  LEnd   := CGCNewLabel('forEnd');
+
+  AsmLabel(LStart);
+  { Tester signe du step : CMP step, 0 ; JL LNeg }
+  AsmMovRegMemBP(R_EAX, StpOfs);
+  AsmAluRegImm(ALU_CMP, R_EAX, 0);
+  AsmJcc(CC_L, LNeg);
+
+  { Step >= 0 : if I > limit then goto LEnd, else body }
+  AsmMovRegMemBP(R_EAX, IOfs);
+  AsmMovRegMemBP(R_ECX, LimOfs);
+  AsmAluRegReg(ALU_CMP, R_EAX, R_ECX);
+  AsmJcc(CC_G, LEnd);
+  AsmJmpLbl(LBod);
+
+  AsmLabel(LNeg);
+  AsmMovRegMemBP(R_EAX, IOfs);
+  AsmMovRegMemBP(R_ECX, LimOfs);
+  AsmAluRegReg(ALU_CMP, R_EAX, R_ECX);
+  AsmJcc(CC_L, LEnd);
+
+  AsmLabel(LBod);
+
+  CGCBreakPush(LEnd, KW_FOR);
+  CGCParseStatementBlock(KW_NEXT, KW_NONE);
+  CGCBreakPop;
+
+  If Not CGCIsKW(KW_NEXT) Then
+    FatalError('Palier D: "Next" attendu (ligne ' + ItoS(CurTokLine) + ')');
+  LexNextToken;
+  { Optionnel : nom de variable apres Next }
+  If CurTokType = TOK_IDENT Then LexNextToken;
+
+  { I = I + step }
+  AsmMovRegMemBP(R_EAX, IOfs);
+  AsmMovRegMemBP(R_ECX, StpOfs);
+  AsmAluRegReg(ALU_ADD, R_EAX, R_ECX);
+  AsmMovMemBPReg(IOfs, R_EAX);
+  AsmJmpLbl(LStart);
+
+  AsmLabel(LEnd);
+  If LDone = '' Then ;   { silence unused }
+End;
+
+{ ------------------------------------------------------------ }
+{ While cond / Wend                                             }
+{ ------------------------------------------------------------ }
+
+Procedure CGCParseWhile;
+Var LStart, LEnd : TString;
+Begin
+  LexNextToken;          { eat "While" }
+  LStart := CGCNewLabel('whStart');
+  LEnd   := CGCNewLabel('whEnd');
+
+  AsmLabel(LStart);
+  CGCParseExpr;
+  AsmAluRegReg(ALU_OR, R_EAX, R_EAX);
+  AsmJcc(CC_E, LEnd);
+
+  CGCBreakPush(LEnd, KW_WHILE);
+  CGCParseStatementBlock(KW_WEND, KW_NONE);
+  CGCBreakPop;
+
+  If Not CGCIsKW(KW_WEND) Then
+    FatalError('Palier D: "Wend" attendu (ligne ' + ItoS(CurTokLine) + ')');
+  LexNextToken;
+  AsmJmpLbl(LStart);
+  AsmLabel(LEnd);
+End;
+
+{ ------------------------------------------------------------ }
+{ Do [While|Until cond] / Loop [While|Until cond]                }
+{   Forme A : Do While c / Loop          (test au debut)         }
+{   Forme B : Do Until c / Loop                                  }
+{   Forme C : Do / Loop While c          (test a la fin)          }
+{   Forme D : Do / Loop Until c                                   }
+{   Forme E : Do / Loop                  (boucle infinie)         }
+{ ------------------------------------------------------------ }
+
+Procedure CGCParseDo;
+Var
+  LStart, LEnd : TString;
+  HasHead, HeadUntil, TailUntil : Boolean;
+  HasTail : Boolean;
+Begin
+  LexNextToken;          { eat "Do" }
+  LStart := CGCNewLabel('doStart');
+  LEnd   := CGCNewLabel('doEnd');
+
+  HasHead   := False;
+  HeadUntil := False;
+  If CGCIsKW(KW_WHILE) Then
+  Begin
+    HasHead := True; HeadUntil := False; LexNextToken;
+  End
+  Else If CGCIsKW(KW_UNTIL) Then
+  Begin
+    HasHead := True; HeadUntil := True;  LexNextToken;
+  End;
+
+  AsmLabel(LStart);
+
+  If HasHead Then
+  Begin
+    CGCParseExpr;
+    AsmAluRegReg(ALU_OR, R_EAX, R_EAX);
+    If HeadUntil Then
+      AsmJcc(CC_NE, LEnd)         { Until : sortir si vrai     }
+    Else
+      AsmJcc(CC_E, LEnd);         { While : sortir si faux      }
+  End;
+
+  CGCBreakPush(LEnd, KW_DO);
+  CGCParseStatementBlock(KW_LOOP, KW_NONE);
+  CGCBreakPop;
+
+  If Not CGCIsKW(KW_LOOP) Then
+    FatalError('Palier D: "Loop" attendu (ligne ' + ItoS(CurTokLine) + ')');
+  LexNextToken;
+
+  HasTail   := False;
+  TailUntil := False;
+  If CGCIsKW(KW_WHILE) Then
+  Begin
+    HasTail := True; TailUntil := False; LexNextToken;
+  End
+  Else If CGCIsKW(KW_UNTIL) Then
+  Begin
+    HasTail := True; TailUntil := True;  LexNextToken;
+  End;
+
+  If HasTail Then
+  Begin
+    If HasHead Then
+      FatalError('Palier D: condition Do/Loop dupliquee');
+    CGCParseExpr;
+    AsmAluRegReg(ALU_OR, R_EAX, R_EAX);
+    If TailUntil Then
+      AsmJcc(CC_E, LStart)         { Until : reboucler si faux  }
+    Else
+      AsmJcc(CC_NE, LStart);       { While : reboucler si vrai  }
+  End
+  Else
+    AsmJmpLbl(LStart);
+
+  AsmLabel(LEnd);
+End;
+
+{ ------------------------------------------------------------ }
+{ Exit For / Exit Do / Exit Sub                                 }
+{ ------------------------------------------------------------ }
+
+Procedure CGCParseExitStmt;
+Var Idx : Integer; Kind : Integer;
+Begin
+  LexNextToken;          { eat "Exit" }
+  Kind := KW_NONE;
+  If      CGCIsKW(KW_FOR) Then Kind := KW_FOR
+  Else If CGCIsKW(KW_DO)  Then Kind := KW_DO
+  Else If CGCIsKW(KW_WHILE) Then Kind := KW_DO   { non standard mais utile }
+  Else If CGCIsKW(KW_SUB) Or CGCIsKW(KW_FUNCTION) Then
+  Begin
+    LexNextToken;
+    If CGCCurProc < 0 Then
+    Begin
+      { Exit Sub dans Main : ExitProcess(0) }
+      AsmPushImm(0);
+      AsmCallIAT(0);
+      AsmInt3;
+      CGCExitDone := True;
+    End
+    Else
+      AsmJmpLbl(CGCExitLabel);
+    Exit;
+  End
+  Else
+    FatalError('Palier D: Exit For|Do|Sub|Function attendu');
+  LexNextToken;
+  Idx := CGCBreakFind(Kind);
+  If Idx < 0 Then
+    FatalError('Palier D: Exit hors d une boucle compatible');
+  AsmJmpLbl(CGCBreakLbl[Idx]);
+End;
+
+Procedure CGCParseStatement;
+Var Nm : TString; PI : Integer;
+Begin
+  CGCSkipNewlines;
+  If CGCIsKW(KW_DIM) Then
+    CGCParseDimLocal
+  Else If CGCIsKW(KW_IF) Then
+    CGCParseIf
+  Else If CGCIsKW(KW_FOR) Then
+    CGCParseFor
+  Else If CGCIsKW(KW_WHILE) Then
+    CGCParseWhile
+  Else If CGCIsKW(KW_DO) Then
+    CGCParseDo
+  Else If CGCIsKW(KW_EXIT) Then
+    CGCParseExitStmt
+  Else If (CurTokType = TOK_IDENT) And
+          (UpCaseStr(CurTokStr) = 'EXITPROCESS') Then
+    CGCParseExitProcess
+  Else If (CurTokType = TOK_IDENT) And
+          (UpCaseStr(CurTokStr) = 'MESSAGEBOX') Then
+    CGCParseMessageBox
+  Else If CGCIsKW(KW_PRINT) Or CGCIsKW(KW_DEBUG) Then
+    CGCParsePrint
+  Else If CurTokType = TOK_IDENT Then
+  Begin
+    Nm := CurTokStr;
+    PI := CGCFindProc(Nm);
+    { Palier G : appel d une Sub utilisateur (statement-level) }
+    If (PI >= 0) And (Not CGCProcs[PI].IsFunc) Then
+    Begin
+      LexNextToken;
+      CGCEmitCall(PI);
+    End
+    { Palier G : appel d une Function utilisateur en statement }
+    { (resultat ignore) si le token suivant est "(" ou un debut }
+    { d expression et non "=" }
+    Else If (PI >= 0) And CGCProcs[PI].IsFunc Then
+    Begin
+      LexNextToken;
+      If CurTokType = TOK_EQ Then
+        CGCParseAssign(Nm)             { auto-assign FuncName = expr }
+      Else
+        CGCEmitCall(PI);
+    End
+    Else
+    Begin
+      LexNextToken;
+      CGCParseAssign(Nm);
+    End;
+  End
+  Else
+    FatalError('Palier C: instruction inattendue "' + CurTokStr +
+               '" (ligne ' + ItoS(CurTokLine) + ')');
+End;
+
+{ ------------------------------------------------------------ }
+{ Pass 1 : scanner les globals au niveau module                 }
+{ Patterns acceptes : (Public|Private|Dim) NAME [As TYPE]       }
+{ Tout le reste est ignore (Declare, Const, Sub, Function,...). }
+{ ------------------------------------------------------------ }
+
+Procedure CGCPass1Globals;
+Var
+  InProc : Boolean;
+  Nm     : TString;
+Begin
+  LexInit;
+  LexNextToken;
+  InProc := False;
+  While CurTokType <> TOK_EOF Do
+  Begin
+    If CGCIsKW(KW_SUB) Or CGCIsKW(KW_FUNCTION) Or
+       CGCIsKW(KW_PROPERTY) Then
+    Begin
+      InProc := True;
+      LexNextToken;
+      Continue;
+    End;
+    If InProc And CGCIsKW(KW_END) Then
+    Begin
+      LexNextToken;
+      If CGCIsKW(KW_SUB) Or CGCIsKW(KW_FUNCTION) Or
+         CGCIsKW(KW_PROPERTY) Then
+      Begin
+        InProc := False;
+        LexNextToken;
+      End;
+      Continue;
+    End;
+    If (Not InProc) And
+       (CGCIsKW(KW_DIM) Or CGCIsKW(KW_PUBLIC) Or CGCIsKW(KW_PRIVATE)) Then
+    Begin
+      LexNextToken;
+      If CurTokType = TOK_IDENT Then
+      Begin
+        Nm := CurTokStr;
+        LexNextToken;
+        { Si suivi de "(" ou "Sub"/"Function" => pas une variable }
+        If (CurTokType = TOK_LPAREN) Or
+           CGCIsKW(KW_SUB) Or CGCIsKW(KW_FUNCTION) Then
+        Begin
+          { ignore : Sub/Function/array }
+        End
+        Else
+        Begin
+          { eat "As Type" si present }
+          CGCEatTypeAnnot;
+          If AsmFindData(Nm) < 0 Then
+            AsmDefineData(Nm, 4);
+        End;
+      End;
+      Continue;
+    End;
+    LexNextToken;
+  End;
+  LexClose;
+End;
+
+Procedure CGCEmitProcBody(IsFunc : Boolean; PIdx : Integer); Forward;
+
+{ ------------------------------------------------------------ }
+{ Palier G : Pass 1.5 - inventaire des Sub/Function utilisateur }
+{ ------------------------------------------------------------ }
+Procedure CGCScanProcs;
+Var
+  IsFunc      : Boolean;
+  Nm, PNm     : TString;
+  P           : Integer;
+  U           : TString;
+Begin
+  LexInit;
+  LexNextToken;
+  While CurTokType <> TOK_EOF Do
+  Begin
+    If CGCIsKW(KW_SUB) Or CGCIsKW(KW_FUNCTION) Then
+    Begin
+      IsFunc := CGCIsKW(KW_FUNCTION);
+      LexNextToken;
+      If CurTokType <> TOK_IDENT Then
+      Begin
+        CGCSkipToEndProc;
+        Continue;
+      End;
+      Nm := CurTokStr;
+      LexNextToken;
+      { Sub Main n est PAS enregistre dans la table }
+      If (Not IsFunc) And (UpCaseStr(Nm) = 'MAIN') Then
+      Begin
+        CGCSkipToEndProc;
+        Continue;
+      End;
+      P := CGCAddProc(Nm, IsFunc);
+      { Liste de parametres entre parentheses }
+      If CurTokType = TOK_LPAREN Then
+      Begin
+        LexNextToken;
+        While (CurTokType <> TOK_RPAREN) And
+              (CurTokType <> TOK_EOF) Do
+        Begin
+          { Avaler ByVal/ByRef/Optional eventuel }
+          If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then
+          Begin
+            U := UpCaseStr(CurTokStr);
+            If (U = 'BYVAL') Or (U = 'BYREF') Or (U = 'OPTIONAL') Then
+              LexNextToken;
+          End;
+          If CurTokType = TOK_IDENT Then
+          Begin
+            PNm := CurTokStr;
+            LexNextToken;
+            CGCEatTypeAnnot;
+            If CGCProcs[P].ParamCnt >= CGC_MAX_PARAM Then
+              FatalError('Palier G: trop de parametres pour "' + Nm + '"');
+            CGCProcs[P].ParamName[CGCProcs[P].ParamCnt] := PNm;
+            Inc(CGCProcs[P].ParamCnt);
+            If CurTokType = TOK_COMMA Then LexNextToken;
+          End
+          Else
+            LexNextToken;
+        End;
+        If CurTokType = TOK_RPAREN Then LexNextToken;
+      End;
+      { Pour Function : avaler "As Type" }
+      If IsFunc Then CGCEatTypeAnnot;
+      { Sauter le corps }
+      CGCSkipToEndProc;
+    End
+    Else
+      LexNextToken;
+  End;
+  LexClose;
+End;
+
+{ ------------------------------------------------------------ }
+{ Palier G : emission d une Sub/Function utilisateur            }
+{ Le lexer est positionne juste apres le nom de la proc dans   }
+{ le source (sur "(" ou "As" ou debut du corps).                }
+{ ------------------------------------------------------------ }
+Procedure CGCEmitProcBody(IsFunc : Boolean; PIdx : Integer);
+Var
+  I            : Integer;
+  FrameInstrIx : Integer;
+  ExitLab      : TString;
+  SavedLocCnt  : Integer;
+  SavedFrame   : LongInt;
+  SavedExitDn  : Boolean;
+  SavedCurProc : Integer;
+  SavedExitLab : TString;
+  SavedRetOfs  : LongInt;
+  SavedFrameIx : Integer;
+Begin
+  { Sauvegarder l etat courant }
+  SavedLocCnt  := CGCLocalCnt;
+  SavedFrame   := CGCFrameSize;
+  SavedExitDn  := CGCExitDone;
+  SavedCurProc := CGCCurProc;
+  SavedExitLab := CGCExitLabel;
+  SavedRetOfs  := CGCRetvalOfs;
+  SavedFrameIx := CGCFrameInstrIdx;
+
+  CGCLocalCnt  := 0;
+  CGCFrameSize := 0;
+  CGCExitDone  := False;
+  CGCCurProc   := PIdx;
+  ExitLab      := CGCNewLabel('procExit');
+  CGCExitLabel := ExitLab;
+  CGCRetvalOfs := 0;
+
+  AsmLabel('_proc_' + UpCaseStr(CGCProcs[PIdx].Name));
+
+  { Prologue }
+  AsmPushReg(R_EBP);
+  AsmMovRegReg(R_EBP, R_ESP);
+  AsmAluRegImm(ALU_SUB, R_ESP, $7FFFFFFF);
+  FrameInstrIx := AsmInstrCount - 1;
+  CGCFrameInstrIdx := FrameInstrIx;
+
+  { Hidden retval pour Function : @RETVAL au sommet du frame }
+  If IsFunc Then
+  Begin
+    CGCRetvalOfs := CGCAddLocal('@RETVAL');
+    AsmMovRegImm(R_EAX, 0);
+    AsmMovMemBPReg(CGCRetvalOfs, R_EAX);
+  End;
+
+  { Avaler la liste de parametres dans le source }
+  If CurTokType = TOK_LPAREN Then
+  Begin
+    LexNextToken;
+    While (CurTokType <> TOK_RPAREN) And
+          (CurTokType <> TOK_EOF) Do LexNextToken;
+    If CurTokType = TOK_RPAREN Then LexNextToken;
+  End;
+  If IsFunc Then CGCEatTypeAnnot;
+
+  { Enregistrer les parametres avec offsets positifs }
+  For I := 0 To CGCProcs[PIdx].ParamCnt - 1 Do
+    CGCAddParam(CGCProcs[PIdx].ParamName[I], 8 + I * 4);
+
+  { Corps }
+  CGCParseStatementBlock(KW_END, KW_NONE);
+
+  If Not CGCIsKW(KW_END) Then
+    FatalError('Palier G: "End Sub/Function" attendu');
+  LexNextToken;
+  If Not (CGCIsKW(KW_SUB) Or CGCIsKW(KW_FUNCTION)) Then
+    FatalError('Palier G: "End Sub/Function" attendu');
+  LexNextToken;
+
+  { Patch frame size }
+  AsmInstrs[FrameInstrIx].Imm := CGCFrameSize;
+
+  { Epilogue }
+  AsmLabel(ExitLab);
+  If IsFunc Then
+    AsmMovRegMemBP(R_EAX, CGCRetvalOfs);
+  AsmMovRegReg(R_ESP, R_EBP);
+  AsmPopReg(R_EBP);
+  AsmRet;
+
+  { Restaurer }
+  CGCLocalCnt      := SavedLocCnt;
+  CGCFrameSize     := SavedFrame;
+  CGCExitDone      := SavedExitDn;
+  CGCCurProc       := SavedCurProc;
+  CGCExitLabel     := SavedExitLab;
+  CGCRetvalOfs     := SavedRetOfs;
+  CGCFrameInstrIdx := SavedFrameIx;
+End;
+
+{ ------------------------------------------------------------ }
+{ Palier G : emission de toutes les Sub/Function (sauf Main)    }
+{ ------------------------------------------------------------ }
+Procedure CGCPass2UserProcs;
+Var
+  IsFunc  : Boolean;
+  Nm      : TString;
+  PIdx    : Integer;
+Begin
+  LexInit;
+  LexNextToken;
+  While CurTokType <> TOK_EOF Do
+  Begin
+    If CGCIsKW(KW_SUB) Or CGCIsKW(KW_FUNCTION) Then
+    Begin
+      IsFunc := CGCIsKW(KW_FUNCTION);
+      LexNextToken;
+      If CurTokType <> TOK_IDENT Then
+      Begin
+        CGCSkipToEndProc;
+        Continue;
+      End;
+      Nm := CurTokStr;
+      LexNextToken;
+      If (Not IsFunc) And (UpCaseStr(Nm) = 'MAIN') Then
+      Begin
+        CGCSkipToEndProc;
+        Continue;
+      End;
+      PIdx := CGCFindProc(Nm);
+      If PIdx < 0 Then
+      Begin
+        CGCSkipToEndProc;
+        Continue;
+      End;
+      CGCEmitProcBody(IsFunc, PIdx);
+    End
+    Else
+      LexNextToken;
+  End;
+  LexClose;
+End;
+
+{ ------------------------------------------------------------ }
+{ Pass 2 : trouver "Sub Main" et generer son code                }
+{ ------------------------------------------------------------ }
+
+Procedure CGCPass2SubMain;
+Var Found : Boolean;
+Begin
+  LexInit;
+  LexNextToken;
+  Found := False;
+  While (CurTokType <> TOK_EOF) And (Not Found) Do
+  Begin
+    If CGCIsKW(KW_SUB) Then
+    Begin
+      LexNextToken;
+      If (CurTokType = TOK_IDENT) And
+         (UpCaseStr(CurTokStr) = 'MAIN') Then
+      Begin
+        LexNextToken;
+        { Skip "(" ... ")" eventuels }
+        If CurTokType = TOK_LPAREN Then
+        Begin
+          While (CurTokType <> TOK_RPAREN) And
+                (CurTokType <> TOK_EOF) Do LexNextToken;
+          If CurTokType = TOK_RPAREN Then LexNextToken;
+        End;
+        Found := True;
+      End
+      Else
+        CGCSkipToEndProc;
+    End
+    Else If CGCIsKW(KW_FUNCTION) Or CGCIsKW(KW_PROPERTY) Then
+    Begin
+      LexNextToken;
+      CGCSkipToEndProc;
+    End
+    Else
+      LexNextToken;
+  End;
+
+  If Not Found Then
+  Begin
+    WarnMsg('Palier C: "Sub Main" introuvable, EXE par defaut ' +
+            'ExitProcess(0)');
+    AsmPushImm(0);
+    AsmCallIAT(0);
+    AsmInt3;
+    LexClose;
+    Exit;
+  End;
+
+  { ----- Prologue ----- }
+  AsmPushReg(R_EBP);
+  AsmMovRegReg(R_EBP, R_ESP);
+  { SUB ESP, FRAME (force imm32 form pour pouvoir patcher) }
+  AsmAluRegImm(ALU_SUB, R_ESP, $7FFFFFFF);
+  CGCFrameInstrIdx := AsmInstrCount - 1;
+
+  { Palier E : reserver 2 slots scratch pour MessageBox }
+  CGCAddLocal('@MSGBOX_TEXT');
+  CGCAddLocal('@MSGBOX_TITLE');
+
+  CGCParseStatementBlock(KW_END, KW_NONE);
+
+  If Not CGCIsKW(KW_END) Then
+    FatalError('Palier C: "End Sub" attendu');
+  LexNextToken;
+  If Not CGCIsKW(KW_SUB) Then
+    FatalError('Palier C: "End Sub" attendu');
+  LexNextToken;
+
+  { Patch frame size }
+  AsmInstrs[CGCFrameInstrIdx].Imm := CGCFrameSize;
+
+  { Si ExitProcess pas explicite : ExitProcess(0) implicite }
+  If Not CGCExitDone Then
+  Begin
+    AsmPushImm(0);
+    AsmCallIAT(0);
+    AsmInt3;
+  End;
+
+  LexClose;
+End;
+
+{ ------------------------------------------------------------ }
+{ CodeGenEntryPoint : pilote le mini-codegen Palier C            }
+{ ------------------------------------------------------------ }
+
+Procedure CodeGenEntryPoint;
+Var DK, DU : Integer;
+Begin
+  AsmInit;
+  ImpReset;
+  CGCLocalCnt      := 0;
+  CGCFrameSize     := 0;
+  CGCFrameInstrIdx := -1;
+  CGCExitDone      := False;
+  CGCLabSeq        := 0;
+  CGCBreakTop      := 0;
+  CGCProcCnt       := 0;
+  CGCCurProc       := -1;
+  CGCExitLabel     := '';
+  CGCRetvalOfs     := 0;
+
+  { Imports pre-enregistres :                                  }
+  {   func 0 = kernel32.ExitProcess (toujours present)         }
+  {   func 1 = user32.MessageBoxA   (utilise par MessageBox)   }
+  DK := ImpAddDLL('kernel32.dll');
+  ImpAddFunc(DK, 'ExitProcess');
+  DU := ImpAddDLL('user32.dll');
+  ImpAddFunc(DU, 'MessageBoxA');
+  { Palier F : runtime console pour Print / Debug.Print         }
+  ImpAddFunc(DK, 'GetStdHandle');
+  ImpAddFunc(DK, 'WriteFile');
+
+  { Globals .data du runtime Print }
+  AsmDefineData('@HSTDOUT',  4);
+  AsmDefineData('@PRINTBUF', 16);
+  { CRLF en .rdata via le pool de litteraux }
+  CGCCRLFLit := StrAddLit(Chr(13) + Chr(10));
+
+  { Pass 1 : globals dans .data }
+  CGCPass1Globals;
+
+  { Pass 1.5 : inventaire des Sub/Function utilisateur }
+  CGCScanProcs;
+
+  { Sous-routines runtime du Palier F (avant _start) }
+  CGCEmitPrintHelpers;
+
+  { Palier G : emission des Sub/Function utilisateur (avant _start) }
+  CGCPass2UserProcs;
+
+  { Entry point }
+  AsmLabel('_start');
+
+  { Init runtime : @HSTDOUT := GetStdHandle(STD_OUTPUT_HANDLE = -11) }
+  AsmPushImm(-11);
+  AsmCallIAT(ImpFindFunc('GetStdHandle'));
+  AsmMovMemAbsReg(AsmDataVA('@HSTDOUT'), R_EAX);
+
+  { Pass 2 : corps de Sub Main }
+  CGCPass2SubMain;
+
+  { Calculer les offsets .rdata avant l encodage final }
+  ImpBuildLayout;
+
+  { Calculer le layout PE (positions/tailles dynamiques)        }
+  PEComputeLayout;
+
+  AsmAssemble;
+End;
+
+{ ============================================================ }
+{ TODO 21 - ECRIVAIN BINAIRE PE (.EXE WIN32) (suite)            }
+{ ============================================================ }
+
+Var
+  PEBuf : Array[0..PE_BUF_SIZE-1] Of Byte;
+  PEPos : LongInt;
+
+{ ------------------------------------------------------------ }
+{ Helpers : ecriture sequentielle dans le buffer PE             }
+{ ------------------------------------------------------------ }
+
+Procedure PEReset;
+Var I : LongInt;
+Begin
+  For I := 0 To PE_BUF_SIZE - 1 Do PEBuf[I] := 0;
+  PEPos := 0;
+End;
+
+Procedure PEByte(B : Byte);
+Begin
+  If PEPos >= PE_BUF_SIZE Then Exit;
+  PEBuf[PEPos] := B;
+  Inc(PEPos);
+End;
+
+Procedure PEWord(W : LongInt);
+Begin
+  PEByte(W And $FF);
+  PEByte((W Shr 8) And $FF);
+End;
+
+Procedure PEDWord(D : LongInt);
+Begin
+  PEByte(D And $FF);
+  PEByte((D Shr 8) And $FF);
+  PEByte((D Shr 16) And $FF);
+  PEByte((D Shr 24) And $FF);
+End;
+
+Procedure PEStr(Const S : String);
+Var I : Integer;
+Begin
+  For I := 1 To Length(S) Do PEByte(Ord(S[I]));
+End;
+
+Procedure PEFixedStr(Const S : String; FixedLen : Integer);
+Var I : Integer;
+Begin
+  For I := 1 To Length(S) Do
+    If I <= FixedLen Then PEByte(Ord(S[I]));
+  For I := Length(S) + 1 To FixedLen Do PEByte(0);
+End;
+
+Procedure PESeek(Ofs : LongInt);
+Begin
+  PEPos := Ofs;
+End;
+
+Procedure PEPadTo(Ofs : LongInt);
+Begin
+  While PEPos < Ofs Do PEByte(0);
+End;
+
+{ ------------------------------------------------------------ }
+{ PEEmitDosStub : en-tete DOS (MZ) + stub "cannot run in DOS"   }
+{ ------------------------------------------------------------ }
+
+Procedure PEEmitDosStub;
+Const
+  MSG : String = 'This program cannot be run in DOS mode.';
+Var I : Integer;
+Begin
+  PESeek(0);
+  PEWord(PE_DOS_MAGIC);   { e_magic   'MZ' }
+  PEWord($0090);          { e_cblp     }
+  PEWord($0003);          { e_cp       }
+  PEWord(0);              { e_crlc     }
+  PEWord(4);              { e_cparhdr  }
+  PEWord(0);              { e_minalloc }
+  PEWord($FFFF);          { e_maxalloc }
+  PEWord(0);              { e_ss       }
+  PEWord($00B8);          { e_sp       }
+  PEWord(0);              { e_csum     }
+  PEWord(0);              { e_ip       }
+  PEWord(0);              { e_cs       }
+  PEWord($0040);          { e_lfarlc   }
+  PEWord(0);              { e_ovno     }
+  For I := 1 To 4 Do PEWord(0);   { e_res    }
+  PEWord(0); PEWord(0);           { e_oemid, e_oeminfo }
+  For I := 1 To 10 Do PEWord(0);  { e_res2 }
+  PEDWord($00000080);             { e_lfanew = offset PE }
+
+  { DOS stub : programme 16 bits qui imprime le message  }
+  { puis se termine par INT 21h, AX=4C01h.               }
+  { Octets exacts (compatibles avec linkers Microsoft).  }
+  PESeek($40);
+  PEByte($0E);                      { push cs           }
+  PEByte($1F);                      { pop ds            }
+  PEByte($BA); PEWord($000E);       { mov dx, offset    }
+  PEByte($B4); PEByte($09);         { mov ah, 9         }
+  PEByte($CD); PEByte($21);         { int 21h           }
+  PEByte($B8); PEWord($4C01);       { mov ax, 4C01h     }
+  PEByte($CD); PEByte($21);         { int 21h           }
+  { Message + CR/LF + '$'                               }
+  For I := 1 To Length(MSG) Do PEByte(Ord(MSG[I]));
+  PEByte($0D); PEByte($0D); PEByte($0A); PEByte($24);
+  PEPadTo($80);
+End;
+
+{ ------------------------------------------------------------ }
+{ PEEmitNTHeaders : signature 'PE', en-tete COFF, en-tete opt   }
+{ ------------------------------------------------------------ }
+
+Procedure PEEmitNTHeaders;
+Var I : Integer;
+Begin
+  PESeek($80);
+  { Signature PE\0\0 }
+  PEDWord(PE_PE_SIG);
+
+  { ----- IMAGE_FILE_HEADER (COFF) ----- }
+  PEWord(PE_MACHINE_I386);    { Machine = 0x014C            }
+  PEWord(3);                  { NumberOfSections            }
+  PEDWord(0);                 { TimeDateStamp               }
+  PEDWord(0);                 { PointerToSymbolTable        }
+  PEDWord(0);                 { NumberOfSymbols             }
+  PEWord(PE_OPT_SIZE);        { SizeOfOptionalHeader = 0xE0 }
+  { Characteristics : RELOCS_STRIPPED | EXECUTABLE_IMAGE |  }
+  { 32BIT_MACHINE                                           }
+  PEWord($0103);
+
+  { ----- IMAGE_OPTIONAL_HEADER32 ----- }
+  PEWord(PE_MAGIC_32);        { Magic = 0x010B (PE32)       }
+  PEByte(1); PEByte(0);       { Major/Minor LinkerVersion   }
+  PEDWord(PE_TEXT_RAWSZ);     { SizeOfCode                  }
+  PEDWord(PE_RDATA_RAWSZ + PE_DATA_RAWSZ); { SizeOfInitializedData       }
+  PEDWord(0);                 { SizeOfUninitializedData     }
+  PEDWord(PE_TEXT_RVA);       { AddressOfEntryPoint         }
+  PEDWord(PE_TEXT_RVA);       { BaseOfCode                  }
+  PEDWord(PE_RDATA_RVA);      { BaseOfData                  }
+  PEDWord(PE_IMG_BASE);       { ImageBase = 0x00400000      }
+  PEDWord(PE_SEC_ALIGN);      { SectionAlignment = 0x1000   }
+  PEDWord(PE_FILE_ALIGN);     { FileAlignment = 0x200       }
+  PEWord(4); PEWord(0);       { Major/Minor OSVersion       }
+  PEWord(0); PEWord(0);       { Major/Minor ImageVersion    }
+  PEWord(4); PEWord(0);       { Major/Minor SubsystemVer    }
+  PEDWord(0);                 { Win32VersionValue           }
+  PEDWord(PE_SIZE_OF_IMAGE);  { SizeOfImage                 }
+  PEDWord(PE_HEADERS_SIZE);   { SizeOfHeaders               }
+  PEDWord(0);                 { CheckSum                    }
+  PEWord(PE_SUBSYS_CUI);      { Subsystem = 3 (Console)     }
+  PEWord(0);                  { DllCharacteristics          }
+  PEDWord($00100000);         { SizeOfStackReserve          }
+  PEDWord($00001000);         { SizeOfStackCommit           }
+  PEDWord($00100000);         { SizeOfHeapReserve           }
+  PEDWord($00001000);         { SizeOfHeapCommit            }
+  PEDWord(0);                 { LoaderFlags                 }
+  PEDWord(16);                { NumberOfRvaAndSizes         }
+
+  { ----- 16 Data Directories (8 octets chacun) -----        }
+  { [0] Export                                               }
+  PEDWord(0); PEDWord(0);
+  { [1] Import : RVA = debut de .rdata, Size = IDT (20 * (NumDLL+1)) }
+  PEDWord(PE_RDATA_RVA);
+  PEDWord(20 * (ImpDLLCnt + 1));
+  { [2..15] vides                                            }
+  For I := 2 To 15 Do
+  Begin
+    PEDWord(0); PEDWord(0);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ PEComputeLayout : calcule positions/tailles de sections en   }
+{ fonction de AsmCodeSize, ImpRDataSize, AsmDataSecSize.       }
+{ Doit etre appele AVANT toute emission PE.                    }
+{ ------------------------------------------------------------ }
+Procedure PEComputeLayout;
+  Function AlignUp(V, A : LongInt) : LongInt;
+  Begin
+    AlignUp := ((V + A - 1) Div A) * A;
+  End;
+Var
+  TextVS, RDataVS, DataVS : LongInt;
+Begin
+  TextVS  := AsmCodeSize;
+  If TextVS = 0 Then TextVS := 1;
+  RDataVS := ImpRDataSize;
+  If RDataVS = 0 Then RDataVS := 1;
+  DataVS  := AsmDataSecSize;
+  If DataVS = 0 Then DataVS := 1;
+
+  PE_TEXT_VSZ      := TextVS;
+  PE_TEXT_RAWSZ    := AlignUp(TextVS, PE_FILE_ALIGN);
+
+  { Les RVA virtuelles restent fixes (.text=0x1000, .rdata=0x2000, }
+  { .data=0x3000) tant que chaque section tient dans une page de  }
+  { SectionAlignment ; AsmDataVA est resolu au moment du codegen, }
+  { donc PE_*_RVA doit etre stable des le depart.                 }
+  PE_RDATA_RVA     := PE_TEXT_RVA  + PE_SEC_ALIGN;     { 0x2000 }
+  PE_DATA_RVA      := PE_RDATA_RVA + PE_SEC_ALIGN;     { 0x3000 }
+
+  PE_RDATA_FILEPOS := PE_TEXT_FILEPOS + PE_TEXT_RAWSZ;
+  PE_RDATA_RAWSZ   := AlignUp(RDataVS, PE_FILE_ALIGN);
+
+  PE_DATA_FILEPOS  := PE_RDATA_FILEPOS + PE_RDATA_RAWSZ;
+  PE_DATA_RAWSZ    := AlignUp(DataVS, PE_FILE_ALIGN);
+
+  PE_FILE_TOTAL    := PE_DATA_FILEPOS + PE_DATA_RAWSZ;
+  PE_SIZE_OF_IMAGE := PE_DATA_RVA + PE_SEC_ALIGN;
+End;
+
+{ ------------------------------------------------------------ }
+{ PEEmitSectionHeaders : .text et .rdata                        }
+{ ------------------------------------------------------------ }
+
+Procedure PEEmitSectionHeaders;
+Var TextVS : LongInt;
+Begin
+  { On suppose que PEPos est apres l Optional Header (= 0x178) }
+  TextVS := AsmCodeSize;
+  If TextVS = 0 Then TextVS := 1;
+  { .text }
+  PEFixedStr('.text', 8);
+  PEDWord(TextVS);              { VirtualSize (taille code) }
+  PEDWord(PE_TEXT_RVA);         { VirtualAddress            }
+  PEDWord(PE_TEXT_RAWSZ);       { SizeOfRawData             }
+  PEDWord(PE_TEXT_FILEPOS);     { PointerToRawData          }
+  PEDWord(0);                   { PointerToRelocations      }
+  PEDWord(0);                   { PointerToLinenumbers      }
+  PEWord(0);                    { NumberOfRelocations       }
+  PEWord(0);                    { NumberOfLinenumbers       }
+  { CODE | EXECUTE | READ }
+  PEDWord($60000020);
+
+  { .rdata }
+  PEFixedStr('.rdata', 8);
+  PEDWord(ImpRDataSize);        { VirtualSize               }
+  PEDWord(PE_RDATA_RVA);        { VirtualAddress            }
+  PEDWord(PE_RDATA_RAWSZ);      { SizeOfRawData             }
+  PEDWord(PE_RDATA_FILEPOS);    { PointerToRawData          }
+  PEDWord(0);                   { PointerToRelocations      }
+  PEDWord(0);                   { PointerToLinenumbers      }
+  PEWord(0);                    { NumberOfRelocations       }
+  PEWord(0);                    { NumberOfLinenumbers       }
+  { INITIALIZED_DATA | READ }
+  PEDWord($40000040);
+
+  { .data : donnees globales (RW) }
+  PEFixedStr('.data', 8);
+  If AsmDataSecSize > 0 Then
+    PEDWord(AsmDataSecSize)
+  Else
+    PEDWord(1);                 { VirtualSize > 0 requis    }
+  PEDWord(PE_DATA_RVA);         { VirtualAddress            }
+  PEDWord(PE_DATA_RAWSZ);       { SizeOfRawData             }
+  PEDWord(PE_DATA_FILEPOS);     { PointerToRawData          }
+  PEDWord(0);                   { PointerToRelocations      }
+  PEDWord(0);                   { PointerToLinenumbers      }
+  PEWord(0);                    { NumberOfRelocations       }
+  PEWord(0);                    { NumberOfLinenumbers       }
+  { INITIALIZED_DATA | READ | WRITE }
+  PEDWord($C0000040);
+
+  PEPadTo(PE_HEADERS_SIZE);
+End;
+
+{ ------------------------------------------------------------ }
+{ PEEmitTextSection : copier les bytes du mini-assembleur       }
+{ ------------------------------------------------------------ }
+
+Procedure PEEmitTextSection;
+Var I : LongInt;
+Begin
+  PESeek(PE_TEXT_FILEPOS);
+  For I := 0 To AsmCodeSize - 1 Do PEByte(AsmCode[I]);
+  PEPadTo(PE_RDATA_FILEPOS);
+End;
+
+{ ------------------------------------------------------------ }
+{ PEEmitRDataSection : Import Dir + ILT + IAT + noms            }
+{ ------------------------------------------------------------ }
+
+Procedure PEEmitRDataSection;
+Var
+  I, J, L, K : Integer;
+  S          : TString;
+  PadCur     : LongInt;
+Begin
+  PESeek(PE_RDATA_FILEPOS);
+
+  { ----- IDT : un IMAGE_IMPORT_DESCRIPTOR par DLL + terminator ----- }
+  For I := 0 To ImpDLLCnt - 1 Do
+  Begin
+    PEDWord(PE_RDATA_RVA + ImpDLLs[I].ILTOfs);    { OriginalFirstThunk }
+    PEDWord(0);                                   { TimeDateStamp     }
+    PEDWord(0);                                   { ForwarderChain    }
+    PEDWord(PE_RDATA_RVA + ImpDLLs[I].NameOfs);   { Name DLL          }
+    PEDWord(PE_RDATA_RVA + ImpDLLs[I].IATOfs);    { FirstThunk (IAT)  }
+  End;
+  { Terminator IDT (20 octets a 0) }
+  PEDWord(0); PEDWord(0); PEDWord(0); PEDWord(0); PEDWord(0);
+
+  { ----- ILT puis IAT pour chaque DLL ----- }
+  For I := 0 To ImpDLLCnt - 1 Do
+  Begin
+    { ILT }
+    For J := 0 To ImpFuncCnt - 1 Do
+      If ImpFuncs[J].DLLIdx = I Then
+        PEDWord(PE_RDATA_RVA + ImpFuncs[J].HintOfs);
+    PEDWord(0);                       { ILT terminator }
+    { IAT (memes valeurs ; le loader y reecrit les vraies adresses) }
+    For J := 0 To ImpFuncCnt - 1 Do
+      If ImpFuncs[J].DLLIdx = I Then
+        PEDWord(PE_RDATA_RVA + ImpFuncs[J].HintOfs);
+    PEDWord(0);                       { IAT terminator }
+  End;
+
+  { ----- Hint/Name ----- }
+  For J := 0 To ImpFuncCnt - 1 Do
+  Begin
+    PEWord(0);                        { Hint = 0 }
+    S := ImpFuncs[J].Name;
+    For L := 1 To Length(S) Do PEByte(Ord(S[L]));
+    PEByte(0);
+    K := 2 + Length(S) + 1;
+    If (K And 1) <> 0 Then PEByte(0); { padding pair }
+  End;
+
+  { ----- Noms de DLL ----- }
+  For I := 0 To ImpDLLCnt - 1 Do
+  Begin
+    S := ImpDLLs[I].Name;
+    For L := 1 To Length(S) Do PEByte(Ord(S[L]));
+    PEByte(0);
+  End;
+
+  { ----- Pool des litteraux chaine ----- }
+  For J := 0 To StrLitCnt - 1 Do
+  Begin
+    S := StrLits[J].Text;
+    For L := 1 To Length(S) Do PEByte(Ord(S[L]));
+    PEByte(0);
+  End;
+
+  PadCur := PE_DATA_FILEPOS;
+  If PadCur = 0 Then ;   { silence unused }
+  PEPadTo(PE_DATA_FILEPOS);
+End;
+
+{ ------------------------------------------------------------ }
+{ PEEmitDataSection : copier les bytes de la section .data       }
+{ ------------------------------------------------------------ }
+
+Procedure PEEmitDataSection;
+Var I : LongInt;
+Begin
+  PESeek(PE_DATA_FILEPOS);
+  For I := 0 To AsmDataSecSize - 1 Do PEByte(AsmDataBuf[I]);
+  PEPadTo(PE_FILE_TOTAL);
+End;
+
+{ ------------------------------------------------------------ }
+{ WritePE : ecrire le fichier PE complet sur disque             }
+{ ------------------------------------------------------------ }
+
+Procedure WritePE(Const OutFile : String);
+Var
+  F        : File;
+  Written  : LongInt;
+  EntryOfs : LongInt;
+Begin
+  PEReset;
+  PEEmitDosStub;
+  PEEmitNTHeaders;
+  PEEmitSectionHeaders;
+  PEEmitTextSection;
+  PEEmitRDataSection;
+  PEEmitDataSection;
+
+  { Patcher AddressOfEntryPoint avec l offset reel de _start.  }
+  { Champ a OptHdr+16 = 0x84+0x14+16 = 0xA8.                   }
+  EntryOfs := AsmGetLabelOfs('_start');
+  If EntryOfs < 0 Then EntryOfs := 0;
+  PEBuf[$A8]     := (PE_TEXT_RVA + EntryOfs) And $FF;
+  PEBuf[$A8 + 1] := ((PE_TEXT_RVA + EntryOfs) Shr 8) And $FF;
+  PEBuf[$A8 + 2] := ((PE_TEXT_RVA + EntryOfs) Shr 16) And $FF;
+  PEBuf[$A8 + 3] := ((PE_TEXT_RVA + EntryOfs) Shr 24) And $FF;
+
+  Assign(F, OutFile);
+{$I-}
+  Rewrite(F, 1);
+{$I+}
+  If IOResult <> 0 Then
+  Begin
+    FatalError('Impossible de creer le fichier ' + OutFile);
+    Exit;
+  End;
+  BlockWrite(F, PEBuf[0], PE_FILE_TOTAL, Written);
+  Close(F);
+  If Written <> PE_FILE_TOTAL Then
+    WarnMsg('WritePE: ecriture incomplete (' + ItoS(Written) +
+            '/' + ItoS(PE_FILE_TOTAL) + ' octets)');
+End;
+
 { ------------------------------------------------------------ }
 { Run                                                          }
 { ------------------------------------------------------------ }
@@ -15241,13 +18288,27 @@ Begin
   InitASMWriter;
   InitImportState;
   InitOptimizer;
-  LexInit;
-  ParseModule;
-  ParseModuleLevelDecl;
-  ParseProcedures;
-  { Les TODOs 19-25 ajouteront ici : }
-  {   ParseStatements, WritePE/WriteCOFF/WriteASM }
-  LexClose;
+  { Palier C : le mini-codegen reouvre lui-meme le source en deux passes. }
+  { Le parser legacy (ParseModule/ParseProcedures) est temporairement     }
+  { neutralise car il n est pas branche au mini-assembleur.               }
+  {  LexInit;                                                             }
+  {  ParseModule;                                                         }
+  {  ParseModuleLevelDecl;                                                }
+  {  ParseProcedures;                                                     }
+  {  LexClose;                                                            }
+
+  { ----- Generation de code et emission des fichiers ----- }
+  If ErrorCount = 0 Then
+  Begin
+    CodeGenEntryPoint;
+    If Opts.EmitAsm Then
+      WriteASM(ReplaceExt(Opts.OutFile, '.asm'));
+    If Opts.EmitObj Then
+      WriteCOFF(Opts.OutFile)
+    Else If Opts.EmitExe Then
+      WritePE(Opts.OutFile);
+  End;
+
   ShowStats;
 End;
 
