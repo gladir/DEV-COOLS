@@ -8088,6 +8088,54 @@ Begin
                            LexNextToken;
                        End;
                      End;
+      KW_DIM      : Begin
+                       { Enregistrer les variables Dim avec defaut compile- }
+                       { time pour que i.ToString() etc. fonctionnent quand }
+                       { la variable n'a pas encore ete affectee.           }
+                       LexNextToken;
+                       While (CurTokType <> TOK_NEWLINE) And
+                             (CurTokType <> TOK_EOF) Do Begin
+                         If (CurTokType = TOK_IDENT) Or
+                            (CurTokType = TOK_KEYWORD) Then Begin
+                           SavedName := CurTokStr;
+                           LexNextToken;
+                           MemberName := '';  { sert a stocker le nom de type }
+                           { 'As Type' optionnel }
+                           If (CurTokType = TOK_KEYWORD) And
+                              (CurTokNum = KW_AS) Then Begin
+                             LexNextToken;
+                             If (CurTokType = TOK_IDENT) Or
+                                (CurTokType = TOK_KEYWORD) Then Begin
+                               MemberName := UpCaseStr(CurTokStr);
+                               LexNextToken;
+                             End;
+                           End;
+                           { Defaut uniquement pour types scalaires connus.    }
+                           { Pour UDT (Personne, etc.), ne PAS enregistrer la  }
+                           { variable de base : sinon l'acces .Field se casse.}
+                           If (MemberName = 'STRING') Then
+                             PEWSetStrVar(SavedName, '')
+                           Else If (MemberName = '') Or
+                                   (MemberName = 'INTEGER') Or
+                                   (MemberName = 'LONG') Or
+                                   (MemberName = 'SHORT') Or
+                                   (MemberName = 'BYTE') Or
+                                   (MemberName = 'BOOLEAN') Then
+                             PEWSetIntVar(SavedName, 0);
+                           { '= expr' optionnel : initialiseur }
+                           If CurTokType = TOK_EQ Then Begin
+                             LexNextToken;
+                             PEWEvalExpr(RhsV);
+                             If RhsV.Kind = PEK_INT Then
+                               PEWSetIntVar(SavedName, RhsV.IVal)
+                             Else If RhsV.Kind = PEK_STR Then
+                               PEWSetStrVar(SavedName, RhsV.SVal);
+                           End;
+                           If CurTokType = TOK_COMMA Then LexNextToken;
+                         End Else
+                           LexNextToken;
+                       End;
+                     End;
     Else
       { Instruction non reconnue par ce TODO - avancer }
       LexNextToken;
