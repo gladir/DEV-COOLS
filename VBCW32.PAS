@@ -16445,6 +16445,11 @@ Type
     IsFunc    : Boolean;
     ParamCnt  : Integer;
     ParamName : Array[0..CGC_MAX_PARAM-1] Of TString;
+    ParamKind : Array[0..CGC_MAX_PARAM-1] Of Integer; { 0=Long, 1=String }
+    RetKind   : Integer;                              { 0=Long, 1=String }
+    ParamHasDef : Array[0..CGC_MAX_PARAM-1] Of Boolean;
+    ParamDefStr : Array[0..CGC_MAX_PARAM-1] Of TString;
+    ParamDefVal : Array[0..CGC_MAX_PARAM-1] Of LongInt;
   End;
 
   { Palier H : tableau 1D Long sur la pile                       }
@@ -16593,12 +16598,16 @@ Begin
 End;
 
 Function CGCAddProc(Const N : TString; IsFunc : Boolean) : Integer;
+Var I : Integer;
 Begin
   If CGCProcCnt >= CGC_MAX_PROC Then
     FatalError('Palier G: trop de procedures utilisateur');
   CGCProcs[CGCProcCnt].Name     := N;
   CGCProcs[CGCProcCnt].IsFunc   := IsFunc;
   CGCProcs[CGCProcCnt].ParamCnt := 0;
+  CGCProcs[CGCProcCnt].RetKind  := 0;
+  For I := 0 To CGC_MAX_PARAM - 1 Do
+    CGCProcs[CGCProcCnt].ParamHasDef[I] := False;
   CGCAddProc := CGCProcCnt;
   Inc(CGCProcCnt);
 End;
@@ -16612,6 +16621,20 @@ Begin
   CGCLocals[CGCLocalCnt].Name := U;
   CGCLocals[CGCLocalCnt].Ofs  := Ofs;
   CGCLocals[CGCLocalCnt].Kind := 0;
+  Inc(CGCLocalCnt);
+End;
+
+{ Variante : enregistre un parametre String (Kind=2). Le parametre   }
+{ occupe deux DWords sur la pile : [Ofs] = ptr, [Ofs+4] = len.       }
+Procedure CGCAddParamString(Const N : TString; Ofs : LongInt);
+Var U : TString;
+Begin
+  U := UpCaseStr(N);
+  If CGCLocalCnt >= CGC_MAX_LOCAL Then
+    FatalError('Palier G: trop de parametres');
+  CGCLocals[CGCLocalCnt].Name := U;
+  CGCLocals[CGCLocalCnt].Ofs  := Ofs;
+  CGCLocals[CGCLocalCnt].Kind := 2;
   Inc(CGCLocalCnt);
 End;
 
@@ -16728,8 +16751,8 @@ Begin
   End
   Else If CGCIsKW(KW_CSTR) Then
   Begin
-    { CStr(x) : identite (le runtime n'a pas de type String separe ;     }
-    { la valeur Long produite est interpretee comme telle par Print/&). }
+    { CStr(x) : si x est deja String, identite ; sinon convertir Long }
+    { en chaine decimale via __str_long2str.                          }
     LexNextToken;
     If CurTokType <> TOK_LPAREN Then
       FatalError('Palier I: "(" attendue apres CStr (ligne ' +
@@ -16739,6 +16762,13 @@ Begin
     If CurTokType <> TOK_RPAREN Then
       FatalError('Palier I: ")" attendue (ligne ' + ItoS(CurTokLine) + ')');
     LexNextToken;
+    If Not CGCExprIsString Then
+    Begin
+      AsmPushReg(R_EAX);
+      AsmCallLbl('__str_long2str');
+      AsmAluRegImm(ALU_ADD, R_ESP, 4);
+      CGCExprIsString := True;
+    End;
   End
   Else If CGCIsKW(KW_FREEFILE) Then
   Begin
@@ -17015,9 +17045,22 @@ Begin
     Begin
       LexNextToken;
       If CurTokType = TOK_LPAREN Then
-        CGCEmitCall(CGCCurProc)
+      Begin
+        CGCEmitCall(CGCCurProc);
+        If CGCProcs[CGCCurProc].RetKind = 1 Then
+          CGCExprIsString := True;
+      End
       Else
-        AsmMovRegMemBP(R_EAX, CGCRetvalOfs);
+      Begin
+        If CGCProcs[CGCCurProc].RetKind = 1 Then
+        Begin
+          AsmMovRegMemBP(R_EDX, CGCRetvalOfs);
+          AsmLeaRegMemBP(R_EAX, CGCRetvalOfs + 4);
+          CGCExprIsString := True;
+        End
+        Else
+          AsmMovRegMemBP(R_EAX, CGCRetvalOfs);
+      End;
       Exit;
     End;
     PI := CGCFindProc(Nm);
@@ -17025,6 +17068,8 @@ Begin
     Begin
       LexNextToken;
       CGCEmitCall(PI);
+      If CGCProcs[PI].RetKind = 1 Then
+        CGCExprIsString := True;
       Exit;
     End;
     AIdx := CGCFindArray(Nm);
@@ -17050,9 +17095,16 @@ Begin
     Begin
       If CGCLocals[Idx].Kind = 1 Then
       Begin
-        { Variable String : EAX = ptr (bp+ofs+4), EDX = len ([bp+ofs]). }
+        { Variable String locale : EAX = ptr (bp+ofs+4), EDX = len ([bp+ofs]). }
         AsmMovRegMemBP(R_EDX, CGCLocals[Idx].Ofs);
         AsmLeaRegMemBP(R_EAX, CGCLocals[Idx].Ofs + 4);
+        CGCExprIsString := True;
+      End
+      Else If CGCLocals[Idx].Kind = 2 Then
+      Begin
+        { Parametre String : ptr deja en [bp+ofs], len en [bp+ofs+4]. }
+        AsmMovRegMemBP(R_EAX, CGCLocals[Idx].Ofs);
+        AsmMovRegMemBP(R_EDX, CGCLocals[Idx].Ofs + 4);
         CGCExprIsString := True;
       End
       Else
@@ -17179,6 +17231,52 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
+{ ParseConcat : operateur & (concatenation de chaines).         }
+{ Auto-promotion Long -> String via __str_long2str si necessaire}
+{ Resultat dans EAX=ptr, EDX=len ; CGCExprIsString:=True.       }
+{ ------------------------------------------------------------ }
+
+Procedure CGCParseConcat;
+Begin
+  CGCParseAdd;
+  While CurTokType = TOK_AMP Do
+  Begin
+    { Promouvoir LHS en String si necessaire }
+    If Not CGCExprIsString Then
+    Begin
+      AsmPushReg(R_EAX);
+      AsmCallLbl('__str_long2str');
+      AsmAluRegImm(ALU_ADD, R_ESP, 4);
+    End;
+    { Sauver LHS (ptr,len) }
+    AsmPushReg(R_EDX);                  { len1 }
+    AsmPushReg(R_EAX);                  { ptr1 }
+    LexNextToken;                       { eat & }
+    CGCExprIsString := False;
+    CGCParseAdd;
+    If Not CGCExprIsString Then
+    Begin
+      AsmPushReg(R_EAX);
+      AsmCallLbl('__str_long2str');
+      AsmAluRegImm(ALU_ADD, R_ESP, 4);
+    End;
+    { Sauver RHS dans ESI/EDI, recuperer LHS, pousser dans l ordre }
+    { cdecl pour l appel : push len2, ptr2, len1, ptr1.            }
+    AsmMovRegReg(R_ESI, R_EAX);         { ptr2 }
+    AsmMovRegReg(R_EDI, R_EDX);         { len2 }
+    AsmPopReg(R_EAX);                   { ptr1 }
+    AsmPopReg(R_EDX);                   { len1 }
+    AsmPushReg(R_EDI);                  { len2 }
+    AsmPushReg(R_ESI);                  { ptr2 }
+    AsmPushReg(R_EDX);                  { len1 }
+    AsmPushReg(R_EAX);                  { ptr1 }
+    AsmCallLbl('__str_concat');
+    AsmAluRegImm(ALU_ADD, R_ESP, 16);
+    CGCExprIsString := True;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
 { ParseRel : = <> < > <= >=                                     }
 { Resultat : 0 (False) ou -1 (True) dans EAX                    }
 { ------------------------------------------------------------ }
@@ -17186,7 +17284,7 @@ End;
 Procedure CGCParseRel;
 Var Op, Cc : Integer; LKeep : TString;
 Begin
-  CGCParseAdd;
+  CGCParseConcat;
   If (CurTokType = TOK_EQ) Or (CurTokType = TOK_NE) Or
      (CurTokType = TOK_LT) Or (CurTokType = TOK_GT) Or
      (CurTokType = TOK_LE) Or (CurTokType = TOK_GE) Then
@@ -17194,7 +17292,7 @@ Begin
     Op := CurTokType;
     LexNextToken;
     AsmPushReg(R_EAX);
-    CGCParseAdd;
+    CGCParseConcat;
     AsmMovRegReg(R_ECX, R_EAX);
     AsmPopReg(R_EAX);
     AsmAluRegReg(ALU_CMP, R_EAX, R_ECX);   { CMP gauche, droit }
@@ -17506,6 +17604,32 @@ Begin
     AsmMovMemBPReg(CGCLocals[Idx].Ofs, R_EAX);
     Exit;
   End;
+  { LHS = nom de la fonction courante avec retour String : meme   }
+  { logique que pour une variable locale String (slot 260 octets).}
+  If (CGCCurProc >= 0) And CGCProcs[CGCCurProc].IsFunc And
+     (CGCProcs[CGCCurProc].RetKind = 1) And
+     (UpCaseStr(Nm) = UpCaseStr(CGCProcs[CGCCurProc].Name)) Then
+  Begin
+    CGCParseExpr;
+    If Not CGCExprIsString Then
+      FatalError('Palier G: expression String attendue pour "' + Nm +
+                 '" (ligne ' + ItoS(CurTokLine) + ')');
+    AsmMovMemBPReg(CGCRetvalOfs, R_EDX);
+    AsmMovRegReg(R_ESI, R_EAX);
+    AsmLeaRegMemBP(R_EDI, CGCRetvalOfs + 4);
+    AsmMovRegReg(R_ECX, R_EDX);
+    AsmAluRegImm(ALU_CMP, R_ECX, 256);
+    L := CGCNewLabel('asfCap');
+    AsmJcc(CC_LE, L);
+    AsmMovRegImm(R_ECX, 256);
+    AsmLabel(L);
+    AsmTestRegReg(R_ECX, R_ECX);
+    L2 := CGCNewLabel('asfZ');
+    AsmJcc(CC_E, L2);
+    AsmRepMovsb;
+    AsmLabel(L2);
+    Exit;
+  End;
   CGCParseExpr;
   { Palier G : assignation au nom de la fonction courante }
   If (CGCCurProc >= 0) And CGCProcs[CGCCurProc].IsFunc And
@@ -17540,16 +17664,26 @@ Var
   HasParen   : Boolean;
   N, I       : Integer;
   ArgsExpect : Integer;
+  TotalSz    : LongInt;
+  ArgOfs     : LongInt;
 Begin
   ArgsExpect := CGCProcs[PIdx].ParamCnt;
   HasParen   := (CurTokType = TOK_LPAREN);
   If HasParen Then LexNextToken;
 
-  { Reserver l espace pour les args (toujours, meme si 0) }
-  If ArgsExpect > 0 Then
-    AsmAluRegImm(ALU_SUB, R_ESP, ArgsExpect * 4);
+  { Calculer la taille totale des arguments sur la pile.            }
+  TotalSz := 0;
+  For I := 0 To ArgsExpect - 1 Do
+    If CGCProcs[PIdx].ParamKind[I] = 1 Then
+      TotalSz := TotalSz + 8
+    Else
+      TotalSz := TotalSz + 4;
+
+  If TotalSz > 0 Then
+    AsmAluRegImm(ALU_SUB, R_ESP, TotalSz);
 
   N := 0;
+  ArgOfs := 0;
   If HasParen Then
   Begin
     If CurTokType <> TOK_RPAREN Then
@@ -17559,7 +17693,20 @@ Begin
           FatalError('Palier G: trop d arguments pour "' +
                      CGCProcs[PIdx].Name + '"');
         CGCParseExpr;
-        AsmMovMemEspReg(N * 4, R_EAX);
+        If CGCProcs[PIdx].ParamKind[N] = 1 Then
+        Begin
+          If Not CGCExprIsString Then
+            FatalError('Palier G: argument String attendu pour "' +
+                       CGCProcs[PIdx].Name + '"');
+          AsmMovMemEspReg(ArgOfs, R_EAX);
+          AsmMovMemEspReg(ArgOfs + 4, R_EDX);
+          ArgOfs := ArgOfs + 8;
+        End
+        Else
+        Begin
+          AsmMovMemEspReg(ArgOfs, R_EAX);
+          ArgOfs := ArgOfs + 4;
+        End;
         Inc(N);
         If CurTokType = TOK_COMMA Then LexNextToken
         Else Break;
@@ -17578,12 +17725,46 @@ Begin
       Repeat
         If N >= ArgsExpect Then Break;
         CGCParseExpr;
-        AsmMovMemEspReg(N * 4, R_EAX);
+        If CGCProcs[PIdx].ParamKind[N] = 1 Then
+        Begin
+          If Not CGCExprIsString Then
+            FatalError('Palier G: argument String attendu pour "' +
+                       CGCProcs[PIdx].Name + '"');
+          AsmMovMemEspReg(ArgOfs, R_EAX);
+          AsmMovMemEspReg(ArgOfs + 4, R_EDX);
+          ArgOfs := ArgOfs + 8;
+        End
+        Else
+        Begin
+          AsmMovMemEspReg(ArgOfs, R_EAX);
+          ArgOfs := ArgOfs + 4;
+        End;
         Inc(N);
         If CurTokType = TOK_COMMA Then LexNextToken
         Else Break;
       Until False;
     End;
+  End;
+
+  { Remplir les parametres Optional restants par leurs valeurs par defaut }
+  While (N < ArgsExpect) And CGCProcs[PIdx].ParamHasDef[N] Do
+  Begin
+    If CGCProcs[PIdx].ParamKind[N] = 1 Then
+    Begin
+      I := StrAddLit(CGCProcs[PIdx].ParamDefStr[N]);
+      AsmMovRegStrRVA(R_EAX, I);
+      AsmMovRegImm(R_EDX, Length(StrLits[I].Text));
+      AsmMovMemEspReg(ArgOfs, R_EAX);
+      AsmMovMemEspReg(ArgOfs + 4, R_EDX);
+      ArgOfs := ArgOfs + 8;
+    End
+    Else
+    Begin
+      AsmMovRegImm(R_EAX, CGCProcs[PIdx].ParamDefVal[N]);
+      AsmMovMemEspReg(ArgOfs, R_EAX);
+      ArgOfs := ArgOfs + 4;
+    End;
+    Inc(N);
   End;
 
   If N <> ArgsExpect Then
@@ -17592,10 +17773,9 @@ Begin
                ItoS(ArgsExpect) + ')');
 
   AsmCallLbl('_proc_' + UpCaseStr(CGCProcs[PIdx].Name));
-
   { cdecl : caller cleanup }
-  If ArgsExpect > 0 Then
-    AsmAluRegImm(ALU_ADD, R_ESP, ArgsExpect * 4);
+  If TotalSz > 0 Then
+    AsmAluRegImm(ALU_ADD, R_ESP, TotalSz);
 
   { I non utilise mais conserve pour clarte }
   If False Then I := 0;
@@ -18774,6 +18954,118 @@ Begin
   AsmPopReg(R_ESI);
   AsmPopReg(R_EDI);
   AsmAluRegImm(ALU_ADD, R_ESP, 4);
+  AsmPopReg(R_EBP);
+  AsmRet;
+
+  { ----- __str_long2str(v) -> EAX,EDX = (slot, len) ----- }
+  { Convertit un Long signe en chaine decimale dans un slot du pool. }
+  AsmLabel('__str_long2str');
+  AsmPushReg(R_EBP);
+  AsmMovRegReg(R_EBP, R_ESP);
+  AsmAluRegImm(ALU_SUB, R_ESP, 12);     { tampon temp 12 octets }
+  AsmPushReg(R_EDI);
+  AsmPushReg(R_ESI);
+  AsmPushReg(R_EBX);
+  AsmCallLbl('__str_alloc');
+  AsmMovRegReg(R_EBX, R_EAX);           { ebx = base slot }
+  AsmMovRegReg(R_EDI, R_EAX);           { edi = curseur de sortie }
+  AsmMovRegMemBP(R_EAX, 8);             { eax = v }
+  AsmTestRegReg(R_EAX, R_EAX);
+  L1 := CGCNewLabel('l2sNN');
+  AsmJcc(CC_NS, L1);                    { si non-negatif, sauter }
+  { Cas negatif : ecrire '-', negate eax }
+  AsmPushReg(R_EAX);
+  AsmMovRegImm(R_EAX, $2D);             { '-' }
+  AsmStosb;
+  AsmPopReg(R_EAX);
+  AsmAluRegReg(ALU_SUB, R_EAX, R_EAX);  { ne marche pas pour neg }
+  AsmMovRegMemBP(R_EAX, 8);
+  { negate via 0 - eax }
+  AsmXorRegReg(R_ECX, R_ECX);
+  AsmAluRegReg(ALU_SUB, R_ECX, R_EAX);
+  AsmMovRegReg(R_EAX, R_ECX);
+  AsmLabel(L1);
+  { Boucle de division par 10 : on empile les chiffres, ESI = compte }
+  AsmXorRegReg(R_ESI, R_ESI);
+  AsmMovRegImm(R_ECX, 10);
+  L2 := CGCNewLabel('l2sLp');
+  L3 := CGCNewLabel('l2sPp');
+  AsmLabel(L2);
+  AsmXorRegReg(R_EDX, R_EDX);
+  AsmIdivReg(R_ECX);                    { eax = quot, edx = reste }
+  AsmAluRegImm(ALU_ADD, R_EDX, $30);    { '0' + digit }
+  AsmPushReg(R_EDX);
+  AsmIncReg(R_ESI);
+  AsmTestRegReg(R_EAX, R_EAX);
+  AsmJcc(CC_NE, L2);
+  { Depiler ESI chiffres dans [edi] }
+  AsmLabel(L3);
+  AsmTestRegReg(R_ESI, R_ESI);
+  L4 := CGCNewLabel('l2sEnd');
+  AsmJcc(CC_E, L4);
+  AsmPopReg(R_EAX);
+  AsmStosb;
+  AsmDecReg(R_ESI);
+  AsmJmpLbl(L3);
+  AsmLabel(L4);
+  AsmMovRegReg(R_EAX, R_EBX);
+  AsmMovRegReg(R_EDX, R_EDI);
+  AsmAluRegReg(ALU_SUB, R_EDX, R_EAX);
+  AsmPopReg(R_EBX);
+  AsmPopReg(R_ESI);
+  AsmPopReg(R_EDI);
+  AsmAluRegImm(ALU_ADD, R_ESP, 12);
+  AsmPopReg(R_EBP);
+  AsmRet;
+
+  { ----- __str_concat(p1,l1,p2,l2) -> EAX,EDX = (slot, len) ----- }
+  { Concatene deux chaines dans un slot du pool. Cap a 256 octets. }
+  AsmLabel('__str_concat');
+  AsmPushReg(R_EBP);
+  AsmMovRegReg(R_EBP, R_ESP);
+  AsmPushReg(R_EDI);
+  AsmPushReg(R_ESI);
+  AsmPushReg(R_EBX);
+  AsmCallLbl('__str_alloc');
+  AsmMovRegReg(R_EBX, R_EAX);           { ebx = base slot }
+  AsmMovRegReg(R_EDI, R_EAX);           { edi = curseur de sortie }
+  { Copie 1 : min(l1, 256) octets }
+  AsmMovRegMemBP(R_ESI, 8);             { ptr1 }
+  AsmMovRegMemBP(R_ECX, 12);            { len1 }
+  AsmAluRegImm(ALU_CMP, R_ECX, 256);
+  L1 := CGCNewLabel('cc1Cap');
+  AsmJcc(CC_LE, L1);
+  AsmMovRegImm(R_ECX, 256);
+  AsmLabel(L1);
+  AsmTestRegReg(R_ECX, R_ECX);
+  L2 := CGCNewLabel('cc1Z');
+  AsmJcc(CC_E, L2);
+  AsmRepMovsb;
+  AsmLabel(L2);
+  { Copie 2 : min(l2, restant) octets ; restant = 256 - (edi - ebx) }
+  AsmMovRegReg(R_EAX, R_EDI);
+  AsmAluRegReg(ALU_SUB, R_EAX, R_EBX);  { eax = deja_ecrit }
+  AsmMovRegImm(R_ECX, 256);
+  AsmAluRegReg(ALU_SUB, R_ECX, R_EAX);  { ecx = restant }
+  { si l2 < restant -> ecx = l2 }
+  AsmMovRegMemBP(R_EDX, 20);            { len2 }
+  AsmAluRegReg(ALU_CMP, R_EDX, R_ECX);
+  L3 := CGCNewLabel('cc2Cap');
+  AsmJcc(CC_GE, L3);
+  AsmMovRegReg(R_ECX, R_EDX);
+  AsmLabel(L3);
+  AsmMovRegMemBP(R_ESI, 16);            { ptr2 }
+  AsmTestRegReg(R_ECX, R_ECX);
+  L4 := CGCNewLabel('cc2Z');
+  AsmJcc(CC_E, L4);
+  AsmRepMovsb;
+  AsmLabel(L4);
+  AsmMovRegReg(R_EAX, R_EBX);
+  AsmMovRegReg(R_EDX, R_EDI);
+  AsmAluRegReg(ALU_SUB, R_EDX, R_EAX);
+  AsmPopReg(R_EBX);
+  AsmPopReg(R_ESI);
+  AsmPopReg(R_EDI);
   AsmPopReg(R_EBP);
   AsmRet;
 
@@ -20001,10 +20293,36 @@ Begin
           Begin
             PNm := CurTokStr;
             LexNextToken;
-            CGCEatTypeAnnot;
             If CGCProcs[P].ParamCnt >= CGC_MAX_PARAM Then
               FatalError('Palier G: trop de parametres pour "' + Nm + '"');
+            CGCProcs[P].ParamKind[CGCProcs[P].ParamCnt] := CGCEatTypeAnnotKind;
             CGCProcs[P].ParamName[CGCProcs[P].ParamCnt] := PNm;
+            CGCProcs[P].ParamHasDef[CGCProcs[P].ParamCnt] := False;
+            { Optional default : "= literal" }
+            If CurTokType = TOK_EQ Then
+            Begin
+              LexNextToken;
+              CGCProcs[P].ParamHasDef[CGCProcs[P].ParamCnt] := True;
+              If CurTokType = TOK_STRING Then
+              Begin
+                CGCProcs[P].ParamDefStr[CGCProcs[P].ParamCnt] := CurTokStr;
+                LexNextToken;
+              End
+              Else If CurTokType = TOK_MINUS Then
+              Begin
+                LexNextToken;
+                If (CurTokType = TOK_INTEGER) Or (CurTokType = TOK_LONG) Then
+                Begin
+                  CGCProcs[P].ParamDefVal[CGCProcs[P].ParamCnt] := -CurTokNum;
+                  LexNextToken;
+                End;
+              End
+              Else If (CurTokType = TOK_INTEGER) Or (CurTokType = TOK_LONG) Then
+              Begin
+                CGCProcs[P].ParamDefVal[CGCProcs[P].ParamCnt] := CurTokNum;
+                LexNextToken;
+              End;
+            End;
             Inc(CGCProcs[P].ParamCnt);
             If CurTokType = TOK_COMMA Then LexNextToken;
           End
@@ -20014,7 +20332,8 @@ Begin
         If CurTokType = TOK_RPAREN Then LexNextToken;
       End;
       { Pour Function : avaler "As Type" }
-      If IsFunc Then CGCEatTypeAnnot;
+      If IsFunc Then
+        CGCProcs[P].RetKind := CGCEatTypeAnnotKind;
       { Sauter le corps }
       CGCSkipToEndProc;
     End
@@ -20044,6 +20363,7 @@ Var
   SavedArrCnt  : Integer;
   SavedErrHnd  : TString;
   SavedErrRsm  : Boolean;
+  POf          : LongInt;
 Begin
   { Sauvegarder l etat courant }
   SavedLocCnt  := CGCLocalCnt;
@@ -20077,10 +20397,15 @@ Begin
   FrameInstrIx := AsmInstrCount - 1;
   CGCFrameInstrIdx := FrameInstrIx;
 
-  { Hidden retval pour Function : @RETVAL au sommet du frame }
+  { Hidden retval pour Function : @RETVAL au sommet du frame.        }
+  { RetKind=0 (Long) : 4 octets, init 0.                              }
+  { RetKind=1 (String) : 260 octets (4 len + 256 data), init len=0.   }
   If IsFunc Then
   Begin
-    CGCRetvalOfs := CGCAddLocal('@RETVAL');
+    If CGCProcs[PIdx].RetKind = 1 Then
+      CGCRetvalOfs := CGCAddLocalString('@RETVAL')
+    Else
+      CGCRetvalOfs := CGCAddLocal('@RETVAL');
     AsmMovRegImm(R_EAX, 0);
     AsmMovMemBPReg(CGCRetvalOfs, R_EAX);
   End;
@@ -20095,9 +20420,22 @@ Begin
   End;
   If IsFunc Then CGCEatTypeAnnot;
 
-  { Enregistrer les parametres avec offsets positifs }
+  { Enregistrer les parametres avec offsets positifs.                 }
+  { Long : 4 octets ; String : 8 octets (ptr+len).                    }
+  POf := 8;
   For I := 0 To CGCProcs[PIdx].ParamCnt - 1 Do
-    CGCAddParam(CGCProcs[PIdx].ParamName[I], 8 + I * 4);
+  Begin
+    If CGCProcs[PIdx].ParamKind[I] = 1 Then
+    Begin
+      CGCAddParamString(CGCProcs[PIdx].ParamName[I], POf);
+      POf := POf + 8;
+    End
+    Else
+    Begin
+      CGCAddParam(CGCProcs[PIdx].ParamName[I], POf);
+      POf := POf + 4;
+    End;
+  End;
 
   { Corps }
   CGCParseStatementBlock(KW_END, KW_NONE);
@@ -20115,7 +20453,15 @@ Begin
   { Epilogue }
   AsmLabel(ExitLab);
   If IsFunc Then
-    AsmMovRegMemBP(R_EAX, CGCRetvalOfs);
+  Begin
+    If CGCProcs[PIdx].RetKind = 1 Then
+    Begin
+      AsmMovRegMemBP(R_EDX, CGCRetvalOfs);
+      AsmLeaRegMemBP(R_EAX, CGCRetvalOfs + 4);
+    End
+    Else
+      AsmMovRegMemBP(R_EAX, CGCRetvalOfs);
+  End;
   AsmMovRegReg(R_ESP, R_EBP);
   AsmPopReg(R_EBP);
   AsmRet;
