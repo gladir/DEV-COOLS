@@ -4683,6 +4683,8 @@ End;
 { ------------------------------------------------------------ }
 
 Procedure ParseModuleLevelDecl; Forward;
+Procedure ParseStatement; Forward;
+Procedure ParseConsoleStatement; Forward;
 
 { ------------------------------------------------------------ }
 { ParseCompilationUnit : point d entree principal du parseur   }
@@ -4825,15 +4827,33 @@ Begin
   SkipNewlines;
   ParseModuleLevelDecl;
 
-  { Les TODOs 08-25 ajouteront ici le parsing des expressions, }
-  { Sub/Function, etc.                                          }
-  If CurTokType <> TOK_EOF Then
+  { Phase 6 : Corps du module - Sub/Function et leurs instructions. }
+  { Boucle generique de dispatch sur ParseStatement jusqu'au End    }
+  { Module / End Class / EOF.                                       }
+  SkipNewlines;
+  While CurTokType <> TOK_EOF Do
   Begin
-    If Opts.Verbose Then
-      WriteLn('  (corps du module non encore parse - TODOs 08-25)');
+    { Detecter "End Module" / "End Class" / "End Namespace" terminal }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END) Then
+    Begin
+      LexNextToken;
+      If (CurTokType = TOK_KEYWORD) And
+         ((CurTokNum = KW_MODULE) Or (CurTokNum = KW_CLASS) Or
+          (CurTokNum = KW_NAMESPACE)) Then
+      Begin
+        LexNextToken;
+        SkipNewlines;
+        Break;
+      End;
+      { End orphelin : ignorer et continuer }
+      SkipNewlines;
+      Continue;
+    End;
+    ParseStatement;
+    SkipNewlines;
   End;
 
-  { Avancer jusqu a la fin du fichier (TODOs 08+ parseront le reste) }
+  { Avancer jusqu a la fin du fichier (au cas ou il reste du texte) }
   While CurTokType <> TOK_EOF Do
     LexNextToken;
 
@@ -7348,7 +7368,6 @@ End;
 { Declarations Forward pour le parseur de statements           }
 { ------------------------------------------------------------ }
 
-Procedure ParseStatement; Forward;
 Procedure ParseStatementBlock; Forward;
 Procedure ParseFor; Forward;
 Procedure ParseDoLoop; Forward;
@@ -7771,6 +7790,15 @@ Begin
   { Label : ident suivi de ':' }
   If (CurTokType = TOK_IDENT) Then
   Begin
+    { Detection des appels Console.XXX(...) : on dispatche pour    }
+    { que le backend binaire puisse capturer les litteraux passes  }
+    { a Console.Write[Line]. Tout le reste est avale generiquement.}
+    If UpCaseStr(CurTokStr) = 'CONSOLE' Then
+    Begin
+      LexNextToken;
+      ParseConsoleStatement;
+      Exit;
+    End;
     LexNextToken;
     Exit;
   End;
@@ -12335,6 +12363,36 @@ Var
   FileCloseCount           : Integer;
 
 { ------------------------------------------------------------ }
+{ File de prints binaires alimentee pendant le parsing.         }
+{ Permet au backend PE binaire de generer du code x86 reel pour }
+{ chaque Console.Write[Line]("litteral") rencontre, en plus du  }
+{ flux Emit() texte (qui reste utilise pour la sortie ASM).     }
+{ ------------------------------------------------------------ }
+
+Const
+  PE_MAX_PRINT_QUEUE = 256;
+
+Type
+  TPEPrintEntry = Record
+    S       : TString;  { contenu (peut contenir CR/LF)              }
+    NewLine : Boolean;  { ajoute CRLF apres                          }
+  End;
+
+Var
+  PEWPrintQueue : Array[0..PE_MAX_PRINT_QUEUE-1] of TPEPrintEntry;
+  PEWPrintCount : Integer;
+
+Procedure PEWEnqueuePrint(Const S : TString; NL : Boolean);
+Begin
+  If PEWPrintCount < PE_MAX_PRINT_QUEUE Then
+  Begin
+    PEWPrintQueue[PEWPrintCount].S       := S;
+    PEWPrintQueue[PEWPrintCount].NewLine := NL;
+    Inc(PEWPrintCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
 { InitConsoleFileIOState : initialiser l etat E/S console/file  }
 { ------------------------------------------------------------ }
 
@@ -12389,11 +12447,16 @@ Begin
   If CurTokType = TOK_RPAREN Then Begin
     { Console.WriteLine() sans argument : saut de ligne seul }
     LexNextToken;
+    PEWEnqueuePrint('', True);
     Emit('  PUSH 0');
     Emit('  CALL ' + IO_RT_PRINTLN);
     Emit('  ADD ESP, 4');
     Exit;
   End;
+  { Cas simple capture par le backend binaire :                   }
+  {   Console.WriteLine("litteral")  -> mise en file              }
+  If CurTokType = TOK_STRING Then
+    PEWEnqueuePrint(CurTokStr, True);
   { Parser le premier argument (chaine ou format) }
   ParseExpr;
   ArgCount := 1;
@@ -12429,6 +12492,10 @@ Begin
     LexNextToken
   Else
     FatalError('Console.Write : parenthese ouvrante attendue');
+  { Cas simple capture par le backend binaire :                   }
+  {   Console.Write("litteral")  -> mise en file (sans CRLF)      }
+  If CurTokType = TOK_STRING Then
+    PEWEnqueuePrint(CurTokStr, False);
   { Parser l expression }
   If CurTokType <> TOK_RPAREN Then
     ParseExpr;
@@ -12500,8 +12567,9 @@ Begin
     LexNextToken
   Else
     FatalError('Console : point attendu apres Console');
-  { Lire le nom du membre }
-  If CurTokType = TOK_IDENT Then Begin
+  { Lire le nom du membre - peut etre un IDENT ou un mot-cle    }
+  { (WriteLine est tokenize comme KW_WRITELINE).                }
+  If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then Begin
     MemberName := UpCaseStr(CurTokStr);
     LexNextToken;
     If MemberName = 'WRITELINE' Then
@@ -15176,6 +15244,8 @@ Begin
   PEWriterCount := 0;
   For I := 0 To PE_MAX_CODE_SIZE - 1 Do PEWCodeBuf[I] := 0;
   For I := 0 To PE_MAX_DATA_SIZE - 1 Do PEWDataBuf[I] := 0;
+  { PEWPrintCount n'est PAS reinitialise ici : la file est remplie  }
+  { pendant le parsing, donc avant l'appel a InitPEWriter.          }
   { Initialiser les imports Win32 API pour VB.NET }
   PEWImports[0].Name  := 'ExitProcess';
   PEWImports[1].Name  := 'GetStdHandle';
@@ -15421,6 +15491,169 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
+{ Helpers d'emission binaire x86 dans PEWCodeBuf et de constantes }
+{ dans PEWDataBuf. Utilises par PEWBuildBinaryEntry pour produire }
+{ du code Win32 reel a partir de la file de prints alimentee     }
+{ par le parseur (Console.Write[Line]("litteral")).              }
+{ ------------------------------------------------------------ }
+
+Procedure PEWEmitByte(B : Byte);
+Begin
+  If PEWCodePos < PE_MAX_CODE_SIZE Then
+  Begin
+    PEWCodeBuf[PEWCodePos] := B;
+    Inc(PEWCodePos);
+  End;
+End;
+
+Procedure PEWEmitDWord(D : LongInt);
+Begin
+  PEWEmitByte(Byte(D And $FF));
+  PEWEmitByte(Byte((D Shr 8) And $FF));
+  PEWEmitByte(Byte((D Shr 16) And $FF));
+  PEWEmitByte(Byte((D Shr 24) And $FF));
+End;
+
+Procedure PEWEmitPushImm32(D : LongInt);
+Begin
+  PEWEmitByte($68);
+  PEWEmitDWord(D);
+End;
+
+{ Emet "push offset <data_label>" : 68 + 4 octets reloges vers   }
+{ l adresse absolue PEWDataVA + offset.                          }
+Procedure PEWEmitPushDataLabel(Const LabelName : TString);
+Var FixOff : LongInt;
+Begin
+  PEWEmitByte($68);
+  FixOff := PEWCodePos;
+  PEWEmitDWord(0);
+  PEWAddFixup(FixOff, LabelName, False, False);
+End;
+
+{ Emet "call dword ptr [import]" : FF 15 + 4 octets relogeables  }
+{ vers l IAT (PEWImports).                                       }
+Procedure PEWEmitCallImport(Const ImpName : TString);
+Var FixOff : LongInt;
+Begin
+  PEWEmitByte($FF);
+  PEWEmitByte($15);
+  FixOff := PEWCodePos;
+  PEWEmitDWord(0);
+  PEWAddFixup(FixOff, ImpName, False, True);
+End;
+
+{ Reserve N octets a zero dans PEWDataBuf et y attache un label.  }
+Procedure PEWReserveData(Const LabelName : TString; NBytes : LongInt);
+Var I : LongInt;
+Begin
+  PEWAddLabel(LabelName, PEWDataPos, True);
+  For I := 0 To NBytes - 1 Do
+  Begin
+    If PEWDataPos < PE_MAX_DATA_SIZE Then
+    Begin
+      PEWDataBuf[PEWDataPos] := 0;
+      Inc(PEWDataPos);
+    End;
+  End;
+End;
+
+{ Stocke une chaine d octets ASCII dans PEWDataBuf avec label.    }
+Procedure PEWStoreString(Const LabelName : TString; Const S : TString);
+Var I : Integer;
+Begin
+  PEWAddLabel(LabelName, PEWDataPos, True);
+  For I := 1 To Length(S) Do
+  Begin
+    If PEWDataPos < PE_MAX_DATA_SIZE Then
+    Begin
+      PEWDataBuf[PEWDataPos] := Byte(Ord(S[I]));
+      Inc(PEWDataPos);
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ PEWBuildBinaryEntry : generer le point d entree x86 binaire    }
+{ A partir de la file de prints (PEWPrintQueue), construit un    }
+{ programme equivalent a :                                       }
+{   hOut := GetStdHandle(STD_OUTPUT_HANDLE)                      }
+{   for each entry: WriteFile(hOut, str, len, &bw, NULL)         }
+{   ExitProcess(0)                                               }
+{ Si la file est vide, emet juste un stub d exit propre.        }
+{ ------------------------------------------------------------ }
+
+Procedure PEWBuildBinaryEntry;
+Var
+  I       : Integer;
+  Lab     : TString;
+  Buf     : TString;
+  Total   : LongInt;
+Begin
+  { Reserver d abord la zone de donnees : un dword bytesWritten    }
+  { partage par tous les WriteFile.                                }
+  PEWReserveData('_VBN_BW', 4);
+
+  { Pour chaque entree, stocker la chaine (avec CRLF eventuel)     }
+  { dans PEWDataBuf et noter sa longueur.                          }
+  For I := 0 To PEWPrintCount - 1 Do
+  Begin
+    Buf := PEWPrintQueue[I].S;
+    If PEWPrintQueue[I].NewLine Then
+      Buf := Buf + #13#10;
+    Lab := '_VBN_S' + ItoS(I);
+    PEWStoreString(Lab, Buf);
+  End;
+
+  { ====== Code x86 ======                                         }
+  { push -11                                                       }
+  PEWEmitByte($6A);
+  PEWEmitByte($F5);                  { -11 = 0xF5 sign-extended    }
+  { call [GetStdHandle]  (STD_OUTPUT_HANDLE = -11)                 }
+  PEWEmitCallImport('_GetStdHandle@4');
+  { mov esi, eax  (89 C6) - sauve le handle dans ESI (callee-saved)}
+  PEWEmitByte($89);
+  PEWEmitByte($C6);
+
+  { Pour chaque chaine en file : WriteFile(hOut,buf,len,&bw,NULL)  }
+  For I := 0 To PEWPrintCount - 1 Do
+  Begin
+    Buf := PEWPrintQueue[I].S;
+    If PEWPrintQueue[I].NewLine Then
+      Buf := Buf + #13#10;
+    Total := Length(Buf);
+    Lab := '_VBN_S' + ItoS(I);
+
+    { push NULL  (lpOverlapped) }
+    PEWEmitByte($6A);
+    PEWEmitByte($00);
+    { push offset bytesWritten }
+    PEWEmitPushDataLabel('_VBN_BW');
+    { push <len> }
+    If (Total >= 0) And (Total <= 127) Then
+    Begin
+      PEWEmitByte($6A);
+      PEWEmitByte(Byte(Total));
+    End
+    Else
+      PEWEmitPushImm32(Total);
+    { push offset string }
+    PEWEmitPushDataLabel(Lab);
+    { push esi  (handle) }
+    PEWEmitByte($56);
+    { call [WriteFile] }
+    PEWEmitCallImport('_WriteFile@20');
+  End;
+
+  { push 0 / call [ExitProcess] }
+  PEWEmitByte($6A);
+  PEWEmitByte($00);
+  PEWEmitCallImport('_ExitProcess@4');
+  { int3 garde-fou }
+  PEWEmitByte($CC);
+End;
+
+{ ------------------------------------------------------------ }
 { WritePEFile : generer un executable PE Windows 32 bits         }
 {   complet a partir des tampons code/data                      }
 { ------------------------------------------------------------ }
@@ -15466,20 +15699,7 @@ Begin
   { Windows et qu il termine proprement avec ExitCode=0.           }
   If PEWCodePos = 0 Then
   Begin
-    { 6A 00              push 0          ; ExitCode             }
-    PEWCodeBuf[0] := $6A;
-    PEWCodeBuf[1] := $00;
-    { FF 15 <abs32>      call dword ptr [ExitProcess_IAT]       }
-    PEWCodeBuf[2] := $FF;
-    PEWCodeBuf[3] := $15;
-    PEWCodeBuf[4] := 0; PEWCodeBuf[5] := 0;
-    PEWCodeBuf[6] := 0; PEWCodeBuf[7] := 0;
-    PEWCodePos := 8;
-    { Fixup absolu vers l IAT ExitProcess }
-    PEWAddFixup(4, '_ExitProcess@4', False, True);
-    { CC                 int3 (filler de queue, jamais execute)  }
-    PEWCodeBuf[8] := $CC;
-    PEWCodePos := 9;
+    PEWBuildBinaryEntry;
   End;
 
   { Disposition simplifiee : toutes les imports dans kernel32.dll }
