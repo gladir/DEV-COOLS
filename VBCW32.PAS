@@ -16432,12 +16432,16 @@ Const
   CGC_MAX_PROC  = 32;
   CGC_MAX_PARAM = 8;
   CGC_MAX_ARRAY = 32;
+  CGC_MAX_CONST = 128;
+  CGC_MAX_TYPE  = 16;
+  CGC_MAX_FIELD = 16;
 
 Type
   TCGCLocal = Record
     Name : TString;
     Ofs  : LongInt;     { offset depuis EBP : negatif (local) ou positif (param) }
-    Kind : Integer;     { 0=Long (4 octets), 1=String (4 longueur + 256 buffer) }
+    Kind : Integer;     { 0=Long, 1=Str local 260B, 2=Str param 8B, 3=UDT local, 4=UDT param ByRef }
+    TIdx : Integer;     { Kind=3/4 : index dans CGCTypes ; sinon -1 }
   End;
 
   TCGCProc = Record
@@ -16445,11 +16449,12 @@ Type
     IsFunc    : Boolean;
     ParamCnt  : Integer;
     ParamName : Array[0..CGC_MAX_PARAM-1] Of TString;
-    ParamKind : Array[0..CGC_MAX_PARAM-1] Of Integer; { 0=Long, 1=String }
+    ParamKind : Array[0..CGC_MAX_PARAM-1] Of Integer; { 0=Long, 1=String, 2=UDT ByRef }
     RetKind   : Integer;                              { 0=Long, 1=String }
     ParamHasDef : Array[0..CGC_MAX_PARAM-1] Of Boolean;
     ParamDefStr : Array[0..CGC_MAX_PARAM-1] Of TString;
     ParamDefVal : Array[0..CGC_MAX_PARAM-1] Of LongInt;
+    ParamTIdx   : Array[0..CGC_MAX_PARAM-1] Of Integer; { -1 ou index UDT }
   End;
 
   { Palier H : tableau 1D Long sur la pile                       }
@@ -16459,6 +16464,20 @@ Type
     BaseOfs : LongInt;
     Lo      : LongInt;
     Count   : LongInt;
+  End;
+
+  { UDT (Type ... End Type) : descripteur de type utilisateur     }
+  TCGCField = Record
+    Name : TString;
+    Kind : Integer;     { 0=Long, 2=String*N fixed }
+    Size : LongInt;     { Long=4, String*N=N }
+    Ofs  : LongInt;     { offset dans la structure }
+  End;
+  TCGCType = Record
+    Name      : TString;
+    FieldCnt  : Integer;
+    Fields    : Array[0..CGC_MAX_FIELD-1] Of TCGCField;
+    TotalSize : LongInt;
   End;
 
 Var
@@ -16486,6 +16505,18 @@ Var
   { Palier J : etat On Error de la proc courante                  }
   CGCErrHandler    : TString;       { '' = aucun, sinon nom du label }
   CGCErrResumeNext : Boolean;       { On Error Resume Next actif    }
+  { Constantes globales (membres Enum, Const Long) : nom -> LongInt }
+  CGCConstName     : Array[0..CGC_MAX_CONST-1] Of TString;
+  CGCConstVal      : Array[0..CGC_MAX_CONST-1] Of LongInt;
+  CGCConstCnt      : Integer;
+  { Types utilisateur (Type ... End Type)                          }
+  CGCTypes         : Array[0..CGC_MAX_TYPE-1] Of TCGCType;
+  CGCTypeCnt       : Integer;
+  { With ... End With : pile de bases (offset BP local ou -1 pour  }
+  { pointeur dans EAX/ECX). Pour la simplicite : on stocke         }
+  { l index dans CGCLocals du var courant (qui doit etre Kind=3/4).}
+  CGCWithLocal     : Array[0..7] Of Integer;
+  CGCWithTop       : Integer;
   { STRINGS : flag positionne par CGCParsePrim/Expr pour signaler   }
   { qu une expression a produit un ptr+len (EAX/EDX) au lieu d un  }
   { Long. Reset par chaque CGCParseExpr a False, mis a True pour  }
@@ -16506,6 +16537,7 @@ Begin
   CGCLocals[CGCLocalCnt].Name := U;
   CGCLocals[CGCLocalCnt].Ofs  := -CGCFrameSize;
   CGCLocals[CGCLocalCnt].Kind := 0;
+  CGCLocals[CGCLocalCnt].TIdx := -1;
   CGCAddLocal := -CGCFrameSize;
   Inc(CGCLocalCnt);
 End;
@@ -16522,7 +16554,26 @@ Begin
   CGCLocals[CGCLocalCnt].Name := U;
   CGCLocals[CGCLocalCnt].Ofs  := -CGCFrameSize;
   CGCLocals[CGCLocalCnt].Kind := 1;
+  CGCLocals[CGCLocalCnt].TIdx := -1;
   CGCAddLocalString := -CGCFrameSize;
+  Inc(CGCLocalCnt);
+End;
+
+{ Allouer un UDT local : Sz octets sur le frame, Kind=3, TIdx=type.  }
+Function CGCAddLocalUDT(Const N : TString; TIdx : Integer; Sz : LongInt) : LongInt;
+Var U : TString;
+Begin
+  U := UpCaseStr(N);
+  If CGCLocalCnt >= CGC_MAX_LOCAL Then
+    FatalError('Palier C: trop de variables locales');
+  { Aligner Sz sur 4 octets pour preserver l alignement frame. }
+  If (Sz And 3) <> 0 Then Sz := (Sz + 3) And (Not 3);
+  CGCFrameSize := CGCFrameSize + Sz;
+  CGCLocals[CGCLocalCnt].Name := U;
+  CGCLocals[CGCLocalCnt].Ofs  := -CGCFrameSize;
+  CGCLocals[CGCLocalCnt].Kind := 3;
+  CGCLocals[CGCLocalCnt].TIdx := TIdx;
+  CGCAddLocalUDT := -CGCFrameSize;
   Inc(CGCLocalCnt);
 End;
 
@@ -16607,7 +16658,10 @@ Begin
   CGCProcs[CGCProcCnt].ParamCnt := 0;
   CGCProcs[CGCProcCnt].RetKind  := 0;
   For I := 0 To CGC_MAX_PARAM - 1 Do
+  Begin
     CGCProcs[CGCProcCnt].ParamHasDef[I] := False;
+    CGCProcs[CGCProcCnt].ParamTIdx[I]   := -1;
+  End;
   CGCAddProc := CGCProcCnt;
   Inc(CGCProcCnt);
 End;
@@ -16621,6 +16675,7 @@ Begin
   CGCLocals[CGCLocalCnt].Name := U;
   CGCLocals[CGCLocalCnt].Ofs  := Ofs;
   CGCLocals[CGCLocalCnt].Kind := 0;
+  CGCLocals[CGCLocalCnt].TIdx := -1;
   Inc(CGCLocalCnt);
 End;
 
@@ -16635,12 +16690,111 @@ Begin
   CGCLocals[CGCLocalCnt].Name := U;
   CGCLocals[CGCLocalCnt].Ofs  := Ofs;
   CGCLocals[CGCLocalCnt].Kind := 2;
+  CGCLocals[CGCLocalCnt].TIdx := -1;
+  Inc(CGCLocalCnt);
+End;
+
+{ Parametre UDT ByRef (Kind=4). Le param occupe 4 octets sur la pile : }
+{ [Ofs] = ptr vers la structure dans le frame de l appelant.            }
+Procedure CGCAddParamUDT(Const N : TString; Ofs : LongInt; TIdx : Integer);
+Var U : TString;
+Begin
+  U := UpCaseStr(N);
+  If CGCLocalCnt >= CGC_MAX_LOCAL Then
+    FatalError('Palier G: trop de parametres');
+  CGCLocals[CGCLocalCnt].Name := U;
+  CGCLocals[CGCLocalCnt].Ofs  := Ofs;
+  CGCLocals[CGCLocalCnt].Kind := 4;
+  CGCLocals[CGCLocalCnt].TIdx := TIdx;
   Inc(CGCLocalCnt);
 End;
 
 { ------------------------------------------------------------ }
 { Helpers de parsing (sur le lexer existant)                    }
 { ------------------------------------------------------------ }
+
+{ Constantes globales (membres Enum) : nom -> LongInt              }
+Function CGCFindConst(Const N : TString) : Integer;
+Var I : Integer; U : TString;
+Begin
+  U := UpCaseStr(N);
+  CGCFindConst := -1;
+  For I := 0 To CGCConstCnt - 1 Do
+    If CGCConstName[I] = U Then
+    Begin
+      CGCFindConst := I;
+      Exit;
+    End;
+End;
+
+Procedure CGCAddConst(Const N : TString; V : LongInt);
+Var U : TString;
+Begin
+  U := UpCaseStr(N);
+  If CGCFindConst(U) >= 0 Then Exit;     { deja defini : ignorer }
+  If CGCConstCnt >= CGC_MAX_CONST Then
+    FatalError('Palier C: trop de constantes (Enum)');
+  CGCConstName[CGCConstCnt] := U;
+  CGCConstVal[CGCConstCnt]  := V;
+  Inc(CGCConstCnt);
+End;
+
+{ Types utilisateur (Type ... End Type) }
+Function CGCFindType(Const N : TString) : Integer;
+Var I : Integer; U : TString;
+Begin
+  U := UpCaseStr(N);
+  CGCFindType := -1;
+  For I := 0 To CGCTypeCnt - 1 Do
+    If CGCTypes[I].Name = U Then
+    Begin CGCFindType := I; Exit; End;
+End;
+
+Function CGCAddType(Const N : TString) : Integer;
+Var U : TString;
+Begin
+  U := UpCaseStr(N);
+  If CGCFindType(U) >= 0 Then
+  Begin CGCAddType := CGCFindType(U); Exit; End;
+  If CGCTypeCnt >= CGC_MAX_TYPE Then
+    FatalError('Palier C: trop de types utilisateur');
+  CGCTypes[CGCTypeCnt].Name      := U;
+  CGCTypes[CGCTypeCnt].FieldCnt  := 0;
+  CGCTypes[CGCTypeCnt].TotalSize := 0;
+  CGCAddType := CGCTypeCnt;
+  Inc(CGCTypeCnt);
+End;
+
+Procedure CGCAddField(TIdx : Integer; Const Nm : TString;
+                      Kind : Integer; Sz : LongInt);
+Var F, U : Integer; UN : TString;
+Begin
+  If TIdx < 0 Then Exit;
+  UN := UpCaseStr(Nm);
+  F := CGCTypes[TIdx].FieldCnt;
+  If F >= CGC_MAX_FIELD Then
+    FatalError('Palier C: trop de champs dans Type "' +
+               CGCTypes[TIdx].Name + '"');
+  CGCTypes[TIdx].Fields[F].Name := UN;
+  CGCTypes[TIdx].Fields[F].Kind := Kind;
+  CGCTypes[TIdx].Fields[F].Size := Sz;
+  CGCTypes[TIdx].Fields[F].Ofs  := CGCTypes[TIdx].TotalSize;
+  CGCTypes[TIdx].TotalSize := CGCTypes[TIdx].TotalSize + Sz;
+  Inc(CGCTypes[TIdx].FieldCnt);
+  { U non utilise }
+  If False Then U := 0;
+End;
+
+Function CGCFindField(TIdx : Integer; Const Nm : TString) : Integer;
+Var I : Integer; U : TString;
+Begin
+  U := UpCaseStr(Nm);
+  CGCFindField := -1;
+  If TIdx < 0 Then Exit;
+  For I := 0 To CGCTypes[TIdx].FieldCnt - 1 Do
+    If CGCTypes[TIdx].Fields[I].Name = U Then
+    Begin CGCFindField := I; Exit; End;
+End;
 
 Function CGCIsKW(KW : Integer) : Boolean;
 Begin
@@ -16681,6 +16835,48 @@ Begin
   End;
 End;
 
+{ Variante etendue : detecte aussi "String * N" (Kind=2, Size=N) et   }
+{ "TypeName" defini par Type (Kind=3, TIdx=index, Size=TotalSize).    }
+{ Sinon retourne Kind=0 (Long, 4 octets) et 1 (String dynamic local). }
+Procedure CGCEatTypeAnnotEx(Var Kind : Integer; Var Size : LongInt;
+                            Var TIdx : Integer);
+Var Nm : TString;
+Begin
+  Kind := 0; Size := 4; TIdx := -1;
+  If Not CGCIsKW(KW_AS) Then Exit;
+  LexNextToken;
+  If CGCIsKW(KW_STRING) Then
+  Begin
+    LexNextToken;
+    If CurTokType = TOK_STAR Then
+    Begin
+      LexNextToken;
+      If (CurTokType <> TOK_INTEGER) And (CurTokType <> TOK_LONG) Then
+        FatalError('Palier C: longueur attendue apres "String *"');
+      Kind := 2; Size := CurTokNum; TIdx := -1;
+      LexNextToken;
+      Exit;
+    End;
+    Kind := 1; Size := 260; TIdx := -1;
+    Exit;
+  End;
+  If CurTokType = TOK_IDENT Then
+  Begin
+    Nm := CurTokStr;
+    LexNextToken;
+    TIdx := CGCFindType(Nm);
+    If TIdx >= 0 Then
+    Begin
+      Kind := 3; Size := CGCTypes[TIdx].TotalSize;
+      Exit;
+    End;
+    { type inconnu : par defaut Long, Size=4 }
+    Exit;
+  End;
+  If CurTokType = TOK_KEYWORD Then
+    LexNextToken;
+End;
+
 { ------------------------------------------------------------ }
 { Sauter jusqu a "End Sub" / "End Function" / "End Property"    }
 { pour les procedures autres que Sub Main.                      }
@@ -16711,6 +16907,9 @@ End;
 
 Procedure CGCParseExpr; Forward;
 Procedure CGCEmitCall(PIdx : Integer); Forward;
+Procedure CGCEmitUDTArg(PIdx, N : Integer; ArgOfs : LongInt); Forward;
+Procedure CGCEmitUDTReadField(LIdx : Integer); Forward;
+Procedure CGCEmitUDTWriteField(LIdx : Integer); Forward;
 Procedure CGCEmitErrDispatch; Forward;
 Procedure CGCEmitSetStrLit(Const PtrSym, LenSym, Msg : TString); Forward;
 
@@ -16732,6 +16931,10 @@ Begin
   Begin
     AsmMovRegImm(R_EAX, CurTokNum);
     LexNextToken;
+  End
+  Else If (CurTokType = TOK_DOT) And (CGCWithTop > 0) Then
+  Begin
+    CGCEmitUDTReadField(CGCWithLocal[CGCWithTop - 1]);
   End
   Else If CurTokType = TOK_STRING Then
   Begin
@@ -17107,6 +17310,12 @@ Begin
         AsmMovRegMemBP(R_EDX, CGCLocals[Idx].Ofs + 4);
         CGCExprIsString := True;
       End
+      Else If (CGCLocals[Idx].Kind = 3) Or (CGCLocals[Idx].Kind = 4) Then
+      Begin
+        LexNextToken;
+        CGCEmitUDTReadField(Idx);
+        Exit;
+      End
       Else
         AsmMovRegMemBP(R_EAX, CGCLocals[Idx].Ofs);
       LexNextToken;
@@ -17115,8 +17324,18 @@ Begin
     Begin
       DOf := AsmFindData(Nm);
       If DOf < 0 Then
+      Begin
+        { Constante (membre Enum) ? }
+        Idx := CGCFindConst(Nm);
+        If Idx >= 0 Then
+        Begin
+          AsmMovRegImm(R_EAX, CGCConstVal[Idx]);
+          LexNextToken;
+          Exit;
+        End;
         FatalError('Palier C: identificateur inconnu "' + Nm +
                    '" (ligne ' + ItoS(CurTokLine) + ')');
+      End;
       AsmMovRegMemAbs(R_EAX, AsmDataVA(Nm));
       LexNextToken;
     End;
@@ -17351,6 +17570,7 @@ End;
 
 Procedure CGCParseStatement; Forward;
 Procedure CGCParseStmtBody; Forward;
+Procedure CGCParseWith; Forward;
 
 { Tout token qui ferme un bloc d instructions structure (If/For/    }
 { While/Do/Sub). Le parser de bloc s arrete et laisse le parent      }
@@ -17398,6 +17618,8 @@ Var
   Nm        : TString;
   Lo, Hi, N : LongInt;
   Neg       : Boolean;
+  DK, DT    : Integer;
+  DSz       : LongInt;
 Begin
   LexNextToken;     { eat "Dim" }
   If CurTokType <> TOK_IDENT Then
@@ -17469,13 +17691,14 @@ Begin
     Exit;
   End;
 
-  If CGCEatTypeAnnotKind = 1 Then
+  CGCEatTypeAnnotEx(DK, DSz, DT);
+  If DK = 1 Then
     CGCAddLocalString(Nm)
+  Else If (DK = 3) And (DT >= 0) Then
+    CGCAddLocalUDT(Nm, DT, DSz)
   Else
     CGCAddLocal(Nm);
-End;
-
-{ Palier H : ReDim NAME(N)  ou  ReDim NAME(Lo To Hi)                  }
+End;{ Palier H : ReDim NAME(N)  ou  ReDim NAME(Lo To Hi)                  }
 { Le tableau doit avoir ete declare via Dim NAME() (Count=0).         }
 { Allocation de Count*4 octets sur le frame courant.                   }
 Procedure CGCParseReDim;
@@ -17570,6 +17793,17 @@ Var
   Lit, Len, DwCount, SrcLI : Integer;
   L, L2    : TString;
 Begin
+  { Acces UDT : "pers.field = expr" }
+  If CurTokType = TOK_DOT Then
+  Begin
+    Idx := CGCFindLocal(Nm);
+    If (Idx < 0) Or
+       ((CGCLocals[Idx].Kind <> 3) And (CGCLocals[Idx].Kind <> 4)) Then
+      FatalError('Palier C: "' + Nm + '" n est pas un UDT (ligne ' +
+                 ItoS(CurTokLine) + ')');
+    CGCEmitUDTWriteField(Idx);
+    Exit;
+  End;
   { CurTok devrait etre "=" }
   If CurTokType <> TOK_EQ Then
     FatalError('Palier C: "=" attendu (ligne ' + ItoS(CurTokLine) + ')');
@@ -17659,6 +17893,160 @@ End;
 { MOV [ESP+disp], reg, puis CALL, puis ADD ESP, N*4.            }
 { Resultat (Function) dans EAX.                                  }
 { ------------------------------------------------------------ }
+Procedure CGCEmitUDTArg(PIdx, N : Integer; ArgOfs : LongInt);
+Var
+  Nm    : TString;
+  LIdx  : Integer;
+Begin
+  If CurTokType <> TOK_IDENT Then
+    FatalError('Palier G: argument UDT attendu pour "' +
+               CGCProcs[PIdx].Name + '" (ligne ' + ItoS(CurTokLine) + ')');
+  Nm := CurTokStr;
+  LexNextToken;
+  LIdx := CGCFindLocal(Nm);
+  If LIdx < 0 Then
+    FatalError('Palier G: variable UDT inconnue "' + Nm + '"');
+  If CGCLocals[LIdx].Kind = 3 Then
+  Begin
+    AsmLeaRegMemBP(R_EAX, CGCLocals[LIdx].Ofs);
+    AsmMovMemEspReg(ArgOfs, R_EAX);
+  End
+  Else If CGCLocals[LIdx].Kind = 4 Then
+  Begin
+    { Re-passer un pointeur deja pointeur }
+    AsmMovRegMemBP(R_EAX, CGCLocals[LIdx].Ofs);
+    AsmMovMemEspReg(ArgOfs, R_EAX);
+  End
+  Else
+    FatalError('Palier G: "' + Nm + '" n est pas un UDT');
+End;
+
+{ Lit un champ d un UDT (CurTok doit etre TOK_DOT). Pour Kind=3        }
+{ (UDT local) : adresse de base = lea[bp+ofs]. Pour Kind=4 (param) :   }
+{ adresse de base = [bp+ofs].                                          }
+{ Resultat : Long -> EAX ; String*N -> EAX=ptr slot, EDX=len.          }
+Procedure CGCEmitUDTReadField(LIdx : Integer);
+Var
+  TIdx, FIdx : Integer;
+  FieldOfs   : LongInt;
+  FNm        : TString;
+Begin
+  If CurTokType <> TOK_DOT Then
+    FatalError('Palier C: "." attendu pour acces champ UDT (ligne ' +
+               ItoS(CurTokLine) + ')');
+  LexNextToken;
+  If (CurTokType <> TOK_IDENT) And (CurTokType <> TOK_KEYWORD) Then
+    FatalError('Palier C: nom de champ attendu (ligne ' +
+               ItoS(CurTokLine) + ')');
+  FNm  := CurTokStr;
+  LexNextToken;
+  TIdx := CGCLocals[LIdx].TIdx;
+  FIdx := CGCFindField(TIdx, FNm);
+  If FIdx < 0 Then
+    FatalError('Palier C: champ "' + FNm + '" inconnu dans le UDT');
+  FieldOfs := CGCTypes[TIdx].Fields[FIdx].Ofs;
+
+  If CGCTypes[TIdx].Fields[FIdx].Kind = 0 Then
+  Begin
+    { Champ Long }
+    If CGCLocals[LIdx].Kind = 3 Then
+      AsmMovRegMemBP(R_EAX, CGCLocals[LIdx].Ofs + FieldOfs)
+    Else
+    Begin
+      { Param ByRef : ptr en [bp+ofs] }
+      AsmMovRegMemBP(R_ECX, CGCLocals[LIdx].Ofs);
+      AsmAluRegImm(ALU_ADD, R_ECX, FieldOfs);
+      AsmMovRegMemReg(R_EAX, R_ECX);
+    End;
+    CGCExprIsString := False;
+  End
+  Else If CGCTypes[TIdx].Fields[FIdx].Kind = 2 Then
+  Begin
+    { Champ String * N : appeler __str_fixed_load(ptr, maxN). }
+    AsmPushReg(R_EBX);                     { sauvegarder EBX (rare cas) }
+    AsmMovRegImm(R_EAX, CGCTypes[TIdx].Fields[FIdx].Size);
+    AsmPushReg(R_EAX);                     { maxN }
+    If CGCLocals[LIdx].Kind = 3 Then
+      AsmLeaRegMemBP(R_EAX, CGCLocals[LIdx].Ofs + FieldOfs)
+    Else
+    Begin
+      AsmMovRegMemBP(R_EAX, CGCLocals[LIdx].Ofs);
+      AsmAluRegImm(ALU_ADD, R_EAX, FieldOfs);
+    End;
+    AsmPushReg(R_EAX);                     { ptr }
+    AsmCallLbl('__str_fixed_load');
+    AsmAluRegImm(ALU_ADD, R_ESP, 8);
+    AsmPopReg(R_EBX);
+    CGCExprIsString := True;
+  End
+  Else
+    FatalError('Palier C: type de champ non supporte');
+End;
+
+{ Ecrit un champ d un UDT. CurTok est sur "." ; consomme ".field = expr". }
+Procedure CGCEmitUDTWriteField(LIdx : Integer);
+Var
+  TIdx, FIdx : Integer;
+  FieldOfs   : LongInt;
+  FNm        : TString;
+  FldKind    : Integer;
+  FldSize    : LongInt;
+Begin
+  If CurTokType <> TOK_DOT Then
+    FatalError('Palier C: "." attendu (ligne ' + ItoS(CurTokLine) + ')');
+  LexNextToken;
+  If (CurTokType <> TOK_IDENT) And (CurTokType <> TOK_KEYWORD) Then
+    FatalError('Palier C: nom de champ attendu');
+  FNm := CurTokStr;
+  LexNextToken;
+  TIdx := CGCLocals[LIdx].TIdx;
+  FIdx := CGCFindField(TIdx, FNm);
+  If FIdx < 0 Then
+    FatalError('Palier C: champ "' + FNm + '" inconnu');
+  FieldOfs := CGCTypes[TIdx].Fields[FIdx].Ofs;
+  FldKind  := CGCTypes[TIdx].Fields[FIdx].Kind;
+  FldSize  := CGCTypes[TIdx].Fields[FIdx].Size;
+  If CurTokType <> TOK_EQ Then
+    FatalError('Palier C: "=" attendu apres champ (ligne ' +
+               ItoS(CurTokLine) + ')');
+  LexNextToken;
+  CGCParseExpr;
+
+  If FldKind = 0 Then
+  Begin
+    If CGCLocals[LIdx].Kind = 3 Then
+      AsmMovMemBPReg(CGCLocals[LIdx].Ofs + FieldOfs, R_EAX)
+    Else
+    Begin
+      AsmMovRegMemBP(R_ECX, CGCLocals[LIdx].Ofs);
+      AsmAluRegImm(ALU_ADD, R_ECX, FieldOfs);
+      AsmMovMemRegReg(R_ECX, R_EAX);
+    End;
+  End
+  Else If FldKind = 2 Then
+  Begin
+    If Not CGCExprIsString Then
+      FatalError('Palier C: expression String attendue pour champ String*N');
+    { __str_fixed_store(dst, maxN, src, srcLen) }
+    AsmPushReg(R_EDX);                  { srcLen }
+    AsmPushReg(R_EAX);                  { src }
+    AsmMovRegImm(R_EAX, FldSize);
+    AsmPushReg(R_EAX);                  { maxN }
+    If CGCLocals[LIdx].Kind = 3 Then
+      AsmLeaRegMemBP(R_EAX, CGCLocals[LIdx].Ofs + FieldOfs)
+    Else
+    Begin
+      AsmMovRegMemBP(R_EAX, CGCLocals[LIdx].Ofs);
+      AsmAluRegImm(ALU_ADD, R_EAX, FieldOfs);
+    End;
+    AsmPushReg(R_EAX);                  { dst }
+    AsmCallLbl('__str_fixed_store');
+    AsmAluRegImm(ALU_ADD, R_ESP, 16);
+  End
+  Else
+    FatalError('Palier C: type de champ non supporte');
+End;
+
 Procedure CGCEmitCall(PIdx : Integer);
 Var
   HasParen   : Boolean;
@@ -17692,6 +18080,15 @@ Begin
         If N >= ArgsExpect Then
           FatalError('Palier G: trop d arguments pour "' +
                      CGCProcs[PIdx].Name + '"');
+        If CGCProcs[PIdx].ParamKind[N] = 2 Then
+        Begin
+          CGCEmitUDTArg(PIdx, N, ArgOfs);
+          ArgOfs := ArgOfs + 4;
+          Inc(N);
+          If CurTokType = TOK_COMMA Then LexNextToken
+          Else Break;
+          Continue;
+        End;
         CGCParseExpr;
         If CGCProcs[PIdx].ParamKind[N] = 1 Then
         Begin
@@ -17724,6 +18121,15 @@ Begin
     Begin
       Repeat
         If N >= ArgsExpect Then Break;
+        If CGCProcs[PIdx].ParamKind[N] = 2 Then
+        Begin
+          CGCEmitUDTArg(PIdx, N, ArgOfs);
+          ArgOfs := ArgOfs + 4;
+          Inc(N);
+          If CurTokType = TOK_COMMA Then LexNextToken
+          Else Break;
+          Continue;
+        End;
         CGCParseExpr;
         If CGCProcs[PIdx].ParamKind[N] = 1 Then
         Begin
@@ -19069,6 +19475,99 @@ Begin
   AsmPopReg(R_EBP);
   AsmRet;
 
+  { ----- __str_fixed_load(ptr, maxN) -> EAX=newptr, EDX=len ----- }
+  { Charge une chaine de longueur fixe NUL-terminee : copie dans   }
+  { un slot du pool, calcule la longueur jusqu au premier NUL ou   }
+  { jusqu a maxN si pas de NUL.                                     }
+  AsmLabel('__str_fixed_load');
+  AsmPushReg(R_EBP);
+  AsmMovRegReg(R_EBP, R_ESP);
+  AsmPushReg(R_EDI);
+  AsmPushReg(R_ESI);
+  AsmPushReg(R_EBX);
+  { Calculer len effective = strnlen(ptr, maxN) via LODSB }
+  AsmMovRegMemBP(R_ESI, 8);             { ptr }
+  AsmMovRegMemBP(R_ECX, 12);            { maxN }
+  AsmXorRegReg(R_EBX, R_EBX);           { ebx = compteur }
+  L1 := CGCNewLabel('sfLoop');
+  L2 := CGCNewLabel('sfEnd');
+  AsmLabel(L1);
+  AsmTestRegReg(R_ECX, R_ECX);
+  AsmJcc(CC_E, L2);
+  AsmXorRegReg(R_EAX, R_EAX);
+  AsmLodsb;
+  AsmTestRegReg(R_EAX, R_EAX);
+  AsmJcc(CC_E, L2);
+  AsmAluRegImm(ALU_ADD, R_EBX, 1);
+  AsmAluRegImm(ALU_SUB, R_ECX, 1);
+  AsmJmpLbl(L1);
+  AsmLabel(L2);
+  { Allouer slot et copier ebx octets }
+  AsmCallLbl('__str_alloc');
+  AsmMovRegReg(R_EDI, R_EAX);
+  AsmMovRegMemBP(R_ESI, 8);
+  AsmMovRegReg(R_ECX, R_EBX);
+  AsmTestRegReg(R_ECX, R_ECX);
+  L3 := CGCNewLabel('sfZ');
+  AsmJcc(CC_E, L3);
+  AsmRepMovsb;
+  AsmLabel(L3);
+  { eax = ptr slot ; edx = ebx (longueur) }
+  AsmMovRegReg(R_EDX, R_EBX);
+  AsmPopReg(R_EBX);
+  AsmPopReg(R_ESI);
+  AsmPopReg(R_EDI);
+  AsmPopReg(R_EBP);
+  AsmRet;
+
+  { ----- __str_fixed_store(dst, maxN, src, srcLen) -> void ----- }
+  { Copie min(srcLen, maxN-1) octets puis NUL-termine et           }
+  { remplit le reste de NULs jusqu a maxN.                          }
+  AsmLabel('__str_fixed_store');
+  AsmPushReg(R_EBP);
+  AsmMovRegReg(R_EBP, R_ESP);
+  AsmPushReg(R_EDI);
+  AsmPushReg(R_ESI);
+  AsmPushReg(R_EBX);
+  AsmMovRegMemBP(R_EDI, 8);             { dst }
+  AsmMovRegMemBP(R_EBX, 12);            { maxN (restant a remplir) }
+  AsmMovRegMemBP(R_ESI, 16);            { src }
+  AsmMovRegMemBP(R_ECX, 20);            { srcLen }
+  L1 := CGCNewLabel('fsEnd');
+  AsmTestRegReg(R_EBX, R_EBX);
+  AsmJcc(CC_LE, L1);
+  { ncopy = min(srcLen, maxN-1) }
+  AsmMovRegReg(R_EAX, R_EBX);
+  AsmAluRegImm(ALU_SUB, R_EAX, 1);
+  AsmAluRegReg(ALU_CMP, R_ECX, R_EAX);
+  L2 := CGCNewLabel('fsCap');
+  AsmJcc(CC_LE, L2);
+  AsmMovRegReg(R_ECX, R_EAX);
+  AsmLabel(L2);
+  AsmAluRegReg(ALU_SUB, R_EBX, R_ECX);  { ebx = restant a NUL-ifier }
+  AsmTestRegReg(R_ECX, R_ECX);
+  L3 := CGCNewLabel('fsCp0');
+  AsmJcc(CC_E, L3);
+  AsmRepMovsb;
+  AsmLabel(L3);
+  { remplir ebx octets de NUL avec une boucle stosb }
+  L4 := CGCNewLabel('fsPL');
+  L5 := CGCNewLabel('fsPE');
+  AsmLabel(L4);
+  AsmTestRegReg(R_EBX, R_EBX);
+  AsmJcc(CC_E, L5);
+  AsmXorRegReg(R_EAX, R_EAX);
+  AsmStosb;
+  AsmAluRegImm(ALU_SUB, R_EBX, 1);
+  AsmJmpLbl(L4);
+  AsmLabel(L5);
+  AsmLabel(L1);
+  AsmPopReg(R_EBX);
+  AsmPopReg(R_ESI);
+  AsmPopReg(R_EDI);
+  AsmPopReg(R_EBP);
+  AsmRet;
+
 End;
 
 { ------------------------------------------------------------ }
@@ -20045,6 +20544,35 @@ Begin
   AsmJmpLbl(CGCBreakLbl[Idx]);
 End;
 
+Procedure CGCParseWith;
+Var
+  Nm   : TString;
+  LIdx : Integer;
+Begin
+  LexNextToken;       { eat With }
+  If CurTokType <> TOK_IDENT Then
+    FatalError('Palier C: nom de variable UDT attendu apres With');
+  Nm := CurTokStr;
+  LexNextToken;
+  LIdx := CGCFindLocal(Nm);
+  If LIdx < 0 Then
+    FatalError('Palier C: variable inconnue "' + Nm + '" dans With');
+  If (CGCLocals[LIdx].Kind <> 3) And (CGCLocals[LIdx].Kind <> 4) Then
+    FatalError('Palier C: "' + Nm + '" n est pas un UDT');
+  If CGCWithTop >= 8 Then
+    FatalError('Palier C: With imbrique trop profond');
+  CGCWithLocal[CGCWithTop] := LIdx;
+  Inc(CGCWithTop);
+  CGCParseStatementBlock(KW_END, KW_NONE);
+  If Not CGCIsKW(KW_END) Then
+    FatalError('Palier C: "End With" attendu');
+  LexNextToken;
+  If Not CGCIsKW(KW_WITH) Then
+    FatalError('Palier C: "End With" attendu');
+  LexNextToken;
+  Dec(CGCWithTop);
+End;
+
 Procedure CGCParseStmtBody;
 Var Nm : TString; PI : Integer; AIdx : Integer;
 Begin
@@ -20091,6 +20619,14 @@ Begin
     CGCParseMessageBox
   Else If CGCIsKW(KW_PRINT) Or CGCIsKW(KW_DEBUG) Then
     CGCParsePrint
+  Else If CGCIsKW(KW_WITH) Then
+    CGCParseWith
+  Else If (CurTokType = TOK_DOT) And (CGCWithTop > 0) Then
+  Begin
+    { ".field = expr" dans un bloc With }
+    Nm := CGCLocals[CGCWithLocal[CGCWithTop - 1]].Name;
+    CGCParseAssign(Nm);
+  End
   Else If CurTokType = TOK_IDENT Then
   Begin
     Nm := CurTokStr;
@@ -20184,6 +20720,123 @@ End;
 { Tout le reste est ignore (Declare, Const, Sub, Function,...). }
 { ------------------------------------------------------------ }
 
+{ Pre-pass : scanner les blocs Enum NAME ... End Enum et          }
+{ enregistrer chaque membre comme constante Long globale.         }
+{ Egalement squelette Type ... End Type (juste consomme).         }
+
+Procedure CGCPass1EnumsTypes;
+Var
+  CurVal : LongInt;
+  Nm     : TString;
+  TI, FK, FT : Integer;
+  FN     : TString;
+  FS     : LongInt;
+Begin
+  LexInit;
+  LexNextToken;
+  While CurTokType <> TOK_EOF Do
+  Begin
+    { Sauter Public/Private prefixes }
+    If CGCIsKW(KW_PUBLIC) Or CGCIsKW(KW_PRIVATE) Then
+      LexNextToken;
+    If CGCIsKW(KW_ENUM) Then
+    Begin
+      LexNextToken;                       { eat Enum }
+      If CurTokType = TOK_IDENT Then LexNextToken;  { nom de l Enum }
+      CurVal := 0;
+      While (CurTokType <> TOK_EOF) Do
+      Begin
+        If CGCIsKW(KW_END) Then
+        Begin
+          LexNextToken;
+          If CGCIsKW(KW_ENUM) Then LexNextToken;
+          Break;
+        End;
+        If CurTokType = TOK_IDENT Then
+        Begin
+          Nm := CurTokStr;
+          LexNextToken;
+          If CurTokType = TOK_EQ Then
+          Begin
+            LexNextToken;
+            If CurTokType = TOK_MINUS Then
+            Begin
+              LexNextToken;
+              If (CurTokType = TOK_INTEGER) Or
+                 (CurTokType = TOK_LONG) Then
+              Begin
+                CurVal := -CurTokNum;
+                LexNextToken;
+              End;
+            End
+            Else If (CurTokType = TOK_INTEGER) Or
+                    (CurTokType = TOK_LONG) Then
+            Begin
+              CurVal := CurTokNum;
+              LexNextToken;
+            End;
+          End;
+          CGCAddConst(Nm, CurVal);
+          Inc(CurVal);
+        End
+        Else
+          LexNextToken;
+      End;
+      Continue;
+    End;
+    If CGCIsKW(KW_TYPE) Then
+    Begin
+      { Type NAME ... End Type : enregistrer chaque champ }
+      LexNextToken;
+      If CurTokType <> TOK_IDENT Then
+      Begin
+        { saut tolerant }
+        While (CurTokType <> TOK_EOF) And (Not CGCIsKW(KW_END)) Do
+          LexNextToken;
+        If CGCIsKW(KW_END) Then LexNextToken;
+        If CGCIsKW(KW_TYPE) Then LexNextToken;
+        Continue;
+      End;
+      Nm := CurTokStr;
+      LexNextToken;
+      TI := CGCAddType(Nm);
+      While (CurTokType <> TOK_EOF) Do
+      Begin
+        If CGCIsKW(KW_END) Then
+        Begin
+          LexNextToken;
+          If CGCIsKW(KW_TYPE) Then LexNextToken;
+          Break;
+        End;
+        If CurTokType = TOK_IDENT Then
+        Begin
+          FN := CurTokStr;
+          LexNextToken;
+          CGCEatTypeAnnotEx(FK, FS, FT);
+          { Champs supportes : Long (Kind=0, Size=4) et String*N (Kind=2). }
+          { String dynamique (Kind=1) traite comme Long (4 octets) -- non  }
+          { supporte ; CStr/Trim sur ce champ donneront un resultat invalide.}
+          If FK = 1 Then
+          Begin
+            FK := 0; FS := 4;
+          End;
+          If FK = 3 Then
+          Begin
+            { UDT imbrique : non supporte, traite comme Long. }
+            FK := 0; FS := 4;
+          End;
+          CGCAddField(TI, FN, FK, FS);
+        End
+        Else
+          LexNextToken;
+      End;
+      Continue;
+    End;
+    LexNextToken;
+  End;
+  LexClose;
+End;
+
 Procedure CGCPass1Globals;
 Var
   InProc : Boolean;
@@ -20252,6 +20905,9 @@ Var
   Nm, PNm     : TString;
   P           : Integer;
   U           : TString;
+  TKind       : Integer;
+  TSz         : LongInt;
+  TI          : Integer;
 Begin
   LexInit;
   LexNextToken;
@@ -20295,7 +20951,13 @@ Begin
             LexNextToken;
             If CGCProcs[P].ParamCnt >= CGC_MAX_PARAM Then
               FatalError('Palier G: trop de parametres pour "' + Nm + '"');
-            CGCProcs[P].ParamKind[CGCProcs[P].ParamCnt] := CGCEatTypeAnnotKind;
+            { Type annotation : utilise variante etendue pour UDT support }
+            CGCEatTypeAnnotEx(TKind, TSz, TI);
+            If TKind = 3 Then
+              CGCProcs[P].ParamKind[CGCProcs[P].ParamCnt] := 2  { UDT ByRef }
+            Else
+              CGCProcs[P].ParamKind[CGCProcs[P].ParamCnt] := TKind;
+            CGCProcs[P].ParamTIdx[CGCProcs[P].ParamCnt] := TI;
             CGCProcs[P].ParamName[CGCProcs[P].ParamCnt] := PNm;
             CGCProcs[P].ParamHasDef[CGCProcs[P].ParamCnt] := False;
             { Optional default : "= literal" }
@@ -20429,6 +21091,12 @@ Begin
     Begin
       CGCAddParamString(CGCProcs[PIdx].ParamName[I], POf);
       POf := POf + 8;
+    End
+    Else If CGCProcs[PIdx].ParamKind[I] = 2 Then
+    Begin
+      CGCAddParamUDT(CGCProcs[PIdx].ParamName[I], POf,
+                     CGCProcs[PIdx].ParamTIdx[I]);
+      POf := POf + 4;
     End
     Else
     Begin
@@ -20629,6 +21297,9 @@ Begin
   CGCArrayCnt      := 0;
   CGCErrHandler    := '';
   CGCErrResumeNext := False;
+  CGCConstCnt      := 0;
+  CGCTypeCnt       := 0;
+  CGCWithTop       := 0;
 
   { Imports pre-enregistres :                                  }
   {   func 0 = kernel32.ExitProcess (toujours present)         }
@@ -20673,6 +21344,7 @@ Begin
   CGCCRLFLit := StrAddLit(Chr(13) + Chr(10));
 
   { Pass 1 : globals dans .data }
+  CGCPass1EnumsTypes;
   CGCPass1Globals;
 
   { Pass 1.5 : inventaire des Sub/Function utilisateur }
