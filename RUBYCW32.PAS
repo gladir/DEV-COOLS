@@ -26,7 +26,7 @@ Program RUBYCW32;
   Avec le parametre -asm, produit egalement un fichier .ASM lisible.
   Supporte tous les exemples SAMPLES\RUBY\*.
 
-  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF
+  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF [IMPLEMENTE]
             TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings,
               EmitExe, EmitObj, EmitAsm, FrozenStrLits, LoadPath)
             ParseArgs : argv source.rb [-o out] [-v] [-d] [-w]
@@ -99,7 +99,7 @@ Program RUBYCW32;
             TSym (Name, Kind, Type, Scope, Offset, ClassRef)
             Kinds : SK_LOCAL, SK_IVAR, SK_CVAR, SK_GVAR, SK_CONST,
               SK_METHOD, SK_CLASS, SK_MODULE, SK_BLOCK_PARAM
-            Type Ruby (dynamique, RT_*) : NIL, FALSE, TRUE,
+            Type Ruby (dynamique, RT_xxx) : NIL, FALSE, TRUE,
               INTEGER (Fixnum/Bignum), FLOAT, STRING, SYMBOL,
               ARRAY, HASH, RANGE, REGEXP, PROC, LAMBDA,
               OBJECT, CLASS, MODULE
@@ -470,6 +470,262 @@ Program RUBYCW32;
               produisent un .EXE PE Win32 fonctionnel
   ============================================================ *)
 
+Const
+  RUBYCW32_VERSION = '0.1';
+
+  EXIT_OK = 0;
+  EXIT_ERROR = 1;
+  EXIT_USAGE = 2;
+
+  PE_DOS_MAGIC = $5A4D;
+  PE_PE_SIG = $00004550;
+  PE_MACHINE_I386 = $014C;
+  PE_IMG_BASE = $00400000;
+  PE_SEC_ALIGN = 4096;
+  PE_FILE_ALIGN = 512;
+  PE_SUBSYS_CUI = 3;
+  PE_SUBSYS_GUI = 2;
+
+  MAX_SYM = 4096;
+  MAX_METHOD = 512;
+  MAX_LOCAL = 256;
+  MAX_PARAM = 64;
+  MAX_LABEL = 4096;
+  MAX_IVAR = 128;
+  MAX_CLASS = 256;
+  MAX_MODULE = 128;
+  MAX_CONST = 512;
+  MAX_BLOCK = 64;
+  MAX_RESCUE = 32;
+  MAX_REQUIRE = 64;
+
+  ASM_PFX_GVAR = '_RB_';
+  ASM_PFX_METHOD = '_RBM_';
+  ASM_PFX_STRING = '_RBK_';
+  ASM_PFX_RUNTIME = '_RBRT_';
+  ASM_PFX_LABEL = '_RBL_';
+  ASM_PFX_ARRAY = '_RBA_';
+  ASM_PFX_HASH = '_RBH_';
+  ASM_PFX_CLASS = '_RBC_';
+  ASM_PFX_MODULE = '_RBMOD_';
+  ASM_PFX_CONST = '_RBCONST_';
+  ASM_PFX_SYMBOL = '_RBSYM_';
+  ASM_PFX_REGEX = '_RBREGEX_';
+
+Type
+  TStringList64 = Array[1..MAX_REQUIRE] Of String;
+
+  TOptions = Record
+    SrcFile: String;
+    OutFile: String;
+    Verbose: Boolean;
+    DebugMode: Boolean;
+    Warnings: Boolean;
+    EmitExe: Boolean;
+    EmitObj: Boolean;
+    EmitAsm: Boolean;
+    FrozenStrLits: Boolean;
+    LoadPath: TStringList64;
+    LoadPathCount: Integer;
+    RequireLib: TStringList64;
+    RequireCount: Integer;
+  End;
+
+Var
+  Opt: TOptions;
+
+Function UpCaseStr(S: String): String;
+Var
+  I: Integer;
 Begin
+  For I := 1 To Length(S) Do S[I] := UpCase(S[I]);
+  UpCaseStr := S;
+End;
+
+Function IsPathSep(C: Char): Boolean;
+Begin
+  IsPathSep := (C = '\') Or (C = '/');
+End;
+
+Function FileExt(S: String): String;
+Var
+  I: Integer;
+Begin
+  FileExt := '';
+  For I := Length(S) DownTo 1 Do Begin
+    If S[I] = '.' Then Begin
+      FileExt := Copy(S, I, Length(S) - I + 1);
+      Exit;
+    End;
+    If IsPathSep(S[I]) Or (S[I] = ':') Then Exit;
+  End;
+End;
+
+Function ChangeExt(S, NewExt: String): String;
+Var
+  I: Integer;
+Begin
+  For I := Length(S) DownTo 1 Do Begin
+    If S[I] = '.' Then Begin
+      ChangeExt := Copy(S, 1, I - 1) + NewExt;
+      Exit;
+    End;
+    If IsPathSep(S[I]) Or (S[I] = ':') Then Break;
+  End;
+  ChangeExt := S + NewExt;
+End;
+
+Function IsRubySourceName(S: String): Boolean;
+Var
+  E: String;
+Begin
+  E := UpCaseStr(FileExt(S));
+  IsRubySourceName := (E = '.RB') Or (E = '.RUBY');
+End;
+
+Procedure Usage;
+Begin
+  WriteLn('RUBYCW32 - Cette commande permet de lancer le compilateur Ruby ',
+          'pour l''assembleur du microprocesseur 80386 pour le systeme ',
+          'd''exploitation Windows 32 bits (PE Win32).');
+  WriteLn;
+  WriteLn('Syntaxe: RUBYCW32 source.rb [-o out] [-v] [-d] [-w] [-obj] [-asm]');
+  WriteLn('                 [-frozen] [-I path] [-r lib] [-h]');
+  WriteLn;
+  WriteLn('Options:');
+  WriteLn('  -o out     Nom du fichier de sortie');
+  WriteLn('  -v         Mode verbeux');
+  WriteLn('  -d         Informations de debogage');
+  WriteLn('  -w         Activer les avertissements');
+  WriteLn('  -obj       Produire uniquement un .OBJ COFF 32 bits');
+  WriteLn('  -asm       Produire aussi un listing assembleur .ASM');
+  WriteLn('  -frozen    Chaines litterales immuables par defaut');
+  WriteLn('  -I path    Ajouter un repertoire a $LOAD_PATH');
+  WriteLn('  -r lib     Precharger une bibliotheque Ruby');
+  WriteLn('  -h         Afficher cette aide');
+End;
+
+Procedure FatalError(Msg: String);
+Begin
+  WriteLn('RUBYCW32: erreur: ', Msg);
+  Halt(EXIT_ERROR);
+End;
+
+Procedure WarnMsg(Msg: String);
+Begin
+  If Opt.Warnings Then WriteLn('RUBYCW32: avertissement: ', Msg);
+End;
+
+Procedure AddLoadPath(Path: String);
+Begin
+  If Opt.LoadPathCount >= MAX_REQUIRE Then
+    FatalError('trop de chemins -I (maximum ' + '64' + ')');
+  Inc(Opt.LoadPathCount);
+  Opt.LoadPath[Opt.LoadPathCount] := Path;
+End;
+
+Procedure AddRequireLib(Lib: String);
+Begin
+  If Opt.RequireCount >= MAX_REQUIRE Then
+    FatalError('trop de bibliotheques -r (maximum ' + '64' + ')');
+  Inc(Opt.RequireCount);
+  Opt.RequireLib[Opt.RequireCount] := Lib;
+End;
+
+Procedure InitOptions;
+Begin
+  FillChar(Opt, SizeOf(Opt), 0);
+  Opt.Warnings := False;
+  Opt.EmitExe := True;
+  Opt.EmitObj := False;
+  Opt.EmitAsm := False;
+  Opt.FrozenStrLits := False;
+End;
+
+Procedure NeedArg(OptName: String; I: Integer);
+Begin
+  If I > ParamCount Then FatalError('option ' + OptName + ' sans argument');
+End;
+
+Procedure ParseArgs;
+Var
+  I: Integer;
+  A, U: String;
+Begin
+  InitOptions;
+  I := 1;
+  While I <= ParamCount Do Begin
+    A := ParamStr(I);
+    U := UpCaseStr(A);
+    If (U = '-H') Or (U = '/H') Or (U = '-?') Or (U = '/?') Or
+       (U = '--HELP') Then Begin
+      Usage;
+      Halt(EXIT_USAGE);
+    End Else If U = '-OBJ' Then Begin
+      Opt.EmitObj := True;
+      Opt.EmitExe := False;
+    End Else If U = '-ASM' Then Begin
+      Opt.EmitAsm := True;
+    End Else If U = '-FROZEN' Then Begin
+      Opt.FrozenStrLits := True;
+    End Else If U = '-O' Then Begin
+      Inc(I);
+      NeedArg('-o', I);
+      Opt.OutFile := ParamStr(I);
+    End Else If Copy(U, 1, 2) = '-O' Then Begin
+      Opt.OutFile := Copy(A, 3, Length(A) - 2);
+      If Opt.OutFile = '' Then FatalError('option -o sans argument');
+    End Else If U = '-V' Then Begin
+      Opt.Verbose := True;
+    End Else If U = '-D' Then Begin
+      Opt.DebugMode := True;
+    End Else If U = '-W' Then Begin
+      Opt.Warnings := True;
+    End Else If U = '-I' Then Begin
+      Inc(I);
+      NeedArg('-I', I);
+      AddLoadPath(ParamStr(I));
+    End Else If Copy(U, 1, 2) = '-I' Then Begin
+      AddLoadPath(Copy(A, 3, Length(A) - 2));
+    End Else If U = '-R' Then Begin
+      Inc(I);
+      NeedArg('-r', I);
+      AddRequireLib(ParamStr(I));
+    End Else If Copy(U, 1, 2) = '-R' Then Begin
+      AddRequireLib(Copy(A, 3, Length(A) - 2));
+    End Else If (Length(A) > 0) And ((A[1] = '-') Or (A[1] = '/')) Then Begin
+      FatalError('option inconnue ' + A);
+    End Else Begin
+      If Opt.SrcFile <> '' Then FatalError('plusieurs fichiers source specifies');
+      Opt.SrcFile := A;
+    End;
+    Inc(I);
+  End;
+
+  If Opt.SrcFile = '' Then Begin
+    Usage;
+    Halt(EXIT_USAGE);
+  End;
+  If Not IsRubySourceName(Opt.SrcFile) Then
+    FatalError('extension source invalide (attendu .rb ou .ruby)');
+
+  If Opt.OutFile = '' Then Begin
+    If Opt.EmitObj Then Opt.OutFile := ChangeExt(Opt.SrcFile, '.obj')
+    Else Opt.OutFile := ChangeExt(Opt.SrcFile, '.exe');
+  End;
+End;
+
+Begin
+  ParseArgs;
   WriteLn('RUBYCW32 v0.1 (2026) - Compilateur Ruby -> 80386 PE Win32');
+  If Opt.Verbose Then Begin
+    WriteLn('Source : ', Opt.SrcFile);
+    WriteLn('Sortie : ', Opt.OutFile);
+    If Opt.EmitObj Then WriteLn('Format : OBJ COFF 32 bits')
+    Else WriteLn('Format : EXE PE Win32');
+    If Opt.EmitAsm Then WriteLn('ASM    : oui');
+    If Opt.DebugMode Then WriteLn('Debug  : oui');
+    If Opt.FrozenStrLits Then WriteLn('Frozen : oui');
+  End;
+  WarnMsg('seule l infrastructure de compilation est initialisee');
 End.
