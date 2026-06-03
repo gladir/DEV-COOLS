@@ -1338,6 +1338,31 @@ Var
   PEWLoopBufPos : Integer;
   PEWLoopReplay : Boolean;
 
+Const
+  PE_MAX_FUNCS    = 32;
+  PE_MAX_FUNC_TOK = 1024;
+
+Type
+  TPEFuncEntry = Record
+    Name      : TString;
+    ParamName : TString;
+    Body      : Array[0..PE_MAX_FUNC_TOK-1] Of TBufTok;
+    BodyLen   : Integer;
+  End;
+
+Var
+  PEWFuncTab       : Array[0..PE_MAX_FUNCS-1] Of TPEFuncEntry;
+  PEWFuncCount     : Integer;
+  PEWFuncReplay    : Boolean;
+  PEWFuncReplayIdx : Integer;
+  PEWFuncReplayPos : Integer;
+  PEWFuncReturn    : Record
+                       Kind : Integer;  { 0=fail 1=int 2=str }
+                       IVal : LongInt;
+                       SVal : TString;
+                     End;
+  PEWFuncReturned  : Boolean;
+
 Type
   TPEEvalKind = (PEK_FAIL, PEK_INT, PEK_STR);
   TPEEvalVal = Record
@@ -2619,6 +2644,19 @@ Var
   PrevTok   : Integer;
 Begin
   { Mode replay : servir les tokens depuis le buffer. }
+  If PEWFuncReplay Then Begin
+    If PEWFuncReplayPos < PEWFuncTab[PEWFuncReplayIdx].BodyLen Then Begin
+      CurTokType := PEWFuncTab[PEWFuncReplayIdx].Body[PEWFuncReplayPos].TokType;
+      CurTokNum  := PEWFuncTab[PEWFuncReplayIdx].Body[PEWFuncReplayPos].TokNum;
+      CurTokStr  := PEWFuncTab[PEWFuncReplayIdx].Body[PEWFuncReplayPos].TokStr;
+      Inc(PEWFuncReplayPos);
+      Exit;
+    End;
+    CurTokType := TOK_EOF;
+    CurTokStr  := '';
+    CurTokNum  := 0;
+    Exit;
+  End;
   If PEWLoopReplay Then Begin
     If PEWLoopBufPos < PEWLoopBufLen Then Begin
       CurTokType := PEWLoopBuf[PEWLoopBufPos].TokType;
@@ -2648,7 +2686,9 @@ Begin
       End
       Else
       Begin
-        { Emettre un token NEWLINE a chaque fin de ligne logique }
+        { Emettre un token NEWLINE a chaque fin de ligne logique. }
+        { On RETOURNE immediatement : sinon le token suivant       }
+        { ecraserait CurTokType et NEWLINE serait perdu.           }
         CurTokLine := LexLineNo;
         CurTokCol  := LexColNo;
         CurTokType := TOK_NEWLINE;
@@ -2657,6 +2697,7 @@ Begin
         CurTokReal := 0.0;
         LexNextLine;
         PrintToken;
+        Exit;
       End;
       { Continuer a lire jusqu a trouver du contenu }
     End;
@@ -4736,6 +4777,12 @@ Function  PEWTryBuildPrint(NewLine : Boolean) : Boolean; Forward;
 Procedure PEWEnqueuePrint(Const S : TString; NL : Boolean); Forward;
 Procedure PEWEvalAdd(Var V : TPEEvalVal); Forward;
 Procedure PEWEvalExpr(Var V : TPEEvalVal); Forward;
+Procedure PEWCaptureFunction; Forward;
+Function  PEWFindFunc(Const Name : TString) : Integer; Forward;
+Function  PEWCallFunc(Idx : Integer; ArgVal : LongInt;
+                      Var Ret : TPEEvalVal) : Boolean; Forward;
+Procedure PEWExecBlock; Forward;
+Procedure PEWSkipBlock; Forward;
 
 { ------------------------------------------------------------ }
 { ParseCompilationUnit : point d entree principal du parseur   }
@@ -7834,7 +7881,10 @@ Begin
       KW_EXIT     : ParseExitStatement;
       KW_CONTINUE : ParseContinueStatement;
       KW_SUB      : ParseSub;
-      KW_FUNCTION : ParseFunction;
+      KW_FUNCTION : Begin
+                      { Capturer le corps pour evaluation compile-time }
+                      PEWCaptureFunction;
+                    End;
     Else
       { Instruction non reconnue par ce TODO - avancer }
       LexNextToken;
@@ -12799,6 +12849,35 @@ Begin
   If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then Begin
     Tmp := CurTokStr;
     LexNextToken;
+    { Appel de fonction utilisateur : IDENT '(' expr ')' }
+    If CurTokType = TOK_LPAREN Then Begin
+      Itmp := PEWFindFunc(Tmp);
+      If Itmp >= 0 Then Begin
+        LexNextToken;
+        PEWEvalExpr(V);
+        If CurTokType = TOK_RPAREN Then LexNextToken
+        Else Begin V.Kind := PEK_FAIL; Exit; End;
+        If V.Kind <> PEK_INT Then Begin V.Kind := PEK_FAIL; Exit; End;
+        If Not PEWCallFunc(Itmp, V.IVal, V) Then V.Kind := PEK_FAIL;
+        { Postfix .ToString() apres appel de fonction }
+        If (V.Kind = PEK_INT) And (CurTokType = TOK_DOT) Then Begin
+          LexNextToken;
+          If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then Begin
+            Method := UpCaseStr(CurTokStr);
+            LexNextToken;
+            If CurTokType = TOK_LPAREN Then Begin
+              LexNextToken;
+              If CurTokType = TOK_RPAREN Then LexNextToken;
+            End;
+            If Method = 'TOSTRING' Then Begin
+              V.SVal := IntToDecStr(V.IVal);
+              V.Kind := PEK_STR;
+            End;
+          End;
+        End;
+        Exit;
+      End;
+    End;
     { Indice de tableau : IDENT '(' expr ')' }
     If CurTokType = TOK_LPAREN Then Begin
       LexNextToken;
@@ -12912,7 +12991,7 @@ Begin
 End;
 
 Procedure PEWEvalExpr(Var V : TPEEvalVal);
-Var R : TPEEvalVal; LS, RS : TString;
+Var R : TPEEvalVal; LS, RS : TString; Op : Integer;
 Begin
   PEWEvalAdd(V);
   While CurTokType = TOK_AMP Do Begin
@@ -12925,6 +13004,346 @@ Begin
     V.Kind := PEK_STR;
     V.SVal := LS + RS;
   End;
+  { Comparaisons : =, <>, <, >, <=, >=  (resultat -1 vrai / 0 faux)  }
+  Op := -1;
+  If V.Kind = PEK_INT Then Begin
+    If CurTokType = TOK_EQ Then Op := 0
+    Else If CurTokType = TOK_NE Then Op := 1
+    Else If CurTokType = TOK_LT Then Op := 2
+    Else If CurTokType = TOK_GT Then Op := 3
+    Else If CurTokType = TOK_LE Then Op := 4
+    Else If CurTokType = TOK_GE Then Op := 5;
+  End;
+  If Op >= 0 Then Begin
+    LexNextToken;
+    PEWEvalAdd(R);
+    If R.Kind <> PEK_INT Then Begin V.Kind := PEK_FAIL; Exit; End;
+    Case Op Of
+      0: If V.IVal =  R.IVal Then V.IVal := -1 Else V.IVal := 0;
+      1: If V.IVal <> R.IVal Then V.IVal := -1 Else V.IVal := 0;
+      2: If V.IVal <  R.IVal Then V.IVal := -1 Else V.IVal := 0;
+      3: If V.IVal >  R.IVal Then V.IVal := -1 Else V.IVal := 0;
+      4: If V.IVal <= R.IVal Then V.IVal := -1 Else V.IVal := 0;
+      5: If V.IVal >= R.IVal Then V.IVal := -1 Else V.IVal := 0;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ PEWFindFunc / PEWCaptureFunction / PEWCallFunc                }
+{ Mini-interpreteur compile-time pour les fonctions VB.NET     }
+{ definies dans le module. Capture les tokens du corps puis    }
+{ les rejoue lors de l'appel. Supporte If/Else/End If, Return  }
+{ et appels recursifs.                                          }
+{ ------------------------------------------------------------ }
+
+Function PEWFindFunc(Const Name : TString) : Integer;
+Var I : Integer; U : TString;
+Begin
+  PEWFindFunc := -1;
+  U := UpCaseStr(Name);
+  For I := 0 To PEWFuncCount - 1 Do
+    If UpCaseStr(PEWFuncTab[I].Name) = U Then Begin
+      PEWFindFunc := I;
+      Exit;
+    End;
+End;
+
+Procedure PEWCaptureFunction;
+Var
+  Idx, ParamSeen, EndDepth : Integer;
+  PrevTok : Integer;
+Begin
+  { Token courant = KW_FUNCTION. Consommer. }
+  LexNextToken;
+  If PEWFuncCount >= PE_MAX_FUNCS Then Begin
+    { Table pleine : avancer jusqu'a End Function et abandonner. }
+    While CurTokType <> TOK_EOF Do Begin
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END) Then Begin
+        LexNextToken;
+        If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_FUNCTION) Then Begin
+          LexNextToken;
+          Exit;
+        End;
+        Continue;
+      End;
+      LexNextToken;
+    End;
+    Exit;
+  End;
+  Idx := PEWFuncCount;
+  Inc(PEWFuncCount);
+  PEWFuncTab[Idx].BodyLen   := 0;
+  PEWFuncTab[Idx].Name      := '';
+  PEWFuncTab[Idx].ParamName := '';
+
+  { Nom de la fonction. }
+  If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then Begin
+    PEWFuncTab[Idx].Name := CurTokStr;
+    LexNextToken;
+  End;
+
+  { Parametres : ( [ByVal|ByRef] NAME [As Type] [, ...] ) }
+  ParamSeen := 0;
+  If CurTokType = TOK_LPAREN Then Begin
+    LexNextToken;
+    While (CurTokType <> TOK_RPAREN) And (CurTokType <> TOK_EOF) Do Begin
+      If (CurTokType = TOK_KEYWORD) And
+         ((CurTokNum = KW_BYVAL) Or (CurTokNum = KW_BYREF)) Then
+        LexNextToken
+      Else If CurTokType = TOK_IDENT Then Begin
+        If ParamSeen = 0 Then PEWFuncTab[Idx].ParamName := CurTokStr;
+        Inc(ParamSeen);
+        LexNextToken;
+      End
+      Else
+        LexNextToken;
+    End;
+    If CurTokType = TOK_RPAREN Then LexNextToken;
+  End;
+
+  { As Type de retour : ignorer jusqu'a fin de ligne ou debut du corps. }
+  While (CurTokType <> TOK_NEWLINE) And (CurTokType <> TOK_EOF) Do
+    LexNextToken;
+  If CurTokType = TOK_NEWLINE Then LexNextToken;
+
+  { Capturer le corps jusqu'a "End Function". Detecter via paire :     }
+  { si on voit KW_END, regarder le token suivant ; si KW_FUNCTION,     }
+  { fin du corps. Sinon on garde les deux dans le buffer.              }
+  EndDepth := 0;  { non utilise pour l'instant }
+  PrevTok  := -1;
+  While CurTokType <> TOK_EOF Do Begin
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END) Then Begin
+      { Peek }
+      LexNextToken;
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_FUNCTION) Then Begin
+        LexNextToken; { consommer 'Function' }
+        Exit;
+      End;
+      { Pas End Function : garder les deux tokens. }
+      If PEWFuncTab[Idx].BodyLen < PE_MAX_FUNC_TOK Then Begin
+        PEWFuncTab[Idx].Body[PEWFuncTab[Idx].BodyLen].TokType := TOK_KEYWORD;
+        PEWFuncTab[Idx].Body[PEWFuncTab[Idx].BodyLen].TokNum  := KW_END;
+        PEWFuncTab[Idx].Body[PEWFuncTab[Idx].BodyLen].TokStr  := 'End';
+        Inc(PEWFuncTab[Idx].BodyLen);
+      End;
+      { Le token courant est le suivant ; tomber dans le append plus bas. }
+    End;
+    If PEWFuncTab[Idx].BodyLen < PE_MAX_FUNC_TOK Then Begin
+      PEWFuncTab[Idx].Body[PEWFuncTab[Idx].BodyLen].TokType := CurTokType;
+      PEWFuncTab[Idx].Body[PEWFuncTab[Idx].BodyLen].TokNum  := CurTokNum;
+      PEWFuncTab[Idx].Body[PEWFuncTab[Idx].BodyLen].TokStr  := CurTokStr;
+      Inc(PEWFuncTab[Idx].BodyLen);
+    End;
+    LexNextToken;
+    PrevTok := PrevTok; { silence warning }
+    EndDepth := EndDepth;
+  End;
+End;
+
+Procedure PEWSkipBlock;
+Var Depth : Integer;
+Begin
+  Depth := 0;
+  While CurTokType <> TOK_EOF Do Begin
+    If CurTokType = TOK_KEYWORD Then Begin
+      If CurTokNum = KW_IF Then Begin
+        Inc(Depth);
+        LexNextToken;
+        Continue;
+      End;
+      If CurTokNum = KW_END Then Begin
+        If Depth = 0 Then Exit;
+        LexNextToken;
+        If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_IF) Then Begin
+          LexNextToken;
+          Dec(Depth);
+        End;
+        Continue;
+      End;
+      If (Depth = 0) And ((CurTokNum = KW_ELSE) Or (CurTokNum = KW_ELSEIF)) Then
+        Exit;
+    End;
+    LexNextToken;
+  End;
+End;
+
+Procedure PEWExecIf; Forward;
+
+Procedure PEWExecBlock;
+Var V : TPEEvalVal; Name : TString;
+Begin
+  While (Not PEWFuncReturned) And (CurTokType <> TOK_EOF) Do Begin
+    If CurTokType = TOK_NEWLINE Then Begin
+      LexNextToken;
+      Continue;
+    End;
+    If CurTokType = TOK_KEYWORD Then Begin
+      If (CurTokNum = KW_ELSE) Or (CurTokNum = KW_ELSEIF) Or
+         (CurTokNum = KW_END) Then Exit;
+      If CurTokNum = KW_RETURN Then Begin
+        LexNextToken;
+        PEWEvalExpr(V);
+        If V.Kind = PEK_INT Then Begin
+          PEWFuncReturn.Kind := 1;
+          PEWFuncReturn.IVal := V.IVal;
+        End Else If V.Kind = PEK_STR Then Begin
+          PEWFuncReturn.Kind := 2;
+          PEWFuncReturn.SVal := V.SVal;
+        End Else
+          PEWFuncReturn.Kind := 0;
+        PEWFuncReturned := True;
+        Exit;
+      End;
+      If CurTokNum = KW_IF Then Begin
+        PEWExecIf;
+        Continue;
+      End;
+      LexNextToken;
+      Continue;
+    End;
+    If CurTokType = TOK_IDENT Then Begin
+      Name := CurTokStr;
+      LexNextToken;
+      If CurTokType = TOK_EQ Then Begin
+        LexNextToken;
+        PEWEvalExpr(V);
+        If V.Kind = PEK_INT Then PEWSetIntVar(Name, V.IVal)
+        Else If V.Kind = PEK_STR Then PEWSetStrVar(Name, V.SVal);
+      End;
+      Continue;
+    End;
+    LexNextToken;
+  End;
+End;
+
+Procedure PEWExecIf;
+Var IfV : TPEEvalVal; Cond : Boolean;
+Begin
+  LexNextToken; { consommer 'If' }
+  PEWEvalExpr(IfV);
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_THEN) Then LexNextToken;
+  If CurTokType = TOK_NEWLINE Then LexNextToken;
+  Cond := (IfV.Kind = PEK_INT) And (IfV.IVal <> 0);
+  If Cond Then Begin
+    PEWExecBlock;
+    If PEWFuncReturned Then Exit;
+    If (CurTokType = TOK_KEYWORD) And
+       ((CurTokNum = KW_ELSE) Or (CurTokNum = KW_ELSEIF)) Then Begin
+      { Sauter le bloc Else }
+      LexNextToken;
+      PEWSkipBlock;
+    End;
+  End Else Begin
+    PEWSkipBlock;
+    If PEWFuncReturned Then Exit;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ELSE) Then Begin
+      LexNextToken;
+      PEWExecBlock;
+    End
+    Else If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ELSEIF) Then Begin
+      { Traiter ElseIf comme un nouvel If imbrique. }
+      PEWExecIf;
+      Exit;
+    End;
+  End;
+  { Consommer "End If" }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END) Then Begin
+    LexNextToken;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_IF) Then LexNextToken;
+  End;
+End;
+
+Function PEWCallFunc(Idx : Integer; ArgVal : LongInt;
+                     Var Ret : TPEEvalVal) : Boolean;
+Var
+  SaveFuncReplay  : Boolean;
+  SaveFuncIdx     : Integer;
+  SaveFuncPos     : Integer;
+  SaveLoopReplay  : Boolean;
+  SaveLoopPos     : Integer;
+  SaveLoopLen     : Integer;
+  SaveTokType     : Integer;
+  SaveTokNum      : LongInt;
+  SaveTokStr      : TString;
+  SaveParamVal    : LongInt;
+  HadParam        : Boolean;
+  SaveReturned    : Boolean;
+  SaveReturnKind  : Integer;
+  SaveReturnIVal  : LongInt;
+  SaveReturnSVal  : TString;
+Begin
+  PEWCallFunc := False;
+  Ret.Kind := PEK_FAIL;
+  If (Idx < 0) Or (Idx >= PEWFuncCount) Then Exit;
+  If PEWFuncTab[Idx].BodyLen <= 0 Then Exit;
+
+  { Sauvegarder l'etat global. }
+  SaveFuncReplay := PEWFuncReplay;
+  SaveFuncIdx    := PEWFuncReplayIdx;
+  SaveFuncPos    := PEWFuncReplayPos;
+  SaveLoopReplay := PEWLoopReplay;
+  SaveLoopPos    := PEWLoopBufPos;
+  SaveLoopLen    := PEWLoopBufLen;
+  SaveTokType    := CurTokType;
+  SaveTokNum     := CurTokNum;
+  SaveTokStr     := CurTokStr;
+  SaveReturned   := PEWFuncReturned;
+  SaveReturnKind := PEWFuncReturn.Kind;
+  SaveReturnIVal := PEWFuncReturn.IVal;
+  SaveReturnSVal := PEWFuncReturn.SVal;
+  SaveParamVal   := 0;
+  HadParam       := False;
+  If PEWFuncTab[Idx].ParamName <> '' Then
+    HadParam := PEWGetIntVar(PEWFuncTab[Idx].ParamName, SaveParamVal);
+
+  { Lier le parametre. }
+  If PEWFuncTab[Idx].ParamName <> '' Then
+    PEWSetIntVar(PEWFuncTab[Idx].ParamName, ArgVal);
+
+  { Activer le replay du corps de la fonction. }
+  PEWFuncReplay    := True;
+  PEWFuncReplayIdx := Idx;
+  PEWFuncReplayPos := 0;
+  PEWLoopReplay    := False;
+  PEWFuncReturned  := False;
+  PEWFuncReturn.Kind := 0;
+
+  { Amorcer le premier token du corps. }
+  LexNextToken;
+
+  { Executer le corps. }
+  PEWExecBlock;
+
+  { Recuperer la valeur de retour. }
+  If PEWFuncReturned Then Begin
+    If PEWFuncReturn.Kind = 1 Then Begin
+      Ret.Kind := PEK_INT;
+      Ret.IVal := PEWFuncReturn.IVal;
+      PEWCallFunc := True;
+    End Else If PEWFuncReturn.Kind = 2 Then Begin
+      Ret.Kind := PEK_STR;
+      Ret.SVal := PEWFuncReturn.SVal;
+      PEWCallFunc := True;
+    End;
+  End;
+
+  { Restaurer l'etat global. }
+  PEWFuncReplay      := SaveFuncReplay;
+  PEWFuncReplayIdx   := SaveFuncIdx;
+  PEWFuncReplayPos   := SaveFuncPos;
+  PEWLoopReplay      := SaveLoopReplay;
+  PEWLoopBufPos      := SaveLoopPos;
+  PEWLoopBufLen      := SaveLoopLen;
+  CurTokType         := SaveTokType;
+  CurTokNum          := SaveTokNum;
+  CurTokStr          := SaveTokStr;
+  PEWFuncReturned    := SaveReturned;
+  PEWFuncReturn.Kind := SaveReturnKind;
+  PEWFuncReturn.IVal := SaveReturnIVal;
+  PEWFuncReturn.SVal := SaveReturnSVal;
+  If HadParam Then
+    PEWSetIntVar(PEWFuncTab[Idx].ParamName, SaveParamVal);
 End;
 
 Function PEWTryBuildPrint(NewLine : Boolean) : Boolean;
