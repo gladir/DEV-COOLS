@@ -1337,6 +1337,8 @@ Var
   PEWLoopBufLen : Integer;
   PEWLoopBufPos : Integer;
   PEWLoopReplay : Boolean;
+  PEWLoopBreak     : Boolean;  { Exit For pendant replay     }
+  PEWLoopContinue  : Boolean;  { Continue For pendant replay }
 
 Const
   PE_MAX_FUNCS    = 32;
@@ -4765,6 +4767,7 @@ End;
 
 Procedure ParseModuleLevelDecl; Forward;
 Procedure ParseStatement; Forward;
+Procedure ParseModuleIf; Forward;
 Procedure ParseConsoleStatement; Forward;
 Procedure PEWSetStrVar(Const Name, Val : TString); Forward;
 Function  PEWGetStrVar(Const Name : TString; Var Val : TString) : Boolean; Forward;
@@ -7487,6 +7490,8 @@ Begin
   SkipNewlines;
   While (CurTokType <> TOK_EOF) Do
   Begin
+    { Pendant le replay, un Exit For / Continue For interrompt le bloc. }
+    If PEWLoopReplay And (PEWLoopBreak Or PEWLoopContinue) Then Exit;
     { Verifier si on est sur un terminateur de bloc }
     If CurTokType = TOK_KEYWORD Then
     Begin
@@ -7836,6 +7841,112 @@ End;
 { Dispatcher principal vers les parseurs specialises           }
 { ------------------------------------------------------------ }
 
+{ ------------------------------------------------------------ }
+{ ParseModuleIf : evalue If/Else/End If en compile-time au     }
+{ niveau module pour que le backend binaire ne mette en file   }
+{ que les Console.Write[Line] de la branche selectionnee.       }
+{ ------------------------------------------------------------ }
+
+Procedure ParseModuleIfSkip; Forward;
+
+Procedure ParseModuleIf;
+Var V : TPEEvalVal; Cond, IsMulti : Boolean;
+Begin
+  LexNextToken; { consommer 'If' }
+  PEWEvalExpr(V);
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_THEN) Then LexNextToken;
+  IsMulti := (CurTokType = TOK_NEWLINE) Or (CurTokType = TOK_EOF);
+  If CurTokType = TOK_NEWLINE Then LexNextToken;
+
+  If V.Kind <> PEK_INT Then Begin
+    { Condition non evaluable : sauter tout le bloc If/End If }
+    If IsMulti Then ParseModuleIfSkip
+    Else
+      While (CurTokType <> TOK_EOF) And (CurTokType <> TOK_NEWLINE) Do
+        LexNextToken;
+    Exit;
+  End;
+
+  Cond := (V.IVal <> 0);
+
+  { Forme mono-ligne : If cond Then statement [Else statement] }
+  If Not IsMulti Then Begin
+    If Cond Then Begin
+      ParseStatement;
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ELSE) Then Begin
+        { sauter le Else et son contenu jusqu'a NEWLINE }
+        While (CurTokType <> TOK_EOF) And (CurTokType <> TOK_NEWLINE) Do
+          LexNextToken;
+      End;
+    End Else Begin
+      { sauter jusqu'a Else ou NEWLINE }
+      While (CurTokType <> TOK_EOF) And (CurTokType <> TOK_NEWLINE) And
+            Not ((CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ELSE)) Do
+        LexNextToken;
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ELSE) Then Begin
+        LexNextToken;
+        ParseStatement;
+      End;
+    End;
+    Exit;
+  End;
+
+  If Cond Then Begin
+    { Executer la branche True jusqu'a Else/ElseIf/End. }
+    While (CurTokType <> TOK_EOF) And
+          Not ((CurTokType = TOK_KEYWORD) And
+               ((CurTokNum = KW_ELSE) Or (CurTokNum = KW_ELSEIF) Or
+                (CurTokNum = KW_END))) Do Begin
+      If PEWLoopReplay And (PEWLoopBreak Or PEWLoopContinue) Then Break;
+      ParseStatement;
+    End;
+    { Sauter le reste (Else/ElseIf et leur corps) jusqu'a End If. }
+    While (CurTokType <> TOK_EOF) And
+          Not ((CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END)) Do
+      LexNextToken;
+  End Else Begin
+    { Sauter la branche True jusqu'a Else/ElseIf/End. }
+    PEWSkipBlock;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ELSEIF) Then Begin
+      ParseModuleIf;
+      Exit;
+    End;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ELSE) Then Begin
+      LexNextToken;
+      If CurTokType = TOK_NEWLINE Then LexNextToken;
+      While (CurTokType <> TOK_EOF) And
+            Not ((CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END)) Do
+        ParseStatement;
+    End;
+  End;
+
+  { Consommer "End If" }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END) Then Begin
+    LexNextToken;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_IF) Then LexNextToken;
+  End;
+End;
+
+Procedure ParseModuleIfSkip;
+Var Depth : Integer;
+Begin
+  Depth := 1;
+  While (CurTokType <> TOK_EOF) And (Depth > 0) Do Begin
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_IF) Then
+      Inc(Depth)
+    Else If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END) Then Begin
+      LexNextToken;
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_IF) Then Begin
+        LexNextToken;
+        Dec(Depth);
+        Continue;
+      End;
+      Continue;
+    End;
+    LexNextToken;
+  End;
+End;
+
 Procedure ParseStatement;
 Var
   SavedName : TString;
@@ -7856,7 +7967,7 @@ Begin
   If CurTokType = TOK_KEYWORD Then
   Begin
     Case CurTokNum Of
-      KW_IF       : ParseIf;
+      KW_IF       : ParseModuleIf;
       KW_SELECT   : ParseSelectCase;
       KW_GOTO     : ParseGoTo;
       KW_RETURN   : Begin
@@ -8069,8 +8180,16 @@ Begin
     SaveLen := PEWLoopBufLen;
     Depth := 1;
     While (CurTokType <> TOK_EOF) And (Depth > 0) Do Begin
-      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_FOR) Then
-        Inc(Depth)
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_FOR) Then Begin
+        { Ne PAS imbriquer si c'est "Exit For" ou "Continue For".  }
+        If (PEWLoopBufLen > SaveLen) And
+           (PEWLoopBuf[PEWLoopBufLen - 1].TokType = TOK_KEYWORD) And
+           ((PEWLoopBuf[PEWLoopBufLen - 1].TokNum = KW_EXIT) Or
+            (PEWLoopBuf[PEWLoopBufLen - 1].TokNum = KW_CONTINUE)) Then
+          { rien : c'est juste le For de Exit For/Continue For }
+        Else
+          Inc(Depth);
+      End
       Else If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_NEXT) Then Begin
         Dec(Depth);
         If Depth = 0 Then Break;
@@ -8106,10 +8225,17 @@ Begin
       SavePos := PEWLoopBufPos;
       PEWLoopBufPos := SaveLen;
       PEWLoopReplay := True;
+      PEWLoopBreak    := False;
+      PEWLoopContinue := False;
       LexNextToken; { amorcer le premier token du buffer }
       ParseStatementBlock;
       PEWLoopReplay := False;
       PEWLoopBufPos := SavePos;
+      If PEWLoopBreak Then Begin
+        PEWLoopBreak := False;
+        Break;
+      End;
+      PEWLoopContinue := False;
       IterVar := IterVar + StepVal;
     End;
     { Restaurer le token du flux principal. }
@@ -8460,6 +8586,7 @@ Begin
     KW_FOR:
     Begin
       LexNextToken; { consommer 'For' }
+      If PEWLoopReplay Then PEWLoopBreak := True;
       ExLbl := FindEnclosingExitLabel;
       If ExLbl <> '' Then
       Begin
@@ -8516,6 +8643,7 @@ Begin
     KW_FOR:
     Begin
       LexNextToken; { consommer 'For' }
+      If PEWLoopReplay Then PEWLoopContinue := True;
       EmitComment('Continue For');
       { En VB.NET, Continue For saute a l increment de la boucle }
       { Simplifie : genere un commentaire indicatif }
