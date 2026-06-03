@@ -48,7 +48,7 @@ Program RUBYCW32;
               _RBH_ (Hash), _RBC_ (Class), _RBMOD_ (Module),
               _RBCONST_, _RBSYM_, _RBREGEX_
 
-  TODO 02 - TOKENISEUR RUBY (LEXER)
+  TODO 02 - TOKENISEUR RUBY (LEXER) [IMPLEMENTE]
             LexInit (gerer shebang #!/usr/bin/env ruby), LexClose,
               LexNextChar, LexPeekChar, LexPeekChar2, LexNextToken
             Identificateurs sensibles a la casse, suffixes ? ! =
@@ -498,6 +498,7 @@ Const
   MAX_BLOCK = 64;
   MAX_RESCUE = 32;
   MAX_REQUIRE = 64;
+  MAX_SRC_TEXT = 65535;
 
   ASM_PFX_GVAR = '_RB_';
   ASM_PFX_METHOD = '_RBM_';
@@ -512,8 +513,47 @@ Const
   ASM_PFX_SYMBOL = '_RBSYM_';
   ASM_PFX_REGEX = '_RBREGEX_';
 
+  TOK_EOF = 0;
+  TOK_IDENT = 256;
+  TOK_CONST = 257;
+  TOK_IVAR = 258;
+  TOK_CVAR = 259;
+  TOK_GVAR = 260;
+  TOK_INTEGER = 261;
+  TOK_FLOAT = 262;
+  TOK_STRING = 263;
+  TOK_DSTRING = 264;
+  TOK_HEREDOC = 265;
+  TOK_SYMBOL = 266;
+  TOK_REGEX = 267;
+  TOK_PERCENT_LIT = 268;
+  TOK_NEWLINE = 269;
+  TOK_DOTDOT = 270;
+  TOK_DOTDOTDOT = 271;
+  TOK_DCOLON = 272;
+  TOK_SPACESHIP = 273;
+  TOK_TRIPLEEQ = 274;
+  TOK_MATCH = 275;
+  TOK_NMATCH = 276;
+  TOK_SAFE_NAV = 277;
+  TOK_AMP_BLOCK = 278;
+  TOK_POW = 279;
+  TOK_SHL = 280;
+  TOK_SHR = 281;
+  TOK_LE = 282;
+  TOK_GE = 283;
+  TOK_EQ = 284;
+  TOK_NE = 285;
+  TOK_ANDAND = 286;
+  TOK_OROR = 287;
+  TOK_ASSIGN_OP = 288;
+  TOK_ARROW = 289;
+  TOK_FAT_ARROW = 290;
+  TOK_PIN = 291;
+
 Type
   TStringList64 = Array[1..MAX_REQUIRE] Of String;
+  TSrcBuffer = Array[1..MAX_SRC_TEXT] Of Char;
 
   TOptions = Record
     SrcFile: String;
@@ -533,6 +573,19 @@ Type
 
 Var
   Opt: TOptions;
+  SrcBuf: TSrcBuffer;
+  SrcLen: LongInt;
+  LexPos: LongInt;
+  LexLine: LongInt;
+  LexCol: LongInt;
+  CurTokType: Integer;
+  CurTokStr: String;
+  CurTokNum: LongInt;
+  CurTokLine: LongInt;
+  CurTokCol: LongInt;
+  LastTokenCanEndExpr: Boolean;
+
+Procedure FatalError(Msg: String); Forward;
 
 Function UpCaseStr(S: String): String;
 Var
@@ -581,6 +634,646 @@ Var
 Begin
   E := UpCaseStr(FileExt(S));
   IsRubySourceName := (E = '.RB') Or (E = '.RUBY');
+End;
+
+Function ItoS(N: LongInt): String;
+Var
+  S: String;
+Begin
+  Str(N, S);
+  ItoS := S;
+End;
+
+Procedure AppendTok(C: Char);
+Begin
+  If Length(CurTokStr) < 255 Then CurTokStr := CurTokStr + C;
+End;
+
+Function IsAlpha(C: Char): Boolean;
+Begin
+  IsAlpha := ((C >= 'A') And (C <= 'Z')) Or ((C >= 'a') And (C <= 'z')) Or
+             (C = '_');
+End;
+
+Function IsDigit(C: Char): Boolean;
+Begin
+  IsDigit := (C >= '0') And (C <= '9');
+End;
+
+Function IsHexDigit(C: Char): Boolean;
+Begin
+  C := UpCase(C);
+  IsHexDigit := IsDigit(C) Or ((C >= 'A') And (C <= 'F'));
+End;
+
+Function IsIdentChar(C: Char): Boolean;
+Begin
+  IsIdentChar := IsAlpha(C) Or IsDigit(C);
+End;
+
+Function HexVal(C: Char): Integer;
+Begin
+  C := UpCase(C);
+  If IsDigit(C) Then HexVal := Ord(C) - Ord('0')
+  Else HexVal := Ord(C) - Ord('A') + 10;
+End;
+
+Function LexPeekChar: Char;
+Begin
+  If LexPos > SrcLen Then LexPeekChar := #0
+  Else LexPeekChar := SrcBuf[LexPos];
+End;
+
+Function LexPeekChar2: Char;
+Begin
+  If LexPos + 1 > SrcLen Then LexPeekChar2 := #0
+  Else LexPeekChar2 := SrcBuf[LexPos + 1];
+End;
+
+Function LexNextChar: Char;
+Var
+  C: Char;
+Begin
+  If LexPos > SrcLen Then Begin
+    LexNextChar := #0;
+    Exit;
+  End;
+  C := SrcBuf[LexPos];
+  Inc(LexPos);
+  If C = #10 Then Begin
+    Inc(LexLine);
+    LexCol := 1;
+  End Else If C <> #13 Then Begin
+    Inc(LexCol);
+  End;
+  LexNextChar := C;
+End;
+
+Procedure LexInit(FileName: String);
+Var
+  F: File;
+  N: LongInt;
+Begin
+  SrcLen := 0;
+  Assign(F, FileName);
+  {$I-}
+  Reset(F, 1);
+  {$I+}
+  If IOResult <> 0 Then FatalError('impossible d''ouvrir ' + FileName);
+  BlockRead(F, SrcBuf, MAX_SRC_TEXT, N);
+  SrcLen := N;
+  If Not Eof(F) Then Begin
+    Close(F);
+    FatalError('fichier source trop volumineux');
+  End;
+  Close(F);
+  LexPos := 1;
+  LexLine := 1;
+  LexCol := 1;
+  CurTokType := TOK_EOF;
+  CurTokStr := '';
+  CurTokNum := 0;
+  LastTokenCanEndExpr := False;
+End;
+
+Procedure LexClose;
+Begin
+  SrcLen := 0;
+  LexPos := 1;
+  LexLine := 1;
+  LexCol := 1;
+End;
+
+Procedure SkipLineComment;
+Begin
+  While (LexPeekChar <> #0) And (LexPeekChar <> #10) Do LexNextChar;
+End;
+
+Procedure SkipBlockComment;
+Var
+  AtLineStart: Boolean;
+  S: String;
+Begin
+  AtLineStart := True;
+  S := '';
+  While LexPeekChar <> #0 Do Begin
+    If AtLineStart Then Begin
+      S := '';
+      While (LexPeekChar <> #0) And (LexPeekChar <> #10) And
+            (LexPeekChar <> #13) And (Length(S) < 4) Do
+        S := S + LexNextChar;
+      If S = '=end' Then Begin
+        SkipLineComment;
+        Exit;
+      End;
+    End Else
+      LexNextChar;
+    If LexPeekChar = #10 Then Begin
+      LexNextChar;
+      AtLineStart := True;
+    End Else
+      AtLineStart := False;
+  End;
+  FatalError('commentaire =begin sans =end');
+End;
+
+Procedure ReadIdent;
+Var
+  First: Char;
+Begin
+  First := LexPeekChar;
+  While IsIdentChar(LexPeekChar) Do AppendTok(LexNextChar);
+  If (LexPeekChar = '?') Or (LexPeekChar = '!') Or (LexPeekChar = '=') Then
+    AppendTok(LexNextChar);
+  If (First >= 'A') And (First <= 'Z') Then CurTokType := TOK_CONST
+  Else CurTokType := TOK_IDENT;
+End;
+
+Procedure ReadAtVar;
+Begin
+  AppendTok(LexNextChar);
+  If LexPeekChar = '@' Then Begin
+    CurTokType := TOK_CVAR;
+    AppendTok(LexNextChar);
+  End Else
+    CurTokType := TOK_IVAR;
+  If Not IsAlpha(LexPeekChar) Then FatalError('nom de variable d''instance invalide');
+  While IsIdentChar(LexPeekChar) Do AppendTok(LexNextChar);
+End;
+
+Procedure ReadGVar;
+Begin
+  CurTokType := TOK_GVAR;
+  AppendTok(LexNextChar);
+  If IsDigit(LexPeekChar) Then Begin
+    AppendTok(LexNextChar);
+    Exit;
+  End;
+  If LexPeekChar = '~' Then Begin
+    AppendTok(LexNextChar);
+    Exit;
+  End;
+  If Not IsAlpha(LexPeekChar) Then FatalError('nom de variable globale invalide');
+  While IsIdentChar(LexPeekChar) Do AppendTok(LexNextChar);
+End;
+
+Procedure ReadNumber;
+Var
+  Base, V: Integer;
+  IsFloat: Boolean;
+  C: Char;
+Begin
+  CurTokType := TOK_INTEGER;
+  CurTokNum := 0;
+  IsFloat := False;
+  Base := 10;
+  If (LexPeekChar = '0') And
+     ((UpCase(LexPeekChar2) = 'X') Or (UpCase(LexPeekChar2) = 'B') Or
+      (UpCase(LexPeekChar2) = 'O')) Then Begin
+    AppendTok(LexNextChar);
+    C := UpCase(LexNextChar);
+    AppendTok(C);
+    If C = 'X' Then Base := 16
+    Else If C = 'B' Then Base := 2
+    Else Base := 8;
+  End Else If LexPeekChar = '0' Then
+    Base := 8;
+
+  While True Do Begin
+    C := LexPeekChar;
+    If C = '_' Then Begin
+      AppendTok(LexNextChar);
+    End Else If (Base = 16) And IsHexDigit(C) Then Begin
+      V := HexVal(C);
+      CurTokNum := CurTokNum * Base + V;
+      AppendTok(LexNextChar);
+    End Else If (Base = 10) And IsDigit(C) Then Begin
+      CurTokNum := CurTokNum * Base + Ord(C) - Ord('0');
+      AppendTok(LexNextChar);
+    End Else If (Base = 8) And (C >= '0') And (C <= '7') Then Begin
+      CurTokNum := CurTokNum * Base + Ord(C) - Ord('0');
+      AppendTok(LexNextChar);
+    End Else If (Base = 2) And ((C = '0') Or (C = '1')) Then Begin
+      CurTokNum := CurTokNum * Base + Ord(C) - Ord('0');
+      AppendTok(LexNextChar);
+    End Else
+      Break;
+  End;
+
+  If (Base = 10) And (LexPeekChar = '.') And (LexPeekChar2 <> '.') Then Begin
+    IsFloat := True;
+    AppendTok(LexNextChar);
+    While IsDigit(LexPeekChar) Or (LexPeekChar = '_') Do
+      AppendTok(LexNextChar);
+  End;
+  If (Base = 10) And ((UpCase(LexPeekChar) = 'E')) Then Begin
+    IsFloat := True;
+    AppendTok(LexNextChar);
+    If (LexPeekChar = '+') Or (LexPeekChar = '-') Then AppendTok(LexNextChar);
+    While IsDigit(LexPeekChar) Or (LexPeekChar = '_') Do
+      AppendTok(LexNextChar);
+  End;
+  If (LexPeekChar = 'r') Or (LexPeekChar = 'i') Then AppendTok(LexNextChar);
+  If IsFloat Then CurTokType := TOK_FLOAT;
+End;
+
+Procedure ReadString(Quote: Char; DString: Boolean);
+Var
+  C, H1, H2: Char;
+Begin
+  If DString Then CurTokType := TOK_DSTRING
+  Else CurTokType := TOK_STRING;
+  LexNextChar;
+  While True Do Begin
+    C := LexNextChar;
+    If C = #0 Then FatalError('chaine non terminee');
+    If C = Quote Then Break;
+    If C = '\' Then Begin
+      C := LexNextChar;
+      If C = #0 Then FatalError('chaine non terminee');
+      If DString Then Begin
+        Case C Of
+          'n': AppendTok(#10);
+          't': AppendTok(#9);
+          'r': AppendTok(#13);
+          'x': Begin
+                 H1 := LexNextChar;
+                 H2 := LexNextChar;
+                 If Not (IsHexDigit(H1) And IsHexDigit(H2)) Then
+                   FatalError('echappement hex invalide');
+                 AppendTok(Chr(HexVal(H1) * 16 + HexVal(H2)));
+               End;
+          'u': Begin
+                 H1 := LexNextChar;
+                 H2 := LexNextChar;
+                 LexNextChar;
+                 LexNextChar;
+                 If Not (IsHexDigit(H1) And IsHexDigit(H2)) Then
+                   FatalError('echappement unicode invalide');
+                 AppendTok('?');
+               End;
+        Else
+          AppendTok(C);
+        End;
+      End Else Begin
+        If (C = '\') Or (C = Quote) Then AppendTok(C)
+        Else Begin
+          AppendTok('\');
+          AppendTok(C);
+        End;
+      End;
+    End Else Begin
+      If DString And (C = '#') And (LexPeekChar = '{') Then Begin
+        AppendTok(C);
+        AppendTok(LexNextChar);
+      End Else
+        AppendTok(C);
+    End;
+  End;
+End;
+
+Procedure ReadSymbol;
+Begin
+  CurTokType := TOK_SYMBOL;
+  AppendTok(LexNextChar);
+  If (LexPeekChar = '"') Or (LexPeekChar = '''') Then Begin
+    ReadString(LexPeekChar, LexPeekChar = '"');
+    CurTokType := TOK_SYMBOL;
+  End Else If IsAlpha(LexPeekChar) Then Begin
+    While IsIdentChar(LexPeekChar) Do AppendTok(LexNextChar);
+    If (LexPeekChar = '?') Or (LexPeekChar = '!') Or (LexPeekChar = '=') Then
+      AppendTok(LexNextChar);
+  End Else If LexPeekChar <> #0 Then
+    AppendTok(LexNextChar);
+End;
+
+Procedure ReadRegex;
+Var
+  C: Char;
+Begin
+  CurTokType := TOK_REGEX;
+  LexNextChar;
+  While True Do Begin
+    C := LexNextChar;
+    If C = #0 Then FatalError('regex non terminee');
+    If C = '/' Then Break;
+    If C = '\' Then Begin
+      AppendTok(C);
+      C := LexNextChar;
+      If C = #0 Then FatalError('regex non terminee');
+    End;
+    AppendTok(C);
+  End;
+  While IsAlpha(LexPeekChar) Do AppendTok(LexNextChar);
+End;
+
+Function MatchingDelim(C: Char): Char;
+Begin
+  Case C Of
+    '(': MatchingDelim := ')';
+    '[': MatchingDelim := ']';
+    '{': MatchingDelim := '}';
+    '<': MatchingDelim := '>';
+  Else
+    MatchingDelim := C;
+  End;
+End;
+
+Procedure ReadPercentLit;
+Var
+  Kind, OpenD, CloseD, C: Char;
+  Depth: Integer;
+Begin
+  CurTokType := TOK_PERCENT_LIT;
+  AppendTok(LexNextChar);
+  Kind := #0;
+  If IsAlpha(LexPeekChar) Then Begin
+    Kind := LexNextChar;
+    AppendTok(Kind);
+  End;
+  OpenD := LexNextChar;
+  CloseD := MatchingDelim(OpenD);
+  AppendTok(OpenD);
+  Depth := 1;
+  While Depth > 0 Do Begin
+    C := LexNextChar;
+    If C = #0 Then FatalError('litteral % non termine');
+    If C = '\' Then Begin
+      AppendTok(C);
+      C := LexNextChar;
+      If C = #0 Then FatalError('litteral % non termine');
+    End Else If C = OpenD Then
+      Inc(Depth)
+    Else If C = CloseD Then Begin
+      Dec(Depth);
+      If Depth = 0 Then Begin
+        AppendTok(C);
+        Break;
+      End;
+    End;
+    AppendTok(C);
+  End;
+End;
+
+Function TryReadHeredoc: Boolean;
+Var
+  SavePos, SaveLine, SaveCol: LongInt;
+  C, Quote: Char;
+Begin
+  TryReadHeredoc := False;
+  SavePos := LexPos;
+  SaveLine := LexLine;
+  SaveCol := LexCol;
+  CurTokStr := '';
+  LexNextChar;
+  LexNextChar;
+  If (LexPeekChar = '-') Or (LexPeekChar = '~') Then AppendTok(LexNextChar);
+  While (LexPeekChar = ' ') Or (LexPeekChar = #9) Do LexNextChar;
+  Quote := #0;
+  If (LexPeekChar = '"') Or (LexPeekChar = '''') Then Quote := LexNextChar;
+  If Not IsAlpha(LexPeekChar) Then Begin
+    LexPos := SavePos;
+    LexLine := SaveLine;
+    LexCol := SaveCol;
+    CurTokStr := '';
+    Exit;
+  End;
+  While IsIdentChar(LexPeekChar) Do AppendTok(LexNextChar);
+  If Quote <> #0 Then Begin
+    C := LexNextChar;
+    If C <> Quote Then FatalError('delimiteur heredoc invalide');
+  End;
+  CurTokType := TOK_HEREDOC;
+  TryReadHeredoc := True;
+End;
+
+Procedure SetSingleToken(T: Integer);
+Begin
+  CurTokType := T;
+  AppendTok(LexNextChar);
+End;
+
+Function TokenCanEndExpr(T: Integer): Boolean;
+Begin
+  TokenCanEndExpr := (T = TOK_IDENT) Or (T = TOK_CONST) Or (T = TOK_IVAR) Or
+                     (T = TOK_CVAR) Or (T = TOK_GVAR) Or
+                     (T = TOK_INTEGER) Or (T = TOK_FLOAT) Or
+                     (T = TOK_STRING) Or (T = TOK_DSTRING) Or
+                     (T = TOK_SYMBOL) Or (T = TOK_REGEX) Or
+                     (T = TOK_PERCENT_LIT) Or (T = Ord(')')) Or
+                     (T = Ord(']')) Or (T = Ord('}'));
+End;
+
+Procedure LexNextToken;
+Var
+  C, C2, C3: Char;
+  Done: Boolean;
+Begin
+  CurTokStr := '';
+  CurTokNum := 0;
+  Done := False;
+  While Not Done Do Begin
+    C := LexPeekChar;
+    If (C = ' ') Or (C = #9) Or (C = #13) Then
+      LexNextChar
+    Else If C = '#' Then
+      SkipLineComment
+    Else If (C = '=') And (LexCol = 1) And (LexPeekChar2 = 'b') Then
+      SkipBlockComment
+    Else
+      Done := True;
+  End;
+
+  CurTokLine := LexLine;
+  CurTokCol := LexCol;
+  C := LexPeekChar;
+  C2 := LexPeekChar2;
+  If LexPos + 2 <= SrcLen Then C3 := SrcBuf[LexPos + 2] Else C3 := #0;
+
+  If C = #0 Then CurTokType := TOK_EOF
+  Else If C = #10 Then Begin
+    CurTokType := TOK_NEWLINE;
+    AppendTok(LexNextChar);
+  End Else If IsAlpha(C) Then ReadIdent
+  Else If IsDigit(C) Then ReadNumber
+  Else If C = '@' Then ReadAtVar
+  Else If C = '$' Then ReadGVar
+  Else If C = '''' Then ReadString('''', False)
+  Else If C = '"' Then ReadString('"', True)
+  Else If C = ':' Then Begin
+    If C2 = ':' Then Begin
+      CurTokType := TOK_DCOLON;
+      AppendTok(LexNextChar);
+      AppendTok(LexNextChar);
+    End Else
+      ReadSymbol;
+  End Else If (C = '/') And Not LastTokenCanEndExpr Then
+    ReadRegex
+  Else If C = '%' Then Begin
+    If IsAlpha(C2) Or (C2 = '(') Or (C2 = '[') Or (C2 = '{') Or
+       (C2 = '<') Or (C2 = '/') Then
+      ReadPercentLit
+    Else
+      SetSingleToken(Ord('%'));
+  End Else If (C = '.') And (C2 = '.') And (C3 = '.') Then Begin
+    CurTokType := TOK_DOTDOTDOT;
+    AppendTok(LexNextChar);
+    AppendTok(LexNextChar);
+    AppendTok(LexNextChar);
+  End Else If (C = '.') And (C2 = '.') Then Begin
+    CurTokType := TOK_DOTDOT;
+    AppendTok(LexNextChar);
+    AppendTok(LexNextChar);
+  End Else If (C = '<') And (C2 = '<') And Not LastTokenCanEndExpr And
+              TryReadHeredoc Then Begin
+  End Else If (((C = '*') And (C2 = '*')) Or
+               ((C = '<') And (C2 = '<')) Or
+               ((C = '>') And (C2 = '>')) Or
+               ((C = '&') And (C2 = '&')) Or
+               ((C = '|') And (C2 = '|'))) And (C3 = '=') Then Begin
+    CurTokType := TOK_ASSIGN_OP;
+    AppendTok(LexNextChar);
+    AppendTok(LexNextChar);
+    AppendTok(LexNextChar);
+  End Else If (C = '<') And (C2 = '<') Then Begin
+    CurTokType := TOK_SHL;
+    AppendTok(LexNextChar);
+    AppendTok(LexNextChar);
+  End Else If (C = '>') And (C2 = '>') Then Begin
+    CurTokType := TOK_SHR;
+    AppendTok(LexNextChar);
+    AppendTok(LexNextChar);
+  End Else If (C = '<') And (C2 = '=') And (C3 = '>') Then Begin
+    CurTokType := TOK_SPACESHIP;
+    AppendTok(LexNextChar);
+    AppendTok(LexNextChar);
+    AppendTok(LexNextChar);
+  End Else If (C = '=') And (C2 = '=') And (C3 = '=') Then Begin
+    CurTokType := TOK_TRIPLEEQ;
+    AppendTok(LexNextChar);
+    AppendTok(LexNextChar);
+    AppendTok(LexNextChar);
+  End Else If (C = '=') And (C2 = '~') Then Begin
+    CurTokType := TOK_MATCH;
+    AppendTok(LexNextChar);
+    AppendTok(LexNextChar);
+  End Else If (C = '!') And (C2 = '~') Then Begin
+    CurTokType := TOK_NMATCH;
+    AppendTok(LexNextChar);
+    AppendTok(LexNextChar);
+  End Else If (C = '&') And (C2 = '.') Then Begin
+    CurTokType := TOK_SAFE_NAV;
+    AppendTok(LexNextChar);
+    AppendTok(LexNextChar);
+  End Else If (C = '&') And IsAlpha(C2) Then Begin
+    CurTokType := TOK_AMP_BLOCK;
+    AppendTok(LexNextChar);
+  End Else If (C = '*') And (C2 = '*') Then Begin
+    CurTokType := TOK_POW;
+    AppendTok(LexNextChar);
+    AppendTok(LexNextChar);
+  End Else If (C = '<') And (C2 = '=') Then Begin
+    CurTokType := TOK_LE;
+    AppendTok(LexNextChar);
+    AppendTok(LexNextChar);
+  End Else If (C = '>') And (C2 = '=') Then Begin
+    CurTokType := TOK_GE;
+    AppendTok(LexNextChar);
+    AppendTok(LexNextChar);
+  End Else If (C = '=') And (C2 = '=') Then Begin
+    CurTokType := TOK_EQ;
+    AppendTok(LexNextChar);
+    AppendTok(LexNextChar);
+  End Else If (C = '!') And (C2 = '=') Then Begin
+    CurTokType := TOK_NE;
+    AppendTok(LexNextChar);
+    AppendTok(LexNextChar);
+  End Else If (C = '&') And (C2 = '&') Then Begin
+    CurTokType := TOK_ANDAND;
+    AppendTok(LexNextChar);
+    AppendTok(LexNextChar);
+  End Else If (C = '|') And (C2 = '|') Then Begin
+    CurTokType := TOK_OROR;
+    AppendTok(LexNextChar);
+    AppendTok(LexNextChar);
+  End Else If (C = '-') And (C2 = '>') Then Begin
+    CurTokType := TOK_ARROW;
+    AppendTok(LexNextChar);
+    AppendTok(LexNextChar);
+  End Else If (C = '=') And (C2 = '>') Then Begin
+    CurTokType := TOK_FAT_ARROW;
+    AppendTok(LexNextChar);
+    AppendTok(LexNextChar);
+  End Else If ((C = '+') Or (C = '-') Or (C = '*') Or (C = '/') Or
+               (C = '%') Or (C = '&') Or (C = '|') Or (C = '^')) And
+              (C2 = '=') Then Begin
+    CurTokType := TOK_ASSIGN_OP;
+    AppendTok(LexNextChar);
+    AppendTok(LexNextChar);
+  End Else If (C = '^') And IsAlpha(C2) Then Begin
+    CurTokType := TOK_PIN;
+    AppendTok(LexNextChar);
+  End Else
+    SetSingleToken(Ord(C));
+
+  LastTokenCanEndExpr := TokenCanEndExpr(CurTokType);
+End;
+
+Function TokenName(T: Integer): String;
+Begin
+  Case T Of
+    TOK_EOF: TokenName := 'TOK_EOF';
+    TOK_IDENT: TokenName := 'TOK_IDENT';
+    TOK_CONST: TokenName := 'TOK_CONST';
+    TOK_IVAR: TokenName := 'TOK_IVAR';
+    TOK_CVAR: TokenName := 'TOK_CVAR';
+    TOK_GVAR: TokenName := 'TOK_GVAR';
+    TOK_INTEGER: TokenName := 'TOK_INTEGER';
+    TOK_FLOAT: TokenName := 'TOK_FLOAT';
+    TOK_STRING: TokenName := 'TOK_STRING';
+    TOK_DSTRING: TokenName := 'TOK_DSTRING';
+    TOK_HEREDOC: TokenName := 'TOK_HEREDOC';
+    TOK_SYMBOL: TokenName := 'TOK_SYMBOL';
+    TOK_REGEX: TokenName := 'TOK_REGEX';
+    TOK_PERCENT_LIT: TokenName := 'TOK_PERCENT_LIT';
+    TOK_NEWLINE: TokenName := 'TOK_NEWLINE';
+    TOK_DOTDOT: TokenName := 'TOK_DOTDOT';
+    TOK_DOTDOTDOT: TokenName := 'TOK_DOTDOTDOT';
+    TOK_DCOLON: TokenName := 'TOK_DCOLON';
+    TOK_SPACESHIP: TokenName := 'TOK_SPACESHIP';
+    TOK_TRIPLEEQ: TokenName := 'TOK_TRIPLEEQ';
+    TOK_MATCH: TokenName := 'TOK_MATCH';
+    TOK_NMATCH: TokenName := 'TOK_NMATCH';
+    TOK_SAFE_NAV: TokenName := 'TOK_SAFE_NAV';
+    TOK_AMP_BLOCK: TokenName := 'TOK_AMP_BLOCK';
+    TOK_POW: TokenName := 'TOK_POW';
+    TOK_SHL: TokenName := 'TOK_SHL';
+    TOK_SHR: TokenName := 'TOK_SHR';
+    TOK_LE: TokenName := 'TOK_LE';
+    TOK_GE: TokenName := 'TOK_GE';
+    TOK_EQ: TokenName := 'TOK_EQ';
+    TOK_NE: TokenName := 'TOK_NE';
+    TOK_ANDAND: TokenName := 'TOK_ANDAND';
+    TOK_OROR: TokenName := 'TOK_OROR';
+    TOK_ASSIGN_OP: TokenName := 'TOK_ASSIGN_OP';
+    TOK_ARROW: TokenName := 'TOK_ARROW';
+    TOK_FAT_ARROW: TokenName := 'TOK_FAT_ARROW';
+    TOK_PIN: TokenName := 'TOK_PIN';
+  Else
+    If (T > 0) And (T < 128) Then TokenName := '''' + Chr(T) + ''''
+    Else TokenName := 'TOK_' + UpCaseStr(ItoS(T));
+  End;
+End;
+
+Procedure DumpTokens;
+Begin
+  LexInit(Opt.SrcFile);
+  Repeat
+    LexNextToken;
+    WriteLn(CurTokLine:5, ':', CurTokCol:3, '  ', TokenName(CurTokType),
+            '  ', CurTokStr);
+  Until CurTokType = TOK_EOF;
+  LexClose;
 End;
 
 Procedure Usage;
@@ -727,5 +1420,8 @@ Begin
     If Opt.DebugMode Then WriteLn('Debug  : oui');
     If Opt.FrozenStrLits Then WriteLn('Frozen : oui');
   End;
-  WarnMsg('seule l infrastructure de compilation est initialisee');
+  If Opt.DebugMode Then
+    DumpTokens
+  Else
+    WarnMsg('seuls l infrastructure et le lexer sont initialises');
 End.
