@@ -1322,6 +1322,31 @@ Var
   LexColNo   : Integer;        { colonne courante dans LexLine         }
   LexEOF     : Boolean;        { fin de fichier atteinte ?             }
 
+Const
+  PE_MAX_TOK_BUF = 4096;
+
+Type
+  TBufTok = Record
+    TokType : Integer;
+    TokNum  : LongInt;
+    TokStr  : TString;
+  End;
+
+Var
+  PEWLoopBuf    : Array[0..PE_MAX_TOK_BUF-1] of TBufTok;
+  PEWLoopBufLen : Integer;
+  PEWLoopBufPos : Integer;
+  PEWLoopReplay : Boolean;
+
+Type
+  TPEEvalKind = (PEK_FAIL, PEK_INT, PEK_STR);
+  TPEEvalVal = Record
+    Kind : TPEEvalKind;
+    SVal : TString;
+    IVal : LongInt;
+  End;
+
+Var
   { Token courant }
   CurTokType : Integer;        { type de token (TOK_*)                 }
   CurTokStr  : TString;        { valeur textuelle du token             }
@@ -2593,6 +2618,21 @@ Var
   HasClose  : Boolean;
   PrevTok   : Integer;
 Begin
+  { Mode replay : servir les tokens depuis le buffer. }
+  If PEWLoopReplay Then Begin
+    If PEWLoopBufPos < PEWLoopBufLen Then Begin
+      CurTokType := PEWLoopBuf[PEWLoopBufPos].TokType;
+      CurTokNum  := PEWLoopBuf[PEWLoopBufPos].TokNum;
+      CurTokStr  := PEWLoopBuf[PEWLoopBufPos].TokStr;
+      Inc(PEWLoopBufPos);
+      Exit;
+    End;
+    { Buffer epuise : signaler EOF logique pour stopper la replay. }
+    CurTokType := TOK_EOF;
+    CurTokStr  := '';
+    CurTokNum  := 0;
+    Exit;
+  End;
   Done := False;
   While Not Done Do
   Begin
@@ -4685,6 +4725,17 @@ End;
 Procedure ParseModuleLevelDecl; Forward;
 Procedure ParseStatement; Forward;
 Procedure ParseConsoleStatement; Forward;
+Procedure PEWSetStrVar(Const Name, Val : TString); Forward;
+Function  PEWGetStrVar(Const Name : TString; Var Val : TString) : Boolean; Forward;
+Procedure PEWSetIntVar(Const Name : TString; Val : LongInt); Forward;
+Function  PEWGetIntVar(Const Name : TString; Var Val : LongInt) : Boolean; Forward;
+Procedure PEWSetIntArr(Const Name : TString; Idx, Val : LongInt); Forward;
+Function  PEWGetIntArr(Const Name : TString; Idx : LongInt;
+                       Var Val : LongInt) : Boolean; Forward;
+Function  PEWTryBuildPrint(NewLine : Boolean) : Boolean; Forward;
+Procedure PEWEnqueuePrint(Const S : TString; NL : Boolean); Forward;
+Procedure PEWEvalAdd(Var V : TPEEvalVal); Forward;
+Procedure PEWEvalExpr(Var V : TPEEvalVal); Forward;
 
 { ------------------------------------------------------------ }
 { ParseCompilationUnit : point d entree principal du parseur   }
@@ -7739,6 +7790,10 @@ End;
 { ------------------------------------------------------------ }
 
 Procedure ParseStatement;
+Var
+  SavedName : TString;
+  IdxV      : TPEEvalVal;
+  RhsV      : TPEEvalVal;
 Begin
   { Sauter les lignes vides }
   If CurTokType = TOK_NEWLINE Then
@@ -7799,7 +7854,31 @@ Begin
       ParseConsoleStatement;
       Exit;
     End;
+    { Capture simple pour le backend binaire : NAME = expr ou       }
+    { NAME(idx) = expr. RHS evaluee compile-time si possible.       }
+    SavedName := CurTokStr;
     LexNextToken;
+    { Affectation a un element de tableau : NAME(idx) = expr }
+    If CurTokType = TOK_LPAREN Then Begin
+      LexNextToken;
+      PEWEvalExpr(IdxV);
+      If CurTokType = TOK_RPAREN Then LexNextToken;
+      If CurTokType = TOK_EQ Then Begin
+        LexNextToken;
+        PEWEvalExpr(RhsV);
+        If (IdxV.Kind = PEK_INT) And (RhsV.Kind = PEK_INT) Then
+          PEWSetIntArr(SavedName, IdxV.IVal, RhsV.IVal);
+      End;
+      Exit;
+    End;
+    If CurTokType = TOK_EQ Then Begin
+      LexNextToken;
+      PEWEvalExpr(RhsV);
+      If RhsV.Kind = PEK_INT Then
+        PEWSetIntVar(SavedName, RhsV.IVal)
+      Else If RhsV.Kind = PEK_STR Then
+        PEWSetStrVar(SavedName, RhsV.SVal);
+    End;
     Exit;
   End;
 
@@ -7863,6 +7942,18 @@ Var
   VarName  : TString;  { nom de la variable       }
   Idx      : Integer;  { index dans la sym table  }
   HasStep  : Boolean;  { True si Step est present }
+  LoVal    : LongInt;
+  HiVal    : LongInt;
+  StepVal  : LongInt;
+  CanUnroll : Boolean;
+  EvalV    : TPEEvalVal;
+  SaveLen  : Integer;
+  Depth    : Integer;
+  IterVar  : LongInt;
+  SavePos  : Integer;
+  SaveTokType : Integer;
+  SaveTokNum  : LongInt;
+  SaveTokStr  : TString;
 Begin
   { Consommer 'For' }
   LexNextToken;
@@ -7893,6 +7984,97 @@ Begin
 
   { Attendre '=' }
   Expect(TOK_EQ);
+
+  { Tenter unroll compile-time : LO et HI doivent etre litteraux. }
+  CanUnroll := False;
+  StepVal := 1;
+  HasStep := False;
+  If Not PEWLoopReplay Then Begin
+    PEWEvalAdd(EvalV);
+    If EvalV.Kind = PEK_INT Then Begin
+      LoVal := EvalV.IVal;
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_TO) Then Begin
+        LexNextToken;
+        PEWEvalAdd(EvalV);
+        If EvalV.Kind = PEK_INT Then Begin
+          HiVal := EvalV.IVal;
+          If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_STEP) Then Begin
+            LexNextToken;
+            HasStep := True;
+            PEWEvalAdd(EvalV);
+            If EvalV.Kind = PEK_INT Then Begin
+              StepVal := EvalV.IVal;
+              CanUnroll := True;
+            End;
+          End Else
+            CanUnroll := True;
+        End;
+      End;
+    End;
+  End;
+
+  If CanUnroll Then Begin
+    { Capturer les tokens du corps jusqu'au Next correspondant. }
+    SkipNewlines;
+    SaveLen := PEWLoopBufLen;
+    Depth := 1;
+    While (CurTokType <> TOK_EOF) And (Depth > 0) Do Begin
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_FOR) Then
+        Inc(Depth)
+      Else If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_NEXT) Then Begin
+        Dec(Depth);
+        If Depth = 0 Then Break;
+      End;
+      If PEWLoopBufLen < PE_MAX_TOK_BUF Then Begin
+        PEWLoopBuf[PEWLoopBufLen].TokType := CurTokType;
+        PEWLoopBuf[PEWLoopBufLen].TokNum  := CurTokNum;
+        PEWLoopBuf[PEWLoopBufLen].TokStr  := CurTokStr;
+        Inc(PEWLoopBufLen);
+      End;
+      LexNextToken;
+    End;
+    { Consommer 'Next' (et l'IDENT optionnel apres). }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_NEXT) Then Begin
+      LexNextToken;
+      If (CurTokType = TOK_IDENT) And
+         (UpCaseStr(CurTokStr) = UpCaseStr(VarName)) Then
+        LexNextToken;
+    End;
+
+    { Replay : iterer LoVal -> HiVal par StepVal. }
+    { Sauvegarder le token courant du flux principal pour le        }
+    { restaurer apres la phase replay (sinon l'EOF synthetique du   }
+    { buffer ecraserait le token suivant le 'Next'/IDENT).          }
+    SaveTokType := CurTokType;
+    SaveTokNum  := CurTokNum;
+    SaveTokStr  := CurTokStr;
+    IterVar := LoVal;
+    While ((StepVal > 0) And (IterVar <= HiVal)) Or
+          ((StepVal < 0) And (IterVar >= HiVal)) Do Begin
+      PEWSetIntVar(VarName, IterVar);
+      { Sauvegarder l'etat parser exterieur }
+      SavePos := PEWLoopBufPos;
+      PEWLoopBufPos := SaveLen;
+      PEWLoopReplay := True;
+      LexNextToken; { amorcer le premier token du buffer }
+      ParseStatementBlock;
+      PEWLoopReplay := False;
+      PEWLoopBufPos := SavePos;
+      IterVar := IterVar + StepVal;
+    End;
+    { Restaurer le token du flux principal. }
+    CurTokType := SaveTokType;
+    CurTokNum  := SaveTokNum;
+    CurTokStr  := SaveTokStr;
+    { Tronquer le buffer pour reutilisation par d'autres boucles }
+    PEWLoopBufLen := SaveLen;
+
+    LeaveLoop;
+    LeaveCtrl;
+    Exit;
+  End;
+
+  { ---- Chemin classique (codegen asm) lorsque non unrollable ---- }
 
   { Parser l expression de debut }
   ParseExpr;
@@ -7944,8 +8126,12 @@ Begin
   If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_NEXT) Then
   Begin
     LexNextToken;
-    { Optionnel : nom de la variable apres Next }
-    If (CurTokType = TOK_IDENT) Then
+    { Optionnel : nom de la variable apres Next.                  }
+    { Ne consommer que si l'IDENT correspond au nom de la variable }
+    { de boucle ; sinon il s'agit du debut de la statement         }
+    { suivante (le lexer peut avoir saute le NEWLINE).             }
+    If (CurTokType = TOK_IDENT) And
+       (UpCaseStr(CurTokStr) = UpCaseStr(VarName)) Then
       LexNextToken;
   End;
 
@@ -12382,6 +12568,379 @@ Var
   PEWPrintQueue : Array[0..PE_MAX_PRINT_QUEUE-1] of TPEPrintEntry;
   PEWPrintCount : Integer;
 
+Const
+  PE_MAX_STRVARS = 64;
+
+Type
+  TPEStrVar = Record
+    Name : TString;  { upcase                                       }
+    Val  : TString;  { dernier litteral assigne                     }
+  End;
+
+Var
+  PEWStrVarTab   : Array[0..PE_MAX_STRVARS-1] of TPEStrVar;
+  PEWStrVarCount : Integer;
+
+Procedure PEWSetStrVar(Const Name, Val : TString);
+Var I : Integer; UN : TString;
+Begin
+  UN := UpCaseStr(Name);
+  For I := 0 To PEWStrVarCount - 1 Do
+    If PEWStrVarTab[I].Name = UN Then Begin
+      PEWStrVarTab[I].Val := Val;
+      Exit;
+    End;
+  If PEWStrVarCount < PE_MAX_STRVARS Then Begin
+    PEWStrVarTab[PEWStrVarCount].Name := UN;
+    PEWStrVarTab[PEWStrVarCount].Val  := Val;
+    Inc(PEWStrVarCount);
+  End;
+End;
+
+Function PEWGetStrVar(Const Name : TString; Var Val : TString) : Boolean;
+Var I : Integer; UN : TString;
+Begin
+  UN := UpCaseStr(Name);
+  For I := 0 To PEWStrVarCount - 1 Do
+    If PEWStrVarTab[I].Name = UN Then Begin
+      Val := PEWStrVarTab[I].Val;
+      PEWGetStrVar := True;
+      Exit;
+    End;
+  PEWGetStrVar := False;
+End;
+
+{ ------------------------------------------------------------ }
+{ Variables entieres connues a la compilation. Permettent       }
+{ d'evaluer "prefix " & i.ToString() au parse time pour         }
+{ produire une chaine litterale unique.                         }
+{ ------------------------------------------------------------ }
+
+Const
+  PE_MAX_INTVARS = 64;
+
+Type
+  TPEIntVar = Record
+    Name : TString;
+    Val  : LongInt;
+  End;
+
+Var
+  PEWIntVarTab   : Array[0..PE_MAX_INTVARS-1] of TPEIntVar;
+  PEWIntVarCount : Integer;
+
+Procedure PEWSetIntVar(Const Name : TString; Val : LongInt);
+Var I : Integer; UN : TString;
+Begin
+  UN := UpCaseStr(Name);
+  For I := 0 To PEWIntVarCount - 1 Do
+    If PEWIntVarTab[I].Name = UN Then Begin
+      PEWIntVarTab[I].Val := Val;
+      Exit;
+    End;
+  If PEWIntVarCount < PE_MAX_INTVARS Then Begin
+    PEWIntVarTab[PEWIntVarCount].Name := UN;
+    PEWIntVarTab[PEWIntVarCount].Val  := Val;
+    Inc(PEWIntVarCount);
+  End;
+End;
+
+Function PEWGetIntVar(Const Name : TString; Var Val : LongInt) : Boolean;
+Var I : Integer; UN : TString;
+Begin
+  UN := UpCaseStr(Name);
+  For I := 0 To PEWIntVarCount - 1 Do
+    If PEWIntVarTab[I].Name = UN Then Begin
+      Val := PEWIntVarTab[I].Val;
+      PEWGetIntVar := True;
+      Exit;
+    End;
+  PEWGetIntVar := False;
+End;
+
+{ ------------------------------------------------------------ }
+{ Tableaux d'entiers connus a la compilation. Stockage plat :   }
+{ on garde au plus PE_MAX_INTARR_ELEMS elements globaux. Cle =  }
+{ (NameUpper, Index).                                            }
+{ ------------------------------------------------------------ }
+
+Const
+  PE_MAX_INTARR_ELEMS = 1024;
+
+Type
+  TPEIntArrEl = Record
+    Name : TString;   { upcase                                       }
+    Idx  : LongInt;
+    Val  : LongInt;
+  End;
+
+Var
+  PEWIntArrTab   : Array[0..PE_MAX_INTARR_ELEMS-1] of TPEIntArrEl;
+  PEWIntArrCount : Integer;
+
+Procedure PEWSetIntArr(Const Name : TString; Idx, Val : LongInt);
+Var I : Integer; UN : TString;
+Begin
+  UN := UpCaseStr(Name);
+  For I := 0 To PEWIntArrCount - 1 Do
+    If (PEWIntArrTab[I].Name = UN) And (PEWIntArrTab[I].Idx = Idx) Then Begin
+      PEWIntArrTab[I].Val := Val;
+      Exit;
+    End;
+  If PEWIntArrCount < PE_MAX_INTARR_ELEMS Then Begin
+    PEWIntArrTab[PEWIntArrCount].Name := UN;
+    PEWIntArrTab[PEWIntArrCount].Idx  := Idx;
+    PEWIntArrTab[PEWIntArrCount].Val  := Val;
+    Inc(PEWIntArrCount);
+  End;
+End;
+
+Function PEWGetIntArr(Const Name : TString; Idx : LongInt;
+                      Var Val : LongInt) : Boolean;
+Var I : Integer; UN : TString;
+Begin
+  UN := UpCaseStr(Name);
+  For I := 0 To PEWIntArrCount - 1 Do
+    If (PEWIntArrTab[I].Name = UN) And (PEWIntArrTab[I].Idx = Idx) Then Begin
+      Val := PEWIntArrTab[I].Val;
+      PEWGetIntArr := True;
+      Exit;
+    End;
+  PEWGetIntArr := False;
+End;
+
+Function IntToDecStr(N : LongInt) : TString;
+Var S : TString; Neg : Boolean; D : Integer;
+Begin
+  If N = 0 Then Begin IntToDecStr := '0'; Exit; End;
+  Neg := N < 0;
+  If Neg Then N := -N;
+  S := '';
+  While N > 0 Do Begin
+    D := N Mod 10;
+    S := Chr(Ord('0') + D) + S;
+    N := N Div 10;
+  End;
+  If Neg Then S := '-' + S;
+  IntToDecStr := S;
+End;
+
+{ ------------------------------------------------------------ }
+{ Mini-evaluateur compile-time pour une expression d'argument  }
+{ Console.WriteLine. Reconnait :                                }
+{   atom :=  STRING                                             }
+{          | INTEGER                                            }
+{          | IDENT                                              }
+{          | IDENT '.' IDENT '(' ')'      (e.g. i.ToString())   }
+{          | '(' expr ')'                                       }
+{          | '-' atom                                           }
+{   term := atom (('*' | '\' | 'Mod') atom)*                    }
+{   add  := term (('+' | '-') term)*                            }
+{   expr := add ('&' add)*                                      }
+{                                                               }
+{ Tous les operandes sont evalues en compile time. La fonction  }
+{ retourne True si toute l'expression a pu etre reduite a une   }
+{ valeur litterale (chaine ou entier). En cas d'echec, l'etat   }
+{ du lexer reste indefini : le caller doit avancer jusqu'a la   }
+{ fin de l'argument (')').                                      }
+{ ------------------------------------------------------------ }
+
+Procedure PEWEvalAtom(Var V : TPEEvalVal);
+Var Tmp : TString; Itmp : LongInt; Method : TString;
+Begin
+  V.Kind := PEK_FAIL;
+  If CurTokType = TOK_MINUS Then Begin
+    LexNextToken;
+    PEWEvalAtom(V);
+    If V.Kind = PEK_INT Then V.IVal := -V.IVal
+    Else V.Kind := PEK_FAIL;
+    Exit;
+  End;
+  If CurTokType = TOK_LPAREN Then Begin
+    LexNextToken;
+    PEWEvalExpr(V);
+    If CurTokType = TOK_RPAREN Then LexNextToken
+    Else Begin V.Kind := PEK_FAIL; Exit; End;
+    { Postfix optionnel : .ToString() }
+    If CurTokType = TOK_DOT Then Begin
+      LexNextToken;
+      If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then Begin
+        Method := UpCaseStr(CurTokStr);
+        LexNextToken;
+        If CurTokType = TOK_LPAREN Then Begin
+          LexNextToken;
+          If CurTokType = TOK_RPAREN Then LexNextToken
+          Else Begin V.Kind := PEK_FAIL; Exit; End;
+        End;
+        If Method = 'TOSTRING' Then Begin
+          If V.Kind = PEK_INT Then Begin
+            V.SVal := IntToDecStr(V.IVal);
+            V.Kind := PEK_STR;
+          End Else If V.Kind <> PEK_STR Then
+            V.Kind := PEK_FAIL;
+        End Else
+          V.Kind := PEK_FAIL;
+      End;
+    End;
+    Exit;
+  End;
+  If CurTokType = TOK_STRING Then Begin
+    V.Kind := PEK_STR;
+    V.SVal := CurTokStr;
+    LexNextToken;
+    Exit;
+  End;
+  If CurTokType = TOK_INTEGER Then Begin
+    V.Kind := PEK_INT;
+    V.IVal := CurTokNum;
+    LexNextToken;
+    Exit;
+  End;
+  If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then Begin
+    Tmp := CurTokStr;
+    LexNextToken;
+    { Indice de tableau : IDENT '(' expr ')' }
+    If CurTokType = TOK_LPAREN Then Begin
+      LexNextToken;
+      PEWEvalExpr(V);
+      If V.Kind <> PEK_INT Then Begin
+        V.Kind := PEK_FAIL;
+        Exit;
+      End;
+      Itmp := V.IVal;
+      V.Kind := PEK_FAIL;
+      If CurTokType = TOK_RPAREN Then LexNextToken
+      Else Exit;
+      { Optionnellement suivi de '.ToString()' }
+      If CurTokType = TOK_DOT Then Begin
+        LexNextToken;
+        If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then Begin
+          Method := UpCaseStr(CurTokStr);
+          LexNextToken;
+          If CurTokType = TOK_LPAREN Then Begin
+            LexNextToken;
+            If CurTokType = TOK_RPAREN Then LexNextToken
+            Else Exit;
+          End;
+          If Method = 'TOSTRING' Then Begin
+            If PEWGetIntArr(Tmp, Itmp, V.IVal) Then Begin
+              V.Kind := PEK_STR;
+              V.SVal := IntToDecStr(V.IVal);
+            End;
+            Exit;
+          End;
+          Exit;
+        End;
+        Exit;
+      End;
+      If PEWGetIntArr(Tmp, Itmp, V.IVal) Then
+        V.Kind := PEK_INT;
+      Exit;
+    End;
+    { Methode : IDENT.IDENT '(' ')' }
+    If CurTokType = TOK_DOT Then Begin
+      LexNextToken;
+      If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then Begin
+        Method := UpCaseStr(CurTokStr);
+        LexNextToken;
+        If CurTokType = TOK_LPAREN Then Begin
+          LexNextToken;
+          If CurTokType = TOK_RPAREN Then LexNextToken
+          Else Exit; { args non geres }
+        End;
+        If Method = 'TOSTRING' Then Begin
+          If PEWGetIntVar(Tmp, Itmp) Then Begin
+            V.Kind := PEK_STR;
+            V.SVal := IntToDecStr(Itmp);
+          End Else If PEWGetStrVar(Tmp, V.SVal) Then
+            V.Kind := PEK_STR;
+        End;
+      End;
+      Exit;
+    End;
+    { Simple identifier }
+    If PEWGetStrVar(Tmp, V.SVal) Then Begin
+      V.Kind := PEK_STR;
+      Exit;
+    End;
+    If PEWGetIntVar(Tmp, Itmp) Then Begin
+      V.Kind := PEK_INT;
+      V.IVal := Itmp;
+      Exit;
+    End;
+    Exit;
+  End;
+End;
+
+Procedure PEWEvalTerm(Var V : TPEEvalVal);
+Var R : TPEEvalVal; Op : Integer;
+Begin
+  PEWEvalAtom(V);
+  While V.Kind = PEK_INT Do Begin
+    Op := -1;
+    If CurTokType = TOK_STAR Then Op := 0
+    Else If CurTokType = TOK_BACKSLASH Then Op := 1
+    Else If (CurTokType = TOK_KEYWORD) And (UpCaseStr(CurTokStr) = 'MOD') Then Op := 2;
+    If Op < 0 Then Exit;
+    LexNextToken;
+    PEWEvalAtom(R);
+    If R.Kind <> PEK_INT Then Begin V.Kind := PEK_FAIL; Exit; End;
+    Case Op Of
+      0 : V.IVal := V.IVal * R.IVal;
+      1 : If R.IVal = 0 Then Begin V.Kind := PEK_FAIL; Exit; End
+          Else V.IVal := V.IVal Div R.IVal;
+      2 : If R.IVal = 0 Then Begin V.Kind := PEK_FAIL; Exit; End
+          Else V.IVal := V.IVal Mod R.IVal;
+    End;
+  End;
+End;
+
+Procedure PEWEvalAdd(Var V : TPEEvalVal);
+Var R : TPEEvalVal; Op : Integer;
+Begin
+  PEWEvalTerm(V);
+  While V.Kind = PEK_INT Do Begin
+    If CurTokType = TOK_PLUS Then Op := 0
+    Else If CurTokType = TOK_MINUS Then Op := 1
+    Else Exit;
+    LexNextToken;
+    PEWEvalTerm(R);
+    If R.Kind <> PEK_INT Then Begin V.Kind := PEK_FAIL; Exit; End;
+    If Op = 0 Then V.IVal := V.IVal + R.IVal
+    Else V.IVal := V.IVal - R.IVal;
+  End;
+End;
+
+Procedure PEWEvalExpr(Var V : TPEEvalVal);
+Var R : TPEEvalVal; LS, RS : TString;
+Begin
+  PEWEvalAdd(V);
+  While CurTokType = TOK_AMP Do Begin
+    If V.Kind = PEK_FAIL Then Exit;
+    LexNextToken;
+    PEWEvalAdd(R);
+    If R.Kind = PEK_FAIL Then Begin V.Kind := PEK_FAIL; Exit; End;
+    If V.Kind = PEK_INT Then LS := IntToDecStr(V.IVal) Else LS := V.SVal;
+    If R.Kind = PEK_INT Then RS := IntToDecStr(R.IVal) Else RS := R.SVal;
+    V.Kind := PEK_STR;
+    V.SVal := LS + RS;
+  End;
+End;
+
+Function PEWTryBuildPrint(NewLine : Boolean) : Boolean;
+Var V : TPEEvalVal;
+Begin
+  PEWEvalExpr(V);
+  If V.Kind = PEK_INT Then Begin
+    PEWEnqueuePrint(IntToDecStr(V.IVal), NewLine);
+    PEWTryBuildPrint := True;
+  End Else If V.Kind = PEK_STR Then Begin
+    PEWEnqueuePrint(V.SVal, NewLine);
+    PEWTryBuildPrint := True;
+  End Else
+    PEWTryBuildPrint := False;
+End;
+
 Procedure PEWEnqueuePrint(Const S : TString; NL : Boolean);
 Begin
   If PEWPrintCount < PE_MAX_PRINT_QUEUE Then
@@ -12434,6 +12993,7 @@ End;
 Procedure ParseConsoleWriteLine;
 Var
   ArgCount : Integer;
+  Var_StrLookup_Tmp : TString;
 Begin
   Inc(ConsoleFileIOCount);
   Inc(ConsoleWriteCount);
@@ -12453,21 +13013,17 @@ Begin
     Emit('  ADD ESP, 4');
     Exit;
   End;
-  { Cas simple capture par le backend binaire :                   }
-  {   Console.WriteLine("litteral")  -> mise en file              }
-  If CurTokType = TOK_STRING Then
-    PEWEnqueuePrint(CurTokStr, True);
-  { Parser le premier argument (chaine ou format) }
-  ParseExpr;
+  { Backend binaire : tenter d'evaluer l'argument en compile time }
+  { (litteraux, vars connues, concat, arith). En cas d'echec, rien }
+  { n'est mis en file et l'asm de fallback s'execute si invoque.   }
+  PEWTryBuildPrint(True);
   ArgCount := 1;
-  { Verifier les arguments supplementaires (format string stub) }
-  While CurTokType = TOK_COMMA Do Begin
+  { Sauter le reste de l'argument courant et tout le reste jusqu'a }
+  { la parenthese fermante de l'appel.                              }
+  While (CurTokType <> TOK_RPAREN) And
+        (CurTokType <> TOK_NEWLINE) And
+        (CurTokType <> TOK_EOF) Do
     LexNextToken;
-    { Les arguments supplementaires sont empiles mais non traites }
-    { dans cette version (stub pour format string)                }
-    ParseExpr;
-    Inc(ArgCount);
-  End;
   { Fermer la parenthese }
   If CurTokType = TOK_RPAREN Then
     LexNextToken;
@@ -12483,6 +13039,8 @@ End;
 { ------------------------------------------------------------ }
 
 Procedure ParseConsoleWrite;
+Var
+  Var_StrLookup_Tmp : TString;
 Begin
   Inc(ConsoleFileIOCount);
   Inc(ConsoleWriteCount);
@@ -12492,13 +13050,13 @@ Begin
     LexNextToken
   Else
     FatalError('Console.Write : parenthese ouvrante attendue');
-  { Cas simple capture par le backend binaire :                   }
-  {   Console.Write("litteral")  -> mise en file (sans CRLF)      }
-  If CurTokType = TOK_STRING Then
-    PEWEnqueuePrint(CurTokStr, False);
-  { Parser l expression }
-  If CurTokType <> TOK_RPAREN Then
-    ParseExpr;
+  { Backend binaire : evaluation compile-time (sans CRLF). }
+  PEWTryBuildPrint(False);
+  { Sauter tout reste jusqu'a la parenthese fermante. }
+  While (CurTokType <> TOK_RPAREN) And
+        (CurTokType <> TOK_NEWLINE) And
+        (CurTokType <> TOK_EOF) Do
+    LexNextToken;
   { Fermer la parenthese }
   If CurTokType = TOK_RPAREN Then
     LexNextToken;
