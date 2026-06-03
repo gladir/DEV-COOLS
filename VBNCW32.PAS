@@ -4780,6 +4780,7 @@ Function  PEWTryBuildPrint(NewLine : Boolean) : Boolean; Forward;
 Procedure PEWEnqueuePrint(Const S : TString; NL : Boolean); Forward;
 Procedure PEWEvalAdd(Var V : TPEEvalVal); Forward;
 Procedure PEWEvalExpr(Var V : TPEEvalVal); Forward;
+Procedure PEWEvalPostfix(Var V : TPEEvalVal); Forward;
 Procedure PEWCaptureFunction; Forward;
 Function  PEWFindFunc(Const Name : TString) : Integer; Forward;
 Function  PEWCallFunc(Idx : Integer; ArgVal : LongInt;
@@ -12904,6 +12905,81 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
+{ Helpers chaines pour l'evaluateur compile-time.              }
+{ ------------------------------------------------------------ }
+
+Function PEWTrimL(Const S : TString) : TString;
+Var I : Integer;
+Begin
+  I := 1;
+  While (I <= Length(S)) And
+        ((S[I] = ' ') Or (S[I] = #9) Or (S[I] = #13) Or (S[I] = #10)) Do
+    Inc(I);
+  PEWTrimL := Copy(S, I, Length(S) - I + 1);
+End;
+
+Function PEWTrimR(Const S : TString) : TString;
+Var I : Integer;
+Begin
+  I := Length(S);
+  While (I >= 1) And
+        ((S[I] = ' ') Or (S[I] = #9) Or (S[I] = #13) Or (S[I] = #10)) Do
+    Dec(I);
+  PEWTrimR := Copy(S, 1, I);
+End;
+
+Function PEWTrimAll(Const S : TString) : TString;
+Begin
+  PEWTrimAll := PEWTrimR(PEWTrimL(S));
+End;
+
+Function PEWLowCaseStr(Const S : TString) : TString;
+Var I : Integer; R : TString; C : Char;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do Begin
+    C := R[I];
+    If (C >= 'A') And (C <= 'Z') Then R[I] := Chr(Ord(C) + 32);
+  End;
+  PEWLowCaseStr := R;
+End;
+
+Function PEWReplaceAll(Const S, Find, Repl : TString) : TString;
+Var R : TString; P, Start : Integer;
+Begin
+  If Length(Find) = 0 Then Begin PEWReplaceAll := S; Exit; End;
+  R := '';
+  Start := 1;
+  While True Do Begin
+    P := Pos(Find, Copy(S, Start, Length(S) - Start + 1));
+    If P = 0 Then Begin
+      R := R + Copy(S, Start, Length(S) - Start + 1);
+      Break;
+    End;
+    R := R + Copy(S, Start, P - 1) + Repl;
+    Start := Start + P - 1 + Length(Find);
+  End;
+  PEWReplaceAll := R;
+End;
+
+Function PEWHexStr(N : LongInt) : TString;
+Const HexD : Array[0..15] of Char =
+  ('0','1','2','3','4','5','6','7','8','9','A','B','C','D','E','F');
+Var R : TString; Neg : Boolean;
+Begin
+  If N = 0 Then Begin PEWHexStr := '0'; Exit; End;
+  Neg := N < 0;
+  If Neg Then N := -N;
+  R := '';
+  While N > 0 Do Begin
+    R := HexD[N And 15] + R;
+    N := N Shr 4;
+  End;
+  If Neg Then R := '-' + R;
+  PEWHexStr := R;
+End;
+
+{ ------------------------------------------------------------ }
 { Mini-evaluateur compile-time pour une expression d'argument  }
 { Console.WriteLine. Reconnait :                                }
 {   atom :=  STRING                                             }
@@ -12924,7 +13000,8 @@ End;
 { ------------------------------------------------------------ }
 
 Procedure PEWEvalAtom(Var V : TPEEvalVal);
-Var Tmp : TString; Itmp : LongInt; Method : TString;
+Var Tmp, UTmp : TString; Itmp, Idx : LongInt; FuncIdx : Integer;
+    ArgV : TPEEvalVal;
 Begin
   V.Kind := PEK_FAIL;
   If CurTokType = TOK_MINUS Then Begin
@@ -12939,143 +13016,189 @@ Begin
     PEWEvalExpr(V);
     If CurTokType = TOK_RPAREN Then LexNextToken
     Else Begin V.Kind := PEK_FAIL; Exit; End;
-    { Postfix optionnel : .ToString() }
-    If CurTokType = TOK_DOT Then Begin
-      LexNextToken;
-      If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then Begin
-        Method := UpCaseStr(CurTokStr);
-        LexNextToken;
-        If CurTokType = TOK_LPAREN Then Begin
-          LexNextToken;
-          If CurTokType = TOK_RPAREN Then LexNextToken
-          Else Begin V.Kind := PEK_FAIL; Exit; End;
-        End;
-        If Method = 'TOSTRING' Then Begin
-          If V.Kind = PEK_INT Then Begin
-            V.SVal := IntToDecStr(V.IVal);
-            V.Kind := PEK_STR;
-          End Else If V.Kind <> PEK_STR Then
-            V.Kind := PEK_FAIL;
-        End Else
-          V.Kind := PEK_FAIL;
-      End;
-    End;
+    PEWEvalPostfix(V);
     Exit;
   End;
   If CurTokType = TOK_STRING Then Begin
     V.Kind := PEK_STR;
     V.SVal := CurTokStr;
     LexNextToken;
+    PEWEvalPostfix(V);
     Exit;
   End;
   If CurTokType = TOK_INTEGER Then Begin
     V.Kind := PEK_INT;
     V.IVal := CurTokNum;
     LexNextToken;
+    PEWEvalPostfix(V);
     Exit;
   End;
   If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then Begin
     Tmp := CurTokStr;
+    UTmp := UpCaseStr(Tmp);
     LexNextToken;
-    { Appel de fonction utilisateur : IDENT '(' expr ')' }
     If CurTokType = TOK_LPAREN Then Begin
-      Itmp := PEWFindFunc(Tmp);
-      If Itmp >= 0 Then Begin
+      { 1) Appel de fonction utilisateur }
+      FuncIdx := PEWFindFunc(Tmp);
+      If FuncIdx >= 0 Then Begin
         LexNextToken;
-        PEWEvalExpr(V);
+        PEWEvalExpr(ArgV);
         If CurTokType = TOK_RPAREN Then LexNextToken
         Else Begin V.Kind := PEK_FAIL; Exit; End;
-        If V.Kind <> PEK_INT Then Begin V.Kind := PEK_FAIL; Exit; End;
-        If Not PEWCallFunc(Itmp, V.IVal, V) Then V.Kind := PEK_FAIL;
-        { Postfix .ToString() apres appel de fonction }
-        If (V.Kind = PEK_INT) And (CurTokType = TOK_DOT) Then Begin
-          LexNextToken;
-          If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then Begin
-            Method := UpCaseStr(CurTokStr);
-            LexNextToken;
-            If CurTokType = TOK_LPAREN Then Begin
-              LexNextToken;
-              If CurTokType = TOK_RPAREN Then LexNextToken;
-            End;
-            If Method = 'TOSTRING' Then Begin
-              V.SVal := IntToDecStr(V.IVal);
-              V.Kind := PEK_STR;
-            End;
-          End;
-        End;
+        If ArgV.Kind <> PEK_INT Then Begin V.Kind := PEK_FAIL; Exit; End;
+        If Not PEWCallFunc(FuncIdx, ArgV.IVal, V) Then V.Kind := PEK_FAIL;
+        PEWEvalPostfix(V);
         Exit;
       End;
+      { 2) Builtins VB.NET : Hex, Asc, Chr, Len }
+      If UTmp = 'HEX' Then Begin
+        LexNextToken;
+        PEWEvalExpr(ArgV);
+        If CurTokType = TOK_RPAREN Then LexNextToken
+        Else Begin V.Kind := PEK_FAIL; Exit; End;
+        If ArgV.Kind = PEK_INT Then Begin
+          V.Kind := PEK_STR; V.SVal := PEWHexStr(ArgV.IVal);
+        End;
+        PEWEvalPostfix(V);
+        Exit;
+      End;
+      If UTmp = 'ASC' Then Begin
+        LexNextToken;
+        PEWEvalExpr(ArgV);
+        If CurTokType = TOK_RPAREN Then LexNextToken
+        Else Begin V.Kind := PEK_FAIL; Exit; End;
+        If (ArgV.Kind = PEK_STR) And (Length(ArgV.SVal) >= 1) Then Begin
+          V.Kind := PEK_INT; V.IVal := Ord(ArgV.SVal[1]);
+        End;
+        PEWEvalPostfix(V);
+        Exit;
+      End;
+      If UTmp = 'CHR' Then Begin
+        LexNextToken;
+        PEWEvalExpr(ArgV);
+        If CurTokType = TOK_RPAREN Then LexNextToken
+        Else Begin V.Kind := PEK_FAIL; Exit; End;
+        If (ArgV.Kind = PEK_INT) And (ArgV.IVal >= 0) And (ArgV.IVal <= 255) Then Begin
+          V.Kind := PEK_STR; V.SVal := Chr(ArgV.IVal);
+        End;
+        PEWEvalPostfix(V);
+        Exit;
+      End;
+      If UTmp = 'LEN' Then Begin
+        LexNextToken;
+        PEWEvalExpr(ArgV);
+        If CurTokType = TOK_RPAREN Then LexNextToken
+        Else Begin V.Kind := PEK_FAIL; Exit; End;
+        If ArgV.Kind = PEK_STR Then Begin
+          V.Kind := PEK_INT; V.IVal := Length(ArgV.SVal);
+        End Else If ArgV.Kind = PEK_INT Then Begin
+          V.Kind := PEK_INT; V.IVal := Length(IntToDecStr(ArgV.IVal));
+        End;
+        PEWEvalPostfix(V);
+        Exit;
+      End;
+      { 3) Indice de tableau d'entiers : IDENT '(' expr ')' }
+      LexNextToken;
+      PEWEvalExpr(ArgV);
+      If ArgV.Kind <> PEK_INT Then Begin V.Kind := PEK_FAIL; Exit; End;
+      Idx := ArgV.IVal;
+      If CurTokType = TOK_RPAREN Then LexNextToken
+      Else Begin V.Kind := PEK_FAIL; Exit; End;
+      If PEWGetIntArr(Tmp, Idx, V.IVal) Then V.Kind := PEK_INT;
+      PEWEvalPostfix(V);
+      Exit;
     End;
-    { Indice de tableau : IDENT '(' expr ')' }
+    { Identifiant simple : charger comme String ou Integer puis postfix. }
+    If PEWGetStrVar(Tmp, V.SVal) Then V.Kind := PEK_STR
+    Else If PEWGetIntVar(Tmp, Itmp) Then Begin
+      V.Kind := PEK_INT; V.IVal := Itmp;
+    End;
+    PEWEvalPostfix(V);
+    Exit;
+  End;
+End;
+
+{ Chaine de postfix : .Method[(args)] applique sur V.            }
+Procedure PEWEvalPostfix(Var V : TPEEvalVal);
+Var Method : TString; Arg1, Arg2 : TPEEvalVal;
+    HasArg1, HasArg2 : Boolean; P : Integer;
+Begin
+  While (V.Kind <> PEK_FAIL) And (CurTokType = TOK_DOT) Do Begin
+    LexNextToken;
+    If Not ((CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD)) Then Begin
+      V.Kind := PEK_FAIL; Exit;
+    End;
+    Method := UpCaseStr(CurTokStr);
+    LexNextToken;
+    HasArg1 := False; HasArg2 := False;
+    Arg1.Kind := PEK_FAIL; Arg2.Kind := PEK_FAIL;
     If CurTokType = TOK_LPAREN Then Begin
       LexNextToken;
-      PEWEvalExpr(V);
-      If V.Kind <> PEK_INT Then Begin
-        V.Kind := PEK_FAIL;
-        Exit;
+      If CurTokType <> TOK_RPAREN Then Begin
+        PEWEvalExpr(Arg1);
+        HasArg1 := True;
+        If CurTokType = TOK_COMMA Then Begin
+          LexNextToken;
+          PEWEvalExpr(Arg2);
+          HasArg2 := True;
+        End;
       End;
-      Itmp := V.IVal;
-      V.Kind := PEK_FAIL;
       If CurTokType = TOK_RPAREN Then LexNextToken
-      Else Exit;
-      { Optionnellement suivi de '.ToString()' }
-      If CurTokType = TOK_DOT Then Begin
-        LexNextToken;
-        If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then Begin
-          Method := UpCaseStr(CurTokStr);
-          LexNextToken;
-          If CurTokType = TOK_LPAREN Then Begin
-            LexNextToken;
-            If CurTokType = TOK_RPAREN Then LexNextToken
-            Else Exit;
-          End;
-          If Method = 'TOSTRING' Then Begin
-            If PEWGetIntArr(Tmp, Itmp, V.IVal) Then Begin
-              V.Kind := PEK_STR;
-              V.SVal := IntToDecStr(V.IVal);
-            End;
-            Exit;
-          End;
-          Exit;
-        End;
-        Exit;
+      Else Begin V.Kind := PEK_FAIL; Exit; End;
+    End;
+    If Method = 'TOSTRING' Then Begin
+      If V.Kind = PEK_INT Then Begin
+        V.SVal := IntToDecStr(V.IVal); V.Kind := PEK_STR;
       End;
-      If PEWGetIntArr(Tmp, Itmp, V.IVal) Then
+    End
+    Else If Method = 'LENGTH' Then Begin
+      If V.Kind = PEK_STR Then Begin
+        V.IVal := Length(V.SVal); V.Kind := PEK_INT;
+      End Else V.Kind := PEK_FAIL;
+    End
+    Else If Method = 'TRIM' Then Begin
+      If V.Kind = PEK_STR Then V.SVal := PEWTrimAll(V.SVal)
+      Else V.Kind := PEK_FAIL;
+    End
+    Else If Method = 'TRIMSTART' Then Begin
+      If V.Kind = PEK_STR Then V.SVal := PEWTrimL(V.SVal)
+      Else V.Kind := PEK_FAIL;
+    End
+    Else If Method = 'TRIMEND' Then Begin
+      If V.Kind = PEK_STR Then V.SVal := PEWTrimR(V.SVal)
+      Else V.Kind := PEK_FAIL;
+    End
+    Else If Method = 'TOUPPER' Then Begin
+      If V.Kind = PEK_STR Then V.SVal := UpCaseStr(V.SVal)
+      Else V.Kind := PEK_FAIL;
+    End
+    Else If Method = 'TOLOWER' Then Begin
+      If V.Kind = PEK_STR Then V.SVal := PEWLowCaseStr(V.SVal)
+      Else V.Kind := PEK_FAIL;
+    End
+    Else If Method = 'SUBSTRING' Then Begin
+      If (V.Kind = PEK_STR) And HasArg1 And (Arg1.Kind = PEK_INT) Then Begin
+        If HasArg2 And (Arg2.Kind = PEK_INT) Then
+          V.SVal := Copy(V.SVal, Arg1.IVal + 1, Arg2.IVal)
+        Else
+          V.SVal := Copy(V.SVal, Arg1.IVal + 1, Length(V.SVal) - Arg1.IVal);
+      End Else V.Kind := PEK_FAIL;
+    End
+    Else If Method = 'INDEXOF' Then Begin
+      If (V.Kind = PEK_STR) And HasArg1 And (Arg1.Kind = PEK_STR) Then Begin
+        P := Pos(Arg1.SVal, V.SVal);
+        V.IVal := P - 1;
         V.Kind := PEK_INT;
-      Exit;
-    End;
-    { Methode : IDENT.IDENT '(' ')' }
-    If CurTokType = TOK_DOT Then Begin
-      LexNextToken;
-      If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then Begin
-        Method := UpCaseStr(CurTokStr);
-        LexNextToken;
-        If CurTokType = TOK_LPAREN Then Begin
-          LexNextToken;
-          If CurTokType = TOK_RPAREN Then LexNextToken
-          Else Exit; { args non geres }
-        End;
-        If Method = 'TOSTRING' Then Begin
-          If PEWGetIntVar(Tmp, Itmp) Then Begin
-            V.Kind := PEK_STR;
-            V.SVal := IntToDecStr(Itmp);
-          End Else If PEWGetStrVar(Tmp, V.SVal) Then
-            V.Kind := PEK_STR;
-        End;
-      End;
-      Exit;
-    End;
-    { Simple identifier }
-    If PEWGetStrVar(Tmp, V.SVal) Then Begin
-      V.Kind := PEK_STR;
-      Exit;
-    End;
-    If PEWGetIntVar(Tmp, Itmp) Then Begin
-      V.Kind := PEK_INT;
-      V.IVal := Itmp;
-      Exit;
-    End;
-    Exit;
+      End Else V.Kind := PEK_FAIL;
+    End
+    Else If Method = 'REPLACE' Then Begin
+      If (V.Kind = PEK_STR) And HasArg1 And HasArg2 And
+         (Arg1.Kind = PEK_STR) And (Arg2.Kind = PEK_STR) Then
+        V.SVal := PEWReplaceAll(V.SVal, Arg1.SVal, Arg2.SVal)
+      Else V.Kind := PEK_FAIL;
+    End
+    Else
+      V.Kind := PEK_FAIL;
   End;
 End;
 
