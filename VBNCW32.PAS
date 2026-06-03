@@ -1343,14 +1343,27 @@ Var
 Const
   PE_MAX_FUNCS    = 32;
   PE_MAX_FUNC_TOK = 1024;
+  PE_MAX_PARAMS   = 8;
 
 Type
-  TPEFuncEntry = Record
+  TPEParam = Record
     Name      : TString;
-    ParamName : TString;
-    Body      : Array[0..PE_MAX_FUNC_TOK-1] Of TBufTok;
-    BodyLen   : Integer;
-    IsSub     : Boolean;
+    IsRef     : Boolean;
+    IsStr     : Boolean;
+    IsOpt     : Boolean;
+    DefIVal   : LongInt;
+    DefSVal   : TString;
+    DefIsStr  : Boolean;
+  End;
+
+  TPEFuncEntry = Record
+    Name       : TString;
+    ParamName  : TString;   { = Params[0].Name (compat) }
+    Params     : Array[0..PE_MAX_PARAMS-1] Of TPEParam;
+    ParamCount : Integer;
+    Body       : Array[0..PE_MAX_FUNC_TOK-1] Of TBufTok;
+    BodyLen    : Integer;
+    IsSub      : Boolean;
   End;
 
 Var
@@ -1373,6 +1386,12 @@ Type
     Kind : TPEEvalKind;
     SVal : TString;
     IVal : LongInt;
+  End;
+
+  TPECallArgs = Record
+    Vals   : Array[0..PE_MAX_PARAMS-1] Of TPEEvalVal;
+    Idents : Array[0..PE_MAX_PARAMS-1] Of TString;
+    Count  : Integer;
   End;
 
 Var
@@ -4789,6 +4808,9 @@ Function  PEWFindFunc(Const Name : TString) : Integer; Forward;
 Function  PEWCallFunc(Idx : Integer; ArgVal : LongInt;
                       Var Ret : TPEEvalVal) : Boolean; Forward;
 Procedure PEWCallFuncByIdent(Idx : Integer; Const SrcIdent : TString); Forward;
+Procedure PEWParseParam(FIdx : Integer); Forward;
+Function  PEWCallFuncN(Idx : Integer; Var Args : TPECallArgs;
+                       Var Ret : TPEEvalVal) : Boolean; Forward;
 Procedure PEWExecBlock; Forward;
 Procedure PEWExecSelect; Forward;
 Procedure PEWSkipBlock; Forward;
@@ -7964,6 +7986,7 @@ Var
   MemberName: TString;
   SrcIdent  : TString;
   RetV      : TPEEvalVal;
+  CallArgs  : TPECallArgs;
 Begin
   { Sauter les lignes vides }
   If CurTokType = TOK_NEWLINE Then
@@ -8109,18 +8132,25 @@ Begin
       LexNextToken;
       If FIdx >= 0 Then Begin
         { Appel de Sub/Function (resultat ignore en Sub call) }
-        PEWLastFailIdent := '';
-        SrcIdent := '';
-        If CurTokType = TOK_IDENT Then
-          SrcIdent := CurTokStr;
-        PEWEvalExpr(IdxV);
+        CallArgs.Count := 0;
+        While (CurTokType <> TOK_RPAREN) And (CurTokType <> TOK_EOF) Do Begin
+          If CallArgs.Count >= PE_MAX_PARAMS Then Break;
+          CallArgs.Idents[CallArgs.Count] := '';
+          If CurTokType = TOK_IDENT Then
+            CallArgs.Idents[CallArgs.Count] := CurTokStr;
+          PEWEvalExpr(CallArgs.Vals[CallArgs.Count]);
+          Inc(CallArgs.Count);
+          If CurTokType = TOK_COMMA Then LexNextToken;
+        End;
         If CurTokType = TOK_RPAREN Then LexNextToken;
-        If IdxV.Kind = PEK_INT Then
-          PEWCallFunc(FIdx, IdxV.IVal, RetV)
-        Else If (IdxV.Kind = PEK_FAIL) And (PEWLastFailIdent <> '') Then
-          PEWCallFuncByIdent(FIdx, PEWLastFailIdent)
-        Else If (IdxV.Kind = PEK_FAIL) And (SrcIdent <> '') Then
-          PEWCallFuncByIdent(FIdx, SrcIdent);
+        { Si l'argument unique est un IDENT inconnu (UDT), utiliser  }
+        { le chemin ByIdent qui copie SrcIdent.* vers ParamName.*    }
+        If (CallArgs.Count = 1) And
+           (CallArgs.Vals[0].Kind = PEK_FAIL) And
+           (CallArgs.Idents[0] <> '') Then
+          PEWCallFuncByIdent(FIdx, CallArgs.Idents[0])
+        Else
+          PEWCallFuncN(FIdx, CallArgs, RetV);
         Exit;
       End;
       { Affectation a un element de tableau : NAME(idx) = expr }
@@ -13109,6 +13139,7 @@ End;
 Procedure PEWEvalAtom(Var V : TPEEvalVal);
 Var Tmp, UTmp : TString; Itmp, Idx : LongInt; FuncIdx : Integer;
     ArgV : TPEEvalVal;
+    CallArgs : TPECallArgs;
 Begin
   V.Kind := PEK_FAIL;
   If CurTokType = TOK_MINUS Then Begin
@@ -13149,11 +13180,19 @@ Begin
       FuncIdx := PEWFindFunc(Tmp);
       If FuncIdx >= 0 Then Begin
         LexNextToken;
-        PEWEvalExpr(ArgV);
+        CallArgs.Count := 0;
+        While (CurTokType <> TOK_RPAREN) And (CurTokType <> TOK_EOF) Do Begin
+          If CallArgs.Count >= PE_MAX_PARAMS Then Begin V.Kind := PEK_FAIL; Exit; End;
+          CallArgs.Idents[CallArgs.Count] := '';
+          If CurTokType = TOK_IDENT Then
+            CallArgs.Idents[CallArgs.Count] := CurTokStr;
+          PEWEvalExpr(CallArgs.Vals[CallArgs.Count]);
+          Inc(CallArgs.Count);
+          If CurTokType = TOK_COMMA Then LexNextToken;
+        End;
         If CurTokType = TOK_RPAREN Then LexNextToken
         Else Begin V.Kind := PEK_FAIL; Exit; End;
-        If ArgV.Kind <> PEK_INT Then Begin V.Kind := PEK_FAIL; Exit; End;
-        If Not PEWCallFunc(FuncIdx, ArgV.IVal, V) Then V.Kind := PEK_FAIL;
+        If Not PEWCallFuncN(FuncIdx, CallArgs, V) Then V.Kind := PEK_FAIL;
         PEWEvalPostfix(V);
         Exit;
       End;
@@ -13451,12 +13490,89 @@ Begin
     End;
 End;
 
+{ ------------------------------------------------------------ }
+{ PEWParseParam : parser un parametre VB.NET                   }
+{   [ByVal|ByRef|Optional] NAME [As Type] [= default]          }
+{ Le token courant doit etre le premier token du parametre.    }
+{ A la sortie, le token courant est ',' ou ')'.                }
+{ ------------------------------------------------------------ }
+Procedure PEWParseParam(FIdx : Integer);
+Var
+  P : Integer;
+  IsRef, IsOpt, IsStr, Negate : Boolean;
+  TypeUp : TString;
+  DefV : TPEEvalVal;
+Begin
+  IsRef := False; IsOpt := False; IsStr := False;
+  { Modificateurs }
+  While (CurTokType = TOK_KEYWORD) And
+        ((CurTokNum = KW_BYVAL) Or (CurTokNum = KW_BYREF) Or
+         (CurTokNum = KW_OPTIONAL)) Do Begin
+    If CurTokNum = KW_BYREF Then IsRef := True;
+    If CurTokNum = KW_OPTIONAL Then IsOpt := True;
+    LexNextToken;
+  End;
+  If PEWFuncTab[FIdx].ParamCount >= PE_MAX_PARAMS Then Begin
+    { Saturation : avancer jusqu'a virgule ou ) sans rien stocker. }
+    While (CurTokType <> TOK_COMMA) And (CurTokType <> TOK_RPAREN) And
+          (CurTokType <> TOK_EOF) Do
+      LexNextToken;
+    Exit;
+  End;
+  P := PEWFuncTab[FIdx].ParamCount;
+  PEWFuncTab[FIdx].Params[P].Name     := '';
+  PEWFuncTab[FIdx].Params[P].IsRef    := IsRef;
+  PEWFuncTab[FIdx].Params[P].IsStr    := False;
+  PEWFuncTab[FIdx].Params[P].IsOpt    := IsOpt;
+  PEWFuncTab[FIdx].Params[P].DefIVal  := 0;
+  PEWFuncTab[FIdx].Params[P].DefSVal  := '';
+  PEWFuncTab[FIdx].Params[P].DefIsStr := False;
+  { Nom }
+  If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then Begin
+    PEWFuncTab[FIdx].Params[P].Name := CurTokStr;
+    LexNextToken;
+  End;
+  { 'As Type' }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_AS) Then Begin
+    LexNextToken;
+    If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then Begin
+      TypeUp := UpCaseStr(CurTokStr);
+      If TypeUp = 'STRING' Then IsStr := True;
+      LexNextToken;
+    End;
+  End;
+  PEWFuncTab[FIdx].Params[P].IsStr := IsStr;
+  { Defaut : '= literal' }
+  If CurTokType = TOK_EQ Then Begin
+    LexNextToken;
+    Negate := False;
+    If CurTokType = TOK_MINUS Then Begin Negate := True; LexNextToken; End;
+    If CurTokType = TOK_INTEGER Then Begin
+      PEWFuncTab[FIdx].Params[P].DefIVal := CurTokNum;
+      If Negate Then PEWFuncTab[FIdx].Params[P].DefIVal :=
+                       -PEWFuncTab[FIdx].Params[P].DefIVal;
+      PEWFuncTab[FIdx].Params[P].DefIsStr := False;
+      LexNextToken;
+    End Else If CurTokType = TOK_STRING Then Begin
+      PEWFuncTab[FIdx].Params[P].DefSVal := CurTokStr;
+      PEWFuncTab[FIdx].Params[P].DefIsStr := True;
+      LexNextToken;
+    End Else Begin
+      { Ignorer expression complexe : avancer jusqu'a , ou ) }
+      DefV.Kind := PEK_FAIL;
+      While (CurTokType <> TOK_COMMA) And (CurTokType <> TOK_RPAREN) And
+            (CurTokType <> TOK_EOF) Do
+        LexNextToken;
+    End;
+  End;
+  Inc(PEWFuncTab[FIdx].ParamCount);
+End;
+
 Procedure PEWCaptureFunction;
 Var
   Idx, ParamSeen, EndDepth : Integer;
   PrevTok : Integer;
-Begin
-  { Token courant = KW_FUNCTION. Consommer. }
+Begin  { Token courant = KW_FUNCTION. Consommer. }
   LexNextToken;
   If PEWFuncCount >= PE_MAX_FUNCS Then Begin
     { Table pleine : avancer jusqu'a End Function et abandonner. }
@@ -13478,6 +13594,7 @@ Begin
   PEWFuncTab[Idx].BodyLen   := 0;
   PEWFuncTab[Idx].Name      := '';
   PEWFuncTab[Idx].ParamName := '';
+  PEWFuncTab[Idx].ParamCount := 0;
   PEWFuncTab[Idx].IsSub     := False;
 
   { Nom de la fonction. }
@@ -13486,24 +13603,19 @@ Begin
     LexNextToken;
   End;
 
-  { Parametres : ( [ByVal|ByRef] NAME [As Type] [, ...] ) }
+  { Parametres : ( [ByVal|ByRef|Optional] NAME [As Type] [= default] [, ...] ) }
   ParamSeen := 0;
   If CurTokType = TOK_LPAREN Then Begin
     LexNextToken;
     While (CurTokType <> TOK_RPAREN) And (CurTokType <> TOK_EOF) Do Begin
-      If (CurTokType = TOK_KEYWORD) And
-         ((CurTokNum = KW_BYVAL) Or (CurTokNum = KW_BYREF)) Then
-        LexNextToken
-      Else If CurTokType = TOK_IDENT Then Begin
-        If ParamSeen = 0 Then PEWFuncTab[Idx].ParamName := CurTokStr;
-        Inc(ParamSeen);
-        LexNextToken;
-      End
-      Else
-        LexNextToken;
+      PEWParseParam(Idx);
+      Inc(ParamSeen);
+      If CurTokType = TOK_COMMA Then LexNextToken;
     End;
     If CurTokType = TOK_RPAREN Then LexNextToken;
   End;
+  If PEWFuncTab[Idx].ParamCount > 0 Then
+    PEWFuncTab[Idx].ParamName := PEWFuncTab[Idx].Params[0].Name;
 
   { As Type de retour : ignorer jusqu'a fin de ligne ou debut du corps. }
   While (CurTokType <> TOK_NEWLINE) And (CurTokType <> TOK_EOF) Do
@@ -13574,25 +13686,21 @@ Begin
   PEWFuncTab[Idx].BodyLen   := 0;
   PEWFuncTab[Idx].Name      := SubName;
   PEWFuncTab[Idx].ParamName := '';
+  PEWFuncTab[Idx].ParamCount := 0;
   PEWFuncTab[Idx].IsSub     := True;
 
   ParamSeen := 0;
   If CurTokType = TOK_LPAREN Then Begin
     LexNextToken;
     While (CurTokType <> TOK_RPAREN) And (CurTokType <> TOK_EOF) Do Begin
-      If (CurTokType = TOK_KEYWORD) And
-         ((CurTokNum = KW_BYVAL) Or (CurTokNum = KW_BYREF)) Then
-        LexNextToken
-      Else If CurTokType = TOK_IDENT Then Begin
-        If ParamSeen = 0 Then PEWFuncTab[Idx].ParamName := CurTokStr;
-        Inc(ParamSeen);
-        LexNextToken;
-      End
-      Else
-        LexNextToken;
+      PEWParseParam(Idx);
+      Inc(ParamSeen);
+      If CurTokType = TOK_COMMA Then LexNextToken;
     End;
     If CurTokType = TOK_RPAREN Then LexNextToken;
   End;
+  If PEWFuncTab[Idx].ParamCount > 0 Then
+    PEWFuncTab[Idx].ParamName := PEWFuncTab[Idx].Params[0].Name;
 
   While (CurTokType <> TOK_NEWLINE) And (CurTokType <> TOK_EOF) Do
     LexNextToken;
@@ -13954,6 +14062,143 @@ Begin
   PEWFuncReturn.SVal := SaveReturnSVal;
   If HadParam Then
     PEWSetIntVar(PEWFuncTab[Idx].ParamName, SaveParamVal);
+End;
+
+{ ------------------------------------------------------------ }
+{ PEWCallFuncN : appel multi-arguments avec defauts et ByRef.  }
+{ Args.Count = nombre d'arguments passes par l'appelant.       }
+{ Args.Vals[i] = valeur evaluee (ou PEK_FAIL si manquant).     }
+{ Args.Idents[i] = nom de l'identificateur source (pour ByRef) }
+{ ou '' si l'argument n'est pas un IDENT pur.                  }
+{ ------------------------------------------------------------ }
+Function PEWCallFuncN(Idx : Integer; Var Args : TPECallArgs;
+                      Var Ret : TPEEvalVal) : Boolean;
+Var
+  SaveFuncReplay  : Boolean;
+  SaveFuncIdx     : Integer;
+  SaveFuncPos     : Integer;
+  SaveLoopReplay  : Boolean;
+  SaveLoopPos     : Integer;
+  SaveLoopLen     : Integer;
+  SaveTokType     : Integer;
+  SaveTokNum      : LongInt;
+  SaveTokStr      : TString;
+  SaveReturned    : Boolean;
+  SaveReturnKind  : Integer;
+  SaveReturnIVal  : LongInt;
+  SaveReturnSVal  : TString;
+  SaveIVal        : Array[0..PE_MAX_PARAMS-1] Of LongInt;
+  SaveSVal        : Array[0..PE_MAX_PARAMS-1] Of TString;
+  SaveHasI        : Array[0..PE_MAX_PARAMS-1] Of Boolean;
+  SaveHasS        : Array[0..PE_MAX_PARAMS-1] Of Boolean;
+  I               : Integer;
+  PName           : TString;
+  AV              : TPEEvalVal;
+Begin
+  PEWCallFuncN := False;
+  Ret.Kind := PEK_FAIL;
+  If (Idx < 0) Or (Idx >= PEWFuncCount) Then Exit;
+  If PEWFuncTab[Idx].BodyLen <= 0 Then Exit;
+
+  SaveFuncReplay := PEWFuncReplay;
+  SaveFuncIdx    := PEWFuncReplayIdx;
+  SaveFuncPos    := PEWFuncReplayPos;
+  SaveLoopReplay := PEWLoopReplay;
+  SaveLoopPos    := PEWLoopBufPos;
+  SaveLoopLen    := PEWLoopBufLen;
+  SaveTokType    := CurTokType;
+  SaveTokNum     := CurTokNum;
+  SaveTokStr     := CurTokStr;
+  SaveReturned   := PEWFuncReturned;
+  SaveReturnKind := PEWFuncReturn.Kind;
+  SaveReturnIVal := PEWFuncReturn.IVal;
+  SaveReturnSVal := PEWFuncReturn.SVal;
+
+  { Sauvegarder l'etat des variables des parametres }
+  For I := 0 To PEWFuncTab[Idx].ParamCount - 1 Do Begin
+    PName := PEWFuncTab[Idx].Params[I].Name;
+    SaveHasI[I] := PEWGetIntVar(PName, SaveIVal[I]);
+    SaveHasS[I] := PEWGetStrVar(PName, SaveSVal[I]);
+  End;
+
+  { Lier les parametres }
+  For I := 0 To PEWFuncTab[Idx].ParamCount - 1 Do Begin
+    PName := PEWFuncTab[Idx].Params[I].Name;
+    AV.Kind := PEK_FAIL;
+    If I < Args.Count Then AV := Args.Vals[I];
+    { Defaut si manquant ou FAIL et Optional }
+    If (AV.Kind = PEK_FAIL) And PEWFuncTab[Idx].Params[I].IsOpt Then Begin
+      If PEWFuncTab[Idx].Params[I].DefIsStr Then Begin
+        AV.Kind := PEK_STR;
+        AV.SVal := PEWFuncTab[Idx].Params[I].DefSVal;
+      End Else Begin
+        AV.Kind := PEK_INT;
+        AV.IVal := PEWFuncTab[Idx].Params[I].DefIVal;
+      End;
+    End;
+    If AV.Kind = PEK_INT Then PEWSetIntVar(PName, AV.IVal)
+    Else If AV.Kind = PEK_STR Then PEWSetStrVar(PName, AV.SVal);
+  End;
+
+  PEWFuncReplay    := True;
+  PEWFuncReplayIdx := Idx;
+  PEWFuncReplayPos := 0;
+  PEWLoopReplay    := False;
+  PEWFuncReturned  := False;
+  PEWFuncReturn.Kind := 0;
+
+  LexNextToken;
+  PEWExecBlock;
+
+  If PEWFuncReturned Then Begin
+    If PEWFuncReturn.Kind = 1 Then Begin
+      Ret.Kind := PEK_INT;
+      Ret.IVal := PEWFuncReturn.IVal;
+      PEWCallFuncN := True;
+    End Else If PEWFuncReturn.Kind = 2 Then Begin
+      Ret.Kind := PEK_STR;
+      Ret.SVal := PEWFuncReturn.SVal;
+      PEWCallFuncN := True;
+    End;
+  End Else If PEWFuncTab[Idx].IsSub Then
+    PEWCallFuncN := True;
+
+  { Writeback ByRef avant restauration des params }
+  For I := 0 To PEWFuncTab[Idx].ParamCount - 1 Do Begin
+    If PEWFuncTab[Idx].Params[I].IsRef And (I < Args.Count) And
+       (Args.Idents[I] <> '') Then Begin
+      PName := PEWFuncTab[Idx].Params[I].Name;
+      If PEWFuncTab[Idx].Params[I].IsStr Then Begin
+        If PEWGetStrVar(PName, AV.SVal) Then
+          PEWSetStrVar(Args.Idents[I], AV.SVal);
+      End Else Begin
+        If PEWGetIntVar(PName, AV.IVal) Then
+          PEWSetIntVar(Args.Idents[I], AV.IVal);
+      End;
+    End;
+  End;
+
+  { Restaurer l'etat global. }
+  PEWFuncReplay      := SaveFuncReplay;
+  PEWFuncReplayIdx   := SaveFuncIdx;
+  PEWFuncReplayPos   := SaveFuncPos;
+  PEWLoopReplay      := SaveLoopReplay;
+  PEWLoopBufPos      := SaveLoopPos;
+  PEWLoopBufLen      := SaveLoopLen;
+  CurTokType         := SaveTokType;
+  CurTokNum          := SaveTokNum;
+  CurTokStr          := SaveTokStr;
+  PEWFuncReturned    := SaveReturned;
+  PEWFuncReturn.Kind := SaveReturnKind;
+  PEWFuncReturn.IVal := SaveReturnIVal;
+  PEWFuncReturn.SVal := SaveReturnSVal;
+
+  { Restaurer les variables des parametres (sauf ByRef deja propages) }
+  For I := 0 To PEWFuncTab[Idx].ParamCount - 1 Do Begin
+    PName := PEWFuncTab[Idx].Params[I].Name;
+    If SaveHasI[I] Then PEWSetIntVar(PName, SaveIVal[I]);
+    If SaveHasS[I] Then PEWSetStrVar(PName, SaveSVal[I]);
+  End;
 End;
 
 { ------------------------------------------------------------ }
