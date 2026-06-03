@@ -15374,6 +15374,12 @@ Const
   IK_MOV_MEMREG_REG     = 45;   { MOV [r32], r32  (R1=mem,R2=src)}
   IK_MOV_REG_MEMREG     = 46;   { MOV r32, [r32]  (R1=dst,R2=mem)}
 
+  { ----- STRINGS : ops bytes pour helpers de chaines ---------- }
+  IK_SHR_REG_IMM        = 47;   { SHR r32, imm8                  }
+  IK_LODSB              = 48;   { AC                             }
+  IK_STOSB              = 49;   { AA                             }
+  IK_REP_MOVSB          = 50;   { F3 A4                          }
+
   { Sous-codes ALU (champ reg du ModR/M pour formes /r) }
   ALU_ADD = 0;
   ALU_OR  = 1;
@@ -15861,6 +15867,18 @@ Begin AsmAddInstr(IK_DEC_REG, R, 0, 0, -1); End;
 Procedure AsmShlRegImm(R : Integer; V : LongInt);
 Begin AsmAddInstr(IK_SHL_REG_IMM, R, 0, V, -1); End;
 
+Procedure AsmShrRegImm(R : Integer; V : LongInt);
+Begin AsmAddInstr(IK_SHR_REG_IMM, R, 0, V, -1); End;
+
+Procedure AsmLodsb;
+Begin AsmAddInstr(IK_LODSB, 0, 0, 0, -1); End;
+
+Procedure AsmStosb;
+Begin AsmAddInstr(IK_STOSB, 0, 0, 0, -1); End;
+
+Procedure AsmRepMovsb;
+Begin AsmAddInstr(IK_REP_MOVSB, 0, 0, 0, -1); End;
+
 Procedure AsmMovRegStrRVA(R : Integer; LitIdx : Integer);
 Begin AsmAddInstr(IK_MOV_REG_STRRVA, R, 0, LitIdx, -1); End;
 
@@ -15930,6 +15948,11 @@ Begin
     IK_MOV_MEMABS_IMM_LBL : AsmInstrSize := 10;
     IK_MOV_MEMREG_REG  : AsmInstrSize := 2;
     IK_MOV_REG_MEMREG  : AsmInstrSize := 2;
+    IK_SHR_REG_IMM     : If I.Imm = 1 Then AsmInstrSize := 2
+                         Else AsmInstrSize := 3;
+    IK_LODSB           : AsmInstrSize := 1;
+    IK_STOSB           : AsmInstrSize := 1;
+    IK_REP_MOVSB       : AsmInstrSize := 2;
   Else
     AsmInstrSize := 0;
   End;
@@ -16353,6 +16376,25 @@ Begin
           AsmEmitByte(((AsmInstrs[I].R1 And 7) Shl 3) Or
                       (AsmInstrs[I].R2 And 7));
         End;
+
+      IK_SHR_REG_IMM:
+        Begin
+          If AsmInstrs[I].Imm = 1 Then
+          Begin
+            AsmEmitByte($D1);
+            AsmEmitByte($E8 Or (AsmInstrs[I].R1 And 7));
+          End
+          Else
+          Begin
+            AsmEmitByte($C1);
+            AsmEmitByte($E8 Or (AsmInstrs[I].R1 And 7));
+            AsmEmitByte(AsmInstrs[I].Imm And $FF);
+          End;
+        End;
+
+      IK_LODSB     : AsmEmitByte($AC);
+      IK_STOSB     : AsmEmitByte($AA);
+      IK_REP_MOVSB : Begin AsmEmitByte($F3); AsmEmitByte($A4); End;
     End;
   End;
 End;
@@ -16439,6 +16481,11 @@ Var
   { Palier J : etat On Error de la proc courante                  }
   CGCErrHandler    : TString;       { '' = aucun, sinon nom du label }
   CGCErrResumeNext : Boolean;       { On Error Resume Next actif    }
+  { STRINGS : flag positionne par CGCParsePrim/Expr pour signaler   }
+  { qu une expression a produit un ptr+len (EAX/EDX) au lieu d un  }
+  { Long. Reset par chaque CGCParseExpr a False, mis a True pour  }
+  { litteraux chaine, variables String, et fonctions de chaines.  }
+  CGCExprIsString  : Boolean;
 
 { ------------------------------------------------------------ }
 { Helpers locaux/labels                                         }
@@ -16655,7 +16702,9 @@ Var
   Nm       : TString;
   PI       : Integer;
   AIdx     : Integer;
+  SLit     : Integer;
 Begin
+  CGCExprIsString := False;
   If (CurTokType = TOK_INTEGER) Or (CurTokType = TOK_LONG) Then
   Begin
     AsmMovRegImm(R_EAX, CurTokNum);
@@ -16663,7 +16712,10 @@ Begin
   End
   Else If CurTokType = TOK_STRING Then
   Begin
-    AsmMovRegStrRVA(R_EAX, StrAddLit(CurTokStr));
+    SLit := StrAddLit(CurTokStr);
+    AsmMovRegStrRVA(R_EAX, SLit);
+    AsmMovRegImm(R_EDX, Length(StrLits[SLit].Text));
+    CGCExprIsString := True;
     LexNextToken;
   End
   Else If CurTokType = TOK_LPAREN Then
@@ -16730,6 +16782,230 @@ Begin
                  ItoS(CurTokLine) + ')');
     LexNextToken;
   End
+  Else If CGCIsKW(KW_LEN) Or CGCIsKW(KW_LEN2) Then
+  Begin
+    LexNextToken;
+    If CurTokType <> TOK_LPAREN Then
+      FatalError('STR: "(" attendue apres Len');
+    LexNextToken;
+    CGCParseExpr;
+    If Not CGCExprIsString Then
+      FatalError('STR: argument String attendu pour Len');
+    AsmMovRegReg(R_EAX, R_EDX);
+    If CurTokType <> TOK_RPAREN Then
+      FatalError('STR: ")" attendue apres Len');
+    LexNextToken;
+    CGCExprIsString := False;
+  End
+  Else If CGCIsKW(KW_ASC) Then
+  Begin
+    LexNextToken;
+    If CurTokType <> TOK_LPAREN Then FatalError('STR: "(" attendue apres Asc');
+    LexNextToken;
+    CGCParseExpr;
+    If Not CGCExprIsString Then FatalError('STR: arg String attendu (Asc)');
+    AsmPushReg(R_EDX);
+    AsmPushReg(R_EAX);
+    AsmCallLbl('__str_asc');
+    AsmAddEspImm(8);
+    If CurTokType <> TOK_RPAREN Then FatalError('STR: ")" attendue (Asc)');
+    LexNextToken;
+    CGCExprIsString := False;
+  End
+  Else If CGCIsKW(KW_CHR) Then
+  Begin
+    LexNextToken;
+    If CurTokType <> TOK_LPAREN Then FatalError('STR: "(" attendue apres Chr');
+    LexNextToken;
+    CGCParseExpr;
+    AsmPushReg(R_EAX);
+    AsmCallLbl('__str_chr');
+    AsmAddEspImm(4);
+    If CurTokType <> TOK_RPAREN Then FatalError('STR: ")" attendue (Chr)');
+    LexNextToken;
+    CGCExprIsString := True;
+  End
+  Else If CGCIsKW(KW_HEX) Then
+  Begin
+    LexNextToken;
+    If CurTokType <> TOK_LPAREN Then FatalError('STR: "(" attendue apres Hex');
+    LexNextToken;
+    CGCParseExpr;
+    AsmPushReg(R_EAX);
+    AsmCallLbl('__str_hex');
+    AsmAddEspImm(4);
+    If CurTokType <> TOK_RPAREN Then FatalError('STR: ")" attendue (Hex)');
+    LexNextToken;
+    CGCExprIsString := True;
+  End
+  Else If CGCIsKW(KW_OCT) Then
+  Begin
+    LexNextToken;
+    If CurTokType <> TOK_LPAREN Then FatalError('STR: "(" attendue apres Oct');
+    LexNextToken;
+    CGCParseExpr;
+    AsmPushReg(R_EAX);
+    AsmCallLbl('__str_oct');
+    AsmAddEspImm(4);
+    If CurTokType <> TOK_RPAREN Then FatalError('STR: ")" attendue (Oct)');
+    LexNextToken;
+    CGCExprIsString := True;
+  End
+  Else If CGCIsKW(KW_TRIM) Or CGCIsKW(KW_LTRIM) Or CGCIsKW(KW_RTRIM) Or
+          CGCIsKW(KW_UCASE) Or CGCIsKW(KW_LCASE) Then
+  Begin
+    Nm := UpCaseStr(CurTokStr);
+    LexNextToken;
+    If CurTokType <> TOK_LPAREN Then FatalError('STR: "(" attendue');
+    LexNextToken;
+    CGCParseExpr;
+    If Not CGCExprIsString Then FatalError('STR: arg String attendu');
+    AsmPushReg(R_EDX);
+    AsmPushReg(R_EAX);
+    If Nm = 'TRIM' Then AsmCallLbl('__str_trim')
+    Else If Nm = 'LTRIM' Then AsmCallLbl('__str_ltrim')
+    Else If Nm = 'RTRIM' Then AsmCallLbl('__str_rtrim')
+    Else If Nm = 'UCASE' Then AsmCallLbl('__str_ucase')
+    Else AsmCallLbl('__str_lcase');
+    AsmAddEspImm(8);
+    If CurTokType <> TOK_RPAREN Then FatalError('STR: ")" attendue');
+    LexNextToken;
+    CGCExprIsString := True;
+  End
+  Else If CGCIsKW(KW_LEFT) Or CGCIsKW(KW_RIGHT) Then
+  Begin
+    Nm := UpCaseStr(CurTokStr);
+    LexNextToken;
+    If CurTokType <> TOK_LPAREN Then FatalError('STR: "(" attendue');
+    LexNextToken;
+    CGCParseExpr;
+    If Not CGCExprIsString Then FatalError('STR: arg String attendu');
+    AsmPushReg(R_EDX);
+    AsmPushReg(R_EAX);
+    If CurTokType <> TOK_COMMA Then FatalError('STR: "," attendue');
+    LexNextToken;
+    CGCParseExpr;
+    AsmMovRegReg(R_ECX, R_EAX);
+    AsmPopReg(R_EAX);
+    AsmPopReg(R_EDX);
+    AsmPushReg(R_ECX);
+    AsmPushReg(R_EDX);
+    AsmPushReg(R_EAX);
+    If Nm = 'LEFT' Then AsmCallLbl('__str_left')
+    Else AsmCallLbl('__str_right');
+    AsmAddEspImm(12);
+    If CurTokType <> TOK_RPAREN Then FatalError('STR: ")" attendue');
+    LexNextToken;
+    CGCExprIsString := True;
+  End
+  Else If CGCIsKW(KW_MID) Then
+  Begin
+    LexNextToken;
+    If CurTokType <> TOK_LPAREN Then FatalError('STR: "(" attendue');
+    LexNextToken;
+    CGCParseExpr;
+    If Not CGCExprIsString Then FatalError('STR: arg String attendu (Mid)');
+    AsmPushReg(R_EDX);                  { l (top+4) }
+    AsmPushReg(R_EAX);                  { p (top+0) }
+    If CurTokType <> TOK_COMMA Then FatalError('STR: "," attendue');
+    LexNextToken;
+    CGCParseExpr;                       { start -> EAX }
+    AsmPushReg(R_EAX);                  { start (top+0) }
+    If CurTokType = TOK_COMMA Then
+    Begin
+      LexNextToken;
+      CGCParseExpr;                     { n -> EAX }
+    End
+    Else
+      AsmMovRegImm(R_EAX, -1);
+    AsmPushReg(R_EAX);                  { n (top+0) }
+    { Pile actuelle (de top vers bottom) : n, start, p, l. }
+    { __str_mid attend (RTL stack order) : p, l, start, n  }
+    { soit [esp+4]=p, [esp+8]=l, [esp+12]=start, [esp+16]=n. }
+    { On reorganise via pop/push.                            }
+    AsmPopReg(R_EAX);                   { n }
+    AsmPopReg(R_ECX);                   { start }
+    AsmPopReg(R_EDX);                   { p }
+    AsmPopReg(R_EBX);                   { l }
+    AsmPushReg(R_EAX);                  { n }
+    AsmPushReg(R_ECX);                  { start }
+    AsmPushReg(R_EBX);                  { l }
+    AsmPushReg(R_EDX);                  { p }
+    AsmCallLbl('__str_mid');
+    AsmAddEspImm(16);
+    If CurTokType <> TOK_RPAREN Then FatalError('STR: ")" attendue (Mid)');
+    LexNextToken;
+    CGCExprIsString := True;
+  End
+  Else If CGCIsKW(KW_INSTR) Then
+  Begin
+    LexNextToken;
+    If CurTokType <> TOK_LPAREN Then FatalError('STR: "(" attendue');
+    LexNextToken;
+    CGCParseExpr;
+    If Not CGCExprIsString Then FatalError('STR: arg String attendu (InStr)');
+    AsmPushReg(R_EDX);
+    AsmPushReg(R_EAX);
+    If CurTokType <> TOK_COMMA Then FatalError('STR: "," attendue');
+    LexNextToken;
+    CGCParseExpr;
+    If Not CGCExprIsString Then FatalError('STR: arg String attendu (InStr)');
+    { Pile : top -> p1, l1 ; EAX=p2, EDX=l2.                 }
+    AsmMovRegReg(R_ECX, R_EAX);                { p2 }
+    AsmMovRegReg(R_EBX, R_EDX);                { l2 }
+    AsmPopReg(R_EAX);                          { p1 }
+    AsmPopReg(R_EDX);                          { l1 }
+    AsmPushReg(R_EBX);                         { l2 }
+    AsmPushReg(R_ECX);                         { p2 }
+    AsmPushReg(R_EDX);                         { l1 }
+    AsmPushReg(R_EAX);                         { p1 }
+    AsmCallLbl('__str_instr');
+    AsmAddEspImm(16);
+    If CurTokType <> TOK_RPAREN Then FatalError('STR: ")" attendue (InStr)');
+    LexNextToken;
+    CGCExprIsString := False;
+  End
+  Else If CGCIsKW(KW_REPLACE) Then
+  Begin
+    LexNextToken;
+    If CurTokType <> TOK_LPAREN Then FatalError('STR: "(" attendue');
+    LexNextToken;
+    CGCParseExpr;          { s }
+    If Not CGCExprIsString Then FatalError('STR: arg String (Replace)');
+    AsmPushReg(R_EDX);
+    AsmPushReg(R_EAX);
+    If CurTokType <> TOK_COMMA Then FatalError('STR: "," attendue');
+    LexNextToken;
+    CGCParseExpr;          { find }
+    If Not CGCExprIsString Then FatalError('STR: arg String (Replace)');
+    AsmPushReg(R_EDX);
+    AsmPushReg(R_EAX);
+    If CurTokType <> TOK_COMMA Then FatalError('STR: "," attendue');
+    LexNextToken;
+    CGCParseExpr;          { repl }
+    If Not CGCExprIsString Then FatalError('STR: arg String (Replace)');
+    AsmPushReg(R_EDX);
+    AsmPushReg(R_EAX);
+    { Pile actuelle : top -> p_repl, l_repl, p_find, l_find, p_s, l_s. }
+    { __str_replace attend RTL : p_s, l_s, p_find, l_find, p_repl, l_repl. }
+    AsmPopReg(R_EBX);          { p_repl }
+    AsmPopReg(R_ECX);          { l_repl }
+    AsmPopReg(R_EAX);          { p_find }
+    AsmPopReg(R_EDX);          { l_find }
+    AsmPopReg(R_ESI);          { p_s }
+    AsmPopReg(R_EDI);          { l_s }
+    AsmPushReg(R_ECX);         { l_repl }
+    AsmPushReg(R_EBX);         { p_repl }
+    AsmPushReg(R_EDX);         { l_find }
+    AsmPushReg(R_EAX);         { p_find }
+    AsmPushReg(R_EDI);         { l_s }
+    AsmPushReg(R_ESI);         { p_s }
+    AsmCallLbl('__str_replace');
+    AsmAddEspImm(24);
+    If CurTokType <> TOK_RPAREN Then FatalError('STR: ")" attendue (Replace)');
+    LexNextToken;
+    CGCExprIsString := True;
+  End
   Else If CurTokType = TOK_IDENT Then
   Begin
     Nm := CurTokStr;
@@ -16772,7 +17048,15 @@ Begin
     Idx := CGCFindLocal(Nm);
     If Idx >= 0 Then
     Begin
-      AsmMovRegMemBP(R_EAX, CGCLocals[Idx].Ofs);
+      If CGCLocals[Idx].Kind = 1 Then
+      Begin
+        { Variable String : EAX = ptr (bp+ofs+4), EDX = len ([bp+ofs]). }
+        AsmMovRegMemBP(R_EDX, CGCLocals[Idx].Ofs);
+        AsmLeaRegMemBP(R_EAX, CGCLocals[Idx].Ofs + 4);
+        CGCExprIsString := True;
+      End
+      Else
+        AsmMovRegMemBP(R_EAX, CGCLocals[Idx].Ofs);
       LexNextToken;
     End
     Else
@@ -16989,7 +17273,13 @@ Begin
     (CurTokType = TOK_STRING)  Or (CurTokType = TOK_LPAREN) Or
     (CurTokType = TOK_IDENT)   Or (CurTokType = TOK_MINUS)  Or
     CGCIsKW(KW_NOT) Or CGCIsKW(KW_CSTR) Or CGCIsKW(KW_ERR) Or
-    CGCIsKW(KW_FREEFILE) Or CGCIsKW(KW_EOF2);
+    CGCIsKW(KW_FREEFILE) Or CGCIsKW(KW_EOF2) Or
+    CGCIsKW(KW_LEN) Or CGCIsKW(KW_LEN2) Or CGCIsKW(KW_ASC) Or
+    CGCIsKW(KW_CHR) Or CGCIsKW(KW_HEX) Or CGCIsKW(KW_OCT) Or
+    CGCIsKW(KW_TRIM) Or CGCIsKW(KW_LTRIM) Or CGCIsKW(KW_RTRIM) Or
+    CGCIsKW(KW_UCASE) Or CGCIsKW(KW_LCASE) Or
+    CGCIsKW(KW_LEFT) Or CGCIsKW(KW_RIGHT) Or CGCIsKW(KW_MID) Or
+    CGCIsKW(KW_INSTR) Or CGCIsKW(KW_REPLACE);
 End;
 
 Procedure CGCParseStatementBlock(Const StopKW1, StopKW2 : Integer);
@@ -17180,65 +17470,41 @@ Procedure CGCParseAssign(Const Nm : TString);
 Var
   Idx, DOf : Integer;
   Lit, Len, DwCount, SrcLI : Integer;
-  L        : TString;
+  L, L2    : TString;
 Begin
   { CurTok devrait etre "=" }
   If CurTokType <> TOK_EQ Then
     FatalError('Palier C: "=" attendu (ligne ' + ItoS(CurTokLine) + ')');
   LexNextToken;
-  { FILEIO : assignation a une variable String locale (Kind=1) :   }
-  { gerer specialement le RHS = litteral chaine ou autre String.   }
+  { STR : assignation a une variable String locale (Kind=1).        }
+  { Toute expression String (litteral, variable, fonction Trim/...)  }
+  { evalue EAX=ptr, EDX=len. On stocke len, puis on copie min(len,256)}
+  { octets via REP MOVSB.                                            }
   Idx := CGCFindLocal(Nm);
   If (Idx >= 0) And (CGCLocals[Idx].Kind = 1) Then
   Begin
-    If CurTokType = TOK_STRING Then
+    CGCParseExpr;
+    If CGCExprIsString Then
     Begin
-      Lit := StrAddLit(CurTokStr);
-      Len := Length(CurTokStr);
-      LexNextToken;
-      AsmMovRegImm(R_EAX, Len);
-      AsmMovMemBPReg(CGCLocals[Idx].Ofs, R_EAX);
-      DwCount := (Len + 3) Div 4;
-      If DwCount > 0 Then
-      Begin
-        AsmMovRegStrRVA(R_ESI, Lit);
-        AsmLeaRegMemBP(R_EDI, CGCLocals[Idx].Ofs + 4);
-        AsmMovRegImm(R_ECX, DwCount);
-        L := CGCNewLabel('saL');
-        AsmLabel(L);
-        AsmMovRegMemReg(R_EAX, R_ESI);
-        AsmMovMemRegReg(R_EDI, R_EAX);
-        AsmAddRegImm(R_ESI, 4);
-        AsmAddRegImm(R_EDI, 4);
-        AsmDecReg(R_ECX);
-        AsmJcc(CC_NE, L);
-      End;
+      AsmMovMemBPReg(CGCLocals[Idx].Ofs, R_EDX);
+      AsmMovRegReg(R_ESI, R_EAX);
+      AsmLeaRegMemBP(R_EDI, CGCLocals[Idx].Ofs + 4);
+      AsmMovRegReg(R_ECX, R_EDX);
+      AsmAluRegImm(ALU_CMP, R_ECX, 256);
+      L := CGCNewLabel('asCap');
+      AsmJcc(CC_LE, L);
+      AsmMovRegImm(R_ECX, 256);
+      AsmLabel(L);
+      AsmTestRegReg(R_ECX, R_ECX);
+      L2 := CGCNewLabel('asZ');
+      AsmJcc(CC_E, L2);
+      AsmRepMovsb;
+      AsmLabel(L2);
       Exit;
     End;
-    If CurTokType = TOK_IDENT Then
-    Begin
-      SrcLI := CGCFindLocal(CurTokStr);
-      If (SrcLI >= 0) And (CGCLocals[SrcLI].Kind = 1) Then
-      Begin
-        LexNextToken;
-        { Copie length + 64 dwords (256 octets) de src vers dst }
-        AsmMovRegMemBP(R_EAX, CGCLocals[SrcLI].Ofs);
-        AsmMovMemBPReg(CGCLocals[Idx].Ofs, R_EAX);
-        AsmLeaRegMemBP(R_ESI, CGCLocals[SrcLI].Ofs + 4);
-        AsmLeaRegMemBP(R_EDI, CGCLocals[Idx].Ofs + 4);
-        AsmMovRegImm(R_ECX, 64);
-        L := CGCNewLabel('scL');
-        AsmLabel(L);
-        AsmMovRegMemReg(R_EAX, R_ESI);
-        AsmMovMemRegReg(R_EDI, R_EAX);
-        AsmAddRegImm(R_ESI, 4);
-        AsmAddRegImm(R_EDI, 4);
-        AsmDecReg(R_ECX);
-        AsmJcc(CC_NE, L);
-        Exit;
-      End;
-    End;
     { Fallback : RHS Long -> stocke comme longueur (rare). }
+    AsmMovMemBPReg(CGCLocals[Idx].Ofs, R_EAX);
+    Exit;
   End;
   CGCParseExpr;
   { Palier G : assignation au nom de la fonction courante }
@@ -17725,6 +17991,795 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
+{ STRINGS : helpers runtime pour Len/Trim/UCase/Left/Mid/InStr  }
+{ /Replace/Hex/Oct/Asc/Chr.                                     }
+{                                                                }
+{ Convention : args poussees RTL (cdecl), [ebp+8] = arg0,        }
+{ [ebp+12] = arg1, etc. Retour string : EAX = ptr, EDX = len.   }
+{ Slot alloue dans @STRPOOL (8 slots de 256 octets, rotatif).   }
+{ ------------------------------------------------------------ }
+Procedure CGCEmitStringHelpers;
+Var
+  PoolVA, IdxVA : LongInt;
+  L1, L2, L3, L4, L5, L6, L7 : TString;
+Begin
+  PoolVA := AsmDataVA('@STRPOOL');
+  IdxVA  := AsmDataVA('@STRPOOL_IDX');
+
+  { ----- __str_alloc : EAX = adresse du prochain slot ----- }
+  AsmLabel('__str_alloc');
+  AsmPushReg(R_ECX);
+  AsmMovRegMemAbs(R_EAX, IdxVA);
+  AsmMovRegReg(R_ECX, R_EAX);
+  AsmShlRegImm(R_EAX, 8);              { *256 }
+  AsmAluRegImm(ALU_ADD, R_EAX, PoolVA);
+  AsmIncReg(R_ECX);
+  AsmAluRegImm(ALU_AND, R_ECX, 7);
+  AsmMovMemAbsReg(IdxVA, R_ECX);
+  AsmPopReg(R_ECX);
+  AsmRet;
+
+  { ----- __str_len(p, l) -> EAX = l ----- }
+  AsmLabel('__str_len');
+  AsmPushReg(R_EBP);
+  AsmMovRegReg(R_EBP, R_ESP);
+  AsmMovRegMemBP(R_EAX, 12);
+  AsmPopReg(R_EBP);
+  AsmRet;
+
+  { ----- __str_asc(p, l) -> EAX = byte0 ou 0 ----- }
+  AsmLabel('__str_asc');
+  AsmPushReg(R_EBP);
+  AsmMovRegReg(R_EBP, R_ESP);
+  AsmPushReg(R_ESI);
+  AsmXorRegReg(R_EAX, R_EAX);
+  AsmMovRegMemBP(R_ECX, 12);
+  AsmTestRegReg(R_ECX, R_ECX);
+  L1 := CGCNewLabel('ascD');
+  AsmJcc(CC_E, L1);
+  AsmMovRegMemBP(R_ESI, 8);
+  AsmLodsb;
+  AsmLabel(L1);
+  AsmPopReg(R_ESI);
+  AsmPopReg(R_EBP);
+  AsmRet;
+
+  { ----- __str_chr(c) -> EAX,EDX = (slot, 1) ----- }
+  AsmLabel('__str_chr');
+  AsmPushReg(R_EBP);
+  AsmMovRegReg(R_EBP, R_ESP);
+  AsmPushReg(R_EDI);
+  AsmPushReg(R_EBX);
+  AsmCallLbl('__str_alloc');
+  AsmMovRegReg(R_EBX, R_EAX);
+  AsmMovRegReg(R_EDI, R_EAX);
+  AsmMovRegMemBP(R_EAX, 8);
+  AsmStosb;
+  AsmMovRegReg(R_EAX, R_EBX);
+  AsmMovRegImm(R_EDX, 1);
+  AsmPopReg(R_EBX);
+  AsmPopReg(R_EDI);
+  AsmPopReg(R_EBP);
+  AsmRet;
+
+  { ----- __str_hex(v) -> EAX,EDX = (slot, len) ----- }
+  AsmLabel('__str_hex');
+  AsmPushReg(R_EBP);
+  AsmMovRegReg(R_EBP, R_ESP);
+  AsmPushReg(R_EDI);
+  AsmPushReg(R_ESI);
+  AsmPushReg(R_EBX);
+  AsmCallLbl('__str_alloc');
+  AsmMovRegReg(R_EBX, R_EAX);          { ebx = base slot }
+  AsmMovRegReg(R_EDI, R_EAX);
+  AsmMovRegMemBP(R_EDX, 8);            { edx = v }
+  AsmMovRegImm(R_ECX, 8);
+  L1 := CGCNewLabel('hxL');
+  L2 := CGCNewLabel('hxD');
+  L3 := CGCNewLabel('hxA');
+  AsmLabel(L1);
+  AsmMovRegReg(R_EAX, R_EDX);
+  AsmShrRegImm(R_EAX, 28);
+  AsmShlRegImm(R_EDX, 4);
+  AsmAluRegImm(ALU_AND, R_EAX, 15);
+  AsmAluRegImm(ALU_CMP, R_EAX, 9);
+  AsmJcc(CC_A, L3);
+  AsmAluRegImm(ALU_ADD, R_EAX, $30);
+  AsmJmpLbl(L2);
+  AsmLabel(L3);
+  AsmAluRegImm(ALU_ADD, R_EAX, $37);
+  AsmLabel(L2);
+  AsmStosb;
+  AsmDecReg(R_ECX);
+  AsmTestRegReg(R_ECX, R_ECX);
+  AsmJcc(CC_NE, L1);
+  { Compactage : compter les '0' de tete (max 7) }
+  AsmMovRegReg(R_ESI, R_EBX);
+  AsmXorRegReg(R_ECX, R_ECX);
+  L4 := CGCNewLabel('hxC');
+  L5 := CGCNewLabel('hxK');
+  AsmLabel(L4);
+  AsmAluRegImm(ALU_CMP, R_ECX, 7);
+  AsmJcc(CC_GE, L5);
+  AsmXorRegReg(R_EAX, R_EAX);
+  AsmLodsb;
+  AsmAluRegImm(ALU_CMP, R_EAX, $30);
+  AsmJcc(CC_NE, L5);
+  AsmIncReg(R_ECX);
+  AsmJmpLbl(L4);
+  AsmLabel(L5);
+  { si ecx > 0 : decaler 8-ecx octets de [ebx+ecx] vers [ebx] }
+  AsmMovRegImm(R_EDX, 8);
+  AsmAluRegReg(ALU_SUB, R_EDX, R_ECX);
+  AsmTestRegReg(R_ECX, R_ECX);
+  L6 := CGCNewLabel('hxE');
+  AsmJcc(CC_E, L6);
+  AsmPushReg(R_EDX);
+  AsmMovRegReg(R_ESI, R_EBX);
+  AsmAluRegReg(ALU_ADD, R_ESI, R_ECX);
+  AsmMovRegReg(R_EDI, R_EBX);
+  AsmMovRegReg(R_ECX, R_EDX);
+  AsmRepMovsb;
+  AsmPopReg(R_EDX);
+  AsmLabel(L6);
+  AsmMovRegReg(R_EAX, R_EBX);
+  { edx contient deja la longueur }
+  AsmPopReg(R_EBX);
+  AsmPopReg(R_ESI);
+  AsmPopReg(R_EDI);
+  AsmPopReg(R_EBP);
+  AsmRet;
+
+  { ----- __str_oct(v) -> EAX,EDX = (slot, len) ----- }
+  AsmLabel('__str_oct');
+  AsmPushReg(R_EBP);
+  AsmMovRegReg(R_EBP, R_ESP);
+  AsmPushReg(R_EDI);
+  AsmPushReg(R_ESI);
+  AsmPushReg(R_EBX);
+  AsmCallLbl('__str_alloc');
+  AsmMovRegReg(R_EBX, R_EAX);
+  AsmMovRegReg(R_EDI, R_EAX);
+  AsmMovRegMemBP(R_EDX, 8);
+  AsmMovRegImm(R_ECX, 11);
+  L1 := CGCNewLabel('ocL');
+  AsmLabel(L1);
+  AsmMovRegReg(R_EAX, R_EDX);
+  AsmShrRegImm(R_EAX, 29);
+  AsmShlRegImm(R_EDX, 3);
+  AsmAluRegImm(ALU_AND, R_EAX, 7);
+  AsmAluRegImm(ALU_ADD, R_EAX, $30);
+  AsmStosb;
+  AsmDecReg(R_ECX);
+  AsmTestRegReg(R_ECX, R_ECX);
+  AsmJcc(CC_NE, L1);
+  AsmMovRegReg(R_ESI, R_EBX);
+  AsmXorRegReg(R_ECX, R_ECX);
+  L2 := CGCNewLabel('ocC');
+  L3 := CGCNewLabel('ocK');
+  AsmLabel(L2);
+  AsmAluRegImm(ALU_CMP, R_ECX, 10);
+  AsmJcc(CC_GE, L3);
+  AsmXorRegReg(R_EAX, R_EAX);
+  AsmLodsb;
+  AsmAluRegImm(ALU_CMP, R_EAX, $30);
+  AsmJcc(CC_NE, L3);
+  AsmIncReg(R_ECX);
+  AsmJmpLbl(L2);
+  AsmLabel(L3);
+  AsmMovRegImm(R_EDX, 11);
+  AsmAluRegReg(ALU_SUB, R_EDX, R_ECX);
+  AsmTestRegReg(R_ECX, R_ECX);
+  L4 := CGCNewLabel('ocE');
+  AsmJcc(CC_E, L4);
+  AsmPushReg(R_EDX);
+  AsmMovRegReg(R_ESI, R_EBX);
+  AsmAluRegReg(ALU_ADD, R_ESI, R_ECX);
+  AsmMovRegReg(R_EDI, R_EBX);
+  AsmMovRegReg(R_ECX, R_EDX);
+  AsmRepMovsb;
+  AsmPopReg(R_EDX);
+  AsmLabel(L4);
+  AsmMovRegReg(R_EAX, R_EBX);
+  AsmPopReg(R_EBX);
+  AsmPopReg(R_ESI);
+  AsmPopReg(R_EDI);
+  AsmPopReg(R_EBP);
+  AsmRet;
+
+  { ----- __str_ucase(p, l) -> EAX,EDX = (slot, l) ----- }
+  AsmLabel('__str_ucase');
+  AsmPushReg(R_EBP);
+  AsmMovRegReg(R_EBP, R_ESP);
+  AsmPushReg(R_EDI);
+  AsmPushReg(R_ESI);
+  AsmPushReg(R_EBX);
+  AsmCallLbl('__str_alloc');
+  AsmMovRegReg(R_EBX, R_EAX);
+  AsmMovRegReg(R_EDI, R_EAX);
+  AsmMovRegMemBP(R_ESI, 8);
+  AsmMovRegMemBP(R_ECX, 12);
+  AsmTestRegReg(R_ECX, R_ECX);
+  L1 := CGCNewLabel('ucD');
+  L2 := CGCNewLabel('ucL');
+  L3 := CGCNewLabel('ucN');
+  AsmJcc(CC_E, L1);
+  AsmLabel(L2);
+  AsmXorRegReg(R_EAX, R_EAX);
+  AsmLodsb;
+  AsmAluRegImm(ALU_CMP, R_EAX, $61);
+  AsmJcc(CC_L, L3);
+  AsmAluRegImm(ALU_CMP, R_EAX, $7A);
+  AsmJcc(CC_G, L3);
+  AsmAluRegImm(ALU_SUB, R_EAX, $20);
+  AsmLabel(L3);
+  AsmStosb;
+  AsmDecReg(R_ECX);
+  AsmTestRegReg(R_ECX, R_ECX);
+  AsmJcc(CC_NE, L2);
+  AsmLabel(L1);
+  AsmMovRegReg(R_EAX, R_EBX);
+  AsmMovRegMemBP(R_EDX, 12);
+  AsmPopReg(R_EBX);
+  AsmPopReg(R_ESI);
+  AsmPopReg(R_EDI);
+  AsmPopReg(R_EBP);
+  AsmRet;
+
+  { ----- __str_lcase(p, l) -> EAX,EDX = (slot, l) ----- }
+  AsmLabel('__str_lcase');
+  AsmPushReg(R_EBP);
+  AsmMovRegReg(R_EBP, R_ESP);
+  AsmPushReg(R_EDI);
+  AsmPushReg(R_ESI);
+  AsmPushReg(R_EBX);
+  AsmCallLbl('__str_alloc');
+  AsmMovRegReg(R_EBX, R_EAX);
+  AsmMovRegReg(R_EDI, R_EAX);
+  AsmMovRegMemBP(R_ESI, 8);
+  AsmMovRegMemBP(R_ECX, 12);
+  AsmTestRegReg(R_ECX, R_ECX);
+  L1 := CGCNewLabel('lcD');
+  L2 := CGCNewLabel('lcL');
+  L3 := CGCNewLabel('lcN');
+  AsmJcc(CC_E, L1);
+  AsmLabel(L2);
+  AsmXorRegReg(R_EAX, R_EAX);
+  AsmLodsb;
+  AsmAluRegImm(ALU_CMP, R_EAX, $41);
+  AsmJcc(CC_L, L3);
+  AsmAluRegImm(ALU_CMP, R_EAX, $5A);
+  AsmJcc(CC_G, L3);
+  AsmAluRegImm(ALU_ADD, R_EAX, $20);
+  AsmLabel(L3);
+  AsmStosb;
+  AsmDecReg(R_ECX);
+  AsmTestRegReg(R_ECX, R_ECX);
+  AsmJcc(CC_NE, L2);
+  AsmLabel(L1);
+  AsmMovRegReg(R_EAX, R_EBX);
+  AsmMovRegMemBP(R_EDX, 12);
+  AsmPopReg(R_EBX);
+  AsmPopReg(R_ESI);
+  AsmPopReg(R_EDI);
+  AsmPopReg(R_EBP);
+  AsmRet;
+
+  { ----- __str_trim(p, l) -> EAX,EDX = (slot, len_trimmed) ----- }
+  { Logique : esi = p; ecx = l; saute leading spaces; trim trailing }
+  { spaces; copie le sous-segment dans un slot.                     }
+  AsmLabel('__str_trim');
+  AsmPushReg(R_EBP);
+  AsmMovRegReg(R_EBP, R_ESP);
+  AsmPushReg(R_EDI);
+  AsmPushReg(R_ESI);
+  AsmPushReg(R_EBX);
+  AsmMovRegMemBP(R_ESI, 8);
+  AsmMovRegMemBP(R_ECX, 12);
+  { skip leading spaces : while ecx>0 && [esi]==32 : esi++; ecx-- }
+  L1 := CGCNewLabel('trL');
+  L2 := CGCNewLabel('trN');
+  L3 := CGCNewLabel('trR');
+  L4 := CGCNewLabel('trE');
+  AsmLabel(L1);
+  AsmTestRegReg(R_ECX, R_ECX);
+  AsmJcc(CC_E, L2);
+  AsmXorRegReg(R_EAX, R_EAX);
+  AsmMovRegMemReg(R_EDX, R_ESI);      { mov edx, [esi] (4 octets) }
+  AsmAluRegImm(ALU_AND, R_EDX, $FF);
+  AsmAluRegImm(ALU_CMP, R_EDX, 32);
+  AsmJcc(CC_NE, L2);
+  AsmIncReg(R_ESI);
+  AsmDecReg(R_ECX);
+  AsmJmpLbl(L1);
+  AsmLabel(L2);
+  { trim trailing : while ecx>0 && [esi+ecx-1]==32 : ecx-- }
+  AsmLabel(L3);
+  AsmTestRegReg(R_ECX, R_ECX);
+  AsmJcc(CC_E, L4);
+  AsmMovRegReg(R_EBX, R_ESI);
+  AsmAluRegReg(ALU_ADD, R_EBX, R_ECX);
+  AsmDecReg(R_EBX);
+  AsmMovRegMemReg(R_EDX, R_EBX);
+  AsmAluRegImm(ALU_AND, R_EDX, $FF);
+  AsmAluRegImm(ALU_CMP, R_EDX, 32);
+  AsmJcc(CC_NE, L4);
+  AsmDecReg(R_ECX);
+  AsmJmpLbl(L3);
+  AsmLabel(L4);
+  { copy : __str_alloc -> edi; rep movsb (esi=src, ecx bytes) }
+  AsmPushReg(R_ESI);
+  AsmPushReg(R_ECX);
+  AsmCallLbl('__str_alloc');
+  AsmPopReg(R_ECX);
+  AsmPopReg(R_ESI);
+  AsmMovRegReg(R_EBX, R_EAX);
+  AsmMovRegReg(R_EDI, R_EAX);
+  AsmMovRegReg(R_EDX, R_ECX);          { sauve len }
+  AsmTestRegReg(R_ECX, R_ECX);
+  L5 := CGCNewLabel('trZ');
+  AsmJcc(CC_E, L5);
+  AsmRepMovsb;
+  AsmLabel(L5);
+  AsmMovRegReg(R_EAX, R_EBX);
+  AsmPopReg(R_EBX);
+  AsmPopReg(R_ESI);
+  AsmPopReg(R_EDI);
+  AsmPopReg(R_EBP);
+  AsmRet;
+
+  { ----- __str_ltrim(p, l) -> EAX,EDX ----- }
+  AsmLabel('__str_ltrim');
+  AsmPushReg(R_EBP);
+  AsmMovRegReg(R_EBP, R_ESP);
+  AsmPushReg(R_EDI);
+  AsmPushReg(R_ESI);
+  AsmPushReg(R_EBX);
+  AsmMovRegMemBP(R_ESI, 8);
+  AsmMovRegMemBP(R_ECX, 12);
+  L1 := CGCNewLabel('ltL');
+  L2 := CGCNewLabel('ltN');
+  AsmLabel(L1);
+  AsmTestRegReg(R_ECX, R_ECX);
+  AsmJcc(CC_E, L2);
+  AsmMovRegMemReg(R_EDX, R_ESI);
+  AsmAluRegImm(ALU_AND, R_EDX, $FF);
+  AsmAluRegImm(ALU_CMP, R_EDX, 32);
+  AsmJcc(CC_NE, L2);
+  AsmIncReg(R_ESI);
+  AsmDecReg(R_ECX);
+  AsmJmpLbl(L1);
+  AsmLabel(L2);
+  AsmPushReg(R_ESI);
+  AsmPushReg(R_ECX);
+  AsmCallLbl('__str_alloc');
+  AsmPopReg(R_ECX);
+  AsmPopReg(R_ESI);
+  AsmMovRegReg(R_EBX, R_EAX);
+  AsmMovRegReg(R_EDI, R_EAX);
+  AsmMovRegReg(R_EDX, R_ECX);
+  AsmTestRegReg(R_ECX, R_ECX);
+  L3 := CGCNewLabel('ltZ');
+  AsmJcc(CC_E, L3);
+  AsmRepMovsb;
+  AsmLabel(L3);
+  AsmMovRegReg(R_EAX, R_EBX);
+  AsmPopReg(R_EBX);
+  AsmPopReg(R_ESI);
+  AsmPopReg(R_EDI);
+  AsmPopReg(R_EBP);
+  AsmRet;
+
+  { ----- __str_rtrim(p, l) -> EAX,EDX ----- }
+  AsmLabel('__str_rtrim');
+  AsmPushReg(R_EBP);
+  AsmMovRegReg(R_EBP, R_ESP);
+  AsmPushReg(R_EDI);
+  AsmPushReg(R_ESI);
+  AsmPushReg(R_EBX);
+  AsmMovRegMemBP(R_ESI, 8);
+  AsmMovRegMemBP(R_ECX, 12);
+  L1 := CGCNewLabel('rtL');
+  L2 := CGCNewLabel('rtN');
+  AsmLabel(L1);
+  AsmTestRegReg(R_ECX, R_ECX);
+  AsmJcc(CC_E, L2);
+  AsmMovRegReg(R_EBX, R_ESI);
+  AsmAluRegReg(ALU_ADD, R_EBX, R_ECX);
+  AsmDecReg(R_EBX);
+  AsmMovRegMemReg(R_EDX, R_EBX);
+  AsmAluRegImm(ALU_AND, R_EDX, $FF);
+  AsmAluRegImm(ALU_CMP, R_EDX, 32);
+  AsmJcc(CC_NE, L2);
+  AsmDecReg(R_ECX);
+  AsmJmpLbl(L1);
+  AsmLabel(L2);
+  AsmPushReg(R_ESI);
+  AsmPushReg(R_ECX);
+  AsmCallLbl('__str_alloc');
+  AsmPopReg(R_ECX);
+  AsmPopReg(R_ESI);
+  AsmMovRegReg(R_EBX, R_EAX);
+  AsmMovRegReg(R_EDI, R_EAX);
+  AsmMovRegReg(R_EDX, R_ECX);
+  AsmTestRegReg(R_ECX, R_ECX);
+  L3 := CGCNewLabel('rtZ');
+  AsmJcc(CC_E, L3);
+  AsmRepMovsb;
+  AsmLabel(L3);
+  AsmMovRegReg(R_EAX, R_EBX);
+  AsmPopReg(R_EBX);
+  AsmPopReg(R_ESI);
+  AsmPopReg(R_EDI);
+  AsmPopReg(R_EBP);
+  AsmRet;
+
+  { ----- __str_left(p, l, n) -> EAX,EDX ----- }
+  { effective = min(max(n,0), l) ; copie premiers effective octets }
+  AsmLabel('__str_left');
+  AsmPushReg(R_EBP);
+  AsmMovRegReg(R_EBP, R_ESP);
+  AsmPushReg(R_EDI);
+  AsmPushReg(R_ESI);
+  AsmPushReg(R_EBX);
+  AsmMovRegMemBP(R_ESI, 8);            { p }
+  AsmMovRegMemBP(R_EDX, 12);           { l }
+  AsmMovRegMemBP(R_ECX, 16);           { n }
+  AsmTestRegReg(R_ECX, R_ECX);
+  L1 := CGCNewLabel('lfNeg');
+  L2 := CGCNewLabel('lfMin');
+  AsmJcc(CC_NS, L1);
+  AsmXorRegReg(R_ECX, R_ECX);
+  AsmLabel(L1);
+  AsmAluRegReg(ALU_CMP, R_ECX, R_EDX);
+  AsmJcc(CC_LE, L2);
+  AsmMovRegReg(R_ECX, R_EDX);
+  AsmLabel(L2);
+  AsmPushReg(R_ESI);
+  AsmPushReg(R_ECX);
+  AsmCallLbl('__str_alloc');
+  AsmPopReg(R_ECX);
+  AsmPopReg(R_ESI);
+  AsmMovRegReg(R_EBX, R_EAX);
+  AsmMovRegReg(R_EDI, R_EAX);
+  AsmMovRegReg(R_EDX, R_ECX);
+  AsmTestRegReg(R_ECX, R_ECX);
+  L3 := CGCNewLabel('lfZ');
+  AsmJcc(CC_E, L3);
+  AsmRepMovsb;
+  AsmLabel(L3);
+  AsmMovRegReg(R_EAX, R_EBX);
+  AsmPopReg(R_EBX);
+  AsmPopReg(R_ESI);
+  AsmPopReg(R_EDI);
+  AsmPopReg(R_EBP);
+  AsmRet;
+
+  { ----- __str_right(p, l, n) -> EAX,EDX ----- }
+  AsmLabel('__str_right');
+  AsmPushReg(R_EBP);
+  AsmMovRegReg(R_EBP, R_ESP);
+  AsmPushReg(R_EDI);
+  AsmPushReg(R_ESI);
+  AsmPushReg(R_EBX);
+  AsmMovRegMemBP(R_ESI, 8);            { p }
+  AsmMovRegMemBP(R_EDX, 12);           { l }
+  AsmMovRegMemBP(R_ECX, 16);           { n }
+  AsmTestRegReg(R_ECX, R_ECX);
+  L1 := CGCNewLabel('rgNeg');
+  L2 := CGCNewLabel('rgMin');
+  AsmJcc(CC_NS, L1);
+  AsmXorRegReg(R_ECX, R_ECX);
+  AsmLabel(L1);
+  AsmAluRegReg(ALU_CMP, R_ECX, R_EDX);
+  AsmJcc(CC_LE, L2);
+  AsmMovRegReg(R_ECX, R_EDX);
+  AsmLabel(L2);
+  { esi := p + (l - n) ; ecx = n }
+  AsmAluRegReg(ALU_ADD, R_ESI, R_EDX);
+  AsmAluRegReg(ALU_SUB, R_ESI, R_ECX);
+  AsmPushReg(R_ESI);
+  AsmPushReg(R_ECX);
+  AsmCallLbl('__str_alloc');
+  AsmPopReg(R_ECX);
+  AsmPopReg(R_ESI);
+  AsmMovRegReg(R_EBX, R_EAX);
+  AsmMovRegReg(R_EDI, R_EAX);
+  AsmMovRegReg(R_EDX, R_ECX);
+  AsmTestRegReg(R_ECX, R_ECX);
+  L3 := CGCNewLabel('rgZ');
+  AsmJcc(CC_E, L3);
+  AsmRepMovsb;
+  AsmLabel(L3);
+  AsmMovRegReg(R_EAX, R_EBX);
+  AsmPopReg(R_EBX);
+  AsmPopReg(R_ESI);
+  AsmPopReg(R_EDI);
+  AsmPopReg(R_EBP);
+  AsmRet;
+
+  { ----- __str_mid(p, l, start, n) -> EAX,EDX ----- }
+  { start 1-based ; n=-1 = jusqu'a la fin                          }
+  AsmLabel('__str_mid');
+  AsmPushReg(R_EBP);
+  AsmMovRegReg(R_EBP, R_ESP);
+  AsmPushReg(R_EDI);
+  AsmPushReg(R_ESI);
+  AsmPushReg(R_EBX);
+  AsmMovRegMemBP(R_ESI, 8);            { p }
+  AsmMovRegMemBP(R_EDX, 12);           { l }
+  AsmMovRegMemBP(R_EBX, 16);           { start (1-based) }
+  AsmDecReg(R_EBX);                    { 0-based }
+  AsmTestRegReg(R_EBX, R_EBX);
+  L1 := CGCNewLabel('mdSn');
+  AsmJcc(CC_NS, L1);
+  AsmXorRegReg(R_EBX, R_EBX);
+  AsmLabel(L1);
+  AsmAluRegReg(ALU_CMP, R_EBX, R_EDX);
+  L2 := CGCNewLabel('mdEm');           { start hors plage : vide }
+  AsmJcc(CC_GE, L2);
+  AsmAluRegReg(ALU_ADD, R_ESI, R_EBX);  { src = p + start0 }
+  AsmAluRegReg(ALU_SUB, R_EDX, R_EBX);  { avail = l - start0 }
+  AsmMovRegMemBP(R_ECX, 20);            { n }
+  AsmTestRegReg(R_ECX, R_ECX);
+  L3 := CGCNewLabel('mdNs');
+  AsmJcc(CC_NS, L3);
+  AsmMovRegReg(R_ECX, R_EDX);           { n=-1 (negatif) -> avail }
+  AsmLabel(L3);
+  AsmAluRegReg(ALU_CMP, R_ECX, R_EDX);
+  L4 := CGCNewLabel('mdMn');
+  AsmJcc(CC_LE, L4);
+  AsmMovRegReg(R_ECX, R_EDX);           { ecx = min(ecx, avail) }
+  AsmLabel(L4);
+  L5 := CGCNewLabel('mdCp');
+  AsmJmpLbl(L5);
+  AsmLabel(L2);
+  AsmXorRegReg(R_ECX, R_ECX);           { vide }
+  AsmLabel(L5);
+  AsmPushReg(R_ESI);
+  AsmPushReg(R_ECX);
+  AsmCallLbl('__str_alloc');
+  AsmPopReg(R_ECX);
+  AsmPopReg(R_ESI);
+  AsmMovRegReg(R_EBX, R_EAX);
+  AsmMovRegReg(R_EDI, R_EAX);
+  AsmMovRegReg(R_EDX, R_ECX);
+  AsmTestRegReg(R_ECX, R_ECX);
+  L6 := CGCNewLabel('mdZ');
+  AsmJcc(CC_E, L6);
+  AsmRepMovsb;
+  AsmLabel(L6);
+  AsmMovRegReg(R_EAX, R_EBX);
+  AsmPopReg(R_EBX);
+  AsmPopReg(R_ESI);
+  AsmPopReg(R_EDI);
+  AsmPopReg(R_EBP);
+  AsmRet;
+
+  { ----- __str_instr(p1,l1,p2,l2) -> EAX = pos 1-based ou 0 ----- }
+  { Recherche naive : pour chaque position i de 0 a l1-l2,        }
+  {   compare l2 octets ; si match, retourne i+1.                  }
+  { Variables :                                                    }
+  {   ebx = i (compteur position)                                  }
+  {   esi = pointeur courant haystack (p1+i+j)                     }
+  {   edi = pointeur courant needle (p2+j)                         }
+  {   ecx = octets restants a comparer dans cette tentative        }
+  AsmLabel('__str_instr');
+  AsmPushReg(R_EBP);
+  AsmMovRegReg(R_EBP, R_ESP);
+  AsmPushReg(R_EDI);
+  AsmPushReg(R_ESI);
+  AsmPushReg(R_EBX);
+  { Cas l2==0 : retourne 1 }
+  AsmMovRegMemBP(R_ECX, 20);
+  AsmTestRegReg(R_ECX, R_ECX);
+  L1 := CGCNewLabel('isNZ');
+  AsmJcc(CC_NE, L1);
+  AsmMovRegImm(R_EAX, 1);
+  AsmPopReg(R_EBX);
+  AsmPopReg(R_ESI);
+  AsmPopReg(R_EDI);
+  AsmPopReg(R_EBP);
+  AsmRet;
+  AsmLabel(L1);
+  { Si l1 < l2 : retourne 0 }
+  AsmMovRegMemBP(R_EAX, 12);
+  AsmAluRegReg(ALU_CMP, R_EAX, R_ECX);
+  L2 := CGCNewLabel('isOK');
+  AsmJcc(CC_GE, L2);
+  AsmXorRegReg(R_EAX, R_EAX);
+  AsmPopReg(R_EBX);
+  AsmPopReg(R_ESI);
+  AsmPopReg(R_EDI);
+  AsmPopReg(R_EBP);
+  AsmRet;
+  AsmLabel(L2);
+  AsmXorRegReg(R_EBX, R_EBX);          { i = 0 }
+  L3 := CGCNewLabel('isOL');           { boucle externe }
+  L4 := CGCNewLabel('isFin');          { trouve : retour i+1 }
+  L5 := CGCNewLabel('isNF');           { non trouve }
+  L6 := CGCNewLabel('isCmp');          { boucle compare }
+  AsmLabel(L3);
+  { Test : si i > l1-l2 -> non trouve }
+  AsmMovRegMemBP(R_EAX, 12);           { l1 }
+  AsmMovRegMemBP(R_EDX, 20);           { l2 }
+  AsmAluRegReg(ALU_SUB, R_EAX, R_EDX);
+  AsmAluRegReg(ALU_CMP, R_EBX, R_EAX);
+  AsmJcc(CC_G, L5);
+  { Init compare : esi = p1+i, edi = p2, ecx = l2 }
+  AsmMovRegMemBP(R_ESI, 8);
+  AsmAluRegReg(ALU_ADD, R_ESI, R_EBX);
+  AsmMovRegMemBP(R_EDI, 16);
+  AsmMovRegMemBP(R_ECX, 20);
+  AsmLabel(L6);
+  AsmTestRegReg(R_ECX, R_ECX);
+  AsmJcc(CC_E, L4);                    { tous matches : succes }
+  AsmXorRegReg(R_EAX, R_EAX);
+  AsmMovRegMemReg(R_EAX, R_ESI);
+  AsmAluRegImm(ALU_AND, R_EAX, $FF);
+  AsmXorRegReg(R_EDX, R_EDX);
+  AsmMovRegMemReg(R_EDX, R_EDI);
+  AsmAluRegImm(ALU_AND, R_EDX, $FF);
+  AsmAluRegReg(ALU_CMP, R_EAX, R_EDX);
+  L7 := CGCNewLabel('isMs');           { mismatch -> i++ }
+  AsmJcc(CC_NE, L7);
+  AsmIncReg(R_ESI);
+  AsmIncReg(R_EDI);
+  AsmDecReg(R_ECX);
+  AsmJmpLbl(L6);
+  AsmLabel(L7);
+  AsmIncReg(R_EBX);
+  AsmJmpLbl(L3);
+  AsmLabel(L4);
+  AsmMovRegReg(R_EAX, R_EBX);
+  AsmIncReg(R_EAX);
+  AsmPopReg(R_EBX);
+  AsmPopReg(R_ESI);
+  AsmPopReg(R_EDI);
+  AsmPopReg(R_EBP);
+  AsmRet;
+  AsmLabel(L5);
+  AsmXorRegReg(R_EAX, R_EAX);
+  AsmPopReg(R_EBX);
+  AsmPopReg(R_ESI);
+  AsmPopReg(R_EDI);
+  AsmPopReg(R_EBP);
+  AsmRet;
+
+  { ----- __str_replace(p,l,fp,fl,rp,rl) -> EAX,EDX ----- }
+  { Recherche chaque occurrence de [fp..fp+fl[ dans [p..p+l[ et la    }
+  { remplace par [rp..rp+rl[. Si fl=0, retourne la source telle quelle.}
+  { Variables :                                                      }
+  {   ebx = curseur source (avance dans p)                           }
+  {   edi = curseur destination dans le slot                         }
+  {   ecx = octets sources restants                                  }
+  {   sauve la base du slot dans une var locale BP-relative ([ebp-4])}
+  AsmLabel('__str_replace');
+  AsmPushReg(R_EBP);
+  AsmMovRegReg(R_EBP, R_ESP);
+  AsmAluRegImm(ALU_SUB, R_ESP, 4);     { local : base du slot }
+  AsmPushReg(R_EDI);
+  AsmPushReg(R_ESI);
+  AsmPushReg(R_EBX);
+  AsmCallLbl('__str_alloc');
+  AsmMovMemBPReg(-4, R_EAX);           { sauve base slot }
+  AsmMovRegReg(R_EDI, R_EAX);          { edi = dst cursor }
+  AsmMovRegMemBP(R_EBX, 8);            { src cursor = p }
+  AsmMovRegMemBP(R_ECX, 12);           { ecx = l }
+  { Cas fl = 0 : copier integralement et sortir }
+  AsmMovRegMemBP(R_EAX, 20);
+  AsmTestRegReg(R_EAX, R_EAX);
+  L1 := CGCNewLabel('rpFlNZ');
+  AsmJcc(CC_NE, L1);
+  { Copie verbatim }
+  AsmMovRegReg(R_ESI, R_EBX);
+  AsmTestRegReg(R_ECX, R_ECX);
+  L2 := CGCNewLabel('rpFlZ');
+  AsmJcc(CC_E, L2);
+  AsmRepMovsb;
+  AsmLabel(L2);
+  AsmMovRegMemBP(R_EAX, -4);
+  AsmMovRegReg(R_EDX, R_EDI);
+  AsmAluRegReg(ALU_SUB, R_EDX, R_EAX);
+  AsmPopReg(R_EBX);
+  AsmPopReg(R_ESI);
+  AsmPopReg(R_EDI);
+  AsmAluRegImm(ALU_ADD, R_ESP, 4);
+  AsmPopReg(R_EBP);
+  AsmRet;
+
+  AsmLabel(L1);
+  { Boucle principale : tant que ecx > 0 }
+  L2 := CGCNewLabel('rpML');
+  L3 := CGCNewLabel('rpDone');
+  L4 := CGCNewLabel('rpNoMatch');
+  L5 := CGCNewLabel('rpDoCmp');
+  L6 := CGCNewLabel('rpMatch');
+  L7 := CGCNewLabel('rpCmpL');
+  AsmLabel(L2);
+  AsmTestRegReg(R_ECX, R_ECX);
+  AsmJcc(CC_E, L3);
+  { si ecx < fl -> pas de match possible : copier 1 octet }
+  AsmMovRegMemBP(R_EAX, 20);
+  AsmAluRegReg(ALU_CMP, R_ECX, R_EAX);
+  AsmJcc(CC_L, L4);
+  { Comparer fl octets : esi=fp, edx=ebx (src), ecx_local=fl }
+  AsmPushReg(R_ECX);
+  AsmMovRegMemBP(R_ESI, 16);          { fp }
+  AsmMovRegReg(R_EDX, R_EBX);         { src cursor copy }
+  AsmMovRegMemBP(R_ECX, 20);          { fl }
+  AsmLabel(L7);
+  AsmTestRegReg(R_ECX, R_ECX);
+  AsmJcc(CC_E, L6);
+  AsmXorRegReg(R_EAX, R_EAX);
+  AsmMovRegMemReg(R_EAX, R_EDX);
+  AsmAluRegImm(ALU_AND, R_EAX, $FF);
+  AsmPushReg(R_EAX);
+  AsmXorRegReg(R_EAX, R_EAX);
+  AsmMovRegMemReg(R_EAX, R_ESI);
+  AsmAluRegImm(ALU_AND, R_EAX, $FF);
+  AsmPopReg(R_EDX);                   { byte src }
+  AsmAluRegReg(ALU_CMP, R_EAX, R_EDX);
+  AsmJcc(CC_NE, L5);                  { mismatch -> sortie restore }
+  AsmIncReg(R_ESI);
+  AsmDecReg(R_ECX);
+  { Le compteur de comparaison etait sur la pile (push ECX a l'entree).}
+  { On modifie la copie locale ECX, le pop a la sortie restaure       }
+  { l'ECX externe. EDX (curseur src) doit aussi avancer :              }
+  AsmAluRegImm(ALU_ADD, R_ESP, 0);    { no-op pour clarte (pas d emission) }
+  { Reconstruire EDX = EBX + (ESI - fp) :                              }
+  AsmPushReg(R_EAX);
+  AsmMovRegMemBP(R_EAX, 16);          { fp }
+  AsmMovRegReg(R_EDX, R_ESI);
+  AsmAluRegReg(ALU_SUB, R_EDX, R_EAX); { offset }
+  AsmAluRegReg(ALU_ADD, R_EDX, R_EBX); { ebx + offset }
+  AsmPopReg(R_EAX);
+  AsmJmpLbl(L7);
+  AsmLabel(L5);
+  AsmPopReg(R_ECX);
+  AsmJmpLbl(L4);
+  AsmLabel(L6);
+  AsmPopReg(R_ECX);                   { restore ecx }
+  { Match : copier rp[0..rl[ vers edi ; avancer ebx de fl ; ecx -= fl }
+  AsmPushReg(R_ECX);
+  AsmMovRegMemBP(R_ESI, 24);          { rp }
+  AsmMovRegMemBP(R_EAX, 28);          { rl }
+  AsmTestRegReg(R_EAX, R_EAX);
+  L7 := CGCNewLabel('rpRlZ');
+  AsmJcc(CC_E, L7);
+  AsmPushReg(R_ECX);
+  AsmMovRegReg(R_ECX, R_EAX);
+  AsmRepMovsb;
+  AsmPopReg(R_ECX);
+  AsmLabel(L7);
+  AsmPopReg(R_ECX);
+  AsmMovRegMemBP(R_EAX, 20);          { fl }
+  AsmAluRegReg(ALU_ADD, R_EBX, R_EAX);
+  AsmAluRegReg(ALU_SUB, R_ECX, R_EAX);
+  AsmJmpLbl(L2);
+  AsmLabel(L4);
+  { No match : copier 1 octet ebx -> edi, ebx++, edi++, ecx-- }
+  AsmXorRegReg(R_EAX, R_EAX);
+  AsmMovRegMemReg(R_EAX, R_EBX);
+  AsmAluRegImm(ALU_AND, R_EAX, $FF);
+  AsmStosb;                           { [edi]=al; edi++ }
+  AsmIncReg(R_EBX);
+  AsmDecReg(R_ECX);
+  AsmJmpLbl(L2);
+  AsmLabel(L3);
+  AsmMovRegMemBP(R_EAX, -4);          { base slot }
+  AsmMovRegReg(R_EDX, R_EDI);
+  AsmAluRegReg(ALU_SUB, R_EDX, R_EAX);
+  AsmPopReg(R_EBX);
+  AsmPopReg(R_ESI);
+  AsmPopReg(R_EDI);
+  AsmAluRegImm(ALU_ADD, R_ESP, 4);
+  AsmPopReg(R_EBP);
+  AsmRet;
+
+End;
+
+{ ------------------------------------------------------------ }
 { Palier F : Print / Debug.Print expr [, expr]...               }
 { Append CRLF a la fin (sauf si le terminateur est ;).          }
 { ------------------------------------------------------------ }
@@ -17765,16 +18820,7 @@ Begin
 
   While CGCCanStartExpr Do
   Begin
-    If CurTokType = TOK_STRING Then
-    Begin
-      Lit := StrAddLit(CurTokStr);
-      Len := Length(CurTokStr);
-      AsmMovRegStrRVA(R_EAX, Lit);
-      AsmMovRegImm(R_EDX, Len);
-      AsmCallLbl('__print_str');
-      LexNextToken;
-    End
-    Else If CGCIsKW(KW_ERR) Then
+    If CGCIsKW(KW_ERR) Then
     Begin
       { Palier J : Err.Description / Err.Source -> __print_str    }
       {           Err.Number                    -> __print_long   }
@@ -17805,27 +18851,15 @@ Begin
         FatalError('Palier J: Err.' + CurTokStr + ' inconnu');
       LexNextToken;
     End
-    Else If CurTokType = TOK_IDENT Then
-    Begin
-      LI := CGCFindLocal(CurTokStr);
-      If (LI >= 0) And (CGCLocals[LI].Kind = 1) Then
-      Begin
-        { Variable String : EAX = ptr buffer, EDX = longueur }
-        AsmMovRegMemBP(R_EDX, CGCLocals[LI].Ofs);
-        AsmLeaRegMemBP(R_EAX, CGCLocals[LI].Ofs + 4);
-        AsmCallLbl('__print_str');
-        LexNextToken;
-      End
-      Else
-      Begin
-        CGCParseExpr;
-        AsmCallLbl('__print_long');
-      End;
-    End
     Else
     Begin
+      { Cas general : evaluer expression, dispatcher selon type     }
+      { signale par CGCExprIsString.                                 }
       CGCParseExpr;
-      AsmCallLbl('__print_long');
+      If CGCExprIsString Then
+        AsmCallLbl('__print_str')
+      Else
+        AsmCallLbl('__print_long');
     End;
 
     If CurTokType = TOK_SEMI Then
@@ -19278,6 +20312,9 @@ Begin
   AsmDefineData('@LINEBUF_LEN', 4);
   AsmDefineData('@PEEKBUF',  4);
   AsmDefineData('@NREAD',    4);
+  { STRINGS : pool de 8 slots de 256 octets pour resultats ephemeres   }
+  AsmDefineData('@STRPOOL',     2048);
+  AsmDefineData('@STRPOOL_IDX', 4);
   { Palier J : objet Err global }
   AsmDefineData('@ERRNUM',      4);
   AsmDefineData('@ERRDESC_PTR', 4);
@@ -19298,6 +20335,7 @@ Begin
   { Sous-routines runtime du Palier F (avant _start) }
   CGCEmitPrintHelpers;
   CGCEmitFileIOHelpers;
+  CGCEmitStringHelpers;
 
   { Palier G : emission des Sub/Function utilisateur (avant _start) }
   CGCPass2UserProcs;
