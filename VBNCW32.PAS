@@ -7,6 +7,14 @@
   @license: MIT
 }
 
+Program VBNCW32;
+
+{$R-}
+{$IFDEF FPC}
+  {$MODE TP}
+  {$H-}
+{$ENDIF}
+
 (* ============================================================
   VBNCW32.PAS - Compilateur Visual Basic .NET vers assembleur
   80386 pour Windows 32 bits
@@ -15451,6 +15459,29 @@ Begin
   If Opts.EmitExe Then
     SubsysVal := PE_SUBSYS_CUI;
 
+  { Si aucun code n a ete emis dans le tampon binaire (le backend  }
+  { actuel produit de l asm texte mais pas encore de bytecode x86), }
+  { generer un stub minimal "push 0 / call [ExitProcess]" pour     }
+  { que l executable produit soit un PE valide chargeable par      }
+  { Windows et qu il termine proprement avec ExitCode=0.           }
+  If PEWCodePos = 0 Then
+  Begin
+    { 6A 00              push 0          ; ExitCode             }
+    PEWCodeBuf[0] := $6A;
+    PEWCodeBuf[1] := $00;
+    { FF 15 <abs32>      call dword ptr [ExitProcess_IAT]       }
+    PEWCodeBuf[2] := $FF;
+    PEWCodeBuf[3] := $15;
+    PEWCodeBuf[4] := 0; PEWCodeBuf[5] := 0;
+    PEWCodeBuf[6] := 0; PEWCodeBuf[7] := 0;
+    PEWCodePos := 8;
+    { Fixup absolu vers l IAT ExitProcess }
+    PEWAddFixup(4, '_ExitProcess@4', False, True);
+    { CC                 int3 (filler de queue, jamais execute)  }
+    PEWCodeBuf[8] := $CC;
+    PEWCodePos := 9;
+  End;
+
   { Disposition simplifiee : toutes les imports dans kernel32.dll }
   { Les imports user32.dll (MessageBoxA) sont a l index 9 }
   { On les inclut tous dans kernel32.dll pour simplifier }
@@ -15518,6 +15549,11 @@ Begin
   PEWRdataVA := PEWTextVA  + PEWAlignUp(PEWCodePos, PE_SECT_ALIGN_VAL);
   PEWDataVA  := PEWRdataVA + PEWAlignUp(RdataSize, PE_SECT_ALIGN_VAL);
 
+  { S assurer que .data a au moins 4 octets (vsize>0) sinon certains  }
+  { chargeurs Windows refusent l image avec une section degenere      }
+  { (vsize=0, rsize>0).                                                }
+  If PEWDataPos = 0 Then PEWDataPos := 4;
+
   SizeOfImage := PEWDataVA + PEWAlignUp(PEWDataPos, PE_SECT_ALIGN_VAL);
 
   { Resoudre les correctifs }
@@ -15553,7 +15589,7 @@ Begin
   PEWFileWriteDWord(F, 0);     { PointerToSymbolTable }
   PEWFileWriteDWord(F, 0);     { NumberOfSymbols }
   PEWFileWriteWord(F, $E0);    { SizeOfOptionalHeader }
-  PEWFileWriteWord(F, $0102);  { Characteristics: EXECUTABLE_IMAGE | 32BIT_MACHINE }
+  PEWFileWriteWord(F, $010F);  { Characteristics: RELOCS_STRIPPED | EXECUTABLE_IMAGE | LINE_NUMS_STRIPPED | LOCAL_SYMS_STRIPPED | 32BIT_MACHINE }
 
   { === En-tete optionnel PE32 (224 octets = $E0) === }
   PEWFileWriteWord(F, $010B);  { Magic : PE32 }
@@ -15568,12 +15604,12 @@ Begin
   PEWFileWriteDWord(F, PE_IMAGE_BASE_VAL); { ImageBase }
   PEWFileWriteDWord(F, PE_SECT_ALIGN_VAL); { SectionAlignment }
   PEWFileWriteDWord(F, PE_FILE_ALIGN_VAL); { FileAlignment }
-  PEWFileWriteWord(F, 4);      { MajorOperatingSystemVersion }
-  PEWFileWriteWord(F, 0);      { MinorOperatingSystemVersion }
+  PEWFileWriteWord(F, 5);      { MajorOperatingSystemVersion }
+  PEWFileWriteWord(F, 1);      { MinorOperatingSystemVersion }
   PEWFileWriteWord(F, 0);      { MajorImageVersion }
   PEWFileWriteWord(F, 0);      { MinorImageVersion }
-  PEWFileWriteWord(F, 4);      { MajorSubsystemVersion }
-  PEWFileWriteWord(F, 0);      { MinorSubsystemVersion }
+  PEWFileWriteWord(F, 5);      { MajorSubsystemVersion }
+  PEWFileWriteWord(F, 1);      { MinorSubsystemVersion }
   PEWFileWriteDWord(F, 0);     { Win32VersionValue }
   PEWFileWriteDWord(F, SizeOfImage); { SizeOfImage }
   PEWFileWriteDWord(F, PE_FILE_ALIGN_VAL); { SizeOfHeaders }
@@ -15677,12 +15713,10 @@ Begin
   For I := 0 To PE_NUM_VBN_IMPORTS - 1 Do
   Begin
     If I <> 9 Then { pas MessageBoxA }
-    Begin
       PEWFileWriteDWord(F, PEWRdataVA + CurOff);
-      NameLen := Length(PEWImports[I].Name) + 1;
-      If (NameLen + 2) Mod 2 <> 0 Then Inc(NameLen);
-      CurOff := CurOff + 2 + NameLen;
-    End;
+    NameLen := Length(PEWImports[I].Name) + 1;
+    If (NameLen + 2) Mod 2 <> 0 Then Inc(NameLen);
+    CurOff := CurOff + 2 + NameLen;
   End;
   PEWFileWriteDWord(F, 0); { terminateur }
 
@@ -15713,12 +15747,10 @@ Begin
   For I := 0 To PE_NUM_VBN_IMPORTS - 1 Do
   Begin
     If I <> 9 Then
-    Begin
       PEWFileWriteDWord(F, PEWRdataVA + CurOff);
-      NameLen := Length(PEWImports[I].Name) + 1;
-      If (NameLen + 2) Mod 2 <> 0 Then Inc(NameLen);
-      CurOff := CurOff + 2 + NameLen;
-    End;
+    NameLen := Length(PEWImports[I].Name) + 1;
+    If (NameLen + 2) Mod 2 <> 0 Then Inc(NameLen);
+    CurOff := CurOff + 2 + NameLen;
   End;
   PEWFileWriteDWord(F, 0);
 
@@ -17817,6 +17849,6 @@ End;
 { Programme principal                                          }
 { ============================================================ }
 
-Begin
-  Run;
-End.
+BEGIN
+ Run;
+END.
