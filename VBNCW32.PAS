@@ -1350,6 +1350,7 @@ Type
     ParamName : TString;
     Body      : Array[0..PE_MAX_FUNC_TOK-1] Of TBufTok;
     BodyLen   : Integer;
+    IsSub     : Boolean;
   End;
 
 Var
@@ -1364,6 +1365,7 @@ Var
                        SVal : TString;
                      End;
   PEWFuncReturned  : Boolean;
+  PEWLastFailIdent : TString;  { dernier IDENT scalaire non trouve }
 
 Type
   TPEEvalKind = (PEK_FAIL, PEK_INT, PEK_STR);
@@ -4782,10 +4784,13 @@ Procedure PEWEvalAdd(Var V : TPEEvalVal); Forward;
 Procedure PEWEvalExpr(Var V : TPEEvalVal); Forward;
 Procedure PEWEvalPostfix(Var V : TPEEvalVal); Forward;
 Procedure PEWCaptureFunction; Forward;
+Procedure PEWCaptureSubBody(Const SubName : TString); Forward;
 Function  PEWFindFunc(Const Name : TString) : Integer; Forward;
 Function  PEWCallFunc(Idx : Integer; ArgVal : LongInt;
                       Var Ret : TPEEvalVal) : Boolean; Forward;
+Procedure PEWCallFuncByIdent(Idx : Integer; Const SrcIdent : TString); Forward;
 Procedure PEWExecBlock; Forward;
+Procedure PEWExecSelect; Forward;
 Procedure PEWSkipBlock; Forward;
 
 { ------------------------------------------------------------ }
@@ -7953,6 +7958,12 @@ Var
   SavedName : TString;
   IdxV      : TPEEvalVal;
   RhsV      : TPEEvalVal;
+  FIdx      : Integer;
+  EnumVal   : LongInt;
+  EnumName  : TString;
+  MemberName: TString;
+  SrcIdent  : TString;
+  RetV      : TPEEvalVal;
 Begin
   { Sauter les lignes vides }
   If CurTokType = TOK_NEWLINE Then
@@ -7997,6 +8008,63 @@ Begin
                       { Capturer le corps pour evaluation compile-time }
                       PEWCaptureFunction;
                     End;
+      KW_STRUCTURE : Begin
+                       { Sauter Structure ... End Structure : nous ne suivons }
+                       { pas la decl, les acces "var.field" sont stockes      }
+                       { directement par cle combinee.                        }
+                       LexNextToken;
+                       While CurTokType <> TOK_EOF Do Begin
+                         If (CurTokType = TOK_KEYWORD) And
+                            (CurTokNum = KW_END) Then Begin
+                           LexNextToken;
+                           If (CurTokType = TOK_KEYWORD) And
+                              (CurTokNum = KW_STRUCTURE) Then Begin
+                             LexNextToken;
+                             Break;
+                           End;
+                           Continue;
+                         End;
+                         LexNextToken;
+                       End;
+                     End;
+      KW_ENUM     : Begin
+                       { Capturer les membres : EnumName.Member -> int }
+                       LexNextToken;
+                       If (CurTokType = TOK_IDENT) Or
+                          (CurTokType = TOK_KEYWORD) Then Begin
+                         EnumName := CurTokStr;
+                         LexNextToken;
+                       End Else
+                         EnumName := '';
+                       EnumVal := 0;
+                       SkipNewlines;
+                       While CurTokType <> TOK_EOF Do Begin
+                         If (CurTokType = TOK_KEYWORD) And
+                            (CurTokNum = KW_END) Then Begin
+                           LexNextToken;
+                           If (CurTokType = TOK_KEYWORD) And
+                              (CurTokNum = KW_ENUM) Then Begin
+                             LexNextToken;
+                             Break;
+                           End;
+                           Continue;
+                         End;
+                         If (CurTokType = TOK_IDENT) Or
+                            (CurTokType = TOK_KEYWORD) Then Begin
+                           MemberName := CurTokStr;
+                           LexNextToken;
+                           If CurTokType = TOK_EQ Then Begin
+                             LexNextToken;
+                             PEWEvalExpr(IdxV);
+                             If IdxV.Kind = PEK_INT Then EnumVal := IdxV.IVal;
+                           End;
+                           If EnumName <> '' Then
+                             PEWSetIntVar(EnumName + '.' + MemberName, EnumVal);
+                           Inc(EnumVal);
+                         End Else
+                           LexNextToken;
+                       End;
+                     End;
     Else
       { Instruction non reconnue par ce TODO - avancer }
       LexNextToken;
@@ -8017,12 +8085,45 @@ Begin
       Exit;
     End;
     { Capture simple pour le backend binaire : NAME = expr ou       }
-    { NAME(idx) = expr. RHS evaluee compile-time si possible.       }
+    { NAME(idx) = expr, NAME.FIELD = expr, NAME(args) = appel Sub.  }
     SavedName := CurTokStr;
     LexNextToken;
-    { Affectation a un element de tableau : NAME(idx) = expr }
-    If CurTokType = TOK_LPAREN Then Begin
+    { Affectation a un membre : NAME.FIELD = expr }
+    If CurTokType = TOK_DOT Then Begin
       LexNextToken;
+      If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then Begin
+        SavedName := SavedName + '.' + CurTokStr;
+        LexNextToken;
+      End;
+      If CurTokType = TOK_EQ Then Begin
+        LexNextToken;
+        PEWEvalExpr(RhsV);
+        If RhsV.Kind = PEK_INT Then PEWSetIntVar(SavedName, RhsV.IVal)
+        Else If RhsV.Kind = PEK_STR Then PEWSetStrVar(SavedName, RhsV.SVal);
+      End;
+      Exit;
+    End;
+    { Affectation a un element de tableau OU appel de Sub : NAME(...) }
+    If CurTokType = TOK_LPAREN Then Begin
+      FIdx := PEWFindFunc(SavedName);
+      LexNextToken;
+      If FIdx >= 0 Then Begin
+        { Appel de Sub/Function (resultat ignore en Sub call) }
+        PEWLastFailIdent := '';
+        SrcIdent := '';
+        If CurTokType = TOK_IDENT Then
+          SrcIdent := CurTokStr;
+        PEWEvalExpr(IdxV);
+        If CurTokType = TOK_RPAREN Then LexNextToken;
+        If IdxV.Kind = PEK_INT Then
+          PEWCallFunc(FIdx, IdxV.IVal, RetV)
+        Else If (IdxV.Kind = PEK_FAIL) And (PEWLastFailIdent <> '') Then
+          PEWCallFuncByIdent(FIdx, PEWLastFailIdent)
+        Else If (IdxV.Kind = PEK_FAIL) And (SrcIdent <> '') Then
+          PEWCallFuncByIdent(FIdx, SrcIdent);
+        Exit;
+      End;
+      { Affectation a un element de tableau : NAME(idx) = expr }
       PEWEvalExpr(IdxV);
       If CurTokType = TOK_RPAREN Then LexNextToken;
       If CurTokType = TOK_EQ Then Begin
@@ -8904,6 +9005,12 @@ Begin
   End;
   SubName := CurTokStr;
   LexNextToken;
+
+  { Sub non-Main : capture compile-time pour appels ulterieurs. }
+  If UpCaseStr(SubName) <> 'MAIN' Then Begin
+    PEWCaptureSubBody(SubName);
+    Exit;
+  End;
 
   { Ajouter dans ProcTab }
   ProcIdx := AddProc(SubName, SK_SUB, VBT_NONE, CurProcIsPublic);
@@ -13097,6 +13204,20 @@ Begin
         PEWEvalPostfix(V);
         Exit;
       End;
+      If UTmp = 'CTYPE' Then Begin
+        { CType(value, type) : passthrough sur la valeur, ignorer le type. }
+        LexNextToken;
+        PEWEvalExpr(V);
+        If CurTokType = TOK_COMMA Then Begin
+          LexNextToken;
+          { Ignorer le nom du type ; il peut contenir un dot (ns.Type). }
+          While (CurTokType <> TOK_RPAREN) And (CurTokType <> TOK_EOF) Do
+            LexNextToken;
+        End;
+        If CurTokType = TOK_RPAREN Then LexNextToken;
+        PEWEvalPostfix(V);
+        Exit;
+      End;
       { 3) Indice de tableau d'entiers : IDENT '(' expr ')' }
       LexNextToken;
       PEWEvalExpr(ArgV);
@@ -13108,11 +13229,41 @@ Begin
       PEWEvalPostfix(V);
       Exit;
     End;
+    { Acces membre IDENT.IDENT (sans parens) : essayer cle combinee.  }
+    If CurTokType = TOK_DOT Then Begin
+      { Si l'identifiant simple est deja une variable connue,         }
+      { laisser PEWEvalPostfix traiter le '.' comme appel de methode. }
+      If PEWGetStrVar(Tmp, V.SVal) Then Begin
+        V.Kind := PEK_STR;
+        PEWEvalPostfix(V);
+        Exit;
+      End;
+      If PEWGetIntVar(Tmp, Itmp) Then Begin
+        V.Kind := PEK_INT; V.IVal := Itmp;
+        PEWEvalPostfix(V);
+        Exit;
+      End;
+      LexNextToken;
+      If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then Begin
+        Tmp := Tmp + '.' + CurTokStr;
+        LexNextToken;
+        If PEWGetStrVar(Tmp, V.SVal) Then V.Kind := PEK_STR
+        Else If PEWGetIntVar(Tmp, Itmp) Then Begin
+          V.Kind := PEK_INT; V.IVal := Itmp;
+        End;
+        PEWEvalPostfix(V);
+        Exit;
+      End;
+      V.Kind := PEK_FAIL;
+      Exit;
+    End;
     { Identifiant simple : charger comme String ou Integer puis postfix. }
     If PEWGetStrVar(Tmp, V.SVal) Then V.Kind := PEK_STR
     Else If PEWGetIntVar(Tmp, Itmp) Then Begin
       V.Kind := PEK_INT; V.IVal := Itmp;
-    End;
+    End
+    Else
+      PEWLastFailIdent := Tmp;
     PEWEvalPostfix(V);
     Exit;
   End;
@@ -13327,6 +13478,7 @@ Begin
   PEWFuncTab[Idx].BodyLen   := 0;
   PEWFuncTab[Idx].Name      := '';
   PEWFuncTab[Idx].ParamName := '';
+  PEWFuncTab[Idx].IsSub     := False;
 
   { Nom de la fonction. }
   If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then Begin
@@ -13392,6 +13544,84 @@ Begin
   End;
 End;
 
+{ ------------------------------------------------------------ }
+{ PEWCaptureSubBody : capturer une Sub a partir de son nom.    }
+{ Le KW_SUB et le nom ont deja ete consommes. On lit ( params  }
+{ ), corps, jusqu'a End Sub. Stocke dans PEWFuncTab avec       }
+{ IsSub=True et Kind=0.                                         }
+{ ------------------------------------------------------------ }
+
+Procedure PEWCaptureSubBody(Const SubName : TString);
+Var Idx, ParamSeen : Integer;
+Begin
+  If PEWFuncCount >= PE_MAX_FUNCS Then Begin
+    { Sauter jusqu'a End Sub. }
+    While CurTokType <> TOK_EOF Do Begin
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END) Then Begin
+        LexNextToken;
+        If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_SUB) Then Begin
+          LexNextToken;
+          Exit;
+        End;
+        Continue;
+      End;
+      LexNextToken;
+    End;
+    Exit;
+  End;
+  Idx := PEWFuncCount;
+  Inc(PEWFuncCount);
+  PEWFuncTab[Idx].BodyLen   := 0;
+  PEWFuncTab[Idx].Name      := SubName;
+  PEWFuncTab[Idx].ParamName := '';
+  PEWFuncTab[Idx].IsSub     := True;
+
+  ParamSeen := 0;
+  If CurTokType = TOK_LPAREN Then Begin
+    LexNextToken;
+    While (CurTokType <> TOK_RPAREN) And (CurTokType <> TOK_EOF) Do Begin
+      If (CurTokType = TOK_KEYWORD) And
+         ((CurTokNum = KW_BYVAL) Or (CurTokNum = KW_BYREF)) Then
+        LexNextToken
+      Else If CurTokType = TOK_IDENT Then Begin
+        If ParamSeen = 0 Then PEWFuncTab[Idx].ParamName := CurTokStr;
+        Inc(ParamSeen);
+        LexNextToken;
+      End
+      Else
+        LexNextToken;
+    End;
+    If CurTokType = TOK_RPAREN Then LexNextToken;
+  End;
+
+  While (CurTokType <> TOK_NEWLINE) And (CurTokType <> TOK_EOF) Do
+    LexNextToken;
+  If CurTokType = TOK_NEWLINE Then LexNextToken;
+
+  While CurTokType <> TOK_EOF Do Begin
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END) Then Begin
+      LexNextToken;
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_SUB) Then Begin
+        LexNextToken;
+        Exit;
+      End;
+      If PEWFuncTab[Idx].BodyLen < PE_MAX_FUNC_TOK Then Begin
+        PEWFuncTab[Idx].Body[PEWFuncTab[Idx].BodyLen].TokType := TOK_KEYWORD;
+        PEWFuncTab[Idx].Body[PEWFuncTab[Idx].BodyLen].TokNum  := KW_END;
+        PEWFuncTab[Idx].Body[PEWFuncTab[Idx].BodyLen].TokStr  := 'End';
+        Inc(PEWFuncTab[Idx].BodyLen);
+      End;
+    End;
+    If PEWFuncTab[Idx].BodyLen < PE_MAX_FUNC_TOK Then Begin
+      PEWFuncTab[Idx].Body[PEWFuncTab[Idx].BodyLen].TokType := CurTokType;
+      PEWFuncTab[Idx].Body[PEWFuncTab[Idx].BodyLen].TokNum  := CurTokNum;
+      PEWFuncTab[Idx].Body[PEWFuncTab[Idx].BodyLen].TokStr  := CurTokStr;
+      Inc(PEWFuncTab[Idx].BodyLen);
+    End;
+    LexNextToken;
+  End;
+End;
+
 Procedure PEWSkipBlock;
 Var Depth : Integer;
 Begin
@@ -13424,14 +13654,17 @@ Procedure PEWExecIf; Forward;
 Procedure PEWExecBlock;
 Var V : TPEEvalVal; Name : TString;
 Begin
-  While (Not PEWFuncReturned) And (CurTokType <> TOK_EOF) Do Begin
+  While (Not PEWFuncReturned) And
+        (Not (PEWLoopReplay And (PEWLoopBreak Or PEWLoopContinue))) And
+        (CurTokType <> TOK_EOF) Do Begin
     If CurTokType = TOK_NEWLINE Then Begin
       LexNextToken;
       Continue;
     End;
     If CurTokType = TOK_KEYWORD Then Begin
       If (CurTokNum = KW_ELSE) Or (CurTokNum = KW_ELSEIF) Or
-         (CurTokNum = KW_END) Then Exit;
+         (CurTokNum = KW_END) Or (CurTokNum = KW_CASE) Or
+         (CurTokNum = KW_LOOP) Or (CurTokNum = KW_NEXT) Then Exit;
       If CurTokNum = KW_RETURN Then Begin
         LexNextToken;
         PEWEvalExpr(V);
@@ -13450,12 +13683,45 @@ Begin
         PEWExecIf;
         Continue;
       End;
+      If CurTokNum = KW_SELECT Then Begin
+        PEWExecSelect;
+        Continue;
+      End;
+      If CurTokNum = KW_EXIT Then Begin
+        ParseExitStatement;
+        Continue;
+      End;
+      If CurTokNum = KW_CONTINUE Then Begin
+        ParseContinueStatement;
+        Continue;
+      End;
       LexNextToken;
       Continue;
     End;
     If CurTokType = TOK_IDENT Then Begin
       Name := CurTokStr;
+      If UpCaseStr(Name) = 'CONSOLE' Then Begin
+        LexNextToken;
+        ParseConsoleStatement;
+        Continue;
+      End;
       LexNextToken;
+      { Member assign : IDENT.IDENT = expr }
+      If CurTokType = TOK_DOT Then Begin
+        LexNextToken;
+        If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then Begin
+          Name := Name + '.' + CurTokStr;
+          LexNextToken;
+        End;
+      End;
+      { Sub call : IDENT(args) ou IDENT.IDENT(args) }
+      If CurTokType = TOK_LPAREN Then Begin
+        Name := ''; { let it fall through, no Sub support inside funcs }
+        While (CurTokType <> TOK_RPAREN) And (CurTokType <> TOK_EOF) Do
+          LexNextToken;
+        If CurTokType = TOK_RPAREN Then LexNextToken;
+        Continue;
+      End;
       If CurTokType = TOK_EQ Then Begin
         LexNextToken;
         PEWEvalExpr(V);
@@ -13502,6 +13768,99 @@ Begin
   If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END) Then Begin
     LexNextToken;
     If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_IF) Then LexNextToken;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ Pour les Subs avec parametre UDT : copier toutes les entrees  }
+{ "SRC.X"  vers  "DST.X" dans les tables String et Integer.    }
+{ ------------------------------------------------------------ }
+
+Procedure PEWCopyPrefix(Const Src, Dst : TString);
+Var I : Integer; SU, DU, P : TString; SLen : Integer;
+Begin
+  SU := UpCaseStr(Src) + '.';
+  DU := UpCaseStr(Dst) + '.';
+  SLen := Length(SU);
+  For I := 0 To PEWStrVarCount - 1 Do
+    If (Length(PEWStrVarTab[I].Name) > SLen) And
+       (Copy(PEWStrVarTab[I].Name, 1, SLen) = SU) Then Begin
+      P := DU + Copy(PEWStrVarTab[I].Name, SLen + 1,
+                     Length(PEWStrVarTab[I].Name) - SLen);
+      PEWSetStrVar(P, PEWStrVarTab[I].Val);
+    End;
+  For I := 0 To PEWIntVarCount - 1 Do
+    If (Length(PEWIntVarTab[I].Name) > SLen) And
+       (Copy(PEWIntVarTab[I].Name, 1, SLen) = SU) Then Begin
+      P := DU + Copy(PEWIntVarTab[I].Name, SLen + 1,
+                     Length(PEWIntVarTab[I].Name) - SLen);
+      PEWSetIntVar(P, PEWIntVarTab[I].Val);
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ PEWExecSelect : Select Case en compile time, dans le corps    }
+{ d'une fonction/sub captures.                                  }
+{ ------------------------------------------------------------ }
+
+Procedure PEWExecSelect;
+Var V, CV : TPEEvalVal; Match, Done : Boolean;
+Begin
+  LexNextToken; { 'Select' }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_CASE) Then LexNextToken;
+  PEWEvalExpr(V);
+  If CurTokType = TOK_NEWLINE Then LexNextToken;
+  Done := False;
+  While CurTokType <> TOK_EOF Do Begin
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END) Then Begin
+      LexNextToken;
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_SELECT) Then
+        LexNextToken;
+      Exit;
+    End;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_CASE) Then Begin
+      LexNextToken;
+      Match := False;
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ELSE) Then Begin
+        LexNextToken;
+        If Not Done Then Match := True;
+      End Else Begin
+        While True Do Begin
+          PEWEvalExpr(CV);
+          If (Not Done) And (V.Kind = CV.Kind) Then Begin
+            If (V.Kind = PEK_INT) And (V.IVal = CV.IVal) Then Match := True
+            Else If (V.Kind = PEK_STR) And (V.SVal = CV.SVal) Then Match := True;
+          End;
+          If CurTokType = TOK_COMMA Then LexNextToken
+          Else Break;
+        End;
+      End;
+      If CurTokType = TOK_NEWLINE Then LexNextToken;
+      If Match Then Begin
+        Done := True;
+        PEWExecBlock;
+        If PEWFuncReturned Then Exit;
+        { sauter jusqu'a End Select }
+        While CurTokType <> TOK_EOF Do Begin
+          If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END) Then Begin
+            LexNextToken;
+            If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_SELECT) Then
+              LexNextToken;
+            Exit;
+          End;
+          LexNextToken;
+        End;
+      End Else Begin
+        { sauter ce corps de Case jusqu'a Case suivant ou End }
+        While CurTokType <> TOK_EOF Do Begin
+          If CurTokType = TOK_KEYWORD Then Begin
+            If (CurTokNum = KW_CASE) Or (CurTokNum = KW_END) Then Break;
+          End;
+          LexNextToken;
+        End;
+      End;
+    End Else
+      LexNextToken;
   End;
 End;
 
@@ -13595,6 +13954,75 @@ Begin
   PEWFuncReturn.SVal := SaveReturnSVal;
   If HadParam Then
     PEWSetIntVar(PEWFuncTab[Idx].ParamName, SaveParamVal);
+End;
+
+{ ------------------------------------------------------------ }
+{ PEWCallFuncByIdent : appel quand l'argument est un IDENT non- }
+{ scalaire (probablement un UDT). On copie SrcIdent.* vers      }
+{ ParamName.* avant l'execution. Pas de valeur de retour        }
+{ exploitee (pour les Subs).                                    }
+{ ------------------------------------------------------------ }
+
+Procedure PEWCallFuncByIdent(Idx : Integer; Const SrcIdent : TString);
+Var
+  SaveFuncReplay  : Boolean;
+  SaveFuncIdx     : Integer;
+  SaveFuncPos     : Integer;
+  SaveLoopReplay  : Boolean;
+  SaveLoopPos     : Integer;
+  SaveLoopLen     : Integer;
+  SaveTokType     : Integer;
+  SaveTokNum      : LongInt;
+  SaveTokStr      : TString;
+  SaveReturned    : Boolean;
+  SaveReturnKind  : Integer;
+  SaveReturnIVal  : LongInt;
+  SaveReturnSVal  : TString;
+Begin
+  If (Idx < 0) Or (Idx >= PEWFuncCount) Then Exit;
+  If PEWFuncTab[Idx].BodyLen <= 0 Then Exit;
+
+  SaveFuncReplay := PEWFuncReplay;
+  SaveFuncIdx    := PEWFuncReplayIdx;
+  SaveFuncPos    := PEWFuncReplayPos;
+  SaveLoopReplay := PEWLoopReplay;
+  SaveLoopPos    := PEWLoopBufPos;
+  SaveLoopLen    := PEWLoopBufLen;
+  SaveTokType    := CurTokType;
+  SaveTokNum     := CurTokNum;
+  SaveTokStr     := CurTokStr;
+  SaveReturned   := PEWFuncReturned;
+  SaveReturnKind := PEWFuncReturn.Kind;
+  SaveReturnIVal := PEWFuncReturn.IVal;
+  SaveReturnSVal := PEWFuncReturn.SVal;
+
+  { Copier SrcIdent.* vers ParamName.* }
+  If PEWFuncTab[Idx].ParamName <> '' Then
+    PEWCopyPrefix(SrcIdent, PEWFuncTab[Idx].ParamName);
+
+  PEWFuncReplay    := True;
+  PEWFuncReplayIdx := Idx;
+  PEWFuncReplayPos := 0;
+  PEWLoopReplay    := False;
+  PEWFuncReturned  := False;
+  PEWFuncReturn.Kind := 0;
+
+  LexNextToken;
+  PEWExecBlock;
+
+  PEWFuncReplay      := SaveFuncReplay;
+  PEWFuncReplayIdx   := SaveFuncIdx;
+  PEWFuncReplayPos   := SaveFuncPos;
+  PEWLoopReplay      := SaveLoopReplay;
+  PEWLoopBufPos      := SaveLoopPos;
+  PEWLoopBufLen      := SaveLoopLen;
+  CurTokType         := SaveTokType;
+  CurTokNum          := SaveTokNum;
+  CurTokStr          := SaveTokStr;
+  PEWFuncReturned    := SaveReturned;
+  PEWFuncReturn.Kind := SaveReturnKind;
+  PEWFuncReturn.IVal := SaveReturnIVal;
+  PEWFuncReturn.SVal := SaveReturnSVal;
 End;
 
 Function PEWTryBuildPrint(NewLine : Boolean) : Boolean;
