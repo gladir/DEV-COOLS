@@ -696,6 +696,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td><b>VAXPCW32.PAS</b></td>
 			<td> Cette commande permet de lancer le compilateur de VAX Pascal pour l'assembleur du microprocesseur 80386 (en executable Windows 32 bits).</td>
 		</tr>
+		<tr>
+			<td><b>VBCW32.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur Visual Basic 6 pour l'assembleur du microprocesseur 80386 (en executable Windows 32 bits).</td>
+		</tr>
 	</table>
 
 <h2>Compilation</h2>
