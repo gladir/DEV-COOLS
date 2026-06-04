@@ -75,7 +75,7 @@ Program RUBYCW32;
               TOK_SPACESHIP, TOK_TRIPLEEQ, TOK_MATCH, TOK_NMATCH,
               TOK_SAFE_NAV, TOK_AMP_BLOCK, TOK_NEWLINE, TOK_EOF
 
-  TODO 03 - MOTS-CLES ET PSEUDO-MOTS-CLES RUBY
+  TODO 03 - MOTS-CLES ET PSEUDO-MOTS-CLES RUBY [IMPLEMENTE]
             IsKeyword(s : String) : Integer
             Reserves : alias and BEGIN begin break case class def
               defined? do else elsif END end ensure false for if
@@ -95,7 +95,7 @@ Program RUBYCW32;
               if/unless/while/until : prefixe OU suffixe (modifieur)
               { } : bloc OU hash literal (selon contexte)
 
-  TODO 04 - SYMBOLES, SCOPES ET REPRESENTATION RUNTIME
+  TODO 04 - SYMBOLES, SCOPES ET REPRESENTATION RUNTIME [IMPLEMENTE]
             TSym (Name, Kind, Type, Scope, Offset, ClassRef)
             Kinds : SK_LOCAL, SK_IVAR, SK_CVAR, SK_GVAR, SK_CONST,
               SK_METHOD, SK_CLASS, SK_MODULE, SK_BLOCK_PARAM
@@ -114,7 +114,7 @@ Program RUBYCW32;
             FindSym, AddSym, EnterScope, LeaveScope (pile pour blocs
               imbriques et methodes)
 
-  TODO 05 - PARSEUR D EXPRESSIONS (PRECEDENCE RUBY)
+  TODO 05 - PARSEUR D EXPRESSIONS (PRECEDENCE RUBY) [IMPLEMENTE]
             ParseExpr -> ParseAssign -> ParseTernary -> ParseRange
               -> ParseLogicalOr -> ParseLogicalAnd -> ParseEquality
               -> ParseComparison -> ParseBitOr -> ParseBitAnd
@@ -498,6 +498,8 @@ Const
   MAX_BLOCK = 64;
   MAX_RESCUE = 32;
   MAX_REQUIRE = 64;
+  MAX_SCOPE = 80;
+  MAX_AST = 8192;
   MAX_SRC_TEXT = 65535;
 
   ASM_PFX_GVAR = '_RB_';
@@ -551,9 +553,184 @@ Const
   TOK_FAT_ARROW = 290;
   TOK_PIN = 291;
 
+  KW_ALIAS = 1000;
+  KW_AND = 1001;
+  KW_BEGIN_UP = 1002;
+  KW_BEGIN = 1003;
+  KW_BREAK = 1004;
+  KW_CASE = 1005;
+  KW_CLASS = 1006;
+  KW_DEF = 1007;
+  KW_DEFINED = 1008;
+  KW_DO = 1009;
+  KW_ELSE = 1010;
+  KW_ELSIF = 1011;
+  KW_END_UP = 1012;
+  KW_END = 1013;
+  KW_ENSURE = 1014;
+  KW_FALSE = 1015;
+  KW_FOR = 1016;
+  KW_IF = 1017;
+  KW_IN = 1018;
+  KW_MODULE = 1019;
+  KW_NEXT = 1020;
+  KW_NIL = 1021;
+  KW_NOT = 1022;
+  KW_OR = 1023;
+  KW_REDO = 1024;
+  KW_RESCUE = 1025;
+  KW_RETRY = 1026;
+  KW_RETURN = 1027;
+  KW_SELF = 1028;
+  KW_SUPER = 1029;
+  KW_THEN = 1030;
+  KW_TRUE = 1031;
+  KW_UNDEF = 1032;
+  KW_UNLESS = 1033;
+  KW_UNTIL = 1034;
+  KW_WHEN = 1035;
+  KW_WHILE = 1036;
+  KW_YIELD = 1037;
+  KW_FILE = 1038;
+  KW_LINE = 1039;
+  KW_ENCODING = 1040;
+
+  KW_ATTR_ACCESSOR = 1100;
+  KW_ATTR_READER = 1101;
+  KW_ATTR_WRITER = 1102;
+  KW_PRIVATE = 1103;
+  KW_PUBLIC = 1104;
+  KW_PROTECTED = 1105;
+  KW_RAISE = 1106;
+  KW_REQUIRE = 1107;
+  KW_REQUIRE_RELATIVE = 1108;
+  KW_LOAD = 1109;
+  KW_INCLUDE = 1110;
+  KW_EXTEND = 1111;
+  KW_PREPEND = 1112;
+  KW_MODULE_FUNCTION = 1113;
+  KW_PROC = 1114;
+  KW_LAMBDA = 1115;
+  KW_LOOP = 1116;
+  KW_TIMES = 1117;
+  KW_EACH = 1118;
+  KW_MAP = 1119;
+  KW_SELECT = 1120;
+  KW_REJECT = 1121;
+  KW_INJECT = 1122;
+  KW_REDUCE = 1123;
+  KW_PUTS = 1124;
+  KW_PRINT = 1125;
+  KW_P = 1126;
+  KW_PP = 1127;
+  KW_GETS = 1128;
+  KW_GETC = 1129;
+  KW_PRINTF = 1130;
+  KW_SPRINTF = 1131;
+
+  CTX_NONE = 0;
+  CTX_PREFIX = 1;
+  CTX_MODIFIER = 2;
+  CTX_DO_AFTER_EXPR = 3;
+  CTX_DO_BEGIN = 4;
+  CTX_BLOCK_BRACE = 5;
+  CTX_HASH_BRACE = 6;
+
+  SK_NONE = 0;
+  SK_LOCAL = 1;
+  SK_IVAR = 2;
+  SK_CVAR = 3;
+  SK_GVAR = 4;
+  SK_CONST = 5;
+  SK_METHOD = 6;
+  SK_CLASS = 7;
+  SK_MODULE = 8;
+  SK_BLOCK_PARAM = 9;
+
+  SC_TOPLEVEL = 0;
+  SC_BLOCK = 1;
+  SC_METHOD = 2;
+  SC_CLASS = 3;
+  SC_MODULE = 4;
+
+  RT_UNKNOWN = 0;
+  RT_NIL = 1;
+  RT_FALSE = 2;
+  RT_TRUE = 3;
+  RT_INTEGER = 4;
+  RT_FLOAT = 5;
+  RT_STRING = 6;
+  RT_SYMBOL = 7;
+  RT_ARRAY = 8;
+  RT_HASH = 9;
+  RT_RANGE = 10;
+  RT_REGEXP = 11;
+  RT_PROC = 12;
+  RT_LAMBDA = 13;
+  RT_OBJECT = 14;
+  RT_CLASS = 15;
+  RT_MODULE = 16;
+
+  RV_FALSE = $00000000;
+  RV_NIL = $00000008;
+  RV_TRUE = $00000014;
+  RV_FIXNUM_TAG = $00000001;
+  RV_SYMBOL_TAG = $0000000C;
+  RV_SYMBOL_SHIFT = 8;
+  RV_PTR_ALIGN = 8;
+
+  OBJ_HDR_CLASS = 0;
+  OBJ_HDR_FLAGS = 4;
+  OBJ_HDR_IVARS = 8;
+  OBJ_HDR_SIZE = 12;
+
+  NK_NONE = 0;
+  NK_LITERAL = 1;
+  NK_VAR = 2;
+  NK_CONST = 3;
+  NK_UNARY = 4;
+  NK_BINARY = 5;
+  NK_ASSIGN = 6;
+  NK_TERNARY = 7;
+  NK_RANGE = 8;
+  NK_CALL = 9;
+  NK_INDEX = 10;
+  NK_ARRAY = 11;
+  NK_HASH = 12;
+  NK_PAIR = 13;
+  NK_LIST = 14;
+  NK_SPLAT = 15;
+  NK_KW_SPLAT = 16;
+
 Type
   TStringList64 = Array[1..MAX_REQUIRE] Of String;
   TSrcBuffer = Array[1..MAX_SRC_TEXT] Of Char;
+
+  TSym = Record
+    Name: String;
+    Kind: Integer;
+    RType: Integer;
+    Scope: Integer;
+    Offset: Integer;
+    ClassRef: Integer;
+  End;
+
+  TSymTable = Array[1..MAX_SYM] Of TSym;
+  TScopeStack = Array[0..MAX_SCOPE] Of Integer;
+
+  TASTNode = Record
+    Kind: Integer;
+    Tok: Integer;
+    Text: String;
+    Left: Integer;
+    Right: Integer;
+    Third: Integer;
+    FirstChild: Integer;
+    NextSibling: Integer;
+    SymRef: Integer;
+  End;
+
+  TASTTable = Array[1..MAX_AST] Of TASTNode;
 
   TOptions = Record
     SrcFile: String;
@@ -583,7 +760,21 @@ Var
   CurTokNum: LongInt;
   CurTokLine: LongInt;
   CurTokCol: LongInt;
+  CurTokContext: Integer;
+  LastTokenType: Integer;
   LastTokenCanEndExpr: Boolean;
+  SymTable: TSymTable;
+  SymCount: Integer;
+  ScopeLevel: Integer;
+  ScopeKind: TScopeStack;
+  ScopeBase: TScopeStack;
+  ScopeNextLocal: TScopeStack;
+  ScopeOwnerClass: TScopeStack;
+  CurrentClassRef: Integer;
+  AstTable: TASTTable;
+  AstCount: Integer;
+  ParseErrors: Integer;
+  ParseAllowCommaList: Boolean;
 
 Procedure FatalError(Msg: String); Forward;
 
@@ -634,6 +825,314 @@ Var
 Begin
   E := UpCaseStr(FileExt(S));
   IsRubySourceName := (E = '.RB') Or (E = '.RUBY');
+End;
+
+Function IsKeyword(S: String): Integer;
+Begin
+  IsKeyword := 0;
+  If S = 'alias' Then IsKeyword := KW_ALIAS
+  Else If S = 'and' Then IsKeyword := KW_AND
+  Else If S = 'BEGIN' Then IsKeyword := KW_BEGIN_UP
+  Else If S = 'begin' Then IsKeyword := KW_BEGIN
+  Else If S = 'break' Then IsKeyword := KW_BREAK
+  Else If S = 'case' Then IsKeyword := KW_CASE
+  Else If S = 'class' Then IsKeyword := KW_CLASS
+  Else If S = 'def' Then IsKeyword := KW_DEF
+  Else If S = 'defined?' Then IsKeyword := KW_DEFINED
+  Else If S = 'do' Then IsKeyword := KW_DO
+  Else If S = 'else' Then IsKeyword := KW_ELSE
+  Else If S = 'elsif' Then IsKeyword := KW_ELSIF
+  Else If S = 'END' Then IsKeyword := KW_END_UP
+  Else If S = 'end' Then IsKeyword := KW_END
+  Else If S = 'ensure' Then IsKeyword := KW_ENSURE
+  Else If S = 'false' Then IsKeyword := KW_FALSE
+  Else If S = 'for' Then IsKeyword := KW_FOR
+  Else If S = 'if' Then IsKeyword := KW_IF
+  Else If S = 'in' Then IsKeyword := KW_IN
+  Else If S = 'module' Then IsKeyword := KW_MODULE
+  Else If S = 'next' Then IsKeyword := KW_NEXT
+  Else If S = 'nil' Then IsKeyword := KW_NIL
+  Else If S = 'not' Then IsKeyword := KW_NOT
+  Else If S = 'or' Then IsKeyword := KW_OR
+  Else If S = 'redo' Then IsKeyword := KW_REDO
+  Else If S = 'rescue' Then IsKeyword := KW_RESCUE
+  Else If S = 'retry' Then IsKeyword := KW_RETRY
+  Else If S = 'return' Then IsKeyword := KW_RETURN
+  Else If S = 'self' Then IsKeyword := KW_SELF
+  Else If S = 'super' Then IsKeyword := KW_SUPER
+  Else If S = 'then' Then IsKeyword := KW_THEN
+  Else If S = 'true' Then IsKeyword := KW_TRUE
+  Else If S = 'undef' Then IsKeyword := KW_UNDEF
+  Else If S = 'unless' Then IsKeyword := KW_UNLESS
+  Else If S = 'until' Then IsKeyword := KW_UNTIL
+  Else If S = 'when' Then IsKeyword := KW_WHEN
+  Else If S = 'while' Then IsKeyword := KW_WHILE
+  Else If S = 'yield' Then IsKeyword := KW_YIELD
+  Else If S = '__FILE__' Then IsKeyword := KW_FILE
+  Else If S = '__LINE__' Then IsKeyword := KW_LINE
+  Else If S = '__ENCODING__' Then IsKeyword := KW_ENCODING
+  Else If S = 'attr_accessor' Then IsKeyword := KW_ATTR_ACCESSOR
+  Else If S = 'attr_reader' Then IsKeyword := KW_ATTR_READER
+  Else If S = 'attr_writer' Then IsKeyword := KW_ATTR_WRITER
+  Else If S = 'private' Then IsKeyword := KW_PRIVATE
+  Else If S = 'public' Then IsKeyword := KW_PUBLIC
+  Else If S = 'protected' Then IsKeyword := KW_PROTECTED
+  Else If S = 'raise' Then IsKeyword := KW_RAISE
+  Else If S = 'require' Then IsKeyword := KW_REQUIRE
+  Else If S = 'require_relative' Then IsKeyword := KW_REQUIRE_RELATIVE
+  Else If S = 'load' Then IsKeyword := KW_LOAD
+  Else If S = 'include' Then IsKeyword := KW_INCLUDE
+  Else If S = 'extend' Then IsKeyword := KW_EXTEND
+  Else If S = 'prepend' Then IsKeyword := KW_PREPEND
+  Else If S = 'module_function' Then IsKeyword := KW_MODULE_FUNCTION
+  Else If S = 'proc' Then IsKeyword := KW_PROC
+  Else If S = 'lambda' Then IsKeyword := KW_LAMBDA
+  Else If S = 'loop' Then IsKeyword := KW_LOOP
+  Else If S = 'times' Then IsKeyword := KW_TIMES
+  Else If S = 'each' Then IsKeyword := KW_EACH
+  Else If S = 'map' Then IsKeyword := KW_MAP
+  Else If S = 'select' Then IsKeyword := KW_SELECT
+  Else If S = 'reject' Then IsKeyword := KW_REJECT
+  Else If S = 'inject' Then IsKeyword := KW_INJECT
+  Else If S = 'reduce' Then IsKeyword := KW_REDUCE
+  Else If S = 'puts' Then IsKeyword := KW_PUTS
+  Else If S = 'print' Then IsKeyword := KW_PRINT
+  Else If S = 'p' Then IsKeyword := KW_P
+  Else If S = 'pp' Then IsKeyword := KW_PP
+  Else If S = 'gets' Then IsKeyword := KW_GETS
+  Else If S = 'getc' Then IsKeyword := KW_GETC
+  Else If S = 'printf' Then IsKeyword := KW_PRINTF
+  Else If S = 'sprintf' Then IsKeyword := KW_SPRINTF;
+End;
+
+Function IsPseudoKeyword(T: Integer): Boolean;
+Begin
+  IsPseudoKeyword := (T >= KW_ATTR_ACCESSOR) And (T <= KW_SPRINTF);
+End;
+
+Function IsKeywordLiteral(T: Integer): Boolean;
+Begin
+  IsKeywordLiteral := (T = KW_FALSE) Or (T = KW_NIL) Or (T = KW_SELF) Or
+                      (T = KW_TRUE) Or (T = KW_FILE) Or (T = KW_LINE) Or
+                      (T = KW_ENCODING);
+End;
+
+Function IsBlockStarterKeyword(T: Integer): Boolean;
+Begin
+  IsBlockStarterKeyword := (T = KW_BEGIN_UP) Or (T = KW_BEGIN) Or
+                           (T = KW_CASE) Or (T = KW_CLASS) Or
+                           (T = KW_DEF) Or (T = KW_DO) Or
+                           (T = KW_FOR) Or (T = KW_IF) Or
+                           (T = KW_MODULE) Or (T = KW_UNLESS) Or
+                           (T = KW_UNTIL) Or (T = KW_WHILE);
+End;
+
+Function IsModifierKeyword(T: Integer): Boolean;
+Begin
+  IsModifierKeyword := (T = KW_IF) Or (T = KW_UNLESS) Or
+                       (T = KW_WHILE) Or (T = KW_UNTIL) Or
+                       (T = KW_RESCUE);
+End;
+
+Function ContextName(C: Integer): String;
+Begin
+  Case C Of
+    CTX_PREFIX: ContextName := 'prefix';
+    CTX_MODIFIER: ContextName := 'modifier';
+    CTX_DO_AFTER_EXPR: ContextName := 'do-after-expr';
+    CTX_DO_BEGIN: ContextName := 'do-begin';
+    CTX_BLOCK_BRACE: ContextName := 'block-brace';
+    CTX_HASH_BRACE: ContextName := 'hash-brace';
+  Else
+    ContextName := '';
+  End;
+End;
+
+Function SymKindName(K: Integer): String;
+Begin
+  Case K Of
+    SK_LOCAL: SymKindName := 'local';
+    SK_IVAR: SymKindName := 'ivar';
+    SK_CVAR: SymKindName := 'cvar';
+    SK_GVAR: SymKindName := 'gvar';
+    SK_CONST: SymKindName := 'const';
+    SK_METHOD: SymKindName := 'method';
+    SK_CLASS: SymKindName := 'class';
+    SK_MODULE: SymKindName := 'module';
+    SK_BLOCK_PARAM: SymKindName := 'block-param';
+  Else
+    SymKindName := 'none';
+  End;
+End;
+
+Function RuntimeTypeName(T: Integer): String;
+Begin
+  Case T Of
+    RT_NIL: RuntimeTypeName := 'nil';
+    RT_FALSE: RuntimeTypeName := 'false';
+    RT_TRUE: RuntimeTypeName := 'true';
+    RT_INTEGER: RuntimeTypeName := 'integer';
+    RT_FLOAT: RuntimeTypeName := 'float';
+    RT_STRING: RuntimeTypeName := 'string';
+    RT_SYMBOL: RuntimeTypeName := 'symbol';
+    RT_ARRAY: RuntimeTypeName := 'array';
+    RT_HASH: RuntimeTypeName := 'hash';
+    RT_RANGE: RuntimeTypeName := 'range';
+    RT_REGEXP: RuntimeTypeName := 'regexp';
+    RT_PROC: RuntimeTypeName := 'proc';
+    RT_LAMBDA: RuntimeTypeName := 'lambda';
+    RT_OBJECT: RuntimeTypeName := 'object';
+    RT_CLASS: RuntimeTypeName := 'class';
+    RT_MODULE: RuntimeTypeName := 'module';
+  Else
+    RuntimeTypeName := 'unknown';
+  End;
+End;
+
+Function ScopeKindName(K: Integer): String;
+Begin
+  Case K Of
+    SC_TOPLEVEL: ScopeKindName := 'toplevel';
+    SC_BLOCK: ScopeKindName := 'block';
+    SC_METHOD: ScopeKindName := 'method';
+    SC_CLASS: ScopeKindName := 'class';
+    SC_MODULE: ScopeKindName := 'module';
+  Else
+    ScopeKindName := 'scope';
+  End;
+End;
+
+Function MakeFixnumValue(N: LongInt): LongInt;
+Begin
+  MakeFixnumValue := (N Shl 1) Or RV_FIXNUM_TAG;
+End;
+
+Function MakeSymbolValue(SymId: LongInt): LongInt;
+Begin
+  MakeSymbolValue := (SymId Shl RV_SYMBOL_SHIFT) Or RV_SYMBOL_TAG;
+End;
+
+Function IsImmediateValue(V: LongInt): Boolean;
+Begin
+  IsImmediateValue := ((V And RV_FIXNUM_TAG) = RV_FIXNUM_TAG) Or
+                      (V = RV_FALSE) Or (V = RV_NIL) Or (V = RV_TRUE) Or
+                      ((V And $000000FF) = RV_SYMBOL_TAG);
+End;
+
+Function FindSymInScope(Name: String; Scope: Integer): Integer;
+Var
+  I: Integer;
+Begin
+  FindSymInScope := 0;
+  For I := SymCount DownTo 1 Do
+    If (SymTable[I].Scope = Scope) And (SymTable[I].Name = Name) Then Begin
+      FindSymInScope := I;
+      Exit;
+    End;
+End;
+
+Function FindSym(Name: String): Integer;
+Var
+  L, I: Integer;
+Begin
+  FindSym := 0;
+  For L := ScopeLevel DownTo 0 Do Begin
+    For I := SymCount DownTo 1 Do
+      If (SymTable[I].Scope = L) And (SymTable[I].Name = Name) Then Begin
+        FindSym := I;
+        Exit;
+      End;
+  End;
+End;
+
+Function AllocSymOffset(Kind: Integer): Integer;
+Begin
+  AllocSymOffset := 0;
+  If (Kind = SK_LOCAL) Or (Kind = SK_BLOCK_PARAM) Then Begin
+    Inc(ScopeNextLocal[ScopeLevel], 4);
+    AllocSymOffset := -ScopeNextLocal[ScopeLevel];
+  End Else If Kind = SK_GVAR Then
+    AllocSymOffset := SymCount * 4
+  Else If Kind = SK_IVAR Then
+    AllocSymOffset := OBJ_HDR_SIZE + SymCount * 4;
+End;
+
+Function AddSym(Name: String; Kind, RType, ClassRef: Integer): Integer;
+Var
+  Existing: Integer;
+Begin
+  Existing := FindSymInScope(Name, ScopeLevel);
+  If Existing <> 0 Then Begin
+    AddSym := Existing;
+    Exit;
+  End;
+  If SymCount >= MAX_SYM Then FatalError('table des symboles pleine');
+  Inc(SymCount);
+  SymTable[SymCount].Name := Name;
+  SymTable[SymCount].Kind := Kind;
+  SymTable[SymCount].RType := RType;
+  SymTable[SymCount].Scope := ScopeLevel;
+  SymTable[SymCount].Offset := AllocSymOffset(Kind);
+  SymTable[SymCount].ClassRef := ClassRef;
+  AddSym := SymCount;
+End;
+
+Procedure EnterScope(Kind: Integer);
+Begin
+  If ScopeLevel >= MAX_SCOPE Then FatalError('pile de scopes pleine');
+  Inc(ScopeLevel);
+  ScopeKind[ScopeLevel] := Kind;
+  ScopeBase[ScopeLevel] := SymCount + 1;
+  ScopeNextLocal[ScopeLevel] := 0;
+  ScopeOwnerClass[ScopeLevel] := CurrentClassRef;
+End;
+
+Procedure LeaveScope;
+Var
+  OldOwner: Integer;
+Begin
+  If ScopeLevel = 0 Then FatalError('impossible de quitter le scope racine');
+  OldOwner := ScopeOwnerClass[ScopeLevel];
+  SymCount := ScopeBase[ScopeLevel] - 1;
+  Dec(ScopeLevel);
+  CurrentClassRef := OldOwner;
+End;
+
+Procedure InitSymbols;
+Begin
+  FillChar(SymTable, SizeOf(SymTable), 0);
+  FillChar(ScopeKind, SizeOf(ScopeKind), 0);
+  FillChar(ScopeBase, SizeOf(ScopeBase), 0);
+  FillChar(ScopeNextLocal, SizeOf(ScopeNextLocal), 0);
+  FillChar(ScopeOwnerClass, SizeOf(ScopeOwnerClass), 0);
+  SymCount := 0;
+  ScopeLevel := 0;
+  ScopeKind[0] := SC_TOPLEVEL;
+  ScopeBase[0] := 1;
+  CurrentClassRef := 0;
+  CurrentClassRef := AddSym('BasicObject', SK_CLASS, RT_CLASS, 0);
+  AddSym('Object', SK_CLASS, RT_CLASS, CurrentClassRef);
+  AddSym('Kernel', SK_MODULE, RT_MODULE, 0);
+  AddSym('ARGV', SK_CONST, RT_ARRAY, 0);
+  AddSym('ENV', SK_CONST, RT_HASH, 0);
+  AddSym('STDIN', SK_CONST, RT_OBJECT, 0);
+  AddSym('STDOUT', SK_CONST, RT_OBJECT, 0);
+  AddSym('STDERR', SK_CONST, RT_OBJECT, 0);
+  CurrentClassRef := FindSym('Object');
+End;
+
+Procedure DumpSymbols;
+Var
+  I: Integer;
+Begin
+  WriteLn('Symboles: ', SymCount);
+  For I := 1 To SymCount Do
+    WriteLn(I:5, '  ', SymTable[I].Name,
+            ' kind=', SymKindName(SymTable[I].Kind),
+            ' type=', RuntimeTypeName(SymTable[I].RType),
+            ' scope=', ScopeKindName(ScopeKind[SymTable[I].Scope]),
+            ' offset=', SymTable[I].Offset:0,
+            ' class=', SymTable[I].ClassRef:0);
 End;
 
 Function ItoS(N: LongInt): String;
@@ -733,6 +1232,8 @@ Begin
   CurTokType := TOK_EOF;
   CurTokStr := '';
   CurTokNum := 0;
+  CurTokContext := CTX_NONE;
+  LastTokenType := TOK_EOF;
   LastTokenCanEndExpr := False;
 End;
 
@@ -780,13 +1281,19 @@ End;
 Procedure ReadIdent;
 Var
   First: Char;
+  K: Integer;
 Begin
   First := LexPeekChar;
   While IsIdentChar(LexPeekChar) Do AppendTok(LexNextChar);
   If (LexPeekChar = '?') Or (LexPeekChar = '!') Or (LexPeekChar = '=') Then
     AppendTok(LexNextChar);
-  If (First >= 'A') And (First <= 'Z') Then CurTokType := TOK_CONST
-  Else CurTokType := TOK_IDENT;
+  K := IsKeyword(CurTokStr);
+  If K <> 0 Then
+    CurTokType := K
+  Else If (First >= 'A') And (First <= 'Z') Then
+    CurTokType := TOK_CONST
+  Else
+    CurTokType := TOK_IDENT;
 End;
 
 Procedure ReadAtVar;
@@ -1061,16 +1568,22 @@ Begin
                      (T = TOK_STRING) Or (T = TOK_DSTRING) Or
                      (T = TOK_SYMBOL) Or (T = TOK_REGEX) Or
                      (T = TOK_PERCENT_LIT) Or (T = Ord(')')) Or
-                     (T = Ord(']')) Or (T = Ord('}'));
+                     (T = Ord(']')) Or (T = Ord('}')) Or
+                     IsKeywordLiteral(T);
 End;
 
 Procedure LexNextToken;
 Var
   C, C2, C3: Char;
   Done: Boolean;
+  PrevCanEndExpr: Boolean;
+  PrevTokenType: Integer;
 Begin
   CurTokStr := '';
   CurTokNum := 0;
+  CurTokContext := CTX_NONE;
+  PrevCanEndExpr := LastTokenCanEndExpr;
+  PrevTokenType := LastTokenType;
   Done := False;
   While Not Done Do Begin
     C := LexPeekChar;
@@ -1105,8 +1618,13 @@ Begin
       CurTokType := TOK_DCOLON;
       AppendTok(LexNextChar);
       AppendTok(LexNextChar);
-    End Else
-      ReadSymbol;
+    End Else If IsAlpha(C2) Or (C2 = '"') Or (C2 = '''') Or
+                (C2 = '+') Or (C2 = '-') Or (C2 = '*') Or
+                (C2 = '/') Or (C2 = '%') Or (C2 = '<') Or
+                (C2 = '>') Or (C2 = '=') Or (C2 = '!') Then
+      ReadSymbol
+    Else
+      SetSingleToken(Ord(':'));
   End Else If (C = '/') And Not LastTokenCanEndExpr Then
     ReadRegex
   Else If C = '%' Then Begin
@@ -1216,6 +1734,19 @@ Begin
   End Else
     SetSingleToken(Ord(C));
 
+  If IsModifierKeyword(CurTokType) Then Begin
+    If PrevCanEndExpr Then CurTokContext := CTX_MODIFIER
+    Else CurTokContext := CTX_PREFIX;
+  End Else If CurTokType = KW_DO Then Begin
+    If PrevCanEndExpr Then CurTokContext := CTX_DO_AFTER_EXPR
+    Else CurTokContext := CTX_DO_BEGIN;
+  End Else If CurTokType = Ord('{') Then Begin
+    If PrevCanEndExpr Or (PrevTokenType = KW_BEGIN_UP) Or
+       (PrevTokenType = KW_END_UP) Then CurTokContext := CTX_BLOCK_BRACE
+    Else CurTokContext := CTX_HASH_BRACE;
+  End;
+
+  LastTokenType := CurTokType;
   LastTokenCanEndExpr := TokenCanEndExpr(CurTokType);
 End;
 
@@ -1259,10 +1790,682 @@ Begin
     TOK_ARROW: TokenName := 'TOK_ARROW';
     TOK_FAT_ARROW: TokenName := 'TOK_FAT_ARROW';
     TOK_PIN: TokenName := 'TOK_PIN';
+    KW_ALIAS: TokenName := 'KW_ALIAS';
+    KW_AND: TokenName := 'KW_AND';
+    KW_BEGIN_UP: TokenName := 'KW_BEGIN_UP';
+    KW_BEGIN: TokenName := 'KW_BEGIN';
+    KW_BREAK: TokenName := 'KW_BREAK';
+    KW_CASE: TokenName := 'KW_CASE';
+    KW_CLASS: TokenName := 'KW_CLASS';
+    KW_DEF: TokenName := 'KW_DEF';
+    KW_DEFINED: TokenName := 'KW_DEFINED';
+    KW_DO: TokenName := 'KW_DO';
+    KW_ELSE: TokenName := 'KW_ELSE';
+    KW_ELSIF: TokenName := 'KW_ELSIF';
+    KW_END_UP: TokenName := 'KW_END_UP';
+    KW_END: TokenName := 'KW_END';
+    KW_ENSURE: TokenName := 'KW_ENSURE';
+    KW_FALSE: TokenName := 'KW_FALSE';
+    KW_FOR: TokenName := 'KW_FOR';
+    KW_IF: TokenName := 'KW_IF';
+    KW_IN: TokenName := 'KW_IN';
+    KW_MODULE: TokenName := 'KW_MODULE';
+    KW_NEXT: TokenName := 'KW_NEXT';
+    KW_NIL: TokenName := 'KW_NIL';
+    KW_NOT: TokenName := 'KW_NOT';
+    KW_OR: TokenName := 'KW_OR';
+    KW_REDO: TokenName := 'KW_REDO';
+    KW_RESCUE: TokenName := 'KW_RESCUE';
+    KW_RETRY: TokenName := 'KW_RETRY';
+    KW_RETURN: TokenName := 'KW_RETURN';
+    KW_SELF: TokenName := 'KW_SELF';
+    KW_SUPER: TokenName := 'KW_SUPER';
+    KW_THEN: TokenName := 'KW_THEN';
+    KW_TRUE: TokenName := 'KW_TRUE';
+    KW_UNDEF: TokenName := 'KW_UNDEF';
+    KW_UNLESS: TokenName := 'KW_UNLESS';
+    KW_UNTIL: TokenName := 'KW_UNTIL';
+    KW_WHEN: TokenName := 'KW_WHEN';
+    KW_WHILE: TokenName := 'KW_WHILE';
+    KW_YIELD: TokenName := 'KW_YIELD';
+    KW_FILE: TokenName := 'KW_FILE';
+    KW_LINE: TokenName := 'KW_LINE';
+    KW_ENCODING: TokenName := 'KW_ENCODING';
+    KW_ATTR_ACCESSOR: TokenName := 'KW_ATTR_ACCESSOR';
+    KW_ATTR_READER: TokenName := 'KW_ATTR_READER';
+    KW_ATTR_WRITER: TokenName := 'KW_ATTR_WRITER';
+    KW_PRIVATE: TokenName := 'KW_PRIVATE';
+    KW_PUBLIC: TokenName := 'KW_PUBLIC';
+    KW_PROTECTED: TokenName := 'KW_PROTECTED';
+    KW_RAISE: TokenName := 'KW_RAISE';
+    KW_REQUIRE: TokenName := 'KW_REQUIRE';
+    KW_REQUIRE_RELATIVE: TokenName := 'KW_REQUIRE_RELATIVE';
+    KW_LOAD: TokenName := 'KW_LOAD';
+    KW_INCLUDE: TokenName := 'KW_INCLUDE';
+    KW_EXTEND: TokenName := 'KW_EXTEND';
+    KW_PREPEND: TokenName := 'KW_PREPEND';
+    KW_MODULE_FUNCTION: TokenName := 'KW_MODULE_FUNCTION';
+    KW_PROC: TokenName := 'KW_PROC';
+    KW_LAMBDA: TokenName := 'KW_LAMBDA';
+    KW_LOOP: TokenName := 'KW_LOOP';
+    KW_TIMES: TokenName := 'KW_TIMES';
+    KW_EACH: TokenName := 'KW_EACH';
+    KW_MAP: TokenName := 'KW_MAP';
+    KW_SELECT: TokenName := 'KW_SELECT';
+    KW_REJECT: TokenName := 'KW_REJECT';
+    KW_INJECT: TokenName := 'KW_INJECT';
+    KW_REDUCE: TokenName := 'KW_REDUCE';
+    KW_PUTS: TokenName := 'KW_PUTS';
+    KW_PRINT: TokenName := 'KW_PRINT';
+    KW_P: TokenName := 'KW_P';
+    KW_PP: TokenName := 'KW_PP';
+    KW_GETS: TokenName := 'KW_GETS';
+    KW_GETC: TokenName := 'KW_GETC';
+    KW_PRINTF: TokenName := 'KW_PRINTF';
+    KW_SPRINTF: TokenName := 'KW_SPRINTF';
   Else
     If (T > 0) And (T < 128) Then TokenName := '''' + Chr(T) + ''''
     Else TokenName := 'TOK_' + UpCaseStr(ItoS(T));
   End;
+End;
+
+Function ParseExpr: Integer; Forward;
+
+Function NodeKindName(K: Integer): String;
+Begin
+  Case K Of
+    NK_LITERAL: NodeKindName := 'literal';
+    NK_VAR: NodeKindName := 'var';
+    NK_CONST: NodeKindName := 'const';
+    NK_UNARY: NodeKindName := 'unary';
+    NK_BINARY: NodeKindName := 'binary';
+    NK_ASSIGN: NodeKindName := 'assign';
+    NK_TERNARY: NodeKindName := 'ternary';
+    NK_RANGE: NodeKindName := 'range';
+    NK_CALL: NodeKindName := 'call';
+    NK_INDEX: NodeKindName := 'index';
+    NK_ARRAY: NodeKindName := 'array';
+    NK_HASH: NodeKindName := 'hash';
+    NK_PAIR: NodeKindName := 'pair';
+    NK_LIST: NodeKindName := 'list';
+    NK_SPLAT: NodeKindName := 'splat';
+    NK_KW_SPLAT: NodeKindName := 'kw-splat';
+  Else
+    NodeKindName := 'none';
+  End;
+End;
+
+Procedure InitAST;
+Begin
+  FillChar(AstTable, SizeOf(AstTable), 0);
+  AstCount := 0;
+  ParseErrors := 0;
+  ParseAllowCommaList := True;
+End;
+
+Function NewASTNode(Kind, Tok: Integer; Text: String; Left, Right, Third: Integer): Integer;
+Begin
+  If AstCount >= MAX_AST Then FatalError('arbre d expressions trop grand');
+  Inc(AstCount);
+  AstTable[AstCount].Kind := Kind;
+  AstTable[AstCount].Tok := Tok;
+  AstTable[AstCount].Text := Text;
+  AstTable[AstCount].Left := Left;
+  AstTable[AstCount].Right := Right;
+  AstTable[AstCount].Third := Third;
+  AstTable[AstCount].FirstChild := 0;
+  AstTable[AstCount].NextSibling := 0;
+  AstTable[AstCount].SymRef := 0;
+  NewASTNode := AstCount;
+End;
+
+Procedure AddChild(Parent, Child: Integer);
+Var
+  N: Integer;
+Begin
+  If (Parent = 0) Or (Child = 0) Then Exit;
+  If AstTable[Parent].FirstChild = 0 Then
+    AstTable[Parent].FirstChild := Child
+  Else Begin
+    N := AstTable[Parent].FirstChild;
+    While AstTable[N].NextSibling <> 0 Do N := AstTable[N].NextSibling;
+    AstTable[N].NextSibling := Child;
+  End;
+End;
+
+Procedure ParseError(Msg: String);
+Begin
+  Inc(ParseErrors);
+  WriteLn('RUBYCW32: parse: ', CurTokLine, ':', CurTokCol, ': ', Msg);
+End;
+
+Procedure NextTok;
+Begin
+  LexNextToken;
+End;
+
+Function IsExprEnd(T: Integer): Boolean;
+Begin
+  IsExprEnd := (T = TOK_EOF) Or (T = TOK_NEWLINE) Or (T = Ord(';')) Or
+               (T = Ord(')')) Or (T = Ord(']')) Or (T = Ord('}')) Or
+               (T = KW_END) Or (T = KW_ELSE) Or (T = KW_ELSIF) Or
+               (T = KW_WHEN) Or (T = KW_RESCUE) Or (T = KW_ENSURE) Or
+               (T = KW_THEN) Or (T = KW_DO);
+End;
+
+Procedure SkipExprNewlines;
+Begin
+  While CurTokType = TOK_NEWLINE Do NextTok;
+End;
+
+Function IsAssignTok(T: Integer): Boolean;
+Begin
+  IsAssignTok := (T = Ord('=')) Or (T = TOK_ASSIGN_OP);
+End;
+
+Function ParseListUntil(EndTok: Integer): Integer;
+Var
+  L, E: Integer;
+  OldComma: Boolean;
+Begin
+  L := NewASTNode(NK_LIST, 0, '', 0, 0, 0);
+  SkipExprNewlines;
+  OldComma := ParseAllowCommaList;
+  ParseAllowCommaList := False;
+  While (CurTokType <> EndTok) And (CurTokType <> TOK_EOF) Do Begin
+    E := ParseExpr;
+    AddChild(L, E);
+    SkipExprNewlines;
+    If CurTokType = Ord(',') Then Begin
+      NextTok;
+      SkipExprNewlines;
+    End Else
+      Break;
+  End;
+  If CurTokType = EndTok Then NextTok
+  Else ParseError('separateur fermant attendu: ' + TokenName(EndTok));
+  ParseAllowCommaList := OldComma;
+  ParseListUntil := L;
+End;
+
+Function ParsePrimary: Integer;
+Var
+  N, K, Key, Val: Integer;
+  T, S: String;
+  OldComma: Boolean;
+Begin
+  ParsePrimary := 0;
+  SkipExprNewlines;
+  If IsPseudoKeyword(CurTokType) Then Begin
+    S := CurTokStr;
+    N := NewASTNode(NK_VAR, CurTokType, S, 0, 0, 0);
+    AstTable[N].SymRef := AddSym(S, SK_METHOD, RT_UNKNOWN, CurrentClassRef);
+    NextTok;
+    ParsePrimary := N;
+    Exit;
+  End;
+  Case CurTokType Of
+    TOK_INTEGER, TOK_FLOAT, TOK_STRING, TOK_DSTRING, TOK_SYMBOL, TOK_REGEX,
+    TOK_PERCENT_LIT, KW_NIL, KW_FALSE, KW_TRUE, KW_FILE, KW_LINE, KW_ENCODING:
+      Begin
+        N := NewASTNode(NK_LITERAL, CurTokType, CurTokStr, 0, 0, 0);
+        If CurTokType = TOK_INTEGER Then AstTable[N].Text := CurTokStr;
+        NextTok;
+        ParsePrimary := N;
+      End;
+    TOK_IDENT, TOK_IVAR, TOK_CVAR, TOK_GVAR:
+      Begin
+        S := CurTokStr;
+        N := NewASTNode(NK_VAR, CurTokType, S, 0, 0, 0);
+        K := SK_LOCAL;
+        If CurTokType = TOK_IVAR Then K := SK_IVAR
+        Else If CurTokType = TOK_CVAR Then K := SK_CVAR
+        Else If CurTokType = TOK_GVAR Then K := SK_GVAR;
+        AstTable[N].SymRef := AddSym(S, K, RT_UNKNOWN, CurrentClassRef);
+        NextTok;
+        ParsePrimary := N;
+      End;
+    TOK_CONST:
+      Begin
+        S := CurTokStr;
+        N := NewASTNode(NK_CONST, CurTokType, S, 0, 0, 0);
+        AstTable[N].SymRef := AddSym(S, SK_CONST, RT_UNKNOWN, CurrentClassRef);
+        NextTok;
+        ParsePrimary := N;
+      End;
+    KW_SELF:
+      Begin
+        N := NewASTNode(NK_VAR, CurTokType, 'self', 0, 0, 0);
+        NextTok;
+        ParsePrimary := N;
+      End;
+    Ord('('):
+      Begin
+        NextTok;
+        ParsePrimary := ParseExpr;
+        If CurTokType = Ord(')') Then NextTok
+        Else ParseError(') attendu');
+      End;
+    Ord('['):
+      Begin
+        NextTok;
+        N := NewASTNode(NK_ARRAY, 0, '', 0, 0, 0);
+        K := ParseListUntil(Ord(']'));
+        AstTable[N].FirstChild := AstTable[K].FirstChild;
+        ParsePrimary := N;
+      End;
+    Ord('{'):
+      Begin
+        NextTok;
+        N := NewASTNode(NK_HASH, 0, '', 0, 0, 0);
+        OldComma := ParseAllowCommaList;
+        ParseAllowCommaList := False;
+        SkipExprNewlines;
+        While (CurTokType <> Ord('}')) And (CurTokType <> TOK_EOF) Do Begin
+          Key := ParseExpr;
+          If (CurTokType = TOK_FAT_ARROW) Or (CurTokType = Ord(':')) Then
+            NextTok
+          Else
+            ParseError('=> ou : attendu dans hash');
+          Val := ParseExpr;
+          AddChild(N, NewASTNode(NK_PAIR, 0, '', Key, Val, 0));
+          SkipExprNewlines;
+          If CurTokType = Ord(',') Then Begin
+            NextTok;
+            SkipExprNewlines;
+          End Else
+            Break;
+        End;
+        If CurTokType = Ord('}') Then NextTok
+        Else ParseError('} attendu');
+        ParseAllowCommaList := OldComma;
+        ParsePrimary := N;
+      End;
+  Else
+    T := TokenName(CurTokType);
+    ParseError('expression attendue, trouve ' + T);
+    If CurTokType <> TOK_EOF Then NextTok;
+    ParsePrimary := NewASTNode(NK_LITERAL, TOK_EOF, 'nil', 0, 0, 0);
+  End;
+End;
+
+Function ParseArgList: Integer;
+Var
+  L, A: Integer;
+  OldComma: Boolean;
+Begin
+  L := NewASTNode(NK_LIST, 0, '', 0, 0, 0);
+  If CurTokType = Ord('(') Then NextTok;
+  SkipExprNewlines;
+  OldComma := ParseAllowCommaList;
+  ParseAllowCommaList := False;
+  While (CurTokType <> Ord(')')) And (CurTokType <> TOK_EOF) Do Begin
+    If CurTokType = Ord('*') Then Begin
+      NextTok;
+      A := NewASTNode(NK_SPLAT, Ord('*'), '*', ParseExpr, 0, 0);
+    End Else If CurTokType = TOK_POW Then Begin
+      NextTok;
+      A := NewASTNode(NK_KW_SPLAT, TOK_POW, '**', ParseExpr, 0, 0);
+    End Else
+      A := ParseExpr;
+    AddChild(L, A);
+    SkipExprNewlines;
+    If CurTokType = Ord(',') Then Begin
+      NextTok;
+      SkipExprNewlines;
+    End Else
+      Break;
+  End;
+  If CurTokType = Ord(')') Then NextTok
+  Else ParseError(') attendu dans appel');
+  ParseAllowCommaList := OldComma;
+  ParseArgList := L;
+End;
+
+Function IsCallArgStart(T: Integer): Boolean;
+Begin
+  IsCallArgStart := (T = TOK_IDENT) Or (T = TOK_CONST) Or (T = TOK_IVAR) Or
+                    (T = TOK_CVAR) Or (T = TOK_GVAR) Or
+                    (T = TOK_INTEGER) Or (T = TOK_FLOAT) Or
+                    (T = TOK_STRING) Or (T = TOK_DSTRING) Or
+                    (T = TOK_SYMBOL) Or (T = TOK_REGEX) Or
+                    (T = TOK_PERCENT_LIT) Or (T = Ord('(')) Or
+                    (T = Ord('[')) Or (T = Ord('{')) Or
+                    (T = Ord('*')) Or (T = TOK_POW) Or
+                    IsKeywordLiteral(T) Or IsPseudoKeyword(T);
+End;
+
+Function ParseBareArgList: Integer;
+Var
+  L, A: Integer;
+  OldComma: Boolean;
+Begin
+  L := NewASTNode(NK_LIST, 0, '', 0, 0, 0);
+  OldComma := ParseAllowCommaList;
+  ParseAllowCommaList := False;
+  While IsCallArgStart(CurTokType) Do Begin
+    If CurTokType = Ord('*') Then Begin
+      NextTok;
+      A := NewASTNode(NK_SPLAT, Ord('*'), '*', ParseExpr, 0, 0);
+    End Else If CurTokType = TOK_POW Then Begin
+      NextTok;
+      A := NewASTNode(NK_KW_SPLAT, TOK_POW, '**', ParseExpr, 0, 0);
+    End Else
+      A := ParseExpr;
+    AddChild(L, A);
+    If CurTokType = Ord(',') Then
+      NextTok
+    Else
+      Break;
+    SkipExprNewlines;
+  End;
+  ParseAllowCommaList := OldComma;
+  ParseBareArgList := L;
+End;
+
+Function ParsePostfix: Integer;
+Var
+  N, Args, Name: Integer;
+  M: String;
+Begin
+  N := ParsePrimary;
+  While True Do Begin
+    If CurTokType = Ord('(') Then Begin
+      Args := ParseArgList;
+      N := NewASTNode(NK_CALL, Ord('('), 'call', N, Args, 0);
+    End Else If CurTokType = Ord('[') Then Begin
+      NextTok;
+      Args := ParseListUntil(Ord(']'));
+      N := NewASTNode(NK_INDEX, Ord('['), '[]', N, Args, 0);
+    End Else If (CurTokType = Ord('.')) Or (CurTokType = TOK_SAFE_NAV) Then Begin
+      If CurTokType = TOK_SAFE_NAV Then M := '&.' Else M := '.';
+      NextTok;
+      If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_CONST) Or
+         IsPseudoKeyword(CurTokType) Then Begin
+        Name := NewASTNode(NK_LITERAL, CurTokType, CurTokStr, 0, 0, 0);
+        NextTok;
+        If CurTokType = Ord('(') Then Args := ParseArgList
+        Else Args := NewASTNode(NK_LIST, 0, '', 0, 0, 0);
+        N := NewASTNode(NK_CALL, 0, M, N, Args, Name);
+      End Else
+        ParseError('nom de methode attendu apres .');
+    End Else If ((AstTable[N].Kind = NK_VAR) Or (AstTable[N].Kind = NK_CONST)) And
+                IsCallArgStart(CurTokType) Then Begin
+      Args := ParseBareArgList;
+      N := NewASTNode(NK_CALL, 0, 'bare-call', N, Args, 0);
+    End Else
+      Break;
+  End;
+  ParsePostfix := N;
+End;
+
+Function ParsePower: Integer;
+Var
+  L, R: Integer;
+Begin
+  L := ParsePostfix;
+  If CurTokType = TOK_POW Then Begin
+    NextTok;
+    R := ParsePower;
+    L := NewASTNode(NK_BINARY, TOK_POW, '**', L, R, 0);
+  End;
+  ParsePower := L;
+End;
+
+Function ParseUnary: Integer;
+Var
+  T: Integer;
+  S: String;
+Begin
+  If (CurTokType = Ord('!')) Or (CurTokType = Ord('~')) Or
+     (CurTokType = Ord('+')) Or (CurTokType = Ord('-')) Or
+     (CurTokType = KW_NOT) Or (CurTokType = TOK_PIN) Then Begin
+    T := CurTokType;
+    S := CurTokStr;
+    If S = '' Then S := TokenName(T);
+    NextTok;
+    ParseUnary := NewASTNode(NK_UNARY, T, S, ParseUnary, 0, 0);
+  End Else
+    ParseUnary := ParsePower;
+End;
+
+Function ParseMultiplicative: Integer;
+Var
+  L, R, T: Integer;
+  S: String;
+Begin
+  L := ParseUnary;
+  While (CurTokType = Ord('*')) Or (CurTokType = Ord('/')) Or
+        (CurTokType = Ord('%')) Do Begin
+    T := CurTokType; S := CurTokStr; NextTok;
+    R := ParseUnary;
+    L := NewASTNode(NK_BINARY, T, S, L, R, 0);
+  End;
+  ParseMultiplicative := L;
+End;
+
+Function ParseAdditive: Integer;
+Var
+  L, R, T: Integer;
+  S: String;
+Begin
+  L := ParseMultiplicative;
+  While (CurTokType = Ord('+')) Or (CurTokType = Ord('-')) Do Begin
+    T := CurTokType; S := CurTokStr; NextTok;
+    R := ParseMultiplicative;
+    L := NewASTNode(NK_BINARY, T, S, L, R, 0);
+  End;
+  ParseAdditive := L;
+End;
+
+Function ParseShift: Integer;
+Var
+  L, R, T: Integer;
+  S: String;
+Begin
+  L := ParseAdditive;
+  While (CurTokType = TOK_SHL) Or (CurTokType = TOK_SHR) Do Begin
+    T := CurTokType; S := CurTokStr; NextTok;
+    R := ParseAdditive;
+    L := NewASTNode(NK_BINARY, T, S, L, R, 0);
+  End;
+  ParseShift := L;
+End;
+
+Function ParseBitAnd: Integer;
+Var
+  L, R: Integer;
+Begin
+  L := ParseShift;
+  While CurTokType = Ord('&') Do Begin
+    NextTok;
+    R := ParseShift;
+    L := NewASTNode(NK_BINARY, Ord('&'), '&', L, R, 0);
+  End;
+  ParseBitAnd := L;
+End;
+
+Function ParseBitOr: Integer;
+Var
+  L, R, T: Integer;
+  S: String;
+Begin
+  L := ParseBitAnd;
+  While (CurTokType = Ord('|')) Or (CurTokType = Ord('^')) Do Begin
+    T := CurTokType; S := CurTokStr; NextTok;
+    R := ParseBitAnd;
+    L := NewASTNode(NK_BINARY, T, S, L, R, 0);
+  End;
+  ParseBitOr := L;
+End;
+
+Function ParseComparison: Integer;
+Var
+  L, R, T: Integer;
+  S: String;
+Begin
+  L := ParseBitOr;
+  While (CurTokType = Ord('<')) Or (CurTokType = Ord('>')) Or
+        (CurTokType = TOK_LE) Or (CurTokType = TOK_GE) Or
+        (CurTokType = TOK_SPACESHIP) Do Begin
+    T := CurTokType; S := CurTokStr; NextTok;
+    R := ParseBitOr;
+    L := NewASTNode(NK_BINARY, T, S, L, R, 0);
+  End;
+  ParseComparison := L;
+End;
+
+Function ParseEquality: Integer;
+Var
+  L, R, T: Integer;
+  S: String;
+Begin
+  L := ParseComparison;
+  While (CurTokType = TOK_EQ) Or (CurTokType = TOK_TRIPLEEQ) Or
+        (CurTokType = TOK_NE) Or (CurTokType = TOK_MATCH) Or
+        (CurTokType = TOK_NMATCH) Do Begin
+    T := CurTokType; S := CurTokStr; NextTok;
+    R := ParseComparison;
+    L := NewASTNode(NK_BINARY, T, S, L, R, 0);
+  End;
+  ParseEquality := L;
+End;
+
+Function ParseLogicalAnd: Integer;
+Var
+  L, R, T: Integer;
+  S: String;
+Begin
+  L := ParseEquality;
+  While (CurTokType = TOK_ANDAND) Or (CurTokType = KW_AND) Do Begin
+    T := CurTokType; S := CurTokStr; NextTok;
+    R := ParseEquality;
+    L := NewASTNode(NK_BINARY, T, S, L, R, 0);
+  End;
+  ParseLogicalAnd := L;
+End;
+
+Function ParseLogicalOr: Integer;
+Var
+  L, R, T: Integer;
+  S: String;
+Begin
+  L := ParseLogicalAnd;
+  While (CurTokType = TOK_OROR) Or (CurTokType = KW_OR) Do Begin
+    T := CurTokType; S := CurTokStr; NextTok;
+    R := ParseLogicalAnd;
+    L := NewASTNode(NK_BINARY, T, S, L, R, 0);
+  End;
+  ParseLogicalOr := L;
+End;
+
+Function ParseRange: Integer;
+Var
+  L, R, T: Integer;
+  S: String;
+Begin
+  L := ParseLogicalOr;
+  If (CurTokType = TOK_DOTDOT) Or (CurTokType = TOK_DOTDOTDOT) Then Begin
+    T := CurTokType; S := CurTokStr; NextTok;
+    If Not IsExprEnd(CurTokType) Then R := ParseLogicalOr Else R := 0;
+    L := NewASTNode(NK_RANGE, T, S, L, R, 0);
+  End;
+  ParseRange := L;
+End;
+
+Function ParseTernary: Integer;
+Var
+  C, A, B: Integer;
+Begin
+  C := ParseRange;
+  If CurTokType = Ord('?') Then Begin
+    NextTok;
+    A := ParseExpr;
+    If CurTokType = Ord(':') Then NextTok
+    Else ParseError(': attendu dans expression ternaire');
+    B := ParseExpr;
+    C := NewASTNode(NK_TERNARY, Ord('?'), '?:', C, A, B);
+  End;
+  ParseTernary := C;
+End;
+
+Function ParseAssign: Integer;
+Var
+  L, R, OpTok: Integer;
+  OpText: String;
+Begin
+  L := ParseTernary;
+  If ParseAllowCommaList And (CurTokType = Ord(',')) Then Begin
+    L := NewASTNode(NK_LIST, 0, '', L, 0, 0);
+    AddChild(L, AstTable[L].Left);
+    AstTable[L].Left := 0;
+    While CurTokType = Ord(',') Do Begin
+      NextTok;
+      AddChild(L, ParseTernary);
+    End;
+  End;
+  If IsAssignTok(CurTokType) Then Begin
+    OpTok := CurTokType;
+    OpText := CurTokStr;
+    If OpText = '' Then OpText := '=';
+    NextTok;
+    R := ParseAssign;
+    L := NewASTNode(NK_ASSIGN, OpTok, OpText, L, R, 0);
+  End;
+  ParseAssign := L;
+End;
+
+Function ParseExpr: Integer;
+Begin
+  ParseExpr := ParseAssign;
+End;
+
+Procedure DumpASTNode(N, Indent: Integer);
+Var
+  I, C: Integer;
+  Pad: String;
+Begin
+  If N = 0 Then Exit;
+  Pad := '';
+  For I := 1 To Indent Do Pad := Pad + ' ';
+  WriteLn(Pad, N:0, ' ', NodeKindName(AstTable[N].Kind),
+          ' tok=', TokenName(AstTable[N].Tok),
+          ' text="', AstTable[N].Text, '"');
+  If AstTable[N].SymRef <> 0 Then
+    WriteLn(Pad, '  sym=', AstTable[N].SymRef:0);
+  DumpASTNode(AstTable[N].Left, Indent + 2);
+  DumpASTNode(AstTable[N].Right, Indent + 2);
+  DumpASTNode(AstTable[N].Third, Indent + 2);
+  C := AstTable[N].FirstChild;
+  While C <> 0 Do Begin
+    DumpASTNode(C, Indent + 2);
+    C := AstTable[C].NextSibling;
+  End;
+End;
+
+Procedure DumpExpressions;
+Var
+  Root: Integer;
+Begin
+  InitAST;
+  LexInit(Opt.SrcFile);
+  NextTok;
+  While CurTokType <> TOK_EOF Do Begin
+    SkipExprNewlines;
+    If CurTokType = TOK_EOF Then Break;
+    If IsExprEnd(CurTokType) Then Begin
+      NextTok;
+    End Else Begin
+      Root := ParseExpr;
+      WriteLn('Expression AST:');
+      DumpASTNode(Root, 2);
+      While (CurTokType <> TOK_EOF) And (CurTokType <> TOK_NEWLINE) Do
+        NextTok;
+    End;
+  End;
+  LexClose;
+  If ParseErrors <> 0 Then
+    WriteLn('Erreurs parse: ', ParseErrors);
 End;
 
 Procedure DumpTokens;
@@ -1272,6 +2475,8 @@ Begin
     LexNextToken;
     WriteLn(CurTokLine:5, ':', CurTokCol:3, '  ', TokenName(CurTokType),
             '  ', CurTokStr);
+    If CurTokContext <> CTX_NONE Then
+      WriteLn('           contexte: ', ContextName(CurTokContext));
   Until CurTokType = TOK_EOF;
   LexClose;
 End;
@@ -1410,6 +2615,7 @@ End;
 
 Begin
   ParseArgs;
+  InitSymbols;
   WriteLn('RUBYCW32 v0.1 (2026) - Compilateur Ruby -> 80386 PE Win32');
   If Opt.Verbose Then Begin
     WriteLn('Source : ', Opt.SrcFile);
@@ -1420,8 +2626,10 @@ Begin
     If Opt.DebugMode Then WriteLn('Debug  : oui');
     If Opt.FrozenStrLits Then WriteLn('Frozen : oui');
   End;
-  If Opt.DebugMode Then
-    DumpTokens
-  Else
-    WarnMsg('seuls l infrastructure et le lexer sont initialises');
+  If Opt.DebugMode Then Begin
+    DumpTokens;
+    DumpExpressions;
+    DumpSymbols;
+  End Else
+    WarnMsg('seuls l infrastructure, le lexer et les symboles sont initialises');
 End.
