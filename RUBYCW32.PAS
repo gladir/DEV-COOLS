@@ -536,6 +536,7 @@ Const
   MAX_BIN_FIXUP = 2048;
   MAX_BIN_IMPORT = 128;
   MAX_BIN_OUTPUT = 256;
+  MAX_STATIC_VALUE = 512;
 
   ASM_PFX_GVAR = '_RB_';
   ASM_PFX_METHOD = '_RBM_';
@@ -1068,10 +1069,17 @@ Type
     Text: String;
   End;
 
+  TStaticValue = Record
+    Name: String;
+    Text: String;
+    Defined: Boolean;
+  End;
+
   TBinLabelTable = Array[1..MAX_BIN_LABEL] Of TBinLabel;
   TBinFixupTable = Array[1..MAX_BIN_FIXUP] Of TBinFixup;
   TBinImportTable = Array[1..MAX_BIN_IMPORT] Of TBinImport;
   TBinOutputTable = Array[1..MAX_BIN_OUTPUT] Of TBinOutput;
+  TStaticValueTable = Array[1..MAX_STATIC_VALUE] Of TStaticValue;
 
   TClassInfo = Record
     Name: String;
@@ -1198,6 +1206,8 @@ Var
   BinImportCount: Integer;
   BinOutputs: TBinOutputTable;
   BinOutputCount: Integer;
+  StaticValues: TStaticValueTable;
+  StaticValueCount: Integer;
   AstTable: TASTTable;
   AstCount: Integer;
   ParseErrors: Integer;
@@ -7234,6 +7244,45 @@ Begin
   BinOutputs[BinOutputCount].Text := S;
 End;
 
+Procedure ClearStaticValues;
+Begin
+  FillChar(StaticValues, SizeOf(StaticValues), 0);
+  StaticValueCount := 0;
+End;
+
+Procedure SetStaticValue(Name, Text: String);
+Var
+  I: Integer;
+Begin
+  If Name = '' Then Exit;
+  For I := 1 To StaticValueCount Do
+    If StaticValues[I].Name = Name Then Begin
+      StaticValues[I].Text := Text;
+      StaticValues[I].Defined := True;
+      Exit;
+    End;
+  If StaticValueCount >= MAX_STATIC_VALUE Then
+    FatalError('table valeurs statiques pleine');
+  Inc(StaticValueCount);
+  StaticValues[StaticValueCount].Name := Name;
+  StaticValues[StaticValueCount].Text := Text;
+  StaticValues[StaticValueCount].Defined := True;
+End;
+
+Function GetStaticValue(Name: String; Var Text: String): Boolean;
+Var
+  I: Integer;
+Begin
+  GetStaticValue := False;
+  Text := '';
+  For I := StaticValueCount DownTo 1 Do
+    If (StaticValues[I].Name = Name) And StaticValues[I].Defined Then Begin
+      Text := StaticValues[I].Text;
+      GetStaticValue := True;
+      Exit;
+    End;
+End;
+
 Function StaticOutputText(N: Integer; Var S: String): Boolean;
 Begin
   S := '';
@@ -7255,6 +7304,8 @@ Begin
   End Else If AstTable[N].Tok = KW_NIL Then Begin
     S := 'nil';
     StaticOutputText := True;
+  End Else If AstTable[N].Kind = NK_VAR Then Begin
+    StaticOutputText := GetStaticValue(AstTable[N].Text, S);
   End;
 End;
 
@@ -7265,6 +7316,12 @@ Var
   AddNL: Boolean;
 Begin
   If N = 0 Then Exit;
+  If (AstTable[N].Kind = NK_ASSIGN) And
+     (AstTable[N].Left <> 0) And
+     (AstTable[AstTable[N].Left].Kind = NK_VAR) Then Begin
+    If StaticOutputText(AstTable[N].Right, S) Then
+      SetStaticValue(AstTable[AstTable[N].Left].Text, S);
+  End;
   If (AstTable[N].Kind = NK_CALL) And (AstTable[N].Text = 'bare-call') Then Begin
     Target := AstTable[N].Left;
     Args := AstTable[N].Right;
@@ -7516,6 +7573,7 @@ Begin
   Root := ParseProgram;
   If ParseErrors <> 0 Then FatalError('generation EXE impossible: erreurs parse');
   BinOutputCount := 0;
+  ClearStaticValues;
   CollectConsoleOutputs(Root);
   TextRva := PE_SEC_ALIGN;
   RDataRva := TextRva + PE_SEC_ALIGN;
