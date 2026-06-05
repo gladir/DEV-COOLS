@@ -7285,6 +7285,52 @@ End;
 
 Function StaticOutputText(N: Integer; Var S: String): Boolean; Forward;
 
+Function StaticArrayMarker(Text: String; Var ArrayNode: Integer): Boolean;
+Var
+  Code: Integer;
+Begin
+  StaticArrayMarker := False;
+  ArrayNode := 0;
+  If Copy(Text, 1, 5) <> '#ARR:' Then Exit;
+  Val(Copy(Text, 6, Length(Text) - 5), ArrayNode, Code);
+  StaticArrayMarker := (Code = 0) And (ArrayNode > 0);
+End;
+
+Function StaticArrayNodeFromExpr(N: Integer; Var ArrayNode: Integer): Boolean;
+Var
+  S: String;
+Begin
+  StaticArrayNodeFromExpr := False;
+  ArrayNode := 0;
+  If N = 0 Then Exit;
+  If AstTable[N].Kind = NK_ARRAY Then Begin
+    ArrayNode := N;
+    StaticArrayNodeFromExpr := True;
+  End Else If (AstTable[N].Kind = NK_VAR) And
+              GetStaticValue(AstTable[N].Text, S) Then
+    StaticArrayNodeFromExpr := StaticArrayMarker(S, ArrayNode);
+End;
+
+Function StaticArrayElementText(ArrayNode: Integer; Index: LongInt;
+                                Var S: String): Boolean;
+Var
+  C: Integer;
+  I: LongInt;
+Begin
+  StaticArrayElementText := False;
+  If (ArrayNode = 0) Or (Index < 0) Then Exit;
+  C := AstTable[ArrayNode].FirstChild;
+  I := 0;
+  While C <> 0 Do Begin
+    If I = Index Then Begin
+      StaticArrayElementText := StaticOutputText(C, S);
+      Exit;
+    End;
+    Inc(I);
+    C := AstTable[C].NextSibling;
+  End;
+End;
+
 Function StaticIntegerValue(N: Integer; Var V: LongInt): Boolean;
 Var
   S: String;
@@ -7300,7 +7346,8 @@ End;
 
 Function StaticOutputText(N: Integer; Var S: String): Boolean;
 Var
-  L, R, V: LongInt;
+  L, R, V, Index: LongInt;
+  ArrayNode, Arg: Integer;
 Begin
   S := '';
   StaticOutputText := False;
@@ -7337,6 +7384,14 @@ Begin
       End;
       S := ItoS(V);
       StaticOutputText := True;
+    End;
+  End Else If AstTable[N].Kind = NK_INDEX Then Begin
+    If StaticArrayNodeFromExpr(AstTable[N].Left, ArrayNode) And
+       (AstTable[N].Right <> 0) And
+       (AstTable[AstTable[N].Right].Kind = NK_LIST) Then Begin
+      Arg := AstTable[AstTable[N].Right].FirstChild;
+      If StaticIntegerValue(Arg, Index) Then
+        StaticOutputText := StaticArrayElementText(ArrayNode, Index, S);
     End;
   End;
 End;
@@ -7378,7 +7433,7 @@ End;
 
 Procedure CollectConsoleOutputs(N: Integer);
 Var
-  Target, Args, A, C, Iter: Integer;
+  Target, Args, A, C, Iter, ArrayNode, Elem, Blk, Param: Integer;
   Name, S: String;
   AddNL: Boolean;
   B: Boolean;
@@ -7387,7 +7442,9 @@ Begin
   If (AstTable[N].Kind = NK_ASSIGN) And
      (AstTable[N].Left <> 0) And
      (AstTable[AstTable[N].Left].Kind = NK_VAR) Then Begin
-    If StaticOutputText(AstTable[N].Right, S) Then
+    If StaticArrayNodeFromExpr(AstTable[N].Right, ArrayNode) Then
+      SetStaticValue(AstTable[AstTable[N].Left].Text, '#ARR:' + ItoS(ArrayNode))
+    Else If StaticOutputText(AstTable[N].Right, S) Then
       SetStaticValue(AstTable[AstTable[N].Left].Text, S);
   End;
   If (AstTable[N].Kind = NK_IF) Or (AstTable[N].Kind = NK_UNLESS) Then Begin
@@ -7407,6 +7464,25 @@ Begin
       Inc(Iter);
       If Iter > 1000 Then
         FatalError('boucle statique trop longue');
+    End;
+    Exit;
+  End;
+  If (AstTable[N].Kind = NK_CALL) And (AstTable[N].Text = '.') And
+     (AstTable[N].Third <> 0) And
+     (NodeMethodName(AstTable[N].Third) = 'each') And
+     StaticArrayNodeFromExpr(AstTable[N].Left, ArrayNode) Then Begin
+    Blk := AstTable[N].FirstChild;
+    If Blk <> 0 Then Begin
+      Param := 0;
+      If AstTable[Blk].Left <> 0 Then
+        Param := AstTable[AstTable[Blk].Left].FirstChild;
+      Elem := AstTable[ArrayNode].FirstChild;
+      While Elem <> 0 Do Begin
+        If (Param <> 0) And StaticOutputText(Elem, S) Then
+          SetStaticValue(AstTable[Param].Text, S);
+        CollectConsoleOutputs(AstTable[Blk].Right);
+        Elem := AstTable[Elem].NextSibling;
+      End;
     End;
     Exit;
   End;
