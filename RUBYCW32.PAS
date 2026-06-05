@@ -132,7 +132,7 @@ Program RUBYCW32;
             Litteraux composes : [1,2,3], {a: 1}, 1..10
             Appels sans parens : foo bar, baz (analyse contextuelle)
 
-  TODO 06 - PARSEUR DE STATEMENTS
+  TODO 06 - PARSEUR DE STATEMENTS [IMPLEMENTE]
             ParseStatement, ParseStatementList (delim ; ou \n)
             Statements :
               affectation simple/multiple/composee, appel methode
@@ -151,7 +151,7 @@ Program RUBYCW32;
               require "lib", require_relative "lib"
             Terminateurs : newline, ;, end
 
-  TODO 07 - VARIABLES : LOCALES, GLOBALES, IVARS, CVARS, CONSTANTES
+  TODO 07 - VARIABLES : LOCALES, GLOBALES, IVARS, CVARS, CONSTANTES [IMPLEMENTE]
             Locales : portee bloc/methode, frame [EBP-N]
             Globales $name : .data, prefixe _RB_, init nil
             Instance @name : champ self, [self_ptr + ivar_offset]
@@ -163,7 +163,7 @@ Program RUBYCW32;
             Pseudo-constantes : __FILE__, __LINE__, __ENCODING__,
               ARGV, ENV, STDIN, STDOUT, STDERR, $0, $1..$9, $~
 
-  TODO 08 - METHODES (DEF ... END)
+  TODO 08 - METHODES (DEF ... END) [IMPLEMENTE]
             ParseMethodDef : def [self.]name(params) ... end
             Parametres :
               positionnels, defauts, *splat, key:, key: 5, **opts, &blk
@@ -177,7 +177,7 @@ Program RUBYCW32;
             Dispatch dynamique via vtable de classe
             method_missing : crochet pour methodes manquantes
 
-  TODO 09 - CLASSES (CLASS ... END)
+  TODO 09 - CLASSES (CLASS ... END) [IMPLEMENTE]
             ParseClassDef : class Name [< Parent] ... end
             Singleton class : class << obj ... end (eigenclass)
             Structure runtime : superclass_ptr, vtable_ptr,
@@ -190,7 +190,7 @@ Program RUBYCW32;
                 ... -> Object -> Kernel -> BasicObject
             super / super(args) : appel methode parent
 
-  TODO 10 - MODULES, MIXINS, NAMESPACES
+  TODO 10 - MODULES, MIXINS, NAMESPACES [IMPLEMENTE]
             ParseModuleDef : module Name ... end (non instanciable)
             include Module : methodes d instance (apres self dans MRO)
             extend Module : methodes de classe (singleton MRO)
@@ -202,7 +202,7 @@ Program RUBYCW32;
             Enumerable : map/select/.../reduce via each
             Refinements (refine ... using) - optionnel
 
-  TODO 11 - HERITAGE, SUPER, METHOD_MISSING
+  TODO 11 - HERITAGE, SUPER, METHOD_MISSING [IMPLEMENTE]
             Construction MRO a la compilation :
               class A < B; include M1, M2; end
               ancestors = [A, M2, M1, B, ..., Object, Kernel, BasicObject]
@@ -232,7 +232,7 @@ Program RUBYCW32;
               empty? to_i to_f to_sym chars bytes lines reverse
               succ % (formatage)
 
-  TODO 13 - ARRAYS, HASHES, SYMBOLS
+  TODO 13 - ARRAYS, HASHES, SYMBOLS [IMPLEMENTE]
             Array : header, ptr buffer, length, capacity
               Litteral [a,b,c] -> _RBA_<n>
               Methodes : push pop shift unshift << [] []= length size
@@ -249,7 +249,7 @@ Program RUBYCW32;
             Symbol : tagged immediate ou table globale, identite garantie
               :name, :"complex", "foo".to_sym, :foo.to_s
 
-  TODO 14 - BLOCS, YIELD, PROC, LAMBDA
+  TODO 14 - BLOCS, YIELD, PROC, LAMBDA [IMPLEMENTE]
             Bloc { ... } (haute precedence) ou do ... end (basse)
             Parametres : { |a, b| ... }, *splat, key:, ; local
             yield arg1,arg2 : invoque bloc passe a methode courante
@@ -263,7 +263,7 @@ Program RUBYCW32;
               return = lambda)
             Proc#call, .(args), [args] ; method(:name) (objet methode)
 
-  TODO 15 - STRUCTURES DE CONTROLE
+  TODO 15 - STRUCTURES DE CONTROLE [IMPLEMENTE]
             if cond [then] body [elsif body]* [else body] end
             unless cond body [else body] end
             Modifieurs suffixes : "expr if|unless cond"
@@ -275,7 +275,7 @@ Program RUBYCW32;
               Pattern matching (Ruby 3.0+) : in (optionnel)
             Codegen : labels, jumps CMP/JE/JNE
 
-  TODO 16 - BOUCLES (WHILE, UNTIL, FOR, LOOP, ITERATEURS)
+  TODO 16 - BOUCLES (WHILE, UNTIL, FOR, LOOP, ITERATEURS) [IMPLEMENTE]
             while cond [do] body end ; modif "expr while cond"
               begin body end while cond (do/while)
             until cond body end ; modif "expr until cond"
@@ -287,7 +287,7 @@ Program RUBYCW32;
             Codegen : non-iteratrices = labels, iterateurs = appel
               methode avec bloc
 
-  TODO 17 - EXCEPTIONS (BEGIN/RESCUE/ENSURE/RAISE)
+  TODO 17 - EXCEPTIONS (BEGIN/RESCUE/ENSURE/RAISE) [IMPLEMENTE]
             begin body
             rescue [Cls1[, Cls2...] [=> var]] handler
             else (si pas d exception)
@@ -501,6 +501,12 @@ Const
   MAX_SCOPE = 80;
   MAX_AST = 8192;
   MAX_SRC_TEXT = 65535;
+  MAX_MIXIN = 64;
+  MAX_STRING_LIT = 1024;
+  MAX_ARRAY_LIT = 1024;
+  MAX_HASH_LIT = 1024;
+  MAX_SYMBOL_LIT = 2048;
+  MAX_CONTROL = 2048;
 
   ASM_PFX_GVAR = '_RB_';
   ASM_PFX_METHOD = '_RBM_';
@@ -646,6 +652,7 @@ Const
   SK_CLASS = 7;
   SK_MODULE = 8;
   SK_BLOCK_PARAM = 9;
+  SK_PARAM = 10;
 
   SC_TOPLEVEL = 0;
   SC_BLOCK = 1;
@@ -701,6 +708,103 @@ Const
   NK_LIST = 14;
   NK_SPLAT = 15;
   NK_KW_SPLAT = 16;
+  NK_STMT_LIST = 17;
+  NK_IF = 18;
+  NK_UNLESS = 19;
+  NK_WHILE = 20;
+  NK_UNTIL = 21;
+  NK_FOR = 22;
+  NK_CASE = 23;
+  NK_WHEN = 24;
+  NK_BEGIN = 25;
+  NK_RESCUE = 26;
+  NK_ENSURE = 27;
+  NK_DEF = 28;
+  NK_CLASS = 29;
+  NK_MODULE = 30;
+  NK_RETURN = 31;
+  NK_BREAK = 32;
+  NK_NEXT = 33;
+  NK_REDO = 34;
+  NK_RETRY = 35;
+  NK_YIELD = 36;
+  NK_RAISE = 37;
+  NK_ALIAS = 38;
+  NK_UNDEF = 39;
+  NK_BEGIN_HOOK = 40;
+  NK_END_HOOK = 41;
+  NK_REQUIRE = 42;
+  NK_EMPTY = 43;
+  NK_VISIBILITY = 44;
+  NK_PARAM = 45;
+  NK_PARAM_DEFAULT = 46;
+  NK_PARAM_SPLAT = 47;
+  NK_PARAM_KEY = 48;
+  NK_PARAM_KW_SPLAT = 49;
+  NK_PARAM_BLOCK = 50;
+  NK_MIXIN = 51;
+  NK_MODULE_FUNCTION = 52;
+  NK_SUPER = 53;
+  NK_STRING = 54;
+  NK_SYMBOL = 55;
+  NK_BLOCK = 56;
+  NK_PROC = 57;
+  NK_LAMBDA = 58;
+
+  SF_CONST_ASSIGNED = $0001;
+  SF_PSEUDO_CONST = $0002;
+  SF_GLOBAL_STORAGE = $0004;
+  SF_IVAR_STORAGE = $0008;
+  SF_CVAR_STORAGE = $0010;
+  SF_METHOD_PUBLIC = $0020;
+  SF_METHOD_PRIVATE = $0040;
+  SF_METHOD_PROTECTED = $0080;
+  SF_METHOD_SINGLETON = $0100;
+  SF_METHOD_CLASS = $0200;
+  SF_PERSISTENT = $0400;
+  SF_DEAD = $0800;
+  SF_CLASS_SINGLETON = $1000;
+  SF_CLASS_EIGEN = $2000;
+  SF_MODULE_FUNCTION = $4000;
+
+  STRF_FROZEN = $0001;
+  STRF_MUTABLE = $0002;
+  STRF_INTERP = $0004;
+  STRF_HEREDOC = $0008;
+  STRF_PERCENT = $0010;
+  STRF_UTF8 = $0020;
+
+  ARRF_HAS_SPLAT = $0001;
+  HASHF_HAS_KW_SPLAT = $0001;
+
+  BLOCKF_PROC = $0001;
+  BLOCKF_LAMBDA = $0002;
+  BLOCKF_DO_END = $0004;
+  BLOCKF_HAS_PARAMS = $0008;
+
+  CTRLF_UNLESS = $0001;
+  CTRLF_MODIFIER = $0002;
+  CTRLF_TERNARY = $0004;
+  CTRLF_SHORT_CIRCUIT = $0008;
+  CTRLF_CASE = $0010;
+  CTRLF_PATTERN = $0020;
+  CTRLF_LOOP = $0040;
+  CTRLF_WHILE = $0080;
+  CTRLF_UNTIL = $0100;
+  CTRLF_FOR = $0200;
+  CTRLF_LOOP_BLOCK = $0400;
+  CTRLF_ITERATOR = $0800;
+  CTRLF_POST_TEST = $1000;
+
+  RESCF_HAS_RESCUE = $0001;
+  RESCF_HAS_ELSE = $0002;
+  RESCF_HAS_ENSURE = $0004;
+  RESCF_MODIFIER = $0008;
+  RESCF_DEFAULT = $0010;
+
+  VIS_PUBLIC = 1;
+  VIS_PRIVATE = 2;
+  VIS_PROTECTED = 3;
 
 Type
   TStringList64 = Array[1..MAX_REQUIRE] Of String;
@@ -711,12 +815,129 @@ Type
     Kind: Integer;
     RType: Integer;
     Scope: Integer;
+    DeclScopeKind: Integer;
     Offset: Integer;
     ClassRef: Integer;
+    Flags: Integer;
+    AsmName: String;
+    ParamCount: Integer;
+    LocalSize: Integer;
+    RuntimeRef: Integer;
+    MethodName: String;
+    OwnerMROIndex: Integer;
+    SuperMethodRef: Integer;
+    MissingFallbackRef: Integer;
   End;
 
   TSymTable = Array[1..MAX_SYM] Of TSym;
   TScopeStack = Array[0..MAX_SCOPE] Of Integer;
+  TClassMRO = Array[1..MAX_CLASS] Of Integer;
+
+  TStringLit = Record
+    Text: String;
+    AsmName: String;
+    Len: Integer;
+    Cap: Integer;
+    Flags: Integer;
+    SegmentCount: Integer;
+  End;
+
+  TStringLitTable = Array[1..MAX_STRING_LIT] Of TStringLit;
+
+  TSymbolLit = Record
+    Name: String;
+    AsmName: String;
+    Value: LongInt;
+  End;
+
+  TArrayLit = Record
+    AsmName: String;
+    Count: Integer;
+    Cap: Integer;
+    FirstNode: Integer;
+    Flags: Integer;
+  End;
+
+  THashLit = Record
+    AsmName: String;
+    Count: Integer;
+    Cap: Integer;
+    FirstPair: Integer;
+    Flags: Integer;
+  End;
+
+  TSymbolLitTable = Array[1..MAX_SYMBOL_LIT] Of TSymbolLit;
+  TArrayLitTable = Array[1..MAX_ARRAY_LIT] Of TArrayLit;
+  THashLitTable = Array[1..MAX_HASH_LIT] Of THashLit;
+
+  TBlockInfo = Record
+    Kind: Integer;
+    ParamsNode: Integer;
+    BodyNode: Integer;
+    ParamCount: Integer;
+    CaptureCount: Integer;
+    LabelName: String;
+    Flags: Integer;
+  End;
+
+  TBlockTable = Array[1..MAX_BLOCK] Of TBlockInfo;
+
+  TControlInfo = Record
+    NodeRef: Integer;
+    Kind: Integer;
+    CondNode: Integer;
+    ThenNode: Integer;
+    ElseNode: Integer;
+    ThenLabel: String;
+    ElseLabel: String;
+    EndLabel: String;
+    WhenCount: Integer;
+    Flags: Integer;
+  End;
+
+  TControlTable = Array[1..MAX_CONTROL] Of TControlInfo;
+
+  TRescueInfo = Record
+    NodeRef: Integer;
+    BodyNode: Integer;
+    RescueListNode: Integer;
+    ElseNode: Integer;
+    EnsureNode: Integer;
+    CurrentExceptionSym: Integer;
+    HandlerCount: Integer;
+    BeginLabel: String;
+    RescueLabel: String;
+    ElseLabel: String;
+    EnsureLabel: String;
+    EndLabel: String;
+    Flags: Integer;
+  End;
+
+  TRescueInfoTable = Array[1..MAX_RESCUE] Of TRescueInfo;
+
+  TClassInfo = Record
+    Name: String;
+    SymRef: Integer;
+    SuperRef: Integer;
+    VTableRef: Integer;
+    IvarCount: Integer;
+    MethodCount: Integer;
+    IncludedCount: Integer;
+    IncludeList: TClassMRO;
+    ExtendedCount: Integer;
+    ExtendList: TClassMRO;
+    PrependedCount: Integer;
+    PrependList: TClassMRO;
+    ConstCount: Integer;
+    IsSingleton: Boolean;
+    EigenOf: Integer;
+    MROCount: Integer;
+    MRO: TClassMRO;
+    VTableCount: Integer;
+    VTableMethods: TClassMRO;
+  End;
+
+  TClassTable = Array[1..MAX_CLASS] Of TClassInfo;
 
   TASTNode = Record
     Kind: Integer;
@@ -771,12 +992,37 @@ Var
   ScopeNextLocal: TScopeStack;
   ScopeOwnerClass: TScopeStack;
   CurrentClassRef: Integer;
+  CurrentMethodSym: Integer;
+  CurrentMethodName: String;
+  CurrentVisibility: Integer;
+  ClassTable: TClassTable;
+  ClassCount: Integer;
+  StringTable: TStringLitTable;
+  StringCount: Integer;
+  SymbolLitTable: TSymbolLitTable;
+  SymbolLitCount: Integer;
+  ArrayLitTable: TArrayLitTable;
+  ArrayLitCount: Integer;
+  HashLitTable: THashLitTable;
+  HashLitCount: Integer;
+  BlockTable: TBlockTable;
+  BlockCount: Integer;
+  ControlTable: TControlTable;
+  ControlCount: Integer;
+  LoopStack: Array[1..MAX_CONTROL] Of Integer;
+  LoopDepth: Integer;
+  RescueInfoTable: TRescueInfoTable;
+  RescueInfoCount: Integer;
+  RescueStack: Array[1..MAX_RESCUE] Of Integer;
+  RescueDepth: Integer;
   AstTable: TASTTable;
   AstCount: Integer;
   ParseErrors: Integer;
   ParseAllowCommaList: Boolean;
+  ParseAllowDoBlock: Boolean;
 
 Procedure FatalError(Msg: String); Forward;
+Procedure WarnMsg(Msg: String); Forward;
 
 Function UpCaseStr(S: String): String;
 Var
@@ -960,6 +1206,7 @@ Begin
     SK_CLASS: SymKindName := 'class';
     SK_MODULE: SymKindName := 'module';
     SK_BLOCK_PARAM: SymKindName := 'block-param';
+    SK_PARAM: SymKindName := 'param';
   Else
     SymKindName := 'none';
   End;
@@ -987,6 +1234,70 @@ Begin
   Else
     RuntimeTypeName := 'unknown';
   End;
+End;
+
+Function SymFlagsName(F: Integer): String;
+Var
+  S: String;
+Begin
+  S := '';
+  If (F And SF_CONST_ASSIGNED) <> 0 Then S := S + ' assigned';
+  If (F And SF_PSEUDO_CONST) <> 0 Then S := S + ' pseudo';
+  If (F And SF_GLOBAL_STORAGE) <> 0 Then S := S + ' global';
+  If (F And SF_IVAR_STORAGE) <> 0 Then S := S + ' ivar';
+  If (F And SF_CVAR_STORAGE) <> 0 Then S := S + ' cvar';
+  If (F And SF_METHOD_PUBLIC) <> 0 Then S := S + ' public';
+  If (F And SF_METHOD_PRIVATE) <> 0 Then S := S + ' private';
+  If (F And SF_METHOD_PROTECTED) <> 0 Then S := S + ' protected';
+  If (F And SF_METHOD_SINGLETON) <> 0 Then S := S + ' singleton';
+  If (F And SF_METHOD_CLASS) <> 0 Then S := S + ' class-method';
+  If (F And SF_PERSISTENT) <> 0 Then S := S + ' persistent';
+  If (F And SF_DEAD) <> 0 Then S := S + ' dead';
+  If (F And SF_CLASS_SINGLETON) <> 0 Then S := S + ' singleton-class';
+  If (F And SF_CLASS_EIGEN) <> 0 Then S := S + ' eigenclass';
+  If (F And SF_MODULE_FUNCTION) <> 0 Then S := S + ' module-function';
+  SymFlagsName := S;
+End;
+
+Function VisibilityFlag(V: Integer): Integer;
+Begin
+  If V = VIS_PRIVATE Then VisibilityFlag := SF_METHOD_PRIVATE
+  Else If V = VIS_PROTECTED Then VisibilityFlag := SF_METHOD_PROTECTED
+  Else VisibilityFlag := SF_METHOD_PUBLIC;
+End;
+
+Function VisibilityName(V: Integer): String;
+Begin
+  If V = VIS_PRIVATE Then VisibilityName := 'private'
+  Else If V = VIS_PROTECTED Then VisibilityName := 'protected'
+  Else VisibilityName := 'public';
+End;
+
+Function AsmIdent(S: String): String;
+Var
+  I: Integer;
+  C: Char;
+  R: String;
+Begin
+  R := '';
+  For I := 1 To Length(S) Do Begin
+    C := S[I];
+    If ((C >= 'A') And (C <= 'Z')) Or ((C >= 'a') And (C <= 'z')) Or
+       ((C >= '0') And (C <= '9')) Or (C = '_') Then
+      R := R + C
+    Else
+      R := R + '_';
+  End;
+  If R = '' Then R := 'anon';
+  AsmIdent := R;
+End;
+
+Function CurrentClassName: String;
+Begin
+  If (CurrentClassRef > 0) And (CurrentClassRef <= SymCount) Then
+    CurrentClassName := SymTable[CurrentClassRef].Name
+  Else
+    CurrentClassName := 'Object';
 End;
 
 Function ScopeKindName(K: Integer): String;
@@ -1025,7 +1336,8 @@ Var
 Begin
   FindSymInScope := 0;
   For I := SymCount DownTo 1 Do
-    If (SymTable[I].Scope = Scope) And (SymTable[I].Name = Name) Then Begin
+    If (SymTable[I].Scope = Scope) And (SymTable[I].Name = Name) And
+       ((SymTable[I].Flags And SF_DEAD) = 0) Then Begin
       FindSymInScope := I;
       Exit;
     End;
@@ -1038,7 +1350,8 @@ Begin
   FindSym := 0;
   For L := ScopeLevel DownTo 0 Do Begin
     For I := SymCount DownTo 1 Do
-      If (SymTable[I].Scope = L) And (SymTable[I].Name = Name) Then Begin
+      If (SymTable[I].Scope = L) And (SymTable[I].Name = Name) And
+         ((SymTable[I].Flags And SF_DEAD) = 0) Then Begin
         FindSym := I;
         Exit;
       End;
@@ -1048,7 +1361,7 @@ End;
 Function AllocSymOffset(Kind: Integer): Integer;
 Begin
   AllocSymOffset := 0;
-  If (Kind = SK_LOCAL) Or (Kind = SK_BLOCK_PARAM) Then Begin
+  If (Kind = SK_LOCAL) Or (Kind = SK_PARAM) Or (Kind = SK_BLOCK_PARAM) Then Begin
     Inc(ScopeNextLocal[ScopeLevel], 4);
     AllocSymOffset := -ScopeNextLocal[ScopeLevel];
   End Else If Kind = SK_GVAR Then
@@ -1072,9 +1385,453 @@ Begin
   SymTable[SymCount].Kind := Kind;
   SymTable[SymCount].RType := RType;
   SymTable[SymCount].Scope := ScopeLevel;
+  SymTable[SymCount].DeclScopeKind := ScopeKind[ScopeLevel];
   SymTable[SymCount].Offset := AllocSymOffset(Kind);
   SymTable[SymCount].ClassRef := ClassRef;
+  SymTable[SymCount].Flags := 0;
+  If (Kind = SK_CONST) Or (Kind = SK_CLASS) Or (Kind = SK_MODULE) Then
+    SymTable[SymCount].Flags := SymTable[SymCount].Flags Or SF_PERSISTENT;
+  SymTable[SymCount].AsmName := '';
+  SymTable[SymCount].ParamCount := 0;
+  SymTable[SymCount].LocalSize := 0;
+  SymTable[SymCount].RuntimeRef := 0;
+  SymTable[SymCount].MethodName := '';
+  SymTable[SymCount].OwnerMROIndex := 0;
+  SymTable[SymCount].SuperMethodRef := 0;
+  SymTable[SymCount].MissingFallbackRef := 0;
   AddSym := SymCount;
+End;
+
+Function FindClassBySym(SymRef: Integer): Integer;
+Var
+  I: Integer;
+Begin
+  FindClassBySym := 0;
+  For I := 1 To ClassCount Do
+    If ClassTable[I].SymRef = SymRef Then Begin
+      FindClassBySym := I;
+      Exit;
+    End;
+End;
+
+Procedure BuildClassMRO(ClassIdx: Integer); Forward;
+
+Function MethodShortName(FullName: String): String;
+Var
+  I: Integer;
+Begin
+  MethodShortName := FullName;
+  For I := Length(FullName) DownTo 1 Do
+    If (FullName[I] = '#') Or (FullName[I] = '.') Then Begin
+      MethodShortName := Copy(FullName, I + 1, Length(FullName) - I);
+      Exit;
+    End;
+End;
+
+Function FindMethodOnOwner(OwnerSym: Integer; MethodName: String): Integer;
+Var
+  I: Integer;
+  Prefix: String;
+Begin
+  FindMethodOnOwner := 0;
+  If (OwnerSym <= 0) Or (OwnerSym > SymCount) Then Exit;
+  Prefix := SymTable[OwnerSym].Name + '#';
+  For I := SymCount DownTo 1 Do
+    If (SymTable[I].Kind = SK_METHOD) And
+       (SymTable[I].Name = Prefix + MethodName) And
+       ((SymTable[I].Flags And SF_DEAD) = 0) Then Begin
+      FindMethodOnOwner := I;
+      Exit;
+    End;
+End;
+
+Function FindMethodInMRO(ClassSym: Integer; MethodName: String;
+                         StartIndex: Integer): Integer;
+Var
+  C, I, M: Integer;
+Begin
+  FindMethodInMRO := 0;
+  C := FindClassBySym(ClassSym);
+  If C = 0 Then Exit;
+  If ClassTable[C].MROCount = 0 Then BuildClassMRO(C);
+  If StartIndex < 1 Then StartIndex := 1;
+  For I := StartIndex To ClassTable[C].MROCount Do Begin
+    M := FindMethodOnOwner(ClassTable[C].MRO[I], MethodName);
+    If M <> 0 Then Begin
+      FindMethodInMRO := M;
+      Exit;
+    End;
+  End;
+End;
+
+Procedure AddVTableMethod(ClassIdx, MethodSym: Integer);
+Var
+  I: Integer;
+  ShortName: String;
+Begin
+  If (ClassIdx <= 0) Or (ClassIdx > ClassCount) Or
+     (MethodSym <= 0) Or (MethodSym > SymCount) Then Exit;
+  ShortName := SymTable[MethodSym].MethodName;
+  If ShortName = '' Then ShortName := MethodShortName(SymTable[MethodSym].Name);
+  For I := 1 To ClassTable[ClassIdx].VTableCount Do
+    If SymTable[ClassTable[ClassIdx].VTableMethods[I]].MethodName = ShortName Then
+      Exit;
+  If ClassTable[ClassIdx].VTableCount < MAX_CLASS Then Begin
+    Inc(ClassTable[ClassIdx].VTableCount);
+    ClassTable[ClassIdx].VTableMethods[ClassTable[ClassIdx].VTableCount] := MethodSym;
+  End;
+End;
+
+Procedure BuildClassVTable(ClassIdx: Integer);
+Var
+  I, J, OwnerSym: Integer;
+Begin
+  If (ClassIdx <= 0) Or (ClassIdx > ClassCount) Then Exit;
+  ClassTable[ClassIdx].VTableCount := 0;
+  If ClassTable[ClassIdx].MROCount = 0 Then BuildClassMRO(ClassIdx);
+  For I := 1 To ClassTable[ClassIdx].MROCount Do Begin
+    OwnerSym := ClassTable[ClassIdx].MRO[I];
+    For J := 1 To SymCount Do
+      If (SymTable[J].Kind = SK_METHOD) And
+         (SymTable[J].ClassRef = OwnerSym) And
+         ((SymTable[J].Flags And SF_METHOD_SINGLETON) = 0) And
+         ((SymTable[J].Flags And SF_METHOD_CLASS) = 0) And
+         ((SymTable[J].Flags And SF_DEAD) = 0) Then
+        AddVTableMethod(ClassIdx, J);
+  End;
+End;
+
+Procedure BuildAllVTables;
+Var
+  I: Integer;
+Begin
+  For I := 1 To ClassCount Do BuildClassVTable(I);
+End;
+
+Function ResolveSuperMethod: Integer;
+Var
+  StartAt, R: Integer;
+Begin
+  R := 0;
+  If (CurrentMethodSym <= 0) Or (CurrentMethodSym > SymCount) Then Begin
+    ResolveSuperMethod := 0;
+    Exit;
+  End;
+  StartAt := SymTable[CurrentMethodSym].OwnerMROIndex + 1;
+  If StartAt <= 1 Then StartAt := 2;
+  R := FindMethodInMRO(CurrentClassRef, CurrentMethodName, StartAt);
+  If R = 0 Then
+    R := FindMethodInMRO(CurrentClassRef, 'method_missing', StartAt);
+  ResolveSuperMethod := R;
+End;
+
+Procedure UpdateOwnerMethodsForClass(ClassIdx, OwnerSym: Integer);
+Var
+  I, J, OwnerIndex: Integer;
+Begin
+  If (ClassIdx <= 0) Or (ClassIdx > ClassCount) Or (OwnerSym = 0) Then Exit;
+  OwnerIndex := 0;
+  If ClassTable[ClassIdx].MROCount = 0 Then BuildClassMRO(ClassIdx);
+  For I := 1 To ClassTable[ClassIdx].MROCount Do
+    If ClassTable[ClassIdx].MRO[I] = OwnerSym Then Begin
+      OwnerIndex := I;
+      Break;
+    End;
+  If OwnerIndex = 0 Then Exit;
+  For J := 1 To SymCount Do
+    If (SymTable[J].Kind = SK_METHOD) And
+       (SymTable[J].ClassRef = OwnerSym) And
+       ((SymTable[J].Flags And SF_DEAD) = 0) Then Begin
+      SymTable[J].OwnerMROIndex := OwnerIndex;
+      SymTable[J].SuperMethodRef := FindMethodInMRO(ClassTable[ClassIdx].SymRef,
+                                                    SymTable[J].MethodName,
+                                                    OwnerIndex + 1);
+      SymTable[J].MissingFallbackRef := FindMethodInMRO(ClassTable[ClassIdx].SymRef,
+                                                        'method_missing', 1);
+    End;
+End;
+
+Procedure AddMROEntry(ClassIdx, SymRef: Integer);
+Var
+  I: Integer;
+Begin
+  If (ClassIdx <= 0) Or (ClassIdx > ClassCount) Or (SymRef = 0) Then Exit;
+  For I := 1 To ClassTable[ClassIdx].MROCount Do
+    If ClassTable[ClassIdx].MRO[I] = SymRef Then Exit;
+  If ClassTable[ClassIdx].MROCount < MAX_CLASS Then Begin
+    Inc(ClassTable[ClassIdx].MROCount);
+    ClassTable[ClassIdx].MRO[ClassTable[ClassIdx].MROCount] := SymRef;
+  End;
+End;
+
+Procedure AddMROFromClass(ClassIdx, SourceIdx: Integer);
+Var
+  I: Integer;
+Begin
+  If (SourceIdx <= 0) Or (SourceIdx > ClassCount) Then Exit;
+  If ClassTable[SourceIdx].MROCount = 0 Then BuildClassMRO(SourceIdx);
+  For I := 1 To ClassTable[SourceIdx].MROCount Do
+    AddMROEntry(ClassIdx, ClassTable[SourceIdx].MRO[I]);
+End;
+
+Procedure BuildClassMRO(ClassIdx: Integer);
+Var
+  I, SuperIdx, KernelIdx, ModuleIdx: Integer;
+Begin
+  If (ClassIdx <= 0) Or (ClassIdx > ClassCount) Then Exit;
+  ClassTable[ClassIdx].MROCount := 0;
+  For I := ClassTable[ClassIdx].PrependedCount DownTo 1 Do Begin
+    ModuleIdx := FindClassBySym(ClassTable[ClassIdx].PrependList[I]);
+    If ModuleIdx <> 0 Then AddMROFromClass(ClassIdx, ModuleIdx)
+    Else AddMROEntry(ClassIdx, ClassTable[ClassIdx].PrependList[I]);
+  End;
+  AddMROEntry(ClassIdx, ClassTable[ClassIdx].SymRef);
+  For I := ClassTable[ClassIdx].IncludedCount DownTo 1 Do Begin
+    ModuleIdx := FindClassBySym(ClassTable[ClassIdx].IncludeList[I]);
+    If ModuleIdx <> 0 Then AddMROFromClass(ClassIdx, ModuleIdx)
+    Else AddMROEntry(ClassIdx, ClassTable[ClassIdx].IncludeList[I]);
+  End;
+  If ClassTable[ClassIdx].Name = 'Object' Then Begin
+    KernelIdx := FindSym('Kernel');
+    If KernelIdx <> 0 Then AddMROEntry(ClassIdx, KernelIdx);
+  End;
+  SuperIdx := FindClassBySym(ClassTable[ClassIdx].SuperRef);
+  If SuperIdx <> 0 Then AddMROFromClass(ClassIdx, SuperIdx);
+End;
+
+Procedure AddMixinToClass(TargetSym, ModuleSym, Mode: Integer);
+Var
+  C, I: Integer;
+  P: ^TClassMRO;
+  Count: ^Integer;
+Begin
+  If TargetSym = 0 Then TargetSym := FindSym('Object');
+  If (TargetSym = 0) Or (ModuleSym = 0) Then Exit;
+  C := FindClassBySym(TargetSym);
+  If C = 0 Then Exit;
+  If Mode = KW_EXTEND Then Begin
+    P := @ClassTable[C].ExtendList;
+    Count := @ClassTable[C].ExtendedCount;
+  End Else If Mode = KW_PREPEND Then Begin
+    P := @ClassTable[C].PrependList;
+    Count := @ClassTable[C].PrependedCount;
+  End Else Begin
+    P := @ClassTable[C].IncludeList;
+    Count := @ClassTable[C].IncludedCount;
+  End;
+  For I := 1 To Count^ Do
+    If P^[I] = ModuleSym Then Exit;
+  If Count^ >= MAX_MIXIN Then FatalError('trop de mixins pour ' + ClassTable[C].Name);
+  Inc(Count^);
+  P^[Count^] := ModuleSym;
+  BuildClassMRO(C);
+  UpdateOwnerMethodsForClass(C, ClassTable[C].SymRef);
+  UpdateOwnerMethodsForClass(C, ModuleSym);
+End;
+
+Function AddMethodSym(MethodName, OwnerName: String; Visibility, ParamCount: Integer;
+                      IsSingleton, IsClassMethod: Boolean): Integer; Forward;
+
+Procedure ApplyModuleFunction(MethodName: String);
+Var
+  InstSym, ClassSym: Integer;
+Begin
+  If MethodName = '' Then Exit;
+  InstSym := FindSym(CurrentClassName + '#' + MethodName);
+  If InstSym <> 0 Then
+    SymTable[InstSym].Flags := SymTable[InstSym].Flags Or SF_MODULE_FUNCTION;
+  ClassSym := AddMethodSym(MethodName, CurrentClassName, VIS_PUBLIC, 0, False, True);
+  SymTable[ClassSym].Flags := SymTable[ClassSym].Flags Or SF_MODULE_FUNCTION;
+End;
+
+Function AddClassInfo(Name: String; SymRef, SuperRef: Integer;
+                      IsSingleton: Boolean; EigenOf: Integer): Integer;
+Var
+  I: Integer;
+Begin
+  I := FindClassBySym(SymRef);
+  If I <> 0 Then Begin
+    ClassTable[I].SuperRef := SuperRef;
+    ClassTable[I].IsSingleton := IsSingleton;
+    ClassTable[I].EigenOf := EigenOf;
+    BuildClassMRO(I);
+    AddClassInfo := I;
+    Exit;
+  End;
+  If ClassCount >= MAX_CLASS Then FatalError('table des classes pleine');
+  Inc(ClassCount);
+  ClassTable[ClassCount].Name := Name;
+  ClassTable[ClassCount].SymRef := SymRef;
+  ClassTable[ClassCount].SuperRef := SuperRef;
+  ClassTable[ClassCount].VTableRef := 0;
+  ClassTable[ClassCount].IvarCount := 0;
+  ClassTable[ClassCount].MethodCount := 0;
+  ClassTable[ClassCount].IncludedCount := 0;
+  ClassTable[ClassCount].ExtendedCount := 0;
+  ClassTable[ClassCount].PrependedCount := 0;
+  ClassTable[ClassCount].ConstCount := 0;
+  ClassTable[ClassCount].IsSingleton := IsSingleton;
+  ClassTable[ClassCount].EigenOf := EigenOf;
+  ClassTable[ClassCount].MROCount := 0;
+  SymTable[SymRef].RuntimeRef := ClassCount;
+  If IsSingleton Then
+    SymTable[SymRef].Flags := SymTable[SymRef].Flags Or SF_CLASS_SINGLETON;
+  If EigenOf <> 0 Then
+    SymTable[SymRef].Flags := SymTable[SymRef].Flags Or SF_CLASS_EIGEN;
+  BuildClassMRO(ClassCount);
+  AddClassInfo := ClassCount;
+End;
+
+Procedure CountClassMembers;
+Var
+  I, C: Integer;
+Begin
+  For C := 1 To ClassCount Do Begin
+    ClassTable[C].MethodCount := 0;
+    ClassTable[C].IvarCount := 0;
+    ClassTable[C].ConstCount := 0;
+  End;
+  For I := 1 To SymCount Do Begin
+    C := FindClassBySym(SymTable[I].ClassRef);
+    If C <> 0 Then Begin
+      If SymTable[I].Kind = SK_METHOD Then Inc(ClassTable[C].MethodCount)
+      Else If SymTable[I].Kind = SK_IVAR Then Inc(ClassTable[C].IvarCount)
+      Else If SymTable[I].Kind = SK_CONST Then Inc(ClassTable[C].ConstCount);
+    End;
+  End;
+End;
+
+Function AddMethodSym(MethodName, OwnerName: String; Visibility, ParamCount: Integer;
+                      IsSingleton, IsClassMethod: Boolean): Integer;
+Var
+  I, F, C, J: Integer;
+  FullName: String;
+Begin
+  If OwnerName = '' Then OwnerName := CurrentClassName;
+  FullName := OwnerName + '#' + MethodName;
+  If IsSingleton Or IsClassMethod Then FullName := OwnerName + '.' + MethodName;
+  I := AddSym(FullName, SK_METHOD, RT_UNKNOWN, CurrentClassRef);
+  F := VisibilityFlag(Visibility);
+  If IsSingleton Then F := F Or SF_METHOD_SINGLETON;
+  If IsClassMethod Then F := F Or SF_METHOD_CLASS;
+  F := F Or SF_PERSISTENT;
+  SymTable[I].Flags := (SymTable[I].Flags And Not
+    (SF_METHOD_PUBLIC Or SF_METHOD_PRIVATE Or SF_METHOD_PROTECTED)) Or F;
+  SymTable[I].AsmName := ASM_PFX_METHOD + AsmIdent(OwnerName) + '_' +
+                         AsmIdent(MethodName);
+  SymTable[I].ParamCount := ParamCount;
+  SymTable[I].MethodName := MethodName;
+  SymTable[I].OwnerMROIndex := 0;
+  C := FindClassBySym(CurrentClassRef);
+  If C <> 0 Then Begin
+    If ClassTable[C].MROCount = 0 Then BuildClassMRO(C);
+    For J := 1 To ClassTable[C].MROCount Do
+      If ClassTable[C].MRO[J] = CurrentClassRef Then Begin
+        SymTable[I].OwnerMROIndex := J;
+        Break;
+      End;
+  End;
+  SymTable[I].SuperMethodRef := FindMethodInMRO(CurrentClassRef, MethodName,
+                                                SymTable[I].OwnerMROIndex + 1);
+  SymTable[I].MissingFallbackRef := FindMethodInMRO(CurrentClassRef,
+                                                    'method_missing', 1);
+  If C <> 0 Then
+    For J := 1 To ClassTable[C].MROCount Do Begin
+      If ClassTable[C].MRO[J] = CurrentClassRef Then Break;
+      UpdateOwnerMethodsForClass(C, ClassTable[C].MRO[J]);
+    End;
+  AddMethodSym := I;
+End;
+
+Function AddPseudoConst(Name: String; RType: Integer): Integer;
+Var
+  I: Integer;
+Begin
+  I := AddSym(Name, SK_CONST, RType, 0);
+  SymTable[I].Flags := SymTable[I].Flags Or SF_PSEUDO_CONST;
+  AddPseudoConst := I;
+End;
+
+Function ResolveLocal(Name: String): Integer;
+Var
+  I: Integer;
+Begin
+  I := FindSym(Name);
+  If I = 0 Then I := AddSym(Name, SK_LOCAL, RT_UNKNOWN, CurrentClassRef);
+  ResolveLocal := I;
+End;
+
+Function ResolveGlobal(Name: String): Integer;
+Var
+  I: Integer;
+Begin
+  I := FindSym(Name);
+  If I = 0 Then I := AddSym(Name, SK_GVAR, RT_UNKNOWN, 0);
+  SymTable[I].Flags := SymTable[I].Flags Or SF_GLOBAL_STORAGE;
+  ResolveGlobal := I;
+End;
+
+Function ResolveIvar(Name: String): Integer;
+Var
+  I: Integer;
+Begin
+  I := FindSym(Name);
+  If I = 0 Then I := AddSym(Name, SK_IVAR, RT_UNKNOWN, CurrentClassRef);
+  SymTable[I].Flags := SymTable[I].Flags Or SF_IVAR_STORAGE;
+  ResolveIvar := I;
+End;
+
+Function ResolveCvar(Name: String): Integer;
+Var
+  I: Integer;
+Begin
+  I := FindSym(Name);
+  If I = 0 Then I := AddSym(Name, SK_CVAR, RT_UNKNOWN, CurrentClassRef);
+  SymTable[I].Flags := SymTable[I].Flags Or SF_CVAR_STORAGE;
+  ResolveCvar := I;
+End;
+
+Function ResolveConst(Name: String): Integer;
+Var
+  I: Integer;
+Begin
+  I := FindSym(Name);
+  If I = 0 Then I := AddSym(Name, SK_CONST, RT_UNKNOWN, CurrentClassRef);
+  ResolveConst := I;
+End;
+
+Function ResolveVarByToken(Tok: Integer; Name: String): Integer;
+Begin
+  If Tok = TOK_IVAR Then ResolveVarByToken := ResolveIvar(Name)
+  Else If Tok = TOK_CVAR Then ResolveVarByToken := ResolveCvar(Name)
+  Else If Tok = TOK_GVAR Then ResolveVarByToken := ResolveGlobal(Name)
+  Else If Tok = TOK_CONST Then ResolveVarByToken := ResolveConst(Name)
+  Else ResolveVarByToken := ResolveLocal(Name);
+End;
+
+Procedure MarkAssignedNode(N: Integer);
+Var
+  C, S: Integer;
+Begin
+  If N = 0 Then Exit;
+  If AstTable[N].Kind = NK_LIST Then Begin
+    C := AstTable[N].FirstChild;
+    While C <> 0 Do Begin
+      MarkAssignedNode(C);
+      C := AstTable[C].NextSibling;
+    End;
+    Exit;
+  End;
+  S := AstTable[N].SymRef;
+  If S = 0 Then Exit;
+  If (SymTable[S].Kind = SK_CONST) And
+     ((SymTable[S].Flags And SF_PSEUDO_CONST) <> 0) Then
+    WarnMsg('affectation a une pseudo-constante ' + SymTable[S].Name)
+  Else If (SymTable[S].Kind = SK_CONST) And
+          ((SymTable[S].Flags And SF_CONST_ASSIGNED) <> 0) Then
+    WarnMsg('constante deja assignee: ' + SymTable[S].Name);
+  If SymTable[S].Kind = SK_CONST Then
+    SymTable[S].Flags := SymTable[S].Flags Or SF_CONST_ASSIGNED;
 End;
 
 Procedure EnterScope(Kind: Integer);
@@ -1089,50 +1846,255 @@ End;
 
 Procedure LeaveScope;
 Var
-  OldOwner: Integer;
+  OldOwner, Leaving, I: Integer;
 Begin
   If ScopeLevel = 0 Then FatalError('impossible de quitter le scope racine');
   OldOwner := ScopeOwnerClass[ScopeLevel];
-  SymCount := ScopeBase[ScopeLevel] - 1;
+  Leaving := ScopeLevel;
+  For I := 1 To SymCount Do
+    If (SymTable[I].Scope = Leaving) And
+       ((SymTable[I].Flags And SF_PERSISTENT) = 0) Then
+      SymTable[I].Flags := SymTable[I].Flags Or SF_DEAD;
   Dec(ScopeLevel);
   CurrentClassRef := OldOwner;
 End;
 
 Procedure InitSymbols;
+Var
+  I, BasicSym, ObjectSym, KernelSym, ExceptionSym, StandardErrorSym,
+  RuntimeErrorSym, ArgumentErrorSym, TypeErrorSym, NameErrorSym,
+  NoMethodErrorSym, ZeroDivisionErrorSym, IndexErrorSym, KeyErrorSym,
+  IOErrorSym, ScriptErrorSym, SignalExceptionSym, SystemExitSym: Integer;
+  S: String;
 Begin
   FillChar(SymTable, SizeOf(SymTable), 0);
   FillChar(ScopeKind, SizeOf(ScopeKind), 0);
   FillChar(ScopeBase, SizeOf(ScopeBase), 0);
   FillChar(ScopeNextLocal, SizeOf(ScopeNextLocal), 0);
   FillChar(ScopeOwnerClass, SizeOf(ScopeOwnerClass), 0);
+  FillChar(ClassTable, SizeOf(ClassTable), 0);
   SymCount := 0;
+  ClassCount := 0;
   ScopeLevel := 0;
   ScopeKind[0] := SC_TOPLEVEL;
   ScopeBase[0] := 1;
   CurrentClassRef := 0;
-  CurrentClassRef := AddSym('BasicObject', SK_CLASS, RT_CLASS, 0);
-  AddSym('Object', SK_CLASS, RT_CLASS, CurrentClassRef);
-  AddSym('Kernel', SK_MODULE, RT_MODULE, 0);
-  AddSym('ARGV', SK_CONST, RT_ARRAY, 0);
-  AddSym('ENV', SK_CONST, RT_HASH, 0);
-  AddSym('STDIN', SK_CONST, RT_OBJECT, 0);
-  AddSym('STDOUT', SK_CONST, RT_OBJECT, 0);
-  AddSym('STDERR', SK_CONST, RT_OBJECT, 0);
-  CurrentClassRef := FindSym('Object');
+  CurrentMethodSym := 0;
+  CurrentMethodName := '';
+  CurrentVisibility := VIS_PUBLIC;
+  BasicSym := AddSym('BasicObject', SK_CLASS, RT_CLASS, 0);
+  ObjectSym := AddSym('Object', SK_CLASS, RT_CLASS, BasicSym);
+  KernelSym := AddSym('Kernel', SK_MODULE, RT_MODULE, 0);
+  AddClassInfo('BasicObject', BasicSym, 0, False, 0);
+  AddClassInfo('Object', ObjectSym, BasicSym, False, 0);
+  AddClassInfo('Kernel', KernelSym, 0, False, 0);
+  ExceptionSym := AddSym('Exception', SK_CLASS, RT_CLASS, ObjectSym);
+  StandardErrorSym := AddSym('StandardError', SK_CLASS, RT_CLASS, ExceptionSym);
+  RuntimeErrorSym := AddSym('RuntimeError', SK_CLASS, RT_CLASS, StandardErrorSym);
+  ArgumentErrorSym := AddSym('ArgumentError', SK_CLASS, RT_CLASS, StandardErrorSym);
+  TypeErrorSym := AddSym('TypeError', SK_CLASS, RT_CLASS, StandardErrorSym);
+  NameErrorSym := AddSym('NameError', SK_CLASS, RT_CLASS, StandardErrorSym);
+  NoMethodErrorSym := AddSym('NoMethodError', SK_CLASS, RT_CLASS, NameErrorSym);
+  ZeroDivisionErrorSym := AddSym('ZeroDivisionError', SK_CLASS, RT_CLASS,
+                                 StandardErrorSym);
+  IndexErrorSym := AddSym('IndexError', SK_CLASS, RT_CLASS, StandardErrorSym);
+  KeyErrorSym := AddSym('KeyError', SK_CLASS, RT_CLASS, IndexErrorSym);
+  IOErrorSym := AddSym('IOError', SK_CLASS, RT_CLASS, StandardErrorSym);
+  ScriptErrorSym := AddSym('ScriptError', SK_CLASS, RT_CLASS, ExceptionSym);
+  SignalExceptionSym := AddSym('SignalException', SK_CLASS, RT_CLASS, ExceptionSym);
+  SystemExitSym := AddSym('SystemExit', SK_CLASS, RT_CLASS, ExceptionSym);
+  AddClassInfo('Exception', ExceptionSym, ObjectSym, False, 0);
+  AddClassInfo('StandardError', StandardErrorSym, ExceptionSym, False, 0);
+  AddClassInfo('RuntimeError', RuntimeErrorSym, StandardErrorSym, False, 0);
+  AddClassInfo('ArgumentError', ArgumentErrorSym, StandardErrorSym, False, 0);
+  AddClassInfo('TypeError', TypeErrorSym, StandardErrorSym, False, 0);
+  AddClassInfo('NameError', NameErrorSym, StandardErrorSym, False, 0);
+  AddClassInfo('NoMethodError', NoMethodErrorSym, NameErrorSym, False, 0);
+  AddClassInfo('ZeroDivisionError', ZeroDivisionErrorSym, StandardErrorSym,
+               False, 0);
+  AddClassInfo('IndexError', IndexErrorSym, StandardErrorSym, False, 0);
+  AddClassInfo('KeyError', KeyErrorSym, IndexErrorSym, False, 0);
+  AddClassInfo('IOError', IOErrorSym, StandardErrorSym, False, 0);
+  AddClassInfo('ScriptError', ScriptErrorSym, ExceptionSym, False, 0);
+  AddClassInfo('SignalException', SignalExceptionSym, ExceptionSym, False, 0);
+  AddClassInfo('SystemExit', SystemExitSym, ExceptionSym, False, 0);
+  CurrentClassRef := KernelSym;
+  AddMethodSym('method_missing', 'Kernel', VIS_PRIVATE, -1, False, False);
+  AddMethodSym('respond_to?', 'Kernel', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('respond_to_missing?', 'Kernel', VIS_PRIVATE, 1, False, False);
+  AddMethodSym('send', 'Kernel', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('__send__', 'Kernel', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('public_send', 'Kernel', VIS_PUBLIC, -1, False, False);
+  AddPseudoConst('ARGV', RT_ARRAY);
+  AddPseudoConst('ENV', RT_HASH);
+  AddPseudoConst('STDIN', RT_OBJECT);
+  AddPseudoConst('STDOUT', RT_OBJECT);
+  AddPseudoConst('STDERR', RT_OBJECT);
+  ResolveGlobal('$0');
+  ResolveGlobal('$~');
+  ResolveGlobal('$!');
+  For I := 1 To 9 Do Begin
+    Str(I, S);
+    ResolveGlobal('$' + S);
+  End;
+  CurrentClassRef := ObjectSym;
+  BuildClassMRO(FindClassBySym(ObjectSym));
 End;
 
 Procedure DumpSymbols;
 Var
   I: Integer;
 Begin
+  CountClassMembers;
   WriteLn('Symboles: ', SymCount);
   For I := 1 To SymCount Do
     WriteLn(I:5, '  ', SymTable[I].Name,
             ' kind=', SymKindName(SymTable[I].Kind),
             ' type=', RuntimeTypeName(SymTable[I].RType),
-            ' scope=', ScopeKindName(ScopeKind[SymTable[I].Scope]),
+            ' scope=', ScopeKindName(SymTable[I].DeclScopeKind),
             ' offset=', SymTable[I].Offset:0,
-            ' class=', SymTable[I].ClassRef:0);
+            ' class=', SymTable[I].ClassRef:0,
+            ' flags=', SymFlagsName(SymTable[I].Flags),
+            ' asm=', SymTable[I].AsmName,
+            ' argc=', SymTable[I].ParamCount:0,
+            ' locals=', SymTable[I].LocalSize:0,
+            ' mroidx=', SymTable[I].OwnerMROIndex:0,
+            ' super=', SymTable[I].SuperMethodRef:0,
+            ' missing=', SymTable[I].MissingFallbackRef:0);
+End;
+
+Procedure DumpClasses;
+Var
+  I, J: Integer;
+Begin
+  CountClassMembers;
+  BuildAllVTables;
+  WriteLn('Classes: ', ClassCount);
+  For I := 1 To ClassCount Do Begin
+    Write('  ', I:0, ' ', ClassTable[I].Name,
+          ' sym=', ClassTable[I].SymRef:0,
+          ' super=', ClassTable[I].SuperRef:0,
+          ' methods=', ClassTable[I].MethodCount:0,
+          ' ivars=', ClassTable[I].IvarCount:0,
+          ' include=', ClassTable[I].IncludedCount:0,
+          ' extend=', ClassTable[I].ExtendedCount:0,
+          ' prepend=', ClassTable[I].PrependedCount:0,
+          ' vtable=', ClassTable[I].VTableCount:0,
+          ' consts=', ClassTable[I].ConstCount:0);
+    If ClassTable[I].IsSingleton Then Write(' singleton');
+    If ClassTable[I].EigenOf <> 0 Then Write(' eigen-of=', ClassTable[I].EigenOf:0);
+    Write(' mro=[');
+    For J := 1 To ClassTable[I].MROCount Do Begin
+      If J > 1 Then Write(',');
+      If (ClassTable[I].MRO[J] > 0) And (ClassTable[I].MRO[J] <= SymCount) Then
+        Write(SymTable[ClassTable[I].MRO[J]].Name)
+      Else
+        Write(ClassTable[I].MRO[J]:0);
+    End;
+    WriteLn(']');
+  End;
+End;
+
+Function StringFlagsName(F: Integer): String; Forward;
+
+Function NodeKindName(K: Integer): String; Forward;
+Function BlockFlagsName(F: Integer): String; Forward;
+Function ControlFlagsName(F: Integer): String; Forward;
+Function RescueFlagsName(F: Integer): String; Forward;
+
+Procedure DumpStrings;
+Var
+  I: Integer;
+Begin
+  WriteLn('Chaines: ', StringCount);
+  For I := 1 To StringCount Do
+    WriteLn(I:5, '  ', StringTable[I].AsmName,
+            ' len=', StringTable[I].Len:0,
+            ' cap=', StringTable[I].Cap:0,
+            ' segments=', StringTable[I].SegmentCount:0,
+            ' flags=', StringFlagsName(StringTable[I].Flags),
+            ' text="', StringTable[I].Text, '"');
+End;
+
+Procedure DumpLiterals;
+Var
+  I: Integer;
+Begin
+  WriteLn('Symboles litteraux: ', SymbolLitCount);
+  For I := 1 To SymbolLitCount Do
+    WriteLn(I:5, '  ', SymbolLitTable[I].AsmName,
+            ' value=', SymbolLitTable[I].Value:0,
+            ' name=:', SymbolLitTable[I].Name);
+  WriteLn('Arrays litteraux: ', ArrayLitCount);
+  For I := 1 To ArrayLitCount Do
+    WriteLn(I:5, '  ', ArrayLitTable[I].AsmName,
+            ' count=', ArrayLitTable[I].Count:0,
+            ' cap=', ArrayLitTable[I].Cap:0,
+            ' first=', ArrayLitTable[I].FirstNode:0,
+            ' flags=', ArrayLitTable[I].Flags:0);
+  WriteLn('Hashes litteraux: ', HashLitCount);
+  For I := 1 To HashLitCount Do
+    WriteLn(I:5, '  ', HashLitTable[I].AsmName,
+            ' count=', HashLitTable[I].Count:0,
+            ' cap=', HashLitTable[I].Cap:0,
+            ' first=', HashLitTable[I].FirstPair:0,
+            ' flags=', HashLitTable[I].Flags:0);
+End;
+
+Procedure DumpBlocks;
+Var
+  I: Integer;
+Begin
+  WriteLn('Blocs: ', BlockCount);
+  For I := 1 To BlockCount Do
+    WriteLn(I:5, '  ', BlockTable[I].LabelName,
+            ' kind=', NodeKindName(BlockTable[I].Kind),
+            ' params=', BlockTable[I].ParamsNode:0,
+            ' body=', BlockTable[I].BodyNode:0,
+            ' argc=', BlockTable[I].ParamCount:0,
+            ' captures=', BlockTable[I].CaptureCount:0,
+            ' flags=', BlockTable[I].Flags:0,
+            BlockFlagsName(BlockTable[I].Flags));
+End;
+
+Procedure DumpControls;
+Var
+  I: Integer;
+Begin
+  WriteLn('Controles: ', ControlCount);
+  For I := 1 To ControlCount Do
+    WriteLn(I:5, '  kind=', NodeKindName(ControlTable[I].Kind),
+            ' node=', ControlTable[I].NodeRef:0,
+            ' cond=', ControlTable[I].CondNode:0,
+            ' then=', ControlTable[I].ThenNode:0,
+            ' else=', ControlTable[I].ElseNode:0,
+            ' whens=', ControlTable[I].WhenCount:0,
+            ' labels=[', ControlTable[I].ThenLabel, ',',
+            ControlTable[I].ElseLabel, ',', ControlTable[I].EndLabel, ']',
+            ' flags=', ControlTable[I].Flags:0,
+            ControlFlagsName(ControlTable[I].Flags));
+End;
+
+Procedure DumpRescues;
+Var
+  I: Integer;
+Begin
+  WriteLn('Exceptions: ', RescueInfoCount);
+  For I := 1 To RescueInfoCount Do
+    WriteLn(I:5, '  node=', RescueInfoTable[I].NodeRef:0,
+            ' body=', RescueInfoTable[I].BodyNode:0,
+            ' rescues=', RescueInfoTable[I].RescueListNode:0,
+            ' handlers=', RescueInfoTable[I].HandlerCount:0,
+            ' else=', RescueInfoTable[I].ElseNode:0,
+            ' ensure=', RescueInfoTable[I].EnsureNode:0,
+            ' current=', RescueInfoTable[I].CurrentExceptionSym:0,
+            ' labels=[', RescueInfoTable[I].BeginLabel, ',',
+            RescueInfoTable[I].RescueLabel, ',',
+            RescueInfoTable[I].ElseLabel, ',',
+            RescueInfoTable[I].EnsureLabel, ',',
+            RescueInfoTable[I].EndLabel, ']',
+            ' flags=', RescueInfoTable[I].Flags:0,
+            RescueFlagsName(RescueInfoTable[I].Flags));
 End;
 
 Function ItoS(N: LongInt): String;
@@ -1141,6 +2103,356 @@ Var
 Begin
   Str(N, S);
   ItoS := S;
+End;
+
+Function CountInterpolations(S: String): Integer;
+Var
+  I, C: Integer;
+Begin
+  C := 0;
+  I := 1;
+  While I < Length(S) Do Begin
+    If (S[I] = '#') And (S[I + 1] = '{') Then Begin
+      Inc(C);
+      Inc(I);
+    End;
+    Inc(I);
+  End;
+  CountInterpolations := C;
+End;
+
+Function StringFlagsName(F: Integer): String;
+Var
+  S: String;
+Begin
+  S := '';
+  If (F And STRF_FROZEN) <> 0 Then S := S + ' frozen';
+  If (F And STRF_MUTABLE) <> 0 Then S := S + ' mutable';
+  If (F And STRF_INTERP) <> 0 Then S := S + ' interp';
+  If (F And STRF_HEREDOC) <> 0 Then S := S + ' heredoc';
+  If (F And STRF_PERCENT) <> 0 Then S := S + ' percent';
+  If (F And STRF_UTF8) <> 0 Then S := S + ' utf8';
+  StringFlagsName := S;
+End;
+
+Function AddStringLit(Text: String; TokKind: Integer): Integer;
+Var
+  I, F, Segs: Integer;
+Begin
+  For I := 1 To StringCount Do
+    If (StringTable[I].Text = Text) And
+       ((StringTable[I].Flags And STRF_HEREDOC) = 0) And
+       (TokKind <> TOK_HEREDOC) Then Begin
+      AddStringLit := I;
+      Exit;
+    End;
+  If StringCount >= MAX_STRING_LIT Then FatalError('table des chaines pleine');
+  Inc(StringCount);
+  F := STRF_UTF8;
+  If Opt.FrozenStrLits Or (TokKind = TOK_STRING) Then
+    F := F Or STRF_FROZEN
+  Else
+    F := F Or STRF_MUTABLE;
+  If (TokKind = TOK_DSTRING) Or (TokKind = TOK_HEREDOC) Then Begin
+    Segs := CountInterpolations(Text);
+    If Segs > 0 Then F := F Or STRF_INTERP;
+  End Else
+    Segs := 0;
+  If TokKind = TOK_HEREDOC Then F := F Or STRF_HEREDOC;
+  If TokKind = TOK_PERCENT_LIT Then F := F Or STRF_PERCENT;
+  StringTable[StringCount].Text := Text;
+  StringTable[StringCount].AsmName := ASM_PFX_STRING + ItoS(StringCount);
+  StringTable[StringCount].Len := Length(Text);
+  StringTable[StringCount].Cap := Length(Text) + 1;
+  StringTable[StringCount].Flags := F;
+  StringTable[StringCount].SegmentCount := Segs + 1;
+  AddStringLit := StringCount;
+End;
+
+Function NormalizeSymbolName(S: String): String;
+Begin
+  If (Length(S) > 0) And (S[1] = ':') Then
+    Delete(S, 1, 1);
+  NormalizeSymbolName := S;
+End;
+
+Function AddSymbolLit(Name: String): Integer;
+Var
+  I: Integer;
+Begin
+  Name := NormalizeSymbolName(Name);
+  For I := 1 To SymbolLitCount Do
+    If SymbolLitTable[I].Name = Name Then Begin
+      AddSymbolLit := I;
+      Exit;
+    End;
+  If SymbolLitCount >= MAX_SYMBOL_LIT Then FatalError('table des symboles litteraux pleine');
+  Inc(SymbolLitCount);
+  SymbolLitTable[SymbolLitCount].Name := Name;
+  SymbolLitTable[SymbolLitCount].AsmName := ASM_PFX_SYMBOL + ItoS(SymbolLitCount);
+  SymbolLitTable[SymbolLitCount].Value := MakeSymbolValue(SymbolLitCount);
+  AddSymbolLit := SymbolLitCount;
+End;
+
+Function CountNodeChildren(FirstNode: Integer): Integer;
+Var
+  C, N: Integer;
+Begin
+  C := 0;
+  N := FirstNode;
+  While N <> 0 Do Begin
+    Inc(C);
+    N := AstTable[N].NextSibling;
+  End;
+  CountNodeChildren := C;
+End;
+
+Function AddArrayLit(ArrayNode: Integer): Integer;
+Var
+  C, F, N: Integer;
+Begin
+  If ArrayLitCount >= MAX_ARRAY_LIT Then FatalError('table des arrays litteraux pleine');
+  Inc(ArrayLitCount);
+  F := 0;
+  N := AstTable[ArrayNode].FirstChild;
+  While N <> 0 Do Begin
+    If AstTable[N].Kind = NK_SPLAT Then F := F Or ARRF_HAS_SPLAT;
+    N := AstTable[N].NextSibling;
+  End;
+  C := CountNodeChildren(AstTable[ArrayNode].FirstChild);
+  ArrayLitTable[ArrayLitCount].AsmName := ASM_PFX_ARRAY + ItoS(ArrayLitCount);
+  ArrayLitTable[ArrayLitCount].Count := C;
+  ArrayLitTable[ArrayLitCount].Cap := C;
+  If ArrayLitTable[ArrayLitCount].Cap = 0 Then ArrayLitTable[ArrayLitCount].Cap := 4;
+  ArrayLitTable[ArrayLitCount].FirstNode := AstTable[ArrayNode].FirstChild;
+  ArrayLitTable[ArrayLitCount].Flags := F;
+  AddArrayLit := ArrayLitCount;
+End;
+
+Function AddHashLit(HashNode: Integer): Integer;
+Var
+  C, F, N: Integer;
+Begin
+  If HashLitCount >= MAX_HASH_LIT Then FatalError('table des hash litteraux pleine');
+  Inc(HashLitCount);
+  F := 0;
+  N := AstTable[HashNode].FirstChild;
+  While N <> 0 Do Begin
+    If AstTable[N].Kind = NK_KW_SPLAT Then F := F Or HASHF_HAS_KW_SPLAT;
+    N := AstTable[N].NextSibling;
+  End;
+  C := CountNodeChildren(AstTable[HashNode].FirstChild);
+  HashLitTable[HashLitCount].AsmName := ASM_PFX_HASH + ItoS(HashLitCount);
+  HashLitTable[HashLitCount].Count := C;
+  HashLitTable[HashLitCount].Cap := C * 2;
+  If HashLitTable[HashLitCount].Cap = 0 Then HashLitTable[HashLitCount].Cap := 8;
+  HashLitTable[HashLitCount].FirstPair := AstTable[HashNode].FirstChild;
+  HashLitTable[HashLitCount].Flags := F;
+  AddHashLit := HashLitCount;
+End;
+
+Function BlockFlagsName(F: Integer): String;
+Var
+  S: String;
+Begin
+  S := '';
+  If (F And BLOCKF_PROC) <> 0 Then S := S + ' proc';
+  If (F And BLOCKF_LAMBDA) <> 0 Then S := S + ' lambda';
+  If (F And BLOCKF_DO_END) <> 0 Then S := S + ' do-end';
+  If (F And BLOCKF_HAS_PARAMS) <> 0 Then S := S + ' params';
+  BlockFlagsName := S;
+End;
+
+Function AddBlockInfo(Kind, ParamsNode, BodyNode, Flags: Integer): Integer;
+Begin
+  If BlockCount >= MAX_BLOCK Then FatalError('table des blocs pleine');
+  Inc(BlockCount);
+  BlockTable[BlockCount].Kind := Kind;
+  BlockTable[BlockCount].ParamsNode := ParamsNode;
+  BlockTable[BlockCount].BodyNode := BodyNode;
+  BlockTable[BlockCount].ParamCount := CountNodeChildren(AstTable[ParamsNode].FirstChild);
+  BlockTable[BlockCount].CaptureCount := 0;
+  BlockTable[BlockCount].LabelName := ASM_PFX_LABEL + 'BLK_' + ItoS(BlockCount);
+  BlockTable[BlockCount].Flags := Flags;
+  AddBlockInfo := BlockCount;
+End;
+
+Function ControlFlagsName(F: Integer): String;
+Var
+  S: String;
+Begin
+  S := '';
+  If (F And CTRLF_UNLESS) <> 0 Then S := S + ' unless';
+  If (F And CTRLF_MODIFIER) <> 0 Then S := S + ' modifier';
+  If (F And CTRLF_TERNARY) <> 0 Then S := S + ' ternary';
+  If (F And CTRLF_SHORT_CIRCUIT) <> 0 Then S := S + ' short-circuit';
+  If (F And CTRLF_CASE) <> 0 Then S := S + ' case';
+  If (F And CTRLF_PATTERN) <> 0 Then S := S + ' pattern';
+  If (F And CTRLF_LOOP) <> 0 Then S := S + ' loop';
+  If (F And CTRLF_WHILE) <> 0 Then S := S + ' while';
+  If (F And CTRLF_UNTIL) <> 0 Then S := S + ' until';
+  If (F And CTRLF_FOR) <> 0 Then S := S + ' for';
+  If (F And CTRLF_LOOP_BLOCK) <> 0 Then S := S + ' loop-block';
+  If (F And CTRLF_ITERATOR) <> 0 Then S := S + ' iterator';
+  If (F And CTRLF_POST_TEST) <> 0 Then S := S + ' post-test';
+  ControlFlagsName := S;
+End;
+
+Function RescueFlagsName(F: Integer): String;
+Var
+  S: String;
+Begin
+  S := '';
+  If (F And RESCF_HAS_RESCUE) <> 0 Then S := S + ' rescue';
+  If (F And RESCF_HAS_ELSE) <> 0 Then S := S + ' else';
+  If (F And RESCF_HAS_ENSURE) <> 0 Then S := S + ' ensure';
+  If (F And RESCF_MODIFIER) <> 0 Then S := S + ' modifier';
+  If (F And RESCF_DEFAULT) <> 0 Then S := S + ' default';
+  RescueFlagsName := S;
+End;
+
+Function CountCaseWhens(BodyNode: Integer): Integer;
+Var
+  C, N: Integer;
+Begin
+  C := 0;
+  If BodyNode <> 0 Then Begin
+    N := AstTable[BodyNode].FirstChild;
+    While N <> 0 Do Begin
+      If AstTable[N].Kind = NK_WHEN Then Inc(C);
+      N := AstTable[N].NextSibling;
+    End;
+  End;
+  CountCaseWhens := C;
+End;
+
+Function CaseHasPattern(BodyNode: Integer): Boolean;
+Var
+  N: Integer;
+Begin
+  CaseHasPattern := False;
+  If BodyNode = 0 Then Exit;
+  N := AstTable[BodyNode].FirstChild;
+  While N <> 0 Do Begin
+    If (AstTable[N].Kind = NK_WHEN) And (AstTable[N].Tok = KW_IN) Then Begin
+      CaseHasPattern := True;
+      Exit;
+    End;
+    N := AstTable[N].NextSibling;
+  End;
+End;
+
+Function AddControlInfo(NodeRef, Kind, CondNode, ThenNode, ElseNode,
+                        Flags: Integer): Integer;
+Begin
+  If ControlCount >= MAX_CONTROL Then FatalError('table des controles pleine');
+  Inc(ControlCount);
+  ControlTable[ControlCount].NodeRef := NodeRef;
+  ControlTable[ControlCount].Kind := Kind;
+  ControlTable[ControlCount].CondNode := CondNode;
+  ControlTable[ControlCount].ThenNode := ThenNode;
+  ControlTable[ControlCount].ElseNode := ElseNode;
+  If (Flags And CTRLF_LOOP) <> 0 Then Begin
+    ControlTable[ControlCount].ThenLabel := ASM_PFX_LABEL + 'CTL_' +
+                                            ItoS(ControlCount) + '_START';
+    ControlTable[ControlCount].ElseLabel := ASM_PFX_LABEL + 'CTL_' +
+                                            ItoS(ControlCount) + '_NEXT';
+  End Else Begin
+    ControlTable[ControlCount].ThenLabel := ASM_PFX_LABEL + 'CTL_' +
+                                            ItoS(ControlCount) + '_THEN';
+    ControlTable[ControlCount].ElseLabel := ASM_PFX_LABEL + 'CTL_' +
+                                            ItoS(ControlCount) + '_ELSE';
+  End;
+  ControlTable[ControlCount].EndLabel := ASM_PFX_LABEL + 'CTL_' +
+                                         ItoS(ControlCount) + '_END';
+  If Kind = NK_CASE Then ControlTable[ControlCount].WhenCount := CountCaseWhens(ThenNode)
+  Else ControlTable[ControlCount].WhenCount := 0;
+  ControlTable[ControlCount].Flags := Flags;
+  AddControlInfo := ControlCount;
+End;
+
+Procedure PushLoop(ControlRef: Integer);
+Begin
+  If LoopDepth >= MAX_CONTROL Then FatalError('pile de boucles pleine');
+  Inc(LoopDepth);
+  LoopStack[LoopDepth] := ControlRef;
+End;
+
+Procedure PopLoop;
+Begin
+  If LoopDepth > 0 Then Dec(LoopDepth);
+End;
+
+Function CurrentLoopControl: Integer;
+Begin
+  If LoopDepth <= 0 Then CurrentLoopControl := 0
+  Else CurrentLoopControl := LoopStack[LoopDepth];
+End;
+
+Function CountRescueHandlers(RescueListNode: Integer): Integer;
+Begin
+  If RescueListNode = 0 Then CountRescueHandlers := 0
+  Else CountRescueHandlers :=
+    CountNodeChildren(AstTable[RescueListNode].FirstChild);
+End;
+
+Function AddRescueInfo(NodeRef, BodyNode, RescueListNode, ElseNode,
+                       EnsureNode, Flags: Integer): Integer;
+Begin
+  If RescueInfoCount >= MAX_RESCUE Then FatalError('table des exceptions pleine');
+  Inc(RescueInfoCount);
+  RescueInfoTable[RescueInfoCount].NodeRef := NodeRef;
+  RescueInfoTable[RescueInfoCount].BodyNode := BodyNode;
+  RescueInfoTable[RescueInfoCount].RescueListNode := RescueListNode;
+  RescueInfoTable[RescueInfoCount].ElseNode := ElseNode;
+  RescueInfoTable[RescueInfoCount].EnsureNode := EnsureNode;
+  RescueInfoTable[RescueInfoCount].CurrentExceptionSym := ResolveGlobal('$!');
+  RescueInfoTable[RescueInfoCount].HandlerCount :=
+    CountRescueHandlers(RescueListNode);
+  RescueInfoTable[RescueInfoCount].BeginLabel := ASM_PFX_LABEL + 'RESC_' +
+                                                ItoS(RescueInfoCount) + '_BEGIN';
+  RescueInfoTable[RescueInfoCount].RescueLabel := ASM_PFX_LABEL + 'RESC_' +
+                                                 ItoS(RescueInfoCount) + '_HANDLER';
+  RescueInfoTable[RescueInfoCount].ElseLabel := ASM_PFX_LABEL + 'RESC_' +
+                                               ItoS(RescueInfoCount) + '_ELSE';
+  RescueInfoTable[RescueInfoCount].EnsureLabel := ASM_PFX_LABEL + 'RESC_' +
+                                                 ItoS(RescueInfoCount) + '_ENSURE';
+  RescueInfoTable[RescueInfoCount].EndLabel := ASM_PFX_LABEL + 'RESC_' +
+                                              ItoS(RescueInfoCount) + '_END';
+  RescueInfoTable[RescueInfoCount].Flags := Flags;
+  AddRescueInfo := RescueInfoCount;
+End;
+
+Procedure UpdateRescueInfo(RescueRef, NodeRef, BodyNode, RescueListNode,
+                           ElseNode, EnsureNode, Flags: Integer);
+Begin
+  If (RescueRef <= 0) Or (RescueRef > RescueInfoCount) Then Exit;
+  RescueInfoTable[RescueRef].NodeRef := NodeRef;
+  RescueInfoTable[RescueRef].BodyNode := BodyNode;
+  RescueInfoTable[RescueRef].RescueListNode := RescueListNode;
+  RescueInfoTable[RescueRef].ElseNode := ElseNode;
+  RescueInfoTable[RescueRef].EnsureNode := EnsureNode;
+  RescueInfoTable[RescueRef].HandlerCount :=
+    CountRescueHandlers(RescueListNode);
+  RescueInfoTable[RescueRef].Flags := Flags;
+End;
+
+Procedure PushRescue(RescueRef: Integer);
+Begin
+  If RescueDepth >= MAX_RESCUE Then FatalError('pile des exceptions pleine');
+  Inc(RescueDepth);
+  RescueStack[RescueDepth] := RescueRef;
+End;
+
+Procedure PopRescue;
+Begin
+  If RescueDepth > 0 Then Dec(RescueDepth);
+End;
+
+Function CurrentRescueControl: Integer;
+Begin
+  If RescueDepth <= 0 Then CurrentRescueControl := 0
+  Else CurrentRescueControl := RescueStack[RescueDepth];
 End;
 
 Procedure AppendTok(C: Char);
@@ -1316,7 +2628,7 @@ Begin
     AppendTok(LexNextChar);
     Exit;
   End;
-  If LexPeekChar = '~' Then Begin
+  If (LexPeekChar = '~') Or (LexPeekChar = '!') Then Begin
     AppendTok(LexNextChar);
     Exit;
   End;
@@ -1526,15 +2838,37 @@ Function TryReadHeredoc: Boolean;
 Var
   SavePos, SaveLine, SaveCol: LongInt;
   C, Quote: Char;
+  Delim, Line, CheckLine: String;
+  AllowIndent: Boolean;
+
+  Function LTrimSpaces(S: String): String;
+  Begin
+    While (Length(S) > 0) And ((S[1] = ' ') Or (S[1] = #9)) Do
+      Delete(S, 1, 1);
+    LTrimSpaces := S;
+  End;
+
+  Procedure AppendBody(S: String);
+  Var
+    I: Integer;
+  Begin
+    For I := 1 To Length(S) Do
+      AppendTok(S[I]);
+  End;
 Begin
   TryReadHeredoc := False;
   SavePos := LexPos;
   SaveLine := LexLine;
   SaveCol := LexCol;
   CurTokStr := '';
+  Delim := '';
+  AllowIndent := False;
   LexNextChar;
   LexNextChar;
-  If (LexPeekChar = '-') Or (LexPeekChar = '~') Then AppendTok(LexNextChar);
+  If (LexPeekChar = '-') Or (LexPeekChar = '~') Then Begin
+    AllowIndent := True;
+    LexNextChar;
+  End;
   While (LexPeekChar = ' ') Or (LexPeekChar = #9) Do LexNextChar;
   Quote := #0;
   If (LexPeekChar = '"') Or (LexPeekChar = '''') Then Quote := LexNextChar;
@@ -1545,10 +2879,35 @@ Begin
     CurTokStr := '';
     Exit;
   End;
-  While IsIdentChar(LexPeekChar) Do AppendTok(LexNextChar);
+  While IsIdentChar(LexPeekChar) Do Begin
+    C := LexNextChar;
+    If Length(Delim) < 255 Then Delim := Delim + C;
+  End;
   If Quote <> #0 Then Begin
     C := LexNextChar;
     If C <> Quote Then FatalError('delimiteur heredoc invalide');
+  End;
+  While (LexPeekChar <> #0) And (LexPeekChar <> #10) Do LexNextChar;
+  If LexPeekChar = #10 Then LexNextChar;
+  CurTokStr := '';
+  While True Do Begin
+    Line := '';
+    While (LexPeekChar <> #0) And (LexPeekChar <> #10) Do Begin
+      C := LexNextChar;
+      If (C <> #13) And (Length(Line) < 255) Then Line := Line + C;
+    End;
+    CheckLine := Line;
+    If AllowIndent Then CheckLine := LTrimSpaces(CheckLine);
+    If CheckLine = Delim Then Begin
+      If LexPeekChar = #10 Then LexNextChar;
+      Break;
+    End;
+    AppendBody(Line);
+    If LexPeekChar = #10 Then Begin
+      AppendTok(#10);
+      LexNextChar;
+    End Else If LexPeekChar = #0 Then
+      FatalError('heredoc non termine');
   End;
   CurTokType := TOK_HEREDOC;
   TryReadHeredoc := True;
@@ -1565,7 +2924,7 @@ Begin
   TokenCanEndExpr := (T = TOK_IDENT) Or (T = TOK_CONST) Or (T = TOK_IVAR) Or
                      (T = TOK_CVAR) Or (T = TOK_GVAR) Or
                      (T = TOK_INTEGER) Or (T = TOK_FLOAT) Or
-                     (T = TOK_STRING) Or (T = TOK_DSTRING) Or
+                     (T = TOK_STRING) Or (T = TOK_DSTRING) Or (T = TOK_HEREDOC) Or
                      (T = TOK_SYMBOL) Or (T = TOK_REGEX) Or
                      (T = TOK_PERCENT_LIT) Or (T = Ord(')')) Or
                      (T = Ord(']')) Or (T = Ord('}')) Or
@@ -1643,6 +3002,7 @@ Begin
     AppendTok(LexNextChar);
     AppendTok(LexNextChar);
   End Else If (C = '<') And (C2 = '<') And Not LastTokenCanEndExpr And
+              (LastTokenType <> KW_CLASS) And
               TryReadHeredoc Then Begin
   End Else If (((C = '*') And (C2 = '*')) Or
                ((C = '<') And (C2 = '<')) Or
@@ -1870,6 +3230,12 @@ Begin
 End;
 
 Function ParseExpr: Integer; Forward;
+Function ParseStatementList(End1, End2, End3: Integer): Integer; Forward;
+Function ParseBlockLiteral(BlockKind, StartTok: Integer): Integer; Forward;
+Function ParseLambdaArrow: Integer; Forward;
+Function NodeMethodName(N: Integer): String; Forward;
+Function IsIteratorMethodName(S: String): Boolean; Forward;
+Function ParseConditionExpr: Integer; Forward;
 
 Function NodeKindName(K: Integer): String;
 Begin
@@ -1890,6 +3256,48 @@ Begin
     NK_LIST: NodeKindName := 'list';
     NK_SPLAT: NodeKindName := 'splat';
     NK_KW_SPLAT: NodeKindName := 'kw-splat';
+    NK_STMT_LIST: NodeKindName := 'stmt-list';
+    NK_IF: NodeKindName := 'if';
+    NK_UNLESS: NodeKindName := 'unless';
+    NK_WHILE: NodeKindName := 'while';
+    NK_UNTIL: NodeKindName := 'until';
+    NK_FOR: NodeKindName := 'for';
+    NK_CASE: NodeKindName := 'case';
+    NK_WHEN: NodeKindName := 'when';
+    NK_BEGIN: NodeKindName := 'begin';
+    NK_RESCUE: NodeKindName := 'rescue';
+    NK_ENSURE: NodeKindName := 'ensure';
+    NK_DEF: NodeKindName := 'def';
+    NK_CLASS: NodeKindName := 'class';
+    NK_MODULE: NodeKindName := 'module';
+    NK_RETURN: NodeKindName := 'return';
+    NK_BREAK: NodeKindName := 'break';
+    NK_NEXT: NodeKindName := 'next';
+    NK_REDO: NodeKindName := 'redo';
+    NK_RETRY: NodeKindName := 'retry';
+    NK_YIELD: NodeKindName := 'yield';
+    NK_RAISE: NodeKindName := 'raise';
+    NK_ALIAS: NodeKindName := 'alias';
+    NK_UNDEF: NodeKindName := 'undef';
+    NK_BEGIN_HOOK: NodeKindName := 'BEGIN';
+    NK_END_HOOK: NodeKindName := 'END';
+    NK_REQUIRE: NodeKindName := 'require';
+    NK_EMPTY: NodeKindName := 'empty';
+    NK_VISIBILITY: NodeKindName := 'visibility';
+    NK_PARAM: NodeKindName := 'param';
+    NK_PARAM_DEFAULT: NodeKindName := 'param-default';
+    NK_PARAM_SPLAT: NodeKindName := 'param-splat';
+    NK_PARAM_KEY: NodeKindName := 'param-key';
+    NK_PARAM_KW_SPLAT: NodeKindName := 'param-kw-splat';
+    NK_PARAM_BLOCK: NodeKindName := 'param-block';
+    NK_MIXIN: NodeKindName := 'mixin';
+    NK_MODULE_FUNCTION: NodeKindName := 'module-function';
+    NK_SUPER: NodeKindName := 'super';
+    NK_STRING: NodeKindName := 'string';
+    NK_SYMBOL: NodeKindName := 'symbol';
+    NK_BLOCK: NodeKindName := 'block';
+    NK_PROC: NodeKindName := 'proc';
+    NK_LAMBDA: NodeKindName := 'lambda';
   Else
     NodeKindName := 'none';
   End;
@@ -1898,9 +3306,26 @@ End;
 Procedure InitAST;
 Begin
   FillChar(AstTable, SizeOf(AstTable), 0);
+  FillChar(StringTable, SizeOf(StringTable), 0);
+  FillChar(SymbolLitTable, SizeOf(SymbolLitTable), 0);
+  FillChar(ArrayLitTable, SizeOf(ArrayLitTable), 0);
+  FillChar(HashLitTable, SizeOf(HashLitTable), 0);
+  FillChar(BlockTable, SizeOf(BlockTable), 0);
+  FillChar(ControlTable, SizeOf(ControlTable), 0);
+  FillChar(RescueInfoTable, SizeOf(RescueInfoTable), 0);
   AstCount := 0;
+  StringCount := 0;
+  SymbolLitCount := 0;
+  ArrayLitCount := 0;
+  HashLitCount := 0;
+  BlockCount := 0;
+  ControlCount := 0;
+  LoopDepth := 0;
+  RescueInfoCount := 0;
+  RescueDepth := 0;
   ParseErrors := 0;
   ParseAllowCommaList := True;
+  ParseAllowDoBlock := True;
 End;
 
 Function NewASTNode(Kind, Tok: Integer; Text: String; Left, Right, Third: Integer): Integer;
@@ -1973,7 +3398,14 @@ Begin
   OldComma := ParseAllowCommaList;
   ParseAllowCommaList := False;
   While (CurTokType <> EndTok) And (CurTokType <> TOK_EOF) Do Begin
-    E := ParseExpr;
+    If CurTokType = Ord('*') Then Begin
+      NextTok;
+      E := NewASTNode(NK_SPLAT, Ord('*'), '*', ParseExpr, 0, 0);
+    End Else If CurTokType = TOK_POW Then Begin
+      NextTok;
+      E := NewASTNode(NK_KW_SPLAT, TOK_POW, '**', ParseExpr, 0, 0);
+    End Else
+      E := ParseExpr;
     AddChild(L, E);
     SkipExprNewlines;
     If CurTokType = Ord(',') Then Begin
@@ -1988,14 +3420,37 @@ Begin
   ParseListUntil := L;
 End;
 
+Function IsCallArgStart(T: Integer): Boolean; Forward;
+Function ParseBareArgList: Integer; Forward;
+
 Function ParsePrimary: Integer;
 Var
-  N, K, Key, Val: Integer;
+  N, K, Key, Val, Args, Tok: Integer;
   T, S: String;
   OldComma: Boolean;
 Begin
   ParsePrimary := 0;
   SkipExprNewlines;
+  If (CurTokType = KW_PROC) Or (CurTokType = KW_LAMBDA) Then Begin
+    Tok := CurTokType;
+    S := CurTokStr;
+    NextTok;
+    If (CurTokType = Ord('{')) Or (CurTokType = KW_DO) Then Begin
+      If Tok = KW_PROC Then
+        ParsePrimary := ParseBlockLiteral(NK_PROC, CurTokType)
+      Else
+        ParsePrimary := ParseBlockLiteral(NK_LAMBDA, CurTokType);
+    End Else Begin
+      N := NewASTNode(NK_VAR, Tok, S, 0, 0, 0);
+      AstTable[N].SymRef := AddSym(S, SK_METHOD, RT_UNKNOWN, CurrentClassRef);
+      ParsePrimary := N;
+    End;
+    Exit;
+  End;
+  If CurTokType = TOK_ARROW Then Begin
+    ParsePrimary := ParseLambdaArrow;
+    Exit;
+  End;
   If IsPseudoKeyword(CurTokType) Then Begin
     S := CurTokStr;
     N := NewASTNode(NK_VAR, CurTokType, S, 0, 0, 0);
@@ -2005,11 +3460,37 @@ Begin
     Exit;
   End;
   Case CurTokType Of
-    TOK_INTEGER, TOK_FLOAT, TOK_STRING, TOK_DSTRING, TOK_SYMBOL, TOK_REGEX,
-    TOK_PERCENT_LIT, KW_NIL, KW_FALSE, KW_TRUE, KW_FILE, KW_LINE, KW_ENCODING:
+    TOK_STRING, TOK_DSTRING, TOK_HEREDOC, TOK_PERCENT_LIT:
+      Begin
+        N := NewASTNode(NK_STRING, CurTokType, CurTokStr, 0, 0, 0);
+        AstTable[N].SymRef := AddStringLit(CurTokStr, CurTokType);
+        NextTok;
+        ParsePrimary := N;
+      End;
+    TOK_SYMBOL:
+      Begin
+        S := NormalizeSymbolName(CurTokStr);
+        N := NewASTNode(NK_SYMBOL, CurTokType, S, 0, 0, 0);
+        AstTable[N].SymRef := AddSymbolLit(S);
+        NextTok;
+        ParsePrimary := N;
+      End;
+    TOK_INTEGER, TOK_FLOAT, TOK_REGEX,
+    KW_NIL, KW_FALSE, KW_TRUE:
       Begin
         N := NewASTNode(NK_LITERAL, CurTokType, CurTokStr, 0, 0, 0);
         If CurTokType = TOK_INTEGER Then AstTable[N].Text := CurTokStr;
+        NextTok;
+        ParsePrimary := N;
+      End;
+    KW_FILE, KW_LINE, KW_ENCODING:
+      Begin
+        If CurTokType = KW_FILE Then S := '__FILE__'
+        Else If CurTokType = KW_LINE Then S := '__LINE__'
+        Else S := '__ENCODING__';
+        N := NewASTNode(NK_CONST, CurTokType, S, 0, 0, 0);
+        AstTable[N].SymRef := AddPseudoConst(S, RT_STRING);
+        If CurTokType = KW_LINE Then SymTable[AstTable[N].SymRef].RType := RT_INTEGER;
         NextTok;
         ParsePrimary := N;
       End;
@@ -2021,7 +3502,7 @@ Begin
         If CurTokType = TOK_IVAR Then K := SK_IVAR
         Else If CurTokType = TOK_CVAR Then K := SK_CVAR
         Else If CurTokType = TOK_GVAR Then K := SK_GVAR;
-        AstTable[N].SymRef := AddSym(S, K, RT_UNKNOWN, CurrentClassRef);
+        AstTable[N].SymRef := ResolveVarByToken(CurTokType, S);
         NextTok;
         ParsePrimary := N;
       End;
@@ -2029,7 +3510,7 @@ Begin
       Begin
         S := CurTokStr;
         N := NewASTNode(NK_CONST, CurTokType, S, 0, 0, 0);
-        AstTable[N].SymRef := AddSym(S, SK_CONST, RT_UNKNOWN, CurrentClassRef);
+        AstTable[N].SymRef := ResolveConst(S);
         NextTok;
         ParsePrimary := N;
       End;
@@ -2037,6 +3518,27 @@ Begin
       Begin
         N := NewASTNode(NK_VAR, CurTokType, 'self', 0, 0, 0);
         NextTok;
+        ParsePrimary := N;
+      End;
+    KW_SUPER:
+      Begin
+        NextTok;
+        Args := 0;
+        S := 'super';
+        If CurTokType = Ord('(') Then Begin
+          NextTok;
+          Args := ParseListUntil(Ord(')'));
+          S := 'super-explicit';
+        End Else If IsCallArgStart(CurTokType) Then Begin
+          Args := ParseBareArgList;
+          S := 'super-explicit';
+        End;
+        N := NewASTNode(NK_SUPER, KW_SUPER, S, Args, 0, 0);
+        AstTable[N].SymRef := ResolveSuperMethod;
+        If (AstTable[N].SymRef = 0) And (CurrentMethodSym <> 0) And
+           ((CurrentClassRef <= 0) Or
+            (SymTable[CurrentClassRef].Kind <> SK_MODULE)) Then
+          WarnMsg('super sans methode parente resolue dans ' + CurrentMethodName);
         ParsePrimary := N;
       End;
     Ord('('):
@@ -2052,6 +3554,7 @@ Begin
         N := NewASTNode(NK_ARRAY, 0, '', 0, 0, 0);
         K := ParseListUntil(Ord(']'));
         AstTable[N].FirstChild := AstTable[K].FirstChild;
+        AstTable[N].SymRef := AddArrayLit(N);
         ParsePrimary := N;
       End;
     Ord('{'):
@@ -2062,9 +3565,29 @@ Begin
         ParseAllowCommaList := False;
         SkipExprNewlines;
         While (CurTokType <> Ord('}')) And (CurTokType <> TOK_EOF) Do Begin
+          If CurTokType = TOK_POW Then Begin
+            NextTok;
+            AddChild(N, NewASTNode(NK_KW_SPLAT, TOK_POW, '**', ParseExpr, 0, 0));
+            SkipExprNewlines;
+            If CurTokType = Ord(',') Then Begin
+              NextTok;
+              SkipExprNewlines;
+            End Else
+              Break;
+            Continue;
+          End;
           Key := ParseExpr;
           If (CurTokType = TOK_FAT_ARROW) Or (CurTokType = Ord(':')) Then
-            NextTok
+          Begin
+            If (CurTokType = Ord(':')) And
+               ((AstTable[Key].Kind = NK_VAR) Or (AstTable[Key].Kind = NK_CONST)) Then Begin
+              S := AstTable[Key].Text;
+              AstTable[Key].Kind := NK_SYMBOL;
+              AstTable[Key].Tok := TOK_SYMBOL;
+              AstTable[Key].SymRef := AddSymbolLit(S);
+            End;
+            NextTok;
+          End
           Else
             ParseError('=> ou : attendu dans hash');
           Val := ParseExpr;
@@ -2079,6 +3602,7 @@ Begin
         If CurTokType = Ord('}') Then NextTok
         Else ParseError('} attendu');
         ParseAllowCommaList := OldComma;
+        AstTable[N].SymRef := AddHashLit(N);
         ParsePrimary := N;
       End;
   Else
@@ -2127,11 +3651,12 @@ Begin
   IsCallArgStart := (T = TOK_IDENT) Or (T = TOK_CONST) Or (T = TOK_IVAR) Or
                     (T = TOK_CVAR) Or (T = TOK_GVAR) Or
                     (T = TOK_INTEGER) Or (T = TOK_FLOAT) Or
-                    (T = TOK_STRING) Or (T = TOK_DSTRING) Or
+                    (T = TOK_STRING) Or (T = TOK_DSTRING) Or (T = TOK_HEREDOC) Or
                     (T = TOK_SYMBOL) Or (T = TOK_REGEX) Or
                     (T = TOK_PERCENT_LIT) Or (T = Ord('(')) Or
                     (T = Ord('[')) Or (T = Ord('{')) Or
                     (T = Ord('*')) Or (T = TOK_POW) Or
+                    (T = KW_SUPER) Or (T = KW_SELF) Or
                     IsKeywordLiteral(T) Or IsPseudoKeyword(T);
 End;
 
@@ -2165,8 +3690,9 @@ End;
 
 Function ParsePostfix: Integer;
 Var
-  N, Args, Name: Integer;
+  N, Args, Name, Blk, Ctl: Integer;
   M: String;
+  IsIter: Boolean;
 Begin
   N := ParsePrimary;
   While True Do Begin
@@ -2189,6 +3715,33 @@ Begin
         N := NewASTNode(NK_CALL, 0, M, N, Args, Name);
       End Else
         ParseError('nom de methode attendu apres .');
+    End Else If CurTokType = TOK_DCOLON Then Begin
+      NextTok;
+      If CurTokType = TOK_CONST Then Begin
+        M := AstTable[N].Text + '::' + CurTokStr;
+        Name := NewASTNode(NK_CONST, TOK_DCOLON, M, N, 0, 0);
+        AstTable[Name].SymRef := ResolveConst(M);
+        NextTok;
+        N := Name;
+      End Else
+        ParseError('constante attendue apres ::');
+    End Else If (CurTokType = Ord('{')) Or
+                ((CurTokType = KW_DO) And ParseAllowDoBlock) Then Begin
+      IsIter := (AstTable[N].Kind = NK_CALL) And (AstTable[N].Third <> 0) And
+                IsIteratorMethodName(NodeMethodName(AstTable[N].Third));
+      If IsIter Then Begin
+        Ctl := AddControlInfo(N, NK_CALL, N, 0, 0,
+                              CTRLF_LOOP Or CTRLF_ITERATOR);
+        AstTable[N].SymRef := Ctl;
+        PushLoop(Ctl);
+      End Else
+        Ctl := 0;
+      Blk := ParseBlockLiteral(NK_BLOCK, CurTokType);
+      If IsIter Then Begin
+        PopLoop;
+        ControlTable[Ctl].ThenNode := Blk;
+      End;
+      AddChild(N, Blk);
     End Else If ((AstTable[N].Kind = NK_VAR) Or (AstTable[N].Kind = NK_CONST)) And
                 IsCallArgStart(CurTokType) Then Begin
       Args := ParseBareArgList;
@@ -2341,6 +3894,9 @@ Begin
     T := CurTokType; S := CurTokStr; NextTok;
     R := ParseEquality;
     L := NewASTNode(NK_BINARY, T, S, L, R, 0);
+    AstTable[L].SymRef := AddControlInfo(L, NK_BINARY, AstTable[L].Left,
+                                         AstTable[L].Right, 0,
+                                         CTRLF_SHORT_CIRCUIT);
   End;
   ParseLogicalAnd := L;
 End;
@@ -2355,6 +3911,9 @@ Begin
     T := CurTokType; S := CurTokStr; NextTok;
     R := ParseLogicalAnd;
     L := NewASTNode(NK_BINARY, T, S, L, R, 0);
+    AstTable[L].SymRef := AddControlInfo(L, NK_BINARY, AstTable[L].Left,
+                                         AstTable[L].Right, 0,
+                                         CTRLF_SHORT_CIRCUIT);
   End;
   ParseLogicalOr := L;
 End;
@@ -2385,6 +3944,9 @@ Begin
     Else ParseError(': attendu dans expression ternaire');
     B := ParseExpr;
     C := NewASTNode(NK_TERNARY, Ord('?'), '?:', C, A, B);
+    AstTable[C].SymRef := AddControlInfo(C, NK_TERNARY, AstTable[C].Left,
+                                         AstTable[C].Right, AstTable[C].Third,
+                                         CTRLF_TERNARY);
   End;
   ParseTernary := C;
 End;
@@ -2410,6 +3972,7 @@ Begin
     If OpText = '' Then OpText := '=';
     NextTok;
     R := ParseAssign;
+    MarkAssignedNode(L);
     L := NewASTNode(NK_ASSIGN, OpTok, OpText, L, R, 0);
   End;
   ParseAssign := L;
@@ -2418,6 +3981,1033 @@ End;
 Function ParseExpr: Integer;
 Begin
   ParseExpr := ParseAssign;
+End;
+
+Function ParseConditionExpr: Integer;
+Var
+  OldAllowDo: Boolean;
+Begin
+  OldAllowDo := ParseAllowDoBlock;
+  ParseAllowDoBlock := False;
+  ParseConditionExpr := ParseExpr;
+  ParseAllowDoBlock := OldAllowDo;
+End;
+
+Procedure DumpASTNode(N, Indent: Integer); Forward;
+
+Function IsStatementEndToken(T, End1, End2, End3: Integer): Boolean;
+Begin
+  IsStatementEndToken := (T = TOK_EOF) Or
+                         ((End1 <> 0) And (T = End1)) Or
+                         ((End2 <> 0) And (T = End2)) Or
+                         ((End3 <> 0) And (T = End3)) Or
+                         ((End1 = KW_RESCUE) And (End2 = KW_ELSE) And
+                          (End3 = KW_ENSURE) And (T = KW_END)) Or
+                         ((End1 = KW_WHEN) And (T = KW_IN));
+End;
+
+Procedure ConsumeStatementDelims;
+Begin
+  While (CurTokType = TOK_NEWLINE) Or (CurTokType = Ord(';')) Do
+    NextTok;
+End;
+
+Function NewEmptyParamList(Name: String): Integer;
+Begin
+  NewEmptyParamList := NewASTNode(NK_LIST, 0, Name, 0, 0, 0);
+End;
+
+Function ParseBlockParamSeq(EndTok: Integer; ListName: String): Integer;
+Var
+  P, N, DefVal, ParamKind: Integer;
+  Name: String;
+  OldComma: Boolean;
+Begin
+  P := NewEmptyParamList(ListName);
+  OldComma := ParseAllowCommaList;
+  ParseAllowCommaList := False;
+  While (CurTokType <> EndTok) And (CurTokType <> TOK_EOF) Do Begin
+    If CurTokType = Ord(';') Then Begin
+      Repeat
+        NextTok;
+        If CurTokType = TOK_IDENT Then Begin
+          AddSym(CurTokStr, SK_LOCAL, RT_UNKNOWN, CurrentClassRef);
+          NextTok;
+        End;
+        If CurTokType = Ord(',') Then NextTok
+        Else Break;
+      Until (CurTokType = EndTok) Or (CurTokType = TOK_EOF);
+      Break;
+    End;
+    ParamKind := NK_PARAM;
+    DefVal := 0;
+    If CurTokType = Ord('*') Then Begin
+      ParamKind := NK_PARAM_SPLAT;
+      NextTok;
+    End Else If CurTokType = TOK_POW Then Begin
+      ParamKind := NK_PARAM_KW_SPLAT;
+      NextTok;
+    End Else If CurTokType = TOK_AMP_BLOCK Then Begin
+      ParamKind := NK_PARAM_BLOCK;
+      NextTok;
+    End;
+    If CurTokType = TOK_IDENT Then Begin
+      Name := CurTokStr;
+      N := NewASTNode(ParamKind, CurTokType, Name, 0, 0, 0);
+      AstTable[N].SymRef := AddSym(Name, SK_BLOCK_PARAM, RT_UNKNOWN, CurrentClassRef);
+      NextTok;
+      If CurTokType = Ord(':') Then Begin
+        NextTok;
+        AstTable[N].Kind := NK_PARAM_KEY;
+        If (CurTokType <> Ord(',')) And (CurTokType <> EndTok) Then
+          DefVal := ParseExpr;
+        AstTable[N].Left := DefVal;
+      End Else If CurTokType = Ord('=') Then Begin
+        NextTok;
+        DefVal := ParseExpr;
+        AstTable[N].Kind := NK_PARAM_DEFAULT;
+        AstTable[N].Left := DefVal;
+      End;
+      AddChild(P, N);
+    End Else Begin
+      ParseError('nom de parametre de bloc attendu');
+      If CurTokType <> TOK_EOF Then NextTok;
+    End;
+    If CurTokType = Ord(',') Then NextTok
+    Else Break;
+  End;
+  If CurTokType = EndTok Then NextTok
+  Else ParseError(TokenName(EndTok) + ' attendu dans parametres de bloc');
+  ParseAllowCommaList := OldComma;
+  ParseBlockParamSeq := P;
+End;
+
+Function ParseBlockBody(BlockKind, StartTok, Params, Flags: Integer; ScopeOpen: Boolean): Integer;
+Var
+  EndTok, Body, N: Integer;
+  Name: String;
+Begin
+  If StartTok = KW_DO Then Begin
+    EndTok := KW_END;
+    Flags := Flags Or BLOCKF_DO_END;
+  End Else
+    EndTok := Ord('}');
+  If BlockKind = NK_PROC Then Begin
+    Name := 'proc';
+    Flags := Flags Or BLOCKF_PROC;
+  End Else If BlockKind = NK_LAMBDA Then Begin
+    Name := 'lambda';
+    Flags := Flags Or BLOCKF_LAMBDA;
+  End Else
+    Name := 'block';
+  If Not ScopeOpen Then EnterScope(SC_BLOCK);
+  NextTok;
+  If Params = 0 Then
+    Params := NewEmptyParamList('block-params');
+  If CurTokType = Ord('|') Then Begin
+    NextTok;
+    Params := ParseBlockParamSeq(Ord('|'), 'block-params');
+    Flags := Flags Or BLOCKF_HAS_PARAMS;
+  End Else If AstTable[Params].FirstChild <> 0 Then
+    Flags := Flags Or BLOCKF_HAS_PARAMS;
+  ConsumeStatementDelims;
+  Body := ParseStatementList(EndTok, 0, 0);
+  If CurTokType = EndTok Then NextTok
+  Else ParseError(TokenName(EndTok) + ' attendu pour bloc');
+  LeaveScope;
+  N := NewASTNode(BlockKind, StartTok, Name, Params, Body, 0);
+  AstTable[N].SymRef := AddBlockInfo(BlockKind, Params, Body, Flags);
+  ParseBlockBody := N;
+End;
+
+Function ParseBlockLiteral(BlockKind, StartTok: Integer): Integer;
+Begin
+  ParseBlockLiteral := ParseBlockBody(BlockKind, StartTok, 0, 0, False);
+End;
+
+Function ParseLambdaArrow: Integer;
+Var
+  Params: Integer;
+Begin
+  NextTok;
+  Params := 0;
+  EnterScope(SC_BLOCK);
+  If CurTokType = Ord('(') Then Begin
+    NextTok;
+    Params := ParseBlockParamSeq(Ord(')'), 'lambda-params');
+  End;
+  If (CurTokType = Ord('{')) Or (CurTokType = KW_DO) Then
+    ParseLambdaArrow := ParseBlockBody(NK_LAMBDA, CurTokType, Params,
+                                      BLOCKF_LAMBDA, True)
+  Else Begin
+    ParseError('bloc attendu apres ->');
+    LeaveScope;
+    ParseLambdaArrow := NewASTNode(NK_LAMBDA, TOK_ARROW, 'lambda', Params, 0, 0);
+    AstTable[ParseLambdaArrow].SymRef :=
+      AddBlockInfo(NK_LAMBDA, Params, 0, BLOCKF_LAMBDA);
+  End;
+End;
+
+Procedure ConsumeOptionalThenDo;
+Begin
+  If (CurTokType = KW_THEN) Or (CurTokType = KW_DO) Then NextTok;
+  ConsumeStatementDelims;
+End;
+
+Function ParseOptionalExpr: Integer;
+Begin
+  If IsExprEnd(CurTokType) Or (CurTokType = Ord(';')) Then
+    ParseOptionalExpr := 0
+  Else
+    ParseOptionalExpr := ParseExpr;
+End;
+
+Function ParseControlValue(Kind: Integer; Name: String): Integer;
+Begin
+  NextTok;
+  ParseControlValue := NewASTNode(Kind, 0, Name, ParseOptionalExpr, 0, 0);
+End;
+
+Function ParseYieldStatement: Integer;
+Var
+  Args: Integer;
+Begin
+  NextTok;
+  If CurTokType = Ord('(') Then
+    Args := ParseArgList
+  Else If IsCallArgStart(CurTokType) Then
+    Args := ParseBareArgList
+  Else
+    Args := NewASTNode(NK_LIST, 0, 'yield-args', 0, 0, 0);
+  ParseYieldStatement := NewASTNode(NK_YIELD, KW_YIELD, 'yield', Args, 0, 0);
+End;
+
+Function ParseLoopStatement: Integer;
+Var
+  N, Ctl, Cond, Blk: Integer;
+Begin
+  NextTok;
+  Cond := NewASTNode(NK_LITERAL, KW_TRUE, 'true', 0, 0, 0);
+  N := NewASTNode(NK_WHILE, KW_LOOP, 'loop', Cond, 0, 0);
+  Ctl := AddControlInfo(N, NK_WHILE, Cond, 0, 0,
+                        CTRLF_LOOP Or CTRLF_LOOP_BLOCK Or CTRLF_ITERATOR);
+  AstTable[N].SymRef := Ctl;
+  PushLoop(Ctl);
+  If (CurTokType = Ord('{')) Or (CurTokType = KW_DO) Then Begin
+    Blk := ParseBlockLiteral(NK_BLOCK, CurTokType);
+    AstTable[N].Right := Blk;
+    ControlTable[Ctl].ThenNode := Blk;
+  End Else
+    ParseError('bloc attendu apres loop');
+  PopLoop;
+  ParseLoopStatement := N;
+End;
+
+Function ParseLoopControlStatement(Kind, Tok: Integer; Name: String): Integer;
+Var
+  N, Val, Cond, ModTok: Integer;
+Begin
+  NextTok;
+  If IsExprEnd(CurTokType) Or IsModifierKeyword(CurTokType) Then
+    Val := 0
+  Else
+    Val := ParseExpr;
+  N := NewASTNode(Kind, Tok, Name, Val, 0, 0);
+  AstTable[N].SymRef := CurrentLoopControl;
+  If (AstTable[N].SymRef = 0) And ((Kind = NK_BREAK) Or
+     (Kind = NK_NEXT) Or (Kind = NK_REDO)) Then
+    WarnMsg(Name + ' hors boucle');
+  If IsModifierKeyword(CurTokType) Then Begin
+    ModTok := CurTokType;
+    NextTok;
+    Cond := ParseConditionExpr;
+    If ModTok = KW_IF Then Begin
+      N := NewASTNode(NK_IF, KW_IF, 'if-mod', Cond, N, 0);
+      AstTable[N].SymRef := AddControlInfo(N, NK_IF, Cond,
+                                            AstTable[N].Right, 0,
+                                            CTRLF_MODIFIER);
+    End Else If ModTok = KW_UNLESS Then Begin
+      N := NewASTNode(NK_UNLESS, KW_UNLESS, 'unless-mod', Cond, N, 0);
+      AstTable[N].SymRef := AddControlInfo(N, NK_UNLESS, Cond,
+                                            AstTable[N].Right, 0,
+                                            CTRLF_UNLESS Or CTRLF_MODIFIER);
+    End Else If ModTok = KW_WHILE Then Begin
+      N := NewASTNode(NK_WHILE, KW_WHILE, 'while-mod', Cond, N, 0);
+      AstTable[N].SymRef := AddControlInfo(N, NK_WHILE, Cond,
+                                            AstTable[N].Right, 0,
+                                            CTRLF_LOOP Or CTRLF_WHILE Or
+                                            CTRLF_MODIFIER);
+    End Else If ModTok = KW_UNTIL Then Begin
+      N := NewASTNode(NK_UNTIL, KW_UNTIL, 'until-mod', Cond, N, 0);
+      AstTable[N].SymRef := AddControlInfo(N, NK_UNTIL, Cond,
+                                            AstTable[N].Right, 0,
+                                            CTRLF_LOOP Or CTRLF_UNTIL Or
+                                            CTRLF_MODIFIER);
+    End;
+  End;
+  ParseLoopControlStatement := N;
+End;
+
+Function ParseRaiseStatement: Integer;
+Var
+  Args, N: Integer;
+Begin
+  NextTok;
+  If CurTokType = Ord('(') Then
+    Args := ParseArgList
+  Else If IsCallArgStart(CurTokType) Then
+    Args := ParseBareArgList
+  Else
+    Args := NewASTNode(NK_LIST, 0, 'raise-args', 0, 0, 0);
+  N := NewASTNode(NK_RAISE, KW_RAISE, 'raise', Args, 0, 0);
+  AstTable[N].SymRef := ResolveConst('RuntimeError');
+  ParseRaiseStatement := N;
+End;
+
+Function ParseRetryStatement: Integer;
+Var
+  N, Cond, ModTok: Integer;
+Begin
+  NextTok;
+  N := NewASTNode(NK_RETRY, KW_RETRY, 'retry', 0, 0, 0);
+  AstTable[N].SymRef := CurrentRescueControl;
+  If AstTable[N].SymRef = 0 Then WarnMsg('retry hors rescue');
+  If IsModifierKeyword(CurTokType) Then Begin
+    ModTok := CurTokType;
+    NextTok;
+    Cond := ParseConditionExpr;
+    If ModTok = KW_IF Then Begin
+      N := NewASTNode(NK_IF, KW_IF, 'if-mod', Cond, N, 0);
+      AstTable[N].SymRef := AddControlInfo(N, NK_IF, Cond,
+                                           AstTable[N].Right, 0,
+                                           CTRLF_MODIFIER);
+    End Else If ModTok = KW_UNLESS Then Begin
+      N := NewASTNode(NK_UNLESS, KW_UNLESS, 'unless-mod', Cond, N, 0);
+      AstTable[N].SymRef := AddControlInfo(N, NK_UNLESS, Cond,
+                                           AstTable[N].Right, 0,
+                                           CTRLF_UNLESS Or CTRLF_MODIFIER);
+    End Else If ModTok = KW_WHILE Then Begin
+      N := NewASTNode(NK_WHILE, KW_WHILE, 'while-mod', Cond, N, 0);
+      AstTable[N].SymRef := AddControlInfo(N, NK_WHILE, Cond,
+                                           AstTable[N].Right, 0,
+                                           CTRLF_LOOP Or CTRLF_WHILE Or
+                                           CTRLF_MODIFIER);
+    End Else If ModTok = KW_UNTIL Then Begin
+      N := NewASTNode(NK_UNTIL, KW_UNTIL, 'until-mod', Cond, N, 0);
+      AstTable[N].SymRef := AddControlInfo(N, NK_UNTIL, Cond,
+                                           AstTable[N].Right, 0,
+                                           CTRLF_LOOP Or CTRLF_UNTIL Or
+                                           CTRLF_MODIFIER);
+    End;
+  End;
+  ParseRetryStatement := N;
+End;
+
+Function ParseAliasStatement: Integer;
+Var
+  A, B: Integer;
+Begin
+  NextTok;
+  A := ParseOptionalExpr;
+  B := ParseOptionalExpr;
+  ParseAliasStatement := NewASTNode(NK_ALIAS, KW_ALIAS, 'alias', A, B, 0);
+End;
+
+Function ParseUndefStatement: Integer;
+Begin
+  NextTok;
+  ParseUndefStatement := NewASTNode(NK_UNDEF, KW_UNDEF, 'undef',
+                                    ParseOptionalExpr, 0, 0);
+End;
+
+Function ParseElsifChain: Integer;
+Var
+  Cond, ThenPart, ElsePart, N: Integer;
+Begin
+  NextTok;
+  Cond := ParseConditionExpr;
+  ConsumeOptionalThenDo;
+  ThenPart := ParseStatementList(KW_ELSIF, KW_ELSE, KW_END);
+  ElsePart := 0;
+  If CurTokType = KW_ELSIF Then
+    ElsePart := ParseElsifChain
+  Else If CurTokType = KW_ELSE Then Begin
+    NextTok;
+    ConsumeStatementDelims;
+    ElsePart := ParseStatementList(KW_END, 0, 0);
+  End;
+  N := NewASTNode(NK_IF, KW_IF, 'elsif', Cond, ThenPart, ElsePart);
+  AstTable[N].SymRef := AddControlInfo(N, NK_IF, Cond, ThenPart, ElsePart, 0);
+  ParseElsifChain := N;
+End;
+
+Function ParseRequireStatement(TokKind: Integer): Integer;
+Var
+  Name: String;
+Begin
+  Name := CurTokStr;
+  NextTok;
+  ParseRequireStatement := NewASTNode(NK_REQUIRE, TokKind, Name,
+                                      ParseOptionalExpr, 0, 0);
+End;
+
+Function ParseVisibilityStatement(V: Integer): Integer;
+Var
+  Args, N, C, S: Integer;
+Begin
+  CurrentVisibility := V;
+  NextTok;
+  Args := 0;
+  If Not IsExprEnd(CurTokType) Then Begin
+    Args := ParseOptionalExpr;
+    C := Args;
+    If AstTable[Args].Kind = NK_LIST Then C := AstTable[Args].FirstChild;
+    While C <> 0 Do Begin
+      S := FindSym(CurrentClassName + '#' + Copy(AstTable[C].Text, 2, 255));
+      If S <> 0 Then
+        SymTable[S].Flags := (SymTable[S].Flags And Not
+          (SF_METHOD_PUBLIC Or SF_METHOD_PRIVATE Or SF_METHOD_PROTECTED)) Or
+          VisibilityFlag(V);
+      C := AstTable[C].NextSibling;
+      If AstTable[Args].Kind <> NK_LIST Then C := 0;
+    End;
+  End;
+  N := NewASTNode(NK_VISIBILITY, 0, VisibilityName(V), Args, 0, 0);
+  ParseVisibilityStatement := N;
+End;
+
+Function MixinModeName(Mode: Integer): String;
+Begin
+  If Mode = KW_EXTEND Then MixinModeName := 'extend'
+  Else If Mode = KW_PREPEND Then MixinModeName := 'prepend'
+  Else MixinModeName := 'include';
+End;
+
+Function NodeMethodName(N: Integer): String;
+Var
+  S: String;
+Begin
+  NodeMethodName := '';
+  If N = 0 Then Exit;
+  S := AstTable[N].Text;
+  If (Length(S) > 0) And (S[1] = ':') Then
+    S := Copy(S, 2, Length(S) - 1);
+  NodeMethodName := S;
+End;
+
+Function IsIteratorMethodName(S: String): Boolean;
+Begin
+  IsIteratorMethodName := (S = 'times') Or (S = 'each') Or (S = 'map') Or
+                          (S = 'select') Or (S = 'reject') Or
+                          (S = 'inject') Or (S = 'reduce') Or
+                          (S = 'upto') Or (S = 'downto') Or (S = 'step');
+End;
+
+Function ParseMixinStatement(Mode: Integer): Integer;
+Var
+  Args, M: Integer;
+Begin
+  NextTok;
+  Args := NewASTNode(NK_LIST, 0, 'modules', 0, 0, 0);
+  If IsExprEnd(CurTokType) Then
+    ParseError('module attendu apres ' + MixinModeName(Mode))
+  Else Begin
+    Repeat
+      M := ParseExpr;
+      AddChild(Args, M);
+      If M <> 0 Then AddMixinToClass(CurrentClassRef, AstTable[M].SymRef, Mode);
+      If CurTokType = Ord(',') Then NextTok
+      Else Break;
+    Until IsExprEnd(CurTokType);
+  End;
+  ParseMixinStatement := NewASTNode(NK_MIXIN, Mode, MixinModeName(Mode), Args, 0, 0);
+End;
+
+Function ParseModuleFunctionStatement: Integer;
+Var
+  Args, M: Integer;
+Begin
+  NextTok;
+  Args := NewASTNode(NK_LIST, 0, 'module-functions', 0, 0, 0);
+  If IsExprEnd(CurTokType) Then
+    CurrentVisibility := VIS_PRIVATE
+  Else Begin
+    Repeat
+      M := ParseExpr;
+      AddChild(Args, M);
+      ApplyModuleFunction(NodeMethodName(M));
+      If CurTokType = Ord(',') Then NextTok
+      Else Break;
+    Until IsExprEnd(CurTokType);
+  End;
+  ParseModuleFunctionStatement := NewASTNode(NK_MODULE_FUNCTION,
+                                            KW_MODULE_FUNCTION,
+                                            'module_function', Args, 0, 0);
+End;
+
+Function ParseIfStatement(IsUnless: Boolean): Integer;
+Var
+  Cond, ThenPart, ElsePart, ThisIf, Chain: Integer;
+Begin
+  NextTok;
+  Cond := ParseConditionExpr;
+  ConsumeOptionalThenDo;
+  ThenPart := ParseStatementList(KW_ELSIF, KW_ELSE, KW_END);
+  ElsePart := 0;
+  If (Not IsUnless) And (CurTokType = KW_ELSIF) Then Begin
+    Chain := ParseElsifChain;
+    ElsePart := Chain;
+  End Else If CurTokType = KW_ELSE Then Begin
+    NextTok;
+    ConsumeStatementDelims;
+    ElsePart := ParseStatementList(KW_END, 0, 0);
+  End;
+  If CurTokType = KW_END Then NextTok
+  Else ParseError('end attendu pour if/unless');
+  If IsUnless Then ThisIf := NewASTNode(NK_UNLESS, KW_UNLESS, 'unless',
+                                       Cond, ThenPart, ElsePart)
+  Else ThisIf := NewASTNode(NK_IF, KW_IF, 'if', Cond, ThenPart, ElsePart);
+  If IsUnless Then
+    AstTable[ThisIf].SymRef := AddControlInfo(ThisIf, NK_UNLESS, Cond,
+                                              ThenPart, ElsePart,
+                                              CTRLF_UNLESS)
+  Else
+    AstTable[ThisIf].SymRef := AddControlInfo(ThisIf, NK_IF, Cond,
+                                              ThenPart, ElsePart, 0);
+  ParseIfStatement := ThisIf;
+End;
+
+Function ParseWhileStatement(IsUntil: Boolean): Integer;
+Var
+  Cond, Body, N, Ctl: Integer;
+Begin
+  NextTok;
+  Cond := ParseConditionExpr;
+  ConsumeOptionalThenDo;
+  If IsUntil Then Begin
+    N := NewASTNode(NK_UNTIL, KW_UNTIL, 'until', Cond, 0, 0);
+    Ctl := AddControlInfo(N, NK_UNTIL, Cond, 0, 0,
+                          CTRLF_LOOP Or CTRLF_UNTIL);
+  End Else Begin
+    N := NewASTNode(NK_WHILE, KW_WHILE, 'while', Cond, 0, 0);
+    Ctl := AddControlInfo(N, NK_WHILE, Cond, 0, 0,
+                          CTRLF_LOOP Or CTRLF_WHILE);
+  End;
+  AstTable[N].SymRef := Ctl;
+  PushLoop(Ctl);
+  Body := ParseStatementList(KW_END, 0, 0);
+  PopLoop;
+  If CurTokType = KW_END Then NextTok
+  Else ParseError('end attendu pour boucle');
+  AstTable[N].Right := Body;
+  ControlTable[Ctl].ThenNode := Body;
+  ParseWhileStatement := N;
+End;
+
+Function ParseForStatement: Integer;
+Var
+  VarNode, InExpr, Body, N, Ctl: Integer;
+Begin
+  NextTok;
+  VarNode := ParseExpr;
+  If CurTokType = KW_IN Then NextTok
+  Else ParseError('in attendu dans for');
+  InExpr := ParseConditionExpr;
+  ConsumeOptionalThenDo;
+  N := NewASTNode(NK_FOR, KW_FOR, 'for', VarNode, InExpr, 0);
+  Ctl := AddControlInfo(N, NK_FOR, InExpr, 0, 0,
+                        CTRLF_LOOP Or CTRLF_FOR Or CTRLF_ITERATOR);
+  AstTable[N].SymRef := Ctl;
+  PushLoop(Ctl);
+  Body := ParseStatementList(KW_END, 0, 0);
+  PopLoop;
+  If CurTokType = KW_END Then NextTok
+  Else ParseError('end attendu pour for');
+  AstTable[N].Third := Body;
+  ControlTable[Ctl].ThenNode := Body;
+  ParseForStatement := N;
+End;
+
+Function ParseCaseStatement: Integer;
+Var
+  CaseExpr, Body, W, Conds, WhenBody: Integer;
+Begin
+  NextTok;
+  CaseExpr := ParseOptionalExpr;
+  ConsumeStatementDelims;
+  Body := NewASTNode(NK_STMT_LIST, 0, 'case-body', 0, 0, 0);
+  While (CurTokType = KW_WHEN) Or (CurTokType = KW_IN) Do Begin
+    If CurTokType = KW_IN Then Begin
+      W := KW_IN;
+      NextTok;
+    End Else Begin
+      W := KW_WHEN;
+      NextTok;
+    End;
+    Conds := ParseExpr;
+    If CurTokType = KW_THEN Then NextTok;
+    ConsumeStatementDelims;
+    WhenBody := ParseStatementList(KW_WHEN, KW_ELSE, KW_END);
+    If W = KW_IN Then
+      W := NewASTNode(NK_WHEN, KW_IN, 'in', Conds, WhenBody, 0)
+    Else
+      W := NewASTNode(NK_WHEN, KW_WHEN, 'when', Conds, WhenBody, 0);
+    AddChild(Body, W);
+  End;
+  If CurTokType = KW_ELSE Then Begin
+    NextTok;
+    ConsumeStatementDelims;
+    AddChild(Body, NewASTNode(NK_STMT_LIST, KW_ELSE, 'else',
+                              ParseStatementList(KW_END, 0, 0), 0, 0));
+  End;
+  If CurTokType = KW_END Then NextTok
+  Else ParseError('end attendu pour case');
+  W := NewASTNode(NK_CASE, KW_CASE, 'case', CaseExpr, Body, 0);
+  If CaseHasPattern(Body) Then
+    AstTable[W].SymRef := AddControlInfo(W, NK_CASE, CaseExpr, Body, 0,
+                                         CTRLF_CASE Or CTRLF_PATTERN)
+  Else
+    AstTable[W].SymRef := AddControlInfo(W, NK_CASE, CaseExpr, Body, 0,
+                                         CTRLF_CASE);
+  ParseCaseStatement := W;
+End;
+
+Function ParseBeginStatement: Integer;
+Var
+  Body, RescueList, ElsePart, EnsurePart, RBody, BeginNode, Cond, LoopNode,
+  Ctl, ModTok, Region, Flags, RescueNode, HandlerBody, DefaultCls: Integer;
+Begin
+  NextTok;
+  ConsumeStatementDelims;
+  Body := ParseStatementList(KW_RESCUE, KW_ELSE, KW_ENSURE);
+  RescueList := NewASTNode(NK_STMT_LIST, 0, 'rescues', 0, 0, 0);
+  Flags := 0;
+  Region := AddRescueInfo(0, Body, RescueList, 0, 0, 0);
+  While CurTokType = KW_RESCUE Do Begin
+    NextTok;
+    If CurTokType = TOK_FAT_ARROW Then Begin
+      DefaultCls := NewASTNode(NK_CONST, TOK_CONST, 'StandardError', 0, 0, 0);
+      AstTable[DefaultCls].SymRef := ResolveConst('StandardError');
+      NextTok;
+      RBody := NewASTNode(NK_PAIR, TOK_FAT_ARROW, '=>', DefaultCls,
+                          ParseOptionalExpr, 0);
+      Flags := Flags Or RESCF_DEFAULT;
+    End Else Begin
+      RBody := ParseOptionalExpr;
+      If CurTokType = TOK_FAT_ARROW Then Begin
+        NextTok;
+        If RBody = 0 Then Begin
+          RBody := NewASTNode(NK_CONST, TOK_CONST, 'StandardError', 0, 0, 0);
+          AstTable[RBody].SymRef := ResolveConst('StandardError');
+          Flags := Flags Or RESCF_DEFAULT;
+        End;
+        RBody := NewASTNode(NK_PAIR, TOK_FAT_ARROW, '=>', RBody,
+                            ParseOptionalExpr, 0);
+      End Else If RBody = 0 Then Begin
+        RBody := NewASTNode(NK_CONST, TOK_CONST, 'StandardError', 0, 0, 0);
+        AstTable[RBody].SymRef := ResolveConst('StandardError');
+        Flags := Flags Or RESCF_DEFAULT;
+      End;
+    End;
+    ConsumeStatementDelims;
+    PushRescue(Region);
+    HandlerBody := ParseStatementList(KW_RESCUE, KW_ELSE, KW_ENSURE);
+    PopRescue;
+    RescueNode := NewASTNode(NK_RESCUE, KW_RESCUE, 'rescue', RBody,
+                             HandlerBody, 0);
+    AstTable[RescueNode].SymRef := Region;
+    AddChild(RescueList, RescueNode);
+    Flags := Flags Or RESCF_HAS_RESCUE;
+  End;
+  ElsePart := 0;
+  If CurTokType = KW_ELSE Then Begin
+    NextTok;
+    ConsumeStatementDelims;
+    ElsePart := ParseStatementList(KW_ENSURE, KW_END, 0);
+    Flags := Flags Or RESCF_HAS_ELSE;
+  End;
+  EnsurePart := 0;
+  If CurTokType = KW_ENSURE Then Begin
+    NextTok;
+    ConsumeStatementDelims;
+    EnsurePart := ParseStatementList(KW_END, 0, 0);
+    Flags := Flags Or RESCF_HAS_ENSURE;
+  End;
+  If CurTokType = KW_END Then NextTok
+  Else ParseError('end attendu pour begin');
+  BeginNode := NewASTNode(NK_BEGIN, KW_BEGIN, 'begin', Body, RescueList,
+                          NewASTNode(NK_ENSURE, KW_ENSURE, 'tail',
+                                     ElsePart, EnsurePart, 0));
+  AstTable[BeginNode].SymRef := Region;
+  UpdateRescueInfo(Region, BeginNode, Body, RescueList, ElsePart, EnsurePart,
+                   Flags);
+  If (CurTokType = KW_WHILE) Or (CurTokType = KW_UNTIL) Then Begin
+    ModTok := CurTokType;
+    NextTok;
+    Cond := ParseConditionExpr;
+    If ModTok = KW_UNTIL Then Begin
+      LoopNode := NewASTNode(NK_UNTIL, KW_UNTIL, 'begin-until', Cond,
+                             BeginNode, 0);
+      Ctl := AddControlInfo(LoopNode, NK_UNTIL, Cond, BeginNode, 0,
+                            CTRLF_LOOP Or CTRLF_UNTIL Or CTRLF_POST_TEST);
+    End Else Begin
+      LoopNode := NewASTNode(NK_WHILE, KW_WHILE, 'begin-while', Cond,
+                             BeginNode, 0);
+      Ctl := AddControlInfo(LoopNode, NK_WHILE, Cond, BeginNode, 0,
+                            CTRLF_LOOP Or CTRLF_WHILE Or CTRLF_POST_TEST);
+    End;
+    AstTable[LoopNode].SymRef := Ctl;
+    ParseBeginStatement := LoopNode;
+  End Else
+    ParseBeginStatement := BeginNode;
+End;
+
+Function ParseParamList: Integer;
+Var
+  P, N, DefVal, ParamKind: Integer;
+  Name: String;
+  OldComma: Boolean;
+Begin
+  P := NewASTNode(NK_LIST, 0, 'params', 0, 0, 0);
+  OldComma := ParseAllowCommaList;
+  ParseAllowCommaList := False;
+  If CurTokType = Ord('(') Then Begin
+    NextTok;
+    While (CurTokType <> Ord(')')) And (CurTokType <> TOK_EOF) Do Begin
+      ParamKind := NK_PARAM;
+      DefVal := 0;
+      If CurTokType = Ord('*') Then Begin
+        ParamKind := NK_PARAM_SPLAT;
+        NextTok;
+      End Else If CurTokType = TOK_POW Then Begin
+        ParamKind := NK_PARAM_KW_SPLAT;
+        NextTok;
+      End Else If CurTokType = TOK_AMP_BLOCK Then Begin
+        ParamKind := NK_PARAM_BLOCK;
+        NextTok;
+      End;
+      If CurTokType = TOK_IDENT Then Begin
+        Name := CurTokStr;
+        N := NewASTNode(ParamKind, CurTokType, Name, 0, 0, 0);
+        AstTable[N].SymRef := AddSym(Name, SK_PARAM, RT_UNKNOWN, CurrentClassRef);
+        NextTok;
+        If CurTokType = Ord(':') Then Begin
+          NextTok;
+          ParamKind := NK_PARAM_KEY;
+          AstTable[N].Kind := NK_PARAM_KEY;
+          If (CurTokType <> Ord(',')) And (CurTokType <> Ord(')')) Then
+            DefVal := ParseExpr;
+          AstTable[N].Left := DefVal;
+        End Else If CurTokType = Ord('=') Then Begin
+          NextTok;
+          DefVal := ParseExpr;
+          AstTable[N].Kind := NK_PARAM_DEFAULT;
+          AstTable[N].Left := DefVal;
+        End;
+        AddChild(P, N);
+      End Else Begin
+        ParseError('nom de parametre attendu');
+        If CurTokType <> TOK_EOF Then NextTok;
+      End;
+      If CurTokType = Ord(',') Then NextTok
+      Else Break;
+    End;
+    If CurTokType = Ord(')') Then NextTok
+    Else ParseError(') attendu dans parametres');
+  End;
+  ParseAllowCommaList := OldComma;
+  ParseParamList := P;
+End;
+
+Function ParseDefStatement: Integer;
+Var
+  NameNode, ReceiverNode, Params, Body, MethodSym, ParamCount, N: Integer;
+  PrevMethodSym: Integer;
+  MethodName, OwnerName: String;
+  PrevMethodName: String;
+  IsSingleton, IsClassMethod: Boolean;
+Begin
+  PrevMethodSym := CurrentMethodSym;
+  PrevMethodName := CurrentMethodName;
+  ReceiverNode := 0;
+  MethodName := '';
+  OwnerName := CurrentClassName;
+  IsSingleton := False;
+  IsClassMethod := False;
+  NextTok;
+  If (CurTokType = KW_SELF) Or (CurTokType = TOK_IDENT) Or
+     (CurTokType = TOK_CONST) Then Begin
+    ReceiverNode := NewASTNode(NK_LITERAL, CurTokType, CurTokStr, 0, 0, 0);
+    If CurTokType = KW_SELF Then Begin
+      OwnerName := CurrentClassName;
+      IsClassMethod := True;
+    End Else Begin
+      OwnerName := CurTokStr;
+      IsSingleton := True;
+    End;
+    NextTok;
+    If CurTokType = Ord('.') Then NextTok
+    Else Begin
+      MethodName := AstTable[ReceiverNode].Text;
+      ReceiverNode := 0;
+      OwnerName := CurrentClassName;
+      IsSingleton := False;
+      IsClassMethod := False;
+    End;
+  End;
+  If MethodName = '' Then Begin
+    If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_CONST) Or
+       IsPseudoKeyword(CurTokType) Then Begin
+      MethodName := CurTokStr;
+      NextTok;
+    End Else Begin
+      ParseError('nom de methode attendu');
+      MethodName := 'anonymous';
+    End;
+  End;
+  NameNode := NewASTNode(NK_LITERAL, TOK_IDENT, MethodName, ReceiverNode, 0, 0);
+  If ReceiverNode <> 0 Then AstTable[NameNode].Left := ReceiverNode;
+  MethodSym := AddMethodSym(MethodName, OwnerName, CurrentVisibility,
+                            0, IsSingleton, IsClassMethod);
+  AstTable[NameNode].SymRef := MethodSym;
+  CurrentMethodSym := MethodSym;
+  CurrentMethodName := MethodName;
+  EnterScope(SC_METHOD);
+  Params := ParseParamList;
+  ParamCount := 0;
+  N := AstTable[Params].FirstChild;
+  While N <> 0 Do Begin
+    Inc(ParamCount);
+    N := AstTable[N].NextSibling;
+  End;
+  If (MethodSym > 0) And (MethodSym <= SymCount) Then
+    SymTable[MethodSym].ParamCount := ParamCount;
+  ConsumeStatementDelims;
+  Body := ParseStatementList(KW_END, 0, 0);
+  If (MethodSym > 0) And (MethodSym <= SymCount) Then
+    SymTable[MethodSym].LocalSize := ScopeNextLocal[ScopeLevel];
+  LeaveScope;
+  If CurTokType = KW_END Then NextTok
+  Else ParseError('end attendu pour def');
+  CurrentMethodSym := PrevMethodSym;
+  CurrentMethodName := PrevMethodName;
+  ParseDefStatement := NewASTNode(NK_DEF, KW_DEF, 'def', NameNode, Params, Body);
+End;
+
+Function ParseClassModuleStatement(IsModule: Boolean): Integer;
+Var
+  NameNode, ParentNode, Body, Sym, PrevClassRef, PrevVisibility: Integer;
+  ParentSym, ClassInfo, EigenOf: Integer;
+  ClassName, BaseName: String;
+Begin
+  PrevClassRef := CurrentClassRef;
+  PrevVisibility := CurrentVisibility;
+  NextTok;
+  If (Not IsModule) And (CurTokType = TOK_SHL) Then Begin
+    NextTok;
+    NameNode := ParseExpr;
+    EigenOf := AstTable[NameNode].SymRef;
+    If EigenOf = 0 Then EigenOf := PrevClassRef;
+    ClassName := 'Eigen_' + ItoS(EigenOf);
+    Sym := AddSym(ClassName, SK_CLASS, RT_CLASS, PrevClassRef);
+    SymTable[Sym].Flags := SymTable[Sym].Flags Or SF_CLASS_SINGLETON Or
+                           SF_CLASS_EIGEN;
+    ClassInfo := AddClassInfo(ClassName, Sym, PrevClassRef, True, EigenOf);
+    CurrentClassRef := Sym;
+    ParentNode := 0;
+  End Else If CurTokType = TOK_CONST Then Begin
+    BaseName := CurTokStr;
+    ClassName := BaseName;
+    NameNode := NewASTNode(NK_CONST, CurTokType, BaseName, 0, 0, 0);
+    NextTok;
+    While CurTokType = TOK_DCOLON Do Begin
+      NextTok;
+      If CurTokType = TOK_CONST Then Begin
+        ClassName := ClassName + '::' + CurTokStr;
+        AstTable[NameNode].Text := ClassName;
+        NextTok;
+      End Else
+        ParseError('constante attendue apres ::');
+    End;
+    If (Pos('::', ClassName) = 0) And
+       (PrevClassRef > 0) And (CurrentClassName <> 'Object') Then Begin
+      ClassName := CurrentClassName + '::' + ClassName;
+      AstTable[NameNode].Text := ClassName;
+    End;
+    If IsModule Then Sym := AddSym(ClassName, SK_MODULE, RT_MODULE, PrevClassRef)
+    Else Sym := AddSym(ClassName, SK_CLASS, RT_CLASS, FindSym('Object'));
+    AstTable[NameNode].SymRef := Sym;
+    CurrentClassRef := Sym;
+    ParentNode := 0;
+    ParentSym := FindSym('Object');
+    If (Not IsModule) And (CurTokType = Ord('<')) Then Begin
+      NextTok;
+      ParentNode := ParseExpr;
+      If ParentNode <> 0 Then ParentSym := AstTable[ParentNode].SymRef;
+      If ParentSym = 0 Then ParentSym := FindSym('Object');
+    End;
+    If IsModule Then
+      ClassInfo := AddClassInfo(ClassName, Sym, 0, False, 0)
+    Else
+      ClassInfo := AddClassInfo(ClassName, Sym, ParentSym, False, 0);
+  End Else Begin
+    ParseError('nom de classe/module attendu');
+    NameNode := 0;
+    ParentNode := 0;
+    ClassInfo := 0;
+  End;
+  ConsumeStatementDelims;
+  If IsModule Then EnterScope(SC_MODULE) Else EnterScope(SC_CLASS);
+  Body := ParseStatementList(KW_END, 0, 0);
+  LeaveScope;
+  CurrentClassRef := PrevClassRef;
+  CurrentVisibility := PrevVisibility;
+  If CurTokType = KW_END Then NextTok
+  Else ParseError('end attendu pour class/module');
+  If IsModule Then
+    ParseClassModuleStatement := NewASTNode(NK_MODULE, KW_MODULE, 'module', NameNode, Body, 0)
+  Else If (ClassInfo <> 0) And ClassTable[ClassInfo].IsSingleton Then
+    ParseClassModuleStatement := NewASTNode(NK_CLASS, KW_CLASS, 'class<<', NameNode, Body, 0)
+  Else
+    ParseClassModuleStatement := NewASTNode(NK_CLASS, KW_CLASS, 'class', NameNode, ParentNode, Body);
+End;
+
+Function ParseHookStatement(IsEndHook: Boolean): Integer;
+Var
+  Body, Kind: Integer;
+Begin
+  If IsEndHook Then Kind := NK_END_HOOK Else Kind := NK_BEGIN_HOOK;
+  NextTok;
+  If CurTokType = Ord('{') Then NextTok
+  Else ParseError('{ attendu pour BEGIN/END');
+  Body := ParseStatementList(Ord('}'), 0, 0);
+  If CurTokType = Ord('}') Then NextTok
+  Else ParseError('} attendu pour BEGIN/END');
+  If IsEndHook Then ParseHookStatement := NewASTNode(Kind, KW_END_UP, 'END', Body, 0, 0)
+  Else ParseHookStatement := NewASTNode(Kind, KW_BEGIN_UP, 'BEGIN', Body, 0, 0);
+End;
+
+Function ParseExpressionStatement: Integer;
+Var
+  Expr, Cond: Integer;
+  ModTok: Integer;
+Begin
+  Expr := ParseExpr;
+  If IsModifierKeyword(CurTokType) Then Begin
+    ModTok := CurTokType;
+    NextTok;
+    Cond := ParseConditionExpr;
+    If ModTok = KW_IF Then Begin
+      Expr := NewASTNode(NK_IF, KW_IF, 'if-mod', Cond, Expr, 0);
+      AstTable[Expr].SymRef := AddControlInfo(Expr, NK_IF, Cond,
+                                              AstTable[Expr].Right, 0,
+                                              CTRLF_MODIFIER);
+    End
+    Else If ModTok = KW_UNLESS Then Begin
+      Expr := NewASTNode(NK_UNLESS, KW_UNLESS, 'unless-mod', Cond, Expr, 0);
+      AstTable[Expr].SymRef := AddControlInfo(Expr, NK_UNLESS, Cond,
+                                              AstTable[Expr].Right, 0,
+                                              CTRLF_UNLESS Or CTRLF_MODIFIER);
+    End
+    Else If ModTok = KW_WHILE Then Begin
+      Expr := NewASTNode(NK_WHILE, KW_WHILE, 'while-mod', Cond, Expr, 0);
+      AstTable[Expr].SymRef := AddControlInfo(Expr, NK_WHILE, Cond,
+                                              AstTable[Expr].Right, 0,
+                                              CTRLF_LOOP Or CTRLF_WHILE Or
+                                              CTRLF_MODIFIER);
+    End
+    Else If ModTok = KW_UNTIL Then Begin
+      Expr := NewASTNode(NK_UNTIL, KW_UNTIL, 'until-mod', Cond, Expr, 0);
+      AstTable[Expr].SymRef := AddControlInfo(Expr, NK_UNTIL, Cond,
+                                              AstTable[Expr].Right, 0,
+                                              CTRLF_LOOP Or CTRLF_UNTIL Or
+                                              CTRLF_MODIFIER);
+    End
+    Else If ModTok = KW_RESCUE Then Begin
+      Expr := NewASTNode(NK_RESCUE, KW_RESCUE, 'rescue-mod', Expr, Cond, 0);
+      AstTable[Expr].SymRef := AddRescueInfo(Expr, AstTable[Expr].Left, 0,
+                                             AstTable[Expr].Right, 0,
+                                             RESCF_HAS_RESCUE Or
+                                             RESCF_MODIFIER Or RESCF_DEFAULT);
+    End;
+  End;
+  ParseExpressionStatement := Expr;
+End;
+
+Function ParseStatement: Integer;
+Begin
+  ConsumeStatementDelims;
+  Case CurTokType Of
+    KW_IF: ParseStatement := ParseIfStatement(False);
+    KW_UNLESS: ParseStatement := ParseIfStatement(True);
+    KW_WHILE: ParseStatement := ParseWhileStatement(False);
+    KW_UNTIL: ParseStatement := ParseWhileStatement(True);
+    KW_FOR: ParseStatement := ParseForStatement;
+    KW_LOOP: ParseStatement := ParseLoopStatement;
+    KW_CASE: ParseStatement := ParseCaseStatement;
+    KW_BEGIN: ParseStatement := ParseBeginStatement;
+    KW_DEF: ParseStatement := ParseDefStatement;
+    KW_CLASS: ParseStatement := ParseClassModuleStatement(False);
+    KW_MODULE: ParseStatement := ParseClassModuleStatement(True);
+    KW_RETURN: ParseStatement := ParseControlValue(NK_RETURN, 'return');
+    KW_BREAK: ParseStatement := ParseLoopControlStatement(NK_BREAK, KW_BREAK, 'break');
+    KW_NEXT: ParseStatement := ParseLoopControlStatement(NK_NEXT, KW_NEXT, 'next');
+    KW_REDO: ParseStatement := ParseLoopControlStatement(NK_REDO, KW_REDO, 'redo');
+    KW_RETRY: ParseStatement := ParseRetryStatement;
+    KW_YIELD: ParseStatement := ParseYieldStatement;
+    KW_RAISE: ParseStatement := ParseRaiseStatement;
+    KW_ALIAS: ParseStatement := ParseAliasStatement;
+    KW_UNDEF: ParseStatement := ParseUndefStatement;
+    KW_PRIVATE: ParseStatement := ParseVisibilityStatement(VIS_PRIVATE);
+    KW_PUBLIC: ParseStatement := ParseVisibilityStatement(VIS_PUBLIC);
+    KW_PROTECTED: ParseStatement := ParseVisibilityStatement(VIS_PROTECTED);
+    KW_INCLUDE: ParseStatement := ParseMixinStatement(KW_INCLUDE);
+    KW_EXTEND: ParseStatement := ParseMixinStatement(KW_EXTEND);
+    KW_PREPEND: ParseStatement := ParseMixinStatement(KW_PREPEND);
+    KW_MODULE_FUNCTION: ParseStatement := ParseModuleFunctionStatement;
+    KW_BEGIN_UP: ParseStatement := ParseHookStatement(False);
+    KW_END_UP: ParseStatement := ParseHookStatement(True);
+    KW_REQUIRE, KW_REQUIRE_RELATIVE, KW_LOAD: ParseStatement := ParseRequireStatement(CurTokType);
+  Else
+    If IsExprEnd(CurTokType) Then
+      ParseStatement := NewASTNode(NK_EMPTY, 0, '', 0, 0, 0)
+    Else
+      ParseStatement := ParseExpressionStatement;
+  End;
+End;
+
+Function ParseStatementList(End1, End2, End3: Integer): Integer;
+Var
+  L, S: Integer;
+Begin
+  L := NewASTNode(NK_STMT_LIST, 0, 'stmts', 0, 0, 0);
+  ConsumeStatementDelims;
+  While Not IsStatementEndToken(CurTokType, End1, End2, End3) Do Begin
+    S := ParseStatement;
+    If AstTable[S].Kind <> NK_EMPTY Then AddChild(L, S);
+    ConsumeStatementDelims;
+  End;
+  ParseStatementList := L;
+End;
+
+Function ParseProgram: Integer;
+Begin
+  InitAST;
+  LexInit(Opt.SrcFile);
+  NextTok;
+  ParseProgram := ParseStatementList(TOK_EOF, 0, 0);
+  LexClose;
+End;
+
+Procedure DumpProgram;
+Var
+  Root: Integer;
+Begin
+  Root := ParseProgram;
+  WriteLn('Program AST:');
+  DumpASTNode(Root, 2);
+  If ParseErrors <> 0 Then
+    WriteLn('Erreurs parse: ', ParseErrors);
 End;
 
 Procedure DumpASTNode(N, Indent: Integer);
@@ -2431,8 +5021,46 @@ Begin
   WriteLn(Pad, N:0, ' ', NodeKindName(AstTable[N].Kind),
           ' tok=', TokenName(AstTable[N].Tok),
           ' text="', AstTable[N].Text, '"');
-  If AstTable[N].SymRef <> 0 Then
-    WriteLn(Pad, '  sym=', AstTable[N].SymRef:0);
+  If AstTable[N].SymRef <> 0 Then Begin
+    If AstTable[N].Kind = NK_STRING Then
+      WriteLn(Pad, '  str=', AstTable[N].SymRef:0)
+    Else If AstTable[N].Kind = NK_SYMBOL Then
+      WriteLn(Pad, '  symbol=', AstTable[N].SymRef:0)
+    Else If AstTable[N].Kind = NK_ARRAY Then
+      WriteLn(Pad, '  array=', AstTable[N].SymRef:0)
+    Else If AstTable[N].Kind = NK_HASH Then
+      WriteLn(Pad, '  hash=', AstTable[N].SymRef:0)
+    Else If (AstTable[N].Kind = NK_BLOCK) Or
+            (AstTable[N].Kind = NK_PROC) Or
+            (AstTable[N].Kind = NK_LAMBDA) Then
+      WriteLn(Pad, '  block=', AstTable[N].SymRef:0)
+    Else If (AstTable[N].Kind = NK_IF) Or
+            (AstTable[N].Kind = NK_UNLESS) Or
+            (AstTable[N].Kind = NK_WHILE) Or
+            (AstTable[N].Kind = NK_UNTIL) Or
+            (AstTable[N].Kind = NK_FOR) Or
+            (AstTable[N].Kind = NK_CASE) Or
+            (AstTable[N].Kind = NK_TERNARY) Or
+            ((AstTable[N].Kind = NK_CALL) And
+             (AstTable[N].SymRef <= ControlCount)) Or
+            (((AstTable[N].Tok = TOK_ANDAND) Or (AstTable[N].Tok = TOK_OROR) Or
+              (AstTable[N].Tok = KW_AND) Or (AstTable[N].Tok = KW_OR)) And
+             (AstTable[N].Kind = NK_BINARY)) Then
+      WriteLn(Pad, '  control=', AstTable[N].SymRef:0)
+    Else If (AstTable[N].Kind = NK_BEGIN) Or
+            (AstTable[N].Kind = NK_RESCUE) Then
+      WriteLn(Pad, '  rescue=', AstTable[N].SymRef:0)
+    Else If AstTable[N].Kind = NK_RAISE Then
+      WriteLn(Pad, '  raise-class=', AstTable[N].SymRef:0)
+    Else If AstTable[N].Kind = NK_RETRY Then
+      WriteLn(Pad, '  retry-control=', AstTable[N].SymRef:0)
+    Else If (AstTable[N].Kind = NK_BREAK) Or
+            (AstTable[N].Kind = NK_NEXT) Or
+            (AstTable[N].Kind = NK_REDO) Then
+      WriteLn(Pad, '  loop-control=', AstTable[N].SymRef:0)
+    Else
+      WriteLn(Pad, '  sym=', AstTable[N].SymRef:0);
+  End;
   DumpASTNode(AstTable[N].Left, Indent + 2);
   DumpASTNode(AstTable[N].Right, Indent + 2);
   DumpASTNode(AstTable[N].Third, Indent + 2);
@@ -2628,8 +5256,14 @@ Begin
   End;
   If Opt.DebugMode Then Begin
     DumpTokens;
-    DumpExpressions;
+    DumpProgram;
+    DumpStrings;
+    DumpLiterals;
+    DumpBlocks;
+    DumpControls;
+    DumpRescues;
     DumpSymbols;
+    DumpClasses;
   End Else
-    WarnMsg('seuls l infrastructure, le lexer et les symboles sont initialises');
+    WarnMsg('infrastructure, lexer, symboles, variables, expressions, statements et classes initialises');
 End.
