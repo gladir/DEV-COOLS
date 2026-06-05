@@ -7283,7 +7283,24 @@ Begin
     End;
 End;
 
+Function StaticOutputText(N: Integer; Var S: String): Boolean; Forward;
+
+Function StaticIntegerValue(N: Integer; Var V: LongInt): Boolean;
+Var
+  S: String;
+  Code: Integer;
+Begin
+  StaticIntegerValue := False;
+  V := 0;
+  If Not StaticOutputText(N, S) Then Exit;
+  S := CleanIntegerText(S);
+  Val(S, V, Code);
+  StaticIntegerValue := Code = 0;
+End;
+
 Function StaticOutputText(N: Integer; Var S: String): Boolean;
+Var
+  L, R, V: LongInt;
 Begin
   S := '';
   StaticOutputText := False;
@@ -7306,6 +7323,21 @@ Begin
     StaticOutputText := True;
   End Else If AstTable[N].Kind = NK_VAR Then Begin
     StaticOutputText := GetStaticValue(AstTable[N].Text, S);
+  End Else If AstTable[N].Kind = NK_BINARY Then Begin
+    If StaticIntegerValue(AstTable[N].Left, L) And
+       StaticIntegerValue(AstTable[N].Right, R) Then Begin
+      Case AstTable[N].Tok Of
+        Ord('+'): V := L + R;
+        Ord('-'): V := L - R;
+        Ord('*'): V := L * R;
+        Ord('/'): If R <> 0 Then V := L Div R Else Exit;
+        Ord('%'): If R <> 0 Then V := L Mod R Else Exit;
+      Else
+        Exit;
+      End;
+      S := ItoS(V);
+      StaticOutputText := True;
+    End;
   End;
 End;
 
