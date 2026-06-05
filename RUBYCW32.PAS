@@ -535,6 +535,7 @@ Const
   MAX_BIN_LABEL = 1024;
   MAX_BIN_FIXUP = 2048;
   MAX_BIN_IMPORT = 128;
+  MAX_BIN_OUTPUT = 256;
 
   ASM_PFX_GVAR = '_RB_';
   ASM_PFX_METHOD = '_RBM_';
@@ -1063,9 +1064,14 @@ Type
     IATRva: LongInt;
   End;
 
+  TBinOutput = Record
+    Text: String;
+  End;
+
   TBinLabelTable = Array[1..MAX_BIN_LABEL] Of TBinLabel;
   TBinFixupTable = Array[1..MAX_BIN_FIXUP] Of TBinFixup;
   TBinImportTable = Array[1..MAX_BIN_IMPORT] Of TBinImport;
+  TBinOutputTable = Array[1..MAX_BIN_OUTPUT] Of TBinOutput;
 
   TClassInfo = Record
     Name: String;
@@ -1190,6 +1196,8 @@ Var
   BinFixupCount: Integer;
   BinImports: TBinImportTable;
   BinImportCount: Integer;
+  BinOutputs: TBinOutputTable;
+  BinOutputCount: Integer;
   AstTable: TASTTable;
   AstCount: Integer;
   ParseErrors: Integer;
@@ -7110,6 +7118,13 @@ Begin
   BinEmit32(V);
 End;
 
+Procedure BinEmitCallAbs(VA: LongInt);
+Begin
+  BinEmit8($FF);
+  BinEmit8($15);
+  BinEmit32(VA);
+End;
+
 Procedure BinEmitJmp(LabelName: String);
 Var
   L: Integer;
@@ -7155,6 +7170,197 @@ Begin
   BinDefineLabel('_RBSTART');
   BinEmitInstr('XOR_EAX_EAX');
   BinEmitInstr('RET');
+  BinResolveFixups;
+End;
+
+Procedure BinRDataEmit8(V: Integer);
+Begin
+  BufEmit8(BinRData, BinRDataSize, V);
+End;
+
+Procedure BinRDataEmit16(V: LongInt);
+Begin
+  BufEmit16(BinRData, BinRDataSize, V);
+End;
+
+Procedure BinRDataEmit32(V: LongInt);
+Begin
+  BufEmit32(BinRData, BinRDataSize, V);
+End;
+
+Procedure BinDataEmit32(V: LongInt);
+Begin
+  BufEmit32(BinData, BinDataSize, V);
+End;
+
+Procedure BinRDataPatch32(Offset, V: LongInt);
+Begin
+  If (Offset < 0) Or (Offset + 3 >= MAX_BIN) Then
+    FatalError('patch rdata hors limites');
+  BinRData[Offset] := V And $FF;
+  BinRData[Offset + 1] := (V Shr 8) And $FF;
+  BinRData[Offset + 2] := (V Shr 16) And $FF;
+  BinRData[Offset + 3] := (V Shr 24) And $FF;
+End;
+
+Function BinRDataAddBytes(S: String): LongInt;
+Var
+  I: Integer;
+Begin
+  BinRDataAddBytes := BinRDataSize;
+  For I := 1 To Length(S) Do
+    BinRDataEmit8(Ord(S[I]));
+End;
+
+Function BinRDataAddCString(S: String): LongInt;
+Begin
+  BinRDataAddCString := BinRDataAddBytes(S);
+  BinRDataEmit8(0);
+End;
+
+Function BinRDataAddHintName(Name: String): LongInt;
+Begin
+  BinRDataAddHintName := BinRDataSize;
+  BinRDataEmit16(0);
+  BinRDataAddCString(Name);
+  If (BinRDataSize And 1) <> 0 Then BinRDataEmit8(0);
+End;
+
+Procedure AddConsoleOutput(S: String);
+Begin
+  If BinOutputCount >= MAX_BIN_OUTPUT Then
+    FatalError('trop de sorties console statiques');
+  Inc(BinOutputCount);
+  BinOutputs[BinOutputCount].Text := S;
+End;
+
+Function StaticOutputText(N: Integer; Var S: String): Boolean;
+Begin
+  S := '';
+  StaticOutputText := False;
+  If N = 0 Then Exit;
+  If AstTable[N].Kind = NK_STRING Then Begin
+    S := AstTable[N].Text;
+    StaticOutputText := True;
+  End Else If (AstTable[N].Kind = NK_LITERAL) And
+              (AstTable[N].Tok = TOK_INTEGER) Then Begin
+    S := AstTable[N].Text;
+    StaticOutputText := True;
+  End Else If AstTable[N].Tok = KW_TRUE Then Begin
+    S := 'true';
+    StaticOutputText := True;
+  End Else If AstTable[N].Tok = KW_FALSE Then Begin
+    S := 'false';
+    StaticOutputText := True;
+  End Else If AstTable[N].Tok = KW_NIL Then Begin
+    S := 'nil';
+    StaticOutputText := True;
+  End;
+End;
+
+Procedure CollectConsoleOutputs(N: Integer);
+Var
+  Target, Args, A, C: Integer;
+  Name, S: String;
+  AddNL: Boolean;
+Begin
+  If N = 0 Then Exit;
+  If (AstTable[N].Kind = NK_CALL) And (AstTable[N].Text = 'bare-call') Then Begin
+    Target := AstTable[N].Left;
+    Args := AstTable[N].Right;
+    If Target <> 0 Then Begin
+      Name := AstTable[Target].Text;
+      If (Name = 'puts') Or (Name = 'print') Or (Name = 'p') Then Begin
+        AddNL := (Name <> 'print');
+        If (Args <> 0) And (AstTable[Args].Kind = NK_LIST) Then Begin
+          A := AstTable[Args].FirstChild;
+          If A = 0 Then Begin
+            If AddNL Then AddConsoleOutput(#13#10);
+          End;
+          While A <> 0 Do Begin
+            If StaticOutputText(A, S) Then Begin
+              If AddNL Then S := S + #13#10;
+              AddConsoleOutput(S);
+            End;
+            A := AstTable[A].NextSibling;
+          End;
+        End;
+      End;
+    End;
+  End;
+  CollectConsoleOutputs(AstTable[N].Left);
+  CollectConsoleOutputs(AstTable[N].Right);
+  CollectConsoleOutputs(AstTable[N].Third);
+  C := AstTable[N].FirstChild;
+  While C <> 0 Do Begin
+    CollectConsoleOutputs(C);
+    C := AstTable[C].NextSibling;
+  End;
+End;
+
+Procedure BuildImportRData(RDataRva: LongInt; Var ImportRva, ImportSize,
+                           IatExitVA, IatGetStdVA, IatWriteVA: LongInt);
+Var
+  DescOff, IltOff, IatOff, DllOff, HExit, HGet, HWrite: LongInt;
+Begin
+  DescOff := BinRDataSize;
+  BinRDataEmit32(0); BinRDataEmit32(0); BinRDataEmit32(0); BinRDataEmit32(0); BinRDataEmit32(0);
+  BinRDataEmit32(0); BinRDataEmit32(0); BinRDataEmit32(0); BinRDataEmit32(0); BinRDataEmit32(0);
+  IltOff := BinRDataSize;
+  BinRDataEmit32(0); BinRDataEmit32(0); BinRDataEmit32(0); BinRDataEmit32(0);
+  IatOff := BinRDataSize;
+  BinRDataEmit32(0); BinRDataEmit32(0); BinRDataEmit32(0); BinRDataEmit32(0);
+  HExit := BinRDataAddHintName('ExitProcess');
+  HGet := BinRDataAddHintName('GetStdHandle');
+  HWrite := BinRDataAddHintName('WriteFile');
+  DllOff := BinRDataAddCString('KERNEL32.DLL');
+  BinRDataPatch32(IltOff, RDataRva + HExit);
+  BinRDataPatch32(IltOff + 4, RDataRva + HGet);
+  BinRDataPatch32(IltOff + 8, RDataRva + HWrite);
+  BinRDataPatch32(IatOff, RDataRva + HExit);
+  BinRDataPatch32(IatOff + 4, RDataRva + HGet);
+  BinRDataPatch32(IatOff + 8, RDataRva + HWrite);
+  BinRDataPatch32(DescOff, RDataRva + IltOff);
+  BinRDataPatch32(DescOff + 12, RDataRva + DllOff);
+  BinRDataPatch32(DescOff + 16, RDataRva + IatOff);
+  ImportRva := RDataRva + DescOff;
+  ImportSize := BinRDataSize - DescOff;
+  IatExitVA := PE_IMG_BASE + RDataRva + IatOff;
+  IatGetStdVA := PE_IMG_BASE + RDataRva + IatOff + 4;
+  IatWriteVA := PE_IMG_BASE + RDataRva + IatOff + 8;
+End;
+
+Procedure BinBuildConsoleExe(RDataRva, DataRva: LongInt;
+                             Var ImportRva, ImportSize: LongInt);
+Var
+  I: Integer;
+  MsgOff, WrittenOff, IatExitVA, IatGetStdVA, IatWriteVA: LongInt;
+Begin
+  BinClear;
+  WrittenOff := BinDataSize;
+  BinDataEmit32(0);
+  For I := 1 To BinOutputCount Do
+    BinRDataAddBytes(BinOutputs[I].Text);
+  BuildImportRData(RDataRva, ImportRva, ImportSize,
+                   IatExitVA, IatGetStdVA, IatWriteVA);
+  BinDefineLabel('_RBSTART');
+  BinEmitPushImm32(-11);
+  BinEmitCallAbs(IatGetStdVA);
+  BinEmit8($8B); BinEmit8($D8);
+  MsgOff := 0;
+  For I := 1 To BinOutputCount Do Begin
+    If Length(BinOutputs[I].Text) > 0 Then Begin
+      BinEmitPushImm32(0);
+      BinEmitPushImm32(PE_IMG_BASE + DataRva + WrittenOff);
+      BinEmitPushImm32(Length(BinOutputs[I].Text));
+      BinEmitPushImm32(PE_IMG_BASE + RDataRva + MsgOff);
+      BinEmit8($53);
+      BinEmitCallAbs(IatWriteVA);
+    End;
+    Inc(MsgOff, Length(BinOutputs[I].Text));
+  End;
+  BinEmitPushImm32(0);
+  BinEmitCallAbs(IatExitVA);
   BinResolveFixups;
 End;
 
@@ -7301,15 +7507,31 @@ End;
 Procedure GenerateExe;
 Var
   F: File;
-  HeadersSize, TextRawSize, TextRva, ImageSize, I: LongInt;
+  Root: Integer;
+  HeadersSize, TextRawSize, RDataRawSize, DataRawSize: LongInt;
+  TextRva, RDataRva, DataRva, ImageSize, I: LongInt;
+  TextRawPtr, RDataRawPtr, DataRawPtr: LongInt;
+  ImportRva, ImportSize: LongInt;
 Begin
-  ParseProgram;
+  Root := ParseProgram;
   If ParseErrors <> 0 Then FatalError('generation EXE impossible: erreurs parse');
-  BinBuildRuntimeSkeleton;
+  BinOutputCount := 0;
+  CollectConsoleOutputs(Root);
   TextRva := PE_SEC_ALIGN;
-  HeadersSize := AlignUp(128 + 4 + 20 + 224 + 40, PE_FILE_ALIGN);
+  RDataRva := TextRva + PE_SEC_ALIGN;
+  DataRva := RDataRva + PE_SEC_ALIGN;
+  BinBuildConsoleExe(RDataRva, DataRva, ImportRva, ImportSize);
+  If (BinCodeSize > PE_SEC_ALIGN) Or (BinRDataSize > PE_SEC_ALIGN) Or
+     (BinDataSize > PE_SEC_ALIGN) Then
+    FatalError('EXE PE minimal: section trop grande');
+  HeadersSize := AlignUp(128 + 4 + 20 + 224 + 3 * 40, PE_FILE_ALIGN);
   TextRawSize := AlignUp(BinCodeSize, PE_FILE_ALIGN);
-  ImageSize := AlignUp(TextRva + AlignUp(BinCodeSize, PE_SEC_ALIGN), PE_SEC_ALIGN);
+  RDataRawSize := AlignUp(BinRDataSize, PE_FILE_ALIGN);
+  DataRawSize := AlignUp(BinDataSize, PE_FILE_ALIGN);
+  TextRawPtr := HeadersSize;
+  RDataRawPtr := TextRawPtr + TextRawSize;
+  DataRawPtr := RDataRawPtr + RDataRawSize;
+  ImageSize := DataRva + PE_SEC_ALIGN;
   Assign(F, Opt.OutFile);
   Rewrite(F, 1);
   WriteWordLE(F, PE_DOS_MAGIC);
@@ -7318,7 +7540,7 @@ Begin
   WriteZeros(F, 128 - 64);
   WriteDWordLE(F, PE_PE_SIG);
   WriteWordLE(F, PE_MACHINE_I386);
-  WriteWordLE(F, 1);
+  WriteWordLE(F, 3);
   WriteDWordLE(F, 0);
   WriteDWordLE(F, 0);
   WriteDWordLE(F, 0);
@@ -7328,11 +7550,11 @@ Begin
   WriteByte(F, 0);
   WriteByte(F, 1);
   WriteDWordLE(F, TextRawSize);
-  WriteDWordLE(F, 0);
+  WriteDWordLE(F, RDataRawSize + DataRawSize);
   WriteDWordLE(F, 0);
   WriteDWordLE(F, TextRva);
   WriteDWordLE(F, TextRva);
-  WriteDWordLE(F, 0);
+  WriteDWordLE(F, DataRva);
   WriteDWordLE(F, PE_IMG_BASE);
   WriteDWordLE(F, PE_SEC_ALIGN);
   WriteDWordLE(F, PE_FILE_ALIGN);
@@ -7355,13 +7577,24 @@ Begin
   WriteDWordLE(F, 0);
   WriteDWordLE(F, 16);
   For I := 1 To 16 Do Begin
-    WriteDWordLE(F, 0);
-    WriteDWordLE(F, 0);
+    If I = 2 Then Begin
+      WriteDWordLE(F, ImportRva);
+      WriteDWordLE(F, ImportSize);
+    End Else Begin
+      WriteDWordLE(F, 0);
+      WriteDWordLE(F, 0);
+    End;
   End;
-  WritePeSectionHeader(F, '.text', BinCodeSize, TextRva, TextRawSize, HeadersSize,
+  WritePeSectionHeader(F, '.text', BinCodeSize, TextRva, TextRawSize, TextRawPtr,
     PE_SCN_CNT_CODE Or PE_SCN_MEM_EXECUTE Or PE_SCN_MEM_READ);
-  WriteZeros(F, HeadersSize - (128 + 4 + 20 + 224 + 40));
+  WritePeSectionHeader(F, '.rdata', BinRDataSize, RDataRva, RDataRawSize,
+    RDataRawPtr, PE_SCN_CNT_INIT_DATA Or PE_SCN_MEM_READ);
+  WritePeSectionHeader(F, '.data', BinDataSize, DataRva, DataRawSize,
+    DataRawPtr, PE_SCN_CNT_INIT_DATA Or PE_SCN_MEM_READ Or PE_SCN_MEM_WRITE);
+  WriteZeros(F, HeadersSize - (128 + 4 + 20 + 224 + 3 * 40));
   WritePaddedBuffer(F, BinCode, BinCodeSize, PE_FILE_ALIGN);
+  WritePaddedBuffer(F, BinRData, BinRDataSize, PE_FILE_ALIGN);
+  WritePaddedBuffer(F, BinData, BinDataSize, PE_FILE_ALIGN);
   Close(F);
   WriteLn('EXE PE genere : ', Opt.OutFile);
 End;
