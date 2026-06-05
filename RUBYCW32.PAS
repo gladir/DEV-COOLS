@@ -7341,11 +7341,47 @@ Begin
   End;
 End;
 
+Function StaticBoolValue(N: Integer; Var B: Boolean): Boolean;
+Var
+  L, R: LongInt;
+  S: String;
+Begin
+  StaticBoolValue := False;
+  B := False;
+  If N = 0 Then Exit;
+  If AstTable[N].Tok = KW_TRUE Then Begin
+    B := True;
+    StaticBoolValue := True;
+  End Else If (AstTable[N].Tok = KW_FALSE) Or (AstTable[N].Tok = KW_NIL) Then Begin
+    B := False;
+    StaticBoolValue := True;
+  End Else If AstTable[N].Kind = NK_BINARY Then Begin
+    If StaticIntegerValue(AstTable[N].Left, L) And
+       StaticIntegerValue(AstTable[N].Right, R) Then Begin
+      Case AstTable[N].Tok Of
+        TOK_EQ: B := L = R;
+        TOK_NE: B := L <> R;
+        Ord('<'): B := L < R;
+        Ord('>'): B := L > R;
+        TOK_LE: B := L <= R;
+        TOK_GE: B := L >= R;
+      Else
+        Exit;
+      End;
+      StaticBoolValue := True;
+    End;
+  End Else If StaticOutputText(N, S) Then Begin
+    B := (S <> '') And (S <> 'false') And (S <> 'nil');
+    StaticBoolValue := True;
+  End;
+End;
+
 Procedure CollectConsoleOutputs(N: Integer);
 Var
-  Target, Args, A, C: Integer;
+  Target, Args, A, C, Iter: Integer;
   Name, S: String;
   AddNL: Boolean;
+  B: Boolean;
 Begin
   If N = 0 Then Exit;
   If (AstTable[N].Kind = NK_ASSIGN) And
@@ -7353,6 +7389,26 @@ Begin
      (AstTable[AstTable[N].Left].Kind = NK_VAR) Then Begin
     If StaticOutputText(AstTable[N].Right, S) Then
       SetStaticValue(AstTable[AstTable[N].Left].Text, S);
+  End;
+  If (AstTable[N].Kind = NK_IF) Or (AstTable[N].Kind = NK_UNLESS) Then Begin
+    If StaticBoolValue(AstTable[N].Left, B) Then Begin
+      If AstTable[N].Kind = NK_UNLESS Then B := Not B;
+      If B Then CollectConsoleOutputs(AstTable[N].Right)
+      Else CollectConsoleOutputs(AstTable[N].Third);
+    End;
+    Exit;
+  End;
+  If (AstTable[N].Kind = NK_WHILE) Or (AstTable[N].Kind = NK_UNTIL) Then Begin
+    Iter := 0;
+    While StaticBoolValue(AstTable[N].Left, B) Do Begin
+      If AstTable[N].Kind = NK_UNTIL Then B := Not B;
+      If Not B Then Break;
+      CollectConsoleOutputs(AstTable[N].Right);
+      Inc(Iter);
+      If Iter > 1000 Then
+        FatalError('boucle statique trop longue');
+    End;
+    Exit;
   End;
   If (AstTable[N].Kind = NK_CALL) And (AstTable[N].Text = 'bare-call') Then Begin
     Target := AstTable[N].Left;
