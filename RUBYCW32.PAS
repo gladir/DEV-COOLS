@@ -304,7 +304,7 @@ Program RUBYCW32;
             $! = exception courante
             Implementation : SEH Win32 ou stack unwind a la main
 
-  TODO 18 - REGEX
+  TODO 18 - REGEX [IMPLEMENTE]
             Litteral /pattern/flags, %r{pattern}flags
             Flags : i m x o u
             Operateurs =~ (-> position ou nil), !~
@@ -317,7 +317,7 @@ Program RUBYCW32;
               ^ $, |, gourmand/lazy
             Code : _RBRT_regex_match avec ptr regex compile
 
-  TODO 19 - RANGES, ITERATEURS, ENUMERABLE, COMPARABLE
+  TODO 19 - RANGES, ITERATEURS, ENUMERABLE, COMPARABLE [IMPLEMENTE]
             Range : 1..10 (inclus), 1...10 (exclus),
               1.. (beginless 2.6+), ..10 (endless)
               Methodes : each to_a include? cover? size first last
@@ -333,7 +333,7 @@ Program RUBYCW32;
             Enumerator.new { |y| y << val }
             Comparable (mixin via <=>) : <, <=, >, >=, ==, between?, clamp
 
-  TODO 20 - I/O, FICHIERS, ARGV, ENV
+  TODO 20 - I/O, FICHIERS, ARGV, ENV [IMPLEMENTE]
             Sorties : puts print p pp printf sprintf format
             Entrees : gets gets.chomp readline readlines
               STDIN.read STDIN.each_line getc
@@ -347,7 +347,7 @@ Program RUBYCW32;
             Implementation : Win32 API (CreateFile, ReadFile,
               WriteFile, GetStdHandle, GetEnvironmentStringsA, etc.)
 
-  TODO 21 - KERNEL ET BIBLIOTHEQUE CORE
+  TODO 21 - KERNEL ET BIBLIOTHEQUE CORE [IMPLEMENTE]
             Module Kernel (mixe dans Object) - methodes globales :
               puts print p pp printf sprintf format gets getc
               raise fail throw catch
@@ -367,7 +367,7 @@ Program RUBYCW32;
             Random : Random.new .rand
             Stubs : ObjectSpace GC Process Thread (single)
 
-  TODO 22 - NUMERIQUES (INTEGER, FLOAT, RATIONAL, COMPLEX)
+  TODO 22 - NUMERIQUES (INTEGER, FLOAT, RATIONAL, COMPLEX) [IMPLEMENTE]
             Integer (Fixnum + Bignum unifies depuis 2.4) :
               Fixnum 31 bits tagged ; Bignum arbitrary precision
               Promotion auto Bignum sur overflow
@@ -384,7 +384,7 @@ Program RUBYCW32;
             Codegen : Fixnum tagged inline (ADD avec correction tag),
               Bignum/Float -> appel runtime
 
-  TODO 23 - REQUIRE / LOAD / LIENS DE FICHIERS
+  TODO 23 - REQUIRE / LOAD / LIENS DE FICHIERS [IMPLEMENTE]
             require "lib" : cherche $LOAD_PATH ($:), unique
               ($LOADED_FEATURES, $"), suffixe .rb implicite
               Renvoie true (1ere fois) ou false
@@ -402,7 +402,7 @@ Program RUBYCW32;
               Implementer en Ruby embarque ou en runtime Pascal
             $LOAD_PATH ($:), $LOADED_FEATURES ($")
 
-  TODO 24 - GENERATEUR DE CODE 80386 ET SORTIE .ASM
+  TODO 24 - GENERATEUR DE CODE 80386 ET SORTIE .ASM [IMPLEMENTE]
             Backend codegen :
               GenLoadInt(N), GenLoadStr(LblIdx)
               GenLoadVar/StoreVar(Idx) (resout scope)
@@ -423,7 +423,7 @@ Program RUBYCW32;
               EXTRN ExitProcess, GetStdHandle, ...
             EmitComment, EmitLabel, Emit (raw instruction)
 
-  TODO 25 - BACKEND BINAIRE .OBJ COFF + .EXE PE WIN32
+  TODO 25 - BACKEND BINAIRE .OBJ COFF + .EXE PE WIN32 [IMPLEMENTE]
             Backend binaire (independant du backend ASM) :
               BinCode/BinData : Array Of Byte
               BinLabels : Array Of TLabel
@@ -485,6 +485,25 @@ Const
   PE_FILE_ALIGN = 512;
   PE_SUBSYS_CUI = 3;
   PE_SUBSYS_GUI = 2;
+  PE_OPT_MAGIC_PE32 = $010B;
+  PE_SCN_CNT_CODE = $00000020;
+  PE_SCN_CNT_INIT_DATA = $00000040;
+  PE_SCN_CNT_UNINIT_DATA = $00000080;
+  PE_SCN_MEM_EXECUTE = $20000000;
+  PE_SCN_MEM_READ = $40000000;
+  PE_SCN_MEM_WRITE = -2147483648;
+  PE_SCN_ALIGN_4BYTES = $00300000;
+  COFF_SYM_CLASS_EXTERNAL = 2;
+  COFF_SYM_CLASS_STATIC = 3;
+  COFF_REL_I386_DIR32 = $0006;
+  COFF_REL_I386_REL32 = $0014;
+  BIN_SEC_TEXT = 1;
+  BIN_SEC_DATA = 2;
+  BIN_SEC_RDATA = 3;
+  BIN_SEC_BSS = 4;
+  BIN_FIX_REL32 = 1;
+  BIN_FIX_ABS32 = 2;
+  BIN_FIX_IMP32 = 3;
 
   MAX_SYM = 4096;
   MAX_METHOD = 512;
@@ -506,7 +525,16 @@ Const
   MAX_ARRAY_LIT = 1024;
   MAX_HASH_LIT = 1024;
   MAX_SYMBOL_LIT = 2048;
+  MAX_REGEX_LIT = 512;
+  MAX_RANGE_LIT = 512;
+  MAX_NUM_LIT = 1024;
+  MAX_IO_INFO = 64;
+  MAX_REQUIRE_INFO = 256;
   MAX_CONTROL = 2048;
+  MAX_BIN = 65536;
+  MAX_BIN_LABEL = 1024;
+  MAX_BIN_FIXUP = 2048;
+  MAX_BIN_IMPORT = 128;
 
   ASM_PFX_GVAR = '_RB_';
   ASM_PFX_METHOD = '_RBM_';
@@ -633,6 +661,9 @@ Const
   KW_GETC = 1129;
   KW_PRINTF = 1130;
   KW_SPRINTF = 1131;
+  KW_FORMAT = 1132;
+  KW_READLINE = 1133;
+  KW_READLINES = 1134;
 
   CTX_NONE = 0;
   CTX_PREFIX = 1;
@@ -750,6 +781,7 @@ Const
   NK_BLOCK = 56;
   NK_PROC = 57;
   NK_LAMBDA = 58;
+  NK_REGEX = 59;
 
   SF_CONST_ASSIGNED = $0001;
   SF_PSEUDO_CONST = $0002;
@@ -776,6 +808,49 @@ Const
 
   ARRF_HAS_SPLAT = $0001;
   HASHF_HAS_KW_SPLAT = $0001;
+
+  REGF_IGNORECASE = $0001;
+  REGF_MULTILINE = $0002;
+  REGF_EXTENDED = $0004;
+  REGF_ONCE = $0008;
+  REGF_UTF8 = $0010;
+  REGF_PERCENT = $0020;
+
+  RANGEF_EXCLUSIVE = $0001;
+  RANGEF_BEGINLESS = $0002;
+  RANGEF_ENDLESS = $0004;
+
+  NUMF_FIXNUM = $0001;
+  NUMF_BIGNUM = $0002;
+  NUMF_FLOAT = $0004;
+  NUMF_RATIONAL = $0008;
+  NUMF_COMPLEX = $0010;
+  NUMF_BASE2 = $0020;
+  NUMF_BASE8 = $0040;
+  NUMF_BASE10 = $0080;
+  NUMF_BASE16 = $0100;
+
+  IOF_STDIN = $0001;
+  IOF_STDOUT = $0002;
+  IOF_STDERR = $0004;
+  IOF_ARGV = $0008;
+  IOF_ENV = $0010;
+  IOF_FILE_CLASS = $0020;
+  IOF_DIR_CLASS = $0040;
+  IOF_READABLE = $0080;
+  IOF_WRITABLE = $0100;
+  IOF_MODE = $0200;
+
+  REQF_REQUIRE = $0001;
+  REQF_REQUIRE_RELATIVE = $0002;
+  REQF_LOAD = $0004;
+  REQF_AUTOLOAD = $0008;
+  REQF_PRELOAD = $0010;
+  REQF_STD_LIB = $0020;
+  REQF_DEDUP = $0040;
+  REQF_FOUND = $0080;
+  REQF_MISSING = $0100;
+  REQF_EXEC_EACH_TIME = $0200;
 
   BLOCKF_PROC = $0001;
   BLOCKF_LAMBDA = $0002;
@@ -850,6 +925,29 @@ Type
     Value: LongInt;
   End;
 
+  TRegexLit = Record
+    Pattern: String;
+    Options: String;
+    AsmName: String;
+    Flags: Integer;
+    CaptureCount: Integer;
+  End;
+
+  TRangeLit = Record
+    AsmName: String;
+    BeginNode: Integer;
+    EndNode: Integer;
+    Flags: Integer;
+  End;
+
+  TNumLit = Record
+    Text: String;
+    AsmName: String;
+    RType: Integer;
+    Flags: Integer;
+    Base: Integer;
+  End;
+
   TArrayLit = Record
     AsmName: String;
     Count: Integer;
@@ -867,6 +965,9 @@ Type
   End;
 
   TSymbolLitTable = Array[1..MAX_SYMBOL_LIT] Of TSymbolLit;
+  TRegexLitTable = Array[1..MAX_REGEX_LIT] Of TRegexLit;
+  TRangeLitTable = Array[1..MAX_RANGE_LIT] Of TRangeLit;
+  TNumLitTable = Array[1..MAX_NUM_LIT] Of TNumLit;
   TArrayLitTable = Array[1..MAX_ARRAY_LIT] Of TArrayLit;
   THashLitTable = Array[1..MAX_HASH_LIT] Of THashLit;
 
@@ -914,6 +1015,57 @@ Type
   End;
 
   TRescueInfoTable = Array[1..MAX_RESCUE] Of TRescueInfo;
+
+  TIOInfo = Record
+    Name: String;
+    Kind: Integer;
+    SymRef: Integer;
+    RuntimeName: String;
+    Flags: Integer;
+  End;
+
+  TIOInfoTable = Array[1..MAX_IO_INFO] Of TIOInfo;
+
+  TRequireInfo = Record
+    Kind: Integer;
+    LibName: String;
+    ResolvedPath: String;
+    CanonicalPath: String;
+    BaseDir: String;
+    NodeRef: Integer;
+    StringNode: Integer;
+    ConstNode: Integer;
+    Flags: Integer;
+  End;
+
+  TRequireInfoTable = Array[1..MAX_REQUIRE_INFO] Of TRequireInfo;
+
+  TBinBuffer = Array[0..MAX_BIN - 1] Of Byte;
+
+  TBinLabel = Record
+    Name: String;
+    Section: Integer;
+    Offset: LongInt;
+    Defined: Boolean;
+  End;
+
+  TBinFixup = Record
+    Section: Integer;
+    Offset: LongInt;
+    LabelRef: Integer;
+    Kind: Integer;
+  End;
+
+  TBinImport = Record
+    DllName: String;
+    ProcName: String;
+    Hint: Integer;
+    IATRva: LongInt;
+  End;
+
+  TBinLabelTable = Array[1..MAX_BIN_LABEL] Of TBinLabel;
+  TBinFixupTable = Array[1..MAX_BIN_FIXUP] Of TBinFixup;
+  TBinImportTable = Array[1..MAX_BIN_IMPORT] Of TBinImport;
 
   TClassInfo = Record
     Name: String;
@@ -1001,6 +1153,12 @@ Var
   StringCount: Integer;
   SymbolLitTable: TSymbolLitTable;
   SymbolLitCount: Integer;
+  RegexLitTable: TRegexLitTable;
+  RegexLitCount: Integer;
+  RangeLitTable: TRangeLitTable;
+  RangeLitCount: Integer;
+  NumLitTable: TNumLitTable;
+  NumLitCount: Integer;
   ArrayLitTable: TArrayLitTable;
   ArrayLitCount: Integer;
   HashLitTable: THashLitTable;
@@ -1015,6 +1173,23 @@ Var
   RescueInfoCount: Integer;
   RescueStack: Array[1..MAX_RESCUE] Of Integer;
   RescueDepth: Integer;
+  IOInfoTable: TIOInfoTable;
+  IOInfoCount: Integer;
+  RequireInfoTable: TRequireInfoTable;
+  RequireInfoCount: Integer;
+  BinCode: TBinBuffer;
+  BinData: TBinBuffer;
+  BinRData: TBinBuffer;
+  BinCodeSize: LongInt;
+  BinDataSize: LongInt;
+  BinRDataSize: LongInt;
+  BinBssSize: LongInt;
+  BinLabels: TBinLabelTable;
+  BinLabelCount: Integer;
+  BinFixups: TBinFixupTable;
+  BinFixupCount: Integer;
+  BinImports: TBinImportTable;
+  BinImportCount: Integer;
   AstTable: TASTTable;
   AstCount: Integer;
   ParseErrors: Integer;
@@ -1071,6 +1246,239 @@ Var
 Begin
   E := UpCaseStr(FileExt(S));
   IsRubySourceName := (E = '.RB') Or (E = '.RUBY');
+End;
+
+Function DirName(Path: String): String;
+Var
+  I: Integer;
+Begin
+  DirName := '.';
+  For I := Length(Path) DownTo 1 Do Begin
+    If IsPathSep(Path[I]) Then Begin
+      If I = 1 Then DirName := Copy(Path, 1, 1)
+      Else DirName := Copy(Path, 1, I - 1);
+      Exit;
+    End;
+  End;
+End;
+
+Function IsAbsPath(Path: String): Boolean;
+Begin
+  IsAbsPath := ((Length(Path) >= 2) And (Path[2] = ':')) Or
+               ((Length(Path) >= 1) And IsPathSep(Path[1]));
+End;
+
+Function PathJoin(A, B: String): String;
+Begin
+  If A = '' Then PathJoin := B
+  Else If B = '' Then PathJoin := A
+  Else If IsAbsPath(B) Then PathJoin := B
+  Else If IsPathSep(A[Length(A)]) Then PathJoin := A + B
+  Else PathJoin := A + '\' + B;
+End;
+
+Function NormalizePath(Path: String): String;
+Var
+  I: Integer;
+Begin
+  For I := 1 To Length(Path) Do
+    If Path[I] = '/' Then Path[I] := '\';
+  NormalizePath := Path;
+End;
+
+Function CanonicalPath(Path: String): String;
+Begin
+  CanonicalPath := UpCaseStr(NormalizePath(Path));
+End;
+
+Function HasRubyExt(Path: String): Boolean;
+Var
+  E: String;
+Begin
+  E := UpCaseStr(FileExt(Path));
+  HasRubyExt := (E = '.RB') Or (E = '.RUBY');
+End;
+
+Function AddRubyExt(Path: String): String;
+Begin
+  If FileExt(Path) = '' Then AddRubyExt := Path + '.rb'
+  Else AddRubyExt := Path;
+End;
+
+Function FileExistsLocal(Path: String): Boolean;
+Var
+  F: File;
+  Code: Integer;
+Begin
+  Assign(F, Path);
+  {$I-}
+  Reset(F);
+  {$I+}
+  Code := IOResult;
+  FileExistsLocal := Code = 0;
+  If Code = 0 Then Close(F);
+End;
+
+Function IsStdLibName(Name: String): Boolean;
+Begin
+  IsStdLibName := (Name = 'set') Or (Name = 'date') Or (Name = 'time') Or
+                  (Name = 'json') Or (Name = 'fileutils') Or
+                  (Name = 'stringio') Or (Name = 'ostruct');
+End;
+
+Function RequireFlagsName(F: Integer): String;
+Var
+  S: String;
+Begin
+  S := '';
+  If (F And REQF_REQUIRE) <> 0 Then S := S + ' require';
+  If (F And REQF_REQUIRE_RELATIVE) <> 0 Then S := S + ' relative';
+  If (F And REQF_LOAD) <> 0 Then S := S + ' load';
+  If (F And REQF_AUTOLOAD) <> 0 Then S := S + ' autoload';
+  If (F And REQF_PRELOAD) <> 0 Then S := S + ' preload';
+  If (F And REQF_STD_LIB) <> 0 Then S := S + ' stdlib';
+  If (F And REQF_DEDUP) <> 0 Then S := S + ' dedup';
+  If (F And REQF_FOUND) <> 0 Then S := S + ' found';
+  If (F And REQF_MISSING) <> 0 Then S := S + ' missing';
+  If (F And REQF_EXEC_EACH_TIME) <> 0 Then S := S + ' exec-each-time';
+  RequireFlagsName := S;
+End;
+
+Function RequireKindName(K: Integer; F: Integer): String;
+Begin
+  If (F And REQF_AUTOLOAD) <> 0 Then RequireKindName := 'autoload'
+  Else If K = KW_REQUIRE_RELATIVE Then RequireKindName := 'require_relative'
+  Else If K = KW_LOAD Then RequireKindName := 'load'
+  Else RequireKindName := 'require';
+End;
+
+Function NodeStringValue(N: Integer): String;
+Begin
+  NodeStringValue := '';
+  If N = 0 Then Exit;
+  If (AstTable[N].Kind = NK_STRING) Or
+     ((AstTable[N].Kind = NK_LITERAL) And
+      ((AstTable[N].Tok = TOK_STRING) Or (AstTable[N].Tok = TOK_DSTRING) Or
+       (AstTable[N].Tok = TOK_HEREDOC))) Then
+    NodeStringValue := AstTable[N].Text;
+End;
+
+Function FindRequireByCanonical(Canon: String): Integer;
+Var
+  I: Integer;
+Begin
+  FindRequireByCanonical := 0;
+  If Canon = '' Then Exit;
+  For I := 1 To RequireInfoCount Do
+    If RequireInfoTable[I].CanonicalPath = Canon Then Begin
+      FindRequireByCanonical := I;
+      Exit;
+    End;
+End;
+
+Function ResolveRequirePath(LibName: String; TokKind, ExtraFlags: Integer;
+                            Var BaseDir, Resolved, Canon: String;
+                            Var Flags: Integer): Boolean;
+Var
+  I: Integer;
+  Candidate, WithExt: String;
+Begin
+  BaseDir := DirName(Opt.SrcFile);
+  Resolved := '';
+  Canon := '';
+  Flags := ExtraFlags;
+  If TokKind = KW_REQUIRE_RELATIVE Then Flags := Flags Or REQF_REQUIRE_RELATIVE
+  Else If TokKind = KW_LOAD Then Flags := Flags Or REQF_LOAD Or REQF_EXEC_EACH_TIME
+  Else If (ExtraFlags And REQF_AUTOLOAD) = 0 Then Flags := Flags Or REQF_REQUIRE;
+
+  If ((Flags And (REQF_REQUIRE Or REQF_AUTOLOAD Or REQF_PRELOAD)) <> 0) And
+     IsStdLibName(LibName) Then Begin
+    Resolved := 'stdlib:' + LibName;
+    Canon := UpCaseStr(Resolved);
+    Flags := Flags Or REQF_STD_LIB Or REQF_FOUND;
+    ResolveRequirePath := True;
+    Exit;
+  End;
+
+  If (Flags And REQF_REQUIRE_RELATIVE) <> 0 Then Begin
+    Candidate := PathJoin(BaseDir, LibName);
+    WithExt := AddRubyExt(Candidate);
+    If FileExistsLocal(WithExt) Then Candidate := WithExt;
+  End Else If (Flags And REQF_LOAD) <> 0 Then Begin
+    If IsAbsPath(LibName) Then Candidate := LibName
+    Else Candidate := PathJoin(BaseDir, LibName);
+    If (Not FileExistsLocal(Candidate)) And (FileExt(Candidate) = '') Then
+      If FileExistsLocal(Candidate + '.rb') Then Candidate := Candidate + '.rb';
+  End Else Begin
+    Candidate := '';
+    For I := 1 To Opt.LoadPathCount Do Begin
+      WithExt := AddRubyExt(PathJoin(Opt.LoadPath[I], LibName));
+      If FileExistsLocal(WithExt) Then Begin
+        Candidate := WithExt;
+        Break;
+      End;
+    End;
+    If Candidate = '' Then Begin
+      WithExt := AddRubyExt(PathJoin(BaseDir, LibName));
+      If FileExistsLocal(WithExt) Then Candidate := WithExt;
+    End;
+    If Candidate = '' Then Begin
+      WithExt := AddRubyExt(LibName);
+      If FileExistsLocal(WithExt) Then Candidate := WithExt;
+    End;
+    If Candidate = '' Then Candidate := AddRubyExt(PathJoin(BaseDir, LibName));
+  End;
+
+  Resolved := NormalizePath(Candidate);
+  Canon := CanonicalPath(Resolved);
+  If FileExistsLocal(Resolved) Then Flags := Flags Or REQF_FOUND
+  Else Flags := Flags Or REQF_MISSING;
+  ResolveRequirePath := (Flags And REQF_FOUND) <> 0;
+End;
+
+Function AddRequireInfo(TokKind, NodeRef, StringNode, ConstNode: Integer;
+                        LibName: String; ExtraFlags: Integer): Integer;
+Var
+  BaseDir, Resolved, Canon: String;
+  Flags: Integer;
+Begin
+  If RequireInfoCount >= MAX_REQUIRE_INFO Then
+    FatalError('table require/load pleine');
+  Inc(RequireInfoCount);
+  ResolveRequirePath(LibName, TokKind, ExtraFlags, BaseDir, Resolved, Canon, Flags);
+  If ((Flags And REQF_LOAD) = 0) And (FindRequireByCanonical(Canon) <> 0) Then
+    Flags := Flags Or REQF_DEDUP;
+  RequireInfoTable[RequireInfoCount].Kind := TokKind;
+  RequireInfoTable[RequireInfoCount].LibName := LibName;
+  RequireInfoTable[RequireInfoCount].ResolvedPath := Resolved;
+  RequireInfoTable[RequireInfoCount].CanonicalPath := Canon;
+  RequireInfoTable[RequireInfoCount].BaseDir := BaseDir;
+  RequireInfoTable[RequireInfoCount].NodeRef := NodeRef;
+  RequireInfoTable[RequireInfoCount].StringNode := StringNode;
+  RequireInfoTable[RequireInfoCount].ConstNode := ConstNode;
+  RequireInfoTable[RequireInfoCount].Flags := Flags;
+  AddRequireInfo := RequireInfoCount;
+End;
+
+Function RegisterAutoloadCall(N: Integer): Integer;
+Var
+  Target, Args, ConstNode, StringNode: Integer;
+  LibName: String;
+Begin
+  RegisterAutoloadCall := 0;
+  If (N = 0) Or (AstTable[N].Kind <> NK_CALL) Or
+     (AstTable[N].Text <> 'bare-call') Then Exit;
+  Target := AstTable[N].Left;
+  Args := AstTable[N].Right;
+  If (Target = 0) Or (AstTable[Target].Text <> 'autoload') Or
+     (Args = 0) Or (AstTable[Args].Kind <> NK_LIST) Then Exit;
+  ConstNode := AstTable[Args].FirstChild;
+  If ConstNode = 0 Then Exit;
+  StringNode := AstTable[ConstNode].NextSibling;
+  LibName := NodeStringValue(StringNode);
+  If LibName <> '' Then
+    RegisterAutoloadCall := AddRequireInfo(0, N, StringNode, ConstNode, LibName,
+                                           REQF_AUTOLOAD);
 End;
 
 Function IsKeyword(S: String): Integer;
@@ -1148,12 +1556,39 @@ Begin
   Else If S = 'gets' Then IsKeyword := KW_GETS
   Else If S = 'getc' Then IsKeyword := KW_GETC
   Else If S = 'printf' Then IsKeyword := KW_PRINTF
-  Else If S = 'sprintf' Then IsKeyword := KW_SPRINTF;
+  Else If S = 'sprintf' Then IsKeyword := KW_SPRINTF
+  Else If S = 'format' Then IsKeyword := KW_FORMAT
+  Else If S = 'readline' Then IsKeyword := KW_READLINE
+  Else If S = 'readlines' Then IsKeyword := KW_READLINES;
 End;
 
 Function IsPseudoKeyword(T: Integer): Boolean;
 Begin
-  IsPseudoKeyword := (T >= KW_ATTR_ACCESSOR) And (T <= KW_SPRINTF);
+  IsPseudoKeyword := (T >= KW_ATTR_ACCESSOR) And (T <= KW_READLINES);
+End;
+
+Function IsCoreMethodKeyword(T: Integer): Boolean;
+Begin
+  IsCoreMethodKeyword := (T = KW_CLASS) Or (T = KW_THEN) Or
+                         (T = KW_RAISE) Or (T = KW_REQUIRE) Or
+                         (T = KW_REQUIRE_RELATIVE) Or (T = KW_LOAD) Or
+                         (T = KW_PROC) Or (T = KW_LAMBDA) Or
+                         (T = KW_LOOP) Or (T = KW_NEXT);
+End;
+
+Function IsKernelBuiltinName(S: String): Boolean;
+Begin
+  IsKernelBuiltinName := (S = 'fail') Or (S = 'throw') Or (S = 'catch') Or
+                         (S = 'autoload') Or (S = 'rand') Or
+                         (S = 'srand') Or (S = 'sleep') Or
+                         (S = 'exit') Or (S = 'exit!') Or
+                         (S = 'abort') Or (S = 'at_exit') Or
+                         (S = 'eval') Or (S = 'binding') Or
+                         (S = 'caller') Or (S = 'method') Or
+                         (S = 'methods') Or
+                         (S = 'instance_variables') Or
+                         (S = 'send') Or (S = '__send__') Or
+                         (S = 'public_send') Or (S = 'respond_to?');
 End;
 
 Function IsKeywordLiteral(T: Integer): Boolean;
@@ -1752,6 +2187,19 @@ Begin
   AddPseudoConst := I;
 End;
 
+Function AddIOInfo(Name: String; Kind, SymRef, Flags: Integer): Integer;
+Begin
+  If IOInfoCount >= MAX_IO_INFO Then FatalError('table I/O pleine');
+  Inc(IOInfoCount);
+  IOInfoTable[IOInfoCount].Name := Name;
+  IOInfoTable[IOInfoCount].Kind := Kind;
+  IOInfoTable[IOInfoCount].SymRef := SymRef;
+  IOInfoTable[IOInfoCount].RuntimeName := ASM_PFX_RUNTIME + 'io_' +
+                                          AsmIdent(Name);
+  IOInfoTable[IOInfoCount].Flags := Flags;
+  AddIOInfo := IOInfoCount;
+End;
+
 Function ResolveLocal(Name: String): Integer;
 Var
   I: Integer;
@@ -1861,10 +2309,16 @@ End;
 
 Procedure InitSymbols;
 Var
-  I, BasicSym, ObjectSym, KernelSym, ExceptionSym, StandardErrorSym,
+  I, BasicSym, ObjectSym, KernelSym, ClassSym, ModuleClassSym, StringSym,
+  ArraySym, HashSym, RangeSym, RegexpSym, EnumeratorSym, EnumerableSym,
+  ComparableSym, IntegerSym,
+  FloatSym, RationalSym, ComplexSym, NumericSym, MathSym, TimeSym, RandomSym,
+  ObjectSpaceSym, GCSym, ProcessSym, ThreadSym, IOSym, FileSym, DirSym,
+  ExceptionSym, StandardErrorSym,
   RuntimeErrorSym, ArgumentErrorSym, TypeErrorSym, NameErrorSym,
   NoMethodErrorSym, ZeroDivisionErrorSym, IndexErrorSym, KeyErrorSym,
-  IOErrorSym, ScriptErrorSym, SignalExceptionSym, SystemExitSym: Integer;
+  IOErrorSym, ScriptErrorSym, SignalExceptionSym, SystemExitSym,
+  ArgvSym, EnvSym, StdInSym, StdOutSym, StdErrSym, PiSym, ESym: Integer;
   S: String;
 Begin
   FillChar(SymTable, SizeOf(SymTable), 0);
@@ -1873,8 +2327,12 @@ Begin
   FillChar(ScopeNextLocal, SizeOf(ScopeNextLocal), 0);
   FillChar(ScopeOwnerClass, SizeOf(ScopeOwnerClass), 0);
   FillChar(ClassTable, SizeOf(ClassTable), 0);
+  FillChar(IOInfoTable, SizeOf(IOInfoTable), 0);
+  FillChar(RequireInfoTable, SizeOf(RequireInfoTable), 0);
   SymCount := 0;
   ClassCount := 0;
+  IOInfoCount := 0;
+  RequireInfoCount := 0;
   ScopeLevel := 0;
   ScopeKind[0] := SC_TOPLEVEL;
   ScopeBase[0] := 1;
@@ -1885,9 +2343,59 @@ Begin
   BasicSym := AddSym('BasicObject', SK_CLASS, RT_CLASS, 0);
   ObjectSym := AddSym('Object', SK_CLASS, RT_CLASS, BasicSym);
   KernelSym := AddSym('Kernel', SK_MODULE, RT_MODULE, 0);
+  ModuleClassSym := AddSym('Module', SK_CLASS, RT_CLASS, ObjectSym);
+  ClassSym := AddSym('Class', SK_CLASS, RT_CLASS, ModuleClassSym);
+  StringSym := AddSym('String', SK_CLASS, RT_CLASS, ObjectSym);
+  ArraySym := AddSym('Array', SK_CLASS, RT_CLASS, ObjectSym);
+  HashSym := AddSym('Hash', SK_CLASS, RT_CLASS, ObjectSym);
+  RangeSym := AddSym('Range', SK_CLASS, RT_CLASS, ObjectSym);
+  RegexpSym := AddSym('Regexp', SK_CLASS, RT_CLASS, ObjectSym);
+  EnumeratorSym := AddSym('Enumerator', SK_CLASS, RT_CLASS, ObjectSym);
+  EnumerableSym := AddSym('Enumerable', SK_MODULE, RT_MODULE, 0);
+  ComparableSym := AddSym('Comparable', SK_MODULE, RT_MODULE, 0);
+  NumericSym := AddSym('Numeric', SK_CLASS, RT_CLASS, ObjectSym);
+  IntegerSym := AddSym('Integer', SK_CLASS, RT_CLASS, NumericSym);
+  FloatSym := AddSym('Float', SK_CLASS, RT_CLASS, NumericSym);
+  RationalSym := AddSym('Rational', SK_CLASS, RT_CLASS, NumericSym);
+  ComplexSym := AddSym('Complex', SK_CLASS, RT_CLASS, NumericSym);
+  MathSym := AddSym('Math', SK_MODULE, RT_MODULE, 0);
+  TimeSym := AddSym('Time', SK_CLASS, RT_CLASS, ObjectSym);
+  RandomSym := AddSym('Random', SK_CLASS, RT_CLASS, ObjectSym);
+  ObjectSpaceSym := AddSym('ObjectSpace', SK_MODULE, RT_MODULE, 0);
+  GCSym := AddSym('GC', SK_MODULE, RT_MODULE, 0);
+  ProcessSym := AddSym('Process', SK_MODULE, RT_MODULE, 0);
+  ThreadSym := AddSym('Thread', SK_CLASS, RT_CLASS, ObjectSym);
+  IOSym := AddSym('IO', SK_CLASS, RT_CLASS, ObjectSym);
+  FileSym := AddSym('File', SK_CLASS, RT_CLASS, IOSym);
+  DirSym := AddSym('Dir', SK_CLASS, RT_CLASS, ObjectSym);
   AddClassInfo('BasicObject', BasicSym, 0, False, 0);
   AddClassInfo('Object', ObjectSym, BasicSym, False, 0);
   AddClassInfo('Kernel', KernelSym, 0, False, 0);
+  AddClassInfo('Module', ModuleClassSym, ObjectSym, False, 0);
+  AddClassInfo('Class', ClassSym, ModuleClassSym, False, 0);
+  AddClassInfo('String', StringSym, ObjectSym, False, 0);
+  AddClassInfo('Array', ArraySym, ObjectSym, False, 0);
+  AddClassInfo('Hash', HashSym, ObjectSym, False, 0);
+  AddClassInfo('Range', RangeSym, ObjectSym, False, 0);
+  AddClassInfo('Regexp', RegexpSym, ObjectSym, False, 0);
+  AddClassInfo('Enumerator', EnumeratorSym, ObjectSym, False, 0);
+  AddClassInfo('Enumerable', EnumerableSym, 0, False, 0);
+  AddClassInfo('Comparable', ComparableSym, 0, False, 0);
+  AddClassInfo('Numeric', NumericSym, ObjectSym, False, 0);
+  AddClassInfo('Integer', IntegerSym, NumericSym, False, 0);
+  AddClassInfo('Float', FloatSym, NumericSym, False, 0);
+  AddClassInfo('Rational', RationalSym, NumericSym, False, 0);
+  AddClassInfo('Complex', ComplexSym, NumericSym, False, 0);
+  AddClassInfo('Math', MathSym, 0, False, 0);
+  AddClassInfo('Time', TimeSym, ObjectSym, False, 0);
+  AddClassInfo('Random', RandomSym, ObjectSym, False, 0);
+  AddClassInfo('ObjectSpace', ObjectSpaceSym, 0, False, 0);
+  AddClassInfo('GC', GCSym, 0, False, 0);
+  AddClassInfo('Process', ProcessSym, 0, False, 0);
+  AddClassInfo('Thread', ThreadSym, ObjectSym, False, 0);
+  AddClassInfo('IO', IOSym, ObjectSym, False, 0);
+  AddClassInfo('File', FileSym, IOSym, False, 0);
+  AddClassInfo('Dir', DirSym, ObjectSym, False, 0);
   ExceptionSym := AddSym('Exception', SK_CLASS, RT_CLASS, ObjectSym);
   StandardErrorSym := AddSym('StandardError', SK_CLASS, RT_CLASS, ExceptionSym);
   RuntimeErrorSym := AddSym('RuntimeError', SK_CLASS, RT_CLASS, StandardErrorSym);
@@ -1925,14 +2433,341 @@ Begin
   AddMethodSym('send', 'Kernel', VIS_PUBLIC, -1, False, False);
   AddMethodSym('__send__', 'Kernel', VIS_PUBLIC, -1, False, False);
   AddMethodSym('public_send', 'Kernel', VIS_PUBLIC, -1, False, False);
-  AddPseudoConst('ARGV', RT_ARRAY);
-  AddPseudoConst('ENV', RT_HASH);
-  AddPseudoConst('STDIN', RT_OBJECT);
-  AddPseudoConst('STDOUT', RT_OBJECT);
-  AddPseudoConst('STDERR', RT_OBJECT);
+  AddMethodSym('puts', 'Kernel', VIS_PRIVATE, -1, False, False);
+  AddMethodSym('print', 'Kernel', VIS_PRIVATE, -1, False, False);
+  AddMethodSym('p', 'Kernel', VIS_PRIVATE, -1, False, False);
+  AddMethodSym('pp', 'Kernel', VIS_PRIVATE, -1, False, False);
+  AddMethodSym('printf', 'Kernel', VIS_PRIVATE, -1, False, False);
+  AddMethodSym('sprintf', 'Kernel', VIS_PRIVATE, -1, False, False);
+  AddMethodSym('format', 'Kernel', VIS_PRIVATE, -1, False, False);
+  AddMethodSym('gets', 'Kernel', VIS_PRIVATE, -1, False, False);
+  AddMethodSym('getc', 'Kernel', VIS_PRIVATE, 0, False, False);
+  AddMethodSym('readline', 'Kernel', VIS_PRIVATE, -1, False, False);
+  AddMethodSym('readlines', 'Kernel', VIS_PRIVATE, -1, False, False);
+  AddMethodSym('raise', 'Kernel', VIS_PRIVATE, -1, False, False);
+  AddMethodSym('fail', 'Kernel', VIS_PRIVATE, -1, False, False);
+  AddMethodSym('throw', 'Kernel', VIS_PRIVATE, -1, False, False);
+  AddMethodSym('catch', 'Kernel', VIS_PRIVATE, -1, False, False);
+  AddMethodSym('loop', 'Kernel', VIS_PRIVATE, 0, False, False);
+  AddMethodSym('lambda', 'Kernel', VIS_PRIVATE, 0, False, False);
+  AddMethodSym('proc', 'Kernel', VIS_PRIVATE, 0, False, False);
+  AddMethodSym('require', 'Kernel', VIS_PRIVATE, 1, False, False);
+  AddMethodSym('require_relative', 'Kernel', VIS_PRIVATE, 1, False, False);
+  AddMethodSym('load', 'Kernel', VIS_PRIVATE, -1, False, False);
+  AddMethodSym('autoload', 'Kernel', VIS_PRIVATE, 2, False, False);
+  AddMethodSym('Integer', 'Kernel', VIS_PRIVATE, -1, False, False);
+  AddMethodSym('Float', 'Kernel', VIS_PRIVATE, -1, False, False);
+  AddMethodSym('Rational', 'Kernel', VIS_PRIVATE, -1, False, False);
+  AddMethodSym('Complex', 'Kernel', VIS_PRIVATE, -1, False, False);
+  AddMethodSym('String', 'Kernel', VIS_PRIVATE, -1, False, False);
+  AddMethodSym('Array', 'Kernel', VIS_PRIVATE, -1, False, False);
+  AddMethodSym('Hash', 'Kernel', VIS_PRIVATE, -1, False, False);
+  AddMethodSym('rand', 'Kernel', VIS_PRIVATE, -1, False, False);
+  AddMethodSym('srand', 'Kernel', VIS_PRIVATE, -1, False, False);
+  AddMethodSym('sleep', 'Kernel', VIS_PRIVATE, -1, False, False);
+  AddMethodSym('exit', 'Kernel', VIS_PRIVATE, -1, False, False);
+  AddMethodSym('exit!', 'Kernel', VIS_PRIVATE, -1, False, False);
+  AddMethodSym('abort', 'Kernel', VIS_PRIVATE, -1, False, False);
+  AddMethodSym('at_exit', 'Kernel', VIS_PRIVATE, 0, False, False);
+  AddMethodSym('eval', 'Kernel', VIS_PRIVATE, -1, False, False);
+  AddMethodSym('binding', 'Kernel', VIS_PRIVATE, 0, False, False);
+  AddMethodSym('caller', 'Kernel', VIS_PRIVATE, -1, False, False);
+  AddMethodSym('method', 'Kernel', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('methods', 'Kernel', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('instance_variables', 'Kernel', VIS_PUBLIC, 0, False, False);
+  CurrentClassRef := ObjectSym;
+  AddMethodSym('class', 'Object', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('kind_of?', 'Object', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('is_a?', 'Object', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('instance_of?', 'Object', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('frozen?', 'Object', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('freeze', 'Object', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('dup', 'Object', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('clone', 'Object', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('hash', 'Object', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('object_id', 'Object', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('equal?', 'Object', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('==', 'Object', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('!=', 'Object', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('!', 'Object', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('inspect', 'Object', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('to_s', 'Object', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('tap', 'Object', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('then', 'Object', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('yield_self', 'Object', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('itself', 'Object', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('instance_eval', 'Object', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('class_eval', 'Object', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('module_eval', 'Object', VIS_PUBLIC, -1, False, False);
+  CurrentClassRef := ModuleClassSym;
+  AddMethodSym('class_eval', 'Module', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('module_eval', 'Module', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('define_method', 'Module', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('method_defined?', 'Module', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('instance_methods', 'Module', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('constants', 'Module', VIS_PUBLIC, -1, False, False);
+  CurrentClassRef := ClassSym;
+  AddMethodSym('new', 'Class', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('allocate', 'Class', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('superclass', 'Class', VIS_PUBLIC, 0, False, False);
+  CurrentClassRef := EnumerableSym;
+  AddMethodSym('map', 'Enumerable', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('collect', 'Enumerable', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('select', 'Enumerable', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('filter', 'Enumerable', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('reject', 'Enumerable', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('find', 'Enumerable', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('detect', 'Enumerable', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('find_index', 'Enumerable', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('count', 'Enumerable', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('inject', 'Enumerable', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('reduce', 'Enumerable', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('sum', 'Enumerable', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('min', 'Enumerable', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('max', 'Enumerable', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('min_by', 'Enumerable', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('max_by', 'Enumerable', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('sort', 'Enumerable', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('sort_by', 'Enumerable', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('group_by', 'Enumerable', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('partition', 'Enumerable', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('chunk', 'Enumerable', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('slice', 'Enumerable', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('each_with_index', 'Enumerable', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('each_with_object', 'Enumerable', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('zip', 'Enumerable', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('take', 'Enumerable', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('take_while', 'Enumerable', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('drop', 'Enumerable', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('drop_while', 'Enumerable', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('all?', 'Enumerable', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('any?', 'Enumerable', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('none?', 'Enumerable', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('one?', 'Enumerable', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('include?', 'Enumerable', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('member?', 'Enumerable', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('to_a', 'Enumerable', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('entries', 'Enumerable', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('lazy', 'Enumerable', VIS_PUBLIC, 0, False, False);
+  CurrentClassRef := ComparableSym;
+  AddMethodSym('<', 'Comparable', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('<=', 'Comparable', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('>', 'Comparable', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('>=', 'Comparable', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('==', 'Comparable', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('between?', 'Comparable', VIS_PUBLIC, 2, False, False);
+  AddMethodSym('clamp', 'Comparable', VIS_PUBLIC, -1, False, False);
+  CurrentClassRef := NumericSym;
+  AddMethodSym('+', 'Numeric', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('-', 'Numeric', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('*', 'Numeric', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('/', 'Numeric', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('%', 'Numeric', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('**', 'Numeric', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('<=>', 'Numeric', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('abs', 'Numeric', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('zero?', 'Numeric', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('positive?', 'Numeric', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('negative?', 'Numeric', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('to_i', 'Numeric', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('to_f', 'Numeric', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('to_r', 'Numeric', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('to_c', 'Numeric', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('to_s', 'Numeric', VIS_PUBLIC, -1, False, False);
+  CurrentClassRef := IntegerSym;
+  AddMethodSym('&', 'Integer', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('|', 'Integer', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('^', 'Integer', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('~', 'Integer', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('<<', 'Integer', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('>>', 'Integer', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('div', 'Integer', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('modulo', 'Integer', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('divmod', 'Integer', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('times', 'Integer', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('upto', 'Integer', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('downto', 'Integer', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('step', 'Integer', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('even?', 'Integer', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('odd?', 'Integer', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('succ', 'Integer', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('next', 'Integer', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('pred', 'Integer', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('gcd', 'Integer', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('lcm', 'Integer', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('digits', 'Integer', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('bit_length', 'Integer', VIS_PUBLIC, 0, False, False);
+  CurrentClassRef := FloatSym;
+  AddMethodSym('floor', 'Float', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('ceil', 'Float', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('round', 'Float', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('truncate', 'Float', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('finite?', 'Float', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('infinite?', 'Float', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('nan?', 'Float', VIS_PUBLIC, 0, False, False);
+  CurrentClassRef := RationalSym;
+  AddMethodSym('new', 'Rational', VIS_PUBLIC, -1, False, True);
+  AddMethodSym('numerator', 'Rational', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('denominator', 'Rational', VIS_PUBLIC, 0, False, False);
+  CurrentClassRef := ComplexSym;
+  AddMethodSym('new', 'Complex', VIS_PUBLIC, -1, False, True);
+  AddMethodSym('real', 'Complex', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('imaginary', 'Complex', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('imag', 'Complex', VIS_PUBLIC, 0, False, False);
+  CurrentClassRef := StringSym;
+  AddMethodSym('match', 'String', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('scan', 'String', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('sub', 'String', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('gsub', 'String', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('split', 'String', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('<=>', 'String', VIS_PUBLIC, 1, False, False);
+  CurrentClassRef := ArraySym;
+  AddMethodSym('each', 'Array', VIS_PUBLIC, 0, False, False);
+  CurrentClassRef := HashSym;
+  AddMethodSym('each', 'Hash', VIS_PUBLIC, 0, False, False);
+  CurrentClassRef := RangeSym;
+  AddMethodSym('each', 'Range', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('to_a', 'Range', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('include?', 'Range', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('cover?', 'Range', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('size', 'Range', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('first', 'Range', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('last', 'Range', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('min', 'Range', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('max', 'Range', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('step', 'Range', VIS_PUBLIC, -1, False, False);
+  CurrentClassRef := EnumeratorSym;
+  AddMethodSym('each', 'Enumerator', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('new', 'Enumerator', VIS_PUBLIC, -1, False, True);
+  CurrentClassRef := RegexpSym;
+  AddMethodSym('match', 'Regexp', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('match?', 'Regexp', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('=~', 'Regexp', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('source', 'Regexp', VIS_PUBLIC, 0, False, False);
+  CurrentClassRef := MathSym;
+  PiSym := AddSym('Math::PI', SK_CONST, RT_FLOAT, MathSym);
+  ESym := AddSym('Math::E', SK_CONST, RT_FLOAT, MathSym);
+  SymTable[PiSym].Flags := SymTable[PiSym].Flags Or SF_CONST_ASSIGNED;
+  SymTable[ESym].Flags := SymTable[ESym].Flags Or SF_CONST_ASSIGNED;
+  AddMethodSym('sqrt', 'Math', VIS_PUBLIC, 1, False, True);
+  AddMethodSym('sin', 'Math', VIS_PUBLIC, 1, False, True);
+  AddMethodSym('cos', 'Math', VIS_PUBLIC, 1, False, True);
+  AddMethodSym('tan', 'Math', VIS_PUBLIC, 1, False, True);
+  AddMethodSym('log', 'Math', VIS_PUBLIC, -1, False, True);
+  AddMethodSym('exp', 'Math', VIS_PUBLIC, 1, False, True);
+  AddMethodSym('atan2', 'Math', VIS_PUBLIC, 2, False, True);
+  CurrentClassRef := TimeSym;
+  AddMethodSym('now', 'Time', VIS_PUBLIC, 0, False, True);
+  AddMethodSym('new', 'Time', VIS_PUBLIC, -1, False, True);
+  AddMethodSym('+', 'Time', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('-', 'Time', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('strftime', 'Time', VIS_PUBLIC, 1, False, False);
+  AddMethodSym('year', 'Time', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('month', 'Time', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('day', 'Time', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('hour', 'Time', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('min', 'Time', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('sec', 'Time', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('to_i', 'Time', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('to_f', 'Time', VIS_PUBLIC, 0, False, False);
+  CurrentClassRef := RandomSym;
+  AddMethodSym('new', 'Random', VIS_PUBLIC, -1, False, True);
+  AddMethodSym('rand', 'Random', VIS_PUBLIC, -1, False, True);
+  AddMethodSym('rand', 'Random', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('srand', 'Random', VIS_PUBLIC, -1, False, True);
+  CurrentClassRef := ObjectSpaceSym;
+  AddMethodSym('each_object', 'ObjectSpace', VIS_PUBLIC, -1, False, True);
+  AddMethodSym('count_objects', 'ObjectSpace', VIS_PUBLIC, -1, False, True);
+  AddMethodSym('garbage_collect', 'ObjectSpace', VIS_PUBLIC, 0, False, True);
+  CurrentClassRef := GCSym;
+  AddMethodSym('start', 'GC', VIS_PUBLIC, -1, False, True);
+  AddMethodSym('enable', 'GC', VIS_PUBLIC, 0, False, True);
+  AddMethodSym('disable', 'GC', VIS_PUBLIC, 0, False, True);
+  AddMethodSym('stat', 'GC', VIS_PUBLIC, 0, False, True);
+  CurrentClassRef := ProcessSym;
+  AddMethodSym('pid', 'Process', VIS_PUBLIC, 0, False, True);
+  AddMethodSym('ppid', 'Process', VIS_PUBLIC, 0, False, True);
+  AddMethodSym('exit', 'Process', VIS_PUBLIC, -1, False, True);
+  AddMethodSym('exit!', 'Process', VIS_PUBLIC, -1, False, True);
+  AddMethodSym('abort', 'Process', VIS_PUBLIC, -1, False, True);
+  AddMethodSym('clock_gettime', 'Process', VIS_PUBLIC, -1, False, True);
+  CurrentClassRef := ThreadSym;
+  AddMethodSym('current', 'Thread', VIS_PUBLIC, 0, False, True);
+  AddMethodSym('main', 'Thread', VIS_PUBLIC, 0, False, True);
+  AddMethodSym('new', 'Thread', VIS_PUBLIC, -1, False, True);
+  AddMethodSym('value', 'Thread', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('join', 'Thread', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('alive?', 'Thread', VIS_PUBLIC, 0, False, False);
+  CurrentClassRef := IOSym;
+  AddMethodSym('read', 'IO', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('write', 'IO', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('puts', 'IO', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('gets', 'IO', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('each_line', 'IO', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('close', 'IO', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('eof?', 'IO', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('pos', 'IO', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('seek', 'IO', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('rewind', 'IO', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('getc', 'IO', VIS_PUBLIC, 0, False, False);
+  AddMethodSym('readline', 'IO', VIS_PUBLIC, -1, False, False);
+  AddMethodSym('readlines', 'IO', VIS_PUBLIC, -1, False, False);
+  CurrentClassRef := FileSym;
+  AddMethodSym('open', 'File', VIS_PUBLIC, -1, False, True);
+  AddMethodSym('read', 'File', VIS_PUBLIC, -1, False, True);
+  AddMethodSym('write', 'File', VIS_PUBLIC, -1, False, True);
+  AddMethodSym('exist?', 'File', VIS_PUBLIC, 1, False, True);
+  AddMethodSym('directory?', 'File', VIS_PUBLIC, 1, False, True);
+  AddMethodSym('size', 'File', VIS_PUBLIC, 1, False, True);
+  AddMethodSym('delete', 'File', VIS_PUBLIC, -1, False, True);
+  CurrentClassRef := DirSym;
+  AddMethodSym('entries', 'Dir', VIS_PUBLIC, 1, False, True);
+  AddMethodSym('glob', 'Dir', VIS_PUBLIC, -1, False, True);
+  AddMethodSym('chdir', 'Dir', VIS_PUBLIC, -1, False, True);
+  AddMethodSym('pwd', 'Dir', VIS_PUBLIC, 0, False, True);
+  AddMethodSym('mkdir', 'Dir', VIS_PUBLIC, -1, False, True);
+  AddMixinToClass(StringSym, ComparableSym, KW_INCLUDE);
+  AddMixinToClass(NumericSym, ComparableSym, KW_INCLUDE);
+  AddMixinToClass(IntegerSym, ComparableSym, KW_INCLUDE);
+  AddMixinToClass(FloatSym, ComparableSym, KW_INCLUDE);
+  AddMixinToClass(RationalSym, ComparableSym, KW_INCLUDE);
+  AddMixinToClass(IntegerSym, EnumerableSym, KW_INCLUDE);
+  AddMixinToClass(ArraySym, EnumerableSym, KW_INCLUDE);
+  AddMixinToClass(HashSym, EnumerableSym, KW_INCLUDE);
+  AddMixinToClass(RangeSym, EnumerableSym, KW_INCLUDE);
+  AddMixinToClass(EnumeratorSym, EnumerableSym, KW_INCLUDE);
+  AddMixinToClass(IOSym, EnumerableSym, KW_INCLUDE);
+  ArgvSym := AddPseudoConst('ARGV', RT_ARRAY);
+  EnvSym := AddPseudoConst('ENV', RT_HASH);
+  StdInSym := AddPseudoConst('STDIN', RT_OBJECT);
+  StdOutSym := AddPseudoConst('STDOUT', RT_OBJECT);
+  StdErrSym := AddPseudoConst('STDERR', RT_OBJECT);
+  AddIOInfo('ARGV', 0, ArgvSym, IOF_ARGV);
+  AddIOInfo('ENV', 0, EnvSym, IOF_ENV);
+  AddIOInfo('STDIN', 0, StdInSym, IOF_STDIN Or IOF_READABLE);
+  AddIOInfo('STDOUT', 0, StdOutSym, IOF_STDOUT Or IOF_WRITABLE);
+  AddIOInfo('STDERR', 0, StdErrSym, IOF_STDERR Or IOF_WRITABLE);
+  AddIOInfo('File', 0, FileSym, IOF_FILE_CLASS Or IOF_READABLE Or
+            IOF_WRITABLE);
+  AddIOInfo('Dir', 0, DirSym, IOF_DIR_CLASS);
+  AddIOInfo('mode:r', 1, 0, IOF_MODE Or IOF_READABLE);
+  AddIOInfo('mode:w', 1, 0, IOF_MODE Or IOF_WRITABLE);
+  AddIOInfo('mode:a', 1, 0, IOF_MODE Or IOF_WRITABLE);
+  AddIOInfo('mode:r+', 1, 0, IOF_MODE Or IOF_READABLE Or IOF_WRITABLE);
+  AddIOInfo('mode:w+', 1, 0, IOF_MODE Or IOF_READABLE Or IOF_WRITABLE);
+  AddIOInfo('mode:a+', 1, 0, IOF_MODE Or IOF_READABLE Or IOF_WRITABLE);
+  AddIOInfo('mode:rb', 1, 0, IOF_MODE Or IOF_READABLE);
+  AddIOInfo('mode:wb', 1, 0, IOF_MODE Or IOF_WRITABLE);
   ResolveGlobal('$0');
   ResolveGlobal('$~');
   ResolveGlobal('$!');
+  ResolveGlobal('$LOAD_PATH');
+  ResolveGlobal('$:');
+  ResolveGlobal('$LOADED_FEATURES');
+  ResolveGlobal('$"');
+  ResolveGlobal('$`');
+  ResolveGlobal('$''');
+  ResolveGlobal('$&');
   For I := 1 To 9 Do Begin
     Str(I, S);
     ResolveGlobal('$' + S);
@@ -1996,6 +2831,10 @@ Begin
 End;
 
 Function StringFlagsName(F: Integer): String; Forward;
+Function RegexFlagsName(F: Integer): String; Forward;
+Function RangeFlagsName(F: Integer): String; Forward;
+Function NumFlagsName(F: Integer): String; Forward;
+Function IOFlagsName(F: Integer): String; Forward;
 
 Function NodeKindName(K: Integer): String; Forward;
 Function BlockFlagsName(F: Integer): String; Forward;
@@ -2025,6 +2864,29 @@ Begin
     WriteLn(I:5, '  ', SymbolLitTable[I].AsmName,
             ' value=', SymbolLitTable[I].Value:0,
             ' name=:', SymbolLitTable[I].Name);
+  WriteLn('Regexps: ', RegexLitCount);
+  For I := 1 To RegexLitCount Do
+    WriteLn(I:5, '  ', RegexLitTable[I].AsmName,
+            ' captures=', RegexLitTable[I].CaptureCount:0,
+            ' flags=', RegexLitTable[I].Flags:0,
+            RegexFlagsName(RegexLitTable[I].Flags),
+            ' opts="', RegexLitTable[I].Options, '"',
+            ' pattern="', RegexLitTable[I].Pattern, '"');
+  WriteLn('Ranges: ', RangeLitCount);
+  For I := 1 To RangeLitCount Do
+    WriteLn(I:5, '  ', RangeLitTable[I].AsmName,
+            ' begin=', RangeLitTable[I].BeginNode:0,
+            ' end=', RangeLitTable[I].EndNode:0,
+            ' flags=', RangeLitTable[I].Flags:0,
+            RangeFlagsName(RangeLitTable[I].Flags));
+  WriteLn('Numeriques: ', NumLitCount);
+  For I := 1 To NumLitCount Do
+    WriteLn(I:5, '  ', NumLitTable[I].AsmName,
+            ' type=', RuntimeTypeName(NumLitTable[I].RType),
+            ' base=', NumLitTable[I].Base:0,
+            ' flags=', NumLitTable[I].Flags:0,
+            NumFlagsName(NumLitTable[I].Flags),
+            ' text="', NumLitTable[I].Text, '"');
   WriteLn('Arrays litteraux: ', ArrayLitCount);
   For I := 1 To ArrayLitCount Do
     WriteLn(I:5, '  ', ArrayLitTable[I].AsmName,
@@ -2039,6 +2901,39 @@ Begin
             ' cap=', HashLitTable[I].Cap:0,
             ' first=', HashLitTable[I].FirstPair:0,
             ' flags=', HashLitTable[I].Flags:0);
+End;
+
+Procedure DumpIOInfos;
+Var
+  I: Integer;
+Begin
+  WriteLn('I/O: ', IOInfoCount);
+  For I := 1 To IOInfoCount Do
+    WriteLn(I:5, '  ', IOInfoTable[I].Name,
+            ' kind=', IOInfoTable[I].Kind:0,
+            ' sym=', IOInfoTable[I].SymRef:0,
+            ' runtime=', IOInfoTable[I].RuntimeName,
+            ' flags=', IOInfoTable[I].Flags:0,
+            IOFlagsName(IOInfoTable[I].Flags));
+End;
+
+Procedure DumpRequireInfos;
+Var
+  I: Integer;
+Begin
+  WriteLn('Require/load: ', RequireInfoCount);
+  For I := 1 To RequireInfoCount Do
+    WriteLn(I:5, '  lib=', RequireInfoTable[I].LibName,
+            ' kind=', RequireKindName(RequireInfoTable[I].Kind,
+                                      RequireInfoTable[I].Flags),
+            ' node=', RequireInfoTable[I].NodeRef:0,
+            ' str=', RequireInfoTable[I].StringNode:0,
+            ' const=', RequireInfoTable[I].ConstNode:0,
+            ' base=', RequireInfoTable[I].BaseDir,
+            ' resolved=', RequireInfoTable[I].ResolvedPath,
+            ' canon=', RequireInfoTable[I].CanonicalPath,
+            ' flags=', RequireInfoTable[I].Flags:0,
+            RequireFlagsName(RequireInfoTable[I].Flags));
 End;
 
 Procedure DumpBlocks;
@@ -2135,6 +3030,132 @@ Begin
   StringFlagsName := S;
 End;
 
+Function RegexFlagsName(F: Integer): String;
+Var
+  S: String;
+Begin
+  S := '';
+  If (F And REGF_IGNORECASE) <> 0 Then S := S + ' i';
+  If (F And REGF_MULTILINE) <> 0 Then S := S + ' m';
+  If (F And REGF_EXTENDED) <> 0 Then S := S + ' x';
+  If (F And REGF_ONCE) <> 0 Then S := S + ' o';
+  If (F And REGF_UTF8) <> 0 Then S := S + ' u';
+  If (F And REGF_PERCENT) <> 0 Then S := S + ' percent';
+  RegexFlagsName := S;
+End;
+
+Function RangeFlagsName(F: Integer): String;
+Var
+  S: String;
+Begin
+  S := '';
+  If (F And RANGEF_EXCLUSIVE) <> 0 Then S := S + ' exclusive'
+  Else S := S + ' inclusive';
+  If (F And RANGEF_BEGINLESS) <> 0 Then S := S + ' beginless';
+  If (F And RANGEF_ENDLESS) <> 0 Then S := S + ' endless';
+  RangeFlagsName := S;
+End;
+
+Function IOFlagsName(F: Integer): String;
+Var
+  S: String;
+Begin
+  S := '';
+  If (F And IOF_STDIN) <> 0 Then S := S + ' stdin';
+  If (F And IOF_STDOUT) <> 0 Then S := S + ' stdout';
+  If (F And IOF_STDERR) <> 0 Then S := S + ' stderr';
+  If (F And IOF_ARGV) <> 0 Then S := S + ' argv';
+  If (F And IOF_ENV) <> 0 Then S := S + ' env';
+  If (F And IOF_FILE_CLASS) <> 0 Then S := S + ' file';
+  If (F And IOF_DIR_CLASS) <> 0 Then S := S + ' dir';
+  If (F And IOF_READABLE) <> 0 Then S := S + ' readable';
+  If (F And IOF_WRITABLE) <> 0 Then S := S + ' writable';
+  If (F And IOF_MODE) <> 0 Then S := S + ' mode';
+  IOFlagsName := S;
+End;
+
+Function NumFlagsName(F: Integer): String;
+Var
+  S: String;
+Begin
+  S := '';
+  If (F And NUMF_FIXNUM) <> 0 Then S := S + ' fixnum';
+  If (F And NUMF_BIGNUM) <> 0 Then S := S + ' bignum';
+  If (F And NUMF_FLOAT) <> 0 Then S := S + ' float';
+  If (F And NUMF_RATIONAL) <> 0 Then S := S + ' rational';
+  If (F And NUMF_COMPLEX) <> 0 Then S := S + ' complex';
+  If (F And NUMF_BASE2) <> 0 Then S := S + ' base2';
+  If (F And NUMF_BASE8) <> 0 Then S := S + ' base8';
+  If (F And NUMF_BASE10) <> 0 Then S := S + ' base10';
+  If (F And NUMF_BASE16) <> 0 Then S := S + ' base16';
+  NumFlagsName := S;
+End;
+
+Function NumericBaseFromText(S: String): Integer;
+Begin
+  NumericBaseFromText := 10;
+  If (Length(S) >= 2) And (S[1] = '0') Then Begin
+    If UpCase(S[2]) = 'X' Then NumericBaseFromText := 16
+    Else If UpCase(S[2]) = 'B' Then NumericBaseFromText := 2
+    Else If UpCase(S[2]) = 'O' Then NumericBaseFromText := 8
+    Else If (S[2] >= '0') And (S[2] <= '7') Then NumericBaseFromText := 8;
+  End;
+End;
+
+Function NumericDigitCount(S: String): Integer;
+Var
+  I, C: Integer;
+Begin
+  C := 0;
+  For I := 1 To Length(S) Do
+    If ((S[I] >= '0') And (S[I] <= '9')) Or
+       ((S[I] >= 'A') And (S[I] <= 'F')) Or
+       ((S[I] >= 'a') And (S[I] <= 'f')) Then Inc(C);
+  NumericDigitCount := C;
+End;
+
+Function AddNumLit(Text: String; TokKind: Integer): Integer;
+Var
+  I, F, B, R: Integer;
+  Last: Char;
+Begin
+  For I := 1 To NumLitCount Do
+    If NumLitTable[I].Text = Text Then Begin
+      AddNumLit := I;
+      Exit;
+    End;
+  If NumLitCount >= MAX_NUM_LIT Then FatalError('table numerique pleine');
+  Inc(NumLitCount);
+  B := NumericBaseFromText(Text);
+  F := 0;
+  If B = 2 Then F := F Or NUMF_BASE2
+  Else If B = 8 Then F := F Or NUMF_BASE8
+  Else If B = 16 Then F := F Or NUMF_BASE16
+  Else F := F Or NUMF_BASE10;
+  Last := #0;
+  If Length(Text) > 0 Then Last := Text[Length(Text)];
+  If Last = 'r' Then F := F Or NUMF_RATIONAL;
+  If Last = 'i' Then F := F Or NUMF_COMPLEX;
+  If TokKind = TOK_FLOAT Then F := F Or NUMF_FLOAT;
+  If (F And NUMF_FLOAT) <> 0 Then R := RT_FLOAT
+  Else If (F And NUMF_RATIONAL) <> 0 Then R := RT_OBJECT
+  Else If (F And NUMF_COMPLEX) <> 0 Then R := RT_OBJECT
+  Else R := RT_INTEGER;
+  If R = RT_INTEGER Then Begin
+    If (B = 10) And (NumericDigitCount(Text) > 9) Then
+      F := F Or NUMF_BIGNUM
+    Else
+      F := F Or NUMF_FIXNUM;
+  End;
+  NumLitTable[NumLitCount].Text := Text;
+  NumLitTable[NumLitCount].AsmName := ASM_PFX_RUNTIME + 'num_' +
+                                      ItoS(NumLitCount);
+  NumLitTable[NumLitCount].RType := R;
+  NumLitTable[NumLitCount].Flags := F;
+  NumLitTable[NumLitCount].Base := B;
+  AddNumLit := NumLitCount;
+End;
+
 Function AddStringLit(Text: String; TokKind: Integer): Integer;
 Var
   I, F, Segs: Integer;
@@ -2192,6 +3213,150 @@ Begin
   SymbolLitTable[SymbolLitCount].AsmName := ASM_PFX_SYMBOL + ItoS(SymbolLitCount);
   SymbolLitTable[SymbolLitCount].Value := MakeSymbolValue(SymbolLitCount);
   AddSymbolLit := SymbolLitCount;
+End;
+
+Function RegexFlagsFromOptions(Options: String; IsPercent: Boolean): Integer;
+Var
+  I, F: Integer;
+  C: Char;
+Begin
+  F := 0;
+  For I := 1 To Length(Options) Do Begin
+    C := Options[I];
+    If C = 'i' Then F := F Or REGF_IGNORECASE
+    Else If C = 'm' Then F := F Or REGF_MULTILINE
+    Else If C = 'x' Then F := F Or REGF_EXTENDED
+    Else If C = 'o' Then F := F Or REGF_ONCE
+    Else If C = 'u' Then F := F Or REGF_UTF8;
+  End;
+  If IsPercent Then F := F Or REGF_PERCENT;
+  RegexFlagsFromOptions := F;
+End;
+
+Function CountRegexCaptures(Pattern: String): Integer;
+Var
+  I, C: Integer;
+Begin
+  C := 0;
+  I := 1;
+  While I <= Length(Pattern) Do Begin
+    If Pattern[I] = '\' Then Inc(I)
+    Else If Pattern[I] = '(' Then Begin
+      If (I + 2 <= Length(Pattern)) And (Pattern[I + 1] = '?') And
+         (Pattern[I + 2] = '<') Then
+        Inc(C)
+      Else If (I < Length(Pattern)) And (Pattern[I + 1] = '?') Then Begin
+      End Else
+        Inc(C);
+    End;
+    Inc(I);
+  End;
+  CountRegexCaptures := C;
+End;
+
+Function RegexMatchingDelim(C: Char): Char;
+Begin
+  Case C Of
+    '(': RegexMatchingDelim := ')';
+    '[': RegexMatchingDelim := ']';
+    '{': RegexMatchingDelim := '}';
+    '<': RegexMatchingDelim := '>';
+  Else
+    RegexMatchingDelim := C;
+  End;
+End;
+
+Function IsRegexOptionChar(C: Char): Boolean;
+Begin
+  IsRegexOptionChar := ((C >= 'A') And (C <= 'Z')) Or
+                       ((C >= 'a') And (C <= 'z'));
+End;
+
+Procedure SplitRegexToken(TokenText: String; Var Pattern, Options: String;
+                          Var IsPercent: Boolean);
+Var
+  I, J, Depth: Integer;
+  OpenD, CloseD, C: Char;
+Begin
+  Pattern := TokenText;
+  Options := '';
+  IsPercent := False;
+  If (Length(TokenText) >= 3) And (TokenText[1] = '%') And
+     ((TokenText[2] = 'r') Or (TokenText[2] = 'R')) Then Begin
+    IsPercent := True;
+    OpenD := TokenText[3];
+    CloseD := RegexMatchingDelim(OpenD);
+    I := 4;
+    J := I;
+    Depth := 1;
+    While (J <= Length(TokenText)) And (Depth > 0) Do Begin
+      C := TokenText[J];
+      If C = '\' Then Inc(J)
+      Else If C = OpenD Then Inc(Depth)
+      Else If C = CloseD Then Dec(Depth);
+      Inc(J);
+    End;
+    Pattern := Copy(TokenText, I, J - I - 1);
+    Options := Copy(TokenText, J, Length(TokenText) - J + 1);
+  End Else If (Length(TokenText) >= 2) And (TokenText[1] = '/') Then Begin
+    I := Length(TokenText);
+    While (I >= 1) And IsRegexOptionChar(TokenText[I]) Do Dec(I);
+    If (I >= 2) And (TokenText[I] = '/') Then Begin
+      Pattern := Copy(TokenText, 2, I - 2);
+      Options := Copy(TokenText, I + 1, Length(TokenText) - I);
+    End;
+  End Else Begin
+    I := Length(TokenText);
+    While (I >= 1) And IsRegexOptionChar(TokenText[I]) Do Dec(I);
+    Pattern := Copy(TokenText, 1, I);
+    Options := Copy(TokenText, I + 1, Length(TokenText) - I);
+  End;
+End;
+
+Function AddRegexLit(TokenText: String): Integer;
+Var
+  I, F, Caps: Integer;
+  Pattern, Options: String;
+  IsPercent: Boolean;
+Begin
+  SplitRegexToken(TokenText, Pattern, Options, IsPercent);
+  F := RegexFlagsFromOptions(Options, IsPercent);
+  Caps := CountRegexCaptures(Pattern);
+  For I := 1 To RegexLitCount Do
+    If (RegexLitTable[I].Pattern = Pattern) And
+       (RegexLitTable[I].Options = Options) Then Begin
+      AddRegexLit := I;
+      Exit;
+    End;
+  If RegexLitCount >= MAX_REGEX_LIT Then FatalError('table des regex pleine');
+  Inc(RegexLitCount);
+  RegexLitTable[RegexLitCount].Pattern := Pattern;
+  RegexLitTable[RegexLitCount].Options := Options;
+  RegexLitTable[RegexLitCount].AsmName := ASM_PFX_REGEX + ItoS(RegexLitCount);
+  RegexLitTable[RegexLitCount].Flags := F;
+  RegexLitTable[RegexLitCount].CaptureCount := Caps;
+  AddRegexLit := RegexLitCount;
+End;
+
+Function AddRangeLit(BeginNode, EndNode, Flags: Integer): Integer;
+Var
+  I: Integer;
+Begin
+  For I := 1 To RangeLitCount Do
+    If (RangeLitTable[I].BeginNode = BeginNode) And
+       (RangeLitTable[I].EndNode = EndNode) And
+       (RangeLitTable[I].Flags = Flags) Then Begin
+      AddRangeLit := I;
+      Exit;
+    End;
+  If RangeLitCount >= MAX_RANGE_LIT Then FatalError('table des ranges pleine');
+  Inc(RangeLitCount);
+  RangeLitTable[RangeLitCount].AsmName := ASM_PFX_RUNTIME + 'range_' +
+                                         ItoS(RangeLitCount);
+  RangeLitTable[RangeLitCount].BeginNode := BeginNode;
+  RangeLitTable[RangeLitCount].EndNode := EndNode;
+  RangeLitTable[RangeLitCount].Flags := Flags;
+  AddRangeLit := RangeLitCount;
 End;
 
 Function CountNodeChildren(FirstNode: Integer): Integer;
@@ -2628,7 +3793,9 @@ Begin
     AppendTok(LexNextChar);
     Exit;
   End;
-  If (LexPeekChar = '~') Or (LexPeekChar = '!') Then Begin
+  If (LexPeekChar = '~') Or (LexPeekChar = '!') Or (LexPeekChar = '`') Or
+     (LexPeekChar = '&') Or (LexPeekChar = ':') Or (LexPeekChar = '"') Or
+     (Ord(LexPeekChar) = 39) Then Begin
     AppendTok(LexNextChar);
     Exit;
   End;
@@ -2769,18 +3936,26 @@ End;
 Procedure ReadRegex;
 Var
   C: Char;
+  InClass: Boolean;
 Begin
   CurTokType := TOK_REGEX;
-  LexNextChar;
+  AppendTok(LexNextChar);
+  InClass := False;
   While True Do Begin
     C := LexNextChar;
     If C = #0 Then FatalError('regex non terminee');
-    If C = '/' Then Break;
+    If (C = '/') And Not InClass Then Begin
+      AppendTok(C);
+      Break;
+    End;
     If C = '\' Then Begin
       AppendTok(C);
       C := LexNextChar;
       If C = #0 Then FatalError('regex non terminee');
-    End;
+    End Else If C = '[' Then
+      InClass := True
+    Else If C = ']' Then
+      InClass := False;
     AppendTok(C);
   End;
   While IsAlpha(LexPeekChar) Do AppendTok(LexNextChar);
@@ -2832,6 +4007,8 @@ Begin
     End;
     AppendTok(C);
   End;
+  While IsAlpha(LexPeekChar) Do AppendTok(LexNextChar);
+  If (Kind = 'r') Or (Kind = 'R') Then CurTokType := TOK_REGEX;
 End;
 
 Function TryReadHeredoc: Boolean;
@@ -3223,6 +4400,9 @@ Begin
     KW_GETC: TokenName := 'KW_GETC';
     KW_PRINTF: TokenName := 'KW_PRINTF';
     KW_SPRINTF: TokenName := 'KW_SPRINTF';
+    KW_FORMAT: TokenName := 'KW_FORMAT';
+    KW_READLINE: TokenName := 'KW_READLINE';
+    KW_READLINES: TokenName := 'KW_READLINES';
   Else
     If (T > 0) And (T < 128) Then TokenName := '''' + Chr(T) + ''''
     Else TokenName := 'TOK_' + UpCaseStr(ItoS(T));
@@ -3298,6 +4478,7 @@ Begin
     NK_BLOCK: NodeKindName := 'block';
     NK_PROC: NodeKindName := 'proc';
     NK_LAMBDA: NodeKindName := 'lambda';
+    NK_REGEX: NodeKindName := 'regex';
   Else
     NodeKindName := 'none';
   End;
@@ -3308,6 +4489,9 @@ Begin
   FillChar(AstTable, SizeOf(AstTable), 0);
   FillChar(StringTable, SizeOf(StringTable), 0);
   FillChar(SymbolLitTable, SizeOf(SymbolLitTable), 0);
+  FillChar(RegexLitTable, SizeOf(RegexLitTable), 0);
+  FillChar(RangeLitTable, SizeOf(RangeLitTable), 0);
+  FillChar(NumLitTable, SizeOf(NumLitTable), 0);
   FillChar(ArrayLitTable, SizeOf(ArrayLitTable), 0);
   FillChar(HashLitTable, SizeOf(HashLitTable), 0);
   FillChar(BlockTable, SizeOf(BlockTable), 0);
@@ -3316,6 +4500,9 @@ Begin
   AstCount := 0;
   StringCount := 0;
   SymbolLitCount := 0;
+  RegexLitCount := 0;
+  RangeLitCount := 0;
+  NumLitCount := 0;
   ArrayLitCount := 0;
   HashLitCount := 0;
   BlockCount := 0;
@@ -3475,11 +4662,21 @@ Begin
         NextTok;
         ParsePrimary := N;
       End;
-    TOK_INTEGER, TOK_FLOAT, TOK_REGEX,
+    TOK_REGEX:
+      Begin
+        N := NewASTNode(NK_REGEX, CurTokType, CurTokStr, 0, 0, 0);
+        AstTable[N].SymRef := AddRegexLit(CurTokStr);
+        NextTok;
+        ParsePrimary := N;
+      End;
+    TOK_INTEGER, TOK_FLOAT,
     KW_NIL, KW_FALSE, KW_TRUE:
       Begin
         N := NewASTNode(NK_LITERAL, CurTokType, CurTokStr, 0, 0, 0);
-        If CurTokType = TOK_INTEGER Then AstTable[N].Text := CurTokStr;
+        If (CurTokType = TOK_INTEGER) Or (CurTokType = TOK_FLOAT) Then Begin
+          AstTable[N].Text := CurTokStr;
+          AstTable[N].SymRef := AddNumLit(CurTokStr, CurTokType);
+        End;
         NextTok;
         ParsePrimary := N;
       End;
@@ -3502,7 +4699,11 @@ Begin
         If CurTokType = TOK_IVAR Then K := SK_IVAR
         Else If CurTokType = TOK_CVAR Then K := SK_CVAR
         Else If CurTokType = TOK_GVAR Then K := SK_GVAR;
-        AstTable[N].SymRef := ResolveVarByToken(CurTokType, S);
+        If (CurTokType = TOK_IDENT) And IsKernelBuiltinName(S) Then
+          AstTable[N].SymRef := AddSym(S, SK_METHOD, RT_UNKNOWN,
+                                       CurrentClassRef)
+        Else
+          AstTable[N].SymRef := ResolveVarByToken(CurTokType, S);
         NextTok;
         ParsePrimary := N;
       End;
@@ -3707,7 +4908,7 @@ Begin
       If CurTokType = TOK_SAFE_NAV Then M := '&.' Else M := '.';
       NextTok;
       If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_CONST) Or
-         IsPseudoKeyword(CurTokType) Then Begin
+         IsPseudoKeyword(CurTokType) Or IsCoreMethodKeyword(CurTokType) Then Begin
         Name := NewASTNode(NK_LITERAL, CurTokType, CurTokStr, 0, 0, 0);
         NextTok;
         If CurTokType = Ord('(') Then Args := ParseArgList
@@ -3743,9 +4944,11 @@ Begin
       End;
       AddChild(N, Blk);
     End Else If ((AstTable[N].Kind = NK_VAR) Or (AstTable[N].Kind = NK_CONST)) And
-                IsCallArgStart(CurTokType) Then Begin
+                IsCallArgStart(CurTokType) And
+                (CurTokType <> Ord('*')) And (CurTokType <> TOK_POW) Then Begin
       Args := ParseBareArgList;
       N := NewASTNode(NK_CALL, 0, 'bare-call', N, Args, 0);
+      AstTable[N].SymRef := RegisterAutoloadCall(N);
     End Else
       Break;
   End;
@@ -3880,6 +5083,8 @@ Begin
     T := CurTokType; S := CurTokStr; NextTok;
     R := ParseComparison;
     L := NewASTNode(NK_BINARY, T, S, L, R, 0);
+    If (T = TOK_MATCH) Or (T = TOK_NMATCH) Then
+      AstTable[L].SymRef := ResolveGlobal('$~');
   End;
   ParseEquality := L;
 End;
@@ -3920,14 +5125,28 @@ End;
 
 Function ParseRange: Integer;
 Var
-  L, R, T: Integer;
+  L, R, T, F: Integer;
   S: String;
 Begin
+  If (CurTokType = TOK_DOTDOT) Or (CurTokType = TOK_DOTDOTDOT) Then Begin
+    T := CurTokType; S := CurTokStr; NextTok;
+    F := RANGEF_BEGINLESS;
+    If T = TOK_DOTDOTDOT Then F := F Or RANGEF_EXCLUSIVE;
+    If Not IsExprEnd(CurTokType) Then R := ParseLogicalOr Else R := 0;
+    L := NewASTNode(NK_RANGE, T, S, 0, R, 0);
+    AstTable[L].SymRef := AddRangeLit(0, R, F);
+    ParseRange := L;
+    Exit;
+  End;
   L := ParseLogicalOr;
   If (CurTokType = TOK_DOTDOT) Or (CurTokType = TOK_DOTDOTDOT) Then Begin
     T := CurTokType; S := CurTokStr; NextTok;
+    F := 0;
+    If T = TOK_DOTDOTDOT Then F := F Or RANGEF_EXCLUSIVE;
     If Not IsExprEnd(CurTokType) Then R := ParseLogicalOr Else R := 0;
+    If R = 0 Then F := F Or RANGEF_ENDLESS;
     L := NewASTNode(NK_RANGE, T, S, L, R, 0);
+    AstTable[L].SymRef := AddRangeLit(AstTable[L].Left, R, F);
   End;
   ParseRange := L;
 End;
@@ -4343,12 +5562,17 @@ End;
 
 Function ParseRequireStatement(TokKind: Integer): Integer;
 Var
-  Name: String;
+  Name, LibName: String;
+  Arg, N: Integer;
 Begin
   Name := CurTokStr;
   NextTok;
-  ParseRequireStatement := NewASTNode(NK_REQUIRE, TokKind, Name,
-                                      ParseOptionalExpr, 0, 0);
+  Arg := ParseOptionalExpr;
+  N := NewASTNode(NK_REQUIRE, TokKind, Name, Arg, 0, 0);
+  LibName := NodeStringValue(Arg);
+  If LibName <> '' Then
+    AstTable[N].SymRef := AddRequireInfo(TokKind, N, Arg, 0, LibName, 0);
+  ParseRequireStatement := N;
 End;
 
 Function ParseVisibilityStatement(V: Integer): Integer;
@@ -4398,8 +5622,18 @@ End;
 Function IsIteratorMethodName(S: String): Boolean;
 Begin
   IsIteratorMethodName := (S = 'times') Or (S = 'each') Or (S = 'map') Or
-                          (S = 'select') Or (S = 'reject') Or
-                          (S = 'inject') Or (S = 'reduce') Or
+                          (S = 'collect') Or (S = 'select') Or
+                          (S = 'filter') Or (S = 'reject') Or
+                          (S = 'find') Or (S = 'detect') Or
+                          (S = 'find_index') Or (S = 'inject') Or
+                          (S = 'reduce') Or (S = 'min_by') Or
+                          (S = 'max_by') Or (S = 'sort_by') Or
+                          (S = 'group_by') Or (S = 'partition') Or
+                          (S = 'chunk') Or (S = 'each_with_index') Or
+                          (S = 'each_with_object') Or
+                          (S = 'take_while') Or (S = 'drop_while') Or
+                          (S = 'all?') Or (S = 'any?') Or
+                          (S = 'none?') Or (S = 'one?') Or
                           (S = 'upto') Or (S = 'downto') Or (S = 'step');
 End;
 
@@ -5022,10 +6256,22 @@ Begin
           ' tok=', TokenName(AstTable[N].Tok),
           ' text="', AstTable[N].Text, '"');
   If AstTable[N].SymRef <> 0 Then Begin
-    If AstTable[N].Kind = NK_STRING Then
+    If (AstTable[N].Kind = NK_LITERAL) And
+       ((AstTable[N].Tok = TOK_INTEGER) Or
+        (AstTable[N].Tok = TOK_FLOAT)) Then
+      WriteLn(Pad, '  num=', AstTable[N].SymRef:0)
+    Else If AstTable[N].Kind = NK_STRING Then
       WriteLn(Pad, '  str=', AstTable[N].SymRef:0)
     Else If AstTable[N].Kind = NK_SYMBOL Then
       WriteLn(Pad, '  symbol=', AstTable[N].SymRef:0)
+    Else If AstTable[N].Kind = NK_REGEX Then
+      WriteLn(Pad, '  regex=', AstTable[N].SymRef:0)
+    Else If AstTable[N].Kind = NK_RANGE Then
+      WriteLn(Pad, '  range=', AstTable[N].SymRef:0)
+    Else If (AstTable[N].Kind = NK_BINARY) And
+            ((AstTable[N].Tok = TOK_MATCH) Or
+             (AstTable[N].Tok = TOK_NMATCH)) Then
+      WriteLn(Pad, '  match-data=', AstTable[N].SymRef:0)
     Else If AstTable[N].Kind = NK_ARRAY Then
       WriteLn(Pad, '  array=', AstTable[N].SymRef:0)
     Else If AstTable[N].Kind = NK_HASH Then
@@ -5094,6 +6340,1036 @@ Begin
   LexClose;
   If ParseErrors <> 0 Then
     WriteLn('Erreurs parse: ', ParseErrors);
+End;
+
+Var
+  AsmOut: Text;
+  AsmLabelSerial: Integer;
+
+Function AsmOutputFileName: String;
+Begin
+  AsmOutputFileName := ChangeExt(Opt.OutFile, '.asm');
+End;
+
+Function SymDataAsmName(SymRef: Integer): String;
+Begin
+  If (SymRef <= 0) Or (SymRef > SymCount) Then Begin
+    SymDataAsmName := ASM_PFX_RUNTIME + 'unknown';
+    Exit;
+  End;
+  If SymTable[SymRef].AsmName <> '' Then Begin
+    SymDataAsmName := SymTable[SymRef].AsmName;
+    Exit;
+  End;
+  Case SymTable[SymRef].Kind Of
+    SK_GVAR: SymDataAsmName := ASM_PFX_GVAR + ItoS(SymRef) + '_' +
+                               AsmIdent(SymTable[SymRef].Name);
+    SK_CONST: SymDataAsmName := ASM_PFX_CONST + ItoS(SymRef) + '_' +
+                                AsmIdent(SymTable[SymRef].Name);
+    SK_IVAR: SymDataAsmName := ASM_PFX_RUNTIME + 'ivar_' +
+                               AsmIdent(SymTable[SymRef].Name);
+    SK_CVAR: SymDataAsmName := ASM_PFX_RUNTIME + 'cvar_' +
+                               AsmIdent(SymTable[SymRef].Name);
+  Else
+    SymDataAsmName := ASM_PFX_RUNTIME + 'sym_' + ItoS(SymRef);
+  End;
+End;
+
+Function CodeLabel(Prefix: String): String;
+Begin
+  Inc(AsmLabelSerial);
+  CodeLabel := ASM_PFX_LABEL + Prefix + '_' + ItoS(AsmLabelSerial);
+End;
+
+Procedure Emit(S: String);
+Begin
+  WriteLn(AsmOut, '    ', S);
+End;
+
+Procedure EmitRaw(S: String);
+Begin
+  WriteLn(AsmOut, S);
+End;
+
+Procedure EmitComment(S: String);
+Begin
+  WriteLn(AsmOut, '    ; ', S);
+End;
+
+Procedure EmitLabel(L: String);
+Begin
+  WriteLn(AsmOut, L, ':');
+End;
+
+Procedure GenPush;
+Begin
+  Emit('push eax');
+End;
+
+Procedure GenPop(RegName: String);
+Begin
+  Emit('pop ' + RegName);
+End;
+
+Function CleanIntegerText(S: String): String;
+Var
+  I: Integer;
+  C: Char;
+  R: String;
+Begin
+  R := '';
+  For I := 1 To Length(S) Do Begin
+    C := S[I];
+    If (C <> '_') And (C <> 'r') And (C <> 'i') Then
+      R := R + C;
+  End;
+  CleanIntegerText := R;
+End;
+
+Function IntLiteralValue(S: String): LongInt;
+Var
+  T: String;
+  V: LongInt;
+  Code: Integer;
+Begin
+  T := CleanIntegerText(S);
+  Val(T, V, Code);
+  If Code <> 0 Then V := 0;
+  IntLiteralValue := V;
+End;
+
+Function FixnumValue(V: LongInt): LongInt;
+Begin
+  FixnumValue := (V Shl 1) Or RV_FIXNUM_TAG;
+End;
+
+Procedure GenLoadInt(V: LongInt);
+Begin
+  Emit('mov eax, ' + ItoS(FixnumValue(V)) + ' ; Fixnum ' + ItoS(V));
+End;
+
+Procedure GenLoadStr(LblIdx: Integer);
+Begin
+  If (LblIdx > 0) And (LblIdx <= StringCount) Then
+    Emit('lea eax, ' + StringTable[LblIdx].AsmName)
+  Else
+    Emit('mov eax, ' + ItoS(RV_NIL));
+End;
+
+Procedure GenLoadVar(SymRef: Integer);
+Begin
+  If (SymRef <= 0) Or (SymRef > SymCount) Then Begin
+    Emit('mov eax, ' + ItoS(RV_NIL));
+    Exit;
+  End;
+  Case SymTable[SymRef].Kind Of
+    SK_LOCAL, SK_PARAM, SK_BLOCK_PARAM:
+      If SymTable[SymRef].Offset < 0 Then
+        Emit('mov eax, [ebp' + ItoS(SymTable[SymRef].Offset) + ']')
+      Else
+        Emit('mov eax, [ebp+' + ItoS(SymTable[SymRef].Offset) + ']');
+    SK_GVAR, SK_CONST, SK_CVAR:
+      Emit('mov eax, [' + SymDataAsmName(SymRef) + ']');
+    SK_IVAR:
+      Emit('mov eax, [ecx+' + ItoS(SymTable[SymRef].Offset) + ']');
+    SK_CLASS, SK_MODULE:
+      Emit('lea eax, ' + SymDataAsmName(SymRef));
+  Else
+    Emit('mov eax, ' + ItoS(RV_NIL));
+  End;
+End;
+
+Procedure GenStoreVar(SymRef: Integer);
+Begin
+  If (SymRef <= 0) Or (SymRef > SymCount) Then Exit;
+  Case SymTable[SymRef].Kind Of
+    SK_LOCAL, SK_PARAM, SK_BLOCK_PARAM:
+      If SymTable[SymRef].Offset < 0 Then
+        Emit('mov [ebp' + ItoS(SymTable[SymRef].Offset) + '], eax')
+      Else
+        Emit('mov [ebp+' + ItoS(SymTable[SymRef].Offset) + '], eax');
+    SK_GVAR, SK_CONST, SK_CVAR:
+      Emit('mov [' + SymDataAsmName(SymRef) + '], eax');
+    SK_IVAR:
+      Emit('mov [ecx+' + ItoS(SymTable[SymRef].Offset) + '], eax');
+  End;
+End;
+
+Procedure GenLoadIvar(SymRef: Integer);
+Begin
+  If (SymRef > 0) And (SymRef <= SymCount) Then
+    Emit('mov eax, [ecx+' + ItoS(SymTable[SymRef].Offset) + ']')
+  Else
+    Emit('mov eax, ' + ItoS(RV_NIL));
+End;
+
+Procedure GenStoreIvar(SymRef: Integer);
+Begin
+  If (SymRef > 0) And (SymRef <= SymCount) Then
+    Emit('mov [ecx+' + ItoS(SymTable[SymRef].Offset) + '], eax');
+End;
+
+Procedure GenCall(MethodName: String; Argc: Integer);
+Begin
+  EmitComment('GenCall ' + MethodName + ' argc=' + ItoS(Argc));
+  Emit('call ' + ASM_PFX_RUNTIME + 'call_' + AsmIdent(MethodName));
+  If Argc > 0 Then Emit('add esp, ' + ItoS(Argc * 4));
+End;
+
+Procedure GenSend(Selector: String; Argc: Integer);
+Begin
+  EmitComment('GenSend ' + Selector + ' argc=' + ItoS(Argc) +
+              ' ; ECX=self, EDX=block');
+  Emit('push OFFSET ' + ASM_PFX_SYMBOL + 'sel_' + AsmIdent(Selector));
+  Emit('call ' + ASM_PFX_RUNTIME + 'dispatch');
+  If Argc > 0 Then Emit('add esp, ' + ItoS(Argc * 4));
+End;
+
+Procedure GenYield(Argc: Integer);
+Begin
+  EmitComment('GenYield argc=' + ItoS(Argc));
+  Emit('call ' + ASM_PFX_RUNTIME + 'yield');
+  If Argc > 0 Then Emit('add esp, ' + ItoS(Argc * 4));
+End;
+
+Procedure GenAlloc(ClassRef: Integer);
+Begin
+  Emit('push OFFSET ' + SymDataAsmName(ClassRef));
+  Emit('call ' + ASM_PFX_RUNTIME + 'alloc');
+End;
+
+Procedure GenJmp(L: String);
+Begin
+  Emit('jmp ' + L);
+End;
+
+Procedure GenJZ(L: String);
+Begin
+  Emit('cmp eax, ' + ItoS(RV_FALSE));
+  Emit('je ' + L);
+  Emit('cmp eax, ' + ItoS(RV_NIL));
+  Emit('je ' + L);
+End;
+
+Procedure GenJNZ(L: String);
+Begin
+  Emit('cmp eax, ' + ItoS(RV_FALSE));
+  Emit('je SHORT $+7');
+  Emit('cmp eax, ' + ItoS(RV_NIL));
+  Emit('jne ' + L);
+End;
+
+Procedure GenAdd;
+Begin
+  GenPop('ebx');
+  Emit('sub eax, ' + ItoS(RV_FIXNUM_TAG));
+  Emit('add eax, ebx');
+End;
+
+Procedure GenSub;
+Begin
+  GenPop('ebx');
+  Emit('sub ebx, eax');
+  Emit('add ebx, ' + ItoS(RV_FIXNUM_TAG));
+  Emit('mov eax, ebx');
+End;
+
+Procedure GenMul;
+Begin
+  GenPop('ebx');
+  Emit('sar eax, 1');
+  Emit('sar ebx, 1');
+  Emit('imul eax, ebx');
+  Emit('shl eax, 1');
+  Emit('or eax, ' + ItoS(RV_FIXNUM_TAG));
+End;
+
+Procedure GenDiv;
+Begin
+  GenPop('ebx');
+  Emit('sar eax, 1');
+  Emit('sar ebx, 1');
+  Emit('mov ecx, eax');
+  Emit('mov eax, ebx');
+  Emit('cdq');
+  Emit('idiv ecx');
+  Emit('shl eax, 1');
+  Emit('or eax, ' + ItoS(RV_FIXNUM_TAG));
+End;
+
+Procedure GenNode(N: Integer); Forward;
+
+Procedure GenArgs(Args: Integer; Var Argc: Integer);
+Var
+  C: Integer;
+Begin
+  If Args = 0 Then Exit;
+  C := AstTable[Args].FirstChild;
+  While C <> 0 Do Begin
+    GenNode(C);
+    GenPush;
+    Inc(Argc);
+    C := AstTable[C].NextSibling;
+  End;
+End;
+
+Function CallName(N: Integer): String;
+Var
+  T: Integer;
+Begin
+  CallName := 'call';
+  If N = 0 Then Exit;
+  If AstTable[N].Third <> 0 Then Begin
+    CallName := NodeMethodName(AstTable[N].Third);
+    Exit;
+  End;
+  T := AstTable[N].Left;
+  If T <> 0 Then CallName := AstTable[T].Text;
+End;
+
+Procedure GenComparison(OpText: String);
+Var
+  LTrue, LEnd: String;
+Begin
+  LTrue := CodeLabel('CMP_TRUE');
+  LEnd := CodeLabel('CMP_END');
+  GenPop('ebx');
+  Emit('cmp ebx, eax');
+  If OpText = '==' Then Emit('je ' + LTrue)
+  Else If OpText = '!=' Then Emit('jne ' + LTrue)
+  Else If OpText = '<' Then Emit('jl ' + LTrue)
+  Else If OpText = '>' Then Emit('jg ' + LTrue)
+  Else If OpText = '<=' Then Emit('jle ' + LTrue)
+  Else If OpText = '>=' Then Emit('jge ' + LTrue)
+  Else Emit('je ' + LTrue);
+  Emit('mov eax, ' + ItoS(RV_FALSE));
+  GenJmp(LEnd);
+  EmitLabel(LTrue);
+  Emit('mov eax, ' + ItoS(RV_TRUE));
+  EmitLabel(LEnd);
+End;
+
+Procedure GenCallNode(N: Integer);
+Var
+  Argc: Integer;
+  Name: String;
+Begin
+  Argc := 0;
+  Name := CallName(N);
+  If AstTable[N].Text = 'bare-call' Then Begin
+    GenArgs(AstTable[N].Right, Argc);
+    GenCall(Name, Argc);
+  End Else Begin
+    GenNode(AstTable[N].Left);
+    Emit('mov ecx, eax');
+    GenArgs(AstTable[N].Right, Argc);
+    GenSend(Name, Argc);
+  End;
+End;
+
+Procedure GenStmtList(N: Integer);
+Var
+  C: Integer;
+Begin
+  C := AstTable[N].FirstChild;
+  While C <> 0 Do Begin
+    GenNode(C);
+    C := AstTable[C].NextSibling;
+  End;
+End;
+
+Procedure GenIfNode(N: Integer; Invert: Boolean);
+Var
+  LElse, LEnd: String;
+Begin
+  LElse := CodeLabel('ELSE');
+  LEnd := CodeLabel('ENDIF');
+  GenNode(AstTable[N].Left);
+  If Invert Then GenJNZ(LElse) Else GenJZ(LElse);
+  GenNode(AstTable[N].Right);
+  GenJmp(LEnd);
+  EmitLabel(LElse);
+  GenNode(AstTable[N].Third);
+  EmitLabel(LEnd);
+End;
+
+Procedure GenWhileNode(N: Integer; Invert: Boolean);
+Var
+  LStart, LEnd: String;
+Begin
+  LStart := CodeLabel('LOOP');
+  LEnd := CodeLabel('ENDLOOP');
+  EmitLabel(LStart);
+  GenNode(AstTable[N].Left);
+  If Invert Then GenJNZ(LEnd) Else GenJZ(LEnd);
+  GenNode(AstTable[N].Right);
+  GenJmp(LStart);
+  EmitLabel(LEnd);
+End;
+
+Procedure GenBinaryNode(N: Integer);
+Begin
+  GenNode(AstTable[N].Left);
+  GenPush;
+  GenNode(AstTable[N].Right);
+  Case AstTable[N].Tok Of
+    Ord('+'): GenAdd;
+    Ord('-'): GenSub;
+    Ord('*'): GenMul;
+    Ord('/'): GenDiv;
+    TOK_EQ: GenComparison('==');
+    TOK_NE: GenComparison('!=');
+    Ord('<'): GenComparison('<');
+    Ord('>'): GenComparison('>');
+    TOK_LE: GenComparison('<=');
+    TOK_GE: GenComparison('>=');
+  Else
+    GenPop('ebx');
+    EmitComment('operateur Ruby non specialise: ' + AstTable[N].Text);
+    GenCall('binary_' + AsmIdent(AstTable[N].Text), 0);
+  End;
+End;
+
+Procedure GenMethodNode(N: Integer);
+Var
+  MethodRef: Integer;
+  MethodLabel: String;
+Begin
+  MethodRef := AstTable[N].SymRef;
+  If (MethodRef > 0) And (MethodRef <= SymCount) And
+     (SymTable[MethodRef].AsmName <> '') Then
+    MethodLabel := SymTable[MethodRef].AsmName
+  Else
+    MethodLabel := ASM_PFX_METHOD + AsmIdent(AstTable[N].Text) + '_' +
+                   ItoS(N);
+  EmitRaw('');
+  EmitRaw(MethodLabel + ' PROC');
+  Emit('push ebp');
+  Emit('mov ebp, esp');
+  Emit('sub esp, 64');
+  GenNode(AstTable[N].Third);
+  Emit('mov esp, ebp');
+  Emit('pop ebp');
+  Emit('ret');
+  EmitRaw(MethodLabel + ' ENDP');
+End;
+
+Procedure GenNode(N: Integer);
+Begin
+  If N = 0 Then Begin
+    Emit('mov eax, ' + ItoS(RV_NIL));
+    Exit;
+  End;
+  Case AstTable[N].Kind Of
+    NK_STMT_LIST:
+      GenStmtList(N);
+    NK_LITERAL:
+      If AstTable[N].Tok = TOK_INTEGER Then
+        GenLoadInt(IntLiteralValue(AstTable[N].Text))
+      Else If AstTable[N].Tok = TOK_FLOAT Then Begin
+        EmitComment('float literal ' + AstTable[N].Text);
+        Emit('lea eax, ' + NumLitTable[AstTable[N].SymRef].AsmName);
+      End Else
+        Emit('mov eax, ' + ItoS(RV_NIL));
+    NK_STRING:
+      GenLoadStr(AstTable[N].SymRef);
+    NK_SYMBOL:
+      If (AstTable[N].SymRef > 0) And (AstTable[N].SymRef <= SymbolLitCount) Then
+        Emit('mov eax, ' + ItoS(SymbolLitTable[AstTable[N].SymRef].Value))
+      Else
+        Emit('mov eax, ' + ItoS(RV_NIL));
+    NK_VAR, NK_CONST:
+      GenLoadVar(AstTable[N].SymRef);
+    NK_ASSIGN:
+      Begin
+        GenNode(AstTable[N].Right);
+        If AstTable[AstTable[N].Left].Kind = NK_VAR Then
+          GenStoreVar(AstTable[AstTable[N].Left].SymRef)
+        Else
+          EmitComment('affectation complexe non specialisee');
+      End;
+    NK_BINARY:
+      GenBinaryNode(N);
+    NK_CALL:
+      GenCallNode(N);
+    NK_IF:
+      GenIfNode(N, False);
+    NK_UNLESS:
+      GenIfNode(N, True);
+    NK_WHILE:
+      GenWhileNode(N, False);
+    NK_UNTIL:
+      GenWhileNode(N, True);
+    NK_RETURN:
+      Begin
+        GenNode(AstTable[N].Left);
+        Emit('mov esp, ebp');
+        Emit('pop ebp');
+        Emit('ret');
+      End;
+    NK_YIELD:
+      Begin
+        EmitComment('yield');
+        GenYield(0);
+      End;
+    NK_DEF:
+      GenMethodNode(N);
+    NK_CLASS, NK_MODULE:
+      Begin
+        EmitComment(NodeKindName(AstTable[N].Kind) + ' ' + AstTable[N].Text);
+        GenNode(AstTable[N].Right);
+      End;
+    NK_REQUIRE:
+      EmitComment('require/load ' + AstTable[N].Text);
+    NK_EMPTY:
+      Emit('mov eax, ' + ItoS(RV_NIL));
+  Else
+    EmitComment('noeud non encore codegen: ' + NodeKindName(AstTable[N].Kind));
+    Emit('mov eax, ' + ItoS(RV_NIL));
+  End;
+End;
+
+Procedure EmitAsmStringData;
+Var
+  I, J, Col: Integer;
+Begin
+  For I := 1 To StringCount Do Begin
+    Write(AsmOut, StringTable[I].AsmName, ' DB ');
+    Col := 0;
+    For J := 1 To Length(StringTable[I].Text) Do Begin
+      If Col > 0 Then Write(AsmOut, ',');
+      Write(AsmOut, Ord(StringTable[I].Text[J]):0);
+      Inc(Col);
+      If (Col = 16) And (J < Length(StringTable[I].Text)) Then Begin
+        WriteLn(AsmOut);
+        Write(AsmOut, '    DB ');
+        Col := 0;
+      End;
+    End;
+    If Col > 0 Then Write(AsmOut, ',');
+    WriteLn(AsmOut, '0');
+  End;
+End;
+
+Procedure EmitAsmData;
+Var
+  I: Integer;
+Begin
+  EmitRaw('.DATA');
+  EmitAsmStringData;
+  For I := 1 To NumLitCount Do
+    EmitRaw(NumLitTable[I].AsmName + ' DD 0 ; ' + NumLitTable[I].Text);
+  For I := 1 To SymbolLitCount Do
+    EmitRaw(SymbolLitTable[I].AsmName + ' DD ' +
+            ItoS(SymbolLitTable[I].Value) + ' ; :' +
+            SymbolLitTable[I].Name);
+  For I := 1 To RegexLitCount Do
+    EmitRaw(RegexLitTable[I].AsmName + ' DD 0 ; /' +
+            RegexLitTable[I].Pattern + '/');
+  For I := 1 To SymCount Do
+    If SymTable[I].Kind = SK_GVAR Then
+      EmitRaw(SymDataAsmName(I) + ' DD ' + ItoS(RV_NIL));
+  EmitRaw('');
+End;
+
+Procedure EmitAsmHeader;
+Begin
+  EmitRaw('; RUBYCW32 - sortie assembleur generee');
+  EmitRaw('; Source: ' + Opt.SrcFile);
+  EmitRaw('.386');
+  EmitRaw('.MODEL FLAT, STDCALL');
+  EmitRaw('OPTION CASEMAP:NONE');
+  EmitRaw('');
+  EmitRaw('ExitProcess PROTO :DWORD');
+  EmitRaw('EXTRN ' + ASM_PFX_RUNTIME + 'main_start:PROC');
+  EmitRaw('EXTRN ' + ASM_PFX_RUNTIME + 'dispatch:PROC');
+  EmitRaw('EXTRN ' + ASM_PFX_RUNTIME + 'yield:PROC');
+  EmitRaw('EXTRN ' + ASM_PFX_RUNTIME + 'alloc:PROC');
+  EmitRaw('');
+End;
+
+Procedure EmitAsmMain(Root: Integer);
+Begin
+  EmitRaw('.CODE');
+  EmitRaw('_RBSTART PROC');
+  Emit('call ' + ASM_PFX_RUNTIME + 'main_start');
+  Emit('call _RBMAIN');
+  Emit('push 0');
+  Emit('call ExitProcess');
+  EmitRaw('_RBSTART ENDP');
+  EmitRaw('');
+  EmitRaw('_RBMAIN PROC');
+  Emit('push ebp');
+  Emit('mov ebp, esp');
+  Emit('sub esp, 256');
+  Emit('xor edx, edx ; bloc courant = nil');
+  Emit('mov ecx, ' + ItoS(RV_NIL) + ' ; self top-level');
+  GenNode(Root);
+  Emit('mov esp, ebp');
+  Emit('pop ebp');
+  Emit('ret');
+  EmitRaw('_RBMAIN ENDP');
+  EmitRaw('');
+  EmitRaw('END _RBSTART');
+End;
+
+Procedure GenerateAsm;
+Var
+  Root: Integer;
+  FileName: String;
+Begin
+  Root := ParseProgram;
+  If ParseErrors <> 0 Then
+    FatalError('generation ASM impossible: erreurs parse');
+  FileName := AsmOutputFileName;
+  Assign(AsmOut, FileName);
+  Rewrite(AsmOut);
+  AsmLabelSerial := 0;
+  EmitAsmHeader;
+  EmitAsmData;
+  EmitAsmMain(Root);
+  Close(AsmOut);
+  WriteLn('ASM genere : ', FileName);
+End;
+
+Function AlignUp(V, A: LongInt): LongInt;
+Begin
+  If A <= 0 Then AlignUp := V
+  Else AlignUp := ((V + A - 1) Div A) * A;
+End;
+
+Procedure BinClear;
+Begin
+  FillChar(BinCode, SizeOf(BinCode), 0);
+  FillChar(BinData, SizeOf(BinData), 0);
+  FillChar(BinRData, SizeOf(BinRData), 0);
+  FillChar(BinLabels, SizeOf(BinLabels), 0);
+  FillChar(BinFixups, SizeOf(BinFixups), 0);
+  FillChar(BinImports, SizeOf(BinImports), 0);
+  BinCodeSize := 0;
+  BinDataSize := 0;
+  BinRDataSize := 0;
+  BinBssSize := 0;
+  BinLabelCount := 0;
+  BinFixupCount := 0;
+  BinImportCount := 0;
+End;
+
+Procedure BufEmit8(Var B: TBinBuffer; Var S: LongInt; V: Integer);
+Begin
+  If S >= MAX_BIN Then FatalError('buffer binaire plein');
+  B[S] := V And $FF;
+  Inc(S);
+End;
+
+Procedure BufEmit16(Var B: TBinBuffer; Var S: LongInt; V: LongInt);
+Begin
+  BufEmit8(B, S, V);
+  BufEmit8(B, S, V Shr 8);
+End;
+
+Procedure BufEmit32(Var B: TBinBuffer; Var S: LongInt; V: LongInt);
+Begin
+  BufEmit8(B, S, V);
+  BufEmit8(B, S, V Shr 8);
+  BufEmit8(B, S, V Shr 16);
+  BufEmit8(B, S, V Shr 24);
+End;
+
+Procedure BinEmit8(V: Integer);
+Begin
+  BufEmit8(BinCode, BinCodeSize, V);
+End;
+
+Procedure BinEmit16(V: LongInt);
+Begin
+  BufEmit16(BinCode, BinCodeSize, V);
+End;
+
+Procedure BinEmit32(V: LongInt);
+Begin
+  BufEmit32(BinCode, BinCodeSize, V);
+End;
+
+Procedure BinPatch32(Offset, V: LongInt);
+Begin
+  If (Offset < 0) Or (Offset + 3 >= MAX_BIN) Then
+    FatalError('patch binaire hors limites');
+  BinCode[Offset] := V And $FF;
+  BinCode[Offset + 1] := (V Shr 8) And $FF;
+  BinCode[Offset + 2] := (V Shr 16) And $FF;
+  BinCode[Offset + 3] := (V Shr 24) And $FF;
+End;
+
+Function BinFindLabel(Name: String): Integer;
+Var
+  I: Integer;
+Begin
+  BinFindLabel := 0;
+  For I := 1 To BinLabelCount Do
+    If BinLabels[I].Name = Name Then Begin
+      BinFindLabel := I;
+      Exit;
+    End;
+End;
+
+Function BinDefineLabel(Name: String): Integer;
+Var
+  I: Integer;
+Begin
+  I := BinFindLabel(Name);
+  If I = 0 Then Begin
+    If BinLabelCount >= MAX_BIN_LABEL Then FatalError('table labels binaire pleine');
+    Inc(BinLabelCount);
+    I := BinLabelCount;
+    BinLabels[I].Name := Name;
+  End;
+  BinLabels[I].Section := BIN_SEC_TEXT;
+  BinLabels[I].Offset := BinCodeSize;
+  BinLabels[I].Defined := True;
+  BinDefineLabel := I;
+End;
+
+Function BinAddLabel(Name: String): Integer;
+Var
+  I: Integer;
+Begin
+  I := BinFindLabel(Name);
+  If I <> 0 Then Begin
+    BinAddLabel := I;
+    Exit;
+  End;
+  If BinLabelCount >= MAX_BIN_LABEL Then FatalError('table labels binaire pleine');
+  Inc(BinLabelCount);
+  BinLabels[BinLabelCount].Name := Name;
+  BinLabels[BinLabelCount].Section := BIN_SEC_TEXT;
+  BinLabels[BinLabelCount].Offset := 0;
+  BinLabels[BinLabelCount].Defined := False;
+  BinAddLabel := BinLabelCount;
+End;
+
+Procedure BinAddFixup(LabelRef, Kind: Integer; AtOffset: LongInt);
+Begin
+  If BinFixupCount >= MAX_BIN_FIXUP Then FatalError('table fixups binaire pleine');
+  Inc(BinFixupCount);
+  BinFixups[BinFixupCount].Section := BIN_SEC_TEXT;
+  BinFixups[BinFixupCount].Offset := AtOffset;
+  BinFixups[BinFixupCount].LabelRef := LabelRef;
+  BinFixups[BinFixupCount].Kind := Kind;
+End;
+
+Procedure BinResolveFixups;
+Var
+  I, L: Integer;
+  Target, Rel: LongInt;
+Begin
+  For I := 1 To BinFixupCount Do Begin
+    L := BinFixups[I].LabelRef;
+    If (L <= 0) Or (L > BinLabelCount) Or Not BinLabels[L].Defined Then
+      FatalError('label binaire non resolu');
+    Target := BinLabels[L].Offset;
+    If BinFixups[I].Kind = BIN_FIX_REL32 Then Begin
+      Rel := Target - (BinFixups[I].Offset + 4);
+      BinPatch32(BinFixups[I].Offset, Rel);
+    End Else
+      BinPatch32(BinFixups[I].Offset, Target);
+  End;
+End;
+
+Function BinAddImport(DllName, ProcName: String): Integer;
+Begin
+  If BinImportCount >= MAX_BIN_IMPORT Then FatalError('table imports pleine');
+  Inc(BinImportCount);
+  BinImports[BinImportCount].DllName := DllName;
+  BinImports[BinImportCount].ProcName := ProcName;
+  BinImports[BinImportCount].Hint := 0;
+  BinImports[BinImportCount].IATRva := 0;
+  BinAddImport := BinImportCount;
+End;
+
+Procedure BinEmitInstr(Mnemonic: String);
+Begin
+  If Mnemonic = 'RET' Then BinEmit8($C3)
+  Else If Mnemonic = 'PUSH_EAX' Then BinEmit8($50)
+  Else If Mnemonic = 'POP_EAX' Then BinEmit8($58)
+  Else If Mnemonic = 'XOR_EAX_EAX' Then Begin BinEmit8($31); BinEmit8($C0); End
+  Else If Mnemonic = 'CDQ' Then BinEmit8($99)
+  Else If Mnemonic = 'LEAVE' Then BinEmit8($C9)
+  Else FatalError('instruction binaire inconnue: ' + Mnemonic);
+End;
+
+Procedure BinEmitMovEAXImm32(V: LongInt);
+Begin
+  BinEmit8($B8);
+  BinEmit32(V);
+End;
+
+Procedure BinEmitPushImm32(V: LongInt);
+Begin
+  BinEmit8($68);
+  BinEmit32(V);
+End;
+
+Procedure BinEmitJmp(LabelName: String);
+Var
+  L: Integer;
+  O: LongInt;
+Begin
+  L := BinAddLabel(LabelName);
+  BinEmit8($E9);
+  O := BinCodeSize;
+  BinEmit32(0);
+  BinAddFixup(L, BIN_FIX_REL32, O);
+End;
+
+Procedure BinEmitJZ(LabelName: String);
+Var
+  L: Integer;
+  O: LongInt;
+Begin
+  L := BinAddLabel(LabelName);
+  BinEmit8($0F);
+  BinEmit8($84);
+  O := BinCodeSize;
+  BinEmit32(0);
+  BinAddFixup(L, BIN_FIX_REL32, O);
+End;
+
+Procedure BinEmitJNZ(LabelName: String);
+Var
+  L: Integer;
+  O: LongInt;
+Begin
+  L := BinAddLabel(LabelName);
+  BinEmit8($0F);
+  BinEmit8($85);
+  O := BinCodeSize;
+  BinEmit32(0);
+  BinAddFixup(L, BIN_FIX_REL32, O);
+End;
+
+Procedure BinBuildRuntimeSkeleton;
+Begin
+  BinClear;
+  BinAddImport('KERNEL32.DLL', 'ExitProcess');
+  BinDefineLabel('_RBSTART');
+  BinEmitInstr('XOR_EAX_EAX');
+  BinEmitInstr('RET');
+  BinResolveFixups;
+End;
+
+Procedure WriteByte(Var F: File; V: Integer);
+Var
+  B: Byte;
+Begin
+  B := V And $FF;
+  BlockWrite(F, B, 1);
+End;
+
+Procedure WriteWordLE(Var F: File; V: LongInt);
+Begin
+  WriteByte(F, V);
+  WriteByte(F, V Shr 8);
+End;
+
+Procedure WriteDWordLE(Var F: File; V: LongInt);
+Begin
+  WriteByte(F, V);
+  WriteByte(F, V Shr 8);
+  WriteByte(F, V Shr 16);
+  WriteByte(F, V Shr 24);
+End;
+
+Procedure WriteZeros(Var F: File; Count: LongInt);
+Var
+  I: LongInt;
+Begin
+  For I := 1 To Count Do WriteByte(F, 0);
+End;
+
+Procedure WriteName8(Var F: File; Name: String);
+Var
+  I: Integer;
+Begin
+  For I := 1 To 8 Do
+    If I <= Length(Name) Then WriteByte(F, Ord(Name[I]))
+    Else WriteByte(F, 0);
+End;
+
+Procedure WriteBuffer(Var F: File; Var B: TBinBuffer; Count: LongInt);
+Begin
+  If Count > 0 Then BlockWrite(F, B, Count);
+End;
+
+Procedure WritePaddedBuffer(Var F: File; Var B: TBinBuffer; Count, AlignTo: LongInt);
+Var
+  Padded: LongInt;
+Begin
+  Padded := AlignUp(Count, AlignTo);
+  WriteBuffer(F, B, Count);
+  WriteZeros(F, Padded - Count);
+End;
+
+Procedure WriteCoffSectionHeader(Var F: File; Name: String; RawSize, RawPtr,
+                                 RelPtr, RelCount, Flags: LongInt);
+Begin
+  WriteName8(F, Name);
+  WriteDWordLE(F, 0);
+  WriteDWordLE(F, 0);
+  WriteDWordLE(F, RawSize);
+  WriteDWordLE(F, RawPtr);
+  WriteDWordLE(F, RelPtr);
+  WriteDWordLE(F, 0);
+  WriteWordLE(F, RelCount);
+  WriteWordLE(F, 0);
+  WriteDWordLE(F, Flags);
+End;
+
+Procedure WriteCoffSymbol(Var F: File; Name: String; Value: LongInt;
+                          SectionNumber, StorageClass: Integer);
+Begin
+  WriteName8(F, Name);
+  WriteDWordLE(F, Value);
+  WriteWordLE(F, SectionNumber);
+  WriteWordLE(F, 0);
+  WriteByte(F, StorageClass);
+  WriteByte(F, 0);
+End;
+
+Procedure GenerateObj;
+Var
+  F: File;
+  TextRaw, DataRaw, RDataRaw, SymPtr: LongInt;
+  TextSize, DataSize, RDataSize, SymCountObj: LongInt;
+Begin
+  ParseProgram;
+  If ParseErrors <> 0 Then FatalError('generation OBJ impossible: erreurs parse');
+  BinBuildRuntimeSkeleton;
+  TextSize := AlignUp(BinCodeSize, 4);
+  DataSize := AlignUp(BinDataSize, 4);
+  RDataSize := AlignUp(BinRDataSize, 4);
+  TextRaw := 20 + 4 * 40;
+  DataRaw := TextRaw + TextSize;
+  RDataRaw := DataRaw + DataSize;
+  SymPtr := RDataRaw + RDataSize;
+  SymCountObj := 5;
+  Assign(F, Opt.OutFile);
+  Rewrite(F, 1);
+  WriteWordLE(F, PE_MACHINE_I386);
+  WriteWordLE(F, 4);
+  WriteDWordLE(F, 0);
+  WriteDWordLE(F, SymPtr);
+  WriteDWordLE(F, SymCountObj);
+  WriteWordLE(F, 0);
+  WriteWordLE(F, 0);
+  WriteCoffSectionHeader(F, '.text', BinCodeSize, TextRaw, 0, 0,
+    PE_SCN_CNT_CODE Or PE_SCN_ALIGN_4BYTES Or PE_SCN_MEM_EXECUTE Or PE_SCN_MEM_READ);
+  WriteCoffSectionHeader(F, '.data', BinDataSize, DataRaw, 0, 0,
+    PE_SCN_CNT_INIT_DATA Or PE_SCN_ALIGN_4BYTES Or PE_SCN_MEM_READ Or PE_SCN_MEM_WRITE);
+  WriteCoffSectionHeader(F, '.rdata', BinRDataSize, RDataRaw, 0, 0,
+    PE_SCN_CNT_INIT_DATA Or PE_SCN_ALIGN_4BYTES Or PE_SCN_MEM_READ);
+  WriteCoffSectionHeader(F, '.bss', BinBssSize, 0, 0, 0,
+    PE_SCN_CNT_UNINIT_DATA Or PE_SCN_ALIGN_4BYTES Or PE_SCN_MEM_READ Or PE_SCN_MEM_WRITE);
+  WritePaddedBuffer(F, BinCode, BinCodeSize, 4);
+  WritePaddedBuffer(F, BinData, BinDataSize, 4);
+  WritePaddedBuffer(F, BinRData, BinRDataSize, 4);
+  WriteCoffSymbol(F, '.text', 0, 1, COFF_SYM_CLASS_STATIC);
+  WriteCoffSymbol(F, '.data', 0, 2, COFF_SYM_CLASS_STATIC);
+  WriteCoffSymbol(F, '.rdata', 0, 3, COFF_SYM_CLASS_STATIC);
+  WriteCoffSymbol(F, '.bss', 0, 4, COFF_SYM_CLASS_STATIC);
+  WriteCoffSymbol(F, '_RBSTART', 0, 1, COFF_SYM_CLASS_EXTERNAL);
+  WriteDWordLE(F, 4);
+  Close(F);
+  WriteLn('OBJ COFF genere : ', Opt.OutFile);
+End;
+
+Procedure WritePeSectionHeader(Var F: File; Name: String; VirtSize, VirtAddr,
+                               RawSize, RawPtr, Flags: LongInt);
+Begin
+  WriteName8(F, Name);
+  WriteDWordLE(F, VirtSize);
+  WriteDWordLE(F, VirtAddr);
+  WriteDWordLE(F, RawSize);
+  WriteDWordLE(F, RawPtr);
+  WriteDWordLE(F, 0);
+  WriteDWordLE(F, 0);
+  WriteWordLE(F, 0);
+  WriteWordLE(F, 0);
+  WriteDWordLE(F, Flags);
+End;
+
+Procedure GenerateExe;
+Var
+  F: File;
+  HeadersSize, TextRawSize, TextRva, ImageSize, I: LongInt;
+Begin
+  ParseProgram;
+  If ParseErrors <> 0 Then FatalError('generation EXE impossible: erreurs parse');
+  BinBuildRuntimeSkeleton;
+  TextRva := PE_SEC_ALIGN;
+  HeadersSize := AlignUp(128 + 4 + 20 + 224 + 40, PE_FILE_ALIGN);
+  TextRawSize := AlignUp(BinCodeSize, PE_FILE_ALIGN);
+  ImageSize := AlignUp(TextRva + AlignUp(BinCodeSize, PE_SEC_ALIGN), PE_SEC_ALIGN);
+  Assign(F, Opt.OutFile);
+  Rewrite(F, 1);
+  WriteWordLE(F, PE_DOS_MAGIC);
+  For I := 1 To 29 Do WriteWordLE(F, 0);
+  WriteDWordLE(F, 128);
+  WriteZeros(F, 128 - 64);
+  WriteDWordLE(F, PE_PE_SIG);
+  WriteWordLE(F, PE_MACHINE_I386);
+  WriteWordLE(F, 1);
+  WriteDWordLE(F, 0);
+  WriteDWordLE(F, 0);
+  WriteDWordLE(F, 0);
+  WriteWordLE(F, 224);
+  WriteWordLE(F, $0102);
+  WriteWordLE(F, PE_OPT_MAGIC_PE32);
+  WriteByte(F, 0);
+  WriteByte(F, 1);
+  WriteDWordLE(F, TextRawSize);
+  WriteDWordLE(F, 0);
+  WriteDWordLE(F, 0);
+  WriteDWordLE(F, TextRva);
+  WriteDWordLE(F, TextRva);
+  WriteDWordLE(F, 0);
+  WriteDWordLE(F, PE_IMG_BASE);
+  WriteDWordLE(F, PE_SEC_ALIGN);
+  WriteDWordLE(F, PE_FILE_ALIGN);
+  WriteWordLE(F, 4);
+  WriteWordLE(F, 0);
+  WriteWordLE(F, 0);
+  WriteWordLE(F, 0);
+  WriteWordLE(F, 4);
+  WriteWordLE(F, 0);
+  WriteDWordLE(F, 0);
+  WriteDWordLE(F, ImageSize);
+  WriteDWordLE(F, HeadersSize);
+  WriteDWordLE(F, 0);
+  WriteWordLE(F, PE_SUBSYS_CUI);
+  WriteWordLE(F, 0);
+  WriteDWordLE(F, $00100000);
+  WriteDWordLE(F, $00001000);
+  WriteDWordLE(F, $00100000);
+  WriteDWordLE(F, $00001000);
+  WriteDWordLE(F, 0);
+  WriteDWordLE(F, 16);
+  For I := 1 To 16 Do Begin
+    WriteDWordLE(F, 0);
+    WriteDWordLE(F, 0);
+  End;
+  WritePeSectionHeader(F, '.text', BinCodeSize, TextRva, TextRawSize, HeadersSize,
+    PE_SCN_CNT_CODE Or PE_SCN_MEM_EXECUTE Or PE_SCN_MEM_READ);
+  WriteZeros(F, HeadersSize - (128 + 4 + 20 + 224 + 40));
+  WritePaddedBuffer(F, BinCode, BinCodeSize, PE_FILE_ALIGN);
+  Close(F);
+  WriteLn('EXE PE genere : ', Opt.OutFile);
+End;
+
+Procedure GenerateBinary;
+Begin
+  If Opt.EmitObj Then GenerateObj
+  Else If Opt.EmitExe Then GenerateExe;
 End;
 
 Procedure DumpTokens;
@@ -5241,9 +7517,18 @@ Begin
   End;
 End;
 
+Procedure RegisterPreloadRequires;
+Var
+  I: Integer;
+Begin
+  For I := 1 To Opt.RequireCount Do
+    AddRequireInfo(KW_REQUIRE, 0, 0, 0, Opt.RequireLib[I], REQF_PRELOAD);
+End;
+
 Begin
   ParseArgs;
   InitSymbols;
+  RegisterPreloadRequires;
   WriteLn('RUBYCW32 v0.1 (2026) - Compilateur Ruby -> 80386 PE Win32');
   If Opt.Verbose Then Begin
     WriteLn('Source : ', Opt.SrcFile);
@@ -5262,8 +7547,14 @@ Begin
     DumpBlocks;
     DumpControls;
     DumpRescues;
+    DumpIOInfos;
+    DumpRequireInfos;
     DumpSymbols;
     DumpClasses;
-  End Else
-    WarnMsg('infrastructure, lexer, symboles, variables, expressions, statements et classes initialises');
+    If Opt.EmitAsm Then GenerateAsm;
+    GenerateBinary;
+  End Else Begin
+    If Opt.EmitAsm Then GenerateAsm;
+    GenerateBinary;
+  End;
 End.
