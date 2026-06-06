@@ -3864,7 +3864,7 @@ Begin
       Break;
   End;
 
-  If (Base = 10) And (LexPeekChar = '.') And (LexPeekChar2 <> '.') Then Begin
+  If (Base = 10) And (LexPeekChar = '.') And IsDigit(LexPeekChar2) Then Begin
     IsFloat := True;
     AppendTok(LexNextChar);
     While IsDigit(LexPeekChar) Or (LexPeekChar = '_') Do
@@ -7284,6 +7284,7 @@ Begin
 End;
 
 Function StaticOutputText(N: Integer; Var S: String): Boolean; Forward;
+Function StaticIntegerValue(N: Integer; Var V: LongInt): Boolean; Forward;
 
 Function StaticBindMethodArgs(MethodNode, Args: Integer): Boolean;
 Var
@@ -7330,6 +7331,17 @@ Begin
   StaticHashMarker := (Code = 0) And (HashNode > 0);
 End;
 
+Function StaticRangeMarker(Text: String; Var RangeNode: Integer): Boolean;
+Var
+  Code: Integer;
+Begin
+  StaticRangeMarker := False;
+  RangeNode := 0;
+  If Copy(Text, 1, 7) <> '#RANGE:' Then Exit;
+  Val(Copy(Text, 8, Length(Text) - 7), RangeNode, Code);
+  StaticRangeMarker := (Code = 0) And (RangeNode > 0);
+End;
+
 Function StaticObjectMarker(Text: String; Var ClassName: String): Boolean;
 Begin
   StaticObjectMarker := False;
@@ -7367,6 +7379,21 @@ Begin
   End Else If (AstTable[N].Kind = NK_VAR) And
               GetStaticValue(AstTable[N].Text, S) Then
     StaticHashNodeFromExpr := StaticHashMarker(S, HashNode);
+End;
+
+Function StaticRangeNodeFromExpr(N: Integer; Var RangeNode: Integer): Boolean;
+Var
+  S: String;
+Begin
+  StaticRangeNodeFromExpr := False;
+  RangeNode := 0;
+  If N = 0 Then Exit;
+  If AstTable[N].Kind = NK_RANGE Then Begin
+    RangeNode := N;
+    StaticRangeNodeFromExpr := True;
+  End Else If (AstTable[N].Kind = NK_VAR) And
+              GetStaticValue(AstTable[N].Text, S) Then
+    StaticRangeNodeFromExpr := StaticRangeMarker(S, RangeNode);
 End;
 
 Function StaticObjectClassFromExpr(N: Integer; Var ClassName: String): Boolean;
@@ -7428,6 +7455,51 @@ Begin
       Exit;
     End;
     P := AstTable[P].NextSibling;
+  End;
+End;
+
+Function StaticRangeIncludeText(RangeNode, ValueNode: Integer;
+                                Var S: String): Boolean;
+Var
+  B, E, V: LongInt;
+  BS, ES, VS: String;
+  Exclusive: Boolean;
+Begin
+  StaticRangeIncludeText := False;
+  S := '';
+  If (RangeNode = 0) Or (ValueNode = 0) Then Exit;
+  Exclusive := AstTable[RangeNode].Tok = TOK_DOTDOTDOT;
+  If StaticIntegerValue(AstTable[RangeNode].Left, B) And
+     StaticIntegerValue(AstTable[RangeNode].Right, E) And
+     StaticIntegerValue(ValueNode, V) Then Begin
+    If Exclusive Then
+      If (V >= B) And (V < E) Then S := 'true' Else S := 'false'
+    Else
+      If (V >= B) And (V <= E) Then S := 'true' Else S := 'false';
+    StaticRangeIncludeText := True;
+  End Else If StaticOutputText(AstTable[RangeNode].Left, BS) And
+              StaticOutputText(AstTable[RangeNode].Right, ES) And
+              StaticOutputText(ValueNode, VS) And
+              (Length(BS) = 1) And (Length(ES) = 1) And (Length(VS) = 1) Then Begin
+    If Exclusive Then
+      If (VS >= BS) And (VS < ES) Then S := 'true' Else S := 'false'
+    Else
+      If (VS >= BS) And (VS <= ES) Then S := 'true' Else S := 'false';
+    StaticRangeIncludeText := True;
+  End;
+End;
+
+Procedure RegisterStaticMethodsInBody(OwnerName: String; BodyNode: Integer);
+Var
+  C: Integer;
+Begin
+  If (OwnerName = '') Or (BodyNode = 0) Then Exit;
+  C := AstTable[BodyNode].FirstChild;
+  While C <> 0 Do Begin
+    If (AstTable[C].Kind = NK_DEF) And (AstTable[C].Left <> 0) Then
+      SetStaticValue('#METHOD:' + OwnerName + '#' +
+                     AstTable[AstTable[C].Left].Text, ItoS(C));
+    C := AstTable[C].NextSibling;
   End;
 End;
 
@@ -7502,8 +7574,8 @@ End;
 Function StaticOutputText(N: Integer; Var S: String): Boolean;
 Var
   L, R, V, Index: LongInt;
-  ArrayNode, HashNode, Arg: Integer;
-  Key: String;
+  ArrayNode, HashNode, RangeNode, Arg: Integer;
+  Key, LS, RS: String;
 Begin
   S := '';
   StaticOutputText := False;
@@ -7540,6 +7612,11 @@ Begin
       End;
       S := ItoS(V);
       StaticOutputText := True;
+    End Else If (AstTable[N].Tok = Ord('+')) And
+                StaticOutputText(AstTable[N].Left, LS) And
+                StaticOutputText(AstTable[N].Right, RS) Then Begin
+      S := LS + RS;
+      StaticOutputText := True;
     End;
   End Else If AstTable[N].Kind = NK_INDEX Then Begin
     If StaticArrayNodeFromExpr(AstTable[N].Left, ArrayNode) And
@@ -7556,7 +7633,15 @@ Begin
         StaticOutputText := StaticHashElementText(HashNode, Key, S);
     End;
   End Else If AstTable[N].Kind = NK_CALL Then Begin
-    StaticOutputText := StaticMethodCallText(N, S);
+    If (AstTable[N].Text = '.') And (AstTable[N].Third <> 0) And
+       (NodeMethodName(AstTable[N].Third) = 'include?') And
+       StaticRangeNodeFromExpr(AstTable[N].Left, RangeNode) And
+       (AstTable[N].Right <> 0) And
+       (AstTable[AstTable[N].Right].Kind = NK_LIST) Then Begin
+      Arg := AstTable[AstTable[N].Right].FirstChild;
+      StaticOutputText := StaticRangeIncludeText(RangeNode, Arg, S);
+    End Else
+      StaticOutputText := StaticMethodCallText(N, S);
   End;
 End;
 
@@ -7597,24 +7682,45 @@ End;
 
 Procedure CollectConsoleOutputs(N: Integer);
 Var
-  Target, Args, A, C, Iter, ArrayNode, HashNode, Elem, Blk, Param,
-  MethodNode: Integer;
-  Name, S, ClassName, M: String;
+  Target, Args, A, C, Iter, ArrayNode, HashNode, RangeNode, Elem, Blk, Param,
+  MethodNode, ModuleNode, BodyNode, ModList, ModNode: Integer;
+  Name, S, ClassName, M, ModuleName: String;
+  Count, StartVal, EndVal, IterVal: LongInt;
   AddNL: Boolean;
   B: Boolean;
   Code: Integer;
 Begin
   If N = 0 Then Exit;
+  If (AstTable[N].Kind = NK_MODULE) And (AstTable[N].Left <> 0) Then Begin
+    ModuleName := AstTable[AstTable[N].Left].Text;
+    SetStaticValue('#MODULE_NODE:' + ModuleName, ItoS(N));
+    RegisterStaticMethodsInBody(ModuleName, AstTable[N].Right);
+    Exit;
+  End;
   If (AstTable[N].Kind = NK_CLASS) And (AstTable[N].Left <> 0) Then Begin
     ClassName := AstTable[AstTable[N].Left].Text;
+    BodyNode := AstTable[N].Right;
+    If (BodyNode = 0) And (AstTable[N].Third <> 0) Then
+      BodyNode := AstTable[N].Third;
+    RegisterStaticMethodsInBody(ClassName, BodyNode);
     C := 0;
-    If AstTable[N].Right <> 0 Then C := AstTable[AstTable[N].Right].FirstChild;
-    If (C = 0) And (AstTable[N].Third <> 0) Then
-      C := AstTable[AstTable[N].Third].FirstChild;
+    If BodyNode <> 0 Then C := AstTable[BodyNode].FirstChild;
     While C <> 0 Do Begin
-      If (AstTable[C].Kind = NK_DEF) And (AstTable[C].Left <> 0) Then
-        SetStaticValue('#METHOD:' + ClassName + '#' +
-                       AstTable[AstTable[C].Left].Text, ItoS(C));
+      If (AstTable[C].Kind = NK_MIXIN) And (AstTable[C].Text = 'include') Then Begin
+        ModList := AstTable[C].Left;
+        If ModList <> 0 Then Begin
+          ModNode := AstTable[ModList].FirstChild;
+          While ModNode <> 0 Do Begin
+            ModuleName := AstTable[ModNode].Text;
+            If GetStaticValue('#MODULE_NODE:' + ModuleName, M) Then Begin
+              Val(M, ModuleNode, Code);
+              If Code = 0 Then
+                RegisterStaticMethodsInBody(ClassName, AstTable[ModuleNode].Right);
+            End;
+            ModNode := AstTable[ModNode].NextSibling;
+          End;
+        End;
+      End;
       C := AstTable[C].NextSibling;
     End;
     Exit;
@@ -7645,6 +7751,8 @@ Begin
       SetStaticValue(AstTable[AstTable[N].Left].Text, '#ARR:' + ItoS(ArrayNode))
     Else If StaticHashNodeFromExpr(AstTable[N].Right, HashNode) Then
       SetStaticValue(AstTable[AstTable[N].Left].Text, '#HASH:' + ItoS(HashNode))
+    Else If StaticRangeNodeFromExpr(AstTable[N].Right, RangeNode) Then
+      SetStaticValue(AstTable[AstTable[N].Left].Text, '#RANGE:' + ItoS(RangeNode))
     Else If StaticOutputText(AstTable[N].Right, S) Then
       SetStaticValue(AstTable[AstTable[N].Left].Text, S);
   End;
@@ -7671,6 +7779,33 @@ Begin
   If (AstTable[N].Kind = NK_CALL) And (AstTable[N].Text = '.') And
      (AstTable[N].Third <> 0) And
      (NodeMethodName(AstTable[N].Third) = 'each') And
+     StaticRangeNodeFromExpr(AstTable[N].Left, RangeNode) Then Begin
+    If StaticIntegerValue(AstTable[RangeNode].Left, StartVal) And
+       StaticIntegerValue(AstTable[RangeNode].Right, EndVal) Then Begin
+      Blk := AstTable[N].FirstChild;
+      If Blk <> 0 Then Begin
+        Param := 0;
+        If AstTable[Blk].Left <> 0 Then
+          Param := AstTable[AstTable[Blk].Left].FirstChild;
+        Iter := 0;
+        IterVal := StartVal;
+        While ((AstTable[RangeNode].Tok = TOK_DOTDOT) And (IterVal <= EndVal)) Or
+              ((AstTable[RangeNode].Tok = TOK_DOTDOTDOT) And (IterVal < EndVal)) Do Begin
+          If Param <> 0 Then
+            SetStaticValue(AstTable[Param].Text, ItoS(IterVal));
+          CollectConsoleOutputs(AstTable[Blk].Right);
+          Inc(IterVal);
+          Inc(Iter);
+          If Iter > 1000 Then
+            FatalError('boucle statique trop longue');
+        End;
+      End;
+    End;
+    Exit;
+  End;
+  If (AstTable[N].Kind = NK_CALL) And (AstTable[N].Text = '.') And
+     (AstTable[N].Third <> 0) And
+     (NodeMethodName(AstTable[N].Third) = 'each') And
      StaticArrayNodeFromExpr(AstTable[N].Left, ArrayNode) Then Begin
     Blk := AstTable[N].FirstChild;
     If Blk <> 0 Then Begin
@@ -7683,6 +7818,25 @@ Begin
           SetStaticValue(AstTable[Param].Text, S);
         CollectConsoleOutputs(AstTable[Blk].Right);
         Elem := AstTable[Elem].NextSibling;
+      End;
+    End;
+    Exit;
+  End;
+  If (AstTable[N].Kind = NK_CALL) And (AstTable[N].Text = '.') And
+     (AstTable[N].Third <> 0) And
+     (NodeMethodName(AstTable[N].Third) = 'times') And
+     StaticIntegerValue(AstTable[N].Left, Count) Then Begin
+    Blk := AstTable[N].FirstChild;
+    If (Blk <> 0) And (Count > 0) Then Begin
+      Param := 0;
+      If AstTable[Blk].Left <> 0 Then
+        Param := AstTable[AstTable[Blk].Left].FirstChild;
+      Iter := 0;
+      While Iter < Count Do Begin
+        If Param <> 0 Then
+          SetStaticValue(AstTable[Param].Text, ItoS(Iter));
+        CollectConsoleOutputs(AstTable[Blk].Right);
+        Inc(Iter);
       End;
     End;
     Exit;
