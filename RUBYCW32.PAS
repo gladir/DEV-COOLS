@@ -7315,6 +7315,7 @@ End;
 
 Function StaticOutputText(N: Integer; Var S: String): Boolean; Forward;
 Function StaticIntegerValue(N: Integer; Var V: LongInt): Boolean; Forward;
+Function StaticRangeIncludeText(RangeNode, ValueNode: Integer; Var S: String): Boolean; Forward;
 
 Function StaticBindMethodArgs(MethodNode, Args: Integer): Boolean;
 Var
@@ -7388,6 +7389,85 @@ Begin
   If Copy(Text, 1, 5) <> '#EXC:' Then Exit;
   Message := Copy(Text, 6, Length(Text) - 5);
   StaticExceptionMarker := True;
+End;
+
+Function StaticJsonMarker(Text: String; Var Json: String): Boolean;
+Begin
+  StaticJsonMarker := False;
+  Json := '';
+  If Copy(Text, 1, 6) <> '#JSON:' Then Exit;
+  Json := Copy(Text, 7, Length(Text) - 6);
+  StaticJsonMarker := True;
+End;
+
+Function StaticSetMarker(Text: String; Var SetName: String): Boolean;
+Begin
+  StaticSetMarker := False;
+  SetName := '';
+  If Copy(Text, 1, 5) <> '#SET:' Then Exit;
+  SetName := Copy(Text, 6, Length(Text) - 5);
+  StaticSetMarker := SetName <> '';
+End;
+
+Function StaticRationalMarker(Text: String; Var Num, Den: String): Boolean;
+Var
+  P: Integer;
+Begin
+  StaticRationalMarker := False;
+  Num := '';
+  Den := '';
+  If Copy(Text, 1, 5) <> '#RAT:' Then Exit;
+  P := Pos('/', Copy(Text, 6, Length(Text) - 5));
+  If P = 0 Then Exit;
+  Num := Copy(Text, 6, P - 1);
+  Den := Copy(Text, 6 + P, Length(Text) - 5 - P);
+  StaticRationalMarker := True;
+End;
+
+Function StaticComplexMarker(Text: String; Var RealPart, ImagPart: String): Boolean;
+Var
+  P: Integer;
+  Body: String;
+Begin
+  StaticComplexMarker := False;
+  RealPart := '';
+  ImagPart := '';
+  If Copy(Text, 1, 5) <> '#CPX:' Then Exit;
+  Body := Copy(Text, 6, Length(Text) - 5);
+  P := Pos(',', Body);
+  If P = 0 Then Exit;
+  RealPart := Copy(Body, 1, P - 1);
+  ImagPart := Copy(Body, P + 1, Length(Body) - P);
+  StaticComplexMarker := True;
+End;
+
+Function StaticJsonValueText(Json, Key: String; Var S: String): Boolean;
+Var
+  P, I, Start: Integer;
+Begin
+  StaticJsonValueText := False;
+  S := '';
+  P := Pos('"' + Key + '"', Json);
+  If P = 0 Then Exit;
+  I := P + Length(Key) + 2;
+  While (I <= Length(Json)) And (Json[I] <> ':') Do Inc(I);
+  If I > Length(Json) Then Exit;
+  Inc(I);
+  While (I <= Length(Json)) And ((Json[I] = ' ') Or (Json[I] = #9)) Do Inc(I);
+  If I > Length(Json) Then Exit;
+  If Json[I] = '"' Then Begin
+    Inc(I);
+    Start := I;
+    While (I <= Length(Json)) And (Json[I] <> '"') Do Inc(I);
+    S := Copy(Json, Start, I - Start);
+  End Else Begin
+    Start := I;
+    While (I <= Length(Json)) And (Json[I] <> ',') And (Json[I] <> '}') Do Inc(I);
+    S := Copy(Json, Start, I - Start);
+    While (Length(S) > 0) And (S[Length(S)] = ' ') Do
+      Delete(S, Length(S), 1);
+  End;
+  StaticJsonValueText := True;
 End;
 
 Function StaticArrayNodeFromExpr(N: Integer; Var ArrayNode: Integer): Boolean;
@@ -7718,6 +7798,22 @@ Begin
   StaticRegexMatchDataText := True;
 End;
 
+Function StaticCasePatternMatches(PatternNode, ValueNode: Integer): Boolean;
+Var
+  VS, PS, RS: String;
+  RangeNode: Integer;
+Begin
+  StaticCasePatternMatches := False;
+  If (PatternNode = 0) Or (ValueNode = 0) Then Exit;
+  If StaticRangeNodeFromExpr(PatternNode, RangeNode) Then Begin
+    StaticCasePatternMatches := StaticRangeIncludeText(RangeNode, ValueNode, RS) And
+                                (RS = 'true');
+    Exit;
+  End;
+  If StaticOutputText(ValueNode, VS) And StaticOutputText(PatternNode, PS) Then
+    StaticCasePatternMatches := VS = PS;
+End;
+
 Function StaticRangeIncludeText(RangeNode, ValueNode: Integer;
                                 Var S: String): Boolean;
 Var
@@ -7835,7 +7931,8 @@ Function StaticOutputText(N: Integer; Var S: String): Boolean;
 Var
   L, R, V, Index: LongInt;
   ArrayNode, HashNode, RangeNode, Arg: Integer;
-  Key, LS, RS, ExcMsg, Path, Content: String;
+  Key, LS, RS, ExcMsg, Path, Content, Json, SetName, Num, Den, RealPart,
+  ImagPart: String;
 Begin
   S := '';
   StaticOutputText := False;
@@ -7845,6 +7942,10 @@ Begin
     StaticOutputText := True;
   End Else If (AstTable[N].Kind = NK_LITERAL) And
               (AstTable[N].Tok = TOK_INTEGER) Then Begin
+    S := AstTable[N].Text;
+    StaticOutputText := True;
+  End Else If (AstTable[N].Kind = NK_LITERAL) And
+              (AstTable[N].Tok = TOK_FLOAT) Then Begin
     S := AstTable[N].Text;
     StaticOutputText := True;
   End Else If AstTable[N].Tok = KW_TRUE Then Begin
@@ -7891,9 +7992,45 @@ Begin
       Arg := AstTable[AstTable[N].Right].FirstChild;
       If StaticKeyText(Arg, Key) Then
         StaticOutputText := StaticHashElementText(HashNode, Key, S);
+    End Else If (AstTable[N].Left <> 0) And
+                (AstTable[AstTable[N].Left].Kind = NK_VAR) And
+                GetStaticValue(AstTable[AstTable[N].Left].Text, Json) And
+                StaticJsonMarker(Json, Json) And
+                (AstTable[N].Right <> 0) And
+                (AstTable[AstTable[N].Right].Kind = NK_LIST) Then Begin
+      Arg := AstTable[AstTable[N].Right].FirstChild;
+      If StaticKeyText(Arg, Key) Then
+        StaticOutputText := StaticJsonValueText(Json, Key, S);
     End;
   End Else If AstTable[N].Kind = NK_CALL Then Begin
-    If StaticFileCall(N, 'exist?') And
+    If (AstTable[N].Text = '.') And (AstTable[N].Third <> 0) And
+       (NodeMethodName(AstTable[N].Third) = 'next') And
+       StaticIntegerValue(AstTable[N].Left, L) Then Begin
+      S := ItoS(L + 1);
+      StaticOutputText := True;
+    End Else If (AstTable[N].Text = '.') And (AstTable[N].Third <> 0) And
+       (NodeMethodName(AstTable[N].Third) = 'to_i') And
+       StaticOutputText(AstTable[N].Left, LS) Then Begin
+      Index := Pos('.', LS);
+      If Index > 0 Then S := Copy(LS, 1, Index - 1)
+      Else S := LS;
+      StaticOutputText := True;
+    End Else If (AstTable[N].Text = '.') And (AstTable[N].Third <> 0) And
+       (NodeMethodName(AstTable[N].Third) = 'to_s') And
+       StaticOutputText(AstTable[N].Left, LS) And
+       StaticRationalMarker(LS, Num, Den) Then Begin
+      S := Num + '/' + Den;
+      StaticOutputText := True;
+    End Else If (AstTable[N].Text = '.') And (AstTable[N].Third <> 0) And
+       (NodeMethodName(AstTable[N].Third) = 'to_s') And
+       StaticOutputText(AstTable[N].Left, LS) And
+       StaticComplexMarker(LS, RealPart, ImagPart) Then Begin
+      If (Length(ImagPart) > 0) And (ImagPart[1] = '-') Then
+        S := RealPart + ImagPart + 'i'
+      Else
+        S := RealPart + '+' + ImagPart + 'i';
+      StaticOutputText := True;
+    End Else If StaticFileCall(N, 'exist?') And
        StaticFileArgText(AstTable[N].Right, 0, Path) Then Begin
       If StaticFileContent(Path, Content) Then S := 'true'
       Else S := 'false';
@@ -7916,6 +8053,20 @@ Begin
        (AstTable[AstTable[N].Right].Kind = NK_LIST) Then Begin
       Arg := AstTable[AstTable[N].Right].FirstChild;
       StaticOutputText := StaticRegexMatchDataText(AstTable[N].Left, Arg, S);
+    End Else If (AstTable[N].Text = '.') And (AstTable[N].Third <> 0) And
+       (NodeMethodName(AstTable[N].Third) = 'include?') And
+       (AstTable[N].Left <> 0) And
+       (AstTable[AstTable[N].Left].Kind = NK_VAR) And
+       GetStaticValue(AstTable[AstTable[N].Left].Text, SetName) And
+       StaticSetMarker(SetName, SetName) And
+       (AstTable[N].Right <> 0) And
+       (AstTable[AstTable[N].Right].Kind = NK_LIST) Then Begin
+      Arg := AstTable[AstTable[N].Right].FirstChild;
+      If StaticOutputText(Arg, Key) Then Begin
+        If GetStaticValue('#SETITEM:' + SetName + ':' + Key, Content) Then S := 'true'
+        Else S := 'false';
+        StaticOutputText := True;
+      End;
     End Else If (AstTable[N].Text = '.') And (AstTable[N].Third <> 0) And
        (NodeMethodName(AstTable[N].Third) = 'include?') And
        StaticRangeNodeFromExpr(AstTable[N].Left, RangeNode) And
@@ -7972,13 +8123,30 @@ Var
   Target, Args, A, C, Iter, ArrayNode, HashNode, RangeNode, Elem, Blk, Param,
   MethodNode, ModuleNode, BodyNode, ModList, ModNode, RescueNode, PairNode,
   EnsureNode: Integer;
-  Name, S, ClassName, M, ModuleName, RaisedClass, Path, Content: String;
+  Name, S, ClassName, M, ModuleName, RaisedClass, Path, Content, SetName: String;
   Count, StartVal, EndVal, IterVal: LongInt;
   AddNL: Boolean;
   B: Boolean;
   Code: Integer;
 Begin
   If N = 0 Then Exit;
+  If AstTable[N].Kind = NK_CASE Then Begin
+    C := 0;
+    If AstTable[N].Right <> 0 Then
+      C := AstTable[AstTable[N].Right].FirstChild;
+    While C <> 0 Do Begin
+      If (AstTable[C].Kind = NK_WHEN) And
+         StaticCasePatternMatches(AstTable[C].Left, AstTable[N].Left) Then Begin
+        CollectConsoleOutputs(AstTable[C].Right);
+        Exit;
+      End Else If AstTable[C].Kind <> NK_WHEN Then Begin
+        CollectConsoleOutputs(C);
+        Exit;
+      End;
+      C := AstTable[C].NextSibling;
+    End;
+    Exit;
+  End;
   If AstTable[N].Kind = NK_BEGIN Then Begin
     If StaticRaiseInfo(AstTable[N].Left, S, RaisedClass) Then Begin
       RescueNode := 0;
@@ -8055,6 +8223,15 @@ Begin
     SetStaticValue('#FILE:' + Path, '#DELETED');
     Exit;
   End;
+  If (AstTable[N].Kind = NK_CALL) And (AstTable[N].Text = '.') And
+     (AstTable[N].Third <> 0) And (NodeMethodName(AstTable[N].Third) = 'add') And
+     (AstTable[N].Left <> 0) And (AstTable[AstTable[N].Left].Kind = NK_VAR) And
+     GetStaticValue(AstTable[AstTable[N].Left].Text, SetName) And
+     StaticSetMarker(SetName, SetName) And
+     StaticFileArgText(AstTable[N].Right, 0, Content) Then Begin
+    SetStaticValue('#SETITEM:' + SetName + ':' + Content, 'true');
+    Exit;
+  End;
   If (AstTable[N].Kind = NK_ASSIGN) And
      (AstTable[N].Left <> 0) And
      (AstTable[AstTable[N].Left].Kind = NK_VAR) Then Begin
@@ -8063,6 +8240,7 @@ Begin
        (AstTable[AstTable[N].Right].Text = '.') And
        (AstTable[AstTable[N].Right].Left <> 0) And
        (AstTable[AstTable[AstTable[N].Right].Left].Kind = NK_CONST) And
+       (AstTable[AstTable[AstTable[N].Right].Left].Text <> 'Set') And
        (AstTable[AstTable[N].Right].Third <> 0) And
        (NodeMethodName(AstTable[AstTable[N].Right].Third) = 'new') Then Begin
       ClassName := AstTable[AstTable[AstTable[N].Right].Left].Text;
@@ -8073,6 +8251,44 @@ Begin
           CollectConsoleOutputs(AstTable[MethodNode].Third);
       End;
       SetStaticValue(AstTable[AstTable[N].Left].Text, '#OBJ:' + ClassName);
+    End Else If (AstTable[N].Right <> 0) And
+       (AstTable[AstTable[N].Right].Kind = NK_CALL) And
+       (AstTable[AstTable[N].Right].Text = '.') And
+       (AstTable[AstTable[N].Right].Left <> 0) And
+       (AstTable[AstTable[AstTable[N].Right].Left].Kind = NK_CONST) And
+       (AstTable[AstTable[AstTable[N].Right].Left].Text = 'JSON') And
+       (AstTable[AstTable[N].Right].Third <> 0) And
+       (NodeMethodName(AstTable[AstTable[N].Right].Third) = 'parse') And
+       StaticFileArgText(AstTable[AstTable[N].Right].Right, 0, Content) Then Begin
+      SetStaticValue(AstTable[AstTable[N].Left].Text, '#JSON:' + Content);
+    End Else If (AstTable[N].Right <> 0) And
+       (AstTable[AstTable[N].Right].Kind = NK_CALL) And
+       (AstTable[AstTable[N].Right].Text = '.') And
+       (AstTable[AstTable[N].Right].Left <> 0) And
+       (AstTable[AstTable[AstTable[N].Right].Left].Kind = NK_CONST) And
+       (AstTable[AstTable[AstTable[N].Right].Left].Text = 'Set') And
+       (AstTable[AstTable[N].Right].Third <> 0) And
+       (NodeMethodName(AstTable[AstTable[N].Right].Third) = 'new') Then Begin
+      SetStaticValue(AstTable[AstTable[N].Left].Text,
+                     '#SET:' + AstTable[AstTable[N].Left].Text);
+    End Else If (AstTable[N].Right <> 0) And
+       (AstTable[AstTable[N].Right].Kind = NK_CALL) And
+       (AstTable[AstTable[N].Right].Text = 'call') And
+       (AstTable[AstTable[N].Right].Left <> 0) And
+       (AstTable[AstTable[AstTable[N].Right].Left].Kind = NK_CONST) And
+       (AstTable[AstTable[AstTable[N].Right].Left].Text = 'Rational') And
+       StaticFileArgText(AstTable[AstTable[N].Right].Right, 0, S) And
+       StaticFileArgText(AstTable[AstTable[N].Right].Right, 1, Content) Then Begin
+      SetStaticValue(AstTable[AstTable[N].Left].Text, '#RAT:' + S + '/' + Content);
+    End Else If (AstTable[N].Right <> 0) And
+       (AstTable[AstTable[N].Right].Kind = NK_CALL) And
+       (AstTable[AstTable[N].Right].Text = 'call') And
+       (AstTable[AstTable[N].Right].Left <> 0) And
+       (AstTable[AstTable[AstTable[N].Right].Left].Kind = NK_CONST) And
+       (AstTable[AstTable[AstTable[N].Right].Left].Text = 'Complex') And
+       StaticFileArgText(AstTable[AstTable[N].Right].Right, 0, S) And
+       StaticFileArgText(AstTable[AstTable[N].Right].Right, 1, Content) Then Begin
+      SetStaticValue(AstTable[AstTable[N].Left].Text, '#CPX:' + S + ',' + Content);
     End Else If StaticArrayNodeFromExpr(AstTable[N].Right, ArrayNode) Then
       SetStaticValue(AstTable[AstTable[N].Left].Text, '#ARR:' + ItoS(ArrayNode))
     Else If StaticHashNodeFromExpr(AstTable[N].Right, HashNode) Then
