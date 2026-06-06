@@ -593,6 +593,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer le compilateur PHP pour l'assembleur du microprocesseur 8086 ou 8088.</td>
 		</tr>
 		<tr>
+			<td><b>PHPCW32.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur PHP pour l'assembleur du microprocesseur 80386 (en executable Windows 32 bits).</td>
+		</tr>
+		<tr>
 			<td><b>PLI86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur PL/I pour 8086/8088.</td>
 		</tr>
