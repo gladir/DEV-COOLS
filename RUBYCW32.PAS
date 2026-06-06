@@ -536,6 +536,7 @@ Const
   MAX_BIN_FIXUP = 2048;
   MAX_BIN_IMPORT = 128;
   MAX_BIN_OUTPUT = 256;
+  MAX_BIN_FILE_OP = 128;
   MAX_STATIC_VALUE = 512;
 
   ASM_PFX_GVAR = '_RB_';
@@ -1069,6 +1070,12 @@ Type
     Text: String;
   End;
 
+  TBinFileOp = Record
+    Kind: Integer;
+    Path: String;
+    Text: String;
+  End;
+
   TStaticValue = Record
     Name: String;
     Text: String;
@@ -1079,6 +1086,7 @@ Type
   TBinFixupTable = Array[1..MAX_BIN_FIXUP] Of TBinFixup;
   TBinImportTable = Array[1..MAX_BIN_IMPORT] Of TBinImport;
   TBinOutputTable = Array[1..MAX_BIN_OUTPUT] Of TBinOutput;
+  TBinFileOpTable = Array[1..MAX_BIN_FILE_OP] Of TBinFileOp;
   TStaticValueTable = Array[1..MAX_STATIC_VALUE] Of TStaticValue;
 
   TClassInfo = Record
@@ -1206,6 +1214,8 @@ Var
   BinImportCount: Integer;
   BinOutputs: TBinOutputTable;
   BinOutputCount: Integer;
+  BinFileOps: TBinFileOpTable;
+  BinFileOpCount: Integer;
   StaticValues: TStaticValueTable;
   StaticValueCount: Integer;
   AstTable: TASTTable;
@@ -7244,6 +7254,26 @@ Begin
   BinOutputs[BinOutputCount].Text := S;
 End;
 
+Procedure AddFileWriteOp(Path, Text: String);
+Begin
+  If BinFileOpCount >= MAX_BIN_FILE_OP Then
+    FatalError('trop d operations fichier statiques');
+  Inc(BinFileOpCount);
+  BinFileOps[BinFileOpCount].Kind := 1;
+  BinFileOps[BinFileOpCount].Path := Path;
+  BinFileOps[BinFileOpCount].Text := Text;
+End;
+
+Procedure AddFileDeleteOp(Path: String);
+Begin
+  If BinFileOpCount >= MAX_BIN_FILE_OP Then
+    FatalError('trop d operations fichier statiques');
+  Inc(BinFileOpCount);
+  BinFileOps[BinFileOpCount].Kind := 2;
+  BinFileOps[BinFileOpCount].Path := Path;
+  BinFileOps[BinFileOpCount].Text := '';
+End;
+
 Procedure ClearStaticValues;
 Begin
   FillChar(StaticValues, SizeOf(StaticValues), 0);
@@ -7414,6 +7444,40 @@ Begin
   If N = 0 Then Exit;
   If (AstTable[N].Kind = NK_VAR) And GetStaticValue(AstTable[N].Text, S) Then
     StaticObjectClassFromExpr := StaticObjectMarker(S, ClassName);
+End;
+
+Function StaticFileCall(N: Integer; MethodName: String): Boolean;
+Begin
+  StaticFileCall := (N <> 0) And (AstTable[N].Kind = NK_CALL) And
+                    (AstTable[N].Text = '.') And
+                    (AstTable[N].Left <> 0) And
+                    (AstTable[AstTable[N].Left].Kind = NK_CONST) And
+                    (AstTable[AstTable[N].Left].Text = 'File') And
+                    (AstTable[N].Third <> 0) And
+                    (NodeMethodName(AstTable[N].Third) = MethodName);
+End;
+
+Function StaticFileArgText(Args: Integer; Index: Integer; Var S: String): Boolean;
+Var
+  A, I: Integer;
+Begin
+  StaticFileArgText := False;
+  S := '';
+  If (Args = 0) Or (AstTable[Args].Kind <> NK_LIST) Or (Index < 0) Then Exit;
+  A := AstTable[Args].FirstChild;
+  I := 0;
+  While (A <> 0) And (I < Index) Do Begin
+    A := AstTable[A].NextSibling;
+    Inc(I);
+  End;
+  If A <> 0 Then
+    StaticFileArgText := StaticOutputText(A, S);
+End;
+
+Function StaticFileContent(Path: String; Var Content: String): Boolean;
+Begin
+  StaticFileContent := GetStaticValue('#FILE:' + Path, Content) And
+                       (Content <> '#DELETED');
 End;
 
 Function StaticRaiseInfo(N: Integer; Var Message, ClassName: String): Boolean;
@@ -7771,7 +7835,7 @@ Function StaticOutputText(N: Integer; Var S: String): Boolean;
 Var
   L, R, V, Index: LongInt;
   ArrayNode, HashNode, RangeNode, Arg: Integer;
-  Key, LS, RS, ExcMsg: String;
+  Key, LS, RS, ExcMsg, Path, Content: String;
 Begin
   S := '';
   StaticOutputText := False;
@@ -7829,7 +7893,16 @@ Begin
         StaticOutputText := StaticHashElementText(HashNode, Key, S);
     End;
   End Else If AstTable[N].Kind = NK_CALL Then Begin
-    If (AstTable[N].Text = '.') And (AstTable[N].Third <> 0) And
+    If StaticFileCall(N, 'exist?') And
+       StaticFileArgText(AstTable[N].Right, 0, Path) Then Begin
+      If StaticFileContent(Path, Content) Then S := 'true'
+      Else S := 'false';
+      StaticOutputText := True;
+    End Else If StaticFileCall(N, 'read') And
+                StaticFileArgText(AstTable[N].Right, 0, Path) Then Begin
+      If Not StaticFileContent(Path, S) Then S := '';
+      StaticOutputText := True;
+    End Else If (AstTable[N].Text = '.') And (AstTable[N].Third <> 0) And
        (NodeMethodName(AstTable[N].Third) = 'message') And
        (AstTable[N].Left <> 0) And
        (AstTable[AstTable[N].Left].Kind = NK_VAR) And
@@ -7899,7 +7972,7 @@ Var
   Target, Args, A, C, Iter, ArrayNode, HashNode, RangeNode, Elem, Blk, Param,
   MethodNode, ModuleNode, BodyNode, ModList, ModNode, RescueNode, PairNode,
   EnsureNode: Integer;
-  Name, S, ClassName, M, ModuleName, RaisedClass: String;
+  Name, S, ClassName, M, ModuleName, RaisedClass, Path, Content: String;
   Count, StartVal, EndVal, IterVal: LongInt;
   AddNL: Boolean;
   B: Boolean;
@@ -7967,6 +8040,19 @@ Begin
   End;
   If (AstTable[N].Kind = NK_DEF) And (AstTable[N].Left <> 0) Then Begin
     SetStaticValue('#METHOD:' + AstTable[AstTable[N].Left].Text, ItoS(N));
+    Exit;
+  End;
+  If StaticFileCall(N, 'write') And
+     StaticFileArgText(AstTable[N].Right, 0, Path) And
+     StaticFileArgText(AstTable[N].Right, 1, Content) Then Begin
+    AddFileWriteOp(Path, Content);
+    SetStaticValue('#FILE:' + Path, Content);
+    Exit;
+  End;
+  If StaticFileCall(N, 'delete') And
+     StaticFileArgText(AstTable[N].Right, 0, Path) Then Begin
+    AddFileDeleteOp(Path);
+    SetStaticValue('#FILE:' + Path, '#DELETED');
     Exit;
   End;
   If (AstTable[N].Kind = NK_ASSIGN) And
@@ -8126,27 +8212,40 @@ Begin
 End;
 
 Procedure BuildImportRData(RDataRva: LongInt; Var ImportRva, ImportSize,
-                           IatExitVA, IatGetStdVA, IatWriteVA: LongInt);
+                           IatExitVA, IatGetStdVA, IatWriteVA,
+                           IatCreateVA, IatCloseVA, IatDeleteVA: LongInt);
 Var
-  DescOff, IltOff, IatOff, DllOff, HExit, HGet, HWrite: LongInt;
+  DescOff, IltOff, IatOff, DllOff, HExit, HGet, HWrite,
+  HCreate, HClose, HDelete: LongInt;
 Begin
   DescOff := BinRDataSize;
   BinRDataEmit32(0); BinRDataEmit32(0); BinRDataEmit32(0); BinRDataEmit32(0); BinRDataEmit32(0);
   BinRDataEmit32(0); BinRDataEmit32(0); BinRDataEmit32(0); BinRDataEmit32(0); BinRDataEmit32(0);
   IltOff := BinRDataSize;
   BinRDataEmit32(0); BinRDataEmit32(0); BinRDataEmit32(0); BinRDataEmit32(0);
+  BinRDataEmit32(0); BinRDataEmit32(0); BinRDataEmit32(0);
   IatOff := BinRDataSize;
   BinRDataEmit32(0); BinRDataEmit32(0); BinRDataEmit32(0); BinRDataEmit32(0);
+  BinRDataEmit32(0); BinRDataEmit32(0); BinRDataEmit32(0);
   HExit := BinRDataAddHintName('ExitProcess');
   HGet := BinRDataAddHintName('GetStdHandle');
   HWrite := BinRDataAddHintName('WriteFile');
+  HCreate := BinRDataAddHintName('CreateFileA');
+  HClose := BinRDataAddHintName('CloseHandle');
+  HDelete := BinRDataAddHintName('DeleteFileA');
   DllOff := BinRDataAddCString('KERNEL32.DLL');
   BinRDataPatch32(IltOff, RDataRva + HExit);
   BinRDataPatch32(IltOff + 4, RDataRva + HGet);
   BinRDataPatch32(IltOff + 8, RDataRva + HWrite);
+  BinRDataPatch32(IltOff + 12, RDataRva + HCreate);
+  BinRDataPatch32(IltOff + 16, RDataRva + HClose);
+  BinRDataPatch32(IltOff + 20, RDataRva + HDelete);
   BinRDataPatch32(IatOff, RDataRva + HExit);
   BinRDataPatch32(IatOff + 4, RDataRva + HGet);
   BinRDataPatch32(IatOff + 8, RDataRva + HWrite);
+  BinRDataPatch32(IatOff + 12, RDataRva + HCreate);
+  BinRDataPatch32(IatOff + 16, RDataRva + HClose);
+  BinRDataPatch32(IatOff + 20, RDataRva + HDelete);
   BinRDataPatch32(DescOff, RDataRva + IltOff);
   BinRDataPatch32(DescOff + 12, RDataRva + DllOff);
   BinRDataPatch32(DescOff + 16, RDataRva + IatOff);
@@ -8155,22 +8254,62 @@ Begin
   IatExitVA := PE_IMG_BASE + RDataRva + IatOff;
   IatGetStdVA := PE_IMG_BASE + RDataRva + IatOff + 4;
   IatWriteVA := PE_IMG_BASE + RDataRva + IatOff + 8;
+  IatCreateVA := PE_IMG_BASE + RDataRva + IatOff + 12;
+  IatCloseVA := PE_IMG_BASE + RDataRva + IatOff + 16;
+  IatDeleteVA := PE_IMG_BASE + RDataRva + IatOff + 20;
 End;
 
 Procedure BinBuildConsoleExe(RDataRva, DataRva: LongInt;
                              Var ImportRva, ImportSize: LongInt);
 Var
   I: Integer;
-  MsgOff, WrittenOff, IatExitVA, IatGetStdVA, IatWriteVA: LongInt;
+  MsgOff, OutputBaseOff, WrittenOff, IatExitVA, IatGetStdVA, IatWriteVA,
+  IatCreateVA, IatCloseVA, IatDeleteVA: LongInt;
+  FilePathOff, FileTextOff: Array[1..MAX_BIN_FILE_OP] Of LongInt;
 Begin
   BinClear;
   WrittenOff := BinDataSize;
   BinDataEmit32(0);
+  For I := 1 To BinFileOpCount Do Begin
+    FilePathOff[I] := BinRDataAddCString(BinFileOps[I].Path);
+    If BinFileOps[I].Kind = 1 Then
+      FileTextOff[I] := BinRDataAddBytes(BinFileOps[I].Text)
+    Else
+      FileTextOff[I] := 0;
+  End;
+  OutputBaseOff := BinRDataSize;
   For I := 1 To BinOutputCount Do
     BinRDataAddBytes(BinOutputs[I].Text);
   BuildImportRData(RDataRva, ImportRva, ImportSize,
-                   IatExitVA, IatGetStdVA, IatWriteVA);
+                   IatExitVA, IatGetStdVA, IatWriteVA,
+                   IatCreateVA, IatCloseVA, IatDeleteVA);
   BinDefineLabel('_RBSTART');
+  For I := 1 To BinFileOpCount Do Begin
+    If BinFileOps[I].Kind = 1 Then Begin
+      BinEmitPushImm32(0);
+      BinEmitPushImm32($80);
+      BinEmitPushImm32(2);
+      BinEmitPushImm32(0);
+      BinEmitPushImm32(0);
+      BinEmitPushImm32($40000000);
+      BinEmitPushImm32(PE_IMG_BASE + RDataRva + FilePathOff[I]);
+      BinEmitCallAbs(IatCreateVA);
+      BinEmit8($8B); BinEmit8($D8);
+      If Length(BinFileOps[I].Text) > 0 Then Begin
+        BinEmitPushImm32(0);
+        BinEmitPushImm32(PE_IMG_BASE + DataRva + WrittenOff);
+        BinEmitPushImm32(Length(BinFileOps[I].Text));
+        BinEmitPushImm32(PE_IMG_BASE + RDataRva + FileTextOff[I]);
+        BinEmit8($53);
+        BinEmitCallAbs(IatWriteVA);
+      End;
+      BinEmit8($53);
+      BinEmitCallAbs(IatCloseVA);
+    End Else If BinFileOps[I].Kind = 2 Then Begin
+      BinEmitPushImm32(PE_IMG_BASE + RDataRva + FilePathOff[I]);
+      BinEmitCallAbs(IatDeleteVA);
+    End;
+  End;
   BinEmitPushImm32(-11);
   BinEmitCallAbs(IatGetStdVA);
   BinEmit8($8B); BinEmit8($D8);
@@ -8180,7 +8319,7 @@ Begin
       BinEmitPushImm32(0);
       BinEmitPushImm32(PE_IMG_BASE + DataRva + WrittenOff);
       BinEmitPushImm32(Length(BinOutputs[I].Text));
-      BinEmitPushImm32(PE_IMG_BASE + RDataRva + MsgOff);
+      BinEmitPushImm32(PE_IMG_BASE + RDataRva + OutputBaseOff + MsgOff);
       BinEmit8($53);
       BinEmitCallAbs(IatWriteVA);
     End;
@@ -8343,6 +8482,7 @@ Begin
   Root := ParseProgram;
   If ParseErrors <> 0 Then FatalError('generation EXE impossible: erreurs parse');
   BinOutputCount := 0;
+  BinFileOpCount := 0;
   ClearStaticValues;
   CollectConsoleOutputs(Root);
   TextRva := PE_SEC_ALIGN;
