@@ -18,7 +18,7 @@
   Avec le parametre -asm, produit egalement un fichier .ASM lisible.
   Supporte tous les exemples SAMPLES\RUST\*.
 
-  TODO 01 - INFRASTRUCTURE, OPTIONS ET MODE DE SORTIE
+  TODO 01 - INFRASTRUCTURE, OPTIONS ET MODE DE SORTIE [IMPLEMENTE]
             Definir TOptions : SrcFile, OutFile, Verbose, DebugMode,
               Warnings, EmitExe, EmitObj, EmitAsm, NoLink, OptLevel.
             ParseArgs : rustcw32 source.rs [-o out] [-v] [-d] [-w]
@@ -198,3 +198,331 @@
               des symboles principaux dans .ASM/.OBJ.
 
   ============================================================ *)
+
+Program RUSTCW32;
+
+{$IFDEF FPC}
+  {$MODE TP}
+  {$H-}
+{$ENDIF}
+{$I-}
+
+{ ============================================================ }
+{ INFRASTRUCTURE ET OPTIONS                                    }
+{ ============================================================ }
+
+Const
+  RUSTCW32_VERSION = '0.1';
+  RUSTCW32_DATE    = '2026';
+
+  EXIT_OK    = 0;
+  EXIT_ERROR = 1;
+  EXIT_USAGE = 2;
+
+  OPT_NONE     = 0;
+  OPT_BASIC    = 1;
+  OPT_ADVANCED = 2;
+
+Type
+  TString = String;
+
+  TOptions = Record
+    SrcFile   : TString;   { fichier source .rs                 }
+    OutFile   : TString;   { sortie principale .exe ou .obj     }
+    Verbose   : Boolean;   { -v : banniere et statistiques      }
+    DebugMode : Boolean;   { -d : debug tokens futur            }
+    Warnings  : Boolean;   { -w : afficher les avertissements   }
+    EmitExe   : Boolean;   { produire un .EXE PE Win32          }
+    EmitObj   : Boolean;   { produire un .OBJ COFF              }
+    EmitAsm   : Boolean;   { conserver un .ASM lisible          }
+    NoLink    : Boolean;   { ne pas lier, implique -obj         }
+    OptLevel  : Integer;   { 0..2                               }
+  End;
+
+Var
+  Opts       : TOptions;
+  ErrorCount : Integer;
+  WarnCount  : Integer;
+
+{ ------------------------------------------------------------ }
+{ Fonctions utilitaires                                        }
+{ ------------------------------------------------------------ }
+
+Function IntToStr_(V : LongInt) : TString;
+Var
+  S : TString;
+Begin
+  Str(V, S);
+  IntToStr_ := S;
+End;
+
+Function StrLowerCase(Const S : TString) : TString;
+Var
+  I   : Integer;
+  Tmp : TString;
+Begin
+  Tmp := S;
+  For I := 1 To Length(Tmp) Do
+    If (Tmp[I] >= 'A') And (Tmp[I] <= 'Z') Then
+      Tmp[I] := Chr(Ord(Tmp[I]) + 32);
+  StrLowerCase := Tmp;
+End;
+
+Function ExtractExt(Const Path : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ExtractExt := StrLowerCase(Copy(Path, LastDot,
+                     Length(Path) - LastDot + 1))
+  Else
+    ExtractExt := '';
+End;
+
+Function ReplaceExt(Const Path, NewExt : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ReplaceExt := Copy(Path, 1, LastDot - 1) + NewExt
+  Else
+    ReplaceExt := Path + NewExt;
+End;
+
+Procedure FatalError(Const Msg : TString);
+Begin
+  WriteLn('RUSTCW32: FATAL: ', Msg);
+  Inc(ErrorCount);
+  Halt(EXIT_ERROR);
+End;
+
+Procedure WarnMsg(Const Msg : TString);
+Begin
+  If Not Opts.Warnings Then Exit;
+  WriteLn('RUSTCW32: warning: ', Msg);
+  Inc(WarnCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ Options, aide et arguments                                   }
+{ ------------------------------------------------------------ }
+
+Procedure InitOptions;
+Begin
+  Opts.SrcFile   := '';
+  Opts.OutFile   := '';
+  Opts.Verbose   := False;
+  Opts.DebugMode := False;
+  Opts.Warnings  := False;
+  Opts.EmitExe   := True;
+  Opts.EmitObj   := False;
+  Opts.EmitAsm   := False;
+  Opts.NoLink    := False;
+  Opts.OptLevel  := OPT_NONE;
+End;
+
+Procedure ShowHelp;
+Begin
+  WriteLn('RUSTCW32 v', RUSTCW32_VERSION, ' (', RUSTCW32_DATE,
+          ') - Cette commande permet de lancer le compilateur Rust ',
+          'pour l''assembleur du microprocesseur 80386 pour Windows (PE Win32).');
+  WriteLn;
+  WriteLn('Syntaxe : RUSTCW32 <source.rs> [-o sortie] [options]');
+  WriteLn;
+  WriteLn('Sortie :');
+  WriteLn('  Par defaut     Produire un .EXE PE Windows 32 bits');
+  WriteLn('  -obj           Produire seulement un .OBJ COFF');
+  WriteLn('  -asm           Produire egalement un .ASM lisible');
+  WriteLn('  -o <fichier>   Nom de la sortie principale');
+  WriteLn;
+  WriteLn('Optimisation :');
+  WriteLn('  -O0            Pas d''optimisation (defaut)');
+  WriteLn('  -O1            Optimisations de base');
+  WriteLn('  -O2            Optimisations avancees');
+  WriteLn;
+  WriteLn('General :');
+  WriteLn('  -v             Mode verbeux');
+  WriteLn('  -d             Debug tokens (pour TODO lexer)');
+  WriteLn('  -w             Afficher les avertissements');
+  WriteLn('  -h, --help, /? Afficher cette aide');
+  WriteLn;
+  WriteLn('Exemples :');
+  WriteLn('  RUSTCW32 SAMPLES\RUST\hello.rs');
+  WriteLn('  RUSTCW32 SAMPLES\RUST\math.rs -asm -O1');
+  WriteLn('  RUSTCW32 SAMPLES\RUST\control.rs -obj -o control.obj');
+End;
+
+Procedure UsageError(Const Msg : TString);
+Begin
+  WriteLn('RUSTCW32: ', Msg);
+  WriteLn;
+  ShowHelp;
+  Halt(EXIT_USAGE);
+End;
+
+Procedure ValidateOutputName;
+Var
+  Ext : TString;
+Begin
+  Ext := ExtractExt(Opts.OutFile);
+  If Opts.EmitObj Then
+  Begin
+    If Ext = '' Then
+      Opts.OutFile := Opts.OutFile + '.obj'
+    Else If Ext <> '.obj' Then
+      FatalError('avec -obj, la sortie principale doit etre un .OBJ: '
+        + Opts.OutFile);
+  End
+  Else
+  Begin
+    If Ext = '' Then
+      Opts.OutFile := Opts.OutFile + '.exe'
+    Else If Ext <> '.exe' Then
+      FatalError('par defaut, la sortie principale doit etre un .EXE: '
+        + Opts.OutFile);
+  End;
+End;
+
+Procedure ParseArgs;
+Var
+  I   : Integer;
+  Arg : TString;
+  Ext : TString;
+Begin
+  InitOptions;
+
+  If ParamCount = 0 Then
+  Begin
+    ShowHelp;
+    Halt(EXIT_USAGE);
+  End;
+
+  I := 1;
+  While I <= ParamCount Do
+  Begin
+    Arg := ParamStr(I);
+
+    If (Arg = '-h') Or (Arg = '--help') Or (Arg = '/?') Or
+       (Arg = '/h') Or (Arg = '/H') Then
+    Begin
+      ShowHelp;
+      Halt(EXIT_OK);
+    End
+    Else If Arg = '-v' Then
+      Opts.Verbose := True
+    Else If Arg = '-d' Then
+      Opts.DebugMode := True
+    Else If Arg = '-w' Then
+      Opts.Warnings := True
+    Else If Arg = '-asm' Then
+      Opts.EmitAsm := True
+    Else If Arg = '-obj' Then
+    Begin
+      Opts.EmitExe := False;
+      Opts.EmitObj := True;
+      Opts.NoLink  := True;
+    End
+    Else If Arg = '-O0' Then
+      Opts.OptLevel := OPT_NONE
+    Else If Arg = '-O1' Then
+      Opts.OptLevel := OPT_BASIC
+    Else If Arg = '-O2' Then
+      Opts.OptLevel := OPT_ADVANCED
+    Else If Arg = '-o' Then
+    Begin
+      Inc(I);
+      If I > ParamCount Then
+        UsageError('option -o sans nom de fichier');
+      If Opts.OutFile <> '' Then
+        FatalError('sortie deja specifiee: ' + Opts.OutFile);
+      Opts.OutFile := ParamStr(I);
+    End
+    Else If (Length(Arg) > 0) And (Arg[1] = '-') Then
+      FatalError('option inconnue: ' + Arg)
+    Else
+    Begin
+      If Opts.SrcFile = '' Then
+        Opts.SrcFile := Arg
+      Else If Opts.OutFile = '' Then
+        Opts.OutFile := Arg
+      Else
+        FatalError('argument inattendu: ' + Arg);
+    End;
+
+    Inc(I);
+  End;
+
+  If Opts.SrcFile = '' Then
+    UsageError('fichier source manquant');
+
+  Ext := ExtractExt(Opts.SrcFile);
+  If Ext <> '.rs' Then
+    FatalError('extension source attendue .rs, trouvee: ' + Ext);
+
+  If Opts.OutFile = '' Then
+  Begin
+    If Opts.EmitObj Then
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.obj')
+    Else
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.exe');
+  End
+  Else
+    ValidateOutputName;
+End;
+
+Procedure ShowBanner;
+Begin
+  If Not Opts.Verbose Then Exit;
+  WriteLn('RUSTCW32 v', RUSTCW32_VERSION, ' (', RUSTCW32_DATE,
+          ') - Rust -> 80386 PE Win32');
+  WriteLn('Source   : ', Opts.SrcFile);
+  WriteLn('Sortie   : ', Opts.OutFile);
+  If Opts.EmitObj Then
+    WriteLn('Format   : OBJ COFF')
+  Else
+    WriteLn('Format   : EXE PE Win32');
+  If Opts.EmitAsm Then
+    WriteLn('ASM      : ', ReplaceExt(Opts.OutFile, '.asm'));
+  WriteLn('Optim    : -O', IntToStr_(Opts.OptLevel));
+  If Opts.NoLink Then
+    WriteLn('Link     : desactive');
+  WriteLn;
+End;
+
+Procedure ShowStats;
+Begin
+  If Not Opts.Verbose Then Exit;
+  WriteLn('Erreurs        : ', ErrorCount);
+  WriteLn('Avertissements : ', WarnCount);
+End;
+
+{ ============================================================ }
+{ PROGRAMME PRINCIPAL                                          }
+{ ============================================================ }
+
+BEGIN
+  ErrorCount := 0;
+  WarnCount  := 0;
+  ParseArgs;
+  ShowBanner;
+  WarnMsg('backend non implemente: TODO 02 et suivantes restent a faire');
+  ShowStats;
+END.
