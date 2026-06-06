@@ -128,18 +128,18 @@
             Les exemples control.rs doivent executer while et loop
               avec sorties conditionnelles.
 
-  TODO 16 - FOR SUR RANGES ENTIERES
+  TODO 16 - FOR SUR RANGES ENTIERES [IMPLEMENTE]
             Supporter for i in a..b { ... } comme sucre syntaxique
               compile en initialisation, test, increment et bloc.
             Gerer variable d'iteration locale immuable par defaut.
             Suffisant pour for i in 0..5 dans control.rs.
 
-  TODO 17 - MATCH MINIMAL
+  TODO 17 - MATCH MINIMAL [IMPLEMENTE]
             Parser match expr { lit => { ... }, _ => { ... } }.
             Generer comparaison sequentielle et branche par defaut.
             Suffisant pour label_of(code) dans control.rs.
 
-  TODO 18 - APPELS DE FONCTIONS ET CONVENTION D'APPEL
+  TODO 18 - APPELS DE FONCTIONS ET CONVENTION D'APPEL [IMPLEMENTE]
             Definir convention interne : arguments pousses sur pile,
               retour dans EAX, nettoyage par appelant ou appele selon
               choix documente.
@@ -147,19 +147,19 @@
               necessaires et acces parametres [EBP+offset].
             Supporter appels add(x, y), mul(z, 2), safe_noop(42).
 
-  TODO 19 - EXTERN "C" ET IMPORTS WIN32/CRT
+  TODO 19 - EXTERN "C" ET IMPORTS WIN32/CRT [IMPLEMENTE]
             Parser extern "C" { fn name(params); }.
             Enregistrer symboles externes et relocations COFF.
             Prevoir imports minimaux console/CRT pour puts, ExitProcess,
               WriteConsoleA ou equivalents runtime.
 
-  TODO 20 - UNSAFE ET POINTEURS BRUTS
+  TODO 20 - UNSAFE ET POINTEURS BRUTS [IMPLEMENTE]
             Parser unsafe { ... } et marquer le contexte unsafe.
             Supporter declarations *const T et *mut T, litteral 0
               comme pointeur nul, affectation locale de pointeur.
             Pour les exemples, aucun dereferencement requis au depart.
 
-  TODO 21 - MACROS RUNTIME : PRINTLN, DEBUG_ASSERT, PANIC
+  TODO 21 - MACROS RUNTIME : PRINTLN, DEBUG_ASSERT, PANIC [IMPLEMENTE]
             println!("texte") : emettre chaine .rdata et appel runtime
               d'ecriture console avec saut de ligne.
             debug_assert!(x) : verifier x != 0 et appeler panic runtime
@@ -167,7 +167,7 @@
             panic!("texte") : afficher message et terminer avec code
               d'erreur non nul.
 
-  TODO 22 - GENERATEUR ASM MASM 80386
+  TODO 22 - GENERATEUR ASM MASM 80386 [IMPLEMENTE]
             Produire optionnellement un .ASM MASM lisible quand -asm
               est fourni : .386, .MODEL FLAT, sections .CODE/.DATA,
               PUBLIC/EXTERN, labels et commentaires utiles.
@@ -410,6 +410,28 @@ Type
     DeclCol     : Integer;
   End;
 
+  TImportRec = Record
+    Name        : TString;
+    MangledName : TString;
+    ModuleName  : TString;
+    AbiName     : TString;
+    ProcIdx     : Integer;
+    SymIdx      : Integer;
+  End;
+
+  TRelocRec = Record
+    SectionName : TString;
+    SymbolName  : TString;
+    RelocType   : Integer;
+    Note        : TString;
+  End;
+
+  TStringRec = Record
+    LabelName : TString;
+    Text      : TString;
+    Len       : Integer;
+  End;
+
   TExprKind = (
     EK_UNKNOWN,
     EK_LITERAL,
@@ -426,6 +448,8 @@ Type
     IntValue : LongInt;
     IsLValue : Boolean;
   End;
+
+  TExprArgArray = Array[0..MAX_PARAM - 1] Of TExprRec;
 
   TOptions = Record
     SrcFile   : TString;   { fichier source .rs                 }
@@ -478,6 +502,10 @@ Var
   ProcTab       : Array[0..MAX_PROC - 1] Of TProcRec;
   ProcCount     : Integer;
   MainProcIdx   : Integer;
+  CurrentProcIdx : Integer;
+  CurrentReturnLabel : TString;
+  CurrentExternAbi : TString;
+  CurrentExternModule : TString;
 
   { Constantes et statics top-level }
   ConstTab      : Array[0..MAX_CONST - 1] Of TConstRec;
@@ -485,12 +513,30 @@ Var
   StaticTab     : Array[0..MAX_STATIC - 1] Of TStaticRec;
   StaticCount   : Integer;
 
+  { Imports externes et relocations COFF futures }
+  ImportTab     : Array[0..MAX_IMPORT - 1] Of TImportRec;
+  ImportCount   : Integer;
+  RelocTab      : Array[0..MAX_RELOC - 1] Of TRelocRec;
+  RelocCount    : Integer;
+  StringTab     : Array[0..MAX_STR - 1] Of TStringRec;
+  StringCount   : Integer;
+
   { Statistiques de parsing des blocs }
   BlockCount    : LongInt;
   StmtCount     : LongInt;
   LocalCount    : LongInt;
   ExprCount     : LongInt;
   LoopCount     : LongInt;
+  MatchCount    : LongInt;
+  CallCount     : LongInt;
+  ExternCallCount : LongInt;
+  UnsafeDepth   : Integer;
+  UnsafeBlockCount : LongInt;
+  PtrLocalCount : LongInt;
+  RuntimeMacroCount : LongInt;
+  PrintlnCount  : LongInt;
+  DebugAssertCount : LongInt;
+  PanicCount    : LongInt;
 
   { Backend intermediaire 80386 }
   AsmTrace      : Array[0..MAX_ASM_TRACE - 1] Of TString;
@@ -499,6 +545,7 @@ Var
   StoreInstrCount : LongInt;
 
 Procedure FatalError(Const Msg : TString); Forward;
+Procedure ReportErrorAt(Line, Col : Integer; Const Token, Msg : TString); Forward;
 
 { ------------------------------------------------------------ }
 { Fonctions utilitaires                                        }
@@ -699,6 +746,56 @@ Begin
     TypeRegClass := RC_NONE
   Else
     TypeRegClass := TypeTab[TypeIdx].RegClass;
+End;
+
+Function TypeIsPointer(TypeIdx : Integer) : Boolean;
+Begin
+  TypeIsPointer := (TypeIdx >= 0) And (TypeIdx < TypeCount) And
+    (TypeTab[TypeIdx].Kind = TYK_PTR);
+End;
+
+Function TypeIsMutablePointer(TypeIdx : Integer) : Boolean;
+Begin
+  TypeIsMutablePointer := TypeIsPointer(TypeIdx) And TypeTab[TypeIdx].IsMutPtr;
+End;
+
+Function TypeIsIntegerLike(TypeIdx : Integer) : Boolean;
+Begin
+  TypeIsIntegerLike :=
+    (TypeIdx = TY_IDX_I8) Or (TypeIdx = TY_IDX_U8) Or
+    (TypeIdx = TY_IDX_I16) Or (TypeIdx = TY_IDX_U16) Or
+    (TypeIdx = TY_IDX_I32) Or (TypeIdx = TY_IDX_U32) Or
+    (TypeIdx = TY_IDX_ISIZE) Or (TypeIdx = TY_IDX_USIZE);
+End;
+
+Function TypesAreAssignable(DstType, SrcType : Integer) : Boolean;
+Begin
+  If (DstType = TY_UNKNOWN) Or (SrcType = TY_UNKNOWN) Then
+    TypesAreAssignable := True
+  Else If DstType = SrcType Then
+    TypesAreAssignable := True
+  Else If TypeIsIntegerLike(DstType) And TypeIsIntegerLike(SrcType) Then
+    TypesAreAssignable := True
+  Else If TypeIsPointer(DstType) And (SrcType = TY_IDX_I32) Then
+    TypesAreAssignable := True
+  Else
+    TypesAreAssignable := False;
+End;
+
+Procedure PrepareAssignmentExpr(DstType : Integer; Var SrcExpr : TExprRec;
+  Line, Col : Integer; Const Name : TString);
+Begin
+  If TypeIsPointer(DstType) And SrcExpr.IsConst And
+     (SrcExpr.IntValue = 0) And TypeIsIntegerLike(SrcExpr.TypeIdx) Then
+  Begin
+    SrcExpr.TypeIdx := DstType;
+    Exit;
+  End;
+
+  If Not TypesAreAssignable(DstType, SrcExpr.TypeIdx) Then
+    ReportErrorAt(Line, Col, Name,
+      'types incompatibles dans affectation: ' +
+      TypeTab[SrcExpr.TypeIdx].Name + ' vers ' + TypeTab[DstType].Name);
 End;
 
 Function AddRawPointerType(BaseType : Integer; IsMut : Boolean) : Integer;
@@ -1084,10 +1181,22 @@ Begin
   WriteLn('Fonctions      : ', ProcCount);
   WriteLn('Constantes     : ', ConstCount);
   WriteLn('Statics        : ', StaticCount);
+  WriteLn('Chaines        : ', StringCount);
   WriteLn('Blocs          : ', BlockCount);
   WriteLn('Instructions   : ', StmtCount);
   WriteLn('Locales        : ', LocalCount);
   WriteLn('Boucles        : ', LoopCount);
+  WriteLn('Matchs         : ', MatchCount);
+  WriteLn('Appels         : ', CallCount);
+  WriteLn('Appels extern  : ', ExternCallCount);
+  WriteLn('Blocs unsafe   : ', UnsafeBlockCount);
+  WriteLn('Locales ptr    : ', PtrLocalCount);
+  WriteLn('Macros runtime : ', RuntimeMacroCount);
+  WriteLn('Println        : ', PrintlnCount);
+  WriteLn('Debug asserts  : ', DebugAssertCount);
+  WriteLn('Panics         : ', PanicCount);
+  WriteLn('Imports        : ', ImportCount);
+  WriteLn('Relocations    : ', RelocCount);
   WriteLn('Expressions    : ', ExprCount);
   WriteLn('Instr. ASM     : ', ArithInstrCount);
   WriteLn('Stores         : ', StoreInstrCount);
@@ -1504,6 +1613,8 @@ Var
 Begin
   ProcCount := 0;
   MainProcIdx := -1;
+  CurrentProcIdx := -1;
+  CurrentReturnLabel := '';
   For I := 0 To MAX_PROC - 1 Do
     ClearProcRec(ProcTab[I]);
 End;
@@ -1629,16 +1740,26 @@ Begin
   S.DeclCol := 0;
 End;
 
+Procedure ClearStringRec(Var S : TStringRec);
+Begin
+  S.LabelName := '';
+  S.Text := '';
+  S.Len := 0;
+End;
+
 Procedure InitConstStaticTables;
 Var
   I : Integer;
 Begin
   ConstCount := 0;
   StaticCount := 0;
+  StringCount := 0;
   For I := 0 To MAX_CONST - 1 Do
     ClearConstRec(ConstTab[I]);
   For I := 0 To MAX_STATIC - 1 Do
     ClearStaticRec(StaticTab[I]);
+  For I := 0 To MAX_STR - 1 Do
+    ClearStringRec(StringTab[I]);
 End;
 
 Function AddConstRec(Const Name : TString; TypeIdx : Integer; IntValue : LongInt;
@@ -1681,6 +1802,20 @@ Begin
   Inc(StaticCount);
 End;
 
+Function AddStringRec(Const Text : TString) : Integer;
+Begin
+  AddStringRec := -1;
+  If StringCount >= MAX_STR Then
+    FatalError('table des chaines pleine (MAX_STR=' +
+      IntToStr_(MAX_STR) + ')');
+  ClearStringRec(StringTab[StringCount]);
+  StringTab[StringCount].LabelName := RS_STR_PFX + IntToStr_(StringCount);
+  StringTab[StringCount].Text := Text;
+  StringTab[StringCount].Len := Length(Text);
+  AddStringRec := StringCount;
+  Inc(StringCount);
+End;
+
 Procedure DumpConstStaticTables;
 Var
   I : Integer;
@@ -1716,6 +1851,148 @@ Begin
       Write(' bss');
     WriteLn;
   End;
+
+  WriteLn('--- Chaines .rdata reconnues ---');
+  If StringCount = 0 Then
+    WriteLn('  (aucune)');
+  For I := 0 To StringCount - 1 Do
+    WriteLn('  [', I, '] ', StringTab[I].LabelName,
+      ' len=', StringTab[I].Len, ' text="', StringTab[I].Text, '"');
+End;
+
+{ ============================================================ }
+{ IMPORTS EXTERNES ET RELOCATIONS                              }
+{ ============================================================ }
+
+Procedure ClearImportRec(Var R : TImportRec);
+Begin
+  R.Name := '';
+  R.MangledName := '';
+  R.ModuleName := '';
+  R.AbiName := '';
+  R.ProcIdx := -1;
+  R.SymIdx := -1;
+End;
+
+Procedure ClearRelocRec(Var R : TRelocRec);
+Begin
+  R.SectionName := '';
+  R.SymbolName := '';
+  R.RelocType := 0;
+  R.Note := '';
+End;
+
+Procedure InitImportRelocTables;
+Var
+  I : Integer;
+Begin
+  ImportCount := 0;
+  RelocCount := 0;
+  CurrentExternAbi := '';
+  CurrentExternModule := '';
+  For I := 0 To MAX_IMPORT - 1 Do
+    ClearImportRec(ImportTab[I]);
+  For I := 0 To MAX_RELOC - 1 Do
+    ClearRelocRec(RelocTab[I]);
+End;
+
+Function DefaultImportModule(Const Name, AbiName : TString) : TString;
+Begin
+  If (Name = 'ExitProcess') Or (Name = 'WriteConsoleA') Or
+     (Name = 'GetStdHandle') Then
+    DefaultImportModule := 'kernel32.dll'
+  Else If (Name = 'puts') Or (Name = 'printf') Or (Name = 'exit') Then
+    DefaultImportModule := 'msvcrt.dll'
+  Else If AbiName = 'C' Then
+    DefaultImportModule := 'msvcrt.dll'
+  Else
+    DefaultImportModule := 'kernel32.dll';
+End;
+
+Function FindImport(Const Name : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  FindImport := -1;
+  For I := 0 To ImportCount - 1 Do
+    If ImportTab[I].Name = Name Then
+    Begin
+      FindImport := I;
+      Exit;
+    End;
+End;
+
+Function AddImportRec(Const Name, MangledName, ModuleName, AbiName : TString;
+  ProcIdx, SymIdx : Integer) : Integer;
+Var
+  Existing : Integer;
+Begin
+  Existing := FindImport(Name);
+  If Existing >= 0 Then
+  Begin
+    AddImportRec := Existing;
+    Exit;
+  End;
+  If ImportCount >= MAX_IMPORT Then
+    FatalError('table des imports pleine (MAX_IMPORT=' +
+      IntToStr_(MAX_IMPORT) + ')');
+  ClearImportRec(ImportTab[ImportCount]);
+  ImportTab[ImportCount].Name := Name;
+  ImportTab[ImportCount].MangledName := MangledName;
+  ImportTab[ImportCount].ModuleName := ModuleName;
+  ImportTab[ImportCount].AbiName := AbiName;
+  ImportTab[ImportCount].ProcIdx := ProcIdx;
+  ImportTab[ImportCount].SymIdx := SymIdx;
+  AddImportRec := ImportCount;
+  Inc(ImportCount);
+End;
+
+Procedure AddRelocRec(Const SectionName, SymbolName : TString; RelocType : Integer;
+  Const Note : TString);
+Begin
+  If RelocCount >= MAX_RELOC Then
+    FatalError('table des relocations pleine (MAX_RELOC=' +
+      IntToStr_(MAX_RELOC) + ')');
+  ClearRelocRec(RelocTab[RelocCount]);
+  RelocTab[RelocCount].SectionName := SectionName;
+  RelocTab[RelocCount].SymbolName := SymbolName;
+  RelocTab[RelocCount].RelocType := RelocType;
+  RelocTab[RelocCount].Note := Note;
+  Inc(RelocCount);
+End;
+
+Function RelocTypeName(RelocType : Integer) : TString;
+Begin
+  If RelocType = COFF_RELOC_REL32 Then
+    RelocTypeName := 'REL32'
+  Else If RelocType = COFF_RELOC_DIR32 Then
+    RelocTypeName := 'DIR32'
+  Else
+    RelocTypeName := IntToStr_(RelocType);
+End;
+
+Procedure DumpImportRelocTables;
+Var
+  I : Integer;
+Begin
+  If Not Opts.DebugMode Then Exit;
+  WriteLn('--- Imports externes ---');
+  If ImportCount = 0 Then
+    WriteLn('  (aucun)');
+  For I := 0 To ImportCount - 1 Do
+    WriteLn('  [', I, '] ', ImportTab[I].Name,
+      ' asm=', ImportTab[I].MangledName,
+      ' module=', ImportTab[I].ModuleName,
+      ' abi=', ImportTab[I].AbiName);
+
+  WriteLn('--- Relocations COFF prevues ---');
+  If RelocCount = 0 Then
+    WriteLn('  (aucune)');
+  For I := 0 To RelocCount - 1 Do
+    WriteLn('  [', I, '] ', RelocTab[I].SectionName,
+      ' ', RelocTypeName(RelocTab[I].RelocType),
+      ' ', RelocTab[I].SymbolName,
+      ' ', RelocTab[I].Note);
 End;
 
 { ============================================================ }
@@ -1881,6 +2158,170 @@ Begin
   EmitAsm('  JE ' + FalseLabel);
 End;
 
+Procedure EmitFunctionPrologue(ProcIdx : Integer; Const ReturnLabel : TString);
+Begin
+  If (ProcIdx < 0) Or (ProcIdx >= ProcCount) Then
+    Exit;
+  EmitAsm('');
+  EmitAsm(ProcTab[ProcIdx].MangledName + ':');
+  EmitAsm('  PUSH EBP');
+  EmitAsm('  MOV EBP, ESP');
+  EmitAsm('  SUB ESP, ' + IntToStr_(MAX_LOCAL * WORD_SIZE));
+  EmitAsm('  PUSH EBX');
+  EmitAsm('  ; convention interne: arguments sur pile, retour EAX, caller cleanup');
+End;
+
+Procedure EmitFunctionEpilogue(ProcIdx : Integer; Const ReturnLabel : TString);
+Begin
+  If (ProcIdx < 0) Or (ProcIdx >= ProcCount) Then
+    Exit;
+  EmitLabel(ReturnLabel);
+  EmitAsm('  POP EBX');
+  EmitAsm('  MOV ESP, EBP');
+  EmitAsm('  POP EBP');
+  EmitAsm('  RET');
+End;
+
+Procedure EmitReturnExpr(Const RetExpr : TExprRec);
+Begin
+  If RetExpr.TypeIdx <> TY_IDX_UNIT Then
+  Begin
+    EmitExprLoad(RetExpr, 'EAX');
+    EmitExtendToEax(RetExpr.TypeIdx);
+  End;
+  If (CurrentProcIdx >= 0) And (CurrentReturnLabel <> '') Then
+    EmitJump(CurrentReturnLabel);
+End;
+
+Procedure EmitCallProc(ProcIdx : Integer; Const Args : TExprArgArray;
+  ArgCount : Integer);
+Var
+  I : Integer;
+Begin
+  If (ProcIdx < 0) Or (ProcIdx >= ProcCount) Then
+    Exit;
+  For I := ArgCount - 1 DownTo 0 Do
+  Begin
+    EmitExprLoad(Args[I], 'EAX');
+    EmitExtendToEax(Args[I].TypeIdx);
+    EmitAsm('  PUSH EAX');
+  End;
+  EmitAsm('  CALL ' + ProcTab[ProcIdx].MangledName);
+  If ProcTab[ProcIdx].IsExtern Then
+  Begin
+    AddRelocRec('.text', ProcTab[ProcIdx].MangledName, COFF_RELOC_REL32,
+      'CALL extern ' + ProcTab[ProcIdx].Name);
+    Inc(ExternCallCount);
+  End;
+  If ArgCount > 0 Then
+    EmitAsm('  ADD ESP, ' + IntToStr_(ArgCount * WORD_SIZE));
+  Inc(CallCount);
+End;
+
+Function RuntimeSymbol(Const Name : TString) : TString;
+Begin
+  RuntimeSymbol := RS_RT_PFX + Name;
+End;
+
+Function ExternSymbol(Const Name : TString) : TString;
+Begin
+  ExternSymbol := RS_EXT_PFX + Name;
+End;
+
+Procedure EnsureRuntimeImports;
+Begin
+  AddImportRec('GetStdHandle', ExternSymbol('GetStdHandle'),
+    'kernel32.dll', 'stdcall', -1, -1);
+  AddImportRec('WriteConsoleA', ExternSymbol('WriteConsoleA'),
+    'kernel32.dll', 'stdcall', -1, -1);
+  AddImportRec('ExitProcess', ExternSymbol('ExitProcess'),
+    'kernel32.dll', 'stdcall', -1, -1);
+End;
+
+Procedure EmitRuntimeCall(Const Name, Note : TString; ArgBytes : Integer);
+Var
+  SymName : TString;
+Begin
+  SymName := RuntimeSymbol(Name);
+  EmitAsm('  CALL ' + SymName);
+  AddRelocRec('.text', SymName, COFF_RELOC_REL32, Note);
+  If ArgBytes > 0 Then
+    EmitAsm('  ADD ESP, ' + IntToStr_(ArgBytes));
+  Inc(CallCount);
+End;
+
+Procedure EmitExternalRuntimeCall(Const Name, Note : TString; ArgBytes : Integer);
+Var
+  SymName : TString;
+Begin
+  SymName := ExternSymbol(Name);
+  AddImportRec(Name, SymName, DefaultImportModule(Name, 'stdcall'),
+    'stdcall', -1, -1);
+  EmitAsm('  CALL ' + SymName);
+  AddRelocRec('.text', SymName, COFF_RELOC_REL32, Note);
+  If ArgBytes > 0 Then
+    EmitAsm('  ADD ESP, ' + IntToStr_(ArgBytes));
+  Inc(CallCount);
+  Inc(ExternCallCount);
+End;
+
+Procedure EmitPushStringRef(StrIdx : Integer; Const Note : TString);
+Begin
+  If (StrIdx < 0) Or (StrIdx >= StringCount) Then
+    Exit;
+  EmitAsm('  PUSH ' + IntToStr_(StringTab[StrIdx].Len));
+  EmitAsm('  PUSH OFFSET ' + StringTab[StrIdx].LabelName);
+  AddRelocRec('.text', StringTab[StrIdx].LabelName, COFF_RELOC_DIR32,
+    Note);
+End;
+
+Procedure EmitPrintlnString(StrIdx : Integer);
+Begin
+  EnsureRuntimeImports;
+  EmitAsm('  ; println! chaine litterale');
+  EmitPushStringRef(StrIdx, 'adresse chaine println!');
+  EmitRuntimeCall('println', 'appel runtime println!', 2 * WORD_SIZE);
+  Inc(RuntimeMacroCount);
+  Inc(PrintlnCount);
+End;
+
+Procedure EmitPanicString(StrIdx : Integer);
+Begin
+  EnsureRuntimeImports;
+  EmitAsm('  ; panic! chaine litterale');
+  EmitPushStringRef(StrIdx, 'adresse chaine panic!');
+  EmitRuntimeCall('panic', 'appel runtime panic!', 2 * WORD_SIZE);
+  EmitAsm('  PUSH 1');
+  EmitExternalRuntimeCall('ExitProcess', 'terminaison apres panic!',
+    WORD_SIZE);
+  Inc(RuntimeMacroCount);
+  Inc(PanicCount);
+End;
+
+Procedure EmitDebugAssert(Const CondExpr : TExprRec);
+Var
+  OkLabel : TString;
+  MsgIdx  : Integer;
+Begin
+  EnsureRuntimeImports;
+  OkLabel := NewLabelName;
+  EmitAsm('  ; debug_assert!');
+  EmitExprLoad(CondExpr, 'EAX');
+  EmitExtendToEax(CondExpr.TypeIdx);
+  EmitAsm('  CMP EAX, 0');
+  EmitAsm('  JNE ' + OkLabel);
+  MsgIdx := AddStringRec('debug_assert! failed'#13#10);
+  EmitPushStringRef(MsgIdx, 'adresse message debug_assert!');
+  EmitRuntimeCall('panic', 'appel runtime panic! debug_assert',
+    2 * WORD_SIZE);
+  EmitAsm('  PUSH 1');
+  EmitExternalRuntimeCall('ExitProcess', 'terminaison debug_assert!',
+    WORD_SIZE);
+  EmitLabel(OkLabel);
+  Inc(RuntimeMacroCount);
+  Inc(DebugAssertCount);
+End;
+
 Procedure EmitUnaryArith(Const Op : TString; Const E : TExprRec);
 Begin
   If Op = '-' Then
@@ -2023,6 +2464,137 @@ Begin
     WriteLn(AsmTrace[I]);
 End;
 
+Function AsmOutputFileName : TString;
+Begin
+  AsmOutputFileName := ReplaceExt(Opts.OutFile, '.asm');
+End;
+
+Function AsmDataDirective(TypeIdx : Integer) : TString;
+Begin
+  Case TypeRegClass(TypeIdx) Of
+    RC_BYTE  : AsmDataDirective := 'DB';
+    RC_WORD  : AsmDataDirective := 'DW';
+    RC_DWORD : AsmDataDirective := 'DD';
+  Else
+    AsmDataDirective := 'DD';
+  End;
+End;
+
+Procedure WriteAsmStringBytes(Var F : Text; Const TextVal : TString);
+Var
+  I : Integer;
+Begin
+  For I := 1 To Length(TextVal) Do
+  Begin
+    If I > 1 Then
+      Write(F, ',');
+    Write(F, Ord(TextVal[I]));
+  End;
+  If Length(TextVal) > 0 Then
+    Write(F, ',');
+  WriteLn(F, '0');
+End;
+
+Procedure EmitAsmFile;
+Var
+  F : Text;
+  Code, I : Integer;
+  AsmName, EntryName : TString;
+Begin
+  If Not Opts.EmitAsm Then
+    Exit;
+  If ErrorCount <> 0 Then
+  Begin
+    WarnMsg('ASM non produit car le parsing contient des erreurs');
+    Exit;
+  End;
+
+  AsmName := AsmOutputFileName;
+  Assign(F, AsmName);
+  {$I-}
+  Rewrite(F);
+  {$I+}
+  Code := IOResult;
+  If Code <> 0 Then
+    FatalError('impossible de creer le fichier ASM: ' + AsmName);
+
+  WriteLn(F, '; Fichier genere par RUSTCW32 v', RUSTCW32_VERSION);
+  WriteLn(F, '; Source : ', Opts.SrcFile);
+  WriteLn(F, '; Cible  : MASM 80386 / Win32');
+  WriteLn(F);
+  WriteLn(F, '.386');
+  WriteLn(F, '.MODEL FLAT, STDCALL');
+  WriteLn(F, 'OPTION CASEMAP:NONE');
+  WriteLn(F);
+
+  For I := 0 To ProcCount - 1 Do
+    If Not ProcTab[I].IsExtern Then
+      WriteLn(F, 'PUBLIC ', ProcTab[I].MangledName);
+  For I := 0 To StaticCount - 1 Do
+    WriteLn(F, 'PUBLIC ', StaticTab[I].MangledName);
+  For I := 0 To ImportCount - 1 Do
+    WriteLn(F, 'EXTERN ', ImportTab[I].MangledName,
+      ':PROC ; ', ImportTab[I].ModuleName);
+  If PrintlnCount > 0 Then
+    WriteLn(F, 'EXTERN ', RuntimeSymbol('println'), ':PROC');
+  If (PanicCount > 0) Or (DebugAssertCount > 0) Then
+    WriteLn(F, 'EXTERN ', RuntimeSymbol('panic'), ':PROC');
+  WriteLn(F);
+
+  WriteLn(F, '.CONST');
+  If StringCount = 0 Then
+    WriteLn(F, '  ; aucune chaine .rdata')
+  Else
+    For I := 0 To StringCount - 1 Do
+    Begin
+      Write(F, StringTab[I].LabelName, ' DB ');
+      WriteAsmStringBytes(F, StringTab[I].Text);
+    End;
+  WriteLn(F);
+
+  WriteLn(F, '.DATA');
+  If StaticCount = 0 Then
+    WriteLn(F, '  ; aucune donnee statique')
+  Else
+    For I := 0 To StaticCount - 1 Do
+    Begin
+      Write(F, StaticTab[I].MangledName, ' ',
+        AsmDataDirective(StaticTab[I].TypeIdx), ' ');
+      If StaticTab[I].HasInit Then
+        WriteLn(F, StaticTab[I].IntValue)
+      Else
+        WriteLn(F, '?');
+    End;
+  WriteLn(F);
+
+  WriteLn(F, '.CODE');
+  WriteLn(F, '; --- Code genere depuis le backend intermediaire ---');
+  If AsmTraceCount = 0 Then
+    WriteLn(F, '  ; aucune instruction backend')
+  Else
+  Begin
+    For I := 0 To AsmTraceCount - 1 Do
+      If I < MAX_ASM_TRACE Then
+        WriteLn(F, AsmTrace[I]);
+    If AsmTraceCount > MAX_ASM_TRACE Then
+      WriteLn(F, '  ; trace ASM tronquee');
+  End;
+
+  If MainProcIdx >= 0 Then
+    EntryName := ProcTab[MainProcIdx].MangledName
+  Else
+    EntryName := '';
+  WriteLn(F);
+  If EntryName <> '' Then
+    WriteLn(F, 'END ', EntryName)
+  Else
+    WriteLn(F, 'END');
+
+  Close(F);
+  If Opts.Verbose Then
+    WriteLn('ASM ecrit     : ', AsmName);
+End;
+
 { ============================================================ }
 { EXPRESSIONS                                                  }
 { ============================================================ }
@@ -2130,9 +2702,10 @@ Function ParseExpr : TExprRec; Forward;
 Function ParsePrimary : TExprRec;
 Var
   Name : TString;
-  SymIdx, ProcIdx : Integer;
+  SymIdx, ProcIdx, ArgCount : Integer;
   Val : LongInt;
   R, Arg : TExprRec;
+  Args : TExprArgArray;
 Begin
   If CurToken.Kind = TK_INTEGER Then
   Begin
@@ -2189,11 +2762,20 @@ Begin
     If TokIs(TK_PUNCT, '(') Then
     Begin
       ParserNext;
+      ArgCount := 0;
       If Not (TokIs(TK_PUNCT, ')')) Then
       Begin
         While CurToken.Kind <> TK_EOF Do
         Begin
           Arg := ParseExpr;
+          If ArgCount < MAX_PARAM Then
+          Begin
+            Args[ArgCount] := Arg;
+            Inc(ArgCount);
+          End
+          Else
+            ReportErrorAt(CurToken.Line, CurToken.Col, Name,
+              'trop d''arguments dans appel');
           If TokIs(TK_PUNCT, ',') Then
           Begin
             ParserNext;
@@ -2213,6 +2795,13 @@ Begin
         ReportErrorAt(CurToken.Line, CurToken.Col, Name,
           'appel de fonction inconnue');
         R := UnknownExpr;
+      End;
+      If ProcIdx >= 0 Then
+      Begin
+        If ArgCount <> ProcTab[ProcIdx].ParamCount Then
+          ReportErrorAt(CurToken.Line, CurToken.Col, Name,
+            'nombre d''arguments incorrect');
+        EmitCallProc(ProcIdx, Args, ArgCount);
       End;
       ParsePrimary := R;
       Exit;
@@ -3082,9 +3671,12 @@ Begin
     InitExpr := ParseExpr;
     If TypeIdx = TY_UNKNOWN Then
       TypeIdx := InitExpr.TypeIdx;
+    PrepareAssignmentExpr(TypeIdx, InitExpr, L, C, Name);
     If SymIdx >= 0 Then
     Begin
       SymTab[SymIdx].TypeIdx := TypeIdx;
+      If TypeIsPointer(TypeIdx) Then
+        Inc(PtrLocalCount);
       EmitStoreSym(SymIdx, InitExpr, True);
     End;
   End;
@@ -3097,15 +3689,28 @@ Var
 Begin
   ExpectToken(TK_KEYWORD, 'return', 'return');
   If Not (TokIs(TK_PUNCT, ';')) Then
-    RetExpr := ParseExpr;
+    RetExpr := ParseExpr
+  Else
+    RetExpr := MakeExpr(EK_LITERAL, TY_IDX_UNIT, True, 0, False);
+  EmitReturnExpr(RetExpr);
   ExpectToken(TK_PUNCT, ';', '; apres return');
 End;
 
 Procedure ParseUnsafeStmt;
+Var
+  OldDepth : Integer;
 Begin
   ExpectToken(TK_KEYWORD, 'unsafe', 'unsafe');
   If TokIs(TK_PUNCT, '{') Then
-    ParseBlock
+  Begin
+    OldDepth := UnsafeDepth;
+    Inc(UnsafeDepth);
+    Inc(UnsafeBlockCount);
+    EmitAsm('  ; debut bloc unsafe depth=' + IntToStr_(UnsafeDepth));
+    ParseBlock;
+    EmitAsm('  ; fin bloc unsafe depth=' + IntToStr_(UnsafeDepth));
+    UnsafeDepth := OldDepth;
+  End
   Else
   Begin
     ReportErrorAt(CurToken.Line, CurToken.Col, CurToken.Val,
@@ -3220,6 +3825,190 @@ Begin
   End;
 End;
 
+Procedure ParseForStmt;
+Var
+  L, C, SymIdx, TypeIdx : Integer;
+  IterName : TString;
+  StartExpr, EndExpr, IterExpr, OneExpr, IncExpr, CondExpr : TExprRec;
+  TestLabel, IncLabel, EndLabel : TString;
+  IsC : Boolean;
+  V : LongInt;
+Begin
+  L := CurToken.Line;
+  C := CurToken.Col;
+  ExpectToken(TK_KEYWORD, 'for', 'for');
+
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    ReportErrorAt(CurToken.Line, CurToken.Col, CurToken.Val,
+      'nom de variable attendu apres for');
+    SkipUntilSemicolon;
+    Exit;
+  End;
+  IterName := CurToken.Val;
+  ParserNext;
+
+  If Not ExpectToken(TK_KEYWORD, 'in', 'in apres variable for') Then
+  Begin
+    SkipUntilSemicolon;
+    Exit;
+  End;
+
+  StartExpr := ParseExpr;
+  If Not ExpectToken(TK_OP, '..', '.. dans range for') Then
+  Begin
+    SkipUntilSemicolon;
+    Exit;
+  End;
+  EndExpr := ParseExpr;
+
+  TypeIdx := StartExpr.TypeIdx;
+  If TypeIdx = TY_UNKNOWN Then
+    TypeIdx := EndExpr.TypeIdx;
+  If TypeIdx = TY_UNKNOWN Then
+    TypeIdx := TY_IDX_I32;
+
+  TestLabel := NewLabelName;
+  IncLabel := NewLabelName;
+  EndLabel := NewLabelName;
+  Inc(LoopCount);
+
+  EnterScope;
+  SymIdx := AddSym(IterName, SC_LOCAL, TypeIdx, False, True,
+    -LongInt((LocalCount + 1) * WORD_SIZE), IterName, L, C);
+  If SymIdx >= 0 Then
+  Begin
+    Inc(LocalCount);
+    EmitStoreSym(SymIdx, StartExpr, True);
+  End;
+
+  EmitLabel(TestLabel);
+  IterExpr := MakeExpr(EK_VAR, TypeIdx, False, 0, True);
+  IsC := False;
+  V := 0;
+  If IterExpr.IsConst And EndExpr.IsConst Then
+    IsC := EvalBinaryConst('<', IterExpr.IntValue, EndExpr.IntValue, V);
+  CondExpr := MakeExpr(EK_BINARY, TY_IDX_BOOL, IsC, V, False);
+  EmitBinaryArith('<', IterExpr, EndExpr, CondExpr.TypeIdx);
+  EmitConditionFalseJump(CondExpr, EndLabel);
+
+  If TokIs(TK_PUNCT, '{') Then
+  Begin
+    PushLoopLabels(IncLabel, EndLabel, L, C);
+    ParseBlock;
+    PopLoopLabels;
+    EmitLabel(IncLabel);
+    If SymIdx >= 0 Then
+    Begin
+      IterExpr := MakeExpr(EK_VAR, TypeIdx, False, 0, True);
+      OneExpr := MakeExpr(EK_LITERAL, TypeIdx, True, 1, False);
+      IsC := False;
+      V := 0;
+      IncExpr := MakeExpr(EK_BINARY, TypeIdx, IsC, V, False);
+      EmitBinaryArith('+', IterExpr, OneExpr, IncExpr.TypeIdx);
+      EmitStoreSym(SymIdx, IncExpr, False);
+    End;
+    EmitJump(TestLabel);
+    EmitLabel(EndLabel);
+  End
+  Else
+  Begin
+    ReportErrorAt(CurToken.Line, CurToken.Col, CurToken.Val,
+      'bloc for attendu');
+    SkipUntilSemicolon;
+    EmitLabel(EndLabel);
+  End;
+  LeaveScope;
+End;
+
+Procedure ParseMatchStmt;
+Var
+  MatchExpr, LitExpr, CondExpr : TExprRec;
+  EndLabel, NextLabel : TString;
+  IsDefault, IsC, SawDefault : Boolean;
+  V, ArmLine : LongInt;
+Begin
+  ExpectToken(TK_KEYWORD, 'match', 'match');
+  MatchExpr := ParseExpr;
+  If Not ExpectToken(TK_PUNCT, '{', '{ apres match') Then
+  Begin
+    SkipUntilSemicolon;
+    Exit;
+  End;
+
+  Inc(MatchCount);
+  EndLabel := NewLabelName;
+  SawDefault := False;
+  ArmLine := CurToken.Line;
+
+  While (CurToken.Kind <> TK_EOF) And Not TokIs(TK_PUNCT, '}') Do
+  Begin
+    IsDefault := False;
+    ArmLine := CurToken.Line;
+
+    If (CurToken.Kind = TK_IDENT) And (CurToken.Val = '_') Then
+    Begin
+      IsDefault := True;
+      SawDefault := True;
+      ParserNext;
+    End
+    Else If CurToken.Kind = TK_INTEGER Then
+    Begin
+      LitExpr := MakeExpr(EK_LITERAL, MatchExpr.TypeIdx, True,
+        CurToken.IntVal, False);
+      ParserNext;
+    End
+    Else
+    Begin
+      ReportErrorAt(CurToken.Line, CurToken.Col, CurToken.Val,
+        'arm match attendue: entier ou _');
+      SkipUntilSemicolon;
+      Break;
+    End;
+
+    If Not ExpectToken(TK_OP, '=>', '=> apres arm match') Then
+    Begin
+      SkipUntilSemicolon;
+      Break;
+    End;
+
+    If Not IsDefault Then
+    Begin
+      NextLabel := NewLabelName;
+      IsC := False;
+      V := 0;
+      If MatchExpr.IsConst And LitExpr.IsConst Then
+        IsC := EvalBinaryConst('==', MatchExpr.IntValue, LitExpr.IntValue, V);
+      CondExpr := MakeExpr(EK_BINARY, TY_IDX_BOOL, IsC, V, False);
+      EmitBinaryArith('==', MatchExpr, LitExpr, CondExpr.TypeIdx);
+      EmitConditionFalseJump(CondExpr, NextLabel);
+    End
+    Else
+      NextLabel := '';
+
+    If TokIs(TK_PUNCT, '{') Then
+      ParseBlock
+    Else
+    Begin
+      ReportErrorAt(CurToken.Line, CurToken.Col, CurToken.Val,
+        'bloc attendu pour arm match');
+      SkipUntilSemicolon;
+    End;
+
+    EmitJump(EndLabel);
+    If NextLabel <> '' Then
+      EmitLabel(NextLabel);
+
+    If TokIs(TK_PUNCT, ',') Then
+      ParserNext;
+  End;
+
+  If Not SawDefault Then
+    WarnMsg('match sans arm _ par defaut a la ligne ' + IntToStr_(ArmLine));
+  ExpectToken(TK_PUNCT, '}', '} apres match');
+  EmitLabel(EndLabel);
+End;
+
 Procedure ParseBreakStmt;
 Var
   Dest : TString;
@@ -3252,17 +4041,92 @@ Begin
   ExpectToken(TK_PUNCT, ';', '; apres continue');
 End;
 
+Procedure ParseRuntimeMacroStmt;
+Var
+  MacroName, TextVal : TString;
+  L, C, StrIdx : Integer;
+  CondExpr : TExprRec;
+Begin
+  L := CurToken.Line;
+  C := CurToken.Col;
+  MacroName := CurToken.Val;
+  ParserNext;
+
+  If Not ExpectToken(TK_PUNCT, '(', '( apres macro') Then
+  Begin
+    SkipUntilSemicolon;
+    Exit;
+  End;
+
+  If MacroName = 'println!' Then
+  Begin
+    If CurToken.Kind <> TK_STRING Then
+    Begin
+      ReportErrorAt(CurToken.Line, CurToken.Col, CurToken.Val,
+        'println! supporte seulement une chaine litterale');
+      SkipUntilSemicolon;
+      Exit;
+    End;
+    TextVal := CurToken.Val + #13#10;
+    ParserNext;
+    If TokIs(TK_PUNCT, ',') Then
+      ReportErrorAt(CurToken.Line, CurToken.Col, ',',
+        'arguments de format println! non supportes');
+    ExpectToken(TK_PUNCT, ')', ') apres println!');
+    ExpectToken(TK_PUNCT, ';', '; apres println!');
+    StrIdx := AddStringRec(TextVal);
+    EmitPrintlnString(StrIdx);
+    Exit;
+  End;
+
+  If MacroName = 'panic!' Then
+  Begin
+    If CurToken.Kind <> TK_STRING Then
+    Begin
+      ReportErrorAt(CurToken.Line, CurToken.Col, CurToken.Val,
+        'panic! supporte seulement une chaine litterale');
+      SkipUntilSemicolon;
+      Exit;
+    End;
+    TextVal := CurToken.Val + #13#10;
+    ParserNext;
+    If TokIs(TK_PUNCT, ',') Then
+      ReportErrorAt(CurToken.Line, CurToken.Col, ',',
+        'arguments de format panic! non supportes');
+    ExpectToken(TK_PUNCT, ')', ') apres panic!');
+    ExpectToken(TK_PUNCT, ';', '; apres panic!');
+    StrIdx := AddStringRec(TextVal);
+    EmitPanicString(StrIdx);
+    Exit;
+  End;
+
+  If MacroName = 'debug_assert!' Then
+  Begin
+    CondExpr := ParseExpr;
+    If TokIs(TK_PUNCT, ',') Then
+      ReportErrorAt(CurToken.Line, CurToken.Col, ',',
+        'message debug_assert! personnalise non supporte');
+    ExpectToken(TK_PUNCT, ')', ') apres debug_assert!');
+    ExpectToken(TK_PUNCT, ';', '; apres debug_assert!');
+    EmitDebugAssert(CondExpr);
+    Exit;
+  End;
+
+  ReportErrorAt(L, C, MacroName, 'macro runtime non supportee');
+  SkipUntilSemicolon;
+End;
+
 Procedure ParseExprStmt;
 Var
   AssignName : TString;
-  AssignLine, AssignCol, SymIdx : Integer;
+  AssignLine, AssignCol, SymIdx, ProcIdx, ArgCount : Integer;
   HadSemi, HadBlock : Boolean;
-  Rhs : TExprRec;
+  Rhs, Arg : TExprRec;
+  Args : TExprArgArray;
 Begin
   If CurToken.Kind = TK_MACRO Then
   Begin
-    Rhs := ParseExpr;
-    ExpectToken(TK_PUNCT, ';', '; apres appel macro');
+    ParseRuntimeMacroStmt;
     Exit;
   End;
 
@@ -3279,9 +4143,53 @@ Begin
     RequireAssignable(SymIdx, AssignLine, AssignCol);
     ParserNext;
     Rhs := ParseExpr;
+    If SymIdx >= 0 Then
+      PrepareAssignmentExpr(SymTab[SymIdx].TypeIdx, Rhs, AssignLine,
+        AssignCol, AssignName);
     If CanAssignToSym(SymIdx) Then
       EmitStoreSym(SymIdx, Rhs, False);
     ExpectToken(TK_PUNCT, ';', '; apres affectation');
+    Exit;
+  End;
+
+  If (AssignName <> '') And TokIs(TK_PUNCT, '(') Then
+  Begin
+    ParserNext;
+    ArgCount := 0;
+    If Not TokIs(TK_PUNCT, ')') Then
+    Begin
+      While CurToken.Kind <> TK_EOF Do
+      Begin
+        Arg := ParseExpr;
+        If ArgCount < MAX_PARAM Then
+        Begin
+          Args[ArgCount] := Arg;
+          Inc(ArgCount);
+        End
+        Else
+          ReportErrorAt(CurToken.Line, CurToken.Col, AssignName,
+            'trop d''arguments dans appel');
+        If TokIs(TK_PUNCT, ',') Then
+        Begin
+          ParserNext;
+          Continue;
+        End;
+        Break;
+      End;
+    End;
+    ExpectToken(TK_PUNCT, ')', ') apres appel');
+    ProcIdx := FindProc(AssignName);
+    If ProcIdx < 0 Then
+      ReportErrorAt(AssignLine, AssignCol, AssignName,
+        'appel de fonction inconnue')
+    Else
+    Begin
+      If ArgCount <> ProcTab[ProcIdx].ParamCount Then
+        ReportErrorAt(AssignLine, AssignCol, AssignName,
+          'nombre d''arguments incorrect');
+      EmitCallProc(ProcIdx, Args, ArgCount);
+    End;
+    ExpectToken(TK_PUNCT, ';', '; apres appel');
     Exit;
   End;
 
@@ -3305,6 +4213,10 @@ Begin
     ParseWhileStmt
   Else If TokIs(TK_KEYWORD, 'loop') Then
     ParseLoopStmt
+  Else If TokIs(TK_KEYWORD, 'for') Then
+    ParseForStmt
+  Else If TokIs(TK_KEYWORD, 'match') Then
+    ParseMatchStmt
   Else If TokIs(TK_KEYWORD, 'break') Then
     ParseBreakStmt
   Else If TokIs(TK_KEYWORD, 'continue') Then
@@ -3418,17 +4330,40 @@ Begin
   End;
 
   If IsExtern Then
+  Begin
+    If CurrentExternModule = '' Then
+      CurrentExternModule := DefaultImportModule(Name, CurrentExternAbi);
+    AddImportRec(Name, ProcTab[ProcIdx].MangledName,
+      DefaultImportModule(Name, CurrentExternAbi), CurrentExternAbi,
+      ProcIdx, FnSym);
     ExpectToken(TK_PUNCT, ';', '; apres declaration extern')
+  End
   Else
+  Begin
+    CurrentProcIdx := ProcIdx;
+    CurrentReturnLabel := NewLabelName;
+    EmitFunctionPrologue(ProcIdx, CurrentReturnLabel);
     ParseBlock;
+    EmitFunctionEpilogue(ProcIdx, CurrentReturnLabel);
+    CurrentProcIdx := -1;
+    CurrentReturnLabel := '';
+  End;
   LeaveScope;
 End;
 
 Procedure ParseExternBlock;
+Var
+  OldAbi, OldModule : TString;
 Begin
   ExpectToken(TK_KEYWORD, 'extern', 'extern');
+  OldAbi := CurrentExternAbi;
+  OldModule := CurrentExternModule;
   If CurToken.Kind = TK_STRING Then
+  Begin
+    CurrentExternAbi := CurToken.Val;
+    CurrentExternModule := DefaultImportModule('', CurrentExternAbi);
     ParserNext
+  End
   Else
     ReportErrorAt(CurToken.Line, CurToken.Col, CurToken.Val,
       'ABI extern attendue, ex: "C"');
@@ -3446,6 +4381,8 @@ Begin
     End;
   End;
   ExpectToken(TK_PUNCT, '}', '} extern');
+  CurrentExternAbi := OldAbi;
+  CurrentExternModule := OldModule;
 End;
 
 Procedure SkipTopLevelItem;
@@ -3642,12 +4579,23 @@ BEGIN
   LocalCount := 0;
   ExprCount := 0;
   LoopCount := 0;
+  MatchCount := 0;
+  CallCount := 0;
+  ExternCallCount := 0;
+  UnsafeDepth := 0;
+  UnsafeBlockCount := 0;
+  PtrLocalCount := 0;
+  RuntimeMacroCount := 0;
+  PrintlnCount := 0;
+  DebugAssertCount := 0;
+  PanicCount := 0;
   SourceInit;
   InitBackend;
   InitTypeTable;
   InitSymbolTable;
   InitProcTable;
   InitConstStaticTables;
+  InitImportRelocTables;
   ParseArgs;
   ShowBanner;
   DumpTypeTable;
@@ -3657,7 +4605,9 @@ BEGIN
   DumpSymbolTable;
   DumpProcTable;
   DumpConstStaticTables;
+  DumpImportRelocTables;
   DumpAsmTrace;
-  WarnMsg('backend fichier non implemente: TODO 16 et suivantes restent a faire');
+  EmitAsmFile;
+  WarnMsg('backend fichier non implemente: TODO 23 et suivantes restent a faire');
   ShowStats;
 END.
