@@ -7340,6 +7340,31 @@ Begin
   StaticBindMethodArgs := (Param = 0) And (Arg = 0);
 End;
 
+Function StaticBindBlockArgs(BlockNode, Args: Integer): Boolean;
+Var
+  Params, Param, Arg: Integer;
+  V: String;
+Begin
+  StaticBindBlockArgs := False;
+  If (BlockNode <= 0) Or
+     ((AstTable[BlockNode].Kind <> NK_LAMBDA) And
+      (AstTable[BlockNode].Kind <> NK_PROC)) Then Exit;
+  Params := AstTable[BlockNode].Left;
+  Param := 0;
+  Arg := 0;
+  If Params <> 0 Then Param := AstTable[Params].FirstChild;
+  If Args <> 0 Then Arg := AstTable[Args].FirstChild;
+  While (Param <> 0) And (Arg <> 0) Do Begin
+    If StaticOutputText(Arg, V) Then
+      SetStaticValue(AstTable[Param].Text, V)
+    Else
+      Exit;
+    Param := AstTable[Param].NextSibling;
+    Arg := AstTable[Arg].NextSibling;
+  End;
+  StaticBindBlockArgs := (Param = 0) And (Arg = 0);
+End;
+
 Function StaticArrayMarker(Text: String; Var ArrayNode: Integer): Boolean;
 Var
   Code: Integer;
@@ -7371,6 +7396,17 @@ Begin
   If Copy(Text, 1, 7) <> '#RANGE:' Then Exit;
   Val(Copy(Text, 8, Length(Text) - 7), RangeNode, Code);
   StaticRangeMarker := (Code = 0) And (RangeNode > 0);
+End;
+
+Function StaticBlockMarker(Text: String; Var BlockNode: Integer): Boolean;
+Var
+  Code: Integer;
+Begin
+  StaticBlockMarker := False;
+  BlockNode := 0;
+  If Copy(Text, 1, 7) <> '#BLOCK:' Then Exit;
+  Val(Copy(Text, 8, Length(Text) - 7), BlockNode, Code);
+  StaticBlockMarker := (Code = 0) And (BlockNode > 0);
 End;
 
 Function StaticObjectMarker(Text: String; Var ClassName: String): Boolean;
@@ -7513,6 +7549,21 @@ Begin
   End Else If (AstTable[N].Kind = NK_VAR) And
               GetStaticValue(AstTable[N].Text, S) Then
     StaticRangeNodeFromExpr := StaticRangeMarker(S, RangeNode);
+End;
+
+Function StaticBlockNodeFromExpr(N: Integer; Var BlockNode: Integer): Boolean;
+Var
+  S: String;
+Begin
+  StaticBlockNodeFromExpr := False;
+  BlockNode := 0;
+  If N = 0 Then Exit;
+  If (AstTable[N].Kind = NK_LAMBDA) Or (AstTable[N].Kind = NK_PROC) Then Begin
+    BlockNode := N;
+    StaticBlockNodeFromExpr := True;
+  End Else If (AstTable[N].Kind = NK_VAR) And
+              GetStaticValue(AstTable[N].Text, S) Then
+    StaticBlockNodeFromExpr := StaticBlockMarker(S, BlockNode);
 End;
 
 Function StaticObjectClassFromExpr(N: Integer; Var ClassName: String): Boolean;
@@ -7930,7 +7981,7 @@ End;
 Function StaticOutputText(N: Integer; Var S: String): Boolean;
 Var
   L, R, V, Index: LongInt;
-  ArrayNode, HashNode, RangeNode, Arg: Integer;
+  ArrayNode, HashNode, RangeNode, BlockNode, Arg: Integer;
   Key, LS, RS, ExcMsg, Path, Content, Json, SetName, Num, Den, RealPart,
   ImagPart: String;
 Begin
@@ -8004,6 +8055,11 @@ Begin
     End;
   End Else If AstTable[N].Kind = NK_CALL Then Begin
     If (AstTable[N].Text = '.') And (AstTable[N].Third <> 0) And
+       (NodeMethodName(AstTable[N].Third) = 'call') And
+       StaticBlockNodeFromExpr(AstTable[N].Left, BlockNode) And
+       StaticBindBlockArgs(BlockNode, AstTable[N].Right) Then Begin
+      StaticOutputText := StaticMethodBodyText(AstTable[BlockNode].Right, S);
+    End Else If (AstTable[N].Text = '.') And (AstTable[N].Third <> 0) And
        (NodeMethodName(AstTable[N].Third) = 'next') And
        StaticIntegerValue(AstTable[N].Left, L) Then Begin
       S := ItoS(L + 1);
@@ -8120,7 +8176,7 @@ End;
 
 Procedure CollectConsoleOutputs(N: Integer);
 Var
-  Target, Args, A, C, Iter, ArrayNode, HashNode, RangeNode, Elem, Blk, Param,
+  Target, Args, A, C, Iter, ArrayNode, HashNode, RangeNode, BlockNode, Elem, Blk, Param,
   MethodNode, ModuleNode, BodyNode, ModList, ModNode, RescueNode, PairNode,
   EnsureNode: Integer;
   Name, S, ClassName, M, ModuleName, RaisedClass, Path, Content, SetName: String;
@@ -8224,6 +8280,14 @@ Begin
     Exit;
   End;
   If (AstTable[N].Kind = NK_CALL) And (AstTable[N].Text = '.') And
+     (AstTable[N].Third <> 0) And
+     (NodeMethodName(AstTable[N].Third) = 'call') And
+     StaticBlockNodeFromExpr(AstTable[N].Left, BlockNode) Then Begin
+    If StaticBindBlockArgs(BlockNode, AstTable[N].Right) Then
+      CollectConsoleOutputs(AstTable[BlockNode].Right);
+    Exit;
+  End;
+  If (AstTable[N].Kind = NK_CALL) And (AstTable[N].Text = '.') And
      (AstTable[N].Third <> 0) And (NodeMethodName(AstTable[N].Third) = 'add') And
      (AstTable[N].Left <> 0) And (AstTable[AstTable[N].Left].Kind = NK_VAR) And
      GetStaticValue(AstTable[AstTable[N].Left].Text, SetName) And
@@ -8295,6 +8359,8 @@ Begin
       SetStaticValue(AstTable[AstTable[N].Left].Text, '#HASH:' + ItoS(HashNode))
     Else If StaticRangeNodeFromExpr(AstTable[N].Right, RangeNode) Then
       SetStaticValue(AstTable[AstTable[N].Left].Text, '#RANGE:' + ItoS(RangeNode))
+    Else If StaticBlockNodeFromExpr(AstTable[N].Right, BlockNode) Then
+      SetStaticValue(AstTable[AstTable[N].Left].Text, '#BLOCK:' + ItoS(BlockNode))
     Else If StaticOutputText(AstTable[N].Right, S) Then
       SetStaticValue(AstTable[AstTable[N].Left].Text, S);
   End;
