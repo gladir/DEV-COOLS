@@ -7351,6 +7351,15 @@ Begin
   StaticObjectMarker := ClassName <> '';
 End;
 
+Function StaticExceptionMarker(Text: String; Var Message: String): Boolean;
+Begin
+  StaticExceptionMarker := False;
+  Message := '';
+  If Copy(Text, 1, 5) <> '#EXC:' Then Exit;
+  Message := Copy(Text, 6, Length(Text) - 5);
+  StaticExceptionMarker := True;
+End;
+
 Function StaticArrayNodeFromExpr(N: Integer; Var ArrayNode: Integer): Boolean;
 Var
   S: String;
@@ -7405,6 +7414,37 @@ Begin
   If N = 0 Then Exit;
   If (AstTable[N].Kind = NK_VAR) And GetStaticValue(AstTable[N].Text, S) Then
     StaticObjectClassFromExpr := StaticObjectMarker(S, ClassName);
+End;
+
+Function StaticRaiseInfo(N: Integer; Var Message, ClassName: String): Boolean;
+Var
+  C, Arg: Integer;
+Begin
+  StaticRaiseInfo := False;
+  Message := '';
+  ClassName := '';
+  If N = 0 Then Exit;
+  If AstTable[N].Kind = NK_STMT_LIST Then Begin
+    C := AstTable[N].FirstChild;
+    While C <> 0 Do Begin
+      If StaticRaiseInfo(C, Message, ClassName) Then Begin
+        StaticRaiseInfo := True;
+        Exit;
+      End;
+      C := AstTable[C].NextSibling;
+    End;
+  End Else If AstTable[N].Kind = NK_RAISE Then Begin
+    If (AstTable[N].Left <> 0) And (AstTable[AstTable[N].Left].Kind = NK_LIST) Then Begin
+      Arg := AstTable[AstTable[N].Left].FirstChild;
+      If Arg <> 0 Then
+        StaticOutputText(Arg, Message);
+    End;
+    If (AstTable[N].SymRef > 0) And (AstTable[N].SymRef <= SymCount) Then
+      ClassName := SymTable[AstTable[N].SymRef].Name
+    Else
+      ClassName := 'RuntimeError';
+    StaticRaiseInfo := True;
+  End;
 End;
 
 Function StaticArrayElementText(ArrayNode: Integer; Index: LongInt;
@@ -7731,7 +7771,7 @@ Function StaticOutputText(N: Integer; Var S: String): Boolean;
 Var
   L, R, V, Index: LongInt;
   ArrayNode, HashNode, RangeNode, Arg: Integer;
-  Key, LS, RS: String;
+  Key, LS, RS, ExcMsg: String;
 Begin
   S := '';
   StaticOutputText := False;
@@ -7790,6 +7830,13 @@ Begin
     End;
   End Else If AstTable[N].Kind = NK_CALL Then Begin
     If (AstTable[N].Text = '.') And (AstTable[N].Third <> 0) And
+       (NodeMethodName(AstTable[N].Third) = 'message') And
+       (AstTable[N].Left <> 0) And
+       (AstTable[AstTable[N].Left].Kind = NK_VAR) And
+       GetStaticValue(AstTable[AstTable[N].Left].Text, ExcMsg) And
+       StaticExceptionMarker(ExcMsg, S) Then Begin
+      StaticOutputText := True;
+    End Else If (AstTable[N].Text = '.') And (AstTable[N].Third <> 0) And
        (NodeMethodName(AstTable[N].Third) = 'match') And
        (AstTable[N].Left <> 0) And (AstTable[AstTable[N].Left].Kind = NK_REGEX) And
        (AstTable[N].Right <> 0) And
@@ -7850,14 +7897,40 @@ End;
 Procedure CollectConsoleOutputs(N: Integer);
 Var
   Target, Args, A, C, Iter, ArrayNode, HashNode, RangeNode, Elem, Blk, Param,
-  MethodNode, ModuleNode, BodyNode, ModList, ModNode: Integer;
-  Name, S, ClassName, M, ModuleName: String;
+  MethodNode, ModuleNode, BodyNode, ModList, ModNode, RescueNode, PairNode,
+  EnsureNode: Integer;
+  Name, S, ClassName, M, ModuleName, RaisedClass: String;
   Count, StartVal, EndVal, IterVal: LongInt;
   AddNL: Boolean;
   B: Boolean;
   Code: Integer;
 Begin
   If N = 0 Then Exit;
+  If AstTable[N].Kind = NK_BEGIN Then Begin
+    If StaticRaiseInfo(AstTable[N].Left, S, RaisedClass) Then Begin
+      RescueNode := 0;
+      If AstTable[N].Right <> 0 Then
+        RescueNode := AstTable[AstTable[N].Right].FirstChild;
+      If RescueNode <> 0 Then Begin
+        PairNode := AstTable[RescueNode].Left;
+        If (PairNode <> 0) And (AstTable[PairNode].Kind = NK_PAIR) And
+           (AstTable[PairNode].Right <> 0) And
+           (AstTable[AstTable[PairNode].Right].Kind = NK_VAR) Then
+          SetStaticValue(AstTable[AstTable[PairNode].Right].Text, '#EXC:' + S);
+        CollectConsoleOutputs(AstTable[RescueNode].Right);
+      End;
+    End Else Begin
+      CollectConsoleOutputs(AstTable[N].Left);
+      If (AstTable[N].Third <> 0) And (AstTable[AstTable[N].Third].Left <> 0) Then
+        CollectConsoleOutputs(AstTable[AstTable[N].Third].Left);
+    End;
+    If AstTable[N].Third <> 0 Then Begin
+      EnsureNode := AstTable[AstTable[N].Third].Right;
+      If EnsureNode <> 0 Then
+        CollectConsoleOutputs(EnsureNode);
+    End;
+    Exit;
+  End;
   If (AstTable[N].Kind = NK_MODULE) And (AstTable[N].Left <> 0) Then Begin
     ModuleName := AstTable[AstTable[N].Left].Text;
     SetStaticValue('#MODULE_NODE:' + ModuleName, ItoS(N));
