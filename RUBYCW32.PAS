@@ -7285,6 +7285,29 @@ End;
 
 Function StaticOutputText(N: Integer; Var S: String): Boolean; Forward;
 
+Function StaticBindMethodArgs(MethodNode, Args: Integer): Boolean;
+Var
+  Params, Param, Arg: Integer;
+  V: String;
+Begin
+  StaticBindMethodArgs := False;
+  If (MethodNode <= 0) Or (AstTable[MethodNode].Kind <> NK_DEF) Then Exit;
+  Params := AstTable[MethodNode].Right;
+  Param := 0;
+  Arg := 0;
+  If Params <> 0 Then Param := AstTable[Params].FirstChild;
+  If Args <> 0 Then Arg := AstTable[Args].FirstChild;
+  While (Param <> 0) And (Arg <> 0) Do Begin
+    If StaticOutputText(Arg, V) Then
+      SetStaticValue(AstTable[Param].Text, V)
+    Else
+      Exit;
+    Param := AstTable[Param].NextSibling;
+    Arg := AstTable[Arg].NextSibling;
+  End;
+  StaticBindMethodArgs := (Param = 0) And (Arg = 0);
+End;
+
 Function StaticArrayMarker(Text: String; Var ArrayNode: Integer): Boolean;
 Var
   Code: Integer;
@@ -7294,6 +7317,26 @@ Begin
   If Copy(Text, 1, 5) <> '#ARR:' Then Exit;
   Val(Copy(Text, 6, Length(Text) - 5), ArrayNode, Code);
   StaticArrayMarker := (Code = 0) And (ArrayNode > 0);
+End;
+
+Function StaticHashMarker(Text: String; Var HashNode: Integer): Boolean;
+Var
+  Code: Integer;
+Begin
+  StaticHashMarker := False;
+  HashNode := 0;
+  If Copy(Text, 1, 6) <> '#HASH:' Then Exit;
+  Val(Copy(Text, 7, Length(Text) - 6), HashNode, Code);
+  StaticHashMarker := (Code = 0) And (HashNode > 0);
+End;
+
+Function StaticObjectMarker(Text: String; Var ClassName: String): Boolean;
+Begin
+  StaticObjectMarker := False;
+  ClassName := '';
+  If Copy(Text, 1, 5) <> '#OBJ:' Then Exit;
+  ClassName := Copy(Text, 6, Length(Text) - 5);
+  StaticObjectMarker := ClassName <> '';
 End;
 
 Function StaticArrayNodeFromExpr(N: Integer; Var ArrayNode: Integer): Boolean;
@@ -7309,6 +7352,32 @@ Begin
   End Else If (AstTable[N].Kind = NK_VAR) And
               GetStaticValue(AstTable[N].Text, S) Then
     StaticArrayNodeFromExpr := StaticArrayMarker(S, ArrayNode);
+End;
+
+Function StaticHashNodeFromExpr(N: Integer; Var HashNode: Integer): Boolean;
+Var
+  S: String;
+Begin
+  StaticHashNodeFromExpr := False;
+  HashNode := 0;
+  If N = 0 Then Exit;
+  If AstTable[N].Kind = NK_HASH Then Begin
+    HashNode := N;
+    StaticHashNodeFromExpr := True;
+  End Else If (AstTable[N].Kind = NK_VAR) And
+              GetStaticValue(AstTable[N].Text, S) Then
+    StaticHashNodeFromExpr := StaticHashMarker(S, HashNode);
+End;
+
+Function StaticObjectClassFromExpr(N: Integer; Var ClassName: String): Boolean;
+Var
+  S: String;
+Begin
+  StaticObjectClassFromExpr := False;
+  ClassName := '';
+  If N = 0 Then Exit;
+  If (AstTable[N].Kind = NK_VAR) And GetStaticValue(AstTable[N].Text, S) Then
+    StaticObjectClassFromExpr := StaticObjectMarker(S, ClassName);
 End;
 
 Function StaticArrayElementText(ArrayNode: Integer; Index: LongInt;
@@ -7331,6 +7400,92 @@ Begin
   End;
 End;
 
+Function StaticKeyText(N: Integer; Var S: String): Boolean;
+Begin
+  StaticKeyText := False;
+  S := '';
+  If N = 0 Then Exit;
+  If AstTable[N].Kind = NK_SYMBOL Then Begin
+    S := AstTable[N].Text;
+    StaticKeyText := True;
+  End Else
+    StaticKeyText := StaticOutputText(N, S);
+End;
+
+Function StaticHashElementText(HashNode: Integer; Key: String;
+                               Var S: String): Boolean;
+Var
+  P: Integer;
+  K: String;
+Begin
+  StaticHashElementText := False;
+  If HashNode = 0 Then Exit;
+  P := AstTable[HashNode].FirstChild;
+  While P <> 0 Do Begin
+    If (AstTable[P].Kind = NK_PAIR) And StaticKeyText(AstTable[P].Left, K) And
+       (K = Key) Then Begin
+      StaticHashElementText := StaticOutputText(AstTable[P].Right, S);
+      Exit;
+    End;
+    P := AstTable[P].NextSibling;
+  End;
+End;
+
+Function StaticMethodBodyText(N: Integer; Var S: String): Boolean; Forward;
+
+Function StaticMethodCallText(N: Integer; Var S: String): Boolean;
+Var
+  MethodNode, Args: Integer;
+  Name, M, ClassName: String;
+  Code: Integer;
+Begin
+  StaticMethodCallText := False;
+  S := '';
+  If (N = 0) Or (AstTable[N].Kind <> NK_CALL) Then Exit;
+  Args := AstTable[N].Right;
+  If (AstTable[N].Text = 'call') And (AstTable[N].Left <> 0) And
+     (AstTable[AstTable[N].Left].Kind = NK_VAR) Then Begin
+    Name := AstTable[AstTable[N].Left].Text;
+    If Not GetStaticValue('#METHOD:' + Name, M) Then Exit;
+  End Else If (AstTable[N].Text = '.') And (AstTable[N].Third <> 0) And
+              StaticObjectClassFromExpr(AstTable[N].Left, ClassName) Then Begin
+    Name := NodeMethodName(AstTable[N].Third);
+    If Not GetStaticValue('#METHOD:' + ClassName + '#' + Name, M) Then Exit;
+  End Else
+    Exit;
+  Val(M, MethodNode, Code);
+  If (Code <> 0) Or (MethodNode <= 0) Or (AstTable[MethodNode].Kind <> NK_DEF) Then
+    Exit;
+  If Not StaticBindMethodArgs(MethodNode, Args) Then Exit;
+  StaticMethodCallText := StaticMethodBodyText(AstTable[MethodNode].Third, S);
+End;
+
+Function StaticMethodBodyText(N: Integer; Var S: String): Boolean;
+Var
+  C: Integer;
+Begin
+  StaticMethodBodyText := False;
+  S := '';
+  If N = 0 Then Exit;
+  If AstTable[N].Kind = NK_RETURN Then Begin
+    StaticMethodBodyText := StaticOutputText(AstTable[N].Left, S);
+    Exit;
+  End;
+  If AstTable[N].Kind = NK_STMT_LIST Then Begin
+    C := AstTable[N].FirstChild;
+    While C <> 0 Do Begin
+      If AstTable[C].Kind = NK_RETURN Then Begin
+        StaticMethodBodyText := StaticOutputText(AstTable[C].Left, S);
+        Exit;
+      End;
+      If AstTable[C].NextSibling = 0 Then
+        StaticMethodBodyText := StaticOutputText(C, S);
+      C := AstTable[C].NextSibling;
+    End;
+  End Else
+    StaticMethodBodyText := StaticOutputText(N, S);
+End;
+
 Function StaticIntegerValue(N: Integer; Var V: LongInt): Boolean;
 Var
   S: String;
@@ -7347,7 +7502,8 @@ End;
 Function StaticOutputText(N: Integer; Var S: String): Boolean;
 Var
   L, R, V, Index: LongInt;
-  ArrayNode, Arg: Integer;
+  ArrayNode, HashNode, Arg: Integer;
+  Key: String;
 Begin
   S := '';
   StaticOutputText := False;
@@ -7392,7 +7548,15 @@ Begin
       Arg := AstTable[AstTable[N].Right].FirstChild;
       If StaticIntegerValue(Arg, Index) Then
         StaticOutputText := StaticArrayElementText(ArrayNode, Index, S);
+    End Else If StaticHashNodeFromExpr(AstTable[N].Left, HashNode) And
+                (AstTable[N].Right <> 0) And
+                (AstTable[AstTable[N].Right].Kind = NK_LIST) Then Begin
+      Arg := AstTable[AstTable[N].Right].FirstChild;
+      If StaticKeyText(Arg, Key) Then
+        StaticOutputText := StaticHashElementText(HashNode, Key, S);
     End;
+  End Else If AstTable[N].Kind = NK_CALL Then Begin
+    StaticOutputText := StaticMethodCallText(N, S);
   End;
 End;
 
@@ -7433,17 +7597,54 @@ End;
 
 Procedure CollectConsoleOutputs(N: Integer);
 Var
-  Target, Args, A, C, Iter, ArrayNode, Elem, Blk, Param: Integer;
-  Name, S: String;
+  Target, Args, A, C, Iter, ArrayNode, HashNode, Elem, Blk, Param,
+  MethodNode: Integer;
+  Name, S, ClassName, M: String;
   AddNL: Boolean;
   B: Boolean;
+  Code: Integer;
 Begin
   If N = 0 Then Exit;
+  If (AstTable[N].Kind = NK_CLASS) And (AstTable[N].Left <> 0) Then Begin
+    ClassName := AstTable[AstTable[N].Left].Text;
+    C := 0;
+    If AstTable[N].Right <> 0 Then C := AstTable[AstTable[N].Right].FirstChild;
+    If (C = 0) And (AstTable[N].Third <> 0) Then
+      C := AstTable[AstTable[N].Third].FirstChild;
+    While C <> 0 Do Begin
+      If (AstTable[C].Kind = NK_DEF) And (AstTable[C].Left <> 0) Then
+        SetStaticValue('#METHOD:' + ClassName + '#' +
+                       AstTable[AstTable[C].Left].Text, ItoS(C));
+      C := AstTable[C].NextSibling;
+    End;
+    Exit;
+  End;
+  If (AstTable[N].Kind = NK_DEF) And (AstTable[N].Left <> 0) Then Begin
+    SetStaticValue('#METHOD:' + AstTable[AstTable[N].Left].Text, ItoS(N));
+    Exit;
+  End;
   If (AstTable[N].Kind = NK_ASSIGN) And
      (AstTable[N].Left <> 0) And
      (AstTable[AstTable[N].Left].Kind = NK_VAR) Then Begin
-    If StaticArrayNodeFromExpr(AstTable[N].Right, ArrayNode) Then
+    If (AstTable[N].Right <> 0) And
+       (AstTable[AstTable[N].Right].Kind = NK_CALL) And
+       (AstTable[AstTable[N].Right].Text = '.') And
+       (AstTable[AstTable[N].Right].Left <> 0) And
+       (AstTable[AstTable[AstTable[N].Right].Left].Kind = NK_CONST) And
+       (AstTable[AstTable[N].Right].Third <> 0) And
+       (NodeMethodName(AstTable[AstTable[N].Right].Third) = 'new') Then Begin
+      ClassName := AstTable[AstTable[AstTable[N].Right].Left].Text;
+      If GetStaticValue('#METHOD:' + ClassName + '#initialize', M) Then Begin
+        Val(M, MethodNode, Code);
+        If (Code = 0) And StaticBindMethodArgs(MethodNode,
+             AstTable[AstTable[N].Right].Right) Then
+          CollectConsoleOutputs(AstTable[MethodNode].Third);
+      End;
+      SetStaticValue(AstTable[AstTable[N].Left].Text, '#OBJ:' + ClassName);
+    End Else If StaticArrayNodeFromExpr(AstTable[N].Right, ArrayNode) Then
       SetStaticValue(AstTable[AstTable[N].Left].Text, '#ARR:' + ItoS(ArrayNode))
+    Else If StaticHashNodeFromExpr(AstTable[N].Right, HashNode) Then
+      SetStaticValue(AstTable[AstTable[N].Left].Text, '#HASH:' + ItoS(HashNode))
     Else If StaticOutputText(AstTable[N].Right, S) Then
       SetStaticValue(AstTable[AstTable[N].Left].Text, S);
   End;
@@ -7483,6 +7684,17 @@ Begin
         CollectConsoleOutputs(AstTable[Blk].Right);
         Elem := AstTable[Elem].NextSibling;
       End;
+    End;
+    Exit;
+  End;
+  If (AstTable[N].Kind = NK_CALL) And (AstTable[N].Text = '.') And
+     (AstTable[N].Third <> 0) And
+     StaticObjectClassFromExpr(AstTable[N].Left, ClassName) Then Begin
+    Name := NodeMethodName(AstTable[N].Third);
+    If GetStaticValue('#METHOD:' + ClassName + '#' + Name, M) Then Begin
+      Val(M, MethodNode, Code);
+      If (Code = 0) And StaticBindMethodArgs(MethodNode, AstTable[N].Right) Then
+        CollectConsoleOutputs(AstTable[MethodNode].Third);
     End;
     Exit;
   End;
