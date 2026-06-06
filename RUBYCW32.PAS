@@ -7458,6 +7458,162 @@ Begin
   End;
 End;
 
+Function StaticRegexCharEqual(A, B: Char; Flags: Integer): Boolean;
+Begin
+  If (Flags And REGF_IGNORECASE) <> 0 Then
+    StaticRegexCharEqual := UpCase(A) = UpCase(B)
+  Else
+    StaticRegexCharEqual := A = B;
+End;
+
+Function StaticRegexTokenMatches(Pattern: String; P: Integer; Text: String;
+                                 T, Flags: Integer; Var NextP: Integer): Boolean;
+Var
+  C: Char;
+Begin
+  StaticRegexTokenMatches := False;
+  NextP := P + 1;
+  If (P > Length(Pattern)) Or (T > Length(Text)) Then Exit;
+  C := Pattern[P];
+  If C = '\' Then Begin
+    If P >= Length(Pattern) Then Exit;
+    C := Pattern[P + 1];
+    NextP := P + 2;
+    Case C Of
+      'd': StaticRegexTokenMatches := (Text[T] >= '0') And (Text[T] <= '9');
+      's': StaticRegexTokenMatches := (Text[T] = ' ') Or (Text[T] = #9) Or
+                                      (Text[T] = #10) Or (Text[T] = #13);
+      'w': StaticRegexTokenMatches := ((Text[T] >= 'A') And (Text[T] <= 'Z')) Or
+                                      ((Text[T] >= 'a') And (Text[T] <= 'z')) Or
+                                      ((Text[T] >= '0') And (Text[T] <= '9')) Or
+                                      (Text[T] = '_');
+    Else
+      StaticRegexTokenMatches := StaticRegexCharEqual(C, Text[T], Flags);
+    End;
+  End Else If C = '.' Then
+    StaticRegexTokenMatches := True
+  Else
+    StaticRegexTokenMatches := StaticRegexCharEqual(C, Text[T], Flags);
+End;
+
+Function StaticRegexMatchHere(Pattern: String; P: Integer; Text: String;
+                              T, Flags: Integer; Var EndT: Integer): Boolean;
+Var
+  NextP, MaxT, I: Integer;
+  Q: Char;
+Begin
+  StaticRegexMatchHere := False;
+  EndT := T;
+  If P > Length(Pattern) Then Begin
+    EndT := T - 1;
+    StaticRegexMatchHere := True;
+    Exit;
+  End;
+  If (P <= Length(Pattern)) And (Pattern[P] = '$') And
+     (P = Length(Pattern)) Then Begin
+    StaticRegexMatchHere := T > Length(Text);
+    If T > Length(Text) Then EndT := Length(Text);
+    Exit;
+  End;
+  If Not StaticRegexTokenMatches(Pattern, P, Text, T, Flags, NextP) Then Begin
+    If (NextP <= Length(Pattern)) And
+       ((Pattern[NextP] = '*') Or (Pattern[NextP] = '?')) And
+       StaticRegexMatchHere(Pattern, NextP + 1, Text, T, Flags, EndT) Then
+      StaticRegexMatchHere := True;
+    Exit;
+  End;
+  Q := #0;
+  If NextP <= Length(Pattern) Then Q := Pattern[NextP];
+  If (Q = '*') Or (Q = '+') Then Begin
+    MaxT := T;
+    While (MaxT <= Length(Text)) And
+          StaticRegexTokenMatches(Pattern, P, Text, MaxT, Flags, NextP) Do
+      Inc(MaxT);
+    For I := MaxT - 1 DownTo T Do
+      If StaticRegexMatchHere(Pattern, NextP + 1, Text, I + 1, Flags, EndT) Then Begin
+        StaticRegexMatchHere := True;
+        Exit;
+      End;
+    If Q = '*' Then
+      If StaticRegexMatchHere(Pattern, NextP + 1, Text, T, Flags, EndT) Then
+        StaticRegexMatchHere := True;
+  End Else If Q = '?' Then Begin
+    If StaticRegexMatchHere(Pattern, NextP + 1, Text, T + 1, Flags, EndT) Then
+      StaticRegexMatchHere := True
+    Else
+      If StaticRegexMatchHere(Pattern, NextP + 1, Text, T, Flags, EndT) Then
+        StaticRegexMatchHere := True;
+  End Else If StaticRegexMatchHere(Pattern, NextP, Text, T + 1, Flags, EndT) Then
+    StaticRegexMatchHere := True;
+End;
+
+Function StaticRegexSearch(RegexNode: Integer; Text: String;
+                           Var StartPos, EndPos: Integer): Boolean;
+Var
+  I, R: Integer;
+  Pattern: String;
+  Flags: Integer;
+Begin
+  StaticRegexSearch := False;
+  StartPos := 0;
+  EndPos := 0;
+  If (RegexNode = 0) Or (AstTable[RegexNode].Kind <> NK_REGEX) Or
+     (AstTable[RegexNode].SymRef <= 0) Then Exit;
+  Pattern := RegexLitTable[AstTable[RegexNode].SymRef].Pattern;
+  Flags := RegexLitTable[AstTable[RegexNode].SymRef].Flags;
+  If (Length(Pattern) > 0) And (Pattern[1] = '^') Then Begin
+    If StaticRegexMatchHere(Pattern, 2, Text, 1, Flags, R) Then Begin
+      StartPos := 1;
+      EndPos := R;
+      StaticRegexSearch := True;
+    End;
+    Exit;
+  End;
+  For I := 1 To Length(Text) + 1 Do
+    If StaticRegexMatchHere(Pattern, 1, Text, I, Flags, R) Then Begin
+      StartPos := I;
+      EndPos := R;
+      StaticRegexSearch := True;
+      Exit;
+    End;
+End;
+
+Function StaticRegexMatchBool(LeftNode, RightNode: Integer; Var B: Boolean): Boolean;
+Var
+  Text: String;
+  S, E: Integer;
+Begin
+  StaticRegexMatchBool := False;
+  B := False;
+  If (LeftNode = 0) Or (RightNode = 0) Then Exit;
+  If (AstTable[RightNode].Kind = NK_REGEX) And StaticOutputText(LeftNode, Text) Then Begin
+    B := StaticRegexSearch(RightNode, Text, S, E);
+    StaticRegexMatchBool := True;
+  End Else If (AstTable[LeftNode].Kind = NK_REGEX) And StaticOutputText(RightNode, Text) Then Begin
+    B := StaticRegexSearch(LeftNode, Text, S, E);
+    StaticRegexMatchBool := True;
+  End;
+End;
+
+Function StaticRegexMatchDataText(RegexNode, TextNode: Integer; Var S: String): Boolean;
+Var
+  Text, M: String;
+  A, B: Integer;
+Begin
+  StaticRegexMatchDataText := False;
+  S := '';
+  If Not StaticOutputText(TextNode, Text) Then Exit;
+  If StaticRegexSearch(RegexNode, Text, A, B) Then Begin
+    If B >= A Then
+      M := Copy(Text, A, B - A + 1)
+    Else
+      M := '';
+    S := '#<MatchData "' + M + '">';
+  End Else
+    S := 'nil';
+  StaticRegexMatchDataText := True;
+End;
+
 Function StaticRangeIncludeText(RangeNode, ValueNode: Integer;
                                 Var S: String): Boolean;
 Var
@@ -7634,6 +7790,13 @@ Begin
     End;
   End Else If AstTable[N].Kind = NK_CALL Then Begin
     If (AstTable[N].Text = '.') And (AstTable[N].Third <> 0) And
+       (NodeMethodName(AstTable[N].Third) = 'match') And
+       (AstTable[N].Left <> 0) And (AstTable[AstTable[N].Left].Kind = NK_REGEX) And
+       (AstTable[N].Right <> 0) And
+       (AstTable[AstTable[N].Right].Kind = NK_LIST) Then Begin
+      Arg := AstTable[AstTable[N].Right].FirstChild;
+      StaticOutputText := StaticRegexMatchDataText(AstTable[N].Left, Arg, S);
+    End Else If (AstTable[N].Text = '.') And (AstTable[N].Third <> 0) And
        (NodeMethodName(AstTable[N].Third) = 'include?') And
        StaticRangeNodeFromExpr(AstTable[N].Left, RangeNode) And
        (AstTable[N].Right <> 0) And
@@ -7660,7 +7823,11 @@ Begin
     B := False;
     StaticBoolValue := True;
   End Else If AstTable[N].Kind = NK_BINARY Then Begin
-    If StaticIntegerValue(AstTable[N].Left, L) And
+    If ((AstTable[N].Tok = TOK_MATCH) Or (AstTable[N].Tok = TOK_NMATCH)) And
+       StaticRegexMatchBool(AstTable[N].Left, AstTable[N].Right, B) Then Begin
+      If AstTable[N].Tok = TOK_NMATCH Then B := Not B;
+      StaticBoolValue := True;
+    End Else If StaticIntegerValue(AstTable[N].Left, L) And
        StaticIntegerValue(AstTable[N].Right, R) Then Begin
       Case AstTable[N].Tok Of
         TOK_EQ: B := L = R;
