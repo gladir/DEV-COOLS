@@ -645,6 +645,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet d'obscurcir le code Pascal en le transformant avec l'algorithme rot13 sur les identificateurs du programme.</td>
 		</tr>
 		<tr>
+			<td><b>RUBYCW32.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur Ruby pour l'assembleur du microprocesseur 80386 pour le systeme d'exploitation Windows 32 bits (PE Win32).</td>
+		</tr>
+		<tr>
 			<td><b>RUST86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur Rust vers l'assembleur 8086.</td>
 		</tr>
