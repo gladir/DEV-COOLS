@@ -2159,16 +2159,31 @@ Begin
 End;
 
 Procedure EmitFunctionPrologue(ProcIdx : Integer; Const ReturnLabel : TString);
+Var
+  J : Integer;
+  Sig : TString;
 Begin
   If (ProcIdx < 0) Or (ProcIdx >= ProcCount) Then
     Exit;
+  Sig := 'fn ' + ProcTab[ProcIdx].Name + '(';
+  For J := 0 To ProcTab[ProcIdx].ParamCount - 1 Do
+  Begin
+    If J > 0 Then Sig := Sig + ', ';
+    Sig := Sig + ProcTab[ProcIdx].ParamNames[J];
+    If ProcTab[ProcIdx].ParamTypes[J] <> TY_UNKNOWN Then
+      Sig := Sig + ': ' + TypeTab[ProcTab[ProcIdx].ParamTypes[J]].Name;
+  End;
+  Sig := Sig + ')';
+  If ProcTab[ProcIdx].RetTypeIdx <> TY_IDX_UNIT Then
+    Sig := Sig + ' -> ' + TypeTab[ProcTab[ProcIdx].RetTypeIdx].Name;
   EmitAsm('');
-  EmitAsm(ProcTab[ProcIdx].MangledName + ':');
+  EmitAsm('; --- ' + Sig + ' ---');
+  EmitAsm(ProcTab[ProcIdx].MangledName + ' PROC');
   EmitAsm('  PUSH EBP');
   EmitAsm('  MOV EBP, ESP');
   EmitAsm('  SUB ESP, ' + IntToStr_(MAX_LOCAL * WORD_SIZE));
   EmitAsm('  PUSH EBX');
-  EmitAsm('  ; convention interne: arguments sur pile, retour EAX, caller cleanup');
+  EmitAsm('  ; convention: args sur pile, retour EAX, caller cleanup');
 End;
 
 Procedure EmitFunctionEpilogue(ProcIdx : Integer; Const ReturnLabel : TString);
@@ -2180,6 +2195,7 @@ Begin
   EmitAsm('  MOV ESP, EBP');
   EmitAsm('  POP EBP');
   EmitAsm('  RET');
+  EmitAsm(ProcTab[ProcIdx].MangledName + ' ENDP');
 End;
 
 Procedure EmitReturnExpr(Const RetExpr : TExprRec);
@@ -2500,6 +2516,7 @@ Var
   F : Text;
   Code, I : Integer;
   AsmName, EntryName : TString;
+  HasInitData, HasBssData : Boolean;
 Begin
   If Not Opts.EmitAsm Then
     Exit;
@@ -2552,19 +2569,33 @@ Begin
     End;
   WriteLn(F);
 
+  { Donnees initialisees (.data) }
   WriteLn(F, '.DATA');
-  If StaticCount = 0 Then
-    WriteLn(F, '  ; aucune donnee statique')
-  Else
-    For I := 0 To StaticCount - 1 Do
+  HasInitData := False;
+  For I := 0 To StaticCount - 1 Do
+    If StaticTab[I].HasInit Then
     Begin
+      HasInitData := True;
       Write(F, StaticTab[I].MangledName, ' ',
         AsmDataDirective(StaticTab[I].TypeIdx), ' ');
-      If StaticTab[I].HasInit Then
-        WriteLn(F, StaticTab[I].IntValue)
-      Else
-        WriteLn(F, '?');
+      WriteLn(F, StaticTab[I].IntValue);
     End;
+  If Not HasInitData Then
+    WriteLn(F, '  ; aucune donnee initialisee');
+  WriteLn(F);
+
+  { Donnees non initialisees / BSS (.data?) }
+  WriteLn(F, '.DATA?');
+  HasBssData := False;
+  For I := 0 To StaticCount - 1 Do
+    If Not StaticTab[I].HasInit Then
+    Begin
+      HasBssData := True;
+      WriteLn(F, StaticTab[I].MangledName, ' ',
+        AsmDataDirective(StaticTab[I].TypeIdx), ' ?');
+    End;
+  If Not HasBssData Then
+    WriteLn(F, '  ; aucune donnee non initialisee (BSS)');
   WriteLn(F);
 
   WriteLn(F, '.CODE');
