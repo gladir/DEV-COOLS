@@ -2567,6 +2567,1086 @@ Begin
   End;
 End;
 
+(* ============================================================ *)
+(* TODO 04 - TYPES SCALAIRES ET REPRESENTATION RUNTIME         *)
+(* ============================================================ *)
+
+Const
+  CTX_VOID   = 0;
+  CTX_SCALAR = 1;
+  CTX_LIST   = 2;
+  CTX_BOOL   = 3;
+
+  PV_UNDEF   = 0;
+  PV_INTEGER = 1;
+  PV_FLOAT   = 2;
+  PV_STRING  = 3;
+
+Type
+  TPerlVal = Record
+    Tag:  Integer;
+    IVal: LongInt;
+    FVal: Double;
+    SVal: String;
+  End;
+
+Function PerlValUndef: TPerlVal;
+Var V: TPerlVal;
+Begin
+  V.Tag  := PV_UNDEF;
+  V.IVal := 0;
+  V.FVal := 0.0;
+  V.SVal := '';
+  PerlValUndef := V;
+End;
+
+Function PerlValInt(N: LongInt): TPerlVal;
+Var V: TPerlVal;
+Begin
+  V.Tag  := PV_INTEGER;
+  V.IVal := N;
+  V.FVal := N;
+  V.SVal := '';
+  PerlValInt := V;
+End;
+
+Function PerlValFloat(F: Double): TPerlVal;
+Var V: TPerlVal;
+Begin
+  V.Tag  := PV_FLOAT;
+  V.IVal := Round(F);
+  V.FVal := F;
+  V.SVal := '';
+  PerlValFloat := V;
+End;
+
+Function PerlValStr(S: String): TPerlVal;
+Var V: TPerlVal;
+Begin
+  V.Tag  := PV_STRING;
+  V.IVal := 0;
+  V.FVal := 0.0;
+  V.SVal := S;
+  PerlValStr := V;
+End;
+
+Function IsUndefVal(V: TPerlVal): Boolean;
+Begin
+  IsUndefVal := (V.Tag = PV_UNDEF);
+End;
+
+Function IntValStr(N: LongInt): String;
+Var S: String;
+Begin
+  Str(N, S);
+  IntValStr := S;
+End;
+
+Function FloatValStr(F: Double): String;
+Var S: String;
+    IsInt: Boolean;
+    Truncated: LongInt;
+Begin
+  Truncated := Round(F);
+  IsInt := (F = Truncated) And (Abs(F) < 1.0E15);
+  If IsInt Then Begin
+    Str(Truncated, S);
+  End Else Begin
+    Str(F:0:6, S);
+    While (Length(S) > 1) And (S[Length(S)] = '0') Do
+      Delete(S, Length(S), 1);
+    If (Length(S) > 0) And (S[Length(S)] = '.') Then
+      Delete(S, Length(S), 1);
+  End;
+  FloatValStr := S;
+End;
+
+{ Parse leading numeric prefix from a Perl string }
+Function StrToNum(S: String): LongInt;
+Var I, Sign: Integer;
+    N: LongInt;
+    IsHex, IsOct: Boolean;
+    C: Char;
+Begin
+  I    := 1;
+  Sign := 1;
+  N    := 0;
+  IsHex := False;
+  IsOct := False;
+  While (I <= Length(S)) And (S[I] = ' ') Do Inc(I);
+  If (I <= Length(S)) And (S[I] = '-') Then Begin
+    Sign := -1; Inc(I);
+  End Else If (I <= Length(S)) And (S[I] = '+') Then
+    Inc(I);
+  If (I <= Length(S)) And (S[I] = '0') Then Begin
+    Inc(I);
+    If (I <= Length(S)) And ((S[I] = 'x') Or (S[I] = 'X')) Then Begin
+      IsHex := True; Inc(I);
+    End Else
+      IsOct := True;
+  End;
+  If IsHex Then Begin
+    While I <= Length(S) Do Begin
+      C := S[I];
+      If (C >= '0') And (C <= '9') Then
+        N := N * 16 + (Ord(C) - Ord('0'))
+      Else If (C >= 'a') And (C <= 'f') Then
+        N := N * 16 + (Ord(C) - Ord('a') + 10)
+      Else If (C >= 'A') And (C <= 'F') Then
+        N := N * 16 + (Ord(C) - Ord('A') + 10)
+      Else
+        Break;
+      Inc(I);
+    End;
+  End Else If IsOct Then Begin
+    While (I <= Length(S)) And (S[I] >= '0') And (S[I] <= '7') Do Begin
+      N := N * 8 + (Ord(S[I]) - Ord('0'));
+      Inc(I);
+    End;
+  End Else Begin
+    While (I <= Length(S)) And (S[I] >= '0') And (S[I] <= '9') Do Begin
+      N := N * 10 + (Ord(S[I]) - Ord('0'));
+      Inc(I);
+    End;
+  End;
+  StrToNum := Sign * N;
+End;
+
+Function ValToInt(V: TPerlVal): LongInt;
+Begin
+  Case V.Tag Of
+    PV_UNDEF:   ValToInt := 0;
+    PV_INTEGER: ValToInt := V.IVal;
+    PV_FLOAT:   ValToInt := Round(V.FVal);
+    PV_STRING:  ValToInt := StrToNum(V.SVal);
+  Else
+    ValToInt := 0;
+  End;
+End;
+
+Function ValToStr(V: TPerlVal): String;
+Begin
+  Case V.Tag Of
+    PV_UNDEF:   ValToStr := '';
+    PV_INTEGER: ValToStr := IntValStr(V.IVal);
+    PV_FLOAT:   ValToStr := FloatValStr(V.FVal);
+    PV_STRING:  ValToStr := V.SVal;
+  Else
+    ValToStr := '';
+  End;
+End;
+
+Function ValToNum(V: TPerlVal): LongInt;
+Begin
+  ValToNum := ValToInt(V);
+End;
+
+{ Perl truth: false if undef, 0, "0", or "" }
+Function IsTrueVal(V: TPerlVal): Boolean;
+Begin
+  Case V.Tag Of
+    PV_UNDEF:   IsTrueVal := False;
+    PV_INTEGER: IsTrueVal := (V.IVal <> 0);
+    PV_FLOAT:   IsTrueVal := (V.FVal <> 0.0);
+    PV_STRING:  IsTrueVal := (V.SVal <> '') And (V.SVal <> '0');
+  Else
+    IsTrueVal := False;
+  End;
+End;
+
+Function ValTypeName(V: TPerlVal): String;
+Begin
+  Case V.Tag Of
+    PV_UNDEF:   ValTypeName := 'undef';
+    PV_INTEGER: ValTypeName := 'integer';
+    PV_FLOAT:   ValTypeName := 'float';
+    PV_STRING:  ValTypeName := 'string';
+  Else
+    ValTypeName := 'unknown';
+  End;
+End;
+
+Function CtxName(C: Integer): String;
+Begin
+  Case C Of
+    CTX_VOID:   CtxName := 'void';
+    CTX_SCALAR: CtxName := 'scalar';
+    CTX_LIST:   CtxName := 'list';
+    CTX_BOOL:   CtxName := 'bool';
+  Else
+    CtxName := 'unknown';
+  End;
+End;
+
+{ Tagged 31-bit integer encoding for runtime: ((n shl 1) or 1) }
+Function MakePerlTaggedInt(N: LongInt): LongInt;
+Begin
+  MakePerlTaggedInt := (N Shl 1) Or 1;
+End;
+
+Function UntagPerlInt(Tagged: LongInt): LongInt;
+Begin
+  UntagPerlInt := Tagged Shr 1;
+End;
+
+{ Runtime symbol name helpers for code generation }
+Function PlRtToNum: String;   Begin PlRtToNum   := '_PLRT_to_num';   End;
+Function PlRtToStr: String;   Begin PlRtToStr   := '_PLRT_to_str';   End;
+Function PlRtToBool: String;  Begin PlRtToBool  := '_PLRT_to_bool';  End;
+Function PlRtIsUndef: String; Begin PlRtIsUndef := '_PLRT_is_undef'; End;
+Function PlRtToInt: String;   Begin PlRtToInt   := '_PLRT_to_int';   End;
+
+(* ============================================================ *)
+(* TODO 05 - VARIABLES : SCALAIRES, TABLEAUX, HASHES           *)
+(* ============================================================ *)
+
+Const
+  SF_DEAD      = $0020;
+  SCK_TOPLEVEL = 0;
+  SCK_SUB      = 1;
+  SCK_BLOCK    = 2;
+
+Var
+  ScopeKindStk: Array[0..MAX_SCOPE] Of Integer;
+
+Procedure InitSymTable;
+Var I: Integer;
+Begin
+  For I := 1 To MAX_SYM Do Begin
+    SymTable[I].Name    := '';
+    SymTable[I].Kind    := SK_NONE;
+    SymTable[I].RType   := RT_UNDEF;
+    SymTable[I].ScopeKd := SCOPE_LEXICAL;
+    SymTable[I].Depth   := 0;
+    SymTable[I].Offset  := 0;
+    SymTable[I].Flags   := 0;
+    SymTable[I].AsmName := '';
+    SymTable[I].Package := '';
+  End;
+  SymCount := 0;
+  ScopeLevel := 0;
+  ScopeBase[0] := 1;
+  ScopeNextLocal[0] := 0;
+  ScopeKindStk[0] := SCK_TOPLEVEL;
+  CurrentPkg := 'main';
+End;
+
+Function SkKindName(K: Integer): String;
+Begin
+  Case K Of
+    SK_SCALAR: SkKindName := 'scalar';
+    SK_ARRAY:  SkKindName := 'array';
+    SK_HASH:   SkKindName := 'hash';
+    SK_CODE:   SkKindName := 'code';
+    SK_FORMAT: SkKindName := 'format';
+    SK_GLOB:   SkKindName := 'glob';
+  Else
+    SkKindName := 'none';
+  End;
+End;
+
+Function ScopeKdStr(K: Integer): String;
+Begin
+  Case K Of
+    SCOPE_LEXICAL: ScopeKdStr := 'lexical';
+    SCOPE_PACKAGE: ScopeKdStr := 'package';
+    SCOPE_DYNAMIC: ScopeKdStr := 'dynamic';
+  Else
+    ScopeKdStr := 'unknown';
+  End;
+End;
+
+{ Replace non-identifier chars; :: becomes __ }
+Function SafeAsmIdent(S: String): String;
+Var R: String;
+    I: Integer;
+    C: Char;
+Begin
+  R := '';
+  I := 1;
+  While I <= Length(S) Do Begin
+    C := S[I];
+    If (I < Length(S)) And (C = ':') And (S[I+1] = ':') Then Begin
+      R := R + '__';
+      Inc(I, 2);
+    End Else If ((C >= 'A') And (C <= 'Z')) Or
+                ((C >= 'a') And (C <= 'z')) Or
+                ((C >= '0') And (C <= '9')) Or
+                (C = '_') Then Begin
+      R := R + C;
+      Inc(I);
+    End Else Begin
+      R := R + '_';
+      Inc(I);
+    End;
+  End;
+  If R = '' Then R := 'anon';
+  SafeAsmIdent := R;
+End;
+
+Function MakeSymAsmName(Name: String; Kind, ScopeKd: Integer; Pkg: String): String;
+Var Base, PkgPfx: String;
+Begin
+  Base := SafeAsmIdent(Name);
+  If Pkg = 'main' Then PkgPfx := ''
+  Else PkgPfx := SafeAsmIdent(Pkg) + '_';
+  Case Kind Of
+    SK_CODE: MakeSymAsmName := ASM_PFX_SUB + PkgPfx + Base;
+    SK_ARRAY: Begin
+      If ScopeKd = SCOPE_PACKAGE Then
+        MakeSymAsmName := ASM_PFX_ARRAY + PkgPfx + Base
+      Else
+        MakeSymAsmName := ASM_PFX_ARRAY + Base;
+    End;
+    SK_HASH: Begin
+      If ScopeKd = SCOPE_PACKAGE Then
+        MakeSymAsmName := ASM_PFX_HASH + PkgPfx + Base
+      Else
+        MakeSymAsmName := ASM_PFX_HASH + Base;
+    End;
+  Else
+    If ScopeKd = SCOPE_PACKAGE Then
+      MakeSymAsmName := ASM_PFX_GVAR + PkgPfx + Base
+    Else
+      MakeSymAsmName := ASM_PFX_GVAR + Base;
+  End;
+End;
+
+Function AllocLocalOffset: Integer;
+Begin
+  Inc(ScopeNextLocal[ScopeLevel], 4);
+  AllocLocalOffset := ScopeNextLocal[ScopeLevel];
+End;
+
+Procedure EnterScope(Kind: Integer);
+Begin
+  If ScopeLevel >= MAX_SCOPE Then FatalError('pile de portees pleine');
+  Inc(ScopeLevel);
+  ScopeBase[ScopeLevel] := SymCount + 1;
+  ScopeKindStk[ScopeLevel] := Kind;
+  If Kind = SCK_SUB Then
+    ScopeNextLocal[ScopeLevel] := 0
+  Else
+    ScopeNextLocal[ScopeLevel] := ScopeNextLocal[ScopeLevel - 1];
+End;
+
+Procedure LeaveScope;
+Var I, Leaving: Integer;
+Begin
+  If ScopeLevel = 0 Then FatalError('impossible de quitter la portee racine');
+  Leaving := ScopeLevel;
+  For I := ScopeBase[Leaving] To SymCount Do
+    If (SymTable[I].ScopeKd = SCOPE_LEXICAL) Or
+       (SymTable[I].ScopeKd = SCOPE_DYNAMIC) Then
+      SymTable[I].Flags := SymTable[I].Flags Or SF_DEAD;
+  Dec(ScopeLevel);
+End;
+
+Function FindSym(Name: String; Kind: Integer): Integer;
+Var I: Integer;
+Begin
+  FindSym := 0;
+  For I := SymCount DownTo 1 Do
+    If (SymTable[I].Name = Name) And
+       ((SymTable[I].Flags And SF_DEAD) = 0) And
+       ((Kind = SK_NONE) Or (SymTable[I].Kind = Kind)) Then Begin
+      FindSym := I;
+      Exit;
+    End;
+End;
+
+Function FindSymInLevel(Name: String; Kind, Level: Integer): Integer;
+Var I: Integer;
+Begin
+  FindSymInLevel := 0;
+  For I := SymCount DownTo 1 Do
+    If (SymTable[I].Depth = Level) And
+       (SymTable[I].Name = Name) And
+       ((SymTable[I].Flags And SF_DEAD) = 0) And
+       ((Kind = SK_NONE) Or (SymTable[I].Kind = Kind)) Then Begin
+      FindSymInLevel := I;
+      Exit;
+    End;
+End;
+
+Function FindSymPkg(Name: String; Kind: Integer; Pkg: String): Integer;
+Var I: Integer;
+Begin
+  FindSymPkg := 0;
+  For I := SymCount DownTo 1 Do
+    If (SymTable[I].Name = Name) And
+       (SymTable[I].Package = Pkg) And
+       (SymTable[I].ScopeKd = SCOPE_PACKAGE) And
+       ((SymTable[I].Flags And SF_DEAD) = 0) And
+       ((Kind = SK_NONE) Or (SymTable[I].Kind = Kind)) Then Begin
+      FindSymPkg := I;
+      Exit;
+    End;
+End;
+
+Function AddSym(Name: String; Kind, ScopeKd, InFlags: Integer): Integer;
+Var Existing: Integer;
+Begin
+  If ScopeKd = SCOPE_PACKAGE Then Begin
+    Existing := FindSymPkg(Name, Kind, CurrentPkg);
+    If Existing <> 0 Then Begin
+      AddSym := Existing;
+      Exit;
+    End;
+  End;
+  If SymCount >= MAX_SYM Then FatalError('table de symboles pleine');
+  Inc(SymCount);
+  SymTable[SymCount].Name    := Name;
+  SymTable[SymCount].Kind    := Kind;
+  SymTable[SymCount].RType   := RT_UNDEF;
+  SymTable[SymCount].ScopeKd := ScopeKd;
+  SymTable[SymCount].Depth   := ScopeLevel;
+  SymTable[SymCount].Flags   := InFlags;
+  SymTable[SymCount].Package := CurrentPkg;
+  If (ScopeKd = SCOPE_LEXICAL) Or (ScopeKd = SCOPE_DYNAMIC) Then
+    SymTable[SymCount].Offset := AllocLocalOffset
+  Else
+    SymTable[SymCount].Offset := 0;
+  If ScopeKd = SCOPE_PACKAGE Then
+    SymTable[SymCount].AsmName := MakeSymAsmName(Name, Kind, ScopeKd, CurrentPkg)
+  Else
+    SymTable[SymCount].AsmName := '';
+  AddSym := SymCount;
+End;
+
+{ Total local frame size for current sub }
+Function CurrentSubLocalSize: Integer;
+Begin
+  CurrentSubLocalSize := ScopeNextLocal[ScopeLevel];
+End;
+
+Procedure DumpSymTable;
+Var
+  I: Integer;
+  FlagStr, NumStr: String;
+Begin
+  WriteLn('=== TABLE DES SYMBOLES (', SymCount, ' entrees) ===');
+  For I := 1 To SymCount Do Begin
+    FlagStr := '';
+    If (SymTable[I].Flags And SF_PARAM)    <> 0 Then FlagStr := FlagStr + 'P';
+    If (SymTable[I].Flags And SF_USED)     <> 0 Then FlagStr := FlagStr + 'U';
+    If (SymTable[I].Flags And SF_ASSIGNED) <> 0 Then FlagStr := FlagStr + 'A';
+    If (SymTable[I].Flags And SF_GLOBAL)   <> 0 Then FlagStr := FlagStr + 'G';
+    If (SymTable[I].Flags And SF_SPECIAL)  <> 0 Then FlagStr := FlagStr + 'S';
+    If (SymTable[I].Flags And SF_DEAD)     <> 0 Then FlagStr := FlagStr + 'D';
+    If FlagStr = '' Then FlagStr := '-';
+    Str(I, NumStr);
+    While Length(NumStr) < 4 Do NumStr := ' ' + NumStr;
+    WriteLn(NumStr, ' [', SymTable[I].Package, '] ',
+            SkKindName(SymTable[I].Kind), ' ', SymTable[I].Name,
+            ' ', ScopeKdStr(SymTable[I].ScopeKd),
+            ' d=', SymTable[I].Depth,
+            ' off=', SymTable[I].Offset,
+            ' asm=', SymTable[I].AsmName,
+            ' fl=', FlagStr);
+  End;
+End;
+
+(* ============================================================ *)
+(* TODO 06 - PARSEUR D'EXPRESSIONS (PRECEDENCE PERL)           *)
+(* ============================================================ *)
+
+Function ParseExpr:    Integer; Forward;
+Function ParseOrLo:    Integer; Forward;
+Function ParseAndLo:   Integer; Forward;
+Function ParseNotLo:   Integer; Forward;
+Function ParseAssign:  Integer; Forward;
+Function ParseTernary: Integer; Forward;
+Function ParseRange:   Integer; Forward;
+Function ParseOrHi:    Integer; Forward;
+Function ParseAndHi:   Integer; Forward;
+Function ParseBitOr:   Integer; Forward;
+Function ParseBitAnd:  Integer; Forward;
+Function ParseCompare: Integer; Forward;
+Function ParseShift:   Integer; Forward;
+Function ParseAdd:     Integer; Forward;
+Function ParseMul:     Integer; Forward;
+Function ParseBind:    Integer; Forward;
+Function ParsePow:     Integer; Forward;
+Function ParseUnary:   Integer; Forward;
+Function ParsePostfix: Integer; Forward;
+Function ParsePrimary: Integer; Forward;
+
+Function NewNode(K, Tok: Integer; Txt: String): Integer;
+Var N: Integer;
+Begin
+  If AstCount >= MAX_AST Then FatalError('trop de noeuds AST');
+  Inc(AstCount);
+  N := AstCount;
+  AstTable[N].Kind        := K;
+  AstTable[N].Tok         := Tok;
+  AstTable[N].Text        := Txt;
+  AstTable[N].Left        := 0;
+  AstTable[N].Right       := 0;
+  AstTable[N].Third       := 0;
+  AstTable[N].FirstChild  := 0;
+  AstTable[N].NextSibling := 0;
+  AstTable[N].SymRef      := 0;
+  AstTable[N].Line        := CurTokLine;
+  NewNode := N;
+End;
+
+Function NewBin(Op, L, R: Integer): Integer;
+Var N: Integer;
+Begin
+  N := NewNode(NK_BINARY, Op, '');
+  AstTable[N].Left  := L;
+  AstTable[N].Right := R;
+  NewBin := N;
+End;
+
+Function NewUn(Op, Child: Integer): Integer;
+Var N: Integer;
+Begin
+  N := NewNode(NK_UNARY, Op, '');
+  AstTable[N].Left := Child;
+  NewUn := N;
+End;
+
+Procedure AppendArg(Parent, Arg: Integer);
+Var Last: Integer;
+Begin
+  If AstTable[Parent].FirstChild = 0 Then
+    AstTable[Parent].FirstChild := Arg
+  Else Begin
+    Last := AstTable[Parent].FirstChild;
+    While AstTable[Last].NextSibling <> 0 Do
+      Last := AstTable[Last].NextSibling;
+    AstTable[Last].NextSibling := Arg;
+  End;
+End;
+
+Function EatIf(T: Integer): Boolean;
+Begin
+  If CurTokType = T Then Begin LexNextToken; EatIf := True; End
+  Else EatIf := False;
+End;
+
+Procedure Expect(T: Integer);
+Begin
+  If CurTokType <> T Then
+    FatalError('attendu ' + TokenName(T) + ' mais ' + TokenName(CurTokType));
+  LexNextToken;
+End;
+
+Procedure InitAST;
+Begin
+  AstCount := 0;
+End;
+
+Function IsArgStopper(T: Integer): Boolean;
+Begin
+  IsArgStopper := (T = Ord(';')) Or (T = TOK_EOF) Or
+                  (T = Ord('}')) Or (T = Ord(')')) Or (T = Ord(']')) Or
+                  IsModifierKW(T) Or
+                  (T = KW_OR) Or (T = KW_AND) Or
+                  (T = KW_NOT) Or (T = KW_XOR);
+End;
+
+Function ParseArgList: Integer;
+Var Head: Integer;
+Begin
+  Head := NewNode(NK_LIST, 0, '');
+  While (CurTokType <> Ord(')')) And (CurTokType <> TOK_EOF) Do Begin
+    AppendArg(Head, ParseAssign);
+    If (CurTokType = Ord(',')) Or (CurTokType = TOK_FATCOMMA) Then
+      LexNextToken
+    Else
+      Break;
+  End;
+  ParseArgList := Head;
+End;
+
+Function ParseVarDecl(DeclKw: Integer): Integer;
+Var
+  N, ListN, ScopeKd, SymIdx, Sigil: Integer;
+  VName: String;
+Begin
+  If DeclKw = KW_MY Then ScopeKd := SCOPE_LEXICAL
+  Else If DeclKw = KW_OUR Then ScopeKd := SCOPE_PACKAGE
+  Else ScopeKd := SCOPE_DYNAMIC;
+  If CurTokType = Ord('(') Then Begin
+    LexNextToken;
+    ListN := NewNode(NK_LIST, DeclKw, '');
+    While (CurTokType <> Ord(')')) And (CurTokType <> TOK_EOF) Do Begin
+      Sigil := CurTokType;
+      If (Sigil = TOK_SIGIL_SCALAR) Or (Sigil = TOK_SIGIL_ARRAY) Or
+         (Sigil = TOK_SIGIL_HASH) Then Begin
+        VName := Copy(CurTokStr, 2, Length(CurTokStr));
+        LexNextToken;
+        N := NewNode(NK_VAR, DeclKw, VName);
+        AstTable[N].Left := Sigil;
+        If Sigil = TOK_SIGIL_SCALAR Then
+          SymIdx := AddSym(VName, SK_SCALAR, ScopeKd, 0)
+        Else If Sigil = TOK_SIGIL_ARRAY Then
+          SymIdx := AddSym(VName, SK_ARRAY, ScopeKd, 0)
+        Else
+          SymIdx := AddSym(VName, SK_HASH, ScopeKd, 0);
+        AstTable[N].SymRef := SymIdx;
+        AppendArg(ListN, N);
+      End Else Break;
+      If (CurTokType = Ord(',')) Or (CurTokType = TOK_FATCOMMA) Then
+        LexNextToken
+      Else Break;
+    End;
+    Expect(Ord(')'));
+    ParseVarDecl := ListN;
+    Exit;
+  End;
+  Sigil := CurTokType;
+  If (Sigil <> TOK_SIGIL_SCALAR) And (Sigil <> TOK_SIGIL_ARRAY) And
+     (Sigil <> TOK_SIGIL_HASH) Then
+    FatalError('variable attendue apres ' + KeywordName(DeclKw));
+  VName := Copy(CurTokStr, 2, Length(CurTokStr));
+  LexNextToken;
+  N := NewNode(NK_VAR, DeclKw, VName);
+  AstTable[N].Left := Sigil;
+  If Sigil = TOK_SIGIL_SCALAR Then
+    SymIdx := AddSym(VName, SK_SCALAR, ScopeKd, 0)
+  Else If Sigil = TOK_SIGIL_ARRAY Then
+    SymIdx := AddSym(VName, SK_ARRAY, ScopeKd, 0)
+  Else
+    SymIdx := AddSym(VName, SK_HASH, ScopeKd, 0);
+  AstTable[N].SymRef := SymIdx;
+  ParseVarDecl := N;
+End;
+
+Function ParseBuiltin(KwTok: Integer; S: String): Integer;
+Var N, ArgList: Integer;
+Begin
+  N       := NewNode(NK_CALL, KwTok, S);
+  ArgList := NewNode(NK_LIST, 0, '');
+  If CurTokType = Ord('(') Then Begin
+    LexNextToken;
+    While (CurTokType <> Ord(')')) And (CurTokType <> TOK_EOF) Do Begin
+      AppendArg(ArgList, ParseAssign);
+      If (CurTokType = Ord(',')) Or (CurTokType = TOK_FATCOMMA) Then
+        LexNextToken
+      Else Break;
+    End;
+    Expect(Ord(')'));
+  End Else Begin
+    While Not IsArgStopper(CurTokType) Do Begin
+      AppendArg(ArgList, ParseAssign);
+      If (CurTokType = Ord(',')) Or (CurTokType = TOK_FATCOMMA) Then
+        LexNextToken
+      Else Break;
+    End;
+  End;
+  AstTable[N].FirstChild := AstTable[ArgList].FirstChild;
+  ParseBuiltin := N;
+End;
+
+Function ParsePrimary: Integer;
+Var
+  N, VarN, IdxN, ArgList, ListN: Integer;
+  S, VName: String;
+  T, Sigil: Integer;
+Begin
+  T := CurTokType;
+  N := 0;
+  If T = TOK_INTEGER Then Begin
+    N := NewNode(NK_LITERAL, T, CurTokStr);
+    AstTable[N].Left := CurTokNum;
+    LexNextToken;
+  End Else If T = TOK_FLOAT Then Begin
+    N := NewNode(NK_LITERAL, T, CurTokStr); LexNextToken;
+  End Else If (T = TOK_STRING) Or (T = TOK_DSTRING) Or
+              (T = TOK_HEREDOC) Then Begin
+    N := NewNode(NK_LITERAL, T, CurTokStr); LexNextToken;
+  End Else If T = TOK_REGEX Then Begin
+    N := NewNode(NK_REGEX, T, CurTokStr); LexNextToken;
+  End Else If T = TOK_SUBST Then Begin
+    N := NewNode(NK_SUBST, T, CurTokStr); LexNextToken;
+  End Else If T = TOK_TRANS Then Begin
+    N := NewNode(NK_TRANS, T, CurTokStr); LexNextToken;
+  End Else If T = TOK_QWORD Then Begin
+    N := NewNode(NK_ARRAY_LIT, T, CurTokStr); LexNextToken;
+  End Else If T = TOK_HASHNUM Then Begin
+    VName := Copy(CurTokStr, 3, Length(CurTokStr));
+    N := NewNode(NK_VAR, T, VName); LexNextToken;
+  End Else If T = TOK_SIGIL_SCALAR Then Begin
+    VName := Copy(CurTokStr, 2, Length(CurTokStr)); LexNextToken;
+    VarN  := NewNode(NK_VAR, TOK_SIGIL_SCALAR, VName);
+    AstTable[VarN].SymRef := FindSym(VName, SK_SCALAR);
+    If CurTokType = Ord('[') Then Begin
+      LexNextToken; IdxN := ParseExpr; Expect(Ord(']'));
+      N := NewNode(NK_INDEX, Ord('['), '');
+      AstTable[N].Left := VarN; AstTable[N].Right := IdxN;
+    End Else If CurTokType = Ord('{') Then Begin
+      LexNextToken; IdxN := ParseExpr; Expect(Ord('}'));
+      N := NewNode(NK_INDEX, Ord('{'), '');
+      AstTable[N].Left := VarN; AstTable[N].Right := IdxN;
+    End Else N := VarN;
+  End Else If T = TOK_SIGIL_ARRAY Then Begin
+    VName := Copy(CurTokStr, 2, Length(CurTokStr)); LexNextToken;
+    VarN  := NewNode(NK_VAR, TOK_SIGIL_ARRAY, VName);
+    AstTable[VarN].SymRef := FindSym(VName, SK_ARRAY);
+    If CurTokType = Ord('[') Then Begin
+      LexNextToken; IdxN := ParseExpr; Expect(Ord(']'));
+      N := NewNode(NK_SLICE, Ord('['), '');
+      AstTable[N].Left := VarN; AstTable[N].Right := IdxN;
+    End Else N := VarN;
+  End Else If T = TOK_SIGIL_HASH Then Begin
+    VName := Copy(CurTokStr, 2, Length(CurTokStr)); LexNextToken;
+    N := NewNode(NK_VAR, T, VName);
+    AstTable[N].SymRef := FindSym(VName, SK_HASH);
+  End Else If T = TOK_SIGIL_CODE Then Begin
+    VName := Copy(CurTokStr, 2, Length(CurTokStr)); LexNextToken;
+    N := NewNode(NK_CALL, T, VName);
+    If CurTokType = Ord('(') Then Begin
+      LexNextToken;
+      ArgList := ParseArgList; Expect(Ord(')'));
+      AstTable[N].FirstChild := AstTable[ArgList].FirstChild;
+    End;
+  End Else If T = KW_UNDEF Then Begin
+    N := NewNode(NK_LITERAL, T, ''); LexNextToken;
+  End Else If T = Ord('(') Then Begin
+    LexNextToken;
+    If CurTokType = Ord(')') Then Begin
+      N := NewNode(NK_LIST, 0, ''); LexNextToken;
+    End Else Begin
+      N := ParseAssign;
+      If (CurTokType = Ord(',')) Or (CurTokType = TOK_FATCOMMA) Then Begin
+        ListN := NewNode(NK_LIST, 0, '');
+        AppendArg(ListN, N);
+        While (CurTokType = Ord(',')) Or (CurTokType = TOK_FATCOMMA) Do Begin
+          LexNextToken;
+          If CurTokType = Ord(')') Then Break;
+          AppendArg(ListN, ParseAssign);
+        End;
+        N := ListN;
+      End;
+      Expect(Ord(')'));
+    End;
+  End Else If T = Ord('[') Then Begin
+    LexNextToken;
+    N := NewNode(NK_ARRAY_LIT, Ord('['), '');
+    While (CurTokType <> Ord(']')) And (CurTokType <> TOK_EOF) Do Begin
+      AppendArg(N, ParseAssign);
+      If (CurTokType = Ord(',')) Or (CurTokType = TOK_FATCOMMA) Then
+        LexNextToken
+      Else Break;
+    End;
+    Expect(Ord(']'));
+  End Else If (T = KW_MY) Or (T = KW_OUR) Or (T = KW_LOCAL) Then Begin
+    LexNextToken; N := ParseVarDecl(T);
+  End Else If T = TOK_IDENT Then Begin
+    S := CurTokStr; LexNextToken;
+    If CurTokType = Ord('(') Then Begin
+      LexNextToken;
+      N := NewNode(NK_CALL, TOK_IDENT, S);
+      ArgList := ParseArgList; Expect(Ord(')'));
+      AstTable[N].FirstChild := AstTable[ArgList].FirstChild;
+    End Else
+      N := NewNode(NK_LITERAL, TOK_IDENT, S);
+  End Else If (T = KW_PRINT) Or (T = KW_SAY) Or (T = KW_PRINTF) Then Begin
+    S := KeywordName(T); LexNextToken; N := ParseBuiltin(T, S);
+  End Else If (T = KW_PUSH) Or (T = KW_POP) Or (T = KW_SHIFT) Or
+              (T = KW_UNSHIFT) Or (T = KW_SPLICE) Or (T = KW_REVERSE) Or
+              (T = KW_SORT) Or (T = KW_JOIN) Or (T = KW_SPLIT) Or
+              (T = KW_MAP) Or (T = KW_GREP) Or (T = KW_KEYS) Or
+              (T = KW_VALUES) Or (T = KW_EACH) Or (T = KW_DELETE) Or
+              (T = KW_EXISTS) Or (T = KW_SCALAR) Or (T = KW_OPEN) Or
+              (T = KW_CLOSE) Or (T = KW_READLINE) Or (T = KW_BINMODE) Or
+              (T = KW_DIE) Or (T = KW_WARN) Or (T = KW_EXIT) Or
+              (T = KW_SPRINTF) Or (T = KW_SUBSTR) Or (T = KW_INDEX_FUNC) Or
+              (T = KW_RINDEX) Or (T = KW_ATAN2) Or (T = KW_SLEEP) Or
+              (T = KW_SRAND) Or (T = KW_STAT) Or (T = KW_UNLINK) Or
+              (T = KW_RENAME) Or (T = KW_CHDIR) Or (T = KW_CALLER) Or
+              (T = KW_EOF_FUNC) Then Begin
+    S := KeywordName(T); LexNextToken; N := ParseBuiltin(T, S);
+  End Else If (T = KW_LENGTH) Or (T = KW_CHOMP) Or (T = KW_CHOP) Or
+              (T = KW_DEFINED) Or (T = KW_REF) Or (T = KW_BLESS) Or
+              (T = KW_CHR) Or (T = KW_ORD) Or (T = KW_UC) Or
+              (T = KW_LC) Or (T = KW_UCFIRST) Or (T = KW_LCFIRST) Or
+              (T = KW_INT_FUNC) Or (T = KW_ABS) Or (T = KW_SQRT) Or
+              (T = KW_SIN) Or (T = KW_COS) Or (T = KW_LOG) Or
+              (T = KW_EXP) Or (T = KW_RAND) Or (T = KW_HEX) Or
+              (T = KW_OCT) Or (T = KW_QUOTEMETA) Or
+              (T = KW_WANTARRAY) Or (T = KW_TIME) Or (T = KW_POS) Then Begin
+    S := KeywordName(T); LexNextToken; N := ParseBuiltin(T, S);
+  End Else
+    N := NewNode(NK_EMPTY, T, TokenName(T));
+  ParsePrimary := N;
+End;
+
+Function ParsePostfix: Integer;
+Var
+  Base, N, IdxN, ArgList: Integer;
+  MName: String;
+Begin
+  N := ParsePrimary;
+  While True Do Begin
+    If CurTokType = TOK_INCR Then Begin
+      Base := N; LexNextToken;
+      N := NewUn(TOK_INCR, Base);
+      AstTable[N].Third := 1;  { postfix }
+    End Else If CurTokType = TOK_DECR Then Begin
+      Base := N; LexNextToken;
+      N := NewUn(TOK_DECR, Base);
+      AstTable[N].Third := 1;  { postfix }
+    End Else If CurTokType = TOK_ARROW Then Begin
+      LexNextToken;
+      Base := N;
+      If CurTokType = Ord('[') Then Begin
+        LexNextToken; IdxN := ParseExpr; Expect(Ord(']'));
+        N := NewNode(NK_INDEX, TOK_ARROW, '[');
+        AstTable[N].Left := Base; AstTable[N].Right := IdxN;
+      End Else If CurTokType = Ord('{') Then Begin
+        LexNextToken; IdxN := ParseExpr; Expect(Ord('}'));
+        N := NewNode(NK_INDEX, TOK_ARROW, '{');
+        AstTable[N].Left := Base; AstTable[N].Right := IdxN;
+      End Else If CurTokType = TOK_IDENT Then Begin
+        MName := CurTokStr; LexNextToken;
+        N := NewNode(NK_BINARY, TOK_ARROW, MName);
+        AstTable[N].Left := Base;
+        If CurTokType = Ord('(') Then Begin
+          LexNextToken;
+          ArgList := ParseArgList; Expect(Ord(')'));
+          AstTable[N].Right := ArgList;
+        End;
+      End Else Break;
+    End Else Break;
+  End;
+  ParsePostfix := N;
+End;
+
+Function ParsePow: Integer;
+Var L, R: Integer;
+Begin
+  L := ParsePostfix;
+  If CurTokType = TOK_POW Then Begin
+    LexNextToken;
+    R := ParseUnary;  { right-assoc; ParseUnary allows 2**-3 }
+    L := NewBin(TOK_POW, L, R);
+  End;
+  ParsePow := L;
+End;
+
+Function ParseUnary: Integer;
+Var T: Integer;
+Begin
+  T := CurTokType;
+  If (T = TOK_INCR) Or (T = TOK_DECR) Then Begin
+    LexNextToken;
+    ParseUnary := NewUn(T, ParseUnary);
+  End Else If (T = Ord('!')) Or (T = Ord('~')) Or (T = Ord('\')) Or
+              (T = Ord('+')) Or (T = Ord('-')) Then Begin
+    LexNextToken;
+    ParseUnary := NewUn(T, ParseUnary);
+  End Else
+    ParseUnary := ParsePow;
+End;
+
+Function ParseBind: Integer;
+Var L, R, Op: Integer;
+Begin
+  L := ParseUnary;
+  While (CurTokType = TOK_MATCH) Or (CurTokType = TOK_NMATCH) Do Begin
+    Op := CurTokType; LexNextToken;
+    R := ParseUnary;
+    L := NewBin(Op, L, R);
+  End;
+  ParseBind := L;
+End;
+
+Function ParseMul: Integer;
+Var L, R, Op: Integer;
+Begin
+  L := ParseBind;
+  While (CurTokType = Ord('*')) Or (CurTokType = Ord('/')) Or
+        (CurTokType = Ord('%')) Or (CurTokType = KW_X_REP) Do Begin
+    Op := CurTokType; LexNextToken;
+    R := ParseBind;
+    L := NewBin(Op, L, R);
+  End;
+  ParseMul := L;
+End;
+
+Function ParseAdd: Integer;
+Var L, R, Op: Integer;
+Begin
+  L := ParseMul;
+  While (CurTokType = Ord('+')) Or (CurTokType = Ord('-')) Or
+        (CurTokType = Ord('.')) Do Begin
+    Op := CurTokType; LexNextToken;
+    R := ParseMul;
+    L := NewBin(Op, L, R);
+  End;
+  ParseAdd := L;
+End;
+
+Function ParseShift: Integer;
+Var L, R, Op: Integer;
+Begin
+  L := ParseAdd;
+  While (CurTokType = TOK_SHL) Or (CurTokType = TOK_SHR) Do Begin
+    Op := CurTokType; LexNextToken;
+    R := ParseAdd;
+    L := NewBin(Op, L, R);
+  End;
+  ParseShift := L;
+End;
+
+Function ParseCompare: Integer;
+Var L, R, Op: Integer;
+Begin
+  L := ParseShift;
+  While (CurTokType = Ord('<')) Or (CurTokType = Ord('>')) Or
+        (CurTokType = TOK_LE) Or (CurTokType = TOK_GE) Or
+        (CurTokType = TOK_EQ) Or (CurTokType = TOK_NE) Or
+        (CurTokType = TOK_SPACESHIP) Or
+        (CurTokType = KW_EQ_STR) Or (CurTokType = KW_NE_STR) Or
+        (CurTokType = KW_LT_STR) Or (CurTokType = KW_GT_STR) Or
+        (CurTokType = KW_LE_STR) Or (CurTokType = KW_GE_STR) Or
+        (CurTokType = KW_CMP_STR) Do Begin
+    Op := CurTokType; LexNextToken;
+    R := ParseShift;
+    L := NewBin(Op, L, R);
+  End;
+  ParseCompare := L;
+End;
+
+Function ParseBitAnd: Integer;
+Var L, R: Integer;
+Begin
+  L := ParseCompare;
+  While CurTokType = Ord('&') Do Begin
+    LexNextToken; R := ParseCompare;
+    L := NewBin(Ord('&'), L, R);
+  End;
+  ParseBitAnd := L;
+End;
+
+Function ParseBitOr: Integer;
+Var L, R, Op: Integer;
+Begin
+  L := ParseBitAnd;
+  While (CurTokType = Ord('|')) Or (CurTokType = Ord('^')) Do Begin
+    Op := CurTokType; LexNextToken;
+    R := ParseBitAnd;
+    L := NewBin(Op, L, R);
+  End;
+  ParseBitOr := L;
+End;
+
+Function ParseAndHi: Integer;
+Var L, R: Integer;
+Begin
+  L := ParseBitOr;
+  While CurTokType = TOK_ANDAND Do Begin
+    LexNextToken; R := ParseBitOr;
+    L := NewBin(TOK_ANDAND, L, R);
+  End;
+  ParseAndHi := L;
+End;
+
+Function ParseOrHi: Integer;
+Var L, R, Op: Integer;
+Begin
+  L := ParseAndHi;
+  While (CurTokType = TOK_OROR) Or (CurTokType = TOK_DEFOR) Do Begin
+    Op := CurTokType; LexNextToken;
+    R := ParseAndHi;
+    L := NewBin(Op, L, R);
+  End;
+  ParseOrHi := L;
+End;
+
+Function ParseRange: Integer;
+Var LeftN, R, Op, N: Integer;
+Begin
+  LeftN := ParseOrHi;
+  If (CurTokType = TOK_DOTDOT) Or (CurTokType = TOK_DOTDOTDOT) Then Begin
+    Op := CurTokType; LexNextToken;
+    R  := ParseOrHi;
+    N  := NewNode(NK_RANGE, Op, '');
+    AstTable[N].Left  := LeftN;
+    AstTable[N].Right := R;
+    ParseRange := N;
+  End Else
+    ParseRange := LeftN;
+End;
+
+Function ParseTernary: Integer;
+Var L, ThenN, ElseN, N: Integer;
+Begin
+  L := ParseRange;
+  If CurTokType = Ord('?') Then Begin
+    LexNextToken;
+    ThenN := ParseAssign;
+    Expect(Ord(':'));
+    ElseN := ParseAssign;
+    N := NewNode(NK_TERNARY, Ord('?'), '');
+    AstTable[N].Left  := L;
+    AstTable[N].Right := ThenN;
+    AstTable[N].Third := ElseN;
+    ParseTernary := N;
+  End Else
+    ParseTernary := L;
+End;
+
+Function ParseAssign: Integer;
+Var L, R, Op, N: Integer;
+    OpStr: String;
+Begin
+  L     := ParseTernary;
+  Op    := CurTokType;
+  OpStr := CurTokStr;
+  If (Op = Ord('=')) Or (Op = TOK_ASSIGN_OP) Then Begin
+    LexNextToken;
+    R := ParseAssign;  { right-assoc }
+    N := NewNode(NK_ASSIGN, Op, OpStr);
+    AstTable[N].Left  := L;
+    AstTable[N].Right := R;
+    ParseAssign := N;
+  End Else
+    ParseAssign := L;
+End;
+
+Function ParseNotLo: Integer;
+Begin
+  If CurTokType = KW_NOT Then Begin
+    LexNextToken;
+    ParseNotLo := NewUn(KW_NOT, ParseAssign);
+  End Else
+    ParseNotLo := ParseAssign;
+End;
+
+Function ParseAndLo: Integer;
+Var L, R: Integer;
+Begin
+  L := ParseNotLo;
+  While CurTokType = KW_AND Do Begin
+    LexNextToken; R := ParseNotLo;
+    L := NewBin(KW_AND, L, R);
+  End;
+  ParseAndLo := L;
+End;
+
+Function ParseOrLo: Integer;
+Var L, R, Op: Integer;
+Begin
+  L := ParseAndLo;
+  While (CurTokType = KW_OR) Or (CurTokType = KW_XOR) Do Begin
+    Op := CurTokType; LexNextToken;
+    R := ParseAndLo;
+    L := NewBin(Op, L, R);
+  End;
+  ParseOrLo := L;
+End;
+
+Function ParseExpr: Integer;
+Begin
+  ParseExpr := ParseOrLo;
+End;
+
 BEGIN
   ParseArgs;
   WriteLn('PERLCW32 v', PERLCW32_VERSION, ' (', PERLCW32_DATE,
