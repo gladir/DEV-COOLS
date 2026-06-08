@@ -21,6 +21,10 @@ pub fn main() {
     println!("fibonacci(0) = {}", r);
     r = fibonacci(1);
     println!("fibonacci(1) = {}", r);
+    r = fibonacci(2);
+    println!("fibonacci(2) = {}", r);    
+    r = fibonacci(3);
+    println!("fibonacci(3) = {}", r);    
     r = fibonacci(6);
     println!("fibonacci(6) = {}", r);
     r = fibonacci(10);
