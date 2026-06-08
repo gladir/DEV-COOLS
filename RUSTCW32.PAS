@@ -174,13 +174,13 @@
             Garder le backend ASM separe du backend binaire COFF/PE
               pour faciliter le debogage.
 
-  TODO 23 - EMISSION COFF .OBJ
+  TODO 23 - EMISSION COFF .OBJ [IMPLEMENTE]
             Construire sections .text, .rdata, .data, .bss, table de
               symboles et relocations IMAGE_REL_I386_DIR32/REL32.
             Avec -obj, ecrire uniquement le .OBJ et ne pas lier.
             Verifier que les appels externes restent relocatables.
 
-  TODO 24 - LINKER PE .EXE PAR DEFAUT
+  TODO 24 - LINKER PE .EXE PAR DEFAUT [IMPLEMENTE]
             Construire PE32 console minimal : en-tetes DOS/PE, sections,
               table d'import Win32, relocations internes et point
               d'entree.
@@ -270,11 +270,29 @@ Const
   MAX_STR       = {$IFDEF FPC}255{$ELSE}127{$ENDIF};
   MAX_ERRORS    = 30;
 
-  { Tailles des buffers binaires futurs }
+  { Tailles des buffers binaires }
   MAX_BIN_CODE  = {$IFDEF FPC}262144{$ELSE}32768{$ENDIF};
   MAX_BIN_DATA  = {$IFDEF FPC}131072{$ELSE}32768{$ENDIF};
   MAX_BIN_RDATA = {$IFDEF FPC}131072{$ELSE}32768{$ENDIF};
   MAX_ASM_TRACE = {$IFDEF FPC}8192{$ELSE}1024{$ENDIF};
+
+  { Limites backend binaire : labels et patches }
+  MAX_BIN_LABEL = {$IFDEF FPC}512{$ELSE}128{$ENDIF};
+  MAX_PATCH_TAB = {$IFDEF FPC}2048{$ELSE}512{$ENDIF};
+
+  { Tailles des buffers PE linker }
+  MAX_IMP_BUF   = {$IFDEF FPC}8192{$ELSE}4096{$ENDIF};
+  MAX_START_BUF = {$IFDEF FPC}4096{$ELSE}2048{$ENDIF};
+
+  { Registres x86 (ModRM/SIB encoding) }
+  REG_EAX = 0;  REG_ECX = 1;  REG_EDX = 2;  REG_EBX = 3;
+  REG_ESP = 4;  REG_EBP = 5;  REG_ESI = 6;  REG_EDI = 7;
+
+  { Conditions x86 pour SETcc / Jcc }
+  CC_O  = $0;  CC_NO  = $1;  CC_B  = $2;  CC_AE  = $3;
+  CC_E  = $4;  CC_NE  = $5;  CC_BE = $6;  CC_A   = $7;
+  CC_S  = $8;  CC_NS  = $9;  CC_P  = $A;  CC_NP  = $B;
+  CC_L  = $C;  CC_GE  = $D;  CC_LE = $E;  CC_G   = $F;
 
   { Prefixes des etiquettes assembleur 80386 / Win32 }
   RS_FN_PFX     = '_RSF_';       { fonctions Rust                    }
@@ -543,6 +561,47 @@ Var
   AsmTraceCount : Integer;
   ArithInstrCount : LongInt;
   StoreInstrCount : LongInt;
+
+  { ---- Buffers binaires (backend COFF / PE) ---- }
+  StringRdataOff : Array[0..MAX_STR - 1] Of LongInt;    { offset de chaque chaine dans RdataBuf }
+  StaticDataOff  : Array[0..MAX_STATIC - 1] Of LongInt; { offset de chaque static dans DataBuf/BssBuf }
+
+  { ---- Buffers PE linker ---- }
+  PeImpBuf      : Array[0..MAX_IMP_BUF - 1] Of Byte;    { import table serialisee }
+  PeImpLen      : LongInt;
+  PeImpIatVA    : Array[0..MAX_IMPORT - 1] Of LongInt;  { VA absolue de chaque entree IAT }
+  PeStartBuf    : Array[0..MAX_START_BUF - 1] Of Byte;  { bloc de demarrage prepend a .text }
+  PeStartLen    : LongInt;
+  PeThunkVA     : Array[0..MAX_IMPORT - 1] Of LongInt;  { VA absolue de chaque thunk JMP }
+  PePrintlnVA   : LongInt;   { VA absolue du stub _RSRT_println }
+  PePanicVA     : LongInt;   { VA absolue du stub _RSRT_panic }
+  PeEntryVA     : LongInt;   { VA absolue du point d entree _start }
+
+  CodeBuf       : Array[0..MAX_BIN_CODE - 1] Of Byte;
+  CodeLen       : LongInt;
+  DataBuf       : Array[0..MAX_BIN_DATA - 1] Of Byte;
+  DataLen       : LongInt;
+  RdataBuf      : Array[0..MAX_BIN_RDATA - 1] Of Byte;
+  RdataLen      : LongInt;
+  BssLen        : LongInt;
+
+  { Table des labels binaires definis (nom -> offset dans CodeBuf) }
+  BinLabelNames : Array[0..MAX_BIN_LABEL - 1] Of TString;
+  BinLabelOffs  : Array[0..MAX_BIN_LABEL - 1] Of LongInt;
+  BinLabelCount : Integer;
+
+  { Patches a appliquer apres resolution des labels }
+  BinPatchLabel : Array[0..MAX_PATCH_TAB - 1] Of TString;
+  BinPatchOff   : Array[0..MAX_PATCH_TAB - 1] Of LongInt;  { offset du slot dans CodeBuf }
+  BinPatchInstr : Array[0..MAX_PATCH_TAB - 1] Of LongInt;  { offset de l'instruction (pour REL32) }
+  BinPatchRel   : Array[0..MAX_PATCH_TAB - 1] Of Boolean;  { True=REL32, False=DIR32 }
+  BinPatchCount : Integer;
+
+  { Relocations COFF pour la section .text }
+  CoffTextRelVA  : Array[0..MAX_RELOC - 1] Of LongInt;
+  CoffTextRelSym : Array[0..MAX_RELOC - 1] Of TString;
+  CoffTextRelTy  : Array[0..MAX_RELOC - 1] Of Word;
+  CoffTextRelCnt : Integer;
 
 Procedure FatalError(Const Msg : TString); Forward;
 Procedure ReportErrorAt(Line, Col : Integer; Const Token, Msg : TString); Forward;
@@ -1898,7 +1957,7 @@ End;
 
 Function DefaultImportModule(Const Name, AbiName : TString) : TString;
 Begin
-  If (Name = 'ExitProcess') Or (Name = 'WriteConsoleA') Or
+  If (Name = 'ExitProcess') Or (Name = 'WriteFile') Or
      (Name = 'GetStdHandle') Then
     DefaultImportModule := 'kernel32.dll'
   Else If (Name = 'puts') Or (Name = 'printf') Or (Name = 'exit') Then
@@ -2008,6 +2067,514 @@ Begin
   StoreInstrCount := 0;
   For I := 0 To MAX_ASM_TRACE - 1 Do
     AsmTrace[I] := '';
+  CodeLen := 0;
+  DataLen := 0;
+  RdataLen := 0;
+  BssLen := 0;
+  BinLabelCount := 0;
+  BinPatchCount := 0;
+  CoffTextRelCnt := 0;
+  PeImpLen   := 0;
+  PeStartLen := 0;
+  PePrintlnVA := 0;
+  PePanicVA   := 0;
+  PeEntryVA   := 0;
+  For I := 0 To MAX_IMPORT - 1 Do
+  Begin
+    PeImpIatVA[I] := 0;
+    PeThunkVA[I]  := 0;
+  End;
+  For I := 0 To MAX_BIN_LABEL - 1 Do
+  Begin
+    BinLabelNames[I] := '';
+    BinLabelOffs[I]  := -1;
+  End;
+  For I := 0 To MAX_PATCH_TAB - 1 Do
+  Begin
+    BinPatchLabel[I] := '';
+    BinPatchOff[I]   := 0;
+    BinPatchInstr[I] := 0;
+    BinPatchRel[I]   := False;
+  End;
+End;
+
+{ ============================================================ }
+{ BACKEND BINAIRE x86 / COFF                                   }
+{ ============================================================ }
+
+{ ---- Primitives d'emission dans CodeBuf ---- }
+
+Procedure BinB(V : Byte);
+Begin
+  If CodeLen < MAX_BIN_CODE Then
+  Begin
+    CodeBuf[CodeLen] := V;
+    Inc(CodeLen);
+  End;
+End;
+
+Procedure BinW(V : Word);
+Begin
+  BinB(V And $FF);
+  BinB((V Shr 8) And $FF);
+End;
+
+Procedure BinD(V : LongInt);
+Begin
+  BinB(LongInt(V) And $FF);
+  BinB((LongInt(V) Shr 8) And $FF);
+  BinB((LongInt(V) Shr 16) And $FF);
+  BinB((LongInt(V) Shr 24) And $FF);
+End;
+
+Procedure DataB(V : Byte);
+Begin
+  If DataLen < MAX_BIN_DATA Then
+  Begin
+    DataBuf[DataLen] := V;
+    Inc(DataLen);
+  End;
+End;
+
+Procedure DataD(V : LongInt);
+Begin
+  DataB(LongInt(V) And $FF);
+  DataB((LongInt(V) Shr 8) And $FF);
+  DataB((LongInt(V) Shr 16) And $FF);
+  DataB((LongInt(V) Shr 24) And $FF);
+End;
+
+Procedure RdataB(V : Byte);
+Begin
+  If RdataLen < MAX_BIN_RDATA Then
+  Begin
+    RdataBuf[RdataLen] := V;
+    Inc(RdataLen);
+  End;
+End;
+
+{ ---- Gestion des labels binaires ---- }
+
+Procedure XDefineLabel(Const Name : TString);
+Var
+  I : Integer;
+Begin
+  For I := 0 To BinLabelCount - 1 Do
+    If BinLabelNames[I] = Name Then
+    Begin
+      BinLabelOffs[I] := CodeLen;
+      Exit;
+    End;
+  If BinLabelCount < MAX_BIN_LABEL Then
+  Begin
+    BinLabelNames[BinLabelCount] := Name;
+    BinLabelOffs[BinLabelCount]  := CodeLen;
+    Inc(BinLabelCount);
+  End;
+End;
+
+Function XFindLabel(Const Name : TString) : LongInt;
+Var
+  I : Integer;
+Begin
+  XFindLabel := -1;
+  For I := 0 To BinLabelCount - 1 Do
+    If BinLabelNames[I] = Name Then
+    Begin
+      XFindLabel := BinLabelOffs[I];
+      Exit;
+    End;
+End;
+
+Procedure XAddPatch(Const Name : TString; PatchOff, InstrOff : LongInt;
+  IsRel : Boolean);
+Begin
+  If BinPatchCount < MAX_PATCH_TAB Then
+  Begin
+    BinPatchLabel[BinPatchCount] := Name;
+    BinPatchOff[BinPatchCount]   := PatchOff;
+    BinPatchInstr[BinPatchCount] := InstrOff;
+    BinPatchRel[BinPatchCount]   := IsRel;
+    Inc(BinPatchCount);
+  End;
+End;
+
+Procedure XResolvePatches;
+Var
+  I   : Integer;
+  Off : LongInt;
+  Rel : LongInt;
+  Po  : LongInt;
+Begin
+  For I := 0 To BinPatchCount - 1 Do
+  Begin
+    Off := XFindLabel(BinPatchLabel[I]);
+    If Off < 0 Then
+      Continue;
+    Po := BinPatchOff[I];
+    If Po + 3 >= MAX_BIN_CODE Then
+      Continue;
+    If BinPatchRel[I] Then
+    Begin
+      { REL32: valeur = target - (patch_end) = target - (InstrOff + instrLen) }
+      { InstrOff = offset debut instruction, PatchOff = Po = offset du DWORD }
+      Rel := Off - (Po + 4);
+    End
+    Else
+      Rel := Off;
+    CodeBuf[Po]   := Rel And $FF;
+    CodeBuf[Po+1] := (Rel Shr 8) And $FF;
+    CodeBuf[Po+2] := (Rel Shr 16) And $FF;
+    CodeBuf[Po+3] := (Rel Shr 24) And $FF;
+  End;
+End;
+
+Procedure XAddTextReloc(SymName : TString; RelocType : Word);
+Begin
+  If CoffTextRelCnt < MAX_RELOC Then
+  Begin
+    CoffTextRelVA[CoffTextRelCnt]  := CodeLen;
+    CoffTextRelSym[CoffTextRelCnt] := SymName;
+    CoffTextRelTy[CoffTextRelCnt]  := RelocType;
+    Inc(CoffTextRelCnt);
+  End;
+End;
+
+{ ---- Encodeurs x86 80386 ---- }
+
+{ Encode ModRM: mod=10 (disp32) ou mod=01 (disp8) + reg/r + rm=EBP(5) }
+Procedure XModRM_EBP(RegField : Byte; Disp : LongInt);
+Begin
+  If (Disp >= -128) And (Disp <= 127) Then
+  Begin
+    BinB($45 Or (RegField Shl 3)); { mod=01, rm=EBP }
+    BinB(Byte(Disp And $FF));
+  End
+  Else
+  Begin
+    BinB($85 Or (RegField Shl 3)); { mod=10, rm=EBP }
+    BinD(Disp);
+  End;
+End;
+
+{ PUSH r32 }
+Procedure XPushReg(Reg : Byte);
+Begin
+  BinB($50 Or Reg);
+End;
+
+{ POP r32 }
+Procedure XPopReg(Reg : Byte);
+Begin
+  BinB($58 Or Reg);
+End;
+
+{ PUSH imm32 }
+Procedure XPushImm32(V : LongInt);
+Begin
+  BinB($68);
+  BinD(V);
+End;
+
+{ PUSH OFFSET label (DIR32 reloc, placeholder 0) }
+Procedure XPushOffsetLabel(Const LabelName : TString);
+Begin
+  BinB($68);
+  XAddTextReloc(LabelName, COFF_RELOC_DIR32);
+  BinD(0);
+End;
+
+{ CALL rel32 (REL32 reloc, placeholder 0) }
+Procedure XCallLabel(Const LabelName : TString);
+Var
+  InstrOff, PatchOff, Off : LongInt;
+Begin
+  InstrOff := CodeLen;
+  BinB($E8);
+  Off := XFindLabel(LabelName);
+  If Off >= 0 Then
+    BinD(Off - (CodeLen + 4))
+  Else
+  Begin
+    PatchOff := CodeLen;
+    BinD(0);
+    XAddPatch(LabelName, PatchOff, InstrOff, True);
+  End;
+End;
+
+{ CALL externe (REL32 reloc COFF) }
+Procedure XCallExternal(Const SymName : TString);
+Begin
+  BinB($E8);
+  XAddTextReloc(SymName, COFF_RELOC_REL32);
+  BinD(-4);
+End;
+
+{ JMP near (E9 + rel32) }
+Procedure XJmpNear(Const LabelName : TString);
+Var
+  InstrOff, PatchOff : LongInt;
+  Off : LongInt;
+Begin
+  InstrOff := CodeLen;
+  BinB($E9);
+  Off := XFindLabel(LabelName);
+  If Off >= 0 Then
+    BinD(Off - (CodeLen + 4))
+  Else
+  Begin
+    PatchOff := CodeLen;
+    BinD(0);
+    XAddPatch(LabelName, PatchOff, InstrOff, True);
+  End;
+End;
+
+{ Jcc near (0F 8x + rel32) }
+Procedure XJccNear(CC : Byte; Const LabelName : TString);
+Var
+  InstrOff, PatchOff : LongInt;
+  Off : LongInt;
+Begin
+  InstrOff := CodeLen;
+  BinB($0F);
+  BinB($80 Or CC);
+  Off := XFindLabel(LabelName);
+  If Off >= 0 Then
+    BinD(Off - (CodeLen + 4))
+  Else
+  Begin
+    PatchOff := CodeLen;
+    BinD(0);
+    XAddPatch(LabelName, PatchOff, InstrOff, True);
+  End;
+End;
+
+{ RET }
+Procedure XRet;
+Begin
+  BinB($C3);
+End;
+
+{ MOV r32, r32 (8B /r) }
+Procedure XMovRR(Dst, Src : Byte);
+Begin
+  BinB($8B);
+  BinB($C0 Or (Dst Shl 3) Or Src);
+End;
+
+{ MOV r32, imm32 (B8+r) }
+Procedure XMovRI(Reg : Byte; V : LongInt);
+Begin
+  BinB($B8 Or Reg);
+  BinD(V);
+End;
+
+{ MOV [EBP+disp], r32 (89 ModRM [disp]) }
+Procedure XMovEBPdispR(Disp : LongInt; Reg : Byte);
+Begin
+  BinB($89);
+  XModRM_EBP(Reg, Disp);
+End;
+
+{ MOV r32, [EBP+disp] (8B ModRM [disp]) }
+Procedure XMovREBPdisp(Reg : Byte; Disp : LongInt);
+Begin
+  BinB($8B);
+  XModRM_EBP(Reg, Disp);
+End;
+
+{ MOV WORD PTR [EBP+disp], AX (66 89 ModRM) }
+Procedure XMovEBPdispAX(Disp : LongInt);
+Begin
+  BinB($66);
+  BinB($89);
+  XModRM_EBP(REG_EAX, Disp);
+End;
+
+{ MOV BYTE PTR [EBP+disp], AL (88 ModRM) }
+Procedure XMovEBPdispAL(Disp : LongInt);
+Begin
+  BinB($88);
+  XModRM_EBP(REG_EAX, Disp);
+End;
+
+{ MOV [symbol], EAX — DIR32 reloc (89 05 addr32) }
+Procedure XMovStaticEAX(Const SymName : TString);
+Begin
+  BinB($89);
+  BinB($05);
+  XAddTextReloc(SymName, COFF_RELOC_DIR32);
+  BinD(0);
+End;
+
+{ MOV [symbol], AX — 66 89 05 addr32 }
+Procedure XMovStaticAX(Const SymName : TString);
+Begin
+  BinB($66);
+  BinB($89);
+  BinB($05);
+  XAddTextReloc(SymName, COFF_RELOC_DIR32);
+  BinD(0);
+End;
+
+{ MOV [symbol], AL — 88 05 addr32 }
+Procedure XMovStaticAL(Const SymName : TString);
+Begin
+  BinB($88);
+  BinB($05);
+  XAddTextReloc(SymName, COFF_RELOC_DIR32);
+  BinD(0);
+End;
+
+{ MOV EAX, [symbol] — 8B 05 addr32 }
+Procedure XMovEAXStatic(Const SymName : TString);
+Begin
+  BinB($8B);
+  BinB($05);
+  XAddTextReloc(SymName, COFF_RELOC_DIR32);
+  BinD(0);
+End;
+
+{ SUB ESP, imm32 (81 EC) }
+Procedure XSubESPImm32(V : LongInt);
+Begin
+  If (V >= 0) And (V <= 127) Then
+  Begin
+    BinB($83); BinB($EC); BinB(Byte(V));
+  End
+  Else
+  Begin
+    BinB($81); BinB($EC); BinD(V);
+  End;
+End;
+
+{ ADD ESP, imm (83 C4 imm8 ou 81 C4 imm32) }
+Procedure XAddESPImm(V : LongInt);
+Begin
+  If (V >= 0) And (V <= 127) Then
+  Begin
+    BinB($83); BinB($C4); BinB(Byte(V));
+  End
+  Else
+  Begin
+    BinB($81); BinB($C4); BinD(V);
+  End;
+End;
+
+{ NEG EAX (F7 D8) }
+Procedure XNegEAX;
+Begin
+  BinB($F7); BinB($D8);
+End;
+
+{ IMUL EBX (F7 EB) }
+Procedure XImulEBX;
+Begin
+  BinB($F7); BinB($EB);
+End;
+
+{ CDQ (99) }
+Procedure XCDQ;
+Begin
+  BinB($99);
+End;
+
+{ IDIV EBX (F7 FB) }
+Procedure XIdivEBX;
+Begin
+  BinB($F7); BinB($FB);
+End;
+
+{ DIV EBX (F7 F3) }
+Procedure XDivEBX;
+Begin
+  BinB($F7); BinB($F3);
+End;
+
+{ XOR r32, r32 (33 /r) }
+Procedure XXorRR(Dst, Src : Byte);
+Begin
+  BinB($33);
+  BinB($C0 Or (Dst Shl 3) Or Src);
+End;
+
+{ ADD r32, r32 (03 /r) }
+Procedure XAddRR(Dst, Src : Byte);
+Begin
+  BinB($03);
+  BinB($C0 Or (Dst Shl 3) Or Src);
+End;
+
+{ SUB r32, r32 (2B /r) }
+Procedure XSubRR(Dst, Src : Byte);
+Begin
+  BinB($2B);
+  BinB($C0 Or (Dst Shl 3) Or Src);
+End;
+
+{ AND r8, r8 (22 /r) }
+Procedure XAndR8R8(Dst, Src : Byte);
+Begin
+  BinB($22);
+  BinB($C0 Or (Dst Shl 3) Or Src);
+End;
+
+{ OR r8, r8 (0A /r) }
+Procedure XOrR8R8(Dst, Src : Byte);
+Begin
+  BinB($0A);
+  BinB($C0 Or (Dst Shl 3) Or Src);
+End;
+
+{ CMP r32, imm8 (83 /7) }
+Procedure XCmpRImm8(Reg : Byte; V : Byte);
+Begin
+  BinB($83);
+  BinB($F8 Or Reg);
+  BinB(V);
+End;
+
+{ CMP r32, r32 (3B /r) }
+Procedure XCmpRR(Dst, Src : Byte);
+Begin
+  BinB($3B);
+  BinB($C0 Or (Dst Shl 3) Or Src);
+End;
+
+{ SETcc r8 (0F 9x /r) }
+Procedure XSetccR8(CC : Byte; Reg : Byte);
+Begin
+  BinB($0F);
+  BinB($90 Or CC);
+  BinB($C0 Or Reg);
+End;
+
+{ MOVZX r32, r8 (0F B6 /r) }
+Procedure XMovzxR32R8(Dst, Src : Byte);
+Begin
+  BinB($0F); BinB($B6);
+  BinB($C0 Or (Dst Shl 3) Or Src);
+End;
+
+{ MOVSX r32, r8 (0F BE /r) }
+Procedure XMovsxR32R8(Dst, Src : Byte);
+Begin
+  BinB($0F); BinB($BE);
+  BinB($C0 Or (Dst Shl 3) Or Src);
+End;
+
+{ MOVZX r32, r16 (0F B7 /r) }
+Procedure XMovzxR32R16(Dst, Src : Byte);
+Begin
+  BinB($0F); BinB($B7);
+  BinB($C0 Or (Dst Shl 3) Or Src);
+End;
+
+{ MOVSX r32, r16 (0F BF /r) }
+Procedure XMovsxR32R16(Dst, Src : Byte);
+Begin
+  BinB($0F); BinB($BF);
+  BinB($C0 Or (Dst Shl 3) Or Src);
 End;
 
 Procedure EmitAsm(Const Line : TString);
@@ -2053,21 +2620,36 @@ Begin
   Case TypeRegClass(TypeIdx) Of
     RC_BYTE:
       If TypeIsSigned(TypeIdx) Then
-        EmitAsm('  MOVSX EAX, AL')
+      Begin
+        EmitAsm('  MOVSX EAX, AL');
+        XMovsxR32R8(REG_EAX, REG_EAX);
+      End
       Else
+      Begin
         EmitAsm('  MOVZX EAX, AL');
+        XMovzxR32R8(REG_EAX, REG_EAX);
+      End;
     RC_WORD:
       If TypeIsSigned(TypeIdx) Then
-        EmitAsm('  MOVSX EAX, AX')
+      Begin
+        EmitAsm('  MOVSX EAX, AX');
+        XMovsxR32R16(REG_EAX, REG_EAX);
+      End
       Else
+      Begin
         EmitAsm('  MOVZX EAX, AX');
+        XMovzxR32R16(REG_EAX, REG_EAX);
+      End;
   End;
 End;
 
 Procedure EmitExprLoad(Const E : TExprRec; Const RegName : TString);
 Begin
   If E.Kind = EK_LITERAL Then
-    EmitAsm('  MOV ' + RegName + ', ' + IntToStr_(E.IntValue))
+  Begin
+    EmitAsm('  MOV ' + RegName + ', ' + IntToStr_(E.IntValue));
+    XMovRI(REG_EAX, E.IntValue);
+  End
   Else If E.Kind = EK_VAR Then
     EmitAsm('  ; charger variable dans ' + RegName + ' (' +
       TypeAsmWidth(E.TypeIdx) + ')')
@@ -2103,6 +2685,7 @@ Procedure EmitStoreSym(SymIdx : Integer; Const ValueExpr : TExprRec;
 Var
   Addr, Prefix : TString;
   TypeIdx : Integer;
+  Disp : LongInt;
 Begin
   If (SymIdx < 0) Or (SymIdx >= SymCount) Then
     Exit;
@@ -2129,16 +2712,39 @@ Begin
   EmitAsm('  MOV ' + TypeAsmWidth(TypeIdx) + ' PTR ' + Addr + ', ' +
     StoreRegForType(TypeIdx));
   Inc(StoreInstrCount);
+
+  { binaire : store EAX/AX/AL -> destination }
+  If (SymTab[SymIdx].Cat = SC_LOCAL) Or (SymTab[SymIdx].Cat = SC_PARAM) Then
+  Begin
+    Disp := SymTab[SymIdx].Offset;
+    Case TypeRegClass(TypeIdx) Of
+      RC_BYTE  : XMovEBPdispAL(Disp);
+      RC_WORD  : XMovEBPdispAX(Disp);
+    Else
+      XMovEBPdispR(Disp, REG_EAX);
+    End;
+  End
+  Else If SymTab[SymIdx].Cat = SC_STATIC Then
+  Begin
+    Case TypeRegClass(TypeIdx) Of
+      RC_BYTE  : XMovStaticAL(SymTab[SymIdx].MangledName);
+      RC_WORD  : XMovStaticAX(SymTab[SymIdx].MangledName);
+    Else
+      XMovStaticEAX(SymTab[SymIdx].MangledName);
+    End;
+  End;
 End;
 
 Procedure EmitLabel(Const LabelName : TString);
 Begin
   EmitAsm(LabelName + ':');
+  XDefineLabel(LabelName);
 End;
 
 Procedure EmitJump(Const LabelName : TString);
 Begin
   EmitAsm('  JMP ' + LabelName);
+  XJmpNear(LabelName);
 End;
 
 Procedure EmitConditionFalseJump(Const CondExpr : TExprRec;
@@ -2156,6 +2762,8 @@ Begin
 
   EmitAsm('  CMP EAX, 0');
   EmitAsm('  JE ' + FalseLabel);
+  XCmpRImm8(REG_EAX, 0);
+  XJccNear(CC_E, FalseLabel);
 End;
 
 Procedure EmitFunctionPrologue(ProcIdx : Integer; Const ReturnLabel : TString);
@@ -2184,6 +2792,12 @@ Begin
   EmitAsm('  SUB ESP, ' + IntToStr_(MAX_LOCAL * WORD_SIZE));
   EmitAsm('  PUSH EBX');
   EmitAsm('  ; convention: args sur pile, retour EAX, caller cleanup');
+  { binaire }
+  XDefineLabel(ProcTab[ProcIdx].MangledName);
+  XPushReg(REG_EBP);
+  XMovRR(REG_EBP, REG_ESP);
+  XSubESPImm32(MAX_LOCAL * WORD_SIZE);
+  XPushReg(REG_EBX);
 End;
 
 Procedure EmitFunctionEpilogue(ProcIdx : Integer; Const ReturnLabel : TString);
@@ -2196,6 +2810,11 @@ Begin
   EmitAsm('  POP EBP');
   EmitAsm('  RET');
   EmitAsm(ProcTab[ProcIdx].MangledName + ' ENDP');
+  { binaire }
+  XPopReg(REG_EBX);
+  XMovRR(REG_ESP, REG_EBP);
+  XPopReg(REG_EBP);
+  XRet;
 End;
 
 Procedure EmitReturnExpr(Const RetExpr : TExprRec);
@@ -2221,16 +2840,23 @@ Begin
     EmitExprLoad(Args[I], 'EAX');
     EmitExtendToEax(Args[I].TypeIdx);
     EmitAsm('  PUSH EAX');
+    XPushReg(REG_EAX);
   End;
   EmitAsm('  CALL ' + ProcTab[ProcIdx].MangledName);
   If ProcTab[ProcIdx].IsExtern Then
   Begin
     AddRelocRec('.text', ProcTab[ProcIdx].MangledName, COFF_RELOC_REL32,
       'CALL extern ' + ProcTab[ProcIdx].Name);
+    XCallExternal(ProcTab[ProcIdx].MangledName);
     Inc(ExternCallCount);
-  End;
+  End
+  Else
+    XCallLabel(ProcTab[ProcIdx].MangledName);
   If ArgCount > 0 Then
+  Begin
     EmitAsm('  ADD ESP, ' + IntToStr_(ArgCount * WORD_SIZE));
+    XAddESPImm(ArgCount * WORD_SIZE);
+  End;
   Inc(CallCount);
 End;
 
@@ -2248,7 +2874,7 @@ Procedure EnsureRuntimeImports;
 Begin
   AddImportRec('GetStdHandle', ExternSymbol('GetStdHandle'),
     'kernel32.dll', 'stdcall', -1, -1);
-  AddImportRec('WriteConsoleA', ExternSymbol('WriteConsoleA'),
+  AddImportRec('WriteFile', ExternSymbol('WriteFile'),
     'kernel32.dll', 'stdcall', -1, -1);
   AddImportRec('ExitProcess', ExternSymbol('ExitProcess'),
     'kernel32.dll', 'stdcall', -1, -1);
@@ -2261,8 +2887,12 @@ Begin
   SymName := RuntimeSymbol(Name);
   EmitAsm('  CALL ' + SymName);
   AddRelocRec('.text', SymName, COFF_RELOC_REL32, Note);
+  XCallExternal(SymName);
   If ArgBytes > 0 Then
+  Begin
     EmitAsm('  ADD ESP, ' + IntToStr_(ArgBytes));
+    XAddESPImm(ArgBytes);
+  End;
   Inc(CallCount);
 End;
 
@@ -2275,8 +2905,12 @@ Begin
     'stdcall', -1, -1);
   EmitAsm('  CALL ' + SymName);
   AddRelocRec('.text', SymName, COFF_RELOC_REL32, Note);
+  XCallExternal(SymName);
   If ArgBytes > 0 Then
+  Begin
     EmitAsm('  ADD ESP, ' + IntToStr_(ArgBytes));
+    XAddESPImm(ArgBytes);
+  End;
   Inc(CallCount);
   Inc(ExternCallCount);
 End;
@@ -2287,8 +2921,9 @@ Begin
     Exit;
   EmitAsm('  PUSH ' + IntToStr_(StringTab[StrIdx].Len));
   EmitAsm('  PUSH OFFSET ' + StringTab[StrIdx].LabelName);
-  AddRelocRec('.text', StringTab[StrIdx].LabelName, COFF_RELOC_DIR32,
-    Note);
+  AddRelocRec('.text', StringTab[StrIdx].LabelName, COFF_RELOC_DIR32, Note);
+  XPushImm32(StringTab[StrIdx].Len);
+  XPushOffsetLabel(StringTab[StrIdx].LabelName);
 End;
 
 Procedure EmitPrintlnString(StrIdx : Integer);
@@ -2308,6 +2943,7 @@ Begin
   EmitPushStringRef(StrIdx, 'adresse chaine panic!');
   EmitRuntimeCall('panic', 'appel runtime panic!', 2 * WORD_SIZE);
   EmitAsm('  PUSH 1');
+  XPushImm32(1);
   EmitExternalRuntimeCall('ExitProcess', 'terminaison apres panic!',
     WORD_SIZE);
   Inc(RuntimeMacroCount);
@@ -2326,11 +2962,14 @@ Begin
   EmitExtendToEax(CondExpr.TypeIdx);
   EmitAsm('  CMP EAX, 0');
   EmitAsm('  JNE ' + OkLabel);
+  XCmpRImm8(REG_EAX, 0);
+  XJccNear(CC_NE, OkLabel);
   MsgIdx := AddStringRec('debug_assert! failed'#13#10);
   EmitPushStringRef(MsgIdx, 'adresse message debug_assert!');
   EmitRuntimeCall('panic', 'appel runtime panic! debug_assert',
     2 * WORD_SIZE);
   EmitAsm('  PUSH 1');
+  XPushImm32(1);
   EmitExternalRuntimeCall('ExitProcess', 'terminaison debug_assert!',
     WORD_SIZE);
   EmitLabel(OkLabel);
@@ -2345,6 +2984,7 @@ Begin
     EmitExprLoad(E, 'EAX');
     EmitExtendToEax(E.TypeIdx);
     EmitAsm('  NEG EAX');
+    XNegEAX;
   End
   Else If Op = '!' Then
   Begin
@@ -2353,6 +2993,9 @@ Begin
     EmitAsm('  CMP EAX, 0');
     EmitAsm('  SETE AL');
     EmitAsm('  MOVZX EAX, AL');
+    XCmpRImm8(REG_EAX, 0);
+    XSetccR8(CC_E, REG_EAX);
+    XMovzxR32R8(REG_EAX, REG_EAX);
   End
   Else If Op = '*' Then
     EmitAsm('  ; dereferencement brut differe au backend pointeurs')
@@ -2363,26 +3006,29 @@ End;
 Procedure EmitSetcc(Const Op : TString; SignedCmp : Boolean);
 Var
   Mn : TString;
+  CC : Byte;
 Begin
-  Mn := 'SETE';
-  If Op = '==' Then Mn := 'SETE'
-  Else If Op = '!=' Then Mn := 'SETNE'
+  Mn := 'SETE'; CC := CC_E;
+  If Op = '==' Then Begin Mn := 'SETE';  CC := CC_E;  End
+  Else If Op = '!=' Then Begin Mn := 'SETNE'; CC := CC_NE; End
   Else If SignedCmp Then
   Begin
-    If Op = '<' Then Mn := 'SETL'
-    Else If Op = '<=' Then Mn := 'SETLE'
-    Else If Op = '>' Then Mn := 'SETG'
-    Else If Op = '>=' Then Mn := 'SETGE';
+    If Op = '<'  Then Begin Mn := 'SETL';  CC := CC_L;  End
+    Else If Op = '<=' Then Begin Mn := 'SETLE'; CC := CC_LE; End
+    Else If Op = '>'  Then Begin Mn := 'SETG';  CC := CC_G;  End
+    Else If Op = '>=' Then Begin Mn := 'SETGE'; CC := CC_GE; End;
   End
   Else
   Begin
-    If Op = '<' Then Mn := 'SETB'
-    Else If Op = '<=' Then Mn := 'SETBE'
-    Else If Op = '>' Then Mn := 'SETA'
-    Else If Op = '>=' Then Mn := 'SETAE';
+    If Op = '<'  Then Begin Mn := 'SETB';  CC := CC_B;  End
+    Else If Op = '<=' Then Begin Mn := 'SETBE'; CC := CC_BE; End
+    Else If Op = '>'  Then Begin Mn := 'SETA';  CC := CC_A;  End
+    Else If Op = '>=' Then Begin Mn := 'SETAE'; CC := CC_AE; End;
   End;
   EmitAsm('  ' + Mn + ' AL');
   EmitAsm('  MOVZX EAX, AL');
+  XSetccR8(CC, REG_EAX);
+  XMovzxR32R8(REG_EAX, REG_EAX);
 End;
 
 Procedure EmitBinaryArith(Const Op : TString; Const Left, Right : TExprRec;
@@ -2400,10 +3046,13 @@ Begin
   EmitExprLoad(Left, 'EAX');
   EmitExtendToEax(Left.TypeIdx);
   EmitAsm('  PUSH EAX');
+  XPushReg(REG_EAX);
   EmitExprLoad(Right, 'EAX');
   EmitExtendToEax(Right.TypeIdx);
   EmitAsm('  MOV EBX, EAX');
+  XMovRR(REG_EBX, REG_EAX);
   EmitAsm('  POP EAX');
+  XPopReg(REG_EAX);
 
   SignedOp := TypeIsSignedInt(ResultType) Or TypeIsSignedInt(Left.TypeIdx) Or
     TypeIsSignedInt(Right.TypeIdx);
@@ -2414,32 +3063,50 @@ Begin
     EmitExprLoad(Right, 'EAX');
     EmitExtendToEax(Right.TypeIdx);
     EmitAsm('  NEG EAX');
+    XNegEAX;
   End
   Else If Op = '+' Then
-    EmitAsm('  ADD EAX, EBX')
+  Begin
+    EmitAsm('  ADD EAX, EBX');
+    XAddRR(REG_EAX, REG_EBX);
+  End
   Else If Op = '-' Then
-    EmitAsm('  SUB EAX, EBX')
+  Begin
+    EmitAsm('  SUB EAX, EBX');
+    XSubRR(REG_EAX, REG_EBX);
+  End
   Else If Op = '*' Then
-    EmitAsm('  IMUL EBX')
+  Begin
+    EmitAsm('  IMUL EBX');
+    XImulEBX;
+  End
   Else If (Op = '/') Or (Op = '%') Then
   Begin
     If SignedOp Then
     Begin
       EmitAsm('  CDQ');
       EmitAsm('  IDIV EBX');
+      XCDQ;
+      XIdivEBX;
     End
     Else
     Begin
       EmitAsm('  XOR EDX, EDX');
       EmitAsm('  DIV EBX');
+      XXorRR(REG_EDX, REG_EDX);
+      XDivEBX;
     End;
     If Op = '%' Then
+    Begin
       EmitAsm('  MOV EAX, EDX');
+      XMovRR(REG_EAX, REG_EDX);
+    End;
   End
   Else If (Op = '==') Or (Op = '!=') Or (Op = '<') Or (Op = '<=') Or
           (Op = '>') Or (Op = '>=') Then
   Begin
     EmitAsm('  CMP EAX, EBX');
+    XCmpRR(REG_EAX, REG_EBX);
     EmitSetcc(Op, SignedOp);
   End
   Else If Op = '&&' Then
@@ -2450,6 +3117,10 @@ Begin
     EmitAsm('  SETNE BL');
     EmitAsm('  AND AL, BL');
     EmitAsm('  MOVZX EAX, AL');
+    XCmpRImm8(REG_EAX, 0); XSetccR8(CC_NE, REG_EAX);
+    XCmpRImm8(REG_EBX, 0); XSetccR8(CC_NE, REG_EBX);
+    XAndR8R8(REG_EAX, REG_EBX);
+    XMovzxR32R8(REG_EAX, REG_EAX);
   End
   Else If Op = '||' Then
   Begin
@@ -2459,6 +3130,10 @@ Begin
     EmitAsm('  SETNE BL');
     EmitAsm('  OR AL, BL');
     EmitAsm('  MOVZX EAX, AL');
+    XCmpRImm8(REG_EAX, 0); XSetccR8(CC_NE, REG_EAX);
+    XCmpRImm8(REG_EBX, 0); XSetccR8(CC_NE, REG_EBX);
+    XOrR8R8(REG_EAX, REG_EBX);
+    XMovzxR32R8(REG_EAX, REG_EAX);
   End;
 End;
 
@@ -2624,6 +3299,1063 @@ Begin
   Close(F);
   If Opts.Verbose Then
     WriteLn('ASM ecrit     : ', AsmName);
+End;
+
+{ ============================================================ }
+{ EMISSION COFF .OBJ (TODO 23)                                 }
+{ ============================================================ }
+
+Procedure BuildRdataSection;
+Var
+  I, J : Integer;
+Begin
+  RdataLen := 0;
+  For I := 0 To StringCount - 1 Do
+  Begin
+    StringRdataOff[I] := RdataLen;
+    For J := 1 To Length(StringTab[I].Text) Do
+      RdataB(Ord(StringTab[I].Text[J]));
+    RdataB(0);
+  End;
+End;
+
+Procedure BuildDataSection;
+Var
+  I, K : Integer;
+  V    : LongInt;
+  Sz   : Integer;
+  BssOff : LongInt;
+Begin
+  DataLen := 0;
+  BssLen  := 0;
+  BssOff  := 0;
+  For I := 0 To StaticCount - 1 Do
+  Begin
+    Sz := TypeSize(StaticTab[I].TypeIdx);
+    If Sz <= 0 Then Sz := 4;
+    If StaticTab[I].HasInit Then
+    Begin
+      StaticDataOff[I] := DataLen;
+      V := StaticTab[I].IntValue;
+      For K := 0 To Sz - 1 Do
+      Begin
+        DataB(LongInt(V) And $FF);
+        V := LongInt(V) Shr 8;
+      End;
+    End
+    Else
+    Begin
+      StaticDataOff[I] := BssOff;
+      Inc(BssOff, Sz);
+      Inc(BssLen, Sz);
+    End;
+  End;
+End;
+
+Function AlignUp(V, A : LongInt) : LongInt;
+Begin
+  If A <= 1 Then
+    AlignUp := V
+  Else
+    AlignUp := ((V + A - 1) Div A) * A;
+End;
+
+Procedure CoffWriteObjFile(Const FileName : TString);
+Var
+  ObjF         : File;
+  Code         : Integer;
+  { offsets dans le fichier }
+  OffHeaders   : LongInt;
+  OffTextData  : LongInt;
+  OffRdataData : LongInt;
+  OffDataData  : LongInt;
+  OffTextReloc : LongInt;
+  OffSymTab    : LongInt;
+  { tailles alignees }
+  CodePad, RdataPad, DataPad : LongInt;
+  { table des symboles (en memoire) }
+  SymBuf       : Array[0..2047] Of Byte;
+  SymBufLen    : Integer;
+  { table de chaines COFF }
+  CoffStrtab   : Array[0..8191] Of Byte;
+  CoffStrtabLen : LongInt;
+  { compteurs/indices }
+  SymCount_Coff  : Integer;
+  { helpers }
+  I            : Integer;
+  V32          : LongInt;
+
+  { ---- helper: ecriture dans le fichier ---- }
+  Procedure WB(B : Byte);
+  Begin
+    BlockWrite(ObjF, B, 1);
+  End;
+
+  Procedure WW(W : Word);
+  Begin
+    WB(W And $FF);
+    WB((W Shr 8) And $FF);
+  End;
+
+  Procedure WD(D : LongInt);
+  Begin
+    WB(LongInt(D) And $FF);
+    WB((LongInt(D) Shr 8) And $FF);
+    WB((LongInt(D) Shr 16) And $FF);
+    WB((LongInt(D) Shr 24) And $FF);
+  End;
+
+  Procedure WBytes(Var Buf; Len : LongInt);
+  Begin
+    If Len > 0 Then
+      BlockWrite(ObjF, Buf, Len);
+  End;
+
+  Procedure WZeros(N : LongInt);
+  Var
+    Tmp : Byte;
+    K   : LongInt;
+  Begin
+    Tmp := 0;
+    For K := 1 To N Do
+      BlockWrite(ObjF, Tmp, 1);
+  End;
+
+  { ---- helper: ajouter une chaine a la strtab COFF ---- }
+  Function AddStrtab(Const S : TString) : LongInt;
+  Var
+    K : Integer;
+  Begin
+    AddStrtab := CoffStrtabLen;
+    For K := 1 To Length(S) Do
+    Begin
+      If CoffStrtabLen < 8190 Then
+      Begin
+        CoffStrtab[CoffStrtabLen] := Ord(S[K]);
+        Inc(CoffStrtabLen);
+      End;
+    End;
+    CoffStrtab[CoffStrtabLen] := 0;
+    Inc(CoffStrtabLen);
+  End;
+
+  { ---- helper: ecrire un nom de symbole COFF (8 octets) ---- }
+  Function WriteSymName(Const S : TString) : LongInt;
+  Var
+    K : Integer;
+    Off : LongInt;
+  Begin
+    If Length(S) <= 8 Then
+    Begin
+      For K := 1 To Length(S) Do WB(Ord(S[K]));
+      For K := Length(S) + 1 To 8 Do WB(0);
+      WriteSymName := 0;
+    End
+    Else
+    Begin
+      Off := AddStrtab(S);
+      WD(0);
+      WD(Off + 4); { strtab offset (apres le size DWORD) }
+      WriteSymName := Off;
+    End;
+  End;
+
+  { ---- helper: ajouter un symbole dans SymBuf ---- }
+  Procedure AddSymbol(Const Name : TString; Value : LongInt;
+    SecNum : Integer; SymType : Word; StorageClass : Byte;
+    NbAux : Byte);
+  Var
+    K   : Integer;
+    Off : LongInt;
+  Begin
+    If SymBufLen + 18 > High(SymBuf) Then Exit;
+    { Name : 8 octets }
+    If Length(Name) <= 8 Then
+    Begin
+      For K := 1 To Length(Name) Do
+      Begin
+        SymBuf[SymBufLen] := Ord(Name[K]);
+        Inc(SymBufLen);
+      End;
+      For K := Length(Name) + 1 To 8 Do
+      Begin
+        SymBuf[SymBufLen] := 0;
+        Inc(SymBufLen);
+      End;
+    End
+    Else
+    Begin
+      Off := AddStrtab(Name);
+      SymBuf[SymBufLen]   := 0; Inc(SymBufLen);
+      SymBuf[SymBufLen]   := 0; Inc(SymBufLen);
+      SymBuf[SymBufLen]   := 0; Inc(SymBufLen);
+      SymBuf[SymBufLen]   := 0; Inc(SymBufLen);
+      Off := Off + 4;
+      SymBuf[SymBufLen] := LongInt(Off) And $FF; Inc(SymBufLen);
+      SymBuf[SymBufLen] := (LongInt(Off) Shr 8) And $FF; Inc(SymBufLen);
+      SymBuf[SymBufLen] := (LongInt(Off) Shr 16) And $FF; Inc(SymBufLen);
+      SymBuf[SymBufLen] := (LongInt(Off) Shr 24) And $FF; Inc(SymBufLen);
+    End;
+    { Value : 4 }
+    SymBuf[SymBufLen] := LongInt(Value) And $FF;         Inc(SymBufLen);
+    SymBuf[SymBufLen] := (LongInt(Value) Shr 8) And $FF;  Inc(SymBufLen);
+    SymBuf[SymBufLen] := (LongInt(Value) Shr 16) And $FF; Inc(SymBufLen);
+    SymBuf[SymBufLen] := (LongInt(Value) Shr 24) And $FF; Inc(SymBufLen);
+    { SectionNumber : 2 }
+    SymBuf[SymBufLen] := SecNum And $FF;         Inc(SymBufLen);
+    SymBuf[SymBufLen] := (SecNum Shr 8) And $FF; Inc(SymBufLen);
+    { Type : 2 }
+    SymBuf[SymBufLen] := SymType And $FF;         Inc(SymBufLen);
+    SymBuf[SymBufLen] := (SymType Shr 8) And $FF; Inc(SymBufLen);
+    { StorageClass : 1 }
+    SymBuf[SymBufLen] := StorageClass; Inc(SymBufLen);
+    { NbAux : 1 }
+    SymBuf[SymBufLen] := NbAux; Inc(SymBufLen);
+    Inc(SymCount_Coff);
+  End;
+
+  { ---- helper: ajouter un enregistrement aux (18 zeros) ---- }
+  Procedure AddAuxRecord;
+  Var K : Integer;
+  Begin
+    If SymBufLen + 18 > High(SymBuf) Then Exit;
+    For K := 0 To 17 Do
+    Begin
+      SymBuf[SymBufLen] := 0;
+      Inc(SymBufLen);
+    End;
+    Inc(SymCount_Coff);
+  End;
+
+  { ---- helper: indice du symbole par nom dans SymBuf ---- }
+  { On maintient un tableau parallele nom->index pendant la construction }
+
+  { Retourne l'indice COFF d'un symbole externe par son nom mangle }
+  Function FindCoffSymIdx(Const MangledName : TString) : Integer;
+  Var K : Integer;
+  Begin
+    { sections: .text=0, .rdata=2, .data=4, .bss=6 }
+    { fonctions internes: 8, 8+1, ... }
+    { Pour un appel externe, on cherche dans ImportTab }
+    FindCoffSymIdx := 0; { defaut: .text }
+    For K := 0 To ImportCount - 1 Do
+      If ImportTab[K].MangledName = MangledName Then
+      Begin
+        { index = 8 + ProcCount_non_extern + K }
+        FindCoffSymIdx := 8 + (ProcCount) + K;
+        Exit;
+      End;
+    { runtime symbols }
+    For K := 0 To ProcCount - 1 Do
+      If ProcTab[K].MangledName = MangledName Then
+      Begin
+        FindCoffSymIdx := 8 + K;
+        Exit;
+      End;
+  End;
+
+Begin
+  { --- 1. Construire les sections de donnees --- }
+  BuildRdataSection;
+  BuildDataSection;
+  XResolvePatches;
+
+  { --- 2. Calculer les offsets --- }
+  CodePad  := AlignUp(CodeLen, 4);
+  RdataPad := AlignUp(RdataLen, 4);
+  DataPad  := AlignUp(DataLen, 4);
+
+  OffHeaders   := 20 + 4 * 40;        { file header + 4 section headers }
+  OffTextData  := OffHeaders;
+  OffRdataData := OffTextData  + CodePad;
+  OffDataData  := OffRdataData + RdataPad;
+
+  { relocations .text juste apres les donnees de toutes les sections }
+  OffTextReloc := OffDataData + DataPad;
+  { apres les relocations .text, table des symboles }
+  OffSymTab    := OffTextReloc + LongInt(CoffTextRelCnt) * 10;
+
+  { --- 3. Construire la table des symboles en memoire --- }
+  SymBufLen    := 0;
+  SymCount_Coff := 0;
+  CoffStrtabLen := 0;
+
+  { sections (symbol + aux chacune) }
+  AddSymbol('.text',  0, 1, 0, 3 {C_STAT}, 1); AddAuxRecord;
+  AddSymbol('.rdata', 0, 2, 0, 3, 1);           AddAuxRecord;
+  AddSymbol('.data',  0, 3, 0, 3, 1);           AddAuxRecord;
+  AddSymbol('.bss',   0, 4, 0, 3, 1);           AddAuxRecord;
+
+  { fonctions internes (Section 1 = .text) }
+  For I := 0 To ProcCount - 1 Do
+  Begin
+    If Not ProcTab[I].IsExtern Then
+    Begin
+      V32 := XFindLabel(ProcTab[I].MangledName);
+      If V32 < 0 Then V32 := 0;
+      AddSymbol(ProcTab[I].MangledName, V32, 1, $20 {fn}, 2 {C_EXT}, 0);
+    End;
+  End;
+
+  { symboles externes (imports) }
+  For I := 0 To ImportCount - 1 Do
+    AddSymbol(ImportTab[I].MangledName, 0, 0 {undefined}, 0, 2, 0);
+
+  { statics dans .data ou .bss }
+  For I := 0 To StaticCount - 1 Do
+  Begin
+    If StaticTab[I].HasInit Then
+      AddSymbol(StaticTab[I].MangledName, 0, 3, 0, 2, 0)
+    Else
+      AddSymbol(StaticTab[I].MangledName, 0, 4, 0, 2, 0);
+  End;
+
+  { --- 4. Ouvrir le fichier et ecrire --- }
+  Assign(ObjF, FileName);
+  {$I-}
+  Rewrite(ObjF, 1);
+  {$I+}
+  Code := IOResult;
+  If Code <> 0 Then
+  Begin
+    FatalError('impossible de creer le fichier OBJ: ' + FileName);
+    Exit;
+  End;
+
+  { --- 5. COFF File Header (20 octets) --- }
+  WW(PE_MACHINE_I386);   { Machine }
+  WW(4);                 { NumberOfSections: .text .rdata .data .bss }
+  WD(0);                 { TimeDateStamp }
+  WD(OffSymTab);         { PointerToSymbolTable }
+  WD(SymCount_Coff);     { NumberOfSymbols }
+  WW(0);                 { SizeOfOptionalHeader }
+  WW(0);                 { Characteristics }
+
+  { --- 6. Section Headers (4 x 40 octets) --- }
+
+  { .text }
+  WB(Ord('.')); WB(Ord('t')); WB(Ord('e')); WB(Ord('x'));
+  WB(Ord('t')); WB(0); WB(0); WB(0);
+  WD(0);              { VirtualSize (0 pour .OBJ) }
+  WD(0);              { VirtualAddress }
+  WD(CodePad);        { SizeOfRawData }
+  WD(OffTextData);    { PointerToRawData }
+  WD(OffTextReloc);   { PointerToRelocations }
+  WD(0);              { PointerToLinenumbers }
+  WW(CoffTextRelCnt); { NumberOfRelocations }
+  WW(0);              { NumberOfLinenumbers }
+  WD(PE_SCN_TEXT);    { Characteristics }
+
+  { .rdata }
+  WB(Ord('.')); WB(Ord('r')); WB(Ord('d')); WB(Ord('a'));
+  WB(Ord('t')); WB(Ord('a')); WB(0); WB(0);
+  WD(0); WD(0);
+  WD(RdataPad);
+  WD(OffRdataData);
+  WD(0); WD(0); WW(0); WW(0);
+  WD(PE_SCN_RDATA);
+
+  { .data }
+  WB(Ord('.')); WB(Ord('d')); WB(Ord('a')); WB(Ord('t'));
+  WB(Ord('a')); WB(0); WB(0); WB(0);
+  WD(0); WD(0);
+  WD(DataPad);
+  If DataPad > 0 Then
+    WD(OffDataData)
+  Else
+    WD(0);
+  WD(0); WD(0); WW(0); WW(0);
+  WD(PE_SCN_DATA);
+
+  { .bss }
+  WB(Ord('.')); WB(Ord('b')); WB(Ord('s')); WB(Ord('s'));
+  WB(0); WB(0); WB(0); WB(0);
+  WD(BssLen);
+  WD(0);
+  WD(0);    { SizeOfRawData = 0 (pas de donnees dans le fichier) }
+  WD(0);    { PointerToRawData = 0 }
+  WD(0); WD(0); WW(0); WW(0);
+  WD(PE_SCN_BSS);
+
+  { --- 7. Section data --- }
+
+  { .text }
+  If CodeLen > 0 Then
+    WBytes(CodeBuf, CodeLen);
+  WZeros(CodePad - CodeLen);
+
+  { .rdata }
+  If RdataLen > 0 Then
+    WBytes(RdataBuf, RdataLen);
+  WZeros(RdataPad - RdataLen);
+
+  { .data }
+  If DataLen > 0 Then
+    WBytes(DataBuf, DataLen);
+  WZeros(DataPad - DataLen);
+
+  { --- 8. Relocations .text --- }
+  For I := 0 To CoffTextRelCnt - 1 Do
+  Begin
+    WD(CoffTextRelVA[I]);
+    WD(FindCoffSymIdx(CoffTextRelSym[I]));
+    WW(CoffTextRelTy[I]);
+  End;
+
+  { --- 9. Table des symboles --- }
+  WBytes(SymBuf, SymBufLen);
+
+  { --- 10. Table des chaines --- }
+  V32 := CoffStrtabLen + 4; { taille totale incluant le DWORD de taille }
+  WD(V32);
+  If CoffStrtabLen > 0 Then
+    WBytes(CoffStrtab, CoffStrtabLen);
+
+  Close(ObjF);
+  If Opts.Verbose Then
+    WriteLn('OBJ ecrit     : ', FileName,
+            ' (code=', CodeLen, 'o rdata=', RdataLen,
+            'o data=', DataLen, 'o bss=', BssLen, 'o)');
+End;
+
+Procedure EmitCoffObjFile;
+Var
+  ObjName : TString;
+Begin
+  If Not Opts.EmitObj Then Exit;
+  If ErrorCount <> 0 Then
+  Begin
+    WarnMsg('OBJ non produit car le parsing contient des erreurs');
+    Exit;
+  End;
+  ObjName := Opts.OutFile;
+  CoffWriteObjFile(ObjName);
+End;
+
+{ ============================================================ }
+{ LINKER PE .EXE (TODO 24) [IMPLEMENTE]                        }
+{ ============================================================ }
+
+Procedure EmitPeExeFile;
+Var
+  PeF          : File;
+  ExeName      : TString;
+  Rc, I, K     : Integer;
+  TextRva      : LongInt;   { RVA depuis image base }
+  RdataRva     : LongInt;
+  DataRva      : LongInt;
+  BssRva       : LongInt;
+  TextVirtSz   : LongInt;
+  RdataVirtSz  : LongInt;
+  DataVirtSz   : LongInt;
+  TextFileOff  : LongInt;
+  RdataFileOff : LongInt;
+  DataFileOff  : LongInt;
+  SizeOfImage  : LongInt;
+  EntryRva     : LongInt;   { RVA du point d entree (pour optional header) }
+  IatGS, IatWC, IatEP : LongInt; { VAs absolues des entrees IAT cles }
+  TmpD         : LongInt;
+  TextVA       : LongInt;   { VA absolue = PE_IMG_BASE + TextRva }
+  DataVA       : LongInt;
+  RdataVA      : LongInt;
+  BssVA        : LongInt;
+
+  { ---- sous-procedures : emission dans le fichier PE ---- }
+
+  Procedure PeB(V : Byte);
+  Begin
+    BlockWrite(PeF, V, 1);
+  End;
+
+  Procedure PeW(V : Word);
+  Begin
+    PeB(Lo(V));
+    PeB(Hi(V));
+  End;
+
+  Procedure PeD(V : LongInt);
+  Begin
+    PeB(LongInt(V) And $FF);
+    PeB((LongInt(V) Shr 8) And $FF);
+    PeB((LongInt(V) Shr 16) And $FF);
+    PeB((LongInt(V) Shr 24) And $FF);
+  End;
+
+  Procedure PeZeros(N : LongInt);
+  Var Z : Byte; J : LongInt;
+  Begin
+    Z := 0;
+    For J := 1 To N Do BlockWrite(PeF, Z, 1);
+  End;
+
+  Procedure PeRaw(Var Buf; Len : LongInt);
+  Begin
+    If Len > 0 Then BlockWrite(PeF, Buf, Len);
+  End;
+
+  Procedure PeSection8(Const Name : TString);
+  Var J : Integer;
+  Begin
+    For J := 1 To 8 Do
+      If J <= Length(Name) Then PeB(Ord(Name[J]))
+      Else PeB(0);
+  End;
+
+  Procedure PePad(Cur, Target : LongInt);
+  Begin
+    If Target > Cur Then PeZeros(Target - Cur);
+  End;
+
+  { ---- sous-procedures : remplissage de PeImpBuf ---- }
+
+  Procedure ImpB(V : Byte);
+  Begin
+    If PeImpLen < MAX_IMP_BUF Then
+    Begin
+      PeImpBuf[PeImpLen] := V;
+      Inc(PeImpLen);
+    End;
+  End;
+
+  Procedure ImpD(V : LongInt);
+  Begin
+    ImpB(LongInt(V) And $FF);
+    ImpB((LongInt(V) Shr 8) And $FF);
+    ImpB((LongInt(V) Shr 16) And $FF);
+    ImpB((LongInt(V) Shr 24) And $FF);
+  End;
+
+  Procedure ImpStr(Const S : TString);
+  Var J : Integer;
+  Begin
+    For J := 1 To Length(S) Do ImpB(Ord(S[J]));
+    ImpB(0);
+  End;
+
+  Procedure ImpPatchD(Off : LongInt; V : LongInt);
+  Begin
+    If Off + 3 < MAX_IMP_BUF Then
+    Begin
+      PeImpBuf[Off]   := LongInt(V) And $FF;
+      PeImpBuf[Off+1] := (LongInt(V) Shr 8) And $FF;
+      PeImpBuf[Off+2] := (LongInt(V) Shr 16) And $FF;
+      PeImpBuf[Off+3] := (LongInt(V) Shr 24) And $FF;
+    End;
+  End;
+
+  { ---- sous-procedures : remplissage de PeStartBuf ---- }
+
+  Procedure StB(V : Byte);
+  Begin
+    If PeStartLen < MAX_START_BUF Then
+    Begin
+      PeStartBuf[PeStartLen] := V;
+      Inc(PeStartLen);
+    End;
+  End;
+
+  Procedure StD(V : LongInt);
+  Begin
+    StB(LongInt(V) And $FF);
+    StB((LongInt(V) Shr 8) And $FF);
+    StB((LongInt(V) Shr 16) And $FF);
+    StB((LongInt(V) Shr 24) And $FF);
+  End;
+
+  Procedure StPatchD(Off : LongInt; V : LongInt);
+  Begin
+    If Off + 3 < MAX_START_BUF Then
+    Begin
+      PeStartBuf[Off]   := LongInt(V) And $FF;
+      PeStartBuf[Off+1] := (LongInt(V) Shr 8) And $FF;
+      PeStartBuf[Off+2] := (LongInt(V) Shr 16) And $FF;
+      PeStartBuf[Off+3] := (LongInt(V) Shr 24) And $FF;
+    End;
+  End;
+
+  { CALL DWORD PTR [AbsAddr32] = FF 15 addr32 }
+  Procedure StCallIat(AbsAddr : LongInt);
+  Begin
+    StB($FF); StB($15); StD(AbsAddr);
+  End;
+
+  { JMP DWORD PTR [AbsAddr32] = FF 25 addr32 }
+  Procedure StJmpIat(AbsAddr : LongInt);
+  Begin
+    StB($FF); StB($25); StD(AbsAddr);
+  End;
+
+  { ---- Calcul de l import table ---- }
+
+  Procedure BuildImportTable;
+  Var
+    N          : Integer;
+    DirOff, IatOff, IltOff, HnOff : LongInt;
+    HnEntryOff : Array[0..MAX_IMPORT-1] Of LongInt;
+    DllNameOff : LongInt;
+    IatBaseRva : LongInt;   { RVA de IAT[0] dans l image }
+    IltBaseRva : LongInt;
+    HnBaseRva  : LongInt;
+    DllNameRva : LongInt;
+    DataImpRva : LongInt;   { RVA de PeImpBuf[0] = DataRva + DataLen }
+    HnRva      : LongInt;
+    I, J       : Integer;
+  Begin
+    PeImpLen := 0;
+    N := ImportCount;
+    If N = 0 Then Exit;
+
+    { Structure : [Dir 40B][IAT (N+1)*4][ILT (N+1)*4][HN...][DLL name] }
+    DirOff := 0;
+    IatOff := 40;
+    IltOff := IatOff + (N + 1) * 4;
+    HnOff  := IltOff + (N + 1) * 4;
+
+    { Reserv les octets fixes : Dir + IAT + ILT (pre-remplis a 0) }
+    For J := 0 To HnOff - 1 Do ImpB(0);
+
+    { Hint/Name table }
+    For I := 0 To N - 1 Do
+    Begin
+      HnEntryOff[I] := PeImpLen;
+      ImpB(0); ImpB(0);          { Hint = 0 }
+      ImpStr(ImportTab[I].Name); { nom + NUL }
+      If (PeImpLen And 1) <> 0 Then ImpB(0); { alignement WORD }
+    End;
+
+    { DLL name }
+    DllNameOff := PeImpLen;
+    ImpStr('kernel32.dll');
+
+    { Calcul des RVAs }
+    DataImpRva := DataRva + DataLen;  { RVA de PeImpBuf[0] dans l image }
+    IatBaseRva := DataImpRva + IatOff;
+    IltBaseRva := DataImpRva + IltOff;
+    HnBaseRva  := DataImpRva + HnOff;
+    DllNameRva := DataImpRva + DllNameOff;
+
+    { Stocker les VAs absolues pour le code }
+    For I := 0 To N - 1 Do
+      PeImpIatVA[I] := PE_IMG_BASE + IatBaseRva + LongInt(I) * 4;
+
+    { Remplir IAT et ILT avec les RVAs des entrees HN }
+    For I := 0 To N - 1 Do
+    Begin
+      HnRva := DataImpRva + HnEntryOff[I];
+      ImpPatchD(IatOff + LongInt(I) * 4, HnRva);
+      ImpPatchD(IltOff + LongInt(I) * 4, HnRva);
+    End;
+    { Terminateurs null deja a 0 }
+
+    { Remplir Import Directory (1 entree + null) }
+    ImpPatchD(DirOff +  0, IltBaseRva);  { OriginalFirstThunk }
+    ImpPatchD(DirOff +  4, 0);           { TimeDateStamp }
+    ImpPatchD(DirOff +  8, 0);           { ForwarderChain }
+    ImpPatchD(DirOff + 12, DllNameRva);  { Name }
+    ImpPatchD(DirOff + 16, IatBaseRva);  { FirstThunk }
+    { [20..39] : null terminator, deja a 0 }
+  End;
+
+  { ---- Bloc de demarrage prepend a .text ---- }
+
+  Procedure BuildStartupBlock;
+  Var
+    N         : Integer;
+    I         : Integer;
+    PlStart   : LongInt;
+    PaStart   : LongInt;
+    EntStart  : LongInt;
+    MainOff   : LongInt;
+    MainVA    : LongInt;
+    CallOff   : LongInt;
+  Begin
+    PeStartLen := 0;
+    N := ImportCount;
+
+    { -- Thunks : JMP DWORD PTR [IAT_k] -- }
+    For I := 0 To N - 1 Do
+    Begin
+      PeThunkVA[I] := TextVA + PeStartLen;
+      StJmpIat(PeImpIatVA[I]);  { FF 25 addr32 = 6 octets }
+    End;
+
+    { Localiser les IAT entries necessaires au runtime }
+    IatGS := 0; IatWC := 0; IatEP := 0;
+    For I := 0 To N - 1 Do
+    Begin
+      If ImportTab[I].Name = 'GetStdHandle'  Then IatGS := PeImpIatVA[I];
+      If ImportTab[I].Name = 'WriteFile'     Then IatWC := PeImpIatVA[I];
+      If ImportTab[I].Name = 'ExitProcess'   Then IatEP := PeImpIatVA[I];
+    End;
+
+    { -- _RSRT_println(ptr:DWORD, len:DWORD) -- }
+    { Pile au moment de l appel : [EBP+8]=ptr [EBP+12]=len }
+    PlStart := PeStartLen;
+    PePrintlnVA := TextVA + PlStart;
+    StB($55);             { PUSH EBP }
+    StB($8B); StB($EC);   { MOV EBP, ESP }
+    StB($83); StB($EC); StB($04); { SUB ESP, 4 }
+    StB($68); StD(LongInt(-11));  { PUSH -11 (STD_OUTPUT_HANDLE) }
+    StCallIat(IatGS);             { CALL [GetStdHandle] }
+    StB($6A); StB($00);           { PUSH 0 (lpOverlapped) }
+    StB($8D); StB($4D); StB($FC); { LEA ECX,[EBP-4] }
+    StB($51);                     { PUSH ECX (lpNumberOfCharsWritten) }
+    StB($FF); StB($75); StB($0C); { PUSH DWORD PTR [EBP+12] (len) }
+    StB($FF); StB($75); StB($08); { PUSH DWORD PTR [EBP+8]  (ptr) }
+    StB($50);                     { PUSH EAX (hFile) }
+    StCallIat(IatWC);             { CALL [WriteFile] }
+    StB($8B); StB($E5);           { MOV ESP, EBP }
+    StB($5D);                     { POP EBP }
+    StB($C3);                     { RET }
+
+    { -- _RSRT_panic(ptr:DWORD, len:DWORD) -- }
+    PaStart := PeStartLen;
+    PePanicVA := TextVA + PaStart;
+    StB($55);             { PUSH EBP }
+    StB($8B); StB($EC);   { MOV EBP, ESP }
+    StB($83); StB($EC); StB($04); { SUB ESP, 4 }
+    StB($68); StD(LongInt(-12));  { PUSH -12 (STD_ERROR_HANDLE) }
+    StCallIat(IatGS);             { CALL [GetStdHandle] }
+    StB($6A); StB($00);           { PUSH 0 }
+    StB($8D); StB($4D); StB($FC); { LEA ECX,[EBP-4] }
+    StB($51);                     { PUSH ECX }
+    StB($FF); StB($75); StB($0C); { PUSH [EBP+12] }
+    StB($FF); StB($75); StB($08); { PUSH [EBP+8]  }
+    StB($50);                     { PUSH EAX }
+    StCallIat(IatWC);             { CALL [WriteFile] }
+    StB($6A); StB($01);           { PUSH 1 (exit code) }
+    StCallIat(IatEP);             { CALL [ExitProcess] }
+    StB($8B); StB($E5);           { MOV ESP, EBP }
+    StB($5D);                     { POP EBP }
+    StB($C3);                     { RET (unreachable) }
+
+    { -- Point d entree _start -- }
+    EntStart := PeStartLen;
+    PeEntryVA := TextVA + EntStart;
+    EntryRva  := TextRva + EntStart;
+    { CALL _RSF_main (REL32) }
+    StB($E8);
+    CallOff := PeStartLen;
+    StD(0);   { placeholder : patch apres }
+    { PUSH 0 (code de sortie normal) }
+    StB($6A); StB($00);
+    { CALL [ExitProcess] }
+    StCallIat(IatEP);
+    { RET (inaccessible) }
+    StB($C3);
+
+    { Patch du CALL _RSF_main }
+    MainOff := XFindLabel(RS_FN_PFX + 'main');
+    If MainOff < 0 Then MainOff := 0;  { defensif }
+    { MainVA = VA du premier octet de _RSF_main dans .text }
+    { .text = [PeStartBuf (PeStartLen octets)][CodeBuf (CodeLen octets)] }
+    { _RSF_main est a CodeBuf[MainOff], donc VA = TextVA + PeStartLen + MainOff }
+    MainVA := TextVA + PeStartLen + MainOff;
+    { REL32 = cible - (site + 4) ; site = CALL opcode + 1 = CallOff dans StartBuf }
+    { VA du site = TextVA + CallOff }
+    TmpD := MainVA - (TextVA + CallOff + 4);
+    StPatchD(CallOff, TmpD);
+  End;
+
+  { ---- Patching CodeBuf pour PE ---- }
+
+  Procedure PatchCodeBuf;
+  Var
+    I, J    : Integer;
+    SiteOff : LongInt;   { offset dans CodeBuf }
+    SiteVA  : LongInt;   { VA absolue du champ 4 octets a patcher }
+    Target  : LongInt;   { VA cible ou valeur DIR32 }
+    Rel32   : LongInt;
+    SymName : TString;
+  Begin
+    For J := 0 To CoffTextRelCnt - 1 Do
+    Begin
+      SiteOff := CoffTextRelVA[J];
+      { VA du champ = base .text + decalage startup + offset dans CodeBuf }
+      SiteVA  := TextVA + PeStartLen + SiteOff;
+      SymName := CoffTextRelSym[J];
+      Target  := 0;
+
+      If CoffTextRelTy[J] = COFF_RELOC_REL32 Then
+      Begin
+        { Appel externe ou runtime : chercher le thunk ou le stub }
+        For I := 0 To ImportCount - 1 Do
+          If ImportTab[I].MangledName = SymName Then
+          Begin
+            Target := PeThunkVA[I];
+            Break;
+          End;
+        If (Target = 0) And (SymName = RS_RT_PFX + 'println') Then
+          Target := PePrintlnVA;
+        If (Target = 0) And (SymName = RS_RT_PFX + 'panic') Then
+          Target := PePanicVA;
+        If Target = 0 Then Continue;
+        { REL32 = cible - (fin du champ) }
+        Rel32 := Target - (SiteVA + 4);
+        CodeBuf[SiteOff]   := LongInt(Rel32) And $FF;
+        CodeBuf[SiteOff+1] := (LongInt(Rel32) Shr 8) And $FF;
+        CodeBuf[SiteOff+2] := (LongInt(Rel32) Shr 16) And $FF;
+        CodeBuf[SiteOff+3] := (LongInt(Rel32) Shr 24) And $FF;
+      End
+      Else { COFF_RELOC_DIR32 }
+      Begin
+        { Chaine constante : _RSK_N }
+        For I := 0 To StringCount - 1 Do
+          If StringTab[I].LabelName = SymName Then
+          Begin
+            Target := PE_IMG_BASE + RdataRva + StringRdataOff[I];
+            Break;
+          End;
+        { Variable statique : _RSV_xxx }
+        If Target = 0 Then
+          For I := 0 To StaticCount - 1 Do
+            If StaticTab[I].MangledName = SymName Then
+            Begin
+              If StaticTab[I].HasInit Then
+                Target := PE_IMG_BASE + DataRva + StaticDataOff[I]
+              Else
+                Target := PE_IMG_BASE + BssRva + StaticDataOff[I];
+              Break;
+            End;
+        If Target = 0 Then Continue;
+        CodeBuf[SiteOff]   := LongInt(Target) And $FF;
+        CodeBuf[SiteOff+1] := (LongInt(Target) Shr 8) And $FF;
+        CodeBuf[SiteOff+2] := (LongInt(Target) Shr 16) And $FF;
+        CodeBuf[SiteOff+3] := (LongInt(Target) Shr 24) And $FF;
+      End;
+    End;
+  End;
+
+Begin { EmitPeExeFile }
+  If Not Opts.EmitExe Then Exit;
+  If ErrorCount <> 0 Then
+  Begin
+    WarnMsg('EXE non produit car le parsing contient des erreurs');
+    Exit;
+  End;
+  ExeName := Opts.OutFile;
+
+  { 1. Garantir les imports runtime }
+  EnsureRuntimeImports;
+
+  { 2. Construire les sections de donnees }
+  BuildRdataSection;
+  BuildDataSection;
+  XResolvePatches;   { resoudre les sauts internes dans CodeBuf }
+
+  { 3. Layout des sections : RVAs et VAs }
+  TextRva  := PE_SEC_ALIGN;
+  { Estimation preliminaire de TextVirtSz pour calculer RdataRva }
+  { StartLen approx = N*6 + ~100 octets de stubs + ~20 pour entry }
+  TextVirtSz  := LongInt(ImportCount) * 6 + 128 + CodeLen;
+  RdataRva    := TextRva + AlignUp(TextVirtSz, PE_SEC_ALIGN);
+  RdataVirtSz := RdataLen;
+  DataRva     := RdataRva + AlignUp(RdataVirtSz, PE_SEC_ALIGN);
+
+  { 4. Construire l import table (necessite DataRva) }
+  BuildImportTable;
+  DataVirtSz := DataLen + PeImpLen;
+  BssRva     := DataRva + AlignUp(DataVirtSz, PE_SEC_ALIGN);
+
+  { 5. Construire le bloc de demarrage (necessite TextRva et les IATVAs) }
+  TextVA   := PE_IMG_BASE + TextRva;
+  RdataVA  := PE_IMG_BASE + RdataRva;
+  DataVA   := PE_IMG_BASE + DataRva;
+  BssVA    := PE_IMG_BASE + BssRva;
+  EntryRva := 0;
+  BuildStartupBlock;
+
+  { 6. Recalculer TextVirtSz avec la vraie taille du startup }
+  TextVirtSz := PeStartLen + CodeLen;
+  RdataRva   := TextRva + AlignUp(TextVirtSz, PE_SEC_ALIGN);
+  DataRva    := RdataRva + AlignUp(RdataVirtSz, PE_SEC_ALIGN);
+  DataVirtSz := DataLen + PeImpLen;
+  BssRva     := DataRva + AlignUp(DataVirtSz, PE_SEC_ALIGN);
+  RdataVA    := PE_IMG_BASE + RdataRva;
+  DataVA     := PE_IMG_BASE + DataRva;
+  BssVA      := PE_IMG_BASE + BssRva;
+
+  { Recalculer les VAs IAT et les VAs thunks avec les vrais RVAs }
+  { (DataRva peut avoir change si TextVirtSz etait sous-estime) }
+  PeImpLen := 0;
+  BuildImportTable;    { reconstruit avec les bons RVAs }
+  DataVirtSz := DataLen + PeImpLen;
+  BssRva     := DataRva + AlignUp(DataVirtSz, PE_SEC_ALIGN);
+  BssVA      := PE_IMG_BASE + BssRva;
+
+  PeStartLen := 0;
+  EntryRva := 0;
+  BuildStartupBlock;   { reconstruit avec les bons PeImpIatVA }
+
+  TextVirtSz := PeStartLen + CodeLen;
+
+  { 7. Patcher CodeBuf pour les relocations PE }
+  PatchCodeBuf;
+
+  { 8. Calculs finaux fichier }
+  TextFileOff  := $200;
+  RdataFileOff := TextFileOff  + AlignUp(TextVirtSz, PE_FILE_ALIGN);
+  DataFileOff  := RdataFileOff + AlignUp(RdataVirtSz, PE_FILE_ALIGN);
+  { SizeOfImage doit couvrir toutes les sections y compris .bss }
+  SizeOfImage := AlignUp(BssRva + AlignUp(BssLen, PE_SEC_ALIGN), PE_SEC_ALIGN);
+  If SizeOfImage <= BssRva Then
+    SizeOfImage := BssRva + PE_SEC_ALIGN;  { minimum : 1 page pour .bss }
+
+  { 9. Ouvrir et ecrire le fichier PE }
+  Assign(PeF, ExeName);
+  {$I-} Rewrite(PeF, 1); {$I+}
+  Rc := IOResult;
+  If Rc <> 0 Then
+  Begin
+    FatalError('impossible de creer le fichier EXE: ' + ExeName);
+    Exit;
+  End;
+
+  { ---- En-tete DOS (64 octets) ---- }
+  PeW($5A4D);          { e_magic: MZ }
+  PeW($0090);          { e_cblp }
+  PeW($0003);          { e_cp }
+  PeW($0000);          { e_crlc }
+  PeW($0004);          { e_cparhdr }
+  PeW($0000);          { e_minalloc }
+  PeW($FFFF);          { e_maxalloc }
+  PeW($0000);          { e_ss }
+  PeW($00B8);          { e_sp }
+  PeW($0000);          { e_csum }
+  PeW($0000);          { e_ip }
+  PeW($0000);          { e_cs }
+  PeW($0040);          { e_lfarlc }
+  PeW($0000);          { e_ovno }
+  PeZeros(32);         { e_res[4] + e_oemid + e_oeminfo + e_res2[10] }
+  PeD($00000040);      { e_lfanew : signature PE a l offset 0x40 }
+
+  { ---- Signature PE (4 octets) ---- }
+  PeD(PE_PE_SIG);
+
+  { ---- COFF File Header (20 octets) ---- }
+  PeW(PE_MACHINE_I386);   { Machine }
+  PeW(4);                  { NumberOfSections: .text .rdata .data .bss }
+  PeD(0);                  { TimeDateStamp }
+  PeD(0);                  { PointerToSymbolTable }
+  PeD(0);                  { NumberOfSymbols }
+  PeW(PE_OPT_SIZE);        { SizeOfOptionalHeader = 224 }
+  PeW($0103);              { Characteristics: RELOCS_STRIPPED | EXECUTABLE | 32BIT }
+
+  { ---- Optional Header PE32 (224 octets) ---- }
+  { Standard fields }
+  PeW(PE_MAGIC_32);
+  PeB(1); PeB(0);          { MajorLinkerVersion / MinorLinkerVersion }
+  PeD(AlignUp(TextVirtSz, PE_FILE_ALIGN));   { SizeOfCode }
+  PeD(AlignUp(RdataVirtSz, PE_FILE_ALIGN)
+    + AlignUp(DataVirtSz,  PE_FILE_ALIGN));  { SizeOfInitializedData }
+  PeD(AlignUp(BssLen, PE_FILE_ALIGN));       { SizeOfUninitializedData }
+  PeD(EntryRva);           { AddressOfEntryPoint (RVA) }
+  PeD(TextRva);            { BaseOfCode (RVA) }
+  PeD(RdataRva);           { BaseOfData (RVA) }
+  { Windows-specific fields }
+  PeD(PE_IMG_BASE);        { ImageBase }
+  PeD(PE_SEC_ALIGN);       { SectionAlignment }
+  PeD(PE_FILE_ALIGN);      { FileAlignment }
+  PeW(4); PeW(0);          { MajorOSVersion / MinorOSVersion }
+  PeW(0); PeW(0);          { MajorImageVersion / MinorImageVersion }
+  PeW(4); PeW(0);          { MajorSubsystemVersion / MinorSubsystemVersion }
+  PeD(0);                  { Win32VersionValue }
+  PeD(SizeOfImage);        { SizeOfImage }
+  PeD($200);               { SizeOfHeaders }
+  PeD(0);                  { CheckSum }
+  PeW(PE_SUBSYS_CUI);      { Subsystem: console }
+  PeW(0);                  { DllCharacteristics }
+  PeD($00100000);          { SizeOfStackReserve = 1 MB }
+  PeD($00001000);          { SizeOfStackCommit  = 4 KB }
+  PeD($00100000);          { SizeOfHeapReserve  = 1 MB }
+  PeD($00001000);          { SizeOfHeapCommit   = 4 KB }
+  PeD(0);                  { LoaderFlags }
+  PeD(16);                 { NumberOfRvaAndSizes }
+  { Data Directories (16 x 8 = 128 octets) }
+  PeD(0); PeD(0);          { [0] Export }
+  PeD(DataRva + DataLen); PeD(40); { [1] Import : RVA de PeImpBuf[0], taille dir }
+  PeD(0); PeD(0);          { [2] Resource }
+  PeD(0); PeD(0);          { [3] Exception }
+  PeD(0); PeD(0);          { [4] Security }
+  PeD(0); PeD(0);          { [5] BaseReloc }
+  PeD(0); PeD(0);          { [6] Debug }
+  PeD(0); PeD(0);          { [7] Architecture }
+  PeD(0); PeD(0);          { [8] GlobalPtr }
+  PeD(0); PeD(0);          { [9] TLS }
+  PeD(0); PeD(0);          { [10] LoadConfig }
+  PeD(0); PeD(0);          { [11] BoundImport }
+  PeD(DataRva + DataLen + 40); { [12] IAT RVA (apres dir) }
+  PeD(LongInt(ImportCount + 1) * 4); { IAT size }
+  PeD(0); PeD(0);          { [13] DelayImport }
+  PeD(0); PeD(0);          { [14] COMdesc }
+  PeD(0); PeD(0);          { [15] Reserved }
+
+  { ---- Section Headers (4 x 40 = 160 octets) ---- }
+
+  { .text }
+  PeSection8('.text');
+  PeD(TextVirtSz);
+  PeD(TextRva);
+  PeD(AlignUp(TextVirtSz, PE_FILE_ALIGN));
+  PeD(TextFileOff);
+  PeD(0); PeD(0); PeW(0); PeW(0);
+  PeD(PE_SCN_TEXT);
+
+  { .rdata }
+  PeSection8('.rdata');
+  PeD(RdataVirtSz);
+  PeD(RdataRva);
+  PeD(AlignUp(RdataVirtSz, PE_FILE_ALIGN));
+  PeD(RdataFileOff);
+  PeD(0); PeD(0); PeW(0); PeW(0);
+  PeD(PE_SCN_RDATA);
+
+  { .data (statics utilisateur + import table) }
+  PeSection8('.data');
+  PeD(DataVirtSz);
+  PeD(DataRva);
+  PeD(AlignUp(DataVirtSz, PE_FILE_ALIGN));
+  PeD(DataFileOff);
+  PeD(0); PeD(0); PeW(0); PeW(0);
+  PeD(PE_SCN_DATA);
+
+  { .bss : VirtualSize = max(BssLen, 4) pour eviter section vide rejetee par le loader }
+  PeSection8('.bss');
+  If BssLen > 0 Then PeD(BssLen) Else PeD(4);
+  PeD(BssRva);
+  PeD(0);   { SizeOfRawData = 0 (non-initialise) }
+  PeD(0);   { PointerToRawData = 0 }
+  PeD(0); PeD(0); PeW(0); PeW(0);
+  PeD(PE_SCN_BSS);
+
+  { Rembourrage pour atteindre TextFileOff = 0x200 }
+  { Octets emis jusqu ici : 64+4+20+224+4*40 = 472 }
+  PePad(472, $200);
+
+  { ---- Donnees des sections ---- }
+
+  { .text = bloc startup + code utilisateur }
+  PeRaw(PeStartBuf, PeStartLen);
+  PeRaw(CodeBuf, CodeLen);
+  PePad(TextVirtSz, AlignUp(TextVirtSz, PE_FILE_ALIGN));
+
+  { .rdata }
+  PeRaw(RdataBuf, RdataLen);
+  PePad(RdataVirtSz, AlignUp(RdataVirtSz, PE_FILE_ALIGN));
+
+  { .data = statics + import table }
+  If DataLen > 0 Then PeRaw(DataBuf, DataLen);
+  If PeImpLen > 0 Then PeRaw(PeImpBuf, PeImpLen);
+  PePad(DataVirtSz, AlignUp(DataVirtSz, PE_FILE_ALIGN));
+
+  { .bss : pas de donnees de fichier (VirtualSize only) }
+
+  Close(PeF);
+
+  If Opts.Verbose Then
+    WriteLn('EXE ecrit     : ', ExeName,
+      '  .text=', TextVirtSz, 'o  .rdata=', RdataVirtSz,
+      'o  .data=', DataVirtSz, 'o  .bss=', BssLen, 'o');
 End;
 
 { ============================================================ }
@@ -4639,6 +6371,7 @@ BEGIN
   DumpImportRelocTables;
   DumpAsmTrace;
   EmitAsmFile;
-  WarnMsg('backend fichier non implemente: TODO 23 et suivantes restent a faire');
+  EmitCoffObjFile;
+  EmitPeExeFile;
   ShowStats;
 END.
