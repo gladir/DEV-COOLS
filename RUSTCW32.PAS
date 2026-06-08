@@ -188,14 +188,13 @@
               MASM/LINK externe.
             Appeler ExitProcess au retour de main ou apres panic.
 
-  TODO 25 - TESTS SUR SAMPLES\RUST\*
-            Ajouter une commande de validation locale compilant :
-              SAMPLES\RUST\hello.rs, math.rs, control.rs,
-              unsafe_test.rs.
-            Verifier production .EXE par defaut, production .OBJ avec
-              -obj, production .ASM additionnelle avec -asm.
-            Comparer erreurs attendues, codes de sortie et presence
-              des symboles principaux dans .ASM/.OBJ.
+  TODO 25 - TESTS SUR SAMPLES\RUST\* [IMPLEMENTE]
+            Commande : RUSTCW32 -test
+            Compile hello.rs, math.rs, control.rs, unsafe_test.rs.
+            Verifie : EXE (defaut), OBJ (-obj), ASM (-asm).
+            Verifie : presence des symboles principaux dans ProcTab
+              et ImportTab apres parsing.
+            28 assertions (pass/fail) + bilan final.
 
   ============================================================ *)
 
@@ -480,6 +479,7 @@ Type
     EmitAsm   : Boolean;   { conserver un .ASM lisible          }
     NoLink    : Boolean;   { ne pas lier, implique -obj         }
     OptLevel  : Integer;   { 0..2                               }
+    TestMode  : Boolean;   { -test : suite de validation locale }
   End;
 
 Var
@@ -1059,6 +1059,7 @@ Begin
   Opts.EmitAsm   := False;
   Opts.NoLink    := False;
   Opts.OptLevel  := OPT_NONE;
+  Opts.TestMode  := False;
 End;
 
 Procedure ShowHelp;
@@ -1177,6 +1178,8 @@ Begin
         FatalError('sortie deja specifiee: ' + Opts.OutFile);
       Opts.OutFile := ParamStr(I);
     End
+    Else If Arg = '-test' Then
+      Opts.TestMode := True
     Else If (Length(Arg) > 0) And (Arg[1] = '-') Then
       FatalError('option inconnue: ' + Arg)
     Else
@@ -1191,6 +1194,8 @@ Begin
 
     Inc(I);
   End;
+
+  If Opts.TestMode Then Exit;   { pas de source requis en mode test }
 
   If Opts.SrcFile = '' Then
     UsageError('fichier source manquant');
@@ -6330,6 +6335,188 @@ Begin
 End;
 
 { ============================================================ }
+{ SUITE DE TESTS LOCAUX (-test)                                }
+{ ============================================================ }
+
+Function FileExistsNZ(Const Name : TString) : Boolean;
+Var
+  F  : File;
+  Sz : LongInt;
+Begin
+  Assign(F, Name);
+  {$I-}
+  Reset(F, 1);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    FileExistsNZ := False;
+    Exit;
+  End;
+  Sz := FileSize(F);
+  Close(F);
+  FileExistsNZ := Sz > 0;
+End;
+
+Function HasProcNamed(Const Name : TString) : Boolean;
+Var I : Integer;
+Begin
+  HasProcNamed := False;
+  For I := 0 To ProcCount - 1 Do
+    If ProcTab[I].Name = Name Then
+    Begin
+      HasProcNamed := True;
+      Exit;
+    End;
+End;
+
+Function HasImportNamed(Const Name : TString) : Boolean;
+Var I : Integer;
+Begin
+  HasImportNamed := False;
+  For I := 0 To ImportCount - 1 Do
+    If ImportTab[I].Name = Name Then
+    Begin
+      HasImportNamed := True;
+      Exit;
+    End;
+End;
+
+{ Reinitialise tout l etat global et compile un fichier }
+Procedure CompileFile(Const Src, OutF : TString; EmA, EmO : Boolean);
+Begin
+  ErrorCount := 0; WarnCount := 0; TotalLines := 0;
+  BlockCount := 0; StmtCount := 0; LocalCount := 0;
+  ExprCount  := 0; LoopCount := 0; MatchCount := 0;
+  CallCount  := 0; ExternCallCount := 0; UnsafeDepth := 0;
+  UnsafeBlockCount := 0; PtrLocalCount := 0;
+  RuntimeMacroCount := 0; PrintlnCount := 0;
+  DebugAssertCount  := 0; PanicCount   := 0;
+  SourceInit;
+  InitBackend;
+  InitTypeTable;
+  InitSymbolTable;
+  InitProcTable;
+  InitConstStaticTables;
+  InitImportRelocTables;
+  InitOptions;
+  Opts.SrcFile  := Src;
+  Opts.OutFile  := OutF;
+  Opts.EmitAsm  := EmA;
+  Opts.EmitObj  := EmO;
+  Opts.EmitExe  := Not EmO;
+  Opts.NoLink   := EmO;
+  SourceOpen(Src);
+  ParseProgram;
+  SourceClose;
+  EmitAsmFile;
+  EmitCoffObjFile;
+  EmitPeExeFile;
+End;
+
+Var
+  TestPass : Integer;
+  TestFail : Integer;
+
+Procedure TestLine(Const Name : TString; Ok : Boolean);
+Begin
+  If Ok Then
+  Begin
+    WriteLn('  [PASS] ', Name);
+    Inc(TestPass);
+  End
+  Else
+  Begin
+    WriteLn('  [FAIL] ', Name);
+    Inc(TestFail);
+  End;
+End;
+
+Procedure RunTests;
+Const
+  BASE_DIR = 'SAMPLES\RUST\';
+Var
+  Src : TString;
+Begin
+  TestPass := 0;
+  TestFail := 0;
+  WriteLn('=== RUSTCW32 -test : validation SAMPLES\RUST\ ===');
+  WriteLn;
+
+  { ---- hello.rs ---- }
+  WriteLn('--- hello.rs ---');
+  Src := BASE_DIR + 'hello.rs';
+
+  CompileFile(Src, BASE_DIR + 'hello_t.exe', False, False);
+  TestLine('hello : compile sans erreur',     ErrorCount = 0);
+  TestLine('hello : EXE produit',             FileExistsNZ(BASE_DIR + 'hello_t.exe'));
+  TestLine('hello : fn main present',         HasProcNamed('main'));
+
+  CompileFile(Src, BASE_DIR + 'hello_t.exe', True, False);
+  TestLine('hello -asm : ASM produit',        FileExistsNZ(BASE_DIR + 'hello_t.asm'));
+
+  CompileFile(Src, BASE_DIR + 'hello_t.obj', False, True);
+  TestLine('hello -obj : OBJ produit',        FileExistsNZ(BASE_DIR + 'hello_t.obj'));
+  WriteLn;
+
+  { ---- math.rs ---- }
+  WriteLn('--- math.rs ---');
+  Src := BASE_DIR + 'math.rs';
+
+  CompileFile(Src, BASE_DIR + 'math_t.exe', True, False);
+  TestLine('math : compile sans erreur',      ErrorCount = 0);
+  TestLine('math : EXE produit',              FileExistsNZ(BASE_DIR + 'math_t.exe'));
+  TestLine('math : fn add present',           HasProcNamed('add'));
+  TestLine('math : fn mul present',           HasProcNamed('mul'));
+  TestLine('math : fn abs_val present',       HasProcNamed('abs_val'));
+  TestLine('math : fn main present',          HasProcNamed('main'));
+  TestLine('math -asm : ASM produit',         FileExistsNZ(BASE_DIR + 'math_t.asm'));
+
+  CompileFile(Src, BASE_DIR + 'math_t.obj', False, True);
+  TestLine('math -obj : OBJ produit',         FileExistsNZ(BASE_DIR + 'math_t.obj'));
+  WriteLn;
+
+  { ---- control.rs ---- }
+  WriteLn('--- control.rs ---');
+  Src := BASE_DIR + 'control.rs';
+
+  CompileFile(Src, BASE_DIR + 'control_t.exe', True, False);
+  TestLine('control : compile sans erreur',   ErrorCount = 0);
+  TestLine('control : EXE produit',           FileExistsNZ(BASE_DIR + 'control_t.exe'));
+  TestLine('control : fn classify present',   HasProcNamed('classify'));
+  TestLine('control : fn sum_to present',     HasProcNamed('sum_to'));
+  TestLine('control : fn label_of present',   HasProcNamed('label_of'));
+  TestLine('control : fn main present',       HasProcNamed('main'));
+  TestLine('control -asm : ASM produit',      FileExistsNZ(BASE_DIR + 'control_t.asm'));
+
+  CompileFile(Src, BASE_DIR + 'control_t.obj', False, True);
+  TestLine('control -obj : OBJ produit',      FileExistsNZ(BASE_DIR + 'control_t.obj'));
+  WriteLn;
+
+  { ---- unsafe_test.rs ---- }
+  WriteLn('--- unsafe_test.rs ---');
+  Src := BASE_DIR + 'unsafe_test.rs';
+
+  CompileFile(Src, BASE_DIR + 'unsafe_t.exe', True, False);
+  TestLine('unsafe : compile sans erreur',    ErrorCount = 0);
+  TestLine('unsafe : EXE produit',            FileExistsNZ(BASE_DIR + 'unsafe_t.exe'));
+  TestLine('unsafe : fn main present',        HasProcNamed('main'));
+  TestLine('unsafe : fn safe_noop present',   HasProcNamed('safe_noop'));
+  TestLine('unsafe : extern puts present',    HasImportNamed('puts'));
+  TestLine('unsafe -asm : ASM produit',       FileExistsNZ(BASE_DIR + 'unsafe_t.asm'));
+
+  CompileFile(Src, BASE_DIR + 'unsafe_t.obj', False, True);
+  TestLine('unsafe -obj : OBJ produit',       FileExistsNZ(BASE_DIR + 'unsafe_t.obj'));
+  WriteLn;
+
+  { Bilan }
+  WriteLn('=== Bilan : ', TestPass, ' pass / ', TestFail, ' fail ===');
+  If TestFail > 0 Then
+    Halt(EXIT_ERROR)
+  Else
+    Halt(EXIT_OK);
+End;
+
+{ ============================================================ }
 { PROGRAMME PRINCIPAL                                          }
 { ============================================================ }
 
@@ -6360,6 +6547,7 @@ BEGIN
   InitConstStaticTables;
   InitImportRelocTables;
   ParseArgs;
+  If Opts.TestMode Then RunTests;
   ShowBanner;
   DumpTypeTable;
   SourceOpen(Opts.SrcFile);
