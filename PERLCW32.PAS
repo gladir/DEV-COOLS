@@ -3647,6 +3647,389 @@ Begin
   ParseExpr := ParseOrLo;
 End;
 
+{ ============================================================ }
+{ TODO 07 : Parseur de statements                              }
+{ ============================================================ }
+
+{ Scanne SrcBuf a partir de LexPos (apres '(' deja consomme) }
+{ Retourne vrai si on trouve un ';' a profondeur 0 -> for C   }
+Function HasSemiAtDepth1: Boolean;
+Var I, D: Integer;
+Begin
+  HasSemiAtDepth1 := False;
+  D := 0;
+  I := LexPos;
+  While I <= SrcLen Do Begin
+    Case SrcBuf[I] Of
+      '(': Inc(D);
+      ')': Begin
+             If D = 0 Then Exit;
+             Dec(D);
+           End;
+      ';': If D = 0 Then Begin
+             HasSemiAtDepth1 := True;
+             Exit;
+           End;
+      '#': While (I <= SrcLen) And (SrcBuf[I] <> #10) Do Inc(I);
+    End;
+    Inc(I);
+  End;
+End;
+
+{ Forward declarations }
+Function ParseStatement: Integer; Forward;
+Function ParseStatementList: Integer; Forward;
+Function ParseBlock: Integer; Forward;
+
+Function ParseBlock: Integer;
+Var N: Integer;
+Begin
+  Expect(Ord('{'));
+  EnterScope(SCK_BLOCK);
+  N := ParseStatementList;
+  LeaveScope;
+  Expect(Ord('}'));
+  ParseBlock := N;
+End;
+
+Function ParseStatementList: Integer;
+Var Head, S: Integer;
+Begin
+  Head := NewNode(NK_STMT_LIST, 0, '');
+  While (CurTokType <> TOK_EOF) And (CurTokType <> Ord('}')) Do Begin
+    S := ParseStatement;
+    If S <> 0 Then AppendArg(Head, S);
+  End;
+  ParseStatementList := Head;
+End;
+
+Function ParseStatement: Integer;
+Var N, Cond, Body, Init, IncN, ElseN, Prev3, VarN, ListN: Integer;
+    SubName: String;
+    IsCSuf: Boolean;
+Begin
+  ParseStatement := 0;
+
+  { Skip bare semicolons }
+  While CurTokType = Ord(';') Do LexNextToken;
+  If (CurTokType = TOK_EOF) Or (CurTokType = Ord('}')) Then Exit;
+
+  { if / unless }
+  If (CurTokType = KW_IF) Or (CurTokType = KW_UNLESS) Then Begin
+    N := NewNode(0, CurTokType, '');
+    If CurTokType = KW_IF Then AstTable[N].Kind := NK_IF
+    Else AstTable[N].Kind := NK_UNLESS;
+    LexNextToken;
+    Expect(Ord('('));
+    Cond := ParseExpr;
+    Expect(Ord(')'));
+    Body := ParseBlock;
+    AstTable[N].Left  := Cond;
+    AstTable[N].Right := Body;
+    { elsif / else chain }
+    ElseN := 0;
+    Prev3 := N;
+    While CurTokType = KW_ELSIF Do Begin
+      LexNextToken;
+      Expect(Ord('('));
+      Cond := ParseExpr;
+      Expect(Ord(')'));
+      Body := ParseBlock;
+      ElseN := NewNode(NK_IF, KW_ELSIF, '');
+      AstTable[ElseN].Left  := Cond;
+      AstTable[ElseN].Right := Body;
+      AstTable[Prev3].Third := ElseN;
+      Prev3 := ElseN;
+    End;
+    If CurTokType = KW_ELSE Then Begin
+      LexNextToken;
+      Body := ParseBlock;
+      ElseN := NewNode(NK_STMT_LIST, 0, '');
+      AstTable[ElseN].Left := Body;
+      AstTable[Prev3].Third := ElseN;
+    End;
+    ParseStatement := N;
+    Exit;
+  End;
+
+  { while / until }
+  If (CurTokType = KW_WHILE) Or (CurTokType = KW_UNTIL) Then Begin
+    If CurTokType = KW_WHILE Then N := NewNode(NK_WHILE, KW_WHILE, '')
+    Else N := NewNode(NK_UNTIL, KW_UNTIL, '');
+    LexNextToken;
+    Expect(Ord('('));
+    Cond := ParseExpr;
+    Expect(Ord(')'));
+    Body := ParseBlock;
+    AstTable[N].Left  := Cond;
+    AstTable[N].Right := Body;
+    ParseStatement := N;
+    Exit;
+  End;
+
+  { do BLOCK while/until }
+  If CurTokType = KW_DO Then Begin
+    LexNextToken;
+    If CurTokType = Ord('{') Then Begin
+      Body := ParseBlock;
+      If (CurTokType = KW_WHILE) Or (CurTokType = KW_UNTIL) Then Begin
+        IsCSuf := (CurTokType = KW_UNTIL);
+        LexNextToken;
+        Expect(Ord('('));
+        Cond := ParseExpr;
+        Expect(Ord(')'));
+        N := NewNode(NK_DO_WHILE, 0, '');
+        AstTable[N].Left  := Body;
+        AstTable[N].Right := Cond;
+        If IsCSuf Then AstTable[N].Tok := KW_UNTIL;
+        If CurTokType = Ord(';') Then LexNextToken;
+        ParseStatement := N;
+      End Else Begin
+        If CurTokType = Ord(';') Then LexNextToken;
+        ParseStatement := Body;
+      End;
+      Exit;
+    End Else Begin
+      { do EXPR - treated as expression statement }
+      N := ParsePrimary;   { re-entry won't work; fall through to expr below }
+      If CurTokType = Ord(';') Then LexNextToken;
+      ParseStatement := N;
+      Exit;
+    End;
+  End;
+
+  { for / foreach }
+  If (CurTokType = KW_FOR) Or (CurTokType = KW_FOREACH) Then Begin
+    LexNextToken;
+    If CurTokType = Ord('(') Then Begin
+      { C-style or foreach — peek for semicolon }
+      LexNextToken;  { consume '(' }
+      If HasSemiAtDepth1 Then Begin
+        { for (init; cond; incr) body }
+        If CurTokType = Ord(';') Then Init := 0
+        Else Init := ParseExpr;
+        Expect(Ord(';'));
+        If CurTokType = Ord(';') Then Cond := 0
+        Else Cond := ParseExpr;
+        Expect(Ord(';'));
+        If CurTokType = Ord(')') Then IncN := 0
+        Else IncN := ParseExpr;
+        Expect(Ord(')'));
+        Body := ParseBlock;
+        N := NewNode(NK_FOR_C, KW_FOR, '');
+        AstTable[N].Left  := Init;
+        AstTable[N].Right := Cond;
+        AstTable[N].Third := IncN;
+        AstTable[N].FirstChild := Body;
+        ParseStatement := N;
+        Exit;
+      End Else Begin
+        { foreach (LIST) or foreach my $var (LIST) }
+        VarN := 0;
+        If (CurTokType = KW_MY) Or (CurTokType = KW_OUR) Or
+           (CurTokType = KW_LOCAL) Then Begin
+          VarN := ParseVarDecl(CurTokType);
+        End Else If CurTokType = TOK_SIGIL_SCALAR Then Begin
+          VarN := ParsePrimary;
+        End;
+        ListN := ParseExpr;
+        Expect(Ord(')'));
+        Body := ParseBlock;
+        N := NewNode(NK_FOREACH, KW_FOREACH, '');
+        AstTable[N].Left      := VarN;
+        AstTable[N].Right     := ListN;
+        AstTable[N].FirstChild := Body;
+        ParseStatement := N;
+        Exit;
+      End;
+    End Else Begin
+      { foreach without parens (rare bare form) - treat as expr stmt }
+    End;
+  End;
+
+  { return }
+  If CurTokType = KW_RETURN Then Begin
+    LexNextToken;
+    N := NewNode(NK_RETURN, KW_RETURN, '');
+    If (CurTokType <> Ord(';')) And (CurTokType <> TOK_EOF) And
+       (CurTokType <> Ord('}')) Then Begin
+      AstTable[N].Left := ParseExpr;
+    End;
+    If CurTokType = Ord(';') Then LexNextToken;
+    ParseStatement := N;
+    Exit;
+  End;
+
+  { last / next / redo }
+  If (CurTokType = KW_LAST) Or (CurTokType = KW_NEXT) Or
+     (CurTokType = KW_REDO) Then Begin
+    If CurTokType = KW_LAST Then N := NewNode(NK_LAST, KW_LAST, '')
+    Else If CurTokType = KW_NEXT Then N := NewNode(NK_NEXT, KW_NEXT, '')
+    Else N := NewNode(NK_REDO, KW_REDO, '');
+    LexNextToken;
+    { optional label }
+    If CurTokType = TOK_IDENT Then Begin
+      AstTable[N].Text := CurTokStr;
+      LexNextToken;
+    End;
+    If CurTokType = Ord(';') Then LexNextToken;
+    ParseStatement := N;
+    Exit;
+  End;
+
+  { sub NAME BLOCK }
+  If CurTokType = KW_SUB Then Begin
+    LexNextToken;
+    SubName := '';
+    If CurTokType = TOK_IDENT Then Begin
+      SubName := CurTokStr; LexNextToken;
+    End;
+    N := NewNode(NK_SUB_DEF, KW_SUB, SubName);
+    If SubName <> '' Then
+      AstTable[N].SymRef := AddSym(SubName, SK_CODE, SCOPE_PACKAGE, 0);
+    EnterScope(SCK_SUB);
+    AstTable[N].Left := ParseBlock;
+    LeaveScope;
+    If CurTokType = Ord(';') Then LexNextToken;
+    ParseStatement := N;
+    Exit;
+  End;
+
+  { use MODULE }
+  If CurTokType = KW_USE Then Begin
+    LexNextToken;
+    N := NewNode(NK_USE, KW_USE, '');
+    If CurTokType = TOK_IDENT Then Begin
+      AstTable[N].Text := CurTokStr; LexNextToken;
+    End;
+    While (CurTokType <> Ord(';')) And (CurTokType <> TOK_EOF) Do
+      LexNextToken;
+    If CurTokType = Ord(';') Then LexNextToken;
+    ParseStatement := N;
+    Exit;
+  End;
+
+  { package NAME }
+  If CurTokType = KW_PACKAGE Then Begin
+    LexNextToken;
+    N := NewNode(NK_PACKAGE, KW_PACKAGE, '');
+    If CurTokType = TOK_IDENT Then Begin
+      AstTable[N].Text := CurTokStr;
+      CurrentPkg := CurTokStr;
+      LexNextToken;
+    End;
+    If CurTokType = Ord(';') Then LexNextToken;
+    ParseStatement := N;
+    Exit;
+  End;
+
+  { BEGIN-BLOCK }
+  If CurTokType = KW_BEGIN Then Begin
+    LexNextToken;
+    N := NewNode(NK_BEGIN_HOOK, KW_BEGIN, '');
+    AstTable[N].Left := ParseBlock;
+    ParseStatement := N;
+    Exit;
+  End;
+
+  { END-BLOCK }
+  If CurTokType = KW_END Then Begin
+    LexNextToken;
+    N := NewNode(NK_END_HOOK, KW_END, '');
+    AstTable[N].Left := ParseBlock;
+    ParseStatement := N;
+    Exit;
+  End;
+
+  { Bare block }
+  If CurTokType = Ord('{') Then Begin
+    N := ParseBlock;
+    ParseStatement := N;
+    Exit;
+  End;
+
+  { Expression statement (y compris my/our/local, appels, affectations) }
+  N := ParseExpr;
+  { Suffix modifiers }
+  If IsModifierKW(CurTokType) Then Begin
+    Cond := 0;
+    VarN := 0;
+    Case CurTokType Of
+      KW_IF: Begin
+               LexNextToken;
+               Cond := ParseExpr;
+               Body := N;
+               N := NewNode(NK_IF, KW_IF, '');
+               AstTable[N].Left  := Cond;
+               AstTable[N].Right := Body;
+             End;
+      KW_UNLESS: Begin
+               LexNextToken;
+               Cond := ParseExpr;
+               Body := N;
+               N := NewNode(NK_UNLESS, KW_UNLESS, '');
+               AstTable[N].Left  := Cond;
+               AstTable[N].Right := Body;
+             End;
+      KW_WHILE: Begin
+               LexNextToken;
+               Cond := ParseExpr;
+               Body := N;
+               N := NewNode(NK_WHILE, KW_WHILE, '');
+               AstTable[N].Left  := Cond;
+               AstTable[N].Right := Body;
+               AstTable[N].Third := 1;  { suffix marker }
+             End;
+      KW_UNTIL: Begin
+               LexNextToken;
+               Cond := ParseExpr;
+               Body := N;
+               N := NewNode(NK_UNTIL, KW_UNTIL, '');
+               AstTable[N].Left  := Cond;
+               AstTable[N].Right := Body;
+               AstTable[N].Third := 1;
+             End;
+      KW_FOR, KW_FOREACH: Begin
+               LexNextToken;
+               { optionnel: my $var }
+               VarN := 0;
+               If (CurTokType = KW_MY) Or (CurTokType = KW_OUR) Then
+                 VarN := ParseVarDecl(CurTokType)
+               Else If CurTokType = TOK_SIGIL_SCALAR Then
+                 VarN := ParsePrimary;
+               If CurTokType = Ord('(') Then Begin
+                 LexNextToken;
+                 ListN := ParseExpr;
+                 Expect(Ord(')'));
+               End Else
+                 ListN := ParseExpr;
+               Body := N;
+               N := NewNode(NK_FOREACH, KW_FOREACH, '');
+               AstTable[N].Left      := VarN;
+               AstTable[N].Right     := ListN;
+               AstTable[N].FirstChild := Body;
+               AstTable[N].Third     := 1;  { suffix marker }
+             End;
+    End;
+  End;
+  If CurTokType = Ord(';') Then LexNextToken;
+  ParseStatement := N;
+End;
+
+Function ParseProgram: Integer;
+Var Root, S: Integer;
+Begin
+  InitAST;
+  InitSymTable;
+  LexNextToken;
+  Root := NewNode(NK_STMT_LIST, 0, '');
+  While CurTokType <> TOK_EOF Do Begin
+    S := ParseStatement;
+    If S <> 0 Then AppendArg(Root, S);
+  End;
+  ParseProgram := Root;
+End;
+
 BEGIN
   ParseArgs;
   WriteLn('PERLCW32 v', PERLCW32_VERSION, ' (', PERLCW32_DATE,
