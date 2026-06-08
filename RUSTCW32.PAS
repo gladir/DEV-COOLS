@@ -464,6 +464,7 @@ Type
     IsConst  : Boolean;
     IntValue : LongInt;
     IsLValue : Boolean;
+    SymIdx   : Integer;   { >= 0 uniquement pour EK_VAR }
   End;
 
   TExprArgArray = Array[0..MAX_PARAM - 1] Of TExprRec;
@@ -2440,6 +2441,66 @@ Begin
   BinD(0);
 End;
 
+{ MOVSX EAX, WORD PTR [EBP+disp] — 0F BF ModRM }
+Procedure XMovsxEAXEBPdispW(Disp : LongInt);
+Begin
+  BinB($0F); BinB($BF);
+  XModRM_EBP(REG_EAX, Disp);
+End;
+
+{ MOVZX EAX, WORD PTR [EBP+disp] — 0F B7 ModRM }
+Procedure XMovzxEAXEBPdispW(Disp : LongInt);
+Begin
+  BinB($0F); BinB($B7);
+  XModRM_EBP(REG_EAX, Disp);
+End;
+
+{ MOVSX EAX, BYTE PTR [EBP+disp] — 0F BE ModRM }
+Procedure XMovsxEAXEBPdispB(Disp : LongInt);
+Begin
+  BinB($0F); BinB($BE);
+  XModRM_EBP(REG_EAX, Disp);
+End;
+
+{ MOVZX EAX, BYTE PTR [EBP+disp] — 0F B6 ModRM }
+Procedure XMovzxEAXEBPdispB(Disp : LongInt);
+Begin
+  BinB($0F); BinB($B6);
+  XModRM_EBP(REG_EAX, Disp);
+End;
+
+{ MOVSX EAX, WORD PTR [symbol] — 0F BF 05 addr32 }
+Procedure XMovsxEAXStaticW(Const SymName : TString);
+Begin
+  BinB($0F); BinB($BF); BinB($05);
+  XAddTextReloc(SymName, COFF_RELOC_DIR32);
+  BinD(0);
+End;
+
+{ MOVZX EAX, WORD PTR [symbol] — 0F B7 05 addr32 }
+Procedure XMovzxEAXStaticW(Const SymName : TString);
+Begin
+  BinB($0F); BinB($B7); BinB($05);
+  XAddTextReloc(SymName, COFF_RELOC_DIR32);
+  BinD(0);
+End;
+
+{ MOVSX EAX, BYTE PTR [symbol] — 0F BE 05 addr32 }
+Procedure XMovsxEAXStaticB(Const SymName : TString);
+Begin
+  BinB($0F); BinB($BE); BinB($05);
+  XAddTextReloc(SymName, COFF_RELOC_DIR32);
+  BinD(0);
+End;
+
+{ MOVZX EAX, BYTE PTR [symbol] — 0F B6 05 addr32 }
+Procedure XMovzxEAXStaticB(Const SymName : TString);
+Begin
+  BinB($0F); BinB($B6); BinB($05);
+  XAddTextReloc(SymName, COFF_RELOC_DIR32);
+  BinD(0);
+End;
+
 { SUB ESP, imm32 (81 EC) }
 Procedure XSubESPImm32(V : LongInt);
 Begin
@@ -2648,6 +2709,86 @@ Begin
   End;
 End;
 
+{ Charge le symbole SI dans EAX avec extension signe/zero selon le type }
+Procedure EmitLoadSym(SI : Integer);
+Var
+  TI   : Integer;
+  Disp : LongInt;
+  Lbl  : TString;
+  IsStk : Boolean;
+  SA   : TString;  { adresse pile inline }
+Begin
+  If (SI < 0) Or (SI >= SymCount) Then Exit;
+  TI := SymTab[SI].TypeIdx;
+  IsStk := (SymTab[SI].Cat = SC_LOCAL) Or (SymTab[SI].Cat = SC_PARAM);
+  If IsStk Then
+  Begin
+    Disp := SymTab[SI].Offset;
+    { StackAddr inline }
+    If Disp < 0 Then SA := '[EBP-' + IntToStr_(-Disp) + ']'
+    Else If Disp > 0 Then SA := '[EBP+' + IntToStr_(Disp) + ']'
+    Else SA := '[EBP]';
+    Case TypeRegClass(TI) Of
+      RC_BYTE :
+        If TypeIsSigned(TI) Then
+        Begin
+          EmitAsm('  MOVSX EAX, BYTE PTR ' + SA);
+          XMovsxEAXEBPdispB(Disp);
+        End
+        Else
+        Begin
+          EmitAsm('  MOVZX EAX, BYTE PTR ' + SA);
+          XMovzxEAXEBPdispB(Disp);
+        End;
+      RC_WORD :
+        If TypeIsSigned(TI) Then
+        Begin
+          EmitAsm('  MOVSX EAX, WORD PTR ' + SA);
+          XMovsxEAXEBPdispW(Disp);
+        End
+        Else
+        Begin
+          EmitAsm('  MOVZX EAX, WORD PTR ' + SA);
+          XMovzxEAXEBPdispW(Disp);
+        End;
+    Else
+      EmitAsm('  MOV EAX, DWORD PTR ' + SA);
+      XMovREBPdisp(REG_EAX, Disp);
+    End;
+  End
+  Else If SymTab[SI].Cat = SC_STATIC Then
+  Begin
+    Lbl := SymTab[SI].MangledName;
+    Case TypeRegClass(TI) Of
+      RC_BYTE :
+        If TypeIsSigned(TI) Then
+        Begin
+          EmitAsm('  MOVSX EAX, BYTE PTR [' + Lbl + ']');
+          XMovsxEAXStaticB(Lbl);
+        End
+        Else
+        Begin
+          EmitAsm('  MOVZX EAX, BYTE PTR [' + Lbl + ']');
+          XMovzxEAXStaticB(Lbl);
+        End;
+      RC_WORD :
+        If TypeIsSigned(TI) Then
+        Begin
+          EmitAsm('  MOVSX EAX, WORD PTR [' + Lbl + ']');
+          XMovsxEAXStaticW(Lbl);
+        End
+        Else
+        Begin
+          EmitAsm('  MOVZX EAX, WORD PTR [' + Lbl + ']');
+          XMovzxEAXStaticW(Lbl);
+        End;
+    Else
+      EmitAsm('  MOV EAX, [' + Lbl + ']');
+      XMovEAXStatic(Lbl);
+    End;
+  End;
+End;
+
 Procedure EmitExprLoad(Const E : TExprRec; Const RegName : TString);
 Begin
   If E.Kind = EK_LITERAL Then
@@ -2656,8 +2797,13 @@ Begin
     XMovRI(REG_EAX, E.IntValue);
   End
   Else If E.Kind = EK_VAR Then
-    EmitAsm('  ; charger variable dans ' + RegName + ' (' +
-      TypeAsmWidth(E.TypeIdx) + ')')
+  Begin
+    If E.SymIdx >= 0 Then
+      EmitLoadSym(E.SymIdx)
+    Else
+      EmitAsm('  ; charger variable dans ' + RegName + ' (' +
+        TypeAsmWidth(E.TypeIdx) + ')');
+  End
   Else If E.Kind = EK_CALL Then
     EmitAsm('  ; resultat appel deja dans EAX')
   Else
@@ -4393,7 +4539,16 @@ Begin
   MakeExpr.IsConst := IsConst;
   MakeExpr.IntValue := IntValue;
   MakeExpr.IsLValue := IsLValue;
+  MakeExpr.SymIdx := -1;
   Inc(ExprCount);
+End;
+
+{ Cree une expression de variable avec son SymIdx pour le chargement }
+Function MakeVarExpr(SI, TypeIdx : Integer; IsConst : Boolean;
+  IntValue : LongInt) : TExprRec;
+Begin
+  MakeVarExpr := MakeExpr(EK_VAR, TypeIdx, IsConst, IntValue, True);
+  MakeVarExpr.SymIdx := SI;
 End;
 
 Function UnknownExpr : TExprRec;
@@ -4579,9 +4734,9 @@ Begin
     If SymIdx >= 0 Then
     Begin
       If ConstValueByName(Name, Val) Then
-        R := MakeExpr(EK_VAR, SymTab[SymIdx].TypeIdx, True, Val, True)
+        R := MakeVarExpr(SymIdx, SymTab[SymIdx].TypeIdx, True, Val)
       Else
-        R := MakeExpr(EK_VAR, SymTab[SymIdx].TypeIdx, False, 0, True);
+        R := MakeVarExpr(SymIdx, SymTab[SymIdx].TypeIdx, False, 0);
       ParsePrimary := R;
       Exit;
     End;
@@ -5651,7 +5806,7 @@ Begin
   End;
 
   EmitLabel(TestLabel);
-  IterExpr := MakeExpr(EK_VAR, TypeIdx, False, 0, True);
+  IterExpr := MakeVarExpr(SymIdx, TypeIdx, False, 0);
   IsC := False;
   V := 0;
   If IterExpr.IsConst And EndExpr.IsConst Then
@@ -5668,7 +5823,7 @@ Begin
     EmitLabel(IncLabel);
     If SymIdx >= 0 Then
     Begin
-      IterExpr := MakeExpr(EK_VAR, TypeIdx, False, 0, True);
+      IterExpr := MakeVarExpr(SymIdx, TypeIdx, False, 0);
       OneExpr := MakeExpr(EK_LITERAL, TypeIdx, True, 1, False);
       IsC := False;
       V := 0;
