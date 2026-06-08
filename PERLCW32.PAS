@@ -918,6 +918,7 @@ Const
   NK_REF_OP     = 35;
   NK_SLICE      = 36;
   NK_EMPTY      = 37;
+  NK_CODE_BLOCK = 38;   { bloc expression pour sort/grep/map }
 
   { Flags de chaines }
   STRF_SIMPLE   = $0001;   { 'single quoted' }
@@ -1046,6 +1047,7 @@ Type
     NextSibling: Integer;
     SymRef:      Integer;
     Line:        Integer;
+    Ctx:         Integer;   { CTX_VOID / CTX_SCALAR / CTX_LIST / CTX_BOOL }
   End;
 
   TASTTable = Array[1..MAX_AST] Of TASTNode;
@@ -3071,6 +3073,13 @@ Function ParsePow:     Integer; Forward;
 Function ParseUnary:   Integer; Forward;
 Function ParsePostfix: Integer; Forward;
 Function ParsePrimary: Integer; Forward;
+{ TODO 07/08/09/11 cross-section forwards }
+Function ParseBlock:            Integer; Forward;
+Function ScanProtoStr:          String;  Forward;
+Procedure RegisterSubParams;    Forward;
+Function ParseCodeBlock:        Integer; Forward;
+Function ParseSortGrepMap(KwTok: Integer; S: String): Integer; Forward;
+Procedure PropagateCtx(Node, InCtx: Integer); Forward;
 
 Function NewNode(K, Tok: Integer; Txt: String): Integer;
 Var N: Integer;
@@ -3088,6 +3097,7 @@ Begin
   AstTable[N].NextSibling := 0;
   AstTable[N].SymRef      := 0;
   AstTable[N].Line        := CurTokLine;
+  AstTable[N].Ctx         := CTX_VOID;
   NewNode := N;
 End;
 
@@ -3244,8 +3254,8 @@ End;
 
 Function ParsePrimary: Integer;
 Var
-  N, VarN, IdxN, ArgList, ListN: Integer;
-  S, VName: String;
+  N, VarN, IdxN, ArgList, ListN, ProtoN: Integer;
+  S, VName, ProtoStr: String;
   T, Sigil: Integer;
 Begin
   T := CurTokType;
@@ -3291,11 +3301,22 @@ Begin
       LexNextToken; IdxN := ParseExpr; Expect(Ord(']'));
       N := NewNode(NK_SLICE, Ord('['), '');
       AstTable[N].Left := VarN; AstTable[N].Right := IdxN;
+    End Else If CurTokType = Ord('{') Then Begin
+      { tranche de hash : @h[...] }
+      LexNextToken; IdxN := ParseExpr; Expect(Ord('}'));
+      N := NewNode(NK_SLICE, Ord('{'), '');
+      AstTable[N].Left := VarN; AstTable[N].Right := IdxN;
     End Else N := VarN;
   End Else If T = TOK_SIGIL_HASH Then Begin
     VName := Copy(CurTokStr, 2, Length(CurTokStr)); LexNextToken;
-    N := NewNode(NK_VAR, T, VName);
-    AstTable[N].SymRef := FindSym(VName, SK_HASH);
+    VarN  := NewNode(NK_VAR, T, VName);
+    AstTable[VarN].SymRef := FindSym(VName, SK_HASH);
+    If CurTokType = Ord('{') Then Begin
+      { tranche hash cle+valeur }
+      LexNextToken; IdxN := ParseExpr; Expect(Ord('}'));
+      N := NewNode(NK_SLICE, Ord('{'), '');
+      AstTable[N].Left := VarN; AstTable[N].Right := IdxN;
+    End Else N := VarN;
   End Else If T = TOK_SIGIL_CODE Then Begin
     VName := Copy(CurTokStr, 2, Length(CurTokStr)); LexNextToken;
     N := NewNode(NK_CALL, T, VName);
@@ -3347,10 +3368,12 @@ Begin
       N := NewNode(NK_LITERAL, TOK_IDENT, S);
   End Else If (T = KW_PRINT) Or (T = KW_SAY) Or (T = KW_PRINTF) Then Begin
     S := KeywordName(T); LexNextToken; N := ParseBuiltin(T, S);
+  End Else If (T = KW_SORT) Or (T = KW_GREP) Or (T = KW_MAP) Then Begin
+    S := KeywordName(T); LexNextToken; N := ParseSortGrepMap(T, S);
   End Else If (T = KW_PUSH) Or (T = KW_POP) Or (T = KW_SHIFT) Or
               (T = KW_UNSHIFT) Or (T = KW_SPLICE) Or (T = KW_REVERSE) Or
-              (T = KW_SORT) Or (T = KW_JOIN) Or (T = KW_SPLIT) Or
-              (T = KW_MAP) Or (T = KW_GREP) Or (T = KW_KEYS) Or
+              (T = KW_JOIN) Or (T = KW_SPLIT) Or
+              (T = KW_KEYS) Or
               (T = KW_VALUES) Or (T = KW_EACH) Or (T = KW_DELETE) Or
               (T = KW_EXISTS) Or (T = KW_SCALAR) Or (T = KW_OPEN) Or
               (T = KW_CLOSE) Or (T = KW_READLINE) Or (T = KW_BINMODE) Or
@@ -3371,6 +3394,31 @@ Begin
               (T = KW_OCT) Or (T = KW_QUOTEMETA) Or
               (T = KW_WANTARRAY) Or (T = KW_TIME) Or (T = KW_POS) Then Begin
     S := KeywordName(T); LexNextToken; N := ParseBuiltin(T, S);
+  End Else If T = Ord('{') Then Begin
+    { Litteral hash-ref en contexte expression }
+    LexNextToken;
+    N := NewNode(NK_HASH_LIT, Ord('{'), '');
+    While (CurTokType <> Ord('}')) And (CurTokType <> TOK_EOF) Do Begin
+      AppendArg(N, ParseAssign);
+      If (CurTokType = Ord(',')) Or (CurTokType = TOK_FATCOMMA) Then LexNextToken
+      Else Break;
+    End;
+    Expect(Ord('}'));
+  End Else If T = KW_SUB Then Begin
+    { Sous-routine anonyme : sub [PROTO] BLOCK }
+    LexNextToken;
+    ProtoStr := '';
+    ProtoN   := 0;
+    If CurTokType = Ord('(') Then Begin
+      ProtoStr := ScanProtoStr;
+      ProtoN   := NewNode(NK_LITERAL, 0, ProtoStr);
+    End;
+    N := NewNode(NK_ANON_SUB, KW_SUB, '');
+    AstTable[N].Right := ProtoN;
+    EnterScope(SCK_SUB);
+    RegisterSubParams;
+    AstTable[N].Left := ParseBlock;
+    LeaveScope;
   End Else
     N := NewNode(NK_EMPTY, T, TokenName(T));
   ParsePrimary := N;
@@ -3676,10 +3724,9 @@ Begin
   End;
 End;
 
-{ Forward declarations }
+{ TODO 07 forward declarations }
 Function ParseStatement: Integer; Forward;
 Function ParseStatementList: Integer; Forward;
-Function ParseBlock: Integer; Forward;
 
 Function ParseBlock: Integer;
 Var N: Integer;
@@ -3704,8 +3751,8 @@ Begin
 End;
 
 Function ParseStatement: Integer;
-Var N, Cond, Body, Init, IncN, ElseN, Prev3, VarN, ListN: Integer;
-    SubName: String;
+Var N, Cond, Body, Init, IncN, ElseN, Prev3, VarN, ListN, ProtoN: Integer;
+    SubName, ProtoStr: String;
     IsCSuf: Boolean;
 Begin
   ParseStatement := 0;
@@ -3877,17 +3924,26 @@ Begin
     Exit;
   End;
 
-  { sub NAME BLOCK }
+  { sub NAME [PROTO] BLOCK }
   If CurTokType = KW_SUB Then Begin
     LexNextToken;
-    SubName := '';
+    SubName  := '';
+    ProtoStr := '';
+    ProtoN   := 0;
     If CurTokType = TOK_IDENT Then Begin
       SubName := CurTokStr; LexNextToken;
     End;
+    { prototype optionnel : sub foo ($$;@) }
+    If CurTokType = Ord('(') Then Begin
+      ProtoStr := ScanProtoStr;
+      ProtoN   := NewNode(NK_LITERAL, 0, ProtoStr);
+    End;
     N := NewNode(NK_SUB_DEF, KW_SUB, SubName);
+    AstTable[N].Right := ProtoN;
     If SubName <> '' Then
       AstTable[N].SymRef := AddSym(SubName, SK_CODE, SCOPE_PACKAGE, 0);
     EnterScope(SCK_SUB);
+    RegisterSubParams;
     AstTable[N].Left := ParseBlock;
     LeaveScope;
     If CurTokType = Ord(';') Then LexNextToken;
@@ -4027,7 +4083,300 @@ Begin
     S := ParseStatement;
     If S <> 0 Then AppendArg(Root, S);
   End;
+  PropagateCtx(Root, CTX_VOID);
   ParseProgram := Root;
+End;
+
+{ ============================================================ }
+{ TODO 09 : Tableaux (@) et fonctions de tableaux              }
+{ ============================================================ }
+
+{ Noms des fonctions runtime pour les tableaux }
+Function PlRtArrayNew:     String; Begin PlRtArrayNew     := '_PLRT_array_new';     End;
+Function PlRtArrayPush:    String; Begin PlRtArrayPush    := '_PLRT_array_push';    End;
+Function PlRtArrayPop:     String; Begin PlRtArrayPop     := '_PLRT_array_pop';     End;
+Function PlRtArrayGet:     String; Begin PlRtArrayGet     := '_PLRT_array_get';     End;
+Function PlRtArraySet:     String; Begin PlRtArraySet     := '_PLRT_array_set';     End;
+Function PlRtArrayLen:     String; Begin PlRtArrayLen     := '_PLRT_array_len';     End;
+Function PlRtArrayShift:   String; Begin PlRtArrayShift   := '_PLRT_array_shift';   End;
+Function PlRtArrayUnshift: String; Begin PlRtArrayUnshift := '_PLRT_array_unshift'; End;
+Function PlRtArraySplice:  String; Begin PlRtArraySplice  := '_PLRT_array_splice';  End;
+Function PlRtArraySlice:   String; Begin PlRtArraySlice   := '_PLRT_array_slice';   End;
+Function PlRtArrayExists:  String; Begin PlRtArrayExists  := '_PLRT_array_exists';  End;
+Function PlRtArrayDelete:  String; Begin PlRtArrayDelete  := '_PLRT_array_delete';  End;
+Function PlRtArrayReverse: String; Begin PlRtArrayReverse := '_PLRT_array_reverse'; End;
+Function PlRtArraySort:    String; Begin PlRtArraySort    := '_PLRT_array_sort';    End;
+Function PlRtArrayGrep:    String; Begin PlRtArrayGrep    := '_PLRT_array_grep';    End;
+Function PlRtArrayMap:     String; Begin PlRtArrayMap     := '_PLRT_array_map';     End;
+Function PlRtArrayJoin:    String; Begin PlRtArrayJoin    := '_PLRT_array_join';    End;
+Function PlRtArraySplit:   String; Begin PlRtArraySplit   := '_PLRT_array_split';   End;
+Function PlRtArrayScalar:  String; Begin PlRtArrayScalar  := '_PLRT_array_scalar';  End;
+
+{ Bloc expression entre accolades pour sort/grep/map }
+Function ParseCodeBlock: Integer;
+Var N: Integer;
+Begin
+  Expect(Ord('{'));
+  N := NewNode(NK_CODE_BLOCK, 0, '');
+  If CurTokType <> Ord('}') Then
+    AstTable[N].Left := ParseExpr;
+  Expect(Ord('}'));
+  ParseCodeBlock := N;
+End;
+
+{ Parser special pour sort, grep, map (acceptent un bloc en 1er arg) }
+Function ParseSortGrepMap(KwTok: Integer; S: String): Integer;
+Var N, ArgList, CmpN, SaIdx, SbIdx: Integer;
+Begin
+  N       := NewNode(NK_CALL, KwTok, S);
+  ArgList := NewNode(NK_LIST, 0, '');
+  SaIdx   := 0;
+  SbIdx   := 0;
+
+  If CurTokType = Ord('{') Then Begin
+    { bloc comparateur/filtre/transformateur }
+    If KwTok = KW_SORT Then Begin
+      { $a et $b sont visibles dans le bloc de comparaison }
+      SaIdx := AddSym('a', SK_SCALAR, SCOPE_LEXICAL, 0);
+      SbIdx := AddSym('b', SK_SCALAR, SCOPE_LEXICAL, 0);
+    End;
+    CmpN := ParseCodeBlock;
+    AstTable[CmpN].Tok := KwTok;
+    AppendArg(ArgList, CmpN);
+    { marquer $a et $b comme morts apres le bloc (sort seulement) }
+    If KwTok = KW_SORT Then Begin
+      If SaIdx > 0 Then SymTable[SaIdx].Flags := SymTable[SaIdx].Flags Or SF_DEAD;
+      If SbIdx > 0 Then SymTable[SbIdx].Flags := SymTable[SbIdx].Flags Or SF_DEAD;
+    End;
+    { virgule optionnelle apres le bloc }
+    If (CurTokType = Ord(',')) Or (CurTokType = TOK_FATCOMMA) Then LexNextToken;
+  End Else If (KwTok = KW_SORT) And (CurTokType = TOK_IDENT) Then Begin
+    { sort SUBNAME LIST : sous-routine comparateur }
+    CmpN := NewNode(NK_LITERAL, TOK_IDENT, CurTokStr);
+    LexNextToken;
+    AppendArg(ArgList, CmpN);
+    If (CurTokType = Ord(',')) Then LexNextToken;
+  End;
+
+  { arguments restants (la liste) }
+  If CurTokType = Ord('(') Then Begin
+    LexNextToken;
+    While (CurTokType <> Ord(')')) And (CurTokType <> TOK_EOF) Do Begin
+      AppendArg(ArgList, ParseAssign);
+      If (CurTokType = Ord(',')) Or (CurTokType = TOK_FATCOMMA) Then
+        LexNextToken
+      Else Break;
+    End;
+    Expect(Ord(')'));
+  End Else Begin
+    While Not IsArgStopper(CurTokType) Do Begin
+      AppendArg(ArgList, ParseAssign);
+      If (CurTokType = Ord(',')) Or (CurTokType = TOK_FATCOMMA) Then
+        LexNextToken
+      Else Break;
+    End;
+  End;
+  AstTable[N].FirstChild := AstTable[ArgList].FirstChild;
+  ParseSortGrepMap := N;
+End;
+
+{ ============================================================ }
+{ TODO 08 : Sous-routines et parametres (@_)                   }
+{ ============================================================ }
+
+{ Scanne les caracteres bruts du prototype depuis LexPos       }
+{ Appele quand CurTokType = '(' : LexPos pointe apres '('      }
+{ Apres retour : LexNextToken a ete appele, CurTokType = token suivant }
+Function ScanProtoStr: String;
+Var P: String; C: Char;
+Begin
+  P := '';
+  While LexPos <= SrcLen Do Begin
+    C := SrcBuf[LexPos];
+    If C = ')' Then Begin Inc(LexPos); Break; End;
+    If C >= ' ' Then P := P + C;
+    Inc(LexPos);
+  End;
+  LexNextToken;
+  ScanProtoStr := P;
+End;
+
+{ ============================================================ }
+{ TODO 11 : Contexte scalaire vs liste et operateurs           }
+{ ============================================================ }
+
+{ Propage le contexte d evaluation dans l arbre AST            }
+{ InCtx = contexte attendu par le parent du noeud              }
+Procedure PropagateCtx(Node, InCtx: Integer);
+Var C, Next, RCtx, LKind, LTok: Integer;
+Begin
+  If Node = 0 Then Exit;
+  AstTable[Node].Ctx := InCtx;
+  Case AstTable[Node].Kind Of
+
+    NK_STMT_LIST: Begin
+      C := AstTable[Node].FirstChild;
+      While C <> 0 Do Begin
+        Next := AstTable[C].NextSibling;
+        If Next = 0 Then PropagateCtx(C, InCtx)
+        Else PropagateCtx(C, CTX_VOID);
+        C := Next;
+      End;
+    End;
+
+    NK_IF, NK_UNLESS: Begin
+      PropagateCtx(AstTable[Node].Left,  CTX_BOOL);
+      PropagateCtx(AstTable[Node].Right, InCtx);
+      PropagateCtx(AstTable[Node].Third, InCtx);
+    End;
+
+    NK_WHILE, NK_UNTIL: Begin
+      PropagateCtx(AstTable[Node].Left,  CTX_BOOL);
+      PropagateCtx(AstTable[Node].Right, CTX_VOID);
+    End;
+
+    NK_DO_WHILE: Begin
+      PropagateCtx(AstTable[Node].Left,  CTX_VOID);
+      PropagateCtx(AstTable[Node].Right, CTX_BOOL);
+    End;
+
+    NK_FOR_C: Begin
+      PropagateCtx(AstTable[Node].Left,      CTX_VOID);
+      PropagateCtx(AstTable[Node].Right,     CTX_BOOL);
+      PropagateCtx(AstTable[Node].Third,     CTX_VOID);
+      PropagateCtx(AstTable[Node].FirstChild,CTX_VOID);
+    End;
+
+    NK_FOREACH: Begin
+      PropagateCtx(AstTable[Node].Left,      CTX_SCALAR);
+      PropagateCtx(AstTable[Node].Right,     CTX_LIST);
+      PropagateCtx(AstTable[Node].FirstChild,CTX_VOID);
+    End;
+
+    NK_ASSIGN: Begin
+      { le sigil du LHS determine le contexte du RHS }
+      LKind := 0; LTok := 0;
+      If AstTable[Node].Left <> 0 Then Begin
+        LKind := AstTable[AstTable[Node].Left].Kind;
+        LTok  := AstTable[AstTable[Node].Left].Tok;
+      End;
+      If (LTok = TOK_SIGIL_ARRAY) Or (LTok = TOK_SIGIL_HASH) Or
+         (LKind = NK_LIST) Then
+        RCtx := CTX_LIST
+      Else
+        RCtx := CTX_SCALAR;
+      PropagateCtx(AstTable[Node].Left,  CTX_SCALAR);
+      PropagateCtx(AstTable[Node].Right, RCtx);
+    End;
+
+    NK_TERNARY: Begin
+      PropagateCtx(AstTable[Node].Left,  CTX_BOOL);
+      PropagateCtx(AstTable[Node].Right, InCtx);
+      PropagateCtx(AstTable[Node].Third, InCtx);
+    End;
+
+    NK_BINARY: Begin
+      PropagateCtx(AstTable[Node].Left,  CTX_SCALAR);
+      PropagateCtx(AstTable[Node].Right, CTX_SCALAR);
+    End;
+
+    NK_UNARY: Begin
+      PropagateCtx(AstTable[Node].Left, CTX_SCALAR);
+    End;
+
+    NK_RANGE: Begin
+      { .. -> liste ou flip-flop selon InCtx (deja marque) }
+      PropagateCtx(AstTable[Node].Left,  CTX_SCALAR);
+      PropagateCtx(AstTable[Node].Right, CTX_SCALAR);
+    End;
+
+    NK_CALL: Begin
+      { les arguments sont en contexte scalaire par defaut }
+      C := AstTable[Node].FirstChild;
+      While C <> 0 Do Begin
+        PropagateCtx(C, CTX_SCALAR);
+        C := AstTable[C].NextSibling;
+      End;
+    End;
+
+    NK_CODE_BLOCK: Begin
+      PropagateCtx(AstTable[Node].Left, CTX_SCALAR);
+    End;
+
+    NK_RETURN: Begin
+      PropagateCtx(AstTable[Node].Left, InCtx);
+    End;
+
+    NK_LIST: Begin
+      C := AstTable[Node].FirstChild;
+      While C <> 0 Do Begin
+        PropagateCtx(C, CTX_SCALAR);
+        C := AstTable[C].NextSibling;
+      End;
+    End;
+
+    NK_ARRAY_LIT: Begin
+      C := AstTable[Node].FirstChild;
+      While C <> 0 Do Begin
+        PropagateCtx(C, CTX_SCALAR);
+        C := AstTable[C].NextSibling;
+      End;
+    End;
+
+    NK_HASH_LIT: Begin
+      C := AstTable[Node].FirstChild;
+      While C <> 0 Do Begin
+        PropagateCtx(C, CTX_SCALAR);
+        C := AstTable[C].NextSibling;
+      End;
+    End;
+
+    NK_INDEX: Begin
+      PropagateCtx(AstTable[Node].Left,  CTX_SCALAR);
+      PropagateCtx(AstTable[Node].Right, CTX_SCALAR);
+    End;
+
+    NK_SLICE: Begin
+      PropagateCtx(AstTable[Node].Left,  CTX_LIST);
+      PropagateCtx(AstTable[Node].Right, CTX_LIST);
+    End;
+
+    NK_SUB_DEF, NK_ANON_SUB: Begin
+      PropagateCtx(AstTable[Node].Left, CTX_VOID);
+    End;
+
+    NK_BEGIN_HOOK, NK_END_HOOK: Begin
+      PropagateCtx(AstTable[Node].Left, CTX_VOID);
+    End;
+
+  End;
+End;
+
+{ ============================================================ }
+{ TODO 10 : Hashes (%) et fonctions de hashes                  }
+{ ============================================================ }
+
+{ Noms des fonctions runtime pour les hashes }
+Function PlRtHashNew:    String; Begin PlRtHashNew    := '_PLRT_hash_new';    End;
+Function PlRtHashSet:    String; Begin PlRtHashSet    := '_PLRT_hash_set';    End;
+Function PlRtHashGet:    String; Begin PlRtHashGet    := '_PLRT_hash_get';    End;
+Function PlRtHashExists: String; Begin PlRtHashExists := '_PLRT_hash_exists'; End;
+Function PlRtHashDelete: String; Begin PlRtHashDelete := '_PLRT_hash_delete'; End;
+Function PlRtHashKeys:   String; Begin PlRtHashKeys   := '_PLRT_hash_keys';   End;
+Function PlRtHashValues: String; Begin PlRtHashValues := '_PLRT_hash_values'; End;
+Function PlRtHashEach:   String; Begin PlRtHashEach   := '_PLRT_hash_each';   End;
+Function PlRtHashLen:    String; Begin PlRtHashLen    := '_PLRT_hash_len';    End;
+Function PlRtHashScalar: String; Begin PlRtHashScalar := '_PLRT_hash_scalar'; End;
+Function PlRtHashSlice:  String; Begin PlRtHashSlice  := '_PLRT_hash_slice';  End;
+Function PlRtHashMerge:  String; Begin PlRtHashMerge  := '_PLRT_hash_merge';  End;
+
+{ Enregistre @_ dans la portee courante (portee de sous-routine) }
+Procedure RegisterSubParams;
+Var Idx: Integer;
+Begin
+  Idx := AddSym('_', SK_ARRAY, SCOPE_DYNAMIC, 0);
+  If Opt.Verbose Then
+    WriteLn('  [sub] @_ registre idx=', Idx);
 End;
 
 BEGIN
