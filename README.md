@@ -661,6 +661,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer le compilateur Rust vers l'assembleur 8086.</td>
 		</tr>
 		<tr>
+			<td><b>RUSTCW32.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur Rust pour l'assembleur du microprocesseur 80386 pour Windows (PE Win32).</td>
+		</tr>
+		<tr>
 			<td><b>SAS86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur SAS vers l'assembleur du microprocesseur 8086 (MASM/TASM).</td>
 		</tr>
