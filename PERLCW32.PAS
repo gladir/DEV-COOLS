@@ -1326,7 +1326,1248 @@ Begin
   End;
 End;
 
+{ ============================================================ }
+{ TODO 02 - TOKENISEUR PERL (LEXER)                            }
+{ ============================================================ }
+
+Function IsKeyword(S: String): Integer; Forward;
+
+Function ItoS(N: LongInt): String;
+Var S: String;
+Begin Str(N, S); ItoS := S; End;
+
+Procedure AppendTok(C: Char);
 Begin
+  If Length(CurTokStr) < 255 Then CurTokStr := CurTokStr + C;
+End;
+
+Function IsAlpha(C: Char): Boolean;
+Begin
+  IsAlpha := ((C >= 'A') And (C <= 'Z')) Or ((C >= 'a') And (C <= 'z')) Or
+             (C = '_');
+End;
+
+Function IsDigit(C: Char): Boolean;
+Begin IsDigit := (C >= '0') And (C <= '9'); End;
+
+Function IsHexDigit(C: Char): Boolean;
+Var U: Char;
+Begin
+  U := UpCase(C);
+  IsHexDigit := IsDigit(C) Or ((U >= 'A') And (U <= 'F'));
+End;
+
+Function IsIdentChar(C: Char): Boolean;
+Begin IsIdentChar := IsAlpha(C) Or IsDigit(C); End;
+
+Function HexVal(C: Char): Integer;
+Begin
+  C := UpCase(C);
+  If IsDigit(C) Then HexVal := Ord(C) - Ord('0')
+  Else HexVal := Ord(C) - Ord('A') + 10;
+End;
+
+Function LexPeekChar: Char;
+Begin
+  If LexPos > SrcLen Then LexPeekChar := #0
+  Else LexPeekChar := SrcBuf[LexPos];
+End;
+
+Function LexPeekChar2: Char;
+Begin
+  If LexPos + 1 > SrcLen Then LexPeekChar2 := #0
+  Else LexPeekChar2 := SrcBuf[LexPos + 1];
+End;
+
+Function LexPeekChar3: Char;
+Begin
+  If LexPos + 2 > SrcLen Then LexPeekChar3 := #0
+  Else LexPeekChar3 := SrcBuf[LexPos + 2];
+End;
+
+Function LexNextChar: Char;
+Var C: Char;
+Begin
+  If LexPos > SrcLen Then Begin LexNextChar := #0; Exit; End;
+  C := SrcBuf[LexPos];
+  Inc(LexPos);
+  If C = #10 Then Begin Inc(LexLine); LexCol := 1; End
+  Else If C <> #13 Then Inc(LexCol);
+  LexNextChar := C;
+End;
+
+Procedure LexInit(FileName: String);
+Var
+  F: File;
+  N: LongInt;
+Begin
+  SrcLen := 0;
+  Assign(F, FileName);
+  {$I-} Reset(F, 1); {$I+}
+  If IOResult <> 0 Then FatalError('impossible d''ouvrir ' + FileName);
+  BlockRead(F, SrcBuf, 65535, N);
+  SrcLen := N;
+  If Not Eof(F) Then Begin Close(F); FatalError('fichier source trop volumineux'); End;
+  Close(F);
+  LexPos  := 1; LexLine := 1; LexCol := 1;
+  CurTokType := TOK_EOF; CurTokStr := ''; CurTokNum := 0;
+  CurTokFloat := 0; LastTokType := TOK_EOF;
+  { Sauter shebang #!/usr/bin/perl en premiere ligne }
+  If (SrcLen >= 2) And (SrcBuf[1] = '#') And (SrcBuf[2] = '!') Then
+    While (LexPos <= SrcLen) And (SrcBuf[LexPos] <> #10) Do Inc(LexPos);
+End;
+
+Procedure LexClose;
+Begin
+  SrcLen := 0; LexPos := 1; LexLine := 1; LexCol := 1;
+End;
+
+Procedure SkipLineComment;
+Begin
+  While (LexPeekChar <> #0) And (LexPeekChar <> #10) Do LexNextChar;
+End;
+
+(* Delimiteur fermant pour m-pat-, s-pat-rpl-, qw(), etc. *)
+Function MatchingDelim(C: Char): Char;
+Begin
+  Case C Of
+    '(': MatchingDelim := ')';
+    '[': MatchingDelim := ']';
+    '{': MatchingDelim := '}';
+    '<': MatchingDelim := '>';
+  Else MatchingDelim := C;
+  End;
+End;
+
+{ Lit un identificateur ; detecte les mots-cles }
+Procedure ReadIdent;
+Var K: Integer;
+Begin
+  While IsIdentChar(LexPeekChar) Do AppendTok(LexNextChar);
+  K := IsKeyword(CurTokStr);
+  If K <> 0 Then CurTokType := K
+  Else CurTokType := TOK_IDENT;
+End;
+
+{ Lit les variables speciales $! $/ $\ $0 $1..$9 $$ $_ etc. }
+Procedure ReadSpecialScalar;
+Var C: Char;
+Begin
+  C := LexPeekChar;
+  { $0..$9 : variables capture regex }
+  If IsDigit(C) Then Begin AppendTok(LexNextChar); Exit; End;
+  { $_ $! $/ $\ $, $; $. $| $$ $0 $@ $& $` $' $+ $~ $- $= $^ }
+  Case C Of
+    '_','!','/','|',',',';','.','$','@','&','`','+','~','-','=','^','<','>':
+      Begin AppendTok(LexNextChar); Exit; End;
+    '\': Begin AppendTok(LexNextChar); Exit; End;
+    '"': Begin AppendTok(LexNextChar); Exit; End;
+  End;
+  { $name : variable scalaire normale }
+  If IsAlpha(C) Then
+    While IsIdentChar(LexPeekChar) Do AppendTok(LexNextChar);
+End;
+
+{ Lit $var, @var, %var, &sub, $#arr }
+Procedure ReadSigil;
+Var
+  Sigil: Char;
+Begin
+  Sigil := LexNextChar;
+  AppendTok(Sigil);
+  Case Sigil Of
+    '$': Begin
+           CurTokType := TOK_SIGIL_SCALAR;
+           { $#arr -> dernier index }
+           If (LexPeekChar = '#') And IsAlpha(LexPeekChar2) Then Begin
+             CurTokType := TOK_HASHNUM;
+             AppendTok(LexNextChar);
+             While IsIdentChar(LexPeekChar) Do AppendTok(LexNextChar);
+           End Else
+             ReadSpecialScalar;
+         End;
+    '@': Begin
+           CurTokType := TOK_SIGIL_ARRAY;
+           If IsAlpha(LexPeekChar) Or (LexPeekChar = '_') Then
+             While IsIdentChar(LexPeekChar) Do AppendTok(LexNextChar);
+         End;
+    '%': Begin
+           CurTokType := TOK_SIGIL_HASH;
+           If IsAlpha(LexPeekChar) Or (LexPeekChar = '_') Then
+             While IsIdentChar(LexPeekChar) Do AppendTok(LexNextChar);
+         End;
+    '&': Begin
+           CurTokType := TOK_SIGIL_CODE;
+           If IsAlpha(LexPeekChar) Or (LexPeekChar = '_') Then
+             While IsIdentChar(LexPeekChar) Do AppendTok(LexNextChar);
+         End;
+  End;
+End;
+
+{ Lit un nombre : 123, 1_000, 0xFF, 0b101, 0777, 1.5, 1.5e3 }
+Procedure ReadNumber;
+Var
+  Base, V: Integer;
+  IsFloat: Boolean;
+  C: Char;
+Begin
+  CurTokType := TOK_INTEGER;
+  CurTokNum  := 0;
+  IsFloat    := False;
+  Base       := 10;
+  If (LexPeekChar = '0') And
+     ((UpCase(LexPeekChar2) = 'X') Or (UpCase(LexPeekChar2) = 'B') Or
+      (UpCase(LexPeekChar2) = 'O')) Then Begin
+    AppendTok(LexNextChar);
+    C := UpCase(LexNextChar); AppendTok(C);
+    If C = 'X' Then Base := 16
+    Else If C = 'B' Then Base := 2
+    Else Base := 8;
+  End Else If LexPeekChar = '0' Then
+    Base := 8;
+
+  While True Do Begin
+    C := LexPeekChar;
+    If C = '_' Then Begin AppendTok(LexNextChar); Continue; End;
+    If (Base = 16) And IsHexDigit(C) Then Begin
+      V := HexVal(C); CurTokNum := CurTokNum * Base + V; AppendTok(LexNextChar);
+    End Else If (Base = 10) And IsDigit(C) Then Begin
+      CurTokNum := CurTokNum * Base + Ord(C) - Ord('0'); AppendTok(LexNextChar);
+    End Else If (Base = 8) And (C >= '0') And (C <= '7') Then Begin
+      CurTokNum := CurTokNum * Base + Ord(C) - Ord('0'); AppendTok(LexNextChar);
+    End Else If (Base = 2) And ((C = '0') Or (C = '1')) Then Begin
+      CurTokNum := CurTokNum * Base + Ord(C) - Ord('0'); AppendTok(LexNextChar);
+    End Else Break;
+  End;
+
+  If (Base = 10) And (LexPeekChar = '.') And IsDigit(LexPeekChar2) Then Begin
+    IsFloat := True; AppendTok(LexNextChar);
+    While IsDigit(LexPeekChar) Or (LexPeekChar = '_') Do AppendTok(LexNextChar);
+  End;
+  If (Base = 10) And (UpCase(LexPeekChar) = 'E') Then Begin
+    IsFloat := True; AppendTok(LexNextChar);
+    If (LexPeekChar = '+') Or (LexPeekChar = '-') Then AppendTok(LexNextChar);
+    While IsDigit(LexPeekChar) Or (LexPeekChar = '_') Do AppendTok(LexNextChar);
+  End;
+  If IsFloat Then Begin
+    CurTokType := TOK_FLOAT;
+    CurTokFloat := 0;
+  End;
+End;
+
+{ Lit une chaine simple 'text' : echappements \\ et \' seulement }
+Procedure ReadSingleString;
+Var C: Char;
+Begin
+  CurTokType := TOK_STRING;
+  LexNextChar; { consume ' }
+  While True Do Begin
+    C := LexNextChar;
+    If C = #0 Then FatalError('chaine simple non terminee');
+    If C = '''' Then Break;
+    If C = '\' Then Begin
+      C := LexNextChar;
+      If C = #0 Then FatalError('chaine simple non terminee');
+      If (C = '\') Or (C = '''') Then AppendTok(C)
+      Else Begin AppendTok('\'); AppendTok(C); End;
+    End Else AppendTok(C);
+  End;
+End;
+
+(* Lecture echappement \xHHHH ou \xHH *)
+Procedure ReadHexEscape;
+Var
+  H1, H2: Char;
+  Depth: Integer;
+Begin
+  If LexPeekChar = '{' Then Begin
+    LexNextChar; Depth := 0;
+    While (LexPeekChar <> #0) And (LexPeekChar <> '}') Do Begin
+      H1 := LexNextChar;
+      If IsHexDigit(H1) And (Depth < 2) Then
+        AppendTok(Chr(HexVal(H1)));
+      Inc(Depth);
+    End;
+    If LexPeekChar = '}' Then LexNextChar;
+  End Else Begin
+    H1 := LexNextChar; H2 := LexNextChar;
+    If IsHexDigit(H1) And IsHexDigit(H2) Then
+      AppendTok(Chr(HexVal(H1) * 16 + HexVal(H2)))
+    Else FatalError('echappement \x invalide');
+  End;
+End;
+
+{ Lit une chaine double "text $var @arr \n \t \xFF" }
+Procedure ReadDoubleString;
+Var C: Char;
+Begin
+  CurTokType := TOK_DSTRING;
+  LexNextChar; { consume " }
+  While True Do Begin
+    C := LexNextChar;
+    If C = #0 Then FatalError('chaine double non terminee');
+    If C = '"' Then Break;
+    If C = '\' Then Begin
+      C := LexNextChar;
+      If C = #0 Then FatalError('chaine double non terminee');
+      Case C Of
+        'n': AppendTok(#10);
+        't': AppendTok(#9);
+        'r': AppendTok(#13);
+        'f': AppendTok(#12);
+        'a': AppendTok(#7);
+        'e': AppendTok(#27);
+        '0': AppendTok(#0);
+        '\': AppendTok('\');
+        '"': AppendTok('"');
+        '$': AppendTok('$');
+        '@': AppendTok('@');
+        'x': ReadHexEscape;
+        'l','u','L','U','Q','E': { modificateurs casse : ignore pour compat }
+          AppendTok(C);
+      Else
+        AppendTok('\'); AppendTok(C);
+      End;
+    End Else If C = '$' Then Begin
+      AppendTok(C);
+      { Marque le debut d interpolation scalaire ou tableau }
+      If IsAlpha(LexPeekChar) Or (LexPeekChar = '_') Or (LexPeekChar = '{') Then
+        AppendTok('S')  { hint pour parseur d interpolation }
+    End Else If C = '@' Then Begin
+      AppendTok(C);
+      If IsAlpha(LexPeekChar) Or (LexPeekChar = '_') Then
+        AppendTok('A')  { hint tableau }
+    End Else
+      AppendTok(C);
+  End;
+End;
+
+{ Lit un heredoc : <<EOF, <<'EOF', <<"EOF", <<~EOF }
+Function TryReadHeredoc: Boolean;
+Var
+  SavePos, SaveLine, SaveCol: LongInt;
+  C, Quote: Char;
+  Delim, Line, Check: String;
+  Squiggly: Boolean;
+
+  Procedure AppBody(S: String);
+  Var I: Integer;
+  Begin For I := 1 To Length(S) Do AppendTok(S[I]); End;
+
+  Function LTrim(S: String): String;
+  Begin
+    While (Length(S) > 0) And ((S[1] = ' ') Or (S[1] = #9)) Do Delete(S, 1, 1);
+    LTrim := S;
+  End;
+Begin
+  TryReadHeredoc := False;
+  SavePos := LexPos; SaveLine := LexLine; SaveCol := LexCol;
+  CurTokStr := ''; Delim := ''; Squiggly := False;
+  LexNextChar; LexNextChar; { consume << }
+  If LexPeekChar = '~' Then Begin Squiggly := True; LexNextChar; End
+  Else If LexPeekChar = '-' Then LexNextChar; { <<-EOF : equivalent a <<~ }
+  While (LexPeekChar = ' ') Or (LexPeekChar = #9) Do LexNextChar;
+  Quote := #0;
+  If (LexPeekChar = '"') Or (LexPeekChar = '''') Or (LexPeekChar = '`') Then
+    Quote := LexNextChar;
+  If Not IsAlpha(LexPeekChar) Then Begin
+    LexPos := SavePos; LexLine := SaveLine; LexCol := SaveCol;
+    CurTokStr := ''; Exit;
+  End;
+  While IsIdentChar(LexPeekChar) Do Begin
+    C := LexNextChar;
+    If Length(Delim) < 255 Then Delim := Delim + C;
+  End;
+  If Quote <> #0 Then Begin
+    C := LexNextChar;
+    If C <> Quote Then FatalError('delimiteur heredoc invalide');
+  End;
+  { Sauter reste de la ligne courante }
+  While (LexPeekChar <> #0) And (LexPeekChar <> #10) Do LexNextChar;
+  If LexPeekChar = #10 Then LexNextChar;
+  CurTokStr := '';
+  While True Do Begin
+    Line := '';
+    While (LexPeekChar <> #0) And (LexPeekChar <> #10) Do Begin
+      C := LexNextChar;
+      If (C <> #13) And (Length(Line) < 255) Then Line := Line + C;
+    End;
+    Check := Line;
+    If Squiggly Then Check := LTrim(Check);
+    If Check = Delim Then Begin
+      If LexPeekChar = #10 Then LexNextChar;
+      Break;
+    End;
+    AppBody(Line);
+    If LexPeekChar = #10 Then Begin AppendTok(#10); LexNextChar; End
+    Else If LexPeekChar = #0 Then FatalError('heredoc non termine : ' + Delim);
+  End;
+  If Quote = '''' Then CurTokType := TOK_STRING
+  Else CurTokType := TOK_HEREDOC;
+  TryReadHeredoc := True;
+End;
+
+{ Lit /pattern/flags ou le corps apres m (delimiteur deja consomme) }
+Procedure ReadRegexBody(OpenDelim: Char);
+Var
+  C:        Char;
+  CloseD:   Char;
+  InClass:  Boolean;
+  Depth:    Integer;
+Begin
+  CloseD  := MatchingDelim(OpenDelim);
+  Depth   := 1;
+  InClass := False;
+  If OpenDelim = CloseD Then Begin
+    { Delimiteur non paire : /pat/ }
+    While True Do Begin
+      C := LexNextChar;
+      If C = #0 Then FatalError('regex non terminee');
+      If (C = OpenDelim) And Not InClass Then Break;
+      If C = '\' Then Begin
+        AppendTok(C); C := LexNextChar;
+        If C = #0 Then FatalError('regex non terminee');
+      End Else If C = '[' Then InClass := True
+      Else If C = ']' Then InClass := False;
+      AppendTok(C);
+    End;
+  End Else Begin
+    (* Delimiteur paire : m-pat- *)
+    AppendTok(OpenDelim);
+    While Depth > 0 Do Begin
+      C := LexNextChar;
+      If C = #0 Then FatalError('regex non terminee');
+      If C = '\' Then Begin AppendTok(C); C := LexNextChar; If C = #0 Then Break; End
+      Else If C = OpenDelim Then Inc(Depth)
+      Else If C = CloseD Then Begin Dec(Depth); If Depth = 0 Then Break; End;
+      AppendTok(C);
+    End;
+    AppendTok(CloseD);
+  End;
+  AppendTok('/'); { marqueur fin pattern dans CurTokStr }
+  { Lire les flags : i g m s x e r }
+  While LexPeekChar In ['i','g','m','s','x','e','r','o'] Do
+    AppendTok(LexNextChar);
+End;
+
+(* Lit s/pat/rpl/flags ou s-pat--rpl-flags *)
+Procedure ReadSubst(OpenDelim: Char);
+Var
+  C, CloseD, OpenR, CloseR: Char;
+  InClass: Boolean;
+  Depth: Integer;
+Begin
+  CurTokType := TOK_SUBST;
+  CloseD := MatchingDelim(OpenDelim);
+  InClass := False;
+  { Pattern }
+  If OpenDelim = CloseD Then Begin
+    While True Do Begin
+      C := LexNextChar;
+      If C = #0 Then FatalError('s/// pattern non termine');
+      If (C = OpenDelim) And Not InClass Then Break;
+      If C = '\' Then Begin AppendTok(C); C := LexNextChar; If C = #0 Then Break; End
+      Else If C = '[' Then InClass := True
+      Else If C = ']' Then InClass := False;
+      AppendTok(C);
+    End;
+    AppendTok('/');
+    { Remplacement }
+    While True Do Begin
+      C := LexNextChar;
+      If C = #0 Then FatalError('s/// remplacement non termine');
+      If C = OpenDelim Then Break;
+      If C = '\' Then Begin AppendTok(C); C := LexNextChar; If C = #0 Then Break; End;
+      AppendTok(C);
+    End;
+    AppendTok('/');
+  End Else Begin
+    (* s-pat--rpl- *)
+    AppendTok(OpenDelim);
+    Depth := 1;
+    While Depth > 0 Do Begin
+      C := LexNextChar;
+      If C = #0 Then FatalError('s{}{} pattern non termine');
+      If C = '\' Then Begin AppendTok(C); C := LexNextChar; If C = #0 Then Break; End
+      Else If C = OpenDelim Then Inc(Depth)
+      Else If C = CloseD Then Begin Dec(Depth); If Depth = 0 Then Break; End;
+      AppendTok(C);
+    End;
+    AppendTok(CloseD);
+    While (LexPeekChar = ' ') Or (LexPeekChar = #9) Do LexNextChar;
+    OpenR  := LexNextChar; CloseR := MatchingDelim(OpenR);
+    AppendTok(OpenR);
+    Depth := 1;
+    While Depth > 0 Do Begin
+      C := LexNextChar;
+      If C = #0 Then FatalError('s{}{} remplacement non termine');
+      If C = '\' Then Begin AppendTok(C); C := LexNextChar; If C = #0 Then Break; End
+      Else If C = OpenR Then Inc(Depth)
+      Else If C = CloseR Then Begin Dec(Depth); If Depth = 0 Then Break; End;
+      AppendTok(C);
+    End;
+    AppendTok(CloseR);
+  End;
+  While LexPeekChar In ['i','g','m','s','x','e','r','o'] Do AppendTok(LexNextChar);
+End;
+
+{ Lit tr/lst/lst/flags ou y/lst/lst/flags }
+Procedure ReadTrans(OpenDelim: Char);
+Var
+  C, CloseD: Char;
+Begin
+  CurTokType := TOK_TRANS;
+  CloseD := MatchingDelim(OpenDelim);
+  { Liste source }
+  While True Do Begin
+    C := LexNextChar;
+    If C = #0 Then FatalError('tr/// liste non terminee');
+    If C = OpenDelim Then Break;
+    If C = '\' Then Begin AppendTok(C); C := LexNextChar; If C = #0 Then Break; End;
+    AppendTok(C);
+  End;
+  AppendTok('/');
+  { Delimiteur de remplacement (peut etre different si paire) }
+  If OpenDelim <> CloseD Then Begin
+    While (LexPeekChar = ' ') Or (LexPeekChar = #9) Do LexNextChar;
+    OpenDelim := LexNextChar; CloseD := MatchingDelim(OpenDelim);
+    AppendTok(OpenDelim);
+  End;
+  While True Do Begin
+    C := LexNextChar;
+    If C = #0 Then FatalError('tr/// remplacement non termine');
+    If C = CloseD Then Break;
+    If C = '\' Then Begin AppendTok(C); C := LexNextChar; If C = #0 Then Break; End;
+    AppendTok(C);
+  End;
+  AppendTok('/');
+  While LexPeekChar In ['c','d','s'] Do AppendTok(LexNextChar);
+End;
+
+(* Lit qw() -> TOK_QWORD, q-x- -> TOK_STRING, qq-x- -> TOK_DSTRING *)
+Procedure ReadQuoteLike(Kind: Char; OpenDelim: Char);
+Var
+  C, CloseD: Char;
+  Depth: Integer;
+Begin
+  Case Kind Of
+    'w': CurTokType := TOK_QWORD;
+    'q': CurTokType := TOK_STRING;
+  Else CurTokType := TOK_DSTRING;
+  End;
+  CloseD := MatchingDelim(OpenDelim);
+  Depth := 1;
+  While Depth > 0 Do Begin
+    C := LexNextChar;
+    If C = #0 Then FatalError('litteral q non termine');
+    If C = '\' Then Begin
+      AppendTok(C); C := LexNextChar;
+      If C = #0 Then FatalError('litteral q non termine');
+      AppendTok(C); Continue;
+    End;
+    If OpenDelim <> CloseD Then Begin
+      If C = OpenDelim Then Inc(Depth)
+      Else If C = CloseD Then Begin Dec(Depth); If Depth = 0 Then Break; End;
+    End Else If C = OpenDelim Then Begin
+      Dec(Depth); If Depth = 0 Then Break;
+    End;
+    AppendTok(C);
+  End;
+End;
+
+{ Vrai si le token precedent peut terminer une expression }
+Function TokCanEndExpr(T: Integer): Boolean;
+Begin
+  TokCanEndExpr :=
+    (T = TOK_IDENT) Or (T = TOK_SIGIL_SCALAR) Or (T = TOK_SIGIL_ARRAY) Or
+    (T = TOK_SIGIL_HASH) Or (T = TOK_SIGIL_CODE) Or (T = TOK_HASHNUM) Or
+    (T = TOK_INTEGER) Or (T = TOK_FLOAT) Or
+    (T = TOK_STRING) Or (T = TOK_DSTRING) Or (T = TOK_HEREDOC) Or
+    (T = TOK_QWORD) Or (T = TOK_REGEX) Or (T = TOK_SUBST) Or (T = TOK_TRANS) Or
+    (T = TOK_INCR) Or (T = TOK_DECR) Or
+    (T = Ord(')')) Or (T = Ord(']')) Or (T = Ord('}')) Or
+    (T = KW_UNDEF) Or (T = KW_MY) Or (T = KW_OUR) Or (T = KW_LOCAL);
+End;
+
+Procedure LexNextToken;
+Var
+  C, C2, C3: Char;
+  Done: Boolean;
+  PrevEnd: Boolean;
+  K: Integer;
+Begin
+  CurTokStr := ''; CurTokNum := 0; CurTokFloat := 0;
+  PrevEnd := TokCanEndExpr(LastTokType);
+  Done := False;
+  While Not Done Do Begin
+    C := LexPeekChar;
+    If (C = ' ') Or (C = #9) Or (C = #13) Then LexNextChar
+    Else If C = '#' Then SkipLineComment
+    Else Done := True;
+  End;
+
+  CurTokLine := LexLine; CurTokCol := LexCol;
+  C  := LexPeekChar;
+  C2 := LexPeekChar2;
+  C3 := LexPeekChar3;
+
+  If C = #0 Then CurTokType := TOK_EOF
+
+  Else If (C = '$') Or (C = '@') Or (C = '%') Then ReadSigil
+  Else If C = '&' Then Begin
+    { & seul peut etre AND bit ou appel &sub }
+    If IsAlpha(C2) Or (C2 = '_') Then ReadSigil
+    Else If C2 = '&' Then Begin
+      If C3 = '=' Then Begin
+        CurTokType := TOK_ASSIGN_OP;
+        AppendTok(LexNextChar); AppendTok(LexNextChar); AppendTok(LexNextChar);
+      End Else Begin
+        CurTokType := TOK_ANDAND;
+        AppendTok(LexNextChar); AppendTok(LexNextChar);
+      End;
+    End Else If C2 = '=' Then Begin
+      CurTokType := TOK_ASSIGN_OP; AppendTok(LexNextChar); AppendTok(LexNextChar);
+    End Else Begin
+      CurTokType := Ord('&'); AppendTok(LexNextChar);
+    End;
+  End
+
+  Else If IsAlpha(C) Then Begin
+    (* Mots-cles speciaux : m// s/// tr/// y/// q qq qw qr *)
+    AppendTok(LexNextChar);
+    If (CurTokStr = 'm') And Not IsIdentChar(LexPeekChar) Then Begin
+      (* m/pat/flags ou m-pat- *)
+      CurTokType := TOK_REGEX; CurTokStr := '';
+      ReadRegexBody(LexNextChar);
+    End Else If (CurTokStr = 's') And Not IsIdentChar(LexPeekChar) Then Begin
+      CurTokStr := ''; ReadSubst(LexNextChar);
+    End Else If ((CurTokStr = 'tr') Or (CurTokStr = 'y')) And Not IsIdentChar(LexPeekChar) Then Begin
+      If CurTokStr = 'y' Then C2 := LexNextChar  { y/// }
+      Else C2 := LexNextChar;
+      CurTokStr := ''; ReadTrans(C2);
+    End Else If (CurTokStr = 'q') And Not IsIdentChar(LexPeekChar) Then Begin
+      CurTokStr := ''; ReadQuoteLike('q', LexNextChar);
+    End Else If (CurTokStr = 'qq') And Not IsIdentChar(LexPeekChar) Then Begin
+      CurTokStr := ''; ReadQuoteLike('Q', LexNextChar);
+    End Else If (CurTokStr = 'qw') And Not IsIdentChar(LexPeekChar) Then Begin
+      CurTokStr := ''; ReadQuoteLike('w', LexNextChar);
+    End Else If (CurTokStr = 'qr') And Not IsIdentChar(LexPeekChar) Then Begin
+      CurTokType := TOK_REGEX; CurTokStr := '';
+      ReadRegexBody(LexNextChar);
+    End Else Begin
+      { Continuer la lecture de l identificateur }
+      While IsIdentChar(LexPeekChar) Do AppendTok(LexNextChar);
+      { tr necessite deux caracteres lus avant verification }
+      If ((CurTokStr = 'tr') Or (CurTokStr = 'y')) And Not IsIdentChar(LexPeekChar) Then Begin
+        CurTokStr := ''; ReadTrans(LexNextChar);
+      End Else Begin
+        K := IsKeyword(CurTokStr);
+        If K <> 0 Then CurTokType := K Else CurTokType := TOK_IDENT;
+      End;
+    End;
+  End
+
+  Else If IsDigit(C) Then ReadNumber
+  Else If C = '''' Then ReadSingleString
+  Else If C = '"' Then ReadDoubleString
+
+  { Heredoc << }
+  Else If (C = '<') And (C2 = '<') And Not PrevEnd And TryReadHeredoc Then Begin
+    { TryReadHeredoc a rempli CurTokStr et CurTokType }
+  End
+
+  { Operateurs multi-caracteres }
+  Else If (C = '<') And (C2 = '<') And (C3 = '=') Then Begin
+    CurTokType := TOK_ASSIGN_OP;
+    AppendTok(LexNextChar); AppendTok(LexNextChar); AppendTok(LexNextChar);
+  End
+  Else If (C = '>') And (C2 = '>') And (C3 = '=') Then Begin
+    CurTokType := TOK_ASSIGN_OP;
+    AppendTok(LexNextChar); AppendTok(LexNextChar); AppendTok(LexNextChar);
+  End
+  Else If (C = '*') And (C2 = '*') And (C3 = '=') Then Begin
+    CurTokType := TOK_ASSIGN_OP;
+    AppendTok(LexNextChar); AppendTok(LexNextChar); AppendTok(LexNextChar);
+  End
+  Else If (C = '<') And (C2 = '=') And (C3 = '>') Then Begin
+    CurTokType := TOK_SPACESHIP;
+    AppendTok(LexNextChar); AppendTok(LexNextChar); AppendTok(LexNextChar);
+  End
+  Else If (C = '.') And (C2 = '.') And (C3 = '.') Then Begin
+    CurTokType := TOK_DOTDOTDOT;
+    AppendTok(LexNextChar); AppendTok(LexNextChar); AppendTok(LexNextChar);
+  End
+  Else If (C = '.') And (C2 = '.') Then Begin
+    CurTokType := TOK_DOTDOT; AppendTok(LexNextChar); AppendTok(LexNextChar);
+  End
+  Else If (C = '=') And (C2 = '>') Then Begin
+    CurTokType := TOK_FATCOMMA; AppendTok(LexNextChar); AppendTok(LexNextChar);
+  End
+  Else If (C = '=') And (C2 = '~') Then Begin
+    CurTokType := TOK_MATCH; AppendTok(LexNextChar); AppendTok(LexNextChar);
+  End
+  Else If (C = '!') And (C2 = '~') Then Begin
+    CurTokType := TOK_NMATCH; AppendTok(LexNextChar); AppendTok(LexNextChar);
+  End
+  Else If (C = '-') And (C2 = '>') Then Begin
+    CurTokType := TOK_ARROW; AppendTok(LexNextChar); AppendTok(LexNextChar);
+  End
+  Else If (C = '*') And (C2 = '*') Then Begin
+    CurTokType := TOK_POW; AppendTok(LexNextChar); AppendTok(LexNextChar);
+  End
+  Else If (C = '<') And (C2 = '<') Then Begin
+    CurTokType := TOK_SHL; AppendTok(LexNextChar); AppendTok(LexNextChar);
+  End
+  Else If (C = '>') And (C2 = '>') Then Begin
+    CurTokType := TOK_SHR; AppendTok(LexNextChar); AppendTok(LexNextChar);
+  End
+  Else If (C = '<') And (C2 = '=') Then Begin
+    CurTokType := TOK_LE; AppendTok(LexNextChar); AppendTok(LexNextChar);
+  End
+  Else If (C = '>') And (C2 = '=') Then Begin
+    CurTokType := TOK_GE; AppendTok(LexNextChar); AppendTok(LexNextChar);
+  End
+  Else If (C = '=') And (C2 = '=') Then Begin
+    CurTokType := TOK_EQ; AppendTok(LexNextChar); AppendTok(LexNextChar);
+  End
+  Else If (C = '!') And (C2 = '=') Then Begin
+    CurTokType := TOK_NE; AppendTok(LexNextChar); AppendTok(LexNextChar);
+  End
+  Else If (C = '|') And (C2 = '|') Then Begin
+    If C3 = '=' Then Begin
+      CurTokType := TOK_ASSIGN_OP;
+      AppendTok(LexNextChar); AppendTok(LexNextChar); AppendTok(LexNextChar);
+    End Else Begin
+      CurTokType := TOK_OROR; AppendTok(LexNextChar); AppendTok(LexNextChar);
+    End;
+  End
+  Else If C = '|' Then Begin
+    If C2 = '=' Then Begin
+      CurTokType := TOK_ASSIGN_OP; AppendTok(LexNextChar); AppendTok(LexNextChar);
+    End Else Begin
+      CurTokType := Ord('|'); AppendTok(LexNextChar);
+    End;
+  End
+  { // defini-ou vs division }
+  Else If (C = '/') And (C2 = '/') Then Begin
+    If C3 = '=' Then Begin
+      CurTokType := TOK_ASSIGN_OP;
+      AppendTok(LexNextChar); AppendTok(LexNextChar); AppendTok(LexNextChar);
+    End Else Begin
+      CurTokType := TOK_DEFOR; AppendTok(LexNextChar); AppendTok(LexNextChar);
+    End;
+  End
+  Else If C = '/' Then Begin
+    If C2 = '=' Then Begin
+      CurTokType := TOK_ASSIGN_OP; AppendTok(LexNextChar); AppendTok(LexNextChar);
+    End Else If Not PrevEnd Then Begin
+      { Regex }
+      CurTokType := TOK_REGEX; LexNextChar;
+      ReadRegexBody('/');
+    End Else Begin
+      CurTokType := Ord('/'); AppendTok(LexNextChar);
+    End;
+  End
+  Else If C = '+' Then Begin
+    If C2 = '+' Then Begin
+      CurTokType := TOK_INCR; AppendTok(LexNextChar); AppendTok(LexNextChar);
+    End Else If C2 = '=' Then Begin
+      CurTokType := TOK_ASSIGN_OP; AppendTok(LexNextChar); AppendTok(LexNextChar);
+    End Else Begin CurTokType := Ord('+'); AppendTok(LexNextChar); End;
+  End
+  Else If C = '-' Then Begin
+    If C2 = '-' Then Begin
+      CurTokType := TOK_DECR; AppendTok(LexNextChar); AppendTok(LexNextChar);
+    End Else If C2 = '=' Then Begin
+      CurTokType := TOK_ASSIGN_OP; AppendTok(LexNextChar); AppendTok(LexNextChar);
+    End Else Begin CurTokType := Ord('-'); AppendTok(LexNextChar); End;
+  End
+  Else If C = '*' Then Begin
+    If C2 = '=' Then Begin
+      CurTokType := TOK_ASSIGN_OP; AppendTok(LexNextChar); AppendTok(LexNextChar);
+    End Else Begin CurTokType := Ord('*'); AppendTok(LexNextChar); End;
+  End
+  Else If C = '%' Then Begin
+    If C2 = '=' Then Begin
+      CurTokType := TOK_ASSIGN_OP; AppendTok(LexNextChar); AppendTok(LexNextChar);
+    End Else Begin CurTokType := Ord('%'); AppendTok(LexNextChar); End;
+  End
+  Else If C = '.' Then Begin
+    If C2 = '=' Then Begin
+      CurTokType := TOK_ASSIGN_OP; AppendTok(LexNextChar); AppendTok(LexNextChar);
+    End Else If IsDigit(C2) Then ReadNumber
+    Else Begin CurTokType := Ord('.'); AppendTok(LexNextChar); End;
+  End
+  Else If C = '^' Then Begin
+    If C2 = '=' Then Begin
+      CurTokType := TOK_ASSIGN_OP; AppendTok(LexNextChar); AppendTok(LexNextChar);
+    End Else Begin CurTokType := Ord('^'); AppendTok(LexNextChar); End;
+  End
+  Else If C = '~' Then Begin CurTokType := Ord('~'); AppendTok(LexNextChar); End
+  Else If C = '!' Then Begin CurTokType := Ord('!'); AppendTok(LexNextChar); End
+  Else If C = '=' Then Begin
+    If C2 = '=' Then Begin
+      { Deja traite plus haut mais au cas ou }
+      CurTokType := TOK_EQ; AppendTok(LexNextChar); AppendTok(LexNextChar);
+    End Else Begin CurTokType := Ord('='); AppendTok(LexNextChar); End;
+  End
+  Else If C = '<' Then Begin CurTokType := Ord('<'); AppendTok(LexNextChar); End
+  Else If C = '>' Then Begin CurTokType := Ord('>'); AppendTok(LexNextChar); End
+  Else Begin
+    CurTokType := Ord(C); AppendTok(LexNextChar);
+  End;
+
+  LastTokType := CurTokType;
+End;
+
+Function TokenName(T: Integer): String;
+Begin
+  Case T Of
+    TOK_EOF:          TokenName := 'TOK_EOF';
+    TOK_IDENT:        TokenName := 'TOK_IDENT';
+    TOK_SIGIL_SCALAR: TokenName := 'TOK_SIGIL_SCALAR';
+    TOK_SIGIL_ARRAY:  TokenName := 'TOK_SIGIL_ARRAY';
+    TOK_SIGIL_HASH:   TokenName := 'TOK_SIGIL_HASH';
+    TOK_SIGIL_CODE:   TokenName := 'TOK_SIGIL_CODE';
+    TOK_INTEGER:      TokenName := 'TOK_INTEGER';
+    TOK_FLOAT:        TokenName := 'TOK_FLOAT';
+    TOK_STRING:       TokenName := 'TOK_STRING';
+    TOK_DSTRING:      TokenName := 'TOK_DSTRING';
+    TOK_HEREDOC:      TokenName := 'TOK_HEREDOC';
+    TOK_REGEX:        TokenName := 'TOK_REGEX';
+    TOK_SUBST:        TokenName := 'TOK_SUBST';
+    TOK_TRANS:        TokenName := 'TOK_TRANS';
+    TOK_QWORD:        TokenName := 'TOK_QWORD';
+    TOK_DOTDOT:       TokenName := 'TOK_DOTDOT';
+    TOK_DOTDOTDOT:    TokenName := 'TOK_DOTDOTDOT';
+    TOK_FATCOMMA:     TokenName := 'TOK_FATCOMMA';
+    TOK_SPACESHIP:    TokenName := 'TOK_SPACESHIP';
+    TOK_CMP:          TokenName := 'TOK_CMP';
+    TOK_DEFOR:        TokenName := 'TOK_DEFOR';
+    TOK_MATCH:        TokenName := 'TOK_MATCH';
+    TOK_NMATCH:       TokenName := 'TOK_NMATCH';
+    TOK_POW:          TokenName := 'TOK_POW';
+    TOK_SHL:          TokenName := 'TOK_SHL';
+    TOK_SHR:          TokenName := 'TOK_SHR';
+    TOK_LE:           TokenName := 'TOK_LE';
+    TOK_GE:           TokenName := 'TOK_GE';
+    TOK_EQ:           TokenName := 'TOK_EQ';
+    TOK_NE:           TokenName := 'TOK_NE';
+    TOK_ANDAND:       TokenName := 'TOK_ANDAND';
+    TOK_OROR:         TokenName := 'TOK_OROR';
+    TOK_ASSIGN_OP:    TokenName := 'TOK_ASSIGN_OP';
+    TOK_ARROW:        TokenName := 'TOK_ARROW';
+    TOK_INCR:         TokenName := 'TOK_INCR';
+    TOK_DECR:         TokenName := 'TOK_DECR';
+    TOK_HASHNUM:      TokenName := 'TOK_HASHNUM';
+    TOK_DEREF_SCALAR: TokenName := 'TOK_DEREF_SCALAR';
+    TOK_DEREF_ARRAY:  TokenName := 'TOK_DEREF_ARRAY';
+    TOK_DEREF_HASH:   TokenName := 'TOK_DEREF_HASH';
+    KW_MY:            TokenName := 'KW_MY';
+    KW_OUR:           TokenName := 'KW_OUR';
+    KW_LOCAL:         TokenName := 'KW_LOCAL';
+    KW_SUB:           TokenName := 'KW_SUB';
+    KW_IF:            TokenName := 'KW_IF';
+    KW_ELSIF:         TokenName := 'KW_ELSIF';
+    KW_ELSE:          TokenName := 'KW_ELSE';
+    KW_UNLESS:        TokenName := 'KW_UNLESS';
+    KW_WHILE:         TokenName := 'KW_WHILE';
+    KW_UNTIL:         TokenName := 'KW_UNTIL';
+    KW_FOR:           TokenName := 'KW_FOR';
+    KW_FOREACH:       TokenName := 'KW_FOREACH';
+    KW_DO:            TokenName := 'KW_DO';
+    KW_LAST:          TokenName := 'KW_LAST';
+    KW_NEXT:          TokenName := 'KW_NEXT';
+    KW_REDO:          TokenName := 'KW_REDO';
+    KW_RETURN:        TokenName := 'KW_RETURN';
+    KW_USE:           TokenName := 'KW_USE';
+    KW_PACKAGE:       TokenName := 'KW_PACKAGE';
+    KW_PRINT:         TokenName := 'KW_PRINT';
+    KW_SAY:           TokenName := 'KW_SAY';
+    KW_PRINTF:        TokenName := 'KW_PRINTF';
+    KW_SPRINTF:       TokenName := 'KW_SPRINTF';
+    KW_PUSH:          TokenName := 'KW_PUSH';
+    KW_POP:           TokenName := 'KW_POP';
+    KW_SHIFT:         TokenName := 'KW_SHIFT';
+    KW_UNSHIFT:       TokenName := 'KW_UNSHIFT';
+    KW_SORT:          TokenName := 'KW_SORT';
+    KW_REVERSE:       TokenName := 'KW_REVERSE';
+    KW_SCALAR:        TokenName := 'KW_SCALAR';
+    KW_KEYS:          TokenName := 'KW_KEYS';
+    KW_VALUES:        TokenName := 'KW_VALUES';
+    KW_EACH:          TokenName := 'KW_EACH';
+    KW_EXISTS:        TokenName := 'KW_EXISTS';
+    KW_DELETE:        TokenName := 'KW_DELETE';
+    KW_DEFINED:       TokenName := 'KW_DEFINED';
+    KW_UNDEF:         TokenName := 'KW_UNDEF';
+    KW_DIE:           TokenName := 'KW_DIE';
+    KW_WARN:          TokenName := 'KW_WARN';
+    KW_OPEN:          TokenName := 'KW_OPEN';
+    KW_CLOSE:         TokenName := 'KW_CLOSE';
+    KW_READLINE:      TokenName := 'KW_READLINE';
+    KW_EOF_FUNC:      TokenName := 'KW_EOF';
+    KW_AND:           TokenName := 'KW_AND';
+    KW_OR:            TokenName := 'KW_OR';
+    KW_NOT:           TokenName := 'KW_NOT';
+    KW_XOR:           TokenName := 'KW_XOR';
+    KW_MAP:           TokenName := 'KW_MAP';
+    KW_GREP:          TokenName := 'KW_GREP';
+    KW_JOIN:          TokenName := 'KW_JOIN';
+    KW_SPLIT:         TokenName := 'KW_SPLIT';
+    KW_ABS:           TokenName := 'KW_ABS';
+    KW_CHOMP:         TokenName := 'KW_CHOMP';
+    KW_LENGTH:        TokenName := 'KW_LENGTH';
+    KW_SUBSTR:        TokenName := 'KW_SUBSTR';
+    KW_UC:            TokenName := 'KW_UC';
+    KW_LC:            TokenName := 'KW_LC';
+    KW_BEGIN:         TokenName := 'KW_BEGIN';
+    KW_END:           TokenName := 'KW_END';
+    KW_FORMAT:        TokenName := 'KW_FORMAT';
+    KW_WANTARRAY:     TokenName := 'KW_WANTARRAY';
+    KW_REF:           TokenName := 'KW_REF';
+    KW_BLESS:         TokenName := 'KW_BLESS';
+  Else
+    If (T > 0) And (T < 128) Then TokenName := '''' + Chr(T) + ''''
+    Else TokenName := 'TOK_' + ItoS(T);
+  End;
+End;
+
+Procedure DumpTokens;
+Begin
+  LexInit(Opt.SrcFile);
+  Repeat
+    LexNextToken;
+    WriteLn(CurTokLine:4, ':', CurTokCol:3, '  ', TokenName(CurTokType),
+            '  [', CurTokStr, ']');
+  Until CurTokType = TOK_EOF;
+  LexClose;
+End;
+
+{ ============================================================ }
+{ TODO 03 - MOTS-CLES ET FONCTIONS INTEGREES PERL              }
+{ ============================================================ }
+
+Const
+  KW_X_REP    = 1085;  { operateur x : "str" x N, LIST x N }
+  KW_BINMODE  = 1087;
+  KW_LCHOP    = 1088;  { lcfirst }
+  KW_UCHOP    = 1089;  { ucfirst }
+  KW_RINDEX   = 1090;
+  KW_POS      = 1091;
+  KW_SPRINTF2 = 1092;  { alias }
+  KW_UNLINK   = 1093;
+  KW_RENAME   = 1094;
+  KW_STAT     = 1095;
+  KW_CHDIR    = 1096;
+  KW_SLEEP    = 1097;
+  KW_TIME     = 1098;
+  KW_RAND     = 1099;
+  KW_SRAND    = 1100;
+  KW_ATAN2    = 1101;
+  KW_SIN      = 1102;
+  KW_COS      = 1103;
+  KW_LOG      = 1104;
+  KW_EXP      = 1105;
+  KW_QUOTEMETA= 1106;
+  KW_LCASE    = 1107;  { lc }
+  KW_UCFIRST  = 1108;
+  KW_LCFIRST  = 1109;
+  KW_SPRINTF3 = 1110;
+  KW_TIED2    = 1111;
+  KW_UNTIE    = 1112;
+  KW_DO_FILE  = 1113;  { do "file" }
+  KW_REQUIRE  = 1114;
+  KW_IMPORT   = 1115;
+  KW_CALLER   = 1116;
+  KW_WANTARR2 = 1117;
+
+Function IsKeyword(S: String): Integer;
+Begin
+  IsKeyword := 0;
+  { --- Mots-cles structures (reserves stricts) --- }
+  If      S = 'and'       Then IsKeyword := KW_AND
+  Else If S = 'BEGIN'     Then IsKeyword := KW_BEGIN
+  Else If S = 'END'       Then IsKeyword := KW_END
+  Else If S = 'do'        Then IsKeyword := KW_DO
+  Else If S = 'else'      Then IsKeyword := KW_ELSE
+  Else If S = 'elsif'     Then IsKeyword := KW_ELSIF
+  Else If S = 'eval'      Then IsKeyword := KW_EVAL
+  Else If S = 'for'       Then IsKeyword := KW_FOR
+  Else If S = 'foreach'   Then IsKeyword := KW_FOREACH
+  Else If S = 'format'    Then IsKeyword := KW_FORMAT
+  Else If S = 'goto'      Then IsKeyword := KW_GOTO
+  Else If S = 'if'        Then IsKeyword := KW_IF
+  Else If S = 'last'      Then IsKeyword := KW_LAST
+  Else If S = 'local'     Then IsKeyword := KW_LOCAL
+  Else If S = 'my'        Then IsKeyword := KW_MY
+  Else If S = 'next'      Then IsKeyword := KW_NEXT
+  Else If S = 'no'        Then IsKeyword := KW_NO
+  Else If S = 'not'       Then IsKeyword := KW_NOT
+  Else If S = 'or'        Then IsKeyword := KW_OR
+  Else If S = 'our'       Then IsKeyword := KW_OUR
+  Else If S = 'package'   Then IsKeyword := KW_PACKAGE
+  Else If S = 'redo'      Then IsKeyword := KW_REDO
+  Else If S = 'return'    Then IsKeyword := KW_RETURN
+  Else If S = 'sub'       Then IsKeyword := KW_SUB
+  Else If S = 'tie'       Then IsKeyword := KW_TIE
+  Else If S = 'tied'      Then IsKeyword := KW_TIED
+  Else If S = 'unless'    Then IsKeyword := KW_UNLESS
+  Else If S = 'until'     Then IsKeyword := KW_UNTIL
+  Else If S = 'use'       Then IsKeyword := KW_USE
+  Else If S = 'while'     Then IsKeyword := KW_WHILE
+  Else If S = 'xor'       Then IsKeyword := KW_XOR
+  Else If S = 'undef'     Then IsKeyword := KW_UNDEF
+  Else If S = 'x'         Then IsKeyword := KW_X_REP
+  Else If S = 'wantarray' Then IsKeyword := KW_WANTARRAY
+  Else If S = 'require'   Then IsKeyword := KW_REQUIRE
+  Else If S = 'import'    Then IsKeyword := KW_IMPORT
+  Else If S = 'caller'    Then IsKeyword := KW_CALLER
+  { --- Operateurs de comparaison chaine --- }
+  Else If S = 'eq'        Then IsKeyword := KW_EQ_STR
+  Else If S = 'ne'        Then IsKeyword := KW_NE_STR
+  Else If S = 'lt'        Then IsKeyword := KW_LT_STR
+  Else If S = 'gt'        Then IsKeyword := KW_GT_STR
+  Else If S = 'le'        Then IsKeyword := KW_LE_STR
+  Else If S = 'ge'        Then IsKeyword := KW_GE_STR
+  Else If S = 'cmp'       Then IsKeyword := TOK_CMP
+  { --- Fonctions integrees E/S --- }
+  Else If S = 'print'     Then IsKeyword := KW_PRINT
+  Else If S = 'say'       Then IsKeyword := KW_SAY
+  Else If S = 'printf'    Then IsKeyword := KW_PRINTF
+  Else If S = 'sprintf'   Then IsKeyword := KW_SPRINTF
+  Else If S = 'warn'      Then IsKeyword := KW_WARN
+  Else If S = 'die'       Then IsKeyword := KW_DIE
+  Else If S = 'exit'      Then IsKeyword := KW_EXIT
+  Else If S = 'open'      Then IsKeyword := KW_OPEN
+  Else If S = 'close'     Then IsKeyword := KW_CLOSE
+  Else If S = 'readline'  Then IsKeyword := KW_READLINE
+  Else If S = 'eof'       Then IsKeyword := KW_EOF_FUNC
+  Else If S = 'binmode'   Then IsKeyword := KW_BINMODE
+  Else If S = 'read'      Then IsKeyword := KW_READLINE
+  { --- Fonctions tableaux --- }
+  Else If S = 'push'      Then IsKeyword := KW_PUSH
+  Else If S = 'pop'       Then IsKeyword := KW_POP
+  Else If S = 'shift'     Then IsKeyword := KW_SHIFT
+  Else If S = 'unshift'   Then IsKeyword := KW_UNSHIFT
+  Else If S = 'splice'    Then IsKeyword := KW_SPLICE
+  Else If S = 'scalar'    Then IsKeyword := KW_SCALAR
+  Else If S = 'reverse'   Then IsKeyword := KW_REVERSE
+  Else If S = 'sort'      Then IsKeyword := KW_SORT
+  Else If S = 'grep'      Then IsKeyword := KW_GREP
+  Else If S = 'map'       Then IsKeyword := KW_MAP
+  Else If S = 'join'      Then IsKeyword := KW_JOIN
+  Else If S = 'split'     Then IsKeyword := KW_SPLIT
+  { --- Fonctions hashes --- }
+  Else If S = 'keys'      Then IsKeyword := KW_KEYS
+  Else If S = 'values'    Then IsKeyword := KW_VALUES
+  Else If S = 'each'      Then IsKeyword := KW_EACH
+  Else If S = 'exists'    Then IsKeyword := KW_EXISTS
+  Else If S = 'delete'    Then IsKeyword := KW_DELETE
+  { --- Fonctions chaines --- }
+  Else If S = 'length'    Then IsKeyword := KW_LENGTH
+  Else If S = 'substr'    Then IsKeyword := KW_SUBSTR
+  Else If S = 'index'     Then IsKeyword := KW_INDEX_FUNC
+  Else If S = 'rindex'    Then IsKeyword := KW_RINDEX
+  Else If S = 'uc'        Then IsKeyword := KW_UC
+  Else If S = 'lc'        Then IsKeyword := KW_LC
+  Else If S = 'ucfirst'   Then IsKeyword := KW_UCFIRST
+  Else If S = 'lcfirst'   Then IsKeyword := KW_LCFIRST
+  Else If S = 'chomp'     Then IsKeyword := KW_CHOMP
+  Else If S = 'chop'      Then IsKeyword := KW_CHOP
+  Else If S = 'chr'       Then IsKeyword := KW_CHR
+  Else If S = 'ord'       Then IsKeyword := KW_ORD
+  Else If S = 'hex'       Then IsKeyword := KW_HEX
+  Else If S = 'oct'       Then IsKeyword := KW_OCT
+  Else If S = 'quotemeta' Then IsKeyword := KW_QUOTEMETA
+  Else If S = 'pos'       Then IsKeyword := KW_POS
+  { --- Fonctions numeriques --- }
+  Else If S = 'abs'       Then IsKeyword := KW_ABS
+  Else If S = 'int'       Then IsKeyword := KW_INT_FUNC
+  Else If S = 'sqrt'      Then IsKeyword := KW_SQRT
+  Else If S = 'atan2'     Then IsKeyword := KW_ATAN2
+  Else If S = 'sin'       Then IsKeyword := KW_SIN
+  Else If S = 'cos'       Then IsKeyword := KW_COS
+  Else If S = 'log'       Then IsKeyword := KW_LOG
+  Else If S = 'exp'       Then IsKeyword := KW_EXP
+  Else If S = 'rand'      Then IsKeyword := KW_RAND
+  Else If S = 'srand'     Then IsKeyword := KW_SRAND
+  { --- Fonctions de test / typage --- }
+  Else If S = 'defined'   Then IsKeyword := KW_DEFINED
+  Else If S = 'ref'       Then IsKeyword := KW_REF
+  Else If S = 'bless'     Then IsKeyword := KW_BLESS
+  { --- Fonctions systeme --- }
+  Else If S = 'stat'      Then IsKeyword := KW_STAT
+  Else If S = 'unlink'    Then IsKeyword := KW_UNLINK
+  Else If S = 'rename'    Then IsKeyword := KW_RENAME
+  Else If S = 'chdir'     Then IsKeyword := KW_CHDIR
+  Else If S = 'sleep'     Then IsKeyword := KW_SLEEP
+  Else If S = 'time'      Then IsKeyword := KW_TIME
+  Else If S = 'untie'     Then IsKeyword := KW_UNTIE;
+End;
+
+{ Vrai si le token est un mot-cle modificateur de statement (suffixe) }
+Function IsModifierKW(T: Integer): Boolean;
+Begin
+  IsModifierKW := (T = KW_IF)    Or (T = KW_UNLESS) Or
+                  (T = KW_WHILE) Or (T = KW_UNTIL)  Or
+                  (T = KW_FOR)   Or (T = KW_FOREACH);
+End;
+
+{ Vrai si le token est un operateur de comparaison chaine }
+Function IsStrCompKW(T: Integer): Boolean;
+Begin
+  IsStrCompKW := (T = KW_EQ_STR) Or (T = KW_NE_STR) Or
+                 (T = KW_LT_STR) Or (T = KW_GT_STR) Or
+                 (T = KW_LE_STR) Or (T = KW_GE_STR) Or
+                 (T = TOK_CMP);
+End;
+
+{ Vrai si le token est une fonction integree de liste }
+Function IsListOperator(T: Integer): Boolean;
+Begin
+  IsListOperator :=
+    (T = KW_PRINT)   Or (T = KW_SAY)     Or (T = KW_PRINTF) Or
+    (T = KW_WARN)    Or (T = KW_DIE)     Or (T = KW_PUSH)   Or
+    (T = KW_POP)     Or (T = KW_SHIFT)   Or (T = KW_UNSHIFT)Or
+    (T = KW_SPLICE)  Or (T = KW_SORT)    Or (T = KW_REVERSE)Or
+    (T = KW_GREP)    Or (T = KW_MAP)     Or (T = KW_JOIN)   Or
+    (T = KW_SPLIT)   Or (T = KW_KEYS)    Or (T = KW_VALUES) Or
+    (T = KW_EACH)    Or (T = KW_EXISTS)  Or (T = KW_DELETE) Or
+    (T = KW_DEFINED) Or (T = KW_CHOMP)   Or (T = KW_CHOP)   Or
+    (T = KW_SCALAR)  Or (T = KW_OPEN)    Or (T = KW_CLOSE)  Or
+    (T = KW_READLINE)Or (T = KW_SPRINTF);
+End;
+
+{ Vrai si le token est une fonction a un seul argument (unaire) }
+Function IsUnaryBuiltin(T: Integer): Boolean;
+Begin
+  IsUnaryBuiltin :=
+    (T = KW_ABS)    Or (T = KW_INT_FUNC)Or (T = KW_SQRT)  Or
+    (T = KW_LENGTH) Or (T = KW_CHOMP)   Or (T = KW_CHOP)  Or
+    (T = KW_UC)     Or (T = KW_LC)      Or (T = KW_UCFIRST)Or
+    (T = KW_LCFIRST)Or (T = KW_CHR)     Or (T = KW_ORD)   Or
+    (T = KW_HEX)    Or (T = KW_OCT)     Or (T = KW_DEFINED)Or
+    (T = KW_REF)    Or (T = KW_SCALAR)  Or (T = KW_UNDEF) Or
+    (T = KW_EOF_FUNC);
+End;
+
+{ Nom lisible d un keyword pour debug / messages d erreur }
+Function KeywordName(T: Integer): String;
+Begin
+  Case T Of
+    KW_AND:       KeywordName := 'and';
+    KW_BEGIN:     KeywordName := 'BEGIN';
+    KW_END:       KeywordName := 'END';
+    KW_DO:        KeywordName := 'do';
+    KW_ELSE:      KeywordName := 'else';
+    KW_ELSIF:     KeywordName := 'elsif';
+    KW_EVAL:      KeywordName := 'eval';
+    KW_FOR:       KeywordName := 'for';
+    KW_FOREACH:   KeywordName := 'foreach';
+    KW_FORMAT:    KeywordName := 'format';
+    KW_GOTO:      KeywordName := 'goto';
+    KW_IF:        KeywordName := 'if';
+    KW_LAST:      KeywordName := 'last';
+    KW_LOCAL:     KeywordName := 'local';
+    KW_MY:        KeywordName := 'my';
+    KW_NEXT:      KeywordName := 'next';
+    KW_NO:        KeywordName := 'no';
+    KW_NOT:       KeywordName := 'not';
+    KW_OR:        KeywordName := 'or';
+    KW_OUR:       KeywordName := 'our';
+    KW_PACKAGE:   KeywordName := 'package';
+    KW_REDO:      KeywordName := 'redo';
+    KW_RETURN:    KeywordName := 'return';
+    KW_SUB:       KeywordName := 'sub';
+    KW_TIE:       KeywordName := 'tie';
+    KW_TIED:      KeywordName := 'tied';
+    KW_UNLESS:    KeywordName := 'unless';
+    KW_UNTIL:     KeywordName := 'until';
+    KW_USE:       KeywordName := 'use';
+    KW_WHILE:     KeywordName := 'while';
+    KW_XOR:       KeywordName := 'xor';
+    KW_UNDEF:     KeywordName := 'undef';
+    KW_X_REP:     KeywordName := 'x';
+    KW_WANTARRAY: KeywordName := 'wantarray';
+    KW_REQUIRE:   KeywordName := 'require';
+    KW_EQ_STR:    KeywordName := 'eq';
+    KW_NE_STR:    KeywordName := 'ne';
+    KW_LT_STR:    KeywordName := 'lt';
+    KW_GT_STR:    KeywordName := 'gt';
+    KW_LE_STR:    KeywordName := 'le';
+    KW_GE_STR:    KeywordName := 'ge';
+    TOK_CMP:      KeywordName := 'cmp';
+    KW_PRINT:     KeywordName := 'print';
+    KW_SAY:       KeywordName := 'say';
+    KW_PRINTF:    KeywordName := 'printf';
+    KW_SPRINTF:   KeywordName := 'sprintf';
+    KW_WARN:      KeywordName := 'warn';
+    KW_DIE:       KeywordName := 'die';
+    KW_EXIT:      KeywordName := 'exit';
+    KW_OPEN:      KeywordName := 'open';
+    KW_CLOSE:     KeywordName := 'close';
+    KW_READLINE:  KeywordName := 'readline';
+    KW_EOF_FUNC:  KeywordName := 'eof';
+    KW_PUSH:      KeywordName := 'push';
+    KW_POP:       KeywordName := 'pop';
+    KW_SHIFT:     KeywordName := 'shift';
+    KW_UNSHIFT:   KeywordName := 'unshift';
+    KW_SPLICE:    KeywordName := 'splice';
+    KW_SCALAR:    KeywordName := 'scalar';
+    KW_REVERSE:   KeywordName := 'reverse';
+    KW_SORT:      KeywordName := 'sort';
+    KW_GREP:      KeywordName := 'grep';
+    KW_MAP:       KeywordName := 'map';
+    KW_JOIN:      KeywordName := 'join';
+    KW_SPLIT:     KeywordName := 'split';
+    KW_KEYS:      KeywordName := 'keys';
+    KW_VALUES:    KeywordName := 'values';
+    KW_EACH:      KeywordName := 'each';
+    KW_EXISTS:    KeywordName := 'exists';
+    KW_DELETE:    KeywordName := 'delete';
+    KW_LENGTH:    KeywordName := 'length';
+    KW_SUBSTR:    KeywordName := 'substr';
+    KW_INDEX_FUNC:KeywordName := 'index';
+    KW_RINDEX:    KeywordName := 'rindex';
+    KW_UC:        KeywordName := 'uc';
+    KW_LC:        KeywordName := 'lc';
+    KW_UCFIRST:   KeywordName := 'ucfirst';
+    KW_LCFIRST:   KeywordName := 'lcfirst';
+    KW_CHOMP:     KeywordName := 'chomp';
+    KW_CHOP:      KeywordName := 'chop';
+    KW_CHR:       KeywordName := 'chr';
+    KW_ORD:       KeywordName := 'ord';
+    KW_HEX:       KeywordName := 'hex';
+    KW_OCT:       KeywordName := 'oct';
+    KW_ABS:       KeywordName := 'abs';
+    KW_INT_FUNC:  KeywordName := 'int';
+    KW_SQRT:      KeywordName := 'sqrt';
+    KW_ATAN2:     KeywordName := 'atan2';
+    KW_SIN:       KeywordName := 'sin';
+    KW_COS:       KeywordName := 'cos';
+    KW_LOG:       KeywordName := 'log';
+    KW_EXP:       KeywordName := 'exp';
+    KW_RAND:      KeywordName := 'rand';
+    KW_SRAND:     KeywordName := 'srand';
+    KW_DEFINED:   KeywordName := 'defined';
+    KW_REF:       KeywordName := 'ref';
+    KW_BLESS:     KeywordName := 'bless';
+    KW_STAT:      KeywordName := 'stat';
+    KW_UNLINK:    KeywordName := 'unlink';
+    KW_RENAME:    KeywordName := 'rename';
+    KW_CHDIR:     KeywordName := 'chdir';
+    KW_SLEEP:     KeywordName := 'sleep';
+    KW_TIME:      KeywordName := 'time';
+    KW_QUOTEMETA: KeywordName := 'quotemeta';
+    KW_POS:       KeywordName := 'pos';
+    KW_BINMODE:   KeywordName := 'binmode';
+    KW_UNTIE:     KeywordName := 'untie';
+  Else
+    KeywordName := TokenName(T);
+  End;
+End;
+
+BEGIN
   ParseArgs;
   WriteLn('PERLCW32 v', PERLCW32_VERSION, ' (', PERLCW32_DATE,
           ') - Compilateur Perl -> 80386 PE Win32');
@@ -1339,6 +2580,10 @@ Begin
     If Opt.DebugMode Then WriteLn('Debug  : oui');
     If Opt.Warnings Then WriteLn('Warnings : oui');
   End;
-  WriteLn('PERLCW32: TODO - compilateur en cours d''implementation');
+  If Opt.DebugMode Then Begin
+    WriteLn('PERLCW32: mode debug - dump des tokens');
+    DumpTokens;
+  End Else
+    WriteLn('PERLCW32: TODO - compilateur en cours d''implementation');
   Halt(EXIT_OK);
-End.
+END.
