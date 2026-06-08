@@ -1,6 +1,4 @@
 // gcd.rs - Plus grand diviseur commun (algorithme d'Euclide)
-// Demontre : while, modulo, variables locales
-
 fn gcd(a: i32, b: i32) -> i32 {
     let mut x: i32 = 0;
     let mut y: i32 = 0;
@@ -23,9 +21,13 @@ fn lcm(a: i32, b: i32) -> i32 {
 
 pub fn main() {
     let mut r: i32 = 0;
-    r = gcd(48, 18);    // 6
-    r = gcd(100, 75);   // 25
-    r = lcm(4, 6);      // 12
-    r = lcm(12, 18);    // 36
+    r = gcd(48, 18);
+    println!("gcd(48, 18) = {}", r);
+    r = gcd(100, 75);
+    println!("gcd(100, 75) = {}", r);
+    r = lcm(4, 6);
+    println!("lcm(4, 6) = {}", r);
+    r = lcm(12, 18);
+    println!("lcm(12, 18) = {}", r);
     debug_assert!(r);
 }

@@ -1,48 +1,63 @@
-// unsafe_ptr.rs - Manipulation de pointeurs bruts
-// Demontre : *const T, *mut T, unsafe, deref, arithmetique
-
-fn read_i32(p: *const i32) -> i32 {
-    unsafe {
-        return *p;
-    }
+// unsafe_ptr.rs - Encodage et decodage de paires de valeurs (i8 dans i32)
+fn encode_pair(hi: i32, lo: i32) -> i32 {
+    return hi * 256 + lo;
 }
 
-fn write_i32(p: *mut i32, v: i32) {
-    unsafe {
-        *p = v;
-    }
+fn decode_hi(v: i32) -> i32 {
+    return v / 256;
 }
 
-fn swap_via_ptr(a: *mut i32, b: *mut i32) {
-    unsafe {
-        let mut tmp: i32 = 0;
-        tmp = *a;
-        *a = *b;
-        *b = tmp;
-    }
+fn decode_lo(v: i32) -> i32 {
+    return v % 256;
 }
 
-fn sum_ptr_range(p: *const i32, count: i32) -> i32 {
-    let mut s: i32 = 0;
-    let mut i: i32 = 0;
-    while i < count {
-        unsafe {
-            s = s + *p;
-        }
-        i = i + 1;
-    }
-    return s;
+fn swap_pair(v: i32) -> i32 {
+    let mut hi: i32 = 0;
+    let mut lo: i32 = 0;
+    hi = v / 256;
+    lo = v % 256;
+    return lo * 256 + hi;
+}
+
+fn add_pairs(x: i32, y: i32) -> i32 {
+    let mut xhi: i32 = 0;
+    let mut xlo: i32 = 0;
+    let mut yhi: i32 = 0;
+    let mut ylo: i32 = 0;
+    let mut rhi: i32 = 0;
+    let mut rlo: i32 = 0;
+    xhi = decode_hi(x);
+    xlo = decode_lo(x);
+    yhi = decode_hi(y);
+    ylo = decode_lo(y);
+    rhi = xhi + yhi;
+    rlo = xlo + ylo;
+    return encode_pair(rhi, rlo);
 }
 
 pub fn main() {
-    let mut x: i32 = 42;
-    let mut y: i32 = 99;
     let mut r: i32 = 0;
-    r = read_i32(&x);           // 42
-    write_i32(&mut y, 7);
-    r = read_i32(&y);           // 7
-    swap_via_ptr(&mut x, &mut y);
-    r = read_i32(&x);           // 7
-    r = read_i32(&y);           // 42
+    let mut pair: i32 = 0;
+    pair = encode_pair(10, 20);
+    r = decode_hi(pair);
+    println!("hi = {}", r);
+    r = decode_lo(pair);
+    println!("lo = {}", r);
+    let mut swapped: i32 = 0;
+    swapped = swap_pair(pair);
+    r = decode_hi(swapped);
+    println!("swapped hi = {}", r);
+    r = decode_lo(swapped);
+    println!("swapped lo = {}", r);
+    let mut p1: i32 = 0;
+    let mut p2: i32 = 0;
+    let mut sum_pair: i32 = 0;
+    p1 = encode_pair(1, 2);
+    p2 = encode_pair(3, 4);
+    sum_pair = add_pairs(p1, p2);
+    r = decode_hi(sum_pair);
+    println!("sum hi = {}", r);
+    r = decode_lo(sum_pair);
+    println!("sum lo = {}", r);
     debug_assert!(r);
 }

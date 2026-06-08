@@ -1,51 +1,30 @@
 // logical.rs - Operations logiques booleennes
-// Demontre : &&, ||, !, comparaisons composees
-
 fn in_range(x: i32, lo: i32, hi: i32) -> bool {
     return x >= lo && x <= hi;
 }
 
-fn is_even(n: i32) -> bool {
-    return n % 2 == 0;
-}
-
-fn is_divisible(n: i32, d: i32) -> bool {
-    return n % d == 0;
-}
-
 fn leap_year(y: i32) -> bool {
-    if is_divisible(y, 400) {
-        return true;
-    }
-    if is_divisible(y, 100) {
-        return false;
-    }
-    return is_divisible(y, 4);
+    if y % 400 == 0 { return true; }
+    if y % 100 == 0 { return false; }
+    return y % 4 == 0;
 }
 
-fn any_true(a: bool, b: bool, c: bool) -> bool {
-    return a || b || c;
-}
-
-fn all_true(a: bool, b: bool, c: bool) -> bool {
-    return a && b && c;
+fn bool_to_i32(b: bool) -> i32 {
+    if b { return 1; }
+    return 0;
 }
 
 pub fn main() {
-    let mut b: bool = false;
-    b = in_range(5, 1, 10);    // true
-    b = in_range(15, 1, 10);   // false
-    b = is_even(42);           // true
-    b = leap_year(2000);       // true
-    b = leap_year(1900);       // false
-    b = leap_year(2024);       // true
-    b = any_true(false, false, true);  // true
-    b = all_true(true, true, false);   // false
     let mut r: i32 = 0;
-    if b {
-        r = 0;
-    } else {
-        r = 1;
-    }
+    r = bool_to_i32(in_range(5, 1, 10));
+    println!("in_range(5, 1, 10) = {}", r);
+    r = bool_to_i32(in_range(15, 1, 10));
+    println!("in_range(15, 1, 10) = {}", r);
+    r = bool_to_i32(leap_year(2000));
+    println!("leap_year(2000) = {}", r);
+    r = bool_to_i32(leap_year(1900));
+    println!("leap_year(1900) = {}", r);
+    r = bool_to_i32(leap_year(2024));
+    println!("leap_year(2024) = {}", r);
     debug_assert!(r);
 }

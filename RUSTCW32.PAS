@@ -553,9 +553,10 @@ Var
   UnsafeBlockCount : LongInt;
   PtrLocalCount : LongInt;
   RuntimeMacroCount : LongInt;
-  PrintlnCount  : LongInt;
+  PrintlnCount     : LongInt;
+  PrintlnI32Count  : LongInt;
   DebugAssertCount : LongInt;
-  PanicCount    : LongInt;
+  PanicCount       : LongInt;
 
   { Backend intermediaire 80386 }
   AsmTrace      : Array[0..MAX_ASM_TRACE - 1] Of TString;
@@ -575,6 +576,7 @@ Var
   PeStartLen    : LongInt;
   PeThunkVA     : Array[0..MAX_IMPORT - 1] Of LongInt;  { VA absolue de chaque thunk JMP }
   PePrintlnVA   : LongInt;   { VA absolue du stub _RSRT_println }
+  PePrintlnI32VA: LongInt;   { VA absolue du stub _RSRT_println_i32 }
   PePanicVA     : LongInt;   { VA absolue du stub _RSRT_panic }
   PeEntryVA     : LongInt;   { VA absolue du point d entree _start }
 
@@ -2082,9 +2084,10 @@ Begin
   CoffTextRelCnt := 0;
   PeImpLen   := 0;
   PeStartLen := 0;
-  PePrintlnVA := 0;
-  PePanicVA   := 0;
-  PeEntryVA   := 0;
+  PePrintlnVA    := 0;
+  PePrintlnI32VA := 0;
+  PePanicVA      := 0;
+  PeEntryVA      := 0;
   For I := 0 To MAX_IMPORT - 1 Do
   Begin
     PeImpIatVA[I] := 0;
@@ -3101,6 +3104,19 @@ Begin
   Inc(PrintlnCount);
 End;
 
+Procedure EmitPrintlnI32(Const E : TExprRec);
+Begin
+  EnsureRuntimeImports;
+  EmitAsm('  ; println! entier');
+  EmitExprLoad(E, 'EAX');
+  EmitExtendToEax(E.TypeIdx);
+  EmitAsm('  PUSH EAX');
+  XPushReg(REG_EAX);
+  EmitRuntimeCall('println_i32', 'appel runtime println_i32', WORD_SIZE);
+  Inc(RuntimeMacroCount);
+  Inc(PrintlnI32Count);
+End;
+
 Procedure EmitPanicString(StrIdx : Integer);
 Begin
   EnsureRuntimeImports;
@@ -3410,6 +3426,8 @@ Begin
       ':PROC ; ', ImportTab[I].ModuleName);
   If PrintlnCount > 0 Then
     WriteLn(F, 'EXTERN ', RuntimeSymbol('println'), ':PROC');
+  If PrintlnI32Count > 0 Then
+    WriteLn(F, 'EXTERN ', RuntimeSymbol('println_i32'), ':PROC');
   If (PanicCount > 0) Or (DebugAssertCount > 0) Then
     WriteLn(F, 'EXTERN ', RuntimeSymbol('panic'), ':PROC');
   WriteLn(F);
@@ -4144,6 +4162,7 @@ Var
     N         : Integer;
     I         : Integer;
     PlStart   : LongInt;
+    PiStart   : LongInt;
     PaStart   : LongInt;
     EntStart  : LongInt;
     MainOff   : LongInt;
@@ -4210,6 +4229,60 @@ Var
     StB($5D);                     { POP EBP }
     StB($C3);                     { RET (unreachable) }
 
+    { -- _RSRT_println_i32(value:DWORD) -- }
+    { Pile : [EBP+8]=value (i32 signe)     }
+    { Convertit en decimal + '\n' et appelle _RSRT_println }
+    PiStart := PeStartLen;
+    PePrintlnI32VA := TextVA + PiStart;
+    StB($55);                              { PUSH EBP            }
+    StB($8B); StB($EC);                    { MOV EBP, ESP        }
+    StB($53);                              { PUSH EBX            }
+    StB($56);                              { PUSH ESI            }
+    StB($57);                              { PUSH EDI            }
+    StB($83); StB($EC); StB($10);          { SUB ESP, 16         }
+    { frame: EBP-4=EBX EBP-8=ESI EBP-12=EDI buffer=[EBP-28..EBP-13] }
+    StB($8D); StB($7D); StB($E4);          { LEA EDI, [EBP-28]   }
+    StB($8B); StB($45); StB($08);          { MOV EAX, [EBP+8]    }
+    StB($33); StB($F6);                    { XOR ESI, ESI        }
+    StB($85); StB($C0);                    { TEST EAX, EAX       }
+    StB($7D); StB($03);                    { JGE +3              }
+    StB($F7); StB($D8);                    { NEG EAX             }
+    StB($46);                              { INC ESI (negative)  }
+    { digit_loop: (13 bytes) }
+    StB($33); StB($C9);                    { XOR ECX, ECX        }
+    StB($BB); StD(10);                     { MOV EBX, 10         }
+    StB($33); StB($D2);                    { XOR EDX, EDX        }
+    StB($F7); StB($F3);                    { DIV EBX             }
+    StB($80); StB($C2); StB($30);          { ADD DL, '0'         }
+    StB($52);                              { PUSH EDX            }
+    StB($41);                              { INC ECX             }
+    StB($85); StB($C0);                    { TEST EAX, EAX       }
+    StB($75); StB($F3);                    { JNZ digit_loop (-13)}
+    StB($33); StB($DB);                    { XOR EBX, EBX        }
+    StB($85); StB($F6);                    { TEST ESI, ESI       }
+    StB($74); StB($04);                    { JZ +4               }
+    StB($C6); StB($07); StB($2D);          { MOV [EDI], '-'      }
+    StB($43);                              { INC EBX             }
+    { pop_loop: (7 bytes) }
+    StB($58);                              { POP EAX             }
+    StB($88); StB($04); StB($1F);          { MOV [EDI+EBX], AL   }
+    StB($43);                              { INC EBX             }
+    StB($E2); StB($F9);                    { LOOP pop_loop (-7)  }
+    StB($C6); StB($04); StB($1F); StB($0A);{ MOV [EDI+EBX], 0x0A}
+    StB($43);                              { INC EBX             }
+    { appel _RSRT_println(ptr=EDI, len=EBX) }
+    StB($53);                              { PUSH EBX (len)      }
+    StB($57);                              { PUSH EDI (ptr)      }
+    StB($E8); StD(PlStart - (PeStartLen + 4)); { CALL _RSRT_println }
+    StB($83); StB($C4); StB($08);          { ADD ESP, 8          }
+    StB($83); StB($C4); StB($10);          { ADD ESP, 16         }
+    StB($5F);                              { POP EDI             }
+    StB($5E);                              { POP ESI             }
+    StB($5B);                              { POP EBX             }
+    StB($8B); StB($E5);                    { MOV ESP, EBP        }
+    StB($5D);                              { POP EBP             }
+    StB($C3);                              { RET                 }
+
     { -- Point d entree _start -- }
     EntStart := PeStartLen;
     PeEntryVA := TextVA + EntStart;
@@ -4268,6 +4341,8 @@ Var
           End;
         If (Target = 0) And (SymName = RS_RT_PFX + 'println') Then
           Target := PePrintlnVA;
+        If (Target = 0) And (SymName = RS_RT_PFX + 'println_i32') Then
+          Target := PePrintlnI32VA;
         If (Target = 0) And (SymName = RS_RT_PFX + 'panic') Then
           Target := PePanicVA;
         If Target = 0 Then Continue;
@@ -6056,9 +6131,9 @@ End;
 
 Procedure ParseRuntimeMacroStmt;
 Var
-  MacroName, TextVal : TString;
-  L, C, StrIdx : Integer;
-  CondExpr : TExprRec;
+  MacroName, TextVal, Prefix : TString;
+  L, C, StrIdx, FmtPos : Integer;
+  CondExpr, ValExpr : TExprRec;
 Begin
   L := CurToken.Line;
   C := CurToken.Col;
@@ -6080,11 +6155,35 @@ Begin
       SkipUntilSemicolon;
       Exit;
     End;
-    TextVal := CurToken.Val + #13#10;
+    TextVal := CurToken.Val;
     ParserNext;
+    // println!("{}", expr) ou println!("prefix {}", expr)
     If TokIs(TK_PUNCT, ',') Then
-      ReportErrorAt(CurToken.Line, CurToken.Col, ',',
-        'arguments de format println! non supportes');
+    Begin
+      FmtPos := Pos('{}', TextVal);
+      If FmtPos = 0 Then
+      Begin
+        ReportErrorAt(CurToken.Line, CurToken.Col, ',',
+          'println! : argument sans {} dans le format');
+        SkipUntilSemicolon;
+        Exit;
+      End;
+      ParserNext;   { consomme , }
+      ValExpr := ParseExpr;
+      ExpectToken(TK_PUNCT, ')', ') apres println!');
+      ExpectToken(TK_PUNCT, ';', '; apres println!');
+      // prefix avant le marqueur de format
+      Prefix := Copy(TextVal, 1, FmtPos - 1);
+      If Length(Prefix) > 0 Then
+      Begin
+        StrIdx := AddStringRec(Prefix);   { sans CRLF : juste le texte }
+        EmitPrintlnString(StrIdx);        { _RSRT_println tronque au len }
+      End;
+      EmitPrintlnI32(ValExpr);
+      Exit;
+    End;
+    { println!("chaine") simple }
+    TextVal := TextVal + #13#10;
     ExpectToken(TK_PUNCT, ')', ') apres println!');
     ExpectToken(TK_PUNCT, ';', '; apres println!');
     StrIdx := AddStringRec(TextVal);
@@ -6634,7 +6733,7 @@ Begin
   ExprCount  := 0; LoopCount := 0; MatchCount := 0;
   CallCount  := 0; ExternCallCount := 0; UnsafeDepth := 0;
   UnsafeBlockCount := 0; PtrLocalCount := 0;
-  RuntimeMacroCount := 0; PrintlnCount := 0;
+  RuntimeMacroCount := 0; PrintlnCount := 0; PrintlnI32Count := 0;
   DebugAssertCount  := 0; PanicCount   := 0;
   SourceInit;
   InitBackend;
@@ -6782,6 +6881,7 @@ BEGIN
   PtrLocalCount := 0;
   RuntimeMacroCount := 0;
   PrintlnCount := 0;
+  PrintlnI32Count := 0;
   DebugAssertCount := 0;
   PanicCount := 0;
   SourceInit;

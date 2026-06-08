@@ -1,30 +1,24 @@
-// math.rs - Fonctions arithmetiques compiles par RUST86
-// Demontre : fn, params, return, static, const
+// math.rs - Fonctions arithmetiques: add, mul, abs, div_mod
+fn add(a: i32, b: i32) -> i32 { return a + b; }
+fn mul(a: i32, b: i32) -> i32 { return a * b; }
+fn abs_val(x: i32) -> i32 { if x < 0 { return 0 - x; } return x; }
 
-const MAX_VAL: i16 = 1000;
-static mut COUNTER: i16 = 0;
-
-fn add(a: i16, b: i16) -> i16 {
-    return a + b;
-}
-
-fn mul(a: i16, b: i16) -> i16 {
-    return a * b;
-}
-
-fn abs_val(x: i16) -> i16 {
-    if x < 0 {
-        return 0 - x;
-    }
-    return x;
+fn div_mod(a: i32, b: i32, mode: i32) -> i32 {
+    if mode == 0 { return a / b; }
+    return a % b;
 }
 
 pub fn main() {
-    let x: i16 = 10;
-    let y: i16 = 20;
-    let mut z: i16 = 0;
-    z = add(x, y);
-    z = mul(z, 2);
-    z = abs_val(0 - z);
-    debug_assert!(z);
+    let mut r: i32 = 0;
+    r = add(10, 20);
+    println!("add(10, 20) = {}", r);
+    r = mul(6, 7);
+    println!("mul(6, 7) = {}", r);
+    r = abs_val(0 - 42);
+    println!("abs_val(-42) = {}", r);
+    r = div_mod(17, 5, 0);
+    println!("17 / 5 = {}", r);
+    r = div_mod(17, 5, 1);
+    println!("17 % 5 = {}", r);
+    debug_assert!(r);
 }

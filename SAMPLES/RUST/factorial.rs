@@ -1,10 +1,6 @@
 // factorial.rs - Factorielle iterative et recursive
-// Demontre : while, multiplication, appels recursifs
-
 fn factorial_iter(n: i32) -> i32 {
-    if n <= 1 {
-        return 1;
-    }
+    if n <= 1 { return 1; }
     let mut result: i32 = 1;
     let mut i: i32 = 2;
     while i <= n {
@@ -15,16 +11,21 @@ fn factorial_iter(n: i32) -> i32 {
 }
 
 fn factorial_rec(n: i32) -> i32 {
-    if n <= 1 {
-        return 1;
-    }
-    return n * factorial_rec(n - 1);
+    if n <= 1 { return 1; }
+    let mut sub: i32 = 0;
+    sub = factorial_rec(n - 1);
+    return n * sub;
 }
 
 pub fn main() {
     let mut r: i32 = 0;
-    r = factorial_iter(5);   // 120
-    r = factorial_rec(5);    // 120
-    r = factorial_iter(7);   // 5040
+    r = factorial_iter(5);
+    println!("factorial_iter(5) = {}", r);
+    r = factorial_rec(5);
+    println!("factorial_rec(5) = {}", r);
+    r = factorial_iter(7);
+    println!("factorial_iter(7) = {}", r);
+    r = factorial_rec(10);
+    println!("factorial_rec(10) = {}", r);
     debug_assert!(r);
 }
