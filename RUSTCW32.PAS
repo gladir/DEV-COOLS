@@ -2592,6 +2592,20 @@ Begin
   BinB($C0 Or (Dst Shl 3) Or Src);
 End;
 
+{ AND r32, r32 (23 /r) }
+Procedure XAndRR(Dst, Src : Byte);
+Begin
+  BinB($23);
+  BinB($C0 Or (Dst Shl 3) Or Src);
+End;
+
+{ OR r32, r32 (0B /r) }
+Procedure XOrRR(Dst, Src : Byte);
+Begin
+  BinB($0B);
+  BinB($C0 Or (Dst Shl 3) Or Src);
+End;
+
 { CMP r32, imm8 (83 /7) }
 Procedure XCmpRImm8(Reg : Byte; V : Byte);
 Begin
@@ -3191,7 +3205,8 @@ Begin
      (Op <> '/') And (Op <> '%') And (Op <> '==') And
      (Op <> '!=') And (Op <> '<') And (Op <> '<=') And
      (Op <> '>') And (Op <> '>=') And (Op <> '&&') And
-     (Op <> '||') Then
+     (Op <> '||') And (Op <> '&') And (Op <> '|') And
+     (Op <> '^') Then
     Exit;
 
   EmitExprLoad(Left, 'EAX');
@@ -3285,6 +3300,21 @@ Begin
     XCmpRImm8(REG_EBX, 0); XSetccR8(CC_NE, REG_EBX);
     XOrR8R8(REG_EAX, REG_EBX);
     XMovzxR32R8(REG_EAX, REG_EAX);
+  End
+  Else If Op = '&' Then
+  Begin
+    EmitAsm('  AND EAX, EBX');
+    XAndRR(REG_EAX, REG_EBX);
+  End
+  Else If Op = '|' Then
+  Begin
+    EmitAsm('  OR EAX, EBX');
+    XOrRR(REG_EAX, REG_EBX);
+  End
+  Else If Op = '^' Then
+  Begin
+    EmitAsm('  XOR EAX, EBX');
+    XXorRR(REG_EAX, REG_EBX);
   End;
 End;
 
@@ -4617,6 +4647,9 @@ Begin
   Else If Op = '>=' Then V := Ord(A >= B)
   Else If Op = '&&' Then V := Ord((A <> 0) And (B <> 0))
   Else If Op = '||' Then V := Ord((A <> 0) Or (B <> 0))
+  Else If Op = '&'  Then V := A And B
+  Else If Op = '|'  Then V := A Or B
+  Else If Op = '^'  Then V := A Xor B
   Else EvalBinaryConst := False;
 End;
 
@@ -4822,6 +4855,63 @@ Begin
   ParseAdd := L;
 End;
 
+Function ParseBitAnd : TExprRec;
+Var
+  L, R, OldL : TExprRec;
+  V : LongInt;
+  IsC : Boolean;
+Begin
+  L := ParseAdd;
+  While TokIs(TK_OP, '&') Do
+  Begin
+    ParserNext;
+    R := ParseAdd;
+    IsC := L.IsConst And R.IsConst And EvalBinaryConst('&', L.IntValue, R.IntValue, V);
+    OldL := L;
+    L := MakeExpr(EK_BINARY, BinaryResultType('&', L, R), IsC, V, False);
+    EmitBinaryArith('&', OldL, R, L.TypeIdx);
+  End;
+  ParseBitAnd := L;
+End;
+
+Function ParseBitXor : TExprRec;
+Var
+  L, R, OldL : TExprRec;
+  V : LongInt;
+  IsC : Boolean;
+Begin
+  L := ParseBitAnd;
+  While TokIs(TK_OP, '^') Do
+  Begin
+    ParserNext;
+    R := ParseBitAnd;
+    IsC := L.IsConst And R.IsConst And EvalBinaryConst('^', L.IntValue, R.IntValue, V);
+    OldL := L;
+    L := MakeExpr(EK_BINARY, BinaryResultType('^', L, R), IsC, V, False);
+    EmitBinaryArith('^', OldL, R, L.TypeIdx);
+  End;
+  ParseBitXor := L;
+End;
+
+Function ParseBitOr : TExprRec;
+Var
+  L, R, OldL : TExprRec;
+  V : LongInt;
+  IsC : Boolean;
+Begin
+  L := ParseBitXor;
+  While TokIs(TK_OP, '|') Do
+  Begin
+    ParserNext;
+    R := ParseBitXor;
+    IsC := L.IsConst And R.IsConst And EvalBinaryConst('|', L.IntValue, R.IntValue, V);
+    OldL := L;
+    L := MakeExpr(EK_BINARY, BinaryResultType('|', L, R), IsC, V, False);
+    EmitBinaryArith('|', OldL, R, L.TypeIdx);
+  End;
+  ParseBitOr := L;
+End;
+
 Function ParseCompare : TExprRec;
 Var
   L, R, OldL : TExprRec;
@@ -4829,7 +4919,7 @@ Var
   V : LongInt;
   IsC : Boolean;
 Begin
-  L := ParseAdd;
+  L := ParseBitOr;
   While TokIs(TK_OP, '<') Or TokIs(TK_OP, '<=') Or
         TokIs(TK_OP, '>') Or TokIs(TK_OP, '>=') Do
   Begin

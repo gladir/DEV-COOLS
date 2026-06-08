@@ -1,5 +1,5 @@
 // bitops.rs - Operations sur les bits
-// Demontre : &, |, ^, %, masques de bits
+// Demontre : &, |, ^, masques de bits
 
 fn count_bits(n: u32) -> u32 {
     let mut x: u32 = 0;
