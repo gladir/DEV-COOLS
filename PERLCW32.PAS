@@ -919,6 +919,7 @@ Const
   NK_SLICE      = 36;
   NK_EMPTY      = 37;
   NK_CODE_BLOCK = 38;   { bloc expression pour sort/grep/map }
+  NK_INTERP     = 39;   { chaine avec interpolation : enfants = segments }
 
   { Flags de chaines }
   STRF_SIMPLE   = $0001;   { 'single quoted' }
@@ -1129,6 +1130,8 @@ Var
   BinFixupCount:  Integer;
   BinImports:     TBinImportTable;
   BinImportCount: Integer;
+  PLKCount:       Integer;   { compteur labels _PLK_ chaines .rdata }
+  PLRECount:      Integer;   { compteur labels _PLRE_ regex compilee }
 
 Procedure FatalError(Msg: String); Forward;
 Procedure WarnMsg(Msg: String); Forward;
@@ -1491,12 +1494,16 @@ Begin
     '@': Begin
            CurTokType := TOK_SIGIL_ARRAY;
            If IsAlpha(LexPeekChar) Or (LexPeekChar = '_') Then
-             While IsIdentChar(LexPeekChar) Do AppendTok(LexNextChar);
+             While IsIdentChar(LexPeekChar) Do AppendTok(LexNextChar)
+           Else If (LexPeekChar = '+') Or (LexPeekChar = '-') Then
+             AppendTok(LexNextChar);  { @+ @- : positions groupes regex }
          End;
     '%': Begin
            CurTokType := TOK_SIGIL_HASH;
            If IsAlpha(LexPeekChar) Or (LexPeekChar = '_') Then
-             While IsIdentChar(LexPeekChar) Do AppendTok(LexNextChar);
+             While IsIdentChar(LexPeekChar) Do AppendTok(LexNextChar)
+           Else If LexPeekChar = '+' Then
+             AppendTok(LexNextChar);  { %+ : captures nommees regex }
          End;
     '&': Begin
            CurTokType := TOK_SIGIL_CODE;
@@ -3073,13 +3080,20 @@ Function ParsePow:     Integer; Forward;
 Function ParseUnary:   Integer; Forward;
 Function ParsePostfix: Integer; Forward;
 Function ParsePrimary: Integer; Forward;
-{ TODO 07/08/09/11 cross-section forwards }
-Function ParseBlock:            Integer; Forward;
-Function ScanProtoStr:          String;  Forward;
-Procedure RegisterSubParams;    Forward;
-Function ParseCodeBlock:        Integer; Forward;
+{ TODO 07/08/09/11/12/13 cross-section forwards }
+Function ParseBlock:                        Integer; Forward;
+Function ScanProtoStr:                      String;  Forward;
+Procedure RegisterSubParams;                Forward;
+Function ParseCodeBlock:                    Integer; Forward;
 Function ParseSortGrepMap(KwTok: Integer; S: String): Integer; Forward;
 Procedure PropagateCtx(Node, InCtx: Integer); Forward;
+Function ParseInterpolatedStr(Src: String; TokT: Integer): Integer; Forward;
+Function ExtractRegexPat(S: String): String;  Forward;
+Function ExtractRegexFlags(S: String): String; Forward;
+Function ExtractSubstRpl(S: String): String;  Forward;
+Function ExtractSubstFlags(S: String): String; Forward;
+Function ParseRegexFlags(F: String): Integer; Forward;
+Function ParseTransFlags(F: String): Integer; Forward;
 
 Function NewNode(K, Tok: Integer; Txt: String): Integer;
 Var N: Integer;
@@ -3266,15 +3280,34 @@ Begin
     LexNextToken;
   End Else If T = TOK_FLOAT Then Begin
     N := NewNode(NK_LITERAL, T, CurTokStr); LexNextToken;
-  End Else If (T = TOK_STRING) Or (T = TOK_DSTRING) Or
-              (T = TOK_HEREDOC) Then Begin
+  End Else If T = TOK_STRING Then Begin
     N := NewNode(NK_LITERAL, T, CurTokStr); LexNextToken;
+  End Else If (T = TOK_DSTRING) Or (T = TOK_HEREDOC) Then Begin
+    S := CurTokStr; LexNextToken;
+    N := ParseInterpolatedStr(S, T);
   End Else If T = TOK_REGEX Then Begin
-    N := NewNode(NK_REGEX, T, CurTokStr); LexNextToken;
+    { NK_REGEX : Text=pattern, Left=flags bitmask, Third=index PLRE }
+    N := NewNode(NK_REGEX, T, ExtractRegexPat(CurTokStr));
+    AstTable[N].Left  := ParseRegexFlags(ExtractRegexFlags(CurTokStr));
+    Inc(PLRECount);
+    AstTable[N].Third := PLRECount;
+    LexNextToken;
   End Else If T = TOK_SUBST Then Begin
-    N := NewNode(NK_SUBST, T, CurTokStr); LexNextToken;
+    { NK_SUBST : Text=pattern, Left=flags, Third=PLRE, FirstChild=rpl }
+    N := NewNode(NK_SUBST, T, ExtractRegexPat(CurTokStr));
+    AstTable[N].Left  := ParseRegexFlags(ExtractSubstFlags(CurTokStr));
+    Inc(PLRECount);
+    AstTable[N].Third := PLRECount;
+    VarN := NewNode(NK_LITERAL, TOK_STRING, ExtractSubstRpl(CurTokStr));
+    AstTable[N].FirstChild := VarN;
+    LexNextToken;
   End Else If T = TOK_TRANS Then Begin
-    N := NewNode(NK_TRANS, T, CurTokStr); LexNextToken;
+    { NK_TRANS : Text=src_list, Left=flags, FirstChild=dst_list }
+    N := NewNode(NK_TRANS, T, ExtractRegexPat(CurTokStr));
+    AstTable[N].Left  := ParseTransFlags(ExtractSubstFlags(CurTokStr));
+    VarN := NewNode(NK_LITERAL, TOK_STRING, ExtractSubstRpl(CurTokStr));
+    AstTable[N].FirstChild := VarN;
+    LexNextToken;
   End Else If T = TOK_QWORD Then Begin
     N := NewNode(NK_ARRAY_LIT, T, CurTokStr); LexNextToken;
   End Else If T = TOK_HASHNUM Then Begin
@@ -4199,6 +4232,254 @@ Begin
   End;
   LexNextToken;
   ScanProtoStr := P;
+End;
+
+{ ============================================================ }
+{ TODO 13 : Expressions regulieres m//, =~, !~, qr//           }
+{ ============================================================ }
+
+Const
+  REGEX_FLAG_I = 1;    { case insensitive }
+  REGEX_FLAG_G = 2;    { global }
+  REGEX_FLAG_M = 4;    { multiline }
+  REGEX_FLAG_S = 8;    { singleline (. inclut \n) }
+  REGEX_FLAG_X = 16;   { extended (espaces ignores) }
+  REGEX_FLAG_E = 32;   { eval du remplacement }
+  REGEX_FLAG_R = 64;   { non-destructif }
+  TRANS_FLAG_C = 1;    { complement de la liste source }
+  TRANS_FLAG_D = 2;    { supprime les non-correspondants }
+  TRANS_FLAG_S = 4;    { squeeze des repetitions }
+
+{ PLRECount est declare dans la section globale Var principale }
+
+{ Genere un label unique _PLRE_N pour les donnees de regex compilees }
+Function MakePLRELabel: String;
+Var S: String;
+Begin
+  Inc(PLRECount);
+  Str(PLRECount, S);
+  MakePLRELabel := '_PLRE_' + S;
+End;
+
+{ Trouve la position du N-ieme slash dans S }
+Function NthSlash(S: String; N: Integer): Integer;
+Var I, Count: Integer;
+Begin
+  Count := 0;
+  For I := 1 To Length(S) Do Begin
+    If S[I] = '/' Then Begin
+      Inc(Count);
+      If Count = N Then Begin NthSlash := I; Exit; End;
+    End;
+  End;
+  NthSlash := 0;
+End;
+
+{ Pour "pat/flags" (TOK_REGEX) -> retourne pat }
+Function ExtractRegexPat(S: String): String;
+Var P: Integer;
+Begin
+  P := NthSlash(S, 1);
+  If P = 0 Then ExtractRegexPat := S
+  Else ExtractRegexPat := Copy(S, 1, P-1);
+End;
+
+{ Pour "pat/flags" (TOK_REGEX) -> retourne flags }
+Function ExtractRegexFlags(S: String): String;
+Var P: Integer;
+Begin
+  P := NthSlash(S, 1);
+  If P = 0 Then ExtractRegexFlags := ''
+  Else ExtractRegexFlags := Copy(S, P+1, Length(S));
+End;
+
+{ Pour "pat/rpl/flags" (TOK_SUBST/TOK_TRANS) -> retourne rpl ou dst }
+Function ExtractSubstRpl(S: String): String;
+Var P1, P2: Integer;
+Begin
+  P1 := NthSlash(S, 1);
+  P2 := NthSlash(S, 2);
+  If (P1 = 0) Or (P2 = 0) Then ExtractSubstRpl := ''
+  Else ExtractSubstRpl := Copy(S, P1+1, P2-P1-1);
+End;
+
+{ Pour "pat/rpl/flags" -> retourne flags apres le 2eme slash }
+Function ExtractSubstFlags(S: String): String;
+Var P: Integer;
+Begin
+  P := NthSlash(S, 2);
+  If P = 0 Then ExtractSubstFlags := ''
+  Else ExtractSubstFlags := Copy(S, P+1, Length(S));
+End;
+
+{ Convertit la chaine de flags regex en bitmask REGEX_FLAG_* }
+Function ParseRegexFlags(F: String): Integer;
+Var Bits, I: Integer;
+Begin
+  Bits := 0;
+  For I := 1 To Length(F) Do
+    Case F[I] Of
+      'i': Bits := Bits Or REGEX_FLAG_I;
+      'g': Bits := Bits Or REGEX_FLAG_G;
+      'm': Bits := Bits Or REGEX_FLAG_M;
+      's': Bits := Bits Or REGEX_FLAG_S;
+      'x': Bits := Bits Or REGEX_FLAG_X;
+      'e': Bits := Bits Or REGEX_FLAG_E;
+      'r': Bits := Bits Or REGEX_FLAG_R;
+    End;
+  ParseRegexFlags := Bits;
+End;
+
+{ Convertit la chaine de flags tr/// en bitmask TRANS_FLAG_* }
+Function ParseTransFlags(F: String): Integer;
+Var Bits, I: Integer;
+Begin
+  Bits := 0;
+  For I := 1 To Length(F) Do
+    Case F[I] Of
+      'c': Bits := Bits Or TRANS_FLAG_C;
+      'd': Bits := Bits Or TRANS_FLAG_D;
+      's': Bits := Bits Or TRANS_FLAG_S;
+    End;
+  ParseTransFlags := Bits;
+End;
+
+{ Noms des fonctions runtime pour les expressions regulieres }
+Function PlRtRegexMatch:   String; Begin PlRtRegexMatch   := '_PLRT_regex_match';   End;
+Function PlRtRegexCompile: String; Begin PlRtRegexCompile := '_PLRT_regex_compile'; End;
+Function PlRtRegexCapture: String; Begin PlRtRegexCapture := '_PLRT_regex_capture'; End;
+Function PlRtSubstOnce:    String; Begin PlRtSubstOnce    := '_PLRT_subst_once';    End;
+Function PlRtSubstGlobal:  String; Begin PlRtSubstGlobal  := '_PLRT_subst_global';  End;
+Function PlRtTrans:        String; Begin PlRtTrans        := '_PLRT_tr';            End;
+
+{ ============================================================ }
+{ TODO 12 : Chaines : interpolation, heredoc, operateurs       }
+{ ============================================================ }
+
+Const
+  RT_STR_REFCOUNT_OFS = 0;    { Int32 : compteur de references }
+  RT_STR_FLAGS_OFS    = 4;    { Int32 : drapeaux d encodage    }
+  RT_STR_LEN_OFS      = 8;    { Int32 : longueur en octets     }
+  RT_STR_CAP_OFS      = 12;   { Int32 : capacite allouee       }
+  RT_STR_BUF_OFS      = 16;   { Ptr32 : pointeur vers donnees  }
+  RT_STR_HEADER_SIZE  = 20;
+  RT_STR_FLAG_LATIN1  = 0;
+  RT_STR_FLAG_UTF8    = 1;
+  RT_STR_FLAG_STATIC  = 2;    { chaine en .rdata, non heap     }
+
+{ PLKCount est declare dans la section globale Var principale }
+
+{ Genere un label unique _PLK_N pour un litteral de chaine }
+Function MakePLKLabel: String;
+Var S: String;
+Begin
+  Inc(PLKCount);
+  Str(PLKCount, S);
+  MakePLKLabel := '_PLK_' + S;
+End;
+
+{ Noms des fonctions runtime pour les chaines }
+Function PlRtStrConcat:  String; Begin PlRtStrConcat  := '_PLRT_strconcat';   End;
+Function PlRtStrRepeat:  String; Begin PlRtStrRepeat  := '_PLRT_strrepeat';   End;
+Function PlRtStrLen:     String; Begin PlRtStrLen     := '_PLRT_strlen';      End;
+Function PlRtStrEq:      String; Begin PlRtStrEq      := '_PLRT_streq';       End;
+Function PlRtStrCmp:     String; Begin PlRtStrCmp     := '_PLRT_strcmp';      End;
+Function PlRtStrToInt:   String; Begin PlRtStrToInt   := '_PLRT_to_s_int';    End;
+Function PlRtStrToFloat: String; Begin PlRtStrToFloat := '_PLRT_to_s_float';  End;
+Function PlRtStrUC:      String; Begin PlRtStrUC      := '_PLRT_str_uc';      End;
+Function PlRtStrLC:      String; Begin PlRtStrLC      := '_PLRT_str_lc';      End;
+Function PlRtStrUCFirst: String; Begin PlRtStrUCFirst := '_PLRT_str_ucfirst'; End;
+Function PlRtStrLCFirst: String; Begin PlRtStrLCFirst := '_PLRT_str_lcfirst'; End;
+Function PlRtStrChomp:   String; Begin PlRtStrChomp   := '_PLRT_str_chomp';   End;
+Function PlRtStrChop:    String; Begin PlRtStrChop    := '_PLRT_str_chop';    End;
+Function PlRtStrSubstr:  String; Begin PlRtStrSubstr  := '_PLRT_str_substr';  End;
+Function PlRtStrIndex:   String; Begin PlRtStrIndex   := '_PLRT_str_index';   End;
+Function PlRtStrRindex:  String; Begin PlRtStrRindex  := '_PLRT_str_rindex';  End;
+Function PlRtStrSprintf: String; Begin PlRtStrSprintf := '_PLRT_sprintf';      End;
+Function PlRtStrChr:     String; Begin PlRtStrChr     := '_PLRT_str_chr';     End;
+Function PlRtStrOrd:     String; Begin PlRtStrOrd     := '_PLRT_str_ord';     End;
+Function PlRtStrHex:     String; Begin PlRtStrHex     := '_PLRT_str_hex';     End;
+Function PlRtStrOct:     String; Begin PlRtStrOct     := '_PLRT_str_oct';     End;
+Function PlRtStrPos:     String; Begin PlRtStrPos     := '_PLRT_str_pos';     End;
+Function PlRtStrReverse: String; Begin PlRtStrReverse := '_PLRT_str_reverse'; End;
+Function PlRtStrJoin:    String; Begin PlRtStrJoin    := '_PLRT_str_join';    End;
+
+{ Analyse une chaine avec hints ($S, @A) issus du lexeur et        }
+{ construit NK_LITERAL si pas d interpolation, ou NK_INTERP avec   }
+{ des enfants : NK_LITERAL pour les segments, NK_VAR / NK_CALL     }
+{ pour les variables interpolees                                    }
+Function ParseInterpolatedStr(Src: String; TokT: Integer): Integer;
+Var
+  N, Child, VarN, ListN: Integer;
+  Buf, VName: String;
+  I: Integer;
+  HasInterp: Boolean;
+  C: Char;
+Begin
+  HasInterp := False;
+  I := 1;
+  While I < Length(Src) Do Begin
+    If ((Src[I] = '$') And (Src[I+1] = 'S')) Or
+       ((Src[I] = '@') And (Src[I+1] = 'A')) Then Begin
+      HasInterp := True; Break;
+    End;
+    Inc(I);
+  End;
+  If Not HasInterp Then Begin
+    ParseInterpolatedStr := NewNode(NK_LITERAL, TokT, Src);
+    Exit;
+  End;
+  N   := NewNode(NK_INTERP, TokT, '');
+  Buf := '';
+  I   := 1;
+  While I <= Length(Src) Do Begin
+    C := Src[I];
+    If (C = '$') And (I < Length(Src)) And (Src[I+1] = 'S') Then Begin
+      If Buf <> '' Then Begin
+        AppendArg(N, NewNode(NK_LITERAL, TOK_STRING, Buf));
+        Buf := '';
+      End;
+      Inc(I, 2);
+      VName := '';
+      If (I <= Length(Src)) And (Src[I] = '{') Then Begin
+        Inc(I);
+        While (I <= Length(Src)) And (Src[I] <> '}') Do Begin
+          VName := VName + Src[I]; Inc(I);
+        End;
+        If I <= Length(Src) Then Inc(I);
+      End Else Begin
+        While (I <= Length(Src)) And IsIdentChar(Src[I]) Do Begin
+          VName := VName + Src[I]; Inc(I);
+        End;
+      End;
+      VarN := NewNode(NK_VAR, TOK_SIGIL_SCALAR, VName);
+      AstTable[VarN].SymRef := FindSym(VName, SK_SCALAR);
+      AppendArg(N, VarN);
+    End Else If (C = '@') And (I < Length(Src)) And (Src[I+1] = 'A') Then Begin
+      If Buf <> '' Then Begin
+        AppendArg(N, NewNode(NK_LITERAL, TOK_STRING, Buf));
+        Buf := '';
+      End;
+      Inc(I, 2);
+      VName := '';
+      While (I <= Length(Src)) And IsIdentChar(Src[I]) Do Begin
+        VName := VName + Src[I]; Inc(I);
+      End;
+      { "@arr" dans chaine -> represente comme join(@arr) }
+      { le separateur $" sera insere au codegen            }
+      VarN  := NewNode(NK_CALL, KW_JOIN, 'join');
+      ListN := NewNode(NK_VAR, TOK_SIGIL_ARRAY, VName);
+      AstTable[ListN].SymRef    := FindSym(VName, SK_ARRAY);
+      AstTable[VarN].FirstChild := ListN;
+      AppendArg(N, VarN);
+    End Else Begin
+      If Length(Buf) < 255 Then Buf := Buf + C;
+      Inc(I);
+    End;
+  End;
+  If Buf <> '' Then
+    AppendArg(N, NewNode(NK_LITERAL, TOK_STRING, Buf));
+  ParseInterpolatedStr := N;
 End;
 
 { ============================================================ }
