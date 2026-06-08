@@ -1132,6 +1132,9 @@ Var
   BinImportCount: Integer;
   PLKCount:       Integer;   { compteur labels _PLK_ chaines .rdata }
   PLRECount:      Integer;   { compteur labels _PLRE_ regex compilee }
+  PLLCount:       Integer;   { compteur labels _PLL_ sauts internes }
+  AsmOut:         Text;      { fichier de sortie ASM (-asm) }
+  AsmOutOpen:     Boolean;   { AsmOut est ouvert }
 
 Procedure FatalError(Msg: String); Forward;
 Procedure WarnMsg(Msg: String); Forward;
@@ -3094,6 +3097,24 @@ Function ExtractSubstRpl(S: String): String;  Forward;
 Function ExtractSubstFlags(S: String): String; Forward;
 Function ParseRegexFlags(F: String): Integer; Forward;
 Function ParseTransFlags(F: String): Integer; Forward;
+{ TODO 14 cross-section forwards }
+Function ExpandTransList(S: String): String;   Forward;
+Function ProcessSubstRepl(S: String): String;  Forward;
+{ TODO 15 cross-section forwards }
+Procedure CodegenNode(Node: Integer); Forward;
+
+{ Constantes de flags regex/trans, definies ici avant ParsePrimary }
+Const
+  REGEX_FLAG_I = 1;    { case insensitive }
+  REGEX_FLAG_G = 2;    { global }
+  REGEX_FLAG_M = 4;    { multiline }
+  REGEX_FLAG_S = 8;    { singleline (. inclut \n) }
+  REGEX_FLAG_X = 16;   { extended (espaces ignores) }
+  REGEX_FLAG_E = 32;   { eval du remplacement }
+  REGEX_FLAG_R = 64;   { non-destructif }
+  TRANS_FLAG_C = 1;    { complement de la liste source }
+  TRANS_FLAG_D = 2;    { supprime les non-correspondants }
+  TRANS_FLAG_S = 4;    { squeeze des repetitions }
 
 Function NewNode(K, Tok: Integer; Txt: String): Integer;
 Var N: Integer;
@@ -3293,19 +3314,29 @@ Begin
     AstTable[N].Third := PLRECount;
     LexNextToken;
   End Else If T = TOK_SUBST Then Begin
-    { NK_SUBST : Text=pattern, Left=flags, Third=PLRE, FirstChild=rpl }
+    { NK_SUBST : Text=pattern, Left=flags, Third=PLRE_idx, Right=PLK_idx }
+    { FirstChild -> noeud remplacement (NK_INTERP ou NK_LITERAL si /e)    }
     N := NewNode(NK_SUBST, T, ExtractRegexPat(CurTokStr));
     AstTable[N].Left  := ParseRegexFlags(ExtractSubstFlags(CurTokStr));
     Inc(PLRECount);
     AstTable[N].Third := PLRECount;
-    VarN := NewNode(NK_LITERAL, TOK_STRING, ExtractSubstRpl(CurTokStr));
+    S := ProcessSubstRepl(ExtractSubstRpl(CurTokStr));
+    If (AstTable[N].Left And REGEX_FLAG_E) <> 0 Then Begin
+      { /e : remplacement est du code Perl - stocke brut pour codegen }
+      VarN := NewNode(NK_LITERAL, TOK_STRING, S);
+    End Else Begin
+      { interpolation du remplacement ($1, $var, etc.) }
+      VarN := ParseInterpolatedStr(S, TOK_DSTRING);
+      Inc(PLKCount);
+      AstTable[N].Right := PLKCount;
+    End;
     AstTable[N].FirstChild := VarN;
     LexNextToken;
   End Else If T = TOK_TRANS Then Begin
-    { NK_TRANS : Text=src_list, Left=flags, FirstChild=dst_list }
-    N := NewNode(NK_TRANS, T, ExtractRegexPat(CurTokStr));
+    { NK_TRANS : Text=src_etendu, Left=flags, FirstChild=NK_LITERAL(dst_etendu) }
+    N := NewNode(NK_TRANS, T, ExpandTransList(ExtractRegexPat(CurTokStr)));
     AstTable[N].Left  := ParseTransFlags(ExtractSubstFlags(CurTokStr));
-    VarN := NewNode(NK_LITERAL, TOK_STRING, ExtractSubstRpl(CurTokStr));
+    VarN := NewNode(NK_LITERAL, TOK_STRING, ExpandTransList(ExtractSubstRpl(CurTokStr)));
     AstTable[N].FirstChild := VarN;
     LexNextToken;
   End Else If T = TOK_QWORD Then Begin
@@ -4238,17 +4269,7 @@ End;
 { TODO 13 : Expressions regulieres m//, =~, !~, qr//           }
 { ============================================================ }
 
-Const
-  REGEX_FLAG_I = 1;    { case insensitive }
-  REGEX_FLAG_G = 2;    { global }
-  REGEX_FLAG_M = 4;    { multiline }
-  REGEX_FLAG_S = 8;    { singleline (. inclut \n) }
-  REGEX_FLAG_X = 16;   { extended (espaces ignores) }
-  REGEX_FLAG_E = 32;   { eval du remplacement }
-  REGEX_FLAG_R = 64;   { non-destructif }
-  TRANS_FLAG_C = 1;    { complement de la liste source }
-  TRANS_FLAG_D = 2;    { supprime les non-correspondants }
-  TRANS_FLAG_S = 4;    { squeeze des repetitions }
+{ REGEX_FLAG_* et TRANS_FLAG_* sont declares avant ParsePrimary }
 
 { PLRECount est declare dans la section globale Var principale }
 
@@ -4658,6 +4679,556 @@ Begin
   Idx := AddSym('_', SK_ARRAY, SCOPE_DYNAMIC, 0);
   If Opt.Verbose Then
     WriteLn('  [sub] @_ registre idx=', Idx);
+End;
+
+{ ============================================================ }
+{ TODO 16 : Boucles : WHILE / UNTIL / FOR / FOREACH / DO-WHILE }
+{ ============================================================ }
+
+{ Empile l'index de label de la boucle courante }
+Procedure PushLoop(LabelN: Integer);
+Begin
+  If LoopDepth >= MAX_LOOP_NEST Then FatalError('trop de boucles imbriquees');
+  Inc(LoopDepth);
+  LoopStack[LoopDepth] := LabelN;
+End;
+
+{ Depile le label de la boucle courante }
+Procedure PopLoop;
+Begin
+  If LoopDepth > 0 Then Dec(LoopDepth);
+End;
+
+{ Retourne l'index PLL de la boucle active (0 si hors boucle) }
+Function CurrentLoop: Integer;
+Begin
+  If LoopDepth > 0 Then CurrentLoop := LoopStack[LoopDepth]
+  Else CurrentLoop := 0;
+End;
+
+{ Noms runtime pour les iterateurs foreach }
+Function PlRtIterCreate: String; Begin PlRtIterCreate := '_PLRT_iter_create'; End;
+Function PlRtIterNext:   String; Begin PlRtIterNext   := '_PLRT_iter_next';   End;
+Function PlRtIterFree:   String; Begin PlRtIterFree   := '_PLRT_iter_free';   End;
+
+{ --- Declarations locales pour appels croises dans TODO 16 --- }
+Procedure CodegenWhile(Node: Integer);    Forward;
+Procedure CodegenDoWhile(Node: Integer);  Forward;
+Procedure CodegenForC(Node: Integer);     Forward;
+Procedure CodegenForeach(Node: Integer);  Forward;
+Procedure CodegenLoopCtrl(Node: Integer); Forward;
+
+{ Codegen NK_WHILE / NK_UNTIL : while-COND-BODY }
+{ Left=condition, Right=corps }
+Procedure CodegenWhile(Node: Integer);
+Var
+  LabelN:  Integer;
+  TopLbl:  String;
+  ContLbl: String;
+  EndLbl:  String;
+Begin
+  Inc(PLLCount);
+  LabelN  := PLLCount;
+  TopLbl  := MakePLLLabel('LOOP', LabelN, 'TOP');
+  ContLbl := MakePLLLabel('LOOP', LabelN, 'CONT');
+  EndLbl  := MakePLLLabel('LOOP', LabelN, 'END');
+  PushLoop(LabelN);
+  EmitComment('while/until ligne ' + NumToStr(AstTable[Node].Line));
+  EmitLabel(TopLbl);
+  EmitBoolTest(AstTable[Node].Left);
+  If AstTable[Node].Kind = NK_WHILE Then
+    EmitLine('jz ' + EndLbl)
+  Else
+    EmitLine('jnz ' + EndLbl);        { until : saute si vrai }
+  CodegenNode(AstTable[Node].Right);   { corps }
+  EmitLabel(ContLbl);
+  EmitLine('jmp ' + TopLbl);
+  EmitLabel(EndLbl);
+  PopLoop;
+End;
+
+{ Codegen NK_DO_WHILE : do-BODY-while/until-COND }
+{ Left=corps, Right=condition, Tok=KW_UNTIL si do-until }
+Procedure CodegenDoWhile(Node: Integer);
+Var
+  LabelN:  Integer;
+  TopLbl:  String;
+  ContLbl: String;
+  EndLbl:  String;
+Begin
+  Inc(PLLCount);
+  LabelN  := PLLCount;
+  TopLbl  := MakePLLLabel('LOOP', LabelN, 'TOP');
+  ContLbl := MakePLLLabel('LOOP', LabelN, 'CONT');
+  EndLbl  := MakePLLLabel('LOOP', LabelN, 'END');
+  PushLoop(LabelN);
+  EmitComment('do-while/until ligne ' + NumToStr(AstTable[Node].Line));
+  EmitLabel(TopLbl);
+  CodegenNode(AstTable[Node].Left);    { corps }
+  EmitLabel(ContLbl);
+  EmitBoolTest(AstTable[Node].Right);  { condition }
+  If AstTable[Node].Tok = KW_UNTIL Then
+    EmitLine('jz ' + TopLbl)          { do-until : reboucle si faux }
+  Else
+    EmitLine('jnz ' + TopLbl);        { do-while : reboucle si vrai }
+  EmitLabel(EndLbl);
+  PopLoop;
+End;
+
+{ Codegen NK_FOR_C : for-INIT-COND-INCR-BODY }
+{ Left=init (0=vide), Right=cond (0=vide), Third=incr (0=vide) }
+{ FirstChild=corps }
+Procedure CodegenForC(Node: Integer);
+Var
+  LabelN:  Integer;
+  TopLbl:  String;
+  ContLbl: String;
+  EndLbl:  String;
+Begin
+  Inc(PLLCount);
+  LabelN  := PLLCount;
+  TopLbl  := MakePLLLabel('LOOP', LabelN, 'TOP');
+  ContLbl := MakePLLLabel('LOOP', LabelN, 'CONT');
+  EndLbl  := MakePLLLabel('LOOP', LabelN, 'END');
+  PushLoop(LabelN);
+  EmitComment('for (;;) ligne ' + NumToStr(AstTable[Node].Line));
+  If AstTable[Node].Left <> 0 Then
+    CodegenNode(AstTable[Node].Left);   { initialisation }
+  EmitLabel(TopLbl);
+  If AstTable[Node].Right <> 0 Then Begin
+    EmitBoolTest(AstTable[Node].Right); { condition }
+    EmitLine('jz ' + EndLbl);
+  End;
+  CodegenNode(AstTable[Node].FirstChild); { corps }
+  EmitLabel(ContLbl);
+  If AstTable[Node].Third <> 0 Then
+    CodegenNode(AstTable[Node].Third);  { increment }
+  EmitLine('jmp ' + TopLbl);
+  EmitLabel(EndLbl);
+  PopLoop;
+End;
+
+{ Codegen NK_FOREACH : foreach var LIST BODY }
+{ Left=var (0=dollar-underscore), Right=liste, FirstChild=corps }
+{ Iteration par index sur tableau temporaire }
+Procedure CodegenForeach(Node: Integer);
+Var
+  LabelN:  Integer;
+  TopLbl:  String;
+  ContLbl: String;
+  EndLbl:  String;
+Begin
+  Inc(PLLCount);
+  LabelN  := PLLCount;
+  TopLbl  := MakePLLLabel('LOOP', LabelN, 'TOP');
+  ContLbl := MakePLLLabel('LOOP', LabelN, 'CONT');
+  EndLbl  := MakePLLLabel('LOOP', LabelN, 'END');
+  PushLoop(LabelN);
+  EmitComment('foreach ligne ' + NumToStr(AstTable[Node].Line));
+  { Evaluer la liste dans EAX (ptr tableau) }
+  CodegenNode(AstTable[Node].Right);
+  { Empiler ptr tableau ; obtenir la longueur }
+  EmitLine('push eax');
+  EmitLine('push eax');
+  EmitLine('call ' + PlRtArrayLen);
+  EmitLine('add esp, 4');
+  { EAX=longueur ; [esp]=ptr-tableau }
+  EmitLine('push eax');
+  { [esp+0]=longueur [esp+4]=ptr-tableau }
+  EmitLine('push dword 0');
+  { [esp+0]=index [esp+4]=longueur [esp+8]=ptr-tableau }
+  EmitLabel(TopLbl);
+  EmitLine('mov ecx, [esp]');
+  EmitLine('cmp ecx, [esp+4]');
+  EmitLine('jge ' + EndLbl);
+  { Charger l element courant }
+  EmitLine('mov eax, [esp+8]');
+  EmitLine('push ecx');
+  EmitLine('push eax');
+  EmitLine('call ' + PlRtArrayGet);
+  EmitLine('add esp, 8');
+  { EAX = element courant -> assigner a la variable de boucle }
+  If AstTable[Node].Left <> 0 Then
+    EmitComment('STUB assign loop var node=' + NumToStr(AstTable[Node].Left))
+  Else
+    EmitComment('STUB assign $_');
+  CodegenNode(AstTable[Node].FirstChild);  { corps }
+  EmitLabel(ContLbl);
+  EmitLine('inc dword [esp]');
+  EmitLine('jmp ' + TopLbl);
+  EmitLabel(EndLbl);
+  EmitLine('add esp, 12');   { libere index + longueur + ptr-tableau }
+  PopLoop;
+End;
+
+{ Codegen NK_LAST / NK_NEXT / NK_REDO }
+{ Text=label nomme (vide si boucle courante) }
+Procedure CodegenLoopCtrl(Node: Integer);
+Var
+  LN:     Integer;
+  Target: String;
+Begin
+  If AstTable[Node].Text <> '' Then Begin
+    { saut vers label de boucle nomme (STUB) }
+    EmitComment('STUB ' + KeywordName(AstTable[Node].Tok) +
+                ' vers label ' + AstTable[Node].Text);
+    Exit;
+  End;
+  LN := CurrentLoop;
+  If LN = 0 Then Begin
+    EmitComment('ERREUR : ' + KeywordName(AstTable[Node].Tok) + ' hors boucle');
+    Exit;
+  End;
+  Case AstTable[Node].Kind Of
+    NK_LAST: Target := MakePLLLabel('LOOP', LN, 'END');
+    NK_NEXT: Target := MakePLLLabel('LOOP', LN, 'CONT');
+    NK_REDO: Target := MakePLLLabel('LOOP', LN, 'TOP');
+    Else Target := '';
+  End;
+  If Target <> '' Then Begin
+    EmitComment(KeywordName(AstTable[Node].Tok) + ' -> ' + Target);
+    EmitLine('jmp ' + Target);
+  End;
+End;
+
+{ ============================================================ }
+{ TODO 15 : Structures de controle : IF / UNLESS / ternaire    }
+{ ============================================================ }
+
+{ Convertit un entier en chaine (sans espaces) }
+Function NumToStr(N: Integer): String;
+Var S: String;
+Begin
+  Str(N, S);
+  NumToStr := S;
+End;
+
+{ Genere un label de saut interne  _PLL_<Pfx>_<N>_<Suf>       }
+{ Ex: MakePLLLabel('IF',1,'ELSE') -> '_PLL_IF_1_ELSE'          }
+Function MakePLLLabel(Pfx: String; N: Integer; Suf: String): String;
+Begin
+  MakePLLLabel := '_PLL_' + Pfx + '_' + NumToStr(N) + '_' + Suf;
+End;
+
+{ Emet une instruction ASM (indentee d'une tabulation) }
+Procedure EmitLine(S: String);
+Begin
+  If AsmOutOpen Then WriteLn(AsmOut, #9 + S)
+  Else WriteLn(#9 + S);
+End;
+
+{ Emet un label ASM (non indente, sans espace) }
+Procedure EmitLabel(L: String);
+Begin
+  If AsmOutOpen Then WriteLn(AsmOut, L + ':')
+  Else WriteLn(L + ':');
+End;
+
+{ Emet une ligne de commentaire ASM }
+Procedure EmitComment(C: String);
+Begin
+  If AsmOutOpen Then WriteLn(AsmOut, #9 + '; ' + C)
+  Else WriteLn(#9 + '; ' + C);
+End;
+
+{ PlRtToBool est deja declare dans TODO 04 }
+{ Nom runtime pour test defined }
+Function PlRtIsDefined: String; Begin PlRtIsDefined := '_PLRT_is_defined'; End;
+
+{ --- Declarations locales pour appels croise dans TODO 15 --- }
+Procedure CodegenIf(Node: Integer);          Forward;
+Procedure CodegenTernary(Node: Integer);     Forward;
+Procedure CodegenShortCircuit(Node: Integer); Forward;
+
+{ Evalue le noeud condition via CodegenNode -> EAX (valeur Perl),    }
+{ puis appelle _PLRT_to_bool ; laisse EAX=0/1 et ZF positionne.      }
+Procedure EmitBoolTest(Node: Integer);
+Begin
+  CodegenNode(Node);
+  EmitLine('push eax');
+  EmitLine('call ' + PlRtToBool);
+  EmitLine('add esp, 4');
+  EmitLine('test eax, eax');
+End;
+
+{ Codegen pour NK_IF / NK_UNLESS }
+{ Left=cond, Right=then-block, Third=else/elsif (0 si absent)         }
+Procedure CodegenIf(Node: Integer);
+Var
+  LabelN:    Integer;
+  ElseLabel: String;
+  EndLabel:  String;
+  ThirdN:    Integer;
+Begin
+  Inc(PLLCount);
+  LabelN    := PLLCount;
+  ElseLabel := MakePLLLabel('IF', LabelN, 'ELSE');
+  EndLabel  := MakePLLLabel('IF', LabelN, 'END');
+  ThirdN    := AstTable[Node].Third;
+
+  EmitComment('if/unless ligne ' + NumToStr(AstTable[Node].Line));
+  EmitBoolTest(AstTable[Node].Left);
+  If AstTable[Node].Kind = NK_IF Then
+    EmitLine('jz ' + ElseLabel)
+  Else
+    EmitLine('jnz ' + ElseLabel);   { unless : branche si vrai }
+
+  CodegenNode(AstTable[Node].Right);
+
+  If ThirdN <> 0 Then Begin
+    EmitLine('jmp ' + EndLabel);
+    EmitLabel(ElseLabel);
+    { elsif -> ThirdN est NK_IF ; else -> ThirdN est NK_STMT_LIST wrapper }
+    If AstTable[ThirdN].Kind = NK_STMT_LIST Then
+      CodegenNode(AstTable[ThirdN].Left)   { deplie le wrapper else }
+    Else
+      CodegenNode(ThirdN);                 { recurse sur elsif }
+    EmitLabel(EndLabel);
+  End Else Begin
+    EmitLabel(ElseLabel);
+  End;
+End;
+
+{ Codegen pour NK_TERNARY : COND ? VRAI : FAUX }
+{ Left=cond, Right=expr-vrai, Third=expr-faux   }
+Procedure CodegenTernary(Node: Integer);
+Var
+  LabelN:    Integer;
+  ElseLabel: String;
+  EndLabel:  String;
+Begin
+  Inc(PLLCount);
+  LabelN    := PLLCount;
+  ElseLabel := MakePLLLabel('IF', LabelN, 'ELSE');
+  EndLabel  := MakePLLLabel('IF', LabelN, 'END');
+
+  EmitBoolTest(AstTable[Node].Left);
+  EmitLine('jz ' + ElseLabel);
+  CodegenNode(AstTable[Node].Right);
+  EmitLine('jmp ' + EndLabel);
+  EmitLabel(ElseLabel);
+  CodegenNode(AstTable[Node].Third);
+  EmitLabel(EndLabel);
+End;
+
+{ Codegen pour operateurs court-circuit : && || // and or         }
+{ Preserve la valeur gauche dans EAX si elle est la valeur finale }
+Procedure CodegenShortCircuit(Node: Integer);
+Var
+  LabelN:  Integer;
+  EndLabel: String;
+  Op:      Integer;
+Begin
+  Inc(PLLCount);
+  LabelN   := PLLCount;
+  EndLabel := MakePLLLabel('IF', LabelN, 'END');
+  Op := AstTable[Node].Tok;
+
+  CodegenNode(AstTable[Node].Left);
+
+  If (Op = TOK_ANDAND) Or (Op = KW_AND) Then Begin
+    { && / and : si gauche faux -> retourner gauche ; sinon -> droite }
+    EmitLine('push eax');
+    EmitLine('push eax');
+    EmitLine('call ' + PlRtToBool);
+    EmitLine('add esp, 4');
+    EmitLine('test eax, eax');
+    EmitLine('pop eax');
+    EmitLine('jz ' + EndLabel);
+    CodegenNode(AstTable[Node].Right);
+    EmitLabel(EndLabel);
+  End Else If (Op = TOK_OROR) Or (Op = KW_OR) Then Begin
+    { || / or : si gauche vrai -> retourner gauche ; sinon -> droite }
+    EmitLine('push eax');
+    EmitLine('push eax');
+    EmitLine('call ' + PlRtToBool);
+    EmitLine('add esp, 4');
+    EmitLine('test eax, eax');
+    EmitLine('pop eax');
+    EmitLine('jnz ' + EndLabel);
+    CodegenNode(AstTable[Node].Right);
+    EmitLabel(EndLabel);
+  End Else Begin
+    { // defini-ou : si gauche est defini -> retourner gauche ; sinon -> droite }
+    EmitLine('push eax');
+    EmitLine('push eax');
+    EmitLine('call ' + PlRtIsDefined);
+    EmitLine('add esp, 4');
+    EmitLine('test eax, eax');
+    EmitLine('pop eax');
+    EmitLine('jnz ' + EndLabel);
+    CodegenNode(AstTable[Node].Right);
+    EmitLabel(EndLabel);
+  End;
+End;
+
+{ Generateur de code principal : dispatche selon le type de noeud AST }
+{ TODO 15 : NK_STMT_LIST, NK_IF, NK_UNLESS, NK_TERNARY, NK_BINARY &&||// }
+{ TODO 16+ : boucles, sous-routines, expressions, etc.                    }
+Procedure CodegenNode(Node: Integer);
+Var C: Integer;
+Begin
+  If Node = 0 Then Exit;
+  Case AstTable[Node].Kind Of
+    NK_NONE:   ;
+    NK_EMPTY:  ;
+
+    NK_STMT_LIST: Begin
+      C := AstTable[Node].FirstChild;
+      While C <> 0 Do Begin
+        CodegenNode(C);
+        C := AstTable[C].NextSibling;
+      End;
+    End;
+
+    NK_IF, NK_UNLESS: CodegenIf(Node);
+
+    NK_TERNARY: CodegenTernary(Node);
+
+    NK_BINARY: Begin
+      If (AstTable[Node].Tok = TOK_ANDAND) Or
+         (AstTable[Node].Tok = TOK_OROR)   Or
+         (AstTable[Node].Tok = TOK_DEFOR)  Or
+         (AstTable[Node].Tok = KW_AND)     Or
+         (AstTable[Node].Tok = KW_OR) Then
+        CodegenShortCircuit(Node)
+      Else
+        EmitComment('STUB binary op=' + NumToStr(AstTable[Node].Tok) +
+                    ' ligne ' + NumToStr(AstTable[Node].Line));
+    End;
+
+    Else
+      EmitComment('STUB node kind=' + NumToStr(AstTable[Node].Kind) +
+                  ' ligne ' + NumToStr(AstTable[Node].Line));
+  End;
+End;
+
+{ ============================================================ }
+{ TODO 14 : Substitution et translitteration s///, tr///       }
+{ ============================================================ }
+
+{ Etend les plages de caracteres dans les listes tr///          }
+{ 'a-z' -> 'abcdefghijklmnopqrstuvwxyz', '\n' -> #10, etc.    }
+Function ExpandTransList(S: String): String;
+Var
+  I:       Integer;
+  Lo, Hi, C: Char;
+  R:       String;
+Begin
+  R := '';
+  I := 1;
+  While I <= Length(S) Do Begin
+    If (I + 2 <= Length(S)) And (S[I+1] = '-') And
+       (Ord(S[I+2]) >= Ord(S[I])) Then Begin
+      Lo := S[I]; Hi := S[I+2];
+      C  := Lo;
+      While C <= Hi Do Begin
+        If Length(R) < 255 Then R := R + C;
+        If C = Hi Then Break;
+        C := Chr(Ord(C) + 1);
+      End;
+      Inc(I, 3);
+    End Else If (S[I] = '\') And (I < Length(S)) Then Begin
+      Inc(I);
+      Case S[I] Of
+        'n': If Length(R) < 255 Then R := R + #10;
+        't': If Length(R) < 255 Then R := R + #9;
+        'r': If Length(R) < 255 Then R := R + #13;
+        '\': If Length(R) < 255 Then R := R + '\';
+        Else If Length(R) < 255 Then R := R + S[I];
+      End;
+      Inc(I);
+    End Else Begin
+      If Length(R) < 255 Then R := R + S[I];
+      Inc(I);
+    End;
+  End;
+  ExpandTransList := R;
+End;
+
+{ Traite les echappements et ajoute les hints '$S'/'@A' pour          }
+{ l'interpolation dans le remplacement s///                            }
+{ $var -> $Svar,  $1 -> $S1,  @arr -> @Aarr,  \n -> #10              }
+Function ProcessSubstRepl(S: String): String;
+Var
+  I: Integer;
+  C: Char;
+  R: String;
+Begin
+  R := '';
+  I := 1;
+  While I <= Length(S) Do Begin
+    C := S[I];
+    If (C = '\') And (I < Length(S)) Then Begin
+      Inc(I);
+      Case S[I] Of
+        'n': If Length(R) < 255 Then R := R + #10;
+        't': If Length(R) < 255 Then R := R + #9;
+        'r': If Length(R) < 255 Then R := R + #13;
+        'f': If Length(R) < 255 Then R := R + #12;
+        'a': If Length(R) < 255 Then R := R + #7;
+        'e': If Length(R) < 255 Then R := R + #27;
+        '\': If Length(R) < 255 Then R := R + '\';
+        '$': If Length(R) < 255 Then R := R + '$';
+        '@': If Length(R) < 255 Then R := R + '@';
+        Else If Length(R) < 254 Then R := R + '\' + S[I];
+      End;
+      Inc(I);
+    End Else If (C = '$') And (I < Length(S)) And
+                (IsAlpha(S[I+1]) Or IsDigit(S[I+1])) Then Begin
+      { variable scalaire ($var) ou reference de capture ($1, $2...) }
+      If Length(R) < 254 Then R := R + '$S';
+      Inc(I);
+      While (I <= Length(S)) And IsIdentChar(S[I]) Do Begin
+        If Length(R) < 255 Then R := R + S[I];
+        Inc(I);
+      End;
+    End Else If (C = '$') And (I < Length(S)) And (S[I+1] = '{') Then Begin
+      { forme dollar-brace: varname brace }
+      If Length(R) < 254 Then R := R + '$S';
+      Inc(I, 2);
+      While (I <= Length(S)) And (S[I] <> '}') Do Begin
+        If Length(R) < 255 Then R := R + S[I];
+        Inc(I);
+      End;
+      If I <= Length(S) Then Inc(I);
+    End Else If (C = '@') And (I < Length(S)) And IsAlpha(S[I+1]) Then Begin
+      { tableau interpole: @arr }
+      If Length(R) < 254 Then R := R + '@A';
+      Inc(I);
+      While (I <= Length(S)) And IsIdentChar(S[I]) Do Begin
+        If Length(R) < 255 Then R := R + S[I];
+        Inc(I);
+      End;
+    End Else Begin
+      { caractere ordinaire ou $ non suivi d'un identifiant }
+      If Length(R) < 255 Then R := R + C;
+      Inc(I);
+    End;
+  End;
+  ProcessSubstRepl := R;
+End;
+
+{ Noms des fonctions runtime supplementaires pour s/// et tr/// }
+Function PlRtSubstInterp: String; Begin PlRtSubstInterp := '_PLRT_subst_interp'; End;
+Function PlRtTransExpand:  String; Begin PlRtTransExpand  := '_PLRT_tr_expand';   End;
+Function PlRtTransCount:   String; Begin PlRtTransCount   := '_PLRT_tr_count';    End;
+Function PlRtTransBuild:   String; Begin PlRtTransBuild   := '_PLRT_tr_build';    End;
+
+{ Genere le nom du label _PLK_N pour une chaine de remplacement s/// }
+Function MakeSubstRplLabel(PLKIdx: Integer): String;
+Var S: String;
+Begin
+  Str(PLKIdx, S);
+  MakeSubstRplLabel := '_PLK_' + S;
+End;
+
+{ Genere le nom du label _PLRE_N pour un pattern compile de s/// }
+Function MakeSubstPatLabel(PLREIdx: Integer): String;
+Var S: String;
+Begin
+  Str(PLREIdx, S);
+  MakeSubstPatLabel := '_PLRE_' + S;
 End;
 
 BEGIN
