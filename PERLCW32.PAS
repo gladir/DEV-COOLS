@@ -1145,6 +1145,7 @@ Var
   BinImports:     TBinImportTable;
   BinImportCount: Integer;
   BinPLKCount:    Integer;   { compteur labels chaines binaires _BPK_ }
+  BinLoopCount:   Integer;   { compteur boucles binaires _PLL_LOOP_ }
   PLKCount:       Integer;   { compteur labels _PLK_ chaines .rdata }
   PLRECount:      Integer;   { compteur labels _PLRE_ regex compilee }
   PLLCount:       Integer;   { compteur labels _PLL_ sauts internes }
@@ -4165,8 +4166,24 @@ Begin
         ParseStatement := N;
         Exit;
       End;
-    End Else Begin
-      { foreach without parens (rare bare form) - treat as expr stmt }
+    End Else If (CurTokType = KW_MY) Or (CurTokType = KW_OUR) Or
+                (CurTokType = KW_LOCAL) Or (CurTokType = TOK_SIGIL_SCALAR) Then Begin
+      { foreach my $v LIST body ou foreach $v LIST body sans paren externe }
+      VarN := 0;
+      If (CurTokType = KW_MY) Or (CurTokType = KW_OUR) Or (CurTokType = KW_LOCAL) Then Begin
+        Init := CurTokType;
+        LexNextToken;
+        VarN := ParseVarDecl(Init);
+      End Else
+        VarN := ParsePrimary;
+      ListN := ParseExpr;
+      Body := ParseBlock;
+      N := NewNode(NK_FOREACH, KW_FOREACH, '');
+      AstTable[N].Left      := VarN;
+      AstTable[N].Right     := ListN;
+      AstTable[N].FirstChild := Body;
+      ParseStatement := N;
+      Exit;
     End;
   End;
 
@@ -5018,7 +5035,8 @@ Procedure BinInit;
 Begin
   BinCodeSize  := 0; BinDataSize  := 0;
   BinRDataSize := 0; BinBssSize   := 0;
-  BinLabelCount := 0; BinFixupCount := 0; BinImportCount := 0; BinPLKCount := 0;
+  BinLabelCount := 0; BinFixupCount := 0; BinImportCount := 0;
+  BinPLKCount := 0; BinLoopCount := 0;
   BinCurSec := BIN_SEC_TEXT;
 End;
 
@@ -5386,6 +5404,70 @@ Begin
   BinEmit8($C3);                              { RET }
 
   { -------------------------------------------------------
+    _PLRT_array_new() cdecl -> EAX = new array ptr (heap)
+    Layout: [0]=count [4..]=elements (max 64, 260 bytes)
+    ------------------------------------------------------- }
+  BinDefineLabel('_PLRT_array_new');
+  BinPushReg(REG_EBP); BinEmit8($8B); BinEmit8($EC);
+  BinPushImm32(260);                             { dwBytes = 4+64*4 }
+  BinPushImm32(8);                               { dwFlags = HEAP_ZERO_MEMORY }
+  BinCallImport('_GetProcessHeap@0', 0);         { EAX = hHeap (STDCALL 0 args) }
+  BinPushReg(REG_EAX);                           { push hHeap (leftmost) }
+  BinCallImport('_HeapAlloc@12', 0);             { EAX = ptr (STDCALL cleans 12) }
+  BinEmit8($8B); BinEmit8($E5); BinPopReg(REG_EBP); BinEmit8($C3);
+
+  { -------------------------------------------------------
+    _PLRT_array_push_one(ptr, val) cdecl
+    [EBP+8]=ptr  [EBP+12]=val
+    ------------------------------------------------------- }
+  BinDefineLabel('_PLRT_array_push_one');
+  BinPushReg(REG_EBP); BinEmit8($8B); BinEmit8($EC);
+  BinPushReg(REG_EBX);
+  BinEmit8($8B); BinEmit8($5D); BinEmit8(8);    { MOV EBX, [EBP+8] (ptr) }
+  BinEmit8($8B); BinEmit8($03);                  { MOV EAX, [EBX] (count) }
+  BinEmit8($8B); BinEmit8($4D); BinEmit8(12);   { MOV ECX, [EBP+12] (val) }
+  BinEmit8($89); BinEmit8($8C); BinEmit8($83);
+  BinEmit32(4);                                   { MOV [EBX+EAX*4+4], ECX }
+  BinEmit8($FF); BinEmit8($03);                  { INC DWORD [EBX] }
+  BinPopReg(REG_EBX);
+  BinEmit8($8B); BinEmit8($E5); BinPopReg(REG_EBP); BinEmit8($C3);
+
+  { -------------------------------------------------------
+    _PLRT_array_len(ptr) cdecl -> EAX = count
+    [ESP+4]=ptr (pas de frame)
+    ------------------------------------------------------- }
+  BinDefineLabel('_PLRT_array_len');
+  BinEmit8($8B); BinEmit8($44); BinEmit8($24); BinEmit8(4);  { MOV EAX,[ESP+4] }
+  BinEmit8($8B); BinEmit8($00);                              { MOV EAX,[EAX] }
+  BinEmit8($C3);
+
+  { -------------------------------------------------------
+    _PLRT_array_get(ptr, idx) cdecl -> EAX = element
+    [ESP+4]=ptr  [ESP+8]=idx (pas de frame)
+    ------------------------------------------------------- }
+  BinDefineLabel('_PLRT_array_get');
+  BinEmit8($8B); BinEmit8($44); BinEmit8($24); BinEmit8(4);  { MOV EAX,[ESP+4] ptr }
+  BinEmit8($8B); BinEmit8($4C); BinEmit8($24); BinEmit8(8);  { MOV ECX,[ESP+8] idx }
+  BinEmit8($8D); BinEmit8($40); BinEmit8(4);                 { LEA EAX,[EAX+4] }
+  BinEmit8($8B); BinEmit8($04); BinEmit8($88);               { MOV EAX,[EAX+ECX*4] }
+  BinEmit8($C3);
+
+  { -------------------------------------------------------
+    _PLRT_array_set(ptr, idx, val) cdecl
+    [EBP+8]=ptr  [EBP+12]=idx  [EBP+16]=val
+    ------------------------------------------------------- }
+  BinDefineLabel('_PLRT_array_set');
+  BinPushReg(REG_EBP); BinEmit8($8B); BinEmit8($EC);
+  BinPushReg(REG_EBX);
+  BinEmit8($8B); BinEmit8($45); BinEmit8(8);    { MOV EAX,[EBP+8] ptr }
+  BinEmit8($8B); BinEmit8($4D); BinEmit8(12);   { MOV ECX,[EBP+12] idx }
+  BinEmit8($8B); BinEmit8($5D); BinEmit8(16);   { MOV EBX,[EBP+16] val }
+  BinEmit8($89); BinEmit8($9C); BinEmit8($88);
+  BinEmit32(4);                                   { MOV [EAX+ECX*4+4], EBX }
+  BinPopReg(REG_EBX);
+  BinEmit8($8B); BinEmit8($E5); BinPopReg(REG_EBP); BinEmit8($C3);
+
+  { -------------------------------------------------------
     _PLRT_print(hFile, count, arg1..argN) cdecl
     [EBP+8]=hFile  [EBP+12]=count  [EBP+16]=arg1
     valeur < 65536 -> convertir en chaine via _PLRT_int_to_str
@@ -5446,8 +5528,13 @@ End;
 { Codegen binaire (AST -> BinCode/BinData/BinRData)            }
 { ============================================================ }
 
-Procedure BinCodegenNode(Node: Integer); Forward;
-Procedure BinCodegenCall(Node: Integer); Forward;
+Procedure BinCodegenNode(Node: Integer);     Forward;
+Procedure BinCodegenCall(Node: Integer);     Forward;
+Procedure BinCodegenList(Node: Integer);     Forward;
+Procedure BinLoadArrayPtr(LN: Integer);      Forward;
+Procedure BinCodegenIndex(Node: Integer);    Forward;
+Procedure BinCodegenBinary(Node: Integer);   Forward;
+Procedure BinCodegenForeach(Node: Integer);  Forward;
 
 Procedure BinCodegenLiteral(Node: Integer);
 Var SaveSec: Integer; LName: String; K: Integer; S: String;
@@ -5490,15 +5577,27 @@ Procedure BinCodegenAssign(Node: Integer);
 Var LN, RN, SIdx: Integer;
 Begin
   LN := AstTable[Node].Left; RN := AstTable[Node].Right;
-  BinCodegenNode(RN);
-  SIdx := 0;
-  If AstTable[LN].Kind = 7 { NK_VAR } Then SIdx := AstTable[LN].SymRef;
-  If SIdx = 0 Then Exit;
-  If SymTable[SIdx].ScopeKd = SCOPE_LEXICAL Then
-    BinMovEbpNEax(SymTable[SIdx].Offset)
-  Else Begin
-    BinEmit8($A3);
-    BinEmitRef32(SymTable[SIdx].AsmName, BIN_FIX_ABS32);
+  If AstTable[LN].Kind = 2 { NK_VAR } Then Begin
+    BinCodegenNode(RN);
+    SIdx := AstTable[LN].SymRef;
+    If SIdx = 0 Then Exit;
+    If SymTable[SIdx].ScopeKd = SCOPE_LEXICAL Then
+      BinMovEbpNEax(SymTable[SIdx].Offset)
+    Else Begin
+      BinEmit8($A3); BinEmitRef32(SymTable[SIdx].AsmName, BIN_FIX_ABS32);
+    End;
+  End Else If AstTable[LN].Kind = 9 { NK_INDEX } Then Begin
+    { arr[idx] = val : _PLRT_array_set(ptr, idx, val) cdecl }
+    BinCodegenNode(RN);                            { EAX = val }
+    BinPushReg(REG_EAX);                           { push val (rightmost) }
+    BinCodegenNode(AstTable[LN].Right);            { EAX = idx }
+    BinPushReg(REG_EAX);                           { push idx }
+    BinLoadArrayPtr(AstTable[LN].Left);            { EAX = arr ptr }
+    BinPushReg(REG_EAX);                           { push ptr (leftmost) }
+    BinCallLabel('_PLRT_array_set');
+    BinAddEspImm8(12);
+  End Else Begin
+    BinCodegenNode(RN);
   End;
 End;
 
@@ -5510,6 +5609,116 @@ Begin
     BinCodegenNode(Ch);
     Ch := AstTable[Ch].NextSibling;
   End;
+End;
+
+{ ---- NK_LIST : construit un tableau heap et retourne son ptr ---- }
+Procedure BinCodegenList(Node: Integer);
+Var C: Integer;
+Begin
+  BinCallLabel('_PLRT_array_new');        { EAX = nouveau tableau }
+  BinPushReg(REG_EAX);                    { empiler ptr }
+  C := AstTable[Node].FirstChild;
+  While C <> 0 Do Begin
+    BinCodegenNode(C);                    { EAX = valeur element }
+    BinPushReg(REG_EAX);                  { push val (arg droit) }
+    BinEmit8($FF); BinEmit8($74); BinEmit8($24); BinEmit8(4); { PUSH [ESP+4]=ptr }
+    BinCallLabel('_PLRT_array_push_one');
+    BinAddEspImm8(8);
+    C := AstTable[C].NextSibling;
+  End;
+  BinPopReg(REG_EAX);                     { EAX = ptr tableau }
+End;
+
+{ Charge le ptr du tableau depuis le noeud gauche d'un NK_INDEX.
+  $var[n] est parse avec FindSym SK_SCALAR qui retourne 0 si @var;
+  on replie sur SK_ARRAY quand SymRef=0. }
+Procedure BinLoadArrayPtr(LN: Integer);
+Var SIdx: Integer;
+Begin
+  If (AstTable[LN].Kind = 2 { NK_VAR }) And (AstTable[LN].SymRef = 0) Then Begin
+    SIdx := FindSym(AstTable[LN].Text, SK_ARRAY);
+    If SIdx > 0 Then Begin
+      If SymTable[SIdx].ScopeKd = SCOPE_LEXICAL Then
+        BinMovEaxEbpN(SymTable[SIdx].Offset)
+      Else Begin
+        BinEmit8($A1); BinEmitRef32(SymTable[SIdx].AsmName, BIN_FIX_ABS32);
+      End;
+    End Else
+      BinXorRegReg(REG_EAX);
+  End Else
+    BinCodegenNode(LN);
+End;
+
+{ ---- NK_INDEX : charge arr[idx] -> EAX ---- }
+Procedure BinCodegenIndex(Node: Integer);
+Begin
+  BinCodegenNode(AstTable[Node].Right);   { EAX = idx (arg droit, push en premier) }
+  BinPushReg(REG_EAX);
+  BinLoadArrayPtr(AstTable[Node].Left);   { EAX = ptr tableau (arg gauche) }
+  BinPushReg(REG_EAX);
+  BinCallLabel('_PLRT_array_get');
+  BinAddEspImm8(8);
+End;
+
+{ ---- NK_BINARY : operations arithmetiques et logiques ---- }
+Procedure BinCodegenBinary(Node: Integer);
+Var Op: Integer;
+Begin
+  Op := AstTable[Node].Tok;
+  BinCodegenNode(AstTable[Node].Left);    { EAX = gauche }
+  BinPushReg(REG_EAX);
+  BinCodegenNode(AstTable[Node].Right);   { EAX = droit }
+  BinEmit8($8B); BinEmit8($C8);          { MOV ECX, EAX }
+  BinPopReg(REG_EAX);                     { EAX = gauche }
+  Case Op Of
+    Ord('+'): BinAddEaxEcx;
+    Ord('-'): BinSubEaxEcx;
+    Ord('*'): BinImulEaxEcx;
+    Ord('/'): Begin BinEmit8($99); BinIdivEcx; End;
+    Ord('%'): Begin BinEmit8($99); BinIdivEcx; BinEmit8($8B); BinEmit8($C2); End;
+  Else BinXorRegReg(REG_EAX);
+  End;
+End;
+
+{ ---- NK_FOREACH : foreach var LIST body ---- }
+{ Left=var, Right=liste, FirstChild=corps }
+Procedure BinCodegenForeach(Node: Integer);
+Var N, SIdx: Integer; LV: Integer;
+Begin
+  Inc(BinLoopCount); N := BinLoopCount;
+  BinCodegenNode(AstTable[Node].Right);   { EAX = ptr tableau }
+  BinPushReg(REG_EAX);
+  BinPushReg(REG_EAX);                    { push ptr pour array_len }
+  BinCallLabel('_PLRT_array_len');
+  BinAddEspImm8(4);                       { EAX = longueur, stack=[ptr] }
+  BinPushReg(REG_EAX);                    { push len }
+  BinPushImm32(0);                        { push idx=0 ; stack=[idx][len][ptr] }
+  { Sommet: [ESP]=idx [ESP+4]=len [ESP+8]=ptr }
+  BinDefineLabel('_BLOOP_' + NumToStr(N) + '_T');
+  BinEmit8($8B); BinEmit8($0C); BinEmit8($24);        { MOV ECX, [ESP] }
+  BinEmit8($3B); BinEmit8($4C); BinEmit8($24); BinEmit8(4); { CMP ECX, [ESP+4] }
+  BinJccLabel(13, '_BLOOP_' + NumToStr(N) + '_E');    { JGE end }
+  { Charger element courant : array_get(ptr, idx) }
+  BinEmit8($8B); BinEmit8($44); BinEmit8($24); BinEmit8(8); { MOV EAX, [ESP+8] ptr }
+  BinPushReg(REG_ECX);                    { push idx (arg droit) }
+  BinPushReg(REG_EAX);                    { push ptr (arg gauche) }
+  BinCallLabel('_PLRT_array_get');
+  BinAddEspImm8(8);                       { EAX = element }
+  { Stocker dans variable de boucle }
+  LV := AstTable[Node].Left;
+  If LV <> 0 Then Begin
+    SIdx := AstTable[LV].SymRef;
+    If SIdx > 0 Then Begin
+      If SymTable[SIdx].ScopeKd = SCOPE_LEXICAL Then
+        BinMovEbpNEax(SymTable[SIdx].Offset);
+    End;
+  End;
+  BinCodegenNode(AstTable[Node].FirstChild); { corps }
+  BinDefineLabel('_BLOOP_' + NumToStr(N) + '_C');
+  BinEmit8($83); BinEmit8($04); BinEmit8($24); BinEmit8(1); { ADD DWORD [ESP], 1 }
+  BinJmpLabel('_BLOOP_' + NumToStr(N) + '_T');
+  BinDefineLabel('_BLOOP_' + NumToStr(N) + '_E');
+  BinAddEspImm8(12);                      { nettoyer idx+len+ptr }
 End;
 
 Procedure BinCodegenCall(Node: Integer);
@@ -5535,6 +5744,29 @@ Begin
     BinEmitRef32('_PL_STDOUT', BIN_FIX_ABS32);
     BinCallLabel('_PLRT_print');
     BinEmit8($83); BinEmit8($C4); BinEmit8((Cnt + 2) * 4);
+  End Else If Op = KW_SCALAR Then Begin
+    { scalar(@arr) -> array_len(ptr) }
+    A := AstTable[Node].FirstChild;
+    If A <> 0 Then BinCodegenNode(A) Else BinXorRegReg(REG_EAX);
+    BinPushReg(REG_EAX);
+    BinCallLabel('_PLRT_array_len');
+    BinAddEspImm8(4);
+  End Else If Op = KW_PUSH Then Begin
+    { push @arr, val1, ..., valN : array_push_one(ptr, val) pour chaque val }
+    A := AstTable[Node].FirstChild;
+    If A = 0 Then Begin BinXorRegReg(REG_EAX); Exit; End;
+    BinCodegenNode(A);                    { EAX = ptr tableau }
+    BinPushReg(REG_EAX);                  { sauver ptr sur pile }
+    A := AstTable[A].NextSibling;
+    While A <> 0 Do Begin
+      BinCodegenNode(A);                  { EAX = valeur a pousser }
+      BinPushReg(REG_EAX);               { push val (arg droit) }
+      BinEmit8($FF); BinEmit8($74); BinEmit8($24); BinEmit8(4); { PUSH [ESP+4]=ptr }
+      BinCallLabel('_PLRT_array_push_one');
+      BinAddEspImm8(8);
+      A := AstTable[A].NextSibling;
+    End;
+    BinPopReg(REG_EAX);                   { retirer ptr (pas de valeur retour utile) }
   End Else
     BinXorRegReg(REG_EAX);
 End;
@@ -5546,9 +5778,14 @@ Begin
     0  { NK_NONE }:       ;
     1  { NK_LITERAL }:    BinCodegenLiteral(Node);
     2  { NK_VAR }:        BinCodegenVar(Node);
+    4  { NK_BINARY }:     BinCodegenBinary(Node);
     5  { NK_ASSIGN }:     BinCodegenAssign(Node);
     8  { NK_CALL }:       BinCodegenCall(Node);
+    9  { NK_INDEX }:      BinCodegenIndex(Node);
+    10 { NK_ARRAY_LIT }:  BinCodegenList(Node);
+    12 { NK_LIST }:       BinCodegenList(Node);
     13 { NK_STMT_LIST }:  BinCodegenBlock(Node);
+    19 { NK_FOREACH }:    BinCodegenForeach(Node);
   Else
     BinXorRegReg(REG_EAX);
   End;
