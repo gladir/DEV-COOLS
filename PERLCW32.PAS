@@ -1144,6 +1144,7 @@ Var
   BinFixupCount:  Integer;
   BinImports:     TBinImportTable;
   BinImportCount: Integer;
+  BinPLKCount:    Integer;   { compteur labels chaines binaires _BPK_ }
   PLKCount:       Integer;   { compteur labels _PLK_ chaines .rdata }
   PLRECount:      Integer;   { compteur labels _PLRE_ regex compilee }
   PLLCount:       Integer;   { compteur labels _PLL_ sauts internes }
@@ -5017,7 +5018,7 @@ Procedure BinInit;
 Begin
   BinCodeSize  := 0; BinDataSize  := 0;
   BinRDataSize := 0; BinBssSize   := 0;
-  BinLabelCount := 0; BinFixupCount := 0; BinImportCount := 0;
+  BinLabelCount := 0; BinFixupCount := 0; BinImportCount := 0; BinPLKCount := 0;
   BinCurSec := BIN_SEC_TEXT;
 End;
 
@@ -5330,41 +5331,115 @@ End;
 { Runtime binaire minimal embarque dans .text                  }
 { ============================================================ }
 
-Procedure BinEmitRuntimeStub(PName: String; ImpName: String; ArgN: Integer);
-Begin
-  BinDefineLabel(PName);
-  BinPushReg(REG_EBP); BinEmit8($8B); BinEmit8($EC);
-  BinCallImport(ImpName, 0);
-  BinPopReg(REG_EBP); BinEmit8($C3);
-End;
-
 Procedure BinEmitRuntime;
-Var I: Integer;
 Begin
-  { _PLRT_exit : push arg / call ExitProcess }
-  BinDefineLabel('_PLRT_exit');
-  BinEmit8($FF); BinEmit8($74); BinEmit8($24); BinEmit8($04);
-  BinCallImport('_ExitProcess@4', 4);
-  BinEmit8($C3);
-
-  { _PLRT_get_handle : push arg / call GetStdHandle / ret }
-  BinDefineLabel('_PLRT_get_handle');
-  BinEmit8($FF); BinEmit8($74); BinEmit8($24); BinEmit8($04);
-  BinCallImport('_GetStdHandle@4', 4);
-  BinEmit8($C3);
-
-  { _PLRT_int_to_str stub : retourne ptr chaine statique "0" }
+  { -------------------------------------------------------
+    _PLRT_int_to_str(value:EAX) -> EAX = ptr chaine
+    cdecl wrapper : [EBP+8] = valeur entiere
+    Utilise _plrt_itoa_buf (25 octets, fin = _plrt_itoa_end)
+    ------------------------------------------------------- }
   BinDefineLabel('_PLRT_int_to_str');
-  BinXorRegReg(REG_EAX);
-  BinEmit8($C3);
+  BinPushReg(REG_EBP);
+  BinEmit8($8B); BinEmit8($EC);              { MOV EBP, ESP }
+  BinPushReg(REG_EBX);
+  BinPushReg(REG_ESI);
+  BinPushReg(REG_EDI);
+  BinEmit8($8B); BinEmit8($45); BinEmit8(8); { MOV EAX, [EBP+8] }
+  { MOV EDI, _plrt_itoa_end (fin du buffer) }
+  BinEmit8($BF); BinEmitRef32('_plrt_itoa_end', BIN_FIX_ABS32);
+  BinEmit8($C6); BinEmit8($07); BinEmit8(0);  { MOV BYTE [EDI], 0 }
+  { TEST EAX, EAX }
+  BinEmit8($85); BinEmit8($C0);
+  BinJccLabel(5, '_itos_nonzero');            { JNZ _itos_nonzero }
+  BinEmit8($4F);                              { DEC EDI }
+  BinEmit8($C6); BinEmit8($07); BinEmit8($30); { MOV BYTE [EDI],'0' }
+  BinJmpLabel('_itos_done');
+  BinDefineLabel('_itos_nonzero');
+  BinXorRegReg(REG_ESI);                     { XOR ESI, ESI (flag negatif) }
+  BinEmit8($85); BinEmit8($C0);              { TEST EAX, EAX }
+  BinJccLabel(9, '_itos_pos');               { JNS _itos_pos }
+  BinEmit8($F7); BinEmit8($D8);              { NEG EAX }
+  BinEmit8($46);                              { INC ESI }
+  BinDefineLabel('_itos_pos');
+  BinEmit8($BB); BinEmit32(10);              { MOV EBX, 10 }
+  BinDefineLabel('_itos_loop');
+  BinEmit8($85); BinEmit8($C0);              { TEST EAX, EAX }
+  BinJccLabel(4, '_itos_endloop');            { JZ _itos_endloop }
+  BinEmit8($99);                              { CDQ }
+  BinEmit8($F7); BinEmit8($FB);              { IDIV EBX }
+  BinEmit8($83); BinEmit8($C2); BinEmit8($30); { ADD EDX, '0' }
+  BinEmit8($4F);                              { DEC EDI }
+  BinEmit8($88); BinEmit8($17);              { MOV [EDI], DL }
+  BinJmpLabel('_itos_loop');
+  BinDefineLabel('_itos_endloop');
+  BinEmit8($85); BinEmit8($F6);              { TEST ESI, ESI }
+  BinJccLabel(4, '_itos_done');              { JZ _itos_done }
+  BinEmit8($4F);                              { DEC EDI }
+  BinEmit8($C6); BinEmit8($07); BinEmit8($2D); { MOV BYTE [EDI], '-' }
+  BinDefineLabel('_itos_done');
+  BinEmit8($8B); BinEmit8($C7);              { MOV EAX, EDI }
+  BinPopReg(REG_EDI);
+  BinPopReg(REG_ESI);
+  BinPopReg(REG_EBX);
+  BinEmit8($8B); BinEmit8($E5);              { MOV ESP, EBP }
+  BinPopReg(REG_EBP);
+  BinEmit8($C3);                              { RET }
 
-  { _PLRT_print stub : retourne 0 }
+  { -------------------------------------------------------
+    _PLRT_print(hFile, count, arg1..argN) cdecl
+    [EBP+8]=hFile  [EBP+12]=count  [EBP+16]=arg1
+    valeur < 65536 -> convertir en chaine via _PLRT_int_to_str
+    valeur >= 65536 -> traiter directement comme ptr chaine
+    ------------------------------------------------------- }
   BinDefineLabel('_PLRT_print');
-  BinXorRegReg(REG_EAX);
-  BinEmit8($C3);
-
-  { Stubs pour toutes autres fonctions runtime }
-  For I := 1 To 0 Do ; { placeholder }
+  BinPushReg(REG_EBP);
+  BinEmit8($8B); BinEmit8($EC);              { MOV EBP, ESP }
+  BinEmit8($83); BinEmit8($EC); BinEmit8(4); { SUB ESP, 4 (octet ecrit) }
+  BinPushReg(REG_EBX);
+  BinPushReg(REG_ESI);
+  BinPushReg(REG_EDI);
+  BinEmit8($8B); BinEmit8($5D); BinEmit8(8);  { MOV EBX, [EBP+8]  (hFile) }
+  BinEmit8($8B); BinEmit8($75); BinEmit8(12); { MOV ESI, [EBP+12] (count) }
+  BinEmit8($8D); BinEmit8($7D); BinEmit8(16); { LEA EDI, [EBP+16] (arg1) }
+  BinDefineLabel('_prt_loop');
+  BinEmit8($85); BinEmit8($F6);              { TEST ESI, ESI }
+  BinJccLabel(4, '_prt_done');               { JZ _prt_done }
+  BinEmit8($8B); BinEmit8($07);             { MOV EAX, [EDI] }
+  BinEmit8($3D); BinEmit32(65536);           { CMP EAX, 65536 }
+  BinJccLabel(3, '_prt_isstr');              { JAE _prt_isstr }
+  BinPushReg(REG_EAX);
+  BinCallLabel('_PLRT_int_to_str');
+  BinEmit8($83); BinEmit8($C4); BinEmit8(4); { ADD ESP, 4 }
+  BinDefineLabel('_prt_isstr');
+  BinEmit8($8B); BinEmit8($D0);              { MOV EDX, EAX (ptr chaine) }
+  BinXorRegReg(REG_ECX);                     { XOR ECX, ECX (longueur) }
+  BinDefineLabel('_prt_len');
+  BinEmit8($80); BinEmit8($3C); BinEmit8($0A); BinEmit8(0); { CMP [EDX+ECX],0 }
+  BinJccLabel(4, '_prt_write');              { JZ _prt_write }
+  BinEmit8($41);                              { INC ECX }
+  BinJmpLabel('_prt_len');
+  BinDefineLabel('_prt_write');
+  BinEmit8($85); BinEmit8($C9);              { TEST ECX, ECX }
+  BinJccLabel(4, '_prt_next');               { JZ _prt_next }
+  BinPushImm32(0);                           { lpOverlapped = NULL }
+  BinEmit8($8D); BinEmit8($45); BinEmit8($FC); { LEA EAX,[EBP-4] }
+  BinPushReg(REG_EAX);                       { lpNumberOfBytesWritten }
+  BinPushReg(REG_ECX);                       { nNumberOfBytesToWrite }
+  BinPushReg(REG_EDX);                       { lpBuffer }
+  BinPushReg(REG_EBX);                       { hFile }
+  BinCallImport('_WriteFile@20', 0);         { STDCALL callee cleans 20 }
+  BinDefineLabel('_prt_next');
+  BinEmit8($83); BinEmit8($C7); BinEmit8(4); { ADD EDI, 4 (arg suivant) }
+  BinEmit8($4E);                              { DEC ESI }
+  BinJmpLabel('_prt_loop');
+  BinDefineLabel('_prt_done');
+  BinMovRegImm32(REG_EAX, 1);
+  BinPopReg(REG_EDI);
+  BinPopReg(REG_ESI);
+  BinPopReg(REG_EBX);
+  BinEmit8($8B); BinEmit8($E5);              { MOV ESP, EBP }
+  BinPopReg(REG_EBP);
+  BinEmit8($C3);                              { RET }
 End;
 
 { ============================================================ }
@@ -5372,16 +5447,26 @@ End;
 { ============================================================ }
 
 Procedure BinCodegenNode(Node: Integer); Forward;
+Procedure BinCodegenCall(Node: Integer); Forward;
 
 Procedure BinCodegenLiteral(Node: Integer);
-Var V: LongInt;
+Var SaveSec: Integer; LName: String; K: Integer; S: String;
 Begin
   Case AstTable[Node].Tok Of
     261 { TOK_INTEGER }: BinMovRegImm32(REG_EAX, AstTable[Node].Left);
     263, 264 { TOK_STRING/DSTRING }: Begin
-      { pointeur vers constante : fixup ABS32 vers _PLK_N }
+      { Emettre la chaine dans .rdata puis MOV EAX, VA }
+      Inc(BinPLKCount);
+      LName := '_BPK_' + NumToStr(BinPLKCount);
+      SaveSec := BinCurSec;
+      BinCurSec := BIN_SEC_RDATA;
+      BinDefineLabel(LName);
+      S := AstTable[Node].Text;
+      For K := 1 To Length(S) Do BinEmit8(Ord(S[K]));
+      BinEmit8(0);
+      BinCurSec := SaveSec;
       BinEmit8($B8);
-      BinEmitRef32(AstTable[Node].Text, BIN_FIX_ABS32);
+      BinEmitRef32(LName, BIN_FIX_ABS32);
     End;
   Else
     BinXorRegReg(REG_EAX);
@@ -5427,33 +5512,79 @@ Begin
   End;
 End;
 
+Procedure BinCodegenCall(Node: Integer);
+Var A, Cnt, Op: Integer;
+Begin
+  Op := AstTable[Node].Tok;
+  If (Op = KW_PRINT) Or (Op = KW_SAY) Then Begin
+    { KW_PRINT=1041, KW_SAY=1083 }
+    Cnt := 0;
+    A := AstTable[Node].FirstChild;
+    While A <> 0 Do Begin
+      A := AstTable[A].NextSibling;
+      Inc(Cnt);
+    End;
+    A := AstTable[Node].FirstChild;
+    While A <> 0 Do Begin
+      BinCodegenNode(A);
+      BinPushReg(REG_EAX);
+      A := AstTable[A].NextSibling;
+    End;
+    BinPushImm32(Cnt);
+    BinEmit8($FF); BinEmit8($35);
+    BinEmitRef32('_PL_STDOUT', BIN_FIX_ABS32);
+    BinCallLabel('_PLRT_print');
+    BinEmit8($83); BinEmit8($C4); BinEmit8((Cnt + 2) * 4);
+  End Else
+    BinXorRegReg(REG_EAX);
+End;
+
 Procedure BinCodegenNode(Node: Integer);
 Begin
   If Node = 0 Then Exit;
   Case AstTable[Node].Kind Of
-    0 { NK_BLOCK }:   BinCodegenBlock(Node);
-    2 { NK_LITERAL }: BinCodegenLiteral(Node);
-    5 { NK_ASSIGN }:  BinCodegenAssign(Node);
-    7 { NK_VAR }:     BinCodegenVar(Node);
+    0  { NK_NONE }:       ;
+    1  { NK_LITERAL }:    BinCodegenLiteral(Node);
+    2  { NK_VAR }:        BinCodegenVar(Node);
+    5  { NK_ASSIGN }:     BinCodegenAssign(Node);
+    8  { NK_CALL }:       BinCodegenCall(Node);
+    13 { NK_STMT_LIST }:  BinCodegenBlock(Node);
   Else
     BinXorRegReg(REG_EAX);
   End;
 End;
 
 Procedure BinCodegenProgram(Root: Integer; FrameSz: Integer);
+Var K: Integer;
 Begin
+  { Variables globales runtime en .data }
+  BinCurSec := BIN_SEC_DATA;
+  BinDefineLabel('_PL_STDOUT');
+  BinEmit32(0);
+  BinDefineLabel('_plrt_itoa_buf');
+  For K := 1 To 24 Do BinEmit8(0);
+  BinDefineLabel('_plrt_itoa_end');
+  BinEmit8(0);
+
+  { Code principal en .text }
   BinCurSec := BIN_SEC_TEXT;
   BinDefineLabel('_PLSTART');
   BinEmitPrologue(FrameSz);
+
+  { Initialiser _PL_STDOUT = GetStdHandle(STD_OUTPUT_HANDLE=-11) }
+  BinPushImm32(-11);
+  BinCallImport('_GetStdHandle@4', 0);  { STDCALL : callee nettoie 4 }
+  BinEmit8($A3); BinEmitRef32('_PL_STDOUT', BIN_FIX_ABS32); { MOV [_PL_STDOUT], EAX }
+
   BinCodegenNode(Root);
+
+  { ExitProcess(0) - STDCALL, callee nettoie }
   BinXorRegReg(REG_EAX);
   BinPushReg(REG_EAX);
-  BinCallImport('_ExitProcess@4', 4);
+  BinCallImport('_ExitProcess@4', 0);
+
   BinEmitRuntime;
   BinResolveFixups;
-  { Donnees initialisees }
-  BinCurSec := BIN_SEC_DATA;
-  { Fin de la generation binaire }
 End;
 
 { ============================================================ }
@@ -5713,6 +5844,41 @@ Begin
     BinCode[Loc + 1] := (IATVA Shr 8)  And $FF;
     BinCode[Loc + 2] := (IATVA Shr 16) And $FF;
     BinCode[Loc + 3] := (IATVA Shr 24) And $FF;
+  End;
+
+  { === Patch des fixups ABS32 (references .data/.rdata dans .text) === }
+  For FI := 1 To BinFixupCount Do Begin
+    If BinFixups[FI].Kind <> BIN_FIX_ABS32 Then Continue;
+    LIdx := BinFixups[FI].LabelRef;
+    If LIdx = 0 Then Continue;
+    If Not BinLabels[LIdx].Defined Then Continue;
+    Case BinLabels[LIdx].Section Of
+      1 { BIN_SEC_TEXT  }: IATVA := ImageBase + TextRVA  + BinLabels[LIdx].Offset;
+      2 { BIN_SEC_DATA  }: IATVA := ImageBase + DataRVA  + BinLabels[LIdx].Offset;
+      3 { BIN_SEC_RDATA }: IATVA := ImageBase + RDataRVA + BinLabels[LIdx].Offset;
+    Else Continue;
+    End;
+    Loc := BinFixups[FI].Offset;
+    Case BinFixups[FI].Section Of
+      1 { BIN_SEC_TEXT }: Begin
+        BinCode[Loc]     := IATVA And $FF;
+        BinCode[Loc + 1] := (IATVA Shr 8)  And $FF;
+        BinCode[Loc + 2] := (IATVA Shr 16) And $FF;
+        BinCode[Loc + 3] := (IATVA Shr 24) And $FF;
+      End;
+      2 { BIN_SEC_DATA }: Begin
+        BinData[Loc]     := IATVA And $FF;
+        BinData[Loc + 1] := (IATVA Shr 8)  And $FF;
+        BinData[Loc + 2] := (IATVA Shr 16) And $FF;
+        BinData[Loc + 3] := (IATVA Shr 24) And $FF;
+      End;
+      3 { BIN_SEC_RDATA }: Begin
+        BinRData[Loc]     := IATVA And $FF;
+        BinRData[Loc + 1] := (IATVA Shr 8)  And $FF;
+        BinRData[Loc + 2] := (IATVA Shr 16) And $FF;
+        BinRData[Loc + 3] := (IATVA Shr 24) And $FF;
+      End;
+    End;
   End;
 
   { === Ecriture du fichier PE === }
