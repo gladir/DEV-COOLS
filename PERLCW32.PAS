@@ -5560,259 +5560,323 @@ End;
 
 Procedure WritePE(FileName: String);
 Const
-  MZ_STUB_SZ   = 64;
-  IMP_KERN32_N = 11;
+  NK = 11;   { nombre de fonctions KERNEL32 }
 Var
   F: File;
-  I: Integer;
+  I, K: Integer;
   LI: LongInt;
+  Dummy: Byte;
 
-  { Constantes de layout PE }
-  ImageBase : LongInt;
-  FileAlign : LongInt;
-  SecAlign  : LongInt;
+  ImageBase: LongInt;
+  FileAlign: LongInt;
+  SecAlign:  LongInt;
 
-  { Offsets fichier }
-  PEHdrOff  : LongInt;
-  Sec1Off   : LongInt;
-  Sec2Off   : LongInt;
-  Sec3Off   : LongInt;
-  Sec4Off   : LongInt;
-  IDataOff  : LongInt;
+  HdrsSz:   LongInt;
+  TextSz:   LongInt;
+  DataSz:   LongInt;
+  RDataSz:  LongInt;
+  IDataSz:  LongInt;
 
-  { Tailles alignees }
-  TextSz    : LongInt;
-  DataSz    : LongInt;
-  RDataSz   : LongInt;
-  BssSz     : LongInt;
-  IDataSz   : LongInt;
+  TextRVA:  LongInt;
+  DataRVA:  LongInt;
+  RDataRVA: LongInt;
+  BssRVA:   LongInt;
+  IDataRVA: LongInt;
 
-  { RVA de chaque section }
-  TextRVA   : LongInt;
-  DataRVA   : LongInt;
-  RDataRVA  : LongInt;
-  BssRVA    : LongInt;
-  IDataRVA  : LongInt;
+  TextFOff:  LongInt;
+  DataFOff:  LongInt;
+  RDataFOff: LongInt;
+  IDataFOff: LongInt;
 
-  { Taille image et entetes }
-  HdrsSz    : LongInt;
-  ImageSz   : LongInt;
-  CodeSz    : LongInt;
-  InitDataSz: LongInt;
+  EntryRVA:  LongInt;
+  ImageSz:   LongInt;
+  CodeSz:    LongInt;
+  InitDataSz:LongInt;
 
-  { IAT layout }
-  IATRva    : LongInt;
-  IATSz     : LongInt;
-  Dummy     : Byte;
+  { .idata offsets relatifs au debut de la section }
+  IAT_Off:      LongInt;  { 0 }
+  ILT_Off:      LongInt;  { (NK+1)*4 }
+  IDT_Off:      LongInt;  { ILT_Off + (NK+1)*4 }
+  DllName_Off:  LongInt;  { IDT_Off + 2*20 }
+  HintBase_Off: LongInt;  { DllName_Off + 14 }
+  IData_Raw:    LongInt;  { taille reelle }
 
-  Kern32Names: Array[1..11] Of String;
-  EntryRVA  : LongInt;
+  FuncOff:  Array[1..11] Of LongInt;
+  FuncName: Array[1..11] Of String;
+
+  IDT_RVA: LongInt;
+  IDT_SZ:  LongInt;
+  IAT_RVA: LongInt;
+  IAT_SZ:  LongInt;
+
+  { Patch IMP32 }
+  FI:    Integer;
+  LIdx:  Integer;
+  Pname: String;
+  Kidx:  Integer;
+  IATVA: LongInt;
+  Loc:   LongInt;
+  NL:    Integer;
 
 Begin
-  Assign(F, FileName); Rewrite(F, 1);
+  FuncName[1]  := 'GetStdHandle';
+  FuncName[2]  := 'WriteFile';
+  FuncName[3]  := 'ReadFile';
+  FuncName[4]  := 'ExitProcess';
+  FuncName[5]  := 'GetCommandLineA';
+  FuncName[6]  := 'GetEnvironmentStringsA';
+  FuncName[7]  := 'CreateFileA';
+  FuncName[8]  := 'CloseHandle';
+  FuncName[9]  := 'HeapAlloc';
+  FuncName[10] := 'HeapFree';
+  FuncName[11] := 'GetProcessHeap';
 
   ImageBase := PE_IMG_BASE;
-  FileAlign := PE_FILE_ALIGN;
-  SecAlign  := PE_SEC_ALIGN;
+  FileAlign := PE_FILE_ALIGN;   { 512 }
+  SecAlign  := PE_SEC_ALIGN;    { 4096 }
 
-  Kern32Names[1]  := 'GetStdHandle';
-  Kern32Names[2]  := 'WriteFile';
-  Kern32Names[3]  := 'ReadFile';
-  Kern32Names[4]  := 'ExitProcess';
-  Kern32Names[5]  := 'GetCommandLineA';
-  Kern32Names[6]  := 'GetEnvironmentStringsA';
-  Kern32Names[7]  := 'CreateFileA';
-  Kern32Names[8]  := 'CloseHandle';
-  Kern32Names[9]  := 'HeapAlloc';
-  Kern32Names[10] := 'HeapFree';
-  Kern32Names[11] := 'GetProcessHeap';
+  { Calcul offsets hint/name dans .idata }
+  IAT_Off     := 0;
+  ILT_Off     := (NK + 1) * 4;           { 48 }
+  IDT_Off     := ILT_Off + (NK + 1) * 4; { 96 }
+  DllName_Off := IDT_Off + 2 * 20;        { 136 }
+  HintBase_Off:= DllName_Off + 14;        { 150 : 'KERNEL32.DLL'(12)+#0+#0 }
+  FuncOff[1]  := HintBase_Off;
+  For I := 2 To NK Do Begin
+    NL := Length(FuncName[I - 1]);
+    FuncOff[I] := FuncOff[I - 1] + 2 + NL + 1;
+    If (FuncOff[I] Mod 2) <> 0 Then Inc(FuncOff[I]); { word-align }
+  End;
+  NL := Length(FuncName[NK]);
+  IData_Raw := FuncOff[NK] + 2 + NL + 1;
+  If (IData_Raw Mod 2) <> 0 Then Inc(IData_Raw);
 
-  TextSz   := AlignUp(BinCodeSize,  FileAlign);
-  DataSz   := AlignUp(BinDataSize,  FileAlign);
+  { Tailles fichier alignees }
+  HdrsSz  := 512;                               { 64+4+20+224+5*40 = 512 }
+  CodeSz  := AlignUp(BinCodeSize, FileAlign);
+  If CodeSz = 0 Then CodeSz := FileAlign;
+  TextSz  := CodeSz;
+  DataSz  := AlignUp(BinDataSize, FileAlign);
   If DataSz  = 0 Then DataSz  := FileAlign;
-  RDataSz  := AlignUp(BinRDataSize, FileAlign);
+  RDataSz := AlignUp(BinRDataSize, FileAlign);
   If RDataSz = 0 Then RDataSz := FileAlign;
-  BssSz    := 0;
-  IDataSz  := AlignUp(IMP_KERN32_N * 4 + 8 + 20 + 16, FileAlign);
-  If IDataSz < FileAlign Then IDataSz := FileAlign;
+  IDataSz := AlignUp(IData_Raw, FileAlign);
+  If IDataSz = 0 Then IDataSz := FileAlign;
 
-  HdrsSz   := AlignUp(MZ_STUB_SZ + 248 + 5 * 40, FileAlign);
+  { RVAs (section-alignes) }
+  TextRVA  := SecAlign;                              { 0x1000 }
+  DataRVA  := TextRVA  + SecAlign;                   { 0x2000 }
+  RDataRVA := DataRVA  + SecAlign;                   { 0x3000 }
+  BssRVA   := RDataRVA + SecAlign;                   { 0x4000 }
+  IDataRVA := BssRVA   + SecAlign;                   { 0x5000 }
+  ImageSz  := AlignUp(IDataRVA + IDataSz, SecAlign);
+  InitDataSz := DataSz + RDataSz + IDataSz;
 
-  TextRVA  := AlignUp(HdrsSz, SecAlign);
-  DataRVA  := AlignUp(TextRVA  + AlignUp(BinCodeSize,  SecAlign), SecAlign);
-  If DataRVA  = TextRVA  Then DataRVA  := TextRVA  + SecAlign;
-  RDataRVA := AlignUp(DataRVA  + AlignUp(BinDataSize,  SecAlign), SecAlign);
-  If RDataRVA = DataRVA  Then RDataRVA := DataRVA  + SecAlign;
-  BssRVA   := AlignUp(RDataRVA + AlignUp(BinRDataSize, SecAlign), SecAlign);
-  If BssRVA  = RDataRVA Then BssRVA   := RDataRVA + SecAlign;
-  IDataRVA := AlignUp(BssRVA   + SecAlign, SecAlign);
-
-  { IAT RVA = debut de .idata }
-  IATRva  := IDataRVA;
-  IATSz   := (IMP_KERN32_N + 1) * 4;
-
-  ImageSz   := AlignUp(IDataRVA + SecAlign, SecAlign);
-  CodeSz    := AlignUp(BinCodeSize, FileAlign);
-  InitDataSz:= DataSz + RDataSz + IDataSz;
+  { Offsets fichier }
+  TextFOff  := HdrsSz;
+  DataFOff  := TextFOff  + TextSz;
+  RDataFOff := DataFOff  + DataSz;
+  IDataFOff := RDataFOff + RDataSz;
   EntryRVA  := TextRVA;
 
-  PEHdrOff  := MZ_STUB_SZ;
-  Sec1Off   := HdrsSz;
-  Sec2Off   := Sec1Off + TextSz;
-  Sec3Off   := Sec2Off + DataSz;
-  Sec4Off   := Sec3Off + RDataSz;
-  IDataOff  := Sec4Off + 0;
+  IDT_RVA := IDataRVA + IDT_Off;
+  IDT_SZ  := 2 * 20;
+  IAT_RVA := IDataRVA + IAT_Off;
+  IAT_SZ  := (NK + 1) * 4;
 
-  { MZ stub (64 octets) }
-  WriteWord(F, PE_DOS_MAGIC);
-  WriteWord(F, $0090);
-  WriteWord(F, 3);
-  WriteWord(F, 0);
-  WriteWord(F, 4);
-  WriteWord(F, 0);
-  WriteWord(F, -1);   { MaxAlloc = $FFFF }
-  WriteWord(F, 0);
-  WriteWord(F, $0000);
-  WriteWord(F, 0);
-  WriteWord(F, 0);
-  WriteWord(F, 0);
-  WriteWord(F, 0);
-  WriteWord(F, 0);
-  WriteDWord(F, 0);                       { 28-2B reserved }
-  WriteDWord(F, 0);                       { 2C-2F reserved }
-  WriteDWord(F, 0);                       { 30-33 reserved }
-  WriteDWord(F, 0);                       { 34-37 reserved }
-  WriteDWord(F, 0);                       { 38-3B reserved }
-  WriteDWord(F, PEHdrOff);               { e_lfanew }
+  { === Patch des fixups IMP32 dans BinCode === }
+  For FI := 1 To BinFixupCount Do Begin
+    If BinFixups[FI].Kind <> BIN_FIX_IMP32 Then Continue;
+    If BinFixups[FI].Section <> BIN_SEC_TEXT Then Continue;
+    LIdx := BinFixups[FI].LabelRef;
+    If LIdx = 0 Then Continue;
+    Pname := BinLabels[LIdx].Name;
+    { Supprimer '__imp__' }
+    If (Length(Pname) > 7) And (Copy(Pname,1,7) = '__imp__') Then
+      Pname := Copy(Pname, 8, 255);
+    { Supprimer '_' initial (decoration STDCALL) }
+    If (Length(Pname) > 0) And (Pname[1] = '_') Then
+      Pname := Copy(Pname, 2, 255);
+    { Supprimer '@N' terminal }
+    For K := Length(Pname) DownTo 1 Do
+      If Pname[K] = '@' Then Begin
+        Pname := Copy(Pname, 1, K - 1); Break;
+      End;
+    { Chercher dans FuncName }
+    Kidx := 0;
+    For K := 1 To NK Do
+      If FuncName[K] = Pname Then Begin Kidx := K; Break; End;
+    If Kidx = 0 Then Continue;
+    IATVA := ImageBase + IAT_RVA + (Kidx - 1) * 4;
+    Loc   := BinFixups[FI].Offset;
+    BinCode[Loc]     := IATVA And $FF;
+    BinCode[Loc + 1] := (IATVA Shr 8)  And $FF;
+    BinCode[Loc + 2] := (IATVA Shr 16) And $FF;
+    BinCode[Loc + 3] := (IATVA Shr 24) And $FF;
+  End;
 
-  { PE signature }
+  { === Ecriture du fichier PE === }
+  Assign(F, FileName); Rewrite(F, 1);
+
+  { En-tete DOS IMAGE_DOS_HEADER (64 octets exactement) }
+  { Champs 0x00-0x1B : 14 mots }
+  WriteWord(F, PE_DOS_MAGIC); { e_magic }
+  WriteWord(F, $0090);         { e_cblp }
+  WriteWord(F, 3);             { e_cp }
+  WriteWord(F, 0);             { e_crlc }
+  WriteWord(F, 4);             { e_cparhdr }
+  WriteWord(F, 0);             { e_minalloc }
+  WriteWord(F, -1);            { e_maxalloc }
+  WriteWord(F, 0);             { e_ss }
+  WriteWord(F, 0);             { e_sp }
+  WriteWord(F, 0);             { e_csum }
+  WriteWord(F, 0);             { e_ip }
+  WriteWord(F, 0);             { e_cs }
+  WriteWord(F, 0);             { e_lfarlc }
+  WriteWord(F, 0);             { e_ovno }
+  { Champs 0x1C-0x3B : 16 mots zeros (e_res, e_oemid, e_oeminfo, e_res2) }
+  For I := 1 To 16 Do WriteWord(F, 0);
+  { Champ 0x3C : e_lfanew = 64 }
+  WriteDWord(F, 64);
+  { Total MZ : 14*2 + 16*2 + 4 = 28 + 32 + 4 = 64 octets }
+
+  { Signature PE (4 octets a l'offset 64) }
   WriteDWord(F, PE_PE_SIG);
 
-  { IMAGE_FILE_HEADER }
+  { IMAGE_FILE_HEADER (20 octets) }
   WriteWord(F,  PE_MACHINE_I386);
-  WriteWord(F,  5);                       { 5 sections }
-  WriteDWord(F, 0);                       { TimeDateStamp }
-  WriteDWord(F, 0);                       { PointerToSymbolTable }
-  WriteDWord(F, 0);                       { NumberOfSymbols }
-  WriteWord(F,  224);                     { SizeOfOptionalHeader }
-  WriteWord(F,  $0102);                   { Characteristics: exec, 32bit }
+  WriteWord(F,  5);           { NumberOfSections }
+  WriteDWord(F, 0);           { TimeDateStamp }
+  WriteDWord(F, 0);           { PointerToSymbolTable }
+  WriteDWord(F, 0);           { NumberOfSymbols }
+  WriteWord(F,  224);         { SizeOfOptionalHeader }
+  WriteWord(F,  $0102);       { Characteristics }
 
-  { IMAGE_OPTIONAL_HEADER32 }
+  { IMAGE_OPTIONAL_HEADER32 (224 octets) }
+  { Champs standard (28 octets) }
   WriteWord(F,  PE_OPT_MAGIC_PE32);
-  WriteWord(F,  0);                       { LinkerVersion }
-  WriteDWord(F, CodeSz);
-  WriteDWord(F, InitDataSz);
-  WriteDWord(F, 0);                       { SizeOfUninitializedData }
-  WriteDWord(F, EntryRVA);               { AddressOfEntryPoint }
-  WriteDWord(F, TextRVA);               { BaseOfCode }
-  WriteDWord(F, DataRVA);               { BaseOfData }
+  WriteWord(F,  0);           { LinkerVersion }
+  WriteDWord(F, CodeSz);      { SizeOfCode }
+  WriteDWord(F, InitDataSz);  { SizeOfInitializedData }
+  WriteDWord(F, SecAlign);    { SizeOfUninitializedData (.bss) }
+  WriteDWord(F, EntryRVA);   { AddressOfEntryPoint }
+  WriteDWord(F, TextRVA);    { BaseOfCode }
+  WriteDWord(F, DataRVA);    { BaseOfData }
+  { Champs Windows (68 octets) }
   WriteDWord(F, ImageBase);
   WriteDWord(F, SecAlign);
   WriteDWord(F, FileAlign);
-  WriteWord(F,  4); WriteWord(F, 0);     { OSVersion }
-  WriteWord(F,  0); WriteWord(F, 0);     { ImageVersion }
-  WriteWord(F,  4); WriteWord(F, 0);     { SubsystemVersion }
-  WriteDWord(F, 0);                       { Win32VersionValue }
+  WriteWord(F,  4); WriteWord(F, 0);  { OSVersion }
+  WriteWord(F,  0); WriteWord(F, 0);  { ImageVersion }
+  WriteWord(F,  4); WriteWord(F, 0);  { SubsystemVersion }
+  WriteDWord(F, 0);                    { Win32VersionValue }
   WriteDWord(F, ImageSz);
   WriteDWord(F, HdrsSz);
-  WriteDWord(F, 0);                       { CheckSum }
+  WriteDWord(F, 0);                    { CheckSum }
   WriteWord(F,  PE_SUBSYS_CUI);
-  WriteWord(F,  0);                       { DllCharacteristics }
-  WriteDWord(F, $00100000);              { SizeOfStackReserve }
-  WriteDWord(F, $00001000);              { SizeOfStackCommit }
-  WriteDWord(F, $00100000);              { SizeOfHeapReserve }
-  WriteDWord(F, $00001000);              { SizeOfHeapCommit }
-  WriteDWord(F, 0);                       { LoaderFlags }
-  WriteDWord(F, 16);                      { NumberOfRvaAndSizes }
-  { Data directories x16 }
-  For I := 1 To 14 Do WriteDWord(F, 0);
-  WriteDWord(F, IATRva); WriteDWord(F, IATSz); { 12 = IAT dir }
-  WriteDWord(F, 0); WriteDWord(F, 0);
-  WriteDWord(F, 0); WriteDWord(F, 0);
+  WriteWord(F,  0);                    { DllCharacteristics }
+  WriteDWord(F, $00100000);
+  WriteDWord(F, $00001000);
+  WriteDWord(F, $00100000);
+  WriteDWord(F, $00001000);
+  WriteDWord(F, 0);                    { LoaderFlags }
+  WriteDWord(F, 16);                   { NumberOfRvaAndSizes }
+  { Repertoires de donnees (128 octets = 16 x 8) }
+  WriteDWord(F, 0); WriteDWord(F, 0);                 { [0] Export }
+  WriteDWord(F, IDT_RVA); WriteDWord(F, IDT_SZ);      { [1] Import }
+  For I := 2 To 11 Do Begin WriteDWord(F, 0); WriteDWord(F, 0); End;
+  WriteDWord(F, IAT_RVA); WriteDWord(F, IAT_SZ);      { [12] IAT }
+  WriteDWord(F, 0); WriteDWord(F, 0);                  { [13] }
+  WriteDWord(F, 0); WriteDWord(F, 0);                  { [14] }
+  WriteDWord(F, 0); WriteDWord(F, 0);                  { [15] }
 
-  { Section headers }
+  { En-tetes de section (5 x 40 = 200 octets) }
   WriteStr8(F, '.text',  8);
-  WriteDWord(F, BinCodeSize);
-  WriteDWord(F, TextRVA);
-  WriteDWord(F, CodeSz);
-  WriteDWord(F, Sec1Off);
-  WriteDWord(F, 0); WriteDWord(F, 0);
-  WriteWord(F, 0);  WriteWord(F, 0);
+  WriteDWord(F, BinCodeSize); WriteDWord(F, TextRVA);
+  WriteDWord(F, TextSz);      WriteDWord(F, TextFOff);
+  WriteDWord(F, 0);           WriteDWord(F, 0);
+  WriteWord(F,  0);           WriteWord(F,  0);
   WriteDWord(F, PE_SCN_CNT_CODE Or PE_SCN_MEM_EXECUTE Or PE_SCN_MEM_READ);
 
   WriteStr8(F, '.data',  8);
-  WriteDWord(F, BinDataSize);
-  WriteDWord(F, DataRVA);
-  WriteDWord(F, DataSz);
-  WriteDWord(F, Sec2Off);
-  WriteDWord(F, 0); WriteDWord(F, 0);
-  WriteWord(F, 0);  WriteWord(F, 0);
+  WriteDWord(F, BinDataSize); WriteDWord(F, DataRVA);
+  WriteDWord(F, DataSz);      WriteDWord(F, DataFOff);
+  WriteDWord(F, 0);           WriteDWord(F, 0);
+  WriteWord(F,  0);           WriteWord(F,  0);
   WriteDWord(F, PE_SCN_CNT_INIT_DATA Or PE_SCN_MEM_READ Or PE_SCN_MEM_WRITE);
 
   WriteStr8(F, '.rdata', 8);
-  WriteDWord(F, BinRDataSize);
-  WriteDWord(F, RDataRVA);
-  WriteDWord(F, RDataSz);
-  WriteDWord(F, Sec3Off);
-  WriteDWord(F, 0); WriteDWord(F, 0);
-  WriteWord(F, 0);  WriteWord(F, 0);
+  WriteDWord(F, BinRDataSize); WriteDWord(F, RDataRVA);
+  WriteDWord(F, RDataSz);      WriteDWord(F, RDataFOff);
+  WriteDWord(F, 0);            WriteDWord(F, 0);
+  WriteWord(F,  0);            WriteWord(F,  0);
   WriteDWord(F, PE_SCN_CNT_INIT_DATA Or PE_SCN_MEM_READ);
 
   WriteStr8(F, '.bss',   8);
-  WriteDWord(F, SecAlign);
-  WriteDWord(F, BssRVA);
-  WriteDWord(F, 0);
-  WriteDWord(F, 0);
-  WriteDWord(F, 0); WriteDWord(F, 0);
-  WriteWord(F, 0);  WriteWord(F, 0);
+  WriteDWord(F, SecAlign);  WriteDWord(F, BssRVA);
+  WriteDWord(F, 0);          WriteDWord(F, 0);
+  WriteDWord(F, 0);          WriteDWord(F, 0);
+  WriteWord(F,  0);          WriteWord(F,  0);
   WriteDWord(F, PE_SCN_CNT_UNINIT_DATA Or PE_SCN_MEM_READ Or PE_SCN_MEM_WRITE);
 
   WriteStr8(F, '.idata', 8);
-  WriteDWord(F, IATSz + 20 + IMP_KERN32_N * 6 + 16);
-  WriteDWord(F, IDataRVA);
-  WriteDWord(F, IDataSz);
-  WriteDWord(F, IDataOff);
-  WriteDWord(F, 0); WriteDWord(F, 0);
-  WriteWord(F, 0);  WriteWord(F, 0);
+  WriteDWord(F, IData_Raw);   WriteDWord(F, IDataRVA);
+  WriteDWord(F, IDataSz);     WriteDWord(F, IDataFOff);
+  WriteDWord(F, 0);           WriteDWord(F, 0);
+  WriteWord(F,  0);           WriteWord(F,  0);
   WriteDWord(F, PE_SCN_CNT_INIT_DATA Or PE_SCN_MEM_READ Or PE_SCN_MEM_WRITE);
 
-  { Pad headers to HdrsSz }
-  Dummy := 0;
-  For LI := MZ_STUB_SZ + 4 + 20 + 224 + 5 * 40 To HdrsSz - 1 Do
-    BlockWrite(F, Dummy, 1);
+  { Remplissage jusqu'a HdrsSz (64+4+20+224+200=512, pad=0) }
+  WritePad(F, HdrsSz - 512);
 
-  { .text section }
+  { Section .text }
   For LI := 0 To BinCodeSize - 1 Do BlockWrite(F, BinCode[LI], 1);
   WritePad(F, TextSz - BinCodeSize);
 
-  { .data section }
+  { Section .data }
   For LI := 0 To BinDataSize - 1 Do BlockWrite(F, BinData[LI], 1);
   WritePad(F, DataSz - BinDataSize);
 
-  { .rdata section }
+  { Section .rdata }
   For LI := 0 To BinRDataSize - 1 Do BlockWrite(F, BinRData[LI], 1);
   WritePad(F, RDataSz - BinRDataSize);
 
-  { .idata section : IAT + IDT + hint/name stubs }
-  { IAT : IMP_KERN32_N+1 entries de 4 octets }
-  For I := 1 To IMP_KERN32_N Do
-    WriteDWord(F, ImageBase + IDataRVA + (IMP_KERN32_N + 2) * 4 + (I - 1) * 6);
+  { Section .idata : IAT }
+  For I := 1 To NK Do WriteDWord(F, IDataRVA + FuncOff[I]);
   WriteDWord(F, 0);  { fin IAT }
 
-  { IDT : 1 entree KERNEL32 + 1 entree vide }
-  WriteDWord(F, IDataRVA + (IMP_KERN32_N + 2) * 4 + IMP_KERN32_N * 6);
-  WriteDWord(F, 0);   WriteDWord(F, 0);
-  WriteDWord(F, IDataRVA + (IMP_KERN32_N + 2) * 4 + IMP_KERN32_N * 6 + 12);
-  WriteDWord(F, IDataRVA);
-  WriteWord(F, 0); WriteWord(F, 0); WriteDWord(F, 0); WriteDWord(F, 0); WriteDWord(F, 0);
+  { ILT (copie initiale de l'IAT) }
+  For I := 1 To NK Do WriteDWord(F, IDataRVA + FuncOff[I]);
+  WriteDWord(F, 0);  { fin ILT }
 
-  { Hint/Name stubs pour KERNEL32.DLL }
-  For I := 1 To IMP_KERN32_N Do Begin
-    WriteWord(F, I);
-    WriteStr8(F, Kern32Names[I], Length(Kern32Names[I]) + 1);
-  End;
+  { IDT entree KERNEL32 }
+  WriteDWord(F, IDataRVA + ILT_Off);        { OriginalFirstThunk = ILT }
+  WriteDWord(F, 0);                           { TimeDateStamp }
+  WriteDWord(F, 0);                           { ForwarderChain }
+  WriteDWord(F, IDataRVA + DllName_Off);     { Name = 'KERNEL32.DLL' }
+  WriteDWord(F, IDataRVA + IAT_Off);         { FirstThunk = IAT }
+  { IDT entree nulle (terminateur) }
+  WriteDWord(F, 0); WriteDWord(F, 0); WriteDWord(F, 0);
+  WriteDWord(F, 0); WriteDWord(F, 0);
+
+  { Nom de la DLL : 'KERNEL32.DLL\0' (12+1=13 octets) + 1 octet de bourrage }
   WriteStr8(F, 'KERNEL32.DLL', 13);
+  Dummy := 0; BlockWrite(F, Dummy, 1); { word-align }
 
+  { Entrees hint/name pour chaque fonction }
+  For I := 1 To NK Do Begin
+    WriteWord(F, I);   { hint }
+    For K := 1 To Length(FuncName[I]) Do Begin
+      Dummy := Ord(FuncName[I][K]); BlockWrite(F, Dummy, 1);
+    End;
+    Dummy := 0; BlockWrite(F, Dummy, 1);    { terminateur null }
+    NL := Length(FuncName[I]);
+    If (NL + 1) Mod 2 <> 0 Then Begin
+      Dummy := 0; BlockWrite(F, Dummy, 1);  { rembourrage word }
+    End;
+  End;
+
+  WritePad(F, IDataSz - IData_Raw);
   Close(F);
 End;
 
