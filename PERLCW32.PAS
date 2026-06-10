@@ -4892,22 +4892,25 @@ Begin
       AstTable[VarN].SymRef := FindSym(VName, SK_SCALAR);
       AppendArg(N, VarN);
     End Else If (C = '@') And (I < Length(Src)) And (Src[I+1] = 'A') Then Begin
-      If Buf <> '' Then Begin
-        AppendArg(N, NewNode(NK_LITERAL, TOK_STRING, Buf));
-        Buf := '';
-      End;
       Inc(I, 2);
       VName := '';
       While (I <= Length(Src)) And IsIdentChar(Src[I]) Do Begin
         VName := VName + Src[I]; Inc(I);
       End;
-      { "@arr" dans chaine -> represente comme join(@arr) }
-      { le separateur $" sera insere au codegen            }
-      VarN  := NewNode(NK_CALL, KW_JOIN, 'join');
-      ListN := NewNode(NK_VAR, TOK_SIGIL_ARRAY, VName);
-      AstTable[ListN].SymRef    := FindSym(VName, SK_ARRAY);
-      AstTable[VarN].FirstChild := ListN;
-      AppendArg(N, VarN);
+      If FindSym(VName, SK_ARRAY) > 0 Then Begin
+        { Tableau declare : interpoler comme join(@arr) }
+        If Buf <> '' Then Begin
+          AppendArg(N, NewNode(NK_LITERAL, TOK_STRING, Buf)); Buf := '';
+        End;
+        VarN  := NewNode(NK_CALL, KW_JOIN, 'join');
+        ListN := NewNode(NK_VAR, TOK_SIGIL_ARRAY, VName);
+        AstTable[ListN].SymRef    := FindSym(VName, SK_ARRAY);
+        AstTable[VarN].FirstChild := ListN;
+        AppendArg(N, VarN);
+      End Else Begin
+        { Tableau non declare : traiter '@name' comme texte litteral }
+        Buf := Buf + '@' + VName;
+      End;
     End Else Begin
       If Length(Buf) < 255 Then Buf := Buf + C;
       Inc(I);
@@ -6030,6 +6033,420 @@ Begin
   BinPopReg(REG_EAX);                                        { EAX=original dest }
   BinPopReg(REG_EDI); BinPopReg(REG_ESI); BinPopReg(REG_EBX);
   BinEmit8($8B); BinEmit8($E5); BinPopReg(REG_EBP); BinEmit8($C3);
+
+  { -------------------------------------------------------
+    _PLRT_regex_matchchar(atom_ptr, char) cdecl -> EAX=1 match 0 fail
+    [EBP+8]=atom_ptr (pointe sur '.' ou '\d' ou char litteral)
+    [EBP+12]=char (seul octet bas compte)
+    ------------------------------------------------------- }
+  BinDefineLabel('_PLRT_regex_matchchar');
+  BinPushReg(REG_EBP); BinEmit8($8B); BinEmit8($EC);
+  BinPushReg(REG_EBX);
+  BinEmit8($8B); BinEmit8($5D); BinEmit8($08);   { MOV EBX,[EBP+8]   atom_ptr }
+  BinEmit8($8A); BinEmit8($03);                   { MOV AL,[EBX]      1er char atom }
+  BinEmit8($8A); BinEmit8($4D); BinEmit8($0C);   { MOV CL,[EBP+12]   char a tester }
+  { '.' - tout sauf null }
+  BinEmit8($3C); BinEmit8(Ord('.'));              { CMP AL,'.' }
+  BinJccLabel(CC_NE, '_RMC_not_dot');
+  BinEmit8($84); BinEmit8($C9);                  { TEST CL,CL }
+  BinJccLabel(CC_E, '_RMC_fail');
+  BinEmit8($B8); BinEmit32(1);
+  BinJmpLabel('_RMC_done');
+  BinDefineLabel('_RMC_not_dot');
+  { '\' - sequence d'echappement }
+  BinEmit8($3C); BinEmit8(Ord('\'));             { CMP AL,'\' }
+  BinJccLabel(CC_NE, '_RMC_literal');
+  BinEmit8($8A); BinEmit8($43); BinEmit8($01);   { MOV AL,[EBX+1] }
+  { \d }
+  BinEmit8($3C); BinEmit8(Ord('d'));
+  BinJccLabel(CC_NE, '_RMC_ne_d');
+  BinEmit8($80); BinEmit8($F9); BinEmit8(Ord('0'));
+  BinJccLabel(CC_B, '_RMC_fail');
+  BinEmit8($80); BinEmit8($F9); BinEmit8(Ord('9'));
+  BinJccLabel(CC_A, '_RMC_fail');
+  BinEmit8($B8); BinEmit32(1); BinJmpLabel('_RMC_done');
+  BinDefineLabel('_RMC_ne_d');
+  { \D }
+  BinEmit8($3C); BinEmit8(Ord('D'));
+  BinJccLabel(CC_NE, '_RMC_ne_D');
+  BinEmit8($80); BinEmit8($F9); BinEmit8(Ord('0'));
+  BinJccLabel(CC_B, '_RMC_is_D');
+  BinEmit8($80); BinEmit8($F9); BinEmit8(Ord('9'));
+  BinJccLabel(CC_BE, '_RMC_fail');
+  BinDefineLabel('_RMC_is_D');
+  BinEmit8($B8); BinEmit32(1); BinJmpLabel('_RMC_done');
+  BinDefineLabel('_RMC_ne_D');
+  { \w  a-z A-Z 0-9 _ }
+  BinEmit8($3C); BinEmit8(Ord('w'));
+  BinJccLabel(CC_NE, '_RMC_ne_w');
+  BinEmit8($80); BinEmit8($F9); BinEmit8(Ord('a'));
+  BinJccLabel(CC_B, '_RMC_nw1');
+  BinEmit8($80); BinEmit8($F9); BinEmit8(Ord('z'));
+  BinJccLabel(CC_BE, '_RMC_is_w');
+  BinDefineLabel('_RMC_nw1');
+  BinEmit8($80); BinEmit8($F9); BinEmit8(Ord('A'));
+  BinJccLabel(CC_B, '_RMC_nw2');
+  BinEmit8($80); BinEmit8($F9); BinEmit8(Ord('Z'));
+  BinJccLabel(CC_BE, '_RMC_is_w');
+  BinDefineLabel('_RMC_nw2');
+  BinEmit8($80); BinEmit8($F9); BinEmit8(Ord('0'));
+  BinJccLabel(CC_B, '_RMC_nw3');
+  BinEmit8($80); BinEmit8($F9); BinEmit8(Ord('9'));
+  BinJccLabel(CC_BE, '_RMC_is_w');
+  BinDefineLabel('_RMC_nw3');
+  BinEmit8($80); BinEmit8($F9); BinEmit8(Ord('_'));
+  BinJccLabel(CC_NE, '_RMC_fail');
+  BinDefineLabel('_RMC_is_w');
+  BinEmit8($B8); BinEmit32(1); BinJmpLabel('_RMC_done');
+  BinDefineLabel('_RMC_ne_w');
+  { \W - pas word char }
+  BinEmit8($3C); BinEmit8(Ord('W'));
+  BinJccLabel(CC_NE, '_RMC_ne_W');
+  BinEmit8($80); BinEmit8($F9); BinEmit8(Ord('a'));
+  BinJccLabel(CC_B, '_RMC_Wok1');
+  BinEmit8($80); BinEmit8($F9); BinEmit8(Ord('z'));
+  BinJccLabel(CC_BE, '_RMC_fail');
+  BinDefineLabel('_RMC_Wok1');
+  BinEmit8($80); BinEmit8($F9); BinEmit8(Ord('A'));
+  BinJccLabel(CC_B, '_RMC_Wok2');
+  BinEmit8($80); BinEmit8($F9); BinEmit8(Ord('Z'));
+  BinJccLabel(CC_BE, '_RMC_fail');
+  BinDefineLabel('_RMC_Wok2');
+  BinEmit8($80); BinEmit8($F9); BinEmit8(Ord('0'));
+  BinJccLabel(CC_B, '_RMC_Wok3');
+  BinEmit8($80); BinEmit8($F9); BinEmit8(Ord('9'));
+  BinJccLabel(CC_BE, '_RMC_fail');
+  BinDefineLabel('_RMC_Wok3');
+  BinEmit8($80); BinEmit8($F9); BinEmit8(Ord('_'));
+  BinJccLabel(CC_E, '_RMC_fail');
+  BinEmit8($B8); BinEmit32(1); BinJmpLabel('_RMC_done');
+  BinDefineLabel('_RMC_ne_W');
+  { \s  espace tabulation saut de ligne }
+  BinEmit8($3C); BinEmit8(Ord('s'));
+  BinJccLabel(CC_NE, '_RMC_ne_s');
+  BinEmit8($80); BinEmit8($F9); BinEmit8(Ord(' ')); BinJccLabel(CC_E, '_RMC_is_s');
+  BinEmit8($80); BinEmit8($F9); BinEmit8(9);          BinJccLabel(CC_E, '_RMC_is_s');
+  BinEmit8($80); BinEmit8($F9); BinEmit8(10);         BinJccLabel(CC_E, '_RMC_is_s');
+  BinEmit8($80); BinEmit8($F9); BinEmit8(13);         BinJccLabel(CC_E, '_RMC_is_s');
+  BinEmit8($80); BinEmit8($F9); BinEmit8(12);         BinJccLabel(CC_NE, '_RMC_fail');
+  BinDefineLabel('_RMC_is_s');
+  BinEmit8($B8); BinEmit32(1); BinJmpLabel('_RMC_done');
+  BinDefineLabel('_RMC_ne_s');
+  { \S - pas espace }
+  BinEmit8($3C); BinEmit8(Ord('S'));
+  BinJccLabel(CC_NE, '_RMC_ne_S');
+  BinEmit8($80); BinEmit8($F9); BinEmit8(Ord(' ')); BinJccLabel(CC_E, '_RMC_fail');
+  BinEmit8($80); BinEmit8($F9); BinEmit8(9);          BinJccLabel(CC_E, '_RMC_fail');
+  BinEmit8($80); BinEmit8($F9); BinEmit8(10);         BinJccLabel(CC_E, '_RMC_fail');
+  BinEmit8($80); BinEmit8($F9); BinEmit8(13);         BinJccLabel(CC_E, '_RMC_fail');
+  BinEmit8($80); BinEmit8($F9); BinEmit8(12);         BinJccLabel(CC_E, '_RMC_fail');
+  BinEmit8($B8); BinEmit32(1); BinJmpLabel('_RMC_done');
+  BinDefineLabel('_RMC_ne_S');
+  { \n \t \r -> char litteral correspondant }
+  BinEmit8($3C); BinEmit8(Ord('n')); BinJccLabel(CC_NE, '_RMC_ne_en');
+  BinEmit8($B0); BinEmit8(10); BinJmpLabel('_RMC_esc_lit');
+  BinDefineLabel('_RMC_ne_en');
+  BinEmit8($3C); BinEmit8(Ord('t')); BinJccLabel(CC_NE, '_RMC_ne_et');
+  BinEmit8($B0); BinEmit8(9);  BinJmpLabel('_RMC_esc_lit');
+  BinDefineLabel('_RMC_ne_et');
+  BinEmit8($3C); BinEmit8(Ord('r')); BinJccLabel(CC_NE, '_RMC_esc_lit');
+  BinEmit8($B0); BinEmit8(13);
+  BinDefineLabel('_RMC_esc_lit');
+  BinEmit8($38); BinEmit8($C8);                  { CMP AL,CL }
+  BinJccLabel(CC_NE, '_RMC_fail');
+  BinEmit8($B8); BinEmit32(1); BinJmpLabel('_RMC_done');
+  BinDefineLabel('_RMC_literal');
+  BinEmit8($38); BinEmit8($C8);                  { CMP AL,CL : char litteral }
+  BinJccLabel(CC_NE, '_RMC_fail');
+  BinEmit8($B8); BinEmit32(1); BinJmpLabel('_RMC_done');
+  BinDefineLabel('_RMC_fail');
+  BinXorRegReg(REG_EAX);
+  BinDefineLabel('_RMC_done');
+  BinPopReg(REG_EBX);
+  BinEmit8($8B); BinEmit8($E5); BinPopReg(REG_EBP); BinEmit8($C3);
+
+  { -------------------------------------------------------
+    _PLRT_regex_try(pat, str) cdecl -> EAX=1 si match a cette pos, 0 sinon
+    [EBP+8]=pat  [EBP+12]=str_position
+    ESI=pat_cursor  EDI=str_cursor  EBX=atom_debut
+    ------------------------------------------------------- }
+  BinDefineLabel('_PLRT_regex_try');
+  BinPushReg(REG_EBP); BinEmit8($8B); BinEmit8($EC);
+  BinPushReg(REG_EBX); BinPushReg(REG_ESI); BinPushReg(REG_EDI);
+  BinEmit8($8B); BinEmit8($75); BinEmit8($08);  { MOV ESI,[EBP+8]  pat }
+  BinEmit8($8B); BinEmit8($7D); BinEmit8($0C);  { MOV EDI,[EBP+12] str }
+  BinDefineLabel('_RTE_loop');
+  BinEmit8($8A); BinEmit8($06);                 { MOV AL,[ESI] }
+  BinEmit8($84); BinEmit8($C0);                 { TEST AL,AL }
+  BinJccLabel(CC_E, '_RTE_ok');
+  { '$' ancre de fin }
+  BinEmit8($3C); BinEmit8(Ord('$'));
+  BinJccLabel(CC_NE, '_RTE_not_dollar');
+  BinEmit8($8A); BinEmit8($07);                 { MOV AL,[EDI] }
+  BinEmit8($84); BinEmit8($C0);
+  BinJccLabel(CC_E, '_RTE_ok');
+  BinEmit8($3C); BinEmit8(10);
+  BinJccLabel(CC_E, '_RTE_ok');
+  BinJmpLabel('_RTE_fail');
+  BinDefineLabel('_RTE_not_dollar');
+  { Sauver debut d'atome dans EBX, avancer ESI }
+  BinEmit8($8B); BinEmit8($DE);                 { MOV EBX,ESI }
+  BinEmit8($3C); BinEmit8(Ord('\'));            { CMP AL,'\' }
+  BinJccLabel(CC_NE, '_RTE_skip1');
+  BinEmit8($46); BinEmit8($46);                 { INC ESI x2 (atome 2 chars) }
+  BinJmpLabel('_RTE_got_atom');
+  BinDefineLabel('_RTE_skip1');
+  BinEmit8($46);                                { INC ESI (atome 1 char) }
+  BinDefineLabel('_RTE_got_atom');
+  { AL = quantificateur potentiel }
+  BinEmit8($8A); BinEmit8($06);                 { MOV AL,[ESI] }
+  BinEmit8($3C); BinEmit8(Ord('+')); BinJccLabel(CC_E, '_RTE_plus');
+  BinEmit8($3C); BinEmit8(Ord('*')); BinJccLabel(CC_E, '_RTE_star');
+  BinEmit8($3C); BinEmit8(Ord('?')); BinJccLabel(CC_E, '_RTE_opt');
+  { Pas de quantificateur : match exact 1 char }
+  BinEmit8($8A); BinEmit8($07);                 { MOV AL,[EDI] }
+  BinEmit8($84); BinEmit8($C0);
+  BinJccLabel(CC_E, '_RTE_fail');
+  BinEmit8($0F); BinEmit8($B6); BinEmit8($07); { MOVZX EAX,BYTE[EDI] }
+  BinPushReg(REG_EAX); BinPushReg(REG_EBX);
+  BinCallLabel('_PLRT_regex_matchchar');
+  BinAddEspImm8(8);
+  BinEmit8($85); BinEmit8($C0);
+  BinJccLabel(CC_E, '_RTE_fail');
+  BinEmit8($47); BinJmpLabel('_RTE_loop');      { INC EDI, boucle }
+  { '+' : 1 ou plusieurs (greedy) }
+  BinDefineLabel('_RTE_plus');
+  BinEmit8($46);                                { INC ESI skip '+' }
+  BinEmit8($8A); BinEmit8($07);
+  BinEmit8($84); BinEmit8($C0); BinJccLabel(CC_E, '_RTE_fail');
+  BinEmit8($0F); BinEmit8($B6); BinEmit8($07);
+  BinPushReg(REG_EAX); BinPushReg(REG_EBX);
+  BinCallLabel('_PLRT_regex_matchchar');
+  BinAddEspImm8(8);
+  BinEmit8($85); BinEmit8($C0); BinJccLabel(CC_E, '_RTE_fail');
+  BinEmit8($47);
+  { Boucle greedy pour * et suite de + }
+  BinDefineLabel('_RTE_star_lp');
+  BinEmit8($8A); BinEmit8($07);
+  BinEmit8($84); BinEmit8($C0); BinJccLabel(CC_E, '_RTE_loop');
+  BinEmit8($0F); BinEmit8($B6); BinEmit8($07);
+  BinPushReg(REG_EAX); BinPushReg(REG_EBX);
+  BinCallLabel('_PLRT_regex_matchchar');
+  BinAddEspImm8(8);
+  BinEmit8($85); BinEmit8($C0); BinJccLabel(CC_E, '_RTE_loop');
+  BinEmit8($47); BinJmpLabel('_RTE_star_lp');
+  { '*' }
+  BinDefineLabel('_RTE_star');
+  BinEmit8($46); BinJmpLabel('_RTE_star_lp');   { skip '*', entrer boucle }
+  { '?' : 0 ou 1 }
+  BinDefineLabel('_RTE_opt');
+  BinEmit8($46);                                { INC ESI skip '?' }
+  BinEmit8($8A); BinEmit8($07);
+  BinEmit8($84); BinEmit8($C0); BinJccLabel(CC_E, '_RTE_loop');
+  BinEmit8($0F); BinEmit8($B6); BinEmit8($07);
+  BinPushReg(REG_EAX); BinPushReg(REG_EBX);
+  BinCallLabel('_PLRT_regex_matchchar');
+  BinAddEspImm8(8);
+  BinEmit8($85); BinEmit8($C0); BinJccLabel(CC_E, '_RTE_loop');
+  BinEmit8($47); BinJmpLabel('_RTE_loop');
+  BinDefineLabel('_RTE_ok');
+  BinEmit8($B8); BinEmit32(1); BinJmpLabel('_RTE_done');
+  BinDefineLabel('_RTE_fail');
+  BinXorRegReg(REG_EAX);
+  BinDefineLabel('_RTE_done');
+  BinPopReg(REG_EDI); BinPopReg(REG_ESI); BinPopReg(REG_EBX);
+  BinEmit8($8B); BinEmit8($E5); BinPopReg(REG_EBP); BinEmit8($C3);
+
+  { -------------------------------------------------------
+    _PLRT_regex_match(pat, str) cdecl -> EAX=1 si match, 0 sinon
+    Essaie chaque position dans str
+    ------------------------------------------------------- }
+  BinDefineLabel('_PLRT_regex_match');
+  BinPushReg(REG_EBP); BinEmit8($8B); BinEmit8($EC);
+  BinPushReg(REG_EBX); BinPushReg(REG_ESI); BinPushReg(REG_EDI);
+  BinEmit8($8B); BinEmit8($75); BinEmit8($08);   { MOV ESI,[EBP+8]  pat }
+  BinEmit8($8B); BinEmit8($7D); BinEmit8($0C);   { MOV EDI,[EBP+12] str }
+  { Ancre '^' ? }
+  BinEmit8($80); BinEmit8($3E); BinEmit8(Ord('^'));
+  BinJccLabel(CC_NE, '_RMA_no_anch');
+  BinEmit8($46);                                  { INC ESI : skip '^' }
+  BinPushReg(REG_EDI); BinPushReg(REG_ESI);
+  BinCallLabel('_PLRT_regex_try');
+  BinAddEspImm8(8);
+  BinEmit8($85); BinEmit8($C0); BinJccLabel(CC_NE, '_RMA_found');
+  BinXorRegReg(REG_EAX); BinJmpLabel('_RMA_done');
+  BinDefineLabel('_RMA_no_anch');
+  BinDefineLabel('_RMA_loop');
+  BinPushReg(REG_EDI); BinPushReg(REG_ESI);
+  BinCallLabel('_PLRT_regex_try');
+  BinAddEspImm8(8);
+  BinEmit8($85); BinEmit8($C0); BinJccLabel(CC_NE, '_RMA_found');
+  BinEmit8($80); BinEmit8($3F); BinEmit8($00);   { CMP BYTE[EDI],0 }
+  BinJccLabel(CC_E, '_RMA_notfound');
+  BinEmit8($47); BinJmpLabel('_RMA_loop');        { INC EDI, boucler }
+  BinDefineLabel('_RMA_notfound');
+  BinXorRegReg(REG_EAX); BinJmpLabel('_RMA_done');
+  BinDefineLabel('_RMA_found');
+  BinEmit8($B8); BinEmit32(1);
+  BinDefineLabel('_RMA_done');
+  BinPopReg(REG_EDI); BinPopReg(REG_ESI); BinPopReg(REG_EBX);
+  BinEmit8($8B); BinEmit8($E5); BinPopReg(REG_EBP); BinEmit8($C3);
+
+  { -------------------------------------------------------
+    _PLRT_regex_try_e(pat, str) cdecl -> EAX=match_end_ptr ou 0
+    Identique a _PLRT_regex_try mais retourne EDI (fin match) au lieu de 1
+    ------------------------------------------------------- }
+  BinDefineLabel('_PLRT_regex_try_e');
+  BinPushReg(REG_EBP); BinEmit8($8B); BinEmit8($EC);
+  BinPushReg(REG_EBX); BinPushReg(REG_ESI); BinPushReg(REG_EDI);
+  BinEmit8($8B); BinEmit8($75); BinEmit8($08);
+  BinEmit8($8B); BinEmit8($7D); BinEmit8($0C);
+  BinDefineLabel('_RTEE_loop');
+  BinEmit8($8A); BinEmit8($06); BinEmit8($84); BinEmit8($C0);
+  BinJccLabel(CC_E, '_RTEE_ok');
+  BinEmit8($3C); BinEmit8(Ord('$')); BinJccLabel(CC_NE, '_RTEE_not_dollar');
+  BinEmit8($8A); BinEmit8($07); BinEmit8($84); BinEmit8($C0);
+  BinJccLabel(CC_E, '_RTEE_ok');
+  BinEmit8($3C); BinEmit8(10); BinJccLabel(CC_E, '_RTEE_ok');
+  BinJmpLabel('_RTEE_fail');
+  BinDefineLabel('_RTEE_not_dollar');
+  BinEmit8($8B); BinEmit8($DE);
+  BinEmit8($3C); BinEmit8(Ord('\')); BinJccLabel(CC_NE, '_RTEE_skip1');
+  BinEmit8($46); BinEmit8($46); BinJmpLabel('_RTEE_got_atom');
+  BinDefineLabel('_RTEE_skip1'); BinEmit8($46);
+  BinDefineLabel('_RTEE_got_atom');
+  BinEmit8($8A); BinEmit8($06);
+  BinEmit8($3C); BinEmit8(Ord('+')); BinJccLabel(CC_E, '_RTEE_plus');
+  BinEmit8($3C); BinEmit8(Ord('*')); BinJccLabel(CC_E, '_RTEE_star');
+  BinEmit8($3C); BinEmit8(Ord('?')); BinJccLabel(CC_E, '_RTEE_opt');
+  BinEmit8($8A); BinEmit8($07); BinEmit8($84); BinEmit8($C0);
+  BinJccLabel(CC_E, '_RTEE_fail');
+  BinEmit8($0F); BinEmit8($B6); BinEmit8($07);
+  BinPushReg(REG_EAX); BinPushReg(REG_EBX);
+  BinCallLabel('_PLRT_regex_matchchar'); BinAddEspImm8(8);
+  BinEmit8($85); BinEmit8($C0); BinJccLabel(CC_E, '_RTEE_fail');
+  BinEmit8($47); BinJmpLabel('_RTEE_loop');
+  BinDefineLabel('_RTEE_plus');
+  BinEmit8($46); BinEmit8($8A); BinEmit8($07); BinEmit8($84); BinEmit8($C0);
+  BinJccLabel(CC_E, '_RTEE_fail');
+  BinEmit8($0F); BinEmit8($B6); BinEmit8($07);
+  BinPushReg(REG_EAX); BinPushReg(REG_EBX);
+  BinCallLabel('_PLRT_regex_matchchar'); BinAddEspImm8(8);
+  BinEmit8($85); BinEmit8($C0); BinJccLabel(CC_E, '_RTEE_fail');
+  BinEmit8($47);
+  BinDefineLabel('_RTEE_star_lp');
+  BinEmit8($8A); BinEmit8($07); BinEmit8($84); BinEmit8($C0);
+  BinJccLabel(CC_E, '_RTEE_loop');
+  BinEmit8($0F); BinEmit8($B6); BinEmit8($07);
+  BinPushReg(REG_EAX); BinPushReg(REG_EBX);
+  BinCallLabel('_PLRT_regex_matchchar'); BinAddEspImm8(8);
+  BinEmit8($85); BinEmit8($C0); BinJccLabel(CC_E, '_RTEE_loop');
+  BinEmit8($47); BinJmpLabel('_RTEE_star_lp');
+  BinDefineLabel('_RTEE_star'); BinEmit8($46); BinJmpLabel('_RTEE_star_lp');
+  BinDefineLabel('_RTEE_opt');
+  BinEmit8($46); BinEmit8($8A); BinEmit8($07); BinEmit8($84); BinEmit8($C0);
+  BinJccLabel(CC_E, '_RTEE_loop');
+  BinEmit8($0F); BinEmit8($B6); BinEmit8($07);
+  BinPushReg(REG_EAX); BinPushReg(REG_EBX);
+  BinCallLabel('_PLRT_regex_matchchar'); BinAddEspImm8(8);
+  BinEmit8($85); BinEmit8($C0); BinJccLabel(CC_E, '_RTEE_loop');
+  BinEmit8($47); BinJmpLabel('_RTEE_loop');
+  BinDefineLabel('_RTEE_ok');
+  BinMovRegReg(REG_EAX, REG_EDI);            { retourner EDI = fin du match }
+  BinJmpLabel('_RTEE_done');
+  BinDefineLabel('_RTEE_fail');
+  BinXorRegReg(REG_EAX);
+  BinDefineLabel('_RTEE_done');
+  BinPopReg(REG_EDI); BinPopReg(REG_ESI); BinPopReg(REG_EBX);
+  BinEmit8($8B); BinEmit8($E5); BinPopReg(REG_EBP); BinEmit8($C3);
+
+  { -------------------------------------------------------
+    _PLRT_subst_once(pat, repl, str) cdecl -> EAX=nouvelle_chaine ou 0
+    [EBP+8]=pat [EBP+12]=repl [EBP+16]=str
+    Locaux : [EBP-16]=prefix_len [EBP-20]=match_end [EBP-24]=new_buf
+    ------------------------------------------------------- }
+  BinDefineLabel('_PLRT_subst_once');
+  BinPushReg(REG_EBP); BinEmit8($8B); BinEmit8($EC);
+  BinPushReg(REG_EBX); BinPushReg(REG_ESI); BinPushReg(REG_EDI);
+  BinEmit8($83); BinEmit8($EC); BinEmit8($0C);   { SUB ESP, 12 }
+  BinEmit8($8B); BinEmit8($75); BinEmit8($08);   { MOV ESI, [EBP+8]  pat }
+  BinEmit8($8B); BinEmit8($7D); BinEmit8($10);   { MOV EDI, [EBP+16] str }
+  { Boucle : chercher la premiere correspondance }
+  BinDefineLabel('_RSO_loop');
+  BinEmit8($8A); BinEmit8($07);                  { MOV AL,[EDI] }
+  BinEmit8($84); BinEmit8($C0);
+  BinJccLabel(CC_E, '_RSO_notfound');
+  BinPushReg(REG_EDI); BinPushReg(REG_ESI);      { str_pos, pat }
+  BinCallLabel('_PLRT_regex_try_e'); BinAddEspImm8(8);
+  BinEmit8($85); BinEmit8($C0); BinJccLabel(CC_NE, '_RSO_found');
+  BinEmit8($47); BinJmpLabel('_RSO_loop');       { INC EDI }
+  BinDefineLabel('_RSO_notfound');
+  BinXorRegReg(REG_EAX); BinJmpLabel('_RSO_done');
+  { Correspondance : EAX=match_end_ptr EDI=match_start_ptr }
+  BinDefineLabel('_RSO_found');
+  { prefix_len = EDI - str }
+  BinEmit8($8B); BinEmit8($CF);                  { MOV ECX, EDI }
+  BinEmit8($2B); BinEmit8($4D); BinEmit8($10);   { SUB ECX, [EBP+16] }
+  BinEmit8($89); BinEmit8($4D); BinEmit8($F0);   { MOV [EBP-16], ECX }
+  BinEmit8($89); BinEmit8($45); BinEmit8($EC);   { MOV [EBP-20], EAX } { match_end }
+  BinEmit8($8B); BinEmit8($D8);                  { MOV EBX, EAX } { EBX=match_end }
+  { repl_len = strlen(repl) -> ECX }
+  BinEmit8($8B); BinEmit8($75); BinEmit8($0C);   { MOV ESI, [EBP+12] repl }
+  BinXorRegReg(REG_ECX);
+  BinDefineLabel('_RSO_lrl');
+  BinEmit8($8A); BinEmit8($06); BinEmit8($84); BinEmit8($C0);
+  BinJccLabel(CC_E, '_RSO_lrl_e');
+  BinEmit8($46); BinEmit8($41); BinJmpLabel('_RSO_lrl'); { INC ESI; INC ECX }
+  BinDefineLabel('_RSO_lrl_e');
+  { suffix_len = strlen(match_end=EBX) -> EAX }
+  BinMovRegReg(REG_ESI, REG_EBX);
+  BinXorRegReg(REG_EAX);
+  BinDefineLabel('_RSO_lsl');
+  BinEmit8($8A); BinEmit8($16); BinEmit8($84); BinEmit8($D2); { MOV DL,[ESI]; TEST DL,DL }
+  BinJccLabel(CC_E, '_RSO_lsl_e');
+  BinEmit8($46); BinEmit8($40); BinJmpLabel('_RSO_lsl');    { INC ESI; INC EAX }
+  BinDefineLabel('_RSO_lsl_e');
+  { new_len = prefix_len + repl_len + suffix_len + 1 }
+  BinEmit8($03); BinEmit8($C1);                  { ADD EAX, ECX }
+  BinEmit8($03); BinEmit8($45); BinEmit8($F0);   { ADD EAX, [EBP-16] }
+  BinEmit8($40);                                 { INC EAX }
+  { HeapAlloc(GetProcessHeap(), 8, new_len) }
+  BinPushReg(REG_EAX); BinPushImm32(8);
+  BinCallImport('_GetProcessHeap@0', 0);
+  BinPushReg(REG_EAX);
+  BinCallImport('_HeapAlloc@12', 0);
+  BinEmit8($89); BinEmit8($45); BinEmit8($E8);   { MOV [EBP-24], EAX } { new_buf }
+  BinMovRegReg(REG_EDI, REG_EAX);               { EDI = curseur ecriture }
+  { Copier le prefixe }
+  BinEmit8($8B); BinEmit8($75); BinEmit8($10);   { MOV ESI, [EBP+16] str }
+  BinEmit8($8B); BinEmit8($4D); BinEmit8($F0);   { MOV ECX, [EBP-16] prefix_len }
+  BinDefineLabel('_RSO_cp1');
+  BinEmit8($85); BinEmit8($C9); BinJccLabel(CC_E, '_RSO_cp1e');
+  BinEmit8($8A); BinEmit8($06); BinEmit8($88); BinEmit8($07); { MOV AL,[ESI]; MOV [EDI],AL }
+  BinEmit8($46); BinEmit8($47); BinEmit8($49);   { INC ESI; INC EDI; DEC ECX }
+  BinJmpLabel('_RSO_cp1');
+  BinDefineLabel('_RSO_cp1e');
+  { Copier le remplacement (null-termine) }
+  BinEmit8($8B); BinEmit8($75); BinEmit8($0C);   { MOV ESI, [EBP+12] repl }
+  BinDefineLabel('_RSO_cp2');
+  BinEmit8($8A); BinEmit8($06); BinEmit8($84); BinEmit8($C0);
+  BinJccLabel(CC_E, '_RSO_cp2e');
+  BinEmit8($88); BinEmit8($07);                  { MOV [EDI], AL }
+  BinEmit8($46); BinEmit8($47); BinJmpLabel('_RSO_cp2');
+  BinDefineLabel('_RSO_cp2e');
+  { Copier le suffixe (null-termine) depuis match_end }
+  BinEmit8($8B); BinEmit8($75); BinEmit8($EC);   { MOV ESI, [EBP-20] match_end }
+  BinDefineLabel('_RSO_cp3');
+  BinEmit8($8A); BinEmit8($06); BinEmit8($84); BinEmit8($C0);
+  BinJccLabel(CC_E, '_RSO_cp3e');
+  BinEmit8($88); BinEmit8($07);                  { MOV [EDI], AL }
+  BinEmit8($46); BinEmit8($47); BinJmpLabel('_RSO_cp3');
+  BinDefineLabel('_RSO_cp3e');
+  BinEmit8($8B); BinEmit8($45); BinEmit8($E8);   { MOV EAX, [EBP-24] new_buf }
+  BinDefineLabel('_RSO_done');
+  BinEmit8($83); BinEmit8($C4); BinEmit8($0C);   { ADD ESP, 12 }
+  BinPopReg(REG_EDI); BinPopReg(REG_ESI); BinPopReg(REG_EBX);
+  BinEmit8($8B); BinEmit8($E5); BinPopReg(REG_EBP); BinEmit8($C3);
 End;
 
 { ============================================================ }
@@ -6037,6 +6454,7 @@ End;
 { ============================================================ }
 
 Procedure BinCodegenNode(Node: Integer);     Forward;
+Procedure BinCodegenRegex(Node: Integer);    Forward;
 Procedure BinCodegenCall(Node: Integer);     Forward;
 Procedure BinCodegenList(Node: Integer);     Forward;
 Procedure BinLoadArrayPtr(LN: Integer);      Forward;
@@ -6313,11 +6731,80 @@ Begin
   BinAddEspImm8(8);
 End;
 
+{ ---- NK_REGEX : stocke le pattern en .rdata, retourne son adresse ---- }
+Procedure BinCodegenRegex(Node: Integer);
+Var LName, S: String; SaveSec, K: Integer;
+Begin
+  Inc(BinPLKCount);
+  LName := '_BPR_' + NumToStr(BinPLKCount);
+  SaveSec := BinCurSec;
+  BinCurSec := BIN_SEC_RDATA;
+  BinDefineLabel(LName);
+  S := AstTable[Node].Text;
+  For K := 1 To Length(S) Do BinEmit8(Ord(S[K]));
+  BinEmit8(0);                              { null-terminateur }
+  BinCurSec := SaveSec;
+  BinEmit8($B8); BinEmitRef32(LName, BIN_FIX_ABS32);  { MOV EAX, &pat }
+End;
+
 { ---- NK_BINARY : operations arithmetiques et logiques ---- }
 Procedure BinCodegenBinary(Node: Integer);
-Var Op: Integer;
+Var Op, SubN, LN, SIdx: Integer; SkipLbl, DoneLbl: String;
 Begin
   Op := AstTable[Node].Tok;
+  { TOK_MATCH / TOK_NMATCH : =~ ou !~ }
+  If (Op = TOK_MATCH) Or (Op = TOK_NMATCH) Then Begin
+    SubN := AstTable[Node].Right;
+    LN   := AstTable[Node].Left;
+    If AstTable[SubN].Kind = 28 { NK_SUBST } Then Begin
+      { s/// substitution : modifier la variable et retourner 1/0 }
+      Inc(BinPLKCount);
+      SkipLbl := '_BSB_' + NumToStr(BinPLKCount) + '_N';
+      DoneLbl := '_BSB_' + NumToStr(BinPLKCount) + '_D';
+      BinCodegenNode(LN);          { EAX = str ptr }
+      BinPushReg(REG_EAX);         { arg3: str }
+      BinCodegenNode(AstTable[SubN].FirstChild); { EAX = repl ptr }
+      BinPushReg(REG_EAX);         { arg2: repl }
+      BinCodegenRegex(SubN);       { EAX = pat ptr (depuis .rdata) }
+      BinPushReg(REG_EAX);         { arg1: pat }
+      BinCallLabel('_PLRT_subst_once');
+      BinAddEspImm8(12);
+      BinEmit8($85); BinEmit8($C0);              { TEST EAX, EAX }
+      BinJccLabel(CC_E, SkipLbl);
+      { Stocker la nouvelle chaine dans la variable gauche }
+      If AstTable[LN].Kind = 2 { NK_VAR } Then Begin
+        SIdx := AstTable[LN].SymRef;
+        If SIdx > 0 Then Begin
+          If (SymTable[SIdx].ScopeKd = SCOPE_LEXICAL) Or
+             (SymTable[SIdx].ScopeKd = SCOPE_DYNAMIC) Then
+            BinMovEbpNEax(SymTable[SIdx].Offset)
+          Else Begin
+            BinEmit8($A3); BinEmitRef32(SymTable[SIdx].AsmName, BIN_FIX_ABS32);
+          End;
+        End;
+      End;
+      BinEmit8($B8); BinEmit32(1); { MOV EAX, 1 }
+      BinJmpLabel(DoneLbl);
+      BinDefineLabel(SkipLbl);
+      BinXorRegReg(REG_EAX);
+      BinDefineLabel(DoneLbl);
+      If Op = TOK_NMATCH Then Begin
+        BinEmit8($83); BinEmit8($F0); BinEmit8($01); { XOR EAX,1 }
+      End;
+    End Else Begin
+      { /regex/ match ordinaire }
+      BinCodegenNode(LN);            { EAX = str ptr }
+      BinPushReg(REG_EAX);           { push str (arg2) }
+      BinCodegenNode(SubN);          { EAX = pat ptr (NK_REGEX) }
+      BinPushReg(REG_EAX);           { push pat (arg1) }
+      BinCallLabel('_PLRT_regex_match');
+      BinAddEspImm8(8);
+      If Op = TOK_NMATCH Then Begin
+        BinEmit8($83); BinEmit8($F0); BinEmit8($01); { XOR EAX,1 }
+      End;
+    End;
+    Exit;
+  End;
   BinCodegenNode(AstTable[Node].Left);    { EAX = gauche }
   BinPushReg(REG_EAX);
   BinCodegenNode(AstTable[Node].Right);   { EAX = droit }
@@ -6655,6 +7142,26 @@ Begin
     BinXorRegReg(REG_EAX);
 End;
 
+Procedure BinCodegenInterp(Node: Integer);
+Var Child: Integer;
+Begin
+  Child := AstTable[Node].FirstChild;
+  If Child = 0 Then Begin BinXorRegReg(REG_EAX); Exit; End;
+  BinCodegenNode(Child);
+  Child := AstTable[Child].NextSibling;
+  While Child <> 0 Do Begin
+    BinPushReg(REG_EAX);             { sauver s1 }
+    BinCodegenNode(Child);           { EAX = s2 }
+    BinEmit8($8B); BinEmit8($C8);   { MOV ECX, EAX }
+    BinPopReg(REG_EAX);              { EAX = s1 }
+    BinPushReg(REG_ECX);             { push s2 (param2) }
+    BinPushReg(REG_EAX);             { push s1 (param1) }
+    BinCallLabel('_PLRT_str_concat');
+    BinAddEspImm8(8);
+    Child := AstTable[Child].NextSibling;
+  End;
+End;
+
 Procedure BinCodegenNode(Node: Integer);
 Begin
   If Node = 0 Then Exit;
@@ -6676,6 +7183,8 @@ Begin
     19 { NK_FOREACH }:    BinCodegenForeach(Node);
     21 { NK_RETURN }:     BinCodegenReturn(Node);
     25 { NK_SUB_DEF }:    BinCodegenSubDef(Node);
+    27 { NK_REGEX }:      BinCodegenRegex(Node);
+    39 { NK_INTERP }:     BinCodegenInterp(Node);
   Else
     BinXorRegReg(REG_EAX);
   End;
@@ -6889,6 +7398,7 @@ Var
   IATVA: LongInt;
   Loc:   LongInt;
   NL:    Integer;
+  TxtVirtSz, DatVirtSz, RdtVirtSz: LongInt;
 
 Begin
   FuncName[1]  := 'GetStdHandle';
@@ -6937,12 +7447,15 @@ Begin
   IDataSz := AlignUp(IData_Raw, FileAlign);
   If IDataSz = 0 Then IDataSz := FileAlign;
 
-  { RVAs (section-alignes) }
-  TextRVA  := SecAlign;                              { 0x1000 }
-  DataRVA  := TextRVA  + SecAlign;                   { 0x2000 }
-  RDataRVA := DataRVA  + SecAlign;                   { 0x3000 }
-  BssRVA   := RDataRVA + SecAlign;                   { 0x4000 }
-  IDataRVA := BssRVA   + SecAlign;                   { 0x5000 }
+  { RVAs (section-alignes, dynamiques pour eviter le chevauchement) }
+  TxtVirtSz := AlignUp(BinCodeSize,  SecAlign); If TxtVirtSz = 0 Then TxtVirtSz := SecAlign;
+  DatVirtSz := AlignUp(BinDataSize,  SecAlign); If DatVirtSz = 0 Then DatVirtSz := SecAlign;
+  RdtVirtSz := AlignUp(BinRDataSize, SecAlign); If RdtVirtSz = 0 Then RdtVirtSz := SecAlign;
+  TextRVA  := SecAlign;
+  DataRVA  := TextRVA  + TxtVirtSz;
+  RDataRVA := DataRVA  + DatVirtSz;
+  BssRVA   := RDataRVA + RdtVirtSz;
+  IDataRVA := BssRVA   + SecAlign;
   ImageSz  := AlignUp(IDataRVA + IDataSz, SecAlign);
   InitDataSz := DataSz + RDataSz + IDataSz;
 
