@@ -3464,17 +3464,12 @@ Begin
       { $fh : parser, puis verifier s'il y a d'autres args (sinon c'est juste print $var) }
       HandleN := ParseAssign;
       If AstTable[HandleN].Kind = NK_VAR Then Begin
-        { Consommer virgule optionnelle si elle precede d'autres args }
         If (CurTokType = Ord(',')) Or (CurTokType = TOK_FATCOMMA) Then Begin
+          { Virgule apres $var = separateur de liste, jamais un filehandle }
+          AppendArg(ArgList, HandleN); HandleN := 0;
           LexNextToken;
-          If Not IsArgStopper(CurTokType) Then
-            IsHandle := True      { virgule + args -> filehandle }
-          Else Begin
-            { virgule seule en fin : traiter $var comme arg }
-            AppendArg(ArgList, HandleN); HandleN := 0;
-          End;
         End Else If Not IsArgStopper(CurTokType) Then
-          IsHandle := True        { pas de virgule + args -> filehandle }
+          IsHandle := True        { espace + args sans virgule -> filehandle }
         Else Begin
           { $var seul : c'est un arg ordinaire }
           AppendArg(ArgList, HandleN); HandleN := 0;
@@ -6494,8 +6489,19 @@ Begin
         BinEmit8($A1); BinEmitRef32('_PL_STDERR', BIN_FIX_ABS32);
       End Else If AstTable[Node].Text = 'STDIN' Then Begin
         BinEmit8($A1); BinEmitRef32('_PL_STDIN', BIN_FIX_ABS32);
-      End Else
-        BinXorRegReg(REG_EAX);
+      End Else Begin
+        { Bareword auto-quoting (ex: cle de hash apres =>) }
+        Inc(BinPLKCount);
+        LName := '_BPK_' + NumToStr(BinPLKCount);
+        SaveSec := BinCurSec;
+        BinCurSec := BIN_SEC_RDATA;
+        BinDefineLabel(LName);
+        S := AstTable[Node].Text;
+        For K := 1 To Length(S) Do BinEmit8(Ord(S[K]));
+        BinEmit8(0);
+        BinCurSec := SaveSec;
+        BinEmit8($B8); BinEmitRef32(LName, BIN_FIX_ABS32);
+      End;
     End;
   Else
     BinXorRegReg(REG_EAX);
@@ -6983,19 +6989,23 @@ Begin
 End;
 
 Procedure BinCodegenCall(Node: Integer);
-Var A, Cnt, Op, HandleN, FhNode, SIdx, ModeN: Integer;
+Var A, Cnt, Op, HandleN, FhNode, SIdx, ModeN, K: Integer;
+    ArgNodes: Array[0..127] Of Integer;
 Begin
   Op := AstTable[Node].Tok;
   If (Op = KW_PRINT) Or (Op = KW_SAY) Then Begin
     { Third = noeud handle (ou 0 = STDOUT) }
     Cnt := 0;
     A := AstTable[Node].FirstChild;
-    While A <> 0 Do Begin A := AstTable[A].NextSibling; Inc(Cnt); End;
-    A := AstTable[Node].FirstChild;
-    While A <> 0 Do Begin
-      BinCodegenNode(A);
+    While (A <> 0) And (Cnt < 128) Do Begin
+      ArgNodes[Cnt] := A; Inc(Cnt); A := AstTable[A].NextSibling;
+    End;
+    { Pousser en ordre inverse : dernier arg en premier -> arg1 a [EBP+16] }
+    K := Cnt - 1;
+    While K >= 0 Do Begin
+      BinCodegenNode(ArgNodes[K]);
       BinPushReg(REG_EAX);
-      A := AstTable[A].NextSibling;
+      Dec(K);
     End;
     BinPushImm32(Cnt);
     HandleN := AstTable[Node].Third;
