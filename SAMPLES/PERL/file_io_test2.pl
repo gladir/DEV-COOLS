@@ -1,6 +1,7 @@
 #!/usr/bin/perl
 # Test TODO 23 - mode append et eof
 
+unlink 'append_test.txt';
 open(my $fa, '>>', 'append_test.txt');
 print $fa, "Texte appende\n";
 close($fa);

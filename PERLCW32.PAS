@@ -5623,13 +5623,28 @@ Begin
   BinCallImport('_CreateFileA@28', 0);
   BinJmpLabel('_fopen_done');
   BinDefineLabel('_fopen_write');
-  { Mode ecriture: GENERIC_WRITE, 0, CREATE_ALWAYS }
+  { Verifier si c'est '>>' (append) : second char }
+  BinEmit8($0F); BinEmit8($B6); BinEmit8($43); BinEmit8(1); { MOVZX EAX, BYTE [EBX+1] }
+  BinEmit8($3C); BinEmit8(Ord('>'));            { CMP AL, '>' }
+  BinJccLabel(4, '_fopen_append');              { JE _fopen_append }
+  { Mode ecriture simple '>': GENERIC_WRITE, 0, CREATE_ALWAYS }
   BinPushImm32(0);
   BinPushImm32($80);
   BinPushImm32(2);                               { CREATE_ALWAYS }
   BinPushImm32(0);
   BinPushImm32(0);
   BinEmit8($68); BinEmit8($00); BinEmit8($00); BinEmit8($00); BinEmit8($40); { PUSH 0x40000000 GENERIC_WRITE }
+  BinEmit8($FF); BinEmit8($75); BinEmit8($0C);  { PUSH [EBP+12] filename }
+  BinCallImport('_CreateFileA@28', 0);
+  BinJmpLabel('_fopen_done');
+  BinDefineLabel('_fopen_append');
+  { Mode ajout '>>': FILE_APPEND_DATA=4, OPEN_ALWAYS=4 }
+  BinPushImm32(0);
+  BinPushImm32($80);
+  BinPushImm32(4);                               { OPEN_ALWAYS }
+  BinPushImm32(0);
+  BinPushImm32(0);
+  BinPushImm32(4);                               { FILE_APPEND_DATA }
   BinEmit8($FF); BinEmit8($75); BinEmit8($0C);  { PUSH [EBP+12] filename }
   BinCallImport('_CreateFileA@28', 0);
   BinDefineLabel('_fopen_done');
@@ -5686,6 +5701,57 @@ Begin
   BinPopReg(REG_EDI);
   BinPopReg(REG_ESI);
   BinPopReg(REG_EBX);
+  BinEmit8($8B); BinEmit8($E5); BinPopReg(REG_EBP); BinEmit8($C3);
+
+  { -------------------------------------------------------
+    _PLRT_file_eof(handle) cdecl -> 1 si EOF, 0 sinon
+    Utilise SetFilePointer pour comparer pos courante et fin
+    [EBP+8] = handle
+    [EBP-4] = resultat eof (sauvegarde avant SetFilePointer restore)
+    ------------------------------------------------------- }
+  BinDefineLabel('_PLRT_file_eof');
+  BinPushReg(REG_EBP); BinEmit8($8B); BinEmit8($EC);
+  BinEmit8($83); BinEmit8($EC); BinEmit8(4);    { SUB ESP, 4 (eof_result) }
+  BinPushReg(REG_EBX);
+  BinPushReg(REG_ESI);
+  BinEmit8($8B); BinEmit8($5D); BinEmit8(8);    { MOV EBX, [EBP+8] handle }
+  { cur = SetFilePointer(hFile, 0, NULL, FILE_CURRENT=1) }
+  BinPushImm32(1);                               { FILE_CURRENT }
+  BinPushImm32(0);                               { lpDistanceToMoveHigh }
+  BinPushImm32(0);                               { lDistanceToMove }
+  BinPushReg(REG_EBX);
+  BinCallImport('_SetFilePointer@16', 0);
+  BinEmit8($8B); BinEmit8($F0);                 { MOV ESI, EAX (cur pos) }
+  { end = SetFilePointer(hFile, 0, NULL, FILE_END=2) }
+  BinPushImm32(2);                               { FILE_END }
+  BinPushImm32(0);
+  BinPushImm32(0);
+  BinPushReg(REG_EBX);
+  BinCallImport('_SetFilePointer@16', 0);
+  { ESI = cur, EAX = end : compare }
+  BinEmit8($3B); BinEmit8($F0);                 { CMP ESI, EAX }
+  BinEmit8($0F); BinEmit8($94); BinEmit8($C0);  { SETE AL }
+  BinEmit8($0F); BinEmit8($B6); BinEmit8($C0);  { MOVZX EAX, AL }
+  BinEmit8($89); BinEmit8($45); BinEmit8($FC);  { MOV [EBP-4], EAX (sauver) }
+  { Restaurer position: SetFilePointer(hFile, cur, NULL, FILE_BEGIN=0) }
+  BinPushImm32(0);                               { FILE_BEGIN }
+  BinPushImm32(0);
+  BinPushReg(REG_ESI);                           { cur pos }
+  BinPushReg(REG_EBX);
+  BinCallImport('_SetFilePointer@16', 0);
+  BinEmit8($8B); BinEmit8($45); BinEmit8($FC);  { MOV EAX, [EBP-4] (resultat) }
+  BinPopReg(REG_ESI);
+  BinPopReg(REG_EBX);
+  BinEmit8($8B); BinEmit8($E5); BinPopReg(REG_EBP); BinEmit8($C3);
+
+  { -------------------------------------------------------
+    _PLRT_unlink(filename_ptr) cdecl -> 1 si succes, 0 sinon
+    [EBP+8] = filename_ptr
+    ------------------------------------------------------- }
+  BinDefineLabel('_PLRT_unlink');
+  BinPushReg(REG_EBP); BinEmit8($8B); BinEmit8($EC);
+  BinEmit8($FF); BinEmit8($75); BinEmit8($08);   { PUSH [EBP+8] (filename_ptr) }
+  BinCallImport('_DeleteFileA@4', 0);             { STDCALL: callee cleans 4 }
   BinEmit8($8B); BinEmit8($E5); BinPopReg(REG_EBP); BinEmit8($C3);
 End;
 
@@ -6036,6 +6102,20 @@ Begin
     BinPushReg(REG_EAX);
     BinCallLabel('_PLRT_file_readline');
     BinAddEspImm8(4);
+  End Else If Op = KW_EOF_FUNC Then Begin
+    { eof($fh) -> 1 si EOF sinon 0 }
+    A := AstTable[Node].FirstChild;
+    If A <> 0 Then BinCodegenNode(A) Else BinXorRegReg(REG_EAX);
+    BinPushReg(REG_EAX);
+    BinCallLabel('_PLRT_file_eof');
+    BinAddEspImm8(4);
+  End Else If Op = KW_UNLINK Then Begin
+    { unlink(filename) -> 1 si succes }
+    A := AstTable[Node].FirstChild;
+    If A <> 0 Then BinCodegenNode(A) Else BinXorRegReg(REG_EAX);
+    BinPushReg(REG_EAX);
+    BinCallLabel('_PLRT_unlink');
+    BinAddEspImm8(4);
   End Else If Op = KW_SCALAR Then Begin
     { scalar(@arr) -> array_len(ptr) }
     A := AstTable[Node].FirstChild;
@@ -6236,7 +6316,7 @@ End;
 
 Procedure WritePE(FileName: String);
 Const
-  NK = 11;   { nombre de fonctions KERNEL32 }
+  NK = 13;   { nombre de fonctions KERNEL32 }
 Var
   F: File;
   I, K: Integer;
@@ -6277,8 +6357,8 @@ Var
   HintBase_Off: LongInt;  { DllName_Off + 14 }
   IData_Raw:    LongInt;  { taille reelle }
 
-  FuncOff:  Array[1..11] Of LongInt;
-  FuncName: Array[1..11] Of String;
+  FuncOff:  Array[1..13] Of LongInt;
+  FuncName: Array[1..13] Of String;
 
   IDT_RVA: LongInt;
   IDT_SZ:  LongInt;
@@ -6306,6 +6386,8 @@ Begin
   FuncName[9]  := 'HeapAlloc';
   FuncName[10] := 'HeapFree';
   FuncName[11] := 'GetProcessHeap';
+  FuncName[12] := 'SetFilePointer';
+  FuncName[13] := 'DeleteFileA';
 
   ImageBase := PE_IMG_BASE;
   FileAlign := PE_FILE_ALIGN;   { 512 }
@@ -6902,6 +6984,8 @@ Begin
   EmitRaw('    EXTRN _ReadFile@20:NEAR');
   EmitRaw('    EXTRN _CreateFileA@28:NEAR');
   EmitRaw('    EXTRN _CloseHandle@4:NEAR');
+  EmitRaw('    EXTRN _SetFilePointer@16:NEAR');
+  EmitRaw('    EXTRN _DeleteFileA@4:NEAR');
   EmitRaw('    EXTRN _GetCommandLineA@0:NEAR');
   EmitRaw('    EXTRN _GetEnvironmentStringsA@0:NEAR');
   EmitRaw('    EXTRN _GetCurrentProcessId@0:NEAR');
