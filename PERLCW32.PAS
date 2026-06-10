@@ -5921,6 +5921,108 @@ Begin
   BinDefineLabel('_hdel_done');
   BinPopReg(REG_EDI); BinPopReg(REG_ESI); BinPopReg(REG_EBX);
   BinEmit8($8B); BinEmit8($E5); BinPopReg(REG_EBP); BinEmit8($C3);
+
+  { _PLRT_str_concat(s1, s2) cdecl -> EAX = ptr chaine concatenee }
+  BinDefineLabel('_PLRT_str_concat');
+  BinPushReg(REG_EBP); BinEmit8($8B); BinEmit8($EC);
+  BinPushReg(REG_EBX); BinPushReg(REG_ESI); BinPushReg(REG_EDI);
+  BinEmit8($8B); BinEmit8($75); BinEmit8($08);               { MOV ESI,[EBP+8] s1 }
+  BinXorRegReg(REG_EBX);
+  BinDefineLabel('_scat_l1');
+  BinEmit8($80); BinEmit8($3C); BinEmit8($1E); BinEmit8($00); { CMP BYTE[ESI+EBX],0 }
+  BinJccLabel(4, '_scat_l1e');
+  BinEmit8($43);                                              { INC EBX }
+  BinJmpLabel('_scat_l1');
+  BinDefineLabel('_scat_l1e');
+  BinEmit8($8B); BinEmit8($7D); BinEmit8($0C);               { MOV EDI,[EBP+12] s2 }
+  BinXorRegReg(REG_ECX);
+  BinDefineLabel('_scat_l2');
+  BinEmit8($80); BinEmit8($3C); BinEmit8($0F); BinEmit8($00); { CMP BYTE[EDI+ECX],0 }
+  BinJccLabel(4, '_scat_l2e');
+  BinEmit8($41);                                              { INC ECX }
+  BinJmpLabel('_scat_l2');
+  BinDefineLabel('_scat_l2e');
+  BinPushReg(REG_ECX);                                        { save len2 }
+  BinMovRegReg(REG_EAX, REG_EBX);                            { MOV EAX,EBX }
+  BinEmit8($03); BinEmit8($C1);                              { ADD EAX,ECX }
+  BinEmit8($40);                                             { INC EAX (total) }
+  BinPushReg(REG_EAX); BinPushImm32(8);
+  BinCallImport('_GetProcessHeap@0', 0);
+  BinPushReg(REG_EAX);
+  BinCallImport('_HeapAlloc@12', 0);
+  { EAX=dest, EBX=len1 preserves; stack=[len2] }
+  BinMovRegReg(REG_EDI, REG_EAX);                            { MOV EDI,EAX dest }
+  BinEmit8($8B); BinEmit8($75); BinEmit8($08);               { MOV ESI,[EBP+8] s1 }
+  BinXorRegReg(REG_ECX);
+  BinDefineLabel('_scat_cp1');
+  BinEmit8($3B); BinEmit8($CB);                              { CMP ECX,EBX }
+  BinJccLabel(3, '_scat_cp1e');
+  BinEmit8($8A); BinEmit8($14); BinEmit8($0E);               { MOV DL,[ESI+ECX] }
+  BinEmit8($88); BinEmit8($14); BinEmit8($0F);               { MOV [EDI+ECX],DL }
+  BinEmit8($41);                                             { INC ECX }
+  BinJmpLabel('_scat_cp1');
+  BinDefineLabel('_scat_cp1e');
+  BinEmit8($03); BinEmit8($FB);                              { ADD EDI,EBX }
+  BinEmit8($8B); BinEmit8($75); BinEmit8($0C);               { MOV ESI,[EBP+12] s2 }
+  BinPopReg(REG_ECX);                                        { pop len2 }
+  BinXorRegReg(REG_EAX);
+  BinDefineLabel('_scat_cp2');
+  BinEmit8($3B); BinEmit8($C1);                              { CMP EAX,ECX }
+  BinJccLabel(3, '_scat_cp2e');
+  BinEmit8($8A); BinEmit8($14); BinEmit8($06);               { MOV DL,[ESI+EAX] }
+  BinEmit8($88); BinEmit8($14); BinEmit8($07);               { MOV [EDI+EAX],DL }
+  BinEmit8($40);                                             { INC EAX }
+  BinJmpLabel('_scat_cp2');
+  BinDefineLabel('_scat_cp2e');
+  BinEmit8($2B); BinEmit8($FB);                              { SUB EDI,EBX }
+  BinMovRegReg(REG_EAX, REG_EDI);                            { MOV EAX,EDI = dest }
+  BinPopReg(REG_EDI); BinPopReg(REG_ESI); BinPopReg(REG_EBX);
+  BinEmit8($8B); BinEmit8($E5); BinPopReg(REG_EBP); BinEmit8($C3);
+
+  { _PLRT_str_repeat(str, count) cdecl -> EAX = ptr chaine repetee }
+  BinDefineLabel('_PLRT_str_repeat');
+  BinPushReg(REG_EBP); BinEmit8($8B); BinEmit8($EC);
+  BinPushReg(REG_EBX); BinPushReg(REG_ESI); BinPushReg(REG_EDI);
+  BinEmit8($8B); BinEmit8($75); BinEmit8($08);               { MOV ESI,[EBP+8] str }
+  BinXorRegReg(REG_EBX);
+  BinDefineLabel('_srep_l1');
+  BinEmit8($80); BinEmit8($3C); BinEmit8($1E); BinEmit8($00); { CMP BYTE[ESI+EBX],0 }
+  BinJccLabel(4, '_srep_l1e');
+  BinEmit8($43);                                             { INC EBX }
+  BinJmpLabel('_srep_l1');
+  BinDefineLabel('_srep_l1e');
+  BinEmit8($8B); BinEmit8($4D); BinEmit8($0C);               { MOV ECX,[EBP+12] count }
+  BinPushReg(REG_ECX);                                       { save count }
+  BinMovRegReg(REG_EAX, REG_EBX);                            { MOV EAX,EBX }
+  BinEmit8($0F); BinEmit8($AF); BinEmit8($C1);               { IMUL EAX,ECX }
+  BinEmit8($40);                                             { INC EAX (total=len*count+1) }
+  BinPushReg(REG_EAX); BinPushImm32(8);
+  BinCallImport('_GetProcessHeap@0', 0);
+  BinPushReg(REG_EAX);
+  BinCallImport('_HeapAlloc@12', 0);
+  { EAX=dest, EBX=len, ESI=str; stack=[count] }
+  BinMovRegReg(REG_EDI, REG_EAX);                            { MOV EDI,EAX write ptr }
+  BinPopReg(REG_ECX);                                        { ECX=count; stack=[] }
+  BinPushReg(REG_EAX);                                       { save dest }
+  BinDefineLabel('_srep_outer');
+  BinEmit8($85); BinEmit8($C9);                              { TEST ECX,ECX }
+  BinJccLabel(4, '_srep_done');
+  BinXorRegReg(REG_EAX);
+  BinDefineLabel('_srep_inner');
+  BinEmit8($3B); BinEmit8($C3);                              { CMP EAX,EBX }
+  BinJccLabel(3, '_srep_inner_e');
+  BinEmit8($8A); BinEmit8($14); BinEmit8($06);               { MOV DL,[ESI+EAX] }
+  BinEmit8($88); BinEmit8($14); BinEmit8($07);               { MOV [EDI+EAX],DL }
+  BinEmit8($40);                                             { INC EAX }
+  BinJmpLabel('_srep_inner');
+  BinDefineLabel('_srep_inner_e');
+  BinEmit8($03); BinEmit8($FB);                              { ADD EDI,EBX }
+  BinEmit8($49);                                             { DEC ECX }
+  BinJmpLabel('_srep_outer');
+  BinDefineLabel('_srep_done');
+  BinPopReg(REG_EAX);                                        { EAX=original dest }
+  BinPopReg(REG_EDI); BinPopReg(REG_ESI); BinPopReg(REG_EBX);
+  BinEmit8($8B); BinEmit8($E5); BinPopReg(REG_EBP); BinEmit8($C3);
 End;
 
 { ============================================================ }
@@ -6016,6 +6118,34 @@ Begin
         End;
         BinCallLabel('_PLRT_hash_set'); BinAddEspImm8(12);
         C := AstTable[ValN].NextSibling;
+      End;
+      Exit;
+    End;
+    { Affectation composee : $var op= expr }
+    If AstTable[Node].Tok = TOK_ASSIGN_OP Then Begin
+      BinCodegenVar(LN);                  { EAX = valeur actuelle LHS }
+      BinPushReg(REG_EAX);
+      BinCodegenNode(RN);                 { EAX = valeur RHS }
+      BinEmit8($8B); BinEmit8($C8);      { MOV ECX, EAX }
+      BinPopReg(REG_EAX);                { EAX = LHS }
+      If Length(AstTable[Node].Text) >= 1 Then
+        Case AstTable[Node].Text[1] Of
+          '+': BinAddEaxEcx;
+          '-': BinSubEaxEcx;
+          '*': BinImulEaxEcx;
+          '.': Begin
+            BinPushReg(REG_ECX);
+            BinPushReg(REG_EAX);
+            BinCallLabel('_PLRT_str_concat');
+            BinAddEspImm8(8);
+          End;
+        Else BinXorRegReg(REG_EAX);
+        End
+      Else BinXorRegReg(REG_EAX);
+      If SymTable[SIdx].ScopeKd = SCOPE_LEXICAL Then
+        BinMovEbpNEax(SymTable[SIdx].Offset)
+      Else Begin
+        BinEmit8($A3); BinEmitRef32(SymTable[SIdx].AsmName, BIN_FIX_ABS32);
       End;
       Exit;
     End;
@@ -6173,6 +6303,18 @@ Begin
     284 { TOK_NE }: Begin BinEmit8($3B); BinEmit8($C1); BinEmit8($0F); BinEmit8($95); BinEmit8($C0); BinEmit8($0F); BinEmit8($B6); BinEmit8($C0); End;
     282 { TOK_GE }: Begin BinEmit8($3B); BinEmit8($C1); BinEmit8($0F); BinEmit8($9D); BinEmit8($C0); BinEmit8($0F); BinEmit8($B6); BinEmit8($C0); End;
     281 { TOK_LE }: Begin BinEmit8($3B); BinEmit8($C1); BinEmit8($0F); BinEmit8($9E); BinEmit8($C0); BinEmit8($0F); BinEmit8($B6); BinEmit8($C0); End;
+    Ord('.') { concat }: Begin
+      BinPushReg(REG_ECX);
+      BinPushReg(REG_EAX);
+      BinCallLabel('_PLRT_str_concat');
+      BinAddEspImm8(8);
+    End;
+    1085 { KW_X_REP }: Begin
+      BinPushReg(REG_ECX);
+      BinPushReg(REG_EAX);
+      BinCallLabel('_PLRT_str_repeat');
+      BinAddEspImm8(8);
+    End;
   Else BinXorRegReg(REG_EAX);
   End;
 End;
