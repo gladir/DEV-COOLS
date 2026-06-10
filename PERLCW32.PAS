@@ -5753,6 +5753,174 @@ Begin
   BinEmit8($FF); BinEmit8($75); BinEmit8($08);   { PUSH [EBP+8] (filename_ptr) }
   BinCallImport('_DeleteFileA@4', 0);             { STDCALL: callee cleans 4 }
   BinEmit8($8B); BinEmit8($E5); BinPopReg(REG_EBP); BinEmit8($C3);
+
+  { -------------------------------------------------------
+    _plrt_streq(s1, s2) cdecl -> EAX=1 si egal, 0 sinon
+    [EBP+8]=s1  [EBP+12]=s2
+    ------------------------------------------------------- }
+  BinDefineLabel('_plrt_streq');
+  BinPushReg(REG_EBP); BinEmit8($8B); BinEmit8($EC);
+  BinPushReg(REG_ESI); BinPushReg(REG_EDI);
+  BinEmit8($8B); BinEmit8($75); BinEmit8($08);       { MOV ESI,[EBP+8]  s1 }
+  BinEmit8($8B); BinEmit8($7D); BinEmit8($0C);       { MOV EDI,[EBP+12] s2 }
+  BinDefineLabel('_streq_loop');
+  BinEmit8($8A); BinEmit8($06);                       { MOV AL,[ESI] }
+  BinEmit8($3A); BinEmit8($07);                       { CMP AL,[EDI] }
+  BinJccLabel(5, '_streq_no');                         { JNE _streq_no }
+  BinEmit8($84); BinEmit8($C0);                       { TEST AL,AL }
+  BinJccLabel(4, '_streq_yes');                        { JZ  _streq_yes }
+  BinEmit8($46);                                       { INC ESI }
+  BinEmit8($47);                                       { INC EDI }
+  BinJmpLabel('_streq_loop');
+  BinDefineLabel('_streq_yes');
+  BinMovRegImm32(REG_EAX, 1);
+  BinJmpLabel('_streq_ret');
+  BinDefineLabel('_streq_no');
+  BinXorRegReg(REG_EAX);
+  BinDefineLabel('_streq_ret');
+  BinPopReg(REG_EDI); BinPopReg(REG_ESI);
+  BinEmit8($8B); BinEmit8($E5); BinPopReg(REG_EBP); BinEmit8($C3);
+
+  { -------------------------------------------------------
+    _PLRT_hash_new() cdecl -> EAX = ptr 4 octets (tete liste)
+    ------------------------------------------------------- }
+  BinDefineLabel('_PLRT_hash_new');
+  BinPushReg(REG_EBP); BinEmit8($8B); BinEmit8($EC);
+  BinPushImm32(4);                                     { dwBytes=4 }
+  BinPushImm32(8);                                     { HEAP_ZERO_MEMORY }
+  BinCallImport('_GetProcessHeap@0', 0);               { EAX=hHeap }
+  BinPushReg(REG_EAX);
+  BinCallImport('_HeapAlloc@12', 0);                   { EAX=header cell }
+  BinEmit8($8B); BinEmit8($E5); BinPopReg(REG_EBP); BinEmit8($C3);
+
+  { -------------------------------------------------------
+    _PLRT_hash_get(hash_ptr, key_ptr) cdecl -> EAX=val ou 0
+    [EBP+8]=hash_ptr  [EBP+12]=key_ptr
+    Entree: [hash_ptr]=tete liste chainee
+    Chaque entree: [next(4)][key_ptr(4)][val(4)]
+    ------------------------------------------------------- }
+  BinDefineLabel('_PLRT_hash_get');
+  BinPushReg(REG_EBP); BinEmit8($8B); BinEmit8($EC);
+  BinPushReg(REG_EBX); BinPushReg(REG_ESI); BinPushReg(REG_EDI);
+  BinEmit8($8B); BinEmit8($75); BinEmit8($08);         { MOV ESI,[EBP+8]  hash_ptr }
+  BinEmit8($8B); BinEmit8($7D); BinEmit8($0C);         { MOV EDI,[EBP+12] key_ptr }
+  BinEmit8($8B); BinEmit8($1E);                         { MOV EBX,[ESI]  tete }
+  BinDefineLabel('_hget_loop');
+  BinEmit8($85); BinEmit8($DB);                         { TEST EBX,EBX }
+  BinJccLabel(4, '_hget_miss');                          { JZ miss }
+  BinEmit8($FF); BinEmit8($73); BinEmit8($04);          { PUSH [EBX+4] entree->key }
+  BinPushReg(REG_EDI);                                   { PUSH key_ptr }
+  BinCallLabel('_plrt_streq'); BinAddEspImm8(8);
+  BinEmit8($85); BinEmit8($C0);                         { TEST EAX,EAX }
+  BinJccLabel(5, '_hget_found');                         { JNZ found }
+  BinEmit8($8B); BinEmit8($1B);                         { MOV EBX,[EBX] suivant }
+  BinJmpLabel('_hget_loop');
+  BinDefineLabel('_hget_found');
+  BinEmit8($8B); BinEmit8($43); BinEmit8($08);          { MOV EAX,[EBX+8] val }
+  BinJmpLabel('_hget_ret');
+  BinDefineLabel('_hget_miss');
+  BinXorRegReg(REG_EAX);
+  BinDefineLabel('_hget_ret');
+  BinPopReg(REG_EDI); BinPopReg(REG_ESI); BinPopReg(REG_EBX);
+  BinEmit8($8B); BinEmit8($E5); BinPopReg(REG_EBP); BinEmit8($C3);
+
+  { -------------------------------------------------------
+    _PLRT_hash_set(hash_ptr, key_ptr, val) cdecl
+    [EBP+8]=hash_ptr  [EBP+12]=key_ptr  [EBP+16]=val
+    Si cle trouvee: met a jour val. Sinon: prepend nouvelle entree.
+    ------------------------------------------------------- }
+  BinDefineLabel('_PLRT_hash_set');
+  BinPushReg(REG_EBP); BinEmit8($8B); BinEmit8($EC);
+  BinPushReg(REG_EBX); BinPushReg(REG_ESI); BinPushReg(REG_EDI);
+  BinEmit8($8B); BinEmit8($75); BinEmit8($08);          { MOV ESI,[EBP+8]  hash_ptr }
+  BinEmit8($8B); BinEmit8($7D); BinEmit8($0C);          { MOV EDI,[EBP+12] key_ptr }
+  BinEmit8($8B); BinEmit8($1E);                          { MOV EBX,[ESI]  tete }
+  BinDefineLabel('_hset_loop');
+  BinEmit8($85); BinEmit8($DB);                          { TEST EBX,EBX }
+  BinJccLabel(4, '_hset_new');                            { JZ new }
+  BinEmit8($FF); BinEmit8($73); BinEmit8($04);           { PUSH [EBX+4] }
+  BinPushReg(REG_EDI);
+  BinCallLabel('_plrt_streq'); BinAddEspImm8(8);
+  BinEmit8($85); BinEmit8($C0);
+  BinJccLabel(5, '_hset_update');                         { JNZ update }
+  BinEmit8($8B); BinEmit8($1B);                          { MOV EBX,[EBX] }
+  BinJmpLabel('_hset_loop');
+  BinDefineLabel('_hset_update');
+  BinEmit8($8B); BinEmit8($4D); BinEmit8($10);           { MOV ECX,[EBP+16] val }
+  BinEmit8($89); BinEmit8($4B); BinEmit8($08);           { MOV [EBX+8],ECX }
+  BinJmpLabel('_hset_ret');
+  BinDefineLabel('_hset_new');
+  BinPushImm32(12); BinPushImm32(8);                     { alloc 12 octets }
+  BinCallImport('_GetProcessHeap@0', 0);
+  BinPushReg(REG_EAX);
+  BinCallImport('_HeapAlloc@12', 0);                     { EAX=nouvelle entree }
+  BinEmit8($8B); BinEmit8($0E);                          { MOV ECX,[ESI] ancienne tete }
+  BinEmit8($89); BinEmit8($08);                          { MOV [EAX],ECX next }
+  BinEmit8($8B); BinEmit8($4D); BinEmit8($0C);           { MOV ECX,[EBP+12] key_ptr }
+  BinEmit8($89); BinEmit8($48); BinEmit8($04);           { MOV [EAX+4],ECX }
+  BinEmit8($8B); BinEmit8($4D); BinEmit8($10);           { MOV ECX,[EBP+16] val }
+  BinEmit8($89); BinEmit8($48); BinEmit8($08);           { MOV [EAX+8],ECX }
+  BinEmit8($89); BinEmit8($06);                          { MOV [ESI],EAX nouvelle tete }
+  BinDefineLabel('_hset_ret');
+  BinPopReg(REG_EDI); BinPopReg(REG_ESI); BinPopReg(REG_EBX);
+  BinEmit8($8B); BinEmit8($E5); BinPopReg(REG_EBP); BinEmit8($C3);
+
+  { -------------------------------------------------------
+    _PLRT_hash_exists(hash_ptr, key_ptr) cdecl -> EAX=1/0
+    ------------------------------------------------------- }
+  BinDefineLabel('_PLRT_hash_exists');
+  BinPushReg(REG_EBP); BinEmit8($8B); BinEmit8($EC);
+  BinPushReg(REG_EBX); BinPushReg(REG_ESI); BinPushReg(REG_EDI);
+  BinEmit8($8B); BinEmit8($75); BinEmit8($08);
+  BinEmit8($8B); BinEmit8($7D); BinEmit8($0C);
+  BinEmit8($8B); BinEmit8($1E);
+  BinDefineLabel('_hexists_loop');
+  BinEmit8($85); BinEmit8($DB);
+  BinJccLabel(4, '_hexists_miss');
+  BinEmit8($FF); BinEmit8($73); BinEmit8($04);
+  BinPushReg(REG_EDI);
+  BinCallLabel('_plrt_streq'); BinAddEspImm8(8);
+  BinEmit8($85); BinEmit8($C0);
+  BinJccLabel(5, '_hexists_found');
+  BinEmit8($8B); BinEmit8($1B);
+  BinJmpLabel('_hexists_loop');
+  BinDefineLabel('_hexists_found');
+  BinMovRegImm32(REG_EAX, 1);
+  BinJmpLabel('_hexists_ret');
+  BinDefineLabel('_hexists_miss');
+  BinXorRegReg(REG_EAX);
+  BinDefineLabel('_hexists_ret');
+  BinPopReg(REG_EDI); BinPopReg(REG_ESI); BinPopReg(REG_EBX);
+  BinEmit8($8B); BinEmit8($E5); BinPopReg(REG_EBP); BinEmit8($C3);
+
+  { -------------------------------------------------------
+    _PLRT_hash_delete(hash_ptr, key_ptr) cdecl
+    ESI=prev_ptr (pointeur vers le champ next a mettre a jour)
+    EBX=entree courante
+    ------------------------------------------------------- }
+  BinDefineLabel('_PLRT_hash_delete');
+  BinPushReg(REG_EBP); BinEmit8($8B); BinEmit8($EC);
+  BinPushReg(REG_EBX); BinPushReg(REG_ESI); BinPushReg(REG_EDI);
+  BinEmit8($8B); BinEmit8($75); BinEmit8($08);          { MOV ESI,[EBP+8]  hash_ptr }
+  BinEmit8($8B); BinEmit8($7D); BinEmit8($0C);          { MOV EDI,[EBP+12] key_ptr }
+  BinEmit8($8B); BinEmit8($1E);                          { MOV EBX,[ESI]  tete }
+  BinDefineLabel('_hdel_loop');
+  BinEmit8($85); BinEmit8($DB);
+  BinJccLabel(4, '_hdel_done');
+  BinEmit8($FF); BinEmit8($73); BinEmit8($04);
+  BinPushReg(REG_EDI);
+  BinCallLabel('_plrt_streq'); BinAddEspImm8(8);
+  BinEmit8($85); BinEmit8($C0);
+  BinJccLabel(5, '_hdel_found');
+  BinEmit8($8B); BinEmit8($F3);                          { MOV ESI,EBX  (ESI=&EBX->next) }
+  BinEmit8($8B); BinEmit8($1B);                          { MOV EBX,[EBX] suivant }
+  BinJmpLabel('_hdel_loop');
+  BinDefineLabel('_hdel_found');
+  BinEmit8($8B); BinEmit8($0B);                          { MOV ECX,[EBX] next de l'entree }
+  BinEmit8($89); BinEmit8($0E);                          { MOV [ESI],ECX retire entree }
+  BinDefineLabel('_hdel_done');
+  BinPopReg(REG_EDI); BinPopReg(REG_ESI); BinPopReg(REG_EBX);
+  BinEmit8($8B); BinEmit8($E5); BinPopReg(REG_EBP); BinEmit8($C3);
 End;
 
 { ============================================================ }
@@ -5763,6 +5931,7 @@ Procedure BinCodegenNode(Node: Integer);     Forward;
 Procedure BinCodegenCall(Node: Integer);     Forward;
 Procedure BinCodegenList(Node: Integer);     Forward;
 Procedure BinLoadArrayPtr(LN: Integer);      Forward;
+Procedure BinLoadHashPtr(LN: Integer);       Forward;
 Procedure BinCodegenIndex(Node: Integer);    Forward;
 Procedure BinCodegenBinary(Node: Integer);   Forward;
 Procedure BinCodegenForeach(Node: Integer);  Forward;
@@ -5818,12 +5987,38 @@ Begin
 End;
 
 Procedure BinCodegenAssign(Node: Integer);
-Var LN, RN, SIdx: Integer;
+Var LN, RN, SIdx: Integer; C, KeyN, ValN: Integer;
 Begin
   LN := AstTable[Node].Left; RN := AstTable[Node].Right;
   If AstTable[LN].Kind = 2 { NK_VAR } Then Begin
     SIdx := AstTable[LN].SymRef;
     If SIdx = 0 Then Begin BinCodegenNode(RN); Exit; End;
+    If SymTable[SIdx].Kind = 3 { SK_HASH } Then Begin
+      { Initialisation hash : hash_new puis hash_set pour chaque paire cle/val }
+      BinCallLabel('_PLRT_hash_new');              { EAX = hash_ptr }
+      If SymTable[SIdx].ScopeKd = SCOPE_LEXICAL Then
+        BinMovEbpNEax(SymTable[SIdx].Offset)
+      Else Begin
+        BinEmit8($A3); BinEmitRef32(SymTable[SIdx].AsmName, BIN_FIX_ABS32);
+      End;
+      C := AstTable[RN].FirstChild;
+      While C <> 0 Do Begin
+        KeyN := C; ValN := AstTable[C].NextSibling;
+        If ValN = 0 Then Break;
+        BinCodegenNode(ValN); BinPushReg(REG_EAX);   { push val (arg3) }
+        BinCodegenNode(KeyN); BinPushReg(REG_EAX);   { push key (arg2) }
+        If SymTable[SIdx].ScopeKd = SCOPE_LEXICAL Then Begin
+          BinEmit8($FF); BinEmit8($75);
+          BinEmit8((-SymTable[SIdx].Offset) And $FF); { PUSH [EBP-N] hash_ptr }
+        End Else Begin
+          BinEmit8($FF); BinEmit8($35);
+          BinEmitRef32(SymTable[SIdx].AsmName, BIN_FIX_ABS32);
+        End;
+        BinCallLabel('_PLRT_hash_set'); BinAddEspImm8(12);
+        C := AstTable[ValN].NextSibling;
+      End;
+      Exit;
+    End;
     { Tableau : si RHS n'est pas une liste, creer un tableau mono-element }
     If (SymTable[SIdx].Kind = 2 { SK_ARRAY }) And
        (AstTable[RN].Kind <> 10 { NK_ARRAY_LIT }) And
@@ -5844,15 +6039,27 @@ Begin
       BinEmit8($A3); BinEmitRef32(SymTable[SIdx].AsmName, BIN_FIX_ABS32);
     End;
   End Else If AstTable[LN].Kind = 9 { NK_INDEX } Then Begin
-    { arr[idx] = val : _PLRT_array_set(ptr, idx, val) cdecl }
-    BinCodegenNode(RN);                            { EAX = val }
-    BinPushReg(REG_EAX);                           { push val (rightmost) }
-    BinCodegenNode(AstTable[LN].Right);            { EAX = idx }
-    BinPushReg(REG_EAX);                           { push idx }
-    BinLoadArrayPtr(AstTable[LN].Left);            { EAX = arr ptr }
-    BinPushReg(REG_EAX);                           { push ptr (leftmost) }
-    BinCallLabel('_PLRT_array_set');
-    BinAddEspImm8(12);
+    If AstTable[LN].Tok = Ord('{') Then Begin
+      { hash-cle- = val : _PLRT_hash_set(hash_ptr, key_ptr, val) cdecl }
+      BinCodegenNode(RN);                           { EAX = val }
+      BinPushReg(REG_EAX);                          { push val (arg3) }
+      BinCodegenNode(AstTable[LN].Right);           { EAX = key_ptr }
+      BinPushReg(REG_EAX);                          { push key (arg2) }
+      BinLoadHashPtr(AstTable[LN].Left);            { EAX = hash_ptr }
+      BinPushReg(REG_EAX);                          { push hash_ptr (arg1) }
+      BinCallLabel('_PLRT_hash_set');
+      BinAddEspImm8(12);
+    End Else Begin
+      { arr[idx] = val : _PLRT_array_set(ptr, idx, val) cdecl }
+      BinCodegenNode(RN);                           { EAX = val }
+      BinPushReg(REG_EAX);                          { push val (rightmost) }
+      BinCodegenNode(AstTable[LN].Right);           { EAX = idx }
+      BinPushReg(REG_EAX);                          { push idx }
+      BinLoadArrayPtr(AstTable[LN].Left);           { EAX = arr ptr }
+      BinPushReg(REG_EAX);                          { push ptr (leftmost) }
+      BinCallLabel('_PLRT_array_set');
+      BinAddEspImm8(12);
+    End;
   End Else Begin
     BinCodegenNode(RN);
   End;
@@ -5906,14 +6113,40 @@ Begin
     BinCodegenNode(LN);
 End;
 
-{ ---- NK_INDEX : charge arr[idx] -> EAX ---- }
+{ Charge le ptr du hash depuis le noeud gauche d'un NK_INDEX-brace.
+  $var-k- est parse avec FindSym SK_SCALAR qui retourne 0 pour un hash;
+  on replie sur SK_HASH quand SymRef=0. }
+Procedure BinLoadHashPtr(LN: Integer);
+Var SIdx: Integer;
+Begin
+  If (AstTable[LN].Kind = 2 { NK_VAR }) And (AstTable[LN].SymRef = 0) Then Begin
+    SIdx := FindSym(AstTable[LN].Text, SK_HASH);
+    If SIdx > 0 Then Begin
+      If SymTable[SIdx].ScopeKd = SCOPE_LEXICAL Then
+        BinMovEaxEbpN(SymTable[SIdx].Offset)
+      Else Begin
+        BinEmit8($A1); BinEmitRef32(SymTable[SIdx].AsmName, BIN_FIX_ABS32);
+      End;
+    End Else
+      BinXorRegReg(REG_EAX);
+  End Else
+    BinCodegenNode(LN);
+End;
+
+{ ---- NK_INDEX : charge arr[idx] ou hash-key- -> EAX ---- }
 Procedure BinCodegenIndex(Node: Integer);
 Begin
-  BinCodegenNode(AstTable[Node].Right);   { EAX = idx (arg droit, push en premier) }
+  BinCodegenNode(AstTable[Node].Right);   { EAX = idx/cle (push en premier = arg droit) }
   BinPushReg(REG_EAX);
-  BinLoadArrayPtr(AstTable[Node].Left);   { EAX = ptr tableau (arg gauche) }
-  BinPushReg(REG_EAX);
-  BinCallLabel('_PLRT_array_get');
+  If AstTable[Node].Tok = Ord('{') Then Begin
+    BinLoadHashPtr(AstTable[Node].Left);   { EAX = hash_ptr (arg gauche) }
+    BinPushReg(REG_EAX);
+    BinCallLabel('_PLRT_hash_get');
+  End Else Begin
+    BinLoadArrayPtr(AstTable[Node].Left);  { EAX = arr_ptr (arg gauche) }
+    BinPushReg(REG_EAX);
+    BinCallLabel('_PLRT_array_get');
+  End;
   BinAddEspImm8(8);
 End;
 
@@ -6139,6 +6372,30 @@ Begin
       A := AstTable[A].NextSibling;
     End;
     BinPopReg(REG_EAX);                   { retirer ptr (pas de valeur retour utile) }
+  End Else If Op = KW_EXISTS Then Begin
+    { exists $hash-key- -> 1 si cle presente, 0 sinon }
+    A := AstTable[Node].FirstChild;
+    If (A <> 0) And (AstTable[A].Kind = 9 { NK_INDEX }) And (AstTable[A].Tok = Ord('{')) Then Begin
+      BinCodegenNode(AstTable[A].Right);    { EAX = key_ptr }
+      BinPushReg(REG_EAX);                  { push key (arg2) }
+      BinLoadHashPtr(AstTable[A].Left);     { EAX = hash_ptr }
+      BinPushReg(REG_EAX);                  { push hash_ptr (arg1) }
+      BinCallLabel('_PLRT_hash_exists');
+      BinAddEspImm8(8);
+    End Else
+      BinXorRegReg(REG_EAX);
+  End Else If Op = KW_DELETE Then Begin
+    { delete $hash-key- -> retire l'entree }
+    A := AstTable[Node].FirstChild;
+    If (A <> 0) And (AstTable[A].Kind = 9 { NK_INDEX }) And (AstTable[A].Tok = Ord('{')) Then Begin
+      BinCodegenNode(AstTable[A].Right);    { EAX = key_ptr }
+      BinPushReg(REG_EAX);                  { push key (arg2) }
+      BinLoadHashPtr(AstTable[A].Left);     { EAX = hash_ptr }
+      BinPushReg(REG_EAX);                  { push hash_ptr (arg1) }
+      BinCallLabel('_PLRT_hash_delete');
+      BinAddEspImm8(8);
+    End Else
+      BinXorRegReg(REG_EAX);
   End Else
     BinXorRegReg(REG_EAX);
 End;
