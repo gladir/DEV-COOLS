@@ -1146,6 +1146,8 @@ Var
   BinImportCount: Integer;
   BinPLKCount:    Integer;   { compteur labels chaines binaires _BPK_ }
   BinLoopCount:   Integer;   { compteur boucles binaires _PLL_LOOP_ }
+  BinSubCount:    Integer;   { compteur sous-routines binaires }
+  BinCurSubEpil:  String;    { label epilogue du sub courant }
   PLKCount:       Integer;   { compteur labels _PLK_ chaines .rdata }
   PLRECount:      Integer;   { compteur labels _PLRE_ regex compilee }
   PLLCount:       Integer;   { compteur labels _PLL_ sauts internes }
@@ -3040,7 +3042,7 @@ Begin
 End;
 
 Procedure LeaveScope;
-Var I, Leaving: Integer;
+Var I, Leaving, MaxLocal: Integer;
 Begin
   If ScopeLevel = 0 Then FatalError('impossible de quitter la portee racine');
   Leaving := ScopeLevel;
@@ -3048,7 +3050,12 @@ Begin
     If (SymTable[I].ScopeKd = SCOPE_LEXICAL) Or
        (SymTable[I].ScopeKd = SCOPE_DYNAMIC) Then
       SymTable[I].Flags := SymTable[I].Flags Or SF_DEAD;
+  MaxLocal := ScopeNextLocal[Leaving];
   Dec(ScopeLevel);
+  { Propager la taille max vers le scope parent, sauf a la frontiere de sub }
+  If (ScopeKindStk[Leaving] <> SCK_SUB) And (ScopeLevel > 0) Then
+    If MaxLocal > ScopeNextLocal[ScopeLevel] Then
+      ScopeNextLocal[ScopeLevel] := MaxLocal;
 End;
 
 Function FindSym(Name: String; Kind: Integer): Integer;
@@ -5112,7 +5119,7 @@ Begin
   BinCodeSize  := 0; BinDataSize  := 0;
   BinRDataSize := 0; BinBssSize   := 0;
   BinLabelCount := 0; BinFixupCount := 0; BinImportCount := 0;
-  BinPLKCount := 0; BinLoopCount := 0;
+  BinPLKCount := 0; BinLoopCount := 0; BinSubCount := 0; BinCurSubEpil := '';
   BinCurSec := BIN_SEC_TEXT;
 End;
 
@@ -6037,6 +6044,8 @@ Procedure BinLoadHashPtr(LN: Integer);       Forward;
 Procedure BinCodegenIndex(Node: Integer);    Forward;
 Procedure BinCodegenBinary(Node: Integer);   Forward;
 Procedure BinCodegenForeach(Node: Integer);  Forward;
+Procedure BinCodegenSubDef(Node: Integer);   Forward;
+Procedure BinCodegenReturn(Node: Integer);   Forward;
 Procedure BinCodegenIf(Node: Integer);       Forward;
 Procedure BinCodegenWhile(Node: Integer);    Forward;
 
@@ -6080,7 +6089,7 @@ Var SIdx: Integer;
 Begin
   SIdx := AstTable[Node].SymRef;
   If SIdx = 0 Then Begin BinXorRegReg(REG_EAX); Exit; End;
-  If SymTable[SIdx].ScopeKd = SCOPE_LEXICAL Then
+  If (SymTable[SIdx].ScopeKd = SCOPE_LEXICAL) Or (SymTable[SIdx].ScopeKd = SCOPE_DYNAMIC) Then
     BinMovEaxEbpN(SymTable[SIdx].Offset)
   Else Begin
     BinEmit8($A1);
@@ -6190,6 +6199,30 @@ Begin
       BinCallLabel('_PLRT_array_set');
       BinAddEspImm8(12);
     End;
+  End Else If AstTable[LN].Kind = 12 { NK_LIST } Then Begin
+    { my ($a, $b) = expr : destructurer tableau RHS dans les variables LHS }
+    BinCodegenNode(RN);                               { EAX = ptr tableau }
+    BinPushReg(REG_EAX);                              { garder ptr sur pile }
+    C := AstTable[LN].FirstChild; KeyN := 0;          { KeyN = index }
+    While C <> 0 Do Begin
+      If AstTable[C].Kind = 2 { NK_VAR } Then Begin
+        SIdx := AstTable[C].SymRef;
+        If SIdx > 0 Then Begin
+          BinPushImm32(KeyN);
+          BinEmit8($FF); BinEmit8($74); BinEmit8($24); BinEmit8($04); { PUSH [ESP+4]=ptr }
+          BinCallLabel('_PLRT_array_get');
+          BinAddEspImm8(8);
+          If (SymTable[SIdx].ScopeKd = SCOPE_LEXICAL) Or (SymTable[SIdx].ScopeKd = SCOPE_DYNAMIC) Then
+            BinMovEbpNEax(SymTable[SIdx].Offset)
+          Else Begin
+            BinEmit8($A3); BinEmitRef32(SymTable[SIdx].AsmName, BIN_FIX_ABS32);
+          End;
+        End;
+      End;
+      Inc(KeyN);
+      C := AstTable[C].NextSibling;
+    End;
+    BinPopReg(REG_EAX);                               { nettoyer ptr }
   End Else Begin
     BinCodegenNode(RN);
   End;
@@ -6412,6 +6445,56 @@ Begin
   BinDefineLabel('_BWH_' + NumToStr(N) + '_E');
 End;
 
+{ NK_RETURN : eval expr -> EAX, sauter a l'epilogue du sub courant }
+Procedure BinCodegenReturn(Node: Integer);
+Begin
+  If AstTable[Node].Left <> 0 Then
+    BinCodegenNode(AstTable[Node].Left)
+  Else
+    BinXorRegReg(REG_EAX);
+  If BinCurSubEpil <> '' Then
+    BinJmpLabel(BinCurSubEpil);
+End;
+
+{ NK_SUB_DEF : emettre corps du sub comme bloc detache (JMP skip autour) }
+Procedure BinCodegenSubDef(Node: Integer);
+Var Nm, SkipLbl, EpilLbl, OldEpil: String; FrameSz, SIdx: Integer;
+Begin
+  Nm := AstTable[Node].Text;
+  If Nm = '' Then Exit;             { subs anonymes non supportes ici }
+  Inc(BinSubCount);
+  SkipLbl := '_BSUB_' + Nm + '_SK';
+  EpilLbl := '_BSUB_' + Nm + '_EP';
+  { Sauter le corps du sub }
+  BinJmpLabel(SkipLbl);
+  { Entree du sub }
+  SIdx := AstTable[Node].SymRef;
+  If (SIdx > 0) And (SymTable[SIdx].AsmName <> '') Then
+    BinDefineLabel(SymTable[SIdx].AsmName)
+  Else
+    BinDefineLabel('_PLF_' + Nm);
+  { Prologue }
+  FrameSz := AstTable[Node].Third;
+  If (FrameSz > 0) And ((FrameSz Mod 4) <> 0) Then
+    FrameSz := FrameSz + (4 - (FrameSz Mod 4));
+  BinEmitPrologue(FrameSz);
+  { Copier _PLA__ dans le slot local @_ = [EBP-4] (RegisterSubParams l'alloue toujours en premier) }
+  If FrameSz >= 4 Then Begin
+    BinEmit8($A1); BinEmitRef32('_PLA__', BIN_FIX_ABS32); { MOV EAX, [_PLA__] }
+    BinMovEbpNEax(4);                                       { MOV [EBP-4], EAX  }
+  End;
+  { Corps : sauver/restaurer BinCurSubEpil pour subs imbriques }
+  OldEpil := BinCurSubEpil;
+  BinCurSubEpil := EpilLbl;
+  BinCodegenNode(AstTable[Node].Left);
+  BinCurSubEpil := OldEpil;
+  { Epilogue par defaut (return undef = 0) }
+  BinDefineLabel(EpilLbl);
+  BinEmit8($8B); BinEmit8($E5); BinPopReg(REG_EBP); BinEmit8($C3);
+  { Label skip }
+  BinDefineLabel(SkipLbl);
+End;
+
 Procedure BinCodegenCall(Node: Integer);
 Var A, Cnt, Op, HandleN, FhNode, SIdx, ModeN: Integer;
 Begin
@@ -6538,6 +6621,36 @@ Begin
       BinAddEspImm8(8);
     End Else
       BinXorRegReg(REG_EAX);
+  End Else If Op = KW_ABS Then Begin
+    { abs(val) : CDQ ; XOR EAX,EDX ; SUB EAX,EDX }
+    A := AstTable[Node].FirstChild;
+    If A <> 0 Then BinCodegenNode(A) Else BinXorRegReg(REG_EAX);
+    BinEmit8($99);                   { CDQ }
+    BinEmit8($33); BinEmit8($C2);    { XOR EAX, EDX }
+    BinEmit8($2B); BinEmit8($C2);    { SUB EAX, EDX }
+  End Else If Op = TOK_IDENT Then Begin
+    { Appel sous-routine utilisateur : args -> @_, call, restaurer @_ }
+    BinEmit8($FF); BinEmit8($35); BinEmitRef32('_PLA__', BIN_FIX_ABS32); { PUSH [_PLA__] }
+    BinCallLabel('_PLRT_array_new');
+    BinEmit8($A3); BinEmitRef32('_PLA__', BIN_FIX_ABS32);  { MOV [_PLA__], EAX }
+    BinPushReg(REG_EAX);             { garder ptr pour array_push_one }
+    A := AstTable[Node].FirstChild;
+    While A <> 0 Do Begin
+      BinCodegenNode(A);             { EAX = arg }
+      BinPushReg(REG_EAX);
+      BinEmit8($FF); BinEmit8($74); BinEmit8($24); BinEmit8($04); { PUSH [ESP+4]=ptr }
+      BinCallLabel('_PLRT_array_push_one');
+      BinAddEspImm8(8);
+      A := AstTable[A].NextSibling;
+    End;
+    BinPopReg(REG_EAX);              { retirer ptr }
+    SIdx := FindSym(AstTable[Node].Text, SK_CODE);
+    If SIdx > 0 Then
+      BinCallLabel(SymTable[SIdx].AsmName)
+    Else
+      BinCallLabel('_PLF_' + AstTable[Node].Text);
+    BinPopReg(REG_ECX);              { ECX = ancienne @_ }
+    BinEmit8($89); BinEmit8($0D); BinEmitRef32('_PLA__', BIN_FIX_ABS32); { MOV [_PLA__],ECX }
   End Else
     BinXorRegReg(REG_EAX);
 End;
@@ -6561,6 +6674,8 @@ Begin
     16 { NK_WHILE }:      BinCodegenWhile(Node);
     17 { NK_UNTIL }:      BinCodegenWhile(Node);
     19 { NK_FOREACH }:    BinCodegenForeach(Node);
+    21 { NK_RETURN }:     BinCodegenReturn(Node);
+    25 { NK_SUB_DEF }:    BinCodegenSubDef(Node);
   Else
     BinXorRegReg(REG_EAX);
   End;
@@ -6583,6 +6698,8 @@ Begin
   BinEmit8(0);
   BinDefineLabel('_plrt_readline_buf');
   For K := 1 To 1024 Do BinEmit8(0);
+  BinDefineLabel('_PLA__');          { @_ argument array ptr }
+  BinEmit32(0);
 
   { Code principal en .text }
   BinCurSec := BIN_SEC_TEXT;
