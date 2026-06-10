@@ -3430,6 +3430,82 @@ Begin
   ParseBuiltin := N;
 End;
 
+{ ParsePrint: print/say/printf avec detection filehandle optionnel.
+  Supporte : print STDOUT LIST   print $fh LIST   print $fh, LIST   print LIST
+  Le noeud retourne : NK_CALL(KwTok), Third = noeud handle (ou 0),
+  FirstChild = premier arg de la liste a imprimer. }
+Function ParsePrint(KwTok: Integer; S: String): Integer;
+Var N, ArgList, HandleN: Integer;
+    IsHandle: Boolean;
+Begin
+  N        := NewNode(NK_CALL, KwTok, S);
+  ArgList  := NewNode(NK_LIST, 0, '');
+  IsHandle := False;
+  HandleN  := 0;
+
+  If CurTokType <> Ord('(') Then Begin
+    { Tester si le premier token est un filehandle }
+    If CurTokType = TOK_IDENT Then Begin
+      { STDOUT / STDERR / STDIN sans $ }
+      If (CurTokStr = 'STDOUT') Or (CurTokStr = 'STDERR') Or (CurTokStr = 'STDIN') Then Begin
+        HandleN  := NewNode(NK_LITERAL, TOK_IDENT, CurTokStr);
+        LexNextToken;
+        IsHandle := True;
+        { Pas de virgule apres le handle nu }
+      End;
+    End Else If CurTokType = TOK_SIGIL_SCALAR Then Begin
+      { $fh : parser, puis verifier s'il y a d'autres args (sinon c'est juste print $var) }
+      HandleN := ParseAssign;
+      If AstTable[HandleN].Kind = NK_VAR Then Begin
+        { Consommer virgule optionnelle si elle precede d'autres args }
+        If (CurTokType = Ord(',')) Or (CurTokType = TOK_FATCOMMA) Then Begin
+          LexNextToken;
+          If Not IsArgStopper(CurTokType) Then
+            IsHandle := True      { virgule + args -> filehandle }
+          Else Begin
+            { virgule seule en fin : traiter $var comme arg }
+            AppendArg(ArgList, HandleN); HandleN := 0;
+          End;
+        End Else If Not IsArgStopper(CurTokType) Then
+          IsHandle := True        { pas de virgule + args -> filehandle }
+        Else Begin
+          { $var seul : c'est un arg ordinaire }
+          AppendArg(ArgList, HandleN); HandleN := 0;
+        End;
+      End Else Begin
+        { Expression complexe : premier arg ordinaire }
+        AppendArg(ArgList, HandleN); HandleN := 0;
+        If (CurTokType = Ord(',')) Or (CurTokType = TOK_FATCOMMA) Then
+          LexNextToken;
+      End;
+    End;
+  End;
+
+  AstTable[N].Third := HandleN;
+
+  { Parser la liste des arguments }
+  If CurTokType = Ord('(') Then Begin
+    LexNextToken;
+    While (CurTokType <> Ord(')')) And (CurTokType <> TOK_EOF) Do Begin
+      AppendArg(ArgList, ParseAssign);
+      If (CurTokType = Ord(',')) Or (CurTokType = TOK_FATCOMMA) Then
+        LexNextToken
+      Else Break;
+    End;
+    Expect(Ord(')'));
+  End Else Begin
+    While Not IsArgStopper(CurTokType) Do Begin
+      AppendArg(ArgList, ParseAssign);
+      If (CurTokType = Ord(',')) Or (CurTokType = TOK_FATCOMMA) Then
+        LexNextToken
+      Else Break;
+    End;
+  End;
+
+  AstTable[N].FirstChild := AstTable[ArgList].FirstChild;
+  ParsePrint := N;
+End;
+
 Function ParsePrimary: Integer;
 Var
   N, VarN, IdxN, ArgList, ListN, ProtoN: Integer;
@@ -3584,7 +3660,7 @@ Begin
         N := NewNode(NK_LITERAL, TOK_IDENT, S);
     End;
   End Else If (T = KW_PRINT) Or (T = KW_SAY) Or (T = KW_PRINTF) Then Begin
-    S := KeywordName(T); LexNextToken; N := ParseBuiltin(T, S);
+    S := KeywordName(T); LexNextToken; N := ParsePrint(T, S);
   End Else If (T = KW_SORT) Or (T = KW_GREP) Or (T = KW_MAP) Then Begin
     S := KeywordName(T); LexNextToken; N := ParseSortGrepMap(T, S);
   End Else If (T = KW_PUSH) Or (T = KW_POP) Or (T = KW_SHIFT) Or
@@ -5522,6 +5598,95 @@ Begin
   BinEmit8($8B); BinEmit8($E5);              { MOV ESP, EBP }
   BinPopReg(REG_EBP);
   BinEmit8($C3);                              { RET }
+
+  { -------------------------------------------------------
+    _PLRT_file_open(mode_ptr, filename_ptr) cdecl -> HANDLE
+    [EBP+8]=mode_ptr  [EBP+12]=filename_ptr
+    '>' -> GENERIC_WRITE CREATE_ALWAYS
+    '<' -> GENERIC_READ  OPEN_EXISTING
+    ------------------------------------------------------- }
+  BinDefineLabel('_PLRT_file_open');
+  BinPushReg(REG_EBP); BinEmit8($8B); BinEmit8($EC);
+  BinPushReg(REG_EBX);
+  BinEmit8($8B); BinEmit8($5D); BinEmit8(8);     { MOV EBX, [EBP+8] (mode_ptr) }
+  BinEmit8($0F); BinEmit8($B6); BinEmit8($03);   { MOVZX EAX, BYTE [EBX] }
+  BinEmit8($3C); BinEmit8(Ord('>'));              { CMP AL, '>' }
+  BinJccLabel(4, '_fopen_write');                 { JE _fopen_write }
+  { Mode lecture: GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING }
+  BinPushImm32(0);                               { hTemplateFile }
+  BinPushImm32($80);                             { FILE_ATTRIBUTE_NORMAL }
+  BinPushImm32(3);                               { OPEN_EXISTING }
+  BinPushImm32(0);                               { lpSecurityAttributes }
+  BinPushImm32(1);                               { FILE_SHARE_READ }
+  BinEmit8($68); BinEmit8($00); BinEmit8($00); BinEmit8($00); BinEmit8($80); { PUSH 0x80000000 GENERIC_READ }
+  BinEmit8($FF); BinEmit8($75); BinEmit8($0C);  { PUSH [EBP+12] filename }
+  BinCallImport('_CreateFileA@28', 0);
+  BinJmpLabel('_fopen_done');
+  BinDefineLabel('_fopen_write');
+  { Mode ecriture: GENERIC_WRITE, 0, CREATE_ALWAYS }
+  BinPushImm32(0);
+  BinPushImm32($80);
+  BinPushImm32(2);                               { CREATE_ALWAYS }
+  BinPushImm32(0);
+  BinPushImm32(0);
+  BinEmit8($68); BinEmit8($00); BinEmit8($00); BinEmit8($00); BinEmit8($40); { PUSH 0x40000000 GENERIC_WRITE }
+  BinEmit8($FF); BinEmit8($75); BinEmit8($0C);  { PUSH [EBP+12] filename }
+  BinCallImport('_CreateFileA@28', 0);
+  BinDefineLabel('_fopen_done');
+  BinPopReg(REG_EBX);
+  BinEmit8($8B); BinEmit8($E5); BinPopReg(REG_EBP); BinEmit8($C3);
+
+  { -------------------------------------------------------
+    _PLRT_file_close(handle) cdecl
+    [EBP+8] = handle Win32
+    ------------------------------------------------------- }
+  BinDefineLabel('_PLRT_file_close');
+  BinPushReg(REG_EBP); BinEmit8($8B); BinEmit8($EC);
+  BinEmit8($FF); BinEmit8($75); BinEmit8($08);   { PUSH [EBP+8] handle }
+  BinCallImport('_CloseHandle@4', 0);
+  BinEmit8($8B); BinEmit8($E5); BinPopReg(REG_EBP); BinEmit8($C3);
+
+  { -------------------------------------------------------
+    _PLRT_file_readline(handle) cdecl -> ptr chaine (buffer statique)
+    Lit jusqu'a '\n' ou EOF; null-termine; retourne _plrt_readline_buf
+    [EBP+8] = handle
+    [EBP-4] = nBytesRead (local)
+    ------------------------------------------------------- }
+  BinDefineLabel('_PLRT_file_readline');
+  BinPushReg(REG_EBP); BinEmit8($8B); BinEmit8($EC);
+  BinEmit8($83); BinEmit8($EC); BinEmit8(4);     { SUB ESP, 4 : nBytesRead }
+  BinPushReg(REG_EBX);
+  BinPushReg(REG_ESI);
+  BinPushReg(REG_EDI);
+  BinEmit8($8B); BinEmit8($5D); BinEmit8(8);     { MOV EBX, [EBP+8] handle }
+  BinEmit8($BF); BinEmitRef32('_plrt_readline_buf', BIN_FIX_ABS32); { MOV EDI, buf }
+  BinXorRegReg(REG_ESI);                          { XOR ESI, ESI (index=0) }
+  BinDefineLabel('_rl_loop');
+  BinEmit8($81); BinEmit8($FE); BinEmit32(1023); { CMP ESI, 1023 }
+  BinJccLabel(13, '_rl_done');                    { JGE _rl_done }
+  { ReadFile(handle, buf+index, 1, &nBytesRead, NULL) }
+  BinPushImm32(0);                               { lpOverlapped = NULL }
+  BinEmit8($8D); BinEmit8($45); BinEmit8($FC);  { LEA EAX, [EBP-4] }
+  BinPushReg(REG_EAX);                           { &nBytesRead }
+  BinPushImm32(1);                               { nToRead = 1 }
+  BinEmit8($8D); BinEmit8($04); BinEmit8($37);  { LEA EAX, [EDI+ESI] }
+  BinPushReg(REG_EAX);                           { lpBuffer }
+  BinPushReg(REG_EBX);                           { hFile }
+  BinCallImport('_ReadFile@20', 0);
+  BinEmit8($83); BinEmit8($7D); BinEmit8($FC); BinEmit8(0); { CMP [EBP-4], 0 }
+  BinJccLabel(4, '_rl_done');                    { JZ EOF }
+  BinEmit8($0F); BinEmit8($B6); BinEmit8($04); BinEmit8($37); { MOVZX EAX, [EDI+ESI] }
+  BinEmit8($46);                                 { INC ESI }
+  BinEmit8($3C); BinEmit8($0A);                 { CMP AL, '\n' }
+  BinJccLabel(4, '_rl_done');                    { JZ newline }
+  BinJmpLabel('_rl_loop');
+  BinDefineLabel('_rl_done');
+  BinEmit8($C6); BinEmit8($04); BinEmit8($37); BinEmit8(0); { MOV BYTE [EDI+ESI], 0 }
+  BinEmit8($8B); BinEmit8($C7);                 { MOV EAX, EDI (return buf ptr) }
+  BinPopReg(REG_EDI);
+  BinPopReg(REG_ESI);
+  BinPopReg(REG_EBX);
+  BinEmit8($8B); BinEmit8($E5); BinPopReg(REG_EBP); BinEmit8($C3);
 End;
 
 { ============================================================ }
@@ -5556,6 +5721,17 @@ Begin
       BinCurSec := SaveSec;
       BinEmit8($B8);
       BinEmitRef32(LName, BIN_FIX_ABS32);
+    End;
+    256 { TOK_IDENT }: Begin
+      { Handles predefinies STDOUT STDERR STDIN }
+      If AstTable[Node].Text = 'STDOUT' Then Begin
+        BinEmit8($A1); BinEmitRef32('_PL_STDOUT', BIN_FIX_ABS32);
+      End Else If AstTable[Node].Text = 'STDERR' Then Begin
+        BinEmit8($A1); BinEmitRef32('_PL_STDERR', BIN_FIX_ABS32);
+      End Else If AstTable[Node].Text = 'STDIN' Then Begin
+        BinEmit8($A1); BinEmitRef32('_PL_STDIN', BIN_FIX_ABS32);
+      End Else
+        BinXorRegReg(REG_EAX);
     End;
   Else
     BinXorRegReg(REG_EAX);
@@ -5796,17 +5972,14 @@ Begin
 End;
 
 Procedure BinCodegenCall(Node: Integer);
-Var A, Cnt, Op: Integer;
+Var A, Cnt, Op, HandleN, FhNode, SIdx, ModeN: Integer;
 Begin
   Op := AstTable[Node].Tok;
   If (Op = KW_PRINT) Or (Op = KW_SAY) Then Begin
-    { KW_PRINT=1041, KW_SAY=1083 }
+    { Third = noeud handle (ou 0 = STDOUT) }
     Cnt := 0;
     A := AstTable[Node].FirstChild;
-    While A <> 0 Do Begin
-      A := AstTable[A].NextSibling;
-      Inc(Cnt);
-    End;
+    While A <> 0 Do Begin A := AstTable[A].NextSibling; Inc(Cnt); End;
     A := AstTable[Node].FirstChild;
     While A <> 0 Do Begin
       BinCodegenNode(A);
@@ -5814,10 +5987,55 @@ Begin
       A := AstTable[A].NextSibling;
     End;
     BinPushImm32(Cnt);
-    BinEmit8($FF); BinEmit8($35);
-    BinEmitRef32('_PL_STDOUT', BIN_FIX_ABS32);
-    BinCallLabel('_PLRT_print');
+    HandleN := AstTable[Node].Third;
+    If HandleN <> 0 Then Begin
+      BinCodegenNode(HandleN);   { EAX = handle Win32 }
+      BinPushReg(REG_EAX);
+    End Else Begin
+      BinEmit8($FF); BinEmit8($35);
+      BinEmitRef32('_PL_STDOUT', BIN_FIX_ABS32);
+    End;
+    If Op = KW_SAY Then BinCallLabel('_PLRT_say')
+    Else BinCallLabel('_PLRT_print');
     BinEmit8($83); BinEmit8($C4); BinEmit8((Cnt + 2) * 4);
+  End Else If Op = KW_OPEN Then Begin
+    { open($fh, mode, filename) cdecl -> HANDLE stocke dans $fh }
+    FhNode := AstTable[Node].FirstChild;
+    If FhNode = 0 Then Begin BinXorRegReg(REG_EAX); Exit; End;
+    ModeN := AstTable[FhNode].NextSibling;
+    If ModeN = 0 Then Begin BinXorRegReg(REG_EAX); Exit; End;
+    A := AstTable[ModeN].NextSibling;  { A = filename node }
+    If A <> 0 Then Begin
+      BinCodegenNode(A);            { EAX = filename ptr }
+      BinPushReg(REG_EAX);          { push filename (arg2) }
+    End Else
+      BinPushImm32(0);
+    BinCodegenNode(ModeN);          { EAX = mode ptr }
+    BinPushReg(REG_EAX);            { push mode (arg1) }
+    BinCallLabel('_PLRT_file_open');
+    BinAddEspImm8(8);
+    SIdx := AstTable[FhNode].SymRef;
+    If SIdx > 0 Then Begin
+      If SymTable[SIdx].ScopeKd = SCOPE_LEXICAL Then
+        BinMovEbpNEax(SymTable[SIdx].Offset)
+      Else Begin
+        BinEmit8($A3); BinEmitRef32(SymTable[SIdx].AsmName, BIN_FIX_ABS32);
+      End;
+    End;
+  End Else If Op = KW_CLOSE Then Begin
+    { close($fh) : CloseHandle }
+    A := AstTable[Node].FirstChild;
+    If A <> 0 Then BinCodegenNode(A) Else BinXorRegReg(REG_EAX);
+    BinPushReg(REG_EAX);
+    BinCallLabel('_PLRT_file_close');
+    BinAddEspImm8(4);
+  End Else If Op = KW_READLINE Then Begin
+    { readline($fh) -> ptr chaine }
+    A := AstTable[Node].FirstChild;
+    If A <> 0 Then BinCodegenNode(A) Else BinXorRegReg(REG_EAX);
+    BinPushReg(REG_EAX);
+    BinCallLabel('_PLRT_file_readline');
+    BinAddEspImm8(4);
   End Else If Op = KW_SCALAR Then Begin
     { scalar(@arr) -> array_len(ptr) }
     A := AstTable[Node].FirstChild;
@@ -5876,20 +6094,32 @@ Begin
   BinCurSec := BIN_SEC_DATA;
   BinDefineLabel('_PL_STDOUT');
   BinEmit32(0);
+  BinDefineLabel('_PL_STDERR');
+  BinEmit32(0);
+  BinDefineLabel('_PL_STDIN');
+  BinEmit32(0);
   BinDefineLabel('_plrt_itoa_buf');
   For K := 1 To 24 Do BinEmit8(0);
   BinDefineLabel('_plrt_itoa_end');
   BinEmit8(0);
+  BinDefineLabel('_plrt_readline_buf');
+  For K := 1 To 1024 Do BinEmit8(0);
 
   { Code principal en .text }
   BinCurSec := BIN_SEC_TEXT;
   BinDefineLabel('_PLSTART');
   BinEmitPrologue(FrameSz);
 
-  { Initialiser _PL_STDOUT = GetStdHandle(STD_OUTPUT_HANDLE=-11) }
+  { Initialiser _PL_STDOUT = GetStdHandle(-11), _PL_STDERR = GetStdHandle(-12), _PL_STDIN = GetStdHandle(-10) }
   BinPushImm32(-11);
-  BinCallImport('_GetStdHandle@4', 0);  { STDCALL : callee nettoie 4 }
-  BinEmit8($A3); BinEmitRef32('_PL_STDOUT', BIN_FIX_ABS32); { MOV [_PL_STDOUT], EAX }
+  BinCallImport('_GetStdHandle@4', 0);
+  BinEmit8($A3); BinEmitRef32('_PL_STDOUT', BIN_FIX_ABS32);
+  BinPushImm32(-12);
+  BinCallImport('_GetStdHandle@4', 0);
+  BinEmit8($A3); BinEmitRef32('_PL_STDERR', BIN_FIX_ABS32);
+  BinPushImm32(-10);
+  BinCallImport('_GetStdHandle@4', 0);
+  BinEmit8($A3); BinEmitRef32('_PL_STDIN', BIN_FIX_ABS32);
 
   BinCodegenNode(Root);
 
