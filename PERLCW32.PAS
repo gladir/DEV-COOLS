@@ -5578,9 +5578,22 @@ Var LN, RN, SIdx: Integer;
 Begin
   LN := AstTable[Node].Left; RN := AstTable[Node].Right;
   If AstTable[LN].Kind = 2 { NK_VAR } Then Begin
-    BinCodegenNode(RN);
     SIdx := AstTable[LN].SymRef;
-    If SIdx = 0 Then Exit;
+    If SIdx = 0 Then Begin BinCodegenNode(RN); Exit; End;
+    { Tableau : si RHS n'est pas une liste, creer un tableau mono-element }
+    If (SymTable[SIdx].Kind = 2 { SK_ARRAY }) And
+       (AstTable[RN].Kind <> 10 { NK_ARRAY_LIT }) And
+       (AstTable[RN].Kind <> 12 { NK_LIST }) Then Begin
+      BinCallLabel('_PLRT_array_new');
+      BinPushReg(REG_EAX);
+      BinCodegenNode(RN);
+      BinPushReg(REG_EAX);
+      BinEmit8($FF); BinEmit8($74); BinEmit8($24); BinEmit8(4);
+      BinCallLabel('_PLRT_array_push_one');
+      BinAddEspImm8(8);
+      BinPopReg(REG_EAX);
+    End Else
+      BinCodegenNode(RN);
     If SymTable[SIdx].ScopeKd = SCOPE_LEXICAL Then
       BinMovEbpNEax(SymTable[SIdx].Offset)
     Else Begin
