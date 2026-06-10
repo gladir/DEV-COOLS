@@ -268,6 +268,405 @@
 }
 
 Program SNOBCW32;
-{ Compilateur SNOBOL4 -> 80386 PE Win32 - a implementer selon les TODOs }
-BEGIN
-END.
+{$MODE TP}
+
+{ ============================================================ }
+{ TODO 01 - STRUCTURE GENERALE DU COMPILATEUR                  }
+{ ============================================================ }
+
+{ ------------------------------------------------------------ }
+{ Constantes globales                                          }
+{ ------------------------------------------------------------ }
+Const
+  SNB_VERSION    = '0.1';
+  SNB_YEAR       = '2026';
+
+  { Modes de sortie }
+  MODE_EXE       = 0;
+  MODE_OBJ       = 1;
+  MODE_ASM       = 2;
+
+  { Limites des tables }
+  MAX_LINE       = 1024;     { longueur max d une ligne source }
+  MAX_TOKENS     = 128;      { tokens par ligne }
+  MAX_AST        = 8192;     { noeuds AST }
+  MAX_SYM        = 2048;     { entrees table des symboles }
+  MAX_LABELS     = 1024;     { labels SNOBOL }
+  MAX_FIXUPS     = 4096;     { fixups de relocation }
+  MAX_CODE       = 524288;   { 512 Ko code .text }
+  MAX_DATA       = 65536;    { 64 Ko .data }
+  MAX_RDATA      = 131072;   { 128 Ko .rdata }
+  MAX_IDATA      = 16384;    { 16 Ko .idata (IAT) }
+  MAX_VARS       = 512;      { variables SNOBOL max }
+  MAX_IMPORTS    = 64;       { entrees IAT max }
+  MAX_FUNCS      = 128;      { fonctions utilisateur max }
+
+  { Sections binaires }
+  BIN_SEC_TEXT   = 0;
+  BIN_SEC_DATA   = 1;
+  BIN_SEC_RDATA  = 2;
+  BIN_SEC_BSS    = 3;
+  BIN_SEC_IDATA  = 4;
+
+  { Types de fixup }
+  BIN_FIX_ABS32  = 0;        { adresse absolue 32 bits }
+  BIN_FIX_REL32  = 1;        { relative 32 bits (CALL/JMP) }
+  BIN_FIX_IMP32  = 2;        { IAT import 32 bits }
+
+  { Kinds de symboles }
+  SK_NONE        = 0;
+  SK_VAR         = 1;        { variable SNOBOL }
+  SK_LABEL       = 2;        { etiquette de saut }
+  SK_FUNC        = 3;        { fonction utilisateur }
+  SK_PARAM       = 4;        { parametre de fonction }
+  SK_SYS_OUT     = 5;        { &OUTPUT }
+  SK_SYS_IN      = 6;        { &INPUT }
+  SK_SYS_TRIM    = 7;        { &TRIM }
+  SK_SYS_ANCHOR  = 8;        { &ANCHOR }
+
+{ ------------------------------------------------------------ }
+{ Types                                                        }
+{ ------------------------------------------------------------ }
+Type
+  { Entree de la table des symboles }
+  TSym = Record
+    Name    : String;
+    Kind    : Integer;
+    VarIdx  : Integer;      { index dans _SNV_TABLE (SK_VAR) }
+    LblAddr : LongInt;      { adresse code compilee (SK_LABEL) }
+    FuncLbl : String;       { label d entree (SK_FUNC) }
+    ParamCnt: Integer;      { nb de parametres (SK_FUNC) }
+    Params  : Array[0..7] Of String;
+  End;
+
+  { Noeud AST }
+  TAstNode = Record
+    Kind       : Integer;   { NK_xxx }
+    Tok        : Integer;   { TOK_xxx }
+    Text       : String;
+    Left       : Integer;   { fils gauche ou premier enfant }
+    Right      : Integer;   { fils droit }
+    FirstChild : Integer;   { tete de liste d enfants }
+    NextSibling: Integer;   { frere suivant dans une liste }
+    Line       : Integer;   { ligne source }
+    SymRef     : Integer;   { index SymTable }
+    GotoS      : String;    { cible :S(label) }
+    GotoF      : String;    { cible :F(label) }
+    GotoU      : String;    { cible :(label) }
+  End;
+
+  { Fixup de relocation }
+  TFixup = Record
+    Offset  : LongInt;
+    Section : Integer;
+    Name    : String;
+    Kind    : Integer;      { BIN_FIX_xxx }
+  End;
+
+  { Label defini }
+  TLabel = Record
+    Name    : String;
+    Section : Integer;
+    Offset  : LongInt;
+  End;
+
+  { Import Win32 }
+  TImport = Record
+    DllName : String;
+    FuncName: String;
+    IATOff  : LongInt;
+    LabelNm : String;       { nom interne __imp__xxx }
+  End;
+
+{ ------------------------------------------------------------ }
+{ Variables globales                                           }
+{ ------------------------------------------------------------ }
+Var
+  { Fichiers et mode }
+  SrcFile      : String;
+  OutFile      : String;
+  OutMode      : Integer;
+  HasError     : Boolean;
+
+  { Table des symboles }
+  SymTable     : Array[0..MAX_SYM-1]    Of TSym;
+  SymCount     : Integer;
+
+  { AST }
+  AstTable     : Array[0..MAX_AST-1]    Of TAstNode;
+  AstCount     : Integer;
+  AstRoot      : Integer;
+
+  { Variables SNOBOL : nom indexe }
+  VarNames     : Array[0..MAX_VARS-1]   Of String;
+  VarCount     : Integer;
+
+  { Sections binaires }
+  BinCode      : Array[0..MAX_CODE-1]   Of Byte;
+  BinCodeSize  : LongInt;
+  BinData      : Array[0..MAX_DATA-1]   Of Byte;
+  BinDataSize  : LongInt;
+  BinRData     : Array[0..MAX_RDATA-1]  Of Byte;
+  BinRDataSize : LongInt;
+  BinBssSize   : LongInt;
+  BinIData     : Array[0..MAX_IDATA-1]  Of Byte;
+  BinIDataSize : LongInt;
+  BinCurSec    : Integer;
+
+  { Labels et fixups }
+  LabelTable   : Array[0..MAX_LABELS-1] Of TLabel;
+  LabelCount   : Integer;
+  FixupTable   : Array[0..MAX_FIXUPS-1] Of TFixup;
+  FixupCount   : Integer;
+
+  { Imports IAT }
+  ImportTable  : Array[0..MAX_IMPORTS-1] Of TImport;
+  ImportCount  : Integer;
+
+  { Compteur de labels internes uniques }
+  BinPLKCount  : Integer;
+
+  { Variables systeme SNOBOL }
+  SysAnchor    : Boolean;   { &ANCHOR }
+  SysTrim      : Boolean;   { &TRIM }
+
+  { Ligne source courante (diagnostics) }
+  CurLineNum   : Integer;
+
+{ ============================================================ }
+{ Utilitaires generaux                                         }
+{ ============================================================ }
+
+Function IntToStr(N: LongInt): String;
+Var S: String; Neg: Boolean;
+Begin
+  If N = 0 Then Begin IntToStr := '0'; Exit; End;
+  Neg := (N < 0); If Neg Then N := -N;
+  S := '';
+  While N > 0 Do Begin
+    S := Chr(Ord('0') + Integer(N Mod 10)) + S;
+    N := N Div 10;
+  End;
+  If Neg Then S := '-' + S;
+  IntToStr := S;
+End;
+
+Function FileExt(Const S: String): String;
+Var I: Integer;
+Begin
+  FileExt := '';
+  For I := Length(S) DownTo 1 Do
+    If S[I] = '.' Then Begin FileExt := Copy(S, I, 255); Exit; End
+    Else If (S[I] = '\') Or (S[I] = '/') Then Exit;
+End;
+
+Function FileBase(Const S: String): String;
+Var I: Integer;
+Begin
+  FileBase := S;
+  For I := Length(S) DownTo 1 Do
+    If S[I] = '.' Then Begin FileBase := Copy(S, 1, I-1); Exit; End
+    Else If (S[I] = '\') Or (S[I] = '/') Then Exit;
+End;
+
+Function ChangeExt(Const Path, NewExt: String): String;
+Begin
+  ChangeExt := FileBase(Path) + NewExt;
+End;
+
+Function FileExists(Const Name: String): Boolean;
+Var F: File;
+Begin
+  Assign(F, Name);
+  {$I-} Reset(F, 1); {$I+}
+  If IOResult = 0 Then Begin Close(F); FileExists := True; End
+  Else FileExists := False;
+End;
+
+Procedure CompileError(Const Msg: String);
+Begin
+  WriteLn('SNOBCW32: erreur ligne ', CurLineNum, ': ', Msg);
+  HasError := True;
+End;
+
+Procedure CompileWarn(Const Msg: String);
+Begin
+  WriteLn('SNOBCW32: avertissement ligne ', CurLineNum, ': ', Msg);
+End;
+
+{ ============================================================ }
+{ Declarations anticipees (Forward) des sections TODO 02..22  }
+{ ============================================================ }
+
+{ TODO 02-03 : Lexer }
+Procedure LexInit;                              Forward;
+Procedure LexLine(Const S: String);            Forward;
+Procedure LexNextToken;                         Forward;
+
+{ TODO 04-05 : Parser / AST }
+Procedure ParseProgram;                         Forward;
+
+{ TODO 06 : Table des symboles }
+Function  FindSym(Const Name: String; Kind: Integer): Integer; Forward;
+Function  AddSym(Const Name: String; Kind: Integer): Integer;  Forward;
+Function  GetOrAddVar(Const Name: String): Integer;            Forward;
+
+{ TODO 07 : Passes }
+Procedure CollectLabels;                        Forward;
+Procedure CodegenProgram;                       Forward;
+
+{ TODO 08 : Sortie PE32 }
+Procedure WritePE(Const FileName: String);      Forward;
+
+{ TODO 21 : Sortie OBJ COFF }
+Procedure WriteCOFF(Const FileName: String);    Forward;
+
+{ TODO 22 : Sortie ASM }
+Procedure WriteASM(Const FileName: String);     Forward;
+
+{ ============================================================ }
+{ Initialisation des tables                                    }
+{ ============================================================ }
+Procedure InitTables;
+Var I: Integer;
+Begin
+  SymCount     := 0;
+  AstCount     := 0;
+  AstRoot      := 0;
+  VarCount     := 0;
+  BinCodeSize  := 0;
+  BinDataSize  := 0;
+  BinRDataSize := 0;
+  BinBssSize   := 0;
+  BinIDataSize := 0;
+  BinCurSec    := BIN_SEC_TEXT;
+  LabelCount   := 0;
+  FixupCount   := 0;
+  ImportCount  := 0;
+  BinPLKCount  := 0;
+  SysAnchor    := False;
+  SysTrim      := False;
+  CurLineNum   := 0;
+  HasError     := False;
+  For I := 0 To MAX_VARS-1 Do VarNames[I] := '';
+End;
+
+{ ============================================================ }
+{ Corps des stubs Forward (remplaces dans les TODO suivants)   }
+{ ============================================================ }
+Procedure LexInit;   Begin End;
+Procedure LexLine(Const S: String); Begin End;
+Procedure LexNextToken; Begin End;
+
+Procedure ParseProgram; Begin End;
+
+Function FindSym(Const Name: String; Kind: Integer): Integer;
+Begin FindSym := -1; End;
+
+Function AddSym(Const Name: String; Kind: Integer): Integer;
+Begin AddSym := -1; End;
+
+Function GetOrAddVar(Const Name: String): Integer;
+Begin GetOrAddVar := -1; End;
+
+Procedure CollectLabels;  Begin End;
+Procedure CodegenProgram; Begin End;
+
+Procedure WritePE(Const FileName: String);
+Begin WriteLn('SNOBCW32: WritePE non implemente'); End;
+
+Procedure WriteCOFF(Const FileName: String);
+Begin WriteLn('SNOBCW32: WriteCOFF non implemente'); End;
+
+Procedure WriteASM(Const FileName: String);
+Begin WriteLn('SNOBCW32: WriteASM non implemente'); End;
+
+{ ============================================================ }
+{ TODO 01 - POINT D ENTREE PRINCIPAL                           }
+{ ============================================================ }
+Var
+  I   : Integer;
+  Arg : String;
+Begin
+  WriteLn('SNOBCW32 v', SNB_VERSION, ' (', SNB_YEAR,
+          ') - Compilateur SNOBOL4 -> 80386 PE Win32');
+
+  SrcFile := '';
+  OutFile := '';
+  OutMode := MODE_EXE;
+
+  { Parsing des arguments }
+  I := 1;
+  While I <= ParamCount Do Begin
+    Arg := ParamStr(I);
+    If Arg = '-obj' Then
+      OutMode := MODE_OBJ
+    Else If Arg = '-asm' Then
+      OutMode := MODE_ASM
+    Else If (Length(Arg) > 0) And (Arg[1] <> '-') Then Begin
+      If SrcFile = '' Then
+        SrcFile := Arg
+      Else Begin
+        WriteLn('SNOBCW32: argument superflu : ', Arg);
+        Halt(1);
+      End;
+    End Else Begin
+      WriteLn('SNOBCW32: option inconnue : ', Arg);
+      Halt(1);
+    End;
+    Inc(I);
+  End;
+
+  { Source obligatoire }
+  If SrcFile = '' Then Begin
+    WriteLn('SNOBCW32 - Cette commande permet de lancer le compilateur SNOBOL4 ',
+          'pour l''assembleur du microprocesseur 80386 pour le systeme ',
+          'd''exploitation Windows 32 bits (PE Win32).');
+    WriteLn;  
+    WriteLn('Usage : SNOBCW32 source[.sbl] [-obj] [-asm]');
+    WriteLn('  (defaut) -> source.exe   PE32 autonome');
+    WriteLn('  -obj     -> source.obj   COFF relocatable');
+    WriteLn('  -asm     -> source.asm   texte MASM/JWasm');
+    Halt(1);
+  End;
+
+  { Ajouter .sbl si pas d extension }
+  If FileExt(SrcFile) = '' Then SrcFile := SrcFile + '.sbl';
+
+  { Verifier existence du source }
+  If Not FileExists(SrcFile) Then Begin
+    WriteLn('SNOBCW32: fichier source introuvable : ', SrcFile);
+    Halt(1);
+  End;
+
+  { Deriver le nom de sortie }
+  Case OutMode Of
+    MODE_EXE : OutFile := ChangeExt(SrcFile, '.exe');
+    MODE_OBJ : OutFile := ChangeExt(SrcFile, '.obj');
+    MODE_ASM : OutFile := ChangeExt(SrcFile, '.asm');
+  End;
+
+  WriteLn('SNOBCW32: compilation de ', SrcFile);
+
+  { Initialiser les tables }
+  InitTables;
+  LexInit;
+
+  { Passe 1 : collecte des labels et DEFINE }
+  CollectLabels;
+  If HasError Then Halt(1);
+
+  { Passe 2 : parsing + generation de code }
+  ParseProgram;
+  If HasError Then Halt(1);
+
+  { Emission du fichier de sortie }
+  Case OutMode Of
+    MODE_EXE : WritePE(OutFile);
+    MODE_OBJ : WriteCOFF(OutFile);
+    MODE_ASM : WriteASM(OutFile);
+  End;
+  If HasError Then Halt(1);
+
+  WriteLn('SNOBCW32: ok');
+End.
