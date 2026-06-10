@@ -5488,7 +5488,7 @@ Begin
   BinJccLabel(4, '_prt_done');               { JZ _prt_done }
   BinEmit8($8B); BinEmit8($07);             { MOV EAX, [EDI] }
   BinEmit8($3D); BinEmit32(65536);           { CMP EAX, 65536 }
-  BinJccLabel(3, '_prt_isstr');              { JAE _prt_isstr }
+  BinJccLabel(13, '_prt_isstr');             { JGE _prt_isstr (signed: negatifs -> int_to_str) }
   BinPushReg(REG_EAX);
   BinCallLabel('_PLRT_int_to_str');
   BinEmit8($83); BinEmit8($C4); BinEmit8(4); { ADD ESP, 4 }
@@ -5535,6 +5535,8 @@ Procedure BinLoadArrayPtr(LN: Integer);      Forward;
 Procedure BinCodegenIndex(Node: Integer);    Forward;
 Procedure BinCodegenBinary(Node: Integer);   Forward;
 Procedure BinCodegenForeach(Node: Integer);  Forward;
+Procedure BinCodegenIf(Node: Integer);       Forward;
+Procedure BinCodegenWhile(Node: Integer);    Forward;
 
 Procedure BinCodegenLiteral(Node: Integer);
 Var SaveSec: Integer; LName: String; K: Integer; S: String;
@@ -5689,6 +5691,13 @@ Begin
     Ord('*'): BinImulEaxEcx;
     Ord('/'): Begin BinEmit8($99); BinIdivEcx; End;
     Ord('%'): Begin BinEmit8($99); BinIdivEcx; BinEmit8($8B); BinEmit8($C2); End;
+    { Comparaisons : CMP EAX,ECX  SETcc AL  MOVZX EAX,AL (0F B6 C0) }
+    Ord('>'): Begin BinEmit8($3B); BinEmit8($C1); BinEmit8($0F); BinEmit8($9F); BinEmit8($C0); BinEmit8($0F); BinEmit8($B6); BinEmit8($C0); End;
+    Ord('<'): Begin BinEmit8($3B); BinEmit8($C1); BinEmit8($0F); BinEmit8($9C); BinEmit8($C0); BinEmit8($0F); BinEmit8($B6); BinEmit8($C0); End;
+    283 { TOK_EQ }: Begin BinEmit8($3B); BinEmit8($C1); BinEmit8($0F); BinEmit8($94); BinEmit8($C0); BinEmit8($0F); BinEmit8($B6); BinEmit8($C0); End;
+    284 { TOK_NE }: Begin BinEmit8($3B); BinEmit8($C1); BinEmit8($0F); BinEmit8($95); BinEmit8($C0); BinEmit8($0F); BinEmit8($B6); BinEmit8($C0); End;
+    282 { TOK_GE }: Begin BinEmit8($3B); BinEmit8($C1); BinEmit8($0F); BinEmit8($9D); BinEmit8($C0); BinEmit8($0F); BinEmit8($B6); BinEmit8($C0); End;
+    281 { TOK_LE }: Begin BinEmit8($3B); BinEmit8($C1); BinEmit8($0F); BinEmit8($9E); BinEmit8($C0); BinEmit8($0F); BinEmit8($B6); BinEmit8($C0); End;
   Else BinXorRegReg(REG_EAX);
   End;
 End;
@@ -5732,6 +5741,58 @@ Begin
   BinJmpLabel('_BLOOP_' + NumToStr(N) + '_T');
   BinDefineLabel('_BLOOP_' + NumToStr(N) + '_E');
   BinAddEspImm8(12);                      { nettoyer idx+len+ptr }
+End;
+
+{ ---- NK_IF / NK_UNLESS : if COND THEN [else/elsif] ---- }
+{ Left=cond, Right=then, Third=else/elsif (0 si absent)   }
+Procedure BinCodegenIf(Node: Integer);
+Var N, ThirdN: Integer;
+Begin
+  Inc(BinLoopCount); N := BinLoopCount;
+  BinCodegenNode(AstTable[Node].Left);          { EAX = condition }
+  BinEmit8($85); BinEmit8($C0);                { TEST EAX, EAX }
+  ThirdN := AstTable[Node].Third;
+  If ThirdN <> 0 Then Begin
+    { if: JZ vers else; unless: JNZ vers else }
+    If AstTable[Node].Kind = 14 { NK_IF } Then
+      BinJccLabel(4, '_BIF_' + NumToStr(N) + '_E')
+    Else
+      BinJccLabel(5, '_BIF_' + NumToStr(N) + '_E');
+    BinCodegenNode(AstTable[Node].Right);       { then }
+    BinJmpLabel('_BIF_' + NumToStr(N) + '_D');
+    BinDefineLabel('_BIF_' + NumToStr(N) + '_E');
+    If AstTable[ThirdN].Kind = 13 { NK_STMT_LIST } Then
+      BinCodegenNode(AstTable[ThirdN].Left)    { else : deplie le wrapper }
+    Else
+      BinCodegenIf(ThirdN);                    { elsif : recurse }
+    BinDefineLabel('_BIF_' + NumToStr(N) + '_D');
+  End Else Begin
+    If AstTable[Node].Kind = 14 { NK_IF } Then
+      BinJccLabel(4, '_BIF_' + NumToStr(N) + '_D')
+    Else
+      BinJccLabel(5, '_BIF_' + NumToStr(N) + '_D');
+    BinCodegenNode(AstTable[Node].Right);       { then }
+    BinDefineLabel('_BIF_' + NumToStr(N) + '_D');
+  End;
+End;
+
+{ ---- NK_WHILE / NK_UNTIL : while COND BODY ---- }
+{ Left=condition, Right=corps                      }
+Procedure BinCodegenWhile(Node: Integer);
+Var N: Integer;
+Begin
+  Inc(BinLoopCount); N := BinLoopCount;
+  BinDefineLabel('_BWH_' + NumToStr(N) + '_T');
+  BinCodegenNode(AstTable[Node].Left);          { EAX = condition }
+  BinEmit8($85); BinEmit8($C0);                { TEST EAX, EAX }
+  { while: JZ sort; until: JNZ sort }
+  If AstTable[Node].Kind = 16 { NK_WHILE } Then
+    BinJccLabel(4, '_BWH_' + NumToStr(N) + '_E')
+  Else
+    BinJccLabel(5, '_BWH_' + NumToStr(N) + '_E');
+  BinCodegenNode(AstTable[Node].Right);         { corps }
+  BinJmpLabel('_BWH_' + NumToStr(N) + '_T');
+  BinDefineLabel('_BWH_' + NumToStr(N) + '_E');
 End;
 
 Procedure BinCodegenCall(Node: Integer);
@@ -5798,6 +5859,10 @@ Begin
     10 { NK_ARRAY_LIT }:  BinCodegenList(Node);
     12 { NK_LIST }:       BinCodegenList(Node);
     13 { NK_STMT_LIST }:  BinCodegenBlock(Node);
+    14 { NK_IF }:         BinCodegenIf(Node);
+    15 { NK_UNLESS }:     BinCodegenIf(Node);
+    16 { NK_WHILE }:      BinCodegenWhile(Node);
+    17 { NK_UNTIL }:      BinCodegenWhile(Node);
     19 { NK_FOREACH }:    BinCodegenForeach(Node);
   Else
     BinXorRegReg(REG_EAX);
@@ -6455,7 +6520,7 @@ Begin
   EmitRaw(#9+'jz _plrt_prt_done');
   EmitRaw(#9+'mov eax, dword ptr [edi]');
   EmitRaw(#9+'cmp eax, 65536');
-  EmitRaw(#9+'jae _plrt_prt_isstr');
+  EmitRaw(#9+'jge _plrt_prt_isstr');  { jge: signe, negatifs -> int_to_str }
   EmitRaw(#9+'push eax');
   EmitRaw(#9+'call _PLRT_int_to_str');
   EmitRaw(#9+'add esp, 4');
