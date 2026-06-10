@@ -585,6 +585,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer le compilateur Perl pour l'assembleur du microprocesseur 8086 ou 8088.</td>
 		</tr>
 		<tr>
+			<td><b>PERLCW32.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur Perl pour l'assembleur du microprocesseur 80386 pour le systeme d'exploitation Windows 32 bits (PE Win32).</td>
+		</tr>
+		<tr>
 			<td><b>PHP2CS.PAS</b></td>
 			<td>Cette commande permet de lancer le transpileur PHP vers C#.</td>
 		</tr>
