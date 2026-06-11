@@ -1017,16 +1017,147 @@ Begin
   End;
 End;
 
+{ ============================================================ }
+{ TODO 06 - TABLE DES SYMBOLES                                }
+{ ============================================================ }
+
+{ FindSym : cherche un symbole par nom et kind.
+  Kind = -1 accepte tout kind. Retourne l index ou -1. }
 Function FindSym(Const Name: String; Kind: Integer): Integer;
-Begin FindSym := -1; End;
+Var I: Integer;
+Begin
+  FindSym := -1;
+  For I := 0 To SymCount - 1 Do
+    If SymTable[I].Name = Name Then
+      If (Kind = -1) Or (SymTable[I].Kind = Kind) Then Begin
+        FindSym := I; Exit;
+      End;
+End;
 
+{ AddSym : ajoute une entree dans SymTable. Retourne l index ou -1. }
 Function AddSym(Const Name: String; Kind: Integer): Integer;
-Begin AddSym := -1; End;
+Var I: Integer;
+Begin
+  If SymCount >= MAX_SYM Then Begin
+    CompileError('table des symboles pleine'); AddSym := -1; Exit;
+  End;
+  I := SymCount; Inc(SymCount);
+  SymTable[I].Name     := Name;
+  SymTable[I].Kind     := Kind;
+  SymTable[I].VarIdx   := -1;
+  SymTable[I].LblAddr  := -1;
+  SymTable[I].FuncLbl  := '';
+  SymTable[I].ParamCnt := 0;
+  AddSym := I;
+End;
 
+{ GetOrAddVar : trouve ou cree une variable SK_VAR.
+  Retourne le VarIdx (index dans _SNV_TABLE), ou -1 si erreur. }
 Function GetOrAddVar(Const Name: String): Integer;
-Begin GetOrAddVar := -1; End;
+Var SI: Integer;
+Begin
+  SI := FindSym(Name, SK_VAR);
+  If SI >= 0 Then Begin GetOrAddVar := SymTable[SI].VarIdx; Exit; End;
+  SI := AddSym(Name, SK_VAR);
+  If SI < 0 Then Begin GetOrAddVar := -1; Exit; End;
+  If VarCount >= MAX_VARS Then Begin
+    CompileError('trop de variables'); GetOrAddVar := -1; Exit;
+  End;
+  SymTable[SI].VarIdx  := VarCount;
+  VarNames[VarCount]   := Name;
+  Inc(VarCount);
+  GetOrAddVar := SymTable[SI].VarIdx;
+End;
 
-Procedure CollectLabels;  Begin End;
+{ ============================================================ }
+{ TODO 07 - PASSE 1 : COLLECTE DES LABELS ET DEFINE           }
+{ ============================================================ }
+
+{ ParseDefineProto : extrait nom, params et label d entree
+  d une chaine de prototype SNOBOL4 du type 'NOM(P1,P2,ENTRY)'. }
+Procedure ParseDefineProto(Const Proto: String;
+                           Var FName: String;
+                           Var ParamCnt: Integer;
+                           Var Params: Array Of String);
+Var P, K: Integer;
+Begin
+  FName    := '';
+  ParamCnt := 0;
+  P := 1;
+  { Nom de la fonction : jusqu au '(' ou fin }
+  While (P <= Length(Proto)) And (Proto[P] <> '(') Do Begin
+    FName := FName + Proto[P]; Inc(P);
+  End;
+  If (P > Length(Proto)) Or (Proto[P] <> '(') Then Exit;
+  Inc(P); { saute '(' }
+  K := 0;
+  While (P <= Length(Proto)) And (Proto[P] <> ')') And (K <= High(Params)) Do Begin
+    Params[K] := '';
+    While (P <= Length(Proto)) And (Proto[P] <> ',') And (Proto[P] <> ')') Do Begin
+      Params[K] := Params[K] + Proto[P]; Inc(P);
+    End;
+    If Params[K] <> '' Then Inc(K);
+    If (P <= Length(Proto)) And (Proto[P] = ',') Then Inc(P);
+  End;
+  ParamCnt := K;
+End;
+
+{ CollectLabels : passe 1 - enregistre labels et DEFINE
+  dans SymTable avant la generation de code. }
+Procedure CollectLabels;
+Var Line, Proto, FName: String;
+    Params: Array[0..8] Of String;
+    SI, ParamCnt, K: Integer;
+Begin
+  LexRewind;
+  While LexReadLine(Line) Do Begin
+    LexLine(Line); LexNextToken;
+    If CurTokType = TOK_END Then Break;
+    If (CurTokType = TOK_EOL) Or (CurTokType = TOK_COMMENT) Then Continue;
+
+    { Label en colonne 1 }
+    If CurTokType = TOK_LABEL Then Begin
+      FName := CurTokStr; LexNextToken;
+      If FindSym(FName, SK_LABEL) < 0 Then Begin
+        SI := AddSym(FName, SK_LABEL);
+        { LblAddr sera fixe lors de la generation de code }
+      End
+      Else If FindSym(FName, SK_FUNC) < 0 Then
+        { Ne pas avertir si le label vient d un DEFINE precedent }
+        CompileWarn('label duplique : ' + FName);
+    End;
+
+    { DEFINE('NOM(P1,P2,...)') }
+    If CurTokType = KW_DEFINE Then Begin
+      LexNextToken;
+      If CurTokType = TOK_LPAREN Then Begin
+        LexNextToken;
+        If (CurTokType = TOK_STRING) Or (CurTokType = TOK_IDENT) Then Begin
+          Proto := CurTokStr; LexNextToken;
+          ParseDefineProto(Proto, FName, ParamCnt, Params);
+          If FName <> '' Then Begin
+            If FindSym(FName, SK_FUNC) < 0 Then Begin
+              SI := AddSym(FName, SK_FUNC);
+              SymTable[SI].FuncLbl  := '_SNL_' + FName;
+              SymTable[SI].ParamCnt := ParamCnt;
+              For K := 0 To ParamCnt - 1 Do
+                SymTable[SI].Params[K] := Params[K];
+              { Enregistrer aussi le label d entree de la fonction }
+              If FindSym(FName, SK_LABEL) < 0 Then Begin
+                SI := AddSym(FName, SK_LABEL);
+              End;
+            End
+            Else
+              CompileWarn('fonction deja definie : ' + FName);
+          End;
+        End;
+        If CurTokType = TOK_RPAREN Then LexNextToken;
+      End;
+    End;
+  End;
+  { Pas de LexRewind ici : ParseProgram le fait a son debut }
+End;
+
 Procedure CodegenProgram; Begin End;
 
 Procedure WritePE(Const FileName: String);
