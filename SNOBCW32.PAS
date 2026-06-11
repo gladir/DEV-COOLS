@@ -1158,10 +1158,433 @@ Begin
   { Pas de LexRewind ici : ParseProgram le fait a son debut }
 End;
 
-Procedure CodegenProgram; Begin End;
+Procedure CodegenProgram; Begin End;  { TODO 07 passe 2 }
+
+{ ============================================================ }
+{ TODO 08 - CONSTANTES x86/PE, PRIMITIVES BINAIRES, WritePE   }
+{ ============================================================ }
+
+Const
+  REG_EAX = 0; REG_ECX = 1; REG_EDX = 2; REG_EBX = 3;
+  REG_ESP = 4; REG_EBP = 5; REG_ESI = 6; REG_EDI = 7;
+  CC_Z  =  4; CC_NZ =  5;
+  CC_L  = 12; CC_GE = 13; CC_LE = 14; CC_G  = 15;
+  IMAGE_BASE   = $00400000;
+  SEC_ALIGN    = $1000;
+  FILE_ALIGN   = $0200;
+  HEADERS_SIZE = $0200;
+
+{ --- Offset dans la section courante }
+Function BinCurOffset: LongInt;
+Begin
+  Case BinCurSec Of
+    BIN_SEC_TEXT:  BinCurOffset := BinCodeSize;
+    BIN_SEC_RDATA: BinCurOffset := BinRDataSize;
+    BIN_SEC_DATA:  BinCurOffset := BinDataSize;
+    BIN_SEC_IDATA: BinCurOffset := BinIDataSize;
+    Else BinCurOffset := 0;
+  End;
+End;
+
+{ --- Emit un octet dans la section active }
+Procedure BinEmit8(B: Byte);
+Begin
+  Case BinCurSec Of
+    BIN_SEC_TEXT:  Begin If BinCodeSize  < MAX_CODE  Then Begin BinCode [BinCodeSize]  := B; Inc(BinCodeSize);  End; End;
+    BIN_SEC_RDATA: Begin If BinRDataSize < MAX_RDATA Then Begin BinRData[BinRDataSize] := B; Inc(BinRDataSize); End; End;
+    BIN_SEC_DATA:  Begin If BinDataSize  < MAX_DATA  Then Begin BinData [BinDataSize]  := B; Inc(BinDataSize);  End; End;
+    BIN_SEC_IDATA: Begin If BinIDataSize < MAX_IDATA Then Begin BinIData[BinIDataSize] := B; Inc(BinIDataSize); End; End;
+  End;
+End;
+
+{ --- Emit 4 octets little-endian }
+Procedure BinEmit32(V: LongInt);
+Begin
+  BinEmit8(Byte(V And $FF));
+  BinEmit8(Byte((V Shr  8) And $FF));
+  BinEmit8(Byte((V Shr 16) And $FF));
+  BinEmit8(Byte((V Shr 24) And $FF));
+End;
+
+{ --- Emit 4 octets + enregistre un fixup }
+Procedure BinEmitRef32(Const Name: String; Kind: Integer);
+Begin
+  If FixupCount < MAX_FIXUPS Then Begin
+    FixupTable[FixupCount].Offset  := BinCurOffset;
+    FixupTable[FixupCount].Section := BinCurSec;
+    FixupTable[FixupCount].Name    := Name;
+    FixupTable[FixupCount].Kind    := Kind;
+    Inc(FixupCount);
+  End;
+  BinEmit8(0); BinEmit8(0); BinEmit8(0); BinEmit8(0);
+End;
+
+{ --- Definit un label a la position courante }
+Procedure BinDefineLabel(Const Name: String);
+Begin
+  If LabelCount < MAX_LABELS Then Begin
+    LabelTable[LabelCount].Name    := Name;
+    LabelTable[LabelCount].Section := BinCurSec;
+    LabelTable[LabelCount].Offset  := BinCurOffset;
+    Inc(LabelCount);
+  End;
+End;
+
+{ --- Cherche un label ; retourne l index ou -1 }
+Function BinFindLabel(Const Name: String): Integer;
+Var I: Integer;
+Begin
+  BinFindLabel := -1;
+  For I := 0 To LabelCount - 1 Do
+    If LabelTable[I].Name = Name Then Begin BinFindLabel := I; Exit; End;
+End;
+
+{ --- Enregistre un import Win32 ; retourne l index }
+Function BinAddImport(Const DllName, FuncName: String): Integer;
+Var I: Integer;
+Begin
+  For I := 0 To ImportCount - 1 Do
+    If ImportTable[I].FuncName = FuncName Then Begin BinAddImport := I; Exit; End;
+  If ImportCount >= MAX_IMPORTS Then Begin BinAddImport := -1; Exit; End;
+  I := ImportCount; Inc(ImportCount);
+  ImportTable[I].DllName  := DllName;
+  ImportTable[I].FuncName := FuncName;
+  ImportTable[I].IATOff   := -1;
+  ImportTable[I].LabelNm  := '__imp__' + FuncName;
+  BinAddImport := I;
+End;
+
+{ ============================================================ }
+{ TODO 08 - HELPERS x86                                       }
+{ ============================================================ }
+
+Procedure BinPushReg(R: Integer);  Begin BinEmit8($50 Or R); End;
+Procedure BinPopReg (R: Integer);  Begin BinEmit8($58 Or R); End;
+Procedure BinRet;                  Begin BinEmit8($C3); End;
+
+Procedure BinXorRegReg(R: Integer);
+Begin BinEmit8($31); BinEmit8($C0 Or (R Shl 3) Or R); End;
+
+Procedure BinMovRegImm32(R: Integer; V: LongInt);
+Begin BinEmit8($B8 Or R); BinEmit32(V); End;
+
+Procedure BinMovRegLabel(R: Integer; Const Name: String);
+Begin BinEmit8($B8 Or R); BinEmitRef32(Name, BIN_FIX_ABS32); End;
+
+Procedure BinPushImm32(V: LongInt);
+Begin BinEmit8($68); BinEmit32(V); End;
+
+Procedure BinPushLabel(Const Name: String);
+Begin BinEmit8($68); BinEmitRef32(Name, BIN_FIX_ABS32); End;
+
+Procedure BinAddEspImm8(N: Integer);
+Begin BinEmit8($83); BinEmit8($C4); BinEmit8(Byte(N And $FF)); End;
+
+Procedure BinCallLabel(Const Name: String);
+Begin BinEmit8($E8); BinEmitRef32(Name, BIN_FIX_REL32); End;
+
+{ CALL [__imp__FuncName]  (FF 15 <abs-va-iat-entry>) }
+Procedure BinCallImport(Const FuncName: String);
+Begin
+  BinEmit8($FF); BinEmit8($15);
+  BinEmitRef32('__imp__' + FuncName, BIN_FIX_IMP32);
+End;
+
+Procedure BinJmpLabel(Const Name: String);
+Begin BinEmit8($E9); BinEmitRef32(Name, BIN_FIX_REL32); End;
+
+Procedure BinJccLabel(CC: Integer; Const Name: String);
+Begin BinEmit8($0F); BinEmit8($80 Or CC); BinEmitRef32(Name, BIN_FIX_REL32); End;
+
+{ MOV EAX, [EBP+off] }
+Procedure BinMovEaxMemBpPos(Off: Integer);
+Begin BinEmit8($8B); BinEmit8($45); BinEmit8(Byte(Off And $FF)); End;
+
+{ MOV [EBP-off], EAX }
+Procedure BinMovMemBpNegEax(Off: Integer);
+Begin BinEmit8($89); BinEmit8($45); BinEmit8(Byte((-Off) And $FF)); End;
+
+{ MOV EAX, [EBP-off] }
+Procedure BinMovEaxMemBpNeg(Off: Integer);
+Begin BinEmit8($8B); BinEmit8($45); BinEmit8(Byte((-Off) And $FF)); End;
+
+{ PUSH EBP / MOV EBP,ESP }
+Procedure BinPrologue;
+Begin BinPushReg(REG_EBP); BinEmit8($89); BinEmit8($E5); End;
+
+{ MOV ESP,EBP / POP EBP }
+Procedure BinEpilogue;
+Begin BinEmit8($89); BinEmit8($EC); BinPopReg(REG_EBP); End;
+
+{ ============================================================ }
+{ TODO 08 - CONSTRUCTION SECTION .idata (IAT)                 }
+{ ============================================================ }
+
+Procedure BinBuildIData(IDataRVA: LongInt);
+Var
+  N, I, K         : Integer;
+  OldSec           : Integer;
+  OrigThunksStart,
+  IATStart,
+  NamesStart,
+  DllNameStart     : LongInt;
+  HintOff          : Array[0..MAX_IMPORTS-1] Of LongInt;
+  P                : LongInt;
+  S                : String;
+Begin
+  N := ImportCount;
+  If N = 0 Then Exit;
+  OldSec := BinCurSec;
+  BinCurSec    := BIN_SEC_IDATA;
+  BinIDataSize := 0;
+
+  { Disposition :
+    [0..39]            : 1 descriptor + 1 null = 40 octets
+    [40..]             : OriginalFirstThunk (N+1 dwords)
+    [40+(N+1)*4..]     : FirstThunk / IAT   (N+1 dwords)
+    [40+(N+1)*8..]     : hint/name entries  }
+  OrigThunksStart := 40;
+  IATStart        := 40 + LongInt(N+1)*4;
+  NamesStart      := 40 + LongInt(N+1)*8;
+
+  { Calcul des offsets hint/name }
+  P := NamesStart;
+  For I := 0 To N-1 Do Begin
+    HintOff[I] := P;
+    Inc(P, 2 + Length(ImportTable[I].FuncName) + 1);
+    If (P Mod 2) <> 0 Then Inc(P);
+  End;
+  DllNameStart := P;
+
+  { IMAGE_IMPORT_DESCRIPTOR pour kernel32.dll (20 octets) }
+  BinEmit32(IDataRVA + OrigThunksStart); { OriginalFirstThunk (RVA) }
+  BinEmit32(0);                          { TimeDateStamp }
+  BinEmit32(0);                          { ForwarderChain }
+  BinEmit32(IDataRVA + DllNameStart);    { Name (RVA) }
+  BinEmit32(IDataRVA + IATStart);        { FirstThunk / IAT (RVA) }
+  { Null descriptor }
+  BinEmit32(0); BinEmit32(0); BinEmit32(0); BinEmit32(0); BinEmit32(0);
+
+  { OriginalFirstThunk : RVAs vers hint/name }
+  For I := 0 To N-1 Do BinEmit32(IDataRVA + HintOff[I]);
+  BinEmit32(0);
+
+  { IAT (FirstThunk) : idem initialement, patche par le loader }
+  For I := 0 To N-1 Do Begin
+    BinDefineLabel('__imp__' + ImportTable[I].FuncName);
+    ImportTable[I].IATOff := BinIDataSize - 4 + 4; { sera correct apres BinDefineLabel }
+    BinEmit32(IDataRVA + HintOff[I]);
+  End;
+  BinEmit32(0);
+
+  { IMAGE_IMPORT_BY_NAME : hint(2) + nom + \0 (aligne sur WORD) }
+  For I := 0 To N-1 Do Begin
+    BinEmit8(0); BinEmit8(0);
+    S := ImportTable[I].FuncName;
+    For K := 1 To Length(S) Do BinEmit8(Ord(S[K]));
+    BinEmit8(0);
+    If (BinIDataSize Mod 2) <> 0 Then BinEmit8(0);
+  End;
+
+  { Nom de la DLL }
+  S := 'kernel32.dll';
+  For K := 1 To Length(S) Do BinEmit8(Ord(S[K]));
+  BinEmit8(0);
+
+  BinCurSec := OldSec;
+End;
+
+{ ============================================================ }
+{ TODO 08 - RESOLUTION DES FIXUPS                             }
+{ ============================================================ }
+
+Procedure BinResolveFixups(TextRVA, RDataRVA, DataRVA, IDataRVA: LongInt);
+Var I, LI: Integer; TargetRVA, FixupRVA, Value: LongInt;
+
+  Procedure Patch4(Sec: Integer; Off, V: LongInt);
+  Begin
+    Case Sec Of
+      BIN_SEC_TEXT:  Begin BinCode [Off]:=Byte(V); BinCode [Off+1]:=Byte(V Shr 8); BinCode [Off+2]:=Byte(V Shr 16); BinCode [Off+3]:=Byte(V Shr 24); End;
+      BIN_SEC_RDATA: Begin BinRData[Off]:=Byte(V); BinRData[Off+1]:=Byte(V Shr 8); BinRData[Off+2]:=Byte(V Shr 16); BinRData[Off+3]:=Byte(V Shr 24); End;
+      BIN_SEC_DATA:  Begin BinData [Off]:=Byte(V); BinData [Off+1]:=Byte(V Shr 8); BinData [Off+2]:=Byte(V Shr 16); BinData [Off+3]:=Byte(V Shr 24); End;
+      BIN_SEC_IDATA: Begin BinIData[Off]:=Byte(V); BinIData[Off+1]:=Byte(V Shr 8); BinIData[Off+2]:=Byte(V Shr 16); BinIData[Off+3]:=Byte(V Shr 24); End;
+    End;
+  End;
+
+  Function SecRVA(Sec: Integer): LongInt;
+  Begin
+    Case Sec Of
+      BIN_SEC_TEXT:  SecRVA := TextRVA;
+      BIN_SEC_RDATA: SecRVA := RDataRVA;
+      BIN_SEC_DATA:  SecRVA := DataRVA;
+      BIN_SEC_IDATA: SecRVA := IDataRVA;
+      Else SecRVA := 0;
+    End;
+  End;
+
+Begin
+  For I := 0 To FixupCount - 1 Do Begin
+    LI := BinFindLabel(FixupTable[I].Name);
+    If LI < 0 Then Begin CompileError('label non resolu : ' + FixupTable[I].Name); Continue; End;
+    TargetRVA := SecRVA(LabelTable[LI].Section) + LabelTable[LI].Offset;
+    If FixupTable[I].Kind = BIN_FIX_REL32 Then Begin
+      FixupRVA := SecRVA(FixupTable[I].Section) + FixupTable[I].Offset;
+      Value    := (IMAGE_BASE + TargetRVA) - (IMAGE_BASE + FixupRVA + 4);
+    End Else
+      Value := IMAGE_BASE + TargetRVA;
+    Patch4(FixupTable[I].Section, FixupTable[I].Offset, Value);
+  End;
+End;
+
+{ ============================================================ }
+{ TODO 08 - WritePE : produit le fichier .EXE PE32            }
+{ ============================================================ }
 
 Procedure WritePE(Const FileName: String);
-Begin WriteLn('SNOBCW32: WritePE non implemente'); End;
+Const N_SECTIONS = 4;
+Var
+  OutF     : File;
+  TextRVA, RDataRVA, DataRVA, IDataRVA   : LongInt;
+  TextFOff, RDataFOff, DataFOff, IDataFOff: LongInt;
+  TextRaw, RDataRaw, DataRaw, IDataRaw    : LongInt;
+  EntryRVA, ImageSize, FSize              : LongInt;
+  LI, I                                   : Integer;
+  PadBuf                                   : Byte;
+
+  Function AlignUp(V, A: LongInt): LongInt;
+  Begin
+    If (V Mod A) = 0 Then AlignUp := V Else AlignUp := V + A - (V Mod A);
+  End;
+
+  Procedure W1(B: Byte);
+  Var Tmp: Byte; Begin Tmp := B; BlockWrite(OutF, Tmp, 1); End;
+
+  Procedure W2(V: Word);
+  Var A: Array[0..1] Of Byte;
+  Begin A[0]:=Byte(V); A[1]:=Byte(V Shr 8); BlockWrite(OutF, A, 2); End;
+
+  Procedure W4(V: LongInt);
+  Var A: Array[0..3] Of Byte;
+  Begin A[0]:=Byte(V); A[1]:=Byte(V Shr 8); A[2]:=Byte(V Shr 16); A[3]:=Byte(V Shr 24); BlockWrite(OutF, A, 4); End;
+
+  Procedure Pad(N: LongInt);
+  Var B: Byte; J: LongInt;
+  Begin B := 0; For J := 1 To N Do BlockWrite(OutF, B, 1); End;
+
+  Procedure PadTo(Target: LongInt);
+  Var B: Byte; Cur: LongInt;
+  Begin B := 0; Cur := FilePos(OutF); While Cur < Target Do Begin BlockWrite(OutF, B, 1); Inc(Cur); End; End;
+
+  Procedure SecHdr(Const Name8: String; VS, VA, RS, RO: LongInt; Chars: LongInt);
+  Var K: Integer;
+  Begin
+    For K := 1 To 8 Do If K <= Length(Name8) Then W1(Ord(Name8[K])) Else W1(0);
+    W4(VS); W4(VA); W4(RS); W4(RO);
+    W4(0); W4(0); W2(0); W2(0);
+    W4(Chars);
+  End;
+
+Begin
+  { 1. Calcul des tailles et RVAs }
+  TextRaw  := AlignUp(BinCodeSize,  FILE_ALIGN); If BinCodeSize  = 0 Then TextRaw  := FILE_ALIGN;
+  RDataRaw := AlignUp(BinRDataSize, FILE_ALIGN); If BinRDataSize = 0 Then RDataRaw := 0;
+  DataRaw  := AlignUp(BinDataSize,  FILE_ALIGN); If BinDataSize  = 0 Then DataRaw  := 0;
+
+  TextRVA  := $1000;
+  RDataRVA := TextRVA  + AlignUp(BinCodeSize,  SEC_ALIGN); If BinCodeSize  = 0 Then RDataRVA := TextRVA  + SEC_ALIGN;
+  DataRVA  := RDataRVA + AlignUp(BinRDataSize, SEC_ALIGN); If BinRDataSize = 0 Then DataRVA  := RDataRVA + SEC_ALIGN;
+  IDataRVA := DataRVA  + AlignUp(BinDataSize,  SEC_ALIGN); If BinDataSize  = 0 Then IDataRVA := DataRVA  + SEC_ALIGN;
+
+  { 2. Construire la section .idata (definit les labels __imp__xxx) }
+  BinBuildIData(IDataRVA);
+  IDataRaw := AlignUp(BinIDataSize, FILE_ALIGN); If BinIDataSize = 0 Then IDataRaw := 0;
+
+  { 3. Resoudre tous les fixups }
+  BinResolveFixups(TextRVA, RDataRVA, DataRVA, IDataRVA);
+
+  { 4. Entry point }
+  LI := BinFindLabel('_SNSTART');
+  If LI >= 0 Then EntryRVA := TextRVA + LabelTable[LI].Offset
+  Else Begin CompileError('_SNSTART non defini'); Exit; End;
+
+  { 5. Taille image }
+  ImageSize := IDataRVA + AlignUp(BinIDataSize, SEC_ALIGN);
+  If ImageSize <= IDataRVA Then ImageSize := IDataRVA + SEC_ALIGN;
+
+  { 6. Offsets fichier }
+  TextFOff  := HEADERS_SIZE;
+  RDataFOff := TextFOff  + TextRaw;
+  DataFOff  := RDataFOff + RDataRaw;
+  IDataFOff := DataFOff  + DataRaw;
+  FSize     := IDataFOff + IDataRaw;
+
+  { 7. Ouvrir le fichier de sortie }
+  Assign(OutF, FileName);
+  {$I-} Rewrite(OutF, 1); {$I+}
+  If IOResult <> 0 Then Begin CompileError('impossible de creer : ' + FileName); Exit; End;
+
+  { --- DOS Header (64 octets) --- }
+  W2($5A4D);
+  W2($0090); W2($0003); W2($0000); W2($0004);
+  W2($0000); W2($FFFF); W2($0000); W2($00B8);
+  W2($0000); W2($0000); W2($0000); W2($0040);
+  W2($0000);
+  W4(0); W4(0);         { e_res }
+  W2(0); W2(0);         { e_oemid e_oeminfo }
+  W4(0); W4(0); W4(0); W4(0); W4(0); { e_res2 }
+  W4($00000040);        { e_lfanew }
+
+  { --- PE signature --- }
+  W1($50); W1($45); W1(0); W1(0);
+
+  { --- IMAGE_FILE_HEADER --- }
+  W2($014C);        { i386 }
+  W2(N_SECTIONS);
+  W4(0); W4(0); W4(0);
+  W2($00E0);        { SizeOfOptionalHeader }
+  W2($0102);        { EXEC | 32BIT }
+
+  { --- IMAGE_OPTIONAL_HEADER32 (224 octets) --- }
+  W2($010B); W1(1); W1(0);
+  W4(TextRaw);
+  W4(RDataRaw + DataRaw + IDataRaw);
+  W4(BinBssSize);
+  W4(EntryRVA);
+  W4(TextRVA); W4(RDataRVA);
+  W4(IMAGE_BASE);
+  W4(SEC_ALIGN); W4(FILE_ALIGN);
+  W2(4); W2(0);  { OS version }
+  W2(0); W2(0);  { Image version }
+  W2(4); W2(0);  { Subsystem version }
+  W4(0);
+  W4(ImageSize);
+  W4(HEADERS_SIZE);
+  W4(0);          { CheckSum }
+  W2(3); W2(0);   { CUI, no DLL flags }
+  W4($00100000); W4($00001000); { Stack reserve/commit }
+  W4($00100000); W4($00001000); { Heap  reserve/commit }
+  W4(0); W4(16);  { LoaderFlags, NumDataDir }
+  W4(0); W4(0);   { export }
+  W4(IDataRVA); W4(BinIDataSize); { import }
+  For I := 3 To 15 Do Begin W4(0); W4(0); End;
+
+  { --- Section headers --- }
+  SecHdr('.text',  BinCodeSize,  TextRVA,  TextRaw,  TextFOff,  $60000020);
+  SecHdr('.rdata', BinRDataSize, RDataRVA, RDataRaw, RDataFOff, $40000040);
+  SecHdr('.data',  BinDataSize,  DataRVA,  DataRaw,  DataFOff,  LongInt($C0000040));
+  SecHdr('.idata', BinIDataSize, IDataRVA, IDataRaw, IDataFOff, LongInt($C0000040));
+
+  PadTo(HEADERS_SIZE);
+
+  { --- Contenu des sections --- }
+  If BinCodeSize  > 0 Then BlockWrite(OutF, BinCode[0],  BinCodeSize);  Pad(TextRaw  - BinCodeSize);
+  If BinRDataSize > 0 Then BlockWrite(OutF, BinRData[0], BinRDataSize); Pad(RDataRaw - BinRDataSize);
+  If BinDataSize  > 0 Then BlockWrite(OutF, BinData[0],  BinDataSize);  Pad(DataRaw  - BinDataSize);
+  If BinIDataSize > 0 Then BlockWrite(OutF, BinIData[0], BinIDataSize); Pad(IDataRaw - BinIDataSize);
+
+  Close(OutF);
+  WriteLn('SNOBCW32: ', FileName, ' ecrit (', FSize, ' octets)');
+End;
 
 Procedure WriteCOFF(Const FileName: String);
 Begin WriteLn('SNOBCW32: WriteCOFF non implemente'); End;
