@@ -1,4 +1,7 @@
-* Test 01 - Hello World
-*
+﻿* test01_hello.sbl - Bonjour monde avec indentation standard
+* Sortie attendue :
+*   BONJOUR MONDE
+*   FIN DU PROGRAMME
         &OUTPUT = 'BONJOUR MONDE'
+        &OUTPUT = 'FIN DU PROGRAMME'
 -END-

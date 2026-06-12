@@ -1,8 +1,15 @@
-* Test 02 - Variables et affichage
-*
-        NOM = 'ALICE'
-        AGE = '30'
-        &OUTPUT = 'NOM    : ' NOM
-        &OUTPUT = 'AGE    : ' AGE
-        &OUTPUT = 'DETAIL : ' NOM ' (' AGE ' ANS)'
+﻿* test02_vars.sbl - Variables et concatenation multi-termes
+* Sortie attendue :
+*   BONJOUR MONDE
+*   HELLO WORLD TEST
+*   VALEUR = 42
+        PRENOM = 'BONJOUR'
+        NOM = 'MONDE'
+        &OUTPUT = PRENOM ' ' NOM
+        A = 'HELLO'
+        B = 'WORLD'
+        C = 'TEST'
+        &OUTPUT = A ' ' B ' ' C
+        NUM = '42'
+        &OUTPUT = 'VALEUR = ' NUM
 -END-

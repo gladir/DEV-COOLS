@@ -1,0 +1,18 @@
+        LT('1','2') :S(LT_OK) :F(BAD)
+LT_OK   &OUTPUT = 'LT OK'
+        LE('2','2') :S(LE_OK) :F(BAD)
+LE_OK   &OUTPUT = 'LE OK'
+        GT('3','2') :S(GT_OK) :F(BAD)
+GT_OK   &OUTPUT = 'GT OK'
+        GE('3','3') :S(GE_OK) :F(BAD)
+GE_OK   &OUTPUT = 'GE OK'
+        EQ('42','42') :S(EQ_OK) :F(BAD)
+EQ_OK   &OUTPUT = 'EQ OK'
+        NE('42','7') :S(NE_OK) :F(BAD)
+NE_OK   &OUTPUT = 'NE OK'
+        LT('5','2') :S(BAD) :F(FAIL_OK)
+FAIL_OK &OUTPUT = 'FAIL OK'
+        :(FIN)
+BAD     &OUTPUT = 'NUMERIC BAD'
+FIN     &OUTPUT = 'FIN TODO13'
+-END-

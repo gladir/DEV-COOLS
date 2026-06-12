@@ -1,0 +1,3 @@
+        &OUTPUT = NEVER_SET
+UNUSED  &OUTPUT = 'DONE'
+-END-

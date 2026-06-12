@@ -1,42 +1,34 @@
-* Test 07 - Arithmetique (v1 : predicats et SIZE)
-* En SNOBOL86 v1, les operateurs +/-/*/÷ ne sont pas encore dans EvalExpr.
-* L'arithmetique est disponible via :
-*   - LT / LE / GT / GE / EQ / NE  (predicats numeriques)
-*   - SIZE(var)                      (longueur -> entier)
-*   - Valeurs entieres en litteraux  (stockees comme chaines)
-        &OUTPUT = '=== Test arithmetique SNOBOL86 v1 ==='
-* --- Affectation de valeurs entieres ---
-        A = '100'
-        B = '42'
-        &OUTPUT = 'A = ' A
-        &OUTPUT = 'B = ' B
-* --- Longueur de chaine via SIZE ---
-        MOT = 'SNOBOL'
-        &OUTPUT = 'MOT = ' MOT
-        &OUTPUT = 'SIZE(MOT) = ' SIZE(MOT)
-* --- Predicat EQ : egalite ---
-        EQ(SIZE(MOT),6) :S(TAILLE_OK)
-        &OUTPUT = 'ERREUR : taille MOT incorrecte'
-        :(SUITE1)
-TAILLE_OK &OUTPUT = 'SIZE(SNOBOL) = 6  OK'
-SUITE1
-* --- Predicat LT : inferieur strict ---
-        LT(B,A) :S(B_PETIT)
-        &OUTPUT = 'B >= A (inattendu)'
-        :(SUITE2)
-B_PETIT &OUTPUT = 'B < A  OK'
-SUITE2
-* --- Predicat GT : superieur strict ---
-        GT(A,B) :S(A_GRAND)
-        &OUTPUT = 'A <= B (inattendu)'
-        :(SUITE3)
-A_GRAND &OUTPUT = 'A > B  OK'
-SUITE3
-* --- Predicat NE : different ---
-        NE(A,B) :S(DIFF_OK)
-        &OUTPUT = 'A = B (inattendu)'
-        :(FIN)
-DIFF_OK &OUTPUT = 'A <> B  OK'
-        &OUTPUT = '--- Fin test arithmetique ---'
+﻿* test07_arith.sbl - LT GT EQ NE + SIZE + EQ(SIZE(x),n)
+* Sortie attendue :
+*   3 < 7 : VRAI
+*   7 > 3 : VRAI
+*   5 = 5 : VRAI
+*   3 <> 7 : VRAI
+*   TAILLE CORRECTE
+*   GRAND MOT
+        A = '3'
+        B = '7'
+        LT(A,B) :S(LT_OUI) :F(LT_NON)
+LT_OUI  &OUTPUT = '3 < 7 : VRAI' :(GT_TEST)
+LT_NON  &OUTPUT = '3 < 7 : FAUX'
+GT_TEST GT(B,A) :S(GT_OUI) :F(GT_NON)
+GT_OUI  &OUTPUT = '7 > 3 : VRAI' :(EQ_TEST)
+GT_NON  &OUTPUT = '7 > 3 : FAUX'
+EQ_TEST C = '5'
+        D = '5'
+        EQ(C,D) :S(EQ_OUI) :F(EQ_NON)
+EQ_OUI  &OUTPUT = '5 = 5 : VRAI' :(NE_TEST)
+EQ_NON  &OUTPUT = '5 = 5 : FAUX'
+NE_TEST NE(A,B) :S(NE_OUI) :F(NE_NON)
+NE_OUI  &OUTPUT = '3 <> 7 : VRAI' :(SIZE_TEST)
+NE_NON  &OUTPUT = '3 <> 7 : FAUX'
+SIZE_TEST MOT = 'HELLO'
+        EQ(SIZE(MOT),'5') :S(TAILLE_OK) :F(TAILLE_NON)
+TAILLE_OK &OUTPUT = 'TAILLE CORRECTE' :(GRAND_TEST)
+TAILLE_NON &OUTPUT = 'TAILLE INCORRECTE'
+GRAND_TEST GRAND = 'COMPILATION'
+        GT(SIZE(GRAND),'5') :S(GRAND_OUI) :F(GRAND_NON)
+GRAND_OUI &OUTPUT = 'GRAND MOT' :(FIN)
+GRAND_NON &OUTPUT = 'MOT COURT'
 FIN
 -END-

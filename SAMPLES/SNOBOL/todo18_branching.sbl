@@ -1,0 +1,14 @@
+* TODO 18 - pattern matching et branchements :S/:F
+        TEXTE = 'ALPHA BETA GAMMA'
+        TEXTE 'BETA' :S(PAT_OK) :F(BAD)
+BAD     &OUTPUT = 'TODO18 BAD'
+        :(FIN)
+PAT_OK  &OUTPUT = 'PATTERN S OK'
+        TEXTE 'DELTA' :S(BAD) :F(PAT_FAIL_OK)
+PAT_FAIL_OK &OUTPUT = 'PATTERN F OK'
+        IDENT('SNOBOL','SNOBOL') :S(PRED_OK) :F(BAD)
+PRED_OK &OUTPUT = 'PREDICAT S OK'
+        DIFFER('X','X') :S(BAD) :F(PRED_FAIL_OK)
+PRED_FAIL_OK &OUTPUT = 'PREDICAT F OK'
+FIN     &OUTPUT = 'FIN TODO18'
+-END-

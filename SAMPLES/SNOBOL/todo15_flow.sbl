@@ -1,0 +1,12 @@
+        :(START)
+BAD     &OUTPUT = 'FLOW BAD'
+        :(FIN)
+START   IDENT('A','A') :S(S_OK) :F(BAD)
+S_OK    &OUTPUT = 'S OK'
+        IDENT('A','B') :S(BAD) :F(F_OK)
+F_OK    &OUTPUT = 'F OK'
+        LT('1','2') :S(COMBO_OK) :F(BAD)
+COMBO_OK &OUTPUT = 'COMBO OK'
+        :(FIN)
+FIN     &OUTPUT = 'FIN TODO15'
+-END-

@@ -1,8 +1,21 @@
-* Test 03 - Boucle : imprimer des lignes repetees par concatenation
-*
-        LIGNE = '='
-BOUCLE  &OUTPUT = LIGNE
-        LIGNE = LIGNE '='
-        IDENT(LIGNE,'==========') :F(BOUCLE)
-        &OUTPUT = 'BOUCLE TERMINEE'
+﻿* test03_boucle.sbl - Boucle avec IDENT + :S/:F
+* Sortie attendue :
+*   1
+*   2
+*   3
+*   4
+*   5
+*   FINI
+        COMPTEUR = '1'
+BOUCLE  &OUTPUT = COMPTEUR
+        IDENT(COMPTEUR,'5') :S(FIN)
+        EQ(COMPTEUR,'1') :S(DEUX)
+        EQ(COMPTEUR,'2') :S(TROIS)
+        EQ(COMPTEUR,'3') :S(QUATRE)
+        EQ(COMPTEUR,'4') :S(CINQ)
+DEUX    COMPTEUR = '2' :(BOUCLE)
+TROIS   COMPTEUR = '3' :(BOUCLE)
+QUATRE  COMPTEUR = '4' :(BOUCLE)
+CINQ    COMPTEUR = '5' :(BOUCLE)
+FIN     &OUTPUT = 'FINI'
 -END-

@@ -1,0 +1,19 @@
+* TODO 19 - fonctions integrees et appel utilisateur
+        DEFINE('PAIR(X,Y)')
+        &OUTPUT = 'SIZE=' SIZE('SNOBOL')
+        LT('1','2') :S(LT_OK) :F(BAD)
+BAD     &OUTPUT = 'TODO19 BAD'
+        :(FIN)
+LT_OK   LE('2','2') :S(LE_OK) :F(BAD)
+LE_OK   GT('9','3') :S(GT_OK) :F(BAD)
+GT_OK   GE('3','3') :S(GE_OK) :F(BAD)
+GE_OK   EQ('7','7') :S(EQ_OK) :F(BAD)
+EQ_OK   NE('7','8') :S(NE_OK) :F(BAD)
+NE_OK   IDENT('ABC','ABC') :S(IDENT_OK) :F(BAD)
+IDENT_OK DIFFER('ABC','XYZ') :S(DIFFER_OK) :F(BAD)
+DIFFER_OK &OUTPUT = PAIR('A','B')
+        :(FIN)
+PAIR    PAIR = X '-' Y
+        RETURN
+FIN     &OUTPUT = 'FIN TODO19'
+-END-

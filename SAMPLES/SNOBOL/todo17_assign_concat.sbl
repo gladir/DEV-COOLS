@@ -1,0 +1,11 @@
+* TODO 17 - affectation et concatenation
+        DEFINE('WRAP(X)')
+        A = 'BON'
+        B = 'JOUR'
+        C = A B ' ' SIZE(A B) ' ' WRAP('OK')
+        &OUTPUT = C
+        :(FIN)
+WRAP    WRAP = '[' X ']'
+        RETURN
+FIN     &OUTPUT = 'FIN TODO17'
+-END-

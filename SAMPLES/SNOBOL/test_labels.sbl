@@ -1,0 +1,3 @@
+&OUTPUT = 'DEBUT'
+LOOP &OUTPUT = 'BOUCLE'  :(LOOP)
+-END-

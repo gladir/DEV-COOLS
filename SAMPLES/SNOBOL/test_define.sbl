@@ -1,0 +1,3 @@
+        DEFINE('ADD(A,B)')
+ADD     RESULT = A B  :(RETURN)
+-END-

@@ -1,2 +1,5 @@
-&OUTPUT = 'BONJOUR MONDE'
+﻿* hello.sbl - Test minimal SNOBOL4
+* Sortie attendue :
+*   BONJOUR MONDE
+        &OUTPUT = 'BONJOUR MONDE'
 -END-
