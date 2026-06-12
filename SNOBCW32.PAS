@@ -1,3 +1,12 @@
+{ @author: Sylvain Maltais (support@gladir.com)
+  @created: 2026
+  @version: 0.1
+  @website(https://www.gladir.com/dev-cools)
+  @abstract(Target: Free Pascal 3.2)
+  @description: Compilateur Snobol 4 vers assembleur 80386 pour Windows 32 bits
+  @license: MIT
+}
+
 { ============================================================ }
 { SNOBCW32.PAS - Compilateur SNOBOL4 -> 80386 PE Win32        }
 { Free Pascal {$MODE TP}                                       }
@@ -528,6 +537,12 @@ Procedure BinPushImm32(V: LongInt);             Forward;
 Procedure BinCallImport(Const FuncName: String); Forward;
 Procedure BinJmpLabel(Const Name: String);      Forward;
 Procedure BinJccLabel(CC: Integer; Const Name: String); Forward;
+
+{ TODO 09 : Runtime variables / memoire }
+Procedure EmitRuntimeMemory;                    Forward;
+
+{ TODO 10 : Runtime operations chaines }
+Procedure EmitRuntimeStrings;                   Forward;
 
 { TODO 21 : Sortie OBJ COFF }
 Procedure WriteCOFF(Const FileName: String);    Forward;
@@ -1316,7 +1331,17 @@ Begin
     CompileError('table des imports pleine');
     Exit;
   End;
+  If BinAddImport('kernel32.dll', 'GetProcessHeap') < 0 Then Begin
+    CompileError('table des imports pleine');
+    Exit;
+  End;
+  If BinAddImport('kernel32.dll', 'HeapAlloc') < 0 Then Begin
+    CompileError('table des imports pleine');
+    Exit;
+  End;
 
+  EmitRuntimeMemory;
+  EmitRuntimeStrings;
   BinDefineLabel('_SNSTART');
   Ch := AstTable[AstRoot].FirstChild;
   While Ch <> 0 Do Begin
@@ -1485,6 +1510,444 @@ Procedure BinEpilogue;
 Begin BinEmit8($89); BinEmit8($EC); BinPopReg(REG_EBP); End;
 
 { ============================================================ }
+{ TODO 09 - RUNTIME EMBARQUE : VARIABLES ET MEMOIRE            }
+{ ============================================================ }
+
+Procedure BinPushMemBpPos(Off: Integer);
+Begin BinEmit8($FF); BinEmit8($75); BinEmit8(Byte(Off And $FF)); End;
+
+Procedure BinMovRegMemBpPos(R, Off: Integer);
+Begin BinEmit8($8B); BinEmit8(Byte($45 Or ((R And 7) Shl 3))); BinEmit8(Byte(Off And $FF)); End;
+
+{ MOV [_SNV_TABLE + ECX*4], EAX }
+Procedure BinMovSnvTableEcxEax;
+Begin
+  BinEmit8($89); BinEmit8($04); BinEmit8($8D);
+  BinEmitRef32('_SNV_TABLE', BIN_FIX_ABS32);
+End;
+
+{ MOV EAX, [_SNV_TABLE + ECX*4] }
+Procedure BinMovEaxSnvTableEcx;
+Begin
+  BinEmit8($8B); BinEmit8($04); BinEmit8($8D);
+  BinEmitRef32('_SNV_TABLE', BIN_FIX_ABS32);
+End;
+
+Procedure BinTestEaxEax;
+Begin BinEmit8($85); BinEmit8($C0); End;
+
+Procedure EmitRuntimeMemoryData;
+Var
+  OldSec : Integer;
+  I      : Integer;
+Begin
+  OldSec := BinCurSec;
+
+  BinCurSec := BIN_SEC_RDATA;
+  BinDefineLabel('_SN_EMPTY');
+  BinEmit8(0);
+
+  BinCurSec := BIN_SEC_DATA;
+  BinDefineLabel('_SNV_TABLE');
+  For I := 0 To MAX_VARS - 1 Do
+    BinEmit32(0);
+
+  BinCurSec := OldSec;
+End;
+
+Procedure EmitRuntimeVarSet;
+Begin
+  BinDefineLabel('_SNRT_var_set');
+  BinPrologue;
+  BinMovRegMemBpPos(REG_ECX, 8);  { idx }
+  BinMovRegMemBpPos(REG_EAX, 12); { ptr }
+  BinMovSnvTableEcxEax;
+  BinMovRegImm32(REG_EAX, 1);
+  BinEpilogue;
+  BinRet;
+End;
+
+Procedure EmitRuntimeVarGet;
+Begin
+  BinDefineLabel('_SNRT_var_get');
+  BinPrologue;
+  BinMovRegMemBpPos(REG_ECX, 8);  { idx }
+  BinMovEaxSnvTableEcx;
+  BinTestEaxEax;
+  BinJccLabel(CC_NZ, '_SNRT_var_get_done');
+  BinMovRegLabel(REG_EAX, '_SN_EMPTY');
+  BinDefineLabel('_SNRT_var_get_done');
+  BinEpilogue;
+  BinRet;
+End;
+
+Procedure EmitRuntimeHeapAlloc;
+Begin
+  BinDefineLabel('_SNRT_heap_alloc');
+  BinPrologue;
+  BinCallImport('GetProcessHeap');
+  BinPushMemBpPos(8);       { dwBytes }
+  BinPushImm32(8);          { HEAP_ZERO_MEMORY }
+  BinPushReg(REG_EAX);      { hHeap }
+  BinCallImport('HeapAlloc');
+  BinEpilogue;
+  BinRet;
+End;
+
+Procedure EmitRuntimeMemory;
+Begin
+  EmitRuntimeMemoryData;
+  BinCurSec := BIN_SEC_TEXT;
+  EmitRuntimeVarSet;
+  EmitRuntimeVarGet;
+  EmitRuntimeHeapAlloc;
+End;
+
+{ ============================================================ }
+{ TODO 10 - RUNTIME EMBARQUE : OPERATIONS SUR CHAINES          }
+{ ============================================================ }
+
+Procedure BinSubEspImm8(N: Integer);
+Begin BinEmit8($83); BinEmit8($EC); BinEmit8(Byte(N And $FF)); End;
+
+Procedure BinMovRegReg(Dst, Src: Integer);
+Begin BinEmit8($89); BinEmit8(Byte($C0 Or ((Src And 7) Shl 3) Or (Dst And 7))); End;
+
+Procedure BinMovRegMemBpNeg(R, Off: Integer);
+Begin BinEmit8($8B); BinEmit8(Byte($45 Or ((R And 7) Shl 3))); BinEmit8(Byte((-Off) And $FF)); End;
+
+Procedure BinMovMemBpNegReg(Off, R: Integer);
+Begin BinEmit8($89); BinEmit8(Byte($45 Or ((R And 7) Shl 3))); BinEmit8(Byte((-Off) And $FF)); End;
+
+Procedure BinMovRegMemReg(R, Base: Integer);
+Begin BinEmit8($8B); BinEmit8(Byte((R Shl 3) Or Base)); End;
+
+Procedure BinMovByteAlMemReg(Base: Integer);
+Begin BinEmit8($8A); BinEmit8(Byte(Base And 7)); End;
+
+Procedure BinMovByteDlMemReg(Base: Integer);
+Begin BinEmit8($8A); BinEmit8(Byte($10 Or (Base And 7))); End;
+
+Procedure BinMovByteMemRegAl(Base: Integer);
+Begin BinEmit8($88); BinEmit8(Byte(Base And 7)); End;
+
+Procedure BinMovByteMemRegDl(Base: Integer);
+Begin BinEmit8($88); BinEmit8(Byte($10 Or (Base And 7))); End;
+
+Procedure BinMovByteMemRegImm8(Base: Integer; V: Byte);
+Begin BinEmit8($C6); BinEmit8(Byte(Base And 7)); BinEmit8(V); End;
+
+Procedure BinMovzxRegByteMemReg(R, Base: Integer);
+Begin BinEmit8($0F); BinEmit8($B6); BinEmit8(Byte((R Shl 3) Or Base)); End;
+
+Procedure BinCmpAlDl;
+Begin BinEmit8($38); BinEmit8($D0); End;
+
+Procedure BinCmpClImm8(V: Byte);
+Begin BinEmit8($80); BinEmit8($F9); BinEmit8(V); End;
+
+Procedure BinCmpRegImm8(R: Integer; V: Byte);
+Begin BinEmit8($83); BinEmit8(Byte($F8 Or (R And 7))); BinEmit8(V); End;
+
+Procedure BinTestRegReg(R: Integer);
+Begin BinEmit8($85); BinEmit8(Byte($C0 Or ((R And 7) Shl 3) Or (R And 7))); End;
+
+Procedure BinIncReg(R: Integer);
+Begin BinEmit8($40 Or (R And 7)); End;
+
+Procedure BinDecReg(R: Integer);
+Begin BinEmit8($48 Or (R And 7)); End;
+
+Procedure BinNegReg(R: Integer);
+Begin BinEmit8($F7); BinEmit8(Byte($D8 Or (R And 7))); End;
+
+Procedure BinAddRegReg(Dst, Src: Integer);
+Begin BinEmit8($01); BinEmit8(Byte($C0 Or ((Src And 7) Shl 3) Or (Dst And 7))); End;
+
+Procedure BinAddRegImm8(R, N: Integer);
+Begin BinEmit8($83); BinEmit8(Byte($C0 Or (R And 7))); BinEmit8(Byte(N And $FF)); End;
+
+Procedure BinSubRegImm8(R, N: Integer);
+Begin BinEmit8($83); BinEmit8(Byte($E8 Or (R And 7))); BinEmit8(Byte(N And $FF)); End;
+
+Procedure BinImulRegRegImm8(Dst, Src, N: Integer);
+Begin BinEmit8($6B); BinEmit8(Byte($C0 Or ((Dst And 7) Shl 3) Or (Src And 7))); BinEmit8(Byte(N And $FF)); End;
+
+Procedure BinXorEdxEdx;
+Begin BinEmit8($31); BinEmit8($D2); End;
+
+Procedure BinDivReg(R: Integer);
+Begin BinEmit8($F7); BinEmit8(Byte($F0 Or (R And 7))); End;
+
+Procedure BinCmpByteMemSibEsiEaxImm8(V: Byte);
+Begin BinEmit8($80); BinEmit8($3C); BinEmit8($06); BinEmit8(V); End;
+
+Procedure EmitRuntimeStrLen;
+Begin
+  BinDefineLabel('_SNRT_str_len');
+  BinPrologue;
+  BinPushReg(REG_ESI);
+  BinMovRegMemBpPos(REG_ESI, 8);
+  BinTestRegReg(REG_ESI);
+  BinJccLabel(CC_NZ, '_SNRT_strlen_have_ptr');
+  BinMovRegLabel(REG_ESI, '_SN_EMPTY');
+  BinDefineLabel('_SNRT_strlen_have_ptr');
+  BinXorRegReg(REG_EAX);
+  BinDefineLabel('_SNRT_strlen_loop');
+  BinCmpByteMemSibEsiEaxImm8(0);
+  BinJccLabel(CC_Z, '_SNRT_strlen_done');
+  BinIncReg(REG_EAX);
+  BinJmpLabel('_SNRT_strlen_loop');
+  BinDefineLabel('_SNRT_strlen_done');
+  BinPopReg(REG_ESI);
+  BinEpilogue;
+  BinRet;
+End;
+
+Procedure EmitRuntimeStrConcat;
+Begin
+  BinDefineLabel('_SNRT_str_concat');
+  BinPrologue;
+  BinSubEspImm8(12);
+  BinPushReg(REG_EBX);
+  BinPushReg(REG_ESI);
+  BinPushReg(REG_EDI);
+
+  BinMovEaxMemBpPos(8);
+  BinTestEaxEax;
+  BinJccLabel(CC_NZ, '_SNRT_concat_s1_ok');
+  BinMovRegLabel(REG_EAX, '_SN_EMPTY');
+  BinDefineLabel('_SNRT_concat_s1_ok');
+  BinMovMemBpNegReg(4, REG_EAX);
+
+  BinMovEaxMemBpPos(12);
+  BinTestEaxEax;
+  BinJccLabel(CC_NZ, '_SNRT_concat_s2_ok');
+  BinMovRegLabel(REG_EAX, '_SN_EMPTY');
+  BinDefineLabel('_SNRT_concat_s2_ok');
+  BinMovMemBpNegReg(8, REG_EAX);
+
+  BinPushMemBpPos(-4);
+  BinCallLabel('_SNRT_str_len');
+  BinAddEspImm8(4);
+  BinMovRegReg(REG_EBX, REG_EAX);
+
+  BinPushMemBpPos(-8);
+  BinCallLabel('_SNRT_str_len');
+  BinAddEspImm8(4);
+  BinMovRegReg(REG_ECX, REG_EAX);
+
+  BinMovRegReg(REG_EAX, REG_EBX);
+  BinAddRegReg(REG_EAX, REG_ECX);
+  BinIncReg(REG_EAX);
+  BinPushReg(REG_EAX);
+  BinCallLabel('_SNRT_heap_alloc');
+  BinAddEspImm8(4);
+  BinTestEaxEax;
+  BinJccLabel(CC_NZ, '_SNRT_concat_alloc_ok');
+  BinMovRegLabel(REG_EAX, '_SN_EMPTY');
+  BinJmpLabel('_SNRT_concat_done');
+
+  BinDefineLabel('_SNRT_concat_alloc_ok');
+  BinMovMemBpNegReg(12, REG_EAX);
+  BinMovRegMemBpNeg(REG_ESI, 4);
+  BinMovRegMemBpNeg(REG_EDI, 12);
+  BinDefineLabel('_SNRT_concat_copy1');
+  BinMovByteAlMemReg(REG_ESI);
+  BinEmit8($84); BinEmit8($C0); { TEST AL,AL }
+  BinJccLabel(CC_Z, '_SNRT_concat_copy2_start');
+  BinMovByteMemRegAl(REG_EDI);
+  BinIncReg(REG_ESI);
+  BinIncReg(REG_EDI);
+  BinJmpLabel('_SNRT_concat_copy1');
+
+  BinDefineLabel('_SNRT_concat_copy2_start');
+  BinMovRegMemBpNeg(REG_ESI, 8);
+  BinDefineLabel('_SNRT_concat_copy2');
+  BinMovByteAlMemReg(REG_ESI);
+  BinMovByteMemRegAl(REG_EDI);
+  BinIncReg(REG_ESI);
+  BinIncReg(REG_EDI);
+  BinEmit8($84); BinEmit8($C0); { TEST AL,AL }
+  BinJccLabel(CC_NZ, '_SNRT_concat_copy2');
+  BinMovRegMemBpNeg(REG_EAX, 12);
+
+  BinDefineLabel('_SNRT_concat_done');
+  BinPopReg(REG_EDI);
+  BinPopReg(REG_ESI);
+  BinPopReg(REG_EBX);
+  BinEpilogue;
+  BinRet;
+End;
+
+Procedure EmitRuntimeIntToStr;
+Begin
+  BinDefineLabel('_SNRT_int_to_str');
+  BinPrologue;
+  BinSubEspImm8(4);
+  BinPushReg(REG_EBX);
+  BinPushReg(REG_EDI);
+
+  BinPushImm32(12);
+  BinCallLabel('_SNRT_heap_alloc');
+  BinAddEspImm8(4);
+  BinTestEaxEax;
+  BinJccLabel(CC_NZ, '_SNRT_itos_alloc_ok');
+  BinMovRegLabel(REG_EAX, '_SN_EMPTY');
+  BinJmpLabel('_SNRT_itos_done');
+
+  BinDefineLabel('_SNRT_itos_alloc_ok');
+  BinMovMemBpNegReg(4, REG_EAX);
+  BinMovRegReg(REG_EDI, REG_EAX);
+  BinAddRegImm8(REG_EDI, 11);
+  BinMovByteMemRegImm8(REG_EDI, 0);
+  BinMovRegMemBpPos(REG_EBX, 8);
+  BinXorRegReg(REG_ECX);
+  BinTestRegReg(REG_EBX);
+  BinJccLabel(9, '_SNRT_itos_abs_ready'); { JNS }
+  BinMovRegImm32(REG_ECX, 1);
+  BinNegReg(REG_EBX);
+  BinDefineLabel('_SNRT_itos_abs_ready');
+
+  BinTestRegReg(REG_EBX);
+  BinJccLabel(CC_NZ, '_SNRT_itos_loop');
+  BinDecReg(REG_EDI);
+  BinMovByteMemRegImm8(REG_EDI, Ord('0'));
+  BinJmpLabel('_SNRT_itos_sign');
+
+  BinDefineLabel('_SNRT_itos_loop');
+  BinMovRegReg(REG_EAX, REG_EBX);
+  BinXorEdxEdx;
+  BinMovRegImm32(REG_ECX, 10);
+  BinDivReg(REG_ECX);
+  BinAddRegImm8(REG_EDX, Ord('0'));
+  BinDecReg(REG_EDI);
+  BinMovByteMemRegDl(REG_EDI);
+  BinMovRegReg(REG_EBX, REG_EAX);
+  BinTestRegReg(REG_EBX);
+  BinJccLabel(CC_NZ, '_SNRT_itos_loop');
+
+  BinDefineLabel('_SNRT_itos_sign');
+  BinMovRegMemBpPos(REG_EBX, 8);
+  BinTestRegReg(REG_EBX);
+  BinJccLabel(9, '_SNRT_itos_return'); { JNS }
+  BinDecReg(REG_EDI);
+  BinMovByteMemRegImm8(REG_EDI, Ord('-'));
+
+  BinDefineLabel('_SNRT_itos_return');
+  BinMovRegReg(REG_EAX, REG_EDI);
+
+  BinDefineLabel('_SNRT_itos_done');
+  BinPopReg(REG_EDI);
+  BinPopReg(REG_EBX);
+  BinEpilogue;
+  BinRet;
+End;
+
+Procedure EmitRuntimeStrToInt;
+Begin
+  BinDefineLabel('_SNRT_str_to_int');
+  BinPrologue;
+  BinPushReg(REG_EBX);
+  BinPushReg(REG_ESI);
+  BinMovRegMemBpPos(REG_ESI, 8);
+  BinTestRegReg(REG_ESI);
+  BinJccLabel(CC_NZ, '_SNRT_atoi_have_ptr');
+  BinMovRegLabel(REG_ESI, '_SN_EMPTY');
+  BinDefineLabel('_SNRT_atoi_have_ptr');
+  BinXorRegReg(REG_EAX);
+  BinMovRegImm32(REG_EBX, 1);
+  BinXorEdxEdx;
+  BinMovByteAlMemReg(REG_ESI);
+  BinCmpRegImm8(REG_EAX, Ord('-'));
+  BinJccLabel(CC_NZ, '_SNRT_atoi_loop');
+  BinMovRegImm32(REG_EBX, -1);
+  BinIncReg(REG_ESI);
+  BinXorRegReg(REG_EAX);
+
+  BinDefineLabel('_SNRT_atoi_loop');
+  BinMovzxRegByteMemReg(REG_ECX, REG_ESI);
+  BinCmpClImm8(Ord('0'));
+  BinJccLabel(CC_L, '_SNRT_atoi_finish');
+  BinCmpClImm8(Ord('9'));
+  BinJccLabel(CC_G, '_SNRT_atoi_finish');
+  BinMovRegImm32(REG_EDX, 1);
+  BinSubRegImm8(REG_ECX, Ord('0'));
+  BinImulRegRegImm8(REG_EAX, REG_EAX, 10);
+  BinAddRegReg(REG_EAX, REG_ECX);
+  BinIncReg(REG_ESI);
+  BinJmpLabel('_SNRT_atoi_loop');
+
+  BinDefineLabel('_SNRT_atoi_finish');
+  BinTestRegReg(REG_EDX);
+  BinJccLabel(CC_NZ, '_SNRT_atoi_has_digit');
+  BinXorRegReg(REG_EAX);
+  BinJmpLabel('_SNRT_atoi_done');
+  BinDefineLabel('_SNRT_atoi_has_digit');
+  BinCmpRegImm8(REG_EBX, 1);
+  BinJccLabel(CC_Z, '_SNRT_atoi_done');
+  BinNegReg(REG_EAX);
+
+  BinDefineLabel('_SNRT_atoi_done');
+  BinPopReg(REG_ESI);
+  BinPopReg(REG_EBX);
+  BinEpilogue;
+  BinRet;
+End;
+
+Procedure EmitRuntimeStrEq;
+Begin
+  BinDefineLabel('_SNRT_str_eq');
+  BinPrologue;
+  BinPushReg(REG_ESI);
+  BinPushReg(REG_EDI);
+
+  BinMovRegMemBpPos(REG_ESI, 8);
+  BinTestRegReg(REG_ESI);
+  BinJccLabel(CC_NZ, '_SNRT_streq_s1_ok');
+  BinMovRegLabel(REG_ESI, '_SN_EMPTY');
+  BinDefineLabel('_SNRT_streq_s1_ok');
+  BinMovRegMemBpPos(REG_EDI, 12);
+  BinTestRegReg(REG_EDI);
+  BinJccLabel(CC_NZ, '_SNRT_streq_s2_ok');
+  BinMovRegLabel(REG_EDI, '_SN_EMPTY');
+  BinDefineLabel('_SNRT_streq_s2_ok');
+
+  BinDefineLabel('_SNRT_streq_loop');
+  BinMovByteAlMemReg(REG_ESI);
+  BinMovByteDlMemReg(REG_EDI);
+  BinCmpAlDl;
+  BinJccLabel(CC_NZ, '_SNRT_streq_false');
+  BinEmit8($84); BinEmit8($C0); { TEST AL,AL }
+  BinJccLabel(CC_Z, '_SNRT_streq_true');
+  BinIncReg(REG_ESI);
+  BinIncReg(REG_EDI);
+  BinJmpLabel('_SNRT_streq_loop');
+
+  BinDefineLabel('_SNRT_streq_true');
+  BinMovRegImm32(REG_EAX, 1);
+  BinJmpLabel('_SNRT_streq_done');
+  BinDefineLabel('_SNRT_streq_false');
+  BinXorRegReg(REG_EAX);
+
+  BinDefineLabel('_SNRT_streq_done');
+  BinPopReg(REG_EDI);
+  BinPopReg(REG_ESI);
+  BinEpilogue;
+  BinRet;
+End;
+
+Procedure EmitRuntimeStrings;
+Begin
+  BinCurSec := BIN_SEC_TEXT;
+  EmitRuntimeStrLen;
+  EmitRuntimeStrConcat;
+  EmitRuntimeIntToStr;
+  EmitRuntimeStrToInt;
+  EmitRuntimeStrEq;
+End;
+
+{ ============================================================ }
 { TODO 08 - CONSTRUCTION SECTION .idata (IAT)                 }
 { ============================================================ }
 
@@ -1615,6 +2078,7 @@ Var
   TextRVA, RDataRVA, DataRVA, IDataRVA   : LongInt;
   TextFOff, RDataFOff, DataFOff, IDataFOff: LongInt;
   TextRaw, RDataRaw, DataRaw, IDataRaw    : LongInt;
+  RDataVS, DataVS                         : LongInt;
   EntryRVA, ImageSize, FSize              : LongInt;
   LI, I                                   : Integer;
   PadBuf                                   : Byte;
@@ -1655,8 +2119,10 @@ Var
 Begin
   { 1. Calcul des tailles et RVAs }
   TextRaw  := AlignUp(BinCodeSize,  FILE_ALIGN); If BinCodeSize  = 0 Then TextRaw  := FILE_ALIGN;
-  RDataRaw := AlignUp(BinRDataSize, FILE_ALIGN); If BinRDataSize = 0 Then RDataRaw := 0;
-  DataRaw  := AlignUp(BinDataSize,  FILE_ALIGN); If BinDataSize  = 0 Then DataRaw  := 0;
+  RDataRaw := AlignUp(BinRDataSize, FILE_ALIGN); If BinRDataSize = 0 Then RDataRaw := FILE_ALIGN;
+  DataRaw  := AlignUp(BinDataSize,  FILE_ALIGN); If BinDataSize  = 0 Then DataRaw  := FILE_ALIGN;
+  RDataVS  := BinRDataSize; If RDataVS = 0 Then RDataVS := 1;
+  DataVS   := BinDataSize;  If DataVS  = 0 Then DataVS  := 1;
 
   TextRVA  := $1000;
   RDataRVA := TextRVA  + AlignUp(BinCodeSize,  SEC_ALIGN); If BinCodeSize  = 0 Then RDataRVA := TextRVA  + SEC_ALIGN;
@@ -1710,7 +2176,7 @@ Begin
   W2(N_SECTIONS);
   W4(0); W4(0); W4(0);
   W2($00E0);        { SizeOfOptionalHeader }
-  W2($0102);        { EXEC | 32BIT }
+  W2($030F);        { RELOCS_STRIPPED | EXEC | stripped | 32BIT }
 
   { --- IMAGE_OPTIONAL_HEADER32 (224 octets) --- }
   W2($010B); W1(1); W1(0);
@@ -1718,7 +2184,7 @@ Begin
   W4(RDataRaw + DataRaw + IDataRaw);
   W4(BinBssSize);
   W4(EntryRVA);
-  W4(TextRVA); W4(RDataRVA);
+  W4(TextRVA); W4(DataRVA);
   W4(IMAGE_BASE);
   W4(SEC_ALIGN); W4(FILE_ALIGN);
   W2(4); W2(0);  { OS version }
@@ -1734,12 +2200,12 @@ Begin
   W4(0); W4(16);  { LoaderFlags, NumDataDir }
   W4(0); W4(0);   { export }
   W4(IDataRVA); W4(BinIDataSize); { import }
-  For I := 3 To 15 Do Begin W4(0); W4(0); End;
+  For I := 2 To 15 Do Begin W4(0); W4(0); End;
 
   { --- Section headers --- }
   SecHdr('.text',  BinCodeSize,  TextRVA,  TextRaw,  TextFOff,  $60000020);
-  SecHdr('.rdata', BinRDataSize, RDataRVA, RDataRaw, RDataFOff, $40000040);
-  SecHdr('.data',  BinDataSize,  DataRVA,  DataRaw,  DataFOff,  LongInt($C0000040));
+  SecHdr('.rdata', RDataVS, RDataRVA, RDataRaw, RDataFOff, $40000040);
+  SecHdr('.data',  DataVS,  DataRVA,  DataRaw,  DataFOff,  LongInt($C0000040));
   SecHdr('.idata', BinIDataSize, IDataRVA, IDataRaw, IDataFOff, LongInt($C0000040));
 
   PadTo(HEADERS_SIZE);
@@ -1801,7 +2267,7 @@ Begin
     WriteLn('SNOBCW32 - Cette commande permet de lancer le compilateur SNOBOL4 ',
           'pour l''assembleur du microprocesseur 80386 pour le systeme ',
           'd''exploitation Windows 32 bits (PE Win32).');
-    WriteLn;  
+    WriteLn;
     WriteLn('Usage : SNOBCW32 source[.sbl] [-obj] [-asm]');
     WriteLn('  (defaut) -> source.exe   PE32 autonome');
     WriteLn('  -obj     -> source.obj   COFF relocatable');
