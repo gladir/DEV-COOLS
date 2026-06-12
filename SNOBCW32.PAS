@@ -332,6 +332,9 @@ Const
   SK_SYS_IN      = 6;        { &INPUT }
   SK_SYS_TRIM    = 7;        { &TRIM }
   SK_SYS_ANCHOR  = 8;        { &ANCHOR }
+  { TODO 25 }
+  SK_SYS_STNO    = 9;        { &STNO : numero de statement courant }
+  SK_TABLE       = 10;       { tableau SNOBOL (TABLE()) }
 
 { ------------------------------------------------------------ }
 { Types                                                        }
@@ -611,6 +614,7 @@ Begin
   AddSym('&INPUT',  SK_SYS_IN);
   AddSym('&TRIM',   SK_SYS_TRIM);
   AddSym('&ANCHOR', SK_SYS_ANCHOR);
+  AddSym('&STNO',   SK_SYS_STNO);
 End;
 
 { ============================================================ }
@@ -634,6 +638,21 @@ Const
   TOK_AMPERS  = 13;   { & : prefixe de variable systeme }
   KW_DEFINE   = 14;   { DEFINE }
   KW_RETURN   = 15;   { RETURN }
+
+  { TODO 25 - tokens arithmetiques }
+  TOK_PLUS    = 16;   { + addition }
+  TOK_MINUS   = 17;   { - soustraction }
+  TOK_STAR    = 18;   { * multiplication }
+  TOK_SLASH   = 19;   { / division }
+
+  { TODO 25 - mots-cles de pattern avances }
+  KW_ARB      = 20;   { ARB    : match arbitraire }
+  KW_REM      = 21;   { REM    : reste de la chaine }
+  KW_SPAN     = 22;   { SPAN   : suite de chars d un ensemble }
+  KW_BREAK    = 23;   { BREAK  : jusqu a un char de l ensemble }
+  KW_ANY      = 24;   { ANY    : un char parmi un ensemble }
+  KW_NOTANY   = 25;   { NOTANY : un char hors de l ensemble }
+  KW_TABLE    = 26;   { TABLE  : creation de tableau associatif }
 
   LEX_TOKCAP  = 128;  { capacite du tampon de tokens par ligne }
 
@@ -744,6 +763,10 @@ Begin
     Else If Ch = ')' Then Begin AddTok(TOK_RPAREN, ')');  Inc(P); End
     Else If Ch = ',' Then Begin AddTok(TOK_COMMA,  ',');  Inc(P); End
     Else If Ch = '&' Then Begin AddTok(TOK_AMPERS, '&');  Inc(P); End
+    Else If Ch = '+' Then Begin AddTok(TOK_PLUS,   '+');  Inc(P); End
+    Else If Ch = '-' Then Begin AddTok(TOK_MINUS,  '-');  Inc(P); End
+    Else If Ch = '*' Then Begin AddTok(TOK_STAR,   '*');  Inc(P); End
+    Else If Ch = '/' Then Begin AddTok(TOK_SLASH,  '/');  Inc(P); End
     Else If Ch = '''' Then Begin
       Inc(P); T := '';
       While P <= L Do Begin
@@ -764,8 +787,15 @@ Begin
     Else If IsAlpha(Ch) Then Begin
       T := '';
       While (P <= L) And IsAlNum(S[P]) Do Begin T := T + S[P]; Inc(P); End;
-      If      T = 'DEFINE' Then AddTok(KW_DEFINE, T)
-      Else If T = 'RETURN' Then AddTok(KW_RETURN, T)
+      If      T = 'DEFINE'  Then AddTok(KW_DEFINE,  T)
+      Else If T = 'RETURN'  Then AddTok(KW_RETURN,  T)
+      Else If T = 'ARB'     Then AddTok(KW_ARB,     T)
+      Else If T = 'REM'     Then AddTok(KW_REM,     T)
+      Else If T = 'SPAN'    Then AddTok(KW_SPAN,    T)
+      Else If T = 'BREAK'   Then AddTok(KW_BREAK,   T)
+      Else If T = 'ANY'     Then AddTok(KW_ANY,     T)
+      Else If T = 'NOTANY'  Then AddTok(KW_NOTANY,  T)
+      Else If T = 'TABLE'   Then AddTok(KW_TABLE,   T)
       Else AddTok(TOK_IDENT, T);
     End
     Else Inc(P);
@@ -843,6 +873,12 @@ Const
   NK_GOTO_S   = 14;   { :S(label) }
   NK_GOTO_F   = 15;   { :F(label) }
   NK_SYSVAR   = 16;   { &KEYWORD }
+  { TODO 25 - noeuds supplementaires }
+  NK_ARITH    = 17;   { operation arithmetique Left op Right, Text = '+'/'-'/'*'/'/' }
+  NK_PATOP    = 18;   { operateur de pattern avance (ARB/REM/SPAN/BREAK/ANY/NOTANY) }
+  NK_TABLECRE = 19;   { creation TABLE() }
+  NK_TABLEGET = 20;   { lecture tableau T<key> }
+  NK_TABLESET = 21;   { ecriture tableau T<key> = val }
 
 { --- Helper : alloue un noeud AST -------------------- }
 Function NewNode(Kind, Tok: Integer; Const Text: String): Integer;
@@ -873,7 +909,9 @@ End;
 Function IsExprStart: Boolean;
 Begin
   IsExprStart := (CurTokType = TOK_STRING)  Or (CurTokType = TOK_INTEGER) Or
-                 (CurTokType = TOK_IDENT)   Or (CurTokType = TOK_AMPERS);
+                 (CurTokType = TOK_IDENT)   Or (CurTokType = TOK_AMPERS)  Or
+                 (CurTokType = KW_TABLE)    Or
+                 ((CurTokType >= KW_ARB) And (CurTokType <= KW_NOTANY));
 End;
 
 { --- ParseGoto : clauses :S(L) :F(L) :(L) ------------ }
@@ -950,17 +988,59 @@ Begin
         AstTable[N].SymRef := FindSym(FName, SK_VAR);
       ParseTerm := N;
     End;
+  End
+  Else If CurTokType = KW_TABLE Then Begin
+    { TABLE() : creation d un tableau SNOBOL }
+    LexNextToken;
+    N := NewNode(NK_TABLECRE, 0, '');
+    If CurTokType = TOK_LPAREN Then Begin
+      LexNextToken;
+      If CurTokType = TOK_RPAREN Then LexNextToken;
+    End;
+    ParseTerm := N;
+  End
+  Else If (CurTokType = KW_ARB)   Or (CurTokType = KW_REM)    Or
+          (CurTokType = KW_SPAN)  Or (CurTokType = KW_BREAK)  Or
+          (CurTokType = KW_ANY)   Or (CurTokType = KW_NOTANY) Then Begin
+    { Operateur de pattern avance : ARB | REM | SPAN(cs) | BREAK(cs) | ANY(cs) | NOTANY(cs) }
+    N := NewNode(NK_PATOP, CurTokType, CurTokStr);
+    LexNextToken;
+    If CurTokType = TOK_LPAREN Then Begin
+      LexNextToken;
+      If IsExprStart Then AstTable[N].Left := ParseExpr;
+      If CurTokType = TOK_RPAREN Then LexNextToken;
+    End;
+    ParseTerm := N;
   End;
 End;
 
-{ --- ParseExpr : terms juxtaposes = concatenation ------- }
+{ --- ParseArith : terme optionnellement suivi de +/-/*//) terme -- }
+Function ParseArith: Integer;
+Var Left, Right, OpNode: Integer;
+Begin
+  Left := ParseTerm;
+  If Left = 0 Then Begin ParseArith := 0; Exit; End;
+  While (CurTokType = TOK_PLUS) Or (CurTokType = TOK_MINUS) Or
+        (CurTokType = TOK_STAR) Or (CurTokType = TOK_SLASH) Do Begin
+    OpNode := NewNode(NK_ARITH, CurTokType, CurTokStr);
+    LexNextToken;
+    Right := ParseTerm;
+    If Right = 0 Then Break;
+    AstTable[OpNode].Left  := Left;
+    AstTable[OpNode].Right := Right;
+    Left := OpNode;
+  End;
+  ParseArith := Left;
+End;
+
+{ --- ParseExpr : termes juxtaposes (concatenation) avec arithmetique }
 Function ParseExpr: Integer;
 Var Left, Right, CatN: Integer;
 Begin
-  Left := ParseTerm;
+  Left := ParseArith;
   If Left = 0 Then Begin ParseExpr := 0; Exit; End;
   While IsExprStart Do Begin
-    Right := ParseTerm;
+    Right := ParseArith;
     If Right = 0 Then Break;
     CatN := NewNode(NK_CONCAT, 0, '');
     AstTable[CatN].Left  := Left;
@@ -1126,7 +1206,9 @@ Begin
     SK_SYS_OUT,
     SK_SYS_IN,
     SK_SYS_TRIM,
-    SK_SYS_ANCHOR: SymAsmName := '_SNS_' + S;
+    SK_SYS_ANCHOR,
+    SK_SYS_STNO:   SymAsmName := '_SNS_' + S;
+    SK_TABLE:      SymAsmName := '_SNT_' + S;
   Else
     SymAsmName := '_SNSYM_' + S;
   End;
@@ -3237,6 +3319,77 @@ Begin
 
   Close(OutF);
   WriteLn('SNOBCW32: ', FileName, ' ecrit (ASM MASM/JWASM)');
+End;
+
+{ ============================================================ }
+{ TODO 25 - EXTENSIONS FUTURES                                 }
+{ ============================================================ }
+
+{ --- Stub codegen : arithmetique directe (+, -, *, /) --------- }
+{ Protocole cdecl attendu (a implementer dans CodegenProgram) :
+    NK_ARITH, Text='+' : PUSH Right -> PUSH Left -> CALL _SNRT_str_add  -> ADD ESP,8
+    NK_ARITH, Text='-' : PUSH Right -> PUSH Left -> CALL _SNRT_str_sub  -> ADD ESP,8
+    NK_ARITH, Text='*' : PUSH Right -> PUSH Left -> CALL _SNRT_str_mul  -> ADD ESP,8
+    NK_ARITH, Text='/' : PUSH Right -> PUSH Left -> CALL _SNRT_str_div  -> ADD ESP,8
+  Chaque _SNRT_str_xxx(s1,s2) : str_to_int x2, operation, int_to_str -> EAX
+  Noms des imports runtime a enregistrer via BinAddImport('','_SNRT_str_add') etc. }
+Procedure BinCodegenArith(N: Integer);
+Begin
+  CompileError('arithmetique directe non implementee (TODO 25)');
+End;
+
+{ --- Stub codegen : operateurs de pattern avances ------------- }
+{ ARB    : _SNRT_pat_arb(subj) cdecl -> EAX=1 (match n importe quoi)
+  REM    : _SNRT_pat_rem(subj) cdecl -> EAX=1 (reste de la chaine)
+  SPAN   : _SNRT_pat_span(subj,cs) cdecl -> EAX=1/0 (1+ chars de l ensemble)
+  BREAK  : _SNRT_pat_break(subj,cs) cdecl -> EAX=1/0 (jusqu a un char cs)
+  ANY    : _SNRT_pat_any(subj,cs) cdecl -> EAX=1/0 (exactement 1 char de cs)
+  NOTANY : _SNRT_pat_notany(subj,cs) cdecl -> EAX=1/0 (1 char hors de cs)
+  L argument charset est le Left child du NK_PATOP (ou absent pour ARB/REM). }
+Procedure BinCodegenPatOp(N: Integer);
+Begin
+  CompileError('operateurs de pattern avances non implementes (TODO 25)');
+End;
+
+{ --- Stub codegen : tableau SNOBOL (TABLE) --------------------- }
+{ NK_TABLECRE : CALL _SNRT_table_new -> EAX = handle table heap
+  NK_TABLEGET : PUSH key -> PUSH handle -> CALL _SNRT_table_get -> EAX
+  NK_TABLESET : PUSH val -> PUSH key -> PUSH handle -> CALL _SNRT_table_set
+  _SNRT_table_new() -> EAX : alloue un tableau associatif (chaine->chaine)
+  _SNRT_table_get(handle,key) cdecl -> EAX = ptr valeur (ou _SN_EMPTY)
+  _SNRT_table_set(handle,key,val) cdecl }
+Procedure BinCodegenTable(N: Integer);
+Begin
+  CompileError('TABLE non implemente (TODO 25)');
+End;
+
+{ --- Stub codegen : &TRIM ------------------------------------- }
+{ A integrer dans la generation de &OUTPUT = expr (TODO 11) :
+    Apres BinCodegenExpr(expr) -> EAX = ptr chaine :
+      Si SysTrim : PUSH EAX ; CALL _SNRT_str_rtrim ; ADD ESP,4
+    _SNRT_str_rtrim(s) cdecl -> EAX = nouveau ptr sans espaces trailing }
+Procedure BinCodegenTrimOutput;
+Begin
+  { stub - activer SysTrim = True via &TRIM = '1' dans le source }
+End;
+
+{ --- Stub codegen : &ANCHOR ----------------------------------- }
+{ A integrer dans la generation de NK_PATTERN (TODO 12/18) :
+    Si SysAnchor : utiliser _SNRT_pat_match_anchored au lieu de _SNRT_pat_match
+    _SNRT_pat_match_anchored(subj,pat) cdecl -> EAX=1 si match en pos 0 seul }
+Procedure BinCodegenAnchorPattern;
+Begin
+  { stub - activer SysAnchor = True via &ANCHOR = '1' dans le source }
+End;
+
+{ --- Stub codegen : &STNO ------------------------------------- }
+{ Variable globale en .data : _SN_STNO DD 0
+  Incrementee par CodegenProgram avant chaque statement.
+  Lecture : MOV EAX,[_SN_STNO] ; CALL _SNRT_int_to_str -> EAX = ptr chaine
+  Emission dans .data : BinDefineLabel('_SN_STNO') ; BinEmit32(0) }
+Procedure BinCodegenStno;
+Begin
+  { stub - lecture de &STNO -> resultat EAX = ptr vers chaine du numero }
 End;
 
 { ============================================================ }
