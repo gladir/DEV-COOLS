@@ -7,23 +7,14 @@
   @license: MIT
 }
 
-{ ============================================================ }
-{ SNOBCW32.PAS - Compilateur SNOBOL4 -> 80386 PE Win32        }
-{ Free Pascal {$MODE TP}                                       }
-{ Usage : SNOBCW32 source.sbl [options]                       }
-{   (defaut)  -> source.exe  (PE32 autonome)                  }
-{   -obj      -> source.obj  (COFF relocatable)               }
-{   -asm      -> source.asm  (texte MASM/JWasm, optionnel)    }
-{ ============================================================ }
-{
-  TODO 01 - STRUCTURE GENERALE DU COMPILATEUR
+{  TODO 01 - STRUCTURE GENERALE DU COMPILATEUR
             Point d entree principal : lire les arguments de la ligne
               de commande, determiner le fichier source (.sbl),
               le mode de sortie (EXE par defaut, OBJ, ASM),
               et le nom du fichier de sortie (derive du source).
             Sections globales : constantes, types, variables,
               procedures du lexeur, du parseur et du codegen.
-            Organisation : {$MODE TP}, pas de classes ni de generiques.
+            Organisation : $MODE TP, pas de classes ni de generiques.
 
   TODO 02 - LEXER / ANALYSEUR LEXICAL
             Lecture ligne par ligne du source SNOBOL4.
@@ -277,7 +268,10 @@
 }
 
 Program SNOBCW32;
-{$MODE TP}
+
+{$IFDEF FPC}
+ {$MODE TP}
+{$ENDIF}
 
 { ============================================================ }
 { TODO 01 - STRUCTURE GENERALE DU COMPILATEUR                  }
