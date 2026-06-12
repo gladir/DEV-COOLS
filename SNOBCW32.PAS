@@ -2232,7 +2232,20 @@ Begin WriteLn('SNOBCW32: WriteASM non implemente'); End;
 Var
   I   : Integer;
   Arg : String;
-Begin
+
+BEGIN
+ If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
+   (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
+  WriteLn('SNOBCW32 - Cette commande permet de lancer le compilateur SNOBOL4 ',
+          'pour l''assembleur du microprocesseur 80386 pour le systeme ',
+          'd''exploitation Windows 32 bits (PE Win32).');
+  WriteLn;
+  WriteLn('Syntaxe : SNOBCW32 source[.sbl] [-obj] [-asm]');
+  WriteLn('  (defaut) -> source.exe   PE32 autonome');
+  WriteLn('  -obj     -> source.obj   COFF relocatable');
+  WriteLn('  -asm     -> source.asm   texte MASM/JWasm');
+  Halt;
+ End;
   WriteLn('SNOBCW32 v', SNB_VERSION, ' (', SNB_YEAR,
           ') - Compilateur SNOBOL4 -> 80386 PE Win32');
 
@@ -2264,11 +2277,7 @@ Begin
 
   { Source obligatoire }
   If SrcFile = '' Then Begin
-    WriteLn('SNOBCW32 - Cette commande permet de lancer le compilateur SNOBOL4 ',
-          'pour l''assembleur du microprocesseur 80386 pour le systeme ',
-          'd''exploitation Windows 32 bits (PE Win32).');
-    WriteLn;
-    WriteLn('Usage : SNOBCW32 source[.sbl] [-obj] [-asm]');
+    WriteLn('Syntaxe : SNOBCW32 source[.sbl] [-obj] [-asm]');
     WriteLn('  (defaut) -> source.exe   PE32 autonome');
     WriteLn('  -obj     -> source.obj   COFF relocatable');
     WriteLn('  -asm     -> source.asm   texte MASM/JWasm');
@@ -2317,4 +2326,4 @@ Begin
   If HasError Then Halt(1);
 
   WriteLn('SNOBCW32: ok');
-End.
+END.
