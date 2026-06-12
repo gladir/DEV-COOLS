@@ -332,6 +332,8 @@ Type
   TSym = Record
     Name    : String;
     Kind    : Integer;
+    Offset  : LongInt;      { offset runtime/codegen generique }
+    AsmName : String;       { nom ASM/PE stable }
     VarIdx  : Integer;      { index dans _SNV_TABLE (SK_VAR) }
     LblAddr : LongInt;      { adresse code compilee (SK_LABEL) }
     FuncLbl : String;       { label d entree (SK_FUNC) }
@@ -517,6 +519,15 @@ Procedure CodegenProgram;                       Forward;
 
 { TODO 08 : Sortie PE32 }
 Procedure WritePE(Const FileName: String);      Forward;
+Function  BinCurOffset: LongInt;                Forward;
+Procedure BinEmit8(B: Byte);                    Forward;
+Procedure BinDefineLabel(Const Name: String);   Forward;
+Function  BinAddImport(Const DllName, FuncName: String): Integer; Forward;
+Procedure BinMovRegImm32(R: Integer; V: LongInt); Forward;
+Procedure BinPushImm32(V: LongInt);             Forward;
+Procedure BinCallImport(Const FuncName: String); Forward;
+Procedure BinJmpLabel(Const Name: String);      Forward;
+Procedure BinJccLabel(CC: Integer; Const Name: String); Forward;
 
 { TODO 21 : Sortie OBJ COFF }
 Procedure WriteCOFF(Const FileName: String);    Forward;
@@ -549,6 +560,10 @@ Begin
   CurLineNum   := 0;
   HasError     := False;
   For I := 0 To MAX_VARS-1 Do VarNames[I] := '';
+  AddSym('&OUTPUT', SK_SYS_OUT);
+  AddSym('&INPUT',  SK_SYS_IN);
+  AddSym('&TRIM',   SK_SYS_TRIM);
+  AddSym('&ANCHOR', SK_SYS_ANCHOR);
 End;
 
 { ============================================================ }
@@ -862,6 +877,7 @@ Begin
     LexNextToken;
     If CurTokType = TOK_IDENT Then Begin
       N := NewNode(NK_SYSVAR, TOK_AMPERS, CurTokStr); LexNextToken;
+      AstTable[N].SymRef := FindSym('&' + AstTable[N].Text, -1);
     End Else N := NewNode(NK_SYSVAR, TOK_AMPERS, '');
     ParseTerm := N;
   End
@@ -883,6 +899,8 @@ Begin
       ParseTerm := N;
     End Else Begin
       N := NewNode(NK_VAR, TOK_IDENT, FName);
+      If GetOrAddVar(FName) >= 0 Then
+        AstTable[N].SymRef := FindSym(FName, SK_VAR);
       ParseTerm := N;
     End;
   End;
@@ -942,6 +960,7 @@ Begin
     If CurTokType = TOK_ASSIGN Then Begin
       LexNextToken; ExprN := ParseExpr;
       LhsN := NewNode(NK_SYSVAR, TOK_AMPERS, LhsName);
+      AstTable[LhsN].SymRef := FindSym('&' + LhsName, -1);
       AstTable[StmtN].Left  := LhsN;
       AstTable[StmtN].Right := ExprN;
       If LhsName = 'OUTPUT' Then AstTable[StmtN].Kind := NK_OUTPUT
@@ -950,6 +969,7 @@ Begin
       AstTable[StmtN].Kind := NK_INPUT
     Else Begin
       LhsN := NewNode(NK_SYSVAR, TOK_AMPERS, LhsName);
+      AstTable[LhsN].SymRef := FindSym('&' + LhsName, -1);
       AstTable[StmtN].Kind := NK_PATTERN; AstTable[StmtN].Left := LhsN;
     End;
     Exit;
@@ -959,9 +979,11 @@ Begin
   If (CurTokType = TOK_IDENT) And (PeekTokType = TOK_ASSIGN) Then Begin
     LhsName := CurTokStr; LexNextToken; { skip IDENT }
     LexNextToken; { skip = }
-    ExprN := ParseExpr;
-    LhsN := NewNode(NK_VAR, TOK_IDENT, LhsName);
-    AstTable[StmtN].Kind  := NK_ASSIGN;
+  ExprN := ParseExpr;
+  LhsN := NewNode(NK_VAR, TOK_IDENT, LhsName);
+  If GetOrAddVar(LhsName) >= 0 Then
+    AstTable[LhsN].SymRef := FindSym(LhsName, SK_VAR);
+  AstTable[StmtN].Kind  := NK_ASSIGN;
     AstTable[StmtN].Left  := LhsN;
     AstTable[StmtN].Right := ExprN;
     Exit;
@@ -1021,14 +1043,71 @@ End;
 { TODO 06 - TABLE DES SYMBOLES                                }
 { ============================================================ }
 
+Function SymUpper(Const S: String): String;
+Var I: Integer; R: String;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do
+    R[I] := UpCase(R[I]);
+  SymUpper := R;
+End;
+
+Function SymAsmSafe(Const S: String): String;
+Var I: Integer; C: Char; R: String;
+Begin
+  R := '';
+  For I := 1 To Length(S) Do Begin
+    C := UpCase(S[I]);
+    If ((C >= 'A') And (C <= 'Z')) Or ((C >= '0') And (C <= '9')) Then
+      R := R + C
+    Else
+      R := R + '_';
+  End;
+  If R = '' Then R := 'NONAME';
+  SymAsmSafe := R;
+End;
+
+Function SymAsmName(Const Name: String; Kind: Integer; VarIdx: Integer): String;
+Var S: String;
+Begin
+  S := SymAsmSafe(Name);
+  Case Kind Of
+    SK_VAR:        SymAsmName := '_SNV_' + IntToStr(VarIdx) + '_' + S;
+    SK_LABEL:      SymAsmName := '_SNL_' + S;
+    SK_FUNC:       SymAsmName := '_SNF_' + S;
+    SK_PARAM:      SymAsmName := '_SNP_' + S;
+    SK_SYS_OUT,
+    SK_SYS_IN,
+    SK_SYS_TRIM,
+    SK_SYS_ANCHOR: SymAsmName := '_SNS_' + S;
+  Else
+    SymAsmName := '_SNSYM_' + S;
+  End;
+End;
+
+Procedure ClearSym(I: Integer);
+Var K: Integer;
+Begin
+  SymTable[I].Name     := '';
+  SymTable[I].Kind     := SK_NONE;
+  SymTable[I].Offset   := 0;
+  SymTable[I].AsmName  := '';
+  SymTable[I].VarIdx   := -1;
+  SymTable[I].LblAddr  := -1;
+  SymTable[I].FuncLbl  := '';
+  SymTable[I].ParamCnt := 0;
+  For K := 0 To 7 Do SymTable[I].Params[K] := '';
+End;
+
 { FindSym : cherche un symbole par nom et kind.
   Kind = -1 accepte tout kind. Retourne l index ou -1. }
 Function FindSym(Const Name: String; Kind: Integer): Integer;
-Var I: Integer;
+Var I: Integer; U: String;
 Begin
+  U := SymUpper(Name);
   FindSym := -1;
   For I := 0 To SymCount - 1 Do
-    If SymTable[I].Name = Name Then
+    If SymTable[I].Name = U Then
       If (Kind = -1) Or (SymTable[I].Kind = Kind) Then Begin
         FindSym := I; Exit;
       End;
@@ -1036,18 +1115,23 @@ End;
 
 { AddSym : ajoute une entree dans SymTable. Retourne l index ou -1. }
 Function AddSym(Const Name: String; Kind: Integer): Integer;
-Var I: Integer;
+Var I, Existing: Integer; U: String;
 Begin
+  U := SymUpper(Name);
+  Existing := FindSym(U, Kind);
+  If Existing >= 0 Then Begin AddSym := Existing; Exit; End;
   If SymCount >= MAX_SYM Then Begin
     CompileError('table des symboles pleine'); AddSym := -1; Exit;
   End;
   I := SymCount; Inc(SymCount);
-  SymTable[I].Name     := Name;
+  ClearSym(I);
+  SymTable[I].Name     := U;
   SymTable[I].Kind     := Kind;
-  SymTable[I].VarIdx   := -1;
-  SymTable[I].LblAddr  := -1;
-  SymTable[I].FuncLbl  := '';
-  SymTable[I].ParamCnt := 0;
+  SymTable[I].AsmName  := SymAsmName(U, Kind, 0);
+  If Kind = SK_LABEL Then
+    SymTable[I].FuncLbl := SymTable[I].AsmName
+  Else If Kind = SK_FUNC Then
+    SymTable[I].FuncLbl := '_SNL_' + SymAsmSafe(U);
   AddSym := I;
 End;
 
@@ -1064,7 +1148,9 @@ Begin
     CompileError('trop de variables'); GetOrAddVar := -1; Exit;
   End;
   SymTable[SI].VarIdx  := VarCount;
-  VarNames[VarCount]   := Name;
+  SymTable[SI].Offset  := VarCount * 4;
+  SymTable[SI].AsmName := SymAsmName(SymTable[SI].Name, SK_VAR, VarCount);
+  VarNames[VarCount]   := SymTable[SI].Name;
   Inc(VarCount);
   GetOrAddVar := SymTable[SI].VarIdx;
 End;
@@ -1138,10 +1224,10 @@ Begin
           If FName <> '' Then Begin
             If FindSym(FName, SK_FUNC) < 0 Then Begin
               SI := AddSym(FName, SK_FUNC);
-              SymTable[SI].FuncLbl  := '_SNL_' + FName;
+              SymTable[SI].FuncLbl  := '_SNL_' + SymAsmSafe(FName);
               SymTable[SI].ParamCnt := ParamCnt;
               For K := 0 To ParamCnt - 1 Do
-                SymTable[SI].Params[K] := Params[K];
+                SymTable[SI].Params[K] := SymUpper(Params[K]);
               { Enregistrer aussi le label d entree de la fonction }
               If FindSym(FName, SK_LABEL) < 0 Then Begin
                 SI := AddSym(FName, SK_LABEL);
@@ -1158,7 +1244,89 @@ Begin
   { Pas de LexRewind ici : ParseProgram le fait a son debut }
 End;
 
-Procedure CodegenProgram; Begin End;  { TODO 07 passe 2 }
+Function CodegenLabelName(Const Name: String): String;
+Begin
+  CodegenLabelName := '_SNL_' + SymAsmSafe(Name);
+End;
+
+Procedure CodegenDefineStmtLabel(Node: Integer);
+Var SI: Integer; Lbl: String;
+Begin
+  If AstTable[Node].Text = '' Then Exit;
+  Lbl := CodegenLabelName(AstTable[Node].Text);
+  BinDefineLabel(Lbl);
+  SI := FindSym(AstTable[Node].Text, SK_LABEL);
+  If SI >= 0 Then Begin
+    SymTable[SI].LblAddr := BinCurOffset;
+    SymTable[SI].AsmName := Lbl;
+    SymTable[SI].FuncLbl := Lbl;
+  End;
+End;
+
+Function CodegenCheckLabel(Const Name: String): Boolean;
+Begin
+  CodegenCheckLabel := True;
+  If Name = '' Then Begin CodegenCheckLabel := False; Exit; End;
+  If FindSym(Name, SK_LABEL) < 0 Then Begin
+    CompileError('label reference mais non defini : ' + Name);
+    CodegenCheckLabel := False;
+  End;
+End;
+
+Procedure CodegenEmitGoto(Node: Integer);
+Var HasTest: Boolean;
+Begin
+  If AstTable[Node].GotoU <> '' Then Begin
+    If CodegenCheckLabel(AstTable[Node].GotoU) Then
+      BinJmpLabel(CodegenLabelName(AstTable[Node].GotoU));
+    Exit;
+  End;
+
+  HasTest := (AstTable[Node].GotoS <> '') Or (AstTable[Node].GotoF <> '');
+  If HasTest Then Begin
+    BinEmit8($85); BinEmit8($C0); { TEST EAX,EAX }
+  End;
+  If AstTable[Node].GotoS <> '' Then
+    If CodegenCheckLabel(AstTable[Node].GotoS) Then
+      BinJccLabel(5, CodegenLabelName(AstTable[Node].GotoS));
+  If AstTable[Node].GotoF <> '' Then
+    If CodegenCheckLabel(AstTable[Node].GotoF) Then
+      BinJccLabel(4, CodegenLabelName(AstTable[Node].GotoF));
+End;
+
+Procedure CodegenStmt(Node: Integer);
+Begin
+  CodegenDefineStmtLabel(Node);
+
+  { TODO 17-19 emettront les vraies operations SNOBOL.
+    Pour la passe 2, chaque instruction laisse EAX=1 (succes). }
+  If AstTable[Node].Kind <> NK_STMT Then
+    BinMovRegImm32(0, 1);
+
+  CodegenEmitGoto(Node);
+End;
+
+{ CodegenProgram : passe 2 - parcours l AST et genere le squelette binaire. }
+Procedure CodegenProgram;
+Var Ch, Dummy: Integer;
+Begin
+  BinCurSec := BIN_SEC_TEXT;
+  Dummy := BinAddImport('kernel32.dll', 'ExitProcess');
+  If Dummy < 0 Then Begin
+    CompileError('table des imports pleine');
+    Exit;
+  End;
+
+  BinDefineLabel('_SNSTART');
+  Ch := AstTable[AstRoot].FirstChild;
+  While Ch <> 0 Do Begin
+    CodegenStmt(Ch);
+    Ch := AstTable[Ch].NextSibling;
+  End;
+
+  BinPushImm32(0);
+  BinCallImport('ExitProcess');
+End;
 
 { ============================================================ }
 { TODO 08 - CONSTANTES x86/PE, PRIMITIVES BINAIRES, WritePE   }
@@ -1669,6 +1837,8 @@ Begin
 
   { Passe 2 : parsing + generation de code }
   ParseProgram;
+  If HasError Then Halt(1);
+  CodegenProgram;
   If HasError Then Halt(1);
 
   { Emission du fichier de sortie }
