@@ -348,6 +348,10 @@ Type
     FuncLbl : String;       { label d entree (SK_FUNC) }
     ParamCnt: Integer;      { nb de parametres (SK_FUNC) }
     Params  : Array[0..7] Of String;
+    RefCnt  : Integer;      { references labels / lectures variables }
+    Assigned: Boolean;      { variable deja affectee }
+    Warned  : Boolean;      { avertissement deja emis }
+    DeclLine: Integer;      { ligne de declaration }
   End;
 
   { Noeud AST }
@@ -398,6 +402,8 @@ Var
   OutFile      : String;
   OutMode      : Integer;
   HasError     : Boolean;
+  ErrorCount   : Integer;
+  WarnCount    : Integer;
 
   { Table des symboles }
   SymTable     : Array[0..MAX_SYM-1]    Of TSym;
@@ -443,6 +449,7 @@ Var
 
   { Ligne source courante (diagnostics) }
   CurLineNum   : Integer;
+  CodegenCurrentFunc : String;
 
 { ============================================================ }
 { Utilitaires generaux                                         }
@@ -498,11 +505,13 @@ Procedure CompileError(Const Msg: String);
 Begin
   WriteLn('SNOBCW32: erreur ligne ', CurLineNum, ': ', Msg);
   HasError := True;
+  Inc(ErrorCount);
 End;
 
 Procedure CompileWarn(Const Msg: String);
 Begin
   WriteLn('SNOBCW32: avertissement ligne ', CurLineNum, ': ', Msg);
+  Inc(WarnCount);
 End;
 
 { ============================================================ }
@@ -532,8 +541,16 @@ Function  BinCurOffset: LongInt;                Forward;
 Procedure BinEmit8(B: Byte);                    Forward;
 Procedure BinDefineLabel(Const Name: String);   Forward;
 Function  BinAddImport(Const DllName, FuncName: String): Integer; Forward;
+Procedure BinRegisterKernel32Imports;             Forward;
 Procedure BinMovRegImm32(R: Integer; V: LongInt); Forward;
+Procedure BinMovRegLabel(R: Integer; Const Name: String); Forward;
+Procedure BinMovRegReg(Dst, Src: Integer);      Forward;
+Procedure BinPushReg(R: Integer);               Forward;
+Procedure BinPopReg(R: Integer);                Forward;
+Procedure BinRet;                               Forward;
 Procedure BinPushImm32(V: LongInt);             Forward;
+Procedure BinAddEspImm8(N: Integer);            Forward;
+Procedure BinCallLabel(Const Name: String);     Forward;
 Procedure BinCallImport(Const FuncName: String); Forward;
 Procedure BinJmpLabel(Const Name: String);      Forward;
 Procedure BinJccLabel(CC: Integer; Const Name: String); Forward;
@@ -543,6 +560,18 @@ Procedure EmitRuntimeMemory;                    Forward;
 
 { TODO 10 : Runtime operations chaines }
 Procedure EmitRuntimeStrings;                   Forward;
+
+{ TODO 11 : Runtime entrees / sorties }
+Procedure EmitRuntimeIO;                        Forward;
+
+{ TODO 12 : Runtime pattern matching }
+Procedure EmitRuntimePattern;                   Forward;
+
+{ TODO 13 : Runtime predicats numeriques }
+Procedure EmitRuntimeNumericPredicates;         Forward;
+
+{ TODO 14 : Runtime predicats de chaines }
+Procedure EmitRuntimeStringPredicates;          Forward;
 
 { TODO 21 : Sortie OBJ COFF }
 Procedure WriteCOFF(Const FileName: String);    Forward;
@@ -573,7 +602,10 @@ Begin
   SysAnchor    := False;
   SysTrim      := False;
   CurLineNum   := 0;
+  CodegenCurrentFunc := '';
   HasError     := False;
+  ErrorCount   := 0;
+  WarnCount    := 0;
   For I := 0 To MAX_VARS-1 Do VarNames[I] := '';
   AddSym('&OUTPUT', SK_SYS_OUT);
   AddSym('&INPUT',  SK_SYS_IN);
@@ -1111,6 +1143,10 @@ Begin
   SymTable[I].LblAddr  := -1;
   SymTable[I].FuncLbl  := '';
   SymTable[I].ParamCnt := 0;
+  SymTable[I].RefCnt   := 0;
+  SymTable[I].Assigned := False;
+  SymTable[I].Warned   := False;
+  SymTable[I].DeclLine := 0;
   For K := 0 To 7 Do SymTable[I].Params[K] := '';
 End;
 
@@ -1143,6 +1179,7 @@ Begin
   SymTable[I].Name     := U;
   SymTable[I].Kind     := Kind;
   SymTable[I].AsmName  := SymAsmName(U, Kind, 0);
+  SymTable[I].DeclLine := CurLineNum;
   If Kind = SK_LABEL Then
     SymTable[I].FuncLbl := SymTable[I].AsmName
   Else If Kind = SK_FUNC Then
@@ -1231,29 +1268,46 @@ Begin
     { DEFINE('NOM(P1,P2,...)') }
     If CurTokType = KW_DEFINE Then Begin
       LexNextToken;
-      If CurTokType = TOK_LPAREN Then Begin
-        LexNextToken;
-        If (CurTokType = TOK_STRING) Or (CurTokType = TOK_IDENT) Then Begin
-          Proto := CurTokStr; LexNextToken;
-          ParseDefineProto(Proto, FName, ParamCnt, Params);
-          If FName <> '' Then Begin
-            If FindSym(FName, SK_FUNC) < 0 Then Begin
-              SI := AddSym(FName, SK_FUNC);
-              SymTable[SI].FuncLbl  := '_SNL_' + SymAsmSafe(FName);
-              SymTable[SI].ParamCnt := ParamCnt;
-              For K := 0 To ParamCnt - 1 Do
-                SymTable[SI].Params[K] := SymUpper(Params[K]);
-              { Enregistrer aussi le label d entree de la fonction }
-              If FindSym(FName, SK_LABEL) < 0 Then Begin
-                SI := AddSym(FName, SK_LABEL);
-              End;
-            End
-            Else
-              CompileWarn('fonction deja definie : ' + FName);
-          End;
-        End;
-        If CurTokType = TOK_RPAREN Then LexNextToken;
+      If CurTokType <> TOK_LPAREN Then Begin
+        CompileError('DEFINE mal forme : parenthese ouvrante attendue');
+        Exit;
       End;
+      LexNextToken;
+      If Not ((CurTokType = TOK_STRING) Or (CurTokType = TOK_IDENT)) Then Begin
+        CompileError('DEFINE mal forme : prototype attendu');
+        Exit;
+      End;
+      Proto := CurTokStr; LexNextToken;
+      ParseDefineProto(Proto, FName, ParamCnt, Params);
+      If FName = '' Then Begin
+        CompileError('DEFINE mal forme : prototype invalide');
+        Exit;
+      End;
+      If CurTokType <> TOK_RPAREN Then Begin
+        CompileError('DEFINE mal forme : parenthese fermante attendue');
+        Exit;
+      End;
+      LexNextToken;
+
+      If FindSym(FName, SK_FUNC) < 0 Then Begin
+        SI := AddSym(FName, SK_FUNC);
+        SymTable[SI].FuncLbl  := '_SNL_' + SymAsmSafe(FName);
+        SymTable[SI].ParamCnt := ParamCnt;
+        For K := 0 To ParamCnt - 1 Do
+          SymTable[SI].Params[K] := SymUpper(Params[K]);
+        GetOrAddVar(FName);
+        For K := 0 To ParamCnt - 1 Do Begin
+          GetOrAddVar(Params[K]);
+          SI := FindSym(Params[K], SK_VAR);
+          If SI >= 0 Then SymTable[SI].Assigned := True;
+        End;
+        { Enregistrer aussi le label d entree de la fonction }
+        If FindSym(FName, SK_LABEL) < 0 Then Begin
+          SI := AddSym(FName, SK_LABEL);
+        End;
+      End
+      Else
+        CompileWarn('fonction deja definie : ' + FName);
     End;
   End;
   { Pas de LexRewind ici : ParseProgram le fait a son debut }
@@ -1276,6 +1330,8 @@ Begin
     SymTable[SI].AsmName := Lbl;
     SymTable[SI].FuncLbl := Lbl;
   End;
+  If FindSym(AstTable[Node].Text, SK_FUNC) >= 0 Then
+    CodegenCurrentFunc := SymUpper(AstTable[Node].Text);
 End;
 
 Function CodegenCheckLabel(Const Name: String): Boolean;
@@ -1285,6 +1341,9 @@ Begin
   If FindSym(Name, SK_LABEL) < 0 Then Begin
     CompileError('label reference mais non defini : ' + Name);
     CodegenCheckLabel := False;
+  End Else Begin
+    SymTable[FindSym(Name, SK_LABEL)].RefCnt :=
+      SymTable[FindSym(Name, SK_LABEL)].RefCnt + 1;
   End;
 End;
 
@@ -1303,45 +1362,245 @@ Begin
   End;
   If AstTable[Node].GotoS <> '' Then
     If CodegenCheckLabel(AstTable[Node].GotoS) Then
-      BinJccLabel(5, CodegenLabelName(AstTable[Node].GotoS));
+      BinJccLabel(5, CodegenLabelName(AstTable[Node].GotoS)); { JNZ }
   If AstTable[Node].GotoF <> '' Then
     If CodegenCheckLabel(AstTable[Node].GotoF) Then
-      BinJccLabel(4, CodegenLabelName(AstTable[Node].GotoF));
+      BinJccLabel(4, CodegenLabelName(AstTable[Node].GotoF)); { JZ }
+End;
+
+Function CodegenNewLocalLabel(Const Prefix: String): String;
+Begin
+  Inc(BinPLKCount);
+  CodegenNewLocalLabel := Prefix + IntToStr(BinPLKCount);
+End;
+
+Function CodegenEmitStringLiteral(Const S: String): String;
+Var
+  OldSec : Integer;
+  I      : Integer;
+  Lbl    : String;
+Begin
+  Lbl := CodegenNewLocalLabel('_SNR_STR_');
+  OldSec := BinCurSec;
+  BinCurSec := BIN_SEC_RDATA;
+  BinDefineLabel(Lbl);
+  For I := 1 To Length(S) Do
+    BinEmit8(Ord(S[I]));
+  BinEmit8(0);
+  BinCurSec := OldSec;
+  CodegenEmitStringLiteral := Lbl;
+End;
+
+Procedure CodegenExpr(Node: Integer);
+Var
+  Lbl       : String;
+  SI, FSI, PSI : Integer;
+  Arg1, Arg2: Integer;
+  ParamIdx  : Integer;
+Begin
+  If Node = 0 Then Begin
+    BinMovRegLabel(0, '_SN_EMPTY');
+    Exit;
+  End;
+
+  Case AstTable[Node].Kind Of
+    NK_LITERAL:
+      Begin
+        Lbl := CodegenEmitStringLiteral(AstTable[Node].Text);
+        BinMovRegLabel(0, Lbl);
+      End;
+
+    NK_VAR:
+      Begin
+        SI := AstTable[Node].SymRef;
+        If SI >= 0 Then Begin
+          Inc(SymTable[SI].RefCnt);
+          If (Not SymTable[SI].Assigned) And (Not SymTable[SI].Warned) Then Begin
+            CompileWarn('variable lue avant affectation : ' + SymTable[SI].Name);
+            SymTable[SI].Warned := True;
+          End;
+          BinPushImm32(SymTable[SI].VarIdx);
+          BinCallLabel('_SNRT_var_get');
+          BinAddEspImm8(4);
+        End Else
+          BinMovRegLabel(0, '_SN_EMPTY');
+      End;
+
+    NK_SYSVAR:
+      Begin
+        If SymUpper(AstTable[Node].Text) = 'INPUT' Then
+          BinCallLabel('_SNRT_input')
+        Else
+          BinMovRegLabel(0, '_SN_EMPTY');
+      End;
+
+    NK_CONCAT:
+      Begin
+        CodegenExpr(AstTable[Node].Left);
+        BinPushReg(0);
+        CodegenExpr(AstTable[Node].Right);
+        BinMovRegReg(1, 0);
+        BinPopReg(0);
+        BinPushReg(1);
+        BinPushReg(0);
+        BinCallLabel('_SNRT_str_concat');
+        BinAddEspImm8(8);
+      End;
+
+    NK_CALL:
+      Begin
+        Lbl := '';
+        If SymUpper(AstTable[Node].Text) = 'LT' Then Lbl := '_SNRT_pred_lt'
+        Else If SymUpper(AstTable[Node].Text) = 'LE' Then Lbl := '_SNRT_pred_le'
+        Else If SymUpper(AstTable[Node].Text) = 'GT' Then Lbl := '_SNRT_pred_gt'
+        Else If SymUpper(AstTable[Node].Text) = 'GE' Then Lbl := '_SNRT_pred_ge'
+        Else If SymUpper(AstTable[Node].Text) = 'EQ' Then Lbl := '_SNRT_pred_eq'
+        Else If SymUpper(AstTable[Node].Text) = 'NE' Then Lbl := '_SNRT_pred_ne'
+        Else If SymUpper(AstTable[Node].Text) = 'IDENT' Then Lbl := '_SNRT_ident'
+        Else If SymUpper(AstTable[Node].Text) = 'DIFFER' Then Lbl := '_SNRT_differ';
+
+        If Lbl <> '' Then Begin
+          Arg1 := AstTable[Node].FirstChild;
+          If Arg1 <> 0 Then Arg2 := AstTable[Arg1].NextSibling Else Arg2 := 0;
+          CodegenExpr(Arg2);
+          BinPushReg(0);
+          CodegenExpr(Arg1);
+          BinPushReg(0);
+          BinCallLabel(Lbl);
+          BinAddEspImm8(8);
+        End Else If SymUpper(AstTable[Node].Text) = 'SIZE' Then Begin
+          Arg1 := AstTable[Node].FirstChild;
+          CodegenExpr(Arg1);
+          BinPushReg(0);
+          BinCallLabel('_SNRT_size');
+          BinAddEspImm8(4);
+        End Else Begin
+          FSI := FindSym(AstTable[Node].Text, SK_FUNC);
+          If FSI >= 0 Then Begin
+            Arg1 := AstTable[Node].FirstChild;
+            ParamIdx := 0;
+            While (Arg1 <> 0) And (ParamIdx < SymTable[FSI].ParamCnt) Do Begin
+              PSI := FindSym(SymTable[FSI].Params[ParamIdx], SK_VAR);
+              CodegenExpr(Arg1);
+              If PSI >= 0 Then Begin
+                BinPushReg(0);
+                BinPushImm32(SymTable[PSI].VarIdx);
+                BinCallLabel('_SNRT_var_set');
+                BinAddEspImm8(8);
+                SymTable[PSI].Assigned := True;
+              End;
+              Arg1 := AstTable[Arg1].NextSibling;
+              Inc(ParamIdx);
+            End;
+            PSI := FindSym(AstTable[Node].Text, SK_LABEL);
+            If PSI >= 0 Then Inc(SymTable[PSI].RefCnt);
+            BinCallLabel(SymTable[FSI].FuncLbl);
+            SI := FindSym(AstTable[Node].Text, SK_VAR);
+            If SI >= 0 Then Begin
+              BinPushImm32(SymTable[SI].VarIdx);
+              BinCallLabel('_SNRT_var_get');
+              BinAddEspImm8(4);
+            End Else
+              BinMovRegLabel(0, '_SN_EMPTY');
+          End Else
+            BinMovRegLabel(0, '_SN_EMPTY');
+        End;
+      End;
+
+    Else
+      BinMovRegLabel(0, '_SN_EMPTY');
+  End;
 End;
 
 Procedure CodegenStmt(Node: Integer);
+Var SI: Integer;
 Begin
+  CurLineNum := AstTable[Node].Line;
   CodegenDefineStmtLabel(Node);
 
-  { TODO 17-19 emettront les vraies operations SNOBOL.
-    Pour la passe 2, chaque instruction laisse EAX=1 (succes). }
-  If AstTable[Node].Kind <> NK_STMT Then
+  If AstTable[Node].Kind = NK_OUTPUT Then Begin
+    CodegenExpr(AstTable[Node].Right);
+    BinPushReg(0);
+    BinCallLabel('_SNRT_output');
+    BinAddEspImm8(4);
+  End
+  Else If AstTable[Node].Kind = NK_PATTERN Then Begin
+    If (AstTable[Node].Left <> 0) And
+       (AstTable[Node].Right = 0) And
+       (AstTable[AstTable[Node].Left].Kind = NK_CALL) Then
+      CodegenExpr(AstTable[Node].Left)
+    Else Begin
+      CodegenExpr(AstTable[Node].Right);
+      BinPushReg(0);
+      CodegenExpr(AstTable[Node].Left);
+      BinPushReg(0);
+      BinCallLabel('_SNRT_pat_match');
+      BinAddEspImm8(8);
+    End;
+  End
+  Else If AstTable[Node].Kind = NK_ASSIGN Then Begin
+    CodegenExpr(AstTable[Node].Right);
+    If AstTable[Node].Left <> 0 Then Begin
+      SI := AstTable[AstTable[Node].Left].SymRef;
+      If (SI >= 0) And (SymTable[SI].Kind = SK_VAR) Then Begin
+        BinPushReg(0);
+        BinPushImm32(SymTable[SI].VarIdx);
+        BinCallLabel('_SNRT_var_set');
+        BinAddEspImm8(8);
+        SymTable[SI].Assigned := True;
+      End;
+    End;
+    BinMovRegImm32(0, 1);
+  End
+  Else If AstTable[Node].Kind = NK_RETURN Then Begin
+    If CodegenCurrentFunc = '' Then
+      CompileWarn('RETURN hors fonction');
+    If AstTable[Node].Left <> 0 Then Begin
+      CodegenExpr(AstTable[Node].Left);
+      If CodegenCurrentFunc <> '' Then Begin
+        SI := FindSym(CodegenCurrentFunc, SK_VAR);
+        If SI >= 0 Then Begin
+          BinPushReg(0);
+          BinPushImm32(SymTable[SI].VarIdx);
+          BinCallLabel('_SNRT_var_set');
+          BinAddEspImm8(8);
+          SymTable[SI].Assigned := True;
+        End;
+      End;
+    End;
+    BinRet;
+    Exit;
+  End
+  Else If AstTable[Node].Kind <> NK_STMT Then
     BinMovRegImm32(0, 1);
 
   CodegenEmitGoto(Node);
 End;
 
+Procedure WarnUnusedLabels;
+Var I: Integer;
+Begin
+  For I := 0 To SymCount - 1 Do
+    If (SymTable[I].Kind = SK_LABEL) And (SymTable[I].RefCnt = 0) Then Begin
+      CurLineNum := SymTable[I].DeclLine;
+      CompileWarn('label defini mais jamais reference : ' + SymTable[I].Name);
+    End;
+End;
+
 { CodegenProgram : passe 2 - parcours l AST et genere le squelette binaire. }
 Procedure CodegenProgram;
-Var Ch, Dummy: Integer;
+Var Ch: Integer;
 Begin
   BinCurSec := BIN_SEC_TEXT;
-  Dummy := BinAddImport('kernel32.dll', 'ExitProcess');
-  If Dummy < 0 Then Begin
-    CompileError('table des imports pleine');
-    Exit;
-  End;
-  If BinAddImport('kernel32.dll', 'GetProcessHeap') < 0 Then Begin
-    CompileError('table des imports pleine');
-    Exit;
-  End;
-  If BinAddImport('kernel32.dll', 'HeapAlloc') < 0 Then Begin
-    CompileError('table des imports pleine');
-    Exit;
-  End;
+  BinRegisterKernel32Imports;
+  If HasError Then Exit;
 
   EmitRuntimeMemory;
   EmitRuntimeStrings;
+  EmitRuntimeIO;
+  EmitRuntimePattern;
+  EmitRuntimeNumericPredicates;
+  EmitRuntimeStringPredicates;
   BinDefineLabel('_SNSTART');
   Ch := AstTable[AstRoot].FirstChild;
   While Ch <> 0 Do Begin
@@ -1351,6 +1610,7 @@ Begin
 
   BinPushImm32(0);
   BinCallImport('ExitProcess');
+  WarnUnusedLabels;
 End;
 
 { ============================================================ }
@@ -1437,7 +1697,8 @@ Function BinAddImport(Const DllName, FuncName: String): Integer;
 Var I: Integer;
 Begin
   For I := 0 To ImportCount - 1 Do
-    If ImportTable[I].FuncName = FuncName Then Begin BinAddImport := I; Exit; End;
+    If (ImportTable[I].DllName = DllName) And
+       (ImportTable[I].FuncName = FuncName) Then Begin BinAddImport := I; Exit; End;
   If ImportCount >= MAX_IMPORTS Then Begin BinAddImport := -1; Exit; End;
   I := ImportCount; Inc(ImportCount);
   ImportTable[I].DllName  := DllName;
@@ -1445,6 +1706,17 @@ Begin
   ImportTable[I].IATOff   := -1;
   ImportTable[I].LabelNm  := '__imp__' + FuncName;
   BinAddImport := I;
+End;
+
+Procedure BinRegisterKernel32Imports;
+Begin
+  If BinAddImport('kernel32.dll', 'ExitProcess') < 0 Then Begin CompileError('table des imports pleine'); Exit; End;
+  If BinAddImport('kernel32.dll', 'GetProcessHeap') < 0 Then Begin CompileError('table des imports pleine'); Exit; End;
+  If BinAddImport('kernel32.dll', 'HeapAlloc') < 0 Then Begin CompileError('table des imports pleine'); Exit; End;
+  If BinAddImport('kernel32.dll', 'HeapFree') < 0 Then Begin CompileError('table des imports pleine'); Exit; End;
+  If BinAddImport('kernel32.dll', 'GetStdHandle') < 0 Then Begin CompileError('table des imports pleine'); Exit; End;
+  If BinAddImport('kernel32.dll', 'WriteFile') < 0 Then Begin CompileError('table des imports pleine'); Exit; End;
+  If BinAddImport('kernel32.dll', 'ReadFile') < 0 Then Begin CompileError('table des imports pleine'); Exit; End;
 End;
 
 { ============================================================ }
@@ -1479,6 +1751,10 @@ Begin BinEmit8($E8); BinEmitRef32(Name, BIN_FIX_REL32); End;
 { CALL [__imp__FuncName]  (FF 15 <abs-va-iat-entry>) }
 Procedure BinCallImport(Const FuncName: String);
 Begin
+  If BinAddImport('kernel32.dll', FuncName) < 0 Then Begin
+    CompileError('table des imports pleine');
+    Exit;
+  End;
   BinEmit8($FF); BinEmit8($15);
   BinEmitRef32('__imp__' + FuncName, BIN_FIX_IMP32);
 End;
@@ -1948,6 +2224,353 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 11 - RUNTIME EMBARQUE : ENTREES / SORTIES               }
+{ ============================================================ }
+
+Procedure BinMovRegAbsLabel(R: Integer; Const Name: String);
+Begin
+  If R = REG_EAX Then Begin
+    BinEmit8($A1);
+    BinEmitRef32(Name, BIN_FIX_ABS32);
+  End Else Begin
+    BinEmit8($8B);
+    BinEmit8(Byte($05 Or ((R And 7) Shl 3)));
+    BinEmitRef32(Name, BIN_FIX_ABS32);
+  End;
+End;
+
+Procedure BinMovAbsLabelReg(Const Name: String; R: Integer);
+Begin
+  If R = REG_EAX Then Begin
+    BinEmit8($A3);
+    BinEmitRef32(Name, BIN_FIX_ABS32);
+  End Else Begin
+    BinEmit8($89);
+    BinEmit8(Byte($05 Or ((R And 7) Shl 3)));
+    BinEmitRef32(Name, BIN_FIX_ABS32);
+  End;
+End;
+
+Procedure BinPushAbsLabel(Const Name: String);
+Begin
+  BinEmit8($FF); BinEmit8($35);
+  BinEmitRef32(Name, BIN_FIX_ABS32);
+End;
+
+Procedure BinCmpRegReg(Left, Right: Integer);
+Begin BinEmit8($39); BinEmit8(Byte($C0 Or ((Right And 7) Shl 3) Or (Left And 7))); End;
+
+Procedure BinMovDlMemSibEsiEax;
+Begin BinEmit8($8A); BinEmit8($14); BinEmit8($06); End;
+
+Procedure BinCmpDlImm8(V: Byte);
+Begin BinEmit8($80); BinEmit8($FA); BinEmit8(V); End;
+
+Procedure BinMovByteMemSibEsiEaxImm8(V: Byte);
+Begin BinEmit8($C6); BinEmit8($04); BinEmit8($06); BinEmit8(V); End;
+
+Procedure EmitRuntimeIOData;
+Var
+  OldSec : Integer;
+  I      : Integer;
+Begin
+  OldSec := BinCurSec;
+
+  BinCurSec := BIN_SEC_RDATA;
+  BinDefineLabel('_SN_CRLF');
+  BinEmit8(13); BinEmit8(10);
+
+  BinCurSec := BIN_SEC_DATA;
+  BinDefineLabel('_SNH_STDOUT'); BinEmit32(0);
+  BinDefineLabel('_SNH_STDIN');  BinEmit32(0);
+  BinDefineLabel('_SN_IO_COUNT'); BinEmit32(0);
+  BinDefineLabel('_SN_INPUT_BUF');
+  For I := 0 To MAX_LINE Do
+    BinEmit8(0);
+
+  BinCurSec := OldSec;
+End;
+
+Procedure EmitRuntimeOutput;
+Begin
+  BinDefineLabel('_SNRT_output');
+  BinPrologue;
+  BinPushReg(REG_EBX);
+
+  BinMovRegMemBpPos(REG_EBX, 8);
+  BinTestRegReg(REG_EBX);
+  BinJccLabel(CC_NZ, '_SNRT_output_have_str');
+  BinMovRegLabel(REG_EBX, '_SN_EMPTY');
+  BinDefineLabel('_SNRT_output_have_str');
+
+  BinMovRegAbsLabel(REG_EAX, '_SNH_STDOUT');
+  BinTestEaxEax;
+  BinJccLabel(CC_NZ, '_SNRT_output_have_handle');
+  BinPushImm32(-11);
+  BinCallImport('GetStdHandle');
+  BinMovAbsLabelReg('_SNH_STDOUT', REG_EAX);
+  BinDefineLabel('_SNRT_output_have_handle');
+
+  BinPushReg(REG_EBX);
+  BinCallLabel('_SNRT_str_len');
+  BinAddEspImm8(4);
+
+  BinPushImm32(0);
+  BinPushLabel('_SN_IO_COUNT');
+  BinPushReg(REG_EAX);
+  BinPushReg(REG_EBX);
+  BinPushAbsLabel('_SNH_STDOUT');
+  BinCallImport('WriteFile');
+
+  BinPushImm32(0);
+  BinPushLabel('_SN_IO_COUNT');
+  BinPushImm32(2);
+  BinPushLabel('_SN_CRLF');
+  BinPushAbsLabel('_SNH_STDOUT');
+  BinCallImport('WriteFile');
+
+  BinMovRegImm32(REG_EAX, 1);
+  BinPopReg(REG_EBX);
+  BinEpilogue;
+  BinRet;
+End;
+
+Procedure EmitRuntimeInput;
+Begin
+  BinDefineLabel('_SNRT_input');
+  BinPrologue;
+  BinPushReg(REG_ESI);
+
+  BinMovRegAbsLabel(REG_EAX, '_SNH_STDIN');
+  BinTestEaxEax;
+  BinJccLabel(CC_NZ, '_SNRT_input_have_handle');
+  BinPushImm32(-10);
+  BinCallImport('GetStdHandle');
+  BinMovAbsLabelReg('_SNH_STDIN', REG_EAX);
+  BinDefineLabel('_SNRT_input_have_handle');
+
+  BinXorRegReg(REG_EAX);
+  BinMovAbsLabelReg('_SN_IO_COUNT', REG_EAX);
+  BinPushImm32(0);
+  BinPushLabel('_SN_IO_COUNT');
+  BinPushImm32(MAX_LINE);
+  BinPushLabel('_SN_INPUT_BUF');
+  BinPushAbsLabel('_SNH_STDIN');
+  BinCallImport('ReadFile');
+
+  BinMovRegLabel(REG_ESI, '_SN_INPUT_BUF');
+  BinXorRegReg(REG_EAX);
+  BinMovRegAbsLabel(REG_ECX, '_SN_IO_COUNT');
+
+  BinDefineLabel('_SNRT_input_scan');
+  BinCmpRegReg(REG_EAX, REG_ECX);
+  BinJccLabel(CC_GE, '_SNRT_input_terminate');
+  BinMovDlMemSibEsiEax;
+  BinCmpDlImm8(13);
+  BinJccLabel(CC_Z, '_SNRT_input_terminate');
+  BinCmpDlImm8(10);
+  BinJccLabel(CC_Z, '_SNRT_input_terminate');
+  BinIncReg(REG_EAX);
+  BinJmpLabel('_SNRT_input_scan');
+
+  BinDefineLabel('_SNRT_input_terminate');
+  BinMovByteMemSibEsiEaxImm8(0);
+  BinPushLabel('_SN_INPUT_BUF');
+  BinPushLabel('_SN_EMPTY');
+  BinCallLabel('_SNRT_str_concat');
+  BinAddEspImm8(8);
+
+  BinPopReg(REG_ESI);
+  BinEpilogue;
+  BinRet;
+End;
+
+Procedure EmitRuntimeIO;
+Begin
+  EmitRuntimeIOData;
+  BinCurSec := BIN_SEC_TEXT;
+  EmitRuntimeOutput;
+  EmitRuntimeInput;
+End;
+
+{ ============================================================ }
+{ TODO 12 - RUNTIME EMBARQUE : PATTERN MATCHING                }
+{ ============================================================ }
+
+Procedure EmitRuntimePatMatch;
+Begin
+  BinDefineLabel('_SNRT_pat_match');
+  BinPrologue;
+  BinPushReg(REG_EBX);
+  BinPushReg(REG_ESI);
+  BinPushReg(REG_EDI);
+
+  BinMovRegMemBpPos(REG_ESI, 8);  { subject }
+  BinTestRegReg(REG_ESI);
+  BinJccLabel(CC_NZ, '_SNRT_pat_subject_ok');
+  BinMovRegLabel(REG_ESI, '_SN_EMPTY');
+  BinDefineLabel('_SNRT_pat_subject_ok');
+
+  BinMovRegMemBpPos(REG_EDI, 12); { pattern }
+  BinTestRegReg(REG_EDI);
+  BinJccLabel(CC_NZ, '_SNRT_pat_pattern_ok');
+  BinMovRegLabel(REG_EDI, '_SN_EMPTY');
+  BinDefineLabel('_SNRT_pat_pattern_ok');
+
+  BinMovByteAlMemReg(REG_EDI);
+  BinEmit8($84); BinEmit8($C0); { TEST AL,AL }
+  BinJccLabel(CC_Z, '_SNRT_pat_true');
+
+  BinDefineLabel('_SNRT_pat_outer');
+  BinMovRegReg(REG_EBX, REG_ESI);
+  BinMovRegMemBpPos(REG_EDI, 12);
+  BinTestRegReg(REG_EDI);
+  BinJccLabel(CC_NZ, '_SNRT_pat_inner');
+  BinMovRegLabel(REG_EDI, '_SN_EMPTY');
+
+  BinDefineLabel('_SNRT_pat_inner');
+  BinMovByteDlMemReg(REG_EDI);
+  BinCmpDlImm8(0);
+  BinJccLabel(CC_Z, '_SNRT_pat_true');
+  BinMovByteAlMemReg(REG_EBX);
+  BinEmit8($84); BinEmit8($C0); { TEST AL,AL }
+  BinJccLabel(CC_Z, '_SNRT_pat_false');
+  BinCmpAlDl;
+  BinJccLabel(CC_NZ, '_SNRT_pat_advance');
+  BinIncReg(REG_EBX);
+  BinIncReg(REG_EDI);
+  BinJmpLabel('_SNRT_pat_inner');
+
+  BinDefineLabel('_SNRT_pat_advance');
+  BinMovByteAlMemReg(REG_ESI);
+  BinEmit8($84); BinEmit8($C0); { TEST AL,AL }
+  BinJccLabel(CC_Z, '_SNRT_pat_false');
+  BinIncReg(REG_ESI);
+  BinJmpLabel('_SNRT_pat_outer');
+
+  BinDefineLabel('_SNRT_pat_true');
+  BinMovRegImm32(REG_EAX, 1);
+  BinJmpLabel('_SNRT_pat_done');
+
+  BinDefineLabel('_SNRT_pat_false');
+  BinXorRegReg(REG_EAX);
+
+  BinDefineLabel('_SNRT_pat_done');
+  BinPopReg(REG_EDI);
+  BinPopReg(REG_ESI);
+  BinPopReg(REG_EBX);
+  BinEpilogue;
+  BinRet;
+End;
+
+Procedure EmitRuntimePattern;
+Begin
+  BinCurSec := BIN_SEC_TEXT;
+  EmitRuntimePatMatch;
+End;
+
+{ ============================================================ }
+{ TODO 13 - RUNTIME EMBARQUE : PREDICATS NUMERIQUES            }
+{ ============================================================ }
+
+Procedure EmitRuntimeNumericPred(Const Name: String; CC: Integer);
+Begin
+  BinDefineLabel(Name);
+  BinPrologue;
+  BinPushReg(REG_EBX);
+
+  BinPushMemBpPos(8);
+  BinCallLabel('_SNRT_str_to_int');
+  BinAddEspImm8(4);
+  BinMovRegReg(REG_EBX, REG_EAX);
+
+  BinPushMemBpPos(12);
+  BinCallLabel('_SNRT_str_to_int');
+  BinAddEspImm8(4);
+
+  BinCmpRegReg(REG_EBX, REG_EAX);
+  BinJccLabel(CC, Name + '_true');
+  BinXorRegReg(REG_EAX);
+  BinJmpLabel(Name + '_done');
+
+  BinDefineLabel(Name + '_true');
+  BinMovRegImm32(REG_EAX, 1);
+
+  BinDefineLabel(Name + '_done');
+  BinPopReg(REG_EBX);
+  BinEpilogue;
+  BinRet;
+End;
+
+Procedure EmitRuntimeNumericPredicates;
+Begin
+  BinCurSec := BIN_SEC_TEXT;
+  EmitRuntimeNumericPred('_SNRT_pred_lt', CC_L);
+  EmitRuntimeNumericPred('_SNRT_pred_le', CC_LE);
+  EmitRuntimeNumericPred('_SNRT_pred_gt', CC_G);
+  EmitRuntimeNumericPred('_SNRT_pred_ge', CC_GE);
+  EmitRuntimeNumericPred('_SNRT_pred_eq', CC_Z);
+  EmitRuntimeNumericPred('_SNRT_pred_ne', CC_NZ);
+End;
+
+{ ============================================================ }
+{ TODO 14 - RUNTIME EMBARQUE : PREDICATS DE CHAINES            }
+{ ============================================================ }
+
+Procedure EmitRuntimeIdent;
+Begin
+  BinDefineLabel('_SNRT_ident');
+  BinPrologue;
+  BinPushMemBpPos(12);
+  BinPushMemBpPos(8);
+  BinCallLabel('_SNRT_str_eq');
+  BinAddEspImm8(8);
+  BinEpilogue;
+  BinRet;
+End;
+
+Procedure EmitRuntimeDiffer;
+Begin
+  BinDefineLabel('_SNRT_differ');
+  BinPrologue;
+  BinPushMemBpPos(12);
+  BinPushMemBpPos(8);
+  BinCallLabel('_SNRT_str_eq');
+  BinAddEspImm8(8);
+  BinTestEaxEax;
+  BinJccLabel(CC_Z, '_SNRT_differ_true');
+  BinXorRegReg(REG_EAX);
+  BinJmpLabel('_SNRT_differ_done');
+  BinDefineLabel('_SNRT_differ_true');
+  BinMovRegImm32(REG_EAX, 1);
+  BinDefineLabel('_SNRT_differ_done');
+  BinEpilogue;
+  BinRet;
+End;
+
+Procedure EmitRuntimeSize;
+Begin
+  BinDefineLabel('_SNRT_size');
+  BinPrologue;
+  BinPushMemBpPos(8);
+  BinCallLabel('_SNRT_str_len');
+  BinAddEspImm8(4);
+  BinPushReg(REG_EAX);
+  BinCallLabel('_SNRT_int_to_str');
+  BinAddEspImm8(4);
+  BinEpilogue;
+  BinRet;
+End;
+
+Procedure EmitRuntimeStringPredicates;
+Begin
+  BinCurSec := BIN_SEC_TEXT;
+  EmitRuntimeIdent;
+  EmitRuntimeDiffer;
+  EmitRuntimeSize;
+End;
+
+{ ============================================================ }
 { TODO 08 - CONSTRUCTION SECTION .idata (IAT)                 }
 { ============================================================ }
 
@@ -1987,7 +2610,7 @@ Begin
   End;
   DllNameStart := P;
 
-  { IMAGE_IMPORT_DESCRIPTOR pour kernel32.dll (20 octets) }
+  { IMAGE_IMPORT_DESCRIPTOR pour la DLL importee (20 octets) }
   BinEmit32(IDataRVA + OrigThunksStart); { OriginalFirstThunk (RVA) }
   BinEmit32(0);                          { TimeDateStamp }
   BinEmit32(0);                          { ForwarderChain }
@@ -2002,8 +2625,8 @@ Begin
 
   { IAT (FirstThunk) : idem initialement, patche par le loader }
   For I := 0 To N-1 Do Begin
-    BinDefineLabel('__imp__' + ImportTable[I].FuncName);
-    ImportTable[I].IATOff := BinIDataSize - 4 + 4; { sera correct apres BinDefineLabel }
+    BinDefineLabel(ImportTable[I].LabelNm);
+    ImportTable[I].IATOff := BinIDataSize;
     BinEmit32(IDataRVA + HintOff[I]);
   End;
   BinEmit32(0);
@@ -2018,7 +2641,7 @@ Begin
   End;
 
   { Nom de la DLL }
-  S := 'kernel32.dll';
+  S := ImportTable[0].DllName;
   For K := 1 To Length(S) Do BinEmit8(Ord(S[K]));
   BinEmit8(0);
 
@@ -2221,10 +2844,400 @@ Begin
 End;
 
 Procedure WriteCOFF(Const FileName: String);
-Begin WriteLn('SNOBCW32: WriteCOFF non implemente'); End;
+Const
+  COFF_SECTIONS = 3;
+  COFF_SYM_UNDEF = 0;
+  COFF_SYM_TEXT  = 1;
+  COFF_SYM_RDATA = 2;
+  COFF_SYM_DATA  = 3;
+  COFF_REL_DIR32 = $0006;
+  COFF_REL_REL32 = $0014;
+Var
+  OutF          : File;
+  TextPtr,
+  RDataPtr,
+  DataPtr,
+  TextRelPtr,
+  RDataRelPtr,
+  DataRelPtr,
+  SymPtr        : LongInt;
+  TextRelCnt,
+  RDataRelCnt,
+  DataRelCnt    : Integer;
+  LabelSymIdx   : Array[0..MAX_LABELS-1] Of LongInt;
+  ImportSymIdx  : Array[0..MAX_IMPORTS-1] Of LongInt;
+  StrTab        : Array[0..65535] Of Byte;
+  StrSize       : LongInt;
+  NumSyms       : LongInt;
+  I             : Integer;
+
+  Procedure W1(B: Byte);
+  Var Tmp: Byte;
+  Begin Tmp := B; BlockWrite(OutF, Tmp, 1); End;
+
+  Procedure W2(V: Word);
+  Var A: Array[0..1] Of Byte;
+  Begin
+    A[0] := Byte(V);
+    A[1] := Byte(V Shr 8);
+    BlockWrite(OutF, A, 2);
+  End;
+
+  Procedure W4(V: LongInt);
+  Var A: Array[0..3] Of Byte;
+  Begin
+    A[0] := Byte(V);
+    A[1] := Byte(V Shr 8);
+    A[2] := Byte(V Shr 16);
+    A[3] := Byte(V Shr 24);
+    BlockWrite(OutF, A, 4);
+  End;
+
+  Function SecIndex(Sec: Integer): Integer;
+  Begin
+    Case Sec Of
+      BIN_SEC_TEXT:  SecIndex := COFF_SYM_TEXT;
+      BIN_SEC_RDATA: SecIndex := COFF_SYM_RDATA;
+      BIN_SEC_DATA:  SecIndex := COFF_SYM_DATA;
+      Else SecIndex := COFF_SYM_UNDEF;
+    End;
+  End;
+
+  Function SectionSize(Sec: Integer): LongInt;
+  Begin
+    Case Sec Of
+      BIN_SEC_TEXT:  SectionSize := BinCodeSize;
+      BIN_SEC_RDATA: SectionSize := BinRDataSize;
+      BIN_SEC_DATA:  SectionSize := BinDataSize;
+      Else SectionSize := 0;
+    End;
+  End;
+
+  Function AddString(Const S: String): LongInt;
+  Var K: Integer;
+  Begin
+    AddString := StrSize;
+    If StrSize + Length(S) + 1 > SizeOf(StrTab) Then Begin
+      CompileError('table des chaines COFF pleine');
+      Exit;
+    End;
+    For K := 1 To Length(S) Do Begin
+      StrTab[StrSize] := Ord(S[K]);
+      Inc(StrSize);
+    End;
+    StrTab[StrSize] := 0;
+    Inc(StrSize);
+  End;
+
+  Procedure WName(Const S: String);
+  Var K: Integer; Off: LongInt;
+  Begin
+    If Length(S) <= 8 Then Begin
+      For K := 1 To 8 Do
+        If K <= Length(S) Then W1(Ord(S[K])) Else W1(0);
+    End Else Begin
+      Off := AddString(S);
+      W4(0);
+      W4(Off);
+    End;
+  End;
+
+  Procedure WSectionHeader(Const Name8: String; Size, RawPtr, RelPtr: LongInt;
+                           RelCnt: Integer; Chars: LongInt);
+  Begin
+    WName(Name8);
+    W4(0);                  { VirtualSize }
+    W4(0);                  { VirtualAddress }
+    W4(Size);
+    If Size > 0 Then W4(RawPtr) Else W4(0);
+    If RelCnt > 0 Then W4(RelPtr) Else W4(0);
+    W4(0);                  { PointerToLinenumbers }
+    W2(Word(RelCnt));
+    W2(0);                  { NumberOfLinenumbers }
+    W4(Chars);
+  End;
+
+  Procedure WSymbol(Const Name: String; Value: LongInt; SecNum: Integer;
+                    Typ: Word; Storage: Byte);
+  Begin
+    WName(Name);
+    W4(Value);
+    W2(Word(SecNum));
+    W2(Typ);
+    W1(Storage);
+    W1(0);                  { NumberOfAuxSymbols }
+  End;
+
+  Function FindImportSymbol(Const Name: String): LongInt;
+  Var K: Integer;
+  Begin
+    FindImportSymbol := -1;
+    For K := 0 To ImportCount - 1 Do
+      If ImportTable[K].LabelNm = Name Then Begin
+        FindImportSymbol := ImportSymIdx[K];
+        Exit;
+      End;
+  End;
+
+  Function FindLabelSymbol(Const Name: String): LongInt;
+  Var K: Integer;
+  Begin
+    FindLabelSymbol := -1;
+    For K := 0 To LabelCount - 1 Do
+      If LabelTable[K].Name = Name Then Begin
+        FindLabelSymbol := LabelSymIdx[K];
+        Exit;
+      End;
+  End;
+
+  Function FixupSymbolIndex(Const Name: String): LongInt;
+  Var R: LongInt;
+  Begin
+    R := FindLabelSymbol(Name);
+    If R < 0 Then
+      R := FindImportSymbol(Name);
+    If R < 0 Then
+      CompileError('symbole COFF non resolu : ' + Name);
+    FixupSymbolIndex := R;
+  End;
+
+  Function FixupRelType(Kind: Integer): Word;
+  Begin
+    If Kind = BIN_FIX_REL32 Then FixupRelType := COFF_REL_REL32
+    Else FixupRelType := COFF_REL_DIR32;
+  End;
+
+  Procedure CountRelocs;
+  Var K: Integer;
+  Begin
+    TextRelCnt := 0;
+    RDataRelCnt := 0;
+    DataRelCnt := 0;
+    For K := 0 To FixupCount - 1 Do
+      Case FixupTable[K].Section Of
+        BIN_SEC_TEXT:  Inc(TextRelCnt);
+        BIN_SEC_RDATA: Inc(RDataRelCnt);
+        BIN_SEC_DATA:  Inc(DataRelCnt);
+      End;
+  End;
+
+  Procedure WriteRelocs(Sec: Integer);
+  Var K: Integer; SymIdx: LongInt;
+  Begin
+    For K := 0 To FixupCount - 1 Do
+      If FixupTable[K].Section = Sec Then Begin
+        SymIdx := FixupSymbolIndex(FixupTable[K].Name);
+        W4(FixupTable[K].Offset);
+        W4(SymIdx);
+        W2(FixupRelType(FixupTable[K].Kind));
+      End;
+  End;
+
+  Function LabelStorageClass(Const Name: String): Byte;
+  Begin
+    If Name = '_SNSTART' Then LabelStorageClass := 2 { IMAGE_SYM_CLASS_EXTERNAL }
+    Else LabelStorageClass := 3;                     { IMAGE_SYM_CLASS_STATIC }
+  End;
+
+Begin
+  CountRelocs;
+
+  TextPtr := 20 + COFF_SECTIONS * 40;
+  RDataPtr := TextPtr + BinCodeSize;
+  DataPtr := RDataPtr + BinRDataSize;
+  TextRelPtr := DataPtr + BinDataSize;
+  RDataRelPtr := TextRelPtr + LongInt(TextRelCnt) * 10;
+  DataRelPtr := RDataRelPtr + LongInt(RDataRelCnt) * 10;
+  SymPtr := DataRelPtr + LongInt(DataRelCnt) * 10;
+
+  NumSyms := LabelCount + ImportCount;
+  For I := 0 To LabelCount - 1 Do
+    LabelSymIdx[I] := I;
+  For I := 0 To ImportCount - 1 Do
+    ImportSymIdx[I] := LabelCount + I;
+
+  StrSize := 4;
+
+  Assign(OutF, FileName);
+  {$I-} Rewrite(OutF, 1); {$I+}
+  If IOResult <> 0 Then Begin CompileError('impossible de creer : ' + FileName); Exit; End;
+
+  { IMAGE_FILE_HEADER }
+  W2($014C);               { IMAGE_FILE_MACHINE_I386 }
+  W2(COFF_SECTIONS);
+  W4(0);                   { TimeDateStamp }
+  W4(SymPtr);
+  W4(NumSyms);
+  W2(0);                   { SizeOfOptionalHeader }
+  W2(0);                   { Characteristics }
+
+  { IMAGE_SECTION_HEADER x3 }
+  WSectionHeader('.text',  BinCodeSize,  TextPtr,  TextRelPtr,  TextRelCnt,  $60500020);
+  WSectionHeader('.rdata', BinRDataSize, RDataPtr, RDataRelPtr, RDataRelCnt, $40500040);
+  WSectionHeader('.data',  BinDataSize,  DataPtr,  DataRelPtr,  DataRelCnt,  LongInt($C0500040));
+
+  If BinCodeSize  > 0 Then BlockWrite(OutF, BinCode[0],  BinCodeSize);
+  If BinRDataSize > 0 Then BlockWrite(OutF, BinRData[0], BinRDataSize);
+  If BinDataSize  > 0 Then BlockWrite(OutF, BinData[0],  BinDataSize);
+
+  WriteRelocs(BIN_SEC_TEXT);
+  WriteRelocs(BIN_SEC_RDATA);
+  WriteRelocs(BIN_SEC_DATA);
+  If HasError Then Begin Close(OutF); Exit; End;
+
+  For I := 0 To LabelCount - 1 Do
+    WSymbol(LabelTable[I].Name, LabelTable[I].Offset,
+            SecIndex(LabelTable[I].Section), 0,
+            LabelStorageClass(LabelTable[I].Name));
+  For I := 0 To ImportCount - 1 Do
+    WSymbol(ImportTable[I].LabelNm, 0, COFF_SYM_UNDEF, 0,
+            2);             { IMAGE_SYM_CLASS_EXTERNAL }
+
+  W4(StrSize);
+  If StrSize > 4 Then
+    BlockWrite(OutF, StrTab[4], StrSize - 4);
+
+  Close(OutF);
+  WriteLn('SNOBCW32: ', FileName, ' ecrit (COFF OBJ)');
+End;
 
 Procedure WriteASM(Const FileName: String);
-Begin WriteLn('SNOBCW32: WriteASM non implemente'); End;
+Var
+  OutF : Text;
+  I    : Integer;
+
+  Function HexByte(B: Byte): String;
+  Const H = '0123456789ABCDEF';
+  Begin
+    HexByte := H[(B Shr 4) + 1] + H[(B And $0F) + 1] + 'h';
+  End;
+
+  Function SectionSize(Sec: Integer): LongInt;
+  Begin
+    Case Sec Of
+      BIN_SEC_TEXT:  SectionSize := BinCodeSize;
+      BIN_SEC_RDATA: SectionSize := BinRDataSize;
+      BIN_SEC_DATA:  SectionSize := BinDataSize;
+      Else SectionSize := 0;
+    End;
+  End;
+
+  Function SectionByte(Sec: Integer; Off: LongInt): Byte;
+  Begin
+    Case Sec Of
+      BIN_SEC_TEXT:  SectionByte := BinCode[Off];
+      BIN_SEC_RDATA: SectionByte := BinRData[Off];
+      BIN_SEC_DATA:  SectionByte := BinData[Off];
+      Else SectionByte := 0;
+    End;
+  End;
+
+  Procedure EmitLabelsAt(Sec: Integer; Off: LongInt);
+  Var K: Integer;
+  Begin
+    For K := 0 To LabelCount - 1 Do
+      If (LabelTable[K].Section = Sec) And (LabelTable[K].Offset = Off) Then Begin
+        If LabelTable[K].Name = '_SNSTART' Then
+          WriteLn(OutF, 'PUBLIC ', LabelTable[K].Name);
+        WriteLn(OutF, LabelTable[K].Name, ':');
+      End;
+  End;
+
+  Function FixupAt(Sec: Integer; Off: LongInt): Integer;
+  Var K: Integer;
+  Begin
+    FixupAt := -1;
+    For K := 0 To FixupCount - 1 Do
+      If (FixupTable[K].Section = Sec) And (FixupTable[K].Offset = Off) Then Begin
+        FixupAt := K;
+        Exit;
+      End;
+  End;
+
+  Function HasLabelAt(Sec: Integer; Off: LongInt): Boolean;
+  Var K: Integer;
+  Begin
+    HasLabelAt := False;
+    For K := 0 To LabelCount - 1 Do
+      If (LabelTable[K].Section = Sec) And (LabelTable[K].Offset = Off) Then Begin
+        HasLabelAt := True;
+        Exit;
+      End;
+  End;
+
+  Procedure EmitDbRun(Sec: Integer; Var Off: LongInt);
+  Var
+    Cnt    : Integer;
+    Line   : String;
+    Size   : LongInt;
+  Begin
+    Size := SectionSize(Sec);
+    Cnt := 0;
+    Line := '  DB ';
+    While (Off < Size) And (Cnt < 12) And
+          (FixupAt(Sec, Off) < 0) And
+          ((Cnt = 0) Or Not HasLabelAt(Sec, Off)) Do Begin
+      If Cnt > 0 Then Line := Line + ',';
+      Line := Line + HexByte(SectionByte(Sec, Off));
+      Inc(Off);
+      Inc(Cnt);
+    End;
+    If Cnt > 0 Then WriteLn(OutF, Line);
+  End;
+
+  Procedure EmitSectionBytes(Sec: Integer);
+  Var
+    Off  : LongInt;
+    FI   : Integer;
+    Expr : String;
+  Begin
+    Off := 0;
+    While Off < SectionSize(Sec) Do Begin
+      EmitLabelsAt(Sec, Off);
+      FI := FixupAt(Sec, Off);
+      If FI >= 0 Then Begin
+        Expr := FixupTable[FI].Name;
+        If FixupTable[FI].Kind = BIN_FIX_REL32 Then
+          Expr := Expr + ' - ($ + 4)';
+        WriteLn(OutF, '  DD ', Expr);
+        Inc(Off, 4);
+      End Else
+        EmitDbRun(Sec, Off);
+    End;
+    EmitLabelsAt(Sec, Off);
+  End;
+
+Begin
+  Assign(OutF, FileName);
+  {$I-} Rewrite(OutF); {$I+}
+  If IOResult <> 0 Then Begin CompileError('impossible de creer : ' + FileName); Exit; End;
+
+  WriteLn(OutF, '; Genere par SNOBCW32 v', SNB_VERSION);
+  WriteLn(OutF, '.386');
+  WriteLn(OutF, '.MODEL FLAT, STDCALL');
+  WriteLn(OutF, 'OPTION CASEMAP:NONE');
+  WriteLn(OutF);
+
+  For I := 0 To ImportCount - 1 Do
+    WriteLn(OutF, 'EXTERN ', ImportTable[I].LabelNm, ':DWORD ; ',
+            ImportTable[I].DllName, '!', ImportTable[I].FuncName);
+  WriteLn(OutF);
+
+  WriteLn(OutF, '.CONST');
+  EmitSectionBytes(BIN_SEC_RDATA);
+  WriteLn(OutF);
+
+  WriteLn(OutF, '.DATA');
+  EmitSectionBytes(BIN_SEC_DATA);
+  WriteLn(OutF);
+
+  WriteLn(OutF, '.CODE');
+  EmitSectionBytes(BIN_SEC_TEXT);
+  WriteLn(OutF, 'END _SNSTART');
+
+  Close(OutF);
+  WriteLn('SNOBCW32: ', FileName, ' ecrit (ASM MASM/JWASM)');
+End;
 
 { ============================================================ }
 { TODO 01 - POINT D ENTREE PRINCIPAL                           }
