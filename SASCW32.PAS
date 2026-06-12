@@ -530,8 +530,8 @@ Const
   TOK_CONCAT    = 11;   { || ou !! }
   TOK_LPAREN    = 12;   { ( }
   TOK_RPAREN    = 13;   { ) }
-  TOK_LBRACE    = 14;   { { }
-  TOK_RBRACE    = 15;   { } }
+  TOK_LBRACE    = 14;   { ouv. accolade }
+  TOK_RBRACE    = 15;   { ferm. accolade }
   TOK_SEMICOL   = 16;   { ; }
   TOK_DOT       = 17;   { . }
   TOK_COMMA     = 18;   { , }
@@ -545,6 +545,8 @@ Const
   TOK_NOT       = 26;   { ^ ~ seul }
   TOK_COLON     = 27;   { : }
   TOK_MACRO_VAR = 28;   { &nom residuel apres expansion }
+  TOK_EOL       = 29;   { fin de ligne (mode CARDS/DATALINES uniquement) }
+  TOK_EQ        =  5;   { alias de TOK_ASSIGN, contexte comparaison }
 
   { Mots-cles SAS }
   KW_DATA       = 30;
@@ -803,8 +805,11 @@ Var
   LexPos         : Integer;
   LexInComment   : Boolean;   { dans un commentaire /* ... */ }
   LexAtStmtStart : Boolean;   { vrai apres ; ou debut fichier }
+  LexEmitEOL     : Boolean;   { emettre TOK_EOL a chaque fin de ligne }
   CurTokType     : Integer;
   CurTokStr      : String;
+  CurDsRoot      : Integer;   { noeud AST du DATA step courant   }
+  CurDsIdx       : Integer;   { index DsTable du dataset courant }
 
 { ============================================================ }
 { Utilitaires generaux                                         }
@@ -917,12 +922,117 @@ Procedure LexNextToken;                                        Forward;
 { TODO 06 : Parser principal }
 Procedure ParseProgram;                                        Forward;
 
+{ TODO 06 : Parser — procedures de detail }
+Function  AstNew(Kind: Integer; Const Txt: String;
+                 Line: Integer): Integer;                      Forward;
+Procedure AstAddChild(Parent, Child: Integer);                 Forward;
+Procedure SkipToSemicolon;                                     Forward;
+Procedure ParseDataStmt;                                       Forward;
+Procedure ParseDataStepBody(DsRoot: Integer);                  Forward;
+Procedure ParseDataStep;                                       Forward;
+Procedure ParseOptions(Var DsName: String;
+                       Var OutDs: String;
+                       Var NoPrint: Boolean);                  Forward;
+Procedure ParseSubCmd(ProcRoot: Integer);                      Forward;
+Procedure ParseProcPrint(Const DsName: String;
+                         NoPrint: Boolean;
+                         ProcRoot: Integer);                   Forward;
+Procedure ParseProcMeans(Const DsName: String;
+                         ProcRoot: Integer);                   Forward;
+Procedure ParseProcSort(Const DsName: String;
+                        Const OutDs: String;
+                        ProcRoot: Integer);                    Forward;
+Procedure ParseProcFreq(Const DsName: String;
+                        NoPrint: Boolean;
+                        ProcRoot: Integer);                    Forward;
+Procedure ParseProcFormat(ProcRoot: Integer);                  Forward;
+Procedure ParseProcGeneric(Const ProcName: String;
+                           Const DsName: String;
+                           ProcRoot: Integer);                 Forward;
+Procedure ParseProcStep;                                       Forward;
+
+{ TODO 07 : AST — constructeurs specialises et diagnostic }
+Function  AstNewBinOp(Const Op: String;
+                      L, R, Line: Integer): Integer;           Forward;
+Function  AstNewUnOp(Const Op: String;
+                     Child, Line: Integer): Integer;           Forward;
+Function  AstNewLitNum(V: LongInt; Line: Integer): Integer;    Forward;
+Function  AstNewLitStr(Const S: String;
+                       Line: Integer): Integer;                Forward;
+Function  AstNewVar(Const Name: String;
+                    Line: Integer): Integer;                   Forward;
+Function  AstNewCall(Const FuncName: String;
+                     Line: Integer): Integer;                  Forward;
+Function  AstNewAssign(VarNode, ExprNode,
+                       Line: Integer): Integer;                Forward;
+Function  AstNewIf(CondN, ThenN, ElseN,
+                   Line: Integer): Integer;                    Forward;
+Function  AstNewDo(Const DoType: String;
+                   Line: Integer): Integer;                    Forward;
+Function  AstNewSelect(ExprNode, Line: Integer): Integer;      Forward;
+Function  AstNewWhen(ValNode, StmtNode,
+                     Line: Integer): Integer;                  Forward;
+Function  AstNewArrayRef(Const Name: String;
+                         IdxNode, Line: Integer): Integer;     Forward;
+Procedure AstSetLeft(Node, Child: Integer);                    Forward;
+Procedure AstSetRight(Node, Child: Integer);                   Forward;
+Procedure AstDump(N, Indent: Integer);                         Forward;
+
 { TODO 08 : Table des symboles }
 Function  FindSym(Const Name: String; Kind: Integer): Integer; Forward;
 Function  AddSym(Const Name: String; Kind: Integer): Integer;  Forward;
 Function  GetOrAddVar(Const Name: String;
                       IsChar: Boolean): Integer;               Forward;
 Function  GetOrAddDataset(Const Name: String): Integer;        Forward;
+Function  FindDsVar(DsIdx: Integer;
+                    Const Name: String): Integer;              Forward;
+Function  GetOrAddDsVar(DsIdx: Integer;
+                        Const Name: String;
+                        IsChar: Boolean): Integer;             Forward;
+Function  FindFormat(Const Name: String): Integer;             Forward;
+Function  GetOrAddFormat(Const Name: String): Integer;         Forward;
+Function  FindLabel(Const Name: String): Integer;              Forward;
+Function  AddLabel(Const Name: String): Integer;               Forward;
+Function  SymGenAsmName(Idx: Integer): String;                 Forward;
+Procedure SymSetOffset(Idx: Integer; Off: LongInt);            Forward;
+Procedure SymMarkAssigned(Idx: Integer);                       Forward;
+Procedure SymWarnUnassigned(Idx: Integer;
+                            Const Context: String);            Forward;
+
+{ TODO 09 : DATA step — parseurs de statements }
+Procedure ParseStmtOutput;                                     Forward;
+Procedure ParseStmtDelete;                                     Forward;
+Procedure ParseStmtStop;                                       Forward;
+Procedure ParseStmtRetain;                                     Forward;
+Procedure ParseStmtAssign;                                     Forward;
+Procedure ParseStmtPut;                                        Forward;
+Procedure ParseStmtIf;                                         Forward;
+Procedure ParseStmtSelect;                                     Forward;
+Procedure ParseStmtDo;                                         Forward;
+Procedure ParseStmtArray;                                      Forward;
+Procedure ParseStmtInfile;                                     Forward;
+Procedure ParseStmtInput;                                      Forward;
+Procedure ParseStmtFile;                                       Forward;
+Procedure ParseStmtSet;                                        Forward;
+Procedure ParseStmtMerge;                                      Forward;
+Procedure ParseStmtBy;                                         Forward;
+Procedure ParseStmtFmtDecl;                                    Forward;
+Procedure ParseStmtGoto;                                       Forward;
+
+{ TODO 11 : IF/THEN/ELSE }
+Function  ParseIfBody(BodyLine: Integer): Integer;           Forward;
+
+{ TODO 10 : Parseur d expressions }
+Function  ParseExprOr(Line: Integer): Integer;               Forward;
+Function  ParseExprAnd(Line: Integer): Integer;              Forward;
+Function  ParseExprNot(Line: Integer): Integer;              Forward;
+Function  ParseExprCmp(Line: Integer): Integer;              Forward;
+Function  ParseExprConcat(Line: Integer): Integer;           Forward;
+Function  ParseExprAdd(Line: Integer): Integer;              Forward;
+Function  ParseExprMul(Line: Integer): Integer;              Forward;
+Function  ParseExprUnary(Line: Integer): Integer;            Forward;
+Function  ParseExprPow(Line: Integer): Integer;              Forward;
+Function  ParseExprPrimary(Line: Integer): Integer;          Forward;
 
 { TODO 25 : Codegen et sorties }
 Procedure CodegenProgram;                                      Forward;
@@ -982,8 +1092,11 @@ Begin
   LexPos         := 1;
   LexInComment   := False;
   LexAtStmtStart := True;
+  LexEmitEOL     := False;
   CurTokType     := TOK_EOF;
   CurTokStr      := '';
+  CurDsRoot      := -1;
+  CurDsIdx       := -1;
   HasError     := False;
   ErrorCount   := 0;
   WarnCount    := 0;
@@ -1701,6 +1814,7 @@ Begin
   LexPos         := 1;
   LexInComment   := False;
   LexAtStmtStart := True;
+  LexEmitEOL     := False;
   CurTokType     := TOK_EOF;
   CurTokStr      := '';
 End;
@@ -1726,6 +1840,10 @@ Begin
       Inc(CurLineNum);
       LexLineLen := Length(LexLine);
       LexPos     := 1;
+      { TODO 05 : fin de ligne en mode CARDS/DATALINES }
+      If LexEmitEOL Then Begin
+        CurTokType := TOK_EOL; CurTokStr := ''; Exit;
+      End;
     End;
     If LexEOF And (LexPos > LexLineLen) Then Begin
       CurTokType := TOK_EOF; Exit;
@@ -1962,10 +2080,633 @@ Begin
   LexAtStmtStart := False;
 End;
 
+{ ============================================================ }
+{ TODO 06 — Parser : structure globale du programme SAS        }
+{ ============================================================ }
+
+{ Alloue un noeud AST et retourne son index.                   }
+Function AstNew(Kind: Integer; Const Txt: String; Line: Integer): Integer;
+Var I: Integer;
+Begin
+  If AstCount >= MAX_AST Then Begin
+    CompileError('trop de noeuds AST'); AstNew := -1; Exit;
+  End;
+  I := AstCount; Inc(AstCount);
+  AstTable[I].Kind        := Kind;
+  AstTable[I].Text        := Txt;
+  AstTable[I].Left        := -1;
+  AstTable[I].Right       := -1;
+  AstTable[I].FirstChild  := -1;
+  AstTable[I].NextSibling := -1;
+  AstTable[I].Line        := Line;
+  AstTable[I].SymRef      := -1;
+  AstTable[I].NumVal      := 0;
+  AstTable[I].IsChar      := False;
+  AstNew := I;
+End;
+
+{ Attache Child comme dernier enfant de Parent dans l AST.     }
+Procedure AstAddChild(Parent, Child: Integer);
+Var C: Integer;
+Begin
+  If (Parent < 0) Or (Child < 0) Then Exit;
+  If AstTable[Parent].FirstChild < 0 Then
+    AstTable[Parent].FirstChild := Child
+  Else Begin
+    C := AstTable[Parent].FirstChild;
+    While AstTable[C].NextSibling >= 0 Do
+      C := AstTable[C].NextSibling;
+    AstTable[C].NextSibling := Child;
+  End;
+End;
+
+{ Avance le lexeur jusqu au ; inclus (ou EOF).                 }
+Procedure SkipToSemicolon;
+Begin
+  While (CurTokType <> TOK_EOF) And (CurTokType <> TOK_SEMICOL) Do
+    LexNextToken;
+  If CurTokType = TOK_SEMICOL Then LexNextToken;
+End;
+
+{ Dispatch des statements du corps d'un DATA step.             }
+Procedure ParseDataStmt;
+Begin
+  Case CurTokType Of
+    KW_OUTPUT:   ParseStmtOutput;
+    KW_DELETE:   ParseStmtDelete;
+    KW_STOP:     ParseStmtStop;
+    KW_RETAIN:   ParseStmtRetain;
+    KW_PUT:      ParseStmtPut;      { TODO 15 }
+    KW_IF:       ParseStmtIf;       { TODO 11 }
+    KW_SELECT:   ParseStmtSelect;   { TODO 12 }
+    KW_DO:       ParseStmtDo;       { TODO 13 }
+    KW_ARRAY:    ParseStmtArray;    { TODO 14 }
+    KW_INFILE:   ParseStmtInfile;   { TODO 16 }
+    KW_INPUT:    ParseStmtInput;    { TODO 16 }
+    KW_FILE:     ParseStmtFile;     { TODO 16 }
+    KW_SET:      ParseStmtSet;      { TODO 17 }
+    KW_MERGE:    ParseStmtMerge;    { TODO 17 }
+    KW_BY:       ParseStmtBy;       { TODO 17 }
+    KW_FORMAT:   ParseStmtFmtDecl;  { TODO 22 }
+    KW_GOTO:     ParseStmtGoto;     { TODO 13 }
+    KW_LEAVE: Begin
+      AstAddChild(CurDsRoot, AstNew(NK_LEAVE, 'LEAVE', CurLineNum));
+      LexNextToken;
+      If CurTokType = TOK_SEMICOL Then LexNextToken;
+    End;
+    KW_CONTINUE: Begin
+      AstAddChild(CurDsRoot, AstNew(NK_CONTINUE, 'CONTINUE', CurLineNum));
+      LexNextToken;
+      If CurTokType = TOK_SEMICOL Then LexNextToken;
+    End;
+    TOK_IDENT:   ParseStmtAssign;   { TODO 10 }
+  Else
+    SkipToSemicolon;
+  End;
+End;
+
+{ Boucle sur les statements du corps du DATA step.             }
+{ Positionne CurDsRoot pour que ParseStmt* y attachent         }
+{ leurs noeuds ; sauvegarde et restaure pour les appels        }
+{ imbriques futurs.                                            }
+Procedure ParseDataStepBody(DsRoot: Integer);
+Var SaveDsRoot: Integer;
+Begin
+  SaveDsRoot := CurDsRoot;
+  CurDsRoot  := DsRoot;
+  Repeat
+    If CurTokType = TOK_EOF Then Break;
+    If (CurTokType = KW_RUN) Or (CurTokType = KW_QUIT) Then Begin
+      LexNextToken;
+      If CurTokType = TOK_SEMICOL Then LexNextToken;
+      Break;
+    End;
+    ParseDataStmt;
+  Until False;
+  CurDsRoot := SaveDsRoot;
+End;
+
+{ Analyse un DATA step complet : DATA nom... ; corps ; RUN ;   }
+{ DATA _NULL_ : aucun dataset de sortie, corps execute 1 fois. }
+Procedure ParseDataStep;
+Var
+  DsRoot, DsNode : Integer;
+  SaveDsIdx      : Integer;
+  IsNull         : Boolean;
+Begin
+  DsRoot := AstNew(NK_DATASTEP, 'DATA', CurLineNum);
+  AstAddChild(AstRoot, DsRoot);
+  SaveDsIdx := CurDsIdx;
+  CurDsIdx  := -1;
+  IsNull    := False;
+  LexNextToken; { avancer apres DATA }
+  { Noms de datasets de sortie }
+  While (CurTokType <> TOK_SEMICOL) And (CurTokType <> TOK_EOF) Do Begin
+    If CurTokType = TOK_IDENT Then Begin
+      If UpperStr(CurTokStr) = '_NULL_' Then
+        IsNull := True
+      Else
+        CurDsIdx := GetOrAddDataset(CurTokStr);
+      DsNode := AstNew(NK_VAR, CurTokStr, CurLineNum);
+      AstAddChild(DsRoot, DsNode);
+    End;
+    LexNextToken;
+  End;
+  If IsNull Then AstTable[DsRoot].Text := 'DATA_NULL';
+  If CurTokType = TOK_SEMICOL Then LexNextToken;
+  ParseDataStepBody(DsRoot);
+  CurDsIdx := SaveDsIdx;
+End;
+
+{ Lit les options KEY=VAL et drapeaux apres le nom du PROC     }
+{ (DATA=ds OUT=ds NOPRINT ...). Consomme le ; de fin.          }
+Procedure ParseOptions(Var DsName: String; Var OutDs: String;
+                       Var NoPrint: Boolean);
+Begin
+  While (CurTokType <> TOK_SEMICOL) And (CurTokType <> TOK_EOF) Do Begin
+    Case CurTokType Of
+      KW_DATA: Begin
+        LexNextToken;
+        If CurTokType = TOK_ASSIGN Then Begin
+          LexNextToken;
+          If CurTokType <> TOK_SEMICOL Then Begin
+            DsName := CurTokStr; LexNextToken;
+          End;
+        End;
+      End;
+      KW_OUT: Begin
+        LexNextToken;
+        If CurTokType = TOK_ASSIGN Then Begin
+          LexNextToken;
+          If CurTokType <> TOK_SEMICOL Then Begin
+            OutDs := CurTokStr; LexNextToken;
+          End;
+        End;
+      End;
+      KW_NOPRINT: Begin NoPrint := True; LexNextToken; End;
+    Else
+      LexNextToken;
+    End;
+  End;
+  If CurTokType = TOK_SEMICOL Then LexNextToken;
+End;
+
+{ Analyse une sous-commande PROC (VAR, BY, TABLES, etc.)       }
+{ et ajoute le noeud correspondant sous ProcRoot.              }
+Procedure ParseSubCmd(ProcRoot: Integer);
+Var
+  Node, VarNode : Integer;
+  SaveKind      : Integer;
+Begin
+  SaveKind := CurTokType;
+  Case SaveKind Of
+
+    KW_VAR, KW_TABLES, KW_CLASS: Begin
+      Case SaveKind Of
+        KW_VAR:    Node := AstNew(NK_VAR_LIST, 'VAR',    CurLineNum);
+        KW_TABLES: Node := AstNew(NK_VAR_LIST, 'TABLES', CurLineNum);
+      Else         Node := AstNew(NK_VAR_LIST, 'CLASS',  CurLineNum);
+      End;
+      AstAddChild(ProcRoot, Node);
+      LexNextToken;
+      While (CurTokType <> TOK_SEMICOL) And (CurTokType <> TOK_EOF) Do Begin
+        If CurTokType = TOK_IDENT Then Begin
+          VarNode := AstNew(NK_VAR, CurTokStr, CurLineNum);
+          AstAddChild(Node, VarNode);
+        End;
+        LexNextToken;
+      End;
+      If CurTokType = TOK_SEMICOL Then LexNextToken;
+    End;
+
+    KW_BY: Begin
+      Node := AstNew(NK_BY, 'BY', CurLineNum);
+      AstAddChild(ProcRoot, Node);
+      LexNextToken;
+      While (CurTokType <> TOK_SEMICOL) And (CurTokType <> TOK_EOF) Do Begin
+        If CurTokType = KW_DESCENDING Then Begin
+          LexNextToken; Continue;
+        End;
+        If CurTokType = TOK_IDENT Then Begin
+          VarNode := AstNew(NK_VAR, CurTokStr, CurLineNum);
+          AstAddChild(Node, VarNode);
+        End;
+        LexNextToken;
+      End;
+      If CurTokType = TOK_SEMICOL Then LexNextToken;
+    End;
+
+    KW_TITLE, KW_FOOTNOTE: Begin
+      If SaveKind = KW_TITLE Then Node := AstNew(NK_LITERAL, 'TITLE',    CurLineNum)
+      Else                       Node := AstNew(NK_LITERAL, 'FOOTNOTE', CurLineNum);
+      AstAddChild(ProcRoot, Node);
+      LexNextToken;
+      If CurTokType = TOK_STRING Then Begin
+        AstTable[Node].Text := CurTokStr; LexNextToken;
+      End;
+      If CurTokType = TOK_SEMICOL Then LexNextToken;
+    End;
+
+    KW_FORMAT: Begin
+      Node := AstNew(NK_FMT_STMT, 'FORMAT', CurLineNum);
+      AstAddChild(ProcRoot, Node);
+      LexNextToken;
+      While (CurTokType <> TOK_SEMICOL) And (CurTokType <> TOK_EOF) Do Begin
+        If CurTokType = TOK_IDENT Then Begin
+          VarNode := AstNew(NK_VAR, CurTokStr, CurLineNum);
+          AstAddChild(Node, VarNode);
+        End;
+        LexNextToken;
+      End;
+      If CurTokType = TOK_SEMICOL Then LexNextToken;
+    End;
+
+    KW_VALUE: Begin
+      { PROC FORMAT VALUE formatname entrees ; }
+      Node := AstNew(NK_FMT_STMT, 'VALUE', CurLineNum);
+      AstAddChild(ProcRoot, Node);
+      LexNextToken;
+      If CurTokType = TOK_IDENT Then Begin
+        AstTable[Node].Text := CurTokStr; LexNextToken;
+      End;
+      While (CurTokType <> TOK_SEMICOL) And (CurTokType <> TOK_EOF) Do
+        LexNextToken;
+      If CurTokType = TOK_SEMICOL Then LexNextToken;
+    End;
+
+    KW_WHERE: Begin
+      Node := AstNew(NK_LITERAL, 'WHERE', CurLineNum);
+      AstAddChild(ProcRoot, Node);
+      SkipToSemicolon;
+    End;
+
+  Else
+    SkipToSemicolon;
+  End;
+End;
+
+{ PROC PRINT DATA=ds ; [VAR ...;] [BY ...;] RUN ;              }
+Procedure ParseProcPrint(Const DsName: String; NoPrint: Boolean;
+                         ProcRoot: Integer);
+Begin
+  Repeat
+    If CurTokType = TOK_EOF Then Break;
+    If (CurTokType = KW_RUN) Or (CurTokType = KW_QUIT) Then Begin
+      LexNextToken;
+      If CurTokType = TOK_SEMICOL Then LexNextToken;
+      Break;
+    End;
+    Case CurTokType Of
+      KW_VAR, KW_BY, KW_FORMAT, KW_WHERE,
+      KW_TITLE, KW_FOOTNOTE: ParseSubCmd(ProcRoot);
+    Else SkipToSemicolon;
+    End;
+  Until False;
+End;
+
+{ PROC MEANS DATA=ds [stats] ; [VAR ...;] [CLASS ...;] RUN ;   }
+Procedure ParseProcMeans(Const DsName: String; ProcRoot: Integer);
+Begin
+  Repeat
+    If CurTokType = TOK_EOF Then Break;
+    If (CurTokType = KW_RUN) Or (CurTokType = KW_QUIT) Then Begin
+      LexNextToken;
+      If CurTokType = TOK_SEMICOL Then LexNextToken;
+      Break;
+    End;
+    Case CurTokType Of
+      KW_VAR, KW_BY, KW_CLASS, KW_FORMAT, KW_WHERE,
+      KW_TITLE, KW_FOOTNOTE: ParseSubCmd(ProcRoot);
+    Else SkipToSemicolon;
+    End;
+  Until False;
+End;
+
+{ PROC SORT DATA=ds [OUT=ds2] ; BY [DESCENDING] var... ; RUN ; }
+Procedure ParseProcSort(Const DsName: String; Const OutDs: String;
+                        ProcRoot: Integer);
+Begin
+  Repeat
+    If CurTokType = TOK_EOF Then Break;
+    If (CurTokType = KW_RUN) Or (CurTokType = KW_QUIT) Then Begin
+      LexNextToken;
+      If CurTokType = TOK_SEMICOL Then LexNextToken;
+      Break;
+    End;
+    If CurTokType = KW_BY Then ParseSubCmd(ProcRoot)
+    Else SkipToSemicolon;
+  Until False;
+End;
+
+{ PROC FREQ DATA=ds [NOPRINT] ; [TABLES ...;] RUN ;            }
+Procedure ParseProcFreq(Const DsName: String; NoPrint: Boolean;
+                        ProcRoot: Integer);
+Begin
+  Repeat
+    If CurTokType = TOK_EOF Then Break;
+    If (CurTokType = KW_RUN) Or (CurTokType = KW_QUIT) Then Begin
+      LexNextToken;
+      If CurTokType = TOK_SEMICOL Then LexNextToken;
+      Break;
+    End;
+    Case CurTokType Of
+      KW_TABLES, KW_BY,
+      KW_TITLE, KW_FOOTNOTE: ParseSubCmd(ProcRoot);
+    Else SkipToSemicolon;
+    End;
+  Until False;
+End;
+
+{ PROC FORMAT ; VALUE name entrees ; ... RUN ;                  }
+Procedure ParseProcFormat(ProcRoot: Integer);
+Begin
+  Repeat
+    If CurTokType = TOK_EOF Then Break;
+    If (CurTokType = KW_RUN) Or (CurTokType = KW_QUIT) Then Begin
+      LexNextToken;
+      If CurTokType = TOK_SEMICOL Then LexNextToken;
+      Break;
+    End;
+    If CurTokType = KW_VALUE Then ParseSubCmd(ProcRoot)
+    Else SkipToSemicolon;
+  Until False;
+End;
+
+{ PROC inconnu : emettre un avertissement et ignorer le corps. }
+Procedure ParseProcGeneric(Const ProcName: String; Const DsName: String;
+                           ProcRoot: Integer);
+Begin
+  If ProcRoot >= 0 Then; { evite le note "parametre non utilise" }
+  CompileWarn('PROC ' + ProcName + ' non reconnu (DATA=' + DsName + '), corps ignore');
+  Repeat
+    If CurTokType = TOK_EOF Then Break;
+    If (CurTokType = KW_RUN) Or (CurTokType = KW_QUIT) Then Begin
+      LexNextToken;
+      If CurTokType = TOK_SEMICOL Then LexNextToken;
+      Break;
+    End;
+    SkipToSemicolon;
+  Until False;
+End;
+
+{ Analyse un PROC step et dispatche vers le parseur specifique. }
+Procedure ParseProcStep;
+Var
+  ProcName : String;
+  ProcKind : Integer;
+  DsName   : String;
+  OutDs    : String;
+  NoPrint  : Boolean;
+  ProcRoot : Integer;
+  NodeKind : Integer;
+Begin
+  { CurTokType = KW_PROC }
+  LexNextToken; { avancer sur le nom du PROC }
+  ProcName := CurTokStr;
+  ProcKind := CurTokType;
+  Case ProcKind Of
+    KW_PRINT:  NodeKind := NK_PROC_PRINT;
+    KW_MEANS:  NodeKind := NK_PROC_MEANS;
+    KW_SORT:   NodeKind := NK_PROC_SORT;
+    KW_FREQ:   NodeKind := NK_PROC_FREQ;
+    KW_FORMAT: NodeKind := NK_PROC_FORMAT;
+  Else
+    NodeKind := NK_PROC_GEN;
+  End;
+  ProcRoot := AstNew(NodeKind, ProcName, CurLineNum);
+  AstAddChild(AstRoot, ProcRoot);
+  LexNextToken; { avancer apres le nom du PROC }
+  DsName := ''; OutDs := ''; NoPrint := False;
+  ParseOptions(DsName, OutDs, NoPrint);
+  Case ProcKind Of
+    KW_PRINT:  ParseProcPrint(DsName, NoPrint, ProcRoot);
+    KW_MEANS:  ParseProcMeans(DsName, ProcRoot);
+    KW_SORT:   ParseProcSort(DsName, OutDs, ProcRoot);
+    KW_FREQ:   ParseProcFreq(DsName, NoPrint, ProcRoot);
+    KW_FORMAT: ParseProcFormat(ProcRoot);
+  Else
+    ParseProcGeneric(ProcName, DsName, ProcRoot);
+  End;
+End;
+
+{ Boucle principale du parseur : DATA steps et PROC steps.     }
 Procedure ParseProgram;
 Begin
-  { TODO 06 }
+  AstRoot := AstNew(NK_PROGRAM, 'PROGRAM', 0);
+  LexNextToken; { premier token }
+  Repeat
+    If CurTokType = TOK_EOF Then Break;
+    Case CurTokType Of
+      KW_DATA:     ParseDataStep;
+      KW_PROC:     ParseProcStep;
+      TOK_SEMICOL: LexNextToken; { ; isole, ignorer }
+    Else
+      CompileWarn('statement inattendu au niveau programme : ' + CurTokStr);
+      SkipToSemicolon;
+    End;
+  Until False;
 End;
+
+{ ============================================================ }
+{ TODO 07 — AST : constructeurs specialises et diagnostic      }
+{ ============================================================ }
+
+{ NK_BINOP : operateur binaire.                                }
+{ L = operande gauche, R = operande droit (indices AST).       }
+Function AstNewBinOp(Const Op: String; L, R, Line: Integer): Integer;
+Var I: Integer;
+Begin
+  I := AstNew(NK_BINOP, Op, Line);
+  If I >= 0 Then Begin AstTable[I].Left := L; AstTable[I].Right := R; End;
+  AstNewBinOp := I;
+End;
+
+{ NK_UNOP : operateur unaire (NOT, signe moins).               }
+{ Child = operande unique (Left).                              }
+Function AstNewUnOp(Const Op: String; Child, Line: Integer): Integer;
+Var I: Integer;
+Begin
+  I := AstNew(NK_UNOP, Op, Line);
+  If I >= 0 Then AstTable[I].Left := Child;
+  AstNewUnOp := I;
+End;
+
+{ NK_LITERAL numerique : NumVal = valeur, IsChar = False.      }
+Function AstNewLitNum(V: LongInt; Line: Integer): Integer;
+Var I: Integer;
+Begin
+  I := AstNew(NK_LITERAL, IntToStr(V), Line);
+  If I >= 0 Then Begin AstTable[I].NumVal := V; AstTable[I].IsChar := False; End;
+  AstNewLitNum := I;
+End;
+
+{ NK_LITERAL chaine : Text = contenu, IsChar = True.           }
+Function AstNewLitStr(Const S: String; Line: Integer): Integer;
+Var I: Integer;
+Begin
+  I := AstNew(NK_LITERAL, S, Line);
+  If I >= 0 Then AstTable[I].IsChar := True;
+  AstNewLitStr := I;
+End;
+
+{ NK_VAR : Text = nom en majuscules, SymRef resolu plus tard.  }
+Function AstNewVar(Const Name: String; Line: Integer): Integer;
+Begin
+  AstNewVar := AstNew(NK_VAR, UpperStr(Name), Line);
+End;
+
+{ NK_CALL : Text = nom de fonction, enfants = arguments.       }
+Function AstNewCall(Const FuncName: String; Line: Integer): Integer;
+Begin
+  AstNewCall := AstNew(NK_CALL, UpperStr(FuncName), Line);
+End;
+
+{ NK_ASSIGN : Left = NK_VAR cible, Right = expression source.  }
+Function AstNewAssign(VarNode, ExprNode, Line: Integer): Integer;
+Var I: Integer;
+Begin
+  I := AstNew(NK_ASSIGN, '=', Line);
+  If I >= 0 Then Begin AstTable[I].Left := VarNode; AstTable[I].Right := ExprNode; End;
+  AstNewAssign := I;
+End;
+
+{ NK_IF : Left = condition, Right = branche then.              }
+{ FirstChild = branche else (ou -1 si absente).                }
+Function AstNewIf(CondN, ThenN, ElseN, Line: Integer): Integer;
+Var I: Integer;
+Begin
+  I := AstNew(NK_IF, 'IF', Line);
+  If I >= 0 Then Begin
+    AstTable[I].Left       := CondN;
+    AstTable[I].Right      := ThenN;
+    AstTable[I].FirstChild := ElseN;
+  End;
+  AstNewIf := I;
+End;
+
+{ NK_DO : Text = 'PLAIN' | 'WHILE' | 'UNTIL' | 'ITER'.        }
+{ Left = expression de controle (sauf PLAIN).                  }
+{ FirstChild = liste des statements du corps.                  }
+Function AstNewDo(Const DoType: String; Line: Integer): Integer;
+Begin
+  AstNewDo := AstNew(NK_DO, DoType, Line);
+End;
+
+{ NK_SELECT : Left = expression optionnelle (ou -1).           }
+{ FirstChild = liste de NK_WHEN.                               }
+Function AstNewSelect(ExprNode, Line: Integer): Integer;
+Var I: Integer;
+Begin
+  I := AstNew(NK_SELECT, 'SELECT', Line);
+  If I >= 0 Then AstTable[I].Left := ExprNode;
+  AstNewSelect := I;
+End;
+
+{ NK_WHEN : Text = 'WHEN' | 'OTHERWISE'.                       }
+{ Left = valeur(s) de comparaison, Right = statement associe.  }
+Function AstNewWhen(ValNode, StmtNode, Line: Integer): Integer;
+Var I: Integer;
+Begin
+  I := AstNew(NK_WHEN, 'WHEN', Line);
+  If I >= 0 Then Begin AstTable[I].Left := ValNode; AstTable[I].Right := StmtNode; End;
+  AstNewWhen := I;
+End;
+
+{ NK_ARRAY_REF : Text = nom du tableau, Left = index.          }
+Function AstNewArrayRef(Const Name: String; IdxNode, Line: Integer): Integer;
+Var I: Integer;
+Begin
+  I := AstNew(NK_ARRAY_REF, UpperStr(Name), Line);
+  If I >= 0 Then AstTable[I].Left := IdxNode;
+  AstNewArrayRef := I;
+End;
+
+{ Relier deux noeuds (utile quand l expression est construite  }
+{ en deux passes ou apres le fait).                            }
+Procedure AstSetLeft(Node, Child: Integer);
+Begin
+  If Node >= 0 Then AstTable[Node].Left := Child;
+End;
+
+Procedure AstSetRight(Node, Child: Integer);
+Begin
+  If Node >= 0 Then AstTable[Node].Right := Child;
+End;
+
+{ Affiche l AST recursivement sur stdout (diagnostic).         }
+Procedure AstDump(N, Indent: Integer);
+Var
+  C, I  : Integer;
+  Pad   : String;
+  KName : String;
+Begin
+  If N < 0 Then Exit;
+  Pad := '';
+  For I := 1 To Indent Do Pad := Pad + '  ';
+  Case AstTable[N].Kind Of
+    NK_PROGRAM    : KName := 'PROGRAM';
+    NK_DATASTEP   : KName := 'DATASTEP';
+    NK_PROCSTEP   : KName := 'PROCSTEP';
+    NK_ASSIGN     : KName := 'ASSIGN';
+    NK_BINOP      : KName := 'BINOP';
+    NK_UNOP       : KName := 'UNOP';
+    NK_LITERAL    : KName := 'LITERAL';
+    NK_VAR        : KName := 'VAR';
+    NK_CALL       : KName := 'CALL';
+    NK_ARRAY_REF  : KName := 'ARRAY_REF';
+    NK_ARRAY_DEF  : KName := 'ARRAY_DEF';
+    NK_IF         : KName := 'IF';
+    NK_SELECT     : KName := 'SELECT';
+    NK_WHEN       : KName := 'WHEN';
+    NK_DO         : KName := 'DO';
+    NK_PUT        : KName := 'PUT';
+    NK_OUTPUT     : KName := 'OUTPUT';
+    NK_DELETE     : KName := 'DELETE';
+    NK_STOP       : KName := 'STOP';
+    NK_RETAIN     : KName := 'RETAIN';
+    NK_SET        : KName := 'SET';
+    NK_MERGE      : KName := 'MERGE';
+    NK_BY         : KName := 'BY';
+    NK_INFILE     : KName := 'INFILE';
+    NK_INPUT      : KName := 'INPUT';
+    NK_FILE       : KName := 'FILE';
+    NK_GOTO       : KName := 'GOTO';
+    NK_LEAVE      : KName := 'LEAVE';
+    NK_CONTINUE   : KName := 'CONTINUE';
+    NK_PROC_PRINT : KName := 'PROC_PRINT';
+    NK_PROC_MEANS : KName := 'PROC_MEANS';
+    NK_PROC_SORT  : KName := 'PROC_SORT';
+    NK_PROC_FREQ  : KName := 'PROC_FREQ';
+    NK_PROC_FORMAT: KName := 'PROC_FORMAT';
+    NK_PROC_GEN   : KName := 'PROC_GEN';
+    NK_VAR_LIST   : KName := 'VAR_LIST';
+    NK_FMT_STMT   : KName := 'FMT_STMT';
+  Else KName := 'NK_' + IntToStr(AstTable[N].Kind);
+  End;
+  Write(Pad, KName);
+  If AstTable[N].Text <> '' Then Write(' "', AstTable[N].Text, '"');
+  If AstTable[N].IsChar      Then Write(' [S]');
+  If AstTable[N].NumVal <> 0 Then Write(' =', AstTable[N].NumVal);
+  WriteLn(' @L', AstTable[N].Line);
+  If AstTable[N].Left >= 0 Then Begin
+    WriteLn(Pad, '  [L]:'); AstDump(AstTable[N].Left, Indent + 2);
+  End;
+  If AstTable[N].Right >= 0 Then Begin
+    WriteLn(Pad, '  [R]:'); AstDump(AstTable[N].Right, Indent + 2);
+  End;
+  C := AstTable[N].FirstChild;
+  If C >= 0 Then Begin
+    WriteLn(Pad, '  [Ch]:');
+    While C >= 0 Do Begin
+      AstDump(C, Indent + 2);
+      C := AstTable[C].NextSibling;
+    End;
+  End;
+End;
+
+{ ============================================================ }
+{ TODO 08 — Table des symboles                                 }
+{ ============================================================ }
 
 Function FindSym(Const Name: String; Kind: Integer): Integer;
 Var I: Integer;
@@ -2001,7 +2742,9 @@ End;
 Function GetOrAddVar(Const Name: String; IsChar: Boolean): Integer;
 Var I: Integer;
 Begin
-  I := FindSym(Name, SK_NONE);
+  { Rechercher uniquement parmi les variables (pas datasets/labels/formats) }
+  I := FindSym(Name, SK_VAR_NUM);
+  If I < 0 Then I := FindSym(Name, SK_VAR_CHAR);
   If I >= 0 Then Begin GetOrAddVar := I; Exit; End;
   If IsChar Then I := AddSym(Name, SK_VAR_CHAR)
             Else I := AddSym(Name, SK_VAR_NUM);
@@ -2017,7 +2760,7 @@ Begin
 End;
 
 Function GetOrAddDataset(Const Name: String): Integer;
-Var I: Integer;
+Var I, SI: Integer;
 Begin
   For I := 0 To DsCount-1 Do
     If DsTable[I].Name = UpperStr(Name) Then
@@ -2028,9 +2771,850 @@ Begin
   DsTable[DsCount].Name   := UpperStr(Name);
   DsTable[DsCount].VarCnt := 0;
   DsTable[DsCount].RowCnt := 0;
+  { Enregistrer dans SymTable pour que FindSym puisse le trouver }
+  SI := FindSym(Name, SK_DATASET);
+  If SI < 0 Then Begin
+    SI := AddSym(Name, SK_DATASET);
+    If SI >= 0 Then SymTable[SI].DsIdx := DsCount;
+  End;
   GetOrAddDataset := DsCount;
   Inc(DsCount);
 End;
+
+{ Cherche une variable dans la liste de colonnes d un dataset.  }
+Function FindDsVar(DsIdx: Integer; Const Name: String): Integer;
+Var I: Integer; NU: String;
+Begin
+  FindDsVar := -1;
+  If (DsIdx < 0) Or (DsIdx >= DsCount) Then Exit;
+  NU := UpperStr(Name);
+  For I := 0 To DsTable[DsIdx].VarCnt - 1 Do
+    If DsTable[DsIdx].Vars[I].Name = NU Then
+      Begin FindDsVar := I; Exit; End;
+End;
+
+{ Trouve ou cree une colonne dans le schema d un dataset.       }
+Function GetOrAddDsVar(DsIdx: Integer; Const Name: String;
+                       IsChar: Boolean): Integer;
+Var I: Integer;
+Begin
+  I := FindDsVar(DsIdx, Name);
+  If I >= 0 Then Begin GetOrAddDsVar := I; Exit; End;
+  If (DsIdx < 0) Or (DsIdx >= DsCount) Or
+     (DsTable[DsIdx].VarCnt >= MAX_DS_COLS) Then Begin
+    CompileError('trop de variables dans le dataset ' +
+                 DsTable[DsIdx].Name);
+    GetOrAddDsVar := -1; Exit;
+  End;
+  I := DsTable[DsIdx].VarCnt;
+  DsTable[DsIdx].Vars[I].Name   := UpperStr(Name);
+  DsTable[DsIdx].Vars[I].IsChar := IsChar;
+  Inc(DsTable[DsIdx].VarCnt);
+  GetOrAddDsVar := I;
+End;
+
+{ Cherche un format utilisateur dans FmtTable (sans le . final). }
+Function FindFormat(Const Name: String): Integer;
+Var I: Integer; NU: String;
+Begin
+  FindFormat := -1;
+  NU := UpperStr(Name);
+  If (Length(NU) > 0) And (NU[Length(NU)] = '.') Then
+    NU := Copy(NU, 1, Length(NU) - 1);
+  For I := 0 To FmtCount - 1 Do
+    If FmtTable[I].Name = NU Then
+      Begin FindFormat := I; Exit; End;
+End;
+
+{ Cree ou retrouve un format utilisateur (PROC FORMAT VALUE ...). }
+Function GetOrAddFormat(Const Name: String): Integer;
+Var I, SI: Integer; NU: String;
+Begin
+  I := FindFormat(Name);
+  If I >= 0 Then Begin GetOrAddFormat := I; Exit; End;
+  If FmtCount >= MAX_FORMATS Then Begin
+    CompileError('trop de formats utilisateur'); GetOrAddFormat := -1; Exit;
+  End;
+  NU := UpperStr(Name);
+  If (Length(NU) > 0) And (NU[Length(NU)] = '.') Then
+    NU := Copy(NU, 1, Length(NU) - 1);
+  FmtTable[FmtCount].Name  := NU;
+  FmtTable[FmtCount].Count := 0;
+  { Enregistrer dans SymTable }
+  SI := FindSym(NU, SK_FORMAT);
+  If SI < 0 Then Begin
+    SI := AddSym(NU, SK_FORMAT);
+    If SI >= 0 Then SymTable[SI].FmtIdx := FmtCount;
+  End;
+  GetOrAddFormat := FmtCount;
+  Inc(FmtCount);
+End;
+
+{ Cherche une etiquette GOTO dans SymTable.                     }
+Function FindLabel(Const Name: String): Integer;
+Begin
+  FindLabel := FindSym(Name, SK_LABEL);
+End;
+
+{ Cree une etiquette GOTO dans SymTable.                        }
+Function AddLabel(Const Name: String): Integer;
+Begin
+  AddLabel := AddSym(Name, SK_LABEL);
+End;
+
+{ Retourne le nom assembleur stable d un symbole.               }
+{ Cache le resultat dans AsmName pour eviter de le recalculer.  }
+Function SymGenAsmName(Idx: Integer): String;
+Begin
+  If Idx < 0 Then Begin SymGenAsmName := ''; Exit; End;
+  If SymTable[Idx].AsmName <> '' Then Begin
+    SymGenAsmName := SymTable[Idx].AsmName; Exit;
+  End;
+  Case SymTable[Idx].Kind Of
+    SK_VAR_NUM  : SymTable[Idx].AsmName := '_SAN_' + SymTable[Idx].Name;
+    SK_VAR_CHAR : SymTable[Idx].AsmName := '_SAC_' + SymTable[Idx].Name;
+    SK_LABEL    : SymTable[Idx].AsmName := '_SAL_' + SymTable[Idx].Name;
+    SK_DATASET  : SymTable[Idx].AsmName := '_SAD_' + SymTable[Idx].Name;
+    SK_FORMAT   : SymTable[Idx].AsmName := '_SAF_' + SymTable[Idx].Name;
+  Else            SymTable[Idx].AsmName := '_SAS_' + SymTable[Idx].Name;
+  End;
+  SymGenAsmName := SymTable[Idx].AsmName;
+End;
+
+{ Definit l offset .data d une variable (appele par le codegen). }
+Procedure SymSetOffset(Idx: Integer; Off: LongInt);
+Begin
+  If Idx >= 0 Then SymTable[Idx].Offset := Off;
+End;
+
+{ Marque une variable comme ayant ete affectee au moins une fois.}
+Procedure SymMarkAssigned(Idx: Integer);
+Begin
+  If Idx >= 0 Then SymTable[Idx].Assigned := True;
+End;
+
+{ Emet un avertissement si la variable n a jamais ete affectee. }
+Procedure SymWarnUnassigned(Idx: Integer; Const Context: String);
+Begin
+  If (Idx < 0) Then Exit;
+  If (Not SymTable[Idx].Assigned) And (Not SymTable[Idx].Warned) Then Begin
+    SymTable[Idx].Warned := True;
+    CompileWarn('variable jamais initialisee : ' +
+                SymTable[Idx].Name + ' (' + Context + ')');
+  End;
+End;
+
+{ ============================================================ }
+{ TODO 09 — DATA STEP : STRUCTURE ET BOUCLE IMPLICITE          }
+{ ============================================================ }
+
+{ OUTPUT ; — emet l observation courante dans le dataset de    }
+{ sortie (en V1 : note dans l AST, codegen TODO 25).           }
+Procedure ParseStmtOutput;
+Var Node: Integer;
+Begin
+  Node := AstNew(NK_OUTPUT, 'OUTPUT', CurLineNum);
+  AstAddChild(CurDsRoot, Node);
+  LexNextToken; { avancer apres OUTPUT }
+  If CurTokType = TOK_SEMICOL Then LexNextToken;
+End;
+
+{ DELETE ; — abandonne l observation courante (ne pas ecrire). }
+Procedure ParseStmtDelete;
+Var Node: Integer;
+Begin
+  Node := AstNew(NK_DELETE, 'DELETE', CurLineNum);
+  AstAddChild(CurDsRoot, Node);
+  LexNextToken; { avancer apres DELETE }
+  If CurTokType = TOK_SEMICOL Then LexNextToken;
+End;
+
+{ STOP ; — interrompt immediatement la boucle DATA step.       }
+Procedure ParseStmtStop;
+Var Node: Integer;
+Begin
+  Node := AstNew(NK_STOP, 'STOP', CurLineNum);
+  AstAddChild(CurDsRoot, Node);
+  LexNextToken; { avancer apres STOP }
+  If CurTokType = TOK_SEMICOL Then LexNextToken;
+End;
+
+{ RETAIN var [val] ... ;                                        }
+{ Conserve la valeur de chaque variable entre les iterations.  }
+{ Valeur initiale optionnelle : numerique, chaine ou signe -.  }
+Procedure ParseStmtRetain;
+Var
+  Node, VarNode : Integer;
+  Neg           : Boolean;
+Begin
+  Node := AstNew(NK_RETAIN, 'RETAIN', CurLineNum);
+  AstAddChild(CurDsRoot, Node);
+  LexNextToken; { avancer apres RETAIN }
+  While (CurTokType <> TOK_SEMICOL) And (CurTokType <> TOK_EOF) Do Begin
+    If CurTokType = TOK_IDENT Then Begin
+      VarNode := AstNewVar(CurTokStr, CurLineNum);
+      GetOrAddVar(CurTokStr, False);
+      AstAddChild(Node, VarNode);
+      LexNextToken;
+      { Valeur initiale optionnelle }
+      Neg := False;
+      If CurTokType = TOK_MINUS Then Begin
+        Neg := True; LexNextToken;
+      End;
+      If CurTokType = TOK_INTEGER Then Begin
+        If Neg Then
+          AstTable[VarNode].NumVal := -StrToInt(CurTokStr)
+        Else
+          AstTable[VarNode].NumVal := StrToInt(CurTokStr);
+        LexNextToken;
+      End Else If CurTokType = TOK_FLOAT Then Begin
+        { Valeur reelle : on stocke juste le flag IsChar=False }
+        LexNextToken;
+      End Else If CurTokType = TOK_STRING Then Begin
+        AstTable[VarNode].Text   := CurTokStr;
+        AstTable[VarNode].IsChar := True;
+        GetOrAddVar(AstTable[VarNode].Text, True);
+        LexNextToken;
+      End Else If Neg Then Begin
+        { signe moins orphelin : le remettre dans le flux n est }
+        { pas possible ; on ignore simplement }
+      End;
+    End Else
+      LexNextToken; { ignorer tokens inconnus }
+  End;
+  If CurTokType = TOK_SEMICOL Then LexNextToken;
+End;
+
+{ --- Stubs pour TODO 10-17 / 22 / 13 --- }
+
+{ Affectation simple (var = expr;), sommante (var + expr;),    }
+{ element de tableau : arr[i] = expr ;  ou etiquette (nom:).   }
+Procedure ParseStmtAssign;
+Var
+  VarName    : String;
+  VarNode    : Integer;
+  VarNode2   : Integer;
+  IdxNode    : Integer;
+  ExprNode   : Integer;
+  AssignNode : Integer;
+  AddNode    : Integer;
+  SIdx       : Integer;
+  Line       : Integer;
+Begin
+  Line    := CurLineNum;
+  VarName := UpperStr(CurTokStr);
+  LexNextToken; { consommer le nom }
+  If CurTokType = TOK_COLON Then Begin
+    { Etiquette : name: }
+    AddLabel(VarName);
+    LexNextToken;
+    Exit;
+  End;
+  If CurTokType = TOK_LBRACE Then Begin
+    { Element de tableau : arr[i] = expr ;                       }
+    LexNextToken;
+    IdxNode := ParseExprOr(Line);
+    If CurTokType = TOK_RBRACE Then LexNextToken;
+    GetOrAddVar(VarName, False);
+    If CurTokType = TOK_ASSIGN Then Begin
+      LexNextToken; { consommer = }
+      ExprNode   := ParseExprOr(Line);
+      VarNode    := AstNewArrayRef(VarName, IdxNode, Line);
+      AssignNode := AstNewAssign(VarNode, ExprNode, Line);
+      AstAddChild(CurDsRoot, AssignNode);
+    End;
+    If CurTokType = TOK_SEMICOL Then LexNextToken;
+    Exit;
+  End;
+  If CurTokType = TOK_ASSIGN Then Begin
+    { var = expr ; }
+    SIdx       := GetOrAddVar(VarName, False);
+    LexNextToken; { consommer = }
+    ExprNode   := ParseExprOr(Line);
+    VarNode    := AstNewVar(VarName, Line);
+    AssignNode := AstNewAssign(VarNode, ExprNode, Line);
+    SymMarkAssigned(SIdx);
+    AstAddChild(CurDsRoot, AssignNode);
+    If CurTokType = TOK_SEMICOL Then LexNextToken;
+    Exit;
+  End;
+  If CurTokType = TOK_PLUS Then Begin
+    { var + expr ; — sommation avec RETAIN implicite }
+    SIdx       := GetOrAddVar(VarName, False);
+    LexNextToken; { consommer + }
+    ExprNode   := ParseExprOr(Line);
+    VarNode    := AstNewVar(VarName, Line);
+    VarNode2   := AstNewVar(VarName, Line);
+    AddNode    := AstNewBinOp('+', VarNode2, ExprNode, Line);
+    AssignNode := AstNewAssign(VarNode, AddNode, Line);
+    AstTable[AssignNode].Text := 'SUM';
+    SymMarkAssigned(SIdx);
+    AstAddChild(CurDsRoot, AssignNode);
+    If CurTokType = TOK_SEMICOL Then LexNextToken;
+    Exit;
+  End;
+  SkipToSemicolon;
+End;
+
+{ PUT — TODO 15 }
+Procedure ParseStmtPut;
+Begin
+  SkipToSemicolon;
+End;
+
+{ ParseIfBody — parse le corps apres THEN ou ELSE.             }
+{ Si le token courant est DO : consomme DO ; corps... END ;    }
+{ Sinon : un seul statement.                                   }
+{ Dans les deux cas, les statements sont enfants d un NK_DO    }
+{ temporaire cree ici, qui devient le noeud corps retourne.    }
+Function ParseIfBody(BodyLine: Integer): Integer;
+Var
+  DoNode     : Integer;
+  SaveDsRoot : Integer;
+Begin
+  SaveDsRoot := CurDsRoot;
+  DoNode     := AstNewDo('PLAIN', BodyLine);
+  CurDsRoot  := DoNode;
+  If CurTokType = KW_DO Then Begin
+    { Bloc explicite : DO ; stmts... END ; }
+    LexNextToken; { sauter DO }
+    If CurTokType = TOK_SEMICOL Then LexNextToken; { sauter ; }
+    While (CurTokType <> KW_END)  And (CurTokType <> TOK_EOF) And
+          (CurTokType <> KW_RUN)  And (CurTokType <> KW_QUIT) Do
+      ParseDataStmt;
+    If CurTokType = KW_END  Then LexNextToken; { sauter END }
+    If CurTokType = TOK_SEMICOL Then LexNextToken; { sauter ; }
+  End Else Begin
+    { Statement unique (peut etre un IF imbrique) }
+    ParseDataStmt;
+  End;
+  CurDsRoot    := SaveDsRoot;
+  ParseIfBody  := DoNode;
+End;
+
+{ IF expr THEN corps [ELSE corps]                              }
+{ ELSE IF est traite de maniere recursive (nearest-ELSE rule). }
+Procedure ParseStmtIf;
+Var
+  IfNode     : Integer;
+  CondNode   : Integer;
+  ThenNode   : Integer;
+  ElseNode   : Integer;
+  SaveDsRoot : Integer;
+  Line       : Integer;
+Begin
+  Line := CurLineNum;
+  LexNextToken; { sauter IF }
+  CondNode := ParseExprOr(Line);
+  If CurTokType = KW_THEN Then LexNextToken; { sauter THEN }
+  ThenNode := ParseIfBody(Line);
+  ElseNode := -1;
+  If CurTokType = KW_ELSE Then Begin
+    LexNextToken; { sauter ELSE }
+    If CurTokType = KW_IF Then Begin
+      { ELSE IF — le IF suivant est emballe dans un NK_DO collecteur }
+      ElseNode   := AstNewDo('PLAIN', CurLineNum);
+      SaveDsRoot := CurDsRoot;
+      CurDsRoot  := ElseNode;
+      ParseStmtIf; { recursif : gere le ELSE IF et ses ELSE eventuels }
+      CurDsRoot  := SaveDsRoot;
+    End Else Begin
+      ElseNode := ParseIfBody(CurLineNum);
+    End;
+  End;
+  IfNode := AstNewIf(CondNode, ThenNode, ElseNode, Line);
+  AstAddChild(CurDsRoot, IfNode);
+End;
+
+{ SELECT [(expr)] ; WHEN (val [,val...]) corps ; ... [OTHERWISE corps ;] END ; }
+{ SELECT avec expression : comparer expr a chaque valeur de WHEN.             }
+{ SELECT sans expression : chaque WHEN contient une condition booleenne.      }
+{ WHEN(v1,v2,v3) : les valeurs supplementaires sont enfants du noeud NK_WHEN. }
+Procedure ParseStmtSelect;
+Var
+  SelectNode : Integer;
+  WhenNode   : Integer;
+  ValNode    : Integer;
+  BodyNode   : Integer;
+  ExprNode   : Integer;
+  ExtraVals  : Array[0..15] Of Integer;
+  ExtraCount : Integer;
+  I          : Integer;
+  Line       : Integer;
+Begin
+  Line := CurLineNum;
+  LexNextToken; { sauter SELECT }
+  ExprNode := -1;
+  { Expression optionnelle : SELECT (expr) ; }
+  If CurTokType = TOK_LPAREN Then Begin
+    LexNextToken; { consommer ( }
+    ExprNode := ParseExprOr(Line);
+    If CurTokType = TOK_RPAREN Then LexNextToken; { consommer ) }
+  End;
+  If CurTokType = TOK_SEMICOL Then LexNextToken; { consommer ; }
+  SelectNode := AstNewSelect(ExprNode, Line);
+  { Boucle WHEN / OTHERWISE jusqu a END }
+  While (CurTokType <> KW_END)  And (CurTokType <> TOK_EOF) And
+        (CurTokType <> KW_RUN)  And (CurTokType <> KW_QUIT) Do Begin
+    Line := CurLineNum;
+    If CurTokType = KW_WHEN Then Begin
+      LexNextToken; { sauter WHEN }
+      ValNode    := -1;
+      ExtraCount := 0;
+      If CurTokType = TOK_LPAREN Then Begin
+        LexNextToken; { consommer ( }
+        ValNode := ParseExprOr(Line);
+        While CurTokType = TOK_COMMA Do Begin
+          LexNextToken; { consommer , }
+          If ExtraCount < 16 Then Begin
+            ExtraVals[ExtraCount] := ParseExprOr(Line);
+            Inc(ExtraCount);
+          End;
+        End;
+        If CurTokType = TOK_RPAREN Then LexNextToken; { consommer ) }
+      End;
+      BodyNode := ParseIfBody(Line);
+      WhenNode := AstNewWhen(ValNode, BodyNode, Line);
+      For I := 0 To ExtraCount - 1 Do
+        AstAddChild(WhenNode, ExtraVals[I]);
+      AstAddChild(SelectNode, WhenNode);
+    End Else If CurTokType = KW_OTHERWISE Then Begin
+      LexNextToken; { sauter OTHERWISE }
+      BodyNode := ParseIfBody(Line);
+      WhenNode := AstNew(NK_WHEN, 'OTHERWISE', Line);
+      AstTable[WhenNode].Right := BodyNode;
+      AstAddChild(SelectNode, WhenNode);
+    End Else Begin
+      SkipToSemicolon; { token inattendu dans le corps SELECT }
+    End;
+  End;
+  If CurTokType = KW_END  Then LexNextToken; { sauter END }
+  If CurTokType = TOK_SEMICOL Then LexNextToken; { sauter ; }
+  AstAddChild(CurDsRoot, SelectNode);
+End;
+
+{ DO ; / DO WHILE(c) ; / DO UNTIL(c) ; / DO v=s TO e [BY p]    }
+{ [WHILE(c)] ; — cinq formes, toutes closes par END ;          }
+{ Encodage AST NK_DO :                                         }
+{   Text = 'PLAIN'|'WHILE'|'UNTIL'|'ITER'|'ITERWHILE'         }
+{   WHILE/UNTIL : Left = condition                             }
+{   ITER/ITERWHILE : Left=start Right=end SymRef=sym NumVal=pas}
+{     (pas=1 si absent, -1 si negatif literal)                 }
+{     ITERWHILE : premier enfant = condition WHILE             }
+{   Corps = enfants (apres eventuelle cond WHILE/UNTIL).       }
+Procedure ParseStmtDo;
+Var
+  DoNode     : Integer;
+  CondNode   : Integer;
+  StartNode  : Integer;
+  EndNode    : Integer;
+  StepExpr   : Integer;
+  InnerNode  : Integer;
+  VarSym     : Integer;
+  SaveDsRoot : Integer;
+  Line       : Integer;
+  VarName    : String;
+  StepLit    : LongInt;
+  HasWhile   : Boolean;
+Begin
+  Line := CurLineNum;
+  LexNextToken; { sauter DO }
+
+  If CurTokType = KW_WHILE Then Begin
+    { DO WHILE (cond) ; }
+    LexNextToken;
+    If CurTokType = TOK_LPAREN Then LexNextToken;
+    CondNode := ParseExprOr(Line);
+    If CurTokType = TOK_RPAREN Then LexNextToken;
+    If CurTokType = TOK_SEMICOL Then LexNextToken;
+    DoNode := AstNewDo('WHILE', Line);
+    AstSetLeft(DoNode, CondNode);
+
+  End Else If CurTokType = KW_UNTIL Then Begin
+    { DO UNTIL (cond) ; }
+    LexNextToken;
+    If CurTokType = TOK_LPAREN Then LexNextToken;
+    CondNode := ParseExprOr(Line);
+    If CurTokType = TOK_RPAREN Then LexNextToken;
+    If CurTokType = TOK_SEMICOL Then LexNextToken;
+    DoNode := AstNewDo('UNTIL', Line);
+    AstSetLeft(DoNode, CondNode);
+
+  End Else If CurTokType = TOK_SEMICOL Then Begin
+    { DO ; — bloc simple }
+    LexNextToken;
+    DoNode := AstNewDo('PLAIN', Line);
+
+  End Else If CurTokType = TOK_IDENT Then Begin
+    { DO var = start TO end [BY pas] [WHILE (cond)] ; }
+    VarName := UpperStr(CurTokStr);
+    LexNextToken;
+    If CurTokType <> TOK_ASSIGN Then Begin
+      SkipToSemicolon;
+      DoNode := AstNewDo('PLAIN', Line);
+    End Else Begin
+      LexNextToken; { sauter = }
+      StartNode := ParseExprOr(Line);
+      VarSym    := GetOrAddVar(VarName, False);
+      SymMarkAssigned(VarSym);
+      If CurTokType = KW_TO Then LexNextToken;
+      EndNode  := ParseExprOr(Line);
+      { Pas : BY expression (defaut 1) }
+      StepLit  := 1;
+      StepExpr := -1;
+      If CurTokType = KW_BY Then Begin
+        LexNextToken;
+        StepExpr := ParseExprOr(Line);
+        If (AstTable[StepExpr].Kind = NK_LITERAL) And
+           (Not AstTable[StepExpr].IsChar) Then
+          StepLit := AstTable[StepExpr].NumVal
+        Else If (AstTable[StepExpr].Kind = NK_UNOP) And
+                (AstTable[StepExpr].Text = '-') Then Begin
+          InnerNode := AstTable[StepExpr].Left;
+          If (InnerNode >= 0) And
+             (AstTable[InnerNode].Kind = NK_LITERAL) And
+             (Not AstTable[InnerNode].IsChar) Then
+            StepLit := -AstTable[InnerNode].NumVal
+          Else
+            StepLit := -1;
+        End Else
+          StepLit := 1; { expression complexe : V1 approxime a 1 }
+      End;
+      { Condition WHILE optionnelle }
+      HasWhile := False;
+      CondNode := -1;
+      If CurTokType = KW_WHILE Then Begin
+        HasWhile := True;
+        LexNextToken;
+        If CurTokType = TOK_LPAREN Then LexNextToken;
+        CondNode := ParseExprOr(Line);
+        If CurTokType = TOK_RPAREN Then LexNextToken;
+      End;
+      If CurTokType = TOK_SEMICOL Then LexNextToken;
+      If HasWhile Then
+        DoNode := AstNewDo('ITERWHILE', Line)
+      Else
+        DoNode := AstNewDo('ITER', Line);
+      AstTable[DoNode].Left   := StartNode;
+      AstTable[DoNode].Right  := EndNode;
+      AstTable[DoNode].SymRef := VarSym;
+      AstTable[DoNode].NumVal := StepLit;
+      If CondNode >= 0 Then
+        AstAddChild(DoNode, CondNode); { WHILE cond : premier enfant }
+    End;
+  End Else Begin
+    SkipToSemicolon;
+    DoNode := AstNewDo('PLAIN', Line);
+  End;
+
+  { Corps : statements jusqu a END ; }
+  SaveDsRoot := CurDsRoot;
+  CurDsRoot  := DoNode;
+  While (CurTokType <> KW_END)  And (CurTokType <> TOK_EOF) And
+        (CurTokType <> KW_RUN)  And (CurTokType <> KW_QUIT) Do
+    ParseDataStmt;
+  CurDsRoot := SaveDsRoot;
+  If CurTokType = KW_END  Then LexNextToken;
+  If CurTokType = TOK_SEMICOL Then LexNextToken;
+  AstAddChild(CurDsRoot, DoNode);
+End;
+
+{ ARRAY — TODO 14 }
+Procedure ParseStmtArray;
+Begin
+  SkipToSemicolon;
+End;
+
+{ INFILE — TODO 16 }
+Procedure ParseStmtInfile;
+Begin
+  SkipToSemicolon;
+End;
+
+{ INPUT — TODO 16 }
+Procedure ParseStmtInput;
+Begin
+  SkipToSemicolon;
+End;
+
+{ FILE — TODO 16 }
+Procedure ParseStmtFile;
+Begin
+  SkipToSemicolon;
+End;
+
+{ SET — TODO 17 }
+Procedure ParseStmtSet;
+Begin
+  SkipToSemicolon;
+End;
+
+{ MERGE — TODO 17 }
+Procedure ParseStmtMerge;
+Begin
+  SkipToSemicolon;
+End;
+
+{ BY dans DATA step — TODO 17 }
+Procedure ParseStmtBy;
+Begin
+  SkipToSemicolon;
+End;
+
+{ FORMAT (declaration dans DATA step) — TODO 22 }
+Procedure ParseStmtFmtDecl;
+Begin
+  SkipToSemicolon;
+End;
+
+{ GOTO label ; — saut inconditionnel.                          }
+{ La definition d etiquette (label:) est geree par             }
+{ ParseStmtAssign (TOK_IDENT suivi de TOK_COLON).             }
+Procedure ParseStmtGoto;
+Var
+  LblName : String;
+  Line    : Integer;
+Begin
+  Line    := CurLineNum;
+  LblName := '';
+  LexNextToken; { sauter GOTO }
+  If CurTokType = TOK_IDENT Then Begin
+    LblName := UpperStr(CurTokStr);
+    LexNextToken;
+  End;
+  If CurTokType = TOK_SEMICOL Then LexNextToken;
+  AstAddChild(CurDsRoot, AstNew(NK_GOTO, LblName, Line));
+End;
+
+{ ============================================================ }
+{ TODO 10 — DATA STEP : AFFECTATIONS ET OPERATEURS             }
+{ Parseur d expressions descendant recursif.                   }
+{ Precedence (de la plus forte a la plus faible) :             }
+{   primaire  > **  > unaire -/+  > */  > +-                   }
+{   > ||  > comparaisons  > NOT  > AND  > OR                   }
+{ ============================================================ }
+
+{ ParseExprPrimary : atome de l expression.                    }
+{ Reconnait : literal entier/reel/chaine, variable, appel de   }
+{ fonction name(...), tableau name[i], parentheses.            }
+{ Mot-cle suivi de ( : traite comme appel de fonction.         }
+{ Token inattendu : retourne LitNum(0) sans avancer.           }
+Function ParseExprPrimary(Line: Integer): Integer;
+Var
+  T    : Integer;
+  Name : String;
+  Idx  : Integer;
+Begin
+  Case CurTokType Of
+    TOK_INTEGER: Begin
+      T := AstNewLitNum(StrToInt(CurTokStr), Line);
+      LexNextToken;
+      ParseExprPrimary := T;
+    End;
+    TOK_FLOAT: Begin
+      { Reel : Text = chaine brute, NumVal = 0 ; codegen TODO 25 }
+      T := AstNew(NK_LITERAL, CurTokStr, Line);
+      LexNextToken;
+      ParseExprPrimary := T;
+    End;
+    TOK_STRING: Begin
+      T := AstNewLitStr(CurTokStr, Line);
+      LexNextToken;
+      ParseExprPrimary := T;
+    End;
+    TOK_MACRO_VAR: Begin
+      T := AstNewVar(CurTokStr, Line);
+      GetOrAddVar(CurTokStr, False);
+      LexNextToken;
+      ParseExprPrimary := T;
+    End;
+    TOK_IDENT: Begin
+      Name := UpperStr(CurTokStr);
+      LexNextToken;
+      If CurTokType = TOK_LPAREN Then Begin
+        { Appel de fonction : name(arg1 [, arg2 ...]) }
+        T := AstNewCall(Name, Line);
+        LexNextToken; { consommer ( }
+        While (CurTokType <> TOK_RPAREN) And (CurTokType <> TOK_EOF) Do Begin
+          Idx := ParseExprOr(Line);
+          AstAddChild(T, Idx);
+          If CurTokType = TOK_COMMA Then LexNextToken;
+        End;
+        If CurTokType = TOK_RPAREN Then LexNextToken; { consommer ) }
+        ParseExprPrimary := T;
+      End Else If CurTokType = TOK_LBRACE Then Begin
+        { Acces tableau : name[i]                                 }
+        LexNextToken;
+        Idx := ParseExprOr(Line);
+        If CurTokType = TOK_RBRACE Then LexNextToken;
+        T := AstNewArrayRef(Name, Idx, Line);
+        GetOrAddVar(Name, False);
+        ParseExprPrimary := T;
+      End Else Begin
+        { Reference de variable simple }
+        T := AstNewVar(Name, Line);
+        GetOrAddVar(Name, False);
+        ParseExprPrimary := T;
+      End;
+    End;
+    TOK_LPAREN: Begin
+      LexNextToken; { consommer ( }
+      T := ParseExprOr(Line);
+      If CurTokType = TOK_RPAREN Then LexNextToken; { consommer ) }
+      ParseExprPrimary := T;
+    End;
+    KW_DATA..KW_OTHER: Begin
+      { Mot-cle utilise comme nom de fonction (ex: PUT(n), DIM(a)) }
+      Name := UpperStr(CurTokStr);
+      LexNextToken;
+      If CurTokType = TOK_LPAREN Then Begin
+        T := AstNewCall(Name, Line);
+        LexNextToken; { consommer ( }
+        While (CurTokType <> TOK_RPAREN) And (CurTokType <> TOK_EOF) Do Begin
+          Idx := ParseExprOr(Line);
+          AstAddChild(T, Idx);
+          If CurTokType = TOK_COMMA Then LexNextToken;
+        End;
+        If CurTokType = TOK_RPAREN Then LexNextToken;
+        ParseExprPrimary := T;
+      End Else Begin
+        { Mot-cle sans () : deja avance, retourner 0 }
+        ParseExprPrimary := AstNewLitNum(0, Line);
+      End;
+    End;
+  Else
+    { Token inattendu : ne pas avancer, retourner 0 }
+    ParseExprPrimary := AstNewLitNum(0, Line);
+  End;
+End;
+
+{ ** — droite-associatif : a**b**c = a**(b**c).               }
+Function ParseExprPow(Line: Integer): Integer;
+Var L, R: Integer;
+Begin
+  L := ParseExprPrimary(Line);
+  If CurTokType = TOK_STARSTAR Then Begin
+    LexNextToken;
+    R := ParseExprUnary(Line); { droite-associatif }
+    L := AstNewBinOp('**', L, R, Line);
+  End;
+  ParseExprPow := L;
+End;
+
+{ Unaire - ou + (pas d adressage de precedence supplementaire). }
+Function ParseExprUnary(Line: Integer): Integer;
+Var Child: Integer;
+Begin
+  If CurTokType = TOK_MINUS Then Begin
+    LexNextToken;
+    Child := ParseExprPow(Line);
+    ParseExprUnary := AstNewUnOp('-', Child, Line);
+  End Else If CurTokType = TOK_PLUS Then Begin
+    LexNextToken;
+    ParseExprUnary := ParseExprPow(Line);
+  End Else
+    ParseExprUnary := ParseExprPow(Line);
+End;
+
+{ * et / — associatif gauche.                                  }
+Function ParseExprMul(Line: Integer): Integer;
+Var L, R: Integer; Op: String;
+Begin
+  L := ParseExprUnary(Line);
+  While (CurTokType = TOK_STAR) Or (CurTokType = TOK_SLASH) Do Begin
+    Op := CurTokStr;
+    LexNextToken;
+    R := ParseExprUnary(Line);
+    L := AstNewBinOp(Op, L, R, Line);
+  End;
+  ParseExprMul := L;
+End;
+
+{ + et - — associatif gauche.                                  }
+Function ParseExprAdd(Line: Integer): Integer;
+Var L, R: Integer; Op: String;
+Begin
+  L := ParseExprMul(Line);
+  While (CurTokType = TOK_PLUS) Or (CurTokType = TOK_MINUS) Do Begin
+    Op := CurTokStr;
+    LexNextToken;
+    R := ParseExprMul(Line);
+    L := AstNewBinOp(Op, L, R, Line);
+  End;
+  ParseExprAdd := L;
+End;
+
+{ || et !! — concatenation de chaines.                         }
+Function ParseExprConcat(Line: Integer): Integer;
+Var L, R: Integer;
+Begin
+  L := ParseExprAdd(Line);
+  While CurTokType = TOK_CONCAT Do Begin
+    LexNextToken;
+    R := ParseExprAdd(Line);
+    L := AstNewBinOp('||', L, R, Line);
+  End;
+  ParseExprConcat := L;
+End;
+
+{ = < > <= >= <> ^= ~= != — comparaisons (pas d enchainage).  }
+Function ParseExprCmp(Line: Integer): Integer;
+Var L, R: Integer; Op: String;
+Begin
+  L := ParseExprConcat(Line);
+  While (CurTokType = TOK_EQ) Or (CurTokType = TOK_LT) Or
+        (CurTokType = TOK_GT) Or (CurTokType = TOK_LE) Or
+        (CurTokType = TOK_GE) Or (CurTokType = TOK_NE) Do Begin
+    Op := CurTokStr;
+    LexNextToken;
+    R := ParseExprConcat(Line);
+    L := AstNewBinOp(Op, L, R, Line);
+  End;
+  ParseExprCmp := L;
+End;
+
+{ NOT / ! / ^ / ~ — negation logique, droite-associatif.       }
+Function ParseExprNot(Line: Integer): Integer;
+Var Child: Integer;
+Begin
+  If (CurTokType = TOK_NOT) Or (CurTokType = KW_NOT) Then Begin
+    LexNextToken;
+    Child := ParseExprNot(Line); { recursif : NOT NOT x = x }
+    ParseExprNot := AstNewUnOp('NOT', Child, Line);
+  End Else
+    ParseExprNot := ParseExprCmp(Line);
+End;
+
+{ AND / & — ET logique, associatif gauche.                     }
+Function ParseExprAnd(Line: Integer): Integer;
+Var L, R: Integer;
+Begin
+  L := ParseExprNot(Line);
+  While (CurTokType = TOK_AND) Or (CurTokType = KW_AND) Do Begin
+    LexNextToken;
+    R := ParseExprNot(Line);
+    L := AstNewBinOp('AND', L, R, Line);
+  End;
+  ParseExprAnd := L;
+End;
+
+{ OR / | — OU logique, associatif gauche.                      }
+{ Point d entree principal du parseur d expressions.           }
+Function ParseExprOr(Line: Integer): Integer;
+Var L, R: Integer;
+Begin
+  L := ParseExprAnd(Line);
+  While (CurTokType = TOK_OR) Or (CurTokType = KW_OR) Do Begin
+    LexNextToken;
+    R := ParseExprAnd(Line);
+    L := AstNewBinOp('OR', L, R, Line);
+  End;
+  ParseExprOr := L;
+End;
+
+{ ============================================================ }
+{ TODO 25 — Generation de code (stubs)                         }
+{ ============================================================ }
 
 Procedure CodegenProgram;
 Begin
