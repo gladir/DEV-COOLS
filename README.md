@@ -673,6 +673,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer le compilateur SAS vers l'assembleur du microprocesseur 8086 (MASM/TASM).</td>
 		</tr>
 		<tr>
+			<td><b>SNOBCW32.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur SNOBOL4 pour l'assembleur du microprocesseur 80386 pour le systeme d'exploitation Windows 32 bits (PE Win32).</td>
+		</tr>	
+		<tr>
 			<td><b>SNOBOL86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur Snobol 4 pour l'assembleur du microprocesseur 8086.</td>
 		</tr>
