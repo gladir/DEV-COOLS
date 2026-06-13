@@ -453,6 +453,7 @@ Const
   MAX_MACRO_BODY = 128;      { lignes de corps par %MACRO }
   MAX_MACRO_LINES = 4096;    { lignes du source SAS max }
   MAX_LOOP_NEST  = 32;       { profondeur de DO imbriques }
+  MAX_ARRAYS     = 256;      { tableaux ARRAY declares }
 
   { Sections binaires }
   BIN_SEC_TEXT   = 0;
@@ -723,6 +724,14 @@ Type
     LblEnd   : String;       { etiquette apres la boucle (LEAVE) }
   End;
 
+  { Entree de la table des tableaux ARRAY (TODO 14) }
+  TArrayRec = Record
+    Name      : String;      { nom du tableau (majuscules) }
+    BaseLabel : String;      { label du premier element en .data }
+    TotalSize : Integer;     { nombre d elements }
+    IsTemp    : Boolean;     { _TEMPORARY_ : sans variables liees }
+  End;
+
 { ------------------------------------------------------------ }
 { Variables globales                                           }
 { ------------------------------------------------------------ }
@@ -793,6 +802,10 @@ Var
   { Pile de contextes de boucles DO (LEAVE / CONTINUE) }
   LoopStack    : Array[0..MAX_LOOP_NEST-1] Of TLoopCtx;
   LoopTop      : Integer;
+
+  { Table des tableaux ARRAY (TODO 14) }
+  ArrayTable   : Array[0..MAX_ARRAYS-1]  Of TArrayRec;
+  ArrayCount   : Integer;
 
   { Ligne source courante (diagnostics) }
   CurLineNum   : Integer;
@@ -1051,12 +1064,49 @@ Procedure BinPushReg(R: Integer);                              Forward;
 Procedure BinPopReg(R: Integer);                               Forward;
 Procedure BinRet;                                              Forward;
 Procedure BinPushImm32(V: LongInt);                            Forward;
+Procedure BinPushLabel(Const Name: String);                    Forward;
 Procedure BinAddEspImm8(N: Integer);                           Forward;
 Procedure BinCallLabel(Const Name: String);                    Forward;
 Procedure BinCallImport(Const FuncName: String);               Forward;
 Procedure BinJmpLabel(Const Name: String);                     Forward;
 Procedure BinJccLabel(CC: Integer; Const Name: String);        Forward;
 Procedure EmitRuntimeIO;                                       Forward;
+{ TODO 19 : Helpers .data/.rdata et codegen PROC PRINT }
+Procedure BinEmitDataByte(B: Byte);                            Forward;
+Procedure BinEmitRDataByte(B: Byte);                           Forward;
+Procedure BinDefineDataLabel(Const Name: String);              Forward;
+Procedure BinDefineRDataLabel(Const Name: String);             Forward;
+Procedure BinPushMem32(Const LblName: String);                 Forward;
+Function  EmitRDataStr(Const S: String): String;               Forward;
+Procedure AllocVars;                                           Forward;
+Procedure CodegenProcPrint(ProcNode: Integer);                 Forward;
+{ TODO 20 : Codegen PROC MEANS }
+Procedure CodegenProcMeans(ProcNode: Integer);                 Forward;
+{ TODO 21 : Codegen PROC FREQ et PROC SORT }
+Procedure CodegenProcFreq(ProcNode: Integer);                  Forward;
+Procedure CodegenProcSort(ProcNode: Integer);                  Forward;
+{ TODO 22 : Helpers codegen et PROC FORMAT }
+Procedure BinMovEaxMem(Const LblName: String);                 Forward;
+Procedure BinCmpEaxImm32(V: LongInt);                          Forward;
+Procedure CodegenFormatOutput(SIdx, FmtIdx: Integer);          Forward;
+Procedure CodegenProcFormat(ProcNode: Integer);                 Forward;
+{ TODO 23 : Fonctions integrees numeriques }
+Procedure EmitRuntimeNumFunc;                                   Forward;
+Procedure CodegenCall(Node: Integer);                           Forward;
+{ TODO 24 : Fonctions integrees chaines et date }
+Procedure EmitRuntimeStrFunc;                                   Forward;
+Procedure EmitRuntimeDateFunc;                                  Forward;
+{ TODO 14/15 : DATA step codegen — expressions, boucles, PUT }
+Procedure BinStoreEaxMem(Const LblName: String);               Forward;
+Procedure BinAddEaxLabelAddr(Const LblName: String);           Forward;
+Procedure BinIncMem(Const LblName: String);                    Forward;
+Function  FindArrayIdx(Const Name: String): Integer;           Forward;
+Procedure RegisterArray(ArrNode: Integer);                     Forward;
+Procedure CodegenArrayAddr(Const ArrName: String;
+                           IdxNode: Integer);                  Forward;
+Procedure CodegenExprEAX(Node: Integer);                       Forward;
+Procedure CodegenStmt(Node: Integer);                          Forward;
+Procedure CodegenDataStep(DsNode: Integer);                    Forward;
 
 { ============================================================ }
 { Initialisation des tables                                    }
@@ -1085,6 +1135,7 @@ Begin
   ImportCount  := 0;
   BinPLKCount  := 0;
   LoopTop      := 0;
+  ArrayCount   := 0;
   CurLineNum     := 0;
   LexEOF         := False;
   LexLine        := '';
@@ -2257,6 +2308,15 @@ Procedure ParseSubCmd(ProcRoot: Integer);
 Var
   Node, VarNode : Integer;
   SaveKind      : Integer;
+  FmtName       : String;
+  FmtIdx        : Integer;
+  E             : Integer;
+  Lo, Hi        : LongInt;
+  Lbl           : String;
+  IsOther       : Boolean;
+  LoIsLow       : Boolean;
+  HiIsHigh      : Boolean;
+  IsSingle      : Boolean;
 Begin
   SaveKind := CurTokType;
   Case SaveKind Of
@@ -2322,15 +2382,80 @@ Begin
     End;
 
     KW_VALUE: Begin
-      { PROC FORMAT VALUE formatname entrees ; }
+      { PROC FORMAT VALUE formatname entrees ;                   }
+      { Entrees : [low|num] [- [high|num]] = 'libelle'          }
+      {         | other = 'libelle'                             }
+      { Stockage dans FmtTable.                                 }
       Node := AstNew(NK_FMT_STMT, 'VALUE', CurLineNum);
       AstAddChild(ProcRoot, Node);
       LexNextToken;
+      { Nom du format (sans point) }
+      FmtName := '';
       If CurTokType = TOK_IDENT Then Begin
-        AstTable[Node].Text := CurTokStr; LexNextToken;
-      End;
-      While (CurTokType <> TOK_SEMICOL) And (CurTokType <> TOK_EOF) Do
+        FmtName := UpperStr(CurTokStr);
+        AstTable[Node].Text := FmtName;
         LexNextToken;
+      End;
+      FmtIdx := -1;
+      If FmtName <> '' Then FmtIdx := GetOrAddFormat(FmtName);
+      { Boucle sur les entrees jusqu au ; }
+      While (CurTokType <> TOK_SEMICOL) And (CurTokType <> TOK_EOF) Do Begin
+        IsOther := False; LoIsLow := False; HiIsHigh := False;
+        IsSingle := True; Lo := 0; Hi := 0; Lbl := '';
+        If CurTokType = KW_OTHER Then Begin
+          IsOther := True;
+          LexNextToken;
+        End Else If CurTokType = KW_LOW Then Begin
+          LoIsLow := True; IsSingle := False;
+          LexNextToken;
+        End Else If CurTokType = TOK_INTEGER Then Begin
+          Lo := StrToInt(CurTokStr); LexNextToken;
+        End Else If CurTokType = TOK_MINUS Then Begin
+          { Nombre negatif }
+          LexNextToken;
+          If CurTokType = TOK_INTEGER Then Begin
+            Lo := -StrToInt(CurTokStr); LexNextToken;
+          End;
+        End Else Begin
+          LexNextToken; { token inattendu, skip }
+          Continue;
+        End;
+        { Optionnel : - borne_haute }
+        If (Not IsOther) And (CurTokType = TOK_MINUS) Then Begin
+          IsSingle := False; LexNextToken;
+          If CurTokType = KW_HIGH Then Begin
+            HiIsHigh := True; LexNextToken;
+          End Else If CurTokType = TOK_INTEGER Then Begin
+            Hi := StrToInt(CurTokStr); LexNextToken;
+          End Else If CurTokType = TOK_MINUS Then Begin
+            LexNextToken;
+            If CurTokType = TOK_INTEGER Then Begin
+              Hi := -StrToInt(CurTokStr); LexNextToken;
+            End;
+          End;
+        End Else If Not IsOther Then Begin
+          Hi := Lo; { valeur unique }
+        End;
+        { = 'libelle' }
+        If CurTokType = TOK_ASSIGN Then Begin
+          LexNextToken;
+          If CurTokType = TOK_STRING Then Begin
+            Lbl := CurTokStr; LexNextToken;
+          End;
+        End;
+        { Enregistrer dans FmtTable }
+        If (FmtIdx >= 0) And (FmtTable[FmtIdx].Count < MAX_FMT_ENT) Then Begin
+          E := FmtTable[FmtIdx].Count;
+          FmtTable[FmtIdx].Entries[E].IsOther  := IsOther;
+          FmtTable[FmtIdx].Entries[E].LoIsLow  := LoIsLow;
+          FmtTable[FmtIdx].Entries[E].HiIsHigh := HiIsHigh;
+          FmtTable[FmtIdx].Entries[E].IsSingle := IsSingle;
+          FmtTable[FmtIdx].Entries[E].Lo       := Lo;
+          FmtTable[FmtIdx].Entries[E].Hi       := Hi;
+          FmtTable[FmtIdx].Entries[E].Lbl      := Lbl;
+          Inc(FmtTable[FmtIdx].Count);
+        End;
+      End;
       If CurTokType = TOK_SEMICOL Then LexNextToken;
     End;
 
@@ -2478,6 +2603,9 @@ Begin
   LexNextToken; { avancer apres le nom du PROC }
   DsName := ''; OutDs := ''; NoPrint := False;
   ParseOptions(DsName, OutDs, NoPrint);
+  { Stocker le nom du dataset et le flag NOPRINT dans le noeud }
+  AstTable[ProcRoot].Text   := UpperStr(DsName);
+  AstTable[ProcRoot].NumVal := Ord(NoPrint);
   Case ProcKind Of
     KW_PRINT:  ParseProcPrint(DsName, NoPrint, ProcRoot);
     KW_MEANS:  ParseProcMeans(DsName, ProcRoot);
@@ -3057,9 +3185,31 @@ Begin
 End;
 
 { PUT — TODO 15 }
+{ PUT item1 item2 ... ;                                        }
+{ Chaque item est un noeud enfant de NK_PUT.                   }
+{ Format inline (best. 8.2) : le point est ignore en V1.       }
 Procedure ParseStmtPut;
+Var
+  PutNode  : Integer;
+  ItemNode : Integer;
+  Line     : Integer;
 Begin
-  SkipToSemicolon;
+  Line := CurLineNum;
+  LexNextToken; { skip PUT }
+  PutNode := AstNew(NK_PUT, 'PUT', Line);
+  While (CurTokType <> TOK_SEMICOL) And (CurTokType <> TOK_EOF) Do Begin
+    If CurTokType = TOK_DOT Then Begin
+      { Point isole : indicateur valeur manquante, ignorer }
+      LexNextToken;
+    End Else Begin
+      ItemNode := ParseExprOr(Line);
+      AstAddChild(PutNode, ItemNode);
+      { Ignorer un format inline qui suit : ident. ou n.m }
+      If CurTokType = TOK_DOT Then LexNextToken;
+    End;
+  End;
+  If CurTokType = TOK_SEMICOL Then LexNextToken;
+  AstAddChild(CurDsRoot, PutNode);
 End;
 
 { ParseIfBody — parse le corps apres THEN ou ELSE.             }
@@ -3320,51 +3470,484 @@ Begin
 End;
 
 { ARRAY — TODO 14 }
+{ ARRAY nom [n] [type] [elem... | plage x1-xN | _TEMPORARY_] ; }
 Procedure ParseStmtArray;
+Var
+  ArrNode   : Integer;
+  VarNode   : Integer;
+  Dim1Node  : Integer;
+  Dim2Node  : Integer;
+  ArrName   : String;
+  ElemName  : String;
+  Elem2     : String;
+  PrefixStr : String;
+  Pref2     : String;
+  NumFrom   : LongInt;
+  NumTo     : LongInt;
+  K         : LongInt;
+  IsChar    : Boolean;
+  IsTemp    : Boolean;
+  HasElems  : Boolean;
+  Line      : Integer;
+  TotalSize : LongInt;
+  SIdx      : Integer;
+  SplitPos  : Integer;
+  I         : Integer;
 Begin
-  SkipToSemicolon;
+  Line := CurLineNum;
+  LexNextToken; { skip ARRAY }
+
+  { Lire le nom du tableau }
+  ArrName := '';
+  If CurTokType = TOK_IDENT Then Begin
+    ArrName := UpperStr(CurTokStr);
+    LexNextToken;
+  End;
+
+  { Creer le noeud NK_ARRAY_DEF }
+  ArrNode := AstNew(NK_ARRAY_DEF, ArrName, Line);
+
+  { Parser les dimensions : [dim1] ou [dim1, dim2] }
+  Dim1Node  := -1;
+  Dim2Node  := -1;
+  TotalSize := 1;
+  If CurTokType = TOK_LBRACE Then Begin
+    LexNextToken; { consommer accolade ouvrante }
+    Dim1Node := ParseExprOr(Line);
+    If (AstTable[Dim1Node].Kind = NK_LITERAL) And (Not AstTable[Dim1Node].IsChar) Then
+      TotalSize := AstTable[Dim1Node].NumVal;
+    If CurTokType = TOK_COMMA Then Begin
+      LexNextToken; { consommer , }
+      Dim2Node := ParseExprOr(Line);
+      If (AstTable[Dim2Node].Kind = NK_LITERAL) And (Not AstTable[Dim2Node].IsChar) Then
+        TotalSize := TotalSize * AstTable[Dim2Node].NumVal;
+    End;
+    If CurTokType = TOK_RBRACE Then LexNextToken;
+  End;
+  AstTable[ArrNode].Left   := Dim1Node;
+  AstTable[ArrNode].Right  := Dim2Node;
+  AstTable[ArrNode].NumVal := TotalSize;
+
+  { Optionnel $ = tableau de chaines de caracteres }
+  IsChar := False;
+  If (CurTokType = TOK_IDENT) And (CurTokStr = '$') Then Begin
+    IsChar := True;
+    LexNextToken;
+  End;
+  AstTable[ArrNode].IsChar := IsChar;
+
+  { Parser la liste d elements, _TEMPORARY_, ou plage prefixN-prefixM }
+  IsTemp   := False;
+  HasElems := False;
+  While (CurTokType <> TOK_SEMICOL) And (CurTokType <> TOK_EOF) Do Begin
+    If CurTokType = TOK_IDENT Then Begin
+      ElemName := UpperStr(CurTokStr);
+      LexNextToken;
+      If ElemName = '_TEMPORARY_' Then Begin
+        IsTemp := True;
+      End Else If CurTokType = TOK_MINUS Then Begin
+        { Tentative de detection de plage numerotee : prefixN - prefixM }
+        SplitPos := Length(ElemName) + 1;
+        For I := Length(ElemName) DownTo 1 Do
+          If (ElemName[I] >= '0') And (ElemName[I] <= '9') Then
+            SplitPos := I
+          Else
+            Break;
+        If (SplitPos > 1) And (SplitPos <= Length(ElemName)) Then Begin
+          { ElemName a bien un suffixe numerique }
+          PrefixStr := Copy(ElemName, 1, SplitPos - 1);
+          NumFrom   := StrToInt(Copy(ElemName, SplitPos, 255));
+          LexNextToken; { consommer - }
+          If CurTokType = TOK_IDENT Then Begin
+            Elem2 := UpperStr(CurTokStr);
+            LexNextToken;
+            SplitPos := Length(Elem2) + 1;
+            For I := Length(Elem2) DownTo 1 Do
+              If (Elem2[I] >= '0') And (Elem2[I] <= '9') Then
+                SplitPos := I
+              Else
+                Break;
+            If (SplitPos > 1) And (SplitPos <= Length(Elem2)) Then Begin
+              Pref2  := Copy(Elem2, 1, SplitPos - 1);
+              NumTo  := StrToInt(Copy(Elem2, SplitPos, 255));
+              If Pref2 = PrefixStr Then Begin
+                { Plage valide : generer prefixK pour K de NumFrom a NumTo }
+                HasElems := True;
+                For K := NumFrom To NumTo Do Begin
+                  ElemName := PrefixStr + IntToStr(K);
+                  SIdx     := GetOrAddVar(ElemName, IsChar);
+                  SymMarkAssigned(SIdx);
+                  VarNode  := AstNewVar(ElemName, Line);
+                  AstAddChild(ArrNode, VarNode);
+                End;
+              End Else Begin
+                { Prefixes differents : ajouter les deux noms tels quels }
+                HasElems := True;
+                SIdx    := GetOrAddVar(ElemName, IsChar);
+                SymMarkAssigned(SIdx);
+                VarNode := AstNewVar(ElemName, Line);
+                AstAddChild(ArrNode, VarNode);
+                SIdx    := GetOrAddVar(Elem2, IsChar);
+                SymMarkAssigned(SIdx);
+                VarNode := AstNewVar(Elem2, Line);
+                AstAddChild(ArrNode, VarNode);
+              End;
+            End Else Begin
+              { Elem2 sans suffixe numerique : deux noms simples }
+              HasElems := True;
+              SIdx    := GetOrAddVar(ElemName, IsChar);
+              SymMarkAssigned(SIdx);
+              VarNode := AstNewVar(ElemName, Line);
+              AstAddChild(ArrNode, VarNode);
+              SIdx    := GetOrAddVar(Elem2, IsChar);
+              SymMarkAssigned(SIdx);
+              VarNode := AstNewVar(Elem2, Line);
+              AstAddChild(ArrNode, VarNode);
+            End;
+          End Else Begin
+            { Apres -, pas d identificateur : ajouter le premier nom seul }
+            HasElems := True;
+            SIdx    := GetOrAddVar(ElemName, IsChar);
+            SymMarkAssigned(SIdx);
+            VarNode := AstNewVar(ElemName, Line);
+            AstAddChild(ArrNode, VarNode);
+          End;
+        End Else Begin
+          { ElemName sans suffixe numerique : nom simple, laisser - en place }
+          HasElems := True;
+          SIdx    := GetOrAddVar(ElemName, IsChar);
+          SymMarkAssigned(SIdx);
+          VarNode := AstNewVar(ElemName, Line);
+          AstAddChild(ArrNode, VarNode);
+        End;
+      End Else Begin
+        { Nom explicite ordinaire }
+        HasElems := True;
+        SIdx    := GetOrAddVar(ElemName, IsChar);
+        SymMarkAssigned(SIdx);
+        VarNode := AstNewVar(ElemName, Line);
+        AstAddChild(ArrNode, VarNode);
+      End;
+    End Else
+      LexNextToken; { ignorer token inattendu }
+  End;
+
+  { Si aucun element explicite et pas temporaire : noms automatiques nom1..nomN }
+  If (Not HasElems) And (Not IsTemp) Then Begin
+    For K := 1 To TotalSize Do Begin
+      ElemName := ArrName + IntToStr(K);
+      SIdx     := GetOrAddVar(ElemName, IsChar);
+      SymMarkAssigned(SIdx);
+      VarNode  := AstNewVar(ElemName, Line);
+      AstAddChild(ArrNode, VarNode);
+    End;
+  End;
+
+  If CurTokType = TOK_SEMICOL Then LexNextToken;
+  AstAddChild(CurDsRoot, ArrNode);
 End;
 
 { INFILE — TODO 16 }
+{ INFILE 'fichier' [DLM='x'] [FIRSTOBS=n] ; ou INFILE CARDS ;  }
+{ Node.Text    = nom de fichier ou 'CARDS'/'DATALINES'          }
+{ Node.NumVal  = FIRSTOBS (defaut 1)                            }
+{ Node.Left    = NK_LITERAL(delimiteur) ou -1 si espace        }
 Procedure ParseStmtInfile;
+Var
+  Node    : Integer;
+  OptName : String;
+  Line    : Integer;
+  Src     : String;
 Begin
-  SkipToSemicolon;
+  Line := CurLineNum;
+  LexNextToken; { skip INFILE }
+
+  { Source : chaine 'fichier', CARDS, DATALINES, ou ident }
+  Src := 'CARDS';
+  If CurTokType = TOK_STRING Then Begin
+    Src := CurTokStr; LexNextToken;
+  End Else If (CurTokType = KW_CARDS) Or (CurTokType = KW_DATALINES) Then Begin
+    Src := UpperStr(CurTokStr); LexNextToken;
+  End Else If CurTokType = TOK_IDENT Then Begin
+    Src := UpperStr(CurTokStr); LexNextToken;
+  End;
+
+  Node := AstNew(NK_INFILE, Src, Line);
+  AstTable[Node].NumVal := 1; { FIRSTOBS par defaut }
+
+  { Options DLM= et FIRSTOBS= }
+  While (CurTokType <> TOK_SEMICOL) And (CurTokType <> TOK_EOF) Do Begin
+    If CurTokType = TOK_IDENT Then Begin
+      OptName := UpperStr(CurTokStr);
+      LexNextToken;
+      If CurTokType = TOK_ASSIGN Then Begin
+        LexNextToken; { skip = }
+        If OptName = 'DLM' Then Begin
+          If CurTokType = TOK_STRING Then Begin
+            AstTable[Node].Left := AstNewLitStr(CurTokStr, Line);
+            LexNextToken;
+          End Else LexNextToken;
+        End Else If OptName = 'FIRSTOBS' Then Begin
+          If CurTokType = TOK_INTEGER Then Begin
+            AstTable[Node].NumVal := StrToInt(CurTokStr);
+            LexNextToken;
+          End Else LexNextToken;
+        End Else
+          LexNextToken; { valeur d option inconnue }
+      End;
+    End Else
+      LexNextToken;
+  End;
+
+  If CurTokType = TOK_SEMICOL Then LexNextToken;
+  AstAddChild(CurDsRoot, Node);
 End;
 
 { INPUT — TODO 16 }
+{ INPUT var1 [$] [col1-col2] var2 [$] [col1-col2] ... ;        }
+{ Chaque variable = NK_VAR enfant de NK_INPUT.                  }
+{ Node.IsChar  = True si $ suit le nom                          }
+{ Node.NumVal  = (col_debut SHL 16) OR col_fin, ou 0 si delim  }
 Procedure ParseStmtInput;
+Var
+  Node     : Integer;
+  VarNode  : Integer;
+  VarName  : String;
+  IsChar   : Boolean;
+  ColStart : LongInt;
+  ColEnd   : LongInt;
+  Line     : Integer;
+  SIdx     : Integer;
 Begin
-  SkipToSemicolon;
+  Line := CurLineNum;
+  LexNextToken; { skip INPUT }
+  Node := AstNew(NK_INPUT, 'INPUT', Line);
+
+  While (CurTokType <> TOK_SEMICOL) And (CurTokType <> TOK_EOF) Do Begin
+    If CurTokType = TOK_IDENT Then Begin
+      VarName := UpperStr(CurTokStr);
+      LexNextToken;
+
+      { Optionnel $ = variable chaine }
+      IsChar := False;
+      If (CurTokType = TOK_IDENT) And (CurTokStr = '$') Then Begin
+        IsChar := True; LexNextToken;
+      End;
+
+      { Optionnel col1-col2 }
+      ColStart := 0; ColEnd := 0;
+      If CurTokType = TOK_INTEGER Then Begin
+        ColStart := StrToInt(CurTokStr); LexNextToken;
+        If CurTokType = TOK_MINUS Then Begin
+          LexNextToken;
+          If CurTokType = TOK_INTEGER Then Begin
+            ColEnd := StrToInt(CurTokStr); LexNextToken;
+          End;
+        End;
+      End;
+
+      SIdx    := GetOrAddVar(VarName, IsChar);
+      SymMarkAssigned(SIdx);
+      VarNode := AstNew(NK_VAR, VarName, Line);
+      AstTable[VarNode].IsChar := IsChar;
+      AstTable[VarNode].SymRef := SIdx;
+      If ColStart > 0 Then
+        AstTable[VarNode].NumVal := (ColStart SHL 16) Or ColEnd
+      Else
+        AstTable[VarNode].NumVal := 0;
+      AstAddChild(Node, VarNode);
+    End Else
+      LexNextToken; { token inattendu }
+  End;
+
+  If CurTokType = TOK_SEMICOL Then LexNextToken;
+  AstAddChild(CurDsRoot, Node);
 End;
 
 { FILE — TODO 16 }
+{ FILE 'fichier' ; ou FILE PRINT ;                              }
+{ Node.Text = nom de fichier ou 'PRINT'                        }
 Procedure ParseStmtFile;
+Var
+  Node : Integer;
+  Dest : String;
+  Line : Integer;
 Begin
-  SkipToSemicolon;
+  Line := CurLineNum;
+  LexNextToken; { skip FILE }
+
+  Dest := '';
+  If CurTokType = TOK_STRING Then Begin
+    Dest := CurTokStr; LexNextToken;
+  End Else If CurTokType = KW_PRINT Then Begin
+    Dest := 'PRINT'; LexNextToken;
+  End Else If CurTokType = TOK_IDENT Then Begin
+    Dest := UpperStr(CurTokStr); LexNextToken;
+  End;
+
+  Node := AstNew(NK_FILE, Dest, Line);
+
+  { Ignorer les options restantes }
+  While (CurTokType <> TOK_SEMICOL) And (CurTokType <> TOK_EOF) Do
+    LexNextToken;
+
+  If CurTokType = TOK_SEMICOL Then LexNextToken;
+  AstAddChild(CurDsRoot, Node);
 End;
 
 { SET — TODO 17 }
+{ SET ds1 [ds2 ...] [END=flag] [NOBS=n] [POINT=p] ;            }
+{ Enfants NK_VAR = datasets sources.                           }
+{ Node.Left = NK_VAR du flag END= (ou -1).                     }
 Procedure ParseStmtSet;
+Var
+  Node     : Integer;
+  Line     : Integer;
+  SaveName : String;
+  FlagName : String;
 Begin
-  SkipToSemicolon;
+  Line := CurLineNum;
+  LexNextToken; { skip SET }
+  Node := AstNew(NK_SET, 'SET', Line);
+
+  While (CurTokType <> TOK_SEMICOL) And (CurTokType <> TOK_EOF) Do Begin
+    If (CurTokType = TOK_IDENT) Or (CurTokType = KW_END) Then Begin
+      SaveName := UpperStr(CurTokStr);
+      LexNextToken;
+      If CurTokType = TOK_ASSIGN Then Begin
+        { Option NOM = valeur }
+        LexNextToken; { skip = }
+        If SaveName = 'END' Then Begin
+          If CurTokType = TOK_IDENT Then Begin
+            FlagName := UpperStr(CurTokStr);
+            GetOrAddVar(FlagName, False);
+            AstTable[Node].Left := AstNewVar(FlagName, Line);
+            LexNextToken;
+          End Else LexNextToken;
+        End Else
+          LexNextToken; { ignorer valeur de NOBS=, POINT= etc. }
+      End Else Begin
+        { Nom de dataset source }
+        AstAddChild(Node, AstNew(NK_VAR, SaveName, Line));
+      End;
+    End Else
+      LexNextToken;
+  End;
+
+  If CurTokType = TOK_SEMICOL Then LexNextToken;
+  AstAddChild(CurDsRoot, Node);
 End;
 
 { MERGE — TODO 17 }
+{ MERGE ds1 ds2 [ds3 ...] ;                                    }
+{ Enfants NK_VAR = datasets a fusionner.                       }
 Procedure ParseStmtMerge;
+Var
+  Node : Integer;
+  Line : Integer;
 Begin
-  SkipToSemicolon;
+  Line := CurLineNum;
+  LexNextToken; { skip MERGE }
+  Node := AstNew(NK_MERGE, 'MERGE', Line);
+
+  While (CurTokType <> TOK_SEMICOL) And (CurTokType <> TOK_EOF) Do Begin
+    If CurTokType = TOK_IDENT Then Begin
+      AstAddChild(Node, AstNew(NK_VAR, UpperStr(CurTokStr), Line));
+      LexNextToken;
+      { Ignorer options parenthesees comme (IN=a) }
+      If CurTokType = TOK_LPAREN Then Begin
+        While (CurTokType <> TOK_RPAREN) And (CurTokType <> TOK_SEMICOL) And
+              (CurTokType <> TOK_EOF) Do LexNextToken;
+        If CurTokType = TOK_RPAREN Then LexNextToken;
+      End;
+    End Else
+      LexNextToken;
+  End;
+
+  If CurTokType = TOK_SEMICOL Then LexNextToken;
+  AstAddChild(CurDsRoot, Node);
 End;
 
 { BY dans DATA step — TODO 17 }
+{ BY [DESCENDING] var1 [DESCENDING] var2 ... ;                 }
+{ Enfants NK_VAR = variables de cle BY.                        }
 Procedure ParseStmtBy;
+Var
+  Node    : Integer;
+  VarNode : Integer;
+  Line    : Integer;
 Begin
-  SkipToSemicolon;
+  Line := CurLineNum;
+  LexNextToken; { skip BY }
+  Node := AstNew(NK_BY, 'BY', Line);
+
+  While (CurTokType <> TOK_SEMICOL) And (CurTokType <> TOK_EOF) Do Begin
+    If CurTokType = KW_DESCENDING Then Begin
+      LexNextToken; { skip, ordre descendant note pour le prochain var }
+    End Else If CurTokType = TOK_IDENT Then Begin
+      VarNode := AstNew(NK_VAR, UpperStr(CurTokStr), Line);
+      AstAddChild(Node, VarNode);
+      LexNextToken;
+    End Else
+      LexNextToken;
+  End;
+
+  If CurTokType = TOK_SEMICOL Then LexNextToken;
+  AstAddChild(CurDsRoot, Node);
 End;
 
 { FORMAT (declaration dans DATA step) — TODO 22 }
+{ FORMAT var1 [var2 ...] fmt1. [var3 fmt2.] ... ;              }
+{ Lie un format a chaque variable dans la symbol table.        }
+{ Un nom suivi de . est un format ; sinon c est une variable.  }
 Procedure ParseStmtFmtDecl;
+Var
+  Node     : Integer;
+  VarNode  : Integer;
+  TokName  : String;
+  FmtName  : String;
+  FmtIdx   : Integer;
+  SIdx     : Integer;
+  Line     : Integer;
+  PendBuf  : Array[0..31] Of String;
+  PendN    : Integer;
+  I        : Integer;
 Begin
-  SkipToSemicolon;
+  Line := CurLineNum;
+  LexNextToken; { skip KW_FORMAT }
+  Node  := AstNew(NK_FMT_STMT, 'FORMAT', Line);
+  PendN := 0;
+  FillChar(PendBuf, SizeOf(PendBuf), 0);
+
+  While (CurTokType <> TOK_SEMICOL) And (CurTokType <> TOK_EOF) Do Begin
+    If CurTokType = TOK_IDENT Then Begin
+      TokName := UpperStr(CurTokStr);
+      LexNextToken;
+      If CurTokType = TOK_DOT Then Begin
+        { Nom de format : appliquer aux variables en attente }
+        LexNextToken; { consommer . }
+        FmtName := TokName;
+        FmtIdx  := GetOrAddFormat(FmtName);
+        For I := 0 To PendN - 1 Do Begin
+          SIdx := GetOrAddVar(PendBuf[I], False);
+          If SIdx >= 0 Then SymTable[SIdx].FmtIdx := FmtIdx;
+          VarNode := AstNew(NK_VAR, PendBuf[I], Line);
+          AstAddChild(Node, VarNode);
+        End;
+        PendN := 0;
+      End Else Begin
+        { Nom de variable : accumuler }
+        If PendN < 32 Then Begin
+          PendBuf[PendN] := TokName;
+          Inc(PendN);
+        End;
+      End;
+    End Else
+      LexNextToken;
+  End;
+
+  If CurTokType = TOK_SEMICOL Then LexNextToken;
+  AstAddChild(CurDsRoot, Node);
 End;
 
 { GOTO label ; — saut inconditionnel.                          }
@@ -3476,6 +4059,14 @@ Begin
           If CurTokType = TOK_COMMA Then LexNextToken;
         End;
         If CurTokType = TOK_RPAREN Then LexNextToken;
+        ParseExprPrimary := T;
+      End Else If (CurTokType = TOK_IDENT) And
+                  ((Name = 'FIRST.') Or (Name = 'LAST.')) Then Begin
+        { FIRST.var ou LAST.var : variable de groupe BY }
+        Name := Name + UpperStr(CurTokStr);
+        LexNextToken;
+        T := AstNewVar(Name, Line);
+        GetOrAddVar(Name, False);
         ParseExprPrimary := T;
       End Else Begin
         { Mot-cle sans () : deja avance, retourner 0 }
@@ -3613,27 +4204,783 @@ Begin
 End;
 
 { ============================================================ }
-{ TODO 25 — Generation de code (stubs)                         }
+{ TODO 14/15 — DATA step : codegen expressions, boucles, PUT  }
 { ============================================================ }
 
+{ MOV [addr32], EAX — stocke EAX en memoire (ABS32 fixup).    }
+Procedure BinStoreEaxMem(Const LblName: String);
+Begin
+  BinEmit8($A3);
+  If FixupCount < MAX_FIXUPS Then Begin
+    FixupTable[FixupCount].Offset  := BinCurOffset;
+    FixupTable[FixupCount].Section := BIN_SEC_TEXT;
+    FixupTable[FixupCount].Name    := LblName;
+    FixupTable[FixupCount].Kind    := BIN_FIX_ABS32;
+    Inc(FixupCount);
+  End;
+  BinEmit32(0);
+End;
+
+{ ADD EAX, VA(label) — additionne l adresse absolue du label.  }
+Procedure BinAddEaxLabelAddr(Const LblName: String);
+Begin
+  BinEmit8($05);
+  If FixupCount < MAX_FIXUPS Then Begin
+    FixupTable[FixupCount].Offset  := BinCurOffset;
+    FixupTable[FixupCount].Section := BIN_SEC_TEXT;
+    FixupTable[FixupCount].Name    := LblName;
+    FixupTable[FixupCount].Kind    := BIN_FIX_ABS32;
+    Inc(FixupCount);
+  End;
+  BinEmit32(0);
+End;
+
+{ INC dword [addr32] — incremente la variable en memoire.      }
+Procedure BinIncMem(Const LblName: String);
+Begin
+  BinEmit8($FF); BinEmit8($05);
+  If FixupCount < MAX_FIXUPS Then Begin
+    FixupTable[FixupCount].Offset  := BinCurOffset;
+    FixupTable[FixupCount].Section := BIN_SEC_TEXT;
+    FixupTable[FixupCount].Name    := LblName;
+    FixupTable[FixupCount].Kind    := BIN_FIX_ABS32;
+    Inc(FixupCount);
+  End;
+  BinEmit32(0);
+End;
+
+{ Cherche un tableau par nom dans ArrayTable. Retourne -1 si absent. }
+Function FindArrayIdx(Const Name: String): Integer;
+Var I: Integer;
+Begin
+  FindArrayIdx := -1;
+  For I := 0 To ArrayCount - 1 Do
+    If ArrayTable[I].Name = Name Then Begin
+      FindArrayIdx := I; Exit;
+    End;
+End;
+
+{ Enregistre un NK_ARRAY_DEF dans ArrayTable.                  }
+{ _TEMPORARY_ (aucun enfant) : alloue N dwords en .data.       }
+{ Nomme ou auto-genere (enfants = elements) : base = premier.  }
+Procedure RegisterArray(ArrNode: Integer);
+Var
+  AName : String;
+  BLbl  : String;
+  ASize : Integer;
+  Child : Integer;
+  SIdx  : Integer;
+  K     : Integer;
+Begin
+  If ArrayCount >= MAX_ARRAYS Then Exit;
+  AName := AstTable[ArrNode].Text;
+  ASize := AstTable[ArrNode].NumVal;
+  If ASize <= 0 Then ASize := 1;
+  If FindArrayIdx(AName) >= 0 Then Exit;
+  Child := AstTable[ArrNode].FirstChild;
+  If Child >= 0 Then Begin
+    { Non-temporaire : premier element deja alloue par AllocVars }
+    SIdx := FindSym(AstTable[Child].Text, SK_NONE);
+    If SIdx >= 0 Then BLbl := SymTable[SIdx].AsmName
+    Else BLbl := '_sas_v_' + AstTable[Child].Text;
+    ArrayTable[ArrayCount].IsTemp := False;
+  End Else Begin
+    { _TEMPORARY_ : allouer dans .data apres les variables }
+    BLbl := '_satmp_' + AName;
+    BinDefineDataLabel(BLbl);
+    For K := 1 To ASize Do Begin
+      BinEmitDataByte(0); BinEmitDataByte(0);
+      BinEmitDataByte(0); BinEmitDataByte(0);
+    End;
+    ArrayTable[ArrayCount].IsTemp := True;
+  End;
+  ArrayTable[ArrayCount].Name      := AName;
+  ArrayTable[ArrayCount].BaseLabel := BLbl;
+  ArrayTable[ArrayCount].TotalSize := ASize;
+  Inc(ArrayCount);
+End;
+
+{ EAX = adresse de l element : base_VA + (index-1)*4.         }
+Procedure CodegenArrayAddr(Const ArrName: String; IdxNode: Integer);
+Var AIdx: Integer;
+Begin
+  AIdx := FindArrayIdx(ArrName);
+  If AIdx < 0 Then Begin
+    CompileWarn('ARRAY inconnu : ' + ArrName);
+    BinEmit8($31); BinEmit8($C0); Exit;
+  End;
+  CodegenExprEAX(IdxNode);
+  BinEmit8($48);                         { DEC EAX (0-base)    }
+  BinEmit8($C1); BinEmit8($E0); BinEmit8($02); { SHL EAX,2    }
+  BinAddEaxLabelAddr(ArrayTable[AIdx].BaseLabel); { +base_VA   }
+End;
+
+{ Evalue l expression Node, resultat dans EAX.                 }
+{ Registres utilises : EAX, ECX. EDX utilise par IDIV.         }
+Procedure CodegenExprEAX(Node: Integer);
+Var
+  SIdx    : Integer;
+  AIdx    : Integer;
+  V       : LongInt;
+  LblStr  : String;
+  Child   : Integer;
+  ArgList : Array[0..15] Of Integer;
+  ArgCnt  : Integer;
+  I       : Integer;
+Begin
+  If Node < 0 Then Begin
+    BinEmit8($31); BinEmit8($C0); Exit;
+  End;
+  Case AstTable[Node].Kind Of
+    NK_LITERAL: Begin
+      If AstTable[Node].IsChar Then Begin
+        LblStr := EmitRDataStr(AstTable[Node].Text);
+        BinPushLabel(LblStr); BinEmit8($58); { PUSH addr; POP EAX }
+      End Else Begin
+        V := AstTable[Node].NumVal;
+        BinEmit8($B8); BinEmit32(V);
+      End;
+    End;
+    NK_VAR: Begin
+      SIdx := FindSym(AstTable[Node].Text, SK_NONE);
+      If SIdx >= 0 Then BinMovEaxMem(SymTable[SIdx].AsmName)
+      Else Begin BinEmit8($31); BinEmit8($C0); End;
+    End;
+    NK_ARRAY_REF: Begin
+      CodegenArrayAddr(AstTable[Node].Text, AstTable[Node].Left);
+      BinEmit8($8B); BinEmit8($00);      { MOV EAX,[EAX]       }
+    End;
+    NK_BINOP: Begin
+      CodegenExprEAX(AstTable[Node].Left);
+      BinEmit8($50);                     { PUSH EAX (gauche)   }
+      CodegenExprEAX(AstTable[Node].Right);
+      BinEmit8($59);                     { POP ECX  (gauche)   }
+      If AstTable[Node].Text = '+' Then
+        Begin BinEmit8($01); BinEmit8($C8); End  { ADD EAX,ECX }
+      Else If AstTable[Node].Text = '-' Then Begin
+        BinEmit8($29); BinEmit8($C1);   { SUB ECX,EAX }
+        BinEmit8($89); BinEmit8($C8);   { MOV EAX,ECX }
+      End Else If AstTable[Node].Text = '*' Then
+        Begin BinEmit8($0F); BinEmit8($AF); BinEmit8($C1); End { IMUL EAX,ECX }
+      Else If AstTable[Node].Text = '/' Then Begin
+        BinEmit8($91);                  { XCHG EAX,ECX : EAX=G }
+        BinEmit8($99);                  { CDQ                  }
+        BinEmit8($F7); BinEmit8($F9);   { IDIV ECX             }
+      End Else If AstTable[Node].Text = '**' Then Begin
+        { Puissance : appel runtime stdcall pow(base,exp) }
+        BinEmit8($50);                  { PUSH EAX (exposant)  }
+        BinEmit8($51);                  { PUSH ECX (base)      }
+        BinCallLabel('_SASRT_pow');
+      End Else
+        Begin BinEmit8($31); BinEmit8($C0); End;
+    End;
+    NK_UNOP: Begin
+      If AstTable[Node].Text = '-' Then Begin
+        CodegenExprEAX(AstTable[Node].Left);
+        BinEmit8($F7); BinEmit8($D8);   { NEG EAX             }
+      End Else If AstTable[Node].Text = 'NOT' Then Begin
+        CodegenExprEAX(AstTable[Node].Left);
+        BinEmit8($85); BinEmit8($C0);   { TEST EAX,EAX        }
+        BinEmit8($0F); BinEmit8($94); BinEmit8($C0); { SETE AL }
+        BinEmit8($0F); BinEmit8($B6); BinEmit8($C0); { MOVZX  }
+      End Else
+        CodegenExprEAX(AstTable[Node].Left);
+    End;
+    NK_CALL: Begin
+      If AstTable[Node].Text = 'DIM' Then Begin
+        Child := AstTable[Node].FirstChild;
+        AIdx  := -1;
+        If Child >= 0 Then AIdx := FindArrayIdx(AstTable[Child].Text);
+        If AIdx >= 0 Then V := ArrayTable[AIdx].TotalSize Else V := 0;
+        BinEmit8($B8); BinEmit32(V);    { MOV EAX, dim        }
+      End Else Begin
+        { Empiler les args gauche-a-droite, puis appeler }
+        ArgCnt := 0;
+        Child  := AstTable[Node].FirstChild;
+        While (Child >= 0) And (ArgCnt < 16) Do Begin
+          ArgList[ArgCnt] := Child; Inc(ArgCnt);
+          Child := AstTable[Child].NextSibling;
+        End;
+        For I := ArgCnt - 1 DownTo 0 Do Begin
+          CodegenExprEAX(ArgList[I]);
+          BinEmit8($50);
+        End;
+        CodegenCall(Node);
+      End;
+    End;
+  Else
+    BinEmit8($31); BinEmit8($C0);
+  End;
+End;
+
+{ Emet le code pour un statement du DATA step.                 }
+Procedure CodegenStmt(Node: Integer);
+Var
+  Tag     : String;
+  LblTop  : String;
+  LblEnd  : String;
+  LblElse : String;
+  LblStr  : String;
+  SIdx    : Integer;
+  StartN  : Integer;
+  EndN    : Integer;
+  StepV   : LongInt;
+  Child   : Integer;
+  ArrName : String;
+  IdxNode : Integer;
+  RhsNode : Integer;
+  LeftN   : Integer;
+Begin
+  If Node < 0 Then Exit;
+  Case AstTable[Node].Kind Of
+
+    NK_ARRAY_DEF: ;  { Deja enregistre en pass 1 — aucun code }
+
+    NK_ASSIGN: Begin
+      RhsNode := AstTable[Node].Right;
+      LeftN   := AstTable[Node].Left;
+      If LeftN < 0 Then Exit;
+      If AstTable[LeftN].Kind = NK_VAR Then Begin
+        SIdx := FindSym(AstTable[LeftN].Text, SK_NONE);
+        CodegenExprEAX(RhsNode);
+        If SIdx >= 0 Then BinStoreEaxMem(SymTable[SIdx].AsmName);
+      End Else If AstTable[LeftN].Kind = NK_ARRAY_REF Then Begin
+        ArrName := AstTable[LeftN].Text;
+        IdxNode := AstTable[LeftN].Left;
+        CodegenExprEAX(RhsNode);
+        BinEmit8($50);                  { PUSH EAX (valeur)   }
+        CodegenArrayAddr(ArrName, IdxNode);
+        BinEmit8($89); BinEmit8($C1);  { MOV ECX, EAX (addr) }
+        BinEmit8($58);                  { POP EAX  (valeur)   }
+        BinEmit8($89); BinEmit8($01);  { MOV [ECX], EAX      }
+      End;
+    End;
+
+    NK_DO: Begin
+      Inc(BinPLKCount);
+      Tag    := IntToStr(BinPLKCount);
+      LblTop := '_dot' + Tag;
+      LblEnd := '_doe' + Tag;
+      If AstTable[Node].Text = 'ITER' Then Begin
+        StartN := AstTable[Node].Left;
+        EndN   := AstTable[Node].Right;
+        StepV  := AstTable[Node].NumVal;
+        SIdx   := AstTable[Node].SymRef;
+        { Init }
+        CodegenExprEAX(StartN);
+        If SIdx >= 0 Then BinStoreEaxMem(SymTable[SIdx].AsmName);
+        { Sommet de boucle : tester i <= end }
+        BinDefineLabel(LblTop);
+        CodegenExprEAX(EndN);
+        BinEmit8($89); BinEmit8($C1); { MOV ECX, EAX (end) }
+        If SIdx >= 0 Then BinMovEaxMem(SymTable[SIdx].AsmName);
+        BinEmit8($3B); BinEmit8($C1); { CMP EAX, ECX }
+        If StepV >= 0 Then BinJccLabel(15, LblEnd)  { JG : i>end }
+        Else               BinJccLabel(12, LblEnd);  { JL : i<end }
+        { Corps }
+        Child := AstTable[Node].FirstChild;
+        While Child >= 0 Do Begin
+          CodegenStmt(Child);
+          Child := AstTable[Child].NextSibling;
+        End;
+        { Increment }
+        If (StepV = 1) And (SIdx >= 0) Then
+          BinIncMem(SymTable[SIdx].AsmName)
+        Else If SIdx >= 0 Then Begin
+          BinMovEaxMem(SymTable[SIdx].AsmName);
+          BinEmit8($05); BinEmit32(StepV);
+          BinStoreEaxMem(SymTable[SIdx].AsmName);
+        End;
+        BinJmpLabel(LblTop);
+        BinDefineLabel(LblEnd);
+      End Else If AstTable[Node].Text = 'WHILE' Then Begin
+        BinDefineLabel(LblTop);
+        CodegenExprEAX(AstTable[Node].Left);
+        BinEmit8($85); BinEmit8($C0);   { TEST EAX,EAX }
+        BinJccLabel(4, LblEnd);         { JZ lbl_end }
+        Child := AstTable[Node].FirstChild;
+        While Child >= 0 Do Begin
+          CodegenStmt(Child);
+          Child := AstTable[Child].NextSibling;
+        End;
+        BinJmpLabel(LblTop);
+        BinDefineLabel(LblEnd);
+      End Else If AstTable[Node].Text = 'UNTIL' Then Begin
+        BinDefineLabel(LblTop);
+        Child := AstTable[Node].FirstChild;
+        While Child >= 0 Do Begin
+          CodegenStmt(Child);
+          Child := AstTable[Child].NextSibling;
+        End;
+        CodegenExprEAX(AstTable[Node].Left);
+        BinEmit8($85); BinEmit8($C0);
+        BinJccLabel(4, LblTop);         { JZ lbl_top (tant que cond faux) }
+        BinDefineLabel(LblEnd);
+      End Else Begin
+        { PLAIN, ITERWHILE, et autres : emettre le corps }
+        Child := AstTable[Node].FirstChild;
+        While Child >= 0 Do Begin
+          CodegenStmt(Child);
+          Child := AstTable[Child].NextSibling;
+        End;
+        BinDefineLabel(LblEnd);
+      End;
+    End;
+
+    NK_PUT: Begin
+      Child := AstTable[Node].FirstChild;
+      While Child >= 0 Do Begin
+        If AstTable[Child].Kind = NK_LITERAL Then Begin
+          If AstTable[Child].IsChar Then Begin
+            LblStr := EmitRDataStr(AstTable[Child].Text);
+            BinPushLabel(LblStr);
+            BinCallLabel('_SASRT_write_str');
+          End Else Begin
+            BinEmit8($B8); BinEmit32(AstTable[Child].NumVal);
+            BinEmit8($50);
+            BinCallLabel('_SASRT_write_num');
+          End;
+        End Else If AstTable[Child].Kind = NK_VAR Then Begin
+          SIdx := FindSym(AstTable[Child].Text, SK_NONE);
+          If (SIdx >= 0) And SymTable[SIdx].IsChar Then Begin
+            BinPushMem32(SymTable[SIdx].AsmName);
+            BinCallLabel('_SASRT_write_str');
+          End Else Begin
+            CodegenExprEAX(Child);
+            BinEmit8($50);
+            BinCallLabel('_SASRT_write_num');
+          End;
+        End Else Begin
+          CodegenExprEAX(Child);
+          BinEmit8($50);
+          BinCallLabel('_SASRT_write_num');
+        End;
+        Child := AstTable[Child].NextSibling;
+      End;
+      BinCallLabel('_SASRT_newline');
+    End;
+
+    NK_IF: Begin
+      Inc(BinPLKCount);
+      Tag     := IntToStr(BinPLKCount);
+      LblElse := '_ife' + Tag;
+      LblEnd  := '_iff' + Tag;
+      CodegenExprEAX(AstTable[Node].Left);
+      BinEmit8($85); BinEmit8($C0);
+      If AstTable[Node].FirstChild >= 0 Then Begin
+        BinJccLabel(4, LblElse);
+        CodegenStmt(AstTable[Node].Right);
+        BinJmpLabel(LblEnd);
+        BinDefineLabel(LblElse);
+        CodegenStmt(AstTable[Node].FirstChild);
+        BinDefineLabel(LblEnd);
+      End Else Begin
+        BinJccLabel(4, LblEnd);
+        CodegenStmt(AstTable[Node].Right);
+        BinDefineLabel(LblEnd);
+      End;
+    End;
+
+  End; { Case }
+End;
+
+{ Emet le code pour un DATA step complet.                      }
+{ Pass 1 : enregistre tous les ARRAY_DEF.                      }
+{ Pass 2 : emet le code de chaque statement.                   }
+Procedure CodegenDataStep(DsNode: Integer);
+Var Child: Integer;
+Begin
+  { Pass 1 : enregistrer les tableaux }
+  Child := AstTable[DsNode].FirstChild;
+  While Child >= 0 Do Begin
+    If AstTable[Child].Kind = NK_ARRAY_DEF Then RegisterArray(Child);
+    Child := AstTable[Child].NextSibling;
+  End;
+  { Pass 2 : emettre le code }
+  Child := AstTable[DsNode].FirstChild;
+  While Child >= 0 Do Begin
+    CodegenStmt(Child);
+    Child := AstTable[Child].NextSibling;
+  End;
+End;
+
+{ ============================================================ }
+{ TODO 25 — Generation de code (stubs pour WritePE/COFF/ASM)   }
+{ ============================================================ }
+
+{ TODO 19/25 — CodegenProgram : alloc vars + dispatch PROC steps }
 Procedure CodegenProgram;
+Var
+  Step : Integer;
 Begin
-  { TODO 25 }
+  AllocVars;
+  BinDefineLabel('_SASSTART');          { point d entree PE }
+  If AstRoot >= 0 Then Begin
+    Step := AstTable[AstRoot].FirstChild;
+    While Step >= 0 Do Begin
+      Case AstTable[Step].Kind Of
+        NK_DATASTEP    : CodegenDataStep(Step);
+        NK_PROC_PRINT  : CodegenProcPrint(Step);
+        NK_PROC_MEANS  : CodegenProcMeans(Step);
+        NK_PROC_FREQ   : CodegenProcFreq(Step);
+        NK_PROC_SORT   : CodegenProcSort(Step);
+        NK_PROC_FORMAT : CodegenProcFormat(Step);
+      End;
+      Step := AstTable[Step].NextSibling;
+    End;
+  End;
+  BinPushImm32(0);                      { push 0 (exit code) }
+  BinCallImport('_ExitProcess@4');      { call ExitProcess }
 End;
 
+{ ============================================================ }
+{ TODO 25 — WritePE : genere un PE32 executable Win32         }
+{ ImageBase $00400000, CUI, 4 sections : .text .rdata .data   }
+{ .idata (IAT kernel32.dll). Fixups resolus avant ecriture.   }
+{ ============================================================ }
 Procedure WritePE(Const FileName: String);
+Const
+  IMAGE_BASE = LongInt($00400000);
+  SEC_ALIGN  = LongInt($1000);
+  FILE_ALIGN = LongInt($200);
+  HDR_FILE   = LongInt($200);
+Var
+  F          : File;
+  I, K       : Integer;
+  TextVsz, RdataVsz, DataVsz, IdataVsz   : LongInt;
+  TextRva,  RdataRva, DataRva,  IdataRva  : LongInt;
+  TextFsz,  RdataFsz, DataFsz,  IdataFsz  : LongInt;
+  TextFOff, RdataFOff, DataFOff, IdataFOff : LongInt;
+  SizeImage  : LongInt;
+  EntryRva   : LongInt;
+  IdataIntOff, IdataIatOff, IdataDllOff, IdataHnBase : LongInt;
+  IdataHnOff : Array[0..MAX_IMPORTS-1] Of LongInt;
+  HnCur      : LongInt;
+  BnLen, HnEntSz : Integer;
+  BaseName   : String;
+  ImpDirRva, ImpDirSz, IatDirRva, IatDirSz : LongInt;
+  FixVal     : LongInt;
+  LblSec     : Integer;
+  Tmp4       : LongInt;
+  Tmp2       : Word;
+  Tmp1       : Byte;
+
+  { ── Utilitaires internes ─────────────────────────────────── }
+
+  Function AlignUp(V, A: LongInt): LongInt;
+  Begin AlignUp := ((V + A - 1) Div A) * A; End;
+
+  Function StripDeco(Const S: String): String;
+  Var R: String; J: Integer;
+  Begin
+    R := S;
+    If (Length(R) > 0) And (R[1] = '_') Then
+      R := Copy(R, 2, Length(R) - 1);
+    J := 1;
+    While (J <= Length(R)) And (R[J] <> '@') Do Inc(J);
+    If J <= Length(R) Then R := Copy(R, 1, J - 1);
+    StripDeco := R;
+  End;
+
+  Procedure WB(B: Byte);
+  Begin Tmp1 := B; BlockWrite(F, Tmp1, 1); End;
+
+  Procedure WW(W: Word);
+  Begin Tmp2 := W; BlockWrite(F, Tmp2, 2); End;
+
+  Procedure WD(V: LongInt);
+  Begin Tmp4 := V; BlockWrite(F, Tmp4, 4); End;
+
+  Procedure WZero(N: LongInt);
+  Var Z: Byte; Rem: LongInt;
+  Begin Z := 0; Rem := N; While Rem > 0 Do Begin BlockWrite(F, Z, 1); Dec(Rem); End; End;
+
+  Procedure WSect8(Const S: String);
+  Var J: Integer;
+  Begin
+    For J := 1 To Length(S) Do WB(Byte(S[J]));
+    For J := Length(S) + 1 To 8 Do WB(0);
+  End;
+
+  Procedure WStr0(Const S: String);
+  Var J: Integer;
+  Begin For J := 1 To Length(S) Do WB(Byte(S[J])); WB(0); End;
+
+  Procedure WSectHdr(Const Name: String; Vsz, Rva, Fsz, Foff, Chars: LongInt);
+  Begin
+    WSect8(Name);
+    WD(Vsz); WD(Rva); WD(Fsz); WD(Foff);
+    WD(0); WD(0); WW(0); WW(0);
+    WD(Chars);
+  End;
+
+  Procedure Patch32(Off: LongInt; V: LongInt);
+  Begin
+    BinCode[Off]   := Byte(V And $FF);
+    BinCode[Off+1] := Byte((V Shr  8) And $FF);
+    BinCode[Off+2] := Byte((V Shr 16) And $FF);
+    BinCode[Off+3] := Byte((V Shr 24) And $FF);
+  End;
+
+  Function LabelVA(Const Name: String): LongInt;
+  Var J: Integer;
+  Begin
+    For J := 0 To LabelCount - 1 Do
+      If LabelTable[J].Name = Name Then Begin
+        Case LabelTable[J].Section Of
+          BIN_SEC_TEXT  : LabelVA := IMAGE_BASE + TextRva  + LabelTable[J].Offset;
+          BIN_SEC_DATA  : LabelVA := IMAGE_BASE + DataRva  + LabelTable[J].Offset;
+          BIN_SEC_RDATA : LabelVA := IMAGE_BASE + RdataRva + LabelTable[J].Offset;
+          BIN_SEC_IDATA : LabelVA := IMAGE_BASE + IdataRva + LabelTable[J].Offset;
+        Else
+          LabelVA := 0;
+        End;
+        Exit;
+      End;
+    CompileError('label non resolu: ' + Name);
+    LabelVA := 0;
+  End;
+
+  Function ImportVA(Const Name: String): LongInt;
+  Var J: Integer;
+  Begin
+    For J := 0 To ImportCount - 1 Do
+      If ImportTable[J].LabelNm = Name Then Begin
+        ImportVA := IMAGE_BASE + IdataRva + ImportTable[J].IATOff;
+        Exit;
+      End;
+    CompileError('import non resolu: ' + Name);
+    ImportVA := 0;
+  End;
+
 Begin
-  { TODO 25 }
+  { ── 1. Layout .idata ────────────────────────────────────── }
+  { [0]   IMPORT_DESCRIPTOR kernel32 (20 o)                   }
+  { [20]  null IMPORT_DESCRIPTOR (20 o)                       }
+  { [40]  INT (ImportCount+1)*4                               }
+  { [INT+] IAT (ImportCount+1)*4                              }
+  { [IAT+] DLL name "KERNEL32.DLL\0" + 1 pad = 14 o         }
+  { [DLL+] Hint/Name entries                                  }
+  IdataIntOff := 40;
+  IdataIatOff := IdataIntOff + LongInt(ImportCount + 1) * 4;
+  IdataDllOff := IdataIatOff + LongInt(ImportCount + 1) * 4;
+  IdataHnBase := IdataDllOff + 14;
+  HnCur := 0;
+  For I := 0 To ImportCount - 1 Do Begin
+    ImportTable[I].IATOff := IdataIatOff + LongInt(I) * 4;
+    BaseName := StripDeco(ImportTable[I].FuncName);
+    BnLen    := Length(BaseName);
+    HnEntSz  := BnLen + 3;
+    If (HnEntSz And 1) <> 0 Then Inc(HnEntSz);
+    IdataHnOff[I] := HnCur;
+    HnCur := HnCur + HnEntSz;
+  End;
+  IdataVsz := IdataHnBase + HnCur;
+  If IdataVsz = 0 Then IdataVsz := 1;
+
+  { ── 2. Tailles et VAs des sections ─────────────────────── }
+  TextVsz  := BinCodeSize;  If TextVsz  = 0 Then TextVsz  := 1;
+  RdataVsz := BinRDataSize; If RdataVsz = 0 Then RdataVsz := 1;
+  DataVsz  := BinDataSize;  If DataVsz  = 0 Then DataVsz  := 1;
+
+  TextRva  := $1000;
+  RdataRva := TextRva  + AlignUp(TextVsz,  SEC_ALIGN);
+  DataRva  := RdataRva + AlignUp(RdataVsz, SEC_ALIGN);
+  IdataRva := DataRva  + AlignUp(DataVsz,  SEC_ALIGN);
+
+  TextFsz  := AlignUp(TextVsz,  FILE_ALIGN);
+  RdataFsz := AlignUp(RdataVsz, FILE_ALIGN);
+  DataFsz  := AlignUp(DataVsz,  FILE_ALIGN);
+  IdataFsz := AlignUp(IdataVsz, FILE_ALIGN);
+
+  TextFOff  := HDR_FILE;
+  RdataFOff := TextFOff  + TextFsz;
+  DataFOff  := RdataFOff + RdataFsz;
+  IdataFOff := DataFOff  + DataFsz;
+
+  SizeImage := IdataRva + AlignUp(IdataVsz, SEC_ALIGN);
+
+  { ── 3. Entry point (_SASSTART) ──────────────────────────── }
+  EntryRva := TextRva;
+  For I := 0 To LabelCount - 1 Do
+    If LabelTable[I].Name = '_SASSTART' Then Begin
+      EntryRva := TextRva + LabelTable[I].Offset; Break;
+    End;
+
+  { ── 4. DataDirectory entries ────────────────────────────── }
+  ImpDirRva := IdataRva;
+  ImpDirSz  := 40;
+  IatDirRva := IdataRva + IdataIatOff;
+  IatDirSz  := LongInt(ImportCount) * 4;
+
+  { ── 5. Application des fixups dans BinCode ─────────────── }
+  For I := 0 To FixupCount - 1 Do Begin
+    Case FixupTable[I].Kind Of
+      BIN_FIX_ABS32 : Patch32(FixupTable[I].Offset,
+                         LabelVA(FixupTable[I].Name));
+      BIN_FIX_REL32 : Patch32(FixupTable[I].Offset,
+                         LabelVA(FixupTable[I].Name) -
+                         (IMAGE_BASE + TextRva + FixupTable[I].Offset + 4));
+      BIN_FIX_IMP32 : Patch32(FixupTable[I].Offset,
+                         ImportVA(FixupTable[I].Name));
+    End;
+  End;
+
+  { ── 6. Ouverture du fichier ─────────────────────────────── }
+  Assign(F, FileName);
+  {$I-} Rewrite(F, 1); {$I+}
+  If IOResult <> 0 Then Begin
+    CompileError('impossible de creer: ' + FileName); Exit;
+  End;
+
+  { ── 7. En-tete DOS (64 o) ───────────────────────────────── }
+  WB($4D); WB($5A);              { 'MZ' }
+  WZero(58);                     { octets 2..59 = zeros }
+  WD(64);                        { e_lfanew = 64 }
+
+  { ── 8. Signature PE (4 o) ───────────────────────────────── }
+  WB($50); WB($45); WB(0); WB(0);
+
+  { ── 9. IMAGE_FILE_HEADER (20 o) ─────────────────────────── }
+  WW($014C);                     { Machine = i386 }
+  WW(4);                         { NumberOfSections }
+  WD(0);                         { TimeDateStamp }
+  WD(0);                         { PointerToSymbolTable }
+  WD(0);                         { NumberOfSymbols }
+  WW($00E0);                     { SizeOfOptionalHeader = 224 }
+  WW($0103);                     { Characteristics }
+
+  { ── 10. IMAGE_OPTIONAL_HEADER32 (224 o) ─────────────────── }
+  WW($010B);                     { Magic PE32 }
+  WB(0); WB(0);                  { LinkerVersion }
+  WD(TextFsz);                   { SizeOfCode }
+  WD(RdataFsz + DataFsz + IdataFsz);  { SizeOfInitializedData }
+  WD(0);                         { SizeOfUninitializedData }
+  WD(EntryRva);                  { AddressOfEntryPoint }
+  WD(TextRva);                   { BaseOfCode }
+  WD(DataRva);                   { BaseOfData }
+  WD(IMAGE_BASE);                { ImageBase }
+  WD(SEC_ALIGN);                 { SectionAlignment }
+  WD(FILE_ALIGN);                { FileAlignment }
+  WW(4); WW(0);                  { MajorOS / MinorOS }
+  WW(0); WW(0);                  { MajorImage / MinorImage }
+  WW(4); WW(0);                  { MajorSubsys / MinorSubsys }
+  WD(0);                         { Win32VersionValue }
+  WD(SizeImage);                 { SizeOfImage }
+  WD(HDR_FILE);                  { SizeOfHeaders }
+  WD(0);                         { CheckSum }
+  WW(3);                         { Subsystem = CUI }
+  WW(0);                         { DllCharacteristics }
+  WD($00100000);                 { SizeOfStackReserve }
+  WD($00001000);                 { SizeOfStackCommit }
+  WD($00100000);                 { SizeOfHeapReserve }
+  WD($00001000);                 { SizeOfHeapCommit }
+  WD(0);                         { LoaderFlags }
+  WD(16);                        { NumberOfRvaAndSizes }
+  WD(0);         WD(0);          { [0] Export }
+  WD(ImpDirRva); WD(ImpDirSz);  { [1] Import }
+  WD(0);         WD(0);          { [2] Resource }
+  WD(0);         WD(0);          { [3] Exception }
+  WD(0);         WD(0);          { [4] Security }
+  WD(0);         WD(0);          { [5] BaseReloc }
+  WD(0);         WD(0);          { [6] Debug }
+  WD(0);         WD(0);          { [7] Architecture }
+  WD(0);         WD(0);          { [8] GlobalPtr }
+  WD(0);         WD(0);          { [9] TLS }
+  WD(0);         WD(0);          { [10] LoadConfig }
+  WD(0);         WD(0);          { [11] BoundImport }
+  WD(IatDirRva); WD(IatDirSz);  { [12] IAT }
+  WD(0);         WD(0);          { [13] DelayImport }
+  WD(0);         WD(0);          { [14] COM }
+  WD(0);         WD(0);          { [15] Reserved }
+
+  { ── 11. Section headers 4 x 40 = 160 o ─────────────────── }
+  WSectHdr('.text',  TextVsz,  TextRva,  TextFsz,  TextFOff,  $60000020);
+  WSectHdr('.rdata', RdataVsz, RdataRva, RdataFsz, RdataFOff, $40000040);
+  WSectHdr('.data',  DataVsz,  DataRva,  DataFsz,  DataFOff,  $C0000040);
+  WSectHdr('.idata', IdataVsz, IdataRva, IdataFsz, IdataFOff, $C0000040);
+
+  { ── 12. Pad en-tete a HDR_FILE ─────────────────────────── }
+  { 64+4+20+224+160 = 472 ; pad 40 o → 512 }
+  WZero(40);
+
+  { ── 13. Section .text ───────────────────────────────────── }
+  If BinCodeSize > 0 Then BlockWrite(F, BinCode, BinCodeSize);
+  WZero(TextFsz - BinCodeSize);
+
+  { ── 14. Section .rdata ──────────────────────────────────── }
+  If BinRDataSize > 0 Then BlockWrite(F, BinRData, BinRDataSize);
+  WZero(RdataFsz - BinRDataSize);
+
+  { ── 15. Section .data ───────────────────────────────────── }
+  If BinDataSize > 0 Then BlockWrite(F, BinData, BinDataSize);
+  WZero(DataFsz - BinDataSize);
+
+  { ── 16. Section .idata ──────────────────────────────────── }
+  { IMPORT_DESCRIPTOR pour KERNEL32.DLL }
+  WD(IdataRva + IdataIntOff);    { OriginalFirstThunk }
+  WD(0);                         { TimeDateStamp }
+  WD(0);                         { ForwarderChain }
+  WD(IdataRva + IdataDllOff);    { Name }
+  WD(IdataRva + IdataIatOff);    { FirstThunk (IAT) }
+  { Terminateur null }
+  WZero(20);
+  { INT : ImportCount entrees + null }
+  For I := 0 To ImportCount - 1 Do
+    WD(IdataRva + IdataHnBase + IdataHnOff[I]);
+  WD(0);
+  { IAT : meme valeurs (loader remplace par adresses reelles) }
+  For I := 0 To ImportCount - 1 Do
+    WD(IdataRva + IdataHnBase + IdataHnOff[I]);
+  WD(0);
+  { Nom de la DLL (14 o) }
+  WStr0('KERNEL32.DLL');
+  WB(0);
+  { Hint/Name entries }
+  For I := 0 To ImportCount - 1 Do Begin
+    BaseName := StripDeco(ImportTable[I].FuncName);
+    BnLen    := Length(BaseName);
+    WW(0);           { Hint = 0 }
+    WStr0(BaseName);
+    HnEntSz := BnLen + 3;
+    If (HnEntSz And 1) <> 0 Then WB(0);
+  End;
+  WZero(IdataFsz - IdataVsz);
+
+  Close(F);
 End;
 
+{ ============================================================ }
+{ TODO 25 — WriteCOFF : sortie COFF (stub V1)                  }
+{ ============================================================ }
 Procedure WriteCOFF(Const FileName: String);
+Var F: Text;
 Begin
-  { TODO 25 }
+  Assign(F, FileName);
+  {$I-} Rewrite(F); {$I+}
+  If IOResult <> 0 Then Begin
+    CompileError('impossible de creer: ' + FileName); Exit;
+  End;
+  WriteLn(F, '; SASCW32 COFF stub - TODO 25 V2');
+  Close(F);
 End;
 
+{ ============================================================ }
+{ TODO 25 — WriteASM : sortie MASM (stub V1)                   }
+{ ============================================================ }
 Procedure WriteASM(Const FileName: String);
+Var F: Text;
 Begin
-  { TODO 25 }
+  Assign(F, FileName);
+  {$I-} Rewrite(F); {$I+}
+  If IOResult <> 0 Then Begin
+    CompileError('impossible de creer: ' + FileName); Exit;
+  End;
+  WriteLn(F, '.386');
+  WriteLn(F, '.MODEL FLAT, STDCALL');
+  WriteLn(F, 'OPTION CASEMAP:NONE');
+  WriteLn(F, '; SASCW32 ASM stub - TODO 25 V2');
+  Close(F);
 End;
 
 Function BinCurOffset: LongInt;
@@ -3716,6 +5063,20 @@ Procedure BinRet;                  Begin BinEmit8($C3); End;
 Procedure BinPushImm32(V: LongInt);
 Begin BinEmit8($68); BinEmit32(V); End;
 
+{ PUSH imm32 avec fixup ABS32 vers un label (pour passer une adresse). }
+Procedure BinPushLabel(Const Name: String);
+Begin
+  BinEmit8($68);
+  If FixupCount < MAX_FIXUPS Then Begin
+    FixupTable[FixupCount].Offset  := BinCurOffset;
+    FixupTable[FixupCount].Section := BIN_SEC_TEXT;
+    FixupTable[FixupCount].Name    := Name;
+    FixupTable[FixupCount].Kind    := BIN_FIX_ABS32;
+    Inc(FixupCount);
+  End;
+  BinEmit32(0);
+End;
+
 Procedure BinAddEspImm8(N: Integer);
 Begin BinEmit8($83); BinEmit8($C4); BinEmit8(Byte(N)); End;
 
@@ -3771,9 +5132,994 @@ Begin
   BinEmit32(-4);
 End;
 
+{ ============================================================ }
+{ TODO 19 — Helpers pour sections .data et .rdata              }
+{ ============================================================ }
+
+Procedure BinEmitDataByte(B: Byte);
+Begin
+  If BinDataSize < MAX_DATA Then Begin
+    BinData[BinDataSize] := B; Inc(BinDataSize);
+  End;
+End;
+
+Procedure BinEmitRDataByte(B: Byte);
+Begin
+  If BinRDataSize < MAX_RDATA Then Begin
+    BinRData[BinRDataSize] := B; Inc(BinRDataSize);
+  End;
+End;
+
+Procedure BinDefineDataLabel(Const Name: String);
+Begin
+  If LabelCount >= MAX_LABELS Then Exit;
+  LabelTable[LabelCount].Name    := Name;
+  LabelTable[LabelCount].Section := BIN_SEC_DATA;
+  LabelTable[LabelCount].Offset  := BinDataSize;
+  Inc(LabelCount);
+End;
+
+Procedure BinDefineRDataLabel(Const Name: String);
+Begin
+  If LabelCount >= MAX_LABELS Then Exit;
+  LabelTable[LabelCount].Name    := Name;
+  LabelTable[LabelCount].Section := BIN_SEC_RDATA;
+  LabelTable[LabelCount].Offset  := BinRDataSize;
+  Inc(LabelCount);
+End;
+
+{ PUSH dword ptr [addr32] : charge et empile la valeur memoire. }
+Procedure BinPushMem32(Const LblName: String);
+Begin
+  BinEmit8($FF); BinEmit8($35);
+  If FixupCount < MAX_FIXUPS Then Begin
+    FixupTable[FixupCount].Offset  := BinCurOffset;
+    FixupTable[FixupCount].Section := BIN_SEC_TEXT;
+    FixupTable[FixupCount].Name    := LblName;
+    FixupTable[FixupCount].Kind    := BIN_FIX_ABS32;
+    Inc(FixupCount);
+  End;
+  BinEmit32(0);
+End;
+
+{ MOV EAX, dword ptr [addr32] : charge la valeur dans EAX.    }
+Procedure BinMovEaxMem(Const LblName: String);
+Begin
+  BinEmit8($8B); BinEmit8($05);
+  If FixupCount < MAX_FIXUPS Then Begin
+    FixupTable[FixupCount].Offset  := BinCurOffset;
+    FixupTable[FixupCount].Section := BIN_SEC_TEXT;
+    FixupTable[FixupCount].Name    := LblName;
+    FixupTable[FixupCount].Kind    := BIN_FIX_ABS32;
+    Inc(FixupCount);
+  End;
+  BinEmit32(0);
+End;
+
+{ CMP EAX, imm32 : compare EAX a une constante immediate.     }
+Procedure BinCmpEaxImm32(V: LongInt);
+Begin
+  BinEmit8($3D); BinEmit32(V);
+End;
+
+{ ============================================================ }
+{ Runtime I/O embarque — TODO 15                               }
+{ _SASRT_write_str(ptr)  : ecrire chaine zero-terminee stdout  }
+{ _SASRT_write_num(n)    : convertir entier->chaine, ecrire    }
+{ _SASRT_newline         : ecrire CR+LF sur stdout             }
+{ _SASRT_crlf            : donnee inline 0D 0A                 }
+{ Convention : stdcall (callee nettoie les params).            }
+{ ============================================================ }
 Procedure EmitRuntimeIO;
 Begin
-  { TODO 15 }
+  { ── _SASRT_write_str(ptr:dword) ─────────────────────────── }
+  { Ecrit la chaine zero-terminee pointee par [esp+4] sur stdout }
+  { 53 octets : stdcall, ret 4                                  }
+  BinDefineLabel('_SASRT_write_str');
+  BinEmit8($55);             { push ebp                        }
+  BinEmit8($89); BinEmit8($E5);  { mov ebp, esp               }
+  BinEmit8($83); BinEmit8($EC); BinEmit8($04); { sub esp, 4   }
+  BinEmit8($8B); BinEmit8($75); BinEmit8($08); { mov esi,[ebp+8] }
+  BinEmit8($31); BinEmit8($C9); { xor ecx, ecx                }
+  { lenloop: cmp byte [esi+ecx], 0 }
+  BinEmit8($80); BinEmit8($3C); BinEmit8($0E); BinEmit8($00);
+  BinEmit8($74); BinEmit8($03); { je lendone (+3)              }
+  BinEmit8($41);             { inc ecx                         }
+  BinEmit8($EB); BinEmit8($F7); { jmp lenloop (-9)             }
+  { lendone: }
+  BinEmit8($85); BinEmit8($C9); { test ecx, ecx                }
+  BinEmit8($74); BinEmit8($17); { jz skip (+23)                }
+  BinEmit8($6A); BinEmit8($F5); { push -11 (STD_OUTPUT_HANDLE) }
+  BinCallImport('_GetStdHandle@4');
+  BinEmit8($8D); BinEmit8($55); BinEmit8($FC); { lea edx,[ebp-4] }
+  BinEmit8($6A); BinEmit8($00); { push 0 (lpOverlapped)        }
+  BinEmit8($52);             { push edx (&dwBytesWritten)       }
+  BinEmit8($51);             { push ecx (nBytesToWrite)         }
+  BinEmit8($56);             { push esi (lpBuffer)              }
+  BinEmit8($50);             { push eax (hFile)                 }
+  BinCallImport('_WriteFile@20');
+  { skip: }
+  BinEmit8($89); BinEmit8($EC); { mov esp, ebp                 }
+  BinEmit8($5D);             { pop ebp                         }
+  BinEmit8($C2); BinEmit8($04); BinEmit8($00); { ret 4         }
+
+  { ── _SASRT_write_num(n:dword) ───────────────────────────── }
+  { Convertit l entier signe [esp+4] en decimal et l ecrit.    }
+  { 81 octets : stdcall, ret 4 ; appelle _SASRT_write_str.     }
+  BinDefineLabel('_SASRT_write_num');
+  BinEmit8($55);             { push ebp                        }
+  BinEmit8($89); BinEmit8($E5);  { mov ebp, esp               }
+  BinEmit8($83); BinEmit8($EC); BinEmit8($10); { sub esp, 16  }
+  { mov byte [ebp-1], 0 }
+  BinEmit8($C6); BinEmit8($45); BinEmit8($FF); BinEmit8($00);
+  BinEmit8($8D); BinEmit8($7D); BinEmit8($FE); { lea edi,[ebp-2] }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08); { mov eax,[ebp+8] }
+  BinEmit8($31); BinEmit8($DB); { xor ebx, ebx                }
+  BinEmit8($85); BinEmit8($C0); { test eax, eax               }
+  BinEmit8($79); BinEmit8($07); { jns positive (+7)           }
+  BinEmit8($F7); BinEmit8($D8); { neg eax                     }
+  BinEmit8($BB); BinEmit32(1);  { mov ebx, 1                  }
+  { positive: }
+  BinEmit8($85); BinEmit8($C0); { test eax, eax               }
+  BinEmit8($75); BinEmit8($06); { jnz digits (+6)             }
+  BinEmit8($C6); BinEmit8($07); BinEmit8($30); { mov byte [edi],'0' }
+  BinEmit8($4F);             { dec edi                         }
+  BinEmit8($EB); BinEmit8($15); { jmp sign_check (+21)         }
+  { digits: mov ecx, 10 }
+  BinEmit8($B9); BinEmit32(10);
+  { digloop: }
+  BinEmit8($85); BinEmit8($C0); { test eax, eax               }
+  BinEmit8($74); BinEmit8($0C); { jz sign_check (+12)         }
+  BinEmit8($31); BinEmit8($D2); { xor edx, edx                }
+  BinEmit8($F7); BinEmit8($F1); { div ecx                     }
+  BinEmit8($80); BinEmit8($C2); BinEmit8($30); { add dl,'0'   }
+  BinEmit8($88); BinEmit8($17); { mov [edi], dl               }
+  BinEmit8($4F);             { dec edi                         }
+  BinEmit8($EB); BinEmit8($F0); { jmp digloop (-16)            }
+  { sign_check: }
+  BinEmit8($85); BinEmit8($DB); { test ebx, ebx               }
+  BinEmit8($74); BinEmit8($04); { jz write_it (+4)            }
+  BinEmit8($C6); BinEmit8($07); BinEmit8($2D); { mov byte [edi],'-' }
+  BinEmit8($4F);             { dec edi                         }
+  { write_it: }
+  BinEmit8($47);             { inc edi                         }
+  BinEmit8($57);             { push edi                        }
+  BinCallLabel('_SASRT_write_str');
+  BinEmit8($89); BinEmit8($EC); { mov esp, ebp                 }
+  BinEmit8($5D);             { pop ebp                         }
+  BinEmit8($C2); BinEmit8($04); BinEmit8($00); { ret 4         }
+
+  { ── _SASRT_newline ──────────────────────────────────────── }
+  { Ecrit CR+LF sur stdout. Aucun parametre. 38 octets.        }
+  BinDefineLabel('_SASRT_newline');
+  BinEmit8($55);             { push ebp                        }
+  BinEmit8($89); BinEmit8($E5);  { mov ebp, esp               }
+  BinEmit8($83); BinEmit8($EC); BinEmit8($04); { sub esp, 4   }
+  BinEmit8($6A); BinEmit8($F5); { push -11 (STD_OUTPUT_HANDLE) }
+  BinCallImport('_GetStdHandle@4');
+  BinEmit8($8D); BinEmit8($4D); BinEmit8($FC); { lea ecx,[ebp-4] }
+  BinEmit8($6A); BinEmit8($00); { push 0 (lpOverlapped)        }
+  BinEmit8($51);             { push ecx (&dwBytesWritten)       }
+  BinEmit8($6A); BinEmit8($02); { push 2 (nBytesToWrite)       }
+  BinPushLabel('_SASRT_crlf');  { push addr de CRLF (ABS32)    }
+  BinEmit8($50);             { push eax (hFile)                 }
+  BinCallImport('_WriteFile@20');
+  BinEmit8($89); BinEmit8($EC); { mov esp, ebp                 }
+  BinEmit8($5D);             { pop ebp                         }
+  BinEmit8($C3);             { ret                             }
+
+  { ── _SASRT_crlf : donnee inline CR+LF ───────────────────── }
+  BinDefineLabel('_SASRT_crlf');
+  BinEmit8($0D); BinEmit8($0A);
+End;
+
+{ ============================================================ }
+{ TODO 19 — Allocation des variables et codegen PROC PRINT     }
+{ ============================================================ }
+
+{ Emet S en zero-termine dans .rdata, retourne le label.       }
+Function EmitRDataStr(Const S: String): String;
+Var
+  LblName : String;
+  I       : Integer;
+Begin
+  LblName := '_sas_rs_' + IntToStr(BinRDataSize);
+  BinDefineRDataLabel(LblName);
+  For I := 1 To Length(S) Do
+    BinEmitRDataByte(Byte(S[I]));
+  BinEmitRDataByte(0);
+  EmitRDataStr := LblName;
+End;
+
+{ Alloue un espace .data pour chaque variable SAS et          }
+{ affecte son AsmName et son Offset dans SymTable.            }
+Procedure AllocVars;
+Const
+  CHARVAR_SIZE = 256;
+Var
+  I : Integer;
+  J : Integer;
+  LN : String;
+Begin
+  For I := 0 To SymCount - 1 Do Begin
+    If (SymTable[I].Kind = SK_VAR_NUM) Or
+       (SymTable[I].Kind = SK_VAR_CHAR) Then Begin
+      LN := '_sas_v_' + SymTable[I].Name;
+      SymTable[I].AsmName := LN;
+      BinDefineDataLabel(LN);
+      SymTable[I].Offset := BinDataSize;
+      If SymTable[I].IsChar Then Begin
+        For J := 1 To CHARVAR_SIZE Do BinEmitDataByte(0);
+      End Else Begin
+        BinEmitDataByte(0); BinEmitDataByte(0);
+        BinEmitDataByte(0); BinEmitDataByte(0);
+      End;
+    End;
+  End;
+End;
+
+{ Genere le code 80386 pour PROC PRINT.                       }
+{ ProcNode : NK_PROC_PRINT, Text=DsName, NumVal=NoPrint.      }
+{ Enfants : NK_VAR_LIST (variables VAR), NK_LITERAL (titres). }
+Procedure CodegenProcPrint(ProcNode: Integer);
+Var
+  Child     : Integer;
+  VListNode : Integer;
+  VarNode   : Integer;
+  DsName    : String;
+  VarName   : String;
+  LblStr    : String;
+  SIdx      : Integer;
+  DsIdx     : Integer;
+  I         : Integer;
+Begin
+  If AstTable[ProcNode].NumVal <> 0 Then Exit; { NOPRINT }
+  DsName := UpperStr(AstTable[ProcNode].Text);
+
+  { Identifier le noeud VAR_LIST parmi les enfants }
+  VListNode := -1;
+  Child := AstTable[ProcNode].FirstChild;
+  While Child >= 0 Do Begin
+    If AstTable[Child].Kind = NK_VAR_LIST Then Begin
+      VListNode := Child; Break;
+    End;
+    Child := AstTable[Child].NextSibling;
+  End;
+
+  If VListNode >= 0 Then Begin
+    { Imprimer les variables listees dans VAR }
+    VarNode := AstTable[VListNode].FirstChild;
+    While VarNode >= 0 Do Begin
+      VarName := UpperStr(AstTable[VarNode].Text);
+      SIdx := FindSym(VarName, SK_NONE);
+      If (SIdx >= 0) And
+         ((SymTable[SIdx].Kind = SK_VAR_NUM) Or
+          (SymTable[SIdx].Kind = SK_VAR_CHAR)) Then Begin
+        LblStr := EmitRDataStr(VarName + '=');
+        BinPushLabel(LblStr);
+        BinCallLabel('_SASRT_write_str');
+        If SymTable[SIdx].IsChar Then Begin
+          BinPushLabel(SymTable[SIdx].AsmName);
+          BinCallLabel('_SASRT_write_str');
+        End Else Begin
+          CodegenFormatOutput(SIdx, SymTable[SIdx].FmtIdx);
+        End;
+        BinCallLabel('_SASRT_newline');
+      End;
+      VarNode := AstTable[VarNode].NextSibling;
+    End;
+  End Else Begin
+    { Pas de VAR : imprimer toutes les variables du dataset }
+    DsIdx := -1;
+    For I := 0 To DsCount - 1 Do Begin
+      If DsTable[I].Name = DsName Then Begin
+        DsIdx := I; Break;
+      End;
+    End;
+    If DsIdx >= 0 Then Begin
+      For I := 0 To DsTable[DsIdx].VarCnt - 1 Do Begin
+        VarName := DsTable[DsIdx].Vars[I].Name;
+        SIdx := FindSym(VarName, SK_NONE);
+        If (SIdx >= 0) And
+           ((SymTable[SIdx].Kind = SK_VAR_NUM) Or
+            (SymTable[SIdx].Kind = SK_VAR_CHAR)) Then Begin
+          LblStr := EmitRDataStr(VarName + '=');
+          BinPushLabel(LblStr);
+          BinCallLabel('_SASRT_write_str');
+          If SymTable[SIdx].IsChar Then Begin
+            BinPushLabel(SymTable[SIdx].AsmName);
+            BinCallLabel('_SASRT_write_str');
+          End Else Begin
+            CodegenFormatOutput(SIdx, SymTable[SIdx].FmtIdx);
+          End;
+          BinCallLabel('_SASRT_newline');
+        End;
+      End;
+    End;
+  End;
+End;
+
+{ ============================================================ }
+{ TODO 20 — Codegen PROC MEANS                                 }
+{ ProcNode : NK_PROC_MEANS, Text=DsName.                       }
+{ V1 : N=1, MEAN=MIN=MAX=SUM = valeur courante de la variable. }
+{ Seules les variables numeriques sont traitees.               }
+{ ============================================================ }
+Procedure CodegenProcMeans(ProcNode: Integer);
+Var
+  Child      : Integer;
+  VListNode  : Integer;
+  VarNode    : Integer;
+  DsName     : String;
+  VarName    : String;
+  LblStr     : String;
+  SIdx       : Integer;
+  DsIdx      : Integer;
+  I          : Integer;
+  VarBuf     : Array[0..MAX_DS_COLS-1] Of String;
+  VarN       : Integer;
+
+  Procedure EmitStats(SIdx: Integer; Const VarName: String);
+  { Emet : varname:\n N=1\n MEAN=v\n MIN=v\n MAX=v\n SUM=v\n }
+  Begin
+    LblStr := EmitRDataStr(VarName + ':');
+    BinPushLabel(LblStr); BinCallLabel('_SASRT_write_str');
+    BinCallLabel('_SASRT_newline');
+    LblStr := EmitRDataStr('N=');
+    BinPushLabel(LblStr); BinCallLabel('_SASRT_write_str');
+    BinPushImm32(1);      BinCallLabel('_SASRT_write_num');
+    BinCallLabel('_SASRT_newline');
+    LblStr := EmitRDataStr('MEAN=');
+    BinPushLabel(LblStr); BinCallLabel('_SASRT_write_str');
+    BinPushMem32(SymTable[SIdx].AsmName); BinCallLabel('_SASRT_write_num');
+    BinCallLabel('_SASRT_newline');
+    LblStr := EmitRDataStr('MIN=');
+    BinPushLabel(LblStr); BinCallLabel('_SASRT_write_str');
+    BinPushMem32(SymTable[SIdx].AsmName); BinCallLabel('_SASRT_write_num');
+    BinCallLabel('_SASRT_newline');
+    LblStr := EmitRDataStr('MAX=');
+    BinPushLabel(LblStr); BinCallLabel('_SASRT_write_str');
+    BinPushMem32(SymTable[SIdx].AsmName); BinCallLabel('_SASRT_write_num');
+    BinCallLabel('_SASRT_newline');
+    LblStr := EmitRDataStr('SUM=');
+    BinPushLabel(LblStr); BinCallLabel('_SASRT_write_str');
+    BinPushMem32(SymTable[SIdx].AsmName); BinCallLabel('_SASRT_write_num');
+    BinCallLabel('_SASRT_newline');
+  End;
+
+Begin
+  DsName    := UpperStr(AstTable[ProcNode].Text);
+  VListNode := -1;
+  VarN      := 0;
+
+  Child := AstTable[ProcNode].FirstChild;
+  While Child >= 0 Do Begin
+    If AstTable[Child].Kind = NK_VAR_LIST Then Begin
+      VListNode := Child; Break;
+    End;
+    Child := AstTable[Child].NextSibling;
+  End;
+
+  If VListNode >= 0 Then Begin
+    { Collecter les noms du noeud VAR }
+    VarNode := AstTable[VListNode].FirstChild;
+    While (VarNode >= 0) And (VarN < MAX_DS_COLS) Do Begin
+      VarBuf[VarN] := UpperStr(AstTable[VarNode].Text);
+      Inc(VarN);
+      VarNode := AstTable[VarNode].NextSibling;
+    End;
+  End Else Begin
+    { Pas de VAR : prendre les variables numeriques du dataset }
+    DsIdx := -1;
+    For I := 0 To DsCount - 1 Do
+      If DsTable[I].Name = DsName Then Begin DsIdx := I; Break; End;
+    If DsIdx >= 0 Then
+      For I := 0 To DsTable[DsIdx].VarCnt - 1 Do
+        If (Not DsTable[DsIdx].Vars[I].IsChar) And (VarN < MAX_DS_COLS) Then Begin
+          VarBuf[VarN] := DsTable[DsIdx].Vars[I].Name;
+          Inc(VarN);
+        End;
+  End;
+
+  { Emettre les stats pour chaque variable collectee }
+  For I := 0 To VarN - 1 Do Begin
+    VarName := VarBuf[I];
+    SIdx := FindSym(VarName, SK_NONE);
+    If (SIdx >= 0) And (SymTable[SIdx].Kind = SK_VAR_NUM) Then
+      EmitStats(SIdx, VarName);
+  End;
+End;
+
+{ ============================================================ }
+{ TODO 22 — Sortie formatee via FmtTable                       }
+{ Genere le code inline CMP/JE/JMP pour appliquer un format   }
+{ utilisateur lors de l affichage d une variable numerique.    }
+{ Si FmtIdx < 0 ou format vide : sortie numerique simple.      }
+{ ============================================================ }
+Procedure CodegenFormatOutput(SIdx, FmtIdx: Integer);
+Var
+  NE       : Integer;
+  I        : Integer;
+  OtherIdx : Integer;
+  BaseTag  : String;
+  EntLbl   : String;
+  SkipLbl  : String;
+  FallLbl  : String;
+  DoneLbl  : String;
+  LblStr   : String;
+  FE       : TFmtEntry;
+Begin
+  If (FmtIdx < 0) Or (FmtIdx >= FmtCount) Then Begin
+    BinPushMem32(SymTable[SIdx].AsmName);
+    BinCallLabel('_SASRT_write_num');
+    Exit;
+  End;
+
+  NE := FmtTable[FmtIdx].Count;
+  If NE = 0 Then Begin
+    BinPushMem32(SymTable[SIdx].AsmName);
+    BinCallLabel('_SASRT_write_num');
+    Exit;
+  End;
+
+  BaseTag  := '_fg_' + IntToStr(BinCodeSize);
+  FallLbl  := BaseTag + '_fb';
+  DoneLbl  := BaseTag + '_dn';
+  OtherIdx := -1;
+
+  For I := 0 To NE - 1 Do
+    If FmtTable[FmtIdx].Entries[I].IsOther Then OtherIdx := I;
+
+  { Charger la valeur dans EAX pour les comparaisons }
+  BinMovEaxMem(SymTable[SIdx].AsmName);
+
+  { Pour chaque entree non-OTHER : emettre la comparaison }
+  For I := 0 To NE - 1 Do Begin
+    FE      := FmtTable[FmtIdx].Entries[I];
+    EntLbl  := BaseTag + '_e' + IntToStr(I);
+    SkipLbl := BaseTag + '_sk' + IntToStr(I);
+    If FE.IsOther Then Continue;
+    If FE.IsSingle Then Begin
+      BinCmpEaxImm32(FE.Lo);
+      BinJccLabel(4, EntLbl);     { JE : valeur unique }
+    End Else Begin
+      If Not FE.LoIsLow Then Begin
+        BinCmpEaxImm32(FE.Lo);
+        BinJccLabel(12, SkipLbl); { JL : en dessous de Lo }
+      End;
+      If Not FE.HiIsHigh Then Begin
+        BinCmpEaxImm32(FE.Hi);
+        BinJccLabel(15, SkipLbl); { JG : au dessus de Hi }
+      End;
+      BinJmpLabel(EntLbl);        { dans [Lo..Hi] }
+      BinDefineLabel(SkipLbl);
+    End;
+  End;
+
+  { Aucune entree n a correspondu : aller vers OTHER ou fallback }
+  If OtherIdx >= 0 Then
+    BinJmpLabel(BaseTag + '_e' + IntToStr(OtherIdx))
+  Else
+    BinJmpLabel(FallLbl);
+
+  { Blocs de sortie : un label + write_str + jmp done par entree }
+  For I := 0 To NE - 1 Do Begin
+    FE     := FmtTable[FmtIdx].Entries[I];
+    EntLbl := BaseTag + '_e' + IntToStr(I);
+    BinDefineLabel(EntLbl);
+    LblStr := EmitRDataStr(FE.Lbl);
+    BinPushLabel(LblStr);
+    BinCallLabel('_SASRT_write_str');
+    BinJmpLabel(DoneLbl);
+  End;
+
+  { Fallback : sortie numerique brute }
+  BinDefineLabel(FallLbl);
+  BinPushMem32(SymTable[SIdx].AsmName);
+  BinCallLabel('_SASRT_write_num');
+
+  BinDefineLabel(DoneLbl);
+End;
+
+{ PROC FORMAT : formats deja enregistres dans FmtTable lors    }
+{ du parsing (ParseSubCmd KW_VALUE). Aucun code a emettre.     }
+Procedure CodegenProcFormat(ProcNode: Integer);
+Begin
+  { no-op : FmtTable peuplee a l analyse syntaxique }
+End;
+
+{ ============================================================ }
+{ TODO 21 — Codegen PROC FREQ                                  }
+{ ProcNode : NK_PROC_FREQ, Text=DsName, NumVal=NoPrint.        }
+{ V1 : 1 observation → chaque valeur apparait 1 fois (100%).   }
+{ Cherche l enfant NK_VAR_LIST 'TABLES' ; ignore si absent.    }
+{ ============================================================ }
+Procedure CodegenProcFreq(ProcNode: Integer);
+Var
+  Child   : Integer;
+  TabNode : Integer;
+  VarNode : Integer;
+  VarName : String;
+  LblStr  : String;
+  SIdx    : Integer;
+Begin
+  If AstTable[ProcNode].NumVal <> 0 Then Exit; { NOPRINT }
+
+  TabNode := -1;
+  Child := AstTable[ProcNode].FirstChild;
+  While Child >= 0 Do Begin
+    If (AstTable[Child].Kind = NK_VAR_LIST) And
+       (AstTable[Child].Text = 'TABLES') Then Begin
+      TabNode := Child; Break;
+    End;
+    Child := AstTable[Child].NextSibling;
+  End;
+
+  If TabNode < 0 Then Exit; { pas de TABLES = rien a afficher }
+
+  VarNode := AstTable[TabNode].FirstChild;
+  While VarNode >= 0 Do Begin
+    VarName := UpperStr(AstTable[VarNode].Text);
+    SIdx := FindSym(VarName, SK_NONE);
+    If (SIdx >= 0) And (SymTable[SIdx].Kind = SK_VAR_NUM) Then Begin
+      { Entete : nom de la variable }
+      LblStr := EmitRDataStr(VarName + ':');
+      BinPushLabel(LblStr); BinCallLabel('_SASRT_write_str');
+      BinCallLabel('_SASRT_newline');
+      { Ligne de frequence : <valeur> N=1 Pct=100 }
+      BinPushMem32(SymTable[SIdx].AsmName);
+      BinCallLabel('_SASRT_write_num');
+      LblStr := EmitRDataStr(' N=1 Pct=100');
+      BinPushLabel(LblStr); BinCallLabel('_SASRT_write_str');
+      BinCallLabel('_SASRT_newline');
+    End;
+    VarNode := AstTable[VarNode].NextSibling;
+  End;
+End;
+
+{ ============================================================ }
+{ TODO 21 — Codegen PROC SORT                                  }
+{ V1 : tri en insertion non implemente (dataset multi-lignes   }
+{ requis). Emet un avertissement si la clause BY est absente.  }
+{ ============================================================ }
+Procedure CodegenProcSort(ProcNode: Integer);
+Var
+  Child : Integer;
+  HasBy : Boolean;
+Begin
+  HasBy := False;
+  Child := AstTable[ProcNode].FirstChild;
+  While Child >= 0 Do Begin
+    If AstTable[Child].Kind = NK_BY Then Begin HasBy := True; Break; End;
+    Child := AstTable[Child].NextSibling;
+  End;
+  If Not HasBy Then
+    CompileWarn('PROC SORT sans BY : aucun tri effectue');
+  { V1 : pas de codegen — tri multi-lignes non implemente }
+End;
+
+{ ============================================================ }
+{ TODO 23 — Runtime : fonctions numeriques integrees           }
+{ ABS INT SIGN MOD MIN MAX SUM ROUND CEIL FLOOR SQRT LOG EXP  }
+{ Convention stdcall : args sur pile (droite→gauche), EAX=res }
+{ ============================================================ }
+Procedure EmitRuntimeNumFunc;
+Begin
+  { --- _SASRT_abs(x): LongInt --- retourne |x| }
+  BinDefineLabel('_SASRT_abs');
+  BinEmit8($55);                               { push ebp }
+  BinEmit8($89); BinEmit8($E5);               { mov ebp, esp }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);{ mov eax, [ebp+8] }
+  BinEmit8($85); BinEmit8($C0);               { test eax, eax }
+  BinEmit8($7D); BinEmit8($02);               { jns +2 → pop ebp }
+  BinEmit8($F7); BinEmit8($D8);               { neg eax }
+  BinEmit8($5D);                               { pop ebp }
+  BinEmit8($C2); BinEmit8($04); BinEmit8($00);{ ret 4 }
+
+  { --- _SASRT_int(x): LongInt --- identite pour entiers }
+  BinDefineLabel('_SASRT_int');
+  BinEmit8($55);
+  BinEmit8($89); BinEmit8($E5);
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);
+  BinEmit8($5D);
+  BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+
+  { --- _SASRT_round(x): LongInt --- identite pour entiers }
+  BinDefineLabel('_SASRT_round');
+  BinEmit8($55);
+  BinEmit8($89); BinEmit8($E5);
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);
+  BinEmit8($5D);
+  BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+
+  { --- _SASRT_ceil(x): LongInt --- identite pour entiers }
+  BinDefineLabel('_SASRT_ceil');
+  BinEmit8($55);
+  BinEmit8($89); BinEmit8($E5);
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);
+  BinEmit8($5D);
+  BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+
+  { --- _SASRT_floor(x): LongInt --- identite pour entiers }
+  BinDefineLabel('_SASRT_floor');
+  BinEmit8($55);
+  BinEmit8($89); BinEmit8($E5);
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);
+  BinEmit8($5D);
+  BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+
+  { --- _SASRT_sign(x): LongInt --- retourne -1/0/+1 }
+  { Layout: test→jz(zero)→jns(pos)→mov -1→jmp done→mov 1→jmp done→xor 0→done }
+  { Deplacement jz  : next=10, cible=26 → disp=$10                             }
+  { Deplacement jns : next=12, cible=19 → disp=$07                             }
+  { Deplacement jmp (apres -1): next=19, cible=28 → disp=$09                   }
+  { Deplacement jmp (apres +1): next=26, cible=28 → disp=$02                   }
+  BinDefineLabel('_SASRT_sign');
+  BinEmit8($55);
+  BinEmit8($89); BinEmit8($E5);
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);
+  BinEmit8($85); BinEmit8($C0);               { test eax, eax }
+  BinEmit8($74); BinEmit8($10);               { jz  +16 → xor eax,eax }
+  BinEmit8($79); BinEmit8($07);               { jns +7  → mov eax,1 }
+  BinEmit8($B8); BinEmit8($FF); BinEmit8($FF); BinEmit8($FF); BinEmit8($FF); { mov eax,-1 }
+  BinEmit8($EB); BinEmit8($09);               { jmp +9  → pop ebp }
+  BinEmit8($B8); BinEmit8($01); BinEmit8($00); BinEmit8($00); BinEmit8($00); { mov eax,1 }
+  BinEmit8($EB); BinEmit8($02);               { jmp +2  → pop ebp }
+  BinEmit8($31); BinEmit8($C0);               { xor eax,eax }
+  BinEmit8($5D);
+  BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+
+  { --- _SASRT_mod(a,b): LongInt --- reste de a/b, protege div/0 }
+  { Layout: mov eax→mov ecx→test ecx→jz(done)→cdq→idiv→mov eax,edx→done }
+  { Deplacement jz : next=13, cible=18 → disp=$05                         }
+  BinDefineLabel('_SASRT_mod');
+  BinEmit8($55);
+  BinEmit8($89); BinEmit8($E5);
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08); { mov eax,[ebp+8]  dividende }
+  BinEmit8($8B); BinEmit8($4D); BinEmit8($0C); { mov ecx,[ebp+12] diviseur  }
+  BinEmit8($85); BinEmit8($C9);                { test ecx,ecx }
+  BinEmit8($74); BinEmit8($05);                { jz +5 → pop ebp (retourne a) }
+  BinEmit8($99);                               { cdq }
+  BinEmit8($F7); BinEmit8($F9);               { idiv ecx }
+  BinEmit8($89); BinEmit8($D0);               { mov eax,edx (reste) }
+  BinEmit8($5D);
+  BinEmit8($C2); BinEmit8($08); BinEmit8($00);{ ret 8 }
+
+  { --- _SASRT_min(a,b): LongInt --- retourne min(a,b) }
+  { Deplacement jle : next=13, cible=15 → disp=$02 }
+  BinDefineLabel('_SASRT_min');
+  BinEmit8($55);
+  BinEmit8($89); BinEmit8($E5);
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);
+  BinEmit8($8B); BinEmit8($4D); BinEmit8($0C);
+  BinEmit8($3B); BinEmit8($C1);               { cmp eax,ecx }
+  BinEmit8($7E); BinEmit8($02);               { jle +2 → pop ebp (a<=b, garde eax) }
+  BinEmit8($89); BinEmit8($C8);               { mov eax,ecx }
+  BinEmit8($5D);
+  BinEmit8($C2); BinEmit8($08); BinEmit8($00);
+
+  { --- _SASRT_max(a,b): LongInt --- retourne max(a,b) }
+  { Deplacement jge : next=13, cible=15 → disp=$02 }
+  BinDefineLabel('_SASRT_max');
+  BinEmit8($55);
+  BinEmit8($89); BinEmit8($E5);
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);
+  BinEmit8($8B); BinEmit8($4D); BinEmit8($0C);
+  BinEmit8($3B); BinEmit8($C1);
+  BinEmit8($7D); BinEmit8($02);               { jge +2 → pop ebp (a>=b, garde eax) }
+  BinEmit8($89); BinEmit8($C8);
+  BinEmit8($5D);
+  BinEmit8($C2); BinEmit8($08); BinEmit8($00);
+
+  { --- _SASRT_sqrt(x): LongInt --- trunc(sqrt(x)) via FPU }
+  { FILD dword: DB /5 → ModRM(mod=01,reg=5,rm=5)=$6D      }
+  { FISTP dword: DB /7 → ModRM(mod=01,reg=7,rm=5)=$7D     }
+  BinDefineLabel('_SASRT_sqrt');
+  BinEmit8($55);
+  BinEmit8($89); BinEmit8($E5);
+  BinEmit8($83); BinEmit8($EC); BinEmit8($04); { sub esp,4  (local dword) }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08); { mov eax,[ebp+8] }
+  BinEmit8($89); BinEmit8($45); BinEmit8($FC); { mov [ebp-4],eax }
+  BinEmit8($DB); BinEmit8($6D); BinEmit8($FC); { fild dword [ebp-4] }
+  BinEmit8($D9); BinEmit8($FA);               { fsqrt }
+  BinEmit8($DB); BinEmit8($7D); BinEmit8($FC); { fistp dword [ebp-4] }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($FC); { mov eax,[ebp-4] }
+  BinEmit8($89); BinEmit8($EC);               { mov esp,ebp }
+  BinEmit8($5D);
+  BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+
+  { --- _SASRT_log(x): LongInt --- stub retourne 0 (TODO 25 : FPU FYL2X) }
+  BinDefineLabel('_SASRT_log');
+  BinEmit8($55);
+  BinEmit8($89); BinEmit8($E5);
+  BinEmit8($31); BinEmit8($C0);               { xor eax,eax }
+  BinEmit8($5D);
+  BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+
+  { --- _SASRT_exp(x): LongInt --- stub retourne 0 (TODO 25 : FPU F2XM1) }
+  BinDefineLabel('_SASRT_exp');
+  BinEmit8($55);
+  BinEmit8($89); BinEmit8($E5);
+  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($5D);
+  BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+
+  { --- _SASRT_sum --- stub retourne 0 (variadic, impl. dans TODO 25) }
+  BinDefineLabel('_SASRT_sum');
+  BinEmit8($55);
+  BinEmit8($89); BinEmit8($E5);
+  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($5D);
+  BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+
+  { --- _SASRT_pow(base,exp) --- puissance entiere (28 octets) }
+  { [ebp+8]=base  [ebp+12]=exp ; ret 8 }
+  BinDefineLabel('_SASRT_pow');
+  BinEmit8($55);                                  { push ebp        }
+  BinEmit8($89); BinEmit8($E5);                  { mov ebp, esp    }
+  BinEmit8($B8); BinEmit32(1);                   { mov eax, 1      }
+  BinEmit8($8B); BinEmit8($4D); BinEmit8($08);   { mov ecx,[ebp+8] }
+  BinEmit8($8B); BinEmit8($55); BinEmit8($0C);   { mov edx,[ebp+12]}
+  { loop: }
+  BinEmit8($85); BinEmit8($D2);                  { test edx, edx   }
+  BinEmit8($7E); BinEmit8($06);                  { jle done (+6)   }
+  BinEmit8($0F); BinEmit8($AF); BinEmit8($C1);   { imul eax, ecx  }
+  BinEmit8($4A);                                  { dec edx         }
+  BinEmit8($EB); BinEmit8($F6);                  { jmp loop (-10)  }
+  { done: }
+  BinEmit8($5D);                                  { pop ebp         }
+  BinEmit8($C2); BinEmit8($08); BinEmit8($00);   { ret 8           }
+End;
+
+{ ============================================================ }
+{ TODO 23 — Dispatch appel de fonction integree (NK_CALL)      }
+{ Appele par CodegenExpr (TODO 25) apres evaluation des args.  }
+{ Args deja empiles droite→gauche avant cet appel.             }
+{ Resultat retourne dans EAX.                                   }
+{ ============================================================ }
+Procedure CodegenCall(Node: Integer);
+Var
+  FName : String;
+Begin
+  FName := AstTable[Node].Text;
+
+  { Fonctions a 1 argument : arg push par CodegenExpr avant cet appel }
+  If FName = 'ABS'   Then Begin BinCallLabel('_SASRT_abs');   Exit; End;
+  If FName = 'INT'   Then Begin BinCallLabel('_SASRT_int');   Exit; End;
+  If FName = 'SIGN'  Then Begin BinCallLabel('_SASRT_sign');  Exit; End;
+  If FName = 'ROUND' Then Begin BinCallLabel('_SASRT_round'); Exit; End;
+  If FName = 'CEIL'  Then Begin BinCallLabel('_SASRT_ceil');  Exit; End;
+  If FName = 'FLOOR' Then Begin BinCallLabel('_SASRT_floor'); Exit; End;
+  If FName = 'SQRT'  Then Begin BinCallLabel('_SASRT_sqrt');  Exit; End;
+  If FName = 'LOG'   Then Begin BinCallLabel('_SASRT_log');   Exit; End;
+  If FName = 'EXP'   Then Begin BinCallLabel('_SASRT_exp');   Exit; End;
+
+  { Fonctions a 2 arguments }
+  If FName = 'MOD'   Then Begin BinCallLabel('_SASRT_mod'); Exit; End;
+  If FName = 'MIN'   Then Begin BinCallLabel('_SASRT_min'); Exit; End;
+  If FName = 'MAX'   Then Begin BinCallLabel('_SASRT_max'); Exit; End;
+
+  { SUM variadic — stub, TODO 25 gerera l accumulation }
+  If FName = 'SUM' Then Begin BinCallLabel('_SASRT_sum'); Exit; End;
+
+  { Fonctions chaines }
+  If FName = 'LENGTH'   Then Begin BinCallLabel('_SASRT_length');   Exit; End;
+  If FName = 'UPCASE'   Then Begin BinCallLabel('_SASRT_upcase');   Exit; End;
+  If FName = 'LOWCASE'  Then Begin BinCallLabel('_SASRT_lowcase');  Exit; End;
+  If FName = 'TRIM'     Then Begin BinCallLabel('_SASRT_trim');     Exit; End;
+  If FName = 'LEFT'     Then Begin BinCallLabel('_SASRT_left');     Exit; End;
+  If FName = 'RIGHT'    Then Begin BinCallLabel('_SASRT_right');    Exit; End;
+  If FName = 'SUBSTR'   Then Begin BinCallLabel('_SASRT_substr');   Exit; End;
+  If FName = 'INDEX'    Then Begin BinCallLabel('_SASRT_index');    Exit; End;
+  If FName = 'COMPRESS' Then Begin BinCallLabel('_SASRT_compress'); Exit; End;
+  If FName = 'CAT'      Then Begin BinCallLabel('_SASRT_cat');      Exit; End;
+  If FName = 'PUT'      Then Begin BinCallLabel('_SASRT_put');      Exit; End;
+  { Fonctions de date }
+  If FName = 'TODAY'    Then Begin BinCallLabel('_SASRT_today');    Exit; End;
+  If FName = 'MDY'      Then Begin BinCallLabel('_SASRT_mdy');      Exit; End;
+  If FName = 'YEAR'     Then Begin BinCallLabel('_SASRT_year');     Exit; End;
+  If FName = 'MONTH'    Then Begin BinCallLabel('_SASRT_month');    Exit; End;
+  If FName = 'DAY'      Then Begin BinCallLabel('_SASRT_day');      Exit; End;
+  If FName = 'POW'      Then Begin BinCallLabel('_SASRT_pow');      Exit; End;
+
+  CompileWarn('CodegenCall : fonction inconnue : ' + FName);
+End;
+
+{ ============================================================ }
+{ TODO 24 — Runtime : fonctions chaines integrees              }
+{ Convention stdcall ; les ptrs designent des buffers 256 o.  }
+{ ============================================================ }
+Procedure EmitRuntimeStrFunc;
+Begin
+  { --- _SASRT_length(s: ptr): LongInt --- longueur sans espaces finaux }
+  { Algo : scan avant, met a jour eax quand char non-espace             }
+  { Registres : esi=base(sauve), eax=result, ecx=index, dl=char        }
+  { Layout (34 o) : deplacement jz done=0x0B, je skip=0x03, jmp=-18   }
+  BinDefineLabel('_SASRT_length');
+  BinEmit8($55);
+  BinEmit8($89); BinEmit8($E5);
+  BinEmit8($56);                               { push esi }
+  BinEmit8($8B); BinEmit8($75); BinEmit8($08); { mov esi,[ebp+8] }
+  BinEmit8($31); BinEmit8($C0);               { xor eax,eax }
+  BinEmit8($31); BinEmit8($C9);               { xor ecx,ecx }
+  { scan_loop: offset=11 }
+  BinEmit8($8A); BinEmit8($14); BinEmit8($0E);{ mov dl,[esi+ecx] }
+  BinEmit8($84); BinEmit8($D2);               { test dl,dl }
+  BinEmit8($74); BinEmit8($0B);               { jz done   +11 → offset 29 }
+  BinEmit8($80); BinEmit8($FA); BinEmit8($20);{ cmp dl,' ' }
+  BinEmit8($74); BinEmit8($03);               { je skip   +3  → offset 26 }
+  BinEmit8($8D); BinEmit8($41); BinEmit8($01);{ lea eax,[ecx+1] }
+  { skip: offset=26 }
+  BinEmit8($41);                               { inc ecx }
+  BinEmit8($EB); BinEmit8($EE);               { jmp scan_loop  -18 → offset 11 }
+  { done: offset=29 }
+  BinEmit8($5E);                               { pop esi }
+  BinEmit8($5D);
+  BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+
+  { --- _SASRT_upcase(s: ptr): ptr --- majuscules en place, retourne s }
+  { Registres : esi=ptr(sauve), al=char                                 }
+  { Layout (36 o) : jz done=0x0F, jb skip=0x08, ja skip=0x04, jmp=-21 }
+  BinDefineLabel('_SASRT_upcase');
+  BinEmit8($55);
+  BinEmit8($89); BinEmit8($E5);
+  BinEmit8($56);
+  BinEmit8($8B); BinEmit8($75); BinEmit8($08); { mov esi,[ebp+8] }
+  { loop_start: offset=7 }
+  BinEmit8($8A); BinEmit8($06);               { mov al,[esi] }
+  BinEmit8($84); BinEmit8($C0);               { test al,al }
+  BinEmit8($74); BinEmit8($0F);               { jz done   → offset 28 }
+  BinEmit8($3C); BinEmit8($61);               { cmp al,'a' }
+  BinEmit8($72); BinEmit8($08);               { jb skip   → offset 25 }
+  BinEmit8($3C); BinEmit8($7A);               { cmp al,'z' }
+  BinEmit8($77); BinEmit8($04);               { ja skip   → offset 25 }
+  BinEmit8($2C); BinEmit8($20);               { sub al,0x20 }
+  BinEmit8($88); BinEmit8($06);               { mov [esi],al }
+  { skip: offset=25 }
+  BinEmit8($46);                               { inc esi }
+  BinEmit8($EB); BinEmit8($EB);               { jmp loop_start  -21 → offset 7 }
+  { done: offset=28 }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08); { mov eax,[ebp+8] }
+  BinEmit8($5E);
+  BinEmit8($5D);
+  BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+
+  { --- _SASRT_lowcase(s: ptr): ptr --- minuscules en place, retourne s }
+  { Identique a upcase : 'A'-'Z' → +0x20                               }
+  BinDefineLabel('_SASRT_lowcase');
+  BinEmit8($55);
+  BinEmit8($89); BinEmit8($E5);
+  BinEmit8($56);
+  BinEmit8($8B); BinEmit8($75); BinEmit8($08);
+  { loop_start: offset=7 }
+  BinEmit8($8A); BinEmit8($06);
+  BinEmit8($84); BinEmit8($C0);
+  BinEmit8($74); BinEmit8($0F);               { jz done → offset 28 }
+  BinEmit8($3C); BinEmit8($41);               { cmp al,'A' }
+  BinEmit8($72); BinEmit8($08);               { jb skip → offset 25 }
+  BinEmit8($3C); BinEmit8($5A);               { cmp al,'Z' }
+  BinEmit8($77); BinEmit8($04);               { ja skip → offset 25 }
+  BinEmit8($04); BinEmit8($20);               { add al,0x20 }
+  BinEmit8($88); BinEmit8($06);
+  { skip: offset=25 }
+  BinEmit8($46);
+  BinEmit8($EB); BinEmit8($EB);               { jmp loop_start -21 → offset 7 }
+  { done: offset=28 }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);
+  BinEmit8($5E);
+  BinEmit8($5D);
+  BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+
+  { --- _SASRT_trim(s: ptr): ptr --- supprime espaces finaux, retourne s }
+  { Passe 1 : strlen via [esi+ecx] ; passe 2 : recule tant que ' '.    }
+  { Layout (44 o) : je strip=+3, jmp1=-9, jz done=+10, jne restore=+2, }
+  {                 jmp2=-13, puis inc ecx/mov 0/ret.                   }
+  BinDefineLabel('_SASRT_trim');
+  BinEmit8($55);
+  BinEmit8($89); BinEmit8($E5);
+  BinEmit8($56);
+  BinEmit8($8B); BinEmit8($75); BinEmit8($08); { mov esi,[ebp+8] }
+  BinEmit8($31); BinEmit8($C9);               { xor ecx,ecx }
+  { find_end: offset=9 }
+  BinEmit8($80); BinEmit8($3C); BinEmit8($0E); BinEmit8($00); { cmp byte [esi+ecx],0 }
+  BinEmit8($74); BinEmit8($03);               { je strip  +3 → offset 18 }
+  BinEmit8($41);                               { inc ecx }
+  BinEmit8($EB); BinEmit8($F7);               { jmp find_end  -9 → offset 9 }
+  { strip / strip_loop: offset=18 }
+  BinEmit8($85); BinEmit8($C9);               { test ecx,ecx }
+  BinEmit8($74); BinEmit8($0A);               { jz done  +10 → offset 32 }
+  BinEmit8($49);                               { dec ecx }
+  BinEmit8($80); BinEmit8($3C); BinEmit8($0E); BinEmit8($20); { cmp byte [esi+ecx],' ' }
+  BinEmit8($75); BinEmit8($02);               { jne restore  +2 → offset 31 }
+  BinEmit8($EB); BinEmit8($F3);               { jmp strip_loop  -13 → offset 18 }
+  { restore: offset=31 }
+  BinEmit8($41);                               { inc ecx }
+  { done: offset=32 }
+  BinEmit8($C6); BinEmit8($04); BinEmit8($0E); BinEmit8($00); { mov byte [esi+ecx],0 }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08); { mov eax,[ebp+8] }
+  BinEmit8($5E);
+  BinEmit8($5D);
+  BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+
+  { --- _SASRT_left(s: ptr): ptr --- stub : retourne s sans modification }
+  BinDefineLabel('_SASRT_left');
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);
+  BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+
+  { --- _SASRT_right(s: ptr): ptr --- stub : retourne s }
+  BinDefineLabel('_SASRT_right');
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);
+  BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+
+  { --- _SASRT_substr(s, pos, n): ptr --- stub : retourne s (3 args) }
+  BinDefineLabel('_SASRT_substr');
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);
+  BinEmit8($5D); BinEmit8($C2); BinEmit8($0C); BinEmit8($00); { ret 12 }
+
+  { --- _SASRT_index(s, sub): LongInt --- stub : retourne 0 (2 args) }
+  BinDefineLabel('_SASRT_index');
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
+  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00); { ret 8 }
+
+  { --- _SASRT_compress(s, c): ptr --- stub : retourne s (2 args) }
+  BinDefineLabel('_SASRT_compress');
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);
+  BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
+
+  { --- _SASRT_cat(s1, s2): ptr --- stub : retourne s1 (2 args) }
+  BinDefineLabel('_SASRT_cat');
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);
+  BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
+
+  { --- _SASRT_put(n: LongInt): ptr --- stub retourne 0 (TODO 25 : num2str) }
+  BinDefineLabel('_SASRT_put');
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
+  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+End;
+
+{ ============================================================ }
+{ TODO 24 — Runtime : fonctions de date integrees              }
+{ Dates SAS = entier (jours depuis 01/01/1960).                }
+{ V1 : stubs retournant 0, TODAY() retourne 0.                 }
+{ ============================================================ }
+Procedure EmitRuntimeDateFunc;
+Begin
+  { --- _SASRT_today(): LongInt --- stub retourne 0 (sans arg) }
+  BinDefineLabel('_SASRT_today');
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
+  BinEmit8($31); BinEmit8($C0);               { xor eax,eax }
+  BinEmit8($5D); BinEmit8($C3);               { pop ebp ; ret (0 arg) }
+
+  { --- _SASRT_mdy(m,d,y): LongInt --- stub retourne 0 (3 args) }
+  BinDefineLabel('_SASRT_mdy');
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
+  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($5D); BinEmit8($C2); BinEmit8($0C); BinEmit8($00);
+
+  { --- _SASRT_year(d): LongInt --- stub retourne 0 (1 arg) }
+  BinDefineLabel('_SASRT_year');
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
+  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+
+  { --- _SASRT_month(d): LongInt --- stub retourne 0 (1 arg) }
+  BinDefineLabel('_SASRT_month');
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
+  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+
+  { --- _SASRT_day(d): LongInt --- stub retourne 0 (1 arg) }
+  BinDefineLabel('_SASRT_day');
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
+  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 End;
 
 { ============================================================ }
@@ -3784,7 +6130,19 @@ Var
   Arg      : String;
   ExpandedSrc : String;
 
-Begin
+BEGIN
+ If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
+   (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
+  WriteLn('SASCW32 - Cette commande permet de lancer le compilateur SAS ',
+          'pour l''assembleur du microprocesseur 80386 pour le systeme ',
+          'd''exploitation Windows 32 bits (PE Win32).');
+  WriteLn;
+  WriteLn('Syntaxe : SASCW32 source.sas [-obj|-asm] [sortie]');
+  WriteLn('  (defaut) -> source.exe   PE32 autonome');
+  WriteLn('  -obj     -> source.obj   COFF relocatable');
+  WriteLn('  -asm     -> source.asm   texte MASM/JWasm');
+  Halt;
+ End;
   SrcFile  := '';
   OutFile  := '';
   OutMode  := MODE_EXE;
@@ -3842,6 +6200,9 @@ Begin
   { --- Phase 4 : Generation de code --- }
   BinRegisterKernel32Imports;
   EmitRuntimeIO;
+  EmitRuntimeNumFunc;
+  EmitRuntimeStrFunc;
+  EmitRuntimeDateFunc;
   CodegenProgram;
 
   If HasError Then Begin
@@ -3864,4 +6225,4 @@ Begin
   If WarnCount > 0 Then
     WriteLn('SASCW32: ', WarnCount, ' avertissement(s)');
   WriteLn('SASCW32: ', OutFile, ' genere avec succes.');
-End.
+END.
