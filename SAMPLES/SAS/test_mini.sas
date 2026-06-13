@@ -1,0 +1,10 @@
+data test1;
+  x = -42;
+  y = abs(x);
+  put y;
+run;
+data test8;
+  x = 'Hello World';
+  n = length(x);
+  put n;
+run;

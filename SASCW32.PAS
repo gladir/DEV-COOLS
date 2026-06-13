@@ -514,6 +514,7 @@ Const
   NK_VAR_LIST    = 35;
   NK_FMT_STMT    = 36;
   NK_CARDS       = 37;  { lignes CARDS/DATALINES inline }
+  NK_CALL_STMT   = 38;  { statement CALL routine(args)  }
 
   { ---------------------------------------------------------- }
   { Types de tokens — TODO 04-05                               }
@@ -609,6 +610,7 @@ Const
   KW_LOW        = 85;   { low dans PROC FORMAT VALUE }
   KW_HIGH       = 86;   { high dans PROC FORMAT VALUE }
   KW_OTHER      = 87;   { other dans PROC FORMAT VALUE }
+  KW_CALL       = 88;   { CALL }
 
 { ------------------------------------------------------------ }
 { Types                                                        }
@@ -1035,6 +1037,7 @@ Procedure ParseStmtMerge;                                      Forward;
 Procedure ParseStmtBy;                                         Forward;
 Procedure ParseStmtFmtDecl;                                    Forward;
 Procedure ParseStmtGoto;                                       Forward;
+Procedure ParseStmtCall;                                       Forward;
 
 { TODO 11 : IF/THEN/ELSE }
 Function  ParseIfBody(BodyLine: Integer): Integer;           Forward;
@@ -1852,6 +1855,7 @@ Begin
   Else If S = 'LOW'         Then LexKeyword := KW_LOW
   Else If S = 'HIGH'        Then LexKeyword := KW_HIGH
   Else If S = 'OTHER'       Then LexKeyword := KW_OTHER
+  Else If S = 'CALL'        Then LexKeyword := KW_CALL
   Else                           LexKeyword := TOK_IDENT;
 End;
 
@@ -2218,6 +2222,7 @@ Begin
       LexNextToken;
       If CurTokType = TOK_SEMICOL Then LexNextToken;
     End;
+    KW_CALL:     ParseStmtCall;
     TOK_IDENT:   ParseStmtAssign;   { TODO 10 }
   Else
     SkipToSemicolon;
@@ -4079,6 +4084,41 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 26 — DATA STEP : CALL routine(args)                     }
+{ CALL nom(arg1, arg2, ...) ;                                   }
+{ Cree NK_CALL_STMT avec le nom de la routine dans Text et     }
+{ les arguments comme noeuds enfants.                          }
+{ ============================================================ }
+Procedure ParseStmtCall;
+Var
+  N    : Integer;
+  FN   : String;
+  ArgN : Integer;
+  Line : Integer;
+Begin
+  Line := CurLineNum;
+  LexNextToken;  { sauter CALL }
+  { Accepter identifiant ou mot-cle (ex: CALL SET, CALL SYSTEM) }
+  If (CurTokType <> TOK_IDENT) And (CurTokType < KW_DATA) Then Begin
+    SkipToSemicolon; Exit;
+  End;
+  FN := UpperStr(CurTokStr);
+  N  := AstNew(NK_CALL_STMT, FN, Line);
+  LexNextToken;
+  If CurTokType = TOK_LPAREN Then Begin
+    LexNextToken;
+    While (CurTokType <> TOK_RPAREN) And (CurTokType <> TOK_EOF) Do Begin
+      If CurTokType = TOK_COMMA Then Begin LexNextToken; Continue; End;
+      ArgN := ParseExprOr(Line);
+      AstAddChild(N, ArgN);
+    End;
+    If CurTokType = TOK_RPAREN Then LexNextToken;
+  End;
+  AstAddChild(CurDsRoot, N);
+  If CurTokType = TOK_SEMICOL Then LexNextToken;
+End;
+
+{ ============================================================ }
 { TODO 10 — DATA STEP : AFFECTATIONS ET OPERATEURS             }
 { Parseur d expressions descendant recursif.                   }
 { Precedence (de la plus forte a la plus faible) :             }
@@ -4750,6 +4790,11 @@ Var
   WhenN       : Integer;
   WIdx        : Integer;
   PrevItemLit : Boolean;
+  FName       : String;
+  VarName     : String;
+  ArgList     : Array[0..15] Of Integer;
+  ArgCnt      : Integer;
+  I           : Integer;
 Begin
   If Node < 0 Then Exit;
   Case AstTable[Node].Kind Of
@@ -4955,6 +5000,66 @@ Begin
         WhenN := AstTable[WhenN].NextSibling;
       End;
       BinDefineLabel(LblEnd);
+    End;
+
+    NK_CALL_STMT: Begin
+      FName  := AstTable[Node].Text;
+      ArgCnt := 0;
+      Child  := AstTable[Node].FirstChild;
+      While (Child >= 0) And (ArgCnt < 16) Do Begin
+        ArgList[ArgCnt] := Child;  Inc(ArgCnt);
+        Child := AstTable[Child].NextSibling;
+      End;
+      If FName = 'POKE' Then Begin
+        { CALL POKE(addr, val) -- MOV [EAX], ECX }
+        If ArgCnt >= 2 Then Begin
+          CodegenExprEAX(ArgList[1]);
+          BinEmit8($89); BinEmit8($C1);   { MOV ECX, EAX (val) }
+          CodegenExprEAX(ArgList[0]);     { EAX = addr }
+          BinEmit8($89); BinEmit8($08);   { MOV [EAX], ECX     }
+        End;
+      End Else If FName = 'SYSTEM' Then Begin
+        { CALL SYSTEM(cmd) -- WinExec(cmd, SW_SHOWNORMAL=1) }
+        BinEmit8($6A); BinEmit8($01);     { PUSH 1             }
+        If ArgCnt >= 1 Then Begin
+          CodegenExprEAX(ArgList[0]);
+          BinEmit8($50);                  { PUSH EAX (cmd ptr) }
+        End Else Begin
+          BinEmit8($6A); BinEmit8($00);   { PUSH 0 (cmd null)  }
+        End;
+        BinCallImport('_WinExec@8');
+      End Else If FName = 'VNAME' Then Begin
+        { CALL VNAME(var, namevar) -- namevar = name of var as string }
+        If ArgCnt >= 2 Then Begin
+          VarName := AstTable[ArgList[0]].Text;
+          LblStr  := EmitRDataStr(VarName);
+          SIdx    := AstTable[ArgList[1]].SymRef;
+          If SIdx < 0 Then SIdx := FindSym(AstTable[ArgList[1]].Text, SK_NONE);
+          If (SIdx >= 0) And SymTable[SIdx].IsChar Then Begin
+            BinPushLabel(LblStr);
+            BinMovEaxLabelAddr(SymTable[SIdx].AsmName);
+            BinEmit8($50);
+            BinCallLabel('_SASRT_strcpy');
+          End;
+        End;
+      End Else If (FName = 'RANBIN') Or (FName = 'RANCAU') Or
+                  (FName = 'RANEXP') Or (FName = 'RANGAM') Or
+                  (FName = 'RANNOR') Or (FName = 'RANPOI') Or
+                  (FName = 'RANTBL') Or (FName = 'RANTRI') Or
+                  (FName = 'RANUNI') Then Begin
+        { CALL RANxxx(seed, result) -- stub : result = 0 }
+        If ArgCnt >= 2 Then Begin
+          SIdx := AstTable[ArgList[1]].SymRef;
+          If SIdx < 0 Then SIdx := FindSym(AstTable[ArgList[1]].Text, SK_NONE);
+          BinEmit8($31); BinEmit8($C0);   { XOR EAX, EAX = 0   }
+          If SIdx >= 0 Then BinStoreEaxMem(SymTable[SIdx].AsmName);
+        End;
+      End Else Begin
+        { EXECUTE, LABEL, MODULE, MODULEI, RXCHANGE, RXFREE,    }
+        { RXSUBSTR, SET, SYMPUT : stub — evaluer et ignorer args }
+        For I := 0 To ArgCnt - 1 Do
+          CodegenExprEAX(ArgList[I]);
+      End;
     End;
 
   End; { Case }
@@ -5631,6 +5736,7 @@ Begin
   BinAddImport('kernel32.dll', '_HeapAlloc@12');
   BinAddImport('kernel32.dll', '_HeapFree@12');
   BinAddImport('kernel32.dll', '_GetProcessHeap@0');
+  BinAddImport('kernel32.dll', '_WinExec@8');
 End;
 
 Procedure BinMovRegImm32(R: Integer; V: LongInt);
@@ -6540,6 +6646,24 @@ Begin
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
   BinEmit8($31); BinEmit8($C0);
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
+
+  { --- _SASRT_cdf(dist,x): stub LongInt 0 (2 args) }
+  BinDefineLabel('_SASRT_cdf');
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
+  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
+
+  { --- _SASRT_ceilz(x): LongInt = x (1 arg, entiers: identique a CEIL) }
+  BinDefineLabel('_SASRT_ceilz');
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);  { mov eax,[ebp+8] }
+  BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+
+  { --- _SASRT_cexist(cat,type): stub LongInt 0 (2 args) }
+  BinDefineLabel('_SASRT_cexist');
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
+  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 End;
 
 { ============================================================ }
@@ -6605,6 +6729,10 @@ Begin
   { Fonctions d attribut de dataset (stubs) }
   If FName = 'ATTRC'   Then Begin BinCallLabel('_SASRT_attrc');   Exit; End;
   If FName = 'ATTRN'   Then Begin BinCallLabel('_SASRT_attrn');   Exit; End;
+  { Stubs : CDF, CEILZ, CEXIST }
+  If FName = 'CDF'     Then Begin BinCallLabel('_SASRT_cdf');     Exit; End;
+  If FName = 'CEILZ'   Then Begin BinCallLabel('_SASRT_ceilz');   Exit; End;
+  If FName = 'CEXIST'  Then Begin BinCallLabel('_SASRT_cexist');  Exit; End;
 
   CompileWarn('CodegenCall : fonction inconnue : ' + FName);
 End;
