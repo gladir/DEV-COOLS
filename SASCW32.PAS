@@ -513,6 +513,7 @@ Const
   NK_PROC_GEN    = 34;
   NK_VAR_LIST    = 35;
   NK_FMT_STMT    = 36;
+  NK_CARDS       = 37;  { lignes CARDS/DATALINES inline }
 
   { ---------------------------------------------------------- }
   { Types de tokens — TODO 04-05                               }
@@ -1026,6 +1027,7 @@ Procedure ParseStmtArray;                                      Forward;
 Procedure ParseStmtInfile;                                     Forward;
 Procedure ParseStmtInput;                                      Forward;
 Procedure ParseStmtFile;                                       Forward;
+Procedure ParseStmtCards;                                      Forward;
 Procedure ParseStmtSet;                                        Forward;
 Procedure ParseStmtMerge;                                      Forward;
 Procedure ParseStmtBy;                                         Forward;
@@ -2195,6 +2197,8 @@ Begin
     KW_INFILE:   ParseStmtInfile;   { TODO 16 }
     KW_INPUT:    ParseStmtInput;    { TODO 16 }
     KW_FILE:     ParseStmtFile;     { TODO 16 }
+    KW_CARDS,
+    KW_DATALINES: ParseStmtCards;  { TODO 16 }
     KW_SET:      ParseStmtSet;      { TODO 17 }
     KW_MERGE:    ParseStmtMerge;    { TODO 17 }
     KW_BY:       ParseStmtBy;       { TODO 17 }
@@ -2809,6 +2813,7 @@ Begin
     NK_PROC_GEN   : KName := 'PROC_GEN';
     NK_VAR_LIST   : KName := 'VAR_LIST';
     NK_FMT_STMT   : KName := 'FMT_STMT';
+    NK_CARDS      : KName := 'CARDS';
   Else KName := 'NK_' + IntToStr(AstTable[N].Kind);
   End;
   Write(Pad, KName);
@@ -3795,6 +3800,53 @@ Begin
   AstAddChild(CurDsRoot, Node);
 End;
 
+{ CARDS / DATALINES — TODO 16                                  }
+{ cards ; suivi des lignes jusqu a une ligne contenant ;        }
+{ Chaque ligne = NK_LITERAL chaine enfant de NK_CARDS.          }
+Procedure ParseStmtCards;
+Var
+  Node     : Integer;
+  DataLine : String;
+  LitNode  : Integer;
+  Line     : Integer;
+  P        : Integer;
+  TrimL    : String;
+Begin
+  Line := CurLineNum;
+  LexNextToken;  { sauter CARDS / DATALINES → CurTokType = TOK_SEMICOL }
+  { Ne pas appeler LexNextToken pour le ; : cela lirait la 1re ligne de donnees }
+  { Vider le buffer courant pour que ReadLn lise la suite depuis LexSrcF }
+  LexPos := LexLineLen + 1;
+
+  Node := AstNew(NK_CARDS, 'CARDS', Line);
+
+  { Lire les lignes de donnees directement depuis le fichier source }
+  While Not EOF(LexSrcF) Do Begin
+    ReadLn(LexSrcF, DataLine);
+    Inc(CurLineNum);
+    { Calcul trim pour detecter la ligne terminatrice ; }
+    TrimL := DataLine;
+    P := 1;
+    While (P <= Length(TrimL)) And (TrimL[P] <= ' ') Do Inc(P);
+    TrimL := Copy(TrimL, P, Length(TrimL) - P + 1);
+    P := Length(TrimL);
+    While (P >= 1) And (TrimL[P] <= ' ') Do Dec(P);
+    TrimL := Copy(TrimL, 1, P);
+    If (TrimL = ';') Or (TrimL = ';;') Then Break;
+    If Length(TrimL) = 0 Then Continue;  { ignorer lignes vides }
+    LitNode := AstNewLitStr(DataLine, CurLineNum);
+    AstAddChild(Node, LitNode);
+  End;
+
+  { Reinitialiser le buffer lexeur pour continuer apres les donnees }
+  LexLine    := '';
+  LexLineLen := 0;
+  LexPos     := 1;
+
+  AstAddChild(CurDsRoot, Node);
+  LexNextToken;  { charger le prochain token (ex : RUN) }
+End;
+
 { SET — TODO 17 }
 { SET ds1 [ds2 ...] [END=flag] [NOBS=n] [POINT=p] ;            }
 { Enfants NK_VAR = datasets sources.                           }
@@ -4662,22 +4714,102 @@ Begin
 End;
 
 { Emet le code pour un DATA step complet.                      }
-{ Pass 1 : enregistre tous les ARRAY_DEF.                      }
-{ Pass 2 : emet le code de chaque statement.                   }
+{ Pass 1 : enregistre les ARRAY_DEF, repere INFILE/INPUT/CARDS.}
+{ Si INFILE CARDS + INPUT + NK_CARDS : boucle sur chaque carte }
+{ en assignant les champs au compile-time, puis emet le corps. }
+{ Sinon : pass 2 normal.                                       }
 Procedure CodegenDataStep(DsNode: Integer);
-Var Child: Integer;
+Var
+  Child    : Integer;
+  InfileN  : Integer;
+  InputN   : Integer;
+  CardsN   : Integer;
+  CardLine : Integer;
+  VarN     : Integer;
+  RawLine  : String;
+  Pos      : Integer;
+  TokStr   : String;
+  V        : LongInt;
+  Sign     : LongInt;
+  SIdx     : Integer;
+  LblStr   : String;
 Begin
-  { Pass 1 : enregistrer les tableaux }
+  { Pass 1 : enregistrer les tableaux et localiser les noeuds CARDS }
+  InfileN := -1;
+  InputN  := -1;
+  CardsN  := -1;
   Child := AstTable[DsNode].FirstChild;
   While Child >= 0 Do Begin
-    If AstTable[Child].Kind = NK_ARRAY_DEF Then RegisterArray(Child);
+    Case AstTable[Child].Kind Of
+      NK_ARRAY_DEF : RegisterArray(Child);
+      NK_INFILE    : InfileN := Child;
+      NK_INPUT     : InputN  := Child;
+      NK_CARDS     : CardsN  := Child;
+    End;
     Child := AstTable[Child].NextSibling;
   End;
-  { Pass 2 : emettre le code }
-  Child := AstTable[DsNode].FirstChild;
-  While Child >= 0 Do Begin
-    CodegenStmt(Child);
-    Child := AstTable[Child].NextSibling;
+
+  { INFILE CARDS + INPUT + donnees CARDS presents : une iteration par carte }
+  If (InfileN >= 0) And (AstTable[InfileN].Text = 'CARDS') And
+     (InputN >= 0) And (CardsN >= 0) Then Begin
+    CardLine := AstTable[CardsN].FirstChild;
+    While CardLine >= 0 Do Begin
+      RawLine := AstTable[CardLine].Text;
+      Pos     := 1;
+      VarN    := AstTable[InputN].FirstChild;
+      While VarN >= 0 Do Begin
+        { Sauter les espaces }
+        While (Pos <= Length(RawLine)) And (RawLine[Pos] <= ' ') Do Inc(Pos);
+        If Pos > Length(RawLine) Then Break;
+        SIdx := FindSym(AstTable[VarN].Text, SK_NONE);
+        If (SIdx >= 0) And SymTable[SIdx].IsChar Then Begin
+          { Variable chaine : extraire le token jusqu a l espace }
+          TokStr := '';
+          While (Pos <= Length(RawLine)) And (RawLine[Pos] > ' ') Do Begin
+            TokStr := TokStr + RawLine[Pos]; Inc(Pos);
+          End;
+          LblStr := EmitRDataStr(TokStr);
+          BinPushLabel(LblStr); BinEmit8($58);   { POP EAX = addr }
+          If SIdx >= 0 Then BinStoreEaxMem(SymTable[SIdx].AsmName);
+        End Else Begin
+          { Variable numerique : extraire entier signe }
+          Sign := 1;
+          If (Pos <= Length(RawLine)) And (RawLine[Pos] = '-') Then Begin
+            Sign := -1; Inc(Pos);
+          End;
+          V := 0;
+          While (Pos <= Length(RawLine)) And (RawLine[Pos] >= '0') And
+                (RawLine[Pos] <= '9') Do Begin
+            V := V * 10 + Ord(RawLine[Pos]) - Ord('0');
+            Inc(Pos);
+          End;
+          V := V * Sign;
+          BinEmit8($B8); BinEmit32(V);   { MOV EAX, imm32 }
+          If SIdx >= 0 Then BinStoreEaxMem(SymTable[SIdx].AsmName);
+          { Sauter la fin du token non-espace }
+          While (Pos <= Length(RawLine)) And (RawLine[Pos] > ' ') Do Inc(Pos);
+        End;
+        VarN := AstTable[VarN].NextSibling;
+      End;
+      { Emettre le corps du DATA step (ignorer INFILE/INPUT/FILE/CARDS) }
+      Child := AstTable[DsNode].FirstChild;
+      While Child >= 0 Do Begin
+        Case AstTable[Child].Kind Of
+          NK_INFILE, NK_INPUT, NK_FILE, NK_CARDS, NK_ARRAY_DEF: ; { no-op }
+        Else
+          CodegenStmt(Child);
+        End;
+        Child := AstTable[Child].NextSibling;
+      End;
+      CardLine := AstTable[CardLine].NextSibling;
+    End;
+  End Else Begin
+    { Pass 2 normal : emettre le code de chaque statement }
+    Child := AstTable[DsNode].FirstChild;
+    While Child >= 0 Do Begin
+      CodegenStmt(Child);
+      Child := AstTable[Child].NextSibling;
+    End;
   End;
 End;
 

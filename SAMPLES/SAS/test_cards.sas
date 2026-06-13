@@ -5,4 +5,7 @@ data cartes;
   input x y;
   total = x + y;
   put 'Total :' total;
+  cards;
+  3 7
+  ;
 run;
