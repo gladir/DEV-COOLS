@@ -4608,6 +4608,86 @@ Begin
           BinEmit8($6A); BinEmit8($00);
         End;
         BinCallLabel('_SASRT_substr');
+      End Else If AstTable[Node].Text = 'BAND' Then Begin
+        { BAND(a,b) : ET binaire — a AND b }
+        Child := AstTable[Node].FirstChild;
+        If Child >= 0 Then Begin
+          CodegenExprEAX(Child); BinEmit8($50);      { PUSH a      }
+          Child := AstTable[Child].NextSibling;
+          If Child >= 0 Then CodegenExprEAX(Child)   { EAX = b     }
+          Else Begin BinEmit8($31); BinEmit8($C0); End;
+        End Else Begin BinEmit8($31); BinEmit8($C0); End;
+        BinEmit8($59);                    { POP ECX = a }
+        BinEmit8($21); BinEmit8($C8);    { AND EAX,ECX }
+      End Else If AstTable[Node].Text = 'BOR' Then Begin
+        { BOR(a,b) : OU binaire — a OR b }
+        Child := AstTable[Node].FirstChild;
+        If Child >= 0 Then Begin
+          CodegenExprEAX(Child); BinEmit8($50);
+          Child := AstTable[Child].NextSibling;
+          If Child >= 0 Then CodegenExprEAX(Child)
+          Else Begin BinEmit8($31); BinEmit8($C0); End;
+        End Else Begin BinEmit8($31); BinEmit8($C0); End;
+        BinEmit8($59);
+        BinEmit8($09); BinEmit8($C8);    { OR  EAX,ECX }
+      End Else If AstTable[Node].Text = 'BXOR' Then Begin
+        { BXOR(a,b) : OU exclusif binaire — a XOR b }
+        Child := AstTable[Node].FirstChild;
+        If Child >= 0 Then Begin
+          CodegenExprEAX(Child); BinEmit8($50);
+          Child := AstTable[Child].NextSibling;
+          If Child >= 0 Then CodegenExprEAX(Child)
+          Else Begin BinEmit8($31); BinEmit8($C0); End;
+        End Else Begin BinEmit8($31); BinEmit8($C0); End;
+        BinEmit8($59);
+        BinEmit8($31); BinEmit8($C8);    { XOR EAX,ECX }
+      End Else If AstTable[Node].Text = 'BNOT' Then Begin
+        { BNOT(a) : negation binaire — NOT a }
+        Child := AstTable[Node].FirstChild;
+        If Child >= 0 Then CodegenExprEAX(Child)
+        Else Begin BinEmit8($31); BinEmit8($C0); End;
+        BinEmit8($F7); BinEmit8($D0);    { NOT EAX     }
+      End Else If AstTable[Node].Text = 'BLSHIFT' Then Begin
+        { BLSHIFT(a,n) : decalage binaire gauche — a SHL n }
+        Child := AstTable[Node].FirstChild;
+        If Child >= 0 Then Begin
+          CodegenExprEAX(Child); BinEmit8($50);      { PUSH a      }
+          Child := AstTable[Child].NextSibling;
+          If Child >= 0 Then CodegenExprEAX(Child)   { EAX = n     }
+          Else Begin BinEmit8($31); BinEmit8($C0); End;
+        End Else Begin
+          BinEmit8($6A); BinEmit8($00);              { PUSH 0, n=0 }
+          BinEmit8($31); BinEmit8($C0);
+        End;
+        BinEmit8($89); BinEmit8($C1);    { MOV ECX,EAX = n }
+        BinEmit8($58);                    { POP EAX = a     }
+        BinEmit8($D3); BinEmit8($E0);    { SHL EAX,CL      }
+      End Else If AstTable[Node].Text = 'BRSHIFT' Then Begin
+        { BRSHIFT(a,n) : decalage binaire droit arithmetique — a SAR n }
+        Child := AstTable[Node].FirstChild;
+        If Child >= 0 Then Begin
+          CodegenExprEAX(Child); BinEmit8($50);
+          Child := AstTable[Child].NextSibling;
+          If Child >= 0 Then CodegenExprEAX(Child)
+          Else Begin BinEmit8($31); BinEmit8($C0); End;
+        End Else Begin
+          BinEmit8($6A); BinEmit8($00);
+          BinEmit8($31); BinEmit8($C0);
+        End;
+        BinEmit8($89); BinEmit8($C1);    { MOV ECX,EAX = n }
+        BinEmit8($58);                    { POP EAX = a     }
+        BinEmit8($D3); BinEmit8($F8);    { SAR EAX,CL      }
+      End Else If (AstTable[Node].Text = 'ADDR') Or
+                  (AstTable[Node].Text = 'ADDRLONG') Then Begin
+        { ADDR(var) / ADDRLONG(var) : adresse memoire de la variable }
+        Child := AstTable[Node].FirstChild;
+        If Child >= 0 Then Begin
+          SIdx := AstTable[Child].SymRef;
+          If SIdx < 0 Then SIdx := FindSym(AstTable[Child].Text, SK_NONE);
+          If SIdx >= 0 Then
+            BinMovEaxLabelAddr(SymTable[SIdx].AsmName)
+          Else Begin BinEmit8($31); BinEmit8($C0); End;
+        End Else Begin BinEmit8($31); BinEmit8($C0); End;
       End Else If AstTable[Node].Text = 'COMPRESS' Then Begin
         { COMPRESS(s [, chars]) — normaliser a 2 args (chars=vide si absent) }
         ArgCnt := 0;
@@ -6406,6 +6486,60 @@ Begin
   { done: }
   BinEmit8($5D);                                  { pop ebp         }
   BinEmit8($C2); BinEmit8($08); BinEmit8($00);   { ret 8           }
+
+  { --- _SASRT_arcos(x): stub LongInt 0 (1 arg) }
+  BinDefineLabel('_SASRT_arcos');
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
+  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+
+  { --- _SASRT_arsin(x): stub LongInt 0 (1 arg) }
+  BinDefineLabel('_SASRT_arsin');
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
+  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+
+  { --- _SASRT_atan(x): stub LongInt 0 (1 arg) }
+  BinDefineLabel('_SASRT_atan');
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
+  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+
+  { --- _SASRT_atan2(y,x): stub LongInt 0 (2 args) }
+  BinDefineLabel('_SASRT_atan2');
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
+  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
+
+  { --- _SASRT_airy(x): stub LongInt 0 (1 arg) }
+  BinDefineLabel('_SASRT_airy');
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
+  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+
+  { --- _SASRT_betainv(p,a,b): stub LongInt 0 (3 args) }
+  BinDefineLabel('_SASRT_betainv');
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
+  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($5D); BinEmit8($C2); BinEmit8($0C); BinEmit8($00);
+
+  { --- _SASRT_byte(n): LongInt = n (code ASCII, 1 arg) }
+  BinDefineLabel('_SASRT_byte');
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);  { mov eax,[ebp+8] }
+  BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+
+  { --- _SASRT_attrc(dsid,attr): stub LongInt 0 (2 args) }
+  BinDefineLabel('_SASRT_attrc');
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
+  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
+
+  { --- _SASRT_attrn(dsid,attr): stub LongInt 0 (2 args) }
+  BinDefineLabel('_SASRT_attrn');
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
+  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 End;
 
 { ============================================================ }
@@ -6458,6 +6592,19 @@ Begin
   If FName = 'MONTH'    Then Begin BinCallLabel('_SASRT_month');    Exit; End;
   If FName = 'DAY'      Then Begin BinCallLabel('_SASRT_day');      Exit; End;
   If FName = 'POW'      Then Begin BinCallLabel('_SASRT_pow');      Exit; End;
+  { Fonctions trigonometriques (stubs entiers) }
+  If FName = 'ARCOS'   Then Begin BinCallLabel('_SASRT_arcos');   Exit; End;
+  If FName = 'ARSIN'   Then Begin BinCallLabel('_SASRT_arsin');   Exit; End;
+  If FName = 'ATAN'    Then Begin BinCallLabel('_SASRT_atan');    Exit; End;
+  If FName = 'ATAN2'   Then Begin BinCallLabel('_SASRT_atan2');   Exit; End;
+  { Fonctions mathematiques speciales (stubs) }
+  If FName = 'AIRY'    Then Begin BinCallLabel('_SASRT_airy');    Exit; End;
+  If FName = 'BETAINV' Then Begin BinCallLabel('_SASRT_betainv'); Exit; End;
+  { Fonctions de caractere }
+  If FName = 'BYTE'    Then Begin BinCallLabel('_SASRT_byte');    Exit; End;
+  { Fonctions d attribut de dataset (stubs) }
+  If FName = 'ATTRC'   Then Begin BinCallLabel('_SASRT_attrc');   Exit; End;
+  If FName = 'ATTRN'   Then Begin BinCallLabel('_SASRT_attrn');   Exit; End;
 
   CompileWarn('CodegenCall : fonction inconnue : ' + FName);
 End;
