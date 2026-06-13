@@ -4371,6 +4371,42 @@ Begin
         BinEmit8($50);                  { PUSH EAX (exposant)  }
         BinEmit8($51);                  { PUSH ECX (base)      }
         BinCallLabel('_SASRT_pow');
+      End Else If (AstTable[Node].Text = '=')  Or
+                  (AstTable[Node].Text = '<')  Or
+                  (AstTable[Node].Text = '>')  Or
+                  (AstTable[Node].Text = '<=') Or
+                  (AstTable[Node].Text = '>=') Or
+                  (AstTable[Node].Text = '<>') Then Begin
+        { Comparaison signee : ECX=gauche, EAX=droite }
+        { CMP ECX, EAX (39 C1) → ECX - EAX }
+        BinEmit8($39); BinEmit8($C1);
+        If AstTable[Node].Text = '='  Then Begin
+          BinEmit8($0F); BinEmit8($94); BinEmit8($C0); { SETE AL  }
+        End Else If AstTable[Node].Text = '<>' Then Begin
+          BinEmit8($0F); BinEmit8($95); BinEmit8($C0); { SETNE AL }
+        End Else If AstTable[Node].Text = '<'  Then Begin
+          BinEmit8($0F); BinEmit8($9C); BinEmit8($C0); { SETL AL  }
+        End Else If AstTable[Node].Text = '<=' Then Begin
+          BinEmit8($0F); BinEmit8($9E); BinEmit8($C0); { SETLE AL }
+        End Else If AstTable[Node].Text = '>'  Then Begin
+          BinEmit8($0F); BinEmit8($9F); BinEmit8($C0); { SETG AL  }
+        End Else Begin
+          BinEmit8($0F); BinEmit8($9D); BinEmit8($C0); { SETGE AL }
+        End;
+        BinEmit8($0F); BinEmit8($B6); BinEmit8($C0);   { MOVZX EAX,AL }
+      End Else If AstTable[Node].Text = 'AND' Then Begin
+        { ECX=gauche, EAX=droite : (ECX<>0) AND (EAX<>0) }
+        BinEmit8($85); BinEmit8($C9);                   { TEST ECX,ECX }
+        BinEmit8($0F); BinEmit8($95); BinEmit8($C1);   { SETNE CL     }
+        BinEmit8($85); BinEmit8($C0);                   { TEST EAX,EAX }
+        BinEmit8($0F); BinEmit8($95); BinEmit8($C0);   { SETNE AL     }
+        BinEmit8($20); BinEmit8($C8);                   { AND AL,CL    }
+        BinEmit8($0F); BinEmit8($B6); BinEmit8($C0);   { MOVZX EAX,AL }
+      End Else If AstTable[Node].Text = 'OR' Then Begin
+        { ECX=gauche, EAX=droite : (ECX<>0) OR (EAX<>0) }
+        BinEmit8($09); BinEmit8($C8);                   { OR EAX,ECX   }
+        BinEmit8($0F); BinEmit8($95); BinEmit8($C0);   { SETNE AL     }
+        BinEmit8($0F); BinEmit8($B6); BinEmit8($C0);   { MOVZX EAX,AL }
       End Else
         Begin BinEmit8($31); BinEmit8($C0); End;
     End;
@@ -4416,20 +4452,24 @@ End;
 { Emet le code pour un statement du DATA step.                 }
 Procedure CodegenStmt(Node: Integer);
 Var
-  Tag     : String;
-  LblTop  : String;
-  LblEnd  : String;
-  LblElse : String;
-  LblStr  : String;
-  SIdx    : Integer;
-  StartN  : Integer;
-  EndN    : Integer;
-  StepV   : LongInt;
-  Child   : Integer;
-  ArrName : String;
-  IdxNode : Integer;
-  RhsNode : Integer;
-  LeftN   : Integer;
+  Tag        : String;
+  LblTop     : String;
+  LblEnd     : String;
+  LblElse    : String;
+  LblNext    : String;
+  LblStr     : String;
+  SIdx       : Integer;
+  StartN     : Integer;
+  EndN       : Integer;
+  StepV      : LongInt;
+  Child      : Integer;
+  ArrName    : String;
+  IdxNode    : Integer;
+  RhsNode    : Integer;
+  LeftN      : Integer;
+  SelectExpr : Integer;
+  WhenN      : Integer;
+  WIdx       : Integer;
 Begin
   If Node < 0 Then Exit;
   Case AstTable[Node].Kind Of
@@ -4579,6 +4619,43 @@ Begin
         CodegenStmt(AstTable[Node].Right);
         BinDefineLabel(LblEnd);
       End;
+    End;
+
+    NK_SELECT: Begin
+      Inc(BinPLKCount);
+      Tag        := IntToStr(BinPLKCount);
+      LblEnd     := '_sle' + Tag;
+      SelectExpr := AstTable[Node].Left;
+      WIdx       := 0;
+      WhenN      := AstTable[Node].FirstChild;
+      While WhenN >= 0 Do Begin
+        Inc(WIdx);
+        LblNext := '_slw' + Tag + 'w' + IntToStr(WIdx);
+        If AstTable[WhenN].Text = 'OTHERWISE' Then Begin
+          CodegenStmt(AstTable[WhenN].Right);
+          BinJmpLabel(LblEnd);
+          { OTHERWISE : pas de label suivant }
+        End Else Begin
+          If SelectExpr >= 0 Then Begin
+            { SELECT (expr) : comparer expr avec valeur WHEN }
+            CodegenExprEAX(SelectExpr);
+            BinEmit8($89); BinEmit8($C1); { MOV ECX, EAX (select) }
+            CodegenExprEAX(AstTable[WhenN].Left); { EAX = val WHEN }
+            BinEmit8($39); BinEmit8($C1); { CMP ECX, EAX           }
+            BinJccLabel(5, LblNext);      { JNE → prochain WHEN    }
+          End Else Begin
+            { SELECT sans expr : WHEN(cond) est booleenne }
+            CodegenExprEAX(AstTable[WhenN].Left);
+            BinEmit8($85); BinEmit8($C0); { TEST EAX, EAX          }
+            BinJccLabel(4, LblNext);      { JZ → prochain WHEN     }
+          End;
+          CodegenStmt(AstTable[WhenN].Right);
+          BinJmpLabel(LblEnd);
+          BinDefineLabel(LblNext);
+        End;
+        WhenN := AstTable[WhenN].NextSibling;
+      End;
+      BinDefineLabel(LblEnd);
     End;
 
   End; { Case }
