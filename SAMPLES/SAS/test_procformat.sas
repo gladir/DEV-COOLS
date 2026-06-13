@@ -53,6 +53,11 @@ data test2;
   format x best.;
 run;
 
+/* Test 7b : PROC PRINT de test2 */
+proc print data=test2;
+  var x;
+run;
+
 /* Test 8 : PROC FORMAT avec un seul VALUE et OTHER */
 proc format;
   value yesno
@@ -66,4 +71,9 @@ run;
 data test3;
   reponse = 1;
   format reponse yesno.;
+run;
+
+/* Test 9b : PROC PRINT de test3 */
+proc print data=test3;
+  var reponse;
 run;
