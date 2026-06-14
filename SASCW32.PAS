@@ -5779,6 +5779,7 @@ Begin
   BinAddImport('kernel32.dll', '_WinExec@8');
   BinAddImport('kernel32.dll', '_GetFileAttributesA@4');
   BinAddImport('kernel32.dll', '_GetEnvironmentVariableA@12');
+  BinAddImport('kernel32.dll', '_GetLocalTime@4');
 End;
 
 Procedure BinMovRegImm32(R: Integer; V: LongInt);
@@ -6124,6 +6125,9 @@ Begin
   { Buffer pour COMPBL / COLLATE }
   BinDefineDataLabel('_sas_compbl_buf');
   For J := 1 To 256 Do BinEmitDataByte(0);
+  { Buffer SYSTEMTIME pour GetLocalTime (16 octets: 8 WORDs) }
+  BinDefineDataLabel('_sas_systime');
+  For J := 1 To 16 Do BinEmitDataByte(0);
 End;
 
 { Genere le code 80386 pour PROC PRINT.                       }
@@ -9466,11 +9470,44 @@ End;
 { ============================================================ }
 Procedure EmitRuntimeDateFunc;
 Begin
-  { --- _SASRT_today(): LongInt --- stub retourne 0 (sans arg) }
+  { --- _SASRT_today(): LongInt --- date SAS courante (jours depuis 01/01/1960) }
+  { Formule JDN : SAS = floor(1461*(y'+4716)/4) + floor((153*(m'+1)+2)/5) + D - 2438472 }
+  { Si mois<=2 : y'=annee-1, m'=mois+12. Constante B=-13 valide de 1900 a 2099.         }
   BinDefineLabel('_SASRT_today');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);               { xor eax,eax }
-  BinEmit8($5D); BinEmit8($C3);               { pop ebp ; ret (0 arg) }
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);               { push ebp ; mov ebp,esp }
+  BinEmit8($53); BinEmit8($56); BinEmit8($57);               { push ebx,esi,edi }
+  BinPushLabel('_sas_systime');                               { push &systime }
+  BinCallImport('_GetLocalTime@4');                           { call [GetLocalTime] }
+  BinMovRegLabel(0, '_sas_systime');                          { mov eax,&systime }
+  BinEmit8($0F); BinEmit8($B7); BinEmit8($30);               { movzx esi,word[eax]   = wYear }
+  BinEmit8($0F); BinEmit8($B7); BinEmit8($48); BinEmit8($02);{ movzx ecx,word[eax+2] = wMonth }
+  BinEmit8($0F); BinEmit8($B7); BinEmit8($58); BinEmit8($06);{ movzx ebx,word[eax+6] = wDay (ebx survit idiv) }
+  { si mois<=2 : annee'=annee-1, mois'=mois+12 }
+  BinEmit8($83); BinEmit8($F9); BinEmit8($02);               { cmp ecx,2 }
+  BinEmit8($7F); BinEmit8($04);                               { jg .no_adj (skip 4 octets) }
+  BinEmit8($4E);                                               { dec esi }
+  BinEmit8($83); BinEmit8($C1); BinEmit8($0C);               { add ecx,12 }
+  { .no_adj: term1 = floor(1461*(annee'+4716)/4) }
+  BinEmit8($89); BinEmit8($F0);                               { mov eax,esi }
+  BinEmit8($05); BinEmit8($6C); BinEmit8($12); BinEmit8($00); BinEmit8($00); { add eax,4716 }
+  BinEmit8($69); BinEmit8($C0); BinEmit8($B5); BinEmit8($05); BinEmit8($00); BinEmit8($00); { imul eax,eax,1461 }
+  BinEmit8($C1); BinEmit8($F8); BinEmit8($02);               { sar eax,2 }
+  { term2 = floor((153*(mois'+1)+2)/5) }
+  BinEmit8($8D); BinEmit8($79); BinEmit8($01);               { lea edi,[ecx+1] }
+  BinEmit8($69); BinEmit8($FF); BinEmit8($99); BinEmit8($00); BinEmit8($00); BinEmit8($00); { imul edi,edi,153 }
+  BinEmit8($83); BinEmit8($C7); BinEmit8($02);               { add edi,2 }
+  BinEmit8($50);                                               { push eax (sauvegarde term1) }
+  BinEmit8($89); BinEmit8($F8);                               { mov eax,edi }
+  BinEmit8($99);                                               { cdq }
+  BinEmit8($BF); BinEmit8($05); BinEmit8($00); BinEmit8($00); BinEmit8($00); { mov edi,5 }
+  BinEmit8($F7); BinEmit8($FF);                               { idiv edi (detruit edx) }
+  BinEmit8($5F);                                               { pop edi (term1) }
+  BinEmit8($01); BinEmit8($F8);                               { add eax,edi }
+  { + jour(ebx) - 2438472 (= 2436935 + 1524 + 13, constante de la formule JDN) }
+  BinEmit8($01); BinEmit8($D8);                               { add eax,ebx (jour, pas edx!) }
+  BinEmit8($2D); BinEmit8($48); BinEmit8($35); BinEmit8($25); BinEmit8($00); { sub eax,2438472 }
+  BinEmit8($5F); BinEmit8($5E); BinEmit8($5B); BinEmit8($5D); { pop edi,esi,ebx,ebp }
+  BinEmit8($C3);                                               { ret (0 arg) }
 
   { --- _SASRT_mdy(m,d,y): LongInt --- stub retourne 0 (3 args) }
   BinDefineLabel('_SASRT_mdy');
