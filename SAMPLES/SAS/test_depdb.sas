@@ -1,8 +1,18 @@
-/* test_depdb.sas - DEPDB : depreciation balance degressif (stub) */
 data _null_;
-  /* DEPDB(cout, val_residuelle, vie, periode, facteur) */
-  a = depdb(10000, 1000, 5, 1, 2);
-  put 'DEPDB(10000,1000,5,1,2) = ' a;
-  b = depdb(10000, 1000, 5, 2, 2);
-  put 'DEPDB(10000,1000,5,2,2) = ' b;
+  d1 = depdb(10000, 1000, 5, 1, 2);
+  put 'DEPDB(10000,1000,5,1,2) = [' d1 '] (attendu: [4000])';
+  d2 = depdb(10000, 1000, 5, 2, 2);
+  put 'DEPDB(10000,1000,5,2,2) = [' d2 '] (attendu: [2400])';
+  d3 = depdb(10000, 1000, 5, 3, 2);
+  put 'DEPDB(10000,1000,5,3,2) = [' d3 '] (attendu: [1440])';
+  d5 = depdb(10000, 0, 5, 1, 2);
+  put 'DEPDB(10000,0,5,1,2) = [' d5 '] (attendu: [4000])';
+  d6 = depdb(10000, 0, 1, 1, 1);
+  put 'DEPDB(10000,0,1,1,1) = [' d6 '] (attendu: [10000])';
+  a1 = daccdb(10000, 1000, 5, 1, 2);
+  put 'DACCDB(10000,1000,5,1,2) = [' a1 '] (attendu: [4000])';
+  a2 = daccdb(10000, 1000, 5, 2, 2);
+  put 'DACCDB(10000,1000,5,2,2) = [' a2 '] (attendu: [6400])';
+  a3 = daccdb(10000, 1000, 5, 3, 2);
+  put 'DACCDB(10000,1000,5,3,2) = [' a3 '] (attendu: [7840])';
 run;

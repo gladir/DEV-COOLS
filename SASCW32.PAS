@@ -6132,6 +6132,10 @@ Begin
   { Buffer decomposition date YMD pour _SASRT_ymd_calc (12 octets: year,month,day) }
   BinDefineDataLabel('_sas_ymd');
   For J := 1 To 12 Do BinEmitDataByte(0);
+  { Constante Euler-Mascheroni gamma = 0.5772156649015329 (IEEE 754 double LE) }
+  BinDefineDataLabel('_sas_euler');
+  BinEmitDataByte($19); BinEmitDataByte($B6); BinEmitDataByte($6F); BinEmitDataByte($FC);
+  BinEmitDataByte($8C); BinEmitDataByte($78); BinEmitDataByte($E2); BinEmitDataByte($3F);
 End;
 
 { Genere le code 80386 pour PROC PRINT.                       }
@@ -6990,16 +6994,111 @@ Begin
   BinEmit8($89); BinEmit8($EC);                          { mov esp,ebp }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00); { pop ebp; ret 8 }
 
-  { --- _SASRT_daccdb(cost,sal,life,per,factor): stub 0 (5 args) }
+  { --- _SASRT_daccdb(cost,sal,life,per,factor): amortissement DB cumule (5 args) }
+  { [ebp+8]=cost [ebp+12]=sal [ebp+16]=life [ebp+20]=per [ebp+24]=factor          }
   BinDefineLabel('_SASRT_daccdb');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($14); BinEmit8($00);
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);           { push ebp; mov ebp,esp }
+  BinEmit8($83); BinEmit8($EC); BinEmit8($08);           { sub esp,8: [ebp-4]=book [ebp-8]=acc }
+  BinEmit8($53);                                          { push ebx }
+  BinEmit8($8B); BinEmit8($4D); BinEmit8($14);           { mov ecx,[ebp+20] per }
+  BinEmit8($85); BinEmit8($C9);                          { test ecx,ecx }
+  BinJccLabel(14,'_dacc_zero');                           { jle: per<=0 }
+  BinEmit8($8B); BinEmit8($5D); BinEmit8($10);           { mov ebx,[ebp+16] life }
+  BinEmit8($85); BinEmit8($DB);                          { test ebx,ebx }
+  BinJccLabel(14,'_dacc_zero');                           { jle: life<=0 }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);           { mov eax,[ebp+8] cost }
+  BinEmit8($89); BinEmit8($45); BinEmit8($FC);           { mov [ebp-4],eax book=cost }
+  BinEmit8($31); BinEmit8($C0);                          { xor eax,eax }
+  BinEmit8($89); BinEmit8($45); BinEmit8($F8);           { mov [ebp-8],eax acc=0 }
+  BinDefineLabel('_dacc_loop');
+  BinEmit8($8B); BinEmit8($45); BinEmit8($FC);           { mov eax,[ebp-4] book }
+  BinEmit8($0F); BinEmit8($AF); BinEmit8($45); BinEmit8($18); { imul eax,[ebp+24] *factor }
+  BinEmit8($99);                                          { cdq }
+  BinEmit8($F7); BinEmit8($7D); BinEmit8($10);           { idiv [ebp+16] /life }
+  BinEmit8($8B); BinEmit8($5D); BinEmit8($FC);           { mov ebx,[ebp-4] book }
+  BinEmit8($2B); BinEmit8($D8);                          { sub ebx,eax book-dep }
+  BinEmit8($3B); BinEmit8($5D); BinEmit8($0C);           { cmp ebx,[ebp+12] vs sal }
+  BinJccLabel(13,'_dacc_ok');                             { jge: dep ok }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($FC);           { mov eax,[ebp-4] book }
+  BinEmit8($2B); BinEmit8($45); BinEmit8($0C);           { sub eax,[ebp+12] book-sal }
+  BinJccLabel(13,'_dacc_ok');                             { jge: dep=book-sal }
+  BinEmit8($31); BinEmit8($C0);                          { xor eax,eax dep=0 }
+  BinDefineLabel('_dacc_ok');
+  BinEmit8($01); BinEmit8($45); BinEmit8($F8);           { add [ebp-8],eax acc+=dep }
+  BinEmit8($29); BinEmit8($45); BinEmit8($FC);           { sub [ebp-4],eax book-=dep }
+  BinEmit8($49);                                          { dec ecx }
+  BinJccLabel(5,'_dacc_loop');                            { jnz loop }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($F8);           { mov eax,[ebp-8] acc }
+  BinEmit8($5B);                                          { pop ebx }
+  BinEmit8($89); BinEmit8($EC);                          { mov esp,ebp }
+  BinEmit8($5D); BinEmit8($C2); BinEmit8($14); BinEmit8($00); { pop ebp; ret 20 }
+  BinDefineLabel('_dacc_zero');
+  BinEmit8($31); BinEmit8($C0);                          { xor eax,eax }
+  BinEmit8($5B);                                          { pop ebx }
+  BinEmit8($89); BinEmit8($EC);                          { mov esp,ebp }
+  BinEmit8($5D); BinEmit8($C2); BinEmit8($14); BinEmit8($00); { pop ebp; ret 20 }
 
-  { --- _SASRT_daccdbsl(cost,sal,life,per,factor): stub 0 (5 args) }
+  { --- _SASRT_daccdbsl(cost,sal,life,per,factor): DB/SL cumule (5 args) }
+  { [ebp+8]=cost [ebp+12]=sal [ebp+16]=life [ebp+20]=per [ebp+24]=factor }
   BinDefineLabel('_SASRT_daccdbsl');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);           { push ebp; mov ebp,esp }
+  BinEmit8($83); BinEmit8($EC); BinEmit8($08);           { sub esp,8: [ebp-4]=book [ebp-8]=rem }
+  BinEmit8($53); BinEmit8($56); BinEmit8($57);           { push ebx,esi,edi }
+  BinEmit8($8B); BinEmit8($4D); BinEmit8($14);           { mov ecx,[ebp+20] per }
+  BinEmit8($85); BinEmit8($C9);                          { test ecx,ecx }
+  BinJccLabel(14,'_daccdbsl_zero');
+  BinEmit8($8B); BinEmit8($5D); BinEmit8($10);           { mov ebx,[ebp+16] life }
+  BinEmit8($85); BinEmit8($DB);                          { test ebx,ebx }
+  BinJccLabel(14,'_daccdbsl_zero');
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);           { mov eax,[ebp+8] cost }
+  BinEmit8($89); BinEmit8($45); BinEmit8($FC);           { mov [ebp-4],eax }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($10);           { mov eax,[ebp+16] life }
+  BinEmit8($89); BinEmit8($45); BinEmit8($F8);           { mov [ebp-8],eax rem=life }
+  BinEmit8($31); BinEmit8($F6);                          { xor esi,esi acc=0 }
+  BinDefineLabel('_daccdbsl_loop');
+  BinEmit8($8B); BinEmit8($45); BinEmit8($FC);           { mov eax,[ebp-4] book }
+  BinEmit8($0F); BinEmit8($AF); BinEmit8($45); BinEmit8($18); { imul eax,[ebp+24] }
+  BinEmit8($99); BinEmit8($F7); BinEmit8($7D); BinEmit8($10); { cdq; idiv life }
+  BinEmit8($89); BinEmit8($C3);                          { mov ebx,eax ddb_dep }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($FC);           { mov eax,[ebp-4] book }
+  BinEmit8($2B); BinEmit8($45); BinEmit8($0C);           { sub eax,[ebp+12] book-sal }
+  BinJccLabel(14,'_daccdbsl_slz');
+  BinEmit8($83); BinEmit8($7D); BinEmit8($F8); BinEmit8($00); { cmp [ebp-8],0 }
+  BinJccLabel(14,'_daccdbsl_slz');
+  BinEmit8($99); BinEmit8($F7); BinEmit8($7D); BinEmit8($F8); { cdq; idiv rem }
+  BinEmit8($89); BinEmit8($C7);                          { mov edi,eax sl_dep }
+  BinJmpLabel('_daccdbsl_slok');
+  BinDefineLabel('_daccdbsl_slz');
+  BinEmit8($31); BinEmit8($FF);                          { xor edi,edi }
+  BinDefineLabel('_daccdbsl_slok');
+  BinEmit8($89); BinEmit8($D8);                          { mov eax,ebx ddb }
+  BinEmit8($3B); BinEmit8($FB);                          { cmp edi,ebx sl vs ddb }
+  BinJccLabel(14,'_daccdbsl_maxok');
+  BinEmit8($8B); BinEmit8($C7);                          { mov eax,edi sl }
+  BinDefineLabel('_daccdbsl_maxok');
+  BinEmit8($8B); BinEmit8($55); BinEmit8($FC);           { mov edx,[ebp-4] book }
+  BinEmit8($2B); BinEmit8($55); BinEmit8($0C);           { sub edx,[ebp+12] book-sal }
+  BinJccLabel(14,'_daccdbsl_capz');
+  BinEmit8($39); BinEmit8($D0);                          { cmp eax,edx dep vs cap }
+  BinJccLabel(14,'_daccdbsl_capdone');
+  BinEmit8($89); BinEmit8($D0);                          { mov eax,edx cap }
+  BinJmpLabel('_daccdbsl_capdone');
+  BinDefineLabel('_daccdbsl_capz');
+  BinEmit8($31); BinEmit8($C0);                          { xor eax,eax }
+  BinDefineLabel('_daccdbsl_capdone');
+  BinEmit8($01); BinEmit8($C6);                          { add esi,eax acc+=dep }
+  BinEmit8($29); BinEmit8($45); BinEmit8($FC);           { sub [ebp-4],eax book-=dep }
+  BinEmit8($FF); BinEmit8($4D); BinEmit8($F8);           { dec [ebp-8] rem-- }
+  BinEmit8($49);                                          { dec ecx }
+  BinJccLabel(5,'_daccdbsl_loop');
+  BinEmit8($8B); BinEmit8($C6);                          { mov eax,esi return acc }
+  BinEmit8($5F); BinEmit8($5E); BinEmit8($5B);           { pop edi,esi,ebx }
+  BinEmit8($89); BinEmit8($EC);
+  BinEmit8($5D); BinEmit8($C2); BinEmit8($14); BinEmit8($00);
+  BinDefineLabel('_daccdbsl_zero');
   BinEmit8($31); BinEmit8($C0);
+  BinEmit8($5F); BinEmit8($5E); BinEmit8($5B);
+  BinEmit8($89); BinEmit8($EC);
   BinEmit8($5D); BinEmit8($C2); BinEmit8($14); BinEmit8($00);
 
   { --- _SASRT_daccsl(cost,sal,life,per): LongInt --- (cost-sal)*per/life (23 octets) }
@@ -7157,16 +7256,120 @@ Begin
   BinEmit8($31); BinEmit8($C0);
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { --- _SASRT_depdb(cost,sal,life,per,factor): stub 0 (5 args) }
+  { --- _SASRT_depdb(cost,sal,life,per,factor): amortissement DB periode per (5 args) }
+  { [ebp+8]=cost [ebp+12]=sal [ebp+16]=life [ebp+20]=per [ebp+24]=factor              }
   BinDefineLabel('_SASRT_depdb');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($14); BinEmit8($00);
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);           { push ebp; mov ebp,esp }
+  BinEmit8($83); BinEmit8($EC); BinEmit8($04);           { sub esp,4: [ebp-4]=book }
+  BinEmit8($53);                                          { push ebx }
+  BinEmit8($8B); BinEmit8($4D); BinEmit8($14);           { mov ecx,[ebp+20] per }
+  BinEmit8($85); BinEmit8($C9);                          { test ecx,ecx }
+  BinJccLabel(14,'_depdb_zero');                          { jle: per<=0 }
+  BinEmit8($8B); BinEmit8($5D); BinEmit8($10);           { mov ebx,[ebp+16] life }
+  BinEmit8($85); BinEmit8($DB);                          { test ebx,ebx }
+  BinJccLabel(14,'_depdb_zero');                          { jle: life<=0 }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);           { mov eax,[ebp+8] cost }
+  BinEmit8($89); BinEmit8($45); BinEmit8($FC);           { mov [ebp-4],eax book=cost }
+  BinEmit8($49);                                          { dec ecx: per-1 prefix iters }
+  BinJccLabel(14,'_depdb_final');                         { jle: per=1 skip loop }
+  BinDefineLabel('_depdb_loop');
+  BinEmit8($8B); BinEmit8($45); BinEmit8($FC);           { mov eax,[ebp-4] book }
+  BinEmit8($0F); BinEmit8($AF); BinEmit8($45); BinEmit8($18); { imul eax,[ebp+24] *factor }
+  BinEmit8($99);                                          { cdq }
+  BinEmit8($F7); BinEmit8($7D); BinEmit8($10);           { idiv [ebp+16] /life }
+  BinEmit8($8B); BinEmit8($5D); BinEmit8($FC);           { mov ebx,[ebp-4] book }
+  BinEmit8($2B); BinEmit8($D8);                          { sub ebx,eax book-dep }
+  BinEmit8($3B); BinEmit8($5D); BinEmit8($0C);           { cmp ebx,[ebp+12] vs sal }
+  BinJccLabel(13,'_depdb_ok');                            { jge: dep ok }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($FC);           { mov eax,[ebp-4] book }
+  BinEmit8($2B); BinEmit8($45); BinEmit8($0C);           { sub eax,[ebp+12] book-sal }
+  BinJccLabel(13,'_depdb_ok');                            { jge: dep=book-sal }
+  BinEmit8($31); BinEmit8($C0);                          { xor eax,eax dep=0 }
+  BinDefineLabel('_depdb_ok');
+  BinEmit8($29); BinEmit8($45); BinEmit8($FC);           { sub [ebp-4],eax book-=dep }
+  BinEmit8($49);                                          { dec ecx }
+  BinJccLabel(5,'_depdb_loop');                           { jnz loop }
+  BinDefineLabel('_depdb_final');
+  BinEmit8($8B); BinEmit8($45); BinEmit8($FC);           { mov eax,[ebp-4] book }
+  BinEmit8($0F); BinEmit8($AF); BinEmit8($45); BinEmit8($18); { imul eax,[ebp+24] *factor }
+  BinEmit8($99);                                          { cdq }
+  BinEmit8($F7); BinEmit8($7D); BinEmit8($10);           { idiv [ebp+16] /life }
+  BinEmit8($8B); BinEmit8($5D); BinEmit8($FC);           { mov ebx,[ebp-4] book }
+  BinEmit8($2B); BinEmit8($D8);                          { sub ebx,eax book-dep }
+  BinEmit8($3B); BinEmit8($5D); BinEmit8($0C);           { cmp ebx,[ebp+12] vs sal }
+  BinJccLabel(13,'_depdb_done');                          { jge: dep ok }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($FC);           { mov eax,[ebp-4] book }
+  BinEmit8($2B); BinEmit8($45); BinEmit8($0C);           { sub eax,[ebp+12] book-sal }
+  BinJccLabel(13,'_depdb_done');                          { jge: dep=book-sal }
+  BinEmit8($31); BinEmit8($C0);                          { xor eax,eax dep=0 }
+  BinDefineLabel('_depdb_done');
+  BinEmit8($5B);                                          { pop ebx }
+  BinEmit8($89); BinEmit8($EC);                          { mov esp,ebp }
+  BinEmit8($5D); BinEmit8($C2); BinEmit8($14); BinEmit8($00); { pop ebp; ret 20 }
+  BinDefineLabel('_depdb_zero');
+  BinEmit8($31); BinEmit8($C0);                          { xor eax,eax }
+  BinEmit8($5B);                                          { pop ebx }
+  BinEmit8($89); BinEmit8($EC);                          { mov esp,ebp }
+  BinEmit8($5D); BinEmit8($C2); BinEmit8($14); BinEmit8($00); { pop ebp; ret 20 }
 
-  { --- _SASRT_depdbsl(cost,sal,life,per,factor): stub 0 (5 args) }
+  { --- _SASRT_depdbsl(cost,sal,life,per,factor): DB/SL periode per (5 args) }
+  { [ebp+8]=cost [ebp+12]=sal [ebp+16]=life [ebp+20]=per [ebp+24]=factor  }
   BinDefineLabel('_SASRT_depdbsl');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);           { push ebp; mov ebp,esp }
+  BinEmit8($83); BinEmit8($EC); BinEmit8($08);           { sub esp,8: [ebp-4]=book [ebp-8]=rem }
+  BinEmit8($53); BinEmit8($56);                          { push ebx,esi }
+  BinEmit8($8B); BinEmit8($4D); BinEmit8($14);           { mov ecx,[ebp+20] per }
+  BinEmit8($85); BinEmit8($C9);                          { test ecx,ecx }
+  BinJccLabel(14,'_depdbsl_zero');
+  BinEmit8($8B); BinEmit8($5D); BinEmit8($10);           { mov ebx,[ebp+16] life }
+  BinEmit8($85); BinEmit8($DB);                          { test ebx,ebx }
+  BinJccLabel(14,'_depdbsl_zero');
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);           { mov eax,[ebp+8] cost }
+  BinEmit8($89); BinEmit8($45); BinEmit8($FC);           { mov [ebp-4],eax }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($10);           { mov eax,[ebp+16] life }
+  BinEmit8($89); BinEmit8($45); BinEmit8($F8);           { mov [ebp-8],eax rem=life }
+  BinDefineLabel('_depdbsl_loop');
+  BinEmit8($8B); BinEmit8($45); BinEmit8($FC);           { mov eax,[ebp-4] book }
+  BinEmit8($0F); BinEmit8($AF); BinEmit8($45); BinEmit8($18); { imul eax,[ebp+24] }
+  BinEmit8($99); BinEmit8($F7); BinEmit8($7D); BinEmit8($10); { cdq; idiv life }
+  BinEmit8($89); BinEmit8($C3);                          { mov ebx,eax ddb_dep }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($FC);           { mov eax,[ebp-4] book }
+  BinEmit8($2B); BinEmit8($45); BinEmit8($0C);           { sub eax,[ebp+12] book-sal }
+  BinJccLabel(14,'_depdbsl_slz');
+  BinEmit8($83); BinEmit8($7D); BinEmit8($F8); BinEmit8($00); { cmp [ebp-8],0 }
+  BinJccLabel(14,'_depdbsl_slz');
+  BinEmit8($99); BinEmit8($F7); BinEmit8($7D); BinEmit8($F8); { cdq; idiv rem }
+  BinEmit8($89); BinEmit8($C6);                          { mov esi,eax sl_dep }
+  BinJmpLabel('_depdbsl_slok');
+  BinDefineLabel('_depdbsl_slz');
+  BinEmit8($31); BinEmit8($F6);                          { xor esi,esi }
+  BinDefineLabel('_depdbsl_slok');
+  BinEmit8($89); BinEmit8($D8);                          { mov eax,ebx ddb }
+  BinEmit8($3B); BinEmit8($F3);                          { cmp esi,ebx sl vs ddb }
+  BinJccLabel(14,'_depdbsl_maxok');
+  BinEmit8($8B); BinEmit8($C6);                          { mov eax,esi sl }
+  BinDefineLabel('_depdbsl_maxok');
+  BinEmit8($8B); BinEmit8($55); BinEmit8($FC);           { mov edx,[ebp-4] book }
+  BinEmit8($2B); BinEmit8($55); BinEmit8($0C);           { sub edx,[ebp+12] book-sal }
+  BinJccLabel(14,'_depdbsl_capz');
+  BinEmit8($39); BinEmit8($D0);                          { cmp eax,edx dep vs cap }
+  BinJccLabel(14,'_depdbsl_capdone');
+  BinEmit8($89); BinEmit8($D0);                          { mov eax,edx cap }
+  BinJmpLabel('_depdbsl_capdone');
+  BinDefineLabel('_depdbsl_capz');
+  BinEmit8($31); BinEmit8($C0);                          { xor eax,eax }
+  BinDefineLabel('_depdbsl_capdone');
+  BinEmit8($29); BinEmit8($45); BinEmit8($FC);           { sub [ebp-4],eax book-=dep }
+  BinEmit8($FF); BinEmit8($4D); BinEmit8($F8);           { dec [ebp-8] rem-- }
+  BinEmit8($49);                                          { dec ecx }
+  BinJccLabel(5,'_depdbsl_loop');
+  BinEmit8($5E); BinEmit8($5B);                          { pop esi,ebx }
+  BinEmit8($89); BinEmit8($EC);
+  BinEmit8($5D); BinEmit8($C2); BinEmit8($14); BinEmit8($00);
+  BinDefineLabel('_depdbsl_zero');
   BinEmit8($31); BinEmit8($C0);
+  BinEmit8($5E); BinEmit8($5B);
+  BinEmit8($89); BinEmit8($EC);
   BinEmit8($5D); BinEmit8($C2); BinEmit8($14); BinEmit8($00);
 
   { --- _SASRT_depsl(cost,sal,life,per): LongInt --- (cost-sal)/life (19 octets) }
@@ -7239,10 +7442,44 @@ Begin
   BinEmit8($31); BinEmit8($C0);
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
-  { --- _SASRT_digamma(x): stub LongInt 0 (1 arg) }
+  { --- _SASRT_digamma(x): psi(x)=floor(-gamma+sum(1/k,k=1..x-1)) (1 arg) }
+  { [ebp+8]=x. Locaux: [ebp-4]=k/resultat [ebp-8]=CW_orig [ebp-6]=CW_floor }
   BinDefineLabel('_SASRT_digamma');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);           { push ebp; mov ebp,esp }
+  BinEmit8($83); BinEmit8($EC); BinEmit8($08);           { sub esp,8 }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);           { mov eax,[ebp+8] x }
+  BinEmit8($85); BinEmit8($C0);                          { test eax,eax }
+  BinJccLabel(14,'_dig_zero');                            { jle: x<=0 return 0 }
+  BinMovRegLabel(2,'_sas_euler');                         { mov edx,&gamma }
+  BinEmit8($DD); BinEmit8($02);                          { fld qword[edx] ST=gamma }
+  BinEmit8($D9); BinEmit8($E0);                          { fchs ST=-gamma }
+  BinEmit8($8B); BinEmit8($4D); BinEmit8($08);           { mov ecx,[ebp+8] x }
+  BinEmit8($49);                                          { dec ecx x-1 }
+  BinJccLabel(14,'_dig_floor');                           { jle: x=1 skip loop }
+  BinEmit8($C7); BinEmit8($45); BinEmit8($FC); BinEmit32(1); { mov [ebp-4],1 k=1 }
+  BinDefineLabel('_dig_loop');
+  BinEmit8($D9); BinEmit8($E8);                          { fld1 }
+  BinEmit8($DB); BinEmit8($45); BinEmit8($FC);           { fild [ebp-4] k }
+  BinEmit8($DE); BinEmit8($F9);                          { fdivp st(1),st 1/k }
+  BinEmit8($DE); BinEmit8($C1);                          { faddp st(1),st acc+=1/k }
+  BinEmit8($FF); BinEmit8($45); BinEmit8($FC);           { inc [ebp-4] k++ }
+  BinEmit8($49);                                          { dec ecx }
+  BinJccLabel(5,'_dig_loop');                             { jnz loop }
+  BinDefineLabel('_dig_floor');
+  BinEmit8($D9); BinEmit8($7D); BinEmit8($F8);           { fnstcw [ebp-8] }
+  BinEmit8($0F); BinEmit8($B7); BinEmit8($45); BinEmit8($F8); { movzx eax,word[ebp-8] }
+  BinEmit8($25); BinEmit32($FFFFF3FF);                   { and eax,~$0C00 clear RC }
+  BinEmit8($0D); BinEmit32($00000400);                   { or eax,$0400 round-down }
+  BinEmit8($66); BinEmit8($89); BinEmit8($45); BinEmit8($FA); { mov [ebp-6],ax }
+  BinEmit8($D9); BinEmit8($6D); BinEmit8($FA);           { fldcw [ebp-6] }
+  BinEmit8($DB); BinEmit8($5D); BinEmit8($FC);           { fistp [ebp-4] }
+  BinEmit8($D9); BinEmit8($6D); BinEmit8($F8);           { fldcw [ebp-8] restore }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($FC);           { mov eax,[ebp-4] }
+  BinEmit8($89); BinEmit8($EC);                          { mov esp,ebp }
+  BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+  BinDefineLabel('_dig_zero');
+  BinEmit8($31); BinEmit8($C0);                          { xor eax,eax }
+  BinEmit8($89); BinEmit8($EC);                          { mov esp,ebp }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
   { --- _SASRT_dnum(did): stub LongInt 0 (1 arg) }

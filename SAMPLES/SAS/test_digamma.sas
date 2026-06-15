@@ -1,8 +1,16 @@
-/* test_digamma.sas - DIGAMMA : fonction digamma (stub) */
 data _null_;
-  /* DIGAMMA(1) = -gamma_euler ~ -0.5772 (stub=0) */
-  a = digamma(1);
-  put 'DIGAMMA(1) = ' a;
-  b = digamma(2);
-  put 'DIGAMMA(2) = ' b;
+  d1 = digamma(1);
+  put 'DIGAMMA(1) = [' d1 '] (attendu: [-1] = floor(-0.5772))';
+  d2 = digamma(2);
+  put 'DIGAMMA(2) = [' d2 '] (attendu: [0] = floor(0.4228))';
+  d3 = digamma(3);
+  put 'DIGAMMA(3) = [' d3 '] (attendu: [0] = floor(0.9228))';
+  d4 = digamma(4);
+  put 'DIGAMMA(4) = [' d4 '] (attendu: [1] = floor(1.2564))';
+  d8 = digamma(8);
+  put 'DIGAMMA(8) = [' d8 '] (attendu: [2] = floor(2.0154))';
+  d10 = digamma(10);
+  put 'DIGAMMA(10) = [' d10 '] (attendu: [2] = floor(2.2517))';
+  d100 = digamma(100);
+  put 'DIGAMMA(100) = [' d100 '] (attendu: [4] = floor(4.5997))';
 run;
