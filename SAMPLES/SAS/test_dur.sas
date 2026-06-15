@@ -1,6 +1,12 @@
-/* test_dur.sas - DUR : duree modifiee d une marge de liquidite (stub) */
 data _null_;
-  /* DUR(n, yield, coupon, par, redemption) */
-  a = dur(10, 5, 6, 1000, 1000);
-  put 'DUR(10,5,6,1000,1000) = ' a;
+  d1 = dur(10, 5, 500, 10000, 10000);
+  put 'DUR(10,5,500,10000,10000) = [' d1 '] (attendu: [8] Macaulay~8.1)';
+  d2 = dur(1, 5, 500, 10000, 10000);
+  put 'DUR(1,5,500,10000,10000) = [' d2 '] (attendu: [1])';
+  d3 = dur(10, 0, 500, 10000, 10000);
+  put 'DUR(10,0,500,10000,10000) = [' d3 '] (attendu: [7] zero-yield)';
+  dp1 = durp(10, 5, 500, 10000, 10000);
+  put 'DURP(10,5,500,10000,10000) = [' dp1 '] (attendu: [7] mod=DUR/1.05)';
+  d0 = dur(0, 5, 500, 10000, 10000);
+  put 'DUR(0,...) = [' d0 '] (attendu: [0])';
 run;

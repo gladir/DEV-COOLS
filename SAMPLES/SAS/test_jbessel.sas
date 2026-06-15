@@ -1,8 +1,14 @@
-/* test_jbessel.sas - JBESSEL : valeur d une fonction Bessel (stub) */
 data _null_;
-  /* JBESSEL(nu, x) */
-  a = jbessel(0, 1);
-  put 'JBESSEL(0,1) = ' a;
-  b = jbessel(1, 2);
-  put 'JBESSEL(1,2) = ' b;
+  j0 = jbessel(0, 0);
+  put 'JBESSEL(0,0) = [' j0 '] (attendu: [1])';
+  j3 = jbessel(0, 3);
+  put 'JBESSEL(0,3) = [' j3 '] (attendu: [-1])';
+  j5 = jbessel(0, 5);
+  put 'JBESSEL(0,5) = [' j5 '] (attendu: [-1])';
+  j6 = jbessel(0, 6);
+  put 'JBESSEL(0,6) = [' j6 '] (attendu: [0])';
+  jn = jbessel(0, -3);
+  put 'JBESSEL(0,-3) = [' jn '] (attendu: [-1])';
+  jx = jbessel(1, 3);
+  put 'JBESSEL(1,3) = [' jx '] (attendu: [0])';
 run;

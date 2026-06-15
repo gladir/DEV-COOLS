@@ -1,6 +1,10 @@
-/* test_convx.sas - CONVX : convexite d une marge de liquidite (stub) */
 data _null_;
-  /* CONVX(n, yield, coupon, par, redemption) */
-  a = convx(10, 5, 6, 1000, 1000);
-  put 'CONVX(10,5,6,1000,1000) = ' a;
+  c1 = convx(10, 5, 500, 10000, 10000);
+  put 'CONVX(10,5,500,10000,10000) = [' c1 '] (attendu: [68] ~68.8)';
+  c2 = convxp(10, 5, 500, 10000, 10000);
+  put 'CONVXP(10,5,500,10000,10000) = [' c2 '] (attendu: [62] ~62.4)';
+  c3 = convx(10, 0, 500, 10000, 10000);
+  put 'CONVX(10,0,...) = [' c3 '] (attendu: [143] ~143.0)';
+  c0 = convx(0, 5, 500, 10000, 10000);
+  put 'CONVX(0,...) = [' c0 '] (attendu: [0])';
 run;

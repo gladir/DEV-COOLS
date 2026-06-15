@@ -1,6 +1,16 @@
-/* test_mort.sas - MORT : parametres d amortissement (stub) */
 data _null_;
-  /* MORT(a, r, n, x) */
-  m = mort(100000, 5, 360, 0);
-  put 'MORT(100000,5,360,0) = ' m;
+  m1 = mort(10000, 5, 12, 0);
+  put 'MORT(10000,5,12,0) = [' m1 '] (attendu: [1128] pmt)';
+  m2 = mort(10000, 5, 12, 6);
+  put 'MORT(10000,5,12,6) = [' m2 '] (attendu: [5854] solde ap 6)';
+  m3 = mort(10000, 5, 12, 12);
+  put 'MORT(10000,5,12,12) = [' m3 '] (attendu: [0] solde final)';
+  m4 = mort(10000, 5, 12, -1);
+  put 'MORT(10000,5,12,-1) = [' m4 '] (attendu: [500] interet pmt1)';
+  m5 = mort(10000, 5, 12, -6);
+  put 'MORT(10000,5,12,-6) = [' m5 '] (attendu: [292] interet pmt6)';
+  m6 = mort(10000, 0, 12, 0);
+  put 'MORT(10000,0,12,0) = [' m6 '] (attendu: [833] pmt r=0)';
+  m7 = mort(10000, 0, 12, 6);
+  put 'MORT(10000,0,12,6) = [' m7 '] (attendu: [5000] solde r=0 ap 6)';
 run;

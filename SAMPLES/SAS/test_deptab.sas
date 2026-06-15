@@ -1,5 +1,16 @@
-/* test_deptab.sas - DEPTAB : depreciation par table (stub) */
 data _null_;
-  a = deptab(10000, 1000, 5, 1);
-  put 'DEPTAB(10000,1000,5,1) = ' a;
+  d1 = deptab(10000, 0, 5, 1);
+  put 'DEPTAB(10000,0,5,1) = [' d1 '] (attendu: [3333])';
+  d2 = deptab(10000, 0, 5, 2);
+  put 'DEPTAB(10000,0,5,2) = [' d2 '] (attendu: [2666])';
+  d3 = deptab(10000, 0, 5, 3);
+  put 'DEPTAB(10000,0,5,3) = [' d3 '] (attendu: [2000])';
+  d5 = deptab(10000, 0, 5, 5);
+  put 'DEPTAB(10000,0,5,5) = [' d5 '] (attendu: [666])';
+  da1 = dacctab(10000, 0, 5, 1);
+  put 'DACCTAB(10000,0,5,1) = [' da1 '] (attendu: [3333])';
+  da2 = dacctab(10000, 0, 5, 2);
+  put 'DACCTAB(10000,0,5,2) = [' da2 '] (attendu: [5999])';
+  da5 = dacctab(10000, 0, 5, 5);
+  put 'DACCTAB(10000,0,5,5) = [' da5 '] (attendu: [10000])';
 run;
