@@ -8001,11 +8001,42 @@ Begin
   BinEmit8($B8); BinEmit32(1);                  { mov eax,1 }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { --- _SASRT_lgamma(x): stub LongInt 0 (1 arg) }
+  { --- _SASRT_lgamma(x): LongInt --- floor(sum ln(k) for k=2..x-1) via FPU }
+  { lgamma(n) = ln(Gamma(n)) = ln((n-1)!) = ln(2)+ln(3)+...+ln(n-1)        }
+  { [ebp-4] = k (loop var), ECX = n, ST0 = running sum (FPU accumulator)    }
   BinDefineLabel('_SASRT_lgamma');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+  BinEmit8($83); BinEmit8($EC); BinEmit8($08);           { sub esp,8 (k@[ebp-4], cw_orig@[ebp-8], cw_mod@[ebp-6]) }
+  BinEmit8($83); BinEmit8($7D); BinEmit8($08); BinEmit8($02); { cmp [ebp+8],2 }
+  BinJccLabel(12,'_lgamma_zero');                         { jl → 0 (n<2) }
+  BinEmit8($D9); BinEmit8($EE);                           { fldz (accumulator=0) }
+  BinEmit8($C7); BinEmit8($45); BinEmit8($FC); BinEmit32(2); { mov [ebp-4],2 (k=2) }
+  BinEmit8($8B); BinEmit8($4D); BinEmit8($08);           { mov ecx,[ebp+8] = n }
+  BinDefineLabel('_lgamma_loop');
+  BinEmit8($39); BinEmit8($4D); BinEmit8($FC);           { cmp [ebp-4],ecx (k vs n) }
+  BinJccLabel(13,'_lgamma_done');                         { jge → done when k>=n }
+  BinEmit8($D9); BinEmit8($ED);                           { fldln2 }
+  BinEmit8($DB); BinEmit8($45); BinEmit8($FC);           { fild dword[ebp-4] (k) }
+  BinEmit8($D9); BinEmit8($F1);                           { fyl2x → ST0=ln(k) }
+  BinEmit8($DE); BinEmit8($C1);                           { faddp st(1),st(0) → acc+=ln(k) }
+  BinEmit8($FF); BinEmit8($45); BinEmit8($FC);           { inc dword[ebp-4] }
+  BinJmpLabel('_lgamma_loop');
+  BinDefineLabel('_lgamma_done');
+  { truncation via FPU CW: RC=11=truncate, évite arrondi vers le haut }
+  BinEmit8($D9); BinEmit8($7D); BinEmit8($F8);           { fnstcw [ebp-8] (sauver CW) }
+  BinEmit8($0F); BinEmit8($B7); BinEmit8($45); BinEmit8($F8); { movzx eax,word[ebp-8] }
+  BinEmit8($0D); BinEmit32($00000C00);                    { or eax,0x0C00 (RC=11=tronc) }
+  BinEmit8($66); BinEmit8($89); BinEmit8($45); BinEmit8($FA); { mov [ebp-6],ax (CW modifie) }
+  BinEmit8($D9); BinEmit8($6D); BinEmit8($FA);           { fldcw [ebp-6] }
+  BinEmit8($DB); BinEmit8($5D); BinEmit8($FC);           { fistp dword[ebp-4] (tronque) }
+  BinEmit8($D9); BinEmit8($6D); BinEmit8($F8);           { fldcw [ebp-8] (restaurer CW) }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($FC);           { mov eax,[ebp-4] }
+  BinEmit8($89); BinEmit8($EC); BinEmit8($5D);
+  BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+  BinDefineLabel('_lgamma_zero');
+  BinEmit8($31); BinEmit8($C0);                           { xor eax,eax }
+  BinEmit8($89); BinEmit8($EC); BinEmit8($5D);
+  BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
   { --- _SASRT_libname(libref,path,engine): stub LongInt 0 (3 args) }
   BinDefineLabel('_SASRT_libname');
@@ -8514,10 +8545,63 @@ Begin
   BinEmit8($31); BinEmit8($C0);
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
-  { SPEDIS(s1,s2): stub 0 (2 args, string inputs) }
+  { SPEDIS(s1,s2): distance d'orthographe [0..100] = (maxlen-common)*100/maxlen }
+  { EBX=maxlen, ECX=minlen, EDX=common, ESI=s1, EDI=s2 }
   BinDefineLabel('_SASRT_spedis');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($53); BinEmit8($56); BinEmit8($57);           { push ebx,esi,edi }
+  BinEmit8($8B); BinEmit8($75); BinEmit8($08);           { mov esi,[ebp+8] = s1 }
+  BinEmit8($8B); BinEmit8($7D); BinEmit8($0C);           { mov edi,[ebp+12] = s2 }
+  { strlen(s1) → EBX }
+  BinEmit8($89); BinEmit8($F3);                           { mov ebx,esi }
+  BinDefineLabel('_sp_len1');
+  BinEmit8($80); BinEmit8($3B); BinEmit8($00);           { cmp byte[ebx],0 }
+  BinJccLabel(4,'_sp_len1_done');
+  BinEmit8($43);                                           { inc ebx }
+  BinJmpLabel('_sp_len1');
+  BinDefineLabel('_sp_len1_done');
+  BinEmit8($2B); BinEmit8($DE);                           { sub ebx,esi → len1 }
+  { strlen(s2) → ECX }
+  BinEmit8($89); BinEmit8($F9);                           { mov ecx,edi }
+  BinDefineLabel('_sp_len2');
+  BinEmit8($80); BinEmit8($39); BinEmit8($00);           { cmp byte[ecx],0 }
+  BinJccLabel(4,'_sp_len2_done');
+  BinEmit8($41);                                           { inc ecx }
+  BinJmpLabel('_sp_len2');
+  BinDefineLabel('_sp_len2_done');
+  BinEmit8($2B); BinEmit8($CF);                           { sub ecx,edi → len2 }
+  { EBX=max(len1,len2), ECX=min }
+  BinEmit8($39); BinEmit8($CB);                           { cmp ebx,ecx }
+  BinJccLabel(13,'_sp_max_ok');                           { jge → ebx already max }
+  BinEmit8($87); BinEmit8($D9);                           { xchg ebx,ecx → ebx=max,ecx=min }
+  BinDefineLabel('_sp_max_ok');
+  BinEmit8($85); BinEmit8($DB);                           { test ebx,ebx }
+  BinJccLabel(4,'_sp_zero');                              { jz → both empty → 0 }
+  BinEmit8($31); BinEmit8($D2);                           { xor edx,edx (common=0) }
+  BinEmit8($85); BinEmit8($C9);                           { test ecx,ecx }
+  BinJccLabel(4,'_sp_compute');                           { jz → no common chars }
+  BinEmit8($51);                                           { push ecx (minlen loop count) }
+  BinDefineLabel('_sp_cmp_loop');
+  BinEmit8($8A); BinEmit8($06);                           { mov al,[esi] }
+  BinEmit8($3A); BinEmit8($07);                           { cmp al,[edi] }
+  BinJccLabel(5,'_sp_no_match');
+  BinEmit8($42);                                           { inc edx (common++) }
+  BinDefineLabel('_sp_no_match');
+  BinEmit8($46); BinEmit8($47);                           { inc esi, inc edi }
+  BinEmit8($49);                                           { dec ecx }
+  BinJccLabel(5,'_sp_cmp_loop');
+  BinEmit8($59);                                           { pop ecx }
+  BinDefineLabel('_sp_compute');
+  BinEmit8($89); BinEmit8($D8);                           { mov eax,ebx (maxlen) }
+  BinEmit8($29); BinEmit8($D0);                           { sub eax,edx (maxlen-common) }
+  BinEmit8($6B); BinEmit8($C0); BinEmit8($64);           { imul eax,100 }
+  BinEmit8($99);                                           { cdq }
+  BinEmit8($F7); BinEmit8($FB);                           { idiv ebx }
+  BinJmpLabel('_sp_done');
+  BinDefineLabel('_sp_zero');
+  BinEmit8($31); BinEmit8($C0);                           { xor eax,eax }
+  BinDefineLabel('_sp_done');
+  BinEmit8($5F); BinEmit8($5E); BinEmit8($5B);           { pop edi,esi,ebx }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
   { STD(x1,x2): LongInt --- |x1-x2|/sqrt(2) via x87 (38 octets) }
@@ -8553,10 +8637,49 @@ Begin
   BinEmit8($5D);                                          { pop ebp }
   BinEmit8($C2); BinEmit8($08); BinEmit8($00);           { ret 8 }
 
-  { STFIPS(abbrev): stub 0 (1 arg, string input) }
+  { STFIPS(abbrev): recherche inverse dans _fipstate_table → code FIPS 1-56 }
+  { EBX=target(char1<<8|char2 uppercase), EDX=table ptr, ECX=index }
   BinDefineLabel('_SASRT_stfips');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($53); BinEmit8($57);                          { push ebx,edi }
+  BinEmit8($8B); BinEmit8($7D); BinEmit8($08);          { mov edi,[ebp+8] = ptr abbrev }
+  { char1: uppercase, validate A-Z }
+  BinEmit8($0F); BinEmit8($B6); BinEmit8($07);          { movzx eax,byte[edi] }
+  BinEmit8($24); BinEmit8($DF);                          { and al,0xDF (uppercase) }
+  BinEmit8($3C); BinEmit8($41);                          { cmp al,'A' }
+  BinJccLabel(2,'_sf_notfound');
+  BinEmit8($3C); BinEmit8($5A);                          { cmp al,'Z' }
+  BinJccLabel(7,'_sf_notfound');
+  { char2: uppercase, validate A-Z }
+  BinEmit8($0F); BinEmit8($B6); BinEmit8($4F); BinEmit8($01); { movzx ecx,byte[edi+1] }
+  BinEmit8($83); BinEmit8($E1); BinEmit8($DF);          { and ecx,0xDF }
+  BinEmit8($80); BinEmit8($F9); BinEmit8($41);          { cmp cl,'A' }
+  BinJccLabel(2,'_sf_notfound');
+  BinEmit8($80); BinEmit8($F9); BinEmit8($5A);          { cmp cl,'Z' }
+  BinJccLabel(7,'_sf_notfound');
+  { build target word (char2<<8)|char1 → EBX, pour correspondre au mot LE lu }
+  BinEmit8($C1); BinEmit8($E1); BinEmit8($08);          { shl ecx,8 }
+  BinEmit8($09); BinEmit8($C8);                          { or eax,ecx }
+  BinEmit8($89); BinEmit8($C3);                          { mov ebx,eax }
+  { search entries 1..56 of _fipstate_table }
+  BinMovRegLabel(2,'_fipstate_table');                   { mov edx,&table }
+  BinEmit8($83); BinEmit8($C2); BinEmit8($02);          { add edx,2 (skip entry 0) }
+  BinEmit8($B9); BinEmit32(1);                           { mov ecx,1 }
+  BinDefineLabel('_sf_loop');
+  BinEmit8($0F); BinEmit8($B7); BinEmit8($02);          { movzx eax,word[edx] }
+  BinEmit8($39); BinEmit8($D8);                          { cmp eax,ebx }
+  BinJccLabel(4,'_sf_found');
+  BinEmit8($83); BinEmit8($C2); BinEmit8($02);          { add edx,2 }
+  BinEmit8($41);                                          { inc ecx }
+  BinEmit8($83); BinEmit8($F9); BinEmit8($38);          { cmp ecx,56 }
+  BinJccLabel(14,'_sf_loop');
+  BinDefineLabel('_sf_notfound');
+  BinEmit8($31); BinEmit8($C0);                          { xor eax,eax }
+  BinJmpLabel('_sf_done');
+  BinDefineLabel('_sf_found');
+  BinEmit8($89); BinEmit8($C8);                          { mov eax,ecx }
+  BinDefineLabel('_sf_done');
+  BinEmit8($5F); BinEmit8($5B);                          { pop edi,ebx }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
   { SYSPROD(product): stub 0 — non licencie (1 arg, string) }
