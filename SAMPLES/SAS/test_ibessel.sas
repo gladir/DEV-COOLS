@@ -1,8 +1,14 @@
-/* test_ibessel.sas - IBESSEL : fonction Bessel modifiée (stub) */
 data _null_;
-  /* IBESSEL(nu, x, kode) */
-  a = ibessel(0, 1, 1);
-  put 'IBESSEL(0,1,1) = ' a;
-  b = ibessel(1, 2, 0);
-  put 'IBESSEL(1,2,0) = ' b;
+  i1 = ibessel(0, 0, 1);
+  put 'IBESSEL(0,0,1) = [' i1 '] (attendu: [1])';
+  i2 = ibessel(0, 2, 1);
+  put 'IBESSEL(0,2,1) = [' i2 '] (attendu: [2])';
+  i3 = ibessel(0, 5, 1);
+  put 'IBESSEL(0,5,1) = [' i3 '] (attendu: [27])';
+  i4 = ibessel(0, 10, 1);
+  put 'IBESSEL(0,10,1) = [' i4 '] (attendu: [2815])';
+  i5 = ibessel(1, 5, 1);
+  put 'IBESSEL(1,5,1) = [' i5 '] (attendu: [0] nu!=0)';
+  i6 = ibessel(0, 1, 1);
+  put 'IBESSEL(0,1,1) = [' i6 '] (attendu: [1])';
 run;
