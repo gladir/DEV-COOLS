@@ -7502,10 +7502,32 @@ Begin
   BinEmit8($31); BinEmit8($C0);
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
-  { --- _SASRT_gamma(x): stub LongInt 0 (1 arg) }
+  { --- _SASRT_gamma(x): LongInt --- (x-1)! pour x entier 1..13, 0 sinon   }
+  { [ebp+8]=x. 1<=x<=13: (x-1)! par LOOP (EBX*=ECX). x<1 ou x>=14 => 0. }
   BinDefineLabel('_SASRT_gamma');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($53);                                          { push ebx }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);           { mov eax,[ebp+8] x }
+  BinEmit8($83); BinEmit8($F8); BinEmit8($01);           { cmp eax,1 }
+  BinJccLabel(12, '_gamma_zero');                         { jl .zero (x<1) }
+  BinEmit8($83); BinEmit8($F8); BinEmit8($0E);           { cmp eax,14 }
+  BinJccLabel(13, '_gamma_zero');                         { jge .zero (x>=14, debordement) }
+  BinEmit8($48);                                          { dec eax  n=x-1 }
+  BinEmit8($85); BinEmit8($C0);                          { test eax,eax }
+  BinJccLabel(4, '_gamma_one');                           { je .one (x=1: 0!=1) }
+  BinEmit8($89); BinEmit8($C1);                          { mov ecx,eax }
+  BinEmit8($BB); BinEmit8($01); BinEmit8($00); BinEmit8($00); BinEmit8($00); { mov ebx,1 }
+  BinEmit8($0F); BinEmit8($AF); BinEmit8($D9);           { .loop: imul ebx,ecx }
+  BinEmit8($E2); BinEmit8($FB);                          { loop .loop (E2 FB = -5) }
+  BinEmit8($89); BinEmit8($D8);                          { mov eax,ebx }
+  BinJmpLabel('_gamma_done');
+  BinDefineLabel('_gamma_one');
+  BinEmit8($B8); BinEmit8($01); BinEmit8($00); BinEmit8($00); BinEmit8($00); { mov eax,1 }
+  BinJmpLabel('_gamma_done');
+  BinDefineLabel('_gamma_zero');
+  BinEmit8($31); BinEmit8($C0);                          { xor eax,eax }
+  BinDefineLabel('_gamma_done');
+  BinEmit8($5B);                                          { pop ebx }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
   { --- _SASRT_getvarn(dsid,varnum): stub LongInt 0 (2 args) }
@@ -8213,10 +8235,13 @@ Begin
   BinEmit8($31); BinEmit8($C0);
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
-  { POKE(addr,val): stub 0 — ecriture memoire brute risquee, 2 args }
+  { POKE(addr,val): ecriture LongInt val a l adresse addr. Retourne 0. }
   BinDefineLabel('_SASRT_poke');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($8B); BinEmit8($4D); BinEmit8($08);           { mov ecx,[ebp+8]  addr }
+  BinEmit8($8B); BinEmit8($55); BinEmit8($0C);           { mov edx,[ebp+12] val }
+  BinEmit8($89); BinEmit8($11);                           { mov [ecx],edx }
+  BinEmit8($31); BinEmit8($C0);                           { xor eax,eax }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
   { --- PROB* stubs --- }
@@ -9492,17 +9517,43 @@ Begin
   BinEmit8($5D);                                          { pop ebp }
   BinEmit8($C2); BinEmit8($08); BinEmit8($00);           { ret 8 }
 
-  { --- _SASRT_compress(s, c): ptr --- stub : retourne s (2 args) }
+  { --- _SASRT_compress(s, c): ptr --- retire de s les chars presents dans c }
+  { [ebp+8]=s, [ebp+12]=c. ESI=s, EDI=strtmp, EBX=c. 59 octets.           }
+  { Offsets : _outer=17  _inner=25  _copy_char=38  _skip_char=41  _done=44 }
   BinDefineLabel('_SASRT_compress');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($8B); BinEmit8($45); BinEmit8($08);
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);           { push ebp; mov ebp,esp }
+  BinEmit8($56); BinEmit8($57); BinEmit8($53);           { push esi; push edi; push ebx }
+  BinEmit8($8B); BinEmit8($75); BinEmit8($08);           { mov esi,[ebp+8]  s }
+  BinMovRegLabel(7, '_sas_strtmp');                       { mov edi,&strtmp }
+  BinEmit8($8B); BinEmit8($5D); BinEmit8($0C);           { mov ebx,[ebp+12] c }
+  { _outer (offset 17): }
+  BinEmit8($8A); BinEmit8($06);                           { mov al,[esi] }
+  BinEmit8($84); BinEmit8($C0);                           { test al,al }
+  BinEmit8($74); BinEmit8($15);                           { jz _done (+21 → 44) }
+  BinEmit8($89); BinEmit8($D9);                           { mov ecx,ebx }
+  { _inner (offset 25): }
+  BinEmit8($8A); BinEmit8($11);                           { mov dl,[ecx] }
+  BinEmit8($84); BinEmit8($D2);                           { test dl,dl }
+  BinEmit8($74); BinEmit8($07);                           { jz _copy_char (+7 → 38) }
+  BinEmit8($3A); BinEmit8($C2);                           { cmp al,dl }
+  BinEmit8($74); BinEmit8($06);                           { je _skip_char (+6 → 41) }
+  BinEmit8($41);                                           { inc ecx }
+  BinEmit8($EB); BinEmit8($F3);                           { jmp _inner (-13 → 25) }
+  { _copy_char (offset 38): }
+  BinEmit8($88); BinEmit8($07);                           { mov [edi],al }
+  BinEmit8($47);                                           { inc edi }
+  { _skip_char (offset 41): }
+  BinEmit8($46);                                           { inc esi }
+  BinEmit8($EB); BinEmit8($E5);                           { jmp _outer (-27 → 17) }
+  { _done (offset 44): }
+  BinEmit8($C6); BinEmit8($07); BinEmit8($00);           { mov byte [edi],0 }
+  BinMovRegLabel(0, '_sas_strtmp');                       { mov eax,&strtmp }
+  BinEmit8($5B); BinEmit8($5F); BinEmit8($5E);           { pop ebx; pop edi; pop esi }
+  BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00); { pop ebp; ret 8 }
 
-  { --- _SASRT_cat(s1, s2): ptr --- stub : retourne s1 (2 args) }
+  { --- _SASRT_cat(s1, s2): ptr --- concatenation s1+s2 → concat_buf (2 args) }
   BinDefineLabel('_SASRT_cat');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($8B); BinEmit8($45); BinEmit8($08);
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
+  BinJmpLabel('_SASRT_concat');
 
   { --- _SASRT_put(val,fmt): ptr --- stub retourne strtmp (2 args) }
   BinDefineLabel('_SASRT_put');
@@ -9618,12 +9669,25 @@ Begin
   BinEmit8($5F); BinEmit8($5E);                    { pop edi; pop esi      }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00); { ret 4   }
 
-  { --- _SASRT_collate(start,end): ptr --- stub retourne buf vide (2 args) }
+  { --- _SASRT_collate(start,end): ptr --- string of ASCII chars [start..end] }
   BinDefineLabel('_SASRT_collate');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinPushLabel('_sas_compbl_buf');                 { reuse buf as empty str}
-  BinEmit8($58);                                    { pop eax               }
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00); { ret 8   }
+  BinEmit8($57);                                          { push edi }
+  BinMovRegLabel(7,'_sas_strtmp');                        { mov edi,&strtmp }
+  BinEmit8($8B); BinEmit8($4D); BinEmit8($0C);           { mov ecx,[ebp+12] end }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);           { mov eax,[ebp+8]  start }
+  BinEmit8($39); BinEmit8($C1);                           { cmp ecx,eax }
+  BinEmit8($7C); BinEmit8($09);                           { jl +9 → done (end<start) }
+  BinEmit8($29); BinEmit8($C1);                           { sub ecx,eax → count-1 }
+  BinEmit8($41);                                          { inc ecx → count }
+  BinEmit8($88); BinEmit8($07);                           { _loop: mov [edi],al }
+  BinEmit8($47);                                          { inc edi }
+  BinEmit8($40);                                          { inc eax }
+  BinEmit8($E2); BinEmit8($FA);                           { loop _loop (-6) }
+  BinEmit8($C6); BinEmit8($07); BinEmit8($00);           { _done: mov byte[edi],0 }
+  BinMovRegLabel(0,'_sas_strtmp');
+  BinEmit8($5F);                                          { pop edi }
+  BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
   { --- _SASRT_dequote(src): ptr --- copie src dans strtmp (1 arg) }
   { Comportement : copie la chaine source telle quelle (stub simple) }
@@ -9672,26 +9736,303 @@ Begin
   BinEmit8($58);
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
-  { --- _SASRT_fipname(code): ptr --- stub retourne chaine vide (1 arg) }
-  BinDefineLabel('_SASRT_fipname');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinPushLabel('_sas_strtmp');
-  BinEmit8($58);
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+  { === FIPSTATE: table FIPS 57 entrees x 2 octets === }
+  BinJmpLabel('_fipstate_after_table');
+  BinDefineLabel('_fipstate_table');
+  BinEmit8($00); BinEmit8($00); { 0: invalide }
+  BinEmit8($41); BinEmit8($4C); { 1: AL }
+  BinEmit8($41); BinEmit8($4B); { 2: AK }
+  BinEmit8($00); BinEmit8($00); { 3: gap }
+  BinEmit8($41); BinEmit8($5A); { 4: AZ }
+  BinEmit8($41); BinEmit8($52); { 5: AR }
+  BinEmit8($43); BinEmit8($41); { 6: CA }
+  BinEmit8($00); BinEmit8($00); { 7: gap }
+  BinEmit8($43); BinEmit8($4F); { 8: CO }
+  BinEmit8($43); BinEmit8($54); { 9: CT }
+  BinEmit8($44); BinEmit8($45); { 10: DE }
+  BinEmit8($44); BinEmit8($43); { 11: DC }
+  BinEmit8($46); BinEmit8($4C); { 12: FL }
+  BinEmit8($47); BinEmit8($41); { 13: GA }
+  BinEmit8($00); BinEmit8($00); { 14: gap }
+  BinEmit8($48); BinEmit8($49); { 15: HI }
+  BinEmit8($49); BinEmit8($44); { 16: ID }
+  BinEmit8($49); BinEmit8($4C); { 17: IL }
+  BinEmit8($49); BinEmit8($4E); { 18: IN }
+  BinEmit8($49); BinEmit8($41); { 19: IA }
+  BinEmit8($4B); BinEmit8($53); { 20: KS }
+  BinEmit8($4B); BinEmit8($59); { 21: KY }
+  BinEmit8($4C); BinEmit8($41); { 22: LA }
+  BinEmit8($4D); BinEmit8($45); { 23: ME }
+  BinEmit8($4D); BinEmit8($44); { 24: MD }
+  BinEmit8($4D); BinEmit8($41); { 25: MA }
+  BinEmit8($4D); BinEmit8($49); { 26: MI }
+  BinEmit8($4D); BinEmit8($4E); { 27: MN }
+  BinEmit8($4D); BinEmit8($53); { 28: MS }
+  BinEmit8($4D); BinEmit8($4F); { 29: MO }
+  BinEmit8($4D); BinEmit8($54); { 30: MT }
+  BinEmit8($4E); BinEmit8($45); { 31: NE }
+  BinEmit8($4E); BinEmit8($56); { 32: NV }
+  BinEmit8($4E); BinEmit8($48); { 33: NH }
+  BinEmit8($4E); BinEmit8($4A); { 34: NJ }
+  BinEmit8($4E); BinEmit8($4D); { 35: NM }
+  BinEmit8($4E); BinEmit8($59); { 36: NY }
+  BinEmit8($4E); BinEmit8($43); { 37: NC }
+  BinEmit8($4E); BinEmit8($44); { 38: ND }
+  BinEmit8($4F); BinEmit8($48); { 39: OH }
+  BinEmit8($4F); BinEmit8($4B); { 40: OK }
+  BinEmit8($4F); BinEmit8($52); { 41: OR }
+  BinEmit8($50); BinEmit8($41); { 42: PA }
+  BinEmit8($00); BinEmit8($00); { 43: gap }
+  BinEmit8($52); BinEmit8($49); { 44: RI }
+  BinEmit8($53); BinEmit8($43); { 45: SC }
+  BinEmit8($53); BinEmit8($44); { 46: SD }
+  BinEmit8($54); BinEmit8($4E); { 47: TN }
+  BinEmit8($54); BinEmit8($58); { 48: TX }
+  BinEmit8($55); BinEmit8($54); { 49: UT }
+  BinEmit8($56); BinEmit8($54); { 50: VT }
+  BinEmit8($56); BinEmit8($41); { 51: VA }
+  BinEmit8($00); BinEmit8($00); { 52: gap }
+  BinEmit8($57); BinEmit8($41); { 53: WA }
+  BinEmit8($57); BinEmit8($56); { 54: WV }
+  BinEmit8($57); BinEmit8($49); { 55: WI }
+  BinEmit8($57); BinEmit8($59); { 56: WY }
+  BinDefineLabel('_fipstate_after_table');
 
-  { --- _SASRT_fipnamel(code): ptr --- stub retourne chaine vide (1 arg) }
-  BinDefineLabel('_SASRT_fipnamel');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinPushLabel('_sas_strtmp');
-  BinEmit8($58);
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
-
-  { --- _SASRT_fipstate(code): ptr --- stub retourne chaine vide (1 arg) }
+  { --- _SASRT_fipstate(code): ptr --- code FIPS → abreviation 2 lettres }
   BinDefineLabel('_SASRT_fipstate');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinPushLabel('_sas_strtmp');
-  BinEmit8($58);
+  BinEmit8($57);                                          { push edi }
+  BinMovRegLabel(7,'_sas_strtmp');
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);           { mov eax,[ebp+8] }
+  BinEmit8($85); BinEmit8($C0);                          { test eax,eax }
+  BinJccLabel(14,'_fs_empty');                            { jle → vide }
+  BinEmit8($83); BinEmit8($F8); BinEmit8($38);           { cmp eax,56 }
+  BinJccLabel(15,'_fs_empty');                            { jg → vide }
+  BinEmit8($01); BinEmit8($C0);                          { add eax,eax }
+  BinMovRegLabel(2,'_fipstate_table');                    { mov edx,&table }
+  BinEmit8($03); BinEmit8($D0);                          { add edx,eax }
+  BinEmit8($8A); BinEmit8($02);                          { mov al,[edx] }
+  BinEmit8($84); BinEmit8($C0);                          { test al,al }
+  BinJccLabel(4,'_fs_empty');                             { jz gap → vide }
+  BinEmit8($88); BinEmit8($07);                          { mov [edi],al }
+  BinEmit8($8A); BinEmit8($42); BinEmit8($01);           { mov al,[edx+1] }
+  BinEmit8($88); BinEmit8($47); BinEmit8($01);           { mov [edi+1],al }
+  BinEmit8($C6); BinEmit8($47); BinEmit8($02); BinEmit8($00); { mov [edi+2],0 }
+  BinJmpLabel('_fs_done');
+  BinDefineLabel('_fs_empty');
+  BinEmit8($C6); BinEmit8($07); BinEmit8($00);           { mov [edi],0 }
+  BinDefineLabel('_fs_done');
+  BinMovRegLabel(0,'_sas_strtmp');
+  BinEmit8($5F);
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+
+  { === FIPNAME: table d'offsets (57x2) + pool de chaines (499 octets) === }
+  BinJmpLabel('_fipname_data_end');
+  BinDefineLabel('_fipname_offsets');
+  { offsets 16-bit LE pour codes 0-56 dans le pool de chaines }
+  BinEmit8($00); BinEmit8($00); { 0: vide à offset 0 }
+  BinEmit8($01); BinEmit8($00); { 1: Alabama à 1 }
+  BinEmit8($09); BinEmit8($00); { 2: Alaska à 9 }
+  BinEmit8($10); BinEmit8($00); { 3: gap à 16 }
+  BinEmit8($11); BinEmit8($00); { 4: Arizona à 17 }
+  BinEmit8($19); BinEmit8($00); { 5: Arkansas à 25 }
+  BinEmit8($22); BinEmit8($00); { 6: California à 34 }
+  BinEmit8($2D); BinEmit8($00); { 7: gap à 45 }
+  BinEmit8($2E); BinEmit8($00); { 8: Colorado à 46 }
+  BinEmit8($37); BinEmit8($00); { 9: Connecticut à 55 }
+  BinEmit8($43); BinEmit8($00); { 10: Delaware à 67 }
+  BinEmit8($4C); BinEmit8($00); { 11: DC à 76 }
+  BinEmit8($61); BinEmit8($00); { 12: Florida à 97 }
+  BinEmit8($69); BinEmit8($00); { 13: Georgia à 105 }
+  BinEmit8($71); BinEmit8($00); { 14: gap à 113 }
+  BinEmit8($72); BinEmit8($00); { 15: Hawaii à 114 }
+  BinEmit8($79); BinEmit8($00); { 16: Idaho à 121 }
+  BinEmit8($7F); BinEmit8($00); { 17: Illinois à 127 }
+  BinEmit8($88); BinEmit8($00); { 18: Indiana à 136 }
+  BinEmit8($90); BinEmit8($00); { 19: Iowa à 144 }
+  BinEmit8($95); BinEmit8($00); { 20: Kansas à 149 }
+  BinEmit8($9C); BinEmit8($00); { 21: Kentucky à 156 }
+  BinEmit8($A5); BinEmit8($00); { 22: Louisiana à 165 }
+  BinEmit8($AF); BinEmit8($00); { 23: Maine à 175 }
+  BinEmit8($B5); BinEmit8($00); { 24: Maryland à 181 }
+  BinEmit8($BE); BinEmit8($00); { 25: Massachusetts à 190 }
+  BinEmit8($CC); BinEmit8($00); { 26: Michigan à 204 }
+  BinEmit8($D5); BinEmit8($00); { 27: Minnesota à 213 }
+  BinEmit8($DF); BinEmit8($00); { 28: Mississippi à 223 }
+  BinEmit8($EB); BinEmit8($00); { 29: Missouri à 235 }
+  BinEmit8($F4); BinEmit8($00); { 30: Montana à 244 }
+  BinEmit8($FC); BinEmit8($00); { 31: Nebraska à 252 }
+  BinEmit8($05); BinEmit8($01); { 32: Nevada à 261 }
+  BinEmit8($0C); BinEmit8($01); { 33: New Hampshire à 268 }
+  BinEmit8($1A); BinEmit8($01); { 34: New Jersey à 282 }
+  BinEmit8($25); BinEmit8($01); { 35: New Mexico à 293 }
+  BinEmit8($30); BinEmit8($01); { 36: New York à 304 }
+  BinEmit8($39); BinEmit8($01); { 37: North Carolina à 313 }
+  BinEmit8($48); BinEmit8($01); { 38: North Dakota à 328 }
+  BinEmit8($55); BinEmit8($01); { 39: Ohio à 341 }
+  BinEmit8($5A); BinEmit8($01); { 40: Oklahoma à 346 }
+  BinEmit8($63); BinEmit8($01); { 41: Oregon à 355 }
+  BinEmit8($6A); BinEmit8($01); { 42: Pennsylvania à 362 }
+  BinEmit8($77); BinEmit8($01); { 43: gap à 375 }
+  BinEmit8($78); BinEmit8($01); { 44: Rhode Island à 376 }
+  BinEmit8($85); BinEmit8($01); { 45: South Carolina à 389 }
+  BinEmit8($94); BinEmit8($01); { 46: South Dakota à 404 }
+  BinEmit8($A1); BinEmit8($01); { 47: Tennessee à 417 }
+  BinEmit8($AB); BinEmit8($01); { 48: Texas à 427 }
+  BinEmit8($B1); BinEmit8($01); { 49: Utah à 433 }
+  BinEmit8($B6); BinEmit8($01); { 50: Vermont à 438 }
+  BinEmit8($BE); BinEmit8($01); { 51: Virginia à 446 }
+  BinEmit8($C7); BinEmit8($01); { 52: gap à 455 }
+  BinEmit8($C8); BinEmit8($01); { 53: Washington à 456 }
+  BinEmit8($D3); BinEmit8($01); { 54: West Virginia à 467 }
+  BinEmit8($E1); BinEmit8($01); { 55: Wisconsin à 481 }
+  BinEmit8($EB); BinEmit8($01); { 56: Wyoming à 491 }
+  BinDefineLabel('_fipname_strings');
+  BinEmit8($00); { offset 0: vide }
+  { offset 1: Alabama }
+  BinEmit8($41); BinEmit8($6C); BinEmit8($61); BinEmit8($62); BinEmit8($61); BinEmit8($6D); BinEmit8($61); BinEmit8($00);
+  { offset 9: Alaska }
+  BinEmit8($41); BinEmit8($6C); BinEmit8($61); BinEmit8($73); BinEmit8($6B); BinEmit8($61); BinEmit8($00);
+  BinEmit8($00); { offset 16: vide (code 3) }
+  { offset 17: Arizona }
+  BinEmit8($41); BinEmit8($72); BinEmit8($69); BinEmit8($7A); BinEmit8($6F); BinEmit8($6E); BinEmit8($61); BinEmit8($00);
+  { offset 25: Arkansas }
+  BinEmit8($41); BinEmit8($72); BinEmit8($6B); BinEmit8($61); BinEmit8($6E); BinEmit8($73); BinEmit8($61); BinEmit8($73); BinEmit8($00);
+  { offset 34: California }
+  BinEmit8($43); BinEmit8($61); BinEmit8($6C); BinEmit8($69); BinEmit8($66); BinEmit8($6F); BinEmit8($72); BinEmit8($6E); BinEmit8($69); BinEmit8($61); BinEmit8($00);
+  BinEmit8($00); { offset 45: vide (code 7) }
+  { offset 46: Colorado }
+  BinEmit8($43); BinEmit8($6F); BinEmit8($6C); BinEmit8($6F); BinEmit8($72); BinEmit8($61); BinEmit8($64); BinEmit8($6F); BinEmit8($00);
+  { offset 55: Connecticut }
+  BinEmit8($43); BinEmit8($6F); BinEmit8($6E); BinEmit8($6E); BinEmit8($65); BinEmit8($63); BinEmit8($74); BinEmit8($69); BinEmit8($63); BinEmit8($75); BinEmit8($74); BinEmit8($00);
+  { offset 67: Delaware }
+  BinEmit8($44); BinEmit8($65); BinEmit8($6C); BinEmit8($61); BinEmit8($77); BinEmit8($61); BinEmit8($72); BinEmit8($65); BinEmit8($00);
+  { offset 76: District of Columbia }
+  BinEmit8($44); BinEmit8($69); BinEmit8($73); BinEmit8($74); BinEmit8($72); BinEmit8($69); BinEmit8($63); BinEmit8($74);
+  BinEmit8($20); BinEmit8($6F); BinEmit8($66); BinEmit8($20);
+  BinEmit8($43); BinEmit8($6F); BinEmit8($6C); BinEmit8($75); BinEmit8($6D); BinEmit8($62); BinEmit8($69); BinEmit8($61); BinEmit8($00);
+  { offset 97: Florida }
+  BinEmit8($46); BinEmit8($6C); BinEmit8($6F); BinEmit8($72); BinEmit8($69); BinEmit8($64); BinEmit8($61); BinEmit8($00);
+  { offset 105: Georgia }
+  BinEmit8($47); BinEmit8($65); BinEmit8($6F); BinEmit8($72); BinEmit8($67); BinEmit8($69); BinEmit8($61); BinEmit8($00);
+  BinEmit8($00); { offset 113: vide (code 14) }
+  { offset 114: Hawaii }
+  BinEmit8($48); BinEmit8($61); BinEmit8($77); BinEmit8($61); BinEmit8($69); BinEmit8($69); BinEmit8($00);
+  { offset 121: Idaho }
+  BinEmit8($49); BinEmit8($64); BinEmit8($61); BinEmit8($68); BinEmit8($6F); BinEmit8($00);
+  { offset 127: Illinois }
+  BinEmit8($49); BinEmit8($6C); BinEmit8($6C); BinEmit8($69); BinEmit8($6E); BinEmit8($6F); BinEmit8($69); BinEmit8($73); BinEmit8($00);
+  { offset 136: Indiana }
+  BinEmit8($49); BinEmit8($6E); BinEmit8($64); BinEmit8($69); BinEmit8($61); BinEmit8($6E); BinEmit8($61); BinEmit8($00);
+  { offset 144: Iowa }
+  BinEmit8($49); BinEmit8($6F); BinEmit8($77); BinEmit8($61); BinEmit8($00);
+  { offset 149: Kansas }
+  BinEmit8($4B); BinEmit8($61); BinEmit8($6E); BinEmit8($73); BinEmit8($61); BinEmit8($73); BinEmit8($00);
+  { offset 156: Kentucky }
+  BinEmit8($4B); BinEmit8($65); BinEmit8($6E); BinEmit8($74); BinEmit8($75); BinEmit8($63); BinEmit8($6B); BinEmit8($79); BinEmit8($00);
+  { offset 165: Louisiana }
+  BinEmit8($4C); BinEmit8($6F); BinEmit8($75); BinEmit8($69); BinEmit8($73); BinEmit8($69); BinEmit8($61); BinEmit8($6E); BinEmit8($61); BinEmit8($00);
+  { offset 175: Maine }
+  BinEmit8($4D); BinEmit8($61); BinEmit8($69); BinEmit8($6E); BinEmit8($65); BinEmit8($00);
+  { offset 181: Maryland }
+  BinEmit8($4D); BinEmit8($61); BinEmit8($72); BinEmit8($79); BinEmit8($6C); BinEmit8($61); BinEmit8($6E); BinEmit8($64); BinEmit8($00);
+  { offset 190: Massachusetts }
+  BinEmit8($4D); BinEmit8($61); BinEmit8($73); BinEmit8($73); BinEmit8($61); BinEmit8($63); BinEmit8($68); BinEmit8($75); BinEmit8($73); BinEmit8($65); BinEmit8($74); BinEmit8($74); BinEmit8($73); BinEmit8($00);
+  { offset 204: Michigan }
+  BinEmit8($4D); BinEmit8($69); BinEmit8($63); BinEmit8($68); BinEmit8($69); BinEmit8($67); BinEmit8($61); BinEmit8($6E); BinEmit8($00);
+  { offset 213: Minnesota }
+  BinEmit8($4D); BinEmit8($69); BinEmit8($6E); BinEmit8($6E); BinEmit8($65); BinEmit8($73); BinEmit8($6F); BinEmit8($74); BinEmit8($61); BinEmit8($00);
+  { offset 223: Mississippi }
+  BinEmit8($4D); BinEmit8($69); BinEmit8($73); BinEmit8($73); BinEmit8($69); BinEmit8($73); BinEmit8($73); BinEmit8($69); BinEmit8($70); BinEmit8($70); BinEmit8($69); BinEmit8($00);
+  { offset 235: Missouri }
+  BinEmit8($4D); BinEmit8($69); BinEmit8($73); BinEmit8($73); BinEmit8($6F); BinEmit8($75); BinEmit8($72); BinEmit8($69); BinEmit8($00);
+  { offset 244: Montana }
+  BinEmit8($4D); BinEmit8($6F); BinEmit8($6E); BinEmit8($74); BinEmit8($61); BinEmit8($6E); BinEmit8($61); BinEmit8($00);
+  { offset 252: Nebraska }
+  BinEmit8($4E); BinEmit8($65); BinEmit8($62); BinEmit8($72); BinEmit8($61); BinEmit8($73); BinEmit8($6B); BinEmit8($61); BinEmit8($00);
+  { offset 261: Nevada }
+  BinEmit8($4E); BinEmit8($65); BinEmit8($76); BinEmit8($61); BinEmit8($64); BinEmit8($61); BinEmit8($00);
+  { offset 268: New Hampshire }
+  BinEmit8($4E); BinEmit8($65); BinEmit8($77); BinEmit8($20); BinEmit8($48); BinEmit8($61); BinEmit8($6D); BinEmit8($70); BinEmit8($73); BinEmit8($68); BinEmit8($69); BinEmit8($72); BinEmit8($65); BinEmit8($00);
+  { offset 282: New Jersey }
+  BinEmit8($4E); BinEmit8($65); BinEmit8($77); BinEmit8($20); BinEmit8($4A); BinEmit8($65); BinEmit8($72); BinEmit8($73); BinEmit8($65); BinEmit8($79); BinEmit8($00);
+  { offset 293: New Mexico }
+  BinEmit8($4E); BinEmit8($65); BinEmit8($77); BinEmit8($20); BinEmit8($4D); BinEmit8($65); BinEmit8($78); BinEmit8($69); BinEmit8($63); BinEmit8($6F); BinEmit8($00);
+  { offset 304: New York }
+  BinEmit8($4E); BinEmit8($65); BinEmit8($77); BinEmit8($20); BinEmit8($59); BinEmit8($6F); BinEmit8($72); BinEmit8($6B); BinEmit8($00);
+  { offset 313: North Carolina }
+  BinEmit8($4E); BinEmit8($6F); BinEmit8($72); BinEmit8($74); BinEmit8($68); BinEmit8($20); BinEmit8($43); BinEmit8($61); BinEmit8($72); BinEmit8($6F); BinEmit8($6C); BinEmit8($69); BinEmit8($6E); BinEmit8($61); BinEmit8($00);
+  { offset 328: North Dakota }
+  BinEmit8($4E); BinEmit8($6F); BinEmit8($72); BinEmit8($74); BinEmit8($68); BinEmit8($20); BinEmit8($44); BinEmit8($61); BinEmit8($6B); BinEmit8($6F); BinEmit8($74); BinEmit8($61); BinEmit8($00);
+  { offset 341: Ohio }
+  BinEmit8($4F); BinEmit8($68); BinEmit8($69); BinEmit8($6F); BinEmit8($00);
+  { offset 346: Oklahoma }
+  BinEmit8($4F); BinEmit8($6B); BinEmit8($6C); BinEmit8($61); BinEmit8($68); BinEmit8($6F); BinEmit8($6D); BinEmit8($61); BinEmit8($00);
+  { offset 355: Oregon }
+  BinEmit8($4F); BinEmit8($72); BinEmit8($65); BinEmit8($67); BinEmit8($6F); BinEmit8($6E); BinEmit8($00);
+  { offset 362: Pennsylvania }
+  BinEmit8($50); BinEmit8($65); BinEmit8($6E); BinEmit8($6E); BinEmit8($73); BinEmit8($79); BinEmit8($6C); BinEmit8($76); BinEmit8($61); BinEmit8($6E); BinEmit8($69); BinEmit8($61); BinEmit8($00);
+  BinEmit8($00); { offset 375: vide (code 43) }
+  { offset 376: Rhode Island }
+  BinEmit8($52); BinEmit8($68); BinEmit8($6F); BinEmit8($64); BinEmit8($65); BinEmit8($20); BinEmit8($49); BinEmit8($73); BinEmit8($6C); BinEmit8($61); BinEmit8($6E); BinEmit8($64); BinEmit8($00);
+  { offset 389: South Carolina }
+  BinEmit8($53); BinEmit8($6F); BinEmit8($75); BinEmit8($74); BinEmit8($68); BinEmit8($20); BinEmit8($43); BinEmit8($61); BinEmit8($72); BinEmit8($6F); BinEmit8($6C); BinEmit8($69); BinEmit8($6E); BinEmit8($61); BinEmit8($00);
+  { offset 404: South Dakota }
+  BinEmit8($53); BinEmit8($6F); BinEmit8($75); BinEmit8($74); BinEmit8($68); BinEmit8($20); BinEmit8($44); BinEmit8($61); BinEmit8($6B); BinEmit8($6F); BinEmit8($74); BinEmit8($61); BinEmit8($00);
+  { offset 417: Tennessee }
+  BinEmit8($54); BinEmit8($65); BinEmit8($6E); BinEmit8($6E); BinEmit8($65); BinEmit8($73); BinEmit8($73); BinEmit8($65); BinEmit8($65); BinEmit8($00);
+  { offset 427: Texas }
+  BinEmit8($54); BinEmit8($65); BinEmit8($78); BinEmit8($61); BinEmit8($73); BinEmit8($00);
+  { offset 433: Utah }
+  BinEmit8($55); BinEmit8($74); BinEmit8($61); BinEmit8($68); BinEmit8($00);
+  { offset 438: Vermont }
+  BinEmit8($56); BinEmit8($65); BinEmit8($72); BinEmit8($6D); BinEmit8($6F); BinEmit8($6E); BinEmit8($74); BinEmit8($00);
+  { offset 446: Virginia }
+  BinEmit8($56); BinEmit8($69); BinEmit8($72); BinEmit8($67); BinEmit8($69); BinEmit8($6E); BinEmit8($69); BinEmit8($61); BinEmit8($00);
+  BinEmit8($00); { offset 455: vide (code 52) }
+  { offset 456: Washington }
+  BinEmit8($57); BinEmit8($61); BinEmit8($73); BinEmit8($68); BinEmit8($69); BinEmit8($6E); BinEmit8($67); BinEmit8($74); BinEmit8($6F); BinEmit8($6E); BinEmit8($00);
+  { offset 467: West Virginia }
+  BinEmit8($57); BinEmit8($65); BinEmit8($73); BinEmit8($74); BinEmit8($20); BinEmit8($56); BinEmit8($69); BinEmit8($72); BinEmit8($67); BinEmit8($69); BinEmit8($6E); BinEmit8($69); BinEmit8($61); BinEmit8($00);
+  { offset 481: Wisconsin }
+  BinEmit8($57); BinEmit8($69); BinEmit8($73); BinEmit8($63); BinEmit8($6F); BinEmit8($6E); BinEmit8($73); BinEmit8($69); BinEmit8($6E); BinEmit8($00);
+  { offset 491: Wyoming }
+  BinEmit8($57); BinEmit8($79); BinEmit8($6F); BinEmit8($6D); BinEmit8($69); BinEmit8($6E); BinEmit8($67); BinEmit8($00);
+  BinDefineLabel('_fipname_data_end');
+
+  { --- _SASRT_fipname(code): ptr --- code FIPS → nom complet d'etat }
+  BinDefineLabel('_SASRT_fipname');
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
+  BinEmit8($57);                                          { push edi }
+  BinMovRegLabel(7,'_sas_strtmp');
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);           { mov eax,[ebp+8] }
+  BinEmit8($85); BinEmit8($C0);                          { test eax,eax }
+  BinJccLabel(14,'_fn_empty');                            { jle → vide }
+  BinEmit8($83); BinEmit8($F8); BinEmit8($38);           { cmp eax,56 }
+  BinJccLabel(15,'_fn_empty');                            { jg → vide }
+  BinEmit8($01); BinEmit8($C0);                          { add eax,eax (*2) }
+  BinMovRegLabel(2,'_fipname_offsets');                   { mov edx,&offsets }
+  BinEmit8($03); BinEmit8($D0);                          { add edx,eax }
+  BinEmit8($0F); BinEmit8($B7); BinEmit8($02);           { movzx eax,word[edx] }
+  BinMovRegLabel(2,'_fipname_strings');                   { mov edx,&strings }
+  BinEmit8($03); BinEmit8($D0);                          { add edx,eax }
+  BinDefineLabel('_fn_copy');
+  BinEmit8($8A); BinEmit8($02);                          { mov al,[edx] }
+  BinEmit8($88); BinEmit8($07);                          { mov [edi],al }
+  BinEmit8($84); BinEmit8($C0);                          { test al,al }
+  BinJccLabel(4,'_fn_done');
+  BinEmit8($42); BinEmit8($47);                          { inc edx, inc edi }
+  BinJmpLabel('_fn_copy');
+  BinDefineLabel('_fn_empty');
+  BinEmit8($C6); BinEmit8($07); BinEmit8($00);           { mov [edi],0 }
+  BinDefineLabel('_fn_done');
+  BinMovRegLabel(0,'_sas_strtmp');
+  BinEmit8($5F);
+  BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+
+  { --- _SASRT_fipnamel(code): ptr --- alias de fipname }
+  BinDefineLabel('_SASRT_fipnamel');
+  BinJmpLabel('_SASRT_fipname');
 
   { --- _SASRT_foptname(fid,n): ptr --- stub retourne chaine vide (2 args) }
   BinDefineLabel('_SASRT_foptname');
@@ -9714,18 +10055,156 @@ Begin
   BinEmit8($58);
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
-  { --- _SASRT_htmldecode(str): ptr --- stub retourne chaine vide (1 arg) }
+  { --- _SASRT_htmldecode(str): ptr --- decode &amp; &lt; &gt; &quot; (insensible casse) }
   BinDefineLabel('_SASRT_htmldecode');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinPushLabel('_sas_strtmp');
-  BinEmit8($58);
+  BinEmit8($56); BinEmit8($57);                               { push esi,edi }
+  BinEmit8($8B); BinEmit8($75); BinEmit8($08);               { mov esi,[ebp+8] }
+  BinMovRegLabel(7,'_sas_strtmp');
+  BinDefineLabel('_hd_loop');
+  BinEmit8($8A); BinEmit8($06);                              { mov al,[esi] }
+  BinEmit8($84); BinEmit8($C0);
+  BinJccLabel(4,'_hd_done');
+  BinEmit8($3C); BinEmit8($26);                              { cmp al,'&' }
+  BinJccLabel(4,'_hd_entity');
+  BinEmit8($88); BinEmit8($07);
+  BinEmit8($46); BinEmit8($47);
+  BinJmpLabel('_hd_loop');
+  BinDefineLabel('_hd_entity');
+  BinEmit8($8A); BinEmit8($46); BinEmit8($01);               { mov al,[esi+1] }
+  BinEmit8($0C); BinEmit8($20);                              { or al,0x20 → minuscule }
+  BinEmit8($3C); BinEmit8($61);                              { cmp al,'a' }
+  BinJccLabel(4,'_hd_amp_check');
+  BinEmit8($3C); BinEmit8($6C);                              { cmp al,'l' }
+  BinJccLabel(4,'_hd_lt_check');
+  BinEmit8($3C); BinEmit8($67);                              { cmp al,'g' }
+  BinJccLabel(4,'_hd_gt_check');
+  BinEmit8($3C); BinEmit8($71);                              { cmp al,'q' }
+  BinJccLabel(4,'_hd_quot_check');
+  BinJmpLabel('_hd_no_match');
+  BinDefineLabel('_hd_amp_check');                            { "amp;" ou "AMP;" }
+  BinEmit8($8A); BinEmit8($46); BinEmit8($02);               { mov al,[esi+2] }
+  BinEmit8($0C); BinEmit8($20);
+  BinEmit8($3C); BinEmit8($6D);                              { cmp al,'m' }
+  BinJccLabel(5,'_hd_no_match');
+  BinEmit8($8A); BinEmit8($46); BinEmit8($03);               { mov al,[esi+3] }
+  BinEmit8($0C); BinEmit8($20);
+  BinEmit8($3C); BinEmit8($70);                              { cmp al,'p' }
+  BinJccLabel(5,'_hd_no_match');
+  BinEmit8($80); BinEmit8($7E); BinEmit8($04); BinEmit8($3B); { cmp [esi+4],';' }
+  BinJccLabel(5,'_hd_no_match');
+  BinEmit8($C6); BinEmit8($07); BinEmit8($26);               { '&' }
+  BinEmit8($83); BinEmit8($C6); BinEmit8($05);               { add esi,5 }
+  BinEmit8($47);
+  BinJmpLabel('_hd_loop');
+  BinDefineLabel('_hd_lt_check');                             { "lt;" ou "LT;" }
+  BinEmit8($8A); BinEmit8($46); BinEmit8($02);
+  BinEmit8($0C); BinEmit8($20);
+  BinEmit8($3C); BinEmit8($74);                              { cmp al,'t' }
+  BinJccLabel(5,'_hd_no_match');
+  BinEmit8($80); BinEmit8($7E); BinEmit8($03); BinEmit8($3B);
+  BinJccLabel(5,'_hd_no_match');
+  BinEmit8($C6); BinEmit8($07); BinEmit8($3C);               { '<' }
+  BinEmit8($83); BinEmit8($C6); BinEmit8($04);
+  BinEmit8($47);
+  BinJmpLabel('_hd_loop');
+  BinDefineLabel('_hd_gt_check');                             { "gt;" ou "GT;" }
+  BinEmit8($8A); BinEmit8($46); BinEmit8($02);
+  BinEmit8($0C); BinEmit8($20);
+  BinEmit8($3C); BinEmit8($74);                              { cmp al,'t' }
+  BinJccLabel(5,'_hd_no_match');
+  BinEmit8($80); BinEmit8($7E); BinEmit8($03); BinEmit8($3B);
+  BinJccLabel(5,'_hd_no_match');
+  BinEmit8($C6); BinEmit8($07); BinEmit8($3E);               { '>' }
+  BinEmit8($83); BinEmit8($C6); BinEmit8($04);
+  BinEmit8($47);
+  BinJmpLabel('_hd_loop');
+  BinDefineLabel('_hd_quot_check');                           { "quot;" ou "QUOT;" }
+  BinEmit8($8A); BinEmit8($46); BinEmit8($02);
+  BinEmit8($0C); BinEmit8($20);
+  BinEmit8($3C); BinEmit8($75);                              { cmp al,'u' }
+  BinJccLabel(5,'_hd_no_match');
+  BinEmit8($8A); BinEmit8($46); BinEmit8($03);
+  BinEmit8($0C); BinEmit8($20);
+  BinEmit8($3C); BinEmit8($6F);                              { cmp al,'o' }
+  BinJccLabel(5,'_hd_no_match');
+  BinEmit8($8A); BinEmit8($46); BinEmit8($04);
+  BinEmit8($0C); BinEmit8($20);
+  BinEmit8($3C); BinEmit8($74);                              { cmp al,'t' }
+  BinJccLabel(5,'_hd_no_match');
+  BinEmit8($80); BinEmit8($7E); BinEmit8($05); BinEmit8($3B);
+  BinJccLabel(5,'_hd_no_match');
+  BinEmit8($C6); BinEmit8($07); BinEmit8($22);               { '"' }
+  BinEmit8($83); BinEmit8($C6); BinEmit8($06);
+  BinEmit8($47);
+  BinJmpLabel('_hd_loop');
+  BinDefineLabel('_hd_no_match');
+  BinEmit8($C6); BinEmit8($07); BinEmit8($26);               { '&' brut }
+  BinEmit8($46); BinEmit8($47);
+  BinJmpLabel('_hd_loop');
+  BinDefineLabel('_hd_done');
+  BinEmit8($C6); BinEmit8($07); BinEmit8($00);
+  BinMovRegLabel(0,'_sas_strtmp');
+  BinEmit8($5F); BinEmit8($5E);
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { --- _SASRT_htmlencode(str): ptr --- stub retourne chaine vide (1 arg) }
+  { --- _SASRT_htmlencode(str): ptr --- encode &<>" en entites HTML }
   BinDefineLabel('_SASRT_htmlencode');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinPushLabel('_sas_strtmp');
-  BinEmit8($58);
+  BinEmit8($56); BinEmit8($57);                               { push esi,edi }
+  BinEmit8($8B); BinEmit8($75); BinEmit8($08);               { mov esi,[ebp+8] }
+  BinMovRegLabel(7,'_sas_strtmp');
+  BinDefineLabel('_he_loop');
+  BinEmit8($8A); BinEmit8($06);                              { mov al,[esi] }
+  BinEmit8($84); BinEmit8($C0);
+  BinJccLabel(4,'_he_done');
+  BinEmit8($46);                                              { inc esi }
+  BinEmit8($3C); BinEmit8($26);                              { cmp al,'&' }
+  BinJccLabel(4,'_he_amp');
+  BinEmit8($3C); BinEmit8($3C);                              { cmp al,'<' }
+  BinJccLabel(4,'_he_lt');
+  BinEmit8($3C); BinEmit8($3E);                              { cmp al,'>' }
+  BinJccLabel(4,'_he_gt');
+  BinEmit8($3C); BinEmit8($22);                              { cmp al,'"' }
+  BinJccLabel(4,'_he_quot');
+  BinEmit8($88); BinEmit8($07);                              { mov [edi],al }
+  BinEmit8($47);
+  BinJmpLabel('_he_loop');
+  BinDefineLabel('_he_amp');                                  { &amp; }
+  BinEmit8($C6); BinEmit8($07); BinEmit8($26);
+  BinEmit8($C6); BinEmit8($47); BinEmit8($01); BinEmit8($61); { 'a' }
+  BinEmit8($C6); BinEmit8($47); BinEmit8($02); BinEmit8($6D); { 'm' }
+  BinEmit8($C6); BinEmit8($47); BinEmit8($03); BinEmit8($70); { 'p' }
+  BinEmit8($C6); BinEmit8($47); BinEmit8($04); BinEmit8($3B); { ';' }
+  BinEmit8($83); BinEmit8($C7); BinEmit8($05);               { add edi,5 }
+  BinJmpLabel('_he_loop');
+  BinDefineLabel('_he_lt');                                   { &lt; }
+  BinEmit8($C6); BinEmit8($07); BinEmit8($26);
+  BinEmit8($C6); BinEmit8($47); BinEmit8($01); BinEmit8($6C); { 'l' }
+  BinEmit8($C6); BinEmit8($47); BinEmit8($02); BinEmit8($74); { 't' }
+  BinEmit8($C6); BinEmit8($47); BinEmit8($03); BinEmit8($3B); { ';' }
+  BinEmit8($83); BinEmit8($C7); BinEmit8($04);               { add edi,4 }
+  BinJmpLabel('_he_loop');
+  BinDefineLabel('_he_gt');                                   { &gt; }
+  BinEmit8($C6); BinEmit8($07); BinEmit8($26);
+  BinEmit8($C6); BinEmit8($47); BinEmit8($01); BinEmit8($67); { 'g' }
+  BinEmit8($C6); BinEmit8($47); BinEmit8($02); BinEmit8($74); { 't' }
+  BinEmit8($C6); BinEmit8($47); BinEmit8($03); BinEmit8($3B); { ';' }
+  BinEmit8($83); BinEmit8($C7); BinEmit8($04);
+  BinJmpLabel('_he_loop');
+  BinDefineLabel('_he_quot');                                 { &quot; }
+  BinEmit8($C6); BinEmit8($07); BinEmit8($26);
+  BinEmit8($C6); BinEmit8($47); BinEmit8($01); BinEmit8($71); { 'q' }
+  BinEmit8($C6); BinEmit8($47); BinEmit8($02); BinEmit8($75); { 'u' }
+  BinEmit8($C6); BinEmit8($47); BinEmit8($03); BinEmit8($6F); { 'o' }
+  BinEmit8($C6); BinEmit8($47); BinEmit8($04); BinEmit8($74); { 't' }
+  BinEmit8($C6); BinEmit8($47); BinEmit8($05); BinEmit8($3B); { ';' }
+  BinEmit8($83); BinEmit8($C7); BinEmit8($06);               { add edi,6 }
+  BinJmpLabel('_he_loop');
+  BinDefineLabel('_he_done');
+  BinEmit8($C6); BinEmit8($07); BinEmit8($00);               { null-terminate }
+  BinMovRegLabel(0,'_sas_strtmp');
+  BinEmit8($5F); BinEmit8($5E);                              { pop edi,esi }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
   { --- _SASRT_inputc(source,informat): ptr --- stub retourne chaine vide (2 args) }
@@ -9742,103 +10221,140 @@ Begin
   BinEmit8($58);
   BinEmit8($5D); BinEmit8($C3);               { pop ebp ; ret (0 args) }
 
-  { --- _SASRT_kcompress(str,chars): ptr --- stub retourne chaine vide (2 args) }
+  { --- _SASRT_kcompress(str,chars): ptr --- retire chars de str (= COMPRESS) }
   BinDefineLabel('_SASRT_kcompress');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinPushLabel('_sas_strtmp');
-  BinEmit8($58);
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
+  BinJmpLabel('_SASRT_compress');
 
-  { --- _SASRT_kleft(str): ptr --- stub retourne chaine vide (1 arg) }
+  { --- _SASRT_kleft(str): ptr --- supprime espaces debut (= LEFT) }
   BinDefineLabel('_SASRT_kleft');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinPushLabel('_sas_strtmp');
-  BinEmit8($58);
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+  BinJmpLabel('_SASRT_left');
 
-  { --- _SASRT_klowcase(str): ptr --- stub retourne chaine vide (1 arg) }
+  { --- _SASRT_klowcase(str): ptr --- conversion minuscules (= LOWCASE) }
   BinDefineLabel('_SASRT_klowcase');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinPushLabel('_sas_strtmp');
-  BinEmit8($58);
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+  BinJmpLabel('_SASRT_lowcase');
 
-  { --- _SASRT_kreverse(str): ptr --- stub retourne chaine vide (1 arg) }
+  { --- _SASRT_kreverse(str): ptr --- inverse la chaine dans strtmp (53 octets) }
+  { Passe 1 : strlen dans ECX. Passe 2 : copie [ESI+ECX-1..ESI] → EDI. }
+  { Offsets : _strlen_loop=15  _rev_start=25  _rev_loop=30  _rev_done=39 }
   BinDefineLabel('_SASRT_kreverse');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinPushLabel('_sas_strtmp');
-  BinEmit8($58);
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);           { push ebp; mov ebp,esp }
+  BinEmit8($56); BinEmit8($57);                           { push esi; push edi }
+  BinEmit8($8B); BinEmit8($75); BinEmit8($08);           { mov esi,[ebp+8] str }
+  BinMovRegLabel(7, '_sas_strtmp');                       { mov edi,&strtmp }
+  BinEmit8($31); BinEmit8($C9);                           { xor ecx,ecx  len=0 }
+  { _strlen_loop (offset 15): }
+  BinEmit8($8A); BinEmit8($04); BinEmit8($0E);           { mov al,[esi+ecx] }
+  BinEmit8($84); BinEmit8($C0);                           { test al,al }
+  BinEmit8($74); BinEmit8($03);                           { jz _rev_start (+3 → 25) }
+  BinEmit8($41);                                           { inc ecx }
+  BinEmit8($EB); BinEmit8($F6);                           { jmp _strlen_loop (-10 → 15) }
+  { _rev_start (offset 25): }
+  BinEmit8($85); BinEmit8($C9);                           { test ecx,ecx }
+  BinEmit8($74); BinEmit8($0A);                           { jz _rev_done (+10 → 39) }
+  BinEmit8($49);                                           { dec ecx  → index dernier char }
+  { _rev_loop (offset 30): }
+  BinEmit8($8A); BinEmit8($04); BinEmit8($0E);           { mov al,[esi+ecx] }
+  BinEmit8($88); BinEmit8($07);                           { mov [edi],al }
+  BinEmit8($47);                                           { inc edi }
+  BinEmit8($49);                                           { dec ecx }
+  BinEmit8($79); BinEmit8($F7);                           { jns _rev_loop (-9 → 30) }
+  { _rev_done (offset 39): }
+  BinEmit8($C6); BinEmit8($07); BinEmit8($00);           { mov byte [edi],0 }
+  BinMovRegLabel(0, '_sas_strtmp');                       { mov eax,&strtmp }
+  BinEmit8($5F); BinEmit8($5E);                           { pop edi; pop esi }
+  BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00); { pop ebp; ret 4 }
 
-  { --- _SASRT_kright(str): ptr --- stub retourne chaine vide (1 arg) }
+  { --- _SASRT_kright(str): ptr --- retourne str tel quel (= RIGHT, sans padding) }
   BinDefineLabel('_SASRT_kright');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinPushLabel('_sas_strtmp');
-  BinEmit8($58);
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+  BinJmpLabel('_SASRT_right');
 
-  { --- _SASRT_kscan(str,n,delims): ptr --- stub retourne chaine vide (3 args) }
+  { --- _SASRT_kscan(str,n,delims): ptr --- ne mot (= SCAN, memes args) }
   BinDefineLabel('_SASRT_kscan');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinPushLabel('_sas_strtmp');
-  BinEmit8($58);
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($0C); BinEmit8($00);
+  BinJmpLabel('_SASRT_scan');
 
-  { --- _SASRT_kstrcat(str1,str2): ptr --- stub retourne chaine vide (2 args) }
+  { --- _SASRT_kstrcat(str1,str2): ptr --- concatenation (= CONCAT) }
   BinDefineLabel('_SASRT_kstrcat');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinPushLabel('_sas_strtmp');
-  BinEmit8($58);
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
+  BinJmpLabel('_SASRT_concat');
 
-  { --- _SASRT_ksubstr(str,pos,len): ptr --- stub retourne chaine vide (3 args) }
+  { --- _SASRT_ksubstr(str,pos,len): ptr --- sous-chaine (= SUBSTR) }
   BinDefineLabel('_SASRT_ksubstr');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinPushLabel('_sas_strtmp');
-  BinEmit8($58);
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($0C); BinEmit8($00);
+  BinJmpLabel('_SASRT_substr');
 
-  { --- _SASRT_ksubstrb(str,pos,len): ptr --- stub retourne chaine vide (3 args) }
+  { --- _SASRT_ksubstrb(str,pos,len): ptr --- sous-chaine octet (= SUBSTR) }
   BinDefineLabel('_SASRT_ksubstrb');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinPushLabel('_sas_strtmp');
-  BinEmit8($58);
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($0C); BinEmit8($00);
+  BinJmpLabel('_SASRT_substr');
 
-  { --- _SASRT_ktranslate(str,from,to): ptr --- stub retourne chaine vide (3 args) }
+  { --- _SASRT_ktranslate(str,to,from): ptr --- substitution chars (= TRANSLATE) }
   BinDefineLabel('_SASRT_ktranslate');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinPushLabel('_sas_strtmp');
-  BinEmit8($58);
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($0C); BinEmit8($00);
+  BinJmpLabel('_SASRT_translate');
 
-  { --- _SASRT_ktrim(str): ptr --- stub retourne chaine vide (1 arg) }
+  { --- _SASRT_ktrim(str): ptr --- supprime espaces finaux (= TRIM) }
   BinDefineLabel('_SASRT_ktrim');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinPushLabel('_sas_strtmp');
-  BinEmit8($58);
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+  BinJmpLabel('_SASRT_trim');
 
-  { --- _SASRT_kupcase(str): ptr --- stub retourne chaine vide (1 arg) }
+  { --- _SASRT_kupcase(str): ptr --- conversion majuscules (= UPCASE) }
   BinDefineLabel('_SASRT_kupcase');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinPushLabel('_sas_strtmp');
-  BinEmit8($58);
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+  BinJmpLabel('_SASRT_upcase');
 
-  { --- _SASRT_kupdate(str,pos,del,ins): ptr --- stub retourne chaine vide (4 args) }
+  { --- _SASRT_kupdate(str,pos,del,ins): ptr --- copie str, supprime del chars }
+  { depuis pos (1-base), insere ins. Args: [ebp+8]=str [ebp+12]=pos      }
+  { [ebp+16]=del [ebp+20]=ins                                             }
   BinDefineLabel('_SASRT_kupdate');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinPushLabel('_sas_strtmp');
-  BinEmit8($58);
+  BinEmit8($53); BinEmit8($56); BinEmit8($57);           { push ebx,esi,edi }
+  BinEmit8($8B); BinEmit8($75); BinEmit8($08);           { mov esi,[ebp+8]  str }
+  BinMovRegLabel(7,'_sas_strtmp');
+  { etape 1 : prefix = pos-1 bytes }
+  BinEmit8($8B); BinEmit8($55); BinEmit8($0C);           { mov edx,[ebp+12] pos }
+  BinEmit8($4A);                                          { dec edx }
+  BinJccLabel(14,'_ku_step2');                            { jle pas de prefix }
+  BinDefineLabel('_ku_prefix');
+  BinEmit8($8A); BinEmit8($06);                          { mov al,[esi] }
+  BinEmit8($84); BinEmit8($C0);
+  BinJccLabel(4,'_ku_step2');                             { jz src fini }
+  BinEmit8($88); BinEmit8($07);                          { mov [edi],al }
+  BinEmit8($46); BinEmit8($47);                          { inc esi; inc edi }
+  BinEmit8($4A);                                          { dec edx }
+  BinJccLabel(5,'_ku_prefix');                            { jnz boucle }
+  { etape 2 : copie ins }
+  BinDefineLabel('_ku_step2');
+  BinEmit8($8B); BinEmit8($5D); BinEmit8($14);           { mov ebx,[ebp+20] ins }
+  BinDefineLabel('_ku_ins_loop');
+  BinEmit8($8A); BinEmit8($03);                          { mov al,[ebx] }
+  BinEmit8($84); BinEmit8($C0);
+  BinJccLabel(4,'_ku_step3');
+  BinEmit8($88); BinEmit8($07);                          { mov [edi],al }
+  BinEmit8($47); BinEmit8($43);                          { inc edi; inc ebx }
+  BinJmpLabel('_ku_ins_loop');
+  { etape 3 : saute del chars, copie le reste }
+  BinDefineLabel('_ku_step3');
+  BinEmit8($8B); BinEmit8($4D); BinEmit8($10);           { mov ecx,[ebp+16] del }
+  BinEmit8($85); BinEmit8($C9);                          { test ecx,ecx }
+  BinJccLabel(14,'_ku_tail');                             { jle copie reste direct }
+  BinDefineLabel('_ku_skip');
+  BinEmit8($8A); BinEmit8($06);                          { mov al,[esi] }
+  BinEmit8($84); BinEmit8($C0);
+  BinJccLabel(4,'_ku_done');                              { src fini }
+  BinEmit8($46);                                          { inc esi }
+  BinEmit8($49);                                          { dec ecx }
+  BinJccLabel(5,'_ku_skip');                              { jnz boucle }
+  BinDefineLabel('_ku_tail');
+  BinDefineLabel('_ku_tail_loop');
+  BinEmit8($8A); BinEmit8($06);                          { mov al,[esi] }
+  BinEmit8($84); BinEmit8($C0);
+  BinJccLabel(4,'_ku_done');
+  BinEmit8($88); BinEmit8($07);
+  BinEmit8($46); BinEmit8($47);
+  BinJmpLabel('_ku_tail_loop');
+  BinDefineLabel('_ku_done');
+  BinEmit8($C6); BinEmit8($07); BinEmit8($00);           { null-terminate }
+  BinMovRegLabel(0,'_sas_strtmp');
+  BinEmit8($5F); BinEmit8($5E); BinEmit8($5B);           { pop edi,esi,ebx }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($10); BinEmit8($00);
 
-  { --- _SASRT_kupdateb(str,pos,del,ins): ptr --- stub retourne chaine vide (4 args) }
+  { --- _SASRT_kupdateb: identique KUPDATE (byte-addressable = meme logique) }
   BinDefineLabel('_SASRT_kupdateb');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinPushLabel('_sas_strtmp');
-  BinEmit8($58);
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($10); BinEmit8($00);
+  BinJmpLabel('_SASRT_kupdate');
 
   { --- _SASRT_modulec(routine,arg): ptr --- stub retourne chaine vide (2 args) }
   BinDefineLabel('_SASRT_modulec');
@@ -9863,12 +10379,18 @@ Begin
   BinEmit8($58);
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { --- _SASRT_peekc(addr): ptr --- stub strtmp (1 arg) }
+  { --- _SASRT_peekc(addr): ptr --- lit octet a addr, retourne string 1 char }
   BinDefineLabel('_SASRT_peekc');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinPushLabel('_sas_strtmp');
-  BinEmit8($58);
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+  BinEmit8($57);                                          { push edi }
+  BinEmit8($8B); BinEmit8($4D); BinEmit8($08);           { mov ecx,[ebp+8] addr }
+  BinMovRegLabel(7, '_sas_strtmp');                       { mov edi,&strtmp }
+  BinEmit8($8A); BinEmit8($01);                           { mov al,[ecx] }
+  BinEmit8($88); BinEmit8($07);                           { mov [edi],al }
+  BinEmit8($C6); BinEmit8($47); BinEmit8($01); BinEmit8($00); { mov byte [edi+1],0 }
+  BinMovRegLabel(0, '_sas_strtmp');                       { mov eax,&strtmp }
+  BinEmit8($5F); BinEmit8($5D);                           { pop edi; pop ebp }
+  BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
   { --- _SASRT_putc(val,fmt): ptr --- stub strtmp (2 args) }
   BinDefineLabel('_SASRT_putc');
@@ -9886,11 +10408,102 @@ Begin
 
   { --- Batch 11 : fonctions chaines S --- }
 
-  { --- _SASRT_soundex(s): ptr --- stub strtmp (1 arg) }
+  { --- _SASRT_soundex(s): ptr --- code Soundex phonetique (1 arg)           }
+  { Retourne strtmp : 1 lettre + 3 chiffres (ex: Smith → S530).            }
+  { Table Soundex A-Z : 0=transparent(HW) 7=voyelle/separateur 1-6=code.  }
+  { Voyelles(AEIOUY)=7 reinitialisent last_code. H,W=0 sont transparents.  }
+  { Registres : ESI=src EDI=dst EDX=table EBX=last_code ECX=digits_restants }
+  BinJmpLabel('_sx_after_table');
+  BinDefineLabel('_sx_table');
+  BinEmit8(7);BinEmit8(1);BinEmit8(2);BinEmit8(3);BinEmit8(7);BinEmit8(1); {A-F}
+  BinEmit8(2);BinEmit8(0);BinEmit8(7);BinEmit8(2);BinEmit8(2);BinEmit8(4); {G-L}
+  BinEmit8(5);BinEmit8(5);BinEmit8(7);BinEmit8(1);BinEmit8(2);BinEmit8(6); {M-R}
+  BinEmit8(2);BinEmit8(3);BinEmit8(7);BinEmit8(1);BinEmit8(0);BinEmit8(2); {S-X}
+  BinEmit8(7);BinEmit8(2);                                                   {Y,Z}
+  BinDefineLabel('_sx_after_table');
   BinDefineLabel('_SASRT_soundex');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinPushLabel('_sas_strtmp');
-  BinEmit8($58);
+  BinEmit8($53); BinEmit8($56); BinEmit8($57);           { push ebx,esi,edi }
+  BinEmit8($8B); BinEmit8($75); BinEmit8($08);           { mov esi,[ebp+8] s }
+  BinMovRegLabel(7, '_sas_strtmp');                       { mov edi,&strtmp }
+  BinMovRegLabel(2, '_sx_table');                         { mov edx,&_sx_table }
+  { trouver premier char alpha }
+  BinDefineLabel('_sx_find_first');
+  BinEmit8($0F); BinEmit8($B6); BinEmit8($06);           { movzx eax,byte[esi] }
+  BinEmit8($85); BinEmit8($C0);                           { test eax,eax }
+  BinJccLabel(4, '_sx_empty');                             { jz → vide }
+  BinEmit8($46);                                           { inc esi }
+  BinEmit8($83); BinEmit8($F8); BinEmit8($61);           { cmp eax,'a' }
+  BinJccLabel(2, '_sx_ff_check_az');                       { jb → upper range }
+  BinEmit8($83); BinEmit8($F8); BinEmit8($7A);           { cmp eax,'z' }
+  BinJccLabel(7, '_sx_find_first');                        { ja → non-alpha }
+  BinEmit8($83); BinEmit8($E8); BinEmit8($20);           { sub eax,32 → majuscule }
+  BinDefineLabel('_sx_ff_check_az');
+  BinEmit8($83); BinEmit8($F8); BinEmit8($41);           { cmp eax,'A' }
+  BinJccLabel(2, '_sx_find_first');                        { jb → non-alpha }
+  BinEmit8($83); BinEmit8($F8); BinEmit8($5A);           { cmp eax,'Z' }
+  BinJccLabel(7, '_sx_find_first');                        { ja → non-alpha }
+  BinEmit8($88); BinEmit8($07);                           { mov [edi],al premier char }
+  BinEmit8($47);                                           { inc edi }
+  { code du premier char → last_code }
+  BinEmit8($89); BinEmit8($C3);                           { mov ebx,eax }
+  BinEmit8($83); BinEmit8($EB); BinEmit8($41);           { sub ebx,'A' → 0-25 }
+  BinEmit8($0F); BinEmit8($B6); BinEmit8($1C); BinEmit8($1A); { movzx ebx,byte[edx+ebx] }
+  BinEmit8($B9); BinEmit8($03); BinEmit8($00); BinEmit8($00); BinEmit8($00); { mov ecx,3 }
+  { _sx_loop: }
+  BinDefineLabel('_sx_loop');
+  BinEmit8($85); BinEmit8($C9);                           { test ecx,ecx }
+  BinJccLabel(4, '_sx_pad');                               { jz → rembourrer }
+  BinEmit8($0F); BinEmit8($B6); BinEmit8($06);           { movzx eax,byte[esi] }
+  BinEmit8($85); BinEmit8($C0);                           { test eax,eax }
+  BinJccLabel(4, '_sx_pad');                               { jz → fin chaine }
+  BinEmit8($46);                                           { inc esi }
+  BinEmit8($83); BinEmit8($F8); BinEmit8($61);           { cmp eax,'a' }
+  BinJccLabel(2, '_sx_check_upper');                       { jb → upper }
+  BinEmit8($83); BinEmit8($F8); BinEmit8($7A);           { cmp eax,'z' }
+  BinJccLabel(7, '_sx_loop');                              { ja → non-alpha, sauter }
+  BinEmit8($83); BinEmit8($E8); BinEmit8($20);           { sub eax,32 }
+  BinDefineLabel('_sx_check_upper');
+  BinEmit8($83); BinEmit8($F8); BinEmit8($41);           { cmp eax,'A' }
+  BinJccLabel(2, '_sx_loop');                              { jb → sauter }
+  BinEmit8($83); BinEmit8($F8); BinEmit8($5A);           { cmp eax,'Z' }
+  BinJccLabel(7, '_sx_loop');                              { ja → sauter }
+  BinEmit8($83); BinEmit8($E8); BinEmit8($41);           { sub eax,'A' → 0-25 }
+  BinEmit8($0F); BinEmit8($B6); BinEmit8($04); BinEmit8($02); { movzx eax,byte[edx+eax] }
+  { 0=transparent(HW), 7=voyelle reset, 1-6=consonne }
+  BinEmit8($85); BinEmit8($C0);                           { test eax,eax }
+  BinJccLabel(4, '_sx_loop');                              { jz → H/W transparent, skip }
+  BinEmit8($83); BinEmit8($F8); BinEmit8($07);           { cmp eax,7 }
+  BinJccLabel(3, '_sx_vowel');                             { jae → voyelle, reinit last_code }
+  BinEmit8($3B); BinEmit8($C3);                           { cmp eax,ebx }
+  BinJccLabel(4, '_sx_loop');                              { je → doublon, sauter }
+  BinEmit8($89); BinEmit8($C3);                           { mov ebx,eax last_code=code }
+  BinEmit8($83); BinEmit8($C0); BinEmit8($30);           { add eax,'0' }
+  BinEmit8($88); BinEmit8($07);                           { mov [edi],al }
+  BinEmit8($47);                                           { inc edi }
+  BinEmit8($49);                                           { dec ecx }
+  BinJmpLabel('_sx_loop');
+  BinDefineLabel('_sx_vowel');
+  BinEmit8($31); BinEmit8($DB);                           { xor ebx,ebx  reset last_code=0 }
+  BinJmpLabel('_sx_loop');
+  { _sx_pad: }
+  BinDefineLabel('_sx_pad');
+  BinEmit8($85); BinEmit8($C9);                           { test ecx,ecx }
+  BinJccLabel(4, '_sx_padded');                            { jz → fini }
+  BinEmit8($C6); BinEmit8($07); BinEmit8($30);           { mov byte [edi],'0' }
+  BinEmit8($47);                                           { inc edi }
+  BinEmit8($49);                                           { dec ecx }
+  BinJmpLabel('_sx_pad');
+  BinDefineLabel('_sx_padded');
+  BinEmit8($C6); BinEmit8($07); BinEmit8($00);           { mov byte [edi],0 }
+  BinMovRegLabel(0, '_sas_strtmp');                       { mov eax,&strtmp }
+  BinEmit8($5F); BinEmit8($5E); BinEmit8($5B);           { pop edi,esi,ebx }
+  BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+  { _sx_empty: chaine vide → retourne "" }
+  BinDefineLabel('_sx_empty');
+  BinEmit8($C6); BinEmit8($07); BinEmit8($00);           { mov byte [edi],0 }
+  BinMovRegLabel(0, '_sas_strtmp');
+  BinEmit8($5F); BinEmit8($5E); BinEmit8($5B);
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
   { --- _SASRT_stname(abbrev): ptr --- stub strtmp (1 arg) }
@@ -10160,12 +10773,60 @@ Begin
   BinEmit8($5D);                                  { pop ebp               }
   BinEmit8($C2); BinEmit8($0C); BinEmit8($00);  { ret 12                }
 
-  { --- _SASRT_tranwrd(str,from,to): ptr --- stub retourne strtmp (3 args) }
+  { --- _SASRT_tranwrd(str,from,to): ptr --- remplace toutes occurrences de from par to }
+  { [ebp+8]=str [ebp+12]=from [ebp+16]=to. ESI=str, EDI=strtmp.                       }
+  { ECX=match_idx. Si from vide (ECX=0 a la fin du match), copie un char.             }
   BinDefineLabel('_SASRT_tranwrd');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinPushLabel('_sas_strtmp');
-  BinEmit8($58);
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($0C); BinEmit8($00);
+  BinEmit8($53); BinEmit8($56); BinEmit8($57);           { push ebx,esi,edi }
+  BinEmit8($8B); BinEmit8($75); BinEmit8($08);           { mov esi,[ebp+8]  str }
+  BinMovRegLabel(7, '_sas_strtmp');                       { mov edi,&strtmp }
+  { _tw_loop: }
+  BinDefineLabel('_tw_loop');
+  BinEmit8($8A); BinEmit8($06);                          { mov al,[esi] }
+  BinEmit8($84); BinEmit8($C0);                          { test al,al }
+  BinJccLabel(4, '_tw_done');                             { jz done }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($0C);          { mov eax,[ebp+12] from }
+  BinEmit8($31); BinEmit8($C9);                          { xor ecx,ecx }
+  { _tw_match_loop: }
+  BinDefineLabel('_tw_match_loop');
+  BinEmit8($8A); BinEmit8($14); BinEmit8($08);          { mov dl,[eax+ecx] from[idx] }
+  BinEmit8($84); BinEmit8($D2);                          { test dl,dl }
+  BinJccLabel(4, '_tw_match_found');                      { jz fully matched }
+  BinEmit8($8A); BinEmit8($1C); BinEmit8($0E);          { mov bl,[esi+ecx] src[idx] }
+  BinEmit8($3A); BinEmit8($DA);                          { cmp bl,dl }
+  BinJccLabel(5, '_tw_match_fail');                       { jnz mismatch }
+  BinEmit8($41);                                          { inc ecx }
+  BinJmpLabel('_tw_match_loop');
+  { _tw_match_found: ECX=flen }
+  BinDefineLabel('_tw_match_found');
+  BinEmit8($85); BinEmit8($C9);                          { test ecx,ecx }
+  BinJccLabel(4, '_tw_match_fail');                       { jz empty from → skip }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($10);          { mov eax,[ebp+16] to }
+  { _tw_copy_to: }
+  BinDefineLabel('_tw_copy_to');
+  BinEmit8($8A); BinEmit8($10);                          { mov dl,[eax] }
+  BinEmit8($84); BinEmit8($D2);                          { test dl,dl }
+  BinJccLabel(4, '_tw_advance_src');                      { jz → advance src }
+  BinEmit8($88); BinEmit8($17);                          { mov [edi],dl }
+  BinEmit8($47); BinEmit8($40);                          { inc edi; inc eax }
+  BinJmpLabel('_tw_copy_to');
+  { _tw_advance_src: }
+  BinDefineLabel('_tw_advance_src');
+  BinEmit8($03); BinEmit8($F1);                          { add esi,ecx }
+  BinJmpLabel('_tw_loop');
+  { _tw_match_fail: copie un char }
+  BinDefineLabel('_tw_match_fail');
+  BinEmit8($8A); BinEmit8($06);                          { mov al,[esi] }
+  BinEmit8($88); BinEmit8($07);                          { mov [edi],al }
+  BinEmit8($46); BinEmit8($47);                          { inc esi; inc edi }
+  BinJmpLabel('_tw_loop');
+  { _tw_done: }
+  BinDefineLabel('_tw_done');
+  BinEmit8($C6); BinEmit8($07); BinEmit8($00);          { mov byte [edi],0 }
+  BinMovRegLabel(0, '_sas_strtmp');                      { mov eax,&strtmp }
+  BinEmit8($5F); BinEmit8($5E); BinEmit8($5B);          { pop edi,esi,ebx }
+  BinEmit8($5D); BinEmit8($C2); BinEmit8($0C); BinEmit8($00); { ret 12 }
 
   { --- _SASRT_trimn(s): ptr --- copie+rogne espaces finaux (1 arg)       }
   { Meme comportement que _SASRT_trim : copie src dans strtmp, ebx=dernier}
@@ -10194,18 +10855,137 @@ Begin
   BinEmit8($5B); BinEmit8($5F); BinEmit8($5E);  { pop ebx; edi; esi     }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { --- _SASRT_urldecode(s): ptr --- stub retourne strtmp (1 arg) }
+  { --- _SASRT_urldecode(s): ptr --- decode sequences %XX }
   BinDefineLabel('_SASRT_urldecode');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinPushLabel('_sas_strtmp');
-  BinEmit8($58);
+  BinEmit8($53); BinEmit8($56); BinEmit8($57);               { push ebx,esi,edi }
+  BinEmit8($8B); BinEmit8($75); BinEmit8($08);               { mov esi,[ebp+8] }
+  BinMovRegLabel(7,'_sas_strtmp');
+  BinDefineLabel('_ud_loop');
+  BinEmit8($8A); BinEmit8($06);                              { mov al,[esi] }
+  BinEmit8($84); BinEmit8($C0);
+  BinJccLabel(4,'_ud_done');
+  BinEmit8($3C); BinEmit8($25);                              { cmp al,'%' }
+  BinJccLabel(4,'_ud_pct');
+  BinEmit8($88); BinEmit8($07);                              { mov [edi],al }
+  BinEmit8($46); BinEmit8($47);                              { inc esi; inc edi }
+  BinJmpLabel('_ud_loop');
+  BinDefineLabel('_ud_pct');
+  { nibble haut depuis [esi+1] }
+  BinEmit8($8A); BinEmit8($46); BinEmit8($01);               { mov al,[esi+1] }
+  BinEmit8($2C); BinEmit8($30);                              { sub al,'0' }
+  BinEmit8($3C); BinEmit8($0A);                              { cmp al,10 }
+  BinJccLabel(2,'_ud_h_ok');                                  { jb digit 0-9 }
+  BinEmit8($2C); BinEmit8($11);                              { sub al,'A'-'0' }
+  BinEmit8($3C); BinEmit8($06);                              { cmp al,6 }
+  BinJccLabel(2,'_ud_h_alpha');                               { jb A-F }
+  BinEmit8($2C); BinEmit8($20);                              { sub al,'a'-'A' }
+  BinEmit8($3C); BinEmit8($06);                              { cmp al,6 }
+  BinJccLabel(3,'_ud_copy_pct');                              { jae invalide }
+  BinDefineLabel('_ud_h_alpha');
+  BinEmit8($04); BinEmit8($0A);                              { add al,10 }
+  BinDefineLabel('_ud_h_ok');
+  BinEmit8($88); BinEmit8($C3);                              { mov bl,al }
+  BinEmit8($C0); BinEmit8($E3); BinEmit8($04);               { shl bl,4 }
+  { nibble bas depuis [esi+2] }
+  BinEmit8($8A); BinEmit8($46); BinEmit8($02);               { mov al,[esi+2] }
+  BinEmit8($2C); BinEmit8($30);
+  BinEmit8($3C); BinEmit8($0A);
+  BinJccLabel(2,'_ud_l_ok');
+  BinEmit8($2C); BinEmit8($11);
+  BinEmit8($3C); BinEmit8($06);
+  BinJccLabel(2,'_ud_l_alpha');
+  BinEmit8($2C); BinEmit8($20);
+  BinEmit8($3C); BinEmit8($06);
+  BinJccLabel(3,'_ud_copy_pct');
+  BinDefineLabel('_ud_l_alpha');
+  BinEmit8($04); BinEmit8($0A);
+  BinDefineLabel('_ud_l_ok');
+  BinEmit8($0A); BinEmit8($C3);                              { or al,bl }
+  BinEmit8($88); BinEmit8($07);                              { mov [edi],al }
+  BinEmit8($83); BinEmit8($C6); BinEmit8($03);               { add esi,3 }
+  BinEmit8($47);
+  BinJmpLabel('_ud_loop');
+  BinDefineLabel('_ud_copy_pct');
+  BinEmit8($C6); BinEmit8($07); BinEmit8($25);               { mov byte[edi],'%' }
+  BinEmit8($46); BinEmit8($47);
+  BinJmpLabel('_ud_loop');
+  BinDefineLabel('_ud_done');
+  BinEmit8($C6); BinEmit8($07); BinEmit8($00);
+  BinMovRegLabel(0,'_sas_strtmp');
+  BinEmit8($5F); BinEmit8($5E); BinEmit8($5B);               { pop edi,esi,ebx }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { --- _SASRT_urlencode(s): ptr --- stub retourne strtmp (1 arg) }
+  { --- _SASRT_urlencode(s): ptr --- encode URL, chars non-reserves RFC 3986 passes }
   BinDefineLabel('_SASRT_urlencode');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinPushLabel('_sas_strtmp');
-  BinEmit8($58);
+  BinEmit8($53); BinEmit8($56); BinEmit8($57);               { push ebx,esi,edi }
+  BinEmit8($8B); BinEmit8($75); BinEmit8($08);               { mov esi,[ebp+8] }
+  BinMovRegLabel(7,'_sas_strtmp');
+  BinDefineLabel('_ue_loop');
+  BinEmit8($8A); BinEmit8($06);                              { mov al,[esi] }
+  BinEmit8($84); BinEmit8($C0);
+  BinJccLabel(4,'_ue_done');
+  BinEmit8($46);                                              { inc esi }
+  { test A-Z }
+  BinEmit8($3C); BinEmit8($41);                              { cmp al,'A' }
+  BinJccLabel(2,'_ue_check_09');                              { jb verif 0-9 }
+  BinEmit8($3C); BinEmit8($5A);                              { cmp al,'Z' }
+  BinJccLabel(6,'_ue_copy');                                  { jbe A-Z safe }
+  { test a-z }
+  BinEmit8($3C); BinEmit8($61);                              { cmp al,'a' }
+  BinJccLabel(2,'_ue_check_sp');                              { jb special }
+  BinEmit8($3C); BinEmit8($7A);                              { cmp al,'z' }
+  BinJccLabel(6,'_ue_copy');                                  { jbe a-z safe }
+  BinJmpLabel('_ue_check_sp');                                { al>'z' → verifie aussi tilde }
+  BinDefineLabel('_ue_check_09');
+  BinEmit8($3C); BinEmit8($30);                              { cmp al,'0' }
+  BinJccLabel(2,'_ue_check_sp');
+  BinEmit8($3C); BinEmit8($39);                              { cmp al,'9' }
+  BinJccLabel(6,'_ue_copy');                                  { jbe 0-9 safe }
+  BinDefineLabel('_ue_check_sp');
+  BinEmit8($3C); BinEmit8($2D);                              { cmp al,'-' }
+  BinJccLabel(4,'_ue_copy');
+  BinEmit8($3C); BinEmit8($5F);                              { cmp al,'_' }
+  BinJccLabel(4,'_ue_copy');
+  BinEmit8($3C); BinEmit8($2E);                              { cmp al,'.' }
+  BinJccLabel(4,'_ue_copy');
+  BinEmit8($3C); BinEmit8($7E);                              { cmp al,'~' }
+  BinJccLabel(4,'_ue_copy');
+  BinJmpLabel('_ue_encode');
+  BinDefineLabel('_ue_copy');
+  BinEmit8($88); BinEmit8($07);                              { mov [edi],al }
+  BinEmit8($47);
+  BinJmpLabel('_ue_loop');
+  BinDefineLabel('_ue_encode');
+  BinEmit8($88); BinEmit8($C3);                              { mov bl,al (sauvegarde) }
+  BinEmit8($C6); BinEmit8($07); BinEmit8($25);               { mov byte[edi],'%' }
+  BinEmit8($47);
+  { nibble haut }
+  BinEmit8($8A); BinEmit8($C3);                              { mov al,bl }
+  BinEmit8($C0); BinEmit8($E8); BinEmit8($04);               { shr al,4 }
+  BinEmit8($3C); BinEmit8($0A);                              { cmp al,10 }
+  BinJccLabel(2,'_ue_h0');
+  BinEmit8($04); BinEmit8($07);                              { add al,7 ('A'-'0'-10) }
+  BinDefineLabel('_ue_h0');
+  BinEmit8($04); BinEmit8($30);                              { add al,'0' }
+  BinEmit8($88); BinEmit8($07);                              { mov [edi],al }
+  BinEmit8($47);
+  { nibble bas }
+  BinEmit8($8A); BinEmit8($C3);                              { mov al,bl }
+  BinEmit8($24); BinEmit8($0F);                              { and al,0x0F }
+  BinEmit8($3C); BinEmit8($0A);                              { cmp al,10 }
+  BinJccLabel(2,'_ue_l0');
+  BinEmit8($04); BinEmit8($07);
+  BinDefineLabel('_ue_l0');
+  BinEmit8($04); BinEmit8($30);
+  BinEmit8($88); BinEmit8($07);                              { mov [edi],al }
+  BinEmit8($47);
+  BinJmpLabel('_ue_loop');
+  BinDefineLabel('_ue_done');
+  BinEmit8($C6); BinEmit8($07); BinEmit8($00);
+  BinMovRegLabel(0,'_sas_strtmp');
+  BinEmit8($5F); BinEmit8($5E); BinEmit8($5B);               { pop edi,esi,ebx }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
   { --- _SASRT_varfmt(dsid,varnum): ptr --- stub retourne strtmp (2 args) }
