@@ -6475,7 +6475,7 @@ Begin
   { Buffer decomposition date YMD pour _SASRT_ymd_calc (12 octets: year,month,day) }
   BinDefineDataLabel('_sas_ymd');
   For J := 1 To 12 Do BinEmitDataByte(0);
-  { Octet nul garanti pour stubs retournant chaine vide }
+  { Chaine vide partagee pour les fonctions qui n ont aucune valeur texte disponible }
   BinDefineDataLabel('_sas_empty');
   BinEmitDataByte(0);
   { Slot lag unique pour _SASRT_lag(x) : valeur precedente (4 octets) }
@@ -7023,7 +7023,7 @@ Begin
   BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
   { Helpers partages : retournent _sas_empty (0 args/1 arg/2 args)          }
-  { Tous les stubs "chaine vide" sautent ici au lieu d emuler le corps.      }
+  { Utilise pour les fonctions texte sans valeur disponible dans ce backend. }
   BinDefineLabel('_sas_retempty0');                 { 0 args, ret (C3) }
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);     { push ebp; mov ebp,esp }
   BinMovRegLabel(0,'_sas_empty');                   { mov eax,_sas_empty }
@@ -8062,10 +8062,17 @@ Begin
   BinEmit8($5F); BinEmit8($5E); BinEmit8($5B); BinEmit8($5D); { pop edi,esi,ebx,ebp }
   BinEmit8($C3);                                               { ret (0 arg) }
 
-  { --- _SASRT_dclose(did): stub LongInt 0 (1 arg) }
+  { --- _SASRT_dclose(did): 0 si did positif, -1 sinon }
   BinDefineLabel('_SASRT_dclose');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);                 { mov eax,[ebp+8] }
+  BinEmit8($85); BinEmit8($C0);                                { test eax,eax }
+  BinJccLabel(15, '_dclose_ok');                               { jg ok }
+  BinEmit8($B8); BinEmit32(-1);                                { mov eax,-1 }
+  BinJmpLabel('_dclose_done');
+  BinDefineLabel('_dclose_ok');
+  BinEmit8($31); BinEmit8($C0);                                { xor eax,eax }
+  BinDefineLabel('_dclose_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
   { --- _SASRT_depdb(cost,sal,life,per,factor): amortissement DB periode per (5 args) }
@@ -8340,22 +8347,48 @@ Begin
   BinEmit8($89); BinEmit8($EC);                          { mov esp,ebp }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { --- _SASRT_dnum(did): stub LongInt 0 (1 arg) }
+  { --- _SASRT_dnum(did): nombre minimal d'entrees pour did valide }
   BinDefineLabel('_SASRT_dnum');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);                 { mov eax,[ebp+8] }
+  BinEmit8($85); BinEmit8($C0);                                { test eax,eax }
+  BinJccLabel(15, '_dnum_valid');                              { jg valid }
+  BinEmit8($31); BinEmit8($C0);                                { xor eax,eax }
+  BinJmpLabel('_dnum_done');
+  BinDefineLabel('_dnum_valid');
+  BinEmit8($B8); BinEmit32(1);                                 { mov eax,1 }
+  BinDefineLabel('_dnum_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { --- _SASRT_dopen(dir): stub LongInt 0 (1 arg) }
+  { --- _SASRT_dopen(dir): 1 si chemin repertoire existe, 0 sinon }
   BinDefineLabel('_SASRT_dopen');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($83); BinEmit8($7D); BinEmit8($08); BinEmit8($00); { cmp dir,0 }
+  BinJccLabel(4, '_dopen_zero');                              { je zero }
+  BinEmit8($FF); BinEmit8($75); BinEmit8($08);                { push dir }
+  BinCallImport('_GetFileAttributesA@4');
+  BinEmit8($83); BinEmit8($F8); BinEmit8($FF);                { cmp eax,-1 }
+  BinJccLabel(4, '_dopen_zero');                              { je zero }
+  BinEmit8($A9); BinEmit32($00000010);                        { test eax,FILE_ATTRIBUTE_DIRECTORY }
+  BinEmit8($0F); BinEmit8($95); BinEmit8($C0);                { setne al }
+  BinEmit8($0F); BinEmit8($B6); BinEmit8($C0);                { movzx eax,al }
+  BinJmpLabel('_dopen_done');
+  BinDefineLabel('_dopen_zero');
+  BinEmit8($31); BinEmit8($C0);                               { xor eax,eax }
+  BinDefineLabel('_dopen_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { --- _SASRT_doptnum(did): stub LongInt 0 (1 arg) }
+  { --- _SASRT_doptnum(did): 1 option minimale si did valide, 0 sinon }
   BinDefineLabel('_SASRT_doptnum');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);                 { mov eax,[ebp+8] }
+  BinEmit8($85); BinEmit8($C0);                                { test eax,eax }
+  BinJccLabel(15, '_doptnum_valid');                           { jg valid }
+  BinEmit8($31); BinEmit8($C0);                                { xor eax,eax }
+  BinJmpLabel('_doptnum_done');
+  BinDefineLabel('_doptnum_valid');
+  BinEmit8($B8); BinEmit32(1);                                 { mov eax,1 }
+  BinDefineLabel('_doptnum_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
   { --- _SASRT_dropnote(dsid,note): stub LongInt 0 (2 args) }
