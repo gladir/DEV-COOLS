@@ -1,8 +1,8 @@
-/* test_cinv.sas - CINV : quantile du Chi au carre (stub) */
+/* test_cinv.sas - CINV : quantile du Chi au carre */
 data _null_;
-  /* CINV(0.95, 5) = quantile a 95% avec 5 deg liberte (stub=0) */
+  /* Backend entier : approximation df + z*sqrt(2*df) */
   a = cinv(95, 5);
-  put 'CINV(95,5) = ' a;
+  put 'CINV(95,5) = ' a '  (attendu: 11)';
   b = cinv(99, 10);
-  put 'CINV(99,10) = ' b;
+  put 'CINV(99,10) = ' b '  (attendu: 22)';
 run;

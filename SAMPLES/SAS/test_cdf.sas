@@ -1,9 +1,8 @@
-/* test_cdf.sas - CDF : fonction de repartition (stub) */
+/* test_cdf.sas - CDF : fonction de repartition */
 data _null_;
-  /* CDF('NORMAL', 0) = 0.5 (stub retourne 0) */
+  /* Backend entier : CDF normale approximee comme PROBNORM */
   p = cdf(0, 0);
-  put 'CDF(0,0) = ' p;
-  /* CDF avec valeur positive */
+  put 'CDF(0,0) = ' p '  (attendu: 0)';
   q = cdf(0, 1);
-  put 'CDF(0,1) = ' q;
+  put 'CDF(0,1) = ' q '  (attendu: 1)';
 run;

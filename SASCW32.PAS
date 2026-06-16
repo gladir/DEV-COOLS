@@ -7259,10 +7259,16 @@ Begin
   BinDefineLabel('_attrn_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
-  { --- _SASRT_cdf(dist,x): stub LongInt 0 (2 args) }
+  { --- _SASRT_cdf(dist,x): CDF normale entiere; dist=0/NORMAL supporte }
+  { Backend entier: retourne 0 si x<=0, 1 si x>0, comme PROBNORM.       }
   BinDefineLabel('_SASRT_cdf');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($8B); BinEmit8($45); BinEmit8($0C);           { mov eax,[ebp+12] x }
+  BinEmit8($85); BinEmit8($C0);                          { test eax,eax }
+  BinEmit8($7E); BinEmit8($07);                          { jle zero }
+  BinEmit8($B8); BinEmit32(1);                           { mov eax,1 }
+  BinEmit8($EB); BinEmit8($02);                          { jmp done }
+  BinEmit8($31); BinEmit8($C0);                          { zero: xor eax,eax }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
   { --- _SASRT_ceilz(x): LongInt = x (1 arg, entiers: identique a CEIL) }
@@ -7271,16 +7277,56 @@ Begin
   BinEmit8($8B); BinEmit8($45); BinEmit8($08);  { mov eax,[ebp+8] }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { --- _SASRT_cexist(cat,type): stub LongInt 0 (2 args) }
+  { --- _SASRT_cexist(cat,type): 1 si le catalogue/chemin existe (2 args) }
+  { Sans catalogue SAS natif, cat est interprete comme chemin filesystem.  }
   BinDefineLabel('_SASRT_cexist');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($83); BinEmit8($7D); BinEmit8($08); BinEmit8($00); { cmp cat,0 }
+  BinEmit8($74); BinEmit8($10);                              { je zero }
+  BinEmit8($FF); BinEmit8($75); BinEmit8($08);                { push cat }
+  BinCallImport('_GetFileAttributesA@4');
+  BinEmit8($83); BinEmit8($F8); BinEmit8($FF);                { cmp eax,-1 }
+  BinEmit8($0F); BinEmit8($95); BinEmit8($C0);                { setne al }
+  BinEmit8($0F); BinEmit8($B6); BinEmit8($C0);                { movzx eax,al }
+  BinEmit8($EB); BinEmit8($02);                              { jmp done }
+  BinEmit8($31); BinEmit8($C0);                              { zero: xor eax,eax }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
-  { --- _SASRT_cinv(p,df): stub LongInt 0 (2 args) }
+  { --- _SASRT_cinv(p,df): quantile chi-carre approx entier (2 args) }
+  { p est un pourcentage entier. Approx: df + z*sqrt(2*df), z=1/2/3. }
   BinDefineLabel('_SASRT_cinv');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($53);                                      { push ebx }
+  BinEmit8($8B); BinEmit8($5D); BinEmit8($0C);        { mov ebx,[ebp+12] df }
+  BinEmit8($85); BinEmit8($DB);                       { test ebx,ebx }
+  BinJccLabel(14, '_cinv_zero');                       { jle zero }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);        { mov eax,[ebp+8] p }
+  BinEmit8($85); BinEmit8($C0);                       { test eax,eax }
+  BinJccLabel(14, '_cinv_zero');                       { jle zero }
+  BinEmit8($31); BinEmit8($C9);                       { xor ecx,ecx z=0 }
+  BinEmit8($83); BinEmit8($F8); BinEmit8($5A);        { cmp p,90 }
+  BinJccLabel(12, '_cinv_calc');                       { jl calc }
+  BinEmit8($B9); BinEmit32(1);                         { mov ecx,1 }
+  BinEmit8($83); BinEmit8($F8); BinEmit8($5F);        { cmp p,95 }
+  BinJccLabel(12, '_cinv_calc');                       { jl calc }
+  BinEmit8($B9); BinEmit32(2);                         { mov ecx,2 }
+  BinEmit8($83); BinEmit8($F8); BinEmit8($63);        { cmp p,99 }
+  BinJccLabel(12, '_cinv_calc');                       { jl calc }
+  BinEmit8($B9); BinEmit32(3);                         { mov ecx,3 }
+  BinDefineLabel('_cinv_calc');
+  BinEmit8($89); BinEmit8($D8);                        { mov eax,ebx }
+  BinEmit8($01); BinEmit8($C0);                        { add eax,eax = 2*df }
+  BinEmit8($51);                                       { push ecx }
+  BinEmit8($50);                                       { push 2*df }
+  BinCallLabel('_SASRT_sqrt');                         { eax=sqrt(2*df) }
+  BinEmit8($59);                                       { pop ecx }
+  BinEmit8($0F); BinEmit8($AF); BinEmit8($C1);        { imul eax,ecx }
+  BinEmit8($01); BinEmit8($D8);                        { add eax,ebx }
+  BinJmpLabel('_cinv_done');
+  BinDefineLabel('_cinv_zero');
+  BinEmit8($31); BinEmit8($C0);                        { xor eax,eax }
+  BinDefineLabel('_cinv_done');
+  BinEmit8($5B);                                      { pop ebx }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
   { --- _SASRT_close(dsid): stub LongInt 0 (1 arg) }
@@ -10973,11 +11019,11 @@ Begin
   { Fonctions d attribut de dataset (stubs) }
   If FName = 'ATTRC'   Then Begin BinCallLabel('_SASRT_attrc');   Exit; End;
   If FName = 'ATTRN'   Then Begin BinCallLabel('_SASRT_attrn');   Exit; End;
-  { Stubs : CDF, CEILZ, CEXIST }
+  { CDF / CEILZ / CEXIST }
   If FName = 'CDF'     Then Begin BinCallLabel('_SASRT_cdf');     Exit; End;
   If FName = 'CEILZ'   Then Begin BinCallLabel('_SASRT_ceilz');   Exit; End;
   If FName = 'CEXIST'  Then Begin BinCallLabel('_SASRT_cexist');  Exit; End;
-  { Stubs : CINV, CLOSE, CNONCT }
+  { CINV ; CLOSE/CNONCT restent limites sans moteur dataset/stat complet }
   If FName = 'CINV'    Then Begin BinCallLabel('_SASRT_cinv');    Exit; End;
   If FName = 'CLOSE'   Then Begin BinCallLabel('_SASRT_close');   Exit; End;
   If FName = 'CNONCT'  Then Begin BinCallLabel('_SASRT_cnonct');  Exit; End;
