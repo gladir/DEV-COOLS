@@ -6119,6 +6119,7 @@ Begin
   BinAddImport('kernel32.dll', '_GetFileAttributesA@4');
   BinAddImport('kernel32.dll', '_GetEnvironmentVariableA@12');
   BinAddImport('kernel32.dll', '_GetLocalTime@4');
+  BinAddImport('kernel32.dll', '_DeleteFileA@4');
 End;
 
 Procedure BinMovRegImm32(R: Integer; V: LongInt);
@@ -8603,10 +8604,13 @@ Begin
   BinEmit8($31); BinEmit8($C0);
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { --- _SASRT_fdelete(fileref): stub LongInt 0 (1 arg) }
+  { --- _SASRT_fdelete(fileref): appelle DeleteFileA(path) → 0=OK 1=erreur (1 arg) }
+  { [ebp+8]=fileref/path. DeleteFileA ret 1=OK → XOR 1 → 0=OK (SAS). }
   BinDefineLabel('_SASRT_fdelete');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);     { push ebp; mov ebp,esp }
+  BinEmit8($FF); BinEmit8($75); BinEmit8($08);     { push [ebp+8] path }
+  BinCallImport('_DeleteFileA@4');                   { eax=1 si supprime, 0 si erreur }
+  BinEmit8($83); BinEmit8($F0); BinEmit8($01);     { xor eax,1 : 0=OK 1=erreur }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
   { --- _SASRT_fetch(dsid): stub LongInt 0 (1 arg) }
