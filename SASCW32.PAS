@@ -5113,8 +5113,33 @@ Begin
           BinCallLabel('_SASRT_rancau');
           If SIdx >= 0 Then BinStoreEaxMem(SymTable[SIdx].AsmName);
         End;
-      End Else If (FName = 'RANEXP') Or (FName = 'RANGAM') Or
-                  (FName = 'RANNOR') Or (FName = 'RANPOI') Or
+      End Else If FName = 'RANEXP' Then Begin
+        { CALL RANEXP(seed,result) -- meme runtime que RANEXP(seed). }
+        If ArgCnt >= 2 Then Begin
+          SIdx := AstTable[ArgList[1]].SymRef;
+          If SIdx < 0 Then SIdx := FindSym(AstTable[ArgList[1]].Text, SK_NONE);
+          CodegenExprEAX(ArgList[0]); BinEmit8($50);
+          BinCallLabel('_SASRT_ranexp');
+          If SIdx >= 0 Then BinStoreEaxMem(SymTable[SIdx].AsmName);
+        End;
+      End Else If FName = 'RANGAM' Then Begin
+        { CALL RANGAM(seed,a,result), compat seed,result => a=1. }
+        If ArgCnt >= 3 Then Begin
+          SIdx := AstTable[ArgList[2]].SymRef;
+          If SIdx < 0 Then SIdx := FindSym(AstTable[ArgList[2]].Text, SK_NONE);
+          CodegenExprEAX(ArgList[1]); BinEmit8($50); { a }
+          CodegenExprEAX(ArgList[0]); BinEmit8($50); { seed }
+          BinCallLabel('_SASRT_rangam');
+          If SIdx >= 0 Then BinStoreEaxMem(SymTable[SIdx].AsmName);
+        End Else If ArgCnt >= 2 Then Begin
+          SIdx := AstTable[ArgList[1]].SymRef;
+          If SIdx < 0 Then SIdx := FindSym(AstTable[ArgList[1]].Text, SK_NONE);
+          BinEmit8($6A); BinEmit8($01);              { a=1 }
+          CodegenExprEAX(ArgList[0]); BinEmit8($50); { seed }
+          BinCallLabel('_SASRT_rangam');
+          If SIdx >= 0 Then BinStoreEaxMem(SymTable[SIdx].AsmName);
+        End;
+      End Else If (FName = 'RANNOR') Or (FName = 'RANPOI') Or
                   (FName = 'RANTBL') Or (FName = 'RANTRI') Or
                   (FName = 'RANUNI') Then Begin
         { CALL RANxxx(seed, result) -- stub : result = 0 }
