@@ -1,4 +1,4 @@
-/* test_attrn.sas - ATTRN : attribut numerique d un dataset (stub) */
+/* test_attrn.sas - ATTRN : attribut numerique d un dataset */
 data test1;
   x = 10;
 run;
@@ -6,5 +6,5 @@ run;
 data _null_;
   dsid = 1;
   n = attrn(dsid, 'NOBS');
-  put 'ATTRN = ' n;
+  put 'ATTRN(NOBS) = ' n '  (attendu: 1)';
 run;

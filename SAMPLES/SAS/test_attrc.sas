@@ -1,4 +1,4 @@
-/* test_attrc.sas - ATTRC : attribut caractere d un dataset (stub) */
+/* test_attrc.sas - ATTRC : attribut caractere d un dataset */
 data test1;
   x = 10;
 run;
@@ -6,5 +6,5 @@ run;
 data _null_;
   dsid = 1;
   a = attrc(dsid, 'TYPE');
-  put 'ATTRC = ' a;
+  put 'ATTRC(TYPE) = ' a '  (attendu: DATA)';
 run;

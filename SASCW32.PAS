@@ -2927,7 +2927,8 @@ Begin
     End;
     NK_CALL: Begin
       FN := AstTable[Node].Text;
-      ExprIsChar := (FN = 'UPCASE')   Or (FN = 'LOWCASE')  Or
+      ExprIsChar := (FN = 'ATTRC')    Or
+                    (FN = 'UPCASE')   Or (FN = 'LOWCASE')  Or
                     (FN = 'TRIM')     Or (FN = 'LEFT')     Or
                     (FN = 'RIGHT')    Or (FN = 'SUBSTR')   Or
                     (FN = 'COMPRESS') Or (FN = 'CAT')      Or
@@ -6825,16 +6826,53 @@ Begin
   BinEmit8($8B); BinEmit8($45); BinEmit8($08);  { mov eax,[ebp+8] }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { --- _SASRT_attrc(dsid,attr): stub LongInt 0 (2 args) }
+  { --- _SASRT_attrc(dsid,attr): retourne quelques attributs texte courants }
   BinDefineLabel('_SASRT_attrc');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($57);                                { push edi }
+  BinEmit8($52);                                { push edx }
+  BinMovRegLabel(7, '_sas_strtmp');             { mov edi,_sas_strtmp }
+  BinEmit8($8B); BinEmit8($55); BinEmit8($0C);  { mov edx,[ebp+12] attr }
+  BinEmit8($C6); BinEmit8($07); BinEmit8($00);  { mov byte [edi],0 }
+  BinEmit8($8A); BinEmit8($02);                 { mov al,[edx] }
+  BinEmit8($24); BinEmit8($DF);                 { and al,0DFh }
+  BinEmit8($3C); BinEmit8(Ord('T'));            { cmp al,'T' }
+  BinJccLabel(4, '_attrc_type');                { je type }
+  BinEmit8($3C); BinEmit8(Ord('M'));            { cmp al,'M' }
+  BinJccLabel(4, '_attrc_type');                { je memtype }
+  BinEmit8($3C); BinEmit8(Ord('E'));            { cmp al,'E' }
+  BinJccLabel(4, '_attrc_engine');              { je engine }
+  BinEmit8($3C); BinEmit8(Ord('L'));            { cmp al,'L' }
+  BinJccLabel(4, '_attrc_lib');                 { je lib/libname }
+  BinJmpLabel('_attrc_done');
+  BinDefineLabel('_attrc_type');
+  BinEmit8($C7); BinEmit8($07); BinEmit32($41544144); { "DATA" }
+  BinEmit8($C6); BinEmit8($47); BinEmit8($04); BinEmit8($00);
+  BinJmpLabel('_attrc_done');
+  BinDefineLabel('_attrc_engine');
+  BinEmit8($C7); BinEmit8($07); BinEmit32($45534142); { "BASE" }
+  BinEmit8($C6); BinEmit8($47); BinEmit8($04); BinEmit8($00);
+  BinJmpLabel('_attrc_done');
+  BinDefineLabel('_attrc_lib');
+  BinEmit8($C7); BinEmit8($07); BinEmit32($4B524F57); { "WORK" }
+  BinEmit8($C6); BinEmit8($47); BinEmit8($04); BinEmit8($00);
+  BinDefineLabel('_attrc_done');
+  BinMovRegLabel(0, '_sas_strtmp');             { mov eax,_sas_strtmp }
+  BinEmit8($5A);                                { pop edx }
+  BinEmit8($5F);                                { pop edi }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
-  { --- _SASRT_attrn(dsid,attr): stub LongInt 0 (2 args) }
+  { --- _SASRT_attrn(dsid,attr): retourne quelques attributs numeriques courants }
   BinDefineLabel('_SASRT_attrn');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($8B); BinEmit8($55); BinEmit8($0C);  { mov edx,[ebp+12] attr }
+  BinEmit8($31); BinEmit8($C0);                 { xor eax,eax }
+  BinEmit8($8A); BinEmit8($0A);                 { mov cl,[edx] }
+  BinEmit8($80); BinEmit8($E1); BinEmit8($DF);  { and cl,0DFh }
+  BinEmit8($80); BinEmit8($F9); BinEmit8(Ord('N')); { cmp cl,'N' }
+  BinJccLabel(5, '_attrn_done');                { jne done }
+  BinEmit8($B8); BinEmit32(1);                  { mov eax,1 }
+  BinDefineLabel('_attrn_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
   { --- _SASRT_cdf(dist,x): stub LongInt 0 (2 args) }
