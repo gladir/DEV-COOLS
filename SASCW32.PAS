@@ -8601,10 +8601,10 @@ Begin
   BinEmit8($31); BinEmit8($C0);
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
-  { --- _SASRT_hbound(array): stub LongInt 0 (1 arg) }
+  { --- _SASRT_hbound(array): LongInt 1 --- fallback (inline intercepte normalement) }
   BinDefineLabel('_SASRT_hbound');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);   { push ebp; mov ebp,esp }
+  BinEmit8($B8); BinEmit32(1);                    { mov eax,1 }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
   { --- _SASRT_hms(h,m,s): LongInt --- h*3600+m*60+s (27 octets) }
@@ -10481,10 +10481,21 @@ Begin
   BinEmit8($5F); BinEmit8($5B);                          { pop edi,ebx }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { SYSPROD(product): stub 0 — non licencie (1 arg, string) }
+  { SYSPROD(product): LongInt --- 1 si "BASE", 0 sinon (1 arg, string)     }
+  { [ebp+8]=product. Compare 4 octets "BASE" + nul terminal. ret 4.       }
   BinDefineLabel('_SASRT_sysprod');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);     { push ebp; mov ebp,esp }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);     { mov eax,[ebp+8] }
+  BinEmit8($31); BinEmit8($C9);                    { xor ecx,ecx (default=0) }
+  { cmp dword [eax],'BASE' (LE: 45 53 41 42 = "BASE" octets 0-3) }
+  BinEmit8($81); BinEmit8($38);
+  BinEmit8($42); BinEmit8($41); BinEmit8($53); BinEmit8($45);
+  BinJccLabel(5,'_sp_done');                        { jne → pas BASE }
+  BinEmit8($80); BinEmit8($78); BinEmit8($04); BinEmit8($00); { cmp byte [eax+4],0 }
+  BinJccLabel(5,'_sp_done');                        { jne → pas exact "BASE\0" }
+  BinEmit8($B9); BinEmit32(1);                     { mov ecx,1 }
+  BinDefineLabel('_sp_done');
+  BinEmit8($89); BinEmit8($C8);                    { mov eax,ecx }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
   { SYSRC(): stub 0 (0 args → pop ebp + ret) }
@@ -11392,10 +11403,55 @@ Begin
   BinEmit8($5F); BinEmit8($5E); BinEmit8($5D);  { pop edi; esi; ebp     }
   BinEmit8($C2); BinEmit8($04); BinEmit8($00);  { ret 4                 }
 
-  { --- _SASRT_right(s: ptr): ptr --- stub : retourne s }
+  { --- _SASRT_right(s): ptr --- deplace espaces finaux au debut dans strtmp }
+  { [ebp+8]=s. EBX=nb_esp_fin, ECX=long_sig, ESI=src, EDI=dst. ret 4.     }
   BinDefineLabel('_SASRT_right');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($8B); BinEmit8($45); BinEmit8($08);
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);     { push ebp; mov ebp,esp }
+  BinEmit8($53); BinEmit8($56); BinEmit8($57);     { push ebx; push esi; push edi }
+  BinEmit8($8B); BinEmit8($75); BinEmit8($08);     { mov esi,[ebp+8] }
+  { strlen(esi) → ecx }
+  BinEmit8($31); BinEmit8($C9);                    { xor ecx,ecx }
+  BinDefineLabel('_right_len');
+  BinEmit8($8A); BinEmit8($04); BinEmit8($0E);    { mov al,[esi+ecx] }
+  BinEmit8($84); BinEmit8($C0);                    { test al,al }
+  BinJccLabel(4,'_right_tsp');                      { jz }
+  BinEmit8($41);                                    { inc ecx }
+  BinJmpLabel('_right_len');
+  BinDefineLabel('_right_tsp');
+  { Compter espaces de fin → ebx }
+  BinEmit8($31); BinEmit8($DB);                    { xor ebx,ebx }
+  BinDefineLabel('_right_tsp_loop');
+  BinEmit8($85); BinEmit8($C9);                    { test ecx,ecx }
+  BinJccLabel(4,'_right_fill');                     { jz → rien }
+  BinEmit8($8A); BinEmit8($44); BinEmit8($0E); BinEmit8($FF); { mov al,[esi+ecx-1] }
+  BinEmit8($3C); BinEmit8($20);                    { cmp al,' ' }
+  BinJccLabel(5,'_right_fill');                     { jne → fin espaces }
+  BinEmit8($43);                                    { inc ebx }
+  BinEmit8($49);                                    { dec ecx }
+  BinJmpLabel('_right_tsp_loop');
+  BinDefineLabel('_right_fill');
+  { ecx=long_sig, ebx=nb espaces. Remplir strtmp. }
+  BinMovRegLabel(7,'_sas_strtmp');                  { mov edi,&strtmp }
+  BinEmit8($85); BinEmit8($DB);                    { test ebx,ebx }
+  BinJccLabel(4,'_right_sig');                      { jz }
+  BinDefineLabel('_right_sp_loop');
+  BinEmit8($C6); BinEmit8($07); BinEmit8($20);    { mov byte [edi],' ' }
+  BinEmit8($47);                                    { inc edi }
+  BinEmit8($4B);                                    { dec ebx }
+  BinJccLabel(5,'_right_sp_loop');                 { jnz }
+  BinDefineLabel('_right_sig');
+  BinEmit8($85); BinEmit8($C9);                    { test ecx,ecx }
+  BinJccLabel(4,'_right_done');                     { jz }
+  BinDefineLabel('_right_sig_loop');
+  BinEmit8($8A); BinEmit8($06);                    { mov al,[esi] }
+  BinEmit8($88); BinEmit8($07);                    { mov [edi],al }
+  BinEmit8($46); BinEmit8($47);                    { inc esi; inc edi }
+  BinEmit8($49);                                    { dec ecx }
+  BinJccLabel(5,'_right_sig_loop');                { jnz }
+  BinDefineLabel('_right_done');
+  BinEmit8($C6); BinEmit8($07); BinEmit8($00);    { mov byte [edi],0 }
+  BinMovRegLabel(0,'_sas_strtmp');                  { mov eax,&strtmp }
+  BinEmit8($5F); BinEmit8($5E); BinEmit8($5B);    { pop edi; pop esi; pop ebx }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
   { --- _SASRT_substr(s,pos,len): ptr --- 69 o stdcall ret 12         }
