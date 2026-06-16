@@ -6814,10 +6814,26 @@ Begin
   BinEmit8($8B); BinEmit8($45); BinEmit8($FC);                   { mov eax,[ebp-4] }
   BinEmit8($89); BinEmit8($EC); BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { --- _SASRT_betainv(p,a,b): stub LongInt 0 (3 args) }
+  { --- _SASRT_betainv(p,a,b): quantile beta borne pour backend entier }
   BinDefineLabel('_SASRT_betainv');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);           { mov eax,[ebp+8] p }
+  BinEmit8($83); BinEmit8($7D); BinEmit8($0C); BinEmit8($00); { cmp a,0 }
+  BinJccLabel(14, '_betainv_zero');                      { jle zero }
+  BinEmit8($83); BinEmit8($7D); BinEmit8($10); BinEmit8($00); { cmp b,0 }
+  BinJccLabel(14, '_betainv_zero');                      { jle zero }
+  BinEmit8($85); BinEmit8($C0);                           { test eax,eax }
+  BinJccLabel(14, '_betainv_zero');                      { jle zero }
+  BinEmit8($83); BinEmit8($F8); BinEmit8($01);            { cmp eax,1 }
+  BinJccLabel(13, '_betainv_one');                       { jge one }
+  BinEmit8($31); BinEmit8($C0);                           { fallback: 0 }
+  BinJmpLabel('_betainv_done');
+  BinDefineLabel('_betainv_one');
+  BinEmit8($B8); BinEmit32(1);                            { mov eax,1 }
+  BinJmpLabel('_betainv_done');
+  BinDefineLabel('_betainv_zero');
+  BinEmit8($31); BinEmit8($C0);                           { xor eax,eax }
+  BinDefineLabel('_betainv_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($0C); BinEmit8($00);
 
   { --- _SASRT_byte(n): LongInt = n (code ASCII, 1 arg) }
