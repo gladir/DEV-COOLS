@@ -8248,10 +8248,22 @@ Begin
   BinEmit8($89); BinEmit8($EC);                          { mov esp,ebp }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($10); BinEmit8($00);
 
-  { --- _SASRT_deviance(dist,x,n): stub LongInt 0 (3 args) }
+  { --- _SASRT_deviance(dist,x,n): deviance entiere (3 args) }
+  { dist=0: gaussienne -> (x-n)^2 ; autres: 2*abs(x-n). }
   BinDefineLabel('_SASRT_deviance');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($8B); BinEmit8($45); BinEmit8($0C);           { mov eax,[ebp+12] x }
+  BinEmit8($2B); BinEmit8($45); BinEmit8($10);           { sub eax,[ebp+16] n }
+  BinEmit8($83); BinEmit8($7D); BinEmit8($08); BinEmit8($00); { cmp dist,0 }
+  BinJccLabel(5, '_deviance_abs');                       { jne fallback }
+  BinEmit8($0F); BinEmit8($AF); BinEmit8($C0);           { imul eax,eax }
+  BinJmpLabel('_deviance_done');
+  BinDefineLabel('_deviance_abs');
+  BinEmit8($99);                                         { cdq }
+  BinEmit8($31); BinEmit8($D0);                          { xor eax,edx }
+  BinEmit8($2B); BinEmit8($C2);                          { sub eax,edx }
+  BinEmit8($01); BinEmit8($C0);                          { add eax,eax }
+  BinDefineLabel('_deviance_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($0C); BinEmit8($00);
 
   { --- _SASRT_dhms(d,h,m,s): LongInt --- d*86400+h*3600+m*60+s (38 octets) }
@@ -11118,7 +11130,7 @@ Begin
   If FName = 'DEPSL'    Then Begin BinCallLabel('_SASRT_depsl');    Exit; End;
   If FName = 'DEPSYD'   Then Begin BinCallLabel('_SASRT_depsyd');   Exit; End;
   If FName = 'DEPTAB'   Then Begin BinCallLabel('_SASRT_deptab');   Exit; End;
-  { Stubs math et statistiques }
+  { Fonctions math et statistiques }
   If FName = 'DEVIANCE' Then Begin BinCallLabel('_SASRT_deviance'); Exit; End;
   If FName = 'DHMS'     Then Begin BinCallLabel('_SASRT_dhms');     Exit; End;
   If FName = 'DIF'      Then Begin BinCallLabel('_SASRT_dif');      Exit; End;
@@ -11883,17 +11895,61 @@ Begin
   BinEmit8($5F);                                          { pop edi }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
-  { --- _SASRT_dequote(src): ptr --- copie src dans strtmp (1 arg) }
-  { Comportement : copie la chaine source telle quelle (stub simple) }
+  { --- _SASRT_dequote(src): ptr --- retire une paire de guillemets externes }
   BinDefineLabel('_SASRT_dequote');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);    { push ebp; mov ebp,esp }
-  BinEmit8($8B); BinEmit8($45); BinEmit8($08);    { mov eax,[ebp+8]  src  }
-  BinEmit8($50);                                    { push src              }
-  BinPushLabel('_sas_strtmp');                     { push strtmp           }
-  BinCallLabel('_SASRT_strcpy');                   { strcpy(strtmp, src)   }
-  BinPushLabel('_sas_strtmp');
-  BinEmit8($58);                                    { pop eax               }
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00); { ret 4   }
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);          { push ebp; mov ebp,esp }
+  BinEmit8($56); BinEmit8($57); BinEmit8($53);          { push esi; edi; ebx }
+  BinEmit8($8B); BinEmit8($75); BinEmit8($08);          { mov esi,[ebp+8] src }
+  BinMovRegLabel(7, '_sas_strtmp');                     { mov edi,_sas_strtmp }
+  BinEmit8($85); BinEmit8($F6);                         { test esi,esi }
+  BinJccLabel(4, '_dequote_empty');                     { jz empty }
+  BinEmit8($8A); BinEmit8($06);                         { mov al,[esi] }
+  BinEmit8($84); BinEmit8($C0);                         { test al,al }
+  BinJccLabel(4, '_dequote_empty');                     { jz empty }
+  BinEmit8($3C); BinEmit8($22);                         { cmp al,'"' }
+  BinJccLabel(4, '_dequote_quoted');                    { je quoted }
+  BinEmit8($3C); BinEmit8($27);                         { cmp al,'''' }
+  BinJccLabel(5, '_dequote_copy_all');                  { jne copy_all }
+  BinDefineLabel('_dequote_quoted');
+  BinEmit8($88); BinEmit8($C2);                         { mov dl,al quote }
+  BinEmit8($89); BinEmit8($F3);                         { mov ebx,esi scan }
+  BinDefineLabel('_dequote_scan_end');
+  BinEmit8($80); BinEmit8($3B); BinEmit8($00);          { cmp byte [ebx],0 }
+  BinJccLabel(4, '_dequote_found_end');                 { je found }
+  BinEmit8($43);                                        { inc ebx }
+  BinJmpLabel('_dequote_scan_end');
+  BinDefineLabel('_dequote_found_end');
+  BinEmit8($4B);                                        { dec ebx -> dernier char }
+  BinEmit8($39); BinEmit8($F3);                         { cmp ebx,esi }
+  BinJccLabel(14, '_dequote_copy_all');                 { jle copy_all }
+  BinEmit8($38); BinEmit8($13);                         { cmp [ebx],dl }
+  BinJccLabel(5, '_dequote_copy_all');                  { jne copy_all }
+  BinEmit8($46);                                        { inc esi -> apres quote }
+  BinDefineLabel('_dequote_strip_loop');
+  BinEmit8($39); BinEmit8($F3);                         { cmp ebx,esi }
+  BinJccLabel(14, '_dequote_done');                     { jle done }
+  BinEmit8($8A); BinEmit8($06);                         { mov al,[esi] }
+  BinEmit8($88); BinEmit8($07);                         { mov [edi],al }
+  BinEmit8($46); BinEmit8($47);                         { inc esi; inc edi }
+  BinJmpLabel('_dequote_strip_loop');
+  BinDefineLabel('_dequote_copy_all');
+  BinEmit8($8B); BinEmit8($75); BinEmit8($08);          { mov esi,[ebp+8] src }
+  BinDefineLabel('_dequote_copy_loop');
+  BinEmit8($8A); BinEmit8($06);                         { mov al,[esi] }
+  BinEmit8($88); BinEmit8($07);                         { mov [edi],al }
+  BinEmit8($46); BinEmit8($47);                         { inc esi; inc edi }
+  BinEmit8($84); BinEmit8($C0);                         { test al,al }
+  BinJccLabel(5, '_dequote_copy_loop');                 { jnz copy_loop }
+  BinJmpLabel('_dequote_return');
+  BinDefineLabel('_dequote_empty');
+  BinEmit8($C6); BinEmit8($07); BinEmit8($00);          { mov byte [edi],0 }
+  BinJmpLabel('_dequote_return');
+  BinDefineLabel('_dequote_done');
+  BinEmit8($C6); BinEmit8($07); BinEmit8($00);          { null-terminate }
+  BinDefineLabel('_dequote_return');
+  BinMovRegLabel(0, '_sas_strtmp');                     { mov eax,_sas_strtmp }
+  BinEmit8($5B); BinEmit8($5F); BinEmit8($5E);          { pop ebx; edi; esi }
+  BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
   { --- _SASRT_dsname(dsid): ptr --- retourne "" (1 arg) }
   BinDefineLabel('_SASRT_dsname');
