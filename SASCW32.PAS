@@ -5331,9 +5331,31 @@ Begin
           BinCallLabel('_SASRT_length');
           If SIdx >= 0 Then BinStoreEaxMem(SymTable[SIdx].AsmName);
         End;
+      End Else If FName = 'SET' Then Begin
+        { CALL SET(dst,value): affecte vraiment la variable cible locale. }
+        If ArgCnt >= 2 Then Begin
+          SIdx := -1;
+          If AstTable[ArgList[0]].Kind = NK_VAR Then Begin
+            SIdx := AstTable[ArgList[0]].SymRef;
+            If SIdx < 0 Then SIdx := FindSym(AstTable[ArgList[0]].Text, SK_NONE);
+          End Else If (AstTable[ArgList[0]].Kind = NK_LITERAL) And
+                      AstTable[ArgList[0]].IsChar Then
+            SIdx := FindSym(UpperStr(AstTable[ArgList[0]].Text), SK_NONE);
+          If SIdx >= 0 Then Begin
+            If SymTable[SIdx].IsChar Then Begin
+              CodegenExprEAX(ArgList[1]); BinEmit8($50); { src }
+              BinMovEaxLabelAddr(SymTable[SIdx].AsmName);
+              BinEmit8($50);                             { dst }
+              BinCallLabel('_SASRT_strcpy');
+            End Else Begin
+              CodegenExprEAX(ArgList[1]);
+              BinStoreEaxMem(SymTable[SIdx].AsmName);
+            End;
+          End;
+        End;
       End Else Begin
         { LABEL,    }
-        { RXSUBSTR, SET, SYMPUT : stub — evaluer et ignorer args }
+        { SYMPUT : stub — evaluer et ignorer args }
         For I := 0 To ArgCnt - 1 Do
           CodegenExprEAX(ArgList[I]);
       End;
@@ -5382,6 +5404,10 @@ Begin
       { SET _NULL_ (ou dataset vide) avec END=var : marquer fin immediate }
       { Sinon : no-op (lecture de dataset non implementee)               }
       SIdx := AstTable[Node].SymRef;
+      If (SIdx < 0) And (AstTable[Node].Left >= 0) Then Begin
+        SIdx := AstTable[AstTable[Node].Left].SymRef;
+        If SIdx < 0 Then SIdx := FindSym(AstTable[AstTable[Node].Left].Text, SK_NONE);
+      End;
       If SIdx >= 0 Then Begin
         { END=var specifie : mettre a 1 (EOF atteint immediatement) }
         BinEmit8($B8); BinEmit32(1);
