@@ -5084,8 +5084,36 @@ Begin
             BinCallLabel('_SASRT_strcpy');
           End;
         End;
-      End Else If (FName = 'RANBIN') Or (FName = 'RANCAU') Or
-                  (FName = 'RANEXP') Or (FName = 'RANGAM') Or
+      End Else If FName = 'RANBIN' Then Begin
+        { CALL RANBIN(seed,n,p,result), p entier en pourcentage. }
+        If ArgCnt >= 4 Then Begin
+          SIdx := AstTable[ArgList[3]].SymRef;
+          If SIdx < 0 Then SIdx := FindSym(AstTable[ArgList[3]].Text, SK_NONE);
+          CodegenExprEAX(ArgList[2]); BinEmit8($50); { p }
+          CodegenExprEAX(ArgList[1]); BinEmit8($50); { n }
+          CodegenExprEAX(ArgList[0]); BinEmit8($50); { seed }
+          BinCallLabel('_SASRT_ranbin');
+          If SIdx >= 0 Then BinStoreEaxMem(SymTable[SIdx].AsmName);
+        End Else If ArgCnt >= 2 Then Begin
+          { Compat ancien test: CALL RANBIN(seed,result) = Bernoulli certain. }
+          SIdx := AstTable[ArgList[1]].SymRef;
+          If SIdx < 0 Then SIdx := FindSym(AstTable[ArgList[1]].Text, SK_NONE);
+          BinEmit8($6A); BinEmit8($01);              { p=1 }
+          BinEmit8($6A); BinEmit8($01);              { n=1 }
+          CodegenExprEAX(ArgList[0]); BinEmit8($50); { seed }
+          BinCallLabel('_SASRT_ranbin');
+          If SIdx >= 0 Then BinStoreEaxMem(SymTable[SIdx].AsmName);
+        End;
+      End Else If FName = 'RANCAU' Then Begin
+        { CALL RANCAU(seed,result) -- meme runtime que RANCAU(seed). }
+        If ArgCnt >= 2 Then Begin
+          SIdx := AstTable[ArgList[1]].SymRef;
+          If SIdx < 0 Then SIdx := FindSym(AstTable[ArgList[1]].Text, SK_NONE);
+          CodegenExprEAX(ArgList[0]); BinEmit8($50);
+          BinCallLabel('_SASRT_rancau');
+          If SIdx >= 0 Then BinStoreEaxMem(SymTable[SIdx].AsmName);
+        End;
+      End Else If (FName = 'RANEXP') Or (FName = 'RANGAM') Or
                   (FName = 'RANNOR') Or (FName = 'RANPOI') Or
                   (FName = 'RANTBL') Or (FName = 'RANTRI') Or
                   (FName = 'RANUNI') Then Begin
@@ -5096,8 +5124,29 @@ Begin
           BinEmit8($31); BinEmit8($C0);   { XOR EAX, EAX = 0   }
           If SIdx >= 0 Then BinStoreEaxMem(SymTable[SIdx].AsmName);
         End;
+      End Else If FName = 'EXECUTE' Then Begin
+        { CALL EXECUTE(code): journalise le code SAS mis en file. }
+        If ArgCnt >= 1 Then Begin
+          LblStr := EmitRDataStr('EXECUTE: ');
+          BinPushLabel(LblStr);
+          BinCallLabel('_SASRT_write_str');
+          CodegenExprEAX(ArgList[0]);
+          BinEmit8($50);
+          BinCallLabel('_SASRT_write_str');
+          BinCallLabel('_SASRT_newline');
+        End;
+      End Else If (FName = 'MODULE') Or (FName = 'MODULEI') Then Begin
+        { CALL MODULE(routine,result): statut local = longueur du nom routine. }
+        If ArgCnt >= 2 Then Begin
+          SIdx := AstTable[ArgList[1]].SymRef;
+          If SIdx < 0 Then SIdx := FindSym(AstTable[ArgList[1]].Text, SK_NONE);
+          CodegenExprEAX(ArgList[0]); BinEmit8($50); { arg = routine }
+          CodegenExprEAX(ArgList[0]); BinEmit8($50); { routine }
+          BinCallLabel('_SASRT_modulen');
+          If SIdx >= 0 Then BinStoreEaxMem(SymTable[SIdx].AsmName);
+        End;
       End Else Begin
-        { EXECUTE, LABEL, MODULE, MODULEI, RXCHANGE, RXFREE,    }
+        { LABEL, RXCHANGE, RXFREE,    }
         { RXSUBSTR, SET, SYMPUT : stub — evaluer et ignorer args }
         For I := 0 To ArgCnt - 1 Do
           CodegenExprEAX(ArgList[I]);
@@ -8981,17 +9030,24 @@ Begin
   BinEmit8($31); BinEmit8($C0);
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { --- _SASRT_modulein(routine,arg): stub LongInt 0 (2 args) }
+  { --- _SASRT_modulein(routine,arg): longueur de arg (2 args) }
   BinDefineLabel('_SASRT_modulein');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($8B); BinEmit8($55); BinEmit8($0C);           { mov edx,[ebp+12] arg }
+  BinEmit8($31); BinEmit8($C0);                          { xor eax,eax }
+  BinEmit8($85); BinEmit8($D2);                          { test edx,edx }
+  BinJccLabel(4, '_modulein_done');                      { jz done }
+  BinDefineLabel('_modulein_loop');
+  BinEmit8($80); BinEmit8($3C); BinEmit8($02); BinEmit8($00); { cmp byte[edx+eax],0 }
+  BinJccLabel(4, '_modulein_done');                      { je done }
+  BinEmit8($40);                                         { inc eax }
+  BinJmpLabel('_modulein_loop');
+  BinDefineLabel('_modulein_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
-  { --- _SASRT_modulen(routine,arg): stub LongInt 0 (2 args) }
+  { --- _SASRT_modulen(routine,arg): longueur de arg (2 args) }
   BinDefineLabel('_SASRT_modulen');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
+  BinJmpLabel('_SASRT_modulein');
 
   { --- _SASRT_mopen(did,member,mode,reclen,cc): stub LongInt 0 (5 args) }
   BinDefineLabel('_SASRT_mopen');
@@ -9426,17 +9482,46 @@ Begin
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
   { --- _SASRT_ranbin(seed,n,p): Binomial(n,p) avec args entiers (3 args)      }
-  { p=0: retourne 0. p>=1: retourne n (Binomial(n,1)=n). [ebp+8]=seed         }
+  { p=0: 0. p=1: n (proba SAS 1). p=2..99: p pourcent. p>=100: n.            }
   BinDefineLabel('_SASRT_ranbin');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);           { push ebp; mov ebp,esp }
-  BinEmit8($8B); BinEmit8($45); BinEmit8($10);           { mov eax,[ebp+16] p }
-  BinEmit8($85); BinEmit8($C0);                          { test eax,eax }
-  BinJccLabel(5,'_ranbin_nonzero');                      { jnz: p!=0 -> return n }
-  BinEmit8($31); BinEmit8($C0);                          { xor eax,eax }
+  BinEmit8($53); BinEmit8($56); BinEmit8($57);           { push ebx,esi,edi }
+  BinEmit8($8B); BinEmit8($75); BinEmit8($0C);           { mov esi,[ebp+12] n }
+  BinEmit8($85); BinEmit8($F6);                          { test esi,esi }
+  BinJccLabel(14,'_ranbin_zero');                         { jle zero }
+  BinEmit8($8B); BinEmit8($7D); BinEmit8($10);           { mov edi,[ebp+16] p }
+  BinEmit8($85); BinEmit8($FF);                          { test edi,edi }
+  BinJccLabel(14,'_ranbin_zero');                         { jle zero }
+  BinEmit8($83); BinEmit8($FF); BinEmit8($01);           { cmp edi,1 }
+  BinJccLabel(4,'_ranbin_all');                           { je all }
+  BinEmit8($83); BinEmit8($FF); BinEmit8($64);           { cmp edi,100 }
+  BinJccLabel(13,'_ranbin_all');                          { jge all }
+  BinEmit8($31); BinEmit8($DB);                          { xor ebx,ebx success=0 }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);           { mov eax,[ebp+8] seed }
+  BinDefineLabel('_ranbin_loop');
+  BinEmit8($69); BinEmit8($C0); BinEmit8($6D); BinEmit8($C5); BinEmit8($C5); BinEmit8($41);
+  BinEmit8($05); BinEmit8($39); BinEmit8($30); BinEmit8($00); BinEmit8($00);
+  BinEmit8($25); BinEmit8($FF); BinEmit8($FF); BinEmit8($FF); BinEmit8($7F);
+  BinEmit8($50);                                          { push eax rng }
+  BinEmit8($B9); BinEmit32(100);                          { mov ecx,100 }
+  BinEmit8($31); BinEmit8($D2);                           { xor edx,edx }
+  BinEmit8($F7); BinEmit8($F1);                           { div ecx; edx=rng mod 100 }
+  BinEmit8($3B); BinEmit8($D7);                           { cmp edx,edi }
+  BinJccLabel(3,'_ranbin_no_success');                    { jae no success }
+  BinEmit8($43);                                          { inc ebx }
+  BinDefineLabel('_ranbin_no_success');
+  BinEmit8($58);                                          { pop eax rng }
+  BinEmit8($4E);                                          { dec esi }
+  BinJccLabel(5,'_ranbin_loop');                          { jnz loop }
+  BinEmit8($89); BinEmit8($D8);                           { mov eax,ebx }
   BinJmpLabel('_ranbin_done');
-  BinDefineLabel('_ranbin_nonzero');
-  BinEmit8($8B); BinEmit8($45); BinEmit8($0C);           { mov eax,[ebp+12] n }
+  BinDefineLabel('_ranbin_all');
+  BinEmit8($89); BinEmit8($F0);                           { mov eax,esi }
+  BinJmpLabel('_ranbin_done');
+  BinDefineLabel('_ranbin_zero');
+  BinEmit8($31); BinEmit8($C0);                           { xor eax,eax }
   BinDefineLabel('_ranbin_done');
+  BinEmit8($5F); BinEmit8($5E); BinEmit8($5B);            { pop edi,esi,ebx }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($0C); BinEmit8($00);
 
   { --- _SASRT_rancau(seed): Cauchy(0,1)=tan(pi*(U-0.5)) via LCG (1 arg)   }
@@ -11909,19 +11994,31 @@ Begin
   BinDefineLabel('_SASRT_kupdateb');
   BinJmpLabel('_SASRT_kupdate');
 
-  { --- _SASRT_modulec(routine,arg): ptr --- stub retourne chaine vide (2 args) }
+  { --- _SASRT_modulec(routine,arg): ptr --- retourne une copie de arg (2 args) }
   BinDefineLabel('_SASRT_modulec');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinPushLabel('_sas_strtmp');
-  BinEmit8($58);
+  BinEmit8($56); BinEmit8($57);                         { push esi,edi }
+  BinEmit8($8B); BinEmit8($75); BinEmit8($0C);           { mov esi,[ebp+12] arg }
+  BinMovRegLabel(7, '_sas_strtmp');                      { mov edi,_sas_strtmp }
+  BinEmit8($85); BinEmit8($F6);                          { test esi,esi }
+  BinJccLabel(4, '_modulec_empty');                      { jz empty }
+  BinDefineLabel('_modulec_loop');
+  BinEmit8($8A); BinEmit8($06);                          { mov al,[esi] }
+  BinEmit8($88); BinEmit8($07);                          { mov [edi],al }
+  BinEmit8($46); BinEmit8($47);                          { inc esi; inc edi }
+  BinEmit8($84); BinEmit8($C0);                          { test al,al }
+  BinJccLabel(5, '_modulec_loop');                       { jnz loop }
+  BinJmpLabel('_modulec_done');
+  BinDefineLabel('_modulec_empty');
+  BinEmit8($C6); BinEmit8($07); BinEmit8($00);           { mov byte[edi],0 }
+  BinDefineLabel('_modulec_done');
+  BinMovRegLabel(0, '_sas_strtmp');                      { mov eax,_sas_strtmp }
+  BinEmit8($5F); BinEmit8($5E);                          { pop edi,esi }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
-  { --- _SASRT_moduleic(routine,arg): ptr --- stub retourne chaine vide (2 args) }
+  { --- _SASRT_moduleic(routine,arg): ptr --- idem MODULEC }
   BinDefineLabel('_SASRT_moduleic');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinPushLabel('_sas_strtmp');
-  BinEmit8($58);
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
+  BinJmpLabel('_SASRT_modulec');
 
   { --- Batch 9 : fonctions retournant des chaines --- }
 
