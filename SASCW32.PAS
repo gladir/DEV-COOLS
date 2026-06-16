@@ -9371,10 +9371,18 @@ Begin
   BinEmit8($40);                                               { inc eax (+1) }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { RANBIN(seed,n,p): stub 0 (3 args) }
+  { --- _SASRT_ranbin(seed,n,p): Binomial(n,p) avec args entiers (3 args)      }
+  { p=0: retourne 0. p>=1: retourne n (Binomial(n,1)=n). [ebp+8]=seed         }
   BinDefineLabel('_SASRT_ranbin');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);           { push ebp; mov ebp,esp }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($10);           { mov eax,[ebp+16] p }
+  BinEmit8($85); BinEmit8($C0);                          { test eax,eax }
+  BinJccLabel(5,'_ranbin_nonzero');                      { jnz: p!=0 -> return n }
+  BinEmit8($31); BinEmit8($C0);                          { xor eax,eax }
+  BinJmpLabel('_ranbin_done');
+  BinDefineLabel('_ranbin_nonzero');
+  BinEmit8($8B); BinEmit8($45); BinEmit8($0C);           { mov eax,[ebp+12] n }
+  BinDefineLabel('_ranbin_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($0C); BinEmit8($00);
 
   { --- _SASRT_rancau(seed): Cauchy(0,1)=tan(pi*(U-0.5)) via LCG (1 arg)   }
@@ -9453,11 +9461,51 @@ Begin
   BinEmit8($8B); BinEmit8($45); BinEmit8($FC);
   BinEmit8($89); BinEmit8($EC); BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { RANGAM(seed,a): stub 0 (2 args) }
+  { --- _SASRT_rangam(seed,a): Gamma(a)=-ln(prod(Ui,i=1..a)) (2 args)          }
+  { [ebp+8]=seed [ebp+12]=a. sub esp,12: [ebp-4]=res [ebp-8/-6]=CW [ebp-12]=N }
   BinDefineLabel('_SASRT_rangam');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);           { push ebp; mov ebp,esp }
+  BinEmit8($83); BinEmit8($EC); BinEmit8($0C);           { sub esp,12 }
+  { CW floor RC=01 }
+  BinEmit8($D9); BinEmit8($7D); BinEmit8($F8);           { fnstcw [ebp-8] }
+  BinEmit8($0F); BinEmit8($B7); BinEmit8($45); BinEmit8($F8); { movzx eax,word[ebp-8] }
+  BinEmit8($25); BinEmit8($FF); BinEmit8($F3); BinEmit8($FF); BinEmit8($FF);
+  BinEmit8($0D); BinEmit8($00); BinEmit8($04); BinEmit8($00); BinEmit8($00);
+  BinEmit8($66); BinEmit8($89); BinEmit8($45); BinEmit8($FA); { mov [ebp-6],ax }
+  { Si a<=0: retourner 0 }
+  BinEmit8($8B); BinEmit8($4D); BinEmit8($0C);           { mov ecx,[ebp+12] a }
+  BinEmit8($85); BinEmit8($C9);                          { test ecx,ecx }
+  BinJccLabel(14,'_rangam_zero');                        { jle }
+  { EDX=&_sas_lcg_max, EAX=seed, P=1.0 }
+  BinMovRegLabel(2,'_sas_lcg_max');
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);           { mov eax,[ebp+8] seed }
+  BinEmit8($D9); BinEmit8($E8);                          { fld1 P=1.0 }
+  { Boucle: P = prod(Ui, i=1..a) }
+  BinDefineLabel('_rangam_loop');
+  BinEmit8($69); BinEmit8($C0); BinEmit8($6D); BinEmit8($C5); BinEmit8($C5); BinEmit8($41);
+  BinEmit8($05); BinEmit8($39); BinEmit8($30); BinEmit8($00); BinEmit8($00);
+  BinEmit8($25); BinEmit8($FF); BinEmit8($FF); BinEmit8($FF); BinEmit8($7F);
+  BinEmit8($83); BinEmit8($C8); BinEmit8($01);           { or eax,1 }
+  BinEmit8($89); BinEmit8($45); BinEmit8($F4);           { mov [ebp-12],eax }
+  BinEmit8($DB); BinEmit8($45); BinEmit8($F4);           { fild [ebp-12] }
+  BinEmit8($DA); BinEmit8($32);                          { fidiv [edx] -> U }
+  BinEmit8($DE); BinEmit8($C9);                          { fmulp -> P*=U }
+  BinEmit8($49);                                          { dec ecx }
+  BinJccLabel(5,'_rangam_loop');                         { jnz: continue }
+  { Calculer -ln(P) = Gamma(a,1) }
+  BinEmit8($D9); BinEmit8($ED);                          { fldln2 }
+  BinEmit8($D9); BinEmit8($C9);                          { fxch -> st0=P, st1=ln2 }
+  BinEmit8($D9); BinEmit8($F1);                          { fyl2x -> ln(P) }
+  BinEmit8($D9); BinEmit8($E0);                          { fchs -> -ln(P) }
+  BinEmit8($D9); BinEmit8($6D); BinEmit8($FA);           { fldcw [ebp-6] }
+  BinEmit8($DB); BinEmit8($5D); BinEmit8($FC);           { fistp [ebp-4] }
+  BinEmit8($D9); BinEmit8($6D); BinEmit8($F8);           { fldcw [ebp-8] }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($FC);           { mov eax,[ebp-4] }
+  BinJmpLabel('_rangam_done');
+  BinDefineLabel('_rangam_zero');
+  BinEmit8($31); BinEmit8($C0);                          { xor eax,eax }
+  BinDefineLabel('_rangam_done');
+  BinEmit8($89); BinEmit8($EC); BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
   { RANGE(x1,x2): LongInt --- ABS(x2-x1) via CDQ/XOR/SUB (18 octets) }
   BinDefineLabel('_SASRT_range');
@@ -9589,10 +9637,24 @@ Begin
   BinDefineLabel('_ranpoi_done');
   BinEmit8($89); BinEmit8($EC); BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
-  { RANTBL(seed,p1,p2): stub 0 (3 args) }
+  { --- _SASRT_rantbl(seed,p1,p2): categorie 1 si p1>0, 2 si p2>0, 3 sinon    }
+  { Pour args entiers: [ebp+8]=seed [ebp+12]=p1 [ebp+16]=p2                   }
   BinDefineLabel('_SASRT_rantbl');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);           { push ebp; mov ebp,esp }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($0C);           { mov eax,[ebp+12] p1 }
+  BinEmit8($85); BinEmit8($C0);                          { test eax,eax }
+  BinJccLabel(5,'_rantbl_cat1');                         { jnz: p1!=0 -> cat 1 }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($10);           { mov eax,[ebp+16] p2 }
+  BinEmit8($85); BinEmit8($C0);                          { test eax,eax }
+  BinJccLabel(5,'_rantbl_cat2');                         { jnz: p2!=0 -> cat 2 }
+  BinEmit8($B8); BinEmit8($03); BinEmit8($00); BinEmit8($00); BinEmit8($00);
+  BinJmpLabel('_rantbl_done');
+  BinDefineLabel('_rantbl_cat2');
+  BinEmit8($B8); BinEmit8($02); BinEmit8($00); BinEmit8($00); BinEmit8($00);
+  BinJmpLabel('_rantbl_done');
+  BinDefineLabel('_rantbl_cat1');
+  BinEmit8($B8); BinEmit8($01); BinEmit8($00); BinEmit8($00); BinEmit8($00);
+  BinDefineLabel('_rantbl_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($0C); BinEmit8($00);
 
   { RANTRI(seed,h): stub 0 (2 args) }
