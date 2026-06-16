@@ -1,12 +1,10 @@
-/* test_cos.sas - COS : cosinus (stub) */
+/* test_cos.sas - COS : cosinus */
 data _null_;
-  /* COS(0) = 1 (stub retourne 0) */
+  /* Backend entier : FCOS puis arrondi entier x87 */
   a = cos(0);
-  put 'COS(0) = ' a;
-  /* COS(1) environ 0.54 (stub=0) */
+  put 'COS(0) = ' a '  (attendu: 1)';
   b = cos(1);
-  put 'COS(1) = ' b;
-  /* COS(-1) environ 0.54 (stub=0) */
+  put 'COS(1) = ' b '  (attendu: 1)';
   c = cos(-1);
-  put 'COS(-1) = ' c;
+  put 'COS(-1) = ' c '  (attendu: 1)';
 run;

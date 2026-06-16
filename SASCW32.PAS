@@ -348,9 +348,9 @@
               ROUND(x)     : arrondi a l entier le plus proche
               CEIL(x)      : plafond (entier >= x)
               FLOOR(x)     : plancher (entier <= x)
-              SQRT(x)      : racine carree (FPU ou stub entier)
-              LOG(x)       : logarithme naturel (FPU ou stub)
-              EXP(x)       : exponentielle (FPU ou stub)
+              SQRT(x)      : racine carree via FPU x87
+              LOG(x)       : logarithme naturel via FPU x87
+              EXP(x)       : exponentielle via FPU x87
             Codegen : appel a _SASRT_abs, _SASRT_int etc. ou calcul inline
               en 80386 (CWD/IDIV pour MOD, FLD/FSQRT pour SQRT).
 
@@ -368,7 +368,7 @@
               CAT(s1,s2,...)   : concatenation sans rognage d espaces
               PUT(n)           : convertir un nombre en chaine
             Fonctions de date :
-              TODAY()          : date courante (stub : valeur fixe ou 0)
+              TODAY()          : date courante via GetLocalTime
               MDY(m,d,y)       : construire une date SAS a partir de m/j/a
               YEAR(d)          : extraire l annee d une date SAS
               MONTH(d)         : extraire le mois
@@ -7329,10 +7329,17 @@ Begin
   BinEmit8($5B);                                      { pop ebx }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
-  { --- _SASRT_close(dsid): stub LongInt 0 (1 arg) }
+  { --- _SASRT_close(dsid): LongInt status (0 si dsid valide, -1 sinon) }
   BinDefineLabel('_SASRT_close');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);                 { mov eax,[ebp+8] }
+  BinEmit8($85); BinEmit8($C0);                                { test eax,eax }
+  BinJccLabel(15, '_close_ok');                                { jg ok }
+  BinEmit8($B8); BinEmit32(-1);                                { mov eax,-1 }
+  BinJmpLabel('_close_done');
+  BinDefineLabel('_close_ok');
+  BinEmit8($31); BinEmit8($C0);                                { xor eax,eax }
+  BinDefineLabel('_close_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
   { --- _SASRT_cnonct(x,df,p): non-centralite chi-carre approx (3 args) }
@@ -7657,10 +7664,15 @@ Begin
   BinEmit8($89); BinEmit8($EC); BinEmit8($5D);           { mov esp,ebp; pop ebp }
   BinEmit8($C2); BinEmit8($08); BinEmit8($00);           { ret 8 }
 
-  { --- _SASRT_curobs(dsid): stub LongInt 0 (1 arg) }
+  { --- _SASRT_curobs(dsid): observation courante approx (1 arg) }
+  { Sans curseur dataset natif: retourne dsid si positif, sinon 1. }
   BinDefineLabel('_SASRT_curobs');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);           { mov eax,[ebp+8] }
+  BinEmit8($85); BinEmit8($C0);                          { test eax,eax }
+  BinJccLabel(15, '_curobs_done');                       { jg done }
+  BinEmit8($B8); BinEmit32(1);                           { mov eax,1 }
+  BinDefineLabel('_curobs_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
   { --- _SASRT_cv(x1,x2): LongInt --- coefficient de variation = 100*sqrt(2)*|x1-x2|/(x1+x2) }
@@ -11052,7 +11064,7 @@ Begin
   If FName = 'CDF'     Then Begin BinCallLabel('_SASRT_cdf');     Exit; End;
   If FName = 'CEILZ'   Then Begin BinCallLabel('_SASRT_ceilz');   Exit; End;
   If FName = 'CEXIST'  Then Begin BinCallLabel('_SASRT_cexist');  Exit; End;
-  { CINV / CNONCT ; CLOSE reste limite sans moteur dataset complet }
+  { CINV / CLOSE / CNONCT }
   If FName = 'CINV'    Then Begin BinCallLabel('_SASRT_cinv');    Exit; End;
   If FName = 'CLOSE'   Then Begin BinCallLabel('_SASRT_close');   Exit; End;
   If FName = 'CNONCT'  Then Begin BinCallLabel('_SASRT_cnonct');  Exit; End;
@@ -11060,7 +11072,7 @@ Begin
   If FName = 'COMB'    Then Begin BinCallLabel('_SASRT_comb');    Exit; End;
   { COMPBL : compression espaces multiples (retourne ptr) }
   If FName = 'COMPBL'  Then Begin BinCallLabel('_SASRT_compbl');  Exit; End;
-  { COLLATE : sequence ASCII (stub ptr) }
+  { COLLATE : sequence ASCII [start..end] }
   If FName = 'COLLATE' Then Begin BinCallLabel('_SASRT_collate'); Exit; End;
   { Finance/constantes }
   If FName = 'COMPOUND' Then Begin BinCallLabel('_SASRT_compound'); Exit; End;
@@ -13218,7 +13230,7 @@ End;
 { ============================================================ }
 { TODO 24 — Runtime : fonctions de date integrees              }
 { Dates SAS = entier (jours depuis 01/01/1960).                }
-{ V1 : stubs retournant 0, TODAY() retourne 0.                 }
+{ Runtime date courant via GetLocalTime et conversions entieres. }
 { ============================================================ }
 Procedure EmitRuntimeDateFunc;
 Begin
