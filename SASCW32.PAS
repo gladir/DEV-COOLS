@@ -6120,6 +6120,9 @@ Begin
   BinAddImport('kernel32.dll', '_GetEnvironmentVariableA@12');
   BinAddImport('kernel32.dll', '_GetLocalTime@4');
   BinAddImport('kernel32.dll', '_DeleteFileA@4');
+  BinAddImport('kernel32.dll', '_CreateFileA@28');
+  BinAddImport('kernel32.dll', '_CloseHandle@4');
+  BinAddImport('kernel32.dll', '_SetFilePointer@16');
 End;
 
 Procedure BinMovRegImm32(R: Integer; V: LongInt);
@@ -6485,6 +6488,25 @@ Begin
   { Slot dif unique pour _SASRT_dif(x,n) : valeur precedente (4 octets) }
   BinDefineDataLabel('_sas_dif_buf');
   For J := 1 To 4 Do BinEmitDataByte(0);
+  { Table file-descriptors SAS : 16 entrees max }
+  { _sas_fid_h[i]   : HANDLE Win32 (-1=libre)   }
+  { _sas_fid_sep[i] : separateur FGET (defaut espace) }
+  { _sas_fid_wl[i]  : longueur buffer ecriture  }
+  { _sas_fid_rp[i]  : position lecture courante }
+  { _sas_fid_rb     : 16x256 octets lecture     }
+  { _sas_fid_wb     : 16x256 octets ecriture    }
+  BinDefineDataLabel('_sas_fid_h');
+  For J := 1 To 64 Do BinEmitDataByte($FF);
+  BinDefineDataLabel('_sas_fid_sep');
+  For J := 1 To 16 Do BinEmitDataByte($20);
+  BinDefineDataLabel('_sas_fid_wl');
+  For J := 1 To 64 Do BinEmitDataByte(0);
+  BinDefineDataLabel('_sas_fid_rp');
+  For J := 1 To 64 Do BinEmitDataByte(0);
+  BinDefineDataLabel('_sas_fid_rb');
+  For J := 1 To 4096 Do BinEmitDataByte(0);
+  BinDefineDataLabel('_sas_fid_wb');
+  For J := 1 To 4096 Do BinEmitDataByte(0);
   { Constante Euler-Mascheroni gamma = 0.5772156649015329 (IEEE 754 double LE) }
   BinDefineDataLabel('_sas_euler');
   BinEmitDataByte($19); BinEmitDataByte($B6); BinEmitDataByte($6F); BinEmitDataByte($FC);
@@ -8392,10 +8414,18 @@ Begin
   BinDefineLabel('_doptnum_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { --- _SASRT_dropnote(dsid,note): stub LongInt 0 (2 args) }
+  { --- _SASRT_dropnote(dsid,note): 0 si dsid>0, -1 sinon (2 args) }
+  { [ebp+8]=dsid [ebp+12]=noteid. Valide dsid ; note supprimee = no-op. }
   BinDefineLabel('_SASRT_dropnote');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);        { push ebp; mov ebp,esp }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);        { mov eax,[ebp+8] dsid }
+  BinEmit8($85); BinEmit8($C0);                       { test eax,eax }
+  BinJccLabel(15,'_dropnote_ok');                      { jg _dropnote_ok }
+  BinEmit8($B8); BinEmit32(-1);                       { mov eax,-1 dsid invalide }
+  BinJmpLabel('_dropnote_done');
+  BinDefineLabel('_dropnote_ok');
+  BinEmit8($31); BinEmit8($C0);                       { xor eax,eax → 0=OK }
+  BinDefineLabel('_dropnote_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
   { --- _SASRT_dur(n,y,c,par,red): Macaulay duration sum(t*CF*v^t)/sum(CF*v^t) (5 args) }
@@ -8561,10 +8591,21 @@ Begin
   BinEmit8($5D);                                          { .done: pop ebp }
   BinEmit8($C2); BinEmit8($04); BinEmit8($00);           { ret 4 }
 
-  { --- _SASRT_exist(dsname,type): stub LongInt 0 (2 args) }
+  { --- _SASRT_exist(dsname,type): 1 si chemin existe, 0 sinon (2 args) }
+  { [ebp+8]=dsname [ebp+12]=type. Traite dsname comme chemin fichier.  }
   BinDefineLabel('_SASRT_exist');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);               { push ebp; mov ebp,esp }
+  BinEmit8($83); BinEmit8($7D); BinEmit8($08); BinEmit8($00);{ cmp dword[ebp+8],0 }
+  BinJccLabel(4,'_exist_zero');                               { je _exist_zero }
+  BinEmit8($FF); BinEmit8($75); BinEmit8($08);               { push [ebp+8] dsname }
+  BinCallImport('_GetFileAttributesA@4');                      { eax=-1 si absent }
+  BinEmit8($83); BinEmit8($F8); BinEmit8($FF);               { cmp eax,-1 }
+  BinJccLabel(4,'_exist_zero');                               { je _exist_zero }
+  BinEmit8($B8); BinEmit32(1);                               { mov eax,1 }
+  BinJmpLabel('_exist_done');
+  BinDefineLabel('_exist_zero');
+  BinEmit8($31); BinEmit8($C0);                              { xor eax,eax }
+  BinDefineLabel('_exist_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
   { --- _SASRT_fact(n): n! LongInt (1 arg)                          }
@@ -8586,22 +8627,54 @@ Begin
   BinEmit8($5D);                                  { pop ebp               }
   BinEmit8($C2); BinEmit8($04); BinEmit8($00);  { ret 4                 }
 
-  { --- _SASRT_fappend(fid): stub LongInt 0 (1 arg) }
+  { --- _SASRT_fappend(fid): ajoute enreg en fin de fichier, alias FWRITE (1 arg) }
   BinDefineLabel('_SASRT_fappend');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+  BinJmpLabel('_SASRT_fwrite');
 
-  { --- _SASRT_fclose(fid): stub LongInt 0 (1 arg) }
+  { --- _SASRT_fclose(fid): CloseHandle, libere slot, retourne 0=OK -1=err (1 arg) }
+  { [ebp+8]=fid(1..16). SIB [eax+ebx*4]: 10 011 000 = 0x98. }
   BinDefineLabel('_SASRT_fclose');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);    { push ebp; mov ebp,esp }
+  BinEmit8($53);                                    { push ebx }
+  BinEmit8($8B); BinEmit8($5D); BinEmit8($08);    { mov ebx,[ebp+8] fid }
+  BinEmit8($4B);                                    { dec ebx (slot=fid-1) }
+  BinEmit8($83); BinEmit8($FB); BinEmit8($10);    { cmp ebx,16 }
+  BinJccLabel(3,'_fclos_err');                      { jae err }
+  BinMovRegLabel(0,'_sas_fid_h');
+  BinEmit8($8B); BinEmit8($04); BinEmit8($98);    { mov eax,[eax+ebx*4] handle }
+  BinEmit8($83); BinEmit8($F8); BinEmit8($FF);    { cmp eax,-1 }
+  BinJccLabel(4,'_fclos_err');                      { je (non ouvert) }
+  BinEmit8($50);                                    { push eax (handle) }
+  BinCallImport('_CloseHandle@4');
+  BinMovRegLabel(0,'_sas_fid_h');
+  BinEmit8($C7); BinEmit8($04); BinEmit8($98); BinEmit32(-1); { mov [eax+ebx*4],-1 }
+  BinEmit8($31); BinEmit8($C0);                    { xor eax,eax (0=OK) }
+  BinJmpLabel('_fclos_done');
+  BinDefineLabel('_fclos_err');
+  BinEmit8($B8); BinEmit32(-1);                    { mov eax,-1 }
+  BinDefineLabel('_fclos_done');
+  BinEmit8($5B);                                    { pop ebx }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { --- _SASRT_fcol(fid): stub LongInt 0 (1 arg) }
+  { --- _SASRT_fcol(fid): colonne ecriture courante = wlen+1, -1 si err (1 arg) }
   BinDefineLabel('_SASRT_fcol');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($53);                                    { push ebx }
+  BinEmit8($8B); BinEmit8($5D); BinEmit8($08);    { mov ebx,[ebp+8] }
+  BinEmit8($4B);                                    { dec ebx }
+  BinEmit8($83); BinEmit8($FB); BinEmit8($10);    { cmp ebx,16 }
+  BinJccLabel(3,'_fcol_err');
+  BinMovRegLabel(0,'_sas_fid_h');
+  BinEmit8($83); BinEmit8($3C); BinEmit8($98); BinEmit8($FF); { cmp [eax+ebx*4],-1 }
+  BinJccLabel(4,'_fcol_err');
+  BinMovRegLabel(0,'_sas_fid_wl');
+  BinEmit8($8B); BinEmit8($04); BinEmit8($98);    { mov eax,[eax+ebx*4] wlen }
+  BinEmit8($40);                                    { inc eax (1-base) }
+  BinJmpLabel('_fcol_done');
+  BinDefineLabel('_fcol_err');
+  BinEmit8($B8); BinEmit32(-1);
+  BinDefineLabel('_fcol_done');
+  BinEmit8($5B);
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
   { --- _SASRT_fdelete(fileref): appelle DeleteFileA(path) → 0=OK 1=erreur (1 arg) }
@@ -8613,16 +8686,16 @@ Begin
   BinEmit8($83); BinEmit8($F0); BinEmit8($01);     { xor eax,1 : 0=OK 1=erreur }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { --- _SASRT_fetch(dsid): stub LongInt 0 (1 arg) }
+  { --- _SASRT_fetch(dsid): -1 fin dataset, aucune observation disponible (1 arg) }
   BinDefineLabel('_SASRT_fetch');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($B8); BinEmit32(-1);                              { mov eax,-1 }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { --- _SASRT_fetchobs(dsid,obs): stub LongInt 0 (2 args) }
+  { --- _SASRT_fetchobs(dsid,obs): -1 observation absente, aucune donnee (2 args) }
   BinDefineLabel('_SASRT_fetchobs');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($B8); BinEmit32(-1);                              { mov eax,-1 }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
   { --- _SASRT_fexist(fileref): stub LongInt 0 (1 arg) }
@@ -8631,10 +8704,66 @@ Begin
   BinEmit8($31); BinEmit8($C0);
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { --- _SASRT_fget(fid,var,len): stub LongInt 0 (3 args) }
+  { --- _SASRT_fget(fid,var,len): extrait champ de rbuf par sep, 0=OK -1=fin (3 args) }
+  { [ebp+8]=fid [ebp+12]=var(ptr) [ebp+16]=len. ESI=src(rbuf+rpos) EDI=dst. }
   BinDefineLabel('_SASRT_fget');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);    { push ebp; mov ebp,esp }
+  BinEmit8($53); BinEmit8($56); BinEmit8($57);    { push ebx esi edi }
+  BinEmit8($8B); BinEmit8($5D); BinEmit8($08);    { mov ebx,[ebp+8] }
+  BinEmit8($4B);                                    { dec ebx (slot) }
+  BinEmit8($83); BinEmit8($FB); BinEmit8($10);    { cmp ebx,16 }
+  BinJccLabel(3,'_fget_err');                       { jae }
+  BinMovRegLabel(0,'_sas_fid_h');
+  BinEmit8($83); BinEmit8($3C); BinEmit8($98); BinEmit8($FF); { cmp [eax+ebx*4],-1 }
+  BinJccLabel(4,'_fget_err');                       { je (non ouvert) }
+  { esi = _sas_fid_rb + slot*256 + rpos }
+  BinEmit8($89); BinEmit8($DE);                    { mov esi,ebx }
+  BinEmit8($C1); BinEmit8($E6); BinEmit8($08);    { shl esi,8 }
+  BinMovRegLabel(0,'_sas_fid_rb');
+  BinEmit8($01); BinEmit8($C6);                    { add esi,eax (→ &rbuf[slot]) }
+  BinMovRegLabel(0,'_sas_fid_rp');
+  BinEmit8($03); BinEmit8($34); BinEmit8($98);    { add esi,[eax+ebx*4] (+rpos) }
+  { si [esi]==0 : fin enregistrement }
+  BinEmit8($8A); BinEmit8($06);                    { mov al,[esi] }
+  BinEmit8($84); BinEmit8($C0);                    { test al,al }
+  BinJccLabel(4,'_fget_end');                       { jz fin enreg }
+  { sep = _sas_fid_sep[slot] (dans CL) }
+  BinMovRegLabel(0,'_sas_fid_sep');
+  BinEmit8($8A); BinEmit8($0C); BinEmit8($18);    { mov cl,[eax+ebx*1] sep }
+  BinEmit8($8B); BinEmit8($7D); BinEmit8($0C);    { mov edi,[ebp+12] (var dst) }
+  BinEmit8($8B); BinEmit8($55); BinEmit8($10);    { mov edx,[ebp+16] (len) }
+  BinDefineLabel('_fget_copy');
+  BinEmit8($85); BinEmit8($D2);                    { test edx,edx }
+  BinJccLabel(4,'_fget_sep_chk');                   { jz len epuise }
+  BinEmit8($8A); BinEmit8($06);                    { mov al,[esi] }
+  BinEmit8($84); BinEmit8($C0);                    { test al,al }
+  BinJccLabel(4,'_fget_sep_chk');                   { jz fin enreg }
+  BinEmit8($38); BinEmit8($C8);                    { cmp al,cl (vs sep) }
+  BinJccLabel(4,'_fget_skip_sep');                  { je → sep trouv }
+  BinEmit8($88); BinEmit8($07);                    { mov [edi],al }
+  BinEmit8($46); BinEmit8($47);                    { inc esi; inc edi }
+  BinEmit8($4A);                                    { dec edx }
+  BinJmpLabel('_fget_copy');
+  BinDefineLabel('_fget_skip_sep');
+  BinEmit8($46);                                    { inc esi (skip sep) }
+  BinDefineLabel('_fget_sep_chk');
+  BinEmit8($C6); BinEmit8($07); BinEmit8($00);    { mov [edi],0 (null-term) }
+  { Mettre a jour rpos = esi - rbuf_base_slot }
+  BinEmit8($89); BinEmit8($F7);                    { mov edi,esi (save esi) }
+  BinEmit8($89); BinEmit8($DE);                    { mov esi,ebx }
+  BinEmit8($C1); BinEmit8($E6); BinEmit8($08);    { shl esi,8 }
+  BinMovRegLabel(0,'_sas_fid_rb');
+  BinEmit8($01); BinEmit8($C6);                    { add esi,eax }
+  BinEmit8($29); BinEmit8($F7);                    { sub edi,esi (new rpos) }
+  BinMovRegLabel(0,'_sas_fid_rp');
+  BinEmit8($89); BinEmit8($3C); BinEmit8($98);    { mov [eax+ebx*4],edi }
+  BinEmit8($31); BinEmit8($C0);                    { xor eax,eax (0=OK) }
+  BinJmpLabel('_fget_ret');
+  BinDefineLabel('_fget_end');
+  BinDefineLabel('_fget_err');
+  BinEmit8($B8); BinEmit32(-1);
+  BinDefineLabel('_fget_ret');
+  BinEmit8($5F); BinEmit8($5E); BinEmit8($5B);   { pop edi esi ebx }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($0C); BinEmit8($00);
 
   { --- _SASRT_fileexist(path): LongInt 1=existe 0=non (1 arg)    }
@@ -8674,64 +8803,397 @@ Begin
   BinEmit8($31); BinEmit8($C0);
   BinEmit8($5D); BinEmit8($C2); BinEmit8($10); BinEmit8($00);
 
-  { --- _SASRT_fnote(fid): stub LongInt 0 (1 arg) }
+  { --- _SASRT_fnote(fid): retourne position fichier courante comme note-id (1 arg) }
+  { SetFilePointer(handle,0,NULL,FILE_CURRENT=1) → position = note ID }
   BinDefineLabel('_SASRT_fnote');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($53);
+  BinEmit8($8B); BinEmit8($5D); BinEmit8($08);
+  BinEmit8($4B);
+  BinEmit8($83); BinEmit8($FB); BinEmit8($10);
+  BinJccLabel(3,'_fnote_err');
+  BinMovRegLabel(0,'_sas_fid_h');
+  BinEmit8($8B); BinEmit8($04); BinEmit8($98);
+  BinEmit8($83); BinEmit8($F8); BinEmit8($FF);
+  BinJccLabel(4,'_fnote_err');
+  BinEmit8($6A); BinEmit8($01);                   { push 1 (FILE_CURRENT) }
+  BinEmit8($6A); BinEmit8($00);
+  BinEmit8($6A); BinEmit8($00);
+  BinEmit8($50);                                    { push eax (handle) }
+  BinCallImport('_SetFilePointer@16');              { eax = position courante }
+  BinJmpLabel('_fnote_done');
+  BinDefineLabel('_fnote_err');
+  BinEmit8($B8); BinEmit32(-1);
+  BinDefineLabel('_fnote_done');
+  BinEmit8($5B);
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { --- _SASRT_fopen(fileref,mode): stub LongInt 0 (2 args) }
+  { --- _SASRT_fopen(fileref,mode): ouvre fichier Win32, retourne fid 1..16 ou 0 }
+  { [ebp+8]=path [ebp+12]=mode('I'=lect 'O'=ecrit 'A'=ajout 'U'=maj). 0=echec. }
+  { SIB [esi+ebx*4]: scale=10,idx=011(ebx),base=110(esi) → 10 011 110 = 0x9E   }
   BinDefineLabel('_SASRT_fopen');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);     { push ebp; mov ebp,esp }
+  BinEmit8($53); BinEmit8($56); BinEmit8($57);     { push ebx esi edi }
+  { Chercher slot libre (_sas_fid_h[i]==-1) }
+  BinEmit8($31); BinEmit8($DB);                    { xor ebx,ebx (slot=0) }
+  BinMovRegLabel(6,'_sas_fid_h');                  { mov esi,_sas_fid_h }
+  BinDefineLabel('_fop_scan');
+  BinEmit8($83); BinEmit8($3C); BinEmit8($9E); BinEmit8($FF);  { cmp [esi+ebx*4],-1 }
+  BinJccLabel(4,'_fop_found');                     { je _fop_found }
+  BinEmit8($43);                                   { inc ebx }
+  BinEmit8($83); BinEmit8($FB); BinEmit8($10);    { cmp ebx,16 }
+  BinJccLabel(2,'_fop_scan');                      { jb _fop_scan }
+  BinEmit8($31); BinEmit8($C0);                    { xor eax,eax (table pleine) }
+  BinJmpLabel('_fop_done');
+  BinDefineLabel('_fop_found');
+  { Determiner flags selon mode[0] : edi=dwAccess, edx=dwCreation }
+  BinEmit8($8B); BinEmit8($7D); BinEmit8($0C);    { mov edi,[ebp+12] (mode ptr) }
+  BinEmit8($B8); BinEmit32(LongInt($80000000));    { mov eax,GENERIC_READ (defaut I) }
+  BinEmit8($BA); BinEmit32(3);                     { mov edx,OPEN_EXISTING }
+  BinEmit8($85); BinEmit8($FF);                    { test edi,edi }
+  BinJccLabel(4,'_fop_create');                    { je (null → mode I) }
+  BinEmit8($8A); BinEmit8($0F);                    { mov cl,[edi] }
+  BinEmit8($80); BinEmit8($F9); BinEmit8($4F);    { cmp cl,'O' }
+  BinJccLabel(5,'_fop_chk_a');                     { jne _fop_chk_a }
+  BinEmit8($B8); BinEmit32($40000000);             { mov eax,GENERIC_WRITE }
+  BinEmit8($BA); BinEmit32(2);                     { mov edx,CREATE_ALWAYS }
+  BinJmpLabel('_fop_create');
+  BinDefineLabel('_fop_chk_a');
+  BinEmit8($80); BinEmit8($F9); BinEmit8($41);    { cmp cl,'A' }
+  BinJccLabel(5,'_fop_chk_u');                     { jne _fop_chk_u }
+  BinEmit8($B8); BinEmit32($40000000);             { mov eax,GENERIC_WRITE }
+  BinEmit8($BA); BinEmit32(4);                     { mov edx,OPEN_ALWAYS }
+  BinJmpLabel('_fop_create');
+  BinDefineLabel('_fop_chk_u');
+  BinEmit8($80); BinEmit8($F9); BinEmit8($55);    { cmp cl,'U' }
+  BinJccLabel(5,'_fop_create');                    { jne (default I) }
+  BinEmit8($B8); BinEmit32(LongInt($C0000000));    { mov eax,GENERIC_READ or WRITE }
+  BinDefineLabel('_fop_create');
+  { CreateFileA(path,access,0,NULL,creation,FILE_ATTR_NORMAL,NULL) }
+  BinEmit8($6A); BinEmit8($00);                   { push 0 (hTemplateFile) }
+  BinEmit8($6A); BinEmit8($80);                   { push 0x80 (FILE_ATTRIBUTE_NORMAL) }
+  BinEmit8($52);                                   { push edx (dwCreationDisposition) }
+  BinEmit8($6A); BinEmit8($00);                   { push 0 (lpSecurityAttributes) }
+  BinEmit8($6A); BinEmit8($00);                   { push 0 (dwShareMode) }
+  BinEmit8($50);                                   { push eax (dwDesiredAccess) }
+  BinEmit8($FF); BinEmit8($75); BinEmit8($08);   { push [ebp+8] (lpFileName) }
+  BinCallImport('_CreateFileA@28');
+  BinEmit8($83); BinEmit8($F8); BinEmit8($FF);   { cmp eax,-1 (INVALID_HANDLE_VALUE) }
+  BinJccLabel(4,'_fop_fail');                      { je _fop_fail }
+  { Stocker handle : [esi+ebx*4]=eax }
+  BinEmit8($89); BinEmit8($04); BinEmit8($9E);   { mov [esi+ebx*4],eax }
+  { Initialiser sep[slot]=' ', wl[slot]=0, rp[slot]=0 }
+  BinMovRegLabel(0,'_sas_fid_sep');               { mov eax,_sas_fid_sep }
+  BinEmit8($C6); BinEmit8($04); BinEmit8($18); BinEmit8($20); { mov [eax+ebx*1],0x20 }
+  BinMovRegLabel(0,'_sas_fid_wl');                { mov eax,_sas_fid_wl }
+  BinEmit8($C7); BinEmit8($04); BinEmit8($98); BinEmit32(0); { mov [eax+ebx*4],0 }
+  BinMovRegLabel(0,'_sas_fid_rp');               { mov eax,_sas_fid_rp }
+  BinEmit8($C7); BinEmit8($04); BinEmit8($98); BinEmit32(0); { mov [eax+ebx*4],0 }
+  { Pour mode 'A' : SetFilePointer(handle,0,NULL,FILE_END=2) }
+  BinEmit8($85); BinEmit8($FF);                   { test edi,edi }
+  BinJccLabel(4,'_fop_ok');                        { je (null mode → pas seek) }
+  BinEmit8($80); BinEmit8($3F); BinEmit8($41);   { cmp byte[edi],'A' }
+  BinJccLabel(5,'_fop_ok');                        { jne }
+  BinMovRegLabel(0,'_sas_fid_h');                 { mov eax,_sas_fid_h }
+  BinEmit8($8B); BinEmit8($04); BinEmit8($98);   { mov eax,[eax+ebx*4] handle }
+  BinEmit8($6A); BinEmit8($02);                   { push 2 (FILE_END) }
+  BinEmit8($6A); BinEmit8($00);                   { push 0 (lpDistanceToMoveHigh) }
+  BinEmit8($6A); BinEmit8($00);                   { push 0 (lDistanceToMove) }
+  BinEmit8($50);                                   { push eax (hFile) }
+  BinCallImport('_SetFilePointer@16');
+  BinDefineLabel('_fop_ok');
+  BinEmit8($8D); BinEmit8($43); BinEmit8($01);   { lea eax,[ebx+1] (fid=slot+1) }
+  BinJmpLabel('_fop_done');
+  BinDefineLabel('_fop_fail');
+  BinEmit8($31); BinEmit8($C0);                    { xor eax,eax (echec) }
+  BinDefineLabel('_fop_done');
+  BinEmit8($5F); BinEmit8($5E); BinEmit8($5B);   { pop edi esi ebx }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
-  { --- _SASRT_foptnum(fid): stub LongInt 0 (1 arg) }
+  { --- _SASRT_foptnum(fid): 0 options disponibles (fid valide), -1 sinon (1 arg) }
   BinDefineLabel('_SASRT_foptnum');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($53);
+  BinEmit8($8B); BinEmit8($5D); BinEmit8($08);
+  BinEmit8($4B);
+  BinEmit8($83); BinEmit8($FB); BinEmit8($10);
+  BinJccLabel(3,'_foptn_err');
+  BinMovRegLabel(0,'_sas_fid_h');
+  BinEmit8($83); BinEmit8($3C); BinEmit8($98); BinEmit8($FF);
+  BinJccLabel(4,'_foptn_err');
+  BinEmit8($31); BinEmit8($C0);                    { xor eax,eax (0 options) }
+  BinJmpLabel('_foptn_done');
+  BinDefineLabel('_foptn_err');
+  BinEmit8($B8); BinEmit32(-1);
+  BinDefineLabel('_foptn_done');
+  BinEmit8($5B);
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { --- _SASRT_fpoint(fid,note): stub LongInt 0 (2 args) }
+  { --- _SASRT_fpoint(fid,note): SetFilePointer(note,FILE_BEGIN), 0=OK -1=err (2 args) }
   BinDefineLabel('_SASRT_fpoint');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
+  BinEmit8($53);
+  BinEmit8($8B); BinEmit8($5D); BinEmit8($08);
+  BinEmit8($4B);
+  BinEmit8($83); BinEmit8($FB); BinEmit8($10);
+  BinJccLabel(3,'_fpt_err');
+  BinMovRegLabel(0,'_sas_fid_h');
+  BinEmit8($8B); BinEmit8($04); BinEmit8($98);
+  BinEmit8($83); BinEmit8($F8); BinEmit8($FF);
+  BinJccLabel(4,'_fpt_err');
+  BinEmit8($6A); BinEmit8($00);                   { push 0 (FILE_BEGIN) }
+  BinEmit8($6A); BinEmit8($00);
+  BinEmit8($FF); BinEmit8($75); BinEmit8($0C);   { push [ebp+12] (note=offset) }
+  BinEmit8($50);                                    { push eax (handle) }
+  BinCallImport('_SetFilePointer@16');
   BinEmit8($31); BinEmit8($C0);
+  BinJmpLabel('_fpt_done');
+  BinDefineLabel('_fpt_err');
+  BinEmit8($B8); BinEmit32(-1);
+  BinDefineLabel('_fpt_done');
+  BinEmit8($5B);
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
-  { --- _SASRT_fpos(fid,col): stub LongInt 0 (2 args) }
+  { --- _SASRT_fpos(fid,col): positionne wbuf a col-1 (pad espaces), 0=OK -1=err (2 args) }
+  { [ebp+8]=fid [ebp+12]=col(1-based). EDI=&wbuf[slot]. }
   BinDefineLabel('_SASRT_fpos');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
+  BinEmit8($53); BinEmit8($57);                    { push ebx edi }
+  BinEmit8($8B); BinEmit8($5D); BinEmit8($08);
+  BinEmit8($4B);
+  BinEmit8($83); BinEmit8($FB); BinEmit8($10);
+  BinJccLabel(3,'_fpos_err');
+  BinMovRegLabel(0,'_sas_fid_h');
+  BinEmit8($83); BinEmit8($3C); BinEmit8($98); BinEmit8($FF);
+  BinJccLabel(4,'_fpos_err');
+  { ecx = col-1 (target wlen) }
+  BinEmit8($8B); BinEmit8($4D); BinEmit8($0C);    { mov ecx,[ebp+12] }
+  BinEmit8($49);                                    { dec ecx }
+  BinEmit8($83); BinEmit8($F9); BinEmit8($00);    { cmp ecx,0 }
+  BinJccLabel(12,'_fpos_err');                      { jl }
+  BinEmit8($83); BinEmit8($F9); BinEmit8($FE);    { cmp ecx,254 }
+  BinJccLabel(15,'_fpos_err');                      { jg }
+  { edi = &wbuf[slot] }
+  BinEmit8($89); BinEmit8($DF);                    { mov edi,ebx }
+  BinEmit8($C1); BinEmit8($E7); BinEmit8($08);    { shl edi,8 }
+  BinMovRegLabel(0,'_sas_fid_wb');
+  BinEmit8($01); BinEmit8($C7);                    { add edi,eax }
+  { eax = wlen courant }
+  BinMovRegLabel(0,'_sas_fid_wl');
+  BinEmit8($8B); BinEmit8($04); BinEmit8($98);    { mov eax,[eax+ebx*4] }
+  BinDefineLabel('_fpos_pad');
+  BinEmit8($39); BinEmit8($C8);                    { cmp eax,ecx }
+  BinJccLabel(13,'_fpos_set');                      { jge done }
+  BinEmit8($C6); BinEmit8($04); BinEmit8($07); BinEmit8($20); { mov [edi+eax*1],0x20 SIB=00 000 111=0x07 }
+  BinEmit8($40);                                    { inc eax }
+  BinJmpLabel('_fpos_pad');
+  BinDefineLabel('_fpos_set');
+  { wlen = ecx }
+  BinMovRegLabel(0,'_sas_fid_wl');
+  BinEmit8($89); BinEmit8($0C); BinEmit8($98);    { mov [eax+ebx*4],ecx }
   BinEmit8($31); BinEmit8($C0);
+  BinJmpLabel('_fpos_done');
+  BinDefineLabel('_fpos_err');
+  BinEmit8($B8); BinEmit32(-1);
+  BinDefineLabel('_fpos_done');
+  BinEmit8($5F); BinEmit8($5B);
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
-  { --- _SASRT_fput(fid,str): stub LongInt 0 (2 args) }
+  { --- _SASRT_fput(fid,str): ajoute str au wbuf[slot], 0=OK -1=err (2 args) }
+  { [ebp+8]=fid [ebp+12]=str. ESI=src EDI=&wbuf[slot]+wlen. }
   BinDefineLabel('_SASRT_fput');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);    { push ebp; mov ebp,esp }
+  BinEmit8($53); BinEmit8($56); BinEmit8($57);    { push ebx esi edi }
+  BinEmit8($8B); BinEmit8($5D); BinEmit8($08);    { mov ebx,[ebp+8] }
+  BinEmit8($4B);                                    { dec ebx }
+  BinEmit8($83); BinEmit8($FB); BinEmit8($10);    { cmp ebx,16 }
+  BinJccLabel(3,'_fput_err');
+  BinMovRegLabel(0,'_sas_fid_h');
+  BinEmit8($83); BinEmit8($3C); BinEmit8($98); BinEmit8($FF); { cmp [eax+ebx*4],-1 }
+  BinJccLabel(4,'_fput_err');
+  BinEmit8($8B); BinEmit8($75); BinEmit8($0C);    { mov esi,[ebp+12] (str src) }
+  BinEmit8($85); BinEmit8($F6);                    { test esi,esi }
+  BinJccLabel(4,'_fput_ok');                        { je null str → OK no-op }
+  { edi = _sas_fid_wb + slot*256 + wlen }
+  BinEmit8($89); BinEmit8($DF);                    { mov edi,ebx }
+  BinEmit8($C1); BinEmit8($E7); BinEmit8($08);    { shl edi,8 }
+  BinMovRegLabel(0,'_sas_fid_wb');
+  BinEmit8($01); BinEmit8($C7);                    { add edi,eax }
+  BinMovRegLabel(0,'_sas_fid_wl');
+  BinEmit8($03); BinEmit8($3C); BinEmit8($98);    { add edi,[eax+ebx*4] (+wlen) }
+  { edx = place restante = 254 - wlen }
+  BinMovRegLabel(0,'_sas_fid_wl');
+  BinEmit8($8B); BinEmit8($14); BinEmit8($98);    { mov edx,[eax+ebx*4] wlen }
+  BinEmit8($BA); BinEmit32(254);                   { mov eax,254 }
+  BinEmit8($29); BinEmit8($D0);                    { sub eax,edx }
+  BinEmit8($89); BinEmit8($C2);                    { mov edx,eax (remaining) }
+  BinDefineLabel('_fput_copy');
+  BinEmit8($85); BinEmit8($D2);                    { test edx,edx }
+  BinJccLabel(4,'_fput_ok');                        { jz buffer plein }
+  BinEmit8($8A); BinEmit8($06);                    { mov al,[esi] }
+  BinEmit8($84); BinEmit8($C0);                    { test al,al }
+  BinJccLabel(4,'_fput_ok');                        { jz fin chaine }
+  BinEmit8($88); BinEmit8($07);                    { mov [edi],al }
+  BinEmit8($46); BinEmit8($47);                    { inc esi; inc edi }
+  BinEmit8($4A);                                    { dec edx }
+  BinMovRegLabel(0,'_sas_fid_wl');
+  BinEmit8($FF); BinEmit8($04); BinEmit8($98);    { inc [eax+ebx*4] (wl++) }
+  BinJmpLabel('_fput_copy');
+  BinDefineLabel('_fput_ok');
   BinEmit8($31); BinEmit8($C0);
+  BinJmpLabel('_fput_ret');
+  BinDefineLabel('_fput_err');
+  BinEmit8($B8); BinEmit32(-1);
+  BinDefineLabel('_fput_ret');
+  BinEmit8($5F); BinEmit8($5E); BinEmit8($5B);
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
-  { --- _SASRT_fread(fid): stub LongInt 0 (1 arg) }
+  { --- _SASRT_fread(fid): lit enreg dans rbuf[slot], 0=OK -1=EOF/err (1 arg) }
+  { [ebp+8]=fid. Lit octet par octet jusqu a LF/EOF → null-termine rbuf.    }
+  { Locaux: [ebp-4]=bytesread [ebp-8]=handle. ESI=&rbuf[slot] EDI=writepos. }
   BinDefineLabel('_SASRT_fread');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);    { push ebp; mov ebp,esp }
+  BinEmit8($83); BinEmit8($EC); BinEmit8($08);    { sub esp,8 }
+  BinEmit8($53); BinEmit8($56); BinEmit8($57);    { push ebx esi edi }
+  BinEmit8($8B); BinEmit8($5D); BinEmit8($08);    { mov ebx,[ebp+8] }
+  BinEmit8($4B);                                    { dec ebx (slot) }
+  BinEmit8($83); BinEmit8($FB); BinEmit8($10);    { cmp ebx,16 }
+  BinJccLabel(3,'_frd_err');                        { jae }
+  BinMovRegLabel(0,'_sas_fid_h');
+  BinEmit8($8B); BinEmit8($04); BinEmit8($98);    { mov eax,[eax+ebx*4] handle }
+  BinEmit8($83); BinEmit8($F8); BinEmit8($FF);    { cmp eax,-1 }
+  BinJccLabel(4,'_frd_err');                        { je }
+  BinEmit8($89); BinEmit8($45); BinEmit8($F8);    { mov [ebp-8],eax (save handle) }
+  { esi = _sas_fid_rb + slot*256 }
+  BinEmit8($89); BinEmit8($DE);                    { mov esi,ebx }
+  BinEmit8($C1); BinEmit8($E6); BinEmit8($08);    { shl esi,8 }
+  BinMovRegLabel(0,'_sas_fid_rb');
+  BinEmit8($01); BinEmit8($C6);                    { add esi,eax }
+  BinEmit8($31); BinEmit8($FF);                    { xor edi,edi (writepos=0) }
+  BinDefineLabel('_frd_loop');
+  BinEmit8($83); BinEmit8($FF); BinEmit8($FF);    { cmp edi,255 }
+  BinJccLabel(13,'_frd_eol');                       { jge buffer plein→eol }
+  { ReadFile(handle,&rbuf[slot][edi],1,&bytesread,NULL) }
+  BinEmit8($6A); BinEmit8($00);                   { push 0 }
+  BinEmit8($8D); BinEmit8($45); BinEmit8($FC);    { lea eax,[ebp-4] }
+  BinEmit8($50);                                    { push eax (&bytesread) }
+  BinEmit8($6A); BinEmit8($01);                   { push 1 }
+  BinEmit8($8D); BinEmit8($04); BinEmit8($3E);    { lea eax,[esi+edi] }
+  BinEmit8($50);                                    { push eax (buf[edi]) }
+  BinEmit8($FF); BinEmit8($75); BinEmit8($F8);   { push [ebp-8] (handle) }
+  BinCallImport('_ReadFile@20');
+  BinEmit8($85); BinEmit8($C0);                    { test eax,eax }
+  BinJccLabel(4,'_frd_err');                        { jz ReadFile failed }
+  BinEmit8($83); BinEmit8($7D); BinEmit8($FC); BinEmit8($00); { cmp [ebp-4],0 }
+  BinJccLabel(4,'_frd_maybe_eof');                  { je 0 bytes = potentiel EOF }
+  { traiter octet recu }
+  BinEmit8($8A); BinEmit8($04); BinEmit8($3E);    { mov al,[esi+edi] }
+  BinEmit8($3C); BinEmit8($0D);                    { cmp al,0x0D (CR) }
+  BinJccLabel(4,'_frd_loop');                       { je skip CR }
+  BinEmit8($3C); BinEmit8($0A);                    { cmp al,0x0A (LF) }
+  BinJccLabel(4,'_frd_eol');                        { je fin de ligne }
+  BinEmit8($47);                                    { inc edi }
+  BinJmpLabel('_frd_loop');
+  BinDefineLabel('_frd_maybe_eof');
+  BinEmit8($85); BinEmit8($FF);                    { test edi,edi }
+  BinJccLabel(4,'_frd_err');                        { jz EOF vide → -1 }
+  BinDefineLabel('_frd_eol');
+  BinEmit8($C6); BinEmit8($04); BinEmit8($3E); BinEmit8($00); { mov [esi+edi],0 }
+  BinMovRegLabel(0,'_sas_fid_rp');
+  BinEmit8($C7); BinEmit8($04); BinEmit8($98); BinEmit32(0); { mov [eax+ebx*4],0 }
+  BinEmit8($31); BinEmit8($C0);                    { xor eax,eax (0=OK) }
+  BinJmpLabel('_frd_ret');
+  BinDefineLabel('_frd_err');
+  BinEmit8($B8); BinEmit32(-1);                    { mov eax,-1 }
+  BinDefineLabel('_frd_ret');
+  BinEmit8($5F); BinEmit8($5E); BinEmit8($5B);   { pop edi esi ebx }
+  BinEmit8($83); BinEmit8($C4); BinEmit8($08);    { add esp,8 }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { --- _SASRT_frewind(fid): stub LongInt 0 (1 arg) }
+  { --- _SASRT_frewind(fid): SetFilePointer(FILE_BEGIN), 0=OK -1=err (1 arg) }
   BinDefineLabel('_SASRT_frewind');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($53);
+  BinEmit8($8B); BinEmit8($5D); BinEmit8($08);
+  BinEmit8($4B);
+  BinEmit8($83); BinEmit8($FB); BinEmit8($10);
+  BinJccLabel(3,'_frwd_err');
+  BinMovRegLabel(0,'_sas_fid_h');
+  BinEmit8($8B); BinEmit8($04); BinEmit8($98);    { mov eax,[eax+ebx*4] handle }
+  BinEmit8($83); BinEmit8($F8); BinEmit8($FF);
+  BinJccLabel(4,'_frwd_err');
+  BinEmit8($6A); BinEmit8($00);                   { push 0 (FILE_BEGIN) }
+  BinEmit8($6A); BinEmit8($00);                   { push 0 (MoveHigh=NULL) }
+  BinEmit8($6A); BinEmit8($00);                   { push 0 (distance=0) }
+  BinEmit8($50);                                    { push eax (handle) }
+  BinCallImport('_SetFilePointer@16');
+  BinEmit8($31); BinEmit8($C0);                    { xor eax,eax }
+  BinJmpLabel('_frwd_done');
+  BinDefineLabel('_frwd_err');
+  BinEmit8($B8); BinEmit32(-1);
+  BinDefineLabel('_frwd_done');
+  BinEmit8($5B);
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { --- _SASRT_frlen(fid): stub LongInt 0 (1 arg) }
+  { --- _SASRT_frlen(fid): strlen(rbuf[slot]) = longueur enreg lu (1 arg) }
   BinDefineLabel('_SASRT_frlen');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($53); BinEmit8($56);                    { push ebx esi }
+  BinEmit8($8B); BinEmit8($5D); BinEmit8($08);    { mov ebx,[ebp+8] }
+  BinEmit8($4B);
+  BinEmit8($83); BinEmit8($FB); BinEmit8($10);
+  BinJccLabel(3,'_frln_err');
+  BinMovRegLabel(0,'_sas_fid_h');
+  BinEmit8($83); BinEmit8($3C); BinEmit8($98); BinEmit8($FF);
+  BinJccLabel(4,'_frln_err');
+  BinEmit8($89); BinEmit8($DE);                    { mov esi,ebx }
+  BinEmit8($C1); BinEmit8($E6); BinEmit8($08);    { shl esi,8 }
+  BinMovRegLabel(0,'_sas_fid_rb');
+  BinEmit8($01); BinEmit8($C6);                    { add esi,eax }
+  BinEmit8($31); BinEmit8($C0);                    { xor eax,eax (counter) }
+  BinDefineLabel('_frln_loop');
+  BinEmit8($80); BinEmit8($3C); BinEmit8($06); BinEmit8($00); { cmp [esi+eax*1],0 -- SIB 00 000 110=0x06 }
+  BinJccLabel(4,'_frln_done');
+  BinEmit8($40);                                    { inc eax }
+  BinJmpLabel('_frln_loop');
+  BinDefineLabel('_frln_done');
+  BinJmpLabel('_frln_ret');
+  BinDefineLabel('_frln_err');
+  BinEmit8($B8); BinEmit32(-1);
+  BinDefineLabel('_frln_ret');
+  BinEmit8($5E); BinEmit8($5B);
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { --- _SASRT_fsep(fid,char): stub LongInt 0 (2 args) }
+  { --- _SASRT_fsep(fid,char_str): definit separateur FGET pour ce fid (2 args) }
+  { [ebp+8]=fid [ebp+12]=sep_str. sep=premier car, null/null-ptr → espace.    }
   BinDefineLabel('_SASRT_fsep');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
+  BinEmit8($53);
+  BinEmit8($8B); BinEmit8($5D); BinEmit8($08);
+  BinEmit8($4B);
+  BinEmit8($83); BinEmit8($FB); BinEmit8($10);
+  BinJccLabel(3,'_fsep_err');
+  BinMovRegLabel(0,'_sas_fid_h');
+  BinEmit8($83); BinEmit8($3C); BinEmit8($98); BinEmit8($FF);
+  BinJccLabel(4,'_fsep_err');
+  { cl = sep char }
+  BinEmit8($B1); BinEmit8($20);                    { mov cl,0x20 (espace defaut) }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($0C);    { mov eax,[ebp+12] str ptr }
+  BinEmit8($85); BinEmit8($C0);                    { test eax,eax }
+  BinJccLabel(4,'_fsep_store');                     { je null → espace }
+  BinEmit8($8A); BinEmit8($08);                    { mov cl,[eax] premier car }
+  BinEmit8($84); BinEmit8($C9);                    { test cl,cl }
+  BinJccLabel(5,'_fsep_store');                     { jnz ok }
+  BinEmit8($B1); BinEmit8($20);                    { mov cl,0x20 (chaine vide → espace) }
+  BinDefineLabel('_fsep_store');
+  BinMovRegLabel(0,'_sas_fid_sep');
+  BinEmit8($88); BinEmit8($0C); BinEmit8($18);    { mov [eax+ebx*1],cl SIB=00 011 000=0x18 }
   BinEmit8($31); BinEmit8($C0);
+  BinJmpLabel('_fsep_done');
+  BinDefineLabel('_fsep_err');
+  BinEmit8($B8); BinEmit32(-1);
+  BinDefineLabel('_fsep_done');
+  BinEmit8($5B);
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
   { --- _SASRT_fuzz(x): retourne x tel quel (identite pour entiers) }
@@ -8743,10 +9205,54 @@ Begin
   BinEmit8($5D);                                  { pop ebp               }
   BinEmit8($C2); BinEmit8($04); BinEmit8($00);  { ret 4                 }
 
-  { --- _SASRT_fwrite(fid): stub LongInt 0 (1 arg) }
+  { --- _SASRT_fwrite(fid): WriteFile(wbuf+LF), reset wlen, 0=OK -1=err (1 arg) }
+  { [ebp+8]=fid. ESI=_sas_fid_h base, EBX=slot. Local [ebp-4]=byteswritten.  }
+  { SIB [esi+ebx*4]: scale=10,idx=011,base=110 → 10 011 110 = 0x9E           }
   BinDefineLabel('_SASRT_fwrite');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);    { push ebp; mov ebp,esp }
+  BinEmit8($83); BinEmit8($EC); BinEmit8($04);    { sub esp,4 ([ebp-4]=byteswritten) }
+  BinEmit8($53); BinEmit8($56); BinEmit8($57);    { push ebx esi edi }
+  BinEmit8($8B); BinEmit8($5D); BinEmit8($08);    { mov ebx,[ebp+8] fid }
+  BinEmit8($4B);                                    { dec ebx (slot) }
+  BinEmit8($83); BinEmit8($FB); BinEmit8($10);    { cmp ebx,16 }
+  BinJccLabel(3,'_fwrt_err');
+  BinMovRegLabel(6,'_sas_fid_h');                  { mov esi,_sas_fid_h }
+  BinEmit8($8B); BinEmit8($3C); BinEmit8($9E);    { mov edi,[esi+ebx*4] handle }
+  BinEmit8($83); BinEmit8($FF); BinEmit8($FF);    { cmp edi,-1 }
+  BinJccLabel(4,'_fwrt_err');
+  { ecx = wlen }
+  BinMovRegLabel(6,'_sas_fid_wl');                 { mov esi,_sas_fid_wl }
+  BinEmit8($8B); BinEmit8($0C); BinEmit8($9E);    { mov ecx,[esi+ebx*4] wlen }
+  BinEmit8($83); BinEmit8($F9); BinEmit8($FE);    { cmp ecx,254 }
+  BinJccLabel(14,'_fwrt_addnl');                    { jle }
+  BinEmit8($B9); BinEmit32(254);                   { mov ecx,254 }
+  BinDefineLabel('_fwrt_addnl');
+  { eax = &wbuf[slot] = _sas_fid_wb + slot*256 }
+  BinEmit8($89); BinEmit8($D8);                    { mov eax,ebx }
+  BinEmit8($C1); BinEmit8($E0); BinEmit8($08);    { shl eax,8 }
+  BinMovRegLabel(6,'_sas_fid_wb');                 { mov esi,_sas_fid_wb }
+  BinEmit8($01); BinEmit8($F0);                    { add eax,esi }
+  { wbuf[wlen] = LF : [eax+ecx*1] ; SIB scale=1,idx=ecx=1,base=eax=0 → 00 001 000 = 0x08 }
+  BinEmit8($C6); BinEmit8($04); BinEmit8($08); BinEmit8($0A); { mov [eax+ecx],LF }
+  BinEmit8($41);                                    { inc ecx (write wlen+1) }
+  { WriteFile(handle,wbuf,ecx,&bw,NULL) }
+  BinEmit8($6A); BinEmit8($00);                   { push 0 (lpOverlapped) }
+  BinEmit8($8D); BinEmit8($75); BinEmit8($FC);    { lea esi,[ebp-4] }
+  BinEmit8($56);                                    { push esi (&byteswritten) }
+  BinEmit8($51);                                    { push ecx }
+  BinEmit8($50);                                    { push eax (wbuf ptr) }
+  BinEmit8($57);                                    { push edi (handle) }
+  BinCallImport('_WriteFile@20');
+  { reset wlen = 0 }
+  BinMovRegLabel(6,'_sas_fid_wl');
+  BinEmit8($C7); BinEmit8($04); BinEmit8($9E); BinEmit32(0); { mov [esi+ebx*4],0 }
+  BinEmit8($31); BinEmit8($C0);                    { xor eax,eax (0=OK) }
+  BinJmpLabel('_fwrt_ret');
+  BinDefineLabel('_fwrt_err');
+  BinEmit8($B8); BinEmit32(-1);
+  BinDefineLabel('_fwrt_ret');
+  BinEmit8($5F); BinEmit8($5E); BinEmit8($5B);
+  BinEmit8($83); BinEmit8($C4); BinEmit8($04);
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
   { --- _SASRT_gaminv(p,shape): stub LongInt 0 (2 args) }
@@ -9723,10 +10229,10 @@ Begin
   BinDefineLabel('_SASRT_normal');
   BinJmpLabel('_SASRT_rannor');
 
-  { --- _SASRT_note(dsid): stub LongInt 0 (1 arg) }
+  { --- _SASRT_note(dsid): -1 aucune note dataset disponible (1 arg) }
   BinDefineLabel('_SASRT_note');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($B8); BinEmit32(-1);                              { mov eax,-1 }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
   { --- _SASRT_npv(r,cf): stub LongInt 0 (2 args, variadic) }
