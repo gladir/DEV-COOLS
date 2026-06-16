@@ -827,6 +827,7 @@ Var
   CurDsRoot      : Integer;   { noeud AST du DATA step courant   }
   CurDsIdx       : Integer;   { index DsTable du dataset courant }
   CurParseStepSeq: Integer;   { incremente pour chaque DATA step parse }
+  CurDsEndLabel  : String;    { etiquette fin du DATA step courant (STOP) }
 
 { ============================================================ }
 { Utilitaires generaux                                         }
@@ -1141,8 +1142,9 @@ Begin
   LabelCount   := 0;
   FixupCount   := 0;
   ImportCount  := 0;
-  BinPLKCount  := 0;
-  LoopTop      := 0;
+  BinPLKCount    := 0;
+  LoopTop        := 0;
+  CurDsEndLabel  := '';
   ArrayCount   := 0;
   CurLineNum     := 0;
   LexEOF         := False;
@@ -3227,9 +3229,13 @@ Begin
   VarName := UpperStr(CurTokStr);
   LexNextToken; { consommer le nom }
   If CurTokType = TOK_COLON Then Begin
-    { Etiquette : name: }
-    AddLabel(VarName);
+    { Etiquette name: -> NK_GOTO(IsChar=True) = definition de label }
+    SIdx    := AddLabel(VarName);
     LexNextToken;
+    VarNode := AstNew(NK_GOTO, VarName, Line);
+    AstTable[VarNode].IsChar := True;
+    AstTable[VarNode].SymRef := SIdx;
+    AstAddChild(CurDsRoot, VarNode);
     Exit;
   End;
   If CurTokType = TOK_LBRACE Then Begin
@@ -4654,6 +4660,14 @@ Begin
         If Child >= 0 Then AIdx := FindArrayIdx(AstTable[Child].Text);
         If AIdx >= 0 Then V := ArrayTable[AIdx].TotalSize Else V := 0;
         BinEmit8($B8); BinEmit32(V);    { MOV EAX, dim        }
+      End Else If AstTable[Node].Text = 'HBOUND' Then Begin
+        Child := AstTable[Node].FirstChild;
+        AIdx  := -1;
+        If Child >= 0 Then AIdx := FindArrayIdx(AstTable[Child].Text);
+        If AIdx >= 0 Then V := ArrayTable[AIdx].TotalSize Else V := 1;
+        BinEmit8($B8); BinEmit32(V);    { MOV EAX, hbound }
+      End Else If AstTable[Node].Text = 'LBOUND' Then Begin
+        BinEmit8($B8); BinEmit32(1);    { MOV EAX, 1 (SAS 1-base) }
       End Else If AstTable[Node].Text = 'SUM' Then Begin
         { Accumulation inline : EAX = somme de tous les args }
         BinEmit8($31); BinEmit8($C0);   { XOR EAX, EAX = 0   }
@@ -4790,6 +4804,28 @@ Begin
           BinEmit8($6A); BinEmit8($00);
         End;
         CodegenCall(Node);
+      End Else If AstTable[Node].Text = 'SUM' Then Begin
+        { SUM(a,b,...) : accumulation inline sans appel de fonction.     }
+        { Algorithme : acc (pile) += chaque arg via PUSH/POP/ADD.        }
+        ArgCnt := 0;
+        Child  := AstTable[Node].FirstChild;
+        While (Child >= 0) And (ArgCnt < 16) Do Begin
+          ArgList[ArgCnt] := Child; Inc(ArgCnt);
+          Child := AstTable[Child].NextSibling;
+        End;
+        If ArgCnt = 0 Then Begin
+          BinEmit8($31); BinEmit8($C0);               { xor eax,eax }
+        End Else Begin
+          CodegenExprEAX(ArgList[0]);                  { eax = arg0 }
+          BinEmit8($50);                               { push eax }
+          For I := 1 To ArgCnt - 1 Do Begin
+            CodegenExprEAX(ArgList[I]);                { eax = argI }
+            BinEmit8($59);                             { pop ecx }
+            BinEmit8($01); BinEmit8($C8);             { add eax,ecx }
+            BinEmit8($50);                             { push eax }
+          End;
+          BinEmit8($58);                               { pop eax (total) }
+        End;
       End Else Begin
         { Cas general : empiler les args droite-a-gauche, puis appeler }
         ArgCnt := 0;
@@ -4876,9 +4912,11 @@ Begin
     NK_DO: Begin
       Inc(BinPLKCount);
       Tag    := IntToStr(BinPLKCount);
-      LblTop := '_dot' + Tag;
-      LblEnd := '_doe' + Tag;
+      LblTop  := '_dot' + Tag;
+      LblEnd  := '_doe' + Tag;
+      LblNext := LblTop;  { cible CONTINUE par defaut = retour au test }
       If AstTable[Node].Text = 'ITER' Then Begin
+        LblNext := '_doi' + Tag;  { label increment pour CONTINUE correct }
         StartN := AstTable[Node].Left;
         EndN   := AstTable[Node].Right;
         StepV  := AstTable[Node].NumVal;
@@ -4894,13 +4932,21 @@ Begin
         BinEmit8($3B); BinEmit8($C1); { CMP EAX, ECX }
         If StepV >= 0 Then BinJccLabel(15, LblEnd)  { JG : i>end }
         Else               BinJccLabel(12, LblEnd);  { JL : i<end }
-        { Corps }
+        { Corps (avec contexte boucle pour LEAVE/CONTINUE) }
+        If LoopTop < MAX_LOOP_NEST Then Begin
+          LoopStack[LoopTop].LblStart := LblTop;
+          LoopStack[LoopTop].LblNext  := LblNext;
+          LoopStack[LoopTop].LblEnd   := LblEnd;
+          Inc(LoopTop);
+        End;
         Child := AstTable[Node].FirstChild;
         While Child >= 0 Do Begin
           CodegenStmt(Child);
           Child := AstTable[Child].NextSibling;
         End;
+        If LoopTop > 0 Then Dec(LoopTop);
         { Increment }
+        BinDefineLabel(LblNext);
         If (StepV = 1) And (SIdx >= 0) Then
           BinIncMem(SymTable[SIdx].AsmName)
         Else If SIdx >= 0 Then Begin
@@ -4915,32 +4961,48 @@ Begin
         CodegenExprEAX(AstTable[Node].Left);
         BinEmit8($85); BinEmit8($C0);   { TEST EAX,EAX }
         BinJccLabel(4, LblEnd);         { JZ lbl_end }
+        If LoopTop < MAX_LOOP_NEST Then Begin
+          LoopStack[LoopTop].LblStart := LblTop;
+          LoopStack[LoopTop].LblNext  := LblTop;
+          LoopStack[LoopTop].LblEnd   := LblEnd;
+          Inc(LoopTop);
+        End;
         Child := AstTable[Node].FirstChild;
         While Child >= 0 Do Begin
           CodegenStmt(Child);
           Child := AstTable[Child].NextSibling;
         End;
+        If LoopTop > 0 Then Dec(LoopTop);
         BinJmpLabel(LblTop);
         BinDefineLabel(LblEnd);
       End Else If AstTable[Node].Text = 'UNTIL' Then Begin
         BinDefineLabel(LblTop);
+        If LoopTop < MAX_LOOP_NEST Then Begin
+          LoopStack[LoopTop].LblStart := LblTop;
+          LoopStack[LoopTop].LblNext  := LblTop;
+          LoopStack[LoopTop].LblEnd   := LblEnd;
+          Inc(LoopTop);
+        End;
         Child := AstTable[Node].FirstChild;
         While Child >= 0 Do Begin
           CodegenStmt(Child);
           Child := AstTable[Child].NextSibling;
         End;
+        If LoopTop > 0 Then Dec(LoopTop);
         CodegenExprEAX(AstTable[Node].Left);
         BinEmit8($85); BinEmit8($C0);
         BinJccLabel(4, LblTop);         { JZ lbl_top (tant que cond faux) }
         BinDefineLabel(LblEnd);
       End Else Begin
-        { PLAIN, ITERWHILE, et autres : emettre le corps }
+        { PLAIN : bloc non iteratif (wrapper THEN/ELSE ou DO; END;).    }
+        { Ne pas pousser LoopStack — PLAIN n est pas une boucle.         }
+        { LEAVE/CONTINUE traversent le PLAIN pour atteindre la boucle   }
+        { englobante (ITER, WHILE, UNTIL) via LoopStack existant.        }
         Child := AstTable[Node].FirstChild;
         While Child >= 0 Do Begin
           CodegenStmt(Child);
           Child := AstTable[Child].NextSibling;
         End;
-        BinDefineLabel(LblEnd);
       End;
     End;
 
@@ -5202,11 +5264,12 @@ Begin
           If SIdx >= 0 Then BinStoreEaxMem(SymTable[SIdx].AsmName);
         End;
       End Else If FName = 'RANUNI' Then Begin
-        { CALL RANxxx(seed, result) -- stub : result = 0 }
+        { CALL RANUNI(seed,result) -- meme runtime que RANUNI(seed). }
         If ArgCnt >= 2 Then Begin
           SIdx := AstTable[ArgList[1]].SymRef;
           If SIdx < 0 Then SIdx := FindSym(AstTable[ArgList[1]].Text, SK_NONE);
-          BinEmit8($31); BinEmit8($C0);   { XOR EAX, EAX = 0   }
+          CodegenExprEAX(ArgList[0]); BinEmit8($50);
+          BinCallLabel('_SASRT_ranuni');
           If SIdx >= 0 Then BinStoreEaxMem(SymTable[SIdx].AsmName);
         End;
       End Else If FName = 'EXECUTE' Then Begin
@@ -5274,6 +5337,63 @@ Begin
         For I := 0 To ArgCnt - 1 Do
           CodegenExprEAX(ArgList[I]);
       End;
+    End;
+
+    { --- Statements DATA step ------------------------------------------- }
+
+    NK_GOTO: Begin
+      { NK_GOTO avec IsChar=True : definition d'etiquette (label:)  }
+      { NK_GOTO avec IsChar=False : saut vers etiquette (GOTO name) }
+      If AstTable[Node].IsChar Then
+        BinDefineLabel('_SAL_' + AstTable[Node].Text)
+      Else
+        BinJmpLabel('_SAL_' + AstTable[Node].Text);
+    End;
+
+    NK_STOP: Begin
+      { Sauter a la fin du DATA step courant si le label est connu }
+      If CurDsEndLabel <> '' Then
+        BinJmpLabel(CurDsEndLabel);
+    End;
+
+    NK_RETAIN: Begin
+      { Initialisation numerique : MOV EAX, NumVal -> stocker en memoire }
+      { Seules les initialisations non nulles necessitent du code.        }
+      SIdx := AstTable[Node].SymRef;
+      If (SIdx >= 0) And (AstTable[Node].NumVal <> 0) Then Begin
+        BinEmit8($B8); BinEmit32(AstTable[Node].NumVal);
+        BinStoreEaxMem(SymTable[SIdx].AsmName);
+      End;
+    End;
+
+    NK_LEAVE: Begin
+      { Sortir de la boucle la plus proche }
+      If LoopTop > 0 Then
+        BinJmpLabel(LoopStack[LoopTop - 1].LblEnd);
+    End;
+
+    NK_CONTINUE: Begin
+      { Passer a l'iteration suivante de la boucle la plus proche }
+      If LoopTop > 0 Then
+        BinJmpLabel(LoopStack[LoopTop - 1].LblNext);
+    End;
+
+    NK_SET: Begin
+      { SET _NULL_ (ou dataset vide) avec END=var : marquer fin immediate }
+      { Sinon : no-op (lecture de dataset non implementee)               }
+      SIdx := AstTable[Node].SymRef;
+      If SIdx >= 0 Then Begin
+        { END=var specifie : mettre a 1 (EOF atteint immediatement) }
+        BinEmit8($B8); BinEmit32(1);
+        BinStoreEaxMem(SymTable[SIdx].AsmName);
+      End;
+    End;
+
+    NK_OUTPUT,
+    NK_DELETE,
+    NK_BY,
+    NK_MERGE: Begin
+      { No-op : non implemente sans E/S de dataset }
     End;
 
   End; { Case }
@@ -5508,11 +5628,15 @@ Begin
     End;
   End Else Begin
     { Pass 2 normal : emettre le code de chaque statement }
+    Inc(BinPLKCount);
+    CurDsEndLabel := '_dse' + IntToStr(BinPLKCount);
     Child := AstTable[DsNode].FirstChild;
     While Child >= 0 Do Begin
       CodegenStmt(Child);
       Child := AstTable[Child].NextSibling;
     End;
+    BinDefineLabel(CurDsEndLabel);
+    CurDsEndLabel := '';
   End;
 End;
 
@@ -8576,17 +8700,53 @@ Begin
   BinDefineLabel('_SASRT_indexw');
   BinJmpLabel('_SASRT_index');
 
-  { --- _SASRT_input(source,informat): stub LongInt 0 (2 args) }
+  { --- _SASRT_input(source,informat): LongInt --- atoi(source), informat ignore }
+  { [ebp+8]=source(ptr) [ebp+12]=informat. EBX=signe ESI=ptr. ret 8.          }
   BinDefineLabel('_SASRT_input');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);           { push ebp; mov ebp,esp }
+  BinEmit8($53); BinEmit8($56);                          { push ebx; push esi }
+  BinEmit8($8B); BinEmit8($75); BinEmit8($08);           { mov esi,[ebp+8] source }
+  { Sauter les espaces initiaux }
+  BinDefineLabel('_input_skip_ws');
+  BinEmit8($8A); BinEmit8($06);                          { mov al,[esi] }
+  BinEmit8($3C); BinEmit8($20);                          { cmp al,' ' }
+  BinJccLabel(5,'_input_sign');                          { jne }
+  BinEmit8($46);                                         { inc esi }
+  BinJmpLabel('_input_skip_ws');
+  BinDefineLabel('_input_sign');
+  BinEmit8($31); BinEmit8($C0);                          { xor eax,eax (result=0) }
+  BinEmit8($31); BinEmit8($DB);                          { xor ebx,ebx (sign=0) }
+  BinEmit8($3C); BinEmit8($2D);                          { cmp al,'-' }
+  BinJccLabel(5,'_input_chkplus');                       { jne }
+  BinEmit8($46);                                         { inc esi }
+  BinEmit8($BB); BinEmit32(1);                           { mov ebx,1 }
+  BinJmpLabel('_input_digits');
+  BinDefineLabel('_input_chkplus');
+  BinEmit8($3C); BinEmit8($2B);                          { cmp al,'+' }
+  BinJccLabel(5,'_input_digits');                        { jne }
+  BinEmit8($46);                                         { inc esi }
+  BinDefineLabel('_input_digits');
+  BinDefineLabel('_input_digloop');
+  BinEmit8($8A); BinEmit8($06);                          { mov al,[esi] }
+  BinEmit8($2C); BinEmit8($30);                          { sub al,'0' }
+  BinEmit8($3C); BinEmit8($09);                          { cmp al,9 }
+  BinJccLabel(7,'_input_done');                          { ja (unsigned >) }
+  BinEmit8($0F); BinEmit8($B6); BinEmit8($C8);          { movzx ecx,al }
+  BinEmit8($69); BinEmit8($C0); BinEmit32(10);          { imul eax,eax,10 }
+  BinEmit8($01); BinEmit8($C8);                          { add eax,ecx }
+  BinEmit8($46);                                         { inc esi }
+  BinJmpLabel('_input_digloop');
+  BinDefineLabel('_input_done');
+  BinEmit8($85); BinEmit8($DB);                          { test ebx,ebx }
+  BinJccLabel(4,'_input_ret');                           { jz }
+  BinEmit8($F7); BinEmit8($D8);                          { neg eax }
+  BinDefineLabel('_input_ret');
+  BinEmit8($5E); BinEmit8($5B);                          { pop esi; pop ebx }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
-  { --- _SASRT_inputn(source,informat): stub LongInt 0 (2 args) }
+  { --- _SASRT_inputn(source,informat): LongInt --- alias de _SASRT_input }
   BinDefineLabel('_SASRT_inputn');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
+  BinJmpLabel('_SASRT_input');
 
   { --- _SASRT_intck(interval,from,to): LongInt --- compte intervalles de dates }
   { Supporte 'D'=DAY, 'W'=WEEK, 'M'=MONTH, 'Q'=QTR, 'Y'=YEAR (insensible casse) }
@@ -11316,11 +11476,56 @@ Begin
   BinDefineLabel('_SASRT_cat');
   BinJmpLabel('_SASRT_concat');
 
-  { --- _SASRT_put(val,fmt): ptr --- stub retourne strtmp (2 args) }
+  { --- _SASRT_put(val,fmt): ptr → strtmp --- itoa(val), fmt ignore      }
+  { [ebp+8]=val(int32) [ebp+12]=fmt. EBX=signe ESI=dst EDI=src. ret 8. }
   BinDefineLabel('_SASRT_put');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinPushLabel('_sas_strtmp');
-  BinEmit8($58);
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);       { push ebp; mov ebp,esp }
+  BinEmit8($53); BinEmit8($56); BinEmit8($57);       { push ebx; push esi; push edi }
+  BinEmit8($83); BinEmit8($EC); BinEmit8($20);       { sub esp,32 }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);       { mov eax,[ebp+8] }
+  BinEmit8($31); BinEmit8($DB);                      { xor ebx,ebx (signe=0) }
+  BinEmit8($85); BinEmit8($C0);                      { test eax,eax }
+  BinJccLabel(5,'_put_nonzero');                      { jnz }
+  BinMovRegLabel(7,'_sas_strtmp');                    { mov edi,_sas_strtmp }
+  BinEmit8($C6); BinEmit8($07); BinEmit8($30);      { mov byte [edi],'0' }
+  BinEmit8($C6); BinEmit8($47); BinEmit8($01); BinEmit8($00);
+  BinMovRegLabel(0,'_sas_strtmp');                    { mov eax,_sas_strtmp }
+  BinJmpLabel('_put_epilog');
+  BinDefineLabel('_put_nonzero');
+  BinJccLabel(9,'_put_positive');                     { jns _put_positive }
+  BinEmit8($F7); BinEmit8($D8);                      { neg eax }
+  BinEmit8($BB); BinEmit32(1);                       { mov ebx,1 (negatif) }
+  BinDefineLabel('_put_positive');
+  { tampon local: [ebp-13]=octet nul, on ecrit vers la gauche }
+  BinEmit8($8D); BinEmit8($7D); BinEmit8($F3);      { lea edi,[ebp-13] }
+  BinEmit8($C6); BinEmit8($07); BinEmit8($00);      { mov byte [edi],0 (nul) }
+  BinEmit8($4F);                                     { dec edi }
+  BinEmit8($B9); BinEmit32(10);                      { mov ecx,10 }
+  BinDefineLabel('_put_dig_loop');
+  BinEmit8($31); BinEmit8($D2);                      { xor edx,edx }
+  BinEmit8($F7); BinEmit8($F1);                      { div ecx (eax=q,edx=r) }
+  BinEmit8($80); BinEmit8($C2); BinEmit8($30);      { add dl,'0' }
+  BinEmit8($88); BinEmit8($17);                      { mov [edi],dl }
+  BinEmit8($4F);                                     { dec edi }
+  BinEmit8($85); BinEmit8($C0);                      { test eax,eax }
+  BinJccLabel(5,'_put_dig_loop');                    { jnz }
+  BinEmit8($85); BinEmit8($DB);                      { test ebx,ebx }
+  BinJccLabel(4,'_put_copy');                         { jz _put_copy }
+  BinEmit8($C6); BinEmit8($07); BinEmit8($2D);      { mov byte [edi],'-' }
+  BinEmit8($4F);                                     { dec edi }
+  BinDefineLabel('_put_copy');
+  BinEmit8($47);                                     { inc edi (debut chaine) }
+  BinMovRegLabel(6,'_sas_strtmp');                    { mov esi,_sas_strtmp }
+  BinDefineLabel('_put_cpy_loop');
+  BinEmit8($8A); BinEmit8($07);                      { mov al,[edi] }
+  BinEmit8($88); BinEmit8($06);                      { mov [esi],al }
+  BinEmit8($47); BinEmit8($46);                      { inc edi; inc esi }
+  BinEmit8($84); BinEmit8($C0);                      { test al,al }
+  BinJccLabel(5,'_put_cpy_loop');                    { jnz }
+  BinMovRegLabel(0,'_sas_strtmp');                    { mov eax,_sas_strtmp }
+  BinDefineLabel('_put_epilog');
+  BinEmit8($83); BinEmit8($C4); BinEmit8($20);      { add esp,32 }
+  BinEmit8($5F); BinEmit8($5E); BinEmit8($5B);      { pop edi; pop esi; pop ebx }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
   { --- _SASRT_concat(src1,src2): ptr --- concat dans _sas_concat_buf    }
@@ -11968,11 +12173,11 @@ Begin
   BinEmit8($5F); BinEmit8($5E);                              { pop edi,esi }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { --- _SASRT_inputc(source,informat): ptr --- stub retourne chaine vide (2 args) }
+  { --- _SASRT_inputc(source,informat): ptr --- retourne source tel quel }
+  { [ebp+8]=source(ptr) [ebp+12]=informat. ret 8. }
   BinDefineLabel('_SASRT_inputc');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinPushLabel('_sas_strtmp');
-  BinEmit8($58);
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);     { push ebp; mov ebp,esp }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);     { mov eax,[ebp+8] }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
   { --- _SASRT_iorcmsg(): ptr --- stub retourne chaine vide (0 args) }
@@ -12165,19 +12370,16 @@ Begin
   BinEmit8($5F); BinEmit8($5D);                           { pop edi; pop ebp }
   BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { --- _SASRT_putc(val,fmt): ptr --- stub strtmp (2 args) }
+  { --- _SASRT_putc(val,fmt): ptr --- retourne val (chaine car) tel quel }
+  { [ebp+8]=val(ptr) [ebp+12]=fmt. ret 8. }
   BinDefineLabel('_SASRT_putc');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinPushLabel('_sas_strtmp');
-  BinEmit8($58);
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);     { push ebp; mov ebp,esp }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);     { mov eax,[ebp+8] }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
-  { --- _SASRT_putn(val,fmt): ptr --- stub strtmp (2 args) }
+  { --- _SASRT_putn(val,fmt): ptr --- alias numerique de _SASRT_put }
   BinDefineLabel('_SASRT_putn');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinPushLabel('_sas_strtmp');
-  BinEmit8($58);
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
+  BinJmpLabel('_SASRT_put');
 
   { --- Batch 11 : fonctions chaines S --- }
 
@@ -12389,11 +12591,11 @@ Begin
   BinEmit8($5B); BinEmit8($5F); BinEmit8($5E);  { pop ebx;edi;esi  }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
-  { --- _SASRT_resolve(s): ptr --- stub strtmp (1 arg) }
+  { --- _SASRT_resolve(s): ptr --- retourne s tel quel (1 arg) }
+  { [ebp+8]=s(ptr). ret 4. }
   BinDefineLabel('_SASRT_resolve');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinPushLabel('_sas_strtmp');
-  BinEmit8($58);
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);     { push ebp; mov ebp,esp }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);     { mov eax,[ebp+8] }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
   { --- _SASRT_reverse(s): ptr --- inverse s dans strtmp (51 o)            }
