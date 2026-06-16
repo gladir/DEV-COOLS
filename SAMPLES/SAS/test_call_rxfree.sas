@@ -1,6 +1,6 @@
-/* test_call_rxfree.sas - CALL RXFREE : liberer regex (stub) */
+/* test_call_rxfree.sas - CALL RXFREE : liberer regex */
 data _null_;
-  rx = 0;
+  rx = 123;
   call rxfree(rx);
-  put 'CALL RXFREE : stub OK';
+  put 'CALL RXFREE rx=' rx '  (attendu: 0)';
 run;

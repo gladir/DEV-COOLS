@@ -5139,9 +5139,69 @@ Begin
           BinCallLabel('_SASRT_rangam');
           If SIdx >= 0 Then BinStoreEaxMem(SymTable[SIdx].AsmName);
         End;
-      End Else If (FName = 'RANNOR') Or (FName = 'RANPOI') Or
-                  (FName = 'RANTBL') Or (FName = 'RANTRI') Or
-                  (FName = 'RANUNI') Then Begin
+      End Else If FName = 'RANNOR' Then Begin
+        { CALL RANNOR(seed,result) -- meme runtime que RANNOR(seed). }
+        If ArgCnt >= 2 Then Begin
+          SIdx := AstTable[ArgList[1]].SymRef;
+          If SIdx < 0 Then SIdx := FindSym(AstTable[ArgList[1]].Text, SK_NONE);
+          CodegenExprEAX(ArgList[0]); BinEmit8($50);
+          BinCallLabel('_SASRT_rannor');
+          If SIdx >= 0 Then BinStoreEaxMem(SymTable[SIdx].AsmName);
+        End;
+      End Else If FName = 'RANPOI' Then Begin
+        { CALL RANPOI(seed,m,result), compat seed,result => m=1. }
+        If ArgCnt >= 3 Then Begin
+          SIdx := AstTable[ArgList[2]].SymRef;
+          If SIdx < 0 Then SIdx := FindSym(AstTable[ArgList[2]].Text, SK_NONE);
+          CodegenExprEAX(ArgList[1]); BinEmit8($50); { m }
+          CodegenExprEAX(ArgList[0]); BinEmit8($50); { seed }
+          BinCallLabel('_SASRT_ranpoi');
+          If SIdx >= 0 Then BinStoreEaxMem(SymTable[SIdx].AsmName);
+        End Else If ArgCnt >= 2 Then Begin
+          SIdx := AstTable[ArgList[1]].SymRef;
+          If SIdx < 0 Then SIdx := FindSym(AstTable[ArgList[1]].Text, SK_NONE);
+          BinEmit8($6A); BinEmit8($01);              { m=1 }
+          CodegenExprEAX(ArgList[0]); BinEmit8($50); { seed }
+          BinCallLabel('_SASRT_ranpoi');
+          If SIdx >= 0 Then BinStoreEaxMem(SymTable[SIdx].AsmName);
+        End;
+      End Else If FName = 'RANTBL' Then Begin
+        { CALL RANTBL(seed,p1,p2,result), compat seed,result => cat 1. }
+        If ArgCnt >= 4 Then Begin
+          SIdx := AstTable[ArgList[3]].SymRef;
+          If SIdx < 0 Then SIdx := FindSym(AstTable[ArgList[3]].Text, SK_NONE);
+          CodegenExprEAX(ArgList[2]); BinEmit8($50); { p2 }
+          CodegenExprEAX(ArgList[1]); BinEmit8($50); { p1 }
+          CodegenExprEAX(ArgList[0]); BinEmit8($50); { seed }
+          BinCallLabel('_SASRT_rantbl');
+          If SIdx >= 0 Then BinStoreEaxMem(SymTable[SIdx].AsmName);
+        End Else If ArgCnt >= 2 Then Begin
+          SIdx := AstTable[ArgList[1]].SymRef;
+          If SIdx < 0 Then SIdx := FindSym(AstTable[ArgList[1]].Text, SK_NONE);
+          BinEmit8($6A); BinEmit8($00);              { p2=0 }
+          BinEmit8($6A); BinEmit8($01);              { p1=1 }
+          CodegenExprEAX(ArgList[0]); BinEmit8($50); { seed }
+          BinCallLabel('_SASRT_rantbl');
+          If SIdx >= 0 Then BinStoreEaxMem(SymTable[SIdx].AsmName);
+        End;
+      End Else If FName = 'RANTRI' Then Begin
+        { CALL RANTRI(seed,h,result), compat seed,result => h=1. }
+        If ArgCnt >= 3 Then Begin
+          SIdx := AstTable[ArgList[2]].SymRef;
+          If SIdx < 0 Then SIdx := FindSym(AstTable[ArgList[2]].Text, SK_NONE);
+          CodegenExprEAX(ArgList[1]); BinEmit8($50); { h }
+          CodegenExprEAX(ArgList[0]); BinEmit8($50); { seed }
+          BinCallLabel('_SASRT_rantri');
+          If SIdx >= 0 Then BinStoreEaxMem(SymTable[SIdx].AsmName);
+        End Else If ArgCnt >= 2 Then Begin
+          SIdx := AstTable[ArgList[1]].SymRef;
+          If SIdx < 0 Then SIdx := FindSym(AstTable[ArgList[1]].Text, SK_NONE);
+          BinEmit8($6A); BinEmit8($01);              { h=1 }
+          CodegenExprEAX(ArgList[0]); BinEmit8($50); { seed }
+          BinCallLabel('_SASRT_rantri');
+          If SIdx >= 0 Then BinStoreEaxMem(SymTable[SIdx].AsmName);
+        End;
+      End Else If FName = 'RANUNI' Then Begin
         { CALL RANxxx(seed, result) -- stub : result = 0 }
         If ArgCnt >= 2 Then Begin
           SIdx := AstTable[ArgList[1]].SymRef;
@@ -5170,8 +5230,46 @@ Begin
           BinCallLabel('_SASRT_modulen');
           If SIdx >= 0 Then BinStoreEaxMem(SymTable[SIdx].AsmName);
         End;
+      End Else If FName = 'RXCHANGE' Then Begin
+        { CALL RXCHANGE(rx,n,src,from,to,dst): remplacement texte simple. }
+        If ArgCnt >= 6 Then Begin
+          SIdx := AstTable[ArgList[5]].SymRef;
+          If SIdx < 0 Then SIdx := FindSym(AstTable[ArgList[5]].Text, SK_NONE);
+          If (SIdx >= 0) And SymTable[SIdx].IsChar Then Begin
+            CodegenExprEAX(ArgList[4]); BinEmit8($50); { to }
+            CodegenExprEAX(ArgList[3]); BinEmit8($50); { from }
+            CodegenExprEAX(ArgList[2]); BinEmit8($50); { src }
+            BinCallLabel('_SASRT_tranwrd');            { EAX = replaced ptr }
+            BinEmit8($50);                             { push src result }
+            BinMovEaxLabelAddr(SymTable[SIdx].AsmName);
+            BinEmit8($50);                             { push dst }
+            BinCallLabel('_SASRT_strcpy');
+          End;
+        End;
+      End Else If FName = 'RXFREE' Then Begin
+        { CALL RXFREE(rx): invalide l identificateur regex local. }
+        If ArgCnt >= 1 Then Begin
+          SIdx := AstTable[ArgList[0]].SymRef;
+          If SIdx < 0 Then SIdx := FindSym(AstTable[ArgList[0]].Text, SK_NONE);
+          BinEmit8($31); BinEmit8($C0);   { xor eax,eax }
+          If SIdx >= 0 Then BinStoreEaxMem(SymTable[SIdx].AsmName);
+        End;
+      End Else If FName = 'RXSUBSTR' Then Begin
+        { CALL RXSUBSTR(rx,src,pos,len): selectionne la chaine source entiere. }
+        If ArgCnt >= 4 Then Begin
+          SIdx := AstTable[ArgList[2]].SymRef;
+          If SIdx < 0 Then SIdx := FindSym(AstTable[ArgList[2]].Text, SK_NONE);
+          BinEmit8($B8); BinEmit32(1);   { pos = 1 }
+          If SIdx >= 0 Then BinStoreEaxMem(SymTable[SIdx].AsmName);
+          SIdx := AstTable[ArgList[3]].SymRef;
+          If SIdx < 0 Then SIdx := FindSym(AstTable[ArgList[3]].Text, SK_NONE);
+          CodegenExprEAX(ArgList[1]);
+          BinEmit8($50);
+          BinCallLabel('_SASRT_length');
+          If SIdx >= 0 Then BinStoreEaxMem(SymTable[SIdx].AsmName);
+        End;
       End Else Begin
-        { LABEL, RXCHANGE, RXFREE,    }
+        { LABEL,    }
         { RXSUBSTR, SET, SYMPUT : stub — evaluer et ignorer args }
         For I := 0 To ArgCnt - 1 Do
           CodegenExprEAX(ArgList[I]);
