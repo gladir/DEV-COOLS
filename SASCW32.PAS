@@ -7216,8 +7216,11 @@ Begin
   BinEmit8($57);                                { push edi }
   BinEmit8($52);                                { push edx }
   BinMovRegLabel(7, '_sas_strtmp');             { mov edi,_sas_strtmp }
-  BinEmit8($8B); BinEmit8($55); BinEmit8($0C);  { mov edx,[ebp+12] attr }
   BinEmit8($C6); BinEmit8($07); BinEmit8($00);  { mov byte [edi],0 }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);  { mov eax,[ebp+8] dsid }
+  BinEmit8($85); BinEmit8($C0);                 { test eax,eax }
+  BinJccLabel(14, '_attrc_done');               { jle done }
+  BinEmit8($8B); BinEmit8($55); BinEmit8($0C);  { mov edx,[ebp+12] attr }
   BinEmit8($8A); BinEmit8($02);                 { mov al,[edx] }
   BinEmit8($24); BinEmit8($DF);                 { and al,0DFh }
   BinEmit8($3C); BinEmit8(Ord('T'));            { cmp al,'T' }
@@ -7249,8 +7252,11 @@ Begin
   { --- _SASRT_attrn(dsid,attr): retourne quelques attributs numeriques courants }
   BinDefineLabel('_SASRT_attrn');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($8B); BinEmit8($55); BinEmit8($0C);  { mov edx,[ebp+12] attr }
   BinEmit8($31); BinEmit8($C0);                 { xor eax,eax }
+  BinEmit8($8B); BinEmit8($55); BinEmit8($08);  { mov edx,[ebp+8] dsid }
+  BinEmit8($85); BinEmit8($D2);                 { test edx,edx }
+  BinJccLabel(14, '_attrn_done');               { jle done }
+  BinEmit8($8B); BinEmit8($55); BinEmit8($0C);  { mov edx,[ebp+12] attr }
   BinEmit8($8A); BinEmit8($0A);                 { mov cl,[edx] }
   BinEmit8($80); BinEmit8($E1); BinEmit8($DF);  { and cl,0DFh }
   BinEmit8($80); BinEmit8($F9); BinEmit8(Ord('N')); { cmp cl,'N' }
@@ -11069,7 +11075,7 @@ Begin
   If FName = 'BETAINV' Then Begin BinCallLabel('_SASRT_betainv'); Exit; End;
   { Fonctions de caractere }
   If FName = 'BYTE'    Then Begin BinCallLabel('_SASRT_byte');    Exit; End;
-  { Fonctions d attribut de dataset (stubs) }
+  { Fonctions d attribut de dataset }
   If FName = 'ATTRC'   Then Begin BinCallLabel('_SASRT_attrc');   Exit; End;
   If FName = 'ATTRN'   Then Begin BinCallLabel('_SASRT_attrn');   Exit; End;
   { CDF / CEILZ / CEXIST }
