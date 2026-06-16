@@ -9531,11 +9531,63 @@ Begin
   BinEmit8($8B); BinEmit8($45); BinEmit8($FC);           { mov eax,[ebp-4] }
   BinEmit8($89); BinEmit8($EC); BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { RANPOI(seed,m): stub 0 (2 args) }
+  { --- _SASRT_ranpoi(seed,m): Poisson(m) methode multiplicative (2 args)    }
+  { Knuth: k=-1,P=1; boucle: k++,P*=U jusqu'a P<=L=exp(-m); retourne k.    }
+  { [ebp+8]=seed [ebp+12]=m. sub esp,12: [ebp-4]=N(LCG) [ebp-12]=L(qword) }
   BinDefineLabel('_SASRT_ranpoi');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);           { push ebp; mov ebp,esp }
+  BinEmit8($83); BinEmit8($EC); BinEmit8($0C);           { sub esp,12 }
+  { Si m<=0: retourner 0 }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($0C);           { mov eax,[ebp+12] m }
+  BinEmit8($85); BinEmit8($C0);                          { test eax,eax }
+  BinJccLabel(14,'_ranpoi_zero');                         { jle: m<=0 }
+  { Calcule L=exp(-m) via FLDL2E/FMULP/FCHS puis F2XM1/FSCALE }
+  BinEmit8($D9); BinEmit8($EA);                          { fldl2e -> log2(e) }
+  BinEmit8($DB); BinEmit8($45); BinEmit8($0C);           { fild [ebp+12] -> m }
+  BinEmit8($DE); BinEmit8($C9);                          { fmulp -> m*log2(e) }
+  BinEmit8($D9); BinEmit8($E0);                          { fchs -> -m*log2(e)=y }
+  { Split y=I+f, compute 2^f via F2XM1, scale par 2^I }
+  BinEmit8($D9); BinEmit8($C0);                          { fld st(0) dup y }
+  BinEmit8($D9); BinEmit8($FC);                          { frndint -> I }
+  BinEmit8($D9); BinEmit8($C9);                          { fxch -> st0=y, st1=I }
+  BinEmit8($D8); BinEmit8($E1);                          { fsub st0,st1 -> f=y-I }
+  BinEmit8($D9); BinEmit8($F0);                          { f2xm1 -> 2^f-1 }
+  BinEmit8($D9); BinEmit8($E8);                          { fld1 }
+  BinEmit8($DE); BinEmit8($C1);                          { faddp -> 2^f }
+  BinEmit8($D9); BinEmit8($FD);                          { fscale -> 2^(f+I)=e^(-m) }
+  BinEmit8($DD); BinEmit8($D9);                          { fstp st(1) -> retire I }
+  BinEmit8($DD); BinEmit8($5D); BinEmit8($F4);           { fstp qword[ebp-12] L }
+  { EDX = &_sas_lcg_max, init eax=seed, ecx=-1, P=1.0 }
+  BinMovRegLabel(2,'_sas_lcg_max');
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);           { mov eax,[ebp+8] seed }
+  BinEmit8($B9); BinEmit8($FF); BinEmit8($FF); BinEmit8($FF); BinEmit8($FF); { mov ecx,-1 }
+  BinEmit8($D9); BinEmit8($E8);                          { fld1 P=1.0 }
+  { Boucle Poisson }
+  BinDefineLabel('_ranpoi_loop');
+  BinEmit8($41);                                          { inc ecx k++ }
+  { LCG }
+  BinEmit8($69); BinEmit8($C0); BinEmit8($6D); BinEmit8($C5); BinEmit8($C5); BinEmit8($41);
+  BinEmit8($05); BinEmit8($39); BinEmit8($30); BinEmit8($00); BinEmit8($00);
+  BinEmit8($25); BinEmit8($FF); BinEmit8($FF); BinEmit8($FF); BinEmit8($7F);
+  BinEmit8($83); BinEmit8($C8); BinEmit8($01);           { or eax,1 }
+  BinEmit8($89); BinEmit8($45); BinEmit8($FC);           { mov [ebp-4],eax }
+  { P = P * U }
+  BinEmit8($DB); BinEmit8($45); BinEmit8($FC);           { fild [ebp-4] }
+  BinEmit8($DA); BinEmit8($32);                          { fidiv [edx] -> U }
+  BinEmit8($DE); BinEmit8($C9);                          { fmulp -> P*U }
+  { Compare P avec L: continue si P>L }
+  BinEmit8($DC); BinEmit8($55); BinEmit8($F4);           { fcom qword[ebp-12] }
+  BinEmit8($DF); BinEmit8($E0);                          { fnstsw ax }
+  BinEmit8($9E);                                          { sahf }
+  BinJccLabel(7,'_ranpoi_loop');                          { ja: P>L -> continuer }
+  { Fin boucle: retirer P, retourner ecx }
+  BinEmit8($DD); BinEmit8($D8);                          { fstp st(0) }
+  BinEmit8($89); BinEmit8($C8);                          { mov eax,ecx }
+  BinJmpLabel('_ranpoi_done');
+  BinDefineLabel('_ranpoi_zero');
+  BinEmit8($31); BinEmit8($C0);                          { xor eax,eax }
+  BinDefineLabel('_ranpoi_done');
+  BinEmit8($89); BinEmit8($EC); BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
   { RANTBL(seed,p1,p2): stub 0 (3 args) }
   BinDefineLabel('_SASRT_rantbl');
