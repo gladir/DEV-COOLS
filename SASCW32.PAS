@@ -7401,11 +7401,13 @@ Begin
   BinEmit8($5F); BinEmit8($5E); BinEmit8($5B);     { pop edi;esi;ebx       }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00); { pop ebp; ret 8 }
 
-  { --- _SASRT_constant(name): LongInt --- valeur entiere de la constante math }
-  { 'E'=2, 'P'(I)=3, 'S'(QRT*)=1, LOGPI/LOG2PI=1, autres=0                 }
+  { --- _SASRT_constant(name/code): LongInt --- valeur entiere constante math }
+  { Codes 0=E,1=PI,2=SQRT2. Noms: E=2, PI=3, SQRT*=1, LOGPI/LOG2PI=1.       }
   BinDefineLabel('_SASRT_constant');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);           { push ebp; mov ebp,esp }
   BinEmit8($8B); BinEmit8($55); BinEmit8($08);           { mov edx,[ebp+8] name }
+  BinEmit8($83); BinEmit8($FA); BinEmit8($10);           { cmp edx,16 }
+  BinJccLabel(6, '_const_code');                         { jbe numeric code }
   BinEmit8($0F); BinEmit8($B6); BinEmit8($02);           { movzx eax,byte[edx] }
   BinEmit8($24); BinEmit8($DF);                          { and al,0xDF uppercase }
   BinEmit8($3C); BinEmit8($45); BinJccLabel(5,'_const_ne'); { cmp 'E'; jne }
@@ -7431,6 +7433,21 @@ Begin
   BinEmit8($31); BinEmit8($C0);                          { xor eax,eax }
   BinDefineLabel('_const_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00); { pop ebp; ret 4 }
+  BinDefineLabel('_const_code');
+  BinEmit8($83); BinEmit8($FA); BinEmit8($00);            { cmp edx,0 }
+  BinJccLabel(5, '_const_code_ne0');
+  BinEmit8($B8); BinEmit32(2);                            { E }
+  BinJmpLabel('_const_done');
+  BinDefineLabel('_const_code_ne0');
+  BinEmit8($83); BinEmit8($FA); BinEmit8($01);            { cmp edx,1 }
+  BinJccLabel(5, '_const_code_ne1');
+  BinEmit8($B8); BinEmit32(3);                            { PI }
+  BinJmpLabel('_const_done');
+  BinDefineLabel('_const_code_ne1');
+  BinEmit8($83); BinEmit8($FA); BinEmit8($02);            { cmp edx,2 }
+  BinJccLabel(5, '_const_zero');
+  BinEmit8($B8); BinEmit32(1);                            { SQRT2 }
+  BinJmpLabel('_const_done');
 
   { --- _SASRT_convx(n,y,c,par,red): v^2*sum(t*(t+1)*CF*v^t)/price (5 args) }
   { [ebp+8]=n [ebp+12]=y [ebp+16]=c [ebp+20]=par(unused) [ebp+24]=red     }
