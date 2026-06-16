@@ -1,7 +1,18 @@
-/* test_airy.sas - AIRY : fonction d Airy (stub) */
 data _null_;
-  a = airy(0);
-  put 'AIRY(0) = ' a;
-  b = airy(1);
-  put 'AIRY(1) = ' b;
+  a0 = airy(0);
+  put 'AIRY(0)  = [' a0 ']  (attendu: [0])';
+  a1 = airy(1);
+  put 'AIRY(1)  = [' a1 ']  (attendu: [0])';
+  am2 = airy(-2);
+  put 'AIRY(-2) = [' am2 '] (attendu: [-1])';
+  am3 = airy(-3);
+  put 'AIRY(-3) = [' am3 '] (attendu: [-1])';
+  am6 = airy(-6);
+  put 'AIRY(-6) = [' am6 '] (attendu: [-1])';
+  d0 = dairy(0);
+  put 'DAIRY(0) = [' d0 ']  (attendu: [-1])';
+  d1 = dairy(1);
+  put 'DAIRY(1) = [' d1 ']  (attendu: [-1])';
+  dm1 = dairy(-1);
+  put 'DAIRY(-1)= [' dm1 '] (attendu: [0])';
 run;

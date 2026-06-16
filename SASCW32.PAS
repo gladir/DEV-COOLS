@@ -6136,6 +6136,18 @@ Begin
   BinDefineDataLabel('_sas_euler');
   BinEmitDataByte($19); BinEmitDataByte($B6); BinEmitDataByte($6F); BinEmitDataByte($FC);
   BinEmitDataByte($8C); BinEmitDataByte($78); BinEmitDataByte($E2); BinEmitDataByte($3F);
+  { c1=Ai(0)=0.3550280538878172929 (IEEE 754 LE) }
+  BinDefineDataLabel('_sas_airyc1');
+  BinEmitDataByte($B9); BinEmitDataByte($15); BinEmitDataByte($27); BinEmitDataByte($96);
+  BinEmitDataByte($C7); BinEmitDataByte($B8); BinEmitDataByte($D6); BinEmitDataByte($3F);
+  { c2=-Ai'(0)=0.2588194037928067846 (IEEE 754 LE) }
+  BinDefineDataLabel('_sas_airyc2');
+  BinEmitDataByte($8A); BinEmitDataByte($0F); BinEmitDataByte($B7); BinEmitDataByte($42);
+  BinEmitDataByte($7F); BinEmitDataByte($90); BinEmitDataByte($D0); BinEmitDataByte($3F);
+  { c1/2=0.177514026943909 (IEEE 754 LE, pour DAIRY) }
+  BinDefineDataLabel('_sas_airyd1h');
+  BinEmitDataByte($B9); BinEmitDataByte($15); BinEmitDataByte($27); BinEmitDataByte($96);
+  BinEmitDataByte($C7); BinEmitDataByte($B8); BinEmitDataByte($C6); BinEmitDataByte($3F);
 End;
 
 { Genere le code 80386 pour PROC PRINT.                       }
@@ -6734,11 +6746,69 @@ Begin
   BinEmit8($89); BinEmit8($EC); BinEmit8($5D);
   BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
-  { --- _SASRT_airy(x): stub LongInt 0 (1 arg) }
+  { --- _SASRT_airy(x): floor(Ai(x)), series Ai=c1*sf-c2*x*sg, 30 iter (1 arg) }
+  { [ebp+8]=x. sub esp,56: [ebp-4]=res [ebp-8/-6]=CW [ebp-16]=denom        }
+  { [ebp-24]=x3 [ebp-32]=term_f [ebp-40]=term_g [ebp-48]=sf [ebp-56]=sg    }
   BinDefineLabel('_SASRT_airy');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);                   { push ebp; mov ebp,esp }
+  BinEmit8($83); BinEmit8($EC); BinEmit8($38);                   { sub esp,56 }
+  BinEmit8($D9); BinEmit8($7D); BinEmit8($F8);                   { fnstcw [ebp-8] }
+  BinEmit8($0F); BinEmit8($B7); BinEmit8($45); BinEmit8($F8);    { movzx eax,word[ebp-8] }
+  BinEmit8($25); BinEmit8($FF); BinEmit8($F3); BinEmit8($FF); BinEmit8($FF); { and eax,~0xC00 }
+  BinEmit8($0D); BinEmit8($00); BinEmit8($04); BinEmit8($00); BinEmit8($00); { or eax,0x400 floor }
+  BinEmit8($66); BinEmit8($89); BinEmit8($45); BinEmit8($FA);    { mov [ebp-6],ax }
+  BinEmit8($DB); BinEmit8($45); BinEmit8($08);                   { fild [ebp+8] x }
+  BinEmit8($D9); BinEmit8($C0);                                  { fld st(0) }
+  BinEmit8($D8); BinEmit8($C8);                                  { fmul st(0),st(0) x^2 }
+  BinEmit8($DE); BinEmit8($C9);                                  { fmulp st(1),st x^3 }
+  BinEmit8($DD); BinEmit8($5D); BinEmit8($E8);                   { fstp [ebp-24] }
+  BinEmit8($D9); BinEmit8($E8); BinEmit8($DD); BinEmit8($5D); BinEmit8($E0); { fld1;fstp term_f }
+  BinEmit8($D9); BinEmit8($E8); BinEmit8($DD); BinEmit8($5D); BinEmit8($D8); { fld1;fstp term_g }
+  BinEmit8($D9); BinEmit8($E8); BinEmit8($DD); BinEmit8($5D); BinEmit8($D0); { fld1;fstp sf }
+  BinEmit8($D9); BinEmit8($E8); BinEmit8($DD); BinEmit8($5D); BinEmit8($C8); { fld1;fstp sg }
+  BinEmit8($B9); BinEmit8($01); BinEmit8($00); BinEmit8($00); BinEmit8($00); { mov ecx,1 }
+  BinDefineLabel('_airy_loop');
+  BinEmit8($8D); BinEmit8($04); BinEmit8($49);                   { lea eax,[ecx+ecx*2] 3k }
+  BinEmit8($89); BinEmit8($45); BinEmit8($F0);                   { mov [ebp-16],eax }
+  BinEmit8($48);                                                  { dec eax 3k-1 }
+  BinEmit8($0F); BinEmit8($AF); BinEmit8($45); BinEmit8($F0);    { imul eax,[ebp-16] }
+  BinEmit8($89); BinEmit8($45); BinEmit8($F0);                   { mov [ebp-16] (3k-1)*3k }
+  BinEmit8($DD); BinEmit8($45); BinEmit8($E0);                   { fld term_f }
+  BinEmit8($DC); BinEmit8($4D); BinEmit8($E8);                   { fmul [ebp-24] *x3 }
+  BinEmit8($DA); BinEmit8($75); BinEmit8($F0);                   { fidiv [ebp-16] }
+  BinEmit8($DD); BinEmit8($5D); BinEmit8($E0);                   { fstp term_f }
+  BinEmit8($DD); BinEmit8($45); BinEmit8($D0);                   { fld sf }
+  BinEmit8($DC); BinEmit8($45); BinEmit8($E0);                   { fadd term_f }
+  BinEmit8($DD); BinEmit8($5D); BinEmit8($D0);                   { fstp sf }
+  BinEmit8($8D); BinEmit8($04); BinEmit8($49);                   { lea eax,[ecx+ecx*2] 3k }
+  BinEmit8($89); BinEmit8($45); BinEmit8($F0);                   { mov [ebp-16],eax }
+  BinEmit8($40);                                                  { inc eax 3k+1 }
+  BinEmit8($0F); BinEmit8($AF); BinEmit8($45); BinEmit8($F0);    { imul eax,[ebp-16] }
+  BinEmit8($89); BinEmit8($45); BinEmit8($F0);                   { mov [ebp-16] 3k*(3k+1) }
+  BinEmit8($DD); BinEmit8($45); BinEmit8($D8);                   { fld term_g }
+  BinEmit8($DC); BinEmit8($4D); BinEmit8($E8);                   { fmul [ebp-24] *x3 }
+  BinEmit8($DA); BinEmit8($75); BinEmit8($F0);                   { fidiv [ebp-16] }
+  BinEmit8($DD); BinEmit8($5D); BinEmit8($D8);                   { fstp term_g }
+  BinEmit8($DD); BinEmit8($45); BinEmit8($C8);                   { fld sg }
+  BinEmit8($DC); BinEmit8($45); BinEmit8($D8);                   { fadd term_g }
+  BinEmit8($DD); BinEmit8($5D); BinEmit8($C8);                   { fstp sg }
+  BinEmit8($41);                                                  { inc ecx }
+  BinEmit8($83); BinEmit8($F9); BinEmit8($1F);                   { cmp ecx,31 }
+  BinJccLabel(12,'_airy_loop');                                   { jl }
+  BinMovRegLabel(0,'_sas_airyc1');                                { mov eax,&c1 }
+  BinEmit8($DD); BinEmit8($00);                                   { fld qword[eax] }
+  BinEmit8($DC); BinEmit8($4D); BinEmit8($D0);                   { fmul sf }
+  BinMovRegLabel(0,'_sas_airyc2');                                { mov eax,&c2 }
+  BinEmit8($DD); BinEmit8($00);                                   { fld qword[eax] }
+  BinEmit8($DB); BinEmit8($45); BinEmit8($08);                   { fild [ebp+8] x }
+  BinEmit8($DE); BinEmit8($C9);                                   { fmulp st(1),st c2*x }
+  BinEmit8($DC); BinEmit8($4D); BinEmit8($C8);                   { fmul sg c2*x*sg }
+  BinEmit8($DE); BinEmit8($E9);                                   { fsubp st(1),st Ai(x) }
+  BinEmit8($D9); BinEmit8($6D); BinEmit8($FA);                   { fldcw [ebp-6] }
+  BinEmit8($DB); BinEmit8($5D); BinEmit8($FC);                   { fistp [ebp-4] }
+  BinEmit8($D9); BinEmit8($6D); BinEmit8($F8);                   { fldcw [ebp-8] }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($FC);                   { mov eax,[ebp-4] }
+  BinEmit8($89); BinEmit8($EC); BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
   { --- _SASRT_betainv(p,a,b): stub LongInt 0 (3 args) }
   BinDefineLabel('_SASRT_betainv');
@@ -7309,11 +7379,72 @@ Begin
   BinEmit8($89); BinEmit8($EC);                          { mov esp,ebp }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($10); BinEmit8($00);
 
-  { --- _SASRT_dairy(x): stub LongInt 0 (1 arg) }
+  { --- _SASRT_dairy(x): floor(Ai'(x))=(c1/2)*x^2*sfp-c2*sgp, 30 iter (1 arg) }
+  { term_fp[k]=term_fp[k-1]*x3/(3k*(3k+2)), term_gp[k]=*x3/((3k-2)*3k)      }
+  { [ebp+8]=x. sub esp,56: [ebp-4]=res [ebp-8/-6]=CW [ebp-16]=denom         }
+  { [ebp-24]=x3 [ebp-32]=term_fp [ebp-40]=term_gp [ebp-48]=sfp [ebp-56]=sgp }
   BinDefineLabel('_SASRT_dairy');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);                   { push ebp; mov ebp,esp }
+  BinEmit8($83); BinEmit8($EC); BinEmit8($38);                   { sub esp,56 }
+  BinEmit8($D9); BinEmit8($7D); BinEmit8($F8);                   { fnstcw [ebp-8] }
+  BinEmit8($0F); BinEmit8($B7); BinEmit8($45); BinEmit8($F8);    { movzx eax,word[ebp-8] }
+  BinEmit8($25); BinEmit8($FF); BinEmit8($F3); BinEmit8($FF); BinEmit8($FF); { and eax,~0xC00 }
+  BinEmit8($0D); BinEmit8($00); BinEmit8($04); BinEmit8($00); BinEmit8($00); { or eax,0x400 floor }
+  BinEmit8($66); BinEmit8($89); BinEmit8($45); BinEmit8($FA);    { mov [ebp-6],ax }
+  BinEmit8($DB); BinEmit8($45); BinEmit8($08);                   { fild [ebp+8] x }
+  BinEmit8($D9); BinEmit8($C0);                                  { fld st(0) }
+  BinEmit8($D8); BinEmit8($C8);                                  { fmul st(0),st(0) x^2 }
+  BinEmit8($DE); BinEmit8($C9);                                  { fmulp st(1),st x^3 }
+  BinEmit8($DD); BinEmit8($5D); BinEmit8($E8);                   { fstp [ebp-24] }
+  BinEmit8($D9); BinEmit8($E8); BinEmit8($DD); BinEmit8($5D); BinEmit8($E0); { fld1;fstp term_fp }
+  BinEmit8($D9); BinEmit8($E8); BinEmit8($DD); BinEmit8($5D); BinEmit8($D8); { fld1;fstp term_gp }
+  BinEmit8($D9); BinEmit8($E8); BinEmit8($DD); BinEmit8($5D); BinEmit8($D0); { fld1;fstp sfp }
+  BinEmit8($D9); BinEmit8($E8); BinEmit8($DD); BinEmit8($5D); BinEmit8($C8); { fld1;fstp sgp }
+  BinEmit8($B9); BinEmit8($01); BinEmit8($00); BinEmit8($00); BinEmit8($00); { mov ecx,1 }
+  BinDefineLabel('_dairy_loop');
+  BinEmit8($8D); BinEmit8($04); BinEmit8($49);                   { lea eax,[ecx+ecx*2] 3k }
+  BinEmit8($89); BinEmit8($45); BinEmit8($F0);                   { mov [ebp-16],eax }
+  BinEmit8($83); BinEmit8($C0); BinEmit8($02);                   { add eax,2 3k+2 }
+  BinEmit8($0F); BinEmit8($AF); BinEmit8($45); BinEmit8($F0);    { imul eax,[ebp-16] }
+  BinEmit8($89); BinEmit8($45); BinEmit8($F0);                   { mov [ebp-16] 3k*(3k+2) }
+  BinEmit8($DD); BinEmit8($45); BinEmit8($E0);                   { fld term_fp }
+  BinEmit8($DC); BinEmit8($4D); BinEmit8($E8);                   { fmul [ebp-24] *x3 }
+  BinEmit8($DA); BinEmit8($75); BinEmit8($F0);                   { fidiv [ebp-16] }
+  BinEmit8($DD); BinEmit8($5D); BinEmit8($E0);                   { fstp term_fp }
+  BinEmit8($DD); BinEmit8($45); BinEmit8($D0);                   { fld sfp }
+  BinEmit8($DC); BinEmit8($45); BinEmit8($E0);                   { fadd term_fp }
+  BinEmit8($DD); BinEmit8($5D); BinEmit8($D0);                   { fstp sfp }
+  BinEmit8($8D); BinEmit8($04); BinEmit8($49);                   { lea eax,[ecx+ecx*2] 3k }
+  BinEmit8($89); BinEmit8($45); BinEmit8($F0);                   { mov [ebp-16],eax }
+  BinEmit8($83); BinEmit8($E8); BinEmit8($02);                   { sub eax,2 3k-2 }
+  BinEmit8($0F); BinEmit8($AF); BinEmit8($45); BinEmit8($F0);    { imul eax,[ebp-16] }
+  BinEmit8($89); BinEmit8($45); BinEmit8($F0);                   { mov [ebp-16] (3k-2)*3k }
+  BinEmit8($DD); BinEmit8($45); BinEmit8($D8);                   { fld term_gp }
+  BinEmit8($DC); BinEmit8($4D); BinEmit8($E8);                   { fmul [ebp-24] *x3 }
+  BinEmit8($DA); BinEmit8($75); BinEmit8($F0);                   { fidiv [ebp-16] }
+  BinEmit8($DD); BinEmit8($5D); BinEmit8($D8);                   { fstp term_gp }
+  BinEmit8($DD); BinEmit8($45); BinEmit8($C8);                   { fld sgp }
+  BinEmit8($DC); BinEmit8($45); BinEmit8($D8);                   { fadd term_gp }
+  BinEmit8($DD); BinEmit8($5D); BinEmit8($C8);                   { fstp sgp }
+  BinEmit8($41);                                                  { inc ecx }
+  BinEmit8($83); BinEmit8($F9); BinEmit8($1F);                   { cmp ecx,31 }
+  BinJccLabel(12,'_dairy_loop');                                  { jl }
+  { Ai'(x) = (c1/2)*x^2*sfp - c2*sgp }
+  BinMovRegLabel(0,'_sas_airyd1h');                               { mov eax,&(c1/2) }
+  BinEmit8($DD); BinEmit8($00);                                   { fld qword[eax] }
+  BinEmit8($DB); BinEmit8($45); BinEmit8($08);                   { fild [ebp+8] x }
+  BinEmit8($D8); BinEmit8($C8);                                  { fmul st(0),st(0) x^2 }
+  BinEmit8($DE); BinEmit8($C9);                                  { fmulp st(1),st (c1/2)*x^2 }
+  BinEmit8($DC); BinEmit8($4D); BinEmit8($D0);                   { fmul sfp }
+  BinMovRegLabel(0,'_sas_airyc2');                                { mov eax,&c2 }
+  BinEmit8($DD); BinEmit8($00);                                   { fld qword[eax] }
+  BinEmit8($DC); BinEmit8($4D); BinEmit8($C8);                   { fmul sgp }
+  BinEmit8($DE); BinEmit8($E9);                                   { fsubp st(1),st Ai'(x) }
+  BinEmit8($D9); BinEmit8($6D); BinEmit8($FA);                   { fldcw [ebp-6] }
+  BinEmit8($DB); BinEmit8($5D); BinEmit8($FC);                   { fistp [ebp-4] }
+  BinEmit8($D9); BinEmit8($6D); BinEmit8($F8);                   { fldcw [ebp-8] }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($FC);                   { mov eax,[ebp-4] }
+  BinEmit8($89); BinEmit8($EC); BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
   { --- _SASRT_compound(a,r,n): LongInt --- a*(1+r/100)^n via FPU (42 octets) }
   { [ebp+8]=a [ebp+12]=r [ebp+16]=n. Boucle avec LOOP (ECX=n).             }
