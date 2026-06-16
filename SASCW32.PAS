@@ -5353,9 +5353,24 @@ Begin
             End;
           End;
         End;
+      End Else If FName = 'SYMPUT' Then Begin
+        { CALL SYMPUT(name,value): ecrit une macro-variable runtime lisible par SYMGET. }
+        If ArgCnt >= 2 Then Begin
+          If ExprIsChar(ArgList[1]) Then Begin
+            CodegenExprEAX(ArgList[1]);
+          End Else Begin
+            LblStr := EmitRDataStr('');
+            BinPushLabel(LblStr);             { fmt ignore par PUTN }
+            CodegenExprEAX(ArgList[1]); BinEmit8($50);
+            BinCallLabel('_SASRT_putn');      { EAX = valeur numerique en texte }
+          End;
+          BinEmit8($50);                      { value }
+          CodegenExprEAX(ArgList[0]); BinEmit8($50); { name }
+          BinCallLabel('_SASRT_symput');
+        End;
       End Else Begin
         { LABEL,    }
-        { SYMPUT : stub — evaluer et ignorer args }
+        { Stubs CALL restants : evaluer et ignorer args }
         For I := 0 To ArgCnt - 1 Do
           CodegenExprEAX(ArgList[I]);
       End;
@@ -6448,6 +6463,11 @@ Begin
   For J := 1 To 512 Do BinEmitDataByte(0);
   { Buffer pour COMPBL / COLLATE }
   BinDefineDataLabel('_sas_compbl_buf');
+  For J := 1 To 256 Do BinEmitDataByte(0);
+  { Stockage runtime minimal CALL SYMPUT / SYMGET : 1 nom + 1 valeur }
+  BinDefineDataLabel('_sas_sym_name');
+  For J := 1 To 32 Do BinEmitDataByte(0);
+  BinDefineDataLabel('_sas_sym_value');
   For J := 1 To 256 Do BinEmitDataByte(0);
   { Buffer SYSTEMTIME pour GetLocalTime (16 octets: 8 WORDs) }
   BinDefineDataLabel('_sas_systime');
@@ -12580,9 +12600,64 @@ Begin
   BinDefineLabel('_SASRT_stnamel');
   BinJmpLabel('_sas_retempty1');
 
-  { --- _SASRT_symget(name): ptr --- retourne "" (variable macro absente) (1 arg) }
+  { --- _SASRT_symput(name,value): stocke une macro-variable runtime (2 args) }
+  BinDefineLabel('_SASRT_symput');
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
+  BinEmit8($56); BinEmit8($57); BinEmit8($51);          { push esi;edi;ecx }
+  BinEmit8($8B); BinEmit8($75); BinEmit8($08);          { mov esi,[ebp+8] name }
+  BinMovRegLabel(7, '_sas_sym_name');                   { mov edi,&sym_name }
+  BinEmit8($B9); BinEmit32(31);                         { mov ecx,31 }
+  BinDefineLabel('_symput_name_loop');
+  BinEmit8($85); BinEmit8($C9);                         { test ecx,ecx }
+  BinJccLabel(4, '_symput_name_done');
+  BinEmit8($8A); BinEmit8($06);                         { mov al,[esi] }
+  BinEmit8($84); BinEmit8($C0);                         { test al,al }
+  BinJccLabel(4, '_symput_name_done');
+  BinEmit8($88); BinEmit8($07);                         { mov [edi],al }
+  BinEmit8($46); BinEmit8($47); BinEmit8($49);          { inc esi; inc edi; dec ecx }
+  BinJmpLabel('_symput_name_loop');
+  BinDefineLabel('_symput_name_done');
+  BinEmit8($C6); BinEmit8($07); BinEmit8($00);          { nul terminal }
+  BinEmit8($8B); BinEmit8($75); BinEmit8($0C);          { mov esi,[ebp+12] value }
+  BinMovRegLabel(7, '_sas_sym_value');                  { mov edi,&sym_value }
+  BinEmit8($B9); BinEmit32(255);                        { mov ecx,255 }
+  BinDefineLabel('_symput_value_loop');
+  BinEmit8($85); BinEmit8($C9);
+  BinJccLabel(4, '_symput_value_done');
+  BinEmit8($8A); BinEmit8($06);
+  BinEmit8($84); BinEmit8($C0);
+  BinJccLabel(4, '_symput_value_done');
+  BinEmit8($88); BinEmit8($07);
+  BinEmit8($46); BinEmit8($47); BinEmit8($49);
+  BinJmpLabel('_symput_value_loop');
+  BinDefineLabel('_symput_value_done');
+  BinEmit8($C6); BinEmit8($07); BinEmit8($00);
+  BinEmit8($59); BinEmit8($5F); BinEmit8($5E);
+  BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
+
+  { --- _SASRT_symget(name): ptr --- retourne la valeur stockee par SYMPUT (1 arg) }
   BinDefineLabel('_SASRT_symget');
-  BinJmpLabel('_sas_retempty1');
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
+  BinEmit8($56); BinEmit8($57);                         { push esi;edi }
+  BinEmit8($8B); BinEmit8($75); BinEmit8($08);          { mov esi,[ebp+8] name }
+  BinMovRegLabel(7, '_sas_sym_name');                   { mov edi,&sym_name }
+  BinDefineLabel('_symget_cmp_loop');
+  BinEmit8($8A); BinEmit8($06);                         { mov al,[esi] }
+  BinEmit8($8A); BinEmit8($27);                         { mov ah,[edi] }
+  BinEmit8($38); BinEmit8($E0);                         { cmp al,ah }
+  BinJccLabel(5, '_symget_not_found');
+  BinEmit8($84); BinEmit8($C0);                         { test al,al }
+  BinJccLabel(4, '_symget_found');
+  BinEmit8($46); BinEmit8($47);                         { inc esi; inc edi }
+  BinJmpLabel('_symget_cmp_loop');
+  BinDefineLabel('_symget_found');
+  BinMovRegLabel(0, '_sas_sym_value');
+  BinEmit8($5F); BinEmit8($5E); BinEmit8($5D);
+  BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+  BinDefineLabel('_symget_not_found');
+  BinMovRegLabel(0, '_sas_empty');
+  BinEmit8($5F); BinEmit8($5E); BinEmit8($5D);
+  BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
   { --- _SASRT_sysget(name): ptr --- GetEnvironmentVariableA(name,strtmp,256) }
   { Layout (32 o): mov edi,&strtmp / clear / push 256 / push edi / push name / call / ret }
