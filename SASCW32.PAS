@@ -7335,10 +7335,22 @@ Begin
   BinEmit8($31); BinEmit8($C0);
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { --- _SASRT_cnonct(x,df,p): stub LongInt 0 (3 args) }
+  { --- _SASRT_cnonct(x,df,p): non-centralite chi-carre approx (3 args) }
+  { Retourne max(0, x - CINV(p,df)) pour le backend entier.              }
   BinDefineLabel('_SASRT_cnonct');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($FF); BinEmit8($75); BinEmit8($0C);           { push df }
+  BinEmit8($FF); BinEmit8($75); BinEmit8($10);           { push p }
+  BinCallLabel('_SASRT_cinv');                           { eax = quantile central }
+  BinEmit8($8B); BinEmit8($4D); BinEmit8($08);           { mov ecx,[ebp+8] x }
+  BinEmit8($29); BinEmit8($C1);                          { sub ecx,eax }
+  BinEmit8($85); BinEmit8($C9);                          { test ecx,ecx }
+  BinJccLabel(14, '_cnonct_zero');                       { jle zero }
+  BinEmit8($89); BinEmit8($C8);                          { mov eax,ecx }
+  BinJmpLabel('_cnonct_done');
+  BinDefineLabel('_cnonct_zero');
+  BinEmit8($31); BinEmit8($C0);                          { xor eax,eax }
+  BinDefineLabel('_cnonct_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($0C); BinEmit8($00);
 
   { --- _SASRT_comb(n,r): LongInt = C(n,r)                               }
@@ -11023,7 +11035,7 @@ Begin
   If FName = 'CDF'     Then Begin BinCallLabel('_SASRT_cdf');     Exit; End;
   If FName = 'CEILZ'   Then Begin BinCallLabel('_SASRT_ceilz');   Exit; End;
   If FName = 'CEXIST'  Then Begin BinCallLabel('_SASRT_cexist');  Exit; End;
-  { CINV ; CLOSE/CNONCT restent limites sans moteur dataset/stat complet }
+  { CINV / CNONCT ; CLOSE reste limite sans moteur dataset complet }
   If FName = 'CINV'    Then Begin BinCallLabel('_SASRT_cinv');    Exit; End;
   If FName = 'CLOSE'   Then Begin BinCallLabel('_SASRT_close');   Exit; End;
   If FName = 'CNONCT'  Then Begin BinCallLabel('_SASRT_cnonct');  Exit; End;
