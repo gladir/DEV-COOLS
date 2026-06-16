@@ -6742,7 +6742,7 @@ Begin
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
   BinEmit8($83); BinEmit8($EC); BinEmit8($04);
   BinEmit8($DB); BinEmit8($45); BinEmit8($08);  { fild [ebp+8]=y → ST0=y }
-  BinEmit8($DB); BinEmit8($4D); BinEmit8($0C);  { fild [ebp+12]=x → ST0=x,ST1=y }
+  BinEmit8($DB); BinEmit8($45); BinEmit8($0C);  { fild [ebp+12]=x → ST0=x,ST1=y }
   BinEmit8($D9); BinEmit8($F3);                  { fpatan → atan(y/x) }
   BinEmit8($DB); BinEmit8($5D); BinEmit8($FC);
   BinEmit8($8B); BinEmit8($45); BinEmit8($FC);
@@ -9720,10 +9720,14 @@ Begin
   BinDefineLabel('_rantri_done');
   BinEmit8($89); BinEmit8($EC); BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
-  { RANUNI(seed): stub 0 (1 arg) }
+  { RANUNI(seed): LongInt --- prochaine valeur LCG positive (1 arg) }
+  { Representation entiere: retourne N=(seed*1103515245+12345)&7FFFFFFF. }
   BinDefineLabel('_SASRT_ranuni');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);           { mov eax,[ebp+8] seed }
+  BinEmit8($69); BinEmit8($C0); BinEmit8($6D); BinEmit8($C5); BinEmit8($C5); BinEmit8($41);
+  BinEmit8($05); BinEmit8($39); BinEmit8($30); BinEmit8($00); BinEmit8($00);
+  BinEmit8($25); BinEmit8($FF); BinEmit8($FF); BinEmit8($FF); BinEmit8($7F);
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
   { REWIND(dsid): stub 0 (1 arg) }
@@ -10180,11 +10184,9 @@ Begin
   BinEmit8($5B);                                          { .done: pop ebx }
   BinEmit8($5D);                                          { pop ebp }
   BinEmit8($C2); BinEmit8($08); BinEmit8($00);           { ret 8 }
-  { UNIFORM(seed): stub 0 (1 arg) }
+  { UNIFORM(seed): alias entier de RANUNI(seed), meme LCG (1 arg) }
   BinDefineLabel('_SASRT_uniform');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+  BinJmpLabel('_SASRT_ranuni');
   { USS(x1,x2): LongInt --- x1^2+x2^2 via IMUL (21 octets) }
   { Somme des carres non corriges pour 2 valeurs.           }
   BinDefineLabel('_SASRT_uss');
@@ -10440,12 +10442,12 @@ Begin
   If FName = 'MONTH'    Then Begin BinCallLabel('_SASRT_month');    Exit; End;
   If FName = 'DAY'      Then Begin BinCallLabel('_SASRT_day');      Exit; End;
   If FName = 'POW'      Then Begin BinCallLabel('_SASRT_pow');      Exit; End;
-  { Fonctions trigonometriques (stubs entiers) }
+  { Fonctions trigonometriques x87 (resultat entier) }
   If FName = 'ARCOS'   Then Begin BinCallLabel('_SASRT_arcos');   Exit; End;
   If FName = 'ARSIN'   Then Begin BinCallLabel('_SASRT_arsin');   Exit; End;
   If FName = 'ATAN'    Then Begin BinCallLabel('_SASRT_atan');    Exit; End;
   If FName = 'ATAN2'   Then Begin BinCallLabel('_SASRT_atan2');   Exit; End;
-  { Fonctions mathematiques speciales (stubs) }
+  { Fonctions mathematiques speciales }
   If FName = 'AIRY'    Then Begin BinCallLabel('_SASRT_airy');    Exit; End;
   If FName = 'BETAINV' Then Begin BinCallLabel('_SASRT_betainv'); Exit; End;
   { Fonctions de caractere }
@@ -10467,25 +10469,25 @@ Begin
   If FName = 'COMPBL'  Then Begin BinCallLabel('_SASRT_compbl');  Exit; End;
   { COLLATE : sequence ASCII (stub ptr) }
   If FName = 'COLLATE' Then Begin BinCallLabel('_SASRT_collate'); Exit; End;
-  { Stubs : COMPOUND, CONSTANT, CONVX, CONVXP }
+  { Finance/constantes }
   If FName = 'COMPOUND' Then Begin BinCallLabel('_SASRT_compound'); Exit; End;
   If FName = 'CONSTANT' Then Begin BinCallLabel('_SASRT_constant'); Exit; End;
   If FName = 'CONVX'   Then Begin BinCallLabel('_SASRT_convx');   Exit; End;
   If FName = 'CONVXP'  Then Begin BinCallLabel('_SASRT_convxp');  Exit; End;
-  { Stubs trigonometriques : COS, COSH }
+  { Trigonometriques / hyperboliques }
   If FName = 'COS'     Then Begin BinCallLabel('_SASRT_cos');     Exit; End;
   If FName = 'COSH'    Then Begin BinCallLabel('_SASRT_cosh');    Exit; End;
-  { Stubs statistiques : CSS, CV, CUROBS }
+  { Statistiques et attributs d observation }
   If FName = 'CSS'     Then Begin BinCallLabel('_SASRT_css');     Exit; End;
   If FName = 'CV'      Then Begin BinCallLabel('_SASRT_cv');      Exit; End;
   If FName = 'CUROBS'  Then Begin BinCallLabel('_SASRT_curobs');  Exit; End;
-  { Stubs d amortissement : DACCDB, DACCDBSL, DACCSL, DACCSYD, DACCTAB }
+  { Amortissement }
   If FName = 'DACCDB'   Then Begin BinCallLabel('_SASRT_daccdb');   Exit; End;
   If FName = 'DACCDBSL' Then Begin BinCallLabel('_SASRT_daccdbsl'); Exit; End;
   If FName = 'DACCSL'   Then Begin BinCallLabel('_SASRT_daccsl');   Exit; End;
   If FName = 'DACCSYD'  Then Begin BinCallLabel('_SASRT_daccsyd');  Exit; End;
   If FName = 'DACCTAB'  Then Begin BinCallLabel('_SASRT_dacctab');  Exit; End;
-  { Stub : DAIRY }
+  { Fonction speciale Airy derivee }
   If FName = 'DAIRY'   Then Begin BinCallLabel('_SASRT_dairy');   Exit; End;
   { Fonctions de date serie D }
   If FName = 'DATDIF'   Then Begin BinCallLabel('_SASRT_datdif');   Exit; End;
@@ -10505,7 +10507,7 @@ Begin
   If FName = 'DINFO'    Then Begin BinCallLabel('_SASRT_dinfo');    Exit; End;
   If FName = 'DOPTNAME' Then Begin BinCallLabel('_SASRT_doptname'); Exit; End;
   If FName = 'DREAD'    Then Begin BinCallLabel('_SASRT_dread');    Exit; End;
-  { Stubs depreciation serie DEP }
+  { Depreciation serie DEP }
   If FName = 'DEPDB'    Then Begin BinCallLabel('_SASRT_depdb');    Exit; End;
   If FName = 'DEPDBSL'  Then Begin BinCallLabel('_SASRT_depdbsl');  Exit; End;
   If FName = 'DEPSL'    Then Begin BinCallLabel('_SASRT_depsl');    Exit; End;
