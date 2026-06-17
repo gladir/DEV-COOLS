@@ -426,7 +426,7 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer le compilateur Fortran 77 pour l'assembleur du microprocesseur 8086.</td>
 		</tr>
 		<tr>
-			<td><b>F77CW32.PAS</b><td>
+			<td><b>F77CW32.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur Fortran 77 pour l'assembleur du microprocesseur 80386 pour Windows 32 bits.</td>
 		</tr>
 		<tr>
