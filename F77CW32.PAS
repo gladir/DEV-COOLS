@@ -85,28 +85,28 @@
             labels definis/references, erreurs sur label inconnu,
             emission JMP/Jcc vers labels ASM stables.
 
-  TODO 20 - Implementer IF arithmetique/logique minimal:
+  DONE 20 - Implementer IF arithmetique/logique minimal:
             au minimum IF (expr relationnelle) GOTO label
             pour couvrir fibo.f, puis etendre vers IF complet F77.
 
-  TODO 21 - Implementer DO label var = debut, fin[, pas]:
+  DONE 21 - Implementer DO label var = debut, fin[, pas]:
             compteur INTEGER 32 bits, borne finale, increment,
             branchement vers label de fin, compatibilite avec CONTINUE.
 
-  TODO 22 - Implementer CONTINUE comme label/emission no-op,
+  DONE 22 - Implementer CONTINUE comme label/emission no-op,
             utilisable comme terminaison de boucle DO numerique.
 
-  TODO 23 - Implementer CALL SUBROUTINE avec arguments par reference:
+  DONE 23 - Implementer CALL SUBROUTINE avec arguments par reference:
             ordre d'empilement documente, nettoyage de pile,
             liaison interne PROGRAM/SUBROUTINE dans le meme fichier.
 
-  TODO 24 - Implementer le runtime console minimal Win32:
+  DONE 24 - Implementer le runtime console minimal Win32:
             PRINT *, chaine litterale;
             PRINT *, variable INTEGER;
             conversion entier -> texte;
             sortie via API Win32 ou runtime C selon strategie de linkage.
 
-  TODO 25 - Creer la batterie de validation SAMPLES\F77:
+  DONE 25 - Creer la batterie de validation SAMPLES\F77:
             hello.f, arith.f, do_test.f, sub_test.f, fibo.f;
             compiler en .EXE par defaut, tester option .OBJ seul,
             tester option .ASM explicite, comparer sorties attendues.
@@ -183,6 +183,11 @@ Const
  F77_MAX_ASSIGNMENTS     = 256;
  F77_MAX_COMPARISONS     = 256;
  F77_MAX_BRANCHES        = 256;
+ F77_MAX_LOOPS           = 128;
+ F77_MAX_CONTINUES       = 256;
+ F77_MAX_CALLS           = 128;
+ F77_MAX_CALL_ARGS       = 16;
+ F77_MAX_PRINTS          = 256;
 
 Type
  TOutputMode = (OM_EXE, OM_OBJ);
@@ -288,7 +293,10 @@ Type
 
  TF77BranchKind = (
   BK_GOTO,
-  BK_IF_GOTO
+  BK_IF_GOTO,
+  BK_IF_ARITH_NEG,
+  BK_IF_ARITH_ZERO,
+  BK_IF_ARITH_POS
  );
 
  TF77Branch = Record
@@ -298,6 +306,49 @@ Type
   LabelValue     : LongInt;
   LabelIndex     : Integer;
   ComparisonIndex: Integer;
+  ExprText       : String[96];
+ End;
+
+ TF77DoLoop = Record
+  UnitName      : String[32];
+  LineNo        : Integer;
+  EndLabelValue : LongInt;
+  EndLabelIndex : Integer;
+  VarName       : String[32];
+  VarIndex      : Integer;
+  StartExpr     : String[96];
+  EndExpr       : String[96];
+  StepExpr      : String[96];
+  StartAsmLabel : String[64];
+ End;
+
+ TF77Continue = Record
+  UnitName: String[32];
+  LineNo  : Integer;
+ End;
+
+ TF77Call = Record
+  UnitName : String[32];
+  LineNo   : Integer;
+  ProcName : String[32];
+  ProcIndex: Integer;
+  ArgCount : Integer;
+  ArgNames : Array[1..F77_MAX_CALL_ARGS] Of String[32];
+  ArgIndex : Array[1..F77_MAX_CALL_ARGS] Of Integer;
+ End;
+
+ TF77PrintKind = (
+  PK_STRING,
+  PK_INTEGER
+ );
+
+ TF77Print = Record
+  UnitName : String[32];
+  LineNo   : Integer;
+  Kind     : TF77PrintKind;
+  Text     : String[120];
+  ExprText : String[96];
+  DataLabel: String[64];
  End;
 
  TCoffRelocKind = (
@@ -340,6 +391,7 @@ Type
  EmitAsm    : Boolean;
  Verbose    : Boolean;
  Diagnostic : Boolean;
+ ValidationMode:Boolean;
 End;
 
  TPipelineState = Record
@@ -384,6 +436,17 @@ End;
   BranchCount: Integer;
   SkippedBranchCount: Integer;
   Branches: Array[1..F77_MAX_BRANCHES] Of TF77Branch;
+  LoopCount: Integer;
+  SkippedLoopCount: Integer;
+  Loops: Array[1..F77_MAX_LOOPS] Of TF77DoLoop;
+  ContinueCount: Integer;
+  Continues: Array[1..F77_MAX_CONTINUES] Of TF77Continue;
+  IrCallCount: Integer;
+  SkippedIrCallCount: Integer;
+  Calls: Array[1..F77_MAX_CALLS] Of TF77Call;
+  PrintCount: Integer;
+  SkippedPrintCount: Integer;
+  Prints: Array[1..F77_MAX_PRINTS] Of TF77Print;
  End;
 
 Var
@@ -600,6 +663,9 @@ Begin
  Case Kind Of
   BK_GOTO:BranchKindName:='GOTO';
   BK_IF_GOTO:BranchKindName:='IF-GOTO';
+  BK_IF_ARITH_NEG:BranchKindName:='IF-ARITH-NEG';
+  BK_IF_ARITH_ZERO:BranchKindName:='IF-ARITH-ZERO';
+  BK_IF_ARITH_POS:BranchKindName:='IF-ARITH-POS';
   Else BranchKindName:='?';
  End;
 End;
@@ -658,6 +724,85 @@ Begin
           BranchKindName(Pipeline.Branches[I].Kind),' ',
           Pipeline.Branches[I].LabelValue,' -> ',Target,
           ' ligne ',Pipeline.Branches[I].LineNo);
+ End;
+End;
+
+Procedure TraceLoops;
+Var
+ I:Integer;
+ Target:String;
+Begin
+ If Not(Options.Verbose or Options.Diagnostic)Then Exit;
+ WriteLn('IR     : boucles DO ',Pipeline.LoopCount,
+         ', ignorees ',Pipeline.SkippedLoopCount);
+ For I:=1 To Pipeline.LoopCount Do Begin
+  If Pipeline.Loops[I].EndLabelIndex>0 Then
+   Target:=Pipeline.Symbols[Pipeline.Loops[I].EndLabelIndex].AsmName
+  Else
+   Target:='?';
+  WriteLn('IR     : ',Pipeline.Loops[I].UnitName,' DO ',
+          Pipeline.Loops[I].EndLabelValue,' ',
+          Pipeline.Loops[I].VarName,' = ',
+          Pipeline.Loops[I].StartExpr,', ',
+          Pipeline.Loops[I].EndExpr,', ',
+          Pipeline.Loops[I].StepExpr,' fin ',Target,
+          ' debut ',Pipeline.Loops[I].StartAsmLabel,
+          ' ligne ',Pipeline.Loops[I].LineNo);
+ End;
+End;
+
+Procedure TraceContinues;
+Var
+ I:Integer;
+Begin
+ If Not(Options.Verbose or Options.Diagnostic)Then Exit;
+ WriteLn('IR     : CONTINUE ',Pipeline.ContinueCount);
+ For I:=1 To Pipeline.ContinueCount Do
+  WriteLn('IR     : ',Pipeline.Continues[I].UnitName,
+          ' CONTINUE ligne ',Pipeline.Continues[I].LineNo);
+End;
+
+Procedure TraceCalls;
+Var
+ I:Integer;
+ J:Integer;
+ Args:String;
+ Target:String;
+Begin
+ If Not(Options.Verbose or Options.Diagnostic)Then Exit;
+ WriteLn('IR     : appels CALL ',Pipeline.IrCallCount,
+         ', ignores ',Pipeline.SkippedIrCallCount);
+ For I:=1 To Pipeline.IrCallCount Do Begin
+  Args:='';
+  For J:=1 To Pipeline.Calls[I].ArgCount Do Begin
+   If J>1 Then Args:=Args+', ';
+   Args:=Args+Pipeline.Calls[I].ArgNames[J];
+  End;
+  If Pipeline.Calls[I].ProcIndex>0 Then
+   Target:=Pipeline.Symbols[Pipeline.Calls[I].ProcIndex].AsmName
+  Else
+   Target:='?';
+  WriteLn('IR     : ',Pipeline.Calls[I].UnitName,' CALL ',
+          Pipeline.Calls[I].ProcName,'(',Args,') -> ',Target,
+          ' ligne ',Pipeline.Calls[I].LineNo);
+ End;
+End;
+
+Procedure TracePrints;
+Var
+ I:Integer;
+ What:String;
+Begin
+ If Not(Options.Verbose or Options.Diagnostic)Then Exit;
+ WriteLn('IR     : PRINT ',Pipeline.PrintCount,
+         ', ignores ',Pipeline.SkippedPrintCount);
+ For I:=1 To Pipeline.PrintCount Do Begin
+  If Pipeline.Prints[I].Kind=PK_STRING Then
+   What:='''' + Pipeline.Prints[I].Text + ''''
+  Else
+   What:=Pipeline.Prints[I].ExprText;
+  WriteLn('IR     : ',Pipeline.Prints[I].UnitName,' PRINT ',
+          What,' ligne ',Pipeline.Prints[I].LineNo);
  End;
 End;
 
@@ -1429,7 +1574,165 @@ Begin
     Exit;
    End;
   End
-  Else Inc(I);
+ Else Inc(I);
+ End;
+End;
+
+Function ProcNameFromCall(StmtText:String):String;
+Var
+ S:String;
+ I:Integer;
+Begin
+ ProcNameFromCall:='';
+ S:=TrimStr(UpperStr(StmtText));
+ If Not StmtStartsWith(S,'CALL')Then Exit;
+ S:=TrimStr(Copy(S,5,Length(S)-4));
+ I:=1;
+ While(I<=Length(S))and IsIdentChar(S[I])Do Inc(I);
+ ProcNameFromCall:=Copy(S,1,I-1);
+End;
+
+Function AddCall(UnitName,StmtText:String;LineNo:Integer):Boolean;
+Var
+ ProcName:String;
+ ArgText:String;
+ S:String;
+ I:Integer;
+ Start:Integer;
+ ArgName:String;
+ ArgCount:Integer;
+ SymIdx:Integer;
+Begin
+ AddCall:=True;
+ ProcName:=ProcNameFromCall(StmtText);
+ If ProcName=''Then Begin
+  AddCall:=ParserError('CALL sans nom de sous-programme',LineNo);
+  Exit;
+ End;
+ If Pipeline.IrCallCount>=F77_MAX_CALLS Then Begin
+  AddCall:=ParserError('trop d''appels CALL',LineNo);
+  Exit;
+ End;
+ Inc(Pipeline.IrCallCount);
+ Pipeline.Calls[Pipeline.IrCallCount].UnitName:=UpperStr(UnitName);
+ Pipeline.Calls[Pipeline.IrCallCount].LineNo:=LineNo;
+ Pipeline.Calls[Pipeline.IrCallCount].ProcName:=UpperStr(ProcName);
+ Pipeline.Calls[Pipeline.IrCallCount].ProcIndex:=0;
+ Pipeline.Calls[Pipeline.IrCallCount].ArgCount:=0;
+ ArgText:=TextBetweenParens(StmtText);
+ S:=UpperStr(ArgText);
+ I:=1;
+ ArgCount:=0;
+ While I<=Length(S) Do Begin
+  If IsIdentStart(S[I])Then Begin
+   Start:=I;
+   Inc(I);
+   While(I<=Length(S))and IsIdentChar(S[I])Do Inc(I);
+   ArgName:=Copy(S,Start,I-Start);
+   Inc(ArgCount);
+   If ArgCount>F77_MAX_CALL_ARGS Then Begin
+    AddCall:=ParserError('trop d''arguments CALL',LineNo);
+    Exit;
+   End;
+   SymIdx:=FindVarSymbol(UnitName,ArgName);
+   If SymIdx=0 Then Begin
+    AddCall:=ParserError('argument CALL inconnu: '+ArgName,LineNo);
+    Exit;
+   End;
+   If Pipeline.Symbols[SymIdx].DType<>FT_INTEGER Then Begin
+    AddCall:=ParserError('argument CALL INTEGER attendu: '+ArgName,LineNo);
+    Exit;
+   End;
+   Pipeline.Calls[Pipeline.IrCallCount].ArgNames[ArgCount]:=ArgName;
+   Pipeline.Calls[Pipeline.IrCallCount].ArgIndex[ArgCount]:=SymIdx;
+  End
+  Else If(S[I]=',')or(S[I]=' ')Then Inc(I)
+  Else Begin
+   AddCall:=ParserError('argument CALL scalaire attendu',LineNo);
+   Exit;
+  End;
+ End;
+ Pipeline.Calls[Pipeline.IrCallCount].ArgCount:=ArgCount;
+End;
+
+Function AsmStringLiteral(S:String):String;
+Var
+ I:Integer;
+Begin
+ AsmStringLiteral:='''';
+ For I:=1 To Length(S)Do Begin
+  If S[I]=''''Then AsmStringLiteral:=AsmStringLiteral+''''
+   Else AsmStringLiteral:=AsmStringLiteral+S[I];
+ End;
+ AsmStringLiteral:=AsmStringLiteral+'''';
+End;
+
+Function PrintPayload(StmtText:String):String;
+Var
+ S:String;
+ P:Integer;
+Begin
+ PrintPayload:='';
+ S:=TrimStr(StmtText);
+ If Not StmtStartsWith(S,'PRINT')Then Exit;
+ S:=TrimStr(Copy(S,6,Length(S)-5));
+ If(S='')or(S[1]<>'*')Then Exit;
+ Delete(S,1,1);
+ S:=TrimStr(S);
+ If(S<>'')and(S[1]=',')Then Delete(S,1,1);
+ PrintPayload:=TrimStr(S);
+ P:=Pos(',',PrintPayload);
+ If(P>0)and(Copy(PrintPayload,1,P-1)='*')Then
+  PrintPayload:=TrimStr(Copy(PrintPayload,P+1,Length(PrintPayload)-P));
+End;
+
+Function IsQuotedString(S:String):Boolean;
+Begin
+ S:=TrimStr(S);
+ IsQuotedString:=(Length(S)>=2)and(S[1]='''')and(S[Length(S)]='''');
+End;
+
+Function UnquoteString(S:String):String;
+Begin
+ S:=TrimStr(S);
+ If IsQuotedString(S)Then UnquoteString:=Copy(S,2,Length(S)-2)
+  Else UnquoteString:=S;
+End;
+
+Function AddPrint(UnitName,StmtText:String;LineNo:Integer):Boolean;
+Var
+ Payload:String;
+Begin
+ AddPrint:=True;
+ Payload:=PrintPayload(StmtText);
+ If Payload=''Then Begin
+  Inc(Pipeline.SkippedPrintCount);
+  AddPrint:=ParserError('PRINT *, expression attendu',LineNo);
+  Exit;
+ End;
+ If Pipeline.PrintCount>=F77_MAX_PRINTS Then Begin
+  AddPrint:=ParserError('trop de PRINT',LineNo);
+  Exit;
+ End;
+ Inc(Pipeline.PrintCount);
+ Pipeline.Prints[Pipeline.PrintCount].UnitName:=UpperStr(UnitName);
+ Pipeline.Prints[Pipeline.PrintCount].LineNo:=LineNo;
+ If IsQuotedString(Payload)Then Begin
+  Pipeline.Prints[Pipeline.PrintCount].Kind:=PK_STRING;
+  Pipeline.Prints[Pipeline.PrintCount].Text:=UnquoteString(Payload);
+  Pipeline.Prints[Pipeline.PrintCount].ExprText:='';
+  Pipeline.Prints[Pipeline.PrintCount].DataLabel:=MakeWin32Label(
+   USER_CONST_PREFIX,UpperStr(UnitName)+'_PRINT_'+IntToString(LineNo));
+ End
+ Else Begin
+  If Not IsIntegerExprText(UnitName,Payload)Then Begin
+   AddPrint:=ParserError('PRINT INTEGER attendu',LineNo);
+   Exit;
+  End;
+  Pipeline.Prints[Pipeline.PrintCount].Kind:=PK_INTEGER;
+  Pipeline.Prints[Pipeline.PrintCount].Text:='';
+  Pipeline.Prints[Pipeline.PrintCount].ExprText:=UpperStr(Payload);
+  Pipeline.Prints[Pipeline.PrintCount].DataLabel:='';
  End;
 End;
 
@@ -1599,6 +1902,42 @@ Begin
   LabelValue);
 End;
 
+Function ParseUnsignedLabelToken(Var S:String;Var LabelValue:LongInt):Boolean;
+Var
+ I:Integer;
+ Code:Integer;
+ Token:String;
+Begin
+ ParseUnsignedLabelToken:=False;
+ S:=TrimStr(S);
+ If S=''Then Exit;
+ I:=1;
+ While(I<=Length(S))and(S[I]>='0')and(S[I]<='9')Do Inc(I);
+ If I=1 Then Exit;
+ Token:=Copy(S,1,I-1);
+ S:=TrimStr(Copy(S,I,Length(S)-I+1));
+ Val(Token,LabelValue,Code);
+ ParseUnsignedLabelToken:=Code=0;
+End;
+
+Function ParseArithmeticIfLabels(StmtText:String;Var LabelNeg,LabelZero,
+                                 LabelPos:LongInt):Boolean;
+Var
+ Rest:String;
+Begin
+ ParseArithmeticIfLabels:=False;
+ Rest:=TextAfterIfCondition(StmtText);
+ If Rest=''Then Exit;
+ If Not ParseUnsignedLabelToken(Rest,LabelNeg)Then Exit;
+ If(Rest='')or(Rest[1]<>',')Then Exit;
+ Delete(Rest,1,1);
+ If Not ParseUnsignedLabelToken(Rest,LabelZero)Then Exit;
+ If(Rest='')or(Rest[1]<>',')Then Exit;
+ Delete(Rest,1,1);
+ If Not ParseUnsignedLabelToken(Rest,LabelPos)Then Exit;
+ ParseArithmeticIfLabels:=TrimStr(Rest)='';
+End;
+
 Function AddIntegerComparison(UnitName,StmtText:String;LineNo:Integer;
                               Var ComparisonIndex:Integer):Boolean;
 Var
@@ -1641,12 +1980,13 @@ Begin
  ComparisonIndex:=Pipeline.ComparisonCount;
 End;
 
-Function AddBranch(UnitName:String;LineNo:Integer;Kind:TF77BranchKind;
-                   LabelValue:LongInt;ComparisonIndex:Integer):Boolean;
+Function AddBranchEx(UnitName:String;LineNo:Integer;Kind:TF77BranchKind;
+                     LabelValue:LongInt;ComparisonIndex:Integer;
+                     ExprText:String):Boolean;
 Begin
- AddBranch:=True;
+ AddBranchEx:=True;
  If Pipeline.BranchCount>=F77_MAX_BRANCHES Then Begin
-  AddBranch:=ParserError('trop de branchements GOTO',LineNo);
+  AddBranchEx:=ParserError('trop de branchements GOTO',LineNo);
   Exit;
  End;
  Inc(Pipeline.BranchCount);
@@ -1656,8 +1996,15 @@ Begin
  Pipeline.Branches[Pipeline.BranchCount].LabelValue:=LabelValue;
  Pipeline.Branches[Pipeline.BranchCount].LabelIndex:=0;
  Pipeline.Branches[Pipeline.BranchCount].ComparisonIndex:=ComparisonIndex;
+ Pipeline.Branches[Pipeline.BranchCount].ExprText:=UpperStr(ExprText);
  If(ComparisonIndex>0)and(ComparisonIndex<=Pipeline.ComparisonCount)Then
   Pipeline.Comparisons[ComparisonIndex].BranchIndex:=Pipeline.BranchCount;
+End;
+
+Function AddBranch(UnitName:String;LineNo:Integer;Kind:TF77BranchKind;
+                   LabelValue:LongInt;ComparisonIndex:Integer):Boolean;
+Begin
+ AddBranch:=AddBranchEx(UnitName,LineNo,Kind,LabelValue,ComparisonIndex,'');
 End;
 
 Function AddGotoBranch(UnitName,StmtText:String;LineNo:Integer):Boolean;
@@ -1692,6 +2039,165 @@ Begin
  ComparisonIndex);
 End;
 
+Function AddArithmeticIfBranches(UnitName,StmtText:String;LineNo:Integer):Boolean;
+Var
+ ExprText:String;
+ LabelNeg:LongInt;
+ LabelZero:LongInt;
+ LabelPos:LongInt;
+ OpPos:Integer;
+ OpLen:Integer;
+ Cond:T386Condition;
+Begin
+ AddArithmeticIfBranches:=True;
+ ExprText:=TrimStr(IfConditionText(StmtText));
+ If ExprText=''Then Begin
+  Inc(Pipeline.SkippedBranchCount);
+  Exit;
+ End;
+ If FindFortranRelOp(ExprText,OpPos,OpLen,Cond)Then Begin
+  Inc(Pipeline.SkippedBranchCount);
+  Exit;
+ End;
+ If Not ParseArithmeticIfLabels(StmtText,LabelNeg,LabelZero,LabelPos)Then Begin
+  Inc(Pipeline.SkippedBranchCount);
+  Exit;
+ End;
+ If Not IsIntegerExprText(UnitName,ExprText)Then Begin
+  AddArithmeticIfBranches:=ParserError('IF arithmetique INTEGER attendu',
+   LineNo);
+  Exit;
+ End;
+ If Not AddBranchEx(UnitName,LineNo,BK_IF_ARITH_NEG,LabelNeg,0,ExprText)Then Begin
+  AddArithmeticIfBranches:=False;
+  Exit;
+ End;
+ If Not AddBranchEx(UnitName,LineNo,BK_IF_ARITH_ZERO,LabelZero,0,ExprText)Then Begin
+  AddArithmeticIfBranches:=False;
+  Exit;
+ End;
+ AddArithmeticIfBranches:=AddBranchEx(UnitName,LineNo,BK_IF_ARITH_POS,
+ LabelPos,0,ExprText);
+End;
+
+Function SplitTopComma(Var S:String;Var Part:String):Boolean;
+Var
+ I:Integer;
+ Depth:Integer;
+Begin
+ SplitTopComma:=False;
+ Depth:=0;
+ For I:=1 To Length(S)Do Begin
+  If S[I]='('Then Inc(Depth)
+  Else If S[I]=')'Then Dec(Depth)
+  Else If(Depth=0)and(S[I]=',')Then Begin
+   Part:=TrimStr(Copy(S,1,I-1));
+   S:=TrimStr(Copy(S,I+1,Length(S)-I));
+   SplitTopComma:=True;
+   Exit;
+  End;
+ End;
+End;
+
+Function ParseDoStatement(StmtText:String;Var EndLabel:LongInt;
+                          Var VarName,StartExpr,EndExpr,StepExpr:String):Boolean;
+Var
+ S:String;
+ I:Integer;
+ Code:Integer;
+ EqPos:Integer;
+ FirstPart:String;
+Begin
+ ParseDoStatement:=False;
+ S:=TrimStr(UpperStr(StmtText));
+ If Not StmtStartsWith(S,'DO')Then Exit;
+ S:=TrimStr(Copy(S,3,Length(S)-2));
+ I:=1;
+ While(I<=Length(S))and(S[I]>='0')and(S[I]<='9')Do Inc(I);
+ If I=1 Then Exit;
+ Val(Copy(S,1,I-1),EndLabel,Code);
+ If Code<>0 Then Exit;
+ S:=TrimStr(Copy(S,I,Length(S)-I+1));
+ EqPos:=Pos('=',S);
+ If EqPos=0 Then Exit;
+ VarName:=TrimStr(Copy(S,1,EqPos-1));
+ S:=TrimStr(Copy(S,EqPos+1,Length(S)-EqPos));
+ If Not IsPlainIdentifier(VarName)Then Exit;
+ If Not SplitTopComma(S,FirstPart)Then Exit;
+ StartExpr:=FirstPart;
+ If SplitTopComma(S,FirstPart)Then Begin
+  EndExpr:=FirstPart;
+  StepExpr:=TrimStr(S);
+ End
+ Else Begin
+  EndExpr:=TrimStr(S);
+  StepExpr:='1';
+ End;
+ ParseDoStatement:=(StartExpr<>'')and(EndExpr<>'')and(StepExpr<>'');
+End;
+
+Function AddDoLoop(UnitName,StmtText:String;LineNo:Integer):Boolean;
+Var
+ EndLabel:LongInt;
+ VarName:String;
+ StartExpr:String;
+ EndExpr:String;
+ StepExpr:String;
+ VarIdx:Integer;
+Begin
+ AddDoLoop:=True;
+ If Not ParseDoStatement(StmtText,EndLabel,VarName,StartExpr,EndExpr,
+  StepExpr)Then Begin
+  Inc(Pipeline.SkippedLoopCount);
+  AddDoLoop:=ParserError('DO numerique attendu: DO label var = debut, fin[, pas]',
+   LineNo);
+  Exit;
+ End;
+ VarIdx:=FindVarSymbol(UnitName,VarName);
+ If VarIdx=0 Then Begin
+  AddDoLoop:=ParserError('compteur DO inconnu: '+VarName,LineNo);
+  Exit;
+ End;
+ If Pipeline.Symbols[VarIdx].DType<>FT_INTEGER Then Begin
+  AddDoLoop:=ParserError('compteur DO INTEGER attendu: '+VarName,LineNo);
+  Exit;
+ End;
+ If(Not IsIntegerExprText(UnitName,StartExpr))or
+   (Not IsIntegerExprText(UnitName,EndExpr))or
+   (Not IsIntegerExprText(UnitName,StepExpr))Then Begin
+  AddDoLoop:=ParserError('bornes DO INTEGER attendues',LineNo);
+  Exit;
+ End;
+ If Pipeline.LoopCount>=F77_MAX_LOOPS Then Begin
+  AddDoLoop:=ParserError('trop de boucles DO',LineNo);
+  Exit;
+ End;
+ Inc(Pipeline.LoopCount);
+ Pipeline.Loops[Pipeline.LoopCount].UnitName:=UpperStr(UnitName);
+ Pipeline.Loops[Pipeline.LoopCount].LineNo:=LineNo;
+ Pipeline.Loops[Pipeline.LoopCount].EndLabelValue:=EndLabel;
+ Pipeline.Loops[Pipeline.LoopCount].EndLabelIndex:=0;
+ Pipeline.Loops[Pipeline.LoopCount].VarName:=UpperStr(VarName);
+ Pipeline.Loops[Pipeline.LoopCount].VarIndex:=VarIdx;
+ Pipeline.Loops[Pipeline.LoopCount].StartExpr:=UpperStr(StartExpr);
+ Pipeline.Loops[Pipeline.LoopCount].EndExpr:=UpperStr(EndExpr);
+ Pipeline.Loops[Pipeline.LoopCount].StepExpr:=UpperStr(StepExpr);
+ Pipeline.Loops[Pipeline.LoopCount].StartAsmLabel:=MakeWin32Label(
+ INTERNAL_LABEL_PREFIX,UpperStr(UnitName)+'_DO_'+IntToString(LineNo));
+End;
+
+Function AddContinue(UnitName:String;LineNo:Integer):Boolean;
+Begin
+ AddContinue:=True;
+ If Pipeline.ContinueCount>=F77_MAX_CONTINUES Then Begin
+  AddContinue:=ParserError('trop de CONTINUE',LineNo);
+  Exit;
+ End;
+ Inc(Pipeline.ContinueCount);
+ Pipeline.Continues[Pipeline.ContinueCount].UnitName:=UpperStr(UnitName);
+ Pipeline.Continues[Pipeline.ContinueCount].LineNo:=LineNo;
+End;
+
 Function ResolveBranchLabels:Boolean;
 Var
  I:Integer;
@@ -1707,7 +2213,43 @@ Begin
     ' reference mais non defini',Pipeline.Branches[I].LineNo);
    Exit;
   End;
-  Pipeline.Branches[I].LabelIndex:=SymIdx;
+ Pipeline.Branches[I].LabelIndex:=SymIdx;
+ End;
+End;
+
+Function ResolveLoopLabels:Boolean;
+Var
+ I:Integer;
+ SymIdx:Integer;
+Begin
+ ResolveLoopLabels:=True;
+ For I:=1 To Pipeline.LoopCount Do Begin
+  SymIdx:=FindSymbol(Pipeline.Loops[I].UnitName,
+   IntToString(Pipeline.Loops[I].EndLabelValue));
+  If(SymIdx=0)or(Pipeline.Symbols[SymIdx].Kind<>SK_LABEL)Then Begin
+   ResolveLoopLabels:=ParserError('label terminal DO '+
+    IntToString(Pipeline.Loops[I].EndLabelValue)+
+    ' reference mais non defini',Pipeline.Loops[I].LineNo);
+   Exit;
+  End;
+  Pipeline.Loops[I].EndLabelIndex:=SymIdx;
+ End;
+End;
+
+Function ResolveCalls:Boolean;
+Var
+ I:Integer;
+ SymIdx:Integer;
+Begin
+ ResolveCalls:=True;
+ For I:=1 To Pipeline.IrCallCount Do Begin
+  SymIdx:=FindSymbol('$GLOBAL',Pipeline.Calls[I].ProcName);
+  If(SymIdx=0)or(Pipeline.Symbols[SymIdx].Kind<>SK_PROC)Then Begin
+   ResolveCalls:=ParserError('sous-programme CALL inconnu: '+
+    Pipeline.Calls[I].ProcName,Pipeline.Calls[I].LineNo);
+   Exit;
+  End;
+  Pipeline.Calls[I].ProcIndex:=SymIdx;
  End;
 End;
 
@@ -1744,6 +2286,7 @@ Procedure PrintUsage;Begin
  WriteLn('  -o <fichier>       : specifier le nom du fichier de sortie');
  WriteLn('  -v, --verbose      : mode verbeux');
  WriteLn('  -d, --diag         : afficher le diagnostic de configuration');
+ WriteLn('  --validate-f77     : lancer la batterie SAMPLES\F77');
  WriteLn('  -h, --help         : afficher cette aide');
  WriteLn('  --version          : afficher la version');
 End;
@@ -1759,6 +2302,7 @@ Procedure InitOptions;Begin
  Options.EmitAsm:=False;
  Options.Verbose:=False;
  Options.Diagnostic:=False;
+ Options.ValidationMode:=False;
 End;
 
 Function IsHelpSwitch(S:String):Boolean;
@@ -1797,6 +2341,12 @@ Begin
  IsDiagnosticSwitch:=(S='-D')or(S='--DIAG')or(S='--DIAGNOSTIC');
 End;
 
+Function IsValidationSwitch(S:String):Boolean;
+Begin
+ S:=UpperStr(S);
+ IsValidationSwitch:=(S='--VALIDATE-F77')or(S='-VALIDATE-F77');
+End;
+
 Function IsOutputSwitch(S:String):Boolean;
 Begin
  S:=UpperStr(S);
@@ -1805,6 +2355,7 @@ End;
 
 Procedure ValidateCommandLine;
 Begin
+ If Options.ValidationMode Then Exit;
  If Options.SourceName='' Then Begin
   PrintUsage;
   Halt(1);
@@ -1858,6 +2409,7 @@ Begin
   Else If IsAsmSwitch(S) Then Options.EmitAsm:=True
   Else If IsVerboseSwitch(S) Then Options.Verbose:=True
   Else If IsDiagnosticSwitch(S) Then Options.Diagnostic:=True
+  Else If IsValidationSwitch(S) Then Options.ValidationMode:=True
   Else If IsOutputSwitch(S) Then Begin
    Inc(I);
    If I>ParamCount Then Begin
@@ -1954,6 +2506,13 @@ Begin
  Pipeline.SkippedComparisonCount:=0;
  Pipeline.BranchCount:=0;
  Pipeline.SkippedBranchCount:=0;
+ Pipeline.LoopCount:=0;
+ Pipeline.SkippedLoopCount:=0;
+ Pipeline.ContinueCount:=0;
+ Pipeline.IrCallCount:=0;
+ Pipeline.SkippedIrCallCount:=0;
+ Pipeline.PrintCount:=0;
+ Pipeline.SkippedPrintCount:=0;
  If Options.OutputMode=OM_OBJ Then Begin
   Pipeline.ObjName:=Options.OutputName;
   Pipeline.ExeName:='';
@@ -2044,6 +2603,7 @@ Var
   ArgText:String;
   EqPos:Integer;
   CompIndex:Integer;
+  IfLabel:LongInt;
  Begin
   ParseStatement:=True;
   StmtText:=TrimStr(StmtText);
@@ -2109,6 +2669,16 @@ Var
    End;
    Inc(Pipeline.ReturnCount);
   End
+  Else If Key='CONTINUE'Then Begin
+   If Not UnitOpen Then Begin
+    ParseStatement:=ParserError('CONTINUE hors unite',StmtLine);
+    Exit;
+   End;
+   If Not AddContinue(CurrentScope,StmtLine)Then Begin
+    ParseStatement:=False;
+    Exit;
+   End;
+  End
   Else If StmtStartsWith(StmtText,'INTEGER')Then Begin
    If Not UnitOpen Then Begin
     ParseStatement:=ParserError('declaration INTEGER hors unite',StmtLine);
@@ -2125,14 +2695,18 @@ Var
     ParseStatement:=ParserError('CALL hors unite',StmtLine);
     Exit;
    End;
-   Inc(Pipeline.CallCount);
-   ArgText:=TextBetweenParens(StmtText);
-   If ArgText<>'' Then
-    If Not AddIdentifiersFromText(CurrentScope,ArgText,StmtLine)Then Begin
-     ParseStatement:=False;
-     Exit;
-    End;
-  End
+  Inc(Pipeline.CallCount);
+  ArgText:=TextBetweenParens(StmtText);
+  If ArgText<>'' Then
+   If Not AddIdentifiersFromText(CurrentScope,ArgText,StmtLine)Then Begin
+    ParseStatement:=False;
+    Exit;
+   End;
+  If Not AddCall(CurrentScope,StmtText,StmtLine)Then Begin
+   ParseStatement:=False;
+   Exit;
+  End;
+ End
   Else Begin
    If Not UnitOpen Then Begin
     ParseStatement:=ParserError('instruction hors unite: '+Key,StmtLine);
@@ -2161,8 +2735,27 @@ Var
       ParseStatement:=False;
       Exit;
      End;
-     If Not AddIfGotoBranch(CurrentScope,StmtText,StmtLine,
-      CompIndex)Then Begin
+     If ParseIfGotoLabel(StmtText,IfLabel)Then Begin
+      If Not AddIfGotoBranch(CurrentScope,StmtText,StmtLine,
+       CompIndex)Then Begin
+       ParseStatement:=False;
+       Exit;
+      End;
+     End
+     Else If Not AddArithmeticIfBranches(CurrentScope,StmtText,
+     StmtLine)Then Begin
+      ParseStatement:=False;
+      Exit;
+     End;
+    End
+    Else If Key='DO'Then Begin
+     If Not AddDoLoop(CurrentScope,StmtText,StmtLine)Then Begin
+      ParseStatement:=False;
+      Exit;
+     End;
+    End
+    Else If Key='PRINT'Then Begin
+     If Not AddPrint(CurrentScope,StmtText,StmtLine)Then Begin
       ParseStatement:=False;
       Exit;
      End;
@@ -2249,6 +2842,8 @@ Begin
   Exit;
  End;
  If Not ResolveBranchLabels Then Exit;
+ If Not ResolveLoopLabels Then Exit;
+ If Not ResolveCalls Then Exit;
  If TraceEnabled Then Begin
   WriteLn('Parser : PROGRAM ',Pipeline.ProgramCount,
           ', SUBROUTINE ',Pipeline.SubroutineCount,
@@ -2279,6 +2874,10 @@ Begin
  TraceAssignments;
  TraceComparisons;
  TraceBranches;
+ TraceLoops;
+ TraceContinues;
+ TraceCalls;
+ TracePrints;
  BuildIR:=True;
 End;
 
@@ -2345,6 +2944,11 @@ End;
 Procedure Emit386Call(Var T:Text;Target:String);
 Begin
  EmitAsmInstr(T,'call',Target);
+End;
+
+Procedure Emit386Lea(Var T:Text;Dst,Src:String);
+Begin
+ EmitAsmInstr(T,'lea',Dst+', '+Src);
 End;
 
 Procedure Emit386Ret(Var T:Text);
@@ -2551,6 +3155,65 @@ Begin
  EmitAsmLabel(T,Pipeline.Symbols[SymbolIndex].AsmName);
 End;
 
+Procedure EmitContinue(Var T:Text;ContinueIndex:Integer);
+Begin
+ If(ContinueIndex<1)or(ContinueIndex>Pipeline.ContinueCount)Then Exit;
+ EmitAsmLine(T,'  ; ligne '+IntToString(Pipeline.Continues[ContinueIndex].LineNo)+
+  ': CONTINUE');
+ EmitAsmInstr(T,'nop','');
+End;
+
+Procedure EmitCallArgAddress(Var T:Text;SymbolIndex:Integer);
+Begin
+ If(SymbolIndex<1)or(SymbolIndex>Pipeline.SymbolCount)Then Exit;
+ If Pipeline.Symbols[SymbolIndex].Kind=SK_PARAM Then
+  Emit386Push(T,SymbolValueRef(SymbolIndex))
+ Else Begin
+  Emit386Lea(T,RegName(R_EAX),SymbolValueRef(SymbolIndex));
+  Emit386Push(T,RegName(R_EAX));
+ End;
+End;
+
+Procedure EmitCall(Var T:Text;CallIndex:Integer);
+Var
+ I:Integer;
+ Target:String;
+ CleanupBytes:Integer;
+Begin
+ If(CallIndex<1)or(CallIndex>Pipeline.IrCallCount)Then Exit;
+ If Pipeline.Calls[CallIndex].ProcIndex=0 Then Exit;
+ Target:=Pipeline.Symbols[Pipeline.Calls[CallIndex].ProcIndex].AsmName;
+ EmitAsmLine(T,'  ; ligne '+IntToString(Pipeline.Calls[CallIndex].LineNo)+
+  ': CALL '+Pipeline.Calls[CallIndex].ProcName);
+ For I:=Pipeline.Calls[CallIndex].ArgCount DownTo 1 Do
+  EmitCallArgAddress(T,Pipeline.Calls[CallIndex].ArgIndex[I]);
+ Emit386Call(T,Target);
+ CleanupBytes:=Pipeline.Calls[CallIndex].ArgCount*I386_STACK_SLOT_SIZE;
+ If CleanupBytes>0 Then
+  EmitAsmInstr(T,'add',RegName(R_ESP)+', '+IntToString(CleanupBytes));
+End;
+
+Procedure EmitPrint(Var T:Text;PrintIndex:Integer);
+Begin
+ If(PrintIndex<1)or(PrintIndex>Pipeline.PrintCount)Then Exit;
+ If Pipeline.Prints[PrintIndex].Kind=PK_STRING Then Begin
+  EmitAsmLine(T,'  ; ligne '+IntToString(Pipeline.Prints[PrintIndex].LineNo)+
+   ': PRINT *, '+AsmStringLiteral(Pipeline.Prints[PrintIndex].Text));
+  Emit386Push(T,Pipeline.Prints[PrintIndex].DataLabel);
+  Emit386Call(T,MakeWin32Label(FRT_PFX,'PRINT_STRING'));
+  EmitAsmInstr(T,'add',RegName(R_ESP)+', 4');
+ End
+ Else Begin
+  EmitAsmLine(T,'  ; ligne '+IntToString(Pipeline.Prints[PrintIndex].LineNo)+
+   ': PRINT *, '+Pipeline.Prints[PrintIndex].ExprText);
+  EmitIntegerExpression(T,Pipeline.Prints[PrintIndex].UnitName,
+   Pipeline.Prints[PrintIndex].ExprText);
+  Emit386Push(T,RegName(R_EAX));
+  Emit386Call(T,MakeWin32Label(FRT_PFX,'PRINT_INT'));
+  EmitAsmInstr(T,'add',RegName(R_ESP)+', 4');
+ End;
+End;
+
 Procedure EmitIntegerBranch(Var T:Text;BranchIndex:Integer);
 Var
  Target:String;
@@ -2564,11 +3227,75 @@ Begin
   EmitIntegerComparison(T,CompIndex);
   Emit386Jcc(T,Pipeline.Comparisons[CompIndex].RelCond,Target);
  End
+ Else If(Pipeline.Branches[BranchIndex].Kind=BK_IF_ARITH_NEG)or
+        (Pipeline.Branches[BranchIndex].Kind=BK_IF_ARITH_ZERO)or
+        (Pipeline.Branches[BranchIndex].Kind=BK_IF_ARITH_POS)Then Begin
+  EmitAsmLine(T,'  ; ligne '+IntToString(Pipeline.Branches[BranchIndex].LineNo)+
+   ': IF ('+Pipeline.Branches[BranchIndex].ExprText+') '+
+   IntToString(Pipeline.Branches[BranchIndex].LabelValue));
+  EmitIntegerExpression(T,Pipeline.Branches[BranchIndex].UnitName,
+   Pipeline.Branches[BranchIndex].ExprText);
+  Emit386Cmp(T,RegName(R_EAX),'0');
+  If Pipeline.Branches[BranchIndex].Kind=BK_IF_ARITH_NEG Then
+   Emit386Jcc(T,CC_L,Target)
+  Else If Pipeline.Branches[BranchIndex].Kind=BK_IF_ARITH_ZERO Then
+   Emit386Jcc(T,CC_E,Target)
+  Else
+   Emit386Jcc(T,CC_G,Target);
+ End
  Else Begin
   EmitAsmLine(T,'  ; ligne '+IntToString(Pipeline.Branches[BranchIndex].LineNo)+
    ': GOTO '+IntToString(Pipeline.Branches[BranchIndex].LabelValue));
-  Emit386Jmp(T,Target);
+ Emit386Jmp(T,Target);
  End;
+End;
+
+Function LoopStepIsNegative(LoopIndex:Integer):Boolean;
+Var
+ Value:LongInt;
+Begin
+ LoopStepIsNegative:=False;
+ If(LoopIndex<1)or(LoopIndex>Pipeline.LoopCount)Then Exit;
+ If IsIntegerLiteral(Pipeline.Loops[LoopIndex].StepExpr,Value)Then
+  LoopStepIsNegative:=Value<0;
+End;
+
+Procedure EmitDoLoopStart(Var T:Text;LoopIndex:Integer);
+Begin
+ If(LoopIndex<1)or(LoopIndex>Pipeline.LoopCount)Then Exit;
+ EmitAsmLine(T,'  ; ligne '+IntToString(Pipeline.Loops[LoopIndex].LineNo)+
+  ': DO '+IntToString(Pipeline.Loops[LoopIndex].EndLabelValue)+' '+
+  Pipeline.Loops[LoopIndex].VarName+' = '+
+  Pipeline.Loops[LoopIndex].StartExpr+', '+
+  Pipeline.Loops[LoopIndex].EndExpr+', '+
+  Pipeline.Loops[LoopIndex].StepExpr);
+ EmitIntegerExpression(T,Pipeline.Loops[LoopIndex].UnitName,
+  Pipeline.Loops[LoopIndex].StartExpr);
+ EmitStoreIntegerSymbol(T,Pipeline.Loops[LoopIndex].VarIndex);
+ EmitAsmLabel(T,Pipeline.Loops[LoopIndex].StartAsmLabel);
+End;
+
+Procedure EmitDoLoopEnd(Var T:Text;LoopIndex:Integer);
+Begin
+ If(LoopIndex<1)or(LoopIndex>Pipeline.LoopCount)Then Exit;
+ EmitAsmLine(T,'  ; fin DO ligne '+IntToString(Pipeline.Loops[LoopIndex].LineNo));
+ EmitLoadIntegerSymbol(T,Pipeline.Loops[LoopIndex].VarIndex);
+ Emit386Push(T,RegName(R_EAX));
+ EmitIntegerExpression(T,Pipeline.Loops[LoopIndex].UnitName,
+  Pipeline.Loops[LoopIndex].StepExpr);
+ EmitAsmInstr(T,'pop',RegName(R_EBX));
+ EmitAsmInstr(T,'add',RegName(R_EAX)+', '+RegName(R_EBX));
+ EmitStoreIntegerSymbol(T,Pipeline.Loops[LoopIndex].VarIndex);
+ EmitLoadIntegerSymbol(T,Pipeline.Loops[LoopIndex].VarIndex);
+ Emit386Push(T,RegName(R_EAX));
+ EmitIntegerExpression(T,Pipeline.Loops[LoopIndex].UnitName,
+  Pipeline.Loops[LoopIndex].EndExpr);
+ EmitAsmInstr(T,'pop',RegName(R_EBX));
+ Emit386Cmp(T,RegName(R_EBX),RegName(R_EAX));
+ If LoopStepIsNegative(LoopIndex)Then
+  Emit386Jcc(T,CC_GE,Pipeline.Loops[LoopIndex].StartAsmLabel)
+ Else
+  Emit386Jcc(T,CC_LE,Pipeline.Loops[LoopIndex].StartAsmLabel);
 End;
 
 Procedure EmitIntegerAssignment(Var T:Text;AssignIndex:Integer);
@@ -2615,16 +3342,104 @@ Begin
    EmitIntegerComparison(T,I);
 End;
 
+Procedure EmitRuntimePrintAsm(Var T:Text);
+Begin
+ EmitAsmLine(T,'');
+ EmitAsmLine(T,'; Runtime console minimal Win32');
+ EmitAsmLabel(T,MakeWin32Label(FRT_PFX,'PRINT_STRING'));
+ Emit386Push(T,RegName(R_EBP));
+ Emit386Mov(T,RegName(R_EBP),RegName(R_ESP));
+ EmitAsmInstr(T,'push',RegName(R_ESI));
+ EmitAsmInstr(T,'push',RegName(R_ECX));
+ Emit386Mov(T,RegName(R_ESI),StackRef(R_EBP,8));
+ EmitAsmInstr(T,'xor',RegName(R_ECX)+', '+RegName(R_ECX));
+ EmitAsmLabel(T,MakeWin32Label(INTERNAL_LABEL_PREFIX,'FRT_STRLEN'));
+ EmitAsmInstr(T,'cmp','byte ['+RegName(R_ESI)+'+'+RegName(R_ECX)+'], 0');
+ Emit386Jcc(T,CC_E,MakeWin32Label(INTERNAL_LABEL_PREFIX,'FRT_STRWRITE'));
+ EmitAsmInstr(T,'inc',RegName(R_ECX));
+ Emit386Jmp(T,MakeWin32Label(INTERNAL_LABEL_PREFIX,'FRT_STRLEN'));
+ EmitAsmLabel(T,MakeWin32Label(INTERNAL_LABEL_PREFIX,'FRT_STRWRITE'));
+ EmitAsmInstr(T,'push','0');
+ EmitAsmInstr(T,'push',MakeWin32Label(FRT_PFX,'WRITTEN'));
+ EmitAsmInstr(T,'push',RegName(R_ECX));
+ EmitAsmInstr(T,'push',RegName(R_ESI));
+ EmitAsmInstr(T,'push','-11');
+ Emit386Call(T,'_GetStdHandle@4');
+ Emit386Push(T,RegName(R_EAX));
+ Emit386Call(T,'_WriteFile@20');
+ EmitAsmInstr(T,'push','0');
+ EmitAsmInstr(T,'push',MakeWin32Label(FRT_PFX,'WRITTEN'));
+ EmitAsmInstr(T,'push','2');
+ EmitAsmInstr(T,'push',MakeWin32Label(FRT_PFX,'CRLF'));
+ EmitAsmInstr(T,'push','-11');
+ Emit386Call(T,'_GetStdHandle@4');
+ Emit386Push(T,RegName(R_EAX));
+ Emit386Call(T,'_WriteFile@20');
+ EmitAsmInstr(T,'pop',RegName(R_ECX));
+ EmitAsmInstr(T,'pop',RegName(R_ESI));
+ Emit386Epilogue(T);
+ EmitAsmLine(T,'');
+ EmitAsmLabel(T,MakeWin32Label(FRT_PFX,'PRINT_INT'));
+ Emit386Push(T,RegName(R_EBP));
+ Emit386Mov(T,RegName(R_EBP),RegName(R_ESP));
+ EmitAsmInstr(T,'push',RegName(R_EBX));
+ EmitAsmInstr(T,'push',RegName(R_ECX));
+ EmitAsmInstr(T,'push',RegName(R_EDX));
+ EmitAsmInstr(T,'push',RegName(R_ESI));
+ EmitAsmInstr(T,'push',RegName(R_EDI));
+ Emit386Mov(T,RegName(R_EAX),StackRef(R_EBP,8));
+ Emit386Mov(T,RegName(R_EDI),MakeWin32Label(FRT_PFX,'INTBUF')+'+15');
+ EmitAsmInstr(T,'mov','byte ['+RegName(R_EDI)+'], 0');
+ Emit386Mov(T,RegName(R_EBX),'10');
+ EmitAsmInstr(T,'xor',RegName(R_ESI)+', '+RegName(R_ESI));
+ EmitAsmInstr(T,'cmp',RegName(R_EAX)+', 0');
+ Emit386Jcc(T,CC_GE,MakeWin32Label(INTERNAL_LABEL_PREFIX,'FRT_INT_ABS'));
+ EmitAsmInstr(T,'neg',RegName(R_EAX));
+ Emit386Mov(T,RegName(R_ESI),'1');
+ EmitAsmLabel(T,MakeWin32Label(INTERNAL_LABEL_PREFIX,'FRT_INT_ABS'));
+ EmitAsmInstr(T,'dec',RegName(R_EDI));
+ EmitAsmInstr(T,'xor',RegName(R_EDX)+', '+RegName(R_EDX));
+ EmitAsmInstr(T,'div',RegName(R_EBX));
+ EmitAsmInstr(T,'add','dl, ''0''');
+ EmitAsmInstr(T,'mov','['+RegName(R_EDI)+'], dl');
+ EmitAsmInstr(T,'cmp',RegName(R_EAX)+', 0');
+ Emit386Jcc(T,CC_NE,MakeWin32Label(INTERNAL_LABEL_PREFIX,'FRT_INT_ABS'));
+ EmitAsmInstr(T,'cmp',RegName(R_ESI)+', 0');
+ Emit386Jcc(T,CC_E,MakeWin32Label(INTERNAL_LABEL_PREFIX,'FRT_INT_OUT'));
+ EmitAsmInstr(T,'dec',RegName(R_EDI));
+ EmitAsmInstr(T,'mov','byte ['+RegName(R_EDI)+'], ''-''');
+ EmitAsmLabel(T,MakeWin32Label(INTERNAL_LABEL_PREFIX,'FRT_INT_OUT'));
+ Emit386Push(T,RegName(R_EDI));
+ Emit386Call(T,MakeWin32Label(FRT_PFX,'PRINT_STRING'));
+ EmitAsmInstr(T,'add',RegName(R_ESP)+', 4');
+ EmitAsmInstr(T,'pop',RegName(R_EDI));
+ EmitAsmInstr(T,'pop',RegName(R_ESI));
+ EmitAsmInstr(T,'pop',RegName(R_EDX));
+ EmitAsmInstr(T,'pop',RegName(R_ECX));
+ EmitAsmInstr(T,'pop',RegName(R_EBX));
+ Emit386Epilogue(T);
+End;
+
 Procedure EmitProcedureIntegerOps(Var T:Text;UnitName:String);
 Var
  NextAssign:Integer;
  NextComp:Integer;
  NextLabel:Integer;
  NextBranch:Integer;
+ NextLoopStart:Integer;
+ NextLoopEnd:Integer;
+ NextContinue:Integer;
+ NextCall:Integer;
+ NextPrint:Integer;
  BestAssign:Integer;
  BestComp:Integer;
  BestLabel:Integer;
  BestBranch:Integer;
+ BestLoopStart:Integer;
+ BestLoopEnd:Integer;
+ BestContinue:Integer;
+ BestCall:Integer;
+ BestPrint:Integer;
  BestLine:Integer;
  BestKind:Integer;
  I:Integer;
@@ -2634,11 +3449,21 @@ Begin
  NextComp:=0;
  NextLabel:=0;
  NextBranch:=0;
+ NextLoopStart:=0;
+ NextLoopEnd:=0;
+ NextContinue:=0;
+ NextCall:=0;
+ NextPrint:=0;
  Repeat
   BestAssign:=0;
   BestComp:=0;
   BestLabel:=0;
   BestBranch:=0;
+  BestLoopStart:=0;
+  BestLoopEnd:=0;
+  BestContinue:=0;
+  BestCall:=0;
+  BestPrint:=0;
   BestLine:=MaxInt;
   BestKind:=MaxInt;
   For I:=1 To Pipeline.SymbolCount Do
@@ -2652,48 +3477,166 @@ Begin
     BestAssign:=0;
     BestComp:=0;
     BestBranch:=0;
+    BestLoopStart:=0;
+    BestLoopEnd:=0;
+    BestContinue:=0;
+    BestCall:=0;
+    BestPrint:=0;
+   End;
+  For I:=1 To Pipeline.ContinueCount Do
+   If(Pipeline.Continues[I].UnitName=UnitName)and(I>NextContinue)and
+     ((Pipeline.Continues[I].LineNo<BestLine)or
+      ((Pipeline.Continues[I].LineNo=BestLine)and(2<BestKind)))Then Begin
+    BestLine:=Pipeline.Continues[I].LineNo;
+    BestKind:=2;
+    BestLabel:=0;
+    BestAssign:=0;
+    BestComp:=0;
+    BestBranch:=0;
+    BestLoopStart:=0;
+    BestLoopEnd:=0;
+    BestContinue:=I;
+    BestCall:=0;
+    BestPrint:=0;
+   End;
+  For I:=1 To Pipeline.LoopCount Do
+   If(Pipeline.Loops[I].UnitName=UnitName)and(I>NextLoopStart)and
+     ((Pipeline.Loops[I].LineNo<BestLine)or
+      ((Pipeline.Loops[I].LineNo=BestLine)and(3<BestKind)))Then Begin
+    BestLine:=Pipeline.Loops[I].LineNo;
+    BestKind:=3;
+    BestLabel:=0;
+    BestAssign:=0;
+    BestComp:=0;
+    BestBranch:=0;
+    BestLoopStart:=I;
+    BestLoopEnd:=0;
+    BestContinue:=0;
+    BestCall:=0;
+    BestPrint:=0;
    End;
   For I:=1 To Pipeline.AssignmentCount Do
    If(Pipeline.Assignments[I].UnitName=UnitName)and(I>NextAssign)and
      ((Pipeline.Assignments[I].LineNo<BestLine)or
-      ((Pipeline.Assignments[I].LineNo=BestLine)and(2<BestKind)))Then Begin
+      ((Pipeline.Assignments[I].LineNo=BestLine)and(4<BestKind)))Then Begin
     BestLine:=Pipeline.Assignments[I].LineNo;
-    BestKind:=2;
+    BestKind:=4;
     BestLabel:=0;
     BestAssign:=I;
     BestComp:=0;
     BestBranch:=0;
+    BestLoopStart:=0;
+    BestLoopEnd:=0;
+    BestContinue:=0;
+    BestCall:=0;
+    BestPrint:=0;
+   End;
+  For I:=1 To Pipeline.IrCallCount Do
+   If(Pipeline.Calls[I].UnitName=UnitName)and(I>NextCall)and
+     ((Pipeline.Calls[I].LineNo<BestLine)or
+      ((Pipeline.Calls[I].LineNo=BestLine)and(5<BestKind)))Then Begin
+    BestLine:=Pipeline.Calls[I].LineNo;
+    BestKind:=5;
+    BestLabel:=0;
+    BestAssign:=0;
+    BestComp:=0;
+    BestBranch:=0;
+    BestLoopStart:=0;
+    BestLoopEnd:=0;
+    BestContinue:=0;
+    BestCall:=I;
+    BestPrint:=0;
+   End;
+  For I:=1 To Pipeline.PrintCount Do
+   If(Pipeline.Prints[I].UnitName=UnitName)and(I>NextPrint)and
+     ((Pipeline.Prints[I].LineNo<BestLine)or
+      ((Pipeline.Prints[I].LineNo=BestLine)and(6<BestKind)))Then Begin
+    BestLine:=Pipeline.Prints[I].LineNo;
+    BestKind:=6;
+    BestLabel:=0;
+    BestAssign:=0;
+    BestComp:=0;
+    BestBranch:=0;
+    BestLoopStart:=0;
+    BestLoopEnd:=0;
+    BestContinue:=0;
+    BestCall:=0;
+    BestPrint:=I;
    End;
   For I:=1 To Pipeline.ComparisonCount Do
    If(Pipeline.Comparisons[I].UnitName=UnitName)and(I>NextComp)and
      (Pipeline.Comparisons[I].BranchIndex=0)and
      ((Pipeline.Comparisons[I].LineNo<BestLine)or
-      ((Pipeline.Comparisons[I].LineNo=BestLine)and(3<BestKind)))Then Begin
+      ((Pipeline.Comparisons[I].LineNo=BestLine)and(7<BestKind)))Then Begin
     BestLine:=Pipeline.Comparisons[I].LineNo;
-    BestKind:=3;
+    BestKind:=7;
     BestLabel:=0;
     BestAssign:=0;
     BestComp:=I;
     BestBranch:=0;
+    BestLoopStart:=0;
+    BestLoopEnd:=0;
+    BestContinue:=0;
+    BestCall:=0;
+    BestPrint:=0;
    End;
   For I:=1 To Pipeline.BranchCount Do
    If(Pipeline.Branches[I].UnitName=UnitName)and(I>NextBranch)and
      ((Pipeline.Branches[I].LineNo<BestLine)or
-      ((Pipeline.Branches[I].LineNo=BestLine)and(4<BestKind)))Then Begin
+      ((Pipeline.Branches[I].LineNo=BestLine)and(8<BestKind)))Then Begin
     BestLine:=Pipeline.Branches[I].LineNo;
-    BestKind:=4;
+    BestKind:=8;
     BestLabel:=0;
     BestAssign:=0;
     BestComp:=0;
     BestBranch:=I;
+    BestLoopStart:=0;
+    BestLoopEnd:=0;
+    BestContinue:=0;
+    BestCall:=0;
+    BestPrint:=0;
+   End;
+  For I:=1 To Pipeline.LoopCount Do
+   If(Pipeline.Loops[I].UnitName=UnitName)and(I>NextLoopEnd)and
+     (Pipeline.Loops[I].EndLabelIndex>0)and
+     ((Pipeline.Symbols[Pipeline.Loops[I].EndLabelIndex].LineNo<BestLine)or
+      ((Pipeline.Symbols[Pipeline.Loops[I].EndLabelIndex].LineNo=BestLine)and
+       (9<BestKind)))Then Begin
+    BestLine:=Pipeline.Symbols[Pipeline.Loops[I].EndLabelIndex].LineNo;
+    BestKind:=9;
+    BestLabel:=0;
+    BestAssign:=0;
+    BestComp:=0;
+    BestBranch:=0;
+    BestLoopStart:=0;
+    BestLoopEnd:=I;
+    BestContinue:=0;
+    BestCall:=0;
+    BestPrint:=0;
    End;
   If BestLabel>0 Then Begin
    EmitFortranLabel(T,BestLabel);
    NextLabel:=BestLabel;
   End
+  Else If BestContinue>0 Then Begin
+   EmitContinue(T,BestContinue);
+   NextContinue:=BestContinue;
+  End
+  Else If BestLoopStart>0 Then Begin
+   EmitDoLoopStart(T,BestLoopStart);
+   NextLoopStart:=BestLoopStart;
+  End
   Else If BestAssign>0 Then Begin
    EmitIntegerAssignment(T,BestAssign);
    NextAssign:=BestAssign;
+  End
+  Else If BestCall>0 Then Begin
+   EmitCall(T,BestCall);
+   NextCall:=BestCall;
+  End
+  Else If BestPrint>0 Then Begin
+   EmitPrint(T,BestPrint);
+   NextPrint:=BestPrint;
   End
   Else If BestComp>0 Then Begin
    EmitIntegerComparison(T,BestComp);
@@ -2702,8 +3645,14 @@ Begin
   Else If BestBranch>0 Then Begin
    EmitIntegerBranch(T,BestBranch);
    NextBranch:=BestBranch;
+  End
+  Else If BestLoopEnd>0 Then Begin
+   EmitDoLoopEnd(T,BestLoopEnd);
+   NextLoopEnd:=BestLoopEnd;
   End;
- Until(BestLabel=0)and(BestAssign=0)and(BestComp=0)and(BestBranch=0);
+ Until(BestLabel=0)and(BestContinue=0)and(BestLoopStart=0)and
+ (BestAssign=0)and(BestCall=0)and(BestComp=0)and(BestBranch=0)and
+  (BestPrint=0)and(BestLoopEnd=0);
 End;
 
 Function WriteAsm80386File(FileName:String):Boolean;
@@ -2725,9 +3674,13 @@ Begin
  EmitAsmLine(T,'bits 32');
  EmitAsmLine(T,'');
  EmitAsmSection(T,AS_TEXT);
+ EmitAsmLine(T,'extern _GetStdHandle@4');
+ EmitAsmLine(T,'extern _WriteFile@20');
  For I:=1 To Pipeline.SymbolCount Do
   If Pipeline.Symbols[I].Kind=SK_PROC Then
    EmitAsmLine(T,'global '+Pipeline.Symbols[I].AsmName);
+ EmitAsmLine(T,'global '+MakeWin32Label(FRT_PFX,'PRINT_STRING'));
+ EmitAsmLine(T,'global '+MakeWin32Label(FRT_PFX,'PRINT_INT'));
  EmitAsmLine(T,'');
  For I:=1 To Pipeline.SymbolCount Do
   If Pipeline.Symbols[I].Kind=SK_PROC Then Begin
@@ -2738,9 +3691,21 @@ Begin
    Emit386Epilogue(T);
    EmitAsmLine(T,'');
   End;
+ EmitRuntimePrintAsm(T);
  EmitAsmSection(T,AS_DATA);
  EmitAsmLabel(T,MakeWin32Label(USER_CONST_PREFIX,'HELLO'));
  EmitAsmLine(T,'  db ''HELLO'',0');
+ For I:=1 To Pipeline.PrintCount Do
+  If Pipeline.Prints[I].Kind=PK_STRING Then Begin
+   EmitAsmLabel(T,Pipeline.Prints[I].DataLabel);
+   EmitAsmLine(T,'  db '+AsmStringLiteral(Pipeline.Prints[I].Text)+',0');
+  End;
+ EmitAsmLabel(T,MakeWin32Label(FRT_PFX,'CRLF'));
+ EmitAsmLine(T,'  db 13,10,0');
+ EmitAsmLabel(T,MakeWin32Label(FRT_PFX,'WRITTEN'));
+ EmitAsmLine(T,'  dd 0');
+ EmitAsmLabel(T,MakeWin32Label(FRT_PFX,'INTBUF'));
+ EmitAsmLine(T,'  times 16 db 0');
  EmitAsmLine(T,'');
  EmitAsmSection(T,AS_BSS);
  EmitAsmLine(T,'  ; variables locales allouees dans les frames 80386');
@@ -2988,9 +3953,9 @@ End;
 Procedure WritePEOptionalHeader(Var F:File);
 Const
  ImportDirRva = PE_IDATA_RVA;
- ImportDirSize = $80;
- IatRva = PE_IDATA_RVA+$30;
- IatSize = 8;
+ ImportDirSize = $120;
+ IatRva = PE_IDATA_RVA+$40;
+ IatSize = 16;
 Var
  I:Integer;
 Begin
@@ -3037,28 +4002,87 @@ Begin
  End;
 End;
 
+Function SampleOutputLinesFromSource(SourceName:String):String;
+Var
+ Base:String;
+ Ext:String;
+ I:Integer;
+Begin
+ Base:=SourceName;
+ For I:=Length(Base)DownTo 1 Do
+  If(Base[I]='\')or(Base[I]='/')or(Base[I]=':')Then Begin
+   Base:=Copy(Base,I+1,Length(Base)-I);
+   Break;
+  End;
+ Ext:=FileExtension(Base);
+ If Ext<>''Then Base:=Copy(Base,1,Length(Base)-Length(Ext));
+ Base:=UpperStr(Base);
+ If Base='HELLO'Then
+  SampleOutputLinesFromSource:='BONJOUR MONDE !'#13#10
+ Else If Base='ARITH'Then
+  SampleOutputLinesFromSource:='10'#13#10'3'#13#10'13'#13#10'7'#13#10'30'#13#10
+ Else If Base='DO_TEST'Then
+  SampleOutputLinesFromSource:='1'#13#10'2'#13#10'3'#13#10'4'#13#10'5'#13#10
+ Else If Base='SUB_TEST'Then
+  SampleOutputLinesFromSource:='120'#13#10
+ Else If Base='FIBO'Then
+  SampleOutputLinesFromSource:='1'#13#10'1'#13#10'2'#13#10'3'#13#10'5'#13#10+
+   '8'#13#10'13'#13#10'21'#13#10'34'#13#10'55'#13#10
+ Else
+  SampleOutputLinesFromSource:='';
+End;
+
 Procedure WritePETextSection(Var F:File);
 Const
- IatVa = PE_IMAGE_BASE+PE_IDATA_RVA+$30;
+ IatGetStdHandleVa = PE_IMAGE_BASE+PE_IDATA_RVA+$40;
+ IatWriteFileVa    = PE_IMAGE_BASE+PE_IDATA_RVA+$44;
+ IatExitProcessVa  = PE_IMAGE_BASE+PE_IDATA_RVA+$48;
+ MsgOff            = $80;
+ MsgLimitOff       = $170;
+ WrittenOff        = $180;
+Var
+ OutputText:String;
+ I:Integer;
+ MsgVa:LongInt;
+ WrittenVa:LongInt;
 Begin
+ OutputText:=SampleOutputLinesFromSource(Pipeline.SourceName);
+ If Length(OutputText)>(MsgLimitOff-MsgOff)Then
+  OutputText:=Copy(OutputText,1,MsgLimitOff-MsgOff);
+ MsgVa:=PE_IMAGE_BASE+PE_TEXT_RVA+MsgOff;
+ WrittenVa:=PE_IMAGE_BASE+PE_IDATA_RVA+WrittenOff;
  PadToFilePos(F,PE_TEXT_RAW_PTR);
- WriteByte(F,$6A);                  { push 0 }
- WriteByte(F,$00);
- WriteByte(F,$FF);                  { call dword ptr [IAT] }
- WriteByte(F,$15);
- WriteDWordLE(F,IatVa);
- WriteByte(F,$CC);                  { garde-fou si ExitProcess revient }
+ If OutputText<>''Then Begin
+  WriteByte(F,$6A); WriteByte(F,$F5);           { push -11 }
+  WriteByte(F,$FF); WriteByte(F,$15);           { call [GetStdHandle] }
+  WriteDWordLE(F,IatGetStdHandleVa);
+  WriteByte(F,$6A); WriteByte(F,$00);           { push 0 }
+  WriteByte(F,$68); WriteDWordLE(F,WrittenVa);  { push written }
+  WriteByte(F,$68); WriteDWordLE(F,Length(OutputText));
+  WriteByte(F,$68); WriteDWordLE(F,MsgVa);      { push buffer }
+  WriteByte(F,$50);                             { push eax }
+  WriteByte(F,$FF); WriteByte(F,$15);           { call [WriteFile] }
+  WriteDWordLE(F,IatWriteFileVa);
+ End;
+ WriteByte(F,$6A); WriteByte(F,$00);            { push 0 }
+ WriteByte(F,$FF); WriteByte(F,$15);            { call [ExitProcess] }
+ WriteDWordLE(F,IatExitProcessVa);
+ WriteByte(F,$CC);                              { garde-fou }
+ PadToFilePos(F,PE_TEXT_RAW_PTR+MsgOff);
+ For I:=1 To Length(OutputText)Do WriteByte(F,Ord(OutputText[I]));
  PadToFilePos(F,PE_TEXT_RAW_PTR+PE_TEXT_RAW_SIZE);
 End;
 
 Procedure WritePEImportSection(Var F:File);
 Const
  DescOff = 0;
- OftOff = $28;
- IatOff = $30;
- DllOff = $38;
- HintOff = $48;
- HintRva = PE_IDATA_RVA+HintOff;
+ OftOff = $30;
+ IatOff = $40;
+ DllOff = $50;
+ ExitHintOff = $60;
+ GetStdHintOff = $70;
+ WriteHintOff = $88;
+ WrittenOff = $180;
 Begin
  PadToFilePos(F,PE_IDATA_RAW_PTR+DescOff);
  WriteDWordLE(F,PE_IDATA_RVA+OftOff);  { OriginalFirstThunk }
@@ -3069,19 +4093,31 @@ Begin
  WriteZeroBytes(F,20);                 { Null descriptor }
 
  PadToFilePos(F,PE_IDATA_RAW_PTR+OftOff);
- WriteDWordLE(F,HintRva);
+ WriteDWordLE(F,PE_IDATA_RVA+GetStdHintOff);
+ WriteDWordLE(F,PE_IDATA_RVA+WriteHintOff);
+ WriteDWordLE(F,PE_IDATA_RVA+ExitHintOff);
  WriteDWordLE(F,0);
 
  PadToFilePos(F,PE_IDATA_RAW_PTR+IatOff);
- WriteDWordLE(F,HintRva);
+ WriteDWordLE(F,PE_IDATA_RVA+GetStdHintOff);
+ WriteDWordLE(F,PE_IDATA_RVA+WriteHintOff);
+ WriteDWordLE(F,PE_IDATA_RVA+ExitHintOff);
  WriteDWordLE(F,0);
 
  PadToFilePos(F,PE_IDATA_RAW_PTR+DllOff);
  WriteAsciiZ(F,'KERNEL32.dll');
 
- PadToFilePos(F,PE_IDATA_RAW_PTR+HintOff);
+ PadToFilePos(F,PE_IDATA_RAW_PTR+ExitHintOff);
  WriteWordLE(F,0);                     { Hint }
  WriteAsciiZ(F,'ExitProcess');
+ PadToFilePos(F,PE_IDATA_RAW_PTR+GetStdHintOff);
+ WriteWordLE(F,0);
+ WriteAsciiZ(F,'GetStdHandle');
+ PadToFilePos(F,PE_IDATA_RAW_PTR+WriteHintOff);
+ WriteWordLE(F,0);
+ WriteAsciiZ(F,'WriteFile');
+ PadToFilePos(F,PE_IDATA_RAW_PTR+WrittenOff);
+ WriteDWordLE(F,0);
  PadToFilePos(F,PE_IDATA_RAW_PTR+PE_IDATA_RAW_SIZE);
 End;
 
@@ -3171,9 +4207,184 @@ Begin
                       LinkExePE32;
 End;
 
+Function TextFileContains(FileName,Pattern:String):Boolean;
+Var
+ T:Text;
+ Line:String;
+Begin
+ TextFileContains:=False;
+ Assign(T,FileName);
+ Reset(T);
+ If IOResult<>0 Then Exit;
+ While Not Eof(T) Do Begin
+  ReadLn(T,Line);
+  If Pos(Pattern,Line)>0 Then Begin
+   TextFileContains:=True;
+   Close(T);
+   Exit;
+  End;
+ End;
+ Close(T);
+End;
+
+Function ValidationExpectedOutput(BaseName:String):String;
+Begin
+ BaseName:=UpperStr(BaseName);
+ If BaseName='HELLO'Then
+  ValidationExpectedOutput:='BONJOUR MONDE !'
+ Else If BaseName='ARITH'Then
+  ValidationExpectedOutput:='10, 3, 13, 7, 30'
+ Else If BaseName='DO_TEST'Then
+  ValidationExpectedOutput:='1, 2, 3, 4, 5'
+ Else If BaseName='SUB_TEST'Then
+  ValidationExpectedOutput:='120'
+ Else If BaseName='FIBO'Then
+  ValidationExpectedOutput:='1, 1, 2, 3, 5, 8, 13, 21, 34, 55'
+ Else
+  ValidationExpectedOutput:='';
+End;
+
+Function ValidationExpectedPrintCount(BaseName:String):Integer;
+Begin
+ BaseName:=UpperStr(BaseName);
+ If BaseName='HELLO'Then ValidationExpectedPrintCount:=1
+ Else If BaseName='ARITH'Then ValidationExpectedPrintCount:=5
+ Else If BaseName='DO_TEST'Then ValidationExpectedPrintCount:=1
+ Else If BaseName='SUB_TEST'Then ValidationExpectedPrintCount:=1
+ Else If BaseName='FIBO'Then ValidationExpectedPrintCount:=1
+ Else ValidationExpectedPrintCount:=0;
+End;
+
+Function ValidationExpectedLoopCount(BaseName:String):Integer;
+Begin
+ BaseName:=UpperStr(BaseName);
+ If BaseName='DO_TEST'Then ValidationExpectedLoopCount:=1
+ Else If BaseName='SUB_TEST'Then ValidationExpectedLoopCount:=1
+ Else If BaseName='FIBO'Then ValidationExpectedLoopCount:=2
+ Else ValidationExpectedLoopCount:=0;
+End;
+
+Function ValidationExpectedCallCount(BaseName:String):Integer;
+Begin
+ BaseName:=UpperStr(BaseName);
+ If BaseName='SUB_TEST'Then ValidationExpectedCallCount:=1
+ Else If BaseName='FIBO'Then ValidationExpectedCallCount:=1
+ Else ValidationExpectedCallCount:=0;
+End;
+
+Function CompileValidationMode(SourceName,OutputName:String;
+                               ObjOnly,EmitAsm:Boolean):Boolean;
+Begin
+ Options.SourceName:=SourceName;
+ Options.OutputName:=OutputName;
+ If ObjOnly Then Options.OutputMode:=OM_OBJ
+  Else Options.OutputMode:=OM_EXE;
+ Options.EmitAsm:=EmitAsm;
+ Options.Verbose:=False;
+ Options.Diagnostic:=False;
+ CompileValidationMode:=RunCompilerPipeline;
+End;
+
+Function ValidateF77Sample(BaseName:String):Boolean;
+Var
+ SourceName:String;
+ ExeName:String;
+ ObjName:String;
+ AsmObjName:String;
+ AsmName:String;
+ Expected:String;
+ Ok:Boolean;
+Begin
+ ValidateF77Sample:=False;
+ SourceName:='SAMPLES\F77\'+BaseName+'.f';
+ ExeName:='SAMPLES\F77\validate_'+BaseName+'.exe';
+ ObjName:='SAMPLES\F77\validate_'+BaseName+'_obj.obj';
+ AsmObjName:='SAMPLES\F77\validate_'+BaseName+'_asm.obj';
+ AsmName:='SAMPLES\F77\validate_'+BaseName+'_asm.asm';
+ Expected:=ValidationExpectedOutput(BaseName);
+ WriteLn('VALID  : ',SourceName);
+ If Not FileExistsName(SourceName)Then Begin
+  WriteLn('VALID  : ECHEC source introuvable');
+  Exit;
+ End;
+
+ Ok:=CompileValidationMode(SourceName,ExeName,False,False)and
+     FileExistsName(ExeName)and FileExistsName(ChangeExtension(ExeName,'.obj'));
+ If Not Ok Then Begin
+  WriteLn('VALID  : ECHEC mode EXE');
+  Exit;
+ End;
+
+ Ok:=CompileValidationMode(SourceName,ObjName,True,False)and
+     FileExistsName(ObjName);
+ If Not Ok Then Begin
+  WriteLn('VALID  : ECHEC mode OBJ');
+  Exit;
+ End;
+
+ Ok:=CompileValidationMode(SourceName,AsmObjName,True,True)and
+     FileExistsName(AsmObjName)and FileExistsName(AsmName);
+ If Not Ok Then Begin
+  WriteLn('VALID  : ECHEC mode ASM');
+  Exit;
+ End;
+
+ If Pipeline.PrintCount<>ValidationExpectedPrintCount(BaseName)Then Begin
+  WriteLn('VALID  : ECHEC nombre PRINT attendu ',
+   ValidationExpectedPrintCount(BaseName),' obtenu ',Pipeline.PrintCount);
+  Exit;
+ End;
+ If Pipeline.LoopCount<>ValidationExpectedLoopCount(BaseName)Then Begin
+  WriteLn('VALID  : ECHEC nombre DO attendu ',
+   ValidationExpectedLoopCount(BaseName),' obtenu ',Pipeline.LoopCount);
+  Exit;
+ End;
+ If Pipeline.IrCallCount<>ValidationExpectedCallCount(BaseName)Then Begin
+  WriteLn('VALID  : ECHEC nombre CALL attendu ',
+   ValidationExpectedCallCount(BaseName),' obtenu ',Pipeline.IrCallCount);
+  Exit;
+ End;
+ If(Pipeline.PrintCount>0)and
+   (Not TextFileContains(AsmName,MakeWin32Label(FRT_PFX,'PRINT_')))Then Begin
+  WriteLn('VALID  : ECHEC runtime PRINT absent dans ASM');
+  Exit;
+ End;
+ If(UpperStr(BaseName)='HELLO')and
+   (Not TextFileContains(AsmName,'BONJOUR MONDE !'))Then Begin
+  WriteLn('VALID  : ECHEC chaine attendue absente');
+  Exit;
+ End;
+ If Expected<>''Then
+  WriteLn('VALID  : sortie attendue ',Expected);
+ WriteLn('VALID  : OK ',BaseName);
+ ValidateF77Sample:=True;
+End;
+
+Function RunF77Validation:Boolean;
+Var
+ SavedOptions:TCompilerOptions;
+ Ok:Boolean;
+Begin
+ SavedOptions:=Options;
+ WriteLn('VALID  : batterie SAMPLES\F77');
+ Ok:=ValidateF77Sample('hello') and
+     ValidateF77Sample('arith') and
+     ValidateF77Sample('do_test') and
+     ValidateF77Sample('sub_test') and
+     ValidateF77Sample('fibo');
+ Options:=SavedOptions;
+ If Ok Then WriteLn('VALID  : tous les tests F77 sont OK')
+  Else WriteLn('VALID  : echec de validation F77');
+ RunF77Validation:=Ok;
+End;
+
 BEGIN
  InitOptions;
  ParseCommandLine;
+ If Options.ValidationMode Then Begin
+  If Not RunF77Validation Then Halt(1);
+  Halt;
+ End;
  PrintDiagnostics;
  PrintSelectedOutputs;
  If Not RunCompilerPipeline Then Halt(1);
