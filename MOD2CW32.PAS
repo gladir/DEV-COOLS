@@ -67,7 +67,7 @@
             allocation globale et locale, offsets EBP, initialisation implicite
             a zero pour les donnees statiques et acces 32 bits.
 
-  TODO 15 - Implementer les expressions:
+  DONE 15 - Implementer les expressions:
             priorites Modula-2, +, -, *, DIV, MOD, parentheses, unaire -,
             constantes, variables et conversion en IR typee.
 
@@ -173,6 +173,8 @@ Const
  MOD2_MAX_IMPORTS      = 64;
  MOD2_MAX_SCOPES       = 256;
  MOD2_MAX_SYMBOLS      = 4096;
+ MOD2_MAX_IR_NODES     = 8192;
+ MOD2_MAX_EXPRESSIONS  = 2048;
 
 Type
  T386Register = (
@@ -361,6 +363,36 @@ Type
   STORAGE_PARAMETER
  );
 
+ TIRExprOp = (
+  IR_EXPR_CONST,
+  IR_EXPR_LOAD,
+  IR_EXPR_NEG,
+  IR_EXPR_ADD,
+  IR_EXPR_SUB,
+  IR_EXPR_MUL,
+  IR_EXPR_DIV,
+  IR_EXPR_MOD
+ );
+
+ TIRExprNode = Record
+  Op         : TIRExprOp;
+  ScalarType : TScalarType;
+  LeftNode   : Integer;
+  RightNode  : Integer;
+  SymbolIndex: Integer;
+  ConstValue : TConstValue;
+  Line       : Integer;
+  Column     : Integer;
+ End;
+
+ TIRExpression = Record
+  RootNode  : Integer;
+  ScopeIndex: Integer;
+  Context   : String[31];
+  Line      : Integer;
+  Column    : Integer;
+ End;
+
  TScope = Record
   Name        : String[63];
   Kind        : TScopeKind;
@@ -368,6 +400,8 @@ Type
   Level       : Integer;
   OwnerSymbol : Integer;
   FrameSize   : Integer;
+  BodyStart   : Integer;
+  BodyEnd     : Integer;
  End;
 
  TSymbol = Record
@@ -440,6 +474,12 @@ Type
   SymbolCount     : Integer;
   Symbols         : Array[1..MOD2_MAX_SYMBOLS] Of TSymbol;
   GlobalBssSize   : LongInt;
+  IrTokenIndex    : Integer;
+  IrTokenLimit    : Integer;
+  IrNodeCount     : Integer;
+  IrNodes         : Array[1..MOD2_MAX_IR_NODES] Of TIRExprNode;
+  IrExpressionCount:Integer;
+  IrExpressions   : Array[1..MOD2_MAX_EXPRESSIONS] Of TIRExpression;
   ErrorCount      : Integer;
   ErrorKind       : TErrorKind;
   ErrorFile       : String;
@@ -656,6 +696,21 @@ Begin
   STORAGE_LOCAL    :StorageKindName:='LOCAL';
   STORAGE_PARAMETER:StorageKindName:='PARAM';
   Else StorageKindName:='-';
+ End;
+End;
+
+Function IRExprOpName(Op:TIRExprOp):String;
+Begin
+ Case Op Of
+  IR_EXPR_CONST:IRExprOpName:='CONST';
+  IR_EXPR_LOAD :IRExprOpName:='LOAD';
+  IR_EXPR_NEG  :IRExprOpName:='NEG';
+  IR_EXPR_ADD  :IRExprOpName:='ADD';
+  IR_EXPR_SUB  :IRExprOpName:='SUB';
+  IR_EXPR_MUL  :IRExprOpName:='MUL';
+  IR_EXPR_DIV  :IRExprOpName:='DIV';
+  IR_EXPR_MOD  :IRExprOpName:='MOD';
+  Else IRExprOpName:='?';
  End;
 End;
 
@@ -2799,6 +2854,8 @@ Begin
         Pipeline.Scopes[ParentScope].Level+1;
  Pipeline.Scopes[ScopeIndex].OwnerSymbol:=OwnerSymbol;
  Pipeline.Scopes[ScopeIndex].FrameSize:=0;
+ Pipeline.Scopes[ScopeIndex].BodyStart:=0;
+ Pipeline.Scopes[ScopeIndex].BodyEnd:=0;
  AddSemanticScope:=True;
 End;
 
@@ -3641,8 +3698,11 @@ Begin
  End;
  BuildDeclarations(ProcedureScope);
  If Pipeline.ErrorCount<>0 Then Exit;
- If SemanticAcceptKeyword(KW_BEGIN) Then
+ If SemanticAcceptKeyword(KW_BEGIN) Then Begin
+  Pipeline.Scopes[ProcedureScope].BodyStart:=Pipeline.SemanticIndex;
   SemanticSkipStatementSequence(ProcedureScope);
+  Pipeline.Scopes[ProcedureScope].BodyEnd:=Pipeline.SemanticIndex-1;
+ End;
  If Pipeline.ErrorCount<>0 Then Exit;
  If Not SemanticAcceptKeyword(KW_END) Then Begin
   SemanticTokenError('END attendu pour la procedure '+NameToken.Text);
@@ -3874,18 +3934,420 @@ Begin
  ResolveAllScalarTypes;
  If Pipeline.ErrorCount<>0 Then Exit;
  AllocateVariableStorage;
- If SemanticAcceptKeyword(KW_BEGIN) Then
+ If SemanticAcceptKeyword(KW_BEGIN) Then Begin
+  Pipeline.Scopes[ModuleScope].BodyStart:=Pipeline.SemanticIndex;
   SemanticSkipStatementSequence(ModuleScope);
+  Pipeline.Scopes[ModuleScope].BodyEnd:=Pipeline.SemanticIndex-1;
+ End;
  If Pipeline.ErrorCount<>0 Then Exit;
  Pipeline.SemanticsReady:=True;
  FinishStage(CS_SEMANTIC_TABLES);
  TraceSemanticTables;
 End;
 
+Function IRToken:TToken;
+Begin
+ If (Pipeline.IrTokenIndex<1) Or
+    (Pipeline.IrTokenIndex>Pipeline.IrTokenLimit) Then
+  IRToken:=Pipeline.Tokens[Pipeline.TokenCount]
+ Else IRToken:=Pipeline.Tokens[Pipeline.IrTokenIndex];
+End;
+
+Procedure IRAdvance;
+Begin
+ If Pipeline.IrTokenIndex<=Pipeline.IrTokenLimit Then
+  Inc(Pipeline.IrTokenIndex);
+End;
+
+Function IRIsSymbol(Text:String):Boolean;
+Begin
+ IRIsSymbol:=(Pipeline.IrTokenIndex<=Pipeline.IrTokenLimit) And
+             (IRToken.Kind=TK_SYMBOL) And (IRToken.Text=Text);
+End;
+
+Function IRIsKeyword(Keyword:TKeyword):Boolean;
+Begin
+ IRIsKeyword:=(Pipeline.IrTokenIndex<=Pipeline.IrTokenLimit) And
+              (IRToken.Kind=TK_KEYWORD) And
+              (IRToken.Keyword=Keyword);
+End;
+
+Function IRAcceptSymbol(Text:String):Boolean;
+Begin
+ IRAcceptSymbol:=IRIsSymbol(Text);
+ If IRAcceptSymbol Then IRAdvance;
+End;
+
+Function AddIRNode(Op:TIRExprOp;ScalarType:TScalarType;
+ LeftNode,RightNode,SymbolIndex:Integer;ConstValue:TConstValue;
+ LineNo,ColumnNo:Integer):Integer;
+Begin
+ AddIRNode:=0;
+ If Pipeline.IrNodeCount>=MOD2_MAX_IR_NODES Then Begin
+  PipelineErrorAt(EK_CODEGEN,'trop de noeuds IR',LineNo,ColumnNo);
+  Exit;
+ End;
+ Inc(Pipeline.IrNodeCount);
+ AddIRNode:=Pipeline.IrNodeCount;
+ Pipeline.IrNodes[AddIRNode].Op:=Op;
+ Pipeline.IrNodes[AddIRNode].ScalarType:=ScalarType;
+ Pipeline.IrNodes[AddIRNode].LeftNode:=LeftNode;
+ Pipeline.IrNodes[AddIRNode].RightNode:=RightNode;
+ Pipeline.IrNodes[AddIRNode].SymbolIndex:=SymbolIndex;
+ Pipeline.IrNodes[AddIRNode].ConstValue:=ConstValue;
+ Pipeline.IrNodes[AddIRNode].Line:=LineNo;
+ Pipeline.IrNodes[AddIRNode].Column:=ColumnNo;
+End;
+
+Function AddIRExpression(RootNode,ScopeIndex:Integer;Context:String;
+ LineNo,ColumnNo:Integer):Boolean;
+Begin
+ AddIRExpression:=False;
+ If Pipeline.IrExpressionCount>=MOD2_MAX_EXPRESSIONS Then Begin
+  PipelineErrorAt(EK_CODEGEN,'trop d''expressions IR',LineNo,ColumnNo);
+  Exit;
+ End;
+ Inc(Pipeline.IrExpressionCount);
+ Pipeline.IrExpressions[Pipeline.IrExpressionCount].RootNode:=RootNode;
+ Pipeline.IrExpressions[Pipeline.IrExpressionCount].ScopeIndex:=ScopeIndex;
+ Pipeline.IrExpressions[Pipeline.IrExpressionCount].Context:=Context;
+ Pipeline.IrExpressions[Pipeline.IrExpressionCount].Line:=LineNo;
+ Pipeline.IrExpressions[Pipeline.IrExpressionCount].Column:=ColumnNo;
+ AddIRExpression:=True;
+End;
+
+Function IRNumericResultType(LeftType,RightType:TScalarType):TScalarType;
+Begin
+ If Not IsNumericScalar(LeftType) Or Not IsNumericScalar(RightType) Then
+  IRNumericResultType:=SCALAR_NONE
+ Else If (LeftType=SCALAR_INTEGER) Or (RightType=SCALAR_INTEGER) Then
+  IRNumericResultType:=SCALAR_INTEGER
+ Else IRNumericResultType:=SCALAR_CARDINAL;
+End;
+
+Function ParseIRExpression(CurrentScope:Integer;Var RootNode:Integer;
+ Var ResultType:TScalarType):Boolean; Forward;
+
+Function ParseIRPrimary(CurrentScope:Integer;Var RootNode:Integer;
+ Var ResultType:TScalarType):Boolean;
+Var
+ Token:TToken;
+ Value:TConstValue;
+ SymbolIndex:Integer;
+Begin
+ ParseIRPrimary:=False;
+ RootNode:=0;
+ ResultType:=SCALAR_NONE;
+ Token:=IRToken;
+ InitConstValue(Value);
+ If Token.Kind=TK_INTEGER Then Begin
+  Value.ScalarType:=SCALAR_INTEGER;
+  Value.IntegerValue:=Token.IntegerVal;
+  Value.Valid:=True;
+  RootNode:=AddIRNode(IR_EXPR_CONST,SCALAR_INTEGER,0,0,0,Value,
+                      Token.Line,Token.Column);
+  ResultType:=SCALAR_INTEGER;
+  IRAdvance;
+ End
+ Else If Token.Kind=TK_STRING Then Begin
+  Value.StringValue:=Token.Text;
+  Value.Valid:=True;
+  If Length(Token.Text)=1 Then Begin
+   Value.ScalarType:=SCALAR_CHAR;
+   Value.IntegerValue:=Ord(Token.Text[1]);
+  End
+  Else Value.ScalarType:=SCALAR_STRING;
+  RootNode:=AddIRNode(IR_EXPR_CONST,Value.ScalarType,0,0,0,Value,
+                      Token.Line,Token.Column);
+  ResultType:=Value.ScalarType;
+  IRAdvance;
+ End
+ Else If Token.Kind=TK_IDENTIFIER Then Begin
+  If (Token.Text='TRUE') Or (Token.Text='FALSE') Then Begin
+   Value.ScalarType:=SCALAR_BOOLEAN;
+   If Token.Text='TRUE' Then Value.IntegerValue:=1
+    Else Value.IntegerValue:=0;
+   Value.Valid:=True;
+   RootNode:=AddIRNode(IR_EXPR_CONST,SCALAR_BOOLEAN,0,0,0,Value,
+                       Token.Line,Token.Column);
+   ResultType:=SCALAR_BOOLEAN;
+  End
+  Else Begin
+   SymbolIndex:=FindVisibleSymbol(Token.Text,CurrentScope);
+   If SymbolIndex=0 Then Begin
+    PipelineErrorAt(EK_CODEGEN,'identificateur inconnu dans expression: '+
+                    Token.Text,Token.Line,Token.Column);
+    Exit;
+   End;
+   If Pipeline.Symbols[SymbolIndex].Kind=SYM_CONSTANT Then Begin
+    Value:=Pipeline.Symbols[SymbolIndex].ConstValue;
+    RootNode:=AddIRNode(IR_EXPR_CONST,Value.ScalarType,0,0,
+                        SymbolIndex,Value,Token.Line,Token.Column);
+    ResultType:=Value.ScalarType;
+   End
+   Else If (Pipeline.Symbols[SymbolIndex].Kind=SYM_VARIABLE) Or
+           (Pipeline.Symbols[SymbolIndex].Kind=SYM_PARAMETER) Then Begin
+    ResultType:=Pipeline.Symbols[SymbolIndex].ScalarType;
+    RootNode:=AddIRNode(IR_EXPR_LOAD,ResultType,0,0,SymbolIndex,Value,
+                        Token.Line,Token.Column);
+   End
+   Else Begin
+    PipelineErrorAt(EK_CODEGEN,'"valeur attendue dans expression: '+
+                    Token.Text,Token.Line,Token.Column);
+    Exit;
+   End;
+  End;
+  IRAdvance;
+ End
+ Else If IRAcceptSymbol('(') Then Begin
+  If Not ParseIRExpression(CurrentScope,RootNode,ResultType) Then Exit;
+  If Not IRAcceptSymbol(')') Then Begin
+   PipelineErrorAt(EK_CODEGEN,'parenthese fermante attendue',
+                   IRToken.Line,IRToken.Column);
+   Exit;
+  End;
+ End
+ Else Begin
+  PipelineErrorAt(EK_CODEGEN,'expression attendue',
+                  Token.Line,Token.Column);
+  Exit;
+ End;
+ ParseIRPrimary:=RootNode<>0;
+End;
+
+Function ParseIRUnary(CurrentScope:Integer;Var RootNode:Integer;
+ Var ResultType:TScalarType):Boolean;
+Var
+ Token:TToken;
+ ChildNode:Integer;
+ ChildType:TScalarType;
+ Value:TConstValue;
+Begin
+ ParseIRUnary:=False;
+ Token:=IRToken;
+ If IRAcceptSymbol('+') Then Begin
+  If Not ParseIRUnary(CurrentScope,RootNode,ResultType) Then Exit;
+  If Not IsNumericScalar(ResultType) Then Begin
+   PipelineErrorAt(EK_CODEGEN,'operateur unaire + exige un entier',
+                   Token.Line,Token.Column);
+   Exit;
+  End;
+ End
+ Else If IRAcceptSymbol('-') Then Begin
+  If Not ParseIRUnary(CurrentScope,ChildNode,ChildType) Then Exit;
+  If Not IsNumericScalar(ChildType) Then Begin
+   PipelineErrorAt(EK_CODEGEN,'operateur unaire - exige un entier',
+                   Token.Line,Token.Column);
+   Exit;
+  End;
+  InitConstValue(Value);
+  ResultType:=SCALAR_INTEGER;
+  RootNode:=AddIRNode(IR_EXPR_NEG,ResultType,ChildNode,0,0,Value,
+                      Token.Line,Token.Column);
+ End
+ Else Begin
+  ParseIRUnary:=ParseIRPrimary(CurrentScope,RootNode,ResultType);
+  Exit;
+ End;
+ ParseIRUnary:=RootNode<>0;
+End;
+
+Function ParseIRProduct(CurrentScope:Integer;Var RootNode:Integer;
+ Var ResultType:TScalarType):Boolean;
+Var
+ Token:TToken;
+ RightNode:Integer;
+ RightType:TScalarType;
+ NewNode:Integer;
+ NewType:TScalarType;
+ Op:TIRExprOp;
+ Value:TConstValue;
+Begin
+ ParseIRProduct:=False;
+ If Not ParseIRUnary(CurrentScope,RootNode,ResultType) Then Exit;
+ While IRIsSymbol('*') Or IRIsKeyword(KW_DIV) Or
+       IRIsKeyword(KW_MOD) Do Begin
+  Token:=IRToken;
+  If IRIsSymbol('*') Then Op:=IR_EXPR_MUL
+  Else If IRIsKeyword(KW_DIV) Then Op:=IR_EXPR_DIV
+  Else Op:=IR_EXPR_MOD;
+  IRAdvance;
+  If Not ParseIRUnary(CurrentScope,RightNode,RightType) Then Exit;
+  NewType:=IRNumericResultType(ResultType,RightType);
+  If NewType=SCALAR_NONE Then Begin
+   PipelineErrorAt(EK_CODEGEN,IRExprOpName(Op)+
+                   ' exige deux operandes entiers',
+                   Token.Line,Token.Column);
+   Exit;
+  End;
+  InitConstValue(Value);
+  NewNode:=AddIRNode(Op,NewType,RootNode,RightNode,0,Value,
+                     Token.Line,Token.Column);
+  If NewNode=0 Then Exit;
+  RootNode:=NewNode;
+  ResultType:=NewType;
+ End;
+ ParseIRProduct:=True;
+End;
+
+Function ParseIRExpression(CurrentScope:Integer;Var RootNode:Integer;
+ Var ResultType:TScalarType):Boolean;
+Var
+ Token:TToken;
+ RightNode:Integer;
+ RightType:TScalarType;
+ NewNode:Integer;
+ NewType:TScalarType;
+ Op:TIRExprOp;
+ Value:TConstValue;
+Begin
+ ParseIRExpression:=False;
+ If Not ParseIRProduct(CurrentScope,RootNode,ResultType) Then Exit;
+ While IRIsSymbol('+') Or IRIsSymbol('-') Do Begin
+  Token:=IRToken;
+  If IRIsSymbol('+') Then Op:=IR_EXPR_ADD Else Op:=IR_EXPR_SUB;
+  IRAdvance;
+  If Not ParseIRProduct(CurrentScope,RightNode,RightType) Then Exit;
+  NewType:=IRNumericResultType(ResultType,RightType);
+  If NewType=SCALAR_NONE Then Begin
+   PipelineErrorAt(EK_CODEGEN,IRExprOpName(Op)+
+                   ' exige deux operandes entiers',
+                   Token.Line,Token.Column);
+   Exit;
+  End;
+  InitConstValue(Value);
+  NewNode:=AddIRNode(Op,NewType,RootNode,RightNode,0,Value,
+                     Token.Line,Token.Column);
+  If NewNode=0 Then Exit;
+  RootNode:=NewNode;
+  ResultType:=NewType;
+ End;
+ ParseIRExpression:=True;
+End;
+
+Procedure CollectIRExpression(CurrentScope:Integer;Context:String);
+Var
+ RootNode:Integer;
+ ResultType:TScalarType;
+ Token:TToken;
+Begin
+ Token:=IRToken;
+ If Not ParseIRExpression(CurrentScope,RootNode,ResultType) Then Exit;
+ AddIRExpression(RootNode,CurrentScope,Context,Token.Line,Token.Column);
+End;
+
+Procedure CollectCallArguments(CurrentScope,OpenParenIndex:Integer);
+Begin
+ Pipeline.IrTokenIndex:=OpenParenIndex+1;
+ If IRIsSymbol(')') Then Begin
+  IRAdvance;
+  Exit;
+ End;
+ While (Pipeline.IrTokenIndex<=Pipeline.IrTokenLimit) And
+       (Pipeline.ErrorCount=0) Do Begin
+  CollectIRExpression(CurrentScope,'ARG');
+  If Pipeline.ErrorCount<>0 Then Exit;
+  If IRAcceptSymbol(',') Then
+  Else If IRAcceptSymbol(')') Then Exit
+  Else Begin
+   PipelineErrorAt(EK_CODEGEN,'virgule ou ")" attendue dans appel',
+                   IRToken.Line,IRToken.Column);
+   Exit;
+  End;
+ End;
+End;
+
+Procedure CollectScopeExpressions(ScopeIndex:Integer);
+Var
+ I:Integer;
+ OpenParenIndex:Integer;
+ Token:TToken;
+Begin
+ If Pipeline.Scopes[ScopeIndex].BodyStart=0 Then Exit;
+ Pipeline.IrTokenLimit:=Pipeline.Scopes[ScopeIndex].BodyEnd;
+ I:=Pipeline.Scopes[ScopeIndex].BodyStart;
+ While (I<=Pipeline.IrTokenLimit) And (Pipeline.ErrorCount=0) Do Begin
+  Pipeline.IrTokenIndex:=I;
+  Token:=IRToken;
+  If (Token.Kind=TK_IDENTIFIER) And
+     (I<Pipeline.IrTokenLimit) And
+     (Pipeline.Tokens[I+1].Kind=TK_SYMBOL) And
+     (Pipeline.Tokens[I+1].Text=':=') Then Begin
+   Pipeline.IrTokenIndex:=I+2;
+   CollectIRExpression(ScopeIndex,'ASSIGN');
+   I:=Pipeline.IrTokenIndex;
+  End
+  Else If IRIsKeyword(KW_TO) Or IRIsKeyword(KW_BY) Then Begin
+   IRAdvance;
+   CollectIRExpression(ScopeIndex,'BOUND');
+   I:=Pipeline.IrTokenIndex;
+  End
+  Else Begin
+   OpenParenIndex:=0;
+   If (Token.Kind=TK_IDENTIFIER) And
+      (I<Pipeline.IrTokenLimit) And
+      (Pipeline.Tokens[I+1].Kind=TK_SYMBOL) And
+      (Pipeline.Tokens[I+1].Text='(') Then OpenParenIndex:=I+1
+   Else If (Token.Kind=TK_IDENTIFIER) And
+           (I+3<=Pipeline.IrTokenLimit) And
+           (Pipeline.Tokens[I+1].Kind=TK_SYMBOL) And
+           (Pipeline.Tokens[I+1].Text='.') And
+           (Pipeline.Tokens[I+2].Kind=TK_IDENTIFIER) And
+           (Pipeline.Tokens[I+3].Kind=TK_SYMBOL) And
+           (Pipeline.Tokens[I+3].Text='(') Then OpenParenIndex:=I+3;
+   If OpenParenIndex<>0 Then Begin
+    CollectCallArguments(ScopeIndex,OpenParenIndex);
+    I:=Pipeline.IrTokenIndex;
+   End
+   Else Inc(I);
+  End;
+ End;
+End;
+
+Procedure TraceSimpleIR;
+Var
+ I:Integer;
+ N:TIRExprNode;
+ E:TIRExpression;
+ Extra:String;
+Begin
+ WriteLn('IR     : ',Pipeline.IrExpressionCount,' expression(s), ',
+         Pipeline.IrNodeCount,' noeud(s)');
+ If Not Options.Verbose Then Exit;
+ For I:=1 To Pipeline.IrNodeCount Do Begin
+  N:=Pipeline.IrNodes[I];
+  Extra:='';
+  If N.Op=IR_EXPR_CONST Then Extra:=' '+ConstValueText(N.ConstValue)
+  Else If N.Op=IR_EXPR_LOAD Then
+   Extra:=' '+Pipeline.Symbols[N.SymbolIndex].Name+
+          ' '+SymbolStorageRef(N.SymbolIndex)
+  Else Extra:=' left='+IntToString(N.LeftNode)+
+              ' right='+IntToString(N.RightNode);
+  WriteLn('  N',I,' ',IRExprOpName(N.Op),' ',
+          ScalarTypeName(N.ScalarType),Extra,
+          ' @ ',N.Line,':',N.Column);
+ End;
+ For I:=1 To Pipeline.IrExpressionCount Do Begin
+  E:=Pipeline.IrExpressions[I];
+  WriteLn('  E',I,' ',E.Context,' root=N',E.RootNode,
+          ' scope=',E.ScopeIndex,' @ ',E.Line,':',E.Column);
+ End;
+End;
+
 Procedure BuildSimpleIR;
+Var
+ I:Integer;
 Begin
  EnterStage(CS_IR);
- CodegenError('IR simple pas encore implemente');
+ Pipeline.IrNodeCount:=0;
+ Pipeline.IrExpressionCount:=0;
+ For I:=1 To Pipeline.ScopeCount Do Begin
+  CollectScopeExpressions(I);
+  If Pipeline.ErrorCount<>0 Then Exit;
+ End;
+ Pipeline.IrReady:=True;
+ FinishStage(CS_IR);
+ TraceSimpleIR;
 End;
 
 Procedure EmitOptionalAsm;
