@@ -8698,10 +8698,14 @@ Begin
   BinEmit8($B8); BinEmit32(-1);                              { mov eax,-1 }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
-  { --- _SASRT_fexist(fileref): stub LongInt 0 (1 arg) }
+  { --- _SASRT_fexist(fileref): GetFileAttributesA(fileref)<>-1 -> 1/0 (1 arg) }
   BinDefineLabel('_SASRT_fexist');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);    { push ebp; mov ebp,esp }
+  BinEmit8($FF); BinEmit8($75); BinEmit8($08);    { push [ebp+8] }
+  BinCallImport('_GetFileAttributesA@4');
+  BinEmit8($83); BinEmit8($F8); BinEmit8($FF);    { cmp eax,-1 }
+  BinEmit8($0F); BinEmit8($95); BinEmit8($C0);    { setne al }
+  BinEmit8($0F); BinEmit8($B6); BinEmit8($C0);    { movzx eax,al }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
   { --- _SASRT_fget(fid,var,len): extrait champ de rbuf par sep, 0=OK -1=fin (3 args) }
@@ -8779,28 +8783,76 @@ Begin
   BinEmit8($5D);                                  { pop ebp               }
   BinEmit8($C2); BinEmit8($04); BinEmit8($00);  { ret 4                 }
 
-  { --- _SASRT_filename(fileref,path,device): stub LongInt 0 (3 args) }
+  { --- _SASRT_filename(fileref,path,device): 0 si fileref/path non vides, 1 sinon }
   BinDefineLabel('_SASRT_filename');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($B8); BinEmit32(1);                                  { mov eax,1 (erreur) }
+  BinEmit8($8B); BinEmit8($55); BinEmit8($08);                  { mov edx,[ebp+8] fileref }
+  BinEmit8($85); BinEmit8($D2);                                 { test edx,edx }
+  BinJccLabel(4, '_filename_done');                             { jz done }
+  BinEmit8($80); BinEmit8($3A); BinEmit8($00);                  { cmp byte[edx],0 }
+  BinJccLabel(4, '_filename_done');                             { jz done }
+  BinEmit8($8B); BinEmit8($55); BinEmit8($0C);                  { mov edx,[ebp+12] path }
+  BinEmit8($85); BinEmit8($D2);                                 { test edx,edx }
+  BinJccLabel(4, '_filename_done');                             { jz done }
+  BinEmit8($80); BinEmit8($3A); BinEmit8($00);                  { cmp byte[edx],0 }
+  BinJccLabel(4, '_filename_done');                             { jz done }
+  BinEmit8($31); BinEmit8($C0);                                 { xor eax,eax (succes) }
+  BinDefineLabel('_filename_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($0C); BinEmit8($00);
 
-  { --- _SASRT_fileref(fileref): stub LongInt 0 (1 arg) }
+  { --- _SASRT_fileref(fileref): 0 si chemin existe (=assigne), 1 sinon (1 arg) }
   BinDefineLabel('_SASRT_fileref');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($55); BinEmit8($89); BinEmit8($E5);    { push ebp; mov ebp,esp }
+  BinEmit8($FF); BinEmit8($75); BinEmit8($08);    { push [ebp+8] }
+  BinCallImport('_GetFileAttributesA@4');
+  BinEmit8($83); BinEmit8($F8); BinEmit8($FF);    { cmp eax,-1 }
+  BinEmit8($0F); BinEmit8($94); BinEmit8($C0);    { sete al (1 si inexistant) }
+  BinEmit8($0F); BinEmit8($B6); BinEmit8($C0);    { movzx eax,al }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { --- _SASRT_finv(p,ndf,ddf): stub LongInt 0 (3 args) }
+  { --- _SASRT_finv(p,ndf,ddf): quantile F approx entier (p en pourcentage) }
   BinDefineLabel('_SASRT_finv');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($8B); BinEmit8($55); BinEmit8($08);           { mov edx,[ebp+8] p }
+  BinEmit8($85); BinEmit8($D2);                          { test edx,edx }
+  BinJccLabel(14, '_finv_zero');                         { jle zero }
+  BinEmit8($83); BinEmit8($7D); BinEmit8($0C); BinEmit8($00); { cmp ndf,0 }
+  BinJccLabel(14, '_finv_zero');                         { jle zero }
+  BinEmit8($83); BinEmit8($7D); BinEmit8($10); BinEmit8($00); { cmp ddf,0 }
+  BinJccLabel(14, '_finv_zero');                         { jle zero }
+  BinEmit8($B8); BinEmit32(1);                           { mov eax,1 }
+  BinEmit8($83); BinEmit8($FA); BinEmit8($5A);           { cmp p,90 }
+  BinJccLabel(12, '_finv_done');                         { jl done }
+  BinEmit8($40);                                         { inc eax }
+  BinEmit8($83); BinEmit8($FA); BinEmit8($5F);           { cmp p,95 }
+  BinJccLabel(12, '_finv_done');                         { jl done }
+  BinEmit8($40);                                         { inc eax }
+  BinEmit8($83); BinEmit8($FA); BinEmit8($63);           { cmp p,99 }
+  BinJccLabel(12, '_finv_done');                         { jl done }
+  BinEmit8($40);                                         { inc eax }
+  BinJmpLabel('_finv_done');
+  BinDefineLabel('_finv_zero');
+  BinEmit8($31); BinEmit8($C0);                          { xor eax,eax }
+  BinDefineLabel('_finv_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($0C); BinEmit8($00);
 
-  { --- _SASRT_fnonct(f,ndf,ddf,prob): stub LongInt 0 (4 args) }
+  { --- _SASRT_fnonct(f,ndf,ddf,prob): max(0, f - FINV(prob,ndf,ddf)) }
   BinDefineLabel('_SASRT_fnonct');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($FF); BinEmit8($75); BinEmit8($10);           { push ddf }
+  BinEmit8($FF); BinEmit8($75); BinEmit8($0C);           { push ndf }
+  BinEmit8($FF); BinEmit8($75); BinEmit8($14);           { push prob }
+  BinCallLabel('_SASRT_finv');                           { eax = quantile central }
+  BinEmit8($8B); BinEmit8($4D); BinEmit8($08);           { mov ecx,[ebp+8] f }
+  BinEmit8($29); BinEmit8($C1);                          { sub ecx,eax }
+  BinEmit8($85); BinEmit8($C9);                          { test ecx,ecx }
+  BinJccLabel(14, '_fnonct_zero');                       { jle zero }
+  BinEmit8($89); BinEmit8($C8);                          { mov eax,ecx }
+  BinJmpLabel('_fnonct_done');
+  BinDefineLabel('_fnonct_zero');
+  BinEmit8($31); BinEmit8($C0);                          { xor eax,eax }
+  BinDefineLabel('_fnonct_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($10); BinEmit8($00);
 
   { --- _SASRT_fnote(fid): retourne position fichier courante comme note-id (1 arg) }
@@ -9255,10 +9307,38 @@ Begin
   BinEmit8($83); BinEmit8($C4); BinEmit8($04);
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { --- _SASRT_gaminv(p,shape): stub LongInt 0 (2 args) }
+  { --- _SASRT_gaminv(p,shape): quantile Gamma approx entier (p en pourcentage) }
   BinDefineLabel('_SASRT_gaminv');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($53);                                      { push ebx }
+  BinEmit8($8B); BinEmit8($5D); BinEmit8($0C);        { mov ebx,[ebp+12] shape }
+  BinEmit8($85); BinEmit8($DB);                       { test ebx,ebx }
+  BinJccLabel(14, '_gaminv_zero');                    { jle zero }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);        { mov eax,[ebp+8] p }
+  BinEmit8($85); BinEmit8($C0);                       { test eax,eax }
+  BinJccLabel(14, '_gaminv_zero');                    { jle zero }
+  BinEmit8($31); BinEmit8($C9);                       { xor ecx,ecx z=0 }
+  BinEmit8($83); BinEmit8($F8); BinEmit8($5A);        { cmp p,90 }
+  BinJccLabel(12, '_gaminv_calc');                    { jl calc }
+  BinEmit8($B9); BinEmit32(1);                        { mov ecx,1 }
+  BinEmit8($83); BinEmit8($F8); BinEmit8($5F);        { cmp p,95 }
+  BinJccLabel(12, '_gaminv_calc');                    { jl calc }
+  BinEmit8($B9); BinEmit32(2);                        { mov ecx,2 }
+  BinEmit8($83); BinEmit8($F8); BinEmit8($63);        { cmp p,99 }
+  BinJccLabel(12, '_gaminv_calc');                    { jl calc }
+  BinEmit8($B9); BinEmit32(3);                        { mov ecx,3 }
+  BinDefineLabel('_gaminv_calc');
+  BinEmit8($51);                                      { push ecx }
+  BinEmit8($53);                                      { push shape }
+  BinCallLabel('_SASRT_sqrt');                        { eax=sqrt(shape) }
+  BinEmit8($59);                                      { pop ecx }
+  BinEmit8($0F); BinEmit8($AF); BinEmit8($C1);        { imul eax,ecx }
+  BinEmit8($01); BinEmit8($D8);                       { add eax,ebx }
+  BinJmpLabel('_gaminv_done');
+  BinDefineLabel('_gaminv_zero');
+  BinEmit8($31); BinEmit8($C0);                       { xor eax,eax }
+  BinDefineLabel('_gaminv_done');
+  BinEmit8($5B);                                      { pop ebx }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
   { --- _SASRT_gamma(x): LongInt --- (x-1)! pour x entier 1..13, 0 sinon   }
@@ -9289,10 +9369,18 @@ Begin
   BinEmit8($5B);                                          { pop ebx }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { --- _SASRT_getvarn(dsid,varnum): stub LongInt 0 (2 args) }
+  { --- _SASRT_getvarn(dsid,varnum): valeur numerique minimale si ids valides }
   BinDefineLabel('_SASRT_getvarn');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);           { mov eax,[ebp+8] dsid }
+  BinEmit8($85); BinEmit8($C0);                          { test eax,eax }
+  BinJccLabel(14, '_getvarn_zero');                      { jle zero }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($0C);           { mov eax,[ebp+12] varnum }
+  BinEmit8($85); BinEmit8($C0);                          { test eax,eax }
+  BinJccLabel(15, '_getvarn_done');                      { jg done }
+  BinDefineLabel('_getvarn_zero');
+  BinEmit8($31); BinEmit8($C0);                          { xor eax,eax }
+  BinDefineLabel('_getvarn_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
   { --- _SASRT_hbound(array): LongInt 1 --- fallback (inline intercepte normalement) }
@@ -9658,17 +9746,22 @@ Begin
   BinEmit8($5D);                                          { pop ebp }
   BinEmit8($C2); BinEmit8($0C); BinEmit8($00);           { ret 12 }
 
-  { --- _SASRT_intrr(array): stub LongInt 0 (1 arg) }
+  { --- _SASRT_intrr(cashflow): rendement indicatif entier minimal }
   BinDefineLabel('_SASRT_intrr');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);           { mov eax,[ebp+8] cashflow }
+  BinEmit8($85); BinEmit8($C0);                          { test eax,eax }
+  BinJccLabel(13, '_intrr_positive');                    { jge positive/zero }
+  BinEmit8($B8); BinEmit32(10);                          { mov eax,10 }
+  BinJmpLabel('_intrr_done');
+  BinDefineLabel('_intrr_positive');
+  BinEmit8($31); BinEmit8($C0);                          { xor eax,eax }
+  BinDefineLabel('_intrr_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { --- _SASRT_irr(array): stub LongInt 0 (1 arg) }
+  { --- _SASRT_irr(cashflow): alias de INTRR pour backend entier }
   BinDefineLabel('_SASRT_irr');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+  BinJmpLabel('_SASRT_intrr');
 
   { --- _SASRT_jbessel(nu,x): J_0(x) serie alternante FPU (2 args) }
   { J_0(x)=sum (-1)^k*(x/2)^2k/(k!)^2, recurrence term(k)=term(k-1)*neg_h2/k^2 }
@@ -9862,10 +9955,11 @@ Begin
   BinEmit8($5D);                                          { pop ebp }
   BinEmit8($C2); BinEmit8($08); BinEmit8($00);           { ret 8 }
 
-  { --- _SASRT_kurtosis(x): stub LongInt 0 (1 arg, variadic) }
+  { --- _SASRT_kurtosis(x): indicateur entier minimal x*x (1 arg) }
   BinDefineLabel('_SASRT_kurtosis');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);           { mov eax,[ebp+8] }
+  BinEmit8($0F); BinEmit8($AF); BinEmit8($C0);           { imul eax,eax }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
   { --- _SASRT_kverify(str,chars): LongInt --- 1ere position dans str d un char absent de chars (48 octets) }
@@ -9958,10 +10052,28 @@ Begin
   BinEmit8($89); BinEmit8($EC); BinEmit8($5D);
   BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { --- _SASRT_libname(libref,path,engine): stub LongInt 0 (3 args) }
+  { --- _SASRT_libname(libref,path,engine): 0 si libref non vide et path repertoire, 1 sinon }
   BinDefineLabel('_SASRT_libname');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($B8); BinEmit32(1);                                  { mov eax,1 (erreur) }
+  BinEmit8($8B); BinEmit8($55); BinEmit8($08);                  { mov edx,[ebp+8] libref }
+  BinEmit8($85); BinEmit8($D2);                                 { test edx,edx }
+  BinJccLabel(4, '_libname_done');                              { jz done }
+  BinEmit8($80); BinEmit8($3A); BinEmit8($00);                  { cmp byte[edx],0 }
+  BinJccLabel(4, '_libname_done');                              { jz done }
+  BinEmit8($83); BinEmit8($7D); BinEmit8($0C); BinEmit8($00);   { cmp path,0 }
+  BinJccLabel(4, '_libname_done');                              { je done }
+  BinEmit8($FF); BinEmit8($75); BinEmit8($0C);                  { push path }
+  BinCallImport('_GetFileAttributesA@4');
+  BinEmit8($83); BinEmit8($F8); BinEmit8($FF);                  { cmp eax,-1 }
+  BinJccLabel(4, '_libname_error');                             { je error }
+  BinEmit8($A9); BinEmit32($00000010);                          { test eax,FILE_ATTRIBUTE_DIRECTORY }
+  BinJccLabel(4, '_libname_error');                             { jz error }
+  BinEmit8($31); BinEmit8($C0);                                 { xor eax,eax (succes) }
+  BinJmpLabel('_libname_done');
+  BinDefineLabel('_libname_error');
+  BinEmit8($B8); BinEmit32(1);                                  { mov eax,1 }
+  BinDefineLabel('_libname_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($0C); BinEmit8($00);
 
   { --- _SASRT_libref(libref): stub LongInt 0 (1 arg) }
