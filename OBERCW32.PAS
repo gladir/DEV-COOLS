@@ -1,4 +1,4 @@
-{ @author: Gladir.com
+{ @author: Sylvain Maltais
   @created: 2026-04-20
   @version: 2.0
   @website(https://www.gladir.com/dev-cools)
