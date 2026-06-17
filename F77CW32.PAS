@@ -14,10 +14,10 @@
   DONE 01 - Cible F77CW32 renomme et isolee, avec metadata d'en-tete indiquant
             Fortran 77 -> assembleur 80386 / Windows 32 bits.
 
-  TODO 02 - Definir les modes de sortie:
+  DONE 02 - Modes de sortie definis:
             par defaut produire un .EXE Windows 32 bits;
-            avec option produire seulement un .OBJ;
-            produire un .ASM uniquement si une option explicite le demande.
+            avec option -c produire seulement un .OBJ;
+            avec option -S produire un .ASM uniquement sur demande explicite.
 
   TODO 03 - Concevoir le pipeline complet:
             source .F -> lexer -> parser -> tables semantiques -> IR simple
@@ -114,6 +114,67 @@
 
 Program F77CW32;
 
+Const
+ F77CW32_VERSION = '2.0';
+
+Type
+ TOutputMode = (OM_EXE, OM_OBJ);
+
+ TCompilerOptions = Record
+  SourceName : String;
+  OutputName : String;
+  OutputMode : TOutputMode;
+  EmitAsm    : Boolean;
+  Verbose    : Boolean;
+ End;
+
+Var
+ Options : TCompilerOptions;
+
+Function UpperStr(S:String):String;
+Var
+ I:Integer;
+Begin
+ For I:=1 To Length(S)Do S[I]:=UpCase(S[I]);
+ UpperStr:=S;
+End;
+
+Function DefaultOutputExt:String;
+Begin
+ If Options.OutputMode=OM_OBJ Then DefaultOutputExt:='.obj'
+  Else DefaultOutputExt:='.exe';
+End;
+
+Function HasExtension(S:String):Boolean;
+Var
+ I:Integer;
+Begin
+ HasExtension:=False;
+ For I:=Length(S) DownTo 1 Do Begin
+  If S[I]='.' Then Begin
+   HasExtension:=True;
+   Exit;
+  End;
+  If(S[I]='\')or(S[I]='/')or(S[I]=':')Then Exit;
+ End;
+End;
+
+Function DefaultOutputName(SourceName:String):String;
+Var
+ I,LastDot:Integer;
+Begin
+ LastDot:=0;
+ For I:=Length(SourceName) DownTo 1 Do Begin
+  If SourceName[I]='.' Then Begin
+   LastDot:=I;
+   Break;
+  End;
+  If(SourceName[I]='\')or(SourceName[I]='/')or(SourceName[I]=':')Then Break;
+ End;
+ If LastDot>0 Then DefaultOutputName:=Copy(SourceName,1,LastDot-1)+DefaultOutputExt
+  Else DefaultOutputName:=SourceName+DefaultOutputExt;
+End;
+
 Procedure PrintUsage;Begin
  WriteLn('F77CW32 - Cette commande permet de ',
          'lancer le compilateur Fortran 77 pour l''assembleur du microprocesseur ',
@@ -122,16 +183,100 @@ Procedure PrintUsage;Begin
  WriteLn('Syntaxe : F77CW32 <source.f77> [options]');
  WriteLn;
  WriteLn('Options :');
+ WriteLn('  -c            : produire seulement un fichier objet COFF i386 .OBJ');
+ WriteLn('  -S            : produire/conserver aussi le fichier assembleur .ASM');
  WriteLn('  -o <fichier>  : specifier le nom du fichier de sortie');
  WriteLn('  -v            : mode verbeux');
  WriteLn('  -h, --help    : afficher cette aide');
  WriteLn('  --version     : afficher la version');
 End;
 
-BEGIN
- If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
-   (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
-  PrintUsage;
-  Halt;
+Procedure PrintVersion;Begin
+ WriteLn('F77CW32 ',F77CW32_VERSION);
+End;
+
+Procedure InitOptions;Begin
+ Options.SourceName:='';
+ Options.OutputName:='';
+ Options.OutputMode:=OM_EXE;
+ Options.EmitAsm:=False;
+ Options.Verbose:=False;
+End;
+
+Function IsHelpSwitch(S:String):Boolean;
+Begin
+ S:=UpperStr(S);
+ IsHelpSwitch:=(S='/?')or(S='--HELP')or(S='-H')or(S='/H');
+End;
+
+Function IsVersionSwitch(S:String):Boolean;
+Begin
+ S:=UpperStr(S);
+ IsVersionSwitch:=(S='--VERSION')or(S='-VERSION');
+End;
+
+Procedure ParseCommandLine;
+Var
+ I:Integer;
+ S:String;
+Begin
+ I:=1;
+ While I<=ParamCount Do Begin
+  S:=ParamStr(I);
+  If IsHelpSwitch(S)Then Begin
+   PrintUsage;
+   Halt;
+  End
+  Else If IsVersionSwitch(S)Then Begin
+   PrintVersion;
+   Halt;
+  End
+  Else If UpperStr(S)='-C' Then Options.OutputMode:=OM_OBJ
+  Else If UpperStr(S)='-S' Then Options.EmitAsm:=True
+  Else If UpperStr(S)='-V' Then Options.Verbose:=True
+  Else If UpperStr(S)='-O' Then Begin
+   Inc(I);
+   If I>ParamCount Then Begin
+    WriteLn('Erreur: option -o sans nom de fichier.');
+    Halt(1);
+   End;
+   Options.OutputName:=ParamStr(I);
+  End
+  Else If(Length(S)>0)and(S[1]='-')Then Begin
+   WriteLn('Erreur: option inconnue: ',S);
+   Halt(1);
+  End
+  Else If Options.SourceName='' Then Options.SourceName:=S
+  Else Begin
+   WriteLn('Erreur: fichier source en trop: ',S);
+   Halt(1);
+  End;
+  Inc(I);
  End;
+
+ If Options.SourceName='' Then Begin
+  PrintUsage;
+  Halt(1);
+ End;
+
+ If Options.OutputName='' Then Options.OutputName:=DefaultOutputName(Options.SourceName)
+  Else If Not HasExtension(Options.OutputName)Then
+   Options.OutputName:=Options.OutputName+DefaultOutputExt;
+End;
+
+Procedure PrintSelectedOutputs;
+Begin
+ If Not Options.Verbose Then Exit;
+ WriteLn('Source : ',Options.SourceName);
+ If Options.OutputMode=OM_OBJ Then WriteLn('Mode   : OBJ seulement')
+  Else WriteLn('Mode   : EXE Win32 par defaut');
+ WriteLn('Sortie : ',Options.OutputName);
+ If Options.EmitAsm Then WriteLn('ASM    : oui')
+  Else WriteLn('ASM    : non');
+End;
+
+BEGIN
+ InitOptions;
+ ParseCommandLine;
+ PrintSelectedOutputs;
 END.
