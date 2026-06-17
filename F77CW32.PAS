@@ -3,14 +3,16 @@
   @version: 2.0
   @website(https://www.gladir.com/dev-cools)
   @abstract(Target: Turbo Pascal 7, Free Pascal 3.2)
-  @description: Compilateur Fortran 77 vers Win32 PE executables natifs
+  @description: Compilateur Fortran 77 vers assembleur 80386 / Windows 32 bits
+  @output: Win32 PE .EXE par defaut, COFF i386 .OBJ sur demande,
+           .ASM 80386 optionnel sur demande explicite
   @license: MIT
 }
 
 { TODO F77CW32 - Compilateur Fortran 77 vers 80386/Win32
 
-  TODO 01 - Renommer et isoler la cible F77CW32 a partir de F77C86, avec metadata
-            d'en-tete indiquant Fortran 77 -> assembleur 80386 / Windows 32 bits.
+  DONE 01 - Cible F77CW32 renomme et isolee, avec metadata d'en-tete indiquant
+            Fortran 77 -> assembleur 80386 / Windows 32 bits.
 
   TODO 02 - Definir les modes de sortie:
             par defaut produire un .EXE Windows 32 bits;
