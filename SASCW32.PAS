@@ -7037,11 +7037,11 @@ Begin
   BinEmit8($89); BinEmit8($EC); BinEmit8($5D);
   BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { --- _SASRT_sum --- stub retourne 0 (variadic, impl. dans TODO 25) }
+  { --- _SASRT_sum(x): fallback runtime 1 arg ; les appels SUM variadiques sont inline }
   BinDefineLabel('_SASRT_sum');
   BinEmit8($55);
   BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);
   BinEmit8($5D);
   BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
@@ -11882,36 +11882,38 @@ Begin
   { VINARRAYX(expr): alias de VINARRAY (1 arg) }
   BinDefineLabel('_SASRT_vinarrayx');
   BinJmpLabel('_SASRT_varray');
-  { VINFORMATD(var): stub 0 (1 arg) }
+  { VINFORMATD(var): decimales informat, 0 par defaut (1 arg) }
   BinDefineLabel('_SASRT_vinformatd');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
   BinEmit8($31); BinEmit8($C0);
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
-  { VINFORMATDX(arg): stub 0 (1 arg) }
+  { VINFORMATDX(arg): alias de VINFORMATD (1 arg) }
   BinDefineLabel('_SASRT_vinformatdx');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
-  { VINFORMATW(var): stub 0 (1 arg) }
+  BinJmpLabel('_SASRT_vinformatd');
+  { VINFORMATW(var): largeur informat minimale 8 si arg non nul (1 arg) }
   BinDefineLabel('_SASRT_vinformatw');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
   BinEmit8($31); BinEmit8($C0);
+  BinEmit8($83); BinEmit8($7D); BinEmit8($08); BinEmit8($00);
+  BinJccLabel(14, '_vinformatw_done');
+  BinEmit8($B8); BinEmit32(8);
+  BinDefineLabel('_vinformatw_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
-  { VINFORMATWX(arg): stub 0 (1 arg) }
+  { VINFORMATWX(arg): alias de VINFORMATW (1 arg) }
   BinDefineLabel('_SASRT_vinformatwx');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
-  { VLENGTH(var): stub 0 (1 arg) }
+  BinJmpLabel('_SASRT_vinformatw');
+  { VLENGTH(var): longueur numerique minimale 8 si arg non nul (1 arg) }
   BinDefineLabel('_SASRT_vlength');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
   BinEmit8($31); BinEmit8($C0);
+  BinEmit8($83); BinEmit8($7D); BinEmit8($08); BinEmit8($00);
+  BinJccLabel(14, '_vlength_done');
+  BinEmit8($B8); BinEmit32(8);
+  BinDefineLabel('_vlength_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
-  { VLENGTHX(expr): stub 0 (1 arg) }
+  { VLENGTHX(expr): alias de VLENGTH (1 arg) }
   BinDefineLabel('_SASRT_vlengthx');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+  BinJmpLabel('_SASRT_vlength');
   { WEEKDAY(date): ((date+5) mod 7)+1, 1=dim 2=lun ... 7=sam (1 arg) }
   { 31 octets : formule modulo 7 avec correction pour valeurs negatives }
   BinDefineLabel('_SASRT_weekday');
@@ -11928,10 +11930,20 @@ Begin
   BinEmit8($40);                                           { inc eax }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
   { YEAR: defini dans EmitRuntimeDateFunc (via _SASRT_ymd_calc) }
-  { YIELDP(p,r): stub 0 (2 args) }
+  { YIELDP(p,r): rendement approx r*100/p si p>0, sinon 0 (2 args) }
   BinDefineLabel('_SASRT_yieldp');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
+  BinEmit8($8B); BinEmit8($4D); BinEmit8($08);           { mov ecx,p }
+  BinEmit8($85); BinEmit8($C9);                          { test ecx,ecx }
+  BinJccLabel(14, '_yieldp_zero');                       { jle zero }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($0C);           { mov eax,r }
+  BinEmit8($6B); BinEmit8($C0); BinEmit8($64);           { imul eax,eax,100 }
+  BinEmit8($99);                                        { cdq }
+  BinEmit8($F7); BinEmit8($F9);                         { idiv ecx }
+  BinJmpLabel('_yieldp_done');
+  BinDefineLabel('_yieldp_zero');
   BinEmit8($31); BinEmit8($C0);
+  BinDefineLabel('_yieldp_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
   { YRDIF(d1,d2,basis): LongInt --- (d2-d1)/365 (21 octets) }
   { [ebp+8]=d1 [ebp+12]=d2 [ebp+16]=basis(ignore). }
@@ -11977,10 +11989,22 @@ Begin
   BinEmit8($2D); BinEmit8($48); BinEmit8($35); BinEmit8($25); BinEmit8($00); { sub eax,2438472 }
   BinEmit8($5F); BinEmit8($5E); BinEmit8($5B); BinEmit8($5D); { pop edi,esi,ebx,ebp }
   BinEmit8($C2); BinEmit8($08); BinEmit8($00);               { ret 8 }
-  { ZIPFIPS(zip): stub 0 (1 arg) }
+  { ZIPFIPS(zip): table minimale; 100xx/101xx -> NY FIPS 36, sinon 0 (1 arg) }
   BinDefineLabel('_SASRT_zipfips');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);           { mov eax,zip }
+  BinEmit8($B9); BinEmit32(100);                         { mov ecx,100 }
+  BinEmit8($99);                                        { cdq }
+  BinEmit8($F7); BinEmit8($F9);                         { idiv ecx => eax=zip/100 }
+  BinEmit8($83); BinEmit8($F8); BinEmit8($64);           { cmp eax,100 }
+  BinJccLabel(4, '_zipfips_ny');                        { je NY }
+  BinEmit8($83); BinEmit8($F8); BinEmit8($65);           { cmp eax,101 }
+  BinJccLabel(4, '_zipfips_ny');                        { je NY }
+  BinEmit8($31); BinEmit8($C0);                         { xor eax,eax }
+  BinJmpLabel('_zipfips_done');
+  BinDefineLabel('_zipfips_ny');
+  BinEmit8($B8); BinEmit32(36);                         { mov eax,36 }
+  BinDefineLabel('_zipfips_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 End;
 
@@ -12012,7 +12036,7 @@ Begin
   If FName = 'MIN'   Then Begin BinCallLabel('_SASRT_min'); Exit; End;
   If FName = 'MAX'   Then Begin BinCallLabel('_SASRT_max'); Exit; End;
 
-  { SUM variadic — stub, TODO 25 gerera l accumulation }
+  { SUM variadic est genere inline dans CodegenExprEAX }
   If FName = 'SUM' Then Begin BinCallLabel('_SASRT_sum'); Exit; End;
 
   { Fonctions chaines }
