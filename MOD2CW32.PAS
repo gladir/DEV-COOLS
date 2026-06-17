@@ -39,31 +39,31 @@
             fichier, ligne, colonne, extrait fautif, erreurs lexicales,
             syntaxiques, semantiques et messages compatibles avec les samples.
 
-  TODO 08 - Implementer le lexer Modula-2:
+  DONE 08 - Implementer le lexer Modula-2:
             identificateurs, mots reserves, entiers, chaines quote/simple quote,
             commentaires imbriques (* *), ponctuation, operateurs et EOF.
 
-  TODO 09 - Implementer le parser des unites:
+  DONE 09 - Implementer le parser des unites:
             MODULE nom; declarations IMPORT/CONST/TYPE/VAR/PROCEDURE,
             bloc BEGIN...END nom. et verification du nom final.
 
-  TODO 10 - Implementer IMPORT et table des modules:
+  DONE 10 - Implementer IMPORT et table des modules:
             resolution de InOut pour les exemples, controle des noms importes,
             preparation pour ajouter d'autres modules standards plus tard.
 
-  TODO 11 - Definir la table des symboles et les portees:
+  DONE 11 - Definir la table des symboles et les portees:
             portee module, portees de procedures, constantes, variables,
             procedures, parametres, imports et detection des doublons.
 
-  TODO 12 - Implementer les types scalaires de base:
+  DONE 12 - Implementer les types scalaires de base:
             INTEGER 32 bits, CARDINAL 32 bits non signe, BOOLEAN, CHAR,
             chaines constantes et compatibilite avec les appels InOut.
 
-  TODO 13 - Implementer CONST:
+  DONE 13 - Implementer CONST:
             constantes entieres, booleennes, caracteres, chaines,
             evaluation constante simple et references dans les expressions.
 
-  TODO 14 - Implementer VAR:
+  DONE 14 - Implementer VAR:
             allocation globale et locale, offsets EBP, initialisation implicite
             a zero pour les donnees statiques et acces 32 bits.
 
@@ -168,6 +168,11 @@ Const
  PE_SUBSYSTEM_CONSOLE  = 3;
  PE_FILE_CHAR_LO       = $0102;
  PE_FILE_CHAR_HI       = $0000;
+ MOD2_MAX_SOURCE_LINES = 2048;
+ MOD2_MAX_TOKENS       = 8192;
+ MOD2_MAX_IMPORTS      = 64;
+ MOD2_MAX_SCOPES       = 256;
+ MOD2_MAX_SYMBOLS      = 4096;
 
 Type
  T386Register = (
@@ -241,6 +246,149 @@ Type
   EK_INTERNAL
  );
 
+ TTokenKind = (
+  TK_EOF,
+  TK_IDENTIFIER,
+  TK_INTEGER,
+  TK_STRING,
+  TK_KEYWORD,
+  TK_SYMBOL
+ );
+
+ TKeyword = (
+  KW_NONE,
+  KW_AND,
+  KW_ARRAY,
+  KW_BEGIN,
+  KW_BY,
+  KW_CASE,
+  KW_CONST,
+  KW_DEFINITION,
+  KW_DIV,
+  KW_DO,
+  KW_ELSE,
+  KW_ELSIF,
+  KW_END,
+  KW_EXIT,
+  KW_EXPORT,
+  KW_FOR,
+  KW_FROM,
+  KW_IF,
+  KW_IMPLEMENTATION,
+  KW_IMPORT,
+  KW_IN,
+  KW_LOOP,
+  KW_MOD,
+  KW_MODULE,
+  KW_NOT,
+  KW_OF,
+  KW_OR,
+  KW_POINTER,
+  KW_PROCEDURE,
+  KW_QUALIFIED,
+  KW_RECORD,
+  KW_REPEAT,
+  KW_RETURN,
+  KW_SET,
+  KW_THEN,
+  KW_TO,
+  KW_TYPE,
+  KW_UNTIL,
+  KW_VAR,
+  KW_WHILE,
+  KW_WITH
+ );
+
+ TToken = Record
+  Kind       : TTokenKind;
+  Keyword    : TKeyword;
+  Text       : String[127];
+  IntegerVal : LongInt;
+  Line       : Integer;
+  Column     : Integer;
+ End;
+
+ TStandardModule = (
+  SM_UNKNOWN,
+  SM_INOUT
+ );
+
+ TModuleImport = Record
+  Name          : String[63];
+  StandardModule: TStandardModule;
+  FromImport    : Boolean;
+  SelectedNames : String[127];
+  Line          : Integer;
+  Column        : Integer;
+ End;
+
+ TScopeKind = (
+  SCOPE_MODULE,
+  SCOPE_PROCEDURE
+ );
+
+ TSymbolKind = (
+  SYM_MODULE,
+  SYM_IMPORT_MODULE,
+  SYM_IMPORT_NAME,
+  SYM_CONSTANT,
+  SYM_TYPE,
+  SYM_VARIABLE,
+  SYM_PROCEDURE,
+  SYM_PARAMETER
+ );
+
+ TScalarType = (
+  SCALAR_NONE,
+  SCALAR_INTEGER,
+  SCALAR_CARDINAL,
+  SCALAR_BOOLEAN,
+  SCALAR_CHAR,
+  SCALAR_STRING
+ );
+
+ TConstValue = Record
+  ScalarType : TScalarType;
+  IntegerValue: LongInt;
+  StringValue : String[127];
+  Valid       : Boolean;
+ End;
+
+ TStorageKind = (
+  STORAGE_NONE,
+  STORAGE_GLOBAL,
+  STORAGE_LOCAL,
+  STORAGE_PARAMETER
+ );
+
+ TScope = Record
+  Name        : String[63];
+  Kind        : TScopeKind;
+  ParentScope : Integer;
+  Level       : Integer;
+  OwnerSymbol : Integer;
+  FrameSize   : Integer;
+ End;
+
+ TSymbol = Record
+  Name       : String[63];
+  Kind       : TSymbolKind;
+  ScopeIndex : Integer;
+  ChildScope : Integer;
+  TypeName   : String[63];
+  ScalarType : TScalarType;
+  TypeSize   : Integer;
+  ConstValue : TConstValue;
+  AsmName    : String[127];
+  ParamIndex : Integer;
+  ByReference: Boolean;
+  StorageKind: TStorageKind;
+  StorageOffset: LongInt;
+  StorageSize: Integer;
+  Line       : Integer;
+  Column     : Integer;
+ End;
+
  TCompilerOptions = Record
   SourceName : String;
   OutputName : String;
@@ -271,6 +419,27 @@ Type
   Target          : TTargetModel;
   SourceLines     : LongInt;
   SourceBytes     : LongInt;
+  StoredLineCount : Integer;
+  SourceText      : Array[1..MOD2_MAX_SOURCE_LINES] Of String[255];
+  TokenCount      : Integer;
+  Tokens          : Array[1..MOD2_MAX_TOKENS] Of TToken;
+  LexerLine       : Integer;
+  LexerColumn     : Integer;
+  CommentCount    : Integer;
+  ParserIndex     : Integer;
+  ImportCount     : Integer;
+  Imports         : Array[1..MOD2_MAX_IMPORTS] Of TModuleImport;
+  ConstDeclCount  : Integer;
+  TypeDeclCount   : Integer;
+  VarDeclCount    : Integer;
+  ProcedureCount  : Integer;
+  StatementCount  : Integer;
+  SemanticIndex   : Integer;
+  ScopeCount      : Integer;
+  Scopes          : Array[1..MOD2_MAX_SCOPES] Of TScope;
+  SymbolCount     : Integer;
+  Symbols         : Array[1..MOD2_MAX_SYMBOLS] Of TSymbol;
+  GlobalBssSize   : LongInt;
   ErrorCount      : Integer;
   ErrorKind       : TErrorKind;
   ErrorFile       : String;
@@ -321,12 +490,240 @@ Begin
  End;
 End;
 
+Function TokenKindName(Kind:TTokenKind):String;
+Begin
+ Case Kind Of
+  TK_EOF       : TokenKindName:='EOF';
+  TK_IDENTIFIER: TokenKindName:='IDENT';
+  TK_INTEGER   : TokenKindName:='INTEGER';
+  TK_STRING    : TokenKindName:='STRING';
+  TK_KEYWORD   : TokenKindName:='KEYWORD';
+  TK_SYMBOL    : TokenKindName:='SYMBOL';
+  Else TokenKindName:='?';
+ End;
+End;
+
+Function KeywordName(Keyword:TKeyword):String;
+Begin
+ Case Keyword Of
+  KW_AND           : KeywordName:='AND';
+  KW_ARRAY         : KeywordName:='ARRAY';
+  KW_BEGIN         : KeywordName:='BEGIN';
+  KW_BY            : KeywordName:='BY';
+  KW_CASE          : KeywordName:='CASE';
+  KW_CONST         : KeywordName:='CONST';
+  KW_DEFINITION    : KeywordName:='DEFINITION';
+  KW_DIV           : KeywordName:='DIV';
+  KW_DO            : KeywordName:='DO';
+  KW_ELSE          : KeywordName:='ELSE';
+  KW_ELSIF         : KeywordName:='ELSIF';
+  KW_END           : KeywordName:='END';
+  KW_EXIT          : KeywordName:='EXIT';
+  KW_EXPORT        : KeywordName:='EXPORT';
+  KW_FOR           : KeywordName:='FOR';
+  KW_FROM          : KeywordName:='FROM';
+  KW_IF            : KeywordName:='IF';
+  KW_IMPLEMENTATION: KeywordName:='IMPLEMENTATION';
+  KW_IMPORT        : KeywordName:='IMPORT';
+  KW_IN            : KeywordName:='IN';
+  KW_LOOP          : KeywordName:='LOOP';
+  KW_MOD           : KeywordName:='MOD';
+  KW_MODULE        : KeywordName:='MODULE';
+  KW_NOT           : KeywordName:='NOT';
+  KW_OF            : KeywordName:='OF';
+  KW_OR            : KeywordName:='OR';
+  KW_POINTER       : KeywordName:='POINTER';
+  KW_PROCEDURE     : KeywordName:='PROCEDURE';
+  KW_QUALIFIED     : KeywordName:='QUALIFIED';
+  KW_RECORD        : KeywordName:='RECORD';
+  KW_REPEAT        : KeywordName:='REPEAT';
+  KW_RETURN        : KeywordName:='RETURN';
+  KW_SET           : KeywordName:='SET';
+  KW_THEN          : KeywordName:='THEN';
+  KW_TO            : KeywordName:='TO';
+  KW_TYPE          : KeywordName:='TYPE';
+  KW_UNTIL         : KeywordName:='UNTIL';
+  KW_VAR           : KeywordName:='VAR';
+  KW_WHILE         : KeywordName:='WHILE';
+  KW_WITH          : KeywordName:='WITH';
+  Else KeywordName:='';
+ End;
+End;
+
+Function FindKeyword(S:String):TKeyword;
+Begin
+ S:=UpperStr(S);
+ If S='AND' Then FindKeyword:=KW_AND
+ Else If S='ARRAY' Then FindKeyword:=KW_ARRAY
+ Else If S='BEGIN' Then FindKeyword:=KW_BEGIN
+ Else If S='BY' Then FindKeyword:=KW_BY
+ Else If S='CASE' Then FindKeyword:=KW_CASE
+ Else If S='CONST' Then FindKeyword:=KW_CONST
+ Else If S='DEFINITION' Then FindKeyword:=KW_DEFINITION
+ Else If S='DIV' Then FindKeyword:=KW_DIV
+ Else If S='DO' Then FindKeyword:=KW_DO
+ Else If S='ELSE' Then FindKeyword:=KW_ELSE
+ Else If S='ELSIF' Then FindKeyword:=KW_ELSIF
+ Else If S='END' Then FindKeyword:=KW_END
+ Else If S='EXIT' Then FindKeyword:=KW_EXIT
+ Else If S='EXPORT' Then FindKeyword:=KW_EXPORT
+ Else If S='FOR' Then FindKeyword:=KW_FOR
+ Else If S='FROM' Then FindKeyword:=KW_FROM
+ Else If S='IF' Then FindKeyword:=KW_IF
+ Else If S='IMPLEMENTATION' Then FindKeyword:=KW_IMPLEMENTATION
+ Else If S='IMPORT' Then FindKeyword:=KW_IMPORT
+ Else If S='IN' Then FindKeyword:=KW_IN
+ Else If S='LOOP' Then FindKeyword:=KW_LOOP
+ Else If S='MOD' Then FindKeyword:=KW_MOD
+ Else If S='MODULE' Then FindKeyword:=KW_MODULE
+ Else If S='NOT' Then FindKeyword:=KW_NOT
+ Else If S='OF' Then FindKeyword:=KW_OF
+ Else If S='OR' Then FindKeyword:=KW_OR
+ Else If S='POINTER' Then FindKeyword:=KW_POINTER
+ Else If S='PROCEDURE' Then FindKeyword:=KW_PROCEDURE
+ Else If S='QUALIFIED' Then FindKeyword:=KW_QUALIFIED
+ Else If S='RECORD' Then FindKeyword:=KW_RECORD
+ Else If S='REPEAT' Then FindKeyword:=KW_REPEAT
+ Else If S='RETURN' Then FindKeyword:=KW_RETURN
+ Else If S='SET' Then FindKeyword:=KW_SET
+ Else If S='THEN' Then FindKeyword:=KW_THEN
+ Else If S='TO' Then FindKeyword:=KW_TO
+ Else If S='TYPE' Then FindKeyword:=KW_TYPE
+ Else If S='UNTIL' Then FindKeyword:=KW_UNTIL
+ Else If S='VAR' Then FindKeyword:=KW_VAR
+ Else If S='WHILE' Then FindKeyword:=KW_WHILE
+ Else If S='WITH' Then FindKeyword:=KW_WITH
+ Else FindKeyword:=KW_NONE;
+End;
+
+Function StandardModuleOf(Name:String):TStandardModule;
+Begin
+ Name:=UpperStr(Name);
+ If Name='INOUT' Then StandardModuleOf:=SM_INOUT
+  Else StandardModuleOf:=SM_UNKNOWN;
+End;
+
+Function StandardModuleName(ModuleKind:TStandardModule):String;
+Begin
+ Case ModuleKind Of
+  SM_INOUT:StandardModuleName:='InOut';
+  Else StandardModuleName:='inconnu';
+ End;
+End;
+
+Function IsStandardModuleExport(ModuleKind:TStandardModule;Name:String):Boolean;
+Begin
+ Name:=UpperStr(Name);
+ Case ModuleKind Of
+  SM_INOUT:
+   IsStandardModuleExport:=
+    (Name='WRITESTRING') Or (Name='WRITELN') Or (Name='WRITEINT') Or
+    (Name='WRITECARD') Or (Name='WRITECHAR') Or
+    (Name='READINT') Or (Name='READCARD') Or
+    (Name='READCHAR') Or (Name='READSTRING');
+  Else IsStandardModuleExport:=False;
+ End;
+End;
+
+Function ScopeKindName(Kind:TScopeKind):String;
+Begin
+ Case Kind Of
+  SCOPE_MODULE   : ScopeKindName:='MODULE';
+  SCOPE_PROCEDURE: ScopeKindName:='PROCEDURE';
+  Else ScopeKindName:='?';
+ End;
+End;
+
+Function SymbolKindName(Kind:TSymbolKind):String;
+Begin
+ Case Kind Of
+  SYM_MODULE       : SymbolKindName:='MODULE';
+  SYM_IMPORT_MODULE: SymbolKindName:='IMPORT MODULE';
+  SYM_IMPORT_NAME  : SymbolKindName:='IMPORT NOM';
+  SYM_CONSTANT     : SymbolKindName:='CONST';
+  SYM_TYPE         : SymbolKindName:='TYPE';
+  SYM_VARIABLE     : SymbolKindName:='VAR';
+  SYM_PROCEDURE    : SymbolKindName:='PROCEDURE';
+  SYM_PARAMETER    : SymbolKindName:='PARAM';
+  Else SymbolKindName:='?';
+ End;
+End;
+
+Function StorageKindName(Kind:TStorageKind):String;
+Begin
+ Case Kind Of
+  STORAGE_GLOBAL   :StorageKindName:='GLOBAL';
+  STORAGE_LOCAL    :StorageKindName:='LOCAL';
+  STORAGE_PARAMETER:StorageKindName:='PARAM';
+  Else StorageKindName:='-';
+ End;
+End;
+
+Function ScalarTypeName(ScalarType:TScalarType):String;
+Begin
+ Case ScalarType Of
+  SCALAR_INTEGER :ScalarTypeName:='INTEGER';
+  SCALAR_CARDINAL:ScalarTypeName:='CARDINAL';
+  SCALAR_BOOLEAN :ScalarTypeName:='BOOLEAN';
+  SCALAR_CHAR    :ScalarTypeName:='CHAR';
+  SCALAR_STRING  :ScalarTypeName:='STRING';
+  Else ScalarTypeName:='<non type>';
+ End;
+End;
+
+Function BuiltinScalarType(Name:String):TScalarType;
+Begin
+ If Name='INTEGER' Then BuiltinScalarType:=SCALAR_INTEGER
+ Else If Name='CARDINAL' Then BuiltinScalarType:=SCALAR_CARDINAL
+ Else If Name='BOOLEAN' Then BuiltinScalarType:=SCALAR_BOOLEAN
+ Else If Name='CHAR' Then BuiltinScalarType:=SCALAR_CHAR
+ Else BuiltinScalarType:=SCALAR_NONE;
+End;
+
+Function IsNumericScalar(ScalarType:TScalarType):Boolean;
+Begin
+ IsNumericScalar:=(ScalarType=SCALAR_INTEGER) Or
+                 (ScalarType=SCALAR_CARDINAL);
+End;
+
+Function ScalarTypeSize(ScalarType:TScalarType):Integer;
+Begin
+ Case ScalarType Of
+  SCALAR_INTEGER,
+  SCALAR_CARDINAL:ScalarTypeSize:=4;
+  SCALAR_BOOLEAN,
+  SCALAR_CHAR:ScalarTypeSize:=1;
+  Else ScalarTypeSize:=0;
+ End;
+End;
+
+Function ScalarTypesCompatible(ExpectedType,ActualType:TScalarType):Boolean;
+Begin
+ ScalarTypesCompatible:=(ExpectedType=ActualType) Or
+  (IsNumericScalar(ExpectedType) And IsNumericScalar(ActualType));
+End;
+
 Function IntToString(N:LongInt):String;
 Var
  S:String;
 Begin
  Str(N,S);
  IntToString:=S;
+End;
+
+Function ConstValueText(Value:TConstValue):String;
+Begin
+ If Not Value.Valid Then ConstValueText:=''
+ Else Case Value.ScalarType Of
+  SCALAR_BOOLEAN:
+   If Value.IntegerValue<>0 Then ConstValueText:='TRUE'
+    Else ConstValueText:='FALSE';
+  SCALAR_CHAR:ConstValueText:=''''+Value.StringValue+'''';
+  SCALAR_STRING:ConstValueText:=''''+Value.StringValue+'''';
+  SCALAR_INTEGER,
+  SCALAR_CARDINAL:ConstValueText:=IntToString(Value.IntegerValue);
+  Else ConstValueText:='';
+ End;
 End;
 
 Function LowerStr(S:String):String;
@@ -488,6 +885,23 @@ Begin
  LocalVarRef:=StackRef(R_EBP,LocalOffset);
 End;
 
+Function SymbolStorageRef(SymbolIndex:Integer):String;
+Var
+ S:TSymbol;
+Begin
+ SymbolStorageRef:='';
+ If (SymbolIndex<1) Or (SymbolIndex>Pipeline.SymbolCount) Then Exit;
+ S:=Pipeline.Symbols[SymbolIndex];
+ Case S.StorageKind Of
+  STORAGE_GLOBAL:
+   SymbolStorageRef:='['+S.AsmName+']';
+  STORAGE_LOCAL:
+   SymbolStorageRef:=StackRef(R_EBP,S.StorageOffset);
+  STORAGE_PARAMETER:
+   SymbolStorageRef:=StackRef(R_EBP,S.StorageOffset);
+ End;
+End;
+
 Procedure PipelineError(Msg:String); Forward;
 Procedure PipelineErrorAt(Kind:TErrorKind;Msg:String;LineNo,ColumnNo:LongInt);
  Forward;
@@ -611,6 +1025,30 @@ Begin
  Emit386Ret(T);
 End;
 
+Procedure EmitGlobalBssVariables(Var T:Text);
+Var
+ I:Integer;
+ Emitted:Boolean;
+ S:TSymbol;
+Begin
+ Emitted:=False;
+ For I:=1 To Pipeline.SymbolCount Do Begin
+  S:=Pipeline.Symbols[I];
+  If S.StorageKind=STORAGE_GLOBAL Then Begin
+   Emitted:=True;
+   EmitAsmComment(T,S.Name+' : '+ScalarTypeName(S.ScalarType)+
+                    ', offset BSS '+IntToString(S.StorageOffset)+
+                    ', initialise implicitement a zero');
+   EmitAsmLabel(T,S.AsmName);
+   EmitAsmLine(T,'  resd 1');
+  End;
+ End;
+ If Not Emitted Then Begin
+  EmitAsmLabel(T,MakeDataLabel(Pipeline.ModuleName+'_BSS_ANCHOR'));
+  EmitAsmLine(T,'  resd 1');
+ End;
+End;
+
 Function WriteAsm80386File(FileName:String):Boolean;
 Var
  T:Text;
@@ -650,8 +1088,7 @@ Begin
  EmitAsmLine(T,'  db 13,10,0');
  EmitAsmBlank(T);
  EmitAsmSection(T,Pipeline.Target.BssSection);
- EmitAsmLabel(T,MakeDataLabel(Pipeline.ModuleName+'_BSS_ANCHOR'));
- EmitAsmLine(T,'  resd 1');
+ EmitGlobalBssVariables(T);
  Close(T);
  If IOResult<>0 Then Begin
   PipelineError('ecriture incomplete de '+FileName);
@@ -745,25 +1182,33 @@ End;
 Function WriteCoffI386File(FileName:String):Boolean;
 Const
  SectionCount = 3;
- SymbolCount  = 6;
  TextSize     = 8;
- BssSize      = 4;
 Var
  F:File;
+ I:Integer;
+ SymbolCount:LongInt;
+ GlobalCount:Integer;
  TextPtr:LongInt;
  DataPtr:LongInt;
  BssPtr:LongInt;
  SymbolPtr:LongInt;
  DataSize:LongInt;
+ BssSize:LongInt;
  EntryName:String;
  SourceLabel:String;
  ModuleLabel:String;
 Begin
  WriteCoffI386File:=False;
+ GlobalCount:=0;
+ For I:=1 To Pipeline.SymbolCount Do
+  If Pipeline.Symbols[I].StorageKind=STORAGE_GLOBAL Then Inc(GlobalCount);
+ SymbolCount:=6+GlobalCount;
  EntryName:=Pipeline.Target.EntryLabel;
  SourceLabel:=MakeDataLabel(Pipeline.ModuleName+'_SOURCE');
  ModuleLabel:=MakeDataLabel(Pipeline.ModuleName+'_MODULE');
  DataSize:=Length(Pipeline.SourceName)+1+Length(Pipeline.ModuleName)+1;
+ BssSize:=Pipeline.GlobalBssSize;
+ If BssSize<4 Then BssSize:=4;
  TextPtr:=COFF_FILE_HEADER_SIZE+(SectionCount*COFF_SECTION_HDR_SIZE);
  DataPtr:=TextPtr+TextSize;
  BssPtr:=0;
@@ -804,6 +1249,11 @@ Begin
                  COFF_SYM_CLASS_STATIC);
  WriteCoffSymbol(F,ModuleLabel,Length(Pipeline.SourceName)+1,
                  CoffSectionNumber(AS_DATA),COFF_SYM_CLASS_STATIC);
+ For I:=1 To Pipeline.SymbolCount Do
+  If Pipeline.Symbols[I].StorageKind=STORAGE_GLOBAL Then
+   WriteCoffSymbol(F,Pipeline.Symbols[I].AsmName,
+                   Pipeline.Symbols[I].StorageOffset,
+                   CoffSectionNumber(AS_BSS),COFF_SYM_CLASS_STATIC);
  WriteRawDWordLE(F,4);
  Close(F);
  If IOResult<>0 Then Begin
@@ -1328,6 +1778,343 @@ Begin
  Pipeline.LastCompleted:=Stage;
 End;
 
+Function LexerAtEnd:Boolean;
+Begin
+ LexerAtEnd:=Pipeline.LexerLine>Pipeline.StoredLineCount;
+End;
+
+Function LexerCurrentChar:Char;
+Begin
+ If LexerAtEnd Then LexerCurrentChar:=#0
+ Else If Pipeline.LexerColumn>Length(Pipeline.SourceText[Pipeline.LexerLine]) Then
+  LexerCurrentChar:=#10
+ Else LexerCurrentChar:=Pipeline.SourceText[Pipeline.LexerLine][Pipeline.LexerColumn];
+End;
+
+Function LexerPeekChar:Char;
+Begin
+ If LexerAtEnd Then LexerPeekChar:=#0
+ Else If Pipeline.LexerColumn<Length(Pipeline.SourceText[Pipeline.LexerLine]) Then
+  LexerPeekChar:=Pipeline.SourceText[Pipeline.LexerLine][Pipeline.LexerColumn+1]
+ Else LexerPeekChar:=#10;
+End;
+
+Procedure LexerAdvance;
+Begin
+ If LexerAtEnd Then Exit;
+ If Pipeline.LexerColumn>Length(Pipeline.SourceText[Pipeline.LexerLine]) Then Begin
+  Inc(Pipeline.LexerLine);
+  Pipeline.LexerColumn:=1;
+ End
+ Else Inc(Pipeline.LexerColumn);
+End;
+
+Function IsIdentStart(C:Char):Boolean;
+Begin
+ IsIdentStart:=((C>='A') And (C<='Z')) Or
+               ((C>='a') And (C<='z')) Or (C='_');
+End;
+
+Function IsIdentChar(C:Char):Boolean;
+Begin
+ IsIdentChar:=IsIdentStart(C) Or ((C>='0') And (C<='9'));
+End;
+
+Function IsHexChar(C:Char):Boolean;
+Begin
+ C:=UpCase(C);
+ IsHexChar:=((C>='0') And (C<='9')) Or ((C>='A') And (C<='F'));
+End;
+
+Function DigitValue(C:Char):Integer;
+Begin
+ C:=UpCase(C);
+ If (C>='0') And (C<='9') Then DigitValue:=Ord(C)-Ord('0')
+ Else If (C>='A') And (C<='F') Then DigitValue:=10+Ord(C)-Ord('A')
+ Else DigitValue:=-1;
+End;
+
+Function ParseIntegerToken(Text:String;LineNo,ColumnNo:Integer;
+ Var Value:LongInt):Boolean;
+Var
+ Base:Integer;
+ I:Integer;
+ LimitText:String;
+ D:Integer;
+ U:String;
+Begin
+ ParseIntegerToken:=False;
+ Value:=0;
+ U:=UpperStr(Text);
+ Base:=10;
+ LimitText:=U;
+ If Length(U)>1 Then Begin
+  If U[Length(U)]='H' Then Begin
+   Base:=16;
+   Delete(LimitText,Length(LimitText),1);
+  End
+  Else If (U[Length(U)]='B') Or (U[Length(U)]='C') Then Begin
+   Base:=8;
+   Delete(LimitText,Length(LimitText),1);
+  End;
+ End;
+ If LimitText='' Then Begin
+  LexicalError('constante entiere vide',LineNo,ColumnNo);
+  Exit;
+ End;
+ For I:=1 To Length(LimitText) Do Begin
+  D:=DigitValue(LimitText[I]);
+  If (D<0) Or (D>=Base) Then Begin
+   LexicalError('chiffre invalide dans la constante '+Text,LineNo,ColumnNo+I-1);
+   Exit;
+  End;
+  If Value>(2147483647-D) Div Base Then Begin
+   LexicalError('constante entiere hors limite 32 bits',LineNo,ColumnNo);
+   Exit;
+  End;
+  Value:=(Value*Base)+D;
+ End;
+ ParseIntegerToken:=True;
+End;
+
+Function AddToken(Kind:TTokenKind;Keyword:TKeyword;Text:String;
+ Value:LongInt;LineNo,ColumnNo:Integer):Boolean;
+Begin
+ AddToken:=False;
+ If Pipeline.TokenCount>=MOD2_MAX_TOKENS Then Begin
+  LexicalError('trop de tokens dans le module',LineNo,ColumnNo);
+  Exit;
+ End;
+ If Length(Text)>127 Then Begin
+  LexicalError('token trop long (maximum 127 caracteres)',LineNo,ColumnNo);
+  Exit;
+ End;
+ Inc(Pipeline.TokenCount);
+ Pipeline.Tokens[Pipeline.TokenCount].Kind:=Kind;
+ Pipeline.Tokens[Pipeline.TokenCount].Keyword:=Keyword;
+ Pipeline.Tokens[Pipeline.TokenCount].Text:=Text;
+ Pipeline.Tokens[Pipeline.TokenCount].IntegerVal:=Value;
+ Pipeline.Tokens[Pipeline.TokenCount].Line:=LineNo;
+ Pipeline.Tokens[Pipeline.TokenCount].Column:=ColumnNo;
+ AddToken:=True;
+End;
+
+Function SkipNestedComment:Boolean;
+Var
+ Depth:Integer;
+ StartLine:Integer;
+ StartColumn:Integer;
+Begin
+ SkipNestedComment:=False;
+ StartLine:=Pipeline.LexerLine;
+ StartColumn:=Pipeline.LexerColumn;
+ Depth:=1;
+ Inc(Pipeline.CommentCount);
+ LexerAdvance;
+ LexerAdvance;
+ While Depth>0 Do Begin
+  If LexerAtEnd Then Begin
+   LexicalError('commentaire (* non termine',StartLine,StartColumn);
+   Exit;
+  End;
+  If (LexerCurrentChar='(') And (LexerPeekChar='*') Then Begin
+   Inc(Depth);
+   LexerAdvance;
+   LexerAdvance;
+  End
+  Else If (LexerCurrentChar='*') And (LexerPeekChar=')') Then Begin
+   Dec(Depth);
+   LexerAdvance;
+   LexerAdvance;
+  End
+  Else LexerAdvance;
+ End;
+ SkipNestedComment:=True;
+End;
+
+Function ScanIdentifier:Boolean;
+Var
+ Text:String;
+ LineNo:Integer;
+ ColumnNo:Integer;
+ Keyword:TKeyword;
+Begin
+ ScanIdentifier:=False;
+ Text:='';
+ LineNo:=Pipeline.LexerLine;
+ ColumnNo:=Pipeline.LexerColumn;
+ While IsIdentChar(LexerCurrentChar) Do Begin
+  If Length(Text)>=127 Then Begin
+   LexicalError('identificateur trop long',LineNo,ColumnNo);
+   Exit;
+  End;
+  Text:=Text+LexerCurrentChar;
+  LexerAdvance;
+ End;
+ Keyword:=FindKeyword(Text);
+ If Keyword=KW_NONE Then
+  ScanIdentifier:=AddToken(TK_IDENTIFIER,KW_NONE,Text,0,LineNo,ColumnNo)
+ Else
+  ScanIdentifier:=AddToken(TK_KEYWORD,Keyword,KeywordName(Keyword),0,
+                           LineNo,ColumnNo);
+End;
+
+Function ScanInteger:Boolean;
+Var
+ Text:String;
+ LineNo:Integer;
+ ColumnNo:Integer;
+ Value:LongInt;
+ C:Char;
+Begin
+ ScanInteger:=False;
+ Text:='';
+ LineNo:=Pipeline.LexerLine;
+ ColumnNo:=Pipeline.LexerColumn;
+ While True Do Begin
+  C:=LexerCurrentChar;
+  If ((C>='0') And (C<='9')) Or
+     ((UpCase(C)>='A') And (UpCase(C)<='H')) Then Begin
+   If Length(Text)>=127 Then Begin
+    LexicalError('constante entiere trop longue',LineNo,ColumnNo);
+    Exit;
+   End;
+   Text:=Text+C;
+   LexerAdvance;
+  End
+  Else Break;
+ End;
+ If Not ParseIntegerToken(Text,LineNo,ColumnNo,Value) Then Exit;
+ ScanInteger:=AddToken(TK_INTEGER,KW_NONE,Text,Value,LineNo,ColumnNo);
+End;
+
+Function ScanStringLiteral:Boolean;
+Var
+ Text:String;
+ Delimiter:Char;
+ LineNo:Integer;
+ ColumnNo:Integer;
+Begin
+ ScanStringLiteral:=False;
+ Text:='';
+ Delimiter:=LexerCurrentChar;
+ LineNo:=Pipeline.LexerLine;
+ ColumnNo:=Pipeline.LexerColumn;
+ LexerAdvance;
+ While True Do Begin
+  If LexerAtEnd Or (LexerCurrentChar=#10) Then Begin
+   LexicalError('chaine non terminee',LineNo,ColumnNo);
+   Exit;
+  End;
+  If LexerCurrentChar=Delimiter Then Begin
+   If LexerPeekChar=Delimiter Then Begin
+    If Length(Text)>=127 Then Begin
+     LexicalError('chaine trop longue',LineNo,ColumnNo);
+     Exit;
+    End;
+    Text:=Text+Delimiter;
+    LexerAdvance;
+    LexerAdvance;
+   End
+   Else Begin
+    LexerAdvance;
+    Break;
+   End;
+  End
+  Else Begin
+   If Length(Text)>=127 Then Begin
+    LexicalError('chaine trop longue',LineNo,ColumnNo);
+    Exit;
+   End;
+   Text:=Text+LexerCurrentChar;
+   LexerAdvance;
+  End;
+ End;
+ ScanStringLiteral:=AddToken(TK_STRING,KW_NONE,Text,0,LineNo,ColumnNo);
+End;
+
+Function ScanSymbol:Boolean;
+Var
+ Text:String;
+ C:Char;
+ LineNo:Integer;
+ ColumnNo:Integer;
+Begin
+ ScanSymbol:=False;
+ Text:='';
+ C:=LexerCurrentChar;
+ LineNo:=Pipeline.LexerLine;
+ ColumnNo:=Pipeline.LexerColumn;
+ If ((C=':') And (LexerPeekChar='=')) Or
+    ((C='<') And (LexerPeekChar='=')) Or
+    ((C='>') And (LexerPeekChar='=')) Or
+    ((C='<') And (LexerPeekChar='>')) Or
+    ((C='.') And (LexerPeekChar='.')) Then Begin
+  Text:=C+LexerPeekChar;
+  LexerAdvance;
+  LexerAdvance;
+ End
+ Else If Pos(C,'+-*/=#<>()[]{};,.:^|&~')>0 Then Begin
+  Text:=C;
+  LexerAdvance;
+ End
+ Else Begin
+  LexicalError('caractere illegal: code '+IntToString(Ord(C)),LineNo,ColumnNo);
+  Exit;
+ End;
+ ScanSymbol:=AddToken(TK_SYMBOL,KW_NONE,Text,0,LineNo,ColumnNo);
+End;
+
+Procedure TraceTokens;
+Var
+ I:Integer;
+ Extra:String;
+Begin
+ If Not Options.Verbose Then Exit;
+ WriteLn('Lexer  : ',Pipeline.TokenCount,' tokens, ',
+         Pipeline.CommentCount,' commentaires');
+ For I:=1 To Pipeline.TokenCount Do Begin
+  Extra:='';
+  If Pipeline.Tokens[I].Kind=TK_INTEGER Then
+   Extra:=' = '+IntToString(Pipeline.Tokens[I].IntegerVal);
+  WriteLn('Token  : ',Pipeline.Tokens[I].Line,':',
+          Pipeline.Tokens[I].Column,' ',
+          TokenKindName(Pipeline.Tokens[I].Kind),' ',
+          Pipeline.Tokens[I].Text,Extra);
+ End;
+End;
+
+Function TokenizeSource:Boolean;
+Var
+ C:Char;
+Begin
+ TokenizeSource:=False;
+ Pipeline.TokenCount:=0;
+ Pipeline.CommentCount:=0;
+ Pipeline.LexerLine:=1;
+ Pipeline.LexerColumn:=1;
+ While Not LexerAtEnd Do Begin
+  C:=LexerCurrentChar;
+  If (C=' ') Or (C=#9) Or (C=#10) Or (C=#13) Then
+   LexerAdvance
+  Else If (C='(') And (LexerPeekChar='*') Then Begin
+   If Not SkipNestedComment Then Exit;
+  End
+  Else If IsIdentStart(C) Then Begin
+   If Not ScanIdentifier Then Exit;
+  End
+  Else If (C>='0') And (C<='9') Then Begin
+   If Not ScanInteger Then Exit;
+  End
+  Else If (C='''') Or (C='"') Then Begin
+   If Not ScanStringLiteral Then Exit;
+  End
+  Else If Not ScanSymbol Then Exit;
+ End;
+ If Not AddToken(TK_EOF,KW_NONE,'',0,Pipeline.StoredLineCount+1,1) Then Exit;
+ TokenizeSource:=True;
+End;
+
 Procedure LoadSource;
 Var
  F:Text;
@@ -1344,6 +2131,14 @@ Begin
   ReadLn(F,Line);
   Inc(Pipeline.SourceLines);
   Inc(Pipeline.SourceBytes,Length(Line)+2);
+  If Pipeline.StoredLineCount>=MOD2_MAX_SOURCE_LINES Then Begin
+   Close(F);
+   PipelineErrorKind(EK_IO,'source trop long: maximum '+
+                     IntToString(MOD2_MAX_SOURCE_LINES)+' lignes');
+   Exit;
+  End;
+  Inc(Pipeline.StoredLineCount);
+  Pipeline.SourceText[Pipeline.StoredLineCount]:=Line;
  End;
  Close(F);
  If IOResult<>0 Then ;
@@ -1355,19 +2150,1736 @@ End;
 Procedure RunLexer;
 Begin
  EnterStage(CS_LEXER);
- LexicalError('lexer Modula-2 pas encore implemente',1,1);
+ If TokenizeSource Then Begin
+  Pipeline.Lexed:=True;
+  FinishStage(CS_LEXER);
+  TraceTokens;
+  If Not Options.Verbose Then
+   WriteLn('Lexer  : ',Pipeline.TokenCount,' tokens');
+ End;
+End;
+
+Function CurrentToken:TToken;
+Begin
+ If Pipeline.ParserIndex<1 Then Pipeline.ParserIndex:=1;
+ If Pipeline.ParserIndex>Pipeline.TokenCount Then
+  CurrentToken:=Pipeline.Tokens[Pipeline.TokenCount]
+ Else
+  CurrentToken:=Pipeline.Tokens[Pipeline.ParserIndex];
+End;
+
+Procedure ParserAdvance;
+Begin
+ If Pipeline.ParserIndex<Pipeline.TokenCount Then Inc(Pipeline.ParserIndex);
+End;
+
+Function TokenIsKeyword(Keyword:TKeyword):Boolean;
+Begin
+ TokenIsKeyword:=(CurrentToken.Kind=TK_KEYWORD) And
+                 (CurrentToken.Keyword=Keyword);
+End;
+
+Function TokenIsSymbol(SymbolText:String):Boolean;
+Begin
+ TokenIsSymbol:=(CurrentToken.Kind=TK_SYMBOL) And
+                (CurrentToken.Text=SymbolText);
+End;
+
+Function AcceptKeyword(Keyword:TKeyword):Boolean;
+Begin
+ AcceptKeyword:=TokenIsKeyword(Keyword);
+ If AcceptKeyword Then ParserAdvance;
+End;
+
+Function AcceptSymbol(SymbolText:String):Boolean;
+Begin
+ AcceptSymbol:=TokenIsSymbol(SymbolText);
+ If AcceptSymbol Then ParserAdvance;
+End;
+
+Function ParserFail(Msg:String):Boolean;
+Var
+ Token:TToken;
+Begin
+ Token:=CurrentToken;
+ SyntaxError(Msg,Token.Line,Token.Column);
+ ParserFail:=False;
+End;
+
+Function ExpectKeyword(Keyword:TKeyword):Boolean;
+Begin
+ If Not TokenIsKeyword(Keyword) Then Begin
+  ExpectKeyword:=ParserFail('mot-cle '+KeywordName(Keyword)+' attendu');
+  Exit;
+ End;
+ ParserAdvance;
+ ExpectKeyword:=True;
+End;
+
+Function ExpectSymbol(SymbolText:String):Boolean;
+Begin
+ If Not TokenIsSymbol(SymbolText) Then Begin
+  ExpectSymbol:=ParserFail('symbole "'+SymbolText+'" attendu');
+  Exit;
+ End;
+ ParserAdvance;
+ ExpectSymbol:=True;
+End;
+
+Function ExpectIdentifier(Var Name:String):Boolean;
+Begin
+ ExpectIdentifier:=False;
+ If CurrentToken.Kind<>TK_IDENTIFIER Then Begin
+  ParserFail('identificateur attendu');
+  Exit;
+ End;
+ Name:=CurrentToken.Text;
+ ParserAdvance;
+ ExpectIdentifier:=True;
+End;
+
+Function SkipUntilSemicolon(AllowRecord:Boolean):Boolean;
+Var
+ ParenDepth:Integer;
+ BracketDepth:Integer;
+ RecordDepth:Integer;
+Begin
+ SkipUntilSemicolon:=False;
+ ParenDepth:=0;
+ BracketDepth:=0;
+ RecordDepth:=0;
+ While CurrentToken.Kind<>TK_EOF Do Begin
+  If TokenIsSymbol('(') Then Inc(ParenDepth)
+  Else If TokenIsSymbol(')') Then Begin
+   If ParenDepth=0 Then Begin
+    ParserFail('parenthese fermante sans parenthese ouvrante');
+    Exit;
+   End;
+   Dec(ParenDepth);
+  End
+  Else If TokenIsSymbol('[') Then Inc(BracketDepth)
+  Else If TokenIsSymbol(']') Then Begin
+   If BracketDepth=0 Then Begin
+    ParserFail('crochet fermant sans crochet ouvrant');
+    Exit;
+   End;
+   Dec(BracketDepth);
+  End
+  Else If AllowRecord And TokenIsKeyword(KW_RECORD) Then Inc(RecordDepth)
+  Else If AllowRecord And TokenIsKeyword(KW_END) And (RecordDepth>0) Then
+   Dec(RecordDepth)
+  Else If TokenIsSymbol(';') And (ParenDepth=0) And
+          (BracketDepth=0) And (RecordDepth=0) Then Begin
+   ParserAdvance;
+   SkipUntilSemicolon:=True;
+   Exit;
+  End;
+  ParserAdvance;
+ End;
+ ParserFail('fin de fichier avant le point-virgule');
+End;
+
+Function ParseIdentifierList:Boolean;
+Var
+ Name:String;
+Begin
+ ParseIdentifierList:=False;
+ If Not ExpectIdentifier(Name) Then Exit;
+ While AcceptSymbol(',') Do
+  If Not ExpectIdentifier(Name) Then Exit;
+ ParseIdentifierList:=True;
+End;
+
+Function FindImportedModule(Name:String):Integer;
+Var
+ I:Integer;
+ U:String;
+Begin
+ FindImportedModule:=0;
+ U:=UpperStr(Name);
+ For I:=1 To Pipeline.ImportCount Do
+  If UpperStr(Pipeline.Imports[I].Name)=U Then Begin
+   FindImportedModule:=I;
+   Exit;
+  End;
+End;
+
+Function AddImportedModule(Name:String;FromImport:Boolean;
+ LineNo,ColumnNo:Integer;Var ImportIndex:Integer):Boolean;
+Var
+ ModuleKind:TStandardModule;
+Begin
+ AddImportedModule:=False;
+ ImportIndex:=0;
+ If FindImportedModule(Name)<>0 Then Begin
+  SemanticError('module importe plusieurs fois: '+Name,LineNo,ColumnNo);
+  Exit;
+ End;
+ ModuleKind:=StandardModuleOf(Name);
+ If ModuleKind=SM_UNKNOWN Then Begin
+  SemanticError('module importe inconnu ou non supporte: '+Name,
+                LineNo,ColumnNo);
+  Exit;
+ End;
+ If Pipeline.ImportCount>=MOD2_MAX_IMPORTS Then Begin
+  SemanticError('trop de modules importes',LineNo,ColumnNo);
+  Exit;
+ End;
+ Inc(Pipeline.ImportCount);
+ ImportIndex:=Pipeline.ImportCount;
+ Pipeline.Imports[ImportIndex].Name:=StandardModuleName(ModuleKind);
+ Pipeline.Imports[ImportIndex].StandardModule:=ModuleKind;
+ Pipeline.Imports[ImportIndex].FromImport:=FromImport;
+ Pipeline.Imports[ImportIndex].SelectedNames:='';
+ Pipeline.Imports[ImportIndex].Line:=LineNo;
+ Pipeline.Imports[ImportIndex].Column:=ColumnNo;
+ AddImportedModule:=True;
+End;
+
+Function AddSelectedImportName(ImportIndex:Integer;Name:String;
+ LineNo,ColumnNo:Integer):Boolean;
+Var
+ I:Integer;
+ Existing:String;
+ Item:String;
+ Start:Integer;
+ ModuleKind:TStandardModule;
+Begin
+ AddSelectedImportName:=False;
+ If (ImportIndex<1) Or (ImportIndex>Pipeline.ImportCount) Then Begin
+  SemanticError('index de module importe invalide',LineNo,ColumnNo);
+  Exit;
+ End;
+ ModuleKind:=Pipeline.Imports[ImportIndex].StandardModule;
+ If Not IsStandardModuleExport(ModuleKind,Name) Then Begin
+  SemanticError('nom "'+Name+'" non exporte par le module '+
+                Pipeline.Imports[ImportIndex].Name,LineNo,ColumnNo);
+  Exit;
+ End;
+ Existing:=Pipeline.Imports[ImportIndex].SelectedNames;
+ Start:=1;
+ For I:=1 To Length(Existing)+1 Do Begin
+  If I>Length(Existing) Then Begin
+   Item:=Copy(Existing,Start,I-Start);
+   If UpperStr(Item)=UpperStr(Name) Then Begin
+    SemanticError('nom importe plusieurs fois: '+Name,LineNo,ColumnNo);
+    Exit;
+   End;
+   Start:=I+1;
+  End
+  Else If Existing[I]=',' Then Begin
+   Item:=Copy(Existing,Start,I-Start);
+   If UpperStr(Item)=UpperStr(Name) Then Begin
+    SemanticError('nom importe plusieurs fois: '+Name,LineNo,ColumnNo);
+    Exit;
+   End;
+   Start:=I+1;
+  End;
+ End;
+ If Existing='' Then Existing:=Name
+  Else Existing:=Existing+','+Name;
+ If Length(Existing)>127 Then Begin
+  SemanticError('liste FROM IMPORT trop longue',LineNo,ColumnNo);
+  Exit;
+ End;
+ Pipeline.Imports[ImportIndex].SelectedNames:=Existing;
+ AddSelectedImportName:=True;
+End;
+
+Function ParseImportClause:Boolean;
+Var
+ ModuleName:String;
+ ImportedName:String;
+ ImportIndex:Integer;
+ LineNo:Integer;
+ ColumnNo:Integer;
+Begin
+ ParseImportClause:=False;
+ If AcceptKeyword(KW_FROM) Then Begin
+  LineNo:=CurrentToken.Line;
+  ColumnNo:=CurrentToken.Column;
+  If Not ExpectIdentifier(ModuleName) Then Exit;
+  If Not AddImportedModule(ModuleName,True,LineNo,ColumnNo,ImportIndex) Then Exit;
+  If Not ExpectKeyword(KW_IMPORT) Then Exit;
+  Repeat
+   LineNo:=CurrentToken.Line;
+   ColumnNo:=CurrentToken.Column;
+   If Not ExpectIdentifier(ImportedName) Then Exit;
+   If Not AddSelectedImportName(ImportIndex,ImportedName,LineNo,ColumnNo) Then Exit;
+  Until Not AcceptSymbol(',');
+ End
+ Else Begin
+  If Not ExpectKeyword(KW_IMPORT) Then Exit;
+  Repeat
+   LineNo:=CurrentToken.Line;
+   ColumnNo:=CurrentToken.Column;
+   If Not ExpectIdentifier(ModuleName) Then Exit;
+   If Not AddImportedModule(ModuleName,False,LineNo,ColumnNo,ImportIndex) Then Exit;
+  Until Not AcceptSymbol(',');
+ End;
+ If Not ExpectSymbol(';') Then Exit;
+ ParseImportClause:=True;
+End;
+
+Function ParseExportClause:Boolean;
+Var
+ Name:String;
+Begin
+ ParseExportClause:=False;
+ If Not ExpectKeyword(KW_EXPORT) Then Exit;
+ AcceptKeyword(KW_QUALIFIED);
+ If Not ExpectIdentifier(Name) Then Exit;
+ While AcceptSymbol(',') Do
+  If Not ExpectIdentifier(Name) Then Exit;
+ If Not ExpectSymbol(';') Then Exit;
+ ParseExportClause:=True;
+End;
+
+Function ParseConstSection:Boolean;
+Var
+ Name:String;
+Begin
+ ParseConstSection:=False;
+ If Not ExpectKeyword(KW_CONST) Then Exit;
+ If CurrentToken.Kind<>TK_IDENTIFIER Then Begin
+  ParserFail('declaration de constante attendue apres CONST');
+  Exit;
+ End;
+ While CurrentToken.Kind=TK_IDENTIFIER Do Begin
+  If Not ExpectIdentifier(Name) Then Exit;
+  If Not ExpectSymbol('=') Then Exit;
+  If Not SkipUntilSemicolon(False) Then Exit;
+  Inc(Pipeline.ConstDeclCount);
+ End;
+ ParseConstSection:=True;
+End;
+
+Function ParseTypeSection:Boolean;
+Var
+ Name:String;
+Begin
+ ParseTypeSection:=False;
+ If Not ExpectKeyword(KW_TYPE) Then Exit;
+ If CurrentToken.Kind<>TK_IDENTIFIER Then Begin
+  ParserFail('declaration de type attendue apres TYPE');
+  Exit;
+ End;
+ While CurrentToken.Kind=TK_IDENTIFIER Do Begin
+  If Not ExpectIdentifier(Name) Then Exit;
+  If Not ExpectSymbol('=') Then Exit;
+  If Not SkipUntilSemicolon(True) Then Exit;
+  Inc(Pipeline.TypeDeclCount);
+ End;
+ ParseTypeSection:=True;
+End;
+
+Function ParseVarSection:Boolean;
+Begin
+ ParseVarSection:=False;
+ If Not ExpectKeyword(KW_VAR) Then Exit;
+ If CurrentToken.Kind<>TK_IDENTIFIER Then Begin
+  ParserFail('declaration de variable attendue apres VAR');
+  Exit;
+ End;
+ While CurrentToken.Kind=TK_IDENTIFIER Do Begin
+  If Not ParseIdentifierList Then Exit;
+  If Not ExpectSymbol(':') Then Exit;
+  If Not SkipUntilSemicolon(True) Then Exit;
+  Inc(Pipeline.VarDeclCount);
+ End;
+ ParseVarSection:=True;
+End;
+
+Function ParseStatementSequence:Boolean;
+Var
+ EndDepth:Integer;
+ RepeatDepth:Integer;
+ ParenDepth:Integer;
+ BracketDepth:Integer;
+ AtStatementStart:Boolean;
+ Keyword:TKeyword;
+Begin
+ ParseStatementSequence:=False;
+ EndDepth:=0;
+ RepeatDepth:=0;
+ ParenDepth:=0;
+ BracketDepth:=0;
+ AtStatementStart:=True;
+ While CurrentToken.Kind<>TK_EOF Do Begin
+  If TokenIsSymbol('(') Then Inc(ParenDepth)
+  Else If TokenIsSymbol(')') Then Begin
+   If ParenDepth=0 Then Begin
+    ParserFail('parenthese fermante inattendue');
+    Exit;
+   End;
+   Dec(ParenDepth);
+  End
+  Else If TokenIsSymbol('[') Then Inc(BracketDepth)
+  Else If TokenIsSymbol(']') Then Begin
+   If BracketDepth=0 Then Begin
+    ParserFail('crochet fermant inattendu');
+    Exit;
+   End;
+   Dec(BracketDepth);
+  End;
+
+  If (ParenDepth=0) And (BracketDepth=0) Then Begin
+   If TokenIsKeyword(KW_END) Then Begin
+    If EndDepth=0 Then Begin
+     If RepeatDepth<>0 Then Begin
+      ParserFail('UNTIL attendu avant END');
+      Exit;
+     End;
+     ParseStatementSequence:=True;
+     Exit;
+    End;
+    Dec(EndDepth);
+    ParserAdvance;
+    AtStatementStart:=False;
+    Continue;
+   End;
+   If TokenIsKeyword(KW_UNTIL) And (RepeatDepth>0) Then Begin
+    Dec(RepeatDepth);
+    ParserAdvance;
+    AtStatementStart:=False;
+    Continue;
+   End;
+   If CurrentToken.Kind=TK_KEYWORD Then Begin
+    Keyword:=CurrentToken.Keyword;
+    If (Keyword=KW_IF) Or (Keyword=KW_WHILE) Or
+       (Keyword=KW_FOR) Or (Keyword=KW_LOOP) Or
+       (Keyword=KW_CASE) Or (Keyword=KW_WITH) Or
+       (Keyword=KW_BEGIN) Then Inc(EndDepth)
+    Else If Keyword=KW_REPEAT Then Inc(RepeatDepth);
+   End;
+   If AtStatementStart And Not TokenIsSymbol(';') Then Begin
+    Inc(Pipeline.StatementCount);
+    AtStatementStart:=False;
+   End;
+   If TokenIsSymbol(';') Then AtStatementStart:=True;
+  End;
+  ParserAdvance;
+ End;
+ ParserFail('END attendu avant la fin du fichier');
+End;
+
+Function ParseDeclarations:Boolean; Forward;
+
+Function ParseProcedureDeclaration:Boolean;
+Var
+ ProcedureName:String;
+ EndName:String;
+ ParenDepth:Integer;
+Begin
+ ParseProcedureDeclaration:=False;
+ If Not ExpectKeyword(KW_PROCEDURE) Then Exit;
+ If Not ExpectIdentifier(ProcedureName) Then Exit;
+ ParenDepth:=0;
+ While CurrentToken.Kind<>TK_EOF Do Begin
+  If TokenIsSymbol('(') Then Inc(ParenDepth)
+  Else If TokenIsSymbol(')') Then Begin
+   If ParenDepth=0 Then Begin
+    ParserFail('parenthese fermante inattendue dans PROCEDURE');
+    Exit;
+   End;
+   Dec(ParenDepth);
+  End
+  Else If TokenIsSymbol(';') And (ParenDepth=0) Then Begin
+   ParserAdvance;
+   Break;
+  End;
+  ParserAdvance;
+ End;
+ If CurrentToken.Kind=TK_EOF Then Begin
+  ParserFail('point-virgule attendu apres l''entete de PROCEDURE');
+  Exit;
+ End;
+ Inc(Pipeline.ProcedureCount);
+ If Not ParseDeclarations Then Exit;
+ If AcceptKeyword(KW_BEGIN) Then
+  If Not ParseStatementSequence Then Exit;
+ If Not ExpectKeyword(KW_END) Then Exit;
+ If CurrentToken.Kind=TK_IDENTIFIER Then Begin
+  EndName:=CurrentToken.Text;
+  If EndName<>ProcedureName Then Begin
+   ParserFail('nom final "'+EndName+'" different de PROCEDURE "'+
+              ProcedureName+'"');
+   Exit;
+  End;
+  ParserAdvance;
+ End;
+ If Not ExpectSymbol(';') Then Exit;
+ ParseProcedureDeclaration:=True;
+End;
+
+Function ParseDeclarations:Boolean;
+Begin
+ ParseDeclarations:=False;
+ While True Do Begin
+  If TokenIsKeyword(KW_CONST) Then Begin
+   If Not ParseConstSection Then Exit;
+  End
+  Else If TokenIsKeyword(KW_TYPE) Then Begin
+   If Not ParseTypeSection Then Exit;
+  End
+  Else If TokenIsKeyword(KW_VAR) Then Begin
+   If Not ParseVarSection Then Exit;
+  End
+  Else If TokenIsKeyword(KW_PROCEDURE) Then Begin
+   If Not ParseProcedureDeclaration Then Exit;
+  End
+  Else Break;
+ End;
+ ParseDeclarations:=True;
+End;
+
+Function ParseModuleUnit:Boolean;
+Var
+ HeaderName:String;
+ EndName:String;
+Begin
+ ParseModuleUnit:=False;
+ Pipeline.ParserIndex:=1;
+ Pipeline.ImportCount:=0;
+ Pipeline.ConstDeclCount:=0;
+ Pipeline.TypeDeclCount:=0;
+ Pipeline.VarDeclCount:=0;
+ Pipeline.ProcedureCount:=0;
+ Pipeline.StatementCount:=0;
+ If TokenIsKeyword(KW_DEFINITION) Or TokenIsKeyword(KW_IMPLEMENTATION) Then
+  ParserAdvance;
+ If Not ExpectKeyword(KW_MODULE) Then Exit;
+ If Not ExpectIdentifier(HeaderName) Then Exit;
+ Pipeline.ModuleName:=HeaderName;
+ If Not ExpectSymbol(';') Then Exit;
+ While TokenIsKeyword(KW_IMPORT) Or TokenIsKeyword(KW_FROM) Do
+  If Not ParseImportClause Then Exit;
+ If TokenIsKeyword(KW_EXPORT) Then
+  If Not ParseExportClause Then Exit;
+ If Not ParseDeclarations Then Exit;
+ If Not ExpectKeyword(KW_BEGIN) Then Exit;
+ If Not ParseStatementSequence Then Exit;
+ If Not ExpectKeyword(KW_END) Then Exit;
+ If Not ExpectIdentifier(EndName) Then Exit;
+ If EndName<>HeaderName Then Begin
+  ParserFail('nom final "'+EndName+'" different du MODULE "'+HeaderName+'"');
+  Exit;
+ End;
+ If Not ExpectSymbol('.') Then Exit;
+ If CurrentToken.Kind<>TK_EOF Then Begin
+  ParserFail('tokens inattendus apres la fin du module');
+  Exit;
+ End;
+ ParseModuleUnit:=True;
+End;
+
+Procedure TraceParser;
+Var
+ I:Integer;
+ Detail:String;
+Begin
+ If Options.Verbose Then
+  WriteLn('Parser : module ',Pipeline.ModuleName,
+          ', imports ',Pipeline.ImportCount,
+          ', CONST ',Pipeline.ConstDeclCount,
+          ', TYPE ',Pipeline.TypeDeclCount,
+          ', VAR ',Pipeline.VarDeclCount,
+          ', PROCEDURE ',Pipeline.ProcedureCount,
+          ', instructions ',Pipeline.StatementCount)
+ Else
+  WriteLn('Parser : module ',Pipeline.ModuleName);
+ If Options.Verbose Then
+  For I:=1 To Pipeline.ImportCount Do Begin
+   If Pipeline.Imports[I].FromImport Then
+    Detail:=' FROM {'+Pipeline.Imports[I].SelectedNames+'}'
+   Else
+    Detail:=' qualifie';
+   WriteLn('Import : ',Pipeline.Imports[I].Name,Detail,
+           ' @ ',Pipeline.Imports[I].Line,':',
+           Pipeline.Imports[I].Column);
+  End;
 End;
 
 Procedure RunParser;
 Begin
  EnterStage(CS_PARSER);
- SyntaxError('parser Modula-2 pas encore implemente',1,1);
+ If ParseModuleUnit Then Begin
+  Pipeline.Parsed:=True;
+  FinishStage(CS_PARSER);
+  TraceParser;
+ End;
+End;
+
+Function SemanticToken:TToken;
+Begin
+ If Pipeline.SemanticIndex<1 Then Pipeline.SemanticIndex:=1;
+ If Pipeline.SemanticIndex>Pipeline.TokenCount Then
+  SemanticToken:=Pipeline.Tokens[Pipeline.TokenCount]
+ Else
+  SemanticToken:=Pipeline.Tokens[Pipeline.SemanticIndex];
+End;
+
+Procedure SemanticAdvance;
+Begin
+ If Pipeline.SemanticIndex<Pipeline.TokenCount Then
+  Inc(Pipeline.SemanticIndex);
+End;
+
+Function SemanticIsKeyword(Keyword:TKeyword):Boolean;
+Begin
+ SemanticIsKeyword:=(SemanticToken.Kind=TK_KEYWORD) And
+                    (SemanticToken.Keyword=Keyword);
+End;
+
+Function SemanticIsSymbol(SymbolText:String):Boolean;
+Begin
+ SemanticIsSymbol:=(SemanticToken.Kind=TK_SYMBOL) And
+                   (SemanticToken.Text=SymbolText);
+End;
+
+Function SemanticAcceptKeyword(Keyword:TKeyword):Boolean;
+Begin
+ SemanticAcceptKeyword:=SemanticIsKeyword(Keyword);
+ If SemanticAcceptKeyword Then SemanticAdvance;
+End;
+
+Function SemanticAcceptSymbol(SymbolText:String):Boolean;
+Begin
+ SemanticAcceptSymbol:=SemanticIsSymbol(SymbolText);
+ If SemanticAcceptSymbol Then SemanticAdvance;
+End;
+
+Procedure SemanticTokenError(Msg:String);
+Var
+ Token:TToken;
+Begin
+ Token:=SemanticToken;
+ SemanticError(Msg,Token.Line,Token.Column);
+End;
+
+Function FindSymbolInScope(Name:String;ScopeIndex:Integer):Integer;
+Var
+ I:Integer;
+Begin
+ FindSymbolInScope:=0;
+ For I:=Pipeline.SymbolCount DownTo 1 Do
+  If (Pipeline.Symbols[I].ScopeIndex=ScopeIndex) And
+     (Pipeline.Symbols[I].Name=Name) Then Begin
+   FindSymbolInScope:=I;
+   Exit;
+  End;
+End;
+
+Function FindVisibleSymbol(Name:String;ScopeIndex:Integer):Integer;
+Begin
+ FindVisibleSymbol:=0;
+ While ScopeIndex<>0 Do Begin
+  FindVisibleSymbol:=FindSymbolInScope(Name,ScopeIndex);
+  If FindVisibleSymbol<>0 Then Exit;
+  ScopeIndex:=Pipeline.Scopes[ScopeIndex].ParentScope;
+ End;
+End;
+
+Function AddSemanticScope(Name:String;Kind:TScopeKind;ParentScope,
+ OwnerSymbol:Integer;Var ScopeIndex:Integer):Boolean;
+Begin
+ AddSemanticScope:=False;
+ ScopeIndex:=0;
+ If Pipeline.ScopeCount>=MOD2_MAX_SCOPES Then Begin
+  SemanticTokenError('trop de portees semantiques');
+  Exit;
+ End;
+ Inc(Pipeline.ScopeCount);
+ ScopeIndex:=Pipeline.ScopeCount;
+ Pipeline.Scopes[ScopeIndex].Name:=Name;
+ Pipeline.Scopes[ScopeIndex].Kind:=Kind;
+ Pipeline.Scopes[ScopeIndex].ParentScope:=ParentScope;
+ If ParentScope=0 Then Pipeline.Scopes[ScopeIndex].Level:=0
+  Else Pipeline.Scopes[ScopeIndex].Level:=
+        Pipeline.Scopes[ParentScope].Level+1;
+ Pipeline.Scopes[ScopeIndex].OwnerSymbol:=OwnerSymbol;
+ Pipeline.Scopes[ScopeIndex].FrameSize:=0;
+ AddSemanticScope:=True;
+End;
+
+Function AddSemanticSymbol(Name:String;Kind:TSymbolKind;ScopeIndex:Integer;
+ TypeName:String;ParamIndex:Integer;ByReference:Boolean;
+ LineNo,ColumnNo:Integer;Var SymbolIndex:Integer):Boolean;
+Var
+ Previous:Integer;
+ Prefix:String;
+Begin
+ AddSemanticSymbol:=False;
+ SymbolIndex:=0;
+ Previous:=FindSymbolInScope(Name,ScopeIndex);
+ If Previous<>0 Then Begin
+  SemanticError('identificateur "'+Name+'" deja declare dans cette portee; '+
+                'premiere declaration ligne '+
+                IntToString(Pipeline.Symbols[Previous].Line),
+                LineNo,ColumnNo);
+  Exit;
+ End;
+ If Pipeline.SymbolCount>=MOD2_MAX_SYMBOLS Then Begin
+  SemanticError('trop de symboles',LineNo,ColumnNo);
+  Exit;
+ End;
+ Inc(Pipeline.SymbolCount);
+ SymbolIndex:=Pipeline.SymbolCount;
+ Pipeline.Symbols[SymbolIndex].Name:=Name;
+ Pipeline.Symbols[SymbolIndex].Kind:=Kind;
+ Pipeline.Symbols[SymbolIndex].ScopeIndex:=ScopeIndex;
+ Pipeline.Symbols[SymbolIndex].ChildScope:=0;
+ Pipeline.Symbols[SymbolIndex].TypeName:=TypeName;
+ Pipeline.Symbols[SymbolIndex].ScalarType:=BuiltinScalarType(TypeName);
+ Pipeline.Symbols[SymbolIndex].TypeSize:=
+  ScalarTypeSize(Pipeline.Symbols[SymbolIndex].ScalarType);
+ Pipeline.Symbols[SymbolIndex].ConstValue.ScalarType:=SCALAR_NONE;
+ Pipeline.Symbols[SymbolIndex].ConstValue.IntegerValue:=0;
+ Pipeline.Symbols[SymbolIndex].ConstValue.StringValue:='';
+ Pipeline.Symbols[SymbolIndex].ConstValue.Valid:=False;
+ Case Kind Of
+  SYM_PROCEDURE:Prefix:=MOD2_INTERNAL_PREFIX;
+  SYM_CONSTANT,
+  SYM_VARIABLE,
+  SYM_PARAMETER:Prefix:=MOD2_DATA_PREFIX;
+  Else Prefix:=MOD2_INTERNAL_PREFIX;
+ End;
+ Pipeline.Symbols[SymbolIndex].AsmName:=
+  MakeAsmLabel(Prefix,'S'+IntToString(ScopeIndex)+'_'+Name);
+ Pipeline.Symbols[SymbolIndex].ParamIndex:=ParamIndex;
+ Pipeline.Symbols[SymbolIndex].ByReference:=ByReference;
+ Pipeline.Symbols[SymbolIndex].StorageKind:=STORAGE_NONE;
+ Pipeline.Symbols[SymbolIndex].StorageOffset:=0;
+ Pipeline.Symbols[SymbolIndex].StorageSize:=0;
+ Pipeline.Symbols[SymbolIndex].Line:=LineNo;
+ Pipeline.Symbols[SymbolIndex].Column:=ColumnNo;
+ AddSemanticSymbol:=True;
+End;
+
+Procedure SemanticSkipToSemicolon;
+Var
+ ParenDepth:Integer;
+ BracketDepth:Integer;
+ RecordDepth:Integer;
+Begin
+ ParenDepth:=0;
+ BracketDepth:=0;
+ RecordDepth:=0;
+ While (SemanticToken.Kind<>TK_EOF) And (Pipeline.ErrorCount=0) Do Begin
+  If SemanticIsSymbol('(') Then Inc(ParenDepth)
+  Else If SemanticIsSymbol(')') And (ParenDepth>0) Then Dec(ParenDepth)
+  Else If SemanticIsSymbol('[') Then Inc(BracketDepth)
+  Else If SemanticIsSymbol(']') And (BracketDepth>0) Then Dec(BracketDepth)
+  Else If SemanticIsKeyword(KW_RECORD) Then Inc(RecordDepth)
+  Else If SemanticIsKeyword(KW_END) And (RecordDepth>0) Then Dec(RecordDepth)
+  Else If SemanticIsSymbol(';') And (ParenDepth=0) And
+          (BracketDepth=0) And (RecordDepth=0) Then Begin
+   SemanticAdvance;
+   Exit;
+  End;
+  SemanticAdvance;
+ End;
+ If Pipeline.ErrorCount=0 Then
+  SemanticTokenError('fin de fichier dans une declaration');
+End;
+
+Function ResolveTypeName(TypeName:String;ScopeIndex,Depth:Integer):TScalarType;
+ Forward;
+
+Function ArgumentScalarType(CurrentScope:Integer;Var IsVariable:Boolean;
+ Var ArgLine,ArgColumn:Integer):TScalarType;
+Var
+ Token:TToken;
+ SymbolIndex:Integer;
+ Depth:Integer;
+ SawToken:Boolean;
+Begin
+ ArgumentScalarType:=SCALAR_NONE;
+ IsVariable:=False;
+ ArgLine:=SemanticToken.Line;
+ ArgColumn:=SemanticToken.Column;
+ Depth:=0;
+ SawToken:=False;
+ If SemanticIsSymbol('-') Or SemanticIsSymbol('+') Then SemanticAdvance;
+ While (SemanticToken.Kind<>TK_EOF) And
+       Not ((Depth=0) And
+            (SemanticIsSymbol(',') Or SemanticIsSymbol(')'))) Do Begin
+  Token:=SemanticToken;
+  If Not SawToken Then Begin
+   SawToken:=True;
+   ArgLine:=Token.Line;
+   ArgColumn:=Token.Column;
+   If Token.Kind=TK_INTEGER Then ArgumentScalarType:=SCALAR_INTEGER
+   Else If Token.Kind=TK_STRING Then Begin
+    If Length(Token.Text)=1 Then ArgumentScalarType:=SCALAR_CHAR
+     Else ArgumentScalarType:=SCALAR_STRING;
+   End
+   Else If (Token.Kind=TK_IDENTIFIER) And
+           ((Token.Text='TRUE') Or (Token.Text='FALSE')) Then
+    ArgumentScalarType:=SCALAR_BOOLEAN
+   Else If Token.Kind=TK_IDENTIFIER Then Begin
+    SymbolIndex:=FindVisibleSymbol(Token.Text,CurrentScope);
+    If SymbolIndex<>0 Then Begin
+     ArgumentScalarType:=Pipeline.Symbols[SymbolIndex].ScalarType;
+     If ArgumentScalarType=SCALAR_NONE Then
+      ArgumentScalarType:=
+       ResolveTypeName(Pipeline.Symbols[SymbolIndex].TypeName,
+                       Pipeline.Symbols[SymbolIndex].ScopeIndex,0);
+     IsVariable:=(Pipeline.Symbols[SymbolIndex].Kind=SYM_VARIABLE) Or
+                 (Pipeline.Symbols[SymbolIndex].Kind=SYM_PARAMETER);
+    End;
+   End;
+  End;
+  If SemanticIsSymbol('(') Or SemanticIsSymbol('[') Then Inc(Depth)
+  Else If (SemanticIsSymbol(')') Or SemanticIsSymbol(']')) And
+          (Depth>0) Then Dec(Depth);
+  SemanticAdvance;
+ End;
+End;
+
+Procedure InOutTypeError(ProcedureName:String;ArgumentIndex:Integer;
+ ExpectedType,ActualType:TScalarType;LineNo,ColumnNo:Integer);
+Begin
+ SemanticError('InOut.'+ProcedureName+': argument '+
+               IntToString(ArgumentIndex)+' doit etre '+
+               ScalarTypeName(ExpectedType)+', obtenu '+
+               ScalarTypeName(ActualType),LineNo,ColumnNo);
+End;
+
+Function ValidateInOutCall(CurrentScope:Integer):Boolean;
+Const
+ MAX_INOUT_ARGS = 4;
+Var
+ StartIndex:Integer;
+ ImportSymbol:Integer;
+ ProcedureName:String;
+ ProcedureKey:String;
+ ArgTypes:Array[1..MAX_INOUT_ARGS] Of TScalarType;
+ ArgVariables:Array[1..MAX_INOUT_ARGS] Of Boolean;
+ ArgLines:Array[1..MAX_INOUT_ARGS] Of Integer;
+ ArgColumns:Array[1..MAX_INOUT_ARGS] Of Integer;
+ ArgCount:Integer;
+ ExpectedCount:Integer;
+ ExpectedFirst:TScalarType;
+ FirstMustBeVariable:Boolean;
+ I:Integer;
+Begin
+ ValidateInOutCall:=False;
+ If SemanticToken.Kind<>TK_IDENTIFIER Then Exit;
+ StartIndex:=Pipeline.SemanticIndex;
+ ImportSymbol:=FindVisibleSymbol(SemanticToken.Text,CurrentScope);
+ If (ImportSymbol<>0) And
+    (Pipeline.Symbols[ImportSymbol].Kind=SYM_IMPORT_MODULE) And
+    (StandardModuleOf(Pipeline.Symbols[ImportSymbol].TypeName)=SM_INOUT) Then Begin
+  SemanticAdvance;
+  If Not SemanticAcceptSymbol('.') Or
+     (SemanticToken.Kind<>TK_IDENTIFIER) Then Begin
+   Pipeline.SemanticIndex:=StartIndex;
+   Exit;
+  End;
+  ProcedureName:=SemanticToken.Text;
+  SemanticAdvance;
+ End
+ Else If (ImportSymbol<>0) And
+         (Pipeline.Symbols[ImportSymbol].Kind=SYM_IMPORT_NAME) And
+         (StandardModuleOf(Pipeline.Symbols[ImportSymbol].TypeName)=SM_INOUT) Then Begin
+  ProcedureName:=SemanticToken.Text;
+  SemanticAdvance;
+ End
+ Else Exit;
+ ValidateInOutCall:=True;
+ ProcedureKey:=UpperStr(ProcedureName);
+ ArgCount:=0;
+ If SemanticAcceptSymbol('(') Then Begin
+  If Not SemanticIsSymbol(')') Then
+   Repeat
+    If ArgCount>=MAX_INOUT_ARGS Then Begin
+     SemanticTokenError('trop d''arguments pour InOut.'+ProcedureName);
+     Exit;
+    End;
+    Inc(ArgCount);
+    ArgTypes[ArgCount]:=ArgumentScalarType(CurrentScope,
+      ArgVariables[ArgCount],ArgLines[ArgCount],ArgColumns[ArgCount]);
+   Until Not SemanticAcceptSymbol(',');
+  If Not SemanticAcceptSymbol(')') Then Begin
+   SemanticTokenError('symbole ")" attendu dans InOut.'+ProcedureName);
+   Exit;
+  End;
+ End;
+ ExpectedCount:=-1;
+ ExpectedFirst:=SCALAR_NONE;
+ FirstMustBeVariable:=False;
+ If ProcedureKey='WRITELN' Then ExpectedCount:=0
+ Else If ProcedureKey='WRITESTRING' Then Begin
+  ExpectedCount:=1;
+  ExpectedFirst:=SCALAR_STRING;
+ End
+ Else If ProcedureKey='WRITEINT' Then Begin
+  ExpectedCount:=2;
+  ExpectedFirst:=SCALAR_INTEGER;
+ End
+ Else If ProcedureKey='WRITECARD' Then Begin
+  ExpectedCount:=2;
+  ExpectedFirst:=SCALAR_CARDINAL;
+ End
+ Else If ProcedureKey='WRITECHAR' Then Begin
+  ExpectedCount:=1;
+  ExpectedFirst:=SCALAR_CHAR;
+ End
+ Else If ProcedureKey='READINT' Then Begin
+  ExpectedCount:=1;
+  ExpectedFirst:=SCALAR_INTEGER;
+  FirstMustBeVariable:=True;
+ End
+ Else If ProcedureKey='READCARD' Then Begin
+  ExpectedCount:=1;
+  ExpectedFirst:=SCALAR_CARDINAL;
+  FirstMustBeVariable:=True;
+ End
+ Else If ProcedureKey='READCHAR' Then Begin
+  ExpectedCount:=1;
+  ExpectedFirst:=SCALAR_CHAR;
+  FirstMustBeVariable:=True;
+ End
+ Else If ProcedureKey='READSTRING' Then Begin
+  ExpectedCount:=1;
+  ExpectedFirst:=SCALAR_STRING;
+  FirstMustBeVariable:=True;
+ End;
+ If ExpectedCount<0 Then Begin
+  SemanticError('procedure InOut inconnue: '+ProcedureName,
+                SemanticToken.Line,SemanticToken.Column);
+  Exit;
+ End;
+ If ArgCount<>ExpectedCount Then Begin
+  SemanticError('InOut.'+ProcedureName+' attend '+
+                IntToString(ExpectedCount)+' argument(s), obtenu '+
+                IntToString(ArgCount),
+                SemanticToken.Line,SemanticToken.Column);
+  Exit;
+ End;
+ If ExpectedCount>0 Then Begin
+  If Not ScalarTypesCompatible(ExpectedFirst,ArgTypes[1]) Then Begin
+   InOutTypeError(ProcedureName,1,ExpectedFirst,ArgTypes[1],
+                  ArgLines[1],ArgColumns[1]);
+   Exit;
+  End;
+  If FirstMustBeVariable And Not ArgVariables[1] Then Begin
+   SemanticError('InOut.'+ProcedureName+
+                 ': le premier argument doit etre une variable',
+                 ArgLines[1],ArgColumns[1]);
+   Exit;
+  End;
+ End;
+ For I:=2 To ArgCount Do
+  If Not IsNumericScalar(ArgTypes[I]) Then Begin
+   InOutTypeError(ProcedureName,I,SCALAR_INTEGER,ArgTypes[I],
+                  ArgLines[I],ArgColumns[I]);
+   Exit;
+  End;
+End;
+
+Procedure SemanticSkipStatementSequence(CurrentScope:Integer);
+Var
+ EndDepth:Integer;
+ RepeatDepth:Integer;
+ ParenDepth:Integer;
+ BracketDepth:Integer;
+ Keyword:TKeyword;
+Begin
+ EndDepth:=0;
+ RepeatDepth:=0;
+ ParenDepth:=0;
+ BracketDepth:=0;
+ While (SemanticToken.Kind<>TK_EOF) And (Pipeline.ErrorCount=0) Do Begin
+  If ValidateInOutCall(CurrentScope) Then Continue;
+  If SemanticIsSymbol('(') Then Inc(ParenDepth)
+  Else If SemanticIsSymbol(')') And (ParenDepth>0) Then Dec(ParenDepth)
+  Else If SemanticIsSymbol('[') Then Inc(BracketDepth)
+  Else If SemanticIsSymbol(']') And (BracketDepth>0) Then Dec(BracketDepth);
+  If (ParenDepth=0) And (BracketDepth=0) Then Begin
+   If SemanticIsKeyword(KW_END) Then Begin
+    If EndDepth=0 Then Exit;
+    Dec(EndDepth);
+    SemanticAdvance;
+    Continue;
+   End;
+   If SemanticIsKeyword(KW_UNTIL) And (RepeatDepth>0) Then Begin
+    Dec(RepeatDepth);
+    SemanticAdvance;
+    Continue;
+   End;
+   If SemanticToken.Kind=TK_KEYWORD Then Begin
+    Keyword:=SemanticToken.Keyword;
+    If (Keyword=KW_IF) Or (Keyword=KW_WHILE) Or
+       (Keyword=KW_FOR) Or (Keyword=KW_LOOP) Or
+       (Keyword=KW_CASE) Or (Keyword=KW_WITH) Or
+       (Keyword=KW_BEGIN) Then Inc(EndDepth)
+    Else If Keyword=KW_REPEAT Then Inc(RepeatDepth);
+   End;
+  End;
+  SemanticAdvance;
+ End;
+ If Pipeline.ErrorCount=0 Then
+  SemanticTokenError('END attendu dans le corps de procedure');
+End;
+
+Procedure BuildDeclarations(CurrentScope:Integer); Forward;
+
+Function EvaluateConstExpression(CurrentScope:Integer;
+ Var Value:TConstValue):Boolean; Forward;
+
+Procedure InitConstValue(Var Value:TConstValue);
+Begin
+ Value.ScalarType:=SCALAR_NONE;
+ Value.IntegerValue:=0;
+ Value.StringValue:='';
+ Value.Valid:=False;
+End;
+
+Function ConstTypeError(Operation:String;Expected:String;
+ Actual:TScalarType;LineNo,ColumnNo:Integer):Boolean;
+Begin
+ SemanticError('CONST: '+Operation+' exige '+Expected+', obtenu '+
+               ScalarTypeName(Actual),LineNo,ColumnNo);
+ ConstTypeError:=False;
+End;
+
+Function CheckedConstInteger(Number:Extended;LineNo,ColumnNo:Integer;
+ Var Value:TConstValue):Boolean;
+Begin
+ CheckedConstInteger:=False;
+ If (Number<-2147483648.0) Or (Number>2147483647.0) Then Begin
+  SemanticError('CONST: resultat entier hors limite 32 bits',
+                LineNo,ColumnNo);
+  Exit;
+ End;
+ InitConstValue(Value);
+ Value.ScalarType:=SCALAR_INTEGER;
+ Value.IntegerValue:=Trunc(Number);
+ Value.Valid:=True;
+ CheckedConstInteger:=True;
+End;
+
+Function EvaluateConstPrimary(CurrentScope:Integer;
+ Var Value:TConstValue):Boolean;
+Var
+ Token:TToken;
+ SymbolIndex:Integer;
+Begin
+ EvaluateConstPrimary:=False;
+ InitConstValue(Value);
+ Token:=SemanticToken;
+ If Token.Kind=TK_INTEGER Then Begin
+  Value.ScalarType:=SCALAR_INTEGER;
+  Value.IntegerValue:=Token.IntegerVal;
+  Value.Valid:=True;
+  SemanticAdvance;
+  EvaluateConstPrimary:=True;
+  Exit;
+ End;
+ If Token.Kind=TK_STRING Then Begin
+  Value.StringValue:=Token.Text;
+  If Length(Token.Text)=1 Then Begin
+   Value.ScalarType:=SCALAR_CHAR;
+   Value.IntegerValue:=Ord(Token.Text[1]);
+  End
+  Else Value.ScalarType:=SCALAR_STRING;
+  Value.Valid:=True;
+  SemanticAdvance;
+  EvaluateConstPrimary:=True;
+  Exit;
+ End;
+ If Token.Kind=TK_IDENTIFIER Then Begin
+  If Token.Text='TRUE' Then Begin
+   Value.ScalarType:=SCALAR_BOOLEAN;
+   Value.IntegerValue:=1;
+   Value.Valid:=True;
+  End
+  Else If Token.Text='FALSE' Then Begin
+   Value.ScalarType:=SCALAR_BOOLEAN;
+   Value.IntegerValue:=0;
+   Value.Valid:=True;
+  End
+  Else Begin
+   SymbolIndex:=FindVisibleSymbol(Token.Text,CurrentScope);
+   If SymbolIndex=0 Then Begin
+    SemanticError('CONST: identificateur inconnu "'+Token.Text+'"',
+                  Token.Line,Token.Column);
+    Exit;
+   End;
+   If (Pipeline.Symbols[SymbolIndex].Kind<>SYM_CONSTANT) Or
+      Not Pipeline.Symbols[SymbolIndex].ConstValue.Valid Then Begin
+    SemanticError('CONST: "'+Token.Text+
+                  '" ne designe pas une constante deja evaluee',
+                  Token.Line,Token.Column);
+    Exit;
+   End;
+   Value:=Pipeline.Symbols[SymbolIndex].ConstValue;
+  End;
+  SemanticAdvance;
+  EvaluateConstPrimary:=True;
+  Exit;
+ End;
+ If SemanticAcceptSymbol('(') Then Begin
+  If Not EvaluateConstExpression(CurrentScope,Value) Then Exit;
+  If Not SemanticAcceptSymbol(')') Then Begin
+   SemanticTokenError('CONST: symbole ")" attendu');
+   Exit;
+  End;
+  EvaluateConstPrimary:=True;
+  Exit;
+ End;
+ SemanticError('CONST: valeur constante attendue',Token.Line,Token.Column);
+End;
+
+Function EvaluateConstUnary(CurrentScope:Integer;
+ Var Value:TConstValue):Boolean;
+Var
+ Token:TToken;
+ Operand:TConstValue;
+Begin
+ EvaluateConstUnary:=False;
+ Token:=SemanticToken;
+ If SemanticAcceptSymbol('+') Then Begin
+  If Not EvaluateConstUnary(CurrentScope,Value) Then Exit;
+  If Not IsNumericScalar(Value.ScalarType) Then Begin
+   ConstTypeError('operateur unaire +','un entier',
+                  Value.ScalarType,Token.Line,Token.Column);
+   Exit;
+  End;
+  EvaluateConstUnary:=True;
+  Exit;
+ End;
+ If SemanticAcceptSymbol('-') Then Begin
+  If Not EvaluateConstUnary(CurrentScope,Operand) Then Exit;
+  If Not IsNumericScalar(Operand.ScalarType) Then Begin
+   ConstTypeError('operateur unaire -','un entier',
+                  Operand.ScalarType,Token.Line,Token.Column);
+   Exit;
+  End;
+  If Not CheckedConstInteger(-Extended(Operand.IntegerValue),
+                             Token.Line,Token.Column,Value) Then Exit;
+  EvaluateConstUnary:=True;
+  Exit;
+ End;
+ If SemanticAcceptKeyword(KW_NOT) Then Begin
+  If Not EvaluateConstUnary(CurrentScope,Operand) Then Exit;
+  If Operand.ScalarType<>SCALAR_BOOLEAN Then Begin
+   ConstTypeError('NOT','BOOLEAN',Operand.ScalarType,
+                  Token.Line,Token.Column);
+   Exit;
+  End;
+  InitConstValue(Value);
+  Value.ScalarType:=SCALAR_BOOLEAN;
+  If Operand.IntegerValue=0 Then Value.IntegerValue:=1
+   Else Value.IntegerValue:=0;
+  Value.Valid:=True;
+  EvaluateConstUnary:=True;
+  Exit;
+ End;
+ EvaluateConstUnary:=EvaluateConstPrimary(CurrentScope,Value);
+End;
+
+Function EvaluateConstProduct(CurrentScope:Integer;
+ Var Value:TConstValue):Boolean;
+Var
+ RightValue:TConstValue;
+ ResultValue:TConstValue;
+ OperatorToken:TToken;
+ OperatorKind:TKeyword;
+ OperatorText:String;
+ Number:Extended;
+Begin
+ EvaluateConstProduct:=False;
+ If Not EvaluateConstUnary(CurrentScope,Value) Then Exit;
+ While SemanticIsSymbol('*') Or SemanticIsSymbol('/') Or
+       SemanticIsKeyword(KW_DIV) Or SemanticIsKeyword(KW_MOD) Do Begin
+  OperatorToken:=SemanticToken;
+  OperatorKind:=OperatorToken.Keyword;
+  OperatorText:=OperatorToken.Text;
+  SemanticAdvance;
+  If OperatorText='/' Then Begin
+   SemanticError('CONST: division reelle "/" non supportee; utiliser DIV',
+                 OperatorToken.Line,OperatorToken.Column);
+   Exit;
+  End;
+  If Not EvaluateConstUnary(CurrentScope,RightValue) Then Exit;
+  If Not IsNumericScalar(Value.ScalarType) Then Begin
+   ConstTypeError(OperatorText,'un entier',Value.ScalarType,
+                  OperatorToken.Line,OperatorToken.Column);
+   Exit;
+  End;
+  If Not IsNumericScalar(RightValue.ScalarType) Then Begin
+   ConstTypeError(OperatorText,'un entier',RightValue.ScalarType,
+                  OperatorToken.Line,OperatorToken.Column);
+   Exit;
+  End;
+  If OperatorText='*' Then Begin
+   Number:=Extended(Value.IntegerValue)*Extended(RightValue.IntegerValue);
+   If Not CheckedConstInteger(Number,OperatorToken.Line,
+                              OperatorToken.Column,ResultValue) Then Exit;
+  End
+  Else Begin
+   If RightValue.IntegerValue=0 Then Begin
+    SemanticError('CONST: division par zero',
+                  OperatorToken.Line,OperatorToken.Column);
+    Exit;
+   End;
+   If (Value.IntegerValue=-2147483647-1) And
+      (RightValue.IntegerValue=-1) And (OperatorKind=KW_DIV) Then Begin
+    SemanticError('CONST: resultat entier hors limite 32 bits',
+                  OperatorToken.Line,OperatorToken.Column);
+    Exit;
+   End;
+   InitConstValue(ResultValue);
+   ResultValue.ScalarType:=SCALAR_INTEGER;
+   If OperatorKind=KW_DIV Then
+    ResultValue.IntegerValue:=Value.IntegerValue Div RightValue.IntegerValue
+   Else
+    ResultValue.IntegerValue:=Value.IntegerValue Mod RightValue.IntegerValue;
+   ResultValue.Valid:=True;
+  End;
+  Value:=ResultValue;
+ End;
+ EvaluateConstProduct:=True;
+End;
+
+Function EvaluateConstSum(CurrentScope:Integer;
+ Var Value:TConstValue):Boolean;
+Var
+ RightValue:TConstValue;
+ ResultValue:TConstValue;
+ OperatorToken:TToken;
+ Number:Extended;
+Begin
+ EvaluateConstSum:=False;
+ If Not EvaluateConstProduct(CurrentScope,Value) Then Exit;
+ While SemanticIsSymbol('+') Or SemanticIsSymbol('-') Do Begin
+  OperatorToken:=SemanticToken;
+  SemanticAdvance;
+  If Not EvaluateConstProduct(CurrentScope,RightValue) Then Exit;
+  If Not IsNumericScalar(Value.ScalarType) Then Begin
+   ConstTypeError(OperatorToken.Text,'un entier',Value.ScalarType,
+                  OperatorToken.Line,OperatorToken.Column);
+   Exit;
+  End;
+  If Not IsNumericScalar(RightValue.ScalarType) Then Begin
+   ConstTypeError(OperatorToken.Text,'un entier',RightValue.ScalarType,
+                  OperatorToken.Line,OperatorToken.Column);
+   Exit;
+  End;
+  If OperatorToken.Text='+' Then
+   Number:=Extended(Value.IntegerValue)+Extended(RightValue.IntegerValue)
+  Else
+   Number:=Extended(Value.IntegerValue)-Extended(RightValue.IntegerValue);
+  If Not CheckedConstInteger(Number,OperatorToken.Line,
+                             OperatorToken.Column,ResultValue) Then Exit;
+  Value:=ResultValue;
+ End;
+ EvaluateConstSum:=True;
+End;
+
+Function EvaluateConstAnd(CurrentScope:Integer;
+ Var Value:TConstValue):Boolean;
+Var
+ RightValue:TConstValue;
+ OperatorToken:TToken;
+Begin
+ EvaluateConstAnd:=False;
+ If Not EvaluateConstSum(CurrentScope,Value) Then Exit;
+ While SemanticIsKeyword(KW_AND) Do Begin
+  OperatorToken:=SemanticToken;
+  SemanticAdvance;
+  If Not EvaluateConstSum(CurrentScope,RightValue) Then Exit;
+  If Value.ScalarType<>SCALAR_BOOLEAN Then Begin
+   ConstTypeError('AND','BOOLEAN',Value.ScalarType,
+                  OperatorToken.Line,OperatorToken.Column);
+   Exit;
+  End;
+  If RightValue.ScalarType<>SCALAR_BOOLEAN Then Begin
+   ConstTypeError('AND','BOOLEAN',RightValue.ScalarType,
+                  OperatorToken.Line,OperatorToken.Column);
+   Exit;
+  End;
+  If (Value.IntegerValue<>0) And (RightValue.IntegerValue<>0) Then
+   Value.IntegerValue:=1
+  Else Value.IntegerValue:=0;
+  Value.Valid:=True;
+ End;
+ EvaluateConstAnd:=True;
+End;
+
+Function EvaluateConstExpression(CurrentScope:Integer;
+ Var Value:TConstValue):Boolean;
+Var
+ RightValue:TConstValue;
+ OperatorToken:TToken;
+Begin
+ EvaluateConstExpression:=False;
+ If Not EvaluateConstAnd(CurrentScope,Value) Then Exit;
+ While SemanticIsKeyword(KW_OR) Do Begin
+  OperatorToken:=SemanticToken;
+  SemanticAdvance;
+  If Not EvaluateConstAnd(CurrentScope,RightValue) Then Exit;
+  If Value.ScalarType<>SCALAR_BOOLEAN Then Begin
+   ConstTypeError('OR','BOOLEAN',Value.ScalarType,
+                  OperatorToken.Line,OperatorToken.Column);
+   Exit;
+  End;
+  If RightValue.ScalarType<>SCALAR_BOOLEAN Then Begin
+   ConstTypeError('OR','BOOLEAN',RightValue.ScalarType,
+                  OperatorToken.Line,OperatorToken.Column);
+   Exit;
+  End;
+  If (Value.IntegerValue<>0) Or (RightValue.IntegerValue<>0) Then
+   Value.IntegerValue:=1
+  Else Value.IntegerValue:=0;
+  Value.Valid:=True;
+ End;
+ EvaluateConstExpression:=True;
+End;
+
+Procedure BuildConstSymbols(CurrentScope:Integer);
+Var
+ Token:TToken;
+ SymbolIndex:Integer;
+ Value:TConstValue;
+Begin
+ SemanticAdvance;
+ While (SemanticToken.Kind=TK_IDENTIFIER) And
+       (Pipeline.ErrorCount=0) Do Begin
+  Token:=SemanticToken;
+  SemanticAdvance;
+  If Not SemanticAcceptSymbol('=') Then Begin
+   SemanticTokenError('symbole "=" attendu dans CONST');
+   Exit;
+  End;
+  If Not EvaluateConstExpression(CurrentScope,Value) Then Exit;
+  If Not SemanticAcceptSymbol(';') Then Begin
+   SemanticTokenError('CONST: operateur ou point-virgule attendu');
+   Exit;
+  End;
+  If Not AddSemanticSymbol(Token.Text,SYM_CONSTANT,CurrentScope,
+                           ScalarTypeName(Value.ScalarType),0,
+                           False,Token.Line,Token.Column,SymbolIndex) Then Exit;
+  Pipeline.Symbols[SymbolIndex].ScalarType:=Value.ScalarType;
+  Pipeline.Symbols[SymbolIndex].TypeSize:=ScalarTypeSize(Value.ScalarType);
+  Pipeline.Symbols[SymbolIndex].ConstValue:=Value;
+  If Value.ScalarType=SCALAR_STRING Then
+   Pipeline.Symbols[SymbolIndex].TypeSize:=Length(Value.StringValue)+1;
+ End;
+End;
+
+Procedure BuildTypeSymbols(CurrentScope:Integer);
+Var
+ Token:TToken;
+ TypeToken:TToken;
+ SymbolIndex:Integer;
+Begin
+ SemanticAdvance;
+ While (SemanticToken.Kind=TK_IDENTIFIER) And
+       (Pipeline.ErrorCount=0) Do Begin
+  Token:=SemanticToken;
+  SemanticAdvance;
+  If Not SemanticAcceptSymbol('=') Then Begin
+   SemanticTokenError('symbole "=" attendu dans TYPE');
+   Exit;
+  End;
+  TypeToken:=SemanticToken;
+  If Not AddSemanticSymbol(Token.Text,SYM_TYPE,CurrentScope,TypeToken.Text,0,
+                           False,Token.Line,Token.Column,SymbolIndex) Then Exit;
+  SemanticSkipToSemicolon;
+ End;
+End;
+
+Procedure BuildVarSymbols(CurrentScope:Integer);
+Const
+ MAX_NAMES_PER_DECL = 256;
+Var
+ Names:Array[1..MAX_NAMES_PER_DECL] Of String[63];
+ Lines:Array[1..MAX_NAMES_PER_DECL] Of Integer;
+ Columns:Array[1..MAX_NAMES_PER_DECL] Of Integer;
+ NameCount:Integer;
+ I:Integer;
+ SymbolIndex:Integer;
+ TypeName:String;
+Begin
+ SemanticAdvance;
+ While (SemanticToken.Kind=TK_IDENTIFIER) And
+       (Pipeline.ErrorCount=0) Do Begin
+  NameCount:=0;
+  Repeat
+   If NameCount>=MAX_NAMES_PER_DECL Then Begin
+    SemanticTokenError('trop de noms dans une declaration VAR');
+    Exit;
+   End;
+   Inc(NameCount);
+   Names[NameCount]:=SemanticToken.Text;
+   Lines[NameCount]:=SemanticToken.Line;
+   Columns[NameCount]:=SemanticToken.Column;
+   SemanticAdvance;
+  Until Not SemanticAcceptSymbol(',');
+  If Not SemanticAcceptSymbol(':') Then Begin
+   SemanticTokenError('symbole ":" attendu dans VAR');
+   Exit;
+  End;
+  If SemanticToken.Kind=TK_EOF Then Begin
+   SemanticTokenError('type attendu dans VAR');
+   Exit;
+  End;
+  TypeName:=SemanticToken.Text;
+  For I:=1 To NameCount Do
+   If Not AddSemanticSymbol(Names[I],SYM_VARIABLE,CurrentScope,TypeName,0,
+                            False,Lines[I],Columns[I],SymbolIndex) Then Exit;
+  SemanticSkipToSemicolon;
+ End;
+End;
+
+Procedure BuildFormalParameters(ProcedureScope:Integer);
+Const
+ MAX_PARAM_NAMES = 256;
+Var
+ Names:Array[1..MAX_PARAM_NAMES] Of String[63];
+ Lines:Array[1..MAX_PARAM_NAMES] Of Integer;
+ Columns:Array[1..MAX_PARAM_NAMES] Of Integer;
+ NameCount:Integer;
+ ParamIndex:Integer;
+ I:Integer;
+ SymbolIndex:Integer;
+ TypeName:String;
+ ByReference:Boolean;
+ Depth:Integer;
+Begin
+ If Not SemanticAcceptSymbol('(') Then Exit;
+ ParamIndex:=0;
+ While Not SemanticIsSymbol(')') And
+       (SemanticToken.Kind<>TK_EOF) And (Pipeline.ErrorCount=0) Do Begin
+  ByReference:=SemanticAcceptKeyword(KW_VAR);
+  NameCount:=0;
+  If SemanticToken.Kind<>TK_IDENTIFIER Then Begin
+   SemanticTokenError('nom de parametre attendu');
+   Exit;
+  End;
+  Repeat
+   If NameCount>=MAX_PARAM_NAMES Then Begin
+    SemanticTokenError('trop de parametres dans un groupe');
+    Exit;
+   End;
+   Inc(NameCount);
+   Names[NameCount]:=SemanticToken.Text;
+   Lines[NameCount]:=SemanticToken.Line;
+   Columns[NameCount]:=SemanticToken.Column;
+   SemanticAdvance;
+  Until Not SemanticAcceptSymbol(',');
+  If Not SemanticAcceptSymbol(':') Then Begin
+   SemanticTokenError('symbole ":" attendu dans les parametres');
+   Exit;
+  End;
+  TypeName:=SemanticToken.Text;
+  For I:=1 To NameCount Do Begin
+   Inc(ParamIndex);
+   If Not AddSemanticSymbol(Names[I],SYM_PARAMETER,ProcedureScope,TypeName,
+                            ParamIndex,ByReference,Lines[I],Columns[I],
+                            SymbolIndex) Then Exit;
+  End;
+  Depth:=0;
+  While (SemanticToken.Kind<>TK_EOF) And
+        Not ((Depth=0) And
+             (SemanticIsSymbol(';') Or SemanticIsSymbol(')'))) Do Begin
+   If SemanticIsSymbol('(') Or SemanticIsSymbol('[') Then Inc(Depth)
+   Else If (SemanticIsSymbol(')') Or SemanticIsSymbol(']')) And
+           (Depth>0) Then Dec(Depth);
+   SemanticAdvance;
+  End;
+  If SemanticAcceptSymbol(';') Then
+  Else If Not SemanticIsSymbol(')') Then Begin
+   SemanticTokenError('fin de groupe de parametres attendue');
+   Exit;
+  End;
+ End;
+ If Not SemanticAcceptSymbol(')') Then
+  SemanticTokenError('symbole ")" attendu');
+End;
+
+Procedure BuildProcedureSymbol(CurrentScope:Integer);
+Var
+ NameToken:TToken;
+ EndName:String;
+ ProcedureSymbol:Integer;
+ ProcedureScope:Integer;
+ Depth:Integer;
+Begin
+ SemanticAdvance;
+ If SemanticToken.Kind<>TK_IDENTIFIER Then Begin
+  SemanticTokenError('nom de procedure attendu');
+  Exit;
+ End;
+ NameToken:=SemanticToken;
+ SemanticAdvance;
+ If Not AddSemanticSymbol(NameToken.Text,SYM_PROCEDURE,CurrentScope,'',0,
+                          False,NameToken.Line,NameToken.Column,
+                          ProcedureSymbol) Then Exit;
+ If Not AddSemanticScope(NameToken.Text,SCOPE_PROCEDURE,CurrentScope,
+                         ProcedureSymbol,ProcedureScope) Then Exit;
+ Pipeline.Symbols[ProcedureSymbol].ChildScope:=ProcedureScope;
+ BuildFormalParameters(ProcedureScope);
+ If Pipeline.ErrorCount<>0 Then Exit;
+ If SemanticAcceptSymbol(':') Then Begin
+  Depth:=0;
+  While (SemanticToken.Kind<>TK_EOF) And
+        Not ((Depth=0) And SemanticIsSymbol(';')) Do Begin
+   If SemanticIsSymbol('(') Or SemanticIsSymbol('[') Then Inc(Depth)
+   Else If (SemanticIsSymbol(')') Or SemanticIsSymbol(']')) And
+           (Depth>0) Then Dec(Depth);
+   SemanticAdvance;
+  End;
+ End;
+ If Not SemanticAcceptSymbol(';') Then Begin
+  SemanticTokenError('point-virgule attendu apres PROCEDURE');
+  Exit;
+ End;
+ BuildDeclarations(ProcedureScope);
+ If Pipeline.ErrorCount<>0 Then Exit;
+ If SemanticAcceptKeyword(KW_BEGIN) Then
+  SemanticSkipStatementSequence(ProcedureScope);
+ If Pipeline.ErrorCount<>0 Then Exit;
+ If Not SemanticAcceptKeyword(KW_END) Then Begin
+  SemanticTokenError('END attendu pour la procedure '+NameToken.Text);
+  Exit;
+ End;
+ If SemanticToken.Kind=TK_IDENTIFIER Then Begin
+  EndName:=SemanticToken.Text;
+  If EndName<>NameToken.Text Then Begin
+   SemanticTokenError('nom final de procedure different: '+EndName);
+   Exit;
+  End;
+  SemanticAdvance;
+ End;
+ If Not SemanticAcceptSymbol(';') Then
+  SemanticTokenError('point-virgule attendu apres END de procedure');
+End;
+
+Procedure BuildDeclarations(CurrentScope:Integer);
+Begin
+ While Pipeline.ErrorCount=0 Do Begin
+  If SemanticIsKeyword(KW_CONST) Then BuildConstSymbols(CurrentScope)
+  Else If SemanticIsKeyword(KW_TYPE) Then BuildTypeSymbols(CurrentScope)
+  Else If SemanticIsKeyword(KW_VAR) Then BuildVarSymbols(CurrentScope)
+  Else If SemanticIsKeyword(KW_PROCEDURE) Then
+   BuildProcedureSymbol(CurrentScope)
+  Else Exit;
+ End;
+End;
+
+Function ResolveTypeName(TypeName:String;ScopeIndex,Depth:Integer):TScalarType;
+Var
+ SymbolIndex:Integer;
+Begin
+ ResolveTypeName:=BuiltinScalarType(TypeName);
+ If ResolveTypeName<>SCALAR_NONE Then Exit;
+ If Depth>MOD2_MAX_SCOPES Then Exit;
+ SymbolIndex:=FindVisibleSymbol(TypeName,ScopeIndex);
+ If (SymbolIndex=0) Or
+    (Pipeline.Symbols[SymbolIndex].Kind<>SYM_TYPE) Then Exit;
+ If Pipeline.Symbols[SymbolIndex].ScalarType<>SCALAR_NONE Then Begin
+  ResolveTypeName:=Pipeline.Symbols[SymbolIndex].ScalarType;
+  Exit;
+ End;
+ ResolveTypeName:=ResolveTypeName(Pipeline.Symbols[SymbolIndex].TypeName,
+                                  Pipeline.Symbols[SymbolIndex].ScopeIndex,
+                                  Depth+1);
+ Pipeline.Symbols[SymbolIndex].ScalarType:=ResolveTypeName;
+End;
+
+Procedure ResolveAllScalarTypes;
+Var
+ I:Integer;
+ ScalarType:TScalarType;
+ S:TSymbol;
+Begin
+ For I:=1 To Pipeline.SymbolCount Do Begin
+  S:=Pipeline.Symbols[I];
+  If (S.Kind=SYM_TYPE) Or (S.Kind=SYM_VARIABLE) Or
+     (S.Kind=SYM_PARAMETER) Then Begin
+   ScalarType:=ResolveTypeName(S.TypeName,S.ScopeIndex,0);
+   If ScalarType=SCALAR_NONE Then Begin
+    SemanticError('type scalaire inconnu ou non supporte: '+S.TypeName,
+                  S.Line,S.Column);
+    Exit;
+   End;
+   Pipeline.Symbols[I].ScalarType:=ScalarType;
+   Pipeline.Symbols[I].TypeSize:=ScalarTypeSize(ScalarType);
+  End
+  Else If (S.Kind=SYM_CONSTANT) And
+          (S.ScalarType=SCALAR_NONE) Then Begin
+   SemanticError('constante scalaire attendue pour "'+S.Name+'"',
+                 S.Line,S.Column);
+   Exit;
+  End;
+ End;
+End;
+
+Function AlignStorage(Value,Alignment:LongInt):LongInt;
+Begin
+ If Alignment<=1 Then AlignStorage:=Value
+ Else AlignStorage:=((Value+Alignment-1) Div Alignment)*Alignment;
+End;
+
+Procedure AllocateVariableStorage;
+Var
+ I:Integer;
+ ScopeIndex:Integer;
+ SlotSize:Integer;
+ Offset:LongInt;
+ S:TSymbol;
+Begin
+ Pipeline.GlobalBssSize:=0;
+ For I:=1 To Pipeline.ScopeCount Do Pipeline.Scopes[I].FrameSize:=0;
+ For I:=1 To Pipeline.SymbolCount Do Begin
+  S:=Pipeline.Symbols[I];
+  If S.Kind=SYM_PARAMETER Then Begin
+   Pipeline.Symbols[I].StorageKind:=STORAGE_PARAMETER;
+   Pipeline.Symbols[I].StorageOffset:=
+    I386_ARG_BASE_OFFSET+
+    ((S.ParamIndex-1)*I386_STACK_SLOT_SIZE);
+   Pipeline.Symbols[I].StorageSize:=I386_STACK_SLOT_SIZE;
+  End
+  Else If S.Kind=SYM_VARIABLE Then Begin
+   ScopeIndex:=S.ScopeIndex;
+   SlotSize:=I386_STACK_SLOT_SIZE;
+   If Pipeline.Scopes[ScopeIndex].Kind=SCOPE_MODULE Then Begin
+    Offset:=AlignStorage(Pipeline.GlobalBssSize,I386_STACK_ALIGN);
+    Pipeline.Symbols[I].StorageKind:=STORAGE_GLOBAL;
+    Pipeline.Symbols[I].StorageOffset:=Offset;
+    Pipeline.Symbols[I].StorageSize:=SlotSize;
+    Pipeline.GlobalBssSize:=Offset+SlotSize;
+   End
+   Else Begin
+    Offset:=AlignStorage(Pipeline.Scopes[ScopeIndex].FrameSize+
+                         SlotSize,I386_STACK_ALIGN);
+    Pipeline.Scopes[ScopeIndex].FrameSize:=Offset;
+    Pipeline.Symbols[I].StorageKind:=STORAGE_LOCAL;
+    Pipeline.Symbols[I].StorageOffset:=-Offset;
+    Pipeline.Symbols[I].StorageSize:=SlotSize;
+   End;
+  End;
+ End;
+ Pipeline.GlobalBssSize:=AlignStorage(Pipeline.GlobalBssSize,
+                                     I386_BSS_ALIGN);
+End;
+
+Procedure BuildImportSymbols(ModuleScope:Integer);
+Var
+ Token:TToken;
+ SymbolIndex:Integer;
+ ModuleName:String;
+Begin
+ While SemanticIsKeyword(KW_IMPORT) Or SemanticIsKeyword(KW_FROM) Do Begin
+  If SemanticAcceptKeyword(KW_FROM) Then Begin
+   ModuleName:=SemanticToken.Text;
+   SemanticAdvance;
+   SemanticAcceptKeyword(KW_IMPORT);
+   Repeat
+    Token:=SemanticToken;
+    SemanticAdvance;
+    If Not AddSemanticSymbol(Token.Text,SYM_IMPORT_NAME,ModuleScope,
+                             ModuleName,0,False,Token.Line,Token.Column,
+                             SymbolIndex) Then Exit;
+   Until Not SemanticAcceptSymbol(',');
+  End
+  Else Begin
+   SemanticAdvance;
+   Repeat
+    Token:=SemanticToken;
+    SemanticAdvance;
+    If Not AddSemanticSymbol(Token.Text,SYM_IMPORT_MODULE,ModuleScope,
+                             Token.Text,0,False,Token.Line,Token.Column,
+                             SymbolIndex) Then Exit;
+   Until Not SemanticAcceptSymbol(',');
+  End;
+  If Not SemanticAcceptSymbol(';') Then Begin
+   SemanticTokenError('point-virgule attendu apres IMPORT');
+   Exit;
+  End;
+ End;
+End;
+
+Procedure TraceSemanticTables;
+Var
+ I:Integer;
+ S:TSymbol;
+Begin
+ WriteLn('Semant.: ',Pipeline.ScopeCount,' portee(s), ',
+         Pipeline.SymbolCount,' symbole(s)');
+ If Options.Verbose Then
+  For I:=1 To Pipeline.SymbolCount Do Begin
+   S:=Pipeline.Symbols[I];
+   WriteLn('  [',I,'] ',SymbolKindName(S.Kind),' ',S.Name,
+           ' : ',ScalarTypeName(S.ScalarType),' [',S.TypeSize,']',
+           ' ',ConstValueText(S.ConstValue),
+           ' ',StorageKindName(S.StorageKind),
+           ' offset=',S.StorageOffset,
+           ' slot=',S.StorageSize,
+           ' ref=',SymbolStorageRef(I),
+           ' scope=',S.ScopeIndex,' @ ',S.Line,':',S.Column);
+  End;
+ If Options.Verbose Then Begin
+  WriteLn('  BSS global: ',Pipeline.GlobalBssSize,' octet(s)');
+  For I:=1 To Pipeline.ScopeCount Do
+   If Pipeline.Scopes[I].Kind=SCOPE_PROCEDURE Then
+    WriteLn('  Frame ',Pipeline.Scopes[I].Name,': ',
+            Pipeline.Scopes[I].FrameSize,' octet(s)');
+ End;
 End;
 
 Procedure BuildSemanticTables;
+Var
+ ModuleToken:TToken;
+ ModuleScope:Integer;
+ ModuleSymbol:Integer;
 Begin
  EnterStage(CS_SEMANTIC_TABLES);
- SemanticError('tables semantiques pas encore implementees',1,1);
+ Pipeline.SemanticIndex:=1;
+ Pipeline.ScopeCount:=0;
+ Pipeline.SymbolCount:=0;
+ If SemanticIsKeyword(KW_DEFINITION) Or
+    SemanticIsKeyword(KW_IMPLEMENTATION) Then SemanticAdvance;
+ If Not SemanticAcceptKeyword(KW_MODULE) Then Begin
+  SemanticTokenError('MODULE attendu par la passe semantique');
+  Exit;
+ End;
+ ModuleToken:=SemanticToken;
+ If ModuleToken.Kind<>TK_IDENTIFIER Then Begin
+  SemanticTokenError('nom de module attendu par la passe semantique');
+  Exit;
+ End;
+ SemanticAdvance;
+ If Not AddSemanticScope(ModuleToken.Text,SCOPE_MODULE,0,0,
+                         ModuleScope) Then Exit;
+ If Not AddSemanticSymbol(ModuleToken.Text,SYM_MODULE,ModuleScope,'',0,
+                          False,ModuleToken.Line,ModuleToken.Column,
+                          ModuleSymbol) Then Exit;
+ Pipeline.Scopes[ModuleScope].OwnerSymbol:=ModuleSymbol;
+ Pipeline.Symbols[ModuleSymbol].ChildScope:=ModuleScope;
+ If Not SemanticAcceptSymbol(';') Then Begin
+  SemanticTokenError('point-virgule attendu apres MODULE');
+  Exit;
+ End;
+ BuildImportSymbols(ModuleScope);
+ If Pipeline.ErrorCount<>0 Then Exit;
+ If SemanticAcceptKeyword(KW_EXPORT) Then SemanticSkipToSemicolon;
+ BuildDeclarations(ModuleScope);
+ If Pipeline.ErrorCount<>0 Then Exit;
+ ResolveAllScalarTypes;
+ If Pipeline.ErrorCount<>0 Then Exit;
+ AllocateVariableStorage;
+ If SemanticAcceptKeyword(KW_BEGIN) Then
+  SemanticSkipStatementSequence(ModuleScope);
+ If Pipeline.ErrorCount<>0 Then Exit;
+ Pipeline.SemanticsReady:=True;
+ FinishStage(CS_SEMANTIC_TABLES);
+ TraceSemanticTables;
 End;
 
 Procedure BuildSimpleIR;
