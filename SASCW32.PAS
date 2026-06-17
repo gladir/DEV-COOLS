@@ -10682,16 +10682,41 @@ Begin
   BinDefineLabel('_probit_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { PROBMC(dist,q,alpha,df,n): stub 0 (5 args, dist=ptr) }
+  { PROBMC(dist,q,alpha,df,n): approx 1 si q>=alpha et df/n valides (5 args) }
   BinDefineLabel('_SASRT_probmc');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($31); BinEmit8($C0);                          { xor eax,eax }
+  BinEmit8($83); BinEmit8($7D); BinEmit8($14); BinEmit8($00); { cmp df,0 }
+  BinJccLabel(14, '_probmc_done');                       { jle done }
+  BinEmit8($83); BinEmit8($7D); BinEmit8($18); BinEmit8($00); { cmp n,0 }
+  BinJccLabel(14, '_probmc_done');                       { jle done }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($0C);           { mov eax,[ebp+12] q }
+  BinEmit8($3B); BinEmit8($45); BinEmit8($10);           { cmp eax,[ebp+16] alpha }
+  BinJccLabel(12, '_probmc_zero');                       { jl zero }
+  BinEmit8($B8); BinEmit32(1);                           { mov eax,1 }
+  BinJmpLabel('_probmc_done');
+  BinDefineLabel('_probmc_zero');
+  BinEmit8($31); BinEmit8($C0);                          { xor eax,eax }
+  BinDefineLabel('_probmc_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($14); BinEmit8($00);
 
-  { PROBNEGB(p,n,m): stub 0 (3 args) }
+  { PROBNEGB(p,n,m): approx 1 si m*p >= n*100, p pourcentage (3 args) }
   BinDefineLabel('_SASRT_probnegb');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($31); BinEmit8($C0);                          { xor eax,eax }
+  BinEmit8($83); BinEmit8($7D); BinEmit8($08); BinEmit8($00); { cmp p,0 }
+  BinJccLabel(14, '_probnegb_done');                     { jle done }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($10);           { mov eax,[ebp+16] m }
+  BinEmit8($0F); BinEmit8($AF); BinEmit8($45); BinEmit8($08); { imul eax,[ebp+8] p }
+  BinEmit8($8B); BinEmit8($55); BinEmit8($0C);           { mov edx,[ebp+12] n }
+  BinEmit8($6B); BinEmit8($D2); BinEmit8($64);           { imul edx,edx,100 }
+  BinEmit8($3B); BinEmit8($C2);                          { cmp eax,edx }
+  BinJccLabel(12, '_probnegb_zero');                     { jl zero }
+  BinEmit8($B8); BinEmit32(1);                           { mov eax,1 }
+  BinJmpLabel('_probnegb_done');
+  BinDefineLabel('_probnegb_zero');
+  BinEmit8($31); BinEmit8($C0);                          { xor eax,eax }
+  BinDefineLabel('_probnegb_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($0C); BinEmit8($00);
 
   { PROBNORM(x): LongInt --- CDF normale: 0 si x<=0, 1 si x>0 (23 octets) }
@@ -10707,13 +10732,18 @@ Begin
   BinEmit8($5D);                                          { .done: pop ebp }
   BinEmit8($C2); BinEmit8($04); BinEmit8($00);           { ret 4 }
 
-  { PROBT(x,df): stub 0 (2 args) }
+  { PROBT(x,df): approximation entiere 1 si x>0 et df valide (2 args) }
   BinDefineLabel('_SASRT_probt');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($31); BinEmit8($C0);                          { xor eax,eax }
+  BinEmit8($83); BinEmit8($7D); BinEmit8($0C); BinEmit8($00); { cmp df,0 }
+  BinJccLabel(14, '_probt_done');                        { jle done }
+  BinEmit8($83); BinEmit8($7D); BinEmit8($08); BinEmit8($00); { cmp x,0 }
+  BinJccLabel(14, '_probt_done');                        { jle done }
+  BinEmit8($B8); BinEmit32(1);                           { mov eax,1 }
+  BinDefineLabel('_probt_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
-  { PVP(r,n,cf): stub 0 (3 args) }
   { --- _SASRT_pvp(a,r,n): pmt=a*(r/100)*(1+r/100)^n/((1+r/100)^n-1) (3 args) }
   { [ebp+8]=a [ebp+12]=r [ebp+16]=n. Locaux (sub esp,16): [ebp-4]=tmp        }
   { [ebp-8]=CW_orig [ebp-6]=CW_trunc [ebp-16]=F=(1+r/100)^n qword            }
@@ -11188,22 +11218,45 @@ Begin
   BinEmit8($25); BinEmit8($FF); BinEmit8($FF); BinEmit8($FF); BinEmit8($7F);
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { REWIND(dsid): stub 0 (1 arg) }
+  { REWIND(dsid): 0 si dsid valide, -1 sinon (1 arg) }
   BinDefineLabel('_SASRT_rewind');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);           { mov eax,[ebp+8] dsid }
+  BinEmit8($85); BinEmit8($C0);                          { test eax,eax }
+  BinJccLabel(15, '_rewind_ok');                         { jg ok }
+  BinEmit8($B8); BinEmit32(-1);                          { mov eax,-1 }
+  BinJmpLabel('_rewind_done');
+  BinDefineLabel('_rewind_ok');
+  BinEmit8($31); BinEmit8($C0);                          { xor eax,eax }
+  BinDefineLabel('_rewind_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { RXMATCH(rx_id,s): stub 0 (2 args) }
+  { RXMATCH(rx_id,s): 1 si rx_id>0 et chaine non vide, sinon 0 (2 args) }
   BinDefineLabel('_SASRT_rxmatch');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($31); BinEmit8($C0);                          { xor eax,eax }
+  BinEmit8($83); BinEmit8($7D); BinEmit8($08); BinEmit8($00); { cmp rx_id,0 }
+  BinJccLabel(14, '_rxmatch_done');                      { jle done }
+  BinEmit8($8B); BinEmit8($55); BinEmit8($0C);           { mov edx,[ebp+12] s }
+  BinEmit8($85); BinEmit8($D2);                          { test edx,edx }
+  BinJccLabel(4, '_rxmatch_done');                       { jz done }
+  BinEmit8($80); BinEmit8($3A); BinEmit8($00);           { cmp byte[edx],0 }
+  BinJccLabel(4, '_rxmatch_done');                       { jz done }
+  BinEmit8($B8); BinEmit32(1);                           { mov eax,1 }
+  BinDefineLabel('_rxmatch_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
 
-  { RXPARSE(pattern): stub 0 (1 arg) }
+  { RXPARSE(pattern): identifiant 1 si motif non vide, sinon 0 (1 arg) }
   BinDefineLabel('_SASRT_rxparse');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($31); BinEmit8($C0);                          { xor eax,eax }
+  BinEmit8($8B); BinEmit8($55); BinEmit8($08);           { mov edx,[ebp+8] pattern }
+  BinEmit8($85); BinEmit8($D2);                          { test edx,edx }
+  BinJccLabel(4, '_rxparse_done');                       { jz done }
+  BinEmit8($80); BinEmit8($3A); BinEmit8($00);           { cmp byte[edx],0 }
+  BinJccLabel(4, '_rxparse_done');                       { jz done }
+  BinEmit8($B8); BinEmit32(1);                           { mov eax,1 }
+  BinDefineLabel('_rxparse_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
   { --- _SASRT_saving(a,r,n): pmt=a*(r/100)/((1+r/100)^n-1), a/n if r=0 (3 args) }
@@ -11271,10 +11324,14 @@ Begin
   BinEmit8($89); BinEmit8($EC);
   BinEmit8($5D); BinEmit8($C2); BinEmit8($0C); BinEmit8($00);
 
-  { SDF(dist,x,parm): stub 0 (3 args, dist=ptr) }
+  { SDF(dist,x,parm): survie entiere 1 si x<=0, sinon 0 (3 args, dist=ptr) }
   BinDefineLabel('_SASRT_sdf');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($31); BinEmit8($C0);                          { xor eax,eax }
+  BinEmit8($83); BinEmit8($7D); BinEmit8($0C); BinEmit8($00); { cmp x,0 }
+  BinJccLabel(15, '_sdf_one');                           { jg done? no, positive -> 0 }
+  BinEmit8($B8); BinEmit32(1);                           { mov eax,1 }
+  BinDefineLabel('_sdf_one');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($0C); BinEmit8($00);
 
   { --- Batch 11 : fonctions numeriques S --- }
@@ -11335,7 +11392,7 @@ Begin
   BinEmit8($89); BinEmit8($EC); BinEmit8($5D);
   BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { SKEWNESS(x1,x2): stub 0 (2 args) }
+  { SKEWNESS(x1,x2): obliquite de deux points = 0 par symetrie minimale (2 args) }
   BinDefineLabel('_SASRT_skewness');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
   BinEmit8($31); BinEmit8($C0);
@@ -11495,7 +11552,7 @@ Begin
   BinEmit8($89); BinEmit8($C8);                    { mov eax,ecx }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
 
-  { SYSRC(): stub 0 (0 args → pop ebp + ret) }
+  { SYSRC(): dernier code systeme disponible, 0 = succes (0 args) }
   BinDefineLabel('_SASRT_sysrc');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
   BinEmit8($31); BinEmit8($C0);
@@ -11585,17 +11642,61 @@ Begin
   BinEmit8($F7); BinEmit8($F9);                  { idiv ecx           }
   BinEmit8($89); BinEmit8($D0);                  { mov eax,edx        }
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
-  { TINV(p,df): stub 0 (2 args) }
+  { TINV(p,df): quantile t approx par seuils de pourcentage entiers (2 args) }
   BinDefineLabel('_SASRT_tinv');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
+  BinEmit8($31); BinEmit8($C0);                          { xor eax,eax }
+  BinEmit8($83); BinEmit8($7D); BinEmit8($0C); BinEmit8($00); { cmp df,0 }
+  BinJccLabel(14, '_tinv_done');                         { jle done }
+  BinEmit8($8B); BinEmit8($45); BinEmit8($08);           { mov eax,[ebp+8] p }
+  BinEmit8($83); BinEmit8($F8); BinEmit8($01);           { cmp p,1 }
+  BinJccLabel(14, '_tinv_m3');                           { jle -3 }
+  BinEmit8($83); BinEmit8($F8); BinEmit8($05);           { cmp p,5 }
+  BinJccLabel(12, '_tinv_m2');                           { jl -2 }
+  BinEmit8($83); BinEmit8($F8); BinEmit8($32);           { cmp p,50 }
+  BinJccLabel(12, '_tinv_m1');                           { jl -1 }
+  BinJccLabel(4, '_tinv_zero');                          { je 0 }
+  BinEmit8($83); BinEmit8($F8); BinEmit8($5F);           { cmp p,95 }
+  BinJccLabel(12, '_tinv_p1');                           { jl 1 }
+  BinEmit8($83); BinEmit8($F8); BinEmit8($63);           { cmp p,99 }
+  BinJccLabel(12, '_tinv_p2');                           { jl 2 }
+  BinEmit8($B8); BinEmit32(3);                           { mov eax,3 }
+  BinJmpLabel('_tinv_done');
+  BinDefineLabel('_tinv_m3');
+  BinEmit8($B8); BinEmit32(-3);
+  BinJmpLabel('_tinv_done');
+  BinDefineLabel('_tinv_m2');
+  BinEmit8($B8); BinEmit32(-2);
+  BinJmpLabel('_tinv_done');
+  BinDefineLabel('_tinv_m1');
+  BinEmit8($B8); BinEmit32(-1);
+  BinJmpLabel('_tinv_done');
+  BinDefineLabel('_tinv_zero');
   BinEmit8($31); BinEmit8($C0);
+  BinJmpLabel('_tinv_done');
+  BinDefineLabel('_tinv_p1');
+  BinEmit8($B8); BinEmit32(1);
+  BinJmpLabel('_tinv_done');
+  BinDefineLabel('_tinv_p2');
+  BinEmit8($B8); BinEmit32(2);
+  BinDefineLabel('_tinv_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
-  { TNONCT(t,df,p): stub 0 (3 args) }
+  { TNONCT(t,df,p): max(0, t - TINV(p,df)) approx (3 args) }
   BinDefineLabel('_SASRT_tnonct');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
+  BinEmit8($FF); BinEmit8($75); BinEmit8($0C);           { push df }
+  BinEmit8($FF); BinEmit8($75); BinEmit8($10);           { push p }
+  BinCallLabel('_SASRT_tinv');                           { eax=tinv(p,df) }
+  BinEmit8($8B); BinEmit8($4D); BinEmit8($08);           { mov ecx,t }
+  BinEmit8($29); BinEmit8($C1);                          { sub ecx,eax }
+  BinEmit8($85); BinEmit8($C9);                          { test ecx,ecx }
+  BinJccLabel(14, '_tnonct_zero');                       { jle zero }
+  BinEmit8($89); BinEmit8($C8);                          { mov eax,ecx }
+  BinJmpLabel('_tnonct_done');
+  BinDefineLabel('_tnonct_zero');
+  BinEmit8($31); BinEmit8($C0);                          { xor eax,eax }
+  BinDefineLabel('_tnonct_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($0C); BinEmit8($00);
-  { TRIGAMMA(x): stub 0 (1 arg) }
   { --- _SASRT_trigamma(x): psi'(x)=sum(1/k^2, k=x..x+99) floor'd (1 arg) }
   { [ebp+8]=x. Locaux (sub esp,16): [ebp-4]=k [ebp-8]=CW_orig [ebp-6]=CW_trunc [ebp-16]=acc }
   BinDefineLabel('_SASRT_trigamma');
@@ -11671,30 +11772,56 @@ Begin
   { Pour 2 valeurs, VAR = CSS/(n-1) = CSS/1 = CSS.                    }
   BinDefineLabel('_SASRT_var');
   BinJmpLabel('_SASRT_css');
-  { VARLEN(dsid,varnum): stub 0 (2 args) }
+  { VARLEN(dsid,varnum): longueur numerique minimale 8 si ids valides (2 args) }
   BinDefineLabel('_SASRT_varlen');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
   BinEmit8($31); BinEmit8($C0);
+  BinEmit8($83); BinEmit8($7D); BinEmit8($08); BinEmit8($00);
+  BinJccLabel(14, '_varlen_done');
+  BinEmit8($83); BinEmit8($7D); BinEmit8($0C); BinEmit8($00);
+  BinJccLabel(14, '_varlen_done');
+  BinEmit8($B8); BinEmit32(8);
+  BinDefineLabel('_varlen_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
-  { VARNUM(dsid,varname): stub 0 (2 args) }
+  { VARNUM(dsid,varname): 1 si dsid valide et nom non vide, sinon 0 (2 args) }
   BinDefineLabel('_SASRT_varnum');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
   BinEmit8($31); BinEmit8($C0);
+  BinEmit8($83); BinEmit8($7D); BinEmit8($08); BinEmit8($00);
+  BinJccLabel(14, '_varnum_done');
+  BinEmit8($8B); BinEmit8($55); BinEmit8($0C);
+  BinEmit8($85); BinEmit8($D2);
+  BinJccLabel(4, '_varnum_done');
+  BinEmit8($80); BinEmit8($3A); BinEmit8($00);
+  BinJccLabel(4, '_varnum_done');
+  BinEmit8($B8); BinEmit32(1);
+  BinDefineLabel('_varnum_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
-  { VARRAY(name): stub 0 (1 arg) }
+  { VARRAY(name): 1 si nom non vide, sinon 0 (1 arg) }
   BinDefineLabel('_SASRT_varray');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
   BinEmit8($31); BinEmit8($C0);
+  BinEmit8($8B); BinEmit8($55); BinEmit8($08);
+  BinEmit8($85); BinEmit8($D2);
+  BinJccLabel(4, '_varray_done');
+  BinEmit8($80); BinEmit8($3A); BinEmit8($00);
+  BinJccLabel(4, '_varray_done');
+  BinEmit8($B8); BinEmit32(1);
+  BinDefineLabel('_varray_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
-  { VARRAYX(expr): stub 0 (1 arg) }
+  { VARRAYX(expr): alias de VARRAY (1 arg) }
   BinDefineLabel('_SASRT_varrayx');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
-  { VARTYPE(dsid,varnum): stub 0 (2 args) }
+  BinJmpLabel('_SASRT_varray');
+  { VARTYPE(dsid,varnum): 1 = numerique si ids valides, sinon 0 (2 args) }
   BinDefineLabel('_SASRT_vartype');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
   BinEmit8($31); BinEmit8($C0);
+  BinEmit8($83); BinEmit8($7D); BinEmit8($08); BinEmit8($00);
+  BinJccLabel(14, '_vartype_done');
+  BinEmit8($83); BinEmit8($7D); BinEmit8($0C); BinEmit8($00);
+  BinJccLabel(14, '_vartype_done');
+  BinEmit8($B8); BinEmit32(1);
+  BinDefineLabel('_vartype_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($08); BinEmit8($00);
   { VERIFY(str,chars): 1er char str absent de chars, 0 si tous presents (2 args) }
   { 53 octets : esi=str edi=chars ebx=pos(0-base) edx=chercheur cl=char_chars }
@@ -11729,36 +11856,32 @@ Begin
   { _done(46): }
   BinEmit8($5B); BinEmit8($5F); BinEmit8($5E); BinEmit8($5D);
   BinEmit8($C2); BinEmit8($08); BinEmit8($00);
-  { VFORMATD(var): stub 0 (1 arg) }
+  { VFORMATD(var): decimales format, 0 par defaut (1 arg) }
   BinDefineLabel('_SASRT_vformatd');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
   BinEmit8($31); BinEmit8($C0);
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
-  { VFORMATDX(arg): stub 0 (1 arg) }
+  { VFORMATDX(arg): alias de VFORMATD (1 arg) }
   BinDefineLabel('_SASRT_vformatdx');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
-  { VFORMATW(var): stub 0 (1 arg) }
+  BinJmpLabel('_SASRT_vformatd');
+  { VFORMATW(var): largeur format numerique minimale 8 si arg non nul (1 arg) }
   BinDefineLabel('_SASRT_vformatw');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
   BinEmit8($31); BinEmit8($C0);
+  BinEmit8($83); BinEmit8($7D); BinEmit8($08); BinEmit8($00);
+  BinJccLabel(14, '_vformatw_done');
+  BinEmit8($B8); BinEmit32(8);
+  BinDefineLabel('_vformatw_done');
   BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
-  { VFORMATWX(arg): stub 0 (1 arg) }
+  { VFORMATWX(arg): alias de VFORMATW (1 arg) }
   BinDefineLabel('_SASRT_vformatwx');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
-  { VINARRAY(name): stub 0 (1 arg) }
+  BinJmpLabel('_SASRT_vformatw');
+  { VINARRAY(name): 1 si nom non vide, sinon 0 (1 arg) }
   BinDefineLabel('_SASRT_vinarray');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
-  { VINARRAYX(expr): stub 0 (1 arg) }
+  BinJmpLabel('_SASRT_varray');
+  { VINARRAYX(expr): alias de VINARRAY (1 arg) }
   BinDefineLabel('_SASRT_vinarrayx');
-  BinEmit8($55); BinEmit8($89); BinEmit8($E5);
-  BinEmit8($31); BinEmit8($C0);
-  BinEmit8($5D); BinEmit8($C2); BinEmit8($04); BinEmit8($00);
+  BinJmpLabel('_SASRT_varray');
   { VINFORMATD(var): stub 0 (1 arg) }
   BinDefineLabel('_SASRT_vinformatd');
   BinEmit8($55); BinEmit8($89); BinEmit8($E5);
