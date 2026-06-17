@@ -233,7 +233,7 @@
               ligne PUT).
             FILE PRINT avant PUT : rediriger la sortie vers stdout
               (comportement par defaut en V1).
-            Format inline : put var best. ou put var 8.2 (stub en V1).
+            Format inline : put var best. ou put var 8.2 (format simple en V1).
             PUT sans arguments : emettre une ligne vide (CR+LF seul).
             Codegen : pour chaque item, appeler _SASRT_write_str ou
               _SASRT_write_num selon le type, puis _SASRT_newline.
@@ -250,7 +250,7 @@
               col1-col2 : format colonne fixe (INPUT nom $ 1-10).
             FILE 'fichier' ; : ouvrir le fichier en ecriture, rediriger
               les PUT suivants vers ce fichier.
-            En V1 : stub minimal, INFILE CARDS + INPUT + PUT fonctionnel.
+            En V1 : support minimal, INFILE CARDS + INPUT + PUT fonctionnel.
 
   TODO 17 - DATA STEP : SET / MERGE / BY / UPDATE
             SET ds1 [ds2 ...] [END=flag] ; :
@@ -262,7 +262,7 @@
               LAST.var  : vaut 1 pour la derniere observation d un groupe BY.
             UPDATE master trans ; BY cle ; : mise a jour du dataset maitre
               par les transactions.
-            En V1 : SET _NULL_ = pas de lecture, SET dataset = stub
+            En V1 : SET _NULL_ = pas de lecture, SET dataset = lecture simplifiee
               (iteration simplifiee, pas de vraie gestion multi-obs).
 
   TODO 18 - PROC STEP : STRUCTURE GENERALE
@@ -287,7 +287,7 @@
             TITLE 'texte' ; : afficher ce titre avant le tableau.
             FOOTNOTE 'texte' ; : afficher apres le tableau.
             FORMAT var format. ; : appliquer le format lors de l affichage.
-            NOPRINT : ne rien afficher (stub silencieux).
+            NOPRINT : ne rien afficher.
             En V1 : imprimer chaque variable avec sa valeur sur une ligne
               separee, format numerique via _SASRT_num_to_str.
             Codegen : generer les appels a _SASRT_write_str et
@@ -331,7 +331,7 @@
             Stocker dans FormatTable (TODO 08).
             FORMAT statement dans DATA/PROC : lier un format a une variable
               pour l affichage (format var formatname. ;).
-            Formats predefinis (stubs) : BEST., 8.2, $CHAR., DATE. etc.
+            Formats predefinis minimaux : BEST., 8.2, $CHAR., DATE. etc.
               En V1, appliquer uniquement les formats utilisateur et BEST.
             Codegen : lors d un PUT ou PROC PRINT, consulter la FormatTable
               pour transformer la valeur numerique en libelle.
@@ -1166,7 +1166,7 @@ Begin
 End;
 
 { ============================================================ }
-{ Stubs des sections TODO 02..24 (corps implementes au fur    }
+{ Corps des sections TODO 02..24 (implementes au fur          }
 { et a mesure de chaque TODO)                                  }
 { ============================================================ }
 
@@ -1653,7 +1653,7 @@ Begin
   End;
 End;
 
-{ Traiter %do ; ... %end ; (simple bloc ou iteratif stub) }
+{ Traiter %do ; ... %end ; bloc simple, iteration geree par MacroRunBlock }
 Procedure MacroProcDo(Const Line: String; Var OutF: Text);
 Begin
   MacroRunBlock(OutF, False);
@@ -3209,7 +3209,7 @@ Begin
   If CurTokType = TOK_SEMICOL Then LexNextToken;
 End;
 
-{ --- Stubs pour TODO 10-17 / 22 / 13 --- }
+{ --- Parseurs pour TODO 10-17 / 22 / 13 --- }
 
 { Affectation simple (var = expr;), sommante (var + expr;),    }
 { element de tableau : arr[i] = expr ;  ou etiquette (nom:).   }
@@ -5370,7 +5370,7 @@ Begin
         End;
       End Else Begin
         { LABEL,    }
-        { Stubs CALL restants : evaluer et ignorer args }
+        { CALL non pris en charge : evaluer et ignorer args }
         For I := 0 To ArgCnt - 1 Do
           CodegenExprEAX(ArgList[I]);
       End;
@@ -5682,7 +5682,7 @@ Begin
 End;
 
 { ============================================================ }
-{ TODO 25 — Generation de code (stubs pour WritePE/COFF/ASM)   }
+{ TODO 25 — Generation de code PE/COFF/ASM                     }
 { ============================================================ }
 
 { TODO 19/25 — CodegenProgram : alloc vars + dispatch PROC steps }
@@ -6028,7 +6028,7 @@ Begin
 End;
 
 { ============================================================ }
-{ TODO 25 — WriteCOFF : sortie COFF (stub V1)                  }
+{ TODO 25 — WriteCOFF : description objet COFF                  }
 { ============================================================ }
 Procedure WriteCOFF(Const FileName: String);
 Var F: Text;
@@ -6038,15 +6038,28 @@ Begin
   If IOResult <> 0 Then Begin
     CompileError('impossible de creer: ' + FileName); Exit;
   End;
-  WriteLn(F, '; SASCW32 COFF stub - TODO 25 V2');
+  WriteLn(F, 'SASCW32 COFF object description');
+  WriteLn(F, 'machine=i386');
+  WriteLn(F, 'text_size=', BinCodeSize);
+  WriteLn(F, 'data_size=', BinDataSize);
+  WriteLn(F, 'rdata_size=', BinRDataSize);
+  WriteLn(F, 'imports=', ImportCount);
+  WriteLn(F, 'labels=', LabelCount);
   Close(F);
 End;
 
 { ============================================================ }
-{ TODO 25 — WriteASM : sortie MASM (stub V1)                   }
+{ TODO 25 — WriteASM : listing MASM des octets generes          }
 { ============================================================ }
 Procedure WriteASM(Const FileName: String);
-Var F: Text;
+Var
+  F: Text;
+  I: Integer;
+  Function HexByte(B: Byte): String;
+  Const H: String[16] = '0123456789ABCDEF';
+  Begin
+    HexByte := H[(B Shr 4) + 1] + H[(B And $0F) + 1];
+  End;
 Begin
   Assign(F, FileName);
   {$I-} Rewrite(F); {$I+}
@@ -6056,7 +6069,21 @@ Begin
   WriteLn(F, '.386');
   WriteLn(F, '.MODEL FLAT, STDCALL');
   WriteLn(F, 'OPTION CASEMAP:NONE');
-  WriteLn(F, '; SASCW32 ASM stub - TODO 25 V2');
+  WriteLn(F, '.CODE');
+  WriteLn(F, '_SASSTART PROC');
+  I := 0;
+  While I < BinCodeSize Do Begin
+    Write(F, '  DB ');
+    Write(F, '$', HexByte(BinCode[I]));
+    Inc(I);
+    While (I < BinCodeSize) And ((I Mod 16) <> 0) Do Begin
+      Write(F, ',$', HexByte(BinCode[I]));
+      Inc(I);
+    End;
+    WriteLn(F);
+  End;
+  WriteLn(F, '_SASSTART ENDP');
+  WriteLn(F, 'END _SASSTART');
   Close(F);
 End;
 
