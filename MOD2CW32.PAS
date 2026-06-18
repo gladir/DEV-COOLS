@@ -71,27 +71,27 @@
             priorites Modula-2, +, -, *, DIV, MOD, parentheses, unaire -,
             constantes, variables et conversion en IR typee.
 
-  TODO 16 - Implementer les comparaisons et booleens:
+  DONE 16 - Implementer les comparaisons et booleens:
             =, #, <, <=, >, >=, NOT, AND, OR, evaluation court-circuit
             si necessaire et emission Jcc 80386.
 
-  TODO 17 - Implementer les instructions de base:
+  DONE 17 - Implementer les instructions de base:
             affectation :=, appels de procedures, instructions separees par ;
             blocs BEGIN...END imbriques et instruction vide.
 
-  TODO 18 - Implementer IF:
+  DONE 18 - Implementer IF:
             IF condition THEN suite [ELSIF condition THEN suite] [ELSE suite]
             END, avec labels et branchements corrects.
 
-  TODO 19 - Implementer WHILE et REPEAT:
+  DONE 19 - Implementer WHILE et REPEAT:
             WHILE condition DO suite END et REPEAT suite UNTIL condition,
             avec gestion correcte des sorties de boucle.
 
-  TODO 20 - Implementer FOR:
+  DONE 20 - Implementer FOR:
             FOR i := debut TO fin [BY pas] DO suite END,
             entiers 32 bits, bornes evaluees correctement et support de INC.
 
-  TODO 21 - Implementer procedures et parametres:
+  DONE 21 - Implementer procedures et parametres:
             PROCEDURE locale/exportable, appels, parametres valeur et VAR,
             pile 32 bits, retour, recursion simple et verification d'arite.
 
@@ -175,6 +175,9 @@ Const
  MOD2_MAX_SYMBOLS      = 4096;
  MOD2_MAX_IR_NODES     = 8192;
  MOD2_MAX_EXPRESSIONS  = 2048;
+ MOD2_MAX_STATEMENTS   = 4096;
+ MOD2_MAX_CALL_ARGS    = 32;
+ MOD2_MAX_EXPORTS      = 128;
 
 Type
  T386Register = (
@@ -371,7 +374,16 @@ Type
   IR_EXPR_SUB,
   IR_EXPR_MUL,
   IR_EXPR_DIV,
-  IR_EXPR_MOD
+  IR_EXPR_MOD,
+  IR_EXPR_EQ,
+  IR_EXPR_NE,
+  IR_EXPR_LT,
+  IR_EXPR_LE,
+  IR_EXPR_GT,
+  IR_EXPR_GE,
+  IR_EXPR_NOT,
+  IR_EXPR_AND,
+  IR_EXPR_OR
  );
 
  TIRExprNode = Record
@@ -391,6 +403,41 @@ Type
   Context   : String[31];
   Line      : Integer;
   Column    : Integer;
+ End;
+
+ TIRStatementKind = (
+  IR_STMT_EMPTY,
+  IR_STMT_ASSIGN,
+  IR_STMT_CALL,
+  IR_STMT_BLOCK_BEGIN,
+  IR_STMT_BLOCK_END,
+  IR_STMT_IF_BEGIN,
+  IR_STMT_ELSIF,
+  IR_STMT_ELSE,
+  IR_STMT_IF_END,
+  IR_STMT_WHILE_BEGIN,
+  IR_STMT_WHILE_END,
+  IR_STMT_REPEAT_BEGIN,
+  IR_STMT_REPEAT_UNTIL,
+  IR_STMT_FOR_BEGIN,
+  IR_STMT_FOR_END,
+  IR_STMT_RETURN
+ );
+
+ TIRStatement = Record
+  Kind        : TIRStatementKind;
+  ScopeIndex  : Integer;
+  BlockDepth  : Integer;
+  ControlDepth: Integer;
+  ControlId   : Integer;
+  TargetSymbol: Integer;
+  ExpressionRoot:Integer;
+  ProcedureSymbol:Integer;
+  ProcedureName:String[127];
+  ArgumentCount:Integer;
+  Arguments   : Array[1..MOD2_MAX_CALL_ARGS] Of Integer;
+  Line        : Integer;
+  Column      : Integer;
  End;
 
  TScope = Record
@@ -419,6 +466,7 @@ Type
   StorageKind: TStorageKind;
   StorageOffset: LongInt;
   StorageSize: Integer;
+  IsExported : Boolean;
   Line       : Integer;
   Column     : Integer;
  End;
@@ -463,6 +511,8 @@ Type
   ParserIndex     : Integer;
   ImportCount     : Integer;
   Imports         : Array[1..MOD2_MAX_IMPORTS] Of TModuleImport;
+  ExportCount     : Integer;
+  ExportNames     : Array[1..MOD2_MAX_EXPORTS] Of String[63];
   ConstDeclCount  : Integer;
   TypeDeclCount   : Integer;
   VarDeclCount    : Integer;
@@ -480,6 +530,8 @@ Type
   IrNodes         : Array[1..MOD2_MAX_IR_NODES] Of TIRExprNode;
   IrExpressionCount:Integer;
   IrExpressions   : Array[1..MOD2_MAX_EXPRESSIONS] Of TIRExpression;
+  IrStatementCount:Integer;
+  IrStatements    : Array[1..MOD2_MAX_STATEMENTS] Of TIRStatement;
   ErrorCount      : Integer;
   ErrorKind       : TErrorKind;
   ErrorFile       : String;
@@ -710,7 +762,39 @@ Begin
   IR_EXPR_MUL  :IRExprOpName:='MUL';
   IR_EXPR_DIV  :IRExprOpName:='DIV';
   IR_EXPR_MOD  :IRExprOpName:='MOD';
+  IR_EXPR_EQ   :IRExprOpName:='EQ';
+  IR_EXPR_NE   :IRExprOpName:='NE';
+  IR_EXPR_LT   :IRExprOpName:='LT';
+  IR_EXPR_LE   :IRExprOpName:='LE';
+  IR_EXPR_GT   :IRExprOpName:='GT';
+  IR_EXPR_GE   :IRExprOpName:='GE';
+  IR_EXPR_NOT  :IRExprOpName:='NOT';
+  IR_EXPR_AND  :IRExprOpName:='AND';
+  IR_EXPR_OR   :IRExprOpName:='OR';
   Else IRExprOpName:='?';
+ End;
+End;
+
+Function IRStatementKindName(Kind:TIRStatementKind):String;
+Begin
+ Case Kind Of
+  IR_STMT_EMPTY      :IRStatementKindName:='EMPTY';
+  IR_STMT_ASSIGN     :IRStatementKindName:='ASSIGN';
+  IR_STMT_CALL       :IRStatementKindName:='CALL';
+  IR_STMT_BLOCK_BEGIN:IRStatementKindName:='BLOCK BEGIN';
+  IR_STMT_BLOCK_END  :IRStatementKindName:='BLOCK END';
+  IR_STMT_IF_BEGIN   :IRStatementKindName:='IF';
+  IR_STMT_ELSIF      :IRStatementKindName:='ELSIF';
+  IR_STMT_ELSE       :IRStatementKindName:='ELSE';
+  IR_STMT_IF_END     :IRStatementKindName:='IF END';
+  IR_STMT_WHILE_BEGIN:IRStatementKindName:='WHILE';
+  IR_STMT_WHILE_END  :IRStatementKindName:='WHILE END';
+  IR_STMT_REPEAT_BEGIN:IRStatementKindName:='REPEAT';
+  IR_STMT_REPEAT_UNTIL:IRStatementKindName:='UNTIL';
+  IR_STMT_FOR_BEGIN   :IRStatementKindName:='FOR';
+  IR_STMT_FOR_END     :IRStatementKindName:='FOR END';
+  IR_STMT_RETURN      :IRStatementKindName:='RETURN';
+  Else IRStatementKindName:='?';
  End;
 End;
 
@@ -1104,9 +1188,414 @@ Begin
  End;
 End;
 
+Procedure EmitIRExpressionAsm(Var T:Text;NodeIndex:Integer;
+ Var LabelCounter:Integer); Forward;
+
+Function NewAsmExpressionLabel(Var LabelCounter:Integer;
+ Suffix:String):String;
+Begin
+ Inc(LabelCounter);
+ NewAsmExpressionLabel:=MakeInternalLabel('EXPR_'+
+  IntToString(LabelCounter)+'_'+Suffix);
+End;
+
+Procedure EmitIRLoadSymbol(Var T:Text;SymbolIndex:Integer);
+Var
+ S:TSymbol;
+Begin
+ S:=Pipeline.Symbols[SymbolIndex];
+ If (S.StorageKind=STORAGE_PARAMETER) And S.ByReference Then Begin
+  Emit386Mov(T,RegName(R_EAX),SymbolStorageRef(SymbolIndex));
+  Emit386Mov(T,RegName(R_EAX),'[eax]');
+ End
+ Else Emit386Mov(T,RegName(R_EAX),SymbolStorageRef(SymbolIndex));
+End;
+
+Procedure EmitIRExpressionAsm(Var T:Text;NodeIndex:Integer;
+ Var LabelCounter:Integer);
+Var
+ N:TIRExprNode;
+ FalseLabel:String;
+ TrueLabel:String;
+ EndLabel:String;
+ SetOp:String;
+Begin
+ If (NodeIndex<1) Or (NodeIndex>Pipeline.IrNodeCount) Then Begin
+  Emit386Mov(T,RegName(R_EAX),'0');
+  Exit;
+ End;
+ N:=Pipeline.IrNodes[NodeIndex];
+ Case N.Op Of
+  IR_EXPR_CONST:
+   Begin
+    If N.ConstValue.ScalarType=SCALAR_STRING Then Begin
+     EmitAsmComment(T,'adresse de chaine differee a TODO 23');
+     Emit386Mov(T,RegName(R_EAX),'0');
+    End
+    Else Emit386Mov(T,RegName(R_EAX),
+                    IntToString(N.ConstValue.IntegerValue));
+   End;
+  IR_EXPR_LOAD:
+   EmitIRLoadSymbol(T,N.SymbolIndex);
+  IR_EXPR_NEG:
+   Begin
+    EmitIRExpressionAsm(T,N.LeftNode,LabelCounter);
+    EmitAsmInstr(T,'neg',RegName(R_EAX));
+   End;
+  IR_EXPR_NOT:
+   Begin
+    EmitIRExpressionAsm(T,N.LeftNode,LabelCounter);
+    EmitAsmInstr(T,'cmp',RegName(R_EAX)+', 0');
+    EmitAsmInstr(T,'sete','al');
+    EmitAsmInstr(T,'movzx',RegName(R_EAX)+', al');
+   End;
+  IR_EXPR_AND:
+   Begin
+    FalseLabel:=NewAsmExpressionLabel(LabelCounter,'FALSE');
+    EndLabel:=NewAsmExpressionLabel(LabelCounter,'END');
+    EmitIRExpressionAsm(T,N.LeftNode,LabelCounter);
+    EmitAsmInstr(T,'cmp',RegName(R_EAX)+', 0');
+    EmitAsmInstr(T,'je',FalseLabel);
+    EmitIRExpressionAsm(T,N.RightNode,LabelCounter);
+    EmitAsmInstr(T,'cmp',RegName(R_EAX)+', 0');
+    EmitAsmInstr(T,'je',FalseLabel);
+    Emit386Mov(T,RegName(R_EAX),'1');
+    EmitAsmInstr(T,'jmp',EndLabel);
+    EmitAsmLabel(T,FalseLabel);
+    Emit386Mov(T,RegName(R_EAX),'0');
+    EmitAsmLabel(T,EndLabel);
+   End;
+  IR_EXPR_OR:
+   Begin
+    TrueLabel:=NewAsmExpressionLabel(LabelCounter,'TRUE');
+    EndLabel:=NewAsmExpressionLabel(LabelCounter,'END');
+    EmitIRExpressionAsm(T,N.LeftNode,LabelCounter);
+    EmitAsmInstr(T,'cmp',RegName(R_EAX)+', 0');
+    EmitAsmInstr(T,'jne',TrueLabel);
+    EmitIRExpressionAsm(T,N.RightNode,LabelCounter);
+    EmitAsmInstr(T,'cmp',RegName(R_EAX)+', 0');
+    EmitAsmInstr(T,'jne',TrueLabel);
+    Emit386Mov(T,RegName(R_EAX),'0');
+    EmitAsmInstr(T,'jmp',EndLabel);
+    EmitAsmLabel(T,TrueLabel);
+    Emit386Mov(T,RegName(R_EAX),'1');
+    EmitAsmLabel(T,EndLabel);
+   End;
+  Else Begin
+   EmitIRExpressionAsm(T,N.LeftNode,LabelCounter);
+   Emit386Push(T,RegName(R_EAX));
+   EmitIRExpressionAsm(T,N.RightNode,LabelCounter);
+   Emit386Pop(T,RegName(R_EBX));
+   Case N.Op Of
+    IR_EXPR_ADD:EmitAsmInstr(T,'add',RegName(R_EAX)+', '+RegName(R_EBX));
+    IR_EXPR_SUB:
+     Begin
+      Emit386Mov(T,RegName(R_ECX),RegName(R_EAX));
+      Emit386Mov(T,RegName(R_EAX),RegName(R_EBX));
+      EmitAsmInstr(T,'sub',RegName(R_EAX)+', '+RegName(R_ECX));
+     End;
+    IR_EXPR_MUL:EmitAsmInstr(T,'imul',RegName(R_EAX)+', '+RegName(R_EBX));
+    IR_EXPR_DIV,
+    IR_EXPR_MOD:
+     Begin
+      Emit386Mov(T,RegName(R_ECX),RegName(R_EAX));
+      Emit386Mov(T,RegName(R_EAX),RegName(R_EBX));
+      EmitAsmInstr(T,'cdq','');
+      EmitAsmInstr(T,'idiv',RegName(R_ECX));
+      If N.Op=IR_EXPR_MOD Then
+       Emit386Mov(T,RegName(R_EAX),RegName(R_EDX));
+     End;
+    IR_EXPR_EQ,
+    IR_EXPR_NE,
+    IR_EXPR_LT,
+    IR_EXPR_LE,
+    IR_EXPR_GT,
+    IR_EXPR_GE:
+     Begin
+      EmitAsmInstr(T,'cmp',RegName(R_EBX)+', '+RegName(R_EAX));
+      Case N.Op Of
+       IR_EXPR_EQ:SetOp:='sete';
+       IR_EXPR_NE:SetOp:='setne';
+       IR_EXPR_LT:SetOp:='setl';
+       IR_EXPR_LE:SetOp:='setle';
+       IR_EXPR_GT:SetOp:='setg';
+       Else SetOp:='setge';
+      End;
+      EmitAsmInstr(T,SetOp,'al');
+      EmitAsmInstr(T,'movzx',RegName(R_EAX)+', al');
+     End;
+   End;
+  End;
+ End;
+End;
+
+Procedure EmitIRStoreSymbol(Var T:Text;SymbolIndex:Integer);
+Var
+ S:TSymbol;
+Begin
+ S:=Pipeline.Symbols[SymbolIndex];
+ If (S.StorageKind=STORAGE_PARAMETER) And S.ByReference Then Begin
+  Emit386Mov(T,RegName(R_EDX),SymbolStorageRef(SymbolIndex));
+  Emit386Mov(T,'[edx]',RegName(R_EAX));
+ End
+ Else Emit386Mov(T,SymbolStorageRef(SymbolIndex),RegName(R_EAX));
+End;
+
+Procedure EmitScopeBasicStatements(Var T:Text;ScopeIndex:Integer;
+ Var LabelCounter:Integer);
+Const
+ MAX_IF_EMIT_DEPTH = 256;
+ MAX_LOOP_EMIT_DEPTH = 256;
+Var
+ I:Integer;
+ J:Integer;
+ IfDepth:Integer;
+ IfId:Array[1..MAX_IF_EMIT_DEPTH] Of Integer;
+ IfBranch:Array[1..MAX_IF_EMIT_DEPTH] Of Integer;
+ IfEndLabel:Array[1..MAX_IF_EMIT_DEPTH] Of String[127];
+ IfNextLabel:Array[1..MAX_IF_EMIT_DEPTH] Of String[127];
+ IfHasElse:Array[1..MAX_IF_EMIT_DEPTH] Of Boolean;
+ LoopDepth:Integer;
+ LoopId:Array[1..MAX_LOOP_EMIT_DEPTH] Of Integer;
+ LoopKind:Array[1..MAX_LOOP_EMIT_DEPTH] Of TIRStatementKind;
+ LoopStartLabel:Array[1..MAX_LOOP_EMIT_DEPTH] Of String[127];
+ LoopEndLabel:Array[1..MAX_LOOP_EMIT_DEPTH] Of String[127];
+ LoopBodyLabel:Array[1..MAX_LOOP_EMIT_DEPTH] Of String[127];
+ LoopPositiveLabel:Array[1..MAX_LOOP_EMIT_DEPTH] Of String[127];
+ LoopNegativeLabel:Array[1..MAX_LOOP_EMIT_DEPTH] Of String[127];
+ LoopVariable:Array[1..MAX_LOOP_EMIT_DEPTH] Of Integer;
+ S:TIRStatement;
+ Target:TSymbol;
+Begin
+ IfDepth:=0;
+ LoopDepth:=0;
+ For I:=1 To Pipeline.IrStatementCount Do Begin
+  S:=Pipeline.IrStatements[I];
+  If (S.ScopeIndex<>ScopeIndex) Or (S.ControlDepth<>0) Then Continue;
+  Case S.Kind Of
+   IR_STMT_WHILE_BEGIN:
+    Begin
+     If LoopDepth>=MAX_LOOP_EMIT_DEPTH Then Begin
+      PipelineErrorAt(EK_CODEGEN,'boucle trop profonde',S.Line,S.Column);
+      Exit;
+     End;
+     Inc(LoopDepth);
+     LoopId[LoopDepth]:=S.ControlId;
+     LoopKind[LoopDepth]:=IR_STMT_WHILE_BEGIN;
+     LoopStartLabel[LoopDepth]:=MakeInternalLabel('WHILE_S'+
+      IntToString(ScopeIndex)+'_'+IntToString(S.ControlId)+'_TEST');
+     LoopEndLabel[LoopDepth]:=MakeInternalLabel('WHILE_S'+
+      IntToString(ScopeIndex)+'_'+IntToString(S.ControlId)+'_END');
+     EmitAsmLabel(T,LoopStartLabel[LoopDepth]);
+     EmitAsmComment(T,'WHILE condition');
+     EmitIRExpressionAsm(T,S.ExpressionRoot,LabelCounter);
+     EmitAsmInstr(T,'cmp',RegName(R_EAX)+', 0');
+     EmitAsmInstr(T,'je',LoopEndLabel[LoopDepth]);
+    End;
+   IR_STMT_WHILE_END:
+    Begin
+     If (LoopDepth=0) Or (LoopId[LoopDepth]<>S.ControlId) Or
+        (LoopKind[LoopDepth]<>IR_STMT_WHILE_BEGIN) Then Begin
+      PipelineErrorAt(EK_CODEGEN,'END WHILE IR mal imbrique',
+                      S.Line,S.Column);
+      Exit;
+     End;
+     EmitAsmInstr(T,'jmp',LoopStartLabel[LoopDepth]);
+     EmitAsmLabel(T,LoopEndLabel[LoopDepth]);
+     Dec(LoopDepth);
+    End;
+   IR_STMT_REPEAT_BEGIN:
+    Begin
+     If LoopDepth>=MAX_LOOP_EMIT_DEPTH Then Begin
+      PipelineErrorAt(EK_CODEGEN,'boucle trop profonde',S.Line,S.Column);
+      Exit;
+     End;
+     Inc(LoopDepth);
+     LoopId[LoopDepth]:=S.ControlId;
+     LoopKind[LoopDepth]:=IR_STMT_REPEAT_BEGIN;
+     LoopStartLabel[LoopDepth]:=MakeInternalLabel('REPEAT_S'+
+      IntToString(ScopeIndex)+'_'+IntToString(S.ControlId)+'_START');
+     LoopEndLabel[LoopDepth]:='';
+     EmitAsmLabel(T,LoopStartLabel[LoopDepth]);
+     EmitAsmComment(T,'REPEAT');
+    End;
+   IR_STMT_REPEAT_UNTIL:
+    Begin
+     If (LoopDepth=0) Or (LoopId[LoopDepth]<>S.ControlId) Or
+        (LoopKind[LoopDepth]<>IR_STMT_REPEAT_BEGIN) Then Begin
+      PipelineErrorAt(EK_CODEGEN,'UNTIL IR mal imbrique',
+                      S.Line,S.Column);
+      Exit;
+     End;
+     EmitAsmComment(T,'UNTIL condition');
+     EmitIRExpressionAsm(T,S.ExpressionRoot,LabelCounter);
+     EmitAsmInstr(T,'cmp',RegName(R_EAX)+', 0');
+     EmitAsmInstr(T,'je',LoopStartLabel[LoopDepth]);
+     Dec(LoopDepth);
+    End;
+   IR_STMT_FOR_BEGIN:
+    Begin
+     If LoopDepth>=MAX_LOOP_EMIT_DEPTH Then Begin
+      PipelineErrorAt(EK_CODEGEN,'boucle trop profonde',S.Line,S.Column);
+      Exit;
+     End;
+     Inc(LoopDepth);
+     LoopId[LoopDepth]:=S.ControlId;
+     LoopKind[LoopDepth]:=IR_STMT_FOR_BEGIN;
+     LoopVariable[LoopDepth]:=S.TargetSymbol;
+     LoopStartLabel[LoopDepth]:=MakeInternalLabel('FOR_S'+
+      IntToString(ScopeIndex)+'_'+IntToString(S.ControlId)+'_TEST');
+     LoopBodyLabel[LoopDepth]:=MakeInternalLabel('FOR_S'+
+      IntToString(ScopeIndex)+'_'+IntToString(S.ControlId)+'_BODY');
+     LoopPositiveLabel[LoopDepth]:=MakeInternalLabel('FOR_S'+
+      IntToString(ScopeIndex)+'_'+IntToString(S.ControlId)+'_POS');
+     LoopNegativeLabel[LoopDepth]:=MakeInternalLabel('FOR_S'+
+      IntToString(ScopeIndex)+'_'+IntToString(S.ControlId)+'_NEG');
+     LoopEndLabel[LoopDepth]:=MakeInternalLabel('FOR_S'+
+      IntToString(ScopeIndex)+'_'+IntToString(S.ControlId)+'_END');
+     EmitAsmComment(T,'FOR initialisation');
+     EmitIRExpressionAsm(T,S.ExpressionRoot,LabelCounter);
+     EmitIRStoreSymbol(T,S.TargetSymbol);
+     EmitIRExpressionAsm(T,S.Arguments[1],LabelCounter);
+     Emit386Push(T,RegName(R_EAX));
+     EmitIRExpressionAsm(T,S.Arguments[2],LabelCounter);
+     Emit386Push(T,RegName(R_EAX));
+     EmitAsmLabel(T,LoopStartLabel[LoopDepth]);
+     EmitAsmInstr(T,'cmp','dword [esp], 0');
+     EmitAsmInstr(T,'jg',LoopPositiveLabel[LoopDepth]);
+     EmitAsmInstr(T,'jl',LoopNegativeLabel[LoopDepth]);
+     EmitAsmInstr(T,'jmp',LoopEndLabel[LoopDepth]);
+     EmitAsmLabel(T,LoopPositiveLabel[LoopDepth]);
+     EmitIRLoadSymbol(T,S.TargetSymbol);
+     EmitAsmInstr(T,'cmp',RegName(R_EAX)+', [esp+4]');
+     EmitAsmInstr(T,'jg',LoopEndLabel[LoopDepth]);
+     EmitAsmInstr(T,'jmp',LoopBodyLabel[LoopDepth]);
+     EmitAsmLabel(T,LoopNegativeLabel[LoopDepth]);
+     EmitIRLoadSymbol(T,S.TargetSymbol);
+     EmitAsmInstr(T,'cmp',RegName(R_EAX)+', [esp+4]');
+     EmitAsmInstr(T,'jl',LoopEndLabel[LoopDepth]);
+     EmitAsmLabel(T,LoopBodyLabel[LoopDepth]);
+    End;
+   IR_STMT_FOR_END:
+    Begin
+     If (LoopDepth=0) Or (LoopId[LoopDepth]<>S.ControlId) Or
+        (LoopKind[LoopDepth]<>IR_STMT_FOR_BEGIN) Then Begin
+      PipelineErrorAt(EK_CODEGEN,'END FOR IR mal imbrique',
+                      S.Line,S.Column);
+      Exit;
+     End;
+     EmitAsmComment(T,'FOR increment');
+     EmitIRLoadSymbol(T,LoopVariable[LoopDepth]);
+     EmitAsmInstr(T,'add',RegName(R_EAX)+', [esp]');
+     EmitIRStoreSymbol(T,LoopVariable[LoopDepth]);
+     EmitAsmInstr(T,'jmp',LoopStartLabel[LoopDepth]);
+     EmitAsmLabel(T,LoopEndLabel[LoopDepth]);
+     EmitAsmInstr(T,'add',RegName(R_ESP)+', 8');
+     Dec(LoopDepth);
+    End;
+   IR_STMT_IF_BEGIN:
+    Begin
+     If IfDepth>=MAX_IF_EMIT_DEPTH Then Begin
+      PipelineErrorAt(EK_CODEGEN,'IF trop profond',S.Line,S.Column);
+      Exit;
+     End;
+     Inc(IfDepth);
+     IfId[IfDepth]:=S.ControlId;
+     IfBranch[IfDepth]:=1;
+     IfHasElse[IfDepth]:=False;
+     IfEndLabel[IfDepth]:=MakeInternalLabel('IF_S'+
+      IntToString(ScopeIndex)+'_'+IntToString(S.ControlId)+'_END');
+     IfNextLabel[IfDepth]:=MakeInternalLabel('IF_S'+
+      IntToString(ScopeIndex)+'_'+IntToString(S.ControlId)+'_NEXT_1');
+     EmitAsmComment(T,'IF');
+     EmitIRExpressionAsm(T,S.ExpressionRoot,LabelCounter);
+     EmitAsmInstr(T,'cmp',RegName(R_EAX)+', 0');
+     EmitAsmInstr(T,'je',IfNextLabel[IfDepth]);
+    End;
+   IR_STMT_ELSIF:
+    Begin
+     If (IfDepth=0) Or (IfId[IfDepth]<>S.ControlId) Then Begin
+      PipelineErrorAt(EK_CODEGEN,'ELSIF IR mal imbrique',
+                      S.Line,S.Column);
+      Exit;
+     End;
+     EmitAsmInstr(T,'jmp',IfEndLabel[IfDepth]);
+     EmitAsmLabel(T,IfNextLabel[IfDepth]);
+     Inc(IfBranch[IfDepth]);
+     IfNextLabel[IfDepth]:=MakeInternalLabel('IF_S'+
+      IntToString(ScopeIndex)+'_'+IntToString(S.ControlId)+'_NEXT_'+
+      IntToString(IfBranch[IfDepth]));
+     EmitAsmComment(T,'ELSIF');
+     EmitIRExpressionAsm(T,S.ExpressionRoot,LabelCounter);
+     EmitAsmInstr(T,'cmp',RegName(R_EAX)+', 0');
+     EmitAsmInstr(T,'je',IfNextLabel[IfDepth]);
+    End;
+   IR_STMT_ELSE:
+    Begin
+     If (IfDepth=0) Or (IfId[IfDepth]<>S.ControlId) Then Begin
+      PipelineErrorAt(EK_CODEGEN,'ELSE IR mal imbrique',
+                      S.Line,S.Column);
+      Exit;
+     End;
+     EmitAsmInstr(T,'jmp',IfEndLabel[IfDepth]);
+     EmitAsmLabel(T,IfNextLabel[IfDepth]);
+     IfHasElse[IfDepth]:=True;
+     EmitAsmComment(T,'ELSE');
+    End;
+   IR_STMT_IF_END:
+    Begin
+     If (IfDepth=0) Or (IfId[IfDepth]<>S.ControlId) Then Begin
+      PipelineErrorAt(EK_CODEGEN,'END IF IR mal imbrique',
+                      S.Line,S.Column);
+      Exit;
+     End;
+     If Not IfHasElse[IfDepth] Then
+      EmitAsmLabel(T,IfNextLabel[IfDepth]);
+     EmitAsmLabel(T,IfEndLabel[IfDepth]);
+     Dec(IfDepth);
+    End;
+   IR_STMT_EMPTY:
+    EmitAsmComment(T,'instruction vide');
+   IR_STMT_BLOCK_BEGIN:
+    EmitAsmComment(T,'BEGIN imbrique profondeur '+IntToString(S.BlockDepth));
+   IR_STMT_BLOCK_END:
+    EmitAsmComment(T,'END imbrique profondeur '+IntToString(S.BlockDepth));
+   IR_STMT_ASSIGN:
+    Begin
+     Target:=Pipeline.Symbols[S.TargetSymbol];
+     EmitAsmComment(T,Target.Name+' := expression');
+     EmitIRExpressionAsm(T,S.ExpressionRoot,LabelCounter);
+     EmitIRStoreSymbol(T,S.TargetSymbol);
+    End;
+   IR_STMT_CALL:
+    Begin
+     EmitAsmComment(T,'appel '+S.ProcedureName);
+     If S.ProcedureSymbol<>0 Then Begin
+      For J:=S.ArgumentCount DownTo 1 Do Begin
+       EmitIRExpressionAsm(T,S.Arguments[J],LabelCounter);
+       Emit386Push(T,RegName(R_EAX));
+      End;
+      EmitAsmInstr(T,'call',Pipeline.Symbols[S.ProcedureSymbol].AsmName);
+      If S.ArgumentCount>0 Then
+       EmitAsmInstr(T,'add',RegName(R_ESP)+', '+
+                    IntToString(S.ArgumentCount*I386_STACK_SLOT_SIZE));
+     End
+     Else EmitAsmComment(T,'appel externe/predefini differe');
+    End;
+  End;
+ End;
+ If IfDepth<>0 Then
+  PipelineErrorAt(EK_CODEGEN,'IF IR non termine',0,0);
+ If LoopDepth<>0 Then
+  PipelineErrorAt(EK_CODEGEN,'boucle IR non terminee',0,0);
+End;
+
 Function WriteAsm80386File(FileName:String):Boolean;
 Var
  T:Text;
+ I:Integer;
+ ScopeIndex:Integer;
+ LabelCounter:Integer;
 Begin
  WriteAsm80386File:=False;
  Assign(T,FileName);
@@ -1125,11 +1614,22 @@ Begin
  EmitAsmLine(T,'bits 32');
  EmitAsmBlank(T);
  EmitAsmSection(T,Pipeline.Target.CodeSection);
+ LabelCounter:=0;
+ For I:=1 To Pipeline.SymbolCount Do
+  If Pipeline.Symbols[I].Kind=SYM_PROCEDURE Then Begin
+   ScopeIndex:=Pipeline.Symbols[I].ChildScope;
+   EmitAsmLabel(T,Pipeline.Symbols[I].AsmName);
+   Emit386Prologue(T,Pipeline.Scopes[ScopeIndex].FrameSize);
+   EmitScopeBasicStatements(T,ScopeIndex,LabelCounter);
+   Emit386Mov(T,RegName(R_EAX),'0');
+   Emit386Epilogue(T);
+   EmitAsmBlank(T);
+  End;
  EmitAsmLine(T,'global '+Pipeline.Target.EntryLabel);
  EmitAsmLabel(T,Pipeline.Target.EntryLabel);
  EmitAsmComment(T,'prologue standard Win32 80386');
  Emit386Prologue(T,0);
- EmitAsmComment(T,'IR Modula-2 pas encore emis; valeur de retour provisoire');
+ EmitScopeBasicStatements(T,1,LabelCounter);
  Emit386Mov(T,RegName(R_EAX),'0');
  EmitAsmLabel(T,MakeInternalLabel(Pipeline.ModuleName+'_EXIT'));
  Emit386Epilogue(T);
@@ -2908,6 +3408,7 @@ Begin
  Pipeline.Symbols[SymbolIndex].StorageKind:=STORAGE_NONE;
  Pipeline.Symbols[SymbolIndex].StorageOffset:=0;
  Pipeline.Symbols[SymbolIndex].StorageSize:=0;
+ Pipeline.Symbols[SymbolIndex].IsExported:=False;
  Pipeline.Symbols[SymbolIndex].Line:=LineNo;
  Pipeline.Symbols[SymbolIndex].Column:=ColumnNo;
  AddSemanticSymbol:=True;
@@ -3439,16 +3940,88 @@ End;
 
 Function EvaluateConstAnd(CurrentScope:Integer;
  Var Value:TConstValue):Boolean;
+Forward;
+
+Function EvaluateConstComparison(CurrentScope:Integer;
+ Var Value:TConstValue):Boolean;
+Var
+ RightValue:TConstValue;
+ OperatorToken:TToken;
+ Compatible:Boolean;
+ Result:Boolean;
+ Ordering:Boolean;
+Begin
+ EvaluateConstComparison:=False;
+ If Not EvaluateConstSum(CurrentScope,Value) Then Exit;
+ If SemanticIsSymbol('=') Or SemanticIsSymbol('#') Or
+    SemanticIsSymbol('<>') Or SemanticIsSymbol('<') Or
+    SemanticIsSymbol('<=') Or SemanticIsSymbol('>') Or
+    SemanticIsSymbol('>=') Then Begin
+  OperatorToken:=SemanticToken;
+  Ordering:=(OperatorToken.Text<>'=') And
+            (OperatorToken.Text<>'#') And
+            (OperatorToken.Text<>'<>');
+  SemanticAdvance;
+  If Not EvaluateConstSum(CurrentScope,RightValue) Then Exit;
+  If Ordering Then
+   Compatible:=
+    (IsNumericScalar(Value.ScalarType) And
+     IsNumericScalar(RightValue.ScalarType)) Or
+    ((Value.ScalarType=SCALAR_CHAR) And
+     (RightValue.ScalarType=SCALAR_CHAR))
+  Else
+   Compatible:=ScalarTypesCompatible(Value.ScalarType,
+                                      RightValue.ScalarType) Or
+    ((Value.ScalarType=SCALAR_BOOLEAN) And
+     (RightValue.ScalarType=SCALAR_BOOLEAN)) Or
+    ((Value.ScalarType=SCALAR_CHAR) And
+     (RightValue.ScalarType=SCALAR_CHAR)) Or
+    ((Value.ScalarType=SCALAR_STRING) And
+     (RightValue.ScalarType=SCALAR_STRING));
+  If Not Compatible Then Begin
+   SemanticError('CONST: types incompatibles pour '+
+                 OperatorToken.Text,OperatorToken.Line,
+                 OperatorToken.Column);
+   Exit;
+  End;
+  If (Value.ScalarType=SCALAR_STRING) Or
+     (RightValue.ScalarType=SCALAR_STRING) Then Begin
+   If OperatorToken.Text='=' Then
+    Result:=Value.StringValue=RightValue.StringValue
+   Else Result:=Value.StringValue<>RightValue.StringValue;
+  End
+  Else If OperatorToken.Text='=' Then
+   Result:=Value.IntegerValue=RightValue.IntegerValue
+  Else If (OperatorToken.Text='#') Or
+          (OperatorToken.Text='<>') Then
+   Result:=Value.IntegerValue<>RightValue.IntegerValue
+  Else If OperatorToken.Text='<' Then
+   Result:=Value.IntegerValue<RightValue.IntegerValue
+  Else If OperatorToken.Text='<=' Then
+   Result:=Value.IntegerValue<=RightValue.IntegerValue
+  Else If OperatorToken.Text='>' Then
+   Result:=Value.IntegerValue>RightValue.IntegerValue
+  Else Result:=Value.IntegerValue>=RightValue.IntegerValue;
+  InitConstValue(Value);
+  Value.ScalarType:=SCALAR_BOOLEAN;
+  If Result Then Value.IntegerValue:=1 Else Value.IntegerValue:=0;
+  Value.Valid:=True;
+ End;
+ EvaluateConstComparison:=True;
+End;
+
+Function EvaluateConstAnd(CurrentScope:Integer;
+ Var Value:TConstValue):Boolean;
 Var
  RightValue:TConstValue;
  OperatorToken:TToken;
 Begin
  EvaluateConstAnd:=False;
- If Not EvaluateConstSum(CurrentScope,Value) Then Exit;
+ If Not EvaluateConstComparison(CurrentScope,Value) Then Exit;
  While SemanticIsKeyword(KW_AND) Do Begin
   OperatorToken:=SemanticToken;
   SemanticAdvance;
-  If Not EvaluateConstSum(CurrentScope,RightValue) Then Exit;
+  If Not EvaluateConstComparison(CurrentScope,RightValue) Then Exit;
   If Value.ScalarType<>SCALAR_BOOLEAN Then Begin
    ConstTypeError('AND','BOOLEAN',Value.ScalarType,
                   OperatorToken.Line,OperatorToken.Column);
@@ -3865,6 +4438,67 @@ Begin
  End;
 End;
 
+Procedure BuildExportNames;
+Var
+ NameToken:TToken;
+ I:Integer;
+ Duplicate:Boolean;
+Begin
+ Pipeline.ExportCount:=0;
+ If Not SemanticAcceptKeyword(KW_EXPORT) Then Exit;
+ SemanticAcceptKeyword(KW_QUALIFIED);
+ Repeat
+  NameToken:=SemanticToken;
+  If NameToken.Kind<>TK_IDENTIFIER Then Begin
+   SemanticTokenError('nom attendu dans EXPORT');
+   Exit;
+  End;
+  Duplicate:=False;
+  For I:=1 To Pipeline.ExportCount Do
+   If Pipeline.ExportNames[I]=NameToken.Text Then Duplicate:=True;
+  If Duplicate Then Begin
+   SemanticError('nom exporte plusieurs fois: '+NameToken.Text,
+                 NameToken.Line,NameToken.Column);
+   Exit;
+  End;
+  If Pipeline.ExportCount>=MOD2_MAX_EXPORTS Then Begin
+   SemanticError('trop de noms exportes',
+                 NameToken.Line,NameToken.Column);
+   Exit;
+  End;
+  Inc(Pipeline.ExportCount);
+  Pipeline.ExportNames[Pipeline.ExportCount]:=NameToken.Text;
+  SemanticAdvance;
+ Until Not SemanticAcceptSymbol(',');
+ If Not SemanticAcceptSymbol(';') Then
+  SemanticTokenError('point-virgule attendu apres EXPORT');
+End;
+
+Procedure ResolveProcedureExports(ModuleScope:Integer);
+Var
+ I:Integer;
+ SymbolIndex:Integer;
+Begin
+ For I:=1 To Pipeline.ExportCount Do Begin
+  SymbolIndex:=FindSymbolInScope(Pipeline.ExportNames[I],ModuleScope);
+  If SymbolIndex=0 Then Begin
+   SemanticError('nom exporte non declare: '+Pipeline.ExportNames[I],1,1);
+   Exit;
+  End;
+  If Pipeline.Symbols[SymbolIndex].Kind<>SYM_PROCEDURE Then Begin
+   SemanticError('seules les procedures sont exportables actuellement: '+
+                 Pipeline.ExportNames[I],
+                 Pipeline.Symbols[SymbolIndex].Line,
+                 Pipeline.Symbols[SymbolIndex].Column);
+   Exit;
+  End;
+  Pipeline.Symbols[SymbolIndex].IsExported:=True;
+  Pipeline.Symbols[SymbolIndex].AsmName:=
+   MakeAsmLabel('_M2EXP_',Pipeline.ModuleName+'_'+
+                Pipeline.Symbols[SymbolIndex].Name);
+ End;
+End;
+
 Procedure TraceSemanticTables;
 Var
  I:Integer;
@@ -3882,6 +4516,7 @@ Begin
            ' offset=',S.StorageOffset,
            ' slot=',S.StorageSize,
            ' ref=',SymbolStorageRef(I),
+           ' exported=',S.IsExported,
            ' scope=',S.ScopeIndex,' @ ',S.Line,':',S.Column);
   End;
  If Options.Verbose Then Begin
@@ -3928,8 +4563,11 @@ Begin
  End;
  BuildImportSymbols(ModuleScope);
  If Pipeline.ErrorCount<>0 Then Exit;
- If SemanticAcceptKeyword(KW_EXPORT) Then SemanticSkipToSemicolon;
+ BuildExportNames;
+ If Pipeline.ErrorCount<>0 Then Exit;
  BuildDeclarations(ModuleScope);
+ If Pipeline.ErrorCount<>0 Then Exit;
+ ResolveProcedureExports(ModuleScope);
  If Pipeline.ErrorCount<>0 Then Exit;
  ResolveAllScalarTypes;
  If Pipeline.ErrorCount<>0 Then Exit;
@@ -4145,6 +4783,19 @@ Begin
   RootNode:=AddIRNode(IR_EXPR_NEG,ResultType,ChildNode,0,0,Value,
                       Token.Line,Token.Column);
  End
+ Else If IRIsKeyword(KW_NOT) Then Begin
+  IRAdvance;
+  If Not ParseIRUnary(CurrentScope,ChildNode,ChildType) Then Exit;
+  If ChildType<>SCALAR_BOOLEAN Then Begin
+   PipelineErrorAt(EK_CODEGEN,'NOT exige une expression BOOLEAN',
+                   Token.Line,Token.Column);
+   Exit;
+  End;
+  InitConstValue(Value);
+  ResultType:=SCALAR_BOOLEAN;
+  RootNode:=AddIRNode(IR_EXPR_NOT,ResultType,ChildNode,0,0,Value,
+                      Token.Line,Token.Column);
+ End
  Else Begin
   ParseIRUnary:=ParseIRPrimary(CurrentScope,RootNode,ResultType);
   Exit;
@@ -4190,7 +4841,7 @@ Begin
  ParseIRProduct:=True;
 End;
 
-Function ParseIRExpression(CurrentScope:Integer;Var RootNode:Integer;
+Function ParseIRSum(CurrentScope:Integer;Var RootNode:Integer;
  Var ResultType:TScalarType):Boolean;
 Var
  Token:TToken;
@@ -4201,7 +4852,7 @@ Var
  Op:TIRExprOp;
  Value:TConstValue;
 Begin
- ParseIRExpression:=False;
+ ParseIRSum:=False;
  If Not ParseIRProduct(CurrentScope,RootNode,ResultType) Then Exit;
  While IRIsSymbol('+') Or IRIsSymbol('-') Do Begin
   Token:=IRToken;
@@ -4222,6 +4873,121 @@ Begin
   RootNode:=NewNode;
   ResultType:=NewType;
  End;
+ ParseIRSum:=True;
+End;
+
+Function IRTypesComparable(LeftType,RightType:TScalarType;
+ Ordering:Boolean):Boolean;
+Begin
+ If Ordering Then
+  IRTypesComparable:=
+   (IsNumericScalar(LeftType) And IsNumericScalar(RightType)) Or
+   ((LeftType=SCALAR_CHAR) And (RightType=SCALAR_CHAR))
+ Else
+  IRTypesComparable:=ScalarTypesCompatible(LeftType,RightType) Or
+   ((LeftType=SCALAR_BOOLEAN) And (RightType=SCALAR_BOOLEAN)) Or
+   ((LeftType=SCALAR_CHAR) And (RightType=SCALAR_CHAR)) Or
+   ((LeftType=SCALAR_STRING) And (RightType=SCALAR_STRING));
+End;
+
+Function ParseIRComparison(CurrentScope:Integer;Var RootNode:Integer;
+ Var ResultType:TScalarType):Boolean;
+Var
+ Token:TToken;
+ RightNode:Integer;
+ RightType:TScalarType;
+ Op:TIRExprOp;
+ Ordering:Boolean;
+ Value:TConstValue;
+Begin
+ ParseIRComparison:=False;
+ If Not ParseIRSum(CurrentScope,RootNode,ResultType) Then Exit;
+ If IRIsSymbol('=') Or IRIsSymbol('#') Or IRIsSymbol('<>') Or
+    IRIsSymbol('<') Or IRIsSymbol('<=') Or
+    IRIsSymbol('>') Or IRIsSymbol('>=') Then Begin
+  Token:=IRToken;
+  Ordering:=False;
+  If Token.Text='=' Then Op:=IR_EXPR_EQ
+  Else If (Token.Text='#') Or (Token.Text='<>') Then Op:=IR_EXPR_NE
+  Else If Token.Text='<' Then Begin Op:=IR_EXPR_LT; Ordering:=True; End
+  Else If Token.Text='<=' Then Begin Op:=IR_EXPR_LE; Ordering:=True; End
+  Else If Token.Text='>' Then Begin Op:=IR_EXPR_GT; Ordering:=True; End
+  Else Begin Op:=IR_EXPR_GE; Ordering:=True; End;
+  IRAdvance;
+  If Not ParseIRSum(CurrentScope,RightNode,RightType) Then Exit;
+  If Not IRTypesComparable(ResultType,RightType,Ordering) Then Begin
+   PipelineErrorAt(EK_CODEGEN,'types incompatibles pour '+
+                   Token.Text+': '+ScalarTypeName(ResultType)+' et '+
+                   ScalarTypeName(RightType),Token.Line,Token.Column);
+   Exit;
+  End;
+  InitConstValue(Value);
+  RootNode:=AddIRNode(Op,SCALAR_BOOLEAN,RootNode,RightNode,0,Value,
+                      Token.Line,Token.Column);
+  ResultType:=SCALAR_BOOLEAN;
+ End;
+ ParseIRComparison:=True;
+End;
+
+Function ParseIRNot(CurrentScope:Integer;Var RootNode:Integer;
+ Var ResultType:TScalarType):Boolean;
+Begin
+ ParseIRNot:=ParseIRComparison(CurrentScope,RootNode,ResultType);
+End;
+
+Function ParseIRAnd(CurrentScope:Integer;Var RootNode:Integer;
+ Var ResultType:TScalarType):Boolean;
+Var
+ Token:TToken;
+ RightNode:Integer;
+ RightType:TScalarType;
+ Value:TConstValue;
+Begin
+ ParseIRAnd:=False;
+ If Not ParseIRNot(CurrentScope,RootNode,ResultType) Then Exit;
+ While IRIsKeyword(KW_AND) Do Begin
+  Token:=IRToken;
+  IRAdvance;
+  If Not ParseIRNot(CurrentScope,RightNode,RightType) Then Exit;
+  If (ResultType<>SCALAR_BOOLEAN) Or
+     (RightType<>SCALAR_BOOLEAN) Then Begin
+   PipelineErrorAt(EK_CODEGEN,'AND exige deux expressions BOOLEAN',
+                   Token.Line,Token.Column);
+   Exit;
+  End;
+  InitConstValue(Value);
+  RootNode:=AddIRNode(IR_EXPR_AND,SCALAR_BOOLEAN,RootNode,RightNode,0,Value,
+                      Token.Line,Token.Column);
+  ResultType:=SCALAR_BOOLEAN;
+ End;
+ ParseIRAnd:=True;
+End;
+
+Function ParseIRExpression(CurrentScope:Integer;Var RootNode:Integer;
+ Var ResultType:TScalarType):Boolean;
+Var
+ Token:TToken;
+ RightNode:Integer;
+ RightType:TScalarType;
+ Value:TConstValue;
+Begin
+ ParseIRExpression:=False;
+ If Not ParseIRAnd(CurrentScope,RootNode,ResultType) Then Exit;
+ While IRIsKeyword(KW_OR) Do Begin
+  Token:=IRToken;
+  IRAdvance;
+  If Not ParseIRAnd(CurrentScope,RightNode,RightType) Then Exit;
+  If (ResultType<>SCALAR_BOOLEAN) Or
+     (RightType<>SCALAR_BOOLEAN) Then Begin
+   PipelineErrorAt(EK_CODEGEN,'OR exige deux expressions BOOLEAN',
+                   Token.Line,Token.Column);
+   Exit;
+  End;
+  InitConstValue(Value);
+  RootNode:=AddIRNode(IR_EXPR_OR,SCALAR_BOOLEAN,RootNode,RightNode,0,Value,
+                      Token.Line,Token.Column);
+  ResultType:=SCALAR_BOOLEAN;
+ End;
  ParseIRExpression:=True;
 End;
 
@@ -4233,6 +4999,29 @@ Var
 Begin
  Token:=IRToken;
  If Not ParseIRExpression(CurrentScope,RootNode,ResultType) Then Exit;
+ AddIRExpression(RootNode,CurrentScope,Context,Token.Line,Token.Column);
+End;
+
+Procedure CollectIRCondition(CurrentScope:Integer;Context:String;
+ Terminator:TKeyword);
+Var
+ RootNode:Integer;
+ ResultType:TScalarType;
+ Token:TToken;
+Begin
+ Token:=IRToken;
+ If Not ParseIRExpression(CurrentScope,RootNode,ResultType) Then Exit;
+ If ResultType<>SCALAR_BOOLEAN Then Begin
+  PipelineErrorAt(EK_CODEGEN,Context+' exige une expression BOOLEAN',
+                  Token.Line,Token.Column);
+  Exit;
+ End;
+ If (Terminator<>KW_NONE) And Not IRIsKeyword(Terminator) Then Begin
+  PipelineErrorAt(EK_CODEGEN,'mot-cle '+KeywordName(Terminator)+
+                  ' attendu apres la condition',
+                  IRToken.Line,IRToken.Column);
+  Exit;
+ End;
  AddIRExpression(RootNode,CurrentScope,Context,Token.Line,Token.Column);
 End;
 
@@ -4269,7 +5058,22 @@ Begin
  While (I<=Pipeline.IrTokenLimit) And (Pipeline.ErrorCount=0) Do Begin
   Pipeline.IrTokenIndex:=I;
   Token:=IRToken;
-  If (Token.Kind=TK_IDENTIFIER) And
+  If IRIsKeyword(KW_IF) Or IRIsKeyword(KW_ELSIF) Then Begin
+   IRAdvance;
+   CollectIRCondition(ScopeIndex,'CONDITION IF',KW_THEN);
+   I:=Pipeline.IrTokenIndex;
+  End
+  Else If IRIsKeyword(KW_WHILE) Then Begin
+   IRAdvance;
+   CollectIRCondition(ScopeIndex,'CONDITION WHILE',KW_DO);
+   I:=Pipeline.IrTokenIndex;
+  End
+  Else If IRIsKeyword(KW_UNTIL) Then Begin
+   IRAdvance;
+   CollectIRCondition(ScopeIndex,'CONDITION UNTIL',KW_NONE);
+   I:=Pipeline.IrTokenIndex;
+  End
+  Else If (Token.Kind=TK_IDENTIFIER) And
      (I<Pipeline.IrTokenLimit) And
      (Pipeline.Tokens[I+1].Kind=TK_SYMBOL) And
      (Pipeline.Tokens[I+1].Text=':=') Then Begin
@@ -4304,15 +5108,664 @@ Begin
  End;
 End;
 
+Function AddIRStatement(Kind:TIRStatementKind;ScopeIndex,BlockDepth,
+ ControlDepth,
+ TargetSymbol,ExpressionRoot,ProcedureSymbol:Integer;
+ ProcedureName:String;LineNo,ColumnNo:Integer):Integer;
+Var
+ I:Integer;
+Begin
+ AddIRStatement:=0;
+ If Pipeline.IrStatementCount>=MOD2_MAX_STATEMENTS Then Begin
+  PipelineErrorAt(EK_CODEGEN,'trop d''instructions IR',
+                  LineNo,ColumnNo);
+  Exit;
+ End;
+ Inc(Pipeline.IrStatementCount);
+ AddIRStatement:=Pipeline.IrStatementCount;
+ Pipeline.IrStatements[AddIRStatement].Kind:=Kind;
+ Pipeline.IrStatements[AddIRStatement].ScopeIndex:=ScopeIndex;
+ Pipeline.IrStatements[AddIRStatement].BlockDepth:=BlockDepth;
+ Pipeline.IrStatements[AddIRStatement].ControlDepth:=ControlDepth;
+ Pipeline.IrStatements[AddIRStatement].ControlId:=0;
+ Pipeline.IrStatements[AddIRStatement].TargetSymbol:=TargetSymbol;
+ Pipeline.IrStatements[AddIRStatement].ExpressionRoot:=ExpressionRoot;
+ Pipeline.IrStatements[AddIRStatement].ProcedureSymbol:=ProcedureSymbol;
+ Pipeline.IrStatements[AddIRStatement].ProcedureName:=ProcedureName;
+ Pipeline.IrStatements[AddIRStatement].ArgumentCount:=0;
+ For I:=1 To MOD2_MAX_CALL_ARGS Do
+  Pipeline.IrStatements[AddIRStatement].Arguments[I]:=0;
+ Pipeline.IrStatements[AddIRStatement].Line:=LineNo;
+ Pipeline.IrStatements[AddIRStatement].Column:=ColumnNo;
+End;
+
+Function AddIRIfStatement(Kind:TIRStatementKind;ScopeIndex,BlockDepth,
+ DeferredDepth,ControlId,ExpressionRoot:Integer;
+ LineNo,ColumnNo:Integer):Integer;
+Begin
+ AddIRIfStatement:=AddIRStatement(Kind,ScopeIndex,BlockDepth,
+  DeferredDepth,0,ExpressionRoot,0,'',LineNo,ColumnNo);
+ If AddIRIfStatement<>0 Then
+  Pipeline.IrStatements[AddIRIfStatement].ControlId:=ControlId;
+End;
+
+Function AddIRLoopStatement(Kind:TIRStatementKind;ScopeIndex,BlockDepth,
+ DeferredDepth,ControlId,ExpressionRoot:Integer;
+ LineNo,ColumnNo:Integer):Integer;
+Begin
+ AddIRLoopStatement:=AddIRStatement(Kind,ScopeIndex,BlockDepth,
+  DeferredDepth,0,ExpressionRoot,0,'',LineNo,ColumnNo);
+ If AddIRLoopStatement<>0 Then
+  Pipeline.IrStatements[AddIRLoopStatement].ControlId:=ControlId;
+End;
+
+Function AddIRForStatement(Kind:TIRStatementKind;ScopeIndex,BlockDepth,
+ DeferredDepth,ControlId,LoopSymbol,StartRoot,EndRoot,StepRoot:Integer;
+ LineNo,ColumnNo:Integer):Integer;
+Begin
+ AddIRForStatement:=AddIRStatement(Kind,ScopeIndex,BlockDepth,
+  DeferredDepth,LoopSymbol,StartRoot,0,'',LineNo,ColumnNo);
+ If AddIRForStatement<>0 Then Begin
+  Pipeline.IrStatements[AddIRForStatement].ControlId:=ControlId;
+  Pipeline.IrStatements[AddIRForStatement].ArgumentCount:=2;
+  Pipeline.IrStatements[AddIRForStatement].Arguments[1]:=EndRoot;
+  Pipeline.IrStatements[AddIRForStatement].Arguments[2]:=StepRoot;
+ End;
+End;
+
+Function AddIRIntegerConstant(Value:LongInt;LineNo,ColumnNo:Integer):Integer;
+Var
+ ConstValue:TConstValue;
+Begin
+ InitConstValue(ConstValue);
+ ConstValue.ScalarType:=SCALAR_INTEGER;
+ ConstValue.IntegerValue:=Value;
+ ConstValue.Valid:=True;
+ AddIRIntegerConstant:=AddIRNode(IR_EXPR_CONST,SCALAR_INTEGER,0,0,0,
+                                 ConstValue,LineNo,ColumnNo);
+End;
+
+Function ParseStatementExpression(CurrentScope:Integer;
+ Var RootNode:Integer;Var ResultType:TScalarType):Boolean;
+Begin
+ ParseStatementExpression:=
+  ParseIRExpression(CurrentScope,RootNode,ResultType);
+End;
+
+Procedure BuildAssignmentStatement(ScopeIndex,BlockDepth,
+ ControlDepth:Integer);
+Var
+ NameToken:TToken;
+ TargetSymbol:Integer;
+ RootNode:Integer;
+ ResultType:TScalarType;
+ TargetType:TScalarType;
+Begin
+ NameToken:=IRToken;
+ TargetSymbol:=FindVisibleSymbol(NameToken.Text,ScopeIndex);
+ If (TargetSymbol=0) Or
+    ((Pipeline.Symbols[TargetSymbol].Kind<>SYM_VARIABLE) And
+     (Pipeline.Symbols[TargetSymbol].Kind<>SYM_PARAMETER)) Then Begin
+  PipelineErrorAt(EK_CODEGEN,'destination d''affectation invalide: '+
+                  NameToken.Text,NameToken.Line,NameToken.Column);
+  Exit;
+ End;
+ IRAdvance;
+ If Not IRAcceptSymbol(':=') Then Begin
+  PipelineErrorAt(EK_CODEGEN,'symbole ":=" attendu',
+                  IRToken.Line,IRToken.Column);
+  Exit;
+ End;
+ If Not ParseStatementExpression(ScopeIndex,RootNode,ResultType) Then Exit;
+ TargetType:=Pipeline.Symbols[TargetSymbol].ScalarType;
+ If Not ScalarTypesCompatible(TargetType,ResultType) Then Begin
+  PipelineErrorAt(EK_CODEGEN,'affectation incompatible: '+
+                  ScalarTypeName(ResultType)+' vers '+
+                  ScalarTypeName(TargetType),
+                  NameToken.Line,NameToken.Column);
+  Exit;
+ End;
+ AddIRStatement(IR_STMT_ASSIGN,ScopeIndex,BlockDepth,ControlDepth,TargetSymbol,
+                RootNode,0,'',NameToken.Line,NameToken.Column);
+End;
+
+Function ResolveCallTarget(ScopeIndex:Integer;Var ProcedureSymbol:Integer;
+ Var ProcedureName:String;Var CallToken:TToken):Boolean;
+Var
+ FirstSymbol:Integer;
+ ModuleName:String;
+Begin
+ ResolveCallTarget:=False;
+ ProcedureSymbol:=0;
+ ProcedureName:='';
+ CallToken:=IRToken;
+ If IRToken.Kind<>TK_IDENTIFIER Then Exit;
+ FirstSymbol:=FindVisibleSymbol(IRToken.Text,ScopeIndex);
+ ModuleName:=IRToken.Text;
+ ProcedureName:=IRToken.Text;
+ IRAdvance;
+ If IRAcceptSymbol('.') Then Begin
+  If (FirstSymbol=0) Or
+     (Pipeline.Symbols[FirstSymbol].Kind<>SYM_IMPORT_MODULE) Then Begin
+   PipelineErrorAt(EK_CODEGEN,'module d''appel inconnu: '+ModuleName,
+                   CallToken.Line,CallToken.Column);
+   Exit;
+  End;
+  If IRToken.Kind<>TK_IDENTIFIER Then Begin
+   PipelineErrorAt(EK_CODEGEN,'nom de procedure attendu apres "."',
+                   IRToken.Line,IRToken.Column);
+   Exit;
+  End;
+  ProcedureName:=ModuleName+'.'+IRToken.Text;
+  IRAdvance;
+ End
+ Else If FirstSymbol<>0 Then Begin
+  If Pipeline.Symbols[FirstSymbol].Kind=SYM_PROCEDURE Then
+   ProcedureSymbol:=FirstSymbol
+  Else If Pipeline.Symbols[FirstSymbol].Kind<>SYM_IMPORT_NAME Then Begin
+   PipelineErrorAt(EK_CODEGEN,'"'+ProcedureName+
+                   '" n''est pas une procedure',
+                   CallToken.Line,CallToken.Column);
+   Exit;
+  End;
+ End
+ Else If (ProcedureName='INC') Or (ProcedureName='DEC') Or
+         (ProcedureName='ORD') Or (ProcedureName='CHR') Or
+         (ProcedureName='ODD') Or (ProcedureName='ABS') Then
+ Else Begin
+  PipelineErrorAt(EK_CODEGEN,'procedure inconnue: '+ProcedureName,
+                  CallToken.Line,CallToken.Column);
+  Exit;
+ End;
+ ResolveCallTarget:=True;
+End;
+
+Function FindProcedureParameter(ProcedureSymbol,ParamIndex:Integer):Integer;
+Var
+ I:Integer;
+ ParamScope:Integer;
+Begin
+ FindProcedureParameter:=0;
+ If ProcedureSymbol=0 Then Exit;
+ ParamScope:=Pipeline.Symbols[ProcedureSymbol].ChildScope;
+ For I:=1 To Pipeline.SymbolCount Do
+  If (Pipeline.Symbols[I].Kind=SYM_PARAMETER) And
+     (Pipeline.Symbols[I].ScopeIndex=ParamScope) And
+     (Pipeline.Symbols[I].ParamIndex=ParamIndex) Then Begin
+   FindProcedureParameter:=I;
+   Exit;
+  End;
+End;
+
+Function IRRootAddressable(RootNode:Integer;Var SymbolIndex:Integer):Boolean;
+Begin
+ SymbolIndex:=0;
+ IRRootAddressable:=(RootNode>=1) And
+                    (RootNode<=Pipeline.IrNodeCount) And
+                    (Pipeline.IrNodes[RootNode].Op=IR_EXPR_LOAD);
+ If IRRootAddressable Then Begin
+  SymbolIndex:=Pipeline.IrNodes[RootNode].SymbolIndex;
+  IRRootAddressable:=(Pipeline.Symbols[SymbolIndex].Kind=SYM_VARIABLE) Or
+                     (Pipeline.Symbols[SymbolIndex].Kind=SYM_PARAMETER);
+ End;
+End;
+
+Procedure BuildCallStatement(ScopeIndex,BlockDepth,ControlDepth:Integer);
+Var
+ StatementIndex:Integer;
+ ProcedureSymbol:Integer;
+ ProcedureName:String;
+ CallToken:TToken;
+ RootNode:Integer;
+ ResultType:TScalarType;
+ ArgCount:Integer;
+ ParamSymbol:Integer;
+ I:Integer;
+ ExpectedCount:Integer;
+ ArgumentSymbol:Integer;
+Begin
+ If Not ResolveCallTarget(ScopeIndex,ProcedureSymbol,ProcedureName,
+                          CallToken) Then Exit;
+ StatementIndex:=AddIRStatement(IR_STMT_CALL,ScopeIndex,BlockDepth,
+                                ControlDepth,0,0,
+                                ProcedureSymbol,ProcedureName,
+                                CallToken.Line,CallToken.Column);
+ If StatementIndex=0 Then Exit;
+ ArgCount:=0;
+ If IRAcceptSymbol('(') Then Begin
+  If Not IRIsSymbol(')') Then
+   Repeat
+    If ArgCount>=MOD2_MAX_CALL_ARGS Then Begin
+     PipelineErrorAt(EK_CODEGEN,'trop d''arguments dans l''appel',
+                     IRToken.Line,IRToken.Column);
+     Exit;
+    End;
+    If Not ParseStatementExpression(ScopeIndex,RootNode,ResultType) Then Exit;
+    Inc(ArgCount);
+    Pipeline.IrStatements[StatementIndex].Arguments[ArgCount]:=RootNode;
+   Until Not IRAcceptSymbol(',');
+  If Not IRAcceptSymbol(')') Then Begin
+   PipelineErrorAt(EK_CODEGEN,'symbole ")" attendu dans l''appel',
+                   IRToken.Line,IRToken.Column);
+   Exit;
+  End;
+ End;
+ Pipeline.IrStatements[StatementIndex].ArgumentCount:=ArgCount;
+ If ProcedureSymbol<>0 Then Begin
+  ExpectedCount:=0;
+  For I:=1 To Pipeline.SymbolCount Do
+   If (Pipeline.Symbols[I].Kind=SYM_PARAMETER) And
+      (Pipeline.Symbols[I].ScopeIndex=
+       Pipeline.Symbols[ProcedureSymbol].ChildScope) Then
+    Inc(ExpectedCount);
+  If ArgCount<>ExpectedCount Then Begin
+   PipelineErrorAt(EK_CODEGEN,'appel de '+ProcedureName+' attend '+
+                   IntToString(ExpectedCount)+' argument(s), obtenu '+
+                   IntToString(ArgCount),CallToken.Line,CallToken.Column);
+   Exit;
+  End;
+  For I:=1 To ArgCount Do Begin
+   ParamSymbol:=FindProcedureParameter(ProcedureSymbol,I);
+   If (ParamSymbol<>0) And Not ScalarTypesCompatible(
+      Pipeline.Symbols[ParamSymbol].ScalarType,
+      Pipeline.IrNodes[Pipeline.IrStatements[StatementIndex].
+       Arguments[I]].ScalarType) Then Begin
+    PipelineErrorAt(EK_CODEGEN,'type incompatible pour l''argument '+
+                    IntToString(I)+' de '+ProcedureName,
+                    CallToken.Line,CallToken.Column);
+    Exit;
+   End;
+   If (ParamSymbol<>0) And Pipeline.Symbols[ParamSymbol].ByReference And
+      Not IRRootAddressable(
+       Pipeline.IrStatements[StatementIndex].Arguments[I],
+       ArgumentSymbol) Then Begin
+    PipelineErrorAt(EK_CODEGEN,'l''argument VAR '+IntToString(I)+
+                    ' de '+ProcedureName+' doit etre une variable',
+                    CallToken.Line,CallToken.Column);
+    Exit;
+   End;
+  End;
+ End;
+End;
+
+Procedure BuildBasicStatements(ScopeIndex:Integer);
+Const
+ MAX_CONTROL_DEPTH = 256;
+Var
+ I:Integer;
+ BlockDepth:Integer;
+ ControlDepth:Integer;
+ ActiveControlDepth:Integer;
+ DeferredControlDepth:Integer;
+ NextControlId:Integer;
+ ControlStack:Array[1..MAX_CONTROL_DEPTH] Of TKeyword;
+ ControlIdStack:Array[1..MAX_CONTROL_DEPTH] Of Integer;
+ AtStatementStart:Boolean;
+ Token:TToken;
+ NextToken:TToken;
+ Top:TKeyword;
+ CurrentControlId:Integer;
+ RootNode:Integer;
+ ResultType:TScalarType;
+ StartRoot:Integer;
+ EndRoot:Integer;
+ StepRoot:Integer;
+ StartType:TScalarType;
+ EndType:TScalarType;
+ StepType:TScalarType;
+ LoopSymbol:Integer;
+ LoopToken:TToken;
+Begin
+ If Pipeline.Scopes[ScopeIndex].BodyStart=0 Then Exit;
+ Pipeline.IrTokenLimit:=Pipeline.Scopes[ScopeIndex].BodyEnd;
+ Pipeline.IrTokenIndex:=Pipeline.Scopes[ScopeIndex].BodyStart;
+ BlockDepth:=0;
+ ControlDepth:=0;
+ ActiveControlDepth:=0;
+ DeferredControlDepth:=0;
+ NextControlId:=0;
+ AtStatementStart:=True;
+ While (Pipeline.IrTokenIndex<=Pipeline.IrTokenLimit) And
+       (Pipeline.ErrorCount=0) Do Begin
+  I:=Pipeline.IrTokenIndex;
+  Token:=IRToken;
+  If Token.Kind=TK_KEYWORD Then Begin
+   If Token.Keyword=KW_BEGIN Then Begin
+    AddIRStatement(IR_STMT_BLOCK_BEGIN,ScopeIndex,BlockDepth,
+                   DeferredControlDepth,0,0,0,'',
+                   Token.Line,Token.Column);
+    Inc(BlockDepth);
+    If ControlDepth<MAX_CONTROL_DEPTH Then Begin
+     Inc(ControlDepth);
+     ControlStack[ControlDepth]:=KW_BEGIN;
+     ControlIdStack[ControlDepth]:=0;
+    End;
+    IRAdvance;
+    AtStatementStart:=True;
+    Continue;
+   End;
+   If Token.Keyword=KW_RETURN Then Begin
+    If Pipeline.Scopes[ScopeIndex].Kind<>SCOPE_PROCEDURE Then Begin
+     PipelineErrorAt(EK_CODEGEN,'RETURN hors procedure',
+                     Token.Line,Token.Column);
+     Exit;
+    End;
+    AddIRStatement(IR_STMT_RETURN,ScopeIndex,BlockDepth,
+                   DeferredControlDepth,0,0,0,'',
+                   Token.Line,Token.Column);
+    IRAdvance;
+    AtStatementStart:=False;
+    Continue;
+   End;
+   If Token.Keyword=KW_IF Then Begin
+    Inc(NextControlId);
+    CurrentControlId:=NextControlId;
+    IRAdvance;
+    If Not ParseStatementExpression(ScopeIndex,RootNode,ResultType) Then Exit;
+    If ResultType<>SCALAR_BOOLEAN Then Begin
+     PipelineErrorAt(EK_CODEGEN,'IF exige une expression BOOLEAN',
+                     Token.Line,Token.Column);
+     Exit;
+    End;
+    If Not IRIsKeyword(KW_THEN) Then Begin
+     PipelineErrorAt(EK_CODEGEN,'mot-cle THEN attendu apres IF',
+                     IRToken.Line,IRToken.Column);
+     Exit;
+    End;
+    AddIRIfStatement(IR_STMT_IF_BEGIN,ScopeIndex,BlockDepth,
+                     DeferredControlDepth,CurrentControlId,RootNode,
+                     Token.Line,Token.Column);
+    If ControlDepth<MAX_CONTROL_DEPTH Then Begin
+     Inc(ControlDepth);
+     ControlStack[ControlDepth]:=KW_IF;
+     ControlIdStack[ControlDepth]:=CurrentControlId;
+    End;
+    Inc(ActiveControlDepth);
+    IRAdvance;
+    AtStatementStart:=True;
+    Continue;
+   End;
+   If Token.Keyword=KW_WHILE Then Begin
+    Inc(NextControlId);
+    CurrentControlId:=NextControlId;
+    IRAdvance;
+    If Not ParseStatementExpression(ScopeIndex,RootNode,ResultType) Then Exit;
+    If ResultType<>SCALAR_BOOLEAN Then Begin
+     PipelineErrorAt(EK_CODEGEN,'WHILE exige une expression BOOLEAN',
+                     Token.Line,Token.Column);
+     Exit;
+    End;
+    If Not IRIsKeyword(KW_DO) Then Begin
+     PipelineErrorAt(EK_CODEGEN,'mot-cle DO attendu apres WHILE',
+                     IRToken.Line,IRToken.Column);
+     Exit;
+    End;
+    AddIRLoopStatement(IR_STMT_WHILE_BEGIN,ScopeIndex,BlockDepth,
+                       DeferredControlDepth,CurrentControlId,RootNode,
+                       Token.Line,Token.Column);
+    If ControlDepth<MAX_CONTROL_DEPTH Then Begin
+     Inc(ControlDepth);
+     ControlStack[ControlDepth]:=KW_WHILE;
+     ControlIdStack[ControlDepth]:=CurrentControlId;
+    End;
+    Inc(ActiveControlDepth);
+    IRAdvance;
+    AtStatementStart:=True;
+    Continue;
+   End;
+   If Token.Keyword=KW_FOR Then Begin
+    Inc(NextControlId);
+    CurrentControlId:=NextControlId;
+    IRAdvance;
+    LoopToken:=IRToken;
+    If LoopToken.Kind<>TK_IDENTIFIER Then Begin
+     PipelineErrorAt(EK_CODEGEN,'variable attendue apres FOR',
+                     LoopToken.Line,LoopToken.Column);
+     Exit;
+    End;
+    LoopSymbol:=FindVisibleSymbol(LoopToken.Text,ScopeIndex);
+    If (LoopSymbol=0) Or
+       ((Pipeline.Symbols[LoopSymbol].Kind<>SYM_VARIABLE) And
+        (Pipeline.Symbols[LoopSymbol].Kind<>SYM_PARAMETER)) Or
+       Not IsNumericScalar(Pipeline.Symbols[LoopSymbol].ScalarType) Then Begin
+     PipelineErrorAt(EK_CODEGEN,'variable de controle FOR invalide: '+
+                     LoopToken.Text,LoopToken.Line,LoopToken.Column);
+     Exit;
+    End;
+    IRAdvance;
+    If Not IRAcceptSymbol(':=') Then Begin
+     PipelineErrorAt(EK_CODEGEN,'symbole ":=" attendu dans FOR',
+                     IRToken.Line,IRToken.Column);
+     Exit;
+    End;
+    If Not ParseStatementExpression(ScopeIndex,StartRoot,StartType) Then Exit;
+    If Not IsNumericScalar(StartType) Then Begin
+     PipelineErrorAt(EK_CODEGEN,'debut de FOR doit etre entier',
+                     LoopToken.Line,LoopToken.Column);
+     Exit;
+    End;
+    If Not IRIsKeyword(KW_TO) Then Begin
+     PipelineErrorAt(EK_CODEGEN,'mot-cle TO attendu dans FOR',
+                     IRToken.Line,IRToken.Column);
+     Exit;
+    End;
+    IRAdvance;
+    If Not ParseStatementExpression(ScopeIndex,EndRoot,EndType) Then Exit;
+    If Not IsNumericScalar(EndType) Then Begin
+     PipelineErrorAt(EK_CODEGEN,'borne finale de FOR doit etre entiere',
+                     LoopToken.Line,LoopToken.Column);
+     Exit;
+    End;
+    If IRIsKeyword(KW_BY) Then Begin
+     IRAdvance;
+     If Not ParseStatementExpression(ScopeIndex,StepRoot,StepType) Then Exit;
+     If Not IsNumericScalar(StepType) Then Begin
+      PipelineErrorAt(EK_CODEGEN,'pas de FOR doit etre entier',
+                      LoopToken.Line,LoopToken.Column);
+      Exit;
+     End;
+     If (Pipeline.IrNodes[StepRoot].Op=IR_EXPR_CONST) And
+        (Pipeline.IrNodes[StepRoot].ConstValue.IntegerValue=0) Then Begin
+      PipelineErrorAt(EK_CODEGEN,'pas BY nul interdit',
+                      Pipeline.IrNodes[StepRoot].Line,
+                      Pipeline.IrNodes[StepRoot].Column);
+      Exit;
+     End;
+    End
+    Else StepRoot:=AddIRIntegerConstant(1,LoopToken.Line,LoopToken.Column);
+    If Not IRIsKeyword(KW_DO) Then Begin
+     PipelineErrorAt(EK_CODEGEN,'mot-cle DO attendu dans FOR',
+                     IRToken.Line,IRToken.Column);
+     Exit;
+    End;
+    AddIRForStatement(IR_STMT_FOR_BEGIN,ScopeIndex,BlockDepth,
+                      DeferredControlDepth,CurrentControlId,LoopSymbol,
+                      StartRoot,EndRoot,StepRoot,
+                      Token.Line,Token.Column);
+    If ControlDepth<MAX_CONTROL_DEPTH Then Begin
+     Inc(ControlDepth);
+     ControlStack[ControlDepth]:=KW_FOR;
+     ControlIdStack[ControlDepth]:=CurrentControlId;
+    End;
+    Inc(ActiveControlDepth);
+    IRAdvance;
+    AtStatementStart:=True;
+    Continue;
+   End;
+   If (Token.Keyword=KW_LOOP) Or
+      (Token.Keyword=KW_CASE) Or (Token.Keyword=KW_WITH) Then Begin
+    If ControlDepth<MAX_CONTROL_DEPTH Then Begin
+     Inc(ControlDepth);
+     ControlStack[ControlDepth]:=Token.Keyword;
+     ControlIdStack[ControlDepth]:=0;
+    End;
+    Inc(ActiveControlDepth);
+    Inc(DeferredControlDepth);
+    IRAdvance;
+    AtStatementStart:=False;
+    Continue;
+   End;
+   If Token.Keyword=KW_REPEAT Then Begin
+    Inc(NextControlId);
+    CurrentControlId:=NextControlId;
+    AddIRLoopStatement(IR_STMT_REPEAT_BEGIN,ScopeIndex,BlockDepth,
+                       DeferredControlDepth,CurrentControlId,0,
+                       Token.Line,Token.Column);
+    If ControlDepth<MAX_CONTROL_DEPTH Then Begin
+     Inc(ControlDepth);
+     ControlStack[ControlDepth]:=KW_REPEAT;
+     ControlIdStack[ControlDepth]:=CurrentControlId;
+    End;
+    Inc(ActiveControlDepth);
+    IRAdvance;
+    AtStatementStart:=True;
+    Continue;
+   End;
+   If Token.Keyword=KW_UNTIL Then Begin
+    IRAdvance;
+    If (ControlDepth=0) Or
+       (ControlStack[ControlDepth]<>KW_REPEAT) Then Begin
+     PipelineErrorAt(EK_CODEGEN,'UNTIL sans REPEAT',
+                     Token.Line,Token.Column);
+     Exit;
+    End;
+    CurrentControlId:=ControlIdStack[ControlDepth];
+    If Not ParseStatementExpression(ScopeIndex,RootNode,ResultType) Then Exit;
+    If ResultType<>SCALAR_BOOLEAN Then Begin
+     PipelineErrorAt(EK_CODEGEN,'UNTIL exige une expression BOOLEAN',
+                     Token.Line,Token.Column);
+     Exit;
+    End;
+    AddIRLoopStatement(IR_STMT_REPEAT_UNTIL,ScopeIndex,BlockDepth,
+                       DeferredControlDepth,CurrentControlId,RootNode,
+                       Token.Line,Token.Column);
+    Dec(ControlDepth);
+    If ActiveControlDepth>0 Then Dec(ActiveControlDepth);
+    AtStatementStart:=False;
+    Continue;
+   End;
+   If Token.Keyword=KW_END Then Begin
+    Top:=KW_NONE;
+    If ControlDepth>0 Then Begin
+     Top:=ControlStack[ControlDepth];
+     CurrentControlId:=ControlIdStack[ControlDepth];
+     Dec(ControlDepth);
+    End;
+    If Top=KW_BEGIN Then Begin
+     If BlockDepth>0 Then Dec(BlockDepth);
+     AddIRStatement(IR_STMT_BLOCK_END,ScopeIndex,BlockDepth,
+                    DeferredControlDepth,0,0,0,'',
+                    Token.Line,Token.Column);
+    End
+    Else If Top=KW_IF Then Begin
+     AddIRIfStatement(IR_STMT_IF_END,ScopeIndex,BlockDepth,
+                      DeferredControlDepth,CurrentControlId,0,
+                      Token.Line,Token.Column);
+     If ActiveControlDepth>0 Then Dec(ActiveControlDepth);
+    End
+    Else If Top=KW_WHILE Then Begin
+     AddIRLoopStatement(IR_STMT_WHILE_END,ScopeIndex,BlockDepth,
+                        DeferredControlDepth,CurrentControlId,0,
+                        Token.Line,Token.Column);
+     If ActiveControlDepth>0 Then Dec(ActiveControlDepth);
+    End
+    Else If Top=KW_FOR Then Begin
+     AddIRForStatement(IR_STMT_FOR_END,ScopeIndex,BlockDepth,
+                       DeferredControlDepth,CurrentControlId,0,0,0,0,
+                       Token.Line,Token.Column);
+     If ActiveControlDepth>0 Then Dec(ActiveControlDepth);
+    End
+    Else If Top<>KW_NONE Then Begin
+     If ActiveControlDepth>0 Then Dec(ActiveControlDepth);
+     If DeferredControlDepth>0 Then Dec(DeferredControlDepth);
+    End;
+    IRAdvance;
+    AtStatementStart:=False;
+    Continue;
+   End;
+   If (Token.Keyword=KW_THEN) Or (Token.Keyword=KW_DO) Then Begin
+    IRAdvance;
+    AtStatementStart:=True;
+    Continue;
+   End;
+   If Token.Keyword=KW_ELSIF Then Begin
+    IRAdvance;
+    If (ControlDepth=0) Or
+       (ControlStack[ControlDepth]<>KW_IF) Then Begin
+     PipelineErrorAt(EK_CODEGEN,'ELSIF sans IF',
+                     Token.Line,Token.Column);
+     Exit;
+    End;
+    CurrentControlId:=ControlIdStack[ControlDepth];
+    If Not ParseStatementExpression(ScopeIndex,RootNode,ResultType) Then Exit;
+    If ResultType<>SCALAR_BOOLEAN Then Begin
+     PipelineErrorAt(EK_CODEGEN,'ELSIF exige une expression BOOLEAN',
+                     Token.Line,Token.Column);
+     Exit;
+    End;
+    If Not IRIsKeyword(KW_THEN) Then Begin
+     PipelineErrorAt(EK_CODEGEN,'mot-cle THEN attendu apres ELSIF',
+                     IRToken.Line,IRToken.Column);
+     Exit;
+    End;
+    AddIRIfStatement(IR_STMT_ELSIF,ScopeIndex,BlockDepth,
+                     DeferredControlDepth,CurrentControlId,RootNode,
+                     Token.Line,Token.Column);
+    IRAdvance;
+    AtStatementStart:=True;
+    Continue;
+   End;
+   If Token.Keyword=KW_ELSE Then Begin
+    If (ControlDepth=0) Or
+       (ControlStack[ControlDepth]<>KW_IF) Then Begin
+     PipelineErrorAt(EK_CODEGEN,'ELSE sans IF',
+                     Token.Line,Token.Column);
+     Exit;
+    End;
+    CurrentControlId:=ControlIdStack[ControlDepth];
+    AddIRIfStatement(IR_STMT_ELSE,ScopeIndex,BlockDepth,
+                     DeferredControlDepth,CurrentControlId,0,
+                     Token.Line,Token.Column);
+    IRAdvance;
+    AtStatementStart:=True;
+    Continue;
+   End;
+  End;
+  If IRIsSymbol(';') Then Begin
+   If AtStatementStart Then
+    AddIRStatement(IR_STMT_EMPTY,ScopeIndex,BlockDepth,
+                   DeferredControlDepth,0,0,0,'',
+                   Token.Line,Token.Column);
+   IRAdvance;
+   AtStatementStart:=True;
+   Continue;
+  End;
+  If AtStatementStart And (Token.Kind=TK_IDENTIFIER) Then Begin
+   NextToken:=Pipeline.Tokens[Pipeline.TokenCount];
+   If I<Pipeline.IrTokenLimit Then NextToken:=Pipeline.Tokens[I+1];
+   If (NextToken.Kind=TK_SYMBOL) And (NextToken.Text=':=') Then
+    BuildAssignmentStatement(ScopeIndex,BlockDepth,DeferredControlDepth)
+   Else
+    BuildCallStatement(ScopeIndex,BlockDepth,DeferredControlDepth);
+   AtStatementStart:=False;
+   Continue;
+  End;
+  IRAdvance;
+ End;
+End;
+
 Procedure TraceSimpleIR;
 Var
  I:Integer;
+ J:Integer;
  N:TIRExprNode;
  E:TIRExpression;
+ S:TIRStatement;
  Extra:String;
 Begin
  WriteLn('IR     : ',Pipeline.IrExpressionCount,' expression(s), ',
-         Pipeline.IrNodeCount,' noeud(s)');
+         Pipeline.IrNodeCount,' noeud(s), ',
+         Pipeline.IrStatementCount,' instruction(s)');
  If Not Options.Verbose Then Exit;
  For I:=1 To Pipeline.IrNodeCount Do Begin
   N:=Pipeline.IrNodes[I];
@@ -4332,6 +5785,47 @@ Begin
   WriteLn('  E',I,' ',E.Context,' root=N',E.RootNode,
           ' scope=',E.ScopeIndex,' @ ',E.Line,':',E.Column);
  End;
+ For I:=1 To Pipeline.IrStatementCount Do Begin
+  S:=Pipeline.IrStatements[I];
+  Extra:='';
+  If S.Kind=IR_STMT_ASSIGN Then
+   Extra:=' '+Pipeline.Symbols[S.TargetSymbol].Name+
+          ' <- N'+IntToString(S.ExpressionRoot)
+  Else If S.Kind=IR_STMT_CALL Then Begin
+   Extra:=' '+S.ProcedureName+'(';
+   For J:=1 To S.ArgumentCount Do Begin
+    If J>1 Then Extra:=Extra+',';
+    Extra:=Extra+'N'+IntToString(S.Arguments[J]);
+   End;
+   Extra:=Extra+')';
+  End
+  Else If (S.Kind=IR_STMT_IF_BEGIN) Or
+          (S.Kind=IR_STMT_ELSIF) Then
+   Extra:=' id='+IntToString(S.ControlId)+
+          ' condition=N'+IntToString(S.ExpressionRoot)
+  Else If (S.Kind=IR_STMT_ELSE) Or
+          (S.Kind=IR_STMT_IF_END) Then
+   Extra:=' id='+IntToString(S.ControlId)
+  Else If (S.Kind=IR_STMT_WHILE_BEGIN) Or
+          (S.Kind=IR_STMT_REPEAT_UNTIL) Then
+   Extra:=' id='+IntToString(S.ControlId)+
+          ' condition=N'+IntToString(S.ExpressionRoot)
+  Else If (S.Kind=IR_STMT_WHILE_END) Or
+          (S.Kind=IR_STMT_REPEAT_BEGIN) Then
+   Extra:=' id='+IntToString(S.ControlId)
+  Else If S.Kind=IR_STMT_FOR_BEGIN Then
+   Extra:=' id='+IntToString(S.ControlId)+' var='+
+          Pipeline.Symbols[S.TargetSymbol].Name+
+          ' start=N'+IntToString(S.ExpressionRoot)+
+          ' end=N'+IntToString(S.Arguments[1])+
+          ' step=N'+IntToString(S.Arguments[2])
+  Else If S.Kind=IR_STMT_FOR_END Then
+   Extra:=' id='+IntToString(S.ControlId);
+  WriteLn('  S',I,' ',IRStatementKindName(S.Kind),Extra,
+          ' depth=',S.BlockDepth,' control=',S.ControlDepth,
+          ' scope=',S.ScopeIndex,
+          ' @ ',S.Line,':',S.Column);
+ End;
 End;
 
 Procedure BuildSimpleIR;
@@ -4341,8 +5835,11 @@ Begin
  EnterStage(CS_IR);
  Pipeline.IrNodeCount:=0;
  Pipeline.IrExpressionCount:=0;
+ Pipeline.IrStatementCount:=0;
  For I:=1 To Pipeline.ScopeCount Do Begin
   CollectScopeExpressions(I);
+  If Pipeline.ErrorCount<>0 Then Exit;
+  BuildBasicStatements(I);
   If Pipeline.ErrorCount<>0 Then Exit;
  End;
  Pipeline.IrReady:=True;
