@@ -1044,6 +1044,10 @@ End;
 Procedure PipelineError(Msg:String); Forward;
 Procedure PipelineErrorAt(Kind:TErrorKind;Msg:String;LineNo,ColumnNo:LongInt);
  Forward;
+Function FindProcedureParameter(ProcedureSymbol,ParamIndex:Integer):Integer;
+ Forward;
+Function IRRootAddressable(RootNode:Integer;Var SymbolIndex:Integer):Boolean;
+ Forward;
 
 Function IsAsmNameChar(C:Char):Boolean;
 Begin
@@ -1211,6 +1215,28 @@ Begin
  Else Emit386Mov(T,RegName(R_EAX),SymbolStorageRef(SymbolIndex));
 End;
 
+Procedure EmitIRAddressOfSymbol(Var T:Text;SymbolIndex:Integer);
+Var
+ S:TSymbol;
+Begin
+ If (SymbolIndex<1) Or (SymbolIndex>Pipeline.SymbolCount) Then Begin
+  PipelineErrorAt(EK_CODEGEN,'symbole adressable invalide',0,0);
+  Exit;
+ End;
+ S:=Pipeline.Symbols[SymbolIndex];
+ If (S.StorageKind=STORAGE_PARAMETER) And S.ByReference Then
+  Emit386Mov(T,RegName(R_EAX),SymbolStorageRef(SymbolIndex))
+ Else Case S.StorageKind Of
+  STORAGE_GLOBAL,
+  STORAGE_LOCAL,
+  STORAGE_PARAMETER:
+   EmitAsmInstr(T,'lea',RegName(R_EAX)+', '+SymbolStorageRef(SymbolIndex));
+  Else
+   PipelineErrorAt(EK_CODEGEN,'symbole sans adresse: '+S.Name,
+                   S.Line,S.Column);
+ End;
+End;
+
 Procedure EmitIRExpressionAsm(Var T:Text;NodeIndex:Integer;
  Var LabelCounter:Integer);
 Var
@@ -1366,6 +1392,8 @@ Var
  LoopVariable:Array[1..MAX_LOOP_EMIT_DEPTH] Of Integer;
  S:TIRStatement;
  Target:TSymbol;
+ ParamSymbol:Integer;
+ ArgumentSymbol:Integer;
 Begin
  IfDepth:=0;
  LoopDepth:=0;
@@ -1572,7 +1600,17 @@ Begin
      EmitAsmComment(T,'appel '+S.ProcedureName);
      If S.ProcedureSymbol<>0 Then Begin
       For J:=S.ArgumentCount DownTo 1 Do Begin
-       EmitIRExpressionAsm(T,S.Arguments[J],LabelCounter);
+       ParamSymbol:=FindProcedureParameter(S.ProcedureSymbol,J);
+       If (ParamSymbol<>0) And
+          Pipeline.Symbols[ParamSymbol].ByReference Then Begin
+        If Not IRRootAddressable(S.Arguments[J],ArgumentSymbol) Then Begin
+         PipelineErrorAt(EK_CODEGEN,'argument VAR non adressable',
+                         S.Line,S.Column);
+         Exit;
+        End;
+        EmitIRAddressOfSymbol(T,ArgumentSymbol);
+       End
+       Else EmitIRExpressionAsm(T,S.Arguments[J],LabelCounter);
        Emit386Push(T,RegName(R_EAX));
       End;
       EmitAsmInstr(T,'call',Pipeline.Symbols[S.ProcedureSymbol].AsmName);
@@ -1618,6 +1656,8 @@ Begin
  For I:=1 To Pipeline.SymbolCount Do
   If Pipeline.Symbols[I].Kind=SYM_PROCEDURE Then Begin
    ScopeIndex:=Pipeline.Symbols[I].ChildScope;
+   If Pipeline.Symbols[I].IsExported Then
+    EmitAsmLine(T,'global '+Pipeline.Symbols[I].AsmName);
    EmitAsmLabel(T,Pipeline.Symbols[I].AsmName);
    Emit386Prologue(T,Pipeline.Scopes[ScopeIndex].FrameSize);
    EmitScopeBasicStatements(T,ScopeIndex,LabelCounter);
@@ -5366,10 +5406,19 @@ Begin
   End;
   For I:=1 To ArgCount Do Begin
    ParamSymbol:=FindProcedureParameter(ProcedureSymbol,I);
-   If (ParamSymbol<>0) And Not ScalarTypesCompatible(
-      Pipeline.Symbols[ParamSymbol].ScalarType,
-      Pipeline.IrNodes[Pipeline.IrStatements[StatementIndex].
-       Arguments[I]].ScalarType) Then Begin
+   If (ParamSymbol<>0) And Pipeline.Symbols[ParamSymbol].ByReference And
+      (Pipeline.Symbols[ParamSymbol].ScalarType<>
+       Pipeline.IrNodes[Pipeline.IrStatements[StatementIndex].
+        Arguments[I]].ScalarType) Then Begin
+    PipelineErrorAt(EK_CODEGEN,'type exact requis pour l''argument VAR '+
+                    IntToString(I)+' de '+ProcedureName,
+                    CallToken.Line,CallToken.Column);
+    Exit;
+   End;
+   If (ParamSymbol<>0) And Not Pipeline.Symbols[ParamSymbol].ByReference And
+      Not ScalarTypesCompatible(Pipeline.Symbols[ParamSymbol].ScalarType,
+       Pipeline.IrNodes[Pipeline.IrStatements[StatementIndex].
+        Arguments[I]].ScalarType) Then Begin
     PipelineErrorAt(EK_CODEGEN,'type incompatible pour l''argument '+
                     IntToString(I)+' de '+ProcedureName,
                     CallToken.Line,CallToken.Column);
