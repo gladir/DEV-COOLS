@@ -864,6 +864,11 @@ Begin
  IntToString:=S;
 End;
 
+Function ToExtended(N:LongInt):Extended;
+Begin
+ ToExtended:=N;
+End;
+
 Function ConstValueText(Value:TConstValue):String;
 Begin
  If Not Value.Valid Then ConstValueText:=''
@@ -1105,16 +1110,17 @@ Function SanitizeAsmName(S:String):String;
 Var
  I:Integer;
  C:Char;
+ R:String;
 Begin
- SanitizeAsmName:='';
+ R:='';
  For I:=1 To Length(S) Do Begin
   C:=S[I];
-  If IsAsmNameChar(C) Then SanitizeAsmName:=SanitizeAsmName+C
-   Else SanitizeAsmName:=SanitizeAsmName+'_';
+  If IsAsmNameChar(C) Then R:=R+C
+   Else R:=R+'_';
  End;
- If SanitizeAsmName='' Then SanitizeAsmName:='NONAME';
- If (SanitizeAsmName[1]>='0') And (SanitizeAsmName[1]<='9') Then
-  SanitizeAsmName:='_'+SanitizeAsmName;
+ If R='' Then R:='NONAME';
+ If (R[1]>='0') And (R[1]<='9') Then R:='_'+R;
+ SanitizeAsmName:=R;
 End;
 
 Function MakeAsmLabel(Prefix,Name:String):String;
@@ -1135,17 +1141,19 @@ End;
 Function AsmByteList(S:String;ZeroTerminated:Boolean):String;
 Var
  I:Integer;
+ R:String;
 Begin
- AsmByteList:='';
+ R:='';
  For I:=1 To Length(S) Do Begin
-  If AsmByteList<>'' Then AsmByteList:=AsmByteList+',';
-  AsmByteList:=AsmByteList+IntToString(Ord(S[I]));
+  If R<>'' Then R:=R+',';
+  R:=R+IntToString(Ord(S[I]));
  End;
  If ZeroTerminated Then Begin
-  If AsmByteList<>'' Then AsmByteList:=AsmByteList+',';
-  AsmByteList:=AsmByteList+'0';
+  If R<>'' Then R:=R+',';
+  R:=R+'0';
  End;
- If AsmByteList='' Then AsmByteList:='0';
+ If R='' Then R:='0';
+ AsmByteList:=R;
 End;
 
 Procedure EmitAsmLine(Var T:Text;S:String);
@@ -2431,11 +2439,13 @@ End;
 Function CaretLine(ColumnNo:LongInt):String;
 Var
  I:LongInt;
+ R:String;
 Begin
  If ColumnNo<1 Then ColumnNo:=1;
- CaretLine:='';
- For I:=1 To ColumnNo-1 Do CaretLine:=CaretLine+' ';
- CaretLine:=CaretLine+'^';
+ R:='';
+ For I:=1 To ColumnNo-1 Do R:=R+' ';
+ R:=R+'^';
+ CaretLine:=R;
 End;
 
 Procedure PrintDiagnostic;
@@ -3081,15 +3091,21 @@ Begin
 End;
 
 Function AcceptKeyword(Keyword:TKeyword):Boolean;
+Var
+ Matched:Boolean;
 Begin
- AcceptKeyword:=TokenIsKeyword(Keyword);
- If AcceptKeyword Then ParserAdvance;
+ Matched:=TokenIsKeyword(Keyword);
+ If Matched Then ParserAdvance;
+ AcceptKeyword:=Matched;
 End;
 
 Function AcceptSymbol(SymbolText:String):Boolean;
+Var
+ Matched:Boolean;
 Begin
- AcceptSymbol:=TokenIsSymbol(SymbolText);
- If AcceptSymbol Then ParserAdvance;
+ Matched:=TokenIsSymbol(SymbolText);
+ If Matched Then ParserAdvance;
+ AcceptSymbol:=Matched;
 End;
 
 Function ParserFail(Msg:String):Boolean;
@@ -3633,15 +3649,21 @@ Begin
 End;
 
 Function SemanticAcceptKeyword(Keyword:TKeyword):Boolean;
+Var
+ Matched:Boolean;
 Begin
- SemanticAcceptKeyword:=SemanticIsKeyword(Keyword);
- If SemanticAcceptKeyword Then SemanticAdvance;
+ Matched:=SemanticIsKeyword(Keyword);
+ If Matched Then SemanticAdvance;
+ SemanticAcceptKeyword:=Matched;
 End;
 
 Function SemanticAcceptSymbol(SymbolText:String):Boolean;
+Var
+ Matched:Boolean;
 Begin
- SemanticAcceptSymbol:=SemanticIsSymbol(SymbolText);
- If SemanticAcceptSymbol Then SemanticAdvance;
+ Matched:=SemanticIsSymbol(SymbolText);
+ If Matched Then SemanticAdvance;
+ SemanticAcceptSymbol:=Matched;
 End;
 
 Procedure SemanticTokenError(Msg:String);
@@ -3666,13 +3688,19 @@ Begin
 End;
 
 Function FindVisibleSymbol(Name:String;ScopeIndex:Integer):Integer;
+Var
+ Found:Integer;
 Begin
- FindVisibleSymbol:=0;
+ Found:=0;
  While ScopeIndex<>0 Do Begin
-  FindVisibleSymbol:=FindSymbolInScope(Name,ScopeIndex);
-  If FindVisibleSymbol<>0 Then Exit;
+  Found:=FindSymbolInScope(Name,ScopeIndex);
+  If Found<>0 Then Begin
+   FindVisibleSymbol:=Found;
+   Exit;
+  End;
   ScopeIndex:=Pipeline.Scopes[ScopeIndex].ParentScope;
  End;
+ FindVisibleSymbol:=Found;
 End;
 
 Function AddSemanticScope(Name:String;Kind:TScopeKind;ParentScope,
@@ -3791,8 +3819,9 @@ Var
  SymbolIndex:Integer;
  Depth:Integer;
  SawToken:Boolean;
+ ResultType:TScalarType;
 Begin
- ArgumentScalarType:=SCALAR_NONE;
+ ResultType:=SCALAR_NONE;
  IsVariable:=False;
  ArgLine:=SemanticToken.Line;
  ArgColumn:=SemanticToken.Column;
@@ -3807,20 +3836,20 @@ Begin
    SawToken:=True;
    ArgLine:=Token.Line;
    ArgColumn:=Token.Column;
-   If Token.Kind=TK_INTEGER Then ArgumentScalarType:=SCALAR_INTEGER
+   If Token.Kind=TK_INTEGER Then ResultType:=SCALAR_INTEGER
    Else If Token.Kind=TK_STRING Then Begin
-    If Length(Token.Text)=1 Then ArgumentScalarType:=SCALAR_CHAR
-     Else ArgumentScalarType:=SCALAR_STRING;
+    If Length(Token.Text)=1 Then ResultType:=SCALAR_CHAR
+     Else ResultType:=SCALAR_STRING;
    End
    Else If (Token.Kind=TK_IDENTIFIER) And
            ((Token.Text='TRUE') Or (Token.Text='FALSE')) Then
-    ArgumentScalarType:=SCALAR_BOOLEAN
+    ResultType:=SCALAR_BOOLEAN
    Else If Token.Kind=TK_IDENTIFIER Then Begin
     SymbolIndex:=FindVisibleSymbol(Token.Text,CurrentScope);
     If SymbolIndex<>0 Then Begin
-     ArgumentScalarType:=Pipeline.Symbols[SymbolIndex].ScalarType;
-     If ArgumentScalarType=SCALAR_NONE Then
-      ArgumentScalarType:=
+     ResultType:=Pipeline.Symbols[SymbolIndex].ScalarType;
+     If ResultType=SCALAR_NONE Then
+      ResultType:=
        ResolveTypeName(Pipeline.Symbols[SymbolIndex].TypeName,
                        Pipeline.Symbols[SymbolIndex].ScopeIndex,0);
      IsVariable:=(Pipeline.Symbols[SymbolIndex].Kind=SYM_VARIABLE) Or
@@ -3833,6 +3862,7 @@ Begin
           (Depth>0) Then Dec(Depth);
   SemanticAdvance;
  End;
+ ArgumentScalarType:=ResultType;
 End;
 
 Procedure InOutTypeError(ProcedureName:String;ArgumentIndex:Integer;
@@ -4236,7 +4266,7 @@ Begin
                   Operand.ScalarType,Token.Line,Token.Column);
    Exit;
   End;
-  If Not CheckedConstInteger(-Extended(Operand.IntegerValue),
+  If Not CheckedConstInteger(-ToExtended(Operand.IntegerValue),
                              Token.Line,Token.Column,Value) Then Exit;
   EvaluateConstUnary:=True;
   Exit;
@@ -4294,7 +4324,7 @@ Begin
    Exit;
   End;
   If OperatorText='*' Then Begin
-   Number:=Extended(Value.IntegerValue)*Extended(RightValue.IntegerValue);
+   Number:=ToExtended(Value.IntegerValue)*ToExtended(RightValue.IntegerValue);
    If Not CheckedConstInteger(Number,OperatorToken.Line,
                               OperatorToken.Column,ResultValue) Then Exit;
   End
@@ -4348,9 +4378,9 @@ Begin
    Exit;
   End;
   If OperatorToken.Text='+' Then
-   Number:=Extended(Value.IntegerValue)+Extended(RightValue.IntegerValue)
+   Number:=ToExtended(Value.IntegerValue)+ToExtended(RightValue.IntegerValue)
   Else
-   Number:=Extended(Value.IntegerValue)-Extended(RightValue.IntegerValue);
+   Number:=ToExtended(Value.IntegerValue)-ToExtended(RightValue.IntegerValue);
   If Not CheckedConstInteger(Number,OperatorToken.Line,
                              OperatorToken.Column,ResultValue) Then Exit;
   Value:=ResultValue;
@@ -4728,21 +4758,30 @@ End;
 Function ResolveTypeName(TypeName:String;ScopeIndex,Depth:Integer):TScalarType;
 Var
  SymbolIndex:Integer;
+ ResultType:TScalarType;
 Begin
- ResolveTypeName:=BuiltinScalarType(TypeName);
- If ResolveTypeName<>SCALAR_NONE Then Exit;
- If Depth>MOD2_MAX_SCOPES Then Exit;
- SymbolIndex:=FindVisibleSymbol(TypeName,ScopeIndex);
- If (SymbolIndex=0) Or
-    (Pipeline.Symbols[SymbolIndex].Kind<>SYM_TYPE) Then Exit;
- If Pipeline.Symbols[SymbolIndex].ScalarType<>SCALAR_NONE Then Begin
-  ResolveTypeName:=Pipeline.Symbols[SymbolIndex].ScalarType;
-  Exit;
+ ResultType:=BuiltinScalarType(TypeName);
+ If ResultType=SCALAR_NONE Then Begin
+  If Depth>MOD2_MAX_SCOPES Then Begin
+   ResolveTypeName:=ResultType;
+   Exit;
+  End;
+  SymbolIndex:=FindVisibleSymbol(TypeName,ScopeIndex);
+  If (SymbolIndex=0) Or
+     (Pipeline.Symbols[SymbolIndex].Kind<>SYM_TYPE) Then Begin
+   ResolveTypeName:=ResultType;
+   Exit;
+  End;
+  If Pipeline.Symbols[SymbolIndex].ScalarType<>SCALAR_NONE Then
+   ResultType:=Pipeline.Symbols[SymbolIndex].ScalarType
+  Else Begin
+   ResultType:=ResolveTypeName(Pipeline.Symbols[SymbolIndex].TypeName,
+                                Pipeline.Symbols[SymbolIndex].ScopeIndex,
+                                Depth+1);
+   Pipeline.Symbols[SymbolIndex].ScalarType:=ResultType;
+  End;
  End;
- ResolveTypeName:=ResolveTypeName(Pipeline.Symbols[SymbolIndex].TypeName,
-                                  Pipeline.Symbols[SymbolIndex].ScopeIndex,
-                                  Depth+1);
- Pipeline.Symbols[SymbolIndex].ScalarType:=ResolveTypeName;
+ ResolveTypeName:=ResultType;
 End;
 
 Procedure ResolveAllScalarTypes;
@@ -5031,30 +5070,37 @@ Begin
 End;
 
 Function IRAcceptSymbol(Text:String):Boolean;
+Var
+ Matched:Boolean;
 Begin
- IRAcceptSymbol:=IRIsSymbol(Text);
- If IRAcceptSymbol Then IRAdvance;
+ Matched:=IRIsSymbol(Text);
+ If Matched Then IRAdvance;
+ IRAcceptSymbol:=Matched;
 End;
 
 Function AddIRNode(Op:TIRExprOp;ScalarType:TScalarType;
  LeftNode,RightNode,SymbolIndex:Integer;ConstValue:TConstValue;
  LineNo,ColumnNo:Integer):Integer;
+Var
+ NodeIndex:Integer;
 Begin
- AddIRNode:=0;
+ NodeIndex:=0;
  If Pipeline.IrNodeCount>=MOD2_MAX_IR_NODES Then Begin
   PipelineErrorAt(EK_CODEGEN,'trop de noeuds IR',LineNo,ColumnNo);
+  AddIRNode:=NodeIndex;
   Exit;
  End;
  Inc(Pipeline.IrNodeCount);
- AddIRNode:=Pipeline.IrNodeCount;
- Pipeline.IrNodes[AddIRNode].Op:=Op;
- Pipeline.IrNodes[AddIRNode].ScalarType:=ScalarType;
- Pipeline.IrNodes[AddIRNode].LeftNode:=LeftNode;
- Pipeline.IrNodes[AddIRNode].RightNode:=RightNode;
- Pipeline.IrNodes[AddIRNode].SymbolIndex:=SymbolIndex;
- Pipeline.IrNodes[AddIRNode].ConstValue:=ConstValue;
- Pipeline.IrNodes[AddIRNode].Line:=LineNo;
- Pipeline.IrNodes[AddIRNode].Column:=ColumnNo;
+ NodeIndex:=Pipeline.IrNodeCount;
+ Pipeline.IrNodes[NodeIndex].Op:=Op;
+ Pipeline.IrNodes[NodeIndex].ScalarType:=ScalarType;
+ Pipeline.IrNodes[NodeIndex].LeftNode:=LeftNode;
+ Pipeline.IrNodes[NodeIndex].RightNode:=RightNode;
+ Pipeline.IrNodes[NodeIndex].SymbolIndex:=SymbolIndex;
+ Pipeline.IrNodes[NodeIndex].ConstValue:=ConstValue;
+ Pipeline.IrNodes[NodeIndex].Line:=LineNo;
+ Pipeline.IrNodes[NodeIndex].Column:=ColumnNo;
+ AddIRNode:=NodeIndex;
 End;
 
 Function AddIRExpression(RootNode,ScopeIndex:Integer;Context:String;
@@ -5615,63 +5661,75 @@ Function AddIRStatement(Kind:TIRStatementKind;ScopeIndex,BlockDepth,
  ProcedureName:String;LineNo,ColumnNo:Integer):Integer;
 Var
  I:Integer;
+ StmtIndex:Integer;
 Begin
- AddIRStatement:=0;
+ StmtIndex:=0;
  If Pipeline.IrStatementCount>=MOD2_MAX_STATEMENTS Then Begin
   PipelineErrorAt(EK_CODEGEN,'trop d''instructions IR',
                   LineNo,ColumnNo);
+  AddIRStatement:=StmtIndex;
   Exit;
  End;
  Inc(Pipeline.IrStatementCount);
- AddIRStatement:=Pipeline.IrStatementCount;
- Pipeline.IrStatements[AddIRStatement].Kind:=Kind;
- Pipeline.IrStatements[AddIRStatement].ScopeIndex:=ScopeIndex;
- Pipeline.IrStatements[AddIRStatement].BlockDepth:=BlockDepth;
- Pipeline.IrStatements[AddIRStatement].ControlDepth:=ControlDepth;
- Pipeline.IrStatements[AddIRStatement].ControlId:=0;
- Pipeline.IrStatements[AddIRStatement].TargetSymbol:=TargetSymbol;
- Pipeline.IrStatements[AddIRStatement].ExpressionRoot:=ExpressionRoot;
- Pipeline.IrStatements[AddIRStatement].ProcedureSymbol:=ProcedureSymbol;
- Pipeline.IrStatements[AddIRStatement].ProcedureName:=ProcedureName;
- Pipeline.IrStatements[AddIRStatement].ArgumentCount:=0;
+ StmtIndex:=Pipeline.IrStatementCount;
+ Pipeline.IrStatements[StmtIndex].Kind:=Kind;
+ Pipeline.IrStatements[StmtIndex].ScopeIndex:=ScopeIndex;
+ Pipeline.IrStatements[StmtIndex].BlockDepth:=BlockDepth;
+ Pipeline.IrStatements[StmtIndex].ControlDepth:=ControlDepth;
+ Pipeline.IrStatements[StmtIndex].ControlId:=0;
+ Pipeline.IrStatements[StmtIndex].TargetSymbol:=TargetSymbol;
+ Pipeline.IrStatements[StmtIndex].ExpressionRoot:=ExpressionRoot;
+ Pipeline.IrStatements[StmtIndex].ProcedureSymbol:=ProcedureSymbol;
+ Pipeline.IrStatements[StmtIndex].ProcedureName:=ProcedureName;
+ Pipeline.IrStatements[StmtIndex].ArgumentCount:=0;
  For I:=1 To MOD2_MAX_CALL_ARGS Do
-  Pipeline.IrStatements[AddIRStatement].Arguments[I]:=0;
- Pipeline.IrStatements[AddIRStatement].Line:=LineNo;
- Pipeline.IrStatements[AddIRStatement].Column:=ColumnNo;
+  Pipeline.IrStatements[StmtIndex].Arguments[I]:=0;
+ Pipeline.IrStatements[StmtIndex].Line:=LineNo;
+ Pipeline.IrStatements[StmtIndex].Column:=ColumnNo;
+ AddIRStatement:=StmtIndex;
 End;
 
 Function AddIRIfStatement(Kind:TIRStatementKind;ScopeIndex,BlockDepth,
  DeferredDepth,ControlId,ExpressionRoot:Integer;
  LineNo,ColumnNo:Integer):Integer;
+Var
+ StmtIndex:Integer;
 Begin
- AddIRIfStatement:=AddIRStatement(Kind,ScopeIndex,BlockDepth,
+ StmtIndex:=AddIRStatement(Kind,ScopeIndex,BlockDepth,
   DeferredDepth,0,ExpressionRoot,0,'',LineNo,ColumnNo);
- If AddIRIfStatement<>0 Then
-  Pipeline.IrStatements[AddIRIfStatement].ControlId:=ControlId;
+ If StmtIndex<>0 Then
+  Pipeline.IrStatements[StmtIndex].ControlId:=ControlId;
+ AddIRIfStatement:=StmtIndex;
 End;
 
 Function AddIRLoopStatement(Kind:TIRStatementKind;ScopeIndex,BlockDepth,
  DeferredDepth,ControlId,ExpressionRoot:Integer;
  LineNo,ColumnNo:Integer):Integer;
+Var
+ StmtIndex:Integer;
 Begin
- AddIRLoopStatement:=AddIRStatement(Kind,ScopeIndex,BlockDepth,
+ StmtIndex:=AddIRStatement(Kind,ScopeIndex,BlockDepth,
   DeferredDepth,0,ExpressionRoot,0,'',LineNo,ColumnNo);
- If AddIRLoopStatement<>0 Then
-  Pipeline.IrStatements[AddIRLoopStatement].ControlId:=ControlId;
+ If StmtIndex<>0 Then
+  Pipeline.IrStatements[StmtIndex].ControlId:=ControlId;
+ AddIRLoopStatement:=StmtIndex;
 End;
 
 Function AddIRForStatement(Kind:TIRStatementKind;ScopeIndex,BlockDepth,
  DeferredDepth,ControlId,LoopSymbol,StartRoot,EndRoot,StepRoot:Integer;
  LineNo,ColumnNo:Integer):Integer;
+Var
+ StmtIndex:Integer;
 Begin
- AddIRForStatement:=AddIRStatement(Kind,ScopeIndex,BlockDepth,
+ StmtIndex:=AddIRStatement(Kind,ScopeIndex,BlockDepth,
   DeferredDepth,LoopSymbol,StartRoot,0,'',LineNo,ColumnNo);
- If AddIRForStatement<>0 Then Begin
-  Pipeline.IrStatements[AddIRForStatement].ControlId:=ControlId;
-  Pipeline.IrStatements[AddIRForStatement].ArgumentCount:=2;
-  Pipeline.IrStatements[AddIRForStatement].Arguments[1]:=EndRoot;
-  Pipeline.IrStatements[AddIRForStatement].Arguments[2]:=StepRoot;
+ If StmtIndex<>0 Then Begin
+  Pipeline.IrStatements[StmtIndex].ControlId:=ControlId;
+  Pipeline.IrStatements[StmtIndex].ArgumentCount:=2;
+  Pipeline.IrStatements[StmtIndex].Arguments[1]:=EndRoot;
+  Pipeline.IrStatements[StmtIndex].Arguments[2]:=StepRoot;
  End;
+ AddIRForStatement:=StmtIndex;
 End;
 
 Function AddIRIntegerConstant(Value:LongInt;LineNo,ColumnNo:Integer):Integer;
@@ -5799,16 +5857,19 @@ Begin
 End;
 
 Function IRRootAddressable(RootNode:Integer;Var SymbolIndex:Integer):Boolean;
+Var
+ Addressable:Boolean;
 Begin
  SymbolIndex:=0;
- IRRootAddressable:=(RootNode>=1) And
-                    (RootNode<=Pipeline.IrNodeCount) And
-                    (Pipeline.IrNodes[RootNode].Op=IR_EXPR_LOAD);
- If IRRootAddressable Then Begin
+ Addressable:=(RootNode>=1) And
+              (RootNode<=Pipeline.IrNodeCount) And
+              (Pipeline.IrNodes[RootNode].Op=IR_EXPR_LOAD);
+ If Addressable Then Begin
   SymbolIndex:=Pipeline.IrNodes[RootNode].SymbolIndex;
-  IRRootAddressable:=(Pipeline.Symbols[SymbolIndex].Kind=SYM_VARIABLE) Or
-                     (Pipeline.Symbols[SymbolIndex].Kind=SYM_PARAMETER);
+  Addressable:=(Pipeline.Symbols[SymbolIndex].Kind=SYM_VARIABLE) Or
+               (Pipeline.Symbols[SymbolIndex].Kind=SYM_PARAMETER);
  End;
+ IRRootAddressable:=Addressable;
 End;
 
 Procedure BuildCallStatement(ScopeIndex,BlockDepth,ControlDepth:Integer);
