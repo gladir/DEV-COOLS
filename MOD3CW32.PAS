@@ -58,23 +58,23 @@
             resolution des interfaces et modules, ordre de compilation,
             detection des cycles et des exports manquants.
 
-  TODO 12 - Definir la table des symboles et les portees:
+  DONE 12 - Definir la table des symboles et les portees:
             portee interface, module, procedure, objet, generique,
             constantes, variables, parametres et detection des doublons.
 
-  TODO 13 - Implementer les types scalaires de base:
+  DONE 13 - Implementer les types scalaires de base:
             INTEGER, CARDINAL, BOOLEAN, CHAR, REAL/LONGREAL si vise, TEXT,
             compatibilite et conversions implicites/explicites.
 
-  TODO 14 - Implementer les types composes:
+  DONE 14 - Implementer les types composes:
             ARRAY (bornes fixes et ouvertes), RECORD, REF (pointeurs, NEW,
             allocation) et types opaques (revelation partielle/complete).
 
-  TODO 15 - Implementer CONST et les litteraux:
+  DONE 15 - Implementer CONST et les litteraux:
             constantes entieres, reelles, booleennes, caracteres, chaines,
             evaluation constante simple et references dans les expressions.
 
-  TODO 16 - Implementer VAR et l'allocation des donnees:
+  DONE 16 - Implementer VAR et l'allocation des donnees:
             allocation globale (.data/.bss) et locale (offsets EBP),
             initialisation implicite a zero et segment de donnees statiques.
 
@@ -137,6 +137,9 @@ Const
  MOD3_MAX_TOKENS       = 8192;
  MOD3_MAX_IMPORTS      = 64;
  MOD3_MAX_EXPORTS      = 16;
+ MOD3_MAX_SCOPES       = 256;
+ MOD3_MAX_SYMBOLS      = 2048;
+ MOD3_MAX_TYPES        = 512;
  I386_STACK_SLOT_SIZE = 4;
  I386_ARG_BASE_OFFSET = 8;
  I386_STACK_ALIGN     = 4;
@@ -360,6 +363,122 @@ Type
   UK_MODULE
  );
 
+ TScopeKind = (
+  SCOPE_UNIVERSE,
+  SCOPE_INTERFACE,
+  SCOPE_MODULE,
+  SCOPE_PROCEDURE,
+  SCOPE_OBJECT,
+  SCOPE_GENERIC
+ );
+
+ TSymbolKind = (
+  SYM_IMPORT,
+  SYM_CONST,
+  SYM_TYPE,
+  SYM_VAR,
+  SYM_PARAM,
+  SYM_PROCEDURE,
+  SYM_FIELD,
+  SYM_METHOD,
+  SYM_EXCEPTION,
+  SYM_GENERIC_PARAM
+ );
+
+ TTypeKind = (
+  TYPE_ERROR,
+  TYPE_INTEGER,
+  TYPE_CARDINAL,
+  TYPE_BOOLEAN,
+  TYPE_CHAR,
+  TYPE_REAL,
+  TYPE_LONGREAL,
+  TYPE_TEXT,
+  TYPE_NIL,
+  TYPE_ALIAS,
+  TYPE_SUBRANGE,
+  TYPE_ARRAY,
+  TYPE_RECORD,
+  TYPE_REF,
+  TYPE_OPAQUE,
+  TYPE_OBJECT,
+  TYPE_COMPOSITE
+ );
+
+ TSemanticType = Record
+  Name       : String[63];
+  Kind       : TTypeKind;
+  Size       : Integer;
+  Align      : Integer;
+  BaseType   : Integer;
+  ElementType: Integer;
+  LowBound   : LongInt;
+  HighBound  : LongInt;
+  OpenArray  : Boolean;
+  FieldScope : Integer;
+  Branded    : Boolean;
+  Untraced   : Boolean;
+  Revealed   : Boolean;
+  Line       : Integer;
+  Column     : Integer;
+ End;
+
+ TConstKind = (
+  CONST_INVALID,
+  CONST_INTEGER,
+  CONST_REAL,
+  CONST_BOOLEAN,
+  CONST_CHAR,
+  CONST_TEXT,
+  CONST_NIL
+ );
+
+ TConstValue = Record
+  Kind       : TConstKind;
+  TypeIndex  : Integer;
+  IntegerVal : LongInt;
+  RealVal    : Extended;
+  TextVal    : String[255];
+  Valid      : Boolean;
+ End;
+
+ TStorageKind = (
+  STORAGE_NONE,
+  STORAGE_GLOBAL_DATA,
+  STORAGE_GLOBAL_BSS,
+  STORAGE_LOCAL,
+  STORAGE_PARAMETER,
+  STORAGE_FIELD
+ );
+
+ TScope = Record
+  Kind        : TScopeKind;
+  Parent      : Integer;
+  Level       : Integer;
+ OwnerName   : String[63];
+ FirstSymbol : Integer;
+  SymbolCount : Integer;
+  StartToken  : Integer;
+  EndToken    : Integer;
+  FrameSize   : Integer;
+ End;
+
+ TSemanticSymbol = Record
+  Name       : String[63];
+  Kind       : TSymbolKind;
+  ScopeIndex : Integer;
+  NextSymbol : Integer;
+  Line       : Integer;
+  Column     : Integer;
+  TypeIndex  : Integer;
+  Offset     : Integer;
+  Size       : Integer;
+  Storage    : TStorageKind;
+  AsmLabel   : String[127];
+  HasInitializer:Boolean;
+  ConstValue : TConstValue;
+ End;
+
  TCompilationUnit = Record
   Name       : String[63];
   Kind       : TUnitKind;
@@ -439,6 +558,21 @@ Var
  PreScanErrorCount: Integer;
  QuietDiagnostics : Boolean;
  HasImportCycle   : Boolean;
+ SemanticScopes   : Array[1..MOD3_MAX_SCOPES] Of TScope;
+ SemanticSymbols  : Array[1..MOD3_MAX_SYMBOLS] Of TSemanticSymbol;
+ SemanticScopeCount : Integer;
+ SemanticSymbolCount: Integer;
+ SemanticIndex      : Integer;
+ SemanticTypes      : Array[1..MOD3_MAX_TYPES] Of TSemanticType;
+ SemanticTypeCount  : Integer;
+ TypeInteger        : Integer;
+ TypeCardinal       : Integer;
+ TypeBoolean        : Integer;
+ TypeChar           : Integer;
+ TypeReal           : Integer;
+ TypeLongReal       : Integer;
+ TypeText           : Integer;
+ TypeNil            : Integer;
 
 Function UpperStr(S:String):String;
 Var
@@ -1139,6 +1273,133 @@ Begin
  Emit386Ret(T);
 End;
 
+Function TypeStorageSize(TypeIndex:Integer):Integer; Forward;
+Function TypeStorageAlign(TypeIndex:Integer):Integer; Forward;
+Function CanonicalType(TypeIndex:Integer):Integer; Forward;
+
+Function AsmReal(Value:Extended;Decimals:Integer):String;
+Var
+ S:String;
+Begin
+ Str(Value:0:Decimals,S);
+ AsmReal:=S;
+End;
+
+Procedure EmitAsmAlignment(Var T:Text;Alignment:Integer);
+Begin
+ If Alignment>1 Then EmitAsmLine(T,'  align '+IntToString(Alignment));
+End;
+
+Procedure EmitAsmConstStrings(Var T:Text);
+Var
+ I:Integer;
+ LabelName:String;
+Begin
+ For I:=1 To SemanticSymbolCount Do
+  If (SemanticSymbols[I].Kind=SYM_CONST) And
+     SemanticSymbols[I].ConstValue.Valid And
+     (SemanticSymbols[I].ConstValue.Kind=CONST_TEXT) Then Begin
+   LabelName:=MakeDataLabel(Pipeline.ModuleName+'_CONST_'+
+                            SemanticSymbols[I].Name);
+   EmitAsmLabel(T,LabelName);
+   EmitAsmLine(T,'  db '+
+    AsmByteList(SemanticSymbols[I].ConstValue.TextVal,True));
+  End;
+End;
+
+Procedure EmitAsmInitializedGlobal(Var T:Text;SymbolIndex:Integer);
+Var
+ TypeIndex:Integer;
+ Kind:TTypeKind;
+ V:TConstValue;
+ ConstLabel:String;
+Begin
+ TypeIndex:=CanonicalType(SemanticSymbols[SymbolIndex].TypeIndex);
+ Kind:=SemanticTypes[TypeIndex].Kind;
+ V:=SemanticSymbols[SymbolIndex].ConstValue;
+ EmitAsmAlignment(T,TypeStorageAlign(TypeIndex));
+ EmitAsmLabel(T,SemanticSymbols[SymbolIndex].AsmLabel);
+ If Kind=TYPE_REAL Then
+  EmitAsmLine(T,'  dd __float32__('+AsmReal(V.RealVal,8)+')')
+ Else If Kind=TYPE_LONGREAL Then
+  EmitAsmLine(T,'  dq __float64__('+AsmReal(V.RealVal,12)+')')
+ Else If Kind=TYPE_TEXT Then Begin
+  ConstLabel:=MakeDataLabel(Pipeline.ModuleName+'_VARINIT_'+
+                            SemanticSymbols[SymbolIndex].Name);
+  EmitAsmLine(T,'  dd '+ConstLabel);
+  EmitAsmLabel(T,ConstLabel);
+  EmitAsmLine(T,'  db '+AsmByteList(V.TextVal,True));
+ End
+ Else If (Kind=TYPE_BOOLEAN) Or (Kind=TYPE_CHAR) Then
+  EmitAsmLine(T,'  db '+IntToString(V.IntegerVal))
+ Else
+  EmitAsmLine(T,'  dd '+IntToString(V.IntegerVal));
+End;
+
+Procedure EmitAsmGlobals(Var T:Text;Storage:TStorageKind);
+Var
+ I:Integer;
+Begin
+ For I:=1 To SemanticSymbolCount Do
+  If (SemanticSymbols[I].Kind=SYM_VAR) And
+     (SemanticSymbols[I].Storage=Storage) Then Begin
+   If Storage=STORAGE_GLOBAL_DATA Then
+    EmitAsmInitializedGlobal(T,I)
+   Else Begin
+    EmitAsmAlignment(T,TypeStorageAlign(SemanticSymbols[I].TypeIndex));
+    EmitAsmLabel(T,SemanticSymbols[I].AsmLabel);
+    EmitAsmLine(T,'  resb '+IntToString(SemanticSymbols[I].Size));
+   End;
+  End;
+End;
+
+Procedure EmitAsmProcedureFrames(Var T:Text);
+Var
+ ScopeIndex,I:Integer;
+ ProcLabel:String;
+Begin
+ For ScopeIndex:=1 To SemanticScopeCount Do
+  If SemanticScopes[ScopeIndex].Kind=SCOPE_PROCEDURE Then Begin
+   ProcLabel:=MakeInternalLabel(Pipeline.ModuleName+'_PROC_'+
+                                SemanticScopes[ScopeIndex].OwnerName);
+   EmitAsmBlank(T);
+   EmitAsmLabel(T,ProcLabel);
+   Emit386Prologue(T,SemanticScopes[ScopeIndex].FrameSize);
+   For I:=1 To SemanticSymbolCount Do
+    If (SemanticSymbols[I].ScopeIndex=ScopeIndex) And
+       (SemanticSymbols[I].Storage=STORAGE_LOCAL) Then Begin
+     If SemanticSymbols[I].Size=1 Then
+      EmitAsmInstr(T,'mov','byte '+LocalVarRef(-SemanticSymbols[I].Offset)+', 0')
+     Else If SemanticSymbols[I].Size=2 Then
+      EmitAsmInstr(T,'mov','word '+LocalVarRef(-SemanticSymbols[I].Offset)+', 0')
+     Else If SemanticSymbols[I].Size=4 Then
+      EmitAsmInstr(T,'mov','dword '+LocalVarRef(-SemanticSymbols[I].Offset)+', 0')
+     Else Begin
+      Emit386Push(T,RegName(R_EDI));
+      Emit386Push(T,RegName(R_ECX));
+      EmitAsmInstr(T,'lea',RegName(R_EDI)+', '+
+                   LocalVarRef(-SemanticSymbols[I].Offset));
+      EmitAsmInstr(T,'xor',RegName(R_EAX)+', '+RegName(R_EAX));
+      Emit386Mov(T,RegName(R_ECX),IntToString(SemanticSymbols[I].Size));
+      EmitAsmInstr(T,'rep stosb','');
+      Emit386Pop(T,RegName(R_ECX));
+      Emit386Pop(T,RegName(R_EDI));
+     End;
+    End;
+   For I:=1 To SemanticSymbolCount Do
+    If SemanticSymbols[I].ScopeIndex=ScopeIndex Then
+     If SemanticSymbols[I].Storage=STORAGE_LOCAL Then
+      EmitAsmComment(T,'local '+SemanticSymbols[I].Name+' = '+
+       LocalVarRef(-SemanticSymbols[I].Offset)+' ('+
+       IntToString(SemanticSymbols[I].Size)+' octets)')
+     Else If SemanticSymbols[I].Storage=STORAGE_PARAMETER Then
+      EmitAsmComment(T,'param '+SemanticSymbols[I].Name+' = '+
+       StackRef(R_EBP,SemanticSymbols[I].Offset));
+   EmitAsmComment(T,'corps de procedure: TODO 20');
+   Emit386Epilogue(T);
+  End;
+End;
+
 Function WriteAsm80386File(FileName:String):Boolean;
 Var
  T:Text;
@@ -1167,6 +1428,7 @@ Begin
  Emit386Mov(T,RegName(R_EAX),'0');
  EmitAsmLabel(T,MakeInternalLabel(Pipeline.ModuleName+'_EXIT'));
  Emit386Epilogue(T);
+ EmitAsmProcedureFrames(T);
  EmitAsmBlank(T);
  EmitAsmSection(T,Pipeline.Target.DataSection);
  EmitAsmLabel(T,MakeDataLabel(Pipeline.ModuleName+'_SOURCE'));
@@ -1175,10 +1437,15 @@ Begin
  EmitAsmLine(T,'  db '+AsmByteList(Pipeline.ModuleName,True));
  EmitAsmLabel(T,MakeAsmLabel(MOD3_RUNTIME_PREFIX,'CRLF'));
  EmitAsmLine(T,'  db 13,10,0');
+ EmitAsmConstStrings(T);
+ EmitAsmGlobals(T,STORAGE_GLOBAL_DATA);
  EmitAsmBlank(T);
  EmitAsmSection(T,Pipeline.Target.BssSection);
- EmitAsmLabel(T,MakeDataLabel(Pipeline.ModuleName+'_BSS_ANCHOR'));
- EmitAsmLine(T,'  resd 1');
+ EmitAsmGlobals(T,STORAGE_GLOBAL_BSS);
+ If Pipeline.VarDeclCount=0 Then Begin
+  EmitAsmLabel(T,MakeDataLabel(Pipeline.ModuleName+'_BSS_ANCHOR'));
+  EmitAsmLine(T,'  resd 1');
+ End;
  Close(T);
  If IOResult<>0 Then Begin
   PipelineError('ecriture incomplete de '+FileName);
@@ -1245,9 +1512,13 @@ Begin
 End;
 
 Procedure WriteCoffSymbol(Var F:File;Name:String;Value:LongInt;
- SectionNumber:Integer;StorageClass:Byte);
+ SectionNumber:Integer;StorageClass:Byte;LongNameOffset:LongInt);
 Begin
- WriteFixedName8(F,Name);
+ If Length(Name)<=8 Then WriteFixedName8(F,Name)
+ Else Begin
+  WriteRawDWordLE(F,0);
+  WriteRawDWordLE(F,LongNameOffset);
+ End;
  WriteRawDWordLE(F,Value);
  WriteRawWordLE(F,SectionNumber);
  WriteRawWordLE(F,0);
@@ -1255,11 +1526,139 @@ Begin
  WriteRawByte(F,0);
 End;
 
+Function CoffLongNameOffset(Name,EntryName,SourceLabel,
+ ModuleLabel:String):LongInt;
+Var
+ Offset:LongInt;
+ I:Integer;
+
+ Procedure Consider(Candidate:String);
+ Begin
+  If (CoffLongNameOffset=0) And (Candidate=Name) And
+     (Length(Candidate)>8) Then CoffLongNameOffset:=Offset;
+  If Length(Candidate)>8 Then Inc(Offset,Length(Candidate)+1);
+ End;
+
+Begin
+ CoffLongNameOffset:=0;
+ Offset:=4;
+ Consider(SectionName(AS_TEXT));
+ Consider(SectionName(AS_DATA));
+ Consider(SectionName(AS_BSS));
+ Consider(EntryName);
+ Consider(SourceLabel);
+ Consider(ModuleLabel);
+ For I:=1 To SemanticSymbolCount Do
+  If (SemanticSymbols[I].Kind=SYM_VAR) And
+     ((SemanticSymbols[I].Storage=STORAGE_GLOBAL_DATA) Or
+      (SemanticSymbols[I].Storage=STORAGE_GLOBAL_BSS)) Then
+   Consider(SemanticSymbols[I].AsmLabel);
+End;
+
+Procedure WriteCoffStringTable(Var F:File;EntryName,SourceLabel,
+ ModuleLabel:String);
+Var
+ TotalSize:LongInt;
+ I:Integer;
+
+ Procedure CountName(Name:String);
+ Begin
+  If Length(Name)>8 Then Inc(TotalSize,Length(Name)+1);
+ End;
+
+ Procedure WriteName(Name:String);
+ Begin
+  If Length(Name)>8 Then WriteRawBytesFromString(F,Name,True);
+ End;
+
+Begin
+ TotalSize:=4;
+ CountName(SectionName(AS_TEXT));
+ CountName(SectionName(AS_DATA));
+ CountName(SectionName(AS_BSS));
+ CountName(EntryName);
+ CountName(SourceLabel);
+ CountName(ModuleLabel);
+ For I:=1 To SemanticSymbolCount Do
+  If (SemanticSymbols[I].Kind=SYM_VAR) And
+     ((SemanticSymbols[I].Storage=STORAGE_GLOBAL_DATA) Or
+      (SemanticSymbols[I].Storage=STORAGE_GLOBAL_BSS)) Then
+   CountName(SemanticSymbols[I].AsmLabel);
+ WriteRawDWordLE(F,TotalSize);
+ WriteName(SectionName(AS_TEXT));
+ WriteName(SectionName(AS_DATA));
+ WriteName(SectionName(AS_BSS));
+ WriteName(EntryName);
+ WriteName(SourceLabel);
+ WriteName(ModuleLabel);
+ For I:=1 To SemanticSymbolCount Do
+  If (SemanticSymbols[I].Kind=SYM_VAR) And
+     ((SemanticSymbols[I].Storage=STORAGE_GLOBAL_DATA) Or
+      (SemanticSymbols[I].Storage=STORAGE_GLOBAL_BSS)) Then
+   WriteName(SemanticSymbols[I].AsmLabel);
+End;
+
 Procedure WriteCoffRelocation(Var F:File;Reloc:TCoffReloc);
 Begin
  WriteRawDWordLE(F,Reloc.Offset);
  WriteRawDWordLE(F,Reloc.SymbolIndex);
  WriteRawWordLE(F,CoffRelocType(Reloc.Kind));
+End;
+
+Procedure PadToFilePos(Var F:File;TargetPos:LongInt); Forward;
+
+Function GlobalStorageSize(Storage:TStorageKind):LongInt;
+Var
+ I:Integer;
+ EndOffset:LongInt;
+Begin
+ GlobalStorageSize:=0;
+ For I:=1 To SemanticSymbolCount Do
+  If (SemanticSymbols[I].Kind=SYM_VAR) And
+     (SemanticSymbols[I].Storage=Storage) Then Begin
+   EndOffset:=SemanticSymbols[I].Offset+SemanticSymbols[I].Size;
+   If EndOffset>GlobalStorageSize Then GlobalStorageSize:=EndOffset;
+  End;
+End;
+
+Procedure WriteCoffInitializer(Var F:File;SymbolIndex:Integer);
+Var
+ TypeIndex:Integer;
+ Kind:TTypeKind;
+ SingleValue:Single;
+ DoubleValue:Double;
+ Bits32:LongInt;
+ Bits64:Array[0..1] Of LongInt;
+ Written:Integer;
+Begin
+ TypeIndex:=CanonicalType(SemanticSymbols[SymbolIndex].TypeIndex);
+ Kind:=SemanticTypes[TypeIndex].Kind;
+ Written:=0;
+ If Kind=TYPE_REAL Then Begin
+  SingleValue:=SemanticSymbols[SymbolIndex].ConstValue.RealVal;
+  Move(SingleValue,Bits32,SizeOf(Bits32));
+  WriteRawDWordLE(F,Bits32);
+  Written:=4;
+ End
+ Else If Kind=TYPE_LONGREAL Then Begin
+  DoubleValue:=SemanticSymbols[SymbolIndex].ConstValue.RealVal;
+  Move(DoubleValue,Bits64,SizeOf(Bits64));
+  WriteRawDWordLE(F,Bits64[0]);
+  WriteRawDWordLE(F,Bits64[1]);
+  Written:=8;
+ End
+ Else If (Kind=TYPE_BOOLEAN) Or (Kind=TYPE_CHAR) Then Begin
+  WriteRawByte(F,SemanticSymbols[SymbolIndex].ConstValue.IntegerVal And $FF);
+  Written:=1;
+ End
+ Else Begin
+  WriteRawDWordLE(F,SemanticSymbols[SymbolIndex].ConstValue.IntegerVal);
+  Written:=4;
+ End;
+ While Written<SemanticSymbols[SymbolIndex].Size Do Begin
+  WriteRawByte(F,0);
+  Inc(Written);
+ End;
 End;
 
 Function WriteCoffI386File(FileName:String):Boolean;
@@ -1278,14 +1677,26 @@ Var
  EntryName:String;
  SourceLabel:String;
  ModuleLabel:String;
+ MetaDataSize:LongInt;
+ GlobalDataBase:LongInt;
+ GlobalDataSize:LongInt;
+ I:Integer;
 Begin
  WriteCoffI386File:=False;
  SymbolCount:=6;
+ For I:=1 To SemanticSymbolCount Do
+  If (SemanticSymbols[I].Kind=SYM_VAR) And
+     ((SemanticSymbols[I].Storage=STORAGE_GLOBAL_DATA) Or
+      (SemanticSymbols[I].Storage=STORAGE_GLOBAL_BSS)) Then Inc(SymbolCount);
  EntryName:=Pipeline.Target.EntryLabel;
  SourceLabel:=MakeDataLabel(Pipeline.ModuleName+'_SOURCE');
  ModuleLabel:=MakeDataLabel(Pipeline.ModuleName+'_MODULE');
- DataSize:=Length(Pipeline.SourceName)+1+Length(Pipeline.ModuleName)+1;
- BssSize:=4; (* anchor minimal; remplace par la taille BSS reelle en TODO 16 *)
+ MetaDataSize:=Length(Pipeline.SourceName)+1+Length(Pipeline.ModuleName)+1;
+ GlobalDataBase:=((MetaDataSize+3) Div 4)*4;
+ GlobalDataSize:=GlobalStorageSize(STORAGE_GLOBAL_DATA);
+ DataSize:=GlobalDataBase+GlobalDataSize;
+ BssSize:=GlobalStorageSize(STORAGE_GLOBAL_BSS);
+ If BssSize=0 Then BssSize:=4;
  TextPtr:=COFF_FILE_HEADER_SIZE+(SectionCount*COFF_SECTION_HDR_SIZE);
  DataPtr:=TextPtr+TextSize;
  BssPtr:=0;
@@ -1314,18 +1725,44 @@ Begin
  WriteRawByte(F,$90);                      (* nop d'alignement *)
  WriteRawBytesFromString(F,Pipeline.SourceName,True);
  WriteRawBytesFromString(F,Pipeline.ModuleName,True);
+ PadToFilePos(F,DataPtr+GlobalDataBase);
+ For I:=1 To SemanticSymbolCount Do
+  If (SemanticSymbols[I].Kind=SYM_VAR) And
+     (SemanticSymbols[I].Storage=STORAGE_GLOBAL_DATA) Then Begin
+   PadToFilePos(F,DataPtr+GlobalDataBase+SemanticSymbols[I].Offset);
+   WriteCoffInitializer(F,I);
+  End;
  WriteCoffSymbol(F,SectionName(AS_TEXT),0,CoffSectionNumber(AS_TEXT),
-                 COFF_SYM_CLASS_STATIC);
+                 COFF_SYM_CLASS_STATIC,0);
  WriteCoffSymbol(F,SectionName(AS_DATA),0,CoffSectionNumber(AS_DATA),
-                 COFF_SYM_CLASS_STATIC);
+                 COFF_SYM_CLASS_STATIC,0);
  WriteCoffSymbol(F,SectionName(AS_BSS),0,CoffSectionNumber(AS_BSS),
-                 COFF_SYM_CLASS_STATIC);
+                 COFF_SYM_CLASS_STATIC,0);
  WriteCoffSymbol(F,EntryName,0,CoffSectionNumber(AS_TEXT),
-                 COFF_SYM_CLASS_EXTERNAL);
+                 COFF_SYM_CLASS_EXTERNAL,
+                 CoffLongNameOffset(EntryName,EntryName,SourceLabel,ModuleLabel));
  WriteCoffSymbol(F,SourceLabel,0,CoffSectionNumber(AS_DATA),
-                 COFF_SYM_CLASS_STATIC);
+                 COFF_SYM_CLASS_STATIC,
+                 CoffLongNameOffset(SourceLabel,EntryName,SourceLabel,ModuleLabel));
  WriteCoffSymbol(F,ModuleLabel,Length(Pipeline.SourceName)+1,
-                 CoffSectionNumber(AS_DATA),COFF_SYM_CLASS_STATIC);
+                 CoffSectionNumber(AS_DATA),COFF_SYM_CLASS_STATIC,
+                 CoffLongNameOffset(ModuleLabel,EntryName,SourceLabel,ModuleLabel));
+ For I:=1 To SemanticSymbolCount Do
+  If (SemanticSymbols[I].Kind=SYM_VAR) And
+     (SemanticSymbols[I].Storage=STORAGE_GLOBAL_DATA) Then
+   WriteCoffSymbol(F,SemanticSymbols[I].AsmLabel,
+                   GlobalDataBase+SemanticSymbols[I].Offset,
+                   CoffSectionNumber(AS_DATA),COFF_SYM_CLASS_STATIC,
+                   CoffLongNameOffset(SemanticSymbols[I].AsmLabel,
+                    EntryName,SourceLabel,ModuleLabel))
+  Else If (SemanticSymbols[I].Kind=SYM_VAR) And
+          (SemanticSymbols[I].Storage=STORAGE_GLOBAL_BSS) Then
+   WriteCoffSymbol(F,SemanticSymbols[I].AsmLabel,
+                   SemanticSymbols[I].Offset,
+                   CoffSectionNumber(AS_BSS),COFF_SYM_CLASS_STATIC,
+                   CoffLongNameOffset(SemanticSymbols[I].AsmLabel,
+                    EntryName,SourceLabel,ModuleLabel));
+ WriteCoffStringTable(F,EntryName,SourceLabel,ModuleLabel);
  Close(F);
  If IOResult<>0 Then Begin
   PipelineError('ecriture incomplete de '+FileName);
@@ -2974,10 +3411,1833 @@ Begin
  ComputeCompileOrder(HasImportCycle);
 End;
 
+Function ScopeKindName(Kind:TScopeKind):String;
+Begin
+ Case Kind Of
+  SCOPE_UNIVERSE :ScopeKindName:='universelle';
+  SCOPE_INTERFACE:ScopeKindName:='interface';
+  SCOPE_MODULE   :ScopeKindName:='module';
+  SCOPE_PROCEDURE:ScopeKindName:='procedure';
+  SCOPE_OBJECT   :ScopeKindName:='objet';
+  SCOPE_GENERIC  :ScopeKindName:='generique';
+  Else ScopeKindName:='inconnue';
+ End;
+End;
+
+Function SymbolKindName(Kind:TSymbolKind):String;
+Begin
+ Case Kind Of
+  SYM_IMPORT       :SymbolKindName:='import';
+  SYM_CONST        :SymbolKindName:='constante';
+  SYM_TYPE         :SymbolKindName:='type';
+  SYM_VAR          :SymbolKindName:='variable';
+  SYM_PARAM        :SymbolKindName:='parametre';
+  SYM_PROCEDURE    :SymbolKindName:='procedure';
+  SYM_FIELD        :SymbolKindName:='champ';
+  SYM_METHOD       :SymbolKindName:='methode';
+  SYM_EXCEPTION    :SymbolKindName:='exception';
+  SYM_GENERIC_PARAM:SymbolKindName:='parametre generique';
+  Else SymbolKindName:='symbole';
+ End;
+End;
+
+Function NewSemanticScope(AKind:TScopeKind;AParent:Integer;
+ AOwnerName:String;LineNo,ColumnNo:Integer):Integer;
+Begin
+ NewSemanticScope:=0;
+ If SemanticScopeCount>=MOD3_MAX_SCOPES Then Begin
+  SemanticError('trop de portees semantiques',LineNo,ColumnNo);
+  Exit;
+ End;
+ Inc(SemanticScopeCount);
+ With SemanticScopes[SemanticScopeCount] Do Begin
+  Kind:=AKind;
+  Parent:=AParent;
+  If Parent=0 Then Level:=0
+  Else Level:=SemanticScopes[Parent].Level+1;
+  OwnerName:=AOwnerName;
+  FirstSymbol:=0;
+  SymbolCount:=0;
+  StartToken:=SemanticIndex;
+  EndToken:=Pipeline.TokenCount;
+  FrameSize:=0;
+ End;
+ NewSemanticScope:=SemanticScopeCount;
+End;
+
+Function FindSymbolInScope(Name:String;ScopeIndex:Integer):Integer;
+Var
+ I:Integer;
+Begin
+ FindSymbolInScope:=0;
+ If (ScopeIndex<1) Or (ScopeIndex>SemanticScopeCount) Then Exit;
+ I:=SemanticScopes[ScopeIndex].FirstSymbol;
+ While I<>0 Do Begin
+  If SemanticSymbols[I].Name=Name Then Begin
+   FindSymbolInScope:=I;
+   Exit;
+  End;
+  I:=SemanticSymbols[I].NextSymbol;
+ End;
+End;
+
+Function FindVisibleSymbol(Name:String;ScopeIndex:Integer):Integer;
+Begin
+ FindVisibleSymbol:=0;
+ While ScopeIndex<>0 Do Begin
+  FindVisibleSymbol:=FindSymbolInScope(Name,ScopeIndex);
+  If FindVisibleSymbol<>0 Then Exit;
+  ScopeIndex:=SemanticScopes[ScopeIndex].Parent;
+ End;
+End;
+
+Function AddSemanticSymbol(AName:String;AKind:TSymbolKind;AScopeIndex:Integer;
+ LineNo,ColumnNo:Integer):Boolean;
+Var
+ Existing:Integer;
+Begin
+ AddSemanticSymbol:=False;
+ Existing:=FindSymbolInScope(AName,AScopeIndex);
+ If Existing<>0 Then Begin
+  SemanticError('identificateur "'+AName+'" deja declare dans cette portee ('+
+   SymbolKindName(SemanticSymbols[Existing].Kind)+' ligne '+
+   IntToString(SemanticSymbols[Existing].Line)+')',LineNo,ColumnNo);
+  Exit;
+ End;
+ If SemanticSymbolCount>=MOD3_MAX_SYMBOLS Then Begin
+  SemanticError('table des symboles pleine',LineNo,ColumnNo);
+  Exit;
+ End;
+ Inc(SemanticSymbolCount);
+ With SemanticSymbols[SemanticSymbolCount] Do Begin
+  Name:=AName;
+  Kind:=AKind;
+  ScopeIndex:=AScopeIndex;
+  Line:=LineNo;
+  Column:=ColumnNo;
+  TypeIndex:=0;
+  Offset:=0;
+  Size:=0;
+  Storage:=STORAGE_NONE;
+  AsmLabel:='';
+  HasInitializer:=False;
+  ConstValue.Kind:=CONST_INVALID;
+  ConstValue.TypeIndex:=0;
+  ConstValue.IntegerVal:=0;
+  ConstValue.RealVal:=0;
+  ConstValue.TextVal:='';
+  ConstValue.Valid:=False;
+  NextSymbol:=SemanticScopes[AScopeIndex].FirstSymbol;
+ End;
+ SemanticScopes[AScopeIndex].FirstSymbol:=SemanticSymbolCount;
+ Inc(SemanticScopes[AScopeIndex].SymbolCount);
+ AddSemanticSymbol:=True;
+End;
+
+Function AddTypedSemanticSymbol(AName:String;AKind:TSymbolKind;
+ AScopeIndex,TypeIndex:Integer;LineNo,ColumnNo:Integer):Boolean;
+Begin
+ AddTypedSemanticSymbol:=
+  AddSemanticSymbol(AName,AKind,AScopeIndex,LineNo,ColumnNo);
+ If AddTypedSemanticSymbol Then
+  SemanticSymbols[SemanticSymbolCount].TypeIndex:=TypeIndex;
+End;
+
+Function AddSemanticType(AName:String;AKind:TTypeKind;ASize,AAlign,
+ ABaseType,LineNo,ColumnNo:Integer):Integer;
+Begin
+ AddSemanticType:=0;
+ If SemanticTypeCount>=MOD3_MAX_TYPES Then Begin
+  SemanticError('table des types pleine',LineNo,ColumnNo);
+  Exit;
+ End;
+ Inc(SemanticTypeCount);
+ With SemanticTypes[SemanticTypeCount] Do Begin
+  Name:=AName;
+  Kind:=AKind;
+  Size:=ASize;
+  Align:=AAlign;
+  BaseType:=ABaseType;
+  ElementType:=0;
+  LowBound:=0;
+  HighBound:=-1;
+  OpenArray:=False;
+  FieldScope:=0;
+  Branded:=False;
+  Untraced:=False;
+  Revealed:=False;
+  Line:=LineNo;
+  Column:=ColumnNo;
+ End;
+ AddSemanticType:=SemanticTypeCount;
+End;
+
+Function CanonicalType(TypeIndex:Integer):Integer;
+Var
+ Guard:Integer;
+Begin
+ Guard:=0;
+ While (TypeIndex>0) And (TypeIndex<=SemanticTypeCount) And
+       (SemanticTypes[TypeIndex].Kind=TYPE_ALIAS) And
+       (SemanticTypes[TypeIndex].BaseType<>0) And
+       (Guard<MOD3_MAX_TYPES) Do Begin
+  TypeIndex:=SemanticTypes[TypeIndex].BaseType;
+  Inc(Guard);
+ End;
+ CanonicalType:=TypeIndex;
+End;
+
+Function TypeKindName(Kind:TTypeKind):String;
+Begin
+ Case Kind Of
+  TYPE_INTEGER :TypeKindName:='INTEGER';
+  TYPE_CARDINAL:TypeKindName:='CARDINAL';
+  TYPE_BOOLEAN :TypeKindName:='BOOLEAN';
+  TYPE_CHAR    :TypeKindName:='CHAR';
+  TYPE_REAL    :TypeKindName:='REAL';
+  TYPE_LONGREAL:TypeKindName:='LONGREAL';
+  TYPE_TEXT    :TypeKindName:='TEXT';
+  TYPE_NIL     :TypeKindName:='NIL';
+  TYPE_ALIAS   :TypeKindName:='alias';
+  TYPE_SUBRANGE:TypeKindName:='sous-intervalle';
+  TYPE_ARRAY   :TypeKindName:='ARRAY';
+  TYPE_RECORD  :TypeKindName:='RECORD';
+  TYPE_REF     :TypeKindName:='REF';
+  TYPE_OPAQUE  :TypeKindName:='opaque';
+  TYPE_OBJECT  :TypeKindName:='OBJECT';
+  TYPE_COMPOSITE:TypeKindName:='compose';
+  Else TypeKindName:='erreur';
+ End;
+End;
+
+Function TypeName(TypeIndex:Integer):String;
+Begin
+ If (TypeIndex<1) Or (TypeIndex>SemanticTypeCount) Then
+  TypeName:='<type inconnu>'
+ Else If SemanticTypes[TypeIndex].Name<>'' Then
+  TypeName:=SemanticTypes[TypeIndex].Name
+ Else TypeName:=TypeKindName(SemanticTypes[TypeIndex].Kind);
+End;
+
+Function TypeIsInteger(TypeIndex:Integer):Boolean;
+Var
+ Kind:TTypeKind;
+Begin
+ TypeIndex:=CanonicalType(TypeIndex);
+ If TypeIndex=0 Then Begin
+  TypeIsInteger:=False;
+  Exit;
+ End;
+ Kind:=SemanticTypes[TypeIndex].Kind;
+ TypeIsInteger:=(Kind=TYPE_INTEGER) Or (Kind=TYPE_CARDINAL);
+End;
+
+Function TypeIsNumeric(TypeIndex:Integer):Boolean;
+Var
+ Kind:TTypeKind;
+Begin
+ TypeIndex:=CanonicalType(TypeIndex);
+ If TypeIndex=0 Then Begin
+  TypeIsNumeric:=False;
+  Exit;
+ End;
+ Kind:=SemanticTypes[TypeIndex].Kind;
+ TypeIsNumeric:=(Kind=TYPE_INTEGER) Or (Kind=TYPE_CARDINAL) Or
+                (Kind=TYPE_REAL) Or (Kind=TYPE_LONGREAL);
+End;
+
+Function TypeIsOrdinal(TypeIndex:Integer):Boolean;
+Var
+ Kind:TTypeKind;
+Begin
+ TypeIndex:=CanonicalType(TypeIndex);
+ If TypeIndex=0 Then Begin
+  TypeIsOrdinal:=False;
+  Exit;
+ End;
+ Kind:=SemanticTypes[TypeIndex].Kind;
+ TypeIsOrdinal:=(Kind=TYPE_INTEGER) Or (Kind=TYPE_CARDINAL) Or
+                (Kind=TYPE_BOOLEAN) Or (Kind=TYPE_CHAR);
+End;
+
+Function TypeCompatible(DestType,SourceType:Integer):Boolean;
+Var
+ DestKind,SourceKind:TTypeKind;
+Begin
+ DestType:=CanonicalType(DestType);
+ SourceType:=CanonicalType(SourceType);
+ If (DestType=0) Or (SourceType=0) Then Begin
+  TypeCompatible:=True;
+  Exit;
+ End;
+ If DestType=SourceType Then Begin
+  TypeCompatible:=True;
+  Exit;
+ End;
+ DestKind:=SemanticTypes[DestType].Kind;
+ SourceKind:=SemanticTypes[SourceType].Kind;
+ TypeCompatible:=
+  ((DestKind=TYPE_INTEGER) And (SourceKind=TYPE_CARDINAL)) Or
+  ((DestKind=TYPE_CARDINAL) And (SourceKind=TYPE_INTEGER)) Or
+  ((DestKind=TYPE_REAL) And
+   ((SourceKind=TYPE_INTEGER) Or (SourceKind=TYPE_CARDINAL))) Or
+  ((DestKind=TYPE_LONGREAL) And
+   ((SourceKind=TYPE_INTEGER) Or (SourceKind=TYPE_CARDINAL) Or
+    (SourceKind=TYPE_REAL))) Or
+  ((DestKind=TYPE_TEXT) And (SourceKind=TYPE_NIL)) Or
+  (((DestKind=TYPE_OPAQUE) Or (DestKind=TYPE_OBJECT) Or
+    (DestKind=TYPE_SUBRANGE)) And
+   (SemanticTypes[DestType].BaseType<>0) And
+   TypeCompatible(SemanticTypes[DestType].BaseType,SourceType)) Or
+  ((SourceKind=TYPE_SUBRANGE) And
+   (SemanticTypes[SourceType].BaseType<>0) And
+   TypeCompatible(DestType,SemanticTypes[SourceType].BaseType)) Or
+  (((DestKind=TYPE_REF) Or (DestKind=TYPE_OPAQUE) Or
+    (DestKind=TYPE_OBJECT) Or (DestKind=TYPE_TEXT)) And
+   (SourceKind=TYPE_NIL));
+End;
+
+Function TypeConvertible(DestType,SourceType:Integer):Boolean;
+Var
+ DestKind,SourceKind:TTypeKind;
+Begin
+ If TypeCompatible(DestType,SourceType) Then Begin
+  TypeConvertible:=True;
+  Exit;
+ End;
+ DestType:=CanonicalType(DestType);
+ SourceType:=CanonicalType(SourceType);
+ If (DestType=0) Or (SourceType=0) Then Begin
+  TypeConvertible:=False;
+  Exit;
+ End;
+ DestKind:=SemanticTypes[DestType].Kind;
+ SourceKind:=SemanticTypes[SourceType].Kind;
+ TypeConvertible:=
+  (TypeIsNumeric(DestType) And TypeIsNumeric(SourceType)) Or
+  ((DestKind=TYPE_INTEGER) And
+   ((SourceKind=TYPE_CHAR) Or (SourceKind=TYPE_BOOLEAN))) Or
+  ((DestKind=TYPE_CHAR) And TypeIsInteger(SourceType)) Or
+  ((DestKind=TYPE_BOOLEAN) And TypeIsInteger(SourceType));
+End;
+
+Function FindTypeByName(Name:String;ScopeIndex:Integer):Integer;
+Var
+ SymbolIndex:Integer;
+Begin
+ FindTypeByName:=0;
+ SymbolIndex:=FindVisibleSymbol(Name,ScopeIndex);
+ If (SymbolIndex<>0) And (SemanticSymbols[SymbolIndex].Kind=SYM_TYPE) Then
+  FindTypeByName:=SemanticSymbols[SymbolIndex].TypeIndex;
+End;
+
+Function LiteralType(Token:TToken):Integer;
+Var
+ U:String;
+Begin
+ Case Token.Kind Of
+  TK_INTEGER:LiteralType:=TypeInteger;
+  TK_REAL   :LiteralType:=TypeReal;
+  TK_CHAR   :LiteralType:=TypeChar;
+  TK_STRING :LiteralType:=TypeText;
+  TK_IDENTIFIER:Begin
+   U:=UpperStr(Token.Text);
+   If (U='TRUE') Or (U='FALSE') Then LiteralType:=TypeBoolean
+   Else If U='NIL' Then LiteralType:=TypeNil
+   Else LiteralType:=0;
+  End;
+ Else LiteralType:=0;
+ End;
+End;
+
+Function InvalidConst:TConstValue;
+Var
+ V:TConstValue;
+Begin
+ FillChar(V,SizeOf(V),0);
+ V.Kind:=CONST_INVALID;
+ V.Valid:=False;
+ InvalidConst:=V;
+End;
+
+Function IntegerConst(Value:LongInt):TConstValue;
+Var
+ V:TConstValue;
+Begin
+ V:=InvalidConst;
+ V.Kind:=CONST_INTEGER;
+ V.TypeIndex:=TypeInteger;
+ V.IntegerVal:=Value;
+ V.RealVal:=Value;
+ V.Valid:=True;
+ IntegerConst:=V;
+End;
+
+Function RealConst(Value:Extended):TConstValue;
+Var
+ V:TConstValue;
+Begin
+ V:=InvalidConst;
+ V.Kind:=CONST_REAL;
+ V.TypeIndex:=TypeReal;
+ V.RealVal:=Value;
+ V.Valid:=True;
+ RealConst:=V;
+End;
+
+Function BooleanConst(Value:Boolean):TConstValue;
+Var
+ V:TConstValue;
+Begin
+ V:=InvalidConst;
+ V.Kind:=CONST_BOOLEAN;
+ V.TypeIndex:=TypeBoolean;
+ If Value Then V.IntegerVal:=1 Else V.IntegerVal:=0;
+ V.Valid:=True;
+ BooleanConst:=V;
+End;
+
+Function CharConst(Value:Char):TConstValue;
+Var
+ V:TConstValue;
+Begin
+ V:=InvalidConst;
+ V.Kind:=CONST_CHAR;
+ V.TypeIndex:=TypeChar;
+ V.IntegerVal:=Ord(Value);
+ V.TextVal:=Value;
+ V.Valid:=True;
+ CharConst:=V;
+End;
+
+Function TextConst(Value:String):TConstValue;
+Var
+ V:TConstValue;
+Begin
+ V:=InvalidConst;
+ V.Kind:=CONST_TEXT;
+ V.TypeIndex:=TypeText;
+ V.TextVal:=Value;
+ V.Valid:=True;
+ TextConst:=V;
+End;
+
+Function NilConst:TConstValue;
+Var
+ V:TConstValue;
+Begin
+ V:=InvalidConst;
+ V.Kind:=CONST_NIL;
+ V.TypeIndex:=TypeNil;
+ V.Valid:=True;
+ NilConst:=V;
+End;
+
+Function ConstKindName(Kind:TConstKind):String;
+Begin
+ Case Kind Of
+  CONST_INTEGER:ConstKindName:='entier';
+  CONST_REAL   :ConstKindName:='reel';
+  CONST_BOOLEAN:ConstKindName:='booleen';
+  CONST_CHAR   :ConstKindName:='caractere';
+  CONST_TEXT   :ConstKindName:='texte';
+  CONST_NIL    :ConstKindName:='NIL';
+  Else ConstKindName:='invalide';
+ End;
+End;
+
+Function SemanticToken:TToken; Forward;
+
+Function ResolveTypeToken(ScopeIndex:Integer;ReportUnknown:Boolean):Integer;
+Var
+ Tok:TToken;
+Begin
+ ResolveTypeToken:=0;
+ Tok:=SemanticToken;
+ If Tok.Kind=TK_IDENTIFIER Then Begin
+  ResolveTypeToken:=FindTypeByName(Tok.Text,ScopeIndex);
+  If (ResolveTypeToken=0) And ReportUnknown Then
+   SemanticError('type inconnu: '+Tok.Text,Tok.Line,Tok.Column);
+ End;
+End;
+
+Function SemanticToken:TToken;
+Begin
+ If SemanticIndex<1 Then SemanticIndex:=1;
+ If SemanticIndex>Pipeline.TokenCount Then
+  SemanticToken:=Pipeline.Tokens[Pipeline.TokenCount]
+ Else SemanticToken:=Pipeline.Tokens[SemanticIndex];
+End;
+
+Procedure SemanticAdvance;
+Begin
+ If SemanticIndex<Pipeline.TokenCount Then Inc(SemanticIndex);
+End;
+
+Function SemanticIsKeyword(Keyword:TKeyword):Boolean;
+Begin
+ SemanticIsKeyword:=(SemanticToken.Kind=TK_KEYWORD) And
+                    (SemanticToken.Keyword=Keyword);
+End;
+
+Function SemanticIsSymbol(S:String):Boolean;
+Begin
+ SemanticIsSymbol:=(SemanticToken.Kind=TK_SYMBOL) And
+                   (SemanticToken.Text=S);
+End;
+
+Procedure SemanticSkipToSemicolon;
+Var
+ ParenDepth,BracketDepth,TypeDepth:Integer;
+Begin
+ ParenDepth:=0;
+ BracketDepth:=0;
+ TypeDepth:=0;
+ While SemanticToken.Kind<>TK_EOF Do Begin
+  If SemanticIsSymbol('(') Then Inc(ParenDepth)
+  Else If SemanticIsSymbol(')') And (ParenDepth>0) Then Dec(ParenDepth)
+  Else If SemanticIsSymbol('[') Then Inc(BracketDepth)
+  Else If SemanticIsSymbol(']') And (BracketDepth>0) Then Dec(BracketDepth)
+  Else If SemanticIsKeyword(KW_RECORD) Or SemanticIsKeyword(KW_OBJECT) Then
+   Inc(TypeDepth)
+  Else If SemanticIsKeyword(KW_END) And (TypeDepth>0) Then Dec(TypeDepth)
+  Else If SemanticIsSymbol(';') And (ParenDepth=0) And
+          (BracketDepth=0) And (TypeDepth=0) Then Begin
+   SemanticAdvance;
+   Exit;
+  End;
+  SemanticAdvance;
+ End;
+End;
+
+Procedure AddPredefinedTypes(UniverseScope:Integer);
+Var
+ TypeIndex:Integer;
+Begin
+ TypeInteger:=AddSemanticType('INTEGER',TYPE_INTEGER,4,4,0,0,0);
+ TypeCardinal:=AddSemanticType('CARDINAL',TYPE_CARDINAL,4,4,0,0,0);
+ TypeBoolean:=AddSemanticType('BOOLEAN',TYPE_BOOLEAN,1,1,0,0,0);
+ TypeChar:=AddSemanticType('CHAR',TYPE_CHAR,1,1,0,0,0);
+ TypeReal:=AddSemanticType('REAL',TYPE_REAL,4,4,0,0,0);
+ TypeLongReal:=AddSemanticType('LONGREAL',TYPE_LONGREAL,8,4,0,0,0);
+ TypeText:=AddSemanticType('TEXT',TYPE_TEXT,4,4,0,0,0);
+ TypeNil:=AddSemanticType('NIL',TYPE_NIL,4,4,0,0,0);
+ AddTypedSemanticSymbol('INTEGER',SYM_TYPE,UniverseScope,TypeInteger,0,0);
+ AddTypedSemanticSymbol('CARDINAL',SYM_TYPE,UniverseScope,TypeCardinal,0,0);
+ AddTypedSemanticSymbol('BOOLEAN',SYM_TYPE,UniverseScope,TypeBoolean,0,0);
+ AddTypedSemanticSymbol('CHAR',SYM_TYPE,UniverseScope,TypeChar,0,0);
+ AddTypedSemanticSymbol('REAL',SYM_TYPE,UniverseScope,TypeReal,0,0);
+ AddTypedSemanticSymbol('LONGREAL',SYM_TYPE,UniverseScope,TypeLongReal,0,0);
+ AddTypedSemanticSymbol('TEXT',SYM_TYPE,UniverseScope,TypeText,0,0);
+ TypeIndex:=AddSemanticType('REFANY',TYPE_REF,4,4,0,0,0);
+ AddTypedSemanticSymbol('REFANY',SYM_TYPE,UniverseScope,TypeIndex,0,0);
+ TypeIndex:=AddSemanticType('ROOT',TYPE_OBJECT,4,4,0,0,0);
+ AddTypedSemanticSymbol('ROOT',SYM_TYPE,UniverseScope,TypeIndex,0,0);
+ TypeIndex:=AddSemanticType('ADDRESS',TYPE_REF,4,4,0,0,0);
+ AddTypedSemanticSymbol('ADDRESS',SYM_TYPE,UniverseScope,TypeIndex,0,0);
+ TypeIndex:=AddSemanticType('NULL',TYPE_REF,4,4,0,0,0);
+ AddTypedSemanticSymbol('NULL',SYM_TYPE,UniverseScope,TypeIndex,0,0);
+ TypeIndex:=AddSemanticType('MUTEX',TYPE_REF,4,4,0,0,0);
+ AddTypedSemanticSymbol('MUTEX',SYM_TYPE,UniverseScope,TypeIndex,0,0);
+End;
+
+Procedure AddPredefinedSymbols(UniverseScope:Integer);
+Const
+ PredefProcCount = 15;
+ PredefProcs:Array[1..PredefProcCount] Of String[8] =
+  ('ABS','DEC','DISPOSE','FIRST','FLOAT','INC','ISTYPE',
+   'LAST','MAX','MIN','NEW','ORD','TRUNC','VAL','BITSIZE');
+Var
+ I,SymbolIndex:Integer;
+Begin
+ AddTypedSemanticSymbol('TRUE',SYM_CONST,UniverseScope,TypeBoolean,0,0);
+ SymbolIndex:=FindSymbolInScope('TRUE',UniverseScope);
+ SemanticSymbols[SymbolIndex].ConstValue:=BooleanConst(True);
+ AddTypedSemanticSymbol('FALSE',SYM_CONST,UniverseScope,TypeBoolean,0,0);
+ SymbolIndex:=FindSymbolInScope('FALSE',UniverseScope);
+ SemanticSymbols[SymbolIndex].ConstValue:=BooleanConst(False);
+ AddTypedSemanticSymbol('NIL',SYM_CONST,UniverseScope,TypeNil,0,0);
+ SymbolIndex:=FindSymbolInScope('NIL',UniverseScope);
+ SemanticSymbols[SymbolIndex].ConstValue:=NilConst;
+ For I:=1 To PredefProcCount Do
+  AddSemanticSymbol(PredefProcs[I],SYM_PROCEDURE,UniverseScope,0,0);
+End;
+
+Function AlignTo(Value,Alignment:Integer):Integer;
+Begin
+ If Alignment<=1 Then AlignTo:=Value
+ Else AlignTo:=((Value+Alignment-1) Div Alignment)*Alignment;
+End;
+
+Function ParseSemanticType(ScopeIndex:Integer;SuggestedName:String):Integer;
+ Forward;
+
+Procedure ParseRecordFields(TypeIndex,FieldScope:Integer);
+Var
+ Names:Array[1..64] Of TToken;
+ NameCount,I,FieldType,SymbolIndex:Integer;
+ FieldOffset,FieldAlign,FieldSize:Integer;
+ MemberKind:TSymbolKind;
+Begin
+ FieldOffset:=0;
+ While (SemanticToken.Kind<>TK_EOF) And Not SemanticIsKeyword(KW_END) Do Begin
+  If SemanticIsKeyword(KW_METHODS) Or SemanticIsKeyword(KW_OVERRIDES) Then Begin
+   SemanticAdvance;
+   Continue;
+  End;
+  If SemanticToken.Kind<>TK_IDENTIFIER Then Begin
+   SemanticAdvance;
+   Continue;
+  End;
+  NameCount:=0;
+  Repeat
+   If NameCount<64 Then Begin
+    Inc(NameCount);
+    Names[NameCount]:=SemanticToken;
+   End;
+   SemanticAdvance;
+   If SemanticIsSymbol(',') Then SemanticAdvance Else Break;
+  Until False;
+  If SemanticIsSymbol(':') Then MemberKind:=SYM_FIELD
+  Else If SemanticIsSymbol('(') Or SemanticIsSymbol(':=') Then
+   MemberKind:=SYM_METHOD
+  Else Begin
+   While (SemanticToken.Kind<>TK_EOF) And Not SemanticIsSymbol(';') And
+         Not SemanticIsKeyword(KW_END) Do SemanticAdvance;
+   If SemanticIsSymbol(';') Then SemanticAdvance;
+   Continue;
+  End;
+  If MemberKind=SYM_FIELD Then Begin
+   SemanticAdvance;
+   FieldType:=ParseSemanticType(FieldScope,'');
+   If FieldType=0 Then Begin
+    FieldAlign:=1;
+    FieldSize:=0;
+   End
+   Else Begin
+    FieldAlign:=SemanticTypes[CanonicalType(FieldType)].Align;
+    FieldSize:=SemanticTypes[CanonicalType(FieldType)].Size;
+   End;
+   FieldOffset:=AlignTo(FieldOffset,FieldAlign);
+   For I:=1 To NameCount Do Begin
+    AddTypedSemanticSymbol(Names[I].Text,SYM_FIELD,FieldScope,FieldType,
+                           Names[I].Line,Names[I].Column);
+    SymbolIndex:=FindSymbolInScope(Names[I].Text,FieldScope);
+    If SymbolIndex<>0 Then SemanticSymbols[SymbolIndex].Offset:=FieldOffset;
+    Inc(FieldOffset,FieldSize);
+   End;
+   If FieldAlign>SemanticTypes[TypeIndex].Align Then
+    SemanticTypes[TypeIndex].Align:=FieldAlign;
+  End
+  Else Begin
+   For I:=1 To NameCount Do
+    AddSemanticSymbol(Names[I].Text,SYM_METHOD,FieldScope,
+                      Names[I].Line,Names[I].Column);
+  End;
+  While (SemanticToken.Kind<>TK_EOF) And Not SemanticIsSymbol(';') And
+        Not SemanticIsKeyword(KW_END) Do SemanticAdvance;
+  If SemanticIsSymbol(';') Then SemanticAdvance;
+ End;
+ SemanticTypes[TypeIndex].Size:=
+  AlignTo(FieldOffset,SemanticTypes[TypeIndex].Align);
+End;
+
+Procedure FillSemanticType(TypeIndex,ScopeIndex:Integer);
+Var
+ Tok:TToken;
+ ElementType,FieldScope,BaseType:Integer;
+ LowValue,HighValue,Count:LongInt;
+ Negative:Boolean;
+Begin
+ If TypeIndex=0 Then Exit;
+ While SemanticIsKeyword(KW_BRANDED) Or SemanticIsKeyword(KW_UNTRACED) Do Begin
+  If SemanticIsKeyword(KW_BRANDED) Then Begin
+   SemanticTypes[TypeIndex].Branded:=True;
+   SemanticAdvance;
+   If SemanticToken.Kind=TK_STRING Then SemanticAdvance;
+  End
+  Else Begin
+   SemanticTypes[TypeIndex].Untraced:=True;
+   SemanticAdvance;
+  End;
+ End;
+ If SemanticIsKeyword(KW_REF) Then Begin
+  SemanticAdvance;
+  SemanticTypes[TypeIndex].Kind:=TYPE_REF;
+  SemanticTypes[TypeIndex].Size:=4;
+  SemanticTypes[TypeIndex].Align:=4;
+  ElementType:=ParseSemanticType(ScopeIndex,'');
+  SemanticTypes[TypeIndex].ElementType:=ElementType;
+  Exit;
+ End;
+ If SemanticIsKeyword(KW_ARRAY) Then Begin
+  SemanticAdvance;
+  SemanticTypes[TypeIndex].Kind:=TYPE_ARRAY;
+  SemanticTypes[TypeIndex].Align:=1;
+  If SemanticIsSymbol('[') Then Begin
+   SemanticAdvance;
+   Negative:=SemanticIsSymbol('-');
+   If Negative Then SemanticAdvance;
+   If SemanticToken.Kind=TK_INTEGER Then Begin
+    LowValue:=SemanticToken.IntegerVal;
+    If Negative Then LowValue:=-LowValue;
+    SemanticAdvance;
+   End
+   Else LowValue:=0;
+   If SemanticIsSymbol('..') Then SemanticAdvance;
+   Negative:=SemanticIsSymbol('-');
+   If Negative Then SemanticAdvance;
+   If SemanticToken.Kind=TK_INTEGER Then Begin
+    HighValue:=SemanticToken.IntegerVal;
+    If Negative Then HighValue:=-HighValue;
+    SemanticAdvance;
+   End
+   Else HighValue:=LowValue-1;
+   If SemanticIsSymbol(']') Then SemanticAdvance;
+  End
+  Else Begin
+   LowValue:=0;
+   HighValue:=-1;
+   SemanticTypes[TypeIndex].OpenArray:=True;
+  End;
+  If SemanticIsKeyword(KW_OF) Then SemanticAdvance;
+  ElementType:=ParseSemanticType(ScopeIndex,'');
+  SemanticTypes[TypeIndex].ElementType:=ElementType;
+  SemanticTypes[TypeIndex].LowBound:=LowValue;
+  SemanticTypes[TypeIndex].HighBound:=HighValue;
+  If ElementType<>0 Then Begin
+   SemanticTypes[TypeIndex].Align:=
+    SemanticTypes[CanonicalType(ElementType)].Align;
+   If SemanticTypes[TypeIndex].OpenArray Then
+    SemanticTypes[TypeIndex].Size:=8
+   Else Begin
+    Count:=HighValue-LowValue+1;
+    If Count<0 Then Count:=0;
+    SemanticTypes[TypeIndex].Size:=
+     Count*SemanticTypes[CanonicalType(ElementType)].Size;
+   End;
+  End;
+  Exit;
+ End;
+ If SemanticIsKeyword(KW_RECORD) Or SemanticIsKeyword(KW_OBJECT) Then Begin
+  Tok:=SemanticToken;
+  If SemanticIsKeyword(KW_RECORD) Then
+   SemanticTypes[TypeIndex].Kind:=TYPE_RECORD
+  Else Begin
+   SemanticTypes[TypeIndex].Kind:=TYPE_OBJECT;
+   SemanticTypes[TypeIndex].Size:=4;
+   SemanticTypes[TypeIndex].Align:=4;
+  End;
+  SemanticAdvance;
+  FieldScope:=NewSemanticScope(SCOPE_OBJECT,ScopeIndex,
+                               SemanticTypes[TypeIndex].Name,
+                               Tok.Line,Tok.Column);
+  SemanticTypes[TypeIndex].FieldScope:=FieldScope;
+  If FieldScope<>0 Then Begin
+   ParseRecordFields(TypeIndex,FieldScope);
+   SemanticScopes[FieldScope].EndToken:=SemanticIndex;
+  End;
+  If SemanticIsKeyword(KW_END) Then SemanticAdvance;
+  If SemanticTypes[TypeIndex].Kind=TYPE_OBJECT Then
+   SemanticTypes[TypeIndex].Size:=4;
+  Exit;
+ End;
+ If SemanticIsSymbol('[') Then Begin
+  SemanticTypes[TypeIndex].Kind:=TYPE_SUBRANGE;
+  SemanticTypes[TypeIndex].BaseType:=TypeInteger;
+  SemanticTypes[TypeIndex].Size:=4;
+  SemanticTypes[TypeIndex].Align:=4;
+  SemanticAdvance;
+  If SemanticToken.Kind=TK_INTEGER Then Begin
+   SemanticTypes[TypeIndex].LowBound:=SemanticToken.IntegerVal;
+   SemanticAdvance;
+  End;
+  If SemanticIsSymbol('..') Then SemanticAdvance;
+  If SemanticToken.Kind=TK_INTEGER Then Begin
+   SemanticTypes[TypeIndex].HighBound:=SemanticToken.IntegerVal;
+   SemanticAdvance;
+  End;
+  If SemanticIsSymbol(']') Then SemanticAdvance;
+  Exit;
+ End;
+ If SemanticToken.Kind=TK_IDENTIFIER Then Begin
+  BaseType:=FindTypeByName(SemanticToken.Text,ScopeIndex);
+  If BaseType=0 Then
+   SemanticError('type inconnu: '+SemanticToken.Text,
+                 SemanticToken.Line,SemanticToken.Column)
+  Else Begin
+   SemanticTypes[TypeIndex].Kind:=TYPE_ALIAS;
+   SemanticTypes[TypeIndex].BaseType:=BaseType;
+   SemanticTypes[TypeIndex].Size:=SemanticTypes[CanonicalType(BaseType)].Size;
+   SemanticTypes[TypeIndex].Align:=SemanticTypes[CanonicalType(BaseType)].Align;
+  End;
+  SemanticAdvance;
+  Exit;
+ End;
+ { Les ensembles, sous-intervalles et signatures PROCEDURE restent
+   nominaux jusqu'aux etapes specialisees suivantes. }
+ SemanticTypes[TypeIndex].Kind:=TYPE_COMPOSITE;
+ While (SemanticToken.Kind<>TK_EOF) And Not SemanticIsSymbol(';') Do
+  SemanticAdvance;
+End;
+
+Function ParseSemanticType(ScopeIndex:Integer;SuggestedName:String):Integer;
+Var
+ Tok:TToken;
+Begin
+ ParseSemanticType:=0;
+ Tok:=SemanticToken;
+ If Tok.Kind=TK_IDENTIFIER Then Begin
+  ParseSemanticType:=FindTypeByName(Tok.Text,ScopeIndex);
+  If ParseSemanticType=0 Then
+   SemanticError('type inconnu: '+Tok.Text,Tok.Line,Tok.Column);
+  SemanticAdvance;
+  Exit;
+ End;
+ If SuggestedName='' Then
+  SuggestedName:='$anon'+IntToString(SemanticTypeCount+1);
+ ParseSemanticType:=AddSemanticType(SuggestedName,TYPE_COMPOSITE,0,1,0,
+                                    Tok.Line,Tok.Column);
+ FillSemanticType(ParseSemanticType,ScopeIndex);
+End;
+
+Procedure ScanFormalParameters(ProcedureScope:Integer);
+Var
+ Names:Array[1..64] Of TToken;
+ NameCount,I,ParenDepth,ParamType,SymbolIndex:Integer;
+Begin
+ If Not SemanticIsSymbol('(') Then Exit;
+ SemanticAdvance;
+ ParenDepth:=1;
+ While (SemanticToken.Kind<>TK_EOF) And (ParenDepth>0) Do Begin
+  If SemanticIsSymbol('(') Then Begin
+   Inc(ParenDepth);
+   SemanticAdvance;
+  End
+  Else If SemanticIsSymbol(')') Then Begin
+   Dec(ParenDepth);
+   SemanticAdvance;
+  End
+  Else If (ParenDepth=1) Then Begin
+   If SemanticIsKeyword(KW_VAR) Or SemanticIsKeyword(KW_READONLY) Or
+      SemanticIsKeyword(KW_VALUE) Then SemanticAdvance;
+   NameCount:=0;
+   While SemanticToken.Kind=TK_IDENTIFIER Do Begin
+    If NameCount<64 Then Begin
+     Inc(NameCount);
+     Names[NameCount]:=SemanticToken;
+    End;
+    SemanticAdvance;
+    If SemanticIsSymbol(',') Then SemanticAdvance
+    Else Break;
+   End;
+   If (NameCount>0) And SemanticIsSymbol(':') Then Begin
+    SemanticAdvance;
+    ParamType:=ParseSemanticType(ProcedureScope,'');
+    For I:=1 To NameCount Do Begin
+     AddTypedSemanticSymbol(Names[I].Text,SYM_PARAM,ProcedureScope,
+                            ParamType,Names[I].Line,Names[I].Column);
+     SymbolIndex:=FindSymbolInScope(Names[I].Text,ProcedureScope);
+     If SymbolIndex<>0 Then
+      SemanticSymbols[SymbolIndex].TypeIndex:=ParamType;
+    End;
+    While (SemanticToken.Kind<>TK_EOF) And
+          Not SemanticIsSymbol(';') And Not SemanticIsSymbol(')') Do
+     SemanticAdvance;
+    If SemanticIsSymbol(';') Then SemanticAdvance;
+   End
+   Else SemanticAdvance;
+  End
+  Else SemanticAdvance;
+ End;
+End;
+
+Procedure SkipProcedureStatements;
+Var
+ EndDepth,RepeatDepth:Integer;
+ K:TKeyword;
+Begin
+ EndDepth:=0;
+ RepeatDepth:=0;
+ While SemanticToken.Kind<>TK_EOF Do Begin
+  If SemanticIsKeyword(KW_END) Then Begin
+   If EndDepth=0 Then Exit;
+   Dec(EndDepth);
+  End
+  Else If SemanticIsKeyword(KW_UNTIL) And (RepeatDepth>0) Then
+   Dec(RepeatDepth)
+  Else If SemanticToken.Kind=TK_KEYWORD Then Begin
+   K:=SemanticToken.Keyword;
+   If (K=KW_IF) Or (K=KW_WHILE) Or (K=KW_FOR) Or (K=KW_LOOP) Or
+      (K=KW_CASE) Or (K=KW_WITH) Or (K=KW_BEGIN) Or (K=KW_TRY) Or
+      (K=KW_TYPECASE) Or (K=KW_LOCK) Then Inc(EndDepth)
+   Else If K=KW_REPEAT Then Inc(RepeatDepth);
+  End;
+  SemanticAdvance;
+ End;
+End;
+
+Procedure ScanSemanticDeclarations(ScopeIndex:Integer); Forward;
+
+Procedure ScanProcedureDeclaration(ParentScope:Integer);
+Var
+ ProcToken:TToken;
+ ProcScope,ProcSymbol,ReturnType:Integer;
+Begin
+ SemanticAdvance;
+ If SemanticToken.Kind<>TK_IDENTIFIER Then Exit;
+ ProcToken:=SemanticToken;
+ AddSemanticSymbol(ProcToken.Text,SYM_PROCEDURE,ParentScope,
+                   ProcToken.Line,ProcToken.Column);
+ ProcSymbol:=FindSymbolInScope(ProcToken.Text,ParentScope);
+ SemanticAdvance;
+ ProcScope:=NewSemanticScope(SCOPE_PROCEDURE,ParentScope,ProcToken.Text,
+                             ProcToken.Line,ProcToken.Column);
+ If ProcScope=0 Then Exit;
+ ScanFormalParameters(ProcScope);
+ If SemanticIsSymbol(':') Then Begin
+  SemanticAdvance;
+  ReturnType:=ParseSemanticType(ParentScope,'');
+  If ProcSymbol<>0 Then SemanticSymbols[ProcSymbol].TypeIndex:=ReturnType;
+ End;
+ While (SemanticToken.Kind<>TK_EOF) And
+       Not SemanticIsSymbol(';') And Not SemanticIsSymbol('=') Do
+  SemanticAdvance;
+ If SemanticIsSymbol(';') Then Begin
+  SemanticAdvance;
+  If SemanticScopes[ParentScope].Kind=SCOPE_INTERFACE Then Begin
+   SemanticScopes[ProcScope].EndToken:=SemanticIndex;
+   Exit;
+  End;
+ End;
+ If SemanticIsSymbol('=') Then SemanticAdvance;
+ ScanSemanticDeclarations(ProcScope);
+ If SemanticIsKeyword(KW_BEGIN) Then Begin
+  SemanticAdvance;
+  SkipProcedureStatements;
+  If SemanticIsKeyword(KW_END) Then SemanticAdvance;
+  If SemanticToken.Kind=TK_IDENTIFIER Then SemanticAdvance;
+  If SemanticIsSymbol(';') Then SemanticAdvance;
+ End;
+ SemanticScopes[ProcScope].EndToken:=SemanticIndex;
+End;
+
+Function ConstIsNumeric(V:TConstValue):Boolean;
+Begin
+ ConstIsNumeric:=V.Valid And
+  ((V.Kind=CONST_INTEGER) Or (V.Kind=CONST_REAL) Or (V.Kind=CONST_CHAR));
+End;
+
+Function ConstAsReal(V:TConstValue):Extended;
+Begin
+ If V.Kind=CONST_REAL Then ConstAsReal:=V.RealVal
+ Else ConstAsReal:=V.IntegerVal;
+End;
+
+Function EvalConstExpression(ScopeIndex:Integer):TConstValue; Forward;
+
+Function EvalConstPrimary(ScopeIndex:Integer):TConstValue;
+Var
+ Tok:TToken;
+ SymbolIndex:Integer;
+ V:TConstValue;
+Begin
+ Tok:=SemanticToken;
+ Case Tok.Kind Of
+  TK_INTEGER:Begin
+   EvalConstPrimary:=IntegerConst(Tok.IntegerVal);
+   SemanticAdvance;
+  End;
+  TK_REAL:Begin
+   EvalConstPrimary:=RealConst(Tok.RealVal);
+   SemanticAdvance;
+  End;
+  TK_CHAR:Begin
+   EvalConstPrimary:=CharConst(Chr(Tok.IntegerVal));
+   SemanticAdvance;
+  End;
+  TK_STRING:Begin
+   EvalConstPrimary:=TextConst(Tok.Text);
+   SemanticAdvance;
+  End;
+  TK_IDENTIFIER:Begin
+   SymbolIndex:=FindVisibleSymbol(Tok.Text,ScopeIndex);
+   If (SymbolIndex=0) Or
+      (SemanticSymbols[SymbolIndex].Kind<>SYM_CONST) Then Begin
+    SemanticError('constante inconnue: '+Tok.Text,Tok.Line,Tok.Column);
+    EvalConstPrimary:=InvalidConst;
+   End
+   Else If Not SemanticSymbols[SymbolIndex].ConstValue.Valid Then Begin
+    SemanticError('reference a une constante non evaluable: '+Tok.Text,
+                  Tok.Line,Tok.Column);
+    EvalConstPrimary:=InvalidConst;
+   End
+   Else EvalConstPrimary:=SemanticSymbols[SymbolIndex].ConstValue;
+   SemanticAdvance;
+  End;
+  TK_SYMBOL:Begin
+   If Tok.Text='(' Then Begin
+    SemanticAdvance;
+    V:=EvalConstExpression(ScopeIndex);
+    If SemanticIsSymbol(')') Then SemanticAdvance
+    Else SemanticError('parenthese fermante attendue dans la constante',
+                       SemanticToken.Line,SemanticToken.Column);
+    EvalConstPrimary:=V;
+   End
+   Else Begin
+    SemanticError('litteral ou constante attendu',Tok.Line,Tok.Column);
+    EvalConstPrimary:=InvalidConst;
+    SemanticAdvance;
+   End;
+  End;
+  Else Begin
+   SemanticError('expression constante attendue',Tok.Line,Tok.Column);
+   EvalConstPrimary:=InvalidConst;
+   SemanticAdvance;
+  End;
+ End;
+End;
+
+Function EvalConstUnary(ScopeIndex:Integer):TConstValue;
+Var
+ Tok:TToken;
+ V:TConstValue;
+Begin
+ Tok:=SemanticToken;
+ If SemanticIsSymbol('+') Then Begin
+  SemanticAdvance;
+  V:=EvalConstUnary(ScopeIndex);
+  If Not ConstIsNumeric(V) Then
+   SemanticError('operateur unaire + exige une valeur numerique',
+                 Tok.Line,Tok.Column);
+  EvalConstUnary:=V;
+ End
+ Else If SemanticIsSymbol('-') Then Begin
+  SemanticAdvance;
+  V:=EvalConstUnary(ScopeIndex);
+  If Not ConstIsNumeric(V) Then Begin
+   SemanticError('operateur unaire - exige une valeur numerique',
+                 Tok.Line,Tok.Column);
+   EvalConstUnary:=InvalidConst;
+  End
+  Else If V.Kind=CONST_REAL Then EvalConstUnary:=RealConst(-V.RealVal)
+  Else EvalConstUnary:=IntegerConst(-V.IntegerVal);
+ End
+ Else If SemanticIsKeyword(KW_NOT) Then Begin
+  SemanticAdvance;
+  V:=EvalConstUnary(ScopeIndex);
+  If V.Kind<>CONST_BOOLEAN Then Begin
+   SemanticError('NOT exige une constante booleenne',Tok.Line,Tok.Column);
+   EvalConstUnary:=InvalidConst;
+  End
+  Else EvalConstUnary:=BooleanConst(V.IntegerVal=0);
+ End
+ Else EvalConstUnary:=EvalConstPrimary(ScopeIndex);
+End;
+
+Function EvalConstProduct(ScopeIndex:Integer):TConstValue;
+Var
+ Left,Right:TConstValue;
+ Tok:TToken;
+ Op:String;
+ IsDiv,IsMod:Boolean;
+Begin
+ Left:=EvalConstUnary(ScopeIndex);
+ While SemanticIsSymbol('*') Or SemanticIsSymbol('/') Or
+       SemanticIsKeyword(KW_DIV) Or SemanticIsKeyword(KW_MOD) Do Begin
+  Tok:=SemanticToken;
+  Op:=Tok.Text;
+  IsDiv:=SemanticIsKeyword(KW_DIV);
+  IsMod:=SemanticIsKeyword(KW_MOD);
+  SemanticAdvance;
+  Right:=EvalConstUnary(ScopeIndex);
+  If Not ConstIsNumeric(Left) Or Not ConstIsNumeric(Right) Then Begin
+   SemanticError('operateur multiplicatif exige des constantes numeriques',
+                 Tok.Line,Tok.Column);
+   Left:=InvalidConst;
+  End
+  Else If (IsDiv Or IsMod) And
+          ((Left.Kind=CONST_REAL) Or (Right.Kind=CONST_REAL)) Then Begin
+   SemanticError('DIV et MOD exigent des constantes entieres',
+                 Tok.Line,Tok.Column);
+   Left:=InvalidConst;
+  End
+  Else If ((IsDiv Or IsMod Or (Op='/')) And
+           (ConstAsReal(Right)=0)) Then Begin
+   SemanticError('division par zero dans une constante',Tok.Line,Tok.Column);
+   Left:=InvalidConst;
+  End
+  Else If IsDiv Then Left:=IntegerConst(Left.IntegerVal Div Right.IntegerVal)
+  Else If IsMod Then Left:=IntegerConst(Left.IntegerVal Mod Right.IntegerVal)
+  Else If Op='/' Then Left:=RealConst(ConstAsReal(Left)/ConstAsReal(Right))
+  Else If (Left.Kind=CONST_REAL) Or (Right.Kind=CONST_REAL) Then
+   Left:=RealConst(ConstAsReal(Left)*ConstAsReal(Right))
+  Else Left:=IntegerConst(Left.IntegerVal*Right.IntegerVal);
+ End;
+ EvalConstProduct:=Left;
+End;
+
+Function EvalConstSum(ScopeIndex:Integer):TConstValue;
+Var
+ Left,Right:TConstValue;
+ Tok:TToken;
+ Op:String;
+Begin
+ Left:=EvalConstProduct(ScopeIndex);
+ While SemanticIsSymbol('+') Or SemanticIsSymbol('-') Or
+       SemanticIsSymbol('&') Do Begin
+  Tok:=SemanticToken;
+  Op:=Tok.Text;
+  SemanticAdvance;
+  Right:=EvalConstProduct(ScopeIndex);
+  If Op='&' Then Begin
+   If (Left.Kind<>CONST_TEXT) Or (Right.Kind<>CONST_TEXT) Then Begin
+    SemanticError('concatenation & exige deux constantes TEXT',
+                  Tok.Line,Tok.Column);
+    Left:=InvalidConst;
+   End
+   Else If Length(Left.TextVal)+Length(Right.TextVal)>255 Then Begin
+    SemanticError('chaine constante concatenee trop longue',
+                  Tok.Line,Tok.Column);
+    Left:=InvalidConst;
+   End
+   Else Left:=TextConst(Left.TextVal+Right.TextVal);
+  End
+  Else If Not ConstIsNumeric(Left) Or Not ConstIsNumeric(Right) Then Begin
+   SemanticError('operateur additif exige des constantes numeriques',
+                 Tok.Line,Tok.Column);
+   Left:=InvalidConst;
+  End
+  Else If (Left.Kind=CONST_REAL) Or (Right.Kind=CONST_REAL) Then Begin
+   If Op='+' Then Left:=RealConst(ConstAsReal(Left)+ConstAsReal(Right))
+   Else Left:=RealConst(ConstAsReal(Left)-ConstAsReal(Right));
+  End
+  Else If Op='+' Then Left:=IntegerConst(Left.IntegerVal+Right.IntegerVal)
+  Else Left:=IntegerConst(Left.IntegerVal-Right.IntegerVal);
+ End;
+ EvalConstSum:=Left;
+End;
+
+Function EvalConstCompare(ScopeIndex:Integer):TConstValue;
+Var
+ Left,Right:TConstValue;
+ Tok:TToken;
+ Op:String;
+ ResultValue:Boolean;
+Begin
+ Left:=EvalConstSum(ScopeIndex);
+ If SemanticIsSymbol('=') Or SemanticIsSymbol('#') Or
+    SemanticIsSymbol('<') Or SemanticIsSymbol('<=') Or
+    SemanticIsSymbol('>') Or SemanticIsSymbol('>=') Then Begin
+  Tok:=SemanticToken;
+  Op:=Tok.Text;
+  SemanticAdvance;
+  Right:=EvalConstSum(ScopeIndex);
+  If ConstIsNumeric(Left) And ConstIsNumeric(Right) Then Begin
+   If Op='=' Then ResultValue:=ConstAsReal(Left)=ConstAsReal(Right)
+   Else If Op='#' Then ResultValue:=ConstAsReal(Left)<>ConstAsReal(Right)
+   Else If Op='<' Then ResultValue:=ConstAsReal(Left)<ConstAsReal(Right)
+   Else If Op='<=' Then ResultValue:=ConstAsReal(Left)<=ConstAsReal(Right)
+   Else If Op='>' Then ResultValue:=ConstAsReal(Left)>ConstAsReal(Right)
+   Else ResultValue:=ConstAsReal(Left)>=ConstAsReal(Right);
+   Left:=BooleanConst(ResultValue);
+  End
+  Else If Left.Kind=Right.Kind Then Begin
+   If (Left.Kind=CONST_TEXT) Or (Left.Kind=CONST_CHAR) Then Begin
+    If Op='=' Then ResultValue:=Left.TextVal=Right.TextVal
+    Else If Op='#' Then ResultValue:=Left.TextVal<>Right.TextVal
+    Else If Op='<' Then ResultValue:=Left.TextVal<Right.TextVal
+    Else If Op='<=' Then ResultValue:=Left.TextVal<=Right.TextVal
+    Else If Op='>' Then ResultValue:=Left.TextVal>Right.TextVal
+    Else ResultValue:=Left.TextVal>=Right.TextVal;
+    Left:=BooleanConst(ResultValue);
+   End
+   Else If Left.Kind=CONST_BOOLEAN Then Begin
+    If Op='=' Then ResultValue:=Left.IntegerVal=Right.IntegerVal
+    Else If Op='#' Then ResultValue:=Left.IntegerVal<>Right.IntegerVal
+    Else Begin
+     SemanticError('comparaison ordonnee invalide pour BOOLEAN',
+                   Tok.Line,Tok.Column);
+     Left:=InvalidConst;
+     ResultValue:=False;
+    End;
+    If Left.Valid Then Left:=BooleanConst(ResultValue);
+   End
+   Else If Left.Kind=CONST_NIL Then
+    Left:=BooleanConst(Op='=')
+   Else Left:=InvalidConst;
+  End
+  Else Begin
+   SemanticError('constantes incompatibles dans la comparaison',
+                 Tok.Line,Tok.Column);
+   Left:=InvalidConst;
+  End;
+ End;
+ EvalConstCompare:=Left;
+End;
+
+Function EvalConstAnd(ScopeIndex:Integer):TConstValue;
+Var
+ Left,Right:TConstValue;
+ Tok:TToken;
+Begin
+ Left:=EvalConstCompare(ScopeIndex);
+ While SemanticIsKeyword(KW_AND) Do Begin
+  Tok:=SemanticToken;
+  SemanticAdvance;
+  Right:=EvalConstCompare(ScopeIndex);
+  If (Left.Kind<>CONST_BOOLEAN) Or (Right.Kind<>CONST_BOOLEAN) Then Begin
+   SemanticError('AND exige deux constantes booleennes',Tok.Line,Tok.Column);
+   Left:=InvalidConst;
+  End
+  Else Left:=BooleanConst((Left.IntegerVal<>0) And (Right.IntegerVal<>0));
+ End;
+ EvalConstAnd:=Left;
+End;
+
+Function EvalConstExpression(ScopeIndex:Integer):TConstValue;
+Var
+ Left,Right:TConstValue;
+ Tok:TToken;
+Begin
+ Left:=EvalConstAnd(ScopeIndex);
+ While SemanticIsKeyword(KW_OR) Do Begin
+  Tok:=SemanticToken;
+  SemanticAdvance;
+  Right:=EvalConstAnd(ScopeIndex);
+  If (Left.Kind<>CONST_BOOLEAN) Or (Right.Kind<>CONST_BOOLEAN) Then Begin
+   SemanticError('OR exige deux constantes booleennes',Tok.Line,Tok.Column);
+   Left:=InvalidConst;
+  End
+  Else Left:=BooleanConst((Left.IntegerVal<>0) Or (Right.IntegerVal<>0));
+ End;
+ EvalConstExpression:=Left;
+End;
+
+Procedure ScanConstSection(ScopeIndex:Integer);
+Var
+ Tok:TToken;
+ ConstType,SymbolIndex:Integer;
+ Value:TConstValue;
+Begin
+ SemanticAdvance;
+ While SemanticToken.Kind=TK_IDENTIFIER Do Begin
+  Tok:=SemanticToken;
+  SemanticAdvance;
+  If SemanticIsSymbol('=') Then SemanticAdvance;
+  Value:=EvalConstExpression(ScopeIndex);
+  ConstType:=Value.TypeIndex;
+  AddTypedSemanticSymbol(Tok.Text,SYM_CONST,ScopeIndex,ConstType,
+                         Tok.Line,Tok.Column);
+  SymbolIndex:=FindSymbolInScope(Tok.Text,ScopeIndex);
+  If SymbolIndex<>0 Then Begin
+   SemanticSymbols[SymbolIndex].TypeIndex:=ConstType;
+   SemanticSymbols[SymbolIndex].ConstValue:=Value;
+  End;
+  If Not SemanticIsSymbol(';') Then Begin
+   SemanticError('fin d''expression constante attendue',
+                 SemanticToken.Line,SemanticToken.Column);
+   SemanticSkipToSemicolon;
+  End
+  Else SemanticAdvance;
+ End;
+End;
+
+Procedure ScanTypeSection(ScopeIndex:Integer);
+Var
+ Tok:TToken;
+ NewType,BaseType:Integer;
+ IsSubtype:Boolean;
+Begin
+ SemanticAdvance;
+ While SemanticToken.Kind=TK_IDENTIFIER Do Begin
+  Tok:=SemanticToken;
+  SemanticAdvance;
+  IsSubtype:=SemanticIsSymbol('<:');
+  If SemanticIsSymbol('=') Or IsSubtype Then SemanticAdvance;
+  If IsSubtype Then
+   NewType:=AddSemanticType(Tok.Text,TYPE_OPAQUE,4,4,0,
+                            Tok.Line,Tok.Column)
+  Else
+   NewType:=AddSemanticType(Tok.Text,TYPE_COMPOSITE,0,1,0,
+                            Tok.Line,Tok.Column);
+  AddTypedSemanticSymbol(Tok.Text,SYM_TYPE,ScopeIndex,NewType,
+                         Tok.Line,Tok.Column);
+  If IsSubtype Then Begin
+   BaseType:=ParseSemanticType(ScopeIndex,'');
+   SemanticTypes[NewType].BaseType:=BaseType;
+   SemanticTypes[NewType].Revealed:=False;
+  End
+  Else FillSemanticType(NewType,ScopeIndex);
+  While (SemanticToken.Kind<>TK_EOF) And Not SemanticIsSymbol(';') Do
+   SemanticAdvance;
+  If SemanticIsSymbol(';') Then SemanticAdvance;
+ End;
+End;
+
+Procedure ScanVarSection(ScopeIndex:Integer);
+Var
+ Names:Array[1..64] Of TToken;
+ NameCount,I,VarType,SymbolIndex:Integer;
+ InitialValue:TConstValue;
+ HasInitializer:Boolean;
+Begin
+ SemanticAdvance;
+ While SemanticToken.Kind=TK_IDENTIFIER Do Begin
+  NameCount:=0;
+  Repeat
+   If NameCount<64 Then Begin
+    Inc(NameCount);
+    Names[NameCount]:=SemanticToken;
+   End;
+   SemanticAdvance;
+   If SemanticIsSymbol(',') Then SemanticAdvance
+   Else Break;
+  Until False;
+  If SemanticIsSymbol(':') Then SemanticAdvance;
+  VarType:=ParseSemanticType(ScopeIndex,'');
+  HasInitializer:=SemanticIsSymbol(':=');
+  InitialValue:=InvalidConst;
+  If HasInitializer Then Begin
+   SemanticAdvance;
+   InitialValue:=EvalConstExpression(ScopeIndex);
+   If InitialValue.Valid And Not TypeCompatible(VarType,InitialValue.TypeIndex) Then
+    SemanticError('initialisation incompatible: '+TypeName(InitialValue.TypeIndex)+
+                  ' vers '+TypeName(VarType),
+                  Names[1].Line,Names[1].Column);
+  End;
+  For I:=1 To NameCount Do Begin
+   AddTypedSemanticSymbol(Names[I].Text,SYM_VAR,ScopeIndex,VarType,
+                          Names[I].Line,Names[I].Column);
+   SymbolIndex:=FindSymbolInScope(Names[I].Text,ScopeIndex);
+   If SymbolIndex<>0 Then Begin
+    SemanticSymbols[SymbolIndex].HasInitializer:=HasInitializer;
+    If HasInitializer Then
+     SemanticSymbols[SymbolIndex].ConstValue:=InitialValue;
+   End;
+  End;
+  SemanticSkipToSemicolon;
+ End;
+End;
+
+Procedure ScanExceptionSection(ScopeIndex:Integer);
+Var
+ Tok:TToken;
+Begin
+ SemanticAdvance;
+ While SemanticToken.Kind=TK_IDENTIFIER Do Begin
+  Tok:=SemanticToken;
+  AddSemanticSymbol(Tok.Text,SYM_EXCEPTION,ScopeIndex,Tok.Line,Tok.Column);
+  SemanticAdvance;
+  SemanticSkipToSemicolon;
+ End;
+End;
+
+Procedure ScanRevealSection(ScopeIndex:Integer);
+Var
+ Tok:TToken;
+ SymbolIndex,TypeIndex,BaseType:Integer;
+Begin
+ SemanticAdvance;
+ While SemanticToken.Kind=TK_IDENTIFIER Do Begin
+  Tok:=SemanticToken;
+  SymbolIndex:=FindVisibleSymbol(Tok.Text,ScopeIndex);
+  If SymbolIndex=0 Then Begin
+   TypeIndex:=AddSemanticType(Tok.Text,TYPE_OPAQUE,4,4,0,
+                              Tok.Line,Tok.Column);
+   AddTypedSemanticSymbol(Tok.Text,SYM_TYPE,ScopeIndex,TypeIndex,
+                          Tok.Line,Tok.Column);
+   SymbolIndex:=FindSymbolInScope(Tok.Text,ScopeIndex);
+  End
+  Else If SemanticSymbols[SymbolIndex].Kind<>SYM_TYPE Then Begin
+   SemanticError('identificateur non type dans REVEAL: '+Tok.Text,
+                 Tok.Line,Tok.Column);
+   SemanticSkipToSemicolon;
+   Continue;
+  End;
+  TypeIndex:=SemanticSymbols[SymbolIndex].TypeIndex;
+  If SemanticTypes[TypeIndex].Kind<>TYPE_OPAQUE Then
+   SemanticError('REVEAL applique a un type non opaque: '+Tok.Text,
+                 Tok.Line,Tok.Column);
+  SemanticAdvance;
+  If SemanticIsSymbol('=') Then SemanticAdvance;
+  BaseType:=0;
+  If SemanticToken.Kind=TK_IDENTIFIER Then Begin
+   BaseType:=FindTypeByName(SemanticToken.Text,ScopeIndex);
+   If BaseType=0 Then
+    SemanticError('supertype inconnu dans REVEAL: '+SemanticToken.Text,
+                  SemanticToken.Line,SemanticToken.Column);
+   SemanticAdvance;
+  End;
+  If BaseType<>0 Then SemanticTypes[TypeIndex].BaseType:=BaseType;
+  If SemanticIsKeyword(KW_BRANDED) Or SemanticIsKeyword(KW_UNTRACED) Or
+     SemanticIsKeyword(KW_OBJECT) Or SemanticIsKeyword(KW_RECORD) Or
+     SemanticIsKeyword(KW_REF) Or SemanticIsKeyword(KW_ARRAY) Then
+   FillSemanticType(TypeIndex,ScopeIndex)
+  Else If BaseType<>0 Then Begin
+   SemanticTypes[TypeIndex].Kind:=TYPE_ALIAS;
+   SemanticTypes[TypeIndex].Size:=SemanticTypes[CanonicalType(BaseType)].Size;
+   SemanticTypes[TypeIndex].Align:=SemanticTypes[CanonicalType(BaseType)].Align;
+  End;
+  SemanticTypes[TypeIndex].Revealed:=True;
+  While (SemanticToken.Kind<>TK_EOF) And Not SemanticIsSymbol(';') Do
+   SemanticAdvance;
+  If SemanticIsSymbol(';') Then SemanticAdvance;
+ End;
+End;
+
+Procedure ScanSemanticDeclarations(ScopeIndex:Integer);
+Begin
+ While SemanticToken.Kind<>TK_EOF Do Begin
+  If SemanticIsKeyword(KW_CONST) Then ScanConstSection(ScopeIndex)
+  Else If SemanticIsKeyword(KW_TYPE) Then ScanTypeSection(ScopeIndex)
+  Else If SemanticIsKeyword(KW_VAR) Then ScanVarSection(ScopeIndex)
+  Else If SemanticIsKeyword(KW_EXCEPTION) Then ScanExceptionSection(ScopeIndex)
+  Else If SemanticIsKeyword(KW_REVEAL) Then ScanRevealSection(ScopeIndex)
+  Else If SemanticIsKeyword(KW_PROCEDURE) Then
+   ScanProcedureDeclaration(ScopeIndex)
+  Else Break;
+ End;
+End;
+
+Procedure ScanImportsIntoScope(ScopeIndex:Integer);
+Var
+ Tok:TToken;
+Begin
+ While SemanticIsKeyword(KW_IMPORT) Or SemanticIsKeyword(KW_FROM) Do Begin
+  If SemanticIsKeyword(KW_FROM) Then Begin
+   SemanticAdvance;
+   If SemanticToken.Kind=TK_IDENTIFIER Then SemanticAdvance;
+   If SemanticIsKeyword(KW_IMPORT) Then SemanticAdvance;
+   While SemanticToken.Kind=TK_IDENTIFIER Do Begin
+    Tok:=SemanticToken;
+    AddSemanticSymbol(Tok.Text,SYM_IMPORT,ScopeIndex,Tok.Line,Tok.Column);
+    SemanticAdvance;
+    If SemanticIsSymbol(',') Then SemanticAdvance Else Break;
+   End;
+  End
+  Else Begin
+   SemanticAdvance;
+   While SemanticToken.Kind=TK_IDENTIFIER Do Begin
+    Tok:=SemanticToken;
+    AddSemanticSymbol(Tok.Text,SYM_IMPORT,ScopeIndex,Tok.Line,Tok.Column);
+    SemanticAdvance;
+    If SemanticIsSymbol(',') Then SemanticAdvance Else Break;
+   End;
+  End;
+  If SemanticIsSymbol(';') Then SemanticAdvance;
+ End;
+End;
+
+Function StorageKindName(Kind:TStorageKind):String;
+Begin
+ Case Kind Of
+  STORAGE_GLOBAL_DATA:StorageKindName:='data';
+  STORAGE_GLOBAL_BSS :StorageKindName:='bss';
+  STORAGE_LOCAL      :StorageKindName:='pile';
+  STORAGE_PARAMETER  :StorageKindName:='parametre';
+  STORAGE_FIELD      :StorageKindName:='champ';
+  Else StorageKindName:='aucun';
+ End;
+End;
+
+Function TypeStorageSize(TypeIndex:Integer):Integer;
+Begin
+ TypeIndex:=CanonicalType(TypeIndex);
+ If (TypeIndex<1) Or (TypeIndex>SemanticTypeCount) Then
+  TypeStorageSize:=I386_STACK_SLOT_SIZE
+ Else Begin
+  TypeStorageSize:=SemanticTypes[TypeIndex].Size;
+  If TypeStorageSize<1 Then TypeStorageSize:=I386_STACK_SLOT_SIZE;
+ End;
+End;
+
+Function TypeStorageAlign(TypeIndex:Integer):Integer;
+Begin
+ TypeIndex:=CanonicalType(TypeIndex);
+ If (TypeIndex<1) Or (TypeIndex>SemanticTypeCount) Then
+  TypeStorageAlign:=I386_STACK_ALIGN
+ Else Begin
+  TypeStorageAlign:=SemanticTypes[TypeIndex].Align;
+  If TypeStorageAlign<1 Then TypeStorageAlign:=1;
+  If TypeStorageAlign>I386_STACK_ALIGN Then
+   TypeStorageAlign:=I386_STACK_ALIGN;
+ End;
+End;
+
+Procedure LayoutSemanticStorage(UnitScope:Integer);
+Var
+ I,ScopeIndex,LocalSize,ParamOffset,DataOffset,BssOffset:Integer;
+ Size,Alignment:Integer;
+Begin
+ DataOffset:=0;
+ BssOffset:=0;
+ For I:=1 To SemanticSymbolCount Do
+  If SemanticSymbols[I].Kind=SYM_FIELD Then Begin
+   SemanticSymbols[I].Storage:=STORAGE_FIELD;
+   SemanticSymbols[I].Size:=TypeStorageSize(SemanticSymbols[I].TypeIndex);
+  End;
+
+ For I:=1 To SemanticSymbolCount Do
+  If (SemanticSymbols[I].Kind=SYM_VAR) And
+     (SemanticSymbols[I].ScopeIndex=UnitScope) Then Begin
+   Size:=TypeStorageSize(SemanticSymbols[I].TypeIndex);
+   Alignment:=TypeStorageAlign(SemanticSymbols[I].TypeIndex);
+   SemanticSymbols[I].Size:=Size;
+   SemanticSymbols[I].AsmLabel:=
+    MakeDataLabel(Pipeline.ModuleName+'_'+SemanticSymbols[I].Name);
+   If SemanticSymbols[I].HasInitializer And
+      SemanticSymbols[I].ConstValue.Valid Then Begin
+    DataOffset:=AlignTo(DataOffset,Alignment);
+    SemanticSymbols[I].Storage:=STORAGE_GLOBAL_DATA;
+    SemanticSymbols[I].Offset:=DataOffset;
+    Inc(DataOffset,Size);
+   End
+   Else Begin
+    BssOffset:=AlignTo(BssOffset,Alignment);
+    SemanticSymbols[I].Storage:=STORAGE_GLOBAL_BSS;
+    SemanticSymbols[I].Offset:=BssOffset;
+    Inc(BssOffset,Size);
+   End;
+  End;
+
+ For ScopeIndex:=1 To SemanticScopeCount Do
+  If SemanticScopes[ScopeIndex].Kind=SCOPE_PROCEDURE Then Begin
+   LocalSize:=0;
+   ParamOffset:=I386_ARG_BASE_OFFSET;
+   For I:=1 To SemanticSymbolCount Do
+    If SemanticSymbols[I].ScopeIndex=ScopeIndex Then Begin
+     If SemanticSymbols[I].Kind=SYM_PARAM Then Begin
+      SemanticSymbols[I].Storage:=STORAGE_PARAMETER;
+      SemanticSymbols[I].Size:=I386_STACK_SLOT_SIZE;
+      SemanticSymbols[I].Offset:=ParamOffset;
+      Inc(ParamOffset,I386_STACK_SLOT_SIZE);
+     End
+     Else If SemanticSymbols[I].Kind=SYM_VAR Then Begin
+      Size:=TypeStorageSize(SemanticSymbols[I].TypeIndex);
+      Alignment:=TypeStorageAlign(SemanticSymbols[I].TypeIndex);
+      LocalSize:=AlignTo(LocalSize,Alignment);
+      Inc(LocalSize,Size);
+      SemanticSymbols[I].Storage:=STORAGE_LOCAL;
+      SemanticSymbols[I].Size:=Size;
+      SemanticSymbols[I].Offset:=-LocalSize;
+     End;
+    End;
+   SemanticScopes[ScopeIndex].FrameSize:=
+    AlignTo(LocalSize,I386_STACK_ALIGN);
+  End;
+End;
+
+Function ScopeForToken(TokenIndex,UnitScope:Integer):Integer;
+Var
+ I,BestLevel:Integer;
+Begin
+ ScopeForToken:=UnitScope;
+ BestLevel:=SemanticScopes[UnitScope].Level;
+ For I:=1 To SemanticScopeCount Do
+  If (SemanticScopes[I].Kind<>SCOPE_OBJECT) And
+     (TokenIndex>=SemanticScopes[I].StartToken) And
+     (TokenIndex<=SemanticScopes[I].EndToken) And
+     (SemanticScopes[I].Level>BestLevel) Then Begin
+   ScopeForToken:=I;
+   BestLevel:=SemanticScopes[I].Level;
+  End;
+End;
+
+Function DesignatorTypeAt(TokenIndex,ScopeIndex:Integer):Integer;
+Var
+ SymbolIndex,TypeIndex,FieldSymbol,I,Depth:Integer;
+ Kind:TTypeKind;
+Begin
+ DesignatorTypeAt:=0;
+ If (TokenIndex<1) Or (TokenIndex>Pipeline.TokenCount) Or
+    (Pipeline.Tokens[TokenIndex].Kind<>TK_IDENTIFIER) Then Exit;
+ SymbolIndex:=FindVisibleSymbol(Pipeline.Tokens[TokenIndex].Text,ScopeIndex);
+ If SymbolIndex=0 Then Exit;
+ If (SemanticSymbols[SymbolIndex].Kind=SYM_PROCEDURE) And
+    Not ((TokenIndex<Pipeline.TokenCount) And
+         (Pipeline.Tokens[TokenIndex+1].Kind=TK_SYMBOL) And
+         (Pipeline.Tokens[TokenIndex+1].Text='(')) Then Exit;
+ TypeIndex:=SemanticSymbols[SymbolIndex].TypeIndex;
+ I:=TokenIndex+1;
+ While (TypeIndex<>0) And (I<=Pipeline.TokenCount) Do Begin
+  TypeIndex:=CanonicalType(TypeIndex);
+  Kind:=SemanticTypes[TypeIndex].Kind;
+  If (Pipeline.Tokens[I].Kind=TK_SYMBOL) And
+     (Pipeline.Tokens[I].Text='[') Then Begin
+   If Kind<>TYPE_ARRAY Then Break;
+   Depth:=1;
+   Inc(I);
+   While (I<=Pipeline.TokenCount) And (Depth>0) Do Begin
+    If (Pipeline.Tokens[I].Kind=TK_SYMBOL) And
+       (Pipeline.Tokens[I].Text='[') Then Inc(Depth)
+    Else If (Pipeline.Tokens[I].Kind=TK_SYMBOL) And
+            (Pipeline.Tokens[I].Text=']') Then Dec(Depth);
+    Inc(I);
+   End;
+   TypeIndex:=SemanticTypes[TypeIndex].ElementType;
+  End
+  Else If (Pipeline.Tokens[I].Kind=TK_SYMBOL) And
+          (Pipeline.Tokens[I].Text='^') Then Begin
+   If Kind<>TYPE_REF Then Break;
+   TypeIndex:=SemanticTypes[TypeIndex].ElementType;
+   Inc(I);
+  End
+  Else If (Pipeline.Tokens[I].Kind=TK_SYMBOL) And
+          (Pipeline.Tokens[I].Text='.') And
+          (I<Pipeline.TokenCount) And
+          (Pipeline.Tokens[I+1].Kind=TK_IDENTIFIER) Then Begin
+   If (Kind<>TYPE_RECORD) And (Kind<>TYPE_OBJECT) Then Break;
+   FieldSymbol:=FindSymbolInScope(Pipeline.Tokens[I+1].Text,
+                                  SemanticTypes[TypeIndex].FieldScope);
+   If FieldSymbol=0 Then Begin
+    TypeIndex:=0;
+    Break;
+   End;
+   TypeIndex:=SemanticSymbols[FieldSymbol].TypeIndex;
+   Inc(I,2);
+  End
+  Else Break;
+ End;
+ DesignatorTypeAt:=TypeIndex;
+End;
+
+Function ExpressionTypeAt(TokenIndex,ScopeIndex:Integer):Integer;
+Var
+ Tok:TToken;
+ SymbolIndex,I,ParenDepth,BracketDepth:Integer;
+ U:String;
+Begin
+ ExpressionTypeAt:=0;
+ If (TokenIndex<1) Or (TokenIndex>Pipeline.TokenCount) Then Exit;
+ Tok:=Pipeline.Tokens[TokenIndex];
+ ExpressionTypeAt:=LiteralType(Tok);
+ If (ExpressionTypeAt=0) And (Tok.Kind=TK_IDENTIFIER) Then Begin
+  ExpressionTypeAt:=DesignatorTypeAt(TokenIndex,ScopeIndex);
+  If ExpressionTypeAt=0 Then Begin
+   SymbolIndex:=FindVisibleSymbol(Tok.Text,ScopeIndex);
+   If SymbolIndex<>0 Then Begin
+    If SemanticSymbols[SymbolIndex].Kind=SYM_PROCEDURE Then Begin
+     If (TokenIndex<Pipeline.TokenCount) And
+        (Pipeline.Tokens[TokenIndex+1].Kind=TK_SYMBOL) And
+        (Pipeline.Tokens[TokenIndex+1].Text='(') Then
+      ExpressionTypeAt:=SemanticSymbols[SymbolIndex].TypeIndex;
+    End
+    Else ExpressionTypeAt:=SemanticSymbols[SymbolIndex].TypeIndex;
+   End;
+  End;
+  If (TokenIndex<Pipeline.TokenCount) And
+     (Pipeline.Tokens[TokenIndex+1].Kind=TK_SYMBOL) And
+     (Pipeline.Tokens[TokenIndex+1].Text='(') Then Begin
+   U:=UpperStr(Tok.Text);
+   If (U='ORD') Or (U='TRUNC') Then ExpressionTypeAt:=TypeInteger
+   Else If U='FLOAT' Then ExpressionTypeAt:=TypeReal;
+  End;
+ End;
+ If ExpressionTypeAt=0 Then Exit;
+ ParenDepth:=0;
+ BracketDepth:=0;
+ I:=TokenIndex+1;
+ While I<=Pipeline.TokenCount Do Begin
+  If (Pipeline.Tokens[I].Kind=TK_SYMBOL) And
+     (Pipeline.Tokens[I].Text='(') Then Inc(ParenDepth)
+  Else If (Pipeline.Tokens[I].Kind=TK_SYMBOL) And
+          (Pipeline.Tokens[I].Text=')') And (ParenDepth>0) Then Dec(ParenDepth)
+  Else If (Pipeline.Tokens[I].Kind=TK_SYMBOL) And
+          (Pipeline.Tokens[I].Text='[') Then Inc(BracketDepth)
+  Else If (Pipeline.Tokens[I].Kind=TK_SYMBOL) And
+          (Pipeline.Tokens[I].Text=']') And (BracketDepth>0) Then Dec(BracketDepth)
+  Else If (ParenDepth=0) And (BracketDepth=0) Then Begin
+   If (Pipeline.Tokens[I].Kind=TK_SYMBOL) And
+      ((Pipeline.Tokens[I].Text='=') Or (Pipeline.Tokens[I].Text='#') Or
+       (Pipeline.Tokens[I].Text='<') Or (Pipeline.Tokens[I].Text='<=') Or
+       (Pipeline.Tokens[I].Text='>') Or (Pipeline.Tokens[I].Text='>=')) Then Begin
+    ExpressionTypeAt:=TypeBoolean;
+    Exit;
+   End;
+   If (Pipeline.Tokens[I].Kind=TK_KEYWORD) And
+      ((Pipeline.Tokens[I].Keyword=KW_AND) Or
+       (Pipeline.Tokens[I].Keyword=KW_OR)) Then Begin
+    ExpressionTypeAt:=TypeBoolean;
+    Exit;
+   End;
+   If (Pipeline.Tokens[I].Kind=TK_SYMBOL) And
+      (Pipeline.Tokens[I].Text='&') Then Begin
+    ExpressionTypeAt:=TypeText;
+    Exit;
+   End;
+   If (Pipeline.Tokens[I].Kind=TK_SYMBOL) And
+      (Pipeline.Tokens[I].Text=';') Then Exit;
+  End;
+  Inc(I);
+ End;
+End;
+
+Procedure ValidateSimpleAssignments(UnitScope:Integer);
+Var
+ I,ScopeIndex,DestSymbol,DestType,SourceType:Integer;
+ DestToken,SourceToken:TToken;
+Begin
+ For I:=1 To Pipeline.TokenCount-2 Do
+  If (Pipeline.Tokens[I].Kind=TK_IDENTIFIER) And
+     (Pipeline.Tokens[I+1].Kind=TK_SYMBOL) And
+     (Pipeline.Tokens[I+1].Text=':=') Then Begin
+   DestToken:=Pipeline.Tokens[I];
+   SourceToken:=Pipeline.Tokens[I+2];
+   ScopeIndex:=ScopeForToken(I,UnitScope);
+   DestSymbol:=FindVisibleSymbol(DestToken.Text,ScopeIndex);
+   If (DestSymbol<>0) And
+      ((SemanticSymbols[DestSymbol].Kind=SYM_VAR) Or
+       (SemanticSymbols[DestSymbol].Kind=SYM_PARAM) Or
+       (SemanticSymbols[DestSymbol].Kind=SYM_FIELD)) Then Begin
+    DestType:=SemanticSymbols[DestSymbol].TypeIndex;
+    SourceType:=ExpressionTypeAt(I+2,ScopeIndex);
+    If (DestType<>0) And (SourceType<>0) And
+       Not TypeCompatible(DestType,SourceType) Then
+     SemanticError('affectation incompatible: '+TypeName(SourceType)+
+                   ' vers '+TypeName(DestType),
+                   SourceToken.Line,SourceToken.Column);
+   End;
+  End;
+End;
+
+Function ConstValueText(V:TConstValue):String;
+Var
+ S:String;
+Begin
+ If Not V.Valid Then ConstValueText:='<invalide>'
+ Else Case V.Kind Of
+  CONST_INTEGER:ConstValueText:=IntToString(V.IntegerVal);
+  CONST_REAL:Begin
+   Str(V.RealVal:0:8,S);
+   ConstValueText:=S;
+  End;
+  CONST_BOOLEAN:
+   If V.IntegerVal<>0 Then ConstValueText:='TRUE'
+   Else ConstValueText:='FALSE';
+  CONST_CHAR:ConstValueText:='#'+IntToString(V.IntegerVal);
+  CONST_TEXT:ConstValueText:='"'+V.TextVal+'"';
+  CONST_NIL:ConstValueText:='NIL';
+  Else ConstValueText:='<invalide>';
+ End;
+End;
+
+Procedure TraceSemanticTables;
+Var
+ I,J:Integer;
+ TypeDetail,LayoutDetail:String;
+Begin
+ WriteLn('Symboles: ',SemanticSymbolCount,' symboles, ',
+         SemanticScopeCount,' portees, ',SemanticTypeCount,' types');
+ If Not Options.Verbose Then Exit;
+ For I:=1 To SemanticScopeCount Do Begin
+  WriteLn('Portee ',I,' [',ScopeKindName(SemanticScopes[I].Kind),
+          '] ',SemanticScopes[I].OwnerName,
+          ', niveau ',SemanticScopes[I].Level,
+          ', symboles ',SemanticScopes[I].SymbolCount,
+          ', frame ',SemanticScopes[I].FrameSize);
+  J:=SemanticScopes[I].FirstSymbol;
+  While J<>0 Do Begin
+   TypeDetail:='';
+   If SemanticSymbols[J].TypeIndex<>0 Then
+    TypeDetail:=' : '+TypeName(SemanticSymbols[J].TypeIndex);
+   If (SemanticSymbols[J].Kind=SYM_CONST) And
+      SemanticSymbols[J].ConstValue.Valid Then
+    TypeDetail:=TypeDetail+' = '+
+     ConstValueText(SemanticSymbols[J].ConstValue);
+   If SemanticSymbols[J].Storage<>STORAGE_NONE Then Begin
+    TypeDetail:=TypeDetail+' ['+
+     StorageKindName(SemanticSymbols[J].Storage);
+    If SemanticSymbols[J].AsmLabel<>'' Then
+     TypeDetail:=TypeDetail+' '+SemanticSymbols[J].AsmLabel
+    Else TypeDetail:=TypeDetail+' offset '+IntToString(SemanticSymbols[J].Offset);
+    TypeDetail:=TypeDetail+', '+IntToString(SemanticSymbols[J].Size)+' octets]';
+   End;
+   WriteLn('  ',SemanticSymbols[J].Name,' : ',
+           SymbolKindName(SemanticSymbols[J].Kind),
+           TypeDetail,
+           ' @ ',SemanticSymbols[J].Line,':',SemanticSymbols[J].Column);
+   J:=SemanticSymbols[J].NextSymbol;
+  End;
+ End;
+ WriteLn('Types:');
+ For I:=1 To SemanticTypeCount Do Begin
+  LayoutDetail:='';
+  If SemanticTypes[I].Kind=TYPE_ARRAY Then Begin
+   If SemanticTypes[I].OpenArray Then LayoutDetail:=' ouvert'
+   Else LayoutDetail:=' ['+IntToString(SemanticTypes[I].LowBound)+'..'+
+                       IntToString(SemanticTypes[I].HighBound)+']';
+   LayoutDetail:=LayoutDetail+' OF '+
+    TypeName(SemanticTypes[I].ElementType);
+  End
+  Else If SemanticTypes[I].Kind=TYPE_REF Then
+   LayoutDetail:=' TO '+TypeName(SemanticTypes[I].ElementType)
+  Else If SemanticTypes[I].FieldScope<>0 Then
+   LayoutDetail:=' champs='+
+    IntToString(SemanticScopes[SemanticTypes[I].FieldScope].SymbolCount);
+  WriteLn('  ',TypeName(I),' [',TypeKindName(SemanticTypes[I].Kind),
+          '] taille=',SemanticTypes[I].Size,
+          ' align=',SemanticTypes[I].Align,LayoutDetail);
+ End;
+End;
+
 Procedure BuildSemanticTables;
+Var
+ UniverseScope,UnitScope:Integer;
+ UnitName:String;
+ UnitToken:TToken;
+ GenericUnit:Boolean;
+ ScopeKind:TScopeKind;
 Begin
  EnterStage(CS_SEMANTIC_TABLES);
+ SemanticScopeCount:=0;
+ SemanticSymbolCount:=0;
+ SemanticTypeCount:=0;
+ SemanticIndex:=1;
+ UniverseScope:=NewSemanticScope(SCOPE_UNIVERSE,0,'',0,0);
+ If UniverseScope=0 Then Exit;
+ AddPredefinedTypes(UniverseScope);
+ AddPredefinedSymbols(UniverseScope);
+ GenericUnit:=SemanticIsKeyword(KW_GENERIC);
+ If GenericUnit Then SemanticAdvance;
+ If SemanticIsKeyword(KW_INTERFACE) Then ScopeKind:=SCOPE_INTERFACE
+ Else ScopeKind:=SCOPE_MODULE;
+ If (SemanticIsKeyword(KW_INTERFACE)) Or (SemanticIsKeyword(KW_MODULE)) Then
+  SemanticAdvance;
+ If SemanticToken.Kind<>TK_IDENTIFIER Then Begin
+  SemanticError('nom d''unite absent pour la table des symboles',
+                SemanticToken.Line,SemanticToken.Column);
+  Exit;
+ End;
+ UnitToken:=SemanticToken;
+ UnitName:=UnitToken.Text;
+ SemanticAdvance;
+ If GenericUnit Then ScopeKind:=SCOPE_GENERIC;
+ UnitScope:=NewSemanticScope(ScopeKind,UniverseScope,UnitName,
+                             UnitToken.Line,UnitToken.Column);
+ If UnitScope=0 Then Exit;
+ If GenericUnit And SemanticIsSymbol('(') Then Begin
+  SemanticAdvance;
+  While SemanticToken.Kind=TK_IDENTIFIER Do Begin
+   UnitToken:=SemanticToken;
+   AddSemanticSymbol(UnitToken.Text,SYM_GENERIC_PARAM,UnitScope,
+                     UnitToken.Line,UnitToken.Column);
+   SemanticAdvance;
+   If SemanticIsSymbol(',') Then SemanticAdvance Else Break;
+  End;
+  If SemanticIsSymbol(')') Then SemanticAdvance;
+ End;
+ While Not SemanticIsSymbol(';') And
+       (SemanticToken.Kind<>TK_EOF) Do SemanticAdvance;
+ If SemanticIsSymbol(';') Then SemanticAdvance;
+ ScanImportsIntoScope(UnitScope);
+ ScanSemanticDeclarations(UnitScope);
+ SemanticScopes[UnitScope].EndToken:=Pipeline.TokenCount;
+ LayoutSemanticStorage(UnitScope);
+ ValidateSimpleAssignments(UnitScope);
+ If Pipeline.ErrorCount<>0 Then Exit;
  FinishStage(CS_SEMANTIC_TABLES);
+ TraceSemanticTables;
 End;
 
 Procedure BuildSimpleIR;
