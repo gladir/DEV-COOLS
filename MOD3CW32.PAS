@@ -106,7 +106,7 @@
             GENERIC INTERFACE/MODULE, parametres generiques, instanciation
             (nom AS generic(params)) et generation du code instancie.
 
-  TODO 24 - Implementer le runtime et les E/S minimales:
+  DONE 24 - Implementer le runtime et les E/S minimales:
             support minimal de IO/Stdio (Put, etc.), fonctions mathematiques
             de base necessaires aux samples et demarrage/arret du runtime.
 
@@ -2570,9 +2570,1064 @@ Begin
  End;
 End;
 
-Function BuildRuntimeOutput:String;
+Type
+ TFlowControl = (FC_NORMAL, FC_RETURN, FC_EXIT);
+
+ TRuntimeValue = Record
+  Kind           : TConstKind;
+  IntValue       : LongInt;
+  RealValue      : Extended;
+  TextValue      : String[255];
+  RefSymbolIndex : Integer;
+ End;
+
+ TStackFrame = Record
+  ScopeIndex : Integer;
+  LocalValues: Array[1..MOD3_MAX_SYMBOLS] Of TRuntimeValue;
+ End;
+
+Var
+ GlobalValues  : Array[1..MOD3_MAX_SYMBOLS] Of TRuntimeValue;
+ CallStack     : Array[1..256] Of TStackFrame;
+ StackTop      : Integer;
+ OutputText    : String;
+ FlowControl   : TFlowControl;
+ ReturnVal     : TRuntimeValue;
+ NextRefIdx    : Integer;
+ StoreKeys     : Array[1..4096] Of String[127];
+ StoreValues   : Array[1..4096] Of TRuntimeValue;
+ StoreCount    : Integer;
+
+Procedure AppendRuntimeOutput(Var Output:String;Text:String;LineNo,ColumnNo:Integer);
 Begin
- BuildRuntimeOutput:=''; (* sera alimente par la TODO 24 via l'execution de l'IR InOut *)
+ If Length(Output)+Length(Text)>255 Then Begin
+  If Length(Output)<255 Then
+   Output:=Output+Copy(Text,1,255-Length(Output));
+  Exit;
+ End;
+ Output:=Output+Text;
+End;
+
+Function ConstToRuntime(CV: TConstValue): TRuntimeValue;
+Var
+ RV: TRuntimeValue;
+Begin
+ RV.Kind := CV.Kind;
+ RV.IntValue := CV.IntegerVal;
+ RV.RealValue := CV.RealVal;
+ RV.TextValue := CV.TextVal;
+ RV.RefSymbolIndex := 0;
+ ConstToRuntime := RV;
+End;
+
+Function LiteralToRuntime(Node: TIRNode): TRuntimeValue;
+Var
+ RV: TRuntimeValue;
+ TK: TTypeKind;
+Begin
+ FillChar(RV, SizeOf(RV), 0);
+ If Node.TypeIndex <> 0 Then TK := SemanticTypes[Node.TypeIndex].Kind
+ Else TK := TYPE_INTEGER;
+ 
+ Case TK Of
+  TYPE_REAL, TYPE_LONGREAL: Begin
+   RV.Kind := CONST_REAL;
+   RV.RealValue := Node.RealVal;
+  End;
+  TYPE_BOOLEAN: Begin
+   RV.Kind := CONST_BOOLEAN;
+   RV.IntValue := Node.IntegerVal;
+  End;
+  TYPE_CHAR: Begin
+   RV.Kind := CONST_CHAR;
+   RV.IntValue := Node.IntegerVal;
+  End;
+  TYPE_TEXT: Begin
+   RV.Kind := CONST_TEXT;
+   RV.TextValue := Node.Text;
+  End;
+  TYPE_NIL: Begin
+   RV.Kind := CONST_NIL;
+   RV.IntValue := 0;
+  End;
+  Else Begin
+   RV.Kind := CONST_INTEGER;
+   RV.IntValue := Node.IntegerVal;
+  End;
+ End;
+ LiteralToRuntime := RV;
+End;
+
+Function GetSymbolScopeFrame(SymbolIndex: Integer): Integer;
+Var
+ S: Integer;
+ TargetScope: Integer;
+Begin
+ GetSymbolScopeFrame := 0;
+ If (SymbolIndex < 1) Or (SymbolIndex > SemanticSymbolCount) Then Exit;
+ TargetScope := SemanticSymbols[SymbolIndex].ScopeIndex;
+ For S := StackTop DownTo 1 Do Begin
+  If CallStack[S].ScopeIndex = TargetScope Then Begin
+   GetSymbolScopeFrame := S;
+   Exit;
+  End;
+ End;
+End;
+
+Function GetPathValue(Path: String): TRuntimeValue;
+Var
+ I: Integer;
+ RV: TRuntimeValue;
+Begin
+ For I := 1 To StoreCount Do Begin
+  If StoreKeys[I] = Path Then Begin
+   GetPathValue := StoreValues[I];
+   Exit;
+  End;
+ End;
+ FillChar(RV, SizeOf(RV), 0);
+ RV.Kind := CONST_INTEGER;
+ GetPathValue := RV;
+End;
+
+Procedure SetPathValue(Path: String; Val: TRuntimeValue);
+Var
+ I: Integer;
+Begin
+ For I := 1 To StoreCount Do Begin
+  If StoreKeys[I] = Path Then Begin
+   StoreValues[I] := Val;
+   Exit;
+  End;
+ End;
+ If StoreCount < 4096 Then Begin
+  Inc(StoreCount);
+  StoreKeys[StoreCount] := Path;
+  StoreValues[StoreCount] := Val;
+ End Else Begin
+  WriteLn('Erreur: debordement du dictionnaire de l''interpreteur.');
+  Halt(1);
+ End;
+End;
+
+Function EvalPath(NodeIndex: Integer): String; Forward;
+Function EvalIR(NodeIndex: Integer): TRuntimeValue; Forward;
+Procedure ExecuteScope(ScopeIndex: Integer); Forward;
+Procedure ExecuteStatement(Var PC: Integer); Forward;
+Procedure ExecuteBlock(ParentIdx: Integer; Var PC: Integer); Forward;
+Procedure SkipToNextBranch(ParentIdx: Integer; Var PC: Integer); Forward;
+Procedure SkipToBlockEnd(ParentIdx: Integer; Var PC: Integer); Forward;
+Procedure ExecuteBlockUntil(ParentIdx: Integer; Var PC: Integer); Forward;
+Procedure SkipToUntilEnd(ParentIdx: Integer; Var PC: Integer); Forward;
+
+Procedure SetValueForNode(NodeIndex: Integer; Val: TRuntimeValue);
+Var
+ P: String;
+Begin
+ P := EvalPath(NodeIndex);
+ If P <> '' Then SetPathValue(P, Val);
+End;
+
+Function EvalPath(NodeIndex: Integer): String;
+Var
+ Node: TIRNode;
+ BasePath: String;
+ IndexVal: TRuntimeValue;
+ FrameIdx: Integer;
+ RefSym: Integer;
+Begin
+ EvalPath := '';
+ If (NodeIndex < 1) Or (NodeIndex > IRNodeCount) Then Exit;
+ Node := IRNodes[NodeIndex];
+ 
+ Case Node.Kind Of
+  IR_SYMBOL: Begin
+   If (Node.SymbolIndex < 1) Or (Node.SymbolIndex > SemanticSymbolCount) Then Exit;
+   If SemanticSymbols[Node.SymbolIndex].ParamMode = PARAM_VAR Then Begin
+    FrameIdx := GetSymbolScopeFrame(Node.SymbolIndex);
+    If FrameIdx > 0 Then Begin
+     RefSym := CallStack[FrameIdx].LocalValues[Node.SymbolIndex].RefSymbolIndex;
+     If RefSym > 0 Then Begin
+      If (SemanticSymbols[RefSym].Storage = STORAGE_GLOBAL_DATA) Or
+         (SemanticSymbols[RefSym].Storage = STORAGE_GLOBAL_BSS) Then
+       EvalPath := 'G_S' + IntToString(RefSym)
+      Else Begin
+       FrameIdx := GetSymbolScopeFrame(RefSym);
+       EvalPath := 'F' + IntToString(FrameIdx) + '_S' + IntToString(RefSym);
+      End;
+     End;
+    End;
+   End Else If (SemanticSymbols[Node.SymbolIndex].Storage = STORAGE_GLOBAL_DATA) Or
+              (SemanticSymbols[Node.SymbolIndex].Storage = STORAGE_GLOBAL_BSS) Then Begin
+    EvalPath := 'G_S' + IntToString(Node.SymbolIndex);
+   End Else Begin
+    FrameIdx := GetSymbolScopeFrame(Node.SymbolIndex);
+    EvalPath := 'F' + IntToString(FrameIdx) + '_S' + IntToString(Node.SymbolIndex);
+   End;
+  End;
+  
+  IR_INDEX: Begin
+   BasePath := EvalPath(Node.Left);
+   IndexVal := EvalIR(Node.Right);
+   EvalPath := BasePath + '[' + IntToString(IndexVal.IntValue) + ']';
+  End;
+  
+  IR_FIELD: Begin
+   BasePath := EvalPath(Node.Left);
+   EvalPath := BasePath + '.' + IntToString(Node.SymbolIndex);
+  End;
+  
+  IR_DEREF: Begin
+   IndexVal := EvalIR(Node.Left);
+   If IndexVal.IntValue > 0 Then
+    EvalPath := 'REF_' + IntToString(IndexVal.IntValue) + '^'
+   Else
+    EvalPath := 'NIL^';
+  End;
+ End;
+End;
+
+Function FindProcedureByAsmLabel(ALabel: String): Integer;
+Var
+ I: Integer;
+Begin
+ FindProcedureByAsmLabel := 0;
+ For I := 1 To SemanticSymbolCount Do
+  If (SemanticSymbols[I].Kind = SYM_PROCEDURE) And (SemanticSymbols[I].AsmLabel = ALabel) Then Begin
+   FindProcedureByAsmLabel := I;
+   Exit;
+  End;
+End;
+
+Function CallUserProcedure(ProcSymbol: Integer; ArgsNode: Integer; ArgCount: Integer): TRuntimeValue;
+Var
+ I, FormalIndex, ScopeIdx: Integer;
+ Actuals: Array[1..64] Of TRuntimeValue;
+ SavedFlow: TFlowControl;
+ Res: TRuntimeValue;
+ ArgNodeIdx: Integer;
+Begin
+ FillChar(Res, SizeOf(Res), 0);
+ Res.Kind := CONST_NIL;
+ CallUserProcedure := Res;
+ ScopeIdx := SemanticSymbols[ProcSymbol].ProcScope;
+ If ScopeIdx = 0 Then Exit;
+
+ For I := 1 To ArgCount Do Begin
+  FormalIndex := NthFormalParameter(ProcSymbol, I);
+  If (FormalIndex <> 0) And (SemanticSymbols[FormalIndex].ParamMode = PARAM_VAR) Then Begin
+   Actuals[I].Kind := CONST_INTEGER;
+   Actuals[I].IntValue := 0;
+   Actuals[I].RefSymbolIndex := 0;
+   
+   ArgNodeIdx := IRArguments[IRNodes[ArgsNode].FirstArg + I - 1];
+   If IRNodes[ArgNodeIdx].Kind = IR_SYMBOL Then
+    Actuals[I].RefSymbolIndex := IRNodes[ArgNodeIdx].SymbolIndex;
+  End Else Begin
+   Actuals[I] := EvalIR(IRArguments[IRNodes[ArgsNode].FirstArg + I - 1]);
+  End;
+ End;
+
+ Inc(StackTop);
+ If StackTop > 256 Then Begin
+  WriteLn('Erreur: debordement de pile lors de l''interpretation.');
+  Halt(1);
+ End;
+ CallStack[StackTop].ScopeIndex := ScopeIdx;
+ FillChar(CallStack[StackTop].LocalValues, SizeOf(CallStack[StackTop].LocalValues), 0);
+
+ For I := 1 To ArgCount Do Begin
+  FormalIndex := NthFormalParameter(ProcSymbol, I);
+  If FormalIndex <> 0 Then
+   CallStack[StackTop].LocalValues[FormalIndex] := Actuals[I];
+ End;
+
+ SavedFlow := FlowControl;
+ FlowControl := FC_NORMAL;
+ ExecuteScope(ScopeIdx);
+ 
+ If FlowControl = FC_RETURN Then
+  Res := ReturnVal;
+
+ FlowControl := SavedFlow;
+ Dec(StackTop);
+ CallUserProcedure := Res;
+End;
+
+Function CallMethod(ReceiverNode, VirtualSlot, ArgsNode, ArgCount, Line, Column: Integer): TRuntimeValue;
+Var
+ ObjVal: TRuntimeValue;
+ ObjID, DynType, MethodSymbol, ProcSymbol, FormalIndex, ScopeIdx, I: Integer;
+ Actuals: Array[1..64] Of TRuntimeValue;
+ SavedFlow: TFlowControl;
+ Res: TRuntimeValue;
+ ArgNodeIdx: Integer;
+Begin
+ FillChar(Res, SizeOf(Res), 0);
+ Res.Kind := CONST_NIL;
+ CallMethod := Res;
+ 
+ ObjVal := EvalIR(ReceiverNode);
+ ObjID := ObjVal.IntValue;
+ If ObjID = 0 Then Begin
+  SemanticError('Derez de pointeur NIL dans l''appel de methode', Line, Column);
+  Halt(1);
+ End;
+ 
+ DynType := GetPathValue('REF_' + IntToString(ObjID) + '.TYPE').IntValue;
+ If DynType = 0 Then Begin
+  SemanticError('Objet non initialise ou type inconnu', Line, Column);
+  Halt(1);
+ End;
+ 
+ MethodSymbol := ObjectMethodForSlot(DynType, VirtualSlot);
+ If MethodSymbol = 0 Then Begin
+  SemanticError('Methode non trouvee pour le slot ' + IntToString(VirtualSlot), Line, Column);
+  Halt(1);
+ End;
+ 
+ ProcSymbol := SemanticSymbols[MethodSymbol].MethodImpl;
+ If ProcSymbol = 0 Then Begin
+  If SemanticSymbols[MethodSymbol].AsmLabel <> '' Then Begin
+   ProcSymbol := FindProcedureByAsmLabel(SemanticSymbols[MethodSymbol].AsmLabel);
+  End;
+ End;
+ 
+ If ProcSymbol = 0 Then Begin
+  SemanticError('Implementation de methode non trouvee pour ' + SemanticSymbols[MethodSymbol].Name, Line, Column);
+  Halt(1);
+ End;
+ 
+ ScopeIdx := SemanticSymbols[ProcSymbol].ProcScope;
+ If ScopeIdx = 0 Then Exit;
+
+ For I := 1 To ArgCount Do Begin
+  FormalIndex := NthFormalParameter(ProcSymbol, I + 1);
+  If (FormalIndex <> 0) And (SemanticSymbols[FormalIndex].ParamMode = PARAM_VAR) Then Begin
+   Actuals[I].Kind := CONST_INTEGER;
+   Actuals[I].IntValue := 0;
+   Actuals[I].RefSymbolIndex := 0;
+   
+   ArgNodeIdx := IRArguments[IRNodes[ArgsNode].FirstArg + I - 1];
+   If IRNodes[ArgNodeIdx].Kind = IR_SYMBOL Then
+    Actuals[I].RefSymbolIndex := IRNodes[ArgNodeIdx].SymbolIndex;
+  End Else Begin
+   Actuals[I] := EvalIR(IRArguments[IRNodes[ArgsNode].FirstArg + I - 1]);
+  End;
+ End;
+
+ Inc(StackTop);
+ If StackTop > 256 Then Begin
+  WriteLn('Erreur: debordement de pile lors de l''interpretation.');
+  Halt(1);
+ End;
+ CallStack[StackTop].ScopeIndex := ScopeIdx;
+ FillChar(CallStack[StackTop].LocalValues, SizeOf(CallStack[StackTop].LocalValues), 0);
+
+ FormalIndex := NthFormalParameter(ProcSymbol, 1);
+ If FormalIndex <> 0 Then
+  CallStack[StackTop].LocalValues[FormalIndex] := ObjVal;
+
+ For I := 1 To ArgCount Do Begin
+  FormalIndex := NthFormalParameter(ProcSymbol, I + 1);
+  If FormalIndex <> 0 Then
+   CallStack[StackTop].LocalValues[FormalIndex] := Actuals[I];
+ End;
+
+ SavedFlow := FlowControl;
+ FlowControl := FC_NORMAL;
+ ExecuteScope(ScopeIdx);
+ 
+ If FlowControl = FC_RETURN Then
+  Res := ReturnVal;
+
+ FlowControl := SavedFlow;
+ Dec(StackTop);
+ CallMethod := Res;
+End;
+
+Function EvalIR(NodeIndex: Integer): TRuntimeValue;
+Var
+ Node: TIRNode;
+ RV, LeftVal, RightVal, Res: TRuntimeValue;
+ TK: TTypeKind;
+ P, TextStr: String;
+ ValReal: Extended;
+ TypeIndex, ObjID, DynType, MethodSymbol, ProcSymbol, FormalIndex, ScopeIdx, I: Integer;
+ SavedFlow: TFlowControl;
+ Name: String;
+ ArgVal, ArgVal2, ArgVal3: TRuntimeValue;
+ LReal, RReal: Extended;
+ ArgNodeIdx, ArgType: Integer;
+ TypeVal: TRuntimeValue;
+ DefVal: TRuntimeValue;
+Begin
+ FillChar(RV, SizeOf(RV), 0);
+ EvalIR := RV;
+ If (NodeIndex < 1) Or (NodeIndex > IRNodeCount) Then Exit;
+ Node := IRNodes[NodeIndex];
+ 
+ Case Node.Kind Of
+  IR_LITERAL: Begin
+   EvalIR := LiteralToRuntime(Node);
+  End;
+  
+  IR_SYMBOL: Begin
+   If SemanticSymbols[Node.SymbolIndex].Kind = SYM_CONST Then
+    EvalIR := ConstToRuntime(SemanticSymbols[Node.SymbolIndex].ConstValue)
+   Else Begin
+    P := EvalPath(NodeIndex);
+    EvalIR := GetPathValue(P);
+   End;
+  End;
+  
+  IR_INDEX, IR_FIELD, IR_DEREF: Begin
+   P := EvalPath(NodeIndex);
+   EvalIR := GetPathValue(P);
+  End;
+  
+  IR_UNARY: Begin
+   LeftVal := EvalIR(Node.Left);
+   Res := LeftVal;
+   If Node.OperatorText = '-' Then Begin
+    If Res.Kind = CONST_REAL Then Res.RealValue := -Res.RealValue
+    Else Res.IntValue := -Res.IntValue;
+   End Else If (UpperStr(Node.OperatorText) = 'NOT') Then Begin
+    If Res.IntValue = 0 Then Res.IntValue := 1 Else Res.IntValue := 0;
+   End;
+   EvalIR := Res;
+  End;
+  
+  IR_BINARY: Begin
+   LeftVal := EvalIR(Node.Left);
+   RightVal := EvalIR(Node.Right);
+   FillChar(Res, SizeOf(Res), 0);
+   If (LeftVal.Kind = CONST_REAL) Or (RightVal.Kind = CONST_REAL) Then Begin
+    If LeftVal.Kind = CONST_REAL Then LReal := LeftVal.RealValue Else LReal := LeftVal.IntValue;
+    If RightVal.Kind = CONST_REAL Then RReal := RightVal.RealValue Else RReal := RightVal.IntValue;
+    Res.Kind := CONST_REAL;
+    If Node.OperatorText = '+' Then Res.RealValue := LReal + RReal
+    Else If Node.OperatorText = '-' Then Res.RealValue := LReal - RReal
+    Else If Node.OperatorText = '*' Then Res.RealValue := LReal * RReal
+    Else If (Node.OperatorText = '/') Or (UpperStr(Node.OperatorText) = 'DIV') Then Begin
+     If RReal <> 0.0 Then Res.RealValue := LReal / RReal Else Res.RealValue := 0.0;
+    End;
+   End Else If (LeftVal.Kind = CONST_TEXT) Or (RightVal.Kind = CONST_TEXT) Or (Node.OperatorText = '&') Then Begin
+    Res.Kind := CONST_TEXT;
+    Res.TextValue := LeftVal.TextValue + RightVal.TextValue;
+   End Else Begin
+    Res.Kind := CONST_INTEGER;
+    If Node.OperatorText = '+' Then Res.IntValue := LeftVal.IntValue + RightVal.IntValue
+    Else If Node.OperatorText = '-' Then Res.IntValue := LeftVal.IntValue - RightVal.IntValue
+    Else If Node.OperatorText = '*' Then Res.IntValue := LeftVal.IntValue * RightVal.IntValue
+    Else If UpperStr(Node.OperatorText) = 'DIV' Then Begin
+     If RightVal.IntValue <> 0 Then Res.IntValue := LeftVal.IntValue Div RightVal.IntValue Else Res.IntValue := 0;
+    End Else If UpperStr(Node.OperatorText) = 'MOD' Then Begin
+     If RightVal.IntValue <> 0 Then Res.IntValue := LeftVal.IntValue Mod RightVal.IntValue Else Res.IntValue := 0;
+    End;
+   End;
+   EvalIR := Res;
+  End;
+  
+  IR_COMPARE: Begin
+   LeftVal := EvalIR(Node.Left);
+   RightVal := EvalIR(Node.Right);
+   FillChar(Res, SizeOf(Res), 0);
+   Res.Kind := CONST_BOOLEAN;
+   Res.IntValue := 0;
+   If (LeftVal.Kind = CONST_REAL) Or (RightVal.Kind = CONST_REAL) Then Begin
+    If LeftVal.Kind = CONST_REAL Then LReal := LeftVal.RealValue Else LReal := LeftVal.IntValue;
+    If RightVal.Kind = CONST_REAL Then RReal := RightVal.RealValue Else RReal := RightVal.IntValue;
+    If Node.OperatorText = '=' Then Begin If LReal = RReal Then Res.IntValue := 1; End
+    Else If Node.OperatorText = '<>' Then Begin If LReal <> RReal Then Res.IntValue := 1; End
+    Else If Node.OperatorText = '<' Then Begin If LReal < RReal Then Res.IntValue := 1; End
+    Else If Node.OperatorText = '<=' Then Begin If LReal <= RReal Then Res.IntValue := 1; End
+    Else If Node.OperatorText = '>' Then Begin If LReal > RReal Then Res.IntValue := 1; End
+    Else If Node.OperatorText = '>=' Then Begin If LReal >= RReal Then Res.IntValue := 1; End;
+   End Else If (LeftVal.Kind = CONST_TEXT) Or (RightVal.Kind = CONST_TEXT) Then Begin
+    If Node.OperatorText = '=' Then Begin If LeftVal.TextValue = RightVal.TextValue Then Res.IntValue := 1; End
+    Else If Node.OperatorText = '<>' Then Begin If LeftVal.TextValue <> RightVal.TextValue Then Res.IntValue := 1; End
+    Else If Node.OperatorText = '<' Then Begin If LeftVal.TextValue < RightVal.TextValue Then Res.IntValue := 1; End
+    Else If Node.OperatorText = '<=' Then Begin If LeftVal.TextValue <= RightVal.TextValue Then Res.IntValue := 1; End
+    Else If Node.OperatorText = '>' Then Begin If LeftVal.TextValue > RightVal.TextValue Then Res.IntValue := 1; End
+    Else If Node.OperatorText = '>=' Then Begin If LeftVal.TextValue >= RightVal.TextValue Then Res.IntValue := 1; End;
+   End Else Begin
+    If Node.OperatorText = '=' Then Begin If LeftVal.IntValue = RightVal.IntValue Then Res.IntValue := 1; End
+    Else If Node.OperatorText = '<>' Then Begin If LeftVal.IntValue <> RightVal.IntValue Then Res.IntValue := 1; End
+    Else If Node.OperatorText = '<' Then Begin If LeftVal.IntValue < RightVal.IntValue Then Res.IntValue := 1; End
+    Else If Node.OperatorText = '<=' Then Begin If LeftVal.IntValue <= RightVal.IntValue Then Res.IntValue := 1; End
+    Else If Node.OperatorText = '>' Then Begin If LeftVal.IntValue > RightVal.IntValue Then Res.IntValue := 1; End
+    Else If Node.OperatorText = '>=' Then Begin If LeftVal.IntValue >= RightVal.IntValue Then Res.IntValue := 1; End;
+   End;
+   EvalIR := Res;
+  End;
+  
+  IR_AND_SHORT: Begin
+   LeftVal := EvalIR(Node.Left);
+   FillChar(Res, SizeOf(Res), 0);
+   Res.Kind := CONST_BOOLEAN;
+   If LeftVal.IntValue = 0 Then Res.IntValue := 0
+   Else Begin
+    RightVal := EvalIR(Node.Right);
+    Res.IntValue := RightVal.IntValue;
+   End;
+   EvalIR := Res;
+  End;
+  
+  IR_OR_SHORT: Begin
+   LeftVal := EvalIR(Node.Left);
+   FillChar(Res, SizeOf(Res), 0);
+   Res.Kind := CONST_BOOLEAN;
+   If LeftVal.IntValue <> 0 Then Res.IntValue := 1
+   Else Begin
+    RightVal := EvalIR(Node.Right);
+    Res.IntValue := RightVal.IntValue;
+   End;
+   EvalIR := Res;
+  End;
+  
+  IR_CALL: Begin
+   Name := UpperStr(Node.Text);
+   FillChar(Res, SizeOf(Res), 0);
+   Res.Kind := CONST_NIL;
+   
+   If (Name = 'NEW') Then Begin
+    TypeIndex := CanonicalType(Node.TypeIndex);
+    Inc(NextRefIdx);
+    Res.Kind := CONST_INTEGER;
+    Res.IntValue := NextRefIdx;
+    
+    If (TypeIndex <> 0) And (SemanticTypes[TypeIndex].Kind = TYPE_OBJECT) Then Begin
+     TypeVal.Kind := CONST_INTEGER;
+     TypeVal.IntValue := TypeIndex;
+     SetPathValue('REF_' + IntToString(NextRefIdx) + '.TYPE', TypeVal);
+    End;
+    
+    FillChar(DefVal, SizeOf(DefVal), 0);
+    DefVal.Kind := CONST_INTEGER;
+    SetPathValue('REF_' + IntToString(NextRefIdx) + '^', DefVal);
+    EvalIR := Res;
+   End Else If (Name = 'DISPOSE') Then Begin
+    EvalIR := Res;
+   End Else If (Name = 'WR.PUTTEXT') Then Begin
+    ArgVal := EvalIR(IRArguments[Node.FirstArg]);
+    AppendRuntimeOutput(OutputText, ArgVal.TextValue, Node.Line, Node.Column);
+    EvalIR := Res;
+   End Else If (Name = 'WR.NL') Then Begin
+    AppendRuntimeOutput(OutputText, #13#10, Node.Line, Node.Column);
+    EvalIR := Res;
+   End Else If (Name = 'WR.PUTINT') Then Begin
+    ArgVal := EvalIR(IRArguments[Node.FirstArg]);
+    Str(ArgVal.IntValue, TextStr);
+    AppendRuntimeOutput(OutputText, TextStr, Node.Line, Node.Column);
+    EvalIR := Res;
+   End Else If (Name = 'WR.PUTCHAR') Then Begin
+    ArgVal := EvalIR(IRArguments[Node.FirstArg]);
+    TextStr := Chr(ArgVal.IntValue And $FF);
+    AppendRuntimeOutput(OutputText, TextStr, Node.Line, Node.Column);
+    EvalIR := Res;
+   End Else If (Name = 'WR.PUTBOOL') Then Begin
+    ArgVal := EvalIR(IRArguments[Node.FirstArg]);
+    If ArgVal.IntValue <> 0 Then TextStr := 'TRUE' Else TextStr := 'FALSE';
+    AppendRuntimeOutput(OutputText, TextStr, Node.Line, Node.Column);
+    EvalIR := Res;
+   End Else If (Name = 'WR.PUTREAL') Then Begin
+    ArgVal := EvalIR(IRArguments[Node.FirstArg]);
+    If ArgVal.Kind = CONST_REAL Then ValReal := ArgVal.RealValue Else ValReal := ArgVal.IntValue;
+    Str(ValReal:0:0, TextStr);
+    AppendRuntimeOutput(OutputText, TextStr, Node.Line, Node.Column);
+    EvalIR := Res;
+   End Else If (Name = 'FMT.INT') Then Begin
+    ArgVal := EvalIR(IRArguments[Node.FirstArg]);
+    Str(ArgVal.IntValue, TextStr);
+    Res.Kind := CONST_TEXT;
+    Res.TextValue := TextStr;
+    EvalIR := Res;
+   End Else If (Name = 'FMT.CHAR') Then Begin
+    ArgVal := EvalIR(IRArguments[Node.FirstArg]);
+    Res.Kind := CONST_TEXT;
+    Res.TextValue := Chr(ArgVal.IntValue And $FF);
+    EvalIR := Res;
+   End Else If (Name = 'FMT.BOOL') Then Begin
+    ArgVal := EvalIR(IRArguments[Node.FirstArg]);
+    Res.Kind := CONST_TEXT;
+    If ArgVal.IntValue <> 0 Then Res.TextValue := 'TRUE' Else Res.TextValue := 'FALSE';
+    EvalIR := Res;
+   End Else If (Name = 'TEXT.LENGTH') Then Begin
+    ArgVal := EvalIR(IRArguments[Node.FirstArg]);
+    Res.Kind := CONST_INTEGER;
+    Res.IntValue := Length(ArgVal.TextValue);
+    EvalIR := Res;
+   End Else If (Name = 'TEXT.GETCHAR') Then Begin
+    ArgVal := EvalIR(IRArguments[Node.FirstArg]);
+    ArgVal2 := EvalIR(IRArguments[Node.FirstArg+1]);
+    Res.Kind := CONST_CHAR;
+    If (ArgVal2.IntValue >= 0) And (ArgVal2.IntValue < Length(ArgVal.TextValue)) Then
+     Res.IntValue := Ord(ArgVal.TextValue[ArgVal2.IntValue + 1])
+    Else Res.IntValue := 0;
+    EvalIR := Res;
+   End Else If (Name = 'TEXT.CAT') Then Begin
+    ArgVal := EvalIR(IRArguments[Node.FirstArg]);
+    ArgVal2 := EvalIR(IRArguments[Node.FirstArg+1]);
+    Res.Kind := CONST_TEXT;
+    Res.TextValue := ArgVal.TextValue + ArgVal2.TextValue;
+    EvalIR := Res;
+   End Else If (Name = 'TEXT.EQUAL') Then Begin
+    ArgVal := EvalIR(IRArguments[Node.FirstArg]);
+    ArgVal2 := EvalIR(IRArguments[Node.FirstArg+1]);
+    Res.Kind := CONST_BOOLEAN;
+    If ArgVal.TextValue = ArgVal2.TextValue Then Res.IntValue := 1 Else Res.IntValue := 0;
+    EvalIR := Res;
+   End Else If (Name = 'TEXT.SUB') Then Begin
+    ArgVal := EvalIR(IRArguments[Node.FirstArg]);
+    ArgVal2 := EvalIR(IRArguments[Node.FirstArg+1]);
+    ArgVal3 := EvalIR(IRArguments[Node.FirstArg+2]);
+    Res.Kind := CONST_TEXT;
+    Res.TextValue := Copy(ArgVal.TextValue, ArgVal2.IntValue + 1, ArgVal3.IntValue);
+    EvalIR := Res;
+   End Else If (Name = 'ABS') Then Begin
+    ArgVal := EvalIR(IRArguments[Node.FirstArg]);
+    Res := ArgVal;
+    If Res.Kind = CONST_REAL Then Begin
+     If Res.RealValue < 0.0 Then Res.RealValue := -Res.RealValue;
+    End Else Begin
+     If Res.IntValue < 0 Then Res.IntValue := -Res.IntValue;
+    End;
+    EvalIR := Res;
+   End Else If (Name = 'MAX') Then Begin
+    ArgVal := EvalIR(IRArguments[Node.FirstArg]);
+    ArgVal2 := EvalIR(IRArguments[Node.FirstArg+1]);
+    If (ArgVal.Kind = CONST_REAL) Or (ArgVal2.Kind = CONST_REAL) Then Begin
+     If ArgVal.Kind = CONST_REAL Then LReal := ArgVal.RealValue Else LReal := ArgVal.IntValue;
+     If ArgVal2.Kind = CONST_REAL Then RReal := ArgVal2.RealValue Else RReal := ArgVal2.IntValue;
+     Res.Kind := CONST_REAL;
+     If LReal > RReal Then Res.RealValue := LReal Else Res.RealValue := RReal;
+    End Else Begin
+     Res.Kind := CONST_INTEGER;
+     If ArgVal.IntValue > ArgVal2.IntValue Then Res.IntValue := ArgVal.IntValue Else Res.IntValue := ArgVal2.IntValue;
+    End;
+    EvalIR := Res;
+   End Else If (Name = 'MIN') Then Begin
+    ArgVal := EvalIR(IRArguments[Node.FirstArg]);
+    ArgVal2 := EvalIR(IRArguments[Node.FirstArg+1]);
+    If (ArgVal.Kind = CONST_REAL) Or (ArgVal2.Kind = CONST_REAL) Then Begin
+     If ArgVal.Kind = CONST_REAL Then LReal := ArgVal.RealValue Else LReal := ArgVal.IntValue;
+     If ArgVal2.Kind = CONST_REAL Then RReal := ArgVal2.RealValue Else RReal := ArgVal2.IntValue;
+     Res.Kind := CONST_REAL;
+     If LReal < RReal Then Res.RealValue := LReal Else Res.RealValue := RReal;
+    End Else Begin
+     Res.Kind := CONST_INTEGER;
+     If ArgVal.IntValue < ArgVal2.IntValue Then Res.IntValue := ArgVal.IntValue Else Res.IntValue := ArgVal2.IntValue;
+    End;
+    EvalIR := Res;
+   End Else If (Name = 'TYPECODE') Then Begin
+    TypeIndex := 0;
+    If Node.ArgCount = 1 Then
+     TypeIndex := CanonicalType(IRNodes[IRArguments[Node.FirstArg]].TypeIndex);
+    Res.Kind := CONST_INTEGER;
+    If TypeIndex <> 0 Then Res.IntValue := SemanticTypes[TypeIndex].TypeCode Else Res.IntValue := 0;
+    EvalIR := Res;
+   End Else If (Name = 'NUMBER') Then Begin
+    ArgNodeIdx := IRArguments[Node.FirstArg];
+    ArgType := CanonicalType(IRNodes[ArgNodeIdx].TypeIndex);
+    Res.Kind := CONST_INTEGER;
+    If (ArgType <> 0) And (SemanticTypes[ArgType].Kind = TYPE_ARRAY) Then Begin
+     Res.IntValue := SemanticTypes[ArgType].HighBound - SemanticTypes[ArgType].LowBound + 1;
+    End Else Begin
+     Res.IntValue := 0;
+    End;
+    EvalIR := Res;
+   End Else If (Name = 'FIRST') Then Begin
+    ArgNodeIdx := IRArguments[Node.FirstArg];
+    ArgType := CanonicalType(IRNodes[ArgNodeIdx].TypeIndex);
+    Res.Kind := CONST_INTEGER;
+    If (ArgType <> 0) And (SemanticTypes[ArgType].Kind = TYPE_ARRAY) Then Begin
+     Res.IntValue := SemanticTypes[ArgType].LowBound;
+    End Else Begin
+     Res.IntValue := 0;
+    End;
+    EvalIR := Res;
+   End Else If (Name = 'LAST') Then Begin
+    ArgNodeIdx := IRArguments[Node.FirstArg];
+    ArgType := CanonicalType(IRNodes[ArgNodeIdx].TypeIndex);
+    Res.Kind := CONST_INTEGER;
+    If (ArgType <> 0) And (SemanticTypes[ArgType].Kind = TYPE_ARRAY) Then Begin
+     Res.IntValue := SemanticTypes[ArgType].HighBound;
+    End Else Begin
+     Res.IntValue := 0;
+    End;
+    EvalIR := Res;
+   End Else If (Name = 'FLOAT') Then Begin
+    ArgVal := EvalIR(IRArguments[Node.FirstArg]);
+    Res.Kind := CONST_REAL;
+    If ArgVal.Kind = CONST_REAL Then Res.RealValue := ArgVal.RealValue
+    Else Res.RealValue := ArgVal.IntValue;
+    EvalIR := Res;
+   End Else If (Name = 'ORD') Then Begin
+    ArgVal := EvalIR(IRArguments[Node.FirstArg]);
+    Res.Kind := CONST_INTEGER;
+    Res.IntValue := ArgVal.IntValue;
+    EvalIR := Res;
+   End Else If (Name = 'TRUNC') Then Begin
+    ArgVal := EvalIR(IRArguments[Node.FirstArg]);
+    Res.Kind := CONST_INTEGER;
+    If ArgVal.Kind = CONST_REAL Then Res.IntValue := Trunc(ArgVal.RealValue)
+    Else Res.IntValue := ArgVal.IntValue;
+    EvalIR := Res;
+   End Else If Node.Receiver <> 0 Then Begin
+    EvalIR := CallMethod(Node.Receiver, Node.VirtualSlot, NodeIndex, Node.ArgCount, Node.Line, Node.Column);
+   End Else If (Node.SymbolIndex <> 0) And
+              (SemanticSymbols[Node.SymbolIndex].Kind = SYM_PROCEDURE) And
+              (SemanticSymbols[Node.SymbolIndex].ProcScope <> 0) Then Begin
+    EvalIR := CallUserProcedure(Node.SymbolIndex, NodeIndex, Node.ArgCount);
+   End Else Begin
+    SemanticError('appel a une procedure inconnue: ' + Node.Text, Node.Line, Node.Column);
+   End;
+  End;
+ End;
+End;
+
+Procedure ExecuteScope(ScopeIndex: Integer);
+Var
+ PC: Integer;
+Begin
+ PC := 1;
+ While (PC <= StatementCount) And (FlowControl = FC_NORMAL) Do Begin
+  If (StatementIR[PC].ScopeIndex = ScopeIndex) And (StatementIR[PC].ParentIndex = 0) Then Begin
+   ExecuteStatement(PC);
+  End Else Begin
+   Inc(PC);
+  End;
+ End;
+End;
+
+Procedure ExecuteBlock(ParentIdx: Integer; Var PC: Integer);
+Var
+ S: TStatementIR;
+Begin
+ While (PC <= StatementCount) And (FlowControl = FC_NORMAL) Do Begin
+  S := StatementIR[PC];
+  If (S.ScopeIndex <> CallStack[StackTop].ScopeIndex) Or (S.ParentIndex <> ParentIdx) Then
+   Exit;
+  If (S.Kind = ST_ELSIF) Or (S.Kind = ST_ELSE) Or (S.Kind = ST_BLOCK_END) Or
+     (S.Kind = ST_CASE_ARM) Or (S.Kind = ST_CASE_ELSE) Then
+   Exit;
+  ExecuteStatement(PC);
+ End;
+End;
+
+Procedure SkipToNextBranch(ParentIdx: Integer; Var PC: Integer);
+Var
+ Depth: Integer;
+ S: TStatementIR;
+Begin
+ Depth := 0;
+ While PC <= StatementCount Do Begin
+  S := StatementIR[PC];
+  If S.ScopeIndex = CallStack[StackTop].ScopeIndex Then Begin
+   If (S.ParentIndex = ParentIdx) And (Depth = 0) Then Begin
+    If (S.Kind = ST_ELSIF) Or (S.Kind = ST_ELSE) Or (S.Kind = ST_BLOCK_END) Then
+     Exit;
+   End;
+   If S.Kind In [ST_IF, ST_WHILE, ST_FOR, ST_LOOP, ST_REPEAT, ST_CASE] Then
+    Inc(Depth)
+   Else If S.Kind = ST_BLOCK_END Then
+    Dec(Depth);
+  End;
+  Inc(PC);
+ End;
+End;
+
+Procedure SkipToBlockEnd(ParentIdx: Integer; Var PC: Integer);
+Var
+ Depth: Integer;
+ S: TStatementIR;
+Begin
+ Depth := 0;
+ While PC <= StatementCount Do Begin
+  S := StatementIR[PC];
+  If S.ScopeIndex = CallStack[StackTop].ScopeIndex Then Begin
+   If (S.ParentIndex = ParentIdx) And (S.Kind = ST_BLOCK_END) And (Depth = 0) Then Begin
+    Inc(PC);
+    Exit;
+   End;
+   If S.Kind In [ST_IF, ST_WHILE, ST_FOR, ST_LOOP, ST_REPEAT, ST_CASE] Then
+    Inc(Depth)
+   Else If S.Kind = ST_BLOCK_END Then
+    Dec(Depth);
+  End;
+  Inc(PC);
+ End;
+End;
+
+Procedure ExecuteBlockUntil(ParentIdx: Integer; Var PC: Integer);
+Var
+ S: TStatementIR;
+Begin
+ While (PC <= StatementCount) And (FlowControl = FC_NORMAL) Do Begin
+  S := StatementIR[PC];
+  If (S.ScopeIndex <> CallStack[StackTop].ScopeIndex) Or (S.ParentIndex <> ParentIdx) Then
+   Exit;
+  If S.Kind = ST_UNTIL Then
+   Exit;
+  ExecuteStatement(PC);
+ End;
+End;
+
+Procedure SkipToUntilEnd(ParentIdx: Integer; Var PC: Integer);
+Var
+ Depth: Integer;
+ S: TStatementIR;
+Begin
+ Depth := 0;
+ While PC <= StatementCount Do Begin
+  S := StatementIR[PC];
+  If S.ScopeIndex = CallStack[StackTop].ScopeIndex Then Begin
+   If (S.ParentIndex = ParentIdx) And (S.Kind = ST_UNTIL) And (Depth = 0) Then Begin
+    Inc(PC);
+    Exit;
+   End;
+   If S.Kind In [ST_IF, ST_WHILE, ST_FOR, ST_LOOP, ST_REPEAT, ST_CASE] Then
+    Inc(Depth)
+   Else If S.Kind = ST_BLOCK_END Then
+    Dec(Depth);
+  End;
+  Inc(PC);
+ End;
+End;
+
+Procedure ExecuteStatement(Var PC: Integer);
+Var
+ S: TStatementIR;
+ IfStmtIdx: Integer;
+ CondVal: TRuntimeValue;
+ ElsifStmtIdx, Parent: Integer;
+ WhileStmtIdx: Integer;
+ LoopEnded: Boolean;
+ LoopStmtIdx: Integer;
+ RepeatStmtIdx: Integer;
+ ForStmtIdx: Integer;
+ VarPath: String;
+ LowVal, BoundVal, StepVal: LongInt;
+ IterVal: TRuntimeValue;
+ BodyPC: Integer;
+ CurVal: LongInt;
+ CaseStmtIdx: Integer;
+ SelectorVal: LongInt;
+ FoundArm: Boolean;
+ ArmPC, ElsePC: Integer;
+ Arm: TStatementIR;
+Begin
+ S := StatementIR[PC];
+ Case S.Kind Of
+  ST_EMPTY: Inc(PC);
+  ST_ASSIGN: Begin
+   SetValueForNode(S.TargetNode, EvalIR(S.ExpressionNode));
+   Inc(PC);
+  End;
+  ST_CALL: Begin
+   EvalIR(S.ExpressionNode);
+   Inc(PC);
+  End;
+  ST_RETURN: Begin
+   If S.ExpressionNode <> 0 Then
+    ReturnVal := EvalIR(S.ExpressionNode);
+   FlowControl := FC_RETURN;
+   Inc(PC);
+  End;
+  ST_EXIT: Begin
+   FlowControl := FC_EXIT;
+   Inc(PC);
+  End;
+  ST_BLOCK_BEGIN: Begin
+   Inc(PC);
+  End;
+  ST_BLOCK_END: Begin
+   Inc(PC);
+  End;
+  
+  ST_IF: Begin
+   IfStmtIdx := PC;
+   Inc(PC);
+   CondVal := EvalIR(StatementIR[IfStmtIdx].ExpressionNode);
+   If CondVal.IntValue <> 0 Then Begin
+    ExecuteBlock(IfStmtIdx, PC);
+    SkipToBlockEnd(IfStmtIdx, PC);
+   End Else Begin
+    SkipToNextBranch(IfStmtIdx, PC);
+   End;
+  End;
+  
+  ST_ELSIF: Begin
+   ElsifStmtIdx := PC;
+   Parent := S.ParentIndex;
+   Inc(PC);
+   CondVal := EvalIR(StatementIR[ElsifStmtIdx].ExpressionNode);
+   If CondVal.IntValue <> 0 Then Begin
+    ExecuteBlock(Parent, PC);
+    SkipToBlockEnd(Parent, PC);
+   End Else Begin
+    SkipToNextBranch(Parent, PC);
+   End;
+  End;
+  
+  ST_ELSE: Begin
+   Parent := S.ParentIndex;
+   Inc(PC);
+   ExecuteBlock(Parent, PC);
+   SkipToBlockEnd(Parent, PC);
+  End;
+  
+  ST_WHILE: Begin
+   WhileStmtIdx := PC;
+   Inc(PC);
+   LoopEnded := False;
+   While (FlowControl = FC_NORMAL) And Not LoopEnded Do Begin
+    CondVal := EvalIR(StatementIR[WhileStmtIdx].ExpressionNode);
+    If CondVal.IntValue <> 0 Then Begin
+     BodyPC := PC;
+     ExecuteBlock(WhileStmtIdx, BodyPC);
+     If FlowControl = FC_EXIT Then Begin
+      FlowControl := FC_NORMAL;
+      LoopEnded := True;
+     End;
+    End Else Begin
+     LoopEnded := True;
+    End;
+   End;
+   SkipToBlockEnd(WhileStmtIdx, PC);
+  End;
+  
+  ST_LOOP: Begin
+   LoopStmtIdx := PC;
+   Inc(PC);
+   LoopEnded := False;
+   While (FlowControl = FC_NORMAL) And Not LoopEnded Do Begin
+    BodyPC := PC;
+    ExecuteBlock(LoopStmtIdx, BodyPC);
+    If FlowControl = FC_EXIT Then Begin
+     FlowControl := FC_NORMAL;
+     LoopEnded := True;
+    End;
+   End;
+   SkipToBlockEnd(LoopStmtIdx, PC);
+  End;
+  
+  ST_REPEAT: Begin
+   RepeatStmtIdx := PC;
+   Inc(PC);
+   LoopEnded := False;
+   While (FlowControl = FC_NORMAL) And Not LoopEnded Do Begin
+    BodyPC := PC;
+    ExecuteBlockUntil(RepeatStmtIdx, BodyPC);
+    CondVal := EvalIR(StatementIR[BodyPC].ExpressionNode);
+    If CondVal.IntValue <> 0 Then
+     LoopEnded := True;
+    If FlowControl = FC_EXIT Then Begin
+     FlowControl := FC_NORMAL;
+     LoopEnded := True;
+    End;
+   End;
+   SkipToUntilEnd(RepeatStmtIdx, PC);
+  End;
+  
+  ST_FOR: Begin
+   ForStmtIdx := PC;
+   Inc(PC);
+   VarPath := EvalPath(S.TargetNode);
+   
+   LowVal := EvalIR(S.ExpressionNode).IntValue;
+   BoundVal := EvalIR(S.BoundNode).IntValue;
+   If S.StepNode <> 0 Then
+    StepVal := EvalIR(S.StepNode).IntValue
+   Else
+    StepVal := 1;
+   
+   IterVal.Kind := CONST_INTEGER;
+   IterVal.IntValue := LowVal;
+   SetPathValue(VarPath, IterVal);
+   
+   LoopEnded := False;
+   While (FlowControl = FC_NORMAL) And Not LoopEnded Do Begin
+    CurVal := GetPathValue(VarPath).IntValue;
+    If ((StepVal > 0) And (CurVal > BoundVal)) Or
+       ((StepVal < 0) And (CurVal < BoundVal)) Then Begin
+     LoopEnded := True;
+    End Else Begin
+     BodyPC := PC;
+     ExecuteBlock(ForStmtIdx, BodyPC);
+     If FlowControl = FC_EXIT Then Begin
+      FlowControl := FC_NORMAL;
+      LoopEnded := True;
+     End;
+     If (FlowControl = FC_NORMAL) And Not LoopEnded Then Begin
+      IterVal.IntValue := GetPathValue(VarPath).IntValue + StepVal;
+      SetPathValue(VarPath, IterVal);
+     End;
+    End;
+   End;
+   SkipToBlockEnd(ForStmtIdx, PC);
+  End;
+  
+  ST_CASE: Begin
+   CaseStmtIdx := PC;
+   Inc(PC);
+   SelectorVal := EvalIR(S.ExpressionNode).IntValue;
+   FoundArm := False;
+   
+   ArmPC := PC;
+   While (ArmPC <= StatementCount) And (StatementIR[ArmPC].ParentIndex = CaseStmtIdx) And Not FoundArm Do Begin
+    Arm := StatementIR[ArmPC];
+    If Arm.Kind = ST_CASE_ARM Then Begin
+     If (SelectorVal >= Arm.CaseLow) And (SelectorVal <= Arm.CaseHigh) Then Begin
+      FoundArm := True;
+      PC := ArmPC + 1;
+      ExecuteBlock(CaseStmtIdx, PC);
+     End;
+    End;
+    Inc(ArmPC);
+   End;
+   
+   If Not FoundArm Then Begin
+    ElsePC := PC;
+    While (ElsePC <= StatementCount) And (StatementIR[ElsePC].ParentIndex = CaseStmtIdx) And Not FoundArm Do Begin
+     If StatementIR[ElsePC].Kind = ST_CASE_ELSE Then Begin
+      FoundArm := True;
+      PC := ElsePC + 1;
+      ExecuteBlock(CaseStmtIdx, PC);
+     End;
+     Inc(ElsePC);
+    End;
+   End;
+   
+   SkipToBlockEnd(CaseStmtIdx, PC);
+  End;
+  
+  Else Inc(PC);
+ End;
+End;
+
+Function BuildRuntimeOutput:String;
+Var
+ ModuleScope, I: Integer;
+Begin
+ BuildRuntimeOutput := '';
+ OutputText := '';
+ StoreCount := 0;
+ FillChar(StoreKeys, SizeOf(StoreKeys), 0);
+ StackTop := 0;
+ FlowControl := FC_NORMAL;
+ NextRefIdx := 0;
+ 
+ ModuleScope:=0;
+ For I:=1 To SemanticScopeCount Do
+  If SemanticScopes[I].Kind=SCOPE_MODULE Then ModuleScope:=I;
+  
+ If ModuleScope<>0 Then Begin
+  ExecuteScope(ModuleScope);
+ End;
+ 
+ BuildRuntimeOutput := OutputText;
 End;
 
 Procedure WritePETextSection(Var F:File);
