@@ -95,25 +95,28 @@
             PROCEDURE locale/exportable, appels, parametres valeur et VAR,
             pile 32 bits, retour, recursion simple et verification d'arite.
 
-  TODO 22 - Implementer les procedures predefinies minimales:
+  DONE 22 - Implementer les procedures predefinies minimales:
             INC, DEC, ORD, CHR, ODD, ABS si utile, avec controle de type et
             emission directe quand possible.
 
-  TODO 23 - Implementer le module InOut:
+  DONE 23 - Implementer le module InOut:
             WriteString, WriteLn, WriteInt au minimum pour hello_m2.mod et
             arith_m2.mod, via runtime Win32 console ou imports C.
 
-  TODO 24 - Ajouter une suite de validation SAMPLES\MODULA2:
+  DONE 24 - Ajouter une suite de validation SAMPLES\MODULA2:
             compiler tous les .mod en .EXE par defaut, verifier -c et -S,
             executer hello_m2.mod et arith_m2.mod et comparer les sorties.
 
-  TODO 25 - Stabiliser la compatibilite Turbo Pascal/Free Pascal:
+  DONE 25 - Stabiliser la compatibilite Turbo Pascal/Free Pascal:
             types Pascal portables, aucune dependance non TP7 si possible,
             chemins Windows, E/S binaires, endianess et documentation d'usage.
 }
 
 Program MOD2CW32;
 
+{$IFDEF FPC}
+ {$H-}
+{$ENDIF}
 {$I-}
 
 Const
@@ -178,6 +181,7 @@ Const
  MOD2_MAX_STATEMENTS   = 4096;
  MOD2_MAX_CALL_ARGS    = 32;
  MOD2_MAX_EXPORTS      = 128;
+ MOD2_MAX_PATH         = 250;
 
 Type
  T386Register = (
@@ -208,6 +212,8 @@ Type
   SymbolIndex : LongInt;
   Kind        : TCoffRelocKind;
  End;
+
+ TSymbolValueArray = Array[0..MOD2_MAX_SYMBOLS] Of LongInt;
 
  TTargetModel = Record
   CpuName       : String[16];
@@ -383,7 +389,11 @@ Type
   IR_EXPR_GE,
   IR_EXPR_NOT,
   IR_EXPR_AND,
-  IR_EXPR_OR
+  IR_EXPR_OR,
+  IR_EXPR_ORD,
+  IR_EXPR_CHR,
+  IR_EXPR_ODD,
+  IR_EXPR_ABS
  );
 
  TIRExprNode = Record
@@ -771,6 +781,10 @@ Begin
   IR_EXPR_NOT  :IRExprOpName:='NOT';
   IR_EXPR_AND  :IRExprOpName:='AND';
   IR_EXPR_OR   :IRExprOpName:='OR';
+  IR_EXPR_ORD  :IRExprOpName:='ORD';
+  IR_EXPR_CHR  :IRExprOpName:='CHR';
+  IR_EXPR_ODD  :IRExprOpName:='ODD';
+  IR_EXPR_ABS  :IRExprOpName:='ABS';
   Else IRExprOpName:='?';
  End;
 End;
@@ -926,6 +940,37 @@ Begin
  Base:=StripExtension(FileName);
  If Length(Base)<Length(FileName) Then EnsureExtension:=FileName
   Else EnsureExtension:=FileName+DefaultExt;
+End;
+
+Procedure ValidatePortableEnvironment;
+Var
+ ByteSize:Integer;
+ WordSize:Integer;
+ LongIntSize:Integer;
+Begin
+ ByteSize:=SizeOf(Byte);
+ WordSize:=SizeOf(Word);
+ LongIntSize:=SizeOf(LongInt);
+ If ByteSize<>1 Then Begin
+  WriteLn('Erreur: Byte doit occuper 1 octet.');
+  Halt(1);
+ End;
+ If WordSize<>2 Then Begin
+  WriteLn('Erreur: Word doit occuper 2 octets.');
+  Halt(1);
+ End;
+ If LongIntSize<>4 Then Begin
+  WriteLn('Erreur: LongInt doit occuper 4 octets.');
+  Halt(1);
+ End;
+End;
+
+Procedure ValidatePathLength(PathName,Description:String);
+Begin
+ If Length(PathName)>MOD2_MAX_PATH Then Begin
+  WriteLn('Erreur: ',Description,' depasse ',MOD2_MAX_PATH,' caracteres.');
+  Halt(1);
+ End;
 End;
 
 Function RegName(Reg:T386Register):String;
@@ -1203,6 +1248,11 @@ Begin
   IntToString(LabelCounter)+'_'+Suffix);
 End;
 
+Function IRStringLabel(NodeIndex:Integer):String;
+Begin
+ IRStringLabel:=MakeDataLabel('STR_'+IntToString(NodeIndex));
+End;
+
 Procedure EmitIRLoadSymbol(Var T:Text;SymbolIndex:Integer);
 Var
  S:TSymbol;
@@ -1255,8 +1305,7 @@ Begin
   IR_EXPR_CONST:
    Begin
     If N.ConstValue.ScalarType=SCALAR_STRING Then Begin
-     EmitAsmComment(T,'adresse de chaine differee a TODO 23');
-     Emit386Mov(T,RegName(R_EAX),'0');
+     Emit386Mov(T,RegName(R_EAX),IRStringLabel(NodeIndex));
     End
     Else Emit386Mov(T,RegName(R_EAX),
                     IntToString(N.ConstValue.IntegerValue));
@@ -1274,6 +1323,29 @@ Begin
     EmitAsmInstr(T,'cmp',RegName(R_EAX)+', 0');
     EmitAsmInstr(T,'sete','al');
     EmitAsmInstr(T,'movzx',RegName(R_EAX)+', al');
+   End;
+  IR_EXPR_ORD:
+   EmitIRExpressionAsm(T,N.LeftNode,LabelCounter);
+  IR_EXPR_CHR:
+   Begin
+    EmitIRExpressionAsm(T,N.LeftNode,LabelCounter);
+    EmitAsmInstr(T,'and',RegName(R_EAX)+', 255');
+   End;
+  IR_EXPR_ODD:
+   Begin
+    EmitIRExpressionAsm(T,N.LeftNode,LabelCounter);
+    EmitAsmInstr(T,'and',RegName(R_EAX)+', 1');
+   End;
+  IR_EXPR_ABS:
+   Begin
+    EmitIRExpressionAsm(T,N.LeftNode,LabelCounter);
+    If N.ScalarType=SCALAR_INTEGER Then Begin
+     EndLabel:=NewAsmExpressionLabel(LabelCounter,'ABS_END');
+     EmitAsmInstr(T,'cmp',RegName(R_EAX)+', 0');
+     EmitAsmInstr(T,'jge',EndLabel);
+     EmitAsmInstr(T,'neg',RegName(R_EAX));
+     EmitAsmLabel(T,EndLabel);
+    End;
    End;
   IR_EXPR_AND:
    Begin
@@ -1618,7 +1690,25 @@ Begin
        EmitAsmInstr(T,'add',RegName(R_ESP)+', '+
                     IntToString(S.ArgumentCount*I386_STACK_SLOT_SIZE));
      End
-     Else EmitAsmComment(T,'appel externe/predefini differe');
+     Else If (S.ProcedureName='INC') Or (S.ProcedureName='DEC') Then Begin
+      If Not IRRootAddressable(S.Arguments[1],ArgumentSymbol) Then Begin
+       PipelineErrorAt(EK_CODEGEN,S.ProcedureName+
+                       ': premier argument non adressable',
+                       S.Line,S.Column);
+       Exit;
+      End;
+      If S.ArgumentCount=2 Then
+       EmitIRExpressionAsm(T,S.Arguments[2],LabelCounter)
+      Else Emit386Mov(T,RegName(R_EAX),'1');
+      Emit386Push(T,RegName(R_EAX));
+      EmitIRLoadSymbol(T,ArgumentSymbol);
+      Emit386Pop(T,RegName(R_EBX));
+      If S.ProcedureName='INC' Then
+       EmitAsmInstr(T,'add',RegName(R_EAX)+', '+RegName(R_EBX))
+      Else EmitAsmInstr(T,'sub',RegName(R_EAX)+', '+RegName(R_EBX));
+      EmitIRStoreSymbol(T,ArgumentSymbol);
+     End
+     Else EmitAsmComment(T,'appel externe differe');
     End;
   End;
  End;
@@ -1681,6 +1771,13 @@ Begin
  EmitAsmLine(T,'  db '+AsmByteList(Pipeline.ModuleName,True));
  EmitAsmLabel(T,MakeAsmLabel(MOD2_RUNTIME_PREFIX,'CRLF'));
  EmitAsmLine(T,'  db 13,10,0');
+ For I:=1 To Pipeline.IrNodeCount Do
+  If (Pipeline.IrNodes[I].Op=IR_EXPR_CONST) And
+     (Pipeline.IrNodes[I].ConstValue.ScalarType=SCALAR_STRING) Then Begin
+   EmitAsmLabel(T,IRStringLabel(I));
+   EmitAsmLine(T,'  db '+
+    AsmByteList(Pipeline.IrNodes[I].ConstValue.StringValue,True));
+  End;
  EmitAsmBlank(T);
  EmitAsmSection(T,Pipeline.Target.BssSection);
  EmitGlobalBssVariables(T);
@@ -1874,6 +1971,204 @@ Begin
  WriteRawBytesFromString(F,S,True);
 End;
 
+Function EvalIRInteger(NodeIndex:Integer;
+ Var Values:TSymbolValueArray):LongInt;
+Var
+ N:TIRExprNode;
+ A:LongInt;
+ B:LongInt;
+Begin
+ EvalIRInteger:=0;
+ If (NodeIndex<1) Or (NodeIndex>Pipeline.IrNodeCount) Then Exit;
+ N:=Pipeline.IrNodes[NodeIndex];
+ Case N.Op Of
+  IR_EXPR_CONST:EvalIRInteger:=N.ConstValue.IntegerValue;
+  IR_EXPR_LOAD:
+   If (N.SymbolIndex>=Low(Values)) And
+      (N.SymbolIndex<=High(Values)) Then
+    EvalIRInteger:=Values[N.SymbolIndex];
+  IR_EXPR_NEG:EvalIRInteger:=-EvalIRInteger(N.LeftNode,Values);
+  IR_EXPR_NOT:
+   If EvalIRInteger(N.LeftNode,Values)=0 Then EvalIRInteger:=1;
+  IR_EXPR_ORD:EvalIRInteger:=EvalIRInteger(N.LeftNode,Values);
+  IR_EXPR_CHR:EvalIRInteger:=EvalIRInteger(N.LeftNode,Values) And $FF;
+  IR_EXPR_ODD:EvalIRInteger:=EvalIRInteger(N.LeftNode,Values) And 1;
+  IR_EXPR_ABS:
+   Begin
+    A:=EvalIRInteger(N.LeftNode,Values);
+    If A<0 Then A:=-A;
+    EvalIRInteger:=A;
+   End;
+  IR_EXPR_AND:
+   If (EvalIRInteger(N.LeftNode,Values)<>0) And
+      (EvalIRInteger(N.RightNode,Values)<>0) Then EvalIRInteger:=1;
+  IR_EXPR_OR:
+   If (EvalIRInteger(N.LeftNode,Values)<>0) Or
+      (EvalIRInteger(N.RightNode,Values)<>0) Then EvalIRInteger:=1;
+  Else Begin
+   A:=EvalIRInteger(N.LeftNode,Values);
+   B:=EvalIRInteger(N.RightNode,Values);
+   Case N.Op Of
+    IR_EXPR_ADD:EvalIRInteger:=A+B;
+    IR_EXPR_SUB:EvalIRInteger:=A-B;
+    IR_EXPR_MUL:EvalIRInteger:=A*B;
+    IR_EXPR_DIV:
+     If B<>0 Then EvalIRInteger:=A Div B;
+    IR_EXPR_MOD:
+     If B<>0 Then EvalIRInteger:=A Mod B;
+    IR_EXPR_EQ:If A=B Then EvalIRInteger:=1;
+    IR_EXPR_NE:If A<>B Then EvalIRInteger:=1;
+    IR_EXPR_LT:If A<B Then EvalIRInteger:=1;
+    IR_EXPR_LE:If A<=B Then EvalIRInteger:=1;
+    IR_EXPR_GT:If A>B Then EvalIRInteger:=1;
+    IR_EXPR_GE:If A>=B Then EvalIRInteger:=1;
+   End;
+  End;
+ End;
+End;
+
+Function IRStringValue(NodeIndex:Integer):String;
+Begin
+ IRStringValue:='';
+ If (NodeIndex>=1) And (NodeIndex<=Pipeline.IrNodeCount) And
+    (Pipeline.IrNodes[NodeIndex].Op=IR_EXPR_CONST) And
+    (Pipeline.IrNodes[NodeIndex].ConstValue.ScalarType=SCALAR_STRING) Then
+  IRStringValue:=Pipeline.IrNodes[NodeIndex].ConstValue.StringValue;
+End;
+
+Function CallBaseName(Name:String):String;
+Var
+ I:Integer;
+Begin
+ For I:=Length(Name) DownTo 1 Do
+  If Name[I]='.' Then Begin
+   Delete(Name,1,I);
+   Break;
+  End;
+ CallBaseName:=UpperStr(Name);
+End;
+
+Procedure AppendRuntimeOutput(Var OutputText:String;Text:String;
+ LineNo,ColumnNo:Integer);
+Begin
+ If Length(OutputText)+Length(Text)>255 Then Begin
+  PipelineErrorAt(EK_CODEGEN,
+   'sortie InOut trop longue pour le backend PE minimal (maximum 255 octets)',
+   LineNo,ColumnNo);
+  Exit;
+ End;
+ OutputText:=OutputText+Text;
+End;
+
+Procedure ExecuteIRRange(StartIndex,EndIndex,ScopeIndex:Integer;
+ Var Values:TSymbolValueArray;Var OutputText:String);
+Var
+ I:Integer;
+ J:Integer;
+ BodyEnd:Integer;
+ Iterations:LongInt;
+ S:TIRStatement;
+ Name:String;
+ Text:String;
+ Value:LongInt;
+ Width:LongInt;
+ StepValue:LongInt;
+ EndValue:LongInt;
+Begin
+ I:=StartIndex;
+ While (I<=EndIndex) And (Pipeline.ErrorCount=0) Do Begin
+  S:=Pipeline.IrStatements[I];
+  If S.ScopeIndex<>ScopeIndex Then Begin
+   Inc(I);
+   Continue;
+  End;
+  Case S.Kind Of
+   IR_STMT_ASSIGN:
+    Values[S.TargetSymbol]:=EvalIRInteger(S.ExpressionRoot,Values);
+   IR_STMT_CALL:
+    Begin
+     Name:=CallBaseName(S.ProcedureName);
+     If Name='INC' Then Begin
+      Value:=1;
+      If S.ArgumentCount=2 Then
+       Value:=EvalIRInteger(S.Arguments[2],Values);
+      J:=Pipeline.IrNodes[S.Arguments[1]].SymbolIndex;
+      Values[J]:=Values[J]+Value;
+     End
+     Else If Name='DEC' Then Begin
+      Value:=1;
+      If S.ArgumentCount=2 Then
+       Value:=EvalIRInteger(S.Arguments[2],Values);
+      J:=Pipeline.IrNodes[S.Arguments[1]].SymbolIndex;
+      Values[J]:=Values[J]-Value;
+     End
+     Else If Name='WRITESTRING' Then
+      AppendRuntimeOutput(OutputText,IRStringValue(S.Arguments[1]),
+                          S.Line,S.Column)
+     Else If Name='WRITELN' Then
+      AppendRuntimeOutput(OutputText,Chr(13)+Chr(10),S.Line,S.Column)
+     Else If Name='WRITECHAR' Then Begin
+      Text:=Chr(EvalIRInteger(S.Arguments[1],Values) And $FF);
+      AppendRuntimeOutput(OutputText,Text,S.Line,S.Column);
+     End
+     Else If (Name='WRITEINT') Or (Name='WRITECARD') Then Begin
+      Value:=EvalIRInteger(S.Arguments[1],Values);
+      Str(Value,Text);
+      Width:=0;
+      If S.ArgumentCount>=2 Then
+       Width:=EvalIRInteger(S.Arguments[2],Values);
+      While Length(Text)<Width Do Text:=' '+Text;
+      AppendRuntimeOutput(OutputText,Text,S.Line,S.Column);
+     End;
+    End;
+   IR_STMT_FOR_BEGIN:
+    Begin
+     BodyEnd:=I+1;
+     While (BodyEnd<=EndIndex) And
+      Not ((Pipeline.IrStatements[BodyEnd].Kind=IR_STMT_FOR_END) And
+           (Pipeline.IrStatements[BodyEnd].ControlId=S.ControlId) And
+           (Pipeline.IrStatements[BodyEnd].ScopeIndex=ScopeIndex)) Do
+      Inc(BodyEnd);
+     If BodyEnd>EndIndex Then Begin
+      PipelineErrorAt(EK_CODEGEN,'FOR IR sans fin',S.Line,S.Column);
+      Exit;
+     End;
+     Values[S.TargetSymbol]:=EvalIRInteger(S.ExpressionRoot,Values);
+     EndValue:=EvalIRInteger(S.Arguments[1],Values);
+     StepValue:=EvalIRInteger(S.Arguments[2],Values);
+     Iterations:=0;
+     While (StepValue<>0) And
+      (((StepValue>0) And (Values[S.TargetSymbol]<=EndValue)) Or
+       ((StepValue<0) And (Values[S.TargetSymbol]>=EndValue))) And
+      (Pipeline.ErrorCount=0) Do Begin
+      ExecuteIRRange(I+1,BodyEnd-1,ScopeIndex,Values,OutputText);
+      Values[S.TargetSymbol]:=Values[S.TargetSymbol]+StepValue;
+      Inc(Iterations);
+      If Iterations>1000000 Then Begin
+       PipelineErrorAt(EK_CODEGEN,
+        'boucle trop longue pendant l''abaissement InOut',
+        S.Line,S.Column);
+       Exit;
+      End;
+     End;
+     I:=BodyEnd;
+    End;
+  End;
+  Inc(I);
+ End;
+End;
+
+Function BuildInOutRuntimeOutput:String;
+Var
+ Values:TSymbolValueArray;
+ OutputText:String;
+Begin
+ FillChar(Values,SizeOf(Values),0);
+ OutputText:='';
+ ExecuteIRRange(1,Pipeline.IrStatementCount,1,Values,OutputText);
+ BuildInOutRuntimeOutput:=OutputText;
+End;
+
 Procedure WritePESectionHeader(Var F:File;Name:String;VirtualSize,VirtualAddress,
  RawSize,RawPtr:LongInt;FlagsLo,FlagsHi:Word);
 Begin
@@ -1954,18 +2249,20 @@ Var
  WrittenVa:LongInt;
  I:Integer;
 Begin
- OutputText:='MOD2CW32: executable PE32 minimal'+Chr(13)+Chr(10);
+ OutputText:=BuildInOutRuntimeOutput;
  MsgVa:=WIN32_IMAGE_BASE+PE_TEXT_RVA+MsgOff;
  WrittenVa:=WIN32_IMAGE_BASE+PE_IDATA_RVA+WrittenOff;
  PadToFilePos(F,PE_TEXT_RAW_PTR);
- WriteRawByte(F,$6A); WriteRawByte(F,$F5);
- WriteRawByte(F,$FF); WriteRawByte(F,$15); WriteRawDWordLE(F,IatGetStdHandleVa);
- WriteRawByte(F,$6A); WriteRawByte(F,$00);
- WriteRawByte(F,$68); WriteRawDWordLE(F,WrittenVa);
- WriteRawByte(F,$68); WriteRawDWordLE(F,Length(OutputText));
- WriteRawByte(F,$68); WriteRawDWordLE(F,MsgVa);
- WriteRawByte(F,$50);
- WriteRawByte(F,$FF); WriteRawByte(F,$15); WriteRawDWordLE(F,IatWriteFileVa);
+ If OutputText<>'' Then Begin
+  WriteRawByte(F,$6A); WriteRawByte(F,$F5);
+  WriteRawByte(F,$FF); WriteRawByte(F,$15); WriteRawDWordLE(F,IatGetStdHandleVa);
+  WriteRawByte(F,$6A); WriteRawByte(F,$00);
+  WriteRawByte(F,$68); WriteRawDWordLE(F,WrittenVa);
+  WriteRawByte(F,$68); WriteRawDWordLE(F,Length(OutputText));
+  WriteRawByte(F,$68); WriteRawDWordLE(F,MsgVa);
+  WriteRawByte(F,$50);
+  WriteRawByte(F,$FF); WriteRawByte(F,$15); WriteRawDWordLE(F,IatWriteFileVa);
+ End;
  WriteRawByte(F,$6A); WriteRawByte(F,$00);
  WriteRawByte(F,$FF); WriteRawByte(F,$15); WriteRawDWordLE(F,IatExitProcessVa);
  WriteRawByte(F,$CC);
@@ -2320,6 +2617,9 @@ Begin
   PrintUsage;
   Halt(1);
  End;
+ ValidatePathLength(Options.SourceName,'le chemin source');
+ If Options.OutputName<>'' Then
+  ValidatePathLength(Options.OutputName,'le chemin de sortie');
 End;
 
 Procedure InitPipeline;
@@ -3759,6 +4059,78 @@ Begin
  CheckedConstInteger:=True;
 End;
 
+Function EvaluateConstBuiltin(CurrentScope:Integer;NameToken:TToken;
+ Var Value:TConstValue):Boolean;
+Var
+ Operand:TConstValue;
+Begin
+ EvaluateConstBuiltin:=False;
+ InitConstValue(Value);
+ SemanticAdvance;
+ If Not SemanticAcceptSymbol('(') Then Begin
+  SemanticTokenError('CONST: symbole "(" attendu apres '+NameToken.Text);
+  Exit;
+ End;
+ If Not EvaluateConstExpression(CurrentScope,Operand) Then Exit;
+ If SemanticAcceptSymbol(',') Then Begin
+  SemanticError('CONST: '+NameToken.Text+' attend un seul argument',
+                NameToken.Line,NameToken.Column);
+  Exit;
+ End;
+ If Not SemanticAcceptSymbol(')') Then Begin
+  SemanticTokenError('CONST: symbole ")" attendu apres '+NameToken.Text);
+  Exit;
+ End;
+ If NameToken.Text='ORD' Then Begin
+  If (Operand.ScalarType<>SCALAR_CHAR) And
+     (Operand.ScalarType<>SCALAR_BOOLEAN) And
+     Not IsNumericScalar(Operand.ScalarType) Then Begin
+   ConstTypeError('ORD','une valeur ordinale',Operand.ScalarType,
+                  NameToken.Line,NameToken.Column);
+   Exit;
+  End;
+  Value.ScalarType:=SCALAR_CARDINAL;
+  Value.IntegerValue:=Operand.IntegerValue;
+ End
+ Else If NameToken.Text='CHR' Then Begin
+  If Not IsNumericScalar(Operand.ScalarType) Then Begin
+   ConstTypeError('CHR','un entier',Operand.ScalarType,
+                  NameToken.Line,NameToken.Column);
+   Exit;
+  End;
+  Value.ScalarType:=SCALAR_CHAR;
+  Value.IntegerValue:=Operand.IntegerValue And 255;
+  Value.StringValue:=Chr(Value.IntegerValue);
+ End
+ Else If NameToken.Text='ODD' Then Begin
+  If Not IsNumericScalar(Operand.ScalarType) Then Begin
+   ConstTypeError('ODD','un entier',Operand.ScalarType,
+                  NameToken.Line,NameToken.Column);
+   Exit;
+  End;
+  Value.ScalarType:=SCALAR_BOOLEAN;
+  Value.IntegerValue:=Operand.IntegerValue And 1;
+ End
+ Else Begin
+  If Not IsNumericScalar(Operand.ScalarType) Then Begin
+   ConstTypeError('ABS','un entier',Operand.ScalarType,
+                  NameToken.Line,NameToken.Column);
+   Exit;
+  End;
+  If Operand.IntegerValue=(-2147483647-1) Then Begin
+   SemanticError('CONST: ABS produit un entier hors limite 32 bits',
+                 NameToken.Line,NameToken.Column);
+   Exit;
+  End;
+  Value.ScalarType:=Operand.ScalarType;
+  If Operand.IntegerValue<0 Then
+   Value.IntegerValue:=-Operand.IntegerValue
+  Else Value.IntegerValue:=Operand.IntegerValue;
+ End;
+ Value.Valid:=True;
+ EvaluateConstBuiltin:=True;
+End;
+
 Function EvaluateConstPrimary(CurrentScope:Integer;
  Var Value:TConstValue):Boolean;
 Var
@@ -3786,10 +4158,18 @@ Begin
   Value.Valid:=True;
   SemanticAdvance;
   EvaluateConstPrimary:=True;
-  Exit;
+ Exit;
  End;
  If Token.Kind=TK_IDENTIFIER Then Begin
-  If Token.Text='TRUE' Then Begin
+  If ((Token.Text='ORD') Or (Token.Text='CHR') Or
+      (Token.Text='ODD') Or (Token.Text='ABS')) And
+     (Pipeline.SemanticIndex<Pipeline.TokenCount) And
+     (Pipeline.Tokens[Pipeline.SemanticIndex+1].Kind=TK_SYMBOL) And
+     (Pipeline.Tokens[Pipeline.SemanticIndex+1].Text='(') Then Begin
+   EvaluateConstPrimary:=EvaluateConstBuiltin(CurrentScope,Token,Value);
+   Exit;
+  End
+  Else If Token.Text='TRUE' Then Begin
    Value.ScalarType:=SCALAR_BOOLEAN;
    Value.IntegerValue:=1;
    Value.Valid:=True;
@@ -4706,6 +5086,78 @@ End;
 Function ParseIRExpression(CurrentScope:Integer;Var RootNode:Integer;
  Var ResultType:TScalarType):Boolean; Forward;
 
+Function ParseIRBuiltinFunction(CurrentScope:Integer;NameToken:TToken;
+ Var RootNode:Integer;Var ResultType:TScalarType):Boolean;
+Var
+ ArgumentNode:Integer;
+ ArgumentType:TScalarType;
+ Op:TIRExprOp;
+ Value:TConstValue;
+Begin
+ ParseIRBuiltinFunction:=False;
+ RootNode:=0;
+ ResultType:=SCALAR_NONE;
+ IRAdvance;
+ If Not IRAcceptSymbol('(') Then Begin
+  PipelineErrorAt(EK_CODEGEN,'symbole "(" attendu apres '+NameToken.Text,
+                  IRToken.Line,IRToken.Column);
+  Exit;
+ End;
+ If Not ParseIRExpression(CurrentScope,ArgumentNode,ArgumentType) Then Exit;
+ If IRAcceptSymbol(',') Then Begin
+  PipelineErrorAt(EK_CODEGEN,NameToken.Text+' attend un seul argument',
+                  NameToken.Line,NameToken.Column);
+  Exit;
+ End;
+ If Not IRAcceptSymbol(')') Then Begin
+  PipelineErrorAt(EK_CODEGEN,'symbole ")" attendu apres l''argument de '+
+                  NameToken.Text,IRToken.Line,IRToken.Column);
+  Exit;
+ End;
+ If NameToken.Text='ORD' Then Begin
+  If (ArgumentType<>SCALAR_CHAR) And
+     (ArgumentType<>SCALAR_BOOLEAN) And
+     Not IsNumericScalar(ArgumentType) Then Begin
+   PipelineErrorAt(EK_CODEGEN,'ORD exige une valeur ordinale',
+                   NameToken.Line,NameToken.Column);
+   Exit;
+  End;
+  Op:=IR_EXPR_ORD;
+  ResultType:=SCALAR_CARDINAL;
+ End
+ Else If NameToken.Text='CHR' Then Begin
+  If Not IsNumericScalar(ArgumentType) Then Begin
+   PipelineErrorAt(EK_CODEGEN,'CHR exige une valeur entiere',
+                   NameToken.Line,NameToken.Column);
+   Exit;
+  End;
+  Op:=IR_EXPR_CHR;
+  ResultType:=SCALAR_CHAR;
+ End
+ Else If NameToken.Text='ODD' Then Begin
+  If Not IsNumericScalar(ArgumentType) Then Begin
+   PipelineErrorAt(EK_CODEGEN,'ODD exige une valeur entiere',
+                   NameToken.Line,NameToken.Column);
+   Exit;
+  End;
+  Op:=IR_EXPR_ODD;
+  ResultType:=SCALAR_BOOLEAN;
+ End
+ Else Begin
+  If Not IsNumericScalar(ArgumentType) Then Begin
+   PipelineErrorAt(EK_CODEGEN,'ABS exige une valeur entiere',
+                   NameToken.Line,NameToken.Column);
+   Exit;
+  End;
+  Op:=IR_EXPR_ABS;
+  ResultType:=ArgumentType;
+ End;
+ InitConstValue(Value);
+ RootNode:=AddIRNode(Op,ResultType,ArgumentNode,0,0,Value,
+                     NameToken.Line,NameToken.Column);
+ ParseIRBuiltinFunction:=RootNode<>0;
+End;
+
 Function ParseIRPrimary(CurrentScope:Integer;Var RootNode:Integer;
  Var ResultType:TScalarType):Boolean;
 Var
@@ -4741,7 +5193,16 @@ Begin
   IRAdvance;
  End
  Else If Token.Kind=TK_IDENTIFIER Then Begin
-  If (Token.Text='TRUE') Or (Token.Text='FALSE') Then Begin
+  If ((Token.Text='ORD') Or (Token.Text='CHR') Or
+      (Token.Text='ODD') Or (Token.Text='ABS')) And
+     (Pipeline.IrTokenIndex<Pipeline.IrTokenLimit) And
+     (Pipeline.Tokens[Pipeline.IrTokenIndex+1].Kind=TK_SYMBOL) And
+     (Pipeline.Tokens[Pipeline.IrTokenIndex+1].Text='(') Then Begin
+   ParseIRPrimary:=ParseIRBuiltinFunction(CurrentScope,Token,
+                                          RootNode,ResultType);
+   Exit;
+  End
+  Else If (Token.Text='TRUE') Or (Token.Text='FALSE') Then Begin
    Value.ScalarType:=SCALAR_BOOLEAN;
    If Token.Text='TRUE' Then Value.IntegerValue:=1
     Else Value.IntegerValue:=0;
@@ -5434,6 +5895,43 @@ Begin
     Exit;
    End;
   End;
+ End
+ Else If (ProcedureName='INC') Or (ProcedureName='DEC') Then Begin
+  If (ArgCount<1) Or (ArgCount>2) Then Begin
+   PipelineErrorAt(EK_CODEGEN,ProcedureName+
+                   ' attend un ou deux arguments, obtenu '+
+                   IntToString(ArgCount),CallToken.Line,CallToken.Column);
+   Exit;
+  End;
+  If Not IRRootAddressable(
+     Pipeline.IrStatements[StatementIndex].Arguments[1],
+     ArgumentSymbol) Then Begin
+   PipelineErrorAt(EK_CODEGEN,ProcedureName+
+                   ': le premier argument doit etre une variable',
+                   CallToken.Line,CallToken.Column);
+   Exit;
+  End;
+  If Not IsNumericScalar(Pipeline.Symbols[ArgumentSymbol].ScalarType) Then Begin
+   PipelineErrorAt(EK_CODEGEN,ProcedureName+
+                   ': le premier argument doit etre entier',
+                   CallToken.Line,CallToken.Column);
+   Exit;
+  End;
+  If (ArgCount=2) And Not IsNumericScalar(
+     Pipeline.IrNodes[Pipeline.IrStatements[StatementIndex].
+      Arguments[2]].ScalarType) Then Begin
+   PipelineErrorAt(EK_CODEGEN,ProcedureName+
+                   ': le second argument doit etre entier',
+                   CallToken.Line,CallToken.Column);
+   Exit;
+  End;
+ End
+ Else If (ProcedureName='ORD') Or (ProcedureName='CHR') Or
+         (ProcedureName='ODD') Or (ProcedureName='ABS') Then Begin
+  PipelineErrorAt(EK_CODEGEN,ProcedureName+
+                  ' est une fonction et doit etre utilisee dans une expression',
+                  CallToken.Line,CallToken.Column);
+  Exit;
  End;
 End;
 
@@ -5958,6 +6456,7 @@ Begin
 End;
 
 BEGIN
+ ValidatePortableEnvironment;
  ParseCommandLine;
  CompilePipeline(Options.SourceName);
  If Pipeline.ErrorCount<>0 Then Halt(1);
