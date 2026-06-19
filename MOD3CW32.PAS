@@ -78,23 +78,23 @@
             allocation globale (.data/.bss) et locale (offsets EBP),
             initialisation implicite a zero et segment de donnees statiques.
 
-  TODO 17 - Implementer les expressions et operateurs:
+  DONE 17 - Implementer les expressions et operateurs:
             priorites Modula-3, arithmetique, comparaisons, booleens
             (AND/OR/NOT court-circuit) et evaluation en IR typee.
 
-  TODO 18 - Implementer les instructions de base et le controle:
+  DONE 18 - Implementer les instructions de base et le controle:
             affectation :=, appel de procedure, IF/ELSIF/ELSE, CASE,
             blocs imbriques et instruction vide.
 
-  TODO 19 - Implementer les boucles:
+  DONE 19 - Implementer les boucles:
             LOOP...EXIT...END, WHILE, REPEAT, FOR, avec gestion correcte
             de EXIT et des bornes.
 
-  TODO 20 - Implementer les procedures et leurs parametres:
+  DONE 20 - Implementer les procedures et leurs parametres:
             PROCEDURE, parametres VALUE/VAR/READONLY, valeurs de retour,
             recursion et verification d'arite et de types.
 
-  TODO 21 - Implementer les objets:
+  DONE 21 - Implementer les objets:
             OBJECT types, heritage, champs et methodes, OVERRIDE, NEW,
             et appels de methodes virtuelles via table de methodes.
 
@@ -140,6 +140,10 @@ Const
  MOD3_MAX_SCOPES       = 256;
  MOD3_MAX_SYMBOLS      = 2048;
  MOD3_MAX_TYPES        = 512;
+ MOD3_MAX_IR_NODES     = 8192;
+ MOD3_MAX_IR_ARGUMENTS = 16384;
+ MOD3_MAX_IR_ROOTS     = 2048;
+ MOD3_MAX_STATEMENTS   = 4096;
  I386_STACK_SLOT_SIZE = 4;
  I386_ARG_BASE_OFFSET = 8;
  I386_STACK_ALIGN     = 4;
@@ -419,6 +423,9 @@ Type
   Branded    : Boolean;
   Untraced   : Boolean;
   Revealed   : Boolean;
+  InstanceSize: Integer;
+  TypeCode    : Integer;
+  MethodCount : Integer;
   Line       : Integer;
   Column     : Integer;
  End;
@@ -451,6 +458,105 @@ Type
   STORAGE_FIELD
  );
 
+ TParameterMode = (
+  PARAM_VALUE,
+  PARAM_VAR,
+  PARAM_READONLY
+ );
+
+ TIRKind = (
+  IR_INVALID,
+  IR_LITERAL,
+  IR_SYMBOL,
+  IR_CALL,
+  IR_INDEX,
+  IR_FIELD,
+  IR_DEREF,
+  IR_UNARY,
+  IR_BINARY,
+  IR_COMPARE,
+  IR_AND_SHORT,
+  IR_OR_SHORT
+ );
+
+ TIRNode = Record
+  Kind        : TIRKind;
+  TypeIndex   : Integer;
+  Left        : Integer;
+  Right       : Integer;
+  SymbolIndex : Integer;
+  OperatorText: String[8];
+  Text        : String[127];
+  IntegerVal  : LongInt;
+  RealVal     : Extended;
+  Line        : Integer;
+  Column      : Integer;
+  TrueLabel   : Integer;
+  FalseLabel  : Integer;
+  FirstArg    : Integer;
+  ArgCount    : Integer;
+  Receiver    : Integer;
+  VirtualSlot : Integer;
+ End;
+
+ TIRRootKind = (
+  IR_ROOT_ASSIGN,
+  IR_ROOT_RETURN,
+  IR_ROOT_CONDITION,
+  IR_ROOT_EXPRESSION
+ );
+
+ TIRRoot = Record
+  Kind       : TIRRootKind;
+  NodeIndex  : Integer;
+  ScopeIndex : Integer;
+  TargetType : Integer;
+  Line       : Integer;
+  Column     : Integer;
+ End;
+
+ TIRArgumentList = Array[0..63] Of Integer;
+
+ TStatementKind = (
+  ST_EMPTY,
+  ST_ASSIGN,
+  ST_CALL,
+  ST_BLOCK_BEGIN,
+  ST_BLOCK_END,
+  ST_IF,
+  ST_ELSIF,
+  ST_ELSE,
+  ST_CASE,
+  ST_CASE_ARM,
+  ST_CASE_ELSE,
+  ST_RETURN,
+  ST_WHILE,
+  ST_FOR,
+  ST_LOOP,
+  ST_REPEAT,
+  ST_UNTIL,
+  ST_EXIT
+ );
+
+ TStatementIR = Record
+  Kind          : TStatementKind;
+  ScopeIndex    : Integer;
+  ExpressionNode: Integer;
+  BoundNode     : Integer;
+  StepNode      : Integer;
+  TargetNode    : Integer;
+  ParentIndex   : Integer;
+  StartLabel    : Integer;
+  FalseLabel    : Integer;
+  ContinueLabel : Integer;
+  EndLabel      : Integer;
+  CaseLow       : LongInt;
+  CaseHigh      : LongInt;
+  HasCaseRange  : Boolean;
+  Line          : Integer;
+  Column        : Integer;
+ End;
+
  TScope = Record
   Kind        : TScopeKind;
   Parent      : Integer;
@@ -461,6 +567,7 @@ Type
   StartToken  : Integer;
   EndToken    : Integer;
   FrameSize   : Integer;
+  TemplateKind: TUnitKind;
  End;
 
  TSemanticSymbol = Record
@@ -477,6 +584,9 @@ Type
   AsmLabel   : String[127];
   HasInitializer:Boolean;
   ConstValue : TConstValue;
+  ParamMode  : TParameterMode;
+  ProcScope  : Integer;
+  MethodImpl : Integer;
  End;
 
  TCompilationUnit = Record
@@ -573,6 +683,18 @@ Var
  TypeLongReal       : Integer;
  TypeText           : Integer;
  TypeNil            : Integer;
+ TypeRoot           : Integer;
+ IRNodes            : Array[1..MOD3_MAX_IR_NODES] Of TIRNode;
+ IRNodeCount        : Integer;
+ IRArguments        : Array[1..MOD3_MAX_IR_ARGUMENTS] Of Integer;
+ IRArgumentCount    : Integer;
+ IRRoots            : Array[1..MOD3_MAX_IR_ROOTS] Of TIRRoot;
+ IRRootCount        : Integer;
+ IRTokenIndex       : Integer;
+ IRCurrentScope     : Integer;
+ IRLabelCounter     : Integer;
+ StatementIR        : Array[1..MOD3_MAX_STATEMENTS] Of TStatementIR;
+ StatementCount     : Integer;
 
 Function UpperStr(S:String):String;
 Var
@@ -1276,6 +1398,8 @@ End;
 Function TypeStorageSize(TypeIndex:Integer):Integer; Forward;
 Function TypeStorageAlign(TypeIndex:Integer):Integer; Forward;
 Function CanonicalType(TypeIndex:Integer):Integer; Forward;
+Function IRKindName(Kind:TIRKind):String; Forward;
+Function StatementKindName(Kind:TStatementKind):String; Forward;
 
 Function AsmReal(Value:Extended;Decimals:Integer):String;
 Var
@@ -1353,6 +1477,72 @@ Begin
   End;
 End;
 
+Function ProcedureLabelForScope(ScopeIndex:Integer):String;Forward;
+Function ObjectTypeLabel(TypeIndex:Integer):String;Forward;
+Function ObjectVTableLabel(TypeIndex:Integer):String;Forward;
+Function ObjectMethodForSlot(TypeIndex,Slot:Integer):Integer;Forward;
+
+Function FindProcedureByName(Name:String):Integer;
+Var
+ I:Integer;
+Begin
+ FindProcedureByName:=0;
+ For I:=1 To SemanticSymbolCount Do
+  If (SemanticSymbols[I].Kind=SYM_PROCEDURE) And
+     (UpperStr(SemanticSymbols[I].Name)=UpperStr(Name)) And
+     (SemanticSymbols[I].ProcScope<>0) Then Begin
+   FindProcedureByName:=I;
+   Exit;
+  End;
+End;
+
+Procedure EmitObjectDescriptors(Var T:Text);
+Var
+ TypeIndex,Slot,MethodSymbol,ProcSymbol,BaseType:Integer;
+ Entry:String;
+Begin
+ For TypeIndex:=1 To SemanticTypeCount Do
+  If SemanticTypes[TypeIndex].Kind=TYPE_OBJECT Then Begin
+   EmitAsmAlignment(T,4);
+   EmitAsmLabel(T,ObjectVTableLabel(TypeIndex));
+   For Slot:=0 To SemanticTypes[TypeIndex].MethodCount-1 Do Begin
+    MethodSymbol:=ObjectMethodForSlot(TypeIndex,Slot);
+    Entry:='0';
+    If MethodSymbol<>0 Then Begin
+     ProcSymbol:=SemanticSymbols[MethodSymbol].MethodImpl;
+     If (ProcSymbol=0) And (SemanticSymbols[MethodSymbol].AsmLabel<>'') Then
+      ProcSymbol:=FindProcedureByName(SemanticSymbols[MethodSymbol].AsmLabel);
+     If ProcSymbol<>0 Then
+      Entry:=ProcedureLabelForScope(SemanticSymbols[ProcSymbol].ProcScope);
+    End;
+    EmitAsmLine(T,'  dd '+Entry);
+   End;
+   EmitAsmLabel(T,ObjectTypeLabel(TypeIndex));
+   EmitAsmLine(T,'  dd '+ObjectVTableLabel(TypeIndex));
+   BaseType:=CanonicalType(SemanticTypes[TypeIndex].BaseType);
+   If BaseType<>0 Then EmitAsmLine(T,'  dd '+ObjectTypeLabel(BaseType))
+   Else EmitAsmLine(T,'  dd 0');
+   EmitAsmLine(T,'  dd '+IntToString(SemanticTypes[TypeIndex].TypeCode));
+   EmitAsmLine(T,'  dd '+IntToString(SemanticTypes[TypeIndex].InstanceSize));
+  End;
+End;
+
+Procedure EmitStatementIR386(Var T:Text;OnlyScope:Integer);Forward;
+
+Function ProcedureLabelForScope(ScopeIndex:Integer):String;
+Begin
+ ProcedureLabelForScope:=MakeInternalLabel(Pipeline.ModuleName+'_PROC_'+
+  SemanticScopes[ScopeIndex].OwnerName+'_S'+IntToString(ScopeIndex));
+End;
+
+Function ScopeExitLabel(ScopeIndex:Integer):String;
+Begin
+ ScopeExitLabel:=MakeInternalLabel(Pipeline.ModuleName+'_EXIT');
+ If (ScopeIndex>=1) And (ScopeIndex<=SemanticScopeCount) And
+    (SemanticScopes[ScopeIndex].Kind=SCOPE_PROCEDURE) Then
+  ScopeExitLabel:=ProcedureLabelForScope(ScopeIndex)+'_EXIT';
+End;
+
 Procedure EmitAsmProcedureFrames(Var T:Text);
 Var
  ScopeIndex,I:Integer;
@@ -1360,8 +1550,7 @@ Var
 Begin
  For ScopeIndex:=1 To SemanticScopeCount Do
   If SemanticScopes[ScopeIndex].Kind=SCOPE_PROCEDURE Then Begin
-   ProcLabel:=MakeInternalLabel(Pipeline.ModuleName+'_PROC_'+
-                                SemanticScopes[ScopeIndex].OwnerName);
+   ProcLabel:=ProcedureLabelForScope(ScopeIndex);
    EmitAsmBlank(T);
    EmitAsmLabel(T,ProcLabel);
    Emit386Prologue(T,SemanticScopes[ScopeIndex].FrameSize);
@@ -1393,16 +1582,527 @@ Begin
        LocalVarRef(-SemanticSymbols[I].Offset)+' ('+
        IntToString(SemanticSymbols[I].Size)+' octets)')
      Else If SemanticSymbols[I].Storage=STORAGE_PARAMETER Then
-      EmitAsmComment(T,'param '+SemanticSymbols[I].Name+' = '+
+     EmitAsmComment(T,'param '+SemanticSymbols[I].Name+' = '+
        StackRef(R_EBP,SemanticSymbols[I].Offset));
-   EmitAsmComment(T,'corps de procedure: TODO 20');
+   EmitStatementIR386(T,ScopeIndex);
+   EmitAsmLabel(T,ScopeExitLabel(ScopeIndex));
    Emit386Epilogue(T);
+ End;
+End;
+
+Function ControlLabel(LabelIndex:Integer):String;
+Begin
+ ControlLabel:=MakeInternalLabel(Pipeline.ModuleName+'_CTRL_'+
+                                 IntToString(LabelIndex));
+End;
+
+Function ObjectTypeLabel(TypeIndex:Integer):String;
+Begin
+ ObjectTypeLabel:=MakeDataLabel(Pipeline.ModuleName+'_TYPE_'+
+  SemanticTypes[TypeIndex].Name);
+End;
+
+Function ObjectVTableLabel(TypeIndex:Integer):String;
+Begin
+ ObjectVTableLabel:=MakeDataLabel(Pipeline.ModuleName+'_VT_'+
+  SemanticTypes[TypeIndex].Name);
+End;
+
+Function ObjectMethodForSlot(TypeIndex,Slot:Integer):Integer;
+Var
+ I:Integer;
+Begin
+ ObjectMethodForSlot:=0;
+ TypeIndex:=CanonicalType(TypeIndex);
+ If (TypeIndex<1) Or (TypeIndex>SemanticTypeCount) Then Exit;
+ For I:=1 To SemanticSymbolCount Do
+  If (SemanticSymbols[I].ScopeIndex=SemanticTypes[TypeIndex].FieldScope) And
+     (SemanticSymbols[I].Kind=SYM_METHOD) And
+     (SemanticSymbols[I].Offset=Slot) Then Begin
+   ObjectMethodForSlot:=I;
+   Exit;
   End;
+ If SemanticTypes[TypeIndex].BaseType<>0 Then
+  ObjectMethodForSlot:=ObjectMethodForSlot(
+   SemanticTypes[TypeIndex].BaseType,Slot);
+End;
+
+Function SymbolMemoryOperand(SymbolIndex:Integer):String;
+Begin
+ SymbolMemoryOperand:='';
+ If (SymbolIndex<1) Or (SymbolIndex>SemanticSymbolCount) Then Exit;
+ Case SemanticSymbols[SymbolIndex].Storage Of
+  STORAGE_GLOBAL_DATA,STORAGE_GLOBAL_BSS:
+   SymbolMemoryOperand:='['+SemanticSymbols[SymbolIndex].AsmLabel+']';
+  STORAGE_LOCAL:
+   SymbolMemoryOperand:=LocalVarRef(-SemanticSymbols[SymbolIndex].Offset);
+  STORAGE_PARAMETER:
+   SymbolMemoryOperand:=StackRef(R_EBP,SemanticSymbols[SymbolIndex].Offset);
+ End;
+End;
+
+Function NthFormalParameter(ProcedureSymbol,Number:Integer):Integer;
+Var
+ I,Count,ScopeIndex:Integer;
+Begin
+ NthFormalParameter:=0;
+ If (ProcedureSymbol<1) Or (ProcedureSymbol>SemanticSymbolCount) Then Exit;
+ ScopeIndex:=SemanticSymbols[ProcedureSymbol].ProcScope;
+ Count:=0;
+ For I:=1 To SemanticSymbolCount Do
+  If (SemanticSymbols[I].ScopeIndex=ScopeIndex) And
+     (SemanticSymbols[I].Kind=SYM_PARAM) Then Begin
+   Inc(Count);
+   If Count=Number Then Begin
+    NthFormalParameter:=I;
+    Exit;
+   End;
+  End;
+End;
+
+Procedure EmitIRExpression386(Var T:Text;NodeIndex:Integer);Forward;
+
+Procedure EmitIRAddress386(Var T:Text;NodeIndex:Integer);
+Var
+ SymbolIndex:Integer;
+Begin
+ If (NodeIndex<1) Or (NodeIndex>IRNodeCount) Then Begin
+  Emit386Mov(T,'eax','0');
+  Exit;
+ End;
+ If IRNodes[NodeIndex].Kind=IR_FIELD Then Begin
+  EmitIRExpression386(T,IRNodes[NodeIndex].Left);
+  SymbolIndex:=IRNodes[NodeIndex].SymbolIndex;
+  If SymbolIndex>0 Then
+   EmitAsmInstr(T,'add','eax, '+IntToString(SemanticSymbols[SymbolIndex].Offset));
+ End
+ Else If IRNodes[NodeIndex].Kind=IR_SYMBOL Then Begin
+  SymbolIndex:=IRNodes[NodeIndex].SymbolIndex;
+  If (SymbolIndex>0) And
+     (SemanticSymbols[SymbolIndex].Storage=STORAGE_PARAMETER) And
+     (SemanticSymbols[SymbolIndex].ParamMode=PARAM_VAR) Then
+   Emit386Mov(T,'eax','dword '+
+    StackRef(R_EBP,SemanticSymbols[SymbolIndex].Offset))
+  Else If (SymbolIndex>0) And
+          (SemanticSymbols[SymbolIndex].Storage In
+           [STORAGE_GLOBAL_DATA,STORAGE_GLOBAL_BSS]) Then
+   EmitAsmInstr(T,'lea','eax, ['+SemanticSymbols[SymbolIndex].AsmLabel+']')
+  Else If (SymbolIndex>0) And
+          (SemanticSymbols[SymbolIndex].Storage=STORAGE_LOCAL) Then
+   EmitAsmInstr(T,'lea','eax, '+
+    LocalVarRef(-SemanticSymbols[SymbolIndex].Offset))
+  Else If (SymbolIndex>0) And
+          (SemanticSymbols[SymbolIndex].Storage=STORAGE_PARAMETER) Then
+   EmitAsmInstr(T,'lea','eax, '+
+    StackRef(R_EBP,SemanticSymbols[SymbolIndex].Offset))
+  Else Emit386Mov(T,'eax','0');
+ End
+ Else Begin
+  EmitAsmComment(T,'adresse de designateur complexe differee');
+  Emit386Mov(T,'eax','0');
+ End;
+End;
+
+Procedure EmitIRExpression386(Var T:Text;NodeIndex:Integer);
+Var
+ Node:TIRNode;
+ Operand,TrueName,FalseName,DoneName:String;
+ BeginLabel,EndLabel,I,FormalIndex,TypeIndex:Integer;
+Begin
+ If (NodeIndex<1) Or (NodeIndex>IRNodeCount) Then Exit;
+ Node:=IRNodes[NodeIndex];
+ Case Node.Kind Of
+  IR_LITERAL:Begin
+   If CanonicalType(Node.TypeIndex)=CanonicalType(TypeBoolean) Then
+    Emit386Mov(T,RegName(R_EAX),IntToString(Node.IntegerVal))
+   Else If CanonicalType(Node.TypeIndex)=CanonicalType(TypeText) Then
+    EmitAsmComment(T,'adresse litteral TEXT "'+Node.Text+'"')
+   Else Emit386Mov(T,RegName(R_EAX),IntToString(Node.IntegerVal));
+  End;
+  IR_SYMBOL:Begin
+   Operand:=SymbolMemoryOperand(Node.SymbolIndex);
+   If Operand<>'' Then Begin
+    If (Node.SymbolIndex<>0) And
+       (SemanticSymbols[Node.SymbolIndex].Storage=STORAGE_PARAMETER) And
+       (SemanticSymbols[Node.SymbolIndex].ParamMode=PARAM_VAR) Then Begin
+     Emit386Mov(T,'eax','dword '+Operand);
+     If TypeStorageSize(SemanticSymbols[Node.SymbolIndex].TypeIndex)=1 Then
+      EmitAsmInstr(T,'movzx','eax, byte [eax]')
+     Else Emit386Mov(T,'eax','dword [eax]');
+    End
+    Else If (Node.SymbolIndex<>0) And
+       (SemanticSymbols[Node.SymbolIndex].Size=1) Then
+     EmitAsmInstr(T,'movzx','eax, byte '+Operand)
+    Else Emit386Mov(T,RegName(R_EAX),'dword '+Operand);
+   End
+   Else If (Node.SymbolIndex<>0) And
+           (SemanticSymbols[Node.SymbolIndex].Kind=SYM_CONST) Then
+    Emit386Mov(T,RegName(R_EAX),
+     IntToString(SemanticSymbols[Node.SymbolIndex].ConstValue.IntegerVal));
+  End;
+  IR_FIELD:Begin
+   EmitIRAddress386(T,NodeIndex);
+   If (Node.SymbolIndex<>0) And
+      (TypeStorageSize(SemanticSymbols[Node.SymbolIndex].TypeIndex)=1) Then
+    EmitAsmInstr(T,'movzx','eax, byte [eax]')
+   Else Emit386Mov(T,'eax','dword [eax]');
+  End;
+  IR_UNARY:Begin
+   EmitIRExpression386(T,Node.Left);
+   If Node.OperatorText='-' Then EmitAsmInstr(T,'neg',RegName(R_EAX))
+   Else If Node.OperatorText='NOT' Then Begin
+    EmitAsmInstr(T,'cmp',RegName(R_EAX)+', 0');
+    EmitAsmInstr(T,'sete','al');
+    EmitAsmInstr(T,'movzx',RegName(R_EAX)+', al');
+   End;
+  End;
+  IR_BINARY:Begin
+   EmitIRExpression386(T,Node.Left);
+   Emit386Push(T,RegName(R_EAX));
+   EmitIRExpression386(T,Node.Right);
+   Emit386Mov(T,RegName(R_ECX),RegName(R_EAX));
+   Emit386Pop(T,RegName(R_EAX));
+   If Node.OperatorText='+' Then EmitAsmInstr(T,'add','eax, ecx')
+   Else If Node.OperatorText='-' Then EmitAsmInstr(T,'sub','eax, ecx')
+   Else If Node.OperatorText='*' Then EmitAsmInstr(T,'imul','eax, ecx')
+   Else If (Node.OperatorText='DIV') Or (Node.OperatorText='MOD') Then Begin
+    EmitAsmInstr(T,'cdq','');
+    EmitAsmInstr(T,'idiv','ecx');
+    If Node.OperatorText='MOD' Then Emit386Mov(T,'eax','edx');
+   End
+   Else If Node.OperatorText='/' Then Begin
+    EmitAsmComment(T,'division reelle differee au backend flottant');
+   End
+   Else If Node.OperatorText='&' Then
+    EmitAsmComment(T,'concatenation TEXT differee au runtime');
+  End;
+  IR_COMPARE:Begin
+   EmitIRExpression386(T,Node.Left);
+   Emit386Push(T,RegName(R_EAX));
+   EmitIRExpression386(T,Node.Right);
+   Emit386Mov(T,RegName(R_ECX),RegName(R_EAX));
+   Emit386Pop(T,RegName(R_EAX));
+   EmitAsmInstr(T,'cmp','eax, ecx');
+   If Node.OperatorText='=' Then EmitAsmInstr(T,'sete','al')
+   Else If Node.OperatorText='#' Then EmitAsmInstr(T,'setne','al')
+   Else If Node.OperatorText='<' Then EmitAsmInstr(T,'setl','al')
+   Else If Node.OperatorText='<=' Then EmitAsmInstr(T,'setle','al')
+   Else If Node.OperatorText='>' Then EmitAsmInstr(T,'setg','al')
+   Else If Node.OperatorText='>=' Then EmitAsmInstr(T,'setge','al');
+   EmitAsmInstr(T,'movzx','eax, al');
+  End;
+  IR_AND_SHORT:Begin
+   BeginLabel:=Node.FalseLabel;
+   Inc(IRLabelCounter);
+   EndLabel:=IRLabelCounter;
+   FalseName:=ControlLabel(BeginLabel);
+   DoneName:=ControlLabel(EndLabel);
+   EmitIRExpression386(T,Node.Left);
+   EmitAsmInstr(T,'test','eax, eax');
+   EmitAsmInstr(T,'jz',FalseName);
+   EmitIRExpression386(T,Node.Right);
+   EmitAsmInstr(T,'jmp',DoneName);
+   EmitAsmLabel(T,FalseName);
+   Emit386Mov(T,'eax','0');
+   EmitAsmLabel(T,DoneName);
+  End;
+  IR_OR_SHORT:Begin
+   BeginLabel:=Node.TrueLabel;
+   Inc(IRLabelCounter);
+   EndLabel:=IRLabelCounter;
+   TrueName:=ControlLabel(BeginLabel);
+   DoneName:=ControlLabel(EndLabel);
+   EmitIRExpression386(T,Node.Left);
+   EmitAsmInstr(T,'test','eax, eax');
+   EmitAsmInstr(T,'jnz',TrueName);
+   EmitIRExpression386(T,Node.Right);
+   EmitAsmInstr(T,'jmp',DoneName);
+   EmitAsmLabel(T,TrueName);
+   Emit386Mov(T,'eax','1');
+   EmitAsmLabel(T,DoneName);
+  End;
+  IR_CALL:Begin
+   If Node.Receiver<>0 Then Begin
+    For I:=Node.ArgCount DownTo 1 Do Begin
+     EmitIRExpression386(T,IRArguments[Node.FirstArg+I-1]);
+     Emit386Push(T,'eax');
+    End;
+    EmitIRExpression386(T,Node.Receiver);
+    Emit386Push(T,'eax');
+    Emit386Mov(T,'ecx','dword [eax]');
+    EmitAsmInstr(T,'call','dword [ecx+'+IntToString(Node.VirtualSlot*4)+']');
+    EmitAsmInstr(T,'add','esp, '+IntToString((Node.ArgCount+1)*4));
+   End
+   Else If UpperStr(Node.Text)='NEW' Then Begin
+    TypeIndex:=CanonicalType(Node.TypeIndex);
+    If (TypeIndex<>0) And (SemanticTypes[TypeIndex].Kind=TYPE_OBJECT) Then Begin
+     Emit386Push(T,IntToString(SemanticTypes[TypeIndex].InstanceSize));
+     Emit386Push(T,ObjectTypeLabel(TypeIndex));
+     EmitAsmInstr(T,'call',MakeAsmLabel(MOD3_RUNTIME_PREFIX,'OBJNEW'));
+     EmitAsmInstr(T,'add','esp, 8');
+    End
+    Else EmitAsmComment(T,'NEW non objet differe au runtime');
+   End
+   Else If UpperStr(Node.Text)='TYPECODE' Then Begin
+    TypeIndex:=0;
+    If Node.ArgCount=1 Then
+     TypeIndex:=CanonicalType(IRNodes[
+      IRArguments[Node.FirstArg]].TypeIndex);
+    If TypeIndex<>0 Then Emit386Mov(T,'eax',
+     IntToString(SemanticTypes[TypeIndex].TypeCode))
+    Else Emit386Mov(T,'eax','0');
+   End
+   Else If (UpperStr(Node.Text)='ISTYPE') Or
+           (UpperStr(Node.Text)='NARROW') Then Begin
+    TypeIndex:=0;
+    If Node.ArgCount>1 Then
+     TypeIndex:=CanonicalType(IRNodes[
+      IRArguments[Node.FirstArg+1]].TypeIndex);
+    If Node.ArgCount>0 Then EmitIRExpression386(T,
+     IRArguments[Node.FirstArg]);
+    Emit386Push(T,'eax');
+    If TypeIndex<>0 Then Emit386Push(T,ObjectTypeLabel(TypeIndex))
+    Else Emit386Push(T,'0');
+    If UpperStr(Node.Text)='ISTYPE' Then
+     EmitAsmInstr(T,'call',MakeAsmLabel(MOD3_RUNTIME_PREFIX,'ISTYPE'))
+    Else
+     EmitAsmInstr(T,'call',MakeAsmLabel(MOD3_RUNTIME_PREFIX,'NARROW'));
+    EmitAsmInstr(T,'add','esp, 8');
+   End
+   Else If (Node.SymbolIndex<>0) And
+      (SemanticSymbols[Node.SymbolIndex].Kind=SYM_PROCEDURE) And
+      (SemanticSymbols[Node.SymbolIndex].ProcScope<>0) Then
+   Begin
+    For I:=Node.ArgCount DownTo 1 Do Begin
+     FormalIndex:=NthFormalParameter(Node.SymbolIndex,I);
+     If (FormalIndex<>0) And
+        (SemanticSymbols[FormalIndex].ParamMode=PARAM_VAR) Then
+      EmitIRAddress386(T,IRArguments[Node.FirstArg+I-1])
+     Else
+      EmitIRExpression386(T,IRArguments[Node.FirstArg+I-1]);
+     Emit386Push(T,'eax');
+    End;
+    EmitAsmInstr(T,'call',ProcedureLabelForScope(
+      SemanticSymbols[Node.SymbolIndex].ProcScope));
+    If Node.ArgCount>0 Then
+     EmitAsmInstr(T,'add','esp, '+IntToString(Node.ArgCount*4));
+   End
+   Else EmitAsmComment(T,'appel externe '+Node.Text);
+  End;
+  Else EmitAsmComment(T,'expression '+IRKindName(Node.Kind)+
+                      ' conservee dans l''IR');
+ End;
+End;
+
+Procedure EmitStatementIR386(Var T:Text;OnlyScope:Integer);
+Var
+ I,TargetSymbol,Parent:Integer;
+ S:TStatementIR;
+ Operand:String;
+ LastIfBranch:Array[1..MOD3_MAX_STATEMENTS] Of Integer;
+ IfHasElse:Array[1..MOD3_MAX_STATEMENTS] Of Boolean;
+ LastCaseArm:Array[1..MOD3_MAX_STATEMENTS] Of Integer;
+ CaseHasElse:Array[1..MOD3_MAX_STATEMENTS] Of Boolean;
+Begin
+ FillChar(LastIfBranch,SizeOf(LastIfBranch),0);
+ FillChar(IfHasElse,SizeOf(IfHasElse),0);
+ FillChar(LastCaseArm,SizeOf(LastCaseArm),0);
+ FillChar(CaseHasElse,SizeOf(CaseHasElse),0);
+ EmitAsmBlank(T);
+ EmitAsmComment(T,'IR des instructions TODO 18/19/20/21');
+ For I:=1 To StatementCount Do Begin
+  S:=StatementIR[I];
+  If S.ScopeIndex<>OnlyScope Then Continue;
+  Case S.Kind Of
+   ST_WHILE:Begin
+    EmitAsmLabel(T,ControlLabel(S.StartLabel));
+    EmitIRExpression386(T,S.ExpressionNode);
+    EmitAsmInstr(T,'test','eax, eax');
+    EmitAsmInstr(T,'jz',ControlLabel(S.EndLabel));
+   End;
+   ST_LOOP,ST_REPEAT:
+    EmitAsmLabel(T,ControlLabel(S.StartLabel));
+   ST_FOR:Begin
+    TargetSymbol:=0;
+    If (S.TargetNode>0) And (IRNodes[S.TargetNode].Kind=IR_SYMBOL) Then
+     TargetSymbol:=IRNodes[S.TargetNode].SymbolIndex;
+    Operand:=SymbolMemoryOperand(TargetSymbol);
+    EmitIRExpression386(T,S.ExpressionNode);
+    If Operand<>'' Then Emit386Mov(T,'dword '+Operand,'eax');
+    EmitIRExpression386(T,S.BoundNode);
+    Emit386Push(T,'eax');
+    If S.StepNode<>0 Then EmitIRExpression386(T,S.StepNode)
+    Else Emit386Mov(T,'eax','1');
+    Emit386Push(T,'eax');
+    EmitAsmLabel(T,ControlLabel(S.StartLabel));
+    Emit386Mov(T,'ecx','dword [esp]');
+    EmitAsmInstr(T,'test','ecx, ecx');
+    EmitAsmInstr(T,'jz',ControlLabel(S.EndLabel));
+    If Operand<>'' Then Emit386Mov(T,'eax','dword '+Operand);
+    EmitAsmInstr(T,'cmp','ecx, 0');
+    EmitAsmInstr(T,'jl',ControlLabel(S.FalseLabel));
+    EmitAsmInstr(T,'cmp','eax, dword [esp+4]');
+    EmitAsmInstr(T,'jg',ControlLabel(S.EndLabel));
+    EmitAsmInstr(T,'jmp',ControlLabel(S.ContinueLabel));
+    EmitAsmLabel(T,ControlLabel(S.FalseLabel));
+    EmitAsmInstr(T,'cmp','eax, dword [esp+4]');
+    EmitAsmInstr(T,'jl',ControlLabel(S.EndLabel));
+    EmitAsmLabel(T,ControlLabel(S.ContinueLabel));
+   End;
+   ST_UNTIL:Begin
+    EmitIRExpression386(T,S.ExpressionNode);
+    EmitAsmInstr(T,'test','eax, eax');
+    If S.ParentIndex>0 Then Begin
+     EmitAsmInstr(T,'jz',ControlLabel(
+      StatementIR[S.ParentIndex].StartLabel));
+     EmitAsmLabel(T,ControlLabel(StatementIR[S.ParentIndex].EndLabel));
+    End;
+   End;
+   ST_EXIT:If S.ParentIndex>0 Then Begin
+    EmitAsmInstr(T,'jmp',ControlLabel(StatementIR[S.ParentIndex].EndLabel));
+   End;
+   ST_ASSIGN:Begin
+    EmitIRExpression386(T,S.ExpressionNode);
+    If (S.TargetNode>0) And (IRNodes[S.TargetNode].Kind=IR_SYMBOL) Then Begin
+     TargetSymbol:=IRNodes[S.TargetNode].SymbolIndex;
+     Operand:=SymbolMemoryOperand(TargetSymbol);
+     If Operand<>'' Then Begin
+      If (SemanticSymbols[TargetSymbol].Storage=STORAGE_PARAMETER) And
+         (SemanticSymbols[TargetSymbol].ParamMode=PARAM_VAR) Then Begin
+       Emit386Push(T,'eax');
+       Emit386Mov(T,'ecx','dword '+Operand);
+       Emit386Pop(T,'eax');
+       If TypeStorageSize(SemanticSymbols[TargetSymbol].TypeIndex)=1 Then
+        Emit386Mov(T,'byte [ecx]','al')
+       Else Emit386Mov(T,'dword [ecx]','eax');
+      End
+      Else If SemanticSymbols[TargetSymbol].Size=1 Then
+       Emit386Mov(T,'byte '+Operand,'al')
+      Else Emit386Mov(T,'dword '+Operand,'eax');
+     End;
+    End
+    Else If (S.TargetNode>0) And
+            (IRNodes[S.TargetNode].Kind=IR_FIELD) Then Begin
+     Emit386Push(T,'eax');
+     EmitIRAddress386(T,S.TargetNode);
+     Emit386Mov(T,'ecx','eax');
+     Emit386Pop(T,'eax');
+     TargetSymbol:=IRNodes[S.TargetNode].SymbolIndex;
+     If (TargetSymbol<>0) And
+        (TypeStorageSize(SemanticSymbols[TargetSymbol].TypeIndex)=1) Then
+      Emit386Mov(T,'byte [ecx]','al')
+     Else Emit386Mov(T,'dword [ecx]','eax');
+    End
+    Else EmitAsmComment(T,'stockage complexe conserve dans l''IR');
+   End;
+   ST_CALL:EmitIRExpression386(T,S.ExpressionNode);
+   ST_IF,ST_ELSIF:Begin
+    If S.Kind=ST_ELSIF Then Begin
+     Parent:=S.ParentIndex;
+     If (Parent>0) And (LastIfBranch[Parent]>0) Then Begin
+      EmitAsmInstr(T,'jmp',ControlLabel(StatementIR[Parent].EndLabel));
+      EmitAsmLabel(T,ControlLabel(
+       StatementIR[LastIfBranch[Parent]].FalseLabel));
+     End;
+    End
+    Else Parent:=I;
+    EmitIRExpression386(T,S.ExpressionNode);
+    EmitAsmInstr(T,'test','eax, eax');
+    EmitAsmInstr(T,'jz',ControlLabel(S.FalseLabel));
+    If S.Kind=ST_IF Then LastIfBranch[I]:=I
+    Else If Parent>0 Then LastIfBranch[Parent]:=I;
+   End;
+   ST_ELSE:Begin
+    Parent:=S.ParentIndex;
+    If (Parent>0) And (LastIfBranch[Parent]>0) Then Begin
+     EmitAsmInstr(T,'jmp',ControlLabel(StatementIR[Parent].EndLabel));
+     EmitAsmLabel(T,ControlLabel(
+      StatementIR[LastIfBranch[Parent]].FalseLabel));
+     IfHasElse[Parent]:=True;
+    End;
+   End;
+   ST_CASE_ELSE:Begin
+    Parent:=S.ParentIndex;
+    If (Parent>0) And (LastCaseArm[Parent]>0) Then Begin
+     EmitAsmInstr(T,'jmp',ControlLabel(StatementIR[Parent].EndLabel));
+     EmitAsmLabel(T,ControlLabel(
+      StatementIR[LastCaseArm[Parent]].FalseLabel));
+     CaseHasElse[Parent]:=True;
+    End;
+   End;
+   ST_CASE:Begin
+    EmitIRExpression386(T,S.ExpressionNode);
+    Emit386Mov(T,'ebx','eax');
+   End;
+   ST_CASE_ARM:Begin
+    Parent:=S.ParentIndex;
+    If (Parent>0) And (LastCaseArm[Parent]>0) Then Begin
+     EmitAsmInstr(T,'jmp',ControlLabel(StatementIR[Parent].EndLabel));
+     EmitAsmLabel(T,ControlLabel(
+      StatementIR[LastCaseArm[Parent]].FalseLabel));
+    End;
+    EmitAsmInstr(T,'cmp','ebx, '+IntToString(S.CaseLow));
+    If S.HasCaseRange Then Begin
+     EmitAsmInstr(T,'jl',ControlLabel(S.FalseLabel));
+     EmitAsmInstr(T,'cmp','ebx, '+IntToString(S.CaseHigh));
+     EmitAsmInstr(T,'jg',ControlLabel(S.FalseLabel));
+    End
+    Else EmitAsmInstr(T,'jne',ControlLabel(S.FalseLabel));
+    EmitAsmLabel(T,ControlLabel(S.StartLabel));
+    If Parent>0 Then LastCaseArm[Parent]:=I;
+   End;
+   ST_RETURN:Begin
+    EmitIRExpression386(T,S.ExpressionNode);
+    EmitAsmInstr(T,'jmp',ScopeExitLabel(OnlyScope));
+   End;
+   ST_BLOCK_END:Begin
+    If S.ParentIndex>0 Then Begin
+     Parent:=S.ParentIndex;
+     If StatementIR[Parent].Kind=ST_IF Then Begin
+      If (LastIfBranch[Parent]>0) And Not IfHasElse[Parent] Then
+       EmitAsmLabel(T,ControlLabel(
+        StatementIR[LastIfBranch[Parent]].FalseLabel));
+      EmitAsmLabel(T,ControlLabel(StatementIR[Parent].EndLabel));
+     End
+     Else If StatementIR[Parent].Kind=ST_CASE Then Begin
+      If (LastCaseArm[Parent]>0) And Not CaseHasElse[Parent] Then
+       EmitAsmLabel(T,ControlLabel(
+        StatementIR[LastCaseArm[Parent]].FalseLabel));
+      EmitAsmLabel(T,ControlLabel(StatementIR[Parent].EndLabel));
+     End
+     Else If StatementIR[Parent].Kind=ST_WHILE Then Begin
+      EmitAsmInstr(T,'jmp',ControlLabel(StatementIR[Parent].StartLabel));
+      EmitAsmLabel(T,ControlLabel(StatementIR[Parent].EndLabel));
+     End
+     Else If StatementIR[Parent].Kind=ST_LOOP Then Begin
+      EmitAsmInstr(T,'jmp',ControlLabel(StatementIR[Parent].StartLabel));
+      EmitAsmLabel(T,ControlLabel(StatementIR[Parent].EndLabel));
+     End
+     Else If StatementIR[Parent].Kind=ST_FOR Then Begin
+      TargetSymbol:=0;
+      If (StatementIR[Parent].TargetNode>0) And
+         (IRNodes[StatementIR[Parent].TargetNode].Kind=IR_SYMBOL) Then
+       TargetSymbol:=IRNodes[StatementIR[Parent].TargetNode].SymbolIndex;
+      Operand:=SymbolMemoryOperand(TargetSymbol);
+      If Operand<>'' Then Begin
+       Emit386Mov(T,'eax','dword '+Operand);
+       EmitAsmInstr(T,'add','eax, dword [esp]');
+       Emit386Mov(T,'dword '+Operand,'eax');
+      End;
+      EmitAsmInstr(T,'jmp',ControlLabel(StatementIR[Parent].StartLabel));
+      EmitAsmLabel(T,ControlLabel(StatementIR[Parent].EndLabel));
+      EmitAsmInstr(T,'add','esp, 8');
+     End;
+    End;
+   End;
+  End;
+ End;
 End;
 
 Function WriteAsm80386File(FileName:String):Boolean;
 Var
  T:Text;
+ I,ModuleScope:Integer;
 Begin
  WriteAsm80386File:=False;
  Assign(T,FileName);
@@ -1425,8 +2125,12 @@ Begin
  EmitAsmLabel(T,Pipeline.Target.EntryLabel);
  EmitAsmComment(T,'prologue standard Win32 80386 (corps reel: TODOs 08 a 24)');
  Emit386Prologue(T,0);
+ ModuleScope:=0;
+ For I:=1 To SemanticScopeCount Do
+  If SemanticScopes[I].Kind=SCOPE_MODULE Then ModuleScope:=I;
+ If ModuleScope<>0 Then EmitStatementIR386(T,ModuleScope);
  Emit386Mov(T,RegName(R_EAX),'0');
- EmitAsmLabel(T,MakeInternalLabel(Pipeline.ModuleName+'_EXIT'));
+ EmitAsmLabel(T,ScopeExitLabel(ModuleScope));
  Emit386Epilogue(T);
  EmitAsmProcedureFrames(T);
  EmitAsmBlank(T);
@@ -1437,6 +2141,7 @@ Begin
  EmitAsmLine(T,'  db '+AsmByteList(Pipeline.ModuleName,True));
  EmitAsmLabel(T,MakeAsmLabel(MOD3_RUNTIME_PREFIX,'CRLF'));
  EmitAsmLine(T,'  db 13,10,0');
+ EmitObjectDescriptors(T);
  EmitAsmConstStrings(T);
  EmitAsmGlobals(T,STORAGE_GLOBAL_DATA);
  EmitAsmBlank(T);
@@ -1530,17 +2235,18 @@ Function CoffLongNameOffset(Name,EntryName,SourceLabel,
  ModuleLabel:String):LongInt;
 Var
  Offset:LongInt;
+ FoundOffset:LongInt;
  I:Integer;
 
  Procedure Consider(Candidate:String);
  Begin
-  If (CoffLongNameOffset=0) And (Candidate=Name) And
-     (Length(Candidate)>8) Then CoffLongNameOffset:=Offset;
+  If (FoundOffset=0) And (Candidate=Name) And
+     (Length(Candidate)>8) Then FoundOffset:=Offset;
   If Length(Candidate)>8 Then Inc(Offset,Length(Candidate)+1);
  End;
 
 Begin
- CoffLongNameOffset:=0;
+ FoundOffset:=0;
  Offset:=4;
  Consider(SectionName(AS_TEXT));
  Consider(SectionName(AS_DATA));
@@ -1553,6 +2259,7 @@ Begin
      ((SemanticSymbols[I].Storage=STORAGE_GLOBAL_DATA) Or
       (SemanticSymbols[I].Storage=STORAGE_GLOBAL_BSS)) Then
    Consider(SemanticSymbols[I].AsmLabel);
+ CoffLongNameOffset:=FoundOffset;
 End;
 
 Procedure WriteCoffStringTable(Var F:File;EntryName,SourceLabel,
@@ -1611,14 +2318,16 @@ Function GlobalStorageSize(Storage:TStorageKind):LongInt;
 Var
  I:Integer;
  EndOffset:LongInt;
+ BestSize:LongInt;
 Begin
- GlobalStorageSize:=0;
+ BestSize:=0;
  For I:=1 To SemanticSymbolCount Do
   If (SemanticSymbols[I].Kind=SYM_VAR) And
      (SemanticSymbols[I].Storage=Storage) Then Begin
    EndOffset:=SemanticSymbols[I].Offset+SemanticSymbols[I].Size;
-   If EndOffset>GlobalStorageSize Then GlobalStorageSize:=EndOffset;
+   If EndOffset>BestSize Then BestSize:=EndOffset;
   End;
+ GlobalStorageSize:=BestSize;
 End;
 
 Procedure WriteCoffInitializer(Var F:File;SymbolIndex:Integer);
@@ -3482,13 +4191,19 @@ Begin
 End;
 
 Function FindVisibleSymbol(Name:String;ScopeIndex:Integer):Integer;
+Var
+ Found:Integer;
 Begin
- FindVisibleSymbol:=0;
+ Found:=0;
  While ScopeIndex<>0 Do Begin
-  FindVisibleSymbol:=FindSymbolInScope(Name,ScopeIndex);
-  If FindVisibleSymbol<>0 Then Exit;
+  Found:=FindSymbolInScope(Name,ScopeIndex);
+  If Found<>0 Then Begin
+   FindVisibleSymbol:=Found;
+   Exit;
+  End;
   ScopeIndex:=SemanticScopes[ScopeIndex].Parent;
  End;
+ FindVisibleSymbol:=Found;
 End;
 
 Function AddSemanticSymbol(AName:String;AKind:TSymbolKind;AScopeIndex:Integer;
@@ -3521,6 +4236,9 @@ Begin
   Storage:=STORAGE_NONE;
   AsmLabel:='';
   HasInitializer:=False;
+  ParamMode:=PARAM_VALUE;
+  ProcScope:=0;
+  MethodImpl:=0;
   ConstValue.Kind:=CONST_INVALID;
   ConstValue.TypeIndex:=0;
   ConstValue.IntegerVal:=0;
@@ -3536,11 +4254,13 @@ End;
 
 Function AddTypedSemanticSymbol(AName:String;AKind:TSymbolKind;
  AScopeIndex,TypeIndex:Integer;LineNo,ColumnNo:Integer):Boolean;
+Var
+ OK:Boolean;
 Begin
- AddTypedSemanticSymbol:=
-  AddSemanticSymbol(AName,AKind,AScopeIndex,LineNo,ColumnNo);
- If AddTypedSemanticSymbol Then
+ OK:=AddSemanticSymbol(AName,AKind,AScopeIndex,LineNo,ColumnNo);
+ If OK Then
   SemanticSymbols[SemanticSymbolCount].TypeIndex:=TypeIndex;
+ AddTypedSemanticSymbol:=OK;
 End;
 
 Function AddSemanticType(AName:String;AKind:TTypeKind;ASize,AAlign,
@@ -3566,6 +4286,9 @@ Begin
   Branded:=False;
   Untraced:=False;
   Revealed:=False;
+  InstanceSize:=0;
+  TypeCode:=SemanticTypeCount;
+  MethodCount:=0;
   Line:=LineNo;
   Column:=ColumnNo;
  End;
@@ -3660,6 +4383,22 @@ Begin
                 (Kind=TYPE_BOOLEAN) Or (Kind=TYPE_CHAR);
 End;
 
+Function ObjectIsSubtype(SourceType,DestType:Integer):Boolean;
+Var
+ Guard:Integer;
+Begin
+ ObjectIsSubtype:=False;
+ SourceType:=CanonicalType(SourceType);
+ DestType:=CanonicalType(DestType);
+ Guard:=0;
+ While (SourceType<>0) And (Guard<MOD3_MAX_TYPES) Do Begin
+  If SourceType=DestType Then Begin ObjectIsSubtype:=True; Exit; End;
+  If SemanticTypes[SourceType].Kind<>TYPE_OBJECT Then Exit;
+  SourceType:=CanonicalType(SemanticTypes[SourceType].BaseType);
+  Inc(Guard);
+ End;
+End;
+
 Function TypeCompatible(DestType,SourceType:Integer):Boolean;
 Var
  DestKind,SourceKind:TTypeKind;
@@ -3684,9 +4423,10 @@ Begin
   ((DestKind=TYPE_LONGREAL) And
    ((SourceKind=TYPE_INTEGER) Or (SourceKind=TYPE_CARDINAL) Or
     (SourceKind=TYPE_REAL))) Or
-  ((DestKind=TYPE_TEXT) And (SourceKind=TYPE_NIL)) Or
-  (((DestKind=TYPE_OPAQUE) Or (DestKind=TYPE_OBJECT) Or
-    (DestKind=TYPE_SUBRANGE)) And
+ ((DestKind=TYPE_TEXT) And (SourceKind=TYPE_NIL)) Or
+ ((DestKind=TYPE_OBJECT) And (SourceKind=TYPE_OBJECT) And
+  ObjectIsSubtype(SourceType,DestType)) Or
+  (((DestKind=TYPE_OPAQUE) Or (DestKind=TYPE_SUBRANGE)) And
    (SemanticTypes[DestType].BaseType<>0) And
    TypeCompatible(SemanticTypes[DestType].BaseType,SourceType)) Or
   ((SourceKind=TYPE_SUBRANGE) And
@@ -3851,14 +4591,16 @@ Function SemanticToken:TToken; Forward;
 Function ResolveTypeToken(ScopeIndex:Integer;ReportUnknown:Boolean):Integer;
 Var
  Tok:TToken;
+ Found:Integer;
 Begin
- ResolveTypeToken:=0;
+ Found:=0;
  Tok:=SemanticToken;
  If Tok.Kind=TK_IDENTIFIER Then Begin
-  ResolveTypeToken:=FindTypeByName(Tok.Text,ScopeIndex);
-  If (ResolveTypeToken=0) And ReportUnknown Then
+  Found:=FindTypeByName(Tok.Text,ScopeIndex);
+  If (Found=0) And ReportUnknown Then
    SemanticError('type inconnu: '+Tok.Text,Tok.Line,Tok.Column);
  End;
+ ResolveTypeToken:=Found;
 End;
 
 Function SemanticToken:TToken;
@@ -3931,8 +4673,9 @@ Begin
  AddTypedSemanticSymbol('TEXT',SYM_TYPE,UniverseScope,TypeText,0,0);
  TypeIndex:=AddSemanticType('REFANY',TYPE_REF,4,4,0,0,0);
  AddTypedSemanticSymbol('REFANY',SYM_TYPE,UniverseScope,TypeIndex,0,0);
- TypeIndex:=AddSemanticType('ROOT',TYPE_OBJECT,4,4,0,0,0);
- AddTypedSemanticSymbol('ROOT',SYM_TYPE,UniverseScope,TypeIndex,0,0);
+ TypeRoot:=AddSemanticType('ROOT',TYPE_OBJECT,4,4,0,0,0);
+ SemanticTypes[TypeRoot].InstanceSize:=4;
+ AddTypedSemanticSymbol('ROOT',SYM_TYPE,UniverseScope,TypeRoot,0,0);
  TypeIndex:=AddSemanticType('ADDRESS',TYPE_REF,4,4,0,0,0);
  AddTypedSemanticSymbol('ADDRESS',SYM_TYPE,UniverseScope,TypeIndex,0,0);
  TypeIndex:=AddSemanticType('NULL',TYPE_REF,4,4,0,0,0);
@@ -3943,10 +4686,11 @@ End;
 
 Procedure AddPredefinedSymbols(UniverseScope:Integer);
 Const
- PredefProcCount = 15;
+ PredefProcCount = 18;
  PredefProcs:Array[1..PredefProcCount] Of String[8] =
   ('ABS','DEC','DISPOSE','FIRST','FLOAT','INC','ISTYPE',
-   'LAST','MAX','MIN','NEW','ORD','TRUNC','VAL','BITSIZE');
+   'LAST','MAX','MIN','NEW','ORD','TRUNC','VAL','BITSIZE',
+   'NARROW','TYPECODE','NUMBER');
 Var
  I,SymbolIndex:Integer;
 Begin
@@ -3972,16 +4716,50 @@ End;
 Function ParseSemanticType(ScopeIndex:Integer;SuggestedName:String):Integer;
  Forward;
 
+Function FindObjectMember(TypeIndex:Integer;Name:String):Integer;
+Var
+ Found:Integer;
+Begin
+ Found:=0;
+ TypeIndex:=CanonicalType(TypeIndex);
+ If (TypeIndex<1) Or (TypeIndex>SemanticTypeCount) Then Begin
+  FindObjectMember:=Found;
+  Exit;
+ End;
+ If SemanticTypes[TypeIndex].FieldScope<>0 Then
+  Found:=FindSymbolInScope(Name,SemanticTypes[TypeIndex].FieldScope);
+ If (Found=0) And (SemanticTypes[TypeIndex].BaseType<>0) Then
+  Found:=FindObjectMember(SemanticTypes[TypeIndex].BaseType,Name);
+ FindObjectMember:=Found;
+End;
+
 Procedure ParseRecordFields(TypeIndex,FieldScope:Integer);
 Var
  Names:Array[1..64] Of TToken;
  NameCount,I,FieldType,SymbolIndex:Integer;
  FieldOffset,FieldAlign,FieldSize:Integer;
  MemberKind:TSymbolKind;
+ SectionKind,BaseMember,ParenDepth:Integer;
 Begin
  FieldOffset:=0;
+ SectionKind:=0;
+ If (SemanticTypes[TypeIndex].Kind=TYPE_OBJECT) Then Begin
+  FieldOffset:=4;
+  If SemanticTypes[TypeIndex].BaseType<>0 Then Begin
+   FieldOffset:=SemanticTypes[CanonicalType(
+    SemanticTypes[TypeIndex].BaseType)].InstanceSize;
+   SemanticTypes[TypeIndex].MethodCount:=SemanticTypes[CanonicalType(
+    SemanticTypes[TypeIndex].BaseType)].MethodCount;
+  End;
+ End;
  While (SemanticToken.Kind<>TK_EOF) And Not SemanticIsKeyword(KW_END) Do Begin
-  If SemanticIsKeyword(KW_METHODS) Or SemanticIsKeyword(KW_OVERRIDES) Then Begin
+  If SemanticIsKeyword(KW_METHODS) Then Begin
+   SectionKind:=1;
+   SemanticAdvance;
+   Continue;
+  End;
+  If SemanticIsKeyword(KW_OVERRIDES) Then Begin
+   SectionKind:=2;
    SemanticAdvance;
    Continue;
   End;
@@ -3998,7 +4776,7 @@ Begin
    SemanticAdvance;
    If SemanticIsSymbol(',') Then SemanticAdvance Else Break;
   Until False;
-  If SemanticIsSymbol(':') Then MemberKind:=SYM_FIELD
+  If (SectionKind=0) And SemanticIsSymbol(':') Then MemberKind:=SYM_FIELD
   Else If SemanticIsSymbol('(') Or SemanticIsSymbol(':=') Then
    MemberKind:=SYM_METHOD
   Else Begin
@@ -4030,9 +4808,55 @@ Begin
     SemanticTypes[TypeIndex].Align:=FieldAlign;
   End
   Else Begin
-   For I:=1 To NameCount Do
+   For I:=1 To NameCount Do Begin
     AddSemanticSymbol(Names[I].Text,SYM_METHOD,FieldScope,
                       Names[I].Line,Names[I].Column);
+    SymbolIndex:=FindSymbolInScope(Names[I].Text,FieldScope);
+    If SectionKind=2 Then Begin
+     BaseMember:=FindObjectMember(SemanticTypes[TypeIndex].BaseType,
+                                  Names[I].Text);
+     If BaseMember=0 Then
+      SemanticError('methode surchargee inconnue: '+Names[I].Text,
+                    Names[I].Line,Names[I].Column)
+     Else If SymbolIndex<>0 Then
+     Begin
+      SemanticSymbols[SymbolIndex].Offset:=SemanticSymbols[BaseMember].Offset;
+      SemanticSymbols[SymbolIndex].TypeIndex:=
+       SemanticSymbols[BaseMember].TypeIndex;
+     End;
+    End
+    Else If SymbolIndex<>0 Then Begin
+     SemanticSymbols[SymbolIndex].Offset:=SemanticTypes[TypeIndex].MethodCount;
+     Inc(SemanticTypes[TypeIndex].MethodCount);
+    End;
+   End;
+   If SemanticIsSymbol(':=') Then Begin
+    SemanticAdvance;
+    If SemanticToken.Kind=TK_IDENTIFIER Then Begin
+     For I:=1 To NameCount Do Begin
+      SymbolIndex:=FindSymbolInScope(Names[I].Text,FieldScope);
+      If SymbolIndex<>0 Then SemanticSymbols[SymbolIndex].AsmLabel:=
+       SemanticToken.Text;
+     End;
+     SemanticAdvance;
+    End;
+   End
+   Else If SemanticIsSymbol('(') Then Begin
+    ParenDepth:=0;
+    Repeat
+     If SemanticIsSymbol('(') Then Inc(ParenDepth)
+     Else If SemanticIsSymbol(')') Then Dec(ParenDepth);
+     SemanticAdvance;
+    Until (SemanticToken.Kind=TK_EOF) Or (ParenDepth=0);
+    If SemanticIsSymbol(':') Then Begin
+     SemanticAdvance;
+     FieldType:=ParseSemanticType(FieldScope,'');
+     For I:=1 To NameCount Do Begin
+      SymbolIndex:=FindSymbolInScope(Names[I].Text,FieldScope);
+      If SymbolIndex<>0 Then SemanticSymbols[SymbolIndex].TypeIndex:=FieldType;
+     End;
+    End;
+   End;
   End;
   While (SemanticToken.Kind<>TK_EOF) And Not SemanticIsSymbol(';') And
         Not SemanticIsKeyword(KW_END) Do SemanticAdvance;
@@ -4040,6 +4864,10 @@ Begin
  End;
  SemanticTypes[TypeIndex].Size:=
   AlignTo(FieldOffset,SemanticTypes[TypeIndex].Align);
+ If SemanticTypes[TypeIndex].Kind=TYPE_OBJECT Then Begin
+  SemanticTypes[TypeIndex].InstanceSize:=SemanticTypes[TypeIndex].Size;
+  SemanticTypes[TypeIndex].Size:=4;
+ End;
 End;
 
 Procedure FillSemanticType(TypeIndex,ScopeIndex:Integer);
@@ -4125,6 +4953,7 @@ Begin
    SemanticTypes[TypeIndex].Kind:=TYPE_RECORD
   Else Begin
    SemanticTypes[TypeIndex].Kind:=TYPE_OBJECT;
+   SemanticTypes[TypeIndex].BaseType:=TypeRoot;
    SemanticTypes[TypeIndex].Size:=4;
    SemanticTypes[TypeIndex].Align:=4;
   End;
@@ -4165,6 +4994,27 @@ Begin
   If BaseType=0 Then
    SemanticError('type inconnu: '+SemanticToken.Text,
                  SemanticToken.Line,SemanticToken.Column)
+  Else If (SemanticIndex<Pipeline.TokenCount) And
+          (Pipeline.Tokens[SemanticIndex+1].Kind=TK_KEYWORD) And
+          (Pipeline.Tokens[SemanticIndex+1].Keyword=KW_OBJECT) Then Begin
+   SemanticTypes[TypeIndex].Kind:=TYPE_OBJECT;
+   SemanticTypes[TypeIndex].BaseType:=BaseType;
+   SemanticTypes[TypeIndex].Size:=4;
+   SemanticTypes[TypeIndex].Align:=4;
+   SemanticAdvance;
+   Tok:=SemanticToken;
+   SemanticAdvance;
+   FieldScope:=NewSemanticScope(SCOPE_OBJECT,ScopeIndex,
+                                SemanticTypes[TypeIndex].Name,
+                                Tok.Line,Tok.Column);
+   SemanticTypes[TypeIndex].FieldScope:=FieldScope;
+   If FieldScope<>0 Then Begin
+    ParseRecordFields(TypeIndex,FieldScope);
+    SemanticScopes[FieldScope].EndToken:=SemanticIndex;
+   End;
+   If SemanticIsKeyword(KW_END) Then SemanticAdvance;
+   Exit;
+  End
   Else Begin
    SemanticTypes[TypeIndex].Kind:=TYPE_ALIAS;
    SemanticTypes[TypeIndex].BaseType:=BaseType;
@@ -4184,27 +5034,30 @@ End;
 Function ParseSemanticType(ScopeIndex:Integer;SuggestedName:String):Integer;
 Var
  Tok:TToken;
+ ResultType:Integer;
 Begin
- ParseSemanticType:=0;
  Tok:=SemanticToken;
  If Tok.Kind=TK_IDENTIFIER Then Begin
-  ParseSemanticType:=FindTypeByName(Tok.Text,ScopeIndex);
-  If ParseSemanticType=0 Then
+  ResultType:=FindTypeByName(Tok.Text,ScopeIndex);
+  If ResultType=0 Then
    SemanticError('type inconnu: '+Tok.Text,Tok.Line,Tok.Column);
   SemanticAdvance;
+  ParseSemanticType:=ResultType;
   Exit;
  End;
  If SuggestedName='' Then
   SuggestedName:='$anon'+IntToString(SemanticTypeCount+1);
- ParseSemanticType:=AddSemanticType(SuggestedName,TYPE_COMPOSITE,0,1,0,
-                                    Tok.Line,Tok.Column);
- FillSemanticType(ParseSemanticType,ScopeIndex);
+ ResultType:=AddSemanticType(SuggestedName,TYPE_COMPOSITE,0,1,0,
+                             Tok.Line,Tok.Column);
+ FillSemanticType(ResultType,ScopeIndex);
+ ParseSemanticType:=ResultType;
 End;
 
 Procedure ScanFormalParameters(ProcedureScope:Integer);
 Var
  Names:Array[1..64] Of TToken;
  NameCount,I,ParenDepth,ParamType,SymbolIndex:Integer;
+ Mode:TParameterMode;
 Begin
  If Not SemanticIsSymbol('(') Then Exit;
  SemanticAdvance;
@@ -4219,8 +5072,16 @@ Begin
    SemanticAdvance;
   End
   Else If (ParenDepth=1) Then Begin
-   If SemanticIsKeyword(KW_VAR) Or SemanticIsKeyword(KW_READONLY) Or
-      SemanticIsKeyword(KW_VALUE) Then SemanticAdvance;
+   Mode:=PARAM_VALUE;
+   If SemanticIsKeyword(KW_VAR) Then Begin
+    Mode:=PARAM_VAR;
+    SemanticAdvance;
+   End
+   Else If SemanticIsKeyword(KW_READONLY) Then Begin
+    Mode:=PARAM_READONLY;
+    SemanticAdvance;
+   End
+   Else If SemanticIsKeyword(KW_VALUE) Then SemanticAdvance;
    NameCount:=0;
    While SemanticToken.Kind=TK_IDENTIFIER Do Begin
     If NameCount<64 Then Begin
@@ -4238,8 +5099,10 @@ Begin
      AddTypedSemanticSymbol(Names[I].Text,SYM_PARAM,ProcedureScope,
                             ParamType,Names[I].Line,Names[I].Column);
      SymbolIndex:=FindSymbolInScope(Names[I].Text,ProcedureScope);
-     If SymbolIndex<>0 Then
+     If SymbolIndex<>0 Then Begin
       SemanticSymbols[SymbolIndex].TypeIndex:=ParamType;
+      SemanticSymbols[SymbolIndex].ParamMode:=Mode;
+     End;
     End;
     While (SemanticToken.Kind<>TK_EOF) And
           Not SemanticIsSymbol(';') And Not SemanticIsSymbol(')') Do
@@ -4252,10 +5115,18 @@ Begin
  End;
 End;
 
-Procedure SkipProcedureStatements;
+Procedure DeclareIfAbsent(AName:String;ATypeIndex,ALine,AColumn,
+ AScopeIndex:Integer);
+Begin
+ If FindVisibleSymbol(AName,AScopeIndex)=0 Then
+  AddTypedSemanticSymbol(AName,SYM_VAR,AScopeIndex,ATypeIndex,ALine,AColumn);
+End;
+
+Procedure SkipProcedureStatements(ScopeIndex:Integer);
 Var
  EndDepth,RepeatDepth:Integer;
  K:TKeyword;
+ J,BoundSymbol,AliasType,ExcSymbol:Integer;
 Begin
  EndDepth:=0;
  RepeatDepth:=0;
@@ -4268,10 +5139,64 @@ Begin
    Dec(RepeatDepth)
   Else If SemanticToken.Kind=TK_KEYWORD Then Begin
    K:=SemanticToken.Keyword;
-   If (K=KW_IF) Or (K=KW_WHILE) Or (K=KW_FOR) Or (K=KW_LOOP) Or
-      (K=KW_CASE) Or (K=KW_WITH) Or (K=KW_BEGIN) Or (K=KW_TRY) Or
+   If K=KW_FOR Then Begin
+    Inc(EndDepth);
+    If (SemanticIndex+2<=Pipeline.TokenCount) And
+       (Pipeline.Tokens[SemanticIndex+1].Kind=TK_IDENTIFIER) And
+       (Pipeline.Tokens[SemanticIndex+2].Kind=TK_SYMBOL) And
+       (Pipeline.Tokens[SemanticIndex+2].Text=':=') Then
+     DeclareIfAbsent(Pipeline.Tokens[SemanticIndex+1].Text,TypeInteger,
+      Pipeline.Tokens[SemanticIndex+1].Line,
+      Pipeline.Tokens[SemanticIndex+1].Column,ScopeIndex);
+   End
+   Else If K=KW_WITH Then Begin
+    Inc(EndDepth);
+    J:=SemanticIndex+1;
+    While (J+1<=Pipeline.TokenCount) And
+          (Pipeline.Tokens[J].Kind=TK_IDENTIFIER) And
+          (Pipeline.Tokens[J+1].Kind=TK_SYMBOL) And
+          (Pipeline.Tokens[J+1].Text='=') Do Begin
+     AliasType:=TypeInteger;
+     If (J+2<=Pipeline.TokenCount) And
+        (Pipeline.Tokens[J+2].Kind=TK_IDENTIFIER) Then Begin
+      BoundSymbol:=FindVisibleSymbol(Pipeline.Tokens[J+2].Text,ScopeIndex);
+      If BoundSymbol<>0 Then AliasType:=SemanticSymbols[BoundSymbol].TypeIndex;
+     End;
+     DeclareIfAbsent(Pipeline.Tokens[J].Text,AliasType,
+      Pipeline.Tokens[J].Line,Pipeline.Tokens[J].Column,ScopeIndex);
+     J:=J+2;
+     While (J<=Pipeline.TokenCount) And
+           Not ((Pipeline.Tokens[J].Kind=TK_SYMBOL) And
+                (Pipeline.Tokens[J].Text=',')) And
+           Not ((Pipeline.Tokens[J].Kind=TK_KEYWORD) And
+                (Pipeline.Tokens[J].Keyword=KW_DO)) Do Inc(J);
+     If (J<=Pipeline.TokenCount) And (Pipeline.Tokens[J].Kind=TK_SYMBOL) And
+        (Pipeline.Tokens[J].Text=',') Then Inc(J)
+     Else Break;
+    End;
+   End
+   Else If (K=KW_IF) Or (K=KW_WHILE) Or (K=KW_LOOP) Or
+      (K=KW_CASE) Or (K=KW_BEGIN) Or (K=KW_TRY) Or
       (K=KW_TYPECASE) Or (K=KW_LOCK) Then Inc(EndDepth)
    Else If K=KW_REPEAT Then Inc(RepeatDepth);
+  End
+  Else If SemanticIsSymbol('|') And
+          (SemanticIndex+5<=Pipeline.TokenCount) And
+          (Pipeline.Tokens[SemanticIndex+1].Kind=TK_IDENTIFIER) And
+          (Pipeline.Tokens[SemanticIndex+2].Kind=TK_SYMBOL) And
+          (Pipeline.Tokens[SemanticIndex+2].Text='(') And
+          (Pipeline.Tokens[SemanticIndex+3].Kind=TK_IDENTIFIER) And
+          (Pipeline.Tokens[SemanticIndex+4].Kind=TK_SYMBOL) And
+          (Pipeline.Tokens[SemanticIndex+4].Text=')') And
+          (Pipeline.Tokens[SemanticIndex+5].Kind=TK_SYMBOL) And
+          (Pipeline.Tokens[SemanticIndex+5].Text='=>') Then Begin
+   ExcSymbol:=FindVisibleSymbol(Pipeline.Tokens[SemanticIndex+1].Text,ScopeIndex);
+   AliasType:=TypeInteger;
+   If (ExcSymbol<>0) And (SemanticSymbols[ExcSymbol].TypeIndex<>0) Then
+    AliasType:=SemanticSymbols[ExcSymbol].TypeIndex;
+   DeclareIfAbsent(Pipeline.Tokens[SemanticIndex+3].Text,AliasType,
+    Pipeline.Tokens[SemanticIndex+3].Line,
+    Pipeline.Tokens[SemanticIndex+3].Column,ScopeIndex);
   End;
   SemanticAdvance;
  End;
@@ -4294,6 +5219,7 @@ Begin
  ProcScope:=NewSemanticScope(SCOPE_PROCEDURE,ParentScope,ProcToken.Text,
                              ProcToken.Line,ProcToken.Column);
  If ProcScope=0 Then Exit;
+ If ProcSymbol<>0 Then SemanticSymbols[ProcSymbol].ProcScope:=ProcScope;
  ScanFormalParameters(ProcScope);
  If SemanticIsSymbol(':') Then Begin
   SemanticAdvance;
@@ -4305,7 +5231,9 @@ Begin
   SemanticAdvance;
  If SemanticIsSymbol(';') Then Begin
   SemanticAdvance;
-  If SemanticScopes[ParentScope].Kind=SCOPE_INTERFACE Then Begin
+  If (SemanticScopes[ParentScope].Kind=SCOPE_INTERFACE) Or
+     ((SemanticScopes[ParentScope].Kind=SCOPE_GENERIC) And
+      (SemanticScopes[ParentScope].TemplateKind=UK_INTERFACE)) Then Begin
    SemanticScopes[ProcScope].EndToken:=SemanticIndex;
    Exit;
   End;
@@ -4314,7 +5242,7 @@ Begin
  ScanSemanticDeclarations(ProcScope);
  If SemanticIsKeyword(KW_BEGIN) Then Begin
   SemanticAdvance;
-  SkipProcedureStatements;
+  SkipProcedureStatements(ProcScope);
   If SemanticIsKeyword(KW_END) Then SemanticAdvance;
   If SemanticToken.Kind=TK_IDENTIFIER Then SemanticAdvance;
   If SemanticIsSymbol(';') Then SemanticAdvance;
@@ -4723,12 +5651,21 @@ End;
 Procedure ScanExceptionSection(ScopeIndex:Integer);
 Var
  Tok:TToken;
+ SymbolIndex,ArgType:Integer;
 Begin
  SemanticAdvance;
  While SemanticToken.Kind=TK_IDENTIFIER Do Begin
   Tok:=SemanticToken;
   AddSemanticSymbol(Tok.Text,SYM_EXCEPTION,ScopeIndex,Tok.Line,Tok.Column);
+  SymbolIndex:=FindSymbolInScope(Tok.Text,ScopeIndex);
   SemanticAdvance;
+  If SemanticIsSymbol('(') Then Begin
+   SemanticAdvance;
+   ArgType:=ParseSemanticType(ScopeIndex,'');
+   If (SymbolIndex<>0) And (ArgType<>0) Then
+    SemanticSymbols[SymbolIndex].TypeIndex:=ArgType;
+   If SemanticIsSymbol(')') Then SemanticAdvance;
+  End;
   SemanticSkipToSemicolon;
  End;
 End;
@@ -4842,27 +5779,33 @@ Begin
 End;
 
 Function TypeStorageSize(TypeIndex:Integer):Integer;
+Var
+ ResultSize:Integer;
 Begin
  TypeIndex:=CanonicalType(TypeIndex);
  If (TypeIndex<1) Or (TypeIndex>SemanticTypeCount) Then
-  TypeStorageSize:=I386_STACK_SLOT_SIZE
+  ResultSize:=I386_STACK_SLOT_SIZE
  Else Begin
-  TypeStorageSize:=SemanticTypes[TypeIndex].Size;
-  If TypeStorageSize<1 Then TypeStorageSize:=I386_STACK_SLOT_SIZE;
+  ResultSize:=SemanticTypes[TypeIndex].Size;
+  If ResultSize<1 Then ResultSize:=I386_STACK_SLOT_SIZE;
  End;
+ TypeStorageSize:=ResultSize;
 End;
 
 Function TypeStorageAlign(TypeIndex:Integer):Integer;
+Var
+ ResultAlign:Integer;
 Begin
  TypeIndex:=CanonicalType(TypeIndex);
  If (TypeIndex<1) Or (TypeIndex>SemanticTypeCount) Then
-  TypeStorageAlign:=I386_STACK_ALIGN
+  ResultAlign:=I386_STACK_ALIGN
  Else Begin
-  TypeStorageAlign:=SemanticTypes[TypeIndex].Align;
-  If TypeStorageAlign<1 Then TypeStorageAlign:=1;
-  If TypeStorageAlign>I386_STACK_ALIGN Then
-   TypeStorageAlign:=I386_STACK_ALIGN;
+  ResultAlign:=SemanticTypes[TypeIndex].Align;
+  If ResultAlign<1 Then ResultAlign:=1;
+  If ResultAlign>I386_STACK_ALIGN Then
+   ResultAlign:=I386_STACK_ALIGN;
  End;
+ TypeStorageAlign:=ResultAlign;
 End;
 
 Procedure LayoutSemanticStorage(UnitScope:Integer);
@@ -4938,7 +5881,7 @@ Begin
   If (SemanticScopes[I].Kind<>SCOPE_OBJECT) And
      (TokenIndex>=SemanticScopes[I].StartToken) And
      (TokenIndex<=SemanticScopes[I].EndToken) And
-     (SemanticScopes[I].Level>BestLevel) Then Begin
+     (SemanticScopes[I].Level>=BestLevel) Then Begin
    ScopeForToken:=I;
    BestLevel:=SemanticScopes[I].Level;
   End;
@@ -4987,6 +5930,10 @@ Begin
           (Pipeline.Tokens[I].Text='.') And
           (I<Pipeline.TokenCount) And
           (Pipeline.Tokens[I+1].Kind=TK_IDENTIFIER) Then Begin
+   If Kind=TYPE_REF Then Begin
+    TypeIndex:=CanonicalType(SemanticTypes[TypeIndex].ElementType);
+    Kind:=SemanticTypes[TypeIndex].Kind;
+   End;
    If (Kind<>TYPE_RECORD) And (Kind<>TYPE_OBJECT) Then Break;
    FieldSymbol:=FindSymbolInScope(Pipeline.Tokens[I+1].Text,
                                   SemanticTypes[TypeIndex].FieldScope);
@@ -5007,34 +5954,41 @@ Var
  Tok:TToken;
  SymbolIndex,I,ParenDepth,BracketDepth:Integer;
  U:String;
+ ResultType:Integer;
 Begin
- ExpressionTypeAt:=0;
- If (TokenIndex<1) Or (TokenIndex>Pipeline.TokenCount) Then Exit;
+ ResultType:=0;
+ If (TokenIndex<1) Or (TokenIndex>Pipeline.TokenCount) Then Begin
+  ExpressionTypeAt:=ResultType;
+  Exit;
+ End;
  Tok:=Pipeline.Tokens[TokenIndex];
- ExpressionTypeAt:=LiteralType(Tok);
- If (ExpressionTypeAt=0) And (Tok.Kind=TK_IDENTIFIER) Then Begin
-  ExpressionTypeAt:=DesignatorTypeAt(TokenIndex,ScopeIndex);
-  If ExpressionTypeAt=0 Then Begin
+ ResultType:=LiteralType(Tok);
+ If (ResultType=0) And (Tok.Kind=TK_IDENTIFIER) Then Begin
+  ResultType:=DesignatorTypeAt(TokenIndex,ScopeIndex);
+  If ResultType=0 Then Begin
    SymbolIndex:=FindVisibleSymbol(Tok.Text,ScopeIndex);
    If SymbolIndex<>0 Then Begin
     If SemanticSymbols[SymbolIndex].Kind=SYM_PROCEDURE Then Begin
      If (TokenIndex<Pipeline.TokenCount) And
         (Pipeline.Tokens[TokenIndex+1].Kind=TK_SYMBOL) And
         (Pipeline.Tokens[TokenIndex+1].Text='(') Then
-      ExpressionTypeAt:=SemanticSymbols[SymbolIndex].TypeIndex;
+      ResultType:=SemanticSymbols[SymbolIndex].TypeIndex;
     End
-    Else ExpressionTypeAt:=SemanticSymbols[SymbolIndex].TypeIndex;
+    Else ResultType:=SemanticSymbols[SymbolIndex].TypeIndex;
    End;
   End;
   If (TokenIndex<Pipeline.TokenCount) And
      (Pipeline.Tokens[TokenIndex+1].Kind=TK_SYMBOL) And
      (Pipeline.Tokens[TokenIndex+1].Text='(') Then Begin
    U:=UpperStr(Tok.Text);
-   If (U='ORD') Or (U='TRUNC') Then ExpressionTypeAt:=TypeInteger
-   Else If U='FLOAT' Then ExpressionTypeAt:=TypeReal;
+   If (U='ORD') Or (U='TRUNC') Then ResultType:=TypeInteger
+   Else If U='FLOAT' Then ResultType:=TypeReal;
   End;
  End;
- If ExpressionTypeAt=0 Then Exit;
+ If ResultType=0 Then Begin
+  ExpressionTypeAt:=ResultType;
+  Exit;
+ End;
  ParenDepth:=0;
  BracketDepth:=0;
  I:=TokenIndex+1;
@@ -5067,10 +6021,14 @@ Begin
     Exit;
    End;
    If (Pipeline.Tokens[I].Kind=TK_SYMBOL) And
-      (Pipeline.Tokens[I].Text=';') Then Exit;
+      (Pipeline.Tokens[I].Text=';') Then Begin
+    ExpressionTypeAt:=ResultType;
+    Exit;
+   End;
   End;
   Inc(I);
  End;
+ ExpressionTypeAt:=ResultType;
 End;
 
 Procedure ValidateSimpleAssignments(UnitScope:Integer);
@@ -5181,27 +6139,26 @@ Begin
  End;
 End;
 
-Procedure BuildSemanticTables;
+Function ProcessSemanticUnit(UniverseScope:Integer):Boolean;
 Var
- UniverseScope,UnitScope:Integer;
- UnitName:String;
+ UnitScope,I,ImplSymbol,TemplateScope,J,NewSym:Integer;
+ UnitName,EndName,GenName:String;
  UnitToken:TToken;
- GenericUnit:Boolean;
+ GenericUnit,IsInstantiation:Boolean;
  ScopeKind:TScopeKind;
+ OrigFlavor:TUnitKind;
 Begin
- EnterStage(CS_SEMANTIC_TABLES);
- SemanticScopeCount:=0;
- SemanticSymbolCount:=0;
- SemanticTypeCount:=0;
- SemanticIndex:=1;
- UniverseScope:=NewSemanticScope(SCOPE_UNIVERSE,0,'',0,0);
- If UniverseScope=0 Then Exit;
- AddPredefinedTypes(UniverseScope);
- AddPredefinedSymbols(UniverseScope);
+ ProcessSemanticUnit:=False;
  GenericUnit:=SemanticIsKeyword(KW_GENERIC);
  If GenericUnit Then SemanticAdvance;
- If SemanticIsKeyword(KW_INTERFACE) Then ScopeKind:=SCOPE_INTERFACE
- Else ScopeKind:=SCOPE_MODULE;
+ If SemanticIsKeyword(KW_INTERFACE) Then Begin
+  ScopeKind:=SCOPE_INTERFACE;
+  OrigFlavor:=UK_INTERFACE;
+ End
+ Else Begin
+  ScopeKind:=SCOPE_MODULE;
+  OrigFlavor:=UK_MODULE;
+ End;
  If (SemanticIsKeyword(KW_INTERFACE)) Or (SemanticIsKeyword(KW_MODULE)) Then
   SemanticAdvance;
  If SemanticToken.Kind<>TK_IDENTIFIER Then Begin
@@ -5212,10 +6169,76 @@ Begin
  UnitToken:=SemanticToken;
  UnitName:=UnitToken.Text;
  SemanticAdvance;
+ (* Instanciation generique : INTERFACE/MODULE Nom = Generique(Params) END Nom. *)
+ IsInstantiation:=(Not GenericUnit) And SemanticIsSymbol('=');
+ If IsInstantiation Then Begin
+  SemanticAdvance;
+  If SemanticToken.Kind<>TK_IDENTIFIER Then Begin
+   SemanticError('nom de generique attendu apres "="',
+                 SemanticToken.Line,SemanticToken.Column);
+   Exit;
+  End;
+  GenName:=SemanticToken.Text;
+  SemanticAdvance;
+  If SemanticIsSymbol('(') Then Begin
+   SemanticAdvance;
+   While Not SemanticIsSymbol(')') And (SemanticToken.Kind<>TK_EOF) Do
+    SemanticAdvance;
+   If SemanticIsSymbol(')') Then SemanticAdvance;
+  End;
+  TemplateScope:=0;
+  For I:=1 To SemanticScopeCount Do
+   If (UpperStr(SemanticScopes[I].OwnerName)=UpperStr(GenName)) And
+      (SemanticScopes[I].Kind=SCOPE_GENERIC) And
+      (SemanticScopes[I].TemplateKind=OrigFlavor) Then Begin
+    TemplateScope:=I;
+    Break;
+   End;
+  If TemplateScope=0 Then Begin
+   SemanticError('generique inconnu ou incompatible: '+GenName,
+                 UnitToken.Line,UnitToken.Column);
+   Exit;
+  End;
+  UnitScope:=NewSemanticScope(ScopeKind,UniverseScope,UnitName,
+                              UnitToken.Line,UnitToken.Column);
+  If UnitScope=0 Then Exit;
+  For J:=1 To SemanticSymbolCount Do
+   If (SemanticSymbols[J].ScopeIndex=TemplateScope) And
+      (SemanticSymbols[J].Kind<>SYM_GENERIC_PARAM) Then Begin
+    AddSemanticSymbol(SemanticSymbols[J].Name,SemanticSymbols[J].Kind,
+                      UnitScope,SemanticSymbols[J].Line,SemanticSymbols[J].Column);
+    NewSym:=FindSymbolInScope(SemanticSymbols[J].Name,UnitScope);
+    If NewSym<>0 Then Begin
+     SemanticSymbols[NewSym].TypeIndex:=SemanticSymbols[J].TypeIndex;
+     SemanticSymbols[NewSym].AsmLabel:=SemanticSymbols[J].AsmLabel;
+     SemanticSymbols[NewSym].ProcScope:=SemanticSymbols[J].ProcScope;
+     SemanticSymbols[NewSym].Storage:=SemanticSymbols[J].Storage;
+    End;
+   End;
+  If Not SemanticIsKeyword(KW_END) Then Begin
+   SemanticError('END attendu pour fermer l''instanciation '+UnitName,
+                 SemanticToken.Line,SemanticToken.Column);
+   Exit;
+  End;
+  SemanticScopes[UnitScope].EndToken:=SemanticIndex;
+  SemanticAdvance;
+  If SemanticToken.Kind=TK_IDENTIFIER Then Begin
+   EndName:=SemanticToken.Text;
+   If UpperStr(EndName)<>UpperStr(UnitName) Then
+    SemanticError('nom final "'+EndName+'" different de "'+UnitName+'"',
+                  SemanticToken.Line,SemanticToken.Column);
+   SemanticAdvance;
+  End;
+  If SemanticIsSymbol('.') Then SemanticAdvance;
+  ProcessSemanticUnit:=Pipeline.ErrorCount=0;
+  Exit;
+ End;
+ (* unite normale, ou modele generique (GENERIC INTERFACE/MODULE) *)
  If GenericUnit Then ScopeKind:=SCOPE_GENERIC;
  UnitScope:=NewSemanticScope(ScopeKind,UniverseScope,UnitName,
                              UnitToken.Line,UnitToken.Column);
  If UnitScope=0 Then Exit;
+ SemanticScopes[UnitScope].TemplateKind:=OrigFlavor;
  If GenericUnit And SemanticIsSymbol('(') Then Begin
   SemanticAdvance;
   While SemanticToken.Kind=TK_IDENTIFIER Do Begin
@@ -5232,18 +6255,1312 @@ Begin
  If SemanticIsSymbol(';') Then SemanticAdvance;
  ScanImportsIntoScope(UnitScope);
  ScanSemanticDeclarations(UnitScope);
- SemanticScopes[UnitScope].EndToken:=Pipeline.TokenCount;
+ For I:=1 To SemanticSymbolCount Do
+  If (SemanticSymbols[I].Kind=SYM_METHOD) And
+     (SemanticSymbols[I].AsmLabel<>'') Then Begin
+   ImplSymbol:=FindVisibleSymbol(SemanticSymbols[I].AsmLabel,
+                                 SemanticSymbols[I].ScopeIndex);
+   If (ImplSymbol=0) Or
+      (SemanticSymbols[ImplSymbol].Kind<>SYM_PROCEDURE) Then
+    SemanticError('implementation de methode inconnue: '+
+                  SemanticSymbols[I].AsmLabel,
+                  SemanticSymbols[I].Line,SemanticSymbols[I].Column)
+   Else SemanticSymbols[I].MethodImpl:=ImplSymbol;
+  End;
+ If SemanticIsKeyword(KW_BEGIN) Then Begin
+  SemanticAdvance;
+  SkipProcedureStatements(UnitScope);
+  If SemanticIsKeyword(KW_END) Then SemanticAdvance;
+ End
+ Else If SemanticIsKeyword(KW_END) Then SemanticAdvance;
+ SemanticScopes[UnitScope].EndToken:=SemanticIndex;
+ If SemanticToken.Kind=TK_IDENTIFIER Then Begin
+  EndName:=SemanticToken.Text;
+  If UpperStr(EndName)<>UpperStr(UnitName) Then
+   SemanticError('nom final "'+EndName+'" different de "'+UnitName+'"',
+                 SemanticToken.Line,SemanticToken.Column);
+  SemanticAdvance;
+ End;
+ If SemanticIsSymbol('.') Then SemanticAdvance;
  LayoutSemanticStorage(UnitScope);
- ValidateSimpleAssignments(UnitScope);
+ ProcessSemanticUnit:=Pipeline.ErrorCount=0;
+End;
+
+Procedure BuildSemanticTables;
+Var
+ UniverseScope:Integer;
+Begin
+ EnterStage(CS_SEMANTIC_TABLES);
+ SemanticScopeCount:=0;
+ SemanticSymbolCount:=0;
+ SemanticTypeCount:=0;
+ SemanticIndex:=1;
+ UniverseScope:=NewSemanticScope(SCOPE_UNIVERSE,0,'',0,0);
+ If UniverseScope=0 Then Exit;
+ AddPredefinedTypes(UniverseScope);
+ AddPredefinedSymbols(UniverseScope);
+ While (SemanticToken.Kind<>TK_EOF) And (Pipeline.ErrorCount=0) Do
+  If Not ProcessSemanticUnit(UniverseScope) Then Break;
  If Pipeline.ErrorCount<>0 Then Exit;
  FinishStage(CS_SEMANTIC_TABLES);
  TraceSemanticTables;
 End;
 
+Function IRKindName(Kind:TIRKind):String;
+Begin
+ Case Kind Of
+  IR_LITERAL  :IRKindName:='literal';
+  IR_SYMBOL   :IRKindName:='symbole';
+  IR_CALL     :IRKindName:='appel';
+  IR_INDEX    :IRKindName:='index';
+  IR_FIELD    :IRKindName:='champ';
+  IR_DEREF    :IRKindName:='deref';
+  IR_UNARY    :IRKindName:='unaire';
+  IR_BINARY   :IRKindName:='binaire';
+  IR_COMPARE  :IRKindName:='comparaison';
+  IR_AND_SHORT:IRKindName:='and-court';
+  IR_OR_SHORT :IRKindName:='or-court';
+  Else IRKindName:='invalide';
+ End;
+End;
+
+Function NewIRNode(AKind:TIRKind;ATypeIndex,ALeft,ARight:Integer;
+ AOperatorText,AText:String;LineNo,ColumnNo:Integer):Integer;
+Begin
+ NewIRNode:=0;
+ If IRNodeCount>=MOD3_MAX_IR_NODES Then Begin
+  SemanticError('IR d''expressions trop grand',LineNo,ColumnNo);
+  Exit;
+ End;
+ Inc(IRNodeCount);
+ With IRNodes[IRNodeCount] Do Begin
+  Kind:=AKind;
+  TypeIndex:=ATypeIndex;
+  Left:=ALeft;
+  Right:=ARight;
+  SymbolIndex:=0;
+  OperatorText:=AOperatorText;
+  Text:=AText;
+  IntegerVal:=0;
+  RealVal:=0;
+  Line:=LineNo;
+  Column:=ColumnNo;
+  TrueLabel:=0;
+  FalseLabel:=0;
+  FirstArg:=0;
+  ArgCount:=0;
+  Receiver:=0;
+  VirtualSlot:=-1;
+ End;
+ NewIRNode:=IRNodeCount;
+End;
+
+Procedure AddIRRoot(AKind:TIRRootKind;ANodeIndex,AScopeIndex,ATargetType:Integer;
+ LineNo,ColumnNo:Integer);
+Begin
+ If ANodeIndex=0 Then Exit;
+ If IRRootCount>=MOD3_MAX_IR_ROOTS Then Begin
+  SemanticError('trop d''expressions racines dans l''IR',LineNo,ColumnNo);
+  Exit;
+ End;
+ Inc(IRRootCount);
+ With IRRoots[IRRootCount] Do Begin
+  Kind:=AKind;
+  NodeIndex:=ANodeIndex;
+  ScopeIndex:=AScopeIndex;
+  TargetType:=ATargetType;
+  Line:=LineNo;
+  Column:=ColumnNo;
+ End;
+End;
+
+Function IRToken:TToken;
+Begin
+ If IRTokenIndex<1 Then IRTokenIndex:=1;
+ If IRTokenIndex>Pipeline.TokenCount Then
+  IRToken:=Pipeline.Tokens[Pipeline.TokenCount]
+ Else IRToken:=Pipeline.Tokens[IRTokenIndex];
+End;
+
+Procedure IRAdvance;
+Begin
+ If IRTokenIndex<Pipeline.TokenCount Then Inc(IRTokenIndex);
+End;
+
+Function IRIsSymbol(S:String):Boolean;
+Begin
+ IRIsSymbol:=(IRToken.Kind=TK_SYMBOL) And (IRToken.Text=S);
+End;
+
+Function IRIsKeyword(K:TKeyword):Boolean;
+Begin
+ IRIsKeyword:=(IRToken.Kind=TK_KEYWORD) And (IRToken.Keyword=K);
+End;
+
+Function IRExpressionStop:Boolean;
+Begin
+ IRExpressionStop:=(IRToken.Kind=TK_EOF) Or IRIsSymbol(';') Or
+  IRIsSymbol(',') Or IRIsSymbol(')') Or IRIsSymbol(']') Or
+  IRIsKeyword(KW_THEN) Or IRIsKeyword(KW_DO) Or IRIsKeyword(KW_TO) Or
+  IRIsKeyword(KW_BY) Or IRIsKeyword(KW_ELSE) Or IRIsKeyword(KW_ELSIF) Or
+  IRIsKeyword(KW_END) Or IRIsKeyword(KW_UNTIL);
+End;
+
+Function IRNumericResult(LeftType,RightType:Integer;ForceReal:Boolean):Integer;
+Var
+ LK,RK:TTypeKind;
+Begin
+ LeftType:=CanonicalType(LeftType);
+ RightType:=CanonicalType(RightType);
+ If (LeftType=0) Or (RightType=0) Then Begin
+  IRNumericResult:=0;
+  Exit;
+ End;
+ LK:=SemanticTypes[LeftType].Kind;
+ RK:=SemanticTypes[RightType].Kind;
+ If (LK=TYPE_LONGREAL) Or (RK=TYPE_LONGREAL) Then
+  IRNumericResult:=TypeLongReal
+ Else If ForceReal Or (LK=TYPE_REAL) Or (RK=TYPE_REAL) Then
+  IRNumericResult:=TypeReal
+ Else If (LK=TYPE_CARDINAL) And (RK=TYPE_CARDINAL) Then
+  IRNumericResult:=TypeCardinal
+ Else IRNumericResult:=TypeInteger;
+End;
+
+Function ParseIRExpression:Boolean; Forward;
+Function ParseIROr(Var NodeIndex:Integer):Boolean; Forward;
+
+Function BuiltinReturnType(Name:String):Integer;
+Begin
+ Name:=UpperStr(Name);
+ If (Name='ORD') Or (Name='TRUNC') Or (Name='ABS') Or
+    (Name='MAX') Or (Name='MIN') Or (Name='FIRST') Or
+    (Name='LAST') Or (Name='NUMBER') Or (Name='BITSIZE') Then
+  BuiltinReturnType:=TypeInteger
+ Else If Name='FLOAT' Then BuiltinReturnType:=TypeReal
+ Else If Name='ISTYPE' Then BuiltinReturnType:=TypeBoolean
+ Else If Name='TYPECODE' Then BuiltinReturnType:=TypeInteger
+ Else BuiltinReturnType:=0;
+End;
+
+Function IsIRDesignator(NodeIndex:Integer):Boolean;
+Begin
+ IsIRDesignator:=(NodeIndex>0) And (NodeIndex<=IRNodeCount) And
+  (IRNodes[NodeIndex].Kind In [IR_SYMBOL,IR_INDEX,IR_FIELD,IR_DEREF]);
+End;
+
+Function IsIRWritableDesignator(NodeIndex:Integer):Boolean;
+Var
+ SymbolIndex:Integer;
+ Writable:Boolean;
+Begin
+ Writable:=IsIRDesignator(NodeIndex);
+ If Writable And (IRNodes[NodeIndex].Kind=IR_SYMBOL) Then Begin
+  SymbolIndex:=IRNodes[NodeIndex].SymbolIndex;
+  If (SymbolIndex=0) Or
+     Not (SemanticSymbols[SymbolIndex].Kind In [SYM_VAR,SYM_PARAM]) Then
+   Writable:=False
+  Else If (SemanticSymbols[SymbolIndex].Kind=SYM_PARAM) And
+          (SemanticSymbols[SymbolIndex].ParamMode=PARAM_READONLY) Then
+   Writable:=False;
+ End;
+ IsIRWritableDesignator:=Writable;
+End;
+
+Procedure AttachCallArguments(CallNode:Integer;Var Args:TIRArgumentList;
+ ArgCount:Integer);
+Var
+ I:Integer;
+Begin
+ If (CallNode=0) Or (ArgCount=0) Then Exit;
+ If IRArgumentCount+ArgCount>MOD3_MAX_IR_ARGUMENTS Then Begin
+  SemanticError('trop d''arguments dans l''IR',
+                IRNodes[CallNode].Line,IRNodes[CallNode].Column);
+  Exit;
+ End;
+ IRNodes[CallNode].FirstArg:=IRArgumentCount+1;
+ IRNodes[CallNode].ArgCount:=ArgCount;
+ For I:=0 To ArgCount-1 Do Begin
+  Inc(IRArgumentCount);
+  IRArguments[IRArgumentCount]:=Args[I];
+ End;
+End;
+
+Procedure ValidateProcedureCall(CallNode,ProcedureSymbol:Integer);
+Var
+ ScopeIndex,FormalIndex,ActualIndex,FormalCount,I:Integer;
+Begin
+ If (ProcedureSymbol<1) Or (ProcedureSymbol>SemanticSymbolCount) Then Exit;
+ If SemanticSymbols[ProcedureSymbol].Kind<>SYM_PROCEDURE Then Exit;
+ ScopeIndex:=SemanticSymbols[ProcedureSymbol].ProcScope;
+ If ScopeIndex=0 Then Exit;
+ FormalCount:=0;
+ For I:=1 To SemanticSymbolCount Do
+  If (SemanticSymbols[I].ScopeIndex=ScopeIndex) And
+     (SemanticSymbols[I].Kind=SYM_PARAM) Then Inc(FormalCount);
+ If IRNodes[CallNode].ArgCount<>FormalCount Then Begin
+  SemanticError('appel de '+SemanticSymbols[ProcedureSymbol].Name+': '+
+   IntToString(FormalCount)+' argument(s) attendu(s), '+
+   IntToString(IRNodes[CallNode].ArgCount)+' recu(s)',
+   IRNodes[CallNode].Line,IRNodes[CallNode].Column);
+  Exit;
+ End;
+ ActualIndex:=0;
+ For FormalIndex:=1 To SemanticSymbolCount Do
+  If (SemanticSymbols[FormalIndex].ScopeIndex=ScopeIndex) And
+     (SemanticSymbols[FormalIndex].Kind=SYM_PARAM) Then Begin
+   Inc(ActualIndex);
+   I:=IRArguments[IRNodes[CallNode].FirstArg+ActualIndex-1];
+   If (SemanticSymbols[FormalIndex].ParamMode=PARAM_VAR) And
+      Not IsIRWritableDesignator(I) Then
+    SemanticError('le parametre VAR '+SemanticSymbols[FormalIndex].Name+
+                  ' exige une variable',IRNodes[I].Line,IRNodes[I].Column)
+   Else If (IRNodes[I].TypeIndex<>0) And
+           Not TypeCompatible(SemanticSymbols[FormalIndex].TypeIndex,
+                              IRNodes[I].TypeIndex) Then
+    SemanticError('type incompatible pour le parametre '+
+     SemanticSymbols[FormalIndex].Name+' de '+
+     SemanticSymbols[ProcedureSymbol].Name,
+     IRNodes[I].Line,IRNodes[I].Column);
+  End;
+End;
+
+Function ParseIRPrimary(Var NodeIndex:Integer):Boolean;
+Var
+ Tok,NameTok:TToken;
+ SymbolIndex,TypeIndex,BaseNode,SelectorNode,ArgNode,FieldSymbol:Integer;
+ Args:TIRArgumentList;
+ ArgCount:Integer;
+ Name:String;
+ Kind:TTypeKind;
+Begin
+ ParseIRPrimary:=False;
+ NodeIndex:=0;
+ Tok:=IRToken;
+ Case Tok.Kind Of
+  TK_INTEGER,TK_REAL,TK_STRING,TK_CHAR:Begin
+   TypeIndex:=LiteralType(Tok);
+   NodeIndex:=NewIRNode(IR_LITERAL,TypeIndex,0,0,'',Tok.Text,
+                        Tok.Line,Tok.Column);
+   If Tok.Kind=TK_INTEGER Then IRNodes[NodeIndex].IntegerVal:=Tok.IntegerVal
+   Else If Tok.Kind=TK_REAL Then IRNodes[NodeIndex].RealVal:=Tok.RealVal
+   Else If Tok.Kind=TK_CHAR Then IRNodes[NodeIndex].IntegerVal:=Tok.IntegerVal;
+   IRAdvance;
+   ParseIRPrimary:=True;
+  End;
+  TK_IDENTIFIER:Begin
+   NameTok:=Tok;
+   Name:=Tok.Text;
+   SymbolIndex:=FindVisibleSymbol(Name,IRCurrentScope);
+   TypeIndex:=LiteralType(Tok);
+   IRAdvance;
+   If IRIsSymbol('.') And (IRTokenIndex+2<=Pipeline.TokenCount) And
+      (Pipeline.Tokens[IRTokenIndex+1].Kind=TK_IDENTIFIER) And
+      (Pipeline.Tokens[IRTokenIndex+2].Kind=TK_SYMBOL) And
+      (Pipeline.Tokens[IRTokenIndex+2].Text='(') And
+      ((SymbolIndex=0) Or
+       (SemanticSymbols[SymbolIndex].Kind=SYM_IMPORT)) Then Begin
+    IRAdvance;
+    If IRToken.Kind=TK_IDENTIFIER Then Begin
+     Name:=Name+'.'+IRToken.Text;
+     IRAdvance;
+    End;
+   End;
+   If IRIsSymbol('(') Then Begin
+    If SymbolIndex<>0 Then TypeIndex:=SemanticSymbols[SymbolIndex].TypeIndex;
+    If TypeIndex=0 Then TypeIndex:=BuiltinReturnType(NameTok.Text);
+   NodeIndex:=NewIRNode(IR_CALL,TypeIndex,0,0,'',Name,
+                         NameTok.Line,NameTok.Column);
+    IRNodes[NodeIndex].SymbolIndex:=SymbolIndex;
+    ArgCount:=0;
+    IRAdvance;
+    If Not IRIsSymbol(')') Then Begin
+     If Not ParseIROr(ArgNode) Then Exit;
+     If ArgCount<64 Then Begin Args[ArgCount]:=ArgNode; Inc(ArgCount); End;
+     While IRIsSymbol(',') Do Begin
+      IRAdvance;
+      If Not ParseIROr(ArgNode) Then Exit;
+      If ArgCount<64 Then Begin Args[ArgCount]:=ArgNode; Inc(ArgCount); End;
+     End;
+    End;
+    If IRIsSymbol(')') Then IRAdvance
+    Else Begin
+     SemanticError('parenthese fermante attendue dans l''appel',
+                   IRToken.Line,IRToken.Column);
+     Exit;
+    End;
+    AttachCallArguments(NodeIndex,Args,ArgCount);
+    If ArgCount>0 Then Begin
+     IRNodes[NodeIndex].Left:=Args[0];
+     IRNodes[NodeIndex].Right:=Args[ArgCount-1];
+    End;
+    Name:=UpperStr(NameTok.Text);
+    If ((Name='NEW') Or (Name='NARROW')) And (ArgCount>0) And
+       (IRNodes[Args[ArgCount-1]].Kind=IR_SYMBOL) And
+       (IRNodes[Args[ArgCount-1]].SymbolIndex<>0) And
+       (SemanticSymbols[IRNodes[Args[ArgCount-1]].SymbolIndex].Kind=SYM_TYPE) Then
+     IRNodes[NodeIndex].TypeIndex:=
+      SemanticSymbols[IRNodes[Args[ArgCount-1]].SymbolIndex].TypeIndex;
+    If (Name='ISTYPE') And (ArgCount=2) Then
+     IRNodes[NodeIndex].TypeIndex:=TypeBoolean;
+    If (Name='TYPECODE') And (ArgCount=1) Then
+     IRNodes[NodeIndex].TypeIndex:=TypeInteger;
+   End
+   Else Begin
+    If SymbolIndex=0 Then Begin
+     SemanticError('identificateur inconnu dans l''expression: '+Name,
+                   NameTok.Line,NameTok.Column);
+     TypeIndex:=0;
+    End
+    Else If SemanticSymbols[SymbolIndex].Kind=SYM_PROCEDURE Then
+     TypeIndex:=0
+    Else TypeIndex:=SemanticSymbols[SymbolIndex].TypeIndex;
+    NodeIndex:=NewIRNode(IR_SYMBOL,TypeIndex,0,0,'',Name,
+                         NameTok.Line,NameTok.Column);
+    IRNodes[NodeIndex].SymbolIndex:=SymbolIndex;
+   End;
+   BaseNode:=NodeIndex;
+   While (NodeIndex<>0) And
+         (IRIsSymbol('[') Or IRIsSymbol('^') Or IRIsSymbol('.')) Do Begin
+    TypeIndex:=CanonicalType(IRNodes[NodeIndex].TypeIndex);
+    If IRIsSymbol('[') Then Begin
+     IRAdvance;
+     If Not ParseIROr(SelectorNode) Then Exit;
+     If Not IRIsSymbol(']') Then Begin
+      SemanticError('crochet fermant attendu',IRToken.Line,IRToken.Column);
+      Exit;
+     End;
+     IRAdvance;
+     If (TypeIndex=0) Or
+        (SemanticTypes[TypeIndex].Kind<>TYPE_ARRAY) Then Begin
+      SemanticError('indexation d''une valeur non ARRAY',
+                    NameTok.Line,NameTok.Column);
+      TypeIndex:=0;
+     End
+     Else TypeIndex:=SemanticTypes[TypeIndex].ElementType;
+     NodeIndex:=NewIRNode(IR_INDEX,TypeIndex,NodeIndex,SelectorNode,'[]','',
+                          NameTok.Line,NameTok.Column);
+    End
+    Else If IRIsSymbol('^') Then Begin
+     IRAdvance;
+     If (TypeIndex=0) Or (SemanticTypes[TypeIndex].Kind<>TYPE_REF) Then Begin
+      SemanticError('dereferencement d''une valeur non REF',
+                    NameTok.Line,NameTok.Column);
+      TypeIndex:=0;
+     End
+     Else TypeIndex:=SemanticTypes[TypeIndex].ElementType;
+     NodeIndex:=NewIRNode(IR_DEREF,TypeIndex,NodeIndex,0,'^','',
+                          NameTok.Line,NameTok.Column);
+    End
+    Else Begin
+     IRAdvance;
+     If IRToken.Kind<>TK_IDENTIFIER Then Exit;
+     Tok:=IRToken;
+     IRAdvance;
+     If (IRNodes[NodeIndex].Kind=IR_SYMBOL) And
+        (UpperStr(IRNodes[NodeIndex].Text)='STDIO') And
+        ((UpperStr(Tok.Text)='STDOUT') Or (UpperStr(Tok.Text)='STDERR') Or
+         (UpperStr(Tok.Text)='STDIN')) Then Begin
+      NodeIndex:=NewIRNode(IR_LITERAL,TypeInteger,0,0,'',Tok.Text,
+                           Tok.Line,Tok.Column);
+      If UpperStr(Tok.Text)='STDOUT' Then IRNodes[NodeIndex].IntegerVal:=1
+      Else If UpperStr(Tok.Text)='STDERR' Then IRNodes[NodeIndex].IntegerVal:=2
+      Else IRNodes[NodeIndex].IntegerVal:=0;
+      Continue;
+     End;
+     FieldSymbol:=0;
+     If TypeIndex<>0 Then Begin
+      Kind:=SemanticTypes[TypeIndex].Kind;
+      If Kind=TYPE_REF Then Begin
+       TypeIndex:=SemanticTypes[TypeIndex].ElementType;
+       If TypeIndex<>0 Then Kind:=SemanticTypes[TypeIndex].Kind;
+      End;
+      If Kind=TYPE_RECORD Then
+       FieldSymbol:=FindSymbolInScope(Tok.Text,
+        SemanticTypes[TypeIndex].FieldScope)
+      Else If Kind=TYPE_OBJECT Then
+       FieldSymbol:=FindObjectMember(TypeIndex,Tok.Text);
+     End;
+     If FieldSymbol=0 Then Begin
+      If (IRNodes[NodeIndex].Kind=IR_SYMBOL) And
+         (IRNodes[NodeIndex].SymbolIndex<>0) And
+         (SemanticSymbols[IRNodes[NodeIndex].SymbolIndex].Kind=SYM_TYPE) Then
+       FieldSymbol:=-1
+      Else Begin
+       SemanticError('champ inconnu: '+Tok.Text,Tok.Line,Tok.Column);
+       TypeIndex:=0;
+      End;
+     End
+     Else TypeIndex:=SemanticSymbols[FieldSymbol].TypeIndex;
+     BaseNode:=NodeIndex;
+     If (FieldSymbol>0) And
+        (SemanticSymbols[FieldSymbol].Kind=SYM_METHOD) And
+        IRIsSymbol('(') Then Begin
+      NodeIndex:=NewIRNode(IR_CALL,TypeIndex,0,0,'',Tok.Text,
+                           Tok.Line,Tok.Column);
+      IRNodes[NodeIndex].SymbolIndex:=FieldSymbol;
+      IRNodes[NodeIndex].Receiver:=BaseNode;
+      IRNodes[NodeIndex].VirtualSlot:=SemanticSymbols[FieldSymbol].Offset;
+      ArgCount:=0;
+      IRAdvance;
+      If Not IRIsSymbol(')') Then Begin
+       If Not ParseIROr(ArgNode) Then Exit;
+       If ArgCount<64 Then Begin Args[ArgCount]:=ArgNode; Inc(ArgCount); End;
+       While IRIsSymbol(',') Do Begin
+        IRAdvance;
+        If Not ParseIROr(ArgNode) Then Exit;
+        If ArgCount<64 Then Begin Args[ArgCount]:=ArgNode; Inc(ArgCount); End;
+       End;
+      End;
+      If IRIsSymbol(')') Then IRAdvance
+      Else SemanticError('parenthese fermante attendue dans l''appel de methode',
+                         IRToken.Line,IRToken.Column);
+      AttachCallArguments(NodeIndex,Args,ArgCount);
+     End
+     Else Begin
+      NodeIndex:=NewIRNode(IR_FIELD,TypeIndex,NodeIndex,0,'.',Tok.Text,
+                           Tok.Line,Tok.Column);
+      If FieldSymbol>0 Then IRNodes[NodeIndex].SymbolIndex:=FieldSymbol;
+     End;
+    End;
+   End;
+   ParseIRPrimary:=BaseNode<>0;
+  End;
+  TK_SYMBOL:Begin
+   If Tok.Text='(' Then Begin
+    IRAdvance;
+    If Not ParseIROr(NodeIndex) Then Exit;
+    If IRIsSymbol(')') Then IRAdvance
+    Else Begin
+     SemanticError('parenthese fermante attendue',
+                   IRToken.Line,IRToken.Column);
+     Exit;
+    End;
+    ParseIRPrimary:=True;
+   End;
+  End;
+ End;
+End;
+
+Function ParseIRUnary(Var NodeIndex:Integer):Boolean;
+Var
+ Tok:TToken;
+ Operand,ResultType:Integer;
+ Op:String;
+Begin
+ Tok:=IRToken;
+ If IRIsSymbol('+') Or IRIsSymbol('-') Or IRIsKeyword(KW_NOT) Then Begin
+  If IRIsKeyword(KW_NOT) Then Op:='NOT' Else Op:=Tok.Text;
+  IRAdvance;
+  If Not ParseIRUnary(Operand) Then Begin
+   ParseIRUnary:=False;
+   Exit;
+  End;
+  ResultType:=IRNodes[Operand].TypeIndex;
+  If Op='NOT' Then Begin
+   If CanonicalType(ResultType)<>CanonicalType(TypeBoolean) Then
+    SemanticError('NOT exige une expression BOOLEAN',Tok.Line,Tok.Column);
+   ResultType:=TypeBoolean;
+  End
+  Else If Not TypeIsNumeric(ResultType) Then
+   SemanticError('operateur unaire '+Op+' exige une expression numerique',
+                 Tok.Line,Tok.Column);
+  NodeIndex:=NewIRNode(IR_UNARY,ResultType,Operand,0,Op,'',
+                       Tok.Line,Tok.Column);
+  ParseIRUnary:=NodeIndex<>0;
+ End
+ Else ParseIRUnary:=ParseIRPrimary(NodeIndex);
+End;
+
+Function ParseIRProduct(Var NodeIndex:Integer):Boolean;
+Var
+ Left,Right,ResultType:Integer;
+ Tok:TToken;
+ Op:String;
+Begin
+ If Not ParseIRUnary(Left) Then Begin ParseIRProduct:=False; Exit; End;
+ While IRIsSymbol('*') Or IRIsSymbol('/') Or
+       IRIsKeyword(KW_DIV) Or IRIsKeyword(KW_MOD) Do Begin
+  Tok:=IRToken;
+  If Tok.Kind=TK_KEYWORD Then Op:=KeywordName(Tok.Keyword) Else Op:=Tok.Text;
+  IRAdvance;
+  If Not ParseIRUnary(Right) Then Begin ParseIRProduct:=False; Exit; End;
+  If Not TypeIsNumeric(IRNodes[Left].TypeIndex) Or
+     Not TypeIsNumeric(IRNodes[Right].TypeIndex) Then
+   SemanticError(Op+' exige deux operandes numeriques',Tok.Line,Tok.Column);
+  If ((Op='DIV') Or (Op='MOD')) And
+     (Not TypeIsInteger(IRNodes[Left].TypeIndex) Or
+      Not TypeIsInteger(IRNodes[Right].TypeIndex)) Then
+   SemanticError(Op+' exige deux operandes entiers',Tok.Line,Tok.Column);
+  ResultType:=IRNumericResult(IRNodes[Left].TypeIndex,
+                              IRNodes[Right].TypeIndex,Op='/');
+  Left:=NewIRNode(IR_BINARY,ResultType,Left,Right,Op,'',
+                  Tok.Line,Tok.Column);
+ End;
+ NodeIndex:=Left;
+ ParseIRProduct:=True;
+End;
+
+Function ParseIRSum(Var NodeIndex:Integer):Boolean;
+Var
+ Left,Right,ResultType:Integer;
+ Tok:TToken;
+ Op:String;
+Begin
+ If Not ParseIRProduct(Left) Then Begin ParseIRSum:=False; Exit; End;
+ While IRIsSymbol('+') Or IRIsSymbol('-') Or IRIsSymbol('&') Do Begin
+  Tok:=IRToken;
+  Op:=Tok.Text;
+  IRAdvance;
+  If Not ParseIRProduct(Right) Then Begin ParseIRSum:=False; Exit; End;
+  If Op='&' Then Begin
+   If (CanonicalType(IRNodes[Left].TypeIndex)<>CanonicalType(TypeText)) Or
+      (CanonicalType(IRNodes[Right].TypeIndex)<>CanonicalType(TypeText)) Then
+    SemanticError('& exige deux operandes TEXT',Tok.Line,Tok.Column);
+   ResultType:=TypeText;
+  End
+  Else Begin
+   If Not TypeIsNumeric(IRNodes[Left].TypeIndex) Or
+      Not TypeIsNumeric(IRNodes[Right].TypeIndex) Then
+    SemanticError(Op+' exige deux operandes numeriques',Tok.Line,Tok.Column);
+   ResultType:=IRNumericResult(IRNodes[Left].TypeIndex,
+                               IRNodes[Right].TypeIndex,False);
+  End;
+  Left:=NewIRNode(IR_BINARY,ResultType,Left,Right,Op,'',
+                  Tok.Line,Tok.Column);
+ End;
+ NodeIndex:=Left;
+ ParseIRSum:=True;
+End;
+
+Function ParseIRCompare(Var NodeIndex:Integer):Boolean;
+Var
+ Left,Right:Integer;
+ Tok:TToken;
+ Op:String;
+Begin
+ If Not ParseIRSum(Left) Then Begin ParseIRCompare:=False; Exit; End;
+ If IRIsSymbol('=') Or IRIsSymbol('#') Or IRIsSymbol('<') Or
+    IRIsSymbol('<=') Or IRIsSymbol('>') Or IRIsSymbol('>=') Or
+    IRIsKeyword(KW_IN) Then Begin
+  Tok:=IRToken;
+  If Tok.Kind=TK_KEYWORD Then Op:=KeywordName(Tok.Keyword) Else Op:=Tok.Text;
+  IRAdvance;
+  If Not ParseIRSum(Right) Then Begin ParseIRCompare:=False; Exit; End;
+  If (Op<>'IN') And
+     Not TypeCompatible(IRNodes[Left].TypeIndex,IRNodes[Right].TypeIndex) And
+     Not TypeCompatible(IRNodes[Right].TypeIndex,IRNodes[Left].TypeIndex) Then
+   SemanticError('operandes incompatibles pour '+Op,Tok.Line,Tok.Column);
+  Left:=NewIRNode(IR_COMPARE,TypeBoolean,Left,Right,Op,'',
+                  Tok.Line,Tok.Column);
+ End;
+ NodeIndex:=Left;
+ ParseIRCompare:=True;
+End;
+
+Function ParseIRAnd(Var NodeIndex:Integer):Boolean;
+Var
+ Left,Right,LabelFalse:Integer;
+ Tok:TToken;
+Begin
+ If Not ParseIRCompare(Left) Then Begin ParseIRAnd:=False; Exit; End;
+ While IRIsKeyword(KW_AND) Do Begin
+  Tok:=IRToken;
+  IRAdvance;
+  If Not ParseIRCompare(Right) Then Begin ParseIRAnd:=False; Exit; End;
+  If (CanonicalType(IRNodes[Left].TypeIndex)<>CanonicalType(TypeBoolean)) Or
+     (CanonicalType(IRNodes[Right].TypeIndex)<>CanonicalType(TypeBoolean)) Then
+   SemanticError('AND exige deux operandes BOOLEAN',Tok.Line,Tok.Column);
+  Inc(IRLabelCounter);
+  LabelFalse:=IRLabelCounter;
+  Left:=NewIRNode(IR_AND_SHORT,TypeBoolean,Left,Right,'AND','',
+                  Tok.Line,Tok.Column);
+  IRNodes[Left].FalseLabel:=LabelFalse;
+ End;
+ NodeIndex:=Left;
+ ParseIRAnd:=True;
+End;
+
+Function ParseIROr(Var NodeIndex:Integer):Boolean;
+Var
+ Left,Right,LabelTrue:Integer;
+ Tok:TToken;
+Begin
+ If Not ParseIRAnd(Left) Then Begin ParseIROr:=False; Exit; End;
+ While IRIsKeyword(KW_OR) Do Begin
+  Tok:=IRToken;
+  IRAdvance;
+  If Not ParseIRAnd(Right) Then Begin ParseIROr:=False; Exit; End;
+  If (CanonicalType(IRNodes[Left].TypeIndex)<>CanonicalType(TypeBoolean)) Or
+     (CanonicalType(IRNodes[Right].TypeIndex)<>CanonicalType(TypeBoolean)) Then
+   SemanticError('OR exige deux operandes BOOLEAN',Tok.Line,Tok.Column);
+  Inc(IRLabelCounter);
+  LabelTrue:=IRLabelCounter;
+  Left:=NewIRNode(IR_OR_SHORT,TypeBoolean,Left,Right,'OR','',
+                  Tok.Line,Tok.Column);
+  IRNodes[Left].TrueLabel:=LabelTrue;
+ End;
+ NodeIndex:=Left;
+ ParseIROr:=True;
+End;
+
+Function ParseIRExpression:Boolean;
+Var
+ NodeIndex:Integer;
+Begin
+ ParseIRExpression:=ParseIROr(NodeIndex);
+End;
+
+Function FindAssignmentTarget(TokenIndex,ScopeIndex:Integer):Integer;
+Var
+ I,StartIndex:Integer;
+Begin
+ FindAssignmentTarget:=0;
+ StartIndex:=TokenIndex-1;
+ While StartIndex>1 Do Begin
+  If (Pipeline.Tokens[StartIndex-1].Kind=TK_SYMBOL) And
+     (Pipeline.Tokens[StartIndex-1].Text=';') Then Break;
+  If (Pipeline.Tokens[StartIndex-1].Kind=TK_KEYWORD) And
+     ((Pipeline.Tokens[StartIndex-1].Keyword=KW_BEGIN) Or
+      (Pipeline.Tokens[StartIndex-1].Keyword=KW_DO) Or
+      (Pipeline.Tokens[StartIndex-1].Keyword=KW_THEN) Or
+      (Pipeline.Tokens[StartIndex-1].Keyword=KW_ELSE)) Then Break;
+  Dec(StartIndex);
+ End;
+ For I:=StartIndex To TokenIndex-1 Do
+  If Pipeline.Tokens[I].Kind=TK_IDENTIFIER Then Begin
+   FindAssignmentTarget:=DesignatorTypeAt(I,ScopeIndex);
+   Exit;
+  End;
+End;
+
+Function ProcedureReturnType(ScopeIndex:Integer):Integer;
+Var
+ ParentScope,SymbolIndex:Integer;
+Begin
+ ProcedureReturnType:=0;
+ If (ScopeIndex<1) Or (ScopeIndex>SemanticScopeCount) Then Exit;
+ If SemanticScopes[ScopeIndex].Kind<>SCOPE_PROCEDURE Then Exit;
+ ParentScope:=SemanticScopes[ScopeIndex].Parent;
+ SymbolIndex:=FindSymbolInScope(SemanticScopes[ScopeIndex].OwnerName,
+                                ParentScope);
+ If (SymbolIndex<>0) And
+    (SemanticSymbols[SymbolIndex].Kind=SYM_PROCEDURE) Then
+  ProcedureReturnType:=SemanticSymbols[SymbolIndex].TypeIndex;
+End;
+
+Function StatementKindName(Kind:TStatementKind):String;
+Begin
+ Case Kind Of
+  ST_EMPTY      :StatementKindName:='vide';
+  ST_ASSIGN     :StatementKindName:='affectation';
+  ST_CALL       :StatementKindName:='appel';
+  ST_BLOCK_BEGIN:StatementKindName:='debut-bloc';
+  ST_BLOCK_END  :StatementKindName:='fin-bloc';
+  ST_IF         :StatementKindName:='if';
+  ST_ELSIF      :StatementKindName:='elsif';
+  ST_ELSE       :StatementKindName:='else';
+  ST_CASE       :StatementKindName:='case';
+  ST_CASE_ARM   :StatementKindName:='branche-case';
+  ST_CASE_ELSE  :StatementKindName:='else-case';
+  ST_RETURN     :StatementKindName:='return';
+  ST_WHILE      :StatementKindName:='while';
+  ST_FOR        :StatementKindName:='for';
+  ST_LOOP       :StatementKindName:='loop';
+  ST_REPEAT     :StatementKindName:='repeat';
+  ST_UNTIL      :StatementKindName:='until';
+  ST_EXIT       :StatementKindName:='exit';
+  Else StatementKindName:='inconnue';
+ End;
+End;
+
+Function NewStatementIR(AKind:TStatementKind;AScopeIndex,AExpressionNode,
+ ATargetNode,AParentIndex:Integer;LineNo,ColumnNo:Integer):Integer;
+Begin
+ NewStatementIR:=0;
+ If StatementCount>=MOD3_MAX_STATEMENTS Then Begin
+  SemanticError('trop d''instructions dans l''IR',LineNo,ColumnNo);
+  Exit;
+ End;
+ Inc(StatementCount);
+ With StatementIR[StatementCount] Do Begin
+  Kind:=AKind;
+  ScopeIndex:=AScopeIndex;
+  ExpressionNode:=AExpressionNode;
+  BoundNode:=0;
+  StepNode:=0;
+  TargetNode:=ATargetNode;
+  ParentIndex:=AParentIndex;
+  StartLabel:=0;
+  FalseLabel:=0;
+  ContinueLabel:=0;
+  EndLabel:=0;
+  CaseLow:=0;
+  CaseHigh:=0;
+  HasCaseRange:=False;
+  Line:=LineNo;
+  Column:=ColumnNo;
+ End;
+ NewStatementIR:=StatementCount;
+End;
+
+Function TokenStartsStatement(Index:Integer):Boolean;
+Var
+ Prev:TToken;
+Begin
+ If Index<=1 Then Begin TokenStartsStatement:=True; Exit; End;
+ Prev:=Pipeline.Tokens[Index-1];
+ TokenStartsStatement:=
+  ((Prev.Kind=TK_SYMBOL) And
+   ((Prev.Text=';') Or (Prev.Text='=>') Or (Prev.Text='|'))) Or
+  ((Prev.Kind=TK_KEYWORD) And
+   ((Prev.Keyword=KW_BEGIN) Or (Prev.Keyword=KW_THEN) Or
+    (Prev.Keyword=KW_ELSE) Or (Prev.Keyword=KW_DO) Or
+    (Prev.Keyword=KW_LOOP) Or (Prev.Keyword=KW_REPEAT)));
+End;
+
+Function ParseIRAt(StartIndex,ScopeIndex:Integer;Var EndIndex:Integer):Integer;
+Var
+ RootNode:Integer;
+Begin
+ IRTokenIndex:=StartIndex;
+ IRCurrentScope:=ScopeIndex;
+ RootNode:=0;
+ If Not IRExpressionStop Then ParseIROr(RootNode);
+ EndIndex:=IRTokenIndex;
+ ParseIRAt:=RootNode;
+End;
+
+Function FindDesignatorStart(AssignIndex:Integer):Integer;
+Var
+ I:Integer;
+Begin
+ FindDesignatorStart:=0;
+ I:=AssignIndex-1;
+ While I>=1 Do Begin
+  If Pipeline.Tokens[I].Kind=TK_IDENTIFIER Then
+   FindDesignatorStart:=I;
+  If (Pipeline.Tokens[I].Kind=TK_SYMBOL) And
+     ((Pipeline.Tokens[I].Text=';') Or (Pipeline.Tokens[I].Text='=>') Or
+      (Pipeline.Tokens[I].Text='|')) Then Break;
+  If (Pipeline.Tokens[I].Kind=TK_KEYWORD) And
+     ((Pipeline.Tokens[I].Keyword=KW_BEGIN) Or
+      (Pipeline.Tokens[I].Keyword=KW_THEN) Or
+      (Pipeline.Tokens[I].Keyword=KW_ELSE) Or
+      (Pipeline.Tokens[I].Keyword=KW_DO)) Then Break;
+  Dec(I);
+ End;
+End;
+
+Function IsObjectOverrideAssignment(AssignIndex:Integer):Boolean;
+Var
+ I:Integer;
+Begin
+ IsObjectOverrideAssignment:=False;
+ I:=AssignIndex-1;
+ While I>=1 Do Begin
+  If (Pipeline.Tokens[I].Kind=TK_KEYWORD) Then Begin
+   If Pipeline.Tokens[I].Keyword=KW_OVERRIDES Then Begin
+    IsObjectOverrideAssignment:=True;
+    Exit;
+   End;
+   If (Pipeline.Tokens[I].Keyword=KW_BEGIN) Or
+      (Pipeline.Tokens[I].Keyword=KW_END) Or
+      (Pipeline.Tokens[I].Keyword=KW_TYPE) Then Exit;
+  End;
+  Dec(I);
+ End;
+End;
+
+Function BuildTargetNode(StartIndex,AssignIndex,ScopeIndex:Integer):Integer;
+Var
+ SavedIndex,EndIndex:Integer;
+Begin
+ SavedIndex:=IRTokenIndex;
+ BuildTargetNode:=ParseIRAt(StartIndex,ScopeIndex,EndIndex);
+ IRTokenIndex:=SavedIndex;
+ If EndIndex<>AssignIndex Then BuildTargetNode:=0;
+End;
+
+Function CaseLiteralAt(Index:Integer;Var Value:LongInt;
+ Var ValueType:Integer):Boolean;
+Var
+ Tok:TToken;
+ SymbolIndex:Integer;
+ V:TConstValue;
+Begin
+ CaseLiteralAt:=False;
+ Tok:=Pipeline.Tokens[Index];
+ V:=InvalidConst;
+ If Tok.Kind=TK_INTEGER Then V:=IntegerConst(Tok.IntegerVal)
+ Else If Tok.Kind=TK_CHAR Then V:=CharConst(Chr(Tok.IntegerVal))
+ Else If Tok.Kind=TK_IDENTIFIER Then Begin
+  SymbolIndex:=FindVisibleSymbol(Tok.Text,ScopeForToken(Index,2));
+  If (SymbolIndex<>0) And (SemanticSymbols[SymbolIndex].Kind=SYM_CONST) Then
+   V:=SemanticSymbols[SymbolIndex].ConstValue;
+ End;
+ If V.Valid And ((V.Kind=CONST_INTEGER) Or (V.Kind=CONST_CHAR)) Then Begin
+  Value:=V.IntegerVal;
+  ValueType:=V.TypeIndex;
+  CaseLiteralAt:=True;
+ End;
+End;
+
+Function IsLoopStatement(Kind:TStatementKind):Boolean;
+Begin
+ IsLoopStatement:=Kind In [ST_WHILE,ST_FOR,ST_LOOP,ST_REPEAT];
+End;
+
+Function ConstantIntegerNode(NodeIndex:Integer;Var Value:LongInt):Boolean;
+Begin
+ ConstantIntegerNode:=False;
+ If (NodeIndex<1) Or (NodeIndex>IRNodeCount) Then Exit;
+ If IRNodes[NodeIndex].Kind=IR_LITERAL Then Begin
+  Value:=IRNodes[NodeIndex].IntegerVal;
+  ConstantIntegerNode:=True;
+ End
+ Else If (IRNodes[NodeIndex].Kind=IR_UNARY) And
+         (IRNodes[NodeIndex].OperatorText='-') And
+         ConstantIntegerNode(IRNodes[NodeIndex].Left,Value) Then Begin
+  Value:=-Value;
+  ConstantIntegerNode:=True;
+ End;
+End;
+
+Procedure BuildStatementIR;
+Var
+ I,ScopeIndex,ExprNode,TargetNode,EndIndex,StartIndex:Integer;
+ StmtIndex,ParentIndex,IfParent,CaseParent,LoopParent:Integer;
+ BoundNode,StepNode,HeaderEnd:Integer;
+ ControlStack:Array[1..256] Of Integer;
+ ControlKind:Array[1..256] Of TStatementKind;
+ StackDepth:Integer;
+ Tok:TToken;
+ LowValue,HighValue,StepValue:LongInt;
+ LowType,HighType:Integer;
+Begin
+ StatementCount:=0;
+ StackDepth:=0;
+ FillChar(ControlStack,SizeOf(ControlStack),0);
+ FillChar(ControlKind,SizeOf(ControlKind),0);
+ I:=1;
+ While I<=Pipeline.TokenCount Do Begin
+  Tok:=Pipeline.Tokens[I];
+  ScopeIndex:=ScopeForToken(I,2);
+  If StackDepth>0 Then ParentIndex:=ControlStack[StackDepth]
+  Else ParentIndex:=0;
+
+  If (Tok.Kind=TK_SYMBOL) And (Tok.Text=';') Then Begin
+   If TokenStartsStatement(I) Then
+    NewStatementIR(ST_EMPTY,ScopeIndex,0,0,ParentIndex,Tok.Line,Tok.Column);
+  End
+  Else If (Tok.Kind=TK_KEYWORD) And (Tok.Keyword=KW_BEGIN) Then
+   NewStatementIR(ST_BLOCK_BEGIN,ScopeIndex,0,0,ParentIndex,
+                  Tok.Line,Tok.Column)
+  Else If (Tok.Kind=TK_KEYWORD) And (Tok.Keyword=KW_WHILE) Then Begin
+   ExprNode:=ParseIRAt(I+1,ScopeIndex,EndIndex);
+   StmtIndex:=NewStatementIR(ST_WHILE,ScopeIndex,ExprNode,0,ParentIndex,
+                            Tok.Line,Tok.Column);
+   Inc(IRLabelCounter);
+   StatementIR[StmtIndex].StartLabel:=IRLabelCounter;
+   Inc(IRLabelCounter);
+   StatementIR[StmtIndex].EndLabel:=IRLabelCounter;
+   If StackDepth<256 Then Begin
+    Inc(StackDepth);
+    ControlStack[StackDepth]:=StmtIndex;
+    ControlKind[StackDepth]:=ST_WHILE;
+   End;
+   I:=EndIndex;
+  End
+  Else If (Tok.Kind=TK_KEYWORD) And (Tok.Keyword=KW_FOR) Then Begin
+   TargetNode:=0;
+   ExprNode:=0;
+   BoundNode:=0;
+   StepNode:=0;
+   HeaderEnd:=I;
+   If (I+2<=Pipeline.TokenCount) And
+      (Pipeline.Tokens[I+1].Kind=TK_IDENTIFIER) And
+      (Pipeline.Tokens[I+2].Kind=TK_SYMBOL) And
+      (Pipeline.Tokens[I+2].Text=':=') Then Begin
+    TargetNode:=BuildTargetNode(I+1,I+2,ScopeIndex);
+    ExprNode:=ParseIRAt(I+3,ScopeIndex,EndIndex);
+    If (EndIndex<=Pipeline.TokenCount) And
+       (Pipeline.Tokens[EndIndex].Kind=TK_KEYWORD) And
+       (Pipeline.Tokens[EndIndex].Keyword=KW_TO) Then Begin
+     BoundNode:=ParseIRAt(EndIndex+1,ScopeIndex,HeaderEnd);
+     If (HeaderEnd<=Pipeline.TokenCount) And
+        (Pipeline.Tokens[HeaderEnd].Kind=TK_KEYWORD) And
+        (Pipeline.Tokens[HeaderEnd].Keyword=KW_BY) Then
+      StepNode:=ParseIRAt(HeaderEnd+1,ScopeIndex,HeaderEnd);
+    End;
+   End;
+   StmtIndex:=NewStatementIR(ST_FOR,ScopeIndex,ExprNode,TargetNode,
+                            ParentIndex,Tok.Line,Tok.Column);
+   StatementIR[StmtIndex].BoundNode:=BoundNode;
+   StatementIR[StmtIndex].StepNode:=StepNode;
+   Inc(IRLabelCounter);
+   StatementIR[StmtIndex].StartLabel:=IRLabelCounter;
+   Inc(IRLabelCounter);
+   StatementIR[StmtIndex].FalseLabel:=IRLabelCounter;
+   Inc(IRLabelCounter);
+   StatementIR[StmtIndex].ContinueLabel:=IRLabelCounter;
+   Inc(IRLabelCounter);
+   StatementIR[StmtIndex].EndLabel:=IRLabelCounter;
+   If (TargetNode=0) Or (IRNodes[TargetNode].Kind<>IR_SYMBOL) Or
+      (IRNodes[TargetNode].SymbolIndex=0) Or
+      (SemanticSymbols[IRNodes[TargetNode].SymbolIndex].Kind<>SYM_VAR) Then
+    SemanticError('variable de controle FOR invalide',Tok.Line,Tok.Column)
+   Else If CanonicalType(IRNodes[TargetNode].TypeIndex)<>
+           CanonicalType(TypeInteger) Then
+    SemanticError('variable de controle FOR non entiere',Tok.Line,Tok.Column);
+   If (ExprNode=0) Or (BoundNode=0) Then
+    SemanticError('bornes FOR invalides',Tok.Line,Tok.Column)
+   Else Begin
+    If CanonicalType(IRNodes[ExprNode].TypeIndex)<>CanonicalType(TypeInteger) Then
+     SemanticError('borne initiale FOR non entiere',Tok.Line,Tok.Column);
+    If CanonicalType(IRNodes[BoundNode].TypeIndex)<>CanonicalType(TypeInteger) Then
+     SemanticError('borne finale FOR non entiere',Tok.Line,Tok.Column);
+   End;
+   If (StepNode<>0) And
+      (CanonicalType(IRNodes[StepNode].TypeIndex)<>CanonicalType(TypeInteger)) Then
+    SemanticError('pas FOR non entier',Tok.Line,Tok.Column);
+   If (StepNode<>0) And ConstantIntegerNode(StepNode,StepValue) And
+      (StepValue=0) Then
+    SemanticError('le pas BY d''une boucle FOR ne peut pas etre nul',
+                  Tok.Line,Tok.Column);
+   If StackDepth<256 Then Begin
+    Inc(StackDepth);
+    ControlStack[StackDepth]:=StmtIndex;
+    ControlKind[StackDepth]:=ST_FOR;
+   End;
+   I:=HeaderEnd;
+  End
+  Else If (Tok.Kind=TK_KEYWORD) And (Tok.Keyword=KW_LOOP) Then Begin
+   StmtIndex:=NewStatementIR(ST_LOOP,ScopeIndex,0,0,ParentIndex,
+                            Tok.Line,Tok.Column);
+   Inc(IRLabelCounter);
+   StatementIR[StmtIndex].StartLabel:=IRLabelCounter;
+   Inc(IRLabelCounter);
+   StatementIR[StmtIndex].EndLabel:=IRLabelCounter;
+   If StackDepth<256 Then Begin
+    Inc(StackDepth);
+    ControlStack[StackDepth]:=StmtIndex;
+    ControlKind[StackDepth]:=ST_LOOP;
+   End;
+  End
+  Else If (Tok.Kind=TK_KEYWORD) And (Tok.Keyword=KW_REPEAT) Then Begin
+   StmtIndex:=NewStatementIR(ST_REPEAT,ScopeIndex,0,0,ParentIndex,
+                            Tok.Line,Tok.Column);
+   Inc(IRLabelCounter);
+   StatementIR[StmtIndex].StartLabel:=IRLabelCounter;
+   Inc(IRLabelCounter);
+   StatementIR[StmtIndex].EndLabel:=IRLabelCounter;
+   If StackDepth<256 Then Begin
+    Inc(StackDepth);
+    ControlStack[StackDepth]:=StmtIndex;
+    ControlKind[StackDepth]:=ST_REPEAT;
+   End;
+  End
+  Else If (Tok.Kind=TK_KEYWORD) And (Tok.Keyword=KW_UNTIL) Then Begin
+   LoopParent:=0;
+   If (StackDepth>0) And (ControlKind[StackDepth]=ST_REPEAT) Then
+    LoopParent:=ControlStack[StackDepth];
+   ExprNode:=ParseIRAt(I+1,ScopeIndex,EndIndex);
+   NewStatementIR(ST_UNTIL,ScopeIndex,ExprNode,0,LoopParent,
+                  Tok.Line,Tok.Column);
+   If LoopParent=0 Then
+    SemanticError('UNTIL sans REPEAT',Tok.Line,Tok.Column)
+   Else Dec(StackDepth);
+   I:=EndIndex-1;
+  End
+  Else If (Tok.Kind=TK_KEYWORD) And (Tok.Keyword=KW_EXIT) Then Begin
+   LoopParent:=0;
+   StartIndex:=StackDepth;
+   While StartIndex>0 Do Begin
+    If IsLoopStatement(ControlKind[StartIndex]) Then Begin
+     LoopParent:=ControlStack[StartIndex];
+     Break;
+    End;
+    Dec(StartIndex);
+   End;
+   NewStatementIR(ST_EXIT,ScopeIndex,0,0,LoopParent,Tok.Line,Tok.Column);
+   If LoopParent=0 Then
+    SemanticError('EXIT utilise hors d''une boucle',Tok.Line,Tok.Column);
+  End
+  Else If (Tok.Kind=TK_KEYWORD) And (Tok.Keyword=KW_IF) Then Begin
+   ExprNode:=ParseIRAt(I+1,ScopeIndex,EndIndex);
+   StmtIndex:=NewStatementIR(ST_IF,ScopeIndex,ExprNode,0,ParentIndex,
+                            Tok.Line,Tok.Column);
+   Inc(IRLabelCounter);
+   StatementIR[StmtIndex].FalseLabel:=IRLabelCounter;
+   Inc(IRLabelCounter);
+   StatementIR[StmtIndex].EndLabel:=IRLabelCounter;
+   If StackDepth<256 Then Begin
+    Inc(StackDepth);
+    ControlStack[StackDepth]:=StmtIndex;
+    ControlKind[StackDepth]:=ST_IF;
+   End;
+  End
+  Else If (Tok.Kind=TK_KEYWORD) And (Tok.Keyword=KW_ELSIF) Then Begin
+   IfParent:=0;
+   If StackDepth>0 Then IfParent:=ControlStack[StackDepth];
+   ExprNode:=ParseIRAt(I+1,ScopeIndex,EndIndex);
+   StmtIndex:=NewStatementIR(ST_ELSIF,ScopeIndex,ExprNode,0,IfParent,
+                            Tok.Line,Tok.Column);
+   Inc(IRLabelCounter);
+   StatementIR[StmtIndex].FalseLabel:=IRLabelCounter;
+   If IfParent<>0 Then StatementIR[StmtIndex].EndLabel:=
+    StatementIR[IfParent].EndLabel;
+  End
+  Else If (Tok.Kind=TK_KEYWORD) And (Tok.Keyword=KW_ELSE) Then Begin
+   If (StackDepth>0) And (ControlKind[StackDepth]=ST_CASE) Then
+    NewStatementIR(ST_CASE_ELSE,ScopeIndex,0,0,
+                   ControlStack[StackDepth],Tok.Line,Tok.Column)
+   Else Begin
+    IfParent:=0;
+    If StackDepth>0 Then IfParent:=ControlStack[StackDepth];
+    NewStatementIR(ST_ELSE,ScopeIndex,0,0,IfParent,Tok.Line,Tok.Column);
+   End;
+  End
+  Else If (Tok.Kind=TK_KEYWORD) And (Tok.Keyword=KW_CASE) Then Begin
+   ExprNode:=ParseIRAt(I+1,ScopeIndex,EndIndex);
+   StmtIndex:=NewStatementIR(ST_CASE,ScopeIndex,ExprNode,0,ParentIndex,
+                            Tok.Line,Tok.Column);
+   Inc(IRLabelCounter);
+   StatementIR[StmtIndex].EndLabel:=IRLabelCounter;
+   If StackDepth<256 Then Begin
+    Inc(StackDepth);
+    ControlStack[StackDepth]:=StmtIndex;
+    ControlKind[StackDepth]:=ST_CASE;
+   End;
+  End
+  Else If (Tok.Kind=TK_SYMBOL) And (Tok.Text='|') And
+          (StackDepth>0) And (ControlKind[StackDepth]=ST_CASE) Then Begin
+   CaseParent:=ControlStack[StackDepth];
+   StartIndex:=I+1;
+   While StartIndex<=Pipeline.TokenCount Do Begin
+    If CaseLiteralAt(StartIndex,LowValue,LowType) Then Begin
+     HighValue:=LowValue;
+     HighType:=LowType;
+     If (StartIndex+2<=Pipeline.TokenCount) And
+        (Pipeline.Tokens[StartIndex+1].Kind=TK_SYMBOL) And
+        (Pipeline.Tokens[StartIndex+1].Text='..') And
+        CaseLiteralAt(StartIndex+2,HighValue,HighType) Then Inc(StartIndex,2);
+     StmtIndex:=NewStatementIR(ST_CASE_ARM,ScopeIndex,0,0,CaseParent,
+                              Tok.Line,Tok.Column);
+     StatementIR[StmtIndex].CaseLow:=LowValue;
+     StatementIR[StmtIndex].CaseHigh:=HighValue;
+     StatementIR[StmtIndex].HasCaseRange:=HighValue<>LowValue;
+     Inc(IRLabelCounter);
+     StatementIR[StmtIndex].StartLabel:=IRLabelCounter;
+     Inc(IRLabelCounter);
+     StatementIR[StmtIndex].FalseLabel:=IRLabelCounter;
+    End;
+    Inc(StartIndex);
+    If (StartIndex>Pipeline.TokenCount) Or
+       ((Pipeline.Tokens[StartIndex].Kind=TK_SYMBOL) And
+        (Pipeline.Tokens[StartIndex].Text='=>')) Then Break;
+    If Not ((Pipeline.Tokens[StartIndex].Kind=TK_SYMBOL) And
+            (Pipeline.Tokens[StartIndex].Text=',')) Then Break;
+    Inc(StartIndex);
+   End;
+  End
+  Else If (Tok.Kind=TK_KEYWORD) And (Tok.Keyword=KW_END) Then Begin
+   NewStatementIR(ST_BLOCK_END,ScopeIndex,0,0,ParentIndex,
+                  Tok.Line,Tok.Column);
+   If StackDepth>0 Then Dec(StackDepth);
+  End
+  Else If (Tok.Kind=TK_KEYWORD) And (Tok.Keyword=KW_RETURN) Then Begin
+   ExprNode:=ParseIRAt(I+1,ScopeIndex,EndIndex);
+   NewStatementIR(ST_RETURN,ScopeIndex,ExprNode,0,ParentIndex,
+                  Tok.Line,Tok.Column);
+   If (ScopeIndex<1) Or (ScopeIndex>SemanticScopeCount) Or
+      (SemanticScopes[ScopeIndex].Kind<>SCOPE_PROCEDURE) Then
+    SemanticError('RETURN utilise hors d''une procedure',
+                  Tok.Line,Tok.Column)
+   Else If (ProcedureReturnType(ScopeIndex)=0) And (ExprNode<>0) Then
+    SemanticError('une procedure sans resultat ne peut pas retourner de valeur',
+                  Tok.Line,Tok.Column)
+   Else If (ProcedureReturnType(ScopeIndex)<>0) And (ExprNode=0) Then
+    SemanticError('valeur RETURN attendue',Tok.Line,Tok.Column);
+  End
+  Else If (Tok.Kind=TK_SYMBOL) And (Tok.Text=':=') Then Begin
+   If IsObjectOverrideAssignment(I) Then Begin
+    Inc(I);
+    Continue;
+   End;
+   StartIndex:=FindDesignatorStart(I);
+   TargetNode:=BuildTargetNode(StartIndex,I,ScopeIndex);
+   ExprNode:=ParseIRAt(I+1,ScopeIndex,EndIndex);
+   StmtIndex:=NewStatementIR(ST_ASSIGN,ScopeIndex,ExprNode,TargetNode,
+                            ParentIndex,Tok.Line,Tok.Column);
+   If (TargetNode=0) Or
+      Not (IRNodes[TargetNode].Kind In
+       [IR_SYMBOL,IR_INDEX,IR_FIELD,IR_DEREF]) Then
+    SemanticError('destination d''affectation invalide',Tok.Line,Tok.Column)
+   Else If Not IsIRWritableDesignator(TargetNode) Then
+    SemanticError('destination d''affectation en lecture seule',
+                  Tok.Line,Tok.Column);
+  End
+  Else If (Tok.Kind=TK_IDENTIFIER) And TokenStartsStatement(I) Then Begin
+   StartIndex:=I;
+   If (I+1<=Pipeline.TokenCount) And
+      (Pipeline.Tokens[I+1].Kind=TK_SYMBOL) And
+      ((Pipeline.Tokens[I+1].Text='(') Or
+       (Pipeline.Tokens[I+1].Text='.')) Then Begin
+    ExprNode:=ParseIRAt(StartIndex,ScopeIndex,EndIndex);
+    If (ExprNode<>0) And (IRNodes[ExprNode].Kind=IR_CALL) Then
+     NewStatementIR(ST_CALL,ScopeIndex,ExprNode,0,ParentIndex,
+                    Tok.Line,Tok.Column);
+   End;
+  End;
+  Inc(I);
+ End;
+End;
+
+Procedure BuildExpressionRoots;
+Var
+ I,NodeIndex,ScopeIndex,TargetType:Integer;
+ Tok:TToken;
+ RootKind:TIRRootKind;
+ BeginIndex:Integer;
+Begin
+ I:=1;
+ While I<=Pipeline.TokenCount Do Begin
+  Tok:=Pipeline.Tokens[I];
+  BeginIndex:=0;
+  TargetType:=0;
+  RootKind:=IR_ROOT_EXPRESSION;
+  If (Tok.Kind=TK_SYMBOL) And (Tok.Text=':=') Then Begin
+   If IsObjectOverrideAssignment(I) Then Begin
+    Inc(I);
+    Continue;
+   End;
+   ScopeIndex:=ScopeForToken(I,2);
+   TargetType:=FindAssignmentTarget(I,ScopeIndex);
+   BeginIndex:=I+1;
+   RootKind:=IR_ROOT_ASSIGN;
+  End
+  Else If (Tok.Kind=TK_KEYWORD) And (Tok.Keyword=KW_RETURN) Then Begin
+   ScopeIndex:=ScopeForToken(I,2);
+   BeginIndex:=I+1;
+   TargetType:=ProcedureReturnType(ScopeIndex);
+   RootKind:=IR_ROOT_RETURN;
+  End
+  Else If (Tok.Kind=TK_KEYWORD) And
+          ((Tok.Keyword=KW_IF) Or (Tok.Keyword=KW_ELSIF) Or
+           (Tok.Keyword=KW_WHILE) Or (Tok.Keyword=KW_UNTIL)) Then Begin
+   ScopeIndex:=ScopeForToken(I,2);
+   BeginIndex:=I+1;
+   TargetType:=TypeBoolean;
+   RootKind:=IR_ROOT_CONDITION;
+  End;
+
+  If BeginIndex<>0 Then Begin
+   IRTokenIndex:=BeginIndex;
+   IRCurrentScope:=ScopeIndex;
+   If Not IRExpressionStop And ParseIROr(NodeIndex) Then Begin
+    AddIRRoot(RootKind,NodeIndex,ScopeIndex,TargetType,
+              Pipeline.Tokens[BeginIndex].Line,
+              Pipeline.Tokens[BeginIndex].Column);
+    If (TargetType<>0) And (IRNodes[NodeIndex].TypeIndex<>0) And
+       Not TypeCompatible(TargetType,IRNodes[NodeIndex].TypeIndex) Then
+     SemanticError('expression '+TypeName(IRNodes[NodeIndex].TypeIndex)+
+                   ' incompatible avec '+TypeName(TargetType),
+                   Pipeline.Tokens[BeginIndex].Line,
+                   Pipeline.Tokens[BeginIndex].Column);
+   End;
+  End;
+  Inc(I);
+ End;
+End;
+
+Procedure ValidateIRCalls;
+Var
+ I,J:Integer;
+ Duplicate:Boolean;
+Begin
+ For I:=1 To IRNodeCount Do
+  If IRNodes[I].Kind=IR_CALL Then Begin
+   Duplicate:=False;
+   For J:=1 To I-1 Do
+    If (IRNodes[J].Kind=IR_CALL) And
+       (IRNodes[J].Line=IRNodes[I].Line) And
+       (IRNodes[J].Column=IRNodes[I].Column) And
+       (IRNodes[J].Text=IRNodes[I].Text) Then Begin
+     Duplicate:=True;
+     Break;
+    End;
+   If Not Duplicate Then
+    ValidateProcedureCall(I,IRNodes[I].SymbolIndex);
+  End;
+End;
+
+Procedure TraceExpressionIR;
+Var
+ I:Integer;
+Begin
+ If Options.Verbose Then Begin
+  WriteLn('IR expr: ',IRNodeCount,' noeuds, ',IRRootCount,' racines');
+  For I:=1 To IRNodeCount Do
+   WriteLn('IR ',I,': ',IRKindName(IRNodes[I].Kind),
+           ' type=',TypeName(IRNodes[I].TypeIndex),
+           ' op=',IRNodes[I].OperatorText,
+           ' left=',IRNodes[I].Left,' right=',IRNodes[I].Right,
+           ' labels=',IRNodes[I].TrueLabel,'/',IRNodes[I].FalseLabel,
+           ' @ ',IRNodes[I].Line,':',IRNodes[I].Column);
+  For I:=1 To IRRootCount Do
+   WriteLn('IR root ',I,': kind=',Ord(IRRoots[I].Kind),
+           ' node=',IRRoots[I].NodeIndex,
+           ' scope=',IRRoots[I].ScopeIndex,
+           ' cible=',TypeName(IRRoots[I].TargetType));
+ End
+ Else WriteLn('IR     : ',IRNodeCount,' noeuds d''expression');
+End;
+
+Procedure TraceStatementIR;
+Var
+ I:Integer;
+ RangeText:String;
+Begin
+ If Options.Verbose Then Begin
+  WriteLn('IR stmt: ',StatementCount,' instructions');
+  For I:=1 To StatementCount Do Begin
+   RangeText:='';
+   If StatementIR[I].Kind=ST_CASE_ARM Then Begin
+    RangeText:=' valeur='+IntToString(StatementIR[I].CaseLow);
+    If StatementIR[I].HasCaseRange Then
+     RangeText:=RangeText+'..'+IntToString(StatementIR[I].CaseHigh);
+   End;
+   WriteLn('ST ',I,': ',StatementKindName(StatementIR[I].Kind),
+           ' expr=',StatementIR[I].ExpressionNode,
+           ' cible=',StatementIR[I].TargetNode,
+           ' parent=',StatementIR[I].ParentIndex,
+           ' labels=',StatementIR[I].StartLabel,'/',
+           StatementIR[I].FalseLabel,'/',StatementIR[I].EndLabel,
+           RangeText,' @ ',StatementIR[I].Line,':',
+           StatementIR[I].Column);
+  End;
+ End
+ Else WriteLn('Stmt   : ',StatementCount,' instructions IR');
+End;
+
 Procedure BuildSimpleIR;
 Begin
  EnterStage(CS_IR);
+ IRNodeCount:=0;
+ IRArgumentCount:=0;
+ IRRootCount:=0;
+ IRTokenIndex:=1;
+ IRCurrentScope:=2;
+ IRLabelCounter:=0;
+ BuildExpressionRoots;
+ BuildStatementIR;
+ ValidateIRCalls;
+ If Pipeline.ErrorCount<>0 Then Exit;
  FinishStage(CS_IR);
+ TraceExpressionIR;
+ TraceStatementIR;
 End;
 
 Procedure EmitOptionalAsm;
