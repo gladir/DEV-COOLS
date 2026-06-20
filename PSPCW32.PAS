@@ -1998,6 +1998,29 @@ Begin
   EmitRaw(PSP_RT_PFX + 'RESP_CCNAME DB  ''Cache-Control'',0');
   EmitRaw(PSP_RT_PFX + 'RESP_CTPFX  DB  ''text/html; charset='',0');
   EmitBlankLine;
+  { Response.Cookies(nom)[(sous-cle)|.Expires] := valeur (style
+    ASP). Les cookies a emettre sont accumules dans RC_KEYS/
+    RC_VALS/RC_EXP (un cookie dictionnaire peut etre construit
+    par plusieurs appels successifs avec (sous-cle)), puis tous
+    emis en une seule fois, sous forme d entetes "Set-Cookie: ",
+    juste avant le premier affichage reel (voir _PSPRT_PRINTSTR
+    et _PSPRT_RCMAYBEFLUSH) — comme tous les autres entetes, les
+    appels Response.Cookies doivent donc precder tout Write/
+    WriteLn/fragment HTML. }
+  EmitComment('--- Response.Cookies buffers ---');
+  EmitRaw(PSP_RT_PFX + 'RESP_SETCOOKIE DB  ''Set-Cookie: '',0');
+  EmitRaw(PSP_RT_PFX + 'RESP_EQSIGN    DB  ''='',0');
+  EmitRaw(PSP_RT_PFX + 'RESP_EXPPFX    DB  ''; expires='',0');
+  EmitRaw(PSP_RT_PFX + 'RC_KEYS    DB  ' +
+          IntToStr(MAX_QS_PAIRS * MAX_QS_KEYLEN) + ' DUP(0)');
+  EmitRaw(PSP_RT_PFX + 'RC_VALS    DB  ' +
+          IntToStr(MAX_QS_PAIRS * MAX_QS_VALLEN) + ' DUP(0)');
+  EmitRaw(PSP_RT_PFX + 'RC_EXP     DB  ' +
+          IntToStr(MAX_QS_PAIRS * MAX_QS_VALLEN) + ' DUP(0)');
+  EmitRaw(PSP_RT_PFX + 'RC_N       DD  0');
+  EmitRaw(PSP_RT_PFX + 'RC_TMPNAME DD  0');
+  EmitRaw(PSP_RT_PFX + 'RC_FLUSHED DD  0');
+  EmitBlankLine;
   { Response.Buffer : tampon de sortie optionnel. Tant que
     RESP_BUFON = 0 (defaut), _PSPRT_PRINTSTR ecrit immediatement
     sur stdout (comportement inchange). Quand Response.Buffer :=
@@ -3073,6 +3096,7 @@ Begin
   End;
   EmitBlankLine;
   EmitComment('--- Sortie programme ---');
+  EmitInstrA('CALL', PSP_RT_PFX + 'RCMAYBEFLUSH');
   EmitInstrA('CALL', PSP_RT_PFX + 'RESPFLUSHBUF');
   EmitInstrA('PUSH', '0');
   EmitInstrA('CALL', '_ExitProcess@4');
@@ -3090,9 +3114,14 @@ Begin
     { _PSPRT_PRINTSTR : afficher chaine ASCIIZ pointee par ESI.
       Si Response.Buffer est actif (RESP_BUFON<>0), accumule dans
       RESP_BUFFER (tronque si la capacite RESP_BUFCAP est atteinte)
-      au lieu d ecrire immediatement sur stdout. }
+      au lieu d ecrire immediatement sur stdout. Avant tout, emet
+      les Response.Cookies en attente (RCMAYBEFLUSH) : ainsi le
+      premier affichage reel d un script est toujours precede des
+      Set-Cookie accumules, sans action explicite du script. }
     EmitLabel(PSP_RT_PFX + 'PRINTSTR');
     EmitInstrA('PUSH', 'ESI');
+    EmitInstrA('CALL', PSP_RT_PFX + 'RCMAYBEFLUSH');
+    EmitInstrAB('MOV', 'ESI', 'DWORD PTR [ESP]');
     EmitInstrAB('MOV', 'EDI', 'ESI');
     EmitComment('calculer la longueur');
     EmitInstrAB('XOR', 'ECX', 'ECX');
@@ -4028,6 +4057,254 @@ Begin
     EmitInstrAB('MOV', 'EAX', 'EDI');
     EmitInstrA('POP', 'EDI');
     EmitInstrA('POP', 'EBX');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { ========================================== }
+    { Response.Cookies (style ASP) RUNTIME       }
+    { ========================================== }
+    EmitComment('========================================');
+    EmitComment('  Response.Cookies RUNTIME');
+    EmitComment('========================================');
+    EmitBlankLine;
+
+    { _PSPRT_RCFIND : ESI=nom ASCIIZ -> EAX = index dans la table
+      RC_KEYS/RC_VALS/RC_EXP (cree une entree vide si absente),
+      ou -1 si la table est pleine (MAX_QS_PAIRS atteint). }
+    EmitComment('RCFIND: ESI=nom -> EAX=index (cree si absent)');
+    EmitLabel(PSP_RT_PFX + 'RCFIND');
+    EmitInstrA('PUSH', 'EBX');
+    EmitInstrA('PUSH', 'ECX');
+    EmitInstrA('PUSH', 'EDX');
+    EmitInstrA('PUSH', 'EDI');
+    EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'RC_TMPNAME]', 'ESI');
+    EmitInstrAB('XOR', 'ECX', 'ECX');
+    EmitLabel(PSP_RT_PFX + 'RCFIND_LOOP');
+    EmitInstrAB('CMP', 'ECX', 'DWORD PTR [' + PSP_RT_PFX + 'RC_N]');
+    EmitInstrA('JAE', PSP_RT_PFX + 'RCFIND_NOTFOUND');
+    EmitInstrAB('MOV', 'EAX', 'ECX');
+    EmitInstrAB('IMUL', 'EAX', IntToStr(MAX_QS_KEYLEN));
+    EmitInstrAB('LEA', 'EDI', PSP_RT_PFX + 'RC_KEYS');
+    EmitInstrAB('ADD', 'EDI', 'EAX');
+    EmitInstrAB('MOV', 'ESI', 'DWORD PTR [' + PSP_RT_PFX + 'RC_TMPNAME]');
+    EmitInstrA('CALL', PSP_RT_PFX + 'STRCMP');
+    EmitInstrAB('CMP', 'EAX', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'RCFIND_FOUND');
+    EmitInstrA('INC', 'ECX');
+    EmitInstrA('JMP', PSP_RT_PFX + 'RCFIND_LOOP');
+    EmitLabel(PSP_RT_PFX + 'RCFIND_NOTFOUND');
+    EmitInstrAB('CMP', 'ECX', IntToStr(MAX_QS_PAIRS));
+    EmitInstrA('JAE', PSP_RT_PFX + 'RCFIND_FULL');
+    EmitInstrAB('MOV', 'EAX', 'ECX');
+    EmitInstrAB('IMUL', 'EAX', IntToStr(MAX_QS_KEYLEN));
+    EmitInstrAB('LEA', 'EDI', PSP_RT_PFX + 'RC_KEYS');
+    EmitInstrAB('ADD', 'EDI', 'EAX');
+    EmitInstrAB('MOV', 'ESI', 'DWORD PTR [' + PSP_RT_PFX + 'RC_TMPNAME]');
+    EmitInstrA('CALL', PSP_RT_PFX + 'RAWCOPY');
+    EmitInstrAB('MOV', 'EAX', 'ECX');
+    EmitInstrAB('IMUL', 'EAX', IntToStr(MAX_QS_VALLEN));
+    EmitInstrAB('LEA', 'EDI', PSP_RT_PFX + 'RC_VALS');
+    EmitInstrAB('ADD', 'EDI', 'EAX');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', '0');
+    EmitInstrAB('MOV', 'EAX', 'ECX');
+    EmitInstrA('INC', 'EAX');
+    EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'RC_N]', 'EAX');
+    EmitInstrA('JMP', PSP_RT_PFX + 'RCFIND_FOUND');
+    EmitLabel(PSP_RT_PFX + 'RCFIND_FULL');
+    EmitInstrAB('MOV', 'EAX', '-1');
+    EmitInstrA('JMP', PSP_RT_PFX + 'RCFIND_DONE');
+    EmitLabel(PSP_RT_PFX + 'RCFIND_FOUND');
+    EmitInstrAB('MOV', 'EAX', 'ECX');
+    EmitLabel(PSP_RT_PFX + 'RCFIND_DONE');
+    EmitInstrA('POP', 'EDI');
+    EmitInstrA('POP', 'EDX');
+    EmitInstrA('POP', 'ECX');
+    EmitInstrA('POP', 'EBX');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_RCSETVAL : ESI=nom, EDX=valeur -> remplace entierement
+      la valeur du cookie "nom" (Response.Cookies(nom) := valeur). }
+    EmitComment('RCSETVAL: ESI=nom, EDX=valeur -> RC_VALS[nom]:=valeur');
+    EmitLabel(PSP_RT_PFX + 'RCSETVAL');
+    EmitInstrA('PUSH', 'ECX');
+    EmitInstrA('PUSH', 'EDI');
+    EmitInstrA('CALL', PSP_RT_PFX + 'RCFIND');
+    EmitInstrAB('CMP', 'EAX', '-1');
+    EmitInstrA('JE', PSP_RT_PFX + 'RCSETVAL_DONE');
+    EmitInstrAB('MOV', 'ECX', 'EAX');
+    EmitInstrAB('IMUL', 'ECX', IntToStr(MAX_QS_VALLEN));
+    EmitInstrAB('LEA', 'EDI', PSP_RT_PFX + 'RC_VALS');
+    EmitInstrAB('ADD', 'EDI', 'ECX');
+    EmitInstrAB('MOV', 'ESI', 'EDX');
+    EmitLabel(PSP_RT_PFX + 'RCSETVAL_CP');
+    EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', 'AL');
+    EmitInstrAB('CMP', 'AL', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'RCSETVAL_DONE');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrA('INC', 'EDI');
+    EmitInstrA('JMP', PSP_RT_PFX + 'RCSETVAL_CP');
+    EmitLabel(PSP_RT_PFX + 'RCSETVAL_DONE');
+    EmitInstrA('POP', 'EDI');
+    EmitInstrA('POP', 'ECX');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_RCSETEXP : ESI=nom, EDX=valeur -> definit l attribut
+      Expires du cookie "nom" (Response.Cookies(nom).Expires := v). }
+    EmitComment('RCSETEXP: ESI=nom, EDX=valeur -> RC_EXP[nom]:=valeur');
+    EmitLabel(PSP_RT_PFX + 'RCSETEXP');
+    EmitInstrA('PUSH', 'ECX');
+    EmitInstrA('PUSH', 'EDI');
+    EmitInstrA('CALL', PSP_RT_PFX + 'RCFIND');
+    EmitInstrAB('CMP', 'EAX', '-1');
+    EmitInstrA('JE', PSP_RT_PFX + 'RCSETEXP_DONE');
+    EmitInstrAB('MOV', 'ECX', 'EAX');
+    EmitInstrAB('IMUL', 'ECX', IntToStr(MAX_QS_VALLEN));
+    EmitInstrAB('LEA', 'EDI', PSP_RT_PFX + 'RC_EXP');
+    EmitInstrAB('ADD', 'EDI', 'ECX');
+    EmitInstrAB('MOV', 'ESI', 'EDX');
+    EmitLabel(PSP_RT_PFX + 'RCSETEXP_CP');
+    EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', 'AL');
+    EmitInstrAB('CMP', 'AL', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'RCSETEXP_DONE');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrA('INC', 'EDI');
+    EmitInstrA('JMP', PSP_RT_PFX + 'RCSETEXP_CP');
+    EmitLabel(PSP_RT_PFX + 'RCSETEXP_DONE');
+    EmitInstrA('POP', 'EDI');
+    EmitInstrA('POP', 'ECX');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_RCSETKEY : ESI=nom, EBX=sous-cle, EDX=valeur -> ajoute
+      "sous-cle=valeur" a la valeur du cookie "nom" (separee par &
+      si elle contient deja d autres sous-cles). Ne remplace pas
+      une sous-cle deja presente du meme nom : un meme appel
+      repete pour la meme sous-cle l ajoute deux fois (limitation
+      assumee, plus simple qu une recherche/remplacement en place
+      a longueur variable). }
+    EmitComment('RCSETKEY: ESI=nom, EBX=cle, EDX=valeur -> ajoute cle=valeur');
+    EmitLabel(PSP_RT_PFX + 'RCSETKEY');
+    EmitInstrA('PUSH', 'ECX');
+    EmitInstrA('PUSH', 'EDI');
+    EmitInstrA('CALL', PSP_RT_PFX + 'RCFIND');
+    EmitInstrAB('CMP', 'EAX', '-1');
+    EmitInstrA('JE', PSP_RT_PFX + 'RCSETKEY_DONE');
+    EmitInstrAB('MOV', 'ECX', 'EAX');
+    EmitInstrAB('IMUL', 'ECX', IntToStr(MAX_QS_VALLEN));
+    EmitInstrAB('LEA', 'EDI', PSP_RT_PFX + 'RC_VALS');
+    EmitInstrAB('ADD', 'EDI', 'ECX');
+    EmitInstrAB('XOR', 'EAX', 'EAX');
+    EmitInstrAB('CMP', 'BYTE PTR [EDI]', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'RCSETKEY_EMPTY');
+    EmitInstrAB('MOV', 'EAX', '1');
+    EmitLabel(PSP_RT_PFX + 'RCSETKEY_EMPTY');
+    EmitLabel(PSP_RT_PFX + 'RCSETKEY_SEEK');
+    EmitInstrAB('CMP', 'BYTE PTR [EDI]', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'RCSETKEY_ATEND');
+    EmitInstrA('INC', 'EDI');
+    EmitInstrA('JMP', PSP_RT_PFX + 'RCSETKEY_SEEK');
+    EmitLabel(PSP_RT_PFX + 'RCSETKEY_ATEND');
+    EmitInstrAB('CMP', 'EAX', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'RCSETKEY_NOAMP');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', '''&''');
+    EmitInstrA('INC', 'EDI');
+    EmitLabel(PSP_RT_PFX + 'RCSETKEY_NOAMP');
+    EmitInstrAB('MOV', 'ESI', 'EBX');
+    EmitLabel(PSP_RT_PFX + 'RCSETKEY_CPK');
+    EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+    EmitInstrAB('CMP', 'AL', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'RCSETKEY_CPKDONE');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', 'AL');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrA('INC', 'EDI');
+    EmitInstrA('JMP', PSP_RT_PFX + 'RCSETKEY_CPK');
+    EmitLabel(PSP_RT_PFX + 'RCSETKEY_CPKDONE');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', '''=''');
+    EmitInstrA('INC', 'EDI');
+    EmitInstrAB('MOV', 'ESI', 'EDX');
+    EmitLabel(PSP_RT_PFX + 'RCSETKEY_CPV');
+    EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', 'AL');
+    EmitInstrAB('CMP', 'AL', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'RCSETKEY_DONE');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrA('INC', 'EDI');
+    EmitInstrA('JMP', PSP_RT_PFX + 'RCSETKEY_CPV');
+    EmitLabel(PSP_RT_PFX + 'RCSETKEY_DONE');
+    EmitInstrA('POP', 'EDI');
+    EmitInstrA('POP', 'ECX');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_RESPCKFLUSH : emet "Set-Cookie: nom=valeur[;
+      expires=exp]" pour chaque cookie accumule dans RC_KEYS/
+      RC_VALS/RC_EXP. Appele automatiquement (voir RCMAYBEFLUSH),
+      jamais directement par le code genere. }
+    EmitComment('RESPCKFLUSH: emet tous les Set-Cookie accumules');
+    EmitLabel(PSP_RT_PFX + 'RESPCKFLUSH');
+    EmitInstrA('PUSH', 'EBX');
+    EmitInstrA('PUSH', 'ECX');
+    EmitInstrA('PUSH', 'EDX');
+    EmitInstrA('PUSH', 'EDI');
+    EmitInstrAB('XOR', 'ECX', 'ECX');
+    EmitLabel(PSP_RT_PFX + 'RCFLUSH_LOOP');
+    EmitInstrAB('CMP', 'ECX', 'DWORD PTR [' + PSP_RT_PFX + 'RC_N]');
+    EmitInstrA('JAE', PSP_RT_PFX + 'RCFLUSH_DONE');
+    EmitInstrAB('LEA', 'ESI', PSP_RT_PFX + 'RESP_SETCOOKIE');
+    EmitInstrA('CALL', PSP_RT_PFX + 'PRINTSTR');
+    EmitInstrAB('MOV', 'EAX', 'ECX');
+    EmitInstrAB('IMUL', 'EAX', IntToStr(MAX_QS_KEYLEN));
+    EmitInstrAB('LEA', 'ESI', PSP_RT_PFX + 'RC_KEYS');
+    EmitInstrAB('ADD', 'ESI', 'EAX');
+    EmitInstrA('CALL', PSP_RT_PFX + 'PRINTSTR');
+    EmitInstrAB('LEA', 'ESI', PSP_RT_PFX + 'RESP_EQSIGN');
+    EmitInstrA('CALL', PSP_RT_PFX + 'PRINTSTR');
+    EmitInstrAB('MOV', 'EAX', 'ECX');
+    EmitInstrAB('IMUL', 'EAX', IntToStr(MAX_QS_VALLEN));
+    EmitInstrAB('LEA', 'ESI', PSP_RT_PFX + 'RC_VALS');
+    EmitInstrAB('ADD', 'ESI', 'EAX');
+    EmitInstrA('CALL', PSP_RT_PFX + 'PRINTSTR');
+    EmitInstrAB('MOV', 'EAX', 'ECX');
+    EmitInstrAB('IMUL', 'EAX', IntToStr(MAX_QS_VALLEN));
+    EmitInstrAB('LEA', 'EDI', PSP_RT_PFX + 'RC_EXP');
+    EmitInstrAB('ADD', 'EDI', 'EAX');
+    EmitInstrAB('CMP', 'BYTE PTR [EDI]', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'RCFLUSH_NOEXP');
+    EmitInstrAB('LEA', 'ESI', PSP_RT_PFX + 'RESP_EXPPFX');
+    EmitInstrA('CALL', PSP_RT_PFX + 'PRINTSTR');
+    EmitInstrAB('MOV', 'ESI', 'EDI');
+    EmitInstrA('CALL', PSP_RT_PFX + 'PRINTSTR');
+    EmitLabel(PSP_RT_PFX + 'RCFLUSH_NOEXP');
+    EmitInstrA('CALL', PSP_RT_PFX + 'WRITECRLF');
+    EmitInstrA('INC', 'ECX');
+    EmitInstrA('JMP', PSP_RT_PFX + 'RCFLUSH_LOOP');
+    EmitLabel(PSP_RT_PFX + 'RCFLUSH_DONE');
+    EmitInstrA('POP', 'EDI');
+    EmitInstrA('POP', 'EDX');
+    EmitInstrA('POP', 'ECX');
+    EmitInstrA('POP', 'EBX');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_RCMAYBEFLUSH : si des cookies sont en attente et pas
+      encore emis, les emet (une seule fois). Appele au debut de
+      PRINTSTR (donc avant le premier affichage reel) et a chaque
+      point de sortie du programme, en filet de securite pour le
+      cas ou Response.Cookies serait utilise sans aucun autre
+      affichage. }
+    EmitComment('RCMAYBEFLUSH: emet les cookies en attente, une fois');
+    EmitLabel(PSP_RT_PFX + 'RCMAYBEFLUSH');
+    EmitInstrAB('CMP', 'DWORD PTR [' + PSP_RT_PFX + 'RC_N]', '0');
+    EmitInstrA('JLE', PSP_RT_PFX + 'RCMAYBE_DONE');
+    EmitInstrAB('CMP', 'DWORD PTR [' + PSP_RT_PFX + 'RC_FLUSHED]', '0');
+    EmitInstrA('JNE', PSP_RT_PFX + 'RCMAYBE_DONE');
+    EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'RC_FLUSHED]', '1');
+    EmitInstrA('CALL', PSP_RT_PFX + 'RESPCKFLUSH');
+    EmitLabel(PSP_RT_PFX + 'RCMAYBE_DONE');
     EmitInstr('RET');
     EmitBlankLine;
 
@@ -8183,6 +8460,7 @@ Begin
       ParseExpr(HaltEv);
       ExprFlushToEAX(HaltEv);
       EmitInstrA('PUSH', 'EAX');
+      EmitInstrA('CALL', PSP_RT_PFX + 'RCMAYBEFLUSH');
       EmitInstrA('CALL', PSP_RT_PFX + 'RESPFLUSHBUF');
       EmitInstrA('CALL', '_ExitProcess@4');
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
@@ -8191,6 +8469,7 @@ Begin
     Else
     Begin
       EmitInstrA('PUSH', '0');
+      EmitInstrA('CALL', PSP_RT_PFX + 'RCMAYBEFLUSH');
       EmitInstrA('CALL', PSP_RT_PFX + 'RESPFLUSHBUF');
       EmitInstrA('CALL', '_ExitProcess@4');
     End;

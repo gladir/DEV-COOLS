@@ -1429,15 +1429,17 @@ End;
 Function ParseHTML(Const HTMLSource: HTMLSourceBuffer): HTMLNodePtr;
 Var
  Pos, StartPos, EndTagPos: LongInt;
- Root, CurrentNode, NewNode, TextNode: HTMLNodePtr;
+ Root, CurrentNode, NewNode, TextNode, SearchNode: HTMLNodePtr;
  TagName, CloseTagName, TextContent: String;
  IsClosingTag, IsSelfClosing: Boolean;
+ CurrentDepth: Integer;
 Begin
  Root := CreateHTMLNode;
  Root^.NodeType := HTML_NODE_ELEMENT;
  Root^.TagName := 'document';
  Root^.TagType := TAG_UNKNOWN;
  CurrentNode := Root;
+ CurrentDepth := 0;
  Pos := 1;
  HTMLParseError := '';
 
@@ -1507,10 +1509,20 @@ Begin
          (HTMLSourceChar(HTMLSource, Pos) <> '>') Do
     Inc(Pos);
    Inc(Pos);
-   { Remonter au parent si le nom correspond }
-   If (CurrentNode <> Root) And
-      (HTMLLowerCase(CurrentNode^.TagName) = HTMLLowerCase(CloseTagName)) Then
-    CurrentNode := CurrentNode^.Parent;
+   { HTML reel est souvent imparfait: chercher l'ancetre correspondant au
+     lieu de laisser chaque balise mal fermee augmenter la profondeur. }
+   SearchNode := CurrentNode;
+   While (SearchNode <> Root) And
+         (HTMLLowerCase(SearchNode^.TagName) <> HTMLLowerCase(CloseTagName)) Do
+    SearchNode := SearchNode^.Parent;
+   If SearchNode <> Root Then Begin
+    While CurrentNode <> SearchNode Do Begin
+     CurrentNode := CurrentNode^.Parent;
+     If CurrentDepth > 0 Then Dec(CurrentDepth);
+    End;
+    CurrentNode := SearchNode^.Parent;
+    If CurrentDepth > 0 Then Dec(CurrentDepth);
+   End;
   End
   Else Begin
    { Balise ouvrante <tag ...> }
@@ -1544,8 +1556,11 @@ Begin
     HTMLAppendChild(CurrentNode, NewNode);
 
     { Si ce n'est pas une balise auto-fermante ou void, descendre dans le noeud }
-    If Not IsSelfClosing And Not IsVoidElement(TagName) Then
+    If Not IsSelfClosing And Not IsVoidElement(TagName) And
+       (CurrentDepth < 128) Then Begin
      CurrentNode := NewNode;
+     Inc(CurrentDepth);
+    End;
    End;
   End;
  End;
@@ -4513,6 +4528,9 @@ Begin
 End;
 
 { Resoudre la cascade CSS pour un element avec heritage }
+Var
+ CSSCascadeDepth: Integer;
+
 Procedure CSSResolveCascade(Element: HTMLNodePtr; Var Style: DOMStyle);
 Var
  ParentStyle: DOMStyle;
@@ -4540,7 +4558,8 @@ Begin
  If Element = Nil Then Exit;
 
  { Obtenir le style herite du parent }
- If Element^.Parent <> Nil Then Begin
+ Inc(CSSCascadeDepth);
+ If (Element^.Parent <> Nil) And (CSSCascadeDepth < 16) Then Begin
   CSSResolveCascade(Element^.Parent, ParentStyle);
   CSSInheritStyle(Style, ParentStyle);
  End;
@@ -4625,6 +4644,7 @@ Begin
  InlineStyle := DOMGetAttribute(Element, 'style');
  If Length(InlineStyle) > 0 Then
   CSSParseInlineStyle(InlineStyle, Style);
+ Dec(CSSCascadeDepth);
 End;
 
 { Appliquer les styles CSS au contexte de rendu }
