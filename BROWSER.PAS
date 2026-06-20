@@ -1557,7 +1557,7 @@ Begin
 
     { Si ce n'est pas une balise auto-fermante ou void, descendre dans le noeud }
     If Not IsSelfClosing And Not IsVoidElement(TagName) And
-       (CurrentDepth < 128) Then Begin
+       (CurrentDepth < 32) Then Begin
      CurrentNode := NewNode;
      Inc(CurrentDepth);
     End;
@@ -3004,28 +3004,32 @@ End;
 Procedure DOMGetElementsByTagNameRecursive(Node: HTMLNodePtr; TagName: String; Var List: DOMNodeList);
 Var
  LowerTag, LowerNodeTag: String;
- Child: HTMLNodePtr;
+ Current: HTMLNodePtr;
 Begin
  If Node = Nil Then Exit;
 
  LowerTag := HTMLLowerCase(TagName);
-
- { Verifier le nom de balise de ce noeud }
- If Node^.NodeType = HTML_NODE_ELEMENT Then Begin
-  LowerNodeTag := HTMLLowerCase(Node^.TagName);
-  If (LowerTag = '*') Or (LowerNodeTag = LowerTag) Then Begin
-   If List.Length < MAX_DOM_QUERY_RESULTS Then Begin
-    Inc(List.Length);
-    List.Nodes[List.Length] := Node;
+ Current := Node;
+ While Current <> Nil Do Begin
+  If Current^.NodeType = HTML_NODE_ELEMENT Then Begin
+   LowerNodeTag := HTMLLowerCase(Current^.TagName);
+   If (LowerTag = '*') Or (LowerNodeTag = LowerTag) Then Begin
+    If List.Length < MAX_DOM_QUERY_RESULTS Then Begin
+     Inc(List.Length);
+     List.Nodes[List.Length] := Current;
+    End;
    End;
   End;
- End;
 
- { Parcourir les enfants }
- Child := Node^.FirstChild;
- While Child <> Nil Do Begin
-  DOMGetElementsByTagNameRecursive(Child, TagName, List);
-  Child := Child^.NextSibling;
+  If Current^.FirstChild <> Nil Then
+   Current := Current^.FirstChild
+  Else Begin
+   While (Current <> Nil) And (Current <> Node) And
+         (Current^.NextSibling = Nil) Do
+    Current := Current^.Parent;
+   If Current = Node Then Current := Nil
+   Else If Current <> Nil Then Current := Current^.NextSibling;
+  End;
  End;
 End;
 
@@ -3071,23 +3075,27 @@ End;
 { Procedure recursive pour chercher des elements par classe }
 Procedure DOMGetElementsByClassNameRecursive(Node: HTMLNodePtr; ClassName: String; Var List: DOMNodeList);
 Var
- Child: HTMLNodePtr;
+ Current: HTMLNodePtr;
 Begin
  If Node = Nil Then Exit;
-
- { Verifier la classe de ce noeud }
- If DOMHasClass(Node, ClassName) Then Begin
-  If List.Length < MAX_DOM_QUERY_RESULTS Then Begin
-   Inc(List.Length);
-   List.Nodes[List.Length] := Node;
+ Current := Node;
+ While Current <> Nil Do Begin
+  If DOMHasClass(Current, ClassName) Then Begin
+   If List.Length < MAX_DOM_QUERY_RESULTS Then Begin
+    Inc(List.Length);
+    List.Nodes[List.Length] := Current;
+   End;
   End;
- End;
 
- { Parcourir les enfants }
- Child := Node^.FirstChild;
- While Child <> Nil Do Begin
-  DOMGetElementsByClassNameRecursive(Child, ClassName, List);
-  Child := Child^.NextSibling;
+  If Current^.FirstChild <> Nil Then
+   Current := Current^.FirstChild
+  Else Begin
+   While (Current <> Nil) And (Current <> Node) And
+         (Current^.NextSibling = Nil) Do
+    Current := Current^.Parent;
+   If Current = Node Then Current := Nil
+   Else If Current <> Nil Then Current := Current^.NextSibling;
+  End;
  End;
 End;
 
@@ -4527,13 +4535,11 @@ Begin
   ChildStyle.Visibility := ParentStyle.Visibility;
 End;
 
-{ Resoudre la cascade CSS pour un element avec heritage }
-Var
- CSSCascadeDepth: Integer;
-
+{ Resoudre la cascade CSS pour un element.
+  L'heritage est transporte par RenderContext pendant le parcours du DOM;
+  remonter recursivement tous les parents ici doublait la profondeur de pile. }
 Procedure CSSResolveCascade(Element: HTMLNodePtr; Var Style: DOMStyle);
 Var
- ParentStyle: DOMStyle;
  I, J, RuleIndex: Integer;
  MatchedRules: Array[1..128] Of CSSMatchedRule;
  MatchedCount: Integer;
@@ -4556,13 +4562,6 @@ Begin
  Style.Border := '';
 
  If Element = Nil Then Exit;
-
- { Obtenir le style herite du parent }
- Inc(CSSCascadeDepth);
- If (Element^.Parent <> Nil) And (CSSCascadeDepth < 16) Then Begin
-  CSSResolveCascade(Element^.Parent, ParentStyle);
-  CSSInheritStyle(Style, ParentStyle);
- End;
 
  { Collecter les regles correspondantes }
  MatchedCount := 0;
@@ -4644,7 +4643,6 @@ Begin
  InlineStyle := DOMGetAttribute(Element, 'style');
  If Length(InlineStyle) > 0 Then
   CSSParseInlineStyle(InlineStyle, Style);
- Dec(CSSCascadeDepth);
 End;
 
 { Appliquer les styles CSS au contexte de rendu }
@@ -12700,6 +12698,7 @@ Begin
  WriteConsoleLine('  /?, /H, -h, --help       Afficher cette aide');
  WriteConsoleLine('  /URL, -u, --url URL      Ouvrir une adresse HTTP ou HTTPS');
  WriteConsoleLine('  /FILE, -f, --file FILE   Ouvrir un fichier HTML local');
+ WriteConsoleLine('  /TEST FILE               Charger, rendre, confirmer puis quitter');
  WriteConsoleLine('');
  WriteConsoleLine('Exemples:');
  WriteConsoleLine('  BROWSER https://www.example.com/');
@@ -12733,17 +12732,30 @@ Begin
                     (P = '-f') Or (P = '--file');
 End;
 
-Procedure ParseCommandLine(Var InitialTarget: String);
+Procedure ParseCommandLine(Var InitialTarget: String; Var TestMode: Boolean);
 Var
- FirstParam: String;
+ FirstParam, LowerParam: String;
 Begin
  InitialTarget := 'https://';
+ TestMode := False;
  If System.ParamCount = 0 Then Exit;
 
  FirstParam := ParamStr(1);
+ LowerParam := HTMLLowerCase(FirstParam);
  If IsHelpParameter(FirstParam) Then Begin
   PrintUsage;
   Halt;
+ End;
+
+ If (LowerParam = 'test') Or (LowerParam = '/test') Or
+    (LowerParam = '--test') Then Begin
+  If System.ParamCount < 2 Then Begin
+   WriteConsoleLine('Erreur: un nom de fichier est requis pour /TEST.');
+   Halt(1);
+  End;
+  InitialTarget := ParamStr(2);
+  TestMode := True;
+  Exit;
  End;
 
  If IsURLParameter(FirstParam) Or IsFileParameter(FirstParam) Then Begin
@@ -12763,9 +12775,10 @@ End;
 Var
  Key: Char;
  InitialTarget: String;
+ TestMode: Boolean;
 
 BEGIN
- ParseCommandLine(InitialTarget);
+ ParseCommandLine(InitialTarget, TestMode);
  InitializeGraphics;
  InitURLBar;
  SetURL(InitialTarget);
@@ -12786,6 +12799,14 @@ BEGIN
  DrawForwardButton;
  DrawRefreshButton;
  DrawFavoriteButton;
+ If TestMode Then Begin
+  { Valider aussi les operations executees uniquement par le mode normal. }
+  ProcessMouseInput;
+  WriteConsoleLine('Chargement, rendu et interface termines sans exception.');
+  If MouseAvailable Then HideMouse;
+  CloseGraph;
+  Halt;
+ End;
  { Boucle principale pour gerer le clavier et la souris }
  URLBarFocused := True;
  Repeat

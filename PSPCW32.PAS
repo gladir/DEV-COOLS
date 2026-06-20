@@ -4245,30 +4245,31 @@ Begin
       RC_VALS/RC_EXP. Appele automatiquement (voir RCMAYBEFLUSH),
       jamais directement par le code genere. }
     EmitComment('RESPCKFLUSH: emet tous les Set-Cookie accumules');
+    EmitComment('(EBX = index de boucle : ECX/EDX/EDI sont ecrases par PRINTSTR)');
     EmitLabel(PSP_RT_PFX + 'RESPCKFLUSH');
     EmitInstrA('PUSH', 'EBX');
     EmitInstrA('PUSH', 'ECX');
     EmitInstrA('PUSH', 'EDX');
     EmitInstrA('PUSH', 'EDI');
-    EmitInstrAB('XOR', 'ECX', 'ECX');
+    EmitInstrAB('XOR', 'EBX', 'EBX');
     EmitLabel(PSP_RT_PFX + 'RCFLUSH_LOOP');
-    EmitInstrAB('CMP', 'ECX', 'DWORD PTR [' + PSP_RT_PFX + 'RC_N]');
+    EmitInstrAB('CMP', 'EBX', 'DWORD PTR [' + PSP_RT_PFX + 'RC_N]');
     EmitInstrA('JAE', PSP_RT_PFX + 'RCFLUSH_DONE');
     EmitInstrAB('LEA', 'ESI', PSP_RT_PFX + 'RESP_SETCOOKIE');
     EmitInstrA('CALL', PSP_RT_PFX + 'PRINTSTR');
-    EmitInstrAB('MOV', 'EAX', 'ECX');
+    EmitInstrAB('MOV', 'EAX', 'EBX');
     EmitInstrAB('IMUL', 'EAX', IntToStr(MAX_QS_KEYLEN));
     EmitInstrAB('LEA', 'ESI', PSP_RT_PFX + 'RC_KEYS');
     EmitInstrAB('ADD', 'ESI', 'EAX');
     EmitInstrA('CALL', PSP_RT_PFX + 'PRINTSTR');
     EmitInstrAB('LEA', 'ESI', PSP_RT_PFX + 'RESP_EQSIGN');
     EmitInstrA('CALL', PSP_RT_PFX + 'PRINTSTR');
-    EmitInstrAB('MOV', 'EAX', 'ECX');
+    EmitInstrAB('MOV', 'EAX', 'EBX');
     EmitInstrAB('IMUL', 'EAX', IntToStr(MAX_QS_VALLEN));
     EmitInstrAB('LEA', 'ESI', PSP_RT_PFX + 'RC_VALS');
     EmitInstrAB('ADD', 'ESI', 'EAX');
     EmitInstrA('CALL', PSP_RT_PFX + 'PRINTSTR');
-    EmitInstrAB('MOV', 'EAX', 'ECX');
+    EmitInstrAB('MOV', 'EAX', 'EBX');
     EmitInstrAB('IMUL', 'EAX', IntToStr(MAX_QS_VALLEN));
     EmitInstrAB('LEA', 'EDI', PSP_RT_PFX + 'RC_EXP');
     EmitInstrAB('ADD', 'EDI', 'EAX');
@@ -4280,7 +4281,7 @@ Begin
     EmitInstrA('CALL', PSP_RT_PFX + 'PRINTSTR');
     EmitLabel(PSP_RT_PFX + 'RCFLUSH_NOEXP');
     EmitInstrA('CALL', PSP_RT_PFX + 'WRITECRLF');
-    EmitInstrA('INC', 'ECX');
+    EmitInstrA('INC', 'EBX');
     EmitInstrA('JMP', PSP_RT_PFX + 'RCFLUSH_LOOP');
     EmitLabel(PSP_RT_PFX + 'RCFLUSH_DONE');
     EmitInstrA('POP', 'EDI');
@@ -8595,6 +8596,79 @@ Begin
       EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'RESP_BUFLEN]', '0');
     End
     Else If (CurToken.Kind = TK_IDENT) And
+            (StrLowerCase(CurToken.Val) = 'cookies') Then
+    Begin
+      { Response.Cookies(nom) := valeur
+        Response.Cookies(nom)(sous-cle) := valeur
+        Response.Cookies(nom).Expires := valeur   (style ASP)
+        Les cookies sont accumules puis emis ensemble, voir
+        RCMAYBEFLUSH/_PSPRT_PRINTSTR ; ces appels doivent donc
+        preceder tout Write/WriteLn/fragment HTML du script. }
+      TplNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        TplNextToken;
+      ParseExpr(Ev1);
+      ExprFlushToEAX(Ev1);
+      EmitInstrA('PUSH', 'EAX');   { sauvegarder pointeur du nom }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        TplNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        { Response.Cookies(nom)(sous-cle) := valeur }
+        TplNextToken;
+        ParseExpr(Ev1);
+        ExprFlushToEAX(Ev1);
+        EmitInstrA('PUSH', 'EAX');   { sauvegarder pointeur de la sous-cle }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          TplNextToken;
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
+          TplNextToken
+        Else
+          WarnMsg('":=" attendu apres Response.Cookies(nom)(cle)');
+        ParseExpr(Ev1);
+        ExprFlushToEAX(Ev1);
+        EmitComment('Response.Cookies(nom)(cle) := valeur');
+        EmitInstrAB('MOV', 'EDX', 'EAX');
+        EmitInstrA('POP', 'EBX');   { sous-cle }
+        EmitInstrA('POP', 'ESI');   { nom }
+        EmitInstrA('CALL', PSP_RT_PFX + 'RCSETKEY');
+      End
+      Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
+      Begin
+        { Response.Cookies(nom).Expires := valeur }
+        TplNextToken;
+        If (CurToken.Kind = TK_IDENT) And
+           (StrLowerCase(CurToken.Val) = 'expires') Then
+          TplNextToken
+        Else
+          WarnMsg('".Expires" attendu apres Response.Cookies(nom)');
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
+          TplNextToken
+        Else
+          WarnMsg('":=" attendu apres Response.Cookies(nom).Expires');
+        ParseExpr(Ev1);
+        ExprFlushToEAX(Ev1);
+        EmitComment('Response.Cookies(nom).Expires := valeur');
+        EmitInstrAB('MOV', 'EDX', 'EAX');
+        EmitInstrA('POP', 'ESI');   { nom }
+        EmitInstrA('CALL', PSP_RT_PFX + 'RCSETEXP');
+      End
+      Else
+      Begin
+        { Response.Cookies(nom) := valeur }
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
+          TplNextToken
+        Else
+          WarnMsg('":=" attendu apres Response.Cookies(nom)');
+        ParseExpr(Ev1);
+        ExprFlushToEAX(Ev1);
+        EmitComment('Response.Cookies(nom) := valeur');
+        EmitInstrAB('MOV', 'EDX', 'EAX');
+        EmitInstrA('POP', 'ESI');   { nom }
+        EmitInstrA('CALL', PSP_RT_PFX + 'RCSETVAL');
+      End;
+    End
+    Else If (CurToken.Kind = TK_IDENT) And
             (StrLowerCase(CurToken.Val) = 'appendtolog') Then
     Begin
       { Response.AppendToLog(message) (style ASP) : ecrit le
@@ -8657,8 +8731,8 @@ Begin
     End
     Else
       WarnMsg('".Redirect", ".AddHeader", ".ContentType", ".CacheControl", ' +
-              '".Charset", ".Clear", ".AppendToLog", ".BinaryWrite" ou ' +
-              '".Buffer" attendu apres Response');
+              '".Charset", ".Clear", ".Cookies", ".AppendToLog", ' +
+              '".BinaryWrite" ou ".Buffer" attendu apres Response');
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
       TplNextToken;
     Exit;
