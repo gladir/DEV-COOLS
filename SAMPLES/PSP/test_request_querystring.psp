@@ -1,0 +1,30 @@
+<%@ Language="PascalScript" %>
+<html>
+<head><title>Test Request.QueryString</title></head>
+<body>
+<h1>Test Request.QueryString (style ASP)</h1>
+<%
+{ Test de Request.QueryString(nom)[(index)|.Count]
+  Pour le tester : definir QUERY_STRING avant de lancer l executable, ex.
+    set QUERY_STRING=nom=Sylvain&couleur=rouge&couleur=vert&couleur=bleu
+}
+var
+  nom, couleur : String;
+  n, i : Integer;
+
+nom := Request.QueryString('nom');
+WriteLn('<p>nom = ', nom, '</p>');
+
+n := Request.QueryString('couleur').Count;
+WriteLn('<p>couleur.Count = ', n, '</p>');
+
+For i := 1 To n Do
+Begin
+  couleur := Request.QueryString('couleur')(i);
+  WriteLn('<p>couleur(', i, ') = ', couleur, '</p>');
+End;
+
+WriteLn('<p>inconnu = [', Request.QueryString('inconnu'), ']</p>');
+%>
+</body>
+</html>
