@@ -1,0 +1,34 @@
+<%@ Language="PascalScript" %>
+<html>
+<head><title>Test Request.ServerVariables</title></head>
+<body>
+<h1>Test Request.ServerVariables (style ASP)</h1>
+<%
+{ Test de Request.ServerVariables(nom) : lit directement la
+  variable d environnement CGI portant ce nom. Sous un vrai
+  serveur web (IIS, Apache+CGI, etc.), ces variables sont
+  remplies automatiquement pour chaque requete. En ligne de
+  commande, on peut les definir soi-meme avant de lancer
+  l executable, ex.
+    set REQUEST_METHOD=GET
+    set SERVER_NAME=www.gladir.com
+    set REMOTE_ADDR=127.0.0.1
+    set HTTP_USER_AGENT=Mozilla/5.0
+}
+var
+  methode, serveur, adresse, agent, inconnue : String;
+
+methode  := Request.ServerVariables('REQUEST_METHOD');
+serveur  := Request.ServerVariables('SERVER_NAME');
+adresse  := Request.ServerVariables('REMOTE_ADDR');
+agent    := Request.ServerVariables('HTTP_USER_AGENT');
+inconnue := Request.ServerVariables('VARIABLE_INEXISTANTE');
+
+WriteLn('<p>REQUEST_METHOD = ', methode, '</p>');
+WriteLn('<p>SERVER_NAME = ', serveur, '</p>');
+WriteLn('<p>REMOTE_ADDR = ', adresse, '</p>');
+WriteLn('<p>HTTP_USER_AGENT = ', agent, '</p>');
+WriteLn('<p>VARIABLE_INEXISTANTE = [', inconnue, ']</p>');
+%>
+</body>
+</html>

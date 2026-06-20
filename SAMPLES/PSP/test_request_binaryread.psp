@@ -1,0 +1,33 @@
+<%@ Language="PascalScript" %>
+<html>
+<head><title>Test Request.BinaryRead</title></head>
+<body>
+<h1>Test Request.BinaryRead (style ASP)</h1>
+<%
+{ Test de Request.BinaryRead(count) : retourne au plus "count"
+  octets bruts (non decodes, contrairement a Request.Form) du
+  corps POST, a partir de la position courante du flux. Chaque
+  appel avance cette position, comme en ASP classique.
+  Pour le tester : definir CONTENT_LENGTH et envoyer le corps
+  sur stdin avant de lancer l executable, ex.
+    set CONTENT_LENGTH=20
+    printf "nom=Sylvain&age=42" | test_request_binaryread.exe
+}
+var
+  bloc1, bloc2, reste : String;
+
+bloc1 := Request.BinaryRead(8);
+WriteLn('<p>1er bloc (8 octets)  = [', bloc1, ']</p>');
+
+bloc2 := Request.BinaryRead(8);
+WriteLn('<p>2e bloc (8 octets)   = [', bloc2, ']</p>');
+
+reste := Request.BinaryRead(1000);
+WriteLn('<p>reste (jusqu a 1000) = [', reste, ']</p>');
+
+{ Le flux est maintenant epuise : un nouvel appel retourne vide }
+reste := Request.BinaryRead(10);
+WriteLn('<p>apres epuisement     = [', reste, ']</p>');
+%>
+</body>
+</html>

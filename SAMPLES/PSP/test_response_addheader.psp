@@ -1,0 +1,22 @@
+<%
+{ Test de Response.AddHeader(nom, valeur) (style ASP).
+  Comme en ASP classique sans tampon (Response.Buffer = False),
+  les entetes doivent etre envoyes avant tout autre affichage.
+  Une fois tous les AddHeader effectues, une ligne vide
+  (WriteLn;) clot la section des entetes avant le corps HTML. }
+var
+  jeton : String;
+
+jeton := 'abc123xyz';
+
+Response.AddHeader('X-Powered-By', 'PSPCW32');
+Response.AddHeader('X-Session-Token', jeton);
+WriteLn;
+
+WriteLn('<html>');
+WriteLn('<body>');
+WriteLn('<h1>Test Response.AddHeader</h1>');
+WriteLn('<p>Entetes personnalisees envoyees avant ce corps.</p>');
+WriteLn('</body>');
+WriteLn('</html>');
+%>

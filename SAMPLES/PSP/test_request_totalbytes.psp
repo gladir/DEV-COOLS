@@ -1,0 +1,32 @@
+<%@ Language="PascalScript" %>
+<html>
+<head><title>Test Request.TotalBytes</title></head>
+<body>
+<h1>Test Request.TotalBytes (style ASP)</h1>
+<%
+{ Test de Request.TotalBytes : propriete (sans parentheses) qui
+  donne le nombre d octets du corps POST (CONTENT_LENGTH) lus au
+  demarrage du programme (le meme corps que celui consulte par
+  Request.Form et Request.BinaryRead).
+  Pour le tester : definir CONTENT_LENGTH et envoyer le corps
+  x-www-form-urlencoded sur stdin avant de lancer l executable, ex.
+    set CONTENT_LENGTH=18
+    printf "nom=Sylvain&age=42" | test_request_totalbytes.exe
+}
+var
+  taille : Integer;
+  brut : String;
+
+taille := Request.TotalBytes;
+WriteLn('<p>Request.TotalBytes = ', taille, '</p>');
+
+If taille > 0 Then
+Begin
+  brut := Request.BinaryRead(taille);
+  WriteLn('<p>Corps complet (', taille, ' octets) = [', brut, ']</p>');
+End
+Else
+  WriteLn('<p>Aucun corps recu.</p>');
+%>
+</body>
+</html>

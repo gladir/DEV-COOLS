@@ -1,0 +1,16 @@
+<%
+{ Test de Response.ContentType (style ASP).
+  Comme en ASP classique sans tampon (Response.Buffer = False),
+  l entete doit etre envoye avant tout autre affichage. Une fois
+  l entete pose, une ligne vide (WriteLn;) clot la section des
+  entetes avant le corps. Ici on produit un corps XML plutot que
+  le HTML par defaut. }
+Response.ContentType := 'text/xml';
+WriteLn;
+
+WriteLn('<?xml version="1.0" encoding="UTF-8"?>');
+WriteLn('<reponse>');
+WriteLn('  <statut>ok</statut>');
+WriteLn('  <message>Genere par Response.ContentType</message>');
+WriteLn('</reponse>');
+%>

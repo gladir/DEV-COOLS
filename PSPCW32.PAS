@@ -61,6 +61,12 @@ Const
   MAX_QS_VALLEN = 256;   { taille max d une valeur (avec terminateur nul)}
   MAX_QS_RAW    = 2048;  { taille max du buffer QUERY_STRING brut        }
 
+  { Request.ServerVariables : pool tournant de buffers, pour que
+    plusieurs appels stockes dans des variables distinctes avant
+    affichage ne s ecrasent pas mutuellement. }
+  SRVVAR_SLOTS  = 8;     { nombre de buffers du pool tournant     }
+  SRVVAR_SLOTSZ = 512;   { taille de chaque buffer (avec nul)     }
+
   { Prefixes de nommage ASM }
   PSP_VAR_PFX   = '_PSP_';      { variable globale              }
   PSP_FN_PFX    = '_PSPF_';     { fonction / procedure          }
@@ -92,10 +98,10 @@ Const
   PE_SCN_TEXT     = $60000020;   { CODE | EXECUTE | READ              }
   PE_SCN_RDATA    = $40000040;   { INIT_DATA | READ                   }
   PE_SCN_BSS      = LongInt($C0000040);   { INIT_DATA | READ | WRITE           }
-  MAX_BIN_CODE    = 65536;
-  MAX_BIN_DATA    = 65536;
-  MAX_BIN_LBL     = 4096;
-  MAX_BIN_FIX     = 8192;
+  MAX_BIN_CODE    = 262144;
+  MAX_BIN_DATA    = 262144;
+  MAX_BIN_LBL     = 8192;
+  MAX_BIN_FIX     = 16384;
   PE_NUM_API      = 9;           { number of imported Win32 APIs      }
   COFF_RELOC_DIR32  = 6;         { IMAGE_REL_I386_DIR32               }
   COFF_RELOC_REL32  = 20;        { IMAGE_REL_I386_REL32               }
@@ -1933,6 +1939,28 @@ Begin
   EmitRaw(PSP_RT_PFX + 'REQ_BINPOS DD  0');
   EmitRaw(PSP_RT_PFX + 'REQ_BINBUF DB  ' + IntToStr(MAX_QS_RAW) + ' DUP(0)');
   EmitBlankLine;
+  { Request.Cookies (CGI, entete HTTP_COOKIE) }
+  EmitComment('--- Request.Cookies buffers ---');
+  EmitRaw(PSP_RT_PFX + 'CK_NAME    DB  ''HTTP_COOKIE'',0');
+  EmitRaw(PSP_RT_PFX + 'CK_RAW     DB  ' + IntToStr(MAX_QS_RAW) + ' DUP(0)');
+  EmitRaw(PSP_RT_PFX + 'CK_KEYS    DB  ' +
+          IntToStr(MAX_QS_PAIRS * MAX_QS_KEYLEN) + ' DUP(0)');
+  EmitRaw(PSP_RT_PFX + 'CK_VALS    DB  ' +
+          IntToStr(MAX_QS_PAIRS * MAX_QS_VALLEN) + ' DUP(0)');
+  EmitRaw(PSP_RT_PFX + 'CK_N       DD  0');
+  EmitRaw(PSP_RT_PFX + 'CK_TMPNAME DD  0');
+  EmitRaw(PSP_RT_PFX + 'CK_SUBNAME DB  ' + IntToStr(MAX_QS_KEYLEN) + ' DUP(0)');
+  EmitRaw(PSP_RT_PFX + 'CK_SUBVAL  DB  ' + IntToStr(MAX_QS_VALLEN) + ' DUP(0)');
+  EmitBlankLine;
+  { Request.ServerVariables (lecture directe d une variable
+    d environnement CGI, nom fourni a l execution). Pool tournant
+    de SRVVAR_SLOTS buffers pour eviter les ecrasements mutuels
+    quand plusieurs appels sont stockes avant affichage. }
+  EmitComment('--- Request.ServerVariables buffers ---');
+  EmitRaw(PSP_RT_PFX + 'SRVVAR_POOL DB  ' +
+          IntToStr(SRVVAR_SLOTS * SRVVAR_SLOTSZ) + ' DUP(0)');
+  EmitRaw(PSP_RT_PFX + 'SRVVAR_IDX  DD  0');
+  EmitBlankLine;
   { Response.Redirect / Response.AddHeader / Response.ContentType
     (entetes CGI) }
   EmitComment('--- Response.Redirect / AddHeader / ContentType buffers ---');
@@ -2969,6 +2997,8 @@ Begin
   EmitInstrA('CALL', PSP_RT_PFX + 'QSINIT');
   EmitComment('Initialiser Request.Form (CGI, corps POST)');
   EmitInstrA('CALL', PSP_RT_PFX + 'FMINIT');
+  EmitComment('Initialiser Request.Cookies (CGI)');
+  EmitInstrA('CALL', PSP_RT_PFX + 'CKINIT');
   EmitBlankLine;
   EmitBlankLine;
 End;
@@ -3572,6 +3602,327 @@ Begin
     EmitInstrA('POP', 'EBX');
     EmitInstrA('POP', 'EDI');
     EmitInstrA('POP', 'ESI');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { ========================================== }
+    { Request.Cookies (CGI) RUNTIME ROUTINES     }
+    { ========================================== }
+    EmitComment('========================================');
+    EmitComment('  Request.Cookies (CGI) RUNTIME');
+    EmitComment('========================================');
+    EmitBlankLine;
+
+    { _PSPRT_RAWCOPY : ESI=curseur source, EDI=curseur dest ->
+      copie BRUTE (sans decodage %XX/+) jusqu a 0/=/&. Retourne
+      AL = caractere d arret, ESI sur cet arret, EDI termine par
+      un zero. Utilise pour reanalyser une valeur deja decodee
+      (sous-cles d un cookie dictionnaire). }
+    EmitComment('RAWCOPY: ESI=src, EDI=dst -> AL=stop(0/=/&), sans decodage');
+    EmitLabel(PSP_RT_PFX + 'RAWCOPY');
+    EmitLabel(PSP_RT_PFX + 'RAWCOPY_LP');
+    EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+    EmitInstrAB('CMP', 'AL', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'RAWCOPY_DONE');
+    EmitInstrAB('CMP', 'AL', '''=''');
+    EmitInstrA('JE', PSP_RT_PFX + 'RAWCOPY_DONE');
+    EmitInstrAB('CMP', 'AL', '''&''');
+    EmitInstrA('JE', PSP_RT_PFX + 'RAWCOPY_DONE');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', 'AL');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrA('INC', 'EDI');
+    EmitInstrA('JMP', PSP_RT_PFX + 'RAWCOPY_LP');
+    EmitLabel(PSP_RT_PFX + 'RAWCOPY_DONE');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', '0');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_CKVCOPY : ESI=curseur source, EDI=curseur dest ->
+      copie en decodant (+, %XX) jusqu a 0/;. Contrairement a
+      QSCOPY, ne s arrete pas sur = ou & (qui peuvent appartenir
+      a un cookie dictionnaire). Retourne AL = caractere d arret
+      (0 ou ';'), ESI sur cet arret, EDI termine par un zero. }
+    EmitComment('CKVCOPY: ESI=src, EDI=dst -> AL=stop(0/;)');
+    EmitLabel(PSP_RT_PFX + 'CKVCOPY');
+    EmitLabel(PSP_RT_PFX + 'CKVCOPY_LP');
+    EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+    EmitInstrAB('CMP', 'AL', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'CKVCOPY_DONE');
+    EmitInstrAB('CMP', 'AL', ''';''');
+    EmitInstrA('JNE', PSP_RT_PFX + 'CKVCOPY_NOTSEMI');
+    EmitInstrA('JMP', PSP_RT_PFX + 'CKVCOPY_DONE');
+    EmitLabel(PSP_RT_PFX + 'CKVCOPY_NOTSEMI');
+    EmitInstrAB('CMP', 'AL', '''+''');
+    EmitInstrA('JNE', PSP_RT_PFX + 'CKVCOPY_PCT');
+    EmitInstrAB('MOV', 'AL', '32');
+    EmitInstrA('JMP', PSP_RT_PFX + 'CKVCOPY_PUT');
+    EmitLabel(PSP_RT_PFX + 'CKVCOPY_PCT');
+    EmitInstrAB('CMP', 'AL', '''%''');
+    EmitInstrA('JNE', PSP_RT_PFX + 'CKVCOPY_PUT');
+    EmitInstrAB('XOR', 'EBX', 'EBX');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrAB('MOV', 'BL', 'BYTE PTR [ESI]');
+    EmitInstrAB('XOR', 'ECX', 'ECX');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrAB('MOV', 'CL', 'BYTE PTR [ESI]');
+    EmitInstrAB('CMP', 'EBX', '''9''');
+    EmitInstrA('JA', PSP_RT_PFX + 'CKVCOPY_H1');
+    EmitInstrAB('SUB', 'EBX', '''0''');
+    EmitInstrA('JMP', PSP_RT_PFX + 'CKVCOPY_HD');
+    EmitLabel(PSP_RT_PFX + 'CKVCOPY_H1');
+    EmitInstrAB('CMP', 'EBX', '''F''');
+    EmitInstrA('JA', PSP_RT_PFX + 'CKVCOPY_H2');
+    EmitInstrAB('SUB', 'EBX', '55');
+    EmitInstrA('JMP', PSP_RT_PFX + 'CKVCOPY_HD');
+    EmitLabel(PSP_RT_PFX + 'CKVCOPY_H2');
+    EmitInstrAB('SUB', 'EBX', '87');
+    EmitLabel(PSP_RT_PFX + 'CKVCOPY_HD');
+    EmitInstrAB('CMP', 'ECX', '''9''');
+    EmitInstrA('JA', PSP_RT_PFX + 'CKVCOPY_L1');
+    EmitInstrAB('SUB', 'ECX', '''0''');
+    EmitInstrA('JMP', PSP_RT_PFX + 'CKVCOPY_LD');
+    EmitLabel(PSP_RT_PFX + 'CKVCOPY_L1');
+    EmitInstrAB('CMP', 'ECX', '''F''');
+    EmitInstrA('JA', PSP_RT_PFX + 'CKVCOPY_L2');
+    EmitInstrAB('SUB', 'ECX', '55');
+    EmitInstrA('JMP', PSP_RT_PFX + 'CKVCOPY_LD');
+    EmitLabel(PSP_RT_PFX + 'CKVCOPY_L2');
+    EmitInstrAB('SUB', 'ECX', '87');
+    EmitLabel(PSP_RT_PFX + 'CKVCOPY_LD');
+    EmitInstrAB('SHL', 'EBX', '4');
+    EmitInstrAB('ADD', 'EBX', 'ECX');
+    EmitInstrAB('MOV', 'AL', 'BL');
+    EmitLabel(PSP_RT_PFX + 'CKVCOPY_PUT');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', 'AL');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrA('INC', 'EDI');
+    EmitInstrA('JMP', PSP_RT_PFX + 'CKVCOPY_LP');
+    EmitLabel(PSP_RT_PFX + 'CKVCOPY_DONE');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', '0');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_CKINIT : lit HTTP_COOKIE (CGI) et la decoupe en
+      paires nom=valeur (separees par "; ") dans CK_KEYS/CK_VALS
+      (max MAX_QS_PAIRS). La valeur peut elle-meme contenir des
+      sous-cles cle=valeur separees par & (cookie dictionnaire). }
+    EmitComment('CKINIT: parse HTTP_COOKIE (CGI env var)');
+    EmitLabel(PSP_RT_PFX + 'CKINIT');
+    EmitInstrA('PUSH', 'ESI');
+    EmitInstrA('PUSH', 'EDI');
+    EmitInstrA('PUSH', 'EBX');
+    EmitInstrA('PUSH', 'ECX');
+    EmitInstrA('PUSH', 'EDX');
+    EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'CK_N]', '0');
+    EmitInstrA('PUSH', IntToStr(MAX_QS_RAW));
+    EmitInstrA('PUSH', 'OFFSET ' + PSP_RT_PFX + 'CK_RAW');
+    EmitInstrA('PUSH', 'OFFSET ' + PSP_RT_PFX + 'CK_NAME');
+    EmitInstrA('CALL', '_GetEnvironmentVariableA@12');
+    EmitInstrAB('CMP', 'EAX', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'CKINIT_DONE');
+    EmitInstrAB('LEA', 'ESI', PSP_RT_PFX + 'CK_RAW');
+    EmitLabel(PSP_RT_PFX + 'CKINIT_PAIR');
+    EmitInstrAB('CMP', 'BYTE PTR [ESI]', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'CKINIT_DONE');
+    EmitInstrAB('MOV', 'EDX', 'DWORD PTR [' + PSP_RT_PFX + 'CK_N]');
+    EmitInstrAB('CMP', 'EDX', IntToStr(MAX_QS_PAIRS));
+    EmitInstrA('JAE', PSP_RT_PFX + 'CKINIT_DONE');
+    EmitInstrAB('MOV', 'EBX', 'EDX');
+    EmitInstrAB('IMUL', 'EBX', IntToStr(MAX_QS_KEYLEN));
+    EmitInstrAB('LEA', 'EDI', PSP_RT_PFX + 'CK_KEYS');
+    EmitInstrAB('ADD', 'EDI', 'EBX');
+    EmitInstrA('CALL', PSP_RT_PFX + 'QSCOPY');
+    EmitInstrAB('CMP', 'AL', '''=''');
+    EmitInstrA('JNE', PSP_RT_PFX + 'CKINIT_NOVAL');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrAB('MOV', 'EBX', 'EDX');
+    EmitInstrAB('IMUL', 'EBX', IntToStr(MAX_QS_VALLEN));
+    EmitInstrAB('LEA', 'EDI', PSP_RT_PFX + 'CK_VALS');
+    EmitInstrAB('ADD', 'EDI', 'EBX');
+    EmitInstrA('CALL', PSP_RT_PFX + 'CKVCOPY');
+    EmitInstrA('JMP', PSP_RT_PFX + 'CKINIT_ADV');
+    EmitLabel(PSP_RT_PFX + 'CKINIT_NOVAL');
+    EmitInstrAB('MOV', 'EBX', 'EDX');
+    EmitInstrAB('IMUL', 'EBX', IntToStr(MAX_QS_VALLEN));
+    EmitInstrAB('LEA', 'EDI', PSP_RT_PFX + 'CK_VALS');
+    EmitInstrAB('ADD', 'EDI', 'EBX');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', '0');
+    EmitLabel(PSP_RT_PFX + 'CKINIT_ADV');
+    EmitInstrA('INC', 'EDX');
+    EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'CK_N]', 'EDX');
+    EmitInstrAB('CMP', 'AL', ''';''');
+    EmitInstrA('JNE', PSP_RT_PFX + 'CKINIT_CKAMP');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrAB('CMP', 'BYTE PTR [ESI]', '32');
+    EmitInstrA('JNE', PSP_RT_PFX + 'CKINIT_PAIR');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrA('JMP', PSP_RT_PFX + 'CKINIT_PAIR');
+    EmitLabel(PSP_RT_PFX + 'CKINIT_CKAMP');
+    EmitInstrAB('CMP', 'AL', '''&''');
+    EmitInstrA('JNE', PSP_RT_PFX + 'CKINIT_CKZ');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrA('JMP', PSP_RT_PFX + 'CKINIT_PAIR');
+    EmitLabel(PSP_RT_PFX + 'CKINIT_CKZ');
+    EmitInstrAB('CMP', 'AL', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'CKINIT_DONE');
+    EmitInstrA('JMP', PSP_RT_PFX + 'CKINIT_PAIR');
+    EmitLabel(PSP_RT_PFX + 'CKINIT_DONE');
+    EmitInstrA('POP', 'EDX');
+    EmitInstrA('POP', 'ECX');
+    EmitInstrA('POP', 'EBX');
+    EmitInstrA('POP', 'EDI');
+    EmitInstrA('POP', 'ESI');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_CKGET : ESI=nom ASCIIZ -> EAX = pointeur vers la
+      valeur (brute, eventuellement dictionnaire) ou chaine vide
+      si ce cookie est absent. }
+    EmitComment('CKGET: ESI=nom -> EAX=ptr valeur cookie');
+    EmitLabel(PSP_RT_PFX + 'CKGET');
+    EmitInstrA('PUSH', 'EBX');
+    EmitInstrA('PUSH', 'ECX');
+    EmitInstrA('PUSH', 'EDI');
+    EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'CK_TMPNAME]', 'ESI');
+    EmitInstrAB('XOR', 'ECX', 'ECX');
+    EmitLabel(PSP_RT_PFX + 'CKGET_LOOP');
+    EmitInstrAB('CMP', 'ECX', 'DWORD PTR [' + PSP_RT_PFX + 'CK_N]');
+    EmitInstrA('JAE', PSP_RT_PFX + 'CKGET_NOTFOUND');
+    EmitInstrAB('MOV', 'EAX', 'ECX');
+    EmitInstrAB('IMUL', 'EAX', IntToStr(MAX_QS_KEYLEN));
+    EmitInstrAB('LEA', 'EDI', PSP_RT_PFX + 'CK_KEYS');
+    EmitInstrAB('ADD', 'EDI', 'EAX');
+    EmitInstrAB('MOV', 'ESI', 'DWORD PTR [' + PSP_RT_PFX + 'CK_TMPNAME]');
+    EmitInstrA('CALL', PSP_RT_PFX + 'STRCMP');
+    EmitInstrAB('CMP', 'EAX', '0');
+    EmitInstrA('JNE', PSP_RT_PFX + 'CKGET_NEXT');
+    EmitInstrAB('MOV', 'EAX', 'ECX');
+    EmitInstrAB('IMUL', 'EAX', IntToStr(MAX_QS_VALLEN));
+    EmitInstrAB('LEA', 'EDI', PSP_RT_PFX + 'CK_VALS');
+    EmitInstrAB('ADD', 'EDI', 'EAX');
+    EmitInstrAB('MOV', 'EAX', 'EDI');
+    EmitInstrA('JMP', PSP_RT_PFX + 'CKGET_FOUND');
+    EmitLabel(PSP_RT_PFX + 'CKGET_NEXT');
+    EmitInstrA('INC', 'ECX');
+    EmitInstrA('JMP', PSP_RT_PFX + 'CKGET_LOOP');
+    EmitLabel(PSP_RT_PFX + 'CKGET_NOTFOUND');
+    EmitInstrAB('LEA', 'EAX', PSP_RT_PFX + 'QS_EMPTY');
+    EmitLabel(PSP_RT_PFX + 'CKGET_FOUND');
+    EmitInstrA('POP', 'EDI');
+    EmitInstrA('POP', 'ECX');
+    EmitInstrA('POP', 'EBX');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_CKGETKEY : ESI=nom ASCIIZ, EDX=sous-cle ASCIIZ ->
+      EAX = pointeur vers la valeur de cette sous-cle dans le
+      cookie dictionnaire "nom" (ou chaine vide si absent ou si
+      le cookie n est pas un dictionnaire). }
+    EmitComment('CKGETKEY: ESI=nom, EDX=sous-cle -> EAX=ptr valeur');
+    EmitLabel(PSP_RT_PFX + 'CKGETKEY');
+    EmitInstrA('PUSH', 'EBX');
+    EmitInstrA('PUSH', 'ECX');
+    EmitInstrA('PUSH', 'EDI');
+    EmitInstrA('CALL', PSP_RT_PFX + 'CKGET');
+    EmitInstrAB('MOV', 'EBX', 'EDX');
+    EmitInstrAB('MOV', 'ESI', 'EAX');
+    EmitLabel(PSP_RT_PFX + 'CKGETKEY_LOOP');
+    EmitInstrAB('CMP', 'BYTE PTR [ESI]', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'CKGETKEY_NOTFOUND');
+    EmitInstrAB('LEA', 'EDI', PSP_RT_PFX + 'CK_SUBNAME');
+    EmitInstrA('CALL', PSP_RT_PFX + 'RAWCOPY');
+    EmitInstrAB('CMP', 'AL', '''=''');
+    EmitInstrA('JNE', PSP_RT_PFX + 'CKGETKEY_SKIPVAL');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrAB('LEA', 'EDI', PSP_RT_PFX + 'CK_SUBVAL');
+    EmitInstrA('CALL', PSP_RT_PFX + 'RAWCOPY');
+    EmitInstrAB('MOV', 'CL', 'AL');
+    EmitInstrA('PUSH', 'ESI');
+    EmitInstrAB('LEA', 'ESI', PSP_RT_PFX + 'CK_SUBNAME');
+    EmitInstrAB('MOV', 'EDI', 'EBX');
+    EmitInstrA('CALL', PSP_RT_PFX + 'STRCMP');
+    EmitInstrA('POP', 'ESI');
+    EmitInstrAB('CMP', 'EAX', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'CKGETKEY_MATCH');
+    EmitInstrAB('CMP', 'CL', '''&''');
+    EmitInstrA('JNE', PSP_RT_PFX + 'CKGETKEY_CKZ2');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrA('JMP', PSP_RT_PFX + 'CKGETKEY_LOOP');
+    EmitLabel(PSP_RT_PFX + 'CKGETKEY_CKZ2');
+    EmitInstrAB('CMP', 'CL', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'CKGETKEY_NOTFOUND');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrA('JMP', PSP_RT_PFX + 'CKGETKEY_LOOP');
+    EmitLabel(PSP_RT_PFX + 'CKGETKEY_SKIPVAL');
+    EmitInstrAB('CMP', 'AL', '''&''');
+    EmitInstrA('JNE', PSP_RT_PFX + 'CKGETKEY_NOTFOUND');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrA('JMP', PSP_RT_PFX + 'CKGETKEY_LOOP');
+    EmitLabel(PSP_RT_PFX + 'CKGETKEY_MATCH');
+    EmitInstrAB('LEA', 'EAX', PSP_RT_PFX + 'CK_SUBVAL');
+    EmitInstrA('JMP', PSP_RT_PFX + 'CKGETKEY_DONE');
+    EmitLabel(PSP_RT_PFX + 'CKGETKEY_NOTFOUND');
+    EmitInstrAB('LEA', 'EAX', PSP_RT_PFX + 'QS_EMPTY');
+    EmitLabel(PSP_RT_PFX + 'CKGETKEY_DONE');
+    EmitInstrA('POP', 'EDI');
+    EmitInstrA('POP', 'ECX');
+    EmitInstrA('POP', 'EBX');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_CKHASKEYS : ESI=nom ASCIIZ -> EAX = 1 si le cookie
+      est un dictionnaire (contient au moins un '='), sinon 0. }
+    EmitComment('CKHASKEYS: ESI=nom -> EAX=1 si dictionnaire, sinon 0');
+    EmitLabel(PSP_RT_PFX + 'CKHASKEYS');
+    EmitInstrA('CALL', PSP_RT_PFX + 'CKGET');
+    EmitInstrAB('MOV', 'ESI', 'EAX');
+    EmitLabel(PSP_RT_PFX + 'CKHASKEYS_LP');
+    EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+    EmitInstrAB('CMP', 'AL', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'CKHASKEYS_NO');
+    EmitInstrAB('CMP', 'AL', '''=''');
+    EmitInstrA('JE', PSP_RT_PFX + 'CKHASKEYS_YES');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrA('JMP', PSP_RT_PFX + 'CKHASKEYS_LP');
+    EmitLabel(PSP_RT_PFX + 'CKHASKEYS_YES');
+    EmitInstrAB('MOV', 'EAX', '1');
+    EmitInstrA('JMP', PSP_RT_PFX + 'CKHASKEYS_DONE');
+    EmitLabel(PSP_RT_PFX + 'CKHASKEYS_NO');
+    EmitInstrAB('XOR', 'EAX', 'EAX');
+    EmitLabel(PSP_RT_PFX + 'CKHASKEYS_DONE');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_REQSRVVAR : ESI=nom ASCIIZ (fourni a l execution) ->
+      EAX = pointeur vers la valeur de la variable d environnement
+      CGI correspondante (style ASP Request.ServerVariables), ou
+      chaine vide si elle n est pas definie. Utilise un buffer du
+      pool tournant SRVVAR_POOL (avance a chaque appel) afin que
+      plusieurs resultats stockes dans des variables distinctes
+      avant affichage ne s ecrasent pas mutuellement. }
+    EmitComment('REQSRVVAR: ESI=nom -> EAX=ptr valeur variable CGI');
+    EmitLabel(PSP_RT_PFX + 'REQSRVVAR');
+    EmitInstrA('PUSH', 'EBX');
+    EmitInstrA('PUSH', 'EDI');
+    EmitInstrAB('MOV', 'EBX', 'DWORD PTR [' + PSP_RT_PFX + 'SRVVAR_IDX]');
+    EmitInstrAB('MOV', 'EAX', 'EBX');
+    EmitInstrAB('IMUL', 'EAX', IntToStr(SRVVAR_SLOTSZ));
+    EmitInstrAB('LEA', 'EDI', PSP_RT_PFX + 'SRVVAR_POOL');
+    EmitInstrAB('ADD', 'EDI', 'EAX');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', '0');
+    EmitInstrA('PUSH', IntToStr(SRVVAR_SLOTSZ));
+    EmitInstrA('PUSH', 'EDI');
+    EmitInstrA('PUSH', 'ESI');
+    EmitInstrA('CALL', '_GetEnvironmentVariableA@12');
+    EmitInstrA('INC', 'EBX');
+    EmitInstrAB('CMP', 'EBX', IntToStr(SRVVAR_SLOTS));
+    EmitInstrA('JL', PSP_RT_PFX + 'SRVVAR_IDXOK');
+    EmitInstrAB('XOR', 'EBX', 'EBX');
+    EmitLabel(PSP_RT_PFX + 'SRVVAR_IDXOK');
+    EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'SRVVAR_IDX]', 'EBX');
+    EmitInstrAB('MOV', 'EAX', 'EDI');
+    EmitInstrA('POP', 'EDI');
+    EmitInstrA('POP', 'EBX');
     EmitInstr('RET');
     EmitBlankLine;
 
@@ -5278,8 +5629,85 @@ Begin
             TplNextToken;
           Res.TypeIdx := TY_IDX_STRING;
         End
+        Else If (CurToken.Kind = TK_IDENT) And
+                (StrLowerCase(CurToken.Val) = 'cookies') Then
+        Begin
+          { Request.Cookies(nom) [(sous-cle) | .HasKeys] (style ASP) }
+          TplNextToken;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+            TplNextToken;
+          ParseExpr(Res);
+          ExprFlushToEAX(Res);
+          EmitInstrA('PUSH', 'EAX');   { sauvegarder pointeur du nom }
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            TplNextToken;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+          Begin
+            { Request.Cookies(nom)(sous-cle) }
+            TplNextToken;
+            ParseExpr(Res);
+            ExprFlushToEAX(Res);
+            EmitInstrAB('MOV', 'EDX', 'EAX');
+            EmitInstrA('POP', 'ESI');
+            EmitInstrA('CALL', PSP_RT_PFX + 'CKGETKEY');
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              TplNextToken;
+            Res.TypeIdx := TY_IDX_STRING;
+          End
+          Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
+          Begin
+            { Request.Cookies(nom).HasKeys }
+            TplNextToken;
+            If (CurToken.Kind = TK_IDENT) And
+               (StrLowerCase(CurToken.Val) = 'haskeys') Then
+              TplNextToken
+            Else
+              WarnMsg('".HasKeys" attendu apres Request.Cookies(nom)');
+            EmitInstrA('POP', 'ESI');
+            EmitInstrA('CALL', PSP_RT_PFX + 'CKHASKEYS');
+            Res.TypeIdx := TY_IDX_INTEGER;
+          End
+          Else
+          Begin
+            { Request.Cookies(nom) : valeur brute du cookie }
+            EmitInstrA('POP', 'ESI');
+            EmitInstrA('CALL', PSP_RT_PFX + 'CKGET');
+            Res.TypeIdx := TY_IDX_STRING;
+          End;
+        End
+        Else If (CurToken.Kind = TK_IDENT) And
+                (StrLowerCase(CurToken.Val) = 'servervariables') Then
+        Begin
+          { Request.ServerVariables(nom) (style ASP) : lit
+            directement la variable d environnement CGI portant
+            ce nom (REQUEST_METHOD, SERVER_NAME, REMOTE_ADDR,
+            HTTP_USER_AGENT, etc.). }
+          TplNextToken;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+            TplNextToken;
+          ParseExpr(Res);
+          ExprFlushToEAX(Res);
+          EmitInstrAB('MOV', 'ESI', 'EAX');
+          EmitInstrA('CALL', PSP_RT_PFX + 'REQSRVVAR');
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            TplNextToken;
+          Res.TypeIdx := TY_IDX_STRING;
+        End
+        Else If (CurToken.Kind = TK_IDENT) And
+                (StrLowerCase(CurToken.Val) = 'totalbytes') Then
+        Begin
+          { Request.TotalBytes (style ASP) : propriete (pas un
+            appel) donnant le nombre d octets du corps POST
+            effectivement lus (rempli par Request.Form/FMINIT). }
+          TplNextToken;
+          EmitComment('Request.TotalBytes');
+          EmitInstrAB('MOV', 'EAX',
+                      'DWORD PTR [' + PSP_RT_PFX + 'FM_BYTESRD]');
+          Res.TypeIdx := TY_IDX_INTEGER;
+        End
         Else
-          WarnMsg('".QueryString", ".Form" ou ".BinaryRead" attendu apres Request');
+          WarnMsg('".QueryString", ".Form", ".BinaryRead", ".Cookies", ' +
+                  '".ServerVariables" ou ".TotalBytes" attendu apres Request');
         Res.Kind   := EK_AX;
         Res.SymIdx := -1;
       End

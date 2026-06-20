@@ -1,0 +1,38 @@
+<%@ Language="PascalScript" %>
+<html>
+<head><title>Test Request.Cookies</title></head>
+<body>
+<h1>Test Request.Cookies (style ASP)</h1>
+<%
+{ Test de Request.Cookies(nom)[(sous-cle)|.HasKeys] : lit
+  l entete CGI HTTP_COOKIE. Un cookie simple retourne sa valeur
+  directement ; un cookie "dictionnaire" (sous-cles separees par
+  & dans sa valeur) se consulte avec Request.Cookies(nom)(cle) et
+  Request.Cookies(nom).HasKeys vaut alors 1 (sinon 0).
+  Pour le tester : definir HTTP_COOKIE avant de lancer l executable, ex.
+    set HTTP_COOKIE=session=abc123; prefs=theme=sombre&langue=fr
+}
+var
+  session, theme, langue, inconnu : String;
+  prefsHasKeys, sessionHasKeys : Integer;
+
+session := Request.Cookies('session');
+WriteLn('<p>session = ', session, '</p>');
+
+sessionHasKeys := Request.Cookies('session').HasKeys;
+WriteLn('<p>session.HasKeys = ', sessionHasKeys, '</p>');
+
+prefsHasKeys := Request.Cookies('prefs').HasKeys;
+WriteLn('<p>prefs.HasKeys = ', prefsHasKeys, '</p>');
+
+theme := Request.Cookies('prefs')('theme');
+WriteLn('<p>prefs(theme) = ', theme, '</p>');
+
+langue := Request.Cookies('prefs')('langue');
+WriteLn('<p>prefs(langue) = ', langue, '</p>');
+
+inconnu := Request.Cookies('inconnu');
+WriteLn('<p>inconnu = [', inconnu, ']</p>');
+%>
+</body>
+</html>
