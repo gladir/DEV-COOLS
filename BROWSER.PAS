@@ -550,6 +550,14 @@ Const
  CSS_PROP_UNKNOWN = 255;
 
 Type
+ HTMLBufferData = Array[0..59999] Of Char;
+ HTMLBufferPtr = ^HTMLBufferData;
+ HTMLSourceBuffer = Record
+  Data: HTMLBufferPtr;
+  DataLength: LongInt;
+  AllocatedSize: Word;
+ End;
+
  CSSUnitString = String[8];
 
  { Type pour un attribut HTML }
@@ -841,9 +849,36 @@ Begin
 End;
 
 { Fonction pour ignorer les espaces blancs }
-Function HTMLSkipWhitespace(Const S: String; Pos: Integer): Integer;
+Function HTMLSourceChar(Const S: HTMLSourceBuffer; Pos: LongInt): Char;
 Begin
- While (Pos <= Length(S)) And (S[Pos] In [' ', #9, #10, #13]) Do
+ If (S.Data = Nil) Or (Pos < 1) Or (Pos > S.DataLength) Then
+  HTMLSourceChar := #0
+ Else
+  HTMLSourceChar := S.Data^[Pos - 1];
+End;
+
+Function HTMLSourceCopy(Const S: HTMLSourceBuffer; StartPos, Count: LongInt): String;
+Var
+ I, CopyCount: Integer;
+ ResultText: String;
+Begin
+ ResultText := '';
+ If (S.Data = Nil) Or (StartPos < 1) Or (Count <= 0) Then Begin
+  HTMLSourceCopy := ResultText;
+  Exit;
+ End;
+ If StartPos + Count - 1 > S.DataLength Then
+  Count := S.DataLength - StartPos + 1;
+ If Count > 255 Then CopyCount := 255 Else CopyCount := Count;
+ For I := 0 To CopyCount - 1 Do
+  ResultText := ResultText + HTMLSourceChar(S, StartPos + I);
+ HTMLSourceCopy := ResultText;
+End;
+
+Function HTMLSkipWhitespace(Const S: HTMLSourceBuffer; Pos: LongInt): LongInt;
+Begin
+ While (Pos <= S.DataLength) And
+       (HTMLSourceChar(S, Pos) In [' ', #9, #10, #13]) Do
   Inc(Pos);
  HTMLSkipWhitespace := Pos;
 End;
@@ -1048,63 +1083,65 @@ Begin
 End;
 
 { Fonction pour extraire le nom d'une balise }
-Function ExtractTagName(Const S: String; Var Pos: Integer): String;
+Function ExtractTagName(Const S: HTMLSourceBuffer; Var Pos: LongInt): String;
 Var
- StartPos: Integer;
+ StartPos: LongInt;
  TagName: String;
 Begin
  TagName := '';
  Pos := HTMLSkipWhitespace(S, Pos);
  StartPos := Pos;
- While (Pos <= Length(S)) And
-       Not (S[Pos] In [' ', '>', '/', #9, #10, #13, '=']) Do
+ While (Pos <= S.DataLength) And
+       Not (HTMLSourceChar(S, Pos) In [' ', '>', '/', #9, #10, #13, '=']) Do
   Inc(Pos);
- TagName := Copy(S, StartPos, Pos - StartPos);
+ TagName := HTMLSourceCopy(S, StartPos, Pos - StartPos);
  ExtractTagName := TagName;
 End;
 
 { Fonction pour extraire la valeur d'un attribut }
-Function ExtractAttributeValue(Const S: String; Var Pos: Integer): String;
+Function ExtractAttributeValue(Const S: HTMLSourceBuffer; Var Pos: LongInt): String;
 Var
  Quote: Char;
- StartPos: Integer;
+ StartPos: LongInt;
  Value: String;
 Begin
  Value := '';
  Pos := HTMLSkipWhitespace(S, Pos);
- If Pos > Length(S) Then Begin
+ If Pos > S.DataLength Then Begin
   ExtractAttributeValue := '';
   Exit;
  End;
  { Verifier si la valeur est entre guillemets }
- If S[Pos] In ['"', ''''] Then Begin
-  Quote := S[Pos];
+ If HTMLSourceChar(S, Pos) In ['"', ''''] Then Begin
+  Quote := HTMLSourceChar(S, Pos);
   Inc(Pos);
   StartPos := Pos;
-  While (Pos <= Length(S)) And (S[Pos] <> Quote) Do
+  While (Pos <= S.DataLength) And (HTMLSourceChar(S, Pos) <> Quote) Do
    Inc(Pos);
-  Value := Copy(S, StartPos, Pos - StartPos);
-  If Pos <= Length(S) Then Inc(Pos); { Passer le guillemet fermant }
+  Value := HTMLSourceCopy(S, StartPos, Pos - StartPos);
+  If Pos <= S.DataLength Then Inc(Pos); { Passer le guillemet fermant }
  End
  Else Begin
   { Valeur sans guillemets }
   StartPos := Pos;
-  While (Pos <= Length(S)) And Not (S[Pos] In [' ', '>', '/', #9, #10, #13]) Do
+  While (Pos <= S.DataLength) And
+        Not (HTMLSourceChar(S, Pos) In [' ', '>', '/', #9, #10, #13]) Do
    Inc(Pos);
-  Value := Copy(S, StartPos, Pos - StartPos);
+  Value := HTMLSourceCopy(S, StartPos, Pos - StartPos);
  End;
  ExtractAttributeValue := Value;
 End;
 
 { Procedure pour parser les attributs d'une balise }
-Procedure ParseHTMLAttributes(Const S: String; Var Pos: Integer; Node: HTMLNodePtr);
+Procedure ParseHTMLAttributes(Const S: HTMLSourceBuffer; Var Pos: LongInt;
+                              Node: HTMLNodePtr);
 Var
  AttrName, AttrValue: String;
 Begin
- While Pos <= Length(S) Do Begin
+ While Pos <= S.DataLength Do Begin
   Pos := HTMLSkipWhitespace(S, Pos);
-  If Pos > Length(S) Then Exit;
-  If S[Pos] In ['>', '/'] Then Exit;
+  If Pos > S.DataLength Then Exit;
+  If HTMLSourceChar(S, Pos) In ['>', '/'] Then Exit;
 
   { Extraire le nom de l'attribut }
   AttrName := ExtractTagName(S, Pos);
@@ -1114,7 +1151,7 @@ Begin
   AttrValue := '';
 
   { Verifier s'il y a une valeur }
-  If (Pos <= Length(S)) And (S[Pos] = '=') Then Begin
+  If (Pos <= S.DataLength) And (HTMLSourceChar(S, Pos) = '=') Then Begin
    Inc(Pos);
    AttrValue := ExtractAttributeValue(S, Pos);
   End;
@@ -1129,9 +1166,9 @@ Begin
 End;
 
 { Fonction principale pour parser du HTML }
-Function ParseHTML(Const HTMLSource: String): HTMLNodePtr;
+Function ParseHTML(Const HTMLSource: HTMLSourceBuffer): HTMLNodePtr;
 Var
- Pos, StartPos, EndTagPos: Integer;
+ Pos, StartPos, EndTagPos: LongInt;
  Root, CurrentNode, NewNode, TextNode: HTMLNodePtr;
  TagName, CloseTagName, TextContent: String;
  IsClosingTag, IsSelfClosing: Boolean;
@@ -1144,15 +1181,16 @@ Begin
  Pos := 1;
  HTMLParseError := '';
 
- While Pos <= Length(HTMLSource) Do Begin
+ While Pos <= HTMLSource.DataLength Do Begin
   { Chercher le debut d'une balise }
   StartPos := Pos;
-  While (Pos <= Length(HTMLSource)) And (HTMLSource[Pos] <> '<') Do
+  While (Pos <= HTMLSource.DataLength) And
+        (HTMLSourceChar(HTMLSource, Pos) <> '<') Do
    Inc(Pos);
 
   { Traiter le texte avant la balise }
   If Pos > StartPos Then Begin
-   TextContent := Copy(HTMLSource, StartPos, Pos - StartPos);
+   TextContent := HTMLSourceCopy(HTMLSource, StartPos, Pos - StartPos);
    { Ignorer le texte qui ne contient que des espaces }
    If Trim(TextContent) <> '' Then Begin
     TextNode := CreateHTMLNode;
@@ -1166,28 +1204,30 @@ Begin
    End;
   End;
 
-  If Pos > Length(HTMLSource) Then Break;
+  If Pos > HTMLSource.DataLength Then Break;
 
   { On est sur un '<' }
   Inc(Pos);
-  If Pos > Length(HTMLSource) Then Break;
+  If Pos > HTMLSource.DataLength Then Break;
 
   { Verifier le type de balise }
-  If HTMLSource[Pos] = '!' Then Begin
+  If HTMLSourceChar(HTMLSource, Pos) = '!' Then Begin
    { Commentaire ou DOCTYPE }
    Inc(Pos);
-   If (Pos + 1 <= Length(HTMLSource)) And
-      (HTMLSource[Pos] = '-') And (HTMLSource[Pos + 1] = '-') Then Begin
+   If (Pos + 1 <= HTMLSource.DataLength) And
+      (HTMLSourceChar(HTMLSource, Pos) = '-') And
+      (HTMLSourceChar(HTMLSource, Pos + 1) = '-') Then Begin
     { Commentaire HTML <!-- ... --> }
     Inc(Pos, 2);
     StartPos := Pos;
-    While (Pos + 2 <= Length(HTMLSource)) And
-          Not ((HTMLSource[Pos] = '-') And (HTMLSource[Pos + 1] = '-') And
-               (HTMLSource[Pos + 2] = '>')) Do
+    While (Pos + 2 <= HTMLSource.DataLength) And
+          Not ((HTMLSourceChar(HTMLSource, Pos) = '-') And
+               (HTMLSourceChar(HTMLSource, Pos + 1) = '-') And
+               (HTMLSourceChar(HTMLSource, Pos + 2) = '>')) Do
      Inc(Pos);
     NewNode := CreateHTMLNode;
     NewNode^.NodeType := HTML_NODE_COMMENT;
-    NewNode^.Content := Copy(HTMLSource, StartPos, Pos - StartPos);
+    NewNode^.Content := HTMLSourceCopy(HTMLSource, StartPos, Pos - StartPos);
     NewNode^.Parent := CurrentNode;
     If CurrentNode^.ChildCount < MAX_CHILDREN Then Begin
      Inc(CurrentNode^.ChildCount);
@@ -1197,17 +1237,19 @@ Begin
    End
    Else Begin
     { DOCTYPE ou autre declaration }
-    While (Pos <= Length(HTMLSource)) And (HTMLSource[Pos] <> '>') Do
+    While (Pos <= HTMLSource.DataLength) And
+          (HTMLSourceChar(HTMLSource, Pos) <> '>') Do
      Inc(Pos);
     Inc(Pos);
    End;
   End
-  Else If HTMLSource[Pos] = '/' Then Begin
+  Else If HTMLSourceChar(HTMLSource, Pos) = '/' Then Begin
    { Balise fermante </tag> }
    Inc(Pos);
    CloseTagName := ExtractTagName(HTMLSource, Pos);
    { Trouver le '>' }
-   While (Pos <= Length(HTMLSource)) And (HTMLSource[Pos] <> '>') Do
+   While (Pos <= HTMLSource.DataLength) And
+         (HTMLSourceChar(HTMLSource, Pos) <> '>') Do
     Inc(Pos);
    Inc(Pos);
    { Remonter au parent si le nom correspond }
@@ -1231,13 +1273,15 @@ Begin
     { Verifier si c'est une balise auto-fermante }
     Pos := HTMLSkipWhitespace(HTMLSource, Pos);
     IsSelfClosing := False;
-    If (Pos <= Length(HTMLSource)) And (HTMLSource[Pos] = '/') Then Begin
+    If (Pos <= HTMLSource.DataLength) And
+       (HTMLSourceChar(HTMLSource, Pos) = '/') Then Begin
      IsSelfClosing := True;
      Inc(Pos);
     End;
 
     { Trouver le '>' }
-    While (Pos <= Length(HTMLSource)) And (HTMLSource[Pos] <> '>') Do
+    While (Pos <= HTMLSource.DataLength) And
+          (HTMLSourceChar(HTMLSource, Pos) <> '>') Do
      Inc(Pos);
     Inc(Pos);
 
@@ -11345,7 +11389,7 @@ Begin
 End;
 
 { Procedure pour tester le rendu avec du HTML }
-Procedure TestHTMLRender(Const HTMLSource: String);
+Procedure TestHTMLRender(Const HTMLSource: HTMLSourceBuffer);
 Var
  Doc: HTMLNodePtr;
 Begin
@@ -11718,33 +11762,82 @@ Begin
  DrawForwardButton;
 End;
 
-{ Charger un petit document HTML depuis un fichier texte.
-  Le type String de Turbo Pascal limite le document a 255 caracteres. }
-Function LoadHTMLFile(Const FileName: String; Var HTML: String): Boolean;
-Var
- F: Text;
- Line: String;
- Remaining: Integer;
+Procedure InitHTMLSource(Var HTML: HTMLSourceBuffer);
 Begin
+ HTML.Data := Nil;
+ HTML.DataLength := 0;
+ HTML.AllocatedSize := 0;
+End;
+
+Procedure FreeHTMLSource(Var HTML: HTMLSourceBuffer);
+Begin
+ If HTML.Data <> Nil Then Begin
+  FreeMem(HTML.Data, HTML.AllocatedSize);
+  HTML.Data := Nil;
+ End;
+ HTML.DataLength := 0;
+ HTML.AllocatedSize := 0;
+End;
+
+Function SetHTMLSourceFromString(Const S: String;
+                                 Var HTML: HTMLSourceBuffer): Boolean;
+Var
+ I: Integer;
+Begin
+ FreeHTMLSource(HTML);
+ SetHTMLSourceFromString := False;
+ If Length(S) = 0 Then Exit;
+ HTML.DataLength := Length(S);
+ HTML.AllocatedSize := Length(S);
+ GetMem(HTML.Data, HTML.AllocatedSize);
+ If HTML.Data = Nil Then Begin
+  HTML.DataLength := 0;
+  HTML.AllocatedSize := 0;
+  Exit;
+ End;
+ For I := 1 To Length(S) Do
+  HTML.Data^[I - 1] := S[I];
+ SetHTMLSourceFromString := True;
+End;
+
+{ Lecture binaire compatible Turbo Pascal et Free Pascal.
+  Un document est limite a 60000 octets pour rester dans un segment TP 16 bits. }
+Function LoadHTMLFile(Const FileName: String; Var HTML: HTMLSourceBuffer): Boolean;
+Var
+ F: File;
+ FileLen: LongInt;
+ ReadLen: Word;
+ BytesRead: Word;
+Begin
+ FreeHTMLSource(HTML);
  LoadHTMLFile := False;
- HTML := '';
  Assign(F, FileName);
  {$I-}
- Reset(F);
+ Reset(F, 1);
  {$I+}
  If IOResult <> 0 Then Exit;
 
- While Not EOF(F) And (Length(HTML) < 255) Do Begin
-  ReadLn(F, Line);
-  Remaining := 255 - Length(HTML);
-  If Length(Line) > Remaining Then
-   Line := Copy(Line, 1, Remaining);
-  HTML := HTML + Line;
-  If (Not EOF(F)) And (Length(HTML) < 255) Then
-   HTML := HTML + ' ';
+ FileLen := FileSize(F);
+ If FileLen > 60000 Then ReadLen := 60000 Else ReadLen := FileLen;
+ If ReadLen <= 0 Then Begin
+  Close(F);
+  Exit;
  End;
+
+ HTML.DataLength := ReadLen;
+ HTML.AllocatedSize := ReadLen;
+ GetMem(HTML.Data, HTML.AllocatedSize);
+ If HTML.Data = Nil Then Begin
+  HTML.DataLength := 0;
+  HTML.AllocatedSize := 0;
+  Close(F);
+  Exit;
+ End;
+
+ BlockRead(F, HTML.Data^, ReadLen, BytesRead);
  Close(F);
- LoadHTMLFile := True;
+ HTML.DataLength := BytesRead;
+ LoadHTMLFile := BytesRead > 0;
 End;
 
 Function IsRemoteURL(Const URL: String): Boolean;
@@ -11759,12 +11852,17 @@ End;
 { Charger et afficher la cible courante. }
 Procedure DisplayCurrentTarget;
 Var
- HTML, FileName: String;
+ HTML: HTMLSourceBuffer;
+ FileName: String;
+ MessageText: String;
 Begin
+ InitHTMLSource(HTML);
  If IsRemoteURL(CurrentURL) Then Begin
-  HTML := '<html><body><h2>Adresse URL</h2><p>' + CurrentURL +
-          '</p><p>Le telechargement HTTP/HTTPS n''est pas encore implemente.</p></body></html>';
-  TestHTMLRender(HTML);
+  MessageText := '<html><body><h2>Adresse URL</h2><p>' + CurrentURL +
+                 '</p><p>Le telechargement HTTP/HTTPS n''est pas encore implemente.</p></body></html>';
+  If SetHTMLSourceFromString(MessageText, HTML) Then
+   TestHTMLRender(HTML);
+  FreeHTMLSource(HTML);
   Exit;
  End;
 
@@ -11775,10 +11873,12 @@ Begin
  If LoadHTMLFile(FileName, HTML) Then
   TestHTMLRender(HTML)
  Else Begin
-  HTML := '<html><body><h2>Erreur</h2><p>Impossible d''ouvrir le fichier : ' +
-          FileName + '</p></body></html>';
-  TestHTMLRender(HTML);
+  MessageText := '<html><body><h2>Erreur</h2><p>Impossible d''ouvrir le fichier : ' +
+                 FileName + '</p></body></html>';
+  If SetHTMLSourceFromString(MessageText, HTML) Then
+   TestHTMLRender(HTML);
  End;
+ FreeHTMLSource(HTML);
 End;
 
 { Procedure pour naviguer vers une nouvelle URL et l'ajouter a l'historique }
