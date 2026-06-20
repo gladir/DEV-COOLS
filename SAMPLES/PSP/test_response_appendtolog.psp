@@ -1,0 +1,24 @@
+<%
+{ Test de Response.AppendToLog(message) (style ASP).
+  Comme en ASP classique, le message est ecrit dans le journal
+  du serveur, jamais dans le corps de la reponse HTTP. Ici (CGI
+  autonome, sans IIS), le journal est simule par la sortie d
+  erreur (stderr) du processus : le corps HTTP (stdout) reste
+  intact, et le message n apparait que si stderr est redirige,
+  ex. test_response_appendtolog.exe 2> journal.txt }
+var
+  utilisateur : String;
+
+utilisateur := 'sylvain';
+
+Response.AppendToLog('Debut du traitement pour ' + utilisateur);
+
+WriteLn('<html>');
+WriteLn('<body>');
+WriteLn('<h1>Test Response.AppendToLog</h1>');
+WriteLn('<p>Ce corps HTTP ne contient aucune trace du journal.</p>');
+WriteLn('</body>');
+WriteLn('</html>');
+
+Response.AppendToLog('Fin du traitement pour ' + utilisateur);
+%>

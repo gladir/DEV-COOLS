@@ -1881,9 +1881,10 @@ Begin
   EmitRaw(PSP_EX_PFX + 'SAVEBP  DD  0');
   EmitRaw(PSP_RT_PFX + 'DIV0MSG DB  ''Runtime error: Division by zero'',0');
   EmitRaw(PSP_RT_PFX + 'PANICMSG DB 0');
-  { Handle stdout/stdin Win32 }
+  { Handle stdout/stdin/stderr Win32 }
   EmitRaw(PSP_RT_PFX + 'HSTDOUT DD  0');
   EmitRaw(PSP_RT_PFX + 'HSTDIN  DD  0');
+  EmitRaw(PSP_RT_PFX + 'HSTDERR DD  0');
   EmitRaw(PSP_RT_PFX + 'WRITTEN DD  0');
   EmitBlankLine;
   { COM/OLE support: IID_IDispatch, CLSID buffer, object pointer, etc. }
@@ -2993,6 +2994,10 @@ Begin
   EmitInstrA('PUSH', '-10');
   EmitInstrA('CALL', '_GetStdHandle@4');
   EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'HSTDIN]', 'EAX');
+  EmitComment('Obtenir le handle stderr (Response.AppendToLog)');
+  EmitInstrA('PUSH', '-12');
+  EmitInstrA('CALL', '_GetStdHandle@4');
+  EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'HSTDERR]', 'EAX');
   EmitComment('Initialiser Request.QueryString (CGI)');
   EmitInstrA('CALL', PSP_RT_PFX + 'QSINIT');
   EmitComment('Initialiser Request.Form (CGI, corps POST)');
@@ -3963,6 +3968,43 @@ Begin
     EmitInstrA('POP', 'ESI');
     EmitInstrA('CALL', PSP_RT_PFX + 'PRINTSTR');
     EmitInstrA('CALL', PSP_RT_PFX + 'WRITECRLF');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_RESPAPPENDLOG : ESI=message ASCIIZ -> ecrit le
+      message suivi de CR+LF sur stderr (style ASP
+      Response.AppendToLog). N affecte jamais stdout : le
+      message n apparait donc pas dans le corps HTTP, seulement
+      dans le journal (ici, la sortie d erreur du processus). }
+    EmitComment('RESPAPPENDLOG: ESI=message -> ecrit sur stderr');
+    EmitLabel(PSP_RT_PFX + 'RESPAPPENDLOG');
+    EmitInstrA('PUSH', 'ESI');
+    EmitInstrA('PUSH', 'EDI');
+    EmitInstrA('PUSH', 'ECX');
+    EmitInstrAB('MOV', 'EDI', 'ESI');
+    EmitInstrAB('XOR', 'ECX', 'ECX');
+    EmitLabel(PSP_RT_PFX + 'RAL_LEN');
+    EmitInstrAB('CMP', 'BYTE PTR [EDI]', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'RAL_WRITE');
+    EmitInstrA('INC', 'EDI');
+    EmitInstrA('INC', 'ECX');
+    EmitInstrA('JMP', PSP_RT_PFX + 'RAL_LEN');
+    EmitLabel(PSP_RT_PFX + 'RAL_WRITE');
+    EmitInstrA('PUSH', '0');
+    EmitInstrA('PUSH', 'OFFSET ' + PSP_RT_PFX + 'WRITTEN');
+    EmitInstrA('PUSH', 'ECX');
+    EmitInstrA('PUSH', 'ESI');
+    EmitInstrA('PUSH', 'DWORD PTR [' + PSP_RT_PFX + 'HSTDERR]');
+    EmitInstrA('CALL', '_WriteFile@20');
+    EmitInstrA('PUSH', '0');
+    EmitInstrA('PUSH', 'OFFSET ' + PSP_RT_PFX + 'WRITTEN');
+    EmitInstrA('PUSH', '2');
+    EmitInstrA('PUSH', 'OFFSET ' + PSP_RT_PFX + 'CRLF');
+    EmitInstrA('PUSH', 'DWORD PTR [' + PSP_RT_PFX + 'HSTDERR]');
+    EmitInstrA('CALL', '_WriteFile@20');
+    EmitInstrA('POP', 'ECX');
+    EmitInstrA('POP', 'EDI');
+    EmitInstrA('POP', 'ESI');
     EmitInstr('RET');
     EmitBlankLine;
 
@@ -8090,8 +8132,26 @@ Begin
       EmitInstrAB('LEA', 'ESI', PSP_RT_PFX + 'RESP_CTNAME');
       EmitInstrA('CALL', PSP_RT_PFX + 'RESPADDHDR');
     End
+    Else If (CurToken.Kind = TK_IDENT) And
+            (StrLowerCase(CurToken.Val) = 'appendtolog') Then
+    Begin
+      { Response.AppendToLog(message) (style ASP) : ecrit le
+        message sur stderr (journal), jamais dans le corps HTTP
+        (stdout). }
+      TplNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        TplNextToken;
+      ParseExpr(Ev1);
+      ExprFlushToEAX(Ev1);
+      EmitComment('Response.AppendToLog');
+      EmitInstrAB('MOV', 'ESI', 'EAX');
+      EmitInstrA('CALL', PSP_RT_PFX + 'RESPAPPENDLOG');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        TplNextToken;
+    End
     Else
-      WarnMsg('".Redirect", ".AddHeader" ou ".ContentType" attendu apres Response');
+      WarnMsg('".Redirect", ".AddHeader", ".ContentType" ou ' +
+              '".AppendToLog" attendu apres Response');
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
       TplNextToken;
     Exit;
