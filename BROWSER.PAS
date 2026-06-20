@@ -36,6 +36,11 @@
 
 Program BROWSER;
 
+{$IFDEF FPC}
+  {$MODE TP}
+  {$H-}
+{$ENDIF}
+
 Uses {$IFDEF FPC}
       Crt,PtcGraph,PtcCrt,PtcMouse
      {$ELSE}
@@ -460,8 +465,8 @@ Const
  CSS_TOK_DOT = 7;            { . (selecteur de classe) }
  CSS_TOK_COLON = 8;          { : (pseudo-classe ou propriete:valeur) }
  CSS_TOK_SEMICOLON = 9;      { ; (fin de declaration) }
- CSS_TOK_LBRACE = 10;        { { (debut de bloc) }
- CSS_TOK_RBRACE = 11;        { } (fin de bloc) }
+ CSS_TOK_LBRACE = 10;        { accolade (debut de bloc) }
+ CSS_TOK_RBRACE = 11;        { accolade (fin de bloc) }
  CSS_TOK_LPAREN = 12;        { ( (debut de fonction) }
  CSS_TOK_RPAREN = 13;        { ) (fin de fonction) }
  CSS_TOK_COMMA = 14;         { , (separateur) }
@@ -545,6 +550,8 @@ Const
  CSS_PROP_UNKNOWN = 255;
 
 Type
+ CSSUnitString = String[8];
+
  { Type pour un attribut HTML }
  HTMLAttribute = Record
   Name: String[64];
@@ -715,7 +722,7 @@ Type
   TokType: Byte;              { Type du token (CSS_TOK_*) }
   Value: String;              { Valeur textuelle du token }
   NumValue: Real;             { Valeur numerique (si nombre) }
-  UnitValue: String[8];       { Unite (px, em, %, etc.) }
+  UnitValue: CSSUnitString;   { Unite (px, em, %, etc.) }
   Line: Integer;              { Numero de ligne }
   Column: Integer;            { Numero de colonne }
  End;
@@ -818,6 +825,9 @@ Var
 { =====================================================
   PARSEUR HTML - Fonctions et procedures
   ===================================================== }
+
+{ Declaree ici car elle est utilisee par le parseur avant son implementation. }
+Function Trim(Const S: String): String; Forward;
 
 { Fonction pour convertir une chaine en minuscules }
 Function HTMLLowerCase(S: String): String;
@@ -3381,7 +3391,8 @@ Begin
 End;
 
 { Lire un nombre CSS (avec unite optionnelle) }
-Procedure CSSReadNumber(Const S: String; Var Pos: Integer; Var NumVal: Real; Var UnitStr: String);
+Procedure CSSReadNumber(Const S: String; Var Pos: Integer; Var NumVal: Real;
+                        Var UnitStr: CSSUnitString);
 Var
  Start: Integer;
  NumStr: String;
@@ -3790,7 +3801,7 @@ Var
  Important: Boolean;
  StartValue: Integer;
 Begin
- { Chercher { }
+ { Chercher l'accolade ouvrante }
  While (Pos <= Length(S)) And (S[Pos] <> '{') Do Inc(Pos);
  If Pos <= Length(S) Then Inc(Pos);
 
@@ -5561,13 +5572,11 @@ Begin
  GetNodeAttribute := '';
  If Node = Nil Then Exit;
 
- LowerAttr := '';
- For I := 1 To Length(AttrName) Do
-  LowerAttr := LowerAttr + LoCase(AttrName[I]);
+ LowerAttr := HTMLLowerCase(AttrName);
 
- For I := 1 To Node^.AttrCount Do Begin
-  If Node^.Attrs[I].Name = LowerAttr Then Begin
-   GetNodeAttribute := Node^.Attrs[I].Value;
+ For I := 1 To Node^.AttributeCount Do Begin
+  If HTMLLowerCase(Node^.Attributes[I].Name) = LowerAttr Then Begin
+   GetNodeAttribute := Node^.Attributes[I].Value;
    Exit;
   End;
  End;
@@ -6193,7 +6202,7 @@ End;
 { Convertir une couleur RGB en index de palette VGA/EGA }
 Function BMPRGBToVGAColor(R, G, B: Byte): Byte;
 Var
- BestColor, BestDist, Dist: Integer;
+ BestColor, BestDist, Dist: LongInt;
  I: Integer;
  { Palette EGA/VGA standard }
 Const
@@ -6586,6 +6595,21 @@ Begin
 End;
 
 { Procedure pour rendre la balise IMG }
+{$IFDEF FPC}
+Procedure RenderTagImg(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ Alt: String;
+Begin
+ { Les types GIF/JPEG/PNG/SVG sont declares plus loin dans ce programme.
+   En mode FPC, afficher le texte alternatif en attendant que les decodeurs
+   soient regroupes dans une unite declaree avant le moteur de rendu. }
+ If Node = Nil Then Exit;
+ If Ctx.InHead Then Exit;
+ Alt := GetNodeAttribute(Node, 'alt');
+ If Alt = '' Then Alt := '[image]';
+ RenderText(Ctx, Alt);
+End;
+{$ELSE}
 Procedure RenderTagImg(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
  Src, Alt, WidthAttr, HeightAttr: String;
@@ -6888,6 +6912,7 @@ Begin
   If DrawHeight > Ctx.LineHeight Then Ctx.LineHeight := DrawHeight;
  End;
 End;
+{$ENDIF}
 
 { =====================================================
   FIN DECODEUR IMAGES BMP
@@ -7054,7 +7079,7 @@ End;
 { Convertir une couleur RGB en index de palette VGA }
 Function GIFRGBToVGAColor(R, G, B: Byte): Byte;
 Var
- BestColor, BestDist, Dist: Integer;
+ BestColor, BestDist, Dist: LongInt;
  I: Integer;
 Const
  VGAPalette: Array[0..15, 0..2] Of Byte = (
@@ -7126,7 +7151,7 @@ Begin
  GIFReadSubBlock := 0;
  BlockRead(F, BlockSize, 1, BytesRead);
  If (BytesRead <> 1) Or (BlockSize = 0) Then Exit;
- 
+
  If BlockSize > MaxSize Then BlockSize := MaxSize;
  BlockRead(F, Buffer, BlockSize, BytesRead);
  GIFReadSubBlock := BytesRead;
@@ -7165,10 +7190,10 @@ Begin
  LZWReadNextBlock := False;
  BlockRead(LZWFileHandle, BlockSize, 1, BytesRead);
  If (BytesRead <> 1) Or (BlockSize = 0) Then Exit;
- 
+
  BlockRead(LZWFileHandle, LZWDataBuffer, BlockSize, BytesRead);
  If BytesRead <> BlockSize Then Exit;
- 
+
  LZWDataPos := 0;
  LZWDataLen := BlockSize;
  LZWReadNextBlock := True;
@@ -7181,31 +7206,31 @@ Var
  NextByte: Byte;
 Begin
  LZWReadBits := -1;
- 
+
  { S'assurer qu'on a assez de bits }
  While LZWBitsInBuffer < NumBits Do Begin
   { Besoin de plus de donnees }
   If LZWDataPos >= LZWDataLen Then Begin
    If Not LZWReadNextBlock Then Exit;
   End;
-  
+
   NextByte := LZWDataBuffer[LZWDataPos];
   Inc(LZWDataPos);
-  
+
   LZWBitBuffer := LZWBitBuffer Or (LongInt(NextByte) Shl LZWBitsInBuffer);
   Inc(LZWBitsInBuffer, 8);
  End;
- 
+
  { Extraire les bits requis }
  Result := LZWBitBuffer And ((1 Shl NumBits) - 1);
  LZWBitBuffer := LZWBitBuffer Shr NumBits;
  Dec(LZWBitsInBuffer, NumBits);
- 
+
  LZWReadBits := Result;
 End;
 
 { Decoder les donnees d'image LZW }
-Function GIFDecodeLZW(Var F: File; MinCodeSize: Byte; 
+Function GIFDecodeLZW(Var F: File; MinCodeSize: Byte;
                        OutputBuffer: Pointer; MaxOutput: LongInt): LongInt;
 Var
  Table: LZWTablePtr;
@@ -7220,18 +7245,18 @@ Var
  I: Integer;
 Begin
  GIFDecodeLZW := 0;
- 
+
  { Allouer la table LZW }
  GetMem(Table, SizeOf(LZWTable));
  If Table = Nil Then Exit;
- 
+
  { Initialiser les codes speciaux }
  ClearCode := 1 Shl MinCodeSize;
  EOICode := ClearCode + 1;
- 
+
  { Initialiser le buffer de lecture }
  LZWInitBuffer(F);
- 
+
  { Initialiser les variables }
  CodeSize := MinCodeSize + 1;
  NextCode := EOICode + 1;
@@ -7239,21 +7264,21 @@ Begin
  FirstChar := 0;
  OutputPos := 0;
  OutPtr := OutputBuffer;
- 
+
  { Initialiser la table avec les codes de base }
  For I := 0 To ClearCode - 1 Do Begin
   Table^[I].Prefix := -1;
   Table^[I].Suffix := I;
   Table^[I].Length := 1;
  End;
- 
+
  { Decoder le flux }
  While OutputPos < MaxOutput Do Begin
   Code := LZWReadBits(CodeSize);
   If Code < 0 Then Break; { Erreur de lecture }
-  
+
   If Code = EOICode Then Break; { Fin de l'image }
-  
+
   If Code = ClearCode Then Begin
    { Reinitialiser la table }
    CodeSize := MinCodeSize + 1;
@@ -7261,7 +7286,7 @@ Begin
    OldCode := -1;
    Continue;
   End;
-  
+
   If OldCode = -1 Then Begin
    { Premier code apres clear }
    If Code < ClearCode Then Begin
@@ -7273,18 +7298,18 @@ Begin
    End;
    Continue;
   End;
-  
+
   { Decoder la chaine }
   TempCode := Code;
   StackPtr := 0;
-  
+
   If Code >= NextCode Then Begin
    { Cas special: code pas encore dans la table }
    Stack[StackPtr] := FirstChar;
    Inc(StackPtr);
    TempCode := OldCode;
   End;
-  
+
   { Suivre la chaine de prefixes }
   While TempCode >= ClearCode Do Begin
    If TempCode >= NextCode Then Break; { Code invalide }
@@ -7293,14 +7318,14 @@ Begin
    TempCode := Table^[TempCode].Prefix;
    If StackPtr >= LZW_MAX_CODES Then Break; { Debordement }
   End;
-  
+
   { Ajouter le dernier caractere }
   If TempCode >= 0 Then Begin
    Stack[StackPtr] := TempCode;
    Inc(StackPtr);
    FirstChar := TempCode;
   End;
-  
+
   { Ecrire la pile dans l'ordre inverse }
   While (StackPtr > 0) And (OutputPos < MaxOutput) Do Begin
    Dec(StackPtr);
@@ -7308,25 +7333,25 @@ Begin
    Inc(OutPtr);
    Inc(OutputPos);
   End;
-  
+
   { Ajouter une nouvelle entree a la table }
   If NextCode < LZW_MAX_CODES Then Begin
    Table^[NextCode].Prefix := OldCode;
    Table^[NextCode].Suffix := FirstChar;
    Table^[NextCode].Length := Table^[OldCode].Length + 1;
    Inc(NextCode);
-   
+
    { Augmenter la taille du code si necessaire }
    If (NextCode >= (1 Shl CodeSize)) And (CodeSize < 12) Then
     Inc(CodeSize);
   End;
-  
+
   OldCode := Code;
  End;
- 
+
  { Liberer la table }
  FreeMem(Table, SizeOf(LZWTable));
- 
+
  GIFDecodeLZW := OutputPos;
 End;
 
@@ -7360,7 +7385,7 @@ Begin
  Img.IsAnimated := False;
  Img.LoopCount := 0;
  Img.HasGlobalPalette := False;
- 
+
  { Initialiser le GCE }
  HasGCE := False;
  GCE.DisposalMethod := 0;
@@ -7368,52 +7393,52 @@ Begin
  GCE.TransparentFlag := False;
  GCE.DelayTime := 0;
  GCE.TransparentIndex := 0;
- 
+
  { Ouvrir le fichier }
  {$I-}
  Assign(F, FileName);
  Reset(F, 1);
  {$I+}
  If IOResult <> 0 Then Exit;
- 
+
  { Lire l'en-tete GIF }
  BlockRead(F, Header, SizeOf(GIFHeader), BytesRead);
  If BytesRead <> SizeOf(GIFHeader) Then Begin
   Close(F);
   Exit;
  End;
- 
+
  { Verifier la signature GIF }
  If (Header.Signature <> GIF_SIGNATURE_87A) And
     (Header.Signature <> GIF_SIGNATURE_89A) Then Begin
   Close(F);
   Exit;
  End;
- 
+
  { Lire le descripteur d'ecran logique }
  BlockRead(F, ScreenDesc, SizeOf(GIFLogicalScreenDesc), BytesRead);
  If BytesRead <> SizeOf(GIFLogicalScreenDesc) Then Begin
   Close(F);
   Exit;
  End;
- 
+
  { Verifier les dimensions }
  If (ScreenDesc.Width > GIF_MAX_WIDTH) Or
     (ScreenDesc.Height > GIF_MAX_HEIGHT) Then Begin
   Close(F);
   Exit;
  End;
- 
+
  Img.Width := ScreenDesc.Width;
  Img.Height := ScreenDesc.Height;
  Img.BgColorIndex := ScreenDesc.BgColorIndex;
- 
+
  { Lire la palette globale si presente }
  If (ScreenDesc.PackedFields And $80) <> 0 Then Begin
   GlobalPaletteSize := 1 Shl ((ScreenDesc.PackedFields And $07) + 1);
   Img.GlobalPaletteSize := GlobalPaletteSize;
   Img.HasGlobalPalette := True;
-  
+
   For I := 0 To GlobalPaletteSize - 1 Do Begin
    BlockRead(F, Img.GlobalPalette[I], SizeOf(GIFPaletteEntry), BytesRead);
    If BytesRead <> SizeOf(GIFPaletteEntry) Then Begin
@@ -7422,20 +7447,20 @@ Begin
    End;
   End;
  End;
- 
+
  { Parcourir les blocs GIF }
  While True Do Begin
   BlockRead(F, Introducer, 1, BytesRead);
   If BytesRead <> 1 Then Break;
-  
+
   Case Introducer Of
    GIF_TRAILER: Break; { Fin du fichier GIF }
-   
+
    GIF_EXTENSION_INTRODUCER: Begin
     { Lire le type d'extension }
     BlockRead(F, Label_, 1, BytesRead);
     If BytesRead <> 1 Then Break;
-    
+
     Case Label_ Of
      GIF_EXT_GRAPHIC_CONTROL: Begin
       { Extension de controle graphique }
@@ -7454,7 +7479,7 @@ Begin
       { Lire le terminateur }
       BlockRead(F, BlockSize, 1, BytesRead);
      End;
-     
+
      GIF_EXT_APPLICATION: Begin
       { Extension d'application (NETSCAPE pour les boucles) }
       BlockRead(F, BlockSize, 1, BytesRead);
@@ -7472,24 +7497,24 @@ Begin
       End;
       GIFSkipSubBlocks(F);
      End;
-     
+
      Else Begin
       { Sauter les autres extensions }
       GIFSkipSubBlocks(F);
      End;
     End;
    End;
-   
+
    GIF_IMAGE_SEPARATOR: Begin
     { Nouvelle frame d'image }
     If Img.FrameCount >= GIF_MAX_FRAMES Then Break;
-    
+
     { Lire le descripteur d'image }
     BlockRead(F, ImageDesc, SizeOf(GIFImageDescriptor), BytesRead);
     If BytesRead <> SizeOf(GIFImageDescriptor) Then Break;
-    
+
     Inc(Img.FrameCount);
-    
+
     With Img.Frames[Img.FrameCount] Do Begin
      Left := ImageDesc.Left;
      Top := ImageDesc.Top;
@@ -7499,7 +7524,7 @@ Begin
      Data := Nil;
      HasLocalPalette := False;
      LocalPaletteSize := 0;
-     
+
      { Appliquer les parametres GCE si disponibles }
      If HasGCE Then Begin
       DelayTime := GCE.DelayTime;
@@ -7514,13 +7539,13 @@ Begin
       TransparentFlag := False;
       TransparentIndex := 0;
      End;
-     
+
      { Lire la palette locale si presente }
      If (ImageDesc.PackedFields And $80) <> 0 Then Begin
       LocalPaletteSize := 1 Shl ((ImageDesc.PackedFields And $07) + 1);
       HasLocalPalette := True;
       Img.Frames[Img.FrameCount].LocalPaletteSize := LocalPaletteSize;
-      
+
       For I := 0 To LocalPaletteSize - 1 Do Begin
        BlockRead(F, LocalPalette[I], SizeOf(GIFPaletteEntry), BytesRead);
        If BytesRead <> SizeOf(GIFPaletteEntry) Then Begin
@@ -7529,26 +7554,26 @@ Begin
        End;
       End;
      End;
-     
+
      { Lire le code LZW minimum }
      BlockRead(F, MinCodeSize, 1, BytesRead);
      If BytesRead <> 1 Then Begin
       Close(F);
       Exit;
      End;
-     
+
      { Allouer la memoire pour les pixels }
      FrameWidth := ImageDesc.Width;
      FrameHeight := ImageDesc.Height;
      FrameDataSize := LongInt(FrameWidth) * LongInt(FrameHeight);
-     
+
      If FrameDataSize > 65520 Then Begin
       { Trop grand, sauter cette frame }
       GIFSkipSubBlocks(F);
       Dec(Img.FrameCount);
       Continue;
      End;
-     
+
      GetMem(Data, FrameDataSize);
      If Data = Nil Then Begin
       GIFSkipSubBlocks(F);
@@ -7556,10 +7581,10 @@ Begin
       Continue;
      End;
      DataSize := FrameDataSize;
-     
+
      { Decoder les donnees LZW }
      DecodedSize := GIFDecodeLZW(F, MinCodeSize, Data, FrameDataSize);
-     
+
      If DecodedSize > 0 Then
       Valid := True
      Else Begin
@@ -7571,9 +7596,9 @@ Begin
    End;
   End;
  End;
- 
+
  Close(F);
- 
+
  { Verifier si on a charge au moins une frame }
  If Img.FrameCount > 0 Then Begin
   Img.Valid := True;
@@ -7585,7 +7610,7 @@ Begin
 End;
 
 { Obtenir la couleur d'un pixel dans une frame GIF }
-Function GIFGetPixel(Const Img: GIFImage; FrameIdx: Integer; 
+Function GIFGetPixel(Const Img: GIFImage; FrameIdx: Integer;
                       X, Y: Integer; Var IsTransparent: Boolean): Byte;
 Var
  Offset: LongInt;
@@ -7595,25 +7620,25 @@ Var
 Begin
  GIFGetPixel := 0;
  IsTransparent := False;
- 
+
  If Not Img.Valid Then Exit;
  If (FrameIdx < 1) Or (FrameIdx > Img.FrameCount) Then Exit;
  If Not Img.Frames[FrameIdx].Valid Then Exit;
- 
+
  With Img.Frames[FrameIdx] Do Begin
   If (X < 0) Or (X >= Width) Or (Y < 0) Or (Y >= Height) Then Exit;
-  
+
   Offset := LongInt(Y) * LongInt(Width) + LongInt(X);
   DataPtr := Data;
   Inc(DataPtr, Offset);
   PixelIndex := DataPtr^;
-  
+
   { Verifier la transparence }
   If TransparentFlag And (PixelIndex = TransparentIndex) Then Begin
    IsTransparent := True;
    Exit;
   End;
-  
+
   { Choisir la palette appropriee }
   If HasLocalPalette Then
    Palette := @LocalPalette
@@ -7623,7 +7648,7 @@ Begin
    GIFGetPixel := PixelIndex And $0F; { Utiliser l'index directement }
    Exit;
   End;
-  
+
   { Convertir en couleur VGA }
   GIFGetPixel := GIFRGBToVGAColor(
    Palette^[PixelIndex].Red,
@@ -7645,15 +7670,15 @@ Begin
  If Not Img.Valid Then Exit;
  If (FrameIdx < 1) Or (FrameIdx > Img.FrameCount) Then Exit;
  If Not Img.Frames[FrameIdx].Valid Then Exit;
- 
+
  With Img.Frames[FrameIdx] Do Begin
   { Calculer les dimensions a dessiner }
   DrawWidth := Width;
   DrawHeight := Height;
-  
+
   If DrawWidth > MaxWidth Then DrawWidth := MaxWidth;
   If DrawHeight > MaxHeight Then DrawHeight := MaxHeight;
-  
+
   { Dessiner pixel par pixel }
   For Y := 0 To DrawHeight - 1 Do Begin
    For X := 0 To DrawWidth - 1 Do Begin
@@ -7689,10 +7714,10 @@ Begin
  If Not Img.Valid Then Exit;
  If (DestWidth <= 0) Or (DestHeight <= 0) Then Exit;
  If Img.FrameCount < 1 Then Exit;
- 
+
  FrameIdx := Img.CurrentFrame;
  If Not Img.Frames[FrameIdx].Valid Then Exit;
- 
+
  { Dessiner avec mise a l'echelle }
  For Y := 0 To DestHeight - 1 Do Begin
   SrcY := (Y * Img.Frames[FrameIdx].Height) Div DestHeight;
@@ -7711,11 +7736,11 @@ Begin
  GIFNextFrame := False;
  If Not Img.Valid Then Exit;
  If Not Img.IsAnimated Then Exit;
- 
+
  Inc(Img.CurrentFrame);
  If Img.CurrentFrame > Img.FrameCount Then
   Img.CurrentFrame := 1;
- 
+
  GIFNextFrame := True;
 End;
 
@@ -7727,11 +7752,11 @@ Begin
  GIFShouldAdvance := False;
  If Not Img.Valid Then Exit;
  If Not Img.IsAnimated Then Exit;
- 
+
  { Calculer le delai en millisecondes }
  DelayMs := LongInt(Img.Frames[Img.CurrentFrame].DelayTime) * 10;
  If DelayMs < 20 Then DelayMs := 100; { Delai minimum }
- 
+
  { Verifier si assez de temps s'est ecoule }
  If CurrentTime - Img.LastFrameTime >= DelayMs Then
   GIFShouldAdvance := True;
@@ -7764,7 +7789,7 @@ Var
  Slot: Integer;
 Begin
  GIFAddToCache := 0;
- 
+
  { Chercher un slot libre }
  Slot := 0;
  For I := 1 To 16 Do Begin
@@ -7773,14 +7798,14 @@ Begin
    Break;
   End;
  End;
- 
+
  { Si pas de slot libre, utiliser le premier }
  If Slot = 0 Then Begin
   If GIFImageCache[1].Image.Valid Then
    GIFFreeImage(GIFImageCache[1].Image);
   Slot := 1;
  End;
- 
+
  GIFImageCache[Slot].URL := URL;
  GIFImageCache[Slot].Image := Img;
  GIFImageCache[Slot].Used := True;
@@ -7799,10 +7824,10 @@ Begin
   GIFBuildImagePath := Src;
   Exit;
  End;
- 
+
  { Sinon construire le chemin relatif a l'URL courante }
  BasePath := CurrentURL;
- 
+
  { Retirer le nom de fichier de l'URL courante }
  For I := Length(BasePath) DownTo 1 Do Begin
   If BasePath[I] In ['/', '\'] Then Begin
@@ -7810,7 +7835,7 @@ Begin
    Break;
   End;
  End;
- 
+
  GIFBuildImagePath := BasePath + Src;
 End;
 
@@ -7946,7 +7971,7 @@ End;
 { Convertir une couleur RGB en index de palette VGA }
 Function JPEGRGBToVGAColor(R, G, B: Byte): Byte;
 Var
- BestColor, BestDist, Dist: Integer;
+ BestColor, BestDist, Dist: LongInt;
  I: Integer;
 Const
  VGAPalette: Array[0..15, 0..2] Of Byte = (
@@ -8015,7 +8040,7 @@ Var
  B: Byte;
 Begin
  JPEGReadByte := -1;
- 
+
  { Remplir le buffer si necessaire }
  If JPEGDataPos >= JPEGDataLen Then Begin
   BlockRead(JPEGFileHandle, JPEGDataBuffer, SizeOf(JPEGDataBuffer), BytesRead);
@@ -8023,10 +8048,10 @@ Begin
   JPEGDataPos := 0;
   JPEGDataLen := BytesRead;
  End;
- 
+
  B := JPEGDataBuffer[JPEGDataPos];
  Inc(JPEGDataPos);
- 
+
  { Gerer le byte stuffing: $FF00 devient $FF }
  If B = $FF Then Begin
   If JPEGDataPos >= JPEGDataLen Then Begin
@@ -8035,7 +8060,7 @@ Begin
    JPEGDataPos := 0;
    JPEGDataLen := BytesRead;
   End;
-  
+
   If JPEGDataBuffer[JPEGDataPos] = $00 Then Begin
    Inc(JPEGDataPos); { Sauter le $00 de stuffing }
   End
@@ -8049,7 +8074,7 @@ Begin
    Exit;
   End;
  End;
- 
+
  JPEGReadByte := B;
 End;
 
@@ -8059,14 +8084,14 @@ Var
  B: Integer;
 Begin
  JPEGReadBits := -1;
- 
+
  While JPEGBitsInBuffer < NumBits Do Begin
   B := JPEGReadByte;
   If B < 0 Then Exit;
   JPEGBitBuffer := (JPEGBitBuffer Shl 8) Or B;
   Inc(JPEGBitsInBuffer, 8);
  End;
- 
+
  Dec(JPEGBitsInBuffer, NumBits);
  JPEGReadBits := (JPEGBitBuffer Shr JPEGBitsInBuffer) And ((1 Shl NumBits) - 1);
 End;
@@ -8079,12 +8104,12 @@ Var
 Begin
  JPEGDecodeHuffman := -1;
  If Not Table.Valid Then Exit;
- 
+
  Code := 0;
  For BitLen := 1 To 16 Do Begin
   Code := (Code Shl 1) Or JPEGReadBits(1);
   If Code < 0 Then Exit;
-  
+
   If (Code >= Table.MinCode[BitLen - 1]) And
      (Code <= Table.MaxCode[BitLen - 1]) Then Begin
    Index := Table.ValPtr[BitLen - 1] + Code - Table.MinCode[BitLen - 1];
@@ -8104,7 +8129,7 @@ Begin
   JPEGExtendValue := 0;
   Exit;
  End;
- 
+
  Threshold := 1 Shl (Category - 1);
  If Value < Threshold Then
   JPEGExtendValue := Value - (2 * Threshold - 1)
@@ -8120,20 +8145,20 @@ Var
 Begin
  Code := 0;
  Count := 0;
- 
+
  For I := 0 To 15 Do Begin
   Table.MinCode[I] := Code;
   Table.ValPtr[I] := Count;
-  
+
   For J := 0 To Table.Bits[I] - 1 Do Begin
    Inc(Code);
    Inc(Count);
   End;
-  
+
   Table.MaxCode[I] := Code - 1;
   Code := Code Shl 1;
  End;
- 
+
  Table.NumCodes := Count;
  Table.Valid := True;
 End;
@@ -8168,7 +8193,7 @@ Begin
    Temp[J * 8 + I] := Sum Div 256;
   End;
  End;
- 
+
  { IDCT sur les lignes }
  For I := 0 To 7 Do Begin
   For J := 0 To 7 Do Begin
@@ -8177,7 +8202,7 @@ Begin
     Sum := Sum + Temp[I * 8 + K] * LongInt(JPEGIDCTScale[K, J]);
    End;
    Block[I * 8 + J] := Sum Div 256 + 128;
-   
+
    { Clamping a 0-255 }
    If Block[I * 8 + J] < 0 Then Block[I * 8 + J] := 0;
    If Block[I * 8 + J] > 255 Then Block[I * 8 + J] := 255;
@@ -8196,14 +8221,14 @@ Var
  ZZIndex: Integer;
 Begin
  JPEGDecodeBlock := False;
- 
+
  { Initialiser le bloc a zero }
  For I := 0 To 63 Do Block[I] := 0;
- 
+
  { Decoder le coefficient DC }
  Category := JPEGDecodeHuffman(DCTable);
  If Category < 0 Then Exit;
- 
+
  If Category > 0 Then Begin
   Bits := JPEGReadBits(Category);
   If Bits < 0 Then Exit;
@@ -8211,46 +8236,46 @@ Begin
  End
  Else
   Value := 0;
- 
+
  DCPred := DCPred + Value;
  Block[0] := DCPred * Integer(QuantTable[0]);
- 
+
  { Decoder les coefficients AC }
  ZZIndex := 1;
  While ZZIndex < 64 Do Begin
   Symbol := JPEGDecodeHuffman(ACTable);
   If Symbol < 0 Then Exit;
-  
+
   If Symbol = 0 Then Begin
    { EOB - End Of Block }
    Break;
   End;
-  
+
   Run := (Symbol Shr 4) And $0F;   { Nombre de zeros }
   Size := Symbol And $0F;          { Taille de la valeur }
-  
+
   If Symbol = $F0 Then Begin
    { ZRL - 16 zeros }
    Inc(ZZIndex, 16);
    Continue;
   End;
-  
+
   Inc(ZZIndex, Run);
   If ZZIndex >= 64 Then Break;
-  
+
   If Size > 0 Then Begin
    Bits := JPEGReadBits(Size);
    If Bits < 0 Then Exit;
    Value := JPEGExtendValue(Bits, Size);
    Block[JPEGZigZag[ZZIndex]] := Value * Integer(QuantTable[JPEGZigZag[ZZIndex]]);
   End;
-  
+
   Inc(ZZIndex);
  End;
- 
+
  { Appliquer l'IDCT }
  JPEGInverseIDCT(Block);
- 
+
  JPEGDecodeBlock := True;
 End;
 
@@ -8263,12 +8288,12 @@ Begin
  Rv := Y + ((Cr - 128) * 359) Div 256;
  Gv := Y - ((Cb - 128) * 88 + (Cr - 128) * 183) Div 256;
  Bv := Y + ((Cb - 128) * 454) Div 256;
- 
+
  { Clamping a 0-255 }
  If Rv < 0 Then Rv := 0 Else If Rv > 255 Then Rv := 255;
  If Gv < 0 Then Gv := 0 Else If Gv > 255 Then Gv := 255;
  If Bv < 0 Then Bv := 0 Else If Bv > 255 Then Bv := 255;
- 
+
  R := Rv;
  G := Gv;
  B := Bv;
@@ -8308,16 +8333,16 @@ Var
 Begin
  JPEGReadQuantTable := False;
  Remaining := Length - 2;
- 
+
  While Remaining > 0 Do Begin
   BlockRead(F, B, 1, BytesRead);
   Dec(Remaining);
-  
+
   Precision := (B Shr 4) And $0F;
   TableId := B And $0F;
-  
+
   If TableId > 3 Then Exit;
-  
+
   If Precision = 0 Then Begin
    { Table 8 bits }
    For I := 0 To 63 Do Begin
@@ -8334,10 +8359,10 @@ Begin
     Img.QuantTables[TableId][JPEGZigZag[I]] := W;
    End;
   End;
-  
+
   Img.QuantTableValid[TableId] := True;
  End;
- 
+
  JPEGReadQuantTable := True;
 End;
 
@@ -8353,21 +8378,21 @@ Var
 Begin
  JPEGReadHuffmanTable := False;
  Remaining := Length - 2;
- 
+
  While Remaining > 0 Do Begin
   BlockRead(F, B, 1, BytesRead);
   Dec(Remaining);
-  
+
   TableClass := (B Shr 4) And $0F; { 0 = DC, 1 = AC }
   TableId := B And $0F;
-  
+
   If TableId > 3 Then Exit;
-  
+
   If TableClass = 0 Then
    Table := @Img.DCHuffTables[TableId]
   Else
    Table := @Img.ACHuffTables[TableId];
-  
+
   { Lire le nombre de codes par longueur }
   Count := 0;
   For I := 0 To 15 Do Begin
@@ -8375,17 +8400,17 @@ Begin
    Dec(Remaining);
    Inc(Count, Table^.Bits[I]);
   End;
-  
+
   { Lire les valeurs }
   For I := 0 To Count - 1 Do Begin
    BlockRead(F, Table^.Values[I], 1, BytesRead);
    Dec(Remaining);
   End;
-  
+
   { Construire les codes }
   JPEGBuildHuffmanCodes(Table^);
  End;
- 
+
  JPEGReadHuffmanTable := True;
 End;
 
@@ -8398,19 +8423,19 @@ Var
  B: Byte;
 Begin
  JPEGReadSOF := False;
- 
+
  BlockRead(F, Precision, 1, BytesRead);
  Img.Height := JPEGReadWord(F);
  Img.Width := JPEGReadWord(F);
  BlockRead(F, B, 1, BytesRead);
  Img.NumComponents := B;
- 
+
  If (Img.Width > JPEG_MAX_WIDTH) Or (Img.Height > JPEG_MAX_HEIGHT) Then Exit;
  If (Img.NumComponents < 1) Or (Img.NumComponents > 4) Then Exit;
- 
+
  Img.MaxHSampling := 1;
  Img.MaxVSampling := 1;
- 
+
  For I := 1 To Img.NumComponents Do Begin
   BlockRead(F, Img.Components[I].Id, 1, BytesRead);
   BlockRead(F, B, 1, BytesRead);
@@ -8418,13 +8443,13 @@ Begin
   Img.Components[I].VSampling := B And $0F;
   BlockRead(F, Img.Components[I].QuantTableId, 1, BytesRead);
   Img.Components[I].DCPred := 0;
-  
+
   If Img.Components[I].HSampling > Img.MaxHSampling Then
    Img.MaxHSampling := Img.Components[I].HSampling;
   If Img.Components[I].VSampling > Img.MaxVSampling Then
    Img.MaxVSampling := Img.Components[I].VSampling;
  End;
- 
+
  JPEGReadSOF := True;
 End;
 
@@ -8438,22 +8463,22 @@ Var
  Ss, Se, AhAl: Byte;
 Begin
  JPEGReadSOS := False;
- 
+
  BlockRead(F, NumComponents, 1, BytesRead);
  If NumComponents <> Img.NumComponents Then Exit;
- 
+
  For I := 1 To NumComponents Do Begin
   BlockRead(F, CompId, 1, BytesRead);
   BlockRead(F, TableIds, 1, BytesRead);
   Img.Components[I].DCTableId := (TableIds Shr 4) And $0F;
   Img.Components[I].ACTableId := TableIds And $0F;
  End;
- 
+
  { Lire les parametres de scan (ignores pour baseline) }
  BlockRead(F, Ss, 1, BytesRead);
  BlockRead(F, Se, 1, BytesRead);
  BlockRead(F, AhAl, 1, BytesRead);
- 
+
  JPEGReadSOS := True;
 End;
 
@@ -8477,35 +8502,35 @@ Begin
  JPEGLoadFromFile := False;
  Img.Valid := False;
  Img.Data := Nil;
- 
+
  For I := 0 To 3 Do Begin
   Img.QuantTableValid[I] := False;
   Img.DCHuffTables[I].Valid := False;
   Img.ACHuffTables[I].Valid := False;
  End;
- 
+
  { Ouvrir le fichier }
  {$I-}
  Assign(F, FileName);
  Reset(F, 1);
  {$I+}
  If IOResult <> 0 Then Exit;
- 
+
  { Verifier la signature SOI }
  Marker := JPEGReadWord(F);
  If Marker <> JPEG_SOI Then Begin
   Close(F);
   Exit;
  End;
- 
+
  { Parcourir les segments }
  While True Do Begin
   Marker := JPEGReadWord(F);
   If (Marker And $FF00) <> $FF00 Then Break;
-  
+
   Case Marker Of
    JPEG_EOI: Break;
-   
+
    JPEG_DQT: Begin
     Length := JPEGReadWord(F);
     If Not JPEGReadQuantTable(F, Img, Length) Then Begin
@@ -8513,7 +8538,7 @@ Begin
      Exit;
     End;
    End;
-   
+
    JPEG_DHT: Begin
     Length := JPEGReadWord(F);
     If Not JPEGReadHuffmanTable(F, Img, Length) Then Begin
@@ -8521,7 +8546,7 @@ Begin
      Exit;
     End;
    End;
-   
+
    JPEG_SOF0: Begin { Baseline DCT }
     Length := JPEGReadWord(F);
     If Not JPEGReadSOF(F, Img, Length) Then Begin
@@ -8529,14 +8554,14 @@ Begin
      Exit;
     End;
    End;
-   
+
    JPEG_SOS: Begin
     Length := JPEGReadWord(F);
     If Not JPEGReadSOS(F, Img) Then Begin
      Close(F);
      Exit;
     End;
-    
+
     { Allouer la memoire pour les pixels RGB }
     Img.DataSize := LongInt(Img.Width) * LongInt(Img.Height) * 3;
     If Img.DataSize > 65520 Then Begin
@@ -8544,24 +8569,24 @@ Begin
      Close(F);
      Exit;
     End;
-    
+
     GetMem(Img.Data, Img.DataSize);
     If Img.Data = Nil Then Begin
      Close(F);
      Exit;
     End;
-    
+
     { Initialiser le buffer de bits }
     JPEGInitBitBuffer(F);
-    
+
     { Reinitialiser les predicteurs DC }
     For I := 1 To Img.NumComponents Do
      Img.Components[I].DCPred := 0;
-    
+
     { Taille d'un MCU en pixels }
     MCUWidth := Img.MaxHSampling * 8;
     MCUHeight := Img.MaxVSampling * 8;
-    
+
     { Decoder les MCUs }
     Y := 0;
     While Y < Img.Height Do Begin
@@ -8580,7 +8605,7 @@ Begin
         Exit;
        End;
       End;
-      
+
       { Decoder les blocs Cb et Cr si image couleur }
       If Img.NumComponents >= 3 Then Begin
        If Not JPEGDecodeBlock(CbBlocks[0],
@@ -8593,7 +8618,7 @@ Begin
         Close(F);
         Exit;
        End;
-       
+
        If Not JPEGDecodeBlock(CrBlocks[0],
          Img.DCHuffTables[Img.Components[3].DCTableId],
          Img.ACHuffTables[Img.Components[3].ACTableId],
@@ -8605,20 +8630,20 @@ Begin
         Exit;
        End;
       End;
-      
+
       { Convertir et stocker les pixels }
       For BlockY := 0 To MCUHeight - 1 Do Begin
        For BlockX := 0 To MCUWidth - 1 Do Begin
         PixelX := X + BlockX;
         PixelY := Y + BlockY;
-        
+
         If (PixelX < Img.Width) And (PixelY < Img.Height) Then Begin
          { Obtenir la valeur Y du bloc approprie }
          I := (BlockY Div 8) * Img.Components[1].HSampling + (BlockX Div 8);
          If I > Img.Components[1].VSampling * Img.Components[1].HSampling - 1 Then
           I := 0;
          Yv := YBlocks[I][(BlockY Mod 8) * 8 + (BlockX Mod 8)];
-         
+
          If Img.NumComponents >= 3 Then Begin
           { Calculer la position dans les blocs Cb/Cr (sous-echantillonnes) }
           J := (BlockY * Img.Components[2].VSampling Div Img.MaxVSampling) * 8 +
@@ -8626,7 +8651,7 @@ Begin
           If J > 63 Then J := 63;
           Cbv := CbBlocks[0][J];
           Crv := CrBlocks[0][J];
-          
+
           JPEGYCbCrToRGB(Yv, Cbv, Crv, R, G, B);
          End
          Else Begin
@@ -8635,7 +8660,7 @@ Begin
           G := Yv;
           B := Yv;
          End;
-         
+
          { Stocker le pixel }
          PixelOffset := (LongInt(PixelY) * LongInt(Img.Width) + LongInt(PixelX)) * 3;
          DataPtr := Img.Data;
@@ -8648,20 +8673,20 @@ Begin
         End;
        End;
       End;
-      
+
       Inc(X, MCUWidth);
      End;
      Inc(Y, MCUHeight);
     End;
-    
+
     Break; { Fin du decodage }
    End;
-   
+
    JPEG_DRI: Begin
     Length := JPEGReadWord(F);
     Img.RestartInterval := JPEGReadWord(F);
    End;
-   
+
    Else Begin
     { Sauter les segments inconnus }
     Length := JPEGReadWord(F);
@@ -8670,9 +8695,9 @@ Begin
    End;
   End;
  End;
- 
+
  Close(F);
- 
+
  If Img.Data <> Nil Then Begin
   Img.Valid := True;
   JPEGLoadFromFile := True;
@@ -8689,7 +8714,7 @@ Begin
  JPEGGetPixel := 0;
  If Not Img.Valid Then Exit;
  If (X < 0) Or (X >= Img.Width) Or (Y < 0) Or (Y >= Img.Height) Then Exit;
- 
+
  Offset := (LongInt(Y) * LongInt(Img.Width) + LongInt(X)) * 3;
  DataPtr := Img.Data;
  Inc(DataPtr, Offset);
@@ -8698,7 +8723,7 @@ Begin
  G := DataPtr^;
  Inc(DataPtr);
  B := DataPtr^;
- 
+
  JPEGGetPixel := JPEGRGBToVGAColor(R, G, B);
 End;
 
@@ -8711,13 +8736,13 @@ Var
  PixelColor: Byte;
 Begin
  If Not Img.Valid Then Exit;
- 
+
  DrawWidth := Img.Width;
  DrawHeight := Img.Height;
- 
+
  If DrawWidth > MaxWidth Then DrawWidth := MaxWidth;
  If DrawHeight > MaxHeight Then DrawHeight := MaxHeight;
- 
+
  For Y := 0 To DrawHeight - 1 Do Begin
   For X := 0 To DrawWidth - 1 Do Begin
    PixelColor := JPEGGetPixel(Img, X, Y);
@@ -8736,7 +8761,7 @@ Var
 Begin
  If Not Img.Valid Then Exit;
  If (DestWidth <= 0) Or (DestHeight <= 0) Then Exit;
- 
+
  For Y := 0 To DestHeight - 1 Do Begin
   SrcY := (Y * Img.Height) Div DestHeight;
   For X := 0 To DestWidth - 1 Do Begin
@@ -8768,7 +8793,7 @@ Var
  Slot: Integer;
 Begin
  JPEGAddToCache := 0;
- 
+
  Slot := 0;
  For I := 1 To 16 Do Begin
   If Not JPEGImageCache[I].Used Then Begin
@@ -8776,13 +8801,13 @@ Begin
    Break;
   End;
  End;
- 
+
  If Slot = 0 Then Begin
   If JPEGImageCache[1].Image.Valid Then
    JPEGFreeImage(JPEGImageCache[1].Image);
   Slot := 1;
  End;
- 
+
  JPEGImageCache[Slot].URL := URL;
  JPEGImageCache[Slot].Image := Img;
  JPEGImageCache[Slot].Used := True;
@@ -8800,16 +8825,16 @@ Begin
   JPEGBuildImagePath := Src;
   Exit;
  End;
- 
+
  BasePath := CurrentURL;
- 
+
  For I := Length(BasePath) DownTo 1 Do Begin
   If BasePath[I] In ['/', '\'] Then Begin
    BasePath := Copy(BasePath, 1, I);
    Break;
   End;
  End;
- 
+
  JPEGBuildImagePath := BasePath + Src;
 End;
 
@@ -8940,7 +8965,7 @@ End;
 { Convertir une couleur RGB en index de palette VGA }
 Function PNGRGBToVGAColor(R, G, B: Byte): Byte;
 Var
- BestColor, BestDist, Dist: Integer;
+ BestColor, BestDist, Dist: LongInt;
  I: Integer;
 Const
  VGAPalette: Array[0..15, 0..2] Of Byte = (
@@ -9032,7 +9057,7 @@ Var
  Result: Integer;
 Begin
  DeflateReadBits := -1;
- 
+
  While DeflateBitsInBuffer < NumBits Do Begin
   If DeflateInPos >= DeflateInLen Then Exit;
   DeflateBitBuffer := DeflateBitBuffer Or
@@ -9040,7 +9065,7 @@ Begin
   Inc(DeflateInPos);
   Inc(DeflateBitsInBuffer, 8);
  End;
- 
+
  Result := DeflateBitBuffer And ((1 Shl NumBits) - 1);
  DeflateBitBuffer := DeflateBitBuffer Shr NumBits;
  Dec(DeflateBitsInBuffer, NumBits);
@@ -9080,20 +9105,20 @@ Var
 Begin
  Table.Valid := False;
  Table.NumSymbols := NumCodes;
- 
+
  { Compter les codes par longueur }
  For I := 0 To DEFLATE_MAX_BITS Do Table.Counts[I] := 0;
  For I := 0 To NumCodes - 1 Do
   If Lengths[I] > 0 Then
    Inc(Table.Counts[Lengths[I]]);
- 
+
  { Calculer les premiers codes par longueur }
  Code := 0;
  For I := 1 To DEFLATE_MAX_BITS Do Begin
   Code := (Code + Table.Counts[I - 1]) Shl 1;
   NextCode[I] := Code;
  End;
- 
+
  { Assigner les symboles }
  For I := 0 To NumCodes - 1 Do Begin
   Len := Lengths[I];
@@ -9102,7 +9127,7 @@ Begin
    Inc(NextCode[Len]);
   End;
  End;
- 
+
  Table.Valid := True;
 End;
 
@@ -9113,15 +9138,15 @@ Var
 Begin
  DeflateDecodeSymbol := -1;
  If Not Table.Valid Then Exit;
- 
+
  Code := 0;
  First := 0;
  Index := 0;
- 
+
  For Len := 1 To DEFLATE_MAX_BITS Do Begin
   Code := (Code Shl 1) Or DeflateReadBits(1);
   If Code < 0 Then Exit;
-  
+
   Count := Table.Counts[Len];
   If Code - First < Count Then Begin
    DeflateDecodeSymbol := Table.Symbols[Index + Code - First];
@@ -9151,41 +9176,41 @@ Var
 Begin
  DeflateDecompressBlock := False;
  OutLen := 0;
- 
+
  DeflateInitBitBuffer;
- 
+
  Repeat
   BFinal := DeflateReadBits(1);
   If BFinal < 0 Then Exit;
-  
+
   BType := DeflateReadBits(2);
   If BType < 0 Then Exit;
-  
+
   Case BType Of
    0: Begin { Bloc non compresse }
     { Aligner sur octet }
     DeflateBitBuffer := 0;
     DeflateBitsInBuffer := 0;
-    
+
     If DeflateInPos + 4 > DeflateInLen Then Exit;
     Len := DeflateInBuffer[DeflateInPos] Or
            (Word(DeflateInBuffer[DeflateInPos + 1]) Shl 8);
     NLen := DeflateInBuffer[DeflateInPos + 2] Or
             (Word(DeflateInBuffer[DeflateInPos + 3]) Shl 8);
     Inc(DeflateInPos, 4);
-    
+
     If Len <> (NLen Xor $FFFF) Then Exit;
-    
+
     If DeflateInPos + Len > DeflateInLen Then Exit;
     If OutLen + Len > MaxOut Then Exit;
-    
+
     For I := 0 To Len - 1 Do Begin
      OutData[OutLen] := DeflateInBuffer[DeflateInPos];
      Inc(OutLen);
      Inc(DeflateInPos);
     End;
    End;
-   
+
    1: Begin { Bloc avec codes Huffman fixes }
     { Construire les tables Huffman fixes }
     For I := 0 To 143 Do LitLenLengths[I] := 8;
@@ -9193,15 +9218,15 @@ Begin
     For I := 256 To 279 Do LitLenLengths[I] := 7;
     For I := 280 To 287 Do LitLenLengths[I] := 8;
     DeflateBuildHuffTable(LitLenTable, LitLenLengths, 288);
-    
+
     For I := 0 To 31 Do DistLengths[I] := 5;
     DeflateBuildHuffTable(DistTable, DistLengths, 32);
-    
+
     { Decoder les symboles }
     Repeat
      Symbol := DeflateDecodeSymbol(LitLenTable);
      If Symbol < 0 Then Exit;
-     
+
      If Symbol < 256 Then Begin
       { Litteral }
       If OutLen >= MaxOut Then Exit;
@@ -9220,21 +9245,21 @@ Begin
        If Extra < 0 Then Exit;
        Inc(Length, Extra);
       End;
-      
+
       Symbol := DeflateDecodeSymbol(DistTable);
       If Symbol < 0 Then Exit;
-      
+
       Distance := DeflateDistBase[Symbol];
       If DeflateDistExtra[Symbol] > 0 Then Begin
        Extra := DeflateReadBits(DeflateDistExtra[Symbol]);
        If Extra < 0 Then Exit;
        Inc(Distance, Extra);
       End;
-      
+
       { Copier les octets }
       CopyPos := OutLen - Distance;
       If CopyPos < 0 Then Exit;
-      
+
       For I := 0 To Length - 1 Do Begin
        If OutLen >= MaxOut Then Exit;
        OutData[OutLen] := OutData[CopyPos];
@@ -9244,28 +9269,28 @@ Begin
      End;
     Until False;
    End;
-   
+
    2: Begin { Bloc avec codes Huffman dynamiques }
     HLit := DeflateReadBits(5) + 257;
     HDist := DeflateReadBits(5) + 1;
     HCLen := DeflateReadBits(4) + 4;
-    
+
     If (HLit < 0) Or (HDist < 0) Or (HCLen < 0) Then Exit;
-    
+
     { Lire les longueurs de codes }
     For I := 0 To 18 Do CodeLengths[I] := 0;
     For I := 0 To HCLen - 1 Do Begin
      CodeLengths[DeflateCodeLengthOrder[I]] := DeflateReadBits(3);
     End;
-    
+
     DeflateBuildHuffTable(CodeTable, CodeLengths, 19);
-    
+
     { Decoder les longueurs literal/length }
     I := 0;
     While I < HLit + HDist Do Begin
      Symbol := DeflateDecodeSymbol(CodeTable);
      If Symbol < 0 Then Exit;
-     
+
      If Symbol < 16 Then Begin
       If I < HLit Then LitLenLengths[I] := Symbol
       Else DistLengths[I - HLit] := Symbol;
@@ -9304,15 +9329,15 @@ Begin
       End;
      End;
     End;
-    
+
     DeflateBuildHuffTable(LitLenTable, LitLenLengths, HLit);
     DeflateBuildHuffTable(DistTable, DistLengths, HDist);
-    
+
     { Decoder les symboles }
     Repeat
      Symbol := DeflateDecodeSymbol(LitLenTable);
      If Symbol < 0 Then Exit;
-     
+
      If Symbol < 256 Then Begin
       If OutLen >= MaxOut Then Exit;
       OutData[OutLen] := Symbol;
@@ -9328,20 +9353,20 @@ Begin
        If Extra < 0 Then Exit;
        Inc(Length, Extra);
       End;
-      
+
       Symbol := DeflateDecodeSymbol(DistTable);
       If Symbol < 0 Then Exit;
-      
+
       Distance := DeflateDistBase[Symbol];
       If DeflateDistExtra[Symbol] > 0 Then Begin
        Extra := DeflateReadBits(DeflateDistExtra[Symbol]);
        If Extra < 0 Then Exit;
        Inc(Distance, Extra);
       End;
-      
+
       CopyPos := OutLen - Distance;
       If CopyPos < 0 Then Exit;
-      
+
       For I := 0 To Length - 1 Do Begin
        If OutLen >= MaxOut Then Exit;
        OutData[OutLen] := OutData[CopyPos];
@@ -9351,12 +9376,12 @@ Begin
      End;
     Until False;
    End;
-   
+
    Else Exit; { Type invalide }
   End;
-  
+
  Until BFinal = 1;
- 
+
  DeflateDecompressBlock := True;
 End;
 
@@ -9369,7 +9394,7 @@ Begin
  PA := Abs(P - A);
  PB := Abs(P - B);
  PC := Abs(P - C);
- 
+
  If (PA <= PB) And (PA <= PC) Then
   PNGPaethPredictor := A
  Else If PB <= PC Then
@@ -9387,24 +9412,24 @@ Var
  A, B, C, Raw: Integer;
 Begin
  PNGUnfilterRow := False;
- 
+
  Case FilterType Of
   PNG_FILTER_NONE: Begin
    { Rien a faire }
   End;
-  
+
   PNG_FILTER_SUB: Begin
    For I := BytesPerPixel To RowLen - 1 Do Begin
     CurrRow[I] := (CurrRow[I] + CurrRow[I - BytesPerPixel]) And $FF;
    End;
   End;
-  
+
   PNG_FILTER_UP: Begin
    For I := 0 To RowLen - 1 Do Begin
     CurrRow[I] := (CurrRow[I] + PrevRow[I]) And $FF;
    End;
   End;
-  
+
   PNG_FILTER_AVERAGE: Begin
    For I := 0 To RowLen - 1 Do Begin
     If I < BytesPerPixel Then
@@ -9415,7 +9440,7 @@ Begin
     CurrRow[I] := (CurrRow[I] + (A + B) Div 2) And $FF;
    End;
   End;
-  
+
   PNG_FILTER_PAETH: Begin
    For I := 0 To RowLen - 1 Do Begin
     If I < BytesPerPixel Then Begin
@@ -9430,10 +9455,10 @@ Begin
     CurrRow[I] := (CurrRow[I] + PNGPaethPredictor(A, B, C)) And $FF;
    End;
   End;
-  
+
   Else Exit; { Filtre inconnu }
  End;
- 
+
  PNGUnfilterRow := True;
 End;
 
@@ -9470,38 +9495,38 @@ Begin
  Img.AlphaData := Nil;
  Img.HasTransparent := False;
  Img.TransparentIndex := -1;
- 
+
  { Ouvrir le fichier }
  {$I-}
  Assign(F, FileName);
  Reset(F, 1);
  {$I+}
  If IOResult <> 0 Then Exit;
- 
+
  { Verifier la signature PNG }
  BlockRead(F, Signature, 8, BytesRead);
  If BytesRead <> 8 Then Begin
   Close(F);
   Exit;
  End;
- 
+
  For I := 0 To 7 Do Begin
   If Signature[I] <> PNG_SIGNATURE[I] Then Begin
    Close(F);
    Exit;
   End;
  End;
- 
+
  CompDataLen := 0;
  CompDataPos := 0;
  Img.PaletteSize := 0;
- 
+
  { Parcourir les chunks }
  While True Do Begin
   ChunkLen := PNGReadDWord(F);
   BlockRead(F, ChunkType, 4, BytesRead);
   If BytesRead <> 4 Then Break;
-  
+
   If ChunkType = PNG_CHUNK_IHDR Then Begin
    { En-tete de l'image }
    Header.Width := PNGReadDWord(F);
@@ -9511,23 +9536,23 @@ Begin
    BlockRead(F, Header.Compression, 1, BytesRead);
    BlockRead(F, Header.Filter, 1, BytesRead);
    BlockRead(F, Header.Interlace, 1, BytesRead);
-   
+
    If (Header.Width > PNG_MAX_WIDTH) Or (Header.Height > PNG_MAX_HEIGHT) Then Begin
     Close(F);
     Exit;
    End;
-   
+
    Img.Width := Header.Width;
    Img.Height := Header.Height;
    Img.BitDepth := Header.BitDepth;
    Img.ColorType := Header.ColorType;
    Img.HasAlpha := (Header.ColorType = PNG_COLOR_GRAYSCALE_ALPHA) Or
                    (Header.ColorType = PNG_COLOR_RGBA);
-   
+
    { Lire le CRC }
    ChunkCRC := PNGReadDWord(F);
   End
-  
+
   Else If ChunkType = PNG_CHUNK_PLTE Then Begin
    { Palette }
    Img.PaletteSize := ChunkLen Div 3;
@@ -9538,7 +9563,7 @@ Begin
    End;
    ChunkCRC := PNGReadDWord(F);
   End
-  
+
   Else If ChunkType = PNG_CHUNK_tRNS Then Begin
    { Transparence }
    Img.HasTransparent := True;
@@ -9559,7 +9584,7 @@ Begin
    End;
    ChunkCRC := PNGReadDWord(F);
   End
-  
+
   Else If ChunkType = PNG_CHUNK_IDAT Then Begin
    { Donnees compressees - accumuler }
    If CompDataPos + ChunkLen <= 65536 Then Begin
@@ -9574,13 +9599,13 @@ Begin
    End;
    ChunkCRC := PNGReadDWord(F);
   End
-  
+
   Else If ChunkType = PNG_CHUNK_IEND Then Begin
    { Fin de l'image }
    ChunkCRC := PNGReadDWord(F);
    Break;
   End
-  
+
   Else Begin
    { Chunk inconnu - sauter }
    For I := 1 To ChunkLen Do Begin
@@ -9589,17 +9614,17 @@ Begin
    ChunkCRC := PNGReadDWord(F);
   End;
  End;
- 
+
  Close(F);
- 
+
  { Decompresser les donnees (sauter l'en-tete zlib de 2 octets) }
  If CompDataPos < 3 Then Exit;
- 
+
  Move(CompData[2], DeflateInBuffer, CompDataPos - 2);
  DeflateInLen := CompDataPos - 2;
- 
+
  If Not DeflateDecompressBlock(DecompData, DecompLen, 65536) Then Exit;
- 
+
  { Calculer les octets par pixel }
  Case Img.ColorType Of
   PNG_COLOR_GRAYSCALE: BytesPerPixel := 1;
@@ -9609,16 +9634,16 @@ Begin
   PNG_COLOR_RGBA: BytesPerPixel := 4;
   Else Exit;
  End;
- 
+
  RowBytes := Img.Width * BytesPerPixel;
- 
+
  { Allouer la memoire pour les pixels RGB }
  Img.DataSize := LongInt(Img.Width) * LongInt(Img.Height) * 3;
  If Img.DataSize > 65520 Then Exit;
- 
+
  GetMem(Img.Data, Img.DataSize);
  If Img.Data = Nil Then Exit;
- 
+
  { Allouer la memoire pour l'alpha si necessaire }
  If Img.HasAlpha Then Begin
   GetMem(Img.AlphaData, LongInt(Img.Width) * LongInt(Img.Height));
@@ -9628,10 +9653,10 @@ Begin
    Exit;
   End;
  End;
- 
+
  { Initialiser la ligne precedente a zero }
  For I := 0 To RowBytes - 1 Do PrevRow[I] := 0;
- 
+
  { Decoder les lignes }
  DataPos := 0;
  For Y := 0 To Img.Height - 1 Do Begin
@@ -9639,7 +9664,7 @@ Begin
   If DataPos >= DecompLen Then Break;
   FilterType := DecompData[DataPos];
   Inc(DataPos);
-  
+
   { Lire les donnees de la ligne }
   For I := 0 To RowBytes - 1 Do Begin
    If DataPos >= DecompLen Then
@@ -9649,19 +9674,19 @@ Begin
     Inc(DataPos);
    End;
   End;
-  
+
   { Appliquer le filtre inverse }
   If Not PNGUnfilterRow(FilterType, CurrRow, PrevRow, RowBytes, BytesPerPixel) Then Begin
    PNGFreeImage(Img);
    Exit;
   End;
-  
+
   { Convertir les pixels en RGB }
   For X := 0 To Img.Width - 1 Do Begin
    PixelOffset := (LongInt(Y) * LongInt(Img.Width) + LongInt(X)) * 3;
    DataPtr := Img.Data;
    Inc(DataPtr, PixelOffset);
-   
+
    Case Img.ColorType Of
     PNG_COLOR_GRAYSCALE: Begin
      GrayVal := CurrRow[X];
@@ -9669,13 +9694,13 @@ Begin
      DataPtr^ := GrayVal; Inc(DataPtr);
      DataPtr^ := GrayVal;
     End;
-    
+
     PNG_COLOR_RGB: Begin
      DataPtr^ := CurrRow[X * 3]; Inc(DataPtr);
      DataPtr^ := CurrRow[X * 3 + 1]; Inc(DataPtr);
      DataPtr^ := CurrRow[X * 3 + 2];
     End;
-    
+
     PNG_COLOR_PALETTE: Begin
      PalIdx := CurrRow[X];
      If PalIdx < Img.PaletteSize Then Begin
@@ -9689,7 +9714,7 @@ Begin
       DataPtr^ := 0;
      End;
     End;
-    
+
     PNG_COLOR_GRAYSCALE_ALPHA: Begin
      GrayVal := CurrRow[X * 2];
      A := CurrRow[X * 2 + 1];
@@ -9702,7 +9727,7 @@ Begin
       AlphaPtr^ := A;
      End;
     End;
-    
+
     PNG_COLOR_RGBA: Begin
      DataPtr^ := CurrRow[X * 4]; Inc(DataPtr);
      DataPtr^ := CurrRow[X * 4 + 1]; Inc(DataPtr);
@@ -9715,11 +9740,11 @@ Begin
     End;
    End;
   End;
-  
+
   { Sauvegarder la ligne courante comme precedente }
   Move(CurrRow, PrevRow, RowBytes);
  End;
- 
+
  Img.Valid := True;
  PNGLoadFromFile := True;
 End;
@@ -9734,7 +9759,7 @@ Begin
  PNGGetPixel := 0;
  If Not Img.Valid Then Exit;
  If (X < 0) Or (X >= Img.Width) Or (Y < 0) Or (Y >= Img.Height) Then Exit;
- 
+
  Offset := (LongInt(Y) * LongInt(Img.Width) + LongInt(X)) * 3;
  DataPtr := Img.Data;
  Inc(DataPtr, Offset);
@@ -9743,7 +9768,7 @@ Begin
  G := DataPtr^;
  Inc(DataPtr);
  B := DataPtr^;
- 
+
  PNGGetPixel := PNGRGBToVGAColor(R, G, B);
 End;
 
@@ -9758,7 +9783,7 @@ Begin
  If Not Img.HasAlpha Then Exit;
  If Img.AlphaData = Nil Then Exit;
  If (X < 0) Or (X >= Img.Width) Or (Y < 0) Or (Y >= Img.Height) Then Exit;
- 
+
  Offset := LongInt(Y) * LongInt(Img.Width) + LongInt(X);
  AlphaPtr := Img.AlphaData;
  Inc(AlphaPtr, Offset);
@@ -9775,13 +9800,13 @@ Var
  Alpha: Byte;
 Begin
  If Not Img.Valid Then Exit;
- 
+
  DrawWidth := Img.Width;
  DrawHeight := Img.Height;
- 
+
  If DrawWidth > MaxWidth Then DrawWidth := MaxWidth;
  If DrawHeight > MaxHeight Then DrawHeight := MaxHeight;
- 
+
  For Y := 0 To DrawHeight - 1 Do Begin
   For X := 0 To DrawWidth - 1 Do Begin
    If Img.HasAlpha Then Begin
@@ -9810,7 +9835,7 @@ Var
 Begin
  If Not Img.Valid Then Exit;
  If (DestWidth <= 0) Or (DestHeight <= 0) Then Exit;
- 
+
  For Y := 0 To DestHeight - 1 Do Begin
   SrcY := (Y * Img.Height) Div DestHeight;
   For X := 0 To DestWidth - 1 Do Begin
@@ -9851,7 +9876,7 @@ Var
  Slot: Integer;
 Begin
  PNGAddToCache := 0;
- 
+
  Slot := 0;
  For I := 1 To 16 Do Begin
   If Not PNGImageCache[I].Used Then Begin
@@ -9859,13 +9884,13 @@ Begin
    Break;
   End;
  End;
- 
+
  If Slot = 0 Then Begin
   If PNGImageCache[1].Image.Valid Then
    PNGFreeImage(PNGImageCache[1].Image);
   Slot := 1;
  End;
- 
+
  PNGImageCache[Slot].URL := URL;
  PNGImageCache[Slot].Image := Img;
  PNGImageCache[Slot].Used := True;
@@ -9883,16 +9908,16 @@ Begin
   PNGBuildImagePath := Src;
   Exit;
  End;
- 
+
  BasePath := CurrentURL;
- 
+
  For I := Length(BasePath) DownTo 1 Do Begin
   If BasePath[I] In ['/', '\'] Then Begin
    BasePath := Copy(BasePath, 1, I);
    Break;
   End;
  End;
- 
+
  PNGBuildImagePath := BasePath + Src;
 End;
 
@@ -10038,7 +10063,7 @@ End;
 Function SVGColorToVGA(Color: LongInt): Byte;
 Var
  R, G, B: Byte;
- BestColor, BestDist, Dist: Integer;
+ BestColor, BestDist, Dist: LongInt;
  I: Integer;
 Const
  VGAPalette: Array[0..15, 0..2] Of Byte = (
@@ -11694,6 +11719,69 @@ Begin
  DrawForwardButton;
 End;
 
+{ Charger un petit document HTML depuis un fichier texte.
+  Le type String de Turbo Pascal limite le document a 255 caracteres. }
+Function LoadHTMLFile(Const FileName: String; Var HTML: String): Boolean;
+Var
+ F: Text;
+ Line: String;
+ Remaining: Integer;
+Begin
+ LoadHTMLFile := False;
+ HTML := '';
+ Assign(F, FileName);
+ {$I-}
+ Reset(F);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+
+ While Not EOF(F) And (Length(HTML) < 255) Do Begin
+  ReadLn(F, Line);
+  Remaining := 255 - Length(HTML);
+  If Length(Line) > Remaining Then
+   Line := Copy(Line, 1, Remaining);
+  HTML := HTML + Line;
+  If (Not EOF(F)) And (Length(HTML) < 255) Then
+   HTML := HTML + ' ';
+ End;
+ Close(F);
+ LoadHTMLFile := True;
+End;
+
+Function IsRemoteURL(Const URL: String): Boolean;
+Var
+ LowerURL: String;
+Begin
+ LowerURL := HTMLLowerCase(URL);
+ IsRemoteURL := (Copy(LowerURL, 1, 7) = 'http://') Or
+                (Copy(LowerURL, 1, 8) = 'https://');
+End;
+
+{ Charger et afficher la cible courante. }
+Procedure DisplayCurrentTarget;
+Var
+ HTML, FileName: String;
+Begin
+ If IsRemoteURL(CurrentURL) Then Begin
+  HTML := '<html><body><h2>Adresse URL</h2><p>' + CurrentURL +
+          '</p><p>Le telechargement HTTP/HTTPS n''est pas encore implemente.</p></body></html>';
+  TestHTMLRender(HTML);
+  Exit;
+ End;
+
+ FileName := CurrentURL;
+ If Copy(HTMLLowerCase(FileName), 1, 7) = 'file://' Then
+  Delete(FileName, 1, 7);
+
+ If LoadHTMLFile(FileName, HTML) Then
+  TestHTMLRender(HTML)
+ Else Begin
+  HTML := '<html><body><h2>Erreur</h2><p>Impossible d''ouvrir le fichier : ' +
+          FileName + '</p></body></html>';
+  TestHTMLRender(HTML);
+ End;
+End;
+
 { Procedure pour naviguer vers une nouvelle URL et l'ajouter a l'historique }
 Procedure NavigateTo(URL: String);
 Var
@@ -11726,6 +11814,7 @@ Begin
  DrawURLBar;
  DrawFavoriteButton;
  UpdateNavigationButtons;
+ DisplayCurrentTarget;
 End;
 
 { Procedure pour aller a la page precedente }
@@ -11738,6 +11827,7 @@ Begin
   DrawURLBar;
   DrawFavoriteButton;
   UpdateNavigationButtons;
+  DisplayCurrentTarget;
  End;
 End;
 
@@ -11751,6 +11841,7 @@ Begin
   DrawURLBar;
   DrawFavoriteButton;
   UpdateNavigationButtons;
+  DisplayCurrentTarget;
  End;
 End;
 
@@ -11995,38 +12086,22 @@ End;
 
  Function MouseDriverFound: Boolean;
  Begin
-  { PtcMouse est toujours disponible sous Free Pascal avec PtcGraph }
-  MouseDriverFound := True;
+  MouseDriverFound := PtcMouse.InitMouse;
  End;
 
  Procedure ShowMouse;
  Begin
-  { PtcMouse gere automatiquement l'affichage du curseur }
-  { Pas d'action necessaire }
+  PtcMouse.ShowMouse;
  End;
 
  Procedure HideMouse;
  Begin
-  { PtcMouse gere automatiquement l'affichage du curseur }
-  { Pas d'action necessaire }
+  PtcMouse.HideMouse;
  End;
 
  Procedure GetMouseState(Var X, Y, Button: LongInt);
- Var
-  Buttons: Word;
  Begin
-  { Utiliser les fonctions de PtcMouse }
-  X := GetMouseX;
-  Y := GetMouseY;
-  Buttons := GetMouseButtons;
-  Button := 0;
-  { Convertir les boutons PtcMouse au format standard }
-  If (Buttons And MouseLeftButton) <> 0 Then
-   Button := Button Or MOUSE_LEFT_BUTTON;
-  If (Buttons And MouseRightButton) <> 0 Then
-   Button := Button Or MOUSE_RIGHT_BUTTON;
-  If (Buttons And MouseMiddleButton) <> 0 Then
-   Button := Button Or MOUSE_MIDDLE_BUTTON;
+  PtcMouse.GetMouseState(X, Y, Button);
  End;
 
  Procedure SetMouseHorizontalBounds(MinX, MaxX: Integer);
@@ -12043,19 +12118,18 @@ End;
 
  Procedure SetMousePosition(X, Y: Integer);
  Begin
-  { PtcMouse ne supporte pas le positionnement direct du curseur }
-  { Sauvegarder la position pour reference }
+  PtcMouse.SetMousePos(X, Y);
   PtcMouseLastX := X;
   PtcMouseLastY := Y;
  End;
 
  Function GetMouseLeftClicks: Integer;
  Var
-  Buttons: Word;
+  X, Y, Buttons: LongInt;
  Begin
   { Detecter les clics via l'etat des boutons }
-  Buttons := GetMouseButtons;
-  If (Buttons And MouseLeftButton) <> 0 Then Begin
+  PtcMouse.GetMouseState(X, Y, Buttons);
+  If (Buttons And PtcMouse.LButton) <> 0 Then Begin
    Inc(PtcMouseLeftClickCount);
    GetMouseLeftClicks := PtcMouseLeftClickCount;
   End
@@ -12065,11 +12139,11 @@ End;
 
  Function GetMouseRightClicks: Integer;
  Var
-  Buttons: Word;
+  X, Y, Buttons: LongInt;
  Begin
   { Detecter les clics via l'etat des boutons }
-  Buttons := GetMouseButtons;
-  If (Buttons And MouseRightButton) <> 0 Then Begin
+  PtcMouse.GetMouseState(X, Y, Buttons);
+  If (Buttons And PtcMouse.RButton) <> 0 Then Begin
    Inc(PtcMouseRightClickCount);
    GetMouseRightClicks := PtcMouseRightClickCount;
   End
@@ -12079,11 +12153,10 @@ End;
 
  Procedure GetMouseMotion(Var DeltaX, DeltaY: Integer);
  Var
-  CurrentX, CurrentY: Integer;
+  CurrentX, CurrentY, Buttons: LongInt;
  Begin
   { Calculer le deplacement depuis la derniere position }
-  CurrentX := GetMouseX;
-  CurrentY := GetMouseY;
+  PtcMouse.GetMouseState(CurrentX, CurrentY, Buttons);
   DeltaX := CurrentX - PtcMouseLastX;
   DeltaY := CurrentY - PtcMouseLastY;
   PtcMouseLastX := CurrentX;
@@ -12242,12 +12315,97 @@ Begin
  LastMouseButton := MouseButton;
 End;
 
+Procedure WriteConsoleLine(Const S: String);
+Begin
+ {$IFDEF FPC}
+ WriteLn(StdErr, S);
+ {$ELSE}
+ WriteLn(S);
+ {$ENDIF}
+End;
+
+Procedure PrintUsage;
+Begin
+ WriteConsoleLine('BROWSER 1.00 - Navigateur Web graphique');
+ WriteConsoleLine('');
+ WriteConsoleLine('Usage:');
+ WriteConsoleLine('  BROWSER [URL|FICHIER]');
+ WriteConsoleLine('  BROWSER URL <adresse>');
+ WriteConsoleLine('  BROWSER FILE <fichier.html>');
+ WriteConsoleLine('');
+ WriteConsoleLine('Options:');
+ WriteConsoleLine('  /?, /H, -h, --help       Afficher cette aide');
+ WriteConsoleLine('  /URL, -u, --url URL      Ouvrir une adresse HTTP ou HTTPS');
+ WriteConsoleLine('  /FILE, -f, --file FILE   Ouvrir un fichier HTML local');
+ WriteConsoleLine('');
+ WriteConsoleLine('Exemples:');
+ WriteConsoleLine('  BROWSER https://www.example.com/');
+ WriteConsoleLine('  BROWSER FILE index.html');
+End;
+
+Function IsHelpParameter(Const S: String): Boolean;
+Var
+ P: String;
+Begin
+ P := HTMLLowerCase(S);
+ IsHelpParameter := (P = '/?') Or (P = '/h') Or
+                    (P = '-h') Or (P = '--help');
+End;
+
+Function IsURLParameter(Const S: String): Boolean;
+Var
+ P: String;
+Begin
+ P := HTMLLowerCase(S);
+ IsURLParameter := (P = 'url') Or (P = '/url') Or
+                   (P = '-u') Or (P = '--url');
+End;
+
+Function IsFileParameter(Const S: String): Boolean;
+Var
+ P: String;
+Begin
+ P := HTMLLowerCase(S);
+ IsFileParameter := (P = 'file') Or (P = '/file') Or
+                    (P = '-f') Or (P = '--file');
+End;
+
+Procedure ParseCommandLine(Var InitialTarget: String);
+Var
+ FirstParam: String;
+Begin
+ InitialTarget := 'https://';
+ If System.ParamCount = 0 Then Exit;
+
+ FirstParam := ParamStr(1);
+ If IsHelpParameter(FirstParam) Then Begin
+  PrintUsage;
+  Halt;
+ End;
+
+ If IsURLParameter(FirstParam) Or IsFileParameter(FirstParam) Then Begin
+  If System.ParamCount < 2 Then Begin
+   WriteConsoleLine('Erreur: une URL ou un nom de fichier est requis.');
+   WriteConsoleLine('Utilisez BROWSER /? pour afficher l''aide.');
+   Halt(1);
+  End;
+  InitialTarget := ParamStr(2);
+  Exit;
+ End;
+
+ { Un premier argument sans option est directement une URL ou un fichier. }
+ InitialTarget := FirstParam;
+End;
+
 Var
  Key: Char;
+ InitialTarget: String;
 
 BEGIN
+ ParseCommandLine(InitialTarget);
  InitializeGraphics;
  InitURLBar;
+ SetURL(InitialTarget);
  InitHistory;
  InitMouse;
  InitHTMLParser;

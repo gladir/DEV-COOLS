@@ -67,6 +67,9 @@ Const
   SRVVAR_SLOTS  = 8;     { nombre de buffers du pool tournant     }
   SRVVAR_SLOTSZ = 512;   { taille de chaque buffer (avec nul)     }
 
+  { Response.Buffer : taille du tampon de sortie quand actif }
+  RESP_BUFCAP   = 16384; { capacite du tampon Response.Buffer     }
+
   { Prefixes de nommage ASM }
   PSP_VAR_PFX   = '_PSP_';      { variable globale              }
   PSP_FN_PFX    = '_PSPF_';     { fonction / procedure          }
@@ -318,6 +321,8 @@ Var
   LexColNo  : Integer;
   LexEOF    : Boolean;
   CurToken  : TToken;
+  TplUngetTok    : TToken;  { jeton remis en file (voir TplNextToken) }
+  TplHasUngetTok : Boolean; { True si TplUngetTok doit etre rejoue    }
 
   { Analyseur de template }
   TplMode      : TPSPMode;
@@ -445,6 +450,7 @@ Procedure TplClose;      Forward;
 Procedure TplEmitHtml;   Forward;
 Procedure TplEmitPSPOpen(Kind : TTokenKind); Forward;
 Procedure TplNextToken;  Forward;
+Procedure TplUngetToken(Const Tok : TToken); Forward;
 { Segment de donnees et litteraux }
 Function  LabelGen : TString; Forward;
 Function  DataAdd(Const Lbl : TString; Kind : TDataKind;
@@ -1658,6 +1664,15 @@ Var
   Ch    : Char;
   Kind  : TTokenKind;
 Begin
+  { 0) Si un jeton a ete remis en file (TplUngetToken), le rejouer
+    tel quel avant de reprendre l analyse normale. }
+  If TplHasUngetTok Then
+  Begin
+    CurToken := TplUngetTok;
+    TplHasUngetTok := False;
+    Exit;
+  End;
+
   { 1) Si un tag PSP est en attente (apres emission de TK_HTML) }
   If TplPending <> TK_EOF Then
   Begin
@@ -1766,6 +1781,18 @@ Begin
     If CurToken.Kind = TK_PSP_CLOSE Then
       TplMode := TPL_HTML;
   End;
+End;
+
+{ ---- TplUngetToken : remettre un jeton en file (1 seul niveau) }
+{ Le prochain appel a TplNextToken renverra exactement ce jeton   }
+{ au lieu de poursuivre l analyse. Utilise pour les lookaheads    }
+{ qui se revelent ne pas correspondre au motif attendu (ex.       }
+{ ParseVarDecl qui doit "rendre" un identifiant ne faisant pas    }
+{ partie d une declaration var).                                 }
+Procedure TplUngetToken(Const Tok : TToken);
+Begin
+  TplUngetTok    := Tok;
+  TplHasUngetTok := True;
 End;
 
 { ============================================================
@@ -1968,6 +1995,18 @@ Begin
   EmitRaw(PSP_RT_PFX + 'RESP_LOC    DB  ''Location: '',0');
   EmitRaw(PSP_RT_PFX + 'RESP_HDRSEP DB  '': '',0');
   EmitRaw(PSP_RT_PFX + 'RESP_CTNAME DB  ''Content-Type'',0');
+  EmitBlankLine;
+  { Response.Buffer : tampon de sortie optionnel. Tant que
+    RESP_BUFON = 0 (defaut), _PSPRT_PRINTSTR ecrit immediatement
+    sur stdout (comportement inchange). Quand Response.Buffer :=
+    True a ete execute, RESP_BUFON = 1 et toute sortie s accumule
+    dans RESP_BUFFER jusqu a la fin du programme (ou jusqu a ce
+    que Response.Buffer := False soit execute, ce qui force un
+    vidage immediat du contenu deja accumule). }
+  EmitComment('--- Response.Buffer buffers ---');
+  EmitRaw(PSP_RT_PFX + 'RESP_BUFON  DD  0');
+  EmitRaw(PSP_RT_PFX + 'RESP_BUFLEN DD  0');
+  EmitRaw(PSP_RT_PFX + 'RESP_BUFFER DB  ' + IntToStr(RESP_BUFCAP) + ' DUP(0)');
   EmitBlankLine;
 
   { --- Entrees dynamiques de DataTab --- }
@@ -3032,6 +3071,7 @@ Begin
   End;
   EmitBlankLine;
   EmitComment('--- Sortie programme ---');
+  EmitInstrA('CALL', PSP_RT_PFX + 'RESPFLUSHBUF');
   EmitInstrA('PUSH', '0');
   EmitInstrA('CALL', '_ExitProcess@4');
   EmitBlankLine;
@@ -3045,7 +3085,10 @@ Begin
     EmitComment('========================================');
     EmitBlankLine;
 
-    { _PSPRT_PRINTSTR : afficher chaine ASCIIZ pointee par ESI }
+    { _PSPRT_PRINTSTR : afficher chaine ASCIIZ pointee par ESI.
+      Si Response.Buffer est actif (RESP_BUFON<>0), accumule dans
+      RESP_BUFFER (tronque si la capacite RESP_BUFCAP est atteinte)
+      au lieu d ecrire immediatement sur stdout. }
     EmitLabel(PSP_RT_PFX + 'PRINTSTR');
     EmitInstrA('PUSH', 'ESI');
     EmitInstrAB('MOV', 'EDI', 'ESI');
@@ -3058,6 +3101,8 @@ Begin
     EmitInstrA('INC', 'ECX');
     EmitInstrA('JMP', PSP_RT_PFX + 'PRINTSTR_L');
     EmitLabel(PSP_RT_PFX + 'PRINTSTR_W');
+    EmitInstrAB('CMP', 'DWORD PTR [' + PSP_RT_PFX + 'RESP_BUFON]', '0');
+    EmitInstrA('JNE', PSP_RT_PFX + 'PRINTSTR_BUF');
     EmitComment('WriteFile(hStdout, pStr, len, pWritten, 0)');
     EmitInstrA('PUSH', '0');
     EmitInstrA('PUSH', 'OFFSET ' + PSP_RT_PFX + 'WRITTEN');
@@ -3065,7 +3110,60 @@ Begin
     EmitInstrA('PUSH', 'ESI');
     EmitInstrA('PUSH', 'DWORD PTR [' + PSP_RT_PFX + 'HSTDOUT]');
     EmitInstrA('CALL', '_WriteFile@20');
+    EmitInstrA('JMP', PSP_RT_PFX + 'PRINTSTR_DONE');
+    EmitLabel(PSP_RT_PFX + 'PRINTSTR_BUF');
+    EmitInstrA('PUSH', 'EBX');
+    EmitInstrA('PUSH', 'EDX');
+    EmitInstrAB('MOV', 'EBX', 'DWORD PTR [' + PSP_RT_PFX + 'RESP_BUFLEN]');
+    EmitInstrAB('MOV', 'EDX', IntToStr(RESP_BUFCAP));
+    EmitInstrAB('SUB', 'EDX', 'EBX');
+    EmitInstrAB('CMP', 'EDX', '0');
+    EmitInstrA('JG', PSP_RT_PFX + 'PRINTSTR_BUFROOM');
+    EmitInstrAB('XOR', 'EDX', 'EDX');
+    EmitLabel(PSP_RT_PFX + 'PRINTSTR_BUFROOM');
+    EmitInstrAB('CMP', 'ECX', 'EDX');
+    EmitInstrA('JLE', PSP_RT_PFX + 'PRINTSTR_BUFLEN');
+    EmitInstrAB('MOV', 'ECX', 'EDX');
+    EmitLabel(PSP_RT_PFX + 'PRINTSTR_BUFLEN');
+    EmitInstrAB('MOV', 'EDX', 'ECX');
+    EmitInstrAB('LEA', 'EDI', PSP_RT_PFX + 'RESP_BUFFER');
+    EmitInstrAB('ADD', 'EDI', 'EBX');
+    EmitLabel(PSP_RT_PFX + 'PRINTSTR_BUFCP');
+    EmitInstrAB('CMP', 'ECX', '0');
+    EmitInstrA('JLE', PSP_RT_PFX + 'PRINTSTR_BUFDONE');
+    EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', 'AL');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrA('INC', 'EDI');
+    EmitInstrA('DEC', 'ECX');
+    EmitInstrA('JMP', PSP_RT_PFX + 'PRINTSTR_BUFCP');
+    EmitLabel(PSP_RT_PFX + 'PRINTSTR_BUFDONE');
+    EmitInstrAB('ADD', 'EBX', 'EDX');
+    EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'RESP_BUFLEN]', 'EBX');
+    EmitInstrA('POP', 'EDX');
+    EmitInstrA('POP', 'EBX');
+    EmitLabel(PSP_RT_PFX + 'PRINTSTR_DONE');
     EmitInstrA('POP', 'ESI');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_RESPFLUSHBUF : si Response.Buffer est actif et que du
+      contenu est accumule, l ecrit sur stdout en un seul appel et
+      vide le tampon. Appele a chaque point de sortie du programme
+      (fin normale, halt, Response.Redirect, panic). Sans effet si
+      le tampon n a jamais ete active ou est vide. }
+    EmitComment('RESPFLUSHBUF: vide RESP_BUFFER sur stdout si non vide');
+    EmitLabel(PSP_RT_PFX + 'RESPFLUSHBUF');
+    EmitInstrAB('CMP', 'DWORD PTR [' + PSP_RT_PFX + 'RESP_BUFLEN]', '0');
+    EmitInstrA('JLE', PSP_RT_PFX + 'RESPFLUSH_DONE');
+    EmitInstrA('PUSH', '0');
+    EmitInstrA('PUSH', 'OFFSET ' + PSP_RT_PFX + 'WRITTEN');
+    EmitInstrA('PUSH', 'DWORD PTR [' + PSP_RT_PFX + 'RESP_BUFLEN]');
+    EmitInstrA('PUSH', 'OFFSET ' + PSP_RT_PFX + 'RESP_BUFFER');
+    EmitInstrA('PUSH', 'DWORD PTR [' + PSP_RT_PFX + 'HSTDOUT]');
+    EmitInstrA('CALL', '_WriteFile@20');
+    EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'RESP_BUFLEN]', '0');
+    EmitLabel(PSP_RT_PFX + 'RESPFLUSH_DONE');
     EmitInstr('RET');
     EmitBlankLine;
 
@@ -3940,9 +4038,14 @@ Begin
 
     { _PSPRT_RESPREDIRECT : ESI=url ASCIIZ -> ecrit l entete CGI
       "Location: <url>" suivi d une ligne vide, puis termine le
-      programme (style ASP Response.Redirect, sans tampon). }
+      programme (style ASP Response.Redirect). Si Response.Buffer
+      est actif, le contenu deja accumule (non encore envoye) est
+      d abord elimine : comme en ASP, une redirection tardive
+      remplace entierement le corps deja ecrit, elle ne s y ajoute
+      pas. Passe ensuite par PRINTSTR puis vide le tampon. }
     EmitComment('RESPREDIRECT: ESI=url -> entete CGI Location + fin');
     EmitLabel(PSP_RT_PFX + 'RESPREDIRECT');
+    EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'RESP_BUFLEN]', '0');
     EmitInstrA('PUSH', 'ESI');
     EmitInstrAB('LEA', 'ESI', PSP_RT_PFX + 'RESP_LOC');
     EmitInstrA('CALL', PSP_RT_PFX + 'PRINTSTR');
@@ -3950,6 +4053,7 @@ Begin
     EmitInstrA('CALL', PSP_RT_PFX + 'PRINTSTR');
     EmitInstrA('CALL', PSP_RT_PFX + 'WRITECRLF');
     EmitInstrA('CALL', PSP_RT_PFX + 'WRITECRLF');
+    EmitInstrA('CALL', PSP_RT_PFX + 'RESPFLUSHBUF');
     EmitInstrA('PUSH', '0');
     EmitInstrA('CALL', '_ExitProcess@4');
     EmitBlankLine;
@@ -4345,6 +4449,7 @@ Begin
     EmitInstrA('CALL', PSP_RT_PFX + 'PRINTSTR');
     EmitInstrAB('LEA', 'ESI', PSP_RT_PFX + 'CRLF');
     EmitInstrA('CALL', PSP_RT_PFX + 'PRINTSTR');
+    EmitInstrA('CALL', PSP_RT_PFX + 'RESPFLUSHBUF');
     EmitInstrA('PUSH', '1');
     EmitInstrA('CALL', '_ExitProcess@4');
     EmitBlankLine;
@@ -6658,6 +6763,7 @@ Var
   NewArrTIdx      : Integer;
   ElemTName       : TString;
   ElemSz          : Integer;
+  SavedTok        : TToken;
 Begin
   { Le mot-cle 'var' a deja ete consomme par l appelant }
   HasPendingAssign := False;
@@ -6666,6 +6772,7 @@ Begin
     { Lookahead : lire le premier ident puis verifier le token suivant }
     Names[0] := CurToken.Val;
     NCount := 1;
+    SavedTok := CurToken;  { au cas ou ce ne soit pas une declaration }
     TplNextToken;
 
     { Si := suit, c est une affectation, pas une declaration var }
@@ -6674,6 +6781,20 @@ Begin
       PendingAssignName := Names[0];
       HasPendingAssign  := True;
       Exit;  { Quitter ParseVarDecl, laisser CurToken sur := }
+    End;
+
+    { Ni ':=' ni ',' ni ':' : ce n est pas du tout une declaration
+      (ex. "Response.BinaryWrite(...)" ou un appel de procedure
+      en premiere instruction apres "var"). Rendre l identifiant
+      et le jeton courant, puis quitter la section var sans rien
+      consommer ni avertir : ParseStatement le reanalysera comme
+      une instruction normale. }
+    If Not ((CurToken.Kind = TK_PUNCT) And
+            ((CurToken.Val = ',') Or (CurToken.Val = ':'))) Then
+    Begin
+      TplUngetToken(CurToken);
+      CurToken := SavedTok;
+      Exit;
     End;
 
     { Collecter d eventuels noms supplementaires separes par virgule }
@@ -7508,6 +7629,7 @@ Var
   WIdx      : Integer;
   WI        : Integer;
   Ev1, Ev2, Ev3 : TExprVal;
+  LblSkip   : TString;
 Begin
   { Rien a faire si EOF }
   If CurToken.Kind = TK_EOF Then Exit;
@@ -8059,6 +8181,7 @@ Begin
       ParseExpr(HaltEv);
       ExprFlushToEAX(HaltEv);
       EmitInstrA('PUSH', 'EAX');
+      EmitInstrA('CALL', PSP_RT_PFX + 'RESPFLUSHBUF');
       EmitInstrA('CALL', '_ExitProcess@4');
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
         TplNextToken;
@@ -8066,6 +8189,7 @@ Begin
     Else
     Begin
       EmitInstrA('PUSH', '0');
+      EmitInstrA('CALL', PSP_RT_PFX + 'RESPFLUSHBUF');
       EmitInstrA('CALL', '_ExitProcess@4');
     End;
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
@@ -8149,9 +8273,53 @@ Begin
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
         TplNextToken;
     End
+    Else If (CurToken.Kind = TK_IDENT) And
+            (StrLowerCase(CurToken.Val) = 'binarywrite') Then
+    Begin
+      { Response.BinaryWrite(donnees) (style ASP) : ecrit les
+        octets bruts directement sur stdout, sans ajouter de
+        CR+LF ni aucun autre traitement (contrairement a
+        Write/WriteLn). Reutilise _PSPRT_PRINTSTR : ecrit jusqu
+        au premier octet nul de "donnees". }
+      TplNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        TplNextToken;
+      ParseExpr(Ev1);
+      ExprFlushToEAX(Ev1);
+      EmitComment('Response.BinaryWrite');
+      EmitInstrAB('MOV', 'ESI', 'EAX');
+      EmitInstrA('CALL', PSP_RT_PFX + 'PRINTSTR');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        TplNextToken;
+    End
+    Else If (CurToken.Kind = TK_IDENT) And
+            (StrLowerCase(CurToken.Val) = 'buffer') Then
+    Begin
+      { Response.Buffer := True|False (style ASP) : quand vrai,
+        toute sortie (Write/WriteLn/HTML/BinaryWrite) s accumule
+        dans un tampon au lieu d etre ecrite immediatement ; le
+        tampon est vide automatiquement a la fin du programme (ou
+        immediatement si l on repasse a False, ce qui permet par
+        exemple un Response.Redirect tardif sans avoir deja envoye
+        de contenu au client). }
+      TplNextToken;
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
+        TplNextToken
+      Else
+        WarnMsg('":=" attendu apres Response.Buffer');
+      ParseExpr(Ev1);
+      ExprFlushToEAX(Ev1);
+      EmitComment('Response.Buffer');
+      EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'RESP_BUFON]', 'EAX');
+      EmitInstrAB('CMP', 'EAX', '0');
+      LblSkip := LabelGen;
+      EmitInstrA('JNE', LblSkip);
+      EmitInstrA('CALL', PSP_RT_PFX + 'RESPFLUSHBUF');
+      EmitLabel(LblSkip);
+    End
     Else
-      WarnMsg('".Redirect", ".AddHeader", ".ContentType" ou ' +
-              '".AppendToLog" attendu apres Response');
+      WarnMsg('".Redirect", ".AddHeader", ".ContentType", ".AppendToLog", ' +
+              '".BinaryWrite" ou ".Buffer" attendu apres Response');
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
       TplNextToken;
     Exit;
