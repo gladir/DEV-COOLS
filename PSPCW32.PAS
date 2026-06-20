@@ -1927,6 +1927,10 @@ Begin
   EmitRaw(PSP_RT_PFX + 'FM_N       DD  0');
   EmitRaw(PSP_RT_PFX + 'FM_TMPNAME DD  0');
   EmitBlankLine;
+  { Response.Redirect (entete CGI) }
+  EmitComment('--- Response.Redirect buffer ---');
+  EmitRaw(PSP_RT_PFX + 'RESP_LOC   DB  ''Location: '',0');
+  EmitBlankLine;
 
   { --- Entrees dynamiques de DataTab --- }
   If DataCount > 0 Then
@@ -3513,6 +3517,22 @@ Begin
     EmitInstrAB('LEA', 'ESI', PSP_RT_PFX + 'CRLF');
     EmitInstrA('CALL', PSP_RT_PFX + 'PRINTSTR');
     EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_RESPREDIRECT : ESI=url ASCIIZ -> ecrit l entete CGI
+      "Location: <url>" suivi d une ligne vide, puis termine le
+      programme (style ASP Response.Redirect, sans tampon). }
+    EmitComment('RESPREDIRECT: ESI=url -> entete CGI Location + fin');
+    EmitLabel(PSP_RT_PFX + 'RESPREDIRECT');
+    EmitInstrA('PUSH', 'ESI');
+    EmitInstrAB('LEA', 'ESI', PSP_RT_PFX + 'RESP_LOC');
+    EmitInstrA('CALL', PSP_RT_PFX + 'PRINTSTR');
+    EmitInstrA('POP', 'ESI');
+    EmitInstrA('CALL', PSP_RT_PFX + 'PRINTSTR');
+    EmitInstrA('CALL', PSP_RT_PFX + 'WRITECRLF');
+    EmitInstrA('CALL', PSP_RT_PFX + 'WRITECRLF');
+    EmitInstrA('PUSH', '0');
+    EmitInstrA('CALL', '_ExitProcess@4');
     EmitBlankLine;
 
     { _PSPRT_CHR : AL -> chaine 1 car dans CHRBUF, EAX = ptr }
@@ -7481,6 +7501,35 @@ Begin
       EmitInstrA('PUSH', '0');
       EmitInstrA('CALL', '_ExitProcess@4');
     End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      TplNextToken;
+    Exit;
+  End;
+
+  { Response.Redirect(url) (style ASP) : envoie l entete CGI
+    "Location: <url>" puis termine le programme. }
+  If ((CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD)) And
+     (StrLowerCase(CurToken.Val) = 'response') Then
+  Begin
+    TplNextToken;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
+      TplNextToken;
+    If (CurToken.Kind = TK_IDENT) And
+       (StrLowerCase(CurToken.Val) = 'redirect') Then
+    Begin
+      TplNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        TplNextToken;
+      ParseExpr(Ev1);
+      ExprFlushToEAX(Ev1);
+      EmitComment('Response.Redirect');
+      EmitInstrAB('MOV', 'ESI', 'EAX');
+      EmitInstrA('CALL', PSP_RT_PFX + 'RESPREDIRECT');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        TplNextToken;
+    End
+    Else
+      WarnMsg('".Redirect" attendu apres Response');
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
       TplNextToken;
     Exit;
