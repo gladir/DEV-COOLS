@@ -506,6 +506,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer le compilateur Modula-2 pour l'assembleur du microprocesseur 80386 pour Windows 32 bits.</td>
 		</tr>
 		<tr>
+			<td><b>MOD3CW32.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur Modula-3 pour l'assembleur du microprocesseur 80386 pour Windows 32 bits.</td>
+		</tr>
+		<tr>
 			<td><b>MODII86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur Modula-2 pour l'assembleur du microprocesseur 8086.</td>
 		</tr>
