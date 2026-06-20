@@ -1927,9 +1927,18 @@ Begin
   EmitRaw(PSP_RT_PFX + 'FM_N       DD  0');
   EmitRaw(PSP_RT_PFX + 'FM_TMPNAME DD  0');
   EmitBlankLine;
-  { Response.Redirect (entete CGI) }
-  EmitComment('--- Response.Redirect buffer ---');
-  EmitRaw(PSP_RT_PFX + 'RESP_LOC   DB  ''Location: '',0');
+  { Request.BinaryRead (octets bruts du corps POST deja capture
+    par Request.Form dans FM_RAW/FM_BYTESRD) }
+  EmitComment('--- Request.BinaryRead buffers ---');
+  EmitRaw(PSP_RT_PFX + 'REQ_BINPOS DD  0');
+  EmitRaw(PSP_RT_PFX + 'REQ_BINBUF DB  ' + IntToStr(MAX_QS_RAW) + ' DUP(0)');
+  EmitBlankLine;
+  { Response.Redirect / Response.AddHeader / Response.ContentType
+    (entetes CGI) }
+  EmitComment('--- Response.Redirect / AddHeader / ContentType buffers ---');
+  EmitRaw(PSP_RT_PFX + 'RESP_LOC    DB  ''Location: '',0');
+  EmitRaw(PSP_RT_PFX + 'RESP_HDRSEP DB  '': '',0');
+  EmitRaw(PSP_RT_PFX + 'RESP_CTNAME DB  ''Content-Type'',0');
   EmitBlankLine;
 
   { --- Entrees dynamiques de DataTab --- }
@@ -3512,6 +3521,60 @@ Begin
     EmitInstr('RET');
     EmitBlankLine;
 
+    { _PSPRT_REQBINREAD : EAX=nombre d octets demande -> EAX =
+      pointeur vers REQ_BINBUF contenant au plus ce nombre
+      d octets bruts (non decodes), pris dans FM_RAW a partir de
+      REQ_BINPOS (qui avance a chaque appel), limite a ce qui a
+      reellement ete lu (FM_BYTESRD). Buffer termine par un zero. }
+    EmitComment('REQBINREAD: EAX=count -> EAX=ptr octets bruts');
+    EmitLabel(PSP_RT_PFX + 'REQBINREAD');
+    EmitInstrA('PUSH', 'ESI');
+    EmitInstrA('PUSH', 'EDI');
+    EmitInstrA('PUSH', 'EBX');
+    EmitInstrA('PUSH', 'ECX');
+    EmitInstrA('PUSH', 'EDX');
+    EmitInstrAB('MOV', 'EBX', 'EAX');
+    EmitInstrAB('CMP', 'EBX', '0');
+    EmitInstrA('JGE', PSP_RT_PFX + 'RBR_CNTOK');
+    EmitInstrAB('XOR', 'EBX', 'EBX');
+    EmitLabel(PSP_RT_PFX + 'RBR_CNTOK');
+    EmitInstrAB('MOV', 'ECX', 'DWORD PTR [' + PSP_RT_PFX + 'FM_BYTESRD]');
+    EmitInstrAB('SUB', 'ECX', 'DWORD PTR [' + PSP_RT_PFX + 'REQ_BINPOS]');
+    EmitInstrAB('CMP', 'ECX', '0');
+    EmitInstrA('JGE', PSP_RT_PFX + 'RBR_REMOK');
+    EmitInstrAB('XOR', 'ECX', 'ECX');
+    EmitLabel(PSP_RT_PFX + 'RBR_REMOK');
+    EmitInstrAB('CMP', 'EBX', 'ECX');
+    EmitInstrA('JLE', PSP_RT_PFX + 'RBR_KEEP');
+    EmitInstrAB('MOV', 'EBX', 'ECX');
+    EmitLabel(PSP_RT_PFX + 'RBR_KEEP');
+    EmitInstrAB('LEA', 'ESI', PSP_RT_PFX + 'FM_RAW');
+    EmitInstrAB('ADD', 'ESI', 'DWORD PTR [' + PSP_RT_PFX + 'REQ_BINPOS]');
+    EmitInstrAB('LEA', 'EDI', PSP_RT_PFX + 'REQ_BINBUF');
+    EmitInstrAB('MOV', 'ECX', 'EBX');
+    EmitLabel(PSP_RT_PFX + 'RBR_CPLP');
+    EmitInstrAB('CMP', 'ECX', '0');
+    EmitInstrA('JLE', PSP_RT_PFX + 'RBR_CPDONE');
+    EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', 'AL');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrA('INC', 'EDI');
+    EmitInstrA('DEC', 'ECX');
+    EmitInstrA('JMP', PSP_RT_PFX + 'RBR_CPLP');
+    EmitLabel(PSP_RT_PFX + 'RBR_CPDONE');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', '0');
+    EmitInstrAB('MOV', 'EAX', 'DWORD PTR [' + PSP_RT_PFX + 'REQ_BINPOS]');
+    EmitInstrAB('ADD', 'EAX', 'EBX');
+    EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'REQ_BINPOS]', 'EAX');
+    EmitInstrAB('LEA', 'EAX', PSP_RT_PFX + 'REQ_BINBUF');
+    EmitInstrA('POP', 'EDX');
+    EmitInstrA('POP', 'ECX');
+    EmitInstrA('POP', 'EBX');
+    EmitInstrA('POP', 'EDI');
+    EmitInstrA('POP', 'ESI');
+    EmitInstr('RET');
+    EmitBlankLine;
+
     { _PSPRT_WRITECRLF : ecrire CR+LF }
     EmitLabel(PSP_RT_PFX + 'WRITECRLF');
     EmitInstrAB('LEA', 'ESI', PSP_RT_PFX + 'CRLF');
@@ -3533,6 +3596,23 @@ Begin
     EmitInstrA('CALL', PSP_RT_PFX + 'WRITECRLF');
     EmitInstrA('PUSH', '0');
     EmitInstrA('CALL', '_ExitProcess@4');
+    EmitBlankLine;
+
+    { _PSPRT_RESPADDHDR : ESI=nom ASCIIZ, EDX=valeur ASCIIZ ->
+      ecrit l entete CGI "nom: valeur" suivi d un CR+LF (style
+      ASP Response.AddHeader). Ne termine pas le programme : a
+      appeler avant tout autre affichage, puis suivre d une ligne
+      vide (WriteLn;) pour clore les entetes avant le corps. }
+    EmitComment('RESPADDHDR: ESI=nom, EDX=valeur -> entete CGI');
+    EmitLabel(PSP_RT_PFX + 'RESPADDHDR');
+    EmitInstrA('PUSH', 'EDX');
+    EmitInstrA('CALL', PSP_RT_PFX + 'PRINTSTR');
+    EmitInstrAB('LEA', 'ESI', PSP_RT_PFX + 'RESP_HDRSEP');
+    EmitInstrA('CALL', PSP_RT_PFX + 'PRINTSTR');
+    EmitInstrA('POP', 'ESI');
+    EmitInstrA('CALL', PSP_RT_PFX + 'PRINTSTR');
+    EmitInstrA('CALL', PSP_RT_PFX + 'WRITECRLF');
+    EmitInstr('RET');
     EmitBlankLine;
 
     { _PSPRT_CHR : AL -> chaine 1 car dans CHRBUF, EAX = ptr }
@@ -5181,8 +5261,25 @@ Begin
             Res.TypeIdx := TY_IDX_STRING;
           End;
         End
+        Else If (CurToken.Kind = TK_IDENT) And
+                (StrLowerCase(CurToken.Val) = 'binaryread') Then
+        Begin
+          { Request.BinaryRead(count) (style ASP) : retourne au
+            plus "count" octets bruts (non decodes) du corps
+            POST deja capture par Request.Form, a partir de la
+            position courante (avance a chaque appel). }
+          TplNextToken;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+            TplNextToken;
+          ParseExpr(Res);
+          ExprFlushToEAX(Res);
+          EmitInstrA('CALL', PSP_RT_PFX + 'REQBINREAD');
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            TplNextToken;
+          Res.TypeIdx := TY_IDX_STRING;
+        End
         Else
-          WarnMsg('".QueryString" ou ".Form" attendu apres Request');
+          WarnMsg('".QueryString", ".Form" ou ".BinaryRead" attendu apres Request');
         Res.Kind   := EK_AX;
         Res.SymIdx := -1;
       End
@@ -7506,8 +7603,10 @@ Begin
     Exit;
   End;
 
-  { Response.Redirect(url) (style ASP) : envoie l entete CGI
-    "Location: <url>" puis termine le programme. }
+  { Response.Redirect(url), Response.AddHeader(nom, valeur) ou
+    Response.ContentType := valeur (style ASP) : envoie des
+    entetes CGI. Redirect ("Location:") termine le programme ;
+    AddHeader/ContentType emettent juste une ligne d entete. }
   If ((CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD)) And
      (StrLowerCase(CurToken.Val) = 'response') Then
   Begin
@@ -7528,8 +7627,43 @@ Begin
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
         TplNextToken;
     End
+    Else If (CurToken.Kind = TK_IDENT) And
+            (StrLowerCase(CurToken.Val) = 'addheader') Then
+    Begin
+      TplNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        TplNextToken;
+      ParseExpr(Ev1);
+      ExprFlushToEAX(Ev1);
+      EmitInstrA('PUSH', 'EAX');   { sauvegarder pointeur du nom }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        TplNextToken;
+      ParseExpr(Ev1);
+      ExprFlushToEAX(Ev1);
+      EmitComment('Response.AddHeader');
+      EmitInstrAB('MOV', 'EDX', 'EAX');
+      EmitInstrA('POP', 'ESI');
+      EmitInstrA('CALL', PSP_RT_PFX + 'RESPADDHDR');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        TplNextToken;
+    End
+    Else If (CurToken.Kind = TK_IDENT) And
+            (StrLowerCase(CurToken.Val) = 'contenttype') Then
+    Begin
+      TplNextToken;
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
+        TplNextToken
+      Else
+        WarnMsg('":=" attendu apres Response.ContentType');
+      ParseExpr(Ev1);
+      ExprFlushToEAX(Ev1);
+      EmitComment('Response.ContentType');
+      EmitInstrAB('MOV', 'EDX', 'EAX');
+      EmitInstrAB('LEA', 'ESI', PSP_RT_PFX + 'RESP_CTNAME');
+      EmitInstrA('CALL', PSP_RT_PFX + 'RESPADDHDR');
+    End
     Else
-      WarnMsg('".Redirect" attendu apres Response');
+      WarnMsg('".Redirect", ".AddHeader" ou ".ContentType" attendu apres Response');
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
       TplNextToken;
     Exit;
