@@ -1914,6 +1914,19 @@ Begin
   EmitRaw(PSP_RT_PFX + 'QS_TMPNAME DD  0');
   EmitRaw(PSP_RT_PFX + 'QS_EMPTY   DB  0');
   EmitBlankLine;
+  { Request.Form (CGI, corps POST x-www-form-urlencoded) }
+  EmitComment('--- Request.Form buffers (CGI, corps POST) ---');
+  EmitRaw(PSP_RT_PFX + 'FM_CL_NAME DB  ''CONTENT_LENGTH'',0');
+  EmitRaw(PSP_RT_PFX + 'FM_CLBUF   DB  32 DUP(0)');
+  EmitRaw(PSP_RT_PFX + 'FM_BYTESRD DD  0');
+  EmitRaw(PSP_RT_PFX + 'FM_RAW     DB  ' + IntToStr(MAX_QS_RAW) + ' DUP(0)');
+  EmitRaw(PSP_RT_PFX + 'FM_KEYS    DB  ' +
+          IntToStr(MAX_QS_PAIRS * MAX_QS_KEYLEN) + ' DUP(0)');
+  EmitRaw(PSP_RT_PFX + 'FM_VALS    DB  ' +
+          IntToStr(MAX_QS_PAIRS * MAX_QS_VALLEN) + ' DUP(0)');
+  EmitRaw(PSP_RT_PFX + 'FM_N       DD  0');
+  EmitRaw(PSP_RT_PFX + 'FM_TMPNAME DD  0');
+  EmitBlankLine;
 
   { --- Entrees dynamiques de DataTab --- }
   If DataCount > 0 Then
@@ -2941,6 +2954,8 @@ Begin
   EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'HSTDIN]', 'EAX');
   EmitComment('Initialiser Request.QueryString (CGI)');
   EmitInstrA('CALL', PSP_RT_PFX + 'QSINIT');
+  EmitComment('Initialiser Request.Form (CGI, corps POST)');
+  EmitInstrA('CALL', PSP_RT_PFX + 'FMINIT');
   EmitBlankLine;
   EmitBlankLine;
 End;
@@ -3321,6 +3336,171 @@ Begin
     EmitInstrA('INC', 'ECX');
     EmitInstrA('JMP', PSP_RT_PFX + 'QSCOUNT_LOOP');
     EmitLabel(PSP_RT_PFX + 'QSCOUNT_DONE');
+    EmitInstrAB('MOV', 'EAX', 'EBX');
+    EmitInstrA('POP', 'EDI');
+    EmitInstrA('POP', 'ECX');
+    EmitInstrA('POP', 'EBX');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { ========================================== }
+    { Request.Form (CGI, corps POST) RUNTIME     }
+    { ========================================== }
+    EmitComment('========================================');
+    EmitComment('  Request.Form (CGI, corps POST) RUNTIME');
+    EmitComment('========================================');
+    EmitBlankLine;
+
+    { _PSPRT_FMINIT : lit CONTENT_LENGTH (CGI), lit le corps
+      POST sur stdin et le decoupe en paires cle=valeur dans
+      FM_KEYS/FM_VALS (max MAX_QS_PAIRS), via _PSPRT_QSCOPY. }
+    EmitComment('FMINIT: lire CONTENT_LENGTH + corps POST (stdin)');
+    EmitLabel(PSP_RT_PFX + 'FMINIT');
+    EmitInstrA('PUSH', 'ESI');
+    EmitInstrA('PUSH', 'EDI');
+    EmitInstrA('PUSH', 'EBX');
+    EmitInstrA('PUSH', 'ECX');
+    EmitInstrA('PUSH', 'EDX');
+    EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'FM_N]', '0');
+    EmitInstrA('PUSH', '32');
+    EmitInstrA('PUSH', 'OFFSET ' + PSP_RT_PFX + 'FM_CLBUF');
+    EmitInstrA('PUSH', 'OFFSET ' + PSP_RT_PFX + 'FM_CL_NAME');
+    EmitInstrA('CALL', '_GetEnvironmentVariableA@12');
+    EmitInstrAB('CMP', 'EAX', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'FMINIT_DONE');
+    EmitInstrAB('LEA', 'ESI', PSP_RT_PFX + 'FM_CLBUF');
+    EmitInstrA('CALL', PSP_RT_PFX + 'STRTONUM');
+    EmitInstrAB('CMP', 'EAX', '0');
+    EmitInstrA('JLE', PSP_RT_PFX + 'FMINIT_DONE');
+    EmitInstrAB('CMP', 'EAX', IntToStr(MAX_QS_RAW - 1));
+    EmitInstrA('JLE', PSP_RT_PFX + 'FMINIT_RD');
+    EmitInstrAB('MOV', 'EAX', IntToStr(MAX_QS_RAW - 1));
+    EmitLabel(PSP_RT_PFX + 'FMINIT_RD');
+    EmitInstrAB('MOV', 'EBX', 'EAX');
+    EmitInstrA('PUSH', '0');
+    EmitInstrA('PUSH', 'OFFSET ' + PSP_RT_PFX + 'FM_BYTESRD');
+    EmitInstrA('PUSH', 'EAX');
+    EmitInstrA('PUSH', 'OFFSET ' + PSP_RT_PFX + 'FM_RAW');
+    EmitInstrA('PUSH', 'DWORD PTR [' + PSP_RT_PFX + 'HSTDIN]');
+    EmitInstrA('CALL', '_ReadFile@20');
+    EmitInstrAB('LEA', 'EDI', PSP_RT_PFX + 'FM_RAW');
+    EmitInstrAB('ADD', 'EDI', 'EBX');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', '0');
+    EmitInstrAB('LEA', 'ESI', PSP_RT_PFX + 'FM_RAW');
+    EmitLabel(PSP_RT_PFX + 'FMINIT_PAIR');
+    EmitInstrAB('CMP', 'BYTE PTR [ESI]', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'FMINIT_DONE');
+    EmitInstrAB('MOV', 'EDX', 'DWORD PTR [' + PSP_RT_PFX + 'FM_N]');
+    EmitInstrAB('CMP', 'EDX', IntToStr(MAX_QS_PAIRS));
+    EmitInstrA('JAE', PSP_RT_PFX + 'FMINIT_DONE');
+    EmitInstrAB('MOV', 'EBX', 'EDX');
+    EmitInstrAB('IMUL', 'EBX', IntToStr(MAX_QS_KEYLEN));
+    EmitInstrAB('LEA', 'EDI', PSP_RT_PFX + 'FM_KEYS');
+    EmitInstrAB('ADD', 'EDI', 'EBX');
+    EmitInstrA('CALL', PSP_RT_PFX + 'QSCOPY');
+    EmitInstrAB('CMP', 'AL', '''=''');
+    EmitInstrA('JNE', PSP_RT_PFX + 'FMINIT_NOVAL');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrAB('MOV', 'EBX', 'EDX');
+    EmitInstrAB('IMUL', 'EBX', IntToStr(MAX_QS_VALLEN));
+    EmitInstrAB('LEA', 'EDI', PSP_RT_PFX + 'FM_VALS');
+    EmitInstrAB('ADD', 'EDI', 'EBX');
+    EmitInstrA('CALL', PSP_RT_PFX + 'QSCOPY');
+    EmitInstrA('JMP', PSP_RT_PFX + 'FMINIT_ADV');
+    EmitLabel(PSP_RT_PFX + 'FMINIT_NOVAL');
+    EmitInstrAB('MOV', 'EBX', 'EDX');
+    EmitInstrAB('IMUL', 'EBX', IntToStr(MAX_QS_VALLEN));
+    EmitInstrAB('LEA', 'EDI', PSP_RT_PFX + 'FM_VALS');
+    EmitInstrAB('ADD', 'EDI', 'EBX');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', '0');
+    EmitLabel(PSP_RT_PFX + 'FMINIT_ADV');
+    EmitInstrA('INC', 'EDX');
+    EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'FM_N]', 'EDX');
+    EmitInstrAB('CMP', 'AL', '''&''');
+    EmitInstrA('JNE', PSP_RT_PFX + 'FMINIT_CKZ');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrA('JMP', PSP_RT_PFX + 'FMINIT_PAIR');
+    EmitLabel(PSP_RT_PFX + 'FMINIT_CKZ');
+    EmitInstrAB('CMP', 'AL', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'FMINIT_DONE');
+    EmitInstrA('JMP', PSP_RT_PFX + 'FMINIT_PAIR');
+    EmitLabel(PSP_RT_PFX + 'FMINIT_DONE');
+    EmitInstrA('POP', 'EDX');
+    EmitInstrA('POP', 'ECX');
+    EmitInstrA('POP', 'EBX');
+    EmitInstrA('POP', 'EDI');
+    EmitInstrA('POP', 'ESI');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_FMGET : ESI=nom ASCIIZ, EDX=index (1-based) ->
+      EAX = pointeur vers la valeur (ou chaine vide si absente). }
+    EmitComment('FMGET: ESI=name, EDX=index(1) -> EAX=value ptr');
+    EmitLabel(PSP_RT_PFX + 'FMGET');
+    EmitInstrA('PUSH', 'EBX');
+    EmitInstrA('PUSH', 'ECX');
+    EmitInstrA('PUSH', 'EDI');
+    EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'FM_TMPNAME]', 'ESI');
+    EmitInstrAB('XOR', 'EBX', 'EBX');
+    EmitInstrAB('XOR', 'ECX', 'ECX');
+    EmitLabel(PSP_RT_PFX + 'FMGET_LOOP');
+    EmitInstrAB('CMP', 'ECX', 'DWORD PTR [' + PSP_RT_PFX + 'FM_N]');
+    EmitInstrA('JAE', PSP_RT_PFX + 'FMGET_NOTFOUND');
+    EmitInstrAB('MOV', 'EAX', 'ECX');
+    EmitInstrAB('IMUL', 'EAX', IntToStr(MAX_QS_KEYLEN));
+    EmitInstrAB('LEA', 'EDI', PSP_RT_PFX + 'FM_KEYS');
+    EmitInstrAB('ADD', 'EDI', 'EAX');
+    EmitInstrAB('MOV', 'ESI', 'DWORD PTR [' + PSP_RT_PFX + 'FM_TMPNAME]');
+    EmitInstrA('CALL', PSP_RT_PFX + 'STRCMP');
+    EmitInstrAB('CMP', 'EAX', '0');
+    EmitInstrA('JNE', PSP_RT_PFX + 'FMGET_NEXT');
+    EmitInstrA('INC', 'EBX');
+    EmitInstrAB('CMP', 'EBX', 'EDX');
+    EmitInstrA('JNE', PSP_RT_PFX + 'FMGET_NEXT');
+    EmitInstrAB('MOV', 'EAX', 'ECX');
+    EmitInstrAB('IMUL', 'EAX', IntToStr(MAX_QS_VALLEN));
+    EmitInstrAB('LEA', 'EDI', PSP_RT_PFX + 'FM_VALS');
+    EmitInstrAB('ADD', 'EDI', 'EAX');
+    EmitInstrAB('MOV', 'EAX', 'EDI');
+    EmitInstrA('JMP', PSP_RT_PFX + 'FMGET_FOUND');
+    EmitLabel(PSP_RT_PFX + 'FMGET_NEXT');
+    EmitInstrA('INC', 'ECX');
+    EmitInstrA('JMP', PSP_RT_PFX + 'FMGET_LOOP');
+    EmitLabel(PSP_RT_PFX + 'FMGET_NOTFOUND');
+    EmitInstrAB('LEA', 'EAX', PSP_RT_PFX + 'QS_EMPTY');
+    EmitLabel(PSP_RT_PFX + 'FMGET_FOUND');
+    EmitInstrA('POP', 'EDI');
+    EmitInstrA('POP', 'ECX');
+    EmitInstrA('POP', 'EBX');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_FMCOUNT : ESI=nom ASCIIZ -> EAX = nombre de valeurs
+      portant ce nom dans le corps POST (Request.Form). }
+    EmitComment('FMCOUNT: ESI=name -> EAX=count');
+    EmitLabel(PSP_RT_PFX + 'FMCOUNT');
+    EmitInstrA('PUSH', 'EBX');
+    EmitInstrA('PUSH', 'ECX');
+    EmitInstrA('PUSH', 'EDI');
+    EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'FM_TMPNAME]', 'ESI');
+    EmitInstrAB('XOR', 'EBX', 'EBX');
+    EmitInstrAB('XOR', 'ECX', 'ECX');
+    EmitLabel(PSP_RT_PFX + 'FMCOUNT_LOOP');
+    EmitInstrAB('CMP', 'ECX', 'DWORD PTR [' + PSP_RT_PFX + 'FM_N]');
+    EmitInstrA('JAE', PSP_RT_PFX + 'FMCOUNT_DONE');
+    EmitInstrAB('MOV', 'EAX', 'ECX');
+    EmitInstrAB('IMUL', 'EAX', IntToStr(MAX_QS_KEYLEN));
+    EmitInstrAB('LEA', 'EDI', PSP_RT_PFX + 'FM_KEYS');
+    EmitInstrAB('ADD', 'EDI', 'EAX');
+    EmitInstrAB('MOV', 'ESI', 'DWORD PTR [' + PSP_RT_PFX + 'FM_TMPNAME]');
+    EmitInstrA('CALL', PSP_RT_PFX + 'STRCMP');
+    EmitInstrAB('CMP', 'EAX', '0');
+    EmitInstrA('JNE', PSP_RT_PFX + 'FMCOUNT_NEXT');
+    EmitInstrA('INC', 'EBX');
+    EmitLabel(PSP_RT_PFX + 'FMCOUNT_NEXT');
+    EmitInstrA('INC', 'ECX');
+    EmitInstrA('JMP', PSP_RT_PFX + 'FMCOUNT_LOOP');
+    EmitLabel(PSP_RT_PFX + 'FMCOUNT_DONE');
     EmitInstrAB('MOV', 'EAX', 'EBX');
     EmitInstrA('POP', 'EDI');
     EmitInstrA('POP', 'ECX');
@@ -4268,6 +4448,8 @@ Var
   FldSz       : Integer;
   WIdx        : Integer;
   WI          : Integer;
+  RtGetName   : TString;
+  RtCountName : TString;
 Begin
   Res.Kind    := EK_NONE;
   Res.ImmVal  := 0;
@@ -4914,14 +5096,29 @@ Begin
 
       Else If StrLowerCase(CurToken.Val) = 'request' Then
       Begin
-        { Request.QueryString(nom) [(index) | .Count] (style ASP) }
+        { Request.QueryString(nom) ou Request.Form(nom),
+          chacun avec [(index) | .Count] (style ASP) }
         TplNextToken;
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
           TplNextToken;
+        RtGetName   := '';
+        RtCountName := '';
         If (CurToken.Kind = TK_IDENT) And
            (StrLowerCase(CurToken.Val) = 'querystring') Then
         Begin
+          RtGetName   := PSP_RT_PFX + 'QSGET';
+          RtCountName := PSP_RT_PFX + 'QSCOUNT';
           TplNextToken;
+        End
+        Else If (CurToken.Kind = TK_IDENT) And
+                (StrLowerCase(CurToken.Val) = 'form') Then
+        Begin
+          RtGetName   := PSP_RT_PFX + 'FMGET';
+          RtCountName := PSP_RT_PFX + 'FMCOUNT';
+          TplNextToken;
+        End;
+        If RtGetName <> '' Then
+        Begin
           If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
             TplNextToken;
           ParseExpr(Res);
@@ -4931,41 +5128,41 @@ Begin
             TplNextToken;
           If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
           Begin
-            { Request.QueryString(nom)(index) }
+            { Request.QueryString/Form(nom)(index) }
             TplNextToken;
             ParseExpr(Res);
             ExprFlushToEAX(Res);
             EmitInstrAB('MOV', 'EDX', 'EAX');
             EmitInstrA('POP', 'ESI');
-            EmitInstrA('CALL', PSP_RT_PFX + 'QSGET');
+            EmitInstrA('CALL', RtGetName);
             If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
               TplNextToken;
             Res.TypeIdx := TY_IDX_STRING;
           End
           Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
           Begin
-            { Request.QueryString(nom).Count }
+            { Request.QueryString/Form(nom).Count }
             TplNextToken;
             If (CurToken.Kind = TK_IDENT) And
                (StrLowerCase(CurToken.Val) = 'count') Then
               TplNextToken
             Else
-              WarnMsg('".Count" attendu apres Request.QueryString(nom)');
+              WarnMsg('".Count" attendu apres Request.QueryString/Form(nom)');
             EmitInstrA('POP', 'ESI');
-            EmitInstrA('CALL', PSP_RT_PFX + 'QSCOUNT');
+            EmitInstrA('CALL', RtCountName);
             Res.TypeIdx := TY_IDX_INTEGER;
           End
           Else
           Begin
-            { Request.QueryString(nom) : valeur, index implicite 1 }
+            { Request.QueryString/Form(nom) : valeur, index implicite 1 }
             EmitInstrAB('MOV', 'EDX', '1');
             EmitInstrA('POP', 'ESI');
-            EmitInstrA('CALL', PSP_RT_PFX + 'QSGET');
+            EmitInstrA('CALL', RtGetName);
             Res.TypeIdx := TY_IDX_STRING;
           End;
         End
         Else
-          WarnMsg('".QueryString" attendu apres Request');
+          WarnMsg('".QueryString" ou ".Form" attendu apres Request');
         Res.Kind   := EK_AX;
         Res.SymIdx := -1;
       End

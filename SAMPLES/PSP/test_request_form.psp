@@ -1,0 +1,32 @@
+<%@ Language="PascalScript" %>
+<html>
+<head><title>Test Request.Form</title></head>
+<body>
+<h1>Test Request.Form (style ASP)</h1>
+<%
+{ Test de Request.Form(champ)[(index)|.Count]
+  Pour le tester : definir CONTENT_LENGTH et envoyer le corps
+  x-www-form-urlencoded sur stdin avant de lancer l executable, ex.
+    set CONTENT_LENGTH=42
+    echo nom=Sylvain&hobby=lecture&hobby=musique | test_request_form.exe
+}
+var
+  nom, hobby : String;
+  n, i : Integer;
+
+nom := Request.Form('nom');
+WriteLn('<p>nom = ', nom, '</p>');
+
+n := Request.Form('hobby').Count;
+WriteLn('<p>hobby.Count = ', n, '</p>');
+
+For i := 1 To n Do
+Begin
+  hobby := Request.Form('hobby')(i);
+  WriteLn('<p>hobby(', i, ') = ', hobby, '</p>');
+End;
+
+WriteLn('<p>inconnu = [', Request.Form('inconnu'), ']</p>');
+%>
+</body>
+</html>
