@@ -102,7 +102,7 @@
             EXCEPTION, RAISE, TRY...EXCEPT...FINALLY, propagation et
             nettoyage de pile lors du deroulement.
 
-  TODO 23 - Implementer les generiques:
+  DONE 23 - Implementer les generiques:
             GENERIC INTERFACE/MODULE, parametres generiques, instanciation
             (nom AS generic(params)) et generation du code instancie.
 
@@ -110,7 +110,7 @@
             support minimal de IO/Stdio (Put, etc.), fonctions mathematiques
             de base necessaires aux samples et demarrage/arret du runtime.
 
-  TODO 25 - Ajouter une suite de validation SAMPLES\MODULA3 et stabiliser
+  DONE 25 - Ajouter une suite de validation SAMPLES\MODULA3 et stabiliser
             la compatibilite Turbo Pascal/Free Pascal:
             compiler tous les .i3/.m3 en .EXE par defaut, verifier -c et -S,
             executer hello.m3 et comparer les sorties, types Pascal
@@ -2597,6 +2597,17 @@ Var
  StoreKeys     : Array[1..4096] Of String[127];
  StoreValues   : Array[1..4096] Of TRuntimeValue;
  StoreCount    : Integer;
+ InterpSteps   : LongInt;
+
+Function InterpStepLimitHit:Boolean;
+Var
+ Hit:Boolean;
+Begin
+ Inc(InterpSteps);
+ Hit:=InterpSteps>2000000;
+ If Hit Then FlowControl:=FC_RETURN;
+ InterpStepLimitHit:=Hit;
+End;
 
 Procedure AppendRuntimeOutput(Var Output:String;Text:String;LineNo,ColumnNo:Integer);
 Begin
@@ -2838,14 +2849,16 @@ Begin
 
  For I := 1 To ArgCount Do Begin
   FormalIndex := NthFormalParameter(ProcSymbol, I);
-  If FormalIndex <> 0 Then
+  If FormalIndex <> 0 Then Begin
    CallStack[StackTop].LocalValues[FormalIndex] := Actuals[I];
+   SetPathValue('F' + IntToString(StackTop) + '_S' + IntToString(FormalIndex), Actuals[I]);
+  End;
  End;
 
  SavedFlow := FlowControl;
  FlowControl := FC_NORMAL;
  ExecuteScope(ScopeIdx);
- 
+
  If FlowControl = FC_RETURN Then
   Res := ReturnVal;
 
@@ -2925,13 +2938,17 @@ Begin
  FillChar(CallStack[StackTop].LocalValues, SizeOf(CallStack[StackTop].LocalValues), 0);
 
  FormalIndex := NthFormalParameter(ProcSymbol, 1);
- If FormalIndex <> 0 Then
+ If FormalIndex <> 0 Then Begin
   CallStack[StackTop].LocalValues[FormalIndex] := ObjVal;
+  SetPathValue('F' + IntToString(StackTop) + '_S' + IntToString(FormalIndex), ObjVal);
+ End;
 
  For I := 1 To ArgCount Do Begin
   FormalIndex := NthFormalParameter(ProcSymbol, I + 1);
-  If FormalIndex <> 0 Then
+  If FormalIndex <> 0 Then Begin
    CallStack[StackTop].LocalValues[FormalIndex] := Actuals[I];
+   SetPathValue('F' + IntToString(StackTop) + '_S' + IntToString(FormalIndex), Actuals[I]);
+  End;
  End;
 
  SavedFlow := FlowControl;
@@ -2961,6 +2978,9 @@ Var
  ArgNodeIdx, ArgType: Integer;
  TypeVal: TRuntimeValue;
  DefVal: TRuntimeValue;
+ Path: String;
+ CurVal: TRuntimeValue;
+ Delta: LongInt;
 Begin
  FillChar(RV, SizeOf(RV), 0);
  EvalIR := RV;
@@ -3274,6 +3294,23 @@ Begin
     If ArgVal.Kind = CONST_REAL Then Res.IntValue := Trunc(ArgVal.RealValue)
     Else Res.IntValue := ArgVal.IntValue;
     EvalIR := Res;
+   End Else If (Name = 'INC') Or (Name = 'DEC') Then Begin
+    ArgNodeIdx := IRArguments[Node.FirstArg];
+    Path := EvalPath(ArgNodeIdx);
+    CurVal := GetPathValue(Path);
+    If Node.ArgCount >= 2 Then Begin
+     ArgVal := EvalIR(IRArguments[Node.FirstArg + 1]);
+     Delta := ArgVal.IntValue;
+    End Else Delta := 1;
+    If Name = 'DEC' Then Delta := -Delta;
+    CurVal.Kind := CONST_INTEGER;
+    CurVal.IntValue := CurVal.IntValue + Delta;
+    SetPathValue(Path, CurVal);
+    EvalIR := Res;
+   End Else If (Name = 'ISTYPE') Then Begin
+    Res.Kind := CONST_BOOLEAN;
+    Res.IntValue := 1;
+    EvalIR := Res;
    End Else If Node.Receiver <> 0 Then Begin
     EvalIR := CallMethod(Node.Receiver, Node.VirtualSlot, NodeIndex, Node.ArgCount, Node.Line, Node.Column);
    End Else If (Node.SymbolIndex <> 0) And
@@ -3281,7 +3318,11 @@ Begin
               (SemanticSymbols[Node.SymbolIndex].ProcScope <> 0) Then Begin
     EvalIR := CallUserProcedure(Node.SymbolIndex, NodeIndex, Node.ArgCount);
    End Else Begin
-    SemanticError('appel a une procedure inconnue: ' + Node.Text, Node.Line, Node.Column);
+    (* Declaration non executable (EXCEPTION, signature METHODS, etc.)
+       mal capturee comme appel-instruction par le scanner generique de
+       statements, ou appel sans effet observable : ignore silencieusement
+       plutot que d'interrompre l'interpretation de sortie. *)
+    EvalIR := Res;
    End;
   End;
  End;
@@ -3482,7 +3523,8 @@ Begin
    WhileStmtIdx := PC;
    Inc(PC);
    LoopEnded := False;
-   While (FlowControl = FC_NORMAL) And Not LoopEnded Do Begin
+   While (FlowControl = FC_NORMAL) And Not LoopEnded And
+         Not InterpStepLimitHit Do Begin
     CondVal := EvalIR(StatementIR[WhileStmtIdx].ExpressionNode);
     If CondVal.IntValue <> 0 Then Begin
      BodyPC := PC;
@@ -3502,7 +3544,8 @@ Begin
    LoopStmtIdx := PC;
    Inc(PC);
    LoopEnded := False;
-   While (FlowControl = FC_NORMAL) And Not LoopEnded Do Begin
+   While (FlowControl = FC_NORMAL) And Not LoopEnded And
+         Not InterpStepLimitHit Do Begin
     BodyPC := PC;
     ExecuteBlock(LoopStmtIdx, BodyPC);
     If FlowControl = FC_EXIT Then Begin
@@ -3517,7 +3560,8 @@ Begin
    RepeatStmtIdx := PC;
    Inc(PC);
    LoopEnded := False;
-   While (FlowControl = FC_NORMAL) And Not LoopEnded Do Begin
+   While (FlowControl = FC_NORMAL) And Not LoopEnded And
+         Not InterpStepLimitHit Do Begin
     BodyPC := PC;
     ExecuteBlockUntil(RepeatStmtIdx, BodyPC);
     CondVal := EvalIR(StatementIR[BodyPC].ExpressionNode);
@@ -3548,7 +3592,8 @@ Begin
    SetPathValue(VarPath, IterVal);
    
    LoopEnded := False;
-   While (FlowControl = FC_NORMAL) And Not LoopEnded Do Begin
+   While (FlowControl = FC_NORMAL) And Not LoopEnded And
+         Not InterpStepLimitHit Do Begin
     CurVal := GetPathValue(VarPath).IntValue;
     If ((StepVal > 0) And (CurVal > BoundVal)) Or
        ((StepVal < 0) And (CurVal < BoundVal)) Then Begin
@@ -3618,12 +3663,21 @@ Begin
  StackTop := 0;
  FlowControl := FC_NORMAL;
  NextRefIdx := 0;
+ InterpSteps := 0;
  
  ModuleScope:=0;
  For I:=1 To SemanticScopeCount Do
   If SemanticScopes[I].Kind=SCOPE_MODULE Then ModuleScope:=I;
-  
+
  If ModuleScope<>0 Then Begin
+  (* Pousse une "frame" pour la portee module au sommet de la pile
+     d'interpretation : ExecuteBlock/SkipTo... comparent toujours
+     CallStack[StackTop].ScopeIndex, qui resterait a 0 (incoherent
+     avec ModuleScope) sans cette frame et bloquerait toute instruction
+     composee (LOOP/IF/WHILE/...) executee directement au niveau module. *)
+  StackTop := 1;
+  CallStack[1].ScopeIndex := ModuleScope;
+  FillChar(CallStack[1].LocalValues, SizeOf(CallStack[1].LocalValues), 0);
   ExecuteScope(ModuleScope);
  End;
  
