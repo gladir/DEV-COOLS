@@ -1,0 +1,17 @@
+<%
+{ Test de Response.Redirect(url) (style ASP).
+  Comme en ASP classique sans tampon (Response.Buffer = False),
+  l appel envoie l entete CGI "Location: <url>" puis termine
+  immediatement le programme : tout code place apres ne s execute
+  pas et aucun corps HTML ne doit etre emis avant l appel
+  (sinon l entete CGI serait invalide). }
+var
+  cible : String;
+
+cible := 'https://www.gladir.com/dev-cools';
+Response.Redirect(cible);
+
+{ Cette ligne ne doit jamais s afficher : le programme s est
+  deja termine dans Response.Redirect. }
+WriteLn('<p>Cette ligne ne doit jamais apparaitre</p>');
+%>
