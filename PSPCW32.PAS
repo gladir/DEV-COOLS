@@ -1991,10 +1991,11 @@ Begin
   EmitBlankLine;
   { Response.Redirect / Response.AddHeader / Response.ContentType
     (entetes CGI) }
-  EmitComment('--- Response.Redirect / AddHeader / ContentType buffers ---');
+  EmitComment('--- Response.Redirect / AddHeader / ContentType / CacheControl buffers ---');
   EmitRaw(PSP_RT_PFX + 'RESP_LOC    DB  ''Location: '',0');
   EmitRaw(PSP_RT_PFX + 'RESP_HDRSEP DB  '': '',0');
   EmitRaw(PSP_RT_PFX + 'RESP_CTNAME DB  ''Content-Type'',0');
+  EmitRaw(PSP_RT_PFX + 'RESP_CCNAME DB  ''Cache-Control'',0');
   EmitBlankLine;
   { Response.Buffer : tampon de sortie optionnel. Tant que
     RESP_BUFON = 0 (defaut), _PSPRT_PRINTSTR ecrit immediatement
@@ -8257,6 +8258,23 @@ Begin
       EmitInstrA('CALL', PSP_RT_PFX + 'RESPADDHDR');
     End
     Else If (CurToken.Kind = TK_IDENT) And
+            (StrLowerCase(CurToken.Val) = 'cachecontrol') Then
+    Begin
+      { Response.CacheControl := 'public'|'private'|... (style ASP)
+        : equivaut a Response.AddHeader('Cache-Control', valeur). }
+      TplNextToken;
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
+        TplNextToken
+      Else
+        WarnMsg('":=" attendu apres Response.CacheControl');
+      ParseExpr(Ev1);
+      ExprFlushToEAX(Ev1);
+      EmitComment('Response.CacheControl');
+      EmitInstrAB('MOV', 'EDX', 'EAX');
+      EmitInstrAB('LEA', 'ESI', PSP_RT_PFX + 'RESP_CCNAME');
+      EmitInstrA('CALL', PSP_RT_PFX + 'RESPADDHDR');
+    End
+    Else If (CurToken.Kind = TK_IDENT) And
             (StrLowerCase(CurToken.Val) = 'appendtolog') Then
     Begin
       { Response.AppendToLog(message) (style ASP) : ecrit le
@@ -8318,8 +8336,8 @@ Begin
       EmitLabel(LblSkip);
     End
     Else
-      WarnMsg('".Redirect", ".AddHeader", ".ContentType", ".AppendToLog", ' +
-              '".BinaryWrite" ou ".Buffer" attendu apres Response');
+      WarnMsg('".Redirect", ".AddHeader", ".ContentType", ".CacheControl", ' +
+              '".AppendToLog", ".BinaryWrite" ou ".Buffer" attendu apres Response');
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
       TplNextToken;
     Exit;

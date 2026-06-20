@@ -4192,7 +4192,7 @@ End;
 { Structure pour stocker les regles correspondantes triees par specificite }
 Type
  CSSMatchedRule = Record
-  Rule: CSSRule;
+  RuleIndex: Integer;
   SelectorIndex: Integer;
   Specificity: LongInt;
   SourceOrder: Integer;
@@ -4247,8 +4247,7 @@ End;
 Procedure CSSResolveCascade(Element: HTMLNodePtr; Var Style: DOMStyle);
 Var
  ParentStyle: DOMStyle;
- I, J, K: Integer;
- Rule: CSSRule;
+ I, J, RuleIndex: Integer;
  MatchedRules: Array[1..128] Of CSSMatchedRule;
  MatchedCount: Integer;
  Temp: CSSMatchedRule;
@@ -4280,14 +4279,14 @@ Begin
  { Collecter les regles correspondantes }
  MatchedCount := 0;
  For I := 1 To CSSGlobalStylesheet.RuleCount Do Begin
-  Rule := CSSGlobalStylesheet.Rules[I];
-  For J := 1 To Rule.SelectorCount Do Begin
-   If CSSMatchSelector(Rule.Selectors[J], Element) Then Begin
+  For J := 1 To CSSGlobalStylesheet.Rules[I].SelectorCount Do Begin
+   If CSSMatchSelector(CSSGlobalStylesheet.Rules[I].Selectors[J], Element) Then Begin
     If MatchedCount < 128 Then Begin
      Inc(MatchedCount);
-     MatchedRules[MatchedCount].Rule := Rule;
+     MatchedRules[MatchedCount].RuleIndex := I;
      MatchedRules[MatchedCount].SelectorIndex := J;
-     MatchedRules[MatchedCount].Specificity := Rule.Selectors[J].Specificity;
+     MatchedRules[MatchedCount].Specificity :=
+      CSSGlobalStylesheet.Rules[I].Selectors[J].Specificity;
      MatchedRules[MatchedCount].SourceOrder := I;
     End;
     Break;
@@ -4307,23 +4306,23 @@ Begin
  { Appliquer les regles dans l'ordre de cascade }
  { D'abord les regles normales }
  For I := 1 To MatchedCount Do Begin
-  Rule := MatchedRules[I].Rule;
-  For J := 1 To Rule.PropertyCount Do Begin
-   If Not Rule.Properties[J].Important Then Begin
-    Case Rule.Properties[J].PropId Of
-     CSS_PROP_COLOR: Style.Color := Rule.Properties[J].Value;
-     CSS_PROP_BACKGROUND_COLOR: Style.BackgroundColor := Rule.Properties[J].Value;
-     CSS_PROP_FONT_SIZE: Style.FontSize := Rule.Properties[J].Value;
-     CSS_PROP_FONT_WEIGHT: Style.FontWeight := Rule.Properties[J].Value;
-     CSS_PROP_FONT_STYLE: Style.FontStyle := Rule.Properties[J].Value;
-     CSS_PROP_TEXT_DECORATION: Style.TextDecoration := Rule.Properties[J].Value;
-     CSS_PROP_DISPLAY: Style.Display := Rule.Properties[J].Value;
-     CSS_PROP_VISIBILITY: Style.Visibility := Rule.Properties[J].Value;
-     CSS_PROP_WIDTH: Style.Width := Rule.Properties[J].Value;
-     CSS_PROP_HEIGHT: Style.Height := Rule.Properties[J].Value;
-     CSS_PROP_MARGIN: Style.Margin := Rule.Properties[J].Value;
-     CSS_PROP_PADDING: Style.Padding := Rule.Properties[J].Value;
-     CSS_PROP_BORDER: Style.Border := Rule.Properties[J].Value;
+  RuleIndex := MatchedRules[I].RuleIndex;
+  For J := 1 To CSSGlobalStylesheet.Rules[RuleIndex].PropertyCount Do Begin
+   If Not CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Important Then Begin
+    Case CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].PropId Of
+     CSS_PROP_COLOR: Style.Color := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
+     CSS_PROP_BACKGROUND_COLOR: Style.BackgroundColor := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
+     CSS_PROP_FONT_SIZE: Style.FontSize := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
+     CSS_PROP_FONT_WEIGHT: Style.FontWeight := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
+     CSS_PROP_FONT_STYLE: Style.FontStyle := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
+     CSS_PROP_TEXT_DECORATION: Style.TextDecoration := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
+     CSS_PROP_DISPLAY: Style.Display := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
+     CSS_PROP_VISIBILITY: Style.Visibility := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
+     CSS_PROP_WIDTH: Style.Width := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
+     CSS_PROP_HEIGHT: Style.Height := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
+     CSS_PROP_MARGIN: Style.Margin := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
+     CSS_PROP_PADDING: Style.Padding := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
+     CSS_PROP_BORDER: Style.Border := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
     End;
    End;
   End;
@@ -4331,23 +4330,23 @@ Begin
 
  { Ensuite les regles !important }
  For I := 1 To MatchedCount Do Begin
-  Rule := MatchedRules[I].Rule;
-  For J := 1 To Rule.PropertyCount Do Begin
-   If Rule.Properties[J].Important Then Begin
-    Case Rule.Properties[J].PropId Of
-     CSS_PROP_COLOR: Style.Color := Rule.Properties[J].Value;
-     CSS_PROP_BACKGROUND_COLOR: Style.BackgroundColor := Rule.Properties[J].Value;
-     CSS_PROP_FONT_SIZE: Style.FontSize := Rule.Properties[J].Value;
-     CSS_PROP_FONT_WEIGHT: Style.FontWeight := Rule.Properties[J].Value;
-     CSS_PROP_FONT_STYLE: Style.FontStyle := Rule.Properties[J].Value;
-     CSS_PROP_TEXT_DECORATION: Style.TextDecoration := Rule.Properties[J].Value;
-     CSS_PROP_DISPLAY: Style.Display := Rule.Properties[J].Value;
-     CSS_PROP_VISIBILITY: Style.Visibility := Rule.Properties[J].Value;
-     CSS_PROP_WIDTH: Style.Width := Rule.Properties[J].Value;
-     CSS_PROP_HEIGHT: Style.Height := Rule.Properties[J].Value;
-     CSS_PROP_MARGIN: Style.Margin := Rule.Properties[J].Value;
-     CSS_PROP_PADDING: Style.Padding := Rule.Properties[J].Value;
-     CSS_PROP_BORDER: Style.Border := Rule.Properties[J].Value;
+  RuleIndex := MatchedRules[I].RuleIndex;
+  For J := 1 To CSSGlobalStylesheet.Rules[RuleIndex].PropertyCount Do Begin
+   If CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Important Then Begin
+    Case CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].PropId Of
+     CSS_PROP_COLOR: Style.Color := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
+     CSS_PROP_BACKGROUND_COLOR: Style.BackgroundColor := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
+     CSS_PROP_FONT_SIZE: Style.FontSize := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
+     CSS_PROP_FONT_WEIGHT: Style.FontWeight := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
+     CSS_PROP_FONT_STYLE: Style.FontStyle := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
+     CSS_PROP_TEXT_DECORATION: Style.TextDecoration := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
+     CSS_PROP_DISPLAY: Style.Display := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
+     CSS_PROP_VISIBILITY: Style.Visibility := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
+     CSS_PROP_WIDTH: Style.Width := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
+     CSS_PROP_HEIGHT: Style.Height := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
+     CSS_PROP_MARGIN: Style.Margin := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
+     CSS_PROP_PADDING: Style.Padding := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
+     CSS_PROP_BORDER: Style.Border := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
     End;
    End;
   End;
