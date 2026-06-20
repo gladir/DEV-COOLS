@@ -55,6 +55,12 @@ Const
   FRAME_WARN    = 512;   { seuil avertissement taille cadre (octets) }
   NEST_MAX      = 4;     { profondeur max imbrication proc/func }
 
+  { Request.QueryString (CGI) }
+  MAX_QS_PAIRS  = 64;    { nombre max de paires cle=valeur               }
+  MAX_QS_KEYLEN = 128;   { taille max d une cle (avec terminateur nul)   }
+  MAX_QS_VALLEN = 256;   { taille max d une valeur (avec terminateur nul)}
+  MAX_QS_RAW    = 2048;  { taille max du buffer QUERY_STRING brut        }
+
   { Prefixes de nommage ASM }
   PSP_VAR_PFX   = '_PSP_';      { variable globale              }
   PSP_FN_PFX    = '_PSPF_';     { fonction / procedure          }
@@ -90,7 +96,7 @@ Const
   MAX_BIN_DATA    = 65536;
   MAX_BIN_LBL     = 4096;
   MAX_BIN_FIX     = 8192;
-  PE_NUM_API      = 8;           { number of imported Win32 APIs      }
+  PE_NUM_API      = 9;           { number of imported Win32 APIs      }
   COFF_RELOC_DIR32  = 6;         { IMAGE_REL_I386_DIR32               }
   COFF_RELOC_REL32  = 20;        { IMAGE_REL_I386_REL32               }
 {$ENDIF}
@@ -1896,6 +1902,18 @@ Begin
   EmitRaw(PSP_RT_PFX + 'DISPID_PROPPUT DD 0FFFFFFFDh');
   EmitRaw(PSP_RT_PFX + 'COM_INIT DD 0');
   EmitBlankLine;
+  { Request.QueryString (CGI) }
+  EmitComment('--- Request.QueryString buffers (CGI) ---');
+  EmitRaw(PSP_RT_PFX + 'QS_NAME    DB  ''QUERY_STRING'',0');
+  EmitRaw(PSP_RT_PFX + 'QS_RAW     DB  ' + IntToStr(MAX_QS_RAW) + ' DUP(0)');
+  EmitRaw(PSP_RT_PFX + 'QS_KEYS    DB  ' +
+          IntToStr(MAX_QS_PAIRS * MAX_QS_KEYLEN) + ' DUP(0)');
+  EmitRaw(PSP_RT_PFX + 'QS_VALS    DB  ' +
+          IntToStr(MAX_QS_PAIRS * MAX_QS_VALLEN) + ' DUP(0)');
+  EmitRaw(PSP_RT_PFX + 'QS_N       DD  0');
+  EmitRaw(PSP_RT_PFX + 'QS_TMPNAME DD  0');
+  EmitRaw(PSP_RT_PFX + 'QS_EMPTY   DB  0');
+  EmitBlankLine;
 
   { --- Entrees dynamiques de DataTab --- }
   If DataCount > 0 Then
@@ -2897,6 +2915,7 @@ Begin
   EmitRaw('EXTRN   _HeapAlloc@12        : PROC');
   EmitRaw('EXTRN   _HeapFree@12         : PROC');
   EmitRaw('EXTRN   _GetTickCount@0      : PROC');
+  EmitRaw('EXTRN   _GetEnvironmentVariableA@12 : PROC');
   EmitBlankLine;
   EmitComment('--- Declarations externes COM/OLE32 ---');
   EmitRaw('EXTRN   _CoInitialize@4      : PROC');
@@ -2920,6 +2939,8 @@ Begin
   EmitInstrA('PUSH', '-10');
   EmitInstrA('CALL', '_GetStdHandle@4');
   EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'HSTDIN]', 'EAX');
+  EmitComment('Initialiser Request.QueryString (CGI)');
+  EmitInstrA('CALL', PSP_RT_PFX + 'QSINIT');
   EmitBlankLine;
   EmitBlankLine;
 End;
@@ -3093,6 +3114,216 @@ Begin
     EmitLabel(PSP_RT_PFX + 'SCMP_GT');
     EmitInstrAB('MOV', 'EAX', '1');
     EmitLabel(PSP_RT_PFX + 'SCMP_DN');
+    EmitInstrA('POP', 'EBX');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { ========================================== }
+    { Request.QueryString (CGI) RUNTIME ROUTINES }
+    { ========================================== }
+    EmitComment('========================================');
+    EmitComment('  Request.QueryString (CGI) RUNTIME');
+    EmitComment('========================================');
+    EmitBlankLine;
+
+    { _PSPRT_QSCOPY : ESI=curseur source, EDI=curseur dest ->
+      copie en decodant (+, %XX) jusqu a 0/=/&. Retourne AL =
+      caractere d arret (0, '=' ou '&'), ESI pointe sur cet
+      arret, EDI est termine par un zero. }
+    EmitComment('QSCOPY: ESI=src, EDI=dst -> AL=stop(0/=/&)');
+    EmitLabel(PSP_RT_PFX + 'QSCOPY');
+    EmitLabel(PSP_RT_PFX + 'QSCOPY_LP');
+    EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+    EmitInstrAB('CMP', 'AL', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'QSCOPY_DONE');
+    EmitInstrAB('CMP', 'AL', '''=''');
+    EmitInstrA('JE', PSP_RT_PFX + 'QSCOPY_DONE');
+    EmitInstrAB('CMP', 'AL', '''&''');
+    EmitInstrA('JE', PSP_RT_PFX + 'QSCOPY_DONE');
+    EmitInstrAB('CMP', 'AL', '''+''');
+    EmitInstrA('JNE', PSP_RT_PFX + 'QSCOPY_PCT');
+    EmitInstrAB('MOV', 'AL', '32');
+    EmitInstrA('JMP', PSP_RT_PFX + 'QSCOPY_PUT');
+    EmitLabel(PSP_RT_PFX + 'QSCOPY_PCT');
+    EmitInstrAB('CMP', 'AL', '''%''');
+    EmitInstrA('JNE', PSP_RT_PFX + 'QSCOPY_PUT');
+    EmitInstrAB('XOR', 'EBX', 'EBX');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrAB('MOV', 'BL', 'BYTE PTR [ESI]');
+    EmitInstrAB('XOR', 'ECX', 'ECX');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrAB('MOV', 'CL', 'BYTE PTR [ESI]');
+    EmitInstrAB('CMP', 'EBX', '''9''');
+    EmitInstrA('JA', PSP_RT_PFX + 'QSCOPY_H1');
+    EmitInstrAB('SUB', 'EBX', '''0''');
+    EmitInstrA('JMP', PSP_RT_PFX + 'QSCOPY_HD');
+    EmitLabel(PSP_RT_PFX + 'QSCOPY_H1');
+    EmitInstrAB('CMP', 'EBX', '''F''');
+    EmitInstrA('JA', PSP_RT_PFX + 'QSCOPY_H2');
+    EmitInstrAB('SUB', 'EBX', '55');
+    EmitInstrA('JMP', PSP_RT_PFX + 'QSCOPY_HD');
+    EmitLabel(PSP_RT_PFX + 'QSCOPY_H2');
+    EmitInstrAB('SUB', 'EBX', '87');
+    EmitLabel(PSP_RT_PFX + 'QSCOPY_HD');
+    EmitInstrAB('CMP', 'ECX', '''9''');
+    EmitInstrA('JA', PSP_RT_PFX + 'QSCOPY_L1');
+    EmitInstrAB('SUB', 'ECX', '''0''');
+    EmitInstrA('JMP', PSP_RT_PFX + 'QSCOPY_LD');
+    EmitLabel(PSP_RT_PFX + 'QSCOPY_L1');
+    EmitInstrAB('CMP', 'ECX', '''F''');
+    EmitInstrA('JA', PSP_RT_PFX + 'QSCOPY_L2');
+    EmitInstrAB('SUB', 'ECX', '55');
+    EmitInstrA('JMP', PSP_RT_PFX + 'QSCOPY_LD');
+    EmitLabel(PSP_RT_PFX + 'QSCOPY_L2');
+    EmitInstrAB('SUB', 'ECX', '87');
+    EmitLabel(PSP_RT_PFX + 'QSCOPY_LD');
+    EmitInstrAB('SHL', 'EBX', '4');
+    EmitInstrAB('ADD', 'EBX', 'ECX');
+    EmitInstrAB('MOV', 'AL', 'BL');
+    EmitLabel(PSP_RT_PFX + 'QSCOPY_PUT');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', 'AL');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrA('INC', 'EDI');
+    EmitInstrA('JMP', PSP_RT_PFX + 'QSCOPY_LP');
+    EmitLabel(PSP_RT_PFX + 'QSCOPY_DONE');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', '0');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_QSINIT : lit QUERY_STRING (CGI) et la decoupe en
+      paires cle=valeur dans QS_KEYS/QS_VALS (max MAX_QS_PAIRS). }
+    EmitComment('QSINIT: parse QUERY_STRING (CGI env var)');
+    EmitLabel(PSP_RT_PFX + 'QSINIT');
+    EmitInstrA('PUSH', 'ESI');
+    EmitInstrA('PUSH', 'EDI');
+    EmitInstrA('PUSH', 'EBX');
+    EmitInstrA('PUSH', 'ECX');
+    EmitInstrA('PUSH', 'EDX');
+    EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'QS_N]', '0');
+    EmitInstrA('PUSH', IntToStr(MAX_QS_RAW));
+    EmitInstrA('PUSH', 'OFFSET ' + PSP_RT_PFX + 'QS_RAW');
+    EmitInstrA('PUSH', 'OFFSET ' + PSP_RT_PFX + 'QS_NAME');
+    EmitInstrA('CALL', '_GetEnvironmentVariableA@12');
+    EmitInstrAB('CMP', 'EAX', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'QSINIT_DONE');
+    EmitInstrAB('LEA', 'ESI', PSP_RT_PFX + 'QS_RAW');
+    EmitLabel(PSP_RT_PFX + 'QSINIT_PAIR');
+    EmitInstrAB('CMP', 'BYTE PTR [ESI]', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'QSINIT_DONE');
+    EmitInstrAB('MOV', 'EDX', 'DWORD PTR [' + PSP_RT_PFX + 'QS_N]');
+    EmitInstrAB('CMP', 'EDX', IntToStr(MAX_QS_PAIRS));
+    EmitInstrA('JAE', PSP_RT_PFX + 'QSINIT_DONE');
+    EmitInstrAB('MOV', 'EBX', 'EDX');
+    EmitInstrAB('IMUL', 'EBX', IntToStr(MAX_QS_KEYLEN));
+    EmitInstrAB('LEA', 'EDI', PSP_RT_PFX + 'QS_KEYS');
+    EmitInstrAB('ADD', 'EDI', 'EBX');
+    EmitInstrA('CALL', PSP_RT_PFX + 'QSCOPY');
+    EmitInstrAB('CMP', 'AL', '''=''');
+    EmitInstrA('JNE', PSP_RT_PFX + 'QSINIT_NOVAL');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrAB('MOV', 'EBX', 'EDX');
+    EmitInstrAB('IMUL', 'EBX', IntToStr(MAX_QS_VALLEN));
+    EmitInstrAB('LEA', 'EDI', PSP_RT_PFX + 'QS_VALS');
+    EmitInstrAB('ADD', 'EDI', 'EBX');
+    EmitInstrA('CALL', PSP_RT_PFX + 'QSCOPY');
+    EmitInstrA('JMP', PSP_RT_PFX + 'QSINIT_ADV');
+    EmitLabel(PSP_RT_PFX + 'QSINIT_NOVAL');
+    EmitInstrAB('MOV', 'EBX', 'EDX');
+    EmitInstrAB('IMUL', 'EBX', IntToStr(MAX_QS_VALLEN));
+    EmitInstrAB('LEA', 'EDI', PSP_RT_PFX + 'QS_VALS');
+    EmitInstrAB('ADD', 'EDI', 'EBX');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', '0');
+    EmitLabel(PSP_RT_PFX + 'QSINIT_ADV');
+    EmitInstrA('INC', 'EDX');
+    EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'QS_N]', 'EDX');
+    EmitInstrAB('CMP', 'AL', '''&''');
+    EmitInstrA('JNE', PSP_RT_PFX + 'QSINIT_CKZ');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrA('JMP', PSP_RT_PFX + 'QSINIT_PAIR');
+    EmitLabel(PSP_RT_PFX + 'QSINIT_CKZ');
+    EmitInstrAB('CMP', 'AL', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'QSINIT_DONE');
+    EmitInstrA('JMP', PSP_RT_PFX + 'QSINIT_PAIR');
+    EmitLabel(PSP_RT_PFX + 'QSINIT_DONE');
+    EmitInstrA('POP', 'EDX');
+    EmitInstrA('POP', 'ECX');
+    EmitInstrA('POP', 'EBX');
+    EmitInstrA('POP', 'EDI');
+    EmitInstrA('POP', 'ESI');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_QSGET : ESI=nom ASCIIZ, EDX=index (1-based) ->
+      EAX = pointeur vers la valeur (ou chaine vide si absente). }
+    EmitComment('QSGET: ESI=name, EDX=index(1) -> EAX=value ptr');
+    EmitLabel(PSP_RT_PFX + 'QSGET');
+    EmitInstrA('PUSH', 'EBX');
+    EmitInstrA('PUSH', 'ECX');
+    EmitInstrA('PUSH', 'EDI');
+    EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'QS_TMPNAME]', 'ESI');
+    EmitInstrAB('XOR', 'EBX', 'EBX');
+    EmitInstrAB('XOR', 'ECX', 'ECX');
+    EmitLabel(PSP_RT_PFX + 'QSGET_LOOP');
+    EmitInstrAB('CMP', 'ECX', 'DWORD PTR [' + PSP_RT_PFX + 'QS_N]');
+    EmitInstrA('JAE', PSP_RT_PFX + 'QSGET_NOTFOUND');
+    EmitInstrAB('MOV', 'EAX', 'ECX');
+    EmitInstrAB('IMUL', 'EAX', IntToStr(MAX_QS_KEYLEN));
+    EmitInstrAB('LEA', 'EDI', PSP_RT_PFX + 'QS_KEYS');
+    EmitInstrAB('ADD', 'EDI', 'EAX');
+    EmitInstrAB('MOV', 'ESI', 'DWORD PTR [' + PSP_RT_PFX + 'QS_TMPNAME]');
+    EmitInstrA('CALL', PSP_RT_PFX + 'STRCMP');
+    EmitInstrAB('CMP', 'EAX', '0');
+    EmitInstrA('JNE', PSP_RT_PFX + 'QSGET_NEXT');
+    EmitInstrA('INC', 'EBX');
+    EmitInstrAB('CMP', 'EBX', 'EDX');
+    EmitInstrA('JNE', PSP_RT_PFX + 'QSGET_NEXT');
+    EmitInstrAB('MOV', 'EAX', 'ECX');
+    EmitInstrAB('IMUL', 'EAX', IntToStr(MAX_QS_VALLEN));
+    EmitInstrAB('LEA', 'EDI', PSP_RT_PFX + 'QS_VALS');
+    EmitInstrAB('ADD', 'EDI', 'EAX');
+    EmitInstrAB('MOV', 'EAX', 'EDI');
+    EmitInstrA('JMP', PSP_RT_PFX + 'QSGET_FOUND');
+    EmitLabel(PSP_RT_PFX + 'QSGET_NEXT');
+    EmitInstrA('INC', 'ECX');
+    EmitInstrA('JMP', PSP_RT_PFX + 'QSGET_LOOP');
+    EmitLabel(PSP_RT_PFX + 'QSGET_NOTFOUND');
+    EmitInstrAB('LEA', 'EAX', PSP_RT_PFX + 'QS_EMPTY');
+    EmitLabel(PSP_RT_PFX + 'QSGET_FOUND');
+    EmitInstrA('POP', 'EDI');
+    EmitInstrA('POP', 'ECX');
+    EmitInstrA('POP', 'EBX');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_QSCOUNT : ESI=nom ASCIIZ -> EAX = nombre de valeurs
+      portant ce nom dans QUERY_STRING. }
+    EmitComment('QSCOUNT: ESI=name -> EAX=count');
+    EmitLabel(PSP_RT_PFX + 'QSCOUNT');
+    EmitInstrA('PUSH', 'EBX');
+    EmitInstrA('PUSH', 'ECX');
+    EmitInstrA('PUSH', 'EDI');
+    EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'QS_TMPNAME]', 'ESI');
+    EmitInstrAB('XOR', 'EBX', 'EBX');
+    EmitInstrAB('XOR', 'ECX', 'ECX');
+    EmitLabel(PSP_RT_PFX + 'QSCOUNT_LOOP');
+    EmitInstrAB('CMP', 'ECX', 'DWORD PTR [' + PSP_RT_PFX + 'QS_N]');
+    EmitInstrA('JAE', PSP_RT_PFX + 'QSCOUNT_DONE');
+    EmitInstrAB('MOV', 'EAX', 'ECX');
+    EmitInstrAB('IMUL', 'EAX', IntToStr(MAX_QS_KEYLEN));
+    EmitInstrAB('LEA', 'EDI', PSP_RT_PFX + 'QS_KEYS');
+    EmitInstrAB('ADD', 'EDI', 'EAX');
+    EmitInstrAB('MOV', 'ESI', 'DWORD PTR [' + PSP_RT_PFX + 'QS_TMPNAME]');
+    EmitInstrA('CALL', PSP_RT_PFX + 'STRCMP');
+    EmitInstrAB('CMP', 'EAX', '0');
+    EmitInstrA('JNE', PSP_RT_PFX + 'QSCOUNT_NEXT');
+    EmitInstrA('INC', 'EBX');
+    EmitLabel(PSP_RT_PFX + 'QSCOUNT_NEXT');
+    EmitInstrA('INC', 'ECX');
+    EmitInstrA('JMP', PSP_RT_PFX + 'QSCOUNT_LOOP');
+    EmitLabel(PSP_RT_PFX + 'QSCOUNT_DONE');
+    EmitInstrAB('MOV', 'EAX', 'EBX');
+    EmitInstrA('POP', 'EDI');
+    EmitInstrA('POP', 'ECX');
     EmitInstrA('POP', 'EBX');
     EmitInstr('RET');
     EmitBlankLine;
@@ -4679,6 +4910,64 @@ Begin
         Res.Kind    := EK_AX;
         Res.TypeIdx := TY_IDX_OBJECT;
         Res.SymIdx  := -1;
+      End
+
+      Else If StrLowerCase(CurToken.Val) = 'request' Then
+      Begin
+        { Request.QueryString(nom) [(index) | .Count] (style ASP) }
+        TplNextToken;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
+          TplNextToken;
+        If (CurToken.Kind = TK_IDENT) And
+           (StrLowerCase(CurToken.Val) = 'querystring') Then
+        Begin
+          TplNextToken;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+            TplNextToken;
+          ParseExpr(Res);
+          ExprFlushToEAX(Res);
+          EmitInstrA('PUSH', 'EAX');   { sauvegarder pointeur du nom }
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            TplNextToken;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+          Begin
+            { Request.QueryString(nom)(index) }
+            TplNextToken;
+            ParseExpr(Res);
+            ExprFlushToEAX(Res);
+            EmitInstrAB('MOV', 'EDX', 'EAX');
+            EmitInstrA('POP', 'ESI');
+            EmitInstrA('CALL', PSP_RT_PFX + 'QSGET');
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              TplNextToken;
+            Res.TypeIdx := TY_IDX_STRING;
+          End
+          Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
+          Begin
+            { Request.QueryString(nom).Count }
+            TplNextToken;
+            If (CurToken.Kind = TK_IDENT) And
+               (StrLowerCase(CurToken.Val) = 'count') Then
+              TplNextToken
+            Else
+              WarnMsg('".Count" attendu apres Request.QueryString(nom)');
+            EmitInstrA('POP', 'ESI');
+            EmitInstrA('CALL', PSP_RT_PFX + 'QSCOUNT');
+            Res.TypeIdx := TY_IDX_INTEGER;
+          End
+          Else
+          Begin
+            { Request.QueryString(nom) : valeur, index implicite 1 }
+            EmitInstrAB('MOV', 'EDX', '1');
+            EmitInstrA('POP', 'ESI');
+            EmitInstrA('CALL', PSP_RT_PFX + 'QSGET');
+            Res.TypeIdx := TY_IDX_STRING;
+          End;
+        End
+        Else
+          WarnMsg('".QueryString" attendu apres Request');
+        Res.Kind   := EK_AX;
+        Res.SymIdx := -1;
       End
 
       Else
@@ -8515,11 +8804,12 @@ Const
   BinAPIDecorated : Array[0..PE_NUM_API - 1] Of String[32] = (
     '_ExitProcess@4', '_GetStdHandle@4', '_WriteFile@20',
     '_ReadFile@20', '_GetProcessHeap@0', '_HeapAlloc@12',
-    '_HeapFree@12', '_GetTickCount@0'
+    '_HeapFree@12', '_GetTickCount@0', '_GetEnvironmentVariableA@12'
   );
-  BinAPIName : Array[0..PE_NUM_API - 1] Of String[20] = (
+  BinAPIName : Array[0..PE_NUM_API - 1] Of String[32] = (
     'ExitProcess', 'GetStdHandle', 'WriteFile', 'ReadFile',
-    'GetProcessHeap', 'HeapAlloc', 'HeapFree', 'GetTickCount'
+    'GetProcessHeap', 'HeapAlloc', 'HeapFree', 'GetTickCount',
+    'GetEnvironmentVariableA'
   );
 
 Procedure BinInit;
