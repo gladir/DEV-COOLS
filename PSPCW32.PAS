@@ -1991,11 +1991,12 @@ Begin
   EmitBlankLine;
   { Response.Redirect / Response.AddHeader / Response.ContentType
     (entetes CGI) }
-  EmitComment('--- Response.Redirect / AddHeader / ContentType / CacheControl buffers ---');
+  EmitComment('--- Response.Redirect / AddHeader / ContentType / CacheControl / Charset buffers ---');
   EmitRaw(PSP_RT_PFX + 'RESP_LOC    DB  ''Location: '',0');
   EmitRaw(PSP_RT_PFX + 'RESP_HDRSEP DB  '': '',0');
   EmitRaw(PSP_RT_PFX + 'RESP_CTNAME DB  ''Content-Type'',0');
   EmitRaw(PSP_RT_PFX + 'RESP_CCNAME DB  ''Cache-Control'',0');
+  EmitRaw(PSP_RT_PFX + 'RESP_CTPFX  DB  ''text/html; charset='',0');
   EmitBlankLine;
   { Response.Buffer : tampon de sortie optionnel. Tant que
     RESP_BUFON = 0 (defaut), _PSPRT_PRINTSTR ecrit immediatement
@@ -8275,6 +8276,46 @@ Begin
       EmitInstrA('CALL', PSP_RT_PFX + 'RESPADDHDR');
     End
     Else If (CurToken.Kind = TK_IDENT) And
+            (StrLowerCase(CurToken.Val) = 'charset') Then
+    Begin
+      { Response.Charset(nom) (style ASP) : emet l entete
+        "Content-Type: text/html; charset=<nom>" (equivalent au
+        comportement ASP qui ajoute le parametre charset a
+        l entete Content-Type courant). }
+      TplNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        TplNextToken;
+      ParseExpr(Ev1);
+      ExprFlushToEAX(Ev1);
+      EmitComment('Response.Charset');
+      EmitInstrAB('MOV', 'EDI', 'EAX');
+      EmitInstrAB('LEA', 'ESI', PSP_RT_PFX + 'RESP_CTPFX');
+      EmitInstrA('CALL', PSP_RT_PFX + 'CONCAT');
+      EmitInstrAB('MOV', 'EDX', 'EAX');
+      EmitInstrAB('LEA', 'ESI', PSP_RT_PFX + 'RESP_CTNAME');
+      EmitInstrA('CALL', PSP_RT_PFX + 'RESPADDHDR');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        TplNextToken;
+    End
+    Else If (CurToken.Kind = TK_IDENT) And
+            (StrLowerCase(CurToken.Val) = 'clear') Then
+    Begin
+      { Response.Clear (style ASP) : elimine tout contenu deja
+        accumule dans le tampon Response.Buffer (rien n a encore
+        ete envoye au client, donc rien ne se voit). Sans effet
+        si Response.Buffer n a jamais ete active (le tampon est
+        alors toujours vide). Accepte avec ou sans parentheses. }
+      TplNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        TplNextToken;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          TplNextToken;
+      End;
+      EmitComment('Response.Clear');
+      EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'RESP_BUFLEN]', '0');
+    End
+    Else If (CurToken.Kind = TK_IDENT) And
             (StrLowerCase(CurToken.Val) = 'appendtolog') Then
     Begin
       { Response.AppendToLog(message) (style ASP) : ecrit le
@@ -8337,7 +8378,8 @@ Begin
     End
     Else
       WarnMsg('".Redirect", ".AddHeader", ".ContentType", ".CacheControl", ' +
-              '".AppendToLog", ".BinaryWrite" ou ".Buffer" attendu apres Response');
+              '".Charset", ".Clear", ".AppendToLog", ".BinaryWrite" ou ' +
+              '".Buffer" attendu apres Response');
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
       TplNextToken;
     Exit;

@@ -550,20 +550,26 @@ Const
  CSS_PROP_UNKNOWN = 255;
 
 Type
- HTMLBufferData = Array[0..59999] Of Char;
- HTMLBufferPtr = ^HTMLBufferData;
+ HTMLBufferChunkPtr = ^HTMLBufferChunk;
+ HTMLBufferChunk = Record
+  Data: Array[0..4095] Of Char;
+  Used: Word;
+  Next: HTMLBufferChunkPtr;
+ End;
  HTMLSourceBuffer = Record
-  Data: HTMLBufferPtr;
+  FirstChunk: HTMLBufferChunkPtr;
+  LastChunk: HTMLBufferChunkPtr;
   DataLength: LongInt;
-  AllocatedSize: Word;
  End;
 
  CSSUnitString = String[8];
 
- { Type pour un attribut HTML }
+ { Attribut HTML stocke dans une liste chainee }
+ HTMLAttributePtr = ^HTMLAttribute;
  HTMLAttribute = Record
   Name: String[64];
   Value: String[255];
+  Next: HTMLAttributePtr;
  End;
 
  { Pointeur vers un noeud HTML (declaration forward) }
@@ -575,9 +581,13 @@ Type
   TagType: Byte;             { Type de balise (TAG_P, TAG_DIV, etc.) }
   TagName: String[32];       { Nom de la balise originale }
   Content: String;           { Contenu texte pour les noeuds texte }
-  Attributes: Array[1..MAX_ATTRIBUTES] Of HTMLAttribute;
+  FirstAttribute: HTMLAttributePtr;
+  LastAttribute: HTMLAttributePtr;
   AttributeCount: Integer;
-  Children: Array[1..MAX_CHILDREN] Of HTMLNodePtr;
+  FirstChild: HTMLNodePtr;
+  LastChild: HTMLNodePtr;
+  PreviousSibling: HTMLNodePtr;
+  NextSibling: HTMLNodePtr;
   ChildCount: Integer;
   Parent: HTMLNodePtr;       { Pointeur vers le noeud parent }
  End;
@@ -848,13 +858,186 @@ Begin
  HTMLLowerCase := S;
 End;
 
+{ Convertir un code ISO-8859-1/Unicode courant vers le jeu de caracteres
+  utilise par la cible. Turbo Pascal DOS utilise normalement la page 850. }
+Function HTMLCodePointToChar(CodePoint: LongInt): Char;
+Begin
+ {$IFDEF FPC}
+ If (CodePoint >= 0) And (CodePoint <= 255) Then
+  HTMLCodePointToChar := Chr(CodePoint)
+ Else
+  HTMLCodePointToChar := '?';
+ {$ELSE}
+ Case CodePoint Of
+  160: HTMLCodePointToChar := ' ';
+  192: HTMLCodePointToChar := Chr(183); { A grave }
+  194: HTMLCodePointToChar := Chr(182); { A circonflexe }
+  199: HTMLCodePointToChar := Chr(128); { C cedille }
+  200: HTMLCodePointToChar := Chr(212); { E grave }
+  201: HTMLCodePointToChar := Chr(144); { E aigu }
+  202: HTMLCodePointToChar := Chr(210); { E circonflexe }
+  206: HTMLCodePointToChar := Chr(215); { I circonflexe }
+  212: HTMLCodePointToChar := Chr(226); { O circonflexe }
+  217: HTMLCodePointToChar := Chr(235); { U grave }
+  219: HTMLCodePointToChar := Chr(234); { U circonflexe }
+  224: HTMLCodePointToChar := Chr(133); { a grave }
+  225: HTMLCodePointToChar := Chr(160); { a aigu }
+  226: HTMLCodePointToChar := Chr(131); { a circonflexe }
+  228: HTMLCodePointToChar := Chr(132); { a trema }
+  231: HTMLCodePointToChar := Chr(135); { c cedille }
+  232: HTMLCodePointToChar := Chr(138); { e grave }
+  233: HTMLCodePointToChar := Chr(130); { e aigu }
+  234: HTMLCodePointToChar := Chr(136); { e circonflexe }
+  235: HTMLCodePointToChar := Chr(137); { e trema }
+  238: HTMLCodePointToChar := Chr(140); { i circonflexe }
+  239: HTMLCodePointToChar := Chr(139); { i trema }
+  244: HTMLCodePointToChar := Chr(147); { o circonflexe }
+  246: HTMLCodePointToChar := Chr(148); { o trema }
+  249: HTMLCodePointToChar := Chr(151); { u grave }
+  251: HTMLCodePointToChar := Chr(150); { u circonflexe }
+  252: HTMLCodePointToChar := Chr(129); { u trema }
+  169: HTMLCodePointToChar := Chr(184); { copyright }
+  174: HTMLCodePointToChar := Chr(169); { marque deposee }
+  176: HTMLCodePointToChar := Chr(248); { degre }
+  171: HTMLCodePointToChar := Chr(174); { guillemet gauche }
+  187: HTMLCodePointToChar := Chr(175); { guillemet droit }
+  Else
+   If (CodePoint >= 0) And (CodePoint <= 127) Then
+    HTMLCodePointToChar := Chr(CodePoint)
+   Else
+    HTMLCodePointToChar := '?';
+ End;
+ {$ENDIF}
+End;
+
+Function HTMLNamedEntityCode(Const EntityName: String): LongInt;
+Var
+ Name: String;
+Begin
+ If EntityName = 'Agrave' Then Begin HTMLNamedEntityCode := 192; Exit; End;
+ If EntityName = 'Acirc' Then Begin HTMLNamedEntityCode := 194; Exit; End;
+ If EntityName = 'Ccedil' Then Begin HTMLNamedEntityCode := 199; Exit; End;
+ If EntityName = 'Egrave' Then Begin HTMLNamedEntityCode := 200; Exit; End;
+ If EntityName = 'Eacute' Then Begin HTMLNamedEntityCode := 201; Exit; End;
+ If EntityName = 'Ecirc' Then Begin HTMLNamedEntityCode := 202; Exit; End;
+ If EntityName = 'Icirc' Then Begin HTMLNamedEntityCode := 206; Exit; End;
+ If EntityName = 'Ocirc' Then Begin HTMLNamedEntityCode := 212; Exit; End;
+ If EntityName = 'Ugrave' Then Begin HTMLNamedEntityCode := 217; Exit; End;
+ If EntityName = 'Ucirc' Then Begin HTMLNamedEntityCode := 219; Exit; End;
+ Name := HTMLLowerCase(EntityName);
+ HTMLNamedEntityCode := -1;
+ If Name = 'nbsp' Then HTMLNamedEntityCode := 160
+ Else If Name = 'amp' Then HTMLNamedEntityCode := 38
+ Else If Name = 'lt' Then HTMLNamedEntityCode := 60
+ Else If Name = 'gt' Then HTMLNamedEntityCode := 62
+ Else If Name = 'quot' Then HTMLNamedEntityCode := 34
+ Else If Name = 'apos' Then HTMLNamedEntityCode := 39
+ Else If Name = 'agrave' Then HTMLNamedEntityCode := 224
+ Else If Name = 'aacute' Then HTMLNamedEntityCode := 225
+ Else If Name = 'acirc' Then HTMLNamedEntityCode := 226
+ Else If Name = 'auml' Then HTMLNamedEntityCode := 228
+ Else If Name = 'ccedil' Then HTMLNamedEntityCode := 231
+ Else If Name = 'egrave' Then HTMLNamedEntityCode := 232
+ Else If Name = 'eacute' Then HTMLNamedEntityCode := 233
+ Else If Name = 'ecirc' Then HTMLNamedEntityCode := 234
+ Else If Name = 'euml' Then HTMLNamedEntityCode := 235
+ Else If Name = 'icirc' Then HTMLNamedEntityCode := 238
+ Else If Name = 'iuml' Then HTMLNamedEntityCode := 239
+ Else If Name = 'ocirc' Then HTMLNamedEntityCode := 244
+ Else If Name = 'ouml' Then HTMLNamedEntityCode := 246
+ Else If Name = 'ugrave' Then HTMLNamedEntityCode := 249
+ Else If Name = 'ucirc' Then HTMLNamedEntityCode := 251
+ Else If Name = 'uuml' Then HTMLNamedEntityCode := 252
+ Else If Name = 'laquo' Then HTMLNamedEntityCode := 171
+ Else If Name = 'raquo' Then HTMLNamedEntityCode := 187
+ Else If Name = 'copy' Then HTMLNamedEntityCode := 169
+ Else If Name = 'reg' Then HTMLNamedEntityCode := 174
+ Else If Name = 'deg' Then HTMLNamedEntityCode := 176;
+End;
+
+Function HTMLDecodeEntities(Const S: String): String;
+Var
+ I, SemiPos, J, Digit: Integer;
+ EntityName, ResultText: String;
+ CodePoint: LongInt;
+ IsNumeric, IsHex, ValidNumber: Boolean;
+Begin
+ ResultText := '';
+ I := 1;
+ While (I <= Length(S)) And (Length(ResultText) < 255) Do Begin
+  If S[I] <> '&' Then Begin
+   ResultText := ResultText + S[I];
+   Inc(I);
+  End
+  Else Begin
+   SemiPos := I + 1;
+   While (SemiPos <= Length(S)) And (SemiPos - I <= 16) And
+         (S[SemiPos] <> ';') Do
+    Inc(SemiPos);
+   If (SemiPos > Length(S)) Or (S[SemiPos] <> ';') Then Begin
+    ResultText := ResultText + '&';
+    Inc(I);
+   End
+   Else Begin
+    EntityName := Copy(S, I + 1, SemiPos - I - 1);
+    IsNumeric := (Length(EntityName) > 1) And (EntityName[1] = '#');
+    CodePoint := -1;
+    If IsNumeric Then Begin
+     IsHex := (Length(EntityName) > 2) And
+              (EntityName[2] In ['x', 'X']);
+     If IsHex Then J := 3 Else J := 2;
+     CodePoint := 0;
+     ValidNumber := J <= Length(EntityName);
+     While ValidNumber And (J <= Length(EntityName)) Do Begin
+      If EntityName[J] In ['0'..'9'] Then
+       Digit := Ord(EntityName[J]) - Ord('0')
+      Else If IsHex And (EntityName[J] In ['a'..'f']) Then
+       Digit := Ord(EntityName[J]) - Ord('a') + 10
+      Else If IsHex And (EntityName[J] In ['A'..'F']) Then
+       Digit := Ord(EntityName[J]) - Ord('A') + 10
+      Else Begin
+       Digit := 0;
+       ValidNumber := False;
+      End;
+      If ValidNumber Then Begin
+       If IsHex Then CodePoint := CodePoint * 16 + Digit
+                Else CodePoint := CodePoint * 10 + Digit;
+      End;
+      Inc(J);
+     End;
+     If Not ValidNumber Then CodePoint := -1;
+    End
+    Else
+     CodePoint := HTMLNamedEntityCode(EntityName);
+
+    If CodePoint >= 0 Then Begin
+     If CodePoint = 160 Then ResultText := ResultText + ' '
+     Else ResultText := ResultText + HTMLCodePointToChar(CodePoint);
+    End
+    Else
+     ResultText := ResultText + Copy(S, I, SemiPos - I + 1);
+    I := SemiPos + 1;
+   End;
+  End;
+ End;
+ HTMLDecodeEntities := ResultText;
+End;
+
 { Fonction pour ignorer les espaces blancs }
 Function HTMLSourceChar(Const S: HTMLSourceBuffer; Pos: LongInt): Char;
+Var
+ Chunk: HTMLBufferChunkPtr;
+ Offset: LongInt;
 Begin
- If (S.Data = Nil) Or (Pos < 1) Or (Pos > S.DataLength) Then
-  HTMLSourceChar := #0
- Else
-  HTMLSourceChar := S.Data^[Pos - 1];
+ HTMLSourceChar := #0;
+ If (S.FirstChunk = Nil) Or (Pos < 1) Or (Pos > S.DataLength) Then Exit;
+ Offset := Pos - 1;
+ Chunk := S.FirstChunk;
+ While (Chunk <> Nil) And (Offset >= Chunk^.Used) Do Begin
+  Offset := Offset - Chunk^.Used;
+  Chunk := Chunk^.Next;
+ End;
+ If Chunk <> Nil Then HTMLSourceChar := Chunk^.Data[Offset];
 End;
 
 Function HTMLSourceCopy(Const S: HTMLSourceBuffer; StartPos, Count: LongInt): String;
@@ -863,7 +1046,7 @@ Var
  ResultText: String;
 Begin
  ResultText := '';
- If (S.Data = Nil) Or (StartPos < 1) Or (Count <= 0) Then Begin
+ If (S.FirstChunk = Nil) Or (StartPos < 1) Or (Count <= 0) Then Begin
   HTMLSourceCopy := ResultText;
   Exit;
  End;
@@ -1050,35 +1233,116 @@ End;
 Function CreateHTMLNode: HTMLNodePtr;
 Var
  Node: HTMLNodePtr;
- I: Integer;
 Begin
  New(Node);
  Node^.NodeType := HTML_NODE_ELEMENT;
  Node^.TagType := TAG_UNKNOWN;
  Node^.TagName := '';
  Node^.Content := '';
+ Node^.FirstAttribute := Nil;
+ Node^.LastAttribute := Nil;
  Node^.AttributeCount := 0;
+ Node^.FirstChild := Nil;
+ Node^.LastChild := Nil;
+ Node^.PreviousSibling := Nil;
+ Node^.NextSibling := Nil;
  Node^.ChildCount := 0;
  Node^.Parent := Nil;
- For I := 1 To MAX_ATTRIBUTES Do Begin
-  Node^.Attributes[I].Name := '';
-  Node^.Attributes[I].Value := '';
- End;
- For I := 1 To MAX_CHILDREN Do
-  Node^.Children[I] := Nil;
  CreateHTMLNode := Node;
+End;
+
+Function HTMLAttributeAt(Node: HTMLNodePtr; Index: Integer): HTMLAttributePtr;
+Var
+ Attr: HTMLAttributePtr;
+ I: Integer;
+Begin
+ HTMLAttributeAt := Nil;
+ If (Node = Nil) Or (Index < 1) Then Exit;
+ Attr := Node^.FirstAttribute;
+ I := 1;
+ While (Attr <> Nil) And (I < Index) Do Begin
+  Attr := Attr^.Next;
+  Inc(I);
+ End;
+ HTMLAttributeAt := Attr;
+End;
+
+Function HTMLChildAt(Node: HTMLNodePtr; Index: Integer): HTMLNodePtr;
+Var
+ Child: HTMLNodePtr;
+ I: Integer;
+Begin
+ HTMLChildAt := Nil;
+ If (Node = Nil) Or (Index < 1) Then Exit;
+ Child := Node^.FirstChild;
+ I := 1;
+ While (Child <> Nil) And (I < Index) Do Begin
+  Child := Child^.NextSibling;
+  Inc(I);
+ End;
+ HTMLChildAt := Child;
+End;
+
+Procedure HTMLAddAttribute(Node: HTMLNodePtr; Const Name, Value: String);
+Var
+ Attr: HTMLAttributePtr;
+Begin
+ If Node = Nil Then Exit;
+ New(Attr);
+ Attr^.Name := Name;
+ Attr^.Value := Value;
+ Attr^.Next := Nil;
+ If Node^.LastAttribute = Nil Then
+  Node^.FirstAttribute := Attr
+ Else
+  Node^.LastAttribute^.Next := Attr;
+ Node^.LastAttribute := Attr;
+ Inc(Node^.AttributeCount);
+End;
+
+Procedure HTMLAppendChild(Parent, Child: HTMLNodePtr);
+Begin
+ If (Parent = Nil) Or (Child = Nil) Then Exit;
+ Child^.Parent := Parent;
+ Child^.PreviousSibling := Parent^.LastChild;
+ Child^.NextSibling := Nil;
+ If Parent^.LastChild = Nil Then
+  Parent^.FirstChild := Child
+ Else
+  Parent^.LastChild^.NextSibling := Child;
+ Parent^.LastChild := Child;
+ Inc(Parent^.ChildCount);
+End;
+
+Procedure HTMLFreeAttributes(Node: HTMLNodePtr);
+Var
+ Attr, NextAttr: HTMLAttributePtr;
+Begin
+ If Node = Nil Then Exit;
+ Attr := Node^.FirstAttribute;
+ While Attr <> Nil Do Begin
+  NextAttr := Attr^.Next;
+  Dispose(Attr);
+  Attr := NextAttr;
+ End;
+ Node^.FirstAttribute := Nil;
+ Node^.LastAttribute := Nil;
+ Node^.AttributeCount := 0;
 End;
 
 { Procedure pour liberer un noeud HTML et ses enfants }
 Procedure FreeHTMLNode(Node: HTMLNodePtr);
 Var
- I: Integer;
+ Child, NextChild: HTMLNodePtr;
 Begin
  If Node = Nil Then Exit;
- { Liberer recursivement tous les enfants }
- For I := 1 To Node^.ChildCount Do
-  If Node^.Children[I] <> Nil Then
-   FreeHTMLNode(Node^.Children[I]);
+ Child := Node^.FirstChild;
+ While Child <> Nil Do Begin
+  NextChild := Child^.NextSibling;
+  FreeHTMLNode(Child);
+  Child := NextChild;
+ End;
+ HTMLFreeAttributes(Node);
  Dispose(Node);
 End;
 
@@ -1129,7 +1393,7 @@ Begin
    Inc(Pos);
   Value := HTMLSourceCopy(S, StartPos, Pos - StartPos);
  End;
- ExtractAttributeValue := Value;
+  ExtractAttributeValue := HTMLDecodeEntities(Value);
 End;
 
 { Procedure pour parser les attributs d'une balise }
@@ -1157,11 +1421,7 @@ Begin
   End;
 
   { Ajouter l'attribut au noeud }
-  If Node^.AttributeCount < MAX_ATTRIBUTES Then Begin
-   Inc(Node^.AttributeCount);
-   Node^.Attributes[Node^.AttributeCount].Name := HTMLLowerCase(AttrName);
-   Node^.Attributes[Node^.AttributeCount].Value := AttrValue;
-  End;
+  HTMLAddAttribute(Node, HTMLLowerCase(AttrName), AttrValue);
  End;
 End;
 
@@ -1190,17 +1450,15 @@ Begin
 
   { Traiter le texte avant la balise }
   If Pos > StartPos Then Begin
-   TextContent := HTMLSourceCopy(HTMLSource, StartPos, Pos - StartPos);
+   TextContent := HTMLDecodeEntities(
+                   HTMLSourceCopy(HTMLSource, StartPos, Pos - StartPos));
    { Ignorer le texte qui ne contient que des espaces }
    If Trim(TextContent) <> '' Then Begin
     TextNode := CreateHTMLNode;
     TextNode^.NodeType := HTML_NODE_TEXT;
     TextNode^.Content := TextContent;
     TextNode^.Parent := CurrentNode;
-    If CurrentNode^.ChildCount < MAX_CHILDREN Then Begin
-     Inc(CurrentNode^.ChildCount);
-     CurrentNode^.Children[CurrentNode^.ChildCount] := TextNode;
-    End;
+    HTMLAppendChild(CurrentNode, TextNode);
    End;
   End;
 
@@ -1229,10 +1487,7 @@ Begin
     NewNode^.NodeType := HTML_NODE_COMMENT;
     NewNode^.Content := HTMLSourceCopy(HTMLSource, StartPos, Pos - StartPos);
     NewNode^.Parent := CurrentNode;
-    If CurrentNode^.ChildCount < MAX_CHILDREN Then Begin
-     Inc(CurrentNode^.ChildCount);
-     CurrentNode^.Children[CurrentNode^.ChildCount] := NewNode;
-    End;
+    HTMLAppendChild(CurrentNode, NewNode);
     Inc(Pos, 3);
    End
    Else Begin
@@ -1286,10 +1541,7 @@ Begin
     Inc(Pos);
 
     { Ajouter le noeud comme enfant du noeud courant }
-    If CurrentNode^.ChildCount < MAX_CHILDREN Then Begin
-     Inc(CurrentNode^.ChildCount);
-     CurrentNode^.Children[CurrentNode^.ChildCount] := NewNode;
-    End;
+    HTMLAppendChild(CurrentNode, NewNode);
 
     { Si ce n'est pas une balise auto-fermante ou void, descendre dans le noeud }
     If Not IsSelfClosing And Not IsVoidElement(TagName) Then
@@ -1304,24 +1556,27 @@ End;
 { Fonction pour obtenir un attribut d'un noeud HTML }
 Function GetHTMLAttribute(Node: HTMLNodePtr; Const AttrName: String): String;
 Var
- I: Integer;
+ Attr: HTMLAttributePtr;
  LowerName: String;
 Begin
  GetHTMLAttribute := '';
  If Node = Nil Then Exit;
  LowerName := HTMLLowerCase(AttrName);
- For I := 1 To Node^.AttributeCount Do
-  If Node^.Attributes[I].Name = LowerName Then Begin
-   GetHTMLAttribute := Node^.Attributes[I].Value;
+ Attr := Node^.FirstAttribute;
+ While Attr <> Nil Do Begin
+  If Attr^.Name = LowerName Then Begin
+   GetHTMLAttribute := Attr^.Value;
    Exit;
   End;
+  Attr := Attr^.Next;
+ End;
 End;
 
 { Fonction pour trouver un element par son ID }
 Function FindElementById(Node: HTMLNodePtr; Const Id: String): HTMLNodePtr;
 Var
- I: Integer;
  Found: HTMLNodePtr;
+ Child: HTMLNodePtr;
 Begin
  FindElementById := Nil;
  If Node = Nil Then Exit;
@@ -1330,19 +1585,22 @@ Begin
   Exit;
  End;
  { Rechercher dans les enfants }
- For I := 1 To Node^.ChildCount Do Begin
-  Found := FindElementById(Node^.Children[I], Id);
+ Child := Node^.FirstChild;
+ While Child <> Nil Do Begin
+  Found := FindElementById(Child, Id);
   If Found <> Nil Then Begin
    FindElementById := Found;
    Exit;
   End;
+  Child := Child^.NextSibling;
  End;
 End;
 
 { Fonction pour compter les elements avec un certain tag }
 Function CountElementsByTag(Node: HTMLNodePtr; TagType: Byte): Integer;
 Var
- I, Count: Integer;
+ Count: Integer;
+ Child: HTMLNodePtr;
 Begin
  Count := 0;
  If Node = Nil Then Begin
@@ -1350,8 +1608,11 @@ Begin
   Exit;
  End;
  If Node^.TagType = TagType Then Inc(Count);
- For I := 1 To Node^.ChildCount Do
-  Count := Count + CountElementsByTag(Node^.Children[I], TagType);
+ Child := Node^.FirstChild;
+ While Child <> Nil Do Begin
+  Count := Count + CountElementsByTag(Child, TagType);
+  Child := Child^.NextSibling;
+ End;
  CountElementsByTag := Count;
 End;
 
@@ -2603,99 +2864,98 @@ End;
 { Obtenir un attribut d'un noeud HTML }
 Function DOMGetAttribute(Node: HTMLNodePtr; AttrName: String): String;
 Var
- I: Integer;
+ Attr: HTMLAttributePtr;
  LowerAttr, LowerName: String;
 Begin
  DOMGetAttribute := '';
  If Node = Nil Then Exit;
 
  LowerAttr := HTMLLowerCase(AttrName);
- For I := 1 To Node^.AttributeCount Do Begin
-  LowerName := HTMLLowerCase(Node^.Attributes[I].Name);
+ Attr := Node^.FirstAttribute;
+ While Attr <> Nil Do Begin
+  LowerName := HTMLLowerCase(Attr^.Name);
   If LowerName = LowerAttr Then Begin
-   DOMGetAttribute := Node^.Attributes[I].Value;
+   DOMGetAttribute := Attr^.Value;
    Exit;
   End;
+  Attr := Attr^.Next;
  End;
 End;
 
 { Definir un attribut sur un noeud HTML }
 Procedure DOMSetAttribute(Node: HTMLNodePtr; AttrName, AttrValue: String);
 Var
- I: Integer;
+ Attr: HTMLAttributePtr;
  LowerAttr, LowerName: String;
- Found: Boolean;
 Begin
  If Node = Nil Then Exit;
 
  LowerAttr := HTMLLowerCase(AttrName);
- Found := False;
-
- { Chercher si l'attribut existe deja }
- For I := 1 To Node^.AttributeCount Do Begin
-  LowerName := HTMLLowerCase(Node^.Attributes[I].Name);
+ Attr := Node^.FirstAttribute;
+ While Attr <> Nil Do Begin
+  LowerName := HTMLLowerCase(Attr^.Name);
   If LowerName = LowerAttr Then Begin
-   Node^.Attributes[I].Value := AttrValue;
-   Found := True;
-   Break;
+   Attr^.Value := AttrValue;
+   Exit;
   End;
+  Attr := Attr^.Next;
  End;
-
- { Ajouter un nouvel attribut si non trouve }
- If Not Found And (Node^.AttributeCount < MAX_ATTRIBUTES) Then Begin
-  Inc(Node^.AttributeCount);
-  Node^.Attributes[Node^.AttributeCount].Name := AttrName;
-  Node^.Attributes[Node^.AttributeCount].Value := AttrValue;
- End;
+ HTMLAddAttribute(Node, HTMLLowerCase(AttrName), AttrValue);
 End;
 
 { Supprimer un attribut d'un noeud HTML }
 Procedure DOMRemoveAttribute(Node: HTMLNodePtr; AttrName: String);
 Var
- I, J: Integer;
+ Attr, PreviousAttr: HTMLAttributePtr;
  LowerAttr, LowerName: String;
 Begin
  If Node = Nil Then Exit;
 
  LowerAttr := HTMLLowerCase(AttrName);
 
- For I := 1 To Node^.AttributeCount Do Begin
-  LowerName := HTMLLowerCase(Node^.Attributes[I].Name);
+ PreviousAttr := Nil;
+ Attr := Node^.FirstAttribute;
+ While Attr <> Nil Do Begin
+  LowerName := HTMLLowerCase(Attr^.Name);
   If LowerName = LowerAttr Then Begin
-   { Decaler tous les attributs suivants }
-   For J := I To Node^.AttributeCount - 1 Do
-    Node^.Attributes[J] := Node^.Attributes[J + 1];
+   If PreviousAttr = Nil Then Node^.FirstAttribute := Attr^.Next
+   Else PreviousAttr^.Next := Attr^.Next;
+   If Node^.LastAttribute = Attr Then Node^.LastAttribute := PreviousAttr;
+   Dispose(Attr);
    Dec(Node^.AttributeCount);
    Exit;
   End;
+  PreviousAttr := Attr;
+  Attr := Attr^.Next;
  End;
 End;
 
 { Verifier si un noeud a un attribut }
 Function DOMHasAttribute(Node: HTMLNodePtr; AttrName: String): Boolean;
 Var
- I: Integer;
+ Attr: HTMLAttributePtr;
  LowerAttr, LowerName: String;
 Begin
  DOMHasAttribute := False;
  If Node = Nil Then Exit;
 
  LowerAttr := HTMLLowerCase(AttrName);
- For I := 1 To Node^.AttributeCount Do Begin
-  LowerName := HTMLLowerCase(Node^.Attributes[I].Name);
+ Attr := Node^.FirstAttribute;
+ While Attr <> Nil Do Begin
+  LowerName := HTMLLowerCase(Attr^.Name);
   If LowerName = LowerAttr Then Begin
    DOMHasAttribute := True;
    Exit;
   End;
+  Attr := Attr^.Next;
  End;
 End;
 
 { Fonction recursive pour chercher un element par ID }
 Function DOMGetElementByIdRecursive(Node: HTMLNodePtr; Id: String): HTMLNodePtr;
 Var
- I: Integer;
  NodeId: String;
- Result: HTMLNodePtr;
+ Result, Child: HTMLNodePtr;
 Begin
  DOMGetElementByIdRecursive := Nil;
  If Node = Nil Then Exit;
@@ -2708,12 +2968,14 @@ Begin
  End;
 
  { Parcourir les enfants }
- For I := 1 To Node^.ChildCount Do Begin
-  Result := DOMGetElementByIdRecursive(Node^.Children[I], Id);
+ Child := Node^.FirstChild;
+ While Child <> Nil Do Begin
+  Result := DOMGetElementByIdRecursive(Child, Id);
   If Result <> Nil Then Begin
    DOMGetElementByIdRecursive := Result;
    Exit;
   End;
+  Child := Child^.NextSibling;
  End;
 End;
 
@@ -2726,8 +2988,8 @@ End;
 { Procedure recursive pour chercher des elements par nom de balise }
 Procedure DOMGetElementsByTagNameRecursive(Node: HTMLNodePtr; TagName: String; Var List: DOMNodeList);
 Var
- I: Integer;
  LowerTag, LowerNodeTag: String;
+ Child: HTMLNodePtr;
 Begin
  If Node = Nil Then Exit;
 
@@ -2745,8 +3007,11 @@ Begin
  End;
 
  { Parcourir les enfants }
- For I := 1 To Node^.ChildCount Do
-  DOMGetElementsByTagNameRecursive(Node^.Children[I], TagName, List);
+ Child := Node^.FirstChild;
+ While Child <> Nil Do Begin
+  DOMGetElementsByTagNameRecursive(Child, TagName, List);
+  Child := Child^.NextSibling;
+ End;
 End;
 
 { Obtenir des elements par nom de balise (document.getElementsByTagName) }
@@ -2791,7 +3056,7 @@ End;
 { Procedure recursive pour chercher des elements par classe }
 Procedure DOMGetElementsByClassNameRecursive(Node: HTMLNodePtr; ClassName: String; Var List: DOMNodeList);
 Var
- I: Integer;
+ Child: HTMLNodePtr;
 Begin
  If Node = Nil Then Exit;
 
@@ -2804,8 +3069,11 @@ Begin
  End;
 
  { Parcourir les enfants }
- For I := 1 To Node^.ChildCount Do
-  DOMGetElementsByClassNameRecursive(Node^.Children[I], ClassName, List);
+ Child := Node^.FirstChild;
+ While Child <> Nil Do Begin
+  DOMGetElementsByClassNameRecursive(Child, ClassName, List);
+  Child := Child^.NextSibling;
+ End;
 End;
 
 { Obtenir des elements par classe (document.getElementsByClassName) }
@@ -2821,8 +3089,8 @@ End;
 { Obtenir le texte d'un noeud (innerText/textContent) }
 Function DOMGetTextContent(Node: HTMLNodePtr): String;
 Var
- I: Integer;
  Result: String;
+ Child: HTMLNodePtr;
 Begin
  Result := '';
  If Node = Nil Then Begin
@@ -2833,8 +3101,11 @@ Begin
  If Node^.NodeType = HTML_NODE_TEXT Then
   Result := Node^.Content
  Else Begin
-  For I := 1 To Node^.ChildCount Do
-   Result := Result + DOMGetTextContent(Node^.Children[I]);
+  Child := Node^.FirstChild;
+  While Child <> Nil Do Begin
+   Result := Result + DOMGetTextContent(Child);
+   Child := Child^.NextSibling;
+  End;
  End;
 
  DOMGetTextContent := Result;
@@ -2842,23 +3113,29 @@ End;
 
 { Definir le texte d'un noeud (innerText/textContent) }
 Procedure DOMSetTextContent(Node: HTMLNodePtr; Text: String);
+Var
+ Child, NextChild, TextNode: HTMLNodePtr;
 Begin
  If Node = Nil Then Exit;
 
  { Supprimer tous les enfants existants }
+ Child := Node^.FirstChild;
+ While Child <> Nil Do Begin
+  NextChild := Child^.NextSibling;
+  FreeHTMLNode(Child);
+  Child := NextChild;
+ End;
+ Node^.FirstChild := Nil;
+ Node^.LastChild := Nil;
  Node^.ChildCount := 0;
 
  { Creer un nouveau noeud texte comme seul enfant }
  If Length(Text) > 0 Then Begin
-  New(Node^.Children[1]);
-  Node^.Children[1]^.NodeType := HTML_NODE_TEXT;
-  Node^.Children[1]^.TagType := 0;
-  Node^.Children[1]^.TagName := '';
-  Node^.Children[1]^.Content := Text;
-  Node^.Children[1]^.AttributeCount := 0;
-  Node^.Children[1]^.ChildCount := 0;
-  Node^.Children[1]^.Parent := Node;
-  Node^.ChildCount := 1;
+  TextNode := CreateHTMLNode;
+  TextNode^.NodeType := HTML_NODE_TEXT;
+  TextNode^.TagType := 0;
+  TextNode^.Content := Text;
+  HTMLAppendChild(Node, TextNode);
  End;
 End;
 
@@ -2867,14 +3144,11 @@ Function DOMCreateElement(TagName: String): HTMLNodePtr;
 Var
  NewNode: HTMLNodePtr;
 Begin
- New(NewNode);
+ NewNode := CreateHTMLNode;
  NewNode^.NodeType := HTML_NODE_ELEMENT;
  NewNode^.TagType := GetTagType(TagName);
  NewNode^.TagName := TagName;
  NewNode^.Content := '';
- NewNode^.AttributeCount := 0;
- NewNode^.ChildCount := 0;
- NewNode^.Parent := Nil;
  DOMCreateElement := NewNode;
 End;
 
@@ -2883,14 +3157,11 @@ Function DOMCreateTextNode(Text: String): HTMLNodePtr;
 Var
  NewNode: HTMLNodePtr;
 Begin
- New(NewNode);
+ NewNode := CreateHTMLNode;
  NewNode^.NodeType := HTML_NODE_TEXT;
  NewNode^.TagType := 0;
  NewNode^.TagName := '';
  NewNode^.Content := Text;
- NewNode^.AttributeCount := 0;
- NewNode^.ChildCount := 0;
- NewNode^.Parent := Nil;
  DOMCreateTextNode := NewNode;
 End;
 
@@ -2900,18 +3171,12 @@ Begin
  DOMAppendChild := Nil;
  If (Parent = Nil) Or (Child = Nil) Then Exit;
 
- If Parent^.ChildCount < MAX_CHILDREN Then Begin
-  Inc(Parent^.ChildCount);
-  Parent^.Children[Parent^.ChildCount] := Child;
-  Child^.Parent := Parent;
-  DOMAppendChild := Child;
- End;
+ HTMLAppendChild(Parent, Child);
+ DOMAppendChild := Child;
 End;
 
 { Inserer un enfant avant un autre (insertBefore) }
 Function DOMInsertBefore(Parent, NewChild, RefChild: HTMLNodePtr): HTMLNodePtr;
-Var
- I, J, RefIndex: Integer;
 Begin
  DOMInsertBefore := Nil;
  If (Parent = Nil) Or (NewChild = Nil) Then Exit;
@@ -2922,108 +3187,90 @@ Begin
   Exit;
  End;
 
- { Trouver l'index de l'enfant de reference }
- RefIndex := 0;
- For I := 1 To Parent^.ChildCount Do Begin
-  If Parent^.Children[I] = RefChild Then Begin
-   RefIndex := I;
-   Break;
-  End;
- End;
-
- If RefIndex = 0 Then Exit; { Enfant de reference non trouve }
-
- If Parent^.ChildCount >= MAX_CHILDREN Then Exit;
-
- { Decaler les enfants suivants }
- Inc(Parent^.ChildCount);
- For J := Parent^.ChildCount DownTo RefIndex + 1 Do
-  Parent^.Children[J] := Parent^.Children[J - 1];
-
- { Inserer le nouvel enfant }
- Parent^.Children[RefIndex] := NewChild;
+ If RefChild^.Parent <> Parent Then Exit;
  NewChild^.Parent := Parent;
+ NewChild^.PreviousSibling := RefChild^.PreviousSibling;
+ NewChild^.NextSibling := RefChild;
+ If RefChild^.PreviousSibling <> Nil Then
+  RefChild^.PreviousSibling^.NextSibling := NewChild
+ Else
+  Parent^.FirstChild := NewChild;
+ RefChild^.PreviousSibling := NewChild;
+ Inc(Parent^.ChildCount);
  DOMInsertBefore := NewChild;
 End;
 
 { Supprimer un enfant (removeChild) }
 Function DOMRemoveChild(Parent, Child: HTMLNodePtr): HTMLNodePtr;
-Var
- I, J, ChildIndex: Integer;
 Begin
  DOMRemoveChild := Nil;
  If (Parent = Nil) Or (Child = Nil) Then Exit;
 
- { Trouver l'index de l'enfant }
- ChildIndex := 0;
- For I := 1 To Parent^.ChildCount Do Begin
-  If Parent^.Children[I] = Child Then Begin
-   ChildIndex := I;
-   Break;
-  End;
- End;
-
- If ChildIndex = 0 Then Exit; { Enfant non trouve }
-
- { Decaler les enfants suivants }
- For J := ChildIndex To Parent^.ChildCount - 1 Do
-  Parent^.Children[J] := Parent^.Children[J + 1];
+ If Child^.Parent <> Parent Then Exit;
+ If Child^.PreviousSibling <> Nil Then
+  Child^.PreviousSibling^.NextSibling := Child^.NextSibling
+ Else Parent^.FirstChild := Child^.NextSibling;
+ If Child^.NextSibling <> Nil Then
+  Child^.NextSibling^.PreviousSibling := Child^.PreviousSibling
+ Else Parent^.LastChild := Child^.PreviousSibling;
  Dec(Parent^.ChildCount);
-
  Child^.Parent := Nil;
+ Child^.PreviousSibling := Nil;
+ Child^.NextSibling := Nil;
  DOMRemoveChild := Child;
 End;
 
 { Remplacer un enfant (replaceChild) }
 Function DOMReplaceChild(Parent, NewChild, OldChild: HTMLNodePtr): HTMLNodePtr;
-Var
- I: Integer;
 Begin
  DOMReplaceChild := Nil;
  If (Parent = Nil) Or (NewChild = Nil) Or (OldChild = Nil) Then Exit;
 
- For I := 1 To Parent^.ChildCount Do Begin
-  If Parent^.Children[I] = OldChild Then Begin
-   Parent^.Children[I] := NewChild;
-   NewChild^.Parent := Parent;
-   OldChild^.Parent := Nil;
-   DOMReplaceChild := OldChild;
-   Exit;
-  End;
- End;
+ If OldChild^.Parent <> Parent Then Exit;
+ NewChild^.Parent := Parent;
+ NewChild^.PreviousSibling := OldChild^.PreviousSibling;
+ NewChild^.NextSibling := OldChild^.NextSibling;
+ If NewChild^.PreviousSibling <> Nil Then
+  NewChild^.PreviousSibling^.NextSibling := NewChild
+ Else Parent^.FirstChild := NewChild;
+ If NewChild^.NextSibling <> Nil Then
+  NewChild^.NextSibling^.PreviousSibling := NewChild
+ Else Parent^.LastChild := NewChild;
+ OldChild^.Parent := Nil;
+ OldChild^.PreviousSibling := Nil;
+ OldChild^.NextSibling := Nil;
+ DOMReplaceChild := OldChild;
 End;
 
 { Cloner un noeud (cloneNode) }
 Function DOMCloneNode(Node: HTMLNodePtr; Deep: Boolean): HTMLNodePtr;
 Var
- Clone, ChildClone: HTMLNodePtr;
- I: Integer;
+ Clone, ChildClone, Child: HTMLNodePtr;
+ Attr: HTMLAttributePtr;
 Begin
  DOMCloneNode := Nil;
  If Node = Nil Then Exit;
 
- New(Clone);
+ Clone := CreateHTMLNode;
  Clone^.NodeType := Node^.NodeType;
  Clone^.TagType := Node^.TagType;
  Clone^.TagName := Node^.TagName;
  Clone^.Content := Node^.Content;
- Clone^.AttributeCount := Node^.AttributeCount;
- Clone^.ChildCount := 0;
- Clone^.Parent := Nil;
-
- { Copier les attributs }
- For I := 1 To Node^.AttributeCount Do
-  Clone^.Attributes[I] := Node^.Attributes[I];
+ Attr := Node^.FirstAttribute;
+ While Attr <> Nil Do Begin
+  HTMLAddAttribute(Clone, Attr^.Name, Attr^.Value);
+  Attr := Attr^.Next;
+ End;
 
  { Cloner les enfants si demande }
  If Deep Then Begin
-  For I := 1 To Node^.ChildCount Do Begin
-   ChildClone := DOMCloneNode(Node^.Children[I], True);
+  Child := Node^.FirstChild;
+  While Child <> Nil Do Begin
+   ChildClone := DOMCloneNode(Child, True);
    If ChildClone <> Nil Then Begin
-    Inc(Clone^.ChildCount);
-    Clone^.Children[Clone^.ChildCount] := ChildClone;
-    ChildClone^.Parent := Clone;
+    HTMLAppendChild(Clone, ChildClone);
    End;
+   Child := Child^.NextSibling;
   End;
  End;
 
@@ -3045,7 +3292,7 @@ Begin
  If (Node = Nil) Or (Node^.ChildCount = 0) Then
   DOMGetFirstChild := Nil
  Else
-  DOMGetFirstChild := Node^.Children[1];
+  DOMGetFirstChild := Node^.FirstChild;
 End;
 
 { Obtenir le dernier enfant (lastChild) }
@@ -3054,47 +3301,25 @@ Begin
  If (Node = Nil) Or (Node^.ChildCount = 0) Then
   DOMGetLastChild := Nil
  Else
-  DOMGetLastChild := Node^.Children[Node^.ChildCount];
+  DOMGetLastChild := Node^.LastChild;
 End;
 
 { Obtenir le frere precedent (previousSibling) }
 Function DOMGetPreviousSibling(Node: HTMLNodePtr): HTMLNodePtr;
-Var
- Parent: HTMLNodePtr;
- I: Integer;
 Begin
  DOMGetPreviousSibling := Nil;
  If Node = Nil Then Exit;
 
- Parent := Node^.Parent;
- If Parent = Nil Then Exit;
-
- For I := 2 To Parent^.ChildCount Do Begin
-  If Parent^.Children[I] = Node Then Begin
-   DOMGetPreviousSibling := Parent^.Children[I - 1];
-   Exit;
-  End;
- End;
+ DOMGetPreviousSibling := Node^.PreviousSibling;
 End;
 
 { Obtenir le frere suivant (nextSibling) }
 Function DOMGetNextSibling(Node: HTMLNodePtr): HTMLNodePtr;
-Var
- Parent: HTMLNodePtr;
- I: Integer;
 Begin
  DOMGetNextSibling := Nil;
  If Node = Nil Then Exit;
 
- Parent := Node^.Parent;
- If Parent = Nil Then Exit;
-
- For I := 1 To Parent^.ChildCount - 1 Do Begin
-  If Parent^.Children[I] = Node Then Begin
-   DOMGetNextSibling := Parent^.Children[I + 1];
-   Exit;
-  End;
- End;
+ DOMGetNextSibling := Node^.NextSibling;
 End;
 
 { Obtenir le nombre d'enfants (childNodes.length) }
@@ -4732,11 +4957,13 @@ Procedure RenderHTMLNode(Node: HTMLNodePtr; Var Ctx: RenderContext); Forward;
 { Procedure pour rendre les enfants d'un noeud }
 Procedure RenderChildren(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
- I: Integer;
+ Child: HTMLNodePtr;
 Begin
- For I := 1 To Node^.ChildCount Do
-  If Node^.Children[I] <> Nil Then
-   RenderHTMLNode(Node^.Children[I], Ctx);
+ Child := Node^.FirstChild;
+ While Child <> Nil Do Begin
+  RenderHTMLNode(Child, Ctx);
+  Child := Child^.NextSibling;
+ End;
 End;
 
 { Procedure pour rendre la balise HTML (racine du document) }
@@ -5351,37 +5578,41 @@ End;
 { Fonction utilitaire pour compter les colonnes d'un tableau }
 Function CountTableColumns(Node: HTMLNodePtr): Integer;
 Var
- I, J, MaxCols, RowCols: Integer;
- ChildNode, CellNode: HTMLNodePtr;
+ MaxCols, RowCols: Integer;
+ ChildNode, CellNode, RowNode: HTMLNodePtr;
 Begin
  MaxCols := 0;
 
  { Parcourir les enfants pour trouver tr, thead, tbody }
- For I := 1 To Node^.ChildCount Do Begin
-  ChildNode := Node^.Children[I];
+ ChildNode := Node^.FirstChild;
+ While ChildNode <> Nil Do Begin
   If ChildNode <> Nil Then Begin
    If (ChildNode^.TagType = TAG_TR) Then Begin
     { Compter les cellules dans cette ligne }
     RowCols := 0;
-    For J := 1 To ChildNode^.ChildCount Do Begin
-     CellNode := ChildNode^.Children[J];
+    CellNode := ChildNode^.FirstChild;
+    While CellNode <> Nil Do Begin
      If CellNode <> Nil Then Begin
       If (CellNode^.TagType = TAG_TD) Or (CellNode^.TagType = TAG_TH) Then
        Inc(RowCols);
      End;
+     CellNode := CellNode^.NextSibling;
     End;
     If RowCols > MaxCols Then MaxCols := RowCols;
    End
    Else If (ChildNode^.TagType = TAG_THEAD) Or (ChildNode^.TagType = TAG_TBODY) Then Begin
     { Parcourir les lignes dans thead/tbody }
-    For J := 1 To ChildNode^.ChildCount Do Begin
-     If (ChildNode^.Children[J] <> Nil) And (ChildNode^.Children[J]^.TagType = TAG_TR) Then Begin
+    RowNode := ChildNode^.FirstChild;
+    While RowNode <> Nil Do Begin
+     If RowNode^.TagType = TAG_TR Then Begin
       RowCols := CountTableColumns(ChildNode);
       If RowCols > MaxCols Then MaxCols := RowCols;
      End;
+     RowNode := RowNode^.NextSibling;
     End;
    End;
   End;
+  ChildNode := ChildNode^.NextSibling;
  End;
 
  If MaxCols > MAX_TABLE_COLS Then MaxCols := MAX_TABLE_COLS;
@@ -5609,7 +5840,7 @@ End;
 { Fonction utilitaire pour obtenir la valeur d'un attribut }
 Function GetNodeAttribute(Node: HTMLNodePtr; AttrName: String): String;
 Var
- I: Integer;
+ Attr: HTMLAttributePtr;
  LowerAttr: String;
 Begin
  GetNodeAttribute := '';
@@ -5617,11 +5848,13 @@ Begin
 
  LowerAttr := HTMLLowerCase(AttrName);
 
- For I := 1 To Node^.AttributeCount Do Begin
-  If HTMLLowerCase(Node^.Attributes[I].Name) = LowerAttr Then Begin
-   GetNodeAttribute := Node^.Attributes[I].Value;
+ Attr := Node^.FirstAttribute;
+ While Attr <> Nil Do Begin
+  If HTMLLowerCase(Attr^.Name) = LowerAttr Then Begin
+   GetNodeAttribute := Attr^.Value;
    Exit;
   End;
+  Attr := Attr^.Next;
  End;
 End;
 
@@ -5824,9 +6057,9 @@ Begin
 
  { Si pas de valeur, utiliser le contenu textuel }
  If ButtonText = '' Then Begin
-  If (Node^.ChildCount > 0) And (Node^.Children[1] <> Nil) Then Begin
-   If Node^.Children[1]^.NodeType = HTML_NODE_TEXT Then
-    ButtonText := Node^.Children[1]^.Content;
+  If Node^.FirstChild <> Nil Then Begin
+   If Node^.FirstChild^.NodeType = HTML_NODE_TEXT Then
+    ButtonText := Node^.FirstChild^.Content;
   End;
  End;
 
@@ -5847,22 +6080,22 @@ End;
 Procedure RenderTagSelect(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
  OldInSelect: Boolean;
- I: Integer;
  FirstOptionText: String;
  ChildNode: HTMLNodePtr;
 Begin
  { Trouver le texte de la premiere option }
  FirstOptionText := '';
- For I := 1 To Node^.ChildCount Do Begin
-  ChildNode := Node^.Children[I];
+ ChildNode := Node^.FirstChild;
+ While ChildNode <> Nil Do Begin
   If (ChildNode <> Nil) And (ChildNode^.TagType = TAG_OPTION) Then Begin
-   If (ChildNode^.ChildCount > 0) And (ChildNode^.Children[1] <> Nil) Then Begin
-    If ChildNode^.Children[1]^.NodeType = HTML_NODE_TEXT Then Begin
-     FirstOptionText := ChildNode^.Children[1]^.Content;
+   If ChildNode^.FirstChild <> Nil Then Begin
+    If ChildNode^.FirstChild^.NodeType = HTML_NODE_TEXT Then Begin
+     FirstOptionText := ChildNode^.FirstChild^.Content;
      Break;
     End;
    End;
   End;
+  ChildNode := ChildNode^.NextSibling;
  End;
 
  If FirstOptionText = '' Then FirstOptionText := '---';
@@ -5954,9 +6187,9 @@ Begin
  Rectangle(Ctx.X, Ctx.Y, Ctx.X + W, Ctx.Y + H);
 
  { Contenu textuel (si present) }
- If (Node^.ChildCount > 0) And (Node^.Children[1] <> Nil) Then Begin
-  If Node^.Children[1]^.NodeType = HTML_NODE_TEXT Then Begin
-   TextContent := Node^.Children[1]^.Content;
+ If Node^.FirstChild <> Nil Then Begin
+  If Node^.FirstChild^.NodeType = HTML_NODE_TEXT Then Begin
+   TextContent := Node^.FirstChild^.Content;
    SetColor(INPUT_TEXT_COLOR);
    OutTextXY(Ctx.X + INPUT_PADDING, Ctx.Y + INPUT_PADDING, TextContent);
   End;
@@ -6043,11 +6276,12 @@ Begin
 
  { Calculer la largeur du texte du lien pour la zone cliquable }
  LinkText := '';
- For I := 1 To Node^.ChildCount Do Begin
-  ChildNode := Node^.Children[I];
+ ChildNode := Node^.FirstChild;
+ While ChildNode <> Nil Do Begin
   If (ChildNode <> Nil) And (ChildNode^.NodeType = HTML_NODE_TEXT) Then Begin
    LinkText := LinkText + ChildNode^.Content;
   End;
+  ChildNode := ChildNode^.NextSibling;
  End;
 
  { Si on a trouve du texte, ajouter la zone de lien }
@@ -6092,8 +6326,8 @@ End;
 { Fonction pour extraire le contenu textuel d'un noeud }
 Function GetNodeTextContent(Node: HTMLNodePtr): String;
 Var
- I: Integer;
  Result: String;
+ Child: HTMLNodePtr;
 Begin
  Result := '';
  If Node = Nil Then Begin
@@ -6104,8 +6338,11 @@ Begin
  If Node^.NodeType = HTML_NODE_TEXT Then
   Result := Node^.Content
  Else If Node^.NodeType = HTML_NODE_ELEMENT Then Begin
-  For I := 1 To Node^.ChildCount Do
-   Result := Result + GetNodeTextContent(Node^.Children[I]);
+  Child := Node^.FirstChild;
+  While Child <> Nil Do Begin
+   Result := Result + GetNodeTextContent(Child);
+   Child := Child^.NextSibling;
+  End;
  End;
  GetNodeTextContent := Result;
 End;
@@ -11764,50 +12001,61 @@ End;
 
 Procedure InitHTMLSource(Var HTML: HTMLSourceBuffer);
 Begin
- HTML.Data := Nil;
+ HTML.FirstChunk := Nil;
+ HTML.LastChunk := Nil;
  HTML.DataLength := 0;
- HTML.AllocatedSize := 0;
 End;
 
 Procedure FreeHTMLSource(Var HTML: HTMLSourceBuffer);
+Var
+ Chunk, NextChunk: HTMLBufferChunkPtr;
 Begin
- If HTML.Data <> Nil Then Begin
-  FreeMem(HTML.Data, HTML.AllocatedSize);
-  HTML.Data := Nil;
+ Chunk := HTML.FirstChunk;
+ While Chunk <> Nil Do Begin
+  NextChunk := Chunk^.Next;
+  Dispose(Chunk);
+  Chunk := NextChunk;
  End;
+ HTML.FirstChunk := Nil;
+ HTML.LastChunk := Nil;
  HTML.DataLength := 0;
- HTML.AllocatedSize := 0;
 End;
 
 Function SetHTMLSourceFromString(Const S: String;
                                  Var HTML: HTMLSourceBuffer): Boolean;
 Var
- I: Integer;
+ I, CopyCount: Integer;
+ Chunk: HTMLBufferChunkPtr;
 Begin
  FreeHTMLSource(HTML);
  SetHTMLSourceFromString := False;
  If Length(S) = 0 Then Exit;
- HTML.DataLength := Length(S);
- HTML.AllocatedSize := Length(S);
- GetMem(HTML.Data, HTML.AllocatedSize);
- If HTML.Data = Nil Then Begin
-  HTML.DataLength := 0;
-  HTML.AllocatedSize := 0;
-  Exit;
+ I := 1;
+ While I <= Length(S) Do Begin
+  New(Chunk);
+  Chunk^.Used := 0;
+  Chunk^.Next := Nil;
+  CopyCount := Length(S) - I + 1;
+  If CopyCount > 4096 Then CopyCount := 4096;
+  While Chunk^.Used < CopyCount Do Begin
+   Chunk^.Data[Chunk^.Used] := S[I + Chunk^.Used];
+   Inc(Chunk^.Used);
+  End;
+  If HTML.LastChunk = Nil Then HTML.FirstChunk := Chunk
+  Else HTML.LastChunk^.Next := Chunk;
+  HTML.LastChunk := Chunk;
+  Inc(HTML.DataLength, CopyCount);
+  Inc(I, CopyCount);
  End;
- For I := 1 To Length(S) Do
-  HTML.Data^[I - 1] := S[I];
  SetHTMLSourceFromString := True;
 End;
 
-{ Lecture binaire compatible Turbo Pascal et Free Pascal.
-  Un document est limite a 60000 octets pour rester dans un segment TP 16 bits. }
+{ Lecture binaire par blocs chaines, sans segment contigu de 64 Ko. }
 Function LoadHTMLFile(Const FileName: String; Var HTML: HTMLSourceBuffer): Boolean;
 Var
  F: File;
- FileLen: LongInt;
- ReadLen: Word;
  BytesRead: Word;
+ Chunk: HTMLBufferChunkPtr;
 Begin
  FreeHTMLSource(HTML);
  LoadHTMLFile := False;
@@ -11817,27 +12065,23 @@ Begin
  {$I+}
  If IOResult <> 0 Then Exit;
 
- FileLen := FileSize(F);
- If FileLen > 60000 Then ReadLen := 60000 Else ReadLen := FileLen;
- If ReadLen <= 0 Then Begin
-  Close(F);
-  Exit;
- End;
-
- HTML.DataLength := ReadLen;
- HTML.AllocatedSize := ReadLen;
- GetMem(HTML.Data, HTML.AllocatedSize);
- If HTML.Data = Nil Then Begin
-  HTML.DataLength := 0;
-  HTML.AllocatedSize := 0;
-  Close(F);
-  Exit;
- End;
-
- BlockRead(F, HTML.Data^, ReadLen, BytesRead);
+ Repeat
+  New(Chunk);
+  Chunk^.Used := 0;
+  Chunk^.Next := Nil;
+  BlockRead(F, Chunk^.Data, 4096, BytesRead);
+  If BytesRead > 0 Then Begin
+   Chunk^.Used := BytesRead;
+   If HTML.LastChunk = Nil Then HTML.FirstChunk := Chunk
+   Else HTML.LastChunk^.Next := Chunk;
+   HTML.LastChunk := Chunk;
+   Inc(HTML.DataLength, BytesRead);
+  End
+  Else
+   Dispose(Chunk);
+ Until BytesRead < 4096;
  Close(F);
- HTML.DataLength := BytesRead;
- LoadHTMLFile := BytesRead > 0;
+ LoadHTMLFile := HTML.DataLength > 0;
 End;
 
 Function IsRemoteURL(Const URL: String): Boolean;
