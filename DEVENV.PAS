@@ -2127,18 +2127,19 @@ Type
   VirtCwd   : String;              { chemin courant sur disque virt }
  End;
 
- { Etat d un disque virtuel FAT12/16 monte via /DISK0, /DISK1,
+ { Etat d un disque virtuel FAT12/16/32 monte via /DISK0, /DISK1,
    /DISK80 ou /DISK81 }
  TFatVol = Record
   Mounted        : Boolean;
   IsD64          : Boolean;        { image Commodore 64 .D64        }
   D64Tracks      : Byte;           { nombre de pistes (35 ou 40)    }
-  FATType        : Byte;           { 12 ou 16                       }
+  FATType        : Byte;           { 12, 16 ou 32                   }
   BytesPerSector : Word;
   SectorsPerCluster: Byte;
   ReservedSectors: Word;
   NumFATs        : Byte;
-  RootEntries    : Word;
+  RootEntries    : Word;           { 0 pour FAT32 (racine = cluster) }
+  RootCluster    : LongInt;        { FAT32 seulement : 1er cluster racine }
   TotalSectors   : LongInt;
   SectorsPerFAT  : LongInt;
   PartitionStart : LongInt;        { LBA de la partition FAT (MBR disque
@@ -2147,7 +2148,7 @@ Type
   FATStart       : LongInt;
   RootStart      : LongInt;
   DataStart      : LongInt;
-  RootDirSectors : LongInt;
+  RootDirSectors : LongInt;        { 0 pour FAT32 }
   ClusterCount   : LongInt;
   VolLabel       : String[11];
   CachedFatLBA   : LongInt;
@@ -18965,39 +18966,43 @@ Begin
  V.SectorsPerCluster := SPC;
  V.ReservedSectors  := Fat_LE16(Buf, 14);
  V.NumFATs          := Buf[16];
- V.RootEntries      := Fat_LE16(Buf, 17);
+ V.RootEntries      := Fat_LE16(Buf, 17);  { 0 = FAT32 (racine = cluster) }
  TS16               := Fat_LE16(Buf, 19);
  TS32               := Fat_LE32(Buf, 32);
  If TS16 <> 0 Then V.TotalSectors := TS16
               Else V.TotalSectors := TS32;
  SPF                := Fat_LE16(Buf, 22);
- V.SectorsPerFAT    := SPF;
+ If SPF <> 0 Then V.SectorsPerFAT := SPF
+             Else V.SectorsPerFAT := Fat_LE32(Buf, 36);  { FAT32 : 32 bits }
  If (V.NumFATs = 0) Or (V.ReservedSectors = 0) Or
-    (V.SectorsPerFAT = 0) Or (V.RootEntries = 0) Or
-    (V.TotalSectors = 0) Then Begin
+    (V.SectorsPerFAT = 0) Or (V.TotalSectors = 0) Then Begin
   FatVol[Idx] := V;
   Exit;
  End;
  V.FATStart       := V.ReservedSectors;
  V.RootStart      := V.FATStart + LongInt(V.NumFATs) * V.SectorsPerFAT;
- V.RootDirSectors := (LongInt(V.RootEntries) * 32 + 511) Div 512;
+ If V.RootEntries = 0 Then Begin
+  { FAT32 : pas de zone racine fixe, la racine est une chaine de
+    clusters comme tout autre repertoire (BPB_RootClus a l offset 44). }
+  V.RootDirSectors := 0;
+  V.RootCluster    := Fat_LE32(Buf, 44);
+  If V.RootCluster < 2 Then V.RootCluster := 2;
+ End Else
+  V.RootDirSectors := (LongInt(V.RootEntries) * 32 + 511) Div 512;
  V.DataStart      := V.RootStart + V.RootDirSectors;
  V.ClusterCount   := (V.TotalSectors - (V.ReservedSectors +
                        LongInt(V.NumFATs) * V.SectorsPerFAT +
                        V.RootDirSectors)) Div V.SectorsPerCluster;
- If V.ClusterCount < 4085 Then V.FATType := 12
- Else If V.ClusterCount < 65525 Then V.FATType := 16
- Else Begin
-  { FAT32 non supporte pour le moment }
-  FatVol[Idx] := V;
-  Exit;
- End;
- { Label de volume : champ a offset 43 du BPB (11 octets) }
+ If V.RootEntries = 0 Then V.FATType := 32
+ Else If V.ClusterCount < 4085 Then V.FATType := 12
+ Else V.FATType := 16;
+ { Label de volume : offset 43 (BPB 12/16) ou 71 (EBPB FAT32, le champ
+   a 43 etant occupe par BPB_RootClus/FSInfo/BkBootSec en FAT32). }
  V.VolLabel := '';
  For I := 0 To 10 Do Begin
-  C := Chr(Buf[43 + I]);
+  If V.FATType = 32 Then C := Chr(Buf[71 + I]) Else C := Chr(Buf[43 + I]);
   If C = ' ' Then Continue;
-  If (Buf[43 + I] < 32) Or (Buf[43 + I] > 126) Then Begin
+  If (Ord(C) < 32) Or (Ord(C) > 126) Then Begin
    V.VolLabel := '';
    Break;
   End;
@@ -19036,6 +19041,13 @@ Begin
   If (Cl And 1) <> 0 Then V := V Shr 4
                      Else V := V And $0FFF;
   Fat_NextCluster := V;
+ End Else If FatVol[Idx].FATType = 32 Then Begin
+  O := Cl * 4;
+  V := LongInt(Fat_FATByte(Idx, O)) Or
+       (LongInt(Fat_FATByte(Idx, O + 1)) Shl 8) Or
+       (LongInt(Fat_FATByte(Idx, O + 2)) Shl 16) Or
+       (LongInt(Fat_FATByte(Idx, O + 3)) Shl 24);
+  Fat_NextCluster := V And $0FFFFFFF;
  End Else Begin
   O := Cl * 2;
   Fat_NextCluster := Word(Fat_FATByte(Idx, O)) Or
@@ -19046,6 +19058,7 @@ End;
 Function Fat_IsEOC(Idx: Byte; Cl: LongInt): Boolean;
 Begin
  If FatVol[Idx].FATType = 12 Then Fat_IsEOC := Cl >= $0FF8
+ Else If FatVol[Idx].FATType = 32 Then Fat_IsEOC := Cl >= $0FFFFFF8
  Else Fat_IsEOC := Cl >= $FFF8;
 End;
 
@@ -19100,9 +19113,16 @@ Begin
  Fat_EntryAttr := Buf[Off + 11];
 End;
 
-Function Fat_EntryCluster(Var Buf: Array Of Byte; Off: Integer): Word;
+Function Fat_EntryCluster(Idx: Byte; Var Buf: Array Of Byte;
+ Off: Integer): LongInt;
+Var
+ Clu: LongInt;
 Begin
- Fat_EntryCluster := Fat_LE16(Buf, Off + 26);
+ Clu := Fat_LE16(Buf, Off + 26);
+ { FAT32 : 16 bits de poids fort a l offset 20 (DIR_FstClusHI). }
+ If FatVol[Idx].FATType = 32 Then
+  Clu := Clu Or (LongInt(Fat_LE16(Buf, Off + 20)) Shl 16);
+ Fat_EntryCluster := Clu;
 End;
 
 Function Fat_EntrySize(Var Buf: Array Of Byte; Off: Integer): LongInt;
@@ -19219,7 +19239,7 @@ End;
   une entree de nom NameUp. Si trouve, renvoie True et remplit
   Attr/Cluster/Size. }
 Function Fat_FindInDir(Idx: Byte; IsRoot: Boolean; StartCl: LongInt;
- NameUp: String; Var Attr: Byte; Var Cluster: Word;
+ NameUp: String; Var Attr: Byte; Var Cluster: LongInt;
  Var Size: LongInt): Boolean;
 Var
  Buf: Array[0..511] Of Byte;
@@ -19245,7 +19265,7 @@ Begin
     If (Fat_EntryAttr(Buf, I * 32) And $08) <> 0 Then Continue;
     If Fat_UpStr(EntName) = NameUp Then Begin
      Attr    := Fat_EntryAttr(Buf, I * 32);
-     Cluster := Fat_EntryCluster(Buf, I * 32);
+     Cluster := Fat_EntryCluster(Idx, Buf, I * 32);
      Size    := Fat_EntrySize(Buf, I * 32);
      Fat_FindInDir := True;
      Exit;
@@ -19265,7 +19285,7 @@ Begin
      If (Fat_EntryAttr(Buf, I * 32) And $08) <> 0 Then Continue;
      If Fat_UpStr(EntName) = NameUp Then Begin
       Attr    := Fat_EntryAttr(Buf, I * 32);
-      Cluster := Fat_EntryCluster(Buf, I * 32);
+      Cluster := Fat_EntryCluster(Idx, Buf, I * 32);
       Size    := Fat_EntrySize(Buf, I * 32);
       Fat_FindInDir := True;
       Exit;
@@ -19274,6 +19294,21 @@ Begin
    End;
    Cur := Fat_NextCluster(Idx, Cur);
   End;
+ End;
+End;
+
+{ Definir IsRoot/StartCl pour designer la racine du volume : secteurs
+  fixes (IsRoot=True) pour FAT12/16, ou chaine de clusters a partir de
+  RootCluster (IsRoot=False) pour FAT32, ou la racine se traite comme
+  n importe quel autre repertoire. }
+Procedure Fat_SetRootRef(Idx: Byte; Var IsRoot: Boolean; Var StartCl: LongInt);
+Begin
+ If FatVol[Idx].FATType = 32 Then Begin
+  IsRoot  := False;
+  StartCl := FatVol[Idx].RootCluster;
+ End Else Begin
+  IsRoot  := True;
+  StartCl := 0;
  End;
 End;
 
@@ -19288,12 +19323,11 @@ Var
  Parts: Array[0..15] Of String;
  I: Integer;
  Attr: Byte;
- Cluster: Word;
+ Cluster: LongInt;
  Sz: LongInt;
 Begin
  Fat_ResolveDir := False;
- IsRoot  := True;
- StartCl := 0;
+ Fat_SetRootRef(Idx, IsRoot, StartCl);
  If Not FatVol[Idx].Mounted Then Exit;
  Fat_SplitPath(AbsPath, NParts, Parts);
  For I := 0 To NParts - 1 Do Begin
@@ -19304,7 +19338,7 @@ Begin
   StartCl := Cluster;
   If StartCl < 2 Then Begin
    { ".." sur sous-rep racine -> retourner racine }
-   IsRoot := True;
+   Fat_SetRootRef(Idx, IsRoot, StartCl);
   End;
  End;
  Fat_ResolveDir := True;
@@ -19313,7 +19347,7 @@ End;
 { Resoudre un chemin de fichier : separe parent + nom feuille, puis
   cherche le nom dans le parent. }
 Function Fat_FindPath(Idx: Byte; AbsPath: String;
- Var Attr: Byte; Var Cluster: Word; Var Size: LongInt): Boolean;
+ Var Attr: Byte; Var Cluster: LongInt; Var Size: LongInt): Boolean;
 Var
  NParts: Integer;
  Parts: Array[0..15] Of String;
@@ -19688,6 +19722,16 @@ Begin
   End;
   If Not Fat_FATWriteByte(Idx, O, B1) Then Exit;
   If Not Fat_FATWriteByte(Idx, O + 1, B2) Then Exit;
+ End Else If FatVol[Idx].FATType = 32 Then Begin
+  O := Cl * 4;
+  Val := Val And $0FFFFFFF;
+  If Not Fat_FATWriteByte(Idx, O, Byte(Val And $FF)) Then Exit;
+  If Not Fat_FATWriteByte(Idx, O + 1, Byte((Val Shr 8) And $FF)) Then Exit;
+  If Not Fat_FATWriteByte(Idx, O + 2, Byte((Val Shr 16) And $FF)) Then Exit;
+  { Les 4 bits hauts (reserves) du 4e octet sont preserves. }
+  If Not Fat_FATWriteByte(Idx, O + 3,
+   Byte((Fat_FATByte(Idx, O + 3) And $F0) Or
+        ((Val Shr 24) And $0F))) Then Exit;
  End Else Begin
   O := Cl * 2;
   If Not Fat_FATWriteByte(Idx, O, Byte(Val And $FF)) Then Exit;
@@ -19705,7 +19749,8 @@ Var
 Begin
  Fat_AllocCluster := 0;
  If FatVol[Idx].FATType = 12 Then EOC := $0FFF
-                              Else EOC := $FFFF;
+ Else If FatVol[Idx].FATType = 32 Then EOC := $0FFFFFFF
+ Else EOC := $FFFF;
  For Cl := 2 To FatVol[Idx].ClusterCount + 1 Do
   If Fat_NextCluster(Idx, Cl) = 0 Then Begin
    If Fat_SetNextCluster(Idx, Cl, EOC) Then
@@ -19804,7 +19849,7 @@ End;
 
 { Ecrire une entree 32 octets dans le slot indique. }
 Function Fat_WriteDirEntry(Idx: Byte; LBA: LongInt; SlotIdx: Integer;
- Var N11: Array Of Byte; Attr: Byte; FirstClu: Word;
+ Var N11: Array Of Byte; Attr: Byte; FirstClu: LongInt;
  Size: LongInt): Boolean;
 Var
  Buf: Array[0..511] Of Byte;
@@ -19815,7 +19860,11 @@ Begin
  Off := SlotIdx * 32;
  For I := 0 To 10 Do Buf[Off + I] := N11[I];
  Buf[Off + 11] := Attr;
- For I := 12 To 21 Do Buf[Off + I] := 0;
+ For I := 12 To 19 Do Buf[Off + I] := 0;
+ { Offset 20-21 : 16 bits de poids fort du cluster (FAT32 seulement ;
+   toujours 0 pour FAT12/16 puisque FirstClu < 65536). }
+ Buf[Off + 20] := Byte((FirstClu Shr 16) And $FF);
+ Buf[Off + 21] := Byte((FirstClu Shr 24) And $FF);
  Buf[Off + 22] := 0; Buf[Off + 23] := 0;   { time }
  Buf[Off + 24] := 0; Buf[Off + 25] := 0;   { date }
  Buf[Off + 26] := Byte(FirstClu And $FF);
@@ -19837,7 +19886,7 @@ Var
  StartCl: LongInt;
  N11: Array[0..10] Of Byte;
  Attr: Byte;
- ExClu: Word;
+ ExClu: LongInt;
  ExSize: LongInt;
  SrcF: File;
  BR: Word;
@@ -19926,7 +19975,7 @@ Begin
   Exit;
  End;
  If Not Fat_WriteDirEntry(Idx, SlotLBA, SlotIdx, N11, $20,
-  Word(FirstClu), TotalSize) Then Begin
+  FirstClu, TotalSize) Then Begin
   ErrMsg := 'Erreur d ecriture de l entree repertoire';
   Exit;
  End;
@@ -20038,7 +20087,7 @@ Var
  SrcAbs, DstAbs: String;
  SrcIsVirt, DstIsVirt: Boolean;
  Attr: Byte;
- SrcCluster: Word;
+ SrcCluster: LongInt;
  SrcSize: LongInt;
  Cur: LongInt;
  SecInClu, BaseSlash, I: Integer;
@@ -20050,7 +20099,7 @@ Var
  ErrMsg: String;
  DstIsDir: Boolean;
  DummyAttr: Byte;
- DummyClu: Word;
+ DummyClu: LongInt;
  DummySz: LongInt;
  SrcBase: String;
 Begin
@@ -20726,7 +20775,7 @@ Var
  Idx: Byte;
  AbsP: String;
  Attr: Byte;
- Cluster: Word;
+ Cluster: LongInt;
  Size: LongInt;
 Begin
  CurrParam := TermExtractParam(ParamStr, 1);
@@ -31863,6 +31912,24 @@ Begin
  EmuFloppyOpen[Idx] := True;
 End;
 
+{ Afficher un diagnostic de montage pour l unite Idx (console), utile
+  pour comprendre pourquoi une image /DISK0../DISK81 n est pas
+  reconnue comme volume FAT par le terminal integre. }
+Procedure Emu_ReportDiskMount(Idx: Byte);
+Begin
+ If Not EmuFloppyOpen[Idx] Then Exit;
+ Write('DEVENV: ', Term_DriveLetterFromIdx(Idx), ': ', EmuFloppyName[Idx]);
+ If FatVol[Idx].IsD64 Then
+  WriteLn(' -> Commodore 64 (.D64, ', FatVol[Idx].D64Tracks, ' pistes)')
+ Else If FatVol[Idx].Mounted Then
+  WriteLn(' -> FAT', FatVol[Idx].FATType, ' monte (',
+   FatVol[Idx].TotalSectors, ' secteurs, partition LBA=',
+   FatVol[Idx].PartitionStart, ')')
+ Else
+  WriteLn(' -> ouvert mais aucun systeme de fichiers FAT12/16/32 reconnu',
+   ' (DIR/CD/TYPE non disponibles sur cette unite)');
+End;
+
 Procedure Emu_FloppyOpenAll;
 Begin
  EmuFloppyOpen[0] := False;
@@ -31875,6 +31942,8 @@ Begin
  FatVol[1].Mounted := False;
  If EmuFloppyOpen[0] Then Begin Fat_TryMount(0); Fat_FindVolLabel(0); End;
  If EmuFloppyOpen[1] Then Begin Fat_TryMount(1); Fat_FindVolLabel(1); End;
+ Emu_ReportDiskMount(0);
+ Emu_ReportDiskMount(1);
 End;
 
 { Ouvrir une image de disque dur (/DISK80 -> Idx=2, /DISK81 -> Idx=3).
@@ -31956,6 +32025,8 @@ Begin
  FatVol[3].Mounted := False;
  If EmuFloppyOpen[2] Then Begin Fat_TryMount(2); Fat_FindVolLabel(2); End;
  If EmuFloppyOpen[3] Then Begin Fat_TryMount(3); Fat_FindVolLabel(3); End;
+ Emu_ReportDiskMount(2);
+ Emu_ReportDiskMount(3);
 End;
 
 Procedure Emu_FloppyCloseAll;
