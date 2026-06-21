@@ -1087,6 +1087,7 @@ Begin
  DictAdd('Eof', 'Fin de fichier');
  DictAdd('src_line_num', 'Numero de ligne de la source');
  DictAdd('src_eof', 'Fin de fichier de la source');
+ DictAdd('UpCaseStr', 'Cette fonction permet de convertir une chaine de caracteres en majuscules.');
  DictAdd('Peek', 'Anticipation de lecture (lookahead)');
  DictAdd('has_peek', 'Indique si un caractere est actuellement entrepose dans peek_char');
  DictAdd('Sym', 'Identificateur (symbole)');
@@ -1170,7 +1171,7 @@ Begin
  DictAdd('Then', 'Alors');
  DictAdd('Elsif', 'Sinon si');
  DictAdd('Else', 'Sinon');
- DictAdd('Case', 'Selon');
+ DictAdd('KW_CASE', 'Mot-cle Selon (instruction de branchement)');
  DictAdd('When', 'Quand');
  DictAdd('Others', 'Autres');
  DictAdd('Loop', 'Boucle');
@@ -1284,23 +1285,46 @@ Begin
   StartsWithStr(S, '(*') Or StartsWithStr(S, '*');
 End;
 
+{ @description: Indique si une ligne de commentaire est un separateur
+    decoratif de section (accolades Pascal entourant une suite de
+    tirets ou de signes egal, avec ou sans titre), compose en
+    majorite de tirets ou de signes egal. Un tel separateur introduit
+    un GROUPE de declarations qui suit (souvent apres une ligne vide)
+    ; il ne documente pas specifiquement la toute premiere
+    declaration de ce groupe et ne doit donc pas etre confondu avec
+    un vrai commentaire de documentation.
+  @param S Ligne de commentaire a tester (deja nettoyee des espaces)
+  @return Vrai si la ligne ressemble a un separateur decoratif }
+Function LooksLikeSectionHeader(S: String): Boolean;
+Var
+ I, DashEq: Integer;
+Begin
+ DashEq := 0;
+ For I := 1 To Length(S) Do
+  If S[I] In ['-', '='] Then Inc(DashEq);
+ LooksLikeSectionHeader := (Length(S) > 0) And (DashEq * 2 >= Length(S));
+End;
+
 { @description: Indique si la declaration commencant a la ligne
-    LineIdx est deja precedee d un commentaire (en remontant au-dela
-    des lignes vides, et des lignes d attributs/directives qui
-    n empechent pas de retrouver un commentaire plus haut).
+    LineIdx est deja precedee d un commentaire qui la documente
+    specifiquement : il doit se trouver immediatement au-dessus (sans
+    ligne vide intercalee, sinon il s agit le plus souvent d un
+    separateur de section introduisant tout un groupe de declarations,
+    pas d une documentation propre a celle-ci), et ne pas etre lui-
+    meme un separateur decoratif (voir LooksLikeSectionHeader).
   @param LineIdx Numero (1-based) de la ligne de la declaration
-  @return Vrai si une ligne de commentaire precede la declaration }
+  @return Vrai si une ligne de commentaire documente specifiquement
+    cette declaration }
 Function HasPrecedingComment(LineIdx: Integer): Boolean;
 Var
- K: Integer;
  S: String;
 Begin
  HasPrecedingComment := False;
- K := LineIdx - 1;
- While (K >= 1) And IsBlankLine(Lines[K]) Do Dec(K);
- If K < 1 Then Exit;
- S := TrimStr(Lines[K]);
- HasPrecedingComment := LooksLikeCommentEnd(S);
+ If LineIdx - 1 < 1 Then Exit;
+ If IsBlankLine(Lines[LineIdx - 1]) Then Exit;
+ S := TrimStr(Lines[LineIdx - 1]);
+ HasPrecedingComment := LooksLikeCommentEnd(S) And
+  (Not LooksLikeSectionHeader(S));
 End;
 
 { @description: Indique si une ligne contient deja un commentaire en
