@@ -1201,6 +1201,19 @@ Const
  MAX_OPT_PAGES        = 16;      { nombre max de pages              }
  OPT_CFG_FILENAME     = 'DEVENV.CFG'; { fichier de configuration    }
 
+ { Boite de dialogue Disques virtuels (gestion de /DISK0, /DISK1,
+   /DISK80 et /DISK81) }
+ VIRTDISK_WIDTH        = 520;     { largeur dialogue gestionnaire   }
+ VIRTDISK_HEIGHT       = 260;     { hauteur dialogue gestionnaire   }
+ VIRTDISK_LIST_HEIGHT  = 160;     { hauteur de la liste des unites  }
+ VIRTDISK_BTN_WIDTH    = 130;     { largeur boutons Ajouter/etc.    }
+ VIRTDISK_SLOT_COUNT   = 4;       { A:, B:, C:, D:                  }
+ VIRTDISK_HSCROLL_H    = 16;      { hauteur barre defil. horizontale}
+ VIRTDISK_HSCROLL_PAGE = 10;      { pas de defilement par page (car.)}
+ VIRTADD_WIDTH         = 460;     { largeur dialogue ajout/modif    }
+ VIRTADD_HEIGHT        = 280;     { hauteur dialogue ajout/modif    }
+ VIRTADD_LIST_HEIGHT   = 80;      { hauteur liste des emplacements  }
+
  { Rechercher et remplacer }
  FIND_DLG_WIDTH       = 420;     { largeur dialogue recherche       }
  FIND_DLG_HEIGHT      = 200;     { hauteur dialogue recherche       }
@@ -2399,6 +2412,30 @@ Type
   Confirmed      : Boolean;             { True si valide par OK      }
  End;
 
+ { Boite de dialogue Ajouter/Modifier un disque virtuel (sous-boite de
+   TVirtualDiskDialog). EditSlot = -1 : ajout (l utilisateur choisit
+   un emplacement libre dans la liste) ; sinon = 0..3 : modification
+   de cet emplacement (liste masquee, emplacement fige). }
+ TVirtAddDiskDialog = Record
+  Base       : TDialog;                { dialogue de base           }
+  EditSlot   : Integer;                { -1=ajout, 0..3=modification}
+  SelSlot    : Integer;                { emplacement choisi (ajout) }
+  FocusField : Integer;                { 0=liste, 1=champ fichier   }
+  FileName   : String[255];            { chemin de l image          }
+  FNCursor   : Integer;                { curseur dans FileName      }
+  Confirmed  : Boolean;                { True si valide par OK      }
+ End;
+
+ { Boite de dialogue Disques virtuels (gestionnaire de /DISK0, /DISK1,
+   /DISK80, /DISK81). Liste les 4 emplacements a gauche, boutons
+   Ajouter/Modifier/Supprimer a droite. }
+ TVirtualDiskDialog = Record
+  Base       : TDialog;                { dialogue de base           }
+  SelIndex   : Integer;                { emplacement selectionne (0..3) }
+  HScrollPos : Integer;                { defilement horizontal (en caracteres) }
+  HScrollMax : Integer;                { defilement horizontal maximal }
+ End;
+
  { ---- Emulateur 8086 integre ---- }
  { Cellule de l ecran virtuel 80x25 }
  TEmuCell = Record
@@ -3266,6 +3303,9 @@ Var
  FileDlg        : TFileDialog;
  { Dialogue proprietes du projet }
  ProjPropDlg    : TProjectPropertiesDialog;
+ { Dialogue gestionnaire de disques virtuels et sa sous-boite ajout/modif }
+ VirtualDiskDlg : TVirtualDiskDialog;
+ VirtAddDiskDlg : TVirtAddDiskDialog;
  { Panneau de l emulateur 8086 integre }
  EmuPanel       : TEmulatorPanel;
  EmuStartCmdLine: String;       { ligne de commande a injecter dans le PSP du programme emule }
@@ -5430,6 +5470,7 @@ Begin
  { Menu Outils }
  InitMenu(MainMenuBar.Menus[6], 'Outils');
  AddMenuItem(MainMenuBar.Menus[6], 'Options...', '', 700);
+ AddMenuItem(MainMenuBar.Menus[6], 'Disque virtuel...', '', 705);
  AddMenuItem(MainMenuBar.Menus[6], 'Personnaliser...', '', 701);
  AddMenuSeparator(MainMenuBar.Menus[6]);
  AddMenuItem(MainMenuBar.Menus[6], 'Gestionnaire d extensions...', '', 710);
@@ -5552,6 +5593,18 @@ Procedure DrawProjectPropertiesDialog(
  Var Dlg: TProjectPropertiesDialog); Forward;
 Procedure HandleProjectPropertiesDialogEvent(
  Var Dlg: TProjectPropertiesDialog; Var Ev: TEvent); Forward;
+
+{ Declarations anticipees pour le dialogue Disque virtuel (gestion
+  de /DISK0, /DISK1, /DISK80, /DISK81) }
+Procedure ShowVirtualDiskDialog(Var Dlg: TVirtualDiskDialog); Forward;
+Procedure DrawVirtualDiskDialog(Var Dlg: TVirtualDiskDialog); Forward;
+Procedure HandleVirtualDiskDialogEvent(Var Dlg: TVirtualDiskDialog;
+ Var Ev: TEvent); Forward;
+Procedure DrawVirtAddDiskDialog(Var Dlg: TVirtAddDiskDialog); Forward;
+Procedure HandleVirtAddDiskDialogEvent(Var Dlg: TVirtAddDiskDialog;
+ Var Ev: TEvent); Forward;
+Function Emu_MountDiskSlot(Idx: Byte; FName: String): Boolean; Forward;
+Procedure Emu_UnmountDiskSlot(Idx: Byte); Forward;
 
 { Declarations anticipees pour l emulateur 8086 integre }
 Procedure InitEmulatorPanel(Var P: TEmulatorPanel); Forward;
@@ -6062,6 +6115,10 @@ Begin
        End;
   700: Begin { Options... }
         ShowOptionsDialog(OptionsDlg);
+        FullRepaintNeeded := True;
+       End;
+  705: Begin { Disque virtuel... }
+        ShowVirtualDiskDialog(VirtualDiskDlg);
         FullRepaintNeeded := True;
        End;
   701: Begin { Personnaliser... }
@@ -26796,6 +26853,633 @@ Begin
  DrawProjectPropertiesDialog(Dlg);
 End;
 
+{ ============================================================
+  Dialogue Disque virtuel (Outils > Disque virtuel...) : liste les
+  4 emplacements montables (/DISK0, /DISK1, /DISK80, /DISK81) et
+  permet d en ajouter, modifier ou supprimer depuis l IDE, de facon
+  equivalente aux parametres de ligne de commande correspondants
+  (Emu_MountDiskSlot/Emu_UnmountDiskSlot, definis avec le reste du
+  support disque de l emulateur, font le travail reel).
+  ============================================================ }
+
+Function VirtSlotKindName(Idx: Byte): String;
+Begin
+ If Idx < 2 Then VirtSlotKindName := 'Disquette'
+            Else VirtSlotKindName := 'Disque dur';
+End;
+
+Function VirtSlotOptName(Idx: Byte): String;
+Begin
+ Case Idx Of
+  0: VirtSlotOptName := '/DISK0';
+  1: VirtSlotOptName := '/DISK1';
+  2: VirtSlotOptName := '/DISK80';
+ Else
+  VirtSlotOptName := '/DISK81';
+ End;
+End;
+
+{ Texte d une ligne de la liste principale : "A:  Disquette  (/DISK0)  chemin" }
+Function VirtSlotRowText(Idx: Byte): String;
+Var
+ S: String;
+Begin
+ S := Term_DriveLetterFromIdx(Idx) + ':  ' + VirtSlotKindName(Idx) +
+  '  (' + VirtSlotOptName(Idx) + ')  ';
+ If EmuFloppyOpen[Idx] Then Begin
+  S := S + EmuFloppyName[Idx];
+  If Not FatVol[Idx].Mounted Then
+   S := S + '  [format non reconnu]';
+ End Else
+  S := S + '(non monte)';
+ VirtSlotRowText := S;
+End;
+
+Function Emu_AnyFreeDiskSlot: Boolean;
+Var I: Integer;
+Begin
+ Emu_AnyFreeDiskSlot := False;
+ For I := 0 To VIRTDISK_SLOT_COUNT - 1 Do
+  If Not EmuFloppyOpen[I] Then Begin
+   Emu_AnyFreeDiskSlot := True;
+   Exit;
+  End;
+End;
+
+{ --- Sous-boite Ajouter / Modifier un disque virtuel --- }
+
+Procedure InitVirtAddDiskDialog(Var Dlg: TVirtAddDiskDialog;
+ EditSlot: Integer);
+Var
+ I, FreeSlot: Integer;
+Begin
+ FreeSlot := -1;
+ For I := 0 To VIRTDISK_SLOT_COUNT - 1 Do
+  If (Not EmuFloppyOpen[I]) And (FreeSlot < 0) Then FreeSlot := I;
+ Dlg.EditSlot := EditSlot;
+ If EditSlot < 0 Then Begin
+  InitDialog(Dlg.Base, 'Ajouter un disque virtuel',
+   VIRTADD_WIDTH, VIRTADD_HEIGHT);
+  Dlg.SelSlot := FreeSlot;
+  Dlg.FocusField := 0;
+  Dlg.FileName := '';
+ End Else Begin
+  InitDialog(Dlg.Base, 'Modifier ' + Term_DriveLetterFromIdx(EditSlot) + ':',
+   VIRTADD_WIDTH, VIRTADD_HEIGHT);
+  Dlg.SelSlot := EditSlot;
+  Dlg.FocusField := 1;
+  Dlg.FileName := EmuFloppyName[EditSlot];
+ End;
+ Dlg.Base.HasCancel := True;
+ Dlg.FNCursor := Length(Dlg.FileName);
+ Dlg.Confirmed := False;
+End;
+
+Procedure ShowVirtAddDiskDialog(Var Dlg: TVirtAddDiskDialog;
+ EditSlot: Integer);
+Begin
+ InitVirtAddDiskDialog(Dlg, EditSlot);
+ Dlg.Base.Visible := True;
+ DrawVirtAddDiskDialog(Dlg);
+End;
+
+Procedure DrawVirtAddDiskDialog(Var Dlg: TVirtAddDiskDialog);
+Var
+ FX, FY, FW: Integer;
+ BorderCol: Integer;
+ LX, LY, LW: Integer;
+ I, RowY: Integer;
+ Txt: String;
+ Fg: Integer;
+Begin
+ If Not Dlg.Base.Visible Then Exit;
+ DrawDialogFrame(Dlg.Base);
+ FX := Dlg.Base.X + DLG_PADDING;
+ FW := Dlg.Base.Width - DLG_PADDING * 2;
+ FY := Dlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING;
+ If Dlg.EditSlot < 0 Then Begin
+  DrawText(FX, FY, 'Emplacement :', CLR_WINDOWTEXT);
+  LY := FY + DLG_INPUT_HEIGHT;
+  LX := FX;
+  LW := FW;
+  DrawFilledRect(LX, LY, LX + LW, LY + VIRTADD_LIST_HEIGHT, CLR_WINDOW);
+  DrawRect(LX, LY, LX + LW, LY + VIRTADD_LIST_HEIGHT, CLR_BORDER);
+  For I := 0 To VIRTDISK_SLOT_COUNT - 1 Do Begin
+   RowY := LY + 1 + I * DLG_LIST_ROW_HEIGHT;
+   Txt := Term_DriveLetterFromIdx(I) + ':  ' + VirtSlotKindName(I);
+   If EmuFloppyOpen[I] Then Begin
+    Txt := Txt + '  (deja monte)';
+    Fg := CLR_BORDER;
+   End Else Begin
+    If I = Dlg.SelSlot Then Begin
+     DrawFilledRect(LX + 1, RowY, LX + LW - 1,
+      RowY + DLG_LIST_ROW_HEIGHT, CLR_HIGHLIGHT);
+     Fg := CLR_HIGHLIGHTTEXT;
+    End Else
+     Fg := CLR_WINDOWTEXT;
+   End;
+   DrawText(LX + 4, RowY + 2, Txt, Fg);
+  End;
+  FY := LY + VIRTADD_LIST_HEIGHT + DLG_PADDING;
+ End Else Begin
+  DrawText(FX, FY, 'Emplacement : ' + Term_DriveLetterFromIdx(Dlg.EditSlot) +
+   ':  ' + VirtSlotKindName(Dlg.EditSlot), CLR_WINDOWTEXT);
+  FY := FY + DLG_INPUT_HEIGHT + DLG_PADDING;
+ End;
+ DrawText(FX, FY, 'Fichier image :', CLR_WINDOWTEXT);
+ FY := FY + DLG_INPUT_HEIGHT;
+ If Dlg.FocusField = 1 Then BorderCol := CLR_TITLEBAR_ACTIVE
+                       Else BorderCol := CLR_BORDER;
+ DrawFilledRect(FX, FY, FX + FW, FY + DLG_INPUT_HEIGHT, CLR_EDITOR_BG);
+ DrawRect(FX, FY, FX + FW, FY + DLG_INPUT_HEIGHT, BorderCol);
+ DrawText(FX + 4, FY + 3, Dlg.FileName, CLR_WINDOWTEXT);
+ If Dlg.FocusField = 1 Then
+  DrawText(FX + 4 + TextWidth(Dlg.FileName), FY + 3, '_',
+   CLR_TITLEBAR_ACTIVE);
+ DrawDialogButtons(Dlg.Base);
+End;
+
+Function VirtAddSlotHitTest(Var Dlg: TVirtAddDiskDialog;
+ MX, MY: Integer): Integer;
+Var
+ FX, FY, FW: Integer;
+ LX, LY, LW: Integer;
+ I: Integer;
+Begin
+ VirtAddSlotHitTest := -1;
+ If Dlg.EditSlot >= 0 Then Exit;
+ FX := Dlg.Base.X + DLG_PADDING;
+ FW := Dlg.Base.Width - DLG_PADDING * 2;
+ FY := Dlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING;
+ LY := FY + DLG_INPUT_HEIGHT;
+ LX := FX;
+ LW := FW;
+ If (MX < LX) Or (MX > LX + LW) Or (MY < LY) Or
+  (MY > LY + VIRTADD_LIST_HEIGHT) Then Exit;
+ I := (MY - LY) Div DLG_LIST_ROW_HEIGHT;
+ If (I >= 0) And (I < VIRTDISK_SLOT_COUNT) And (Not EmuFloppyOpen[I]) Then
+  VirtAddSlotHitTest := I;
+End;
+
+{ Position Y du champ "Fichier image" : doit suivre exactement le
+  meme calcul que DrawVirtAddDiskDialog. }
+Function VirtAddFileFieldY(Var Dlg: TVirtAddDiskDialog): Integer;
+Var
+ Y: Integer;
+Begin
+ Y := Dlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING;
+ If Dlg.EditSlot < 0 Then
+  Y := Y + DLG_INPUT_HEIGHT + VIRTADD_LIST_HEIGHT + DLG_PADDING +
+   DLG_INPUT_HEIGHT
+ Else
+  Y := Y + DLG_INPUT_HEIGHT + DLG_PADDING + DLG_INPUT_HEIGHT;
+ VirtAddFileFieldY := Y;
+End;
+
+Procedure HandleVirtAddDiskDialogOK(Var Dlg: TVirtAddDiskDialog);
+Var
+ TargetSlot: Integer;
+Begin
+ If Dlg.FileName = '' Then Begin
+  ShowMessageBox('Disque virtuel', 'Veuillez indiquer un fichier image.',
+   MB_OK, MI_WARNING);
+  Exit;
+ End;
+ If Not FileExists(Dlg.FileName) Then Begin
+  ShowMessageBox('Disque virtuel',
+   'Fichier introuvable : ' + Dlg.FileName, MB_OK, MI_WARNING);
+  Exit;
+ End;
+ If Dlg.EditSlot < 0 Then Begin
+  If (Dlg.SelSlot < 0) Or EmuFloppyOpen[Dlg.SelSlot] Then Begin
+   ShowMessageBox('Disque virtuel',
+    'Aucun emplacement libre selectionne.', MB_OK, MI_WARNING);
+   Exit;
+  End;
+  TargetSlot := Dlg.SelSlot;
+ End Else
+  TargetSlot := Dlg.EditSlot;
+ If Not Emu_MountDiskSlot(TargetSlot, Dlg.FileName) Then Begin
+  ShowMessageBox('Disque virtuel',
+   'Impossible de monter l''image : ' + Dlg.FileName, MB_OK, MI_ERROR);
+  Exit;
+ End;
+ VirtualDiskDlg.SelIndex := TargetSlot;
+ Dlg.Confirmed := True;
+ Dlg.Base.Result := DR_OK;
+ CloseDialog(Dlg.Base);
+End;
+
+Procedure HandleVirtAddDiskDialogKey(Var Dlg: TVirtAddDiskDialog;
+ Key: Word; Ch: Char);
+Var
+ NextSlot: Integer;
+Begin
+ If Key = $1B Then Begin { Echap }
+  Dlg.Confirmed := False;
+  Dlg.Base.Result := DR_CANCEL;
+  CloseDialog(Dlg.Base);
+  Exit;
+ End;
+ If Key = $0D Then Begin { Entree = OK }
+  HandleVirtAddDiskDialogOK(Dlg);
+  Exit;
+ End;
+ If (Key = $09) And (Dlg.EditSlot < 0) Then Begin { Tab }
+  Dlg.FocusField := (Dlg.FocusField + 1) Mod 2;
+  Exit;
+ End;
+ If (Dlg.FocusField = 0) And (Dlg.EditSlot < 0) Then Begin
+  If Key = $48 Then Begin { Fleche haut }
+   NextSlot := Dlg.SelSlot - 1;
+   While (NextSlot >= 0) And EmuFloppyOpen[NextSlot] Do Dec(NextSlot);
+   If NextSlot >= 0 Then Dlg.SelSlot := NextSlot;
+   Exit;
+  End;
+  If Key = $50 Then Begin { Fleche bas }
+   NextSlot := Dlg.SelSlot + 1;
+   While (NextSlot < VIRTDISK_SLOT_COUNT) And EmuFloppyOpen[NextSlot] Do
+    Inc(NextSlot);
+   If NextSlot < VIRTDISK_SLOT_COUNT Then Dlg.SelSlot := NextSlot;
+   Exit;
+  End;
+  Exit;   { pas de saisie texte tant que la liste a le focus }
+ End;
+ { Saisie dans le champ nom de fichier }
+ If (Ch >= ' ') And (Length(Dlg.FileName) < 255) Then Begin
+  Dlg.FileName := Dlg.FileName + Ch;
+  Inc(Dlg.FNCursor);
+ End Else If Key = $08 Then Begin { Retour arriere }
+  If Length(Dlg.FileName) > 0 Then Begin
+   Delete(Dlg.FileName, Length(Dlg.FileName), 1);
+   Dec(Dlg.FNCursor);
+  End;
+ End;
+End;
+
+Procedure HandleVirtAddDiskDialogEvent(Var Dlg: TVirtAddDiskDialog;
+ Var Ev: TEvent);
+Var
+ Hit, BtnR: Integer;
+ FX, FY, FW: Integer;
+Begin
+ If Not Dlg.Base.Visible Then Exit;
+ Case Ev.Kind Of
+  EV_KEY_DOWN, EV_KEY_CHAR: Begin
+   HandleVirtAddDiskDialogKey(Dlg, Ev.KeyCode, Ev.KeyChar);
+   If Dlg.Base.Visible Then DrawVirtAddDiskDialog(Dlg);
+  End;
+  EV_MOUSE_DOWN: Begin
+   Hit := VirtAddSlotHitTest(Dlg, Ev.MouseX, Ev.MouseY);
+   If Hit >= 0 Then Begin
+    Dlg.SelSlot := Hit;
+    Dlg.FocusField := 0;
+    DrawVirtAddDiskDialog(Dlg);
+    Exit;
+   End;
+   FX := Dlg.Base.X + DLG_PADDING;
+   FW := Dlg.Base.Width - DLG_PADDING * 2;
+   FY := VirtAddFileFieldY(Dlg);
+   If (Ev.MouseX >= FX) And (Ev.MouseX <= FX + FW) And
+      (Ev.MouseY >= FY) And (Ev.MouseY <= FY + DLG_INPUT_HEIGHT) Then Begin
+    Dlg.FocusField := 1;
+    DrawVirtAddDiskDialog(Dlg);
+    Exit;
+   End;
+   BtnR := DialogButtonHitTest(Dlg.Base, Ev.MouseX, Ev.MouseY);
+   If BtnR = 0 Then
+    HandleVirtAddDiskDialogOK(Dlg)
+   Else If BtnR = 1 Then Begin
+    Dlg.Confirmed := False;
+    Dlg.Base.Result := DR_CANCEL;
+    CloseDialog(Dlg.Base);
+   End;
+  End;
+ End;
+End;
+
+{ --- Boite principale du gestionnaire de disques virtuels --- }
+
+Procedure InitVirtualDiskDialog(Var Dlg: TVirtualDiskDialog);
+Begin
+ InitDialog(Dlg.Base, 'Disques virtuels', VIRTDISK_WIDTH, VIRTDISK_HEIGHT);
+ Dlg.Base.HasCancel := False;
+ Dlg.SelIndex := -1;
+ Dlg.HScrollPos := 0;
+ Dlg.HScrollMax := 0;
+End;
+
+Procedure ShowVirtualDiskDialog(Var Dlg: TVirtualDiskDialog);
+Begin
+ InitVirtualDiskDialog(Dlg);
+ Dlg.Base.Visible := True;
+ DrawVirtualDiskDialog(Dlg);
+End;
+
+{ Position/largeur de la liste principale (partagee par le dessin et
+  les tests de clic, y compris ceux de la barre de defilement). }
+Procedure VirtualDiskListRect(Var Dlg: TVirtualDiskDialog;
+ Var LX, LY, LW: Integer);
+Begin
+ LX := Dlg.Base.X + DLG_PADDING;
+ LY := Dlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING;
+ LW := Dlg.Base.Width - DLG_PADDING * 3 - VIRTDISK_BTN_WIDTH;
+End;
+
+{ Nombre de caracteres visibles par ligne (largeur disponible pour le
+  texte, police a pas fixe de 8 pixels). }
+Function VirtualDiskVisibleChars(LW: Integer): Integer;
+Begin
+ VirtualDiskVisibleChars := (LW - 8) Div 8;
+End;
+
+Function VirtualDiskMaxRowLen: Integer;
+Var
+ I, L, Best: Integer;
+Begin
+ Best := 0;
+ For I := 0 To VIRTDISK_SLOT_COUNT - 1 Do Begin
+  L := Length(VirtSlotRowText(I));
+  If L > Best Then Best := L;
+ End;
+ VirtualDiskMaxRowLen := Best;
+End;
+
+Procedure DrawVirtualDiskHScroll(Var Dlg: TVirtualDiskDialog;
+ LX, LY, LW: Integer);
+Var
+ SBY, SBY2: Integer;
+ BtnW: Integer;
+ TrackX1, TrackX2, TrackW, ThumbW, ThumbX: Integer;
+ MaxLen, AvailChars: Integer;
+Begin
+ If Dlg.HScrollMax <= 0 Then Exit;
+ SBY := LY + VIRTDISK_LIST_HEIGHT - VIRTDISK_HSCROLL_H;
+ SBY2 := LY + VIRTDISK_LIST_HEIGHT - 1;
+ BtnW := VIRTDISK_HSCROLL_H;
+ { Fond de la barre }
+ DrawFilledRect(LX + 1, SBY, LX + LW - 1, SBY2, CLR_SCROLLBAR);
+ SetColor(CLR_BORDER);
+ Line(LX + 1, SBY, LX + LW - 1, SBY);
+ { Bouton fleche gauche }
+ DrawFilledRect(LX + 1, SBY, LX + BtnW, SBY2, CLR_TITLEBAR);
+ DrawRect(LX + 1, SBY, LX + BtnW, SBY2, CLR_BORDER);
+ SetColor(15);
+ OutTextXY(LX + 1 + (BtnW - 8) Div 2, SBY + (VIRTDISK_HSCROLL_H - 8) Div 2,
+  #17);
+ { Bouton fleche droite }
+ DrawFilledRect(LX + LW - 1 - BtnW, SBY, LX + LW - 1, SBY2, CLR_TITLEBAR);
+ DrawRect(LX + LW - 1 - BtnW, SBY, LX + LW - 1, SBY2, CLR_BORDER);
+ SetColor(15);
+ OutTextXY(LX + LW - 1 - BtnW + (BtnW - 8) Div 2,
+  SBY + (VIRTDISK_HSCROLL_H - 8) Div 2, #16);
+ { Piste + poignee proportionnelle }
+ TrackX1 := LX + 2 + BtnW;
+ TrackX2 := LX + LW - 2 - BtnW;
+ TrackW := TrackX2 - TrackX1 + 1;
+ If TrackW < 4 Then TrackW := 4;
+ MaxLen := VirtualDiskMaxRowLen;
+ AvailChars := VirtualDiskVisibleChars(LW);
+ If MaxLen <= 0 Then MaxLen := 1;
+ ThumbW := (AvailChars * TrackW) Div MaxLen;
+ If ThumbW < 8 Then ThumbW := 8;
+ If ThumbW > TrackW Then ThumbW := TrackW;
+ ThumbX := TrackX1 + (Dlg.HScrollPos * (TrackW - ThumbW)) Div Dlg.HScrollMax;
+ SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE);
+ Bar(ThumbX, SBY + 2, ThumbX + ThumbW - 1, SBY2 - 1);
+ SetColor(CLR_BORDER);
+ Rectangle(ThumbX, SBY + 2, ThumbX + ThumbW - 1, SBY2 - 1);
+End;
+
+Procedure DrawVirtualDiskList(Var Dlg: TVirtualDiskDialog);
+Var
+ LX, LY, LW: Integer;
+ I, RowY: Integer;
+ Fg: Integer;
+ AvailChars: Integer;
+ RowText: String;
+Begin
+ VirtualDiskListRect(Dlg, LX, LY, LW);
+ DrawFilledRect(LX, LY, LX + LW, LY + VIRTDISK_LIST_HEIGHT, CLR_WINDOW);
+ DrawRect(LX, LY, LX + LW, LY + VIRTDISK_LIST_HEIGHT, CLR_BORDER);
+ AvailChars := VirtualDiskVisibleChars(LW);
+ Dlg.HScrollMax := VirtualDiskMaxRowLen - AvailChars;
+ If Dlg.HScrollMax < 0 Then Dlg.HScrollMax := 0;
+ If Dlg.HScrollPos > Dlg.HScrollMax Then Dlg.HScrollPos := Dlg.HScrollMax;
+ For I := 0 To VIRTDISK_SLOT_COUNT - 1 Do Begin
+  RowY := LY + 1 + I * DLG_LIST_ROW_HEIGHT;
+  If I = Dlg.SelIndex Then Begin
+   DrawFilledRect(LX + 1, RowY, LX + LW - 1, RowY + DLG_LIST_ROW_HEIGHT,
+    CLR_HIGHLIGHT);
+   Fg := CLR_HIGHLIGHTTEXT;
+  End Else
+   Fg := CLR_WINDOWTEXT;
+  RowText := VirtSlotRowText(I);
+  If Dlg.HScrollPos > 0 Then Begin
+   If Dlg.HScrollPos < Length(RowText) Then
+    RowText := Copy(RowText, Dlg.HScrollPos + 1, Length(RowText))
+   Else
+    RowText := '';
+  End;
+  If Length(RowText) > AvailChars Then
+   RowText := Copy(RowText, 1, AvailChars);
+  DrawText(LX + 4, RowY + 2, RowText, Fg);
+ End;
+ DrawVirtualDiskHScroll(Dlg, LX, LY, LW);
+End;
+
+Procedure DrawVirtDiskSideButton(X, Y: Integer; Caption: String;
+ Enabled: Boolean);
+Var
+ Fg: Integer;
+Begin
+ SetFillStyle(SolidFill, CLR_BACKGROUND);
+ Bar(X, Y, X + VIRTDISK_BTN_WIDTH - 1, Y + DLG_BUTTON_HEIGHT - 1);
+ SetColor(CLR_BORDER);
+ Rectangle(X, Y, X + VIRTDISK_BTN_WIDTH - 1, Y + DLG_BUTTON_HEIGHT - 1);
+ If Enabled Then Fg := CLR_WINDOWTEXT Else Fg := CLR_BORDER;
+ SetColor(Fg);
+ OutTextXY(X + (VIRTDISK_BTN_WIDTH - TextWidth(Caption)) Div 2,
+  Y + (DLG_BUTTON_HEIGHT - TextHeight(Caption)) Div 2, Caption);
+End;
+
+Procedure DrawVirtualDiskButtons(Var Dlg: TVirtualDiskDialog);
+Var
+ BX, BY: Integer;
+ MountedSel: Boolean;
+Begin
+ BX := Dlg.Base.X + Dlg.Base.Width - DLG_PADDING - VIRTDISK_BTN_WIDTH;
+ BY := Dlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING;
+ MountedSel := (Dlg.SelIndex >= 0) And EmuFloppyOpen[Dlg.SelIndex];
+ DrawVirtDiskSideButton(BX, BY, 'Ajouter...', True);
+ BY := BY + DLG_BUTTON_HEIGHT + DLG_BUTTON_SPACING;
+ DrawVirtDiskSideButton(BX, BY, 'Modifier...', MountedSel);
+ BY := BY + DLG_BUTTON_HEIGHT + DLG_BUTTON_SPACING;
+ DrawVirtDiskSideButton(BX, BY, 'Supprimer', MountedSel);
+End;
+
+Procedure DrawVirtualDiskDialog(Var Dlg: TVirtualDiskDialog);
+Var
+ BX, BY: Integer;
+Begin
+ If Not Dlg.Base.Visible Then Exit;
+ DrawDialogFrame(Dlg.Base);
+ DrawVirtualDiskList(Dlg);
+ DrawVirtualDiskButtons(Dlg);
+ BX := Dlg.Base.X + (Dlg.Base.Width - DLG_BUTTON_WIDTH) Div 2;
+ BY := Dlg.Base.Y + Dlg.Base.Height - DLG_PADDING - DLG_BUTTON_HEIGHT;
+ DrawDialogButton(BX, BY, 'Fermer', True);
+End;
+
+Function VirtualDiskListHitTest(Var Dlg: TVirtualDiskDialog;
+ MX, MY: Integer): Integer;
+Var
+ LX, LY, LW, I: Integer;
+Begin
+ VirtualDiskListHitTest := -1;
+ VirtualDiskListRect(Dlg, LX, LY, LW);
+ If (MX < LX) Or (MX > LX + LW) Or (MY < LY) Or
+  (MY > LY + VIRTDISK_LIST_HEIGHT - VIRTDISK_HSCROLL_H) Then Exit;
+ I := (MY - LY) Div DLG_LIST_ROW_HEIGHT;
+ If (I >= 0) And (I < VIRTDISK_SLOT_COUNT) Then
+  VirtualDiskListHitTest := I;
+End;
+
+{ Action : 0=fleche gauche, 1=fleche droite, 2=clic dans la piste }
+Function VirtualDiskHScrollHitTest(Var Dlg: TVirtualDiskDialog;
+ MX, MY: Integer; Var Action: Integer): Boolean;
+Var
+ LX, LY, LW: Integer;
+ SBY: Integer;
+Begin
+ VirtualDiskHScrollHitTest := False;
+ If Dlg.HScrollMax <= 0 Then Exit;
+ VirtualDiskListRect(Dlg, LX, LY, LW);
+ SBY := LY + VIRTDISK_LIST_HEIGHT - VIRTDISK_HSCROLL_H;
+ If (MY < SBY) Or (MY > LY + VIRTDISK_LIST_HEIGHT - 1) Then Exit;
+ If (MX < LX + 1) Or (MX > LX + LW - 1) Then Exit;
+ VirtualDiskHScrollHitTest := True;
+ If MX <= LX + 1 + VIRTDISK_HSCROLL_H Then Action := 0
+ Else If MX >= LX + LW - 1 - VIRTDISK_HSCROLL_H Then Action := 1
+ Else Action := 2;
+End;
+
+Function VirtualDiskSideButtonHitTest(Var Dlg: TVirtualDiskDialog;
+ MX, MY: Integer): Integer;
+Var
+ BX, BY: Integer;
+Begin
+ VirtualDiskSideButtonHitTest := -1;
+ BX := Dlg.Base.X + Dlg.Base.Width - DLG_PADDING - VIRTDISK_BTN_WIDTH;
+ BY := Dlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING;
+ If (MX < BX) Or (MX > BX + VIRTDISK_BTN_WIDTH) Then Exit;
+ If (MY >= BY) And (MY <= BY + DLG_BUTTON_HEIGHT) Then Begin
+  VirtualDiskSideButtonHitTest := 0;
+  Exit;
+ End;
+ BY := BY + DLG_BUTTON_HEIGHT + DLG_BUTTON_SPACING;
+ If (MY >= BY) And (MY <= BY + DLG_BUTTON_HEIGHT) Then Begin
+  VirtualDiskSideButtonHitTest := 1;
+  Exit;
+ End;
+ BY := BY + DLG_BUTTON_HEIGHT + DLG_BUTTON_SPACING;
+ If (MY >= BY) And (MY <= BY + DLG_BUTTON_HEIGHT) Then Begin
+  VirtualDiskSideButtonHitTest := 2;
+  Exit;
+ End;
+End;
+
+Procedure HandleVirtualDiskDialogEvent(Var Dlg: TVirtualDiskDialog;
+ Var Ev: TEvent);
+Var
+ Hit, BtnR, HAction: Integer;
+Begin
+ If Not Dlg.Base.Visible Then Exit;
+ Case Ev.Kind Of
+  EV_KEY_DOWN: Begin
+   If Ev.KeyCode = $1B Then Begin { Echap }
+    CloseDialog(Dlg.Base);
+    Exit;
+   End;
+   If Ev.KeyCode = $4B Then Begin { Fleche gauche }
+    If Dlg.HScrollPos > 0 Then Begin
+     Dec(Dlg.HScrollPos);
+     DrawVirtualDiskDialog(Dlg);
+    End;
+    Exit;
+   End;
+   If Ev.KeyCode = $4D Then Begin { Fleche droite }
+    If Dlg.HScrollPos < Dlg.HScrollMax Then Begin
+     Inc(Dlg.HScrollPos);
+     DrawVirtualDiskDialog(Dlg);
+    End;
+    Exit;
+   End;
+  End;
+  EV_MOUSE_DOWN: Begin
+   If VirtualDiskHScrollHitTest(Dlg, Ev.MouseX, Ev.MouseY, HAction) Then Begin
+    Case HAction Of
+     0: If Dlg.HScrollPos > 0 Then Dec(Dlg.HScrollPos);
+     1: If Dlg.HScrollPos < Dlg.HScrollMax Then Inc(Dlg.HScrollPos);
+     2: Begin
+         If Ev.MouseX < Dlg.Base.X + Dlg.Base.Width Div 2 Then
+          Dlg.HScrollPos := Dlg.HScrollPos - VIRTDISK_HSCROLL_PAGE
+         Else
+          Dlg.HScrollPos := Dlg.HScrollPos + VIRTDISK_HSCROLL_PAGE;
+         If Dlg.HScrollPos < 0 Then Dlg.HScrollPos := 0;
+         If Dlg.HScrollPos > Dlg.HScrollMax Then
+          Dlg.HScrollPos := Dlg.HScrollMax;
+        End;
+    End;
+    DrawVirtualDiskDialog(Dlg);
+    Exit;
+   End;
+   Hit := VirtualDiskListHitTest(Dlg, Ev.MouseX, Ev.MouseY);
+   If Hit >= 0 Then Begin
+    Dlg.SelIndex := Hit;
+    DrawVirtualDiskDialog(Dlg);
+    Exit;
+   End;
+   BtnR := VirtualDiskSideButtonHitTest(Dlg, Ev.MouseX, Ev.MouseY);
+   If BtnR = 0 Then Begin { Ajouter }
+    If Emu_AnyFreeDiskSlot Then
+     ShowVirtAddDiskDialog(VirtAddDiskDlg, -1)
+    Else
+     ShowMessageBox('Disque virtuel',
+      'Les 4 emplacements (A:, B:, C:, D:) sont deja utilises.',
+      MB_OK, MI_INFO);
+    Exit;
+   End;
+   If BtnR = 1 Then Begin { Modifier }
+    If (Dlg.SelIndex >= 0) And EmuFloppyOpen[Dlg.SelIndex] Then
+     ShowVirtAddDiskDialog(VirtAddDiskDlg, Dlg.SelIndex)
+    Else
+     ShowMessageBox('Disque virtuel',
+      'Selectionnez un disque monte a modifier.', MB_OK, MI_INFO);
+    Exit;
+   End;
+   If BtnR = 2 Then Begin { Supprimer }
+    If (Dlg.SelIndex >= 0) And EmuFloppyOpen[Dlg.SelIndex] Then Begin
+     If ShowMessageBox('Disque virtuel',
+      'Demonter ' + Term_DriveLetterFromIdx(Dlg.SelIndex) + ': (' +
+      EmuFloppyName[Dlg.SelIndex] + ') ?', MB_YESNO, MI_WARNING) = DR_YES
+     Then Begin
+      Emu_UnmountDiskSlot(Dlg.SelIndex);
+      DrawVirtualDiskDialog(Dlg);
+     End;
+    End Else
+     ShowMessageBox('Disque virtuel',
+      'Selectionnez un disque monte a supprimer.', MB_OK, MI_INFO);
+    Exit;
+   End;
+   If DialogButtonHitTest(Dlg.Base, Ev.MouseX, Ev.MouseY) = 0 Then Begin
+    CloseDialog(Dlg.Base);
+    Exit;
+   End;
+  End;
+ End;
+End;
+
 { --- Obtenir le type de projet selectionne (nouveau projet) --- }
 
 Function GetNewProjectSelectedType(
@@ -32035,15 +32719,70 @@ Begin
  Emu_ReportDiskMount(3);
 End;
 
+{ ============================================================
+  Gestion individuelle d un emplacement (0=A: 1=B: 2=C: 3=D:) pour
+  le dialogue Outils > Disque virtuel. Equivalent fonctionnel des
+  parametres /DISK0:, /DISK1:, /DISK80: et /DISK81: au demarrage. }
+
+{ Demonter l unite Idx (ferme le fichier, sans toucher aux autres). }
+Procedure Emu_FloppyCloseOne(Idx: Byte);
+Begin
+ If EmuFloppyOpen[Idx] Then Begin
+  {$I-} Close(EmuFloppyFile[Idx]); {$I+} If IOResult <> 0 Then ;
+  EmuFloppyOpen[Idx] := False;
+ End;
+ EmuFloppyName[Idx] := '';
+ EmuFloppySize[Idx] := 0;
+ FatVol[Idx].Mounted := False;
+End;
+
+{ Synchroniser Opts.DiskImgN avec l emplacement Idx, pour rester
+  coherent avec les parametres /DISK0:/DISK1:/DISK80:/DISK81: passes
+  en ligne de commande. }
+Procedure Emu_SetDiskOpt(Idx: Byte; FName: String);
+Begin
+ Case Idx Of
+  0: Opts.DiskImg0  := FName;
+  1: Opts.DiskImg1  := FName;
+  2: Opts.DiskImg80 := FName;
+  3: Opts.DiskImg81 := FName;
+ End;
+End;
+
+{ Monter (ou remonter) l image FName sur l emplacement Idx : ferme
+  l ancien fichier s il y en a un, ouvre le nouveau (disquette pour
+  0/1 via Emu_FloppyOpenOne, disque dur pour 2/3 via
+  Emu_HardDiskOpenOne), tente le montage FAT et synchronise
+  Opts.DiskImgN. Retourne False si l ouverture du fichier echoue. }
+Function Emu_MountDiskSlot(Idx: Byte; FName: String): Boolean;
+Begin
+ Emu_FloppyCloseOne(Idx);
+ If Idx < 2 Then Emu_FloppyOpenOne(Idx, FName)
+            Else Emu_HardDiskOpenOne(Idx, FName);
+ If EmuFloppyOpen[Idx] Then Begin
+  Fat_TryMount(Idx);
+  Fat_FindVolLabel(Idx);
+  Emu_SetDiskOpt(Idx, FName);
+  Emu_MountDiskSlot := True;
+ End Else Begin
+  Emu_SetDiskOpt(Idx, '');
+  Emu_MountDiskSlot := False;
+ End;
+End;
+
+{ Demonter l emplacement Idx et synchroniser Opts.DiskImgN (= ''). }
+Procedure Emu_UnmountDiskSlot(Idx: Byte);
+Begin
+ Emu_FloppyCloseOne(Idx);
+ Emu_SetDiskOpt(Idx, '');
+End;
+
 Procedure Emu_FloppyCloseAll;
 Var
  I: Byte;
 Begin
  For I := 0 To 3 Do
-  If EmuFloppyOpen[I] Then Begin
-   {$I-} Close(EmuFloppyFile[I]); {$I+} If IOResult <> 0 Then ;
-   EmuFloppyOpen[I] := False;
-  End;
+  Emu_FloppyCloseOne(I);
 End;
 
 { Convertir un triplet CHS en LBA (offset secteur) selon la geometrie
@@ -50655,6 +51394,10 @@ Begin
   DrawGoToLineDialog(GoToLineDlg);
  If OptionsDlg.Base.Visible Then
   DrawOptionsDialog(OptionsDlg);
+ If VirtualDiskDlg.Base.Visible Then
+  DrawVirtualDiskDialog(VirtualDiskDlg);
+ If VirtAddDiskDlg.Base.Visible Then
+  DrawVirtAddDiskDialog(VirtAddDiskDlg);
 End;
 
 { ============================================================
@@ -52579,6 +53322,23 @@ Begin
    FullRepaintNeeded := True;
   End Else
    DrawProjectPropertiesDialog(ProjPropDlg);
+  Exit;
+ End;
+ { Sous-boite Ajouter/Modifier en premier : elle doit recevoir les
+   evenements en priorite quand elle est ouverte par-dessus le
+   gestionnaire de disques virtuels. }
+ If VirtAddDiskDlg.Base.Visible Then Begin
+  HandleVirtAddDiskDialogEvent(VirtAddDiskDlg, Ev);
+  If Not VirtAddDiskDlg.Base.Visible Then Begin
+   FullRepaintNeeded := True;
+   DrawVirtualDiskDialog(VirtualDiskDlg);
+  End;
+  Exit;
+ End;
+ If VirtualDiskDlg.Base.Visible Then Begin
+  HandleVirtualDiskDialogEvent(VirtualDiskDlg, Ev);
+  If Not VirtualDiskDlg.Base.Visible Then
+   FullRepaintNeeded := True;
   Exit;
  End;
  If EmuPanel.Base.Visible Then Begin
