@@ -262,6 +262,31 @@ Begin
   End;
 End;
 
+{ @description: Comme DictFind, mais ignore les entrees qui sont des
+    phrases completes decrivant une fonction/procedure entiere (celles
+    qui commencent par "Cette ", ex: la description de la procedure
+    RTL Str). Ces phrases ne doivent etre utilisees que lorsque le nom
+    complet correspond exactement a la fonction/procedure decrite, pas
+    lorsqu il n est qu un fragment decoupe d un identificateur plus
+    long (ex: "Str" dans "StrToUpper" doit plutot donner "Chaine de
+    caracteres", pas la phrase complete de la procedure Str).
+  @param Nom Identificateur (ou fragment) recherche
+  @return Description trouvee (non-phrase), ou chaine vide si absente }
+Function DictFindWord(Nom: String): String;
+Var
+ I: Integer;
+ U: String40;
+Begin
+ DictFindWord := '';
+ U := UpStr(Nom);
+ For I := 1 To DictCount Do
+  If (UpStr(Dict[I].Nom) = U) And
+     (Not StartsWithStr(Dict[I].Desc, 'Cette ')) Then Begin
+   DictFindWord := Dict[I].Desc;
+   Exit;
+  End;
+End;
+
 { @description: Ajoute une entree a la table des @return connus pour
     des noms de fonctions specifiques (ex: 'FileExists' -> phrase
     decrivant precisement vrai/faux).
@@ -457,7 +482,7 @@ Begin
  SplitWords(Name, Words, WCount);
  Res := '';
  For I := 0 To WCount - 1 Do Begin
-  D := DictFind(Words[I]);
+  D := DictFindWord(Words[I]);
   If D <> '' Then Begin
    If Res <> '' Then Res := Res + ' ';
    Res := Res + D;
@@ -484,6 +509,22 @@ Begin
  DescribeSimple := D;
 End;
 
+{ @description: Extrait le dernier mot d un texte de type declare
+    (ex: "Array[1..10] of Byte" -> "Byte"), utilise pour retrouver le
+    type de base dans le dictionnaire quand le nom seul ne suffit pas.
+  @param TypeText Texte du type declare
+  @return Dernier mot du type, ou chaine vide si TypeText est vide }
+Function LastTypeWord(TypeText: String): String;
+Var
+ BaseType: String;
+ P: Integer;
+Begin
+ BaseType := TrimStr(TypeText);
+ P := Length(BaseType);
+ While (P >= 1) And (BaseType[P] <> ' ') Do Dec(P);
+ LastTypeWord := Copy(BaseType, P + 1, Length(BaseType) - P);
+End;
+
 { @description: Trouve ou deduit la signification d un champ ou d une
     variable : recherche exacte du nom, puis decomposition en mots,
     puis repli sur le type declare (utile pour les noms courts et
@@ -495,20 +536,40 @@ End;
   @return Description francaise pour ce champ ou cette variable }
 Function DescribeField(Name, TypeText: String): String;
 Var
- D, BaseType: String;
- P: Integer;
+ D: String;
 Begin
  D := DictFind(Name);
  If D = '' Then D := DecomposeToPhrase(Name);
- If D = '' Then Begin
-  BaseType := TrimStr(TypeText);
-  P := Length(BaseType);
-  While (P >= 1) And (BaseType[P] <> ' ') Do Dec(P);
-  BaseType := Copy(BaseType, P + 1, Length(BaseType) - P);
-  D := DictFind(BaseType);
- End;
+ If D = '' Then D := DictFind(LastTypeWord(TypeText));
  If D = '' Then D := 'Variable ' + Name;
  DescribeField := D;
+End;
+
+{ @description: Trouve ou deduit la signification d un parametre de
+    fonction/procedure : recherche exacte du nom, puis decomposition
+    en mots, puis repli sur le type declare. Contrairement a
+    DescribeField, un nom court et opaque (1 ou 2 lettres, ex: S, L,
+    I) qui n est compris que par convention ou par son type voit sa
+    description annoncee par "Parametre de ..." plutot que presentee
+    comme si le nom lui-meme la portait ; un nom long et explicite
+    (ex: FileName) reste tel quel, sans ce prefixe.
+  @param Name Nom du parametre a decrire
+  @param TypeText Texte du type declare du parametre
+  @return Description francaise pour ce parametre }
+Function DescribeParam(Name, TypeText: String): String;
+Var
+ D: String;
+ Opaque: Boolean;
+Begin
+ Opaque := Length(Name) <= 2;
+ D := DictFind(Name);
+ If D = '' Then D := DecomposeToPhrase(Name);
+ If D = '' Then D := DictFind(LastTypeWord(TypeText));
+ If D <> '' Then Begin
+  If Opaque Then D := 'Parametre de ' + LowStr(D);
+ End Else
+  D := 'Parametre ' + Name;
+ DescribeParam := D;
 End;
 
 { @description: Construit la phrase d action d une fonction ou
@@ -529,7 +590,7 @@ Begin
  VerbPhrase := FindPrefixVerb(Name, Rest);
  If VerbPhrase = '' Then VerbPhrase := FindSuffixVerb(Name, Rest);
  If VerbPhrase <> '' Then Begin
-  Tail := DictFind(Rest);
+  Tail := DictFindWord(Rest);
   If Tail = '' Then Tail := DecomposeToPhrase(Rest);
   If Tail <> '' Then
    BuildActionPhrase := VerbPhrase + ' ' + LowStr(Tail)
@@ -553,98 +614,98 @@ End;
 Procedure InitPrefixVerbs;
 Begin
  PrefixCount := 0;
- PrefixAdd('Init', 'initialise');
- PrefixAdd('Initialize', 'initialise');
- PrefixAdd('Create', 'cree');
- PrefixAdd('Destroy', 'detruit');
- PrefixAdd('Free', 'libere');
- PrefixAdd('Dispose', 'libere');
- PrefixAdd('Alloc', 'alloue');
- PrefixAdd('Allocate', 'alloue');
- PrefixAdd('Get', 'obtient');
- PrefixAdd('Set', 'definit');
- PrefixAdd('Draw', 'dessine');
- PrefixAdd('Paint', 'dessine');
- PrefixAdd('Render', 'affiche');
- PrefixAdd('Show', 'affiche');
- PrefixAdd('Hide', 'cache');
- PrefixAdd('Handle', 'traite');
- PrefixAdd('Process', 'traite');
- PrefixAdd('Load', 'charge');
- PrefixAdd('Save', 'enregistre');
- PrefixAdd('Read', 'lit');
- PrefixAdd('Write', 'ecrit');
- PrefixAdd('Open', 'ouvre');
- PrefixAdd('Close', 'ferme');
- PrefixAdd('Mount', 'monte');
- PrefixAdd('Unmount', 'demonte');
- PrefixAdd('Find', 'recherche');
- PrefixAdd('Search', 'recherche');
- PrefixAdd('Check', 'verifie');
- PrefixAdd('Validate', 'valide');
- PrefixAdd('Verify', 'verifie');
- PrefixAdd('Update', 'met a jour');
- PrefixAdd('Refresh', 'rafraichit');
- PrefixAdd('Clear', 'efface');
- PrefixAdd('Reset', 'reinitialise');
- PrefixAdd('Build', 'construit');
- PrefixAdd('Parse', 'analyse');
- PrefixAdd('Scan', 'analyse');
- PrefixAdd('Convert', 'convertit');
- PrefixAdd('Compute', 'calcule');
- PrefixAdd('Calculate', 'calcule');
- PrefixAdd('Execute', 'execute');
- PrefixAdd('Run', 'execute');
- PrefixAdd('Start', 'demarre');
- PrefixAdd('Stop', 'arrete');
- PrefixAdd('Pause', 'met en pause');
- PrefixAdd('Resume', 'reprend');
- PrefixAdd('Add', 'ajoute');
- PrefixAdd('Append', 'ajoute a la fin de');
- PrefixAdd('Remove', 'retire');
- PrefixAdd('Delete', 'supprime');
- PrefixAdd('Erase', 'efface');
- PrefixAdd('Insert', 'insere');
- PrefixAdd('Copy', 'copie');
- PrefixAdd('Move', 'deplace');
- PrefixAdd('Send', 'envoie');
- PrefixAdd('Receive', 'recoit');
- PrefixAdd('Format', 'formate');
- PrefixAdd('Resolve', 'resout');
- PrefixAdd('Detect', 'detecte');
- PrefixAdd('Toggle', 'bascule');
- PrefixAdd('Enable', 'active');
- PrefixAdd('Disable', 'desactive');
- PrefixAdd('Switch', 'bascule');
- PrefixAdd('Compare', 'compare');
- PrefixAdd('Sort', 'trie');
- PrefixAdd('Extract', 'extrait');
- PrefixAdd('Encode', 'encode');
- PrefixAdd('Decode', 'decode');
- PrefixAdd('Translate', 'traduit');
- PrefixAdd('Apply', 'applique');
- PrefixAdd('Register', 'enregistre');
- PrefixAdd('Unregister', 'retire l enregistrement de');
- PrefixAdd('Is', 'indique si');
- PrefixAdd('Has', 'indique si');
- PrefixAdd('Can', 'indique si');
- PrefixAdd('Show', 'affiche');
- PrefixAdd('New', 'cree');
- PrefixAdd('Make', 'cree');
- PrefixAdd('Term', 'termine');
- PrefixAdd('Begin', 'demarre');
- PrefixAdd('End', 'termine');
- PrefixAdd('Push', 'empile');
- PrefixAdd('Pop', 'depile');
- PrefixAdd('Wait', 'attend');
- PrefixAdd('Lock', 'verrouille');
- PrefixAdd('Unlock', 'deverrouille');
- PrefixAdd('Bind', 'associe');
- PrefixAdd('Unbind', 'dissocie');
- PrefixAdd('Connect', 'connecte');
- PrefixAdd('Disconnect', 'deconnecte');
- PrefixAdd('Open', 'ouvre');
- PrefixAdd('Test', 'teste');
+ { Les phrases sont toutes a l infinitif : Emit*DocBlock les insere
+   dans le gabarit "Cette fonction/procedure permet de ...". }
+ PrefixAdd('Init', 'initialiser');
+ PrefixAdd('Initialize', 'initialiser');
+ PrefixAdd('Create', 'creer');
+ PrefixAdd('Destroy', 'detruire');
+ PrefixAdd('Free', 'liberer');
+ PrefixAdd('Dispose', 'liberer');
+ PrefixAdd('Alloc', 'allouer');
+ PrefixAdd('Allocate', 'allouer');
+ PrefixAdd('Get', 'obtenir');
+ PrefixAdd('Set', 'definir');
+ PrefixAdd('Draw', 'dessiner');
+ PrefixAdd('Paint', 'dessiner');
+ PrefixAdd('Render', 'afficher');
+ PrefixAdd('Show', 'afficher');
+ PrefixAdd('Hide', 'cacher');
+ PrefixAdd('Handle', 'traiter');
+ PrefixAdd('Process', 'traiter');
+ PrefixAdd('Load', 'charger');
+ PrefixAdd('Save', 'enregistrer');
+ PrefixAdd('Read', 'lire');
+ PrefixAdd('Write', 'ecrire');
+ PrefixAdd('Open', 'ouvrir');
+ PrefixAdd('Close', 'fermer');
+ PrefixAdd('Mount', 'monter');
+ PrefixAdd('Unmount', 'demonter');
+ PrefixAdd('Find', 'rechercher');
+ PrefixAdd('Search', 'rechercher');
+ PrefixAdd('Check', 'verifier');
+ PrefixAdd('Validate', 'valider');
+ PrefixAdd('Verify', 'verifier');
+ PrefixAdd('Update', 'mettre a jour');
+ PrefixAdd('Refresh', 'rafraichir');
+ PrefixAdd('Clear', 'effacer');
+ PrefixAdd('Reset', 'reinitialiser');
+ PrefixAdd('Build', 'construire');
+ PrefixAdd('Parse', 'analyser');
+ PrefixAdd('Scan', 'analyser');
+ PrefixAdd('Convert', 'convertir');
+ PrefixAdd('Compute', 'calculer');
+ PrefixAdd('Calculate', 'calculer');
+ PrefixAdd('Execute', 'executer');
+ PrefixAdd('Run', 'executer');
+ PrefixAdd('Start', 'demarrer');
+ PrefixAdd('Stop', 'arreter');
+ PrefixAdd('Pause', 'mettre en pause');
+ PrefixAdd('Resume', 'reprendre');
+ PrefixAdd('Add', 'ajouter');
+ PrefixAdd('Append', 'ajouter a la fin de');
+ PrefixAdd('Remove', 'retirer');
+ PrefixAdd('Delete', 'supprimer');
+ PrefixAdd('Erase', 'effacer');
+ PrefixAdd('Insert', 'inserer');
+ PrefixAdd('Copy', 'copier');
+ PrefixAdd('Move', 'deplacer');
+ PrefixAdd('Send', 'envoyer');
+ PrefixAdd('Receive', 'recevoir');
+ PrefixAdd('Format', 'formater');
+ PrefixAdd('Resolve', 'resoudre');
+ PrefixAdd('Detect', 'detecter');
+ PrefixAdd('Toggle', 'basculer');
+ PrefixAdd('Enable', 'activer');
+ PrefixAdd('Disable', 'desactiver');
+ PrefixAdd('Switch', 'basculer');
+ PrefixAdd('Compare', 'comparer');
+ PrefixAdd('Sort', 'trier');
+ PrefixAdd('Extract', 'extraire');
+ PrefixAdd('Encode', 'encoder');
+ PrefixAdd('Decode', 'decoder');
+ PrefixAdd('Translate', 'traduire');
+ PrefixAdd('Apply', 'appliquer');
+ PrefixAdd('Register', 'enregistrer');
+ PrefixAdd('Unregister', 'retirer l enregistrement de');
+ PrefixAdd('Is', 'indiquer si');
+ PrefixAdd('Has', 'indiquer si');
+ PrefixAdd('Can', 'indiquer si');
+ PrefixAdd('New', 'creer');
+ PrefixAdd('Make', 'creer');
+ PrefixAdd('Term', 'terminer');
+ PrefixAdd('Begin', 'demarrer');
+ PrefixAdd('End', 'terminer');
+ PrefixAdd('Push', 'empiler');
+ PrefixAdd('Pop', 'depiler');
+ PrefixAdd('Wait', 'attendre');
+ PrefixAdd('Lock', 'verrouiller');
+ PrefixAdd('Unlock', 'deverrouiller');
+ PrefixAdd('Bind', 'associer');
+ PrefixAdd('Unbind', 'dissocier');
+ PrefixAdd('Connect', 'connecter');
+ PrefixAdd('Disconnect', 'deconnecter');
+ PrefixAdd('Test', 'tester');
 End;
 
 { @description: Remplit la table des verbes-suffixes les plus
@@ -653,21 +714,30 @@ End;
 Procedure InitSuffixVerbs;
 Begin
  SuffixCount := 0;
- SuffixAdd('Exists', 'verifie si existe :');
- SuffixAdd('Changed', 'indique si a change :');
- SuffixAdd('Found', 'indique si a ete trouve :');
- SuffixAdd('Valid', 'indique si est valide :');
- SuffixAdd('Ready', 'indique si est pret :');
- SuffixAdd('Done', 'indique si est termine :');
- SuffixAdd('Failed', 'indique si a echoue :');
- SuffixAdd('Visible', 'indique si est visible :');
- SuffixAdd('Enabled', 'indique si est active :');
- SuffixAdd('Active', 'indique si est actif :');
- SuffixAdd('Open', 'indique si est ouvert :');
- SuffixAdd('Mounted', 'indique si est monte :');
- SuffixAdd('Empty', 'indique si est vide :');
- SuffixAdd('Equal', 'compare l egalite de :');
- SuffixAdd('Supported', 'indique si est pris en charge :');
+ { Memes regles que InitPrefixVerbs : phrases a l infinitif. }
+ SuffixAdd('Exists', 'verifier si existe :');
+ SuffixAdd('Changed', 'indiquer si a change :');
+ SuffixAdd('Found', 'indiquer si a ete trouve :');
+ SuffixAdd('Valid', 'indiquer si est valide :');
+ SuffixAdd('Ready', 'indiquer si est pret :');
+ SuffixAdd('Done', 'indiquer si est termine :');
+ SuffixAdd('Failed', 'indiquer si a echoue :');
+ SuffixAdd('Visible', 'indiquer si est visible :');
+ SuffixAdd('Enabled', 'indiquer si est active :');
+ SuffixAdd('Active', 'indiquer si est actif :');
+ SuffixAdd('Open', 'indiquer si est ouvert :');
+ SuffixAdd('Mounted', 'indiquer si est monte :');
+ SuffixAdd('Empty', 'indiquer si est vide :');
+ SuffixAdd('Equal', 'comparer l egalite de :');
+ SuffixAdd('Supported', 'indiquer si est pris en charge :');
+ SuffixAdd('ToUpper', 'convertir en majuscules :');
+ SuffixAdd('ToLower', 'convertir en minuscules :');
+ SuffixAdd('UpperCase', 'convertir en majuscules :');
+ SuffixAdd('LowerCase', 'convertir en minuscules :');
+ SuffixAdd('ToStr', 'convertir en chaine de caracteres :');
+ SuffixAdd('ToString', 'convertir en chaine de caracteres :');
+ SuffixAdd('ToInt', 'convertir en entier :');
+ SuffixAdd('ToFloat', 'convertir en nombre reel :');
 End;
 
 { @description: Remplit le dictionnaire interne d amorce (mots-cles,
@@ -761,6 +831,11 @@ Begin
  DictAdd('I', 'Compteur de boucle');
  DictAdd('J', 'Compteur de boucle (boucle imbriquee)');
  DictAdd('K', 'Compteur de boucle (boucle imbriquee)');
+ DictAdd('L', 'Longueur');
+ DictAdd('N', 'Nombre');
+ DictAdd('C', 'Caractere');
+ DictAdd('X', 'Coordonnee horizontale');
+ DictAdd('Y', 'Coordonnee verticale');
  DictAdd('Idx', 'Index');
  DictAdd('Index', 'Index');
  DictAdd('Cnt', 'Compteur');
@@ -1040,20 +1115,22 @@ Begin
  End;
 End;
 
-{ @description: Extrait les noms de parametres d une liste de
-    parametres Pascal (entre parentheses), en ignorant les mots-cles
-    Var/Const/Out et les types. Les groupes "A, B: Integer" sont
-    decomposes en plusieurs noms.
+{ @description: Extrait les noms et les types de parametres d une
+    liste de parametres Pascal (entre parentheses), en ignorant les
+    mots-cles Var/Const/Out. Les groupes "A, B: Integer" sont
+    decomposes en plusieurs noms, qui partagent tous le meme type.
   @param ParamList Texte de la liste de parametres (sans les
     parentheses)
   @param Names Tableau recevant les noms trouves (sortie)
+  @param Types Tableau recevant le type declare de chaque nom (sortie)
   @param NCount Nombre de noms places dans Names (sortie) }
 Procedure ExtractPascalParamNames(ParamList: String;
- Var Names: Array Of String; Var NCount: Integer);
+ Var Names: Array Of String; Var Types: Array Of String;
+ Var NCount: Integer);
 Var
  Groups: Array[0..MaxParams - 1] Of String;
  GCount, I, P: Integer;
- G, NamesPart, Cur: String;
+ G, NamesPart, TypePart, Cur: String;
 Begin
  NCount := 0;
  GCount := 0;
@@ -1077,7 +1154,13 @@ Begin
  For I := 0 To GCount - 1 Do Begin
   G := TrimStr(Groups[I]);
   P := Pos(':', G);
-  If P > 0 Then NamesPart := Copy(G, 1, P - 1) Else NamesPart := G;
+  If P > 0 Then Begin
+   NamesPart := Copy(G, 1, P - 1);
+   TypePart := TrimStr(Copy(G, P + 1, Length(G) - P));
+  End Else Begin
+   NamesPart := G;
+   TypePart := '';
+  End;
   If StartsWithStr(NamesPart, 'Var ') Then Delete(NamesPart, 1, 4);
   If StartsWithStr(NamesPart, 'Const ') Then Delete(NamesPart, 1, 6);
   If StartsWithStr(NamesPart, 'Out ') Then Delete(NamesPart, 1, 4);
@@ -1087,6 +1170,7 @@ Begin
     Cur := TrimStr(Cur);
     If (Cur <> '') And (NCount <= High(Names)) Then Begin
      Names[NCount] := Cur;
+     Types[NCount] := TypePart;
      Inc(NCount);
     End;
     Cur := '';
@@ -1096,24 +1180,27 @@ Begin
   Cur := TrimStr(Cur);
   If (Cur <> '') And (NCount <= High(Names)) Then Begin
    Names[NCount] := Cur;
+   Types[NCount] := TypePart;
    Inc(NCount);
   End;
  End;
 End;
 
-{ @description: Extrait les noms de parametres d une liste de
-    parametres C ou C# (entre parentheses), un type suivi d un nom par
-    groupe separe par des virgules.
+{ @description: Extrait les noms et les types de parametres d une
+    liste de parametres C ou C# (entre parentheses), un type suivi d
+    un nom par groupe separe par des virgules.
   @param ParamList Texte de la liste de parametres (sans les
     parentheses)
   @param Names Tableau recevant les noms trouves (sortie)
+  @param Types Tableau recevant le type declare de chaque nom (sortie)
   @param NCount Nombre de noms places dans Names (sortie) }
 Procedure ExtractCParamNames(ParamList: String;
- Var Names: Array Of String; Var NCount: Integer);
+ Var Names: Array Of String; Var Types: Array Of String;
+ Var NCount: Integer);
 Var
  Groups: Array[0..MaxParams - 1] Of String;
  GCount, I, P: Integer;
- G, Nm: String;
+ G, Nm, Tp: String;
 Begin
  NCount := 0;
  GCount := 0;
@@ -1139,15 +1226,18 @@ Begin
   { Retirer un eventuel '=valeur_par_defaut' ou '*'/'&' final }
   P := Pos('=', G);
   If P > 0 Then G := TrimStr(Copy(G, 1, P - 1));
-  { Le nom du parametre est le dernier "mot" identificateur de G }
+  { Le nom du parametre est le dernier "mot" identificateur de G, le
+    type est tout ce qui precede. }
   Nm := '';
   P := Length(G);
   While (P >= 1) And IsIdentChar(G[P]) Do Begin
    Nm := G[P] + Nm;
    Dec(P);
   End;
+  Tp := TrimStr(Copy(G, 1, P));
   If (Nm <> '') And (NCount <= High(Names)) Then Begin
    Names[NCount] := Nm;
+   Types[NCount] := Tp;
    Inc(NCount);
   End;
  End;
@@ -1158,11 +1248,12 @@ End;
     fonction ou procedure.
   @param Name Nom de la fonction ou procedure
   @param ParamNames Tableau des noms de parametres
+  @param ParamTypes Tableau des types declares de chaque parametre
   @param ParamCnt Nombre de parametres dans ParamNames
   @param IsFunc Vrai s il s agit d une fonction (ajoute @return),
     faux pour une procedure }
-Procedure EmitPascalDocBlock(Name: String;
- Var ParamNames: Array Of String; ParamCnt: Integer; IsFunc: Boolean);
+Procedure EmitPascalDocBlock(Name: String; Var ParamNames: Array Of String;
+ Var ParamTypes: Array Of String; ParamCnt: Integer; IsFunc: Boolean);
 Var
  I: Integer;
  Kind, Action, DescLine: String;
@@ -1181,7 +1272,7 @@ Begin
  WriteLn(OutF, '{ @description: ', DescLine);
  For I := 0 To ParamCnt - 1 Do Begin
   WriteLn(OutF, '  @param ', ParamNames[I], ' ',
-   CapStr(DescribeSimple(ParamNames[I], 'Parametre')));
+   CapStr(DescribeParam(ParamNames[I], ParamTypes[I])));
   Inc(NbParam);
  End;
  If IsFunc Then
@@ -1286,6 +1377,7 @@ Var
  FullText, Name, ParamList: String;
  IsFunc: Boolean;
  ParamNames: Array[0..MaxParams - 1] Of String;
+ ParamTypes: Array[0..MaxParams - 1] Of String;
  ParamCnt: Integer;
  EqPos, ColonPos, SemiPos: Integer;
  FieldNamesPart, TypeText: String;
@@ -1349,11 +1441,11 @@ Begin
    FlushPendingBlock;
    CollectPascalHeader(I, FullText, LastLine);
    ParsePascalHeader(FullText, Name, ParamList, IsFunc);
-   ExtractPascalParamNames(ParamList, ParamNames, ParamCnt);
+   ExtractPascalParamNames(ParamList, ParamNames, ParamTypes, ParamCnt);
    If Not HasPrecedingComment(I) Then Begin
     If (IsFunc And ((Mode And MD_FUNC) <> 0)) Or
        ((Not IsFunc) And ((Mode And MD_PROC) <> 0)) Then Begin
-     EmitPascalDocBlock(Name, ParamNames, ParamCnt, IsFunc);
+     EmitPascalDocBlock(Name, ParamNames, ParamTypes, ParamCnt, IsFunc);
      If IsFunc Then Inc(NbFunc) Else Inc(NbProc);
     End;
    End;
@@ -1500,9 +1592,10 @@ End;
     methode.
   @param Name Nom de la fonction ou methode
   @param ParamNames Tableau des noms de parametres
+  @param ParamTypes Tableau des types declares de chaque parametre
   @param ParamCnt Nombre de parametres dans ParamNames }
 Procedure EmitCDocBlock(Name: String; Var ParamNames: Array Of String;
- ParamCnt: Integer; HasReturnValue: Boolean);
+ Var ParamTypes: Array Of String; ParamCnt: Integer; HasReturnValue: Boolean);
 Var
  I: Integer;
  Action, DescLine, Kind: String;
@@ -1521,7 +1614,7 @@ Begin
  WriteLn(OutF, '/* ', DescLine);
  For I := 0 To ParamCnt - 1 Do Begin
   WriteLn(OutF, ' * @param ', ParamNames[I], ' ',
-   CapStr(DescribeSimple(ParamNames[I], 'Parametre')));
+   CapStr(DescribeParam(ParamNames[I], ParamTypes[I])));
   Inc(NbParam);
  End;
  If HasReturnValue Then
@@ -1543,6 +1636,7 @@ Var
  S, Trimmed, UpTrim: String;
  Name, ParamList: String;
  ParamNames: Array[0..MaxParams - 1] Of String;
+ ParamTypes: Array[0..MaxParams - 1] Of String;
  ParamCnt: Integer;
  Desc, FieldName, TypeWord: String;
  P, SemiPos, Q: Integer;
@@ -1632,10 +1726,10 @@ Begin
   If LooksLikeCFunction(Trimmed, Name, ParamList) And
      ((Mode And (MD_FUNC Or MD_PROC Or MD_PARAM)) <> 0) Then Begin
    FlushPendingBlock;
-   ExtractCParamNames(ParamList, ParamNames, ParamCnt);
+   ExtractCParamNames(ParamList, ParamNames, ParamTypes, ParamCnt);
    If (Not HasPrecedingComment(I)) And
       ((Mode And (MD_FUNC Or MD_PROC)) <> 0) Then Begin
-    EmitCDocBlock(Name, ParamNames, ParamCnt,
+    EmitCDocBlock(Name, ParamNames, ParamTypes, ParamCnt,
      Not StartsWithStr(UpTrim, 'VOID '));
     Inc(NbFunc);
    End;
