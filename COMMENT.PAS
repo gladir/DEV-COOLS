@@ -453,25 +453,63 @@ Begin
  End;
 End;
 
+{ @description: Indique si un mot est un qualificatif courant de nom
+    de variable (Curr, Prev, Next, Old, Temp, ...) qui se place en
+    francais APRES le nom qu il qualifie (ex: "CurrLine" -> "Ligne
+    courante", pas "Valeur courante Ligne"). L accord en genre n est
+    pas connu (le dictionnaire ne le suit pas) : une forme feminine
+    est utilisee par defaut, ce qui reste lisible meme quand le nom
+    qualifie est masculin.
+  @param W Mot a tester
+  @return Forme adjectivale francaise du qualificatif, ou chaine vide
+    si W n en est pas un }
+Function QualifierWord(W: String): String;
+Var
+ U: String;
+Begin
+ U := UpStr(W);
+ If (U = 'CURR') Or (U = 'CURRENT') Then QualifierWord := 'courante'
+ Else If (U = 'PREV') Or (U = 'PREVIOUS') Or (U = 'OLD') Then
+  QualifierWord := 'precedente'
+ Else If U = 'NEXT' Then QualifierWord := 'suivante'
+ Else If U = 'LAST' Then QualifierWord := 'derniere'
+ Else If U = 'FIRST' Then QualifierWord := 'premiere'
+ Else If (U = 'TEMP') Or (U = 'TMP') Then QualifierWord := 'temporaire'
+ Else If U = 'DEFAULT' Then QualifierWord := 'par defaut'
+ Else QualifierWord := '';
+End;
+
 { @description: Decompose un identificateur inconnu en mots et
     assemble les significations trouvees dans le dictionnaire pour
-    chacun d eux.
+    chacun d eux. Un qualificatif reconnu (voir QualifierWord) est
+    reporte a la fin de la phrase plutot que concatene dans l ordre
+    du nom, pour respecter l ordre nom-puis-adjectif du francais.
   @param Name Identificateur a decomposer
   @return Phrase assemblee, ou chaine vide si aucun mot n est connu }
 Function DecomposeToPhrase(Name: String): String;
 Var
  Words: Array[0..MaxWords - 1] Of String;
  WCount, I: Integer;
- D, Res: String;
+ D, Res, Qualifier: String;
 Begin
  SplitWords(Name, Words, WCount);
  Res := '';
+ Qualifier := '';
  For I := 0 To WCount - 1 Do Begin
-  D := DictFindWord(Words[I]);
-  If D <> '' Then Begin
-   If Res <> '' Then Res := Res + ' ';
-   Res := Res + D;
+  D := QualifierWord(Words[I]);
+  If (D <> '') And (Qualifier = '') Then
+   Qualifier := D
+  Else Begin
+   D := DictFindWord(Words[I]);
+   If D <> '' Then Begin
+    If Res <> '' Then Res := Res + ' ';
+    Res := Res + D;
+   End;
   End;
+ End;
+ If Qualifier <> '' Then Begin
+  If Res <> '' Then Res := Res + ' ' + Qualifier
+  Else Res := CapStr(Qualifier);
  End;
  DecomposeToPhrase := Res;
 End;
@@ -992,6 +1030,7 @@ Begin
  DictAdd('Output', 'Sortie');
  DictAdd('Old', 'Ancienne valeur');
  DictAdd('Cur', 'Valeur courante');
+ DictAdd('Curr', 'Valeur courante');
  DictAdd('Current', 'Valeur courante');
  DictAdd('Last', 'Derniere valeur');
  DictAdd('First', 'Premiere valeur');
