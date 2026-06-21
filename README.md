@@ -322,6 +322,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de convertir un fichier «.COM» en fichier «.EXE»</td>
 		</tr>
 		<tr>
+			<td><b>COMMENT.PAS</b></td>
+			<td>Cette commande permet d'ajouter des commentaires en francais dans un fichier source Pascal, C ou C# (champs, constantes, fonctions/procedures et leurs parametres) lorsqu il n y en a pas.</td>
+		</tr>
+		<tr>
 			<td><b>CONVERT.PAS</b></td>
 			<td>Cette commande permet de convertir un fichier de code source Pascal en minuscule, majuscule ou capitale. Cette commande est inspiré de la commande CONVERT du Pascal pour FLEX.</td>
 		</tr>
