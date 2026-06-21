@@ -1087,6 +1087,8 @@ Begin
  DictAdd('Eof', 'Fin de fichier');
  DictAdd('src_line_num', 'Numero de ligne de la source');
  DictAdd('src_eof', 'Fin de fichier de la source');
+ DictAdd('Peek', 'Anticipation de lecture (lookahead)');
+ DictAdd('has_peek', 'Indique si un caractere est actuellement entrepose dans peek_char');
  DictAdd('Target', 'Cible');
  DictAdd('Input', 'Entree');
  DictAdd('Output', 'Sortie');
