@@ -1126,6 +1126,79 @@ Begin
  DictAdd('Tag', 'Etiquette/marqueur numerique');
  DictAdd('Attr', 'Attribut');
  DictAdd('Attribute', 'Attribut');
+
+ { --- Mots-cles du langage Ada (pour les tables de jetons KW_xxx) --- }
+ DictAdd('KW', 'Mot-cle');
+ DictAdd('None', 'Aucun');
+ DictAdd('Function', 'Fonction');
+ DictAdd('Procedure', 'Procedure');
+ DictAdd('Package', 'Paquetage');
+ DictAdd('Begin', 'Debut');
+ DictAdd('End', 'Fin');
+ DictAdd('Is', 'Est');
+ DictAdd('With', 'Avec');
+ DictAdd('Use', 'Utiliser');
+ DictAdd('Subtype', 'Sous-type');
+ DictAdd('Of', 'De');
+ DictAdd('Range', 'Intervalle');
+ DictAdd('If', 'Si');
+ DictAdd('Then', 'Alors');
+ DictAdd('Elsif', 'Sinon si');
+ DictAdd('Else', 'Sinon');
+ DictAdd('Case', 'Selon');
+ DictAdd('When', 'Quand');
+ DictAdd('Others', 'Autres');
+ DictAdd('Loop', 'Boucle');
+ DictAdd('Exit', 'Sortie de boucle');
+ DictAdd('While', 'Tant que');
+ DictAdd('For', 'Pour');
+ DictAdd('In', 'Dans');
+ DictAdd('Reverse', 'Inverse');
+ DictAdd('Return', 'Retour');
+ DictAdd('Null', 'Nul');
+ DictAdd('Raise', 'Lever une exception');
+ DictAdd('Exception', 'Exception');
+ DictAdd('Pragma', 'Directive de compilation');
+ DictAdd('Renames', 'Renomme');
+ DictAdd('Separate', 'Unite separee');
+ DictAdd('Abstract', 'Abstrait');
+ DictAdd('Private', 'Prive');
+ DictAdd('Body', 'Corps');
+ DictAdd('And', 'Et');
+ DictAdd('Or', 'Ou');
+ DictAdd('Not', 'Non');
+ DictAdd('Xor', 'Ou exclusif');
+ DictAdd('Mod', 'Modulo');
+ DictAdd('Rem', 'Reste de division');
+ DictAdd('All', 'Tous');
+ DictAdd('Access', 'Acces (pointeur)');
+ DictAdd('Out', 'Sortie (mode parametre)');
+ DictAdd('Declare', 'Declarer');
+ DictAdd('Do', 'Faire');
+ DictAdd('Goto', 'Aller a');
+ DictAdd('Delta', 'Delta (precision fixe)');
+ DictAdd('Digits', 'Chiffres (precision flottante)');
+ DictAdd('At', 'A (clause d''adresse)');
+ DictAdd('Accept', 'Accepter (rendez-vous de tache)');
+ DictAdd('Task', 'Tache');
+ DictAdd('Protected', 'Protege');
+ DictAdd('Generic', 'Generique');
+ DictAdd('Limited', 'Limite');
+ DictAdd('Tagged', 'Etiquete');
+ DictAdd('Select', 'Selectionner');
+ DictAdd('Terminate', 'Terminer');
+ DictAdd('Until', 'Jusqu''a');
+ DictAdd('Requeue', 'Remettre en file d''attente');
+ DictAdd('Entry', 'Point d''entree de tache');
+ DictAdd('Interface', 'Interface');
+ DictAdd('Overriding', 'Redefinition');
+ DictAdd('Synchronized', 'Synchronise');
+ DictAdd('Some', 'Quelconque');
+ DictAdd('True', 'Vrai');
+ DictAdd('False', 'Faux');
+ DictAdd('Andthen', 'Et alors (court-circuit)');
+ DictAdd('Orelse', 'Ou sinon (court-circuit)');
+ DictAdd('Inout', 'Entree-sortie (mode parametre)');
 End;
 
 { @description: Charge le dictionnaire externe COMMENT.DIC (s il
@@ -1638,17 +1711,23 @@ Begin
 
   { ----- Constante (en dehors d un enregistrement) -----
     Trimmed[EqPos-1]<>':' exclut une affectation "X:=valeur;" sans
-    espace, ou EqPos pointerait sur le '=' de ':='. }
+    espace, ou EqPos pointerait sur le '=' de ':='. La verification
+    d absence d espace porte sur le nom DEJA NETTOYE (Name), pas sur
+    le texte brut avant '=' : ce dernier peut contenir des espaces de
+    simple alignement (ex: "KW_NONE        = 0;") qui ne doivent pas
+    faire rejeter une declaration par ailleurs valide ; en revanche
+    une expression a plusieurs mots (ex: "If A = B") doit l etre. }
   If (Not InRecord) And (EqPos > 1) And (SemiPos > EqPos) And
      IsIdentStart(Trimmed[1]) And ((Mode And MD_CONST) <> 0) And
-     (Not HasTrailingComment(S)) And (Trimmed[EqPos - 1] <> ':') And
-     (Not ContainsStr(Copy(Trimmed, 1, EqPos - 1), ' ')) Then Begin
+     (Not HasTrailingComment(S)) And (Trimmed[EqPos - 1] <> ':') Then Begin
    Name := TrimStr(Copy(Trimmed, 1, EqPos - 1));
-   Desc := DescribeSimple(Name, 'Constante');
-   AddToPendingBlock(S, Desc);
-   Inc(NbConst);
-   Inc(I);
-   Continue;
+   If Not ContainsStr(Name, ' ') Then Begin
+    Desc := DescribeSimple(Name, 'Constante');
+    AddToPendingBlock(S, Desc);
+    Inc(NbConst);
+    Inc(I);
+    Continue;
+   End;
   End;
 
   { ----- Variable/champ simple (Var globale ou locale) -----
