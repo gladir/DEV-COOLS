@@ -319,21 +319,6 @@ Begin
   End;
 End;
 
-{ @description: Construit la phrase @return d une fonction : reprend
-    la phrase connue pour ce nom si elle existe, sinon une phrase
-    generique honnete (on ne devine pas la valeur de retour exacte
-    d une fonction inconnue).
-  @param Name Nom de la fonction
-  @return Phrase decrivant la valeur de retour }
-Function BuildReturnPhrase(Name: String): String;
-Var
- D: String;
-Begin
- D := ReturnDictFind(Name);
- If D = '' Then D := 'Resultat de l operation.';
- BuildReturnPhrase := D;
-End;
-
 { @description: Remplit la table des @return connus pour les
     fonctions standards les plus courantes. }
 Procedure InitReturnDict;
@@ -570,6 +555,71 @@ Begin
  End Else
   D := 'Parametre ' + Name;
  DescribeParam := D;
+End;
+
+{ @description: Cherche si le nom d une fonction se termine par un
+    suffixe de conversion connu (ToUpper, ToStr, ...) et renvoie la
+    formulation @return adaptee (sans le sujet, ajoute par l appelant),
+    ainsi que la partie du nom qui precede le suffixe.
+  @param Name Nom de la fonction
+  @param Rest Partie de Name avant le suffixe trouve (sortie)
+  @return Formulation de fin de phrase @return, ou chaine vide si le
+    nom ne se termine par aucun suffixe de conversion connu }
+Function FindReturnSuffix(Name: String; Var Rest: String): String;
+Const
+ NSuf = 8;
+ Suf: Array[1..NSuf] Of String[16] = (
+  'ToUpper', 'UpperCase', 'ToLower', 'LowerCase',
+  'ToStr', 'ToString', 'ToInt', 'ToFloat');
+ Phr: Array[1..NSuf] Of String[40] = (
+  'en majuscules.', 'en majuscules.', 'en minuscules.', 'en minuscules.',
+  'sous forme de chaine de caracteres.', 'sous forme de chaine de caracteres.',
+  'sous forme d entier.', 'sous forme de nombre reel.');
+Var
+ I, L: Integer;
+Begin
+ FindReturnSuffix := '';
+ Rest := Name;
+ For I := 1 To NSuf Do Begin
+  L := Length(Suf[I]);
+  If (Length(Name) > L) And
+     (UpStr(Copy(Name, Length(Name) - L + 1, L)) = UpStr(Suf[I])) Then Begin
+   FindReturnSuffix := Phr[I];
+   Rest := Copy(Name, 1, Length(Name) - L);
+   Exit;
+  End;
+ End;
+End;
+
+{ @description: Construit la phrase @return d une fonction : reprend
+    la phrase connue pour ce nom si elle existe ; sinon, si le nom se
+    termine par un suffixe de conversion connu (ex: StrToUpper), batit
+    une phrase a partir de ce que decrit la partie du nom qui precede
+    (ex: "Chaine de caracteres en majuscules.") ; sinon une phrase
+    generique honnete (on ne devine pas la valeur de retour exacte
+    d une fonction totalement inconnue).
+  @param Name Nom de la fonction
+  @return Phrase decrivant la valeur de retour }
+Function BuildReturnPhrase(Name: String): String;
+Var
+ D, Rest, Tail, EndPhrase: String;
+Begin
+ D := ReturnDictFind(Name);
+ If D <> '' Then Begin
+  BuildReturnPhrase := D;
+  Exit;
+ End;
+ EndPhrase := FindReturnSuffix(Name, Rest);
+ If EndPhrase <> '' Then Begin
+  Tail := DictFindWord(Rest);
+  If Tail = '' Then Tail := DecomposeToPhrase(Rest);
+  If Tail <> '' Then
+   BuildReturnPhrase := CapStr(Tail) + ' ' + EndPhrase
+  Else
+   BuildReturnPhrase := CapStr(EndPhrase);
+  Exit;
+ End;
+ BuildReturnPhrase := 'Resultat de l operation.';
 End;
 
 { @description: Construit la phrase d action d une fonction ou
