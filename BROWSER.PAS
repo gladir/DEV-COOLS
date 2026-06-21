@@ -48,6 +48,8 @@ Uses {$IFDEF FPC}
      {$ENDIF};
 
 Const
+ BROWSER_BUILD_ID = '20260620-STACKFIX-5';
+
  { Constantes pour la barre d'URL }
  URL_BAR_X = 5;
  URL_BAR_Y = 5;
@@ -3583,7 +3585,9 @@ Procedure InitCSS;
 Var
  I, J: Integer;
 Begin
- CSSEnabled := True;
+ { Desactive tant que le parseur CSS experimental n'est pas adapte aux
+   contraintes strictes de pile de Turbo Pascal/Free Pascal. }
+ CSSEnabled := False;
  CSSParseError := '';
  CSSGlobalStylesheet.RuleCount := 0;
 
@@ -4145,12 +4149,10 @@ Begin
  If (Pos <= Length(S)) And (S[Pos] = '}') Then Inc(Pos);
 End;
 
-{ Parser une regle CSS complete }
-Function CSSParseRule(Const S: String; Var Pos: Integer): CSSRule;
+{ Parser une regle CSS directement dans sa destination. }
+Procedure CSSParseRule(Const S: String; Var Pos: Integer; Var Rule: CSSRule);
 Var
- Rule: CSSRule;
  Sel: CSSSelector;
- Token: CSSToken;
 Begin
  Rule.SelectorCount := 0;
  Rule.PropertyCount := 0;
@@ -4181,15 +4183,13 @@ Begin
  If Rule.SelectorCount > 0 Then
   CSSParseDeclarations(S, Pos, Rule);
 
- CSSParseRule := Rule;
 End;
 
 { Parser une feuille de style CSS complete }
 Procedure CSSParseStylesheet(Const CSS: String);
 Var
  Pos: Integer;
- Rule: CSSRule;
- Token: CSSToken;
+ RuleIndex: Integer;
 Begin
  Pos := 1;
 
@@ -4211,13 +4211,17 @@ Begin
    Continue;
   End;
 
-  { Parser une regle normale }
-  Rule := CSSParseRule(CSS, Pos);
-  If Rule.SelectorCount > 0 Then Begin
-   If CSSGlobalStylesheet.RuleCount < MAX_CSS_RULES Then Begin
-    Inc(CSSGlobalStylesheet.RuleCount);
-    CSSGlobalStylesheet.Rules[CSSGlobalStylesheet.RuleCount] := Rule;
-   End;
+  { Parser directement dans la feuille globale pour eviter une CSSRule locale
+    de plusieurs dizaines de Ko sur la pile. }
+  If CSSGlobalStylesheet.RuleCount < MAX_CSS_RULES Then Begin
+   RuleIndex := CSSGlobalStylesheet.RuleCount + 1;
+   CSSParseRule(CSS, Pos, CSSGlobalStylesheet.Rules[RuleIndex]);
+   If CSSGlobalStylesheet.Rules[RuleIndex].SelectorCount > 0 Then
+    CSSGlobalStylesheet.RuleCount := RuleIndex;
+  End
+  Else Begin
+   While (Pos <= Length(CSS)) And (CSS[Pos] <> '}') Do Inc(Pos);
+   If Pos <= Length(CSS) Then Inc(Pos);
   End;
  End;
 End;
@@ -4273,7 +4277,7 @@ Begin
 End;
 
 { Verifier si un selecteur correspond a un element }
-Function CSSMatchSelector(Sel: CSSSelector; Element: HTMLNodePtr): Boolean;
+Function CSSMatchSelector(Const Sel: CSSSelector; Element: HTMLNodePtr): Boolean;
 Var
  I: Integer;
  Part: CSSSelectorPart;
@@ -4345,8 +4349,7 @@ End;
 { Obtenir les styles CSS appliques a un element }
 Procedure CSSGetComputedStyle(Element: HTMLNodePtr; Var Style: DOMStyle);
 Var
- I, J: Integer;
- Rule: CSSRule;
+ I, J, K: Integer;
  InlineStyle: String;
 Begin
  { Initialiser avec valeurs par defaut }
@@ -4368,25 +4371,24 @@ Begin
 
  { Appliquer les regles de la feuille de style }
  For I := 1 To CSSGlobalStylesheet.RuleCount Do Begin
-  Rule := CSSGlobalStylesheet.Rules[I];
-  For J := 1 To Rule.SelectorCount Do Begin
-   If CSSMatchSelector(Rule.Selectors[J], Element) Then Begin
+  For J := 1 To CSSGlobalStylesheet.Rules[I].SelectorCount Do Begin
+   If CSSMatchSelector(CSSGlobalStylesheet.Rules[I].Selectors[J], Element) Then Begin
     { Appliquer les proprietes }
-    For J := 1 To Rule.PropertyCount Do Begin
-     Case Rule.Properties[J].PropId Of
-      CSS_PROP_COLOR: Style.Color := Rule.Properties[J].Value;
-      CSS_PROP_BACKGROUND_COLOR: Style.BackgroundColor := Rule.Properties[J].Value;
-      CSS_PROP_FONT_SIZE: Style.FontSize := Rule.Properties[J].Value;
-      CSS_PROP_FONT_WEIGHT: Style.FontWeight := Rule.Properties[J].Value;
-      CSS_PROP_FONT_STYLE: Style.FontStyle := Rule.Properties[J].Value;
-      CSS_PROP_TEXT_DECORATION: Style.TextDecoration := Rule.Properties[J].Value;
-      CSS_PROP_DISPLAY: Style.Display := Rule.Properties[J].Value;
-      CSS_PROP_VISIBILITY: Style.Visibility := Rule.Properties[J].Value;
-      CSS_PROP_WIDTH: Style.Width := Rule.Properties[J].Value;
-      CSS_PROP_HEIGHT: Style.Height := Rule.Properties[J].Value;
-      CSS_PROP_MARGIN: Style.Margin := Rule.Properties[J].Value;
-      CSS_PROP_PADDING: Style.Padding := Rule.Properties[J].Value;
-      CSS_PROP_BORDER: Style.Border := Rule.Properties[J].Value;
+    For K := 1 To CSSGlobalStylesheet.Rules[I].PropertyCount Do Begin
+     Case CSSGlobalStylesheet.Rules[I].Properties[K].PropId Of
+      CSS_PROP_COLOR: Style.Color := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
+      CSS_PROP_BACKGROUND_COLOR: Style.BackgroundColor := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
+      CSS_PROP_FONT_SIZE: Style.FontSize := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
+      CSS_PROP_FONT_WEIGHT: Style.FontWeight := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
+      CSS_PROP_FONT_STYLE: Style.FontStyle := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
+      CSS_PROP_TEXT_DECORATION: Style.TextDecoration := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
+      CSS_PROP_DISPLAY: Style.Display := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
+      CSS_PROP_VISIBILITY: Style.Visibility := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
+      CSS_PROP_WIDTH: Style.Width := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
+      CSS_PROP_HEIGHT: Style.Height := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
+      CSS_PROP_MARGIN: Style.Margin := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
+      CSS_PROP_PADDING: Style.Padding := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
+      CSS_PROP_BORDER: Style.Border := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
      End;
     End;
     Break;
@@ -12688,6 +12690,7 @@ End;
 Procedure PrintUsage;
 Begin
  WriteConsoleLine('BROWSER 1.00 - Navigateur Web graphique');
+ WriteConsoleLine('Build: ' + BROWSER_BUILD_ID);
  WriteConsoleLine('');
  WriteConsoleLine('Usage:');
  WriteConsoleLine('  BROWSER [URL|FICHIER]');
@@ -12802,7 +12805,8 @@ BEGIN
  If TestMode Then Begin
   { Valider aussi les operations executees uniquement par le mode normal. }
   ProcessMouseInput;
-  WriteConsoleLine('Chargement, rendu et interface termines sans exception.');
+  WriteConsoleLine('Build ' + BROWSER_BUILD_ID +
+                   ': chargement, rendu et interface termines sans exception.');
   If MouseAvailable Then HideMouse;
   CloseGraph;
   Halt;

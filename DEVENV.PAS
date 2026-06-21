@@ -1424,6 +1424,7 @@ Type
  TDevEnvOptions = Record
   SolutionFile    : TString;   { fichier .sln a ouvrir              }
   SourceFile      : TString;   { fichier source a ouvrir directement}
+  MaxScreen       : Boolean;   { Force l'affichage maximal support� }
   Verbose         : Boolean;   { -v : mode verbeux                  }
   DebugMode       : Boolean;   { -d : mode debogage interne         }
   ThemeName       : TString;   { nom du theme de couleurs           }
@@ -3949,11 +3950,10 @@ Begin
  WriteLn('Compilateurs integres : C# (CSC), VB.NET (VBC), Pascal (TPC)');
 End;
 
-Procedure ShowHelp;
-Begin
+Procedure ShowHelp;Begin
  ShowVersion;
  WriteLn;
- WriteLn('Usage: DEVENV [solution.sln] [options]');
+ WriteLn('Syntaxe: DEVENV [solution.sln] [options]');
  WriteLn;
  WriteLn('Options:');
  WriteLn('  solution.sln   Ouvrir une solution existante au demarrage');
@@ -3990,6 +3990,7 @@ Begin
  Opts.SolutionFile    := '';
  Opts.SourceFile      := '';
  Opts.Verbose         := False;
+ Opts.MaxScreen       := False;
  Opts.DebugMode       := False;
  Opts.ThemeName       := 'Default';
  Opts.FontSize        := 8;
@@ -4016,14 +4017,11 @@ Var
 Begin
  For I := 1 To ParamCount Do Begin
   Arg := ParamStr(I);
-  If (Arg = '-h') Or (Arg = '--help') Or (Arg = '-?') Or
-     (Arg = '/?') Then
-   ShowHelp
-  Else If (Arg = '-v') Or (Arg = '-V') Then
-   Opts.Verbose := True
-  Else If (Arg = '-d') Or (Arg = '-D') Then
-   Opts.DebugMode := True
-  Else If (Length(Arg) >= 5) And
+  If(Arg='-h')Or(Arg='--help')Or(Arg='-?')Or(Arg='/?')Then ShowHelp Else
+  If(Arg='-maxscreen')Then Opts.MaxScreen := True Else
+  If(Arg='-v')Or(Arg='-V')Then Opts.Verbose := True Else
+  If(Arg = '-d')Or(Arg='-D')Then Opts.DebugMode := True Else
+  If (Length(Arg) >= 5) And
           ((Copy(Arg, 1, 5) = '-emu:') Or (Copy(Arg, 1, 5) = '-EMU:') Or
            (Copy(Arg, 1, 5) = '-Emu:')) Then Begin
    { -emu:XXX,fichier[,arg1[,arg2...]] : split sur les virgules }
@@ -4143,11 +4141,31 @@ End;
 Procedure InitializeGraphics;
 Var
  Driver, Mode: Integer;
+ LoMode, HiMode: SmallInt;
  ErrCode: Integer;
 Begin
  {$IFDEF FPC}
-  Driver := VGA;
-  Mode := VGAHi;
+  If(Opts.MaxScreen)Then Begin
+   { Detect choisirait le pilote couleur le plus profond (15/16 bits),
+     ou les indices de palette EGA/VGA 1..15 sont alors interpretes
+     comme des valeurs RGB brutes (ex: 8 -> bleu presque noir) au lieu
+     de couleurs Noir/Bleu/Vert/.../Jaune/Blanc. On force donc le
+     pilote 256 couleurs (palette VGA standard) a sa plus haute
+     resolution, ce qui conserve la palette correcte. }
+   Driver := D8bit;
+   GetModeRange(Driver, LoMode, HiMode);
+   If HiMode >= LoMode Then
+    Mode := HiMode
+   Else Begin
+    Driver := Detect;
+    Mode := 0;
+   End;
+  End
+   Else
+  Begin
+   Driver := VGA;
+   Mode := VGAHi;
+  End;
  {$ELSE}
   Driver := Detect;
   Mode := 0;
@@ -7799,7 +7817,7 @@ Begin
  End;
 End;
 
-{ Boucle modale de la visionneuse. } 
+{ Boucle modale de la visionneuse. }
 Procedure HlpvRun;
 Var Ev: TEvent;
 Begin
