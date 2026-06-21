@@ -1397,7 +1397,7 @@ End;
 
 { @description: Indique si une ligne C/C++/C# ressemble a un en-tete
     de fonction ou methode : "[modificateurs] Type Nom(parametres)"
-    suivi (sur la meme ligne ou une suivante) de '{' ou ';'.
+    suivi (sur la meme ligne ou une suivante) de ouvrir accollade ou ';'.
   @param S Ligne nettoyee a tester
   @param Name Nom de la fonction trouve (sortie)
   @param ParamList Liste de parametres trouvee, sans les parentheses
@@ -1687,7 +1687,7 @@ Var
  I: Integer;
  IOErr: Integer;
  BakName: String;
-Begin
+BEGIN
  If (ParamCount = 0) Or (UpStr(ParamStr(1)) = '/?') Or
     (UpStr(ParamStr(1)) = '-H') Or (UpStr(ParamStr(1)) = '--HELP') Then
  Begin
@@ -1797,4 +1797,4 @@ Begin
  WriteLn(' Enregistrements/structures commentes : ', NbRecord);
  WriteLn(' Champs/variables commentes : ', NbField);
  WriteLn(' Constantes commentees  : ', NbConst);
-End.
+END.
