@@ -982,6 +982,16 @@ Begin
  DictAdd('Tmp', 'Variable temporaire');
  DictAdd('Temp', 'Variable temporaire');
  DictAdd('Flag', 'Indicateur');
+ DictAdd('Opt', 'Option');
+ DictAdd('Option', 'Option');
+ DictAdd('Verbose', 'Mode detaille (bavard)');
+ DictAdd('Dump', 'Affichage de diagnostic');
+ DictAdd('Debug', 'Mode de deboguage');
+ DictAdd('Tok', 'Jeton (token de l''analyse lexicale)');
+ DictAdd('Token', 'Jeton (token de l''analyse lexicale)');
+ DictAdd('Lex', 'Analyse lexicale');
+ DictAdd('opt_verbose', 'Active l''affichage detaille des messages d''execution');
+ DictAdd('opt_dump_tok', 'Affiche la liste des jetons (tokens) generes par l''analyse lexicale');
  DictAdd('Size', 'Taille');
  DictAdd('Len', 'Longueur');
  DictAdd('Name', 'Nom');
