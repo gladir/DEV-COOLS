@@ -14,6 +14,7 @@ Il possède également des IDE, comme DEVENV :
 	<li>Debogueur pour le 6502, 8086 intégré</li>
 	<li>Support de la souris et du clavier</li>
 	<li>Aide en ligne de plus de 1 Mo</li>
+	<li>Supporte le mode pleine fenetre d'écran (-maxscreen).</li>
 </ul>
 
 <h2>Liste des fichiers</h2>
