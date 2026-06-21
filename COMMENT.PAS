@@ -144,6 +144,21 @@ Begin
  TrimStr := S;
 End;
 
+{ @description: Construit une chaine de N espaces (au moins un),
+    utilisee pour aligner les commentaires de fin de ligne en colonne.
+  @param N Nombre d espaces souhaite
+  @return Chaine de N espaces (1 si N est nul ou negatif) }
+Function SpaceStr(N: Integer): String;
+Var
+ I: Integer;
+ Accum: String;
+Begin
+ If N < 1 Then N := 1;
+ Accum := '';
+ For I := 1 To N Do Accum := Accum + ' ';
+ SpaceStr := Accum;
+End;
+
 { @description: Indique si un caractere peut faire partie d un
     identificateur Pascal/C/C# (lettre, chiffre ou underscore).
   @param C Caractere a tester
@@ -1261,6 +1276,8 @@ End;
     ecrit, dans le fichier de sortie deja ouvert, le contenu original
     complete des commentaires manquants selon le mode actif (Mode). }
 Procedure ProcessPascalFile;
+Const
+ MaxPending = 1000;          { taille maximale d un bloc de lignes a aligner }
 Var
  I, J, LastLine: Integer;
  S, Trimmed, Up: String;
@@ -1275,9 +1292,49 @@ Var
  FieldNames: Array[0..7] Of String;
  FNCount: Integer;
  Desc: String;
+ PendingLines: Array[1..MaxPending] Of String;
+ PendingDescs: Array[1..MaxPending] Of String;
+ PendingCount: Integer;
+
+ { @description: Ecrit le bloc de lignes en attente, en alignant tous
+     leurs commentaires de fin de ligne sur la meme colonne (celle de
+     la ligne la plus longue du bloc, plus une marge), puis vide le
+     bloc. Ne fait rien si le bloc est vide. }
+ Procedure FlushPendingBlock;
+ Var
+  K, MaxLen: Integer;
+ Begin
+  If PendingCount = 0 Then Exit;
+  MaxLen := 0;
+  For K := 1 To PendingCount Do
+   If Length(PendingLines[K]) > MaxLen Then MaxLen := Length(PendingLines[K]);
+  For K := 1 To PendingCount Do
+   WriteLn(OutF, PendingLines[K],
+    SpaceStr(MaxLen - Length(PendingLines[K]) + 1), '{ ',
+    PendingDescs[K], ' }');
+  PendingCount := 0;
+ End;
+
+ { @description: Ajoute une ligne et la description de son
+     commentaire au bloc en attente d alignement (voir
+     FlushPendingBlock). Si le bloc est plein, ecrit la ligne
+     immediatement, sans alignement, par securite.
+   @param LineText Texte original de la ligne (sans le commentaire)
+   @param CDesc Description a placer en commentaire de fin de ligne }
+ Procedure AddToPendingBlock(LineText, CDesc: String);
+ Begin
+  If PendingCount < MaxPending Then Begin
+   Inc(PendingCount);
+   PendingLines[PendingCount] := LineText;
+   PendingDescs[PendingCount] := CDesc;
+  End Else
+   WriteLn(OutF, LineText, ' { ', CDesc, ' }');
+ End;
+
 Begin
  InRecord := False;
  RecordTypeName := '';
+ PendingCount := 0;
  I := 1;
  While I <= LineCount Do Begin
   S := Lines[I];
@@ -1289,6 +1346,7 @@ Begin
       StartsWithStr(Trimmed, 'Procedure ')) And
      (((Mode And MD_FUNC) <> 0) Or ((Mode And MD_PROC) <> 0) Or
       ((Mode And MD_PARAM) <> 0)) Then Begin
+   FlushPendingBlock;
    CollectPascalHeader(I, FullText, LastLine);
    ParsePascalHeader(FullText, Name, ParamList, IsFunc);
    ExtractPascalParamNames(ParamList, ParamNames, ParamCnt);
@@ -1310,6 +1368,7 @@ Begin
      (EndsWithStr(UpStr(TrimStr(Copy(Trimmed, EqPos + 1,
        Length(Trimmed) - EqPos))), 'RECORD')) And
      ((Mode And (MD_RECORD Or MD_FIELD)) <> 0) Then Begin
+   FlushPendingBlock;
    RecordTypeName := TrimStr(Copy(Trimmed, 1, EqPos - 1));
    If ((Mode And MD_RECORD) <> 0) And (Not HasPrecedingComment(I)) Then Begin
     Desc := DescribeSimple(RecordTypeName, 'Structure');
@@ -1324,6 +1383,7 @@ Begin
 
   { ----- Fin d un enregistrement ----- }
   If InRecord And (Up = 'END;') Then Begin
+   FlushPendingBlock;
    InRecord := False;
    WriteLn(OutF, S);
    Inc(I);
@@ -1340,7 +1400,7 @@ Begin
    SplitNameList(FieldNamesPart, FieldNames, FNCount);
    If FNCount > 0 Then Begin
     Desc := DescribeField(FieldNames[0], TypeText);
-    WriteLn(OutF, S, ' { ', Desc, ' }');
+    AddToPendingBlock(S, Desc);
     Inc(NbField);
     Inc(I);
     Continue;
@@ -1356,7 +1416,7 @@ Begin
      (Not ContainsStr(Copy(Trimmed, 1, EqPos - 1), ' ')) Then Begin
    Name := TrimStr(Copy(Trimmed, 1, EqPos - 1));
    Desc := DescribeSimple(Name, 'Constante');
-   WriteLn(OutF, S, ' { ', Desc, ' }');
+   AddToPendingBlock(S, Desc);
    Inc(NbConst);
    Inc(I);
    Continue;
@@ -1379,16 +1439,18 @@ Begin
    SplitNameList(FieldNamesPart, FieldNames, FNCount);
    If FNCount > 0 Then Begin
     Desc := DescribeField(FieldNames[0], TypeText);
-    WriteLn(OutF, S, ' { ', Desc, ' }');
+    AddToPendingBlock(S, Desc);
     Inc(NbField);
     Inc(I);
     Continue;
    End;
   End;
 
+  FlushPendingBlock;
   WriteLn(OutF, S);
   Inc(I);
  End;
+ FlushPendingBlock;
 End;
 
 { ============================================================
@@ -1474,6 +1536,8 @@ End;
     (#define et "const Type Nom ="), et les champs simples
     "Type Nom;" a l interieur d une structure/classe. }
 Procedure ProcessCFile;
+Const
+ MaxPending = 1000;          { taille maximale d un bloc de lignes a aligner }
 Var
  I: Integer;
  S, Trimmed, UpTrim: String;
@@ -1485,11 +1549,44 @@ Var
  BraceDepth: Integer;
  InStruct: Boolean;
  StructEnterDepth: Integer;
+ PendingLines: Array[1..MaxPending] Of String;
+ PendingDescs: Array[1..MaxPending] Of String;
+ PendingCount: Integer;
+
+ { Aligne les commentaires "/* ... */" de fin de ligne d un bloc de
+   champs/constantes consecutifs sur une meme colonne (voir l
+   explication detaillee dans ProcessPascalFile.FlushPendingBlock). }
+ Procedure FlushPendingBlock;
+ Var
+  K, MaxLen: Integer;
+ Begin
+  If PendingCount = 0 Then Exit;
+  MaxLen := 0;
+  For K := 1 To PendingCount Do
+   If Length(PendingLines[K]) > MaxLen Then MaxLen := Length(PendingLines[K]);
+  For K := 1 To PendingCount Do
+   WriteLn(OutF, PendingLines[K],
+    SpaceStr(MaxLen - Length(PendingLines[K]) + 1), '/* ',
+    PendingDescs[K], ' */');
+  PendingCount := 0;
+ End;
+
+ Procedure AddToPendingBlock(LineText, CDesc: String);
+ Begin
+  If PendingCount < MaxPending Then Begin
+   Inc(PendingCount);
+   PendingLines[PendingCount] := LineText;
+   PendingDescs[PendingCount] := CDesc;
+  End Else
+   WriteLn(OutF, LineText, ' /* ', CDesc, ' */');
+ End;
+
 Begin
  I := 1;
  BraceDepth := 0;
  InStruct := False;
  StructEnterDepth := 0;
+ PendingCount := 0;
  While I <= LineCount Do Begin
   S := Lines[I];
   Trimmed := TrimStr(S);
@@ -1524,7 +1621,7 @@ Begin
    End;
    If Name <> '' Then Begin
     Desc := DescribeSimple(Name, 'Constante');
-    WriteLn(OutF, S, ' /* ', Desc, ' */');
+    AddToPendingBlock(S, Desc);
     Inc(NbConst);
     Inc(I);
     Continue;
@@ -1534,6 +1631,7 @@ Begin
   { ----- Fonction/methode ----- }
   If LooksLikeCFunction(Trimmed, Name, ParamList) And
      ((Mode And (MD_FUNC Or MD_PROC Or MD_PARAM)) <> 0) Then Begin
+   FlushPendingBlock;
    ExtractCParamNames(ParamList, ParamNames, ParamCnt);
    If (Not HasPrecedingComment(I)) And
       ((Mode And (MD_FUNC Or MD_PROC)) <> 0) Then Begin
@@ -1579,7 +1677,7 @@ Begin
     If ContainsStr(Trimmed, 'const ') And ((Mode And MD_CONST) <> 0) Then
      Begin
       Desc := DescribeField(FieldName, TypeWord);
-      WriteLn(OutF, S, ' /* ', Desc, ' */');
+      AddToPendingBlock(S, Desc);
       Inc(NbConst);
       Inc(I);
       Continue;
@@ -1588,7 +1686,7 @@ Begin
             (BraceDepth = StructEnterDepth) And
             (Not ContainsStr(Trimmed, '=')) Then Begin
      Desc := DescribeField(FieldName, TypeWord);
-     WriteLn(OutF, S, ' /* ', Desc, ' */');
+     AddToPendingBlock(S, Desc);
      Inc(NbField);
      Inc(I);
      Continue;
@@ -1596,9 +1694,11 @@ Begin
    End;
   End;
 
+  FlushPendingBlock;
   WriteLn(OutF, S);
   Inc(I);
  End;
+ FlushPendingBlock;
 End;
 
 { ============================================================

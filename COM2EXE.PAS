@@ -7,7 +7,7 @@
 Program COM2EXE;
 
 Type
- ExeHead=Array[1..32]of Byte;
+ ExeHead=Array[1..32]of Byte; { Tete de liste }
 
 Const
  ExeHeader:ExeHead=(
@@ -16,15 +16,18 @@ Const
   $6f,$74,$61,$6e);
 
 Var
- Buf:Array[1..4096]of Byte;
- FileCOM,FileEXE:File;
- Size,I,J:Word;
- FileNameCOM,FileNameEXE:String;
- W:Byte;
+ Buf:Array[1..4096]of Byte;      { Tampon }
+ FileCOM,FileEXE:File;           { Descripteur de fichier }
+ Size,I,J:Word;                  { Taille }
+ FileNameCOM,FileNameEXE:String; { Descripteur de fichier Nom }
+ W:Byte;                         { Entier non signe (8 bits) }
 
+{ @description: Cette fonction permet de verifier si le fichier existe.
+  @param FileName Nom du fichier
+  @return Faux = le fichier n existe pas, Vrai = le fichier existe. }
 Function FileExists(FileName:String):Boolean;
 Var
- F:File;
+ F:File; { Descripteur de fichier }
 Begin
  {$I-}Assign(F,FileName);
  Reset(F);
