@@ -324,16 +324,16 @@ End;
 Procedure InitReturnDict;
 Begin
  ReturnDictCount := 0;
- ReturnAdd('FileExists', 'Faux = le fichier n existe pas, Vrai = le fichier existe.');
- ReturnAdd('DirectoryExists', 'Faux = le repertoire n existe pas, Vrai = le repertoire existe.');
+ ReturnAdd('FileExists', 'Faux = le fichier n''existe pas, Vrai = le fichier existe.');
+ ReturnAdd('DirectoryExists', 'Faux = le repertoire n''existe pas, Vrai = le repertoire existe.');
  ReturnAdd('Eof', 'Vrai si la fin du fichier est atteinte.');
  ReturnAdd('Eoln', 'Vrai si la fin de la ligne est atteinte.');
- ReturnAdd('IOResult', 'Code d erreur de la derniere operation d entree/sortie (0 = aucune erreur).');
+ ReturnAdd('IOResult', 'Code d''erreur de la derniere operation d''entree/sortie (0 = aucune erreur).');
  ReturnAdd('FileSize', 'Taille du fichier en octets.');
  ReturnAdd('FilePos', 'Position courante dans le fichier.');
  ReturnAdd('Length', 'Longueur de la chaine ou du tableau.');
  ReturnAdd('Pos', 'Position de la sous-chaine trouvee, ou 0 si absente.');
- ReturnAdd('ParamCount', 'Nombre d arguments passes sur la ligne de commande.');
+ ReturnAdd('ParamCount', 'Nombre d''arguments passes sur la ligne de commande.');
  ReturnAdd('ParamStr', 'Argument demande de la ligne de commande.');
 End;
 
@@ -612,7 +612,7 @@ Const
  Phr: Array[1..NSuf] Of String[40] = (
   'en majuscules.', 'en majuscules.', 'en minuscules.', 'en minuscules.',
   'sous forme de chaine de caracteres.', 'sous forme de chaine de caracteres.',
-  'sous forme d entier.', 'sous forme de nombre reel.');
+  'sous forme d''entier.', 'sous forme de nombre reel.');
 Var
  I, L: Integer;
 Begin
@@ -657,7 +657,7 @@ Begin
    BuildReturnPhrase := CapStr(EndPhrase);
   Exit;
  End;
- BuildReturnPhrase := 'Resultat de l operation.';
+ BuildReturnPhrase := 'Resultat de l''operation.';
 End;
 
 { @description: Construit la phrase d action d une fonction ou
@@ -666,9 +666,46 @@ End;
     decomposition generique.
   @param Name Nom de la fonction ou procedure
   @return Phrase decrivant l action realisee }
+{ @description: Devine le genre grammatical (masculin/feminin) d une
+    description francaise, a partir de son premier mot, pour choisir
+    l article indefini correct ("un"/"une") lorsqu elle est inseree
+    comme complement d un verbe (ex: "traiter" + "ligne" -> "traiter
+    une ligne"). Couvre les noms les plus frequents du dictionnaire ;
+    un mot non reconnu ne provoque pas l ajout d un article (mieux
+    vaut l absence d article qu un mauvais accord).
+  @param Desc Description dont on veut le genre du premier mot
+  @return 'F' (feminin), 'M' (masculin), ou '?' si inconnu }
+Function NounGenre(Desc: String): Char;
+Var
+ FirstWord, U: String;
+ P: Integer;
+Begin
+ FirstWord := TrimStr(Desc);
+ P := Pos(' ', FirstWord);
+ If P > 0 Then FirstWord := Copy(FirstWord, 1, P - 1);
+ U := UpStr(FirstWord);
+ NounGenre := '?';
+ If (U = 'LIGNE') Or (U = 'CHAINE') Or (U = 'VALEUR') Or (U = 'TAILLE') Or
+    (U = 'POSITION') Or (U = 'LONGUEUR') Or (U = 'ADRESSE') Or
+    (U = 'DATE') Or (U = 'HEURE') Or (U = 'LISTE') Or (U = 'PILE') Or
+    (U = 'STRUCTURE') Or (U = 'VARIABLE') Or (U = 'CONSTANTE') Or
+    (U = 'FONCTION') Or (U = 'PROCEDURE') Or (U = 'CLE') Or
+    (U = 'TABLE') Or (U = 'ENTREE') Then
+  NounGenre := 'F'
+ Else If (U = 'FICHIER') Or (U = 'REPERTOIRE') Or (U = 'ENTIER') Or
+    (U = 'CARACTERE') Or (U = 'TABLEAU') Or (U = 'TAMPON') Or
+    (U = 'INDEX') Or (U = 'COMPTEUR') Or (U = 'NOMBRE') Or
+    (U = 'POINTEUR') Or (U = 'BOOLEEN') Or (U = 'DRAPEAU') Or
+    (U = 'INDICATEUR') Or (U = 'NOM') Or (U = 'CHEMIN') Or
+    (U = 'LECTEUR') Or (U = 'DESCRIPTEUR') Or (U = 'OCTET') Or
+    (U = 'ARGUMENT') Then
+  NounGenre := 'M';
+End;
+
 Function BuildActionPhrase(Name: String): String;
 Var
- D, VerbPhrase, Rest, Tail: String;
+ D, VerbPhrase, Rest, Tail, Art: String;
+ G: Char;
 Begin
  D := DictFind(Name);
  If D <> '' Then Begin
@@ -680,9 +717,20 @@ Begin
  If VerbPhrase <> '' Then Begin
   Tail := DictFindWord(Rest);
   If Tail = '' Then Tail := DecomposeToPhrase(Rest);
-  If Tail <> '' Then
-   BuildActionPhrase := VerbPhrase + ' ' + LowStr(Tail)
-  Else
+  If Tail <> '' Then Begin
+   { Pas d article si le verbe se termine deja par "de"/"a ... de"/":"
+     (ex: "ajouter a la fin de", "verifier si existe :") : le mot
+     suivant s enchaine directement, et "de un/une" demanderait une
+     elision ("d un") que l on ne gere pas ici. }
+   Art := '';
+   If (Not EndsWithStr(VerbPhrase, 'de')) And
+      (Not EndsWithStr(VerbPhrase, ':')) Then Begin
+    G := NounGenre(Tail);
+    If G = 'F' Then Art := 'une '
+    Else If G = 'M' Then Art := 'un ';
+   End;
+   BuildActionPhrase := VerbPhrase + ' ' + Art + LowStr(Tail);
+  End Else
    BuildActionPhrase := VerbPhrase;
   Exit;
  End;
@@ -690,7 +738,7 @@ Begin
  If D <> '' Then
   BuildActionPhrase := 'la fonctionnalite ' + LowStr(D)
  Else
-  BuildActionPhrase := 'l operation ' + Name;
+  BuildActionPhrase := 'l''operation ' + Name;
 End;
 
 { ============================================================
@@ -775,7 +823,7 @@ Begin
  PrefixAdd('Translate', 'traduire');
  PrefixAdd('Apply', 'appliquer');
  PrefixAdd('Register', 'enregistrer');
- PrefixAdd('Unregister', 'retirer l enregistrement de');
+ PrefixAdd('Unregister', 'retirer l''enregistrement de');
  PrefixAdd('Is', 'indiquer si');
  PrefixAdd('Has', 'indiquer si');
  PrefixAdd('Can', 'indiquer si');
@@ -816,7 +864,7 @@ Begin
  SuffixAdd('Open', 'indiquer si est ouvert :');
  SuffixAdd('Mounted', 'indiquer si est monte :');
  SuffixAdd('Empty', 'indiquer si est vide :');
- SuffixAdd('Equal', 'comparer l egalite de :');
+ SuffixAdd('Equal', 'comparer l''egalite de :');
  SuffixAdd('Supported', 'indiquer si est pris en charge :');
  SuffixAdd('ToUpper', 'convertir en majuscules :');
  SuffixAdd('ToLower', 'convertir en minuscules :');
@@ -863,57 +911,57 @@ Begin
  { --- Fonctions/procedures standards Pascal/TP/FPC --- }
  DictAdd('FileExists', 'Cette fonction permet de verifier si le fichier existe.');
  DictAdd('DirectoryExists', 'Cette fonction permet de verifier si le repertoire existe.');
- DictAdd('Assign',   'Cette procedure permet d associer un descripteur de fichier a un nom de fichier sur le disque.');
- DictAdd('Reset',    'Cette procedure permet d ouvrir un fichier existant en lecture (ou lecture/ecriture).');
- DictAdd('Rewrite',  'Cette procedure permet de creer un nouveau fichier (vide) et de l ouvrir en ecriture.');
- DictAdd('Append',   'Cette procedure permet d ouvrir un fichier texte en ajout, a la fin du contenu existant.');
+ DictAdd('Assign',   'Cette procedure permet d''associer un descripteur de fichier a un nom de fichier sur le disque.');
+ DictAdd('Reset',    'Cette procedure permet d''ouvrir un fichier existant en lecture (ou lecture/ecriture).');
+ DictAdd('Rewrite',  'Cette procedure permet de creer un nouveau fichier (vide) et de l''ouvrir en ecriture.');
+ DictAdd('Append',   'Cette procedure permet d''ouvrir un fichier texte en ajout, a la fin du contenu existant.');
  DictAdd('Close',    'Cette procedure permet de fermer un fichier ouvert.');
  DictAdd('Erase',    'Cette procedure permet de supprimer un fichier du disque.');
  DictAdd('Rename',   'Cette procedure permet de renommer un fichier sur le disque.');
- DictAdd('BlockRead',  'Cette procedure permet de lire un bloc d octets depuis un fichier.');
- DictAdd('BlockWrite', 'Cette procedure permet d ecrire un bloc d octets dans un fichier.');
+ DictAdd('BlockRead',  'Cette procedure permet de lire un bloc d''octets depuis un fichier.');
+ DictAdd('BlockWrite', 'Cette procedure permet d''ecrire un bloc d''octets dans un fichier.');
  DictAdd('Seek',     'Cette procedure permet de deplacer la position courante dans un fichier.');
- DictAdd('FileSize', 'Cette fonction permet d obtenir la taille en octets d un fichier ouvert.');
- DictAdd('FilePos',  'Cette fonction permet d obtenir la position courante dans un fichier ouvert.');
+ DictAdd('FileSize', 'Cette fonction permet d''obtenir la taille en octets d''un fichier ouvert.');
+ DictAdd('FilePos',  'Cette fonction permet d''obtenir la position courante dans un fichier ouvert.');
  DictAdd('Eof',      'Cette fonction permet de verifier si la fin du fichier est atteinte.');
  DictAdd('Eoln',     'Cette fonction permet de verifier si la fin de la ligne courante est atteinte.');
  DictAdd('ReadLn',   'Cette procedure permet de lire une ligne de texte.');
- DictAdd('WriteLn',  'Cette procedure permet d ecrire une ligne de texte.');
- DictAdd('GetMem',   'Cette procedure permet d allouer un bloc de memoire.');
+ DictAdd('WriteLn',  'Cette procedure permet d''ecrire une ligne de texte.');
+ DictAdd('GetMem',   'Cette procedure permet d''allouer un bloc de memoire.');
  DictAdd('FreeMem',  'Cette procedure permet de liberer un bloc de memoire alloue.');
- DictAdd('New',      'Cette procedure permet d allouer dynamiquement une nouvelle instance.');
+ DictAdd('New',      'Cette procedure permet d''allouer dynamiquement une nouvelle instance.');
  DictAdd('Dispose',  'Cette procedure permet de liberer une instance allouee dynamiquement.');
- DictAdd('Move',     'Cette procedure permet de copier un bloc d octets en memoire.');
+ DictAdd('Move',     'Cette procedure permet de copier un bloc d''octets en memoire.');
  DictAdd('FillChar', 'Cette procedure permet de remplir un bloc memoire avec un octet donne.');
- DictAdd('Length',   'Cette fonction permet d obtenir la longueur d une chaine ou d un tableau.');
- DictAdd('Copy',     'Cette fonction permet d extraire une sous-chaine ou une portion d un tableau.');
- DictAdd('Pos',      'Cette fonction permet de trouver la position d une sous-chaine.');
- DictAdd('Delete',   'Cette procedure permet de retirer une partie d une chaine.');
- DictAdd('Insert',   'Cette procedure permet d inserer une chaine dans une autre.');
+ DictAdd('Length',   'Cette fonction permet d''obtenir la longueur d''une chaine ou d''un tableau.');
+ DictAdd('Copy',     'Cette fonction permet d''extraire une sous-chaine ou une portion d''un tableau.');
+ DictAdd('Pos',      'Cette fonction permet de trouver la position d''une sous-chaine.');
+ DictAdd('Delete',   'Cette procedure permet de retirer une partie d''une chaine.');
+ DictAdd('Insert',   'Cette procedure permet d''inserer une chaine dans une autre.');
  DictAdd('UpCase',   'Cette fonction permet de convertir un caractere en majuscule.');
- DictAdd('Chr',      'Cette fonction permet d obtenir le caractere correspondant a un code ASCII.');
- DictAdd('Ord',      'Cette fonction permet d obtenir le code ordinal d une valeur.');
+ DictAdd('Chr',      'Cette fonction permet d''obtenir le caractere correspondant a un code ASCII.');
+ DictAdd('Ord',      'Cette fonction permet d''obtenir le code ordinal d''une valeur.');
  DictAdd('Val',      'Cette procedure permet de convertir une chaine en valeur numerique.');
  DictAdd('Str',      'Cette procedure permet de convertir une valeur numerique en chaine.');
  DictAdd('IntToStr', 'Cette fonction permet de convertir un entier en chaine de caracteres.');
  DictAdd('StrToInt', 'Cette fonction permet de convertir une chaine de caracteres en entier.');
- DictAdd('ParamStr', 'Cette fonction permet d obtenir un argument de la ligne de commande.');
- DictAdd('ParamCount', 'Cette fonction permet d obtenir le nombre d arguments de la ligne de commande.');
- DictAdd('Halt',     'Cette procedure permet d arreter immediatement le programme.');
- DictAdd('GetDir',   'Cette procedure permet d obtenir le repertoire courant.');
+ DictAdd('ParamStr', 'Cette fonction permet d''obtenir un argument de la ligne de commande.');
+ DictAdd('ParamCount', 'Cette fonction permet d''obtenir le nombre d''arguments de la ligne de commande.');
+ DictAdd('Halt',     'Cette procedure permet d''arreter immediatement le programme.');
+ DictAdd('GetDir',   'Cette procedure permet d''obtenir le repertoire courant.');
  DictAdd('ChDir',    'Cette procedure permet de changer de repertoire courant.');
  DictAdd('MkDir',    'Cette procedure permet de creer un repertoire.');
  DictAdd('RmDir',    'Cette procedure permet de supprimer un repertoire.');
  DictAdd('FindFirst', 'Cette procedure permet de demarrer une recherche de fichiers.');
  DictAdd('FindNext', 'Cette procedure permet de poursuivre une recherche de fichiers.');
  DictAdd('FindClose', 'Cette procedure permet de terminer une recherche de fichiers.');
- DictAdd('IOResult', 'Cette fonction permet d obtenir le code d erreur de la derniere operation d entree/sortie.');
- DictAdd('Random',   'Cette fonction permet d obtenir un nombre aleatoire.');
- DictAdd('Randomize', 'Cette procedure permet d initialiser le generateur de nombres aleatoires.');
+ DictAdd('IOResult', 'Cette fonction permet d''obtenir le code d''erreur de la derniere operation d''entree/sortie.');
+ DictAdd('Random',   'Cette fonction permet d''obtenir un nombre aleatoire.');
+ DictAdd('Randomize', 'Cette procedure permet d''initialiser le generateur de nombres aleatoires.');
  DictAdd('Sqrt',     'Cette fonction permet de calculer la racine carree.');
- DictAdd('Abs',      'Cette fonction permet d obtenir la valeur absolue.');
+ DictAdd('Abs',      'Cette fonction permet d''obtenir la valeur absolue.');
  DictAdd('Trunc',    'Cette fonction permet de tronquer un nombre reel en entier.');
- DictAdd('Round',    'Cette fonction permet d arrondir un nombre reel en entier.');
+ DictAdd('Round',    'Cette fonction permet d''arrondir un nombre reel en entier.');
 
  { --- Abreviations et noms de variables/champs courants --- }
  DictAdd('I', 'Compteur de boucle');
@@ -942,9 +990,9 @@ Begin
  DictAdd('PathName', 'Nom du chemin');
  DictAdd('SrcName', 'Nom du fichier source');
  DictAdd('DestName', 'Nom du fichier destination');
- DictAdd('ErrorMsg', 'Message d erreur');
- DictAdd('ErrMsg', 'Message d erreur');
- DictAdd('UserName', 'Nom d utilisateur');
+ DictAdd('ErrorMsg', 'Message d''erreur');
+ DictAdd('ErrMsg', 'Message d''erreur');
+ DictAdd('UserName', 'Nom d''utilisateur');
  DictAdd('Path', 'Chemin');
  DictAdd('Dir', 'Repertoire');
  DictAdd('Directory', 'Repertoire');
@@ -1047,7 +1095,7 @@ Begin
  DictAdd('Time', 'Heure');
  DictAdd('Timestamp', 'Horodatage');
  DictAdd('Duration', 'Duree');
- DictAdd('Timeout', 'Delai d expiration');
+ DictAdd('Timeout', 'Delai d''expiration');
  DictAdd('Delay', 'Delai');
  DictAdd('Speed', 'Vitesse');
  DictAdd('Rate', 'Taux');
@@ -1891,7 +1939,7 @@ End;
 { @description: Affiche l aide d utilisation de la commande COMMENT. }
 Procedure Help;
 Begin
- WriteLn('COMMENT : Cette commande permet d ajouter des commentaires ',
+ WriteLn('COMMENT : Cette commande permet d''ajouter des commentaires ',
          'en francais');
  WriteLn('          dans un fichier source Pascal, C ou C# (champs, ',
          'constantes,');
@@ -2049,7 +2097,7 @@ BEGIN
  Rename(OutF, BakName);
  {$I+}
  If IOResult <> 0 Then Begin
-  WriteLn('Erreur : impossible de sauvegarder l original avant remplacement.');
+  WriteLn('Erreur : impossible de sauvegarder l''original avant remplacement.');
   WriteLn('Le resultat se trouve dans : ', OutName);
   Halt(1);
  End;
@@ -2058,8 +2106,8 @@ BEGIN
  Rename(OutF, SrcName);
  {$I+}
  If IOResult <> 0 Then Begin
-  WriteLn('Erreur lors de l installation du resultat : restauration ',
-   'de l original.');
+  WriteLn('Erreur lors de l''installation du resultat : restauration ',
+   'de l''original.');
   {$I-}
   Assign(OutF, BakName);
   Rename(OutF, SrcName);

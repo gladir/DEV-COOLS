@@ -7,12 +7,15 @@
 Program _8080Z80;
 
 Var
- Source8080:Text;
- CurrLine:String;
+ Source8080:Text; { Fichier texte }
+ CurrLine:String; { Ligne courante }
 
+{ @description: Cette fonction permet de convertir en majuscules : chaine de caracteres.
+  @param S Parametre de chaine de caracteres
+  @return Chaine de caracteres en majuscules. }
 Function StrToUpper(S:String):String;
 Var
- I:Byte;
+ I:Byte; { Compteur de boucle }
 Begin
  For I:=1 to Length(S)do Begin
   If S[I] in['a'..'z']Then S[I]:=Chr(Ord(S[I])-32);
@@ -20,9 +23,12 @@ Begin
  StrToUpper:=S;
 End;
 
+{ @description: Cette fonction permet de l'operation Space.
+  @param L Parametre de longueur
+  @return Resultat de l'operation. }
 Function Space(L:Byte):String;
 Var
- S:String;
+ S:String; { Chaine de caracteres }
 Begin
  If(L=0)Then Space:=''
   else
@@ -33,13 +39,15 @@ Begin
  End;
 End;
 
+{ @description: Cette fonction permet de traiter une ligne.
+  @return Resultat de l'operation. }
 Function ProcessLine:String;
 Var
- I:Integer;
- CellPos:Byte;
- SpaceLeft:Byte;
- Cells:Array[0..3]of String;
- Rem:String;
+ I:Integer;                  { Compteur de boucle }
+ CellPos:Byte;               { Position }
+ SpaceLeft:Byte;             { Position gauche }
+ Cells:Array[0..3]of String; { Chaine de caracteres }
+ Rem:String;                 { Chaine de caracteres }
 Begin
  CellPos:=0;
  FillChar(Cells,SizeOf(Cells),0);
