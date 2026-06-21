@@ -1445,6 +1445,8 @@ Type
   EmuArgs         : TString;   { arguments passes au programme emule}
   DiskImg0        : TString;   { /DISK0:fichier.img -> unite A:     }
   DiskImg1        : TString;   { /DISK1:fichier.img -> unite B:     }
+  DiskImg80       : TString;   { /DISK80:fichier.img -> disque dur C: }
+  DiskImg81       : TString;   { /DISK81:fichier.img -> disque dur D: }
  End;
 
  { Types d evenements }
@@ -2125,7 +2127,8 @@ Type
   VirtCwd   : String;              { chemin courant sur disque virt }
  End;
 
- { Etat d un disque virtuel FAT12/16 monte via /DISK0 ou /DISK1 }
+ { Etat d un disque virtuel FAT12/16 monte via /DISK0, /DISK1,
+   /DISK80 ou /DISK81 }
  TFatVol = Record
   Mounted        : Boolean;
   IsD64          : Boolean;        { image Commodore 64 .D64        }
@@ -2138,6 +2141,9 @@ Type
   RootEntries    : Word;
   TotalSectors   : LongInt;
   SectorsPerFAT  : LongInt;
+  PartitionStart : LongInt;        { LBA de la partition FAT (MBR disque
+                                      dur) ; 0 pour une image disquette
+                                      ou un disque dur sans MBR        }
   FATStart       : LongInt;
   RootStart      : LongInt;
   DataStart      : LongInt;
@@ -3269,18 +3275,33 @@ Var
  EmuIoBuf       : Array[0..2047] Of Byte; { buffer global pour AH=3F/40 (eviter stack overflow) }
  EmuFileName    : Array[5..31] Of String;
  EmuFileMode    : Array[5..31] Of Byte;  { 0=read 1=write 2=rw }
- { --- Images disquettes A:/B: pour INT 13h (option /DISK0:/DISK1:) --- }
- EmuFloppyOpen  : Array[0..1] Of Boolean;
- EmuFloppyFile  : Array[0..1] Of File;
- EmuFloppyName  : Array[0..1] Of String;
- EmuFloppyCyls  : Array[0..1] Of Word;    { nb cylindres }
- EmuFloppyHeads : Array[0..1] Of Byte;    { nb tetes (1 ou 2) }
- EmuFloppySpt   : Array[0..1] Of Byte;    { secteurs par piste }
- EmuFloppyType  : Array[0..1] Of Byte;    { code BIOS drive type }
- EmuFloppySize  : Array[0..1] Of LongInt; { taille totale en octets }
- EmuFloppyRO    : Array[0..1] Of Boolean; { ouvert en lecture seule  }
+ { --- Images montees pour INT 13h : indices 0=A: 1=B: (option
+   /DISK0:/DISK1:, disquettes) et 2=C: 3=D: (option /DISK80:/DISK81:,
+   disques durs). EmuFloppySize represente toujours la taille VIRTUELLE
+   du disque en octets (pas necessairement la taille du fichier hote :
+   pour VHD dynamique/VMDK sparse, le fichier est plus petit). --- }
+ EmuFloppyOpen  : Array[0..3] Of Boolean;
+ EmuFloppyFile  : Array[0..3] Of File;
+ EmuFloppyName  : Array[0..3] Of String;
+ EmuFloppyCyls  : Array[0..3] Of Word;    { nb cylindres }
+ EmuFloppyHeads : Array[0..3] Of Byte;    { nb tetes (1 ou 2, 16 pour HDD) }
+ EmuFloppySpt   : Array[0..3] Of Byte;    { secteurs par piste }
+ EmuFloppyType  : Array[0..3] Of Byte;    { code BIOS drive type (floppy) }
+ EmuFloppySize  : Array[0..3] Of LongInt; { taille virtuelle en octets }
+ EmuFloppyRO    : Array[0..3] Of Boolean; { ouvert en lecture seule  }
  EmuFloppyMotor : Byte;                   { etat moteur drive ($40:$3F) }
- FatVol         : Array[0..1] Of TFatVol; { volumes FAT12/16 montes  }
+ { Traduction de conteneur (VHD/VMDK) pour les unites 2/3 (disques durs).
+   Kind: 0=brut, 1=VHD fixe, 2=VHD dynamique, 3=VMDK sparse.
+   BlockSec=secteurs par bloc/grain, BitmapSecs=secteurs de bitmap avant
+   chaque bloc (VHD seulement), BATFileOfs=offset fichier de la BAT (VHD)
+   ou de la Grain Directory (VMDK), GTEsPerGT=entrees par table de grains
+   (VMDK). }
+ EmuFloppyKind     : Array[0..3] Of Byte;
+ EmuFloppyBlockSec  : Array[0..3] Of LongInt;
+ EmuFloppyBitmapSecs: Array[0..3] Of LongInt;
+ EmuFloppyBATFileOfs: Array[0..3] Of LongInt;
+ EmuFloppyGTEsPerGT : Array[0..3] Of LongInt;
+ FatVol         : Array[0..3] Of TFatVol; { volumes FAT12/16 montes  }
  EmuDtaSeg      : Word;
  EmuDtaOfs      : Word;
  EmuPspSeg      : Word;     { segment du PSP du programme courant }
@@ -3975,8 +3996,13 @@ Procedure ShowHelp;Begin
  WriteLn('  /DISK1:img     Image disquette montee sur l unite B: (DOS)');
  WriteLn('                 Formats: .IMG/.IMA brutes (160/180/320/360/720');
  WriteLn('                          /1200/1440/2880 Ko).');
+ WriteLn('  /DISK80:img    Image disque dur montee sur l unite C: (DOS)');
+ WriteLn('  /DISK81:img    Image disque dur montee sur l unite D: (DOS)');
+ WriteLn('                 Formats: brute (.IMG), VHD fixe/dynamique,');
+ WriteLn('                          VMDK sparse/descripteur. Avec ou sans');
+ WriteLn('                          table de partitions (MBR).');
  WriteLn('                 Le terminal CMD/PowerShell integre peut');
- WriteLn('                 utiliser A: ou B: et les commandes DIR,');
+ WriteLn('                 utiliser A:/B:/C:/D: et les commandes DIR,');
  WriteLn('                 TYPE, CD, VOL pour explorer l image (FAT12/16).');
  WriteLn('  -maxscreen     Ouvrir l IDE en plein ecran');
  WriteLn('  -h             Afficher cette aide');
@@ -4015,6 +4041,8 @@ Begin
  Opts.EmuArgs         := '';
  Opts.DiskImg0        := '';
  Opts.DiskImg1        := '';
+ Opts.DiskImg80       := '';
+ Opts.DiskImg81       := '';
 End;
 
 { --- Analyse de la ligne de commande --- }
@@ -4109,6 +4137,28 @@ Begin
    If Not FileExists(EmuFn) Then
     FatalError('Image disque introuvable: ' + EmuFn);
    Opts.DiskImg1 := EmuFn;
+  End
+  Else If (Length(Arg) >= 8) And
+          ((Copy(Arg, 1, 8) = '/DISK80:') Or (Copy(Arg, 1, 8) = '/disk80:') Or
+           (Copy(Arg, 1, 8) = '-DISK80:') Or (Copy(Arg, 1, 8) = '-disk80:') Or
+           (Copy(Arg, 1, 8) = '/Disk80:') Or (Copy(Arg, 1, 8) = '-Disk80:')) Then Begin
+   EmuFn := Copy(Arg, 9, Length(Arg) - 8);
+   If EmuFn = '' Then
+    FatalError('Syntaxe /DISK80 attendue : /DISK80:fichier.img');
+   If Not FileExists(EmuFn) Then
+    FatalError('Image disque introuvable: ' + EmuFn);
+   Opts.DiskImg80 := EmuFn;
+  End
+  Else If (Length(Arg) >= 8) And
+          ((Copy(Arg, 1, 8) = '/DISK81:') Or (Copy(Arg, 1, 8) = '/disk81:') Or
+           (Copy(Arg, 1, 8) = '-DISK81:') Or (Copy(Arg, 1, 8) = '-disk81:') Or
+           (Copy(Arg, 1, 8) = '/Disk81:') Or (Copy(Arg, 1, 8) = '-Disk81:')) Then Begin
+   EmuFn := Copy(Arg, 9, Length(Arg) - 8);
+   If EmuFn = '' Then
+    FatalError('Syntaxe /DISK81 attendue : /DISK81:fichier.img');
+   If Not FileExists(EmuFn) Then
+    FatalError('Image disque introuvable: ' + EmuFn);
+   Opts.DiskImg81 := EmuFn;
   End
   Else If (Length(Arg) > 0) And (Arg[1] = '-') Then
    FatalError('Option inconnue: ' + Arg)
@@ -18705,26 +18755,28 @@ End;
 { ============================================================
   ACCES FAT12/16 POUR LE TERMINAL INTEGRE
   ============================================================
-  Les images montees via /DISK0 et /DISK1 sont lues directement
-  depuis EmuFloppyFile[]. Ces helpers fournissent une couche
-  read-only suffisante pour DIR / CD / TYPE / VOL. }
+  Les images montees via /DISK0, /DISK1, /DISK80 et /DISK81 sont
+  lues via la couche de traduction de conteneur (Emu_ImageReadSector/
+  Emu_ImageWriteSector, definie plus bas avec l emulateur), decalee
+  de FatVol[Idx].PartitionStart pour les disques durs partitionnes
+  (MBR). Ces helpers fournissent une couche suffisante pour
+  DIR / CD / TYPE / VOL. }
+
+{ Declarations anticipees : implementees avec le reste du support
+  disque de l emulateur (conteneurs VHD/VMDK). }
+Function Emu_ImageReadSector(Idx: Byte; LBA: LongInt;
+ Var Buf: Array Of Byte): Boolean; Forward;
+Function Emu_ImageWriteSector(Idx: Byte; LBA: LongInt;
+ Var Buf: Array Of Byte): Boolean; Forward;
 
 Function Fat_ReadSector(Idx: Byte; LBA: LongInt;
  Var Buf: Array Of Byte): Boolean;
-Var
- BR: Word;
 Begin
  Fat_ReadSector := False;
  If Not EmuFloppyOpen[Idx] Then Exit;
  If LBA < 0 Then Exit;
- If LBA >= (EmuFloppySize[Idx] Div 512) Then Exit;
- {$I-}
- Seek(EmuFloppyFile[Idx], LBA * 512);
- If IOResult <> 0 Then Exit;
- BR := 0;
- BlockRead(EmuFloppyFile[Idx], Buf, 512, BR);
- {$I+} If IOResult <> 0 Then Exit;
- Fat_ReadSector := (BR = 512);
+ Fat_ReadSector :=
+  Emu_ImageReadSector(Idx, FatVol[Idx].PartitionStart + LBA, Buf);
 End;
 
 Function Fat_LE16(Var Buf: Array Of Byte; Off: Integer): Word;
@@ -18830,6 +18882,14 @@ Begin
  D64_TryMount := True;
 End;
 
+{ Types de partition MBR pouvant contenir un systeme de fichiers FAT
+  (port de IsFATPartitionType, DISKPC.PAS / UNDISKPC.PAS). }
+Function Fat_IsFATPartitionType(T: Byte): Boolean;
+Begin
+ Fat_IsFATPartitionType :=
+  T In [$01, $04, $06, $0B, $0C, $0E, $11, $14, $16, $1B, $1C, $1E];
+End;
+
 Procedure Fat_TryMount(Idx: Byte);
 Var
  Buf: Array[0..511] Of Byte;
@@ -18841,10 +18901,16 @@ Var
  V: TFatVol;
  I: Integer;
  C: Char;
+ PartStart: LongInt;
+ PI, PO: Integer;
+ PType: Byte;
+ PLBA, PSZ: LongInt;
 Begin
  FillChar(V, SizeOf(V), 0);
  V.Mounted := False;
  V.CachedFatLBA := -1;
+ { Lecture absolue (disque entier) pour la sonde initiale. }
+ FatVol[Idx].PartitionStart := 0;
  If Not EmuFloppyOpen[Idx] Then Begin
   FatVol[Idx] := V;
   Exit;
@@ -18860,10 +18926,41 @@ Begin
  End;
  BPS := Fat_LE16(Buf, 11);
  SPC := Buf[13];
+ PartStart := 0;
  If (BPS <> 512) Or (SPC = 0) Then Begin
-  FatVol[Idx] := V;
-  Exit;
+  { Pas de BPB au secteur 0 : un disque dur (/DISK80, /DISK81) porte
+    en general une table de partitions (MBR). Chercher la premiere
+    partition FAT primaire et y monter le volume. }
+  PartStart := -1;
+  If (Buf[510] = $55) And (Buf[511] = $AA) Then Begin
+   For PI := 0 To 3 Do Begin
+    PO := 446 + PI * 16;
+    PType := Buf[PO + 4];
+    PLBA  := Fat_LE32(Buf, PO + 8);
+    PSZ   := Fat_LE32(Buf, PO + 12);
+    If Fat_IsFATPartitionType(PType) And (PLBA > 0) And (PSZ > 0) Then Begin
+     PartStart := PLBA;
+     Break;
+    End;
+   End;
+  End;
+  If PartStart < 0 Then Begin
+   FatVol[Idx] := V;
+   Exit;
+  End;
+  FatVol[Idx].PartitionStart := PartStart;
+  If Not Fat_ReadSector(Idx, 0, Buf) Then Begin
+   FatVol[Idx] := V;
+   Exit;
+  End;
+  BPS := Fat_LE16(Buf, 11);
+  SPC := Buf[13];
+  If (BPS <> 512) Or (SPC = 0) Then Begin
+   FatVol[Idx] := V;
+   Exit;
+  End;
  End;
+ V.PartitionStart   := PartStart;
  V.BytesPerSector   := BPS;
  V.SectorsPerCluster := SPC;
  V.ReservedSectors  := Fat_LE16(Buf, 14);
@@ -19538,22 +19635,16 @@ End;
 
 Function Fat_WriteSector(Idx: Byte; LBA: LongInt;
  Var Buf: Array Of Byte): Boolean;
-Var BW: Word;
 Begin
  Fat_WriteSector := False;
  If Not EmuFloppyOpen[Idx] Then Exit;
  If LBA < 0 Then Exit;
- If LBA >= (EmuFloppySize[Idx] Div 512) Then Exit;
- {$I-}
- Seek(EmuFloppyFile[Idx], LBA * 512);
- If IOResult <> 0 Then Exit;
- BW := 0;
- BlockWrite(EmuFloppyFile[Idx], Buf, 512, BW);
- {$I+} If IOResult <> 0 Then Exit;
+ If Not Emu_ImageWriteSector(Idx, FatVol[Idx].PartitionStart + LBA, Buf) Then
+  Exit;
  { Invalider le cache FAT si on ecrit sur le LBA cache }
  If LBA = FatVol[Idx].CachedFatLBA Then
   FatVol[Idx].CachedFatLBA := -1;
- Fat_WriteSector := (BW = 512);
+ Fat_WriteSector := True;
 End;
 
 { Modifier un octet de la FAT et repercuter sur toutes les copies. }
@@ -19843,13 +19934,40 @@ Begin
 End;
 
 { Construire le chemin "X:\..." courant du terminal sur le disque virtuel }
+{ Correspondance lettre de lecteur <-> index FatVol/EmuFloppy* :
+  A:=0 B:=1 (disquettes /DISK0//DISK1), C:=2 D:=3 (disques durs
+  /DISK80//DISK81). }
+Function Term_DriveLetterFromIdx(Idx: Byte): Char;
+Begin
+ Case Idx Of
+  0: Term_DriveLetterFromIdx := 'A';
+  1: Term_DriveLetterFromIdx := 'B';
+  2: Term_DriveLetterFromIdx := 'C';
+  3: Term_DriveLetterFromIdx := 'D';
+ Else
+  Term_DriveLetterFromIdx := '?';
+ End;
+End;
+
+Function Term_DriveIdxFromLetter(DL: Char; Var Idx: Byte): Boolean;
+Begin
+ Term_DriveIdxFromLetter := True;
+ Case UpCase(DL) Of
+  'A': Idx := 0;
+  'B': Idx := 1;
+  'C': Idx := 2;
+  'D': Idx := 3;
+ Else
+  Term_DriveIdxFromLetter := False;
+ End;
+End;
+
 Function Term_VirtFullPath(Var TP: TTerminalPanel): String;
 Var
  DL: Char;
 Begin
- If TP.VirtDrive = 0 Then DL := 'A'
- Else If TP.VirtDrive = 1 Then DL := 'B'
- Else DL := '?';
+ If TP.VirtDrive >= 0 Then DL := Term_DriveLetterFromIdx(TP.VirtDrive)
+                       Else DL := '?';
  If (TP.VirtCwd = '') Or (TP.VirtCwd = '\') Then
   Term_VirtFullPath := DL + ':\'
  Else
@@ -19881,8 +19999,7 @@ Begin
  If HasColon Then Begin
   DL := UpCase(P[1]);
   Rest := Copy(P, 3, Length(P) - 2);
-  If (DL <> 'A') And (DL <> 'B') Then Exit;
-  If DL = 'A' Then TIdx := 0 Else TIdx := 1;
+  If Not Term_DriveIdxFromLetter(DL, TIdx) Then Exit;
   Term_VirtEnsureMounted(TIdx);
   If Not FatVol[TIdx].Mounted Then Exit;
   Idx := TIdx;
@@ -20686,16 +20803,25 @@ Var
  DL: Char;
  Lbl: String;
  P: String;
+ Explicit: Boolean;
 Begin
  P := TermExtractParam(ParamStr, 1);
  { Determiner le lecteur cible : argument explicite, ou lecteur courant }
- If (Length(P) >= 2) And (P[2] = ':') Then
+ Explicit := (Length(P) >= 2) And (P[2] = ':');
+ If Explicit Then
   DL := UpCase(P[1])
- Else If TP.VirtDrive = 0 Then DL := 'A'
- Else If TP.VirtDrive = 1 Then DL := 'B'
- Else DL := 'C';
- If (DL = 'A') Or (DL = 'B') Then Begin
-  If DL = 'A' Then Idx := 0 Else Idx := 1;
+ Else If TP.VirtDrive >= 0 Then
+  DL := Term_DriveLetterFromIdx(TP.VirtDrive)
+ Else
+  DL := 'C';
+ { Lecteur virtuel (A:/B:/C:/D:) : seulement si explicitement demande,
+   ou si c est le lecteur courant (sinon "VOL" sans argument sur
+   l hote garde son comportement d origine, place de tenue 'C:').
+   C:/D: ne comptent comme virtuels que si une image disque dur est
+   effectivement montee (sinon C: designe le disque hote reel). }
+ If Term_DriveIdxFromLetter(DL, Idx) And
+    (Explicit Or (TP.VirtDrive >= 0)) And
+    ((Idx < 2) Or EmuFloppyOpen[Idx]) Then Begin
   Term_VirtEnsureMounted(Idx);
   If Not EmuFloppyOpen[Idx] Then Begin
    TermAddLine(TP,
@@ -20753,12 +20879,13 @@ Var
 Begin
  TermAddLine(TP,
   'Filesystem     1K-blocks      Used Available Use% Mounted on');
- If (Not EmuFloppyOpen[0]) And (Not EmuFloppyOpen[1]) Then Begin
+ If (Not EmuFloppyOpen[0]) And (Not EmuFloppyOpen[1]) And
+    (Not EmuFloppyOpen[2]) And (Not EmuFloppyOpen[3]) Then Begin
   TermAddLine(TP,
-   '(aucune image montee ; utilisez /DISK0:img ou /DISK1:img)');
+   '(aucune image montee ; utilisez /DISK0, /DISK1, /DISK80 ou /DISK81)');
   Exit;
  End;
- For Idx := 0 To 1 Do Begin
+ For Idx := 0 To 3 Do Begin
   If Not EmuFloppyOpen[Idx] Then Continue;
   Term_VirtEnsureMounted(Idx);
   Total := EmuFloppySize[Idx];
@@ -20997,6 +21124,27 @@ End;
   EXECUTEUR DE COMMANDES DU TERMINAL
   ============================================================ }
 
+{ Tenter de basculer le terminal sur le lecteur virtuel Idx (image
+  montee via /DISK0, /DISK1, /DISK80 ou /DISK81). Affiche un message
+  d erreur si l unite n est pas montee ou pas reconnue comme FAT. }
+Procedure Term_TryEnterVirtDrive(Var TP: TTerminalPanel; Idx: Byte;
+ MountHint: String);
+Var
+ DL: Char;
+Begin
+ DL := Term_DriveLetterFromIdx(Idx);
+ Term_VirtEnsureMounted(Idx);
+ If EmuFloppyOpen[Idx] And FatVol[Idx].Mounted Then Begin
+  TP.VirtDrive := Idx;
+  If TP.VirtCwd = '' Then TP.VirtCwd := '\';
+ End Else If EmuFloppyOpen[Idx] Then
+  TermAddLine(TP, 'Volume ' + DL + ': monte mais format FAT non reconnu.')
+ Else Begin
+  TermAddLine(TP, 'Le systeme ne peut pas trouver le lecteur specifie.');
+  TermAddLine(TP, '(Monter une image avec ' + MountHint + ' au demarrage.)');
+ End;
+End;
+
 Procedure TermExecuteCommand(Var TP: TTerminalPanel;
  CmdStr: String);
 Var
@@ -21009,41 +21157,27 @@ Begin
  { Changement de lecteur : A:, B:, C:, D:, ... }
  If (Length(CmdStr) = 2) And (CmdStr[2] = ':') And
   (CmdStr[1] In ['A'..'Z', 'a'..'z']) Then Begin
-  { Lecteurs virtuels A: et B: : sur image montee, on bascule le
-    terminal en mode disque virtuel. }
+  { Lecteurs virtuels A:/B: (disquettes) et C:/D: (disques durs) :
+    sur image montee, on bascule le terminal en mode disque virtuel. }
   If UpCase(CmdStr[1]) = 'A' Then Begin
-   Term_VirtEnsureMounted(0);
-   If EmuFloppyOpen[0] And FatVol[0].Mounted Then Begin
-    TP.VirtDrive := 0;
-    If TP.VirtCwd = '' Then TP.VirtCwd := '\';
-    Exit;
-   End Else If EmuFloppyOpen[0] Then Begin
-    TermAddLine(TP, 'Volume A: monte mais format FAT non reconnu.');
-    Exit;
-   End Else Begin
-    TermAddLine(TP,
-     'Le systeme ne peut pas trouver le lecteur specifie.');
-    TermAddLine(TP,
-     '(Monter une image avec /DISK0:fichier.img au demarrage.)');
-    Exit;
-   End;
+   Term_TryEnterVirtDrive(TP, 0, '/DISK0:fichier.img');
+   Exit;
   End;
   If UpCase(CmdStr[1]) = 'B' Then Begin
-   Term_VirtEnsureMounted(1);
-   If EmuFloppyOpen[1] And FatVol[1].Mounted Then Begin
-    TP.VirtDrive := 1;
-    If TP.VirtCwd = '' Then TP.VirtCwd := '\';
-    Exit;
-   End Else If EmuFloppyOpen[1] Then Begin
-    TermAddLine(TP, 'Volume B: monte mais format FAT non reconnu.');
-    Exit;
-   End Else Begin
-    TermAddLine(TP,
-     'Le systeme ne peut pas trouver le lecteur specifie.');
-    TermAddLine(TP,
-     '(Monter une image avec /DISK1:fichier.img au demarrage.)');
-    Exit;
-   End;
+   Term_TryEnterVirtDrive(TP, 1, '/DISK1:fichier.img');
+   Exit;
+  End;
+  { C:/D: ne sont consideres comme lecteurs virtuels que si une image
+    disque dur a effectivement ete montee (/DISK80//DISK81) : sinon
+    on garde le comportement d origine (changement de lecteur hote,
+    C: etant le plus souvent le disque principal de la machine reelle). }
+  If (UpCase(CmdStr[1]) = 'C') And EmuFloppyOpen[2] Then Begin
+   Term_TryEnterVirtDrive(TP, 2, '/DISK80:fichier.img');
+   Exit;
+  End;
+  If (UpCase(CmdStr[1]) = 'D') And EmuFloppyOpen[3] Then Begin
+   Term_TryEnterVirtDrive(TP, 3, '/DISK81:fichier.img');
+   Exit;
   End;
   { Autres lecteurs : on revient au mode hote standard }
   TP.VirtDrive := -1;
@@ -31347,6 +31481,348 @@ Begin
  Emu_FloppyIsRaw := True;
 End;
 
+{ ============================================================
+  Traduction de conteneurs disque (VHD fixe/dynamique, VMDK
+  sparse ou descripteur texte) pour les disques durs montes via
+  /DISK80 et /DISK81. Porte depuis DISKPC.PAS / UNDISKPC.PAS
+  (projet Corail). Les disquettes (/DISK0, /DISK1) restent
+  brutes uniquement (Emu_FloppyIsRaw ci-dessus) : EmuFloppyKind
+  vaut toujours 0 pour les unites 0/1.
+  ============================================================ }
+
+Function Emu_BufLE32(Var Buf; Off: Integer): LongInt;
+Var
+ B: Array[0..2047] Of Byte Absolute Buf;
+Begin
+ Emu_BufLE32 := LongInt(B[Off]) Or (LongInt(B[Off + 1]) Shl 8) Or
+   (LongInt(B[Off + 2]) Shl 16) Or (LongInt(B[Off + 3]) Shl 24);
+End;
+
+Function Emu_BufBE32(Var Buf; Off: Integer): LongInt;
+Var
+ B: Array[0..2047] Of Byte Absolute Buf;
+Begin
+ Emu_BufBE32 := (LongInt(B[Off]) Shl 24) Or (LongInt(B[Off + 1]) Shl 16) Or
+   (LongInt(B[Off + 2]) Shl 8) Or LongInt(B[Off + 3]);
+End;
+
+{ Detecter le format du fichier deja ouvert dans EmuFloppyFile[Idx]
+  (raw, VHD fixe/dynamique, VMDK sparse/descripteur) et remplir les
+  champs EmuFloppyKind/BlockSec/BitmapSecs/BATFileOfs/GTEsPerGT et
+  EmuFloppySize (taille VIRTUELLE en octets). L appelant doit avoir
+  prealablement mis EmuFloppySize[Idx] a la taille du fichier brut
+  (valeur conservee si aucun conteneur n est detecte). Retourne False
+  si le format est reconnu mais non supporte (message imprime). }
+Function Emu_DiskDetectFormat(Idx: Byte): Boolean;
+Var
+ Raw: Array[0..511] Of Byte;
+ R: Word;
+ Sz, FtrOfs, DT, CurSz, HdrOfs, BAToff, BlockSz: LongInt;
+ GDOffset, NumGTEs, Capacity, GrainSize: LongInt;
+ S, ExtName, DescDir: String;
+ I, K: Integer;
+Begin
+ Emu_DiskDetectFormat := True;
+ EmuFloppyKind[Idx]      := 0;
+ EmuFloppyBlockSec[Idx]   := 0;
+ EmuFloppyBitmapSecs[Idx] := 0;
+ EmuFloppyBATFileOfs[Idx] := 0;
+ EmuFloppyGTEsPerGT[Idx]  := 0;
+ {$I-}
+ Sz := FileSize(EmuFloppyFile[Idx]);
+ {$I+} If IOResult <> 0 Then ;
+ If Sz < 512 Then Exit;
+ {$I-}
+ Seek(EmuFloppyFile[Idx], 0);
+ R := 0;
+ BlockRead(EmuFloppyFile[Idx], Raw, 512, R);
+ {$I+} If IOResult <> 0 Then ;
+ If R < 512 Then Exit;
+ { TeleDisk : signature 'TD' ou 'td' }
+ If ((Raw[0] = Ord('T')) And (Raw[1] = Ord('D'))) Or
+    ((Raw[0] = Ord('t')) And (Raw[1] = Ord('d'))) Then Begin
+  WriteLn('DEVENV: format TeleDisk non supporte pour ', EmuFloppyName[Idx]);
+  Emu_DiskDetectFormat := False;
+  Exit;
+ End;
+ { VDI VirtualBox : signature texte '<<< ' }
+ If (Raw[0] = Ord('<')) And (Raw[1] = Ord('<')) And (Raw[2] = Ord('<')) Then Begin
+  WriteLn('DEVENV: format VDI non supporte pour ', EmuFloppyName[Idx]);
+  Emu_DiskDetectFormat := False;
+  Exit;
+ End;
+ { QCOW (QEMU) }
+ If (Raw[0] = Ord('Q')) And (Raw[1] = Ord('F')) And
+    (Raw[2] = Ord('I')) And (Raw[3] = $FB) Then Begin
+  WriteLn('DEVENV: format QCOW non supporte pour ', EmuFloppyName[Idx]);
+  Emu_DiskDetectFormat := False;
+  Exit;
+ End;
+ { VMDK sparse : magic 'KDMV' (little-endian) }
+ If (Raw[0] = $4B) And (Raw[1] = $44) And
+    (Raw[2] = $4D) And (Raw[3] = $56) Then Begin
+  Capacity  := Emu_BufLE32(Raw, 12);
+  GrainSize := Emu_BufLE32(Raw, 20);
+  NumGTEs   := Emu_BufLE32(Raw, 44);
+  GDOffset  := Emu_BufLE32(Raw, 56);
+  If (GrainSize > 0) And (NumGTEs > 0) And (GDOffset > 0) Then Begin
+   EmuFloppyKind[Idx]      := 3;
+   EmuFloppySize[Idx]      := Capacity * 512;
+   EmuFloppyBlockSec[Idx]   := GrainSize;
+   EmuFloppyGTEsPerGT[Idx]  := NumGTEs;
+   EmuFloppyBATFileOfs[Idx] := GDOffset * 512;
+  End;
+  Exit;
+ End;
+ { VMDK descripteur texte : redirige vers le fichier flat (ligne
+   'RW <n> FLAT "fichier" <ofs>') puis ranalyse ce fichier. }
+ If (Raw[0] = $23) Or ((Raw[0] >= Ord('A')) And (Raw[0] <= Ord('z'))) Then Begin
+  S := '';
+  For I := 0 To 511 Do
+   If (Raw[I] >= 32) Or (Raw[I] = 10) Or (Raw[I] = 13) Then S := S + Chr(Raw[I])
+                                                          Else S := S + ' ';
+  If (Pos('DescriptorFile', S) > 0) Or (Pos('createType', S) > 0) Then Begin
+   I := Pos('RW ', S);
+   If (I > 0) And (Pos('FLAT', S) > I) Then Begin
+    I := Pos('FLAT', S);
+    K := I + 4;
+    While (K <= Length(S)) And (S[K] <> '"') Do Inc(K);
+    If (K < Length(S)) And (S[K] = '"') Then Begin
+     Inc(K);
+     ExtName := '';
+     While (K <= Length(S)) And (S[K] <> '"') Do Begin
+      ExtName := ExtName + S[K];
+      Inc(K);
+     End;
+     DescDir := ExtractFilePath(EmuFloppyName[Idx]);
+     If (Pos(':', ExtName) = 0) And (Length(ExtName) > 0) And
+        (ExtName[1] <> '\') And (ExtName[1] <> '/') Then
+      ExtName := DescDir + ExtName;
+     {$I-}
+     Close(EmuFloppyFile[Idx]);
+     Assign(EmuFloppyFile[Idx], ExtName);
+     FileMode := 2;
+     Reset(EmuFloppyFile[Idx], 1);
+     If IOResult <> 0 Then Begin
+      FileMode := 0;
+      Assign(EmuFloppyFile[Idx], ExtName);
+      Reset(EmuFloppyFile[Idx], 1);
+      If IOResult <> 0 Then Begin
+       FileMode := 0;
+       WriteLn('DEVENV: impossible d ouvrir l extension VMDK : ', ExtName);
+       Emu_DiskDetectFormat := False;
+       Exit;
+      End;
+      EmuFloppyRO[Idx] := True;
+     End;
+     FileMode := 0;
+     {$I+} If IOResult <> 0 Then ;
+     EmuFloppyName[Idx] := ExtName;
+     EmuFloppySize[Idx] := FileSize(EmuFloppyFile[Idx]);
+     Emu_DiskDetectFormat := Emu_DiskDetectFormat(Idx);
+     Exit;
+    End;
+   End;
+   Exit;  { descripteur reconnu mais sans ligne FLAT : traiter en brut }
+  End;
+ End;
+ { VHD : footer 'conectix' aux 512 derniers octets }
+ If Sz < 1024 Then Exit;
+ FtrOfs := Sz - 512;
+ {$I-}
+ Seek(EmuFloppyFile[Idx], FtrOfs);
+ R := 0;
+ BlockRead(EmuFloppyFile[Idx], Raw, 512, R);
+ {$I+} If IOResult <> 0 Then ;
+ If R <> 512 Then Exit;
+ If (Raw[0] <> $63) Or (Raw[1] <> $6F) Or (Raw[2] <> $6E) Or (Raw[3] <> $65) Or
+    (Raw[4] <> $63) Or (Raw[5] <> $74) Or (Raw[6] <> $69) Or (Raw[7] <> $78) Then Exit;
+ DT := Emu_BufBE32(Raw, 60);
+ CurSz := Emu_BufBE32(Raw, 52);
+ If CurSz <= 0 Then CurSz := Sz - 512;
+ If DT = 2 Then Begin
+  EmuFloppyKind[Idx] := 1;
+  EmuFloppySize[Idx] := CurSz;
+  Exit;
+ End;
+ If (DT = 3) Or (DT = 4) Then Begin
+  HdrOfs := Emu_BufBE32(Raw, 20);
+  {$I-}
+  Seek(EmuFloppyFile[Idx], HdrOfs);
+  R := 0;
+  BlockRead(EmuFloppyFile[Idx], Raw, 512, R);
+  {$I+} If IOResult <> 0 Then ;
+  If R <> 512 Then Exit;
+  If (Raw[0] <> $63) Or (Raw[1] <> $78) Or (Raw[2] <> $73) Or (Raw[3] <> $70) Or
+     (Raw[4] <> $61) Or (Raw[5] <> $72) Or (Raw[6] <> $73) Or (Raw[7] <> $65) Then Exit;
+  BAToff  := Emu_BufBE32(Raw, 20);
+  BlockSz := Emu_BufBE32(Raw, 32);
+  If (BlockSz = 0) Or (BlockSz Mod 512 <> 0) Then Exit;
+  EmuFloppyKind[Idx]       := 2;
+  EmuFloppySize[Idx]       := CurSz;
+  EmuFloppyBlockSec[Idx]   := BlockSz Div 512;
+  EmuFloppyBitmapSecs[Idx] := ((EmuFloppyBlockSec[Idx] Div 8) + 511) Div 512;
+  If EmuFloppyBitmapSecs[Idx] < 1 Then EmuFloppyBitmapSecs[Idx] := 1;
+  EmuFloppyBATFileOfs[Idx] := BAToff;
+  Exit;
+ End;
+End;
+
+{ Lire un secteur logique (LBA, disque entier) de l unite Idx en
+  traduisant a travers le conteneur (VHD/VMDK) si necessaire. Pour
+  un bloc/grain non alloue (VHD dynamique/VMDK sparse), renvoie un
+  secteur a zero (comportement standard : zone jamais ecrite). }
+Function Emu_ImageReadSector(Idx: Byte; LBA: LongInt;
+ Var Buf: Array Of Byte): Boolean;
+Var
+ R: Word;
+ Ofs, BlockIdx, OfsInBlock, BATEntry: LongInt;
+ GrainNum, GTIdx, GTOff, GTSec, GrainSec: LongInt;
+ Buf4: Array[0..3] Of Byte;
+Begin
+ Emu_ImageReadSector := False;
+ If Not EmuFloppyOpen[Idx] Then Exit;
+ If LBA < 0 Then Exit;
+ If LBA >= (EmuFloppySize[Idx] Div 512) Then Exit;
+ Case EmuFloppyKind[Idx] Of
+  2: Begin
+   BlockIdx   := LBA Div EmuFloppyBlockSec[Idx];
+   OfsInBlock := LBA Mod EmuFloppyBlockSec[Idx];
+   {$I-}
+   Seek(EmuFloppyFile[Idx], EmuFloppyBATFileOfs[Idx] + BlockIdx * 4);
+   R := 0;
+   BlockRead(EmuFloppyFile[Idx], Buf4, 4, R);
+   {$I+} If (IOResult <> 0) Or (R <> 4) Then Begin
+    FillChar(Buf, 512, 0);
+    Emu_ImageReadSector := True;
+    Exit;
+   End;
+   BATEntry := (LongInt(Buf4[0]) Shl 24) Or (LongInt(Buf4[1]) Shl 16) Or
+               (LongInt(Buf4[2]) Shl 8) Or LongInt(Buf4[3]);
+   If BATEntry = -1 Then Begin
+    FillChar(Buf, 512, 0);
+    Emu_ImageReadSector := True;
+    Exit;
+   End;
+   Ofs := (BATEntry + EmuFloppyBitmapSecs[Idx]) * 512 + OfsInBlock * 512;
+  End;
+  3: Begin
+   GrainNum   := LBA Div EmuFloppyBlockSec[Idx];
+   GTIdx      := GrainNum Div EmuFloppyGTEsPerGT[Idx];
+   GTOff      := GrainNum Mod EmuFloppyGTEsPerGT[Idx];
+   OfsInBlock := LBA Mod EmuFloppyBlockSec[Idx];
+   {$I-}
+   Seek(EmuFloppyFile[Idx], EmuFloppyBATFileOfs[Idx] + GTIdx * 4);
+   R := 0;
+   BlockRead(EmuFloppyFile[Idx], Buf4, 4, R);
+   {$I+} If (IOResult <> 0) Or (R <> 4) Then Begin
+    FillChar(Buf, 512, 0);
+    Emu_ImageReadSector := True;
+    Exit;
+   End;
+   GTSec := LongInt(Buf4[0]) Or (LongInt(Buf4[1]) Shl 8) Or
+            (LongInt(Buf4[2]) Shl 16) Or (LongInt(Buf4[3]) Shl 24);
+   If GTSec = 0 Then Begin
+    FillChar(Buf, 512, 0);
+    Emu_ImageReadSector := True;
+    Exit;
+   End;
+   {$I-}
+   Seek(EmuFloppyFile[Idx], GTSec * 512 + GTOff * 4);
+   R := 0;
+   BlockRead(EmuFloppyFile[Idx], Buf4, 4, R);
+   {$I+} If (IOResult <> 0) Or (R <> 4) Then Begin
+    FillChar(Buf, 512, 0);
+    Emu_ImageReadSector := True;
+    Exit;
+   End;
+   GrainSec := LongInt(Buf4[0]) Or (LongInt(Buf4[1]) Shl 8) Or
+               (LongInt(Buf4[2]) Shl 16) Or (LongInt(Buf4[3]) Shl 24);
+   If GrainSec = 0 Then Begin
+    FillChar(Buf, 512, 0);
+    Emu_ImageReadSector := True;
+    Exit;
+   End;
+   Ofs := GrainSec * 512 + OfsInBlock * 512;
+  End;
+ Else
+  Ofs := LBA * 512;     { 0=brut, 1=VHD fixe : disposition identique }
+ End;
+ {$I-}
+ Seek(EmuFloppyFile[Idx], Ofs);
+ If IOResult <> 0 Then Exit;
+ R := 0;
+ BlockRead(EmuFloppyFile[Idx], Buf, 512, R);
+ {$I+} If IOResult <> 0 Then Exit;
+ Emu_ImageReadSector := (R = 512);
+End;
+
+{ Ecrire un secteur logique (LBA, disque entier) de l unite Idx.
+  Comme DISKPC.PAS, l ecriture sur un bloc/grain non alloue d une
+  image VHD dynamique/VMDK sparse est refusee (pas d allocation de
+  nouveaux blocs) ; seuls le brut et le VHD fixe l autorisent. }
+Function Emu_ImageWriteSector(Idx: Byte; LBA: LongInt;
+ Var Buf: Array Of Byte): Boolean;
+Var
+ W, R: Word;
+ Ofs, BlockIdx, OfsInBlock, BATEntry: LongInt;
+ GrainNum, GTIdx, GTOff, GTSec, GrainSec: LongInt;
+ Buf4: Array[0..3] Of Byte;
+Begin
+ Emu_ImageWriteSector := False;
+ If Not EmuFloppyOpen[Idx] Then Exit;
+ If EmuFloppyRO[Idx] Then Exit;
+ If LBA < 0 Then Exit;
+ If LBA >= (EmuFloppySize[Idx] Div 512) Then Exit;
+ Case EmuFloppyKind[Idx] Of
+  2: Begin
+   BlockIdx   := LBA Div EmuFloppyBlockSec[Idx];
+   OfsInBlock := LBA Mod EmuFloppyBlockSec[Idx];
+   {$I-}
+   Seek(EmuFloppyFile[Idx], EmuFloppyBATFileOfs[Idx] + BlockIdx * 4);
+   R := 0;
+   BlockRead(EmuFloppyFile[Idx], Buf4, 4, R);
+   {$I+} If (IOResult <> 0) Or (R <> 4) Then Exit;
+   BATEntry := (LongInt(Buf4[0]) Shl 24) Or (LongInt(Buf4[1]) Shl 16) Or
+               (LongInt(Buf4[2]) Shl 8) Or LongInt(Buf4[3]);
+   If BATEntry = -1 Then Exit;
+   Ofs := (BATEntry + EmuFloppyBitmapSecs[Idx]) * 512 + OfsInBlock * 512;
+  End;
+  3: Begin
+   GrainNum   := LBA Div EmuFloppyBlockSec[Idx];
+   GTIdx      := GrainNum Div EmuFloppyGTEsPerGT[Idx];
+   GTOff      := GrainNum Mod EmuFloppyGTEsPerGT[Idx];
+   OfsInBlock := LBA Mod EmuFloppyBlockSec[Idx];
+   {$I-}
+   Seek(EmuFloppyFile[Idx], EmuFloppyBATFileOfs[Idx] + GTIdx * 4);
+   R := 0;
+   BlockRead(EmuFloppyFile[Idx], Buf4, 4, R);
+   {$I+} If (IOResult <> 0) Or (R <> 4) Then Exit;
+   GTSec := LongInt(Buf4[0]) Or (LongInt(Buf4[1]) Shl 8) Or
+            (LongInt(Buf4[2]) Shl 16) Or (LongInt(Buf4[3]) Shl 24);
+   If GTSec = 0 Then Exit;
+   {$I-}
+   Seek(EmuFloppyFile[Idx], GTSec * 512 + GTOff * 4);
+   R := 0;
+   BlockRead(EmuFloppyFile[Idx], Buf4, 4, R);
+   {$I+} If (IOResult <> 0) Or (R <> 4) Then Exit;
+   GrainSec := LongInt(Buf4[0]) Or (LongInt(Buf4[1]) Shl 8) Or
+               (LongInt(Buf4[2]) Shl 16) Or (LongInt(Buf4[3]) Shl 24);
+   If GrainSec = 0 Then Exit;
+   Ofs := GrainSec * 512 + OfsInBlock * 512;
+  End;
+ Else
+  Ofs := LBA * 512;
+ End;
+ {$I-}
+ Seek(EmuFloppyFile[Idx], Ofs);
+ If IOResult <> 0 Then Exit;
+ W := 0;
+ BlockWrite(EmuFloppyFile[Idx], Buf, 512, W);
+ {$I+} If IOResult <> 0 Then Exit;
+ Emu_ImageWriteSector := (W = 512);
+End;
+
 Procedure Emu_FloppyOpenOne(Idx: Byte; FName: String);
 Var
  Sz: LongInt;
@@ -31401,16 +31877,96 @@ Begin
  If EmuFloppyOpen[1] Then Begin Fat_TryMount(1); Fat_FindVolLabel(1); End;
 End;
 
-Procedure Emu_FloppyCloseAll;
+{ Ouvrir une image de disque dur (/DISK80 -> Idx=2, /DISK81 -> Idx=3).
+  Contrairement aux disquettes, les conteneurs VHD/VMDK sont acceptes
+  (Emu_DiskDetectFormat) ; les disques peuvent aussi porter une table
+  de partitions (MBR), detectee plus loin par Fat_TryMount. La
+  geometrie CHS est synthetisee (16 tetes, 63 secteurs/piste, comme
+  la plupart des BIOS pour les disques non standards) a partir de la
+  taille virtuelle ; au-dela de 1024 cylindres, seule la zone couverte
+  par l adressage CHS classique (~528 Mo) reste accessible via
+  INT 13h AH=02/03 (pas d extensions LBA/EDD). }
+Procedure Emu_HardDiskOpenOne(Idx: Byte; FName: String);
+Var
+ Sz: LongInt;
+ VirtSec: LongInt;
 Begin
- If EmuFloppyOpen[0] Then Begin
-  {$I-} Close(EmuFloppyFile[0]); {$I+} If IOResult <> 0 Then ;
-  EmuFloppyOpen[0] := False;
+ EmuFloppyOpen[Idx]  := False;
+ EmuFloppyName[Idx]  := '';
+ EmuFloppySize[Idx]  := 0;
+ EmuFloppyCyls[Idx]  := 0;
+ EmuFloppyHeads[Idx] := 0;
+ EmuFloppySpt[Idx]   := 0;
+ EmuFloppyType[Idx]  := 0;
+ EmuFloppyRO[Idx]    := False;
+ EmuFloppyKind[Idx]  := 0;
+ If FName = '' Then Exit;
+ {$I-}
+ Assign(EmuFloppyFile[Idx], FName);
+ FileMode := 2;          { read/write }
+ Reset(EmuFloppyFile[Idx], 1);
+ If IOResult <> 0 Then Begin
+  FileMode := 0;
+  Assign(EmuFloppyFile[Idx], FName);
+  Reset(EmuFloppyFile[Idx], 1);
+  If IOResult <> 0 Then Begin
+   FileMode := 0;
+   WriteLn('DEVENV: impossible d ouvrir l image disque : ', FName);
+   Exit;
+  End;
+  EmuFloppyRO[Idx] := True;
  End;
- If EmuFloppyOpen[1] Then Begin
-  {$I-} Close(EmuFloppyFile[1]); {$I+} If IOResult <> 0 Then ;
-  EmuFloppyOpen[1] := False;
+ FileMode := 0;
+ Sz := FileSize(EmuFloppyFile[Idx]);
+ {$I+} If IOResult <> 0 Then ;
+ EmuFloppyName[Idx] := FName;
+ EmuFloppySize[Idx] := Sz;
+ If Not Emu_DiskDetectFormat(Idx) Then Begin
+  {$I-} Close(EmuFloppyFile[Idx]); {$I+} If IOResult <> 0 Then ;
+  EmuFloppyName[Idx] := '';
+  EmuFloppySize[Idx] := 0;
+  Exit;
  End;
+ VirtSec := EmuFloppySize[Idx] Div 512;
+ If VirtSec < 1 Then Begin
+  {$I-} Close(EmuFloppyFile[Idx]); {$I+} If IOResult <> 0 Then ;
+  WriteLn('DEVENV: image disque dur vide ou invalide : ', FName);
+  EmuFloppyName[Idx] := '';
+  EmuFloppySize[Idx] := 0;
+  Exit;
+ End;
+ EmuFloppyHeads[Idx] := 16;
+ EmuFloppySpt[Idx]   := 63;
+ EmuFloppyCyls[Idx]  := Word(VirtSec Div
+  (LongInt(EmuFloppyHeads[Idx]) * EmuFloppySpt[Idx]));
+ If EmuFloppyCyls[Idx] < 1 Then EmuFloppyCyls[Idx] := 1;
+ If EmuFloppyCyls[Idx] > 1024 Then EmuFloppyCyls[Idx] := 1024;
+ EmuFloppyOpen[Idx] := True;
+End;
+
+Procedure Emu_HardDiskOpenAll;
+Begin
+ EmuFloppyOpen[2] := False;
+ EmuFloppyOpen[3] := False;
+ If Opts.DiskImg80 <> '' Then Emu_HardDiskOpenOne(2, Opts.DiskImg80);
+ If Opts.DiskImg81 <> '' Then Emu_HardDiskOpenOne(3, Opts.DiskImg81);
+ { Tenter le mount FAT pour les terminaux (DIR/TYPE/VOL/CD) ;
+   Fat_TryMount detecte lui-meme une eventuelle table de partitions. }
+ FatVol[2].Mounted := False;
+ FatVol[3].Mounted := False;
+ If EmuFloppyOpen[2] Then Begin Fat_TryMount(2); Fat_FindVolLabel(2); End;
+ If EmuFloppyOpen[3] Then Begin Fat_TryMount(3); Fat_FindVolLabel(3); End;
+End;
+
+Procedure Emu_FloppyCloseAll;
+Var
+ I: Byte;
+Begin
+ For I := 0 To 3 Do
+  If EmuFloppyOpen[I] Then Begin
+   {$I-} Close(EmuFloppyFile[I]); {$I+} If IOResult <> 0 Then ;
+   EmuFloppyOpen[I] := False;
+  End;
 End;
 
 { Convertir un triplet CHS en LBA (offset secteur) selon la geometrie
@@ -31433,7 +31989,6 @@ Function Emu_FloppyReadSectors(Var P: TEmulatorPanel; Idx: Byte;
  LBA: LongInt; NSect: Byte; Seg, Ofs: Word): Byte;
 Var
  SBuf: Array[0..511] Of Byte;
- I, BR: Word;
  N: Byte;
  J: Integer;
 Begin
@@ -31441,20 +31996,10 @@ Begin
  If Not EmuFloppyOpen[Idx] Then Exit;
  N := 0;
  While N < NSect Do Begin
-  If LBA + N >= (EmuFloppySize[Idx] Div 512) Then Break;
-  {$I-}
-  Seek(EmuFloppyFile[Idx], (LBA + N) * 512);
-  If IOResult <> 0 Then Break;
-  BR := 0;
-  BlockRead(EmuFloppyFile[Idx], SBuf, 512, BR);
-  {$I+} If IOResult <> 0 Then Break;
-  If BR < 512 Then
-   For J := BR To 511 Do SBuf[J] := 0;
+  If Not Emu_ImageReadSector(Idx, LBA + N, SBuf) Then Break;
   For J := 0 To 511 Do
    Emu_WriteByte(P.CPU, Seg, Word(Ofs + LongInt(N) * 512 + J), SBuf[J]);
   Inc(N);
-  I := BR;       { eviter avertissement variable inutilisee }
-  If I = I Then ;
  End;
  Emu_FloppyReadSectors := N;
 End;
@@ -31465,7 +32010,6 @@ Function Emu_FloppyWriteSectors(Var P: TEmulatorPanel; Idx: Byte;
  LBA: LongInt; NSect: Byte; Seg, Ofs: Word): Byte;
 Var
  SBuf: Array[0..511] Of Byte;
- BW: Word;
  N: Byte;
  J: Integer;
 Begin
@@ -31474,16 +32018,9 @@ Begin
  If EmuFloppyRO[Idx] Then Exit;
  N := 0;
  While N < NSect Do Begin
-  If LBA + N >= (EmuFloppySize[Idx] Div 512) Then Break;
   For J := 0 To 511 Do
    SBuf[J] := Emu_ReadByte(P.CPU, Seg, Word(Ofs + LongInt(N) * 512 + J));
-  {$I-}
-  Seek(EmuFloppyFile[Idx], (LBA + N) * 512);
-  If IOResult <> 0 Then Break;
-  BW := 0;
-  BlockWrite(EmuFloppyFile[Idx], SBuf, 512, BW);
-  {$I+} If IOResult <> 0 Then Break;
-  If BW < 512 Then Break;
+  If Not Emu_ImageWriteSector(Idx, LBA + N, SBuf) Then Break;
   Inc(N);
  End;
  Emu_FloppyWriteSectors := N;
@@ -31500,9 +32037,10 @@ Begin
 End;
 
 { ============================================================
-  INT 13h : BIOS Disk Services (floppy uniquement pour l instant)
+  INT 13h : BIOS Disk Services (disquettes A:/B: et disques durs
+  C:/D: montes via /DISK0, /DISK1, /DISK80, /DISK81)
   ============================================================
-  DL = numero d unite (00=A:, 01=B:, 80=C:...). Services
+  DL = numero d unite (00=A:, 01=B:, 80=C:, 81=D:). Services
   supportes :
    AH=00 Reset disk system
    AH=01 Get status
@@ -31515,21 +32053,54 @@ End;
    AH=16 Detect disk change
    AH=17 Set DASD type
    AH=18 Set media type for format
-  CF=0 et AH=00 si succes. CF=1 et AH=code d erreur sinon. }
+  CF=0 et AH=00 si succes. CF=1 et AH=code d erreur sinon.
+  Pas d extensions LBA/EDD (AH=41h/42h/...) : seul l acces CHS
+  classique est emule, comme pour les disquettes. }
 Var
- EmuFloppyLastStatus: Array[0..1] Of Byte;
+ EmuFloppyLastStatus: Array[0..3] Of Byte;
 
-Procedure Emu_Int13SetError(Var P: TEmulatorPanel; DL, Status: Byte);
+{ Traduire DL (numero d unite BIOS) en index 0..3 dans les tableaux
+  EmuFloppy*/FatVol : 00h/01h -> 0/1 (A:/B:), 80h/81h -> 2/3 (C:/D:).
+  Retourne False si DL ne correspond a aucune unite supportee. }
+Function Emu_DiskIdxFromDL(DL: Byte; Var Idx: Byte): Boolean;
+Begin
+ Emu_DiskIdxFromDL := True;
+ If (DL And $80) <> 0 Then Begin
+  If (DL And $7F) > 1 Then Begin
+   Emu_DiskIdxFromDL := False;
+   Exit;
+  End;
+  Idx := 2 + (DL And $7F);
+ End Else Begin
+  If DL > 1 Then Begin
+   Emu_DiskIdxFromDL := False;
+   Exit;
+  End;
+  Idx := DL;
+ End;
+End;
+
+{ Nombre de disques durs disponibles (unites 2/3, /DISK80//DISK81). }
+Function Emu_HardDiskCount: Byte;
+Var N: Byte;
+Begin
+ N := 0;
+ If EmuFloppyOpen[2] Then Inc(N);
+ If EmuFloppyOpen[3] Then Inc(N);
+ Emu_HardDiskCount := N;
+End;
+
+Procedure Emu_Int13SetError(Var P: TEmulatorPanel; Idx, Status: Byte);
 Begin
  P.CPU.Regs.AH := Status;
- If (DL And $7F) <= 1 Then EmuFloppyLastStatus[DL And $01] := Status;
+ EmuFloppyLastStatus[Idx] := Status;
  Include(P.CPU.Flags.s, EFG_CF);
 End;
 
-Procedure Emu_Int13SetOK(Var P: TEmulatorPanel; DL: Byte);
+Procedure Emu_Int13SetOK(Var P: TEmulatorPanel; Idx: Byte);
 Begin
  P.CPU.Regs.AH := 0;
- If (DL And $7F) <= 1 Then EmuFloppyLastStatus[DL And $01] := 0;
+ EmuFloppyLastStatus[Idx] := 0;
  Exclude(P.CPU.Flags.s, EFG_CF);
 End;
 
@@ -31540,26 +32111,23 @@ Var
  LBA: LongInt;
  NSect, Done: Byte;
  Idx: Byte;
+ IsHD: Boolean;
 Begin
  AH := P.CPU.Regs.AH;
  AL := P.CPU.Regs.AL;
  DL := P.CPU.Regs.DL;
- { On ne gere que les unites floppy (DL bit 7 = 0, DL <= 1). }
- If (DL And $80) <> 0 Then Begin
-  { Disque dur : non supporte. }
-  Emu_Int13SetError(P, DL, $01);   { 01 = invalid function }
+ If Not Emu_DiskIdxFromDL(DL, Idx) Then Begin
+  { Unite hors plage (ni 00h/01h, ni 80h/81h) : pas de slot de statut
+    a mettre a jour, juste signaler l erreur. }
+  P.CPU.Regs.AH := $01;            { 01 = invalid function/parameter }
+  Include(P.CPU.Flags.s, EFG_CF);
   P.CPU.Regs.AL := 0;
   Exit;
  End;
- Idx := DL And $01;
- If DL > 1 Then Begin
-  Emu_Int13SetError(P, DL, $80);   { 80 = timeout/no response }
-  P.CPU.Regs.AL := 0;
-  Exit;
- End;
+ IsHD := Idx >= 2;
  Case AH Of
   $00: Begin   { Reset disk system }
-   Emu_Int13SetOK(P, DL);
+   Emu_Int13SetOK(P, Idx);
   End;
   $01: Begin   { Get status of last operation }
    P.CPU.Regs.AH := EmuFloppyLastStatus[Idx];
@@ -31571,7 +32139,7 @@ Begin
   $02: Begin   { Read sectors  AL=count, CH=cyl(low8), CL=cyl(hi2)|sec,
                                 DH=head, ES:BX -> buffer }
    If Not EmuFloppyOpen[Idx] Then Begin
-    Emu_Int13SetError(P, DL, $80);
+    Emu_Int13SetError(P, Idx, $80);
     P.CPU.Regs.AL := 0;
     Exit;
    End;
@@ -31582,24 +32150,24 @@ Begin
    Head  := P.CPU.Regs.DH;
    LBA   := Emu_FloppyCHS2LBA(Idx, Cyl, Head, Sect);
    If LBA < 0 Then Begin
-    Emu_Int13SetError(P, DL, $04);  { 04 = sector not found }
+    Emu_Int13SetError(P, Idx, $04);  { 04 = sector not found }
     P.CPU.Regs.AL := 0;
     Exit;
    End;
    Done := Emu_FloppyReadSectors(P, Idx, LBA, NSect,
             P.CPU.Segs.ES, P.CPU.Regs.BX);
    P.CPU.Regs.AL := Done;
-   If Done = NSect Then Emu_Int13SetOK(P, DL)
-   Else Emu_Int13SetError(P, DL, $04);
+   If Done = NSect Then Emu_Int13SetOK(P, Idx)
+   Else Emu_Int13SetError(P, Idx, $04);
   End;
   $03: Begin   { Write sectors }
    If Not EmuFloppyOpen[Idx] Then Begin
-    Emu_Int13SetError(P, DL, $80);
+    Emu_Int13SetError(P, Idx, $80);
     P.CPU.Regs.AL := 0;
     Exit;
    End;
    If EmuFloppyRO[Idx] Then Begin
-    Emu_Int13SetError(P, DL, $03);  { 03 = write protected }
+    Emu_Int13SetError(P, Idx, $03);  { 03 = write protected }
     P.CPU.Regs.AL := 0;
     Exit;
    End;
@@ -31610,19 +32178,19 @@ Begin
    Head  := P.CPU.Regs.DH;
    LBA   := Emu_FloppyCHS2LBA(Idx, Cyl, Head, Sect);
    If LBA < 0 Then Begin
-    Emu_Int13SetError(P, DL, $04);
+    Emu_Int13SetError(P, Idx, $04);
     P.CPU.Regs.AL := 0;
     Exit;
    End;
    Done := Emu_FloppyWriteSectors(P, Idx, LBA, NSect,
             P.CPU.Segs.ES, P.CPU.Regs.BX);
    P.CPU.Regs.AL := Done;
-   If Done = NSect Then Emu_Int13SetOK(P, DL)
-   Else Emu_Int13SetError(P, DL, $04);
+   If Done = NSect Then Emu_Int13SetOK(P, Idx)
+   Else Emu_Int13SetError(P, Idx, $04);
   End;
   $04: Begin   { Verify sectors : on valide simplement la plage }
    If Not EmuFloppyOpen[Idx] Then Begin
-    Emu_Int13SetError(P, DL, $80);
+    Emu_Int13SetError(P, Idx, $80);
     P.CPU.Regs.AL := 0;
     Exit;
    End;
@@ -31633,33 +32201,35 @@ Begin
    Head  := P.CPU.Regs.DH;
    LBA   := Emu_FloppyCHS2LBA(Idx, Cyl, Head, Sect);
    If LBA < 0 Then Begin
-    Emu_Int13SetError(P, DL, $04);
+    Emu_Int13SetError(P, Idx, $04);
     P.CPU.Regs.AL := 0;
     Exit;
    End;
    If LBA + NSect > (EmuFloppySize[Idx] Div 512) Then Begin
-    Emu_Int13SetError(P, DL, $04);
+    Emu_Int13SetError(P, Idx, $04);
     P.CPU.Regs.AL := 0;
     Exit;
    End;
-   Emu_Int13SetOK(P, DL);
+   Emu_Int13SetOK(P, Idx);
   End;
   $05: Begin   { Format track : stub - on accepte sans rien faire
                  si l unite est ouverte en ecriture. }
    If Not EmuFloppyOpen[Idx] Then
-    Emu_Int13SetError(P, DL, $80)
+    Emu_Int13SetError(P, Idx, $80)
    Else If EmuFloppyRO[Idx] Then
-    Emu_Int13SetError(P, DL, $03)
+    Emu_Int13SetError(P, Idx, $03)
    Else
-    Emu_Int13SetOK(P, DL);
+    Emu_Int13SetOK(P, Idx);
   End;
   $08: Begin   { Get drive parameters }
    If Not EmuFloppyOpen[Idx] Then Begin
-    Emu_Int13SetError(P, DL, $07);  { 07 = no drive }
+    Emu_Int13SetError(P, Idx, $07);  { 07 = no drive }
     P.CPU.Regs.AX := 0;
     P.CPU.Regs.BX := 0;
     P.CPU.Regs.CX := 0;
-    P.CPU.Regs.DX := Emu_FloppyCount;
+    If IsHD Then P.CPU.Regs.DL := Emu_HardDiskCount
+            Else P.CPU.Regs.DL := Emu_FloppyCount;
+    P.CPU.Regs.DH := 0;
     Exit;
    End;
    P.CPU.Regs.BL := EmuFloppyType[Idx];
@@ -31667,35 +32237,45 @@ Begin
    P.CPU.Regs.CL := Byte(((EmuFloppyCyls[Idx] - 1) Shr 2) And $C0)
                  Or Byte(EmuFloppySpt[Idx] And $3F);
    P.CPU.Regs.DH := EmuFloppyHeads[Idx] - 1;
-   P.CPU.Regs.DL := Emu_FloppyCount;
+   If IsHD Then P.CPU.Regs.DL := Emu_HardDiskCount
+           Else P.CPU.Regs.DL := Emu_FloppyCount;
    { ES:DI -> table de parametres : on laisse 0:0 (non utilisee) }
    P.CPU.Segs.ES := 0;
    P.CPU.Regs.DI := 0;
-   Emu_Int13SetOK(P, DL);
+   Emu_Int13SetOK(P, Idx);
   End;
   $15: Begin   { Get disk type }
    If Not EmuFloppyOpen[Idx] Then Begin
     P.CPU.Regs.AH := 0;     { 00 = no disk present }
-   End Else If EmuFloppyType[Idx] >= 3 Then
-    P.CPU.Regs.AH := 2      { 02 = floppy with changeline (3.5") }
-   Else
-    P.CPU.Regs.AH := 1;     { 01 = floppy sans changeline (5.25") }
-   Exclude(P.CPU.Flags.s, EFG_CF);
+    Exclude(P.CPU.Flags.s, EFG_CF);
+   End Else If IsHD Then Begin
+    P.CPU.Regs.AH := 3;     { 03 = disque dur, CX:DX = nb secteurs }
+    P.CPU.Regs.CX := Word((LongInt(EmuFloppySize[Idx] Div 512)
+                            Shr 16) And $FFFF);
+    P.CPU.Regs.DX := Word(LongInt(EmuFloppySize[Idx] Div 512) And $FFFF);
+    Exclude(P.CPU.Flags.s, EFG_CF);
+   End Else Begin
+    If EmuFloppyType[Idx] >= 3 Then
+     P.CPU.Regs.AH := 2      { 02 = floppy with changeline (3.5") }
+    Else
+     P.CPU.Regs.AH := 1;     { 01 = floppy sans changeline (5.25") }
+    Exclude(P.CPU.Flags.s, EFG_CF);
+   End;
   End;
-  $16: Begin   { Detect disk change }
+  $16: Begin   { Detect disk change (sans objet pour un disque dur) }
    If Not EmuFloppyOpen[Idx] Then
-    Emu_Int13SetError(P, DL, $80)
+    Emu_Int13SetError(P, Idx, $80)
    Else Begin
     P.CPU.Regs.AH := 0;     { 00 = pas de changement }
     Exclude(P.CPU.Flags.s, EFG_CF);
    End;
   End;
   $17, $18: Begin   { Set DASD / Set media type for format : stubs OK }
-   If EmuFloppyOpen[Idx] Then Emu_Int13SetOK(P, DL)
-   Else Emu_Int13SetError(P, DL, $80);
+   If EmuFloppyOpen[Idx] Then Emu_Int13SetOK(P, Idx)
+   Else Emu_Int13SetError(P, Idx, $80);
   End;
  Else
-  Emu_Int13SetError(P, DL, $01);  { 01 = invalid function }
+  Emu_Int13SetError(P, Idx, $01);  { 01 = invalid function }
  End;
 End;
 
@@ -52514,6 +53094,7 @@ BEGIN
  InitOptions(Opts);
  ParseCommandLine(Opts);
  Emu_FloppyOpenAll;
+ Emu_HardDiskOpenAll;
  If Opts.Verbose Then
   ShowVersion;
  InitializeGraphics;
