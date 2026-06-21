@@ -1089,6 +1089,15 @@ Begin
  DictAdd('src_eof', 'Fin de fichier de la source');
  DictAdd('Peek', 'Anticipation de lecture (lookahead)');
  DictAdd('has_peek', 'Indique si un caractere est actuellement entrepose dans peek_char');
+ DictAdd('Sym', 'Identificateur (symbole)');
+ DictAdd('Pkg', 'Module importe');
+ DictAdd('Lbl', 'Label');
+ DictAdd('prog_name', 'Nom du programme, de la bibliotheque ou de l''unite en cours');
+ DictAdd('sym_count', 'Nombre d''identificateurs enregistres');
+ DictAdd('sub_count', 'Nombre de sous-programmes declares');
+ DictAdd('type_count', 'Nombre de types connus du compilateur');
+ DictAdd('pkg_count', 'Nombre de modules importes');
+ DictAdd('str_count', 'Nombre de chaines stockees dans le pool des constantes');
  DictAdd('Target', 'Cible');
  DictAdd('Input', 'Entree');
  DictAdd('Output', 'Sortie');
