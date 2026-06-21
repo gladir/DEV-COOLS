@@ -1083,6 +1083,10 @@ Begin
  DictAdd('Src', 'Source');
  DictAdd('Dest', 'Destination');
  DictAdd('Destination', 'Destination');
+ DictAdd('Num', 'Numero');
+ DictAdd('Eof', 'Fin de fichier');
+ DictAdd('src_line_num', 'Numero de ligne de la source');
+ DictAdd('src_eof', 'Fin de fichier de la source');
  DictAdd('Target', 'Cible');
  DictAdd('Input', 'Entree');
  DictAdd('Output', 'Sortie');
