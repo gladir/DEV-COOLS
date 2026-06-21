@@ -1349,6 +1349,10 @@ Const
  STATUSBAR_HEIGHT      = 20;
  OUTPUT_HEIGHT         = 150;
 
+ { Bouton de zoom ecran (plein ecran / VGA 640x480) }
+ SCRZOOM_BTN_SIZE      = 16;      { taille de l icone (16x16)      }
+ SCRZOOM_BTN_MARGIN    = 2;       { marge a droite dans la barre   }
+
  { Terminal integre }
  MAX_TERM_LINES        = 200;     { lignes de buffer du terminal   }
  MAX_TERM_HIST_LINES   = 5000;    { historique d affichage maxi    }
@@ -3137,6 +3141,10 @@ Var
  MenuBgX2     : Integer;
  MenuBgY2     : Integer;
  MenuBgSaved  : Boolean;      { True si un fond est sauvegarde  }
+ { Bouton de zoom ecran (coin superieur droit) }
+ ScrZoomIcon    : TIcon16;    { icone du bouton plein ecran/VGA }
+ ScrZoomHover   : Boolean;    { bouton survole par la souris    }
+ ScreenMaxMode  : Boolean;    { True=plein ecran, False=VGA 640x480 }
  { Barre d outils }
  MainToolBar  : TToolBar;
  TooltipTimer : LongInt;      { timestamp du debut de survol    }
@@ -3970,6 +3978,7 @@ Procedure ShowHelp;Begin
  WriteLn('                 Le terminal CMD/PowerShell integre peut');
  WriteLn('                 utiliser A: ou B: et les commandes DIR,');
  WriteLn('                 TYPE, CD, VOL pour explorer l image (FAT12/16).');
+ WriteLn('  -maxscreen     Ouvrir l IDE en plein ecran');
  WriteLn('  -h             Afficher cette aide');
  WriteLn('  --help         Afficher cette aide');
  WriteLn;
@@ -4138,14 +4147,13 @@ End;
 
 { --- Initialisation du mode graphique --- }
 
-Procedure InitializeGraphics;
+Procedure SelectScreenDriverMode(WantMaxScreen: Boolean;
+ Var Driver, Mode: Integer);
 Var
- Driver, Mode: Integer;
  LoMode, HiMode: SmallInt;
- ErrCode: Integer;
 Begin
  {$IFDEF FPC}
-  If(Opts.MaxScreen)Then Begin
+  If(WantMaxScreen)Then Begin
    { Detect choisirait le pilote couleur le plus profond (15/16 bits),
      ou les indices de palette EGA/VGA 1..15 sont alors interpretes
      comme des valeurs RGB brutes (ex: 8 -> bleu presque noir) au lieu
@@ -4170,6 +4178,14 @@ Begin
   Driver := Detect;
   Mode := 0;
  {$ENDIF}
+End;
+
+Procedure InitializeGraphics;
+Var
+ Driver, Mode: Integer;
+ ErrCode: Integer;
+Begin
+ SelectScreenDriverMode(Opts.MaxScreen, Driver, Mode);
  InitGraph(Driver, Mode, '');
  ErrCode := GraphResult;
  If ErrCode <> grOk Then Begin
@@ -4179,6 +4195,7 @@ Begin
  SetColor(CLR_EDITOR_TEXT);
  SetBkColor(CLR_BACKGROUND);
  SetLineStyle(SolidLn, 0, NormWidth);
+ ScreenMaxMode := Opts.MaxScreen;
 End;
 
 { --- Fermeture du mode graphique --- }
@@ -5604,9 +5621,13 @@ Begin
  MenuBgSaved := False;
 End;
 
+{ Declaration anticipee : implementee plus bas avec les autres
+  routines de dessin d icones de la barre d outils }
+Procedure DrawIcon16x16(X, Y: Integer; Var Icon: TIcon16); Forward;
+
 Procedure DrawMenuBar;
 Var
- I, TX: Integer;
+ I, TX, BX, BY: Integer;
 Begin
  { Fond de la barre }
  SetColor(CLR_MENUBAR);
@@ -5630,6 +5651,15 @@ Begin
   OutTextXY(TX, MainMenuBar.Y + 4, MainMenuBar.Menus[I].Title);
   TX := TX + Length(MainMenuBar.Menus[I].Title) * 8 + 16;
  End;
+ { Bouton de zoom ecran (plein ecran / VGA 640x480), coin sup. droit }
+ BX := GetScreenWidth - SCRZOOM_BTN_SIZE - SCRZOOM_BTN_MARGIN;
+ BY := MainMenuBar.Y + (MainMenuBar.Height - SCRZOOM_BTN_SIZE) Div 2;
+ If ScrZoomHover Then Begin
+  SetColor(CLR_MENU_HIGHLIGHT);
+  Bar(BX - 2, MainMenuBar.Y, BX + SCRZOOM_BTN_SIZE + 1,
+      MainMenuBar.Y + MainMenuBar.Height - 2);
+ End;
+ DrawIcon16x16(BX, BY, ScrZoomIcon);
 End;
 
 { --- Ouverture d un menu deroulant --- }
@@ -5728,6 +5758,42 @@ Begin
  SelItemIdx := -1;
  MenuActive := False;
  DrawMenuBar; { redessiner la barre sans surbrillance }
+End;
+
+{ --- Basculer entre le mode plein ecran et le mode VGA 640x480 :
+  PtcGraph ne supporte pas de changer de mode graphique de facon
+  fiable au sein d un meme processus (CloseGraph puis InitGraph a
+  nouveau provoque un plantage). On redemarre donc DEVENV avec
+  l autre mode, comme s il avait ete relance avec/sans -maxscreen. }
+
+Procedure ToggleScreenZoom;
+Var
+ ExeName, CmdArgs, FullCmd, Arg: String;
+ WantMax: Boolean;
+ I: Integer;
+Begin
+ If ShowMessageBox('Changer de mode d''affichage',
+  'DEVENV doit redemarrer pour changer de mode d''affichage.' + #10 +
+  'Les modifications non enregistrees seront perdues.' + #10 +
+  'Continuer ?', MB_YESNO, MI_WARNING) <> DR_YES Then Exit;
+ If MenuActive Then CloseMenu;
+ WantMax := Not ScreenMaxMode;
+ ExeName := ParamStr(0);
+ CmdArgs := '';
+ For I := 1 To ParamCount Do Begin
+  Arg := ParamStr(I);
+  If UpCaseStr(Arg) <> '-MAXSCREEN' Then
+   CmdArgs := CmdArgs + ' "' + Arg + '"';
+ End;
+ If WantMax Then CmdArgs := CmdArgs + ' -maxscreen';
+ FullCmd := '"' + ExeName + '"' + CmdArgs;
+ CloseGraph;
+ {$IFDEF WINDOWS}
+  Exec(GetEnv('COMSPEC'), '/C START "" ' + FullCmd);
+ {$ELSE}
+  Exec('/bin/sh', '-c ''' + FullCmd + ' &''');
+ {$ENDIF}
+ Halt(EXIT_OK);
 End;
 
 { --- Execution d un element de menu --- }
@@ -6027,6 +6093,19 @@ Begin
  End;
 End;
 
+{ --- Tester si la souris survole le bouton de zoom ecran --- }
+
+Function ScrZoomBtnHitTest(MX, MY: Integer): Boolean;
+Var
+ BX, BY: Integer;
+Begin
+ BX := GetScreenWidth - SCRZOOM_BTN_SIZE - SCRZOOM_BTN_MARGIN;
+ BY := MainMenuBar.Y + (MainMenuBar.Height - SCRZOOM_BTN_SIZE) Div 2;
+ ScrZoomBtnHitTest := (MX >= BX - 2) And
+  (MX <= BX + SCRZOOM_BTN_SIZE + 1) And
+  (MY >= MainMenuBar.Y) And (MY < MainMenuBar.Y + MainMenuBar.Height - 1);
+End;
+
 { --- Trouver l item sous la souris dans le menu ouvert --- }
 
 Function MenuItemHitTest(MX, MY: Integer): Integer;
@@ -6066,8 +6145,14 @@ End;
 Procedure HandleMenuEvent(Var Ev: TEvent);
 Var
  Hit, ItemHit: Integer;
+ NewHover: Boolean;
 Begin
  If Ev.Kind = EV_MOUSE_DOWN Then Begin
+  { Clic sur le bouton de zoom ecran (plein ecran / VGA 640x480) }
+  If ScrZoomBtnHitTest(Ev.MouseX, Ev.MouseY) Then Begin
+   ToggleScreenZoom;
+   Exit;
+  End;
   { Clic sur la barre de menus }
   Hit := MenuBarHitTest(Ev.MouseX, Ev.MouseY);
   If Hit >= 0 Then Begin
@@ -6089,6 +6174,10 @@ Begin
   End;
  End
  Else If Ev.Kind = EV_MOUSE_MOVE Then Begin
+  { Survol du bouton de zoom ecran }
+  NewHover := ScrZoomBtnHitTest(Ev.MouseX, Ev.MouseY);
+  If NewHover <> ScrZoomHover Then
+   ScrZoomHover := NewHover;
   { Survol de la barre de menus avec menu ouvert }
   If MenuActive And (OpenMenuIdx >= 0) Then Begin
    Hit := MenuBarHitTest(Ev.MouseX, Ev.MouseY);
@@ -6567,6 +6656,28 @@ Begin
  IconPutPixel(Icon, 12, 7, 1);
  IconPutPixel(Icon, 11, 8, 1);
  IconPutPixel(Icon, 10, 9, 1);
+End;
+
+{ --- Icone : Zoom ecran (plein ecran / VGA 640x480) --- }
+
+Procedure MakeIconScrZoom(Var Icon: TIcon16);
+Begin
+ ClearIcon(Icon, 255);
+ { Cadre du moniteur }
+ IconRect(Icon, 1, 1, 13, 9, 0);
+ { Pied du moniteur }
+ IconVLine(Icon, 7, 10, 11, 0);
+ IconHLine(Icon, 4, 10, 12, 0);
+ { Fleche d agrandissement (coin haut-gauche) }
+ IconPutPixel(Icon, 3, 3, 1);
+ IconPutPixel(Icon, 4, 3, 1);
+ IconPutPixel(Icon, 3, 4, 1);
+ IconPutPixel(Icon, 5, 5, 1);
+ { Fleche d agrandissement (coin bas-droit) }
+ IconPutPixel(Icon, 11, 7, 1);
+ IconPutPixel(Icon, 10, 7, 1);
+ IconPutPixel(Icon, 11, 6, 1);
+ IconPutPixel(Icon, 9, 5, 1);
 End;
 
 { --- Initialiser toutes les icones de la barre d outils --- }
@@ -52411,6 +52522,8 @@ BEGIN
  InitMouse;
  InitWidgetSystem;
  InitMenuBar;
+ MakeIconScrZoom(ScrZoomIcon);
+ ScrZoomHover := False;
  DrawMenuBar;
  InitToolBar;
  DrawToolBar;
