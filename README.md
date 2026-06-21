@@ -14,6 +14,7 @@ Il possède également des IDE, comme DEVENV :
 	<li>Debogueur pour le 6502, 8086 intégré</li>
 	<li>Support de la souris et du clavier</li>
 	<li>Aide en ligne de plus de 1 Mo</li>
+	<li>Supporte le mode pleine fenetre d'écran (-maxscreen).</li>
 </ul>
 
 <h2>Liste des fichiers</h2>
@@ -320,6 +321,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 		<tr>
 			<td><b>COM2EXE.PAS</b></td>
 			<td>Cette commande permet de convertir un fichier «.COM» en fichier «.EXE»</td>
+		</tr>
+		<tr>
+			<td><b>COMMENT.PAS</b></td>
+			<td>Cette commande permet d'ajouter des commentaires en francais dans un fichier source Pascal, C ou C# (champs, constantes, fonctions/procedures et leurs parametres) lorsqu il n y en a pas.</td>
 		</tr>
 		<tr>
 			<td><b>CONVERT.PAS</b></td>
