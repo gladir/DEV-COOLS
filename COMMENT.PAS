@@ -1646,6 +1646,62 @@ Var
  PendingLines: Array[1..MaxPending] Of String;
  PendingDescs: Array[1..MaxPending] Of String;
  PendingCount: Integer;
+ NextTrimmed, Body: String;
+ CStart: Integer;
+ ParamNamesB: Array[0..MaxParams - 1] Of String;
+ ParamTypesB: Array[0..MaxParams - 1] Of String;
+ ParamCntB: Integer;
+
+ { @description: A partir de la ligne EndLine, qui se termine par le
+     accolade fermante d un commentaire, remonte pour trouver la
+     ligne ou ce commentaire commence (celle qui debute par une
+     accolade ouvrante). Si EndLine debute elle-meme par une
+     accolade ouvrante, le commentaire est tout entier sur une seule
+     ligne. La remontee s arrete par securite sur une ligne vide ou
+     terminee par un point-virgule, pour ne jamais deborder dans une
+     instruction precedente non liee a ce commentaire.
+   @param EndLine Numero (1-based) de la derniere ligne du commentaire
+   @return Numero (1-based) de la premiere ligne du commentaire (ou
+     EndLine si le debut n a pas pu etre retrouve avec certitude) }
+ Function FindCommentBlockStart(EndLine: Integer): Integer;
+ Var
+  K: Integer;
+  T: String;
+ Begin
+  T := TrimStr(Lines[EndLine]);
+  If StartsWithStr(T, '{') Then Begin
+   FindCommentBlockStart := EndLine;
+   Exit;
+  End;
+  K := EndLine - 1;
+  While K >= 1 Do Begin
+   T := TrimStr(Lines[K]);
+   If StartsWithStr(T, '{') Then Begin
+    FindCommentBlockStart := K;
+    Exit;
+   End;
+   If (T = '') Or EndsWithStr(T, ';') Then Break;
+   Dec(K);
+  End;
+  FindCommentBlockStart := EndLine;
+ End;
+
+ { @description: Indique si l une des lignes de StartLine a EndLine
+     (inclusivement) contient deja un marqueur @param.
+   @param StartLine Premiere ligne du commentaire (incluse)
+   @param EndLine Derniere ligne du commentaire (incluse)
+   @return Vrai si @param apparait dans l intervalle }
+ Function CommentBlockHasParam(StartLine, EndLine: Integer): Boolean;
+ Var
+  K: Integer;
+ Begin
+  CommentBlockHasParam := False;
+  For K := StartLine To EndLine Do
+   If ContainsStr(Lines[K], '@param') Then Begin
+    CommentBlockHasParam := True;
+    Exit;
+   End;
+ End;
 
  { @description: Ecrit le bloc de lignes en attente, en alignant tous
      leurs commentaires de fin de ligne sur la meme colonne (celle de
@@ -1691,6 +1747,40 @@ Begin
   S := Lines[I];
   Trimmed := TrimStr(S);
   Up := UpStr(Trimmed);
+
+  { ----- Commentaire deja present juste avant une fonction/procedure,
+    mais sans @param : on complete avec les @param manquants, sans
+    toucher au reste du commentaire (texte libre de l auteur). Ne
+    s applique qu au commentaire DIRECTEMENT adjacent (sans ligne
+    vide), conformement a HasPrecedingComment. ----- }
+  If ((Mode And MD_PARAM) <> 0) And LooksLikeCommentEnd(Trimmed) And
+     EndsWithStr(Trimmed, '}') And (I < LineCount) Then Begin
+   NextTrimmed := TrimStr(Lines[I + 1]);
+   If StartsWithStr(NextTrimmed, 'Function ') Or
+      StartsWithStr(NextTrimmed, 'Procedure ') Then Begin
+    CStart := FindCommentBlockStart(I);
+    If Not CommentBlockHasParam(CStart, I) Then Begin
+     CollectPascalHeader(I + 1, FullText, LastLine);
+     ParsePascalHeader(FullText, Name, ParamList, IsFunc);
+     ExtractPascalParamNames(ParamList, ParamNamesB, ParamTypesB, ParamCntB);
+     If ParamCntB > 0 Then Begin
+      FlushPendingBlock;
+      Body := Trimmed;
+      Delete(Body, Length(Body), 1);
+      Body := TrimStr(Body);
+      If Body <> '' Then WriteLn(OutF, Body);
+      For J := 0 To ParamCntB - 1 Do Begin
+       WriteLn(OutF, '  @param ', ParamNamesB[J], ' ',
+        CapStr(DescribeParam(ParamNamesB[J], ParamTypesB[J])));
+       Inc(NbParam);
+      End;
+      WriteLn(OutF, ' }');
+      Inc(I);
+      Continue;
+     End;
+    End;
+   End;
+  End;
 
   { ----- Detection d une fonction/procedure ----- }
   If (StartsWithStr(Trimmed, 'Function ') Or
