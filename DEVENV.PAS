@@ -21546,7 +21546,13 @@ Begin
  TP.NumberHistory := 0;
  TP.HistoryPos := 0;
  TP.NumberDirStack := 0;
- TP.VirtDrive := -1;
+ { Si un disque dur est monte et reconnu (FAT12/16/32), le terminal
+   demarre directement sur ce lecteur (C:), comme un DOS reel
+   demarrant sur son disque dur. Sinon, mode hote standard. }
+ If EmuFloppyOpen[2] And FatVol[2].Mounted Then
+  TP.VirtDrive := 2
+ Else
+  TP.VirtDrive := -1;
  TP.VirtCwd   := '\';
  TermLoadCmdHistory(TP);
 End;
