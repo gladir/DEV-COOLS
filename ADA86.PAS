@@ -31,7 +31,7 @@ Const
   { ------------------------------------------------------------------ }
   { Types de tokens                                                     }
   { ------------------------------------------------------------------ }
-  TOK_UNKNOWN    = 0;
+  TOK_UNKNOWN    = 0; { Jeton (token de l'analyse lexicale) }
   TOK_IDENT      = 1;   { identifiant ou mot-cle Ada                   }
   TOK_INTEGER    = 2;   { litteral entier  42  16#FF#  2#1010#         }
   TOK_FLOAT      = 3;   { litteral flottant 3.14  1.5E-3               }
@@ -66,78 +66,78 @@ Const
   { ------------------------------------------------------------------ }
   { Mots-cles Ada (insensibles a la casse -> stockes en majuscules)    }
   { ------------------------------------------------------------------ }
-  KW_NONE        =  0;
-  KW_PROCEDURE   =  1;
-  KW_FUNCTION    =  2;
-  KW_PACKAGE     =  3;
-  KW_BEGIN       =  4;
-  KW_END         =  5;
-  KW_IS          =  6;
-  KW_WITH        =  7;
-  KW_USE         =  8;
-  KW_TYPE        =  9;
-  KW_SUBTYPE     = 10;
-  KW_CONSTANT    = 11;
-  KW_ARRAY       = 12;
-  KW_RECORD      = 13;
-  KW_OF          = 14;
-  KW_RANGE       = 15;
-  KW_IF          = 16;
-  KW_THEN        = 17;
-  KW_ELSIF       = 18;
-  KW_ELSE        = 19;
-  KW_CASE        = 20;
-  KW_WHEN        = 21;
-  KW_OTHERS      = 22;
-  KW_LOOP        = 23;
-  KW_EXIT        = 24;
-  KW_WHILE       = 25;
-  KW_FOR         = 26;
-  KW_IN          = 27;
-  KW_REVERSE     = 28;
-  KW_RETURN      = 29;
-  KW_NULL        = 30;
-  KW_RAISE       = 31;
-  KW_EXCEPTION   = 32;
-  KW_PRAGMA      = 33;
-  KW_RENAMES     = 34;
-  KW_SEPARATE    = 35;
-  KW_ABSTRACT    = 36;
-  KW_PRIVATE     = 37;
-  KW_BODY        = 38;
-  KW_AND         = 39;
-  KW_OR          = 40;
-  KW_NOT         = 41;
-  KW_XOR         = 42;
-  KW_MOD         = 43;
-  KW_REM         = 44;
-  KW_NEW         = 45;
-  KW_ALL         = 46;
-  KW_ACCESS      = 47;
-  KW_OUT         = 48;
-  KW_DECLARE     = 49;
-  KW_DO          = 50;
-  KW_GOTO        = 51;
-  KW_ABS         = 52;
-  KW_DELTA       = 53;
-  KW_DIGITS      = 54;
-  KW_AT          = 55;
-  KW_ACCEPT      = 56;
-  KW_TASK        = 57;
-  KW_PROTECTED   = 58;
-  KW_GENERIC     = 59;
-  KW_LIMITED     = 60;
-  KW_TAGGED      = 61;
-  KW_SELECT      = 62;
-  KW_TERMINATE   = 63;
-  KW_DELAY       = 64;
-  KW_UNTIL       = 65;
-  KW_REQUEUE     = 66;
-  KW_ENTRY       = 67;
-  KW_INTERFACE   = 68;
-  KW_OVERRIDING  = 69;
-  KW_SYNCHRONIZED= 70;
-  KW_SOME        = 71;
+  KW_NONE        =  0; { Mot-cle Aucun }
+  KW_PROCEDURE   =  1; { Mot-cle Procedure }
+  KW_FUNCTION    =  2; { Mot-cle Fonction }
+  KW_PACKAGE     =  3; { Mot-cle Paquetage }
+  KW_BEGIN       =  4; { Mot-cle Debut }
+  KW_END         =  5; { Mot-cle Fin }
+  KW_IS          =  6; { Mot-cle Est }
+  KW_WITH        =  7; { Mot-cle Avec }
+  KW_USE         =  8; { Mot-cle Utiliser }
+  KW_TYPE        =  9; { Mot-cle Type }
+  KW_SUBTYPE     = 10; { Mot-cle Sous-type }
+  KW_CONSTANT    = 11; { Mot-cle }
+  KW_ARRAY       = 12; { Mot-cle Tableau }
+  KW_RECORD      = 13; { Mot-cle Enregistrement }
+  KW_OF          = 14; { Mot-cle De }
+  KW_RANGE       = 15; { Mot-cle Intervalle }
+  KW_IF          = 16; { Mot-cle Si }
+  KW_THEN        = 17; { Mot-cle Alors }
+  KW_ELSIF       = 18; { Mot-cle Sinon si }
+  KW_ELSE        = 19; { Mot-cle Sinon }
+  KW_CASE        = 20; { Mot-cle Selon (instruction de branchement) }
+  KW_WHEN        = 21; { Mot-cle Quand }
+  KW_OTHERS      = 22; { Mot-cle Autres }
+  KW_LOOP        = 23; { Mot-cle Boucle }
+  KW_EXIT        = 24; { Mot-cle Sortie de boucle }
+  KW_WHILE       = 25; { Mot-cle Tant que }
+  KW_FOR         = 26; { Mot-cle Pour }
+  KW_IN          = 27; { Mot-cle Dans }
+  KW_REVERSE     = 28; { Mot-cle Inverse }
+  KW_RETURN      = 29; { Mot-cle Retour }
+  KW_NULL        = 30; { Mot-cle Nul }
+  KW_RAISE       = 31; { Mot-cle Lever une exception }
+  KW_EXCEPTION   = 32; { Mot-cle Exception }
+  KW_PRAGMA      = 33; { Mot-cle Directive de compilation }
+  KW_RENAMES     = 34; { Mot-cle Renomme }
+  KW_SEPARATE    = 35; { Mot-cle Unite separee }
+  KW_ABSTRACT    = 36; { Mot-cle Abstrait }
+  KW_PRIVATE     = 37; { Mot-cle Prive }
+  KW_BODY        = 38; { Mot-cle Corps }
+  KW_AND         = 39; { Mot-cle Et }
+  KW_OR          = 40; { Mot-cle Ou }
+  KW_NOT         = 41; { Mot-cle Non }
+  KW_XOR         = 42; { Mot-cle Ou exclusif }
+  KW_MOD         = 43; { Mot-cle Modulo }
+  KW_REM         = 44; { Mot-cle Reste de division }
+  KW_NEW         = 45; { Mot-cle }
+  KW_ALL         = 46; { Mot-cle Tous }
+  KW_ACCESS      = 47; { Mot-cle Acces (pointeur) }
+  KW_OUT         = 48; { Mot-cle Sortie (mode parametre) }
+  KW_DECLARE     = 49; { Mot-cle Declarer }
+  KW_DO          = 50; { Mot-cle Faire }
+  KW_GOTO        = 51; { Mot-cle Aller a }
+  KW_ABS         = 52; { Mot-cle }
+  KW_DELTA       = 53; { Mot-cle Delta (precision fixe) }
+  KW_DIGITS      = 54; { Mot-cle Chiffres (precision flottante) }
+  KW_AT          = 55; { Mot-cle A (clause d'adresse) }
+  KW_ACCEPT      = 56; { Mot-cle Accepter (rendez-vous de tache) }
+  KW_TASK        = 57; { Mot-cle Tache }
+  KW_PROTECTED   = 58; { Mot-cle Protege }
+  KW_GENERIC     = 59; { Mot-cle Generique }
+  KW_LIMITED     = 60; { Mot-cle Limite }
+  KW_TAGGED      = 61; { Mot-cle Etiquete }
+  KW_SELECT      = 62; { Mot-cle Selectionner }
+  KW_TERMINATE   = 63; { Mot-cle Terminer }
+  KW_DELAY       = 64; { Mot-cle Delai }
+  KW_UNTIL       = 65; { Mot-cle Jusqu'a }
+  KW_REQUEUE     = 66; { Mot-cle Remettre en file d'attente }
+  KW_ENTRY       = 67; { Mot-cle Point d'entree de tache }
+  KW_INTERFACE   = 68; { Mot-cle Interface }
+  KW_OVERRIDING  = 69; { Mot-cle Redefinition }
+  KW_SYNCHRONIZED= 70; { Mot-cle Synchronise }
+  KW_SOME        = 71; { Mot-cle Quelconque }
   KW_TRUE        = 72;  { predefined Boolean constant                  }
   KW_FALSE       = 73;  { predefined Boolean constant                  }
   KW_ANDTHEN     = 74;  { pseudo-KW : AND THEN (court-circuit)         }
@@ -147,7 +147,7 @@ Const
   { ------------------------------------------------------------------ }
   { Types Ada internes (indices predefinis dans type_table)            }
   { ------------------------------------------------------------------ }
-  TYPE_UNKNOWN   =  0;
+  TYPE_UNKNOWN   =  0; { Type }
   TYPE_INT       =  1;  { Integer  (16 bits signe, DW)                 }
   TYPE_FLOAT     =  2;  { Float    (32 bits, DD, stub)                 }
   TYPE_BOOL      =  3;  { Boolean  (8 bits, DB, 0/1)                   }
@@ -241,12 +241,12 @@ Type
 
   { --- Entree de table des sous-programmes (proc + func) --- }
   TSubEntry = Record
-    name          : String[48];
+    name          : String[48]; { Nom }
     asm_label     : String[48];  { ex: _ADA_PROC_nom / _ADA_FUNC_nom    }
     ret_type      : Integer;     { TYPE_xxx de retour (TYPE_VOID si proc)}
     param_count   : Integer;     { nombre total de parametres            }
-    param_names   : Array[1..MAX_PARAM] of String[48];
-    param_types   : Array[1..MAX_PARAM] of Integer;
+    param_names   : Array[1..MAX_PARAM] of String[48]; { Parametre }
+    param_types   : Array[1..MAX_PARAM] of Integer;    { Parametre }
     param_modes   : Array[1..MAX_PARAM] of Integer;   { PARAM_xxx        }
     is_forward    : Boolean;     { True si forward declaration           }
     is_function   : Boolean;     { True si FUNCTION, False si PROCEDURE  }
@@ -255,19 +255,19 @@ Type
 
   { --- Entree de table des types utilisateur --- }
   TTypeEntry = Record
-    name        : String[48];
+    name        : String[48]; { Nom }
     kind        : Integer;       { TK_xxx                               }
     base_type   : Integer;       { index type_table pour derives/ranges }
     lo_bound    : LongInt;       { borne inferieure (RANGE / ARRAY)     }
     hi_bound    : LongInt;       { borne superieure                     }
     field_count : Integer;       { nombre de champs (RECORD)            }
-    field_names : Array[1..MAX_FIELD] of String[48];
-    field_types : Array[1..MAX_FIELD] of Integer;
+    field_names : Array[1..MAX_FIELD] of String[48]; { Champ }
+    field_types : Array[1..MAX_FIELD] of Integer;    { Champ }
     field_offs  : Array[1..MAX_FIELD] of Integer;   { offsets en octets }
     elem_type   : Integer;       { type des elements (ARRAY)            }
     elem_size   : Integer;       { taille d'un element en octets        }
     enum_count  : Integer;       { nombre de litteraux (ENUM)           }
-    enum_names  : Array[1..MAX_ENUM] of String[48];
+    enum_names  : Array[1..MAX_ENUM] of String[48]; { Variable enum_names }
     total_size  : Integer;       { taille totale du type en octets      }
   End;
 
@@ -292,21 +292,21 @@ Type
   End;
 
   { --- Alias tableaux + pointeurs pour allocation sur le tas --- }
-  TSymTableArr  = Array[1..MAX_SYM]  of TSymEntry;
-  TSubTableArr  = Array[1..MAX_SUB]  of TSubEntry;
-  TTypeTableArr = Array[1..MAX_TYPE] of TTypeEntry;
-  TPkgTableArr  = Array[1..MAX_PKG]  of TPkgEntry;
-  TScopeArr     = Array[0..MAX_DEPTH] of TScopeEntry;
+  TSymTableArr  = Array[1..MAX_SYM]  of TSymEntry;    { Table }
+  TSubTableArr  = Array[1..MAX_SUB]  of TSubEntry;    { Table }
+  TTypeTableArr = Array[1..MAX_TYPE] of TTypeEntry;   { Table }
+  TPkgTableArr  = Array[1..MAX_PKG]  of TPkgEntry;    { Table }
+  TScopeArr     = Array[0..MAX_DEPTH] of TScopeEntry; { Constante TScopeArr }
   TStrTableArr  = Array[1..MAX_STR]  of String;      { texte litteral   }
   TLblTableArr  = Array[1..MAX_STR]  of String[32];  { label _LSn       }
 
-  PSymTable   = ^TSymTableArr;
-  PSubTable   = ^TSubTableArr;
-  PTypeTable  = ^TTypeTableArr;
-  PPkgTable   = ^TPkgTableArr;
-  PScopeArr   = ^TScopeArr;
-  PStrTable   = ^TStrTableArr;
-  PLblTable   = ^TLblTableArr;
+  PSymTable   = ^TSymTableArr;  { Table }
+  PSubTable   = ^TSubTableArr;  { Table }
+  PTypeTable  = ^TTypeTableArr; { Table }
+  PPkgTable   = ^TPkgTableArr;  { Table }
+  PScopeArr   = ^TScopeArr;     { Constante PScopeArr }
+  PStrTable   = ^TStrTableArr;  { Table }
+  PLblTable   = ^TLblTableArr;  { Table }
 
 { ============================================================================ }
 { Variables globales                                                           }
@@ -315,54 +315,54 @@ Type
 Var
 
   { --- Fichiers --- }
-  source_filename : String;
-  output_filename : String;
-  input_file      : Text;
-  output_file     : Text;
+  source_filename : String; { Source Nom du fichier }
+  output_filename : String; { Sortie Nom du fichier }
+  input_file      : Text;   { Entree Descripteur de fichier }
+  output_file     : Text;   { Sortie Descripteur de fichier }
 
   { --- Options --- }
-  opt_verbose     : Boolean;
-  opt_dump_tok    : Boolean;
+  opt_verbose     : Boolean; { Active l'affichage detaille des messages d'execution }
+  opt_dump_tok    : Boolean; { Affiche la liste des jetons (tokens) generes par l'analyse lexicale }
 
   { --- Etat du tokeniseur --- }
-  src_line        : String;
-  src_line_num    : Integer;
-  src_col         : Integer;
-  src_eof         : Boolean;
+  src_line        : String;  { Source Ligne }
+  src_line_num    : Integer; { Numero de ligne de la source }
+  src_col         : Integer; { Source Colonne }
+  src_eof         : Boolean; { Fin de fichier de la source }
   cur_tok_type    : Integer;   { TOK_xxx                                }
   cur_tok_str     : String;    { texte brut du token (idents, strings)  }
   cur_tok_num     : LongInt;   { valeur si TOK_INTEGER                  }
   cur_tok_flt     : Double;    { valeur si TOK_FLOAT                    }
   cur_tok_kw      : Integer;   { KW_xxx si TOK_IDENT est un mot-cle    }
   peek_char       : Char;      { caractere en attente (lookahead)       }
-  has_peek        : Boolean;
+  has_peek        : Boolean; { Indique si un caractere est actuellement entrepose dans peek_char }
   cur_column      : Integer;   { colonne courante (1-base)              }
 
   { --- Nom de la procedure principale (library unit) --- }
-  prog_name       : String;
+  prog_name       : String; { Nom du programme, de la bibliotheque ou de l'unite en cours }
 
   { --- Tables sur le tas --- }
   sym_table   : PSymTable;     { variables + constantes                 }
-  sym_count   : Integer;
+  sym_count   : Integer; { Nombre d'identificateurs enregistres }
   sub_table   : PSubTable;     { procedures + fonctions                 }
-  sub_count   : Integer;
+  sub_count   : Integer; { Nombre de sous-programmes declares }
   type_table  : PTypeTable;    { types utilisateur + predefinis         }
-  type_count  : Integer;
+  type_count  : Integer; { Nombre de types connus du compilateur }
   pkg_table   : PPkgTable;     { packages importes (WITH/USE)           }
-  pkg_count   : Integer;
+  pkg_count   : Integer; { Nombre de modules importes }
   str_table   : PStrTable;     { textes des litteraux chaines           }
   lbl_table   : PLblTable;     { labels ASM des litteraux (_LS1..._LSn) }
-  str_count   : Integer;
+  str_count   : Integer; { Nombre de chaines stockees dans le pool des constantes }
 
   { --- Pile de scopes --- }
-  scope_stack : PScopeArr;
-  scope_top   : Integer;
+  scope_stack : PScopeArr; { Pile }
+  scope_top   : Integer;   { Position haute }
 
   { --- Compteurs --- }
   label_counter : Integer;     { pour NewLabel -> @@L0001, @@L0002 ...  }
   lit_counter   : Integer;     { pour AddStringLit -> _LS1, _LS2 ...    }
-  error_count   : Integer;
-  warn_count    : Integer;
+  error_count   : Integer; { Erreur Compteur }
+  warn_count    : Integer; { Compteur }
   gen_enabled   : Boolean;     { False -> Emit() ne fait rien (erreur)  }
   except_next_code : Integer;  { prochain code d'exception utilisateur  }
 
@@ -372,8 +372,11 @@ Var
 
 { ---------- Utilitaires chaines ---------- }
 
+{ @description: Cette fonction permet de convertir une chaine de caracteres en majuscules.
+  @param s Parametre de chaine de caracteres
+  @return Resultat de l'operation. }
 Function UpCaseStr(Const s: String): String;
-Var i: Integer; r: String;
+Var i: Integer; r: String; { Entier signe }
 Begin
  r := s;
  For i := 1 to Length(r) do
@@ -381,24 +384,33 @@ Begin
  UpCaseStr := r;
 End;
 
+{ @description: Cette fonction permet de convertir un entier en chaine de caracteres.
+  @param n Parametre de nombre
+  @return Sous forme de chaine de caracteres. }
 Function IntToStr(n: LongInt): String;
-Var s: String;
+Var s: String; { Chaine de caracteres }
 Begin
  Str(n, s);
  IntToStr := s;
 End;
 
+{ @description: Cette fonction permet de convertir une chaine de caracteres en entier.
+  @param s Parametre de chaine de caracteres
+  @return Chaine de caracteres sous forme d'entier. }
 Function StrToInt(Const s: String): LongInt;
-Var v: LongInt; code: Integer;
+Var v: LongInt; code: Integer; { Entier long signe (32 bits) }
 Begin
  Val(s, v, code);
  If code <> 0 Then v := 0;
  StrToInt := v;
 End;
 
-{ Normalise un nom en etiquette ASM valide (remplace - et . par _) }
+{ Normalise un nom en etiquette ASM valide (remplace - et . par _)
+  @param prefix Chaine de caracteres
+  @param name   Nom
+ }
 Function AsmIdent(Const prefix, name: String): String;
-Var i: Integer; r: String;
+Var i: Integer; r: String; { Entier signe }
 Begin
  r := prefix + name;
  For i := 1 to Length(r) do
@@ -444,7 +456,7 @@ End;
 
 { Consomme et retourne un caractere source }
 Function SrcGetChar: Char;
-Var ch: Char;
+Var ch: Char; { Caractere }
 Begin
  { Initialisation : charger la premiere ligne si necessaire }
  If (src_line_num = 0) And (Not src_eof) Then
@@ -481,8 +493,10 @@ End;
 
 { ---------- Gestion du lookahead (peek_char) ---------------  }
 
+{ @description: Cette fonction permet de obtenir un caractere.
+  @return Resultat de l'operation. }
 Function GetChar: Char;
-Var ch: Char;
+Var ch: Char; { Caractere }
 Begin
  If has_peek Then
  Begin
@@ -494,14 +508,19 @@ Begin
  GetChar := ch;
 End;
 
+{ @description: Cette procedure permet de la fonctionnalite caractere.
+  @param ch Parametre de caractere
+  }
 Procedure UngetChar(ch: Char);
 Begin
  peek_char := ch;
  has_peek  := True;
 End;
 
+{ @description: Cette fonction permet de la fonctionnalite anticipation de lecture (lookahead) caractere suivante.
+  @return Resultat de l'operation. }
 Function PeekNextChar: Char;
-Var ch: Char;
+Var ch: Char; { Caractere }
 Begin
  ch := GetChar;
  UngetChar(ch);
@@ -510,8 +529,10 @@ End;
 
 { ---------- Ignorer espaces et commentaires Ada (--) ---------- }
 
+{ @description: Cette procedure permet de la fonctionnalite et.
+  }
 Procedure SkipWhitespaceAndComments;
-Var ch, ch2: Char;
+Var ch, ch2: Char; { Caractere }
 Begin
  Repeat
   ch := GetChar;
@@ -549,7 +570,9 @@ End;
 { ---------- Table des mots-cles Ada ---------- }
 
 { Retourne KW_xxx si l'identifiant (en majuscules) est un mot-cle,
-  sinon KW_NONE.  La table est triee alphabetiquement pour lisibilite. }
+sinon KW_NONE.  La table est triee alphabetiquement pour lisibilite.
+  @param u Parametre de chaine de caracteres
+ }
 Function LookupKeyword(Const u: String): Integer;
 Begin
  LookupKeyword := KW_NONE;
@@ -613,10 +636,11 @@ Begin
       Else If u = 'DIGITS' Then LookupKeyword := KW_DIGITS
       Else If u = 'OTHERS' Then LookupKeyword := KW_OTHERS
       Else If u = 'PRAGMA' Then LookupKeyword := KW_PRAGMA
+{ Structure Else If u }
       Else If u = 'RECORD' Then LookupKeyword := KW_RECORD
       Else If u = 'RETURN' Then LookupKeyword := KW_RETURN
       Else If u = 'SELECT' Then LookupKeyword := KW_SELECT
-      Else If u = 'TAGGED' Then LookupKeyword := KW_TAGGED;
+      Else If u = 'TAGGED' Then LookupKeyword := KW_TAGGED; { Variable Else If u = 'TAGGED' Then LookupKeyword }
      End;
   7: Begin
       If      u = 'DECLARE' Then LookupKeyword := KW_DECLARE
@@ -649,8 +673,10 @@ End;
 
 { ---------- Lex : identifiant ou mot-cle ---------- }
 
+{ @description: Cette procedure permet de la fonctionnalite analyse lexicale.
+  }
 Procedure LexIdent;
-Var s: String; ch: Char;
+Var s: String; ch: Char; { Chaine de caracteres }
 Begin
  s := '';
  Repeat
@@ -673,9 +699,12 @@ End;
 
 { ---------- Lex : litteraux numeriques ---------- }
 
-{ Convertit un chiffre dans une base donnee ; retourne -1 si invalide }
+{ Convertit un chiffre dans une base donnee ; retourne -1 si invalide
+  @param ch   Parametre de caractere
+  @param base Base
+ }
 Function DigitValue(ch: Char; base: Integer): Integer;
-Var v: Integer;
+Var v: Integer; { Entier signe }
 Begin
  ch := UpCase(ch);
  If (ch >= '0') And (ch <= '9') Then v := Ord(ch) - Ord('0')
@@ -685,14 +714,17 @@ Begin
  DigitValue := v;
 End;
 
+{ @description: Cette procedure permet de la fonctionnalite analyse lexicale.
+  @param firstCh Premiere
+  }
 Procedure LexNumber(firstCh: Char);
-Var s        : String;
-    intVal   : LongInt;
-    base     : Integer;
-    ch       : Char;
-    dv       : Integer;
-    isFloat  : Boolean;
-    fltStr   : String;
+Var s        : String;  { Chaine de caracteres }
+    intVal   : LongInt; { Valeur }
+    base     : Integer; { Base }
+    ch       : Char;    { Caractere }
+    dv       : Integer; { Entier signe }
+    isFloat  : Boolean; { Est }
+    fltStr   : String;  { Chaine de caracteres }
 Begin
  s      := '' + firstCh;
  isFloat:= False;
@@ -812,8 +844,10 @@ End;
   '' n'existe pas en Ada (c'est toujours exactement un caractere).
   Le tick ' devant un ident est l'attribut T'FIRST -> retourne TOK_TICK.     }
 
+{ @description: Cette procedure permet de la fonctionnalite analyse lexicale caractere ou.
+  }
 Procedure LexCharOrTick;
-Var ch, ch2: Char;
+Var ch, ch2: Char; { Caractere }
 Begin
  ch := GetChar;
  If ch = #0 Then
@@ -843,8 +877,10 @@ End;
 
 { ---------- Lex : litteral chaine "..." ---------- }
 
+{ @description: Cette procedure permet de la fonctionnalite analyse lexicale chaine de caracteres.
+  }
 Procedure LexString;
-Var s: String; ch: Char;
+Var s: String; ch: Char; { Chaine de caracteres }
 Begin
  s := '';
  Repeat
@@ -874,8 +910,11 @@ End;
 
 { ---------- Lex : symboles et operateurs ---------- }
 
+{ @description: Cette procedure permet de la fonctionnalite analyse lexicale.
+  @param firstCh Premiere
+  }
 Procedure LexSymbol(firstCh: Char);
-Var ch2: Char;
+Var ch2: Char; { Caractere }
 Begin
  cur_tok_str := '' + firstCh;
  Case firstCh of
@@ -936,8 +975,10 @@ End;
 
 { ---------- Tokeniseur principal ---------- }
 
+{ @description: Cette procedure permet de la fonctionnalite jeton (token de l'analyse lexicale) suivante.
+  }
 Procedure NextToken;
-Var ch: Char;
+Var ch: Char; { Caractere }
 Begin
  SkipWhitespaceAndComments;
 
@@ -971,17 +1012,26 @@ End;
 
 { ---------- Helpers de parsing ---------- }
 
+{ @description: Cette fonction permet de la fonctionnalite jeton (token de l'analyse lexicale) est mot-cle.
+  @param kw Parametre de mot-cle
+  @return Resultat de l'operation. }
 Function TokIsKw(kw: Integer): Boolean;
 Begin
  TokIsKw := (cur_tok_type = TOK_IDENT) And (cur_tok_kw = kw);
 End;
 
+{ @description: Cette fonction permet de la fonctionnalite jeton (token de l'analyse lexicale) est.
+  @param tok Jeton (token de l'analyse lexicale)
+  @return Resultat de l'operation. }
 Function TokIsOp(tok: Integer): Boolean;
 Begin
  TokIsOp := (cur_tok_type = tok);
 End;
 
-{ Verify that current token is of type tok ; consume it ; else error msg }
+{ Verify that current token is of type tok ; consume it ; else error msg
+  @param tok Jeton (token de l'analyse lexicale)
+  @param msg Message
+ }
 Procedure Expect(tok: Integer; Const msg: String);
 Begin
  If cur_tok_type <> tok Then
@@ -994,6 +1044,11 @@ Begin
   Consume;
 End;
 
+{ @description: Cette procedure permet de la fonctionnalite mot-cle.
+  @param kw     Parametre de mot-cle
+  @param kwname Chaine de caracteres
+  @param msg    Message
+  }
 Procedure ExpectKw(kw: Integer; Const kwname, msg: String);
 Begin
  If Not TokIsKw(kw) Then
@@ -1013,25 +1068,34 @@ End;
 { Affiche un message d'erreur non fatal et incremente error_count.
   L'analyseur continue pour detecter d'autres erreurs. }
 
+{ @description: Cette procedure permet de Erreur.
+  @param msg Message
+  }
 Procedure Error(Const msg: String);Begin
  WriteLn('ERREUR (ligne ', src_line_num, ', col ', cur_column, ') : ', msg);
  Inc(error_count);
 End;
 
-{ Affiche un message d'erreur avec le token courant en contexte }
+{ Affiche un message d'erreur avec le token courant en contexte
+  @param msg Message
+ }
 Procedure ErrorTok(Const msg: String);Begin
  WriteLn('ERREUR (ligne ', src_line_num, ') : ', msg,
          ' (token : ''', cur_tok_str, ''')');
  Inc(error_count);
 End;
 
-{ Avertissement non bloquant }
+{ Avertissement non bloquant
+  @param msg Message
+ }
 Procedure Warning(Const msg: String);Begin
  WriteLn('ATTENTION (ligne ', src_line_num, ') : ', msg);
  Inc(warn_count);
 End;
 
-{ Erreur fatale : affiche le message et arrete la compilation }
+{ Erreur fatale : affiche le message et arrete la compilation
+  @param msg Message
+ }
 Procedure FatalError(Const msg: String);Begin
  WriteLn('ERREUR FATALE (ligne ', src_line_num, ') : ', msg);
  Halt(1);
@@ -1050,7 +1114,7 @@ End;
   Utilise apres une erreur grave dans un bloc.                                }
 Procedure SkipToEnd;
 Var
- depth: Integer;
+ depth: Integer; { Profondeur }
 Begin
  depth := 1;
  While (cur_tok_type <> TOK_EOF) And (depth > 0) do
@@ -1067,7 +1131,9 @@ Begin
 End;
 
 { Resynchronisation : sauter jusqu'a l'un des mots-cles de l'ensemble donne.
-  Exemple d'utilisation : SkipToKw(KW_THEN) apres une condition malformee.   }
+Exemple d'utilisation : SkipToKw(KW_THEN) apres une condition malformee.
+  @param kw Parametre de mot-cle
+ }
 Procedure SkipToKw(kw: Integer);Begin
  While (cur_tok_type <> TOK_EOF) And Not TokIsKw(kw) do Consume;
 End;
@@ -1093,7 +1159,9 @@ End;
 
 { Taille en octets d'un type primaire Ada (types predefinis uniquement).
   Pour les types utilisateur (type_idx >= 6), retourne 2 par defaut ;
-  GetTypeSize affinera ce calcul. }
+GetTypeSize affinera ce calcul.
+  @param type_idx Type Index
+ }
 Function PrimTypeSize(type_idx: Integer): Integer;
 Begin
  Case type_idx of
@@ -1108,10 +1176,12 @@ Begin
 End;
 
 { Retourne la taille en octets du symbole sym_idx.
-  Tient compte de array_size et char_len.                                      }
+Tient compte de array_size et char_len.
+  @param sym_idx Identificateur (symbole) Index
+ }
 Function GetSymSize(sym_idx: Integer): Integer;
-Var base_sz : Integer;
-    arr_sz  : Integer;
+Var base_sz : Integer; { Entier signe }
+    arr_sz  : Integer; { Entier signe }
 Begin
  If (sym_idx < 1) Or (sym_idx > sym_count) Then
  Begin GetSymSize := 2; Exit; End;
@@ -1134,7 +1204,9 @@ Begin
   GetSymSize := base_sz;
 End;
 
-{ Aligne une taille sur un multiple de 2 (alginement mot pour la pile 8086) }
+{ Aligne une taille sur un multiple de 2 (alginement mot pour la pile 8086)
+  @param n Parametre de nombre
+ }
 Function AlignWord(n: Integer): Integer;
 Begin
  If (n Mod 2) <> 0 Then AlignWord := n + 1
@@ -1143,8 +1215,10 @@ End;
 
 { ---- Initialisation de la table des symboles ---- }
 
+{ @description: Cette procedure permet de initialiser identificateur (symbole) table.
+  }
 Procedure InitSymTable;
-Var i: Integer;
+Var i: Integer; { Entier signe }
 Begin
  If sym_table = nil Then New(sym_table);
  sym_count := 0;
@@ -1169,11 +1243,15 @@ End;
 { ---- Ajout d'un symbole dans la table ----
   - Retourne l'index (1-base) du nouveau symbole.
   - Retourne 0 si la table est pleine.
-  - Pour STORE_AUTO : calcule bp_offset en decalant bp_top du scope courant.  }
+- Pour STORE_AUTO : calcule bp_offset en decalant bp_top du scope courant.
+  @param name        Nom
+  @param type_idx    Type Index
+  @param store_class Classe
+ }
 Function AddSym(Const name: String; type_idx, store_class: Integer): Integer;
-Var u   : String;
-    sz  : Integer;
-    idx : Integer;
+Var u   : String;  { Chaine de caracteres }
+    sz  : Integer; { Entier signe }
+    idx : Integer; { Index }
 Begin
  If sym_count >= MAX_SYM Then
  Begin
@@ -1211,12 +1289,14 @@ Begin
 End;
 
 { Recalcule le bp_offset apres que char_len / array_size ont ete mis a jour.
-  A appeler juste apres AddSym quand la taille reelle est connue.             }
+A appeler juste apres AddSym quand la taille reelle est connue.
+  @param sym_idx Identificateur (symbole) Index
+ }
 Procedure FixSymBpOffset(sym_idx: Integer);
-Var sz      : Integer;
-    old_off : Integer;
-    new_off : Integer;
-    lev     : Integer;
+Var sz      : Integer; { Entier signe }
+    old_off : Integer; { Precedente }
+    new_off : Integer; { Entier signe }
+    lev     : Integer; { Entier signe }
 Begin
  If sym_table^[sym_idx].store_class <> STORE_AUTO Then Exit;
  lev := sym_table^[sym_idx].scope_lev;
@@ -1242,10 +1322,12 @@ Begin
 End;
 
 { ---- Recherche dans la table des symboles ----
-  Cherche de la fin vers le debut pour respecter la portee la plus proche.   }
+Cherche de la fin vers le debut pour respecter la portee la plus proche.
+  @param name Nom
+ }
 Function FindSym(Const name: String): Integer;
-Var i : Integer;
-    u : String;
+Var i : Integer; { Entier signe }
+    u : String;  { Chaine de caracteres }
 Begin
  u := UpCaseStr(name);
  For i := sym_count DownTo 1 do
@@ -1253,11 +1335,13 @@ Begin
  FindSym := 0;
 End;
 
-{ Recherche uniquement dans le scope courant }
+{ Recherche uniquement dans le scope courant
+  @param name Nom
+ }
 Function FindSymLocal(Const name: String): Integer;
-Var i   : Integer;
-    u   : String;
-    lev : Integer;
+Var i   : Integer; { Entier signe }
+    u   : String;  { Chaine de caracteres }
+    lev : Integer; { Entier signe }
 Begin
  u   := UpCaseStr(name);
  lev := scope_top;
@@ -1267,10 +1351,13 @@ Begin
  FindSymLocal := 0;
 End;
 
-{ Recherche dans un scope de niveau donne }
+{ Recherche dans un scope de niveau donne
+  @param name Nom
+  @param lev  Entier signe
+ }
 Function FindSymAtLevel(Const name: String; lev: Integer): Integer;
-Var i : Integer;
-    u : String;
+Var i : Integer; { Entier signe }
+    u : String;  { Chaine de caracteres }
 Begin
  u := UpCaseStr(name);
  For i := sym_count DownTo 1 do
@@ -1285,8 +1372,10 @@ End;
 
 { ---- Table des types utilisateur ----------------------------------------- }
 
+{ @description: Cette procedure permet de initialiser type table.
+  }
 Procedure InitTypeTable;
-Var i, j : Integer;
+Var i, j : Integer; { Entier signe }
 Begin
  If type_table = nil Then New(type_table);
  type_count := 0;
@@ -1316,7 +1405,7 @@ End;
 { Enregistre les types Ada predefinis aux indices TYPE_xxx connus.
   Doit etre appele au debut de la compilation (apres InitTypeTable).          }
 Procedure RegisterPredefinedTypes;
-Var i : Integer;
+Var i : Integer; { Entier signe }
 Begin
  { On "pre-rempli" les entrees aux indices TYPE_INT..TYPE_STR directement }
  For i := 1 to 5 do
@@ -1366,9 +1455,12 @@ Begin
  type_count := 5;
 End;
 
-{ Ajoute un type utilisateur ; retourne l'index (>5) ou 0 si plein }
+{ Ajoute un type utilisateur ; retourne l'index (>5) ou 0 si plein
+  @param name Nom
+  @param kind Genre/type
+ }
 Function AddType(Const name: String; kind: Integer): Integer;
-Var u : String;
+Var u : String; { Chaine de caracteres }
 Begin
  If type_count >= MAX_TYPE Then
  Begin
@@ -1390,10 +1482,12 @@ Begin
  AddType := type_count;
 End;
 
-{ Recherche un type par nom (majuscules) ; retourne l'index ou 0 }
+{ Recherche un type par nom (majuscules) ; retourne l'index ou 0
+  @param name Nom
+ }
 Function FindType(Const name: String): Integer;
-Var i : Integer;
-    u : String;
+Var i : Integer; { Entier signe }
+    u : String;  { Chaine de caracteres }
 Begin
  u := UpCaseStr(name);
  For i := type_count DownTo 1 do
@@ -1404,9 +1498,11 @@ End;
 { Taille en octets d'un type selon son index dans type_table.
   Pour les types predefinis, identique a PrimTypeSize.
   Pour les types utilisateur, lit total_size.
-  Un type de taille 0 (non resolu) est traite comme 2 octets.                }
+Un type de taille 0 (non resolu) est traite comme 2 octets.
+  @param type_idx Type Index
+ }
 Function GetTypeSize(type_idx: Integer): Integer;
-Var sz : Integer;
+Var sz : Integer; { Entier signe }
 Begin
  If (type_idx < 1) Or (type_idx > type_count) Then
  Begin GetTypeSize := 2; Exit; End;
@@ -1418,8 +1514,10 @@ End;
 
 { ---- Table des sous-programmes (procedures + fonctions) ------------------- }
 
+{ @description: Cette procedure permet de initialiser une table.
+  }
 Procedure InitSubTable;
-Var i, j : Integer;
+Var i, j : Integer; { Entier signe }
 Begin
  If sub_table = nil Then New(sub_table);
  sub_count := 0;
@@ -1441,10 +1539,14 @@ Begin
  End;
 End;
 
-{ Ajoute un sous-programme ; retourne l'index ou 0 si plein }
+{ Ajoute un sous-programme ; retourne l'index ou 0 si plein
+  @param name     Nom
+  @param is_func  Est
+  @param ret_type Type
+ }
 Function AddSub(Const name: String; is_func: Boolean; ret_type: Integer): Integer;
-Var u   : String;
-    idx : Integer;
+Var u   : String;  { Chaine de caracteres }
+    idx : Integer; { Index }
 Begin
  If sub_count >= MAX_SUB Then
  Begin
@@ -1467,10 +1569,12 @@ Begin
  AddSub := idx;
 End;
 
-{ Recherche un sous-programme par nom ; retourne l'index ou 0 }
+{ Recherche un sous-programme par nom ; retourne l'index ou 0
+  @param name Nom
+ }
 Function FindSub(Const name: String): Integer;
-Var i : Integer;
-    u : String;
+Var i : Integer; { Entier signe }
+    u : String;  { Chaine de caracteres }
 Begin
  u := UpCaseStr(name);
  For i := sub_count DownTo 1 do
@@ -1479,10 +1583,12 @@ Begin
 End;
 
 { Taille totale en octets des parametres IN d'un sous-programme
-  (pour le nettoyage de pile callee-cleanup : RET n).                         }
+(pour le nettoyage de pile callee-cleanup : RET n).
+  @param sub_idx Index
+ }
 Function SubParamBytes(sub_idx: Integer): Integer;
-Var i   : Integer;
-    tot : Integer;
+Var i   : Integer; { Entier signe }
+    tot : Integer; { Entier signe }
 Begin
  tot := 0;
  If (sub_idx < 1) Or (sub_idx > sub_count) Then
@@ -1501,8 +1607,10 @@ End;
 
 { ---- Table des packages importes (WITH / USE) ----------------------------- }
 
+{ @description: Cette procedure permet de initialiser module importe table.
+  }
 Procedure InitPkgTable;
-Var i : Integer;
+Var i : Integer; { Entier signe }
 Begin
  If pkg_table = nil Then New(pkg_table);
  pkg_count := 0;
@@ -1515,11 +1623,14 @@ Begin
 End;
 
 { Enregistre un package importe (WITH).
-  Retourne l'index ou 0 si plein ou deja present.                             }
+Retourne l'index ou 0 si plein ou deja present.
+  @param name   Nom
+  @param is_std Est
+ }
 Function AddPkg(Const name: String; is_std: Boolean): Integer;
-Var u   : String;
-    i   : Integer;
-    idx : Integer;
+Var u   : String;  { Chaine de caracteres }
+    i   : Integer; { Compteur de boucle }
+    idx : Integer; { Index }
 Begin
  u := UpCaseStr(name);
  { Verifier si deja present }
@@ -1538,10 +1649,12 @@ Begin
  AddPkg := idx;
 End;
 
-{ Recherche un package ; retourne l'index ou 0 }
+{ Recherche un package ; retourne l'index ou 0
+  @param name Nom
+ }
 Function FindPkg(Const name: String): Integer;
-Var i : Integer;
-    u : String;
+Var i : Integer; { Entier signe }
+    u : String;  { Chaine de caracteres }
 Begin
  u := UpCaseStr(name);
  For i := 1 to pkg_count do
@@ -1551,7 +1664,7 @@ End;
 
 { Teste si Ada.Text_IO (ou equivalent) est importe et actif via USE }
 Function TextIO_Active: Boolean;
-Var i : Integer;
+Var i : Integer; { Entier signe }
 Begin
  For i := 1 to pkg_count do
   If pkg_table^[i].use_active And
@@ -1567,6 +1680,8 @@ End;
 
 { ---- Initialisation de la pile de scopes ---- }
 
+{ @description: Cette procedure permet de initialiser une pile.
+  }
 Procedure InitScopeStack;
 Begin
  If scope_stack = nil Then New(scope_stack);
@@ -1585,11 +1700,15 @@ End;
 
 { ---- Accesseurs courants ---- }
 
+{ @description: Cette fonction permet de la fonctionnalite genre/type courante.
+  @return Resultat de l'operation. }
 Function CurrentScopeKind: Integer;
 Begin
  CurrentScopeKind := scope_stack^[scope_top].kind;
 End;
 
+{ @description: Cette fonction permet de la fonctionnalite index courante.
+  @return Resultat de l'operation. }
 Function CurrentSubIdx: Integer;
 Begin
  CurrentSubIdx := scope_stack^[scope_top].sub_idx;
@@ -1598,7 +1717,7 @@ End;
 { Remonte la pile pour trouver l'index du sous-programme englobant
   (ignore les scopes SK_BLOCK et SK_LOOP qui ne definissent pas de frame) }
 Function EnclosingSubIdx: Integer;
-Var lev : Integer;
+Var lev : Integer; { Entier signe }
 Begin
  lev := scope_top;
  While lev > 0 do
@@ -1612,7 +1731,7 @@ End;
 
 { Taille totale de la frame locale du sous-programme courant (valeur absolue) }
 Function CurrentFrameSize: Integer;
-Var lev : Integer;
+Var lev : Integer; { Entier signe }
 Begin
  lev := scope_top;
  While lev > 0 do
@@ -1626,6 +1745,10 @@ End;
 
 { ---- PushScope ---- }
 
+{ @description: Cette procedure permet de empiler.
+  @param kind    Genre/type
+  @param sub_idx Index
+  }
 Procedure PushScope(kind, sub_idx: Integer);
 Begin
  If scope_top >= MAX_DEPTH Then
@@ -1649,8 +1772,8 @@ End;
   Libere les symboles locaux du scope courant (en decrementant sym_count).
   Retourne la taille de frame allouee pour ce scope.                          }
 Function PopScope: Integer;
-Var frame : Integer;
-    st    : Integer;
+Var frame : Integer; { Entier signe }
+    st    : Integer; { Entier signe }
 Begin
  If scope_top <= 0 Then
  Begin
@@ -1668,9 +1791,11 @@ End;
 
 { ---- AllocLocal ----
   Alloue 'size' octets (aligne sur mot) sur la pile du scope courant.
-  Retourne l'offset BP (negatif) ou 0 si scope global.                        }
+Retourne l'offset BP (negatif) ou 0 si scope global.
+  @param size Taille
+ }
 Function AllocLocal(size: Integer): Integer;
-Var aligned : Integer;
+Var aligned : Integer; { Entier signe }
 Begin
  If scope_top <= 0 Then Begin AllocLocal := 0; Exit; End;
  aligned := AlignWord(size);
@@ -1681,7 +1806,10 @@ End;
 
 { ---- Gestion des labels de boucle et de sortie ---- }
 
-{ Enregistre les labels pour une boucle dans le scope courant }
+{ Enregistre les labels pour une boucle dans le scope courant
+  @param lbl_cont Label
+  @param lbl_end  Label Fin
+ }
 Procedure EnterLoop(Const lbl_cont, lbl_end: String);
 Begin
  scope_stack^[scope_top].lbl_cont := lbl_cont;
@@ -1690,7 +1818,7 @@ End;
 
 { Retourne le label de continuation de la boucle englobante (ou '') }
 Function FindLoopCont: String;
-Var lev : Integer;
+Var lev : Integer; { Entier signe }
 Begin
  For lev := scope_top DownTo 1 do
   If scope_stack^[lev].lbl_cont <> '' Then
@@ -1700,7 +1828,7 @@ End;
 
 { Retourne le label de fin de la boucle englobante (pour EXIT) }
 Function FindLoopEnd: String;
-Var lev : Integer;
+Var lev : Integer; { Entier signe }
 Begin
  For lev := scope_top DownTo 1 do
   If scope_stack^[lev].lbl_end <> '' Then
@@ -1708,7 +1836,9 @@ Begin
  FindLoopEnd := '';
 End;
 
-{ Positionne le label de sortie (RETURN / procedure exit) }
+{ Positionne le label de sortie (RETURN / procedure exit)
+  @param lbl Label
+ }
 Procedure SetExitLabel(Const lbl: String);
 Begin
  scope_stack^[scope_top].lbl_exit := lbl;
@@ -1716,7 +1846,7 @@ End;
 
 { Retourne le label de sortie du sous-programme courant }
 Function FindExitLabel: String;
-Var lev : Integer;
+Var lev : Integer; { Entier signe }
 Begin
  For lev := scope_top DownTo 1 do
   If scope_stack^[lev].lbl_exit <> '' Then
@@ -1726,6 +1856,9 @@ End;
 
 { ---- Gestion des exceptions ---- }
 
+{ @description: Cette procedure permet de definir etiquette.
+  @param lbl Label
+  }
 Procedure SetExceptLabel(Const lbl: String);
 Begin
  scope_stack^[scope_top].has_except := True;
@@ -1734,7 +1867,7 @@ End;
 
 { Retourne le label du handler EXCEPTION le plus proche (ou '') }
 Function FindExceptLabel: String;
-Var lev : Integer;
+Var lev : Integer; { Entier signe }
 Begin
  For lev := scope_top DownTo 1 do
   If scope_stack^[lev].has_except Then
@@ -1744,6 +1877,8 @@ End;
 
 { ---- Niveau de scope courant (pour sym_table.scope_lev) ---- }
 
+{ @description: Cette fonction permet de la fonctionnalite niveau courante.
+  @return Resultat de l'operation. }
 Function CurrentLevel: Integer;
 Begin
  CurrentLevel := scope_top;
@@ -1755,6 +1890,8 @@ End;
 
 { ---- Initialisation des tables de litteraux chaines ---- }
 
+{ @description: Cette procedure permet de initialiser une chaine de caracteres table.
+  }
 Procedure InitStrTable;
 Begin
  If str_table = nil Then New(str_table);
@@ -1765,28 +1902,36 @@ End;
 
 { ---- Primitives d'emission ASM ---- }
 
-{ Emet une ligne brute dans le fichier de sortie (ou ne fait rien si !gen) }
+{ Emet une ligne brute dans le fichier de sortie (ou ne fait rien si !gen)
+  @param s Parametre de chaine de caracteres
+ }
 Procedure Emit(Const s: String);
 Begin
  If Not gen_enabled Then Exit;
  WriteLn(output_file, s);
 End;
 
-{ Emet une instruction indentee (tabulation) }
+{ Emet une instruction indentee (tabulation)
+  @param s Parametre de chaine de caracteres
+ }
 Procedure EmitI(Const s: String);
 Begin
  If Not gen_enabled Then Exit;
  WriteLn(output_file, #9 + s);
 End;
 
-{ Emet un label suivi de ':' sans indentation }
+{ Emet un label suivi de ':' sans indentation
+  @param lbl Label
+ }
 Procedure EmitLabel(Const lbl: String);
 Begin
  If Not gen_enabled Then Exit;
  WriteLn(output_file, lbl + ':');
 End;
 
-{ Emet un commentaire ASM (';' prefixe) }
+{ Emet un commentaire ASM (';' prefixe)
+  @param s Parametre de chaine de caracteres
+ }
 Procedure EmitComment(Const s: String);
 Begin
  If Not gen_enabled Then Exit;
@@ -1804,7 +1949,7 @@ End;
 
 { Retourne un nouveau label local unique de la forme @@L0001 }
 Function NewLabel: String;
-Var n : String;
+Var n : String; { Chaine de caracteres }
 Begin
  Inc(label_counter);
  n := IntToStr(label_counter);
@@ -1814,10 +1959,12 @@ End;
 
 { ---- Gestion des litteraux chaines ---- }
 
-{ Ajoute un litteral chaine dans str_table, retourne le label _LSn }
+{ Ajoute un litteral chaine dans str_table, retourne le label _LSn
+  @param s Parametre de chaine de caracteres
+ }
 Function AsmStrLit(Const s: String): String;
-Var i  : Integer;
-    lb : String;
+Var i  : Integer; { Entier signe }
+    lb : String;  { Chaine de caracteres }
 Begin
  { Deduplication : cherche si deja present }
  For i := 1 to str_count do
@@ -1840,9 +1987,9 @@ End;
 { Emet la section .DATA pour tous les litteraux chaines accumules
   Appele par le generateur de code final }
 Procedure EmitStringLiterals;
-Var i : Integer;
-    s : String;
-    j : Integer;
+Var i : Integer; { Entier signe }
+    s : String;  { Chaine de caracteres }
+    j : Integer; { Compteur de boucle (boucle imbriquee) }
 Begin
  If str_count = 0 Then Exit;
  EmitComment('--- litteraux chaines ---');
@@ -1863,7 +2010,9 @@ End;
 
 { ---- Normalisation des etiquettes ASM ---- }
 
-{ Transforme un nom Ada en etiquette ASM .DATA : _VAR_NOM }
+{ Transforme un nom Ada en etiquette ASM .DATA : _VAR_NOM
+  @param name Nom
+ }
 Function DataLbl(Const name: String): String;
 Begin
  DataLbl := AsmIdent('_VAR_', UpCaseStr(name));
@@ -1871,9 +2020,11 @@ End;
 
 { ---- Helpers de chargement / stockage ---- }
 
-{ Retourne la taille en octets du type d'un symbole (2 ou 4) }
+{ Retourne la taille en octets du type d'un symbole (2 ou 4)
+  @param sym_idx Identificateur (symbole) Index
+ }
 Function SymTypeSize(sym_idx: Integer): Integer;
-Var ti : Integer;
+Var ti : Integer; { Entier signe }
 Begin
  ti := sym_table^[sym_idx].type_idx;
  If ti = TYPE_FLOAT Then SymTypeSize := 4
@@ -1883,7 +2034,9 @@ End;
 { ---- BpOff : formate un offset BP en string (negatif: -n, positif: +n, zero: ) ----
   Produit : -2 -> '-2'  -> '[BP-2]'
             +4 -> '+4'  -> '[BP+4]'
-             0 -> ''    -> '[BP]'                                              }
+0 -> ''    -> '[BP]'
+  @param off Entier signe
+ }
 Function BpOff(off: Integer): String;
 Begin
  If off < 0 Then BpOff := IntToStr(off)
@@ -1891,13 +2044,15 @@ Begin
  Else BpOff := '';
 End;
 
-{ Charge un symbole dans AX (ou DX:AX si float, AL si char/bool) }
+{ Charge un symbole dans AX (ou DX:AX si float, AL si char/bool)
+  @param sym_idx Identificateur (symbole) Index
+ }
 Procedure GenLoadVar(sym_idx: Integer);
-Var sc   : Integer;
-    off  : Integer;
-    lbl  : String;
-    ti   : Integer;
-    sz   : Integer;
+Var sc   : Integer; { Entier signe }
+    off  : Integer; { Entier signe }
+    lbl  : String;  { Label }
+    ti   : Integer; { Entier signe }
+    sz   : Integer; { Entier signe }
 Begin
  sc  := sym_table^[sym_idx].store_class;
  off := sym_table^[sym_idx].bp_offset;
@@ -1951,13 +2106,15 @@ Begin
  End; { Case }
 End;
 
-{ Stocke AX (ou DX:AX si float, AL si char/bool) dans un symbole }
+{ Stocke AX (ou DX:AX si float, AL si char/bool) dans un symbole
+  @param sym_idx Identificateur (symbole) Index
+ }
 Procedure GenStoreVar(sym_idx: Integer);
-Var sc  : Integer;
-    off : Integer;
-    lbl : String;
-    ti  : Integer;
-    sz  : Integer;
+Var sc  : Integer; { Entier signe }
+    off : Integer; { Entier signe }
+    lbl : String;  { Label }
+    ti  : Integer; { Entier signe }
+    sz  : Integer; { Entier signe }
 Begin
  If sym_table^[sym_idx].is_const Then
  Begin
@@ -2001,7 +2158,9 @@ End;
 
 { ---- Chargement de constante immediate ---- }
 
-{ MOV AX, val  (entier 16 bits) }
+{ MOV AX, val  (entier 16 bits)
+  @param val Cette procedure permet de convertir une chaine en valeur numerique.
+ }
 Procedure GenLoadConst(val: LongInt);
 Begin
  EmitI('MOV AX, ' + IntToStr(val));
@@ -2009,7 +2168,9 @@ End;
 
 { ---- Prologue / Epilogue de sous-programme ---- }
 
-{ PUSH BP / MOV BP,SP / SUB SP,frame_size }
+{ PUSH BP / MOV BP,SP / SUB SP,frame_size
+  @param frame_size Taille
+ }
 Procedure GenPrologue(frame_size: Integer);
 Begin
  EmitI('PUSH BP');
@@ -2019,7 +2180,10 @@ Begin
 End;
 
 { MOV SP,BP / POP BP / RET param_bytes
-  Callee-cleanup : param_bytes = nombre d'octets pousses par l'appelant }
+Callee-cleanup : param_bytes = nombre d'octets pousses par l'appelant
+  @param frame_size  Taille
+  @param param_bytes Parametre
+ }
 Procedure GenEpilogue(frame_size: Integer; param_bytes: Integer);
 Begin
  If frame_size > 0 Then
@@ -2033,9 +2197,13 @@ End;
 
 { ---- Helpers PUSH / POP ---- }
 
+{ @description: Cette procedure permet de l'operation GenPushAX.
+  }
 Procedure GenPushAX;
 Begin EmitI('PUSH AX'); End;
 
+{ @description: Cette procedure permet de l'operation GenPopAX.
+  }
 Procedure GenPopAX;
 Begin EmitI('POP  AX'); End;
 
@@ -2062,12 +2230,17 @@ End;
    mais ParsePrimary peut appeler ParseExpr pour les sous-expressions
    entre parentheses -> declaration forward necessaire)               }
 
+{ @description: Cette procedure permet de analyser.
+  }
 Procedure ParseExpr; Forward;
 
 { ---- GenBinaryOp : gen code pour operateurs binaires arithmetiques ---- }
 { AX = operande gauche (deja sur pile), AX = operande droit apres ParseTerm
   Resultat dans AX.  Pile : TOS = droite, TOS+2 = gauche.               }
 
+{ @description: Cette procedure permet de l'operation GenBinaryOp.
+  @param op Parametre de entier signe
+  }
 Procedure GenBinaryOp(op: Integer);
 { op = TOK_PLUS / TOK_MINUS / TOK_STAR / TOK_SLASH / KW_MOD / KW_REM }
 Begin
@@ -2136,9 +2309,12 @@ End;
 { ---- GenRelOp : CMP + Jcc, resultat 0/1 dans AX ---- }
 { A gauche : deja sur pile (PUSHed). AX = operande droit. }
 
+{ @description: Cette procedure permet de l'operation GenRelOp.
+  @param op Parametre de entier signe
+  }
 Procedure GenRelOp(op: Integer);
 { op = TOK_EQ / TOK_NEQ / TOK_LT / TOK_LE / TOK_GT / TOK_GE }
-Var lbl_true, lbl_end : String;
+Var lbl_true, lbl_end : String; { Vrai }
 Begin
  lbl_true := NewLabel;
  lbl_end  := NewLabel;
@@ -2160,25 +2336,43 @@ Begin
  EmitLabel(lbl_end);
 End;
 
-{ ---- Forward declarations pour helpers tableaux/records ---- }
+{ ---- Forward declarations pour helpers tableaux/records ----
+  @param sym_idx Identificateur (symbole) Index
+ }
 Procedure GenLoadAddrBX(sym_idx: Integer); Forward;
+{ @description: Cette procedure permet de la fonctionnalite decalage.
+  @param sym_idx Identificateur (symbole) Index
+  }
 Procedure GenElemOffset(sym_idx: Integer); Forward;
+{ @description: Cette procedure permet de l'operation GenLoadElement.
+  @param sym_idx Identificateur (symbole) Index
+  }
 Procedure GenLoadElement(sym_idx: Integer); Forward;
+{ @description: Cette procedure permet de la fonctionnalite champ.
+  @param sym_idx   Identificateur (symbole) Index
+  @param field_off Champ
+  }
 Procedure GenLoadField(sym_idx, field_off: Integer); Forward;
+{ @description: Cette procedure permet de la fonctionnalite champ.
+  @param sym_idx   Identificateur (symbole) Index
+  @param field_off Champ
+  }
 Procedure GenStoreField(sym_idx, field_off: Integer); Forward;
 
 { ---- ParsePrimary : litteraux, idents, appels, (expr), attributs ---- }
 
+{ @description: Cette procedure permet de analyser.
+  }
 Procedure ParsePrimary;
-Var sym       : Integer;
-    sub       : Integer;
-    ti        : Integer;
-    nm        : String;
-    lbl       : String;
+Var sym       : Integer; { Entier signe }
+    sub       : Integer; { Entier signe }
+    ti        : Integer; { Entier signe }
+    nm        : String;  { Chaine de caracteres }
+    lbl       : String;  { Label }
     ai        : Integer;   { index attribut : 1=FIRST 2=LAST 3=LENGTH 4=SIZE }
-    i         : Integer;
-    j         : Integer;
-    arg_count : Integer;
+    i         : Integer; { Compteur de boucle }
+    j         : Integer; { Compteur de boucle (boucle imbriquee) }
+    arg_count : Integer; { Argument Compteur }
     field_off : Integer;   { offset champ de record courrant                 }
     total_off : Integer;   { offset cumule pour champs imbriques             }
 Begin
@@ -2406,9 +2600,11 @@ End;
 
 { ---- ParseFactor : ** et ABS ---- }
 
+{ @description: Cette procedure permet de analyser.
+  }
 Procedure ParseFactor;
-Var lbl1     : String;
-    lbl_loop : String;
+Var lbl1     : String; { Chaine de caracteres }
+    lbl_loop : String; { Label Boucle }
 Begin
  { ABS unaire }
  If (cur_tok_type = TOK_IDENT) And (cur_tok_kw = KW_ABS) Then
@@ -2446,8 +2642,10 @@ End;
 
 { ---- ParseTerm : * / mod rem ---- }
 
+{ @description: Cette procedure permet de analyser.
+  }
 Procedure ParseTerm;
-Var op : Integer;
+Var op : Integer; { Entier signe }
 Begin
  ParseFactor;
  While (cur_tok_type = TOK_STAR) Or (cur_tok_type = TOK_SLASH)
@@ -2465,9 +2663,11 @@ End;
 
 { ---- ParseSimple : + - & (unaire + ou - possible en tete) ---- }
 
+{ @description: Cette procedure permet de analyser.
+  }
 Procedure ParseSimple;
-Var op   : Integer;
-    uneg : Boolean;
+Var op   : Integer; { Entier signe }
+    uneg : Boolean; { Valeur logique (vrai ou faux) }
 Begin
  uneg := False;
  If cur_tok_type = TOK_MINUS Then Begin uneg := True; Consume; End
@@ -2487,8 +2687,10 @@ End;
 
 { ---- ParseRelation : = /= < <= > >= ---- }
 
+{ @description: Cette procedure permet de analyser.
+  }
 Procedure ParseRelation;
-Var op : Integer;
+Var op : Integer; { Entier signe }
 Begin
  ParseSimple;
  If (cur_tok_type = TOK_EQ)  Or (cur_tok_type = TOK_NEQ) Or
@@ -2505,6 +2707,8 @@ End;
 
 { ---- ParseNot : NOT unaire logique ---- }
 
+{ @description: Cette procedure permet de analyser non.
+  }
 Procedure ParseNot;
 Begin
  If (cur_tok_type = TOK_IDENT) And (cur_tok_kw = KW_NOT) Then
@@ -2520,6 +2724,8 @@ End;
 
 { ---- ParseAnd : AND (bit ou logique) ---- }
 
+{ @description: Cette procedure permet de analyser et.
+  }
 Procedure ParseAnd;
 Begin
  ParseNot;
@@ -2535,8 +2741,10 @@ End;
 
 { ---- ParseOr : OR et XOR (bit ou logique) ---- }
 
+{ @description: Cette procedure permet de analyser ou.
+  }
 Procedure ParseOr;
-Var is_xor : Boolean;
+Var is_xor : Boolean; { Ou exclusif }
 Begin
  ParseAnd;
  While (cur_tok_type = TOK_IDENT) And
@@ -2554,8 +2762,10 @@ End;
 
 { ---- ParseAndThen : AND THEN (court-circuit) ---- }
 
+{ @description: Cette procedure permet de analyser et alors (court-circuit).
+  }
 Procedure ParseAndThen;
-Var lbl_false : String;
+Var lbl_false : String; { Faux }
 Begin
  ParseOr;
  While (cur_tok_type = TOK_IDENT) And (cur_tok_kw = KW_ANDTHEN) do
@@ -2573,8 +2783,10 @@ End;
 
 { ---- ParseOrElse : OR ELSE (court-circuit) ---- }
 
+{ @description: Cette procedure permet de analyser ou sinon (court-circuit).
+  }
 Procedure ParseOrElse;
-Var lbl_true : String;
+Var lbl_true : String; { Vrai }
 Begin
  ParseAndThen;
  While (cur_tok_type = TOK_IDENT) And (cur_tok_kw = KW_ORELSE) do
@@ -2592,6 +2804,8 @@ End;
 
 { ---- ParseExpr : point d'entree principal des expressions ---- }
 
+{ @description: Cette procedure permet de analyser.
+  }
 Procedure ParseExpr;
 Begin
  ParseOrElse;
@@ -2603,6 +2817,9 @@ End;
 
 { ---- Liste des packages standard reconnus (comparaison en majuscules) ---- }
 
+{ @description: Cette fonction permet de indiquer si paquetage.
+  @param u Parametre de chaine de caracteres
+  @return Resultat de l'operation. }
 Function IsStandardPackage(Const u: String): Boolean;
 Begin
  IsStandardPackage :=
@@ -2619,8 +2836,10 @@ End;
   Le lexeur produit : IDENT (DOT IDENT)* car le point est TOK_DOT.
   On reconnecte les segments en majuscules avec des points.                   }
 
+{ @description: Cette fonction permet de analyser paquetage nom.
+  @return Resultat de l'operation. }
 Function ParsePackageName: String;
-Var res : String;
+Var res : String; { Chaine de caracteres }
 Begin
  If cur_tok_type <> TOK_IDENT Then
  Begin
@@ -2650,9 +2869,11 @@ End;
   Les packages standards reçoivent is_standard=True.
   Les autres : avertissement + enregistrement avec is_standard=False.         }
 
+{ @description: Cette procedure permet de analyser avec.
+  }
 Procedure ParseWith;
-Var nm  : String;
-    idx : Integer;
+Var nm  : String;  { Chaine de caracteres }
+    idx : Integer; { Index }
 Begin
  Consume; { consomme WITH }
  Repeat
@@ -2675,9 +2896,11 @@ End;
 { Active use_active pour chaque package.
   Si un package est USE sans WITH prealable, il est ajoute automatiquement.  }
 
+{ @description: Cette procedure permet de analyser utiliser.
+  }
 Procedure ParseUse;
-Var nm  : String;
-    idx : Integer;
+Var nm  : String;  { Chaine de caracteres }
+    idx : Integer; { Index }
 Begin
  Consume; { consomme USE }
  Repeat
@@ -2706,6 +2929,8 @@ End;
 { ---- ParseWithUseSection : lit la section WITH/USE en tete d'unite ----
   A appeler au debut de Compile, avant le corps PROCEDURE/PACKAGE. }
 
+{ @description: Cette procedure permet de analyser avec utiliser.
+  }
 Procedure ParseWithUseSection;Begin
  While (cur_tok_type = TOK_IDENT) And
        ((cur_tok_kw = KW_WITH) Or (cur_tok_kw = KW_USE)) do
@@ -2723,9 +2948,11 @@ End;
   Cherche d'abord les predefinis (INTEGER, FLOAT...) puis les types
   utilisateur. Retourne TYPE_UNKNOWN si non trouve.                            }
 
+{ @description: Cette fonction permet de analyser type.
+  @return Resultat de l'operation. }
 Function ParseTypeRef: Integer;
-Var nm : String;
-    ti : Integer;
+Var nm : String;  { Chaine de caracteres }
+    ti : Integer; { Entier signe }
 Begin
  If cur_tok_type <> TOK_IDENT Then
  Begin
@@ -2751,9 +2978,12 @@ End;
 
 { ---- ParseEnumType : ( lit1, lit2, ... ) ---- }
 
+{ @description: Cette fonction permet de analyser type.
+  @param tname Chaine de caracteres
+  @return Resultat de l'operation. }
 Function ParseEnumType(Const tname: String): Integer;
-Var idx : Integer;
-    cnt : Integer;
+Var idx : Integer; { Entier signe }
+    cnt : Integer; { Compteur }
 Begin
  idx := AddType(tname, TK_ENUM);
  type_table^[idx].enum_count := 0;
@@ -2783,10 +3013,14 @@ End;
 
 { ParseRangeBoundsEx : resout les bornes entiere OU litteraux enumeres.
   enum_ti > 0 : type enum de base dont on cherche les litteraux.
-  enum_ti = 0 : entiers uniquement (comportement original).               }
+enum_ti = 0 : entiers uniquement (comportement original).
+  @param lo      Parametre de entier long signe (32 bits)
+  @param hi      Parametre de entier long signe (32 bits)
+  @param enum_ti Entier signe
+ }
 Procedure ParseRangeBoundsEx(Var lo, hi: LongInt; enum_ti: Integer);
-Var lit_nm : String;
-    i      : Integer;
+Var lit_nm : String;  { Chaine de caracteres }
+    i      : Integer; { Compteur de boucle }
 Begin
  { --- Borne inferieure --- }
  If cur_tok_type = TOK_INTEGER Then
@@ -2833,7 +3067,10 @@ Begin
  Begin ErrorTok('Borne superieure entiere attendue'); hi := lo; Consume; End;
 End;
 
-{ Compatibilite : appelants sans base enum (entiers uniquement) }
+{ Compatibilite : appelants sans base enum (entiers uniquement)
+  @param lo Parametre de entier long signe (32 bits)
+  @param hi Parametre de entier long signe (32 bits)
+ }
 Procedure ParseRangeBounds(Var lo, hi: LongInt);
 Begin
  ParseRangeBoundsEx(lo, hi, 0);
@@ -2841,9 +3078,13 @@ End;
 
 { ---- ParseRangeType : RANGE lo .. hi ---- }
 
+{ @description: Cette fonction permet de analyser intervalle type.
+  @param tname   Chaine de caracteres
+  @param base_ti Base
+  @return Resultat de l'operation. }
 Function ParseRangeType(Const tname: String; base_ti: Integer): Integer;
-Var idx    : Integer;
-    lo, hi : LongInt;
+Var idx    : Integer; { Entier signe }
+    lo, hi : LongInt; { Entier long signe (32 bits) }
 Begin
  { RANGE deja consomme par l'appelant si besoin }
  ParseRangeBounds(lo, hi);
@@ -2858,13 +3099,16 @@ End;
 { ---- ParseArrayType : ARRAY ( lo .. hi ) OF type
   ou ARRAY ( TypeName RANGE <> ) OF type (non contraint -> stub)              }
 
+{ @description: Cette fonction permet de analyser un tableau type.
+  @param tname Chaine de caracteres
+  @return Resultat de l'operation. }
 Function ParseArrayType(Const tname: String): Integer;
-Var idx           : Integer;
-    lo, hi        : LongInt;
-    elem_ti       : Integer;
-    esz           : Integer;
-    unconstrained : Boolean;
-    peek_name     : String;
+Var idx           : Integer; { Entier signe }
+    lo, hi        : LongInt; { Entier long signe (32 bits) }
+    elem_ti       : Integer; { Entier signe }
+    esz           : Integer; { Entier signe }
+    unconstrained : Boolean; { Valeur logique (vrai ou faux) }
+    peek_name     : String;  { Anticipation de lecture (lookahead) Nom }
 Begin
  Expect(TOK_LPAREN, '`(` attendu apres ARRAY');
  unconstrained := False;
@@ -2922,13 +3166,16 @@ End;
 
 { ---- ParseRecordType : RECORD champ : type [; ...] END RECORD ---- }
 
+{ @description: Cette fonction permet de analyser enregistrement type.
+  @param tname Chaine de caracteres
+  @return Resultat de l'operation. }
 Function ParseRecordType(Const tname: String): Integer;
-Var idx    : Integer;
+Var idx    : Integer; { Entier signe }
     fi     : Integer;     { index champ courant }
     fti    : Integer;     { type du champ }
     off    : Integer;     { offset courant en octets }
-    fsz    : Integer;
-    fname  : String;
+    fsz    : Integer; { Entier signe }
+    fname  : String;  { Chaine de caracteres }
 Begin
  { RECORD deja consomme par l'appelant }
  idx := AddType(tname, TK_RECORD);
@@ -2974,6 +3221,9 @@ End;
   Appele lors de la generation du segment .DATA pour les variables
   dont le type necessite un gabarit . }
 
+{ @description: Cette procedure permet de la fonctionnalite type donnees.
+  @param ti Parametre de entier signe
+  }
 Procedure GenTypeData(ti: Integer);Begin
  { Pour l'instant : stub ... les variables elles-memes emettent leurs DW/DB }
  { Les tableaux et records emettent via GenVarData dans ParseObjectDecl     }
@@ -2981,11 +3231,13 @@ End;
 
 { ---- ParseTypeDecl : TYPE nom IS definition ; ---- }
 
+{ @description: Cette procedure permet de analyser type.
+  }
 Procedure ParseTypeDecl;
-Var tname  : String;
-    idx    : Integer;
-    base   : Integer;
-    lo, hi : LongInt;
+Var tname  : String;  { Chaine de caracteres }
+    idx    : Integer; { Index }
+    base   : Integer; { Base }
+    lo, hi : LongInt; { Entier long signe (32 bits) }
 Begin
  Consume; { TYPE }
  If cur_tok_type <> TOK_IDENT Then
@@ -3052,11 +3304,13 @@ End;
 
 { ---- ParseSubtypeDecl : SUBTYPE nom IS basetype [RANGE lo .. hi] ; ---- }
 
+{ @description: Cette procedure permet de analyser sous-type.
+  }
 Procedure ParseSubtypeDecl;
-Var sname  : String;
-    base   : Integer;
-    idx    : Integer;
-    lo, hi : LongInt;
+Var sname  : String;  { Chaine de caracteres }
+    base   : Integer; { Base }
+    idx    : Integer; { Index }
+    lo, hi : LongInt; { Entier long signe (32 bits) }
 Begin
  Consume; { SUBTYPE }
  If cur_tok_type <> TOK_IDENT Then
@@ -3096,11 +3350,14 @@ End;
   Appele lors de la passe .DATA.  Ici on l'ecrit directement
   dans output_file car les variables globales sont declarees avant BEGIN.     }
 
+{ @description: Cette procedure permet de la fonctionnalite donnees.
+  @param sym_idx Identificateur (symbole) Index
+  }
 Procedure GenVarData(sym_idx: Integer);
-Var ti   : Integer;
-    sz   : Integer;
-    i    : Integer;
-    n    : LongInt;
+Var ti   : Integer; { Entier signe }
+    sz   : Integer; { Entier signe }
+    i    : Integer; { Compteur de boucle }
+    n    : LongInt; { Nombre }
 Begin
  ti := sym_table^[sym_idx].type_idx;
  sz := GetSymSize(sym_idx);
@@ -3154,6 +3411,9 @@ End;
   Suppose que l'expression a ete evaluee et que AX contient le resultat.
   Stocke dans la variable via GenStoreVar.                                     }
 
+{ @description: Cette procedure permet de l'operation GenVarInit.
+  @param sym_idx Identificateur (symbole) Index
+  }
 Procedure GenVarInit(sym_idx: Integer);
 Begin
  GenStoreVar(sym_idx);
@@ -3164,6 +3424,9 @@ End;
   Retourne True si l'evaluation a reussi, et la valeur dans val.
   Sinon, genere le code de l'expression et laisse le resultat dans AX.        }
 
+{ @description: Cette fonction permet de analyser.
+  @param val Cette procedure permet de convertir une chaine en valeur numerique.
+  @return Resultat de l'operation. }
 Function ParseConstExpr(Var val: LongInt): Boolean;
 Begin
  { Litteraux entiers simples }
@@ -3205,18 +3468,20 @@ End;
   Peut etre appele pour une ou plusieurs variables du meme type.
   isSym_global = True si on emet dans .DATA, False si pile.                   }
 
+{ @description: Cette procedure permet de analyser objet.
+  }
 Procedure ParseObjectDecl;
-Var names     : Array[1..16] of String[48];
-    ncount    : Integer;
-    is_const  : Boolean;
-    ti        : Integer;
-    sc        : Integer;
-    sym_idx   : Integer;
-    has_init  : Boolean;
-    init_val  : LongInt;
-    got_const : Boolean;
-    i         : Integer;
-    sz        : Integer;
+Var names     : Array[1..16] of String[48]; { Variable Var names }
+    ncount    : Integer;                    { Entier signe }
+    is_const  : Boolean;                    { Est }
+    ti        : Integer;                    { Entier signe }
+    sc        : Integer;                    { Entier signe }
+    sym_idx   : Integer;                    { Identificateur (symbole) Index }
+    has_init  : Boolean;                    { Valeur logique (vrai ou faux) }
+    init_val  : LongInt;                    { Valeur }
+    got_const : Boolean;                    { Valeur logique (vrai ou faux) }
+    i         : Integer;                    { Compteur de boucle }
+    sz        : Integer;                    { Entier signe }
 Begin
  { Lire la liste de noms }
  ncount := 0;
@@ -3336,14 +3601,17 @@ End;
   sous-programme dont l'index est sub_idx.
   Retourne le nombre total de parametres enregistres.                          }
 
+{ @description: Cette procedure permet de analyser parametre liste.
+  @param sub_idx Index
+  }
 Procedure ParseParamList(sub_idx: Integer);
-Var names  : Array[1..MAX_PARAM] of String[48];
-    ncount : Integer;
-    mode   : Integer;
-    ti     : Integer;
+Var names  : Array[1..MAX_PARAM] of String[48]; { Variable Var names }
+    ncount : Integer;                           { Entier signe }
+    mode   : Integer;                           { Mode }
+    ti     : Integer;                           { Entier signe }
     pc     : Integer;   { param_count global }
-    i      : Integer;
-    dummy  : LongInt;
+    i      : Integer; { Compteur de boucle }
+    dummy  : LongInt; { Entier long signe (32 bits) }
 Begin
  { Parenthese ouvrante deja consommee par l'appelant }
  pc := sub_table^[sub_idx].param_count;
@@ -3416,9 +3684,11 @@ End;
   Cree ou met a jour l'entree sub_table avec is_forward := True.
   Retourne l'index dans sub_table.                                             }
 
+{ @description: Cette fonction permet de analyser une procedure.
+  @return Resultat de l'operation. }
 Function ParseProcedureSpec: Integer;
-Var nm  : String;
-    idx : Integer;
+Var nm  : String;  { Chaine de caracteres }
+    idx : Integer; { Index }
 Begin
  Consume; { PROCEDURE }
  If cur_tok_type <> TOK_IDENT Then
@@ -3448,10 +3718,12 @@ End;
 { ---- ParseFunctionSpec : FUNCTION nom [(params)] RETURN type ;
   Retourne l'index dans sub_table.                                             }
 
+{ @description: Cette fonction permet de analyser une fonction.
+  @return Resultat de l'operation. }
 Function ParseFunctionSpec: Integer;
-Var nm     : String;
-    idx    : Integer;
-    ret_ti : Integer;
+Var nm     : String;  { Chaine de caracteres }
+    idx    : Integer; { Index }
+    ret_ti : Integer; { Entier signe }
 Begin
  Consume; { FUNCTION }
  If cur_tok_type <> TOK_IDENT Then
@@ -3485,10 +3757,14 @@ End;
 
 { ---- VerifySubSignature : verifie coherence forward vs body ----
   Appele depuis ParseProcedureBody / ParseFunctionBody quand la
+{ @description: Cette procedure permet de l'operation etait.
+  @param fwd_idx  Index
+  @param body_idx Corps Index
+  }
   procedure etait deja declaree comme forward.                                }
 
 Procedure VerifySubSignature(fwd_idx, body_idx: Integer);
-Var i : Integer;
+Var i : Integer; { Entier signe }
 Begin
  If fwd_idx = body_idx Then Exit;  { meme entree, rien a verifier }
  { Comparer param_count }
@@ -3512,12 +3788,16 @@ End;
 
 { ---- Prototypes forward ---- }
 Procedure ParseStatement;      Forward;
+{ @description: Cette procedure permet de analyser.
+  }
 Procedure ParseDeclarativePart; Forward;
 
 { ---- ParseSequenceOfStatements ----
   Lit des instructions jusqu'a une borne de fin de bloc :
   END | EXCEPTION | ELSIF | ELSE | WHEN | TOK_EOF                             }
 
+{ @description: Cette procedure permet de analyser de.
+  }
 Procedure ParseSequenceOfStatements;
 Begin
  While True do
@@ -3538,13 +3818,16 @@ End;
     [BP+0] = ancien BP, [BP+2] = adresse retour
     [BP+4] = 1er param, [BP+6] = 2eme param, ...                              }
 
+{ @description: Cette procedure permet de enregistrer parametre.
+  @param sub_idx Index
+  }
 Procedure RegisterParamSymbols(sub_idx: Integer);
-Var i      : Integer;
-    pc     : Integer;
-    ti     : Integer;
-    mode   : Integer;
-    off    : Integer;
-    sym    : Integer;
+Var i      : Integer; { Entier signe }
+    pc     : Integer; { Entier signe }
+    ti     : Integer; { Entier signe }
+    mode   : Integer; { Mode }
+    off    : Integer; { Entier signe }
+    sym    : Integer; { Identificateur (symbole) }
 Begin
  pc  := sub_table^[sub_idx].param_count;
  off := 4;   { [BP+4] = premier parametre }
@@ -3564,8 +3847,11 @@ End;
 { ---- EmitLocalInits : emet les MOV [BP-n], val pour toutes les vars locales
   ayant has_init=True et un init_num connu (compile-time).                    }
 
+{ @description: Cette procedure permet de l'operation EmitLocalInits.
+  @param sym_start Identificateur (symbole) Debut
+  }
 Procedure EmitLocalInits(sym_start: Integer);
-Var i : Integer;
+Var i : Integer; { Entier signe }
 Begin
  For i := sym_start to sym_count do
   If sym_table^[i].has_init And (sym_table^[i].store_class = STORE_AUTO) Then
@@ -3582,16 +3868,19 @@ End;
 
 { ---- ParseExceptionHandlers : WHEN nom [| nom2] => stmts  (dans EXCEPTION) ----
   AX = code exception pose par RAISE (ou 0 si re-raise generique)
-  Chaque clause nomme fait : CMP AX, code; JNE lbl_next
+  Chaque clause nomme fait : CMP AX, code; JNE lbl_next { Code }
   WHEN OTHERS => couvre tout (pas de CMP)                                      }
 
+{ @description: Cette procedure permet de analyser exception.
+  @param lbl_end Label Fin
+  }
 Procedure ParseExceptionHandlers(Const lbl_end: String);
-Var lbl_next : String;
-    lbl_body : String;
-    nm       : String;
-    si       : Integer;
-    code     : LongInt;
-    matched  : Boolean;
+Var lbl_next : String;  { Suivante }
+    lbl_body : String;  { Label Corps }
+    nm       : String;  { Chaine de caracteres }
+    si       : Integer; { Entier signe }
+    code     : LongInt; { Code }
+    matched  : Boolean; { Valeur logique (vrai ou faux) }
 Begin
  While TokIsKw(KW_WHEN) And (cur_tok_type <> TOK_EOF) do
  Begin
@@ -3655,15 +3944,19 @@ End;
 { ---- ParseSubBody : corps commun PROCEDURE et FUNCTION ----
   sub_idx : entree sub_table deja creee par le parseur appelant               }
 
+{ @description: Cette procedure permet de analyser corps.
+  @param sub_idx Index
+  @param kind    Genre/type
+  }
 Procedure ParseSubBody(sub_idx: Integer; kind: Integer);
-Var frame_size  : Integer;
-    param_bytes : Integer;
-    lbl_exit    : String;
-    lbl_except  : String;
+Var frame_size  : Integer; { Taille }
+    param_bytes : Integer; { Parametre }
+    lbl_exit    : String;  { Label Sortie de boucle }
+    lbl_except  : String;  { Label }
     lbl_body    : String;   { JMP over nested subprograms }
-    has_except  : Boolean;
-    sym_start   : Integer;
-    end_name    : String;
+    has_except  : Boolean; { Valeur logique (vrai ou faux) }
+    sym_start   : Integer; { Identificateur (symbole) Debut }
+    end_name    : String;  { Fin Nom }
 Begin
  { Emettre le label de la procedure / fonction }
  EmitBlank;
@@ -3758,9 +4051,11 @@ End;
 
 { ---- ParseProcedureBody : PROCEDURE nom [(params)] IS ... ---- }
 
+{ @description: Cette procedure permet de analyser une procedure corps.
+  }
 Procedure ParseProcedureBody;
-Var nm  : String;
-    idx : Integer;
+Var nm  : String;  { Chaine de caracteres }
+    idx : Integer; { Index }
 Begin
  Consume; { PROCEDURE }
  If cur_tok_type <> TOK_IDENT Then
@@ -3801,10 +4096,12 @@ End;
 
 { ---- ParseFunctionBody : FUNCTION nom [(params)] RETURN type IS ... ---- }
 
+{ @description: Cette procedure permet de analyser une fonction corps.
+  }
 Procedure ParseFunctionBody;
-Var nm     : String;
-    idx    : Integer;
-    ret_ti : Integer;
+Var nm     : String;  { Chaine de caracteres }
+    idx    : Integer; { Index }
+    ret_ti : Integer; { Entier signe }
 Begin
  Consume; { FUNCTION }
  If cur_tok_type <> TOK_IDENT Then
@@ -3849,6 +4146,8 @@ End;
 { ---- ParseDeclarativePart : types, constants, variables, sous-progs ----
   Boucle jusqu'a BEGIN ou END (partie declarative terminee).                   }
 
+{ @description: Cette procedure permet de analyser.
+  }
 Procedure ParseDeclarativePart;
 Begin
  While True do
@@ -3900,14 +4199,32 @@ End;
 
 { ---- Prototypes forward pour instructions complexes ---- }
 Procedure ParseAssignment;   Forward;
+{ @description: Cette procedure permet de analyser une procedure.
+  }
 Procedure ParseProcedureCall; Forward;
+{ @description: Cette procedure permet de analyser si.
+  }
 Procedure ParseIf;           Forward;
+{ @description: Cette procedure permet de analyser.
+  }
 Procedure ParseCase;         Forward;
+{ @description: Cette procedure permet de analyser boucle.
+  }
 Procedure ParseLoop;         Forward;
+{ @description: Cette procedure permet de analyser tant que.
+  }
 Procedure ParseWhile;        Forward;
+{ @description: Cette procedure permet de analyser pour.
+  }
 Procedure ParseFor;          Forward;
+{ @description: Cette procedure permet de analyser retour.
+  }
 Procedure ParseReturn;       Forward;
+{ @description: Cette procedure permet de analyser lever une exception.
+  }
 Procedure ParseRaise;        Forward;
+{ @description: Cette procedure permet de analyser debut bloc.
+  }
 Procedure ParseBeginBlock;   Forward;
 
 { ---- ParseNull : NULL ; ---- }
@@ -3933,8 +4250,8 @@ End;
 
 { ---- ParseExit : EXIT [WHEN expr] ; ---- }
 Procedure ParseExit;
-Var lbl_end  : String;
-    lbl_cont : String;
+Var lbl_end  : String; { Fin }
+    lbl_cont : String; { Label }
 Begin
  Consume; { EXIT }
  lbl_end := FindLoopEnd;
@@ -3964,7 +4281,7 @@ End;
 
 { ---- ParseGoto : GOTO label ; (stub minimal) ---- }
 Procedure ParseGoto;
-Var lbl : String;
+Var lbl : String; { Chaine de caracteres }
 Begin
  Consume; { GOTO }
  If cur_tok_type = TOK_IDENT Then
@@ -3978,7 +4295,7 @@ End;
 
 { ---- ParseLabeledStatement : <<nom>> ---- }
 Procedure ParseLabeledStatement;
-Var lbl : String;
+Var lbl : String; { Chaine de caracteres }
 Begin
  { Deja consomme le premier '<' }
  If cur_tok_type = TOK_LT Then
@@ -3999,9 +4316,9 @@ End;
 
 { ---- ParseBeginBlock : [DECLARE decls] BEGIN stmts [EXCEPTION] END ; ---- }
 Procedure ParseBeginBlock;
-Var frame  : Integer;
-    lbl_ex : String;
-    lbl_end: String;
+Var frame  : Integer; { Entier signe }
+    lbl_ex : String;  { Label }
+    lbl_end: String;  { Label Fin }
 Begin
  PushScope(SK_BLOCK, CurrentSubIdx);
 
@@ -4057,10 +4374,10 @@ End;
 
 { ---- ParseStatement : dispatcher principal ---- }
 Procedure ParseStatement;
-Var nm      : String;
-    sym     : Integer;
-    sub     : Integer;
-    is_call : Boolean;
+Var nm      : String;  { Chaine de caracteres }
+    sym     : Integer; { Identificateur (symbole) }
+    sub     : Integer; { Entier signe }
+    is_call : Boolean; { Est }
 Begin
  If IsEndBoundary Then Exit;
 
@@ -4162,6 +4479,8 @@ End;
   Ces stubs s'appuient sur des helpers runtime assembleur.
   Convention : argument en AX (pointeur chaine ou valeur entiere).            }
 
+{ @description: Cette procedure permet de la fonctionnalite fichier texte.
+  }
 Procedure GenTextIO_Stubs;
 Begin
  { ---- Put_Line(str) : affiche chaine + saut de ligne ---- }
@@ -4238,10 +4557,16 @@ End;
 
 { ---- RegisterStdExceptions : pre-enregistre les exceptions standard Ada ---- }
 
+{ @description: Cette procedure permet de enregistrer.
+  }
 Procedure RegisterStdExceptions;
-Var idx : Integer;
-    code : Integer;
+Var idx : Integer;  { Entier signe }
+    code : Integer; { Code }
 
+{ @description: Cette procedure permet de l'operation RegEx.
+  @param nm Parametre de chaine de caracteres
+  @param c  Parametre de caractere
+  }
   Procedure RegEx(Const nm: String; c: Integer);
   Begin
    idx := FindSym(nm);
@@ -4265,8 +4590,10 @@ Begin
  RegEx('NUMERIC_ERROR',    5);
 End;
 
+{ @description: Cette procedure permet de enregistrer un fichier texte.
+  }
 Procedure RegisterTextIO_Subs;
-Var idx : Integer;
+Var idx : Integer; { Entier signe }
 Begin
  { PUT_LINE(str : String) }
  idx := FindSub('PUT_LINE');
@@ -4351,11 +4678,13 @@ End;
   Enregistre le package et ses exports (types, constantes, sous-progs)
   dans les tables globales. Aucun code n'est genere pour la spec.             }
 
+{ @description: Cette procedure permet de analyser paquetage.
+  }
 Procedure ParsePackageSpec;
-Var nm       : String;
-    idx      : Integer;
-    spec_idx : Integer;
-    fspec_idx: Integer;
+Var nm       : String;  { Chaine de caracteres }
+    idx      : Integer; { Index }
+    spec_idx : Integer; { Index }
+    fspec_idx: Integer; { Index }
 Begin
  Consume; { PACKAGE }
  If cur_tok_type <> TOK_IDENT Then
@@ -4419,12 +4748,14 @@ End;
 
 { ---- ParsePackageBody : PACKAGE BODY nom IS decls [BEGIN stmts END] ; ---- }
 
+{ @description: Cette procedure permet de analyser paquetage corps.
+  }
 Procedure ParsePackageBody;
-Var nm       : String;
-    idx      : Integer;
-    lbl_init : String;
-    is_textio: Boolean;
-    end_name : String;
+Var nm       : String;  { Chaine de caracteres }
+    idx      : Integer; { Index }
+    lbl_init : String;  { Label }
+    is_textio: Boolean; { Est }
+    end_name : String;  { Fin Nom }
 Begin
  { BODY deja consomme par l'appelant (PACKAGE BODY) }
  { ou appele apres que PACKAGE et BODY ont ete consommes }
@@ -4518,6 +4849,8 @@ End;
 
 { ---- ParsePackage : PACKAGE [BODY] ... ---- }
 
+{ @description: Cette procedure permet de analyser paquetage.
+  }
 Procedure ParsePackage;
 Begin
  Consume; { PACKAGE }
@@ -4538,8 +4871,11 @@ End;
 
 { ---- GenLoadAddrBX : charge l'adresse d'un symbole dans BX ---- }
 
+{ @description: Cette procedure permet de la fonctionnalite adresse.
+  @param sym_idx Identificateur (symbole) Index
+  }
 Procedure GenLoadAddrBX(sym_idx: Integer);
-Var off : Integer;
+Var off : Integer; { Entier signe }
 Begin
  Case sym_table^[sym_idx].store_class Of
   STORE_STATIC :
@@ -4558,6 +4894,9 @@ End;
 
 { ---- GenPushAddr : pousse l'adresse d'un symbole (pour OUT/IN OUT) ---- }
 
+{ @description: Cette procedure permet de la fonctionnalite adresse.
+  @param sym_idx Identificateur (symbole) Index
+  }
 Procedure GenPushAddr(sym_idx: Integer);
 Begin
  GenLoadAddrBX(sym_idx);
@@ -4567,11 +4906,16 @@ End;
 { ---- ParseLhsInfo : parse un LHS et retourne descripteur ----
   Entree  : cur_tok sur l'identifiant de base                                 }
 
+{ @description: Cette fonction permet de analyser information.
+  @param sym_idx   Identificateur (symbole) Index
+  @param field_off Champ
+  @param has_index Index
+  @return Resultat de l'operation. }
 Function ParseLhsInfo(Var sym_idx, field_off: Integer;
                       Var has_index: Boolean): Boolean;
-Var nm  : String;
-    ti  : Integer;
-    i   : Integer;
+Var nm  : String;  { Chaine de caracteres }
+    ti  : Integer; { Entier signe }
+    i   : Integer; { Compteur de boucle }
 Begin
  field_off := 0;
  has_index := False;
@@ -4623,10 +4967,15 @@ End;
 
 { ---- GenStoreLhs : stocke AX dans le LHS decrit ---- }
 
+{ @description: Cette procedure permet de l'operation GenStoreLhs.
+  @param sym_idx   Identificateur (symbole) Index
+  @param field_off Champ
+  @param has_index Index
+  }
 Procedure GenStoreLhs(sym_idx, field_off: Integer; has_index: Boolean);
-Var sc  : Integer;
-    off : Integer;
-    lbl : String;
+Var sc  : Integer; { Entier signe }
+    off : Integer; { Entier signe }
+    lbl : String;  { Label }
 Begin
  If sym_table^[sym_idx].is_const Then
  Begin Error('Assignation a une constante : ' + sym_table^[sym_idx].name); Exit; End;
@@ -4667,10 +5016,13 @@ End;
   Utilise lo_bound et elem_size reels de type_table quand le symbole est
   un tableau 1D de type TK_ARRAY ; sinon hypothese lo=1, stride=2.            }
 
+{ @description: Cette procedure permet de la fonctionnalite decalage.
+  @param sym_idx Identificateur (symbole) Index
+  }
 Procedure GenElemOffset(sym_idx: Integer);
-Var ti  : Integer;
-    lo  : LongInt;
-    esz : Integer;
+Var ti  : Integer; { Entier signe }
+    lo  : LongInt; { Entier long signe (32 bits) }
+    esz : Integer; { Entier signe }
 Begin
  ti  := sym_table^[sym_idx].type_idx;
  If (ti > 0) And (type_table^[ti].kind = TK_ARRAY) Then
@@ -4700,6 +5052,9 @@ End;
 { ---- GenLoadElement : AX=index en entree -> charge elem[AX] dans AX ----
   Sequence : compute SI via GenElemOffset, BX <- base, AX <- [BX+SI]         }
 
+{ @description: Cette procedure permet de l'operation GenLoadElement.
+  @param sym_idx Identificateur (symbole) Index
+  }
 Procedure GenLoadElement(sym_idx: Integer);
 Begin
  GenElemOffset(sym_idx);    { SI = byte offset }
@@ -4711,6 +5066,9 @@ End;
 { ---- GenStoreElement : AX=valeur, SI=byte offset -> stocke dans tab[SI] ---
   Sauvegarde AX, charge adresse dans BX, restaure et ecrit.                   }
 
+{ @description: Cette procedure permet de l'operation GenStoreElement.
+  @param sym_idx Identificateur (symbole) Index
+  }
 Procedure GenStoreElement(sym_idx: Integer);
 Begin
  EmitI('PUSH AX');           { sauver valeur }
@@ -4726,10 +5084,14 @@ End;
 
 { ---- GenLoadField : charge le champ a field_off octets de sym dans AX ---- }
 
+{ @description: Cette procedure permet de la fonctionnalite champ.
+  @param sym_idx   Identificateur (symbole) Index
+  @param field_off Champ
+  }
 Procedure GenLoadField(sym_idx, field_off: Integer);
-Var sc  : Integer;
-    off : Integer;
-    lbl : String;
+Var sc  : Integer; { Entier signe }
+    off : Integer; { Entier signe }
+    lbl : String;  { Label }
 Begin
  sc  := sym_table^[sym_idx].store_class;
  off := sym_table^[sym_idx].bp_offset;
@@ -4755,10 +5117,14 @@ End;
 
 { ---- GenStoreField : stocke AX dans le champ a field_off octets de sym ---- }
 
+{ @description: Cette procedure permet de la fonctionnalite champ.
+  @param sym_idx   Identificateur (symbole) Index
+  @param field_off Champ
+  }
 Procedure GenStoreField(sym_idx, field_off: Integer);
-Var sc  : Integer;
-    off : Integer;
-    lbl : String;
+Var sc  : Integer; { Entier signe }
+    off : Integer; { Entier signe }
+    lbl : String;  { Label }
 Begin
  sc  := sym_table^[sym_idx].store_class;
  off := sym_table^[sym_idx].bp_offset;
@@ -4786,14 +5152,17 @@ End;
   Precondition : cur_tok est sur `(`, appelant a determine que c'est un
   agregat de record pour sym_idx.                                              }
 
+{ @description: Cette procedure permet de analyser enregistrement.
+  @param sym_idx Identificateur (symbole) Index
+  }
 Procedure ParseRecordAggregate(sym_idx: Integer);
-Var ti        : Integer;
-    nm        : String;
-    fi        : Integer;
-    foff      : Integer;
-    fcount    : Integer;
-    i         : Integer;
-    fsym      : Integer;
+Var ti        : Integer; { Entier signe }
+    nm        : String;  { Chaine de caracteres }
+    fi        : Integer; { Entier signe }
+    foff      : Integer; { Entier signe }
+    fcount    : Integer; { Entier signe }
+    i         : Integer; { Compteur de boucle }
+    fsym      : Integer; { Entier signe }
 Begin
  Consume; { ( }
  ti := sym_table^[sym_idx].type_idx;
@@ -4865,11 +5234,13 @@ End;
 
 { ---- ParseAssignment : ident [.champ | (index)] := expr ; ---- }
 
+{ @description: Cette procedure permet de analyser.
+  }
 Procedure ParseAssignment;
-Var sym_idx   : Integer;
-    field_off : Integer;
-    has_index : Boolean;
-    saved_type : Integer;
+Var sym_idx   : Integer;  { Index }
+    field_off : Integer;  { Champ }
+    has_index : Boolean;  { Index }
+    saved_type : Integer; { Type }
 Begin
  If Not ParseLhsInfo(sym_idx, field_off, has_index) Then
  Begin SkipToSemi; Exit; End;
@@ -4896,14 +5267,17 @@ End;
   IN      : evaluer expression -> PUSH AX
   OUT/INOUT : pousser adresse de la variable effective -> PUSH BX             }
 
+{ @description: Cette procedure permet de analyser un argument.
+  @param mode Mode
+  }
 Procedure ParseOneArg(mode: Integer);
-Var nm      : String;
-    lhs_sym : Integer;
-    sub_a   : Integer;
-    tot_off : Integer;
-    ti_a    : Integer;
-    fnm_a   : String;
-    fi_a    : Integer;
+Var nm      : String;  { Chaine de caracteres }
+    lhs_sym : Integer; { Identificateur (symbole) }
+    sub_a   : Integer; { Entier signe }
+    tot_off : Integer; { Entier signe }
+    ti_a    : Integer; { Entier signe }
+    fnm_a   : String;  { Chaine de caracteres }
+    fi_a    : Integer; { Entier signe }
 Begin
  If (mode = PARAM_OUT) Or (mode = PARAM_INOUT) Then
  Begin
@@ -5028,12 +5402,14 @@ End;
 
 { ---- ParseProcedureCall : nom [(arg1, arg2, ...)] ; ---- }
 
+{ @description: Cette procedure permet de analyser une procedure.
+  }
 Procedure ParseProcedureCall;
-Var nm       : String;
-    sub_idx  : Integer;
-    pc       : Integer;
-    arg_num  : Integer;
-    mode     : Integer;
+Var nm       : String;  { Chaine de caracteres }
+    sub_idx  : Integer; { Index }
+    pc       : Integer; { Entier signe }
+    arg_num  : Integer; { Argument Numero }
+    mode     : Integer; { Mode }
 Begin
  nm := UpCaseStr(cur_tok_str);
  Consume;   { identifiant }
@@ -5078,9 +5454,11 @@ End;
 
 { ---- ParseIf : IF cond THEN stmts [ELSIF cond THEN stmts]* [ELSE stmts] END IF ; ---- }
 
+{ @description: Cette procedure permet de analyser si.
+  }
 Procedure ParseIf;
-Var lbl_next : String;
-    lbl_end  : String;
+Var lbl_next : String; { Suivante }
+    lbl_end  : String; { Label Fin }
 Begin
  Consume; { IF }
  lbl_end := NewLabel;
@@ -5123,11 +5501,14 @@ End;
   Handles : integer literals, char literals, TRUE/FALSE, enum literals,
   symbolic constants.                                                          }
 
+{ @description: Cette fonction permet de obtenir une valeur.
+  @param v Parametre de entier long signe (32 bits)
+  @return Resultat de l'operation. }
 Function GetCaseVal(Var v: LongInt): Boolean;
-Var nm : String;
-    ti : Integer;
-    j  : Integer;
-    si : Integer;
+Var nm : String;  { Chaine de caracteres }
+    ti : Integer; { Entier signe }
+    j  : Integer; { Compteur de boucle (boucle imbriquee) }
+    si : Integer; { Entier signe }
 Begin
  GetCaseVal := False; v := 0;
  If cur_tok_type = TOK_INTEGER Then
@@ -5160,11 +5541,13 @@ End;
 
 { ---- ParseCase : CASE expr IS WHEN val [| val2 ...] => stmts ... END CASE ; ---- }
 
+{ @description: Cette procedure permet de analyser.
+  }
 Procedure ParseCase;
-Var lbl_body : String;
-    lbl_next : String;
-    lbl_end  : String;
-    v        : LongInt;
+Var lbl_body : String;  { Corps }
+    lbl_next : String;  { Label suivante }
+    lbl_end  : String;  { Label Fin }
+    v        : LongInt; { Entier long signe (32 bits) }
 Begin
  Consume; { CASE }
  ParseExpr;            { AX = valeur du CASE }
@@ -5216,9 +5599,11 @@ End;
 
 { ---- ParseLoop : LOOP stmts END LOOP ;  (boucle infinie) ---- }
 
+{ @description: Cette procedure permet de analyser boucle.
+  }
 Procedure ParseLoop;
-Var lbl_cont : String;
-    lbl_end  : String;
+Var lbl_cont : String; { Chaine de caracteres }
+    lbl_end  : String; { Label Fin }
 Begin
  Consume; { LOOP }
  lbl_cont := NewLabel;
@@ -5237,9 +5622,11 @@ End;
 
 { ---- ParseWhile : WHILE cond LOOP stmts END LOOP ; ---- }
 
+{ @description: Cette procedure permet de analyser tant que.
+  }
 Procedure ParseWhile;
-Var lbl_cont : String;
-    lbl_end  : String;
+Var lbl_cont : String; { Chaine de caracteres }
+    lbl_end  : String; { Label Fin }
 Begin
  Consume; { WHILE }
  lbl_cont := NewLabel;
@@ -5284,14 +5671,16 @@ End;
   _LEND_xxx:
                                                                               }
 
+{ @description: Cette procedure permet de analyser pour.
+  }
 Procedure ParseFor;
 Var iter_nm   : String;    { nom Ada de la variable de boucle              }
     lbl_iter  : String;    { label DW compteur                              }
     lbl_hi    : String;    { label DW borne                                 }
     lbl_start : String;    { label apres les DW                             }
-    lbl_cont  : String;
-    lbl_end   : String;
-    is_rev    : Boolean;
+    lbl_cont  : String;  { Label }
+    lbl_end   : String;  { Label Fin }
+    is_rev    : Boolean; { Est }
     sym_iter  : Integer;   { index symbole de boucle (lecture seule)        }
 Begin
  Consume; { FOR }
@@ -5368,8 +5757,10 @@ Begin
  Expect(TOK_SEMI, '`;` attendu apres END LOOP');
 End;
 
+{ @description: Cette procedure permet de analyser retour.
+  }
 Procedure ParseReturn;
-Var lbl : String;
+Var lbl : String; { Chaine de caracteres }
 Begin
  Consume; { RETURN }
  If Not TokIsOp(TOK_SEMI) Then
@@ -5390,11 +5781,13 @@ End;
 { ParseRaise (ameliore) et ParseExceptionDecl (via ParseObjectDecl)            }
 { ============================================================================ }
 
+{ @description: Cette procedure permet de analyser lever une exception.
+  }
 Procedure ParseRaise;
-Var nm     : String;
-    lbl_ex : String;
-    si     : Integer;
-    code   : LongInt;
+Var nm     : String;  { Chaine de caracteres }
+    lbl_ex : String;  { Label }
+    si     : Integer; { Entier signe }
+    code   : LongInt; { Code }
 Begin
  Consume; { RAISE }
  nm := '';
@@ -5446,6 +5839,8 @@ End;
 { ============================================================= }
 
 { ------------- buffers ------------------------------------- }
+{ @description: Cette procedure permet de la fonctionnalite donnees.
+  }
 Procedure GenRuntimeData;
 Begin
  EmitBlank;
@@ -5459,10 +5854,12 @@ Begin
 End;
 
 { ------------- helpers ------------------------------------- }
+{ @description: Cette procedure permet de l'operation GenRuntimeHelpers.
+  }
 Procedure GenRuntimeHelpers;
 Begin
  EmitBlank;
- EmitComment('=== Runtime helpers ADA86 (MS-DOS INT 21h) ===');
+ EmitComment('=== Runtime helpers ADA86 (MS-DOS INT 21h) ==='); { Constante EmitComment(' }
 
  { ------ _RT_NEWLINE : emet CR + LF ---------------------- }
  EmitBlank;
@@ -5666,7 +6063,7 @@ Begin
 
  { ==== Assistants publics _ADA_xxx ==== }
  EmitBlank;
- EmitComment('=== Helpers publics Ada (_ADA_xxx) ===');
+ EmitComment('=== Helpers publics Ada (_ADA_xxx) ==='); { Constante EmitComment(' }
 
  { _ADA_CRLF }
  EmitBlank;
@@ -5818,12 +6215,14 @@ End;
 {            GenFooter / GenRuntimeHelpers etendu               }
 { ============================================================= }
 
-{ Emet la declaration ASM d'une variable globale dans .DATA }
+{ Emet la declaration ASM d'une variable globale dans .DATA
+  @param i Parametre de compteur de boucle
+ }
 Procedure GenVarDecl(i: Integer);
-Var lbl  : String;
-    ti   : Integer;
-    asiz : Integer;
-    csz  : Integer;
+Var lbl  : String;  { Chaine de caracteres }
+    ti   : Integer; { Entier signe }
+    asiz : Integer; { Entier signe }
+    csz  : Integer; { Entier signe }
 Begin
  lbl  := sym_table^[i].asm_label;
  ti   := sym_table^[i].type_idx;
@@ -5867,7 +6266,7 @@ End;
 
 { Emet le segment .DATA : variables globales + litteraux + buffers runtime }
 Procedure GenDataSegment;
-Var i : Integer;
+Var i : Integer; { Entier signe }
 Begin
  EmitBlank;
  EmitComment('--- variables globales Ada ---');
@@ -5900,10 +6299,10 @@ End;
 
 { Emet le point d'entree START : initialise DS/ES, appelle proc principale, exit DOS }
 Procedure GenCodeSegmentHeader;
-Var main_label : String;
+Var main_label : String; { Etiquette }
 Begin
  EmitBlank;
- EmitComment('=== Point d''entree du programme ===');
+ EmitComment('=== Point d''entree du programme ==='); { Constante EmitComment(' }
  EmitLabel('START');
  EmitI('MOV  AX, @DATA');
  EmitI('MOV  DS, AX');
@@ -5933,14 +6332,16 @@ End;
 { Procedure Compile : orchestration deux passes                 }
 { ============================================================= }
 
+{ @description: Cette procedure permet de l'operation Compile.
+  }
 Procedure Compile;
-Var tmp_name    : String;
-    tmp_file    : Text;
-    line        : String;
-    i           : Integer;
-    ext_start   : Integer;
-    sub_before  : Integer;
-    tmp_ok      : Boolean;
+Var tmp_name    : String;  { Nom }
+    tmp_file    : Text;    { Descripteur de fichier temporaire }
+    line        : String;  { Ligne }
+    i           : Integer; { Compteur de boucle }
+    ext_start   : Integer; { Extension de fichier Debut }
+    sub_before  : Integer; { Entier signe }
+    tmp_ok      : Boolean; { Temporaire }
 Begin
  { 1. Validation argument }
  If ParamCount < 1 Then
@@ -6071,7 +6472,7 @@ Begin
  Begin
   tmp_ok := True;
   EmitBlank;
-  EmitComment('=== Corps des procedures/fonctions Ada ===');
+  EmitComment('=== Corps des procedures/fonctions Ada ==='); { Constante EmitComment(' }
   While Not EOF(tmp_file) do
   Begin
    ReadLn(tmp_file, line);

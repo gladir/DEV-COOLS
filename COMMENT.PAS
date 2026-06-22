@@ -1514,7 +1514,7 @@ End;
 Procedure EmitPascalDocBlock(Name: String; Var ParamNames: Array Of String;
  Var ParamTypes: Array Of String; ParamCnt: Integer; IsFunc: Boolean);
 Var
- I: Integer;
+ I, MaxNameLen: Integer;
  Kind, Action, DescLine: String;
 Begin
  If IsFunc Then Kind := 'fonction' Else Kind := 'procedure';
@@ -1529,8 +1529,14 @@ Begin
   If Not EndsWithStr(DescLine, '.') Then DescLine := DescLine + '.';
  End;
  WriteLn(OutF, '{ @description: ', DescLine);
+ { Les descriptions de @param sont alignees sur une meme colonne,
+   celle du plus long nom de parametre de ce bloc, plus une marge. }
+ MaxNameLen := 0;
+ For I := 0 To ParamCnt - 1 Do
+  If Length(ParamNames[I]) > MaxNameLen Then MaxNameLen := Length(ParamNames[I]);
  For I := 0 To ParamCnt - 1 Do Begin
-  WriteLn(OutF, '  @param ', ParamNames[I], ' ',
+  WriteLn(OutF, '  @param ', ParamNames[I],
+   SpaceStr(MaxNameLen - Length(ParamNames[I]) + 1),
    CapStr(DescribeParam(ParamNames[I], ParamTypes[I])));
   Inc(NbParam);
  End;
@@ -1651,6 +1657,7 @@ Var
  ParamNamesB: Array[0..MaxParams - 1] Of String;
  ParamTypesB: Array[0..MaxParams - 1] Of String;
  ParamCntB: Integer;
+ MaxNameLenB: Integer;
 
  { @description: A partir de la ligne EndLine, qui se termine par le
      accolade fermante d un commentaire, remonte pour trouver la
@@ -1769,8 +1776,13 @@ Begin
       Delete(Body, Length(Body), 1);
       Body := TrimStr(Body);
       If Body <> '' Then WriteLn(OutF, Body);
+      MaxNameLenB := 0;
+      For J := 0 To ParamCntB - 1 Do
+       If Length(ParamNamesB[J]) > MaxNameLenB Then
+        MaxNameLenB := Length(ParamNamesB[J]);
       For J := 0 To ParamCntB - 1 Do Begin
-       WriteLn(OutF, '  @param ', ParamNamesB[J], ' ',
+       WriteLn(OutF, '  @param ', ParamNamesB[J],
+        SpaceStr(MaxNameLenB - Length(ParamNamesB[J]) + 1),
         CapStr(DescribeParam(ParamNamesB[J], ParamTypesB[J])));
        Inc(NbParam);
       End;
@@ -1952,7 +1964,7 @@ End;
 Procedure EmitCDocBlock(Name: String; Var ParamNames: Array Of String;
  Var ParamTypes: Array Of String; ParamCnt: Integer; HasReturnValue: Boolean);
 Var
- I: Integer;
+ I, MaxNameLen: Integer;
  Action, DescLine, Kind: String;
 Begin
  Action := BuildActionPhrase(Name);
@@ -1967,8 +1979,14 @@ Begin
   If Not EndsWithStr(DescLine, '.') Then DescLine := DescLine + '.';
  End;
  WriteLn(OutF, '/* ', DescLine);
+ { Les descriptions de @param sont alignees sur une meme colonne,
+   celle du plus long nom de parametre de ce bloc, plus une marge. }
+ MaxNameLen := 0;
+ For I := 0 To ParamCnt - 1 Do
+  If Length(ParamNames[I]) > MaxNameLen Then MaxNameLen := Length(ParamNames[I]);
  For I := 0 To ParamCnt - 1 Do Begin
-  WriteLn(OutF, ' * @param ', ParamNames[I], ' ',
+  WriteLn(OutF, ' * @param ', ParamNames[I],
+   SpaceStr(MaxNameLen - Length(ParamNames[I]) + 1),
    CapStr(DescribeParam(ParamNames[I], ParamTypes[I])));
   Inc(NbParam);
  End;
