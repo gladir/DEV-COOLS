@@ -1803,7 +1803,11 @@ Begin
    CollectPascalHeader(I, FullText, LastLine);
    ParsePascalHeader(FullText, Name, ParamList, IsFunc);
    ExtractPascalParamNames(ParamList, ParamNames, ParamTypes, ParamCnt);
-   If Not HasPrecedingComment(I) Then Begin
+   { Une declaration "Forward" n a pas de corps a cet endroit : la
+     documentation a sa place sur la definition reelle, plus loin
+     dans le fichier, pas sur ce simple pre-declaration. }
+   If (Not HasPrecedingComment(I)) And
+      (Not EndsWithStr(TrimStr(Lines[LastLine]), 'Forward;')) Then Begin
     If (IsFunc And ((Mode And MD_FUNC) <> 0)) Or
        ((Not IsFunc) And ((Mode And MD_PROC) <> 0)) Then Begin
      EmitPascalDocBlock(Name, ParamNames, ParamTypes, ParamCnt, IsFunc);
