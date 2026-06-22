@@ -42,10 +42,12 @@ Const
  FMT_PE64    = 4;
  FMT_NES     = 5;        { ROM NES (entete iNES, code 6502)            }
  FMT_RAW     = 6;        { binaire brut sans entete (code force par -m)}
+ FMT_MZ      = 7;        { EXE DOS reel (entete MZ, sans entete PE)    }
 
  { ----- Architectures de desassemblage (option -m) ----- }
  ARCH_X86  = 0;          { x86 32 bits (defaut, voir DisasmOne)         }
  ARCH_6502 = 1;          { 6502/65C02 8 bits (voir Disasm6502One)      }
+ ARCH_8086 = 2;          { 8086/80186 16 bits (voir Disasm8086One)     }
 
  { ----- Modes d adressage 6502 ----- }
  AM_NONE = 0;            { opcode illegal/non documente                 }
@@ -355,6 +357,9 @@ Begin
     End;
    End;
   End;
+  { "MZ" sans en-tete PE valide a e_lfanew : EXE DOS reel (16 bits) }
+  BinFormat := FMT_MZ;
+  Exit;
  End;
  If (GetByte(0) = Ord('N')) And (GetByte(1) = Ord('E')) And
     (GetByte(2) = Ord('S')) And (GetByte(3) = $1A) Then Begin
@@ -601,6 +606,43 @@ Begin
  SymbolCount := 0;
  EntryPoint := BaseAddr;
  ImageBase := 0;
+End;
+
+{ @description: Remplit Sections[] a partir d un EXE DOS reel (entete
+    MZ, 16 bits). Comme les segments d un EXE MZ sont tous relatifs au
+    debut du module charge (le loader DOS ajoute le segment reel
+    d execution a chaque reference), tout le module post-entete est
+    traite comme une seule section ".text" partant de l adresse
+    relative 0000 ; le point d entree affiche est CS*16+IP, relatif a
+    ce meme debut de module. Cette approximation ignore les segments
+    multiples eventuels (donnees apres code, overlays, ...) : tout le
+    corps du fichier est presente comme du code desassemblable. }
+Procedure ParseMZ;
+Var
+ CblpVal, CpVal, CparHdrVal: Word;
+ IpVal, CsVal: Word;
+ PageBytes: LongInt;
+ ImgSize, HdrSize: LongInt;
+Begin
+ CblpVal    := GetWord(2);
+ CpVal      := GetWord(4);
+ CparHdrVal := GetWord(8);
+ IpVal      := GetWord(14);
+ CsVal      := GetWord(16);
+ If CblpVal = 0 Then PageBytes := 512 Else PageBytes := CblpVal;
+ ImgSize := LongInt(CpVal - 1) * 512 + PageBytes;
+ HdrSize := LongInt(CparHdrVal) * 16;
+ If (ImgSize <= 0) Or (ImgSize > BufSize) Then ImgSize := BufSize;
+ If HdrSize >= ImgSize Then HdrSize := 0; { entete incoherente : repli }
+ SectionCount := 1;
+ Sections[1].Name    := '.text';
+ Sections[1].VAddr   := 0;
+ Sections[1].FileOff := HdrSize;
+ Sections[1].Size    := ImgSize - HdrSize;
+ Sections[1].IsCode  := True;
+ SymbolCount := 0;
+ ImageBase := 0;
+ EntryPoint := (LongInt(CsVal) * 16) + IpVal;
 End;
 
 { ============================================================
@@ -1040,6 +1082,558 @@ Begin
 End;
 
 { ============================================================
+  DESASSEMBLEUR 8086/80186 16 BITS (syntaxe Intel/MASM)
+  ============================================================ }
+
+{ @description: Nom (majuscules, sans prefixe) du registre 16 bits
+    numero R, pour la syntaxe Intel/MASM utilisee par le 8086 (a la
+    difference du x86 32 bits AT&T, qui prefixe par % en minuscules).
+  @param R Numero de registre (0..7)
+  @return Nom du registre en majuscules (ex: "AX") }
+Function Reg16I(R: Byte): String;
+Begin
+ Reg16I := UpStr(Reg16Names[R And 7]);
+End;
+
+{ @description: Nom (majuscules, sans prefixe) du registre 8 bits
+    numero R, syntaxe Intel/MASM.
+  @param R Numero de registre (0..7)
+  @return Nom du registre en majuscules (ex: "AL") }
+Function Reg8I(R: Byte): String;
+Begin
+ Reg8I := UpStr(Reg8Names[R And 7]);
+End;
+
+{ @description: Formate une valeur en hexadecimal selon la convention
+    MASM (suffixe "h", zero de tete ajoute si le premier chiffre est
+    une lettre, pour ne pas etre pris pour un identificateur).
+  @param V Valeur a formater
+  @return Chaine hexadecimale suffixee de "h" }
+Function MasmHex(V: LongInt): String;
+Var
+ S: String;
+Begin
+ S := ToHexU(V);
+ If S[1] In ['a'..'f'] Then S := '0' + S;
+ MasmHex := S + 'h';
+End;
+
+{ @description: Interprete un mot de 16 bits non signe comme une
+    valeur signee (complement a deux), independamment du comportement
+    de Shr/And sur les types signes.
+  @param W Mot non signe a interpreter
+  @return Valeur signee equivalente, -32768..32767 }
+Function SignedWord(W: Word): LongInt;
+Begin
+ If W >= 32768 Then SignedWord := LongInt(W) - 65536
+ Else SignedWord := LongInt(W);
+End;
+
+{ @description: Decode l octet ModRM (et l eventuel deplacement) en
+    adressage 16 bits (8086), tres different du 32 bits : pas d octet
+    SIB, et le champ RM (Mod<>11) designe directement une des sept
+    combinaisons fixes de registres de base/index ([BX+SI], [BX+DI],
+    [BP+SI], [BP+DI], [SI], [DI], [BP], [BX]), ou une adresse directe
+    disp16 dans le cas particulier Mod=00,RM=110.
+  @param Off Decalage du premier octet (le ModRM lui-meme)
+  @param Consumed Nombre d octets consommes (sortie)
+  @param RegField Champ Reg (3 bits) du ModRM (sortie)
+  @param Wide Vrai pour un registre 16 bits, faux pour 8 bits, quand
+    le mode est registre direct (Mod=11)
+  @return Texte de l operande (registre ou adresse memoire) }
+Function DecodeModRM16(Off: LongInt; Var Consumed: Integer;
+ Var RegField: Byte; Wide: Boolean): String;
+Const
+ RM16: Array[0..7] Of String[7] = (
+  'BX+SI', 'BX+DI', 'BP+SI', 'BP+DI', 'SI', 'DI', 'BP', 'BX');
+Var
+ ModB, RM: Byte;
+ Disp: LongInt;
+ P: LongInt;
+Begin
+ P := Off;
+ ModB := (GetByte(P) Shr 6) And 3;
+ RegField := (GetByte(P) Shr 3) And 7;
+ RM := GetByte(P) And 7;
+ Inc(P);
+ Consumed := 1;
+ If ModB = 3 Then Begin
+  If Wide Then DecodeModRM16 := Reg16I(RM) Else DecodeModRM16 := Reg8I(RM);
+  Exit;
+ End;
+ If (ModB = 0) And (RM = 6) Then Begin
+  Disp := GetWord(P); P := P + 2; Consumed := Consumed + 2;
+  DecodeModRM16 := '[' + MasmHex(Disp) + ']';
+  Exit;
+ End;
+ Disp := 0;
+ If ModB = 1 Then Begin
+  Disp := ShortInt(GetByte(P)); Inc(P); Inc(Consumed);
+ End Else If ModB = 2 Then Begin
+  Disp := SignedWord(GetWord(P)); P := P + 2; Consumed := Consumed + 2;
+ End;
+ If Disp = 0 Then DecodeModRM16 := '[' + RM16[RM] + ']'
+ Else If Disp > 0 Then
+  DecodeModRM16 := '[' + RM16[RM] + '+' + MasmHex(Disp) + ']'
+ Else
+  DecodeModRM16 := '[' + RM16[RM] + '-' + MasmHex(-Disp) + ']';
+End;
+
+{ @description: Desassemble une seule instruction 8086/80186 16 bits
+    a partir du decalage Off, en syntaxe Intel/MASM (mnemonique en
+    majuscules, ordre destination puis source, registres sans
+    prefixe). Couvre le jeu d instructions courant (mov, push/pop,
+    arithmetique, branchements, decalages, multiplications/divisions)
+    ; pas de prefixes de segment repliés dans l operande (affiches
+    comme pseudo-instruction separee), pas d opcodes etendus 0F
+    (Jcc longue, movzx/movsx : introduits avec le 386, hors de
+    portee du 8086/80186).
+  @param Off Decalage de l instruction dans le fichier
+  @param VAddrBase Adresse (relative au debut du module) de Off
+  @param Mnemonic Mnemonique de l instruction (sortie)
+  @param Operands Operandes formates, syntaxe Intel (sortie)
+  @return Nombre d octets occupes par l instruction }
+Function Disasm8086One(Off, VAddrBase: LongInt;
+ Var Mnemonic, Operands: String): Integer;
+Const
+ Cc8086: Array[0..15] Of String[4] = (
+  'JO', 'JNO', 'JB', 'JAE', 'JE', 'JNE', 'JBE', 'JA',
+  'JS', 'JNS', 'JP', 'JNP', 'JL', 'JGE', 'JLE', 'JG');
+ Grp1Names8086: Array[0..7] Of String[4] = (
+  'ADD', 'OR', 'ADC', 'SBB', 'AND', 'SUB', 'XOR', 'CMP');
+ ShiftNames8086: Array[0..7] Of String[4] = (
+  'ROL', 'ROR', 'RCL', 'RCR', 'SHL', 'SHR', 'SAL', 'SAR');
+ SegNames8086: Array[0..3] Of String[2] = ('ES', 'CS', 'SS', 'DS');
+Var
+ Op: Byte;
+ P: LongInt;
+ Len: Integer;
+ RM: String;
+ RegF: Byte;
+ Imm: LongInt;
+ Rel: LongInt;
+Begin
+ P := Off;
+ Op := GetByte(P);
+ Inc(P);
+ Mnemonic := '(bad)';
+ Operands := '';
+
+ { ----- prefixes de segment : affiches comme pseudo-instruction ----- }
+ If Op = $2E Then Begin Mnemonic := 'CS:'; End
+ Else If Op = $36 Then Begin Mnemonic := 'SS:'; End
+ Else If Op = $3E Then Begin Mnemonic := 'DS:'; End
+ Else If Op = $26 Then Begin Mnemonic := 'ES:'; End
+
+ { ----- push/pop registre general ----- }
+ Else If (Op >= $50) And (Op <= $57) Then Begin
+  Mnemonic := 'PUSH'; Operands := Reg16I(Op - $50);
+ End Else If (Op >= $58) And (Op <= $5F) Then Begin
+  Mnemonic := 'POP'; Operands := Reg16I(Op - $58);
+ End
+
+ { ----- push/pop registre de segment ----- }
+ Else If Op = $06 Then Begin Mnemonic := 'PUSH'; Operands := 'ES'; End
+ Else If Op = $07 Then Begin Mnemonic := 'POP';  Operands := 'ES'; End
+ Else If Op = $0E Then Begin Mnemonic := 'PUSH'; Operands := 'CS'; End
+ Else If Op = $16 Then Begin Mnemonic := 'PUSH'; Operands := 'SS'; End
+ Else If Op = $17 Then Begin Mnemonic := 'POP';  Operands := 'SS'; End
+ Else If Op = $1E Then Begin Mnemonic := 'PUSH'; Operands := 'DS'; End
+ Else If Op = $1F Then Begin Mnemonic := 'POP';  Operands := 'DS'; End
+
+ { ----- push immediat (80186+, tolere pour usage pratique) ----- }
+ Else If Op = $68 Then Begin
+  Imm := GetWord(P); P := P + 2;
+  Mnemonic := 'PUSH'; Operands := MasmHex(Imm);
+ End Else If Op = $6A Then Begin
+  Imm := ShortInt(GetByte(P)); Inc(P);
+  Mnemonic := 'PUSH'; Operands := MasmHex(Imm);
+ End
+
+ { ----- mov reg16, imm16 ----- }
+ Else If (Op >= $B8) And (Op <= $BF) Then Begin
+  Imm := GetWord(P); P := P + 2;
+  Mnemonic := 'MOV'; Operands := Reg16I(Op - $B8) + ',' + MasmHex(Imm);
+ End
+
+ { ----- mov reg8, imm8 ----- }
+ Else If (Op >= $B0) And (Op <= $B7) Then Begin
+  Imm := GetByte(P); Inc(P);
+  Mnemonic := 'MOV'; Operands := Reg8I(Op - $B0) + ',' + MasmHex(Imm);
+ End
+
+ { ----- inc/dec reg16 ----- }
+ Else If (Op >= $40) And (Op <= $47) Then Begin
+  Mnemonic := 'INC'; Operands := Reg16I(Op - $40);
+ End Else If (Op >= $48) And (Op <= $4F) Then Begin
+  Mnemonic := 'DEC'; Operands := Reg16I(Op - $48);
+ End
+
+ { ----- mov r/m16,r16 (89) / mov r16,r/m16 (8B) ----- }
+ Else If Op = $89 Then Begin
+  RM := DecodeModRM16(P, Len, RegF, True); P := P + Len;
+  Mnemonic := 'MOV'; Operands := RM + ',' + Reg16I(RegF);
+ End Else If Op = $8B Then Begin
+  RM := DecodeModRM16(P, Len, RegF, True); P := P + Len;
+  Mnemonic := 'MOV'; Operands := Reg16I(RegF) + ',' + RM;
+ End
+
+ { ----- mov r/m16,segreg (8C) / mov segreg,r/m16 (8E) ----- }
+ Else If Op = $8C Then Begin
+  RM := DecodeModRM16(P, Len, RegF, True); P := P + Len;
+  Mnemonic := 'MOV'; Operands := RM + ',' + SegNames8086[RegF And 3];
+ End Else If Op = $8E Then Begin
+  RM := DecodeModRM16(P, Len, RegF, True); P := P + Len;
+  Mnemonic := 'MOV'; Operands := SegNames8086[RegF And 3] + ',' + RM;
+ End
+
+ { ----- mov AL/AX,[adresse directe] (A0/A1) et inverse (A2/A3) ----- }
+ Else If Op = $A0 Then Begin
+  Imm := GetWord(P); P := P + 2;
+  Mnemonic := 'MOV'; Operands := 'AL,[' + MasmHex(Imm) + ']';
+ End Else If Op = $A1 Then Begin
+  Imm := GetWord(P); P := P + 2;
+  Mnemonic := 'MOV'; Operands := 'AX,[' + MasmHex(Imm) + ']';
+ End Else If Op = $A2 Then Begin
+  Imm := GetWord(P); P := P + 2;
+  Mnemonic := 'MOV'; Operands := '[' + MasmHex(Imm) + '],AL';
+ End Else If Op = $A3 Then Begin
+  Imm := GetWord(P); P := P + 2;
+  Mnemonic := 'MOV'; Operands := '[' + MasmHex(Imm) + '],AX';
+ End
+
+ { ----- instructions sur chaines (octet/mot) et prefixes REP/REPNE ----- }
+ Else If Op = $A4 Then Begin Mnemonic := 'MOVSB'; End
+ Else If Op = $A5 Then Begin Mnemonic := 'MOVSW'; End
+ Else If Op = $A6 Then Begin Mnemonic := 'CMPSB'; End
+ Else If Op = $A7 Then Begin Mnemonic := 'CMPSW'; End
+ Else If Op = $AA Then Begin Mnemonic := 'STOSB'; End
+ Else If Op = $AB Then Begin Mnemonic := 'STOSW'; End
+ Else If Op = $AC Then Begin Mnemonic := 'LODSB'; End
+ Else If Op = $AD Then Begin Mnemonic := 'LODSW'; End
+ Else If Op = $AE Then Begin Mnemonic := 'SCASB'; End
+ Else If Op = $AF Then Begin Mnemonic := 'SCASW'; End
+ Else If Op = $F2 Then Begin Mnemonic := 'REPNE'; End
+ Else If Op = $F3 Then Begin Mnemonic := 'REP'; End
+
+ { ----- mov r/m8,r8 (88) / mov r8,r/m8 (8A) ----- }
+ Else If Op = $88 Then Begin
+  RM := DecodeModRM16(P, Len, RegF, False); P := P + Len;
+  Mnemonic := 'MOV'; Operands := RM + ',' + Reg8I(RegF);
+ End Else If Op = $8A Then Begin
+  RM := DecodeModRM16(P, Len, RegF, False); P := P + Len;
+  Mnemonic := 'MOV'; Operands := Reg8I(RegF) + ',' + RM;
+ End
+
+ { ----- mov r/m16, imm16 (C7) / mov r/m8, imm8 (C6) ----- }
+ Else If Op = $C7 Then Begin
+  RM := DecodeModRM16(P, Len, RegF, True); P := P + Len;
+  Imm := GetWord(P); P := P + 2;
+  Mnemonic := 'MOV'; Operands := RM + ',' + MasmHex(Imm);
+ End Else If Op = $C6 Then Begin
+  RM := DecodeModRM16(P, Len, RegF, False); P := P + Len;
+  Imm := GetByte(P); Inc(P);
+  Mnemonic := 'MOV'; Operands := RM + ',' + MasmHex(Imm);
+ End
+
+ { ----- lea reg16, m ----- }
+ Else If Op = $8D Then Begin
+  RM := DecodeModRM16(P, Len, RegF, True); P := P + Len;
+  Mnemonic := 'LEA'; Operands := Reg16I(RegF) + ',' + RM;
+ End
+
+ { ----- les/lds reg16, m (charge ES:reg ou DS:reg depuis dword) ----- }
+ Else If Op = $C4 Then Begin
+  RM := DecodeModRM16(P, Len, RegF, True); P := P + Len;
+  Mnemonic := 'LES'; Operands := Reg16I(RegF) + ',' + RM;
+ End Else If Op = $C5 Then Begin
+  RM := DecodeModRM16(P, Len, RegF, True); P := P + Len;
+  Mnemonic := 'LDS'; Operands := Reg16I(RegF) + ',' + RM;
+ End
+
+ { ----- instructions BCD intercalees dans le bloc 00-3F : doivent
+   etre interceptees AVANT le groupe arithmetique generique ci-dessous,
+   sinon "Op < $40" les absorbe a tort comme formes 7 inexistantes. ----- }
+ Else If Op = $27 Then Begin
+  Mnemonic := 'DAA';
+ End Else If Op = $2F Then Begin
+  Mnemonic := 'DAS';
+ End Else If Op = $37 Then Begin
+  Mnemonic := 'AAA';
+ End Else If Op = $3F Then Begin
+  Mnemonic := 'AAS';
+ End
+
+ { ----- groupe arithmetique 00-3F (add/or/adc/sbb/and/sub/xor/cmp) ----- }
+ Else If Op < $40 Then Begin
+  Case Op And 7 Of
+   0: Begin
+       RM := DecodeModRM16(P, Len, RegF, False); P := P + Len;
+       Mnemonic := Grp1Names8086[(Op Shr 3) And 7];
+       Operands := RM + ',' + Reg8I(RegF);
+      End;
+   1: Begin
+       RM := DecodeModRM16(P, Len, RegF, True); P := P + Len;
+       Mnemonic := Grp1Names8086[(Op Shr 3) And 7];
+       Operands := RM + ',' + Reg16I(RegF);
+      End;
+   2: Begin
+       RM := DecodeModRM16(P, Len, RegF, False); P := P + Len;
+       Mnemonic := Grp1Names8086[(Op Shr 3) And 7];
+       Operands := Reg8I(RegF) + ',' + RM;
+      End;
+   3: Begin
+       RM := DecodeModRM16(P, Len, RegF, True); P := P + Len;
+       Mnemonic := Grp1Names8086[(Op Shr 3) And 7];
+       Operands := Reg16I(RegF) + ',' + RM;
+      End;
+   4: Begin
+       Imm := GetByte(P); Inc(P);
+       Mnemonic := Grp1Names8086[(Op Shr 3) And 7];
+       Operands := Reg8I(0) + ',' + MasmHex(Imm);
+      End;
+   5: Begin
+       Imm := GetWord(P); P := P + 2;
+       Mnemonic := Grp1Names8086[(Op Shr 3) And 7];
+       Operands := Reg16I(0) + ',' + MasmHex(Imm);
+      End;
+  Else
+   Mnemonic := '(bad)';
+  End;
+ End
+
+ { ----- groupe 1 avec immediat : 80/81/83 ----- }
+ Else If Op = $80 Then Begin
+  RM := DecodeModRM16(P, Len, RegF, False); P := P + Len;
+  Imm := GetByte(P); Inc(P);
+  Mnemonic := Grp1Names8086[RegF And 7];
+  Operands := RM + ',' + MasmHex(Imm);
+ End Else If Op = $81 Then Begin
+  RM := DecodeModRM16(P, Len, RegF, True); P := P + Len;
+  Imm := GetWord(P); P := P + 2;
+  Mnemonic := Grp1Names8086[RegF And 7];
+  Operands := RM + ',' + MasmHex(Imm);
+ End Else If Op = $83 Then Begin
+  RM := DecodeModRM16(P, Len, RegF, True); P := P + Len;
+  Imm := ShortInt(GetByte(P)); Inc(P);
+  Mnemonic := Grp1Names8086[RegF And 7];
+  Operands := RM + ',' + MasmHex(Imm);
+ End
+
+ { ----- test r/m,r ; test AL/AX,imm ----- }
+ Else If Op = $84 Then Begin
+  RM := DecodeModRM16(P, Len, RegF, False); P := P + Len;
+  Mnemonic := 'TEST'; Operands := RM + ',' + Reg8I(RegF);
+ End Else If Op = $85 Then Begin
+  RM := DecodeModRM16(P, Len, RegF, True); P := P + Len;
+  Mnemonic := 'TEST'; Operands := RM + ',' + Reg16I(RegF);
+ End Else If Op = $A8 Then Begin
+  Imm := GetByte(P); Inc(P);
+  Mnemonic := 'TEST'; Operands := 'AL,' + MasmHex(Imm);
+ End Else If Op = $A9 Then Begin
+  Imm := GetWord(P); P := P + 2;
+  Mnemonic := 'TEST'; Operands := 'AX,' + MasmHex(Imm);
+ End
+
+ { ----- call/jmp relatifs (deplacement 16 bits, pas 32) ----- }
+ Else If Op = $E8 Then Begin
+  Rel := SignedWord(GetWord(P)); P := P + 2;
+  Mnemonic := 'CALL'; Operands := MasmHex(VAddrBase + (P - Off) + Rel);
+ End Else If Op = $E9 Then Begin
+  Rel := SignedWord(GetWord(P)); P := P + 2;
+  Mnemonic := 'JMP'; Operands := MasmHex(VAddrBase + (P - Off) + Rel);
+ End Else If Op = $EB Then Begin
+  Rel := ShortInt(GetByte(P)); Inc(P);
+  Mnemonic := 'JMP'; Operands := MasmHex(VAddrBase + (P - Off) + Rel);
+ End
+
+ { ----- Jcc rel8 (70-7F) ----- }
+ Else If (Op >= $70) And (Op <= $7F) Then Begin
+  Rel := ShortInt(GetByte(P)); Inc(P);
+  Mnemonic := Cc8086[Op - $70];
+  Operands := MasmHex(VAddrBase + (P - Off) + Rel);
+ End
+
+ { ----- JCXZ / LOOP / LOOPE / LOOPNE (rel8) ----- }
+ Else If Op = $E0 Then Begin
+  Rel := ShortInt(GetByte(P)); Inc(P);
+  Mnemonic := 'LOOPNE'; Operands := MasmHex(VAddrBase + (P - Off) + Rel);
+ End Else If Op = $E1 Then Begin
+  Rel := ShortInt(GetByte(P)); Inc(P);
+  Mnemonic := 'LOOPE'; Operands := MasmHex(VAddrBase + (P - Off) + Rel);
+ End Else If Op = $E2 Then Begin
+  Rel := ShortInt(GetByte(P)); Inc(P);
+  Mnemonic := 'LOOP'; Operands := MasmHex(VAddrBase + (P - Off) + Rel);
+ End Else If Op = $E3 Then Begin
+  Rel := ShortInt(GetByte(P)); Inc(P);
+  Mnemonic := 'JCXZ'; Operands := MasmHex(VAddrBase + (P - Off) + Rel);
+ End
+
+ { ----- ret / leave / nop / int / cbw / cwd ----- }
+ Else If Op = $C3 Then Begin
+  Mnemonic := 'RET';
+ End Else If Op = $C2 Then Begin
+  Imm := GetWord(P); P := P + 2;
+  Mnemonic := 'RET'; Operands := MasmHex(Imm);
+ End Else If Op = $CB Then Begin
+  Mnemonic := 'RETF';
+ End Else If Op = $CA Then Begin
+  Imm := GetWord(P); P := P + 2;
+  Mnemonic := 'RETF'; Operands := MasmHex(Imm);
+ End Else If Op = $C9 Then Begin
+  Mnemonic := 'LEAVE';
+ End Else If Op = $90 Then Begin
+  Mnemonic := 'NOP';
+ End Else If Op = $CC Then Begin
+  Mnemonic := 'INT3';
+ End Else If Op = $CD Then Begin
+  Imm := GetByte(P); Inc(P);
+  Mnemonic := 'INT'; Operands := MasmHex(Imm);
+ End Else If Op = $98 Then Begin
+  Mnemonic := 'CBW';
+ End Else If Op = $99 Then Begin
+  Mnemonic := 'CWD';
+ End Else If Op = $F4 Then Begin
+  Mnemonic := 'HLT';
+ End Else If Op = $F8 Then Begin
+  Mnemonic := 'CLC';
+ End Else If Op = $F9 Then Begin
+  Mnemonic := 'STC';
+ End Else If Op = $FA Then Begin
+  Mnemonic := 'CLI';
+ End Else If Op = $FB Then Begin
+  Mnemonic := 'STI';
+ End Else If Op = $FC Then Begin
+  Mnemonic := 'CLD';
+ End Else If Op = $FD Then Begin
+  Mnemonic := 'STD';
+ End Else If Op = $F5 Then Begin
+  Mnemonic := 'CMC';
+ End
+
+ { ----- appel/saut lointain (inter-segment) : ptr16:16, 5 octets ----- }
+ Else If Op = $9A Then Begin
+  Imm := GetWord(P);          { offset }
+  Rel := GetWord(P + 2);      { segment }
+  P := P + 4;
+  Mnemonic := 'CALLF';
+  Operands := MasmHex(Rel) + ':' + MasmHex(Imm);
+ End Else If Op = $EA Then Begin
+  Imm := GetWord(P);
+  Rel := GetWord(P + 2);
+  P := P + 4;
+  Mnemonic := 'JMPF';
+  Operands := MasmHex(Rel) + ':' + MasmHex(Imm);
+ End
+
+ { ----- pile des indicateurs, table de conversion, BCD ----- }
+ Else If Op = $9C Then Begin
+  Mnemonic := 'PUSHF';
+ End Else If Op = $9D Then Begin
+  Mnemonic := 'POPF';
+ End Else If Op = $D7 Then Begin
+  Mnemonic := 'XLAT';
+ End Else If Op = $D4 Then Begin
+  Inc(P); { octet immediat de l encodage, toujours 0Ah en pratique }
+  Mnemonic := 'AAM';
+ End Else If Op = $D5 Then Begin
+  Inc(P);
+  Mnemonic := 'AAD';
+ End
+
+ { ----- groupe decalages : C0/C1 (imm8), D0-D3 (1 ou CL) ----- }
+ Else If Op = $C0 Then Begin
+  RM := DecodeModRM16(P, Len, RegF, False); P := P + Len;
+  Imm := GetByte(P); Inc(P);
+  Mnemonic := ShiftNames8086[RegF And 7];
+  Operands := RM + ',' + MasmHex(Imm);
+ End Else If Op = $C1 Then Begin
+  RM := DecodeModRM16(P, Len, RegF, True); P := P + Len;
+  Imm := GetByte(P); Inc(P);
+  Mnemonic := ShiftNames8086[RegF And 7];
+  Operands := RM + ',' + MasmHex(Imm);
+ End Else If Op = $D0 Then Begin
+  RM := DecodeModRM16(P, Len, RegF, False); P := P + Len;
+  Mnemonic := ShiftNames8086[RegF And 7]; Operands := RM + ',1';
+ End Else If Op = $D1 Then Begin
+  RM := DecodeModRM16(P, Len, RegF, True); P := P + Len;
+  Mnemonic := ShiftNames8086[RegF And 7]; Operands := RM + ',1';
+ End Else If Op = $D2 Then Begin
+  RM := DecodeModRM16(P, Len, RegF, False); P := P + Len;
+  Mnemonic := ShiftNames8086[RegF And 7]; Operands := RM + ',CL';
+ End Else If Op = $D3 Then Begin
+  RM := DecodeModRM16(P, Len, RegF, True); P := P + Len;
+  Mnemonic := ShiftNames8086[RegF And 7]; Operands := RM + ',CL';
+ End
+
+ { ----- groupe FE/FF : inc/dec/call/jmp/push selon RegField ----- }
+ Else If Op = $FE Then Begin
+  RM := DecodeModRM16(P, Len, RegF, False); P := P + Len;
+  If (RegF And 7) = 0 Then Mnemonic := 'INC' Else Mnemonic := 'DEC';
+  Operands := RM;
+ End Else If Op = $FF Then Begin
+  RM := DecodeModRM16(P, Len, RegF, True); P := P + Len;
+  Case RegF And 7 Of
+   0: Mnemonic := 'INC';
+   1: Mnemonic := 'DEC';
+   2: Mnemonic := 'CALL';
+   4: Mnemonic := 'JMP';
+   6: Mnemonic := 'PUSH';
+  Else
+   Mnemonic := '(bad)';
+  End;
+  If Mnemonic <> '(bad)' Then Operands := RM;
+ End
+
+ { ----- groupe F6/F7 : test/not/neg/mul/imul/div/idiv ----- }
+ Else If Op = $F6 Then Begin
+  RM := DecodeModRM16(P, Len, RegF, False); P := P + Len;
+  Case RegF And 7 Of
+   0, 1: Begin
+          Imm := GetByte(P); Inc(P);
+          Mnemonic := 'TEST'; Operands := RM + ',' + MasmHex(Imm);
+         End;
+   2: Begin Mnemonic := 'NOT'; Operands := RM; End;
+   3: Begin Mnemonic := 'NEG'; Operands := RM; End;
+   4: Begin Mnemonic := 'MUL'; Operands := RM; End;
+   5: Begin Mnemonic := 'IMUL'; Operands := RM; End;
+   6: Begin Mnemonic := 'DIV'; Operands := RM; End;
+   7: Begin Mnemonic := 'IDIV'; Operands := RM; End;
+  End;
+ End Else If Op = $F7 Then Begin
+  RM := DecodeModRM16(P, Len, RegF, True); P := P + Len;
+  Case RegF And 7 Of
+   0, 1: Begin
+          Imm := GetWord(P); P := P + 2;
+          Mnemonic := 'TEST'; Operands := RM + ',' + MasmHex(Imm);
+         End;
+   2: Begin Mnemonic := 'NOT'; Operands := RM; End;
+   3: Begin Mnemonic := 'NEG'; Operands := RM; End;
+   4: Begin Mnemonic := 'MUL'; Operands := RM; End;
+   5: Begin Mnemonic := 'IMUL'; Operands := RM; End;
+   6: Begin Mnemonic := 'DIV'; Operands := RM; End;
+   7: Begin Mnemonic := 'IDIV'; Operands := RM; End;
+  End;
+ End
+
+ { ----- imul reg16, r/m16, imm (69 = imm16, 6B = imm8) ----- }
+ Else If Op = $69 Then Begin
+  RM := DecodeModRM16(P, Len, RegF, True); P := P + Len;
+  Imm := GetWord(P); P := P + 2;
+  Mnemonic := 'IMUL';
+  Operands := Reg16I(RegF) + ',' + RM + ',' + MasmHex(Imm);
+ End Else If Op = $6B Then Begin
+  RM := DecodeModRM16(P, Len, RegF, True); P := P + Len;
+  Imm := ShortInt(GetByte(P)); Inc(P);
+  Mnemonic := 'IMUL';
+  Operands := Reg16I(RegF) + ',' + RM + ',' + MasmHex(Imm);
+ End;
+
+ If P <= Off Then P := Off + 1; { securite anti-boucle infinie }
+ Disasm8086One := P - Off;
+End;
+
+{ ============================================================
   DESASSEMBLEUR 6502 (jeu d instructions documente complet, 151 opcodes)
   ============================================================ }
 
@@ -1317,6 +1911,7 @@ Begin
   FMT_PE64:  FormatName := 'pei-x86-64 (en-tetes seulement)';
   FMT_NES:   FormatName := 'nes-rom (6502)';
   FMT_RAW:   FormatName := 'raw-binary (-m/-b)';
+  FMT_MZ:    FormatName := 'mz-dos (8086)';
  Else
   FormatName := 'inconnu';
  End;
@@ -1374,7 +1969,8 @@ Var
  InstrLen, K, AddrDigits: Integer;
  Mnemonic, Operands, BytesTxt, Lbl: String;
 Begin
- If Arch = ARCH_6502 Then AddrDigits := 4 Else AddrDigits := 6;
+ If (Arch = ARCH_6502) Or (Arch = ARCH_8086) Then AddrDigits := 4
+ Else AddrDigits := 6;
  WriteLn;
  WriteLn(InFileName, ':     format ', FormatName);
  For SI := 1 To SectionCount Do Begin
@@ -1392,6 +1988,8 @@ Begin
    End;
    If Arch = ARCH_6502 Then
     InstrLen := Disasm6502One(Off, VAddr, Mnemonic, Operands)
+   Else If Arch = ARCH_8086 Then
+    InstrLen := Disasm8086One(Off, VAddr, Mnemonic, Operands)
    Else
     InstrLen := DisasmOne(Off, VAddr, Mnemonic, Operands);
    BytesTxt := '';
@@ -1452,16 +2050,18 @@ Begin
  WriteLn('  -t       Affiche la table des symboles');
  WriteLn('  -S       Melange source/assembleur (non supporte)');
  WriteLn('  -m arch  Force l''architecture de desassemblage :');
- WriteLn('           i386 (defaut) ou 6502');
+ WriteLn('           i386 (defaut), 8086 ou 6502');
  WriteLn('  -b adr   Adresse de chargement (hexa) pour un binaire');
  WriteLn('           brut sans entete, ex: -b 8000 ou -b $8000');
  WriteLn('  -?       Aide sur cette commande');
  WriteLn;
  WriteLn('Formats supportes : ELF32/ELF64 (Linux), PE32/PE32+ (Windows),');
- WriteLn('ROM NES (entete iNES), binaire brut (avec -m).');
- WriteLn('Desassemblage : x86 32 bits courant (mov, push/pop,');
- WriteLn('arithmetique, branchements...) ou 6502 complet (151');
- WriteLn('opcodes documentes) ; pas de SSE/AVX/x86-64 (REX).');
+ WriteLn('EXE DOS reel (entete MZ), ROM NES (entete iNES), binaire');
+ WriteLn('brut (avec -m).');
+ WriteLn('Desassemblage : x86 32 bits courant (syntaxe AT&T, comme');
+ WriteLn('objdump) ; 8086/80186 16 bits courant, syntaxe Intel/MASM ;');
+ WriteLn('ou 6502 complet (151 opcodes documentes). Pas de SSE/AVX ni');
+ WriteLn('de mode x86-64 (REX), pas d''opcodes etendus 0F pour le 8086.');
 End;
 
 Var
@@ -1495,10 +2095,12 @@ Begin
   Else If Arg = '-m' Then Begin
    Inc(I);
    If I > ParamCount Then Begin
-    WriteLn('Erreur : -m necessite une architecture (i386 ou 6502).');
+    WriteLn('Erreur : -m necessite une architecture (i386, 8086 ou 6502).');
     Halt(1);
    End;
    If UpStr(ParamStr(I)) = '6502' Then Arch := ARCH_6502
+   Else If (UpStr(ParamStr(I)) = '8086') Or
+           (UpStr(ParamStr(I)) = '80186') Then Arch := ARCH_8086
    Else If UpStr(ParamStr(I)) = 'I386' Then Arch := ARCH_X86
    Else Begin
     WriteLn('Architecture inconnue pour -m : ', ParamStr(I));
@@ -1534,6 +2136,9 @@ Begin
  If BinFormat = FMT_NES Then Begin
   ParseNES;
   If Not ArchForced Then Arch := ARCH_6502; { detection automatique }
+ End Else If BinFormat = FMT_MZ Then Begin
+  ParseMZ;
+  If Not ArchForced Then Arch := ARCH_8086; { detection automatique }
  End Else If (BinFormat = FMT_ELF32) Or (BinFormat = FMT_ELF64) Then
   ParseELF
  Else If (BinFormat = FMT_PE32) Or (BinFormat = FMT_PE64) Then
@@ -1544,7 +2149,7 @@ Begin
   BinFormat := FMT_RAW;
   ParseRaw;
  End Else Begin
-  WriteLn('Erreur : format de fichier non reconnu (ni ELF, ni PE, ni ROM NES).');
+  WriteLn('Erreur : format de fichier non reconnu (ni ELF, ni PE, ni ROM NES, ni EXE DOS).');
   WriteLn('Pour un binaire brut, precisez l''architecture avec -m (ex: -m 6502).');
   Halt(1);
  End;
