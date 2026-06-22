@@ -40,6 +40,28 @@ Const
  FMT_ELF64   = 2;
  FMT_PE32    = 3;
  FMT_PE64    = 4;
+ FMT_NES     = 5;        { ROM NES (entete iNES, code 6502)            }
+ FMT_RAW     = 6;        { binaire brut sans entete (code force par -m)}
+
+ { ----- Architectures de desassemblage (option -m) ----- }
+ ARCH_X86  = 0;          { x86 32 bits (defaut, voir DisasmOne)         }
+ ARCH_6502 = 1;          { 6502/65C02 8 bits (voir Disasm6502One)      }
+
+ { ----- Modes d adressage 6502 ----- }
+ AM_NONE = 0;            { opcode illegal/non documente                 }
+ AM_IMP  = 1;            { implicite : aucun operande                   }
+ AM_ACC  = 2;            { accumulateur : "A"                           }
+ AM_IMM  = 3;            { immediat : #$nn                              }
+ AM_ZP   = 4;            { page zero : $nn                              }
+ AM_ZPX  = 5;            { page zero,X : $nn,X                          }
+ AM_ZPY  = 6;            { page zero,Y : $nn,Y                          }
+ AM_ABS  = 7;            { absolu : $nnnn                                }
+ AM_ABSX = 8;            { absolu,X : $nnnn,X                            }
+ AM_ABSY = 9;            { absolu,Y : $nnnn,Y                            }
+ AM_IND  = 10;           { indirect (JMP uniquement) : ($nnnn)          }
+ AM_INDX = 11;           { indirect indexe par X : ($nn,X)              }
+ AM_INDY = 12;           { indirect indexe par Y : ($nn),Y              }
+ AM_REL  = 13;           { relatif (branchements) : $nnnn (resolu)      }
 
 Type
  String64 = String[64];
@@ -84,6 +106,11 @@ Var
  OptSymbols   : Boolean;          { -t }
  OptDisasm    : Boolean;          { -d }
  OptSource    : Boolean;          { -S (non supporte) }
+ Arch         : Integer;          { ARCH_xxx, selectionne par -m }
+ ArchForced   : Boolean;          { vrai si -m a ete passe explicitement }
+ BaseAddr     : LongInt;          { adresse de chargement pour un binaire brut (-b) }
+ Mnem6502     : Array[0..255] Of String[4];
+ Mode6502     : Array[0..255] Of Byte;
 
 { ============================================================
   UTILITAIRES GENERAUX
@@ -275,6 +302,8 @@ Var
  NRead: LongInt;
 Begin
  Assign(F, FName);
+ FileMode := 0; { ouverture en lecture seule : accepte aussi les
+                   fichiers proteges en ecriture (ROM, dumps, ...) }
  {$I-} Reset(F, 1); {$I+}
  If IOResult <> 0 Then Begin
   WriteLn('Erreur : impossible d''ouvrir "', FName, '"');
@@ -326,6 +355,11 @@ Begin
     End;
    End;
   End;
+ End;
+ If (GetByte(0) = Ord('N')) And (GetByte(1) = Ord('E')) And
+    (GetByte(2) = Ord('S')) And (GetByte(3) = $1A) Then Begin
+  BinFormat := FMT_NES;
+  Exit;
  End;
 End;
 
@@ -512,6 +546,61 @@ Begin
    End;
   End;
  End;
+End;
+
+{ ============================================================
+  ANALYSE D UNE ROM NES (entete iNES) ET D UN BINAIRE BRUT 6502
+  ============================================================ }
+
+{ @description: Remplit Sections[] a partir d une ROM NES (entete
+    iNES de 16 octets). La banque PRG-ROM est mappee a $8000, soit
+    directement (32 Ko, mapping lineaire courant) soit reproduite en
+    miroir sur $8000-$FFFF (16 Ko, mapping le plus repandu des
+    cartouches simples type NROM). Le CHR-ROM (graphismes, pas du
+    code 6502) n est pas mappe pour le desassemblage. }
+Procedure ParseNES;
+Var
+ PrgBanks: Integer;
+ PrgSize: LongInt;
+Begin
+ PrgBanks := GetByte(4);
+ PrgSize := LongInt(PrgBanks) * 16384;
+ SectionCount := 0;
+ If PrgSize > 0 Then Begin
+  SectionCount := 1;
+  Sections[1].Name    := '.prg';
+  Sections[1].FileOff := 16; { fin de l entete iNES }
+  Sections[1].IsCode  := True;
+  If PrgSize >= 32768 Then Begin
+   Sections[1].VAddr := $8000;
+   Sections[1].Size  := 32768;
+  End Else Begin
+   { Banque unique de 16 Ko, miroir habituel sur toute la fenetre
+     $8000-$FFFF des cartouches NROM ; on ne desassemble que
+     l exemplaire reel, present une seule fois dans le fichier. }
+   Sections[1].VAddr := $C000;
+   Sections[1].Size  := PrgSize;
+  End;
+ End;
+ SymbolCount := 0;
+ EntryPoint := 0;
+ ImageBase := 0;
+End;
+
+{ @description: Cree une unique section couvrant tout le fichier,
+    pour un binaire brut sans entete reconnu (option -m force,
+    chargee a l adresse BaseAddr fixee par -b, $0000 par defaut). }
+Procedure ParseRaw;
+Begin
+ SectionCount := 1;
+ Sections[1].Name    := '.rom';
+ Sections[1].VAddr   := BaseAddr;
+ Sections[1].FileOff := 0;
+ Sections[1].Size    := BufSize;
+ Sections[1].IsCode  := True;
+ SymbolCount := 0;
+ EntryPoint := BaseAddr;
+ ImageBase := 0;
 End;
 
 { ============================================================
@@ -951,6 +1040,218 @@ Begin
 End;
 
 { ============================================================
+  DESASSEMBLEUR 6502 (jeu d instructions documente complet, 151 opcodes)
+  ============================================================ }
+
+{ @description: Enregistre un opcode 6502 dans les tables Mnem6502/
+    Mode6502.
+  @param Code Valeur de l opcode (0..255)
+  @param M Mnemonique (ex: "LDA")
+  @param Mode Mode d adressage (AM_xxx) }
+Procedure SetOp6502(Code: Byte; M: String; Mode: Byte);
+Begin
+ Mnem6502[Code] := M;
+ Mode6502[Code] := Mode;
+End;
+
+{ @description: Remplit les tables d opcodes 6502 (Mnem6502/Mode6502)
+    avec les 151 opcodes documentes du 6502 NMOS. Les opcodes non
+    renseignes restent a chaine vide (illegaux/non documentes), et
+    sont affiches comme "(bad)" par Disasm6502One. }
+Procedure InitOpcodes6502;
+Var
+ I: Integer;
+Begin
+ For I := 0 To 255 Do Begin
+  Mnem6502[I] := '';
+  Mode6502[I] := AM_NONE;
+ End;
+ SetOp6502($69, 'ADC', AM_IMM); SetOp6502($65, 'ADC', AM_ZP);
+ SetOp6502($75, 'ADC', AM_ZPX); SetOp6502($6D, 'ADC', AM_ABS);
+ SetOp6502($7D, 'ADC', AM_ABSX); SetOp6502($79, 'ADC', AM_ABSY);
+ SetOp6502($61, 'ADC', AM_INDX); SetOp6502($71, 'ADC', AM_INDY);
+ SetOp6502($29, 'AND', AM_IMM); SetOp6502($25, 'AND', AM_ZP);
+ SetOp6502($35, 'AND', AM_ZPX); SetOp6502($2D, 'AND', AM_ABS);
+ SetOp6502($3D, 'AND', AM_ABSX); SetOp6502($39, 'AND', AM_ABSY);
+ SetOp6502($21, 'AND', AM_INDX); SetOp6502($31, 'AND', AM_INDY);
+ SetOp6502($0A, 'ASL', AM_ACC); SetOp6502($06, 'ASL', AM_ZP);
+ SetOp6502($16, 'ASL', AM_ZPX); SetOp6502($0E, 'ASL', AM_ABS);
+ SetOp6502($1E, 'ASL', AM_ABSX);
+ SetOp6502($90, 'BCC', AM_REL); SetOp6502($B0, 'BCS', AM_REL);
+ SetOp6502($F0, 'BEQ', AM_REL);
+ SetOp6502($24, 'BIT', AM_ZP); SetOp6502($2C, 'BIT', AM_ABS);
+ SetOp6502($30, 'BMI', AM_REL); SetOp6502($D0, 'BNE', AM_REL);
+ SetOp6502($10, 'BPL', AM_REL);
+ SetOp6502($00, 'BRK', AM_IMP);
+ SetOp6502($50, 'BVC', AM_REL); SetOp6502($70, 'BVS', AM_REL);
+ SetOp6502($18, 'CLC', AM_IMP); SetOp6502($D8, 'CLD', AM_IMP);
+ SetOp6502($58, 'CLI', AM_IMP); SetOp6502($B8, 'CLV', AM_IMP);
+ SetOp6502($C9, 'CMP', AM_IMM); SetOp6502($C5, 'CMP', AM_ZP);
+ SetOp6502($D5, 'CMP', AM_ZPX); SetOp6502($CD, 'CMP', AM_ABS);
+ SetOp6502($DD, 'CMP', AM_ABSX); SetOp6502($D9, 'CMP', AM_ABSY);
+ SetOp6502($C1, 'CMP', AM_INDX); SetOp6502($D1, 'CMP', AM_INDY);
+ SetOp6502($E0, 'CPX', AM_IMM); SetOp6502($E4, 'CPX', AM_ZP);
+ SetOp6502($EC, 'CPX', AM_ABS);
+ SetOp6502($C0, 'CPY', AM_IMM); SetOp6502($C4, 'CPY', AM_ZP);
+ SetOp6502($CC, 'CPY', AM_ABS);
+ SetOp6502($C6, 'DEC', AM_ZP); SetOp6502($D6, 'DEC', AM_ZPX);
+ SetOp6502($CE, 'DEC', AM_ABS); SetOp6502($DE, 'DEC', AM_ABSX);
+ SetOp6502($CA, 'DEX', AM_IMP); SetOp6502($88, 'DEY', AM_IMP);
+ SetOp6502($49, 'EOR', AM_IMM); SetOp6502($45, 'EOR', AM_ZP);
+ SetOp6502($55, 'EOR', AM_ZPX); SetOp6502($4D, 'EOR', AM_ABS);
+ SetOp6502($5D, 'EOR', AM_ABSX); SetOp6502($59, 'EOR', AM_ABSY);
+ SetOp6502($41, 'EOR', AM_INDX); SetOp6502($51, 'EOR', AM_INDY);
+ SetOp6502($E6, 'INC', AM_ZP); SetOp6502($F6, 'INC', AM_ZPX);
+ SetOp6502($EE, 'INC', AM_ABS); SetOp6502($FE, 'INC', AM_ABSX);
+ SetOp6502($E8, 'INX', AM_IMP); SetOp6502($C8, 'INY', AM_IMP);
+ SetOp6502($4C, 'JMP', AM_ABS); SetOp6502($6C, 'JMP', AM_IND);
+ SetOp6502($20, 'JSR', AM_ABS);
+ SetOp6502($A9, 'LDA', AM_IMM); SetOp6502($A5, 'LDA', AM_ZP);
+ SetOp6502($B5, 'LDA', AM_ZPX); SetOp6502($AD, 'LDA', AM_ABS);
+ SetOp6502($BD, 'LDA', AM_ABSX); SetOp6502($B9, 'LDA', AM_ABSY);
+ SetOp6502($A1, 'LDA', AM_INDX); SetOp6502($B1, 'LDA', AM_INDY);
+ SetOp6502($A2, 'LDX', AM_IMM); SetOp6502($A6, 'LDX', AM_ZP);
+ SetOp6502($B6, 'LDX', AM_ZPY); SetOp6502($AE, 'LDX', AM_ABS);
+ SetOp6502($BE, 'LDX', AM_ABSY);
+ SetOp6502($A0, 'LDY', AM_IMM); SetOp6502($A4, 'LDY', AM_ZP);
+ SetOp6502($B4, 'LDY', AM_ZPX); SetOp6502($AC, 'LDY', AM_ABS);
+ SetOp6502($BC, 'LDY', AM_ABSX);
+ SetOp6502($4A, 'LSR', AM_ACC); SetOp6502($46, 'LSR', AM_ZP);
+ SetOp6502($56, 'LSR', AM_ZPX); SetOp6502($4E, 'LSR', AM_ABS);
+ SetOp6502($5E, 'LSR', AM_ABSX);
+ SetOp6502($EA, 'NOP', AM_IMP);
+ SetOp6502($09, 'ORA', AM_IMM); SetOp6502($05, 'ORA', AM_ZP);
+ SetOp6502($15, 'ORA', AM_ZPX); SetOp6502($0D, 'ORA', AM_ABS);
+ SetOp6502($1D, 'ORA', AM_ABSX); SetOp6502($19, 'ORA', AM_ABSY);
+ SetOp6502($01, 'ORA', AM_INDX); SetOp6502($11, 'ORA', AM_INDY);
+ SetOp6502($48, 'PHA', AM_IMP); SetOp6502($08, 'PHP', AM_IMP);
+ SetOp6502($68, 'PLA', AM_IMP); SetOp6502($28, 'PLP', AM_IMP);
+ SetOp6502($2A, 'ROL', AM_ACC); SetOp6502($26, 'ROL', AM_ZP);
+ SetOp6502($36, 'ROL', AM_ZPX); SetOp6502($2E, 'ROL', AM_ABS);
+ SetOp6502($3E, 'ROL', AM_ABSX);
+ SetOp6502($6A, 'ROR', AM_ACC); SetOp6502($66, 'ROR', AM_ZP);
+ SetOp6502($76, 'ROR', AM_ZPX); SetOp6502($6E, 'ROR', AM_ABS);
+ SetOp6502($7E, 'ROR', AM_ABSX);
+ SetOp6502($40, 'RTI', AM_IMP); SetOp6502($60, 'RTS', AM_IMP);
+ SetOp6502($E9, 'SBC', AM_IMM); SetOp6502($E5, 'SBC', AM_ZP);
+ SetOp6502($F5, 'SBC', AM_ZPX); SetOp6502($ED, 'SBC', AM_ABS);
+ SetOp6502($FD, 'SBC', AM_ABSX); SetOp6502($F9, 'SBC', AM_ABSY);
+ SetOp6502($E1, 'SBC', AM_INDX); SetOp6502($F1, 'SBC', AM_INDY);
+ SetOp6502($38, 'SEC', AM_IMP); SetOp6502($F8, 'SED', AM_IMP);
+ SetOp6502($78, 'SEI', AM_IMP);
+ SetOp6502($85, 'STA', AM_ZP); SetOp6502($95, 'STA', AM_ZPX);
+ SetOp6502($8D, 'STA', AM_ABS); SetOp6502($9D, 'STA', AM_ABSX);
+ SetOp6502($99, 'STA', AM_ABSY); SetOp6502($81, 'STA', AM_INDX);
+ SetOp6502($91, 'STA', AM_INDY);
+ SetOp6502($86, 'STX', AM_ZP); SetOp6502($96, 'STX', AM_ZPY);
+ SetOp6502($8E, 'STX', AM_ABS);
+ SetOp6502($84, 'STY', AM_ZP); SetOp6502($94, 'STY', AM_ZPX);
+ SetOp6502($8C, 'STY', AM_ABS);
+ SetOp6502($AA, 'TAX', AM_IMP); SetOp6502($A8, 'TAY', AM_IMP);
+ SetOp6502($BA, 'TSX', AM_IMP); SetOp6502($8A, 'TXA', AM_IMP);
+ SetOp6502($9A, 'TXS', AM_IMP); SetOp6502($98, 'TYA', AM_IMP);
+End;
+
+{ @description: Desassemble une seule instruction 6502 a partir du
+    decalage Off dans le fichier. Chaque opcode 6502 a un mode
+    d adressage fixe (contrairement au x86, pas de ModRM a decoder) :
+    Mode6502[octet] indique combien d octets supplementaires lire et
+    comment les formater. Les opcodes non documentes (Mnem6502[octet]
+    vide) produisent "(bad)" et avancent d un octet.
+  @param Off Decalage de l instruction dans le fichier
+  @param VAddrBase Adresse virtuelle correspondant a Off (pour
+    resoudre la cible des branchements relatifs)
+  @param Mnemonic Mnemonique de l instruction (sortie)
+  @param Operands Operandes formates (sortie)
+  @return Nombre d octets occupes par l instruction (1, 2 ou 3) }
+Function Disasm6502One(Off, VAddrBase: LongInt;
+ Var Mnemonic, Operands: String): Integer;
+Var
+ Op: Byte;
+ Mode: Byte;
+ B1: Byte;
+ W1: Word;
+ Rel: ShortInt;
+ Target: LongInt;
+Begin
+ Op := GetByte(Off);
+ Mnemonic := Mnem6502[Op];
+ Mode := Mode6502[Op];
+ If Mnemonic = '' Then Begin
+  Mnemonic := '(bad)';
+  Operands := '';
+  Disasm6502One := 1;
+  Exit;
+ End;
+ Operands := '';
+ Case Mode Of
+  AM_IMP: Disasm6502One := 1;
+  AM_ACC: Begin
+   Operands := 'A';
+   Disasm6502One := 1;
+  End;
+  AM_IMM: Begin
+   B1 := GetByte(Off + 1);
+   Operands := '#$' + ToHexFixed(B1, 2);
+   Disasm6502One := 2;
+  End;
+  AM_ZP: Begin
+   B1 := GetByte(Off + 1);
+   Operands := '$' + ToHexFixed(B1, 2);
+   Disasm6502One := 2;
+  End;
+  AM_ZPX: Begin
+   B1 := GetByte(Off + 1);
+   Operands := '$' + ToHexFixed(B1, 2) + ',X';
+   Disasm6502One := 2;
+  End;
+  AM_ZPY: Begin
+   B1 := GetByte(Off + 1);
+   Operands := '$' + ToHexFixed(B1, 2) + ',Y';
+   Disasm6502One := 2;
+  End;
+  AM_ABS: Begin
+   W1 := GetWord(Off + 1);
+   Operands := '$' + ToHexFixed(W1, 4);
+   Disasm6502One := 3;
+  End;
+  AM_ABSX: Begin
+   W1 := GetWord(Off + 1);
+   Operands := '$' + ToHexFixed(W1, 4) + ',X';
+   Disasm6502One := 3;
+  End;
+  AM_ABSY: Begin
+   W1 := GetWord(Off + 1);
+   Operands := '$' + ToHexFixed(W1, 4) + ',Y';
+   Disasm6502One := 3;
+  End;
+  AM_IND: Begin
+   W1 := GetWord(Off + 1);
+   Operands := '($' + ToHexFixed(W1, 4) + ')';
+   Disasm6502One := 3;
+  End;
+  AM_INDX: Begin
+   B1 := GetByte(Off + 1);
+   Operands := '($' + ToHexFixed(B1, 2) + ',X)';
+   Disasm6502One := 2;
+  End;
+  AM_INDY: Begin
+   B1 := GetByte(Off + 1);
+   Operands := '($' + ToHexFixed(B1, 2) + '),Y';
+   Disasm6502One := 2;
+  End;
+  AM_REL: Begin
+   Rel := ShortInt(GetByte(Off + 1));
+   Target := VAddrBase + 2 + Rel;
+   Operands := '$' + ToHexFixed(Target, 4);
+   Disasm6502One := 2;
+  End;
+ Else
+  Disasm6502One := 1;
+ End;
+End;
+
+{ ============================================================
   RECHERCHE DE SYMBOLE / SECTION POUR L AFFICHAGE
   ============================================================ }
 
@@ -1014,6 +1315,8 @@ Begin
   FMT_ELF64: FormatName := 'elf64-x86-64 (en-tetes seulement)';
   FMT_PE32:  FormatName := 'pei-i386';
   FMT_PE64:  FormatName := 'pei-x86-64 (en-tetes seulement)';
+  FMT_NES:   FormatName := 'nes-rom (6502)';
+  FMT_RAW:   FormatName := 'raw-binary (-m/-b)';
  Else
   FormatName := 'inconnu';
  End;
@@ -1068,9 +1371,10 @@ Procedure CmdDisasm;
 Var
  SI: Integer;
  Off, VAddr, EndAddr: LongInt;
- InstrLen, K: Integer;
+ InstrLen, K, AddrDigits: Integer;
  Mnemonic, Operands, BytesTxt, Lbl: String;
 Begin
+ If Arch = ARCH_6502 Then AddrDigits := 4 Else AddrDigits := 6;
  WriteLn;
  WriteLn(InFileName, ':     format ', FormatName);
  For SI := 1 To SectionCount Do Begin
@@ -1084,15 +1388,18 @@ Begin
    Lbl := FindSymbolAt(VAddr);
    If Lbl <> '' Then Begin
     WriteLn;
-    WriteLn(ToHexFixed(VAddr, 16), ' <', Lbl, '>:');
+    WriteLn(ToHexFixed(VAddr, AddrDigits), ' <', Lbl, '>:');
    End;
-   InstrLen := DisasmOne(Off, VAddr, Mnemonic, Operands);
+   If Arch = ARCH_6502 Then
+    InstrLen := Disasm6502One(Off, VAddr, Mnemonic, Operands)
+   Else
+    InstrLen := DisasmOne(Off, VAddr, Mnemonic, Operands);
    BytesTxt := '';
    For K := 0 To InstrLen - 1 Do Begin
     If K > 0 Then BytesTxt := BytesTxt + ' ';
     BytesTxt := BytesTxt + HexByte(GetByte(Off + K));
    End;
-   Write('  ', ToHexFixed(VAddr, 6), ':' + #9, PadRight(BytesTxt, 21), #9);
+   Write('  ', ToHexFixed(VAddr, AddrDigits), ':' + #9, PadRight(BytesTxt, 21), #9);
    If Operands <> '' Then WriteLn(PadRight(Mnemonic, 6), ' ', Operands)
    Else WriteLn(Mnemonic);
    VAddr := VAddr + InstrLen;
@@ -1118,21 +1425,43 @@ End;
   PROGRAMME PRINCIPAL
   ============================================================ }
 
+{ @description: Convertit une chaine hexadecimale (avec prefixe
+    optionnel "0x" ou "$") en valeur numerique, pour l option -b. Une
+    chaine invalide donne 0 plutot que de planter.
+  @param S Chaine a convertir
+  @return Valeur numerique correspondante }
+Function HexStrToLong(S: String): LongInt;
+Var
+ V: LongInt;
+ Code: Integer;
+Begin
+ If StartsWithStr(S, '0x') Or StartsWithStr(S, '0X') Then Delete(S, 1, 2)
+ Else If StartsWithStr(S, '$') Then Delete(S, 1, 1);
+ Val('$' + S, V, Code);
+ If Code <> 0 Then V := 0;
+ HexStrToLong := V;
+End;
+
 Procedure Help;
 Begin
  WriteLn('OBJDUMP - Clone partiel de l''outil GNU objdump.');
  WriteLn('Syntaxe : OBJDUMP fichier [options]');
- WriteLn('  fichier  Fichier binaire a analyser (ELF ou PE/PE32)');
+ WriteLn('  fichier  Fichier binaire a analyser');
  WriteLn('  -d       Desassemble les sections de code');
  WriteLn('  -h       Affiche l''en-tete des sections');
  WriteLn('  -t       Affiche la table des symboles');
  WriteLn('  -S       Melange source/assembleur (non supporte)');
+ WriteLn('  -m arch  Force l''architecture de desassemblage :');
+ WriteLn('           i386 (defaut) ou 6502');
+ WriteLn('  -b adr   Adresse de chargement (hexa) pour un binaire');
+ WriteLn('           brut sans entete, ex: -b 8000 ou -b $8000');
  WriteLn('  -?       Aide sur cette commande');
  WriteLn;
- WriteLn('Formats supportes : ELF32/ELF64 (Linux), PE32/PE32+ (Windows).');
- WriteLn('Desassemblage : jeu d''instructions x86 32 bits courant');
- WriteLn('(mov, push/pop, arithmetique, branchements, etc.) ; pas de');
- WriteLn('SSE/AVX ni de mode x86-64 (prefixes REX).');
+ WriteLn('Formats supportes : ELF32/ELF64 (Linux), PE32/PE32+ (Windows),');
+ WriteLn('ROM NES (entete iNES), binaire brut (avec -m).');
+ WriteLn('Desassemblage : x86 32 bits courant (mov, push/pop,');
+ WriteLn('arithmetique, branchements...) ou 6502 complet (151');
+ WriteLn('opcodes documentes) ; pas de SSE/AVX/x86-64 (REX).');
 End;
 
 Var
@@ -1144,13 +1473,17 @@ Begin
  OptSymbols := False;
  OptDisasm  := False;
  OptSource  := False;
+ Arch       := ARCH_X86;
+ ArchForced := False;
+ BaseAddr   := 0;
 
  If ParamCount < 1 Then Begin
   Help;
   Halt(1);
  End;
 
- For I := 1 To ParamCount Do Begin
+ I := 1;
+ While I <= ParamCount Do Begin
   Arg := ParamStr(I);
   If (Arg = '-?') Or (UpStr(Arg) = '/?') Then Begin
    Help;
@@ -1159,11 +1492,32 @@ Begin
   Else If Arg = '-h' Then OptHeaders := True
   Else If Arg = '-t' Then OptSymbols := True
   Else If Arg = '-S' Then OptSource := True
-  Else If StartsWithStr(Arg, '-') Then Begin
+  Else If Arg = '-m' Then Begin
+   Inc(I);
+   If I > ParamCount Then Begin
+    WriteLn('Erreur : -m necessite une architecture (i386 ou 6502).');
+    Halt(1);
+   End;
+   If UpStr(ParamStr(I)) = '6502' Then Arch := ARCH_6502
+   Else If UpStr(ParamStr(I)) = 'I386' Then Arch := ARCH_X86
+   Else Begin
+    WriteLn('Architecture inconnue pour -m : ', ParamStr(I));
+    Halt(1);
+   End;
+   ArchForced := True;
+  End Else If Arg = '-b' Then Begin
+   Inc(I);
+   If I > ParamCount Then Begin
+    WriteLn('Erreur : -b necessite une adresse (ex: -b 8000).');
+    Halt(1);
+   End;
+   BaseAddr := HexStrToLong(ParamStr(I));
+  End Else If StartsWithStr(Arg, '-') Then Begin
    WriteLn('Option inconnue : ', Arg);
    Halt(1);
   End Else
    InFileName := Arg;
+  Inc(I);
  End;
 
  If InFileName = '' Then Begin
@@ -1173,15 +1527,27 @@ Begin
  If (Not OptDisasm) And (Not OptHeaders) And (Not OptSymbols) And
     (Not OptSource) Then OptDisasm := True; { comportement par defaut }
 
+ InitOpcodes6502;
  LoadFile(InFileName);
  DetectFormat;
- If BinFormat = FMT_UNKNOWN Then Begin
-  WriteLn('Erreur : format de fichier non reconnu (ni ELF, ni PE).');
+
+ If BinFormat = FMT_NES Then Begin
+  ParseNES;
+  If Not ArchForced Then Arch := ARCH_6502; { detection automatique }
+ End Else If (BinFormat = FMT_ELF32) Or (BinFormat = FMT_ELF64) Then
+  ParseELF
+ Else If (BinFormat = FMT_PE32) Or (BinFormat = FMT_PE64) Then
+  ParsePE
+ Else If ArchForced Then Begin
+  { Format non reconnu, mais architecture explicitement choisie via
+    -m : on traite le fichier comme un binaire brut, sans entete. }
+  BinFormat := FMT_RAW;
+  ParseRaw;
+ End Else Begin
+  WriteLn('Erreur : format de fichier non reconnu (ni ELF, ni PE, ni ROM NES).');
+  WriteLn('Pour un binaire brut, precisez l''architecture avec -m (ex: -m 6502).');
   Halt(1);
  End;
-
- If (BinFormat = FMT_ELF32) Or (BinFormat = FMT_ELF64) Then ParseELF
- Else ParsePE;
 
  If OptHeaders Then CmdHeaders;
  If OptSymbols Then CmdSymbols;
