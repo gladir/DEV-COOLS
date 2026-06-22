@@ -159,6 +159,20 @@ Begin
  SpaceStr := Accum;
 End;
 
+{ @description: Renvoie "d'" ou "de " selon que le mot W commence par
+    une voyelle (elision francaise) ou non, pour construire
+    correctement des phrases comme "permet d'analyser" ou
+    "permet de traiter" sans avoir a coder l elision a chaque appel.
+  @param W Mot qui suivra immediatement (sans espace pour "d'")
+  @return "d'" si W commence par une voyelle, sinon "de " }
+Function DePrefix(W: String): String;
+Begin
+ If (Length(W) > 0) And (UpCase(W[1]) In ['A', 'E', 'I', 'O', 'U']) Then
+  DePrefix := 'd'''
+ Else
+  DePrefix := 'de ';
+End;
+
 { @description: Indique si un caractere peut faire partie d un
     identificateur Pascal/C/C# (lettre, chiffre ou underscore).
   @param C Caractere a tester
@@ -589,7 +603,7 @@ Begin
  If D = '' Then D := DecomposeToPhrase(Name);
  If D = '' Then D := DictFind(LastTypeWord(TypeText));
  If D <> '' Then Begin
-  If Opaque Then D := 'Parametre de ' + LowStr(D);
+  If Opaque Then D := 'Parametre ' + DePrefix(LowStr(D)) + LowStr(D);
  End Else
   D := 'Parametre ' + Name;
  DescribeParam := D;
@@ -698,7 +712,8 @@ Begin
     (U = 'POINTEUR') Or (U = 'BOOLEEN') Or (U = 'DRAPEAU') Or
     (U = 'INDICATEUR') Or (U = 'NOM') Or (U = 'CHEMIN') Or
     (U = 'LECTEUR') Or (U = 'DESCRIPTEUR') Or (U = 'OCTET') Or
-    (U = 'ARGUMENT') Then
+    (U = 'ARGUMENT') Or (U = 'PAQUETAGE') Or (U = 'MODULE') Or
+    (U = 'JETON') Or (U = 'LABEL') Then
   NounGenre := 'M';
 End;
 
@@ -1525,7 +1540,7 @@ Begin
  If StartsWithStr(Action, 'Cette ') Then
   DescLine := Action
  Else Begin
-  DescLine := 'Cette ' + Kind + ' permet de ' + Action;
+  DescLine := 'Cette ' + Kind + ' permet ' + DePrefix(Action) + Action;
   If Not EndsWithStr(DescLine, '.') Then DescLine := DescLine + '.';
  End;
  WriteLn(OutF, '{ @description: ', DescLine);
@@ -1979,7 +1994,7 @@ Begin
  If StartsWithStr(Action, 'Cette ') Then
   DescLine := Action
  Else Begin
-  DescLine := 'Cette ' + Kind + ' permet de ' + Action;
+  DescLine := 'Cette ' + Kind + ' permet ' + DePrefix(Action) + Action;
   If Not EndsWithStr(DescLine, '.') Then DescLine := DescLine + '.';
  End;
  WriteLn(OutF, '/* ', DescLine);
