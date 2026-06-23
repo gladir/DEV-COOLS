@@ -211,6 +211,7 @@ Begin
   $01F0: MachineName := 'PowerPC';
   $01F2: MachineName := 'PowerPC FP';
   $0200: MachineName := 'IA-64';
+  $02A0: MachineName := 'SPARC';
   $01A2: MachineName := 'SH3';
   $01A6: MachineName := 'SH4';
   $01C0: MachineName := 'ARM';
@@ -446,8 +447,10 @@ Begin
   End;
   Machine := GetWordAt(0);
   If ((Machine = $014C) Or (Machine = $8664) Or (Machine = $01C0) Or
-      (Machine = $01C4) Or
-      (Machine = $AA64) Or (Machine = $0200)) And (GetWordAt(2) < 512) Then Begin
+      (Machine = $01C4) Or (Machine = $AA64) Or (Machine = $0166) Or
+      (Machine = $01F0) Or (Machine = $01F2) Or (Machine = $01A2) Or
+      (Machine = $01A6) Or (Machine = $0200) Or (Machine = $02A0)) And
+      (GetWordAt(2) < 512) Then Begin
    IsCOFF := True;
    PEOff := 0;
    ReadCOFFHeader(0, False);
@@ -1372,6 +1375,22 @@ Begin
  Else DispText := '-' + HexFixed(-D, 8) + 'h';
 End;
 
+Function GetDWordBEAt(P: LongInt): LongInt;
+Begin
+ GetDWordBEAt := (LongInt(GetByteAt(P)) Shl 24) Or
+  (LongInt(GetByteAt(P + 1)) Shl 16) Or
+  (LongInt(GetByteAt(P + 2)) Shl 8) Or
+  LongInt(GetByteAt(P + 3));
+End;
+
+Function SignExtend(V, Bits: LongInt): LongInt;
+Var Mask: LongInt;
+Begin
+ Mask := 1 Shl (Bits - 1);
+ If (V And Mask) <> 0 Then SignExtend := V Or (-1 Shl Bits)
+ Else SignExtend := V;
+End;
+
 Function DecodeModRMIntel(Off: LongInt; Var Consumed: Integer;
  Var RegField: Byte; Wide: Boolean): String;
 Var M, ModBits, RM, Scale, Idx, BaseR: Byte;
@@ -1437,6 +1456,18 @@ Var B, Op2, RegF: Byte; D, Target, Imm: LongInt;
 Begin
  B := GetByteAt(Off); Len := 1;
  Case B Of
+  $00: Begin RM := DecodeModRMIntel(Off+1, Used, RegF, False); Len := 1 + Used; DecodeX86 := 'add         ' + RM + ',' + Reg8I(RegF); End;
+  $02: Begin RM := DecodeModRMIntel(Off+1, Used, RegF, False); Len := 1 + Used; DecodeX86 := 'add         ' + Reg8I(RegF) + ',' + RM; End;
+  $05: Begin Len := 5; DecodeX86 := 'add         eax,' + ImmText(GetDWordAt(Off+1),8); End;
+  $09: Begin RM := DecodeModRMIntel(Off+1, Used, RegF, True); Len := 1 + Used; DecodeX86 := 'or          ' + RM + ',' + Reg32I(RegF); End;
+  $0B: Begin RM := DecodeModRMIntel(Off+1, Used, RegF, True); Len := 1 + Used; DecodeX86 := 'or          ' + Reg32I(RegF) + ',' + RM; End;
+  $0D: Begin Len := 5; DecodeX86 := 'or          eax,' + ImmText(GetDWordAt(Off+1),8); End;
+  $21: Begin RM := DecodeModRMIntel(Off+1, Used, RegF, True); Len := 1 + Used; DecodeX86 := 'and         ' + RM + ',' + Reg32I(RegF); End;
+  $23: Begin RM := DecodeModRMIntel(Off+1, Used, RegF, True); Len := 1 + Used; DecodeX86 := 'and         ' + Reg32I(RegF) + ',' + RM; End;
+  $25: Begin Len := 5; DecodeX86 := 'and         eax,' + ImmText(GetDWordAt(Off+1),8); End;
+  $2D: Begin Len := 5; DecodeX86 := 'sub         eax,' + ImmText(GetDWordAt(Off+1),8); End;
+  $35: Begin Len := 5; DecodeX86 := 'xor         eax,' + ImmText(GetDWordAt(Off+1),8); End;
+  $3D: Begin Len := 5; DecodeX86 := 'cmp         eax,' + ImmText(GetDWordAt(Off+1),8); End;
   $50..$57: DecodeX86 := 'push        ' + Reg32I(B - $50);
   $58..$5F: DecodeX86 := 'pop         ' + Reg32I(B - $58);
   $40..$47: DecodeX86 := 'inc         ' + Reg32I(B - $40);
@@ -1447,9 +1478,15 @@ Begin
   $CC: DecodeX86 := 'int         3';
   $68: Begin Len := 5; DecodeX86 := 'push        ' + ImmText(GetDWordAt(Off+1),8); End;
   $6A: Begin Len := 2; DecodeX86 := 'push        ' + ImmText(GetByteAt(Off+1),2); End;
+  $84: Begin RM := DecodeModRMIntel(Off+1, Used, RegF, False); Len := 1 + Used; DecodeX86 := 'test        ' + RM + ',' + Reg8I(RegF); End;
   $B8..$BF: Begin Len := 5; DecodeX86 := 'mov         ' + Reg32I(B - $B8) + ',' + ImmText(GetDWordAt(Off+1),8); End;
+  $B0..$B7: Begin Len := 2; DecodeX86 := 'mov         ' + Reg8I(B - $B0) + ',' + ImmText(GetByteAt(Off+1),2); End;
   $A1: Begin Len := 5; DecodeX86 := 'mov         eax,dword ptr [' + IntelHex(GetDWordAt(Off+1)) + ']'; End;
   $A3: Begin Len := 5; DecodeX86 := 'mov         dword ptr [' + IntelHex(GetDWordAt(Off+1)) + '],eax'; End;
+  $E0: Begin Len := 2; Target := VAddr + 2 + SignedByte(GetByteAt(Off+1)); DecodeX86 := 'loopne      ' + HexFixed(Target,8); End;
+  $E1: Begin Len := 2; Target := VAddr + 2 + SignedByte(GetByteAt(Off+1)); DecodeX86 := 'loope       ' + HexFixed(Target,8); End;
+  $E2: Begin Len := 2; Target := VAddr + 2 + SignedByte(GetByteAt(Off+1)); DecodeX86 := 'loop        ' + HexFixed(Target,8); End;
+  $E3: Begin Len := 2; Target := VAddr + 2 + SignedByte(GetByteAt(Off+1)); DecodeX86 := 'jecxz       ' + HexFixed(Target,8); End;
   $E8: Begin Len := 5; D := GetDWordAt(Off+1); Target := VAddr + 5 + D; DecodeX86 := 'call        ' + HexFixed(Target,8); End;
   $E9: Begin Len := 5; D := GetDWordAt(Off+1); Target := VAddr + 5 + D; DecodeX86 := 'jmp         ' + HexFixed(Target,8); End;
   $EB: Begin Len := 2; Target := VAddr + 2 + SignedByte(GetByteAt(Off+1)); DecodeX86 := 'jmp         ' + HexFixed(Target,8); End;
@@ -1459,8 +1496,30 @@ Begin
   $89: Begin RM := DecodeModRMIntel(Off+1, Used, RegF, True); Len := 1 + Used; DecodeX86 := 'mov         ' + RM + ',' + Reg32I(RegF); End;
   $8B: Begin RM := DecodeModRMIntel(Off+1, Used, RegF, True); Len := 1 + Used; DecodeX86 := 'mov         ' + Reg32I(RegF) + ',' + RM; End;
   $8D: Begin RM := DecodeModRMIntel(Off+1, Used, RegF, True); Len := 1 + Used; DecodeX86 := 'lea         ' + Reg32I(RegF) + ',' + RM; End;
+  $87: Begin RM := DecodeModRMIntel(Off+1, Used, RegF, True); Len := 1 + Used; DecodeX86 := 'xchg        ' + RM + ',' + Reg32I(RegF); End;
+  $8F: Begin RM := DecodeModRMIntel(Off+1, Used, RegF, True); Len := 1 + Used; DecodeX86 := 'pop         ' + RM; End;
   $C6: Begin RM := DecodeModRMIntel(Off+1, Used, RegF, False); Imm := GetByteAt(Off+1+Used); Len := 2 + Used; DecodeX86 := 'mov         ' + RM + ',' + ImmText(Imm,2); End;
   $C7: Begin RM := DecodeModRMIntel(Off+1, Used, RegF, True); Imm := GetDWordAt(Off+1+Used); Len := 5 + Used; DecodeX86 := 'mov         ' + RM + ',' + ImmText(Imm,8); End;
+  $C0,$C1: Begin
+        RM := DecodeModRMIntel(Off+1, Used, RegF, B = $C1);
+        Imm := GetByteAt(Off+1+Used); Len := 2 + Used;
+        Case RegF And 7 Of
+         0: R := 'rol'; 1: R := 'ror'; 2: R := 'rcl'; 3: R := 'rcr';
+         4: R := 'shl'; 5: R := 'shr'; 7: R := 'sar';
+        Else R := 'sh?';
+        End;
+        DecodeX86 := PadRight(R, 12) + RM + ',' + ImmText(Imm,2);
+       End;
+  $D1,$D3: Begin
+        RM := DecodeModRMIntel(Off+1, Used, RegF, True); Len := 1 + Used;
+        Case RegF And 7 Of
+         0: R := 'rol'; 1: R := 'ror'; 2: R := 'rcl'; 3: R := 'rcr';
+         4: R := 'shl'; 5: R := 'shr'; 7: R := 'sar';
+        Else R := 'sh?';
+        End;
+        If B = $D1 Then DecodeX86 := PadRight(R, 12) + RM + ',1'
+        Else DecodeX86 := PadRight(R, 12) + RM + ',cl';
+       End;
   $01: Begin RM := DecodeModRMIntel(Off+1, Used, RegF, True); Len := 1 + Used; DecodeX86 := 'add         ' + RM + ',' + Reg32I(RegF); End;
   $03: Begin RM := DecodeModRMIntel(Off+1, Used, RegF, True); Len := 1 + Used; DecodeX86 := 'add         ' + Reg32I(RegF) + ',' + RM; End;
   $29: Begin RM := DecodeModRMIntel(Off+1, Used, RegF, True); Len := 1 + Used; DecodeX86 := 'sub         ' + RM + ',' + Reg32I(RegF); End;
@@ -1487,6 +1546,14 @@ Begin
         If (Op2 >= $80) And (Op2 <= $8F) Then Begin
          D := GetDWordAt(Off+2); Len := 6; Target := VAddr + 6 + D;
          DecodeX86 := PadRight(JccName(Op2 And 15), 12) + HexFixed(Target,8);
+        End Else If Op2 = $1F Then Begin
+         RM := DecodeModRMIntel(Off+2, Used, RegF, True);
+         Len := 2 + Used;
+         DecodeX86 := 'nop         ' + RM;
+        End Else If Op2 = $AF Then Begin
+         RM := DecodeModRMIntel(Off+2, Used, RegF, True);
+         Len := 2 + Used;
+         DecodeX86 := 'imul        ' + Reg32I(RegF) + ',' + RM;
         End Else If (Op2 = $B6) Or (Op2 = $B7) Then Begin
          RM := DecodeModRMIntel(Off+2, Used, RegF, Op2 = $B7);
          Len := 2 + Used;
@@ -1498,6 +1565,18 @@ Begin
         End Else Begin
          Len := 2;
          DecodeX86 := 'db          0Fh,' + HexByte(Op2) + 'h';
+        End;
+       End;
+  $F7: Begin
+        RM := DecodeModRMIntel(Off+1, Used, RegF, True); Len := 1 + Used;
+        Case RegF And 7 Of
+         0: Begin Imm := GetDWordAt(Off+1+Used); Len := 5 + Used; DecodeX86 := 'test        ' + RM + ',' + ImmText(Imm,8); End;
+         2: DecodeX86 := 'not         ' + RM;
+         3: DecodeX86 := 'neg         ' + RM;
+         4: DecodeX86 := 'mul         ' + RM;
+         5: DecodeX86 := 'imul        ' + RM;
+         6: DecodeX86 := 'div         ' + RM;
+        Else DecodeX86 := 'idiv        ' + RM;
         End;
        End;
   $FF: Begin
@@ -1587,10 +1666,62 @@ Begin
   Else If Prefix = $F3 Then SseMnemonic := 'addss'
   Else If Prefix = $F2 Then SseMnemonic := 'addsd'
   Else SseMnemonic := 'addps';
+ End Else If Base = 'sub' Then Begin
+  If Prefix = $66 Then SseMnemonic := 'subpd'
+  Else If Prefix = $F3 Then SseMnemonic := 'subss'
+  Else If Prefix = $F2 Then SseMnemonic := 'subsd'
+  Else SseMnemonic := 'subps';
+ End Else If Base = 'mul' Then Begin
+  If Prefix = $66 Then SseMnemonic := 'mulpd'
+  Else If Prefix = $F3 Then SseMnemonic := 'mulss'
+  Else If Prefix = $F2 Then SseMnemonic := 'mulsd'
+  Else SseMnemonic := 'mulps';
+ End Else If Base = 'div' Then Begin
+  If Prefix = $66 Then SseMnemonic := 'divpd'
+  Else If Prefix = $F3 Then SseMnemonic := 'divss'
+  Else If Prefix = $F2 Then SseMnemonic := 'divsd'
+  Else SseMnemonic := 'divps';
+ End Else If Base = 'min' Then Begin
+  If Prefix = $66 Then SseMnemonic := 'minpd'
+  Else If Prefix = $F3 Then SseMnemonic := 'minss'
+  Else If Prefix = $F2 Then SseMnemonic := 'minsd'
+  Else SseMnemonic := 'minps';
+ End Else If Base = 'max' Then Begin
+  If Prefix = $66 Then SseMnemonic := 'maxpd'
+  Else If Prefix = $F3 Then SseMnemonic := 'maxss'
+  Else If Prefix = $F2 Then SseMnemonic := 'maxsd'
+  Else SseMnemonic := 'maxps';
+ End Else If Base = 'and' Then Begin
+  If Prefix = $66 Then SseMnemonic := 'andpd'
+  Else SseMnemonic := 'andps';
+ End Else If Base = 'or' Then Begin
+  If Prefix = $66 Then SseMnemonic := 'orpd'
+  Else SseMnemonic := 'orps';
  End Else If Base = 'xor' Then Begin
   If Prefix = $66 Then SseMnemonic := 'xorpd'
   Else SseMnemonic := 'xorps';
  End Else SseMnemonic := Base;
+End;
+
+Function VexSseName(Op2, PP: Byte): String;
+Begin
+ Case Op2 Of
+  $10: If PP = 1 Then VexSseName := 'vmovupd' Else VexSseName := 'vmovups';
+  $11: If PP = 1 Then VexSseName := 'vmovupd' Else VexSseName := 'vmovups';
+  $28: If PP = 1 Then VexSseName := 'vmovapd' Else VexSseName := 'vmovaps';
+  $29: If PP = 1 Then VexSseName := 'vmovapd' Else VexSseName := 'vmovaps';
+  $54: If PP = 1 Then VexSseName := 'vandpd' Else VexSseName := 'vandps';
+  $55: If PP = 1 Then VexSseName := 'vandnpd' Else VexSseName := 'vandnps';
+  $56: If PP = 1 Then VexSseName := 'vorpd' Else VexSseName := 'vorps';
+  $57: If PP = 1 Then VexSseName := 'vxorpd' Else VexSseName := 'vxorps';
+  $58: If PP = 1 Then VexSseName := 'vaddpd' Else VexSseName := 'vaddps';
+  $59: If PP = 1 Then VexSseName := 'vmulpd' Else VexSseName := 'vmulps';
+  $5C: If PP = 1 Then VexSseName := 'vsubpd' Else VexSseName := 'vsubps';
+  $5D: If PP = 1 Then VexSseName := 'vminpd' Else VexSseName := 'vminps';
+  $5E: If PP = 1 Then VexSseName := 'vdivpd' Else VexSseName := 'vdivps';
+  $5F: If PP = 1 Then VexSseName := 'vmaxpd' Else VexSseName := 'vmaxps';
+ Else VexSseName := '';
+ End;
 End;
 
 Function DecodeModRM64Intel(Off, VAddr, InstLenGuess: LongInt;
@@ -1650,8 +1781,8 @@ Begin
 End;
 
 Function DecodeX64(Off, VAddr: LongInt; Var Len: Integer): String;
-Var P: LongInt; Rex, B, Op2, RegF, Prefix: Byte; RexW, RexR, RexX, RexB: Boolean;
-    Used: Integer; RM, Mnem: String; D, Target, Imm: LongInt;
+Var P: LongInt; Rex, B, Op2, RegF, Prefix, PP, VReg: Byte; RexW, RexR, RexX, RexB: Boolean;
+    Used: Integer; RM, Mnem, VName: String; D, Target, Imm: LongInt; UseYmm: Boolean;
 Begin
  P := Off;
  Rex := 0;
@@ -1670,10 +1801,33 @@ Begin
  B := GetByteAt(P); Len := (P - Off) + 1;
  Case B Of
   $C5: Begin
+        PP := GetByteAt(P + 1) And 3;
+        VReg := ((GetByteAt(P + 1) Shr 3) And 15) Xor 15;
+        UseYmm := (GetByteAt(P + 1) And 4) <> 0;
         Op2 := GetByteAt(P + 2);
+        RexR := (GetByteAt(P + 1) And $80) = 0;
         If (GetByteAt(P + 1) = $F8) And (Op2 = $77) Then Begin
          Len := (P - Off) + 3;
          DecodeX64 := 'vzeroupper';
+        End Else If (Op2 = $10) Or (Op2 = $28) Or
+          ((Op2 >= $54) And (Op2 <= $5F)) Then Begin
+         RM := DecodeModRM64Xmm(P+3, VAddr, 5, Used, RegF, RexR, False, False, UseYmm);
+         Len := (P-Off)+3+Used;
+         VName := VexSseName(Op2, PP);
+         If VName = '' Then VName := 'vop';
+         If UseYmm Then
+          DecodeX64 := PadRight(VName, 12) + YmmReg(RegF) + ',' +
+           YmmReg(VReg) + ',' + RM
+         Else
+          DecodeX64 := PadRight(VName, 12) + XmmReg(RegF) + ',' +
+           XmmReg(VReg) + ',' + RM;
+        End Else If (Op2 = $11) Or (Op2 = $29) Then Begin
+         RM := DecodeModRM64Xmm(P+3, VAddr, 5, Used, RegF, RexR, False, False, UseYmm);
+         Len := (P-Off)+3+Used;
+         VName := VexSseName(Op2, PP);
+         If VName = '' Then VName := 'vmov';
+         If UseYmm Then DecodeX64 := PadRight(VName, 12) + RM + ',' + YmmReg(RegF)
+         Else DecodeX64 := PadRight(VName, 12) + RM + ',' + XmmReg(RegF);
         End Else Begin
          Len := (P - Off) + 3;
          DecodeX64 := 'vex         C5 ' + HexByte(GetByteAt(P+1)) + ' ' + HexByte(Op2);
@@ -1689,16 +1843,33 @@ Begin
   $90: DecodeX64 := 'nop';
   $C3: DecodeX64 := 'ret';
   $C2: Begin Len := Len + 2; DecodeX64 := 'ret         ' + ImmText(GetWordAt(P+1),4); End;
+  $05: Begin Len := Len + 4; DecodeX64 := 'add         ' + X64Reg(0, RexW) + ',' + ImmText(GetDWordAt(P+1),8); End;
+  $0D: Begin Len := Len + 4; DecodeX64 := 'or          ' + X64Reg(0, RexW) + ',' + ImmText(GetDWordAt(P+1),8); End;
+  $25: Begin Len := Len + 4; DecodeX64 := 'and         ' + X64Reg(0, RexW) + ',' + ImmText(GetDWordAt(P+1),8); End;
+  $2D: Begin Len := Len + 4; DecodeX64 := 'sub         ' + X64Reg(0, RexW) + ',' + ImmText(GetDWordAt(P+1),8); End;
+  $35: Begin Len := Len + 4; DecodeX64 := 'xor         ' + X64Reg(0, RexW) + ',' + ImmText(GetDWordAt(P+1),8); End;
+  $3D: Begin Len := Len + 4; DecodeX64 := 'cmp         ' + X64Reg(0, RexW) + ',' + ImmText(GetDWordAt(P+1),8); End;
   $E8: Begin Len := Len + 4; D := GetDWordAt(P+1); Target := VAddr + Len + D; DecodeX64 := 'call        ' + HexFixed(Target,8); End;
   $E9: Begin Len := Len + 4; D := GetDWordAt(P+1); Target := VAddr + Len + D; DecodeX64 := 'jmp         ' + HexFixed(Target,8); End;
   $EB: Begin Len := Len + 1; Target := VAddr + Len + SignedByte(GetByteAt(P+1)); DecodeX64 := 'jmp         ' + HexFixed(Target,8); End;
   $70..$7F: Begin Len := Len + 1; Target := VAddr + Len + SignedByte(GetByteAt(P+1)); DecodeX64 := PadRight(JccName(B And 15), 12) + HexFixed(Target,8); End;
   $B8..$BF: Begin Len := Len + 4; DecodeX64 := 'mov         ' + X64Reg((B - $B8) Or ((Rex And 1) Shl 3), RexW) + ',' + ImmText(GetDWordAt(P+1),8); End;
+  $01: Begin RM := DecodeModRM64Intel(P+1, VAddr, 3, Used, RegF, RexW, RexR, RexX, RexB); Len := (P-Off)+1+Used; DecodeX64 := 'add         ' + RM + ',' + X64Reg(RegF, RexW); End;
+  $03: Begin RM := DecodeModRM64Intel(P+1, VAddr, 3, Used, RegF, RexW, RexR, RexX, RexB); Len := (P-Off)+1+Used; DecodeX64 := 'add         ' + X64Reg(RegF, RexW) + ',' + RM; End;
+  $09: Begin RM := DecodeModRM64Intel(P+1, VAddr, 3, Used, RegF, RexW, RexR, RexX, RexB); Len := (P-Off)+1+Used; DecodeX64 := 'or          ' + RM + ',' + X64Reg(RegF, RexW); End;
+  $0B: Begin RM := DecodeModRM64Intel(P+1, VAddr, 3, Used, RegF, RexW, RexR, RexX, RexB); Len := (P-Off)+1+Used; DecodeX64 := 'or          ' + X64Reg(RegF, RexW) + ',' + RM; End;
+  $21: Begin RM := DecodeModRM64Intel(P+1, VAddr, 3, Used, RegF, RexW, RexR, RexX, RexB); Len := (P-Off)+1+Used; DecodeX64 := 'and         ' + RM + ',' + X64Reg(RegF, RexW); End;
+  $23: Begin RM := DecodeModRM64Intel(P+1, VAddr, 3, Used, RegF, RexW, RexR, RexX, RexB); Len := (P-Off)+1+Used; DecodeX64 := 'and         ' + X64Reg(RegF, RexW) + ',' + RM; End;
+  $29: Begin RM := DecodeModRM64Intel(P+1, VAddr, 3, Used, RegF, RexW, RexR, RexX, RexB); Len := (P-Off)+1+Used; DecodeX64 := 'sub         ' + RM + ',' + X64Reg(RegF, RexW); End;
+  $2B: Begin RM := DecodeModRM64Intel(P+1, VAddr, 3, Used, RegF, RexW, RexR, RexX, RexB); Len := (P-Off)+1+Used; DecodeX64 := 'sub         ' + X64Reg(RegF, RexW) + ',' + RM; End;
   $89: Begin RM := DecodeModRM64Intel(P+1, VAddr, 3, Used, RegF, RexW, RexR, RexX, RexB); Len := (P-Off)+1+Used; DecodeX64 := 'mov         ' + RM + ',' + X64Reg(RegF, RexW); End;
   $8B: Begin RM := DecodeModRM64Intel(P+1, VAddr, 3, Used, RegF, RexW, RexR, RexX, RexB); Len := (P-Off)+1+Used; DecodeX64 := 'mov         ' + X64Reg(RegF, RexW) + ',' + RM; End;
   $8D: Begin RM := DecodeModRM64Intel(P+1, VAddr, 3, Used, RegF, RexW, RexR, RexX, RexB); Len := (P-Off)+1+Used; DecodeX64 := 'lea         ' + X64Reg(RegF, RexW) + ',' + RM; End;
   $31: Begin RM := DecodeModRM64Intel(P+1, VAddr, 3, Used, RegF, RexW, RexR, RexX, RexB); Len := (P-Off)+1+Used; DecodeX64 := 'xor         ' + RM + ',' + X64Reg(RegF, RexW); End;
   $33: Begin RM := DecodeModRM64Intel(P+1, VAddr, 3, Used, RegF, RexW, RexR, RexX, RexB); Len := (P-Off)+1+Used; DecodeX64 := 'xor         ' + X64Reg(RegF, RexW) + ',' + RM; End;
+  $39: Begin RM := DecodeModRM64Intel(P+1, VAddr, 3, Used, RegF, RexW, RexR, RexX, RexB); Len := (P-Off)+1+Used; DecodeX64 := 'cmp         ' + RM + ',' + X64Reg(RegF, RexW); End;
+  $3B: Begin RM := DecodeModRM64Intel(P+1, VAddr, 3, Used, RegF, RexW, RexR, RexX, RexB); Len := (P-Off)+1+Used; DecodeX64 := 'cmp         ' + X64Reg(RegF, RexW) + ',' + RM; End;
+  $85: Begin RM := DecodeModRM64Intel(P+1, VAddr, 3, Used, RegF, RexW, RexR, RexX, RexB); Len := (P-Off)+1+Used; DecodeX64 := 'test        ' + RM + ',' + X64Reg(RegF, RexW); End;
   $83: Begin
         RM := DecodeModRM64Intel(P+1, VAddr, 4, Used, RegF, RexW, RexR, RexX, RexB);
         Imm := SignedByte(GetByteAt(P+1+Used));
@@ -1716,6 +1887,22 @@ Begin
         If (Op2 >= $80) And (Op2 <= $8F) Then Begin
          D := GetDWordAt(P+2); Len := (P-Off)+6; Target := VAddr + Len + D;
          DecodeX64 := PadRight(JccName(Op2 And 15), 12) + HexFixed(Target,8);
+        End Else If Op2 = $1F Then Begin
+         RM := DecodeModRM64Intel(P+2, VAddr, 4, Used, RegF, RexW, RexR, RexX, RexB);
+         Len := (P-Off)+2+Used;
+         DecodeX64 := 'nop         ' + RM;
+        End Else If Op2 = $AF Then Begin
+         RM := DecodeModRM64Intel(P+2, VAddr, 4, Used, RegF, RexW, RexR, RexX, RexB);
+         Len := (P-Off)+2+Used;
+         DecodeX64 := 'imul        ' + X64Reg(RegF, RexW) + ',' + RM;
+        End Else If (Op2 = $B6) Or (Op2 = $B7) Then Begin
+         RM := DecodeModRM64Intel(P+2, VAddr, 4, Used, RegF, Op2 = $B7, RexR, RexX, RexB);
+         Len := (P-Off)+2+Used;
+         DecodeX64 := 'movzx       ' + X64Reg(RegF, RexW) + ',' + RM;
+        End Else If (Op2 = $BE) Or (Op2 = $BF) Then Begin
+         RM := DecodeModRM64Intel(P+2, VAddr, 4, Used, RegF, Op2 = $BF, RexR, RexX, RexB);
+         Len := (P-Off)+2+Used;
+         DecodeX64 := 'movsx       ' + X64Reg(RegF, RexW) + ',' + RM;
         End Else If (Op2 = $10) Or (Op2 = $28) Then Begin
          RM := DecodeModRM64Xmm(P+2, VAddr, 4, Used, RegF, RexR, RexX, RexB, False);
          Len := (P-Off)+2+Used;
@@ -1732,10 +1919,21 @@ Begin
          RM := DecodeModRM64Xmm(P+2, VAddr, 4, Used, RegF, RexR, RexX, RexB, False);
          Len := (P-Off)+2+Used;
          DecodeX64 := PadRight(SseMnemonic(Prefix, 'xor'), 12) + XmmReg(RegF) + ',' + RM;
-        End Else If Op2 = $58 Then Begin
+        End Else If (Op2 = $54) Or (Op2 = $56) Or (Op2 = $58) Or
+          (Op2 = $59) Or ((Op2 >= $5C) And (Op2 <= $5F)) Then Begin
          RM := DecodeModRM64Xmm(P+2, VAddr, 4, Used, RegF, RexR, RexX, RexB, False);
          Len := (P-Off)+2+Used;
-         DecodeX64 := PadRight(SseMnemonic(Prefix, 'add'), 12) + XmmReg(RegF) + ',' + RM;
+         Case Op2 Of
+          $54: Mnem := SseMnemonic(Prefix, 'and');
+          $56: Mnem := SseMnemonic(Prefix, 'or');
+          $58: Mnem := SseMnemonic(Prefix, 'add');
+          $59: Mnem := SseMnemonic(Prefix, 'mul');
+          $5C: Mnem := SseMnemonic(Prefix, 'sub');
+          $5D: Mnem := SseMnemonic(Prefix, 'min');
+          $5E: Mnem := SseMnemonic(Prefix, 'div');
+         Else Mnem := SseMnemonic(Prefix, 'max');
+         End;
+         DecodeX64 := PadRight(Mnem, 12) + XmmReg(RegF) + ',' + RM;
         End Else Begin
          Len := (P-Off)+2;
          DecodeX64 := 'db          0Fh,' + HexByte(Op2) + 'h';
@@ -2117,6 +2315,220 @@ Begin
  DecodeARM64 := 'dcd         ' + HexFixed(Op, 8) + 'h';
 End;
 
+Function MipsReg(R: LongInt): String;
+Const Names: Array[0..31] Of String[5] =
+ ('zero','at','v0','v1','a0','a1','a2','a3',
+  't0','t1','t2','t3','t4','t5','t6','t7',
+  's0','s1','s2','s3','s4','s5','s6','s7',
+  't8','t9','k0','k1','gp','sp','fp','ra');
+Begin
+ MipsReg := '$' + Names[R And 31];
+End;
+
+Function DecodeMIPS(Off, VAddr: LongInt; Var Len: Integer): String;
+Var Op, Opc, Rs, Rt, Rd, Sa, Fn, Imm, Target: LongInt; M: String;
+Begin
+ Len := 4;
+ Op := GetDWordAt(Off);
+ Opc := (Op Shr 26) And 63; Rs := (Op Shr 21) And 31;
+ Rt := (Op Shr 16) And 31; Rd := (Op Shr 11) And 31;
+ Sa := (Op Shr 6) And 31; Fn := Op And 63;
+ If Op = 0 Then Begin DecodeMIPS := 'nop'; Exit; End;
+ If Opc = 0 Then Begin
+  Case Fn Of
+   $08: DecodeMIPS := 'jr          ' + MipsReg(Rs);
+   $09: DecodeMIPS := 'jalr        ' + MipsReg(Rd) + ',' + MipsReg(Rs);
+   $20: DecodeMIPS := 'add         ' + MipsReg(Rd) + ',' + MipsReg(Rs) + ',' + MipsReg(Rt);
+   $21: DecodeMIPS := 'addu        ' + MipsReg(Rd) + ',' + MipsReg(Rs) + ',' + MipsReg(Rt);
+   $22: DecodeMIPS := 'sub         ' + MipsReg(Rd) + ',' + MipsReg(Rs) + ',' + MipsReg(Rt);
+   $23: DecodeMIPS := 'subu        ' + MipsReg(Rd) + ',' + MipsReg(Rs) + ',' + MipsReg(Rt);
+   $24: DecodeMIPS := 'and         ' + MipsReg(Rd) + ',' + MipsReg(Rs) + ',' + MipsReg(Rt);
+   $25: DecodeMIPS := 'or          ' + MipsReg(Rd) + ',' + MipsReg(Rs) + ',' + MipsReg(Rt);
+   $26: DecodeMIPS := 'xor         ' + MipsReg(Rd) + ',' + MipsReg(Rs) + ',' + MipsReg(Rt);
+   $2A: DecodeMIPS := 'slt         ' + MipsReg(Rd) + ',' + MipsReg(Rs) + ',' + MipsReg(Rt);
+   $00: DecodeMIPS := 'sll         ' + MipsReg(Rd) + ',' + MipsReg(Rt) + ',' + LToS(Sa);
+   $02: DecodeMIPS := 'srl         ' + MipsReg(Rd) + ',' + MipsReg(Rt) + ',' + LToS(Sa);
+   $03: DecodeMIPS := 'sra         ' + MipsReg(Rd) + ',' + MipsReg(Rt) + ',' + LToS(Sa);
+  Else DecodeMIPS := 'word        ' + HexFixed(Op,8) + 'h';
+  End;
+  Exit;
+ End;
+ Imm := SignExtend(Op And $FFFF, 16);
+ Case Opc Of
+  $02,$03: Begin
+       Target := ((VAddr + 4) And LongInt($F0000000)) Or ((Op And $03FFFFFF) Shl 2);
+       If Opc = $03 Then M := 'jal' Else M := 'j';
+       DecodeMIPS := PadRight(M, 12) + HexFixed(Target,8);
+      End;
+  $04: DecodeMIPS := 'beq         ' + MipsReg(Rs) + ',' + MipsReg(Rt) + ',' + HexFixed(VAddr + 4 + (Imm Shl 2),8);
+  $05: DecodeMIPS := 'bne         ' + MipsReg(Rs) + ',' + MipsReg(Rt) + ',' + HexFixed(VAddr + 4 + (Imm Shl 2),8);
+  $08: DecodeMIPS := 'addi        ' + MipsReg(Rt) + ',' + MipsReg(Rs) + ',' + ImmText(Imm,4);
+  $09: DecodeMIPS := 'addiu       ' + MipsReg(Rt) + ',' + MipsReg(Rs) + ',' + ImmText(Imm,4);
+  $0A: DecodeMIPS := 'slti        ' + MipsReg(Rt) + ',' + MipsReg(Rs) + ',' + ImmText(Imm,4);
+  $0C: DecodeMIPS := 'andi        ' + MipsReg(Rt) + ',' + MipsReg(Rs) + ',' + ImmText(Op And $FFFF,4);
+  $0D: DecodeMIPS := 'ori         ' + MipsReg(Rt) + ',' + MipsReg(Rs) + ',' + ImmText(Op And $FFFF,4);
+  $0E: DecodeMIPS := 'xori        ' + MipsReg(Rt) + ',' + MipsReg(Rs) + ',' + ImmText(Op And $FFFF,4);
+  $0F: DecodeMIPS := 'lui         ' + MipsReg(Rt) + ',' + ImmText(Op And $FFFF,4);
+  $23: DecodeMIPS := 'lw          ' + MipsReg(Rt) + ',' + ImmText(Imm,4) + '(' + MipsReg(Rs) + ')';
+  $2B: DecodeMIPS := 'sw          ' + MipsReg(Rt) + ',' + ImmText(Imm,4) + '(' + MipsReg(Rs) + ')';
+  $20: DecodeMIPS := 'lb          ' + MipsReg(Rt) + ',' + ImmText(Imm,4) + '(' + MipsReg(Rs) + ')';
+  $28: DecodeMIPS := 'sb          ' + MipsReg(Rt) + ',' + ImmText(Imm,4) + '(' + MipsReg(Rs) + ')';
+ Else DecodeMIPS := 'word        ' + HexFixed(Op,8) + 'h';
+ End;
+End;
+
+Function PPCReg(R: LongInt): String;
+Begin
+ PPCReg := 'r' + LToS(R And 31);
+End;
+
+Function DecodePowerPC(Off, VAddr: LongInt; Var Len: Integer): String;
+Var Op, Opc, Rt, Ra, Rb, Imm, Target, XO: LongInt; M: String;
+Begin
+ Len := 4;
+ Op := GetDWordBEAt(Off);
+ Opc := (Op Shr 26) And 63; Rt := (Op Shr 21) And 31;
+ Ra := (Op Shr 16) And 31; Rb := (Op Shr 11) And 31;
+ Imm := SignExtend(Op And $FFFF, 16);
+ Case Opc Of
+  14: DecodePowerPC := 'addi        ' + PPCReg(Rt) + ',' + PPCReg(Ra) + ',' + ImmText(Imm,4);
+  15: DecodePowerPC := 'addis       ' + PPCReg(Rt) + ',' + PPCReg(Ra) + ',' + ImmText(Imm,4);
+  24: DecodePowerPC := 'ori         ' + PPCReg(Rt) + ',' + PPCReg(Ra) + ',' + ImmText(Op And $FFFF,4);
+  25: DecodePowerPC := 'oris        ' + PPCReg(Rt) + ',' + PPCReg(Ra) + ',' + ImmText(Op And $FFFF,4);
+  32: DecodePowerPC := 'lwz         ' + PPCReg(Rt) + ',' + ImmText(Imm,4) + '(' + PPCReg(Ra) + ')';
+  36: DecodePowerPC := 'stw         ' + PPCReg(Rt) + ',' + ImmText(Imm,4) + '(' + PPCReg(Ra) + ')';
+  34: DecodePowerPC := 'lbz         ' + PPCReg(Rt) + ',' + ImmText(Imm,4) + '(' + PPCReg(Ra) + ')';
+  38: DecodePowerPC := 'stb         ' + PPCReg(Rt) + ',' + ImmText(Imm,4) + '(' + PPCReg(Ra) + ')';
+  16: Begin
+       Target := VAddr + SignExtend(Op And $FFFC, 16);
+       If (Op And 1) <> 0 Then M := 'bcl' Else M := 'bc';
+       DecodePowerPC := PadRight(M, 12) + HexFixed(Target,8);
+      End;
+  18: Begin
+       Target := SignExtend(Op And $03FFFFFC, 26);
+       If (Op And 2) = 0 Then Target := VAddr + Target;
+       If (Op And 1) <> 0 Then M := 'bl' Else M := 'b';
+       DecodePowerPC := PadRight(M, 12) + HexFixed(Target,8);
+      End;
+  31: Begin
+       XO := (Op Shr 1) And 1023;
+       Case XO Of
+        266: DecodePowerPC := 'add         ' + PPCReg(Rt) + ',' + PPCReg(Ra) + ',' + PPCReg(Rb);
+        40: DecodePowerPC := 'subf        ' + PPCReg(Rt) + ',' + PPCReg(Ra) + ',' + PPCReg(Rb);
+        444: DecodePowerPC := 'or          ' + PPCReg(Rt) + ',' + PPCReg(Ra) + ',' + PPCReg(Rb);
+        28: DecodePowerPC := 'and         ' + PPCReg(Rt) + ',' + PPCReg(Ra) + ',' + PPCReg(Rb);
+        467: DecodePowerPC := 'mtspr       ' + LToS(((Op Shr 16) And 31) Or ((Op Shr 6) And 992)) + ',' + PPCReg(Rt);
+        339: DecodePowerPC := 'mfspr       ' + PPCReg(Rt) + ',' + LToS(((Op Shr 16) And 31) Or ((Op Shr 6) And 992));
+       Else DecodePowerPC := 'long        ' + HexFixed(Op,8) + 'h';
+       End;
+      End;
+ Else DecodePowerPC := 'long        ' + HexFixed(Op,8) + 'h';
+ End;
+End;
+
+Function SHReg(R: LongInt): String;
+Begin
+ SHReg := 'r' + LToS(R And 15);
+End;
+
+Function DecodeSuperH(Off, VAddr: LongInt; Var Len: Integer): String;
+Var H, N, M, D: LongInt;
+Begin
+ Len := 2;
+ H := GetWordAt(Off); N := (H Shr 8) And 15; M := (H Shr 4) And 15; D := H And 15;
+ If H = 9 Then Begin DecodeSuperH := 'nop'; Exit; End;
+ If (H And $F000) = $E000 Then Begin DecodeSuperH := 'mov         #' + ImmText(SignExtend(H And $FF,8),2) + ',' + SHReg(N); Exit; End;
+ If (H And $F000) = $6000 Then Begin
+  Case D Of
+   0: DecodeSuperH := 'mov.b       @' + SHReg(M) + ',' + SHReg(N);
+   1: DecodeSuperH := 'mov.w       @' + SHReg(M) + ',' + SHReg(N);
+   2: DecodeSuperH := 'mov.l       @' + SHReg(M) + ',' + SHReg(N);
+   3: DecodeSuperH := 'mov         ' + SHReg(M) + ',' + SHReg(N);
+   7: DecodeSuperH := 'not         ' + SHReg(M) + ',' + SHReg(N);
+   8: DecodeSuperH := 'swap.b      ' + SHReg(M) + ',' + SHReg(N);
+   9: DecodeSuperH := 'swap.w      ' + SHReg(M) + ',' + SHReg(N);
+  Else DecodeSuperH := 'dc.w        ' + HexFixed(H,4) + 'h';
+  End;
+  Exit;
+ End;
+ If (H And $F00F) = $300C Then Begin DecodeSuperH := 'add         ' + SHReg(M) + ',' + SHReg(N); Exit; End;
+ If (H And $F00F) = $3008 Then Begin DecodeSuperH := 'sub         ' + SHReg(M) + ',' + SHReg(N); Exit; End;
+ If (H And $F00F) = $300D Then Begin DecodeSuperH := 'dmuls.l     ' + SHReg(M) + ',' + SHReg(N); Exit; End;
+ If (H And $F000) = $A000 Then Begin D := SignExtend(H And $0FFF, 12); DecodeSuperH := 'bra         ' + HexFixed(VAddr + 4 + (D Shl 1),8); Exit; End;
+ If (H And $F000) = $B000 Then Begin D := SignExtend(H And $0FFF, 12); DecodeSuperH := 'bsr         ' + HexFixed(VAddr + 4 + (D Shl 1),8); Exit; End;
+ If (H And $FF00) = $8900 Then Begin D := SignExtend(H And $FF,8); DecodeSuperH := 'bt          ' + HexFixed(VAddr + 4 + (D Shl 1),8); Exit; End;
+ If (H And $FF00) = $8B00 Then Begin D := SignExtend(H And $FF,8); DecodeSuperH := 'bf          ' + HexFixed(VAddr + 4 + (D Shl 1),8); Exit; End;
+ DecodeSuperH := 'dc.w        ' + HexFixed(H,4) + 'h';
+End;
+
+Function SparcReg(R: LongInt): String;
+Const Prefix: Array[0..3] Of String[2] = ('g','o','l','i');
+Begin
+ SparcReg := '%' + Prefix[(R Shr 3) And 3] + LToS(R And 7);
+End;
+
+Function DecodeSPARC(Off, VAddr: LongInt; Var Len: Integer): String;
+Var Op, Op0, Op2, Op3, Rd, Rs1, Rs2, Imm, Target: LongInt; M: String;
+Begin
+ Len := 4;
+ Op := GetDWordBEAt(Off);
+ Op0 := (Op Shr 30) And 3; Rd := (Op Shr 25) And 31;
+ If Op0 = 0 Then Begin
+  Op2 := (Op Shr 22) And 7;
+  If Op2 = 4 Then Begin
+   Target := VAddr + (SignExtend(Op And $3FFFFF, 22) Shl 2);
+   DecodeSPARC := 'sethi       %hi(' + HexFixed(Target,8) + '),' + SparcReg(Rd);
+  End Else If Op2 = 2 Then Begin
+   Target := VAddr + (SignExtend(Op And $3FFFFF, 22) Shl 2);
+   DecodeSPARC := 'bicc        ' + HexFixed(Target,8);
+  End Else DecodeSPARC := 'word        ' + HexFixed(Op,8) + 'h';
+  Exit;
+ End;
+ If Op0 = 1 Then Begin
+  Target := VAddr + (SignExtend(Op And $3FFFFFFF, 30) Shl 2);
+  DecodeSPARC := 'call        ' + HexFixed(Target,8);
+  Exit;
+ End;
+ Op3 := (Op Shr 19) And 63; Rs1 := (Op Shr 14) And 31; Rs2 := Op And 31;
+ If (Op And $2000) <> 0 Then Imm := SignExtend(Op And $1FFF, 13)
+ Else Imm := 0;
+ If Op0 = 2 Then Begin
+  Case Op3 Of
+   0: M := 'add'; 4: M := 'sub'; 1: M := 'and'; 2: M := 'or'; 3: M := 'xor';
+   32: M := 'taddcc'; 36: M := 'tsubcc';
+  Else M := '';
+  End;
+  If M <> '' Then Begin
+   If (Op And $2000) <> 0 Then DecodeSPARC := PadRight(M,12) + SparcReg(Rs1) + ',' + ImmText(Imm,4) + ',' + SparcReg(Rd)
+   Else DecodeSPARC := PadRight(M,12) + SparcReg(Rs1) + ',' + SparcReg(Rs2) + ',' + SparcReg(Rd);
+  End Else DecodeSPARC := 'word        ' + HexFixed(Op,8) + 'h';
+ End Else Begin
+  Case Op3 Of
+   0: M := 'ld'; 4: M := 'st'; 1: M := 'ldub'; 5: M := 'stub'; 2: M := 'lduh'; 6: M := 'sth';
+  Else M := '';
+  End;
+  If M <> '' Then Begin
+   If (Op And $2000) <> 0 Then DecodeSPARC := PadRight(M,12) + '[' + SparcReg(Rs1) + DispText(Imm) + '],' + SparcReg(Rd)
+   Else DecodeSPARC := PadRight(M,12) + '[' + SparcReg(Rs1) + '+' + SparcReg(Rs2) + '],' + SparcReg(Rd);
+  End Else DecodeSPARC := 'word        ' + HexFixed(Op,8) + 'h';
+ End;
+End;
+
+Function DecodeIA64(Off, VAddr: LongInt; Var Len: Integer): String;
+Var T: Byte; Stop0, Stop1: Boolean; S: String;
+Begin
+ Len := 16;
+ T := GetByteAt(Off) And 31;
+ Stop0 := (GetByteAt(Off) And $20) <> 0;
+ Stop1 := (GetByteAt(Off) And $40) <> 0;
+ S := 'bundle      template=' + HexFixed(T,2) + 'h';
+ If Stop0 Then S := S + ' stop0';
+ If Stop1 Then S := S + ' stop1';
+ S := S + ' raw=' + HexByte(GetByteAt(Off+15)) + HexByte(GetByteAt(Off+14)) +
+  HexByte(GetByteAt(Off+13)) + HexByte(GetByteAt(Off+12)) + '...';
+ DecodeIA64 := S;
+End;
+
 Procedure CmdDisasm;
 Var I, L, J: Integer; Off, EndOff, V: LongInt; Mn: String;
 Begin
@@ -2139,6 +2551,11 @@ Begin
    Else If (Machine = $01C4) Then Mn := DecodeThumb(Off, V, L)
    Else If (Machine = $AA64) Then Mn := DecodeARM64(Off, V, L)
    Else If (Machine = $8664) Then Mn := DecodeX64(Off, V, L)
+   Else If (Machine = $0166) Then Mn := DecodeMIPS(Off, V, L)
+   Else If (Machine = $01F0) Or (Machine = $01F2) Then Mn := DecodePowerPC(Off, V, L)
+   Else If (Machine = $01A2) Or (Machine = $01A6) Then Mn := DecodeSuperH(Off, V, L)
+   Else If (Machine = $0200) Then Mn := DecodeIA64(Off, V, L)
+   Else If (Machine = $02A0) Then Mn := DecodeSPARC(Off, V, L)
    Else Mn := DecodeX86(Off, V, L);
    If L <= 0 Then L := 1;
    Write(HexFixed(V,8), ': ');
@@ -2916,16 +3333,6 @@ Begin
   WriteLn('DEBUG directory presente; le decodage FPO ancien n''est pas detaille par ce clone.')
  Else
   WriteLn('Aucune information FPO trouvee.');
-End;
-
-Function GetDWordBEAt(Off: LongInt): LongInt;
-Var L: LongInt;
-Begin
- L := GetByteAt(Off);
- L := (L Shl 8) Or GetByteAt(Off + 1);
- L := (L Shl 8) Or GetByteAt(Off + 2);
- L := (L Shl 8) Or GetByteAt(Off + 3);
- GetDWordBEAt := L;
 End;
 
 Function ArchiveMemberName(Off: LongInt): String;
