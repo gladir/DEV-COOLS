@@ -4670,8 +4670,6 @@ End;
   COMMANDES
   ============================================================ }
 
-{ @description: Convertit un entier en chaine decimale.
-
 { @description: Nom du format binaire detecte, pour l affichage
     d entete (style "objdump").
   @return Nom du format (ex: "elf32-i386", "pei-i386") }
@@ -4878,7 +4876,7 @@ End;
 Var
  Arg: String;
  I: Integer;
-Begin
+BEGIN
  InFileName := '';
  OptHeaders := False;
  OptSymbols := False;
@@ -5012,4 +5010,4 @@ Begin
  If OptSymbols Then CmdSymbols;
  If OptSource Then CmdSourceMix;
  If OptDisasm Then CmdDisasm;
-End.
+END.
