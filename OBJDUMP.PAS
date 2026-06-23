@@ -81,6 +81,7 @@ Const
  ARCH_Z80   = 7;         { Z80/8080 8 bits (voir DisasmZ80One)         }
  ARCH_6800  = 8;         { Motorola 6800 8 bits (voir Disasm6800One)   }
  ARCH_68000 = 9;         { Motorola 68000 16/32 bits (voir Disasm68kOne)}
+ ARCH_8080  = 10;        { Intel 8080 8 bits (voir Disasm8080One)      }
 
  { ----- Modes d adressage 6800 ----- }
  AM68_INH   = 0;         { inherent : aucun operande                   }
@@ -3369,6 +3370,180 @@ Begin
 End;
 
 { ============================================================
+  DESASSEMBLEUR INTEL 8080
+  ============================================================ }
+
+{ @description: Desassemble une instruction Intel 8080 avec les
+    mnemoniques et operandes Intel d origine. Le jeu documente complet
+    est pris en charge ; les opcodes non documentes du 8080 produisent
+    "(bad)" et occupent un octet. Cette separation avec le decodeur Z80
+    evite d afficher LD/JR/IX/IY ou les prefixes CB/DD/ED/FD pour un
+    binaire strictement 8080.
+  @param Off Decalage de l instruction dans le fichier
+  @param VAddrBase Adresse virtuelle correspondant a Off
+  @param Mnemonic Mnemonique de l instruction (sortie)
+  @param Operands Operandes formates (sortie)
+  @return Nombre d octets occupes par l instruction (1, 2 ou 3) }
+Function Disasm8080One(Off, VAddrBase: LongInt;
+ Var Mnemonic, Operands: String): Integer;
+Const
+ Reg8080: Array[0..7] Of String[1] = (
+  'B', 'C', 'D', 'E', 'H', 'L', 'M', 'A');
+ Pair8080: Array[0..3] Of String[2] = ('B', 'D', 'H', 'SP');
+ PairPush8080: Array[0..3] Of String[3] = ('B', 'D', 'H', 'PSW');
+ Alu8080: Array[0..7] Of String[3] = (
+  'ADD', 'ADC', 'SUB', 'SBB', 'ANA', 'XRA', 'ORA', 'CMP');
+ ImmAlu8080: Array[0..7] Of String[3] = (
+  'ADI', 'ACI', 'SUI', 'SBI', 'ANI', 'XRI', 'ORI', 'CPI');
+ Ret8080: Array[0..7] Of String[3] = (
+  'RNZ', 'RZ', 'RNC', 'RC', 'RPO', 'RPE', 'RP', 'RM');
+ Jump8080: Array[0..7] Of String[3] = (
+  'JNZ', 'JZ', 'JNC', 'JC', 'JPO', 'JPE', 'JP', 'JM');
+ Call8080: Array[0..7] Of String[3] = (
+  'CNZ', 'CZ', 'CNC', 'CC', 'CPO', 'CPE', 'CP', 'CM');
+Var
+ Op, Y, Z, P2: Byte;
+ P: LongInt;
+ D8: Byte;
+ D16: Word;
+Begin
+ P := Off + 1;
+ Op := GetByte(Off);
+ Y := (Op Shr 3) And 7;
+ Z := Op And 7;
+ P2 := (Op Shr 4) And 3;
+ Mnemonic := '(bad)';
+ Operands := '';
+
+ If (Op >= $40) And (Op <= $7F) Then Begin
+  If Op = $76 Then
+   Mnemonic := 'HLT'
+  Else Begin
+   Mnemonic := 'MOV';
+   Operands := Reg8080[Y] + ',' + Reg8080[Z];
+  End;
+ End Else If (Op >= $80) And (Op <= $BF) Then Begin
+  Mnemonic := Alu8080[Y];
+  Operands := Reg8080[Z];
+ End Else If Op < $40 Then Begin
+  Case Op Of
+   $00: Mnemonic := 'NOP';
+   $01, $11, $21, $31: Begin
+    D16 := GetWord(P); P := P + 2;
+    Mnemonic := 'LXI';
+    Operands := Pair8080[P2] + ',0x' + ToHexFixed(D16, 4);
+   End;
+   $02, $12: Begin
+    Mnemonic := 'STAX';
+    Operands := Pair8080[P2];
+   End;
+   $03, $13, $23, $33: Begin
+    Mnemonic := 'INX';
+    Operands := Pair8080[P2];
+   End;
+   $04, $0C, $14, $1C, $24, $2C, $34, $3C: Begin
+    Mnemonic := 'INR';
+    Operands := Reg8080[Y];
+   End;
+   $05, $0D, $15, $1D, $25, $2D, $35, $3D: Begin
+    Mnemonic := 'DCR';
+    Operands := Reg8080[Y];
+   End;
+   $06, $0E, $16, $1E, $26, $2E, $36, $3E: Begin
+    D8 := GetByte(P); Inc(P);
+    Mnemonic := 'MVI';
+    Operands := Reg8080[Y] + ',0x' + ToHexFixed(D8, 2);
+   End;
+   $07: Mnemonic := 'RLC';
+   $09, $19, $29, $39: Begin
+    Mnemonic := 'DAD';
+    Operands := Pair8080[P2];
+   End;
+   $0A, $1A: Begin
+    Mnemonic := 'LDAX';
+    Operands := Pair8080[P2];
+   End;
+   $0B, $1B, $2B, $3B: Begin
+    Mnemonic := 'DCX';
+    Operands := Pair8080[P2];
+   End;
+   $0F: Mnemonic := 'RRC';
+   $17: Mnemonic := 'RAL';
+   $1F: Mnemonic := 'RAR';
+   $22, $2A, $32, $3A: Begin
+    D16 := GetWord(P); P := P + 2;
+    Case Op Of
+     $22: Mnemonic := 'SHLD';
+     $2A: Mnemonic := 'LHLD';
+     $32: Mnemonic := 'STA';
+     $3A: Mnemonic := 'LDA';
+    End;
+    Operands := '0x' + ToHexFixed(D16, 4);
+   End;
+   $27: Mnemonic := 'DAA';
+   $2F: Mnemonic := 'CMA';
+   $37: Mnemonic := 'STC';
+   $3F: Mnemonic := 'CMC';
+  End;
+ End Else Begin
+  If (Op And $C7) = $C0 Then
+   Mnemonic := Ret8080[Y]
+  Else If (Op And $C7) = $C2 Then Begin
+   D16 := GetWord(P); P := P + 2;
+   Mnemonic := Jump8080[Y];
+   Operands := '0x' + ToHexFixed(D16, 4);
+  End Else If (Op And $C7) = $C4 Then Begin
+   D16 := GetWord(P); P := P + 2;
+   Mnemonic := Call8080[Y];
+   Operands := '0x' + ToHexFixed(D16, 4);
+  End Else If (Op And $CF) = $C1 Then Begin
+   Mnemonic := 'POP';
+   Operands := PairPush8080[P2];
+  End Else If (Op And $CF) = $C5 Then Begin
+   Mnemonic := 'PUSH';
+   Operands := PairPush8080[P2];
+  End Else If (Op And $C7) = $C6 Then Begin
+   D8 := GetByte(P); Inc(P);
+   Mnemonic := ImmAlu8080[Y];
+   Operands := '0x' + ToHexFixed(D8, 2);
+  End Else If (Op And $C7) = $C7 Then Begin
+   Mnemonic := 'RST';
+   Operands := IntToStr(Y);
+  End Else Case Op Of
+   $C3: Begin
+    D16 := GetWord(P); P := P + 2;
+    Mnemonic := 'JMP';
+    Operands := '0x' + ToHexFixed(D16, 4);
+   End;
+   $C9: Mnemonic := 'RET';
+   $CD: Begin
+    D16 := GetWord(P); P := P + 2;
+    Mnemonic := 'CALL';
+    Operands := '0x' + ToHexFixed(D16, 4);
+   End;
+   $D3: Begin
+    D8 := GetByte(P); Inc(P);
+    Mnemonic := 'OUT';
+    Operands := '0x' + ToHexFixed(D8, 2);
+   End;
+   $DB: Begin
+    D8 := GetByte(P); Inc(P);
+    Mnemonic := 'IN';
+    Operands := '0x' + ToHexFixed(D8, 2);
+   End;
+   $E3: Mnemonic := 'XTHL';
+   $E9: Mnemonic := 'PCHL';
+   $EB: Mnemonic := 'XCHG';
+   $F3: Mnemonic := 'DI';
+   $F9: Mnemonic := 'SPHL';
+   $FB: Mnemonic := 'EI';
+  End;
+ End;
+
+ Disasm8080One := P - Off;
+End;
+
+{ ============================================================
   DESASSEMBLEUR Z80 (sur-ensemble du 8080, sous-ensemble pratique)
   ============================================================ }
 
@@ -4750,8 +4925,8 @@ Var
  InstrLen, K, AddrDigits: Integer;
  Mnemonic, Operands, BytesTxt, Lbl: String;
 Begin
- If (Arch = ARCH_6502) Or (Arch = ARCH_8086) Or (Arch = ARCH_Z80) Or
-    (Arch = ARCH_6800) Then
+ If (Arch = ARCH_6502) Or (Arch = ARCH_8086) Or (Arch = ARCH_8080) Or
+    (Arch = ARCH_Z80) Or (Arch = ARCH_6800) Then
   AddrDigits := 4
  Else If (Arch = ARCH_X64) Or (Arch = ARCH_ARM64) Then AddrDigits := 16
  Else If (Arch = ARCH_ARM32) Or (Arch = ARCH_THUMB) Or
@@ -4783,7 +4958,9 @@ Begin
    Else If Arch = ARCH_ARM32 Then
     InstrLen := DisasmArm32One(Off, VAddr, Mnemonic, Operands)
    Else If Arch = ARCH_THUMB Then
-    InstrLen := DisasmThumbOne(Off, VAddr, Mnemonic, Operands)
+   InstrLen := DisasmThumbOne(Off, VAddr, Mnemonic, Operands)
+   Else If Arch = ARCH_8080 Then
+    InstrLen := Disasm8080One(Off, VAddr, Mnemonic, Operands)
    Else If Arch = ARCH_Z80 Then
     InstrLen := DisasmZ80One(Off, VAddr, Mnemonic, Operands)
    Else If Arch = ARCH_6800 Then
@@ -4851,7 +5028,7 @@ Procedure Help;Begin
  WriteLn('  -t       Affiche la table des symboles');
  WriteLn('  -S       Melange source/assembleur (non supporte)');
  WriteLn('  -m arch  Force l''architecture de desassemblage :');
- WriteLn('           i386 (defaut), x86-64, 8086, 6502, z80, 6800,');
+ WriteLn('           i386 (defaut), x86-64, 8086, 8080, 6502, z80, 6800,');
  WriteLn('           68000, arm, thumb ou arm64');
  WriteLn('  -b adr   Adresse de chargement (hexa) pour un binaire');
  WriteLn('           brut sans entete, ex: -b 8000 ou -b $8000');
@@ -4863,8 +5040,9 @@ Procedure Help;Begin
  WriteLn('brut (avec -m). L''architecture est choisie automatiquement');
  WriteLn('a partir de e_machine (ELF), Machine (PE) ou cputype (Mach-O).');
  WriteLn('Desassemblage : x86 32 bits / x86-64 (syntaxe AT&T, comme');
- WriteLn('objdump) ; 8086/80186 16 bits (syntaxe Intel/MASM) ; 6502');
- WriteLn('complet (151 opcodes) ; Z80 (jeu de base complet, plus un');
+ WriteLn('objdump) ; 8086/80186 16 bits (syntaxe Intel/MASM) ; Intel');
+ WriteLn('8080 complet (syntaxe Intel) ; 6502 complet (151 opcodes) ;');
+ WriteLn('Z80 (jeu de base complet, plus un');
  WriteLn('sous-ensemble pratique de CB/ED/DD/FD) ; Motorola 6800');
  WriteLn('(jeu d''instructions complet) ; Motorola 68000 (jeu utilisateur');
  WriteLn('complet, sans 68010/68020+/FPU/MMU) ; ARM 32 bits classique,');
@@ -4905,10 +5083,12 @@ BEGIN
    Inc(I);
    If I > ParamCount Then Begin
     WriteLn('Erreur : -m necessite une architecture (i386, x86-64, 8086, ',
-     '6502, z80, 6800, 68000, arm, thumb ou arm64).');
+     '8080, 6502, z80, 6800, 68000, arm, thumb ou arm64).');
     Halt(1);
    End;
    If UpStr(ParamStr(I)) = '6502' Then Arch := ARCH_6502
+   Else If (UpStr(ParamStr(I)) = '8080') Or
+           (UpStr(ParamStr(I)) = 'I8080') Then Arch := ARCH_8080
    Else If (UpStr(ParamStr(I)) = '8086') Or
            (UpStr(ParamStr(I)) = '80186') Then Arch := ARCH_8086
    Else If (UpStr(ParamStr(I)) = 'X64') Or
