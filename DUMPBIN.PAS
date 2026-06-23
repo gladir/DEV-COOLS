@@ -654,13 +654,23 @@ Begin
 End;
 
 Procedure CmdRelocations;
-Var Off, EndOff, Page, Size, P, E: LongInt; Typ, ROff: Word; I, J: Integer;
+Var Off, EndOff, Page, Size, P, E: LongInt; Typ, ROff: Word;
+    I, J: Integer; Found: Boolean;
 Begin
- If IsPE And (Dirs[IMAGE_DIRECTORY_ENTRY_BASERELOC].RVA <> 0) Then Begin
+ If IsPE Then Begin
+  If (Dirs[IMAGE_DIRECTORY_ENTRY_BASERELOC].RVA = 0) Or
+     (Dirs[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size = 0) Then Begin
+   WriteLn('Aucune relocation de base.');
+   Exit;
+  End;
   Off := RvaToOff(Dirs[IMAGE_DIRECTORY_ENTRY_BASERELOC].RVA);
+  If Off < 0 Then Begin
+   WriteLn('Table de relocation de base invalide.');
+   Exit;
+  End;
   EndOff := Off + Dirs[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size;
   WriteLn('BASE RELOCATIONS');
-  While (Off > 0) And (Off + 8 <= EndOff) Do Begin
+  While (Off >= 0) And (Off + 8 <= EndOff) Do Begin
    Page := GetDWordAt(Off); Size := GetDWordAt(Off + 4);
    If Size <= 8 Then Break;
    WriteLn('  Page RVA ', HexFixed(Page,8));
@@ -673,6 +683,14 @@ Begin
    Inc(Off, Size);
   End;
  End Else Begin
+  Found := False;
+  For I := 1 To SectionCount Do
+   If SectionMatches(Sections[I].Name) And (Sections[I].RelocCount <> 0) Then
+    Found := True;
+  If Not Found Then Begin
+   WriteLn('Aucune relocation COFF.');
+   Exit;
+  End;
   WriteLn('COFF RELOCATIONS');
   For I := 1 To SectionCount Do If SectionMatches(Sections[I].Name) Then Begin
    If Sections[I].RelocCount = 0 Then Continue;
