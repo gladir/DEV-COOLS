@@ -73,13 +73,15 @@ Var
  BufSize  : LongInt;
  FileName : String;
 
- IsPE, IsCOFF, IsArchive, Is64 : Boolean;
- Machine, NumSections, SizeOpt : Word;
- TimeDate, SymPtr, NumSyms : LongInt;
- PEOff, OptOff, SecOff : LongInt;
- EntryRVA, ImageBase, SectionAlign, FileAlign : LongInt;
- SubSystem, DllChars : Word;
- Dirs : Array[0..MaxDirs - 1] Of TDir;
+IsPE, IsCOFF, IsArchive, Is64 : Boolean;
+IsPDB : Boolean;
+Machine, NumSections, SizeOpt : Word;
+TimeDate, SymPtr, NumSyms : LongInt;
+PEOff, OptOff, SecOff : LongInt;
+EntryRVA, ImageBase, SectionAlign, FileAlign : LongInt;
+SubSystem, DllChars : Word;
+PdbPageSize, PdbNumPages, PdbDirSize, PdbBlockMapPage : LongInt;
+Dirs : Array[0..MaxDirs - 1] Of TDir;
  Sections : Array[1..MaxSections] Of TSection;
  SectionCount : Integer;
  Symbols : Array[1..MaxSymbols] Of TSymbol;
@@ -383,8 +385,28 @@ Begin
   (GetByteAt(6) = Ord('>'));
 End;
 
+Function LooksPDB: Boolean;
+Begin
+ LooksPDB := (BufSize >= 64) And
+  (GetCStr(0, 24) = 'Microsoft C/C++ MSF 7.00');
+End;
+
+Procedure ParsePDB;
+Begin
+ IsPDB := LooksPDB;
+ If Not IsPDB Then Exit;
+ PdbPageSize := GetDWordAt(32);
+ PdbNumPages := GetDWordAt(40);
+ PdbDirSize := GetDWordAt(44);
+ PdbBlockMapPage := GetDWordAt(52);
+ If (PdbPageSize <= 0) Or (PdbPageSize > 16384) Then IsPDB := False;
+End;
+
 Procedure Detect;
 Begin
+ IsPDB := False;
+ ParsePDB;
+ If IsPDB Then Exit;
  IsArchive := LooksArchive;
  If Not IsArchive Then ParsePE;
 End;
@@ -395,9 +417,155 @@ Begin
  WriteLn('Compatible Turbo Pascal / Free Pascal');
 End;
 
+Function DebugTypeName(T: LongInt): String;
+Begin
+ Case T Of
+  0: DebugTypeName := 'UNKNOWN';
+  1: DebugTypeName := 'COFF';
+  2: DebugTypeName := 'CODEVIEW/PDB';
+  3: DebugTypeName := 'FPO';
+  4: DebugTypeName := 'MISC';
+  5: DebugTypeName := 'EXCEPTION';
+  6: DebugTypeName := 'FIXUP';
+  9: DebugTypeName := 'BORLAND';
+  10: DebugTypeName := 'RESERVED10';
+  11: DebugTypeName := 'CLSID';
+  12: DebugTypeName := 'VC_FEATURE';
+  13: DebugTypeName := 'POGO';
+  14: DebugTypeName := 'ILTCG';
+  16: DebugTypeName := 'REPRO';
+ Else DebugTypeName := 'TYPE ' + LToS(T);
+ End;
+End;
+
+Function GetSig4(Off: LongInt): String;
+Var S: String; I: Integer; B: Byte;
+Begin
+ S := '';
+ For I := 0 To 3 Do Begin
+  B := GetByteAt(Off + I);
+  If (B >= 32) And (B < 127) Then S := S + Chr(B)
+  Else S := S + '.';
+ End;
+ GetSig4 := S;
+End;
+
+Function GuidText(Off: LongInt): String;
+Begin
+ GuidText :=
+  HexByte(GetByteAt(Off + 3)) + HexByte(GetByteAt(Off + 2)) +
+  HexByte(GetByteAt(Off + 1)) + HexByte(GetByteAt(Off + 0)) + '-' +
+  HexByte(GetByteAt(Off + 5)) + HexByte(GetByteAt(Off + 4)) + '-' +
+  HexByte(GetByteAt(Off + 7)) + HexByte(GetByteAt(Off + 6)) + '-' +
+  HexByte(GetByteAt(Off + 8)) + HexByte(GetByteAt(Off + 9)) + '-' +
+  HexByte(GetByteAt(Off + 10)) + HexByte(GetByteAt(Off + 11)) +
+  HexByte(GetByteAt(Off + 12)) + HexByte(GetByteAt(Off + 13)) +
+  HexByte(GetByteAt(Off + 14)) + HexByte(GetByteAt(Off + 15));
+End;
+
+Procedure CmdDebugDirectory;
+Var DirOff, Count, I, EOff, Typ, Size, RVA, Raw, DataOff: LongInt;
+    Sig, PdbName: String;
+Begin
+ If (Not IsPE) Or (Dirs[IMAGE_DIRECTORY_ENTRY_DEBUG].RVA = 0) Or
+    (Dirs[IMAGE_DIRECTORY_ENTRY_DEBUG].Size = 0) Then Exit;
+ DirOff := RvaToOff(Dirs[IMAGE_DIRECTORY_ENTRY_DEBUG].RVA);
+ If DirOff < 0 Then Exit;
+ Count := Dirs[IMAGE_DIRECTORY_ENTRY_DEBUG].Size Div 28;
+ If Count <= 0 Then Exit;
+ WriteLn;
+ WriteLn('DEBUG DIRECTORY');
+ For I := 0 To Count - 1 Do Begin
+  EOff := DirOff + I * 28;
+  Typ := GetDWordAt(EOff + 12);
+  Size := GetDWordAt(EOff + 16);
+  RVA := GetDWordAt(EOff + 20);
+  Raw := GetDWordAt(EOff + 24);
+  DataOff := Raw;
+  If (DataOff <= 0) Or (DataOff >= BufSize) Then DataOff := RvaToOff(RVA);
+  WriteLn('  Type ', PadRight(DebugTypeName(Typ), 14),
+   ' Size ', HexFixed(Size,8), ' RVA ', HexFixed(RVA,8),
+   ' Raw ', HexFixed(Raw,8));
+  If (Typ = 2) And (DataOff >= 0) And (DataOff + 4 < BufSize) Then Begin
+   Sig := GetSig4(DataOff);
+   If Sig = 'RSDS' Then Begin
+    PdbName := GetCStr(DataOff + 24, 160);
+    WriteLn('    CodeView: RSDS');
+    WriteLn('    PDB GUID: ', GuidText(DataOff + 4));
+    WriteLn('    PDB Age : ', GetDWordAt(DataOff + 20));
+    If Not OptNoPdb Then WriteLn('    PDB File: ', PdbName)
+    Else WriteLn('    PDB File: masque par /NOPDB');
+   End Else If Sig = 'NB10' Then Begin
+    PdbName := GetCStr(DataOff + 16, 160);
+    WriteLn('    CodeView: NB10');
+    WriteLn('    Signature: ', HexFixed(GetDWordAt(DataOff + 8),8));
+    WriteLn('    PDB Age  : ', GetDWordAt(DataOff + 12));
+    If Not OptNoPdb Then WriteLn('    PDB File : ', PdbName)
+    Else WriteLn('    PDB File : masque par /NOPDB');
+   End Else
+    WriteLn('    CodeView signature: ', Sig);
+  End;
+ End;
+End;
+
+Function PdbDirByte(Idx: LongInt): Byte;
+Var PageIndex, PageNumber, MapOff, FileOff: LongInt;
+Begin
+ PdbDirByte := 0;
+ If (Idx < 0) Or (Idx >= PdbDirSize) Then Exit;
+ PageIndex := Idx Div PdbPageSize;
+ MapOff := PdbBlockMapPage * PdbPageSize + PageIndex * 4;
+ If (MapOff < 0) Or (MapOff + 4 > BufSize) Then Exit;
+ PageNumber := GetDWordAt(MapOff);
+ FileOff := PageNumber * PdbPageSize + (Idx Mod PdbPageSize);
+ If (FileOff >= 0) And (FileOff < BufSize) Then PdbDirByte := GetByteAt(FileOff);
+End;
+
+Function PdbDirDWord(Idx: LongInt): LongInt;
+Var L: LongInt;
+Begin
+ L := PdbDirByte(Idx + 3);
+ L := (L Shl 8) Or PdbDirByte(Idx + 2);
+ L := (L Shl 8) Or PdbDirByte(Idx + 1);
+ L := (L Shl 8) Or PdbDirByte(Idx);
+ PdbDirDWord := L;
+End;
+
+Procedure CmdPDBHeaders;
+Var StreamCount, I, Size, Pages, PageListOff: LongInt;
+Begin
+ WriteLn('PDB FILE HEADER VALUES');
+ WriteLn('        Microsoft C/C++ MSF 7.00');
+ WriteLn('        ', HexFixed(PdbPageSize,8), ' page size');
+ WriteLn('        ', HexFixed(PdbNumPages,8), ' number of pages');
+ WriteLn('        ', HexFixed(PdbDirSize,8), ' directory size');
+ WriteLn('        ', HexFixed(PdbBlockMapPage,8), ' block map page');
+ StreamCount := PdbDirDWord(0);
+ If (StreamCount < 0) Or (StreamCount > 4096) Then Begin
+  WriteLn('        Repertoire PDB invalide.');
+  Exit;
+ End;
+ WriteLn;
+ WriteLn('PDB STREAMS');
+ WriteLn('Idx Size      Pages');
+ PageListOff := 4 + StreamCount * 4;
+ For I := 0 To StreamCount - 1 Do Begin
+  Size := PdbDirDWord(4 + I * 4);
+  If Size < 0 Then Pages := 0
+  Else Pages := (Size + PdbPageSize - 1) Div PdbPageSize;
+  WriteLn(PadLeft(LToS(I), 3), ' ',
+   PadLeft(HexFixed(Size,8), 9), ' ', Pages);
+  Inc(PageListOff, Pages * 4);
+ End;
+End;
+
 Procedure CmdHeaders;
 Var I: Integer;
 Begin
+ If IsPDB Then Begin
+  CmdPDBHeaders;
+  Exit;
+ End;
  If IsArchive Then Begin
   WriteLn('Archive COFF: ', FileName);
   Exit;
@@ -426,6 +594,7 @@ Begin
    If Dirs[I].RVA <> 0 Then
     WriteLn(PadLeft(LToS(I), 3), '  RVA ', HexFixed(Dirs[I].RVA,8),
      '  Size ', HexFixed(Dirs[I].Size,8));
+  CmdDebugDirectory;
  End;
  WriteLn;
  WriteLn('SECTION HEADER VALUES');
@@ -831,9 +1000,10 @@ Procedure Help;Begin
  WriteLn('DUMPBIN clone - Cette commande permet d''analyser et d''afficher en detail le contenu des fichiers ',
          'binaires Windows, tels que les executables (.exe), les bibliotheques dynamiques (.dll), les fichiers ',
          'objets (.obj) et les bibliotheques statiques (.lib), afin d''en examiner les en-tetes, les symboles, ',
-         'les importations, les exportations et le code machine.');
+         'les importations, les exportations, les informations PDB et le code machine.');
  WriteLn;
  WriteLn('Syntaxe: DUMPBIN /OPTION fichier.exe');
+ WriteLn('        DUMPBIN fichier.pdb');
  WriteLn;
  WriteLn('Options:');
  WriteLn('  /ALL              Affiche toutes les informations disponibles.');
@@ -927,8 +1097,8 @@ Begin
  If FileName = '' Then Exit;
  LoadFile(FileName);
  Detect;
- If Not (IsPE Or IsCOFF Or IsArchive) Then Begin
-  WriteLn('DUMPBIN: format non reconnu (PE/COFF/.lib attendu).');
+ If Not (IsPE Or IsCOFF Or IsArchive Or IsPDB) Then Begin
+  WriteLn('DUMPBIN: format non reconnu (PE/COFF/.lib/.pdb attendu).');
   Halt(1);
  End;
  If Not HasDumpOption Then Begin
