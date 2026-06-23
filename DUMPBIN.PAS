@@ -810,19 +810,41 @@ Begin
 End;
 
 Procedure Help;Begin
- WriteLn('DUMPBIN clone - Cette commande permet d''analyser et d''afficher en d'+#130+'tail le contenu des fichiers ',
-         'binaires Windows, tels que les ex'+#130+'cutables (.exe), les biblioth'+#138+'ques dynamiques (.dll), les fichiers ',
-         'objets (.obj) et les biblioth'+#138+'ques statiques (.lib), afin d''en examiner les en-t'+#136+'tes, les symboles, ',
+ WriteLn('DUMPBIN clone - Cette commande permet d''analyser et d''afficher en detail le contenu des fichiers ',
+         'binaires Windows, tels que les executables (.exe), les bibliotheques dynamiques (.dll), les fichiers ',
+         'objets (.obj) et les bibliotheques statiques (.lib), afin d''en examiner les en-tetes, les symboles, ',
          'les importations, les exportations et le code machine.');
  WriteLn;
  WriteLn('Syntaxe: DUMPBIN /OPTION fichier.exe');
  WriteLn;
- WriteLn('Options: /ALL /ARCHIVEMEMBERS /CLRHEADER /DEPENDENTS /DIRECTIVES');
- WriteLn('         /DISASM[:NOBYTES] /EXPORTS /FPO /HEADERS /IMPORTS');
- WriteLn('         /LINENUMBERS /LINKERMEMBER /LOADCONFIG /NOPDB');
- WriteLn('         /OUT:fichier.txt /PDATA /RAWDATA[:BYTES|NONE]');
- WriteLn('         /RELOCATIONS /SECTION:nom /SUMMARY /SYMBOLS /TLS');
- WriteLn('         /UNWINDINFO /VERSION');
+ WriteLn('Options:');
+ WriteLn('  /ALL              Affiche toutes les informations disponibles.');
+ WriteLn('  /ARCHIVEMEMBERS   Affiche les membres contenus dans une bibliotheque .lib.');
+ WriteLn('  /CLRHEADER        Affiche l''en-tete CLR des programmes .NET.');
+ WriteLn('  /DEPENDENTS       Affiche les DLL dont depend le programme.');
+ WriteLn('  /DIRECTIVES       Affiche les directives compilateur/editeur de liens.');
+ WriteLn('  /DISASM           Desassemble les sections de code du programme.');
+ WriteLn('  /DISASM:NOBYTES   Desassemble sans afficher les octets machine.');
+ WriteLn('  /EXPORTS          Affiche les fonctions exportees par une DLL.');
+ WriteLn('  /FPO              Affiche les informations Frame Pointer Omission.');
+ WriteLn('  /HEADERS          Affiche les en-tetes du fichier executable ou objet.');
+ WriteLn('  /IMPORTS          Affiche les fonctions et DLL importees.');
+ WriteLn('  /LINENUMBERS      Affiche les numeros de lignes associes aux adresses.');
+ WriteLn('  /LINKERMEMBER     Affiche les informations de l''editeur de liens .lib.');
+ WriteLn('  /LOADCONFIG       Affiche la configuration du chargeur Windows.');
+ WriteLn('  /NOPDB            Ne charge pas le fichier PDB associe.');
+ WriteLn('  /OUT:fichier.txt  Redirige la sortie vers un fichier texte.');
+ WriteLn('  /PDATA            Affiche les informations de gestion des exceptions.');
+ WriteLn('  /RAWDATA          Affiche les donnees brutes des sections.');
+ WriteLn('  /RAWDATA:BYTES    Affiche les donnees brutes octet par octet.');
+ WriteLn('  /RAWDATA:NONE     Masque les donnees brutes.');
+ WriteLn('  /RELOCATIONS      Affiche les entrees de relocalisation.');
+ WriteLn('  /SECTION:nom      Limite l''affichage a une section specifique.');
+ WriteLn('  /SUMMARY          Affiche un resume des sections du fichier.');
+ WriteLn('  /SYMBOLS          Affiche la table des symboles.');
+ WriteLn('  /TLS              Affiche les informations Thread Local Storage.');
+ WriteLn('  /UNWINDINFO       Affiche les informations de deroulement de pile x64.');
+ WriteLn('  /VERSION          Affiche la version de DUMPBIN.');
 End;
 
 Procedure ParseArgs;
