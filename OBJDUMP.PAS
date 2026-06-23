@@ -92,6 +92,7 @@ Const
  ARCH_IA64  = 18;        { Intel Itanium IA-64 little-endian           }
  ARCH_IA64BE = 19;       { Intel Itanium IA-64 big-endian              }
  ARCH_PCODE = 20;        { p-Code UCSD p-System II.0/II.1              }
+ ARCH_MSIL  = 21;        { Microsoft Intermediate Language / CIL       }
 
  { ----- Modes d adressage 6800 ----- }
  AM68_INH   = 0;         { inherent : aucun operande                   }
@@ -744,6 +745,191 @@ Begin
    End;
   End;
  End;
+End;
+
+{ ============================================================
+  ANALYSE CLI/.NET : COR20 + METADONNEES METHODDEF
+  ============================================================ }
+
+{ @description: Convertit une RVA PE en decalage fichier. }
+Function PERvaToFile(RVA: LongInt): LongInt;
+Var
+ I: Integer;
+ Rel: LongInt;
+Begin
+ PERvaToFile := -1;
+ For I := 1 To SectionCount Do Begin
+  Rel := RVA - (Sections[I].VAddr - ImageBase);
+  If (Rel >= 0) And (Rel < Sections[I].Size) Then Begin
+   PERvaToFile := Sections[I].FileOff + Rel;
+   Exit;
+  End;
+ End;
+End;
+
+Function MetaIndexSize(RowCount: LongInt): Integer;
+Begin
+ If RowCount < 65536 Then MetaIndexSize := 2 Else MetaIndexSize := 4;
+End;
+
+Function MetaCodedSize(A, B, C, D: LongInt; TagBits: Integer): Integer;
+Var
+ M, Limit: LongInt;
+Begin
+ M := A; If B > M Then M := B; If C > M Then M := C; If D > M Then M := D;
+ Limit := LongInt(1) Shl (16 - TagBits);
+ If M < Limit Then MetaCodedSize := 2 Else MetaCodedSize := 4;
+End;
+
+{ @description: Extrait les corps de methodes MSIL d un PE manage.
+    Retourne vrai si un en-tete CLI et une table MethodDef valides ont
+    ete trouves. Sections[] devient alors une liste de methodes IL. }
+Function ParseMSILPE: Boolean;
+Var
+ PEOff, OptOff, DataDirOff, CliRva, CliOff, MetaRva, MetaOff: LongInt;
+ VersionLen, P, Streams, I, J, TablesOff, RowsOff, DataOff: LongInt;
+ StreamOff, StreamSize: LongInt;
+ StreamName: String;
+ HeapSizes: Byte;
+ ValidLo, ValidHi: LongInt;
+ Rows: Array[0..63] Of LongInt;
+ StrSize, GuidSize, BlobSize: Integer;
+ ModuleSize, TypeRefSize, TypeDefSize, FieldPtrSize, FieldSize: LongInt;
+ MethodPtrSize, MethodRowSize, MethodOff, MethodRva, BodyOff: LongInt;
+ CodeOff, CodeSize, HeaderSize: LongInt;
+ FlagsSize: Word;
+ NameIdx: LongInt;
+ MethodName: String;
+ StringHeapOff: LongInt;
+ OldSections: Array[1..MaxSections] Of TSection;
+ OldCount, Sec: Integer;
+
+ Function ReadIndex(At: LongInt; Sz: Integer): LongInt;
+ Begin
+  If Sz = 2 Then ReadIndex := GetWord(At) Else ReadIndex := GetDWord(At);
+ End;
+
+ Function TablePresent(T: Integer): Boolean;
+ Begin
+  If T < 32 Then TablePresent := (ValidLo And (LongInt(1) Shl T)) <> 0
+  Else TablePresent := (ValidHi And (LongInt(1) Shl (T - 32))) <> 0;
+ End;
+
+Begin
+ ParseMSILPE := False;
+ OldCount := SectionCount;
+ For I := 1 To OldCount Do OldSections[I] := Sections[I];
+ PEOff := GetDWord($3C);
+ OptOff := PEOff + 24;
+ If GetWord(OptOff) = $20B Then DataDirOff := OptOff + 112
+ Else DataDirOff := OptOff + 96;
+ CliRva := GetDWord(DataDirOff + 14 * 8);
+ If CliRva = 0 Then Exit;
+ CliOff := PERvaToFile(CliRva);
+ If CliOff < 0 Then Exit;
+ MetaRva := GetDWord(CliOff + 8);
+ MetaOff := PERvaToFile(MetaRva);
+ If (MetaOff < 0) Or (GetDWord(MetaOff) <> $424A5342) Then Exit; { BSJB }
+
+ VersionLen := GetDWord(MetaOff + 12);
+ P := MetaOff + 16 + VersionLen;
+ P := (P + 3) And Not 3;
+ Streams := GetWord(P + 2);
+ P := P + 4;
+ TablesOff := -1;
+ StringHeapOff := -1;
+ For I := 0 To Streams - 1 Do Begin
+  StreamOff := GetDWord(P);
+  StreamSize := GetDWord(P + 4);
+  StreamName := '';
+  J := 0;
+  While (J < 32) And (GetByte(P + 8 + J) <> 0) Do Begin
+   StreamName := StreamName + Chr(GetByte(P + 8 + J));
+   Inc(J);
+  End;
+  If (StreamName = '#~') Or (StreamName = '#-') Then TablesOff := MetaOff + StreamOff;
+  If StreamName = '#Strings' Then StringHeapOff := MetaOff + StreamOff;
+  J := J + 1;
+  While (J And 3) <> 0 Do Inc(J);
+  P := P + 8 + J;
+  If StreamSize < 0 Then Exit;
+ End;
+ If (TablesOff < 0) Or (StringHeapOff < 0) Then Exit;
+
+ HeapSizes := GetByte(TablesOff + 6);
+ If (HeapSizes And 1) <> 0 Then StrSize := 4 Else StrSize := 2;
+ If (HeapSizes And 2) <> 0 Then GuidSize := 4 Else GuidSize := 2;
+ If (HeapSizes And 4) <> 0 Then BlobSize := 4 Else BlobSize := 2;
+ ValidLo := GetDWord(TablesOff + 8);
+ ValidHi := GetDWord(TablesOff + 12);
+ FillChar(Rows, SizeOf(Rows), 0);
+ RowsOff := TablesOff + 24;
+ For I := 0 To 63 Do
+  If TablePresent(I) Then Begin
+   Rows[I] := GetDWord(RowsOff);
+   RowsOff := RowsOff + 4;
+  End;
+ If Not TablePresent(6) Then Exit;
+
+ ModuleSize := 2 + StrSize + GuidSize * 3;
+ TypeRefSize := MetaCodedSize(Rows[0], Rows[1], Rows[26], Rows[35], 2) +
+  StrSize * 2;
+ TypeDefSize := 4 + StrSize * 2 +
+  MetaCodedSize(Rows[2], Rows[1], Rows[27], 0, 2) +
+  MetaIndexSize(Rows[4]) + MetaIndexSize(Rows[6]);
+ FieldPtrSize := MetaIndexSize(Rows[4]);
+ FieldSize := 2 + StrSize + BlobSize;
+ MethodPtrSize := MetaIndexSize(Rows[6]);
+ MethodRowSize := 8 + StrSize + BlobSize + MetaIndexSize(Rows[8]);
+ DataOff := RowsOff;
+ If TablePresent(0) Then DataOff := DataOff + Rows[0] * ModuleSize;
+ If TablePresent(1) Then DataOff := DataOff + Rows[1] * TypeRefSize;
+ If TablePresent(2) Then DataOff := DataOff + Rows[2] * TypeDefSize;
+ If TablePresent(3) Then DataOff := DataOff + Rows[3] * FieldPtrSize;
+ If TablePresent(4) Then DataOff := DataOff + Rows[4] * FieldSize;
+ If TablePresent(5) Then DataOff := DataOff + Rows[5] * MethodPtrSize;
+
+ SectionCount := 0;
+ For I := 0 To Rows[6] - 1 Do Begin
+  MethodOff := DataOff + I * MethodRowSize;
+  MethodRva := GetDWord(MethodOff);
+  If MethodRva = 0 Then Continue;
+  NameIdx := ReadIndex(MethodOff + 8, StrSize);
+  MethodName := GetCStr(StringHeapOff + NameIdx, 31);
+  BodyOff := -1;
+  For Sec := 1 To OldCount Do Begin
+   J := MethodRva - (OldSections[Sec].VAddr - ImageBase);
+   If (J >= 0) And (J < OldSections[Sec].Size) Then
+    BodyOff := OldSections[Sec].FileOff + J;
+  End;
+  If BodyOff < 0 Then Continue;
+  If (GetByte(BodyOff) And 3) = 2 Then Begin { tiny header }
+   HeaderSize := 1;
+   CodeSize := GetByte(BodyOff) Shr 2;
+  End Else If (GetByte(BodyOff) And 3) = 3 Then Begin { fat header }
+   FlagsSize := GetWord(BodyOff);
+   HeaderSize := ((FlagsSize Shr 12) And 15) * 4;
+   CodeSize := GetDWord(BodyOff + 4);
+  End Else Continue;
+  CodeOff := BodyOff + HeaderSize;
+  If (CodeSize <= 0) Or (CodeOff + CodeSize > BufSize) Then Continue;
+  If SectionCount >= MaxSections Then Break;
+  Inc(SectionCount);
+  If MethodName = '' Then MethodName := 'method_' + IntToStr(I + 1);
+  Sections[SectionCount].Name := MethodName;
+  Sections[SectionCount].FileOff := CodeOff;
+  Sections[SectionCount].VAddr := MethodRva + HeaderSize;
+  Sections[SectionCount].Size := CodeSize;
+  Sections[SectionCount].IsCode := True;
+ End;
+ If SectionCount = 0 Then Begin
+  SectionCount := OldCount;
+  For I := 1 To OldCount Do Sections[I] := OldSections[I];
+  Exit;
+ End;
+ EntryPoint := Sections[1].VAddr;
+ SymbolCount := 0;
+ ParseMSILPE := True;
 End;
 
 { ============================================================
@@ -6140,6 +6326,231 @@ Begin
 End;
 
 { ============================================================
+  DESASSEMBLEUR MICROSOFT INTERMEDIATE LANGUAGE (MSIL/CIL)
+  ============================================================ }
+
+{ @description: Retourne le mnemonique et le type d operande d un
+    opcode CIL ECMA-335. Kind: 0 rien, 1 octet signe, 2 entier 4,
+    3 entier 8, 4 flottant 4, 5 flottant 8, 6 branche courte,
+    7 branche longue, 8 switch, 9 jeton metadata, 10 variable courte,
+    11 variable 16 bits. }
+Procedure MSILInfo(Op: Word; Var Mn: String; Var Kind: Byte);
+Begin
+ Mn := '(bad)'; Kind := 0;
+ Case Op Of
+  $00: Mn := 'nop'; $01: Mn := 'break';
+  $02: Mn := 'ldarg.0'; $03: Mn := 'ldarg.1'; $04: Mn := 'ldarg.2'; $05: Mn := 'ldarg.3';
+  $06: Mn := 'ldloc.0'; $07: Mn := 'ldloc.1'; $08: Mn := 'ldloc.2'; $09: Mn := 'ldloc.3';
+  $0A: Mn := 'stloc.0'; $0B: Mn := 'stloc.1'; $0C: Mn := 'stloc.2'; $0D: Mn := 'stloc.3';
+  $0E: Begin Mn := 'ldarg.s'; Kind := 10; End;
+  $0F: Begin Mn := 'ldarga.s'; Kind := 10; End;
+  $10: Begin Mn := 'starg.s'; Kind := 10; End;
+  $11: Begin Mn := 'ldloc.s'; Kind := 10; End;
+  $12: Begin Mn := 'ldloca.s'; Kind := 10; End;
+  $13: Begin Mn := 'stloc.s'; Kind := 10; End;
+  $14: Mn := 'ldnull';
+  $15: Mn := 'ldc.i4.m1'; $16: Mn := 'ldc.i4.0'; $17: Mn := 'ldc.i4.1';
+  $18: Mn := 'ldc.i4.2'; $19: Mn := 'ldc.i4.3'; $1A: Mn := 'ldc.i4.4';
+  $1B: Mn := 'ldc.i4.5'; $1C: Mn := 'ldc.i4.6'; $1D: Mn := 'ldc.i4.7';
+  $1E: Mn := 'ldc.i4.8';
+  $1F: Begin Mn := 'ldc.i4.s'; Kind := 1; End;
+  $20: Begin Mn := 'ldc.i4'; Kind := 2; End;
+  $21: Begin Mn := 'ldc.i8'; Kind := 3; End;
+  $22: Begin Mn := 'ldc.r4'; Kind := 4; End;
+  $23: Begin Mn := 'ldc.r8'; Kind := 5; End;
+  $25: Mn := 'dup'; $26: Mn := 'pop';
+  $27: Begin Mn := 'jmp'; Kind := 9; End;
+  $28: Begin Mn := 'call'; Kind := 9; End;
+  $29: Begin Mn := 'calli'; Kind := 9; End;
+  $2A: Mn := 'ret';
+  $2B: Begin Mn := 'br.s'; Kind := 6; End;
+  $2C: Begin Mn := 'brfalse.s'; Kind := 6; End;
+  $2D: Begin Mn := 'brtrue.s'; Kind := 6; End;
+  $2E: Begin Mn := 'beq.s'; Kind := 6; End;
+  $2F: Begin Mn := 'bge.s'; Kind := 6; End;
+  $30: Begin Mn := 'bgt.s'; Kind := 6; End;
+  $31: Begin Mn := 'ble.s'; Kind := 6; End;
+  $32: Begin Mn := 'blt.s'; Kind := 6; End;
+  $33: Begin Mn := 'bne.un.s'; Kind := 6; End;
+  $34: Begin Mn := 'bge.un.s'; Kind := 6; End;
+  $35: Begin Mn := 'bgt.un.s'; Kind := 6; End;
+  $36: Begin Mn := 'ble.un.s'; Kind := 6; End;
+  $37: Begin Mn := 'blt.un.s'; Kind := 6; End;
+  $38: Begin Mn := 'br'; Kind := 7; End;
+  $39: Begin Mn := 'brfalse'; Kind := 7; End;
+  $3A: Begin Mn := 'brtrue'; Kind := 7; End;
+  $3B: Begin Mn := 'beq'; Kind := 7; End;
+  $3C: Begin Mn := 'bge'; Kind := 7; End;
+  $3D: Begin Mn := 'bgt'; Kind := 7; End;
+  $3E: Begin Mn := 'ble'; Kind := 7; End;
+  $3F: Begin Mn := 'blt'; Kind := 7; End;
+  $40: Begin Mn := 'bne.un'; Kind := 7; End;
+  $41: Begin Mn := 'bge.un'; Kind := 7; End;
+  $42: Begin Mn := 'bgt.un'; Kind := 7; End;
+  $43: Begin Mn := 'ble.un'; Kind := 7; End;
+  $44: Begin Mn := 'blt.un'; Kind := 7; End;
+  $45: Begin Mn := 'switch'; Kind := 8; End;
+  $46: Mn := 'ldind.i1'; $47: Mn := 'ldind.u1'; $48: Mn := 'ldind.i2';
+  $49: Mn := 'ldind.u2'; $4A: Mn := 'ldind.i4'; $4B: Mn := 'ldind.u4';
+  $4C: Mn := 'ldind.i8'; $4D: Mn := 'ldind.i'; $4E: Mn := 'ldind.r4';
+  $4F: Mn := 'ldind.r8'; $50: Mn := 'ldind.ref';
+  $51: Mn := 'stind.ref'; $52: Mn := 'stind.i1'; $53: Mn := 'stind.i2';
+  $54: Mn := 'stind.i4'; $55: Mn := 'stind.i8'; $56: Mn := 'stind.r4';
+  $57: Mn := 'stind.r8';
+  $58: Mn := 'add'; $59: Mn := 'sub'; $5A: Mn := 'mul'; $5B: Mn := 'div';
+  $5C: Mn := 'div.un'; $5D: Mn := 'rem'; $5E: Mn := 'rem.un'; $5F: Mn := 'and';
+  $60: Mn := 'or'; $61: Mn := 'xor'; $62: Mn := 'shl'; $63: Mn := 'shr';
+  $64: Mn := 'shr.un'; $65: Mn := 'neg'; $66: Mn := 'not';
+  $67: Mn := 'conv.i1'; $68: Mn := 'conv.i2'; $69: Mn := 'conv.i4';
+  $6A: Mn := 'conv.i8'; $6B: Mn := 'conv.r4'; $6C: Mn := 'conv.r8';
+  $6D: Mn := 'conv.u4'; $6E: Mn := 'conv.u8';
+  $6F: Begin Mn := 'callvirt'; Kind := 9; End;
+  $70: Begin Mn := 'cpobj'; Kind := 9; End;
+  $71: Begin Mn := 'ldobj'; Kind := 9; End;
+  $72: Begin Mn := 'ldstr'; Kind := 9; End;
+  $73: Begin Mn := 'newobj'; Kind := 9; End;
+  $74: Begin Mn := 'castclass'; Kind := 9; End;
+  $75: Begin Mn := 'isinst'; Kind := 9; End;
+  $76: Mn := 'conv.r.un';
+  $79: Begin Mn := 'unbox'; Kind := 9; End;
+  $7A: Mn := 'throw';
+  $7B: Begin Mn := 'ldfld'; Kind := 9; End;
+  $7C: Begin Mn := 'ldflda'; Kind := 9; End;
+  $7D: Begin Mn := 'stfld'; Kind := 9; End;
+  $7E: Begin Mn := 'ldsfld'; Kind := 9; End;
+  $7F: Begin Mn := 'ldsflda'; Kind := 9; End;
+  $80: Begin Mn := 'stsfld'; Kind := 9; End;
+  $81: Begin Mn := 'stobj'; Kind := 9; End;
+  $82: Mn := 'conv.ovf.i1.un'; $83: Mn := 'conv.ovf.i2.un';
+  $84: Mn := 'conv.ovf.i4.un'; $85: Mn := 'conv.ovf.i8.un';
+  $86: Mn := 'conv.ovf.u1.un'; $87: Mn := 'conv.ovf.u2.un';
+  $88: Mn := 'conv.ovf.u4.un'; $89: Mn := 'conv.ovf.u8.un';
+  $8A: Mn := 'conv.ovf.i.un'; $8B: Mn := 'conv.ovf.u.un';
+  $8C: Begin Mn := 'box'; Kind := 9; End;
+  $8D: Begin Mn := 'newarr'; Kind := 9; End;
+  $8E: Mn := 'ldlen';
+  $8F: Begin Mn := 'ldelema'; Kind := 9; End;
+  $90: Mn := 'ldelem.i1'; $91: Mn := 'ldelem.u1'; $92: Mn := 'ldelem.i2';
+  $93: Mn := 'ldelem.u2'; $94: Mn := 'ldelem.i4'; $95: Mn := 'ldelem.u4';
+  $96: Mn := 'ldelem.i8'; $97: Mn := 'ldelem.i'; $98: Mn := 'ldelem.r4';
+  $99: Mn := 'ldelem.r8'; $9A: Mn := 'ldelem.ref';
+  $9B: Mn := 'stelem.i'; $9C: Mn := 'stelem.i1'; $9D: Mn := 'stelem.i2';
+  $9E: Mn := 'stelem.i4'; $9F: Mn := 'stelem.i8'; $A0: Mn := 'stelem.r4';
+  $A1: Mn := 'stelem.r8'; $A2: Mn := 'stelem.ref';
+  $A3: Begin Mn := 'ldelem'; Kind := 9; End;
+  $A4: Begin Mn := 'stelem'; Kind := 9; End;
+  $A5: Begin Mn := 'unbox.any'; Kind := 9; End;
+  $B3: Mn := 'conv.ovf.i1'; $B4: Mn := 'conv.ovf.u1';
+  $B5: Mn := 'conv.ovf.i2'; $B6: Mn := 'conv.ovf.u2';
+  $B7: Mn := 'conv.ovf.i4'; $B8: Mn := 'conv.ovf.u4';
+  $B9: Mn := 'conv.ovf.i8'; $BA: Mn := 'conv.ovf.u8';
+  $C2: Begin Mn := 'refanyval'; Kind := 9; End;
+  $C3: Mn := 'ckfinite';
+  $C6: Begin Mn := 'mkrefany'; Kind := 9; End;
+  $D0: Begin Mn := 'ldtoken'; Kind := 9; End;
+  $D1: Mn := 'conv.u2'; $D2: Mn := 'conv.u1'; $D3: Mn := 'conv.i';
+  $D4: Mn := 'conv.ovf.i'; $D5: Mn := 'conv.ovf.u';
+  $D6: Mn := 'add.ovf'; $D7: Mn := 'add.ovf.un';
+  $D8: Mn := 'mul.ovf'; $D9: Mn := 'mul.ovf.un';
+  $DA: Mn := 'sub.ovf'; $DB: Mn := 'sub.ovf.un';
+  $DC: Mn := 'endfinally';
+  $DD: Begin Mn := 'leave'; Kind := 7; End;
+  $DE: Begin Mn := 'leave.s'; Kind := 6; End;
+  $DF: Mn := 'stind.i'; $E0: Mn := 'conv.u';
+
+  $FE00: Mn := 'arglist'; $FE01: Mn := 'ceq'; $FE02: Mn := 'cgt';
+  $FE03: Mn := 'cgt.un'; $FE04: Mn := 'clt'; $FE05: Mn := 'clt.un';
+  $FE06: Begin Mn := 'ldftn'; Kind := 9; End;
+  $FE07: Begin Mn := 'ldvirtftn'; Kind := 9; End;
+  $FE09: Begin Mn := 'ldarg'; Kind := 11; End;
+  $FE0A: Begin Mn := 'ldarga'; Kind := 11; End;
+  $FE0B: Begin Mn := 'starg'; Kind := 11; End;
+  $FE0C: Begin Mn := 'ldloc'; Kind := 11; End;
+  $FE0D: Begin Mn := 'ldloca'; Kind := 11; End;
+  $FE0E: Begin Mn := 'stloc'; Kind := 11; End;
+  $FE0F: Mn := 'localloc'; $FE11: Mn := 'endfilter';
+  $FE12: Begin Mn := 'unaligned.'; Kind := 1; End;
+  $FE13: Mn := 'volatile.'; $FE14: Mn := 'tail.';
+  $FE15: Begin Mn := 'initobj'; Kind := 9; End;
+  $FE16: Begin Mn := 'constrained.'; Kind := 9; End;
+  $FE17: Mn := 'cpblk'; $FE18: Mn := 'initblk'; $FE1A: Mn := 'rethrow';
+  $FE1C: Begin Mn := 'sizeof'; Kind := 9; End;
+  $FE1D: Mn := 'refanytype'; $FE1E: Mn := 'readonly.';
+ End;
+End;
+
+Function DisasmMSILOne(Off, VAddrBase: LongInt;
+ Var Mnemonic, Operands: String): Integer;
+Var
+ Op: Word;
+ Kind: Byte;
+ P, I, Count, BaseSize: Integer;
+ V, Target: LongInt;
+ B: Byte;
+ S: String;
+Begin
+ B := GetByte(Off);
+ If B = $FE Then Begin
+  Op := $FE00 Or GetByte(Off + 1);
+  P := 2;
+ End Else Begin
+  Op := B;
+  P := 1;
+ End;
+ MSILInfo(Op, Mnemonic, Kind);
+ Operands := '';
+ Case Kind Of
+  1: Begin
+   B := GetByte(Off + P);
+   If B < 128 Then V := B Else V := Integer(B) - 256;
+   Operands := IntToStr(V); Inc(P);
+  End;
+  2: Begin V := GetDWord(Off + P); Operands := IntToStr(V); Inc(P, 4); End;
+  3: Begin
+   Operands := '0x' + ToHexFixed(GetDWord(Off + P + 4), 8) +
+    ToHexFixed(GetDWord(Off + P), 8); Inc(P, 8);
+  End;
+  4: Begin Operands := 'float32(0x' + ToHexFixed(GetDWord(Off + P), 8) + ')'; Inc(P, 4); End;
+  5: Begin
+   Operands := 'float64(0x' + ToHexFixed(GetDWord(Off + P + 4), 8) +
+    ToHexFixed(GetDWord(Off + P), 8) + ')'; Inc(P, 8);
+  End;
+  6: Begin
+   B := GetByte(Off + P);
+   If B < 128 Then V := B Else V := Integer(B) - 256;
+   Inc(P);
+   Target := VAddrBase + P + V;
+   Operands := 'IL_' + ToHexFixed(Target, 4);
+  End;
+  7: Begin
+   V := GetDWord(Off + P); Inc(P, 4);
+   Target := VAddrBase + P + V;
+   Operands := 'IL_' + ToHexFixed(Target, 4);
+  End;
+  8: Begin
+   Count := GetDWord(Off + P); Inc(P, 4);
+   BaseSize := P + Count * 4;
+   S := '';
+   For I := 0 To Count - 1 Do Begin
+    V := GetDWord(Off + P + I * 4);
+    Target := VAddrBase + BaseSize + V;
+    If S <> '' Then S := S + ',';
+    S := S + 'IL_' + ToHexFixed(Target, 4);
+   End;
+   Operands := '(' + S + ')';
+   P := BaseSize;
+  End;
+  9: Begin
+   V := GetDWord(Off + P);
+   Operands := 'token(0x' + ToHexFixed(V, 8) + ')'; Inc(P, 4);
+  End;
+  10: Begin Operands := IntToStr(GetByte(Off + P)); Inc(P); End;
+  11: Begin Operands := IntToStr(GetWord(Off + P)); Inc(P, 2); End;
+ End;
+ DisasmMSILOne := P;
+End;
+
+{ ============================================================
   RECHERCHE DE SYMBOLE / SECTION POUR L AFFICHAGE
   ============================================================ }
 
@@ -6187,6 +6598,12 @@ End;
   @return Nom du format (ex: "elf32-i386", "pei-i386") }
 Function FormatName: String;
 Begin
+ If Arch = ARCH_MSIL Then Begin
+  If (BinFormat = FMT_PE32) Or (BinFormat = FMT_PE64) Then
+   FormatName := 'pei-managed-msil'
+  Else FormatName := 'raw-msil';
+  Exit;
+ End;
  If Arch = ARCH_PCODE Then Begin
   FormatName := 'ucsd-pcode';
   Exit;
@@ -6311,7 +6728,7 @@ Var
  Mnemonic, Operands, BytesTxt, Lbl: String;
 Begin
  If (Arch = ARCH_6502) Or (Arch = ARCH_8086) Or (Arch = ARCH_8080) Or
-    (Arch = ARCH_Z80) Or (Arch = ARCH_6800) Then
+    (Arch = ARCH_Z80) Or (Arch = ARCH_6800) Or (Arch = ARCH_MSIL) Then
   AddrDigits := 4
  Else If (Arch = ARCH_X64) Or (Arch = ARCH_ARM64) Or
          (Arch = ARCH_IA64) Or (Arch = ARCH_IA64BE) Or
@@ -6372,7 +6789,9 @@ Begin
    Else If (Arch = ARCH_IA64) Or (Arch = ARCH_IA64BE) Then
    InstrLen := DisasmIa64One(Off, VAddr, Mnemonic, Operands)
    Else If Arch = ARCH_PCODE Then
-    InstrLen := DisasmPCodeOne(Off, VAddr, Mnemonic, Operands)
+   InstrLen := DisasmPCodeOne(Off, VAddr, Mnemonic, Operands)
+   Else If Arch = ARCH_MSIL Then
+    InstrLen := DisasmMSILOne(Off, VAddr, Mnemonic, Operands)
    Else
     InstrLen := DisasmOne(Off, VAddr, Mnemonic, Operands);
    BytesTxt := '';
@@ -6436,7 +6855,7 @@ Procedure Help;Begin
  WriteLn('  -m arch  Force l''architecture de desassemblage :');
  WriteLn('           i386 (defaut), x86-64, 8086, 8080, 6502, z80, 6800,');
  WriteLn('           68000, sparc, sparcv9, mips, mipsel, ppc, ppcle,');
- WriteLn('           sh, shle, ia64, pcode, arm, thumb');
+ WriteLn('           sh, shle, ia64, pcode, msil, arm, thumb');
  WriteLn('           ou arm64');
  WriteLn('  -b adr   Adresse de chargement (hexa) pour un binaire');
  WriteLn('           brut sans entete, ex: -b 8000 ou -b $8000');
@@ -6458,7 +6877,8 @@ Procedure Help;Begin
  WriteLn('SPARC V8/V8+ avec le noyau entier commun SPARC V9 ; MIPS');
  WriteLn('I/II et MIPS32 ; PowerPC 32 et noyau entier PowerPC 64,');
  WriteLn('gros-boutiste ou little-endian ; SuperH SH-1/SH-2/SH-3/SH-4 ;');
- WriteLn('IA-64 structurel ; p-Code UCSD p-System II.0/II.1.');
+ WriteLn('IA-64 structurel ; p-Code UCSD p-System II.0/II.1 ; MSIL/CIL');
+ WriteLn('avec extraction automatique des methodes des assemblies .NET.');
  WriteLn('Pas de SSE/AVX/NEON/VFP, pas d''opcodes etendus 0F pour le');
  WriteLn('8086, pas de DDCB/FDCB pour le Z80.');
 End;
@@ -6495,7 +6915,7 @@ BEGIN
    Inc(I);
    If I > ParamCount Then Begin
     WriteLn('Erreur : -m necessite une architecture (i386, x86-64, 8086, ',
-     '8080, 6502, z80, 6800, 68000, sparc, mips, ppc, sh, ia64, pcode ou arm).');
+     '8080, 6502, z80, 6800, 68000, sparc, mips, ppc, sh, ia64, pcode, msil ou arm).');
     Halt(1);
    End;
    If UpStr(ParamStr(I)) = '6502' Then Arch := ARCH_6502
@@ -6559,6 +6979,10 @@ BEGIN
            (UpStr(ParamStr(I)) = 'P-CODE') Or
            (UpStr(ParamStr(I)) = 'UCSD') Or
            (UpStr(ParamStr(I)) = 'UCSDPCODE') Then Arch := ARCH_PCODE
+   Else If (UpStr(ParamStr(I)) = 'MSIL') Or
+           (UpStr(ParamStr(I)) = 'CIL') Or
+           (UpStr(ParamStr(I)) = 'IL') Or
+           (UpStr(ParamStr(I)) = 'DOTNET') Then Arch := ARCH_MSIL
    Else Begin
     WriteLn('Architecture inconnue pour -m : ', ParamStr(I));
     Halt(1);
@@ -6623,11 +7047,16 @@ BEGIN
   End;
  End Else If (BinFormat = FMT_PE32) Or (BinFormat = FMT_PE64) Then Begin
   ParsePE;
-  If Not ArchForced Then Begin
-   If PEMachine = PE_MACHINE_ARM64 Then Arch := ARCH_ARM64
-   Else If PEMachine = PE_MACHINE_ARMNT Then Arch := ARCH_THUMB
-   Else If PEMachine = PE_MACHINE_ARM Then Arch := ARCH_ARM32
-   Else If BinFormat = FMT_PE64 Then Arch := ARCH_X64;
+  If ArchForced Then Begin
+   If Arch = ARCH_MSIL Then ParseMSILPE;
+  End Else Begin
+   If ParseMSILPE Then Arch := ARCH_MSIL
+   Else Begin
+    If PEMachine = PE_MACHINE_ARM64 Then Arch := ARCH_ARM64
+    Else If PEMachine = PE_MACHINE_ARMNT Then Arch := ARCH_THUMB
+    Else If PEMachine = PE_MACHINE_ARM Then Arch := ARCH_ARM32
+    Else If BinFormat = FMT_PE64 Then Arch := ARCH_X64;
+   End;
   End;
  End Else If (BinFormat = FMT_MACHO32) Or (BinFormat = FMT_MACHO64) Then Begin
   ParseMachO;
