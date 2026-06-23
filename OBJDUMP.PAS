@@ -89,6 +89,8 @@ Const
  ARCH_PPCLE = 15;        { PowerPC little-endian                       }
  ARCH_SH    = 16;        { SuperH gros-boutiste                        }
  ARCH_SHLE  = 17;        { SuperH little-endian                        }
+ ARCH_IA64  = 18;        { Intel Itanium IA-64 little-endian           }
+ ARCH_IA64BE = 19;       { Intel Itanium IA-64 big-endian              }
 
  { ----- Modes d adressage 6800 ----- }
  AM68_INH   = 0;         { inherent : aucun operande                   }
@@ -110,6 +112,7 @@ Const
  EM_PPC       = 20;        { PowerPC 32 bits                             }
  EM_PPC64     = 21;        { PowerPC 64 bits                             }
  EM_SH        = 42;        { Hitachi/Renesas SuperH                      }
+ EM_IA_64     = 50;        { Intel Itanium IA-64                         }
  PE_MACHINE_ARM   = $01C0;
  PE_MACHINE_ARMNT = $01C4;  { Thumb-2 (ARMv7 et plus, convention Windows) }
  PE_MACHINE_ARM64 = $AA64;
@@ -5879,6 +5882,105 @@ Begin
 End;
 
 { ============================================================
+  DESASSEMBLEUR STRUCTUREL INTEL ITANIUM IA-64
+  ============================================================ }
+
+{ @description: Lit un octet d un paquet IA-64 en tenant compte du
+    boutisme. Un paquet architectural contient toujours 16 octets. }
+Function Ia64BundleByte(Off: LongInt; Index: Integer): Byte;
+Begin
+ If Arch = ARCH_IA64BE Then Ia64BundleByte := GetByte(Off + 15 - Index)
+ Else Ia64BundleByte := GetByte(Off + Index);
+End;
+
+{ @description: Extrait un slot IA-64 de 41 bits dans Lo (bits 0..31)
+    et Hi (bits 32..40). Slot vaut 0, 1 ou 2. }
+Procedure Ia64GetSlot(Off: LongInt; Slot: Integer; Var Lo: LongInt;
+ Var Hi: Word);
+Var
+ StartBit, I, SrcBit, ByteIndex, BitIndex: Integer;
+ B: Byte;
+Begin
+ Lo := 0;
+ Hi := 0;
+ StartBit := 5 + Slot * 41;
+ For I := 0 To 40 Do Begin
+  SrcBit := StartBit + I;
+  ByteIndex := SrcBit Div 8;
+  BitIndex := SrcBit Mod 8;
+  B := Ia64BundleByte(Off, ByteIndex);
+  If (B And (1 Shl BitIndex)) <> 0 Then Begin
+   If I < 32 Then Lo := Lo Or (LongInt(1) Shl I)
+   Else Hi := Hi Or (1 Shl (I - 32));
+  End;
+ End;
+End;
+
+{ @description: Retourne le template textuel d un paquet IA-64. Le
+    point-virgule indique un arret de groupe d instructions. }
+Function Ia64TemplateName(T: Byte): String;
+Const
+ Names: Array[0..31] Of String[5] = (
+  'MII', 'MII;', 'M;II', 'M;II;', 'MLX', 'MLX;', 'res', 'res',
+  'MMI', 'MMI;', 'M;MI', 'M;MI;', 'MFI', 'MFI;', 'MMF', 'MMF;',
+  'MIB', 'MIB;', 'MBB', 'MBB;', 'res', 'res', 'BBB', 'BBB;',
+  'MMB', 'MMB;', 'res', 'res', 'MFB', 'MFB;', 'res', 'res');
+Begin
+ Ia64TemplateName := Names[T And 31];
+End;
+
+{ @description: Retourne le type d unite du slot (M/I/F/B/L/X). }
+Function Ia64SlotType(T: Byte; Slot: Integer): Char;
+Const
+ Types: Array[0..31] Of String[3] = (
+  'MII', 'MII', 'MII', 'MII', 'MLX', 'MLX', '???', '???',
+  'MMI', 'MMI', 'MMI', 'MMI', 'MFI', 'MFI', 'MMF', 'MMF',
+  'MIB', 'MIB', 'MBB', 'MBB', '???', '???', 'BBB', 'BBB',
+  'MMB', 'MMB', '???', '???', 'MFB', 'MFB', '???', '???');
+Begin
+ Ia64SlotType := Types[T And 31][Slot + 1];
+End;
+
+{ @description: Formate les 41 bits d un slot en hexadecimal fixe. }
+Function Ia64SlotHex(Lo: LongInt; Hi: Word): String;
+Begin
+ Ia64SlotHex := ToHexFixed(Hi And $1FF, 3) + ToHexFixed(Lo, 8);
+End;
+
+{ @description: Desassemble structurellement un paquet IA-64. Le
+    template, les trois types d unites, les predicats et les opcodes
+    majeurs sont affiches. Les 41 bits bruts de chaque slot sont
+    conserves, ce qui permet une inspection fiable meme lorsque le
+    mnemonique detaille n est pas encore decode. }
+Function DisasmIa64One(Off, VAddrBase: LongInt;
+ Var Mnemonic, Operands: String): Integer;
+Var
+ T, Pred, Major: Byte;
+ Slot: Integer;
+ Lo: LongInt;
+ Hi: Word;
+ S, Part: String;
+ UnitType: Char;
+Begin
+ T := Ia64BundleByte(Off, 0) And $1F;
+ Mnemonic := 'bundle.' + Ia64TemplateName(T);
+ S := '';
+ For Slot := 0 To 2 Do Begin
+  Ia64GetSlot(Off, Slot, Lo, Hi);
+  Pred := Lo And $3F;
+  Major := (Hi Shr 5) And $0F;
+  UnitType := Ia64SlotType(T, Slot);
+  Part := 's' + IntToStr(Slot) + '=' + UnitType +
+   '(p' + IntToStr(Pred) + ',op' + ToHexFixed(Major, 1) +
+   ',0x' + Ia64SlotHex(Lo, Hi) + ')';
+  If S <> '' Then S := S + ' ';
+  S := S + Part;
+ End;
+ Operands := S;
+ DisasmIa64One := 16;
+End;
+
+{ ============================================================
   RECHERCHE DE SYMBOLE / SECTION POUR L AFFICHAGE
   ============================================================ }
 
@@ -5926,6 +6028,12 @@ End;
   @return Nom du format (ex: "elf32-i386", "pei-i386") }
 Function FormatName: String;
 Begin
+ If ((Arch = ARCH_IA64) Or (Arch = ARCH_IA64BE)) And
+    (BinFormat = FMT_ELF64) Then Begin
+  If Arch = ARCH_IA64BE Then FormatName := 'elf64-ia64-big'
+  Else FormatName := 'elf64-ia64-little';
+  Exit;
+ End;
  If ((Arch = ARCH_SH) Or (Arch = ARCH_SHLE)) And
     (BinFormat = FMT_ELF32) Then Begin
   If Arch = ARCH_SHLE Then FormatName := 'elf32-shl'
@@ -6043,6 +6151,7 @@ Begin
     (Arch = ARCH_Z80) Or (Arch = ARCH_6800) Then
   AddrDigits := 4
  Else If (Arch = ARCH_X64) Or (Arch = ARCH_ARM64) Or
+         (Arch = ARCH_IA64) Or (Arch = ARCH_IA64BE) Or
          ((Arch = ARCH_SPARC) And (BinFormat = FMT_ELF64)) Or
          (((Arch = ARCH_MIPS) Or (Arch = ARCH_MIPSEL)) And
           (BinFormat = FMT_ELF64)) Or
@@ -6096,7 +6205,9 @@ Begin
    Else If (Arch = ARCH_PPC) Or (Arch = ARCH_PPCLE) Then
    InstrLen := DisasmPpcOne(Off, VAddr, Mnemonic, Operands)
    Else If (Arch = ARCH_SH) Or (Arch = ARCH_SHLE) Then
-    InstrLen := DisasmShOne(Off, VAddr, Mnemonic, Operands)
+   InstrLen := DisasmShOne(Off, VAddr, Mnemonic, Operands)
+   Else If (Arch = ARCH_IA64) Or (Arch = ARCH_IA64BE) Then
+    InstrLen := DisasmIa64One(Off, VAddr, Mnemonic, Operands)
    Else
     InstrLen := DisasmOne(Off, VAddr, Mnemonic, Operands);
    BytesTxt := '';
@@ -6160,7 +6271,7 @@ Procedure Help;Begin
  WriteLn('  -m arch  Force l''architecture de desassemblage :');
  WriteLn('           i386 (defaut), x86-64, 8086, 8080, 6502, z80, 6800,');
  WriteLn('           68000, sparc, sparcv9, mips, mipsel, ppc, ppcle,');
- WriteLn('           sh, shle, arm, thumb');
+ WriteLn('           sh, shle, ia64, arm, thumb');
  WriteLn('           ou arm64');
  WriteLn('  -b adr   Adresse de chargement (hexa) pour un binaire');
  WriteLn('           brut sans entete, ex: -b 8000 ou -b $8000');
@@ -6181,7 +6292,8 @@ Procedure Help;Begin
  WriteLn('Thumb/Thumb-2 (sous-ensemble), AArch64 (sous-ensemble) et');
  WriteLn('SPARC V8/V8+ avec le noyau entier commun SPARC V9 ; MIPS');
  WriteLn('I/II et MIPS32 ; PowerPC 32 et noyau entier PowerPC 64,');
- WriteLn('gros-boutiste ou little-endian ; SuperH SH-1/SH-2/SH-3/SH-4.');
+ WriteLn('gros-boutiste ou little-endian ; SuperH SH-1/SH-2/SH-3/SH-4 ;');
+ WriteLn('IA-64 structurel (paquets, templates, slots et predicats).');
  WriteLn('Pas de SSE/AVX/NEON/VFP, pas d''opcodes etendus 0F pour le');
  WriteLn('8086, pas de DDCB/FDCB pour le Z80.');
 End;
@@ -6218,7 +6330,7 @@ BEGIN
    Inc(I);
    If I > ParamCount Then Begin
     WriteLn('Erreur : -m necessite une architecture (i386, x86-64, 8086, ',
-     '8080, 6502, z80, 6800, 68000, sparc, mips, ppc, sh, arm, thumb ou arm64).');
+     '8080, 6502, z80, 6800, 68000, sparc, mips, ppc, sh, ia64, arm ou arm64).');
     Halt(1);
    End;
    If UpStr(ParamStr(I)) = '6502' Then Arch := ARCH_6502
@@ -6273,6 +6385,11 @@ BEGIN
            (UpStr(ParamStr(I)) = 'SH2LE') Or
            (UpStr(ParamStr(I)) = 'SH3LE') Or
            (UpStr(ParamStr(I)) = 'SH4LE') Then Arch := ARCH_SHLE
+   Else If (UpStr(ParamStr(I)) = 'IA64') Or
+           (UpStr(ParamStr(I)) = 'IA-64') Or
+           (UpStr(ParamStr(I)) = 'ITANIUM') Then Arch := ARCH_IA64
+   Else If (UpStr(ParamStr(I)) = 'IA64BE') Or
+           (UpStr(ParamStr(I)) = 'ITANIUMBE') Then Arch := ARCH_IA64BE
    Else Begin
     WriteLn('Architecture inconnue pour -m : ', ParamStr(I));
     Halt(1);
@@ -6327,6 +6444,9 @@ BEGIN
    End
    Else If ElfMachine = EM_SH Then Begin
     If ElfBigEndian Then Arch := ARCH_SH Else Arch := ARCH_SHLE;
+   End
+   Else If ElfMachine = EM_IA_64 Then Begin
+    If ElfBigEndian Then Arch := ARCH_IA64BE Else Arch := ARCH_IA64;
    End
    Else If BinFormat = FMT_ELF64 Then Arch := ARCH_X64;
    { ELF32 sans e_machine ARM reconnu : on laisse ARCH_X86 par defaut,
