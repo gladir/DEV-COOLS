@@ -77,6 +77,7 @@ Const
  ARCH_ARM32 = 4;         { ARM 32 bits classique (voir DisasmArm32One) }
  ARCH_THUMB = 5;         { Thumb/Thumb-2 16+32 bits (voir DisasmThumbOne) }
  ARCH_ARM64 = 6;         { AArch64 (voir DisasmArm64One)               }
+ ARCH_Z80   = 7;         { Z80/8080 8 bits (voir DisasmZ80One)         }
 
  { ----- Types de machine ELF/PE utiles au choix automatique de Arch -----}
  EM_ARM       = 40;
@@ -3341,6 +3342,354 @@ Begin
 End;
 
 { ============================================================
+  DESASSEMBLEUR Z80 (sur-ensemble du 8080, sous-ensemble pratique)
+  ============================================================ }
+
+{ @description: Desassemble une seule instruction Z80 a partir du
+    decalage Off. Le Z80 a une structure d opcode tres reguliere pour
+    les instructions non prefixees (xx yyy zzz), exploitee directement
+    ici plutot que par une grande table comme pour le 6502. Couvre
+    le jeu de base complet (compatible 8080 : LD, ALU, INC/DEC, JP/
+    JR/CALL/RET conditionnels ou non, PUSH/POP, RST, rotations de
+    l accumulateur, DJNZ, EX) ainsi qu un sous-ensemble pratique des
+    formes prefixees : CB (rotations/decalages de registre, BIT/SET/
+    RES), ED (16 bits ADC/SBC/LD, NEG, IM, RETI/RETN, instructions de
+    bloc LDIR/LDDR/CPIR/CPDR et variantes courtes LDI/LDD/CPI/CPD) et
+    DD/FD (acces indexes (IX+d)/(IY+d) pour LD/ALU/INC/DEC, plus
+    PUSH/POP/INC/DEC/ADD/JP sur IX/IY directement). Ne couvre pas les
+    formes DDCB/FDCB (bit indexe), ni l ensemble des instructions
+    d entree/sortie ED, ni RLD/RRD.
+  @param Off Decalage de l instruction dans le fichier
+  @param VAddrBase Adresse virtuelle correspondant a Off
+  @param Mnemonic Mnemonique de l instruction (sortie)
+  @param Operands Operandes formates (sortie)
+  @return Nombre d octets occupes par l instruction }
+
+{ @description: Formate un deplacement signe pour la syntaxe Z80
+    "(IX+d)"/"(IY+d)" : contrairement a ToHexSignedDisp (qui omet le
+    signe "+" pour une valeur positive, adaptee a un contexte ou le
+    signe est deja fourni par ailleurs), le "+" doit ici toujours
+    apparaitre explicitement pour un deplacement positif ou nul.
+  @param D Deplacement signe (-128..127)
+  @return "+0xNN" ou "-0xNN" }
+Function IxDispStr(D: ShortInt): String;
+Begin
+ If D < 0 Then IxDispStr := '-0x' + ToHexU(-D)
+ Else IxDispStr := '+0x' + ToHexU(D);
+End;
+
+Function DisasmZ80One(Off, VAddrBase: LongInt;
+ Var Mnemonic, Operands: String): Integer;
+Const
+ Reg8Z80: Array[0..7] Of String[4] = (
+  'B', 'C', 'D', 'E', 'H', 'L', '(HL)', 'A');
+ Reg16Z80: Array[0..3] Of String[2] = ('BC', 'DE', 'HL', 'SP');
+ Reg16Z80AF: Array[0..3] Of String[2] = ('BC', 'DE', 'HL', 'AF');
+ AluZ80: Array[0..7] Of String[3] = (
+  'ADD', 'ADC', 'SUB', 'SBC', 'AND', 'XOR', 'OR', 'CP');
+ CondZ80: Array[0..7] Of String[2] = (
+  'NZ', 'Z', 'NC', 'C', 'PO', 'PE', 'P', 'M');
+ CondJrZ80: Array[0..3] Of String[2] = ('NZ', 'Z', 'NC', 'C');
+ RotZ80: Array[0..7] Of String[3] = (
+  'RLC', 'RRC', 'RL', 'RR', 'SLA', 'SRA', 'SLL', 'SRL');
+Var
+ Op, Op2: Byte;
+ P: LongInt;
+ X, Y, Z, P2, Q: Byte;
+ D8: LongInt;
+ D16: LongInt;
+ Disp: ShortInt;
+ IxName: String[2];
+Begin
+ P := Off;
+ Op := GetByte(P);
+ Inc(P);
+ Mnemonic := '(bad)';
+ Operands := '';
+
+ { ----- CB : rotations/decalages de registre, BIT/SET/RES ----- }
+ If Op = $CB Then Begin
+  Op2 := GetByte(P); Inc(P);
+  X := (Op2 Shr 6) And 3;
+  Y := (Op2 Shr 3) And 7;
+  Z := Op2 And 7;
+  Case X Of
+   0: Begin Mnemonic := RotZ80[Y]; Operands := Reg8Z80[Z]; End;
+   1: Begin Mnemonic := 'BIT'; Operands := IntToStr(Y) + ',' + Reg8Z80[Z]; End;
+   2: Begin Mnemonic := 'RES'; Operands := IntToStr(Y) + ',' + Reg8Z80[Z]; End;
+   3: Begin Mnemonic := 'SET'; Operands := IntToStr(Y) + ',' + Reg8Z80[Z]; End;
+  End;
+ End
+
+ { ----- ED : instructions etendues (sous-ensemble pratique) ----- }
+ Else If Op = $ED Then Begin
+  Op2 := GetByte(P); Inc(P);
+  P2 := (Op2 Shr 4) And 3;
+  Q := (Op2 Shr 3) And 1;
+  Case Op2 Of
+   $44: Mnemonic := 'NEG';
+   $4D: Mnemonic := 'RETI';
+   $45: Mnemonic := 'RETN';
+   $46, $4E: Begin Mnemonic := 'IM'; Operands := '0'; End;
+   $56, $5E: Begin Mnemonic := 'IM'; Operands := '1'; End;
+   $66, $6E: Begin Mnemonic := 'IM'; Operands := '2'; End;
+   $47: Begin Mnemonic := 'LD'; Operands := 'I,A'; End;
+   $4F: Begin Mnemonic := 'LD'; Operands := 'R,A'; End;
+   $57: Begin Mnemonic := 'LD'; Operands := 'A,I'; End;
+   $5F: Begin Mnemonic := 'LD'; Operands := 'A,R'; End;
+   $67: Mnemonic := 'RRD';
+   $6F: Mnemonic := 'RLD';
+   $A0: Mnemonic := 'LDI';
+   $A8: Mnemonic := 'LDD';
+   $B0: Mnemonic := 'LDIR';
+   $B8: Mnemonic := 'LDDR';
+   $A1: Mnemonic := 'CPI';
+   $A9: Mnemonic := 'CPD';
+   $B1: Mnemonic := 'CPIR';
+   $B9: Mnemonic := 'CPDR';
+   $A2: Mnemonic := 'INI';
+   $AA: Mnemonic := 'IND';
+   $B2: Mnemonic := 'INIR';
+   $BA: Mnemonic := 'INDR';
+   $A3: Mnemonic := 'OUTI';
+   $AB: Mnemonic := 'OUTD';
+   $B3: Mnemonic := 'OTIR';
+   $BB: Mnemonic := 'OTDR';
+  Else Begin
+   If (Op2 And $C7) = $42 Then Begin
+    Mnemonic := 'SBC'; Operands := 'HL,' + Reg16Z80[P2];
+   End Else If (Op2 And $C7) = $4A Then Begin
+    Mnemonic := 'ADC'; Operands := 'HL,' + Reg16Z80[P2];
+   End Else If (Op2 And $C7) = $43 Then Begin
+    D16 := GetWord(P); P := P + 2;
+    Mnemonic := 'LD';
+    Operands := '(0x' + ToHexU(D16) + '),' + Reg16Z80[P2];
+   End Else If (Op2 And $C7) = $4B Then Begin
+    D16 := GetWord(P); P := P + 2;
+    Mnemonic := 'LD';
+    Operands := Reg16Z80[P2] + ',(0x' + ToHexU(D16) + ')';
+   End Else
+    Mnemonic := '(bad)';
+  End;
+  End;
+ End
+
+ { ----- DD/FD : variantes indexees par IX ou IY ----- }
+ Else If (Op = $DD) Or (Op = $FD) Then Begin
+  If Op = $DD Then IxName := 'IX' Else IxName := 'IY';
+  Op2 := GetByte(P); Inc(P);
+  Case Op2 Of
+   $21: Begin
+    D16 := GetWord(P); P := P + 2;
+    Mnemonic := 'LD'; Operands := IxName + ',0x' + ToHexU(D16);
+   End;
+   $E5: Begin Mnemonic := 'PUSH'; Operands := IxName; End;
+   $E1: Begin Mnemonic := 'POP'; Operands := IxName; End;
+   $23: Begin Mnemonic := 'INC'; Operands := IxName; End;
+   $2B: Begin Mnemonic := 'DEC'; Operands := IxName; End;
+   $E9: Begin Mnemonic := 'JP'; Operands := '(' + IxName + ')'; End;
+   $F9: Begin Mnemonic := 'LD'; Operands := 'SP,' + IxName; End;
+   $09, $19, $39: Begin
+    Mnemonic := 'ADD';
+    Operands := IxName + ',' + Reg16Z80[(Op2 Shr 4) And 3];
+   End;
+   $29: Begin Mnemonic := 'ADD'; Operands := IxName + ',' + IxName; End;
+   $34, $35, $36: Begin
+    Disp := ShortInt(GetByte(P)); Inc(P);
+    If Op2 = $34 Then Mnemonic := 'INC'
+    Else If Op2 = $35 Then Mnemonic := 'DEC'
+    Else Mnemonic := 'LD';
+    Operands := '(' + IxName + IxDispStr(Disp) + ')';
+    If Op2 = $36 Then Begin
+     D8 := GetByte(P); Inc(P);
+     Operands := Operands + ',0x' + ToHexU(D8);
+    End;
+   End;
+  Else Begin
+   X := (Op2 Shr 6) And 3;
+   Y := (Op2 Shr 3) And 7;
+   Z := Op2 And 7;
+   If (X = 1) And (Z = 6) And (Y <> 6) Then Begin
+    { LD r,(IX+d) }
+    Disp := ShortInt(GetByte(P)); Inc(P);
+    Mnemonic := 'LD';
+    Operands := Reg8Z80[Y] + ',(' + IxName + IxDispStr(Disp) + ')';
+   End Else If (X = 1) And (Y = 6) And (Z <> 6) Then Begin
+    { LD (IX+d),r }
+    Disp := ShortInt(GetByte(P)); Inc(P);
+    Mnemonic := 'LD';
+    Operands := '(' + IxName + IxDispStr(Disp) + '),' + Reg8Z80[Z];
+   End Else If (X = 2) And (Z = 6) Then Begin
+    { ALU A,(IX+d) }
+    Disp := ShortInt(GetByte(P)); Inc(P);
+    Mnemonic := AluZ80[Y];
+    If Y In [0, 1, 3] Then
+     Operands := 'A,(' + IxName + IxDispStr(Disp) + ')'
+    Else
+     Operands := '(' + IxName + IxDispStr(Disp) + ')';
+   End Else
+    Mnemonic := '(bad)';
+  End;
+  End;
+ End
+
+ { ----- instructions de base (non prefixees) ----- }
+ Else Begin
+  X := (Op Shr 6) And 3;
+  Y := (Op Shr 3) And 7;
+  Z := Op And 7;
+  P2 := (Op Shr 4) And 3;
+  Q := (Op Shr 3) And 1;
+
+  Case X Of
+
+   0: Case Z Of
+       0: Case Y Of
+           0: Mnemonic := 'NOP';
+           1: Begin Mnemonic := 'EX'; Operands := 'AF,AF'''; End;
+           2: Begin
+               Disp := ShortInt(GetByte(P)); Inc(P);
+               Mnemonic := 'DJNZ';
+               Operands := '0x' + ToHexU(VAddrBase + (P - Off) + Disp);
+              End;
+           3: Begin
+               Disp := ShortInt(GetByte(P)); Inc(P);
+               Mnemonic := 'JR';
+               Operands := '0x' + ToHexU(VAddrBase + (P - Off) + Disp);
+              End;
+          Else Begin
+           Disp := ShortInt(GetByte(P)); Inc(P);
+           Mnemonic := 'JR';
+           Operands := CondJrZ80[Y - 4] + ',0x' +
+            ToHexU(VAddrBase + (P - Off) + Disp);
+          End;
+          End;
+       1: Begin
+           If Q = 0 Then Begin
+            D16 := GetWord(P); P := P + 2;
+            Mnemonic := 'LD'; Operands := Reg16Z80[P2] + ',0x' + ToHexU(D16);
+           End Else Begin
+            Mnemonic := 'ADD'; Operands := 'HL,' + Reg16Z80[P2];
+           End;
+          End;
+       2: Case Y Of
+           0: Begin Mnemonic := 'LD'; Operands := '(BC),A'; End;
+           1: Begin Mnemonic := 'LD'; Operands := 'A,(BC)'; End;
+           2: Begin Mnemonic := 'LD'; Operands := '(DE),A'; End;
+           3: Begin Mnemonic := 'LD'; Operands := 'A,(DE)'; End;
+           4: Begin
+               D16 := GetWord(P); P := P + 2;
+               Mnemonic := 'LD'; Operands := '(0x' + ToHexU(D16) + '),HL';
+              End;
+           5: Begin
+               D16 := GetWord(P); P := P + 2;
+               Mnemonic := 'LD'; Operands := 'HL,(0x' + ToHexU(D16) + ')';
+              End;
+           6: Begin
+               D16 := GetWord(P); P := P + 2;
+               Mnemonic := 'LD'; Operands := '(0x' + ToHexU(D16) + '),A';
+              End;
+           7: Begin
+               D16 := GetWord(P); P := P + 2;
+               Mnemonic := 'LD'; Operands := 'A,(0x' + ToHexU(D16) + ')';
+              End;
+          End;
+       3: Begin
+           If Q = 0 Then Mnemonic := 'INC' Else Mnemonic := 'DEC';
+           Operands := Reg16Z80[P2];
+          End;
+       4: Begin Mnemonic := 'INC'; Operands := Reg8Z80[Y]; End;
+       5: Begin Mnemonic := 'DEC'; Operands := Reg8Z80[Y]; End;
+       6: Begin
+           D8 := GetByte(P); Inc(P);
+           Mnemonic := 'LD'; Operands := Reg8Z80[Y] + ',0x' + ToHexU(D8);
+          End;
+       7: Case Y Of
+           0: Mnemonic := 'RLCA'; 1: Mnemonic := 'RRCA';
+           2: Mnemonic := 'RLA';  3: Mnemonic := 'RRA';
+           4: Mnemonic := 'DAA';  5: Mnemonic := 'CPL';
+           6: Mnemonic := 'SCF';  7: Mnemonic := 'CCF';
+          End;
+      End;
+
+   1: Begin
+       If Op = $76 Then Mnemonic := 'HALT'
+       Else Begin
+        Mnemonic := 'LD'; Operands := Reg8Z80[Y] + ',' + Reg8Z80[Z];
+       End;
+      End;
+
+   2: Begin
+       Mnemonic := AluZ80[Y];
+       If Y In [0, 1, 3] Then Operands := 'A,' + Reg8Z80[Z] { ADD/ADC/SBC }
+       Else Operands := Reg8Z80[Z]; { SUB/AND/XOR/OR/CP : pas de "A," }
+      End;
+
+   3: Case Z Of
+       0: Begin Mnemonic := 'RET'; Operands := CondZ80[Y]; End;
+       1: Begin
+           If Q = 0 Then Begin
+            Mnemonic := 'POP'; Operands := Reg16Z80AF[P2];
+           End Else Case P2 Of
+            0: Mnemonic := 'RET';
+            1: Mnemonic := 'EXX';
+            2: Begin Mnemonic := 'JP'; Operands := '(HL)'; End;
+            3: Begin Mnemonic := 'LD'; Operands := 'SP,HL'; End;
+           End;
+          End;
+       2: Begin
+           D16 := GetWord(P); P := P + 2;
+           Mnemonic := 'JP'; Operands := CondZ80[Y] + ',0x' + ToHexU(D16);
+          End;
+       3: Case Y Of
+           0: Begin
+               D16 := GetWord(P); P := P + 2;
+               Mnemonic := 'JP'; Operands := '0x' + ToHexU(D16);
+              End;
+           2: Begin
+               D8 := GetByte(P); Inc(P);
+               Mnemonic := 'OUT'; Operands := '(0x' + ToHexU(D8) + '),A';
+              End;
+           3: Begin
+               D8 := GetByte(P); Inc(P);
+               Mnemonic := 'IN'; Operands := 'A,(0x' + ToHexU(D8) + ')';
+              End;
+           4: Begin Mnemonic := 'EX'; Operands := '(SP),HL'; End;
+           5: Begin Mnemonic := 'EX'; Operands := 'DE,HL'; End;
+           6: Mnemonic := 'DI';
+           7: Mnemonic := 'EI';
+          Else
+           Mnemonic := '(bad)'; { Y=1 : CB deja intercepte plus haut }
+          End;
+       4: Begin
+           D16 := GetWord(P); P := P + 2;
+           Mnemonic := 'CALL'; Operands := CondZ80[Y] + ',0x' + ToHexU(D16);
+          End;
+       5: Begin
+           If Q = 0 Then Begin
+            Mnemonic := 'PUSH'; Operands := Reg16Z80AF[P2];
+           End Else If P2 = 0 Then Begin
+            D16 := GetWord(P); P := P + 2;
+            Mnemonic := 'CALL'; Operands := '0x' + ToHexU(D16);
+           End Else
+            Mnemonic := '(bad)'; { P2=1/2/3 : DD/ED/FD deja intercepte }
+          End;
+       6: Begin
+           D8 := GetByte(P); Inc(P);
+           Mnemonic := AluZ80[Y];
+           If Y In [0, 1, 3] Then Operands := 'A,0x' + ToHexU(D8)
+           Else Operands := '0x' + ToHexU(D8);
+          End;
+       7: Begin Mnemonic := 'RST'; Operands := '0x' + ToHexU(Y * 8); End;
+      End;
+  End;
+ End;
+
+ If P <= Off Then P := Off + 1; { securite anti-boucle infinie }
+ DisasmZ80One := P - Off;
+End;
+
+{ ============================================================
   RECHERCHE DE SYMBOLE / SECTION POUR L AFFICHAGE
   ============================================================ }
 
@@ -3465,7 +3814,8 @@ Var
  InstrLen, K, AddrDigits: Integer;
  Mnemonic, Operands, BytesTxt, Lbl: String;
 Begin
- If (Arch = ARCH_6502) Or (Arch = ARCH_8086) Then AddrDigits := 4
+ If (Arch = ARCH_6502) Or (Arch = ARCH_8086) Or (Arch = ARCH_Z80) Then
+  AddrDigits := 4
  Else If (Arch = ARCH_X64) Or (Arch = ARCH_ARM64) Then AddrDigits := 16
  Else If (Arch = ARCH_ARM32) Or (Arch = ARCH_THUMB) Then AddrDigits := 8
  Else AddrDigits := 6;
@@ -3496,6 +3846,8 @@ Begin
     InstrLen := DisasmArm32One(Off, VAddr, Mnemonic, Operands)
    Else If Arch = ARCH_THUMB Then
     InstrLen := DisasmThumbOne(Off, VAddr, Mnemonic, Operands)
+   Else If Arch = ARCH_Z80 Then
+    InstrLen := DisasmZ80One(Off, VAddr, Mnemonic, Operands)
    Else
     InstrLen := DisasmOne(Off, VAddr, Mnemonic, Operands);
    BytesTxt := '';
@@ -3556,8 +3908,8 @@ Begin
  WriteLn('  -t       Affiche la table des symboles');
  WriteLn('  -S       Melange source/assembleur (non supporte)');
  WriteLn('  -m arch  Force l''architecture de desassemblage :');
- WriteLn('           i386 (defaut), x86-64, 8086, 6502, arm, thumb');
- WriteLn('           ou arm64');
+ WriteLn('           i386 (defaut), x86-64, 8086, 6502, z80, arm,');
+ WriteLn('           thumb ou arm64');
  WriteLn('  -b adr   Adresse de chargement (hexa) pour un binaire');
  WriteLn('           brut sans entete, ex: -b 8000 ou -b $8000');
  WriteLn('  -?       Aide sur cette commande');
@@ -3569,9 +3921,11 @@ Begin
  WriteLn('a partir de e_machine (ELF), Machine (PE) ou cputype (Mach-O).');
  WriteLn('Desassemblage : x86 32 bits / x86-64 (syntaxe AT&T, comme');
  WriteLn('objdump) ; 8086/80186 16 bits (syntaxe Intel/MASM) ; 6502');
- WriteLn('complet (151 opcodes) ; ARM 32 bits classique, Thumb/Thumb-2');
- WriteLn('(sous-ensemble) et AArch64 (sous-ensemble). Pas de SSE/AVX/');
- WriteLn('NEON/VFP, pas d''opcodes etendus 0F pour le 8086.');
+ WriteLn('complet (151 opcodes) ; Z80 (jeu de base complet, plus un');
+ WriteLn('sous-ensemble pratique de CB/ED/DD/FD) ; ARM 32 bits');
+ WriteLn('classique, Thumb/Thumb-2 (sous-ensemble) et AArch64 (sous-');
+ WriteLn('ensemble). Pas de SSE/AVX/NEON/VFP, pas d''opcodes etendus');
+ WriteLn('0F pour le 8086, pas de DDCB/FDCB pour le Z80.');
 End;
 
 Var
@@ -3606,7 +3960,7 @@ Begin
    Inc(I);
    If I > ParamCount Then Begin
     WriteLn('Erreur : -m necessite une architecture (i386, x86-64, 8086, ',
-     '6502, arm, thumb ou arm64).');
+     '6502, z80, arm, thumb ou arm64).');
     Halt(1);
    End;
    If UpStr(ParamStr(I)) = '6502' Then Arch := ARCH_6502
@@ -3622,6 +3976,7 @@ Begin
    Else If (UpStr(ParamStr(I)) = 'ARM') Or
            (UpStr(ParamStr(I)) = 'ARM32') Then Arch := ARCH_ARM32
    Else If UpStr(ParamStr(I)) = 'THUMB' Then Arch := ARCH_THUMB
+   Else If UpStr(ParamStr(I)) = 'Z80' Then Arch := ARCH_Z80
    Else Begin
     WriteLn('Architecture inconnue pour -m : ', ParamStr(I));
     Halt(1);
