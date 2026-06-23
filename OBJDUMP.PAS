@@ -16,7 +16,12 @@
       (.a, traitee membre par membre), et binaire brut (avec -m/-b).
     - Desassemblage (-d) : jeu d instructions courant de chaque
       architecture (mov, push/pop, arithmetique, branchements, etc.),
-      pas une couverture exhaustive (pas de SSE/AVX).
+      pas une couverture exhaustive. x86 : SSE/SSE2/SSE3/SSSE3/
+      SSE4.1 et AVX/AVX2 (prefixe VEX) couverts sur les instructions
+      les plus frequentes (voir TrySSE_x86). ARM/AArch64 : pas de
+      NEON ni VFP (confiance insuffisante sur leur encodage exact
+      sans documentation de reference, a la difference de SSE/AVX
+      dont les encodages ont pu etre verifies a la main).
     - L option -S (melange source/assembleur) necessiterait de lire
       les informations de debogage (DWARF pour ELF, CodeView/PDB pour
       PE), hors de portee ici : elle affiche un message explicite
@@ -1634,6 +1639,26 @@ Begin
  Reg8 := '%' + Reg8Names[R And 7];
 End;
 
+{ @description: Tente de decoder une instruction SSE/SSE2/SSE3/
+    SSSE3/SSE4/AVX/AVX2 a la position Off (prefixe eventuel suivi
+    de 0F/0F38/0F3A, ou prefixe VEX C4/C5). Fonction partagee par
+    DisasmOne (32 bits) et Disasm64One (64 bits) : voir
+    l implementation complete, placee plus loin dans ce fichier
+    (apres les utilitaires de registres 64 bits dont elle a besoin
+    en mode Is64).
+  @param Off Decalage de l instruction
+  @param VAddrBase Adresse virtuelle correspondante (non utilisee
+    ici, mais gardee pour une signature uniforme avec DisasmOne)
+  @param Is64 Vrai si appelee depuis Disasm64One (registres
+    etendus R8-R15/XMM8-XMM15 via REX possibles)
+  @param Mnemonic (sortie) mnemonique decode
+  @param Operands (sortie) operandes formates (syntaxe AT&T)
+  @return Nombre d octets consommes, ou 0 si aucune instruction
+    SSE/AVX n a ete reconnue a cette position (l appelant doit
+    alors continuer son propre decodage, inchange) }
+Function TrySSE_x86(Off, VAddrBase: LongInt; Is64: Boolean;
+ Var Mnemonic, Operands: String): Integer; Forward;
+
 { @description: Decode l octet ModRM (et l eventuel octet SIB et
     deplacement) a la position Off, et renvoie la representation
     textuelle (syntaxe AT&T) de l operande memoire/registre qu il
@@ -1727,7 +1752,14 @@ Var
  RegF: Byte;
  Imm: LongInt;
  Rel: LongInt;
+Var
+ SSELen: Integer;
 Begin
+ SSELen := TrySSE_x86(Off, VAddrBase, False, Mnemonic, Operands);
+ If SSELen > 0 Then Begin
+  DisasmOne := SSELen;
+  Exit;
+ End;
  P := Off;
  Op := GetByte(P);
  Inc(P);
@@ -2167,6 +2199,659 @@ Begin
  DecodeModRM64 := DispTxt + '(' + Inner + ')';
 End;
 
+{ ============================================================
+  SSE/SSE2/SSE3/SSSE3/SSE4/AVX/AVX2 (x86 32 et 64 bits)
+  ============================================================
+  Couvre les instructions les plus frequentes dans du code reel
+  compile (chargement/stockage XMM, arithmetique flottante scalaire
+  et empaquetee, conversions, comparaisons, logique bit-a-bit,
+  quelques instructions entieres SIMD courantes), pas une couverture
+  exhaustive : pas de groupes de decalage (PSxxx avec sous-opcode
+  ModRM.reg), pas de formes MMX historiques (registres MM0-MM7),
+  pas de PCMPxSTRx/AES-NI/SSE4.2 string, pas de FMA3/4, pas
+  d AVX-512. AVX/AVX2 (prefixe VEX) reutilise la meme table de
+  mnemoniques que SSE, avec le prefixe "v" et l operande
+  supplementaire vvvv ; seules les formes courantes a 2/3 operandes
+  des opcodes deja couverts par SSE sont reconnues (pas de nouveaux
+  opcodes propres a AVX2 comme les decalages variables VPSLLVD).
+  Confiance plus faible que le reste de ce fichier : aucun
+  assembleur ni processeur reel n a ete utilise pour validation. }
+
+{ @description: Nom d un registre XMM (128 bits). }
+Function XmmReg(R: Byte): String;
+Begin
+ XmmReg := '%xmm' + IntToStr(R);
+End;
+
+{ @description: Nom d un registre YMM (256 bits, AVX). }
+Function YmmReg(R: Byte): String;
+Begin
+ YmmReg := '%ymm' + IntToStr(R);
+End;
+
+{ @description: Comme DecodeModRM/DecodeModRM64, mais renvoie un
+    registre XMM/YMM (et non un registre general) quand Mod=11 ;
+    l adressage memoire (identique quelle que soit la largeur de
+    l operande final) est calcule de la meme facon.
+  @param Off Decalage du ModRM
+  @param Consumed Octets consommes, ModRM+SIB+deplacement (sortie)
+  @param RegField Champ Reg du ModRM, etendu par RexR (sortie)
+  @param Is64 Vrai en mode 64 bits (registres d adresse 64 bits,
+    adressage RIP-relatif pour Mod=00,RM=101 sans SIB)
+  @param RexR, RexX, RexB Bits d extension REX (ignores si Is64=Faux)
+  @param UseYmm Vrai pour nommer le registre direct en YMM (AVX 256
+    bits), faux pour XMM (128 bits)
+  @return Texte de l operande (registre vectoriel ou adresse memoire) }
+Function DecodeModRMVec(Off: LongInt; Var Consumed: Integer;
+ Var RegField: Byte; Is64: Boolean; RexR, RexX, RexB, UseYmm: Boolean): String;
+Var
+ ModB, RM, Scale, Idx, BaseR: Byte;
+ Disp: LongInt;
+ HasSIB, NoBase: Boolean;
+ P: LongInt;
+ Inner, DispTxt: String;
+Begin
+ P := Off;
+ ModB := (GetByte(P) Shr 6) And 3;
+ RegField := (GetByte(P) Shr 3) And 7;
+ If Is64 And RexR Then RegField := RegField Or 8;
+ RM := GetByte(P) And 7;
+ If Is64 And RexB Then RM := RM Or 8;
+ Inc(P);
+ Consumed := 1;
+ If ModB = 3 Then Begin
+  If UseYmm Then DecodeModRMVec := YmmReg(RM) Else DecodeModRMVec := XmmReg(RM);
+  Exit;
+ End;
+ HasSIB := ((RM And 7) = 4);
+ Scale := 0; Idx := 0; BaseR := 0; NoBase := False;
+ If HasSIB Then Begin
+  Scale := (GetByte(P) Shr 6) And 3;
+  Idx   := (GetByte(P) Shr 3) And 7;
+  If Is64 And RexX Then Idx := Idx Or 8;
+  BaseR := GetByte(P) And 7;
+  If Is64 And RexB Then BaseR := BaseR Or 8;
+  Inc(P); Inc(Consumed);
+  NoBase := (BaseR = 5) And (ModB = 0);
+ End;
+ Disp := 0;
+ If (ModB = 0) And ((RM And 7) = 5) And (Not HasSIB) Then Begin
+  Disp := GetDWord(P); P := P + 4; Consumed := Consumed + 4;
+  If Is64 Then DecodeModRMVec := ToHexSignedDisp(Disp) + '(%rip)'
+  Else DecodeModRMVec := '0x' + ToHexU(Disp);
+  Exit;
+ End;
+ If NoBase Then Begin
+  Disp := GetDWord(P); P := P + 4; Consumed := Consumed + 4;
+ End Else If ModB = 1 Then Begin
+  Disp := ShortInt(GetByte(P)); Inc(P); Inc(Consumed);
+ End Else If ModB = 2 Then Begin
+  Disp := GetDWord(P); P := P + 4; Consumed := Consumed + 4;
+ End;
+ Inner := '';
+ If HasSIB Then Begin
+  If Not NoBase Then Begin
+   If Is64 Then Inner := Reg64(BaseR) Else Inner := Reg32(BaseR);
+  End;
+  If Idx <> 4 Then Begin
+   If Inner <> '' Then Inner := Inner + ',';
+   If Is64 Then Inner := Inner + Reg64(Idx) + ',' + Chr(Ord('0') + (1 Shl Scale))
+   Else Inner := Inner + Reg32(Idx) + ',' + Chr(Ord('0') + (1 Shl Scale));
+  End;
+ End Else Begin
+  If Is64 Then Inner := Reg64(RM) Else Inner := Reg32(RM);
+ End;
+ DispTxt := ToHexSignedDisp(Disp);
+ DecodeModRMVec := DispTxt + '(' + Inner + ')';
+End;
+
+{ @description: Suffixe de mnemonique selon le prefixe obligatoire
+    SSE (aucun=ps, 66=pd, F3=ss, F2=sd).
+  @param Pfx 0=aucun,1=66,2=F3,3=F2
+  @return "ps", "pd", "ss" ou "sd" }
+Function SSESuffix(Pfx: Byte): String;
+Begin
+ Case Pfx Of
+  0: SSESuffix := 'ps';
+  1: SSESuffix := 'pd';
+  2: SSESuffix := 'ss';
+ Else
+  SSESuffix := 'sd';
+ End;
+End;
+
+{ @description: Coeur commun de decodage SSE et AVX (VEX) : a partir
+    du second octet d opcode (Op2, deja lu par l appelant) et du
+    contexte deja determine (prefixe obligatoire Pfx, table d escape
+    Esc), decode le ModRM/l immediat eventuel et produit le
+    mnemonique racine (sans le "v" d AVX, ajoute par l appelant si
+    necessaire) et les deux operandes "source,destination" (la
+    destination etant toujours le registre vectoriel du champ Reg
+    du ModRM). Renvoie une chaine vide si Op2 n est pas reconnu.
+  @param Off2 Decalage de l octet Op2 lui-meme
+  @param Op2 Octet d opcode (deja lu)
+  @param Pfx Prefixe obligatoire (0=aucun,1=66,2=F3,3=F2)
+  @param Esc Table d echappement (0=0F,1=0F38,2=0F3A)
+  @param Is64, RexR, RexX, RexB Contexte REX (mode 64 bits)
+  @param Src (sortie) operande source
+  @param Dst (sortie) operande destination (toujours un registre)
+  @param DstReg (sortie) numero du registre destination (pour AVX)
+  @param TotalLen (sortie) octets consommes a partir de Off2
+  @return Mnemonique racine (sans taille ni "v"), ou chaine vide }
+Function DecodeGPR32Or64(Off: LongInt; Var Consumed: Integer;
+ Var RegField: Byte; Is64, RexR, RexX, RexB: Boolean): String;
+Begin
+ If Is64 Then
+  DecodeGPR32Or64 := DecodeModRM64(Off, Consumed, RegField, 32,
+   RexR, RexX, RexB, True)
+ Else
+  DecodeGPR32Or64 := DecodeModRM(Off, Consumed, RegField, True);
+End;
+
+Function SSECore(Off2: LongInt; Op2: Byte; Pfx, Esc: Byte;
+ Is64, RexR, RexX, RexB: Boolean; Var Src, Dst: String; Var DstReg: Byte;
+ Var TotalLen: Integer): String;
+Var
+ P: LongInt;
+ Len: Integer;
+ RM: String;
+ Imm: Byte;
+ Root: String;
+Begin
+ P := Off2 + 1; { apres Op2 }
+ Root := '';
+ DstReg := 0;
+ If Esc = 0 Then Begin
+  Case Op2 Of
+   $10: Begin
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len;
+    Src := RM; Root := 'mov' + SSESuffix(Pfx);
+   End;
+   $11: Begin
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len;
+    Src := XmmReg(DstReg); Dst := RM; Root := 'mov' + SSESuffix(Pfx);
+    TotalLen := P - Off2; SSECore := Root; Exit;
+   End;
+   $28: Begin
+    If Pfx > 1 Then Begin SSECore := ''; Exit; End;
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len;
+    Src := RM; Root := 'movap' + Copy(SSESuffix(Pfx), 2, 1);
+   End;
+   $29: Begin
+    If Pfx > 1 Then Begin SSECore := ''; Exit; End;
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len;
+    Src := XmmReg(DstReg); Dst := RM;
+    Root := 'movap' + Copy(SSESuffix(Pfx), 2, 1);
+    TotalLen := P - Off2; SSECore := Root; Exit;
+   End;
+   $12: Begin
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM;
+    If Pfx = 1 Then Root := 'movlpd' Else Root := 'movlps';
+   End;
+   $16: Begin
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM;
+    If Pfx = 1 Then Root := 'movhpd' Else Root := 'movhps';
+   End;
+   $2A: Begin
+    If (Pfx <> 2) And (Pfx <> 3) Then Begin SSECore := ''; Exit; End;
+    RM := DecodeGPR32Or64(P, Len, DstReg, Is64, RexR, RexX, RexB);
+    P := P + Len;
+    Src := RM;
+    If Pfx = 2 Then Root := 'cvtsi2ss' Else Root := 'cvtsi2sd';
+   End;
+   $2C: Begin
+    If (Pfx <> 2) And (Pfx <> 3) Then Begin SSECore := ''; Exit; End;
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM;
+    If Pfx = 2 Then Root := 'cvttss2si' Else Root := 'cvttsd2si';
+   End;
+   $2D: Begin
+    If (Pfx <> 2) And (Pfx <> 3) Then Begin SSECore := ''; Exit; End;
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM;
+    If Pfx = 2 Then Root := 'cvtss2si' Else Root := 'cvtsd2si';
+   End;
+   $2E: Begin
+    If Pfx > 1 Then Begin SSECore := ''; Exit; End;
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM;
+    If Pfx = 1 Then Root := 'ucomisd' Else Root := 'ucomiss';
+   End;
+   $2F: Begin
+    If Pfx > 1 Then Begin SSECore := ''; Exit; End;
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM;
+    If Pfx = 1 Then Root := 'comisd' Else Root := 'comiss';
+   End;
+   $51: Begin
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'sqrt' + SSESuffix(Pfx);
+   End;
+   $54: Begin
+    If Pfx > 1 Then Begin SSECore := ''; Exit; End;
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'andp' + Copy(SSESuffix(Pfx), 2, 1);
+   End;
+   $55: Begin
+    If Pfx > 1 Then Begin SSECore := ''; Exit; End;
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'andnp' + Copy(SSESuffix(Pfx), 2, 1);
+   End;
+   $56: Begin
+    If Pfx > 1 Then Begin SSECore := ''; Exit; End;
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'orp' + Copy(SSESuffix(Pfx), 2, 1);
+   End;
+   $57: Begin
+    If Pfx > 1 Then Begin SSECore := ''; Exit; End;
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'xorp' + Copy(SSESuffix(Pfx), 2, 1);
+   End;
+   $58: Begin
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'add' + SSESuffix(Pfx);
+   End;
+   $59: Begin
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'mul' + SSESuffix(Pfx);
+   End;
+   $5A: Begin
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM;
+    Case Pfx Of
+     0: Root := 'cvtps2pd'; 1: Root := 'cvtpd2ps';
+     2: Root := 'cvtss2sd';
+    Else Root := 'cvtsd2ss';
+    End;
+   End;
+   $5B: Begin
+    If Pfx = 3 Then Begin SSECore := ''; Exit; End;
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM;
+    Case Pfx Of
+     0: Root := 'cvtdq2ps'; 1: Root := 'cvtps2dq';
+    Else Root := 'cvttps2dq';
+    End;
+   End;
+   $5C: Begin
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'sub' + SSESuffix(Pfx);
+   End;
+   $5D: Begin
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'min' + SSESuffix(Pfx);
+   End;
+   $5E: Begin
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'div' + SSESuffix(Pfx);
+   End;
+   $5F: Begin
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'max' + SSESuffix(Pfx);
+   End;
+   $60: Begin
+    If Pfx <> 1 Then Begin SSECore := ''; Exit; End;
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'punpcklbw';
+   End;
+   $61: Begin
+    If Pfx <> 1 Then Begin SSECore := ''; Exit; End;
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'punpcklwd';
+   End;
+   $62: Begin
+    If Pfx <> 1 Then Begin SSECore := ''; Exit; End;
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'punpckldq';
+   End;
+   $68: Begin
+    If Pfx <> 1 Then Begin SSECore := ''; Exit; End;
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'punpckhbw';
+   End;
+   $69: Begin
+    If Pfx <> 1 Then Begin SSECore := ''; Exit; End;
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'punpckhwd';
+   End;
+   $6A: Begin
+    If Pfx <> 1 Then Begin SSECore := ''; Exit; End;
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'punpckhdq';
+   End;
+   $6C: Begin
+    If Pfx <> 1 Then Begin SSECore := ''; Exit; End;
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'punpcklqdq';
+   End;
+   $6D: Begin
+    If Pfx <> 1 Then Begin SSECore := ''; Exit; End;
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'punpckhqdq';
+   End;
+   $6E: Begin
+    If Pfx <> 1 Then Begin SSECore := ''; Exit; End;
+    RM := DecodeGPR32Or64(P, Len, DstReg, Is64, RexR, RexX, RexB);
+    P := P + Len; Src := RM; Root := 'movd';
+   End;
+   $7E: Begin
+    If Pfx = 2 Then Begin
+     RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+     P := P + Len; Src := RM; Root := 'movq';
+    End Else If Pfx = 1 Then Begin
+     RM := DecodeGPR32Or64(P, Len, DstReg, Is64, RexR, RexX, RexB);
+     P := P + Len;
+     Src := XmmReg(DstReg); Dst := RM; Root := 'movd';
+     TotalLen := P - Off2; SSECore := Root; Exit;
+    End Else Begin SSECore := ''; Exit; End;
+   End;
+   $6F: Begin
+    If Pfx = 0 Then Begin SSECore := ''; Exit; End;
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM;
+    If Pfx = 1 Then Root := 'movdqa' Else Root := 'movdqu';
+   End;
+   $7F: Begin
+    If Pfx = 0 Then Begin SSECore := ''; Exit; End;
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len;
+    Src := XmmReg(DstReg); Dst := RM;
+    If Pfx = 1 Then Root := 'movdqa' Else Root := 'movdqu';
+    TotalLen := P - Off2; SSECore := Root; Exit;
+   End;
+   $D6: Begin
+    If Pfx <> 1 Then Begin SSECore := ''; Exit; End;
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len;
+    Src := XmmReg(DstReg); Dst := RM; Root := 'movq';
+    TotalLen := P - Off2; SSECore := Root; Exit;
+   End;
+   $70: Begin
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len;
+    Imm := GetByte(P); Inc(P);
+    Src := '$0x' + ToHexU(Imm) + ',' + RM;
+    Case Pfx Of
+     1: Root := 'pshufd'; 2: Root := 'pshufhw'; 3: Root := 'pshuflw';
+    Else Begin SSECore := ''; Exit; End;
+    End;
+    TotalLen := P - Off2; SSECore := Root; Exit;
+   End;
+   $C2: Begin
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len;
+    Imm := GetByte(P); Inc(P);
+    Src := '$0x' + ToHexU(Imm) + ',' + RM;
+    Root := 'cmp' + SSESuffix(Pfx);
+    TotalLen := P - Off2; SSECore := Root; Exit;
+   End;
+   $C6: Begin
+    If Pfx > 1 Then Begin SSECore := ''; Exit; End;
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len;
+    Imm := GetByte(P); Inc(P);
+    Src := '$0x' + ToHexU(Imm) + ',' + RM;
+    Root := 'shufp' + Copy(SSESuffix(Pfx), 2, 1);
+    TotalLen := P - Off2; SSECore := Root; Exit;
+   End;
+   $74: Begin
+    If Pfx <> 1 Then Begin SSECore := ''; Exit; End;
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'pcmpeqb';
+   End;
+   $75: Begin
+    If Pfx <> 1 Then Begin SSECore := ''; Exit; End;
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'pcmpeqw';
+   End;
+   $76: Begin
+    If Pfx <> 1 Then Begin SSECore := ''; Exit; End;
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'pcmpeqd';
+   End;
+   $D7: Begin
+    If Pfx <> 1 Then Begin SSECore := ''; Exit; End;
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'pmovmskb';
+   End;
+   $DB: Begin
+    If Pfx <> 1 Then Begin SSECore := ''; Exit; End;
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'pand';
+   End;
+   $DF: Begin
+    If Pfx <> 1 Then Begin SSECore := ''; Exit; End;
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'pandn';
+   End;
+   $EB: Begin
+    If Pfx <> 1 Then Begin SSECore := ''; Exit; End;
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'por';
+   End;
+   $EF: Begin
+    If Pfx <> 1 Then Begin SSECore := ''; Exit; End;
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'pxor';
+   End;
+   $D4: Begin
+    If Pfx <> 1 Then Begin SSECore := ''; Exit; End;
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'paddq';
+   End;
+   $FB: Begin
+    If Pfx <> 1 Then Begin SSECore := ''; Exit; End;
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'psubq';
+   End;
+   $FC: Begin
+    If Pfx <> 1 Then Begin SSECore := ''; Exit; End;
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'paddb';
+   End;
+   $FD: Begin
+    If Pfx <> 1 Then Begin SSECore := ''; Exit; End;
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'paddw';
+   End;
+   $FE: Begin
+    If Pfx <> 1 Then Begin SSECore := ''; Exit; End;
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'paddd';
+   End;
+   $F8: Begin
+    If Pfx <> 1 Then Begin SSECore := ''; Exit; End;
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'psubb';
+   End;
+   $F9: Begin
+    If Pfx <> 1 Then Begin SSECore := ''; Exit; End;
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'psubw';
+   End;
+   $FA: Begin
+    If Pfx <> 1 Then Begin SSECore := ''; Exit; End;
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'psubd';
+   End;
+  Else
+   Root := '';
+  End;
+ End Else If Esc = 1 Then Begin { 0F 38 : SSSE3/SSE4.1 }
+  If Pfx <> 1 Then Root := '' Else
+  Case Op2 Of
+   $00: Begin
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'pshufb';
+   End;
+   $1C: Begin
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'pabsb';
+   End;
+   $1D: Begin
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'pabsw';
+   End;
+   $1E: Begin
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'pabsd';
+   End;
+   $29: Begin
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'pcmpeqq';
+   End;
+   $37: Begin
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'pcmpgtq';
+   End;
+   $40: Begin
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len; Src := RM; Root := 'pmulld';
+   End;
+  Else
+   Root := '';
+  End;
+ End Else Begin { Esc = 2 : 0F 3A : SSE4.1 avec immediat }
+  If Pfx <> 1 Then Root := '' Else
+  Case Op2 Of
+   $0F: Begin
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len;
+    Imm := GetByte(P); Inc(P);
+    Src := '$0x' + ToHexU(Imm) + ',' + RM;
+    Root := 'palignr';
+    TotalLen := P - Off2; SSECore := Root; Exit;
+   End;
+   $08, $09, $0A, $0B: Begin
+    RM := DecodeModRMVec(P, Len, DstReg, Is64, RexR, RexX, RexB, False);
+    P := P + Len;
+    Imm := GetByte(P); Inc(P);
+    Src := '$0x' + ToHexU(Imm) + ',' + RM;
+    Case Op2 Of
+     $08: Root := 'roundps'; $09: Root := 'roundpd';
+     $0A: Root := 'roundss';
+    Else Root := 'roundsd';
+    End;
+    TotalLen := P - Off2; SSECore := Root; Exit;
+   End;
+  Else
+   Root := '';
+  End;
+ End;
+ TotalLen := P - Off2;
+ SSECore := Root;
+End;
+
+{ @description: Point d entree SSE/AVX, voir l en-tete de section.
+    Detecte d abord un prefixe VEX (C4/C5), sinon un prefixe
+    obligatoire SSE (66/F2/F3) suivi de 0F[38|3A] ou 0F seul.
+  @return Octets consommes, ou 0 si rien de reconnu ici }
+Function TrySSE_x86(Off, VAddrBase: LongInt; Is64: Boolean;
+ Var Mnemonic, Operands: String): Integer;
+Var
+ P: LongInt;
+ B0, B1: Byte;
+ Pfx, Esc: Byte;
+ Op2: Byte;
+ Src, Dst, Root: String;
+ DstReg, VvvvReg: Byte;
+ TotalLen: Integer;
+ IsVex, UseYmm: Boolean;
+ RexR, RexX, RexB: Boolean;
+Begin
+ TrySSE_x86 := 0;
+ P := Off;
+ B0 := GetByte(P);
+ IsVex := False;
+ Pfx := 0; Esc := 0; VvvvReg := 0; UseYmm := False;
+ RexR := False; RexX := False; RexB := False;
+ If (B0 = $C5) And ((GetByte(P + 1) And $80) = $80) Then Begin
+  { VEX 2 octets : C5 RvvvvLpp -- R inverse (1=non etendu) }
+  IsVex := True;
+  B1 := GetByte(P + 1);
+  RexR := (B1 And $80) = 0;
+  VvvvReg := ((Not (B1 Shr 3)) And $F) And 7;
+  UseYmm := (B1 And 4) <> 0;
+  Pfx := B1 And 3;
+  Esc := 0;
+  P := P + 2;
+ End Else If (B0 = $C4) And ((GetByte(P + 1) And $C0) = $C0) Then Begin
+  { VEX 3 octets : C4 RXBmmmmm WvvvvLpp }
+  IsVex := True;
+  B1 := GetByte(P + 1);
+  RexR := (B1 And $80) = 0;
+  RexX := (B1 And $40) = 0;
+  RexB := (B1 And $20) = 0;
+  Case B1 And $1F Of
+   2: Esc := 1; 3: Esc := 2;
+  Else Esc := 0;
+  End;
+  B1 := GetByte(P + 2);
+  { bit W (B1 and $80) : taille d operande GPR pour de rares formes
+    (ex: VCVTSI2SD avec source 64 bits) ; non distingue ici, voir
+    la portee documentee en tete de section. }
+  VvvvReg := ((Not (B1 Shr 3)) And $F) And 7;
+  UseYmm := (B1 And 4) <> 0;
+  Pfx := B1 And 3;
+  P := P + 3;
+ End Else Begin
+  If (B0 = $66) Or (B0 = $F2) Or (B0 = $F3) Then Begin
+   Case B0 Of $66: Pfx := 1; $F3: Pfx := 2; Else Pfx := 3; End;
+   Inc(P);
+  End;
+  If Is64 And ((GetByte(P) And $F0) = $40) Then Begin
+   RexR := (GetByte(P) And 4) <> 0;
+   RexX := (GetByte(P) And 2) <> 0;
+   RexB := (GetByte(P) And 1) <> 0;
+   Inc(P);
+  End;
+  If GetByte(P) <> $0F Then Exit; { pas d opcode etendu : abandon }
+  Inc(P);
+  If GetByte(P) = $38 Then Begin Esc := 1; Inc(P); End
+  Else If GetByte(P) = $3A Then Begin Esc := 2; Inc(P); End;
+ End;
+ Op2 := GetByte(P);
+ Src := ''; Dst := '';
+ Root := SSECore(P, Op2, Pfx, Esc, Is64, RexR, RexX, RexB, Src, Dst,
+  DstReg, TotalLen);
+ If Root = '' Then Exit; { rien reconnu : l appelant continue normalement }
+ P := P + TotalLen; { TotalLen mesure deja depuis Off2 (= P ici),
+   Op2 inclus : ne pas l ajouter une seconde fois }
+ If Dst = '' Then Dst := XmmReg(DstReg); { forme "registre <- src", le cas le plus frequent }
+ If UseYmm Then Begin
+  { AVX 256 bits (VEX.L=1) : un operande registre direct decode par
+    DecodeModRMVec est toujours nomme XMM (elle ne connait pas le
+    contexte VEX) ; substitution textuelle "%xmmN" -> "%ymmN" sur
+    les deux operandes plutot que de propager UseYmm a tous les
+    appels de DecodeModRMVec dans SSECore. Les operandes memoire
+    (qui ne contiennent jamais "%xmm") restent inchanges. }
+  If Copy(Src, 1, 4) = '%xmm' Then Src := '%ymm' + Copy(Src, 5, Length(Src) - 4);
+  If Copy(Dst, 1, 4) = '%xmm' Then Dst := '%ymm' + Copy(Dst, 5, Length(Dst) - 4);
+ End;
+ If IsVex Then Begin
+  Mnemonic := 'v' + Root;
+  If (Root = 'movaps') Or (Root = 'movapd') Or (Root = 'movups') Or
+     (Root = 'movupd') Or (Root = 'movdqa') Or (Root = 'movdqu') Or
+     (Root = 'sqrtps') Or (Root = 'sqrtpd') Or (Root = 'sqrtss') Or
+     (Root = 'sqrtsd') Or (Root = 'movd') Or (Root = 'movq') Then
+   Operands := Src + ',' + Dst { formes a 2 operandes, vvvv non utilise }
+  Else If UseYmm Then
+   Operands := Src + ',' + YmmReg(VvvvReg) + ',' + Dst
+  Else
+   Operands := Src + ',' + XmmReg(VvvvReg) + ',' + Dst;
+ End Else Begin
+  Mnemonic := Root;
+  Operands := Src + ',' + Dst;
+ End;
+ TrySSE_x86 := P - Off;
+End;
+
 { @description: Desassemble une seule instruction x86-64 a partir du
     decalage Off, en syntaxe AT&T (comme DisasmOne). Consomme d abord
     un eventuel prefixe REX (0x40-0x4F, qui en mode 64 bits ne signifie
@@ -2195,7 +2880,13 @@ Var
  Imm: LongInt;
  ImmHi: LongInt;
  Rel: LongInt;
+ SSELen: Integer;
 Begin
+ SSELen := TrySSE_x86(Off, VAddrBase, True, Mnemonic, Operands);
+ If SSELen > 0 Then Begin
+  Disasm64One := SSELen;
+  Exit;
+ End;
  P := Off;
  RexByte := GetByte(P);
  RexPresent := (RexByte And $F0) = $40;
@@ -9214,7 +9905,9 @@ Procedure Help;Begin
  WriteLn('binaire brut (avec -m). L''architecture est choisie automatiquement');
  WriteLn('a partir de e_machine (ELF), Machine (PE) ou cputype (Mach-O).');
  WriteLn('Desassemblage : x86 32 bits / x86-64 (syntaxe AT&T, comme');
- WriteLn('objdump) ; 8086/80186 16 bits (syntaxe Intel/MASM) ; Intel');
+ WriteLn('objdump), avec SSE/SSE2/SSE3/SSSE3/SSE4.1 et AVX/AVX2');
+ WriteLn('(prefixe VEX 2 et 3 octets, registres XMM/YMM) sur les');
+ WriteLn('instructions les plus courantes ; 8086/80186 16 bits (syntaxe Intel/MASM) ; Intel');
  WriteLn('8080 complet (syntaxe Intel) ; 6502 complet (151 opcodes) ;');
  WriteLn('Z80 (jeu de base complet, plus un');
  WriteLn('sous-ensemble pratique de CB/ED/DD/FD) ; Motorola 6800');
@@ -9230,8 +9923,11 @@ Procedure Help;Begin
  WriteLn('avec extraction automatique des methodes des assemblies .NET ;');
  WriteLn('bytecode JVM/Jasmin avec extraction des methodes des .class ;');
  WriteLn('bitcode LLVM structurel (blocs, abbreviations et records).');
- WriteLn('Pas de SSE/AVX/NEON/VFP, pas d''opcodes etendus 0F pour le');
- WriteLn('8086, pas de DDCB/FDCB pour le Z80.');
+ WriteLn('Pas de NEON ni VFP (ARM/AArch64) : confiance insuffisante sur');
+ WriteLn('leur encodage exact sans documentation de reference sous la');
+ WriteLn('main, contrairement a SSE/AVX (encodages verifies a la main).');
+ WriteLn('Pas d''opcodes etendus 0F pour le 8086, pas de DDCB/FDCB pour');
+ WriteLn('le Z80.');
 End;
 
 { @description: Analyse le tampon courant (Buf/BufSize, deja passe
