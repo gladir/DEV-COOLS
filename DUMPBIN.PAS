@@ -27,10 +27,12 @@ Const
  MaxDirs     = 16;
  MaxSymbols  = 8192;
  MaxPdbStreams = 512;
+ MaxClrNames = 4096;
  MaxFileSize = 16 * 1024 * 1024;
 
  IMAGE_DIRECTORY_ENTRY_EXPORT      = 0;
  IMAGE_DIRECTORY_ENTRY_IMPORT      = 1;
+ IMAGE_DIRECTORY_ENTRY_RESOURCE    = 2;
  IMAGE_DIRECTORY_ENTRY_EXCEPTION   = 3;
  IMAGE_DIRECTORY_ENTRY_SECURITY    = 4;
  IMAGE_DIRECTORY_ENTRY_BASERELOC   = 5;
@@ -79,7 +81,7 @@ Var
  BufSize  : LongInt;
  FileName : String;
 
-IsPE, IsCOFF, IsArchive, Is64 : Boolean;
+IsPE, IsCOFF, IsArchive, Is64, IsBigObj : Boolean;
 IsPDB : Boolean;
 Machine, NumSections, SizeOpt : Word;
 TimeDate, SymPtr, NumSyms : LongInt;
@@ -91,7 +93,11 @@ Dirs : Array[0..MaxDirs - 1] Of TDir;
  Sections : Array[1..MaxSections] Of TSection;
  SectionCount : Integer;
  Symbols : Array[1..MaxSymbols] Of TSymbol;
- SymbolCount : Integer;
+SymbolCount : Integer;
+ClrTypeNames   : Array[1..MaxClrNames] Of String[80];
+ClrMethodNames : Array[1..MaxClrNames] Of String[80];
+ClrMemberRefs  : Array[1..MaxClrNames] Of String[80];
+ClrTypeCount, ClrMethodCount, ClrMemberRefCount : Integer;
 
  OptAll, OptArchiveMembers, OptClrHeader, OptDependents : Boolean;
  OptDirectives, OptDisasm, OptDisasmNoBytes, OptExports : Boolean;
@@ -330,6 +336,47 @@ Begin
   Sections[I].LinePtr := GetDWordAt(P + 28);
   Sections[I].RelocCount := GetWordAt(P + 32);
   Sections[I].LineCount := GetWordAt(P + 34);
+ Sections[I].Chars := GetDWordAt(P + 36);
+ End;
+End;
+
+Function LooksBigObj: Boolean;
+Begin
+ LooksBigObj := (BufSize >= 56) And
+  (GetWordAt(0) = 0) And (GetWordAt(2) = $FFFF) And
+  (GetWordAt(4) >= 2);
+End;
+
+Procedure ParseBigObj;
+Var I, P, J: LongInt; S: String;
+Begin
+ IsBigObj := False;
+ If Not LooksBigObj Then Exit;
+ IsBigObj := True;
+ IsCOFF := True;
+ Machine := GetWordAt(6);
+ TimeDate := GetDWordAt(8);
+ NumSections := 0;
+ SectionCount := GetDWordAt(44);
+ SymPtr := GetDWordAt(48);
+ NumSyms := GetDWordAt(52);
+ SizeOpt := 0;
+ If SectionCount > MaxSections Then SectionCount := MaxSections;
+ SecOff := 56;
+ For I := 1 To SectionCount Do Begin
+  P := SecOff + (I - 1) * 40;
+  S := '';
+  For J := 0 To 7 Do
+   If GetByteAt(P + J) <> 0 Then S := S + Chr(GetByteAt(P + J));
+  Sections[I].Name := TrimS(S);
+  Sections[I].VSize := GetDWordAt(P + 8);
+  Sections[I].VAddr := GetDWordAt(P + 12);
+  Sections[I].RawSize := GetDWordAt(P + 16);
+  Sections[I].RawPtr := GetDWordAt(P + 20);
+  Sections[I].RelocPtr := GetDWordAt(P + 24);
+  Sections[I].LinePtr := GetDWordAt(P + 28);
+  Sections[I].RelocCount := GetWordAt(P + 32);
+  Sections[I].LineCount := GetWordAt(P + 34);
   Sections[I].Chars := GetDWordAt(P + 36);
  End;
 End;
@@ -369,7 +416,7 @@ End;
 Procedure ParsePE;
 Var I, DirBase, Magic: Integer;
 Begin
- IsPE := False; IsCOFF := False; Is64 := False;
+ IsPE := False; IsCOFF := False; Is64 := False; IsBigObj := False;
  If (GetByteAt(0) = Ord('M')) And (GetByteAt(1) = Ord('Z')) Then Begin
   PEOff := GetDWordAt($3C);
   If (PEOff > 0) And (PEOff + 24 < BufSize) And
@@ -393,6 +440,10 @@ Begin
    ReadSymbols;
   End;
  End Else Begin
+  If LooksBigObj Then Begin
+   ParseBigObj;
+   Exit;
+  End;
   Machine := GetWordAt(0);
   If ((Machine = $014C) Or (Machine = $8664) Or (Machine = $01C0) Or
       (Machine = $01C4) Or
@@ -534,6 +585,122 @@ Begin
    End Else
     WriteLn('    CodeView signature: ', Sig);
   End;
+ End;
+End;
+
+Procedure CmdRichHeader;
+Var RichOff, DansOff, P, Key, DecVal, Prod, Build, Count: LongInt;
+Begin
+ If Not IsPE Then Exit;
+ RichOff := -1;
+ P := $80;
+ While (P + 4 < PEOff) And (P + 4 < BufSize) Do Begin
+  If GetDWordAt(P) = $68636952 Then Begin { "Rich" }
+   RichOff := P; Break;
+  End;
+  Inc(P,4);
+ End;
+ If RichOff < 0 Then Exit;
+ Key := GetDWordAt(RichOff + 4);
+ DansOff := -1;
+ P := RichOff - 4;
+ While P >= $40 Do Begin
+  If (GetDWordAt(P) Xor Key) = $536E6144 Then Begin { "DanS" }
+   DansOff := P; Break;
+  End;
+  Dec(P,4);
+ End;
+ If DansOff < 0 Then Exit;
+ WriteLn;
+ WriteLn('RICH HEADER');
+ WriteLn('        Key ', HexFixed(Key,8));
+ P := DansOff + 16;
+ While P + 8 <= RichOff Do Begin
+  DecVal := GetDWordAt(P) Xor Key;
+  Count := GetDWordAt(P + 4) Xor Key;
+  Prod := DecVal Shr 16;
+  Build := DecVal And $FFFF;
+  WriteLn('        Product ', PadLeft(LToS(Prod),5),
+   ' Build ', PadLeft(LToS(Build),5), ' Count ', Count);
+  Inc(P,8);
+ End;
+End;
+
+Function ResIdName(Base, EntryOff: LongInt): String;
+Var NameVal, NameOff, Len, I: LongInt; S: String;
+Begin
+ NameVal := GetDWordAt(EntryOff);
+ If NameVal < 0 Then Begin
+  NameOff := Base + (NameVal And $7FFFFFFF);
+  Len := GetWordAt(NameOff);
+  S := '';
+  For I := 0 To Len - 1 Do Begin
+   If GetByteAt(NameOff + 2 + I * 2) >= 32 Then
+    S := S + Chr(GetByteAt(NameOff + 2 + I * 2));
+   If Length(S) >= 60 Then Break;
+  End;
+  ResIdName := '"' + S + '"';
+ End Else
+  ResIdName := '#' + LToS(NameVal);
+End;
+
+Procedure DumpResourceDir(Base, DirOff: LongInt; Level: Integer);
+Var Named, Ids, I, Entries, EntryOff, DataVal, Child, DataEntry: LongInt;
+    Ind: String;
+Begin
+ If (DirOff < Base) Or (DirOff + 16 > BufSize) Then Exit;
+ Named := GetWordAt(DirOff + 12);
+ Ids := GetWordAt(DirOff + 14);
+ Entries := Named + Ids;
+ Ind := '';
+ For I := 1 To Level Do Ind := Ind + '  ';
+ For I := 0 To Entries - 1 Do Begin
+  EntryOff := DirOff + 16 + I * 8;
+  DataVal := GetDWordAt(EntryOff + 4);
+  Write(Ind, ResIdName(Base, EntryOff));
+  If DataVal < 0 Then Begin
+   Child := Base + (DataVal And $7FFFFFFF);
+   WriteLn;
+   DumpResourceDir(Base, Child, Level + 1);
+  End Else Begin
+   DataEntry := Base + DataVal;
+   WriteLn(' RVA ', HexFixed(GetDWordAt(DataEntry),8),
+    ' Size ', HexFixed(GetDWordAt(DataEntry + 4),8),
+    ' CodePage ', GetDWordAt(DataEntry + 8));
+  End;
+ End;
+End;
+
+Procedure CmdResources;
+Var Base: LongInt;
+Begin
+ If (Not IsPE) Or (Dirs[IMAGE_DIRECTORY_ENTRY_RESOURCE].RVA = 0) Then Exit;
+ Base := RvaToOff(Dirs[IMAGE_DIRECTORY_ENTRY_RESOURCE].RVA);
+ If Base < 0 Then Exit;
+ WriteLn;
+ WriteLn('RESOURCE DIRECTORY');
+ DumpResourceDir(Base, Base, 1);
+End;
+
+Procedure CmdSecurityDirectory;
+Var Off, EndOff, CertLen, Revision, CertType: LongInt;
+Begin
+ If (Not IsPE) Or (Dirs[IMAGE_DIRECTORY_ENTRY_SECURITY].RVA = 0) Then Exit;
+ { SECURITY directory RVA is a file offset, not an RVA. }
+ Off := Dirs[IMAGE_DIRECTORY_ENTRY_SECURITY].RVA;
+ EndOff := Off + Dirs[IMAGE_DIRECTORY_ENTRY_SECURITY].Size;
+ If (Off < 0) Or (Off + 8 > BufSize) Then Exit;
+ WriteLn;
+ WriteLn('SECURITY / CERTIFICATES');
+ While Off + 8 <= EndOff Do Begin
+  CertLen := GetDWordAt(Off);
+  Revision := GetWordAt(Off + 4);
+  CertType := GetWordAt(Off + 6);
+  If CertLen < 8 Then Break;
+  WriteLn('  Certificate at ', HexFixed(Off,8),
+   ' size ', CertLen, ' revision ', HexFixed(Revision,4),
+   ' type ', CertType);
+  Off := Off + ((CertLen + 7) And Not 7);
  End;
 End;
 
@@ -703,8 +870,30 @@ Begin
  End;
 End;
 
+Function PdbTypeTailName(Stream: Integer; Off, RecLen: LongInt): String;
+Var P, EndP, Start: LongInt; S: String; C: Byte;
+Begin
+ PdbTypeTailName := '';
+ EndP := Off + RecLen + 2;
+ P := EndP - 1;
+ While (P > Off + 4) And (PdbStreamByte(Stream, P) = 0) Do Dec(P);
+ Start := P;
+ While (Start > Off + 4) Do Begin
+  C := PdbStreamByte(Stream, Start - 1);
+  If (C < 32) Or (C >= 127) Then Break;
+  Dec(Start);
+ End;
+ S := '';
+ While Start <= P Do Begin
+  C := PdbStreamByte(Stream, Start);
+  If (C >= 32) And (C < 127) Then S := S + Chr(C);
+  Inc(Start);
+ End;
+ If Length(S) > 0 Then PdbTypeTailName := S;
+End;
+
 Procedure DumpPdbTypeStream(Stream: Integer; Title: String; MaxRecs: LongInt);
-Var Off, Size, RecLen, Count, TypeIndex: LongInt; Kind: Word;
+Var Off, Size, RecLen, Count, TypeIndex: LongInt; Kind: Word; TN: String;
 Begin
  Size := PdbStreamSize(Stream);
  If Size < 24 Then Exit;
@@ -723,8 +912,14 @@ Begin
   RecLen := PdbStreamWord(Stream, Off);
   If (RecLen < 2) Or (Off + RecLen + 2 > Size) Then Break;
   Kind := PdbStreamWord(Stream, Off + 2);
-  WriteLn('    ', HexFixed(TypeIndex,8), ' ',
+  TN := '';
+  If (Kind = $1004) Or (Kind = $1005) Or (Kind = $1006) Or (Kind = $1007) Or
+     (Kind = $1504) Or (Kind = $1505) Or (Kind = $1506) Or (Kind = $1507) Then
+   TN := PdbTypeTailName(Stream, Off, RecLen);
+  Write('    ', HexFixed(TypeIndex,8), ' ',
    PadRight(PdbTypeKindName(Kind), 22), ' len ', RecLen);
+  If TN <> '' Then Write(' name ', TN);
+  WriteLn;
   Inc(Off, RecLen + 2);
   Inc(TypeIndex);
   Inc(Count);
@@ -1015,6 +1210,7 @@ Begin
  End;
  WriteLn('FILE HEADER VALUES');
  WriteLn('             ', HexFixed(Machine,4), ' machine (', MachineName(Machine), ')');
+ If IsBigObj Then WriteLn('             bigobj COFF object');
  WriteLn(PadLeft(LToS(NumSections), 16), ' number of sections');
  WriteLn('        ', HexFixed(TimeDate,8), ' time date stamp');
  WriteLn('        ', HexFixed(SymPtr,8), ' file pointer to symbol table');
@@ -1039,6 +1235,9 @@ Begin
      PadRight(DirectoryName(I), 13), ' RVA ', HexFixed(Dirs[I].RVA,8),
      '  Size ', HexFixed(Dirs[I].Size,8));
   CmdDebugDirectory;
+  CmdRichHeader;
+  CmdResources;
+  CmdSecurityDirectory;
  End;
  WriteLn;
  WriteLn('SECTION HEADER VALUES');
@@ -1340,6 +1539,62 @@ End;
 
 Function DecodeModRM64Intel(Off, VAddr, InstLenGuess: LongInt;
  Var Consumed: Integer; Var RegField: Byte;
+ Wide64, RexR, RexX, RexB: Boolean): String; Forward;
+
+Function XmmReg(R: Byte): String;
+Begin
+ XmmReg := 'xmm' + LToS(R And 15);
+End;
+
+Function YmmReg(R: Byte): String;
+Begin
+ YmmReg := 'ymm' + LToS(R And 15);
+End;
+
+Function DecodeModRM64Xmm(Off, VAddr, InstLenGuess: LongInt;
+ Var Consumed: Integer; Var RegField: Byte;
+ RexR, RexX, RexB: Boolean; UseYmm: Boolean): String;
+Var M, RM: Byte;
+Begin
+ M := GetByteAt(Off);
+ RegField := (M Shr 3) And 7;
+ If RexR Then RegField := RegField Or 8;
+ RM := M And 7;
+ If RexB Then RM := RM Or 8;
+ If (M Shr 6) = 3 Then Begin
+  Consumed := 1;
+  If UseYmm Then DecodeModRM64Xmm := YmmReg(RM)
+  Else DecodeModRM64Xmm := XmmReg(RM);
+ End Else
+  DecodeModRM64Xmm := DecodeModRM64Intel(Off, VAddr, InstLenGuess,
+   Consumed, RegField, True, RexR, RexX, RexB);
+End;
+
+Function SseMnemonic(Prefix: Byte; Base: String): String;
+Begin
+ If Base = 'mov' Then Begin
+  If Prefix = $66 Then SseMnemonic := 'movapd'
+  Else If Prefix = $F3 Then SseMnemonic := 'movss'
+  Else If Prefix = $F2 Then SseMnemonic := 'movsd'
+  Else SseMnemonic := 'movaps';
+ End Else If Base = 'movu' Then Begin
+  If Prefix = $66 Then SseMnemonic := 'movupd'
+  Else If Prefix = $F3 Then SseMnemonic := 'movss'
+  Else If Prefix = $F2 Then SseMnemonic := 'movsd'
+  Else SseMnemonic := 'movups';
+ End Else If Base = 'add' Then Begin
+  If Prefix = $66 Then SseMnemonic := 'addpd'
+  Else If Prefix = $F3 Then SseMnemonic := 'addss'
+  Else If Prefix = $F2 Then SseMnemonic := 'addsd'
+  Else SseMnemonic := 'addps';
+ End Else If Base = 'xor' Then Begin
+  If Prefix = $66 Then SseMnemonic := 'xorpd'
+  Else SseMnemonic := 'xorps';
+ End Else SseMnemonic := Base;
+End;
+
+Function DecodeModRM64Intel(Off, VAddr, InstLenGuess: LongInt;
+ Var Consumed: Integer; Var RegField: Byte;
  Wide64, RexR, RexX, RexB: Boolean): String;
 Var M, ModBits, RM, Scale, Idx, BaseR: Byte;
     P, Disp, AbsAddr: LongInt; Inner, BaseText, IdxText: String;
@@ -1395,12 +1650,16 @@ Begin
 End;
 
 Function DecodeX64(Off, VAddr: LongInt; Var Len: Integer): String;
-Var P: LongInt; Rex, B, Op2, RegF: Byte; RexW, RexR, RexX, RexB: Boolean;
+Var P: LongInt; Rex, B, Op2, RegF, Prefix: Byte; RexW, RexR, RexX, RexB: Boolean;
     Used: Integer; RM, Mnem: String; D, Target, Imm: LongInt;
 Begin
  P := Off;
  Rex := 0;
+ Prefix := 0;
  B := GetByteAt(P);
+ While (B = $66) Or (B = $F2) Or (B = $F3) Do Begin
+  Prefix := B; Inc(P); B := GetByteAt(P);
+ End;
  If (B >= $40) And (B <= $4F) Then Begin
   Rex := B; Inc(P);
  End;
@@ -1410,6 +1669,21 @@ Begin
  RexB := (Rex And 1) <> 0;
  B := GetByteAt(P); Len := (P - Off) + 1;
  Case B Of
+  $C5: Begin
+        Op2 := GetByteAt(P + 2);
+        If (GetByteAt(P + 1) = $F8) And (Op2 = $77) Then Begin
+         Len := (P - Off) + 3;
+         DecodeX64 := 'vzeroupper';
+        End Else Begin
+         Len := (P - Off) + 3;
+         DecodeX64 := 'vex         C5 ' + HexByte(GetByteAt(P+1)) + ' ' + HexByte(Op2);
+        End;
+       End;
+  $C4: Begin
+        Len := (P - Off) + 4;
+        DecodeX64 := 'vex         C4 ' + HexByte(GetByteAt(P+1)) + ' ' +
+         HexByte(GetByteAt(P+2)) + ' ' + HexByte(GetByteAt(P+3));
+       End;
   $50..$57: DecodeX64 := 'push        ' + Reg64I((B - $50) Or ((Rex And 1) Shl 3));
   $58..$5F: DecodeX64 := 'pop         ' + Reg64I((B - $58) Or ((Rex And 1) Shl 3));
   $90: DecodeX64 := 'nop';
@@ -1442,6 +1716,26 @@ Begin
         If (Op2 >= $80) And (Op2 <= $8F) Then Begin
          D := GetDWordAt(P+2); Len := (P-Off)+6; Target := VAddr + Len + D;
          DecodeX64 := PadRight(JccName(Op2 And 15), 12) + HexFixed(Target,8);
+        End Else If (Op2 = $10) Or (Op2 = $28) Then Begin
+         RM := DecodeModRM64Xmm(P+2, VAddr, 4, Used, RegF, RexR, RexX, RexB, False);
+         Len := (P-Off)+2+Used;
+         If Op2 = $10 Then Mnem := SseMnemonic(Prefix, 'movu')
+         Else Mnem := SseMnemonic(Prefix, 'mov');
+         DecodeX64 := PadRight(Mnem, 12) + XmmReg(RegF) + ',' + RM;
+        End Else If (Op2 = $11) Or (Op2 = $29) Then Begin
+         RM := DecodeModRM64Xmm(P+2, VAddr, 4, Used, RegF, RexR, RexX, RexB, False);
+         Len := (P-Off)+2+Used;
+         If Op2 = $11 Then Mnem := SseMnemonic(Prefix, 'movu')
+         Else Mnem := SseMnemonic(Prefix, 'mov');
+         DecodeX64 := PadRight(Mnem, 12) + RM + ',' + XmmReg(RegF);
+        End Else If Op2 = $57 Then Begin
+         RM := DecodeModRM64Xmm(P+2, VAddr, 4, Used, RegF, RexR, RexX, RexB, False);
+         Len := (P-Off)+2+Used;
+         DecodeX64 := PadRight(SseMnemonic(Prefix, 'xor'), 12) + XmmReg(RegF) + ',' + RM;
+        End Else If Op2 = $58 Then Begin
+         RM := DecodeModRM64Xmm(P+2, VAddr, 4, Used, RegF, RexR, RexX, RexB, False);
+         Len := (P-Off)+2+Used;
+         DecodeX64 := PadRight(SseMnemonic(Prefix, 'add'), 12) + XmmReg(RegF) + ',' + RM;
         End Else Begin
          Len := (P-Off)+2;
          DecodeX64 := 'db          0Fh,' + HexByte(Op2) + 'h';
@@ -2044,6 +2338,69 @@ End;
 Procedure CmdRelocations;
 Var Off, EndOff, Page, Size, P, E: LongInt; Typ, ROff: Word;
     I, J: Integer; Found: Boolean;
+
+ Function RelocName(T: Word): String;
+ Begin
+  Case Machine Of
+   $014C: Case T Of
+    $0000: RelocName := 'ABSOLUTE';
+    $0006: RelocName := 'DIR32';
+    $0007: RelocName := 'DIR32NB';
+    $0014: RelocName := 'REL32';
+   Else RelocName := 'I386_' + HexFixed(T,4); End;
+   $8664: Case T Of
+    $0000: RelocName := 'ABSOLUTE';
+    $0001: RelocName := 'ADDR64';
+    $0002: RelocName := 'ADDR32';
+    $0003: RelocName := 'ADDR32NB';
+    $0004: RelocName := 'REL32';
+    $0005: RelocName := 'REL32_1';
+    $0006: RelocName := 'REL32_2';
+    $0007: RelocName := 'REL32_3';
+    $0008: RelocName := 'REL32_4';
+    $0009: RelocName := 'REL32_5';
+    $000A: RelocName := 'SECTION';
+    $000B: RelocName := 'SECREL';
+    $000C: RelocName := 'SECREL7';
+    $000D: RelocName := 'TOKEN';
+    $000F: RelocName := 'PAIR';
+    $0010: RelocName := 'SSPAN32';
+   Else RelocName := 'AMD64_' + HexFixed(T,4); End;
+   $01C0,$01C4: Case T Of
+    $0000: RelocName := 'ABSOLUTE';
+    $0001: RelocName := 'ADDR32';
+    $0002: RelocName := 'ADDR32NB';
+    $0003: RelocName := 'BRANCH24';
+    $0004: RelocName := 'BRANCH11';
+    $0006: RelocName := 'REL32';
+    $0007: RelocName := 'SECTION';
+    $0008: RelocName := 'SECREL';
+    $0009: RelocName := 'MOV32A';
+    $000A: RelocName := 'MOV32T';
+    $000B: RelocName := 'BRANCH20T';
+    $000C: RelocName := 'BRANCH24T';
+    $000D: RelocName := 'BLX23T';
+   Else RelocName := 'ARM_' + HexFixed(T,4); End;
+   $AA64: Case T Of
+    $0000: RelocName := 'ABSOLUTE';
+    $0001: RelocName := 'ADDR32';
+    $0002: RelocName := 'ADDR32NB';
+    $0003: RelocName := 'BRANCH26';
+    $0004: RelocName := 'PAGEBASE_REL21';
+    $0005: RelocName := 'REL21';
+    $0006: RelocName := 'PAGEOFFSET_12A';
+    $0007: RelocName := 'PAGEOFFSET_12L';
+    $0008: RelocName := 'SECREL';
+    $0009: RelocName := 'SECREL_LOW12A';
+    $000A: RelocName := 'SECREL_HIGH12A';
+    $000B: RelocName := 'SECREL_LOW12L';
+    $000C: RelocName := 'TOKEN';
+    $000D: RelocName := 'SECTION';
+    $000E: RelocName := 'ADDR64';
+   Else RelocName := 'ARM64_' + HexFixed(T,4); End;
+  Else RelocName := 'TYPE_' + HexFixed(T,4);
+  End;
+ End;
 Begin
  If IsPE Then Begin
   If (Dirs[IMAGE_DIRECTORY_ENTRY_BASERELOC].RVA = 0) Or
@@ -2086,7 +2443,8 @@ Begin
    P := Sections[I].RelocPtr;
    For J := 0 To Sections[I].RelocCount - 1 Do Begin
     WriteLn('  ', HexFixed(GetDWordAt(P),8), ' sym ',
-     HexFixed(GetDWordAt(P+4),8), ' type ', HexFixed(GetWordAt(P+8),4));
+     HexFixed(GetDWordAt(P+4),8), ' type ', HexFixed(GetWordAt(P+8),4),
+     ' ', RelocName(GetWordAt(P+8)));
     Inc(P, 10);
    End;
   End;
@@ -2271,8 +2629,28 @@ Begin
  End;
 End;
 
+Function CLRTokenName(Token: LongInt): String;
+Var Tbl, Idx: LongInt;
+Begin
+ Tbl := (Token Shr 24) And $FF;
+ Idx := Token And $00FFFFFF;
+ Case Tbl Of
+  $02: If (Idx >= 1) And (Idx <= ClrTypeCount) Then
+        CLRTokenName := ClrTypeNames[Idx]
+       Else CLRTokenName := 'TypeDef:' + LToS(Idx);
+  $06: If (Idx >= 1) And (Idx <= ClrMethodCount) Then
+        CLRTokenName := ClrMethodNames[Idx]
+       Else CLRTokenName := 'MethodDef:' + LToS(Idx);
+  $0A: If (Idx >= 1) And (Idx <= ClrMemberRefCount) Then
+        CLRTokenName := ClrMemberRefs[Idx]
+       Else CLRTokenName := 'MemberRef:' + LToS(Idx);
+ Else CLRTokenName := '';
+ End;
+End;
+
 Procedure DisasmIL(CodeOff, CodeSize: LongInt);
 Var P, EndP, Rel: LongInt; B: Byte; Op: Word; OSz: Integer; Operand: LongInt;
+    TokName: String;
 Begin
  P := CodeOff; EndP := CodeOff + CodeSize;
  While P < EndP Do Begin
@@ -2286,7 +2664,13 @@ Begin
   Else If OSz = 2 Then Operand := GetWordAt(P)
   Else If OSz = 4 Then Operand := GetDWordAt(P);
   Write('    IL_', HexFixed(Rel,4), ': ', PadRight(ILName(Op), 12));
-  If OSz > 0 Then Write(HexFixed(Operand, OSz * 2));
+  If OSz > 0 Then Begin
+   Write(HexFixed(Operand, OSz * 2));
+   If OSz = 4 Then Begin
+    TokName := CLRTokenName(Operand);
+    If TokName <> '' Then Write(' // ', TokName);
+   End;
+  End;
   WriteLn;
   Inc(P, OSz);
  End;
@@ -2333,8 +2717,9 @@ End;
 Procedure CmdCLRMetadata(MetaOff: LongInt);
 Var VerLen, Streams, I, P, NameP, StreamOff, StreamSize: LongInt;
     Name: String; TblOff, StrOff, HeapSizes, Present, CountPresent: LongInt;
-    Rows: Array[0..63] Of LongInt; T, DataOff, MethodOff, MethodRowSize: LongInt;
+    Rows: Array[0..63] Of LongInt; T, DataOff, TypeOff, MethodOff, MemberRefOff, MethodRowSize: LongInt;
     StrSz, GuidSz, BlobSz, NameIdx, MethodRVA, BodyOff, Header, CodeSize, CodeOff: LongInt;
+    RowSize, ClassSize, SigSize: LongInt;
 Begin
  If (MetaOff < 0) Or (MetaOff + 16 >= BufSize) Then Exit;
  If GetDWordAt(MetaOff) <> $424A5342 Then Begin
@@ -2366,6 +2751,7 @@ Begin
  If (HeapSizes And 4) <> 0 Then BlobSz := 4 Else BlobSz := 2;
  Present := GetDWordAt(TblOff + 8);
  For T := 0 To 63 Do Rows[T] := 0;
+ ClrTypeCount := 0; ClrMethodCount := 0; ClrMemberRefCount := 0;
  P := TblOff + 24;
  CountPresent := 0;
  For T := 0 To 63 Do
@@ -2379,11 +2765,56 @@ Begin
  For T := 0 To 63 Do If Rows[T] <> 0 Then
   WriteLn('  Table ', PadLeft(LToS(T),2), ' rows ', Rows[T]);
  DataOff := P;
+ TypeOff := DataOff;
+ For T := 0 To 1 Do
+  If Rows[T] <> 0 Then Inc(TypeOff, Rows[T] * MdTableRowSize(T, StrSz, GuidSz, BlobSz, Rows));
+ If Rows[2] > 0 Then Begin
+  RowSize := MdTableRowSize(2, StrSz, GuidSz, BlobSz, Rows);
+  ClrTypeCount := Rows[2];
+  If ClrTypeCount > MaxClrNames Then ClrTypeCount := MaxClrNames;
+  For I := 0 To ClrTypeCount - 1 Do Begin
+   P := TypeOff + I * RowSize;
+   If StrSz = 2 Then NameIdx := GetWordAt(P + 4)
+   Else NameIdx := GetDWordAt(P + 4);
+   ClrTypeNames[I + 1] := MetaString(StrOff, NameIdx);
+  End;
+ End;
  MethodOff := DataOff;
  For T := 0 To 5 Do
   If Rows[T] <> 0 Then
    Inc(MethodOff, Rows[T] * MdTableRowSize(T, StrSz, GuidSz, BlobSz, Rows));
  MethodRowSize := MdTableRowSize(6, StrSz, GuidSz, BlobSz, Rows);
+ If Rows[6] > 0 Then Begin
+  ClrMethodCount := Rows[6];
+  If ClrMethodCount > MaxClrNames Then ClrMethodCount := MaxClrNames;
+  For I := 0 To ClrMethodCount - 1 Do Begin
+   P := MethodOff + I * MethodRowSize;
+   If StrSz = 2 Then NameIdx := GetWordAt(P + 8)
+   Else NameIdx := GetDWordAt(P + 8);
+   ClrMethodNames[I + 1] := MetaString(StrOff, NameIdx);
+  End;
+ End;
+ MemberRefOff := DataOff;
+ For T := 0 To 9 Do
+  If Rows[T] <> 0 Then Begin
+   If T = 7 Then RowSize := 2 + MdIndexSize(Rows[4])
+   Else If T = 8 Then RowSize := 2 + MdIndexSize(Rows[6])
+   Else If T = 9 Then RowSize := MdIndexSize(Rows[2]) + MdIndexSize(Rows[4])
+   Else RowSize := MdTableRowSize(T, StrSz, GuidSz, BlobSz, Rows);
+   Inc(MemberRefOff, Rows[T] * RowSize);
+  End;
+ If Rows[10] > 0 Then Begin
+  ClrMemberRefCount := Rows[10];
+  If ClrMemberRefCount > MaxClrNames Then ClrMemberRefCount := MaxClrNames;
+  ClassSize := MdCoded4(Rows[2], Rows[1], Rows[26], Rows[6]);
+  SigSize := BlobSz;
+  For I := 0 To ClrMemberRefCount - 1 Do Begin
+   P := MemberRefOff + I * (ClassSize + StrSz + SigSize);
+   If StrSz = 2 Then NameIdx := GetWordAt(P + ClassSize)
+   Else NameIdx := GetDWordAt(P + ClassSize);
+   ClrMemberRefs[I + 1] := MetaString(StrOff, NameIdx);
+  End;
+ End;
  If (Rows[6] = 0) Or (MethodRowSize = 0) Then Exit;
  WriteLn;
  WriteLn('CLR METHODS / IL');
