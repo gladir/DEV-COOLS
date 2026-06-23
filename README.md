@@ -403,6 +403,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet d'analyser et de désassembler un fichier d'extension «.OBJ».</td>
 		</tr>
 		<tr>
+			<td><b>DISPCODE.PAS</b></td>
+			<td>Cette commande permet de lancer le désassembleur de p-Code UCSD p-System.</td>
+		</tr>
+		<tr>
 			<td><b>DISPRG.PAS</b></td>
 			<td>Cette commande permet de lancer le désassembler de fichiers .PRG du Atari ST.</td>
 		</tr>
