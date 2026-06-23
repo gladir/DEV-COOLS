@@ -83,6 +83,8 @@ Const
  ARCH_68000 = 9;         { Motorola 68000 16/32 bits (voir Disasm68kOne)}
  ARCH_8080  = 10;        { Intel 8080 8 bits (voir Disasm8080One)      }
  ARCH_SPARC = 11;        { SPARC V8/V9 (voir DisasmSparcOne)           }
+ ARCH_MIPS  = 12;        { MIPS gros-boutiste (MIPS I/II/MIPS32)       }
+ ARCH_MIPSEL = 13;       { MIPS little-endian                          }
 
  { ----- Modes d adressage 6800 ----- }
  AM68_INH   = 0;         { inherent : aucun operande                   }
@@ -100,6 +102,7 @@ Const
  EM_SPARC     = 2;         { SPARC V8                                    }
  EM_SPARC32PLUS = 18;      { SPARC V8+                                   }
  EM_SPARCV9   = 43;        { SPARC V9 64 bits                            }
+ EM_MIPS      = 8;         { MIPS I/II/III/IV, MIPS32 et MIPS64          }
  PE_MACHINE_ARM   = $01C0;
  PE_MACHINE_ARMNT = $01C4;  { Thumb-2 (ARMv7 et plus, convention Windows) }
  PE_MACHINE_ARM64 = $AA64;
@@ -5021,6 +5024,217 @@ Begin
 End;
 
 { ============================================================
+  DESASSEMBLEUR MIPS I/II ET MIPS32
+  ============================================================ }
+
+{ @description: Retourne le nom ABI usuel d un registre MIPS. }
+Function MipsReg(R: Byte): String;
+Const
+ Names: Array[0..31] Of String[5] = (
+  '$zero', '$at', '$v0', '$v1', '$a0', '$a1', '$a2', '$a3',
+  '$t0', '$t1', '$t2', '$t3', '$t4', '$t5', '$t6', '$t7',
+  '$s0', '$s1', '$s2', '$s3', '$s4', '$s5', '$s6', '$s7',
+  '$t8', '$t9', '$k0', '$k1', '$gp', '$sp', '$fp', '$ra');
+Begin
+ MipsReg := Names[R And 31];
+End;
+
+{ @description: Etend un immediat 16 bits signe en LongInt. }
+Function MipsSign16(V: Word): LongInt;
+Begin
+ If (V And $8000) <> 0 Then MipsSign16 := LongInt(V) Or LongInt($FFFF0000)
+ Else MipsSign16 := V;
+End;
+
+{ @description: Formate une adresse base+deplacement MIPS. }
+Function MipsMem(Imm: Word; Base: Byte): String;
+Var
+ V: LongInt;
+ S: String;
+Begin
+ V := MipsSign16(Imm);
+ If V < 0 Then S := '-0x' + ToHexU(-V)
+ Else S := '0x' + ToHexU(V);
+ MipsMem := S + '(' + MipsReg(Base) + ')';
+End;
+
+{ @description: Desassemble une instruction MIPS de 32 bits. Le noyau
+    entier MIPS I/II et MIPS32 est couvert : SPECIAL, REGIMM, sauts,
+    branches, immediats, HI/LO, SPECIAL2, COP0 et acces memoire. Le
+    boutisme est choisi par ARCH_MIPS/ARCH_MIPSEL ou par EI_DATA ELF. }
+Function DisasmMipsOne(Off, VAddrBase: LongInt;
+ Var Mnemonic, Operands: String): Integer;
+Const
+ LoadStoreNames: Array[$20..$3F] Of String[5] = (
+  'lb', 'lh', 'lwl', 'lw', 'lbu', 'lhu', 'lwr', '',
+  'sb', 'sh', 'swl', 'sw', '', '', 'swr', 'cache',
+  'll', 'lwc1', 'lwc2', 'pref', '', 'ldc1', 'ldc2', '',
+  'sc', 'swc1', 'swc2', '', '', 'sdc1', 'sdc2', '');
+Var
+ Instr, Target, SImm: LongInt;
+ Op, Rs, Rt, Rd, Sa, Funct: Byte;
+ Imm: Word;
+ Code: LongInt;
+ Mem, ImmText, RegText: String;
+Begin
+ If Arch = ARCH_MIPSEL Then Instr := GetDWord(Off)
+ Else Instr := GetDWordBE(Off);
+ Op := (Instr Shr 26) And $3F;
+ Rs := (Instr Shr 21) And $1F;
+ Rt := (Instr Shr 16) And $1F;
+ Rd := (Instr Shr 11) And $1F;
+ Sa := (Instr Shr 6) And $1F;
+ Funct := Instr And $3F;
+ Imm := Instr And $FFFF;
+ SImm := MipsSign16(Imm);
+ Mnemonic := '(bad)';
+ Operands := '';
+
+ Case Op Of
+  $00: Begin { SPECIAL }
+   If Instr = 0 Then Mnemonic := 'nop'
+   Else Case Funct Of
+    $00: Begin Mnemonic := 'sll'; Operands := MipsReg(Rd) + ',' + MipsReg(Rt) + ',' + IntToStr(Sa); End;
+    $02: Begin Mnemonic := 'srl'; Operands := MipsReg(Rd) + ',' + MipsReg(Rt) + ',' + IntToStr(Sa); End;
+    $03: Begin Mnemonic := 'sra'; Operands := MipsReg(Rd) + ',' + MipsReg(Rt) + ',' + IntToStr(Sa); End;
+    $04: Begin Mnemonic := 'sllv'; Operands := MipsReg(Rd) + ',' + MipsReg(Rt) + ',' + MipsReg(Rs); End;
+    $06: Begin Mnemonic := 'srlv'; Operands := MipsReg(Rd) + ',' + MipsReg(Rt) + ',' + MipsReg(Rs); End;
+    $07: Begin Mnemonic := 'srav'; Operands := MipsReg(Rd) + ',' + MipsReg(Rt) + ',' + MipsReg(Rs); End;
+    $08: Begin Mnemonic := 'jr'; Operands := MipsReg(Rs); End;
+    $09: Begin
+     Mnemonic := 'jalr';
+     If Rd = 31 Then Operands := MipsReg(Rs)
+     Else Operands := MipsReg(Rd) + ',' + MipsReg(Rs);
+    End;
+    $0A: Begin Mnemonic := 'movz'; Operands := MipsReg(Rd) + ',' + MipsReg(Rs) + ',' + MipsReg(Rt); End;
+    $0B: Begin Mnemonic := 'movn'; Operands := MipsReg(Rd) + ',' + MipsReg(Rs) + ',' + MipsReg(Rt); End;
+    $0C: Begin
+     Mnemonic := 'syscall';
+     Code := (Instr Shr 6) And $FFFFF;
+     If Code <> 0 Then Operands := '0x' + ToHexU(Code);
+    End;
+    $0D: Begin
+     Mnemonic := 'break';
+     Code := (Instr Shr 6) And $FFFFF;
+     If Code <> 0 Then Operands := '0x' + ToHexU(Code);
+    End;
+    $0F: Mnemonic := 'sync';
+    $10: Begin Mnemonic := 'mfhi'; Operands := MipsReg(Rd); End;
+    $11: Begin Mnemonic := 'mthi'; Operands := MipsReg(Rs); End;
+    $12: Begin Mnemonic := 'mflo'; Operands := MipsReg(Rd); End;
+    $13: Begin Mnemonic := 'mtlo'; Operands := MipsReg(Rs); End;
+    $18: Begin Mnemonic := 'mult'; Operands := MipsReg(Rs) + ',' + MipsReg(Rt); End;
+    $19: Begin Mnemonic := 'multu'; Operands := MipsReg(Rs) + ',' + MipsReg(Rt); End;
+    $1A: Begin Mnemonic := 'div'; Operands := MipsReg(Rs) + ',' + MipsReg(Rt); End;
+    $1B: Begin Mnemonic := 'divu'; Operands := MipsReg(Rs) + ',' + MipsReg(Rt); End;
+    $20: Begin Mnemonic := 'add'; Operands := MipsReg(Rd) + ',' + MipsReg(Rs) + ',' + MipsReg(Rt); End;
+    $21: Begin
+     If Rt = 0 Then Begin Mnemonic := 'move'; Operands := MipsReg(Rd) + ',' + MipsReg(Rs); End
+     Else Begin Mnemonic := 'addu'; Operands := MipsReg(Rd) + ',' + MipsReg(Rs) + ',' + MipsReg(Rt); End;
+    End;
+    $22: Begin Mnemonic := 'sub'; Operands := MipsReg(Rd) + ',' + MipsReg(Rs) + ',' + MipsReg(Rt); End;
+    $23: Begin Mnemonic := 'subu'; Operands := MipsReg(Rd) + ',' + MipsReg(Rs) + ',' + MipsReg(Rt); End;
+    $24: Begin Mnemonic := 'and'; Operands := MipsReg(Rd) + ',' + MipsReg(Rs) + ',' + MipsReg(Rt); End;
+    $25: Begin
+     If Rs = 0 Then Begin Mnemonic := 'move'; Operands := MipsReg(Rd) + ',' + MipsReg(Rt); End
+     Else Begin Mnemonic := 'or'; Operands := MipsReg(Rd) + ',' + MipsReg(Rs) + ',' + MipsReg(Rt); End;
+    End;
+    $26: Begin Mnemonic := 'xor'; Operands := MipsReg(Rd) + ',' + MipsReg(Rs) + ',' + MipsReg(Rt); End;
+    $27: Begin Mnemonic := 'nor'; Operands := MipsReg(Rd) + ',' + MipsReg(Rs) + ',' + MipsReg(Rt); End;
+    $2A: Begin Mnemonic := 'slt'; Operands := MipsReg(Rd) + ',' + MipsReg(Rs) + ',' + MipsReg(Rt); End;
+    $2B: Begin Mnemonic := 'sltu'; Operands := MipsReg(Rd) + ',' + MipsReg(Rs) + ',' + MipsReg(Rt); End;
+   End;
+  End;
+  $01: Begin { REGIMM }
+   Target := VAddrBase + 4 + SImm * 4;
+   Case Rt Of
+    $00: Mnemonic := 'bltz';
+    $01: Mnemonic := 'bgez';
+    $02: Mnemonic := 'bltzl';
+    $03: Mnemonic := 'bgezl';
+    $10: Mnemonic := 'bltzal';
+    $11: Mnemonic := 'bgezal';
+    $12: Mnemonic := 'bltzall';
+    $13: Mnemonic := 'bgezall';
+   End;
+   If Mnemonic <> '(bad)' Then
+    Operands := MipsReg(Rs) + ',0x' + ToHexFixed(Target, 8);
+  End;
+  $02, $03: Begin
+   Target := ((VAddrBase + 4) And LongInt($F0000000)) Or
+             ((Instr And $03FFFFFF) Shl 2);
+   If Op = $02 Then Mnemonic := 'j' Else Mnemonic := 'jal';
+   Operands := '0x' + ToHexFixed(Target, 8);
+  End;
+  $04, $05, $06, $07, $14, $15, $16, $17: Begin
+   Target := VAddrBase + 4 + SImm * 4;
+   Case Op Of
+    $04: Mnemonic := 'beq'; $05: Mnemonic := 'bne';
+    $06: Mnemonic := 'blez'; $07: Mnemonic := 'bgtz';
+    $14: Mnemonic := 'beql'; $15: Mnemonic := 'bnel';
+    $16: Mnemonic := 'blezl'; $17: Mnemonic := 'bgtzl';
+   End;
+   If Op In [$06, $07, $16, $17] Then
+    Operands := MipsReg(Rs) + ',0x' + ToHexFixed(Target, 8)
+   Else
+    Operands := MipsReg(Rs) + ',' + MipsReg(Rt) + ',0x' + ToHexFixed(Target, 8);
+  End;
+  $08, $09: Begin
+   If Op = $08 Then Mnemonic := 'addi' Else Mnemonic := 'addiu';
+   ImmText := ToHexSignedDisp(SImm);
+   If SImm = 0 Then ImmText := '0';
+   Operands := MipsReg(Rt) + ',' + MipsReg(Rs) + ',' + ImmText;
+  End;
+  $0A, $0B: Begin
+   If Op = $0A Then Mnemonic := 'slti' Else Mnemonic := 'sltiu';
+   ImmText := ToHexSignedDisp(SImm);
+   If SImm = 0 Then ImmText := '0';
+   Operands := MipsReg(Rt) + ',' + MipsReg(Rs) + ',' + ImmText;
+  End;
+  $0C, $0D, $0E: Begin
+   Case Op Of $0C: Mnemonic := 'andi'; $0D: Mnemonic := 'ori'; $0E: Mnemonic := 'xori'; End;
+   Operands := MipsReg(Rt) + ',' + MipsReg(Rs) + ',0x' + ToHexFixed(Imm, 4);
+  End;
+  $0F: Begin Mnemonic := 'lui'; Operands := MipsReg(Rt) + ',0x' + ToHexFixed(Imm, 4); End;
+  $10: Begin { COP0 }
+   Case Rs Of
+    $00: Begin Mnemonic := 'mfc0'; Operands := MipsReg(Rt) + ',$' + IntToStr(Rd); End;
+    $04: Begin Mnemonic := 'mtc0'; Operands := MipsReg(Rt) + ',$' + IntToStr(Rd); End;
+    $10: If Funct = $18 Then Mnemonic := 'eret'
+         Else If Funct = $01 Then Mnemonic := 'tlbr'
+         Else If Funct = $02 Then Mnemonic := 'tlbwi'
+         Else If Funct = $06 Then Mnemonic := 'tlbwr'
+         Else If Funct = $08 Then Mnemonic := 'tlbp';
+   End;
+  End;
+  $1C: Begin { SPECIAL2 }
+   Case Funct Of
+    $00: Begin Mnemonic := 'madd'; Operands := MipsReg(Rs) + ',' + MipsReg(Rt); End;
+    $01: Begin Mnemonic := 'maddu'; Operands := MipsReg(Rs) + ',' + MipsReg(Rt); End;
+    $02: Begin Mnemonic := 'mul'; Operands := MipsReg(Rd) + ',' + MipsReg(Rs) + ',' + MipsReg(Rt); End;
+    $04: Begin Mnemonic := 'msub'; Operands := MipsReg(Rs) + ',' + MipsReg(Rt); End;
+    $05: Begin Mnemonic := 'msubu'; Operands := MipsReg(Rs) + ',' + MipsReg(Rt); End;
+    $20: Begin Mnemonic := 'clz'; Operands := MipsReg(Rd) + ',' + MipsReg(Rs); End;
+    $21: Begin Mnemonic := 'clo'; Operands := MipsReg(Rd) + ',' + MipsReg(Rs); End;
+   End;
+  End;
+  $20..$3F: Begin
+   Mnemonic := LoadStoreNames[Op];
+   If Mnemonic <> '' Then Begin
+    Mem := MipsMem(Imm, Rs);
+    If Op In [$2F, $33] Then RegText := IntToStr(Rt)
+    Else If Op In [$31, $35, $39, $3D] Then RegText := '$f' + IntToStr(Rt)
+    Else If Op In [$32, $36, $3A, $3E] Then RegText := '$c2r' + IntToStr(Rt)
+    Else RegText := MipsReg(Rt);
+    Operands := RegText + ',' + Mem;
+   End Else Mnemonic := '(bad)';
+  End;
+ End;
+
+ DisasmMipsOne := 4;
+End;
+
+{ ============================================================
   RECHERCHE DE SYMBOLE / SECTION POUR L AFFICHAGE
   ============================================================ }
 
@@ -5068,6 +5282,18 @@ End;
   @return Nom du format (ex: "elf32-i386", "pei-i386") }
 Function FormatName: String;
 Begin
+ If ((Arch = ARCH_MIPS) Or (Arch = ARCH_MIPSEL)) And
+    (BinFormat = FMT_ELF32) Then Begin
+  If Arch = ARCH_MIPSEL Then FormatName := 'elf32-tradlittlemips'
+  Else FormatName := 'elf32-tradbigmips';
+  Exit;
+ End;
+ If ((Arch = ARCH_MIPS) Or (Arch = ARCH_MIPSEL)) And
+    (BinFormat = FMT_ELF64) Then Begin
+  If Arch = ARCH_MIPSEL Then FormatName := 'elf64-tradlittlemips'
+  Else FormatName := 'elf64-tradbigmips';
+  Exit;
+ End;
  If (Arch = ARCH_SPARC) And (BinFormat = FMT_ELF32) Then Begin
   FormatName := 'elf32-sparc';
   Exit;
@@ -5155,9 +5381,12 @@ Begin
     (Arch = ARCH_Z80) Or (Arch = ARCH_6800) Then
   AddrDigits := 4
  Else If (Arch = ARCH_X64) Or (Arch = ARCH_ARM64) Or
-         ((Arch = ARCH_SPARC) And (BinFormat = FMT_ELF64)) Then AddrDigits := 16
+         ((Arch = ARCH_SPARC) And (BinFormat = FMT_ELF64)) Or
+         (((Arch = ARCH_MIPS) Or (Arch = ARCH_MIPSEL)) And
+          (BinFormat = FMT_ELF64)) Then AddrDigits := 16
  Else If (Arch = ARCH_ARM32) Or (Arch = ARCH_THUMB) Or
-         (Arch = ARCH_68000) Or (Arch = ARCH_SPARC) Then AddrDigits := 8
+         (Arch = ARCH_68000) Or (Arch = ARCH_SPARC) Or
+         (Arch = ARCH_MIPS) Or (Arch = ARCH_MIPSEL) Then AddrDigits := 8
  Else AddrDigits := 6;
  WriteLn;
  WriteLn(InFileName, ':     format ', FormatName);
@@ -5195,7 +5424,9 @@ Begin
    Else If Arch = ARCH_68000 Then
    InstrLen := Disasm68kOne(Off, VAddr, Mnemonic, Operands)
    Else If Arch = ARCH_SPARC Then
-    InstrLen := DisasmSparcOne(Off, VAddr, Mnemonic, Operands)
+   InstrLen := DisasmSparcOne(Off, VAddr, Mnemonic, Operands)
+   Else If (Arch = ARCH_MIPS) Or (Arch = ARCH_MIPSEL) Then
+    InstrLen := DisasmMipsOne(Off, VAddr, Mnemonic, Operands)
    Else
     InstrLen := DisasmOne(Off, VAddr, Mnemonic, Operands);
    BytesTxt := '';
@@ -5258,7 +5489,8 @@ Procedure Help;Begin
  WriteLn('  -S       Melange source/assembleur (non supporte)');
  WriteLn('  -m arch  Force l''architecture de desassemblage :');
  WriteLn('           i386 (defaut), x86-64, 8086, 8080, 6502, z80, 6800,');
- WriteLn('           68000, sparc, sparcv9, arm, thumb ou arm64');
+ WriteLn('           68000, sparc, sparcv9, mips, mipsel, arm, thumb');
+ WriteLn('           ou arm64');
  WriteLn('  -b adr   Adresse de chargement (hexa) pour un binaire');
  WriteLn('           brut sans entete, ex: -b 8000 ou -b $8000');
  WriteLn('  -?       Aide sur cette commande');
@@ -5276,7 +5508,8 @@ Procedure Help;Begin
  WriteLn('(jeu d''instructions complet) ; Motorola 68000 (jeu utilisateur');
  WriteLn('complet, sans 68010/68020+/FPU/MMU) ; ARM 32 bits classique,');
  WriteLn('Thumb/Thumb-2 (sous-ensemble), AArch64 (sous-ensemble) et');
- WriteLn('SPARC V8/V8+ avec le noyau entier commun SPARC V9.');
+ WriteLn('SPARC V8/V8+ avec le noyau entier commun SPARC V9 ; MIPS');
+ WriteLn('I/II et MIPS32, gros-boutiste ou little-endian.');
  WriteLn('Pas de SSE/AVX/NEON/VFP, pas d''opcodes etendus 0F pour le');
  WriteLn('8086, pas de DDCB/FDCB pour le Z80.');
 End;
@@ -5313,7 +5546,7 @@ BEGIN
    Inc(I);
    If I > ParamCount Then Begin
     WriteLn('Erreur : -m necessite une architecture (i386, x86-64, 8086, ',
-     '8080, 6502, z80, 6800, 68000, sparc, arm, thumb ou arm64).');
+     '8080, 6502, z80, 6800, 68000, sparc, mips, mipsel, arm, thumb ou arm64).');
     Halt(1);
    End;
    If UpStr(ParamStr(I)) = '6502' Then Arch := ARCH_6502
@@ -5340,6 +5573,12 @@ BEGIN
            (UpStr(ParamStr(I)) = 'SPARCV8') Or
            (UpStr(ParamStr(I)) = 'SPARC64') Or
            (UpStr(ParamStr(I)) = 'SPARCV9') Then Arch := ARCH_SPARC
+   Else If (UpStr(ParamStr(I)) = 'MIPS') Or
+           (UpStr(ParamStr(I)) = 'MIPS32') Or
+           (UpStr(ParamStr(I)) = 'MIPSEB') Then Arch := ARCH_MIPS
+   Else If (UpStr(ParamStr(I)) = 'MIPSEL') Or
+           (UpStr(ParamStr(I)) = 'MIPS32EL') Or
+           (UpStr(ParamStr(I)) = 'MIPSEL32') Then Arch := ARCH_MIPSEL
    Else Begin
     WriteLn('Architecture inconnue pour -m : ', ParamStr(I));
     Halt(1);
@@ -5386,6 +5625,9 @@ BEGIN
    Else If ElfMachine = EM_68K Then Arch := ARCH_68000
    Else If (ElfMachine = EM_SPARC) Or (ElfMachine = EM_SPARC32PLUS) Or
            (ElfMachine = EM_SPARCV9) Then Arch := ARCH_SPARC
+   Else If ElfMachine = EM_MIPS Then Begin
+    If ElfBigEndian Then Arch := ARCH_MIPS Else Arch := ARCH_MIPSEL;
+   End
    Else If BinFormat = FMT_ELF64 Then Arch := ARCH_X64;
    { ELF32 sans e_machine ARM reconnu : on laisse ARCH_X86 par defaut,
      comme avant la prise en charge d e_machine. }
