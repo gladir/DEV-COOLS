@@ -87,6 +87,8 @@ Const
  ARCH_MIPSEL = 13;       { MIPS little-endian                          }
  ARCH_PPC   = 14;        { PowerPC gros-boutiste                       }
  ARCH_PPCLE = 15;        { PowerPC little-endian                       }
+ ARCH_SH    = 16;        { SuperH gros-boutiste                        }
+ ARCH_SHLE  = 17;        { SuperH little-endian                        }
 
  { ----- Modes d adressage 6800 ----- }
  AM68_INH   = 0;         { inherent : aucun operande                   }
@@ -107,6 +109,7 @@ Const
  EM_MIPS      = 8;         { MIPS I/II/III/IV, MIPS32 et MIPS64          }
  EM_PPC       = 20;        { PowerPC 32 bits                             }
  EM_PPC64     = 21;        { PowerPC 64 bits                             }
+ EM_SH        = 42;        { Hitachi/Renesas SuperH                      }
  PE_MACHINE_ARM   = $01C0;
  PE_MACHINE_ARMNT = $01C4;  { Thumb-2 (ARMv7 et plus, convention Windows) }
  PE_MACHINE_ARM64 = $AA64;
@@ -5549,6 +5552,333 @@ Begin
 End;
 
 { ============================================================
+  DESASSEMBLEUR SUPERH SH-1/SH-2/SH-3/SH-4
+  ============================================================ }
+
+{ @description: Retourne le nom d un registre general SuperH. }
+Function ShReg(R: Byte): String;
+Begin
+ ShReg := 'r' + IntToStr(R And 15);
+End;
+
+{ @description: Etend un octet signe en LongInt. }
+Function ShSign8(V: Byte): LongInt;
+Begin
+ If (V And $80) <> 0 Then ShSign8 := LongInt(V) Or LongInt($FFFFFF00)
+ Else ShSign8 := V;
+End;
+
+{ @description: Formate un deplacement signe SuperH. }
+Function ShSigned(V: LongInt): String;
+Begin
+ If V < 0 Then ShSigned := '-0x' + ToHexU(-V)
+ Else ShSigned := '0x' + ToHexU(V);
+End;
+
+{ @description: Desassemble une instruction SuperH de 16 bits. Le
+    noyau SH-1/SH-2 est couvert, avec les registres de controle SH-3,
+    SHAD/SHLD et les operations flottantes SH-4 les plus courantes.
+    Les branchements et chargements PC-relatifs utilisent PC+4. }
+Function DisasmShOne(Off, VAddrBase: LongInt;
+ Var Mnemonic, Operands: String): Integer;
+Var
+ Instr: Word;
+ Top, N, M, Low: Byte;
+ Disp, Target: LongInt;
+ Imm8: Byte;
+ Rn, Rm: String;
+Begin
+ If Arch = ARCH_SHLE Then Instr := GetWord(Off)
+ Else Instr := GetWordBE(Off);
+ Top := Instr Shr 12;
+ N := (Instr Shr 8) And 15;
+ M := (Instr Shr 4) And 15;
+ Low := Instr And 15;
+ Imm8 := Instr And $FF;
+ Rn := ShReg(N);
+ Rm := ShReg(M);
+ Mnemonic := '(bad)';
+ Operands := '';
+
+ Case Top Of
+  $0: Begin
+   Case Low Of
+    $2: Begin
+     Mnemonic := 'stc';
+     Case M Of
+      0: Operands := 'sr,' + Rn;
+      1: Operands := 'gbr,' + Rn;
+      2: Operands := 'vbr,' + Rn;
+      3: Operands := 'ssr,' + Rn;
+      4: Operands := 'spc,' + Rn;
+     Else Mnemonic := '(bad)';
+     End;
+    End;
+    $3: Begin
+     If M = 0 Then Begin Mnemonic := 'bsrf'; Operands := Rn; End
+     Else If M = 2 Then Begin Mnemonic := 'braf'; Operands := Rn; End;
+    End;
+    $4: Begin Mnemonic := 'mov.b'; Operands := Rm + ',@(r0,' + Rn + ')'; End;
+    $5: Begin Mnemonic := 'mov.w'; Operands := Rm + ',@(r0,' + Rn + ')'; End;
+    $6: Begin Mnemonic := 'mov.l'; Operands := Rm + ',@(r0,' + Rn + ')'; End;
+    $7: Begin Mnemonic := 'mul.l'; Operands := Rm + ',' + Rn; End;
+    $8: Case (Instr Shr 4) And $FF Of
+     $00: Mnemonic := 'clrt';
+     $01: Mnemonic := 'sett';
+     $02: Mnemonic := 'clrmac';
+     $03: Mnemonic := 'ldtlb';
+     $04: Mnemonic := 'clrs';
+     $05: Mnemonic := 'sets';
+    End;
+    $9: Case (Instr Shr 4) And $FF Of
+     $00: Mnemonic := 'nop';
+     $01: Mnemonic := 'div0u';
+     $02: Begin Mnemonic := 'movt'; Operands := Rn; End;
+    End;
+    $A: Begin
+     Mnemonic := 'sts';
+     Case M Of
+      0: Operands := 'mach,' + Rn;
+      1: Operands := 'macl,' + Rn;
+      2: Operands := 'pr,' + Rn;
+      5: Operands := 'fpul,' + Rn;
+      6: Operands := 'fpscr,' + Rn;
+     Else Mnemonic := '(bad)';
+     End;
+    End;
+    $B: Case (Instr Shr 4) And $FF Of
+     $00: Mnemonic := 'rts';
+     $01: Mnemonic := 'sleep';
+     $02: Mnemonic := 'rte';
+    End;
+    $C: Begin Mnemonic := 'mov.b'; Operands := '@(r0,' + Rm + '),' + Rn; End;
+    $D: Begin Mnemonic := 'mov.w'; Operands := '@(r0,' + Rm + '),' + Rn; End;
+    $E: Begin Mnemonic := 'mov.l'; Operands := '@(r0,' + Rm + '),' + Rn; End;
+    $F: Begin Mnemonic := 'mac.l'; Operands := '@' + Rm + '+,@' + Rn + '+'; End;
+   End;
+  End;
+  $1: Begin
+   Mnemonic := 'mov.l';
+   Operands := Rm + ',@(' + IntToStr(Low * 4) + ',' + Rn + ')';
+  End;
+  $2: Case Low Of
+   $0: Begin Mnemonic := 'mov.b'; Operands := Rm + ',@' + Rn; End;
+   $1: Begin Mnemonic := 'mov.w'; Operands := Rm + ',@' + Rn; End;
+   $2: Begin Mnemonic := 'mov.l'; Operands := Rm + ',@' + Rn; End;
+   $4: Begin Mnemonic := 'mov.b'; Operands := Rm + ',@-' + Rn; End;
+   $5: Begin Mnemonic := 'mov.w'; Operands := Rm + ',@-' + Rn; End;
+   $6: Begin Mnemonic := 'mov.l'; Operands := Rm + ',@-' + Rn; End;
+   $7: Begin Mnemonic := 'div0s'; Operands := Rm + ',' + Rn; End;
+   $8: Begin Mnemonic := 'tst'; Operands := Rm + ',' + Rn; End;
+   $9: Begin Mnemonic := 'and'; Operands := Rm + ',' + Rn; End;
+   $A: Begin Mnemonic := 'xor'; Operands := Rm + ',' + Rn; End;
+   $B: Begin Mnemonic := 'or'; Operands := Rm + ',' + Rn; End;
+   $C: Begin Mnemonic := 'cmp/str'; Operands := Rm + ',' + Rn; End;
+   $D: Begin Mnemonic := 'xtrct'; Operands := Rm + ',' + Rn; End;
+   $E: Begin Mnemonic := 'mulu.w'; Operands := Rm + ',' + Rn; End;
+   $F: Begin Mnemonic := 'muls.w'; Operands := Rm + ',' + Rn; End;
+  End;
+  $3: Case Low Of
+   $0: Begin Mnemonic := 'cmp/eq'; Operands := Rm + ',' + Rn; End;
+   $2: Begin Mnemonic := 'cmp/hs'; Operands := Rm + ',' + Rn; End;
+   $3: Begin Mnemonic := 'cmp/ge'; Operands := Rm + ',' + Rn; End;
+   $4: Begin Mnemonic := 'div1'; Operands := Rm + ',' + Rn; End;
+   $5: Begin Mnemonic := 'dmulu.l'; Operands := Rm + ',' + Rn; End;
+   $6: Begin Mnemonic := 'cmp/hi'; Operands := Rm + ',' + Rn; End;
+   $7: Begin Mnemonic := 'cmp/gt'; Operands := Rm + ',' + Rn; End;
+   $8: Begin Mnemonic := 'sub'; Operands := Rm + ',' + Rn; End;
+   $A: Begin Mnemonic := 'subc'; Operands := Rm + ',' + Rn; End;
+   $B: Begin Mnemonic := 'subv'; Operands := Rm + ',' + Rn; End;
+   $C: Begin Mnemonic := 'add'; Operands := Rm + ',' + Rn; End;
+   $D: Begin Mnemonic := 'dmuls.l'; Operands := Rm + ',' + Rn; End;
+   $E: Begin Mnemonic := 'addc'; Operands := Rm + ',' + Rn; End;
+   $F: Begin Mnemonic := 'addv'; Operands := Rm + ',' + Rn; End;
+  End;
+  $4: Begin
+   Case Instr And $FF Of
+    $00: Begin Mnemonic := 'shll'; Operands := Rn; End;
+    $01: Begin Mnemonic := 'shlr'; Operands := Rn; End;
+    $02: Begin Mnemonic := 'sts.l'; Operands := 'mach,@-' + Rn; End;
+    $03: Begin Mnemonic := 'stc.l'; Operands := 'sr,@-' + Rn; End;
+    $04: Begin Mnemonic := 'rotl'; Operands := Rn; End;
+    $05: Begin Mnemonic := 'rotr'; Operands := Rn; End;
+    $06: Begin Mnemonic := 'lds.l'; Operands := '@' + Rn + '+,mach'; End;
+    $07: Begin Mnemonic := 'ldc.l'; Operands := '@' + Rn + '+,sr'; End;
+    $08: Begin Mnemonic := 'shll2'; Operands := Rn; End;
+    $09: Begin Mnemonic := 'shlr2'; Operands := Rn; End;
+    $0A: Begin Mnemonic := 'lds'; Operands := Rn + ',mach'; End;
+    $0B: Begin Mnemonic := 'jsr'; Operands := '@' + Rn; End;
+    $0E: Begin Mnemonic := 'ldc'; Operands := Rn + ',sr'; End;
+    $10: Begin Mnemonic := 'dt'; Operands := Rn; End;
+    $11: Begin Mnemonic := 'cmp/pz'; Operands := Rn; End;
+    $12: Begin Mnemonic := 'sts.l'; Operands := 'macl,@-' + Rn; End;
+    $13: Begin Mnemonic := 'stc.l'; Operands := 'gbr,@-' + Rn; End;
+    $15: Begin Mnemonic := 'cmp/pl'; Operands := Rn; End;
+    $16: Begin Mnemonic := 'lds.l'; Operands := '@' + Rn + '+,macl'; End;
+    $17: Begin Mnemonic := 'ldc.l'; Operands := '@' + Rn + '+,gbr'; End;
+    $18: Begin Mnemonic := 'shll8'; Operands := Rn; End;
+    $19: Begin Mnemonic := 'shlr8'; Operands := Rn; End;
+    $1A: Begin Mnemonic := 'lds'; Operands := Rn + ',macl'; End;
+    $1B: Begin Mnemonic := 'tas.b'; Operands := '@' + Rn; End;
+    $1E: Begin Mnemonic := 'ldc'; Operands := Rn + ',gbr'; End;
+    $20: Begin Mnemonic := 'shal'; Operands := Rn; End;
+    $21: Begin Mnemonic := 'shar'; Operands := Rn; End;
+    $22: Begin Mnemonic := 'sts.l'; Operands := 'pr,@-' + Rn; End;
+    $23: Begin Mnemonic := 'stc.l'; Operands := 'vbr,@-' + Rn; End;
+    $24: Begin Mnemonic := 'rotcl'; Operands := Rn; End;
+    $25: Begin Mnemonic := 'rotcr'; Operands := Rn; End;
+    $26: Begin Mnemonic := 'lds.l'; Operands := '@' + Rn + '+,pr'; End;
+    $27: Begin Mnemonic := 'ldc.l'; Operands := '@' + Rn + '+,vbr'; End;
+    $28: Begin Mnemonic := 'shll16'; Operands := Rn; End;
+    $29: Begin Mnemonic := 'shlr16'; Operands := Rn; End;
+    $2A: Begin Mnemonic := 'lds'; Operands := Rn + ',pr'; End;
+    $2B: Begin Mnemonic := 'jmp'; Operands := '@' + Rn; End;
+    $2E: Begin Mnemonic := 'ldc'; Operands := Rn + ',vbr'; End;
+    $32: Begin Mnemonic := 'stc.l'; Operands := 'sgr,@-' + Rn; End;
+    $33: Begin Mnemonic := 'stc.l'; Operands := 'ssr,@-' + Rn; End;
+    $37: Begin Mnemonic := 'ldc.l'; Operands := '@' + Rn + '+,ssr'; End;
+    $3E: Begin Mnemonic := 'ldc'; Operands := Rn + ',ssr'; End;
+    $43: Begin Mnemonic := 'stc.l'; Operands := 'spc,@-' + Rn; End;
+    $47: Begin Mnemonic := 'ldc.l'; Operands := '@' + Rn + '+,spc'; End;
+    $4E: Begin Mnemonic := 'ldc'; Operands := Rn + ',spc'; End;
+    $52: Begin Mnemonic := 'sts.l'; Operands := 'fpul,@-' + Rn; End;
+    $56: Begin Mnemonic := 'lds.l'; Operands := '@' + Rn + '+,fpul'; End;
+    $5A: Begin Mnemonic := 'lds'; Operands := Rn + ',fpul'; End;
+    $62: Begin Mnemonic := 'sts.l'; Operands := 'fpscr,@-' + Rn; End;
+    $66: Begin Mnemonic := 'lds.l'; Operands := '@' + Rn + '+,fpscr'; End;
+    $6A: Begin Mnemonic := 'lds'; Operands := Rn + ',fpscr'; End;
+   End;
+   If (Instr And $F00F) = $400C Then Begin
+    Mnemonic := 'shad'; Operands := Rm + ',' + Rn;
+   End Else If (Instr And $F00F) = $400D Then Begin
+    Mnemonic := 'shld'; Operands := Rm + ',' + Rn;
+   End Else If (Instr And $F00F) = $400F Then Begin
+    Mnemonic := 'mac.w'; Operands := '@' + Rm + '+,@' + Rn + '+';
+   End;
+  End;
+  $5: Begin
+   Mnemonic := 'mov.l';
+   Operands := '@(' + IntToStr(Low * 4) + ',' + Rm + '),' + Rn;
+  End;
+  $6: Case Low Of
+   $0: Begin Mnemonic := 'mov.b'; Operands := '@' + Rm + ',' + Rn; End;
+   $1: Begin Mnemonic := 'mov.w'; Operands := '@' + Rm + ',' + Rn; End;
+   $2: Begin Mnemonic := 'mov.l'; Operands := '@' + Rm + ',' + Rn; End;
+   $3: Begin Mnemonic := 'mov'; Operands := Rm + ',' + Rn; End;
+   $4: Begin Mnemonic := 'mov.b'; Operands := '@' + Rm + '+,' + Rn; End;
+   $5: Begin Mnemonic := 'mov.w'; Operands := '@' + Rm + '+,' + Rn; End;
+   $6: Begin Mnemonic := 'mov.l'; Operands := '@' + Rm + '+,' + Rn; End;
+   $7: Begin Mnemonic := 'not'; Operands := Rm + ',' + Rn; End;
+   $8: Begin Mnemonic := 'swap.b'; Operands := Rm + ',' + Rn; End;
+   $9: Begin Mnemonic := 'swap.w'; Operands := Rm + ',' + Rn; End;
+   $A: Begin Mnemonic := 'negc'; Operands := Rm + ',' + Rn; End;
+   $B: Begin Mnemonic := 'neg'; Operands := Rm + ',' + Rn; End;
+   $C: Begin Mnemonic := 'extu.b'; Operands := Rm + ',' + Rn; End;
+   $D: Begin Mnemonic := 'extu.w'; Operands := Rm + ',' + Rn; End;
+   $E: Begin Mnemonic := 'exts.b'; Operands := Rm + ',' + Rn; End;
+   $F: Begin Mnemonic := 'exts.w'; Operands := Rm + ',' + Rn; End;
+  End;
+  $7: Begin
+   Mnemonic := 'add';
+   Operands := '#' + ShSigned(ShSign8(Imm8)) + ',' + Rn;
+  End;
+  $8: Begin
+   Case (Instr Shr 8) And $F Of
+    $0: Begin Mnemonic := 'mov.b'; Operands := 'r0,@(' + IntToStr(Instr And 15) + ',' + Rm + ')'; End;
+    $1: Begin Mnemonic := 'mov.w'; Operands := 'r0,@(' + IntToStr((Instr And 15) * 2) + ',' + Rm + ')'; End;
+    $4: Begin Mnemonic := 'mov.b'; Operands := '@(' + IntToStr(Instr And 15) + ',' + Rm + '),r0'; End;
+    $5: Begin Mnemonic := 'mov.w'; Operands := '@(' + IntToStr((Instr And 15) * 2) + ',' + Rm + '),r0'; End;
+    $8: Begin Mnemonic := 'cmp/eq'; Operands := '#0x' + ToHexFixed(Imm8, 2) + ',r0'; End;
+    $9, $B, $D, $F: Begin
+     Disp := ShSign8(Imm8) * 2;
+     Target := VAddrBase + 4 + Disp;
+     Case (Instr Shr 8) And $F Of
+      $9: Mnemonic := 'bt';
+      $B: Mnemonic := 'bf';
+      $D: Mnemonic := 'bt/s';
+      $F: Mnemonic := 'bf/s';
+     End;
+     Operands := '0x' + ToHexFixed(Target, 8);
+    End;
+   End;
+  End;
+  $9: Begin
+   Target := VAddrBase + 4 + Imm8 * 2;
+   Mnemonic := 'mov.w';
+   Operands := '@(0x' + ToHexFixed(Target, 8) + ',pc),' + Rn;
+  End;
+  $A, $B: Begin
+   Disp := Instr And $0FFF;
+   If (Disp And $0800) <> 0 Then Disp := Disp Or LongInt($FFFFF000);
+   Target := VAddrBase + 4 + Disp * 2;
+   If Top = $A Then Mnemonic := 'bra' Else Mnemonic := 'bsr';
+   Operands := '0x' + ToHexFixed(Target, 8);
+  End;
+  $C: Case (Instr Shr 8) And 15 Of
+   $0: Begin Mnemonic := 'mov.b'; Operands := 'r0,@(' + IntToStr(Imm8) + ',gbr)'; End;
+   $1: Begin Mnemonic := 'mov.w'; Operands := 'r0,@(' + IntToStr(Imm8 * 2) + ',gbr)'; End;
+   $2: Begin Mnemonic := 'mov.l'; Operands := 'r0,@(' + IntToStr(Imm8 * 4) + ',gbr)'; End;
+   $3: Begin Mnemonic := 'trapa'; Operands := '#0x' + ToHexFixed(Imm8, 2); End;
+   $4: Begin Mnemonic := 'mov.b'; Operands := '@(' + IntToStr(Imm8) + ',gbr),r0'; End;
+   $5: Begin Mnemonic := 'mov.w'; Operands := '@(' + IntToStr(Imm8 * 2) + ',gbr),r0'; End;
+   $6: Begin Mnemonic := 'mov.l'; Operands := '@(' + IntToStr(Imm8 * 4) + ',gbr),r0'; End;
+   $7: Begin
+    Target := ((VAddrBase + 4) And LongInt($FFFFFFFC)) + Imm8 * 4;
+    Mnemonic := 'mova'; Operands := '@(0x' + ToHexFixed(Target, 8) + ',pc),r0';
+   End;
+   $8: Begin Mnemonic := 'tst'; Operands := '#0x' + ToHexFixed(Imm8, 2) + ',r0'; End;
+   $9: Begin Mnemonic := 'and'; Operands := '#0x' + ToHexFixed(Imm8, 2) + ',r0'; End;
+   $A: Begin Mnemonic := 'xor'; Operands := '#0x' + ToHexFixed(Imm8, 2) + ',r0'; End;
+   $B: Begin Mnemonic := 'or'; Operands := '#0x' + ToHexFixed(Imm8, 2) + ',r0'; End;
+   $C: Begin Mnemonic := 'tst.b'; Operands := '#0x' + ToHexFixed(Imm8, 2) + ',@(r0,gbr)'; End;
+   $D: Begin Mnemonic := 'and.b'; Operands := '#0x' + ToHexFixed(Imm8, 2) + ',@(r0,gbr)'; End;
+   $E: Begin Mnemonic := 'xor.b'; Operands := '#0x' + ToHexFixed(Imm8, 2) + ',@(r0,gbr)'; End;
+   $F: Begin Mnemonic := 'or.b'; Operands := '#0x' + ToHexFixed(Imm8, 2) + ',@(r0,gbr)'; End;
+  End;
+  $D: Begin
+   Target := ((VAddrBase + 4) And LongInt($FFFFFFFC)) + Imm8 * 4;
+   Mnemonic := 'mov.l';
+   Operands := '@(0x' + ToHexFixed(Target, 8) + ',pc),' + Rn;
+  End;
+  $E: Begin
+   Mnemonic := 'mov';
+   Operands := '#' + ShSigned(ShSign8(Imm8)) + ',' + Rn;
+  End;
+  $F: Case Low Of
+   $0: Begin Mnemonic := 'fadd'; Operands := 'fr' + IntToStr(M) + ',fr' + IntToStr(N); End;
+   $1: Begin Mnemonic := 'fsub'; Operands := 'fr' + IntToStr(M) + ',fr' + IntToStr(N); End;
+   $2: Begin Mnemonic := 'fmul'; Operands := 'fr' + IntToStr(M) + ',fr' + IntToStr(N); End;
+   $3: Begin Mnemonic := 'fdiv'; Operands := 'fr' + IntToStr(M) + ',fr' + IntToStr(N); End;
+   $4: Begin Mnemonic := 'fcmp/eq'; Operands := 'fr' + IntToStr(M) + ',fr' + IntToStr(N); End;
+   $5: Begin Mnemonic := 'fcmp/gt'; Operands := 'fr' + IntToStr(M) + ',fr' + IntToStr(N); End;
+   $6: Begin Mnemonic := 'fmov.s'; Operands := '@(r0,' + Rm + '),fr' + IntToStr(N); End;
+   $7: Begin Mnemonic := 'fmov.s'; Operands := 'fr' + IntToStr(M) + ',@(r0,' + Rn + ')'; End;
+   $8: Begin Mnemonic := 'fmov.s'; Operands := '@' + Rm + ',fr' + IntToStr(N); End;
+   $9: Begin Mnemonic := 'fmov.s'; Operands := '@' + Rm + '+,fr' + IntToStr(N); End;
+   $A: Begin Mnemonic := 'fmov.s'; Operands := 'fr' + IntToStr(M) + ',@' + Rn; End;
+   $B: Begin Mnemonic := 'fmov.s'; Operands := 'fr' + IntToStr(M) + ',@-' + Rn; End;
+   $C: Begin Mnemonic := 'fmov'; Operands := 'fr' + IntToStr(M) + ',fr' + IntToStr(N); End;
+   $D: Case M Of
+    $0: Begin Mnemonic := 'fsts'; Operands := 'fpul,fr' + IntToStr(N); End;
+    $1: Begin Mnemonic := 'flds'; Operands := 'fr' + IntToStr(N) + ',fpul'; End;
+    $2: Begin Mnemonic := 'float'; Operands := 'fpul,fr' + IntToStr(N); End;
+    $3: Begin Mnemonic := 'ftrc'; Operands := 'fr' + IntToStr(N) + ',fpul'; End;
+    $4: Begin Mnemonic := 'fneg'; Operands := 'fr' + IntToStr(N); End;
+    $5: Begin Mnemonic := 'fabs'; Operands := 'fr' + IntToStr(N); End;
+    $6: Begin Mnemonic := 'fsqrt'; Operands := 'fr' + IntToStr(N); End;
+    $8: Begin Mnemonic := 'fldi0'; Operands := 'fr' + IntToStr(N); End;
+    $9: Begin Mnemonic := 'fldi1'; Operands := 'fr' + IntToStr(N); End;
+    $A: Begin Mnemonic := 'fcnvsd'; Operands := 'fpul,dr' + IntToStr(N And $E); End;
+    $B: Begin Mnemonic := 'fcnvds'; Operands := 'dr' + IntToStr(N And $E) + ',fpul'; End;
+   End;
+   $E: Begin Mnemonic := 'fmac'; Operands := 'fr0,fr' + IntToStr(M) + ',fr' + IntToStr(N); End;
+  End;
+ End;
+
+ DisasmShOne := 2;
+End;
+
+{ ============================================================
   RECHERCHE DE SYMBOLE / SECTION POUR L AFFICHAGE
   ============================================================ }
 
@@ -5596,6 +5926,12 @@ End;
   @return Nom du format (ex: "elf32-i386", "pei-i386") }
 Function FormatName: String;
 Begin
+ If ((Arch = ARCH_SH) Or (Arch = ARCH_SHLE)) And
+    (BinFormat = FMT_ELF32) Then Begin
+  If Arch = ARCH_SHLE Then FormatName := 'elf32-shl'
+  Else FormatName := 'elf32-sh';
+  Exit;
+ End;
  If ((Arch = ARCH_PPC) Or (Arch = ARCH_PPCLE)) And
     (BinFormat = FMT_ELF32) Then Begin
   If Arch = ARCH_PPCLE Then FormatName := 'elf32-powerpcle'
@@ -5715,7 +6051,8 @@ Begin
  Else If (Arch = ARCH_ARM32) Or (Arch = ARCH_THUMB) Or
          (Arch = ARCH_68000) Or (Arch = ARCH_SPARC) Or
          (Arch = ARCH_MIPS) Or (Arch = ARCH_MIPSEL) Or
-         (Arch = ARCH_PPC) Or (Arch = ARCH_PPCLE) Then AddrDigits := 8
+         (Arch = ARCH_PPC) Or (Arch = ARCH_PPCLE) Or
+         (Arch = ARCH_SH) Or (Arch = ARCH_SHLE) Then AddrDigits := 8
  Else AddrDigits := 6;
  WriteLn;
  WriteLn(InFileName, ':     format ', FormatName);
@@ -5757,7 +6094,9 @@ Begin
    Else If (Arch = ARCH_MIPS) Or (Arch = ARCH_MIPSEL) Then
    InstrLen := DisasmMipsOne(Off, VAddr, Mnemonic, Operands)
    Else If (Arch = ARCH_PPC) Or (Arch = ARCH_PPCLE) Then
-    InstrLen := DisasmPpcOne(Off, VAddr, Mnemonic, Operands)
+   InstrLen := DisasmPpcOne(Off, VAddr, Mnemonic, Operands)
+   Else If (Arch = ARCH_SH) Or (Arch = ARCH_SHLE) Then
+    InstrLen := DisasmShOne(Off, VAddr, Mnemonic, Operands)
    Else
     InstrLen := DisasmOne(Off, VAddr, Mnemonic, Operands);
    BytesTxt := '';
@@ -5821,7 +6160,7 @@ Procedure Help;Begin
  WriteLn('  -m arch  Force l''architecture de desassemblage :');
  WriteLn('           i386 (defaut), x86-64, 8086, 8080, 6502, z80, 6800,');
  WriteLn('           68000, sparc, sparcv9, mips, mipsel, ppc, ppcle,');
- WriteLn('           arm, thumb');
+ WriteLn('           sh, shle, arm, thumb');
  WriteLn('           ou arm64');
  WriteLn('  -b adr   Adresse de chargement (hexa) pour un binaire');
  WriteLn('           brut sans entete, ex: -b 8000 ou -b $8000');
@@ -5842,7 +6181,7 @@ Procedure Help;Begin
  WriteLn('Thumb/Thumb-2 (sous-ensemble), AArch64 (sous-ensemble) et');
  WriteLn('SPARC V8/V8+ avec le noyau entier commun SPARC V9 ; MIPS');
  WriteLn('I/II et MIPS32 ; PowerPC 32 et noyau entier PowerPC 64,');
- WriteLn('gros-boutiste ou little-endian.');
+ WriteLn('gros-boutiste ou little-endian ; SuperH SH-1/SH-2/SH-3/SH-4.');
  WriteLn('Pas de SSE/AVX/NEON/VFP, pas d''opcodes etendus 0F pour le');
  WriteLn('8086, pas de DDCB/FDCB pour le Z80.');
 End;
@@ -5879,7 +6218,7 @@ BEGIN
    Inc(I);
    If I > ParamCount Then Begin
     WriteLn('Erreur : -m necessite une architecture (i386, x86-64, 8086, ',
-     '8080, 6502, z80, 6800, 68000, sparc, mips, ppc, arm, thumb ou arm64).');
+     '8080, 6502, z80, 6800, 68000, sparc, mips, ppc, sh, arm, thumb ou arm64).');
     Halt(1);
    End;
    If UpStr(ParamStr(I)) = '6502' Then Arch := ARCH_6502
@@ -5921,6 +6260,19 @@ BEGIN
            (UpStr(ParamStr(I)) = 'POWERPCLE') Or
            (UpStr(ParamStr(I)) = 'PPC64LE') Or
            (UpStr(ParamStr(I)) = 'POWERPC64LE') Then Arch := ARCH_PPCLE
+   Else If (UpStr(ParamStr(I)) = 'SH') Or
+           (UpStr(ParamStr(I)) = 'SUPERH') Or
+           (UpStr(ParamStr(I)) = 'SH1') Or
+           (UpStr(ParamStr(I)) = 'SH2') Or
+           (UpStr(ParamStr(I)) = 'SH3') Or
+           (UpStr(ParamStr(I)) = 'SH4') Or
+           (UpStr(ParamStr(I)) = 'SHEB') Then Arch := ARCH_SH
+   Else If (UpStr(ParamStr(I)) = 'SHLE') Or
+           (UpStr(ParamStr(I)) = 'SHEL') Or
+           (UpStr(ParamStr(I)) = 'SH1LE') Or
+           (UpStr(ParamStr(I)) = 'SH2LE') Or
+           (UpStr(ParamStr(I)) = 'SH3LE') Or
+           (UpStr(ParamStr(I)) = 'SH4LE') Then Arch := ARCH_SHLE
    Else Begin
     WriteLn('Architecture inconnue pour -m : ', ParamStr(I));
     Halt(1);
@@ -5972,6 +6324,9 @@ BEGIN
    End
    Else If (ElfMachine = EM_PPC) Or (ElfMachine = EM_PPC64) Then Begin
     If ElfBigEndian Then Arch := ARCH_PPC Else Arch := ARCH_PPCLE;
+   End
+   Else If ElfMachine = EM_SH Then Begin
+    If ElfBigEndian Then Arch := ARCH_SH Else Arch := ARCH_SHLE;
    End
    Else If BinFormat = FMT_ELF64 Then Arch := ARCH_X64;
    { ELF32 sans e_machine ARM reconnu : on laisse ARCH_X86 par defaut,
