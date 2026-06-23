@@ -5,8 +5,10 @@
   @description: Clone partiel de l outil GNU "objdump", couvrant les
     formats binaires ELF32/ELF64 (Linux), PE32/PE32+ (Windows), EXE
     DOS reel (MZ) et ROM NES (iNES), avec desassemblage x86 32 bits,
-    x86-64, 8086/80186, 6502, Z80, Motorola 6800 et Motorola 68000
-    pour les instructions courantes.
+    x86-64, 8086/80186, 6502, Z80, Motorola 6800 et la famille
+    Motorola 68000/68010/68020/68030 (plus un sous-ensemble du
+    coprocesseur flottant 68881/68882) pour les instructions
+    courantes.
 
     Portee assumee (voir discussion avec l utilisateur) :
     - Formats : ELF et PE (32 et 64 bits), EXE DOS MZ, ROM NES,
@@ -4838,6 +4840,28 @@ Begin
  CondName68k := Names[C And 15];
 End;
 
+{ @description: Nom d un registre de controle 68010/68020+, pour
+    MOVEC. Les codes non reconnus sont affiches en hexadecimal brut
+    plutot que de provoquer une erreur (registres specifiques aux
+    68040/68060, hors de portee ici).
+  @param C Code de registre de controle (12 bits)
+  @return Nom mnemonique ("USP", "VBR", ...) ou "$nnn" }
+Function CRegName68k(C: Word): String;
+Begin
+ Case C Of
+  $000: CRegName68k := 'SFC';
+  $001: CRegName68k := 'DFC';
+  $002: CRegName68k := 'CACR';
+  $800: CRegName68k := 'USP';
+  $801: CRegName68k := 'VBR';
+  $802: CRegName68k := 'CAAR';
+  $803: CRegName68k := 'MSP';
+  $804: CRegName68k := 'ISP';
+ Else
+  CRegName68k := '$' + ToHexFixed(C, 3);
+ End;
+End;
+
 { @description: Lit une valeur immediate de taille Size a la
     position Off (mot(s) d extension), pour les operandes "#imm".
     Le format .B utilise l octet de poids faible d un mot complet
@@ -4860,11 +4884,202 @@ Begin
  End;
 End;
 
-{ @description: Decode un operande EA (effective address) 68000
-    complet (les 7 modes d adressage standards, dont les 5 formes
-    speciales du mode 7), et indique combien d octets d extension
-    ont ete consommes par cette EA (deplacements/valeurs absolues/
-    immediat).
+{ @description: Decode le mot d extension "complet" 68020+ (bit 8 a
+    1, par opposition au mot "bref" 68000 deja gere par DecodeEA68k)
+    des modes indexes (mode 6 et mode 7/reg 3) : index mis a l
+    echelle (*1/*2/*4/*8), registre de base ou index supprimable, et
+    surtout l indirection memoire pre-indexee/post-indexee avec
+    deplacement de base et deplacement externe de taille 0/16/32
+    bits. Syntaxe Motorola/GNU as : crochets autour de la partie
+    effectivement dereferencee en memoire ("[bd,An,Xn],od" pour le
+    pre-indexe, "[bd,An],Xn,od" pour le post-indexe).
+  @param Off Decalage (0-based) du mot d extension lui-meme
+  @param BaseTok Texte du registre de base ("A0".."A7" ou "PC")
+  @param ExtraLen (sortie) nombre d octets d extension consommes
+    (mot d extension + deplacements eventuels)
+  @return Texte de l operande complet, parentheses incluses }
+{ ============================================================
+  COPROCESSEUR ARITHMETIQUE 68881/68882 (FPU)
+  ============================================================
+  Couvre le format "general" (chargement + arithmetique + test/
+  comparaison, registre<->registre ou <ea>->registre), qui couvre
+  l ecrasante majorite du code flottant reel. Explicitement HORS DE
+  PORTEE (confiance trop faible, formes rares en pratique) :
+  FMOVE FPn-><ea> (stockage), FMOVEM, FBcc/FDBcc/FScc/FTRAPcc,
+  FSAVE/FRESTORE, et le format BCD empaquete source. Confiance
+  generale plus faible que le reste de ce fichier : aucun
+  assembleur ni processeur 68881/68882 reel n a pu etre utilise
+  pour validation, contrairement a l entier 68000/68010/68020. }
+
+{ @description: Nom d un registre flottant FP0-FP7.
+  @param R Numero de registre (0-7)
+  @return "FP0".."FP7" }
+Function FPReg68k(R: Byte): String;
+Begin
+ FPReg68k := 'FP' + Chr(Ord('0') + (R And 7));
+End;
+
+{ @description: Mnemonique de l operation FPU correspondant au
+    champ opmode (7 bits) du mot d extension du format general.
+    Sous-ensemble courant (arithmetique de base, transcendantales,
+    test/comparaison) ; les opmodes non reconnus renvoient une
+    chaine vide (traite comme "(bad)" par l appelant).
+  @param OpM Champ opmode (7 bits, bits6-0 du mot d extension)
+  @return Mnemonique ("FADD", "FSIN", ...) ou chaine vide }
+Function FPOpName68k(OpM: Byte): String;
+Begin
+ Case OpM Of
+  $00: FPOpName68k := 'FMOVE';
+  $01: FPOpName68k := 'FINT';
+  $02: FPOpName68k := 'FSINH';
+  $03: FPOpName68k := 'FINTRZ';
+  $04: FPOpName68k := 'FSQRT';
+  $06: FPOpName68k := 'FLOGNP1';
+  $08: FPOpName68k := 'FETOXM1';
+  $09: FPOpName68k := 'FTANH';
+  $0A: FPOpName68k := 'FATAN';
+  $0C: FPOpName68k := 'FASIN';
+  $0D: FPOpName68k := 'FATANH';
+  $0E: FPOpName68k := 'FSIN';
+  $0F: FPOpName68k := 'FTAN';
+  $10: FPOpName68k := 'FETOX';
+  $11: FPOpName68k := 'FTWOTOX';
+  $12: FPOpName68k := 'FTENTOX';
+  $14: FPOpName68k := 'FLOGN';
+  $15: FPOpName68k := 'FLOG10';
+  $16: FPOpName68k := 'FLOG2';
+  $18: FPOpName68k := 'FABS';
+  $19: FPOpName68k := 'FCOSH';
+  $1A: FPOpName68k := 'FNEG';
+  $1C: FPOpName68k := 'FACOS';
+  $1D: FPOpName68k := 'FCOS';
+  $1E: FPOpName68k := 'FGETEXP';
+  $1F: FPOpName68k := 'FGETMAN';
+  $20: FPOpName68k := 'FDIV';
+  $21: FPOpName68k := 'FMOD';
+  $22: FPOpName68k := 'FADD';
+  $23: FPOpName68k := 'FMUL';
+  $24: FPOpName68k := 'FSGLDIV';
+  $25: FPOpName68k := 'FREM';
+  $26: FPOpName68k := 'FSCALE';
+  $27: FPOpName68k := 'FSGLMUL';
+  $28: FPOpName68k := 'FSUB';
+  $38: FPOpName68k := 'FCMP';
+  $3A: FPOpName68k := 'FTST';
+ Else
+  FPOpName68k := '';
+ End;
+End;
+
+{ @description: Lit un operande immediat FPU (mode 7/registre 4) du
+    format general, dont la taille depend du format source (champ
+    de 3 bits du mot d extension), et non de la taille "octet/mot/
+    long" habituelle. Affiche les octets bruts en hexadecimal
+    (aucune conversion en decimal flottant) : correct mais moins
+    lisible qu un vrai desassembleur pour les constantes reelles.
+  @param Off Decalage (0-based) du premier octet de la constante
+  @param Fmt Format source (0=long,1=simple,2=etendu,3=BCD,
+    4=mot,5=double,6=octet,7=BCD a facteur k dynamique)
+  @param ExtraLen (sortie) nombre d octets consommes
+  @return "#$..." (constante en hexadecimal brut) }
+Function FpImmStr68k(Off: LongInt; Fmt: Byte; Var ExtraLen: Integer): String;
+Var
+ NBytes, I: Integer;
+ S: String;
+Begin
+ Case Fmt Of
+  4: NBytes := 2;          { mot (entier 16 bits) }
+  0, 1: NBytes := 4;       { long (entier 32 bits) / simple precision }
+  5: NBytes := 8;          { double precision }
+  2, 3, 7: NBytes := 12;   { etendu / BCD empaquete (96 bits) }
+ Else
+  NBytes := 2;             { octet (entier 8 bits), complete a un mot }
+ End;
+ S := '';
+ For I := 0 To NBytes - 1 Do S := S + HexByte(GetByte(Off + I));
+ ExtraLen := NBytes;
+ FpImmStr68k := '#$' + S;
+End;
+
+Function DecodeFullExtWord68k(Off: LongInt; BaseTok: String;
+ Var ExtraLen: Integer): String;
+Var
+ Ext: Word;
+ XnIsA, XnSuppress, BaseSuppress: Boolean;
+ XnReg, Scale, BDSize, IIS: Byte;
+ XnLong: Boolean;
+ XnStr: String;
+ BD, OD: LongInt;
+ Len: Integer;
+ Inner, ODStr, Res: String;
+ HasIndirect, IsPost: Boolean;
+Begin
+ Ext := GetWordBE(Off);
+ Len := 2;
+ XnIsA := (Ext And $8000) <> 0;
+ XnReg := (Ext Shr 12) And 7;
+ XnLong := (Ext And $0800) <> 0;
+ Scale := (Ext Shr 9) And 3;
+ BaseSuppress := (Ext And $0080) <> 0;
+ XnSuppress := (Ext And $0040) <> 0;
+ BDSize := (Ext Shr 4) And 3;
+ IIS := Ext And 7;
+
+ If XnIsA Then XnStr := RegA68k(XnReg) Else XnStr := RegD68k(XnReg);
+ If XnLong Then XnStr := XnStr + '.L' Else XnStr := XnStr + '.W';
+ If Scale > 0 Then XnStr := XnStr + '*' + IntToStr(1 Shl Scale);
+
+ BD := 0;
+ If BDSize = 2 Then Begin
+  BD := SmallInt(GetWordBE(Off + Len)); Len := Len + 2;
+ End Else If BDSize = 3 Then Begin
+  BD := GetDWordBE(Off + Len); Len := Len + 4;
+ End;
+
+ If BaseSuppress Then Inner := Disp68kStr(BD)
+ Else Inner := Disp68kStr(BD) + ',' + BaseTok;
+
+ HasIndirect := IIS <> 0;
+ IsPost := IIS >= 5;
+ ODStr := '';
+ If HasIndirect Then Begin
+  If IsPost Then Begin
+   If IIS = 6 Then Begin
+    OD := SmallInt(GetWordBE(Off + Len)); Len := Len + 2;
+    ODStr := ',' + Disp68kStr(OD);
+   End Else If IIS = 7 Then Begin
+    OD := GetDWordBE(Off + Len); Len := Len + 4;
+    ODStr := ',' + Disp68kStr(OD);
+   End; { IIS=5 : deplacement externe nul, ODStr reste vide }
+  End Else Begin
+   If IIS = 2 Then Begin
+    OD := SmallInt(GetWordBE(Off + Len)); Len := Len + 2;
+    ODStr := ',' + Disp68kStr(OD);
+   End Else If IIS = 3 Then Begin
+    OD := GetDWordBE(Off + Len); Len := Len + 4;
+    ODStr := ',' + Disp68kStr(OD);
+   End; { IIS=1 : deplacement externe nul }
+  End;
+ End;
+
+ If XnSuppress Then Begin
+  If Not HasIndirect Then Res := '(' + Inner + ')'
+  Else Res := '([' + Inner + ']' + ODStr + ')';
+ End Else Begin
+  If Not HasIndirect Then Res := '(' + Inner + ',' + XnStr + ')'
+  Else If Not IsPost Then Res := '([' + Inner + ',' + XnStr + ']' + ODStr + ')'
+  Else Res := '([' + Inner + '],' + XnStr + ODStr + ')';
+ End;
+ ExtraLen := Len;
+ DecodeFullExtWord68k := Res;
+End;
+
+{ @description: Decode un operande EA (effective address) 68000/
+    68020+ complet (les 7 modes d adressage standards, dont les 5
+    formes speciales du mode 7, et le format d extension "complet"
+    68020+ pour les modes indexes 6 et 7/3), et indique combien
+    d octets d extension ont ete consommes par cette EA
+    (deplacements/valeurs absolues/immediat).
   @param Off Decalage (0-based) du premier octet suivant le mot
     d instruction (ou le mot d extension precedent, si l EA n est
     pas le premier operande)
@@ -4902,14 +5117,18 @@ Begin
   End;
   6: Begin
    Ext := GetWordBE(Off);
-   ExtraLen := 2;
-   XnIsA := (Ext And $8000) <> 0;
-   XnReg := (Ext Shr 12) And 7;
-   XnLong := (Ext And $0800) <> 0;
-   D8 := ShortInt(Ext And $FF);
-   If XnIsA Then XnStr := RegA68k(XnReg) Else XnStr := RegD68k(XnReg);
-   If XnLong Then XnStr := XnStr + '.L' Else XnStr := XnStr + '.W';
-   DecodeEA68k := Disp68kStr(D8) + '(' + RegA68k(Reg) + ',' + XnStr + ')';
+   If (Ext And $0100) <> 0 Then
+    DecodeEA68k := DecodeFullExtWord68k(Off, RegA68k(Reg), ExtraLen)
+   Else Begin
+    ExtraLen := 2;
+    XnIsA := (Ext And $8000) <> 0;
+    XnReg := (Ext Shr 12) And 7;
+    XnLong := (Ext And $0800) <> 0;
+    D8 := ShortInt(Ext And $FF);
+    If XnIsA Then XnStr := RegA68k(XnReg) Else XnStr := RegD68k(XnReg);
+    If XnLong Then XnStr := XnStr + '.L' Else XnStr := XnStr + '.W';
+    DecodeEA68k := Disp68kStr(D8) + '(' + RegA68k(Reg) + ',' + XnStr + ')';
+   End;
   End;
  Else Begin { Mode = 7 : formes speciales, selectionnees par Reg }
   Case Reg Of
@@ -4930,14 +5149,18 @@ Begin
    End;
    3: Begin
     Ext := GetWordBE(Off);
-    ExtraLen := 2;
-    XnIsA := (Ext And $8000) <> 0;
-    XnReg := (Ext Shr 12) And 7;
-    XnLong := (Ext And $0800) <> 0;
-    D8 := ShortInt(Ext And $FF);
-    If XnIsA Then XnStr := RegA68k(XnReg) Else XnStr := RegD68k(XnReg);
-    If XnLong Then XnStr := XnStr + '.L' Else XnStr := XnStr + '.W';
-    DecodeEA68k := Disp68kStr(D8) + '(PC,' + XnStr + ')';
+    If (Ext And $0100) <> 0 Then
+     DecodeEA68k := DecodeFullExtWord68k(Off, 'PC', ExtraLen)
+    Else Begin
+     ExtraLen := 2;
+     XnIsA := (Ext And $8000) <> 0;
+     XnReg := (Ext Shr 12) And 7;
+     XnLong := (Ext And $0800) <> 0;
+     D8 := ShortInt(Ext And $FF);
+     If XnIsA Then XnStr := RegA68k(XnReg) Else XnStr := RegD68k(XnReg);
+     If XnLong Then XnStr := XnStr + '.L' Else XnStr := XnStr + '.W';
+     DecodeEA68k := Disp68kStr(D8) + '(PC,' + XnStr + ')';
+    End;
    End;
    4: DecodeEA68k := ImmStr68k(Off, Size, ExtraLen);
   Else
@@ -4996,12 +5219,36 @@ Begin
  RegList68k := S;
 End;
 
-{ @description: Decode une instruction 68000 a la position Off et
-    renvoie son mnemonique, ses operandes et sa longueur en octets.
-    Couvre le jeu d instructions utilisateur du 68000 simple (pas
-    68010/68020+, pas de FPU 68881, pas de MMU 68851, pas de
-    CAS/CAS2/bitfields). MOVEP est decode avec une confiance plus
-    faible que le reste (instruction rarissime en pratique, jamais
+{ @description: Decode une instruction 68000/68010/68020/68030 (plus
+    le coprocesseur 68881/68882, sous-ensemble) a la position Off,
+    et renvoie son mnemonique, ses operandes et sa longueur en
+    octets. Couverture par etage de confiance :
+    - 68000 utilisateur : haute confiance, valide contre les
+      manuels et des instructions encodees a la main (voir
+      l historique des tests de cette fonction).
+    - 68010 (MOVEC/MOVES/RTD) et 68020 entier (modes d adressage
+      indexes complets, multiplication/division 32x32, EXTB.L,
+      champs de bits BFxxx, CHK2/CMP2, CAS, PACK/UNPK, TRAPcc) :
+      confiance moyenne, encodages reconstruits de memoire et
+      verifies par auto-coherence uniquement (aucun assembleur ni
+      processeur 68010/68020 reel disponible ici). CAS2, CALLM/RTM
+      delibrement exclus (trop rares en pratique).
+    - MULx.L/DIVx.L partagent leur opcode de base avec les formes
+      .W du 68000 pur, sans bit distinctif : une heuristique (mot
+      suivant aux bits reserves nuls) tranche entre les deux
+      interpretations, comme le ferait un vrai outil avec -m
+      68000/68020 explicite.
+    - FPU 68881/68882 : uniquement le format general (chargement,
+      arithmetique, transcendantales, FCMP/FTST) ; FMOVE vers <ea>,
+      FMOVEM, FBcc/FDBcc/FScc/FTRAPcc, FSAVE/FRESTORE non couverts.
+      Confiance plus faible que l entier (jamais verifie contre un
+      68881/68882 reel).
+    - MMU 68851 : seul PFLUSHA (opcode fixe $F518) est reconnu ;
+      tout le reste (PMOVE/PLOAD/PFLUSH/PTEST/PVALID/PSAVE/
+      PRESTORE) est volontairement absent (format trop incertain de
+      memoire pour etre decode de façon fiable).
+    MOVEP est decode avec une confiance plus faible que le reste du
+    68000 de base (instruction rarissime en pratique, jamais
     validee contre un binaire reel).
   @param Off Decalage (0-based) du mot d instruction
   @param VAddrBase Adresse virtuelle de l instruction (pour les
@@ -5030,6 +5277,15 @@ Var
  IsReg: Boolean;
  TypeNames: Array[0..3] Of String[4];
  ShCount, ShType: Byte;
+ ExtW: Word;
+ RegStr: String;
+ CReg: Word;
+ BfOp, BfDn: Byte;
+ OffStr, WidStr, BfSpec: String;
+ BfDo, BfDw: Byte;
+ BfW: Integer;
+ CpID, FType, FDest, FOpmode, FRM, FSrcSpec: Byte;
+ FName, FSrc: String;
 Begin
  Op := GetWordBE(Off);
  Len := 2;
@@ -5072,7 +5328,37 @@ Begin
       Size := (Op Shr 6) And 3;
       SrcMode := (Op Shr 3) And 7;
       SrcReg  := Op And 7;
-      If (Size = 3) And (SrcMode = 7) And (SrcReg = 4) Then
+      If (Size = 3) And ((Nibble = 0) Or (Nibble = 2) Or (Nibble = 4)) Then Begin
+       { trou "taille invalide" de ORI/ANDI/SUBI (bits8-6=011) :
+         reutilise par CHK2/CMP2 (68020+), taille donnee par
+         bits10-9 de l opcode (0=octet,1=mot,2=long), et non par le
+         champ Size habituel (qui vaut toujours 11 ici). }
+       Case (Op Shr 9) And 3 Of
+        0: Size := 0; 1: Size := 1; Else Size := 2;
+       End;
+       EA := DecodeEA68k(Off + 2, VAddrBase + 2, SrcMode, SrcReg, Size, Ext);
+       Len := 2 + Ext;
+       ExtW := GetWordBE(Off + Len);
+       Len := Len + 2;
+       If (ExtW And $8000) <> 0 Then RegStr := RegA68k((ExtW Shr 12) And 7)
+       Else RegStr := RegD68k((ExtW Shr 12) And 7);
+       If (ExtW And $0800) <> 0 Then Mnemonic := 'CHK2' + SizeSuf68k(Size)
+       Else Mnemonic := 'CMP2' + SizeSuf68k(Size);
+       Operands := EA + ',' + RegStr;
+      End Else If (Size = 3) And ((Nibble = $A) Or (Nibble = $C)) Then Begin
+       { trou "taille invalide" de EORI/CMPI : reutilise par CAS
+         (68020+, comparaison-et-echange) ; CAS.L vit dans le trou
+         equivalent de MOVES (deja gere comme tel plus haut). }
+       SrcMode := (Op Shr 3) And 7;
+       SrcReg  := Op And 7;
+       If Nibble = $A Then Size := 0 Else Size := 1;
+       ExtW := GetWordBE(Off + 2);
+       EA := DecodeEA68k(Off + 4, VAddrBase + 4, SrcMode, SrcReg, Size, Ext);
+       Len := 4 + Ext;
+       Mnemonic := 'CAS' + SizeSuf68k(Size);
+       Operands := RegD68k(ExtW And 7) + ',' + RegD68k((ExtW Shr 6) And 7) +
+        ',' + EA;
+      End Else If (Size = 3) And (SrcMode = 7) And (SrcReg = 4) Then
        Mnemonic := '(bad)' { taille invalide }
       Else If (SrcMode = 7) And (SrcReg = 4) And
               ((Nibble = 0) Or (Nibble = 2) Or (Nibble = $A)) Then Begin
@@ -5114,6 +5400,32 @@ Begin
       Else Mnemonic := 'BSET';
       Operands := EA;
      End;
+     $E: Begin { MOVES <ea>,Rn / MOVES Rn,<ea> (68010+, privilegie) }
+      Size := (Op Shr 6) And 3;
+      SrcMode := (Op Shr 3) And 7;
+      SrcReg  := Op And 7;
+      If Size = 3 Then Begin
+       { trou "taille invalide" de MOVES : reutilise par CAS.L
+         (68020+), forme longue de CAS (voir aussi le trou
+         equivalent de EORI/CMPI pour CAS.B/CAS.W). }
+       ExtW := GetWordBE(Off + 2);
+       EA := DecodeEA68k(Off + 4, VAddrBase + 4, SrcMode, SrcReg, 2, Ext);
+       Len := 4 + Ext;
+       Mnemonic := 'CAS.L';
+       Operands := RegD68k(ExtW And 7) + ',' + RegD68k((ExtW Shr 6) And 7) +
+        ',' + EA;
+      End Else Begin
+       ExtW := GetWordBE(Off + 2);
+       Rx := (ExtW Shr 12) And 7;
+       If (ExtW And $8000) <> 0 Then RegStr := RegA68k(Rx)
+       Else RegStr := RegD68k(Rx);
+       EA := DecodeEA68k(Off + 4, VAddrBase + 4, SrcMode, SrcReg, Size, Ext);
+       Len := 4 + Ext;
+       Mnemonic := 'MOVES' + SizeSuf68k(Size);
+       If (ExtW And $0800) <> 0 Then Operands := RegStr + ',' + EA
+       Else Operands := EA + ',' + RegStr;
+      End;
+     End;
     End; { Case Nibble }
    End;
   End;
@@ -5144,16 +5456,24 @@ Begin
     SrcMode := (Op Shr 3) And 7;
     SrcReg  := Op And 7;
     OpMode := (Op Shr 6) And 3;
-    EA := DecodeEA68k(Off + 2, VAddrBase + 2, SrcMode, SrcReg, 1, Ext);
-    Len := 2 + Ext;
-    If OpMode = 2 Then Begin
-     Mnemonic := 'CHK';
-     Operands := EA + ',' + RegD68k(Rx);
-    End Else If OpMode = 3 Then Begin
-     Mnemonic := 'LEA';
-     Operands := EA + ',' + RegA68k(Rx);
-    End Else
-     Mnemonic := '(bad)';
+    If (OpMode = 3) And (Rx = 4) And (SrcMode = 0) Then Begin
+     { trou illegal de LEA (source = registre direct, Rx=4 fixe) :
+       reutilise par EXTB.L Dn (68020+, extension de signe octet
+       vers long, directement, sans passer par EXT.W). }
+     Mnemonic := 'EXTB.L';
+     Operands := RegD68k(SrcReg);
+    End Else Begin
+     EA := DecodeEA68k(Off + 2, VAddrBase + 2, SrcMode, SrcReg, 1, Ext);
+     Len := 2 + Ext;
+     If OpMode = 2 Then Begin
+      Mnemonic := 'CHK';
+      Operands := EA + ',' + RegD68k(Rx);
+     End Else If OpMode = 3 Then Begin
+      Mnemonic := 'LEA';
+      Operands := EA + ',' + RegA68k(Rx);
+     End Else
+      Mnemonic := '(bad)';
+    End;
    End Else Begin
     Case Nibble Of
      $0, $2, $4, $6: Begin { NEGX/CLR/NEG/NOT, ou MOVE SR/CCR a size=11 }
@@ -5196,6 +5516,11 @@ Begin
         Mnemonic := 'PEA';
         Operands := EA;
        End;
+      End Else If SrcMode = 0 Then Begin
+       { trou illegal de MOVEM (source = registre direct) : reutilise
+         par EXT.W Dn (OpMode=2) / EXT.L Dn (OpMode=3). }
+       If OpMode = 2 Then Mnemonic := 'EXT.W' Else Mnemonic := 'EXT.L';
+       Operands := RegD68k(SrcReg);
       End Else Begin
        IsLong := OpMode = 3;
        Mask := GetWordBE(Off + 2);
@@ -5269,9 +5594,27 @@ Begin
           Len := 2 + Ext;
          End;
          $3: Mnemonic := 'RTE';
+         $4: Begin { RTD #disp (68010+) }
+          DispW := SmallInt(GetWordBE(Off + 2));
+          Len := 4;
+          Mnemonic := 'RTD';
+          Operands := '#' + Disp68kStr(DispW);
+         End;
          $5: Mnemonic := 'RTS';
          $6: Mnemonic := 'TRAPV';
          $7: Mnemonic := 'RTR';
+         $A, $B: Begin { MOVEC (68010+), registre <-> registre de controle }
+          ExtW := GetWordBE(Off + 2);
+          Len := 4;
+          CReg := ExtW And $0FFF;
+          If (ExtW And $8000) <> 0 Then RegStr := RegA68k((ExtW Shr 12) And 7)
+          Else RegStr := RegD68k((ExtW Shr 12) And 7);
+          Mnemonic := 'MOVEC';
+          If (Op And $F) = $A Then
+           Operands := CRegName68k(CReg) + ',' + RegStr
+          Else
+           Operands := RegStr + ',' + CRegName68k(CReg);
+         End;
         Else
          Mnemonic := '(bad)';
         End;
@@ -5308,6 +5651,19 @@ Begin
      Target := VAddrBase + 2 + DispW;
      Mnemonic := 'DB' + CondName68k(Cond);
      Operands := RegD68k(SrcReg) + ',$' + ToHexFixed(Target, 8);
+    End Else If (SrcMode = 7) And (SrcReg >= 2) And (SrcReg <= 4) Then Begin
+     { trous illegaux de Scc (destination non inscriptible : PC-
+       relatif ou immediat) : reutilises par TRAPcc (68020+), sans
+       operande / avec operande mot / avec operande long. }
+     Mnemonic := 'TRAP' + CondName68k(Cond);
+     If SrcReg = 2 Then Begin
+      Operands := '#$' + ToHexFixed(GetWordBE(Off + 2), 4);
+      Len := 4;
+     End Else If SrcReg = 3 Then Begin
+      Operands := '#$' + ToHexFixed(GetDWordBE(Off + 2), 8);
+      Len := 6;
+     End Else
+      Len := 2;
     End Else Begin
      EA := DecodeEA68k(Off + 2, VAddrBase + 2, SrcMode, SrcReg, 0, Ext);
      Len := 2 + Ext;
@@ -5364,17 +5720,53 @@ Begin
     If OpMode = 3 Then Size := 1 Else Size := 2;
     EA := DecodeEA68k(Off + 2, VAddrBase + 2, SrcMode, SrcReg, Size, Ext);
     Len := 2 + Ext;
-    Case Top4 Of
-     $8: If OpMode = 3 Then Mnemonic := 'DIVU.W' Else Mnemonic := 'DIVS.W';
-     $C: If OpMode = 3 Then Mnemonic := 'MULU.W' Else Mnemonic := 'MULS.W';
-     $9: Mnemonic := 'SUBA' + SizeSuf68k(Size);
-     $B: Mnemonic := 'CMPA' + SizeSuf68k(Size);
-     $D: Mnemonic := 'ADDA' + SizeSuf68k(Size);
-    End;
-    If (Top4 = $8) Or (Top4 = $C) Then
-     Operands := EA + ',' + RegD68k(Rx) { DIVU/DIVS/MULU/MULS ecrivent dans Dn }
-    Else
+    If (Top4 = $8) Or (Top4 = $C) Then Begin
+     { DIVU/DIVS/MULU/MULS : sur 68020+, le meme opcode est suivi
+       d un mot d extension donnant la taille (mot/long) et, pour
+       la division, le registre quotient separe du reste (registre
+       Dn de l opcode de base). Comme ce mot d extension n existe
+       pas sur le 68000 pur, ces 4 opcodes sont structurellement
+       ambigus entre les deux generations sans selection explicite
+       du CPU cible (meme limitation que les vrais desassembleurs,
+       qui demandent un -m cpu32/68000/68020). Heuristique adoptee
+       ici : le mot suivant n est interprete comme extension 68020
+       que si ses bits reserves (tous sauf le champ registre haut
+       et le bit de taille) sont a zero ; sinon, comportement 68000
+       d origine (mot, sans extension) inchange. }
+     ExtW := GetWordBE(Off + Len);
+     If (ExtW And $0BFF) = 0 Then Begin
+      CReg := (ExtW Shr 12) And 7; { Dq (division) ou Dh (multiplication) }
+      Len := Len + 2;
+      IsLong := (ExtW And $0400) <> 0;
+      If Top4 = $8 Then Begin
+       If OpMode = 3 Then Mnemonic := 'DIVU.L' Else Mnemonic := 'DIVS.L';
+       If IsLong Then
+        Operands := EA + ',' + RegD68k(Rx) + ':' + RegD68k(CReg)
+       Else
+        Operands := EA + ',' + RegD68k(CReg);
+      End Else Begin
+       If OpMode = 3 Then Mnemonic := 'MULU.L' Else Mnemonic := 'MULS.L';
+       If IsLong Then
+        Operands := EA + ',' + RegD68k(CReg) + ':' + RegD68k(Rx)
+       Else
+        Operands := EA + ',' + RegD68k(Rx);
+      End;
+     End Else Begin
+      If Top4 = $8 Then Begin
+       If OpMode = 3 Then Mnemonic := 'DIVU.W' Else Mnemonic := 'DIVS.W';
+      End Else Begin
+       If OpMode = 3 Then Mnemonic := 'MULU.W' Else Mnemonic := 'MULS.W';
+      End;
+      Operands := EA + ',' + RegD68k(Rx);
+     End;
+    End Else Begin
+     Case Top4 Of
+      $9: Mnemonic := 'SUBA' + SizeSuf68k(Size);
+      $B: Mnemonic := 'CMPA' + SizeSuf68k(Size);
+      $D: Mnemonic := 'ADDA' + SizeSuf68k(Size);
+     End;
      Operands := EA + ',' + RegA68k(Rx);
+    End;
    End Else If OpMode <= 2 Then Begin
     { forme normale : op.sz <ea>,Dn }
     Size := OpMode;
@@ -5420,13 +5812,26 @@ Begin
       Mnemonic := 'EOR' + SizeSuf68k(Size);
       Operands := RegD68k(Rx) + ',' + EA;
      End;
-    End Else Begin { SUB(9)/OR(8)/ADD(D) : SUBX/ADDX/SBCD ou op Dn,<ea> }
+    End Else Begin { SUB(9)/OR(8)/ADD(D) : SUBX/ADDX/SBCD/PACK/UNPK ou op Dn,<ea> }
      If SrcMode <= 1 Then Begin
       IsReg := SrcMode = 0;
-      If Top4 = $8 Then Begin
+      If (Top4 = $8) And (OpMode = 4) Then Begin
        Mnemonic := 'SBCD';
        If IsReg Then Operands := RegD68k(SrcReg) + ',' + RegD68k(Rx)
        Else Operands := '-(' + RegA68k(SrcReg) + '),-(' + RegA68k(Rx) + ')';
+      End Else If (Top4 = $8) And ((OpMode = 5) Or (OpMode = 6)) Then Begin
+       { trous "5" et "6" du SBCD de groupe 8 (taille non applicable
+         a une instruction BCD octet) : reutilises par PACK/UNPK
+         (68020+), toujours suivis d un mot d ajustement #adj. }
+       ExtW := GetWordBE(Off + 2);
+       Len := 4;
+       If OpMode = 5 Then Mnemonic := 'PACK' Else Mnemonic := 'UNPK';
+       If IsReg Then
+        Operands := RegD68k(SrcReg) + ',' + RegD68k(Rx) + ',#$' +
+         ToHexFixed(ExtW, 4)
+       Else
+        Operands := '-(' + RegA68k(SrcReg) + '),-(' + RegA68k(Rx) + '),#$' +
+         ToHexFixed(ExtW, 4);
       End Else Begin
        If Top4 = $9 Then Mnemonic := 'SUBX' + SizeSuf68k(Size)
        Else Mnemonic := 'ADDX' + SizeSuf68k(Size);
@@ -5449,9 +5854,47 @@ Begin
    TypeNames[2] := 'ROX'; TypeNames[3] := 'RO';
    Size := (Op Shr 6) And 3;
    ShType := (Op Shr 3) And 3;
-   If Size = 3 Then
-    Mnemonic := '(bad)' { forme memoire, 68020+ uniquement }
-   Else Begin
+   If Size = 3 Then Begin
+    If ((Op Shr 11) And 1) = 1 Then Begin
+     { champs de bits (68020+) : meme "trou" Size=11 du decalage
+       registre, marque par le bit 11 (toujours 0 pour un decalage
+       registre normal, puisque ccc y est un compte/registre libre
+       mais Size y reste 00/01/10). Mot d extension reconstruit de
+       memoire (decalage/largeur immediat ou registre, registre
+       destination) : confiance plus faible que le reste du 68020,
+       jamais verifie contre un assembleur ou processeur reel. }
+     BfOp := (Op Shr 8) And 7;
+     SrcMode := (Op Shr 3) And 7;
+     SrcReg  := Op And 7;
+     EA := DecodeEA68k(Off + 2, VAddrBase + 2, SrcMode, SrcReg, 1, Ext);
+     Len := 2 + Ext;
+     ExtW := GetWordBE(Off + Len);
+     Len := Len + 2;
+     BfDn := (ExtW Shr 12) And 7;
+     BfDo := (ExtW Shr 11) And 1;
+     If BfDo = 1 Then OffStr := RegD68k((ExtW Shr 8) And 7)
+     Else OffStr := IntToStr((ExtW Shr 6) And 31);
+     BfDw := (ExtW Shr 5) And 1;
+     If BfDw = 1 Then WidStr := RegD68k(ExtW And 7)
+     Else Begin
+      BfW := ExtW And 31;
+      If BfW = 0 Then BfW := 32;
+      WidStr := IntToStr(BfW);
+     End;
+     BfSpec := '{' + OffStr + ':' + WidStr + '}';
+     Case BfOp Of
+      0: Begin Mnemonic := 'BFTST'; Operands := EA + BfSpec; End;
+      1: Begin Mnemonic := 'BFEXTU'; Operands := EA + BfSpec + ',' + RegD68k(BfDn); End;
+      2: Begin Mnemonic := 'BFCHG'; Operands := EA + BfSpec; End;
+      3: Begin Mnemonic := 'BFEXTS'; Operands := EA + BfSpec + ',' + RegD68k(BfDn); End;
+      4: Begin Mnemonic := 'BFCLR'; Operands := EA + BfSpec; End;
+      5: Begin Mnemonic := 'BFFFO'; Operands := EA + BfSpec + ',' + RegD68k(BfDn); End;
+      6: Begin Mnemonic := 'BFSET'; Operands := EA + BfSpec; End;
+      7: Begin Mnemonic := 'BFINS'; Operands := RegD68k(BfDn) + ',' + EA + BfSpec; End;
+     End;
+    End Else
+     Mnemonic := '(bad)';
+   End Else Begin
     If ((Op Shr 8) And 1) = 1 Then Mnemonic := TypeNames[ShType] + 'L'
     Else Mnemonic := TypeNames[ShType] + 'R';
     Mnemonic := Mnemonic + SizeSuf68k(Size);
@@ -5463,6 +5906,52 @@ Begin
      Operands := '#$' + ToHexU(ShCount) + ',' + RegD68k(Op And 7);
     End;
    End;
+  End;
+
+  $F: Begin { coprocesseur (FPU 68881/68882 si CpID=1, MMU 68851 si CpID=0) }
+   CpID := (Op Shr 9) And 7;
+   FType := (Op Shr 6) And 7;
+   If Op = $F518 Then
+    Mnemonic := 'PFLUSHA' { 68851/68030 PMMU : seul opcode MMU dont
+     l encodage exact est suffisamment sur pour etre decode ici ;
+     PMOVE/PLOAD/PFLUSH/PTEST/PVALID/PSAVE/PRESTORE ne sont pas
+     implementes (format nettement moins documente/memorise que
+     celui du FPU, risque trop eleve de decodage errone plutot
+     qu absent) }
+   Else If (CpID = 1) And (FType = 0) Then Begin
+    { format general : chargement + arithmetique + test/comparaison.
+      FMOVE FPn-><ea>, FMOVEM, FBcc/FDBcc/FScc/FTRAPcc, FSAVE/
+      FRESTORE : non couverts (voir le commentaire d en-tete de
+      cette section). }
+    SrcMode := (Op Shr 3) And 7;
+    SrcReg  := Op And 7;
+    ExtW := GetWordBE(Off + 2);
+    FRM := (ExtW Shr 14) And 1;
+    FSrcSpec := (ExtW Shr 11) And 7;
+    FDest := (ExtW Shr 8) And 7;
+    FOpmode := ExtW And $7F;
+    FName := FPOpName68k(FOpmode);
+    If FName = '' Then
+     Mnemonic := '(bad)'
+    Else Begin
+     If FRM = 0 Then Begin
+      FSrc := FPReg68k(FSrcSpec);
+      Len := 4;
+     End Else Begin
+      If (SrcMode = 7) And (SrcReg = 4) Then Begin
+       FSrc := FpImmStr68k(Off + 4, FSrcSpec, Ext);
+       Len := 4 + Ext;
+      End Else Begin
+       FSrc := DecodeEA68k(Off + 4, VAddrBase + 4, SrcMode, SrcReg, 2, Ext);
+       Len := 4 + Ext;
+      End;
+     End;
+     Mnemonic := FName;
+     If FOpmode = $3A Then Operands := FSrc { FTST : un seul operande }
+     Else Operands := FSrc + ',' + FPReg68k(FDest);
+    End;
+   End Else
+    Mnemonic := '(bad)';
   End;
 
  Else
@@ -8729,8 +9218,10 @@ Procedure Help;Begin
  WriteLn('8080 complet (syntaxe Intel) ; 6502 complet (151 opcodes) ;');
  WriteLn('Z80 (jeu de base complet, plus un');
  WriteLn('sous-ensemble pratique de CB/ED/DD/FD) ; Motorola 6800');
- WriteLn('(jeu d''instructions complet) ; Motorola 68000 (jeu utilisateur');
- WriteLn('complet, sans 68010/68020+/FPU/MMU) ; ARM 32 bits classique,');
+ WriteLn('(jeu d''instructions complet) ; Motorola 68000/68010/68020/');
+ WriteLn('68030 (entier, modes d''adressage complets, sous-ensemble');
+ WriteLn('68881/68882 pour le calcul flottant, PFLUSHA pour le MMU');
+ WriteLn('68851) ; ARM 32 bits classique,');
  WriteLn('Thumb/Thumb-2 (sous-ensemble), AArch64 (sous-ensemble) et');
  WriteLn('SPARC V8/V8+ avec le noyau entier commun SPARC V9 ; MIPS');
  WriteLn('I/II et MIPS32 ; PowerPC 32 et noyau entier PowerPC 64,');
