@@ -368,6 +368,7 @@ Begin
  End Else Begin
   Machine := GetWordAt(0);
   If ((Machine = $014C) Or (Machine = $8664) Or (Machine = $01C0) Or
+      (Machine = $01C4) Or
       (Machine = $AA64) Or (Machine = $0200)) And (GetWordAt(2) < 512) Then Begin
    IsCOFF := True;
    PEOff := 0;
@@ -1129,6 +1130,310 @@ Begin
  End;
 End;
 
+Function ArmReg(R: Byte): String;
+Begin
+ Case R And 15 Of
+  13: ArmReg := 'sp';
+  14: ArmReg := 'lr';
+  15: ArmReg := 'pc';
+ Else ArmReg := 'r' + LToS(R And 15);
+ End;
+End;
+
+Function ArmCond(C: Byte): String;
+Begin
+ Case C And 15 Of
+  0: ArmCond := 'eq';
+  1: ArmCond := 'ne';
+  2: ArmCond := 'cs';
+  3: ArmCond := 'cc';
+  4: ArmCond := 'mi';
+  5: ArmCond := 'pl';
+  6: ArmCond := 'vs';
+  7: ArmCond := 'vc';
+  8: ArmCond := 'hi';
+  9: ArmCond := 'ls';
+ 10: ArmCond := 'ge';
+ 11: ArmCond := 'lt';
+ 12: ArmCond := 'gt';
+ 13: ArmCond := 'le';
+ 14: ArmCond := '';
+ Else ArmCond := '';
+ End;
+End;
+
+Function Ror32(V: LongInt; N: Byte): LongInt;
+Var I: Byte;
+Begin
+ N := N And 31;
+ For I := 1 To N Do
+  V := (V Shr 1) Or ((V And 1) Shl 31);
+ Ror32 := V;
+End;
+
+Function ArmImm12(Op: LongInt): LongInt;
+Begin
+ ArmImm12 := Ror32(Op And $FF, ((Op Shr 8) And 15) * 2);
+End;
+
+Function ArmDPName(N: Byte): String;
+Begin
+ Case N And 15 Of
+  0: ArmDPName := 'and';
+  1: ArmDPName := 'eor';
+  2: ArmDPName := 'sub';
+  3: ArmDPName := 'rsb';
+  4: ArmDPName := 'add';
+  5: ArmDPName := 'adc';
+  6: ArmDPName := 'sbc';
+  7: ArmDPName := 'rsc';
+  8: ArmDPName := 'tst';
+  9: ArmDPName := 'teq';
+ 10: ArmDPName := 'cmp';
+ 11: ArmDPName := 'cmn';
+ 12: ArmDPName := 'orr';
+ 13: ArmDPName := 'mov';
+ 14: ArmDPName := 'bic';
+ Else ArmDPName := 'mvn';
+ End;
+End;
+
+Function ArmRegList(Mask: Word): String;
+Var I: Integer; S: String;
+Begin
+ S := '{';
+ For I := 0 To 15 Do
+  If (Mask And (1 Shl I)) <> 0 Then Begin
+   If Length(S) > 1 Then S := S + ',';
+   S := S + ArmReg(I);
+  End;
+ ArmRegList := S + '}';
+End;
+
+Function DecodeARM32(Off, VAddr: LongInt; Var Len: Integer): String;
+Var Op, Cond, Cls, Code, Rn, Rd, Rm, Imm, Target: LongInt;
+    Mnem, Suf, Op2: String;
+Begin
+ Len := 4;
+ Op := GetDWordAt(Off);
+ Cond := (Op Shr 28) And 15;
+ Suf := ArmCond(Cond);
+ If (Op And $0FFFFFF0) = $012FFF10 Then Begin
+  DecodeARM32 := 'bx' + Suf + '          ' + ArmReg(Op And 15);
+  Exit;
+ End;
+ If (Op And $0F000000) = $0A000000 Then Begin
+  Imm := Op And $00FFFFFF;
+  If (Imm And $00800000) <> 0 Then Imm := Imm Or LongInt($FF000000);
+  Target := VAddr + 8 + (Imm Shl 2);
+  If (Op And $01000000) <> 0 Then Mnem := 'bl' Else Mnem := 'b';
+  DecodeARM32 := PadRight(Mnem + Suf, 12) + HexFixed(Target, 8);
+  Exit;
+ End;
+ Cls := (Op Shr 26) And 3;
+ If Cls = 0 Then Begin
+  Code := (Op Shr 21) And 15;
+  Rn := (Op Shr 16) And 15;
+  Rd := (Op Shr 12) And 15;
+  If (Op And $02000000) <> 0 Then
+   Op2 := '#' + ImmText(ArmImm12(Op), 8)
+  Else Begin
+   Rm := Op And 15;
+   Op2 := ArmReg(Rm);
+  End;
+  Mnem := ArmDPName(Code) + Suf;
+  If ((Code >= 8) And (Code <= 11)) Then
+   DecodeARM32 := PadRight(Mnem, 12) + ArmReg(Rn) + ',' + Op2
+  Else If (Code = 13) Or (Code = 15) Then
+   DecodeARM32 := PadRight(Mnem, 12) + ArmReg(Rd) + ',' + Op2
+  Else
+   DecodeARM32 := PadRight(Mnem, 12) + ArmReg(Rd) + ',' + ArmReg(Rn) + ',' + Op2;
+  Exit;
+ End;
+ If Cls = 1 Then Begin
+  Rn := (Op Shr 16) And 15;
+  Rd := (Op Shr 12) And 15;
+  Imm := Op And $FFF;
+  If (Op And $00100000) <> 0 Then Mnem := 'ldr' Else Mnem := 'str';
+  Mnem := Mnem + Suf;
+  If (Op And $00800000) = 0 Then Imm := -Imm;
+  DecodeARM32 := PadRight(Mnem, 12) + ArmReg(Rd) + ',[' + ArmReg(Rn) + DispText(Imm) + ']';
+  Exit;
+ End;
+ If ((Op Shr 25) And 7) = 4 Then Begin
+  Rn := (Op Shr 16) And 15;
+  If (Op And $00100000) <> 0 Then Mnem := 'ldm' Else Mnem := 'stm';
+  DecodeARM32 := PadRight(Mnem + Suf, 12) + ArmReg(Rn) + ',' + ArmRegList(Op And $FFFF);
+  Exit;
+ End;
+ DecodeARM32 := 'dcd         ' + HexFixed(Op, 8) + 'h';
+End;
+
+Function ThumbCondName(C: Byte): String;
+Begin
+ Case C And 15 Of
+  0: ThumbCondName := 'beq';
+  1: ThumbCondName := 'bne';
+  2: ThumbCondName := 'bcs';
+  3: ThumbCondName := 'bcc';
+  4: ThumbCondName := 'bmi';
+  5: ThumbCondName := 'bpl';
+  6: ThumbCondName := 'bvs';
+  7: ThumbCondName := 'bvc';
+  8: ThumbCondName := 'bhi';
+  9: ThumbCondName := 'bls';
+ 10: ThumbCondName := 'bge';
+ 11: ThumbCondName := 'blt';
+ 12: ThumbCondName := 'bgt';
+ 13: ThumbCondName := 'ble';
+ Else ThumbCondName := 'b';
+ End;
+End;
+
+Function DecodeThumb(Off, VAddr: LongInt; Var Len: Integer): String;
+Var H, H2: Word; Op, Rd, Rn, Rm, Imm, Target: LongInt; M: String;
+Begin
+ H := GetWordAt(Off);
+ Len := 2;
+ If ((H And $F800) = $F000) Or ((H And $F800) = $F800) Or
+    ((H And $F800) = $E800) Then Begin
+  H2 := GetWordAt(Off + 2);
+  Len := 4;
+  DecodeThumb := 'dcd         ' + HexFixed(H Or (LongInt(H2) Shl 16), 8) + 'h';
+  Exit;
+ End;
+ If (H And $FF00) = $B500 Then Begin
+  DecodeThumb := 'push        ' + ArmRegList((H And $FF) Or ((H And $0100) Shl 6));
+  Exit;
+ End;
+ If (H And $FF00) = $BD00 Then Begin
+  DecodeThumb := 'pop         ' + ArmRegList((H And $FF) Or ((H And $0100) Shl 7));
+  Exit;
+ End;
+ If (H And $F800) = $2000 Then Begin
+  Rd := (H Shr 8) And 7; Imm := H And $FF;
+  DecodeThumb := 'movs        ' + ArmReg(Rd) + ',#' + ImmText(Imm, 2);
+  Exit;
+ End;
+ If (H And $F800) = $2800 Then Begin
+  Rn := (H Shr 8) And 7; Imm := H And $FF;
+  DecodeThumb := 'cmp         ' + ArmReg(Rn) + ',#' + ImmText(Imm, 2);
+  Exit;
+ End;
+ If (H And $F800) = $3000 Then Begin
+  Rd := (H Shr 8) And 7; Imm := H And $FF;
+  DecodeThumb := 'adds        ' + ArmReg(Rd) + ',#' + ImmText(Imm, 2);
+  Exit;
+ End;
+ If (H And $F800) = $3800 Then Begin
+  Rd := (H Shr 8) And 7; Imm := H And $FF;
+  DecodeThumb := 'subs        ' + ArmReg(Rd) + ',#' + ImmText(Imm, 2);
+  Exit;
+ End;
+ If (H And $F800) = $4800 Then Begin
+  Rd := (H Shr 8) And 7; Imm := (H And $FF) Shl 2;
+  DecodeThumb := 'ldr         ' + ArmReg(Rd) + ',[pc+' + ImmText(Imm, 4) + ']';
+  Exit;
+ End;
+ If (H And $F800) = $6000 Then Begin
+  Imm := ((H Shr 6) And 31) Shl 2; Rn := (H Shr 3) And 7; Rd := H And 7;
+  DecodeThumb := 'str         ' + ArmReg(Rd) + ',[' + ArmReg(Rn) + DispText(Imm) + ']';
+  Exit;
+ End;
+ If (H And $F800) = $6800 Then Begin
+  Imm := ((H Shr 6) And 31) Shl 2; Rn := (H Shr 3) And 7; Rd := H And 7;
+  DecodeThumb := 'ldr         ' + ArmReg(Rd) + ',[' + ArmReg(Rn) + DispText(Imm) + ']';
+  Exit;
+ End;
+ If (H And $F000) = $D000 Then Begin
+  Op := (H Shr 8) And 15;
+  If Op <> 15 Then Begin
+   Imm := H And $FF; If (Imm And $80) <> 0 Then Imm := Imm Or LongInt($FFFFFF00);
+   Target := VAddr + 4 + (Imm Shl 1);
+   DecodeThumb := PadRight(ThumbCondName(Op), 12) + HexFixed(Target, 8);
+   Exit;
+  End;
+ End;
+ If (H And $F800) = $E000 Then Begin
+  Imm := H And $7FF; If (Imm And $400) <> 0 Then Imm := Imm Or LongInt($FFFFF800);
+  Target := VAddr + 4 + (Imm Shl 1);
+  DecodeThumb := 'b           ' + HexFixed(Target, 8);
+  Exit;
+ End;
+ If (H And $FC00) = $4400 Then Begin
+  Op := (H Shr 8) And 3;
+  Rd := (H And 7) Or ((H Shr 4) And 8);
+  Rm := (H Shr 3) And 15;
+  Case Op Of
+   0: M := 'add';
+   1: M := 'cmp';
+   2: M := 'mov';
+  Else M := 'bx';
+  End;
+  If M = 'bx' Then DecodeThumb := 'bx          ' + ArmReg(Rm)
+  Else DecodeThumb := PadRight(M, 12) + ArmReg(Rd) + ',' + ArmReg(Rm);
+  Exit;
+ End;
+ DecodeThumb := 'dcw         ' + HexFixed(H, 4) + 'h';
+End;
+
+Function A64Reg(R: LongInt; Is64: Boolean): String;
+Begin
+ If R = 31 Then Begin
+  If Is64 Then A64Reg := 'sp' Else A64Reg := 'wsp';
+ End Else If Is64 Then A64Reg := 'x' + LToS(R)
+ Else A64Reg := 'w' + LToS(R);
+End;
+
+Function DecodeARM64(Off, VAddr: LongInt; Var Len: Integer): String;
+Var Op, Rd, Rn, Rm, Imm, Target: LongInt; Is64: Boolean; M: String;
+Begin
+ Len := 4;
+ Op := GetDWordAt(Off);
+ If Op = LongInt($D65F03C0) Then Begin DecodeARM64 := 'ret'; Exit; End;
+ If (Op And $7C000000) = $14000000 Then Begin
+  Imm := Op And $03FFFFFF; If (Imm And $02000000) <> 0 Then Imm := Imm Or LongInt($FC000000);
+  Target := VAddr + (Imm Shl 2);
+  If Op < 0 Then M := 'bl' Else M := 'b';
+  DecodeARM64 := PadRight(M, 12) + HexFixed(Target, 8);
+  Exit;
+ End;
+ If (Op And $7C000000) = $34000000 Then Begin
+  Imm := (Op Shr 5) And $7FFFF; If (Imm And $40000) <> 0 Then Imm := Imm Or LongInt($FFF80000);
+  Rd := Op And 31; Target := VAddr + (Imm Shl 2);
+  If (Op And $01000000) <> 0 Then M := 'cbnz' Else M := 'cbz';
+  Is64 := Op < 0;
+  DecodeARM64 := PadRight(M, 12) + A64Reg(Rd, Is64) + ',' + HexFixed(Target, 8);
+  Exit;
+ End;
+ If (Op And $FFC00000) = $91000000 Then Begin
+  Rd := Op And 31; Rn := (Op Shr 5) And 31; Imm := (Op Shr 10) And $FFF;
+  DecodeARM64 := 'add         ' + A64Reg(Rd, True) + ',' + A64Reg(Rn, True) + ',#' + ImmText(Imm, 4);
+  Exit;
+ End;
+ If (Op And $FFC00000) = $D1000000 Then Begin
+  Rd := Op And 31; Rn := (Op Shr 5) And 31; Imm := (Op Shr 10) And $FFF;
+  DecodeARM64 := 'sub         ' + A64Reg(Rd, True) + ',' + A64Reg(Rn, True) + ',#' + ImmText(Imm, 4);
+  Exit;
+ End;
+ If (Op And $FFC00000) = $F9400000 Then Begin
+  Rd := Op And 31; Rn := (Op Shr 5) And 31; Imm := ((Op Shr 10) And $FFF) Shl 3;
+  DecodeARM64 := 'ldr         ' + A64Reg(Rd, True) + ',[' + A64Reg(Rn, True) + DispText(Imm) + ']';
+  Exit;
+ End;
+ If (Op And $FFC00000) = $F9000000 Then Begin
+  Rd := Op And 31; Rn := (Op Shr 5) And 31; Imm := ((Op Shr 10) And $FFF) Shl 3;
+  DecodeARM64 := 'str         ' + A64Reg(Rd, True) + ',[' + A64Reg(Rn, True) + DispText(Imm) + ']';
+  Exit;
+ End;
+ If (Op And $FFE0FC00) = $AA0003E0 Then Begin
+  Rd := Op And 31; Rm := (Op Shr 16) And 31;
+  DecodeARM64 := 'mov         ' + A64Reg(Rd, True) + ',' + A64Reg(Rm, True);
+  Exit;
+ End;
+ DecodeARM64 := 'dcd         ' + HexFixed(Op, 8) + 'h';
+End;
+
 Procedure CmdDisasm;
 Var I, L, J: Integer; Off, EndOff, V: LongInt; Mn: String;
 Begin
@@ -1147,7 +1452,10 @@ Begin
   EndOff := Off + Sections[I].RawSize;
   V := Sections[I].VAddr;
   While Off < EndOff Do Begin
-   Mn := DecodeX86(Off, V, L);
+   If (Machine = $01C0) Then Mn := DecodeARM32(Off, V, L)
+   Else If (Machine = $01C4) Then Mn := DecodeThumb(Off, V, L)
+   Else If (Machine = $AA64) Then Mn := DecodeARM64(Off, V, L)
+   Else Mn := DecodeX86(Off, V, L);
    If L <= 0 Then L := 1;
    Write(HexFixed(V,8), ': ');
    If Not OptDisasmNoBytes Then Begin
