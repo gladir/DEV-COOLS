@@ -78,6 +78,16 @@ Const
  ARCH_THUMB = 5;         { Thumb/Thumb-2 16+32 bits (voir DisasmThumbOne) }
  ARCH_ARM64 = 6;         { AArch64 (voir DisasmArm64One)               }
  ARCH_Z80   = 7;         { Z80/8080 8 bits (voir DisasmZ80One)         }
+ ARCH_6800  = 8;         { Motorola 6800 8 bits (voir Disasm6800One)   }
+
+ { ----- Modes d adressage 6800 ----- }
+ AM68_INH   = 0;         { inherent : aucun operande                   }
+ AM68_IMM8  = 1;         { immediat 8 bits : #$nn                      }
+ AM68_IMM16 = 2;         { immediat 16 bits : #$nnnn (LDX/LDS/CPX)     }
+ AM68_DIR   = 3;         { direct (page zero) : $nn                    }
+ AM68_EXT   = 4;         { etendu (absolu 16 bits) : $nnnn             }
+ AM68_IDX   = 5;         { indexe : $nn,X                              }
+ AM68_REL   = 6;         { relatif (branchements) : $nnnn (resolu)     }
 
  { ----- Types de machine ELF/PE utiles au choix automatique de Arch -----}
  EM_ARM       = 40;
@@ -156,6 +166,8 @@ Var
  PEMachine    : LongInt;          { Machine du IMAGE_FILE_HEADER PE, idem }
  Mnem6502     : Array[0..255] Of String[4];
  Mode6502     : Array[0..255] Of Byte;
+ Mnem6800     : Array[0..255] Of String[4];
+ Mode6800     : Array[0..255] Of Byte;
 
 { ============================================================
   UTILITAIRES GENERAUX
@@ -307,6 +319,17 @@ End;
 Function GetWord(Off: LongInt): Word;
 Begin
  GetWord := GetByte(Off) Or (GetByte(Off + 1) Shl 8);
+End;
+
+{ @description: Lit un mot de 16 bits non signe en BIG-endian a la
+    position Off (convention Motorola, utilisee par le 6800 pour ses
+    valeurs immediates/etendues 16 bits, a l inverse du little-endian
+    x86 lu par GetWord).
+  @param Off Decalage (0-based) dans le fichier
+  @return Valeur 16 bits lue, interpretation gros-boutiste }
+Function GetWordBE(Off: LongInt): Word;
+Begin
+ GetWordBE := (GetByte(Off) Shl 8) Or GetByte(Off + 1);
 End;
 
 { @description: Lit un mot de 32 bits en little-endian a la position
@@ -3690,6 +3713,223 @@ Begin
 End;
 
 { ============================================================
+  DESASSEMBLEUR MOTOROLA 6800 (jeu d instructions documente complet)
+  ============================================================ }
+
+{ @description: Enregistre un opcode 6800 dans les tables Mnem6800/
+    Mode6800.
+  @param Code Valeur de l opcode (0..255)
+  @param M Mnemonique (ex: "LDAA")
+  @param Mode Mode d adressage (AM68_xxx) }
+Procedure SetOp68(Code: Byte; M: String; Mode: Byte);
+Begin
+ Mnem6800[Code] := M;
+ Mode6800[Code] := Mode;
+End;
+
+{ @description: Remplit les tables d opcodes 6800 (Mnem6800/Mode6800)
+    avec le jeu d instructions documente complet du Motorola 6800
+    (accumulateurs A/B, registre d index X, pile, branchements). Les
+    opcodes non renseignes restent a chaine vide (illegaux), affiches
+    comme "(bad)" par Disasm6800One. }
+Procedure InitOpcodes6800;
+Var
+ I: Integer;
+Begin
+ For I := 0 To 255 Do Begin
+  Mnem6800[I] := '';
+  Mode6800[I] := AM68_INH;
+ End;
+
+ { ----- inherent (sans operande) ----- }
+ SetOp68($01, 'NOP', AM68_INH);
+ SetOp68($06, 'TAP', AM68_INH);  SetOp68($07, 'TPA', AM68_INH);
+ SetOp68($08, 'INX', AM68_INH);  SetOp68($09, 'DEX', AM68_INH);
+ SetOp68($0A, 'CLV', AM68_INH);  SetOp68($0B, 'SEV', AM68_INH);
+ SetOp68($0C, 'CLC', AM68_INH);  SetOp68($0D, 'SEC', AM68_INH);
+ SetOp68($0E, 'CLI', AM68_INH);  SetOp68($0F, 'SEI', AM68_INH);
+ SetOp68($10, 'SBA', AM68_INH);  SetOp68($11, 'CBA', AM68_INH);
+ SetOp68($16, 'TAB', AM68_INH);  SetOp68($17, 'TBA', AM68_INH);
+ SetOp68($19, 'DAA', AM68_INH);
+ SetOp68($1B, 'ABA', AM68_INH);
+ SetOp68($30, 'TSX', AM68_INH);  SetOp68($31, 'INS', AM68_INH);
+ SetOp68($32, 'PULA', AM68_INH); SetOp68($33, 'PULB', AM68_INH);
+ SetOp68($34, 'DES', AM68_INH);  SetOp68($35, 'TXS', AM68_INH);
+ SetOp68($36, 'PSHA', AM68_INH); SetOp68($37, 'PSHB', AM68_INH);
+ SetOp68($39, 'RTS', AM68_INH);  SetOp68($3B, 'RTI', AM68_INH);
+ SetOp68($3E, 'WAI', AM68_INH);  SetOp68($3F, 'SWI', AM68_INH);
+ SetOp68($40, 'NEGA', AM68_INH); SetOp68($43, 'COMA', AM68_INH);
+ SetOp68($44, 'LSRA', AM68_INH); SetOp68($46, 'RORA', AM68_INH);
+ SetOp68($47, 'ASRA', AM68_INH); SetOp68($48, 'ASLA', AM68_INH);
+ SetOp68($49, 'ROLA', AM68_INH); SetOp68($4A, 'DECA', AM68_INH);
+ SetOp68($4C, 'INCA', AM68_INH); SetOp68($4D, 'TSTA', AM68_INH);
+ SetOp68($4F, 'CLRA', AM68_INH);
+ SetOp68($50, 'NEGB', AM68_INH); SetOp68($53, 'COMB', AM68_INH);
+ SetOp68($54, 'LSRB', AM68_INH); SetOp68($56, 'RORB', AM68_INH);
+ SetOp68($57, 'ASRB', AM68_INH); SetOp68($58, 'ASLB', AM68_INH);
+ SetOp68($59, 'ROLB', AM68_INH); SetOp68($5A, 'DECB', AM68_INH);
+ SetOp68($5C, 'INCB', AM68_INH); SetOp68($5D, 'TSTB', AM68_INH);
+ SetOp68($5F, 'CLRB', AM68_INH);
+
+ { ----- relatif (branchements, 1 octet signe) ----- }
+ SetOp68($20, 'BRA', AM68_REL); SetOp68($21, 'BRN', AM68_REL);
+ SetOp68($22, 'BHI', AM68_REL); SetOp68($23, 'BLS', AM68_REL);
+ SetOp68($24, 'BCC', AM68_REL); SetOp68($25, 'BCS', AM68_REL);
+ SetOp68($26, 'BNE', AM68_REL); SetOp68($27, 'BEQ', AM68_REL);
+ SetOp68($28, 'BVC', AM68_REL); SetOp68($29, 'BVS', AM68_REL);
+ SetOp68($2A, 'BPL', AM68_REL); SetOp68($2B, 'BMI', AM68_REL);
+ SetOp68($2C, 'BGE', AM68_REL); SetOp68($2D, 'BLT', AM68_REL);
+ SetOp68($2E, 'BGT', AM68_REL); SetOp68($2F, 'BLE', AM68_REL);
+ SetOp68($8D, 'BSR', AM68_REL);
+
+ { ----- etendu (memoire, sans accumulateur dedie) ----- }
+ SetOp68($6E, 'JMP', AM68_IDX); SetOp68($7E, 'JMP', AM68_EXT);
+ SetOp68($6D, 'TST', AM68_IDX); SetOp68($7D, 'TST', AM68_EXT);
+ SetOp68($6F, 'CLR', AM68_IDX); SetOp68($7F, 'CLR', AM68_EXT);
+ SetOp68($60, 'NEG', AM68_IDX); SetOp68($70, 'NEG', AM68_EXT);
+ SetOp68($63, 'COM', AM68_IDX); SetOp68($73, 'COM', AM68_EXT);
+ SetOp68($64, 'LSR', AM68_IDX); SetOp68($74, 'LSR', AM68_EXT);
+ SetOp68($66, 'ROR', AM68_IDX); SetOp68($76, 'ROR', AM68_EXT);
+ SetOp68($67, 'ASR', AM68_IDX); SetOp68($77, 'ASR', AM68_EXT);
+ SetOp68($68, 'ASL', AM68_IDX); SetOp68($78, 'ASL', AM68_EXT);
+ SetOp68($69, 'ROL', AM68_IDX); SetOp68($79, 'ROL', AM68_EXT);
+ SetOp68($6A, 'DEC', AM68_IDX); SetOp68($7A, 'DEC', AM68_EXT);
+ SetOp68($6C, 'INC', AM68_IDX); SetOp68($7C, 'INC', AM68_EXT);
+ SetOp68($AD, 'JSR', AM68_IDX); SetOp68($BD, 'JSR', AM68_EXT);
+
+ { ----- accumulateur A : immediat/direct/indexe/etendu ----- }
+ SetOp68($80, 'SUBA', AM68_IMM8); SetOp68($90, 'SUBA', AM68_DIR);
+ SetOp68($A0, 'SUBA', AM68_IDX);  SetOp68($B0, 'SUBA', AM68_EXT);
+ SetOp68($81, 'CMPA', AM68_IMM8); SetOp68($91, 'CMPA', AM68_DIR);
+ SetOp68($A1, 'CMPA', AM68_IDX);  SetOp68($B1, 'CMPA', AM68_EXT);
+ SetOp68($82, 'SBCA', AM68_IMM8); SetOp68($92, 'SBCA', AM68_DIR);
+ SetOp68($A2, 'SBCA', AM68_IDX);  SetOp68($B2, 'SBCA', AM68_EXT);
+ SetOp68($84, 'ANDA', AM68_IMM8); SetOp68($94, 'ANDA', AM68_DIR);
+ SetOp68($A4, 'ANDA', AM68_IDX);  SetOp68($B4, 'ANDA', AM68_EXT);
+ SetOp68($85, 'BITA', AM68_IMM8); SetOp68($95, 'BITA', AM68_DIR);
+ SetOp68($A5, 'BITA', AM68_IDX);  SetOp68($B5, 'BITA', AM68_EXT);
+ SetOp68($86, 'LDAA', AM68_IMM8); SetOp68($96, 'LDAA', AM68_DIR);
+ SetOp68($A6, 'LDAA', AM68_IDX);  SetOp68($B6, 'LDAA', AM68_EXT);
+ SetOp68($97, 'STAA', AM68_DIR);
+ SetOp68($A7, 'STAA', AM68_IDX);  SetOp68($B7, 'STAA', AM68_EXT);
+ SetOp68($88, 'EORA', AM68_IMM8); SetOp68($98, 'EORA', AM68_DIR);
+ SetOp68($A8, 'EORA', AM68_IDX);  SetOp68($B8, 'EORA', AM68_EXT);
+ SetOp68($89, 'ADCA', AM68_IMM8); SetOp68($99, 'ADCA', AM68_DIR);
+ SetOp68($A9, 'ADCA', AM68_IDX);  SetOp68($B9, 'ADCA', AM68_EXT);
+ SetOp68($8A, 'ORAA', AM68_IMM8); SetOp68($9A, 'ORAA', AM68_DIR);
+ SetOp68($AA, 'ORAA', AM68_IDX);  SetOp68($BA, 'ORAA', AM68_EXT);
+ SetOp68($8B, 'ADDA', AM68_IMM8); SetOp68($9B, 'ADDA', AM68_DIR);
+ SetOp68($AB, 'ADDA', AM68_IDX);  SetOp68($BB, 'ADDA', AM68_EXT);
+
+ { ----- accumulateur B : immediat/direct/indexe/etendu ----- }
+ SetOp68($C0, 'SUBB', AM68_IMM8); SetOp68($D0, 'SUBB', AM68_DIR);
+ SetOp68($E0, 'SUBB', AM68_IDX);  SetOp68($F0, 'SUBB', AM68_EXT);
+ SetOp68($C1, 'CMPB', AM68_IMM8); SetOp68($D1, 'CMPB', AM68_DIR);
+ SetOp68($E1, 'CMPB', AM68_IDX);  SetOp68($F1, 'CMPB', AM68_EXT);
+ SetOp68($C2, 'SBCB', AM68_IMM8); SetOp68($D2, 'SBCB', AM68_DIR);
+ SetOp68($E2, 'SBCB', AM68_IDX);  SetOp68($F2, 'SBCB', AM68_EXT);
+ SetOp68($C4, 'ANDB', AM68_IMM8); SetOp68($D4, 'ANDB', AM68_DIR);
+ SetOp68($E4, 'ANDB', AM68_IDX);  SetOp68($F4, 'ANDB', AM68_EXT);
+ SetOp68($C5, 'BITB', AM68_IMM8); SetOp68($D5, 'BITB', AM68_DIR);
+ SetOp68($E5, 'BITB', AM68_IDX);  SetOp68($F5, 'BITB', AM68_EXT);
+ SetOp68($C6, 'LDAB', AM68_IMM8); SetOp68($D6, 'LDAB', AM68_DIR);
+ SetOp68($E6, 'LDAB', AM68_IDX);  SetOp68($F6, 'LDAB', AM68_EXT);
+ SetOp68($D7, 'STAB', AM68_DIR);
+ SetOp68($E7, 'STAB', AM68_IDX);  SetOp68($F7, 'STAB', AM68_EXT);
+ SetOp68($C8, 'EORB', AM68_IMM8); SetOp68($D8, 'EORB', AM68_DIR);
+ SetOp68($E8, 'EORB', AM68_IDX);  SetOp68($F8, 'EORB', AM68_EXT);
+ SetOp68($C9, 'ADCB', AM68_IMM8); SetOp68($D9, 'ADCB', AM68_DIR);
+ SetOp68($E9, 'ADCB', AM68_IDX);  SetOp68($F9, 'ADCB', AM68_EXT);
+ SetOp68($CA, 'ORAB', AM68_IMM8); SetOp68($DA, 'ORAB', AM68_DIR);
+ SetOp68($EA, 'ORAB', AM68_IDX);  SetOp68($FA, 'ORAB', AM68_EXT);
+ SetOp68($CB, 'ADDB', AM68_IMM8); SetOp68($DB, 'ADDB', AM68_DIR);
+ SetOp68($EB, 'ADDB', AM68_IDX);  SetOp68($FB, 'ADDB', AM68_EXT);
+
+ { ----- registre d index X et pointeur de pile S (16 bits) ----- }
+ SetOp68($8C, 'CPX', AM68_IMM16); SetOp68($9C, 'CPX', AM68_DIR);
+ SetOp68($AC, 'CPX', AM68_IDX);   SetOp68($BC, 'CPX', AM68_EXT);
+ SetOp68($CE, 'LDX', AM68_IMM16); SetOp68($DE, 'LDX', AM68_DIR);
+ SetOp68($EE, 'LDX', AM68_IDX);   SetOp68($FE, 'LDX', AM68_EXT);
+ SetOp68($DF, 'STX', AM68_DIR);
+ SetOp68($EF, 'STX', AM68_IDX);   SetOp68($FF, 'STX', AM68_EXT);
+ SetOp68($8E, 'LDS', AM68_IMM16); SetOp68($9E, 'LDS', AM68_DIR);
+ SetOp68($AE, 'LDS', AM68_IDX);   SetOp68($BE, 'LDS', AM68_EXT);
+ SetOp68($9F, 'STS', AM68_DIR);
+ SetOp68($AF, 'STS', AM68_IDX);   SetOp68($BF, 'STS', AM68_EXT);
+End;
+
+{ @description: Desassemble une seule instruction Motorola 6800 a
+    partir du decalage Off dans le fichier. Comme pour le 6502, chaque
+    opcode a un mode d adressage fixe enregistre dans Mode6800[octet],
+    indiquant combien d octets supplementaires lire et comment les
+    formater (syntaxe Motorola usuelle : #$nn immediat, $nn direct,
+    $nnnn etendu, $nn,X indexe). Les opcodes non documentes (Mnem6800
+    vide) produisent "(bad)" et avancent d un octet.
+  @param Off Decalage de l instruction dans le fichier
+  @param VAddrBase Adresse virtuelle correspondant a Off (pour
+    resoudre la cible des branchements relatifs)
+  @param Mnemonic Mnemonique de l instruction (sortie)
+  @param Operands Operandes formates (sortie)
+  @return Nombre d octets occupes par l instruction (1, 2 ou 3) }
+Function Disasm6800One(Off, VAddrBase: LongInt;
+ Var Mnemonic, Operands: String): Integer;
+Var
+ Op: Byte;
+ Mode: Byte;
+ B1: Byte;
+ W1: Word;
+ Rel: ShortInt;
+ Target: LongInt;
+Begin
+ Op := GetByte(Off);
+ Mnemonic := Mnem6800[Op];
+ Mode := Mode6800[Op];
+ If Mnemonic = '' Then Begin
+  Mnemonic := '(bad)';
+  Operands := '';
+  Disasm6800One := 1;
+  Exit;
+ End;
+ Operands := '';
+ Case Mode Of
+  AM68_INH: Disasm6800One := 1;
+  AM68_IMM8: Begin
+   B1 := GetByte(Off + 1);
+   Operands := '#$' + ToHexFixed(B1, 2);
+   Disasm6800One := 2;
+  End;
+  AM68_IMM16: Begin
+   W1 := GetWordBE(Off + 1);
+   Operands := '#$' + ToHexFixed(W1, 4);
+   Disasm6800One := 3;
+  End;
+  AM68_DIR: Begin
+   B1 := GetByte(Off + 1);
+   Operands := '$' + ToHexFixed(B1, 2);
+   Disasm6800One := 2;
+  End;
+  AM68_EXT: Begin
+   W1 := GetWordBE(Off + 1);
+   Operands := '$' + ToHexFixed(W1, 4);
+   Disasm6800One := 3;
+  End;
+  AM68_IDX: Begin
+   B1 := GetByte(Off + 1);
+   Operands := '$' + ToHexFixed(B1, 2) + ',X';
+   Disasm6800One := 2;
+  End;
+  AM68_REL: Begin
+   Rel := ShortInt(GetByte(Off + 1));
+   Target := VAddrBase + 2 + Rel;
+   Operands := '$' + ToHexFixed(Target, 4);
+   Disasm6800One := 2;
+  End;
+ Else
+  Disasm6800One := 1;
+ End;
+End;
+
+{ ============================================================
   RECHERCHE DE SYMBOLE / SECTION POUR L AFFICHAGE
   ============================================================ }
 
@@ -3814,7 +4054,8 @@ Var
  InstrLen, K, AddrDigits: Integer;
  Mnemonic, Operands, BytesTxt, Lbl: String;
 Begin
- If (Arch = ARCH_6502) Or (Arch = ARCH_8086) Or (Arch = ARCH_Z80) Then
+ If (Arch = ARCH_6502) Or (Arch = ARCH_8086) Or (Arch = ARCH_Z80) Or
+    (Arch = ARCH_6800) Then
   AddrDigits := 4
  Else If (Arch = ARCH_X64) Or (Arch = ARCH_ARM64) Then AddrDigits := 16
  Else If (Arch = ARCH_ARM32) Or (Arch = ARCH_THUMB) Then AddrDigits := 8
@@ -3848,6 +4089,8 @@ Begin
     InstrLen := DisasmThumbOne(Off, VAddr, Mnemonic, Operands)
    Else If Arch = ARCH_Z80 Then
     InstrLen := DisasmZ80One(Off, VAddr, Mnemonic, Operands)
+   Else If Arch = ARCH_6800 Then
+    InstrLen := Disasm6800One(Off, VAddr, Mnemonic, Operands)
    Else
     InstrLen := DisasmOne(Off, VAddr, Mnemonic, Operands);
    BytesTxt := '';
@@ -3898,9 +4141,10 @@ Begin
  HexStrToLong := V;
 End;
 
-Procedure Help;
-Begin
- WriteLn('OBJDUMP - Clone partiel de l''outil GNU objdump.');
+Procedure Help;Begin
+ WriteLn('OBJDUMP - Cette commande permet d''analyser des fichiers objets, biblioth'+#138+'ques et ex'+#130+'cutables ',
+         'afin d''afficher leurs ent'+#136+'tes, sections, symboles et code d'+#130+'sassembl'+#130+'.');
+ WriteLn;
  WriteLn('Syntaxe : OBJDUMP fichier [options]');
  WriteLn('  fichier  Fichier binaire a analyser');
  WriteLn('  -d       Desassemble les sections de code');
@@ -3908,8 +4152,8 @@ Begin
  WriteLn('  -t       Affiche la table des symboles');
  WriteLn('  -S       Melange source/assembleur (non supporte)');
  WriteLn('  -m arch  Force l''architecture de desassemblage :');
- WriteLn('           i386 (defaut), x86-64, 8086, 6502, z80, arm,');
- WriteLn('           thumb ou arm64');
+ WriteLn('           i386 (defaut), x86-64, 8086, 6502, z80, 6800,');
+ WriteLn('           arm, thumb ou arm64');
  WriteLn('  -b adr   Adresse de chargement (hexa) pour un binaire');
  WriteLn('           brut sans entete, ex: -b 8000 ou -b $8000');
  WriteLn('  -?       Aide sur cette commande');
@@ -3922,10 +4166,11 @@ Begin
  WriteLn('Desassemblage : x86 32 bits / x86-64 (syntaxe AT&T, comme');
  WriteLn('objdump) ; 8086/80186 16 bits (syntaxe Intel/MASM) ; 6502');
  WriteLn('complet (151 opcodes) ; Z80 (jeu de base complet, plus un');
- WriteLn('sous-ensemble pratique de CB/ED/DD/FD) ; ARM 32 bits');
- WriteLn('classique, Thumb/Thumb-2 (sous-ensemble) et AArch64 (sous-');
- WriteLn('ensemble). Pas de SSE/AVX/NEON/VFP, pas d''opcodes etendus');
- WriteLn('0F pour le 8086, pas de DDCB/FDCB pour le Z80.');
+ WriteLn('sous-ensemble pratique de CB/ED/DD/FD) ; Motorola 6800');
+ WriteLn('(jeu d''instructions complet) ; ARM 32 bits classique,');
+ WriteLn('Thumb/Thumb-2 (sous-ensemble) et AArch64 (sous-ensemble).');
+ WriteLn('Pas de SSE/AVX/NEON/VFP, pas d''opcodes etendus 0F pour le');
+ WriteLn('8086, pas de DDCB/FDCB pour le Z80.');
 End;
 
 Var
@@ -3960,7 +4205,7 @@ Begin
    Inc(I);
    If I > ParamCount Then Begin
     WriteLn('Erreur : -m necessite une architecture (i386, x86-64, 8086, ',
-     '6502, z80, arm, thumb ou arm64).');
+     '6502, z80, 6800, arm, thumb ou arm64).');
     Halt(1);
    End;
    If UpStr(ParamStr(I)) = '6502' Then Arch := ARCH_6502
@@ -3977,6 +4222,7 @@ Begin
            (UpStr(ParamStr(I)) = 'ARM32') Then Arch := ARCH_ARM32
    Else If UpStr(ParamStr(I)) = 'THUMB' Then Arch := ARCH_THUMB
    Else If UpStr(ParamStr(I)) = 'Z80' Then Arch := ARCH_Z80
+   Else If UpStr(ParamStr(I)) = '6800' Then Arch := ARCH_6800
    Else Begin
     WriteLn('Architecture inconnue pour -m : ', ParamStr(I));
     Halt(1);
@@ -4005,6 +4251,7 @@ Begin
     (Not OptSource) Then OptDisasm := True; { comportement par defaut }
 
  InitOpcodes6502;
+ InitOpcodes6800;
  LoadFile(InFileName);
  DetectFormat;
 
