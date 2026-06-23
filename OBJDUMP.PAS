@@ -215,13 +215,28 @@ Var
  SymbolCount  : Integer;
  ArchiveMembers     : Array[1..MaxArchiveMembers] Of TArchiveMember;
  ArchiveMemberCount : Integer;
- OptHeaders   : Boolean;          { -h }
- OptSymbols   : Boolean;          { -t }
- OptDisasm    : Boolean;          { -d }
- OptSource    : Boolean;          { -S (non supporte) }
+ OptHeaders   : Boolean;          { -h / --section-headers }
+ OptFileHdr   : Boolean;          { -f / --file-headers }
+ OptSymbols   : Boolean;          { -t / --syms }
+ OptDisasm    : Boolean;          { -d / --disassemble }
+ OptDisasmAll : Boolean;          { -D / --disassemble-all }
+ OptSource    : Boolean;          { -S / --source }
+ OptArchiveHdr: Boolean;          { -a / --archive-headers }
+ OptFullContents : Boolean;       { -s / --full-contents }
+ OptLineNumbers  : Boolean;       { -l / --line-numbers }
+ OptPrefixAddr   : Boolean;       { --prefix-addresses }
+ OptShowRawInsn  : Boolean;       { --show-raw-insn (defaut) / --no-show-raw-insn }
+ OptDemangle     : Boolean;       { -C / --demangle (--no-demangle pour desactiver) }
+ InsnWidth       : Integer;       { --insn-width=<n>, 0 = largeur par defaut }
+ SectionFilter   : String;        { -j / --section=<nom>, vide = pas de filtre }
+ HaveStartAddr, HaveStopAddr : Boolean;
+ StartAddrVal, StopAddrVal   : LongInt; { --start-address / --stop-address }
+ ForceEndianBE   : Boolean;       { --endian=big force le gros-boutiste (ELF) }
+ ForceEndianSet  : Boolean;
+ TargetFormat    : String;        { -b / --target=<format> (nom BFD) }
  Arch         : Integer;          { ARCH_xxx, selectionne par -m }
  ArchForced   : Boolean;          { vrai si -m a ete passe explicitement }
- BaseAddr     : LongInt;          { adresse de chargement pour un binaire brut (-b) }
+ BaseAddr     : LongInt;          { adresse de chargement pour un binaire brut (--adjust-vma) }
  MachOBase    : LongInt;          { decalage de la tranche choisie dans un binaire universel (fat), 0 sinon }
  MachOCpuType : LongInt;          { cputype Mach-O, pour le choix automatique de Arch }
  ElfMachine   : LongInt;          { e_machine ELF, pour le choix automatique de Arch }
@@ -692,7 +707,8 @@ Var
  FoundSymTab: Boolean;
 Begin
  Is64 := (BinFormat = FMT_ELF64);
- ElfBigEndian := GetByte(5) = 2; { ELFDATA2MSB }
+ If ForceEndianSet Then ElfBigEndian := ForceEndianBE { --endian= }
+ Else ElfBigEndian := GetByte(5) = 2; { ELFDATA2MSB }
  ElfMachine := GetElfWord(18); { e_machine, meme decalage en 32 et 64 bits }
  EntryPoint := 0;
  ImageBase := 0;
@@ -731,7 +747,7 @@ Begin
     SymTabOff  := GetElfQWordLow(Base + 24);
     SymTabSize := GetElfQWordLow(Base + 32);
     SymEntSize := GetElfQWordLow(Base + 56);
-    SymStrOff  := GetElfQWordLow(ShOff + GetElfDWord(Base + 40) * ShEntSize + 24);
+    SymStrOff  := GetElfQWordLow(ShOff + GetElfDWord(Base + 36) * ShEntSize + 24);
     FoundSymTab := True;
    End;
   End Else Begin
@@ -746,7 +762,7 @@ Begin
     SymTabOff  := GetElfDWord(Base + 16);
     SymTabSize := GetElfDWord(Base + 20);
     SymEntSize := GetElfDWord(Base + 36);
-    SymStrOff  := GetElfDWord(ShOff + GetElfDWord(Base + 28) * ShEntSize + 16);
+    SymStrOff  := GetElfDWord(ShOff + GetElfDWord(Base + 24) * ShEntSize + 16);
     FoundSymTab := True;
    End;
   End;
@@ -8395,6 +8411,207 @@ Begin
 End;
 
 { ============================================================
+  DEMANGLAGE C++ (ITANIUM ABI, SOUS-ENSEMBLE) -- OPTION -C
+  ============================================================
+  Couvre les noms les plus courants : fonctions globales et membres
+  de classes/namespaces imbriques ("_ZN...E"), types de parametres
+  natifs (int/char/bool/float/double/long/...), pointeurs/
+  references/const. Les gabarits sont affiches sous forme abregee
+  ("Nom<...>") plutot que developpes. La compression par
+  substitution (S_, S0_, ...), tres utilisee par les noms impliquant
+  la bibliotheque standard, n est PAS prise en charge : un nom qui
+  en depend echoue proprement (renvoie le nom mangle inchange, ou
+  une signature partielle "Nom(...)" si seul l entete a pu etre
+  resolu) plutot que de produire un resultat errone. }
+
+Function DemangleReadNumber(S: String; Var Pos: Integer): Integer;
+Var
+ N: Integer;
+Begin
+ N := 0;
+ While (Pos <= Length(S)) And (S[Pos] >= '0') And (S[Pos] <= '9') Do Begin
+  N := N * 10 + (Ord(S[Pos]) - Ord('0'));
+  Inc(Pos);
+ End;
+ DemangleReadNumber := N;
+End;
+
+Function DemangleSourceName(S: String; Var Pos: Integer): String;
+Var
+ Len: Integer;
+Begin
+ Len := DemangleReadNumber(S, Pos);
+ If (Len <= 0) Or (Pos + Len - 1 > Length(S)) Then Begin
+  DemangleSourceName := '';
+  Exit;
+ End;
+ DemangleSourceName := Copy(S, Pos, Len);
+ Pos := Pos + Len;
+End;
+
+Function DemangleBuiltinType(C: Char): String;
+Begin
+ Case C Of
+  'v': DemangleBuiltinType := 'void';
+  'b': DemangleBuiltinType := 'bool';
+  'c': DemangleBuiltinType := 'char';
+  'a': DemangleBuiltinType := 'signed char';
+  'h': DemangleBuiltinType := 'unsigned char';
+  's': DemangleBuiltinType := 'short';
+  't': DemangleBuiltinType := 'unsigned short';
+  'i': DemangleBuiltinType := 'int';
+  'j': DemangleBuiltinType := 'unsigned int';
+  'l': DemangleBuiltinType := 'long';
+  'm': DemangleBuiltinType := 'unsigned long';
+  'x': DemangleBuiltinType := 'long long';
+  'y': DemangleBuiltinType := 'unsigned long long';
+  'f': DemangleBuiltinType := 'float';
+  'd': DemangleBuiltinType := 'double';
+  'e': DemangleBuiltinType := 'long double';
+  'w': DemangleBuiltinType := 'wchar_t';
+  'z': DemangleBuiltinType := '...';
+ Else
+  DemangleBuiltinType := '';
+ End;
+End;
+
+{ @description: Decode un "nested-name" Itanium ("N...E"), c est a
+    dire une suite de composants namespace::classe::membre, avec un
+    affichage simplifie ("<...>") pour les arguments de gabarit
+    eventuels. Ne gere pas les qualificateurs de gabarit imbriques
+    complexes ni les substitutions.
+  @param S Chaine mangled complete
+  @param Pos (entree/sortie) position courante (1-based), doit
+    pointer sur le "N" initial ; avancee jusqu apres le "E" final
+  @return Nom qualifie reconstitue, ou chaine vide si non reconnu }
+Function DemangleNestedName(S: String; Var Pos: Integer): String;
+Var
+ Parts, Part: String;
+ Failed: Boolean;
+Begin
+ Inc(Pos); { saute le 'N' }
+ While (Pos <= Length(S)) And ((S[Pos] = 'r') Or (S[Pos] = 'V') Or
+       (S[Pos] = 'K')) Do Inc(Pos);
+ Parts := '';
+ Failed := False;
+ While (Pos <= Length(S)) And (S[Pos] <> 'E') And (Not Failed) Do Begin
+  If (S[Pos] >= '0') And (S[Pos] <= '9') Then
+   Part := DemangleSourceName(S, Pos)
+  Else If (S[Pos] = 'C') And (Pos < Length(S)) And
+          (S[Pos + 1] In ['1', '2', '3']) Then Begin
+   Part := '{ctor}'; Pos := Pos + 2;
+  End Else If (S[Pos] = 'D') And (Pos < Length(S)) And
+          (S[Pos + 1] In ['0', '1', '2']) Then Begin
+   Part := '~{dtor}'; Pos := Pos + 2;
+  End Else Begin
+   Part := ''; Failed := True;
+  End;
+  If Part = '' Then Begin Failed := True; Break; End;
+  If Parts <> '' Then Parts := Parts + '::';
+  Parts := Parts + Part;
+  If (Pos <= Length(S)) And (S[Pos] = 'I') Then Begin
+   Parts := Parts + '<...>';
+   Inc(Pos);
+   While (Pos <= Length(S)) And (S[Pos] <> 'E') Do Inc(Pos);
+   If Pos <= Length(S) Then Inc(Pos);
+  End;
+ End;
+ If (Pos <= Length(S)) And (S[Pos] = 'E') Then Inc(Pos);
+ If Failed Then DemangleNestedName := '' Else DemangleNestedName := Parts;
+End;
+
+{ @description: Decode un type Itanium isole (utilise pour les
+    parametres de fonction) : types natifs, pointeur (P), reference
+    (R), const (K), ou type nomme (source-name/nested-name).
+  @param S Chaine mangled complete
+  @param Pos (entree/sortie) position courante (1-based)
+  @return Texte du type C++, ou chaine vide si non reconnu }
+Function DemangleType(S: String; Var Pos: Integer): String;
+Var
+ Inner, Suffix: String;
+ C: Char;
+Begin
+ If Pos > Length(S) Then Begin DemangleType := ''; Exit; End;
+ C := S[Pos];
+ If C = 'P' Then Begin
+  Inc(Pos);
+  Inner := DemangleType(S, Pos);
+  If Inner = '' Then DemangleType := '' Else DemangleType := Inner + '*';
+ End Else If C = 'R' Then Begin
+  Inc(Pos);
+  Inner := DemangleType(S, Pos);
+  If Inner = '' Then DemangleType := '' Else DemangleType := Inner + '&';
+ End Else If C = 'K' Then Begin
+  Inc(Pos);
+  Inner := DemangleType(S, Pos);
+  If Inner = '' Then DemangleType := '' Else DemangleType := 'const ' + Inner;
+ End Else If (C >= '0') And (C <= '9') Then
+  DemangleType := DemangleSourceName(S, Pos)
+ Else If C = 'N' Then
+  DemangleType := DemangleNestedName(S, Pos)
+ Else Begin
+  Suffix := DemangleBuiltinType(C);
+  If Suffix <> '' Then Begin
+   Inc(Pos);
+   DemangleType := Suffix;
+  End Else
+   DemangleType := '';
+ End;
+End;
+
+{ @description: Point d entree du demangleur -C : tente de decoder
+    un nom mangle Itanium ABI ("_Zxxx"). En cas d echec (forme non
+    reconnue par ce sous-ensemble : operateurs, noms locaux,
+    substitutions S_/S0_, ...), renvoie le nom d origine inchange,
+    jamais un resultat invente.
+  @param S Nom potentiellement mangle
+  @return Nom demangle, ou S inchange si non reconnu/non mangle }
+Function DemangleCpp(S: String): String;
+Var
+ Pos: Integer;
+ Name, Params, PType: String;
+ Ok: Boolean;
+Begin
+ DemangleCpp := S;
+ If Copy(S, 1, 2) <> '_Z' Then Exit;
+ Pos := 3;
+ If Pos > Length(S) Then Exit;
+ If S[Pos] = 'N' Then
+  Name := DemangleNestedName(S, Pos)
+ Else If (S[Pos] >= '0') And (S[Pos] <= '9') Then
+  Name := DemangleSourceName(S, Pos)
+ Else
+  Exit; { operateurs/noms locaux/etc : hors de portee de ce sous-ensemble }
+ If Name = '' Then Exit;
+ If (Pos <= Length(S)) And (S[Pos] = 'I') Then Begin
+  Name := Name + '<...>';
+  Inc(Pos);
+  While (Pos <= Length(S)) And (S[Pos] <> 'E') Do Inc(Pos);
+  If Pos <= Length(S) Then Inc(Pos);
+ End;
+ If Pos > Length(S) Then Begin
+  DemangleCpp := Name; { nom de donnee, pas de liste de parametres }
+  Exit;
+ End;
+ If (S[Pos] = 'v') And (Pos = Length(S)) Then Begin
+  DemangleCpp := Name + '(void)';
+  Exit;
+ End;
+ Params := '';
+ Ok := True;
+ While (Pos <= Length(S)) And Ok Do Begin
+  PType := DemangleType(S, Pos);
+  If PType = '' Then Begin Ok := False; Break; End;
+  If Params <> '' Then Params := Params + ', ';
+  Params := Params + PType;
+ End;
+ If Not Ok Then
+  DemangleCpp := Name + '(...)'
+ Else
+  DemangleCpp := Name + '(' + Params + ')';
+End;
+
+{ ============================================================
   RECHERCHE DE SYMBOLE / SECTION POUR L AFFICHAGE
   ============================================================ }
 
@@ -8410,7 +8627,8 @@ Begin
  FindSymbolAt := '';
  For I := 1 To SymbolCount Do
   If Symbols[I].Value = Addr Then Begin
-   FindSymbolAt := Symbols[I].Name;
+   If OptDemangle Then FindSymbolAt := DemangleCpp(Symbols[I].Name)
+   Else FindSymbolAt := Symbols[I].Name;
    Exit;
   End;
 End;
@@ -8818,32 +9036,53 @@ Begin
  End;
 End;
 
-{ @description: Implemente l option -h : affiche la liste des
-    sections (index, nom, taille, adresse virtuelle), comme
-    "objdump -h". }
-Procedure CmdHeaders;
-Var
- I: Integer;
+{ @description: Implemente l option -f/--file-headers : affiche le
+    resume global du fichier (format, point d entree), sans la
+    table des sections (separee dans CmdSectionHeaders pour -h),
+    comme "objdump -f". }
+Procedure CmdFileHeader;
 Begin
  WriteLn;
  WriteLn(InFileName, ':     format ', FormatName);
  WriteLn('Point d''entree (entry point) : 0x', ToHexU(EntryPoint));
+End;
+
+{ @description: Vrai si Name correspond au filtre de section actif
+    (-j/--section), ou si aucun filtre n est actif.
+  @param Name Nom de section a tester
+  @return Vrai si la section doit etre traitee }
+Function SectionMatchesFilter(Name: String): Boolean;
+Begin
+ SectionMatchesFilter := (SectionFilter = '') Or (Name = SectionFilter);
+End;
+
+{ @description: Implemente l option -h/--section-headers : affiche
+    la liste des sections (index, nom, taille, adresse virtuelle),
+    comme "objdump -h". Respecte le filtre -j/--section s il est
+    actif. }
+Procedure CmdSectionHeaders;
+Var
+ I: Integer;
+Begin
  WriteLn;
  WriteLn('Sections:');
  WriteLn('Idx Name          Size      VMA');
  For I := 1 To SectionCount Do
-  WriteLn(PadRight(IntToStr(I - 1), 4),
-   PadRight(Sections[I].Name, 14),
-   PadRight(ToHexFixed(Sections[I].Size, 8), 10),
-   ToHexFixed(Sections[I].VAddr, 8));
+  If SectionMatchesFilter(Sections[I].Name) Then
+   WriteLn(PadRight(IntToStr(I - 1), 4),
+    PadRight(Sections[I].Name, 14),
+    PadRight(ToHexFixed(Sections[I].Size, 8), 10),
+    ToHexFixed(Sections[I].VAddr, 8));
 End;
 
-{ @description: Implemente l option -t : affiche la table des
-    symboles (adresse, section, nom), comme "objdump -t". }
+{ @description: Implemente l option -t/--syms : affiche la table des
+    symboles (adresse, section, nom), comme "objdump -t". Applique
+    le demangleur C++ si -C/--demangle est actif, et respecte le
+    filtre -j/--section. }
 Procedure CmdSymbols;
 Var
  I, SIdx: Integer;
- SecName: String;
+ SecName, SymName: String;
 Begin
  WriteLn;
  WriteLn('SYMBOL TABLE:');
@@ -8854,9 +9093,13 @@ Begin
  For I := 1 To SymbolCount Do Begin
   SIdx := FindSectionAt(Symbols[I].Value);
   If SIdx > 0 Then SecName := Sections[SIdx].Name Else SecName := '*UND*';
-  WriteLn(ToHexFixed(Symbols[I].Value, 8), ' ',
-   PadRight(SecName, 10), ' ',
-   Symbols[I].Name);
+  If SectionMatchesFilter(SecName) Then Begin
+   If OptDemangle Then SymName := DemangleCpp(Symbols[I].Name)
+   Else SymName := Symbols[I].Name;
+   WriteLn(ToHexFixed(Symbols[I].Value, 8), ' ',
+    PadRight(SecName, 10), ' ',
+    SymName);
+  End;
  End;
 End;
 
@@ -8942,43 +9185,6 @@ End;
 { @description: Implemente l option -d : desassemble toutes les
     sections de code (IsCode = vrai), avec une etiquette de symbole
     au debut de chaque fonction connue, comme "objdump -d". }
-
-Procedure CmdDisasm;
-Var
- SI: Integer;
- Off, VAddr, EndAddr: LongInt;
- InstrLen, K, AddrDigits: Integer;
- Mnemonic, Operands, BytesTxt, Lbl: String;
-Begin
- AddrDigits := GetAddrDigits;
- WriteLn;
- WriteLn(InFileName, ':     format ', FormatName);
- For SI := 1 To SectionCount Do Begin
-  If Not Sections[SI].IsCode Then Continue;
-  WriteLn;
-  WriteLn('Disassembly of section ', Sections[SI].Name, ':');
-  VAddr := Sections[SI].VAddr;
-  EndAddr := VAddr + Sections[SI].Size;
-  While VAddr < EndAddr Do Begin
-   Off := Sections[SI].FileOff + (VAddr - Sections[SI].VAddr);
-   Lbl := FindSymbolAt(VAddr);
-   If Lbl <> '' Then Begin
-    WriteLn;
-    WriteLn(ToHexFixed(VAddr, AddrDigits), ' <', Lbl, '>:');
-   End;
-   InstrLen := DecodeInstruction(Off, VAddr, Mnemonic, Operands);
-   BytesTxt := '';
-   For K := 0 To InstrLen - 1 Do Begin
-    If K > 0 Then BytesTxt := BytesTxt + ' ';
-    BytesTxt := BytesTxt + HexByte(GetByte(Off + K));
-   End;
-   Write('  ', ToHexFixed(VAddr, AddrDigits), ':' + #9, PadRight(BytesTxt, 21), #9);
-   If Operands <> '' Then WriteLn(PadRight(Mnemonic, 6), ' ', Operands)
-   Else WriteLn(Mnemonic);
-   VAddr := VAddr + InstrLen;
-  End;
- End;
-End;
 
 { ============================================================
   OPTION -S : LECTURE DES INFORMATIONS DE DEBOGAGE
@@ -9763,6 +9969,94 @@ Begin
  If L = LineNo Then ReadSourceLine := LineTxt;
 End;
 
+{ @description: Tentative silencieuse de chargement de la table de
+    lignes (DWARF pour ELF, PDB pour PE) pour l option -l, sans les
+    messages d erreur explicites de CmdSourceMix (qui restent
+    reserves a -S) : si rien n est trouve, -l n affiche simplement
+    aucune annotation fichier:ligne. }
+Procedure TryLoadLineTableSilent;
+Var
+ PdbPath, Candidate: String;
+Begin
+ If (BinFormat = FMT_ELF32) Or (BinFormat = FMT_ELF64) Then
+  LoadDwarfLineTable
+ Else If (BinFormat = FMT_PE32) Or (BinFormat = FMT_PE64) Then Begin
+  PdbPath := FindPECodeViewPdbPath;
+  If PdbPath <> '' Then Begin
+   If Not LoadPdbLineTable(PdbPath) Then Begin
+    Candidate := DirOf(InFileName) + ExtractBaseName(PdbPath);
+    If Not LoadPdbLineTable(Candidate) Then
+     LoadPdbLineTable(ExtractBaseName(PdbPath));
+   End;
+  End;
+ End;
+End;
+
+{ @description: Implemente l option -d/--disassemble (et -D/
+    --disassemble-all, qui parcourt aussi les sections non
+    executables). Respecte -j/--section (filtre), --start-address/
+    --stop-address (plage d adresses), -l/--line-numbers (annotation
+    fichier:ligne via DWARF/PDB), --prefix-addresses (adresse devant
+    chaque ligne, y compris les etiquettes) et --show-raw-insn/
+    --no-show-raw-insn (colonne des octets bruts). }
+Procedure CmdDisasm;
+Var
+ SI: Integer;
+ Off, VAddr, EndAddr: LongInt;
+ InstrLen, K, AddrDigits: Integer;
+ Mnemonic, Operands, BytesTxt, Lbl: String;
+ CurFile, LastFile: String;
+ CurLine, LastLine: Integer;
+ BytesColW: Integer;
+Begin
+ AddrDigits := GetAddrDigits;
+ If OptLineNumbers Then Begin
+  TryLoadLineTableSilent;
+  LastFile := ''; LastLine := -1;
+ End;
+ If InsnWidth > 0 Then BytesColW := InsnWidth Else BytesColW := 21;
+ WriteLn;
+ WriteLn(InFileName, ':     format ', FormatName);
+ For SI := 1 To SectionCount Do Begin
+  If (Not OptDisasmAll) And (Not Sections[SI].IsCode) Then Continue;
+  If Not SectionMatchesFilter(Sections[SI].Name) Then Continue;
+  WriteLn;
+  WriteLn('Disassembly of section ', Sections[SI].Name, ':');
+  VAddr := Sections[SI].VAddr;
+  EndAddr := VAddr + Sections[SI].Size;
+  If HaveStartAddr And (StartAddrVal > VAddr) Then VAddr := StartAddrVal;
+  If HaveStopAddr And (StopAddrVal < EndAddr) Then EndAddr := StopAddrVal;
+  While VAddr < EndAddr Do Begin
+   Off := Sections[SI].FileOff + (VAddr - Sections[SI].VAddr);
+   Lbl := FindSymbolAt(VAddr);
+   If Lbl <> '' Then Begin
+    WriteLn;
+    WriteLn(ToHexFixed(VAddr, AddrDigits), ' <', Lbl, '>:');
+   End;
+   If OptLineNumbers And FindLineForAddr(VAddr, CurFile, CurLine) Then Begin
+    If (CurFile <> LastFile) Or (CurLine <> LastLine) Then Begin
+     WriteLn(CurFile, ':', IntToStr(CurLine), ':');
+     LastFile := CurFile; LastLine := CurLine;
+    End;
+   End;
+   InstrLen := DecodeInstruction(Off, VAddr, Mnemonic, Operands);
+   BytesTxt := '';
+   For K := 0 To InstrLen - 1 Do Begin
+    If K > 0 Then BytesTxt := BytesTxt + ' ';
+    BytesTxt := BytesTxt + HexByte(GetByte(Off + K));
+   End;
+   If OptPrefixAddr Then
+    Write(ToHexFixed(VAddr, AddrDigits), ' ')
+   Else
+    Write('  ', ToHexFixed(VAddr, AddrDigits), ':' + #9);
+   If OptShowRawInsn Then Write(PadRight(BytesTxt, BytesColW), #9);
+   If Operands <> '' Then WriteLn(PadRight(Mnemonic, 6), ' ', Operands)
+   Else WriteLn(Mnemonic);
+   VAddr := VAddr + InstrLen;
+  End;
+ End;
+End;
+
 { @description: Implemente l affichage -S commun aux deux sources
     de lignes (DWARF pour ELF, PDB pour PE) : desassemble comme
     CmdDisasm, mais affiche d abord la reference fichier:ligne (et
@@ -9822,6 +10116,68 @@ Begin
    VAddr := VAddr + InstrLen;
   End;
  End;
+End;
+
+{ @description: Implemente l option -s/--full-contents : affiche le
+    contenu brut de chaque section (ou seulement celle filtree par
+    -j/--section) sous forme d un hexdump classique (decalage,
+    8 mots de 16 bits en hexadecimal, colonne ASCII), comme
+    "objdump -s". }
+Procedure CmdFullContents;
+Var
+ SI, J: Integer;
+ Addr, RowOff: LongInt;
+ B: Byte;
+ HexPart, AsciiPart: String;
+Begin
+ WriteLn;
+ WriteLn('Contents of section(s) :');
+ For SI := 1 To SectionCount Do Begin
+  If Not SectionMatchesFilter(Sections[SI].Name) Then Continue;
+  If Sections[SI].Size <= 0 Then Continue;
+  WriteLn;
+  WriteLn('Contents of section ', Sections[SI].Name, ':');
+  RowOff := 0;
+  While RowOff < Sections[SI].Size Do Begin
+   Addr := Sections[SI].VAddr + RowOff;
+   HexPart := ''; AsciiPart := '';
+   For J := 0 To 15 Do Begin
+    If RowOff + J < Sections[SI].Size Then Begin
+     B := GetByte(Sections[SI].FileOff + RowOff + J);
+     HexPart := HexPart + HexByte(B);
+     If (J Mod 2) = 1 Then HexPart := HexPart + ' ';
+     If (B >= 32) And (B < 127) Then AsciiPart := AsciiPart + Chr(B)
+     Else AsciiPart := AsciiPart + '.';
+    End Else Begin
+     HexPart := HexPart + '  ';
+     If (J Mod 2) = 1 Then HexPart := HexPart + ' ';
+    End;
+   End;
+   WriteLn(' ', ToHexFixed(Addr, 8), ' ', PadRight(HexPart, 36), AsciiPart);
+   RowOff := RowOff + 16;
+  End;
+ End;
+End;
+
+{ @description: Implemente l option -a/--archive-headers : affiche
+    la liste des membres d une bibliotheque "ar" (.a), comme
+    "ar tv" ou "objdump -a". Sans effet (message explicite) si le
+    fichier charge n est pas une archive. }
+Procedure CmdArchiveHeaders;
+Var
+ AI: Integer;
+Begin
+ WriteLn;
+ If BinFormat <> FMT_ARCHIVE Then Begin
+  WriteLn('Option -a : "', InFileName, '" n''est pas une archive .a.');
+  Exit;
+ End;
+ WriteLn(InFileName, ':');
+ WriteLn('rw-r--r-- 0/0   taille      nom');
+ For AI := 1 To ArchiveMemberCount Do
+  WriteLn('rw-r--r-- 0/0   ',
+   PadRight(IntToStr(ArchiveMembers[AI].DataSize), 12),
+   ArchiveMembers[AI].Name);
 End;
 
 { @description: Implemente l option -S : melange source/assembleur
@@ -9909,26 +10265,65 @@ Begin
  HexStrToLong := V;
 End;
 
+{ @description: Convertit une chaine decimale en entier, pour
+    --insn-width. Une chaine invalide donne Def plutot que de
+    planter (pas de SysUtils/StrToIntDef dans ce fichier sans Uses).
+  @param S Chaine a convertir
+  @param Def Valeur de repli si S n est pas un entier valide
+  @return Valeur numerique correspondante, ou Def }
+Function StrToIntSafe(S: String; Def: Integer): Integer;
+Var
+ V: Integer;
+ Code: Integer;
+Begin
+ Val(S, V, Code);
+ If Code <> 0 Then StrToIntSafe := Def Else StrToIntSafe := V;
+End;
+
 Procedure Help;Begin
  WriteLn('OBJDUMP - Cette commande permet d''analyser des fichiers objets, biblioth'+#138+'ques et ex'+#130+'cutables ',
          'afin d''afficher leurs ent'+#136+'tes, sections, symboles et code d'+#130+'sassembl'+#130+'.');
  WriteLn;
  WriteLn('Syntaxe : OBJDUMP fichier [options]');
  WriteLn('  fichier  Fichier binaire a analyser');
- WriteLn('  -d       Desassemble les sections de code');
- WriteLn('  -h       Affiche l''en-tete des sections');
- WriteLn('  -t       Affiche la table des symboles');
- WriteLn('  -S       Melange source/assembleur : DWARF .debug_line');
- WriteLn('           pour ELF, CodeView/RSDS + PDB externe pour PE');
- WriteLn('  -m arch  Force l''architecture de desassemblage :');
+ WriteLn('  -d, --disassemble       Desassemble les sections de code');
+ WriteLn('  -D, --disassemble-all   Desassemble TOUTES les sections');
+ WriteLn('  -h, --section-headers   Affiche la liste des sections');
+ WriteLn('  -f, --file-headers      Affiche le resume du fichier (format, point d''entree)');
+ WriteLn('  -x, --all-headers       Equivaut a -f -h -t');
+ WriteLn('  -t, --syms              Affiche la table des symboles');
+ WriteLn('  -a, --archive-headers   Affiche la liste des membres d''une archive .a');
+ WriteLn('  -s, --full-contents     Affiche le contenu brut des sections (hexdump)');
+ WriteLn('  -S, --source            Melange source/assembleur : DWARF .debug_line');
+ WriteLn('                          pour ELF, CodeView/RSDS + PDB externe pour PE');
+ WriteLn('  -l, --line-numbers      Annote -d des references fichier:ligne (DWARF/PDB)');
+ WriteLn('  -j nom, --section=nom   Limite -h/-t/-s/-d a la section nommee');
+ WriteLn('  -C, --demangle          Demangle les noms C++ (Itanium ABI, sous-ensemble)');
+ WriteLn('      --no-demangle       Desactive le demangling (defaut)');
+ WriteLn('  -m arch, --architecture=arch  Force l''architecture de desassemblage :');
  WriteLn('           i386 (defaut), x86-64, 8086, 8080, 6502, z80, 6800,');
  WriteLn('           68000, sparc, sparcv9, mips, mipsel, ppc, ppcle,');
  WriteLn('           sh, shle, ia64, pcode, msil, jasmin, llvm, arm,');
- WriteLn('           thumb');
- WriteLn('           ou arm64');
- WriteLn('  -b adr   Adresse de chargement (hexa) pour un binaire');
- WriteLn('           brut sans entete, ex: -b 8000 ou -b $8000');
- WriteLn('  -?       Aide sur cette commande');
+ WriteLn('           thumb ou arm64');
+ WriteLn('  -b fmt, --target=fmt    Format BFD cible ("binary" force le mode brut)');
+ WriteLn('      --adjust-vma=adr    Adresse de chargement (hexa) pour un binaire');
+ WriteLn('                          brut, ex: --adjust-vma=8000 (remplace l''ancien -b)');
+ WriteLn('      --start-address=adr Limite -d a partir de cette adresse');
+ WriteLn('      --stop-address=adr  Limite -d jusqu''a cette adresse (exclue)');
+ WriteLn('      --prefix-addresses  Affiche l''adresse complete devant chaque ligne');
+ WriteLn('      --show-raw-insn     Affiche les octets machine (defaut)');
+ WriteLn('      --no-show-raw-insn  Masque la colonne des octets machine');
+ WriteLn('      --insn-width=n      Largeur de la colonne des octets machine');
+ WriteLn('      --endian=big|little Force le boutisme (ELF)');
+ WriteLn('  -w, --wide              Accepte, sans effet (lignes deja non tronquees)');
+ WriteLn('  -z, --disassemble-zeroes  Accepte, sans effet (deja le comportement)');
+ WriteLn('  -M opt, --disassembler-options=opt  Accepte, sans effet');
+ WriteLn('  -i, --info               Liste les architectures/formats reconnus');
+ WriteLn('  -v, --version            Affiche la version');
+ WriteLn('  -?, -H, --help           Aide sur cette commande');
+ WriteLn('  -g/-e/-p/-P/-r/-R/-T/-W/--dwarf*/--special-syms/--synthetic/');
+ WriteLn('  --unicode*/--visualize-jumps* : reconnues mais hors de portee');
+ WriteLn('  (message explicite plutot qu''un faux resultat).');
  WriteLn;
  WriteLn('Formats supportes : ELF32/ELF64 (Linux), PE32/PE32+ (Windows),');
  WriteLn('Mach-O 32/64 bits (macOS, dont binaires universels "fat"),');
@@ -10070,10 +10465,12 @@ Begin
   End;
  End;
 
- If OptHeaders Then CmdHeaders;
+ If OptFileHdr Then CmdFileHeader;
+ If OptHeaders Then CmdSectionHeaders;
  If OptSymbols Then CmdSymbols;
+ If OptFullContents Then CmdFullContents;
  If OptSource Then CmdSourceMix;
- If OptDisasm Then Begin
+ If OptDisasm Or OptDisasmAll Then Begin
   If Arch = ARCH_LLVM Then CmdLLVM Else CmdDisasm;
  End;
 End;
@@ -10089,9 +10486,23 @@ Var
 BEGIN
  InFileName := '';
  OptHeaders := False;
+ OptFileHdr := False;
  OptSymbols := False;
  OptDisasm  := False;
+ OptDisasmAll := False;
  OptSource  := False;
+ OptArchiveHdr := False;
+ OptFullContents := False;
+ OptLineNumbers := False;
+ OptPrefixAddr := False;
+ OptShowRawInsn := True; { comportement par defaut de objdump }
+ OptDemangle := False;
+ InsnWidth := 0;
+ SectionFilter := '';
+ HaveStartAddr := False;
+ HaveStopAddr := False;
+ ForceEndianSet := False;
+ TargetFormat := '';
  Arch       := ARCH_X86;
  ArchForced := False;
  BaseAddr   := 0;
@@ -10195,14 +10606,171 @@ BEGIN
     Halt(1);
    End;
    ArchForced := True;
-  End Else If Arg = '-b' Then Begin
+  End
+
+  { ----- -b / --target : format BFD cible (GNU). "binary" force le
+    mode brut deja gere par ArchForced+FMT_RAW ; les autres noms ne
+    sont acceptes que pour memoire (la detection automatique par
+    signature reste utilisee). L ancien -b "adresse de chargement"
+    est devenu --adjust-vma, conformement a la convention GNU. ----- }
+  Else If (Arg = '-b') Or (Arg = '--target') Then Begin
    Inc(I);
    If I > ParamCount Then Begin
-    WriteLn('Erreur : -b necessite une adresse (ex: -b 8000).');
+    WriteLn('Erreur : ', Arg, ' necessite un format (ex: binary, elf32-i386).');
+    Halt(1);
+   End;
+   TargetFormat := ParamStr(I);
+   If UpStr(TargetFormat) = 'BINARY' Then Begin
+    BinFormat := FMT_RAW; { effectif une fois -m egalement fourni }
+   End;
+  End Else If StartsWithStr(Arg, '--target=') Then Begin
+   TargetFormat := Copy(Arg, 10, Length(Arg) - 9);
+   If UpStr(TargetFormat) = 'BINARY' Then BinFormat := FMT_RAW;
+  End
+
+  Else If (Arg = '--adjust-vma') Then Begin
+   Inc(I);
+   If I > ParamCount Then Begin
+    WriteLn('Erreur : --adjust-vma necessite une adresse (ex: --adjust-vma 8000).');
     Halt(1);
    End;
    BaseAddr := HexStrToLong(ParamStr(I));
-  End Else If StartsWithStr(Arg, '-') Then Begin
+  End Else If StartsWithStr(Arg, '--adjust-vma=') Then
+   BaseAddr := HexStrToLong(Copy(Arg, 14, Length(Arg) - 13))
+
+  Else If (Arg = '-a') Or (Arg = '--archive-headers') Then
+   OptArchiveHdr := True
+  Else If (Arg = '-D') Or (Arg = '--disassemble-all') Then
+   OptDisasmAll := True
+  Else If (Arg = '-f') Or (Arg = '--file-headers') Then
+   OptFileHdr := True
+  Else If (Arg = '-x') Or (Arg = '--all-headers') Then Begin
+   OptFileHdr := True; OptHeaders := True; OptSymbols := True;
+  End
+  Else If (Arg = '-s') Or (Arg = '--full-contents') Then
+   OptFullContents := True
+  Else If (Arg = '-l') Or (Arg = '--line-numbers') Then
+   OptLineNumbers := True
+  Else If (Arg = '-C') Or (Arg = '--demangle') Then
+   OptDemangle := True
+  Else If Arg = '--no-demangle' Then
+   OptDemangle := False
+  Else If (Arg = '-w') Or (Arg = '--wide') Then Begin
+   { accepte, sans effet : cet outil ne tronque pas les lignes }
+  End
+  Else If (Arg = '-z') Or (Arg = '--disassemble-zeroes') Then Begin
+   { accepte, sans effet : les blocs de zeros sont deja desassembles
+     par defaut ici (a la difference du vrai objdump, qui les
+     escamote sauf avec -z) }
+  End
+  Else If (Arg = '--prefix-addresses') Then
+   OptPrefixAddr := True
+  Else If Arg = '--show-raw-insn' Then
+   OptShowRawInsn := True
+  Else If Arg = '--no-show-raw-insn' Then
+   OptShowRawInsn := False
+  Else If (Arg = '-j') Or (Arg = '--section') Then Begin
+   Inc(I);
+   If I > ParamCount Then Begin
+    WriteLn('Erreur : -j necessite un nom de section (ex: -j .text).');
+    Halt(1);
+   End;
+   SectionFilter := ParamStr(I);
+  End Else If StartsWithStr(Arg, '--section=') Then
+   SectionFilter := Copy(Arg, 11, Length(Arg) - 10)
+
+  Else If Arg = '--insn-width' Then Begin
+   Inc(I);
+   If I > ParamCount Then Begin
+    WriteLn('Erreur : --insn-width necessite une largeur (ex: --insn-width 16).');
+    Halt(1);
+   End;
+   InsnWidth := StrToIntSafe(ParamStr(I), 0);
+  End Else If StartsWithStr(Arg, '--insn-width=') Then
+   InsnWidth := StrToIntSafe(Copy(Arg, 14, Length(Arg) - 13), 0)
+
+  Else If Arg = '--start-address' Then Begin
+   Inc(I);
+   If I > ParamCount Then Begin
+    WriteLn('Erreur : --start-address necessite une adresse.');
+    Halt(1);
+   End;
+   StartAddrVal := HexStrToLong(ParamStr(I)); HaveStartAddr := True;
+  End Else If StartsWithStr(Arg, '--start-address=') Then Begin
+   StartAddrVal := HexStrToLong(Copy(Arg, 17, Length(Arg) - 16));
+   HaveStartAddr := True;
+  End
+  Else If Arg = '--stop-address' Then Begin
+   Inc(I);
+   If I > ParamCount Then Begin
+    WriteLn('Erreur : --stop-address necessite une adresse.');
+    Halt(1);
+   End;
+   StopAddrVal := HexStrToLong(ParamStr(I)); HaveStopAddr := True;
+  End Else If StartsWithStr(Arg, '--stop-address=') Then Begin
+   StopAddrVal := HexStrToLong(Copy(Arg, 16, Length(Arg) - 15));
+   HaveStopAddr := True;
+  End
+
+  Else If Arg = '--endian' Then Begin
+   Inc(I);
+   If I > ParamCount Then Begin
+    WriteLn('Erreur : --endian necessite big ou little.');
+    Halt(1);
+   End;
+   ForceEndianBE := UpStr(ParamStr(I)) = 'BIG'; ForceEndianSet := True;
+  End Else If StartsWithStr(Arg, '--endian=') Then Begin
+   ForceEndianBE := UpStr(Copy(Arg, 10, Length(Arg) - 9)) = 'BIG';
+   ForceEndianSet := True;
+  End
+
+  Else If (Arg = '-M') Or (Arg = '--disassembler-options') Then Begin
+   { accepte (ex: -M intel) mais sans effet : ce clone ne propose
+     qu une seule syntaxe par architecture (AT&T pour x86/x86-64,
+     deja le choix de "objdump" sans -M). }
+   Inc(I);
+  End Else If StartsWithStr(Arg, '--disassembler-options=') Then Begin
+   { idem, forme attachee }
+  End
+
+  Else If (Arg = '-i') Or (Arg = '--info') Then Begin
+   WriteLn('Architectures reconnues (-m) : i386, x86-64, 8086, 8080, ',
+    '6502, z80, 6800, 68000, sparc, mips, mipsel, ppc, ppcle, sh, ',
+    'shle, ia64, pcode, msil, jasmin, llvm, arm, thumb, arm64.');
+   WriteLn('Formats reconnus (auto-detectes ou -b binary) : elf32-*, ',
+    'elf64-*, pei-i386, pei-x86-64, mach-o-*, nes-rom, mz-dos, ',
+    'coff-*, ar-archive, raw-binary.');
+   Halt(0);
+  End Else If (Arg = '-v') Or (Arg = '--version') Then Begin
+   WriteLn('OBJDUMP.PAS (clone partiel de GNU objdump, Pascal/FPC) - ',
+    'voir l en-tete du fichier source pour la portee detaillee.');
+   Halt(0);
+  End Else If (Arg = '-H') Or (Arg = '--help') Then Begin
+   Help;
+   Halt(0);
+  End
+
+  { ----- options reconnues mais explicitement hors de portee : un
+    message clair plutot qu un faux resultat ou une erreur bloquante,
+    pour rester utilisable dans un script qui passe ces options sans
+    en dependre reellement. ----- }
+  Else If (Arg = '-g') Or (Arg = '--debugging') Or (Arg = '-e') Or
+          (Arg = '--debugging-tags') Or (Arg = '-p') Or
+          (Arg = '--private-headers') Or (Arg = '-r') Or
+          (Arg = '--reloc') Or (Arg = '-R') Or (Arg = '--dynamic-reloc') Or
+          (Arg = '-T') Or (Arg = '--dynamic-syms') Or (Arg = '-W') Or
+          (Arg = '--special-syms') Or (Arg = '--synthetic') Or
+          (Arg = '--visualize-jumps') Or
+          StartsWithStr(Arg, '--visualize-jumps=') Or
+          StartsWithStr(Arg, '--dwarf') Or StartsWithStr(Arg, '--unicode') Or
+          (Arg = '-P') Or StartsWithStr(Arg, '--private=') Then Begin
+   WriteLn('Option ', Arg, ' reconnue mais non supportee par ce clone ',
+    '(hors de portee : informations de debogage STABS/DWARF DIE, ',
+    'relocalisations, symboles dynamiques, ou donnees privees au ',
+    'format cible). Ignoree.');
+  End
+
+  Else If StartsWithStr(Arg, '-') Then Begin
    WriteLn('Option inconnue : ', Arg);
    Halt(1);
   End Else
@@ -10214,8 +10782,10 @@ BEGIN
   WriteLn('Erreur : aucun fichier specifie.');
   Halt(1);
  End;
- If (Not OptDisasm) And (Not OptHeaders) And (Not OptSymbols) And
-    (Not OptSource) Then OptDisasm := True; { comportement par defaut }
+ If (Not OptDisasm) And (Not OptDisasmAll) And (Not OptHeaders) And
+    (Not OptFileHdr) And (Not OptSymbols) And (Not OptSource) And
+    (Not OptArchiveHdr) And (Not OptFullContents) Then
+  OptDisasm := True; { comportement par defaut }
 
  InitOpcodes6502;
  InitOpcodes6800;
@@ -10229,6 +10799,7 @@ BEGIN
     ..." deja imprimes par CmdHeaders/CmdDisasm affichent le nom du
     membre), comme le ferait "objdump" sur une archive. }
   ParseArchive;
+  If OptArchiveHdr Then CmdArchiveHeaders;
   WriteLn('In archive ', InFileName, ':');
   ArchiveBuf := Buf;
   ArchiveBufSize := BufSize;
@@ -10249,6 +10820,8 @@ BEGIN
   InFileName := SavedFileName;
   Buf := ArchiveBuf;
   BufSize := ArchiveBufSize;
- End Else
+ End Else Begin
+  If OptArchiveHdr Then CmdArchiveHeaders; { signale "pas une archive" }
   AnalyzeBuffer(True);
+ End;
 END.
