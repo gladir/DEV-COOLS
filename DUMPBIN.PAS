@@ -891,7 +891,16 @@ Begin
   OptTLS := True; OptLoadConfig := True; OptPData := True;
   OptLineNumbers := True; OptFPO := True;
  End;
- If (FileName = '') And Not OptVersion Then Begin Help; Halt(1); End;
+If (FileName = '') And Not OptVersion Then Begin Help; Halt(1); End;
+End;
+
+Function HasDumpOption: Boolean;
+Begin
+ HasDumpOption := OptArchiveMembers Or OptLinkerMember Or OptHeaders Or
+  OptSummary Or OptDependents Or OptImports Or OptExports Or OptDirectives Or
+  OptSymbols Or OptLineNumbers Or OptRelocs Or OptPData Or OptUnwind Or
+  OptClrHeader Or OptTLS Or OptLoadConfig Or OptFPO Or OptRawData Or
+  OptDisasm Or OptVersion;
 End;
 
 Procedure Run;
@@ -903,6 +912,13 @@ Begin
  If Not (IsPE Or IsCOFF Or IsArchive) Then Begin
   WriteLn('DUMPBIN: format non reconnu (PE/COFF/.lib attendu).');
   Halt(1);
+ End;
+ If Not HasDumpOption Then Begin
+  If IsArchive Then OptArchiveMembers := True
+  Else OptHeaders := True;
+ End;
+ If OptNoPdb Then Begin
+  { Option acceptee pour compatibilite : ce clone ne charge jamais de PDB. }
  End;
  If OptArchiveMembers Then CmdArchiveMembers(False);
  If OptLinkerMember Then CmdArchiveMembers(True);
@@ -922,12 +938,6 @@ Begin
  If OptFPO Then CmdFPO;
  If OptRawData Then CmdRawData;
  If OptDisasm Then CmdDisasm;
- If Not (OptArchiveMembers Or OptLinkerMember Or OptHeaders Or OptSummary Or
-  OptDependents Or OptImports Or OptExports Or OptDirectives Or OptSymbols Or
-  OptLineNumbers Or OptRelocs Or OptPData Or OptUnwind Or OptClrHeader Or
-  OptTLS Or OptLoadConfig Or OptFPO Or OptRawData Or OptDisasm Or OptVersion Or
-  OptNoPdb) Then
-  Help;
 End;
 
 BEGIN
