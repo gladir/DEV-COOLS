@@ -47,6 +47,27 @@ Const
  FMT_NES     = 5;        { ROM NES (entete iNES, code 6502)            }
  FMT_RAW     = 6;        { binaire brut sans entete (code force par -m)}
  FMT_MZ      = 7;        { EXE DOS reel (entete MZ, sans entete PE)    }
+ FMT_MACHO32 = 8;        { Mach-O 32 bits (macOS), natif little-endian }
+ FMT_MACHO64 = 9;        { Mach-O 64 bits (macOS), natif little-endian }
+
+ { ----- Mach-O : valeurs magiques et types de commande utiles -----
+   Les constantes dont le bit de poids fort est positionne doivent
+   etre typees explicitement en LongInt (signe) : sinon FPC les
+   considere hors de la plage d un LongInt et compare toujours a
+   faux face a une valeur lue par GetDWord (qui renvoie elle aussi un
+   LongInt signe, via Move sur les octets bruts). }
+ MH_MAGIC      : LongInt = LongInt($FEEDFACE);
+ MH_MAGIC_64   : LongInt = LongInt($FEEDFACF);
+ MH_CIGAM      : LongInt = LongInt($CEFAEDFE); { boutisme inverse (PowerPC) }
+ MH_CIGAM_64   : LongInt = LongInt($CFFAEDFE);
+ FAT_MAGIC     : LongInt = LongInt($CAFEBABE);
+ FAT_CIGAM     : LongInt = LongInt($BEBAFECA);
+ LC_SEGMENT    = $00000001;
+ LC_SYMTAB     = $00000002;
+ LC_SEGMENT_64 = $00000019;
+ LC_MAIN       : LongInt = LongInt($80000028);
+ CPU_TYPE_X86    = $00000007;
+ CPU_TYPE_X86_64 = $01000007;
 
  { ----- Architectures de desassemblage (option -m) ----- }
  ARCH_X86  = 0;          { x86 32 bits (defaut, voir DisasmOne)         }
@@ -116,6 +137,8 @@ Var
  Arch         : Integer;          { ARCH_xxx, selectionne par -m }
  ArchForced   : Boolean;          { vrai si -m a ete passe explicitement }
  BaseAddr     : LongInt;          { adresse de chargement pour un binaire brut (-b) }
+ MachOBase    : LongInt;          { decalage de la tranche choisie dans un binaire universel (fat), 0 sinon }
+ MachOCpuType : LongInt;          { cputype Mach-O, pour le choix automatique de Arch }
  Mnem6502     : Array[0..255] Of String[4];
  Mode6502     : Array[0..255] Of Byte;
 
@@ -276,6 +299,23 @@ Begin
  GetDWord := R;
 End;
 
+{ @description: Lit un mot de 32 bits en BIG-endian a la position Off
+    (l en-tete "fat" d un binaire universel Mach-O est toujours stocke
+    en gros-boutiste, independamment de l architecture cible, pour
+    rester identifiable sans ambiguite).
+  @param Off Decalage (0-based) dans le fichier
+  @return Valeur 32 bits lue, interpretation gros-boutiste }
+Function GetDWordBE(Off: LongInt): LongInt;
+Var
+ B: Array[0..3] Of Byte;
+ I: Integer;
+ R: LongInt;
+Begin
+ For I := 0 To 3 Do B[3 - I] := GetByte(Off + I);
+ Move(B, R, 4);
+ GetDWordBE := R;
+End;
+
 { @description: Lit une chaine terminee par un octet nul a partir de
     la position Off, avec une longueur maximale de securite.
   @param Off Decalage (0-based) du premier caractere
@@ -341,8 +381,12 @@ End;
 Procedure DetectFormat;
 Var
  PEOff: LongInt;
+ Magic, NArch, I, ArchOff, ArchCpu: LongInt;
+ ChosenOff: LongInt;
+ Found: Boolean;
 Begin
  BinFormat := FMT_UNKNOWN;
+ MachOBase := 0;
  If BufSize < 4 Then Exit;
  If (GetByte(0) = $7F) And (GetByte(1) = Ord('E')) And
     (GetByte(2) = Ord('L')) And (GetByte(3) = Ord('F')) Then Begin
@@ -370,6 +414,52 @@ Begin
     (GetByte(2) = Ord('S')) And (GetByte(3) = $1A) Then Begin
   BinFormat := FMT_NES;
   Exit;
+ End;
+ Magic := GetDWord(0);
+ If Magic = MH_MAGIC_64 Then Begin
+  BinFormat := FMT_MACHO64;
+  Exit;
+ End;
+ If Magic = MH_MAGIC Then Begin
+  BinFormat := FMT_MACHO32;
+  Exit;
+ End;
+ If (Magic = MH_CIGAM) Or (Magic = MH_CIGAM_64) Then Begin
+  WriteLn('Erreur : Mach-O gros-boutiste (PowerPC) non supporte.');
+  Halt(1);
+ End;
+ If GetDWordBE(0) = FAT_MAGIC Then Begin
+  { Binaire universel : choisir de preference la tranche x86-64, sinon
+    x86 32 bits, sinon la premiere tranche du fichier. L en-tete fat
+    et les entrees fat_arch sont toujours en gros-boutiste. }
+  NArch := GetDWordBE(4);
+  ChosenOff := -1;
+  Found := False;
+  For I := 0 To NArch - 1 Do Begin
+   ArchOff := 8 + I * 20;
+   ArchCpu := GetDWordBE(ArchOff);
+   If ArchCpu = CPU_TYPE_X86_64 Then Begin
+    { Meilleur choix possible : on arrete la recherche immediatement. }
+    ChosenOff := GetDWordBE(ArchOff + 8);
+    Found := True;
+    Break;
+   End;
+   If (ArchCpu = CPU_TYPE_X86) And (Not Found) Then Begin
+    ChosenOff := GetDWordBE(ArchOff + 8);
+    Found := True; { x86 trouve ; on continue, un x86-64 ferait mieux }
+   End;
+   If ChosenOff < 0 Then
+    ChosenOff := GetDWordBE(ArchOff + 8); { repli : 1ere tranche vue }
+  End;
+  If ChosenOff < 0 Then Exit; { fat_header sans tranche exploitable }
+  MachOBase := ChosenOff;
+  Magic := GetDWord(MachOBase);
+  If Magic = MH_MAGIC_64 Then BinFormat := FMT_MACHO64
+  Else If Magic = MH_MAGIC Then BinFormat := FMT_MACHO32;
+  Exit;
+ End Else If GetDWordBE(0) = FAT_CIGAM Then Begin
+  WriteLn('Erreur : binaire universel gros-boutiste non supporte.');
+  Halt(1);
  End;
 End;
 
@@ -648,6 +738,132 @@ Begin
  SymbolCount := 0;
  ImageBase := 0;
  EntryPoint := (LongInt(CsVal) * 16) + IpVal;
+End;
+
+{ ============================================================
+  ANALYSE DU FORMAT MACH-O (32 et 64 bits, macOS)
+  ============================================================ }
+
+{ @description: Remplit Sections[]/Symbols[] a partir d un fichier
+    Mach-O deja charge (32 ou 64 bits, natif little-endian), eventu-
+    ellement une tranche extraite d un binaire universel "fat" via
+    MachOBase (0 pour un Mach-O simple). Parcourt les commandes de
+    chargement (load commands) a la recherche des segments
+    (LC_SEGMENT/LC_SEGMENT_64, pour remplir Sections[]), de la table
+    des symboles (LC_SYMTAB), et du point d entree (LC_MAIN). Comme
+    pour ELF64/PE64, les champs 64 bits ne sont conserves que sur 32
+    bits pour l affichage.
+
+    Avertissement : implementation ecrite directement a partir des
+    structures documentees du format Mach-O (mach_header, segment_
+    command, section, nlist), sans pouvoir la verifier contre un
+    binaire macOS reel (aucun disponible dans cet environnement
+    Windows/Linux/DOS) ; verifiee uniquement par un fichier Mach-O
+    synthetique minimal construit a la main pour ce test. }
+Procedure ParseMachO;
+Var
+ Is64: Boolean;
+ HdrSize: LongInt;
+ NCmds: LongInt;
+ CmdOff, Cmd, CmdSize: LongInt;
+ I, J: Integer;
+ NSects, SectOff, SegHdrSize, SectEntrySize: LongInt;
+ SegVAddr: LongInt;
+ SName, SSegName: String;
+ SAddr, SSize, SFileOff: LongInt;
+ SymOff, NSyms, StrOff: LongInt;
+ SymEntrySize: LongInt;
+ SBase: LongInt;
+ NStrx, NValue: LongInt;
+ NType, NSect: Byte;
+ EntryOff: LongInt;
+ FoundMain: Boolean;
+ TextVAddr: LongInt;
+Begin
+ Is64 := (BinFormat = FMT_MACHO64);
+ MachOCpuType := GetDWord(MachOBase + 4);
+ If Is64 Then HdrSize := 32 Else HdrSize := 28;
+ NCmds := GetDWord(MachOBase + 16);
+ SectionCount := 0;
+ SymbolCount := 0;
+ TextVAddr := 0;
+ FoundMain := False;
+ EntryOff := 0;
+ SymOff := 0; NSyms := 0; StrOff := 0;
+ CmdOff := MachOBase + HdrSize;
+ For I := 0 To NCmds - 1 Do Begin
+  If (CmdOff + 8 > BufSize) Or (CmdOff + 8 < 0) Then Break;
+  Cmd     := GetDWord(CmdOff);
+  CmdSize := GetDWord(CmdOff + 4);
+  If CmdSize <= 0 Then Break;
+  If (Cmd = LC_SEGMENT) Or (Cmd = LC_SEGMENT_64) Then Begin
+   SSegName := GetCStr(CmdOff + 8, 16);
+   If Cmd = LC_SEGMENT_64 Then Begin
+    SegVAddr := GetDWord(CmdOff + 24);    { partie basse de vmaddr (8 octets) }
+    NSects   := GetDWord(CmdOff + 64);
+    SegHdrSize := 72; SectEntrySize := 80;
+   End Else Begin
+    SegVAddr := GetDWord(CmdOff + 24);
+    NSects   := GetDWord(CmdOff + 48);
+    SegHdrSize := 56; SectEntrySize := 68;
+   End;
+   If (TextVAddr = 0) And (SSegName = '__TEXT') Then TextVAddr := SegVAddr;
+   SectOff := CmdOff + SegHdrSize;
+   For J := 0 To NSects - 1 Do Begin
+    If SectionCount >= MaxSections Then Break;
+    SName    := GetCStr(SectOff, 16);
+    SSegName := GetCStr(SectOff + 16, 16);
+    If Cmd = LC_SEGMENT_64 Then Begin
+     SAddr    := GetDWord(SectOff + 32); { partie basse de addr (8 octets) }
+     SSize    := GetDWord(SectOff + 40); { partie basse de size (8 octets) }
+     SFileOff := GetDWord(SectOff + 48);
+    End Else Begin
+     SAddr    := GetDWord(SectOff + 32);
+     SSize    := GetDWord(SectOff + 36);
+     SFileOff := GetDWord(SectOff + 40);
+    End;
+    Inc(SectionCount);
+    Sections[SectionCount].Name    := SSegName + ',' + SName;
+    Sections[SectionCount].VAddr   := SAddr;
+    Sections[SectionCount].FileOff := MachOBase + SFileOff;
+    Sections[SectionCount].Size    := SSize;
+    Sections[SectionCount].IsCode  :=
+     (SSegName = '__TEXT') And (SName = '__text');
+    SectOff := SectOff + SectEntrySize;
+   End;
+  End Else If Cmd = LC_SYMTAB Then Begin
+   SymOff := MachOBase + GetDWord(CmdOff + 8);
+   NSyms  := GetDWord(CmdOff + 12);
+   StrOff := MachOBase + GetDWord(CmdOff + 16);
+  End Else If Cmd = LC_MAIN Then Begin
+   EntryOff := GetDWord(CmdOff + 8); { partie basse de entryoff (8 octets) }
+   FoundMain := True;
+  End;
+  CmdOff := CmdOff + CmdSize;
+ End;
+ ImageBase := 0;
+ If FoundMain Then EntryPoint := TextVAddr + EntryOff
+ Else EntryPoint := TextVAddr;
+ { Table des symboles (nlist / nlist_64) }
+ If Is64 Then SymEntrySize := 16 Else SymEntrySize := 12;
+ If (NSyms > 0) And (SymOff > 0) Then
+  For I := 0 To NSyms - 1 Do Begin
+   If SymbolCount >= MaxSymbols Then Break;
+   SBase := SymOff + I * SymEntrySize;
+   NStrx := GetDWord(SBase);
+   NType := GetByte(SBase + 4);
+   NSect := GetByte(SBase + 5);
+   NValue := GetDWord(SBase + 8); { partie basse de n_value si 64 bits }
+   If (NType And $E0) <> 0 Then Continue; { entree de debogage (stab) }
+   SName := GetCStr(StrOff + NStrx, 63);
+   If SName <> '' Then Begin
+    Inc(SymbolCount);
+    Symbols[SymbolCount].Name   := SName;
+    Symbols[SymbolCount].Value  := NValue;
+    Symbols[SymbolCount].SecIdx := NSect;
+    Symbols[SymbolCount].IsFunc := (NType And $0E) = $0E; { N_SECT }
+   End;
+  End;
 End;
 
 { ============================================================
@@ -2470,6 +2686,14 @@ Begin
   FMT_NES:   FormatName := 'nes-rom (6502)';
   FMT_RAW:   FormatName := 'raw-binary (-m/-b)';
   FMT_MZ:    FormatName := 'mz-dos (8086)';
+  FMT_MACHO32: Begin
+   If MachOCpuType = CPU_TYPE_X86 Then FormatName := 'mach-o-i386'
+   Else FormatName := 'mach-o-32 (cputype 0x' + ToHexU(MachOCpuType) + ')';
+  End;
+  FMT_MACHO64: Begin
+   If MachOCpuType = CPU_TYPE_X86_64 Then FormatName := 'mach-o-x86-64'
+   Else FormatName := 'mach-o-64 (cputype 0x' + ToHexU(MachOCpuType) + ')';
+  End;
  Else
   FormatName := 'inconnu';
  End;
@@ -2512,8 +2736,8 @@ Begin
   SIdx := FindSectionAt(Symbols[I].Value);
   If SIdx > 0 Then SecName := Sections[SIdx].Name Else SecName := '*UND*';
   WriteLn(ToHexFixed(Symbols[I].Value, 8), ' ',
-   PadRight(SecName, 10),
-   PadRight(Symbols[I].Name, 0));
+   PadRight(SecName, 10), ' ',
+   Symbols[I].Name);
  End;
 End;
 
@@ -2713,13 +2937,24 @@ Begin
  End Else If (BinFormat = FMT_PE32) Or (BinFormat = FMT_PE64) Then Begin
   ParsePE;
   If (BinFormat = FMT_PE64) And (Not ArchForced) Then Arch := ARCH_X64;
+ End Else If (BinFormat = FMT_MACHO32) Or (BinFormat = FMT_MACHO64) Then Begin
+  ParseMachO;
+  If Not ArchForced Then Begin
+   If MachOCpuType = CPU_TYPE_X86_64 Then Arch := ARCH_X64
+   Else If MachOCpuType = CPU_TYPE_X86 Then Arch := ARCH_X86
+   Else If OptDisasm Then
+    WriteLn('Avertissement : architecture Mach-O (cputype 0x',
+     ToHexU(MachOCpuType), ') non prise en charge par le ',
+     'desassembleur ; -h/-t restent fiables, -d sera incorrect ',
+     'sans -m explicite.');
+  End;
  End Else If ArchForced Then Begin
   { Format non reconnu, mais architecture explicitement choisie via
     -m : on traite le fichier comme un binaire brut, sans entete. }
   BinFormat := FMT_RAW;
   ParseRaw;
  End Else Begin
-  WriteLn('Erreur : format de fichier non reconnu (ni ELF, ni PE, ni ROM NES, ni EXE DOS).');
+  WriteLn('Erreur : format de fichier non reconnu (ni ELF, ni PE, ni ROM NES, ni EXE DOS, ni Mach-O).');
   WriteLn('Pour un binaire brut, precisez l''architecture avec -m (ex: -m 6502).');
   Halt(1);
  End;
