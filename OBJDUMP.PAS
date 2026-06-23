@@ -70,10 +70,22 @@ Const
  CPU_TYPE_X86_64 = $01000007;
 
  { ----- Architectures de desassemblage (option -m) ----- }
- ARCH_X86  = 0;          { x86 32 bits (defaut, voir DisasmOne)         }
- ARCH_6502 = 1;          { 6502/65C02 8 bits (voir Disasm6502One)      }
- ARCH_8086 = 2;          { 8086/80186 16 bits (voir Disasm8086One)     }
- ARCH_X64  = 3;          { x86-64 (prefixes REX, voir Disasm64One)     }
+ ARCH_X86   = 0;         { x86 32 bits (defaut, voir DisasmOne)         }
+ ARCH_6502  = 1;         { 6502/65C02 8 bits (voir Disasm6502One)      }
+ ARCH_8086  = 2;         { 8086/80186 16 bits (voir Disasm8086One)     }
+ ARCH_X64   = 3;         { x86-64 (prefixes REX, voir Disasm64One)     }
+ ARCH_ARM32 = 4;         { ARM 32 bits classique (voir DisasmArm32One) }
+ ARCH_THUMB = 5;         { Thumb/Thumb-2 16+32 bits (voir DisasmThumbOne) }
+ ARCH_ARM64 = 6;         { AArch64 (voir DisasmArm64One)               }
+
+ { ----- Types de machine ELF/PE utiles au choix automatique de Arch -----}
+ EM_ARM       = 40;
+ EM_AARCH64   = 183;
+ PE_MACHINE_ARM   = $01C0;
+ PE_MACHINE_ARMNT = $01C4;  { Thumb-2 (ARMv7 et plus, convention Windows) }
+ PE_MACHINE_ARM64 = $AA64;
+ CPU_TYPE_ARM     = $0000000C;
+ CPU_TYPE_ARM64   : LongInt = LongInt($0100000C);
 
  { ----- Modes d adressage 6502 ----- }
  AM_NONE = 0;            { opcode illegal/non documente                 }
@@ -139,6 +151,8 @@ Var
  BaseAddr     : LongInt;          { adresse de chargement pour un binaire brut (-b) }
  MachOBase    : LongInt;          { decalage de la tranche choisie dans un binaire universel (fat), 0 sinon }
  MachOCpuType : LongInt;          { cputype Mach-O, pour le choix automatique de Arch }
+ ElfMachine   : LongInt;          { e_machine ELF, pour le choix automatique de Arch }
+ PEMachine    : LongInt;          { Machine du IMAGE_FILE_HEADER PE, idem }
  Mnem6502     : Array[0..255] Of String[4];
  Mode6502     : Array[0..255] Of Byte;
 
@@ -258,6 +272,17 @@ Begin
  S := ToHexU(V);
  While Length(S) < Digits Do S := '0' + S;
  ToHexFixed := S;
+End;
+
+{ @description: Convertit un entier en chaine decimale.
+  @param N Valeur a convertir
+  @return Representation decimale de N }
+Function IntToStr(N: LongInt): String;
+Var
+ S: String;
+Begin
+ Str(N, S);
+ IntToStr := S;
 End;
 
 { ============================================================
@@ -488,6 +513,7 @@ Var
  FoundSymTab: Boolean;
 Begin
  Is64 := (BinFormat = FMT_ELF64);
+ ElfMachine := GetWord(18); { e_machine, meme decalage en 32 et 64 bits }
  EntryPoint := 0;
  ImageBase := 0;
  If Is64 Then Begin
@@ -595,6 +621,7 @@ Var
  StrOffInTab: LongInt;
 Begin
  PEOff := GetDWord($3C);
+ PEMachine := GetWord(PEOff + 4);
  NumSections := GetWord(PEOff + 6);
  SizeOptHdr  := GetWord(PEOff + 20);
  SymTabOff   := GetDWord(PEOff + 12);
@@ -1856,6 +1883,700 @@ Begin
 End;
 
 { ============================================================
+  DESASSEMBLEUR AARCH64 (ARM 64 bits, instructions courantes)
+  ============================================================ }
+
+{ @description: Nom (prefixe %) du registre 64 bits numero R, dans un
+    contexte d ADRESSE/BASE (registre 31 affiche "sp").
+  @param R Numero de registre (0..31)
+  @return Nom du registre 64 bits }
+Function RegX(R: Byte): String;
+Begin
+ If (R And 31) = 31 Then RegX := '%sp' Else RegX := '%x' + IntToStr(R And 31);
+End;
+
+{ @description: Nom (prefixe %) du registre 64 bits numero R, dans un
+    contexte de VALEUR (registre 31 affiche le registre zero "xzr").
+  @param R Numero de registre (0..31)
+  @return Nom du registre 64 bits ou "xzr" }
+Function RegXZ(R: Byte): String;
+Begin
+ If (R And 31) = 31 Then RegXZ := '%xzr' Else RegXZ := '%x' + IntToStr(R And 31);
+End;
+
+{ @description: Nom (prefixe %) du registre 32 bits (vue basse d un
+    registre 64 bits) numero R, contexte VALEUR (registre 31 = "wzr").
+  @param R Numero de registre (0..31)
+  @return Nom du registre 32 bits ou "wzr" }
+Function RegWZ(R: Byte): String;
+Begin
+ If (R And 31) = 31 Then RegWZ := '%wzr' Else RegWZ := '%w' + IntToStr(R And 31);
+End;
+
+{ @description: Desassemble une seule instruction AArch64 (largeur
+    fixe 4 octets) a partir du decalage Off, en syntaxe AT&T simplifiee
+    (registres prefixes %, comme pour DisasmOne/Disasm64One). Couvre
+    un sous-ensemble pratique : branchements (B/BL/B.cond/CBZ/CBNZ/
+    BR/BLR/RET), deplacement de constantes (MOVZ/MOVN/MOVK), arithmetique
+    et logique de base (ADD/SUB/AND/ORR/EOR, formes immediat et
+    registre, avec les alias CMP/CMN/MOV), chargement/rangement simple
+    et par paire (LDR/STR/STP/LDP, decalage non signe ou signe), NOP,
+    SVC. Pas de SIMD/FP, pas de logique a immediat (masque de bits),
+    pas d adressage indexe par registre.
+
+    Avertissement de confiance : l encodage exact des instructions
+    LDR/STR/STP/LDP (notamment le sous-champ "mode" de STP/LDP qui
+    distingue decalage signe / pre-index / post-index) est implemente
+    a partir du souvenir des tables de l ARM ARM (Architecture
+    Reference Manual), sans reference disponible pour le verifier
+    dans cet environnement ; les branchements, MOVZ/MOVN/MOVK et
+    ADD/SUB sont les parties les plus sures de ce decodeur.
+  @param Off Decalage de l instruction dans le fichier
+  @param VAddrBase Adresse virtuelle correspondant a Off
+  @param Mnemonic Mnemonique de l instruction (sortie)
+  @param Operands Operandes formates (sortie)
+  @return Nombre d octets occupes par l instruction (toujours 4, ou 4
+    par securite si l instruction n est pas reconnue) }
+Function DisasmArm64One(Off, VAddrBase: LongInt;
+ Var Mnemonic, Operands: String): Integer;
+Const
+ CondA64: Array[0..15] Of String[3] = (
+  'eq', 'ne', 'cs', 'cc', 'mi', 'pl', 'vs', 'vc',
+  'hi', 'ls', 'ge', 'lt', 'gt', 'le', 'al', 'nv');
+Var
+ Instr: LongInt;
+ Sf, Op, S, L, Opc, Cond, Hw, ShiftBits, Mode, Sz: Byte;
+ Rd, Rn, Rm, Rt, Rt2: Byte;
+ Imm26, Imm19, Imm16, Imm12, Imm7, Imm6: LongInt;
+Begin
+ Instr := GetDWord(Off);
+ Mnemonic := '(bad)';
+ Operands := '';
+
+ If Instr = LongInt($D503201F) Then
+  Mnemonic := 'nop'
+
+ Else If (Instr And LongInt($FE1FFC1F)) = LongInt($D61F0000) Then Begin
+  Rn := (Instr Shr 5) And 31;
+  Opc := (Instr Shr 21) And 15;
+  Case Opc Of
+   0: Mnemonic := 'br';
+   1: Mnemonic := 'blr';
+   2: Mnemonic := 'ret';
+  Else
+   Mnemonic := '(bad)';
+  End;
+  If Mnemonic <> '(bad)' Then Operands := RegX(Rn);
+ End
+
+ Else If ((Instr Shr 26) And 63) = 5 Then Begin
+  Imm26 := Instr And $03FFFFFF;
+  If (Imm26 And $02000000) <> 0 Then Imm26 := Imm26 Or LongInt($FC000000);
+  Mnemonic := 'b';
+  Operands := '0x' + ToHexU(VAddrBase + (Imm26 Shl 2));
+ End Else If ((Instr Shr 26) And 63) = 37 Then Begin
+  Imm26 := Instr And $03FFFFFF;
+  If (Imm26 And $02000000) <> 0 Then Imm26 := Imm26 Or LongInt($FC000000);
+  Mnemonic := 'bl';
+  Operands := '0x' + ToHexU(VAddrBase + (Imm26 Shl 2));
+ End
+
+ Else If ((Instr Shr 24) And 255) = 84 Then Begin
+  If (Instr And 1) = 0 Then Begin
+   Cond := Instr And 15;
+   Imm19 := (Instr Shr 5) And $7FFFF;
+   If (Imm19 And $40000) <> 0 Then Imm19 := Imm19 Or LongInt($FFF80000);
+   Mnemonic := 'b.' + CondA64[Cond];
+   Operands := '0x' + ToHexU(VAddrBase + (Imm19 Shl 2));
+  End;
+ End
+
+ Else If (((Instr Shr 24) And 255) = $D4) And ((Instr And 3) = 1) And
+         (((Instr Shr 21) And 7) = 0) And (((Instr Shr 2) And 7) = 0) Then Begin
+  Imm16 := (Instr Shr 5) And $FFFF;
+  Mnemonic := 'svc';
+  Operands := '#0x' + ToHexU(Imm16);
+ End
+
+ Else If ((Instr Shr 25) And 63) = 26 Then Begin
+  Sf := (Instr Shr 31) And 1;
+  L  := (Instr Shr 24) And 1;
+  Imm19 := (Instr Shr 5) And $7FFFF;
+  If (Imm19 And $40000) <> 0 Then Imm19 := Imm19 Or LongInt($FFF80000);
+  Rt := Instr And 31;
+  If L = 0 Then Mnemonic := 'cbz' Else Mnemonic := 'cbnz';
+  If Sf = 1 Then Operands := RegXZ(Rt) Else Operands := RegWZ(Rt);
+  Operands := Operands + ',0x' + ToHexU(VAddrBase + (Imm19 Shl 2));
+ End
+
+ Else If ((Instr Shr 23) And 63) = 37 Then Begin
+  Sf := (Instr Shr 31) And 1;
+  Opc := (Instr Shr 29) And 3;
+  Hw := (Instr Shr 21) And 3;
+  Imm16 := (Instr Shr 5) And $FFFF;
+  Rd := Instr And 31;
+  Case Opc Of
+   0: Mnemonic := 'movn';
+   2: Mnemonic := 'movz';
+   3: Mnemonic := 'movk';
+  Else
+   Mnemonic := '(bad)';
+  End;
+  If Mnemonic <> '(bad)' Then Begin
+   If Sf = 1 Then Operands := RegXZ(Rd) Else Operands := RegWZ(Rd);
+   Operands := Operands + ',#0x' + ToHexU(Imm16);
+   If Hw > 0 Then Operands := Operands + ',lsl #' + IntToStr(Hw * 16);
+  End;
+ End
+
+ Else If ((Instr Shr 24) And 31) = 17 Then Begin
+  Sf := (Instr Shr 31) And 1;
+  Op := (Instr Shr 30) And 1;
+  S  := (Instr Shr 29) And 1;
+  ShiftBits := (Instr Shr 22) And 3;
+  Imm12 := (Instr Shr 10) And $FFF;
+  Rn := (Instr Shr 5) And 31;
+  Rd := Instr And 31;
+  If ShiftBits = 1 Then Imm12 := Imm12 Shl 12;
+  If (S = 1) And (Rd = 31) Then Begin
+   If Op = 0 Then Mnemonic := 'cmn' Else Mnemonic := 'cmp';
+   If Sf = 1 Then Operands := RegX(Rn) Else Operands := '%w' + IntToStr(Rn);
+   Operands := Operands + ',#0x' + ToHexU(Imm12);
+  End Else Begin
+   If Op = 0 Then Mnemonic := 'add' Else Mnemonic := 'sub';
+   If S = 1 Then Mnemonic := Mnemonic + 's';
+   If Sf = 1 Then Operands := RegX(Rd) + ',' + RegX(Rn)
+   Else Operands := '%w' + IntToStr(Rd) + ',%w' + IntToStr(Rn);
+   Operands := Operands + ',#0x' + ToHexU(Imm12);
+  End;
+ End
+
+ Else If (((Instr Shr 24) And 31) = 11) And (((Instr Shr 21) And 1) = 0) Then Begin
+  Sf := (Instr Shr 31) And 1;
+  Op := (Instr Shr 30) And 1;
+  S  := (Instr Shr 29) And 1;
+  Rm := (Instr Shr 16) And 31;
+  Imm6 := (Instr Shr 10) And 63;
+  Rn := (Instr Shr 5) And 31;
+  Rd := Instr And 31;
+  If (S = 1) And (Rd = 31) Then Begin
+   If Op = 0 Then Mnemonic := 'cmn' Else Mnemonic := 'cmp';
+   If Sf = 1 Then Operands := RegX(Rn) + ',' + RegX(Rm)
+   Else Operands := '%w' + IntToStr(Rn) + ',%w' + IntToStr(Rm);
+  End Else Begin
+   If Op = 0 Then Mnemonic := 'add' Else Mnemonic := 'sub';
+   If S = 1 Then Mnemonic := Mnemonic + 's';
+   If Sf = 1 Then Operands := RegX(Rd) + ',' + RegX(Rn) + ',' + RegX(Rm)
+   Else Operands := '%w' + IntToStr(Rd) + ',%w' + IntToStr(Rn) +
+    ',%w' + IntToStr(Rm);
+  End;
+  If Imm6 > 0 Then Operands := Operands + ',lsl #' + IntToStr(Imm6);
+ End
+
+ Else If ((Instr Shr 24) And 31) = 10 Then Begin
+  Sf := (Instr Shr 31) And 1;
+  Opc := (Instr Shr 29) And 3;
+  L := (Instr Shr 21) And 1; { reutilise pour le bit N }
+  Rm := (Instr Shr 16) And 31;
+  Imm6 := (Instr Shr 10) And 63;
+  Rn := (Instr Shr 5) And 31;
+  Rd := Instr And 31;
+  If L = 1 Then Mnemonic := '(bad)' { N=1 : BIC/ORN/EON/BICS, non couverts }
+  Else Begin
+   Case Opc Of
+    0: Mnemonic := 'and';
+    1: Mnemonic := 'orr';
+    2: Mnemonic := 'eor';
+    3: Mnemonic := 'ands';
+   End;
+   If (Opc = 1) And (Rn = 31) And (Imm6 = 0) Then Begin
+    Mnemonic := 'mov';
+    If Sf = 1 Then Operands := RegXZ(Rd) + ',' + RegXZ(Rm)
+    Else Operands := RegWZ(Rd) + ',' + RegWZ(Rm);
+   End Else Begin
+    If Sf = 1 Then
+     Operands := RegXZ(Rd) + ',' + RegXZ(Rn) + ',' + RegXZ(Rm)
+    Else
+     Operands := RegWZ(Rd) + ',' + RegWZ(Rn) + ',' + RegWZ(Rm);
+    If Imm6 > 0 Then Operands := Operands + ',lsl #' + IntToStr(Imm6);
+   End;
+  End;
+ End
+
+ Else If (((Instr Shr 27) And 7) = 7) And (((Instr Shr 26) And 1) = 0) And
+         (((Instr Shr 24) And 3) = 1) Then Begin
+  Sz := (Instr Shr 30) And 3;
+  Opc := (Instr Shr 22) And 3;
+  Imm12 := (Instr Shr 10) And $FFF;
+  Rn := (Instr Shr 5) And 31;
+  Rt := Instr And 31;
+  If (Sz >= 2) And (Opc <= 1) Then Begin
+   If Opc = 0 Then Mnemonic := 'str' Else Mnemonic := 'ldr';
+   If Sz = 3 Then Begin
+    Operands := RegXZ(Rt) + ',[' + RegX(Rn);
+    Imm12 := Imm12 * 8;
+   End Else Begin
+    Operands := RegWZ(Rt) + ',[' + RegX(Rn);
+    Imm12 := Imm12 * 4;
+   End;
+   If Imm12 > 0 Then Operands := Operands + ',#0x' + ToHexU(Imm12);
+   Operands := Operands + ']';
+  End Else
+   Mnemonic := '(bad)';
+ End
+
+ Else If (((Instr Shr 27) And 7) = 5) And (((Instr Shr 26) And 1) = 0) Then Begin
+  Sz   := (Instr Shr 30) And 3;
+  Mode := (Instr Shr 23) And 7;
+  L    := (Instr Shr 22) And 1;
+  Imm7 := (Instr Shr 15) And $7F;
+  If (Imm7 And $40) <> 0 Then Imm7 := Imm7 Or LongInt($FFFFFF80);
+  Rt2 := (Instr Shr 10) And 31;
+  Rn  := (Instr Shr 5) And 31;
+  Rt  := Instr And 31;
+  If L = 0 Then Mnemonic := 'stp' Else Mnemonic := 'ldp';
+  If Sz = 2 Then Begin
+   Operands := RegXZ(Rt) + ',' + RegXZ(Rt2) + ',[' + RegX(Rn);
+   Imm7 := Imm7 * 8;
+  End Else Begin
+   Operands := RegWZ(Rt) + ',' + RegWZ(Rt2) + ',[' + RegX(Rn);
+   Imm7 := Imm7 * 4;
+  End;
+  If Mode = 1 Then Begin { post-index : "[Rn], #imm" }
+   Operands := Operands + ']';
+   If Imm7 <> 0 Then Operands := Operands + ',#' + ToHexSignedDisp(Imm7);
+  End Else Begin { decalage signe ou pre-index : "[Rn, #imm]" ou "...]!" }
+   If Imm7 <> 0 Then Operands := Operands + ',#' + ToHexSignedDisp(Imm7);
+   Operands := Operands + ']';
+   If Mode = 3 Then Operands := Operands + '!';
+  End;
+ End;
+
+ DisasmArm64One := 4;
+End;
+
+{ ============================================================
+  DESASSEMBLEUR ARM 32 BITS CLASSIQUE (execution conditionnelle)
+  ============================================================ }
+
+{ @description: Nom (prefixe %) du registre ARM 32 bits numero R
+    (0..15), avec les alias usuels GNU pour les registres speciaux
+    (sp, lr, pc plutot que r13/r14/r15).
+  @param R Numero de registre (0..15)
+  @return Nom du registre }
+Function RegArm(R: Byte): String;
+Const
+ Names: Array[0..15] Of String[3] = (
+  'r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7',
+  'r8', 'r9', 'r10', 'r11', 'r12', 'sp', 'lr', 'pc');
+Begin
+ RegArm := '%' + Names[R And 15];
+End;
+
+{ @description: Desassemble une seule instruction ARM 32 bits classique
+    (largeur fixe 4 octets) a partir du decalage Off, en syntaxe AT&T
+    simplifiee. Couvre un sous-ensemble pratique : traitement de
+    donnees (AND/EOR/SUB/RSB/ADD/ADC/SBC/RSC/TST/TEQ/CMP/CMN/ORR/MOV/
+    BIC/MVN, formes immediat-tourne et registre-decale), branchements
+    B/BL, BX/BLX (registre), chargement/rangement simple LDR/STR(B),
+    chargement/rangement multiple LDM/STM (push/pop), SVC, NOP. Le
+    code condition (bits 31-28, ex: EQ/NE/CS/...) est ajoute en
+    suffixe du mnemonique sauf pour AL (toujours vrai, omis comme le
+    fait objdump). Pas de coprocesseur/NEON/VFP, pas de decalage par
+    registre pour l adressage memoire, pas de double-mot LDRD/STRD.
+  @param Off Decalage de l instruction dans le fichier
+  @param VAddrBase Adresse virtuelle correspondant a Off
+  @param Mnemonic Mnemonique de l instruction (sortie)
+  @param Operands Operandes formates (sortie)
+  @return Nombre d octets occupes par l instruction (toujours 4) }
+Function DisasmArm32One(Off, VAddrBase: LongInt;
+ Var Mnemonic, Operands: String): Integer;
+Const
+ CondArm: Array[0..15] Of String[3] = (
+  'eq', 'ne', 'cs', 'cc', 'mi', 'pl', 'vs', 'vc',
+  'hi', 'ls', 'ge', 'lt', 'gt', 'le', '', 'nv');
+ DPNames: Array[0..15] Of String[4] = (
+  'and', 'eor', 'sub', 'rsb', 'add', 'adc', 'sbc', 'rsc',
+  'tst', 'teq', 'cmp', 'cmn', 'orr', 'mov', 'bic', 'mvn');
+ ShiftNamesArm: Array[0..3] Of String[3] = ('lsl', 'lsr', 'asr', 'ror');
+Var
+ Instr: LongInt;
+ Cond: Byte;
+ CondTxt: String;
+ IBit, OpcodeDP, SBit, Rn, Rd, Rm: Byte;
+ ShiftType, ShiftImm: Byte;
+ Operand2Txt: String;
+ RotateAmt, ImmVal: LongInt;
+ PBit, UBit, BBit, WBit, LBit: Byte;
+ OffsetImm: LongInt;
+ RegListTxt: String;
+ I: Integer;
+ Imm24, Target: LongInt;
+ First: Boolean;
+Begin
+ Instr := GetDWord(Off);
+ Mnemonic := '(bad)';
+ Operands := '';
+ Cond := (Instr Shr 28) And 15;
+ CondTxt := CondArm[Cond];
+
+ { ----- NOP (encodage dedie ARMv6K+) ----- }
+ If (Instr And LongInt($0FFFFFFF)) = LongInt($0320F000) Then
+  Mnemonic := 'nop'
+
+ { ----- BX / BLX (registre) ----- }
+ Else If (Instr And LongInt($0FFFFFF0)) = LongInt($012FFF10) Then Begin
+  Rm := Instr And 15;
+  Mnemonic := 'bx' + CondTxt;
+  Operands := RegArm(Rm);
+ End Else If (Instr And LongInt($0FFFFFF0)) = LongInt($012FFF30) Then Begin
+  Rm := Instr And 15;
+  Mnemonic := 'blx' + CondTxt;
+  Operands := RegArm(Rm);
+ End
+
+ { ----- B / BL ----- }
+ Else If ((Instr Shr 25) And 7) = 5 Then Begin
+  Imm24 := Instr And $00FFFFFF;
+  If (Imm24 And $00800000) <> 0 Then Imm24 := Imm24 Or LongInt($FF000000);
+  Target := VAddrBase + 8 + (Imm24 Shl 2);
+  If ((Instr Shr 24) And 1) = 1 Then Mnemonic := 'bl' + CondTxt
+  Else Mnemonic := 'b' + CondTxt;
+  Operands := '0x' + ToHexU(Target);
+ End
+
+ { ----- SVC / SWI ----- }
+ Else If ((Instr Shr 24) And 15) = 15 Then Begin
+  ImmVal := Instr And $00FFFFFF;
+  Mnemonic := 'svc' + CondTxt;
+  Operands := '#0x' + ToHexU(ImmVal);
+ End
+
+ { ----- Chargement/rangement multiple (LDM/STM, alias push/pop) ----- }
+ Else If ((Instr Shr 25) And 7) = 4 Then Begin
+  PBit := (Instr Shr 24) And 1;
+  UBit := (Instr Shr 23) And 1;
+  WBit := (Instr Shr 21) And 1;
+  LBit := (Instr Shr 20) And 1;
+  Rn   := (Instr Shr 16) And 15;
+  { Alias courant : STMDB sp! (liste) = PUSH, LDMIA sp! (liste) = POP }
+  If (Rn = 13) And (WBit = 1) And (LBit = 0) And (PBit = 1) And (UBit = 0) Then
+   Mnemonic := 'push'
+  Else If (Rn = 13) And (WBit = 1) And (LBit = 1) And (PBit = 0) And
+          (UBit = 1) Then
+   Mnemonic := 'pop'
+  Else Begin
+   If LBit = 1 Then Mnemonic := 'ldm' Else Mnemonic := 'stm';
+   If UBit = 1 Then Begin
+    If PBit = 1 Then Mnemonic := Mnemonic + 'ib' Else Mnemonic := Mnemonic + 'ia';
+   End Else Begin
+    If PBit = 1 Then Mnemonic := Mnemonic + 'db' Else Mnemonic := Mnemonic + 'da';
+   End;
+  End;
+  Mnemonic := Mnemonic + CondTxt;
+  If (Mnemonic <> 'push' + CondTxt) And (Mnemonic <> 'pop' + CondTxt) Then Begin
+   Operands := RegArm(Rn);
+   If WBit = 1 Then Operands := Operands + '!';
+   Operands := Operands + ',';
+  End;
+  Operands := Operands + '{';
+  RegListTxt := '';
+  First := True;
+  For I := 0 To 15 Do
+   If ((Instr Shr I) And 1) = 1 Then Begin
+    If Not First Then RegListTxt := RegListTxt + ',';
+    RegListTxt := RegListTxt + RegArm(I);
+    First := False;
+   End;
+  Operands := Operands + RegListTxt + '}';
+ End
+
+ { ----- Chargement/rangement simple (LDR/STR/LDRB/STRB, decalage
+   immediat uniquement ; le decalage par registre n est pas couvert) ----- }
+ Else If ((Instr Shr 26) And 3) = 1 Then Begin
+  PBit := (Instr Shr 24) And 1;
+  UBit := (Instr Shr 23) And 1;
+  BBit := (Instr Shr 22) And 1;
+  WBit := (Instr Shr 21) And 1;
+  LBit := (Instr Shr 20) And 1;
+  Rn   := (Instr Shr 16) And 15;
+  Rd   := (Instr Shr 12) And 15;
+  If LBit = 1 Then Mnemonic := 'ldr' Else Mnemonic := 'str';
+  If BBit = 1 Then Mnemonic := Mnemonic + 'b';
+  Mnemonic := Mnemonic + CondTxt;
+  If ((Instr Shr 25) And 1) = 0 Then Begin
+   { decalage immediat (12 bits) }
+   OffsetImm := Instr And $FFF;
+   Operands := RegArm(Rd) + ',[' + RegArm(Rn);
+   If PBit = 1 Then Begin
+    If OffsetImm <> 0 Then Begin
+     If UBit = 1 Then Operands := Operands + ',#0x' + ToHexU(OffsetImm)
+     Else Operands := Operands + ',#-0x' + ToHexU(OffsetImm);
+    End;
+    Operands := Operands + ']';
+    If WBit = 1 Then Operands := Operands + '!';
+   End Else Begin
+    Operands := Operands + ']';
+    If OffsetImm <> 0 Then Begin
+     If UBit = 1 Then Operands := Operands + ',#0x' + ToHexU(OffsetImm)
+     Else Operands := Operands + ',#-0x' + ToHexU(OffsetImm);
+    End;
+   End;
+  End Else
+   Mnemonic := '(bad)'; { decalage par registre : non couvert }
+ End
+
+ { ----- Traitement de donnees (bits[27:26]=00) ----- }
+ Else If ((Instr Shr 26) And 3) = 0 Then Begin
+  IBit     := (Instr Shr 25) And 1;
+  OpcodeDP := (Instr Shr 21) And 15;
+  SBit     := (Instr Shr 20) And 1;
+  Rn       := (Instr Shr 16) And 15;
+  Rd       := (Instr Shr 12) And 15;
+  Mnemonic := DPNames[OpcodeDP];
+  If (SBit = 1) And (OpcodeDP < 8) Then Mnemonic := Mnemonic + 's';
+  Mnemonic := Mnemonic + CondTxt;
+  If IBit = 1 Then Begin
+   { operande 2 immediat : imm8 tourne de rotate*2 vers la droite }
+   RotateAmt := (Instr Shr 8) And 15;
+   ImmVal := Instr And 255;
+   If RotateAmt > 0 Then
+    ImmVal := (ImmVal Shr (RotateAmt * 2)) Or
+              (ImmVal Shl (32 - RotateAmt * 2));
+   Operand2Txt := '#0x' + ToHexU(ImmVal And LongInt($FFFFFFFF));
+  End Else Begin
+   { operande 2 registre, decalage immediat (le decalage par
+     registre, bit[4]=1, n est pas couvert : (bad)) }
+   If (Instr And 16) <> 0 Then Begin
+    Mnemonic := '(bad)';
+    Operand2Txt := '';
+   End Else Begin
+    Rm := Instr And 15;
+    ShiftType := (Instr Shr 5) And 3;
+    ShiftImm  := (Instr Shr 7) And 31;
+    Operand2Txt := RegArm(Rm);
+    If ShiftImm > 0 Then
+     Operand2Txt := Operand2Txt + ',' + ShiftNamesArm[ShiftType] +
+      ' #' + IntToStr(ShiftImm);
+   End;
+  End;
+  If Mnemonic <> '(bad)' Then Begin
+   If OpcodeDP In [8, 9, 10, 11] Then { TST/TEQ/CMP/CMN : pas de Rd }
+    Operands := RegArm(Rn) + ',' + Operand2Txt
+   Else If OpcodeDP In [13, 15] Then { MOV/MVN : pas de Rn }
+    Operands := RegArm(Rd) + ',' + Operand2Txt
+   Else
+    Operands := RegArm(Rd) + ',' + RegArm(Rn) + ',' + Operand2Txt;
+  End;
+ End;
+
+ DisasmArm32One := 4;
+End;
+
+{ ============================================================
+  DESASSEMBLEUR THUMB / THUMB-2 (sous-ensemble courant)
+  ============================================================ }
+
+{ @description: Desassemble une seule instruction Thumb a partir du
+    decalage Off. La plupart des instructions Thumb1 tiennent sur un
+    seul demi-mot (2 octets) ; BL/BLX (32 bits, formee d une paire de
+    demi-mots 11110xxxxxxxxxxx 11111xxxxxxxxxxx) est la seule
+    extension Thumb-2 couverte ici, car omniprésente meme dans du
+    code par ailleurs Thumb1. Couvre : decalage immediat (LSL/LSR/
+    ASR), addition/soustraction (registre et immediat court), MOV/
+    CMP/ADD/SUB immediat 8 bits, operations ALU registre a registre,
+    operations sur registres hauts et BX/BLX, chargement PC-relatif,
+    chargement/rangement immediat, push/pop, branchement conditionnel
+    et inconditionnel, BL, SVC, NOP. Ne couvre pas : chargement/
+    rangement par registre ou signe-etendu, LDM/STM generique,
+    relatif a SP, ADD SP, et le reste des instructions Thumb-2 32
+    bits (seul le cas BL/BLX est traite).
+  @param Off Decalage de l instruction dans le fichier
+  @param VAddrBase Adresse virtuelle correspondant a Off
+  @param Mnemonic Mnemonique de l instruction (sortie)
+  @param Operands Operandes formates (sortie)
+  @return Nombre d octets occupes (2, ou 4 pour BL/BLX 32 bits) }
+Function DisasmThumbOne(Off, VAddrBase: LongInt;
+ Var Mnemonic, Operands: String): Integer;
+Const
+ CondThumb: Array[0..15] Of String[3] = (
+  'eq', 'ne', 'cs', 'cc', 'mi', 'pl', 'vs', 'vc',
+  'hi', 'ls', 'ge', 'lt', 'gt', 'le', '', 'nv');
+Var
+ W, W2: Word;
+ Op, Rd, Rs, Rb, Rn: Byte;
+ IBit, SBit, BBit, LBit, HBit1, HBit2: Byte;
+ Offset5, Offset8, Offset11: LongInt;
+ Cond: Byte;
+ Target: LongInt;
+ RegListTxt: String;
+ First: Boolean;
+ I: Integer;
+Begin
+ W := GetWord(Off);
+ Mnemonic := '(bad)';
+ Operands := '';
+
+ { ----- format 19 : BL/BLX 32 bits (paire de demi-mots Thumb-2) ----- }
+ If ((W Shr 11) And 31) = 30 Then Begin
+  W2 := GetWord(Off + 2);
+  If ((W2 Shr 11) And 31) = 31 Then Begin
+   Offset11 := W And $7FF;
+   Target := (Offset11 Shl 12) Or ((W2 And $7FF) Shl 1);
+   If (Offset11 And $400) <> 0 Then Target := Target Or LongInt($FFC00000);
+   Mnemonic := 'bl';
+   Operands := '0x' + ToHexU(VAddrBase + 4 + Target);
+   DisasmThumbOne := 4;
+   Exit;
+  End;
+ End;
+
+ { ----- NOP (deux idiomes courants) ----- }
+ If (W = $46C0) Or (W = $BF00) Then
+  Mnemonic := 'nop'
+
+ { ----- format 18 : branchement inconditionnel ----- }
+ Else If ((W Shr 11) And 31) = 28 Then Begin
+  Offset11 := W And $7FF;
+  If (Offset11 And $400) <> 0 Then Offset11 := Offset11 Or LongInt($FFFFF800);
+  Mnemonic := 'b';
+  Operands := '0x' + ToHexU(VAddrBase + 4 + (Offset11 Shl 1));
+ End
+
+ { ----- format 16 : branchement conditionnel / SVC ----- }
+ Else If ((W Shr 12) And 15) = 13 Then Begin
+  Cond := (W Shr 8) And 15;
+  If Cond = 15 Then Begin
+   Mnemonic := 'svc';
+   Operands := '#0x' + ToHexU(W And 255);
+  End Else Begin
+   Offset8 := W And 255;
+   If (Offset8 And 128) <> 0 Then Offset8 := Offset8 Or LongInt($FFFFFF00);
+   Mnemonic := 'b' + CondThumb[Cond];
+   Operands := '0x' + ToHexU(VAddrBase + 4 + (Offset8 Shl 1));
+  End;
+ End
+
+ { ----- format 14 : push / pop ----- }
+ Else If ((W Shr 12) And 15) = 11 Then Begin
+  If ((W Shr 9) And 3) = 2 Then Begin
+   LBit  := (W Shr 11) And 1;
+   HBit1 := (W Shr 8) And 1; { bit R : inclut LR (push) ou PC (pop) }
+   If LBit = 0 Then Mnemonic := 'push' Else Mnemonic := 'pop';
+   RegListTxt := '';
+   First := True;
+   For I := 0 To 7 Do
+    If ((W Shr I) And 1) = 1 Then Begin
+     If Not First Then RegListTxt := RegListTxt + ',';
+     RegListTxt := RegListTxt + RegArm(I);
+     First := False;
+    End;
+   If HBit1 = 1 Then Begin
+    If Not First Then RegListTxt := RegListTxt + ',';
+    If LBit = 0 Then RegListTxt := RegListTxt + RegArm(14)
+    Else RegListTxt := RegListTxt + RegArm(15);
+   End;
+   Operands := '{' + RegListTxt + '}';
+  End;
+ End
+
+ { ----- format 6 : chargement PC-relatif ----- }
+ Else If ((W Shr 11) And 31) = 9 Then Begin
+  Rd := (W Shr 8) And 7;
+  Offset8 := (W And 255) * 4;
+  Mnemonic := 'ldr';
+  Operands := RegArm(Rd) + ',[' + RegArm(15) + ',#0x' + ToHexU(Offset8) + ']';
+ End
+
+ { ----- format 9 : chargement/rangement avec deplacement immediat ----- }
+ Else If ((W Shr 13) And 7) = 3 Then Begin
+  BBit := (W Shr 12) And 1;
+  LBit := (W Shr 11) And 1;
+  Offset5 := (W Shr 6) And 31;
+  Rb := (W Shr 3) And 7;
+  Rd := W And 7;
+  If LBit = 1 Then Mnemonic := 'ldr' Else Mnemonic := 'str';
+  If BBit = 1 Then Mnemonic := Mnemonic + 'b' Else Offset5 := Offset5 * 4;
+  Operands := RegArm(Rd) + ',[' + RegArm(Rb);
+  If Offset5 <> 0 Then Operands := Operands + ',#0x' + ToHexU(Offset5);
+  Operands := Operands + ']';
+ End
+
+ { ----- format 3 : MOV/CMP/ADD/SUB immediat ----- }
+ Else If ((W Shr 13) And 7) = 1 Then Begin
+  Op := (W Shr 11) And 3;
+  Rd := (W Shr 8) And 7;
+  Offset8 := W And 255;
+  Case Op Of
+   0: Mnemonic := 'mov'; 1: Mnemonic := 'cmp';
+   2: Mnemonic := 'add'; 3: Mnemonic := 'sub';
+  End;
+  Operands := RegArm(Rd) + ',#0x' + ToHexU(Offset8);
+ End
+
+ { ----- format 4 : operations ALU registre a registre ----- }
+ Else If ((W Shr 10) And 63) = 16 Then Begin
+  Op := (W Shr 6) And 15;
+  Rs := (W Shr 3) And 7;
+  Rd := W And 7;
+  Case Op Of
+   0: Mnemonic := 'and'; 1: Mnemonic := 'eor'; 2: Mnemonic := 'lsl';
+   3: Mnemonic := 'lsr'; 4: Mnemonic := 'asr'; 5: Mnemonic := 'adc';
+   6: Mnemonic := 'sbc'; 7: Mnemonic := 'ror'; 8: Mnemonic := 'tst';
+   9: Mnemonic := 'neg'; 10: Mnemonic := 'cmp'; 11: Mnemonic := 'cmn';
+   12: Mnemonic := 'orr'; 13: Mnemonic := 'mul'; 14: Mnemonic := 'bic';
+   15: Mnemonic := 'mvn';
+  End;
+  Operands := RegArm(Rd) + ',' + RegArm(Rs);
+ End
+
+ { ----- format 5 : operations registres hauts / BX/BLX ----- }
+ Else If ((W Shr 10) And 63) = 17 Then Begin
+  Op := (W Shr 8) And 3;
+  HBit1 := (W Shr 7) And 1;
+  HBit2 := (W Shr 6) And 1;
+  Rs := ((W Shr 3) And 7) Or (HBit2 Shl 3);
+  Rd := (W And 7) Or (HBit1 Shl 3);
+  Case Op Of
+   0: Begin Mnemonic := 'add'; Operands := RegArm(Rd) + ',' + RegArm(Rs); End;
+   1: Begin Mnemonic := 'cmp'; Operands := RegArm(Rd) + ',' + RegArm(Rs); End;
+   2: Begin Mnemonic := 'mov'; Operands := RegArm(Rd) + ',' + RegArm(Rs); End;
+   3: Begin
+       If HBit1 = 0 Then Mnemonic := 'bx' Else Mnemonic := 'blx';
+       Operands := RegArm(Rs);
+      End;
+  End;
+ End
+
+ { ----- format 1/2 : decalage immediat, ou addition/soustraction ----- }
+ Else If ((W Shr 13) And 7) = 0 Then Begin
+  Op := (W Shr 11) And 3;
+  If Op = 3 Then Begin
+   IBit := (W Shr 10) And 1;
+   SBit := (W Shr 9) And 1;
+   Rn := (W Shr 6) And 7;
+   Rs := (W Shr 3) And 7;
+   Rd := W And 7;
+   If SBit = 0 Then Mnemonic := 'add' Else Mnemonic := 'sub';
+   If IBit = 0 Then
+    Operands := RegArm(Rd) + ',' + RegArm(Rs) + ',' + RegArm(Rn)
+   Else
+    Operands := RegArm(Rd) + ',' + RegArm(Rs) + ',#0x' + ToHexU(Rn);
+  End Else Begin
+   Offset5 := (W Shr 6) And 31;
+   Rs := (W Shr 3) And 7;
+   Rd := W And 7;
+   Case Op Of
+    0: Mnemonic := 'lsl'; 1: Mnemonic := 'lsr'; 2: Mnemonic := 'asr';
+   End;
+   Operands := RegArm(Rd) + ',' + RegArm(Rs) + ',#0x' + ToHexU(Offset5);
+  End;
+ End;
+
+ DisasmThumbOne := 2;
+End;
+
+{ ============================================================
   DESASSEMBLEUR 8086/80186 16 BITS (syntaxe Intel/MASM)
   ============================================================ }
 
@@ -2663,15 +3384,6 @@ End;
   ============================================================ }
 
 { @description: Convertit un entier en chaine decimale.
-  @param N Valeur a convertir
-  @return Representation decimale de N }
-Function IntToStr(N: LongInt): String;
-Var
- S: String;
-Begin
- Str(N, S);
- IntToStr := S;
-End;
 
 { @description: Nom du format binaire detecte, pour l affichage
     d entete (style "objdump").
@@ -2688,10 +3400,12 @@ Begin
   FMT_MZ:    FormatName := 'mz-dos (8086)';
   FMT_MACHO32: Begin
    If MachOCpuType = CPU_TYPE_X86 Then FormatName := 'mach-o-i386'
+   Else If MachOCpuType = CPU_TYPE_ARM Then FormatName := 'mach-o-arm'
    Else FormatName := 'mach-o-32 (cputype 0x' + ToHexU(MachOCpuType) + ')';
   End;
   FMT_MACHO64: Begin
    If MachOCpuType = CPU_TYPE_X86_64 Then FormatName := 'mach-o-x86-64'
+   Else If MachOCpuType = CPU_TYPE_ARM64 Then FormatName := 'mach-o-arm64'
    Else FormatName := 'mach-o-64 (cputype 0x' + ToHexU(MachOCpuType) + ')';
   End;
  Else
@@ -2752,7 +3466,8 @@ Var
  Mnemonic, Operands, BytesTxt, Lbl: String;
 Begin
  If (Arch = ARCH_6502) Or (Arch = ARCH_8086) Then AddrDigits := 4
- Else If Arch = ARCH_X64 Then AddrDigits := 16
+ Else If (Arch = ARCH_X64) Or (Arch = ARCH_ARM64) Then AddrDigits := 16
+ Else If (Arch = ARCH_ARM32) Or (Arch = ARCH_THUMB) Then AddrDigits := 8
  Else AddrDigits := 6;
  WriteLn;
  WriteLn(InFileName, ':     format ', FormatName);
@@ -2775,6 +3490,12 @@ Begin
     InstrLen := Disasm8086One(Off, VAddr, Mnemonic, Operands)
    Else If Arch = ARCH_X64 Then
     InstrLen := Disasm64One(Off, VAddr, Mnemonic, Operands)
+   Else If Arch = ARCH_ARM64 Then
+    InstrLen := DisasmArm64One(Off, VAddr, Mnemonic, Operands)
+   Else If Arch = ARCH_ARM32 Then
+    InstrLen := DisasmArm32One(Off, VAddr, Mnemonic, Operands)
+   Else If Arch = ARCH_THUMB Then
+    InstrLen := DisasmThumbOne(Off, VAddr, Mnemonic, Operands)
    Else
     InstrLen := DisasmOne(Off, VAddr, Mnemonic, Operands);
    BytesTxt := '';
@@ -2835,19 +3556,22 @@ Begin
  WriteLn('  -t       Affiche la table des symboles');
  WriteLn('  -S       Melange source/assembleur (non supporte)');
  WriteLn('  -m arch  Force l''architecture de desassemblage :');
- WriteLn('           i386 (defaut), x86-64, 8086 ou 6502');
+ WriteLn('           i386 (defaut), x86-64, 8086, 6502, arm, thumb');
+ WriteLn('           ou arm64');
  WriteLn('  -b adr   Adresse de chargement (hexa) pour un binaire');
  WriteLn('           brut sans entete, ex: -b 8000 ou -b $8000');
  WriteLn('  -?       Aide sur cette commande');
  WriteLn;
  WriteLn('Formats supportes : ELF32/ELF64 (Linux), PE32/PE32+ (Windows),');
+ WriteLn('Mach-O 32/64 bits (macOS, dont binaires universels "fat"),');
  WriteLn('EXE DOS reel (entete MZ), ROM NES (entete iNES), binaire');
- WriteLn('brut (avec -m). ELF64/PE64 desassembles en x86-64 par defaut.');
- WriteLn('Desassemblage : x86 32 bits ou x86-64 (prefixes REX, RIP-');
- WriteLn('relatif, registres etendus R8-R15), syntaxe AT&T comme');
- WriteLn('objdump ; 8086/80186 16 bits, syntaxe Intel/MASM ; ou 6502');
- WriteLn('complet (151 opcodes documentes). Pas de SSE/AVX, pas');
- WriteLn('d''opcodes etendus 0F pour le 8086.');
+ WriteLn('brut (avec -m). L''architecture est choisie automatiquement');
+ WriteLn('a partir de e_machine (ELF), Machine (PE) ou cputype (Mach-O).');
+ WriteLn('Desassemblage : x86 32 bits / x86-64 (syntaxe AT&T, comme');
+ WriteLn('objdump) ; 8086/80186 16 bits (syntaxe Intel/MASM) ; 6502');
+ WriteLn('complet (151 opcodes) ; ARM 32 bits classique, Thumb/Thumb-2');
+ WriteLn('(sous-ensemble) et AArch64 (sous-ensemble). Pas de SSE/AVX/');
+ WriteLn('NEON/VFP, pas d''opcodes etendus 0F pour le 8086.');
 End;
 
 Var
@@ -2881,7 +3605,8 @@ Begin
   Else If Arg = '-m' Then Begin
    Inc(I);
    If I > ParamCount Then Begin
-    WriteLn('Erreur : -m necessite une architecture (i386, x86-64, 8086 ou 6502).');
+    WriteLn('Erreur : -m necessite une architecture (i386, x86-64, 8086, ',
+     '6502, arm, thumb ou arm64).');
     Halt(1);
    End;
    If UpStr(ParamStr(I)) = '6502' Then Arch := ARCH_6502
@@ -2892,6 +3617,11 @@ Begin
            (UpStr(ParamStr(I)) = 'X86_64') Or
            (UpStr(ParamStr(I)) = 'AMD64') Then Arch := ARCH_X64
    Else If UpStr(ParamStr(I)) = 'I386' Then Arch := ARCH_X86
+   Else If (UpStr(ParamStr(I)) = 'ARM64') Or
+           (UpStr(ParamStr(I)) = 'AARCH64') Then Arch := ARCH_ARM64
+   Else If (UpStr(ParamStr(I)) = 'ARM') Or
+           (UpStr(ParamStr(I)) = 'ARM32') Then Arch := ARCH_ARM32
+   Else If UpStr(ParamStr(I)) = 'THUMB' Then Arch := ARCH_THUMB
    Else Begin
     WriteLn('Architecture inconnue pour -m : ', ParamStr(I));
     Halt(1);
@@ -2931,17 +3661,28 @@ Begin
   If Not ArchForced Then Arch := ARCH_8086; { detection automatique }
  End Else If (BinFormat = FMT_ELF32) Or (BinFormat = FMT_ELF64) Then Begin
   ParseELF;
-  { Les binaires ELF64 sont presque toujours x86-64 en pratique (ce
-    desassembleur ne lit pas e_machine pour le confirmer precisement) }
-  If (BinFormat = FMT_ELF64) And (Not ArchForced) Then Arch := ARCH_X64;
+  If Not ArchForced Then Begin
+   If ElfMachine = EM_AARCH64 Then Arch := ARCH_ARM64
+   Else If ElfMachine = EM_ARM Then Arch := ARCH_ARM32
+   Else If BinFormat = FMT_ELF64 Then Arch := ARCH_X64;
+   { ELF32 sans e_machine ARM reconnu : on laisse ARCH_X86 par defaut,
+     comme avant la prise en charge d e_machine. }
+  End;
  End Else If (BinFormat = FMT_PE32) Or (BinFormat = FMT_PE64) Then Begin
   ParsePE;
-  If (BinFormat = FMT_PE64) And (Not ArchForced) Then Arch := ARCH_X64;
+  If Not ArchForced Then Begin
+   If PEMachine = PE_MACHINE_ARM64 Then Arch := ARCH_ARM64
+   Else If PEMachine = PE_MACHINE_ARMNT Then Arch := ARCH_THUMB
+   Else If PEMachine = PE_MACHINE_ARM Then Arch := ARCH_ARM32
+   Else If BinFormat = FMT_PE64 Then Arch := ARCH_X64;
+  End;
  End Else If (BinFormat = FMT_MACHO32) Or (BinFormat = FMT_MACHO64) Then Begin
   ParseMachO;
   If Not ArchForced Then Begin
    If MachOCpuType = CPU_TYPE_X86_64 Then Arch := ARCH_X64
    Else If MachOCpuType = CPU_TYPE_X86 Then Arch := ARCH_X86
+   Else If MachOCpuType = CPU_TYPE_ARM64 Then Arch := ARCH_ARM64
+   Else If MachOCpuType = CPU_TYPE_ARM Then Arch := ARCH_ARM32
    Else If OptDisasm Then
     WriteLn('Avertissement : architecture Mach-O (cputype 0x',
      ToHexU(MachOCpuType), ') non prise en charge par le ',
