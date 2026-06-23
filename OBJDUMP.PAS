@@ -91,6 +91,7 @@ Const
  ARCH_SHLE  = 17;        { SuperH little-endian                        }
  ARCH_IA64  = 18;        { Intel Itanium IA-64 little-endian           }
  ARCH_IA64BE = 19;       { Intel Itanium IA-64 big-endian              }
+ ARCH_PCODE = 20;        { p-Code UCSD p-System II.0/II.1              }
 
  { ----- Modes d adressage 6800 ----- }
  AM68_INH   = 0;         { inherent : aucun operande                   }
@@ -5981,6 +5982,164 @@ Begin
 End;
 
 { ============================================================
+  DESASSEMBLEUR p-CODE UCSD p-SYSTEM II.0 / II.1
+  ============================================================ }
+
+{ @description: Lit un operande BIG du p-Code UCSD. Les valeurs
+    inferieures a 128 occupent un octet ; les autres utilisent 14 bits
+    sur deux octets en ordre gros-boutiste. }
+Function PCodeReadBig(Off: LongInt; Var Used: Integer): LongInt;
+Var
+ B1, B2: Byte;
+Begin
+ B1 := GetByte(Off);
+ If B1 < 128 Then Begin
+  Used := 1;
+  PCodeReadBig := B1;
+ End Else Begin
+  B2 := GetByte(Off + 1);
+  Used := 2;
+  PCodeReadBig := LongInt(B1 And $7F) * 256 + B2;
+ End;
+End;
+
+{ @description: Desassemble une instruction du p-Code UCSD p-System.
+    La table et les formats d operandes sont partages conceptuellement
+    avec DISPCODE.PAS : SLDC, UB/SB, WORD, BIG, niveaux lexicaux,
+    chaines LSA, constantes LDC et appels CSP. }
+Function DisasmPCodeOne(Off, VAddrBase: LongInt;
+ Var Mnemonic, Operands: String): Integer;
+Const
+ OPK_NONE  = 0; OPK_UB = 1; OPK_SB = 2; OPK_W = 3; OPK_BIG = 4;
+ OPK_UBUB  = 5; OPK_UBBIG = 6; OPK_DBBIG = 7; OPK_LSA = 8;
+ OPK_LDC   = 9; OPK_XJP = 10;
+ Mnem128: Array[128..255] Of String[6] = (
+  'ABI','ABR','ADI','ADR','LAND','DIF','DVI','DVR',
+  'CHK','FLO','FLT','INN','INT','IOR','MODI','MPI',
+  'MPR','NGI','NGR','LNOT','SRS','SBI','SBR','SGS',
+  'SQI','SQR','STO','IXS','UNI','LDE','CSP','LDCN',
+  'ADJ','FJP','INC','IND','IXA','LAO','LSA','LAE',
+  'MOV','LDO','SAS','SRO','XJP','RNP','CIP','EQU',
+  'GEQ','GRT','LDA','LDC','LEQ','LES','LOD','NEQ',
+  'STR','UJP','LDP','STP','LDM','STM','LDB','STB',
+  'IXP','RBP','CBP','EQUI','GEQI','GRTI','LLA','LDCI',
+  'LEQI','LESI','LDL','NEQI','STL','CXP','CLP','CGP',
+  'LPA','STE','???','EFJ','NFJ','BPT','XIT','NOP',
+  'SLDL1','SLDL2','SLDL3','SLDL4','SLDL5','SLDL6','SLDL7','SLDL8',
+  'SLDL9','SLDL10','SLDL11','SLDL12','SLDL13','SLDL14','SLDL15','SLDL16',
+  'SLDO1','SLDO2','SLDO3','SLDO4','SLDO5','SLDO6','SLDO7','SLDO8',
+  'SLDO9','SLDO10','SLDO11','SLDO12','SLDO13','SLDO14','SLDO15','SLDO16',
+  'SIND0','SIND1','SIND2','SIND3','SIND4','SIND5','SIND6','SIND7');
+ Kind128: Array[128..255] Of Byte = (
+  0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0, 0,0,0,0,0,6,1,0,
+  1,2,4,4,4,4,8,6, 4,4,1,4,10,1,1,1,
+  1,1,7,9,1,1,7,1, 7,2,0,0,1,1,0,0,
+  5,1,1,0,0,0,4,3, 0,0,4,0,4,5,1,1,
+  5,6,0,2,2,0,0,0, 0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0);
+ CSPName: Array[0..37] Of String[6] = (
+  'IOC','NEW','MVL','MVR','EXIT','UREAD','UWRITE','IDS',
+  'TRS','TIM','FLC','SCN','USTAT','???','???','???',
+  'LDSEG','ULSEG','TRC','RND','SIN','COS','TAN','ATAN',
+  'LN','EXP','SQT','MARK','RLS','IOR','UBUSY','POT',
+  'UWAIT','CHN','INN','OUT','ATT','IORSLT');
+Var
+ Op, Kind, B, B2, Lo, Hi: Byte;
+ Used, I, N, Size: Integer;
+ W, Target: LongInt;
+ S: String;
+ C: Char;
+Begin
+ Op := GetByte(Off);
+ Operands := '';
+ If Op < 128 Then Begin
+  Mnemonic := 'SLDC';
+  Operands := IntToStr(Op);
+  DisasmPCodeOne := 1;
+  Exit;
+ End;
+
+ Mnemonic := Mnem128[Op];
+ Kind := Kind128[Op];
+ Size := 1;
+ Case Kind Of
+  OPK_NONE: ;
+  OPK_UB: Begin
+   B := GetByte(Off + 1);
+   Operands := IntToStr(B);
+   Size := 2;
+   If Op = 158 Then Begin
+    If B <= 37 Then Operands := Operands + ' ; ' + CSPName[B]
+    Else Operands := Operands + ' ; CSP#' + IntToStr(B);
+   End;
+  End;
+  OPK_SB: Begin
+   B := GetByte(Off + 1);
+   If B < 128 Then W := B Else W := Integer(B) - 256;
+   Target := VAddrBase + 2 + W;
+   Operands := IntToStr(W) + ' ; -> 0x' + ToHexFixed(Target, 6);
+   Size := 2;
+  End;
+  OPK_W: Begin
+   Lo := GetByte(Off + 1);
+   Hi := GetByte(Off + 2);
+   W := LongInt(Hi) * 256 + Lo;
+   If W >= 32768 Then W := W - 65536;
+   Operands := IntToStr(W);
+   Size := 3;
+  End;
+  OPK_BIG: Begin
+   W := PCodeReadBig(Off + 1, Used);
+   Operands := IntToStr(W);
+   Size := 1 + Used;
+  End;
+  OPK_UBUB: Begin
+   B := GetByte(Off + 1); B2 := GetByte(Off + 2);
+   Operands := IntToStr(B) + ',' + IntToStr(B2);
+   Size := 3;
+  End;
+  OPK_UBBIG: Begin
+   B := GetByte(Off + 1);
+   W := PCodeReadBig(Off + 2, Used);
+   Operands := IntToStr(B) + ',' + IntToStr(W);
+   Size := 2 + Used;
+  End;
+  OPK_DBBIG: Begin
+   B := GetByte(Off + 1);
+   W := PCodeReadBig(Off + 2, Used);
+   Operands := 'L' + IntToStr(B) + ',' + IntToStr(W);
+   Size := 2 + Used;
+  End;
+  OPK_LSA: Begin
+   B := GetByte(Off + 1);
+   N := B;
+   S := '';
+   For I := 0 To N - 1 Do Begin
+    B2 := GetByte(Off + 2 + I);
+    If (B2 >= 32) And (B2 < 127) Then C := Chr(B2) Else C := '.';
+    S := S + C;
+   End;
+   Operands := IntToStr(B) + ',"' + S + '"';
+   Size := 2 + N;
+  End;
+  OPK_LDC: Begin
+   B := GetByte(Off + 1);
+   Operands := IntToStr(B);
+   For I := 0 To B - 1 Do Begin
+    Lo := GetByte(Off + 2 + I * 2);
+    Hi := GetByte(Off + 3 + I * 2);
+    Operands := Operands + ',$' + ToHexFixed(LongInt(Hi) * 256 + Lo, 4);
+   End;
+   Size := 2 + B * 2;
+  End;
+  OPK_XJP: Operands := '(table de cas)';
+ End;
+ DisasmPCodeOne := Size;
+End;
+
+{ ============================================================
   RECHERCHE DE SYMBOLE / SECTION POUR L AFFICHAGE
   ============================================================ }
 
@@ -6028,6 +6187,10 @@ End;
   @return Nom du format (ex: "elf32-i386", "pei-i386") }
 Function FormatName: String;
 Begin
+ If Arch = ARCH_PCODE Then Begin
+  FormatName := 'ucsd-pcode';
+  Exit;
+ End;
  If ((Arch = ARCH_IA64) Or (Arch = ARCH_IA64BE)) And
     (BinFormat = FMT_ELF64) Then Begin
   If Arch = ARCH_IA64BE Then FormatName := 'elf64-ia64-big'
@@ -6207,7 +6370,9 @@ Begin
    Else If (Arch = ARCH_SH) Or (Arch = ARCH_SHLE) Then
    InstrLen := DisasmShOne(Off, VAddr, Mnemonic, Operands)
    Else If (Arch = ARCH_IA64) Or (Arch = ARCH_IA64BE) Then
-    InstrLen := DisasmIa64One(Off, VAddr, Mnemonic, Operands)
+   InstrLen := DisasmIa64One(Off, VAddr, Mnemonic, Operands)
+   Else If Arch = ARCH_PCODE Then
+    InstrLen := DisasmPCodeOne(Off, VAddr, Mnemonic, Operands)
    Else
     InstrLen := DisasmOne(Off, VAddr, Mnemonic, Operands);
    BytesTxt := '';
@@ -6271,7 +6436,7 @@ Procedure Help;Begin
  WriteLn('  -m arch  Force l''architecture de desassemblage :');
  WriteLn('           i386 (defaut), x86-64, 8086, 8080, 6502, z80, 6800,');
  WriteLn('           68000, sparc, sparcv9, mips, mipsel, ppc, ppcle,');
- WriteLn('           sh, shle, ia64, arm, thumb');
+ WriteLn('           sh, shle, ia64, pcode, arm, thumb');
  WriteLn('           ou arm64');
  WriteLn('  -b adr   Adresse de chargement (hexa) pour un binaire');
  WriteLn('           brut sans entete, ex: -b 8000 ou -b $8000');
@@ -6293,7 +6458,7 @@ Procedure Help;Begin
  WriteLn('SPARC V8/V8+ avec le noyau entier commun SPARC V9 ; MIPS');
  WriteLn('I/II et MIPS32 ; PowerPC 32 et noyau entier PowerPC 64,');
  WriteLn('gros-boutiste ou little-endian ; SuperH SH-1/SH-2/SH-3/SH-4 ;');
- WriteLn('IA-64 structurel (paquets, templates, slots et predicats).');
+ WriteLn('IA-64 structurel ; p-Code UCSD p-System II.0/II.1.');
  WriteLn('Pas de SSE/AVX/NEON/VFP, pas d''opcodes etendus 0F pour le');
  WriteLn('8086, pas de DDCB/FDCB pour le Z80.');
 End;
@@ -6330,7 +6495,7 @@ BEGIN
    Inc(I);
    If I > ParamCount Then Begin
     WriteLn('Erreur : -m necessite une architecture (i386, x86-64, 8086, ',
-     '8080, 6502, z80, 6800, 68000, sparc, mips, ppc, sh, ia64, arm ou arm64).');
+     '8080, 6502, z80, 6800, 68000, sparc, mips, ppc, sh, ia64, pcode ou arm).');
     Halt(1);
    End;
    If UpStr(ParamStr(I)) = '6502' Then Arch := ARCH_6502
@@ -6390,6 +6555,10 @@ BEGIN
            (UpStr(ParamStr(I)) = 'ITANIUM') Then Arch := ARCH_IA64
    Else If (UpStr(ParamStr(I)) = 'IA64BE') Or
            (UpStr(ParamStr(I)) = 'ITANIUMBE') Then Arch := ARCH_IA64BE
+   Else If (UpStr(ParamStr(I)) = 'PCODE') Or
+           (UpStr(ParamStr(I)) = 'P-CODE') Or
+           (UpStr(ParamStr(I)) = 'UCSD') Or
+           (UpStr(ParamStr(I)) = 'UCSDPCODE') Then Arch := ARCH_PCODE
    Else Begin
     WriteLn('Architecture inconnue pour -m : ', ParamStr(I));
     Halt(1);
