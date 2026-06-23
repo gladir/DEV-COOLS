@@ -9,8 +9,9 @@
     pour les instructions courantes.
 
     Portee assumee (voir discussion avec l utilisateur) :
-    - Formats : ELF et PE (32 et 64 bits), EXE DOS MZ, ROM NES, et
-      binaire brut (avec -m/-b).
+    - Formats : ELF et PE (32 et 64 bits), EXE DOS MZ, ROM NES,
+      fichier objet COFF brut (.o/.obj), bibliotheque statique "ar"
+      (.a, traitee membre par membre), et binaire brut (avec -m/-b).
     - Desassemblage (-d) : jeu d instructions courant de chaque
       architecture (mov, push/pop, arithmetique, branchements, etc.),
       pas une couverture exhaustive (pas de SSE/AVX).
@@ -36,8 +37,11 @@ Program OBJDUMP;
 {$R-}
 
 Const
- MaxSections = 256;       { nombre maximal de sections gerees }
+ MaxSections = 4096;      { nombre maximal de sections gerees (les .o
+                             FPC en "smart-linking" ont une section par
+                             routine : plusieurs centaines, voire plus) }
  MaxSymbols  = 16384;     { nombre maximal de symboles geres }
+ MaxArchiveMembers = 2048; { nombre maximal de membres geres dans un .a }
 
  { ----- Formats binaires reconnus ----- }
  FMT_UNKNOWN = 0;
@@ -52,6 +56,9 @@ Const
  FMT_MACHO64 = 9;        { Mach-O 64 bits (macOS), natif little-endian }
  FMT_CLASS   = 10;       { fichier Java .class (bytecode JVM/Jasmin)   }
  FMT_LLVMBC  = 11;       { LLVM IR bitcode (brut ou wrapper)           }
+ FMT_COFFOBJ = 12;       { fichier objet COFF brut (.o/.obj), sans MZ/PE}
+ FMT_ARCHIVE = 13;       { bibliotheque statique "ar" (.a), entete     }
+                          { "!<arch>\n" : traite par membre (-h/-t/-d) }
 
  { ----- Mach-O : valeurs magiques et types de commande utiles -----
    Les constantes dont le bit de poids fort est positionne doivent
@@ -172,6 +179,15 @@ Type
   IsFunc    : Boolean;      { vrai si le symbole designe une fonction}
  End;
 
+ { Un membre d une bibliotheque "ar" (.a) : nom resolu (table des
+   noms longs GNU deja appliquee) et plage d octets dans le fichier
+   archive, traitee ensuite comme un mini-fichier independant. }
+ TArchiveMember = Record
+  Name     : String[200];
+  DataOff  : LongInt;
+  DataSize : LongInt;
+ End;
+
  { Tableau d octets de taille ouverte, accede via un pointeur ; les
    bornes statiques ([0..0]) n empechent pas l indexation au-dela
    tant que la verification de portee est desactivee (directive R
@@ -190,6 +206,8 @@ Var
  SectionCount : Integer;
  Symbols      : Array[1..MaxSymbols] Of TSymbol;
  SymbolCount  : Integer;
+ ArchiveMembers     : Array[1..MaxArchiveMembers] Of TArchiveMember;
+ ArchiveMemberCount : Integer;
  OptHeaders   : Boolean;          { -h }
  OptSymbols   : Boolean;          { -t }
  OptDisasm    : Boolean;          { -d }
@@ -519,10 +537,18 @@ Var
  Magic, NArch, I, ArchOff, ArchCpu: LongInt;
  ChosenOff: LongInt;
  Found: Boolean;
+ CoffMachine, CoffNSec, CoffSizeOpt: Integer;
 Begin
  BinFormat := FMT_UNKNOWN;
  MachOBase := 0;
  If BufSize < 4 Then Exit;
+ If (BufSize >= 8) And (GetByte(0) = Ord('!')) And (GetByte(1) = Ord('<')) And
+    (GetByte(2) = Ord('a')) And (GetByte(3) = Ord('r')) And
+    (GetByte(4) = Ord('c')) And (GetByte(5) = Ord('h')) And
+    (GetByte(6) = Ord('>')) And (GetByte(7) = 10) Then Begin
+  BinFormat := FMT_ARCHIVE;
+  Exit;
+ End;
  If (GetByte(0) = $7F) And (GetByte(1) = Ord('E')) And
     (GetByte(2) = Ord('L')) And (GetByte(3) = Ord('F')) Then Begin
   If GetByte(4) = 2 Then BinFormat := FMT_ELF64
@@ -611,6 +637,26 @@ Begin
  End Else If GetDWordBE(0) = FAT_CIGAM Then Begin
   WriteLn('Erreur : binaire universel gros-boutiste non supporte.');
   Halt(1);
+ End;
+ { Fichier objet COFF brut (.o/.obj) : aucune signature propre (a la
+   difference de MZ/ELF/Mach-O), mais l entete IMAGE_FILE_HEADER (20
+   octets) a une forme reconnaissable : Machine parmi un jeu connu,
+   et surtout SizeOfOptionalHeader nul (un fichier objet n a jamais
+   d en-tete optionnel, a la difference d un PE). Heuristique testee
+   contre des .o reels produits par cette chaine FPC. }
+ If BufSize >= 20 Then Begin
+  CoffMachine := GetWord(0);
+  CoffNSec := GetWord(2);
+  CoffSizeOpt := GetWord(16);
+  If ((CoffMachine = $14C) Or (CoffMachine = $8664) Or
+      (CoffMachine = $1C0) Or (CoffMachine = $1C4) Or
+      (CoffMachine = $AA64) Or (CoffMachine = $166) Or
+      (CoffMachine = $1F0) Or (CoffMachine = $1F1) Or
+      (CoffMachine = $200)) And
+     (CoffNSec > 0) And (CoffNSec <= 8192) And (CoffSizeOpt = 0) Then Begin
+   BinFormat := FMT_COFFOBJ;
+   Exit;
+  End;
  End;
 End;
 
@@ -777,7 +823,8 @@ Begin
  SymbolCount := 0;
  If (SymTabOff > 0) And (NumSyms > 0) Then Begin
   StrTabOff := SymTabOff + NumSyms * 18;
-  For I := 0 To NumSyms - 1 Do Begin
+  I := 0;
+  While I < NumSyms Do Begin
    If SymbolCount >= MaxSymbols Then Break;
    Base := SymTabOff + I * 18;
    ZeroLead := (GetDWord(Base) = 0);
@@ -798,7 +845,193 @@ Begin
     Symbols[SymbolCount].SecIdx := GetWord(Base + 12);
     Symbols[SymbolCount].IsFunc := True; { COFF ne distingue pas finement ici }
    End;
+   { Entrees auxiliaires : voir le commentaire equivalent dans
+     ParseCoffObj. }
+   I := I + 1 + GetByte(Base + 17);
   End;
+ End;
+End;
+
+{ ============================================================
+  ANALYSE D UN FICHIER OBJET COFF BRUT (.o/.obj, sans MZ/PE)
+  ============================================================
+  Identique a un PE du point de vue de l entete COFF et de la table
+  de symboles (memes structures, voir ParsePE), mais sans enveloppe
+  MZ/PE ni en-tete optionnel : l entete IMAGE_FILE_HEADER (20
+  octets) est directement au debut du fichier, et SizeOfOptionalHeader
+  y est habituellement nul. Pas d ImageBase (fichier non relogeable
+  : les adresses de section restent celles, generalement nulles,
+  ecrites par le compilateur/assembleur). Valide contre des .o reels
+  produits par cette meme chaine FPC (ex: COMMENT.o, 1177 sections
+  en "smart linking"). }
+Procedure ParseCoffObj;
+Var
+ SecOff: LongInt;
+ NumSections, SizeOptHdr: Integer;
+ I, J: Integer;
+ Base: LongInt;
+ RawName: String;
+ SymTabOff, NumSyms, StrTabOff: LongInt;
+ SName: String;
+ ZeroLead: Boolean;
+ StrOffInTab: LongInt;
+ NameIdx: LongInt;
+ Code: Integer;
+Begin
+ PEMachine   := GetWord(0);
+ NumSections := GetWord(2);
+ SymTabOff   := GetDWord(8);
+ NumSyms     := GetDWord(12);
+ SizeOptHdr  := GetWord(16);
+ ImageBase   := 0;
+ EntryPoint  := 0;
+ SecOff := 20 + SizeOptHdr;
+ { La table de chaines COFF (noms de section/symbole de plus de 8
+   caracteres, references par "/N") suit immediatement la table des
+   symboles ; ses 4 premiers octets sont sa propre taille totale, et
+   les chaines elles-memes (terminees par un octet nul) commencent
+   donc a son decalage de base + l index N lu dans le champ. }
+ StrTabOff := SymTabOff + NumSyms * 18;
+ If NumSections > MaxSections Then NumSections := MaxSections;
+ SectionCount := 0;
+ For I := 0 To NumSections - 1 Do Begin
+  Base := SecOff + I * 40;
+  RawName := '';
+  For J := 0 To 7 Do Begin
+   If GetByte(Base + J) = 0 Then Break;
+   RawName := RawName + Chr(GetByte(Base + J));
+  End;
+  If (Length(RawName) > 0) And (RawName[1] = '/') And (StrTabOff > 0) Then Begin
+   Val(Copy(RawName, 2, Length(RawName) - 1), NameIdx, Code);
+   If Code = 0 Then RawName := GetCStr(StrTabOff + NameIdx, 63);
+  End;
+  Inc(SectionCount);
+  Sections[SectionCount].Name    := RawName;
+  Sections[SectionCount].VAddr   := GetDWord(Base + 12);
+  Sections[SectionCount].FileOff := GetDWord(Base + 20);
+  Sections[SectionCount].Size    := GetDWord(Base + 16); { SizeOfRawData :
+   VirtualSize (Base+8) vaut generalement 0 dans un objet non reloge }
+  Sections[SectionCount].IsCode  := (GetDWord(Base + 36) And $20000000) <> 0;
+ End;
+ SymbolCount := 0;
+ If (SymTabOff > 0) And (NumSyms > 0) Then Begin
+  I := 0;
+  While I < NumSyms Do Begin
+   If SymbolCount >= MaxSymbols Then Break;
+   Base := SymTabOff + I * 18;
+   ZeroLead := (GetDWord(Base) = 0);
+   If ZeroLead Then Begin
+    StrOffInTab := GetDWord(Base + 4);
+    SName := GetCStr(StrTabOff + StrOffInTab, 63);
+   End Else Begin
+    SName := '';
+    For J := 0 To 7 Do Begin
+     If GetByte(Base + J) = 0 Then Break;
+     SName := SName + Chr(GetByte(Base + J));
+    End;
+   End;
+   If SName <> '' Then Begin
+    Inc(SymbolCount);
+    Symbols[SymbolCount].Name   := SName;
+    Symbols[SymbolCount].Value  := GetDWord(Base + 8);
+    Symbols[SymbolCount].SecIdx := GetWord(Base + 12);
+    Symbols[SymbolCount].IsFunc := True;
+   End;
+   { Les entrees auxiliaires (ex: nom de fichier complet apres un
+     symbole ".file", informations de section apres un symbole de
+     section) suivent immediatement le symbole principal et ne sont
+     pas des symboles a part : NumberOfAuxSymbols (octet 17) indique
+     combien d entrees de 18 octets supplementaires sauter. }
+   I := I + 1 + GetByte(Base + 17);
+  End;
+ End;
+End;
+
+{ ============================================================
+  ANALYSE D UNE BIBLIOTHEQUE STATIQUE "ar" (.a)
+  ============================================================
+  Format "ar" classique (entete "!<arch>\n" puis une suite de
+  membres) : chaque membre a un en-tete de 60 octets en ASCII
+  (nom/date/uid/gid/mode/taille/marqueur "`\n"), suivi des octets du
+  membre, complete par un octet de bourrage "\n" si la taille est
+  impaire. Le nom est tronque a 16 caracteres dans l en-tete ; deux
+  conventions courantes l etendent : un "/" final (BSD/Microsoft,
+  simple marqueur de fin de nom court) ou "/N" (GNU, ou N est un
+  decalage ASCII dans le membre special "//" qui liste les noms
+  longs). Les membres speciaux "/" (table des symboles) et "//"
+  (table des noms longs) ne sont pas exposes comme membres normaux.
+  Valide contre BINLINUX/libimpDEVENV.a, une bibliotheque reelle
+  presente dans ce depot. }
+
+{ @description: Lit une chaine dans la table des noms longs ("//"),
+    ou chaque entree est terminee par "/\n" (et non par un octet
+    nul, a la difference de GetCStr).
+  @param Off Decalage (0-based) du debut de la chaine
+  @param MaxLen Longueur maximale de securite
+  @return Chaine lue, sans le "/" terminal }
+Function GetArName(Off: LongInt; MaxLen: Integer): String;
+Var
+ S: String;
+ B: Byte;
+Begin
+ S := '';
+ While Length(S) < MaxLen Do Begin
+  B := GetByte(Off + Length(S));
+  If (B = Ord('/')) Or (B = 10) Or (B = 0) Then Break;
+  S := S + Chr(B);
+ End;
+ GetArName := S;
+End;
+
+{ @description: Remplit ArchiveMembers[] a partir d un fichier .a
+    deja charge, en resolvant les noms longs GNU ("/N") via le
+    membre "//" et en ignorant les membres speciaux ("/" et "//"
+    eux-memes).}
+Procedure ParseArchive;
+Var
+ Off, Sz: LongInt;
+ Name, SizeStr: String;
+ I: Integer;
+ LongNamesOff: LongInt;
+ NameIdx: LongInt;
+ Code: Integer;
+Begin
+ ArchiveMemberCount := 0;
+ LongNamesOff := -1;
+ Off := 8; { taille de la signature "!<arch>\n" }
+ While Off + 60 <= BufSize Do Begin
+  Name := '';
+  For I := 0 To 15 Do Begin
+   If GetByte(Off + I) = Ord(' ') Then Break;
+   Name := Name + Chr(GetByte(Off + I));
+  End;
+  SizeStr := '';
+  For I := 0 To 9 Do Begin
+   If GetByte(Off + 48 + I) = Ord(' ') Then Break;
+   SizeStr := SizeStr + Chr(GetByte(Off + 48 + I));
+  End;
+  Val(SizeStr, Sz, Code);
+  If Code <> 0 Then Sz := 0;
+  If Name = '//' Then
+   LongNamesOff := Off + 60
+  Else If Name = '/' Then
+   { table des symboles : ignoree, non necessaire par membre }
+  Else Begin
+   If (Length(Name) > 0) And (Name[1] = '/') Then Begin
+    Val(Copy(Name, 2, Length(Name) - 1), NameIdx, Code);
+    If (Code = 0) And (LongNamesOff >= 0) Then
+     Name := GetArName(LongNamesOff + NameIdx, 200);
+   End Else If (Length(Name) > 0) And (Name[Length(Name)] = '/') Then
+    Name := Copy(Name, 1, Length(Name) - 1); { terminateur court BSD/MS }
+   If ArchiveMemberCount < MaxArchiveMembers Then Begin
+    Inc(ArchiveMemberCount);
+    ArchiveMembers[ArchiveMemberCount].Name := Name;
+    ArchiveMembers[ArchiveMemberCount].DataOff := Off + 60;
+    ArchiveMembers[ArchiveMemberCount].DataSize := Sz;
+   End;
+  End;
+  Off := Off + 60 + Sz;
+  If (Sz Mod 2) = 1 Then Inc(Off); { octet de bourrage }
  End;
 End;
 
@@ -7358,6 +7591,15 @@ Begin
    Else If MachOCpuType = CPU_TYPE_ARM64 Then FormatName := 'mach-o-arm64'
    Else FormatName := 'mach-o-64 (cputype 0x' + ToHexU(MachOCpuType) + ')';
   End;
+  FMT_COFFOBJ: Begin
+   If PEMachine = $14C Then FormatName := 'coff-i386'
+   Else If PEMachine = $8664 Then FormatName := 'coff-x86-64'
+   Else If (PEMachine = PE_MACHINE_ARM) Or (PEMachine = PE_MACHINE_ARMNT) Then
+    FormatName := 'coff-arm'
+   Else If PEMachine = PE_MACHINE_ARM64 Then FormatName := 'coff-arm64'
+   Else FormatName := 'coff-object (machine 0x' + ToHexU(PEMachine) + ')';
+  End;
+  FMT_ARCHIVE: FormatName := 'ar-archive';
  Else
   FormatName := 'inconnu';
  End;
@@ -8477,8 +8719,10 @@ Procedure Help;Begin
  WriteLn;
  WriteLn('Formats supportes : ELF32/ELF64 (Linux), PE32/PE32+ (Windows),');
  WriteLn('Mach-O 32/64 bits (macOS, dont binaires universels "fat"),');
- WriteLn('EXE DOS reel (entete MZ), ROM NES (entete iNES), binaire');
- WriteLn('brut (avec -m). L''architecture est choisie automatiquement');
+ WriteLn('EXE DOS reel (entete MZ), ROM NES (entete iNES), fichier');
+ WriteLn('objet COFF brut (.o/.obj, sans MZ/PE), bibliotheque statique');
+ WriteLn('"ar" (.a, chaque membre traite comme un fichier independant),');
+ WriteLn('binaire brut (avec -m). L''architecture est choisie automatiquement');
  WriteLn('a partir de e_machine (ELF), Machine (PE) ou cputype (Mach-O).');
  WriteLn('Desassemblage : x86 32 bits / x86-64 (syntaxe AT&T, comme');
  WriteLn('objdump) ; 8086/80186 16 bits (syntaxe Intel/MASM) ; Intel');
@@ -8499,9 +8743,129 @@ Procedure Help;Begin
  WriteLn('8086, pas de DDCB/FDCB pour le Z80.');
 End;
 
+{ @description: Analyse le tampon courant (Buf/BufSize, deja passe
+    par DetectFormat) : parse le format reconnu, choisit Arch
+    automatiquement (sauf si -m a ete passe), puis execute les
+    commandes demandees (-h/-t/-S/-d). Factorise pour etre reutilise
+    a la fois pour le fichier principal et, membre par membre, pour
+    une bibliotheque .a.
+  @param FailHard Si vrai, un format non reconnu arrete le programme
+    (comportement historique pour un fichier unique) ; si faux,
+    signale simplement et renvoie Faux, pour permettre de passer au
+    membre d archive suivant sans interrompre tout le traitement
+  @return Faux si le format n a pas pu etre traite (seulement
+    possible si FailHard est faux) }
+Function AnalyzeBuffer(FailHard: Boolean): Boolean;
+Begin
+ AnalyzeBuffer := True;
+ If Not ArchForced Then Arch := ARCH_X86; { evite toute fuite d etat
+   entre deux appels successifs (membres d archive consecutifs) }
+
+ If BinFormat = FMT_NES Then Begin
+  ParseNES;
+  If Not ArchForced Then Arch := ARCH_6502; { detection automatique }
+ End Else If BinFormat = FMT_MZ Then Begin
+  ParseMZ;
+  If Not ArchForced Then Arch := ARCH_8086; { detection automatique }
+ End Else If BinFormat = FMT_CLASS Then Begin
+  ParseJavaClass;
+  If Not ArchForced Then Arch := ARCH_JVM;
+ End Else If BinFormat = FMT_LLVMBC Then Begin
+  ParseRaw;
+  If Not ArchForced Then Arch := ARCH_LLVM;
+ End Else If (BinFormat = FMT_ELF32) Or (BinFormat = FMT_ELF64) Then Begin
+  ParseELF;
+  If Not ArchForced Then Begin
+   If ElfMachine = EM_AARCH64 Then Arch := ARCH_ARM64
+   Else If ElfMachine = EM_ARM Then Arch := ARCH_ARM32
+   Else If ElfMachine = EM_68K Then Arch := ARCH_68000
+   Else If (ElfMachine = EM_SPARC) Or (ElfMachine = EM_SPARC32PLUS) Or
+           (ElfMachine = EM_SPARCV9) Then Arch := ARCH_SPARC
+   Else If ElfMachine = EM_MIPS Then Begin
+    If ElfBigEndian Then Arch := ARCH_MIPS Else Arch := ARCH_MIPSEL;
+   End
+   Else If (ElfMachine = EM_PPC) Or (ElfMachine = EM_PPC64) Then Begin
+    If ElfBigEndian Then Arch := ARCH_PPC Else Arch := ARCH_PPCLE;
+   End
+   Else If ElfMachine = EM_SH Then Begin
+    If ElfBigEndian Then Arch := ARCH_SH Else Arch := ARCH_SHLE;
+   End
+   Else If ElfMachine = EM_IA_64 Then Begin
+    If ElfBigEndian Then Arch := ARCH_IA64BE Else Arch := ARCH_IA64;
+   End
+   Else If BinFormat = FMT_ELF64 Then Arch := ARCH_X64;
+   { ELF32 sans e_machine ARM reconnu : on laisse ARCH_X86 par defaut,
+     comme avant la prise en charge d e_machine. }
+  End;
+ End Else If (BinFormat = FMT_PE32) Or (BinFormat = FMT_PE64) Then Begin
+  ParsePE;
+  If ArchForced Then Begin
+   If Arch = ARCH_MSIL Then ParseMSILPE;
+  End Else Begin
+   If ParseMSILPE Then Arch := ARCH_MSIL
+   Else Begin
+    If PEMachine = PE_MACHINE_ARM64 Then Arch := ARCH_ARM64
+    Else If PEMachine = PE_MACHINE_ARMNT Then Arch := ARCH_THUMB
+    Else If PEMachine = PE_MACHINE_ARM Then Arch := ARCH_ARM32
+    Else If BinFormat = FMT_PE64 Then Arch := ARCH_X64;
+   End;
+  End;
+ End Else If BinFormat = FMT_COFFOBJ Then Begin
+  ParseCoffObj;
+  If Not ArchForced Then Begin
+   If PEMachine = $8664 Then Arch := ARCH_X64
+   Else If PEMachine = PE_MACHINE_ARM64 Then Arch := ARCH_ARM64
+   Else If PEMachine = PE_MACHINE_ARMNT Then Arch := ARCH_THUMB
+   Else If PEMachine = PE_MACHINE_ARM Then Arch := ARCH_ARM32;
+   { sinon (machine 0x14C, i386) : ARCH_X86, deja la valeur par defaut }
+  End;
+ End Else If (BinFormat = FMT_MACHO32) Or (BinFormat = FMT_MACHO64) Then Begin
+  ParseMachO;
+  If Not ArchForced Then Begin
+   If MachOCpuType = CPU_TYPE_X86_64 Then Arch := ARCH_X64
+   Else If MachOCpuType = CPU_TYPE_X86 Then Arch := ARCH_X86
+   Else If MachOCpuType = CPU_TYPE_ARM64 Then Arch := ARCH_ARM64
+   Else If MachOCpuType = CPU_TYPE_ARM Then Arch := ARCH_ARM32
+   Else If MachOCpuType = CPU_TYPE_MC680x0 Then Arch := ARCH_68000
+   Else If OptDisasm Then
+    WriteLn('Avertissement : architecture Mach-O (cputype 0x',
+     ToHexU(MachOCpuType), ') non prise en charge par le ',
+     'desassembleur ; -h/-t restent fiables, -d sera incorrect ',
+     'sans -m explicite.');
+  End;
+ End Else If ArchForced Then Begin
+  { Format non reconnu, mais architecture explicitement choisie via
+    -m : on traite le fichier comme un binaire brut, sans entete. }
+  BinFormat := FMT_RAW;
+  ParseRaw;
+ End Else Begin
+  If FailHard Then Begin
+   WriteLn('Erreur : format de fichier non reconnu (ni ELF, ni PE, ni ROM NES, ni EXE DOS, ni Mach-O, ni objet COFF).');
+   WriteLn('Pour un binaire brut, precisez l''architecture avec -m (ex: -m 6502).');
+   Halt(1);
+  End Else Begin
+   WriteLn('  (format non reconnu, membre ignore)');
+   AnalyzeBuffer := False;
+   Exit;
+  End;
+ End;
+
+ If OptHeaders Then CmdHeaders;
+ If OptSymbols Then CmdSymbols;
+ If OptSource Then CmdSourceMix;
+ If OptDisasm Then Begin
+  If Arch = ARCH_LLVM Then CmdLLVM Else CmdDisasm;
+ End;
+End;
+
 Var
  Arg: String;
  I: Integer;
+ ArchiveBuf: PByteBuf;
+ ArchiveBufSize: LongInt;
+ MemberBuf: PByteBuf;
+ SavedFileName: String;
+ AI: Integer;
 BEGIN
  InFileName := '';
  OptHeaders := False;
@@ -8638,84 +9002,33 @@ BEGIN
  LoadFile(InFileName);
  DetectFormat;
 
- If BinFormat = FMT_NES Then Begin
-  ParseNES;
-  If Not ArchForced Then Arch := ARCH_6502; { detection automatique }
- End Else If BinFormat = FMT_MZ Then Begin
-  ParseMZ;
-  If Not ArchForced Then Arch := ARCH_8086; { detection automatique }
- End Else If BinFormat = FMT_CLASS Then Begin
-  ParseJavaClass;
-  If Not ArchForced Then Arch := ARCH_JVM;
- End Else If BinFormat = FMT_LLVMBC Then Begin
-  ParseRaw;
-  If Not ArchForced Then Arch := ARCH_LLVM;
- End Else If (BinFormat = FMT_ELF32) Or (BinFormat = FMT_ELF64) Then Begin
-  ParseELF;
-  If Not ArchForced Then Begin
-   If ElfMachine = EM_AARCH64 Then Arch := ARCH_ARM64
-   Else If ElfMachine = EM_ARM Then Arch := ARCH_ARM32
-   Else If ElfMachine = EM_68K Then Arch := ARCH_68000
-   Else If (ElfMachine = EM_SPARC) Or (ElfMachine = EM_SPARC32PLUS) Or
-           (ElfMachine = EM_SPARCV9) Then Arch := ARCH_SPARC
-   Else If ElfMachine = EM_MIPS Then Begin
-    If ElfBigEndian Then Arch := ARCH_MIPS Else Arch := ARCH_MIPSEL;
-   End
-   Else If (ElfMachine = EM_PPC) Or (ElfMachine = EM_PPC64) Then Begin
-    If ElfBigEndian Then Arch := ARCH_PPC Else Arch := ARCH_PPCLE;
-   End
-   Else If ElfMachine = EM_SH Then Begin
-    If ElfBigEndian Then Arch := ARCH_SH Else Arch := ARCH_SHLE;
-   End
-   Else If ElfMachine = EM_IA_64 Then Begin
-    If ElfBigEndian Then Arch := ARCH_IA64BE Else Arch := ARCH_IA64;
-   End
-   Else If BinFormat = FMT_ELF64 Then Arch := ARCH_X64;
-   { ELF32 sans e_machine ARM reconnu : on laisse ARCH_X86 par defaut,
-     comme avant la prise en charge d e_machine. }
-  End;
- End Else If (BinFormat = FMT_PE32) Or (BinFormat = FMT_PE64) Then Begin
-  ParsePE;
-  If ArchForced Then Begin
-   If Arch = ARCH_MSIL Then ParseMSILPE;
-  End Else Begin
-   If ParseMSILPE Then Arch := ARCH_MSIL
-   Else Begin
-    If PEMachine = PE_MACHINE_ARM64 Then Arch := ARCH_ARM64
-    Else If PEMachine = PE_MACHINE_ARMNT Then Arch := ARCH_THUMB
-    Else If PEMachine = PE_MACHINE_ARM Then Arch := ARCH_ARM32
-    Else If BinFormat = FMT_PE64 Then Arch := ARCH_X64;
+ If BinFormat = FMT_ARCHIVE Then Begin
+  { Bibliotheque statique .a : chaque membre est traite comme un
+    mini-fichier independant, en echangeant temporairement Buf/
+    BufSize (et InFileName, pour que les en-tetes "fichier: format
+    ..." deja imprimes par CmdHeaders/CmdDisasm affichent le nom du
+    membre), comme le ferait "objdump" sur une archive. }
+  ParseArchive;
+  WriteLn('In archive ', InFileName, ':');
+  ArchiveBuf := Buf;
+  ArchiveBufSize := BufSize;
+  SavedFileName := InFileName;
+  For AI := 1 To ArchiveMemberCount Do Begin
+   If ArchiveMembers[AI].DataSize > 0 Then Begin
+    GetMem(MemberBuf, ArchiveMembers[AI].DataSize);
+    Move(ArchiveBuf^[ArchiveMembers[AI].DataOff], MemberBuf^,
+     ArchiveMembers[AI].DataSize);
+    Buf := MemberBuf;
+    BufSize := ArchiveMembers[AI].DataSize;
+    InFileName := SavedFileName + '(' + ArchiveMembers[AI].Name + ')';
+    DetectFormat;
+    AnalyzeBuffer(False);
+    FreeMem(MemberBuf, ArchiveMembers[AI].DataSize);
    End;
   End;
- End Else If (BinFormat = FMT_MACHO32) Or (BinFormat = FMT_MACHO64) Then Begin
-  ParseMachO;
-  If Not ArchForced Then Begin
-   If MachOCpuType = CPU_TYPE_X86_64 Then Arch := ARCH_X64
-   Else If MachOCpuType = CPU_TYPE_X86 Then Arch := ARCH_X86
-   Else If MachOCpuType = CPU_TYPE_ARM64 Then Arch := ARCH_ARM64
-   Else If MachOCpuType = CPU_TYPE_ARM Then Arch := ARCH_ARM32
-   Else If MachOCpuType = CPU_TYPE_MC680x0 Then Arch := ARCH_68000
-   Else If OptDisasm Then
-    WriteLn('Avertissement : architecture Mach-O (cputype 0x',
-     ToHexU(MachOCpuType), ') non prise en charge par le ',
-     'desassembleur ; -h/-t restent fiables, -d sera incorrect ',
-     'sans -m explicite.');
-  End;
- End Else If ArchForced Then Begin
-  { Format non reconnu, mais architecture explicitement choisie via
-    -m : on traite le fichier comme un binaire brut, sans entete. }
-  BinFormat := FMT_RAW;
-  ParseRaw;
- End Else Begin
-  WriteLn('Erreur : format de fichier non reconnu (ni ELF, ni PE, ni ROM NES, ni EXE DOS, ni Mach-O).');
-  WriteLn('Pour un binaire brut, precisez l''architecture avec -m (ex: -m 6502).');
-  Halt(1);
- End;
-
- If OptHeaders Then CmdHeaders;
- If OptSymbols Then CmdSymbols;
- If OptSource Then CmdSourceMix;
- If OptDisasm Then Begin
-  If Arch = ARCH_LLVM Then CmdLLVM Else CmdDisasm;
- End;
+  InFileName := SavedFileName;
+  Buf := ArchiveBuf;
+  BufSize := ArchiveBufSize;
+ End Else
+  AnalyzeBuffer(True);
 END.
