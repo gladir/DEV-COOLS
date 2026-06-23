@@ -50,6 +50,7 @@ Const
  FMT_MZ      = 7;        { EXE DOS reel (entete MZ, sans entete PE)    }
  FMT_MACHO32 = 8;        { Mach-O 32 bits (macOS), natif little-endian }
  FMT_MACHO64 = 9;        { Mach-O 64 bits (macOS), natif little-endian }
+ FMT_CLASS   = 10;       { fichier Java .class (bytecode JVM/Jasmin)   }
 
  { ----- Mach-O : valeurs magiques et types de commande utiles -----
    Les constantes dont le bit de poids fort est positionne doivent
@@ -93,6 +94,7 @@ Const
  ARCH_IA64BE = 19;       { Intel Itanium IA-64 big-endian              }
  ARCH_PCODE = 20;        { p-Code UCSD p-System II.0/II.1              }
  ARCH_MSIL  = 21;        { Microsoft Intermediate Language / CIL       }
+ ARCH_JVM   = 22;        { bytecode JVM / assembleur Jasmin            }
 
  { ----- Modes d adressage 6800 ----- }
  AM68_INH   = 0;         { inherent : aucun operande                   }
@@ -140,6 +142,15 @@ Const
 
 Type
  String64 = String[64];
+
+ TJavaCPRec = Record
+  Tag: Byte;
+  Ref1, Ref2: Word;
+  StrOff: LongInt;
+  StrLen: Word;
+ End;
+ TJavaCPArray = Array[0..4095] Of TJavaCPRec;
+ PJavaCPArray = ^TJavaCPArray;
 
  { Une section du binaire (texte, donnees, ...), normalisee quel que
    soit le format d origine. }
@@ -193,6 +204,8 @@ Var
  Mode6502     : Array[0..255] Of Byte;
  Mnem6800     : Array[0..255] Of String[4];
  Mode6800     : Array[0..255] Of Byte;
+ JavaCP       : PJavaCPArray;
+ JavaCPCount  : Word;
 
 { ============================================================
   UTILITAIRES GENERAUX
@@ -488,6 +501,13 @@ Begin
     (GetByte(2) = Ord('L')) And (GetByte(3) = Ord('F')) Then Begin
   If GetByte(4) = 2 Then BinFormat := FMT_ELF64
   Else BinFormat := FMT_ELF32;
+  Exit;
+ End;
+ If (GetDWordBE(0) = FAT_MAGIC) And (BufSize >= 10) And
+    (GetWordBE(6) >= 45) And (GetWordBE(8) > 0) Then Begin
+  { CAFEBABE est aussi le magic Mach-O fat. Une version JVM >=45 et
+    un constant_pool_count non nul identifient un fichier .class. }
+  BinFormat := FMT_CLASS;
   Exit;
  End;
  If (GetByte(0) = Ord('M')) And (GetByte(1) = Ord('Z')) Then Begin
@@ -930,6 +950,157 @@ Begin
  EntryPoint := Sections[1].VAddr;
  SymbolCount := 0;
  ParseMSILPE := True;
+End;
+
+{ ============================================================
+  ANALYSE D UN FICHIER JAVA .CLASS / JASMIN
+  ============================================================ }
+
+Function JavaCPUtf8(Index: Word): String;
+Var
+ I, N: Integer;
+ S: String;
+Begin
+ JavaCPUtf8 := '';
+ If (JavaCP = Nil) Or (Index = 0) Or (Index >= JavaCPCount) Then Exit;
+ If JavaCP^[Index].Tag <> 1 Then Exit;
+ N := JavaCP^[Index].StrLen;
+ If N > 255 Then N := 255;
+ S := '';
+ For I := 0 To N - 1 Do S := S + Chr(GetByte(JavaCP^[Index].StrOff + I));
+ JavaCPUtf8 := S;
+End;
+
+Function JavaCPDescription(Index: Word): String;
+Var
+ N, D: String;
+ R: Word;
+Begin
+ JavaCPDescription := '#' + IntToStr(Index);
+ If (JavaCP = Nil) Or (Index = 0) Or (Index >= JavaCPCount) Then Exit;
+ Case JavaCP^[Index].Tag Of
+  1: JavaCPDescription := JavaCPUtf8(Index);
+  7, 8, 16, 19, 20: JavaCPDescription := JavaCPUtf8(JavaCP^[Index].Ref1);
+  12: Begin
+   N := JavaCPUtf8(JavaCP^[Index].Ref1);
+   D := JavaCPUtf8(JavaCP^[Index].Ref2);
+   JavaCPDescription := N + D;
+  End;
+  9, 10, 11: Begin
+   R := JavaCP^[Index].Ref1;
+   If (R > 0) And (R < JavaCPCount) Then
+    N := JavaCPUtf8(JavaCP^[R].Ref1) Else N := '';
+   R := JavaCP^[Index].Ref2;
+   If (R > 0) And (R < JavaCPCount) Then
+    D := JavaCPUtf8(JavaCP^[R].Ref1) + JavaCPUtf8(JavaCP^[R].Ref2)
+   Else D := '';
+   If N <> '' Then JavaCPDescription := N + '.' + D Else JavaCPDescription := D;
+  End;
+ End;
+End;
+
+Procedure JavaSkipAttributes(Var P: LongInt; Count: Word);
+Var
+ I: Integer;
+ L: LongInt;
+Begin
+ For I := 1 To Count Do Begin
+  L := GetDWordBE(P + 2);
+  P := P + 6 + L;
+ End;
+End;
+
+{ @description: Analyse le constant pool et les attributs Code d un
+    fichier .class. Chaque methode concrete devient une section de
+    bytecode, avec une adresse locale commencant a zero. }
+Procedure ParseJavaClass;
+Var
+ P, L, CodeLen, CodeOff: LongInt;
+ CPCount, I, AttrCount, FieldCount, MethodCount, IfaceCount: Word;
+ Tag: Byte;
+ NameIdx, DescIdx, AttrNameIdx: Word;
+ Name, Desc, AttrName: String;
+ J: Integer;
+Begin
+ SectionCount := 0;
+ SymbolCount := 0;
+ EntryPoint := 0;
+ ImageBase := 0;
+ If JavaCP <> Nil Then Begin
+  FreeMem(JavaCP, SizeOf(TJavaCPArray));
+  JavaCP := Nil;
+ End;
+ CPCount := GetWordBE(8);
+ If (CPCount < 1) Or (CPCount > 4096) Then Exit;
+ GetMem(JavaCP, SizeOf(TJavaCPArray));
+ FillChar(JavaCP^, SizeOf(TJavaCPArray), 0);
+ JavaCPCount := CPCount;
+ P := 10;
+ I := 1;
+ While I < CPCount Do Begin
+  Tag := GetByte(P); Inc(P);
+  JavaCP^[I].Tag := Tag;
+  Case Tag Of
+   1: Begin
+    JavaCP^[I].StrLen := GetWordBE(P); Inc(P, 2);
+    JavaCP^[I].StrOff := P;
+    P := P + JavaCP^[I].StrLen;
+   End;
+   3, 4: Inc(P, 4);
+   5, 6: Begin Inc(P, 8); Inc(I); End;
+   7, 8, 16, 19, 20: Begin JavaCP^[I].Ref1 := GetWordBE(P); Inc(P, 2); End;
+   9, 10, 11, 12, 17, 18: Begin
+    JavaCP^[I].Ref1 := GetWordBE(P);
+    JavaCP^[I].Ref2 := GetWordBE(P + 2);
+    Inc(P, 4);
+   End;
+   15: Begin
+    JavaCP^[I].Ref1 := GetWordBE(P + 1);
+    Inc(P, 3);
+   End;
+  Else
+   Exit;
+  End;
+  Inc(I);
+ End;
+
+ Inc(P, 6); { access_flags, this_class, super_class }
+ IfaceCount := GetWordBE(P); Inc(P, 2 + IfaceCount * 2);
+ FieldCount := GetWordBE(P); Inc(P, 2);
+ For I := 1 To FieldCount Do Begin
+  AttrCount := GetWordBE(P + 6);
+  Inc(P, 8);
+  JavaSkipAttributes(P, AttrCount);
+ End;
+ MethodCount := GetWordBE(P); Inc(P, 2);
+ For I := 1 To MethodCount Do Begin
+  NameIdx := GetWordBE(P + 2);
+  DescIdx := GetWordBE(P + 4);
+  AttrCount := GetWordBE(P + 6);
+  Name := JavaCPUtf8(NameIdx);
+  Desc := JavaCPUtf8(DescIdx);
+  Inc(P, 8);
+  For J := 1 To AttrCount Do Begin
+   AttrNameIdx := GetWordBE(P);
+   L := GetDWordBE(P + 2);
+   AttrName := JavaCPUtf8(AttrNameIdx);
+   If (AttrName = 'Code') And (L >= 12) Then Begin
+    CodeLen := GetDWordBE(P + 10);
+    CodeOff := P + 14;
+    If (CodeLen > 0) And (CodeOff + CodeLen <= BufSize) And
+       (SectionCount < MaxSections) Then Begin
+     Inc(SectionCount);
+     If Name = '' Then Name := 'method_' + IntToStr(I);
+     Sections[SectionCount].Name := Copy(Name + Desc, 1, 32);
+     Sections[SectionCount].FileOff := CodeOff;
+     Sections[SectionCount].VAddr := 0;
+     Sections[SectionCount].Size := CodeLen;
+     Sections[SectionCount].IsCode := True;
+    End;
+   End;
+   P := P + 6 + L;
+  End;
+ End;
 End;
 
 { ============================================================
@@ -6551,6 +6722,195 @@ Begin
 End;
 
 { ============================================================
+  DESASSEMBLEUR BYTECODE JAVA JVM / JASMIN
+  ============================================================ }
+
+Function JVMName(Op: Byte): String;
+Const
+ C0: Array[0..20] Of String[12] = (
+  'nop','aconst_null','iconst_m1','iconst_0','iconst_1','iconst_2',
+  'iconst_3','iconst_4','iconst_5','lconst_0','lconst_1','fconst_0',
+  'fconst_1','fconst_2','dconst_0','dconst_1','bipush','sipush',
+  'ldc','ldc_w','ldc2_w');
+ Ld: Array[21..45] Of String[10] = (
+  'iload','lload','fload','dload','aload',
+  'iload_0','iload_1','iload_2','iload_3',
+  'lload_0','lload_1','lload_2','lload_3',
+  'fload_0','fload_1','fload_2','fload_3',
+  'dload_0','dload_1','dload_2','dload_3',
+  'aload_0','aload_1','aload_2','aload_3');
+ ArrLd: Array[46..53] Of String[7] = (
+  'iaload','laload','faload','daload','aaload','baload','caload','saload');
+ St: Array[54..78] Of String[10] = (
+  'istore','lstore','fstore','dstore','astore',
+  'istore_0','istore_1','istore_2','istore_3',
+  'lstore_0','lstore_1','lstore_2','lstore_3',
+  'fstore_0','fstore_1','fstore_2','fstore_3',
+  'dstore_0','dstore_1','dstore_2','dstore_3',
+  'astore_0','astore_1','astore_2','astore_3');
+ ArrSt: Array[79..86] Of String[8] = (
+  'iastore','lastore','fastore','dastore','aastore','bastore','castore','sastore');
+ Stack: Array[87..95] Of String[8] = (
+  'pop','pop2','dup','dup_x1','dup_x2','dup2','dup2_x1','dup2_x2','swap');
+ Math: Array[96..131] Of String[6] = (
+  'iadd','ladd','fadd','dadd','isub','lsub','fsub','dsub',
+  'imul','lmul','fmul','dmul','idiv','ldiv','fdiv','ddiv',
+  'irem','lrem','frem','drem','ineg','lneg','fneg','dneg',
+  'ishl','lshl','ishr','lshr','iushr','lushr','iand','land',
+  'ior','lor','ixor','lxor');
+ Conv: Array[133..147] Of String[4] = (
+  'i2l','i2f','i2d','l2i','l2f','l2d','f2i','f2l','f2d',
+  'd2i','d2l','d2f','i2b','i2c','i2s');
+ Cmp: Array[148..152] Of String[5] = ('lcmp','fcmpl','fcmpg','dcmpl','dcmpg');
+ Br: Array[153..166] Of String[10] = (
+  'ifeq','ifne','iflt','ifge','ifgt','ifle',
+  'if_icmpeq','if_icmpne','if_icmplt','if_icmpge','if_icmpgt','if_icmple',
+  'if_acmpeq','if_acmpne');
+Begin
+ If Op <= 20 Then JVMName := C0[Op]
+ Else If (Op >= 21) And (Op <= 45) Then JVMName := Ld[Op]
+ Else If (Op >= 46) And (Op <= 53) Then JVMName := ArrLd[Op]
+ Else If (Op >= 54) And (Op <= 78) Then JVMName := St[Op]
+ Else If (Op >= 79) And (Op <= 86) Then JVMName := ArrSt[Op]
+ Else If (Op >= 87) And (Op <= 95) Then JVMName := Stack[Op]
+ Else If (Op >= 96) And (Op <= 131) Then JVMName := Math[Op]
+ Else If Op = 132 Then JVMName := 'iinc'
+ Else If (Op >= 133) And (Op <= 147) Then JVMName := Conv[Op]
+ Else If (Op >= 148) And (Op <= 152) Then JVMName := Cmp[Op]
+ Else If (Op >= 153) And (Op <= 166) Then JVMName := Br[Op]
+ Else Case Op Of
+  167: JVMName := 'goto'; 168: JVMName := 'jsr'; 169: JVMName := 'ret';
+  170: JVMName := 'tableswitch'; 171: JVMName := 'lookupswitch';
+  172: JVMName := 'ireturn'; 173: JVMName := 'lreturn';
+  174: JVMName := 'freturn'; 175: JVMName := 'dreturn';
+  176: JVMName := 'areturn'; 177: JVMName := 'return';
+  178: JVMName := 'getstatic'; 179: JVMName := 'putstatic';
+  180: JVMName := 'getfield'; 181: JVMName := 'putfield';
+  182: JVMName := 'invokevirtual'; 183: JVMName := 'invokespecial';
+  184: JVMName := 'invokestatic'; 185: JVMName := 'invokeinterface';
+  186: JVMName := 'invokedynamic'; 187: JVMName := 'new';
+  188: JVMName := 'newarray'; 189: JVMName := 'anewarray';
+  190: JVMName := 'arraylength'; 191: JVMName := 'athrow';
+  192: JVMName := 'checkcast'; 193: JVMName := 'instanceof';
+  194: JVMName := 'monitorenter'; 195: JVMName := 'monitorexit';
+  196: JVMName := 'wide'; 197: JVMName := 'multianewarray';
+  198: JVMName := 'ifnull'; 199: JVMName := 'ifnonnull';
+  200: JVMName := 'goto_w'; 201: JVMName := 'jsr_w';
+  202: JVMName := 'breakpoint'; 254: JVMName := 'impdep1'; 255: JVMName := 'impdep2';
+ Else JVMName := '(bad)';
+ End;
+End;
+
+Function JVMShortBE(Off: LongInt): LongInt;
+Var W: Word;
+Begin
+ W := GetWordBE(Off);
+ If (W And $8000) <> 0 Then JVMShortBE := LongInt(W) Or LongInt($FFFF0000)
+ Else JVMShortBE := W;
+End;
+
+Function DisasmJVMOne(Off, VAddrBase: LongInt;
+ Var Mnemonic, Operands: String): Integer;
+Var
+ Op, SubOp, B: Byte;
+ P, Padding, Count, I: Integer;
+ V, V2, Target, LowVal, HighVal: LongInt;
+ Idx: Word;
+ S: String;
+Begin
+ Op := GetByte(Off);
+ Mnemonic := JVMName(Op);
+ Operands := '';
+ P := 1;
+ Case Op Of
+  16: Begin B := GetByte(Off + 1); If B < 128 Then V := B Else V := Integer(B)-256;
+       Operands := IntToStr(V); P := 2; End;
+  17: Begin Operands := IntToStr(JVMShortBE(Off + 1)); P := 3; End;
+  18: Begin Idx := GetByte(Off + 1); Operands := '#' + IntToStr(Idx) +
+       ' ; ' + JavaCPDescription(Idx); P := 2; End;
+  19,20,178..184,187,189,192,193: Begin
+   Idx := GetWordBE(Off + 1);
+   Operands := '#' + IntToStr(Idx) + ' ; ' + JavaCPDescription(Idx);
+   P := 3;
+  End;
+  21..25,54..58,169: Begin Operands := IntToStr(GetByte(Off + 1)); P := 2; End;
+  132: Begin
+   B := GetByte(Off + 2); If B < 128 Then V := B Else V := Integer(B)-256;
+   Operands := IntToStr(GetByte(Off + 1)) + ',' + IntToStr(V); P := 3;
+  End;
+  153..168,198,199: Begin
+   V := JVMShortBE(Off + 1);
+   Target := VAddrBase + V;
+   Operands := 'L' + ToHexFixed(Target, 4); P := 3;
+  End;
+  185: Begin
+   Idx := GetWordBE(Off + 1);
+   Operands := '#' + IntToStr(Idx) + ',' + IntToStr(GetByte(Off + 3)) +
+    ' ; ' + JavaCPDescription(Idx); P := 5;
+  End;
+  186: Begin
+   Idx := GetWordBE(Off + 1);
+   Operands := '#' + IntToStr(Idx) + ' ; ' + JavaCPDescription(Idx); P := 5;
+  End;
+  188: Begin
+   B := GetByte(Off + 1);
+   Case B Of
+    4: S := 'boolean'; 5: S := 'char'; 6: S := 'float'; 7: S := 'double';
+    8: S := 'byte'; 9: S := 'short'; 10: S := 'int'; 11: S := 'long';
+   Else S := IntToStr(B);
+   End;
+   Operands := S; P := 2;
+  End;
+  197: Begin
+   Idx := GetWordBE(Off + 1);
+   Operands := '#' + IntToStr(Idx) + ',' + IntToStr(GetByte(Off + 3)) +
+    ' ; ' + JavaCPDescription(Idx); P := 4;
+  End;
+  200,201: Begin
+   V := GetDWordBE(Off + 1);
+   Target := VAddrBase + V;
+   Operands := 'L' + ToHexFixed(Target, 4); P := 5;
+  End;
+  196: Begin
+   SubOp := GetByte(Off + 1);
+   Mnemonic := 'wide ' + JVMName(SubOp);
+   Idx := GetWordBE(Off + 2);
+   Operands := IntToStr(Idx);
+   If SubOp = 132 Then Begin
+    Operands := Operands + ',' + IntToStr(JVMShortBE(Off + 4)); P := 6;
+   End Else P := 4;
+  End;
+  170: Begin
+   Padding := (4 - ((VAddrBase + 1) And 3)) And 3;
+   V := GetDWordBE(Off + 1 + Padding);
+   LowVal := GetDWordBE(Off + 5 + Padding);
+   HighVal := GetDWordBE(Off + 9 + Padding);
+   Count := HighVal - LowVal + 1;
+   S := 'low=' + IntToStr(LowVal) + ',high=' + IntToStr(HighVal) +
+    ',default=L' + ToHexFixed(VAddrBase + V, 4);
+   For I := 0 To Count - 1 Do Begin
+    V2 := GetDWordBE(Off + 13 + Padding + I * 4);
+    S := S + ',' + IntToStr(LowVal + I) + ':L' + ToHexFixed(VAddrBase + V2, 4);
+   End;
+   Operands := S; P := 1 + Padding + 12 + Count * 4;
+  End;
+  171: Begin
+   Padding := (4 - ((VAddrBase + 1) And 3)) And 3;
+   V := GetDWordBE(Off + 1 + Padding);
+   Count := GetDWordBE(Off + 5 + Padding);
+   S := 'default=L' + ToHexFixed(VAddrBase + V, 4);
+   For I := 0 To Count - 1 Do Begin
+    V2 := GetDWordBE(Off + 9 + Padding + I * 8);
+    Target := GetDWordBE(Off + 13 + Padding + I * 8);
+    S := S + ',' + IntToStr(V2) + ':L' + ToHexFixed(VAddrBase + Target, 4);
+   End;
+   Operands := S; P := 1 + Padding + 8 + Count * 8;
+  End;
+ End;
+ DisasmJVMOne := P;
+End;
+
+{ ============================================================
   RECHERCHE DE SYMBOLE / SECTION POUR L AFFICHAGE
   ============================================================ }
 
@@ -6598,6 +6958,11 @@ End;
   @return Nom du format (ex: "elf32-i386", "pei-i386") }
 Function FormatName: String;
 Begin
+ If Arch = ARCH_JVM Then Begin
+  If BinFormat = FMT_CLASS Then FormatName := 'java-class'
+  Else FormatName := 'raw-jvm-bytecode';
+  Exit;
+ End;
  If Arch = ARCH_MSIL Then Begin
   If (BinFormat = FMT_PE32) Or (BinFormat = FMT_PE64) Then
    FormatName := 'pei-managed-msil'
@@ -6728,7 +7093,8 @@ Var
  Mnemonic, Operands, BytesTxt, Lbl: String;
 Begin
  If (Arch = ARCH_6502) Or (Arch = ARCH_8086) Or (Arch = ARCH_8080) Or
-    (Arch = ARCH_Z80) Or (Arch = ARCH_6800) Or (Arch = ARCH_MSIL) Then
+    (Arch = ARCH_Z80) Or (Arch = ARCH_6800) Or (Arch = ARCH_MSIL) Or
+    (Arch = ARCH_JVM) Then
   AddrDigits := 4
  Else If (Arch = ARCH_X64) Or (Arch = ARCH_ARM64) Or
          (Arch = ARCH_IA64) Or (Arch = ARCH_IA64BE) Or
@@ -6791,7 +7157,9 @@ Begin
    Else If Arch = ARCH_PCODE Then
    InstrLen := DisasmPCodeOne(Off, VAddr, Mnemonic, Operands)
    Else If Arch = ARCH_MSIL Then
-    InstrLen := DisasmMSILOne(Off, VAddr, Mnemonic, Operands)
+   InstrLen := DisasmMSILOne(Off, VAddr, Mnemonic, Operands)
+   Else If Arch = ARCH_JVM Then
+    InstrLen := DisasmJVMOne(Off, VAddr, Mnemonic, Operands)
    Else
     InstrLen := DisasmOne(Off, VAddr, Mnemonic, Operands);
    BytesTxt := '';
@@ -6855,7 +7223,7 @@ Procedure Help;Begin
  WriteLn('  -m arch  Force l''architecture de desassemblage :');
  WriteLn('           i386 (defaut), x86-64, 8086, 8080, 6502, z80, 6800,');
  WriteLn('           68000, sparc, sparcv9, mips, mipsel, ppc, ppcle,');
- WriteLn('           sh, shle, ia64, pcode, msil, arm, thumb');
+ WriteLn('           sh, shle, ia64, pcode, msil, jasmin, arm, thumb');
  WriteLn('           ou arm64');
  WriteLn('  -b adr   Adresse de chargement (hexa) pour un binaire');
  WriteLn('           brut sans entete, ex: -b 8000 ou -b $8000');
@@ -6878,7 +7246,8 @@ Procedure Help;Begin
  WriteLn('I/II et MIPS32 ; PowerPC 32 et noyau entier PowerPC 64,');
  WriteLn('gros-boutiste ou little-endian ; SuperH SH-1/SH-2/SH-3/SH-4 ;');
  WriteLn('IA-64 structurel ; p-Code UCSD p-System II.0/II.1 ; MSIL/CIL');
- WriteLn('avec extraction automatique des methodes des assemblies .NET.');
+ WriteLn('avec extraction automatique des methodes des assemblies .NET ;');
+ WriteLn('bytecode JVM/Jasmin avec extraction des methodes des .class.');
  WriteLn('Pas de SSE/AVX/NEON/VFP, pas d''opcodes etendus 0F pour le');
  WriteLn('8086, pas de DDCB/FDCB pour le Z80.');
 End;
@@ -6915,7 +7284,7 @@ BEGIN
    Inc(I);
    If I > ParamCount Then Begin
     WriteLn('Erreur : -m necessite une architecture (i386, x86-64, 8086, ',
-     '8080, 6502, z80, 6800, 68000, sparc, mips, ppc, sh, ia64, pcode, msil ou arm).');
+     '8080, z80, 6800, 68000, sparc, mips, ppc, sh, ia64, pcode, msil, jasmin ou arm).');
     Halt(1);
    End;
    If UpStr(ParamStr(I)) = '6502' Then Arch := ARCH_6502
@@ -6983,6 +7352,10 @@ BEGIN
            (UpStr(ParamStr(I)) = 'CIL') Or
            (UpStr(ParamStr(I)) = 'IL') Or
            (UpStr(ParamStr(I)) = 'DOTNET') Then Arch := ARCH_MSIL
+   Else If (UpStr(ParamStr(I)) = 'JASMIN') Or
+           (UpStr(ParamStr(I)) = 'JVM') Or
+           (UpStr(ParamStr(I)) = 'JAVA') Or
+           (UpStr(ParamStr(I)) = 'BYTECODE') Then Arch := ARCH_JVM
    Else Begin
     WriteLn('Architecture inconnue pour -m : ', ParamStr(I));
     Halt(1);
@@ -7021,6 +7394,9 @@ BEGIN
  End Else If BinFormat = FMT_MZ Then Begin
   ParseMZ;
   If Not ArchForced Then Arch := ARCH_8086; { detection automatique }
+ End Else If BinFormat = FMT_CLASS Then Begin
+  ParseJavaClass;
+  If Not ArchForced Then Arch := ARCH_JVM;
  End Else If (BinFormat = FMT_ELF32) Or (BinFormat = FMT_ELF64) Then Begin
   ParseELF;
   If Not ArchForced Then Begin
