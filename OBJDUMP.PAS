@@ -85,6 +85,8 @@ Const
  ARCH_SPARC = 11;        { SPARC V8/V9 (voir DisasmSparcOne)           }
  ARCH_MIPS  = 12;        { MIPS gros-boutiste (MIPS I/II/MIPS32)       }
  ARCH_MIPSEL = 13;       { MIPS little-endian                          }
+ ARCH_PPC   = 14;        { PowerPC gros-boutiste                       }
+ ARCH_PPCLE = 15;        { PowerPC little-endian                       }
 
  { ----- Modes d adressage 6800 ----- }
  AM68_INH   = 0;         { inherent : aucun operande                   }
@@ -103,6 +105,8 @@ Const
  EM_SPARC32PLUS = 18;      { SPARC V8+                                   }
  EM_SPARCV9   = 43;        { SPARC V9 64 bits                            }
  EM_MIPS      = 8;         { MIPS I/II/III/IV, MIPS32 et MIPS64          }
+ EM_PPC       = 20;        { PowerPC 32 bits                             }
+ EM_PPC64     = 21;        { PowerPC 64 bits                             }
  PE_MACHINE_ARM   = $01C0;
  PE_MACHINE_ARMNT = $01C4;  { Thumb-2 (ARMv7 et plus, convention Windows) }
  PE_MACHINE_ARM64 = $AA64;
@@ -5235,6 +5239,316 @@ Begin
 End;
 
 { ============================================================
+  DESASSEMBLEUR POWERPC 32 / NOYAU ENTIER POWERPC 64
+  ============================================================ }
+
+{ @description: Retourne le nom d un registre general PowerPC. }
+Function PpcReg(R: Byte): String;
+Begin
+ PpcReg := 'r' + IntToStr(R And 31);
+End;
+
+{ @description: Etend un immediat PowerPC 16 bits signe. }
+Function PpcSign16(V: Word): LongInt;
+Begin
+ If (V And $8000) <> 0 Then PpcSign16 := LongInt(V) Or LongInt($FFFF0000)
+ Else PpcSign16 := V;
+End;
+
+{ @description: Formate un entier signe PowerPC en hexadecimal. }
+Function PpcSigned(V: LongInt): String;
+Begin
+ If V < 0 Then PpcSigned := '-0x' + ToHexU(-V)
+ Else PpcSigned := '0x' + ToHexU(V);
+End;
+
+{ @description: Retourne le nom usuel d un registre special PowerPC. }
+Function PpcSprName(Spr: Word): String;
+Begin
+ Case Spr Of
+  1: PpcSprName := 'xer';
+  8: PpcSprName := 'lr';
+  9: PpcSprName := 'ctr';
+  18: PpcSprName := 'dsisr';
+  19: PpcSprName := 'dar';
+  22: PpcSprName := 'dec';
+  25: PpcSprName := 'sdr1';
+  26: PpcSprName := 'srr0';
+  27: PpcSprName := 'srr1';
+ Else
+  PpcSprName := IntToStr(Spr);
+ End;
+End;
+
+{ @description: Desassemble une instruction PowerPC de 32 bits. Couvre
+    les formats D/X/XL/XO/M principaux, les branches, les operations
+    entieres, CR/SPR, synchronisation et les chargements/stockages.
+    Les instructions communes PPC64 ld/std sont egalement reconnues. }
+Function DisasmPpcOne(Off, VAddrBase: LongInt;
+ Var Mnemonic, Operands: String): Integer;
+Const
+ DLoadStore: Array[32..55] Of String[5] = (
+  'lwz', 'lwzu', 'lbz', 'lbzu', 'stw', 'stwu', 'stb', 'stbu',
+  'lhz', 'lhzu', 'lha', 'lhau', 'sth', 'sthu', 'lmw', 'stmw',
+  'lfs', 'lfsu', 'lfd', 'lfdu', 'stfs', 'stfsu', 'stfd', 'stfdu');
+Var
+ Instr, Disp, Target: LongInt;
+ Op, Rt, Ra, Rb, Bo, Bi, CrfD, LBit: Byte;
+ Imm: Word;
+ XO, Spr: Word;
+ LK, AA, OE, RcBit: Boolean;
+ A, B, D, Suffix: String;
+Begin
+ If Arch = ARCH_PPCLE Then Instr := GetDWord(Off)
+ Else Instr := GetDWordBE(Off);
+ Op := (Instr Shr 26) And $3F;
+ Rt := (Instr Shr 21) And 31;
+ Ra := (Instr Shr 16) And 31;
+ Rb := (Instr Shr 11) And 31;
+ Imm := Instr And $FFFF;
+ Mnemonic := '(bad)';
+ Operands := '';
+
+ Case Op Of
+  2, 3: Begin
+   If Op = 2 Then Mnemonic := 'tdi' Else Mnemonic := 'twi';
+   Operands := IntToStr(Rt) + ',' + PpcReg(Ra) + ',' +
+    PpcSigned(PpcSign16(Imm));
+  End;
+  7: Begin Mnemonic := 'mulli'; Operands := PpcReg(Rt) + ',' + PpcReg(Ra) + ',' + PpcSigned(PpcSign16(Imm)); End;
+  8: Begin Mnemonic := 'subfic'; Operands := PpcReg(Rt) + ',' + PpcReg(Ra) + ',' + PpcSigned(PpcSign16(Imm)); End;
+  10, 11: Begin
+   CrfD := (Instr Shr 23) And 7;
+   LBit := (Instr Shr 21) And 1;
+   If Op = 10 Then Mnemonic := 'cmpli' Else Mnemonic := 'cmpi';
+   Operands := IntToStr(CrfD) + ',' + IntToStr(LBit) + ',' +
+    PpcReg(Ra) + ',';
+   If Op = 10 Then Operands := Operands + '0x' + ToHexFixed(Imm, 4)
+   Else Operands := Operands + PpcSigned(PpcSign16(Imm));
+  End;
+  12, 13: Begin
+   If Op = 12 Then Mnemonic := 'addic' Else Mnemonic := 'addic.';
+   Operands := PpcReg(Rt) + ',' + PpcReg(Ra) + ',' + PpcSigned(PpcSign16(Imm));
+  End;
+  14, 15: Begin
+   If (Op = 14) And (Ra = 0) Then Begin
+    Mnemonic := 'li';
+    Operands := PpcReg(Rt) + ',' + PpcSigned(PpcSign16(Imm));
+   End Else If (Op = 15) And (Ra = 0) Then Begin
+    Mnemonic := 'lis';
+    Operands := PpcReg(Rt) + ',0x' + ToHexFixed(Imm, 4);
+   End Else Begin
+    If Op = 14 Then Mnemonic := 'addi' Else Mnemonic := 'addis';
+    Operands := PpcReg(Rt) + ',' + PpcReg(Ra) + ',' + PpcSigned(PpcSign16(Imm));
+   End;
+  End;
+  16: Begin { bc }
+   Bo := (Instr Shr 21) And 31;
+   Bi := (Instr Shr 16) And 31;
+   Disp := Instr And $FFFC;
+   If (Disp And $8000) <> 0 Then Disp := Disp Or LongInt($FFFF0000);
+   AA := (Instr And 2) <> 0;
+   LK := (Instr And 1) <> 0;
+   If AA Then Target := Disp Else Target := VAddrBase + Disp;
+   If Bo = 20 Then Begin
+    Mnemonic := 'b';
+    Operands := '0x' + ToHexFixed(Target, 8);
+   End Else Begin
+    Mnemonic := 'bc';
+    Operands := IntToStr(Bo) + ',' + IntToStr(Bi) + ',0x' + ToHexFixed(Target, 8);
+   End;
+   If LK Then Mnemonic := Mnemonic + 'l';
+   If AA Then Mnemonic := Mnemonic + 'a';
+  End;
+  17: Mnemonic := 'sc';
+  18: Begin { b/bl }
+   Disp := Instr And $03FFFFFC;
+   If (Disp And $02000000) <> 0 Then Disp := Disp Or LongInt($FC000000);
+   AA := (Instr And 2) <> 0;
+   LK := (Instr And 1) <> 0;
+   If AA Then Target := Disp Else Target := VAddrBase + Disp;
+   Mnemonic := 'b';
+   If LK Then Mnemonic := 'bl';
+   If AA Then Mnemonic := Mnemonic + 'a';
+   Operands := '0x' + ToHexFixed(Target, 8);
+  End;
+  19: Begin { XL }
+   XO := (Instr Shr 1) And $3FF;
+   LK := (Instr And 1) <> 0;
+   Bo := (Instr Shr 21) And 31;
+   Bi := (Instr Shr 16) And 31;
+   Case XO Of
+    0: Begin Mnemonic := 'mcrf'; Operands := IntToStr((Instr Shr 23) And 7) + ',' + IntToStr((Instr Shr 18) And 7); End;
+    16: Begin
+     If (Bo = 20) And (Bi = 0) Then Begin
+      If LK Then Mnemonic := 'blrl' Else Mnemonic := 'blr';
+     End Else Begin
+      Mnemonic := 'bclr'; If LK Then Mnemonic := 'bclrl';
+      Operands := IntToStr(Bo) + ',' + IntToStr(Bi);
+     End;
+    End;
+    33: Mnemonic := 'crnor';
+    50: Mnemonic := 'rfi';
+    129: Mnemonic := 'crandc';
+    150: Mnemonic := 'isync';
+    193: Mnemonic := 'crxor';
+    225: Mnemonic := 'crnand';
+    257: Mnemonic := 'crand';
+    289: Mnemonic := 'creqv';
+    417: Mnemonic := 'crorc';
+    449: Mnemonic := 'cror';
+    528: Begin
+     If (Bo = 20) And (Bi = 0) Then Begin
+      If LK Then Mnemonic := 'bctrl' Else Mnemonic := 'bctr';
+     End Else Begin
+      Mnemonic := 'bcctr'; If LK Then Mnemonic := 'bcctrl';
+      Operands := IntToStr(Bo) + ',' + IntToStr(Bi);
+     End;
+    End;
+   End;
+   If (Mnemonic <> '(bad)') And
+      ((XO = 33) Or (XO = 129) Or (XO = 193) Or (XO = 225) Or
+       (XO = 257) Or (XO = 289) Or (XO = 417) Or (XO = 449)) Then
+    Operands := IntToStr((Instr Shr 21) And 31) + ',' +
+     IntToStr((Instr Shr 16) And 31) + ',' + IntToStr((Instr Shr 11) And 31);
+  End;
+  20, 21, 23: Begin
+   If Op = 20 Then Mnemonic := 'rlwimi'
+   Else If Op = 21 Then Mnemonic := 'rlwinm'
+   Else Mnemonic := 'rlwnm';
+   If Op = 23 Then B := PpcReg(Rb) Else B := IntToStr(Rb);
+   Operands := PpcReg(Ra) + ',' + PpcReg(Rt) + ',' + B + ',' +
+    IntToStr((Instr Shr 6) And 31) + ',' + IntToStr((Instr Shr 1) And 31);
+   If (Instr And 1) <> 0 Then Mnemonic := Mnemonic + '.';
+  End;
+  24, 25, 26, 27, 28, 29: Begin
+   Case Op Of
+    24: Mnemonic := 'ori'; 25: Mnemonic := 'oris';
+    26: Mnemonic := 'xori'; 27: Mnemonic := 'xoris';
+    28: Mnemonic := 'andi.'; 29: Mnemonic := 'andis.';
+   End;
+   If (Op = 24) And (Rt = 0) And (Ra = 0) And (Imm = 0) Then
+    Mnemonic := 'nop'
+   Else Operands := PpcReg(Ra) + ',' + PpcReg(Rt) + ',0x' + ToHexFixed(Imm, 4);
+  End;
+  31: Begin { X/XO }
+   XO := (Instr Shr 1) And $3FF;
+   OE := (Instr And $400) <> 0;
+   RcBit := (Instr And 1) <> 0;
+   If (XO = 520) Or (XO = 522) Or (XO = 552) Or (XO = 616) Or
+      (XO = 648) Or (XO = 650) Or (XO = 712) Or (XO = 714) Or
+      (XO = 744) Or (XO = 746) Or (XO = 747) Or (XO = 778) Or
+      (XO = 971) Or (XO = 1003) Then
+    XO := XO - 512; { bit OE separe du XO pour les formes arithmetiques }
+   A := PpcReg(Ra); B := PpcReg(Rb); D := PpcReg(Rt);
+   Suffix := ''; If OE Then Suffix := 'o'; If RcBit Then Suffix := Suffix + '.';
+   Case XO Of
+    0, 32: Begin
+     If XO = 0 Then Mnemonic := 'cmp' Else Mnemonic := 'cmpl';
+     Operands := IntToStr((Instr Shr 23) And 7) + ',' +
+      IntToStr((Instr Shr 21) And 1) + ',' + A + ',' + B;
+    End;
+    4: Begin Mnemonic := 'tw'; Operands := IntToStr(Rt) + ',' + A + ',' + B; End;
+    8: Begin Mnemonic := 'subfc' + Suffix; Operands := D + ',' + A + ',' + B; End;
+    10: Begin Mnemonic := 'addc' + Suffix; Operands := D + ',' + A + ',' + B; End;
+    11: Begin Mnemonic := 'mulhwu'; Operands := D + ',' + A + ',' + B; End;
+    19: Begin Mnemonic := 'mfcr'; Operands := D; End;
+    20: Begin Mnemonic := 'lwarx'; Operands := D + ',' + A + ',' + B; End;
+    23: Begin Mnemonic := 'lwzx'; Operands := D + ',' + A + ',' + B; End;
+    24: Begin Mnemonic := 'slw'; Operands := D + ',' + A + ',' + B; End;
+    26: Begin Mnemonic := 'cntlzw'; Operands := D + ',' + A; End;
+    28: Begin Mnemonic := 'and'; Operands := A + ',' + D + ',' + B; If RcBit Then Mnemonic := Mnemonic + '.'; End;
+    40: Begin Mnemonic := 'subf' + Suffix; Operands := D + ',' + A + ',' + B; End;
+    54: Mnemonic := 'dcbst';
+    55: Begin Mnemonic := 'lwzux'; Operands := D + ',' + A + ',' + B; End;
+    60: Begin Mnemonic := 'andc'; Operands := A + ',' + D + ',' + B; If RcBit Then Mnemonic := Mnemonic + '.'; End;
+    75: Begin Mnemonic := 'mulhw'; Operands := D + ',' + A + ',' + B; End;
+    83: Begin Mnemonic := 'mfmsr'; Operands := D; End;
+    86: Mnemonic := 'dcbf';
+    87: Begin Mnemonic := 'lbzx'; Operands := D + ',' + A + ',' + B; End;
+    104: Begin Mnemonic := 'neg' + Suffix; Operands := D + ',' + A; End;
+    124: Begin Mnemonic := 'nor'; Operands := A + ',' + D + ',' + B; If RcBit Then Mnemonic := Mnemonic + '.'; End;
+    136: Begin Mnemonic := 'subfe' + Suffix; Operands := D + ',' + A + ',' + B; End;
+    138: Begin Mnemonic := 'adde' + Suffix; Operands := D + ',' + A + ',' + B; End;
+    144: Begin Mnemonic := 'mtcrf'; Operands := '0x' + ToHexFixed((Instr Shr 12) And $FF, 2) + ',' + D; End;
+    146: Begin Mnemonic := 'mtmsr'; Operands := D; End;
+    150: Begin Mnemonic := 'stwcx.'; Operands := D + ',' + A + ',' + B; End;
+    151: Begin Mnemonic := 'stwx'; Operands := D + ',' + A + ',' + B; End;
+    183: Begin Mnemonic := 'stwux'; Operands := D + ',' + A + ',' + B; End;
+    200: Begin Mnemonic := 'subfze' + Suffix; Operands := D + ',' + A; End;
+    202: Begin Mnemonic := 'addze' + Suffix; Operands := D + ',' + A; End;
+    215: Begin Mnemonic := 'stbx'; Operands := D + ',' + A + ',' + B; End;
+    232: Begin Mnemonic := 'subfme' + Suffix; Operands := D + ',' + A; End;
+    234: Begin Mnemonic := 'addme' + Suffix; Operands := D + ',' + A; End;
+    235: Begin Mnemonic := 'mullw' + Suffix; Operands := D + ',' + A + ',' + B; End;
+    266: Begin Mnemonic := 'add' + Suffix; Operands := D + ',' + A + ',' + B; End;
+    278: Mnemonic := 'dcbt';
+    279: Begin Mnemonic := 'lhzx'; Operands := D + ',' + A + ',' + B; End;
+    284: Begin Mnemonic := 'eqv'; Operands := A + ',' + D + ',' + B; If RcBit Then Mnemonic := Mnemonic + '.'; End;
+    311: Begin Mnemonic := 'lhzux'; Operands := D + ',' + A + ',' + B; End;
+    316: Begin Mnemonic := 'xor'; Operands := A + ',' + D + ',' + B; If RcBit Then Mnemonic := Mnemonic + '.'; End;
+    339: Begin
+     Spr := ((Instr Shr 16) And $1F) Or ((Instr Shr 6) And $3E0);
+     If Spr = 8 Then Mnemonic := 'mflr'
+     Else If Spr = 9 Then Mnemonic := 'mfctr'
+     Else Mnemonic := 'mfspr';
+     Operands := D;
+     If Mnemonic = 'mfspr' Then Operands := Operands + ',' + PpcSprName(Spr);
+    End;
+    343: Begin Mnemonic := 'lhax'; Operands := D + ',' + A + ',' + B; End;
+    371: Begin Mnemonic := 'mftb'; Operands := D; End;
+    407: Begin Mnemonic := 'sthx'; Operands := D + ',' + A + ',' + B; End;
+    412: Begin Mnemonic := 'orc'; Operands := A + ',' + D + ',' + B; If RcBit Then Mnemonic := Mnemonic + '.'; End;
+    439: Begin Mnemonic := 'sthux'; Operands := D + ',' + A + ',' + B; End;
+    444: Begin
+     If Rb = Rt Then Begin Mnemonic := 'mr'; Operands := A + ',' + D; End
+     Else Begin Mnemonic := 'or'; Operands := A + ',' + D + ',' + B; If RcBit Then Mnemonic := Mnemonic + '.'; End;
+    End;
+    459: Begin Mnemonic := 'divwu' + Suffix; Operands := D + ',' + A + ',' + B; End;
+    467: Begin
+     Spr := ((Instr Shr 16) And $1F) Or ((Instr Shr 6) And $3E0);
+     If Spr = 8 Then Mnemonic := 'mtlr'
+     Else If Spr = 9 Then Mnemonic := 'mtctr'
+     Else Mnemonic := 'mtspr';
+     Operands := D;
+     If Mnemonic = 'mtspr' Then Operands := PpcSprName(Spr) + ',' + D;
+    End;
+    476: Begin Mnemonic := 'nand'; Operands := A + ',' + D + ',' + B; If RcBit Then Mnemonic := Mnemonic + '.'; End;
+    491: Begin Mnemonic := 'divw' + Suffix; Operands := D + ',' + A + ',' + B; End;
+    534: Begin Mnemonic := 'lwbrx'; Operands := D + ',' + A + ',' + B; End;
+    536: Begin Mnemonic := 'srw'; Operands := D + ',' + A + ',' + B; End;
+    598: Mnemonic := 'sync';
+    662: Begin Mnemonic := 'stwbrx'; Operands := D + ',' + A + ',' + B; End;
+    792: Begin Mnemonic := 'sraw'; Operands := D + ',' + A + ',' + B; End;
+    824: Begin Mnemonic := 'srawi'; Operands := D + ',' + A + ',' + IntToStr(Rb); End;
+    854: Mnemonic := 'eieio';
+    922: Begin Mnemonic := 'extsh'; Operands := A + ',' + D; If RcBit Then Mnemonic := Mnemonic + '.'; End;
+    954: Begin Mnemonic := 'extsb'; Operands := A + ',' + D; If RcBit Then Mnemonic := Mnemonic + '.'; End;
+   End;
+   If (Mnemonic = 'dcbst') Or (Mnemonic = 'dcbf') Or
+      (Mnemonic = 'dcbt') Then Operands := A + ',' + B;
+  End;
+  32..55: Begin
+   Mnemonic := DLoadStore[Op];
+   Operands := PpcReg(Rt) + ',' + PpcSigned(PpcSign16(Imm)) + '(' + PpcReg(Ra) + ')';
+  End;
+  58, 62: Begin { DS-form PPC64 }
+   Disp := Instr And $FFFC;
+   If (Disp And $8000) <> 0 Then Disp := Disp Or LongInt($FFFF0000);
+   If Op = 58 Then Begin
+    Case Instr And 3 Of 0: Mnemonic := 'ld'; 1: Mnemonic := 'ldu'; 2: Mnemonic := 'lwa'; End;
+   End Else Begin
+    Case Instr And 3 Of 0: Mnemonic := 'std'; 1: Mnemonic := 'stdu'; End;
+   End;
+   If Mnemonic <> '(bad)' Then
+    Operands := PpcReg(Rt) + ',' + PpcSigned(Disp) + '(' + PpcReg(Ra) + ')';
+  End;
+ End;
+
+ DisasmPpcOne := 4;
+End;
+
+{ ============================================================
   RECHERCHE DE SYMBOLE / SECTION POUR L AFFICHAGE
   ============================================================ }
 
@@ -5282,6 +5596,18 @@ End;
   @return Nom du format (ex: "elf32-i386", "pei-i386") }
 Function FormatName: String;
 Begin
+ If ((Arch = ARCH_PPC) Or (Arch = ARCH_PPCLE)) And
+    (BinFormat = FMT_ELF32) Then Begin
+  If Arch = ARCH_PPCLE Then FormatName := 'elf32-powerpcle'
+  Else FormatName := 'elf32-powerpc';
+  Exit;
+ End;
+ If ((Arch = ARCH_PPC) Or (Arch = ARCH_PPCLE)) And
+    (BinFormat = FMT_ELF64) Then Begin
+  If Arch = ARCH_PPCLE Then FormatName := 'elf64-powerpcle'
+  Else FormatName := 'elf64-powerpc';
+  Exit;
+ End;
  If ((Arch = ARCH_MIPS) Or (Arch = ARCH_MIPSEL)) And
     (BinFormat = FMT_ELF32) Then Begin
   If Arch = ARCH_MIPSEL Then FormatName := 'elf32-tradlittlemips'
@@ -5383,10 +5709,13 @@ Begin
  Else If (Arch = ARCH_X64) Or (Arch = ARCH_ARM64) Or
          ((Arch = ARCH_SPARC) And (BinFormat = FMT_ELF64)) Or
          (((Arch = ARCH_MIPS) Or (Arch = ARCH_MIPSEL)) And
+          (BinFormat = FMT_ELF64)) Or
+         (((Arch = ARCH_PPC) Or (Arch = ARCH_PPCLE)) And
           (BinFormat = FMT_ELF64)) Then AddrDigits := 16
  Else If (Arch = ARCH_ARM32) Or (Arch = ARCH_THUMB) Or
          (Arch = ARCH_68000) Or (Arch = ARCH_SPARC) Or
-         (Arch = ARCH_MIPS) Or (Arch = ARCH_MIPSEL) Then AddrDigits := 8
+         (Arch = ARCH_MIPS) Or (Arch = ARCH_MIPSEL) Or
+         (Arch = ARCH_PPC) Or (Arch = ARCH_PPCLE) Then AddrDigits := 8
  Else AddrDigits := 6;
  WriteLn;
  WriteLn(InFileName, ':     format ', FormatName);
@@ -5426,7 +5755,9 @@ Begin
    Else If Arch = ARCH_SPARC Then
    InstrLen := DisasmSparcOne(Off, VAddr, Mnemonic, Operands)
    Else If (Arch = ARCH_MIPS) Or (Arch = ARCH_MIPSEL) Then
-    InstrLen := DisasmMipsOne(Off, VAddr, Mnemonic, Operands)
+   InstrLen := DisasmMipsOne(Off, VAddr, Mnemonic, Operands)
+   Else If (Arch = ARCH_PPC) Or (Arch = ARCH_PPCLE) Then
+    InstrLen := DisasmPpcOne(Off, VAddr, Mnemonic, Operands)
    Else
     InstrLen := DisasmOne(Off, VAddr, Mnemonic, Operands);
    BytesTxt := '';
@@ -5489,7 +5820,8 @@ Procedure Help;Begin
  WriteLn('  -S       Melange source/assembleur (non supporte)');
  WriteLn('  -m arch  Force l''architecture de desassemblage :');
  WriteLn('           i386 (defaut), x86-64, 8086, 8080, 6502, z80, 6800,');
- WriteLn('           68000, sparc, sparcv9, mips, mipsel, arm, thumb');
+ WriteLn('           68000, sparc, sparcv9, mips, mipsel, ppc, ppcle,');
+ WriteLn('           arm, thumb');
  WriteLn('           ou arm64');
  WriteLn('  -b adr   Adresse de chargement (hexa) pour un binaire');
  WriteLn('           brut sans entete, ex: -b 8000 ou -b $8000');
@@ -5509,7 +5841,8 @@ Procedure Help;Begin
  WriteLn('complet, sans 68010/68020+/FPU/MMU) ; ARM 32 bits classique,');
  WriteLn('Thumb/Thumb-2 (sous-ensemble), AArch64 (sous-ensemble) et');
  WriteLn('SPARC V8/V8+ avec le noyau entier commun SPARC V9 ; MIPS');
- WriteLn('I/II et MIPS32, gros-boutiste ou little-endian.');
+ WriteLn('I/II et MIPS32 ; PowerPC 32 et noyau entier PowerPC 64,');
+ WriteLn('gros-boutiste ou little-endian.');
  WriteLn('Pas de SSE/AVX/NEON/VFP, pas d''opcodes etendus 0F pour le');
  WriteLn('8086, pas de DDCB/FDCB pour le Z80.');
 End;
@@ -5546,7 +5879,7 @@ BEGIN
    Inc(I);
    If I > ParamCount Then Begin
     WriteLn('Erreur : -m necessite une architecture (i386, x86-64, 8086, ',
-     '8080, 6502, z80, 6800, 68000, sparc, mips, mipsel, arm, thumb ou arm64).');
+     '8080, 6502, z80, 6800, 68000, sparc, mips, ppc, arm, thumb ou arm64).');
     Halt(1);
    End;
    If UpStr(ParamStr(I)) = '6502' Then Arch := ARCH_6502
@@ -5579,6 +5912,15 @@ BEGIN
    Else If (UpStr(ParamStr(I)) = 'MIPSEL') Or
            (UpStr(ParamStr(I)) = 'MIPS32EL') Or
            (UpStr(ParamStr(I)) = 'MIPSEL32') Then Arch := ARCH_MIPSEL
+   Else If (UpStr(ParamStr(I)) = 'PPC') Or
+           (UpStr(ParamStr(I)) = 'POWERPC') Or
+           (UpStr(ParamStr(I)) = 'PPC32') Or
+           (UpStr(ParamStr(I)) = 'PPC64') Or
+           (UpStr(ParamStr(I)) = 'POWERPC64') Then Arch := ARCH_PPC
+   Else If (UpStr(ParamStr(I)) = 'PPCLE') Or
+           (UpStr(ParamStr(I)) = 'POWERPCLE') Or
+           (UpStr(ParamStr(I)) = 'PPC64LE') Or
+           (UpStr(ParamStr(I)) = 'POWERPC64LE') Then Arch := ARCH_PPCLE
    Else Begin
     WriteLn('Architecture inconnue pour -m : ', ParamStr(I));
     Halt(1);
@@ -5627,6 +5969,9 @@ BEGIN
            (ElfMachine = EM_SPARCV9) Then Arch := ARCH_SPARC
    Else If ElfMachine = EM_MIPS Then Begin
     If ElfBigEndian Then Arch := ARCH_MIPS Else Arch := ARCH_MIPSEL;
+   End
+   Else If (ElfMachine = EM_PPC) Or (ElfMachine = EM_PPC64) Then Begin
+    If ElfBigEndian Then Arch := ARCH_PPC Else Arch := ARCH_PPCLE;
    End
    Else If BinFormat = FMT_ELF64 Then Arch := ARCH_X64;
    { ELF32 sans e_machine ARM reconnu : on laisse ARCH_X86 par defaut,
