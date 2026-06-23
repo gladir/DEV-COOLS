@@ -82,6 +82,7 @@ Const
  ARCH_6800  = 8;         { Motorola 6800 8 bits (voir Disasm6800One)   }
  ARCH_68000 = 9;         { Motorola 68000 16/32 bits (voir Disasm68kOne)}
  ARCH_8080  = 10;        { Intel 8080 8 bits (voir Disasm8080One)      }
+ ARCH_SPARC = 11;        { SPARC V8/V9 (voir DisasmSparcOne)           }
 
  { ----- Modes d adressage 6800 ----- }
  AM68_INH   = 0;         { inherent : aucun operande                   }
@@ -96,6 +97,9 @@ Const
  EM_ARM       = 40;
  EM_AARCH64   = 183;
  EM_68K       = 4;         { Motorola 68000 (e_machine ELF)              }
+ EM_SPARC     = 2;         { SPARC V8                                    }
+ EM_SPARC32PLUS = 18;      { SPARC V8+                                   }
+ EM_SPARCV9   = 43;        { SPARC V9 64 bits                            }
  PE_MACHINE_ARM   = $01C0;
  PE_MACHINE_ARMNT = $01C4;  { Thumb-2 (ARMv7 et plus, convention Windows) }
  PE_MACHINE_ARM64 = $AA64;
@@ -168,6 +172,7 @@ Var
  MachOBase    : LongInt;          { decalage de la tranche choisie dans un binaire universel (fat), 0 sinon }
  MachOCpuType : LongInt;          { cputype Mach-O, pour le choix automatique de Arch }
  ElfMachine   : LongInt;          { e_machine ELF, pour le choix automatique de Arch }
+ ElfBigEndian : Boolean;          { EI_DATA = ELFDATA2MSB                 }
  PEMachine    : LongInt;          { Machine du IMAGE_FILE_HEADER PE, idem }
  Mnem6502     : Array[0..255] Of String[4];
  Mode6502     : Array[0..255] Of Byte;
@@ -370,6 +375,28 @@ Begin
  GetDWordBE := R;
 End;
 
+{ @description: Lit un mot ELF selon l ordre des octets indique par
+    EI_DATA dans l entete ELF. }
+Function GetElfWord(Off: LongInt): Word;
+Begin
+ If ElfBigEndian Then GetElfWord := GetWordBE(Off)
+ Else GetElfWord := GetWord(Off);
+End;
+
+{ @description: Lit un double mot ELF selon EI_DATA. }
+Function GetElfDWord(Off: LongInt): LongInt;
+Begin
+ If ElfBigEndian Then GetElfDWord := GetDWordBE(Off)
+ Else GetElfDWord := GetDWord(Off);
+End;
+
+{ @description: Retourne les 32 bits bas d un champ ELF64. }
+Function GetElfQWordLow(Off: LongInt): LongInt;
+Begin
+ If ElfBigEndian Then GetElfQWordLow := GetDWordBE(Off + 4)
+ Else GetElfQWordLow := GetDWord(Off);
+End;
+
 { @description: Lit une chaine terminee par un octet nul a partir de
     la position Off, avec une longueur maximale de securite.
   @param Off Decalage (0-based) du premier caractere
@@ -542,26 +569,27 @@ Var
  FoundSymTab: Boolean;
 Begin
  Is64 := (BinFormat = FMT_ELF64);
- ElfMachine := GetWord(18); { e_machine, meme decalage en 32 et 64 bits }
+ ElfBigEndian := GetByte(5) = 2; { ELFDATA2MSB }
+ ElfMachine := GetElfWord(18); { e_machine, meme decalage en 32 et 64 bits }
  EntryPoint := 0;
  ImageBase := 0;
  If Is64 Then Begin
-  EntryPoint := GetDWord(24);          { partie basse de e_entry }
-  ShOff      := GetDWord(40);          { partie basse de e_shoff }
-  ShEntSize  := GetWord(58);
-  ShNum      := GetWord(60);
-  ShStrNdx   := GetWord(62);
+  EntryPoint := GetElfQWordLow(24);
+  ShOff      := GetElfQWordLow(40);
+  ShEntSize  := GetElfWord(58);
+  ShNum      := GetElfWord(60);
+  ShStrNdx   := GetElfWord(62);
  End Else Begin
-  EntryPoint := GetDWord(24);
-  ShOff      := GetDWord(32);
-  ShEntSize  := GetWord(46);
-  ShNum      := GetWord(48);
-  ShStrNdx   := GetWord(50);
+  EntryPoint := GetElfDWord(24);
+  ShOff      := GetElfDWord(32);
+  ShEntSize  := GetElfWord(46);
+  ShNum      := GetElfWord(48);
+  ShStrNdx   := GetElfWord(50);
  End;
  If (ShOff <= 0) Or (ShNum <= 0) Or (ShNum > MaxSections) Then Exit;
  { Localiser la table de noms de sections (.shstrtab) }
- If Is64 Then StrTabOff := GetDWord(ShOff + ShStrNdx * ShEntSize + 24)
- Else StrTabOff := GetDWord(ShOff + ShStrNdx * ShEntSize + 16);
+ If Is64 Then StrTabOff := GetElfQWordLow(ShOff + ShStrNdx * ShEntSize + 24)
+ Else StrTabOff := GetElfDWord(ShOff + ShStrNdx * ShEntSize + 16);
  SectionCount := 0;
  FoundSymTab := False;
  SymTabOff := 0; SymTabSize := 0; SymEntSize := 0; SymStrOff := 0;
@@ -569,33 +597,33 @@ Begin
   Base := ShOff + I * ShEntSize;
   Inc(SectionCount);
   If Is64 Then Begin
-   NameOff := GetDWord(Base);
+   NameOff := GetElfDWord(Base);
    Sections[SectionCount].Name    := GetCStr(StrTabOff + NameOff, 31);
-   Sections[SectionCount].VAddr   := GetDWord(Base + 16);
-   Sections[SectionCount].FileOff := GetDWord(Base + 24);
-   Sections[SectionCount].Size    := GetDWord(Base + 32);
-   Sections[SectionCount].IsCode  := (GetDWord(Base + 4) = 1) And
-    ((GetDWord(Base + 8) And 4) <> 0); { SHT_PROGBITS + SHF_EXECINSTR }
-   If GetDWord(Base + 4) = 2 Then Begin { SHT_SYMTAB }
-    SymTabOff  := GetDWord(Base + 24);
-    SymTabSize := GetDWord(Base + 32);
-    SymEntSize := GetDWord(Base + 56);
-    SymStrOff  := GetDWord(ShOff + GetDWord(Base + 28) * ShEntSize + 24);
+   Sections[SectionCount].VAddr   := GetElfQWordLow(Base + 16);
+   Sections[SectionCount].FileOff := GetElfQWordLow(Base + 24);
+   Sections[SectionCount].Size    := GetElfQWordLow(Base + 32);
+   Sections[SectionCount].IsCode  := (GetElfDWord(Base + 4) = 1) And
+    ((GetElfQWordLow(Base + 8) And 4) <> 0); { SHT_PROGBITS + SHF_EXECINSTR }
+   If GetElfDWord(Base + 4) = 2 Then Begin { SHT_SYMTAB }
+    SymTabOff  := GetElfQWordLow(Base + 24);
+    SymTabSize := GetElfQWordLow(Base + 32);
+    SymEntSize := GetElfQWordLow(Base + 56);
+    SymStrOff  := GetElfQWordLow(ShOff + GetElfDWord(Base + 40) * ShEntSize + 24);
     FoundSymTab := True;
    End;
   End Else Begin
-   NameOff := GetDWord(Base);
+   NameOff := GetElfDWord(Base);
    Sections[SectionCount].Name    := GetCStr(StrTabOff + NameOff, 31);
-   Sections[SectionCount].VAddr   := GetDWord(Base + 12);
-   Sections[SectionCount].FileOff := GetDWord(Base + 16);
-   Sections[SectionCount].Size    := GetDWord(Base + 20);
-   Sections[SectionCount].IsCode  := (GetDWord(Base + 4) = 1) And
-    ((GetDWord(Base + 8) And 4) <> 0);
-   If GetDWord(Base + 4) = 2 Then Begin { SHT_SYMTAB }
-    SymTabOff  := GetDWord(Base + 16);
-    SymTabSize := GetDWord(Base + 20);
-    SymEntSize := GetDWord(Base + 36);
-    SymStrOff  := GetDWord(ShOff + GetDWord(Base + 28) * ShEntSize + 16);
+   Sections[SectionCount].VAddr   := GetElfDWord(Base + 12);
+   Sections[SectionCount].FileOff := GetElfDWord(Base + 16);
+   Sections[SectionCount].Size    := GetElfDWord(Base + 20);
+   Sections[SectionCount].IsCode  := (GetElfDWord(Base + 4) = 1) And
+    ((GetElfDWord(Base + 8) And 4) <> 0);
+   If GetElfDWord(Base + 4) = 2 Then Begin { SHT_SYMTAB }
+    SymTabOff  := GetElfDWord(Base + 16);
+    SymTabSize := GetElfDWord(Base + 20);
+    SymEntSize := GetElfDWord(Base + 36);
+    SymStrOff  := GetElfDWord(ShOff + GetElfDWord(Base + 28) * ShEntSize + 16);
     FoundSymTab := True;
    End;
   End;
@@ -607,15 +635,15 @@ Begin
    If SymbolCount >= MaxSymbols Then Break;
    Base := SymTabOff + I * SymEntSize;
    If Is64 Then Begin
-    NameOff := GetDWord(Base);
+    NameOff := GetElfDWord(Base);
     Info    := GetByte(Base + 4);
-    Value   := GetDWord(Base + 8);
-    SecIdx  := GetWord(Base + 6);
+    Value   := GetElfQWordLow(Base + 8);
+    SecIdx  := GetElfWord(Base + 6);
    End Else Begin
-    NameOff := GetDWord(Base);
-    Value   := GetDWord(Base + 4);
+    NameOff := GetElfDWord(Base);
+    Value   := GetElfDWord(Base + 4);
     Info    := GetByte(Base + 12);
-    SecIdx  := GetWord(Base + 14);
+    SecIdx  := GetElfWord(Base + 14);
    End;
    SName := GetCStr(SymStrOff + NameOff, 63);
    If SName <> '' Then Begin
@@ -4803,6 +4831,196 @@ Begin
 End;
 
 { ============================================================
+  DESASSEMBLEUR SPARC V8 / SOUS-ENSEMBLE ENTIER V9
+  ============================================================ }
+
+{ @description: Retourne le nom ABI d un registre SPARC. }
+Function SparcReg(R: Byte): String;
+Const
+ Names: Array[0..31] Of String[3] = (
+  '%g0', '%g1', '%g2', '%g3', '%g4', '%g5', '%g6', '%g7',
+  '%o0', '%o1', '%o2', '%o3', '%o4', '%o5', '%o6', '%o7',
+  '%l0', '%l1', '%l2', '%l3', '%l4', '%l5', '%l6', '%l7',
+  '%i0', '%i1', '%i2', '%i3', '%i4', '%i5', '%i6', '%i7');
+Begin
+ SparcReg := Names[R And 31];
+End;
+
+{ @description: Formate l operande rs2/simm13 du format 3 SPARC. }
+Function SparcOp2(Instr: LongInt): String;
+Var
+ V: LongInt;
+Begin
+ If (Instr And $2000) <> 0 Then Begin
+  V := Instr And $1FFF;
+  If (V And $1000) <> 0 Then V := V Or LongInt($FFFFE000);
+  SparcOp2 := ToHexSignedDisp(V);
+  If V = 0 Then SparcOp2 := '0';
+ End Else
+  SparcOp2 := SparcReg(Instr And 31);
+End;
+
+{ @description: Formate une adresse memoire SPARC [rs1+rs2/simm13]. }
+Function SparcAddr(Instr: LongInt): String;
+Var
+ R1, O2: String;
+Begin
+ R1 := SparcReg((Instr Shr 14) And 31);
+ O2 := SparcOp2(Instr);
+ If O2 = '0' Then SparcAddr := '[' + R1 + ']'
+ Else If Copy(O2, 1, 1) = '-' Then SparcAddr := '[' + R1 + O2 + ']'
+ Else SparcAddr := '[' + R1 + '+' + O2 + ']';
+End;
+
+{ @description: Desassemble une instruction SPARC de 32 bits. Les
+    formats V8 entiers principaux sont couverts, ainsi que leur noyau
+    commun avec V9 : CALL, branches Bicc, SETHI, ALU, decalages,
+    SAVE/RESTORE, JMPL/RETT, traps et chargements/stockages. }
+Function DisasmSparcOne(Off, VAddrBase: LongInt;
+ Var Mnemonic, Operands: String): Integer;
+Const
+ BCond: Array[0..15] Of String[4] = (
+  'bn', 'be', 'ble', 'bl', 'bleu', 'bcs', 'bneg', 'bvs',
+  'ba', 'bne', 'bg', 'bge', 'bgu', 'bcc', 'bpos', 'bvc');
+ TCond: Array[0..15] Of String[4] = (
+  'tn', 'te', 'tle', 'tl', 'tleu', 'tcs', 'tneg', 'tvs',
+  'ta', 'tne', 'tg', 'tge', 'tgu', 'tcc', 'tpos', 'tvc');
+ AluNames: Array[0..31] Of String[8] = (
+  'add', 'and', 'or', 'xor', 'sub', 'andn', 'orn', 'xnor',
+  'addx', '', 'umul', 'smul', 'subx', '', 'udiv', 'sdiv',
+  'addcc', 'andcc', 'orcc', 'xorcc', 'subcc', 'andncc', 'orncc', 'xnorcc',
+  'taddcc', 'tsubcc', 'taddcctv', 'tsubcctv', 'mulscc', '', 'udivcc', 'sdivcc');
+ LoadNames: Array[0..27] Of String[7] = (
+  'ld', 'ldub', 'lduh', 'ldd', 'st', 'stb', 'sth', 'std',
+  'ldsb', 'ldsh', 'ldstub', 'swap', '', '', '', '',
+  'lda', 'lduba', 'lduha', 'ldda', 'sta', 'stba', 'stha', 'stda',
+  'ldsba', 'ldsha', 'ldstuba', 'swapa');
+Var
+ Instr, Disp, Target: LongInt;
+ Op, Op2, Op3, Rd, Rs1, Cond: Byte;
+ Annul: Boolean;
+ A, B, Dst, Addr, Asi: String;
+ IsStore: Boolean;
+Begin
+ Instr := GetDWordBE(Off);
+ Op := (Instr Shr 30) And 3;
+ Rd := (Instr Shr 25) And 31;
+ Mnemonic := '(bad)';
+ Operands := '';
+
+ If Op = 1 Then Begin
+  Disp := Instr Shl 2;
+  Target := VAddrBase + Disp;
+  Mnemonic := 'call';
+  Operands := '0x' + ToHexFixed(Target, 8);
+ End Else If Op = 0 Then Begin
+  Op2 := (Instr Shr 22) And 7;
+  If Op2 = 4 Then Begin
+   Disp := (Instr And $3FFFFF) Shl 10;
+   If (Rd = 0) And (Disp = 0) Then
+    Mnemonic := 'nop'
+   Else Begin
+    Mnemonic := 'sethi';
+    Operands := '%hi(0x' + ToHexFixed(Disp, 8) + '),' + SparcReg(Rd);
+   End;
+  End Else If Op2 = 2 Then Begin
+   Cond := (Instr Shr 25) And 15;
+   Annul := (Instr And LongInt($20000000)) <> 0;
+   Disp := Instr And $3FFFFF;
+   If (Disp And $200000) <> 0 Then Disp := Disp Or LongInt($FFC00000);
+   Target := VAddrBase + Disp * 4;
+   Mnemonic := BCond[Cond];
+   If Annul Then Mnemonic := Mnemonic + ',a';
+   Operands := '0x' + ToHexFixed(Target, 8);
+  End Else If Op2 = 0 Then Begin
+   Mnemonic := 'unimp';
+   Operands := '0x' + ToHexU(Instr And $3FFFFF);
+  End;
+ End Else Begin
+  Op3 := (Instr Shr 19) And 63;
+  Rs1 := (Instr Shr 14) And 31;
+  A := SparcReg(Rs1);
+  B := SparcOp2(Instr);
+  Dst := SparcReg(Rd);
+
+  If Op = 2 Then Begin
+   If Op3 <= 31 Then Begin
+    Mnemonic := AluNames[Op3];
+    If Mnemonic <> '' Then Operands := A + ',' + B + ',' + Dst
+    Else Mnemonic := '(bad)';
+   End Else Case Op3 Of
+    $25: Begin Mnemonic := 'sll'; Operands := A + ',' + B + ',' + Dst; End;
+    $26: Begin Mnemonic := 'srl'; Operands := A + ',' + B + ',' + Dst; End;
+    $27: Begin Mnemonic := 'sra'; Operands := A + ',' + B + ',' + Dst; End;
+    $28: Begin
+     Mnemonic := 'rd';
+     If Rs1 = 0 Then Operands := '%y,' + Dst
+     Else Operands := '%asr' + IntToStr(Rs1) + ',' + Dst;
+    End;
+    $29: Begin Mnemonic := 'rd'; Operands := '%psr,' + Dst; End;
+    $2A: Begin Mnemonic := 'rd'; Operands := '%wim,' + Dst; End;
+    $2B: Begin Mnemonic := 'rd'; Operands := '%tbr,' + Dst; End;
+    $30, $31, $32, $33: Begin
+     Mnemonic := 'wr';
+     Case Op3 Of
+      $30: If Rd = 0 Then Dst := '%y' Else Dst := '%asr' + IntToStr(Rd);
+      $31: Dst := '%psr';
+      $32: Dst := '%wim';
+      $33: Dst := '%tbr';
+     End;
+     Operands := A + ',' + B + ',' + Dst;
+    End;
+    $38: Begin
+     If (Rd = 0) And ((Instr And $2000) <> 0) And
+        ((Instr And $1FFF) = 8) And (Rs1 = 31) Then Mnemonic := 'ret'
+     Else If (Rd = 0) And ((Instr And $2000) <> 0) And
+             ((Instr And $1FFF) = 8) And (Rs1 = 15) Then Mnemonic := 'retl'
+     Else Begin
+      Mnemonic := 'jmpl';
+      Operands := SparcAddr(Instr) + ',' + Dst;
+     End;
+    End;
+    $39: Begin Mnemonic := 'rett'; Operands := SparcAddr(Instr); End;
+    $3A: Begin
+     Cond := (Instr Shr 25) And 15;
+     Mnemonic := TCond[Cond];
+     Operands := A + '+' + B;
+    End;
+    $3B: Begin Mnemonic := 'flush'; Operands := SparcAddr(Instr); End;
+    $3C: Begin Mnemonic := 'save'; Operands := A + ',' + B + ',' + Dst; End;
+    $3D: Begin Mnemonic := 'restore'; Operands := A + ',' + B + ',' + Dst; End;
+   End;
+  End Else Begin
+   Addr := SparcAddr(Instr);
+   If Op3 <= $1B Then Begin
+    Mnemonic := LoadNames[Op3];
+    If Mnemonic <> '' Then Begin
+     IsStore := (Op3 And 4) <> 0;
+     If Op3 In [$0B, $1B] Then IsStore := False; { SWAP/SWAPA }
+     If Op3 >= $10 Then Begin
+      Asi := '';
+      If (Instr And $2000) = 0 Then
+       Asi := ' 0x' + ToHexFixed((Instr Shr 5) And $FF, 2);
+      Addr := Addr + Asi;
+     End;
+     If IsStore Then Operands := Dst + ',' + Addr
+     Else Operands := Addr + ',' + Dst;
+    End;
+   End Else Case Op3 Of
+    $20: Begin Mnemonic := 'ld'; Operands := Addr + ',%f' + IntToStr(Rd); End;
+    $21: Begin Mnemonic := 'ld'; Operands := Addr + ',%fsr'; End;
+    $23: Begin Mnemonic := 'ldd'; Operands := Addr + ',%f' + IntToStr(Rd); End;
+    $24: Begin Mnemonic := 'st'; Operands := '%f' + IntToStr(Rd) + ',' + Addr; End;
+    $25: Begin Mnemonic := 'st'; Operands := '%fsr,' + Addr; End;
+    $27: Begin Mnemonic := 'std'; Operands := '%f' + IntToStr(Rd) + ',' + Addr; End;
+   End;
+  End;
+ End;
+
+ DisasmSparcOne := 4;
+End;
+
+{ ============================================================
   RECHERCHE DE SYMBOLE / SECTION POUR L AFFICHAGE
   ============================================================ }
 
@@ -4850,6 +5068,14 @@ End;
   @return Nom du format (ex: "elf32-i386", "pei-i386") }
 Function FormatName: String;
 Begin
+ If (Arch = ARCH_SPARC) And (BinFormat = FMT_ELF32) Then Begin
+  FormatName := 'elf32-sparc';
+  Exit;
+ End;
+ If (Arch = ARCH_SPARC) And (BinFormat = FMT_ELF64) Then Begin
+  FormatName := 'elf64-sparc';
+  Exit;
+ End;
  Case BinFormat Of
   FMT_ELF32: FormatName := 'elf32-i386';
   FMT_ELF64: FormatName := 'elf64-x86-64';
@@ -4928,9 +5154,10 @@ Begin
  If (Arch = ARCH_6502) Or (Arch = ARCH_8086) Or (Arch = ARCH_8080) Or
     (Arch = ARCH_Z80) Or (Arch = ARCH_6800) Then
   AddrDigits := 4
- Else If (Arch = ARCH_X64) Or (Arch = ARCH_ARM64) Then AddrDigits := 16
+ Else If (Arch = ARCH_X64) Or (Arch = ARCH_ARM64) Or
+         ((Arch = ARCH_SPARC) And (BinFormat = FMT_ELF64)) Then AddrDigits := 16
  Else If (Arch = ARCH_ARM32) Or (Arch = ARCH_THUMB) Or
-         (Arch = ARCH_68000) Then AddrDigits := 8
+         (Arch = ARCH_68000) Or (Arch = ARCH_SPARC) Then AddrDigits := 8
  Else AddrDigits := 6;
  WriteLn;
  WriteLn(InFileName, ':     format ', FormatName);
@@ -4966,7 +5193,9 @@ Begin
    Else If Arch = ARCH_6800 Then
     InstrLen := Disasm6800One(Off, VAddr, Mnemonic, Operands)
    Else If Arch = ARCH_68000 Then
-    InstrLen := Disasm68kOne(Off, VAddr, Mnemonic, Operands)
+   InstrLen := Disasm68kOne(Off, VAddr, Mnemonic, Operands)
+   Else If Arch = ARCH_SPARC Then
+    InstrLen := DisasmSparcOne(Off, VAddr, Mnemonic, Operands)
    Else
     InstrLen := DisasmOne(Off, VAddr, Mnemonic, Operands);
    BytesTxt := '';
@@ -5029,7 +5258,7 @@ Procedure Help;Begin
  WriteLn('  -S       Melange source/assembleur (non supporte)');
  WriteLn('  -m arch  Force l''architecture de desassemblage :');
  WriteLn('           i386 (defaut), x86-64, 8086, 8080, 6502, z80, 6800,');
- WriteLn('           68000, arm, thumb ou arm64');
+ WriteLn('           68000, sparc, sparcv9, arm, thumb ou arm64');
  WriteLn('  -b adr   Adresse de chargement (hexa) pour un binaire');
  WriteLn('           brut sans entete, ex: -b 8000 ou -b $8000');
  WriteLn('  -?       Aide sur cette commande');
@@ -5046,7 +5275,8 @@ Procedure Help;Begin
  WriteLn('sous-ensemble pratique de CB/ED/DD/FD) ; Motorola 6800');
  WriteLn('(jeu d''instructions complet) ; Motorola 68000 (jeu utilisateur');
  WriteLn('complet, sans 68010/68020+/FPU/MMU) ; ARM 32 bits classique,');
- WriteLn('Thumb/Thumb-2 (sous-ensemble) et AArch64 (sous-ensemble).');
+ WriteLn('Thumb/Thumb-2 (sous-ensemble), AArch64 (sous-ensemble) et');
+ WriteLn('SPARC V8/V8+ avec le noyau entier commun SPARC V9.');
  WriteLn('Pas de SSE/AVX/NEON/VFP, pas d''opcodes etendus 0F pour le');
  WriteLn('8086, pas de DDCB/FDCB pour le Z80.');
 End;
@@ -5083,7 +5313,7 @@ BEGIN
    Inc(I);
    If I > ParamCount Then Begin
     WriteLn('Erreur : -m necessite une architecture (i386, x86-64, 8086, ',
-     '8080, 6502, z80, 6800, 68000, arm, thumb ou arm64).');
+     '8080, 6502, z80, 6800, 68000, sparc, arm, thumb ou arm64).');
     Halt(1);
    End;
    If UpStr(ParamStr(I)) = '6502' Then Arch := ARCH_6502
@@ -5105,6 +5335,11 @@ BEGIN
    Else If UpStr(ParamStr(I)) = '6800' Then Arch := ARCH_6800
    Else If (UpStr(ParamStr(I)) = '68000') Or (UpStr(ParamStr(I)) = '68K') Or
            (UpStr(ParamStr(I)) = 'M68K') Then Arch := ARCH_68000
+   Else If (UpStr(ParamStr(I)) = 'SPARC') Or
+           (UpStr(ParamStr(I)) = 'SPARC32') Or
+           (UpStr(ParamStr(I)) = 'SPARCV8') Or
+           (UpStr(ParamStr(I)) = 'SPARC64') Or
+           (UpStr(ParamStr(I)) = 'SPARCV9') Then Arch := ARCH_SPARC
    Else Begin
     WriteLn('Architecture inconnue pour -m : ', ParamStr(I));
     Halt(1);
@@ -5149,6 +5384,8 @@ BEGIN
    If ElfMachine = EM_AARCH64 Then Arch := ARCH_ARM64
    Else If ElfMachine = EM_ARM Then Arch := ARCH_ARM32
    Else If ElfMachine = EM_68K Then Arch := ARCH_68000
+   Else If (ElfMachine = EM_SPARC) Or (ElfMachine = EM_SPARC32PLUS) Or
+           (ElfMachine = EM_SPARCV9) Then Arch := ARCH_SPARC
    Else If BinFormat = FMT_ELF64 Then Arch := ARCH_X64;
    { ELF32 sans e_machine ARM reconnu : on laisse ARCH_X86 par defaut,
      comme avant la prise en charge d e_machine. }
