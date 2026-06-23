@@ -26,6 +26,7 @@ Const
  MaxSections = 256;
  MaxDirs     = 16;
  MaxSymbols  = 8192;
+ MaxPdbStreams = 512;
  MaxFileSize = 16 * 1024 * 1024;
 
  IMAGE_DIRECTORY_ENTRY_EXPORT      = 0;
@@ -531,8 +532,232 @@ Begin
  PdbDirDWord := L;
 End;
 
+Function PdbStreamCount: LongInt;
+Begin
+ PdbStreamCount := PdbDirDWord(0);
+End;
+
+Function PdbStreamSize(Stream: LongInt): LongInt;
+Begin
+ If (Stream < 0) Or (Stream >= PdbStreamCount) Or
+    (Stream >= MaxPdbStreams) Then PdbStreamSize := -1
+ Else PdbStreamSize := PdbDirDWord(4 + Stream * 4);
+End;
+
+Function PdbStreamPage(Stream, PageIndex: LongInt): LongInt;
+Var I, Off, Size, Pages: LongInt;
+Begin
+ PdbStreamPage := -1;
+ If (Stream < 0) Or (Stream >= PdbStreamCount) Or
+    (Stream >= MaxPdbStreams) Then Exit;
+ Off := 4 + PdbStreamCount * 4;
+ For I := 0 To Stream - 1 Do Begin
+  Size := PdbStreamSize(I);
+  If Size < 0 Then Pages := 0
+  Else Pages := (Size + PdbPageSize - 1) Div PdbPageSize;
+  Inc(Off, Pages * 4);
+ End;
+ PdbStreamPage := PdbDirDWord(Off + PageIndex * 4);
+End;
+
+Function PdbStreamByte(Stream, Off: LongInt): Byte;
+Var Size, PageIndex, PageNo, FileOff: LongInt;
+Begin
+ PdbStreamByte := 0;
+ Size := PdbStreamSize(Stream);
+ If (Off < 0) Or (Size < 0) Or (Off >= Size) Then Exit;
+ PageIndex := Off Div PdbPageSize;
+ PageNo := PdbStreamPage(Stream, PageIndex);
+ If PageNo < 0 Then Exit;
+ FileOff := PageNo * PdbPageSize + (Off Mod PdbPageSize);
+ If (FileOff >= 0) And (FileOff < BufSize) Then
+  PdbStreamByte := GetByteAt(FileOff);
+End;
+
+Function PdbStreamWord(Stream, Off: LongInt): Word;
+Begin
+ PdbStreamWord := PdbStreamByte(Stream, Off) Or
+  (PdbStreamByte(Stream, Off + 1) Shl 8);
+End;
+
+Function PdbStreamDWord(Stream, Off: LongInt): LongInt;
+Var L: LongInt;
+Begin
+ L := PdbStreamByte(Stream, Off + 3);
+ L := (L Shl 8) Or PdbStreamByte(Stream, Off + 2);
+ L := (L Shl 8) Or PdbStreamByte(Stream, Off + 1);
+ L := (L Shl 8) Or PdbStreamByte(Stream, Off);
+ PdbStreamDWord := L;
+End;
+
+Function PdbStreamCStr(Stream, Off: LongInt; MaxLen: Integer): String;
+Var S: String; C: Byte; Size: LongInt;
+Begin
+ S := '';
+ Size := PdbStreamSize(Stream);
+ While (Off < Size) And (Length(S) < MaxLen) Do Begin
+  C := PdbStreamByte(Stream, Off);
+  If C = 0 Then Break;
+  If C >= 32 Then S := S + Chr(C) Else S := S + '.';
+  Inc(Off);
+ End;
+ PdbStreamCStr := S;
+End;
+
+Function PdbStreamGuid(Stream, Off: LongInt): String;
+Begin
+ PdbStreamGuid :=
+  HexByte(PdbStreamByte(Stream, Off + 3)) + HexByte(PdbStreamByte(Stream, Off + 2)) +
+  HexByte(PdbStreamByte(Stream, Off + 1)) + HexByte(PdbStreamByte(Stream, Off + 0)) + '-' +
+  HexByte(PdbStreamByte(Stream, Off + 5)) + HexByte(PdbStreamByte(Stream, Off + 4)) + '-' +
+  HexByte(PdbStreamByte(Stream, Off + 7)) + HexByte(PdbStreamByte(Stream, Off + 6)) + '-' +
+  HexByte(PdbStreamByte(Stream, Off + 8)) + HexByte(PdbStreamByte(Stream, Off + 9)) + '-' +
+  HexByte(PdbStreamByte(Stream, Off + 10)) + HexByte(PdbStreamByte(Stream, Off + 11)) +
+  HexByte(PdbStreamByte(Stream, Off + 12)) + HexByte(PdbStreamByte(Stream, Off + 13)) +
+  HexByte(PdbStreamByte(Stream, Off + 14)) + HexByte(PdbStreamByte(Stream, Off + 15));
+End;
+
+Function PdbSymKindName(K: Word): String;
+Begin
+ Case K Of
+  $110C: PdbSymKindName := 'LDATA32';
+  $110D: PdbSymKindName := 'GDATA32';
+  $110E: PdbSymKindName := 'PUB32';
+  $110F: PdbSymKindName := 'LPROC32_ID';
+  $1110: PdbSymKindName := 'GPROC32';
+  $1111: PdbSymKindName := 'LPROC32';
+  $1125: PdbSymKindName := 'PROCREF';
+  $1127: PdbSymKindName := 'LPROCREF';
+  $113E: PdbSymKindName := 'ANNOTATIONREF';
+  $1147: PdbSymKindName := 'GPROC32_ID';
+  $114C: PdbSymKindName := 'BUILDINFO';
+  $115D: PdbSymKindName := 'OBJNAME';
+  $115E: PdbSymKindName := 'COMPILE3';
+  $1160: PdbSymKindName := 'ENVBLOCK';
+  $1169: PdbSymKindName := 'INLINESITE';
+  $116C: PdbSymKindName := 'FILESTATIC';
+ Else PdbSymKindName := 'S_' + HexFixed(K,4);
+ End;
+End;
+
+Function PdbDbiPublicStream: Integer;
+Begin
+ If PdbStreamSize(3) >= 24 Then PdbDbiPublicStream := PdbStreamWord(3, 16)
+ Else PdbDbiPublicStream := -1;
+End;
+
+Function PdbDbiGlobalStream: Integer;
+Begin
+ If PdbStreamSize(3) >= 16 Then PdbDbiGlobalStream := PdbStreamWord(3, 12)
+ Else PdbDbiGlobalStream := -1;
+End;
+
+Function PdbDbiSymRecordStream: Integer;
+Begin
+ If PdbStreamSize(3) >= 24 Then PdbDbiSymRecordStream := PdbStreamWord(3, 20)
+ Else PdbDbiSymRecordStream := -1;
+End;
+
+Procedure DecodePdbSymbol(Stream, RecOff: LongInt);
+Var Len, Kind, Seg: Word; Offs, Flags, Typ, ProcLen: LongInt; Name: String;
+Begin
+ Len := PdbStreamWord(Stream, RecOff);
+ If Len < 2 Then Exit;
+ Kind := PdbStreamWord(Stream, RecOff + 2);
+ Case Kind Of
+  $110E: Begin { S_PUB32 }
+   Flags := PdbStreamDWord(Stream, RecOff + 4);
+   Offs := PdbStreamDWord(Stream, RecOff + 8);
+   Seg := PdbStreamWord(Stream, RecOff + 12);
+   Name := PdbStreamCStr(Stream, RecOff + 14, 120);
+   WriteLn('  ', PadRight(PdbSymKindName(Kind), 10), ' ',
+    HexFixed(Seg,4), ':', HexFixed(Offs,8), ' flags ',
+    HexFixed(Flags,8), ' ', Name);
+  End;
+  $110C, $110D: Begin { S_LDATA32 / S_GDATA32 }
+   Typ := PdbStreamDWord(Stream, RecOff + 4);
+   Offs := PdbStreamDWord(Stream, RecOff + 8);
+   Seg := PdbStreamWord(Stream, RecOff + 12);
+   Name := PdbStreamCStr(Stream, RecOff + 14, 120);
+   WriteLn('  ', PadRight(PdbSymKindName(Kind), 10), ' ',
+    HexFixed(Seg,4), ':', HexFixed(Offs,8), ' type ',
+    HexFixed(Typ,8), ' ', Name);
+  End;
+  $1110, $1111, $110F, $1147: Begin { PROC32 variants }
+   ProcLen := PdbStreamDWord(Stream, RecOff + 16);
+   Typ := PdbStreamDWord(Stream, RecOff + 28);
+   Offs := PdbStreamDWord(Stream, RecOff + 32);
+   Seg := PdbStreamWord(Stream, RecOff + 36);
+   Name := PdbStreamCStr(Stream, RecOff + 39, 120);
+   WriteLn('  ', PadRight(PdbSymKindName(Kind), 10), ' ',
+    HexFixed(Seg,4), ':', HexFixed(Offs,8), ' len ',
+    HexFixed(ProcLen,8), ' type ', HexFixed(Typ,8), ' ', Name);
+  End;
+  $1125, $1127: Begin { PROCREF/LPROCREF }
+   Offs := PdbStreamDWord(Stream, RecOff + 8);
+   Seg := PdbStreamWord(Stream, RecOff + 12);
+   Name := PdbStreamCStr(Stream, RecOff + 14, 120);
+   WriteLn('  ', PadRight(PdbSymKindName(Kind), 10), ' module ',
+    Seg, ' symoff ', HexFixed(Offs,8), ' ', Name);
+  End;
+  $115D: Begin { OBJNAME }
+   Name := PdbStreamCStr(Stream, RecOff + 8, 120);
+   WriteLn('  ', PadRight(PdbSymKindName(Kind), 10), ' ', Name);
+  End;
+ Else
+  If Len <= 256 Then
+   WriteLn('  ', PadRight(PdbSymKindName(Kind), 10), ' len ', Len);
+ End;
+End;
+
+Procedure DumpPdbSymbolStream(Stream: Integer; Title: String; MaxRecs: LongInt);
+Var Off, Size, Len, Count: LongInt;
+Begin
+ If (Stream < 0) Or (PdbStreamSize(Stream) <= 0) Then Exit;
+ WriteLn;
+ WriteLn(Title, ' (stream ', Stream, ')');
+ Off := 0;
+ Size := PdbStreamSize(Stream);
+ Count := 0;
+ While (Off + 4 <= Size) And ((MaxRecs <= 0) Or (Count < MaxRecs)) Do Begin
+  Len := PdbStreamWord(Stream, Off);
+  If (Len < 2) Or (Off + Len + 2 > Size) Then Break;
+  DecodePdbSymbol(Stream, Off);
+  Inc(Off, Len + 2);
+  Inc(Count);
+ End;
+ If (MaxRecs > 0) And (Off + 4 <= Size) Then
+  WriteLn('  ... sortie limitee a ', MaxRecs, ' enregistrements.');
+End;
+
+Procedure CmdSymbols; Forward;
+
+Procedure CmdPDBSymbols;
+Var GS, PS, SS: Integer;
+Begin
+ If Not IsPDB Then Begin
+  CmdSymbols;
+  Exit;
+ End;
+ GS := PdbDbiGlobalStream;
+ PS := PdbDbiPublicStream;
+ SS := PdbDbiSymRecordStream;
+ If PdbStreamSize(3) <= 0 Then Begin
+  WriteLn('Aucun stream DBI PDB.');
+  Exit;
+ End;
+ WriteLn('PDB SYMBOLS');
+ WriteLn('  Global stream       : ', GS);
+ WriteLn('  Public stream       : ', PS);
+ WriteLn('  Symbol record stream: ', SS);
+ DumpPdbSymbolStream(GS, 'Global symbols', 0);
+ DumpPdbSymbolStream(PS, 'Public symbols', 0);
+ DumpPdbSymbolStream(SS, 'Symbol records', 0);
+End;
+
 Procedure CmdPDBHeaders;
 Var StreamCount, I, Size, Pages, PageListOff: LongInt;
+    GS, PS, SS: Integer;
 Begin
  WriteLn('PDB FILE HEADER VALUES');
  WriteLn('        Microsoft C/C++ MSF 7.00');
@@ -556,6 +781,37 @@ Begin
   WriteLn(PadLeft(LToS(I), 3), ' ',
    PadLeft(HexFixed(Size,8), 9), ' ', Pages);
   Inc(PageListOff, Pages * 4);
+ End;
+ If PdbStreamSize(1) >= 28 Then Begin
+  WriteLn;
+  WriteLn('PDB INFO STREAM');
+  WriteLn('        ', HexFixed(PdbStreamDWord(1,0),8), ' version');
+  WriteLn('        ', HexFixed(PdbStreamDWord(1,4),8), ' signature');
+  WriteLn('        ', PdbStreamDWord(1,8), ' age');
+  WriteLn('        ', PdbStreamGuid(1,12), ' guid');
+ End;
+ If PdbStreamSize(2) >= 24 Then Begin
+  WriteLn;
+  WriteLn('TPI STREAM');
+  WriteLn('        ', HexFixed(PdbStreamDWord(2,0),8), ' version');
+  WriteLn('        ', HexFixed(PdbStreamDWord(2,8),8), ' type index begin');
+  WriteLn('        ', HexFixed(PdbStreamDWord(2,12),8), ' type index end');
+  WriteLn('        ', HexFixed(PdbStreamDWord(2,16),8), ' type record bytes');
+ End;
+ If PdbStreamSize(3) >= 64 Then Begin
+  GS := PdbDbiGlobalStream;
+  PS := PdbDbiPublicStream;
+  SS := PdbDbiSymRecordStream;
+  WriteLn;
+  WriteLn('DBI STREAM');
+  WriteLn('        ', HexFixed(PdbStreamDWord(3,4),8), ' version');
+  WriteLn('        ', PdbStreamDWord(3,8), ' age');
+  WriteLn('        ', GS, ' global symbol stream');
+  WriteLn('        ', PS, ' public symbol stream');
+  WriteLn('        ', SS, ' symbol record stream');
+  WriteLn('        ', HexFixed(PdbStreamDWord(3,24),8), ' module info size');
+  WriteLn('        ', HexFixed(PdbStreamDWord(3,48),8), ' optional debug header size');
+  WriteLn('        ', HexFixed(PdbStreamWord(3,58),4), ' machine');
  End;
 End;
 
@@ -656,49 +912,243 @@ Begin
  End;
 End;
 
-Function DecodeX86(Off: LongInt; Var Len: Integer): String;
-Var B, B2: Byte; D: LongInt;
+Function Reg32I(R: Byte): String;
+Const Names: Array[0..7] Of String[3] =
+ ('eax','ecx','edx','ebx','esp','ebp','esi','edi');
+Begin
+ Reg32I := Names[R And 7];
+End;
+
+Function Reg8I(R: Byte): String;
+Const Names: Array[0..7] Of String[3] =
+ ('al','cl','dl','bl','ah','ch','dh','bh');
+Begin
+ Reg8I := Names[R And 7];
+End;
+
+Function Grp1Name(N: Byte): String;
+Begin
+ Case N And 7 Of
+  0: Grp1Name := 'add';
+  1: Grp1Name := 'or';
+  2: Grp1Name := 'adc';
+  3: Grp1Name := 'sbb';
+  4: Grp1Name := 'and';
+  5: Grp1Name := 'sub';
+  6: Grp1Name := 'xor';
+ Else Grp1Name := 'cmp';
+ End;
+End;
+
+Function JccName(N: Byte): String;
+Begin
+ Case N And 15 Of
+  0: JccName := 'jo';
+  1: JccName := 'jno';
+  2: JccName := 'jb';
+  3: JccName := 'jae';
+  4: JccName := 'je';
+  5: JccName := 'jne';
+  6: JccName := 'jbe';
+  7: JccName := 'ja';
+  8: JccName := 'js';
+  9: JccName := 'jns';
+ 10: JccName := 'jp';
+ 11: JccName := 'jnp';
+ 12: JccName := 'jl';
+ 13: JccName := 'jge';
+ 14: JccName := 'jle';
+ Else JccName := 'jg';
+ End;
+End;
+
+Function SignedByte(B: Byte): LongInt;
+Begin
+ If B < 128 Then SignedByte := B Else SignedByte := LongInt(B) - 256;
+End;
+
+Function IntelHex(V: LongInt): String;
+Begin
+ IntelHex := HexFixed(V, 8) + 'h';
+End;
+
+Function ImmText(V: LongInt; Digits: Integer): String;
+Begin
+ If Digits <= 2 Then ImmText := HexFixed(V And $FF, 2) + 'h'
+ Else ImmText := HexFixed(V, Digits) + 'h';
+End;
+
+Function DispText(D: LongInt): String;
+Begin
+ If D = 0 Then DispText := ''
+ Else If D > 0 Then DispText := '+' + HexFixed(D, 8) + 'h'
+ Else DispText := '-' + HexFixed(-D, 8) + 'h';
+End;
+
+Function DecodeModRMIntel(Off: LongInt; Var Consumed: Integer;
+ Var RegField: Byte; Wide: Boolean): String;
+Var M, ModBits, RM, Scale, Idx, BaseR: Byte;
+    P, Disp: LongInt;
+    S, Inner, BaseText, IdxText: String;
+Begin
+ M := GetByteAt(Off);
+ ModBits := M Shr 6;
+ RegField := (M Shr 3) And 7;
+ RM := M And 7;
+ P := Off + 1;
+ Consumed := 1;
+
+ If ModBits = 3 Then Begin
+  If Wide Then DecodeModRMIntel := Reg32I(RM)
+  Else DecodeModRMIntel := Reg8I(RM);
+  Exit;
+ End;
+
+ Disp := 0;
+ Inner := '';
+ If RM = 4 Then Begin
+  M := GetByteAt(P); Inc(P); Inc(Consumed);
+  Scale := M Shr 6;
+  Idx := (M Shr 3) And 7;
+  BaseR := M And 7;
+  If (ModBits = 0) And (BaseR = 5) Then Begin
+   Disp := GetDWordAt(P); Inc(P, 4); Inc(Consumed, 4);
+   BaseText := '';
+  End Else
+   BaseText := Reg32I(BaseR);
+  If Idx = 4 Then IdxText := ''
+  Else Begin
+   IdxText := Reg32I(Idx);
+   If Scale <> 0 Then IdxText := IdxText + '*' + LToS(1 Shl Scale);
+  End;
+  Inner := BaseText;
+  If IdxText <> '' Then Begin
+   If Inner <> '' Then Inner := Inner + '+';
+   Inner := Inner + IdxText;
+  End;
+ End Else If (ModBits = 0) And (RM = 5) Then Begin
+  Disp := GetDWordAt(P); Inc(P, 4); Inc(Consumed, 4);
+  DecodeModRMIntel := 'dword ptr [' + IntelHex(Disp) + ']';
+  Exit;
+ End Else
+  Inner := Reg32I(RM);
+
+ If ModBits = 1 Then Begin
+  Disp := SignedByte(GetByteAt(P)); Inc(P); Inc(Consumed);
+ End Else If ModBits = 2 Then Begin
+  Disp := GetDWordAt(P); Inc(P, 4); Inc(Consumed, 4);
+ End;
+
+ S := '[' + Inner + DispText(Disp) + ']';
+ If Wide Then DecodeModRMIntel := 'dword ptr ' + S
+ Else DecodeModRMIntel := 'byte ptr ' + S;
+End;
+
+Function DecodeX86(Off, VAddr: LongInt; Var Len: Integer): String;
+Var B, Op2, RegF: Byte; D, Target, Imm: LongInt;
+    Used: Integer; RM, R: String;
 Begin
  B := GetByteAt(Off); Len := 1;
  Case B Of
-  $55: DecodeX86 := 'push ebp';
-  $53: DecodeX86 := 'push ebx';
-  $56: DecodeX86 := 'push esi';
-  $57: DecodeX86 := 'push edi';
-  $5D: DecodeX86 := 'pop ebp';
-  $5B: DecodeX86 := 'pop ebx';
-  $5E: DecodeX86 := 'pop esi';
-  $5F: DecodeX86 := 'pop edi';
+  $50..$57: DecodeX86 := 'push        ' + Reg32I(B - $50);
+  $58..$5F: DecodeX86 := 'pop         ' + Reg32I(B - $58);
+  $40..$47: DecodeX86 := 'inc         ' + Reg32I(B - $40);
+  $48..$4F: DecodeX86 := 'dec         ' + Reg32I(B - $48);
   $90: DecodeX86 := 'nop';
   $C3: DecodeX86 := 'ret';
-  $CC: DecodeX86 := 'int 3';
-  $E8: Begin Len := 5; D := GetDWordAt(Off+1); DecodeX86 := 'call ' + HexFixed(Off + 5 + D,8); End;
-  $E9: Begin Len := 5; D := GetDWordAt(Off+1); DecodeX86 := 'jmp ' + HexFixed(Off + 5 + D,8); End;
-  $EB: Begin Len := 2; DecodeX86 := 'jmp short'; End;
-  $68: Begin Len := 5; DecodeX86 := 'push ' + HexFixed(GetDWordAt(Off+1),8); End;
-  $6A: Begin Len := 2; DecodeX86 := 'push ' + HexFixed(GetByteAt(Off+1),2); End;
-  $B8..$BF: Begin Len := 5; DecodeX86 := 'mov r' + Chr(Ord('0') + (B And 7)) + ', ' + HexFixed(GetDWordAt(Off+1),8); End;
-  $8B: Begin Len := 2; B2 := GetByteAt(Off+1); DecodeX86 := 'mov /r ' + HexFixed(B2,2); End;
-  $89: Begin Len := 2; B2 := GetByteAt(Off+1); DecodeX86 := 'mov /r ' + HexFixed(B2,2); End;
-  $83: Begin Len := 3; DecodeX86 := 'op83 /r imm8'; End;
-  $0F: Begin Len := 2; DecodeX86 := '0f ' + HexFixed(GetByteAt(Off+1),2); End;
+  $C2: Begin Len := 3; DecodeX86 := 'ret         ' + ImmText(GetWordAt(Off+1),4); End;
+  $CC: DecodeX86 := 'int         3';
+  $68: Begin Len := 5; DecodeX86 := 'push        ' + ImmText(GetDWordAt(Off+1),8); End;
+  $6A: Begin Len := 2; DecodeX86 := 'push        ' + ImmText(GetByteAt(Off+1),2); End;
+  $B8..$BF: Begin Len := 5; DecodeX86 := 'mov         ' + Reg32I(B - $B8) + ',' + ImmText(GetDWordAt(Off+1),8); End;
+  $A1: Begin Len := 5; DecodeX86 := 'mov         eax,dword ptr [' + IntelHex(GetDWordAt(Off+1)) + ']'; End;
+  $A3: Begin Len := 5; DecodeX86 := 'mov         dword ptr [' + IntelHex(GetDWordAt(Off+1)) + '],eax'; End;
+  $E8: Begin Len := 5; D := GetDWordAt(Off+1); Target := VAddr + 5 + D; DecodeX86 := 'call        ' + HexFixed(Target,8); End;
+  $E9: Begin Len := 5; D := GetDWordAt(Off+1); Target := VAddr + 5 + D; DecodeX86 := 'jmp         ' + HexFixed(Target,8); End;
+  $EB: Begin Len := 2; Target := VAddr + 2 + SignedByte(GetByteAt(Off+1)); DecodeX86 := 'jmp         ' + HexFixed(Target,8); End;
+  $70..$7F: Begin Len := 2; Target := VAddr + 2 + SignedByte(GetByteAt(Off+1)); DecodeX86 := PadRight(JccName(B And 15), 12) + HexFixed(Target,8); End;
+  $88: Begin RM := DecodeModRMIntel(Off+1, Used, RegF, False); Len := 1 + Used; DecodeX86 := 'mov         ' + RM + ',' + Reg8I(RegF); End;
+  $8A: Begin RM := DecodeModRMIntel(Off+1, Used, RegF, False); Len := 1 + Used; DecodeX86 := 'mov         ' + Reg8I(RegF) + ',' + RM; End;
+  $89: Begin RM := DecodeModRMIntel(Off+1, Used, RegF, True); Len := 1 + Used; DecodeX86 := 'mov         ' + RM + ',' + Reg32I(RegF); End;
+  $8B: Begin RM := DecodeModRMIntel(Off+1, Used, RegF, True); Len := 1 + Used; DecodeX86 := 'mov         ' + Reg32I(RegF) + ',' + RM; End;
+  $8D: Begin RM := DecodeModRMIntel(Off+1, Used, RegF, True); Len := 1 + Used; DecodeX86 := 'lea         ' + Reg32I(RegF) + ',' + RM; End;
+  $C6: Begin RM := DecodeModRMIntel(Off+1, Used, RegF, False); Imm := GetByteAt(Off+1+Used); Len := 2 + Used; DecodeX86 := 'mov         ' + RM + ',' + ImmText(Imm,2); End;
+  $C7: Begin RM := DecodeModRMIntel(Off+1, Used, RegF, True); Imm := GetDWordAt(Off+1+Used); Len := 5 + Used; DecodeX86 := 'mov         ' + RM + ',' + ImmText(Imm,8); End;
+  $01: Begin RM := DecodeModRMIntel(Off+1, Used, RegF, True); Len := 1 + Used; DecodeX86 := 'add         ' + RM + ',' + Reg32I(RegF); End;
+  $03: Begin RM := DecodeModRMIntel(Off+1, Used, RegF, True); Len := 1 + Used; DecodeX86 := 'add         ' + Reg32I(RegF) + ',' + RM; End;
+  $29: Begin RM := DecodeModRMIntel(Off+1, Used, RegF, True); Len := 1 + Used; DecodeX86 := 'sub         ' + RM + ',' + Reg32I(RegF); End;
+  $2B: Begin RM := DecodeModRMIntel(Off+1, Used, RegF, True); Len := 1 + Used; DecodeX86 := 'sub         ' + Reg32I(RegF) + ',' + RM; End;
+  $31: Begin RM := DecodeModRMIntel(Off+1, Used, RegF, True); Len := 1 + Used; DecodeX86 := 'xor         ' + RM + ',' + Reg32I(RegF); End;
+  $33: Begin RM := DecodeModRMIntel(Off+1, Used, RegF, True); Len := 1 + Used; DecodeX86 := 'xor         ' + Reg32I(RegF) + ',' + RM; End;
+  $39: Begin RM := DecodeModRMIntel(Off+1, Used, RegF, True); Len := 1 + Used; DecodeX86 := 'cmp         ' + RM + ',' + Reg32I(RegF); End;
+  $3B: Begin RM := DecodeModRMIntel(Off+1, Used, RegF, True); Len := 1 + Used; DecodeX86 := 'cmp         ' + Reg32I(RegF) + ',' + RM; End;
+  $83: Begin
+        RM := DecodeModRMIntel(Off+1, Used, RegF, True);
+        Imm := SignedByte(GetByteAt(Off+1+Used));
+        Len := 2 + Used;
+        DecodeX86 := PadRight(Grp1Name(RegF), 12) + RM + ',' + ImmText(Imm,2);
+       End;
+  $81: Begin
+        RM := DecodeModRMIntel(Off+1, Used, RegF, True);
+        Imm := GetDWordAt(Off+1+Used);
+        Len := 5 + Used;
+        DecodeX86 := PadRight(Grp1Name(RegF), 12) + RM + ',' + ImmText(Imm,8);
+       End;
+  $85: Begin RM := DecodeModRMIntel(Off+1, Used, RegF, True); Len := 1 + Used; DecodeX86 := 'test        ' + RM + ',' + Reg32I(RegF); End;
+  $0F: Begin
+        Op2 := GetByteAt(Off+1);
+        If (Op2 >= $80) And (Op2 <= $8F) Then Begin
+         D := GetDWordAt(Off+2); Len := 6; Target := VAddr + 6 + D;
+         DecodeX86 := PadRight(JccName(Op2 And 15), 12) + HexFixed(Target,8);
+        End Else If (Op2 = $B6) Or (Op2 = $B7) Then Begin
+         RM := DecodeModRMIntel(Off+2, Used, RegF, Op2 = $B7);
+         Len := 2 + Used;
+         DecodeX86 := 'movzx       ' + Reg32I(RegF) + ',' + RM;
+        End Else If (Op2 = $BE) Or (Op2 = $BF) Then Begin
+         RM := DecodeModRMIntel(Off+2, Used, RegF, Op2 = $BF);
+         Len := 2 + Used;
+         DecodeX86 := 'movsx       ' + Reg32I(RegF) + ',' + RM;
+        End Else Begin
+         Len := 2;
+         DecodeX86 := 'db          0Fh,' + HexByte(Op2) + 'h';
+        End;
+       End;
+  $FF: Begin
+        RM := DecodeModRMIntel(Off+1, Used, RegF, True); Len := 1 + Used;
+        Case RegF And 7 Of
+         0: R := 'inc';
+         1: R := 'dec';
+         2: R := 'call';
+         4: R := 'jmp';
+         6: R := 'push';
+        Else R := 'grpff';
+        End;
+        DecodeX86 := PadRight(R, 12) + RM;
+       End;
  Else DecodeX86 := 'db ' + HexByte(B);
  End;
 End;
 
 Procedure CmdDisasm;
-Var I: Integer; Off, EndOff, V, L, J: LongInt; Mn: String;
+Var I, L, J: Integer; Off, EndOff, V: LongInt; Mn: String;
 Begin
+ WriteLn('Dump of file ', FileName);
+ WriteLn;
+ If IsPE Then WriteLn('File Type: EXECUTABLE IMAGE')
+ Else If IsCOFF Then WriteLn('File Type: COFF OBJECT')
+ Else WriteLn('File Type: UNKNOWN');
  For I := 1 To SectionCount Do Begin
   If Not SectionMatches(Sections[I].Name) Then Continue;
   If (Sections[I].Chars And $20000000) = 0 Then Continue;
   WriteLn;
-  WriteLn('Disassembly of section ', Sections[I].Name);
+  WriteLn('  Section ', Sections[I].Name, ' contains the following code:');
+  WriteLn;
   Off := Sections[I].RawPtr;
   EndOff := Off + Sections[I].RawSize;
   V := Sections[I].VAddr;
   While Off < EndOff Do Begin
-   Mn := DecodeX86(Off, Integer(L));
+   Mn := DecodeX86(Off, V, L);
+   If L <= 0 Then L := 1;
    Write(HexFixed(V,8), ': ');
    If Not OptDisasmNoBytes Then Begin
     For J := 0 To L - 1 Do Write(HexByte(GetByteAt(Off + J)), ' ');
@@ -1116,7 +1566,9 @@ Begin
  If OptImports Then CmdImports(False);
  If OptExports Then CmdExports;
  If OptDirectives Then CmdDirectives;
- If OptSymbols Then CmdSymbols;
+ If OptSymbols Then Begin
+  If IsPDB Then CmdPDBSymbols Else CmdSymbols;
+ End;
  If OptLineNumbers Then CmdLineNumbers;
  If OptRelocs Then CmdRelocations;
  If OptPData Or OptUnwind Then CmdPData;
