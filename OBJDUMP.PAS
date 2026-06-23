@@ -4918,8 +4918,10 @@ End;
     RES), ED (16 bits ADC/SBC/LD, NEG, IM, RETI/RETN, instructions de
     bloc LDIR/LDDR/CPIR/CPDR et variantes courtes LDI/LDD/CPI/CPD) et
     DD/FD (acces indexes (IX+d)/(IY+d) pour LD/ALU/INC/DEC, plus
-    PUSH/POP/INC/DEC/ADD/JP sur IX/IY directement). Ne couvre pas les
-    formes DDCB/FDCB (bit indexe), ni l ensemble des instructions
+    PUSH/POP/INC/DEC/ADD/JP sur IX/IY directement) et DDCB/FDCB
+    (rotations/decalages, BIT/RES/SET sur (IX+d)/(IY+d) ; le
+    deplacement precede l octet d opcode, a la difference des autres
+    formes DD/FD). Ne couvre pas l ensemble des instructions
     d entree/sortie ED, ni RLD/RRD.
   @param Off Decalage de l instruction dans le fichier
   @param VAddrBase Adresse virtuelle correspondant a Off
@@ -5065,6 +5067,37 @@ Begin
     If Op2 = $36 Then Begin
      D8 := GetByte(P); Inc(P);
      Operands := Operands + ',0x' + ToHexU(D8);
+    End;
+   End;
+   $CB: Begin
+    { DDCB/FDCB : operations bit (rotation/decalage, BIT/RES/SET) sur
+      l octet memoire (IX+d)/(IY+d). A la difference des autres
+      formes DD/FD, le deplacement precede ici l octet d opcode (qui
+      reprend exactement la grille X/Y/Z de l opcode CB simple, le
+      champ Z (registre) etant toujours ignore en pratique puisque
+      la cible documentee est systematiquement la case memoire
+      indexee, jamais un registre). }
+    Disp := ShortInt(GetByte(P)); Inc(P);
+    Op2 := GetByte(P); Inc(P);
+    X := (Op2 Shr 6) And 3;
+    Y := (Op2 Shr 3) And 7;
+    Case X Of
+     0: Begin
+      Mnemonic := RotZ80[Y];
+      Operands := '(' + IxName + IxDispStr(Disp) + ')';
+     End;
+     1: Begin
+      Mnemonic := 'BIT';
+      Operands := IntToStr(Y) + ',(' + IxName + IxDispStr(Disp) + ')';
+     End;
+     2: Begin
+      Mnemonic := 'RES';
+      Operands := IntToStr(Y) + ',(' + IxName + IxDispStr(Disp) + ')';
+     End;
+     3: Begin
+      Mnemonic := 'SET';
+      Operands := IntToStr(Y) + ',(' + IxName + IxDispStr(Disp) + ')';
+     End;
     End;
    End;
   Else Begin
@@ -9926,8 +9959,8 @@ Procedure Help;Begin
  WriteLn('Pas de NEON ni VFP (ARM/AArch64) : confiance insuffisante sur');
  WriteLn('leur encodage exact sans documentation de reference sous la');
  WriteLn('main, contrairement a SSE/AVX (encodages verifies a la main).');
- WriteLn('Pas d''opcodes etendus 0F pour le 8086, pas de DDCB/FDCB pour');
- WriteLn('le Z80.');
+ WriteLn('Pas d''opcodes etendus 0F pour le 8086. Z80 : DDCB/FDCB');
+ WriteLn('(bit indexe sur (IX+d)/(IY+d)) couvert.');
 End;
 
 { @description: Analyse le tampon courant (Buf/BufSize, deja passe
