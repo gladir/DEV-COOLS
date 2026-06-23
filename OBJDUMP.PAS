@@ -5,7 +5,8 @@
   @description: Clone partiel de l outil GNU "objdump", couvrant les
     formats binaires ELF32/ELF64 (Linux), PE32/PE32+ (Windows), EXE
     DOS reel (MZ) et ROM NES (iNES), avec desassemblage x86 32 bits,
-    x86-64, 8086/80186 et 6502 pour les instructions courantes.
+    x86-64, 8086/80186, 6502, Z80, Motorola 6800 et Motorola 68000
+    pour les instructions courantes.
 
     Portee assumee (voir discussion avec l utilisateur) :
     - Formats : ELF et PE (32 et 64 bits), EXE DOS MZ, ROM NES, et
@@ -79,6 +80,7 @@ Const
  ARCH_ARM64 = 6;         { AArch64 (voir DisasmArm64One)               }
  ARCH_Z80   = 7;         { Z80/8080 8 bits (voir DisasmZ80One)         }
  ARCH_6800  = 8;         { Motorola 6800 8 bits (voir Disasm6800One)   }
+ ARCH_68000 = 9;         { Motorola 68000 16/32 bits (voir Disasm68kOne)}
 
  { ----- Modes d adressage 6800 ----- }
  AM68_INH   = 0;         { inherent : aucun operande                   }
@@ -92,11 +94,13 @@ Const
  { ----- Types de machine ELF/PE utiles au choix automatique de Arch -----}
  EM_ARM       = 40;
  EM_AARCH64   = 183;
+ EM_68K       = 4;         { Motorola 68000 (e_machine ELF)              }
  PE_MACHINE_ARM   = $01C0;
  PE_MACHINE_ARMNT = $01C4;  { Thumb-2 (ARMv7 et plus, convention Windows) }
  PE_MACHINE_ARM64 = $AA64;
  CPU_TYPE_ARM     = $0000000C;
  CPU_TYPE_ARM64   : LongInt = LongInt($0100000C);
+ CPU_TYPE_MC680x0 = $00000006; { Motorola 68000 (cputype Mach-O)         }
 
  { ----- Modes d adressage 6502 ----- }
  AM_NONE = 0;            { opcode illegal/non documente                 }
@@ -3930,6 +3934,700 @@ Begin
 End;
 
 { ============================================================
+  DESASSEMBLEUR MOTOROLA 68000
+  ============================================================
+  A la difference du 6502/Z80/6800 (table d opcode fixe de 256
+  entrees), le 68000 encode ses instructions par champs de bits
+  (taille, mode d adressage, registre) sur un mot de 16 bits de
+  base, suivi de 0 a 2 mots d extension. Le decodage se fait donc
+  algorithmiquement plutot que par table, en suivant la table de
+  decodage officielle du M68000 Programmer s Reference Manual
+  (dispatch par les 4 bits de poids fort, puis sous-decodage par
+  groupe). Boutisme : comme le 6800, le 68000 est gros-boutiste
+  (voir GetWordBE/GetDWordBE). }
+
+{ @description: Nom d un registre de donnees D0-D7.
+  @param R Numero de registre (0-7)
+  @return "D0".."D7" }
+Function RegD68k(R: Byte): String;
+Begin
+ RegD68k := 'D' + Chr(Ord('0') + (R And 7));
+End;
+
+{ @description: Nom d un registre d adresse A0-A7.
+  @param R Numero de registre (0-7)
+  @return "A0".."A7" }
+Function RegA68k(R: Byte): String;
+Begin
+ RegA68k := 'A' + Chr(Ord('0') + (R And 7));
+End;
+
+{ @description: Suffixe de taille pour un mnemonique 68000.
+  @param Size 0=octet, 1=mot, 2=long
+  @return ".B", ".W" ou ".L" }
+Function SizeSuf68k(Size: Byte): String;
+Begin
+ If Size = 0 Then SizeSuf68k := '.B'
+ Else If Size = 1 Then SizeSuf68k := '.W'
+ Else SizeSuf68k := '.L';
+End;
+
+{ @description: Formate un deplacement signe avec signe explicite
+    ("+$nn" rendu comme "$nn", "-$nn" pour negatif), pour les modes
+    d adressage indexes/indirects du 68000.
+  @param V Valeur signee
+  @return "$nn" ou "-$nn" }
+Function Disp68kStr(V: LongInt): String;
+Begin
+ If V < 0 Then Disp68kStr := '-$' + ToHexU(-V)
+ Else Disp68kStr := '$' + ToHexU(V);
+End;
+
+{ @description: Nom de condition 68000 (utilise par Scc, DBcc et
+    Bcc, ce dernier remplacant les codes 0/1 par BRA/BSR).
+  @param C Code de condition (0-15)
+  @return Code mnemonique a 2 lettres ("EQ", "NE", "CC", ...) }
+Function CondName68k(C: Byte): String;
+Const
+ Names: Array[0..15] Of String[2] = (
+  'T', 'F', 'HI', 'LS', 'CC', 'CS', 'NE', 'EQ',
+  'VC', 'VS', 'PL', 'MI', 'GE', 'LT', 'GT', 'LE');
+Begin
+ CondName68k := Names[C And 15];
+End;
+
+{ @description: Lit une valeur immediate de taille Size a la
+    position Off (mot(s) d extension), pour les operandes "#imm".
+    Le format .B utilise l octet de poids faible d un mot complet
+    (l octet de poids fort est ignore par convention 68000).
+  @param Off Decalage (0-based) du premier mot d extension
+  @param Size 0=octet, 1=mot, 2=long
+  @param ExtraLen (sortie) nombre d octets d extension consommes
+  @return "#$nn" / "#$nnnn" / "#$nnnnnnnn" }
+Function ImmStr68k(Off: LongInt; Size: Byte; Var ExtraLen: Integer): String;
+Begin
+ If Size = 0 Then Begin
+  ImmStr68k := '#$' + ToHexFixed(GetWordBE(Off) And $FF, 2);
+  ExtraLen := 2;
+ End Else If Size = 1 Then Begin
+  ImmStr68k := '#$' + ToHexFixed(GetWordBE(Off), 4);
+  ExtraLen := 2;
+ End Else Begin
+  ImmStr68k := '#$' + ToHexFixed(GetDWordBE(Off), 8);
+  ExtraLen := 4;
+ End;
+End;
+
+{ @description: Decode un operande EA (effective address) 68000
+    complet (les 7 modes d adressage standards, dont les 5 formes
+    speciales du mode 7), et indique combien d octets d extension
+    ont ete consommes par cette EA (deplacements/valeurs absolues/
+    immediat).
+  @param Off Decalage (0-based) du premier octet suivant le mot
+    d instruction (ou le mot d extension precedent, si l EA n est
+    pas le premier operande)
+  @param VAddr Adresse virtuelle correspondant a Off (necessaire
+    pour resoudre les modes relatifs au PC)
+  @param Mode Champ mode (3 bits, 0-7)
+  @param Reg Champ registre (3 bits, 0-7, ou sous-mode si Mode=7)
+  @param Size Taille de l instruction (0=octet,1=mot,2=long), pour
+    le mode immediat
+  @param ExtraLen (sortie) nombre d octets d extension consommes
+  @return Texte de l operande }
+Function DecodeEA68k(Off, VAddr: LongInt; Mode, Reg, Size: Byte;
+ Var ExtraLen: Integer): String;
+Var
+ D16: Integer;
+ D8: ShortInt;
+ Ext: Word;
+ XnIsA: Boolean;
+ XnReg: Byte;
+ XnLong: Boolean;
+ XnStr: String;
+ Target: LongInt;
+Begin
+ ExtraLen := 0;
+ Case Mode Of
+  0: DecodeEA68k := RegD68k(Reg);
+  1: DecodeEA68k := RegA68k(Reg);
+  2: DecodeEA68k := '(' + RegA68k(Reg) + ')';
+  3: DecodeEA68k := '(' + RegA68k(Reg) + ')+';
+  4: DecodeEA68k := '-(' + RegA68k(Reg) + ')';
+  5: Begin
+   D16 := SmallInt(GetWordBE(Off));
+   ExtraLen := 2;
+   DecodeEA68k := Disp68kStr(D16) + '(' + RegA68k(Reg) + ')';
+  End;
+  6: Begin
+   Ext := GetWordBE(Off);
+   ExtraLen := 2;
+   XnIsA := (Ext And $8000) <> 0;
+   XnReg := (Ext Shr 12) And 7;
+   XnLong := (Ext And $0800) <> 0;
+   D8 := ShortInt(Ext And $FF);
+   If XnIsA Then XnStr := RegA68k(XnReg) Else XnStr := RegD68k(XnReg);
+   If XnLong Then XnStr := XnStr + '.L' Else XnStr := XnStr + '.W';
+   DecodeEA68k := Disp68kStr(D8) + '(' + RegA68k(Reg) + ',' + XnStr + ')';
+  End;
+ Else Begin { Mode = 7 : formes speciales, selectionnees par Reg }
+  Case Reg Of
+   0: Begin
+    D16 := SmallInt(GetWordBE(Off));
+    ExtraLen := 2;
+    DecodeEA68k := '$' + ToHexFixed(D16 And $FFFF, 4) + '.W';
+   End;
+   1: Begin
+    DecodeEA68k := '$' + ToHexFixed(GetDWordBE(Off), 8);
+    ExtraLen := 4;
+   End;
+   2: Begin
+    D16 := SmallInt(GetWordBE(Off));
+    ExtraLen := 2;
+    Target := VAddr + D16;
+    DecodeEA68k := '$' + ToHexFixed(Target, 8) + '(PC)';
+   End;
+   3: Begin
+    Ext := GetWordBE(Off);
+    ExtraLen := 2;
+    XnIsA := (Ext And $8000) <> 0;
+    XnReg := (Ext Shr 12) And 7;
+    XnLong := (Ext And $0800) <> 0;
+    D8 := ShortInt(Ext And $FF);
+    If XnIsA Then XnStr := RegA68k(XnReg) Else XnStr := RegD68k(XnReg);
+    If XnLong Then XnStr := XnStr + '.L' Else XnStr := XnStr + '.W';
+    DecodeEA68k := Disp68kStr(D8) + '(PC,' + XnStr + ')';
+   End;
+   4: DecodeEA68k := ImmStr68k(Off, Size, ExtraLen);
+  Else
+   DecodeEA68k := '?';
+  End;
+ End;
+ End;
+End;
+
+{ @description: Construit la liste de registres d une instruction
+    MOVEM ("D0-D3/D7/A0", etc.), avec compression des suites
+    consecutives. L ordre des bits du masque est inverse pour la
+    forme predecrement vers la memoire ("MOVEM regs,-(An)"), comme
+    specifie par le manuel Motorola.
+  @param Mask Masque 16 bits (bit 0 = D0 ou A7 selon Reverse)
+  @param Reverse Vrai si l EA destination est -(An)
+  @return Liste de registres separes par "/", plages par "-" }
+Function RegList68k(Mask: Word; Reverse: Boolean): String;
+Var
+ I, RunStart: Integer;
+ Names: Array[0..15] Of String[3];
+ Bits: Array[0..15] Of Boolean;
+ S: String;
+Begin
+ For I := 0 To 7 Do Names[I] := RegD68k(I);
+ For I := 0 To 7 Do Names[8 + I] := RegA68k(I);
+ For I := 0 To 15 Do Begin
+  If Reverse Then Bits[I] := (Mask And (1 Shl (15 - I))) <> 0
+  Else Bits[I] := (Mask And (1 Shl I)) <> 0;
+ End;
+ { Deux passes separees (D0-D7 puis A0-A7) : une plage ne doit
+   jamais franchir la frontiere entre registres de donnees et
+   registres d adresse, meme si leurs bits sont contigus dans le
+   masque (ex: "D6/D7/A0" doit rester "D6-D7/A0", pas "D6-A0"). }
+ S := '';
+ I := 0;
+ While I <= 7 Do Begin
+  If Bits[I] Then Begin
+   RunStart := I;
+   While (I <= 7) And Bits[I] Do Inc(I);
+   If S <> '' Then S := S + '/';
+   If I - 1 = RunStart Then S := S + Names[RunStart]
+   Else S := S + Names[RunStart] + '-' + Names[I - 1];
+  End Else Inc(I);
+ End;
+ I := 8;
+ While I <= 15 Do Begin
+  If Bits[I] Then Begin
+   RunStart := I;
+   While (I <= 15) And Bits[I] Do Inc(I);
+   If S <> '' Then S := S + '/';
+   If I - 1 = RunStart Then S := S + Names[RunStart]
+   Else S := S + Names[RunStart] + '-' + Names[I - 1];
+  End Else Inc(I);
+ End;
+ RegList68k := S;
+End;
+
+{ @description: Decode une instruction 68000 a la position Off et
+    renvoie son mnemonique, ses operandes et sa longueur en octets.
+    Couvre le jeu d instructions utilisateur du 68000 simple (pas
+    68010/68020+, pas de FPU 68881, pas de MMU 68851, pas de
+    CAS/CAS2/bitfields). MOVEP est decode avec une confiance plus
+    faible que le reste (instruction rarissime en pratique, jamais
+    validee contre un binaire reel).
+  @param Off Decalage (0-based) du mot d instruction
+  @param VAddrBase Adresse virtuelle de l instruction (pour les
+    branchements et les modes relatifs au PC)
+  @param Mnemonic (sortie) mnemonique decode
+  @param Operands (sortie) operandes formates
+  @return Longueur de l instruction en octets (toujours paire) }
+Function Disasm68kOne(Off, VAddrBase: LongInt;
+ Var Mnemonic, Operands: String): Integer;
+Var
+ Op: Word;
+ Len: Integer;
+ Top4, Nibble, Bit8, Nib2: Integer;
+ SrcMode, SrcReg, DstMode, DstReg: Byte;
+ Size, OpMode: Byte;
+ EA: String;
+ Ext: Integer;
+ Rx: Byte;
+ Cond: Byte;
+ DispB: ShortInt;
+ DispW: Integer;
+ Target: LongInt;
+ Mask: Word;
+ IsLong: Boolean;
+ Data3: Byte;
+ IsReg: Boolean;
+ TypeNames: Array[0..3] Of String[4];
+ ShCount, ShType: Byte;
+Begin
+ Op := GetWordBE(Off);
+ Len := 2;
+ Mnemonic := '(bad)';
+ Operands := '';
+ Top4 := (Op Shr 12) And $F;
+
+ Case Top4 Of
+
+  $0: Begin { immediat / bit ops / MOVEP }
+   Nibble := (Op Shr 8) And $F;
+   If (Nibble And 1) = 1 Then Begin
+    SrcMode := (Op Shr 3) And 7;
+    SrcReg  := Op And 7;
+    Rx := (Op Shr 9) And 7;
+    If SrcMode = 1 Then Begin { MOVEP Dx,(d16,Ay) ou l inverse }
+     DispW := SmallInt(GetWordBE(Off + 2));
+     Len := 4;
+     OpMode := (Op Shr 6) And 3;
+     If OpMode < 2 Then Begin { memoire -> registre }
+      If OpMode = 0 Then Mnemonic := 'MOVEP.W' Else Mnemonic := 'MOVEP.L';
+      Operands := Disp68kStr(DispW) + '(' + RegA68k(SrcReg) + '),' + RegD68k(Rx);
+     End Else Begin { registre -> memoire }
+      If OpMode = 2 Then Mnemonic := 'MOVEP.W' Else Mnemonic := 'MOVEP.L';
+      Operands := RegD68k(Rx) + ',' + Disp68kStr(DispW) + '(' + RegA68k(SrcReg) + ')';
+     End;
+    End Else Begin { BTST/BCHG/BCLR/BSET Dn,<ea> }
+     OpMode := (Op Shr 6) And 3;
+     If OpMode = 0 Then Mnemonic := 'BTST'
+     Else If OpMode = 1 Then Mnemonic := 'BCHG'
+     Else If OpMode = 2 Then Mnemonic := 'BCLR'
+     Else Mnemonic := 'BSET';
+     EA := DecodeEA68k(Off + 2, VAddrBase + 2, SrcMode, SrcReg, 0, Ext);
+     Len := 2 + Ext;
+     Operands := RegD68k(Rx) + ',' + EA;
+    End;
+   End Else Begin
+    Case Nibble Of
+     $0, $2, $4, $6, $A, $C: Begin
+      Size := (Op Shr 6) And 3;
+      SrcMode := (Op Shr 3) And 7;
+      SrcReg  := Op And 7;
+      If (Size = 3) And (SrcMode = 7) And (SrcReg = 4) Then
+       Mnemonic := '(bad)' { taille invalide }
+      Else If (SrcMode = 7) And (SrcReg = 4) And
+              ((Nibble = 0) Or (Nibble = 2) Or (Nibble = $A)) Then Begin
+       { formes speciales vers CCR/SR (ORI/ANDI/EORI uniquement) }
+       EA := ImmStr68k(Off + 2, Size, Ext);
+       Len := 2 + Ext;
+       If Nibble = 0 Then Mnemonic := 'ORI'
+       Else If Nibble = 2 Then Mnemonic := 'ANDI'
+       Else Mnemonic := 'EORI';
+       If Size = 0 Then Operands := EA + ',CCR'
+       Else Operands := EA + ',SR';
+      End Else Begin
+       EA := ImmStr68k(Off + 2, Size, Ext);
+       Len := 2 + Ext;
+       EA := EA + ',' + DecodeEA68k(Off + Len, VAddrBase + Len, SrcMode, SrcReg, Size, Ext);
+       Len := Len + Ext;
+       Case Nibble Of
+        $0: Mnemonic := 'ORI' + SizeSuf68k(Size);
+        $2: Mnemonic := 'ANDI' + SizeSuf68k(Size);
+        $4: Mnemonic := 'SUBI' + SizeSuf68k(Size);
+        $6: Mnemonic := 'ADDI' + SizeSuf68k(Size);
+        $A: Mnemonic := 'EORI' + SizeSuf68k(Size);
+        $C: Mnemonic := 'CMPI' + SizeSuf68k(Size);
+       End;
+       Operands := EA;
+      End;
+     End;
+     $8: Begin { BTST/BCHG/BCLR/BSET #imm,<ea> }
+      OpMode := (Op Shr 6) And 3;
+      SrcMode := (Op Shr 3) And 7;
+      SrcReg  := Op And 7;
+      EA := ImmStr68k(Off + 2, 0, Ext);
+      Len := 2 + Ext;
+      EA := EA + ',' + DecodeEA68k(Off + Len, VAddrBase + Len, SrcMode, SrcReg, 0, Ext);
+      Len := Len + Ext;
+      If OpMode = 0 Then Mnemonic := 'BTST'
+      Else If OpMode = 1 Then Mnemonic := 'BCHG'
+      Else If OpMode = 2 Then Mnemonic := 'BCLR'
+      Else Mnemonic := 'BSET';
+      Operands := EA;
+     End;
+    End; { Case Nibble }
+   End;
+  End;
+
+  $1, $2, $3: Begin { MOVE.B / MOVE.L / MOVE.W (et MOVEA) }
+   If Top4 = 1 Then Size := 0 Else If Top4 = 3 Then Size := 1 Else Size := 2;
+   DstReg  := (Op Shr 9) And 7;
+   DstMode := (Op Shr 6) And 7;
+   SrcMode := (Op Shr 3) And 7;
+   SrcReg  := Op And 7;
+   EA := DecodeEA68k(Off + 2, VAddrBase + 2, SrcMode, SrcReg, Size, Ext);
+   Len := 2 + Ext;
+   If DstMode = 1 Then Begin { MOVEA }
+    Mnemonic := 'MOVEA' + SizeSuf68k(Size);
+    Operands := EA + ',' + RegA68k(DstReg);
+   End Else Begin
+    Mnemonic := 'MOVE' + SizeSuf68k(Size);
+    Operands := EA + ',' + DecodeEA68k(Off + Len, VAddrBase + Len, DstMode, DstReg, Size, Ext);
+    Len := Len + Ext;
+   End;
+  End;
+
+  $4: Begin { groupe divers }
+   Bit8 := (Op Shr 8) And 1;
+   Nibble := (Op Shr 8) And $F;
+   If Bit8 = 1 Then Begin { CHK / LEA, registre variable }
+    Rx := (Op Shr 9) And 7;
+    SrcMode := (Op Shr 3) And 7;
+    SrcReg  := Op And 7;
+    OpMode := (Op Shr 6) And 3;
+    EA := DecodeEA68k(Off + 2, VAddrBase + 2, SrcMode, SrcReg, 1, Ext);
+    Len := 2 + Ext;
+    If OpMode = 2 Then Begin
+     Mnemonic := 'CHK';
+     Operands := EA + ',' + RegD68k(Rx);
+    End Else If OpMode = 3 Then Begin
+     Mnemonic := 'LEA';
+     Operands := EA + ',' + RegA68k(Rx);
+    End Else
+     Mnemonic := '(bad)';
+   End Else Begin
+    Case Nibble Of
+     $0, $2, $4, $6: Begin { NEGX/CLR/NEG/NOT, ou MOVE SR/CCR a size=11 }
+      Size := (Op Shr 6) And 3;
+      SrcMode := (Op Shr 3) And 7;
+      SrcReg  := Op And 7;
+      EA := DecodeEA68k(Off + 2, VAddrBase + 2, SrcMode, SrcReg, 1, Ext);
+      Len := 2 + Ext;
+      If Size = 3 Then Begin
+       If Nibble = 0 Then Begin Mnemonic := 'MOVE'; Operands := 'SR,' + EA; End
+       Else If Nibble = 4 Then Begin Mnemonic := 'MOVE'; Operands := EA + ',CCR'; End
+       Else If Nibble = 6 Then Begin Mnemonic := 'MOVE'; Operands := EA + ',SR'; End
+       Else Mnemonic := '(bad)';
+      End Else Begin
+       Case Nibble Of
+        $0: Mnemonic := 'NEGX' + SizeSuf68k(Size);
+        $2: Mnemonic := 'CLR' + SizeSuf68k(Size);
+        $4: Mnemonic := 'NEG' + SizeSuf68k(Size);
+        $6: Mnemonic := 'NOT' + SizeSuf68k(Size);
+       End;
+       Operands := EA;
+      End;
+     End;
+     $8: Begin { NBCD / SWAP / PEA / MOVEM (stockage) }
+      OpMode := (Op Shr 6) And 3;
+      SrcMode := (Op Shr 3) And 7;
+      SrcReg  := Op And 7;
+      If OpMode = 0 Then Begin
+       EA := DecodeEA68k(Off + 2, VAddrBase + 2, SrcMode, SrcReg, 0, Ext);
+       Len := 2 + Ext;
+       Mnemonic := 'NBCD';
+       Operands := EA;
+      End Else If OpMode = 1 Then Begin
+       If SrcMode = 0 Then Begin
+        Mnemonic := 'SWAP';
+        Operands := RegD68k(SrcReg);
+       End Else Begin
+        EA := DecodeEA68k(Off + 2, VAddrBase + 2, SrcMode, SrcReg, 2, Ext);
+        Len := 2 + Ext;
+        Mnemonic := 'PEA';
+        Operands := EA;
+       End;
+      End Else Begin
+       IsLong := OpMode = 3;
+       Mask := GetWordBE(Off + 2);
+       EA := DecodeEA68k(Off + 4, VAddrBase + 4, SrcMode, SrcReg, 0, Ext);
+       Len := 4 + Ext;
+       If IsLong Then Mnemonic := 'MOVEM.L' Else Mnemonic := 'MOVEM.W';
+       Operands := RegList68k(Mask, SrcMode = 4) + ',' + EA;
+      End;
+     End;
+     $A: Begin { TST / TAS / ILLEGAL }
+      Size := (Op Shr 6) And 3;
+      SrcMode := (Op Shr 3) And 7;
+      SrcReg  := Op And 7;
+      If (Size = 3) And (SrcMode = 7) And (SrcReg = 4) Then Begin
+       Mnemonic := 'ILLEGAL';
+       Len := 2;
+      End Else If Size = 3 Then Begin
+       EA := DecodeEA68k(Off + 2, VAddrBase + 2, SrcMode, SrcReg, 0, Ext);
+       Len := 2 + Ext;
+       Mnemonic := 'TAS';
+       Operands := EA;
+      End Else Begin
+       EA := DecodeEA68k(Off + 2, VAddrBase + 2, SrcMode, SrcReg, Size, Ext);
+       Len := 2 + Ext;
+       Mnemonic := 'TST' + SizeSuf68k(Size);
+       Operands := EA;
+      End;
+     End;
+     $C: Begin { MOVEM (chargement) }
+      OpMode := (Op Shr 6) And 3;
+      SrcMode := (Op Shr 3) And 7;
+      SrcReg  := Op And 7;
+      If OpMode >= 2 Then Begin
+       IsLong := OpMode = 3;
+       Mask := GetWordBE(Off + 2);
+       EA := DecodeEA68k(Off + 4, VAddrBase + 4, SrcMode, SrcReg, 0, Ext);
+       Len := 4 + Ext;
+       If IsLong Then Mnemonic := 'MOVEM.L' Else Mnemonic := 'MOVEM.W';
+       Operands := EA + ',' + RegList68k(Mask, False);
+      End Else
+       Mnemonic := '(bad)';
+     End;
+     $E: Begin { TRAP / LINK / UNLK / MOVE USP / RTx / JSR / JMP / ... }
+      Nib2 := (Op Shr 4) And $F;
+      Case Nib2 Of
+       $4: Begin Mnemonic := 'TRAP'; Operands := '#' + IntToStr(Op And $F); End;
+       $5: Begin
+        If (Op And 8) = 0 Then Begin
+         DispW := SmallInt(GetWordBE(Off + 2));
+         Len := 4;
+         Mnemonic := 'LINK';
+         Operands := RegA68k(Op And 7) + ',' + Disp68kStr(DispW);
+        End Else Begin
+         Mnemonic := 'UNLK'; Operands := RegA68k(Op And 7);
+        End;
+       End;
+       $6: Begin
+        If (Op And 8) = 0 Then Begin
+         Mnemonic := 'MOVE'; Operands := RegA68k(Op And 7) + ',USP';
+        End Else Begin
+         Mnemonic := 'MOVE'; Operands := 'USP,' + RegA68k(Op And 7);
+        End;
+       End;
+       $7: Begin
+        Case Op And $F Of
+         $0: Mnemonic := 'RESET';
+         $1: Mnemonic := 'NOP';
+         $2: Begin
+          Mnemonic := 'STOP';
+          Operands := ImmStr68k(Off + 2, 1, Ext);
+          Len := 2 + Ext;
+         End;
+         $3: Mnemonic := 'RTE';
+         $5: Mnemonic := 'RTS';
+         $6: Mnemonic := 'TRAPV';
+         $7: Mnemonic := 'RTR';
+        Else
+         Mnemonic := '(bad)';
+        End;
+       End;
+      Else Begin
+       OpMode := (Op Shr 6) And 3;
+       SrcMode := (Op Shr 3) And 7;
+       SrcReg  := Op And 7;
+       If OpMode >= 2 Then Begin
+        EA := DecodeEA68k(Off + 2, VAddrBase + 2, SrcMode, SrcReg, 2, Ext);
+        Len := 2 + Ext;
+        If OpMode = 2 Then Mnemonic := 'JSR' Else Mnemonic := 'JMP';
+        Operands := EA;
+       End Else
+        Mnemonic := '(bad)';
+      End;
+      End;
+     End;
+    Else
+     Mnemonic := '(bad)';
+    End; { Case Nibble }
+   End;
+  End;
+
+  $5: Begin { ADDQ/SUBQ ou Scc/DBcc }
+   Size := (Op Shr 6) And 3;
+   SrcMode := (Op Shr 3) And 7;
+   SrcReg  := Op And 7;
+   If Size = 3 Then Begin
+    Cond := (Op Shr 8) And $F;
+    If SrcMode = 1 Then Begin { DBcc Dn,label }
+     DispW := SmallInt(GetWordBE(Off + 2));
+     Len := 4;
+     Target := VAddrBase + 2 + DispW;
+     Mnemonic := 'DB' + CondName68k(Cond);
+     Operands := RegD68k(SrcReg) + ',$' + ToHexFixed(Target, 8);
+    End Else Begin
+     EA := DecodeEA68k(Off + 2, VAddrBase + 2, SrcMode, SrcReg, 0, Ext);
+     Len := 2 + Ext;
+     Mnemonic := 'S' + CondName68k(Cond);
+     Operands := EA;
+    End;
+   End Else Begin
+    Data3 := (Op Shr 9) And 7;
+    If Data3 = 0 Then Data3 := 8;
+    EA := DecodeEA68k(Off + 2, VAddrBase + 2, SrcMode, SrcReg, Size, Ext);
+    Len := 2 + Ext;
+    If ((Op Shr 8) And 1) = 0 Then Mnemonic := 'ADDQ' + SizeSuf68k(Size)
+    Else Mnemonic := 'SUBQ' + SizeSuf68k(Size);
+    Operands := '#$' + ToHexU(Data3) + ',' + EA;
+   End;
+  End;
+
+  $6: Begin { Bcc / BRA / BSR }
+   Cond := (Op Shr 8) And $F;
+   DispB := ShortInt(Op And $FF);
+   IsLong := False; { reutilise comme drapeau "deplacement invalide" }
+   If (Op And $FF) = 0 Then Begin
+    DispW := SmallInt(GetWordBE(Off + 2));
+    Len := 4;
+    Target := VAddrBase + 2 + DispW;
+   End Else If (Op And $FF) = $FF Then Begin
+    IsLong := True; { deplacement 32 bits, 68020+ uniquement : non supporte }
+    Len := 2;
+   End Else Begin
+    Target := VAddrBase + 2 + DispB;
+    Len := 2;
+   End;
+   If Not IsLong Then Begin
+    If Cond = 0 Then Mnemonic := 'BRA'
+    Else If Cond = 1 Then Mnemonic := 'BSR'
+    Else Mnemonic := 'B' + CondName68k(Cond);
+    Operands := '$' + ToHexFixed(Target, 8);
+   End;
+  End;
+
+  $7: Begin { MOVEQ }
+   Rx := (Op Shr 9) And 7;
+   Mnemonic := 'MOVEQ';
+   Operands := '#$' + ToHexFixed(ShortInt(Op And $FF), 8) + ',' + RegD68k(Rx);
+  End;
+
+  $8, $9, $B, $C, $D: Begin { OR/SUB/CMP+EOR/AND/ADD, et formes A/X/M associees }
+   Rx := (Op Shr 9) And 7;
+   OpMode := (Op Shr 6) And 7;
+   SrcMode := (Op Shr 3) And 7;
+   SrcReg  := Op And 7;
+   If (OpMode = 3) Or (OpMode = 7) Then Begin
+    { forme A : DIVU/DIVS (8), MULU/MULS (C), xxxA.W/.L <ea>,Ax (9,B,D) }
+    If OpMode = 3 Then Size := 1 Else Size := 2;
+    EA := DecodeEA68k(Off + 2, VAddrBase + 2, SrcMode, SrcReg, Size, Ext);
+    Len := 2 + Ext;
+    Case Top4 Of
+     $8: If OpMode = 3 Then Mnemonic := 'DIVU.W' Else Mnemonic := 'DIVS.W';
+     $C: If OpMode = 3 Then Mnemonic := 'MULU.W' Else Mnemonic := 'MULS.W';
+     $9: Mnemonic := 'SUBA' + SizeSuf68k(Size);
+     $B: Mnemonic := 'CMPA' + SizeSuf68k(Size);
+     $D: Mnemonic := 'ADDA' + SizeSuf68k(Size);
+    End;
+    Operands := EA + ',' + RegA68k(Rx);
+   End Else If OpMode <= 2 Then Begin
+    { forme normale : op.sz <ea>,Dn }
+    Size := OpMode;
+    EA := DecodeEA68k(Off + 2, VAddrBase + 2, SrcMode, SrcReg, Size, Ext);
+    Len := 2 + Ext;
+    Case Top4 Of
+     $8: Mnemonic := 'OR' + SizeSuf68k(Size);
+     $9: Mnemonic := 'SUB' + SizeSuf68k(Size);
+     $B: Mnemonic := 'CMP' + SizeSuf68k(Size);
+     $C: Mnemonic := 'AND' + SizeSuf68k(Size);
+     $D: Mnemonic := 'ADD' + SizeSuf68k(Size);
+    End;
+    Operands := EA + ',' + RegD68k(Rx);
+   End Else Begin
+    { OpMode in [4,5,6] : Dn,<ea>, ou formes X/BCD/EXG/CMPM selon SrcMode }
+    Size := OpMode - 4;
+    If Top4 = $C Then Begin { AND : ABCD ou EXG ou AND Dn,<ea> }
+     If (OpMode = 4) And (SrcMode <= 1) Then Begin
+      Mnemonic := 'ABCD';
+      If SrcMode = 0 Then
+       Operands := RegD68k(SrcReg) + ',' + RegD68k(Rx)
+      Else
+       Operands := '-(' + RegA68k(SrcReg) + '),-(' + RegA68k(Rx) + ')';
+     End Else If (OpMode = 5) And (SrcMode = 0) Then Begin
+      Mnemonic := 'EXG'; Operands := RegD68k(Rx) + ',' + RegD68k(SrcReg);
+     End Else If (OpMode = 5) And (SrcMode = 1) Then Begin
+      Mnemonic := 'EXG'; Operands := RegA68k(Rx) + ',' + RegA68k(SrcReg);
+     End Else If (OpMode = 6) And (SrcMode = 1) Then Begin
+      Mnemonic := 'EXG'; Operands := RegD68k(Rx) + ',' + RegA68k(SrcReg);
+     End Else Begin
+      EA := DecodeEA68k(Off + 2, VAddrBase + 2, SrcMode, SrcReg, Size, Ext);
+      Len := 2 + Ext;
+      Mnemonic := 'AND' + SizeSuf68k(Size);
+      Operands := RegD68k(Rx) + ',' + EA;
+     End;
+    End Else If Top4 = $B Then Begin { CMP/EOR : CMPM ou EOR Dn,<ea> }
+     If SrcMode = 1 Then Begin
+      Mnemonic := 'CMPM' + SizeSuf68k(Size);
+      Operands := '(' + RegA68k(SrcReg) + ')+,(' + RegA68k(Rx) + ')+';
+     End Else Begin
+      EA := DecodeEA68k(Off + 2, VAddrBase + 2, SrcMode, SrcReg, Size, Ext);
+      Len := 2 + Ext;
+      Mnemonic := 'EOR' + SizeSuf68k(Size);
+      Operands := RegD68k(Rx) + ',' + EA;
+     End;
+    End Else Begin { SUB(9)/OR(8)/ADD(D) : SUBX/ADDX/SBCD ou op Dn,<ea> }
+     If SrcMode <= 1 Then Begin
+      IsReg := SrcMode = 0;
+      If Top4 = $8 Then Begin
+       Mnemonic := 'SBCD';
+       If IsReg Then Operands := RegD68k(SrcReg) + ',' + RegD68k(Rx)
+       Else Operands := '-(' + RegA68k(SrcReg) + '),-(' + RegA68k(Rx) + ')';
+      End Else Begin
+       If Top4 = $9 Then Mnemonic := 'SUBX' + SizeSuf68k(Size)
+       Else Mnemonic := 'ADDX' + SizeSuf68k(Size);
+       If IsReg Then Operands := RegD68k(SrcReg) + ',' + RegD68k(Rx)
+       Else Operands := '-(' + RegA68k(SrcReg) + '),-(' + RegA68k(Rx) + ')';
+      End;
+     End Else Begin
+      EA := DecodeEA68k(Off + 2, VAddrBase + 2, SrcMode, SrcReg, Size, Ext);
+      Len := 2 + Ext;
+      If Top4 = $8 Then Mnemonic := 'OR' + SizeSuf68k(Size)
+      Else Mnemonic := 'ADD' + SizeSuf68k(Size);
+      Operands := RegD68k(Rx) + ',' + EA;
+     End;
+    End;
+   End;
+  End;
+
+  $E: Begin { decalages/rotations, registre uniquement sur 68000 }
+   TypeNames[0] := 'AS'; TypeNames[1] := 'LS';
+   TypeNames[2] := 'ROX'; TypeNames[3] := 'RO';
+   Size := (Op Shr 6) And 3;
+   ShType := (Op Shr 3) And 3;
+   If Size = 3 Then
+    Mnemonic := '(bad)' { forme memoire, 68020+ uniquement }
+   Else Begin
+    If ((Op Shr 8) And 1) = 1 Then Mnemonic := TypeNames[ShType] + 'L'
+    Else Mnemonic := TypeNames[ShType] + 'R';
+    Mnemonic := Mnemonic + SizeSuf68k(Size);
+    If ((Op Shr 5) And 1) = 1 Then
+     Operands := RegD68k((Op Shr 9) And 7) + ',' + RegD68k(Op And 7)
+    Else Begin
+     ShCount := (Op Shr 9) And 7;
+     If ShCount = 0 Then ShCount := 8;
+     Operands := '#$' + ToHexU(ShCount) + ',' + RegD68k(Op And 7);
+    End;
+   End;
+  End;
+
+ Else
+  Mnemonic := '(bad)';
+ End; { Case Top4 }
+
+ Disasm68kOne := Len;
+End;
+
+{ ============================================================
   RECHERCHE DE SYMBOLE / SECTION POUR L AFFICHAGE
   ============================================================ }
 
@@ -4058,7 +4756,8 @@ Begin
     (Arch = ARCH_6800) Then
   AddrDigits := 4
  Else If (Arch = ARCH_X64) Or (Arch = ARCH_ARM64) Then AddrDigits := 16
- Else If (Arch = ARCH_ARM32) Or (Arch = ARCH_THUMB) Then AddrDigits := 8
+ Else If (Arch = ARCH_ARM32) Or (Arch = ARCH_THUMB) Or
+         (Arch = ARCH_68000) Then AddrDigits := 8
  Else AddrDigits := 6;
  WriteLn;
  WriteLn(InFileName, ':     format ', FormatName);
@@ -4091,6 +4790,8 @@ Begin
     InstrLen := DisasmZ80One(Off, VAddr, Mnemonic, Operands)
    Else If Arch = ARCH_6800 Then
     InstrLen := Disasm6800One(Off, VAddr, Mnemonic, Operands)
+   Else If Arch = ARCH_68000 Then
+    InstrLen := Disasm68kOne(Off, VAddr, Mnemonic, Operands)
    Else
     InstrLen := DisasmOne(Off, VAddr, Mnemonic, Operands);
    BytesTxt := '';
@@ -4153,7 +4854,7 @@ Procedure Help;Begin
  WriteLn('  -S       Melange source/assembleur (non supporte)');
  WriteLn('  -m arch  Force l''architecture de desassemblage :');
  WriteLn('           i386 (defaut), x86-64, 8086, 6502, z80, 6800,');
- WriteLn('           arm, thumb ou arm64');
+ WriteLn('           68000, arm, thumb ou arm64');
  WriteLn('  -b adr   Adresse de chargement (hexa) pour un binaire');
  WriteLn('           brut sans entete, ex: -b 8000 ou -b $8000');
  WriteLn('  -?       Aide sur cette commande');
@@ -4167,7 +4868,8 @@ Procedure Help;Begin
  WriteLn('objdump) ; 8086/80186 16 bits (syntaxe Intel/MASM) ; 6502');
  WriteLn('complet (151 opcodes) ; Z80 (jeu de base complet, plus un');
  WriteLn('sous-ensemble pratique de CB/ED/DD/FD) ; Motorola 6800');
- WriteLn('(jeu d''instructions complet) ; ARM 32 bits classique,');
+ WriteLn('(jeu d''instructions complet) ; Motorola 68000 (jeu utilisateur');
+ WriteLn('complet, sans 68010/68020+/FPU/MMU) ; ARM 32 bits classique,');
  WriteLn('Thumb/Thumb-2 (sous-ensemble) et AArch64 (sous-ensemble).');
  WriteLn('Pas de SSE/AVX/NEON/VFP, pas d''opcodes etendus 0F pour le');
  WriteLn('8086, pas de DDCB/FDCB pour le Z80.');
@@ -4205,7 +4907,7 @@ Begin
    Inc(I);
    If I > ParamCount Then Begin
     WriteLn('Erreur : -m necessite une architecture (i386, x86-64, 8086, ',
-     '6502, z80, 6800, arm, thumb ou arm64).');
+     '6502, z80, 6800, 68000, arm, thumb ou arm64).');
     Halt(1);
    End;
    If UpStr(ParamStr(I)) = '6502' Then Arch := ARCH_6502
@@ -4223,6 +4925,8 @@ Begin
    Else If UpStr(ParamStr(I)) = 'THUMB' Then Arch := ARCH_THUMB
    Else If UpStr(ParamStr(I)) = 'Z80' Then Arch := ARCH_Z80
    Else If UpStr(ParamStr(I)) = '6800' Then Arch := ARCH_6800
+   Else If (UpStr(ParamStr(I)) = '68000') Or (UpStr(ParamStr(I)) = '68K') Or
+           (UpStr(ParamStr(I)) = 'M68K') Then Arch := ARCH_68000
    Else Begin
     WriteLn('Architecture inconnue pour -m : ', ParamStr(I));
     Halt(1);
@@ -4266,6 +4970,7 @@ Begin
   If Not ArchForced Then Begin
    If ElfMachine = EM_AARCH64 Then Arch := ARCH_ARM64
    Else If ElfMachine = EM_ARM Then Arch := ARCH_ARM32
+   Else If ElfMachine = EM_68K Then Arch := ARCH_68000
    Else If BinFormat = FMT_ELF64 Then Arch := ARCH_X64;
    { ELF32 sans e_machine ARM reconnu : on laisse ARCH_X86 par defaut,
      comme avant la prise en charge d e_machine. }
@@ -4285,6 +4990,7 @@ Begin
    Else If MachOCpuType = CPU_TYPE_X86 Then Arch := ARCH_X86
    Else If MachOCpuType = CPU_TYPE_ARM64 Then Arch := ARCH_ARM64
    Else If MachOCpuType = CPU_TYPE_ARM Then Arch := ARCH_ARM32
+   Else If MachOCpuType = CPU_TYPE_MC680x0 Then Arch := ARCH_68000
    Else If OptDisasm Then
     WriteLn('Avertissement : architecture Mach-O (cputype 0x',
      ToHexU(MachOCpuType), ') non prise en charge par le ',
