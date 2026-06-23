@@ -3,15 +3,16 @@
   @website(https://www.gladir.com/dev-cools)
   @abstract(Target: Turbo Pascal 7, Free Pascal 3.2)
   @description: Clone partiel de l outil GNU "objdump", couvrant les
-    formats binaires ELF32/ELF64 (Linux) et PE32/PE32+ (Windows), avec
-    desassemblage x86 32 bits pour les instructions courantes.
+    formats binaires ELF32/ELF64 (Linux), PE32/PE32+ (Windows), EXE
+    DOS reel (MZ) et ROM NES (iNES), avec desassemblage x86 32 bits,
+    x86-64, 8086/80186 et 6502 pour les instructions courantes.
 
     Portee assumee (voir discussion avec l utilisateur) :
-    - Formats : ELF (32 et 64 bits, ce dernier en lecture d en-tetes
-      best-effort) et PE/PE32 (32 et 64 bits, idem).
-    - Desassemblage (-d) : jeu d instructions x86 32 bits courant
-      (mov, push/pop, arithmetique, branchements, etc.), pas une
-      couverture exhaustive (pas de SSE/AVX/x86-64 REX).
+    - Formats : ELF et PE (32 et 64 bits), EXE DOS MZ, ROM NES, et
+      binaire brut (avec -m/-b).
+    - Desassemblage (-d) : jeu d instructions courant de chaque
+      architecture (mov, push/pop, arithmetique, branchements, etc.),
+      pas une couverture exhaustive (pas de SSE/AVX).
     - L option -S (melange source/assembleur) necessiterait de lire
       les informations de debogage (DWARF pour ELF, CodeView/PDB pour
       PE), hors de portee ici : elle affiche un message explicite
@@ -19,9 +20,12 @@
 
     Architecture : le fichier est charge entierement en memoire (via
     GetMem), puis lu par decalage (Off) avec des fonctions GetByte/
-    GetWord/GetDWord. Chaque format (ELF, PE) remplit les memes
-    tableaux Sections[]/Symbols[], consultes ensuite par les
-    commandes -h/-t/-d, independamment du format d origine.
+    GetWord/GetDWord. Chaque format (ELF, PE, MZ, NES) remplit les
+    memes tableaux Sections[]/Symbols[], consultes ensuite par les
+    commandes -h/-t/-d, independamment du format d origine. De meme,
+    chaque architecture (DisasmOne, Disasm64One, Disasm8086One,
+    Disasm6502One) expose une fonction d appel uniforme, choisie par
+    Arch (detectee automatiquement selon le format, ou forcee par -m).
 }
 
 Program OBJDUMP;
@@ -48,6 +52,7 @@ Const
  ARCH_X86  = 0;          { x86 32 bits (defaut, voir DisasmOne)         }
  ARCH_6502 = 1;          { 6502/65C02 8 bits (voir Disasm6502One)      }
  ARCH_8086 = 2;          { 8086/80186 16 bits (voir Disasm8086One)     }
+ ARCH_X64  = 3;          { x86-64 (prefixes REX, voir Disasm64One)     }
 
  { ----- Modes d adressage 6502 ----- }
  AM_NONE = 0;            { opcode illegal/non documente                 }
@@ -1082,6 +1087,559 @@ Begin
 End;
 
 { ============================================================
+  DESASSEMBLEUR X86-64 (prefixes REX, registres etendus, RIP-relatif)
+  ============================================================ }
+
+{ @description: Nom (prefixe %) du registre 64 bits numero R (0..15,
+    les valeurs 8..15 designant R8..R15, accessibles uniquement via
+    l extension REX du champ correspondant du ModRM/SIB).
+  @param R Numero de registre etendu (0..15)
+  @return Nom du registre 64 bits }
+Function Reg64(R: Byte): String;
+Const
+ Names: Array[0..15] Of String[4] = (
+  'rax', 'rcx', 'rdx', 'rbx', 'rsp', 'rbp', 'rsi', 'rdi',
+  'r8', 'r9', 'r10', 'r11', 'r12', 'r13', 'r14', 'r15');
+Begin
+ Reg64 := '%' + Names[R And 15];
+End;
+
+{ @description: Nom (prefixe %) du registre 32 bits numero R (0..15),
+    forme par defaut en mode 64 bits (operandes 32 bits implicites
+    sauf REX.W). R8..R15 sont notes r8d..r15d.
+  @param R Numero de registre etendu (0..15)
+  @return Nom du registre 32 bits }
+Function Reg32X(R: Byte): String;
+Const
+ Names: Array[0..15] Of String[5] = (
+  'eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi',
+  'r8d', 'r9d', 'r10d', 'r11d', 'r12d', 'r13d', 'r14d', 'r15d');
+Begin
+ Reg32X := '%' + Names[R And 15];
+End;
+
+{ @description: Nom (prefixe %) du registre 8 bits numero R (0..15).
+    En presence d un prefixe REX (RexPresent vrai), les numeros 4..7
+    designent spl/bpl/sil/dil (et non plus ah/ch/dh/bh, qui deviennent
+    inaccessibles dans une instruction prefixee REX) ; sans REX, la
+    convention historique ah/ch/dh/bh s applique.
+  @param R Numero de registre etendu (0..15)
+  @param RexPresent Vrai si l instruction courante porte un prefixe REX
+  @return Nom du registre 8 bits }
+Function Reg8X(R: Byte; RexPresent: Boolean): String;
+Const
+ NamesNoRex: Array[0..7] Of String[3] = (
+  'al', 'cl', 'dl', 'bl', 'ah', 'ch', 'dh', 'bh');
+ NamesRex: Array[0..15] Of String[4] = (
+  'al', 'cl', 'dl', 'bl', 'spl', 'bpl', 'sil', 'dil',
+  'r8b', 'r9b', 'r10b', 'r11b', 'r12b', 'r13b', 'r14b', 'r15b');
+Begin
+ If RexPresent Then Reg8X := '%' + NamesRex[R And 15]
+ Else Reg8X := '%' + NamesNoRex[R And 7];
+End;
+
+{ @description: Decode l octet ModRM (et l eventuel octet SIB et
+    deplacement) en mode 64 bits : structurellement identique a
+    DecodeModRM (meme codage SIB, mêmes cas particuliers Mod=00/RM=101
+    et SIB.base=101), mais (a) les champs Reg/RM/Index/Base sont
+    etendus a 4 bits par les bits REX.R/REX.X/REX.B, et (b) le cas
+    Mod=00,RM=101 (sans SIB), qui designait une adresse absolue
+    disp32 en 32 bits, designe desormais une adresse RIP-relative
+    ([RIP+disp32]) : le deplacement brut est affiche suivi de
+    "(%rip)", sans resoudre l adresse absolue (la longueur totale de
+    l instruction, necessaire pour ce calcul, n est pas encore connue
+    a cet instant si un immediat suit).
+  @param Off Decalage du premier octet (le ModRM lui-meme)
+  @param Consumed Nombre d octets consommes (sortie)
+  @param RegField Champ Reg (4 bits, etendu par REX.R) du ModRM (sortie)
+  @param Width Taille du registre pour le mode Mod=11 (8, 32 ou 64)
+  @param RexR Bit REX.R (etend le champ Reg)
+  @param RexX Bit REX.X (etend le champ Index du SIB)
+  @param RexB Bit REX.B (etend le champ RM/Base)
+  @param RexPresent Vrai si l instruction porte un prefixe REX (pour
+    le choix de la convention des registres 8 bits)
+  @return Texte de l operande (registre ou adresse memoire) }
+Function DecodeModRM64(Off: LongInt; Var Consumed: Integer;
+ Var RegField: Byte; Width: Integer;
+ RexR, RexX, RexB, RexPresent: Boolean): String;
+Var
+ ModB, RM, Scale, Idx, BaseR: Byte;
+ Disp: LongInt;
+ HasSIB, NoBase: Boolean;
+ P: LongInt;
+ Inner: String;
+ DispTxt: String;
+Begin
+ P := Off;
+ ModB := (GetByte(P) Shr 6) And 3;
+ RegField := (GetByte(P) Shr 3) And 7;
+ If RexR Then RegField := RegField Or 8;
+ RM := GetByte(P) And 7;
+ If RexB Then RM := RM Or 8;
+ Inc(P);
+ Consumed := 1;
+ If ModB = 3 Then Begin
+  Case Width Of
+   64: DecodeModRM64 := Reg64(RM);
+   8:  DecodeModRM64 := Reg8X(RM, RexPresent);
+  Else
+   DecodeModRM64 := Reg32X(RM);
+  End;
+  Exit;
+ End;
+ HasSIB := ((RM And 7) = 4);
+ Scale := 0; Idx := 0; BaseR := 0; NoBase := False;
+ If HasSIB Then Begin
+  Scale := (GetByte(P) Shr 6) And 3;
+  Idx   := (GetByte(P) Shr 3) And 7;
+  If RexX Then Idx := Idx Or 8;
+  BaseR := GetByte(P) And 7;
+  If RexB Then BaseR := BaseR Or 8;
+  Inc(P); Inc(Consumed);
+  NoBase := (BaseR = 5) And (ModB = 0);
+ End;
+ Disp := 0;
+ If (ModB = 0) And ((RM And 7) = 5) And (Not HasSIB) Then Begin
+  Disp := GetDWord(P); P := P + 4; Consumed := Consumed + 4;
+  DecodeModRM64 := ToHexSignedDisp(Disp) + '(%rip)';
+  Exit;
+ End;
+ If NoBase Then Begin
+  Disp := GetDWord(P); P := P + 4; Consumed := Consumed + 4;
+ End Else If ModB = 1 Then Begin
+  Disp := ShortInt(GetByte(P)); Inc(P); Inc(Consumed);
+ End Else If ModB = 2 Then Begin
+  Disp := GetDWord(P); P := P + 4; Consumed := Consumed + 4;
+ End;
+ Inner := '';
+ If HasSIB Then Begin
+  If Not NoBase Then Inner := Reg64(BaseR);
+  If Idx <> 4 Then Begin { Idx=4 (rsp, sans extension REX.X) signifie
+    "pas d index" ; avec REX.X, ce meme champ designe r12, un index
+    valide, donc le test porte sur la valeur ETENDUE. }
+   If Inner <> '' Then Inner := Inner + ',';
+   Inner := Inner + Reg64(Idx) + ',' + Chr(Ord('0') + (1 Shl Scale));
+  End;
+ End Else
+  Inner := Reg64(RM);
+ DispTxt := ToHexSignedDisp(Disp);
+ DecodeModRM64 := DispTxt + '(' + Inner + ')';
+End;
+
+{ @description: Desassemble une seule instruction x86-64 a partir du
+    decalage Off, en syntaxe AT&T (comme DisasmOne). Consomme d abord
+    un eventuel prefixe REX (0x40-0x4F, qui en mode 64 bits ne signifie
+    plus jamais inc/dec comme en 32 bits) pour determiner la taille
+    par defaut des operandes "larges" (32 bits sans REX.W, 64 bits
+    avec) et les bits d extension de registre R/X/B. Reutilise pour
+    le reste la meme structure d opcodes que DisasmOne (les
+    significations de base sont identiques), avec les differences
+    propres au mode 64 bits : adressage RIP-relatif, MOVSXD (0x63),
+    MOVABS (B8-BF avec REX.W, immediat 64 bits), absence des formes
+    inc/dec a un octet (0x40-0x4F, reservees aux prefixes REX).
+  @param Off Decalage de l instruction dans le fichier
+  @param VAddrBase Adresse virtuelle correspondant a Off
+  @param Mnemonic Mnemonique de l instruction (sortie)
+  @param Operands Operandes formates, syntaxe AT&T (sortie)
+  @return Nombre d octets occupes par l instruction }
+Function Disasm64One(Off, VAddrBase: LongInt;
+ Var Mnemonic, Operands: String): Integer;
+Var
+ Op, Op2, RexByte: Byte;
+ RexW, RexR, RexX, RexB, RexPresent: Boolean;
+ P: LongInt;
+ Len, WideSz: Integer;
+ RM: String;
+ RegF: Byte;
+ Imm: LongInt;
+ ImmHi: LongInt;
+ Rel: LongInt;
+Begin
+ P := Off;
+ RexByte := GetByte(P);
+ RexPresent := (RexByte And $F0) = $40;
+ If RexPresent Then Begin
+  RexW := (RexByte And 8) <> 0;
+  RexR := (RexByte And 4) <> 0;
+  RexX := (RexByte And 2) <> 0;
+  RexB := (RexByte And 1) <> 0;
+  Inc(P);
+ End Else Begin
+  RexW := False; RexR := False; RexX := False; RexB := False;
+ End;
+ If RexW Then WideSz := 64 Else WideSz := 32;
+ Op := GetByte(P);
+ Inc(P);
+ Mnemonic := '(bad)';
+ Operands := '';
+
+ { ----- push/pop registre (toujours 64 bits par defaut, meme sans
+   REX.W : REX.B etend seulement le numero de registre) ----- }
+ If (Op >= $50) And (Op <= $57) Then Begin
+  RegF := Op - $50; If RexB Then RegF := RegF Or 8;
+  Mnemonic := 'push'; Operands := Reg64(RegF);
+ End Else If (Op >= $58) And (Op <= $5F) Then Begin
+  RegF := Op - $58; If RexB Then RegF := RegF Or 8;
+  Mnemonic := 'pop'; Operands := Reg64(RegF);
+ End
+
+ { ----- push immediat ----- }
+ Else If Op = $68 Then Begin
+  Imm := GetDWord(P); P := P + 4;
+  Mnemonic := 'push'; Operands := '$0x' + ToHexU(Imm);
+ End Else If Op = $6A Then Begin
+  Imm := ShortInt(GetByte(P)); Inc(P);
+  Mnemonic := 'push'; Operands := '$0x' + ToHexU(Imm);
+ End
+
+ { ----- mov reg,imm : MOVABS reg64,imm64 avec REX.W (immediat 8
+   octets), sinon mov reg32,imm32 comme en 32 bits ----- }
+ Else If (Op >= $B8) And (Op <= $BF) Then Begin
+  RegF := Op - $B8; If RexB Then RegF := RegF Or 8;
+  If RexW Then Begin
+   Imm := GetDWord(P); ImmHi := GetDWord(P + 4); P := P + 8;
+   Mnemonic := 'movabs';
+   If ImmHi = 0 Then
+    Operands := '$0x' + ToHexU(Imm) + ',' + Reg64(RegF)
+   Else
+    Operands := '$0x' + ToHexU(ImmHi) + ToHexFixed(Imm, 8) + ',' +
+     Reg64(RegF);
+  End Else Begin
+   Imm := GetDWord(P); P := P + 4;
+   Mnemonic := 'mov'; Operands := '$0x' + ToHexU(Imm) + ',' + Reg32X(RegF);
+  End;
+ End
+
+ { ----- mov r/m,r (89) / mov r,r/m (8B), largeur selon REX.W ----- }
+ Else If Op = $89 Then Begin
+  RM := DecodeModRM64(P, Len, RegF, WideSz, RexR, RexX, RexB, RexPresent);
+  P := P + Len;
+  Mnemonic := 'mov';
+  If RexW Then Operands := Reg64(RegF) + ',' + RM
+  Else Operands := Reg32X(RegF) + ',' + RM;
+ End Else If Op = $8B Then Begin
+  RM := DecodeModRM64(P, Len, RegF, WideSz, RexR, RexX, RexB, RexPresent);
+  P := P + Len;
+  Mnemonic := 'mov';
+  If RexW Then Operands := RM + ',' + Reg64(RegF)
+  Else Operands := RM + ',' + Reg32X(RegF);
+ End
+
+ { ----- mov r/m8,r8 (88) / mov r8,r/m8 (8A) ----- }
+ Else If Op = $88 Then Begin
+  RM := DecodeModRM64(P, Len, RegF, 8, RexR, RexX, RexB, RexPresent);
+  P := P + Len;
+  Mnemonic := 'mov'; Operands := Reg8X(RegF, RexPresent) + ',' + RM;
+ End Else If Op = $8A Then Begin
+  RM := DecodeModRM64(P, Len, RegF, 8, RexR, RexX, RexB, RexPresent);
+  P := P + Len;
+  Mnemonic := 'mov'; Operands := RM + ',' + Reg8X(RegF, RexPresent);
+ End
+
+ { ----- mov r/m, imm32 (C7, signe-etendu en 64 bits si REX.W) ----- }
+ Else If Op = $C7 Then Begin
+  RM := DecodeModRM64(P, Len, RegF, WideSz, RexR, RexX, RexB, RexPresent);
+  P := P + Len;
+  Imm := GetDWord(P); P := P + 4;
+  Mnemonic := 'mov'; Operands := '$0x' + ToHexU(Imm) + ',' + RM;
+ End Else If Op = $C6 Then Begin
+  RM := DecodeModRM64(P, Len, RegF, 8, RexR, RexX, RexB, RexPresent);
+  P := P + Len;
+  Imm := GetByte(P); Inc(P);
+  Mnemonic := 'mov'; Operands := '$0x' + ToHexU(Imm) + ',' + RM;
+ End
+
+ { ----- lea reg, m ----- }
+ Else If Op = $8D Then Begin
+  RM := DecodeModRM64(P, Len, RegF, WideSz, RexR, RexX, RexB, RexPresent);
+  P := P + Len;
+  Mnemonic := 'lea';
+  If RexW Then Operands := RM + ',' + Reg64(RegF)
+  Else Operands := RM + ',' + Reg32X(RegF);
+ End
+
+ { ----- movsxd reg64, r/m32 (0x63 : signification propre au mode 64
+   bits, remplace l ancien ARPL 16 bits) ----- }
+ Else If Op = $63 Then Begin
+  RM := DecodeModRM64(P, Len, RegF, 32, RexR, RexX, RexB, RexPresent);
+  P := P + Len;
+  Mnemonic := 'movslq'; Operands := RM + ',' + Reg64(RegF);
+ End
+
+ { ----- groupe arithmetique 00-3F (add/or/adc/sbb/and/sub/xor/cmp) ----- }
+ Else If Op < $40 Then Begin
+  Case Op And 7 Of
+   0: Begin
+       RM := DecodeModRM64(P, Len, RegF, 8, RexR, RexX, RexB, RexPresent);
+       P := P + Len;
+       Mnemonic := Grp1Names[(Op Shr 3) And 7];
+       Operands := Reg8X(RegF, RexPresent) + ',' + RM;
+      End;
+   1: Begin
+       RM := DecodeModRM64(P, Len, RegF, WideSz, RexR, RexX, RexB, RexPresent);
+       P := P + Len;
+       Mnemonic := Grp1Names[(Op Shr 3) And 7];
+       If RexW Then Operands := Reg64(RegF) + ',' + RM
+       Else Operands := Reg32X(RegF) + ',' + RM;
+      End;
+   2: Begin
+       RM := DecodeModRM64(P, Len, RegF, 8, RexR, RexX, RexB, RexPresent);
+       P := P + Len;
+       Mnemonic := Grp1Names[(Op Shr 3) And 7];
+       Operands := RM + ',' + Reg8X(RegF, RexPresent);
+      End;
+   3: Begin
+       RM := DecodeModRM64(P, Len, RegF, WideSz, RexR, RexX, RexB, RexPresent);
+       P := P + Len;
+       Mnemonic := Grp1Names[(Op Shr 3) And 7];
+       If RexW Then Operands := RM + ',' + Reg64(RegF)
+       Else Operands := RM + ',' + Reg32X(RegF);
+      End;
+   4: Begin
+       Imm := GetByte(P); Inc(P);
+       Mnemonic := Grp1Names[(Op Shr 3) And 7];
+       Operands := '$0x' + ToHexU(Imm) + ',' + Reg8X(0, RexPresent);
+      End;
+   5: Begin
+       Imm := GetDWord(P); P := P + 4;
+       Mnemonic := Grp1Names[(Op Shr 3) And 7];
+       If RexW Then Operands := '$0x' + ToHexU(Imm) + ',' + Reg64(0)
+       Else Operands := '$0x' + ToHexU(Imm) + ',' + Reg32X(0);
+      End;
+  Else
+   Mnemonic := '(bad)';
+  End;
+ End
+
+ { ----- groupe 1 avec immediat : 80/81/83 ----- }
+ Else If Op = $80 Then Begin
+  RM := DecodeModRM64(P, Len, RegF, 8, RexR, RexX, RexB, RexPresent);
+  P := P + Len;
+  Imm := GetByte(P); Inc(P);
+  Mnemonic := Grp1Names[RegF And 7];
+  Operands := '$0x' + ToHexU(Imm) + ',' + RM;
+ End Else If Op = $81 Then Begin
+  RM := DecodeModRM64(P, Len, RegF, WideSz, RexR, RexX, RexB, RexPresent);
+  P := P + Len;
+  Imm := GetDWord(P); P := P + 4;
+  Mnemonic := Grp1Names[RegF And 7];
+  Operands := '$0x' + ToHexU(Imm) + ',' + RM;
+ End Else If Op = $83 Then Begin
+  RM := DecodeModRM64(P, Len, RegF, WideSz, RexR, RexX, RexB, RexPresent);
+  P := P + Len;
+  Imm := ShortInt(GetByte(P)); Inc(P);
+  Mnemonic := Grp1Names[RegF And 7];
+  Operands := '$0x' + ToHexU(Imm) + ',' + RM;
+ End
+
+ { ----- test r/m,r ; test AL/eAX,imm ----- }
+ Else If Op = $84 Then Begin
+  RM := DecodeModRM64(P, Len, RegF, 8, RexR, RexX, RexB, RexPresent);
+  P := P + Len;
+  Mnemonic := 'test'; Operands := Reg8X(RegF, RexPresent) + ',' + RM;
+ End Else If Op = $85 Then Begin
+  RM := DecodeModRM64(P, Len, RegF, WideSz, RexR, RexX, RexB, RexPresent);
+  P := P + Len;
+  Mnemonic := 'test';
+  If RexW Then Operands := Reg64(RegF) + ',' + RM
+  Else Operands := Reg32X(RegF) + ',' + RM;
+ End Else If Op = $A8 Then Begin
+  Imm := GetByte(P); Inc(P);
+  Mnemonic := 'test'; Operands := '$0x' + ToHexU(Imm) + ',' + Reg8X(0, RexPresent);
+ End Else If Op = $A9 Then Begin
+  Imm := GetDWord(P); P := P + 4;
+  Mnemonic := 'test';
+  If RexW Then Operands := '$0x' + ToHexU(Imm) + ',' + Reg64(0)
+  Else Operands := '$0x' + ToHexU(Imm) + ',' + Reg32X(0);
+ End
+
+ { ----- call/jmp relatifs (toujours rel32, meme en 64 bits) ----- }
+ Else If Op = $E8 Then Begin
+  Rel := GetDWord(P); P := P + 4;
+  Mnemonic := 'call'; Operands := '0x' + ToHexU(VAddrBase + (P - Off) + Rel);
+ End Else If Op = $E9 Then Begin
+  Rel := GetDWord(P); P := P + 4;
+  Mnemonic := 'jmp'; Operands := '0x' + ToHexU(VAddrBase + (P - Off) + Rel);
+ End Else If Op = $EB Then Begin
+  Rel := ShortInt(GetByte(P)); Inc(P);
+  Mnemonic := 'jmp'; Operands := '0x' + ToHexU(VAddrBase + (P - Off) + Rel);
+ End
+
+ { ----- Jcc rel8 (70-7F) ----- }
+ Else If (Op >= $70) And (Op <= $7F) Then Begin
+  Rel := ShortInt(GetByte(P)); Inc(P);
+  Mnemonic := 'j' + Cc16Names[Op - $70];
+  Operands := '0x' + ToHexU(VAddrBase + (P - Off) + Rel);
+ End
+
+ { ----- ret / leave / nop / int ----- }
+ Else If Op = $C3 Then Begin
+  Mnemonic := 'ret';
+ End Else If Op = $C2 Then Begin
+  Imm := GetWord(P); P := P + 2;
+  Mnemonic := 'ret'; Operands := '$0x' + ToHexU(Imm);
+ End Else If Op = $C9 Then Begin
+  Mnemonic := 'leave';
+ End Else If Op = $90 Then Begin
+  Mnemonic := 'nop';
+ End Else If Op = $CC Then Begin
+  Mnemonic := 'int3';
+ End Else If Op = $CD Then Begin
+  Imm := GetByte(P); Inc(P);
+  Mnemonic := 'int'; Operands := '$0x' + ToHexU(Imm);
+ End Else If Op = $98 Then Begin
+  If RexW Then Mnemonic := 'cdqe' Else Mnemonic := 'cwde';
+ End Else If Op = $99 Then Begin
+  If RexW Then Mnemonic := 'cqto' Else Mnemonic := 'cdq';
+ End
+
+ { ----- groupe decalages : C0/C1 (imm8), D0-D3 (1 ou CL) ----- }
+ Else If Op = $C0 Then Begin
+  RM := DecodeModRM64(P, Len, RegF, 8, RexR, RexX, RexB, RexPresent);
+  P := P + Len;
+  Imm := GetByte(P); Inc(P);
+  Mnemonic := ShiftNames[RegF And 7];
+  Operands := '$0x' + ToHexU(Imm) + ',' + RM;
+ End Else If Op = $C1 Then Begin
+  RM := DecodeModRM64(P, Len, RegF, WideSz, RexR, RexX, RexB, RexPresent);
+  P := P + Len;
+  Imm := GetByte(P); Inc(P);
+  Mnemonic := ShiftNames[RegF And 7];
+  Operands := '$0x' + ToHexU(Imm) + ',' + RM;
+ End Else If Op = $D0 Then Begin
+  RM := DecodeModRM64(P, Len, RegF, 8, RexR, RexX, RexB, RexPresent);
+  P := P + Len;
+  Mnemonic := ShiftNames[RegF And 7]; Operands := RM;
+ End Else If Op = $D1 Then Begin
+  RM := DecodeModRM64(P, Len, RegF, WideSz, RexR, RexX, RexB, RexPresent);
+  P := P + Len;
+  Mnemonic := ShiftNames[RegF And 7]; Operands := RM;
+ End Else If Op = $D2 Then Begin
+  RM := DecodeModRM64(P, Len, RegF, 8, RexR, RexX, RexB, RexPresent);
+  P := P + Len;
+  Mnemonic := ShiftNames[RegF And 7]; Operands := '%cl,' + RM;
+ End Else If Op = $D3 Then Begin
+  RM := DecodeModRM64(P, Len, RegF, WideSz, RexR, RexX, RexB, RexPresent);
+  P := P + Len;
+  Mnemonic := ShiftNames[RegF And 7]; Operands := '%cl,' + RM;
+ End
+
+ { ----- groupe FE/FF : inc/dec/call/jmp/push selon RegField ----- }
+ Else If Op = $FE Then Begin
+  RM := DecodeModRM64(P, Len, RegF, 8, RexR, RexX, RexB, RexPresent);
+  P := P + Len;
+  If (RegF And 7) = 0 Then Mnemonic := 'inc' Else Mnemonic := 'dec';
+  Operands := RM;
+ End Else If Op = $FF Then Begin
+  RM := DecodeModRM64(P, Len, RegF, WideSz, RexR, RexX, RexB, RexPresent);
+  P := P + Len;
+  Case RegF And 7 Of
+   0: Mnemonic := 'inc';
+   1: Mnemonic := 'dec';
+   2: Mnemonic := 'call';
+   4: Mnemonic := 'jmp';
+   6: Begin
+       { push : toujours 64 bits, le decodage ci-dessus en WideSz
+         (32 par defaut) ne s applique qu au texte de l operande deja
+         construit ; comme RM est deja forme, on l utilise tel quel. }
+       Mnemonic := 'push';
+      End;
+  Else
+   Mnemonic := '(bad)';
+  End;
+  If Mnemonic <> '(bad)' Then Operands := '*' + RM;
+ End
+
+ { ----- groupe F6/F7 : test/not/neg/mul/imul/div/idiv ----- }
+ Else If Op = $F6 Then Begin
+  RM := DecodeModRM64(P, Len, RegF, 8, RexR, RexX, RexB, RexPresent);
+  P := P + Len;
+  Case RegF And 7 Of
+   0, 1: Begin
+          Imm := GetByte(P); Inc(P);
+          Mnemonic := 'test'; Operands := '$0x' + ToHexU(Imm) + ',' + RM;
+         End;
+   2: Begin Mnemonic := 'not'; Operands := RM; End;
+   3: Begin Mnemonic := 'neg'; Operands := RM; End;
+   4: Begin Mnemonic := 'mul'; Operands := RM; End;
+   5: Begin Mnemonic := 'imul'; Operands := RM; End;
+   6: Begin Mnemonic := 'div'; Operands := RM; End;
+   7: Begin Mnemonic := 'idiv'; Operands := RM; End;
+  End;
+ End Else If Op = $F7 Then Begin
+  RM := DecodeModRM64(P, Len, RegF, WideSz, RexR, RexX, RexB, RexPresent);
+  P := P + Len;
+  Case RegF And 7 Of
+   0, 1: Begin
+          Imm := GetDWord(P); P := P + 4;
+          Mnemonic := 'test'; Operands := '$0x' + ToHexU(Imm) + ',' + RM;
+         End;
+   2: Begin Mnemonic := 'not'; Operands := RM; End;
+   3: Begin Mnemonic := 'neg'; Operands := RM; End;
+   4: Begin Mnemonic := 'mul'; Operands := RM; End;
+   5: Begin Mnemonic := 'imul'; Operands := RM; End;
+   6: Begin Mnemonic := 'div'; Operands := RM; End;
+   7: Begin Mnemonic := 'idiv'; Operands := RM; End;
+  End;
+ End
+
+ { ----- imul reg, r/m, imm (69 = imm32, 6B = imm8) ----- }
+ Else If Op = $69 Then Begin
+  RM := DecodeModRM64(P, Len, RegF, WideSz, RexR, RexX, RexB, RexPresent);
+  P := P + Len;
+  Imm := GetDWord(P); P := P + 4;
+  Mnemonic := 'imul';
+  If RexW Then Operands := '$0x' + ToHexU(Imm) + ',' + RM + ',' + Reg64(RegF)
+  Else Operands := '$0x' + ToHexU(Imm) + ',' + RM + ',' + Reg32X(RegF);
+ End Else If Op = $6B Then Begin
+  RM := DecodeModRM64(P, Len, RegF, WideSz, RexR, RexX, RexB, RexPresent);
+  P := P + Len;
+  Imm := ShortInt(GetByte(P)); Inc(P);
+  Mnemonic := 'imul';
+  If RexW Then Operands := '$0x' + ToHexU(Imm) + ',' + RM + ',' + Reg64(RegF)
+  Else Operands := '$0x' + ToHexU(Imm) + ',' + RM + ',' + Reg32X(RegF);
+ End
+
+ { ----- opcodes etendus 0F xx (Jcc rel32, movzx, movsx) ----- }
+ Else If Op = $0F Then Begin
+  Op2 := GetByte(P); Inc(P);
+  If (Op2 >= $80) And (Op2 <= $8F) Then Begin
+   Rel := GetDWord(P); P := P + 4;
+   Mnemonic := 'j' + Cc16Names[Op2 - $80];
+   Operands := '0x' + ToHexU(VAddrBase + (P - Off) + Rel);
+  End Else If Op2 = $B6 Then Begin
+   RM := DecodeModRM64(P, Len, RegF, 8, RexR, RexX, RexB, RexPresent);
+   P := P + Len;
+   Mnemonic := 'movzbl';
+   If RexW Then Operands := RM + ',' + Reg64(RegF)
+   Else Operands := RM + ',' + Reg32X(RegF);
+  End Else If Op2 = $B7 Then Begin
+   RM := DecodeModRM64(P, Len, RegF, 16, RexR, RexX, RexB, RexPresent);
+   P := P + Len;
+   Mnemonic := 'movzwl';
+   If RexW Then Operands := RM + ',' + Reg64(RegF)
+   Else Operands := RM + ',' + Reg32X(RegF);
+  End Else If Op2 = $BE Then Begin
+   RM := DecodeModRM64(P, Len, RegF, 8, RexR, RexX, RexB, RexPresent);
+   P := P + Len;
+   Mnemonic := 'movsbl';
+   If RexW Then Operands := RM + ',' + Reg64(RegF)
+   Else Operands := RM + ',' + Reg32X(RegF);
+  End Else If Op2 = $BF Then Begin
+   RM := DecodeModRM64(P, Len, RegF, 16, RexR, RexX, RexB, RexPresent);
+   P := P + Len;
+   Mnemonic := 'movswl';
+   If RexW Then Operands := RM + ',' + Reg64(RegF)
+   Else Operands := RM + ',' + Reg32X(RegF);
+  End Else
+   Mnemonic := '(bad)';
+ End;
+
+ If P <= Off Then P := Off + 1; { securite anti-boucle infinie }
+ Disasm64One := P - Off;
+End;
+
+{ ============================================================
   DESASSEMBLEUR 8086/80186 16 BITS (syntaxe Intel/MASM)
   ============================================================ }
 
@@ -1906,9 +2464,9 @@ Function FormatName: String;
 Begin
  Case BinFormat Of
   FMT_ELF32: FormatName := 'elf32-i386';
-  FMT_ELF64: FormatName := 'elf64-x86-64 (en-tetes seulement)';
+  FMT_ELF64: FormatName := 'elf64-x86-64';
   FMT_PE32:  FormatName := 'pei-i386';
-  FMT_PE64:  FormatName := 'pei-x86-64 (en-tetes seulement)';
+  FMT_PE64:  FormatName := 'pei-x86-64';
   FMT_NES:   FormatName := 'nes-rom (6502)';
   FMT_RAW:   FormatName := 'raw-binary (-m/-b)';
   FMT_MZ:    FormatName := 'mz-dos (8086)';
@@ -1970,6 +2528,7 @@ Var
  Mnemonic, Operands, BytesTxt, Lbl: String;
 Begin
  If (Arch = ARCH_6502) Or (Arch = ARCH_8086) Then AddrDigits := 4
+ Else If Arch = ARCH_X64 Then AddrDigits := 16
  Else AddrDigits := 6;
  WriteLn;
  WriteLn(InFileName, ':     format ', FormatName);
@@ -1990,6 +2549,8 @@ Begin
     InstrLen := Disasm6502One(Off, VAddr, Mnemonic, Operands)
    Else If Arch = ARCH_8086 Then
     InstrLen := Disasm8086One(Off, VAddr, Mnemonic, Operands)
+   Else If Arch = ARCH_X64 Then
+    InstrLen := Disasm64One(Off, VAddr, Mnemonic, Operands)
    Else
     InstrLen := DisasmOne(Off, VAddr, Mnemonic, Operands);
    BytesTxt := '';
@@ -2050,18 +2611,19 @@ Begin
  WriteLn('  -t       Affiche la table des symboles');
  WriteLn('  -S       Melange source/assembleur (non supporte)');
  WriteLn('  -m arch  Force l''architecture de desassemblage :');
- WriteLn('           i386 (defaut), 8086 ou 6502');
+ WriteLn('           i386 (defaut), x86-64, 8086 ou 6502');
  WriteLn('  -b adr   Adresse de chargement (hexa) pour un binaire');
  WriteLn('           brut sans entete, ex: -b 8000 ou -b $8000');
  WriteLn('  -?       Aide sur cette commande');
  WriteLn;
  WriteLn('Formats supportes : ELF32/ELF64 (Linux), PE32/PE32+ (Windows),');
  WriteLn('EXE DOS reel (entete MZ), ROM NES (entete iNES), binaire');
- WriteLn('brut (avec -m).');
- WriteLn('Desassemblage : x86 32 bits courant (syntaxe AT&T, comme');
- WriteLn('objdump) ; 8086/80186 16 bits courant, syntaxe Intel/MASM ;');
- WriteLn('ou 6502 complet (151 opcodes documentes). Pas de SSE/AVX ni');
- WriteLn('de mode x86-64 (REX), pas d''opcodes etendus 0F pour le 8086.');
+ WriteLn('brut (avec -m). ELF64/PE64 desassembles en x86-64 par defaut.');
+ WriteLn('Desassemblage : x86 32 bits ou x86-64 (prefixes REX, RIP-');
+ WriteLn('relatif, registres etendus R8-R15), syntaxe AT&T comme');
+ WriteLn('objdump ; 8086/80186 16 bits, syntaxe Intel/MASM ; ou 6502');
+ WriteLn('complet (151 opcodes documentes). Pas de SSE/AVX, pas');
+ WriteLn('d''opcodes etendus 0F pour le 8086.');
 End;
 
 Var
@@ -2095,12 +2657,16 @@ Begin
   Else If Arg = '-m' Then Begin
    Inc(I);
    If I > ParamCount Then Begin
-    WriteLn('Erreur : -m necessite une architecture (i386, 8086 ou 6502).');
+    WriteLn('Erreur : -m necessite une architecture (i386, x86-64, 8086 ou 6502).');
     Halt(1);
    End;
    If UpStr(ParamStr(I)) = '6502' Then Arch := ARCH_6502
    Else If (UpStr(ParamStr(I)) = '8086') Or
            (UpStr(ParamStr(I)) = '80186') Then Arch := ARCH_8086
+   Else If (UpStr(ParamStr(I)) = 'X64') Or
+           (UpStr(ParamStr(I)) = 'X86-64') Or
+           (UpStr(ParamStr(I)) = 'X86_64') Or
+           (UpStr(ParamStr(I)) = 'AMD64') Then Arch := ARCH_X64
    Else If UpStr(ParamStr(I)) = 'I386' Then Arch := ARCH_X86
    Else Begin
     WriteLn('Architecture inconnue pour -m : ', ParamStr(I));
@@ -2139,11 +2705,15 @@ Begin
  End Else If BinFormat = FMT_MZ Then Begin
   ParseMZ;
   If Not ArchForced Then Arch := ARCH_8086; { detection automatique }
- End Else If (BinFormat = FMT_ELF32) Or (BinFormat = FMT_ELF64) Then
-  ParseELF
- Else If (BinFormat = FMT_PE32) Or (BinFormat = FMT_PE64) Then
-  ParsePE
- Else If ArchForced Then Begin
+ End Else If (BinFormat = FMT_ELF32) Or (BinFormat = FMT_ELF64) Then Begin
+  ParseELF;
+  { Les binaires ELF64 sont presque toujours x86-64 en pratique (ce
+    desassembleur ne lit pas e_machine pour le confirmer precisement) }
+  If (BinFormat = FMT_ELF64) And (Not ArchForced) Then Arch := ARCH_X64;
+ End Else If (BinFormat = FMT_PE32) Or (BinFormat = FMT_PE64) Then Begin
+  ParsePE;
+  If (BinFormat = FMT_PE64) And (Not ArchForced) Then Arch := ARCH_X64;
+ End Else If ArchForced Then Begin
   { Format non reconnu, mais architecture explicitement choisie via
     -m : on traite le fichier comme un binaire brut, sans entete. }
   BinFormat := FMT_RAW;
