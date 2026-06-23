@@ -5138,7 +5138,10 @@ Begin
      $B: Mnemonic := 'CMPA' + SizeSuf68k(Size);
      $D: Mnemonic := 'ADDA' + SizeSuf68k(Size);
     End;
-    Operands := EA + ',' + RegA68k(Rx);
+    If (Top4 = $8) Or (Top4 = $C) Then
+     Operands := EA + ',' + RegD68k(Rx) { DIVU/DIVS/MULU/MULS ecrivent dans Dn }
+    Else
+     Operands := EA + ',' + RegA68k(Rx);
    End Else If OpMode <= 2 Then Begin
     { forme normale : op.sz <ea>,Dn }
     Size := OpMode;
@@ -6984,6 +6987,23 @@ Begin
   End;
 End;
 
+{ @description: Cherche une section par son nom exact (ex:
+    ".debug_line"), utilise par l option -S pour localiser les
+    informations de debogage DWARF dans un binaire ELF.
+  @param Name Nom de section recherche
+  @return Index (1-based) de la section, ou 0 si absente }
+Function FindSectionByName(Name: String): Integer;
+Var
+ I: Integer;
+Begin
+ FindSectionByName := 0;
+ For I := 1 To SectionCount Do
+  If Sections[I].Name = Name Then Begin
+   FindSectionByName := I;
+   Exit;
+  End;
+End;
+
 { ============================================================
   ANALYSE STRUCTURELLE LLVM BITCODE
   ============================================================ }
@@ -7007,16 +7027,17 @@ End;
 
 Function LLVMReadVBR(Width: Integer): LongInt;
 Var
- Piece, Payload, Shift: LongInt;
+ Piece, Payload, Shift, Acc: LongInt;
 Begin
- LLVMReadVBR := 0;
+ Acc := 0;
  Shift := 0;
  Repeat
   Piece := LLVMReadBits(Width);
   Payload := Piece And ((LongInt(1) Shl (Width - 1)) - 1);
-  If Shift < 30 Then LLVMReadVBR := LLVMReadVBR Or (Payload Shl Shift);
+  If Shift < 30 Then Acc := Acc Or (Payload Shl Shift);
   Inc(Shift, Width - 1);
  Until (Piece And (LongInt(1) Shl (Width - 1))) = 0;
+ LLVMReadVBR := Acc;
 End;
 
 Procedure LLVMAlign32;
@@ -7384,9 +7405,89 @@ Begin
  End;
 End;
 
+{ @description: Determine le nombre de chiffres hexadecimaux a
+    utiliser pour afficher une adresse, selon l architecture et la
+    largeur de bus (32/64 bits) du format charge. Factorise hors de
+    CmdDisasm pour etre reutilise par CmdSourceMix (option -S).
+  @return Nombre de chiffres hexadecimaux }
+Function GetAddrDigits: Integer;
+Begin
+ If (Arch = ARCH_6502) Or (Arch = ARCH_8086) Or (Arch = ARCH_8080) Or
+    (Arch = ARCH_Z80) Or (Arch = ARCH_6800) Or (Arch = ARCH_MSIL) Or
+    (Arch = ARCH_JVM) Then
+  GetAddrDigits := 4
+ Else If (Arch = ARCH_X64) Or (Arch = ARCH_ARM64) Or
+         (Arch = ARCH_IA64) Or (Arch = ARCH_IA64BE) Or
+         ((Arch = ARCH_SPARC) And (BinFormat = FMT_ELF64)) Or
+         (((Arch = ARCH_MIPS) Or (Arch = ARCH_MIPSEL)) And
+          (BinFormat = FMT_ELF64)) Or
+         (((Arch = ARCH_PPC) Or (Arch = ARCH_PPCLE)) And
+          (BinFormat = FMT_ELF64)) Then GetAddrDigits := 16
+ Else If (Arch = ARCH_ARM32) Or (Arch = ARCH_THUMB) Or
+         (Arch = ARCH_68000) Or (Arch = ARCH_SPARC) Or
+         (Arch = ARCH_MIPS) Or (Arch = ARCH_MIPSEL) Or
+         (Arch = ARCH_PPC) Or (Arch = ARCH_PPCLE) Or
+         (Arch = ARCH_SH) Or (Arch = ARCH_SHLE) Then GetAddrDigits := 8
+ Else GetAddrDigits := 6;
+End;
+
+{ @description: Decode une instruction a la position Off, en
+    aiguillant vers le desassembleur de Arch. Factorise hors de
+    CmdDisasm pour etre reutilise par CmdSourceMix (option -S), qui a
+    besoin du meme decodage instruction par instruction mais avec un
+    affichage entrelace different.
+  @param Off Decalage (0-based) dans le fichier
+  @param VAddr Adresse virtuelle de l instruction
+  @param Mnemonic (sortie) mnemonique decode
+  @param Operands (sortie) operandes formates
+  @return Longueur de l instruction en octets }
+Function DecodeInstruction(Off, VAddr: LongInt;
+ Var Mnemonic, Operands: String): Integer;
+Begin
+ If Arch = ARCH_6502 Then
+  DecodeInstruction := Disasm6502One(Off, VAddr, Mnemonic, Operands)
+ Else If Arch = ARCH_8086 Then
+  DecodeInstruction := Disasm8086One(Off, VAddr, Mnemonic, Operands)
+ Else If Arch = ARCH_X64 Then
+  DecodeInstruction := Disasm64One(Off, VAddr, Mnemonic, Operands)
+ Else If Arch = ARCH_ARM64 Then
+  DecodeInstruction := DisasmArm64One(Off, VAddr, Mnemonic, Operands)
+ Else If Arch = ARCH_ARM32 Then
+  DecodeInstruction := DisasmArm32One(Off, VAddr, Mnemonic, Operands)
+ Else If Arch = ARCH_THUMB Then
+  DecodeInstruction := DisasmThumbOne(Off, VAddr, Mnemonic, Operands)
+ Else If Arch = ARCH_8080 Then
+  DecodeInstruction := Disasm8080One(Off, VAddr, Mnemonic, Operands)
+ Else If Arch = ARCH_Z80 Then
+  DecodeInstruction := DisasmZ80One(Off, VAddr, Mnemonic, Operands)
+ Else If Arch = ARCH_6800 Then
+  DecodeInstruction := Disasm6800One(Off, VAddr, Mnemonic, Operands)
+ Else If Arch = ARCH_68000 Then
+  DecodeInstruction := Disasm68kOne(Off, VAddr, Mnemonic, Operands)
+ Else If Arch = ARCH_SPARC Then
+  DecodeInstruction := DisasmSparcOne(Off, VAddr, Mnemonic, Operands)
+ Else If (Arch = ARCH_MIPS) Or (Arch = ARCH_MIPSEL) Then
+  DecodeInstruction := DisasmMipsOne(Off, VAddr, Mnemonic, Operands)
+ Else If (Arch = ARCH_PPC) Or (Arch = ARCH_PPCLE) Then
+  DecodeInstruction := DisasmPpcOne(Off, VAddr, Mnemonic, Operands)
+ Else If (Arch = ARCH_SH) Or (Arch = ARCH_SHLE) Then
+  DecodeInstruction := DisasmShOne(Off, VAddr, Mnemonic, Operands)
+ Else If (Arch = ARCH_IA64) Or (Arch = ARCH_IA64BE) Then
+  DecodeInstruction := DisasmIa64One(Off, VAddr, Mnemonic, Operands)
+ Else If Arch = ARCH_PCODE Then
+  DecodeInstruction := DisasmPCodeOne(Off, VAddr, Mnemonic, Operands)
+ Else If Arch = ARCH_MSIL Then
+  DecodeInstruction := DisasmMSILOne(Off, VAddr, Mnemonic, Operands)
+ Else If Arch = ARCH_JVM Then
+  DecodeInstruction := DisasmJVMOne(Off, VAddr, Mnemonic, Operands)
+ Else
+  DecodeInstruction := DisasmOne(Off, VAddr, Mnemonic, Operands);
+End;
+
 { @description: Implemente l option -d : desassemble toutes les
     sections de code (IsCode = vrai), avec une etiquette de symbole
     au debut de chaque fonction connue, comme "objdump -d". }
+
 Procedure CmdDisasm;
 Var
  SI: Integer;
@@ -7394,23 +7495,7 @@ Var
  InstrLen, K, AddrDigits: Integer;
  Mnemonic, Operands, BytesTxt, Lbl: String;
 Begin
- If (Arch = ARCH_6502) Or (Arch = ARCH_8086) Or (Arch = ARCH_8080) Or
-    (Arch = ARCH_Z80) Or (Arch = ARCH_6800) Or (Arch = ARCH_MSIL) Or
-    (Arch = ARCH_JVM) Then
-  AddrDigits := 4
- Else If (Arch = ARCH_X64) Or (Arch = ARCH_ARM64) Or
-         (Arch = ARCH_IA64) Or (Arch = ARCH_IA64BE) Or
-         ((Arch = ARCH_SPARC) And (BinFormat = FMT_ELF64)) Or
-         (((Arch = ARCH_MIPS) Or (Arch = ARCH_MIPSEL)) And
-          (BinFormat = FMT_ELF64)) Or
-         (((Arch = ARCH_PPC) Or (Arch = ARCH_PPCLE)) And
-          (BinFormat = FMT_ELF64)) Then AddrDigits := 16
- Else If (Arch = ARCH_ARM32) Or (Arch = ARCH_THUMB) Or
-         (Arch = ARCH_68000) Or (Arch = ARCH_SPARC) Or
-         (Arch = ARCH_MIPS) Or (Arch = ARCH_MIPSEL) Or
-         (Arch = ARCH_PPC) Or (Arch = ARCH_PPCLE) Or
-         (Arch = ARCH_SH) Or (Arch = ARCH_SHLE) Then AddrDigits := 8
- Else AddrDigits := 6;
+ AddrDigits := GetAddrDigits;
  WriteLn;
  WriteLn(InFileName, ':     format ', FormatName);
  For SI := 1 To SectionCount Do Begin
@@ -7426,44 +7511,7 @@ Begin
     WriteLn;
     WriteLn(ToHexFixed(VAddr, AddrDigits), ' <', Lbl, '>:');
    End;
-   If Arch = ARCH_6502 Then
-    InstrLen := Disasm6502One(Off, VAddr, Mnemonic, Operands)
-   Else If Arch = ARCH_8086 Then
-    InstrLen := Disasm8086One(Off, VAddr, Mnemonic, Operands)
-   Else If Arch = ARCH_X64 Then
-    InstrLen := Disasm64One(Off, VAddr, Mnemonic, Operands)
-   Else If Arch = ARCH_ARM64 Then
-    InstrLen := DisasmArm64One(Off, VAddr, Mnemonic, Operands)
-   Else If Arch = ARCH_ARM32 Then
-    InstrLen := DisasmArm32One(Off, VAddr, Mnemonic, Operands)
-   Else If Arch = ARCH_THUMB Then
-   InstrLen := DisasmThumbOne(Off, VAddr, Mnemonic, Operands)
-   Else If Arch = ARCH_8080 Then
-    InstrLen := Disasm8080One(Off, VAddr, Mnemonic, Operands)
-   Else If Arch = ARCH_Z80 Then
-    InstrLen := DisasmZ80One(Off, VAddr, Mnemonic, Operands)
-   Else If Arch = ARCH_6800 Then
-    InstrLen := Disasm6800One(Off, VAddr, Mnemonic, Operands)
-   Else If Arch = ARCH_68000 Then
-   InstrLen := Disasm68kOne(Off, VAddr, Mnemonic, Operands)
-   Else If Arch = ARCH_SPARC Then
-   InstrLen := DisasmSparcOne(Off, VAddr, Mnemonic, Operands)
-   Else If (Arch = ARCH_MIPS) Or (Arch = ARCH_MIPSEL) Then
-   InstrLen := DisasmMipsOne(Off, VAddr, Mnemonic, Operands)
-   Else If (Arch = ARCH_PPC) Or (Arch = ARCH_PPCLE) Then
-   InstrLen := DisasmPpcOne(Off, VAddr, Mnemonic, Operands)
-   Else If (Arch = ARCH_SH) Or (Arch = ARCH_SHLE) Then
-   InstrLen := DisasmShOne(Off, VAddr, Mnemonic, Operands)
-   Else If (Arch = ARCH_IA64) Or (Arch = ARCH_IA64BE) Then
-   InstrLen := DisasmIa64One(Off, VAddr, Mnemonic, Operands)
-   Else If Arch = ARCH_PCODE Then
-   InstrLen := DisasmPCodeOne(Off, VAddr, Mnemonic, Operands)
-   Else If Arch = ARCH_MSIL Then
-   InstrLen := DisasmMSILOne(Off, VAddr, Mnemonic, Operands)
-   Else If Arch = ARCH_JVM Then
-    InstrLen := DisasmJVMOne(Off, VAddr, Mnemonic, Operands)
-   Else
-    InstrLen := DisasmOne(Off, VAddr, Mnemonic, Operands);
+   InstrLen := DecodeInstruction(Off, VAddr, Mnemonic, Operands);
    BytesTxt := '';
    For K := 0 To InstrLen - 1 Do Begin
     If K > 0 Then BytesTxt := BytesTxt + ' ';
@@ -7477,17 +7525,911 @@ Begin
  End;
 End;
 
-{ @description: Implemente l option -S : signale clairement que le
-    melange source/assembleur n est pas pris en charge (necessiterait
-    de lire les informations de debogage DWARF ou CodeView/PDB), au
-    lieu d afficher un faux resultat. }
-Procedure CmdSourceMix;
+{ ============================================================
+  OPTION -S : LECTURE DES INFORMATIONS DE DEBOGAGE
+  ============================================================
+  Couvre deux chaines completement distinctes :
+   - ELF : table de lignes DWARF (.debug_line), versions 2 a 4
+     (le format DWARF5, qui remplace les tables repertoire/fichier
+     par des "formulaires" generiques DW_FORM_*, n est pas pris en
+     charge ; il est detecte et signale explicitement).
+   - PE : repertoire de debogage IMAGE_DEBUG_DIRECTORY, entree
+     CodeView (type 2) au format "RSDS" (PDB 7.0), qui designe un
+     fichier .pdb externe ; ce fichier est ensuite lu comme un
+     conteneur MSF (Multi-Stream File), pour en extraire le flux
+     DBI puis les sous-sections de lignes C13 de chaque module.
+  Aucun des deux n a pu etre valide contre un binaire reel produit
+  par un compilateur (aucune chaine ELF+gcc/clang ni aucun fichier
+  .pdb reel n est disponible dans cet environnement) : la confiance
+  repose uniquement sur l encodage manuel de donnees synthetiques
+  conformes aux specifications DWARF et PDB/MSF. }
+
+Const
+ MaxLineRows     = 16384;  { lignes source->adresse cumulees (-S) }
+ MaxIncludeDirs  = 256;
+ MaxLineFilesCU  = 256;    { fichiers par unite de compilation DWARF }
+
+Type
+ TLineRow = Record
+  Addr     : LongInt;
+  FileName : String[160]; { resolu immediatement (table par-CU)     }
+  Line     : Integer;
+ End;
+
+Var
+ LineRows        : Array[1..MaxLineRows] Of TLineRow;
+ LineRowCount    : Integer;
+ DwarfLineFound  : Boolean;
+ DwarfSawV5      : Boolean; { au moins une unite DWARF5 ignoree }
+ IncludeDirNames : Array[1..MaxIncludeDirs] Of String[160];
+ IncludeDirCount : Integer;
+ CULineFiles     : Array[1..MaxLineFilesCU] Of String[160];
+ CULineFileDirs  : Array[1..MaxLineFilesCU] Of Integer;
+ CULineFileCount : Integer;
+
+{ @description: Lit un entier non signe encode en LEB128 a la
+    position Off (avancee automatiquement), tronque a 32 bits.
+  @param Off (entree/sortie) decalage, avance apres l entier lu
+  @return Valeur lue }
+Function ReadULEB128(Var Off: LongInt): LongInt;
+Var
+ ShiftN: Integer;
+ B: Byte;
+ Acc: LongInt;
 Begin
+ Acc := 0; ShiftN := 0;
+ Repeat
+  B := GetByte(Off);
+  Inc(Off);
+  If ShiftN < 32 Then Acc := Acc Or (LongInt(B And $7F) Shl ShiftN);
+  Inc(ShiftN, 7);
+ Until (B And $80) = 0;
+ ReadULEB128 := Acc;
+End;
+
+{ @description: Lit un entier signe encode en LEB128 a la position
+    Off (avancee automatiquement), tronque a 32 bits.
+  @param Off (entree/sortie) decalage, avance apres l entier lu
+  @return Valeur lue }
+Function ReadSLEB128(Var Off: LongInt): LongInt;
+Var
+ ShiftN: Integer;
+ B: Byte;
+ Acc: LongInt;
+Begin
+ Acc := 0; ShiftN := 0;
+ Repeat
+  B := GetByte(Off);
+  Inc(Off);
+  If ShiftN < 32 Then Acc := Acc Or (LongInt(B And $7F) Shl ShiftN);
+  Inc(ShiftN, 7);
+ Until (B And $80) = 0;
+ If (ShiftN < 32) And ((B And $40) <> 0) Then
+  Acc := Acc Or (LongInt(-1) Shl ShiftN);
+ ReadSLEB128 := Acc;
+End;
+
+{ @description: Resout l index de fichier FIdx (table DWARF de
+    l unite de compilation courante, remplie par ParseDwarfUnit) en
+    chemin affichable, en prefixant par son repertoire si connu.
+  @param FIdx Index 1-based dans CULineFiles
+  @return Chemin resolu, ou chaine vide si index invalide }
+Function ResolveDwarfFile(FIdx: Integer): String;
+Var
+ D: Integer;
+Begin
+ If (FIdx < 1) Or (FIdx > CULineFileCount) Then Begin
+  ResolveDwarfFile := '';
+  Exit;
+ End;
+ D := CULineFileDirs[FIdx];
+ If (D >= 1) And (D <= IncludeDirCount) Then
+  ResolveDwarfFile := IncludeDirNames[D] + '/' + CULineFiles[FIdx]
+ Else
+  ResolveDwarfFile := CULineFiles[FIdx];
+End;
+
+{ @description: Decode le programme de lignes DWARF d une unite de
+    compilation (.debug_line), de UnitOff (debut, juste apres le
+    champ unit_length deja consomme par l appelant) a UnitEnd
+    (exclu), et accumule les lignes resultantes dans LineRows[].
+    Les tables repertoire/fichier sont locales a l unite (DWARF
+    2-4) : elles sont reinitialisees a chaque appel, et resolues en
+    chemin complet immediatement a l emission de chaque ligne, pour
+    eviter toute ambiguite d index entre unites differentes.
+  @param UnitOff Decalage du champ version (apres unit_length)
+  @param UnitEnd Decalage de fin de l unite (exclu) }
+Procedure ParseDwarfUnit(UnitOff, UnitEnd: LongInt);
+Var
+ Off, ProgStart: LongInt;
+ Version: Word;
+ HeaderLength: LongInt;
+ MinInstrLen: Byte;
+ LineBase: ShortInt;
+ LineRange, OpcodeBase: Byte;
+ StdOpLens: Array[1..255] Of Byte;
+ I: Integer;
+ S: String;
+ DirIdx: LongInt;
+ Address: LongInt;
+ FileReg, LineReg: Integer;
+ Opcode: Byte;
+ ExtLen, ExtEnd: LongInt;
+ SubOp: Byte;
+ Adj: Integer;
+ Op2: Word;
+Begin
+ Off := UnitOff;
+ Version := GetElfWord(Off); Off := Off + 2;
+ If Version >= 5 Then Begin
+  DwarfSawV5 := True;
+  Exit; { tables dir/fichier par formulaires DW_FORM_* : non gere }
+ End;
+ HeaderLength := GetElfDWord(Off); Off := Off + 4;
+ ProgStart := Off + HeaderLength;
+ MinInstrLen := GetByte(Off); Inc(Off);
+ If Version >= 4 Then Inc(Off); { maximum_operations_per_instruction }
+ Inc(Off); { default_is_stmt : ignore, l etat is_stmt n est pas utilise }
+ LineBase := ShortInt(GetByte(Off)); Inc(Off);
+ LineRange := GetByte(Off); Inc(Off);
+ OpcodeBase := GetByte(Off); Inc(Off);
+ For I := 1 To OpcodeBase - 1 Do Begin
+  StdOpLens[I] := GetByte(Off); Inc(Off);
+ End;
+ IncludeDirCount := 0;
+ Repeat
+  S := GetCStr(Off, 160);
+  Off := Off + Length(S) + 1;
+  If (S <> '') And (IncludeDirCount < MaxIncludeDirs) Then Begin
+   Inc(IncludeDirCount);
+   IncludeDirNames[IncludeDirCount] := S;
+  End;
+ Until S = '';
+ CULineFileCount := 0;
+ Repeat
+  S := GetCStr(Off, 160);
+  Off := Off + Length(S) + 1;
+  If S <> '' Then Begin
+   DirIdx := ReadULEB128(Off);
+   ReadULEB128(Off); { mtime, ignore }
+   ReadULEB128(Off); { taille du fichier, ignore }
+   If CULineFileCount < MaxLineFilesCU Then Begin
+    Inc(CULineFileCount);
+    CULineFiles[CULineFileCount] := S;
+    CULineFileDirs[CULineFileCount] := DirIdx;
+   End;
+  End;
+ Until S = '';
+ { La machine a etats du programme de lignes commence a ProgStart
+   (annonce par header_length), independamment de la position
+   atteinte par l analyse des tables ci-dessus. }
+ Off := ProgStart;
+ Address := 0; FileReg := 1; LineReg := 1;
+ While Off < UnitEnd Do Begin
+  Opcode := GetByte(Off); Inc(Off);
+  If Opcode = 0 Then Begin { opcode etendu }
+   ExtLen := ReadULEB128(Off);
+   ExtEnd := Off + ExtLen;
+   If ExtLen > 0 Then Begin
+    SubOp := GetByte(Off);
+    If SubOp = 1 Then Begin { DW_LNE_end_sequence }
+     Address := 0; FileReg := 1; LineReg := 1;
+    End Else If SubOp = 2 Then Begin { DW_LNE_set_address }
+     Address := GetElfDWord(Off + 1);
+    End;
+    { DW_LNE_define_file / DW_LNE_set_discriminator : ignores }
+   End;
+   Off := ExtEnd;
+  End Else If Opcode < OpcodeBase Then Begin { opcode standard }
+   Case Opcode Of
+    1: Begin { DW_LNS_copy }
+     If LineRowCount < MaxLineRows Then Begin
+      Inc(LineRowCount);
+      LineRows[LineRowCount].Addr := Address;
+      LineRows[LineRowCount].FileName := ResolveDwarfFile(FileReg);
+      LineRows[LineRowCount].Line := LineReg;
+     End;
+    End;
+    2: Address := Address + ReadULEB128(Off) * MinInstrLen;
+    3: LineReg := LineReg + ReadSLEB128(Off);
+    4: FileReg := ReadULEB128(Off);
+    5: ReadULEB128(Off); { set_column, ignore }
+    6, 7, 10, 11: ; { negate_stmt/basic_block/prologue/epilogue : ignores }
+    8: Begin { DW_LNS_const_add_pc }
+     Adj := 255 - OpcodeBase;
+     Address := Address + (Adj Div LineRange) * MinInstrLen;
+    End;
+    9: Begin { DW_LNS_fixed_advance_pc }
+     Op2 := GetElfWord(Off); Off := Off + 2;
+     Address := Address + Op2;
+    End;
+    12: ReadULEB128(Off); { set_isa, ignore }
+   Else
+    For I := 1 To StdOpLens[Opcode] Do ReadULEB128(Off);
+   End;
+  End Else Begin { opcode special }
+   Adj := Opcode - OpcodeBase;
+   Address := Address + (Adj Div LineRange) * MinInstrLen;
+   LineReg := LineReg + LineBase + (Adj Mod LineRange);
+   If LineRowCount < MaxLineRows Then Begin
+    Inc(LineRowCount);
+    LineRows[LineRowCount].Addr := Address;
+    LineRows[LineRowCount].FileName := ResolveDwarfFile(FileReg);
+    LineRows[LineRowCount].Line := LineReg;
+   End;
+  End;
+ End;
+End;
+
+{ @description: Localise la section ".debug_line" et decode chacune
+    de ses unites de compilation (en boucle, jusqu a epuisement de
+    la section), pour remplir LineRows[]. Sans effet si la section
+    est absente ou si le format n est pas ELF. }
+Procedure LoadDwarfLineTable;
+Var
+ SI: Integer;
+ SecOff, SecEnd, Off, UnitLen, UnitEnd: LongInt;
+Begin
+ LineRowCount := 0;
+ DwarfLineFound := False;
+ DwarfSawV5 := False;
+ SI := FindSectionByName('.debug_line');
+ If SI = 0 Then Exit;
+ SecOff := Sections[SI].FileOff;
+ SecEnd := SecOff + Sections[SI].Size;
+ Off := SecOff;
+ While Off + 4 <= SecEnd Do Begin
+  UnitLen := GetElfDWord(Off);
+  If UnitLen <= 0 Then Break;
+  UnitEnd := Off + 4 + UnitLen;
+  If UnitEnd > SecEnd Then Break;
+  ParseDwarfUnit(Off + 4, UnitEnd);
+  Off := UnitEnd;
+ End;
+ DwarfLineFound := LineRowCount > 0;
+End;
+
+{ @description: Cherche, parmi les lignes accumulees dans
+    LineRows[], celle dont l adresse est la plus grande valeur
+    inferieure ou egale a VAddr (recherche du "plancher"), c est a
+    dire la ligne source active a cette adresse.
+  @param VAddr Adresse virtuelle recherchee
+  @param FName (sortie) chemin du fichier source resolu
+  @param LineNo (sortie) numero de ligne
+  @return Vrai si une correspondance a ete trouvee }
+Function FindLineForAddr(VAddr: LongInt; Var FName: String;
+ Var LineNo: Integer): Boolean;
+Var
+ I, Best: Integer;
+Begin
+ Best := 0;
+ For I := 1 To LineRowCount Do
+  If (LineRows[I].Addr <= VAddr) And
+     ((Best = 0) Or (LineRows[I].Addr > LineRows[Best].Addr)) Then
+   Best := I;
+ If Best = 0 Then Begin
+  FindLineForAddr := False;
+ End Else Begin
+  FName := LineRows[Best].FileName;
+  LineNo := LineRows[Best].Line;
+  FindLineForAddr := True;
+ End;
+End;
+
+{ ============================================================
+  OPTION -S (PE) : CODEVIEW (RSDS) + PDB/MSF EXTERNE
+  ============================================================
+  Le PE n embarque presque jamais les lignes elles-memes : son
+  repertoire de debogage (IMAGE_DEBUG_DIRECTORY, entree de type 2 =
+  CODEVIEW) contient un enregistrement "RSDS" qui ne fait que
+  DESIGNER un fichier .pdb externe par son chemin (le plus souvent
+  un chemin absolu de la machine de compilation d origine). Ce
+  fichier .pdb est lui-meme un conteneur "MSF" (Multi-Stream File) :
+  un super-bloc, un repertoire de flux (liste de blocs par flux),
+  puis des flux numerotes dont le flux 3 (fixe par convention) est
+  le flux "DBI" (debug info), qui liste les modules et, pour
+  chacun, le flux prive contenant ses symboles et ses sous-sections
+  de lignes au format "C13" (DEBUG_S_LINES / DEBUG_S_FILECHKSMS /
+  DEBUG_S_STRINGTABLE). Les lignes resolues sont fusionnees dans le
+  meme tableau LineRows[] que le chemin DWARF, et reutilisent donc
+  FindLineForAddr/ReadSourceLine sans changement.
+  Confiance : la plus faible de tout ce fichier. Le format MSF/PDB
+  n est documente que par la source du projet Microsoft-PDB et par
+  LLVM ; aucun fichier .pdb reel n a pu etre obtenu dans cet
+  environnement pour validation. Seul un aller-retour avec un
+  fichier .pdb synthetique, encode a la main selon la specification
+  telle que je m en souviens, a pu etre verifie. }
+
+Const
+ MaxPdbDirBlocks = 256;
+
+Var
+ PdbBuf         : PByteBuf;
+ PdbBufSize     : LongInt;
+ MsfBlockSize   : LongInt;
+ MsfDirBlockList: Array[0..MaxPdbDirBlocks - 1] Of LongInt;
+ MsfDirBlockCnt : Integer;
+
+Function GetPdbByte(Off: LongInt): Byte;
+Begin
+ If (Off < 0) Or (Off >= PdbBufSize) Then GetPdbByte := 0
+ Else GetPdbByte := PdbBuf^[Off];
+End;
+
+Function GetPdbDWord(Off: LongInt): LongInt;
+Var
+ B: Array[0..3] Of Byte;
+ I: Integer;
+ R: LongInt;
+Begin
+ For I := 0 To 3 Do B[I] := GetPdbByte(Off + I);
+ Move(B, R, 4);
+ GetPdbDWord := R;
+End;
+
+Function CeilDivLong(A, B: LongInt): LongInt;
+Begin
+ CeilDivLong := (A + B - 1) Div B;
+End;
+
+{ @description: Lit un octet du repertoire de flux MSF (le tableau
+    NumStreams/StreamSizes[]/blocs-par-flux), via sa propre liste de
+    blocs (MsfDirBlockList, remplie par OpenPdbSuperblock).
+  @param LogicalOff Decalage logique (0-based) dans le repertoire
+  @return Octet lu, ou 0 si hors limites }
+Function MsfDirByte(LogicalOff: LongInt): Byte;
+Var
+ BlkIdx: LongInt;
+Begin
+ BlkIdx := LogicalOff Div MsfBlockSize;
+ If (BlkIdx < 0) Or (BlkIdx >= MsfDirBlockCnt) Then Begin
+  MsfDirByte := 0;
+  Exit;
+ End;
+ MsfDirByte := GetPdbByte(MsfDirBlockList[BlkIdx] * MsfBlockSize +
+  (LogicalOff Mod MsfBlockSize));
+End;
+
+Function MsfDirDWord(LogicalOff: LongInt): LongInt;
+Var
+ B: Array[0..3] Of Byte;
+ I: Integer;
+ R: LongInt;
+Begin
+ For I := 0 To 3 Do B[I] := MsfDirByte(LogicalOff + I);
+ Move(B, R, 4);
+ MsfDirDWord := R;
+End;
+
+Function MsfStreamCount: LongInt;
+Begin
+ MsfStreamCount := MsfDirDWord(0);
+End;
+
+{ @description: Taille en octets du flux Idx (0-based), d apres le
+    repertoire de flux MSF.
+  @param Idx Index de flux
+  @return Taille en octets ($FFFFFFFF = flux nul/absent) }
+Function MsfStreamSize(Idx: LongInt): LongInt;
+Begin
+ MsfStreamSize := MsfDirDWord(4 + Idx * 4);
+End;
+
+{ @description: Calcule le decalage logique, dans le repertoire de
+    flux, ou commence la liste des numeros de bloc du flux Idx (en
+    sommant le nombre de blocs de tous les flux precedents).
+  @param Idx Index de flux
+  @return Decalage logique dans le repertoire }
+Function MsfStreamBlockListOff(Idx: LongInt): LongInt;
+Var
+ N, I, Acc, Sz: LongInt;
+Begin
+ N := MsfStreamCount;
+ Acc := 0;
+ For I := 0 To Idx - 1 Do Begin
+  Sz := MsfStreamSize(I);
+  If Sz = LongInt($FFFFFFFF) Then Sz := 0;
+  Acc := Acc + CeilDivLong(Sz, MsfBlockSize);
+ End;
+ MsfStreamBlockListOff := 4 + N * 4 + Acc * 4;
+End;
+
+Function MsfStreamBlockNum(Idx, BlockIdxInStream: LongInt): LongInt;
+Begin
+ MsfStreamBlockNum := MsfDirDWord(MsfStreamBlockListOff(Idx) +
+  BlockIdxInStream * 4);
+End;
+
+{ @description: Lit un octet logique d un flux MSF quelconque, en
+    traduisant via sa liste de blocs (elle-meme lue dans le
+    repertoire de flux a la demande, sans mise en cache).
+  @param Idx Index de flux
+  @param LogicalOff Decalage logique (0-based) dans le flux
+  @return Octet lu }
+Function MsfStreamByte(Idx, LogicalOff: LongInt): Byte;
+Var
+ BlkNum: LongInt;
+Begin
+ BlkNum := MsfStreamBlockNum(Idx, LogicalOff Div MsfBlockSize);
+ MsfStreamByte := GetPdbByte(BlkNum * MsfBlockSize +
+  (LogicalOff Mod MsfBlockSize));
+End;
+
+Function MsfStreamWord(Idx, Off: LongInt): Word;
+Begin
+ MsfStreamWord := MsfStreamByte(Idx, Off) Or
+  (MsfStreamByte(Idx, Off + 1) Shl 8);
+End;
+
+Function MsfStreamDWord(Idx, Off: LongInt): LongInt;
+Var
+ B: Array[0..3] Of Byte;
+ I: Integer;
+ R: LongInt;
+Begin
+ For I := 0 To 3 Do B[I] := MsfStreamByte(Idx, Off + I);
+ Move(B, R, 4);
+ MsfStreamDWord := R;
+End;
+
+Function MsfStreamCStr(Idx, Off: LongInt; MaxLen: Integer): String;
+Var
+ S: String;
+ B: Byte;
+Begin
+ S := '';
+ While Length(S) < MaxLen Do Begin
+  B := MsfStreamByte(Idx, Off + Length(S));
+  If B = 0 Then Break;
+  S := S + Chr(B);
+ End;
+ MsfStreamCStr := S;
+End;
+
+{ @description: Charge un fichier .pdb en memoire (PdbBuf), sans
+    interrompre le programme en cas d echec (a la difference de
+    LoadFile, utilisee pour le fichier principal).
+  @param FName Chemin du fichier .pdb
+  @return Vrai si le fichier a ete charge avec succes }
+Function LoadPdbFile(FName: String): Boolean;
+Var
+ F: File;
+ NRead: LongInt;
+Begin
+ LoadPdbFile := False;
+ Assign(F, FName);
+ FileMode := 0;
+ {$I-} Reset(F, 1); {$I+}
+ If IOResult <> 0 Then Exit;
+ PdbBufSize := FileSize(F);
+ If PdbBufSize <= 56 Then Begin Close(F); Exit; End;
+ GetMem(PdbBuf, PdbBufSize);
+ {$I-} BlockRead(F, PdbBuf^, PdbBufSize, NRead); {$I+}
+ Close(F);
+ If NRead <> PdbBufSize Then Exit;
+ LoadPdbFile := True;
+End;
+
+{ @description: Verifie la signature MSF ("Microsoft C/C++ MSF
+    7.00...") et remplit MsfBlockSize/MsfDirBlockList a partir du
+    super-bloc (32 premiers octets de signature, puis BlockSize,
+    NumDirectoryBytes et BlockMapAddr).
+  @return Vrai si le super-bloc est valide et exploitable }
+Function OpenPdbSuperblock: Boolean;
+Const
+ PdbMagic: Array[0..31] Of Byte = (
+  $4D, $69, $63, $72, $6F, $73, $6F, $66, $74, $20, $43, $2F, $43,
+  $2B, $2B, $20, $4D, $53, $46, $20, $37, $2E, $30, $30, $0D, $0A,
+  $1A, $44, $53, $00, $00, $00);
+Var
+ I: Integer;
+ NumDirBytes, BlockMapAddr: LongInt;
+Begin
+ OpenPdbSuperblock := False;
+ For I := 0 To 31 Do
+  If GetPdbByte(I) <> PdbMagic[I] Then Exit;
+ MsfBlockSize := GetPdbDWord(32);
+ If MsfBlockSize <= 0 Then Exit;
+ NumDirBytes := GetPdbDWord(44);
+ BlockMapAddr := GetPdbDWord(52);
+ MsfDirBlockCnt := CeilDivLong(NumDirBytes, MsfBlockSize);
+ If (MsfDirBlockCnt <= 0) Or (MsfDirBlockCnt > MaxPdbDirBlocks) Then Exit;
+ For I := 0 To MsfDirBlockCnt - 1 Do
+  MsfDirBlockList[I] := GetPdbDWord(BlockMapAddr * MsfBlockSize + I * 4);
+ OpenPdbSuperblock := True;
+End;
+
+{ @description: Decode une sous-section DEBUG_S_LINES (C13) du flux
+    prive d un module, et ajoute les lignes resolues a LineRows[].
+    Le nom de fichier est resolu via DEBUG_S_FILECHKSMS puis
+    DEBUG_S_STRINGTABLE (offsets ChksmsOff/StrTabOff, deja localises
+    par l appelant). Les colonnes (fHasColumns) ne sont pas lues
+    (hors de portee, non necessaires pour -S).
+  @param StreamIdx Flux prive du module (ModuleSymStream)
+  @param Start Decalage logique du contenu de la sous-section
+  @param Len Longueur de la sous-section
+  @param ChksmsOff Decalage logique de DEBUG_S_FILECHKSMS (-1 si absente)
+  @param StrTabOff Decalage logique de DEBUG_S_STRINGTABLE (-1 si absente) }
+Procedure ParseLinesSubsection(StreamIdx: Integer;
+ Start, Len, ChksmsOff, StrTabOff: LongInt);
+Var
+ BaseOffset: LongInt;
+ Pos, EndPos: LongInt;
+ FileChkOff, NumLines, BlockSize: LongInt;
+ I: Integer;
+ LineOff, LineNumField: LongInt;
+ LineNo: Integer;
+ FName: String;
+ NameOff: LongInt;
+Begin
+ BaseOffset := MsfStreamDWord(StreamIdx, Start);
+ { CodeSize a Start+8 : non utilise, l etendue n est pas necessaire
+   pour resoudre une adresse en ligne source }
+ Pos := Start + 12;
+ EndPos := Start + Len;
+ While Pos + 12 <= EndPos Do Begin
+  FileChkOff := MsfStreamDWord(StreamIdx, Pos);
+  NumLines   := MsfStreamDWord(StreamIdx, Pos + 4);
+  BlockSize  := MsfStreamDWord(StreamIdx, Pos + 8);
+  If BlockSize <= 0 Then Break; { protection anti-boucle infinie }
+  FName := '';
+  If (ChksmsOff >= 0) And (StrTabOff >= 0) Then Begin
+   NameOff := MsfStreamDWord(StreamIdx, ChksmsOff + FileChkOff);
+   FName := MsfStreamCStr(StreamIdx, StrTabOff + NameOff, 160);
+  End;
+  For I := 0 To NumLines - 1 Do Begin
+   LineOff := MsfStreamDWord(StreamIdx, Pos + 12 + I * 8);
+   LineNumField := MsfStreamDWord(StreamIdx, Pos + 12 + I * 8 + 4);
+   LineNo := LineNumField And $00FFFFFF;
+   If LineRowCount < MaxLineRows Then Begin
+    Inc(LineRowCount);
+    { Les adresses C13 sont des RVA (relatives a l image, hors
+      ImageBase), alors que Sections[].VAddr (et donc VAddr passe a
+      FindLineForAddr) inclut deja ImageBase partout ailleurs dans
+      cet outil : conversion necessaire pour rester comparable. }
+    LineRows[LineRowCount].Addr := ImageBase + BaseOffset + LineOff;
+    LineRows[LineRowCount].FileName := FName;
+    LineRows[LineRowCount].Line := LineNo;
+   End;
+  End;
+  Pos := Pos + BlockSize;
+ End;
+End;
+
+{ @description: Parcourt les sous-sections C13 (DEBUG_S_*) du flux
+    prive d un module, en deux passes : la premiere localise
+    DEBUG_S_FILECHKSMS et DEBUG_S_STRINGTABLE (necessaires pour
+    resoudre les noms de fichiers, qui peuvent apparaitre apres
+    DEBUG_S_LINES dans le flux), la seconde decode DEBUG_S_LINES.
+  @param StreamIdx Flux prive du module (ModuleSymStream)
+  @param C13Start Decalage logique du debut des donnees C13
+  @param C13Size Longueur des donnees C13 }
+Procedure ParseModuleC13(StreamIdx: Integer; C13Start, C13Size: LongInt);
+Var
+ Off, EndOff: LongInt;
+ SubType, SubLen: LongInt;
+ ChksmsOff, StrTabOff: LongInt;
+Begin
+ ChksmsOff := -1; StrTabOff := -1;
+ Off := C13Start;
+ EndOff := C13Start + C13Size;
+ While Off + 8 <= EndOff Do Begin
+  SubType := MsfStreamDWord(StreamIdx, Off);
+  SubLen  := MsfStreamDWord(StreamIdx, Off + 4);
+  If SubLen < 0 Then Break;
+  If SubType = $F4 Then ChksmsOff := Off + 8
+  Else If SubType = $F3 Then StrTabOff := Off + 8;
+  Off := Off + 8 + SubLen;
+  While (Off Mod 4) <> 0 Do Inc(Off);
+ End;
+ Off := C13Start;
+ While Off + 8 <= EndOff Do Begin
+  SubType := MsfStreamDWord(StreamIdx, Off);
+  SubLen  := MsfStreamDWord(StreamIdx, Off + 4);
+  If SubLen < 0 Then Break;
+  If SubType = $F2 Then
+   ParseLinesSubsection(StreamIdx, Off + 8, SubLen, ChksmsOff, StrTabOff);
+  Off := Off + 8 + SubLen;
+  While (Off Mod 4) <> 0 Do Inc(Off);
+ End;
+End;
+
+{ @description: Parcourt la sous-section "Module Info" du flux DBI
+    (stream 3), et pour chaque module dote d un flux prive et de
+    donnees C13, appelle ParseModuleC13. Le format de l entete DBI
+    (64 octets) et de chaque enregistrement de module suit la
+    documentation publique du format PDB (Microsoft-PDB / LLVM).
+  @param DbiStreamIdx Index du flux DBI (toujours 3) }
+Procedure ParseDbiModules(DbiStreamIdx: Integer);
+Var
+ ModInfoSize: LongInt;
+ Off, EndOff: LongInt;
+ ModuleSymStream: Word;
+ SymSize, C11Size, C13Size: LongInt;
+ S: String;
+Begin
+ ModInfoSize := MsfStreamDWord(DbiStreamIdx, 24);
+ Off := 64;
+ EndOff := 64 + ModInfoSize;
+ While Off + 36 < EndOff Do Begin
+  Off := Off + 4;  { Unused1 }
+  Off := Off + 28; { SECTION_CONTRIB }
+  Off := Off + 2;  { Flags }
+  ModuleSymStream := Word(MsfStreamWord(DbiStreamIdx, Off)); Off := Off + 2;
+  SymSize  := MsfStreamDWord(DbiStreamIdx, Off); Off := Off + 4;
+  C11Size  := MsfStreamDWord(DbiStreamIdx, Off); Off := Off + 4;
+  C13Size  := MsfStreamDWord(DbiStreamIdx, Off); Off := Off + 4;
+  Off := Off + 2; { SourceFileCount }
+  Off := Off + 2; { Padding }
+  Off := Off + 4; { SourceFileNameIndex }
+  Off := Off + 4; { PdbFilePathNameIndex }
+  S := MsfStreamCStr(DbiStreamIdx, Off, 255); Off := Off + Length(S) + 1;
+  S := MsfStreamCStr(DbiStreamIdx, Off, 255); Off := Off + Length(S) + 1;
+  While (Off Mod 4) <> 0 Do Inc(Off);
+  If (ModuleSymStream <> $FFFF) And (C13Size > 0) Then
+   ParseModuleC13(ModuleSymStream, SymSize + C11Size, C13Size);
+ End;
+End;
+
+{ @description: Point d entree du chargement PDB : ouvre le
+    fichier, verifie le super-bloc MSF, puis decode le flux DBI
+    (toujours l index 3) pour fusionner toutes les lignes C13 de
+    tous les modules dans LineRows[].
+  @param PdbPath Chemin du fichier .pdb a charger
+  @return Vrai si au moins une ligne a ete trouvee }
+Function LoadPdbLineTable(PdbPath: String): Boolean;
+Var
+ DbiSize: LongInt;
+Begin
+ LineRowCount := 0;
+ LoadPdbLineTable := False;
+ If Not LoadPdbFile(PdbPath) Then Exit;
+ If Not OpenPdbSuperblock Then Begin
+  FreeMem(PdbBuf, PdbBufSize);
+  Exit;
+ End;
+ DbiSize := MsfStreamSize(3);
+ If (DbiSize > 0) And (DbiSize <> LongInt($FFFFFFFF)) Then
+  ParseDbiModules(3);
+ FreeMem(PdbBuf, PdbBufSize);
+ LoadPdbLineTable := LineRowCount > 0;
+End;
+
+{ @description: Localise l entree CodeView (type 2, format "RSDS")
+    du repertoire de debogage PE, et en extrait le chemin du
+    fichier .pdb externe qu elle designe.
+  @return Chemin .pdb tel qu enregistre a la compilation, ou chaine
+    vide si aucune entree CodeView/RSDS n a ete trouvee }
+Function FindPECodeViewPdbPath: String;
+Var
+ PEOff, OptOff, DataDirOff: LongInt;
+ DebugRVA, DebugSize, TableOff: LongInt;
+ NumEntries, I: Integer;
+ EntryOff, EntryType, PtrRaw, Sig: LongInt;
+Begin
+ FindPECodeViewPdbPath := '';
+ PEOff := GetDWord($3C);
+ OptOff := PEOff + 24;
+ If BinFormat = FMT_PE64 Then DataDirOff := OptOff + 160
+ Else DataDirOff := OptOff + 144;
+ DebugRVA := GetDWord(DataDirOff);
+ DebugSize := GetDWord(DataDirOff + 4);
+ If DebugSize <= 0 Then Exit;
+ TableOff := PERvaToFile(DebugRVA);
+ If TableOff < 0 Then Exit;
+ NumEntries := DebugSize Div 28;
+ For I := 0 To NumEntries - 1 Do Begin
+  EntryOff := TableOff + I * 28;
+  EntryType := GetDWord(EntryOff + 12);
+  If EntryType = 2 Then Begin { IMAGE_DEBUG_TYPE_CODEVIEW }
+   PtrRaw := GetDWord(EntryOff + 24);
+   Sig := GetDWord(PtrRaw);
+   If Sig = $53445352 Then Begin { 'RSDS' }
+    FindPECodeViewPdbPath := GetCStr(PtrRaw + 24, 260);
+    Exit;
+   End;
+  End;
+ End;
+End;
+
+{ @description: Renvoie le nom de fichier seul (sans repertoire) a
+    partir d un chemin pouvant utiliser "/" ou "\".
+  @param P Chemin complet ou partiel
+  @return Composante finale de P }
+Function ExtractBaseName(P: String): String;
+Var
+ I: Integer;
+Begin
+ For I := Length(P) DownTo 1 Do
+  If (P[I] = '/') Or (P[I] = '\') Then Begin
+   ExtractBaseName := Copy(P, I + 1, Length(P) - I);
+   Exit;
+  End;
+ ExtractBaseName := P;
+End;
+
+{ @description: Renvoie le repertoire (avec separateur final) d un
+    chemin, ou chaine vide si P ne contient aucun separateur.
+  @param P Chemin complet ou partiel
+  @return Repertoire de P, separateur final inclus }
+Function DirOf(P: String): String;
+Var
+ I: Integer;
+Begin
+ For I := Length(P) DownTo 1 Do
+  If (P[I] = '/') Or (P[I] = '\') Then Begin
+   DirOf := Copy(P, 1, I);
+   Exit;
+  End;
+ DirOf := '';
+End;
+
+{ @description: Tente de lire la ligne LineNo (1-based) du fichier
+    source FName, en essayant successivement le chemin tel que
+    fourni par les informations de debogage (souvent un chemin
+    absolu de la machine de compilation d origine, donc rarement
+    valide ici), puis le meme nom de base dans le repertoire du
+    binaire analyse, puis dans le repertoire courant. Echec
+    silencieux (chaine vide) si le fichier reste introuvable : -S
+    affiche alors la reference fichier:ligne sans le texte source.
+  @param FName Chemin du fichier source (issu du debogage)
+  @param LineNo Numero de ligne (1-based)
+  @return Texte de la ligne, ou chaine vide si indisponible }
+Function ReadSourceLine(FName: String; LineNo: Integer): String;
+Var
+ F: Text;
+ Candidate, LineTxt: String;
+ L: Integer;
+ Opened: Boolean;
+Begin
+ ReadSourceLine := '';
+ If (LineNo <= 0) Or (FName = '') Then Exit;
+ Candidate := FName;
+ {$I-} Assign(F, Candidate); Reset(F); {$I+}
+ Opened := IOResult = 0;
+ If Not Opened Then Begin
+  Candidate := DirOf(InFileName) + ExtractBaseName(FName);
+  {$I-} Assign(F, Candidate); Reset(F); {$I+}
+  Opened := IOResult = 0;
+ End;
+ If Not Opened Then Begin
+  Candidate := ExtractBaseName(FName);
+  {$I-} Assign(F, Candidate); Reset(F); {$I+}
+  Opened := IOResult = 0;
+ End;
+ If Not Opened Then Exit;
+ L := 0;
+ While (Not Eof(F)) And (L < LineNo) Do Begin
+  {$I-} ReadLn(F, LineTxt); {$I+}
+  If IOResult <> 0 Then Break;
+  Inc(L);
+ End;
+ Close(F);
+ If L = LineNo Then ReadSourceLine := LineTxt;
+End;
+
+{ @description: Implemente l affichage -S commun aux deux sources
+    de lignes (DWARF pour ELF, PDB pour PE) : desassemble comme
+    CmdDisasm, mais affiche d abord la reference fichier:ligne (et
+    le texte source si le fichier est accessible sur disque) chaque
+    fois que la ligne active change. LineRows[] (rempli au prealable
+    par LoadDwarfLineTable ou LoadPdbLineTable) est la seule donnee
+    partagee entre les deux chemins.
+  @param SourceKind Libelle affiche dans l en-tete ("DWARF" ou "PDB") }
+Procedure CmdSourceMixGeneric(SourceKind: String);
+Var
+ SI: Integer;
+ Off, VAddr, EndAddr: LongInt;
+ InstrLen, K, AddrDigits: Integer;
+ Mnemonic, Operands, BytesTxt, Lbl: String;
+ CurFile, LastFile, SrcTxt: String;
+ CurLine, LastLine: Integer;
+ Have: Boolean;
+Begin
+ AddrDigits := GetAddrDigits;
+ LastFile := ''; LastLine := -1; { force l affichage de la 1ere ligne }
  WriteLn;
- WriteLn('Option -S non supportee par cette implementation :');
+ WriteLn(InFileName, ':     format ', FormatName, ' (avec table de lignes ',
+  SourceKind, ')');
+ For SI := 1 To SectionCount Do Begin
+  If Not Sections[SI].IsCode Then Continue;
+  WriteLn;
+  WriteLn('Disassembly of section ', Sections[SI].Name, ':');
+  VAddr := Sections[SI].VAddr;
+  EndAddr := VAddr + Sections[SI].Size;
+  While VAddr < EndAddr Do Begin
+   Off := Sections[SI].FileOff + (VAddr - Sections[SI].VAddr);
+   Lbl := FindSymbolAt(VAddr);
+   If Lbl <> '' Then Begin
+    WriteLn;
+    WriteLn(ToHexFixed(VAddr, AddrDigits), ' <', Lbl, '>:');
+   End;
+   Have := FindLineForAddr(VAddr, CurFile, CurLine);
+   If Have And ((CurFile <> LastFile) Or (CurLine <> LastLine)) Then Begin
+    WriteLn;
+    SrcTxt := ReadSourceLine(CurFile, CurLine);
+    If SrcTxt <> '' Then
+     WriteLn(CurFile, ':', IntToStr(CurLine), ': ', SrcTxt)
+    Else
+     WriteLn(CurFile, ':', IntToStr(CurLine), ': (source indisponible)');
+    LastFile := CurFile;
+    LastLine := CurLine;
+   End;
+   InstrLen := DecodeInstruction(Off, VAddr, Mnemonic, Operands);
+   BytesTxt := '';
+   For K := 0 To InstrLen - 1 Do Begin
+    If K > 0 Then BytesTxt := BytesTxt + ' ';
+    BytesTxt := BytesTxt + HexByte(GetByte(Off + K));
+   End;
+   Write('  ', ToHexFixed(VAddr, AddrDigits), ':' + #9, PadRight(BytesTxt, 21), #9);
+   If Operands <> '' Then WriteLn(PadRight(Mnemonic, 6), ' ', Operands)
+   Else WriteLn(Mnemonic);
+   VAddr := VAddr + InstrLen;
+  End;
+ End;
+End;
+
+{ @description: Implemente l option -S : melange source/assembleur
+    pour ELF (DWARF .debug_line) et PE (CodeView/RSDS + PDB
+    externe) ; pour les autres formats, signale explicitement
+    l etat du support plutot que d afficher un faux resultat. }
+Procedure CmdSourceMix;
+Var
+ PdbPath, Candidate: String;
+Begin
+ If (BinFormat = FMT_ELF32) Or (BinFormat = FMT_ELF64) Then Begin
+  LoadDwarfLineTable;
+  If DwarfLineFound Then Begin
+   CmdSourceMixGeneric('DWARF');
+   Exit;
+  End;
+  WriteLn;
+  If DwarfSawV5 Then
+   WriteLn('Option -S : table de lignes DWARF version 5 detectee, ',
+    'mais ce format (tables repertoire/fichier par formulaires) ',
+    'n''est pas pris en charge.')
+  Else
+   WriteLn('Option -S : aucune information de debogage DWARF ',
+    '(.debug_line) trouvee dans ce fichier ELF. Recompilez avec ',
+    '-g pour en generer.');
+  WriteLn('Utilisez -d pour le desassemblage seul.');
+  Exit;
+ End Else If (BinFormat = FMT_PE32) Or (BinFormat = FMT_PE64) Then Begin
+  PdbPath := FindPECodeViewPdbPath;
+  If PdbPath = '' Then Begin
+   WriteLn;
+   WriteLn('Option -S : aucune entree de debogage CodeView (RSDS) ',
+    'trouvee dans ce fichier PE. Recompilez/relinkez avec les ',
+    'informations de debogage actives (/Zi /DEBUG).');
+   WriteLn('Utilisez -d pour le desassemblage seul.');
+   Exit;
+  End;
+  { Le chemin .pdb enregistre par le lieur est presque toujours
+    celui de la machine de compilation d origine : on essaie aussi
+    le meme nom de base a cote du PE analyse, puis dans le
+    repertoire courant. }
+  If (Not LoadPdbLineTable(PdbPath)) Then Begin
+   Candidate := DirOf(InFileName) + ExtractBaseName(PdbPath);
+   If Not LoadPdbLineTable(Candidate) Then
+    LoadPdbLineTable(ExtractBaseName(PdbPath));
+  End;
+  If LineRowCount > 0 Then Begin
+   CmdSourceMixGeneric('PDB');
+   Exit;
+  End;
+  WriteLn;
+  WriteLn('Option -S : entree CodeView trouvee, pointant vers "',
+   PdbPath, '", mais ce fichier .pdb n''a pas pu etre ouvert ou ',
+   'ne contenait aucune ligne exploitable (chemin absolu de la ',
+   'machine de compilation d''origine, probablement introuvable ici).');
+  WriteLn('Utilisez -d pour le desassemblage seul.');
+  Exit;
+ End;
+ WriteLn;
+ WriteLn('Option -S non supportee pour ce format de fichier :');
  WriteLn('le melange source/assembleur necessite de lire les');
  WriteLn('informations de debogage (DWARF pour ELF, CodeView/PDB');
- WriteLn('pour PE), ce qui depasse la portee de cet outil.');
+ WriteLn('pour PE), et seuls ces deux cas sont pris en charge ici.');
  WriteLn('Utilisez -d pour le desassemblage seul.');
 End;
 
@@ -7521,7 +8463,8 @@ Procedure Help;Begin
  WriteLn('  -d       Desassemble les sections de code');
  WriteLn('  -h       Affiche l''en-tete des sections');
  WriteLn('  -t       Affiche la table des symboles');
- WriteLn('  -S       Melange source/assembleur (non supporte)');
+ WriteLn('  -S       Melange source/assembleur : DWARF .debug_line');
+ WriteLn('           pour ELF, CodeView/RSDS + PDB externe pour PE');
  WriteLn('  -m arch  Force l''architecture de desassemblage :');
  WriteLn('           i386 (defaut), x86-64, 8086, 8080, 6502, z80, 6800,');
  WriteLn('           68000, sparc, sparcv9, mips, mipsel, ppc, ppcle,');
