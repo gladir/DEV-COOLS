@@ -51,6 +51,7 @@ Const
  FMT_MACHO32 = 8;        { Mach-O 32 bits (macOS), natif little-endian }
  FMT_MACHO64 = 9;        { Mach-O 64 bits (macOS), natif little-endian }
  FMT_CLASS   = 10;       { fichier Java .class (bytecode JVM/Jasmin)   }
+ FMT_LLVMBC  = 11;       { LLVM IR bitcode (brut ou wrapper)           }
 
  { ----- Mach-O : valeurs magiques et types de commande utiles -----
    Les constantes dont le bit de poids fort est positionne doivent
@@ -95,6 +96,7 @@ Const
  ARCH_PCODE = 20;        { p-Code UCSD p-System II.0/II.1              }
  ARCH_MSIL  = 21;        { Microsoft Intermediate Language / CIL       }
  ARCH_JVM   = 22;        { bytecode JVM / assembleur Jasmin            }
+ ARCH_LLVM  = 23;        { LLVM IR bitcode structurel                  }
 
  { ----- Modes d adressage 6800 ----- }
  AM68_INH   = 0;         { inherent : aucun operande                   }
@@ -206,6 +208,30 @@ Var
  Mode6800     : Array[0..255] Of Byte;
  JavaCP       : PJavaCPArray;
  JavaCPCount  : Word;
+
+Const
+ LLVM_MAX_ABBREVS = 32;
+ LLVM_MAX_ABBREV_OPS = 32;
+
+Type
+ TLLVMAbbrevOp = Record
+  IsLiteral: Boolean;
+  Encoding: Byte;
+  Value: LongInt;
+ End;
+ TLLVMAbbrev = Record
+  Count: Integer;
+  Ops: Array[0..LLVM_MAX_ABBREV_OPS - 1] Of TLLVMAbbrevOp;
+ End;
+ TLLVMAbbrevList = Record
+  Count: Integer;
+  Items: Array[0..LLVM_MAX_ABBREVS - 1] Of TLLVMAbbrev;
+ End;
+ PLLVMAbbrevList = ^TLLVMAbbrevList;
+
+Var
+ LLVMBitPos: LongInt;
+ LLVMBlockInfo: Array[0..63] Of PLLVMAbbrevList;
 
 { ============================================================
   UTILITAIRES GENERAUX
@@ -508,6 +534,15 @@ Begin
   { CAFEBABE est aussi le magic Mach-O fat. Une version JVM >=45 et
     un constant_pool_count non nul identifient un fichier .class. }
   BinFormat := FMT_CLASS;
+  Exit;
+ End;
+ If (GetByte(0) = Ord('B')) And (GetByte(1) = Ord('C')) And
+    (GetByte(2) = $C0) And (GetByte(3) = $DE) Then Begin
+  BinFormat := FMT_LLVMBC;
+  Exit;
+ End;
+ If GetDWord(0) = $0B17C0DE Then Begin
+  BinFormat := FMT_LLVMBC; { wrapper bitcode LLVM }
   Exit;
  End;
  If (GetByte(0) = Ord('M')) And (GetByte(1) = Ord('Z')) Then Begin
@@ -6950,6 +6985,269 @@ Begin
 End;
 
 { ============================================================
+  ANALYSE STRUCTURELLE LLVM BITCODE
+  ============================================================ }
+
+Function LLVMReadBits(Count: Integer): LongInt;
+Var
+ I, BytePos, BitInByte: Integer;
+ R: LongInt;
+Begin
+ R := 0;
+ For I := 0 To Count - 1 Do Begin
+  BytePos := LLVMBitPos Div 8;
+  BitInByte := LLVMBitPos Mod 8;
+  If (BytePos < BufSize) And
+     ((GetByte(BytePos) And (1 Shl BitInByte)) <> 0) And (I < 31) Then
+   R := R Or (LongInt(1) Shl I);
+  Inc(LLVMBitPos);
+ End;
+ LLVMReadBits := R;
+End;
+
+Function LLVMReadVBR(Width: Integer): LongInt;
+Var
+ Piece, Payload, Shift: LongInt;
+Begin
+ LLVMReadVBR := 0;
+ Shift := 0;
+ Repeat
+  Piece := LLVMReadBits(Width);
+  Payload := Piece And ((LongInt(1) Shl (Width - 1)) - 1);
+  If Shift < 30 Then LLVMReadVBR := LLVMReadVBR Or (Payload Shl Shift);
+  Inc(Shift, Width - 1);
+ Until (Piece And (LongInt(1) Shl (Width - 1))) = 0;
+End;
+
+Procedure LLVMAlign32;
+Begin
+ LLVMBitPos := (LLVMBitPos + 31) And Not 31;
+End;
+
+Function LLVMBlockName(ID: LongInt): String;
+Begin
+ Case ID Of
+  0: LLVMBlockName := 'BLOCKINFO';
+  8: LLVMBlockName := 'MODULE';
+  9: LLVMBlockName := 'PARAMATTR';
+  10: LLVMBlockName := 'PARAMATTR_GROUP';
+  11: LLVMBlockName := 'CONSTANTS';
+  12: LLVMBlockName := 'FUNCTION';
+  14: LLVMBlockName := 'VALUE_SYMTAB';
+  15: LLVMBlockName := 'METADATA';
+  16: LLVMBlockName := 'METADATA_ATTACHMENT';
+  17: LLVMBlockName := 'TYPE';
+  18: LLVMBlockName := 'USELIST';
+  19: LLVMBlockName := 'MODULE_STRTAB';
+  21: LLVMBlockName := 'GLOBALVAL_SUMMARY';
+  22: LLVMBlockName := 'OPERAND_BUNDLE_TAGS';
+  23: LLVMBlockName := 'STRTAB';
+  25: LLVMBlockName := 'SYMTAB';
+ Else LLVMBlockName := 'BLOCK';
+ End;
+End;
+
+Function LLVMIndent(Level: Integer): String;
+Begin
+ LLVMIndent := SpaceStr(Level * 2);
+End;
+
+Procedure LLVMReadAbbrev(Var A: TLLVMAbbrev);
+Var
+ I, N, Stored: Integer;
+ Enc: Byte;
+ IsLit: Boolean;
+ V: LongInt;
+Begin
+ FillChar(A, SizeOf(A), 0);
+ N := LLVMReadVBR(5);
+ Stored := N;
+ If Stored > LLVM_MAX_ABBREV_OPS Then Stored := LLVM_MAX_ABBREV_OPS;
+ A.Count := Stored;
+ For I := 0 To N - 1 Do Begin
+  IsLit := LLVMReadBits(1) <> 0;
+  Enc := 0; V := 0;
+  If IsLit Then
+   V := LLVMReadVBR(8)
+  Else Begin
+   Enc := LLVMReadBits(3);
+   If (Enc = 1) Or (Enc = 2) Then V := LLVMReadVBR(5);
+  End;
+  If I < Stored Then Begin
+   A.Ops[I].IsLiteral := IsLit;
+   A.Ops[I].Encoding := Enc;
+   A.Ops[I].Value := V;
+  End;
+ End;
+End;
+
+Function LLVMReadEncodedValue(Const O: TLLVMAbbrevOp): LongInt;
+Begin
+ Case O.Encoding Of
+  1: LLVMReadEncodedValue := LLVMReadBits(O.Value);
+  2: LLVMReadEncodedValue := LLVMReadVBR(O.Value);
+  4: LLVMReadEncodedValue := LLVMReadBits(6);
+ Else LLVMReadEncodedValue := 0;
+ End;
+End;
+
+Procedure LLVMPrintRecord(Level: Integer; Code: LongInt; Const Values: String);
+Begin
+ If Values = '' Then
+  WriteLn(LLVMIndent(Level), 'record ', Code)
+ Else
+  WriteLn(LLVMIndent(Level), 'record ', Code, ' [', Values, ']');
+End;
+
+Procedure LLVMDecodeAbbrevRecord(Const A: TLLVMAbbrev; Level: Integer);
+Var
+ I, J, N: Integer;
+ Code, V: LongInt;
+ Values: String;
+ Elem: TLLVMAbbrevOp;
+Begin
+ Code := -1;
+ Values := '';
+ I := 0;
+ While I < A.Count Do Begin
+  If A.Ops[I].IsLiteral Then V := A.Ops[I].Value
+  Else If A.Ops[I].Encoding = 3 Then Begin { Array }
+   Inc(I);
+   If I >= A.Count Then Break;
+   Elem := A.Ops[I];
+   N := LLVMReadVBR(6);
+   For J := 0 To N - 1 Do Begin
+    V := LLVMReadEncodedValue(Elem);
+    If Length(Values) < 180 Then Begin
+     If Values <> '' Then Values := Values + ',';
+     Values := Values + IntToStr(V);
+    End;
+   End;
+   Inc(I);
+   Continue;
+  End Else If A.Ops[I].Encoding = 5 Then Begin { Blob }
+   N := LLVMReadVBR(6);
+   LLVMAlign32;
+   If Values <> '' Then Values := Values + ',';
+   Values := Values + 'blob(' + IntToStr(N) + ')';
+   Inc(LLVMBitPos, N * 8);
+   LLVMAlign32;
+   Inc(I);
+   Continue;
+  End Else
+   V := LLVMReadEncodedValue(A.Ops[I]);
+
+  If Code < 0 Then Code := V
+  Else Begin
+   If Values <> '' Then Values := Values + ',';
+   Values := Values + IntToStr(V);
+  End;
+  Inc(I);
+ End;
+ LLVMPrintRecord(Level, Code, Values);
+End;
+
+Procedure LLVMParseBlock(BlockID, CodeWidth, EndBit, Level: LongInt);
+Var
+ Local: PLLVMAbbrevList;
+ AbbrevID, SubID, NewWidth, BlockWords: LongInt;
+ Code, N, I, TargetBID: LongInt;
+ Values: String;
+ A: TLLVMAbbrev;
+Begin
+ GetMem(Local, SizeOf(TLLVMAbbrevList));
+ FillChar(Local^, SizeOf(TLLVMAbbrevList), 0);
+ If (BlockID >= 0) And (BlockID <= 63) And
+    (LLVMBlockInfo[BlockID] <> Nil) Then Local^ := LLVMBlockInfo[BlockID]^;
+ TargetBID := -1;
+ While (LLVMBitPos < EndBit) And (LLVMBitPos < BufSize * 8) Do Begin
+  AbbrevID := LLVMReadBits(CodeWidth);
+  Case AbbrevID Of
+   0: Begin
+    LLVMAlign32;
+    Break;
+   End;
+   1: Begin
+    SubID := LLVMReadVBR(8);
+    NewWidth := LLVMReadVBR(4);
+    LLVMAlign32;
+    BlockWords := LLVMReadBits(32);
+    WriteLn(LLVMIndent(Level), '<', LLVMBlockName(SubID),
+     ' id=', SubID, ' words=', BlockWords, '>');
+    LLVMParseBlock(SubID, NewWidth, LLVMBitPos + BlockWords * 32, Level + 1);
+    WriteLn(LLVMIndent(Level), '</', LLVMBlockName(SubID), '>');
+   End;
+   2: Begin
+    LLVMReadAbbrev(A);
+    If (BlockID = 0) And (TargetBID >= 0) And (TargetBID <= 63) Then Begin
+     If LLVMBlockInfo[TargetBID] = Nil Then Begin
+      GetMem(LLVMBlockInfo[TargetBID], SizeOf(TLLVMAbbrevList));
+      FillChar(LLVMBlockInfo[TargetBID]^, SizeOf(TLLVMAbbrevList), 0);
+     End;
+     N := LLVMBlockInfo[TargetBID]^.Count;
+     If N < LLVM_MAX_ABBREVS Then Begin
+      LLVMBlockInfo[TargetBID]^.Items[N] := A;
+      Inc(LLVMBlockInfo[TargetBID]^.Count);
+     End;
+    End Else If Local^.Count < LLVM_MAX_ABBREVS Then Begin
+     Local^.Items[Local^.Count] := A;
+     Inc(Local^.Count);
+    End;
+    WriteLn(LLVMIndent(Level), 'abbrev #', Local^.Count + 3);
+   End;
+   3: Begin
+    Code := LLVMReadVBR(6);
+    N := LLVMReadVBR(6);
+    Values := '';
+    For I := 0 To N - 1 Do Begin
+     If Values <> '' Then Values := Values + ',';
+     Values := Values + IntToStr(LLVMReadVBR(6));
+    End;
+    LLVMPrintRecord(Level, Code, Values);
+    If (BlockID = 0) And (Code = 1) And (N > 0) Then Begin
+     { SETBID est toujours le premier operande du record. }
+     Val(Copy(Values, 1, Pos(',', Values + ',') - 1), TargetBID, I);
+    End;
+   End;
+  Else
+   I := AbbrevID - 4;
+   If (I >= 0) And (I < Local^.Count) Then
+    LLVMDecodeAbbrevRecord(Local^.Items[I], Level)
+   Else Begin
+    WriteLn(LLVMIndent(Level), 'abbrev inconnu #', AbbrevID);
+    Break;
+   End;
+  End;
+ End;
+ LLVMBitPos := EndBit;
+ FreeMem(Local, SizeOf(TLLVMAbbrevList));
+End;
+
+Procedure CmdLLVM;
+Var
+ I: Integer;
+ StartOff: LongInt;
+Begin
+ For I := 0 To 63 Do Begin
+  If LLVMBlockInfo[I] <> Nil Then Begin
+   FreeMem(LLVMBlockInfo[I], SizeOf(TLLVMAbbrevList));
+   LLVMBlockInfo[I] := Nil;
+  End;
+ End;
+ If GetDWord(0) = $0B17C0DE Then StartOff := GetDWord(8) Else StartOff := 0;
+ WriteLn;
+ WriteLn(InFileName, ':     format llvm-bitcode');
+ WriteLn('LLVM bitstream structure:');
+ If (GetByte(StartOff) <> Ord('B')) Or (GetByte(StartOff + 1) <> Ord('C')) Or
+    (GetByte(StartOff + 2) <> $C0) Or (GetByte(StartOff + 3) <> $DE) Then Begin
+  WriteLn('Erreur : signature LLVM BC C0 DE absente.');
+  Exit;
+ End;
+ LLVMBitPos := (StartOff + 4) * 8;
+ LLVMParseBlock(-1, 2, BufSize * 8, 0);
+End;
+
+{ ============================================================
   COMMANDES
   ============================================================ }
 
@@ -6958,6 +7256,10 @@ End;
   @return Nom du format (ex: "elf32-i386", "pei-i386") }
 Function FormatName: String;
 Begin
+ If Arch = ARCH_LLVM Then Begin
+  FormatName := 'llvm-bitcode';
+  Exit;
+ End;
  If Arch = ARCH_JVM Then Begin
   If BinFormat = FMT_CLASS Then FormatName := 'java-class'
   Else FormatName := 'raw-jvm-bytecode';
@@ -7223,7 +7525,8 @@ Procedure Help;Begin
  WriteLn('  -m arch  Force l''architecture de desassemblage :');
  WriteLn('           i386 (defaut), x86-64, 8086, 8080, 6502, z80, 6800,');
  WriteLn('           68000, sparc, sparcv9, mips, mipsel, ppc, ppcle,');
- WriteLn('           sh, shle, ia64, pcode, msil, jasmin, arm, thumb');
+ WriteLn('           sh, shle, ia64, pcode, msil, jasmin, llvm, arm,');
+ WriteLn('           thumb');
  WriteLn('           ou arm64');
  WriteLn('  -b adr   Adresse de chargement (hexa) pour un binaire');
  WriteLn('           brut sans entete, ex: -b 8000 ou -b $8000');
@@ -7247,7 +7550,8 @@ Procedure Help;Begin
  WriteLn('gros-boutiste ou little-endian ; SuperH SH-1/SH-2/SH-3/SH-4 ;');
  WriteLn('IA-64 structurel ; p-Code UCSD p-System II.0/II.1 ; MSIL/CIL');
  WriteLn('avec extraction automatique des methodes des assemblies .NET ;');
- WriteLn('bytecode JVM/Jasmin avec extraction des methodes des .class.');
+ WriteLn('bytecode JVM/Jasmin avec extraction des methodes des .class ;');
+ WriteLn('bitcode LLVM structurel (blocs, abbreviations et records).');
  WriteLn('Pas de SSE/AVX/NEON/VFP, pas d''opcodes etendus 0F pour le');
  WriteLn('8086, pas de DDCB/FDCB pour le Z80.');
 End;
@@ -7284,7 +7588,7 @@ BEGIN
    Inc(I);
    If I > ParamCount Then Begin
     WriteLn('Erreur : -m necessite une architecture (i386, x86-64, 8086, ',
-     '8080, z80, 6800, 68000, sparc, mips, ppc, sh, ia64, pcode, msil, jasmin ou arm).');
+     '8080, z80, 6800, sparc, mips, ppc, sh, ia64, pcode, msil, jasmin, llvm ou arm).');
     Halt(1);
    End;
    If UpStr(ParamStr(I)) = '6502' Then Arch := ARCH_6502
@@ -7356,6 +7660,9 @@ BEGIN
            (UpStr(ParamStr(I)) = 'JVM') Or
            (UpStr(ParamStr(I)) = 'JAVA') Or
            (UpStr(ParamStr(I)) = 'BYTECODE') Then Arch := ARCH_JVM
+   Else If (UpStr(ParamStr(I)) = 'LLVM') Or
+           (UpStr(ParamStr(I)) = 'BITCODE') Or
+           (UpStr(ParamStr(I)) = 'LLVMBC') Then Arch := ARCH_LLVM
    Else Begin
     WriteLn('Architecture inconnue pour -m : ', ParamStr(I));
     Halt(1);
@@ -7397,6 +7704,9 @@ BEGIN
  End Else If BinFormat = FMT_CLASS Then Begin
   ParseJavaClass;
   If Not ArchForced Then Arch := ARCH_JVM;
+ End Else If BinFormat = FMT_LLVMBC Then Begin
+  ParseRaw;
+  If Not ArchForced Then Arch := ARCH_LLVM;
  End Else If (BinFormat = FMT_ELF32) Or (BinFormat = FMT_ELF64) Then Begin
   ParseELF;
   If Not ArchForced Then Begin
@@ -7462,5 +7772,7 @@ BEGIN
  If OptHeaders Then CmdHeaders;
  If OptSymbols Then CmdSymbols;
  If OptSource Then CmdSourceMix;
- If OptDisasm Then CmdDisasm;
+ If OptDisasm Then Begin
+  If Arch = ARCH_LLVM Then CmdLLVM Else CmdDisasm;
+ End;
 END.
