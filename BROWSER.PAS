@@ -3613,9 +3613,7 @@ Procedure InitCSS;
 Var
  I, J: Integer;
 Begin
- { Desactive tant que le parseur CSS experimental n'est pas adapte aux
-   contraintes strictes de pile de Turbo Pascal/Free Pascal. }
- CSSEnabled := False;
+ CSSEnabled := True;
  CSSParseError := '';
  CSSGlobalStylesheet.RuleCount := 0;
 
