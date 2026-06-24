@@ -5476,6 +5476,7 @@ Begin
  AddMenuItem(MainMenuBar.Menus[6], 'Gestionnaire d extensions...', '', 710);
  AddMenuSeparator(MainMenuBar.Menus[6]);
  AddMenuItem(MainMenuBar.Menus[6], 'Ligne de commande externe', '', 720);
+ AddMenuItem(MainMenuBar.Menus[6], 'COMMENT', '', 721);
  MainMenuBar.MenuCount := 7;
 
  { Menu Fenetre }
@@ -5635,6 +5636,7 @@ Function EmuVScr_PopKey(Var P: TEmulatorPanel): Word; Forward;
 Procedure SaveFile(Var Buf: TTextBuffer; AFileName: String); Forward;
 Procedure HandleSaveCurrentFile; Forward;
 Procedure HandleSaveAll; Forward;
+Procedure HandleRunCommentTool; Forward;
 Procedure TryQuit; Forward;
 Procedure CloseEditorWindow(Index: Integer); Forward;
 Procedure ClearExplorer(Var Exp: TSolutionExplorer); Forward;
@@ -6129,6 +6131,7 @@ Begin
          MB_OK, MI_INFO);
         FullRepaintNeeded := True;
        End;
+  721: HandleRunCommentTool; { Outils > COMMENT }
   900: Begin { Aide > A propos de DEVENV }
         ShowMessageBox('A propos de DEVENV',
          'DEVENV - Clone de Visual Studio en mode graphique' + #10 +
@@ -50901,6 +50904,150 @@ Begin
  SaveFile(ActiveEditor.Buffer, FN);
  AppendOutput(OutputPanel, 'Fichier enregistre : ' + FN,
   Ord(OTK_BUILD));
+End;
+
+{ --- Localiser un executable compagnon (PATH, repertoire courant,
+  puis repertoire de DEVENV.EXE lui-meme), pour les commandes du
+  menu Outils qui invoquent un outil externe de cette meme suite. --- }
+Function FindToolExe(Name: String): String;
+Var
+ FullPath, ExeDir, CurDir: String;
+Begin
+ FindToolExe := '';
+ {$IFDEF WINDOWS}
+ FullPath := FSearch(Name + '.exe', GetEnv('PATH'));
+ {$ELSE}
+ FullPath := FSearch(Name, GetEnv('PATH'));
+ {$ENDIF}
+ If FullPath <> '' Then Begin
+  FindToolExe := FullPath;
+  Exit;
+ End;
+ { Repertoire courant : on construit un chemin absolu plutot que de
+   renvoyer le nom nu, car la recherche implicite de l executable
+   par cmd.exe dans le repertoire courant n est pas garantie sur
+   toutes les configurations (variable NoDefaultCurrentDirectoryInExePath,
+   constate sur certains postes) ; un chemin absolu evite toute
+   ambiguite, ici comme dans le repertoire de DEVENV.EXE plus bas. }
+ GetDir(0, CurDir);
+ If CurDir[Length(CurDir)] <> '\' Then CurDir := CurDir + '\';
+ {$IFDEF WINDOWS}
+ If FileExists(CurDir + Name + '.exe') Then Begin
+  FindToolExe := CurDir + Name + '.exe';
+  Exit;
+ End;
+ {$ELSE}
+ If FileExists(CurDir + Name) Then Begin
+  FindToolExe := CurDir + Name;
+  Exit;
+ End;
+ {$ENDIF}
+ { Repertoire de DEVENV.EXE lui-meme : les outils de cette suite
+   (COMMENT, OBJDUMP, NM, ...) sont habituellement compiles cote a
+   cote avec DEVENV dans le meme repertoire de projet. }
+ ExeDir := ExtractFilePath(ParamStr(0));
+ {$IFDEF WINDOWS}
+ If FileExists(ExeDir + Name + '.exe') Then
+  FindToolExe := ExeDir + Name + '.exe';
+ {$ELSE}
+ If FileExists(ExeDir + Name) Then
+  FindToolExe := ExeDir + Name;
+ {$ENDIF}
+End;
+
+{ --- Outils > COMMENT : ajoute les commentaires manquants au
+  fichier actuellement edite, via la commande externe COMMENT
+  (COMMENT.PAS), puis recharge l editeur avec le resultat. La
+  sortie de la commande (stdout/stderr) est affichee dans l onglet
+  "Sortie de build" du panneau de sortie, comme une compilation. --- }
+Procedure HandleRunCommentTool;
+Const
+ CommentTempFile = 'COMMENT.TMP';
+Var
+ FN, ToolPath, CmdLine: String;
+ ExitCode: Integer;
+ SavedCursorLine: LongInt;
+Begin
+ If Not EditorReady Then Begin
+  AppendOutput(OutputPanel, 'Aucun fichier ouvert pour COMMENT.',
+   Ord(OTK_BUILD));
+  Exit;
+ End;
+ FN := '';
+ If Opts.SourceFile <> '' Then
+  FN := Opts.SourceFile
+ Else If WinMgr.ActiveIdx >= 0 Then
+  FN := WinMgr.Windows[WinMgr.ActiveIdx].FileName;
+ If FN = '' Then Begin
+  AppendOutput(OutputPanel, 'Aucun nom de fichier pour COMMENT.',
+   Ord(OTK_BUILD));
+  Exit;
+ End;
+
+ ClearOutput(OutputPanel, Ord(OTK_BUILD));
+ OutputPanel.ActiveTab := OTK_BUILD;
+ OutputPanel.Visible := True;
+ AppendOutput(OutputPanel,
+  '------ COMMENT : ' + FN + ' ------', Ord(OTK_BUILD));
+
+ { Le fichier doit refleter le contenu en cours d edition : COMMENT
+   travaille sur le fichier disque, pas sur le tampon memoire. }
+ SaveFile(ActiveEditor.Buffer, FN);
+ If WinMgr.ActiveIdx >= 0 Then
+  Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
+
+ ToolPath := FindToolExe('COMMENT');
+ If ToolPath = '' Then Begin
+  AppendOutputEx(OutputPanel,
+   'COMMENT.EXE introuvable (PATH, repertoire courant, ' +
+   'repertoire de DEVENV.EXE).',
+   Ord(OTK_BUILD), OLK_ERROR, '', 0, 0);
+  FullRepaintNeeded := True;
+  Exit;
+ End;
+
+ { Pas de guillemets ici : ExecuteCompiler ajoute une redirection
+   shell (> fichier 2>&1) au bout de CmdLine puis lance le tout via
+   "cmd /C ...". La regle de conservation des guillemets de cmd.exe
+   n est valide que si la ligne entiere contient EXACTEMENT deux
+   guillemets ; en ajouter une seconde paire (autour de FN) en
+   introduit quatre, ce qui fait retomber cmd.exe sur son
+   comportement historique (il retire le premier et le DERNIER
+   guillemet de toute la ligne, avalant au passage la redirection
+   dans l argument). Meme limitation, deja acceptee ailleurs dans ce
+   fichier (voir BuildCSCCommandLine), pour les chemins avec
+   espaces. }
+ CmdLine := ToolPath + ' ' + FN;
+ AppendOutput(OutputPanel, '> ' + CmdLine, Ord(OTK_BUILD));
+ ExitCode := ExecuteCompiler(CmdLine, CommentTempFile);
+ ReadOutputFile(CommentTempFile, OutputPanel, Ord(OTK_BUILD));
+ CleanupTempFile(CommentTempFile);
+
+ { Recharger l editeur avec le resultat : que COMMENT ait reussi ou
+   non, le fichier disque est dans un etat valide (remplace
+   uniquement apres confirmation, sinon laisse intact), donc
+   recharger est toujours sans risque. }
+ LoadFile(ActiveEditor.Buffer, FN);
+ SavedCursorLine := ActiveEditor.CursorLine;
+ If SavedCursorLine >= ActiveEditor.Buffer.LineCount Then
+  SavedCursorLine := ActiveEditor.Buffer.LineCount - 1;
+ If SavedCursorLine < 0 Then SavedCursorLine := 0;
+ ActiveEditor.CursorLine := SavedCursorLine;
+ ActiveEditor.CursorCol := 1;
+ ActiveEditor.ScrollLine := 0;
+ If WinMgr.ActiveIdx >= 0 Then
+  Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
+
+ If ExitCode = 0 Then
+  AppendOutputEx(OutputPanel,
+   '------ COMMENT termine : ' + FN + ' (editeur recharge) ------',
+   Ord(OTK_BUILD), OLK_SUCCESS, '', 0, 0)
+ Else
+  AppendOutputEx(OutputPanel,
+   '------ COMMENT a echoue (code ' + IntToStr(ExitCode) +
+   ') : ' + FN + ' ------',
+   Ord(OTK_BUILD), OLK_ERROR, '', 0, 0);
+ FullRepaintNeeded := True;
 End;
 
 { --- Sauvegarder tous les fichiers ouverts --- }
