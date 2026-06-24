@@ -267,8 +267,9 @@ Const
  { Zone de rendu du contenu HTML }
  RENDER_AREA_X = 5;
  RENDER_AREA_Y = 30;           { Sous la barre d'URL }
- RENDER_AREA_WIDTH = 630;
- RENDER_AREA_HEIGHT = 440;
+ { RENDER_AREA_WIDTH/HEIGHT : valeurs par defaut pour le mode VGA
+   640x480 ; recalculees dans InitializeGraphics selon la resolution
+   reelle (notamment en mode -maxscreen), voir plus bas. }
 
  { Marges et espacements }
  RENDER_MARGIN_LEFT = 10;
@@ -790,6 +791,15 @@ Type
  CSSStylesheetPtr = ^CSSStylesheet;
 
 Var
+ { -maxscreen : forcer l'affichage maximal supporte (voir DEVENV.PAS) }
+ MaxScreen: Boolean;
+
+ { Dimensions de la zone de rendu HTML, calculees selon la resolution
+   graphique reelle (voir InitializeGraphics). Valeurs par defaut =
+   mode VGA 640x480. }
+ RENDER_AREA_WIDTH: Integer;
+ RENDER_AREA_HEIGHT: Integer;
+
  { Variables globales pour la barre d'URL }
  CurrentURL: String;
  URLCursorPos: Integer;
@@ -12321,23 +12331,57 @@ Begin
  GetURL := CurrentURL;
 End;
 
+{ --- Choisir le pilote/mode graphique selon -maxscreen : voir
+  DEVENV.PAS/SelectScreenDriverMode pour le detail. Detect choisirait
+  le pilote couleur le plus profond (15/16 bits), ou les indices de
+  palette EGA/VGA 1..15 sont alors interpretes comme des valeurs RGB
+  brutes au lieu de couleurs Noir/Bleu/Vert/.../Jaune/Blanc. On force
+  donc le pilote 256 couleurs (palette VGA standard) a sa plus haute
+  resolution, ce qui conserve la palette correcte. }
+Procedure SelectScreenDriverMode(WantMaxScreen: Boolean;
+ Var Driver, Mode: Integer);
+Var
+ LoMode, HiMode: SmallInt;
+Begin
+ {$IFDEF FPC}
+  If(WantMaxScreen)Then Begin
+   Driver := D8bit;
+   GetModeRange(Driver, LoMode, HiMode);
+   If HiMode >= LoMode Then
+    Mode := HiMode
+   Else Begin
+    Driver := Detect;
+    Mode := 0;
+   End;
+  End
+   Else
+  Begin
+   Driver := VGA;
+   Mode := VGAHi;
+  End;
+ {$ELSE}
+  Driver := Detect;
+  Mode := VGAHi;
+ {$ENDIF}
+End;
+
 Procedure InitializeGraphics;
 Var
  Driver, Mode: Integer;
  ErrCode: Integer;
 Begin
- {$IFDEF FPC}
-  Driver:=VGA;
-  Mode:=VGAHi;
- {$ELSE}
-  Driver:=Detect;
-  Mode:=VGAHi;
- {$ENDIF}
+ SelectScreenDriverMode(MaxScreen, Driver, Mode);
  InitGraph(Driver,Mode,'');
  ErrCode:=GraphResult;
  If ErrCode=grOk Then Begin
   SetColor(White);
   SetLineStyle(0,0,1);
+  { Zone de rendu = espace reellement disponible apres la barre d'URL,
+    et non plus une taille figee pour 640x480 : sans cela, le mode
+    -maxscreen ouvrait un grand ecran mais ne dessinait le contenu
+    HTML que dans son coin superieur gauche. }
+  RENDER_AREA_WIDTH := GetMaxX - RENDER_AREA_X - 5;
+  RENDER_AREA_HEIGHT := GetMaxY - RENDER_AREA_Y - 5;
  End
   Else
  Begin
@@ -12710,6 +12754,7 @@ Begin
  WriteConsoleLine('  /URL, -u, --url URL      Ouvrir une adresse HTTP ou HTTPS');
  WriteConsoleLine('  /FILE, -f, --file FILE   Ouvrir un fichier HTML local');
  WriteConsoleLine('  /TEST FILE               Charger, rendre, confirmer puis quitter');
+ WriteConsoleLine('  -maxscreen               Ouvrir le navigateur en plein ecran');
  WriteConsoleLine('');
  WriteConsoleLine('Exemples:');
  WriteConsoleLine('  BROWSER https://www.example.com/');
@@ -12746,12 +12791,29 @@ End;
 Procedure ParseCommandLine(Var InitialTarget: String; Var TestMode: Boolean);
 Var
  FirstParam, LowerParam: String;
+ Args: Array[1..20] Of String;
+ ArgCount, I: Integer;
 Begin
  InitialTarget := 'https://';
  TestMode := False;
- If System.ParamCount = 0 Then Exit;
+ MaxScreen := False;
 
- FirstParam := ParamStr(1);
+ { Extraire -maxscreen de la ligne de commande, ou qu'il apparaisse,
+   et conserver les autres arguments dans leur ordre d'origine (meme
+   principe que DEVENV.PAS). }
+ ArgCount := 0;
+ For I := 1 To System.ParamCount Do Begin
+  If HTMLLowerCase(ParamStr(I)) = '-maxscreen' Then
+   MaxScreen := True
+  Else If ArgCount < 20 Then Begin
+   Inc(ArgCount);
+   Args[ArgCount] := ParamStr(I);
+  End;
+ End;
+
+ If ArgCount = 0 Then Exit;
+
+ FirstParam := Args[1];
  LowerParam := HTMLLowerCase(FirstParam);
  If IsHelpParameter(FirstParam) Then Begin
   PrintUsage;
@@ -12760,22 +12822,22 @@ Begin
 
  If (LowerParam = 'test') Or (LowerParam = '/test') Or
     (LowerParam = '--test') Then Begin
-  If System.ParamCount < 2 Then Begin
+  If ArgCount < 2 Then Begin
    WriteConsoleLine('Erreur: un nom de fichier est requis pour /TEST.');
    Halt(1);
   End;
-  InitialTarget := ParamStr(2);
+  InitialTarget := Args[2];
   TestMode := True;
   Exit;
  End;
 
  If IsURLParameter(FirstParam) Or IsFileParameter(FirstParam) Then Begin
-  If System.ParamCount < 2 Then Begin
+  If ArgCount < 2 Then Begin
    WriteConsoleLine('Erreur: une URL ou un nom de fichier est requis.');
    WriteConsoleLine('Utilisez BROWSER /? pour afficher l''aide.');
    Halt(1);
   End;
-  InitialTarget := ParamStr(2);
+  InitialTarget := Args[2];
   Exit;
  End;
 
