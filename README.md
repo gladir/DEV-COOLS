@@ -543,6 +543,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer le compilateur Oberon pour l'assembleur du microprocesseur 80386 (en executable Windows 32 bits).</td>
 		</tr>
 		<tr>
+			<td><b>OBJDUMP.PAS</b></td>
+			<td>Cette commande permet d'analyser des fichiers objets, bibliothèques et exécutables afin d'afficher leurs entêtes, sections, symboles et code désassemblé.</td>
+		</tr>
+		<tr>
 			<td><b>PAS2ADA.PAS</b></td>
 			<td>Cette commande permet de transpiler un fichier source Turbo Pascal/Free Pascal vers le langage Ada (.adb).</td>
 		</tr>
