@@ -2803,12 +2803,13 @@ Begin
     JSSetVariable(VarName, Value, False);
     If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
    End Else Begin
-    { Autre expression - revenir en arriere et evaluer }
+    { Autre expression (ex: appel de fonction isole) - revenir en
+      arriere et evaluer via le moteur d'expressions, qui avance Pos
+      lui-meme. Rappeler JSEvaluate sur le meme texte rebouclerait
+      indefiniment dans cette meme branche sans jamais progresser. }
     Pos := StartPos;
-    StartPos := Pos;
-    While (Pos <= Length(Script)) And (Script[Pos] <> ';') Do
-     Inc(Pos);
-    JSEvaluate := JSEvaluate(Copy(Script, StartPos, Pos - StartPos));
+    JSEvaluate := JSEvalExpression(Script, Pos);
+    Pos := JSSkipComments(Script, Pos);
     If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
    End;
   End
@@ -8338,22 +8339,17 @@ Function JPEGReadByte: Integer;
 Var
  BytesRead: Word;
  B: Byte;
+ SkipMarker: Boolean;
 Begin
  JPEGReadByte := -1;
 
- { Remplir le buffer si necessaire }
- If JPEGDataPos >= JPEGDataLen Then Begin
-  BlockRead(JPEGFileHandle, JPEGDataBuffer, SizeOf(JPEGDataBuffer), BytesRead);
-  If BytesRead = 0 Then Exit;
-  JPEGDataPos := 0;
-  JPEGDataLen := BytesRead;
- End;
+ { Boucle plutot que recursion : un flux corrompu/atypique peut
+   enchainer plusieurs marqueurs RST consecutifs, ce qu'un appel
+   recursif a soi-meme finirait par faire deborder la pile. }
+ Repeat
+  SkipMarker := False;
 
- B := JPEGDataBuffer[JPEGDataPos];
- Inc(JPEGDataPos);
-
- { Gerer le byte stuffing: $FF00 devient $FF }
- If B = $FF Then Begin
+  { Remplir le buffer si necessaire }
   If JPEGDataPos >= JPEGDataLen Then Begin
    BlockRead(JPEGFileHandle, JPEGDataBuffer, SizeOf(JPEGDataBuffer), BytesRead);
    If BytesRead = 0 Then Exit;
@@ -8361,19 +8357,31 @@ Begin
    JPEGDataLen := BytesRead;
   End;
 
-  If JPEGDataBuffer[JPEGDataPos] = $00 Then Begin
-   Inc(JPEGDataPos); { Sauter le $00 de stuffing }
-  End
-  Else If (JPEGDataBuffer[JPEGDataPos] >= $D0) And
-          (JPEGDataBuffer[JPEGDataPos] <= $D7) Then Begin
-   { Marqueur RST - le sauter }
-   Inc(JPEGDataPos);
-   JPEGBitBuffer := 0;
-   JPEGBitsInBuffer := 0;
-   JPEGReadByte := JPEGReadByte; { Lire le prochain octet }
-   Exit;
+  B := JPEGDataBuffer[JPEGDataPos];
+  Inc(JPEGDataPos);
+
+  { Gerer le byte stuffing: $FF00 devient $FF }
+  If B = $FF Then Begin
+   If JPEGDataPos >= JPEGDataLen Then Begin
+    BlockRead(JPEGFileHandle, JPEGDataBuffer, SizeOf(JPEGDataBuffer), BytesRead);
+    If BytesRead = 0 Then Exit;
+    JPEGDataPos := 0;
+    JPEGDataLen := BytesRead;
+   End;
+
+   If JPEGDataBuffer[JPEGDataPos] = $00 Then Begin
+    Inc(JPEGDataPos); { Sauter le $00 de stuffing }
+   End
+   Else If (JPEGDataBuffer[JPEGDataPos] >= $D0) And
+           (JPEGDataBuffer[JPEGDataPos] <= $D7) Then Begin
+    { Marqueur RST - le sauter, puis lire l'octet suivant }
+    Inc(JPEGDataPos);
+    JPEGBitBuffer := 0;
+    JPEGBitsInBuffer := 0;
+    SkipMarker := True;
+   End;
   End;
- End;
+ Until Not SkipMarker;
 
  JPEGReadByte := B;
 End;
