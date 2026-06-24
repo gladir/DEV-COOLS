@@ -271,6 +271,12 @@ Const
    640x480 ; recalculees dans InitializeGraphics selon la resolution
    reelle (notamment en mode -maxscreen), voir plus bas. }
 
+ { Barres de defilement de la zone de rendu }
+ SCROLLBAR_SIZE = 16;          { Epaisseur des barres / cote des boutons fleche }
+ SCROLLBAR_MIN_THUMB = 12;     { Taille minimale de la poignee }
+ SCROLL_LINE_STEP = 16;        { Pas de defilement par clic sur une fleche }
+ SCROLL_MEASURE_MARGIN = 2000; { Marge d'anticipation pour mesurer le contenu restant }
+
  { Marges et espacements }
  RENDER_MARGIN_LEFT = 10;
  RENDER_MARGIN_TOP = 5;
@@ -799,6 +805,17 @@ Var
    mode VGA 640x480. }
  RENDER_AREA_WIDTH: Integer;
  RENDER_AREA_HEIGHT: Integer;
+
+ { Defilement de la page (voir RenderText/InitRenderContext/RenderHTMLDocument) }
+ ScrollX: Integer;             { decalage horizontal courant, >= 0 }
+ ScrollY: Integer;             { decalage vertical courant, >= 0 }
+ CanScrollUp: Boolean;
+ CanScrollDown: Boolean;
+ CanScrollLeft: Boolean;
+ CanScrollRight: Boolean;
+ ContentOverflowX: Integer;    { X maximal atteint pendant le rendu (mots non coupables) }
+ RenderOriginX: Integer;       { = RENDER_AREA_X - ScrollX, ancre du contenu }
+ RenderOriginY: Integer;       { = RENDER_AREA_Y - ScrollY, ancre du contenu }
 
  { Variables globales pour la barre d'URL }
  CurrentURL: String;
@@ -4824,10 +4841,20 @@ Var
 { Procedure pour initialiser le contexte de rendu }
 Procedure InitRenderContext(Var Ctx: RenderContext);
 Begin
- Ctx.X := RENDER_AREA_X + RENDER_MARGIN_LEFT;
- Ctx.Y := RENDER_AREA_Y + RENDER_MARGIN_TOP;
- Ctx.MaxX := RENDER_AREA_X + RENDER_AREA_WIDTH - RENDER_MARGIN_LEFT;
- Ctx.MaxY := RENDER_AREA_Y + RENDER_AREA_HEIGHT;
+ { RenderOriginX/Y = ancre de positionnement du contenu, decalee selon
+   le defilement courant. Ctx.MaxX/MaxY restent bases sur la VRAIE
+   position fixe de la zone de rendu (independants du defilement) :
+   Ctx.MaxX est la limite de retour a la ligne (elle ne doit pas
+   bouger avec ScrollX, sinon le texte se reformaterait a chaque clic
+   sur la barre horizontale) ; Ctx.MaxY est etendu d'une marge de
+   mesure pour pouvoir detecter, en une seule passe, s'il reste du
+   contenu sous la zone visible (voir RenderHTMLDocument). }
+ RenderOriginX := RENDER_AREA_X - ScrollX;
+ RenderOriginY := RENDER_AREA_Y - ScrollY;
+ Ctx.X := RenderOriginX + RENDER_MARGIN_LEFT;
+ Ctx.Y := RenderOriginY + RENDER_MARGIN_TOP;
+ Ctx.MaxX := RENDER_AREA_X + (RENDER_AREA_WIDTH - SCROLLBAR_SIZE) - RENDER_MARGIN_LEFT;
+ Ctx.MaxY := RENDER_AREA_Y + (RENDER_AREA_HEIGHT - SCROLLBAR_SIZE) + SCROLL_MEASURE_MARGIN;
  Ctx.LineHeight := RENDER_LINE_HEIGHT;
  Ctx.TextColor := RENDER_TEXT_COLOR;
  Ctx.BgColor := RENDER_BG_COLOR;
@@ -4915,7 +4942,7 @@ End;
 { Procedure pour passer a la ligne suivante }
 Procedure RenderNewLine(Var Ctx: RenderContext);
 Begin
- Ctx.X := RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10);
+ Ctx.X := RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10);
  Ctx.Y := Ctx.Y + Ctx.LineHeight;
 End;
 
@@ -4923,7 +4950,7 @@ End;
 Procedure RenderBlockSpacing(Var Ctx: RenderContext; Spacing: Integer);
 Begin
  Ctx.Y := Ctx.Y + Spacing;
- Ctx.X := RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10);
+ Ctx.X := RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10);
 End;
 
 { Fonction pour calculer la largeur d'un texte }
@@ -4949,10 +4976,10 @@ Begin
   While (I <= Length(Text)) And (Text[I] In [' ', #9, #10, #13]) Do Begin
    If Text[I] In [#10, #13] Then Begin
     { Nouvelle ligne dans le texte source }
-    If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+    If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
      RenderNewLine(Ctx);
    End
-   Else If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then Begin
+   Else If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then Begin
     { Espace entre les mots }
     Ctx.X := Ctx.X + 8;
    End;
@@ -4971,14 +4998,18 @@ Begin
 
   { Retour a la ligne si le mot ne tient pas }
   If (Ctx.X + WordWidth > Ctx.MaxX) And
-     (Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10)) Then
+     (Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10)) Then
    RenderNewLine(Ctx);
 
-  { Afficher le mot si on est dans la zone visible }
-  If Ctx.Y <= Ctx.MaxY Then Begin
+  { Afficher le mot uniquement s'il est dans la bande visible (entre
+    la barre d'URL et la barre de defilement horizontale) ; on avance
+    quand meme Ctx.X pour garder une mise en page coherente et pour
+    detecter un eventuel debordement (mot plus large que la zone). }
+  If (Ctx.Y >= RENDER_AREA_Y) And
+     (Ctx.Y <= RENDER_AREA_Y + (RENDER_AREA_HEIGHT - SCROLLBAR_SIZE)) Then
    OutTextXY(Ctx.X, Ctx.Y, Word);
-   Ctx.X := Ctx.X + WordWidth;
-  End;
+  Ctx.X := Ctx.X + WordWidth;
+  If Ctx.X > ContentOverflowX Then ContentOverflowX := Ctx.X;
  End;
 End;
 
@@ -5037,7 +5068,7 @@ End;
 Procedure RenderTagDiv(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Begin
  { DIV est un element de bloc - nouvelle ligne avant et apres }
- If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+ If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
   RenderNewLine(Ctx);
 
  Inc(Ctx.BlockLevel);
@@ -5058,7 +5089,7 @@ End;
 { Procedure pour rendre la balise SECTION (HTML5 bloc semantique) }
 Procedure RenderTagSection(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Begin
- If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+ If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
   RenderNewLine(Ctx);
  RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
  RenderChildren(Node, Ctx);
@@ -5068,7 +5099,7 @@ End;
 { Procedure pour rendre la balise ARTICLE (HTML5 bloc semantique) }
 Procedure RenderTagArticle(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Begin
- If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+ If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
   RenderNewLine(Ctx);
  RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
  RenderChildren(Node, Ctx);
@@ -5078,7 +5109,7 @@ End;
 { Procedure pour rendre la balise NAV (HTML5 navigation) }
 Procedure RenderTagNav(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Begin
- If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+ If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
   RenderNewLine(Ctx);
  RenderChildren(Node, Ctx);
  RenderNewLine(Ctx);
@@ -5087,7 +5118,7 @@ End;
 { Procedure pour rendre la balise ASIDE (HTML5 contenu lateral) }
 Procedure RenderTagAside(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Begin
- If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+ If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
   RenderNewLine(Ctx);
  Inc(Ctx.BlockLevel);
  RenderChildren(Node, Ctx);
@@ -5098,7 +5129,7 @@ End;
 { Procedure pour rendre la balise HEADER (HTML5 en-tete) }
 Procedure RenderTagHeader(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Begin
- If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+ If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
   RenderNewLine(Ctx);
  RenderChildren(Node, Ctx);
  RenderBlockSpacing(Ctx, RENDER_DIV_MARGIN);
@@ -5108,7 +5139,7 @@ End;
 Procedure RenderTagFooter(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Begin
  RenderBlockSpacing(Ctx, RENDER_DIV_MARGIN);
- If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+ If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
   RenderNewLine(Ctx);
  RenderChildren(Node, Ctx);
 End;
@@ -5116,7 +5147,7 @@ End;
 { Procedure pour rendre la balise MAIN (HTML5 contenu principal) }
 Procedure RenderTagMain(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Begin
- If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+ If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
   RenderNewLine(Ctx);
  RenderChildren(Node, Ctx);
 End;
@@ -5129,7 +5160,7 @@ End;
 Procedure RenderTagP(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Begin
  { Nouvelle ligne avant le paragraphe si necessaire }
- If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+ If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
   RenderNewLine(Ctx);
  RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
 
@@ -5150,7 +5181,7 @@ Begin
  OldTextStyle := Ctx.TextStyle;
 
  { Nouvelle ligne avant le titre }
- If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+ If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
   RenderNewLine(Ctx);
  RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
 
@@ -5268,7 +5299,7 @@ Var
  OldTextStyle: Byte;
 Begin
  { Nouvelle ligne avant le bloc pre }
- If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+ If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
   RenderNewLine(Ctx);
  RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
 
@@ -5327,13 +5358,13 @@ End;
 Procedure RenderTagHR(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Begin
  { Nouvelle ligne avant la ligne horizontale }
- If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+ If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
   RenderNewLine(Ctx);
  RenderBlockSpacing(Ctx, 4);
 
  { Dessiner la ligne horizontale }
  SetColor(8); { Gris }
- Line(RENDER_AREA_X + RENDER_MARGIN_LEFT,
+ Line(RenderOriginX + RENDER_MARGIN_LEFT,
       Ctx.Y + (Ctx.LineHeight Div 2),
       Ctx.MaxX - RENDER_MARGIN_LEFT,
       Ctx.Y + (Ctx.LineHeight Div 2));
@@ -5348,7 +5379,7 @@ End;
 Procedure RenderTagBlockquote(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Begin
  { Nouvelle ligne avant la citation }
- If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+ If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
   RenderNewLine(Ctx);
  RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
 
@@ -5430,7 +5461,7 @@ Var
  OldListItemNumber: Integer;
 Begin
  { Nouvelle ligne avant la liste si necessaire }
- If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+ If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
   RenderNewLine(Ctx);
  RenderBlockSpacing(Ctx, RENDER_LIST_SPACING);
 
@@ -5461,7 +5492,7 @@ Var
  OldListItemNumber: Integer;
 Begin
  { Nouvelle ligne avant la liste si necessaire }
- If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+ If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
   RenderNewLine(Ctx);
  RenderBlockSpacing(Ctx, RENDER_LIST_SPACING);
 
@@ -5492,11 +5523,11 @@ Var
  IndentX: Integer;
 Begin
  { Nouvelle ligne pour l'element }
- If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.ListLevel * RENDER_LIST_INDENT) Then
+ If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.ListLevel * RENDER_LIST_INDENT) Then
   RenderNewLine(Ctx);
 
  { Calculer l'indentation }
- IndentX := RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.ListLevel * RENDER_LIST_INDENT);
+ IndentX := RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.ListLevel * RENDER_LIST_INDENT);
  Ctx.X := IndentX;
 
  { Incrementer le numero d'element pour les listes ordonnees }
@@ -5539,7 +5570,7 @@ Var
  OldListType: Byte;
 Begin
  { Nouvelle ligne avant la liste si necessaire }
- If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+ If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
   RenderNewLine(Ctx);
  RenderBlockSpacing(Ctx, RENDER_LIST_SPACING);
 
@@ -5566,12 +5597,12 @@ Var
  OldTextStyle: Byte;
 Begin
  { Nouvelle ligne pour le terme }
- If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT Then
+ If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT Then
   RenderNewLine(Ctx);
  RenderBlockSpacing(Ctx, RENDER_DT_SPACING);
 
  { Position sans indentation supplementaire }
- Ctx.X := RENDER_AREA_X + RENDER_MARGIN_LEFT + ((Ctx.ListLevel - 1) * RENDER_LIST_INDENT);
+ Ctx.X := RenderOriginX + RENDER_MARGIN_LEFT + ((Ctx.ListLevel - 1) * RENDER_LIST_INDENT);
 
  { Rendre le terme en gras }
  OldTextStyle := Ctx.TextStyle;
@@ -5586,11 +5617,11 @@ End;
 Procedure RenderTagDD(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Begin
  { Nouvelle ligne pour la definition }
- If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT Then
+ If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT Then
   RenderNewLine(Ctx);
 
  { Indenter la definition }
- Ctx.X := RENDER_AREA_X + RENDER_MARGIN_LEFT + ((Ctx.ListLevel - 1) * RENDER_LIST_INDENT) + RENDER_DD_INDENT;
+ Ctx.X := RenderOriginX + RENDER_MARGIN_LEFT + ((Ctx.ListLevel - 1) * RENDER_LIST_INDENT) + RENDER_DD_INDENT;
 
  RenderChildren(Node, Ctx);
 
@@ -5659,7 +5690,7 @@ Var
  NumCols, TableWidth: Integer;
 Begin
  { Nouvelle ligne avant le tableau si necessaire }
- If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+ If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
   RenderNewLine(Ctx);
  RenderBlockSpacing(Ctx, TABLE_MARGIN);
 
@@ -5699,7 +5730,7 @@ Begin
  Ctx.TableX := OldTableX;
 
  { Retour a la position X de depart et espacement apres }
- Ctx.X := RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10);
+ Ctx.X := RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10);
  RenderBlockSpacing(Ctx, TABLE_MARGIN);
 End;
 
@@ -5895,7 +5926,7 @@ Var
  OldInForm: Boolean;
 Begin
  { Nouvelle ligne avant le formulaire si necessaire }
- If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+ If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
   RenderNewLine(Ctx);
  RenderBlockSpacing(Ctx, FORM_MARGIN);
 
@@ -6302,7 +6333,7 @@ Begin
  If EndY > StartY Then Begin
   { Zone multiligne - on enregistre seulement la derniere ligne }
   { Pour une implementation plus complete, il faudrait plusieurs zones }
-  StartX := RENDER_AREA_X + RENDER_MARGIN_LEFT;
+  StartX := RenderOriginX + RENDER_MARGIN_LEFT;
  End;
 
  { Calculer la largeur du texte du lien pour la zone cliquable }
@@ -11636,6 +11667,11 @@ Begin
  End;
 End;
 
+{ Declarations forward pour les barres de defilement (definies plus
+  bas, avec les autres elements de l'interface comme les boutons). }
+Procedure DrawVScrollBar; Forward;
+Procedure DrawHScrollBar; Forward;
+
 { Procedure pour rendre un document HTML complet }
 Procedure RenderHTMLDocument(Doc: HTMLNodePtr);
 Var
@@ -11660,7 +11696,19 @@ Begin
  ClearRenderArea;
 
  { Rendre le document avec application des styles CSS }
+ ContentOverflowX := RENDER_AREA_X;
  RenderHTMLNode(Doc, Ctx);
+
+ { Determiner s'il reste du contenu a reveler par defilement : Ctx.Y
+   depasse le bas visible si la marge de mesure (SCROLL_MEASURE_MARGIN)
+   a rencontre du contenu au-dela de la zone visible. }
+ CanScrollDown := Ctx.Y > (RENDER_AREA_Y + (RENDER_AREA_HEIGHT - SCROLLBAR_SIZE));
+ CanScrollUp := ScrollY > 0;
+ CanScrollRight := ContentOverflowX > (RENDER_AREA_X + (RENDER_AREA_WIDTH - SCROLLBAR_SIZE));
+ CanScrollLeft := ScrollX > 0;
+
+ DrawVScrollBar;
+ DrawHScrollBar;
 End;
 
 { Procedure pour tester le rendu avec du HTML }
@@ -11670,9 +11718,25 @@ Var
 Begin
  Doc := ParseHTML(HTMLSource);
  If Doc <> Nil Then Begin
-  RenderHTMLDocument(Doc);
-  FreeHTMLNode(Doc);
+  { Conserver l'arbre du document (au lieu de le liberer immediatement)
+    pour pouvoir le re-rendre sans reparser a chaque defilement, et
+    pour que DOMGetElementById/... (acces DOM depuis JS) trouvent un
+    document valide. L'ancien arbre est libere ici, juste avant d etre
+    remplace. }
+  If HTMLDocument <> Nil Then FreeHTMLNode(HTMLDocument);
+  HTMLDocument := Doc;
+  ScrollX := 0;
+  ScrollY := 0;
+  RenderHTMLDocument(HTMLDocument);
  End;
+End;
+
+{ Procedure pour re-rendre la page courante apres un changement de
+  defilement, sans reparser le HTML. }
+Procedure RescrollPage;
+Begin
+ If HTMLDocument = Nil Then Exit;
+ RenderHTMLDocument(HTMLDocument);
 End;
 
 { =====================================================
@@ -12016,6 +12080,238 @@ Begin
  DrawFavoriteButton;
 End;
 
+{ =====================================================
+  BARRES DE DEFILEMENT DE LA ZONE DE RENDU
+  ===================================================== }
+
+{ --- Geometrie de la barre verticale --- }
+Function VScrollX1: Integer;
+Begin VScrollX1 := RENDER_AREA_X + RENDER_AREA_WIDTH - SCROLLBAR_SIZE; End;
+Function VScrollX2: Integer;
+Begin VScrollX2 := RENDER_AREA_X + RENDER_AREA_WIDTH; End;
+Function VScrollTrackY1: Integer;
+Begin VScrollTrackY1 := RENDER_AREA_Y + SCROLLBAR_SIZE; End;
+Function VScrollTrackY2: Integer;
+Begin VScrollTrackY2 := RENDER_AREA_Y + (RENDER_AREA_HEIGHT - SCROLLBAR_SIZE) - SCROLLBAR_SIZE; End;
+
+{ --- Geometrie de la barre horizontale --- }
+Function HScrollY1: Integer;
+Begin HScrollY1 := RENDER_AREA_Y + RENDER_AREA_HEIGHT - SCROLLBAR_SIZE; End;
+Function HScrollY2: Integer;
+Begin HScrollY2 := RENDER_AREA_Y + RENDER_AREA_HEIGHT; End;
+Function HScrollTrackX1: Integer;
+Begin HScrollTrackX1 := RENDER_AREA_X + SCROLLBAR_SIZE; End;
+Function HScrollTrackX2: Integer;
+Begin HScrollTrackX2 := RENDER_AREA_X + (RENDER_AREA_WIDTH - SCROLLBAR_SIZE) - SCROLLBAR_SIZE; End;
+
+{ Procedure pour dessiner la barre de defilement verticale (fleches
+  haut/bas et poignee proportionnelle a l'avancement). }
+Procedure DrawVScrollBar;
+Var
+ TrackH, ThumbH, ThumbY, Range, ArrowColor: Integer;
+ CenterX, CenterY: Integer;
+Begin
+ { Fond de la barre }
+ SetFillStyle(SolidFill, COLOR_URL_BAR_BG);
+ Bar(VScrollX1, RENDER_AREA_Y, VScrollX2, RENDER_AREA_Y + (RENDER_AREA_HEIGHT - SCROLLBAR_SIZE));
+ SetColor(COLOR_BTN_BORDER);
+ Rectangle(VScrollX1, RENDER_AREA_Y, VScrollX2, RENDER_AREA_Y + (RENDER_AREA_HEIGHT - SCROLLBAR_SIZE));
+
+ { Bouton fleche du haut }
+ SetFillStyle(SolidFill, COLOR_BTN_BG);
+ Bar(VScrollX1, RENDER_AREA_Y, VScrollX2, RENDER_AREA_Y + SCROLLBAR_SIZE);
+ Rectangle(VScrollX1, RENDER_AREA_Y, VScrollX2, RENDER_AREA_Y + SCROLLBAR_SIZE);
+ CenterX := (VScrollX1 + VScrollX2) Div 2;
+ CenterY := RENDER_AREA_Y + (SCROLLBAR_SIZE Div 2);
+ If CanScrollUp Then ArrowColor := COLOR_BTN_TEXT Else ArrowColor := COLOR_BTN_DISABLED;
+ SetColor(ArrowColor);
+ Line(CenterX, CenterY - 4, CenterX - 4, CenterY + 3);
+ Line(CenterX, CenterY - 4, CenterX + 4, CenterY + 3);
+
+ { Bouton fleche du bas }
+ CenterY := VScrollTrackY2 + (SCROLLBAR_SIZE Div 2);
+ SetFillStyle(SolidFill, COLOR_BTN_BG);
+ Bar(VScrollX1, VScrollTrackY2, VScrollX2, VScrollTrackY2 + SCROLLBAR_SIZE);
+ SetColor(COLOR_BTN_BORDER);
+ Rectangle(VScrollX1, VScrollTrackY2, VScrollX2, VScrollTrackY2 + SCROLLBAR_SIZE);
+ If CanScrollDown Then ArrowColor := COLOR_BTN_TEXT Else ArrowColor := COLOR_BTN_DISABLED;
+ SetColor(ArrowColor);
+ Line(CenterX, CenterY + 4, CenterX - 4, CenterY - 3);
+ Line(CenterX, CenterY + 4, CenterX + 4, CenterY - 3);
+
+ { Poignee : taille et position proportionnelles a ScrollY et a ce
+   qui reste mesurable (CanScrollDown). Approximation raisonnable :
+   on ne connait pas la hauteur totale exacte du document (le rendu
+   s'arrete d'explorer au-dela d'une marge de mesure pour rester
+   rapide), seulement s'il reste du contenu sous le pli. }
+ TrackH := VScrollTrackY2 - VScrollTrackY1;
+ If TrackH < SCROLLBAR_MIN_THUMB Then Exit;
+ If CanScrollUp Or CanScrollDown Then Begin
+  Range := ScrollY;
+  If CanScrollDown Then Inc(Range, TrackH) { encore de la place plus bas } ;
+  If Range <= 0 Then Range := 1;
+  ThumbH := (TrackH * TrackH) Div Range;
+  If ThumbH > TrackH Then ThumbH := TrackH;
+  If ThumbH < SCROLLBAR_MIN_THUMB Then ThumbH := SCROLLBAR_MIN_THUMB;
+  ThumbY := VScrollTrackY1 + ((TrackH - ThumbH) * ScrollY) Div Range;
+  If ThumbY + ThumbH > VScrollTrackY2 Then ThumbY := VScrollTrackY2 - ThumbH;
+ End Else Begin
+  ThumbH := TrackH;
+  ThumbY := VScrollTrackY1;
+ End;
+ SetFillStyle(SolidFill, COLOR_BTN_BG);
+ Bar(VScrollX1 + 2, ThumbY, VScrollX2 - 2, ThumbY + ThumbH);
+ SetColor(COLOR_BTN_BORDER);
+ Rectangle(VScrollX1 + 2, ThumbY, VScrollX2 - 2, ThumbY + ThumbH);
+End;
+
+{ Procedure pour dessiner la barre de defilement horizontale }
+Procedure DrawHScrollBar;
+Var
+ TrackW, ThumbW, ThumbX, Range, ArrowColor: Integer;
+ CenterX, CenterY: Integer;
+Begin
+ SetFillStyle(SolidFill, COLOR_URL_BAR_BG);
+ Bar(RENDER_AREA_X, HScrollY1, RENDER_AREA_X + (RENDER_AREA_WIDTH - SCROLLBAR_SIZE), HScrollY2);
+ SetColor(COLOR_BTN_BORDER);
+ Rectangle(RENDER_AREA_X, HScrollY1, RENDER_AREA_X + (RENDER_AREA_WIDTH - SCROLLBAR_SIZE), HScrollY2);
+
+ { Bouton fleche gauche }
+ SetFillStyle(SolidFill, COLOR_BTN_BG);
+ Bar(RENDER_AREA_X, HScrollY1, RENDER_AREA_X + SCROLLBAR_SIZE, HScrollY2);
+ Rectangle(RENDER_AREA_X, HScrollY1, RENDER_AREA_X + SCROLLBAR_SIZE, HScrollY2);
+ CenterX := RENDER_AREA_X + (SCROLLBAR_SIZE Div 2);
+ CenterY := (HScrollY1 + HScrollY2) Div 2;
+ If CanScrollLeft Then ArrowColor := COLOR_BTN_TEXT Else ArrowColor := COLOR_BTN_DISABLED;
+ SetColor(ArrowColor);
+ Line(CenterX - 4, CenterY, CenterX + 3, CenterY - 4);
+ Line(CenterX - 4, CenterY, CenterX + 3, CenterY + 4);
+
+ { Bouton fleche droite }
+ CenterX := HScrollTrackX2 + (SCROLLBAR_SIZE Div 2);
+ SetFillStyle(SolidFill, COLOR_BTN_BG);
+ Bar(HScrollTrackX2, HScrollY1, HScrollTrackX2 + SCROLLBAR_SIZE, HScrollY2);
+ SetColor(COLOR_BTN_BORDER);
+ Rectangle(HScrollTrackX2, HScrollY1, HScrollTrackX2 + SCROLLBAR_SIZE, HScrollY2);
+ If CanScrollRight Then ArrowColor := COLOR_BTN_TEXT Else ArrowColor := COLOR_BTN_DISABLED;
+ SetColor(ArrowColor);
+ Line(CenterX + 4, CenterY, CenterX - 3, CenterY - 4);
+ Line(CenterX + 4, CenterY, CenterX - 3, CenterY + 4);
+
+ { Poignee horizontale }
+ TrackW := HScrollTrackX2 - HScrollTrackX1;
+ If TrackW < SCROLLBAR_MIN_THUMB Then Exit;
+ If CanScrollLeft Or CanScrollRight Then Begin
+  Range := ScrollX;
+  If CanScrollRight Then Inc(Range, TrackW);
+  If Range <= 0 Then Range := 1;
+  ThumbW := (TrackW * TrackW) Div Range;
+  If ThumbW > TrackW Then ThumbW := TrackW;
+  If ThumbW < SCROLLBAR_MIN_THUMB Then ThumbW := SCROLLBAR_MIN_THUMB;
+  ThumbX := HScrollTrackX1 + ((TrackW - ThumbW) * ScrollX) Div Range;
+  If ThumbX + ThumbW > HScrollTrackX2 Then ThumbX := HScrollTrackX2 - ThumbW;
+ End Else Begin
+  ThumbW := TrackW;
+  ThumbX := HScrollTrackX1;
+ End;
+ SetFillStyle(SolidFill, COLOR_BTN_BG);
+ Bar(ThumbX, HScrollY1 + 2, ThumbX + ThumbW, HScrollY2 - 2);
+ SetColor(COLOR_BTN_BORDER);
+ Rectangle(ThumbX, HScrollY1 + 2, ThumbX + ThumbW, HScrollY2 - 2);
+End;
+
+{ --- Detection de clic sur les elements des barres de defilement --- }
+Function IsClickInVScrollUp(X, Y: Integer): Boolean;
+Begin
+ IsClickInVScrollUp := (X >= VScrollX1) And (X <= VScrollX2) And
+                       (Y >= RENDER_AREA_Y) And (Y <= RENDER_AREA_Y + SCROLLBAR_SIZE);
+End;
+
+Function IsClickInVScrollDown(X, Y: Integer): Boolean;
+Begin
+ IsClickInVScrollDown := (X >= VScrollX1) And (X <= VScrollX2) And
+                         (Y >= VScrollTrackY2) And (Y <= VScrollTrackY2 + SCROLLBAR_SIZE);
+End;
+
+Function IsClickInVScrollTrack(X, Y: Integer): Boolean;
+Begin
+ IsClickInVScrollTrack := (X >= VScrollX1) And (X <= VScrollX2) And
+                          (Y > RENDER_AREA_Y + SCROLLBAR_SIZE) And (Y < VScrollTrackY2);
+End;
+
+Function IsClickInHScrollLeft(X, Y: Integer): Boolean;
+Begin
+ IsClickInHScrollLeft := (Y >= HScrollY1) And (Y <= HScrollY2) And
+                         (X >= RENDER_AREA_X) And (X <= RENDER_AREA_X + SCROLLBAR_SIZE);
+End;
+
+Function IsClickInHScrollRight(X, Y: Integer): Boolean;
+Begin
+ IsClickInHScrollRight := (Y >= HScrollY1) And (Y <= HScrollY2) And
+                          (X >= HScrollTrackX2) And (X <= HScrollTrackX2 + SCROLLBAR_SIZE);
+End;
+
+Function IsClickInHScrollTrack(X, Y: Integer): Boolean;
+Begin
+ IsClickInHScrollTrack := (Y >= HScrollY1) And (Y <= HScrollY2) And
+                          (X > RENDER_AREA_X + SCROLLBAR_SIZE) And (X < HScrollTrackX2);
+End;
+
+{ --- Defilement effectif : ajuste ScrollX/ScrollY puis re-rend la
+  page courante (sans reparser le HTML). --- }
+Procedure ScrollPageBy(DX, DY: Integer);
+Begin
+ If (DY < 0) And (ScrollY > 0) Then Begin
+  ScrollY := ScrollY + DY;
+  If ScrollY < 0 Then ScrollY := 0;
+ End Else If (DY > 0) And CanScrollDown Then
+  ScrollY := ScrollY + DY;
+
+ If (DX < 0) And (ScrollX > 0) Then Begin
+  ScrollX := ScrollX + DX;
+  If ScrollX < 0 Then ScrollX := 0;
+ End Else If (DX > 0) And CanScrollRight Then
+  ScrollX := ScrollX + DX;
+
+ RescrollPage;
+End;
+
+{ Procedure pour gerer un clic dans la barre verticale }
+Procedure HandleVScrollClick(X, Y: Integer);
+Var
+ PageStep: Integer;
+Begin
+ PageStep := RENDER_AREA_HEIGHT - SCROLLBAR_SIZE;
+ If IsClickInVScrollUp(X, Y) Then
+  ScrollPageBy(0, -SCROLL_LINE_STEP)
+ Else If IsClickInVScrollDown(X, Y) Then
+  ScrollPageBy(0, SCROLL_LINE_STEP)
+ Else If IsClickInVScrollTrack(X, Y) Then Begin
+  If Y < VScrollTrackY1 + ((VScrollTrackY2 - VScrollTrackY1) Div 2) Then
+   ScrollPageBy(0, -PageStep)
+  Else
+   ScrollPageBy(0, PageStep);
+ End;
+End;
+
+{ Procedure pour gerer un clic dans la barre horizontale }
+Procedure HandleHScrollClick(X, Y: Integer);
+Var
+ PageStep: Integer;
+Begin
+ PageStep := RENDER_AREA_WIDTH - SCROLLBAR_SIZE;
+ If IsClickInHScrollLeft(X, Y) Then
+  ScrollPageBy(-SCROLL_LINE_STEP, 0)
+ Else If IsClickInHScrollRight(X, Y) Then
+  ScrollPageBy(SCROLL_LINE_STEP, 0)
+ Else If IsClickInHScrollTrack(X, Y) Then Begin
+  If X < HScrollTrackX1 + ((HScrollTrackX2 - HScrollTrackX1) Div 2) Then
+   ScrollPageBy(-PageStep, 0)
+  Else
+   ScrollPageBy(PageStep, 0);
+ End;
+End;
+
 { Fonction pour verifier si on peut revenir en arriere dans l'historique }
 Function CanGoBack: Boolean;
 Begin
@@ -12286,7 +12582,19 @@ End;
 { Procedure pour gerer les touches speciales (fleches) dans la barre d'URL }
 Procedure HandleURLSpecialKey(ScanCode: Byte);
 Begin
- If Not URLBarFocused Then Exit;
+ If Not URLBarFocused Then Begin
+  { La barre d'URL n'a pas le focus : les touches de navigation
+    defilent la page plutot que de deplacer un curseur de texte. }
+  Case ScanCode Of
+   72: ScrollPageBy(0, -SCROLL_LINE_STEP);                      { Fleche haut }
+   80: ScrollPageBy(0, SCROLL_LINE_STEP);                       { Fleche bas }
+   75: ScrollPageBy(-SCROLL_LINE_STEP, 0);                      { Fleche gauche }
+   77: ScrollPageBy(SCROLL_LINE_STEP, 0);                       { Fleche droite }
+   73: ScrollPageBy(0, -(RENDER_AREA_HEIGHT - SCROLLBAR_SIZE)); { Page haut }
+   81: ScrollPageBy(0, RENDER_AREA_HEIGHT - SCROLLBAR_SIZE);    { Page bas }
+  End;
+  Exit;
+ End;
 
  Case ScanCode Of
   75: Begin { Fleche gauche }
@@ -12701,6 +13009,10 @@ Begin
   HandleFavoriteButtonClick;
  End;
 
+ { Verifier si le clic est dans l'une des barres de defilement }
+ HandleVScrollClick(X, Y);
+ HandleHScrollClick(X, Y);
+
  { Verifier si le clic est sur un lien hypertexte dans la zone de rendu }
  If IsInRenderArea(X, Y) Then Begin
   LinkIdx := FindLinkAtPosition(X, Y);
@@ -12875,6 +13187,12 @@ BEGIN
  If TestMode Then Begin
   { Valider aussi les operations executees uniquement par le mode normal. }
   ProcessMouseInput;
+  { Exercer le defilement (bas/droite puis haut/gauche) pour detecter
+    toute exception dans RescrollPage/DrawVScrollBar/DrawHScrollBar. }
+  ScrollPageBy(0, SCROLL_LINE_STEP);
+  ScrollPageBy(SCROLL_LINE_STEP, 0);
+  ScrollPageBy(0, -SCROLL_LINE_STEP);
+  ScrollPageBy(-SCROLL_LINE_STEP, 0);
   WriteConsoleLine('Build ' + BROWSER_BUILD_ID +
                    ': chargement, rendu et interface termines sans exception.');
   If MouseAvailable Then HideMouse;
