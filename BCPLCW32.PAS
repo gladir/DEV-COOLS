@@ -132,6 +132,7 @@ Type
     options     : TPipelineOptions;
     last_art    : TArtifactKind;
     token_count : LongInt;
+    block_count : LongInt;
     errors      : Integer;
   End;
 
@@ -146,6 +147,8 @@ Var
   cur_tok     : TToken;
   lex_errors  : Integer;
   lex_tokens  : LongInt;
+  parse_errors: Integer;
+  parse_blocks: LongInt;
 
 Function StageName(stage : TCompileStage) : TString;
 Begin
@@ -285,16 +288,17 @@ Function LexIsKeyword(Const s : TString) : Boolean;
 Begin
   LexIsKeyword :=
     (s = 'LET') Or (s = 'BE') Or (s = 'DO') Or
+    (s = 'VALOF') Or
+    (s = 'RESULTIS') Or (s = 'STATIC') Or
     (s = 'IF') Or (s = 'UNLESS') Or (s = 'TEST') Or
     (s = 'THEN') Or (s = 'ELSE') Or
     (s = 'FOR') Or (s = 'TO') Or (s = 'BY') Or
     (s = 'WHILE') Or (s = 'UNTIL') Or
     (s = 'REPEAT') Or (s = 'REPEATWHILE') Or
-    (s = 'BREAK') Or (s = 'SWITCHON') Or (s = 'INTO') Or
+    (s = 'BREAK') Or
+    (s = 'SWITCHON') Or (s = 'INTO') Or
     (s = 'CASE') Or (s = 'DEFAULT') Or (s = 'ENDCASE') Or
-    (s = 'VALOF') Or (s = 'RESULTIS') Or
-    (s = 'STATIC') Or (s = 'FINISH') Or
-    (s = 'MOD');
+    (s = 'FINISH') Or (s = 'MOD');
 End;
 
 Procedure LexError(Const msg : TString);
@@ -635,6 +639,69 @@ Begin
   End;
 End;
 
+Procedure ParseError(Const msg : TString);
+Begin
+  Inc(parse_errors);
+  WriteLn('Erreur syntaxique(', cur_tok.line, ',', cur_tok.col, '): ', msg);
+End;
+
+Procedure ParseBlock;
+Begin
+  If cur_tok.val <> '$(' Then
+  Begin
+    ParseError('bloc BCPL attendu: $(');
+    Exit;
+  End;
+
+  Inc(parse_blocks);
+  LexNext;
+
+  While (cur_tok.kind <> TK_EOF) And (cur_tok.val <> '$)') Do
+  Begin
+    If cur_tok.val = '$(' Then
+      ParseBlock
+    Else
+      LexNext;
+  End;
+
+  If cur_tok.val = '$)' Then
+    LexNext
+  Else
+    ParseError('bloc BCPL non termine: $) attendu');
+End;
+
+Function ParseProgramBlocks(Var ctx : TCompilerContext) : Boolean;
+Begin
+  ParseProgramBlocks := False;
+  If Not LexOpenSource(ctx.source_name) Then
+  Begin
+    Inc(ctx.errors);
+    Exit;
+  End;
+
+  parse_errors := 0;
+  parse_blocks := 0;
+  LexNext;
+
+  While cur_tok.kind <> TK_EOF Do
+  Begin
+    If cur_tok.val = '$(' Then
+      ParseBlock
+    Else If cur_tok.val = '$)' Then
+    Begin
+      ParseError('fin de bloc inattendue: $)');
+      LexNext;
+    End
+    Else
+      LexNext;
+  End;
+
+  LexCloseSource;
+  ctx.block_count := parse_blocks;
+  Inc(ctx.errors, parse_errors);
+  ParseProgramBlocks := parse_errors = 0;
+End;
+
 Procedure InitDefaultOptions(Var options : TPipelineOptions);
 Begin
   options.output_mode := OM_EXE;
@@ -697,6 +764,7 @@ Begin
   InitDefaultOptions(ctx.options);
   ctx.last_art    := AK_NONE;
   ctx.token_count := 0;
+  ctx.block_count := 0;
   ctx.errors      := 0;
 End;
 
@@ -809,7 +877,15 @@ Begin
         End;
         ctx.last_art := AK_TOKEN_STREAM;
       End;
-    CS_PARSE_AST  : ctx.last_art := AK_AST_IR;
+    CS_PARSE_AST  :
+      Begin
+        If Not ParseProgramBlocks(ctx) Then
+        Begin
+          RunStage := False;
+          Exit;
+        End;
+        ctx.last_art := AK_AST_IR;
+      End;
     CS_EMIT_ASM386: ctx.last_art := AK_ASM_386;
     CS_BUILD_OBJ  : ctx.last_art := AK_OBJ_COFF;
     CS_LINK_EXE   : ctx.last_art := AK_EXE_PE32;
@@ -875,12 +951,13 @@ Var
     WriteLn('Mode  : ', OutputModeName(ctx.options.output_mode));
     WriteLn('Source: ', ctx.source_name);
     WriteLn('Tokens: ', ctx.token_count);
+    WriteLn('Blocs : ', ctx.block_count);
     If ctx.options.keep_asm Then
       WriteLn('ASM   : ', ctx.asm_name);
     WriteLn('OBJ   : ', ctx.obj_name);
     If ctx.options.output_mode = OM_EXE Then
       WriteLn('EXE   : ', ctx.exe_name);
-    WriteLn('TODO suivante: creer la table des mots-cles BCPL complete.');
+    WriteLn('TODO suivante: parser les declarations globales LET ... BE.');
   End
   Else
   Begin
