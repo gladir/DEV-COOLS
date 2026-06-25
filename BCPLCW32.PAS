@@ -49,12 +49,32 @@ Const
   BCPLCW32_VERSION = '1.0';
   BCPLCW32_DATE    = '2026';
   MAX_PATH_LEN     = 255;
+  MAX_LINE_LEN     = 255;
   EXIT_OK          = 0;
   EXIT_ERROR       = 1;
   EXIT_USAGE       = 2;
 
 Type
   TString = String[MAX_PATH_LEN];
+  TSourceLine = String[MAX_LINE_LEN];
+
+  TTokenKind = (
+    TK_IDENT,
+    TK_INTEGER,
+    TK_STRING,
+    TK_KEYWORD,
+    TK_OP,
+    TK_PUNCT,
+    TK_EOF
+  );
+
+  TToken = Record
+    kind    : TTokenKind;
+    val     : TString;
+    int_val : LongInt;
+    line    : Integer;
+    col     : Integer;
+  End;
 
   { TODO 1 - Pipeline canonique du compilateur.
 
@@ -111,8 +131,21 @@ Type
     exe_name    : TString;
     options     : TPipelineOptions;
     last_art    : TArtifactKind;
+    token_count : LongInt;
     errors      : Integer;
   End;
+
+Var
+  src_file    : Text;
+  lex_line    : TSourceLine;
+  lex_pos     : Integer;
+  lex_lineno  : Integer;
+  lex_colno   : Integer;
+  lex_eof     : Boolean;
+  lex_open    : Boolean;
+  cur_tok     : TToken;
+  lex_errors  : Integer;
+  lex_tokens  : LongInt;
 
 Function StageName(stage : TCompileStage) : TString;
 Begin
@@ -211,6 +244,392 @@ Begin
   End;
 End;
 
+Function TokenKindName(kind : TTokenKind) : TString;
+Begin
+  Case kind Of
+    TK_IDENT  : TokenKindName := 'IDENT';
+    TK_INTEGER: TokenKindName := 'INTEGER';
+    TK_STRING : TokenKindName := 'STRING';
+    TK_KEYWORD: TokenKindName := 'KEYWORD';
+    TK_OP     : TokenKindName := 'OP';
+    TK_PUNCT  : TokenKindName := 'PUNCT';
+    TK_EOF    : TokenKindName := 'EOF';
+  Else
+    TokenKindName := 'UNKNOWN';
+  End;
+End;
+
+Function LexIsAlpha(c : Char) : Boolean;
+Begin
+  LexIsAlpha := ((c >= 'A') And (c <= 'Z')) Or
+                ((c >= 'a') And (c <= 'z')) Or
+                (c = '_');
+End;
+
+Function LexIsDigit(c : Char) : Boolean;
+Begin
+  LexIsDigit := (c >= '0') And (c <= '9');
+End;
+
+Function LexIsAlNum(c : Char) : Boolean;
+Begin
+  LexIsAlNum := LexIsAlpha(c) Or LexIsDigit(c);
+End;
+
+Function LexIsWhite(c : Char) : Boolean;
+Begin
+  LexIsWhite := (c = ' ') Or (c = #9) Or (c = #13);
+End;
+
+Function LexIsKeyword(Const s : TString) : Boolean;
+Begin
+  LexIsKeyword :=
+    (s = 'LET') Or (s = 'BE') Or (s = 'DO') Or
+    (s = 'IF') Or (s = 'UNLESS') Or (s = 'TEST') Or
+    (s = 'THEN') Or (s = 'ELSE') Or
+    (s = 'FOR') Or (s = 'TO') Or (s = 'BY') Or
+    (s = 'WHILE') Or (s = 'UNTIL') Or
+    (s = 'REPEAT') Or (s = 'REPEATWHILE') Or
+    (s = 'BREAK') Or (s = 'SWITCHON') Or (s = 'INTO') Or
+    (s = 'CASE') Or (s = 'DEFAULT') Or (s = 'ENDCASE') Or
+    (s = 'VALOF') Or (s = 'RESULTIS') Or
+    (s = 'STATIC') Or (s = 'FINISH') Or
+    (s = 'MOD');
+End;
+
+Procedure LexError(Const msg : TString);
+Begin
+  Inc(lex_errors);
+  WriteLn('Erreur lexicale(', lex_lineno, ',', lex_colno, '): ', msg);
+End;
+
+Procedure LexMakeTok(Var t : TToken; kind : TTokenKind; Const val : TString);
+Begin
+  t.kind    := kind;
+  t.val     := val;
+  t.int_val := 0;
+  t.line    := lex_lineno;
+  t.col     := lex_colno;
+End;
+
+Procedure LexRefill;
+Begin
+  If Eof(src_file) Then
+  Begin
+    lex_eof    := True;
+    lex_line   := '';
+    lex_pos    := 1;
+    lex_colno  := 1;
+  End
+  Else
+  Begin
+    ReadLn(src_file, lex_line);
+    Inc(lex_lineno);
+    lex_pos   := 1;
+    lex_colno := 1;
+  End;
+End;
+
+Function LexCurChar : Char;
+Begin
+  If lex_eof Then
+    LexCurChar := #0
+  Else If lex_pos > Length(lex_line) Then
+    LexCurChar := #0
+  Else
+    LexCurChar := lex_line[lex_pos];
+End;
+
+Function LexPeekChar(n : Integer) : Char;
+Var
+  p : Integer;
+Begin
+  p := lex_pos + n;
+  If lex_eof Or (p < 1) Or (p > Length(lex_line)) Then
+    LexPeekChar := #0
+  Else
+    LexPeekChar := lex_line[p];
+End;
+
+Procedure LexAdvance;
+Begin
+  If Not lex_eof Then
+  Begin
+    Inc(lex_pos);
+    Inc(lex_colno);
+  End;
+End;
+
+Procedure LexSkipLineComment;
+Begin
+  While (Not lex_eof) And (LexCurChar <> #0) Do
+    LexAdvance;
+End;
+
+Procedure LexSkipWS;
+Var
+  again : Boolean;
+Begin
+  Repeat
+    again := False;
+
+    While (Not lex_eof) And LexIsWhite(LexCurChar) Do
+      LexAdvance;
+
+    If (Not lex_eof) And (LexCurChar = #0) Then
+    Begin
+      LexRefill;
+      again := True;
+    End
+    Else If (Not lex_eof) And (LexCurChar = '/') And (LexPeekChar(1) = '/') Then
+    Begin
+      LexSkipLineComment;
+      again := True;
+    End;
+  Until Not again;
+End;
+
+Procedure LexReadIdent(Var t : TToken);
+Var
+  s : TString;
+Begin
+  s := '';
+  While (Not lex_eof) And LexIsAlNum(LexCurChar) Do
+  Begin
+    If Length(s) < MAX_PATH_LEN Then
+      s := s + UpChar(LexCurChar);
+    LexAdvance;
+  End;
+
+  If LexIsKeyword(s) Then
+    LexMakeTok(t, TK_KEYWORD, s)
+  Else
+    LexMakeTok(t, TK_IDENT, s);
+End;
+
+Procedure LexReadNumber(Var t : TToken);
+Var
+  s : TString;
+  i : Integer;
+  n : LongInt;
+Begin
+  s := '';
+  While (Not lex_eof) And LexIsDigit(LexCurChar) Do
+  Begin
+    If Length(s) < MAX_PATH_LEN Then
+      s := s + LexCurChar;
+    LexAdvance;
+  End;
+
+  n := 0;
+  For i := 1 To Length(s) Do
+    n := n * 10 + (Ord(s[i]) - Ord('0'));
+
+  LexMakeTok(t, TK_INTEGER, s);
+  t.int_val := n;
+End;
+
+Procedure LexReadString(Var t : TToken);
+Var
+  s : TString;
+Begin
+  s := '';
+  LexAdvance; { sauter le guillemet ouvrant }
+
+  While (Not lex_eof) And (LexCurChar <> #0) And (LexCurChar <> '"') Do
+  Begin
+    If LexCurChar = '*' Then
+    Begin
+      If Length(s) < MAX_PATH_LEN Then
+        s := s + LexCurChar;
+      LexAdvance;
+      If Not lex_eof Then
+      Begin
+        If Length(s) < MAX_PATH_LEN Then
+          s := s + LexCurChar;
+        LexAdvance;
+      End;
+    End
+    Else
+    Begin
+      If Length(s) < MAX_PATH_LEN Then
+        s := s + LexCurChar;
+      LexAdvance;
+    End;
+  End;
+
+  If LexCurChar = '"' Then
+    LexAdvance
+  Else
+    LexError('chaine non terminee');
+
+  LexMakeTok(t, TK_STRING, s);
+End;
+
+Procedure LexReadOp(Var t : TToken);
+Var
+  s : TString;
+  c : Char;
+Begin
+  c := LexCurChar;
+  s := c;
+  LexAdvance;
+
+  Case c Of
+    ':' : If LexCurChar = '=' Then
+          Begin
+            s := ':=';
+            LexAdvance;
+          End;
+    '~' : If LexCurChar = '=' Then
+          Begin
+            s := '~=';
+            LexAdvance;
+          End;
+    '<' : If LexCurChar = '=' Then
+          Begin
+            s := '<=';
+            LexAdvance;
+          End
+          Else If LexCurChar = '<' Then
+          Begin
+            s := '<<';
+            LexAdvance;
+          End;
+    '>' : If LexCurChar = '=' Then
+          Begin
+            s := '>=';
+            LexAdvance;
+          End
+          Else If LexCurChar = '>' Then
+          Begin
+            s := '>>';
+            LexAdvance;
+          End;
+    '-' : If LexCurChar = '>' Then
+          Begin
+            s := '->';
+            LexAdvance;
+          End;
+    '$' : If LexCurChar = '(' Then
+          Begin
+            s := '$(';
+            LexAdvance;
+          End
+          Else If LexCurChar = ')' Then
+          Begin
+            s := '$)';
+            LexAdvance;
+          End;
+  End;
+
+  If (s = '(') Or (s = ')') Or (s = '[') Or (s = ']') Or
+     (s = ',') Or (s = ';') Or (s = ':') Or (s = '.') Or
+     (s = '{') Or (s = '}') Then
+    LexMakeTok(t, TK_PUNCT, s)
+  Else
+    LexMakeTok(t, TK_OP, s);
+End;
+
+Procedure LexNext;
+Begin
+  LexSkipWS;
+  lex_colno := lex_pos;
+
+  If lex_eof Or (LexCurChar = #0) Then
+  Begin
+    LexMakeTok(cur_tok, TK_EOF, '');
+    Exit;
+  End;
+
+  If LexIsAlpha(LexCurChar) Then
+  Begin
+    LexReadIdent(cur_tok);
+    Exit;
+  End;
+
+  If LexIsDigit(LexCurChar) Then
+  Begin
+    LexReadNumber(cur_tok);
+    Exit;
+  End;
+
+  If LexCurChar = '"' Then
+  Begin
+    LexReadString(cur_tok);
+    Exit;
+  End;
+
+  LexReadOp(cur_tok);
+End;
+
+Function LexOpenSource(Const file_name : TString) : Boolean;
+Begin
+  LexOpenSource := False;
+  Assign(src_file, file_name);
+  Reset(src_file);
+  If IOResult <> 0 Then
+  Begin
+    WriteLn('Erreur: impossible d''ouvrir ', file_name);
+    Exit;
+  End;
+
+  lex_line   := '';
+  lex_pos    := 1;
+  lex_lineno := 0;
+  lex_colno  := 1;
+  lex_eof    := False;
+  lex_open   := True;
+  lex_errors := 0;
+  lex_tokens := 0;
+  LexRefill;
+  LexOpenSource := True;
+End;
+
+Procedure LexCloseSource;
+Begin
+  If lex_open Then
+  Begin
+    Close(src_file);
+    lex_open := False;
+  End;
+End;
+
+Function LexScanFile(Var ctx : TCompilerContext) : Boolean;
+Begin
+  LexScanFile := False;
+  If Not LexOpenSource(ctx.source_name) Then
+  Begin
+    Inc(ctx.errors);
+    Exit;
+  End;
+
+  Repeat
+    LexNext;
+    If cur_tok.kind <> TK_EOF Then
+      Inc(lex_tokens);
+  Until cur_tok.kind = TK_EOF;
+
+  LexCloseSource;
+  ctx.token_count := lex_tokens;
+  Inc(ctx.errors, lex_errors);
+  LexScanFile := lex_errors = 0;
+End;
+
+Function SourceReadable(Const file_name : TString) : Boolean;
+Var
+  f : Text;
+Begin
+  SourceReadable := False;
+  Assign(f, file_name);
+  Reset(f);
+  If IOResult = 0 Then
+  Begin
+    Close(f);
+    SourceReadable := True;
+  End;
+End;
+
 Procedure InitDefaultOptions(Var options : TPipelineOptions);
 Begin
   options.output_mode := OM_EXE;
@@ -272,6 +691,7 @@ Begin
   ctx.exe_name    := '';
   InitDefaultOptions(ctx.options);
   ctx.last_art    := AK_NONE;
+  ctx.token_count := 0;
   ctx.errors      := 0;
 End;
 
@@ -364,8 +784,26 @@ Begin
   TraceStage(ctx, stage);
 
   Case stage Of
-    CS_LOAD_SOURCE: ctx.last_art := AK_SOURCE_BCPL;
-    CS_LEX_TOKENS : ctx.last_art := AK_TOKEN_STREAM;
+    CS_LOAD_SOURCE:
+      Begin
+        If Not SourceReadable(ctx.source_name) Then
+        Begin
+          WriteLn('Erreur: impossible d''ouvrir ', ctx.source_name);
+          Inc(ctx.errors);
+          RunStage := False;
+          Exit;
+        End;
+        ctx.last_art := AK_SOURCE_BCPL;
+      End;
+    CS_LEX_TOKENS:
+      Begin
+        If Not LexScanFile(ctx) Then
+        Begin
+          RunStage := False;
+          Exit;
+        End;
+        ctx.last_art := AK_TOKEN_STREAM;
+      End;
     CS_PARSE_AST  : ctx.last_art := AK_AST_IR;
     CS_EMIT_ASM386: ctx.last_art := AK_ASM_386;
     CS_BUILD_OBJ  : ctx.last_art := AK_OBJ_COFF;
@@ -431,12 +869,13 @@ Var
     WriteLn('Pipeline defini jusqu''a: ', ArtifactName(ctx.last_art));
     WriteLn('Mode  : ', OutputModeName(ctx.options.output_mode));
     WriteLn('Source: ', ctx.source_name);
+    WriteLn('Tokens: ', ctx.token_count);
     If ctx.options.keep_asm Then
       WriteLn('ASM   : ', ctx.asm_name);
     WriteLn('OBJ   : ', ctx.obj_name);
     If ctx.options.output_mode = OM_EXE Then
       WriteLn('EXE   : ', ctx.exe_name);
-    WriteLn('TODO suivante: implementer le scanner lexical BCPL.');
+    WriteLn('TODO suivante: supporter les sequences speciales des chaines BCPL.');
   End
   Else
   Begin
