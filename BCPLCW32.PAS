@@ -50,6 +50,12 @@ Const
   BCPLCW32_DATE    = '2026';
   MAX_PATH_LEN     = 255;
   MAX_LINE_LEN     = 255;
+  MAX_SYM          = 1024;
+  ABI_WORD_SIZE    = 4;
+  ABI_PARAM_BASE   = 8;
+  ABI_RET_REG      = 'EAX';
+  ABI_FRAME_REG    = 'EBP';
+  ABI_STACK_REG    = 'ESP';
   EXIT_OK          = 0;
   EXIT_ERROR       = 1;
   EXIT_USAGE       = 2;
@@ -75,6 +81,26 @@ Type
     line    : Integer;
     col     : Integer;
   End;
+
+  TSymKind = (
+    SK_PROC,
+    SK_FUNC,
+    SK_PARAM,
+    SK_LOCAL,
+    SK_STATIC
+  );
+
+  TSymbol = Record
+    name      : TString;
+    kind      : TSymKind;
+    owner     : TString;
+    const_val : LongInt;
+    stack_off : LongInt;
+    line      : Integer;
+    col       : Integer;
+  End;
+
+  TSymbolTable = Array[1..MAX_SYM] Of TSymbol;
 
   { TODO 1 - Pipeline canonique du compilateur.
 
@@ -133,6 +159,14 @@ Type
     last_art    : TArtifactKind;
     token_count : LongInt;
     block_count : LongInt;
+    proc_count  : LongInt;
+    func_count  : LongInt;
+    param_count : LongInt;
+    local_count : LongInt;
+    static_count: LongInt;
+    sym_count   : LongInt;
+    abi_param_bytes: LongInt;
+    abi_local_bytes: LongInt;
     errors      : Integer;
   End;
 
@@ -149,6 +183,18 @@ Var
   lex_tokens  : LongInt;
   parse_errors: Integer;
   parse_blocks: LongInt;
+  parse_procs : LongInt;
+  parse_funcs : LongInt;
+  parse_params: LongInt;
+  parse_locals: LongInt;
+  parse_static: LongInt;
+  parse_owner : TString;
+  parse_param_offset: LongInt;
+  parse_local_offset: LongInt;
+  parse_param_bytes : LongInt;
+  parse_local_bytes : LongInt;
+  sym_table   : TSymbolTable;
+  sym_count   : Integer;
 
 Function StageName(stage : TCompileStage) : TString;
 Begin
@@ -260,6 +306,62 @@ Begin
   Else
     TokenKindName := 'UNKNOWN';
   End;
+End;
+
+Procedure ParseError(Const msg : TString); Forward;
+
+Function SymKindName(kind : TSymKind) : TString;
+Begin
+  Case kind Of
+    SK_PROC  : SymKindName := 'PROC';
+    SK_FUNC  : SymKindName := 'FUNC';
+    SK_PARAM : SymKindName := 'PARAM';
+    SK_LOCAL : SymKindName := 'LOCAL';
+    SK_STATIC: SymKindName := 'STATIC';
+  Else
+    SymKindName := 'UNKNOWN';
+  End;
+End;
+
+Function SymFindInOwner(Const name, owner : TString) : Integer;
+Var
+  i : Integer;
+Begin
+  For i := sym_count DownTo 1 Do
+    If (sym_table[i].name = name) And (sym_table[i].owner = owner) Then
+    Begin
+      SymFindInOwner := i;
+      Exit;
+    End;
+  SymFindInOwner := 0;
+End;
+
+Function SymEnter(Const name : TString; kind : TSymKind;
+                  Const owner : TString; const_val, stack_off : LongInt) : Integer;
+Begin
+  If sym_count >= MAX_SYM Then
+  Begin
+    ParseError('table des symboles saturee');
+    SymEnter := 0;
+    Exit;
+  End;
+
+  If SymFindInOwner(name, owner) <> 0 Then
+  Begin
+    ParseError('symbole deja declare: ' + name);
+    SymEnter := 0;
+    Exit;
+  End;
+
+  Inc(sym_count);
+  sym_table[sym_count].name      := name;
+  sym_table[sym_count].kind      := kind;
+  sym_table[sym_count].owner     := owner;
+  sym_table[sym_count].const_val := const_val;
+  sym_table[sym_count].stack_off := stack_off;
+  sym_table[sym_count].line      := cur_tok.line;
+  sym_table[sym_count].col       := cur_tok.col;
+  SymEnter := sym_count;
 End;
 
 Function LexIsAlpha(c : Char) : Boolean;
@@ -645,6 +747,8 @@ Begin
   WriteLn('Erreur syntaxique(', cur_tok.line, ',', cur_tok.col, '): ', msg);
 End;
 
+Procedure ParseLocalLet; Forward;
+
 Procedure ParseBlock;
 Begin
   If cur_tok.val <> '$(' Then
@@ -658,7 +762,9 @@ Begin
 
   While (cur_tok.kind <> TK_EOF) And (cur_tok.val <> '$)') Do
   Begin
-    If cur_tok.val = '$(' Then
+    If cur_tok.val = 'LET' Then
+      ParseLocalLet
+    Else If cur_tok.val = '$(' Then
       ParseBlock
     Else
       LexNext;
@@ -668,6 +774,207 @@ Begin
     LexNext
   Else
     ParseError('bloc BCPL non termine: $) attendu');
+End;
+
+Procedure ParseFormalParamList;
+Begin
+  If cur_tok.val <> '(' Then
+  Begin
+    ParseError('liste de parametres attendue: (');
+    Exit;
+  End;
+
+  LexNext;
+  If cur_tok.val = ')' Then
+  Begin
+    LexNext;
+    Exit;
+  End;
+
+  While cur_tok.kind <> TK_EOF Do
+  Begin
+    If cur_tok.kind <> TK_IDENT Then
+    Begin
+      ParseError('nom de parametre attendu');
+      Exit;
+    End;
+    SymEnter(cur_tok.val, SK_PARAM, parse_owner, 0, parse_param_offset);
+    Inc(parse_params);
+    Inc(parse_param_bytes, ABI_WORD_SIZE);
+    Inc(parse_param_offset, ABI_WORD_SIZE);
+    LexNext;
+
+    If cur_tok.val = ',' Then
+      LexNext
+    Else If cur_tok.val = ')' Then
+    Begin
+      LexNext;
+      Exit;
+    End
+    Else
+    Begin
+      ParseError('"," ou ")" attendu dans la liste de parametres');
+      Exit;
+    End;
+  End;
+
+  ParseError('liste de parametres non terminee: ) attendu');
+End;
+
+Procedure ParseLocalLet;
+Var
+  expr_line : Integer;
+  local_name: TString;
+Begin
+  LexNext; { LET }
+  If cur_tok.kind <> TK_IDENT Then
+  Begin
+    ParseError('nom de variable locale attendu apres LET');
+    Exit;
+  End;
+
+  local_name := cur_tok.val;
+  LexNext;
+  If cur_tok.val <> '=' Then
+  Begin
+    ParseError('= attendu apres variable locale');
+    Exit;
+  End;
+
+  Inc(parse_locals);
+  Inc(parse_local_offset, ABI_WORD_SIZE);
+  SymEnter(local_name, SK_LOCAL, parse_owner, 0, -parse_local_offset);
+  Inc(parse_local_bytes, ABI_WORD_SIZE);
+  LexNext;
+  expr_line := cur_tok.line;
+
+  While (cur_tok.kind <> TK_EOF) And (cur_tok.val <> '$)') And
+        (cur_tok.line = expr_line) Do
+  Begin
+    If cur_tok.val = '$(' Then
+      ParseBlock
+    Else
+      LexNext;
+  End;
+End;
+
+Procedure ParseStaticBlock;
+Var
+  static_name : TString;
+  static_val  : LongInt;
+Begin
+  LexNext; { STATIC }
+  If cur_tok.val <> '$(' Then
+  Begin
+    ParseError('bloc STATIC attendu: $(');
+    Exit;
+  End;
+
+  Inc(parse_blocks);
+  LexNext;
+  While (cur_tok.kind <> TK_EOF) And (cur_tok.val <> '$)') Do
+  Begin
+    If cur_tok.kind <> TK_IDENT Then
+    Begin
+      ParseError('nom de variable statique attendu');
+      While (cur_tok.kind <> TK_EOF) And (cur_tok.val <> '$)') Do LexNext;
+      If cur_tok.val = '$)' Then LexNext;
+      Exit;
+    End;
+
+    static_name := cur_tok.val;
+    LexNext;
+    If cur_tok.val <> '=' Then
+    Begin
+      ParseError('= attendu dans declaration STATIC');
+      While (cur_tok.kind <> TK_EOF) And (cur_tok.val <> '$)') Do LexNext;
+      If cur_tok.val = '$)' Then LexNext;
+      Exit;
+    End;
+
+    LexNext;
+    If cur_tok.kind <> TK_INTEGER Then
+    Begin
+      ParseError('valeur entiere attendue dans declaration STATIC');
+      While (cur_tok.kind <> TK_EOF) And (cur_tok.val <> '$)') Do LexNext;
+      If cur_tok.val = '$)' Then LexNext;
+      Exit;
+    End;
+
+    static_val := cur_tok.int_val;
+    Inc(parse_static);
+    SymEnter(static_name, SK_STATIC, '', static_val, 0);
+    LexNext;
+  End;
+
+  If cur_tok.val = '$)' Then
+    LexNext
+  Else
+    ParseError('bloc STATIC non termine: $) attendu');
+End;
+
+Procedure ParseFunctionExpr;
+Begin
+  While cur_tok.kind <> TK_EOF Do
+  Begin
+    If cur_tok.val = '$(' Then
+      ParseBlock
+    Else If cur_tok.val = '$)' Then
+    Begin
+      ParseError('fin de bloc inattendue: $)');
+      LexNext;
+    End
+    Else If (cur_tok.val = 'LET') Or (cur_tok.val = 'STATIC') Then
+      Exit
+    Else
+      LexNext;
+  End;
+End;
+
+Procedure ParseGlobalLet;
+Var
+  global_name : TString;
+  saved_owner : TString;
+Begin
+  LexNext; { LET }
+  If cur_tok.kind <> TK_IDENT Then
+  Begin
+    ParseError('nom attendu apres LET');
+    Exit;
+  End;
+
+  global_name := cur_tok.val;
+  saved_owner := parse_owner;
+  parse_owner := global_name;
+  parse_param_offset := ABI_PARAM_BASE;
+  parse_local_offset := 0;
+  LexNext;
+  ParseFormalParamList;
+  If parse_errors > 0 Then
+  Begin
+    parse_owner := saved_owner;
+    Exit;
+  End;
+
+  If cur_tok.val = 'BE' Then
+  Begin
+    Inc(parse_procs);
+    SymEnter(global_name, SK_PROC, '', 0, 0);
+    LexNext;
+    If cur_tok.val = '$(' Then
+      ParseBlock;
+  End
+  Else If cur_tok.val = '=' Then
+  Begin
+    Inc(parse_funcs);
+    SymEnter(global_name, SK_FUNC, '', 0, 0);
+    LexNext;
+    ParseFunctionExpr;
+  End
+  Else
+    ParseError('BE ou = attendu apres declaration LET globale');
+
+  parse_owner := saved_owner;
 End;
 
 Function ParseProgramBlocks(Var ctx : TCompilerContext) : Boolean;
@@ -681,11 +988,26 @@ Begin
 
   parse_errors := 0;
   parse_blocks := 0;
+  parse_procs := 0;
+  parse_funcs := 0;
+  parse_params := 0;
+  parse_locals := 0;
+  parse_static := 0;
+  parse_owner := '';
+  parse_param_offset := ABI_PARAM_BASE;
+  parse_local_offset := 0;
+  parse_param_bytes := 0;
+  parse_local_bytes := 0;
+  sym_count := 0;
   LexNext;
 
   While cur_tok.kind <> TK_EOF Do
   Begin
-    If cur_tok.val = '$(' Then
+    If cur_tok.val = 'STATIC' Then
+      ParseStaticBlock
+    Else If cur_tok.val = 'LET' Then
+      ParseGlobalLet
+    Else If cur_tok.val = '$(' Then
       ParseBlock
     Else If cur_tok.val = '$)' Then
     Begin
@@ -698,6 +1020,14 @@ Begin
 
   LexCloseSource;
   ctx.block_count := parse_blocks;
+  ctx.proc_count := parse_procs;
+  ctx.func_count := parse_funcs;
+  ctx.param_count := parse_params;
+  ctx.local_count := parse_locals;
+  ctx.static_count := parse_static;
+  ctx.sym_count := sym_count;
+  ctx.abi_param_bytes := parse_param_bytes;
+  ctx.abi_local_bytes := parse_local_bytes;
   Inc(ctx.errors, parse_errors);
   ParseProgramBlocks := parse_errors = 0;
 End;
@@ -765,6 +1095,14 @@ Begin
   ctx.last_art    := AK_NONE;
   ctx.token_count := 0;
   ctx.block_count := 0;
+  ctx.proc_count  := 0;
+  ctx.func_count  := 0;
+  ctx.param_count := 0;
+  ctx.local_count := 0;
+  ctx.static_count:= 0;
+  ctx.sym_count   := 0;
+  ctx.abi_param_bytes := 0;
+  ctx.abi_local_bytes := 0;
   ctx.errors      := 0;
 End;
 
@@ -952,12 +1290,23 @@ Var
     WriteLn('Source: ', ctx.source_name);
     WriteLn('Tokens: ', ctx.token_count);
     WriteLn('Blocs : ', ctx.block_count);
+    WriteLn('Procs : ', ctx.proc_count);
+    WriteLn('Funcs : ', ctx.func_count);
+    WriteLn('Params: ', ctx.param_count);
+    WriteLn('Locals: ', ctx.local_count);
+    WriteLn('Static: ', ctx.static_count);
+    WriteLn('Symbols: ', ctx.sym_count);
+    WriteLn('ABI   : params pile [', ABI_FRAME_REG, '+', ABI_PARAM_BASE,
+            '], retour ', ABI_RET_REG, ', frame ', ABI_FRAME_REG,
+            '/', ABI_STACK_REG, ', caller cleanup');
+    WriteLn('Stack : params ', ctx.abi_param_bytes, ' octets, locals ',
+            ctx.abi_local_bytes, ' octets');
     If ctx.options.keep_asm Then
       WriteLn('ASM   : ', ctx.asm_name);
     WriteLn('OBJ   : ', ctx.obj_name);
     If ctx.options.output_mode = OM_EXE Then
       WriteLn('EXE   : ', ctx.exe_name);
-    WriteLn('TODO suivante: parser les declarations globales LET ... BE.');
+    WriteLn('TODO suivante: corriger le support multi-parametres.');
   End
   Else
   Begin
