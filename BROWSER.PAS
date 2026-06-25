@@ -3695,7 +3695,17 @@ Begin
 End;
 
 { Ignorer les espaces blancs dans le CSS }
-Function CSSSkipWhitespace(Const S: AnsiString; Pos: Integer): Integer;
+{ NOTE IMPORTANTE : Pos est ici un LongInt (32 bits), pas Integer. La
+  directive de compatibilite Turbo Pascal de ce fichier fait qu'Integer
+  reste fidele a l'original et n'est que 16 bits (-32768..32767) !
+  Une feuille de style reelle depasse presque toujours cette limite
+  (49948 octets ici) : un compteur de position en Integer y deborde
+  silencieusement vers une valeur negative au-dela de l'octet 32767,
+  ce qui finit par indexer la chaine avec une position invalide et
+  declenche EAccessViolation. C'est la veritable cause des
+  plantages/blocages observes sur ce parseur (le filet de securite
+  GuardPos plus bas en attenuait le symptome sans corriger la cause). }
+Function CSSSkipWhitespace(Const S: AnsiString; Pos: LongInt): LongInt;
 Begin
  While (Pos <= Length(S)) And (S[Pos] In [' ', #9, #10, #13]) Do
   Inc(Pos);
@@ -3703,7 +3713,7 @@ Begin
 End;
 
 { Ignorer les commentaires CSS /* */ }
-Function CSSSkipComment(Const S: AnsiString; Pos: Integer): Integer;
+Function CSSSkipComment(Const S: AnsiString; Pos: LongInt): LongInt;
 Begin
  If (Pos < Length(S)) And (S[Pos] = '/') And (S[Pos + 1] = '*') Then Begin
   Inc(Pos, 2);
@@ -3719,9 +3729,9 @@ Begin
 End;
 
 { Ignorer espaces et commentaires }
-Function CSSSkipWhitespaceAndComments(Const S: AnsiString; Pos: Integer): Integer;
+Function CSSSkipWhitespaceAndComments(Const S: AnsiString; Pos: LongInt): LongInt;
 Var
- OldPos: Integer;
+ OldPos: LongInt;
 Begin
  Repeat
   OldPos := Pos;
@@ -3741,9 +3751,9 @@ Begin
 End;
 
 { Lire un identifiant CSS }
-Function CSSReadIdent(Const S: AnsiString; Var Pos: Integer): String;
+Function CSSReadIdent(Const S: AnsiString; Var Pos: LongInt): String;
 Var
- Start: Integer;
+ Start: LongInt;
 Begin
  CSSReadIdent := '';
  If Pos > Length(S) Then Exit;
@@ -3758,10 +3768,10 @@ Begin
 End;
 
 { Lire une chaine entre guillemets }
-Function CSSReadString(Const S: AnsiString; Var Pos: Integer): String;
+Function CSSReadString(Const S: AnsiString; Var Pos: LongInt): String;
 Var
  Quote: Char;
- Start: Integer;
+ Start: LongInt;
 Begin
  CSSReadString := '';
  If Pos > Length(S) Then Exit;
@@ -3782,10 +3792,10 @@ Begin
 End;
 
 { Lire un nombre CSS (avec unite optionnelle) }
-Procedure CSSReadNumber(Const S: AnsiString; Var Pos: Integer; Var NumVal: Real;
+Procedure CSSReadNumber(Const S: AnsiString; Var Pos: LongInt; Var NumVal: Real;
                         Var UnitStr: CSSUnitString);
 Var
- Start: Integer;
+ Start: LongInt;
  NumStr: String;
  Negative: Boolean;
 Begin
@@ -3827,7 +3837,7 @@ Begin
 End;
 
 { Lire un token CSS }
-Function CSSReadToken(Const S: AnsiString; Var Pos: Integer): CSSToken;
+Function CSSReadToken(Const S: AnsiString; Var Pos: LongInt): CSSToken;
 Var
  Token: CSSToken;
  C: Char;
@@ -4017,11 +4027,11 @@ Begin
 End;
 
 { Parser une partie de selecteur simple }
-Function CSSParseSimpleSelector(Const S: AnsiString; Var Pos: Integer): CSSSelectorPart;
+Function CSSParseSimpleSelector(Const S: AnsiString; Var Pos: LongInt): CSSSelectorPart;
 Var
  Part: CSSSelectorPart;
  Token: CSSToken;
- StartPos: Integer;
+ StartPos: LongInt;
 Begin
  Part.PartType := CSS_SEL_TAG;
  Part.Value := '';
@@ -4113,13 +4123,13 @@ Begin
 End;
 
 { Parser un selecteur CSS complet }
-Function CSSParseSelector(Const S: AnsiString; Var Pos: Integer): CSSSelector;
+Function CSSParseSelector(Const S: AnsiString; Var Pos: LongInt): CSSSelector;
 Var
  Sel: CSSSelector;
  Part: CSSSelectorPart;
  Combinator: Byte;
  HasWhitespace: Boolean;
- StartPos: Integer;
+ StartPos: LongInt;
 Begin
  Sel.PartCount := 0;
  Sel.Specificity := 0;
@@ -4185,12 +4195,12 @@ Begin
 End;
 
 { Parser les declarations CSS (proprietes) }
-Procedure CSSParseDeclarations(Const S: AnsiString; Var Pos: Integer; Var Rule: CSSRule);
+Procedure CSSParseDeclarations(Const S: AnsiString; Var Pos: LongInt; Var Rule: CSSRule);
 Var
  PropName, PropValue: String;
  Token: CSSToken;
  Important: Boolean;
- StartValue: Integer;
+ StartValue: LongInt;
 Begin
  { Chercher l'accolade ouvrante }
  While (Pos <= Length(S)) And (S[Pos] <> '{') Do Inc(Pos);
@@ -4245,7 +4255,7 @@ Begin
 End;
 
 { Parser une regle CSS directement dans sa destination. }
-Procedure CSSParseRule(Const S: AnsiString; Var Pos: Integer; Var Rule: CSSRule);
+Procedure CSSParseRule(Const S: AnsiString; Var Pos: LongInt; Var Rule: CSSRule);
 Var
  Sel: CSSSelector;
 Begin
@@ -4283,9 +4293,9 @@ End;
 { Parser une feuille de style CSS complete }
 Procedure CSSParseStylesheet(Const CSS: AnsiString);
 Var
- Pos: Integer;
+ Pos: LongInt;
  RuleIndex: Integer;
- GuardPos: Integer;
+ GuardPos: LongInt;
  BraceLevel: Integer;
 Begin
  Pos := 1;
@@ -4396,9 +4406,9 @@ End;
 { Parser un attribut style inline }
 Procedure CSSParseInlineStyle(Const StyleAttr: String; Var Style: DOMStyle);
 Var
- Pos: Integer;
+ Pos: LongInt;
  PropName, PropValue: String;
- StartValue: Integer;
+ StartValue: LongInt;
 Begin
  Pos := 1;
 
@@ -13917,6 +13927,12 @@ BEGIN
  DrawRefreshButton;
  DrawFavoriteButton;
  If TestMode Then Begin
+  { Re-naviguer vers la meme page pour exercer un second appel a
+    CSSParseStylesheet alors que la table de regles est deja pleine
+    (cas reel d'un clic sur un lien apres le chargement d'une 1ere
+    page) : c'est ce second appel qui a revele le debordement 16 bits
+    de Pos corrige ci-dessus. }
+  NavigateTo(CurrentURL);
   { Valider aussi les operations executees uniquement par le mode normal. }
   ProcessMouseInput;
   { Exercer le defilement (bas/droite puis haut/gauche) pour detecter
