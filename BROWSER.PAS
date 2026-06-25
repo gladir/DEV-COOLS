@@ -945,6 +945,51 @@ Var
  CSSParseError: String;               { Message d'erreur de parsing }
  CSSEnabled: Boolean;                 { CSS active ou non }
 
+Var
+ InContentRenderPass: Boolean;
+ DiagViolationReported: Boolean;
+
+{ Enveloppes de diagnostic TEMPORAIRES autour des primitives de
+  dessin : signalent tout tracage au-dessus de RENDER_AREA_Y pendant
+  le rendu du contenu (InContentRenderPass), pour trouver
+  empiriquement un site de dessin qui ne respecterait pas encore
+  YInVisibleBand. A retirer une fois le site fautif trouve. }
+Procedure OutTextXY(X, Y: Integer; Const Text: String);
+Begin
+ If InContentRenderPass And (Y < RENDER_AREA_Y) And Not DiagViolationReported Then Begin
+  WriteLn(StdErr, 'VERIF VIOLATION OutTextXY Y=', Y, ' X=', X, ' Text=[', Text, ']');
+  DiagViolationReported := True;
+ End;
+ PtcGraph.OutTextXY(X, Y, Text);
+End;
+
+Procedure Bar(X1, Y1, X2, Y2: Integer);
+Begin
+ If InContentRenderPass And (Y1 < RENDER_AREA_Y) And Not DiagViolationReported Then Begin
+  WriteLn(StdErr, 'VERIF VIOLATION Bar Y1=', Y1, ' Y2=', Y2, ' X1=', X1);
+  DiagViolationReported := True;
+ End;
+ PtcGraph.Bar(X1, Y1, X2, Y2);
+End;
+
+Procedure Rectangle(X1, Y1, X2, Y2: Integer);
+Begin
+ If InContentRenderPass And (Y1 < RENDER_AREA_Y) And Not DiagViolationReported Then Begin
+  WriteLn(StdErr, 'VERIF VIOLATION Rectangle Y1=', Y1, ' Y2=', Y2, ' X1=', X1);
+  DiagViolationReported := True;
+ End;
+ PtcGraph.Rectangle(X1, Y1, X2, Y2);
+End;
+
+Procedure Line(X1, Y1, X2, Y2: Integer);
+Begin
+ If InContentRenderPass And (Y1 < RENDER_AREA_Y) And Not DiagViolationReported Then Begin
+  WriteLn(StdErr, 'VERIF VIOLATION Line Y1=', Y1, ' Y2=', Y2, ' X1=', X1);
+  DiagViolationReported := True;
+ End;
+ PtcGraph.Line(X1, Y1, X2, Y2);
+End;
+
 { =====================================================
   PARSEUR HTML - Fonctions et procedures
   ===================================================== }
@@ -5472,6 +5517,21 @@ Begin
  GetTextWidth := Length(Text) * 8; { Police par defaut = 8 pixels par caractere }
 End;
 
+{ Verifier si une plage verticale [Y1,Y2] recoupe la bande visible de
+  la zone de rendu (entre la barre d'URL et la barre de defilement
+  horizontale). A utiliser avant tout Bar()/Line()/Rectangle() qui
+  dessine a une position deja calculee avec defilement (Ctx.Y) : sans
+  cette verification, les fonds et bordures de tableau (entre autres)
+  continuent de se dessiner au-dessus de la zone de rendu quand on
+  defile, recouvrant progressivement la barre d'adresse et ses
+  boutons - le texte (RenderText) avait deja ce garde-fou, mais pas
+  les autres primitives de dessin. }
+Function YInVisibleBand(Y1, Y2: Integer): Boolean;
+Begin
+ YInVisibleBand := (Y2 >= RENDER_AREA_Y) And
+                   (Y1 <= RENDER_AREA_Y + (RENDER_AREA_HEIGHT - SCROLLBAR_SIZE));
+End;
+
 { Decaler Ctx.X selon text-align (centre/droite) avant de rendre le
   contenu d'un element de bloc. Approximation : on mesure la largeur
   du texte de TOUT le sous-arbre (DOMGetTextContent) et on suppose
@@ -5674,7 +5734,7 @@ Begin
     donc pas le texte deja trace - un fond plein devrait etre dessine
     AVANT le contenu, ce qui demanderait de connaitre la hauteur de la
     boite a l'avance ; non implemente pour cette raison). }
-  If Box.HasBorder Then Begin
+  If Box.HasBorder And YInVisibleBand(BoxStartY, BoxEndY) Then Begin
    SetColor(Box.BorderColorIdx);
    Rectangle(BoxStartX, BoxStartY, Ctx.MaxX, BoxEndY);
    SetColor(Ctx.TextColor);
@@ -5823,7 +5883,7 @@ Begin
  RenderChildren(Node, Ctx);
 
  If WantsBlock Then Begin
-  If Box.HasBorder Then Begin
+  If Box.HasBorder And YInVisibleBand(BoxStartY, Ctx.Y) Then Begin
    SetColor(Box.BorderColorIdx);
    Rectangle(BoxStartX, BoxStartY, Ctx.MaxX, Ctx.Y);
    SetColor(Ctx.TextColor);
@@ -6046,12 +6106,14 @@ Begin
  RenderBlockSpacing(Ctx, 4);
 
  { Dessiner la ligne horizontale }
- SetColor(8); { Gris }
- Line(RenderOriginX + RENDER_MARGIN_LEFT,
-      Ctx.Y + (Ctx.LineHeight Div 2),
-      Ctx.MaxX - RENDER_MARGIN_LEFT,
-      Ctx.Y + (Ctx.LineHeight Div 2));
- SetColor(Ctx.TextColor);
+ If YInVisibleBand(Ctx.Y + (Ctx.LineHeight Div 2), Ctx.Y + (Ctx.LineHeight Div 2)) Then Begin
+  SetColor(8); { Gris }
+  Line(RenderOriginX + RENDER_MARGIN_LEFT,
+       Ctx.Y + (Ctx.LineHeight Div 2),
+       Ctx.MaxX - RENDER_MARGIN_LEFT,
+       Ctx.Y + (Ctx.LineHeight Div 2));
+  SetColor(Ctx.TextColor);
+ End;
 
  { Espacement apres la ligne }
  RenderNewLine(Ctx);
@@ -6441,16 +6503,20 @@ Begin
   Ctx.TableCellWidth := TABLE_CELL_MIN_WIDTH;
 
  { Dessiner la bordure superieure du tableau }
- SetColor(TABLE_BORDER_COLOR);
- Line(Ctx.TableX, Ctx.Y, Ctx.TableX + (NumCols * (Ctx.TableCellWidth + TABLE_CELL_SPACING)), Ctx.Y);
+ If YInVisibleBand(Ctx.Y, Ctx.Y) Then Begin
+  SetColor(TABLE_BORDER_COLOR);
+  Line(Ctx.TableX, Ctx.Y, Ctx.TableX + (NumCols * (Ctx.TableCellWidth + TABLE_CELL_SPACING)), Ctx.Y);
+ End;
  Inc(Ctx.Y, TABLE_BORDER_WIDTH);
 
  { Rendre les enfants }
  RenderChildren(Node, Ctx);
 
  { Dessiner la bordure inferieure du tableau }
- SetColor(TABLE_BORDER_COLOR);
- Line(Ctx.TableX, Ctx.Y, Ctx.TableX + (NumCols * (Ctx.TableCellWidth + TABLE_CELL_SPACING)), Ctx.Y);
+ If YInVisibleBand(Ctx.Y, Ctx.Y) Then Begin
+  SetColor(TABLE_BORDER_COLOR);
+  Line(Ctx.TableX, Ctx.Y, Ctx.TableX + (NumCols * (Ctx.TableCellWidth + TABLE_CELL_SPACING)), Ctx.Y);
+ End;
  Inc(Ctx.Y, TABLE_BORDER_WIDTH);
 
  { Restaurer l'etat }
@@ -6502,23 +6568,29 @@ Begin
  Ctx.TableRowHeight := RENDER_LINE_HEIGHT + (2 * TABLE_CELL_PADDING);
 
  { Dessiner la bordure gauche de la ligne }
- SetColor(TABLE_BORDER_COLOR);
- Line(Ctx.TableX, Ctx.Y, Ctx.TableX, Ctx.Y + Ctx.TableRowHeight);
+ If YInVisibleBand(Ctx.Y, Ctx.Y + Ctx.TableRowHeight) Then Begin
+  SetColor(TABLE_BORDER_COLOR);
+  Line(Ctx.TableX, Ctx.Y, Ctx.TableX, Ctx.Y + Ctx.TableRowHeight);
+ End;
 
  { Rendre les cellules }
  RenderChildren(Node, Ctx);
 
  { Dessiner la bordure droite de la ligne }
- SetColor(TABLE_BORDER_COLOR);
- Line(Ctx.TableCellX, Ctx.TableRowY, Ctx.TableCellX, Ctx.TableRowY + Ctx.TableRowHeight);
+ If YInVisibleBand(Ctx.TableRowY, Ctx.TableRowY + Ctx.TableRowHeight) Then Begin
+  SetColor(TABLE_BORDER_COLOR);
+  Line(Ctx.TableCellX, Ctx.TableRowY, Ctx.TableCellX, Ctx.TableRowY + Ctx.TableRowHeight);
+ End;
 
  { Passer a la ligne suivante }
  Ctx.Y := Ctx.TableRowY + Ctx.TableRowHeight;
  Ctx.X := Ctx.TableX;
 
  { Dessiner la bordure horizontale sous la ligne }
- SetColor(TABLE_BORDER_COLOR);
- Line(Ctx.TableX, Ctx.Y, Ctx.TableCellX, Ctx.Y);
+ If YInVisibleBand(Ctx.Y, Ctx.Y) Then Begin
+  SetColor(TABLE_BORDER_COLOR);
+  Line(Ctx.TableX, Ctx.Y, Ctx.TableCellX, Ctx.Y);
+ End;
  Inc(Ctx.Y, TABLE_BORDER_WIDTH);
 End;
 
@@ -6538,10 +6610,15 @@ Begin
  CellStartX := Ctx.TableCellX;
  CellStartY := Ctx.TableRowY;
 
- { Dessiner le fond de la cellule }
- SetFillStyle(SolidFill, RENDER_BG_COLOR);
- Bar(CellStartX + TABLE_BORDER_WIDTH, CellStartY + TABLE_BORDER_WIDTH,
-     CellStartX + Ctx.TableCellWidth, CellStartY + Ctx.TableRowHeight - TABLE_BORDER_WIDTH);
+ { Dessiner le fond de la cellule (seulement si visible : sans cette
+   verification, les rangees deja defilees au-dessus de la zone de
+   rendu continuent de peindre leur fond, recouvrant la barre
+   d'adresse et ses boutons un peu plus a chaque defilement). }
+ If YInVisibleBand(CellStartY, CellStartY + Ctx.TableRowHeight) Then Begin
+  SetFillStyle(SolidFill, RENDER_BG_COLOR);
+  Bar(CellStartX + TABLE_BORDER_WIDTH, CellStartY + TABLE_BORDER_WIDTH,
+      CellStartX + Ctx.TableCellWidth, CellStartY + Ctx.TableRowHeight - TABLE_BORDER_WIDTH);
+ End;
 
  { Configurer le contexte pour le contenu de la cellule }
  Ctx.X := CellStartX + TABLE_CELL_PADDING;
@@ -6560,8 +6637,10 @@ Begin
  Inc(Ctx.TableColIndex);
 
  { Dessiner la bordure droite de la cellule }
- SetColor(TABLE_BORDER_COLOR);
- Line(Ctx.TableCellX - TABLE_CELL_SPACING, CellStartY, Ctx.TableCellX - TABLE_CELL_SPACING, CellStartY + Ctx.TableRowHeight);
+ If YInVisibleBand(CellStartY, CellStartY + Ctx.TableRowHeight) Then Begin
+  SetColor(TABLE_BORDER_COLOR);
+  Line(Ctx.TableCellX - TABLE_CELL_SPACING, CellStartY, Ctx.TableCellX - TABLE_CELL_SPACING, CellStartY + Ctx.TableRowHeight);
+ End;
 
  { Remettre Y a la position de la ligne }
  Ctx.Y := CellStartY;
@@ -6587,10 +6666,13 @@ Begin
  CellStartX := Ctx.TableCellX;
  CellStartY := Ctx.TableRowY;
 
- { Dessiner le fond de la cellule d'en-tete (gris clair) }
- SetFillStyle(SolidFill, TABLE_HEADER_BG);
- Bar(CellStartX + TABLE_BORDER_WIDTH, CellStartY + TABLE_BORDER_WIDTH,
-     CellStartX + Ctx.TableCellWidth, CellStartY + Ctx.TableRowHeight - TABLE_BORDER_WIDTH);
+ { Dessiner le fond de la cellule d'en-tete (gris clair), seulement
+   si visible (voir RenderTagTD pour l'explication). }
+ If YInVisibleBand(CellStartY, CellStartY + Ctx.TableRowHeight) Then Begin
+  SetFillStyle(SolidFill, TABLE_HEADER_BG);
+  Bar(CellStartX + TABLE_BORDER_WIDTH, CellStartY + TABLE_BORDER_WIDTH,
+      CellStartX + Ctx.TableCellWidth, CellStartY + Ctx.TableRowHeight - TABLE_BORDER_WIDTH);
+ End;
 
  { Configurer le contexte pour le contenu de la cellule }
  Ctx.X := CellStartX + TABLE_CELL_PADDING;
@@ -6612,8 +6694,10 @@ Begin
  Inc(Ctx.TableColIndex);
 
  { Dessiner la bordure droite de la cellule }
- SetColor(TABLE_BORDER_COLOR);
- Line(Ctx.TableCellX - TABLE_CELL_SPACING, CellStartY, Ctx.TableCellX - TABLE_CELL_SPACING, CellStartY + Ctx.TableRowHeight);
+ If YInVisibleBand(CellStartY, CellStartY + Ctx.TableRowHeight) Then Begin
+  SetColor(TABLE_BORDER_COLOR);
+  Line(Ctx.TableCellX - TABLE_CELL_SPACING, CellStartY, Ctx.TableCellX - TABLE_CELL_SPACING, CellStartY + Ctx.TableRowHeight);
+ End;
 
  { Remettre Y a la position de la ligne }
  Ctx.Y := CellStartY;
@@ -7789,10 +7873,12 @@ Begin
   If DrawWidth > Ctx.MaxX - Ctx.X Then DrawWidth := Ctx.MaxX - Ctx.X;
   If DrawHeight > Ctx.MaxY - Ctx.Y Then DrawHeight := Ctx.MaxY - Ctx.Y;
 
-  If (DrawWidth = ImgWidth) And (DrawHeight = ImgHeight) Then
-   BMPDrawImage(BMPImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight)
-  Else
-   BMPDrawImageScaled(BMPImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight);
+  If YInVisibleBand(Ctx.Y, Ctx.Y + DrawHeight) Then Begin
+   If (DrawWidth = ImgWidth) And (DrawHeight = ImgHeight) Then
+    BMPDrawImage(BMPImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight)
+   Else
+    BMPDrawImageScaled(BMPImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight);
+  End;
 
   Ctx.X := Ctx.X + DrawWidth;
   If DrawHeight > Ctx.LineHeight Then Ctx.LineHeight := DrawHeight;
@@ -7837,10 +7923,12 @@ Begin
   If DrawWidth > Ctx.MaxX - Ctx.X Then DrawWidth := Ctx.MaxX - Ctx.X;
   If DrawHeight > Ctx.MaxY - Ctx.Y Then DrawHeight := Ctx.MaxY - Ctx.Y;
 
-  If (DrawWidth = ImgWidth) And (DrawHeight = ImgHeight) Then
-   GIFDrawImage(GIFImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight)
-  Else
-   GIFDrawImageScaled(GIFImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight);
+  If YInVisibleBand(Ctx.Y, Ctx.Y + DrawHeight) Then Begin
+   If (DrawWidth = ImgWidth) And (DrawHeight = ImgHeight) Then
+    GIFDrawImage(GIFImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight)
+   Else
+    GIFDrawImageScaled(GIFImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight);
+  End;
 
   Ctx.X := Ctx.X + DrawWidth;
   If DrawHeight > Ctx.LineHeight Then Ctx.LineHeight := DrawHeight;
@@ -7885,10 +7973,12 @@ Begin
   If DrawWidth > Ctx.MaxX - Ctx.X Then DrawWidth := Ctx.MaxX - Ctx.X;
   If DrawHeight > Ctx.MaxY - Ctx.Y Then DrawHeight := Ctx.MaxY - Ctx.Y;
 
-  If (DrawWidth = ImgWidth) And (DrawHeight = ImgHeight) Then
-   JPEGDrawImage(JPEGImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight)
-  Else
-   JPEGDrawImageScaled(JPEGImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight);
+  If YInVisibleBand(Ctx.Y, Ctx.Y + DrawHeight) Then Begin
+   If (DrawWidth = ImgWidth) And (DrawHeight = ImgHeight) Then
+    JPEGDrawImage(JPEGImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight)
+   Else
+    JPEGDrawImageScaled(JPEGImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight);
+  End;
 
   Ctx.X := Ctx.X + DrawWidth;
   If DrawHeight > Ctx.LineHeight Then Ctx.LineHeight := DrawHeight;
@@ -7933,10 +8023,12 @@ Begin
   If DrawWidth > Ctx.MaxX - Ctx.X Then DrawWidth := Ctx.MaxX - Ctx.X;
   If DrawHeight > Ctx.MaxY - Ctx.Y Then DrawHeight := Ctx.MaxY - Ctx.Y;
 
-  If (DrawWidth = ImgWidth) And (DrawHeight = ImgHeight) Then
-   PNGDrawImage(PNGImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight)
-  Else
-   PNGDrawImageScaled(PNGImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight);
+  If YInVisibleBand(Ctx.Y, Ctx.Y + DrawHeight) Then Begin
+   If (DrawWidth = ImgWidth) And (DrawHeight = ImgHeight) Then
+    PNGDrawImage(PNGImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight)
+   Else
+    PNGDrawImageScaled(PNGImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight);
+  End;
 
   Ctx.X := Ctx.X + DrawWidth;
   If DrawHeight > Ctx.LineHeight Then Ctx.LineHeight := DrawHeight;
@@ -7981,7 +8073,8 @@ Begin
   If DrawWidth > Ctx.MaxX - Ctx.X Then DrawWidth := Ctx.MaxX - Ctx.X;
   If DrawHeight > Ctx.MaxY - Ctx.Y Then DrawHeight := Ctx.MaxY - Ctx.Y;
 
-  SVGDrawImageScaled(SVGImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight);
+  If YInVisibleBand(Ctx.Y, Ctx.Y + DrawHeight) Then
+   SVGDrawImageScaled(SVGImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight);
 
   Ctx.X := Ctx.X + DrawWidth;
   If DrawHeight > Ctx.LineHeight Then Ctx.LineHeight := DrawHeight;
@@ -12469,7 +12562,10 @@ Begin
 
  { Rendre le document avec application des styles CSS }
  ContentOverflowX := RENDER_AREA_X;
+ DiagViolationReported := False;
+ InContentRenderPass := True;
  RenderHTMLNode(Doc, Ctx);
+ InContentRenderPass := False;
 
  { Determiner s'il reste du contenu a reveler par defilement : Ctx.Y
    depasse le bas visible si la marge de mesure (SCROLL_MEASURE_MARGIN)
@@ -13966,6 +14062,7 @@ Var
  Key: Char;
  InitialTarget: String;
  TestMode: Boolean;
+ ScrollTestI: Integer;
 
 BEGIN
  ParseCommandLine(InitialTarget, TestMode);
@@ -14004,6 +14101,13 @@ BEGIN
   ScrollPageBy(SCROLL_LINE_STEP, 0);
   ScrollPageBy(0, -SCROLL_LINE_STEP);
   ScrollPageBy(-SCROLL_LINE_STEP, 0);
+  { Defilement profond (10 pages) pour exercer le rendu d'un tableau
+    HTML long bien au-dela de la zone visible : sans la verification
+    de visibilite verticale dans les cellules/bordures de tableau (et
+    les images), leur fond/contour continuait a se dessiner par-dessus
+    la barre d'adresse a chaque defilement. }
+  For ScrollTestI := 1 To 10 Do
+   ScrollPageBy(0, RENDER_AREA_HEIGHT);
   WriteConsoleLine('Build ' + BROWSER_BUILD_ID +
                    ': chargement, rendu et interface termines sans exception.');
   If MouseAvailable Then HideMouse;
