@@ -965,54 +965,105 @@ End;
 
 { Convertir un code ISO-8859-1/Unicode courant vers le jeu de caracteres
   utilise par la cible. Turbo Pascal DOS utilise normalement la page 850. }
+{ Convertir un code point Unicode/Latin-1 (caractere brut du fichier
+  source, lu en ISO-8859-1/Windows-1252 comme l'annoncent les pages de
+  ce site, ou point de code decode depuis une entite HTML comme
+  &eacute;/&#233;) vers l'octet CP437 qui affiche le MEME glyphe avec
+  la police bitmap par defaut de PtcGraph/BGI. Sans cette conversion,
+  l'octet brut hexadecimal E9 (e accentue en Latin-1) est interprete
+  tel quel par la police CP437, ou cet octet est la lettre grecque
+  theta - exactement le symptome observe : des lettres accentuees
+  remplacees par des symboles grecs/mathematiques sans rapport. Cette
+  table etait deja ecrite correctement dans ce fichier, mais reservee
+  a la branche non-FPC ; la branche FPC (celle reellement compilee
+  ici) se contentait d'un Chr(CodePoint) qui ne convertit rien. }
 Function HTMLCodePointToChar(CodePoint: LongInt): Char;
 Begin
- {$IFDEF FPC}
- If (CodePoint >= 0) And (CodePoint <= 255) Then
-  HTMLCodePointToChar := Chr(CodePoint)
- Else
-  HTMLCodePointToChar := '?';
- {$ELSE}
  Case CodePoint Of
   160: HTMLCodePointToChar := ' ';
   192: HTMLCodePointToChar := Chr(183); { A grave }
+  193: HTMLCodePointToChar := Chr(65);  { A aigu - pas d'equivalent CP437 }
   194: HTMLCodePointToChar := Chr(182); { A circonflexe }
+  195: HTMLCodePointToChar := Chr(65);  { A tilde - pas d'equivalent CP437 }
+  196: HTMLCodePointToChar := Chr(142); { A trema }
+  197: HTMLCodePointToChar := Chr(143); { A rond en chef }
+  198: HTMLCodePointToChar := Chr(146); { AE majuscule }
   199: HTMLCodePointToChar := Chr(128); { C cedille }
   200: HTMLCodePointToChar := Chr(212); { E grave }
   201: HTMLCodePointToChar := Chr(144); { E aigu }
   202: HTMLCodePointToChar := Chr(210); { E circonflexe }
+  203: HTMLCodePointToChar := Chr(69);  { E trema - pas d'equivalent CP437 }
+  204: HTMLCodePointToChar := Chr(73);  { I grave - pas d'equivalent CP437 }
+  205: HTMLCodePointToChar := Chr(73);  { I aigu - pas d'equivalent CP437 }
   206: HTMLCodePointToChar := Chr(215); { I circonflexe }
+  207: HTMLCodePointToChar := Chr(216); { I trema }
+  209: HTMLCodePointToChar := Chr(165); { N tilde }
+  210: HTMLCodePointToChar := Chr(79);  { O grave - pas d'equivalent CP437 }
+  211: HTMLCodePointToChar := Chr(79);  { O aigu - pas d'equivalent CP437 }
   212: HTMLCodePointToChar := Chr(226); { O circonflexe }
+  214: HTMLCodePointToChar := Chr(153); { O trema }
   217: HTMLCodePointToChar := Chr(235); { U grave }
+  218: HTMLCodePointToChar := Chr(85);  { U aigu - pas d'equivalent CP437 }
   219: HTMLCodePointToChar := Chr(234); { U circonflexe }
+  220: HTMLCodePointToChar := Chr(154); { U trema }
+  223: HTMLCodePointToChar := Chr(225); { s dur (eszett) }
   224: HTMLCodePointToChar := Chr(133); { a grave }
   225: HTMLCodePointToChar := Chr(160); { a aigu }
   226: HTMLCodePointToChar := Chr(131); { a circonflexe }
+  227: HTMLCodePointToChar := Chr(97);  { a tilde - pas d'equivalent CP437 }
   228: HTMLCodePointToChar := Chr(132); { a trema }
+  229: HTMLCodePointToChar := Chr(134); { a rond en chef }
+  230: HTMLCodePointToChar := Chr(145); { ae minuscule }
   231: HTMLCodePointToChar := Chr(135); { c cedille }
   232: HTMLCodePointToChar := Chr(138); { e grave }
   233: HTMLCodePointToChar := Chr(130); { e aigu }
   234: HTMLCodePointToChar := Chr(136); { e circonflexe }
   235: HTMLCodePointToChar := Chr(137); { e trema }
+  236: HTMLCodePointToChar := Chr(141); { i grave }
+  237: HTMLCodePointToChar := Chr(161); { i aigu }
   238: HTMLCodePointToChar := Chr(140); { i circonflexe }
   239: HTMLCodePointToChar := Chr(139); { i trema }
+  241: HTMLCodePointToChar := Chr(164); { n tilde }
+  242: HTMLCodePointToChar := Chr(149); { o grave }
+  243: HTMLCodePointToChar := Chr(162); { o aigu }
   244: HTMLCodePointToChar := Chr(147); { o circonflexe }
   246: HTMLCodePointToChar := Chr(148); { o trema }
   249: HTMLCodePointToChar := Chr(151); { u grave }
+  250: HTMLCodePointToChar := Chr(163); { u aigu }
   251: HTMLCodePointToChar := Chr(150); { u circonflexe }
   252: HTMLCodePointToChar := Chr(129); { u trema }
-  169: HTMLCodePointToChar := Chr(184); { copyright }
-  174: HTMLCodePointToChar := Chr(169); { marque deposee }
+  253: HTMLCodePointToChar := Chr(121); { y aigu - pas d'equivalent CP437 }
+  255: HTMLCodePointToChar := Chr(152); { y trema }
+  161: HTMLCodePointToChar := Chr(173); { point d'exclamation inverse }
+  162: HTMLCodePointToChar := Chr(155); { cent }
+  163: HTMLCodePointToChar := Chr(156); { livre sterling }
+  165: HTMLCodePointToChar := Chr(157); { yen }
+  169: HTMLCodePointToChar := Chr(184); { copyright - approximation }
+  170: HTMLCodePointToChar := Chr(166); { indicateur ordinal feminin }
+  171: HTMLCodePointToChar := Chr(174); { guillemet francais gauche }
+  172: HTMLCodePointToChar := Chr(170); { signe "non" }
+  174: HTMLCodePointToChar := Chr(169); { marque deposee - approximation }
   176: HTMLCodePointToChar := Chr(248); { degre }
-  171: HTMLCodePointToChar := Chr(174); { guillemet gauche }
-  187: HTMLCodePointToChar := Chr(175); { guillemet droit }
+  177: HTMLCodePointToChar := Chr(241); { plus ou moins }
+  178: HTMLCodePointToChar := Chr(253); { exposant 2 }
+  186: HTMLCodePointToChar := Chr(167); { indicateur ordinal masculin }
+  187: HTMLCodePointToChar := Chr(175); { guillemet francais droit }
+  191: HTMLCodePointToChar := Chr(168); { point d'interrogation inverse }
+  215: HTMLCodePointToChar := Chr(158); { signe de multiplication - approximation }
+  247: HTMLCodePointToChar := Chr(246); { signe de division }
+  8211, 8212: HTMLCodePointToChar := Chr(45); { tiret demi/cadratin -> trait d'union }
+  8216, 8217: HTMLCodePointToChar := Chr(39); { apostrophes courbes -> apostrophe simple }
+  8220, 8221: HTMLCodePointToChar := Chr(34); { guillemets courbes -> guillemet droit }
+  8226: HTMLCodePointToChar := Chr(7);  { puce }
+  8230: HTMLCodePointToChar := Chr(133);{ points de suspension (approxime, conflit rare avec a grave) }
   Else
    If (CodePoint >= 0) And (CodePoint <= 127) Then
     HTMLCodePointToChar := Chr(CodePoint)
+   Else If (CodePoint >= 128) And (CodePoint <= 255) Then
+    HTMLCodePointToChar := Chr(CodePoint) { reste tel quel, faute de mieux }
    Else
     HTMLCodePointToChar := '?';
  End;
- {$ENDIF}
 End;
 
 Function HTMLNamedEntityCode(Const EntityName: String): LongInt;
@@ -1071,7 +1122,12 @@ Begin
  I := 1;
  While (I <= Length(S)) And (Length(ResultText) < 255) Do Begin
   If S[I] <> '&' Then Begin
-   ResultText := ResultText + S[I];
+   { Les octets bruts du fichier source (Latin-1/Windows-1252, comme
+     l'annoncent les pages de ce site) doivent subir la meme
+     conversion CP437 que les entites HTML decodees plus bas, sinon
+     un "e accentue" tape directement dans le fichier (sans passer
+     par &eacute;) ne serait jamais corrige. }
+   ResultText := ResultText + HTMLCodePointToChar(Ord(S[I]));
    Inc(I);
   End
   Else Begin
