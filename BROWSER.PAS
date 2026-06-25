@@ -946,46 +946,69 @@ Var
  CSSEnabled: Boolean;                 { CSS active ou non }
 
 Var
+ { True pendant le parcours du document (RenderHTMLNode au sommet),
+   pour que les enveloppes ci-dessous sachent qu'elles doivent
+   decouper a la zone de rendu - la barre d'adresse et la barre de
+   defilement, dessinees hors de ce parcours, ne sont pas affectees. }
  InContentRenderPass: Boolean;
- DiagViolationReported: Boolean;
 
-{ Enveloppes de diagnostic TEMPORAIRES autour des primitives de
-  dessin : signalent tout tracage au-dessus de RENDER_AREA_Y pendant
-  le rendu du contenu (InContentRenderPass), pour trouver
-  empiriquement un site de dessin qui ne respecterait pas encore
-  YInVisibleBand. A retirer une fois le site fautif trouve. }
+{ Enveloppes des primitives de dessin qui decoupent automatiquement a
+  la bande verticale visible (entre la barre d'URL et la barre de
+  defilement horizontale) pendant le rendu du contenu. Une rangee de
+  tableau (ou tout autre element) a cheval sur le bord superieur de
+  la zone de rendu est PARTIELLEMENT visible : se contenter de
+  decider "dessiner ou pas" (comme le faisait une simple verification
+  de chevauchement) ne suffit pas, le rectangle entier se dessinait
+  alors quand meme, debordant sur la barre d'adresse a chaque
+  defilement. Ici, on ramene Y1/Y2 (ou on saute l'appel) avant de
+  transmettre a la primitive reelle de PtcGraph, qui n'a pas de
+  region de decoupage active par defaut. }
 Procedure OutTextXY(X, Y: Integer; Const Text: String);
 Begin
- If InContentRenderPass And (Y < RENDER_AREA_Y) And Not DiagViolationReported Then Begin
-  WriteLn(StdErr, 'VERIF VIOLATION OutTextXY Y=', Y, ' X=', X, ' Text=[', Text, ']');
-  DiagViolationReported := True;
- End;
+ If InContentRenderPass And
+    ((Y < RENDER_AREA_Y) Or (Y > RENDER_AREA_Y + (RENDER_AREA_HEIGHT - SCROLLBAR_SIZE))) Then
+  Exit;
  PtcGraph.OutTextXY(X, Y, Text);
 End;
 
 Procedure Bar(X1, Y1, X2, Y2: Integer);
+Var
+ VisibleBottom: Integer;
 Begin
- If InContentRenderPass And (Y1 < RENDER_AREA_Y) And Not DiagViolationReported Then Begin
-  WriteLn(StdErr, 'VERIF VIOLATION Bar Y1=', Y1, ' Y2=', Y2, ' X1=', X1);
-  DiagViolationReported := True;
+ If InContentRenderPass Then Begin
+  VisibleBottom := RENDER_AREA_Y + (RENDER_AREA_HEIGHT - SCROLLBAR_SIZE);
+  If (Y2 < RENDER_AREA_Y) Or (Y1 > VisibleBottom) Then Exit;
+  If Y1 < RENDER_AREA_Y Then Y1 := RENDER_AREA_Y;
+  If Y2 > VisibleBottom Then Y2 := VisibleBottom;
  End;
  PtcGraph.Bar(X1, Y1, X2, Y2);
 End;
 
 Procedure Rectangle(X1, Y1, X2, Y2: Integer);
+Var
+ VisibleBottom: Integer;
 Begin
- If InContentRenderPass And (Y1 < RENDER_AREA_Y) And Not DiagViolationReported Then Begin
-  WriteLn(StdErr, 'VERIF VIOLATION Rectangle Y1=', Y1, ' Y2=', Y2, ' X1=', X1);
-  DiagViolationReported := True;
+ If InContentRenderPass Then Begin
+  VisibleBottom := RENDER_AREA_Y + (RENDER_AREA_HEIGHT - SCROLLBAR_SIZE);
+  If (Y2 < RENDER_AREA_Y) Or (Y1 > VisibleBottom) Then Exit;
+  If Y1 < RENDER_AREA_Y Then Y1 := RENDER_AREA_Y;
+  If Y2 > VisibleBottom Then Y2 := VisibleBottom;
  End;
  PtcGraph.Rectangle(X1, Y1, X2, Y2);
 End;
 
 Procedure Line(X1, Y1, X2, Y2: Integer);
+Var
+ VisibleBottom: Integer;
 Begin
- If InContentRenderPass And (Y1 < RENDER_AREA_Y) And Not DiagViolationReported Then Begin
-  WriteLn(StdErr, 'VERIF VIOLATION Line Y1=', Y1, ' Y2=', Y2, ' X1=', X1);
-  DiagViolationReported := True;
+ If InContentRenderPass Then Begin
+  VisibleBottom := RENDER_AREA_Y + (RENDER_AREA_HEIGHT - SCROLLBAR_SIZE);
+  If (Y1 < RENDER_AREA_Y) And (Y2 < RENDER_AREA_Y) Then Exit;
+  If (Y1 > VisibleBottom) And (Y2 > VisibleBottom) Then Exit;
+  If Y1 < RENDER_AREA_Y Then Y1 := RENDER_AREA_Y;
+  If Y2 < RENDER_AREA_Y Then Y2 := RENDER_AREA_Y;
+  If Y1 > VisibleBottom Then Y1 := VisibleBottom;
+  If Y2 > VisibleBottom Then Y2 := VisibleBottom;
  End;
  PtcGraph.Line(X1, Y1, X2, Y2);
 End;
@@ -12562,7 +12585,6 @@ Begin
 
  { Rendre le document avec application des styles CSS }
  ContentOverflowX := RENDER_AREA_X;
- DiagViolationReported := False;
  InContentRenderPass := True;
  RenderHTMLNode(Doc, Ctx);
  InContentRenderPass := False;
