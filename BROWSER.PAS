@@ -817,6 +817,16 @@ Var
  RenderOriginX: Integer;       { = RENDER_AREA_X - ScrollX, ancre du contenu }
  RenderOriginY: Integer;       { = RENDER_AREA_Y - ScrollY, ancre du contenu }
 
+ { Resultat CSS "display" du noeud dont le rendu est en cours, lu par
+   chaque RenderTagXXX juste avant tout appel recursif (RenderChildren
+   peut re-ecrire ce drapeau pour un descendant entre-temps : chaque
+   gestionnaire doit le capturer dans une variable locale avant de
+   rendre ses enfants). True = comportement de bloc (saut de ligne
+   avant/apres), False = le CSS a demande display:inline/inline-block,
+   donc le contenu doit continuer sur la meme ligne malgre le
+   comportement par defaut de la balise. }
+ CurrentElementWantsBlock: Boolean;
+
  { Variables globales pour la barre d'URL }
  CurrentURL: String;
  URLCursorPos: Integer;
@@ -3140,9 +3150,9 @@ Begin
 End;
 
 { Obtenir le texte d'un noeud (innerText/textContent) }
-Function DOMGetTextContent(Node: HTMLNodePtr): String;
+Function DOMGetTextContent(Node: HTMLNodePtr): AnsiString;
 Var
- Result: String;
+ Result: AnsiString;
  Child: HTMLNodePtr;
 Begin
  Result := '';
@@ -3626,7 +3636,7 @@ Begin
 End;
 
 { Ignorer les espaces blancs dans le CSS }
-Function CSSSkipWhitespace(Const S: String; Pos: Integer): Integer;
+Function CSSSkipWhitespace(Const S: AnsiString; Pos: Integer): Integer;
 Begin
  While (Pos <= Length(S)) And (S[Pos] In [' ', #9, #10, #13]) Do
   Inc(Pos);
@@ -3634,7 +3644,7 @@ Begin
 End;
 
 { Ignorer les commentaires CSS /* */ }
-Function CSSSkipComment(Const S: String; Pos: Integer): Integer;
+Function CSSSkipComment(Const S: AnsiString; Pos: Integer): Integer;
 Begin
  If (Pos < Length(S)) And (S[Pos] = '/') And (S[Pos + 1] = '*') Then Begin
   Inc(Pos, 2);
@@ -3650,7 +3660,7 @@ Begin
 End;
 
 { Ignorer espaces et commentaires }
-Function CSSSkipWhitespaceAndComments(Const S: String; Pos: Integer): Integer;
+Function CSSSkipWhitespaceAndComments(Const S: AnsiString; Pos: Integer): Integer;
 Var
  OldPos: Integer;
 Begin
@@ -3672,7 +3682,7 @@ Begin
 End;
 
 { Lire un identifiant CSS }
-Function CSSReadIdent(Const S: String; Var Pos: Integer): String;
+Function CSSReadIdent(Const S: AnsiString; Var Pos: Integer): String;
 Var
  Start: Integer;
 Begin
@@ -3689,7 +3699,7 @@ Begin
 End;
 
 { Lire une chaine entre guillemets }
-Function CSSReadString(Const S: String; Var Pos: Integer): String;
+Function CSSReadString(Const S: AnsiString; Var Pos: Integer): String;
 Var
  Quote: Char;
  Start: Integer;
@@ -3713,7 +3723,7 @@ Begin
 End;
 
 { Lire un nombre CSS (avec unite optionnelle) }
-Procedure CSSReadNumber(Const S: String; Var Pos: Integer; Var NumVal: Real;
+Procedure CSSReadNumber(Const S: AnsiString; Var Pos: Integer; Var NumVal: Real;
                         Var UnitStr: CSSUnitString);
 Var
  Start: Integer;
@@ -3758,7 +3768,7 @@ Begin
 End;
 
 { Lire un token CSS }
-Function CSSReadToken(Const S: String; Var Pos: Integer): CSSToken;
+Function CSSReadToken(Const S: AnsiString; Var Pos: Integer): CSSToken;
 Var
  Token: CSSToken;
  C: Char;
@@ -3948,7 +3958,7 @@ Begin
 End;
 
 { Parser une partie de selecteur simple }
-Function CSSParseSimpleSelector(Const S: String; Var Pos: Integer): CSSSelectorPart;
+Function CSSParseSimpleSelector(Const S: AnsiString; Var Pos: Integer): CSSSelectorPart;
 Var
  Part: CSSSelectorPart;
  Token: CSSToken;
@@ -4044,7 +4054,7 @@ Begin
 End;
 
 { Parser un selecteur CSS complet }
-Function CSSParseSelector(Const S: String; Var Pos: Integer): CSSSelector;
+Function CSSParseSelector(Const S: AnsiString; Var Pos: Integer): CSSSelector;
 Var
  Sel: CSSSelector;
  Part: CSSSelectorPart;
@@ -4116,7 +4126,7 @@ Begin
 End;
 
 { Parser les declarations CSS (proprietes) }
-Procedure CSSParseDeclarations(Const S: String; Var Pos: Integer; Var Rule: CSSRule);
+Procedure CSSParseDeclarations(Const S: AnsiString; Var Pos: Integer; Var Rule: CSSRule);
 Var
  PropName, PropValue: String;
  Token: CSSToken;
@@ -4176,7 +4186,7 @@ Begin
 End;
 
 { Parser une regle CSS directement dans sa destination. }
-Procedure CSSParseRule(Const S: String; Var Pos: Integer; Var Rule: CSSRule);
+Procedure CSSParseRule(Const S: AnsiString; Var Pos: Integer; Var Rule: CSSRule);
 Var
  Sel: CSSSelector;
 Begin
@@ -4212,14 +4222,23 @@ Begin
 End;
 
 { Parser une feuille de style CSS complete }
-Procedure CSSParseStylesheet(Const CSS: String);
+Procedure CSSParseStylesheet(Const CSS: AnsiString);
 Var
  Pos: Integer;
  RuleIndex: Integer;
+ GuardPos: Integer;
+ BraceLevel: Integer;
 Begin
  Pos := 1;
 
- While Pos <= Length(CSS) Do Begin
+ While (Pos >= 1) And (Pos <= Length(CSS)) Do Begin
+  { Filet de securite : ce parseur ecrit a la main ne reconnait pas
+    toute la syntaxe CSS3 (ex: selecteurs non standards). Si un appel
+    plus bas ne fait aucun progres (ou corrompt Pos), on force
+    l'avancement d'au moins un caractere plutot que de boucler/planter
+    indefiniment sur une feuille de style reelle complexe. }
+  GuardPos := Pos;
+
   Pos := CSSSkipWhitespaceAndComments(CSS, Pos);
   If Pos > Length(CSS) Then Break;
 
@@ -4229,26 +4248,40 @@ Begin
    While (Pos <= Length(CSS)) And (CSS[Pos] <> ';') And (CSS[Pos] <> '{') Do
     Inc(Pos);
    If (Pos <= Length(CSS)) And (CSS[Pos] = '{') Then Begin
-    { At-rule avec bloc - sauter le bloc }
+    { At-rule avec bloc, par exemple @media : sauter le bloc en
+      comptant les accolades imbriquees, sinon la 1ere regle a
+      l'interieur du bloc referme prematurement le @media et derobe
+      le reste du fichier au lieu de la feuille de style globale. }
     Inc(Pos);
-    While (Pos <= Length(CSS)) And (CSS[Pos] <> '}') Do Inc(Pos);
-   End;
-   If Pos <= Length(CSS) Then Inc(Pos);
-   Continue;
-  End;
-
-  { Parser directement dans la feuille globale pour eviter une CSSRule locale
-    de plusieurs dizaines de Ko sur la pile. }
-  If CSSGlobalStylesheet.RuleCount < MAX_CSS_RULES Then Begin
-   RuleIndex := CSSGlobalStylesheet.RuleCount + 1;
-   CSSParseRule(CSS, Pos, CSSGlobalStylesheet.Rules[RuleIndex]);
-   If CSSGlobalStylesheet.Rules[RuleIndex].SelectorCount > 0 Then
-    CSSGlobalStylesheet.RuleCount := RuleIndex;
+    BraceLevel := 1;
+    While (Pos <= Length(CSS)) And (BraceLevel > 0) Do Begin
+     If CSS[Pos] = '{' Then Inc(BraceLevel)
+     Else If CSS[Pos] = '}' Then Dec(BraceLevel);
+     Inc(Pos);
+    End;
+   End
+   Else If Pos <= Length(CSS) Then Inc(Pos);
+   GuardPos := -1; { progres garanti par les boucles ci-dessus }
   End
   Else Begin
-   While (Pos <= Length(CSS)) And (CSS[Pos] <> '}') Do Inc(Pos);
-   If Pos <= Length(CSS) Then Inc(Pos);
+   { Parser directement dans la feuille globale pour eviter une CSSRule
+     locale de plusieurs dizaines de Ko sur la pile. }
+   If CSSGlobalStylesheet.RuleCount < MAX_CSS_RULES Then Begin
+    RuleIndex := CSSGlobalStylesheet.RuleCount + 1;
+    CSSParseRule(CSS, Pos, CSSGlobalStylesheet.Rules[RuleIndex]);
+    If CSSGlobalStylesheet.Rules[RuleIndex].SelectorCount > 0 Then
+     CSSGlobalStylesheet.RuleCount := RuleIndex;
+   End
+   Else Begin
+    While (Pos <= Length(CSS)) And (CSS[Pos] <> '}') Do Inc(Pos);
+    If Pos <= Length(CSS) Then Inc(Pos);
+   End;
   End;
+
+  { Garde anti-blocage : si rien n'a fait progresser Pos (ou si Pos est
+    devenu invalide), on force un caractere d'avance. }
+  If (GuardPos >= 0) And ((Pos <= GuardPos) Or (Pos < 1)) Then
+   Pos := GuardPos + 1;
  End;
 End;
 
@@ -4358,10 +4391,19 @@ Begin
    End;
   Until Match;
 
-  { Passer au noeud suivant selon le combinateur }
+  { Passer au noeud suivant selon le combinateur : Sel.Parts[I] (et
+    non Parts[I-1]) contient le combinateur qui relie la partie I a
+    la partie I-1, puisque c'est la valeur enregistree par
+    CSSParseSelector juste avant d'ajouter la partie I. Avec le
+    mauvais index, un selecteur compose comme "li.Foo" (Combinator =
+    CSS_COMB_NONE) etait traite comme un descendant ("li .Foo"),
+    remontant vers le parent au lieu de re-tester le meme element -
+    ce qui faisait silencieusement echouer la quasi-totalite des
+    selecteurs composes (balise+classe, balise+id, etc.). }
   If I > 1 Then Begin
-   Case Sel.Parts[I - 1].Combinator Of
-    CSS_COMB_NONE, CSS_COMB_DESCENDANT: Node := Node^.Parent;
+   Case Sel.Parts[I].Combinator Of
+    CSS_COMB_NONE: { Selecteur compose : rester sur le meme element } ;
+    CSS_COMB_DESCENDANT: Node := Node^.Parent;
     CSS_COMB_CHILD: Node := Node^.Parent;
     CSS_COMB_ADJACENT: Node := DOMGetPreviousSibling(Node);
     CSS_COMB_SIBLING: Node := DOMGetPreviousSibling(Node);
@@ -4468,17 +4510,91 @@ Begin
 End;
 
 { Extraire le CSS des balises <style> du document }
+{ Resoudre le chemin d'une feuille de style externe (href de <link>)
+  par rapport a l'URL/fichier courant - meme principe que
+  BMPBuildImagePath pour les images (cf. plus loin dans ce fichier). }
+Function CSSBuildStylesheetPath(Const Src: String): String;
+Var
+ BasePath: String;
+ I: Integer;
+Begin
+ If (Length(Src) > 0) And ((Src[1] = '/') Or (Src[1] = '\') Or
+     ((Length(Src) > 2) And (Src[2] = ':'))) Then Begin
+  CSSBuildStylesheetPath := Src;
+  Exit;
+ End;
+
+ BasePath := CurrentURL;
+ For I := Length(BasePath) DownTo 1 Do Begin
+  If BasePath[I] In ['/', '\'] Then Begin
+   BasePath := Copy(BasePath, 1, I);
+   Break;
+  End;
+ End;
+
+ CSSBuildStylesheetPath := BasePath + Src;
+End;
+
+{ Charger un fichier texte entier (feuille de style externe) dans une
+  AnsiString, sans la limite de 255 caracteres des String courtes
+  (directive H moins de ce fichier) : indispensable car une feuille
+  de style reelle depasse presque toujours 255 octets. }
+Function LoadTextFileAsString(Const FileName: String): AnsiString;
+Var
+ F: File;
+ Buf: Array[1..4096] Of Char;
+ BytesRead: Word;
+ Total: AnsiString;
+Begin
+ Total := '';
+ Assign(F, FileName);
+ {$I-}
+ Reset(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Begin
+  LoadTextFileAsString := '';
+  Exit;
+ End;
+ Repeat
+  BlockRead(F, Buf, SizeOf(Buf), BytesRead);
+  If BytesRead > 0 Then Begin
+   SetLength(Total, Length(Total) + BytesRead);
+   Move(Buf, Total[Length(Total) - BytesRead + 1], BytesRead);
+  End;
+ Until BytesRead < SizeOf(Buf);
+ Close(F);
+ LoadTextFileAsString := Total;
+End;
+
 Procedure CSSExtractFromDocument;
 Var
  List: DOMNodeList;
  I: Integer;
- StyleContent: String;
+ StyleContent: AnsiString;
+ RelAttr, HrefAttr, CSSPath: String;
+ ExternalCSS: AnsiString;
 Begin
+ { Feuilles de style en ligne : <style>...</style> }
  List := DOMGetElementsByTagName('style');
  For I := 1 To List.Length Do Begin
   StyleContent := DOMGetTextContent(List.Nodes[I]);
   If Length(StyleContent) > 0 Then
    CSSParseStylesheet(StyleContent);
+ End;
+
+ { Feuilles de style externes : <link rel="stylesheet" href="..."> }
+ List := DOMGetElementsByTagName('link');
+ For I := 1 To List.Length Do Begin
+  RelAttr := HTMLLowerCase(GetHTMLAttribute(List.Nodes[I], 'rel'));
+  If RelAttr = 'stylesheet' Then Begin
+   HrefAttr := GetHTMLAttribute(List.Nodes[I], 'href');
+   If Length(HrefAttr) > 0 Then Begin
+    CSSPath := CSSBuildStylesheetPath(HrefAttr);
+    ExternalCSS := LoadTextFileAsString(CSSPath);
+    If Length(ExternalCSS) > 0 Then
+     CSSParseStylesheet(ExternalCSS);
+   End;
+  End;
  End;
 End;
 
@@ -5064,17 +5180,25 @@ End;
 
 { Procedure pour rendre la balise DIV (bloc) }
 Procedure RenderTagDiv(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ WantsBlock: Boolean;
 Begin
- { DIV est un element de bloc - nouvelle ligne avant et apres }
- If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
-  RenderNewLine(Ctx);
+ WantsBlock := CurrentElementWantsBlock;
+ { DIV est un element de bloc par defaut - nouvelle ligne avant et
+   apres - sauf si le CSS demande display:inline/inline-block. }
+ If WantsBlock Then Begin
+  If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+   RenderNewLine(Ctx);
+  Inc(Ctx.BlockLevel);
+  RenderBlockSpacing(Ctx, RENDER_DIV_MARGIN);
+ End;
 
- Inc(Ctx.BlockLevel);
- RenderBlockSpacing(Ctx, RENDER_DIV_MARGIN);
  RenderChildren(Node, Ctx);
- Dec(Ctx.BlockLevel);
 
- RenderBlockSpacing(Ctx, RENDER_DIV_MARGIN);
+ If WantsBlock Then Begin
+  Dec(Ctx.BlockLevel);
+  RenderBlockSpacing(Ctx, RENDER_DIV_MARGIN);
+ End;
 End;
 
 { Procedure pour rendre la balise SPAN (inline) }
@@ -5086,66 +5210,101 @@ End;
 
 { Procedure pour rendre la balise SECTION (HTML5 bloc semantique) }
 Procedure RenderTagSection(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ WantsBlock: Boolean;
 Begin
- If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
-  RenderNewLine(Ctx);
- RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+ WantsBlock := CurrentElementWantsBlock;
+ If WantsBlock Then Begin
+  If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+   RenderNewLine(Ctx);
+  RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+ End;
  RenderChildren(Node, Ctx);
- RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+ If WantsBlock Then
+  RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
 End;
 
 { Procedure pour rendre la balise ARTICLE (HTML5 bloc semantique) }
 Procedure RenderTagArticle(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ WantsBlock: Boolean;
 Begin
- If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
-  RenderNewLine(Ctx);
- RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+ WantsBlock := CurrentElementWantsBlock;
+ If WantsBlock Then Begin
+  If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+   RenderNewLine(Ctx);
+  RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+ End;
  RenderChildren(Node, Ctx);
- RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+ If WantsBlock Then
+  RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
 End;
 
 { Procedure pour rendre la balise NAV (HTML5 navigation) }
 Procedure RenderTagNav(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ WantsBlock: Boolean;
 Begin
- If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+ WantsBlock := CurrentElementWantsBlock;
+ If WantsBlock And (Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10)) Then
   RenderNewLine(Ctx);
  RenderChildren(Node, Ctx);
- RenderNewLine(Ctx);
+ If WantsBlock Then
+  RenderNewLine(Ctx);
 End;
 
 { Procedure pour rendre la balise ASIDE (HTML5 contenu lateral) }
 Procedure RenderTagAside(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ WantsBlock: Boolean;
 Begin
- If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
-  RenderNewLine(Ctx);
- Inc(Ctx.BlockLevel);
+ WantsBlock := CurrentElementWantsBlock;
+ If WantsBlock Then Begin
+  If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+   RenderNewLine(Ctx);
+  Inc(Ctx.BlockLevel);
+ End;
  RenderChildren(Node, Ctx);
- Dec(Ctx.BlockLevel);
- RenderNewLine(Ctx);
+ If WantsBlock Then Begin
+  Dec(Ctx.BlockLevel);
+  RenderNewLine(Ctx);
+ End;
 End;
 
 { Procedure pour rendre la balise HEADER (HTML5 en-tete) }
 Procedure RenderTagHeader(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ WantsBlock: Boolean;
 Begin
- If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+ WantsBlock := CurrentElementWantsBlock;
+ If WantsBlock And (Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10)) Then
   RenderNewLine(Ctx);
  RenderChildren(Node, Ctx);
- RenderBlockSpacing(Ctx, RENDER_DIV_MARGIN);
+ If WantsBlock Then
+  RenderBlockSpacing(Ctx, RENDER_DIV_MARGIN);
 End;
 
 { Procedure pour rendre la balise FOOTER (HTML5 pied de page) }
 Procedure RenderTagFooter(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ WantsBlock: Boolean;
 Begin
- RenderBlockSpacing(Ctx, RENDER_DIV_MARGIN);
- If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
-  RenderNewLine(Ctx);
+ WantsBlock := CurrentElementWantsBlock;
+ If WantsBlock Then Begin
+  RenderBlockSpacing(Ctx, RENDER_DIV_MARGIN);
+  If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+   RenderNewLine(Ctx);
+ End;
  RenderChildren(Node, Ctx);
 End;
 
 { Procedure pour rendre la balise MAIN (HTML5 contenu principal) }
 Procedure RenderTagMain(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ WantsBlock: Boolean;
 Begin
- If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+ WantsBlock := CurrentElementWantsBlock;
+ If WantsBlock And (Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10)) Then
   RenderNewLine(Ctx);
  RenderChildren(Node, Ctx);
 End;
@@ -5156,16 +5315,23 @@ End;
 
 { Procedure pour rendre la balise P (paragraphe) }
 Procedure RenderTagP(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ WantsBlock: Boolean;
 Begin
- { Nouvelle ligne avant le paragraphe si necessaire }
- If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
-  RenderNewLine(Ctx);
- RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+ WantsBlock := CurrentElementWantsBlock;
+ { Nouvelle ligne avant le paragraphe si necessaire, sauf si le CSS
+   demande display:inline/inline-block. }
+ If WantsBlock Then Begin
+  If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+   RenderNewLine(Ctx);
+  RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+ End;
 
  RenderChildren(Node, Ctx);
 
  { Espacement apres le paragraphe }
- RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+ If WantsBlock Then
+  RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
 End;
 
 { Procedure generique pour rendre les titres H1-H6 }
@@ -5173,15 +5339,20 @@ Procedure RenderHeading(Node: HTMLNodePtr; Var Ctx: RenderContext; HeadingHeight
 Var
  OldLineHeight: Integer;
  OldTextStyle: Byte;
+ WantsBlock: Boolean;
 Begin
+ WantsBlock := CurrentElementWantsBlock;
  { Sauvegarder les valeurs courantes }
  OldLineHeight := Ctx.LineHeight;
  OldTextStyle := Ctx.TextStyle;
 
- { Nouvelle ligne avant le titre }
- If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
-  RenderNewLine(Ctx);
- RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+ { Nouvelle ligne avant le titre, sauf si le CSS demande
+   display:inline/inline-block. }
+ If WantsBlock Then Begin
+  If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+   RenderNewLine(Ctx);
+  RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+ End;
 
  { Appliquer la taille du titre }
  Ctx.LineHeight := HeadingHeight;
@@ -5194,8 +5365,10 @@ Begin
  Ctx.TextStyle := OldTextStyle;
 
  { Espacement apres le titre }
- RenderNewLine(Ctx);
- RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+ If WantsBlock Then Begin
+  RenderNewLine(Ctx);
+  RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+ End;
 End;
 
 { Procedure pour rendre la balise H1 }
@@ -5295,11 +5468,15 @@ Procedure RenderTagPre(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
  OldInPreformatted: Boolean;
  OldTextStyle: Byte;
+ WantsBlock: Boolean;
 Begin
+ WantsBlock := CurrentElementWantsBlock;
  { Nouvelle ligne avant le bloc pre }
- If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
-  RenderNewLine(Ctx);
- RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+ If WantsBlock Then Begin
+  If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+   RenderNewLine(Ctx);
+  RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+ End;
 
  OldInPreformatted := Ctx.InPreformatted;
  OldTextStyle := Ctx.TextStyle;
@@ -5313,8 +5490,10 @@ Begin
  Ctx.TextStyle := OldTextStyle;
 
  { Espacement apres le bloc pre }
- RenderNewLine(Ctx);
- RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+ If WantsBlock Then Begin
+  RenderNewLine(Ctx);
+  RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+ End;
 End;
 
 { Procedure pour rendre la balise CODE (code inline) }
@@ -5375,19 +5554,26 @@ End;
 
 { Procedure pour rendre la balise BLOCKQUOTE (citation) }
 Procedure RenderTagBlockquote(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ WantsBlock: Boolean;
 Begin
+ WantsBlock := CurrentElementWantsBlock;
  { Nouvelle ligne avant la citation }
- If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
-  RenderNewLine(Ctx);
- RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+ If WantsBlock Then Begin
+  If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+   RenderNewLine(Ctx);
+  RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+  Inc(Ctx.BlockLevel, 2);
+ End;
 
  { Indenter le contenu }
- Inc(Ctx.BlockLevel, 2);
  RenderChildren(Node, Ctx);
- Dec(Ctx.BlockLevel, 2);
 
  { Espacement apres la citation }
- RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+ If WantsBlock Then Begin
+  Dec(Ctx.BlockLevel, 2);
+  RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+ End;
 End;
 
 { Procedure pour rendre la balise Q (citation inline) }
@@ -5457,11 +5643,15 @@ Procedure RenderTagUL(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
  OldListType: Byte;
  OldListItemNumber: Integer;
+ WantsBlock: Boolean;
 Begin
+ WantsBlock := CurrentElementWantsBlock;
  { Nouvelle ligne avant la liste si necessaire }
- If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
-  RenderNewLine(Ctx);
- RenderBlockSpacing(Ctx, RENDER_LIST_SPACING);
+ If WantsBlock Then Begin
+  If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+   RenderNewLine(Ctx);
+  RenderBlockSpacing(Ctx, RENDER_LIST_SPACING);
+ End;
 
  { Sauvegarder l'etat de la liste parente }
  OldListType := Ctx.ListType;
@@ -5480,7 +5670,8 @@ Begin
  Ctx.ListItemNumber := OldListItemNumber;
 
  { Espacement apres la liste }
- RenderBlockSpacing(Ctx, RENDER_LIST_SPACING);
+ If WantsBlock Then
+  RenderBlockSpacing(Ctx, RENDER_LIST_SPACING);
 End;
 
 { Procedure pour rendre la balise OL (liste ordonnee) }
@@ -5488,11 +5679,15 @@ Procedure RenderTagOL(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
  OldListType: Byte;
  OldListItemNumber: Integer;
+ WantsBlock: Boolean;
 Begin
+ WantsBlock := CurrentElementWantsBlock;
  { Nouvelle ligne avant la liste si necessaire }
- If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
-  RenderNewLine(Ctx);
- RenderBlockSpacing(Ctx, RENDER_LIST_SPACING);
+ If WantsBlock Then Begin
+  If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+   RenderNewLine(Ctx);
+  RenderBlockSpacing(Ctx, RENDER_LIST_SPACING);
+ End;
 
  { Sauvegarder l'etat de la liste parente }
  OldListType := Ctx.ListType;
@@ -5511,7 +5706,8 @@ Begin
  Ctx.ListItemNumber := OldListItemNumber;
 
  { Espacement apres la liste }
- RenderBlockSpacing(Ctx, RENDER_LIST_SPACING);
+ If WantsBlock Then
+  RenderBlockSpacing(Ctx, RENDER_LIST_SPACING);
 End;
 
 { Procedure pour rendre la balise LI (element de liste) }
@@ -5519,14 +5715,22 @@ Procedure RenderTagLI(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
  BulletText: String;
  IndentX: Integer;
+ WantsBlock: Boolean;
 Begin
- { Nouvelle ligne pour l'element }
- If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.ListLevel * RENDER_LIST_INDENT) Then
-  RenderNewLine(Ctx);
+ WantsBlock := CurrentElementWantsBlock;
+ { Nouvelle ligne pour l'element, sauf si le CSS demande
+   display:inline/inline-block (ex: menu horizontal en <li>). }
+ If WantsBlock Then Begin
+  If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.ListLevel * RENDER_LIST_INDENT) Then
+   RenderNewLine(Ctx);
 
- { Calculer l'indentation }
- IndentX := RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.ListLevel * RENDER_LIST_INDENT);
- Ctx.X := IndentX;
+  { Calculer l'indentation }
+  IndentX := RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.ListLevel * RENDER_LIST_INDENT);
+  Ctx.X := IndentX;
+ End
+ Else If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.ListLevel * RENDER_LIST_INDENT) Then
+  { En ligne : un espace de separation avant l'element suivant }
+  Ctx.X := Ctx.X + 8;
 
  { Incrementer le numero d'element pour les listes ordonnees }
  If Ctx.ListType = LIST_TYPE_OL Then
@@ -5559,18 +5763,23 @@ Begin
  RenderChildren(Node, Ctx);
 
  { Espacement apres l'element }
- RenderBlockSpacing(Ctx, RENDER_LIST_SPACING);
+ If WantsBlock Then
+  RenderBlockSpacing(Ctx, RENDER_LIST_SPACING);
 End;
 
 { Procedure pour rendre la balise DL (liste de definitions) }
 Procedure RenderTagDL(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
  OldListType: Byte;
+ WantsBlock: Boolean;
 Begin
+ WantsBlock := CurrentElementWantsBlock;
  { Nouvelle ligne avant la liste si necessaire }
- If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
-  RenderNewLine(Ctx);
- RenderBlockSpacing(Ctx, RENDER_LIST_SPACING);
+ If WantsBlock Then Begin
+  If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+   RenderNewLine(Ctx);
+  RenderBlockSpacing(Ctx, RENDER_LIST_SPACING);
+ End;
 
  { Sauvegarder l'etat }
  OldListType := Ctx.ListType;
@@ -5586,21 +5795,26 @@ Begin
  Ctx.ListType := OldListType;
 
  { Espacement apres la liste }
- RenderBlockSpacing(Ctx, RENDER_LIST_SPACING);
+ If WantsBlock Then
+  RenderBlockSpacing(Ctx, RENDER_LIST_SPACING);
 End;
 
 { Procedure pour rendre la balise DT (terme de definition) }
 Procedure RenderTagDT(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
  OldTextStyle: Byte;
+ WantsBlock: Boolean;
 Begin
+ WantsBlock := CurrentElementWantsBlock;
  { Nouvelle ligne pour le terme }
- If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT Then
-  RenderNewLine(Ctx);
- RenderBlockSpacing(Ctx, RENDER_DT_SPACING);
+ If WantsBlock Then Begin
+  If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT Then
+   RenderNewLine(Ctx);
+  RenderBlockSpacing(Ctx, RENDER_DT_SPACING);
 
- { Position sans indentation supplementaire }
- Ctx.X := RenderOriginX + RENDER_MARGIN_LEFT + ((Ctx.ListLevel - 1) * RENDER_LIST_INDENT);
+  { Position sans indentation supplementaire }
+  Ctx.X := RenderOriginX + RENDER_MARGIN_LEFT + ((Ctx.ListLevel - 1) * RENDER_LIST_INDENT);
+ End;
 
  { Rendre le terme en gras }
  OldTextStyle := Ctx.TextStyle;
@@ -5613,13 +5827,18 @@ End;
 
 { Procedure pour rendre la balise DD (definition) }
 Procedure RenderTagDD(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ WantsBlock: Boolean;
 Begin
+ WantsBlock := CurrentElementWantsBlock;
  { Nouvelle ligne pour la definition }
- If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT Then
-  RenderNewLine(Ctx);
+ If WantsBlock Then Begin
+  If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT Then
+   RenderNewLine(Ctx);
 
- { Indenter la definition }
- Ctx.X := RenderOriginX + RENDER_MARGIN_LEFT + ((Ctx.ListLevel - 1) * RENDER_LIST_INDENT) + RENDER_DD_INDENT;
+  { Indenter la definition }
+  Ctx.X := RenderOriginX + RENDER_MARGIN_LEFT + ((Ctx.ListLevel - 1) * RENDER_LIST_INDENT) + RENDER_DD_INDENT;
+ End;
 
  RenderChildren(Node, Ctx);
 
@@ -5922,11 +6141,15 @@ End;
 Procedure RenderTagForm(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
  OldInForm: Boolean;
+ WantsBlock: Boolean;
 Begin
+ WantsBlock := CurrentElementWantsBlock;
  { Nouvelle ligne avant le formulaire si necessaire }
- If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
-  RenderNewLine(Ctx);
- RenderBlockSpacing(Ctx, FORM_MARGIN);
+ If WantsBlock Then Begin
+  If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+   RenderNewLine(Ctx);
+  RenderBlockSpacing(Ctx, FORM_MARGIN);
+ End;
 
  { Sauvegarder l'etat }
  OldInForm := Ctx.InForm;
@@ -5939,7 +6162,8 @@ Begin
  Ctx.InForm := OldInForm;
 
  { Espacement apres le formulaire }
- RenderBlockSpacing(Ctx, FORM_MARGIN);
+ If WantsBlock Then
+  RenderBlockSpacing(Ctx, FORM_MARGIN);
 End;
 
 { Procedure pour dessiner un champ de saisie text/password }
@@ -11534,6 +11758,11 @@ Begin
  OldBgColor := Ctx.BgColor;
  OldTextStyle := Ctx.TextStyle;
 
+ { Par defaut (CSS desactive ou noeud texte) : comportement de bloc
+   selon la balise seule, comme avant l'introduction du CSS. }
+ NodeStyle.Display := '';
+ CurrentElementWantsBlock := CSSIsBlockElement(NodeStyle, Node^.TagType);
+
  { Appliquer les styles CSS si active et si c'est un element }
  If CSSAutoApply And CSSEnabled And (Node^.NodeType = HTML_NODE_ELEMENT) Then Begin
   CSSResolveCascade(Node, NodeStyle);
@@ -11543,6 +11772,11 @@ Begin
 
   { Appliquer les styles au contexte }
   CSSApplyStylesToContext(NodeStyle, Ctx);
+
+  { display: en/in/inline-block calcule par cascade, en tenant compte
+    du comportement par defaut de la balise si la propriete n'est pas
+    explicitement fixee (voir CSSIsBlockElement). }
+  CurrentElementWantsBlock := CSSIsBlockElement(NodeStyle, Node^.TagType);
  End;
 
  Case Node^.NodeType Of
@@ -11646,8 +11880,15 @@ Begin
     End;
 
     Else Begin
-     { Balise non geree - rendre les enfants par defaut }
+     { Balise non geree (ex: figure, figcaption, address, details,
+       summary) - rendre les enfants, avec saut de ligne si la balise
+       ou le CSS la considere comme un element de bloc. }
+     If CurrentElementWantsBlock And
+        (Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10)) Then
+      RenderNewLine(Ctx);
      RenderChildren(Node, Ctx);
+     If CurrentElementWantsBlock Then
+      RenderNewLine(Ctx);
     End;
    End;
   End;
