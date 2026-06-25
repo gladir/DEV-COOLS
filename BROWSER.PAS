@@ -354,6 +354,11 @@ Const
  TEXT_STYLE_STRIKE = 8;
  TEXT_STYLE_CODE = 16;
 
+ { Modes de text-align CSS }
+ ALIGN_LEFT = 0;
+ ALIGN_CENTER = 1;
+ ALIGN_RIGHT = 2;
+
  { =====================================================
    Constantes pour l'interpreteur JavaScript
    ===================================================== }
@@ -639,6 +644,8 @@ Type
   SelectOptionIndex: Integer;{ Index de l'option courante dans select }
   InLink: Boolean;           { Dans un lien hypertexte }
   CurrentLinkHref: String[255]; { URL du lien en cours de rendu }
+  NoWrap: Boolean;           { CSS white-space: nowrap }
+  TextAlignMode: Byte;       { CSS text-align : 0=left 1=center 2=right }
  End;
 
  { =====================================================
@@ -738,6 +745,32 @@ Type
   Margin: String[32];
   Padding: String[32];
   Border: String[32];
+  { Etendu pour un support CSS plus complet }
+  TextAlign: String[16];
+  LineHeight: String[16];
+  Float: String[16];
+  ClearProp: String[16];
+  PositionProp: String[16];
+  TopProp: String[16];
+  RightProp: String[16];
+  BottomProp: String[16];
+  LeftProp: String[16];
+  ListStyle: String[32];
+  ListStyleType: String[16];
+  VerticalAlign: String[16];
+  WhiteSpace: String[16];
+  Overflow: String[16];
+  MarginTop: String[16];
+  MarginRight: String[16];
+  MarginBottom: String[16];
+  MarginLeft: String[16];
+  PaddingTop: String[16];
+  PaddingRight: String[16];
+  PaddingBottom: String[16];
+  PaddingLeft: String[16];
+  BorderColor: String[32];
+  BorderWidth: String[16];
+  BorderStyle: String[16];
  End;
 
  { =====================================================
@@ -826,6 +859,12 @@ Var
    donc le contenu doit continuer sur la meme ligne malgre le
    comportement par defaut de la balise. }
  CurrentElementWantsBlock: Boolean;
+
+ { CSS list-style/list-style-type:none du <li> dont le rendu est en
+   cours - meme principe et meme prudence de capture que
+   CurrentElementWantsBlock (lu une seule fois, au tout debut de
+   RenderTagLI, avant tout appel recursif). }
+ CurrentElementListStyleNone: Boolean;
 
  { Variables globales pour la barre d'URL }
  CurrentURL: String;
@@ -4285,6 +4324,55 @@ Begin
  End;
 End;
 
+{ Affecter une propriete CSS resolue au champ correspondant du style.
+  Partagee par le style inline et les deux passes de cascade (normale
+  puis !important) pour eviter de dupliquer ce grand Case et faciliter
+  l'ajout futur de nouvelles proprietes en un seul endroit. }
+Procedure CSSAssignProperty(PropId: Byte; Const Value: String; Var Style: DOMStyle);
+Begin
+ Case PropId Of
+  CSS_PROP_COLOR: Style.Color := Value;
+  CSS_PROP_BACKGROUND_COLOR: Style.BackgroundColor := Value;
+  CSS_PROP_BACKGROUND: Style.BackgroundColor := Value;
+  CSS_PROP_FONT_SIZE: Style.FontSize := Value;
+  CSS_PROP_FONT_WEIGHT: Style.FontWeight := Value;
+  CSS_PROP_FONT_STYLE: Style.FontStyle := Value;
+  CSS_PROP_TEXT_DECORATION: Style.TextDecoration := Value;
+  CSS_PROP_TEXT_ALIGN: Style.TextAlign := Value;
+  CSS_PROP_DISPLAY: Style.Display := Value;
+  CSS_PROP_VISIBILITY: Style.Visibility := Value;
+  CSS_PROP_WIDTH: Style.Width := Value;
+  CSS_PROP_HEIGHT: Style.Height := Value;
+  CSS_PROP_MARGIN: Style.Margin := Value;
+  CSS_PROP_MARGIN_TOP: Style.MarginTop := Value;
+  CSS_PROP_MARGIN_RIGHT: Style.MarginRight := Value;
+  CSS_PROP_MARGIN_BOTTOM: Style.MarginBottom := Value;
+  CSS_PROP_MARGIN_LEFT: Style.MarginLeft := Value;
+  CSS_PROP_PADDING: Style.Padding := Value;
+  CSS_PROP_PADDING_TOP: Style.PaddingTop := Value;
+  CSS_PROP_PADDING_RIGHT: Style.PaddingRight := Value;
+  CSS_PROP_PADDING_BOTTOM: Style.PaddingBottom := Value;
+  CSS_PROP_PADDING_LEFT: Style.PaddingLeft := Value;
+  CSS_PROP_BORDER: Style.Border := Value;
+  CSS_PROP_BORDER_COLOR: Style.BorderColor := Value;
+  CSS_PROP_BORDER_WIDTH: Style.BorderWidth := Value;
+  CSS_PROP_BORDER_STYLE: Style.BorderStyle := Value;
+  CSS_PROP_POSITION: Style.PositionProp := Value;
+  CSS_PROP_TOP: Style.TopProp := Value;
+  CSS_PROP_RIGHT: Style.RightProp := Value;
+  CSS_PROP_LEFT: Style.LeftProp := Value;
+  CSS_PROP_BOTTOM: Style.BottomProp := Value;
+  CSS_PROP_FLOAT: Style.Float := Value;
+  CSS_PROP_CLEAR: Style.ClearProp := Value;
+  CSS_PROP_LINE_HEIGHT: Style.LineHeight := Value;
+  CSS_PROP_OVERFLOW: Style.Overflow := Value;
+  CSS_PROP_LIST_STYLE: Style.ListStyle := Value;
+  CSS_PROP_LIST_STYLE_TYPE: Style.ListStyleType := Value;
+  CSS_PROP_VERTICAL_ALIGN: Style.VerticalAlign := Value;
+  CSS_PROP_WHITE_SPACE: Style.WhiteSpace := Value;
+ End;
+End;
+
 { Parser un attribut style inline }
 Procedure CSSParseInlineStyle(Const StyleAttr: String; Var Style: DOMStyle);
 Var
@@ -4316,20 +4404,10 @@ Begin
    Inc(Pos);
   PropValue := Trim(Copy(StyleAttr, StartValue, Pos - StartValue));
 
-  { Appliquer la propriete au style }
-  If PropName = 'color' Then Style.Color := PropValue
-  Else If PropName = 'background-color' Then Style.BackgroundColor := PropValue
-  Else If PropName = 'font-size' Then Style.FontSize := PropValue
-  Else If PropName = 'font-weight' Then Style.FontWeight := PropValue
-  Else If PropName = 'font-style' Then Style.FontStyle := PropValue
-  Else If PropName = 'text-decoration' Then Style.TextDecoration := PropValue
-  Else If PropName = 'display' Then Style.Display := PropValue
-  Else If PropName = 'visibility' Then Style.Visibility := PropValue
-  Else If PropName = 'width' Then Style.Width := PropValue
-  Else If PropName = 'height' Then Style.Height := PropValue
-  Else If PropName = 'margin' Then Style.Margin := PropValue
-  Else If PropName = 'padding' Then Style.Padding := PropValue
-  Else If PropName = 'border' Then Style.Border := PropValue;
+  { Appliquer la propriete au style - meme table que les feuilles de
+    style (CSSGetPropertyId/CSSAssignProperty), pour que le style
+    inline reconnaisse exactement les memes proprietes. }
+  CSSAssignProperty(CSSGetPropertyId(PropName), PropValue, Style);
 
   If (Pos <= Length(StyleAttr)) And (StyleAttr[Pos] = ';') Then Inc(Pos);
  End;
@@ -4682,6 +4760,7 @@ End;
 { Resoudre la cascade CSS pour un element.
   L'heritage est transporte par RenderContext pendant le parcours du DOM;
   remonter recursivement tous les parents ici doublait la profondeur de pile. }
+
 Procedure CSSResolveCascade(Element: HTMLNodePtr; Var Style: DOMStyle);
 Var
  I, J, RuleIndex: Integer;
@@ -4704,6 +4783,31 @@ Begin
  Style.Margin := '';
  Style.Padding := '';
  Style.Border := '';
+ Style.TextAlign := '';
+ Style.LineHeight := '';
+ Style.Float := '';
+ Style.ClearProp := '';
+ Style.PositionProp := '';
+ Style.TopProp := '';
+ Style.RightProp := '';
+ Style.BottomProp := '';
+ Style.LeftProp := '';
+ Style.ListStyle := '';
+ Style.ListStyleType := '';
+ Style.VerticalAlign := '';
+ Style.WhiteSpace := '';
+ Style.Overflow := '';
+ Style.MarginTop := '';
+ Style.MarginRight := '';
+ Style.MarginBottom := '';
+ Style.MarginLeft := '';
+ Style.PaddingTop := '';
+ Style.PaddingRight := '';
+ Style.PaddingBottom := '';
+ Style.PaddingLeft := '';
+ Style.BorderColor := '';
+ Style.BorderWidth := '';
+ Style.BorderStyle := '';
 
  If Element = Nil Then Exit;
 
@@ -4739,23 +4843,9 @@ Begin
  For I := 1 To MatchedCount Do Begin
   RuleIndex := MatchedRules[I].RuleIndex;
   For J := 1 To CSSGlobalStylesheet.Rules[RuleIndex].PropertyCount Do Begin
-   If Not CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Important Then Begin
-    Case CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].PropId Of
-     CSS_PROP_COLOR: Style.Color := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
-     CSS_PROP_BACKGROUND_COLOR: Style.BackgroundColor := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
-     CSS_PROP_FONT_SIZE: Style.FontSize := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
-     CSS_PROP_FONT_WEIGHT: Style.FontWeight := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
-     CSS_PROP_FONT_STYLE: Style.FontStyle := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
-     CSS_PROP_TEXT_DECORATION: Style.TextDecoration := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
-     CSS_PROP_DISPLAY: Style.Display := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
-     CSS_PROP_VISIBILITY: Style.Visibility := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
-     CSS_PROP_WIDTH: Style.Width := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
-     CSS_PROP_HEIGHT: Style.Height := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
-     CSS_PROP_MARGIN: Style.Margin := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
-     CSS_PROP_PADDING: Style.Padding := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
-     CSS_PROP_BORDER: Style.Border := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
-    End;
-   End;
+   If Not CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Important Then
+    CSSAssignProperty(CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].PropId,
+     CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value, Style);
   End;
  End;
 
@@ -4763,23 +4853,9 @@ Begin
  For I := 1 To MatchedCount Do Begin
   RuleIndex := MatchedRules[I].RuleIndex;
   For J := 1 To CSSGlobalStylesheet.Rules[RuleIndex].PropertyCount Do Begin
-   If CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Important Then Begin
-    Case CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].PropId Of
-     CSS_PROP_COLOR: Style.Color := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
-     CSS_PROP_BACKGROUND_COLOR: Style.BackgroundColor := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
-     CSS_PROP_FONT_SIZE: Style.FontSize := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
-     CSS_PROP_FONT_WEIGHT: Style.FontWeight := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
-     CSS_PROP_FONT_STYLE: Style.FontStyle := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
-     CSS_PROP_TEXT_DECORATION: Style.TextDecoration := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
-     CSS_PROP_DISPLAY: Style.Display := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
-     CSS_PROP_VISIBILITY: Style.Visibility := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
-     CSS_PROP_WIDTH: Style.Width := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
-     CSS_PROP_HEIGHT: Style.Height := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
-     CSS_PROP_MARGIN: Style.Margin := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
-     CSS_PROP_PADDING: Style.Padding := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
-     CSS_PROP_BORDER: Style.Border := CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value;
-    End;
-   End;
+   If CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Important Then
+    CSSAssignProperty(CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].PropId,
+     CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value, Style);
   End;
  End;
 
@@ -4828,12 +4904,17 @@ Begin
    Ctx.TextStyle := Ctx.TextStyle And (Not TEXT_STYLE_ITALIC);
  End;
 
- { Appliquer text-decoration }
+ { Appliquer text-decoration (underline et/ou line-through, separes
+   par un espace en CSS, ex: "underline line-through") }
  If Length(Style.TextDecoration) > 0 Then Begin
-  If System.Pos('underline', HTMLLowerCase(Style.TextDecoration)) > 0 Then
-   Ctx.TextStyle := Ctx.TextStyle Or TEXT_STYLE_UNDERLINE
-  Else If HTMLLowerCase(Style.TextDecoration) = 'none' Then
-   Ctx.TextStyle := Ctx.TextStyle And (Not TEXT_STYLE_UNDERLINE);
+  If HTMLLowerCase(Style.TextDecoration) = 'none' Then Begin
+   Ctx.TextStyle := Ctx.TextStyle And (Not TEXT_STYLE_UNDERLINE) And (Not TEXT_STYLE_STRIKE);
+  End Else Begin
+   If System.Pos('underline', HTMLLowerCase(Style.TextDecoration)) > 0 Then
+    Ctx.TextStyle := Ctx.TextStyle Or TEXT_STYLE_UNDERLINE;
+   If System.Pos('line-through', HTMLLowerCase(Style.TextDecoration)) > 0 Then
+    Ctx.TextStyle := Ctx.TextStyle Or TEXT_STYLE_STRIKE;
+  End;
  End;
 
  { Appliquer visibility }
@@ -4841,6 +4922,21 @@ Begin
   { Element cache mais prend de l'espace - simuler en ne pas dessiner }
   { Note: necessiterait un flag InVisible dans le contexte }
  End;
+
+ { Appliquer text-align }
+ If Length(Style.TextAlign) > 0 Then Begin
+  If HTMLLowerCase(Style.TextAlign) = 'center' Then
+   Ctx.TextAlignMode := ALIGN_CENTER
+  Else If HTMLLowerCase(Style.TextAlign) = 'right' Then
+   Ctx.TextAlignMode := ALIGN_RIGHT
+  Else
+   Ctx.TextAlignMode := ALIGN_LEFT;
+ End;
+
+ { Appliquer white-space: nowrap (empeche le retour a la ligne
+   automatique - utilise par ex. par les icones d'en-tete sprites) }
+ If Length(Style.WhiteSpace) > 0 Then
+  Ctx.NoWrap := HTMLLowerCase(Style.WhiteSpace) = 'nowrap';
 End;
 
 { Verifier si un element doit etre cache (display: none) }
@@ -4993,6 +5089,8 @@ Begin
  Ctx.SelectOptionIndex := 0;
  Ctx.InLink := False;
  Ctx.CurrentLinkHref := '';
+ Ctx.NoWrap := False;
+ Ctx.TextAlignMode := ALIGN_LEFT;
 End;
 
 { Procedure pour reinitialiser les zones de liens }
@@ -5073,7 +5171,64 @@ Begin
  GetTextWidth := Length(Text) * 8; { Police par defaut = 8 pixels par caractere }
 End;
 
+{ Decaler Ctx.X selon text-align (centre/droite) avant de rendre le
+  contenu d'un element de bloc. Approximation : on mesure la largeur
+  du texte de TOUT le sous-arbre (DOMGetTextContent) et on suppose
+  qu'il tient sur une seule ligne, ce qui est exact pour les titres et
+  la plupart des paragraphes courts ; un paragraphe long se reformate
+  sur plusieurs lignes a partir de ce meme decalage initial (un
+  centrage parfait ligne par ligne demanderait de bufferiser chaque
+  ligne avant de la dessiner, hors de portee raisonnable ici). }
+Procedure ApplyTextAlignOffset(Var Ctx: RenderContext; Node: HTMLNodePtr);
+Var
+ ContentWidth, AvailWidth, LineStart: Integer;
+Begin
+ If Ctx.TextAlignMode = ALIGN_LEFT Then Exit;
+ LineStart := Ctx.X;
+ ContentWidth := GetTextWidth(DOMGetTextContent(Node));
+ AvailWidth := Ctx.MaxX - LineStart;
+ If ContentWidth >= AvailWidth Then Exit; { ne tient pas sur une ligne : laisser le wrap normal }
+ If Ctx.TextAlignMode = ALIGN_CENTER Then
+  Ctx.X := LineStart + ((AvailWidth - ContentWidth) Div 2)
+ Else If Ctx.TextAlignMode = ALIGN_RIGHT Then
+  Ctx.X := LineStart + (AvailWidth - ContentWidth);
+ If Ctx.X < LineStart Then Ctx.X := LineStart;
+End;
+
 { Procedure pour afficher du texte avec retour a la ligne automatique }
+{ Dessiner un seul mot avec les styles actifs (gras/souligne/barre/
+  fond) : Ctx.TextStyle et Ctx.BgColor sont mis a jour partout dans le
+  moteur de rendu (balises B/STRONG/I/EM/U/S/MARK/CSS font-weight/
+  text-decoration/etc.) mais n'etaient jusqu'ici jamais consultes au
+  moment de dessiner - le texte sortait toujours "normal". }
+Procedure RenderStyledWord(Var Ctx: RenderContext; Const Word: String; WordWidth: Integer);
+Var
+ UnderlineY, StrikeY: Integer;
+Begin
+ { Fond du mot, si different du fond de page par defaut }
+ If Ctx.BgColor <> RENDER_BG_COLOR Then Begin
+  SetFillStyle(SolidFill, Ctx.BgColor);
+  Bar(Ctx.X, Ctx.Y, Ctx.X + WordWidth, Ctx.Y + Ctx.LineHeight - 2);
+ End;
+
+ SetColor(Ctx.TextColor);
+ OutTextXY(Ctx.X, Ctx.Y, Word);
+ { Gras simule par un second trace decale de 1 pixel : la police
+   bitmap par defaut n'a pas de variante grasse. }
+ If (Ctx.TextStyle And TEXT_STYLE_BOLD) <> 0 Then
+  OutTextXY(Ctx.X + 1, Ctx.Y, Word);
+
+ If (Ctx.TextStyle And TEXT_STYLE_UNDERLINE) <> 0 Then Begin
+  UnderlineY := Ctx.Y + 9;
+  Line(Ctx.X, UnderlineY, Ctx.X + WordWidth, UnderlineY);
+ End;
+
+ If (Ctx.TextStyle And TEXT_STYLE_STRIKE) <> 0 Then Begin
+  StrikeY := Ctx.Y + 4;
+  Line(Ctx.X, StrikeY, Ctx.X + WordWidth, StrikeY);
+ End;
+End;
+
 Procedure RenderText(Var Ctx: RenderContext; Const Text: String);
 Var
  I, StartWord, EndWord, WordWidth: Integer;
@@ -5090,7 +5245,8 @@ Begin
   While (I <= Length(Text)) And (Text[I] In [' ', #9, #10, #13]) Do Begin
    If Text[I] In [#10, #13] Then Begin
     { Nouvelle ligne dans le texte source }
-    If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+    If (Not Ctx.NoWrap) And
+       (Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10)) Then
      RenderNewLine(Ctx);
    End
    Else If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then Begin
@@ -5110,8 +5266,10 @@ Begin
   Word := Copy(Text, StartWord, EndWord - StartWord + 1);
   WordWidth := GetTextWidth(Word);
 
-  { Retour a la ligne si le mot ne tient pas }
-  If (Ctx.X + WordWidth > Ctx.MaxX) And
+  { Retour a la ligne si le mot ne tient pas (sauf white-space:nowrap,
+    qui demande explicitement de ne jamais retourner a la ligne -
+    utilise par ex. par les icones d'en-tete en sprite) }
+  If (Not Ctx.NoWrap) And (Ctx.X + WordWidth > Ctx.MaxX) And
      (Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10)) Then
    RenderNewLine(Ctx);
 
@@ -5121,7 +5279,7 @@ Begin
     detecter un eventuel debordement (mot plus large que la zone). }
   If (Ctx.Y >= RENDER_AREA_Y) And
      (Ctx.Y <= RENDER_AREA_Y + (RENDER_AREA_HEIGHT - SCROLLBAR_SIZE)) Then
-   OutTextXY(Ctx.X, Ctx.Y, Word);
+   RenderStyledWord(Ctx, Word, WordWidth);
   Ctx.X := Ctx.X + WordWidth;
   If Ctx.X > ContentOverflowX Then ContentOverflowX := Ctx.X;
  End;
@@ -5191,6 +5349,7 @@ Begin
    RenderNewLine(Ctx);
   Inc(Ctx.BlockLevel);
   RenderBlockSpacing(Ctx, RENDER_DIV_MARGIN);
+  ApplyTextAlignOffset(Ctx, Node);
  End;
 
  RenderChildren(Node, Ctx);
@@ -5325,6 +5484,7 @@ Begin
   If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
    RenderNewLine(Ctx);
   RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+  ApplyTextAlignOffset(Ctx, Node);
  End;
 
  RenderChildren(Node, Ctx);
@@ -5357,6 +5517,8 @@ Begin
  { Appliquer la taille du titre }
  Ctx.LineHeight := HeadingHeight;
  Ctx.TextStyle := Ctx.TextStyle Or TEXT_STYLE_BOLD;
+
+ If WantsBlock Then ApplyTextAlignOffset(Ctx, Node);
 
  RenderChildren(Node, Ctx);
 
@@ -5716,8 +5878,10 @@ Var
  BulletText: String;
  IndentX: Integer;
  WantsBlock: Boolean;
+ NoBullet: Boolean;
 Begin
  WantsBlock := CurrentElementWantsBlock;
+ NoBullet := CurrentElementListStyleNone;
  { Nouvelle ligne pour l'element, sauf si le CSS demande
    display:inline/inline-block (ex: menu horizontal en <li>). }
  If WantsBlock Then Begin
@@ -5736,26 +5900,29 @@ Begin
  If Ctx.ListType = LIST_TYPE_OL Then
   Inc(Ctx.ListItemNumber);
 
- { Afficher le marqueur de liste }
- Case Ctx.ListType Of
-  LIST_TYPE_UL: Begin
-   { Puce pour liste non ordonnee - utiliser differentes puces selon le niveau }
-   Case Ctx.ListLevel Of
-    1: BulletText := '• ';   { Puce ronde }
-    2: BulletText := '○ ';   { Cercle vide }
-    3: BulletText := '■ ';   { Carre plein }
-    Else BulletText := '- '; { Tiret pour niveaux plus profonds }
+ { Afficher le marqueur de liste, sauf si list-style/list-style-type
+   vaut none (menus horizontaux <ul><li> par exemple). }
+ If Not NoBullet Then Begin
+  Case Ctx.ListType Of
+   LIST_TYPE_UL: Begin
+    { Puce pour liste non ordonnee - utiliser differentes puces selon le niveau }
+    Case Ctx.ListLevel Of
+     1: BulletText := '• ';   { Puce ronde }
+     2: BulletText := '○ ';   { Cercle vide }
+     3: BulletText := '■ ';   { Carre plein }
+     Else BulletText := '- '; { Tiret pour niveaux plus profonds }
+    End;
+    RenderText(Ctx, BulletText);
    End;
-   RenderText(Ctx, BulletText);
-  End;
-  LIST_TYPE_OL: Begin
-   { Numero pour liste ordonnee }
-   Str(Ctx.ListItemNumber, BulletText);
-   BulletText := BulletText + '. ';
-   RenderText(Ctx, BulletText);
-  End;
-  Else Begin
-   { Pas de marqueur si pas dans une liste }
+   LIST_TYPE_OL: Begin
+    { Numero pour liste ordonnee }
+    Str(Ctx.ListItemNumber, BulletText);
+    BulletText := BulletText + '. ';
+    RenderText(Ctx, BulletText);
+   End;
+   Else Begin
+    { Pas de marqueur si pas dans une liste }
+   End;
   End;
  End;
 
@@ -11749,6 +11916,8 @@ Var
  OldTextColor: Integer;
  OldBgColor: Integer;
  OldTextStyle: Byte;
+ OldNoWrap: Boolean;
+ OldTextAlignMode: Byte;
 Begin
  If Node = Nil Then Exit;
  If Ctx.Y > Ctx.MaxY Then Exit; { Depasse la zone de rendu }
@@ -11757,11 +11926,14 @@ Begin
  OldTextColor := Ctx.TextColor;
  OldBgColor := Ctx.BgColor;
  OldTextStyle := Ctx.TextStyle;
+ OldNoWrap := Ctx.NoWrap;
+ OldTextAlignMode := Ctx.TextAlignMode;
 
  { Par defaut (CSS desactive ou noeud texte) : comportement de bloc
    selon la balise seule, comme avant l'introduction du CSS. }
  NodeStyle.Display := '';
  CurrentElementWantsBlock := CSSIsBlockElement(NodeStyle, Node^.TagType);
+ CurrentElementListStyleNone := False;
 
  { Appliquer les styles CSS si active et si c'est un element }
  If CSSAutoApply And CSSEnabled And (Node^.NodeType = HTML_NODE_ELEMENT) Then Begin
@@ -11777,6 +11949,12 @@ Begin
     du comportement par defaut de la balise si la propriete n'est pas
     explicitement fixee (voir CSSIsBlockElement). }
   CurrentElementWantsBlock := CSSIsBlockElement(NodeStyle, Node^.TagType);
+
+  { list-style/list-style-type: none - puce supprimee (utilise par ex.
+    pour les menus horizontaux construits avec <ul><li>). }
+  CurrentElementListStyleNone :=
+   (HTMLLowerCase(NodeStyle.ListStyleType) = 'none') Or
+   (System.Pos('none', HTMLLowerCase(NodeStyle.ListStyle)) > 0);
  End;
 
  Case Node^.NodeType Of
@@ -11903,6 +12081,8 @@ Begin
   Ctx.TextColor := OldTextColor;
   Ctx.BgColor := OldBgColor;
   Ctx.TextStyle := OldTextStyle;
+  Ctx.NoWrap := OldNoWrap;
+  Ctx.TextAlignMode := OldTextAlignMode;
  End;
 End;
 
