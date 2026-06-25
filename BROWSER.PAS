@@ -344,7 +344,14 @@ Const
  RENDER_LINK_ACTIVE_COLOR = 4; { Rouge }
 
  { Parametres pour les liens }
- MAX_LINKS = 100;              { Nombre maximum de liens sur une page }
+ { Le rendu parcourt tout le document depuis le debut a chaque appel
+   (y compris a chaque defilement), donc les liens du haut de page
+   remplissaient toujours ce tableau en premier : au-dela de la
+   limite, les liens plus bas (ceux qu'on atteint justement en
+   defilant) n'etaient jamais enregistres comme zones cliquables. Une
+   vraie page (tableau de reference) peut depasser le millier de
+   liens, d'ou cette marge confortable. }
+ MAX_LINKS = 4000;             { Nombre maximum de liens sur une page }
 
  { Styles de texte (flags combinables) }
  TEXT_STYLE_NORMAL = 0;
