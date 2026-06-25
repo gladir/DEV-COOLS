@@ -648,6 +648,22 @@ Type
   TextAlignMode: Byte;       { CSS text-align : 0=left 1=center 2=right }
  End;
 
+ { Marges/padding/bordure/fond resolus en pixels pour l'element dont
+   le rendu est en cours - meme principe de capture immediate que
+   CurrentElementWantsBlock (-1 = non specifie par le CSS, le
+   gestionnaire de balise garde alors sa propre constante par defaut). }
+ TElementBoxInfo = Record
+  MarginTopPx: Integer;
+  MarginBottomPx: Integer;
+  PaddingTopPx: Integer;
+  PaddingBottomPx: Integer;
+  HasBorder: Boolean;
+  BorderWidthPx: Integer;
+  BorderColorIdx: Integer;
+  HasBgBox: Boolean;
+  BgBoxColorIdx: Integer;
+ End;
+
  { =====================================================
    Types pour l'interpreteur JavaScript
    ===================================================== }
@@ -865,6 +881,10 @@ Var
    CurrentElementWantsBlock (lu une seule fois, au tout debut de
    RenderTagLI, avant tout appel recursif). }
  CurrentElementListStyleNone: Boolean;
+
+ { Boite CSS (marges/padding/bordure/fond) de l'element dont le rendu
+   est en cours - voir TElementBoxInfo. }
+ CurrentElementBox: TElementBoxInfo;
 
  { Variables globales pour la barre d'URL }
  CurrentURL: String;
@@ -4549,10 +4569,131 @@ Begin
 End;
 
 { Convertir une couleur CSS en index de couleur EGA/VGA }
+{ Table RGB de la palette EGA/VGA 16 couleurs standard (index = couleur
+  BGI 0..15), utilisee pour trouver la couleur la plus proche d'une
+  couleur CSS hexadecimale ou rgb(). }
+Const
+ EGAPaletteR: Array[0..15] Of Byte = (0,0,0,0,170,170,170,170,85,85,85,85,255,255,255,255);
+ EGAPaletteG: Array[0..15] Of Byte = (0,0,170,170,0,0,85,170,85,85,255,255,85,85,255,255);
+ EGAPaletteB: Array[0..15] Of Byte = (0,170,0,170,0,170,0,170,85,255,85,255,85,255,85,255);
+
+{ Trouver l'index EGA/VGA (0..15) le plus proche d'une couleur RGB 24
+  bits, par distance euclidienne au carre (pas besoin de racine pour
+  comparer). }
+Function CSSRGBToIndex(R, G, B: Byte): Integer;
+Var
+ I, DR, DG, DB: Integer;
+ Dist, BestDist: LongInt;
+ BestIdx: Integer;
+Begin
+ BestIdx := 0;
+ BestDist := MaxLongInt;
+ For I := 0 To 15 Do Begin
+  DR := R - EGAPaletteR[I];
+  DG := G - EGAPaletteG[I];
+  DB := B - EGAPaletteB[I];
+  Dist := LongInt(DR) * DR + LongInt(DG) * DG + LongInt(DB) * DB;
+  If Dist < BestDist Then Begin
+   BestDist := Dist;
+   BestIdx := I;
+  End;
+ End;
+ CSSRGBToIndex := BestIdx;
+End;
+
+{ Convertir un chiffre hexadecimal en valeur 0..15, -1 si invalide }
+Function CSSHexDigit(C: Char): Integer;
+Begin
+ If C In ['0'..'9'] Then CSSHexDigit := Ord(C) - Ord('0')
+ Else If C In ['A'..'F'] Then CSSHexDigit := Ord(C) - Ord('A') + 10
+ Else If C In ['a'..'f'] Then CSSHexDigit := Ord(C) - Ord('a') + 10
+ Else CSSHexDigit := -1;
+End;
+
+{ Parser une couleur hexadecimale CSS (#RGB ou #RRGGBB) ; retourne -1
+  si la chaine n'est pas un hexadecimal valide. }
+Function CSSParseHexColor(Const ColorStr: String): Integer;
+Var
+ H: String;
+ R, G, B: Integer;
+ D1, D2, D3, D4, D5, D6: Integer;
+Begin
+ CSSParseHexColor := -1;
+ If (Length(ColorStr) = 0) Or (ColorStr[1] <> '#') Then Exit;
+ H := Copy(ColorStr, 2, Length(ColorStr) - 1);
+
+ If Length(H) = 3 Then Begin
+  D1 := CSSHexDigit(H[1]); D2 := CSSHexDigit(H[2]); D3 := CSSHexDigit(H[3]);
+  If (D1 < 0) Or (D2 < 0) Or (D3 < 0) Then Exit;
+  R := D1 * 16 + D1; G := D2 * 16 + D2; B := D3 * 16 + D3;
+ End Else If Length(H) = 6 Then Begin
+  D1 := CSSHexDigit(H[1]); D2 := CSSHexDigit(H[2]);
+  D3 := CSSHexDigit(H[3]); D4 := CSSHexDigit(H[4]);
+  D5 := CSSHexDigit(H[5]); D6 := CSSHexDigit(H[6]);
+  If (D1 < 0) Or (D2 < 0) Or (D3 < 0) Or (D4 < 0) Or (D5 < 0) Or (D6 < 0) Then Exit;
+  R := D1 * 16 + D2; G := D3 * 16 + D4; B := D5 * 16 + D6;
+ End Else
+  Exit;
+
+ CSSParseHexColor := CSSRGBToIndex(R, G, B);
+End;
+
+{ Parser une couleur CSS rgb(r,g,b) ou rgba(r,g,b,a) ; retourne -1 si
+  la chaine n'a pas ce format. }
+Function CSSParseRGBFunc(Const ColorStr: String): Integer;
+Var
+ LowerColor, NumStr: String;
+ P, I: Integer;
+ Vals: Array[1..3] Of Integer;
+ ValCount, Code: Integer;
+Begin
+ CSSParseRGBFunc := -1;
+ LowerColor := HTMLLowerCase(ColorStr);
+ P := System.Pos('(', LowerColor);
+ If ((System.Pos('rgb', LowerColor) <> 1) And (System.Pos('rgba', LowerColor) <> 1)) Or
+    (P = 0) Then Exit;
+
+ ValCount := 0;
+ I := P + 1;
+ While (I <= Length(LowerColor)) And (ValCount < 3) Do Begin
+  While (I <= Length(LowerColor)) And (LowerColor[I] In [' ', ',']) Do Inc(I);
+  NumStr := '';
+  While (I <= Length(LowerColor)) And (LowerColor[I] In ['0'..'9']) Do Begin
+   NumStr := NumStr + LowerColor[I];
+   Inc(I);
+  End;
+  If Length(NumStr) = 0 Then Break;
+  Inc(ValCount);
+  Val(NumStr, Vals[ValCount], Code);
+  If Code <> 0 Then Exit;
+  While (I <= Length(LowerColor)) And (LowerColor[I] <> ',') And (LowerColor[I] <> ')') Do Inc(I);
+  If (I <= Length(LowerColor)) And (LowerColor[I] = ',') Then Inc(I);
+ End;
+ If ValCount < 3 Then Exit;
+
+ CSSParseRGBFunc := CSSRGBToIndex(Vals[1], Vals[2], Vals[3]);
+End;
+
 Function CSSColorToIndex(Const ColorStr: String): Integer;
 Var
  LowerColor: String;
+ HexResult: Integer;
 Begin
+ { Couleurs hexadecimales (#RGB / #RRGGBB) - format le plus courant en
+   CSS reel, totalement absent ici auparavant : toute couleur definie
+   en hexadecimal etait silencieusement ignoree. }
+ If (Length(ColorStr) > 0) And (ColorStr[1] = '#') Then Begin
+  HexResult := CSSParseHexColor(ColorStr);
+  CSSColorToIndex := HexResult;
+  Exit;
+ End;
+
+ { Fonctions rgb()/rgba() }
+ If (System.Pos('rgb', HTMLLowerCase(ColorStr)) = 1) Then Begin
+  CSSColorToIndex := CSSParseRGBFunc(ColorStr);
+  Exit;
+ End;
+
  LowerColor := HTMLLowerCase(ColorStr);
 
  { Couleurs nommees }
@@ -5032,6 +5173,93 @@ Begin
   CSSParseDimension := Round(NumVal);
 End;
 
+{ Calculer la boite CSS (marges/padding/bordure/fond) d'un element a
+  partir de son style resolu. -1 dans MarginTopPx/.../PaddingBottomPx
+  signifie "non specifie", le gestionnaire de balise garde alors sa
+  propre constante d'espacement par defaut. Le raccourci (Margin,
+  Padding, Border) est utilise si le cote specifique n'est pas defini ;
+  CSSParseDimension gere correctement le cas d'un raccourci a plusieurs
+  valeurs (ex: "4px 8px") en ne lisant que le premier nombre. }
+Function ComputeElementBoxInfo(Const Style: DOMStyle): TElementBoxInfo;
+Var
+ Info: TElementBoxInfo;
+ BorderTokens, Tok: String;
+ P: Integer;
+ TryColor: Integer;
+Begin
+ Info.MarginTopPx := -1;
+ Info.MarginBottomPx := -1;
+ Info.PaddingTopPx := -1;
+ Info.PaddingBottomPx := -1;
+ Info.HasBorder := False;
+ Info.BorderWidthPx := 0;
+ Info.BorderColorIdx := 0;
+ Info.HasBgBox := False;
+ Info.BgBoxColorIdx := 0;
+
+ If Length(Style.MarginTop) > 0 Then
+  Info.MarginTopPx := CSSParseDimension(Style.MarginTop, 0)
+ Else If Length(Style.Margin) > 0 Then
+  Info.MarginTopPx := CSSParseDimension(Style.Margin, 0);
+
+ If Length(Style.MarginBottom) > 0 Then
+  Info.MarginBottomPx := CSSParseDimension(Style.MarginBottom, 0)
+ Else If Length(Style.Margin) > 0 Then
+  Info.MarginBottomPx := CSSParseDimension(Style.Margin, 0);
+
+ If Length(Style.PaddingTop) > 0 Then
+  Info.PaddingTopPx := CSSParseDimension(Style.PaddingTop, 0)
+ Else If Length(Style.Padding) > 0 Then
+  Info.PaddingTopPx := CSSParseDimension(Style.Padding, 0);
+
+ If Length(Style.PaddingBottom) > 0 Then
+  Info.PaddingBottomPx := CSSParseDimension(Style.PaddingBottom, 0)
+ Else If Length(Style.Padding) > 0 Then
+  Info.PaddingBottomPx := CSSParseDimension(Style.Padding, 0);
+
+ { Bordure : largeur et couleur, depuis les sous-proprietes ou le
+   raccourci "border: 1px solid #003366" }
+ If Length(Style.BorderWidth) > 0 Then
+  Info.BorderWidthPx := CSSParseDimension(Style.BorderWidth, 0)
+ Else If Length(Style.Border) > 0 Then
+  Info.BorderWidthPx := CSSParseDimension(Style.Border, 0);
+
+ If Length(Style.BorderColor) > 0 Then Begin
+  TryColor := CSSColorToIndex(Style.BorderColor);
+  If TryColor >= 0 Then Info.BorderColorIdx := TryColor;
+ End Else If Length(Style.Border) > 0 Then Begin
+  { Chercher un jeton ressemblant a une couleur dans le raccourci }
+  BorderTokens := Style.Border + ' ';
+  P := System.Pos(' ', BorderTokens);
+  While P > 0 Do Begin
+   Tok := Copy(BorderTokens, 1, P - 1);
+   BorderTokens := Copy(BorderTokens, P + 1, Length(BorderTokens) - P);
+   If Length(Tok) > 0 Then Begin
+    TryColor := CSSColorToIndex(Tok);
+    If TryColor >= 0 Then Info.BorderColorIdx := TryColor;
+   End;
+   P := System.Pos(' ', BorderTokens);
+  End;
+ End;
+
+ Info.HasBorder := Info.BorderWidthPx > 0;
+ If Length(Style.BorderStyle) > 0 Then
+  Info.HasBorder := Info.HasBorder And (HTMLLowerCase(Style.BorderStyle) <> 'none');
+
+ { Fond plein de la boite (pas seulement derriere les mots, voir
+   RenderStyledWord) : seulement si la balise est un bloc avec une
+   couleur de fond explicite. }
+ If Length(Style.BackgroundColor) > 0 Then Begin
+  TryColor := CSSColorToIndex(Style.BackgroundColor);
+  If TryColor >= 0 Then Begin
+   Info.HasBgBox := True;
+   Info.BgBoxColorIdx := TryColor;
+  End;
+ End;
+
+ ComputeElementBoxInfo := Info;
+End;
+
 { =====================================================
   FIN APPLICATION DES STYLES CSS
   ===================================================== }
@@ -5340,23 +5568,46 @@ End;
 Procedure RenderTagDiv(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
  WantsBlock: Boolean;
+ Box: TElementBoxInfo;
+ MarginTopPx, MarginBottomPx, PaddingTopPx, PaddingBottomPx: Integer;
+ BoxStartX, BoxStartY, BoxEndY: Integer;
 Begin
  WantsBlock := CurrentElementWantsBlock;
+ Box := CurrentElementBox;
+ If Box.MarginTopPx >= 0 Then MarginTopPx := Box.MarginTopPx Else MarginTopPx := RENDER_DIV_MARGIN;
+ If Box.MarginBottomPx >= 0 Then MarginBottomPx := Box.MarginBottomPx Else MarginBottomPx := RENDER_DIV_MARGIN;
+ If Box.PaddingTopPx >= 0 Then PaddingTopPx := Box.PaddingTopPx Else PaddingTopPx := 0;
+ If Box.PaddingBottomPx >= 0 Then PaddingBottomPx := Box.PaddingBottomPx Else PaddingBottomPx := 0;
+
  { DIV est un element de bloc par defaut - nouvelle ligne avant et
    apres - sauf si le CSS demande display:inline/inline-block. }
  If WantsBlock Then Begin
   If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
    RenderNewLine(Ctx);
   Inc(Ctx.BlockLevel);
-  RenderBlockSpacing(Ctx, RENDER_DIV_MARGIN);
+  RenderBlockSpacing(Ctx, MarginTopPx);
+  BoxStartX := RenderOriginX + RENDER_MARGIN_LEFT;
+  BoxStartY := Ctx.Y;
+  If PaddingTopPx > 0 Then Ctx.Y := Ctx.Y + PaddingTopPx;
   ApplyTextAlignOffset(Ctx, Node);
  End;
 
  RenderChildren(Node, Ctx);
 
  If WantsBlock Then Begin
+  If PaddingBottomPx > 0 Then Ctx.Y := Ctx.Y + PaddingBottomPx;
+  BoxEndY := Ctx.Y;
+  { Bordure dessinee apres le contenu (simple contour, ne recouvre
+    donc pas le texte deja trace - un fond plein devrait etre dessine
+    AVANT le contenu, ce qui demanderait de connaitre la hauteur de la
+    boite a l'avance ; non implemente pour cette raison). }
+  If Box.HasBorder Then Begin
+   SetColor(Box.BorderColorIdx);
+   Rectangle(BoxStartX, BoxStartY, Ctx.MaxX, BoxEndY);
+   SetColor(Ctx.TextColor);
+  End;
   Dec(Ctx.BlockLevel);
-  RenderBlockSpacing(Ctx, RENDER_DIV_MARGIN);
+  RenderBlockSpacing(Ctx, MarginBottomPx);
  End;
 End;
 
@@ -5476,22 +5727,36 @@ End;
 Procedure RenderTagP(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
  WantsBlock: Boolean;
+ Box: TElementBoxInfo;
+ MarginTopPx, MarginBottomPx: Integer;
+ BoxStartX, BoxStartY: Integer;
 Begin
  WantsBlock := CurrentElementWantsBlock;
+ Box := CurrentElementBox;
+ If Box.MarginTopPx >= 0 Then MarginTopPx := Box.MarginTopPx Else MarginTopPx := RENDER_PARAGRAPH_SPACING;
+ If Box.MarginBottomPx >= 0 Then MarginBottomPx := Box.MarginBottomPx Else MarginBottomPx := RENDER_PARAGRAPH_SPACING;
+
  { Nouvelle ligne avant le paragraphe si necessaire, sauf si le CSS
    demande display:inline/inline-block. }
  If WantsBlock Then Begin
   If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
    RenderNewLine(Ctx);
-  RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+  RenderBlockSpacing(Ctx, MarginTopPx);
+  BoxStartX := RenderOriginX + RENDER_MARGIN_LEFT;
+  BoxStartY := Ctx.Y;
   ApplyTextAlignOffset(Ctx, Node);
  End;
 
  RenderChildren(Node, Ctx);
 
- { Espacement apres le paragraphe }
- If WantsBlock Then
-  RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+ If WantsBlock Then Begin
+  If Box.HasBorder Then Begin
+   SetColor(Box.BorderColorIdx);
+   Rectangle(BoxStartX, BoxStartY, Ctx.MaxX, Ctx.Y);
+   SetColor(Ctx.TextColor);
+  End;
+  RenderBlockSpacing(Ctx, MarginBottomPx);
+ End;
 End;
 
 { Procedure generique pour rendre les titres H1-H6 }
@@ -5500,8 +5765,14 @@ Var
  OldLineHeight: Integer;
  OldTextStyle: Byte;
  WantsBlock: Boolean;
+ Box: TElementBoxInfo;
+ MarginTopPx, MarginBottomPx: Integer;
 Begin
  WantsBlock := CurrentElementWantsBlock;
+ Box := CurrentElementBox;
+ If Box.MarginTopPx >= 0 Then MarginTopPx := Box.MarginTopPx Else MarginTopPx := RENDER_PARAGRAPH_SPACING;
+ If Box.MarginBottomPx >= 0 Then MarginBottomPx := Box.MarginBottomPx Else MarginBottomPx := RENDER_PARAGRAPH_SPACING;
+
  { Sauvegarder les valeurs courantes }
  OldLineHeight := Ctx.LineHeight;
  OldTextStyle := Ctx.TextStyle;
@@ -5511,7 +5782,7 @@ Begin
  If WantsBlock Then Begin
   If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
    RenderNewLine(Ctx);
-  RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+  RenderBlockSpacing(Ctx, MarginTopPx);
  End;
 
  { Appliquer la taille du titre }
@@ -5529,7 +5800,7 @@ Begin
  { Espacement apres le titre }
  If WantsBlock Then Begin
   RenderNewLine(Ctx);
-  RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+  RenderBlockSpacing(Ctx, MarginBottomPx);
  End;
 End;
 
@@ -11934,6 +12205,12 @@ Begin
  NodeStyle.Display := '';
  CurrentElementWantsBlock := CSSIsBlockElement(NodeStyle, Node^.TagType);
  CurrentElementListStyleNone := False;
+ CurrentElementBox.MarginTopPx := -1;
+ CurrentElementBox.MarginBottomPx := -1;
+ CurrentElementBox.PaddingTopPx := -1;
+ CurrentElementBox.PaddingBottomPx := -1;
+ CurrentElementBox.HasBorder := False;
+ CurrentElementBox.HasBgBox := False;
 
  { Appliquer les styles CSS si active et si c'est un element }
  If CSSAutoApply And CSSEnabled And (Node^.NodeType = HTML_NODE_ELEMENT) Then Begin
@@ -11955,6 +12232,9 @@ Begin
   CurrentElementListStyleNone :=
    (HTMLLowerCase(NodeStyle.ListStyleType) = 'none') Or
    (System.Pos('none', HTMLLowerCase(NodeStyle.ListStyle)) > 0);
+
+  { Marges/padding/bordure/fond resolus en pixels pour cet element. }
+  CurrentElementBox := ComputeElementBoxInfo(NodeStyle);
  End;
 
  Case Node^.NodeType Of
@@ -13343,6 +13623,37 @@ Begin
 End;
 
 { Procedure pour gerer le clic sur un lien hypertexte }
+{ Resoudre un href relatif (ex: "A86/reference.htm") par rapport au
+  repertoire de la page courante - meme principe que BMPBuildImagePath
+  pour les images et CSSBuildStylesheetPath pour les feuilles de
+  style, qui souffraient du meme probleme avant d'etre corriges : sans
+  cette resolution, un lien relatif est cherche par rapport au
+  repertoire de travail du PROCESSUS (celui ou BROWSER.exe a ete
+  lance), pas par rapport a la page actuellement affichee. }
+Function ResolveLinkHref(Const Href: String): String;
+Var
+ BasePath: String;
+ I: Integer;
+Begin
+ { Chemin deja absolu (autre lecteur, ou commence par / ou \) : le
+   retourner tel quel. }
+ If (Length(Href) > 0) And ((Href[1] = '/') Or (Href[1] = '\') Or
+     ((Length(Href) > 2) And (Href[2] = ':'))) Then Begin
+  ResolveLinkHref := Href;
+  Exit;
+ End;
+
+ BasePath := CurrentURL;
+ For I := Length(BasePath) DownTo 1 Do Begin
+  If BasePath[I] In ['/', '\'] Then Begin
+   BasePath := Copy(BasePath, 1, I);
+   Break;
+  End;
+ End;
+
+ ResolveLinkHref := BasePath + Href;
+End;
+
 Procedure HandleLinkClick(LinkIndex: Integer);
 Var
  TargetURL: String;
@@ -13380,9 +13691,11 @@ Begin
   { Lien telephone - ne pas naviguer }
  End
  Else Begin
-  { URL relative - combiner avec le chemin courant }
-  { Pour l'instant, on utilise l'URL telle quelle }
-  NavigateTo(TargetURL);
+  { URL relative - combiner avec le repertoire de la page courante
+    (ex: "A86/reference.htm" depuis une page situee dans CODER/ doit
+    pointer vers CODER/A86/reference.htm, pas vers le repertoire de
+    travail du processus). }
+  NavigateTo(ResolveLinkHref(TargetURL));
  End;
 End;
 
