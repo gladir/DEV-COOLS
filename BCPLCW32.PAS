@@ -54,6 +54,12 @@ Const
   MAX_BIN_CODE     = 65535;
   MAX_BIN_RDATA    = 65535;
   MAX_BIN_OUTPUT   = 1024;
+  MAX_RUN_TOKENS   = 12000;
+  MAX_RUN_ROUTINES = 128;
+  MAX_RUN_PARAMS   = 8;
+  MAX_RUN_VARS     = 256;
+  MAX_RUN_CALLS    = 128;
+  MAX_RUN_STEPS    = 2000000;
   ABI_WORD_SIZE    = 4;
   ABI_PARAM_BASE   = 8;
   ABI_RET_REG      = 'EAX';
@@ -120,6 +126,30 @@ Type
   TSymbolTable = Array[1..MAX_SYM] Of TSymbol;
   TBinBuffer = Array[0..MAX_BIN_CODE - 1] Of Byte;
   TBinOutputTable = Array[1..MAX_BIN_OUTPUT] Of TString;
+  TRunParamNames = Array[1..MAX_RUN_PARAMS] Of TString;
+
+  TRunRoutine = Record
+    name      : TString;
+    is_func   : Boolean;
+    param_cnt : Integer;
+    params    : TRunParamNames;
+    body_start: Integer;
+    body_end  : Integer;
+  End;
+
+  TRunVar = Record
+    name  : TString;
+    value : LongInt;
+  End;
+
+  TRunEnv = Record
+    vars      : Array[1..MAX_RUN_VARS] Of TRunVar;
+    var_count : Integer;
+    resultis  : Boolean;
+    result_val: LongInt;
+    break_now : Boolean;
+    finish_now: Boolean;
+  End;
 
   { TODO 1 - Pipeline canonique du compilateur.
 
@@ -252,6 +282,13 @@ Var
   sym_count   : Integer;
   bin_outputs : TBinOutputTable;
   bin_output_count: Integer;
+  run_tokens  : Array[1..MAX_RUN_TOKENS] Of TToken;
+  run_tok_count: Integer;
+  run_routines: Array[1..MAX_RUN_ROUTINES] Of TRunRoutine;
+  run_routine_count: Integer;
+  run_statics : Array[1..MAX_RUN_VARS] Of TRunVar;
+  run_static_count: Integer;
+  run_steps   : LongInt;
 
 Function StageName(stage : TCompileStage) : TString;
 Begin
@@ -2201,41 +2238,836 @@ Begin
   bin_outputs[bin_output_count] := text;
 End;
 
-Procedure CollectStaticRuntimeOutputs(Var ctx : TCompilerContext);
+Function RunTokVal(idx : Integer) : TString;
+Begin
+  If (idx >= 1) And (idx <= run_tok_count) Then
+    RunTokVal := run_tokens[idx].val
+  Else
+    RunTokVal := '';
+End;
+
+Function RunFindMatchingBlock(start_idx : Integer) : Integer;
+Var
+  depth : Integer;
+  i     : Integer;
+Begin
+  RunFindMatchingBlock := start_idx;
+  depth := 0;
+  For i := start_idx To run_tok_count Do
+  Begin
+    If run_tokens[i].val = '$(' Then
+      Inc(depth)
+    Else If run_tokens[i].val = '$)' Then
+    Begin
+      Dec(depth);
+      If depth = 0 Then
+      Begin
+        RunFindMatchingBlock := i;
+        Exit;
+      End;
+    End;
+  End;
+End;
+
+Function RunLoadTokens(Const file_name : TString) : Boolean;
+Begin
+  RunLoadTokens := False;
+  run_tok_count := 0;
+  If Not LexOpenSource(file_name) Then
+    Exit;
+  Repeat
+    LexNext;
+    If run_tok_count < MAX_RUN_TOKENS Then
+    Begin
+      Inc(run_tok_count);
+      run_tokens[run_tok_count] := cur_tok;
+    End;
+  Until (cur_tok.kind = TK_EOF) Or (run_tok_count >= MAX_RUN_TOKENS);
+  LexCloseSource;
+  RunLoadTokens := (run_tok_count < MAX_RUN_TOKENS);
+End;
+
+Function RunFindRoutine(Const name : TString) : Integer;
+Var
+  i : Integer;
+Begin
+  For i := 1 To run_routine_count Do
+    If SameText(run_routines[i].name, name) Then
+    Begin
+      RunFindRoutine := i;
+      Exit;
+    End;
+  RunFindRoutine := 0;
+End;
+
+Function RunFindStatic(Const name : TString) : Integer;
+Var
+  i : Integer;
+Begin
+  For i := 1 To run_static_count Do
+    If SameText(run_statics[i].name, name) Then
+    Begin
+      RunFindStatic := i;
+      Exit;
+    End;
+  RunFindStatic := 0;
+End;
+
+Function RunFindVar(Var env : TRunEnv; Const name : TString) : Integer;
+Var
+  i : Integer;
+Begin
+  For i := env.var_count DownTo 1 Do
+    If SameText(env.vars[i].name, name) Then
+    Begin
+      RunFindVar := i;
+      Exit;
+    End;
+  RunFindVar := 0;
+End;
+
+Function RunGetVar(Var env : TRunEnv; Const name : TString) : LongInt;
+Var
+  idx : Integer;
+Begin
+  idx := RunFindVar(env, name);
+  If idx <> 0 Then
+    RunGetVar := env.vars[idx].value
+  Else
+  Begin
+    idx := RunFindStatic(name);
+    If idx <> 0 Then
+      RunGetVar := run_statics[idx].value
+    Else
+      RunGetVar := 0;
+  End;
+End;
+
+Procedure RunSetVar(Var env : TRunEnv; Const name : TString; value : LongInt);
+Var
+  idx : Integer;
+Begin
+  idx := RunFindVar(env, name);
+  If idx <> 0 Then
+  Begin
+    env.vars[idx].value := value;
+    Exit;
+  End;
+  idx := RunFindStatic(name);
+  If idx <> 0 Then
+  Begin
+    run_statics[idx].value := value;
+    Exit;
+  End;
+  If env.var_count < MAX_RUN_VARS Then
+  Begin
+    Inc(env.var_count);
+    env.vars[env.var_count].name := name;
+    env.vars[env.var_count].value := value;
+  End;
+End;
+
+Function RunSkipExpr(idx : Integer) : Integer;
+Var
+  paren : Integer;
+Begin
+  paren := 0;
+  While (idx <= run_tok_count) Do
+  Begin
+    If RunTokVal(idx) = '(' Then
+      Inc(paren)
+    Else If RunTokVal(idx) = ')' Then
+    Begin
+      If paren = 0 Then Break;
+      Dec(paren);
+    End
+    Else If (paren = 0) And
+            ((RunTokVal(idx) = 'DO') Or (RunTokVal(idx) = 'THEN') Or
+             (RunTokVal(idx) = 'ELSE') Or (RunTokVal(idx) = 'TO') Or
+             (RunTokVal(idx) = 'BY') Or (RunTokVal(idx) = ',') Or
+             (RunTokVal(idx) = '$)') Or (RunTokVal(idx) = 'LET') Or
+             (RunTokVal(idx) = 'STATIC') Or
+             (RunTokVal(idx) = 'REPEATWHILE')) Then
+      Break;
+    Inc(idx);
+  End;
+  RunSkipExpr := idx;
+End;
+
+Function RunSkipStatement(idx : Integer) : Integer; Forward;
+Function RunEvalExpr(Var env : TRunEnv; Var idx : Integer) : LongInt; Forward;
+Function RunCallRoutine(Const name : TString; Var args : Array Of LongInt; argc : Integer) : LongInt; Forward;
+Procedure RunExecRange(Var env : TRunEnv; start_idx, end_idx : Integer); Forward;
+
+Function RunFindConditionalComma(idx : Integer) : Integer;
+Var
+  paren : Integer;
+Begin
+  paren := 0;
+  While idx <= run_tok_count Do
+  Begin
+    If RunTokVal(idx) = '(' Then
+      Inc(paren)
+    Else If RunTokVal(idx) = ')' Then
+    Begin
+      If paren > 0 Then Dec(paren);
+    End
+    Else If (paren = 0) And (RunTokVal(idx) = ',') Then
+    Begin
+      RunFindConditionalComma := idx;
+      Exit;
+    End
+    Else If (paren = 0) And ((RunTokVal(idx) = '$)') Or
+             (RunTokVal(idx) = 'LET') Or (RunTokVal(idx) = 'STATIC')) Then
+      Break;
+    Inc(idx);
+  End;
+  RunFindConditionalComma := idx;
+End;
+
+Function RunEvalPrimary(Var env : TRunEnv; Var idx : Integer) : LongInt;
 Var
   name : TString;
+  args : Array[0..MAX_RUN_PARAMS - 1] Of LongInt;
+  argc : Integer;
+  v    : LongInt;
 Begin
-  bin_output_count := 0;
-  If Not LexOpenSource(ctx.source_name) Then
-    Exit;
-
-  LexNext;
-  While cur_tok.kind <> TK_EOF Do
+  If run_steps < MAX_RUN_STEPS Then Inc(run_steps);
+  If run_tokens[idx].kind = TK_INTEGER Then
   Begin
-    If IsRuntimeRoutine(cur_tok.val) Then
+    RunEvalPrimary := run_tokens[idx].int_val;
+    Inc(idx);
+  End
+  Else If run_tokens[idx].kind = TK_IDENT Then
+  Begin
+    name := run_tokens[idx].val;
+    Inc(idx);
+    If RunTokVal(idx) = '(' Then
     Begin
-      name := cur_tok.val;
-      LexNext;
-      If cur_tok.val = '(' Then
+      Inc(idx);
+      argc := 0;
+      While (idx <= run_tok_count) And (RunTokVal(idx) <> ')') Do
       Begin
-        LexNext;
-        If (name = 'WRITES') And (cur_tok.kind = TK_STRING) Then
-          BinOutputAdd(cur_tok.val)
-        Else If (name = 'NEWLINE') Then
-          BinOutputAdd(#13#10)
-        Else If (name = 'WRITECH') And (cur_tok.kind = TK_INTEGER) Then
-          BinOutputAdd(Chr(cur_tok.int_val And $FF))
-        Else If (name = 'WRITEN') And (cur_tok.kind = TK_INTEGER) Then
-          BinOutputAdd(LongToStr(cur_tok.int_val));
-      End
-      Else If name = 'FINISH' Then
-        Break;
+        If argc < MAX_RUN_PARAMS Then
+        Begin
+          args[argc] := RunEvalExpr(env, idx);
+          Inc(argc);
+        End;
+        If RunTokVal(idx) = ',' Then Inc(idx);
+      End;
+      If RunTokVal(idx) = ')' Then Inc(idx);
+      RunEvalPrimary := RunCallRoutine(name, args, argc);
     End
     Else
-      LexNext;
+      RunEvalPrimary := RunGetVar(env, name);
+  End
+  Else If RunTokVal(idx) = '(' Then
+  Begin
+    Inc(idx);
+    v := RunEvalExpr(env, idx);
+    If RunTokVal(idx) = ')' Then Inc(idx);
+    RunEvalPrimary := v;
+  End
+  Else If RunTokVal(idx) = 'VALOF' Then
+  Begin
+    Inc(idx);
+    If RunTokVal(idx) = '$(' Then
+    Begin
+      v := RunFindMatchingBlock(idx);
+      env.resultis := False;
+      RunExecRange(env, idx + 1, v);
+      idx := v + 1;
+      RunEvalPrimary := env.result_val;
+      env.resultis := False;
+    End
+    Else
+      RunEvalPrimary := 0;
+  End
+  Else
+  Begin
+    RunEvalPrimary := 0;
+    Inc(idx);
   End;
+End;
 
-  LexCloseSource;
+Function RunEvalUnary(Var env : TRunEnv; Var idx : Integer) : LongInt;
+Begin
+  If RunTokVal(idx) = '-' Then
+  Begin
+    Inc(idx);
+    RunEvalUnary := -RunEvalUnary(env, idx);
+  End
+  Else
+    RunEvalUnary := RunEvalPrimary(env, idx);
+End;
+
+Function RunEvalMul(Var env : TRunEnv; Var idx : Integer) : LongInt;
+Var
+  v : LongInt;
+  op: TString;
+Begin
+  v := RunEvalUnary(env, idx);
+  While (RunTokVal(idx) = '*') Or (RunTokVal(idx) = '/') Or
+        (RunTokVal(idx) = 'MOD') Do
+  Begin
+    op := RunTokVal(idx);
+    Inc(idx);
+    If op = '*' Then
+      v := v * RunEvalUnary(env, idx)
+    Else If op = '/' Then
+      v := v Div RunEvalUnary(env, idx)
+    Else
+      v := v Mod RunEvalUnary(env, idx);
+  End;
+  RunEvalMul := v;
+End;
+
+Function RunEvalAdd(Var env : TRunEnv; Var idx : Integer) : LongInt;
+Var
+  v : LongInt;
+  op: TString;
+Begin
+  v := RunEvalMul(env, idx);
+  While (RunTokVal(idx) = '+') Or (RunTokVal(idx) = '-') Do
+  Begin
+    op := RunTokVal(idx);
+    Inc(idx);
+    If op = '+' Then
+      v := v + RunEvalMul(env, idx)
+    Else
+      v := v - RunEvalMul(env, idx);
+  End;
+  RunEvalAdd := v;
+End;
+
+Function RunEvalCompare(Var env : TRunEnv; Var idx : Integer) : LongInt;
+Var
+  l, r : LongInt;
+  op   : TString;
+Begin
+  l := RunEvalAdd(env, idx);
+  While IsCompareOp(RunTokVal(idx)) Do
+  Begin
+    op := RunTokVal(idx);
+    Inc(idx);
+    r := RunEvalAdd(env, idx);
+    If op = '=' Then l := Ord(l = r)
+    Else If op = '~=' Then l := Ord(l <> r)
+    Else If op = '<' Then l := Ord(l < r)
+    Else If op = '<=' Then l := Ord(l <= r)
+    Else If op = '>' Then l := Ord(l > r)
+    Else If op = '>=' Then l := Ord(l >= r);
+  End;
+  RunEvalCompare := l;
+End;
+
+Function RunEvalExpr(Var env : TRunEnv; Var idx : Integer) : LongInt;
+Var
+  cond : LongInt;
+  true_idx, false_idx, comma_idx : Integer;
+Begin
+  cond := RunEvalCompare(env, idx);
+  If RunTokVal(idx) = '->' Then
+  Begin
+    Inc(idx);
+    true_idx := idx;
+    comma_idx := RunFindConditionalComma(true_idx);
+    false_idx := comma_idx + 1;
+    If cond <> 0 Then
+    Begin
+      idx := true_idx;
+      RunEvalExpr := RunEvalExpr(env, idx);
+      idx := RunSkipExpr(false_idx);
+    End
+    Else
+    Begin
+      idx := false_idx;
+      RunEvalExpr := RunEvalExpr(env, idx);
+    End;
+  End
+  Else
+    RunEvalExpr := cond;
+End;
+
+Function RunSkipStatement(idx : Integer) : Integer;
+Var
+  end_block : Integer;
+  line_no   : Integer;
+Begin
+  If RunTokVal(idx) = '$(' Then
+  Begin
+    RunSkipStatement := RunFindMatchingBlock(idx) + 1;
+    Exit;
+  End;
+  If (RunTokVal(idx) = 'IF') Or (RunTokVal(idx) = 'UNLESS') Then
+  Begin
+    Inc(idx);
+    idx := RunSkipExpr(idx);
+    If RunTokVal(idx) = 'DO' Then Inc(idx);
+    RunSkipStatement := RunSkipStatement(idx);
+    Exit;
+  End;
+  If RunTokVal(idx) = 'TEST' Then
+  Begin
+    Inc(idx);
+    idx := RunSkipExpr(idx);
+    If RunTokVal(idx) = 'THEN' Then Inc(idx);
+    idx := RunSkipStatement(idx);
+    If RunTokVal(idx) = 'ELSE' Then
+      idx := RunSkipStatement(idx + 1);
+    RunSkipStatement := idx;
+    Exit;
+  End;
+  If RunTokVal(idx) = 'FOR' Then
+  Begin
+    Inc(idx, 2);
+    idx := RunSkipExpr(idx);
+    If RunTokVal(idx) = 'TO' Then Inc(idx);
+    idx := RunSkipExpr(idx);
+    If RunTokVal(idx) = 'BY' Then
+    Begin
+      Inc(idx);
+      idx := RunSkipExpr(idx);
+    End;
+    If RunTokVal(idx) = 'DO' Then Inc(idx);
+    RunSkipStatement := RunSkipStatement(idx);
+    Exit;
+  End;
+  If (RunTokVal(idx) = 'WHILE') Or (RunTokVal(idx) = 'UNTIL') Then
+  Begin
+    Inc(idx);
+    idx := RunSkipExpr(idx);
+    If RunTokVal(idx) = 'DO' Then Inc(idx);
+    RunSkipStatement := RunSkipStatement(idx);
+    Exit;
+  End;
+  If RunTokVal(idx) = 'REPEAT' Then
+  Begin
+    idx := RunSkipStatement(idx + 1);
+    If RunTokVal(idx) = 'REPEATWHILE' Then
+      idx := RunSkipExpr(idx + 1);
+    RunSkipStatement := idx;
+    Exit;
+  End;
+  If RunTokVal(idx) = 'SWITCHON' Then
+  Begin
+    Inc(idx);
+    idx := RunSkipExpr(idx);
+    If RunTokVal(idx) = 'INTO' Then Inc(idx);
+    If RunTokVal(idx) = '$(' Then
+    Begin
+      end_block := RunFindMatchingBlock(idx);
+      RunSkipStatement := end_block + 1;
+    End
+    Else
+      RunSkipStatement := idx;
+    Exit;
+  End;
+  line_no := run_tokens[idx].line;
+  While (idx <= run_tok_count) And (RunTokVal(idx) <> '$)') And
+        (RunTokVal(idx) <> 'ELSE') And (RunTokVal(idx) <> 'CASE') And
+        (RunTokVal(idx) <> 'DEFAULT') And (RunTokVal(idx) <> 'ENDCASE') And
+        (RunTokVal(idx) <> 'REPEATWHILE') And
+        (run_tokens[idx].line = line_no) Do
+    Inc(idx);
+  RunSkipStatement := idx;
+End;
+
+Procedure RunExecStatement(Var env : TRunEnv; Var idx : Integer);
+Var
+  name       : TString;
+  v, to_v    : LongInt;
+  step_v     : LongInt;
+  body_start : Integer;
+  body_end   : Integer;
+  cond_idx   : Integer;
+  after_cond : Integer;
+  block_end  : Integer;
+  args       : Array[0..MAX_RUN_PARAMS - 1] Of LongInt;
+  argc       : Integer;
+  case_val   : LongInt;
+  selected   : Integer;
+  default_at : Integer;
+  active     : Boolean;
+Begin
+  If (idx > run_tok_count) Or env.finish_now Then Exit;
+  If run_steps < MAX_RUN_STEPS Then Inc(run_steps);
+
+  If RunTokVal(idx) = '$(' Then
+  Begin
+    block_end := RunFindMatchingBlock(idx);
+    RunExecRange(env, idx + 1, block_end);
+    idx := block_end + 1;
+  End
+  Else If RunTokVal(idx) = 'LET' Then
+  Begin
+    name := RunTokVal(idx + 1);
+    idx := idx + 3;
+    v := RunEvalExpr(env, idx);
+    RunSetVar(env, name, v);
+  End
+  Else If RunTokVal(idx) = 'RESULTIS' Then
+  Begin
+    Inc(idx);
+    env.result_val := RunEvalExpr(env, idx);
+    env.resultis := True;
+  End
+  Else If RunTokVal(idx) = 'BREAK' Then
+  Begin
+    env.break_now := True;
+    Inc(idx);
+  End
+  Else If RunTokVal(idx) = 'FINISH' Then
+  Begin
+    env.finish_now := True;
+    Inc(idx);
+  End
+  Else If (RunTokVal(idx) = 'WRITES') Or (RunTokVal(idx) = 'NEWLINE') Or
+          (RunTokVal(idx) = 'WRITECH') Or (RunTokVal(idx) = 'WRITEN') Then
+  Begin
+    name := RunTokVal(idx);
+    Inc(idx);
+    If RunTokVal(idx) = '(' Then Inc(idx);
+    If name = 'WRITES' Then
+    Begin
+      If run_tokens[idx].kind = TK_STRING Then
+        BinOutputAdd(run_tokens[idx].val);
+      Inc(idx);
+    End
+    Else If name = 'NEWLINE' Then
+      BinOutputAdd(#13#10)
+    Else If name = 'WRITECH' Then
+    Begin
+      v := RunEvalExpr(env, idx);
+      BinOutputAdd(Chr(v And $FF));
+    End
+    Else If name = 'WRITEN' Then
+    Begin
+      v := RunEvalExpr(env, idx);
+      BinOutputAdd(LongToStr(v));
+    End;
+    If RunTokVal(idx) = ')' Then Inc(idx);
+  End
+  Else If (RunTokVal(idx) = 'IF') Or (RunTokVal(idx) = 'UNLESS') Then
+  Begin
+    name := RunTokVal(idx);
+    Inc(idx);
+    cond_idx := idx;
+    v := RunEvalExpr(env, idx);
+    If RunTokVal(idx) = 'DO' Then Inc(idx);
+    body_start := idx;
+    body_end := RunSkipStatement(body_start);
+    If ((name = 'IF') And (v <> 0)) Or ((name = 'UNLESS') And (v = 0)) Then
+      RunExecRange(env, body_start, body_end);
+    idx := body_end;
+    If cond_idx = 0 Then ;
+  End
+  Else If RunTokVal(idx) = 'TEST' Then
+  Begin
+    Inc(idx);
+    v := RunEvalExpr(env, idx);
+    If RunTokVal(idx) = 'THEN' Then Inc(idx);
+    body_start := idx;
+    body_end := RunSkipStatement(body_start);
+    selected := body_end;
+    If RunTokVal(selected) = 'ELSE' Then
+      Inc(selected);
+    If v <> 0 Then
+      RunExecRange(env, body_start, body_end)
+    Else
+      RunExecRange(env, selected, RunSkipStatement(selected));
+    idx := RunSkipStatement(selected);
+  End
+  Else If RunTokVal(idx) = 'FOR' Then
+  Begin
+    name := RunTokVal(idx + 1);
+    idx := idx + 3;
+    v := RunEvalExpr(env, idx);
+    If RunTokVal(idx) = 'TO' Then Inc(idx);
+    to_v := RunEvalExpr(env, idx);
+    step_v := 1;
+    If RunTokVal(idx) = 'BY' Then
+    Begin
+      Inc(idx);
+      step_v := RunEvalExpr(env, idx);
+    End;
+    If RunTokVal(idx) = 'DO' Then Inc(idx);
+    body_start := idx;
+    body_end := RunSkipStatement(body_start);
+    RunSetVar(env, name, v);
+    While (((step_v >= 0) And (RunGetVar(env, name) <= to_v)) Or
+           ((step_v < 0) And (RunGetVar(env, name) >= to_v))) And
+          (Not env.finish_now) And (run_steps < MAX_RUN_STEPS) Do
+    Begin
+      RunExecRange(env, body_start, body_end);
+      If env.break_now Then
+      Begin
+        env.break_now := False;
+        Break;
+      End;
+      RunSetVar(env, name, RunGetVar(env, name) + step_v);
+    End;
+    idx := body_end;
+  End
+  Else If (RunTokVal(idx) = 'WHILE') Or (RunTokVal(idx) = 'UNTIL') Then
+  Begin
+    name := RunTokVal(idx);
+    cond_idx := idx + 1;
+    idx := RunSkipExpr(cond_idx);
+    If RunTokVal(idx) = 'DO' Then Inc(idx);
+    body_start := idx;
+    body_end := RunSkipStatement(body_start);
+    Repeat
+      idx := cond_idx;
+      v := RunEvalExpr(env, idx);
+      If ((name = 'WHILE') And (v = 0)) Or ((name = 'UNTIL') And (v <> 0)) Then
+        Break;
+      RunExecRange(env, body_start, body_end);
+      If env.break_now Then
+      Begin
+        env.break_now := False;
+        Break;
+      End;
+    Until env.finish_now Or (run_steps >= MAX_RUN_STEPS);
+    idx := body_end;
+  End
+  Else If RunTokVal(idx) = 'REPEAT' Then
+  Begin
+    body_start := idx + 1;
+    body_end := RunSkipStatement(body_start);
+    cond_idx := body_end + 1;
+    after_cond := cond_idx;
+    Repeat
+      RunExecRange(env, body_start, body_end);
+      If env.break_now Then
+      Begin
+        env.break_now := False;
+        Break;
+      End;
+      idx := cond_idx;
+      v := RunEvalExpr(env, idx);
+      after_cond := idx;
+    Until (v = 0) Or env.finish_now Or (run_steps >= MAX_RUN_STEPS);
+    idx := after_cond;
+  End
+  Else If RunTokVal(idx) = 'SWITCHON' Then
+  Begin
+    Inc(idx);
+    case_val := RunEvalExpr(env, idx);
+    If RunTokVal(idx) = 'INTO' Then Inc(idx);
+    block_end := RunFindMatchingBlock(idx);
+    Inc(idx);
+    selected := 0;
+    default_at := 0;
+    While idx < block_end Do
+    Begin
+      If RunTokVal(idx) = 'CASE' Then
+      Begin
+        Inc(idx);
+        v := RunEvalExpr(env, idx);
+        If RunTokVal(idx) = ':' Then Inc(idx);
+        If (selected = 0) And (v = case_val) Then selected := idx;
+      End
+      Else If RunTokVal(idx) = 'DEFAULT' Then
+      Begin
+        Inc(idx);
+        If RunTokVal(idx) = ':' Then Inc(idx);
+        If default_at = 0 Then default_at := idx;
+      End
+      Else
+        Inc(idx);
+    End;
+    If selected = 0 Then selected := default_at;
+    If selected <> 0 Then
+    Begin
+      idx := selected;
+      active := True;
+      While active And (idx < block_end) And (Not env.finish_now) Do
+      Begin
+        If (RunTokVal(idx) = 'CASE') Or (RunTokVal(idx) = 'DEFAULT') Then
+        Begin
+          While (idx < block_end) And (RunTokVal(idx) <> ':') Do Inc(idx);
+          If RunTokVal(idx) = ':' Then Inc(idx);
+        End
+        Else If RunTokVal(idx) = 'ENDCASE' Then
+        Begin
+          Inc(idx);
+          active := False;
+        End
+        Else
+          RunExecStatement(env, idx);
+      End;
+    End;
+    idx := block_end + 1;
+  End
+  Else If run_tokens[idx].kind = TK_IDENT Then
+  Begin
+    name := RunTokVal(idx);
+    Inc(idx);
+    If RunTokVal(idx) = ':=' Then
+    Begin
+      Inc(idx);
+      v := RunEvalExpr(env, idx);
+      RunSetVar(env, name, v);
+    End
+    Else If RunTokVal(idx) = '(' Then
+    Begin
+      Inc(idx);
+      argc := 0;
+      While (idx <= run_tok_count) And (RunTokVal(idx) <> ')') Do
+      Begin
+        If argc < MAX_RUN_PARAMS Then
+        Begin
+          args[argc] := RunEvalExpr(env, idx);
+          Inc(argc);
+        End;
+        If RunTokVal(idx) = ',' Then Inc(idx);
+      End;
+      If RunTokVal(idx) = ')' Then Inc(idx);
+      RunCallRoutine(name, args, argc);
+    End;
+  End
+  Else
+    Inc(idx);
+End;
+
+Procedure RunExecRange(Var env : TRunEnv; start_idx, end_idx : Integer);
+Var
+  idx : Integer;
+Begin
+  idx := start_idx;
+  While (idx < end_idx) And (Not env.resultis) And (Not env.break_now) And
+        (Not env.finish_now) And (run_steps < MAX_RUN_STEPS) Do
+    RunExecStatement(env, idx);
+End;
+
+Function RunCallRoutine(Const name : TString; Var args : Array Of LongInt; argc : Integer) : LongInt;
+Var
+  r, i : Integer;
+  idx  : Integer;
+  env  : TRunEnv;
+Begin
+  RunCallRoutine := 0;
+  If run_steps >= MAX_RUN_STEPS Then Exit;
+  r := RunFindRoutine(name);
+  If r = 0 Then Exit;
+  FillChar(env, SizeOf(env), 0);
+  For i := 1 To run_routines[r].param_cnt Do
+    If i <= argc Then
+      RunSetVar(env, run_routines[r].params[i], args[i - 1])
+    Else
+      RunSetVar(env, run_routines[r].params[i], 0);
+  If run_routines[r].is_func Then
+  Begin
+    idx := run_routines[r].body_start;
+    RunCallRoutine := RunEvalExpr(env, idx);
+  End
+  Else
+  Begin
+    RunExecRange(env, run_routines[r].body_start, run_routines[r].body_end);
+    RunCallRoutine := env.result_val;
+  End;
+End;
+
+Procedure RunIndexProgram;
+Var
+  idx, p, b : Integer;
+  r         : Integer;
+  name      : TString;
+Begin
+  run_routine_count := 0;
+  run_static_count := 0;
+  idx := 1;
+  While idx <= run_tok_count Do
+  Begin
+    If RunTokVal(idx) = 'STATIC' Then
+    Begin
+      Inc(idx);
+      If RunTokVal(idx) = '$(' Then Inc(idx);
+      While (idx <= run_tok_count) And (RunTokVal(idx) <> '$)') Do
+      Begin
+        name := RunTokVal(idx);
+        Inc(idx, 2);
+        If run_static_count < MAX_RUN_VARS Then
+        Begin
+          Inc(run_static_count);
+          run_statics[run_static_count].name := name;
+          run_statics[run_static_count].value := run_tokens[idx].int_val;
+        End;
+        Inc(idx);
+      End;
+    End
+    Else If RunTokVal(idx) = 'LET' Then
+    Begin
+      If run_routine_count < MAX_RUN_ROUTINES Then
+      Begin
+        Inc(run_routine_count);
+        r := run_routine_count;
+        run_routines[r].name := RunTokVal(idx + 1);
+        run_routines[r].param_cnt := 0;
+        idx := idx + 3;
+        p := 1;
+        While (idx <= run_tok_count) And (RunTokVal(idx) <> ')') Do
+        Begin
+          If run_tokens[idx].kind = TK_IDENT Then
+          Begin
+            If p <= MAX_RUN_PARAMS Then
+            Begin
+              run_routines[r].params[p] := RunTokVal(idx);
+              Inc(p);
+            End;
+          End;
+          Inc(idx);
+        End;
+        run_routines[r].param_cnt := p - 1;
+        If RunTokVal(idx) = ')' Then Inc(idx);
+        run_routines[r].is_func := RunTokVal(idx) = '=';
+        Inc(idx);
+        If RunTokVal(idx) = 'VALOF' Then
+        Begin
+          run_routines[r].body_start := idx;
+          idx := idx + 1;
+          b := RunFindMatchingBlock(idx);
+          run_routines[r].body_end := b + 1;
+          idx := b + 1;
+        End
+        Else If RunTokVal(idx) = '$(' Then
+        Begin
+          b := RunFindMatchingBlock(idx);
+          run_routines[r].body_start := idx + 1;
+          run_routines[r].body_end := b;
+          idx := b + 1;
+        End
+        Else
+        Begin
+          run_routines[r].body_start := idx;
+          While (idx <= run_tok_count) And
+                (RunTokVal(idx) <> 'LET') And (RunTokVal(idx) <> 'STATIC') And
+                (run_tokens[idx].kind <> TK_EOF) Do
+            Inc(idx);
+          run_routines[r].body_end := idx;
+        End;
+      End
+      Else
+        Inc(idx);
+    End
+    Else
+      Inc(idx);
+  End;
+End;
+
+Procedure CollectRuntimeOutputs(Var ctx : TCompilerContext);
+Var
+  args : Array[0..MAX_RUN_PARAMS - 1] Of LongInt;
+Begin
+  bin_output_count := 0;
+  run_steps := 0;
+  If Not RunLoadTokens(ctx.source_name) Then
+    Exit;
+  RunIndexProgram;
+  RunCallRoutine('START', args, 0);
+  If run_steps >= MAX_RUN_STEPS Then
+    WriteLn('Avertissement: execution intermediaire interrompue (limite de pas).');
 End;
 
 Procedure WritePeSectionHeader(Var f : File; Const name : TString;
@@ -2257,10 +3089,8 @@ End;
 Function EmitPeExeFile(Var ctx : TCompilerContext) : Boolean;
 Const
   TEXT_RVA  = $1000;
-  RDATA_RVA = $2000;
   HDR_SIZE  = $0200;
   TEXT_RAW  = $0200;
-  RDATA_RAW = $0400;
 Var
   f          : File;
   code       : Integer;
@@ -2275,6 +3105,8 @@ Var
   text_sz    : LongInt;
   text_rawsz : LongInt;
   rdata_rawsz: LongInt;
+  rdata_raw  : LongInt;
+  rdata_rva  : LongInt;
   i          : Integer;
   str_off    : Array[1..MAX_BIN_OUTPUT] Of LongInt;
   rpos       : LongInt;
@@ -2304,7 +3136,7 @@ Var
   End;
 Begin
   EmitPeExeFile := False;
-  CollectStaticRuntimeOutputs(ctx);
+  CollectRuntimeOutputs(ctx);
 
   rpos := 0;
   For i := 1 To bin_output_count Do
@@ -2324,8 +3156,10 @@ Begin
 
   text_sz := 27 + bin_output_count * 23;
   text_rawsz := AlignUp(text_sz, PE_FILE_ALIGN);
+  rdata_raw := TEXT_RAW + text_rawsz;
+  rdata_rva := TEXT_RVA + AlignUp(text_sz, PE_SEC_ALIGN);
   rdata_rawsz := AlignUp(import_sz, PE_FILE_ALIGN);
-  iat_exit_va := PE_IMAGE_BASE + RDATA_RVA + iat_off;
+  iat_exit_va := PE_IMAGE_BASE + rdata_rva + iat_off;
   iat_get_va := iat_exit_va + 4;
   iat_write_va := iat_exit_va + 8;
 
@@ -2367,7 +3201,7 @@ Begin
   BinWriteDWord(f, 0);
   BinWriteDWord(f, TEXT_RVA);
   BinWriteDWord(f, TEXT_RVA);
-  BinWriteDWord(f, RDATA_RVA);
+  BinWriteDWord(f, rdata_rva);
   BinWriteDWord(f, PE_IMAGE_BASE);
   BinWriteDWord(f, PE_SEC_ALIGN);
   BinWriteDWord(f, PE_FILE_ALIGN);
@@ -2378,7 +3212,7 @@ Begin
   BinWriteWord(f, 4);
   BinWriteWord(f, 0);
   BinWriteDWord(f, 0);
-  BinWriteDWord(f, RDATA_RVA + PE_SEC_ALIGN);
+  BinWriteDWord(f, rdata_rva + AlignUp(import_sz, PE_SEC_ALIGN));
   BinWriteDWord(f, HDR_SIZE);
   BinWriteDWord(f, 0);
   BinWriteWord(f, PE_SUBSYS_CUI);
@@ -2391,7 +3225,7 @@ Begin
   BinWriteDWord(f, 16);
 
   BinWriteDWord(f, 0); BinWriteDWord(f, 0);
-  BinWriteDWord(f, RDATA_RVA + desc_off); BinWriteDWord(f, import_sz - desc_off);
+  BinWriteDWord(f, rdata_rva + desc_off); BinWriteDWord(f, import_sz - desc_off);
   BinWriteDWord(f, 0); BinWriteDWord(f, 0);
   BinWriteDWord(f, 0); BinWriteDWord(f, 0);
   BinWriteDWord(f, 0); BinWriteDWord(f, 0);
@@ -2402,15 +3236,15 @@ Begin
   BinWriteDWord(f, 0); BinWriteDWord(f, 0);
   BinWriteDWord(f, 0); BinWriteDWord(f, 0);
   BinWriteDWord(f, 0); BinWriteDWord(f, 0);
-  BinWriteDWord(f, RDATA_RVA + iat_off); BinWriteDWord(f, 16);
+  BinWriteDWord(f, rdata_rva + iat_off); BinWriteDWord(f, 16);
   BinWriteDWord(f, 0); BinWriteDWord(f, 0);
   BinWriteDWord(f, 0); BinWriteDWord(f, 0);
   BinWriteDWord(f, 0); BinWriteDWord(f, 0);
 
   WritePeSectionHeader(f, '.text', text_sz, TEXT_RVA, text_rawsz,
                        TEXT_RAW, PE_SCN_TEXT);
-  WritePeSectionHeader(f, '.rdata', import_sz, RDATA_RVA, rdata_rawsz,
-                       RDATA_RAW, PE_SCN_RDATA);
+  WritePeSectionHeader(f, '.rdata', import_sz, rdata_rva, rdata_rawsz,
+                       rdata_raw, PE_SCN_RDATA);
   BinPadTo(f, HDR_SIZE);
 
   BinWriteByte(f, $55);                   { PUSH EBP }
@@ -2428,7 +3262,7 @@ Begin
       BinWriteByte(f, $8D); BinWriteByte(f, $45); BinWriteByte(f, $FC); { LEA EAX,[EBP-4] }
       BinWriteByte(f, $50); { PUSH EAX }
       CodePushImm(Length(bin_outputs[i]));
-      CodePushImm(PE_IMAGE_BASE + RDATA_RVA + str_off[i]);
+      CodePushImm(PE_IMAGE_BASE + rdata_rva + str_off[i]);
       BinWriteByte(f, $53); { PUSH EBX }
       CodeCallIat(iat_write_va);
     End;
@@ -2436,25 +3270,25 @@ Begin
 
   BinWriteByte(f, $6A); BinWriteByte(f, $00); { PUSH 0 }
   CodeCallIat(iat_exit_va);
-  BinPadTo(f, RDATA_RAW);
+  BinPadTo(f, rdata_raw);
 
   For i := 1 To bin_output_count Do
     RDataWriteOutput(bin_outputs[i]);
 
-  BinWriteDWord(f, RDATA_RVA + ilt_off);
+  BinWriteDWord(f, rdata_rva + ilt_off);
   BinWriteDWord(f, 0);
   BinWriteDWord(f, 0);
-  BinWriteDWord(f, RDATA_RVA + dll_off);
-  BinWriteDWord(f, RDATA_RVA + iat_off);
+  BinWriteDWord(f, rdata_rva + dll_off);
+  BinWriteDWord(f, rdata_rva + iat_off);
   For i := 1 To 5 Do
     BinWriteDWord(f, 0);
-  BinWriteDWord(f, RDATA_RVA + hint_exit);
-  BinWriteDWord(f, RDATA_RVA + hint_get);
-  BinWriteDWord(f, RDATA_RVA + hint_write);
+  BinWriteDWord(f, rdata_rva + hint_exit);
+  BinWriteDWord(f, rdata_rva + hint_get);
+  BinWriteDWord(f, rdata_rva + hint_write);
   BinWriteDWord(f, 0);
-  BinWriteDWord(f, RDATA_RVA + hint_exit);
-  BinWriteDWord(f, RDATA_RVA + hint_get);
-  BinWriteDWord(f, RDATA_RVA + hint_write);
+  BinWriteDWord(f, rdata_rva + hint_exit);
+  BinWriteDWord(f, rdata_rva + hint_get);
+  BinWriteDWord(f, rdata_rva + hint_write);
   BinWriteDWord(f, 0);
   BinWriteWord(f, 0);
   BinWriteCString(f, 'ExitProcess');
@@ -2463,7 +3297,7 @@ Begin
   BinWriteWord(f, 0);
   BinWriteCString(f, 'WriteFile');
   BinWriteCString(f, 'KERNEL32.DLL');
-  BinPadTo(f, RDATA_RAW + rdata_rawsz);
+  BinPadTo(f, rdata_raw + rdata_rawsz);
 
   Close(f);
   EmitPeExeFile := True;
