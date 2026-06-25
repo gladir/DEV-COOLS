@@ -432,6 +432,7 @@ End;
 Procedure LexReadString(Var t : TToken);
 Var
   s : TString;
+  c : Char;
 Begin
   s := '';
   LexAdvance; { sauter le guillemet ouvrant }
@@ -440,15 +441,19 @@ Begin
   Begin
     If LexCurChar = '*' Then
     Begin
-      If Length(s) < MAX_PATH_LEN Then
-        s := s + LexCurChar;
-      LexAdvance;
-      If Not lex_eof Then
-      Begin
-        If Length(s) < MAX_PATH_LEN Then
-          s := s + LexCurChar;
-        LexAdvance;
+      LexAdvance; { sauter '*' }
+      Case UpChar(LexCurChar) Of
+        'N' : c := #10;
+        'T' : c := #9;
+        '"' : c := '"';
+        '*' : c := '*';
+      Else
+        c := LexCurChar;
       End;
+      If Length(s) < MAX_PATH_LEN Then
+        s := s + c;
+      If Not lex_eof Then
+        LexAdvance;
     End
     Else
     Begin
@@ -875,7 +880,7 @@ Var
     WriteLn('OBJ   : ', ctx.obj_name);
     If ctx.options.output_mode = OM_EXE Then
       WriteLn('EXE   : ', ctx.exe_name);
-    WriteLn('TODO suivante: supporter les sequences speciales des chaines BCPL.');
+    WriteLn('TODO suivante: creer la table des mots-cles BCPL complete.');
   End
   Else
   Begin
