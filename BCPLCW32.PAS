@@ -96,6 +96,9 @@ Type
     owner     : TString;
     const_val : LongInt;
     stack_off : LongInt;
+    param_no  : Integer;
+    param_cnt : Integer;
+    local_size: LongInt;
     line      : Integer;
     col       : Integer;
   End;
@@ -163,10 +166,13 @@ Type
     func_count  : LongInt;
     param_count : LongInt;
     local_count : LongInt;
+    expr_count  : LongInt;
+    comp_count  : LongInt;
     static_count: LongInt;
     sym_count   : LongInt;
     abi_param_bytes: LongInt;
     abi_local_bytes: LongInt;
+    max_param_count: LongInt;
     errors      : Integer;
   End;
 
@@ -187,12 +193,17 @@ Var
   parse_funcs : LongInt;
   parse_params: LongInt;
   parse_locals: LongInt;
+  parse_exprs : LongInt;
+  parse_comps : LongInt;
   parse_static: LongInt;
   parse_owner : TString;
   parse_param_offset: LongInt;
   parse_local_offset: LongInt;
   parse_param_bytes : LongInt;
   parse_local_bytes : LongInt;
+  parse_param_index : Integer;
+  parse_routine_params: Integer;
+  parse_max_params  : Integer;
   sym_table   : TSymbolTable;
   sym_count   : Integer;
 
@@ -280,7 +291,15 @@ Begin
   If (i > 0) And (file_name[i] = '.') Then
     FileExtension := StrUpper(Copy(file_name, i, Length(file_name) - i + 1))
   Else
-    FileExtension := '';
+  FileExtension := '';
+End;
+
+Function LongToStr(v : LongInt) : TString;
+Var
+  s : TString;
+Begin
+  Str(v, s);
+  LongToStr := s;
 End;
 
 Function OutputModeName(mode : TOutputMode) : TString;
@@ -359,6 +378,9 @@ Begin
   sym_table[sym_count].owner     := owner;
   sym_table[sym_count].const_val := const_val;
   sym_table[sym_count].stack_off := stack_off;
+  sym_table[sym_count].param_no  := 0;
+  sym_table[sym_count].param_cnt := 0;
+  sym_table[sym_count].local_size:= 0;
   sym_table[sym_count].line      := cur_tok.line;
   sym_table[sym_count].col       := cur_tok.col;
   SymEnter := sym_count;
@@ -748,6 +770,146 @@ Begin
 End;
 
 Procedure ParseLocalLet; Forward;
+Procedure ParseIntegerExpr; Forward;
+
+Function ExprStarts : Boolean;
+Begin
+  ExprStarts := (cur_tok.kind = TK_INTEGER) Or (cur_tok.kind = TK_IDENT) Or
+                (cur_tok.val = '(') Or (cur_tok.val = '-');
+End;
+
+Procedure ParseActualArgList;
+Begin
+  If cur_tok.val <> '(' Then
+    Exit;
+
+  LexNext;
+  If cur_tok.val = ')' Then
+  Begin
+    LexNext;
+    Exit;
+  End;
+
+  While cur_tok.kind <> TK_EOF Do
+  Begin
+    If Not ExprStarts Then
+    Begin
+      ParseError('expression attendue dans appel de fonction');
+      Exit;
+    End;
+    ParseIntegerExpr;
+
+    If cur_tok.val = ',' Then
+      LexNext
+    Else If cur_tok.val = ')' Then
+    Begin
+      LexNext;
+      Exit;
+    End
+    Else
+    Begin
+      ParseError('"," ou ")" attendu dans appel de fonction');
+      Exit;
+    End;
+  End;
+
+  ParseError('appel de fonction non termine: ) attendu');
+End;
+
+Procedure ParseExprPrimary;
+Begin
+  If cur_tok.kind = TK_INTEGER Then
+    LexNext
+  Else If cur_tok.kind = TK_IDENT Then
+  Begin
+    LexNext;
+    If cur_tok.val = '(' Then
+      ParseActualArgList;
+  End
+  Else If cur_tok.val = '(' Then
+  Begin
+    LexNext;
+    ParseIntegerExpr;
+    If cur_tok.val = ')' Then
+      LexNext
+    Else
+      ParseError(') attendu dans expression');
+  End
+  Else
+    ParseError('expression entiere attendue');
+End;
+
+Procedure ParseExprUnary;
+Begin
+  If cur_tok.val = '-' Then
+  Begin
+    LexNext;
+    ParseExprUnary;
+  End
+  Else
+    ParseExprPrimary;
+End;
+
+Procedure ParseExprMul;
+Begin
+  ParseExprUnary;
+  While (cur_tok.val = '*') Or (cur_tok.val = '/') Or (cur_tok.val = 'MOD') Do
+  Begin
+    LexNext;
+    ParseExprUnary;
+  End;
+End;
+
+Procedure ParseExprAdd;
+Begin
+  ParseExprMul;
+  While (cur_tok.val = '+') Or (cur_tok.val = '-') Do
+  Begin
+    LexNext;
+    ParseExprMul;
+  End;
+End;
+
+Function IsCompareOp(Const op : TString) : Boolean;
+Begin
+  IsCompareOp := (op = '=') Or (op = '~=') Or (op = '<') Or
+                 (op = '<=') Or (op = '>') Or (op = '>=');
+End;
+
+Procedure ParseExprCompare;
+Begin
+  ParseExprAdd;
+  While IsCompareOp(cur_tok.val) Do
+  Begin
+    Inc(parse_comps);
+    LexNext;
+    ParseExprAdd;
+  End;
+End;
+
+Procedure ParseIntegerExpr;
+Begin
+  Inc(parse_exprs);
+  ParseExprCompare;
+End;
+
+Procedure ParseResultIs;
+Begin
+  LexNext; { RESULTIS }
+  If ExprStarts Then
+    ParseIntegerExpr
+  Else
+    ParseError('expression attendue apres RESULTIS');
+End;
+
+Procedure ParseConditionStatement;
+Begin
+  LexNext;
+  If ExprStarts Then
+    ParseIntegerExpr
+  Else
+    ParseError('expression conditionnelle attendue');
+End;
 
 Procedure ParseBlock;
 Begin
@@ -764,6 +926,12 @@ Begin
   Begin
     If cur_tok.val = 'LET' Then
       ParseLocalLet
+    Else If cur_tok.val = 'RESULTIS' Then
+      ParseResultIs
+    Else If (cur_tok.val = 'IF') Or (cur_tok.val = 'UNLESS') Or
+            (cur_tok.val = 'WHILE') Or (cur_tok.val = 'UNTIL') Or
+            (cur_tok.val = 'TEST') Then
+      ParseConditionStatement
     Else If cur_tok.val = '$(' Then
       ParseBlock
     Else
@@ -777,6 +945,8 @@ Begin
 End;
 
 Procedure ParseFormalParamList;
+Var
+  sym_idx : Integer;
 Begin
   If cur_tok.val <> '(' Then
   Begin
@@ -798,7 +968,11 @@ Begin
       ParseError('nom de parametre attendu');
       Exit;
     End;
-    SymEnter(cur_tok.val, SK_PARAM, parse_owner, 0, parse_param_offset);
+    Inc(parse_param_index);
+    Inc(parse_routine_params);
+    sym_idx := SymEnter(cur_tok.val, SK_PARAM, parse_owner, 0, parse_param_offset);
+    If sym_idx <> 0 Then
+      sym_table[sym_idx].param_no := parse_param_index;
     Inc(parse_params);
     Inc(parse_param_bytes, ABI_WORD_SIZE);
     Inc(parse_param_offset, ABI_WORD_SIZE);
@@ -823,7 +997,6 @@ End;
 
 Procedure ParseLocalLet;
 Var
-  expr_line : Integer;
   local_name: TString;
 Begin
   LexNext; { LET }
@@ -846,16 +1019,10 @@ Begin
   SymEnter(local_name, SK_LOCAL, parse_owner, 0, -parse_local_offset);
   Inc(parse_local_bytes, ABI_WORD_SIZE);
   LexNext;
-  expr_line := cur_tok.line;
-
-  While (cur_tok.kind <> TK_EOF) And (cur_tok.val <> '$)') And
-        (cur_tok.line = expr_line) Do
-  Begin
-    If cur_tok.val = '$(' Then
-      ParseBlock
-    Else
-      LexNext;
-  End;
+  If ExprStarts Then
+    ParseIntegerExpr
+  Else
+    ParseError('expression attendue apres =');
 End;
 
 Procedure ParseStaticBlock;
@@ -917,7 +1084,17 @@ Procedure ParseFunctionExpr;
 Begin
   While cur_tok.kind <> TK_EOF Do
   Begin
-    If cur_tok.val = '$(' Then
+    If cur_tok.val = 'VALOF' Then
+    Begin
+      LexNext;
+      If cur_tok.val = '$(' Then
+        ParseBlock
+      Else
+        ParseError('bloc VALOF attendu: $(');
+    End
+    Else If ExprStarts Then
+      ParseIntegerExpr
+    Else If cur_tok.val = '$(' Then
       ParseBlock
     Else If cur_tok.val = '$)' Then
     Begin
@@ -935,6 +1112,7 @@ Procedure ParseGlobalLet;
 Var
   global_name : TString;
   saved_owner : TString;
+  global_sym  : Integer;
 Begin
   LexNext; { LET }
   If cur_tok.kind <> TK_IDENT Then
@@ -948,6 +1126,8 @@ Begin
   parse_owner := global_name;
   parse_param_offset := ABI_PARAM_BASE;
   parse_local_offset := 0;
+  parse_param_index := 0;
+  parse_routine_params := 0;
   LexNext;
   ParseFormalParamList;
   If parse_errors > 0 Then
@@ -959,7 +1139,7 @@ Begin
   If cur_tok.val = 'BE' Then
   Begin
     Inc(parse_procs);
-    SymEnter(global_name, SK_PROC, '', 0, 0);
+    global_sym := SymEnter(global_name, SK_PROC, '', 0, 0);
     LexNext;
     If cur_tok.val = '$(' Then
       ParseBlock;
@@ -967,12 +1147,23 @@ Begin
   Else If cur_tok.val = '=' Then
   Begin
     Inc(parse_funcs);
-    SymEnter(global_name, SK_FUNC, '', 0, 0);
+    global_sym := SymEnter(global_name, SK_FUNC, '', 0, 0);
     LexNext;
     ParseFunctionExpr;
   End
   Else
+  Begin
+    global_sym := 0;
     ParseError('BE ou = attendu apres declaration LET globale');
+  End;
+
+  If global_sym <> 0 Then
+  Begin
+    sym_table[global_sym].param_cnt := parse_routine_params;
+    sym_table[global_sym].local_size := parse_local_offset;
+    If parse_routine_params > parse_max_params Then
+      parse_max_params := parse_routine_params;
+  End;
 
   parse_owner := saved_owner;
 End;
@@ -992,12 +1183,17 @@ Begin
   parse_funcs := 0;
   parse_params := 0;
   parse_locals := 0;
+  parse_exprs := 0;
+  parse_comps := 0;
   parse_static := 0;
   parse_owner := '';
   parse_param_offset := ABI_PARAM_BASE;
   parse_local_offset := 0;
   parse_param_bytes := 0;
   parse_local_bytes := 0;
+  parse_param_index := 0;
+  parse_routine_params := 0;
+  parse_max_params := 0;
   sym_count := 0;
   LexNext;
 
@@ -1024,12 +1220,120 @@ Begin
   ctx.func_count := parse_funcs;
   ctx.param_count := parse_params;
   ctx.local_count := parse_locals;
+  ctx.expr_count := parse_exprs;
+  ctx.comp_count := parse_comps;
   ctx.static_count := parse_static;
   ctx.sym_count := sym_count;
   ctx.abi_param_bytes := parse_param_bytes;
   ctx.abi_local_bytes := parse_local_bytes;
+  ctx.max_param_count := parse_max_params;
   Inc(ctx.errors, parse_errors);
   ParseProgramBlocks := parse_errors = 0;
+End;
+
+Function AsmGlobalName(Const name : TString) : TString;
+Begin
+  AsmGlobalName := '_' + name;
+End;
+
+Function FindGlobalRoutine(Const name : TString) : Integer;
+Var
+  i : Integer;
+Begin
+  For i := 1 To sym_count Do
+    If ((sym_table[i].kind = SK_PROC) Or (sym_table[i].kind = SK_FUNC)) And
+       (sym_table[i].owner = '') And (sym_table[i].name = name) Then
+    Begin
+      FindGlobalRoutine := i;
+      Exit;
+    End;
+  FindGlobalRoutine := 0;
+End;
+
+Procedure EmitAsmRoutine(Var f : Text; idx : Integer);
+Var
+  frame_size : LongInt;
+  asm_name   : TString;
+Begin
+  frame_size := sym_table[idx].local_size + ABI_WORD_SIZE;
+  asm_name := AsmGlobalName(sym_table[idx].name);
+
+  WriteLn(f);
+  WriteLn(f, '; ', SymKindName(sym_table[idx].kind), ' ', sym_table[idx].name,
+             ' params=', sym_table[idx].param_cnt,
+             ' locals=', sym_table[idx].local_size);
+  WriteLn(f, 'PUBLIC ', asm_name);
+  WriteLn(f, asm_name, ' PROC');
+  WriteLn(f, '  PUSH ', ABI_FRAME_REG);
+  WriteLn(f, '  MOV ', ABI_FRAME_REG, ', ', ABI_STACK_REG);
+  If frame_size > 0 Then
+    WriteLn(f, '  SUB ', ABI_STACK_REG, ', ', LongToStr(frame_size));
+  WriteLn(f, '  MOV DWORD PTR [', ABI_FRAME_REG, '-', LongToStr(frame_size), '], EBX');
+  WriteLn(f, '  ; parametre 1: [', ABI_FRAME_REG, '+', ABI_PARAM_BASE, ']');
+  WriteLn(f, '  ; retour entier attendu dans ', ABI_RET_REG);
+  WriteLn(f, '  XOR ', ABI_RET_REG, ', ', ABI_RET_REG);
+  WriteLn(f, '@@', sym_table[idx].name, '_return:');
+  WriteLn(f, '  MOV EBX, DWORD PTR [', ABI_FRAME_REG, '-', LongToStr(frame_size), ']');
+  WriteLn(f, '  MOV ', ABI_STACK_REG, ', ', ABI_FRAME_REG);
+  WriteLn(f, '  POP ', ABI_FRAME_REG);
+  WriteLn(f, '  RET');
+  WriteLn(f, asm_name, ' ENDP');
+End;
+
+Function EmitAsm386File(Var ctx : TCompilerContext) : Boolean;
+Var
+  f          : Text;
+  code       : Integer;
+  i          : Integer;
+  entry_idx  : Integer;
+  entry_name : TString;
+Begin
+  EmitAsm386File := False;
+
+  If Not ctx.options.keep_asm Then
+  Begin
+    EmitAsm386File := True;
+    Exit;
+  End;
+
+  Assign(f, ctx.asm_name);
+  Rewrite(f);
+  code := IOResult;
+  If code <> 0 Then
+  Begin
+    WriteLn('Erreur: impossible de creer ', ctx.asm_name);
+    Inc(ctx.errors);
+    Exit;
+  End;
+
+  entry_idx := FindGlobalRoutine('START');
+  If entry_idx <> 0 Then
+    entry_name := AsmGlobalName(sym_table[entry_idx].name)
+  Else
+    entry_name := '';
+
+  WriteLn(f, '; Fichier genere par BCPLCW32 ', BCPLCW32_VERSION);
+  WriteLn(f, '; Source : ', ctx.source_name);
+  WriteLn(f, '; Cible  : MASM 80386 / Win32');
+  WriteLn(f);
+  WriteLn(f, '.386');
+  WriteLn(f, '.MODEL FLAT, C');
+  WriteLn(f, 'OPTION CASEMAP:NONE');
+  WriteLn(f);
+  WriteLn(f, '.CODE');
+
+  For i := 1 To sym_count Do
+    If (sym_table[i].owner = '') And
+       ((sym_table[i].kind = SK_PROC) Or (sym_table[i].kind = SK_FUNC)) Then
+      EmitAsmRoutine(f, i);
+
+  WriteLn(f);
+  If entry_name <> '' Then
+    WriteLn(f, 'END ', entry_name)
+  Else
+    WriteLn(f, 'END');
+  Close(f);
+  EmitAsm386File := True;
 End;
 
 Procedure InitDefaultOptions(Var options : TPipelineOptions);
@@ -1099,10 +1403,13 @@ Begin
   ctx.func_count  := 0;
   ctx.param_count := 0;
   ctx.local_count := 0;
+  ctx.expr_count  := 0;
+  ctx.comp_count  := 0;
   ctx.static_count:= 0;
   ctx.sym_count   := 0;
   ctx.abi_param_bytes := 0;
   ctx.abi_local_bytes := 0;
+  ctx.max_param_count := 0;
   ctx.errors      := 0;
 End;
 
@@ -1224,7 +1531,15 @@ Begin
         End;
         ctx.last_art := AK_AST_IR;
       End;
-    CS_EMIT_ASM386: ctx.last_art := AK_ASM_386;
+    CS_EMIT_ASM386:
+      Begin
+        If Not EmitAsm386File(ctx) Then
+        Begin
+          RunStage := False;
+          Exit;
+        End;
+        ctx.last_art := AK_ASM_386;
+      End;
     CS_BUILD_OBJ  : ctx.last_art := AK_OBJ_COFF;
     CS_LINK_EXE   : ctx.last_art := AK_EXE_PE32;
   End;
@@ -1294,8 +1609,11 @@ Var
     WriteLn('Funcs : ', ctx.func_count);
     WriteLn('Params: ', ctx.param_count);
     WriteLn('Locals: ', ctx.local_count);
+    WriteLn('Exprs : ', ctx.expr_count);
+    WriteLn('Comps : ', ctx.comp_count);
     WriteLn('Static: ', ctx.static_count);
     WriteLn('Symbols: ', ctx.sym_count);
+    WriteLn('MaxPar: ', ctx.max_param_count);
     WriteLn('ABI   : params pile [', ABI_FRAME_REG, '+', ABI_PARAM_BASE,
             '], retour ', ABI_RET_REG, ', frame ', ABI_FRAME_REG,
             '/', ABI_STACK_REG, ', caller cleanup');
@@ -1306,7 +1624,7 @@ Var
     WriteLn('OBJ   : ', ctx.obj_name);
     If ctx.options.output_mode = OM_EXE Then
       WriteLn('EXE   : ', ctx.exe_name);
-    WriteLn('TODO suivante: corriger le support multi-parametres.');
+    WriteLn('TODO suivante: implementer l''expression conditionnelle BCPL.');
   End
   Else
   Begin
