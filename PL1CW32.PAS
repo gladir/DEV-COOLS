@@ -22,13 +22,13 @@
 13. [IMPLEMENTE] Implementer le parseur d'expressions avec precedence : litteraux, variables, tableaux, parentheses, appels, unaire -, *, / si prevu, +, -, comparaisons.
 14. [IMPLEMENTE] Implementer les built-ins requis : ABS, MAX, MIN, MOD, avec evaluation correcte dans les expressions et preparation a d'autres built-ins PL/1.
 15. [IMPLEMENTE] Generer le code des affectations : variable = expression, tableau(index) = expression, initialisation explicite, initialisation STATIC et locales.
-16. Implementer DO I = debut TO fin ; ... END ; avec variable de controle, test de fin, increment implicite, labels 80386 uniques et imbrication.
-17. Implementer SELECT(expr), WHEN(valeurs), OTHERWISE et END, en generation de comparaisons et branchements structures.
-18. Implementer GOTO label et les etiquettes internes en emission ASM/OBJ, avec verification des labels inexistants ou dupliques.
-19. Implementer RETURN(expr) pour les procedures avec RETURNS, prologue/epilogue propre et retour de valeur dans EAX.
-20. Definir la convention d'appel interne 32 bits : parametres sur pile, frame EBP, sauvegarde minimale des registres, nettoyage de pile documente.
-21. Generer les prologues/epilogues 80386 Win32 : allocation des locales, acces [EBP-offset] et [EBP+offset], alignement simple de pile.
-22. Fournir le runtime console minimal : PUT LIST(expr) pour afficher les entiers, PUT SKIP pour nouvelle ligne, sortie propre via ExitProcess ou equivalent.
+16. [IMPLEMENTE] Implementer DO I = debut TO fin ; ... END ; avec variable de controle, test de fin, increment implicite, labels 80386 uniques et imbrication.
+17. [IMPLEMENTE] Implementer SELECT(expr), WHEN(valeurs), OTHERWISE et END, en generation de comparaisons et branchements structures.
+18. [IMPLEMENTE] Implementer GOTO label et les etiquettes internes en emission ASM/OBJ, avec verification des labels inexistants ou dupliques.
+19. [IMPLEMENTE] Implementer RETURN(expr) pour les procedures avec RETURNS, prologue/epilogue propre et retour de valeur dans EAX.
+20. [IMPLEMENTE] Definir la convention d'appel interne 32 bits : parametres sur pile, frame EBP, sauvegarde minimale des registres, nettoyage de pile documente.
+21. [IMPLEMENTE] Generer les prologues/epilogues 80386 Win32 : allocation des locales, acces [EBP-offset] et [EBP+offset], alignement simple de pile.
+22. [IMPLEMENTE] Fournir le runtime console minimal : PUT LIST(expr) pour afficher les entiers, PUT SKIP pour nouvelle ligne, sortie propre via ExitProcess ou equivalent.
 23. Implementer l'emission ASM optionnelle : syntaxe MASM 80386 lisible, sections .text/.data/.rdata, labels stables, commentaires utiles pour le debug.
 24. Implementer l'emission OBJ COFF et le lien EXE PE Win32 par defaut, avec imports runtime necessaires et mode -obj qui s'arrete apres le fichier objet.
 25. Creer une validation automatique compilant et executant tous les fichiers SAMPLES\PL1\*.PLI, en couvrant TEST.PLI et TEST2.PLI, avec verification des sorties attendues et des modes .EXE, .OBJ et .ASM optionnel.
@@ -61,8 +61,18 @@ Const
   MAX_TOKENS      = 4096;
   MAX_CALL_ARGS   = 8;
   MAX_ASSIGNMENTS = 512;
+  MAX_DO_LOOPS    = 256;
+  MAX_SELECTS     = 128;
+  MAX_WHENS       = 512;
+  MAX_RETURNS     = 128;
+  MAX_PUTS        = 256;
   ABI_WORD_SIZE   = 4;
   ABI_RET_REG     = 'EAX';
+  ABI_FRAME_REG   = 'EBP';
+  ABI_STACK_REG   = 'ESP';
+  ABI_FIRST_PARAM = 8;
+  ABI_SAVED_REGS  = 'EBP';
+  ABI_CLEANUP     = 'caller';
   PL1_KEYWORD_COUNT = 28;
   EXT_PL1         = '.PL1';
   EXT_PLI         = '.PLI';
@@ -155,16 +165,21 @@ Type
   );
 
   TLabelRef = Record
-    name : TLabelName;
-    kind : TLabelKind;
-    line : LongInt;
-    col  : Integer;
+    name      : TLabelName;
+    owner     : TLabelName;
+    asm_name  : TLabelName;
+    kind      : TLabelKind;
+    line      : LongInt;
+    col       : Integer;
   End;
 
   TGotoRef = Record
-    name : TLabelName;
-    line : LongInt;
-    col  : Integer;
+    name        : TLabelName;
+    owner       : TLabelName;
+    target_index: Integer;
+    asm_target  : TLabelName;
+    line        : LongInt;
+    col         : Integer;
   End;
 
   TLabelTable = Array[1..MAX_LABELS] Of TLabelRef;
@@ -215,6 +230,13 @@ Type
     body_line   : LongInt;
     end_line    : LongInt;
     closed      : Boolean;
+    return_count: Integer;
+    epilogue_label: TLabelName;
+    arg_bytes   : Integer;
+    local_bytes : Integer;
+    frame_bytes : Integer;
+    cleanup     : String[16];
+    saved_regs  : String[32];
   End;
 
   TProcTable = Array[1..MAX_PROCS] Of TProcInfo;
@@ -262,6 +284,8 @@ Type
     lower_bound: LongInt;
     upper_bound: LongInt;
     elem_count : LongInt;
+    stack_offset: Integer;
+    data_label : TLabelName;
   End;
 
   TSymbolTable = Array[1..MAX_SYMBOLS] Of TSymbol;
@@ -288,6 +312,96 @@ Type
   End;
 
   TAssignmentTable = Array[1..MAX_ASSIGNMENTS] Of TAssignment;
+
+  TDoLoop = Record
+    control_name  : TLabelName;
+    owner         : TLabelName;
+    symbol_index  : Integer;
+    do_token      : Integer;
+    control_token : Integer;
+    start_first   : Integer;
+    start_last    : Integer;
+    end_first     : Integer;
+    end_last      : Integer;
+    by_first      : Integer;
+    by_last       : Integer;
+    has_by        : Boolean;
+    body_first    : Integer;
+    body_last     : Integer;
+    end_token     : Integer;
+    line          : LongInt;
+    end_line      : LongInt;
+    nesting       : Integer;
+    label_test    : TLabelName;
+    label_body    : TLabelName;
+    label_end     : TLabelName;
+  End;
+
+  TDoLoopTable = Array[1..MAX_DO_LOOPS] Of TDoLoop;
+
+  TSelectInfo = Record
+    select_token  : Integer;
+    expr_first    : Integer;
+    expr_last     : Integer;
+    first_when    : Integer;
+    when_count    : Integer;
+    otherwise_token: Integer;
+    end_token     : Integer;
+    line          : LongInt;
+    end_line      : LongInt;
+    nesting       : Integer;
+    label_next    : TLabelName;
+    label_otherwise: TLabelName;
+    label_end     : TLabelName;
+  End;
+
+  TWhenInfo = Record
+    select_index : Integer;
+    when_token   : Integer;
+    value_first  : Integer;
+    value_last   : Integer;
+    value_count  : Integer;
+    stmt_first   : Integer;
+    stmt_last    : Integer;
+    line         : LongInt;
+    label_match  : TLabelName;
+    label_next   : TLabelName;
+  End;
+
+  TSelectTable = Array[1..MAX_SELECTS] Of TSelectInfo;
+  TWhenTable = Array[1..MAX_WHENS] Of TWhenInfo;
+
+  TReturnInfo = Record
+    proc_index    : Integer;
+    proc_name     : TLabelName;
+    return_token  : Integer;
+    expr_first    : Integer;
+    expr_last     : Integer;
+    line          : LongInt;
+    col           : Integer;
+    return_reg    : String[8];
+    epilogue_label: TLabelName;
+  End;
+
+  TReturnTable = Array[1..MAX_RETURNS] Of TReturnInfo;
+
+  TPutKind = (
+    PK_LIST,
+    PK_SKIP
+  );
+
+  TPutInfo = Record
+    kind       : TPutKind;
+    proc_index : Integer;
+    owner      : TLabelName;
+    put_token  : Integer;
+    expr_first : Integer;
+    expr_last  : Integer;
+    line       : LongInt;
+    col        : Integer;
+  End;
+
+  TPutTable = Array[1..MAX_PUTS] Of TPutInfo;
 
   TSymbolInfo = Record
     count              : Integer;
@@ -343,6 +457,22 @@ Type
     assignment_array_count: Integer;
     assignment_init_count: Integer;
     assignment_error_count: Integer;
+    do_loop_count   : Integer;
+    do_loop_error_count: Integer;
+    do_loop_depth   : Integer;
+    max_do_loop_depth: Integer;
+    select_count    : Integer;
+    when_count      : Integer;
+    otherwise_count : Integer;
+    select_error_count: Integer;
+    select_depth    : Integer;
+    max_select_depth: Integer;
+    return_count    : Integer;
+    return_error_count: Integer;
+    put_count       : Integer;
+    put_list_count  : Integer;
+    put_skip_count  : Integer;
+    put_error_count : Integer;
     proc_count        : Integer;
     main_proc_count   : Integer;
     open_proc         : Integer;
@@ -367,6 +497,11 @@ Type
     labels            : TLabelTable;
     gotos             : TGotoTable;
     assignments       : TAssignmentTable;
+    do_loops          : TDoLoopTable;
+    selects           : TSelectTable;
+    whens             : TWhenTable;
+    returns           : TReturnTable;
+    puts              : TPutTable;
     have_prev         : Boolean;
     prev_token        : TToken;
     pending_goto      : Boolean;
@@ -497,6 +632,22 @@ Begin
   ctx.parse.assignment_array_count := 0;
   ctx.parse.assignment_init_count := 0;
   ctx.parse.assignment_error_count := 0;
+  ctx.parse.do_loop_count := 0;
+  ctx.parse.do_loop_error_count := 0;
+  ctx.parse.do_loop_depth := 0;
+  ctx.parse.max_do_loop_depth := 0;
+  ctx.parse.select_count := 0;
+  ctx.parse.when_count := 0;
+  ctx.parse.otherwise_count := 0;
+  ctx.parse.select_error_count := 0;
+  ctx.parse.select_depth := 0;
+  ctx.parse.max_select_depth := 0;
+  ctx.parse.return_count := 0;
+  ctx.parse.return_error_count := 0;
+  ctx.parse.put_count := 0;
+  ctx.parse.put_list_count := 0;
+  ctx.parse.put_skip_count := 0;
+  ctx.parse.put_error_count := 0;
   ctx.parse.proc_count := 0;
   ctx.parse.main_proc_count := 0;
   ctx.parse.open_proc := 0;
@@ -841,6 +992,82 @@ Begin
       End;
 End;
 
+Function FindScopedLabel(Var ctx: TCompilerContext; name, owner: TLabelName): Integer;
+Var
+  i: Integer;
+  uname, uowner: TLabelName;
+Begin
+  FindScopedLabel := 0;
+  uname := UpperStr(name);
+  uowner := UpperStr(owner);
+  For i := 1 To ctx.parse.label_count Do
+    If (ctx.parse.labels[i].name = uname) And
+       ((ctx.parse.labels[i].owner = uowner) Or
+        (ctx.parse.labels[i].kind = LK_PROC)) Then
+      Begin
+        FindScopedLabel := i;
+        Exit;
+      End;
+End;
+
+Function AsmSafeName(name: TLabelName): TLabelName;
+Var
+  i: Integer;
+  ch: Char;
+  s: TLabelName;
+Begin
+  s := '';
+  For i := 1 To Length(name) Do
+    Begin
+      ch := UpCase(name[i]);
+      If ((ch >= 'A') And (ch <= 'Z')) Or
+         ((ch >= '0') And (ch <= '9')) Or (ch = '_') Then
+        s := s + ch
+      Else
+        s := s + '_';
+    End;
+  If s = '' Then
+    s := 'ANON';
+  AsmSafeName := s;
+End;
+
+Function IntToLabel(n: LongInt): TLabelName;
+Var
+  s: String[16];
+Begin
+  Str(n, s);
+  IntToLabel := s;
+End;
+
+Function MakeUserAsmLabel(name, owner: TLabelName; line_no: LongInt;
+                          kind: TLabelKind): TLabelName;
+Begin
+  If kind = LK_PROC Then
+    MakeUserAsmLabel := 'PL1_PROC_' + AsmSafeName(name)
+  Else If owner <> '' Then
+    MakeUserAsmLabel := 'PL1_' + AsmSafeName(owner) + '_' +
+                        AsmSafeName(name) + '_L' + IntToLabel(line_no)
+  Else
+    MakeUserAsmLabel := 'PL1_' + AsmSafeName(name) + '_L' + IntToLabel(line_no);
+End;
+
+Function MakeDataLabel(owner, name: TLabelName): TLabelName;
+Begin
+  If owner = '' Then
+    owner := 'GLOBAL';
+  MakeDataLabel := 'PL1_DATA_' + AsmSafeName(owner) + '_' + AsmSafeName(name);
+End;
+
+Function AlignTo(value, align: Integer): Integer;
+Begin
+  If align <= 1 Then
+    AlignTo := value
+  Else If (value Mod align) = 0 Then
+    AlignTo := value
+  Else
+    AlignTo := value + align - (value Mod align);
+End;
+
 Function SymKindName(kind: TSymKind): TString;
 Begin
   Case kind Of
@@ -1021,6 +1248,8 @@ Begin
   ctx.symbols.symbols[ctx.symbols.count].lower_bound := 0;
   ctx.symbols.symbols[ctx.symbols.count].upper_bound := 0;
   ctx.symbols.symbols[ctx.symbols.count].elem_count := 0;
+  ctx.symbols.symbols[ctx.symbols.count].stack_offset := 0;
+  ctx.symbols.symbols[ctx.symbols.count].data_label := '';
   IncSymbolKind(ctx, kind);
   AddSymbol := True;
 End;
@@ -1098,6 +1327,22 @@ Begin
   ctx.parse.assignment_array_count := 0;
   ctx.parse.assignment_init_count := 0;
   ctx.parse.assignment_error_count := 0;
+  ctx.parse.do_loop_count := 0;
+  ctx.parse.do_loop_error_count := 0;
+  ctx.parse.do_loop_depth := 0;
+  ctx.parse.max_do_loop_depth := 0;
+  ctx.parse.select_count := 0;
+  ctx.parse.when_count := 0;
+  ctx.parse.otherwise_count := 0;
+  ctx.parse.select_error_count := 0;
+  ctx.parse.select_depth := 0;
+  ctx.parse.max_select_depth := 0;
+  ctx.parse.return_count := 0;
+  ctx.parse.return_error_count := 0;
+  ctx.parse.put_count := 0;
+  ctx.parse.put_list_count := 0;
+  ctx.parse.put_skip_count := 0;
+  ctx.parse.put_error_count := 0;
   ctx.parse.proc_count := 0;
   ctx.parse.main_proc_count := 0;
   ctx.parse.open_proc := 0;
@@ -1132,6 +1377,7 @@ End;
 Procedure AddLabel(Var ctx: TCompilerContext; tok: TToken);
 Var
   idx: Integer;
+  owner: TLabelName;
 Begin
   idx := FindLabel(ctx, tok.text);
   If idx <> 0 Then
@@ -1148,7 +1394,11 @@ Begin
     End;
 
   Inc(ctx.parse.label_count);
+  owner := CurrentProcName(ctx);
   ctx.parse.labels[ctx.parse.label_count].name := UpperStr(tok.text);
+  ctx.parse.labels[ctx.parse.label_count].owner := owner;
+  ctx.parse.labels[ctx.parse.label_count].asm_name :=
+    MakeUserAsmLabel(tok.text, owner, tok.line, LK_CONTROL);
   ctx.parse.labels[ctx.parse.label_count].kind := LK_CONTROL;
   ctx.parse.labels[ctx.parse.label_count].line := tok.line;
   ctx.parse.labels[ctx.parse.label_count].col := tok.col;
@@ -1195,6 +1445,14 @@ Begin
   ctx.parse.procs[proc_idx].body_line := 0;
   ctx.parse.procs[proc_idx].end_line := 0;
   ctx.parse.procs[proc_idx].closed := False;
+  ctx.parse.procs[proc_idx].return_count := 0;
+  ctx.parse.procs[proc_idx].epilogue_label :=
+    'PL1_EPILOGUE_' + AsmSafeName(ctx.parse.procs[proc_idx].name);
+  ctx.parse.procs[proc_idx].arg_bytes := 0;
+  ctx.parse.procs[proc_idx].local_bytes := 0;
+  ctx.parse.procs[proc_idx].frame_bytes := 0;
+  ctx.parse.procs[proc_idx].cleanup := ABI_CLEANUP;
+  ctx.parse.procs[proc_idx].saved_regs := ABI_SAVED_REGS;
   AddSymbol(ctx, ctx.parse.procs[proc_idx].name, '', SK_PROC,
             ctx.parse.procs[proc_idx].decl_line,
             ctx.parse.procs[proc_idx].decl_col, proc_idx);
@@ -1211,6 +1469,10 @@ Begin
     If ctx.parse.labels[idx].kind <> LK_PROC Then
       Begin
         ctx.parse.labels[idx].kind := LK_PROC;
+        ctx.parse.labels[idx].owner := '';
+        ctx.parse.labels[idx].asm_name :=
+          MakeUserAsmLabel(ctx.parse.labels[idx].name, '',
+                           ctx.parse.labels[idx].line, LK_PROC);
         Inc(ctx.parse.proc_label_count);
         Dec(ctx.parse.control_label_count);
         AddProcedureFromLabel(ctx, idx, tok);
@@ -1228,6 +1490,9 @@ Begin
 
   Inc(ctx.parse.goto_count);
   ctx.parse.gotos[ctx.parse.goto_count].name := UpperStr(tok.text);
+  ctx.parse.gotos[ctx.parse.goto_count].owner := CurrentProcName(ctx);
+  ctx.parse.gotos[ctx.parse.goto_count].target_index := 0;
+  ctx.parse.gotos[ctx.parse.goto_count].asm_target := '';
   ctx.parse.gotos[ctx.parse.goto_count].line := tok.line;
   ctx.parse.gotos[ctx.parse.goto_count].col := tok.col;
 End;
@@ -1816,6 +2081,21 @@ Begin
       Begin
         ProcNameAtLine := ctx.parse.procs[i].name;
         Exit;
+    End;
+End;
+
+Function ProcIndexAtLine(Var ctx: TCompilerContext; line_no: LongInt): Integer;
+Var
+  i: Integer;
+Begin
+  ProcIndexAtLine := 0;
+  For i := 1 To ctx.parse.proc_count Do
+    If (line_no >= ctx.parse.procs[i].decl_line) And
+       ((ctx.parse.procs[i].end_line = 0) Or
+        (line_no <= ctx.parse.procs[i].end_line)) Then
+      Begin
+        ProcIndexAtLine := i;
+        Exit;
       End;
 End;
 
@@ -1839,6 +2119,16 @@ Begin
     AS_INITIALIZER:   AssignKindName := 'INIT';
   Else
     AssignKindName := 'UNKNOWN';
+  End;
+End;
+
+Function LabelKindName(kind: TLabelKind): TString;
+Begin
+  Case kind Of
+    LK_PROC:    LabelKindName := 'PROC';
+    LK_CONTROL: LabelKindName := 'CONTROL';
+  Else
+    LabelKindName := 'UNKNOWN';
   End;
 End;
 
@@ -1884,6 +2174,43 @@ End;
 
 Function ParseExpressionRange(Var ctx: TCompilerContext; first_idx,
                               last_idx: Integer): Boolean; Forward;
+
+Function ParseExpressionListRange(Var ctx: TCompilerContext; first_idx,
+                                  last_idx: Integer): Integer;
+Var
+  i, part_first, depth, count: Integer;
+Begin
+  ParseExpressionListRange := 0;
+  part_first := first_idx;
+  depth := 0;
+  count := 0;
+
+  If first_idx > last_idx Then
+    Begin
+      ExprErrorAt(ctx, first_idx, 'expression attendue');
+      Exit;
+    End;
+
+  For i := first_idx To last_idx Do
+    Begin
+      If TokenKindTextAt(ctx, i, TK_PUNCT, '(') Then
+        Inc(depth)
+      Else If TokenKindTextAt(ctx, i, TK_PUNCT, ')') Then
+        Dec(depth)
+      Else If TokenKindTextAt(ctx, i, TK_PUNCT, ',') And (depth = 0) Then
+        Begin
+          If Not ParseExpressionRange(ctx, part_first, i - 1) Then
+            Exit;
+          Inc(count);
+          part_first := i + 1;
+        End;
+    End;
+
+  If Not ParseExpressionRange(ctx, part_first, last_idx) Then
+    Exit;
+  Inc(count);
+  ParseExpressionListRange := count;
+End;
 
 Function AddAssignmentIR(Var ctx: TCompilerContext; kind: TAssignKind;
                          target_idx, index_first, index_last,
@@ -2025,6 +2352,362 @@ Begin
         AddAssignmentIR(ctx, AS_INITIALIZER, target_idx, 0, 0,
                         init_idx + 2, close_idx - 1);
     End;
+End;
+
+Procedure DoLoopErrorAt(Var ctx: TCompilerContext; idx: Integer; msg: TString);
+Var
+  tok: TToken;
+Begin
+  Inc(ctx.parse.do_loop_error_count);
+  If (idx >= 1) And (idx <= ctx.lex.token_count) Then
+    tok := ctx.lex.tokens[idx]
+  Else
+    tok := ctx.lex.eof_token;
+  SourceErrorAt(ctx, tok.line, tok.col, msg);
+End;
+
+Function IntToFixedLabel(n: Integer): TLabelName;
+Var
+  s: String[12];
+Begin
+  Str(n, s);
+  While Length(s) < 4 Do
+    s := '0' + s;
+  IntToFixedLabel := s;
+End;
+
+Function MakeDoLabel(n: Integer; suffix: TLabelName): TLabelName;
+Begin
+  MakeDoLabel := '@DO' + IntToFixedLabel(n) + '_' + suffix;
+End;
+
+Function MakeSelectLabel(n: Integer; suffix: TLabelName): TLabelName;
+Begin
+  MakeSelectLabel := '@SEL' + IntToFixedLabel(n) + '_' + suffix;
+End;
+
+Function DoLoopNestingForToken(Var ctx: TCompilerContext; tok_idx: Integer): Integer;
+Var
+  i, depth: Integer;
+Begin
+  depth := 1;
+  For i := 1 To ctx.parse.do_loop_count Do
+    If (ctx.parse.do_loops[i].do_token < tok_idx) And
+       (ctx.parse.do_loops[i].end_token > tok_idx) Then
+      Inc(depth);
+  DoLoopNestingForToken := depth;
+End;
+
+Function FindMatchingEndForBlock(Var ctx: TCompilerContext; block_idx: Integer): Integer;
+Var
+  i, stmt_end, depth: Integer;
+Begin
+  FindMatchingEndForBlock := 0;
+  stmt_end := FindStatementEnd(ctx, block_idx);
+  depth := 1;
+  i := stmt_end + 1;
+  While i <= ctx.lex.token_count Do
+    Begin
+      If TokenTextAt(ctx, i, 'DO') Or TokenTextAt(ctx, i, 'SELECT') Then
+        Inc(depth)
+      Else If TokenTextAt(ctx, i, 'END') Then
+        Begin
+          If TokenKindTextAt(ctx, i + 1, TK_PUNCT, ';') Then
+            Begin
+              Dec(depth);
+              If depth = 0 Then
+                Begin
+                  FindMatchingEndForBlock := i;
+                  Exit;
+                End;
+            End;
+        End;
+      Inc(i);
+    End;
+End;
+
+Function AddDoLoopIR(Var ctx: TCompilerContext; do_idx, stmt_end,
+                     eq_idx, to_idx, by_idx: Integer): Boolean;
+Var
+  control_idx, sym_idx, loop_idx, match_end: Integer;
+  owner: TLabelName;
+Begin
+  AddDoLoopIR := False;
+  control_idx := do_idx + 1;
+
+  If Not IsNameToken(ctx.lex.tokens[control_idx]) Then
+    Begin
+      DoLoopErrorAt(ctx, control_idx, 'variable de controle attendue apres DO');
+      Exit;
+    End;
+
+  owner := ProcNameAtLine(ctx, ctx.lex.tokens[do_idx].line);
+  sym_idx := FindScopedSymbolAny(ctx, ctx.lex.tokens[control_idx].text, owner);
+  If sym_idx = 0 Then
+    Begin
+      DoLoopErrorAt(ctx, control_idx, 'variable de controle DO inconnue');
+      Exit;
+    End;
+
+  If Not ((ctx.symbols.symbols[sym_idx].kind = SK_LOCAL) Or
+          (ctx.symbols.symbols[sym_idx].kind = SK_STATIC) Or
+          (ctx.symbols.symbols[sym_idx].kind = SK_PARAM)) Then
+    Begin
+      DoLoopErrorAt(ctx, control_idx, 'variable de controle DO non modifiable');
+      Exit;
+    End;
+
+  If ctx.symbols.symbols[sym_idx].typ.kind <> TY_FIXED_BINARY Then
+    Begin
+      DoLoopErrorAt(ctx, control_idx,
+                    'variable de controle DO doit etre FIXED BINARY');
+      Exit;
+    End;
+
+  If (eq_idx <> control_idx + 1) Or (to_idx = 0) Or (to_idx <= eq_idx) Then
+    Begin
+      DoLoopErrorAt(ctx, do_idx, 'syntaxe DO attendue: DO I = debut TO fin');
+      Exit;
+    End;
+
+  If Not ParseExpressionRange(ctx, eq_idx + 1, to_idx - 1) Then
+    Exit;
+
+  If (by_idx <> 0) And (by_idx > to_idx) Then
+    Begin
+      If Not ParseExpressionRange(ctx, to_idx + 1, by_idx - 1) Then
+        Exit;
+      If Not ParseExpressionRange(ctx, by_idx + 1, stmt_end - 1) Then
+        Exit;
+    End
+  Else If Not ParseExpressionRange(ctx, to_idx + 1, stmt_end - 1) Then
+    Exit;
+
+  match_end := FindMatchingEndForBlock(ctx, do_idx);
+  If match_end = 0 Then
+    Begin
+      DoLoopErrorAt(ctx, do_idx, 'DO sans END correspondant');
+      Exit;
+    End;
+
+  If ctx.parse.do_loop_count >= MAX_DO_LOOPS Then
+    Begin
+      DoLoopErrorAt(ctx, do_idx, 'trop de boucles DO');
+      Exit;
+    End;
+
+  Inc(ctx.parse.do_loop_count);
+  loop_idx := ctx.parse.do_loop_count;
+  ctx.parse.do_loops[loop_idx].control_name :=
+    ctx.symbols.symbols[sym_idx].name;
+  ctx.parse.do_loops[loop_idx].owner := ctx.symbols.symbols[sym_idx].owner;
+  ctx.parse.do_loops[loop_idx].symbol_index := sym_idx;
+  ctx.parse.do_loops[loop_idx].do_token := do_idx;
+  ctx.parse.do_loops[loop_idx].control_token := control_idx;
+  ctx.parse.do_loops[loop_idx].start_first := eq_idx + 1;
+  ctx.parse.do_loops[loop_idx].start_last := to_idx - 1;
+  ctx.parse.do_loops[loop_idx].end_first := to_idx + 1;
+  If (by_idx <> 0) And (by_idx > to_idx) Then
+    Begin
+      ctx.parse.do_loops[loop_idx].end_last := by_idx - 1;
+      ctx.parse.do_loops[loop_idx].has_by := True;
+      ctx.parse.do_loops[loop_idx].by_first := by_idx + 1;
+      ctx.parse.do_loops[loop_idx].by_last := stmt_end - 1;
+    End
+  Else
+    Begin
+      ctx.parse.do_loops[loop_idx].end_last := stmt_end - 1;
+      ctx.parse.do_loops[loop_idx].has_by := False;
+      ctx.parse.do_loops[loop_idx].by_first := 0;
+      ctx.parse.do_loops[loop_idx].by_last := 0;
+    End;
+  ctx.parse.do_loops[loop_idx].body_first := stmt_end + 1;
+  ctx.parse.do_loops[loop_idx].body_last := match_end - 1;
+  ctx.parse.do_loops[loop_idx].end_token := match_end;
+  ctx.parse.do_loops[loop_idx].line := ctx.lex.tokens[do_idx].line;
+  ctx.parse.do_loops[loop_idx].end_line := ctx.lex.tokens[match_end].line;
+  ctx.parse.do_loops[loop_idx].nesting := DoLoopNestingForToken(ctx, do_idx);
+  If ctx.parse.do_loops[loop_idx].nesting > ctx.parse.max_do_loop_depth Then
+    ctx.parse.max_do_loop_depth := ctx.parse.do_loops[loop_idx].nesting;
+  ctx.parse.do_loops[loop_idx].label_test := MakeDoLabel(loop_idx, 'TEST');
+  ctx.parse.do_loops[loop_idx].label_body := MakeDoLabel(loop_idx, 'BODY');
+  ctx.parse.do_loops[loop_idx].label_end := MakeDoLabel(loop_idx, 'END');
+  AddDoLoopIR := True;
+End;
+
+Procedure SelectErrorAt(Var ctx: TCompilerContext; idx: Integer; msg: TString);
+Var
+  tok: TToken;
+Begin
+  Inc(ctx.parse.select_error_count);
+  If (idx >= 1) And (idx <= ctx.lex.token_count) Then
+    tok := ctx.lex.tokens[idx]
+  Else
+    tok := ctx.lex.eof_token;
+  SourceErrorAt(ctx, tok.line, tok.col, msg);
+End;
+
+Function SelectNestingForToken(Var ctx: TCompilerContext; tok_idx: Integer): Integer;
+Var
+  i, depth: Integer;
+Begin
+  depth := 1;
+  For i := 1 To ctx.parse.select_count Do
+    If (ctx.parse.selects[i].select_token < tok_idx) And
+       (ctx.parse.selects[i].end_token > tok_idx) Then
+      Inc(depth);
+  SelectNestingForToken := depth;
+End;
+
+Function AddWhenIR(Var ctx: TCompilerContext; select_idx, when_idx,
+                   scan_end: Integer): Boolean;
+Var
+  open_idx, close_idx, stmt_end, when_info_idx, value_count: Integer;
+Begin
+  AddWhenIR := False;
+  If Not TokenKindTextAt(ctx, when_idx + 1, TK_PUNCT, '(') Then
+    Begin
+      SelectErrorAt(ctx, when_idx, '( attendu apres WHEN');
+      Exit;
+    End;
+
+  open_idx := when_idx + 1;
+  close_idx := FindMatchingParen(ctx, open_idx, scan_end);
+  If close_idx = 0 Then
+    Begin
+      SelectErrorAt(ctx, when_idx, ') attendu apres WHEN');
+      Exit;
+    End;
+
+  value_count := ParseExpressionListRange(ctx, open_idx + 1, close_idx - 1);
+  If value_count = 0 Then
+    Exit;
+
+  stmt_end := FindStatementEnd(ctx, when_idx);
+  If stmt_end > scan_end Then
+    Begin
+      SelectErrorAt(ctx, when_idx, 'WHEN depasse le bloc SELECT');
+      Exit;
+    End;
+
+  If ctx.parse.when_count >= MAX_WHENS Then
+    Begin
+      SelectErrorAt(ctx, when_idx, 'trop de WHEN');
+      Exit;
+    End;
+
+  Inc(ctx.parse.when_count);
+  Inc(ctx.parse.selects[select_idx].when_count);
+  If ctx.parse.selects[select_idx].first_when = 0 Then
+    ctx.parse.selects[select_idx].first_when := ctx.parse.when_count;
+  when_info_idx := ctx.parse.when_count;
+  ctx.parse.whens[when_info_idx].select_index := select_idx;
+  ctx.parse.whens[when_info_idx].when_token := when_idx;
+  ctx.parse.whens[when_info_idx].value_first := open_idx + 1;
+  ctx.parse.whens[when_info_idx].value_last := close_idx - 1;
+  ctx.parse.whens[when_info_idx].value_count := value_count;
+  ctx.parse.whens[when_info_idx].stmt_first := close_idx + 1;
+  ctx.parse.whens[when_info_idx].stmt_last := stmt_end - 1;
+  ctx.parse.whens[when_info_idx].line := ctx.lex.tokens[when_idx].line;
+  ctx.parse.whens[when_info_idx].label_match :=
+    MakeSelectLabel(select_idx, 'WHEN' + IntToFixedLabel(ctx.parse.selects[select_idx].when_count));
+  ctx.parse.whens[when_info_idx].label_next :=
+    MakeSelectLabel(select_idx, 'NEXT' + IntToFixedLabel(ctx.parse.selects[select_idx].when_count));
+  AddWhenIR := True;
+End;
+
+Function AddSelectIR(Var ctx: TCompilerContext; select_idx,
+                     stmt_end: Integer): Boolean;
+Var
+  close_idx, match_end, idx, sel_info_idx, nested_end: Integer;
+Begin
+  AddSelectIR := False;
+  If Not TokenKindTextAt(ctx, select_idx + 1, TK_PUNCT, '(') Then
+    Begin
+      SelectErrorAt(ctx, select_idx, '( attendu apres SELECT');
+      Exit;
+    End;
+
+  close_idx := FindMatchingParen(ctx, select_idx + 1, stmt_end - 1);
+  If close_idx = 0 Then
+    Begin
+      SelectErrorAt(ctx, select_idx, ') attendu apres SELECT');
+      Exit;
+    End;
+
+  If Not ParseExpressionRange(ctx, select_idx + 2, close_idx - 1) Then
+    Exit;
+
+  match_end := FindMatchingEndForBlock(ctx, select_idx);
+  If match_end = 0 Then
+    Begin
+      SelectErrorAt(ctx, select_idx, 'SELECT sans END correspondant');
+      Exit;
+    End;
+
+  If ctx.parse.select_count >= MAX_SELECTS Then
+    Begin
+      SelectErrorAt(ctx, select_idx, 'trop de SELECT');
+      Exit;
+    End;
+
+  Inc(ctx.parse.select_count);
+  sel_info_idx := ctx.parse.select_count;
+  ctx.parse.selects[sel_info_idx].select_token := select_idx;
+  ctx.parse.selects[sel_info_idx].expr_first := select_idx + 2;
+  ctx.parse.selects[sel_info_idx].expr_last := close_idx - 1;
+  ctx.parse.selects[sel_info_idx].first_when := 0;
+  ctx.parse.selects[sel_info_idx].when_count := 0;
+  ctx.parse.selects[sel_info_idx].otherwise_token := 0;
+  ctx.parse.selects[sel_info_idx].end_token := match_end;
+  ctx.parse.selects[sel_info_idx].line := ctx.lex.tokens[select_idx].line;
+  ctx.parse.selects[sel_info_idx].end_line := ctx.lex.tokens[match_end].line;
+  ctx.parse.selects[sel_info_idx].nesting := SelectNestingForToken(ctx, select_idx);
+  If ctx.parse.selects[sel_info_idx].nesting > ctx.parse.max_select_depth Then
+    ctx.parse.max_select_depth := ctx.parse.selects[sel_info_idx].nesting;
+  ctx.parse.selects[sel_info_idx].label_next :=
+    MakeSelectLabel(sel_info_idx, 'TEST');
+  ctx.parse.selects[sel_info_idx].label_otherwise :=
+    MakeSelectLabel(sel_info_idx, 'OTHER');
+  ctx.parse.selects[sel_info_idx].label_end :=
+    MakeSelectLabel(sel_info_idx, 'END');
+
+  idx := stmt_end + 1;
+  While idx < match_end Do
+    Begin
+      If (idx <> select_idx) And
+         (TokenTextAt(ctx, idx, 'SELECT') Or TokenTextAt(ctx, idx, 'DO')) Then
+        Begin
+          nested_end := FindMatchingEndForBlock(ctx, idx);
+          If nested_end <> 0 Then
+            Begin
+              idx := nested_end + 2;
+              Continue;
+            End;
+        End;
+
+      If TokenTextAt(ctx, idx, 'WHEN') Then
+        AddWhenIR(ctx, sel_info_idx, idx, match_end)
+      Else If TokenTextAt(ctx, idx, 'OTHERWISE') Then
+        Begin
+          If ctx.parse.selects[sel_info_idx].otherwise_token <> 0 Then
+            SelectErrorAt(ctx, idx, 'plusieurs OTHERWISE dans SELECT')
+          Else
+            Begin
+              ctx.parse.selects[sel_info_idx].otherwise_token := idx;
+              Inc(ctx.parse.otherwise_count);
+            End;
+        End;
+      Inc(idx);
+    End;
+
+  If ctx.parse.selects[sel_info_idx].when_count = 0 Then
+    Begin
+      SelectErrorAt(ctx, select_idx, 'SELECT sans WHEN');
+      Exit;
+    End;
+
+  AddSelectIR := True;
 End;
 
 Function IsMulOp(Var ctx: TCompilerContext; idx: Integer): Boolean;
@@ -2460,13 +3143,13 @@ Begin
     End;
 End;
 
-Function ParseExpressionRange(Var ctx: TCompilerContext; first_idx,
-                              last_idx: Integer): Boolean;
+Function ParseExpressionRangeInfo(Var ctx: TCompilerContext; first_idx,
+                                  last_idx: Integer; Var expr: TExprInfo): Boolean;
 Var
   pos: Integer;
-  expr: TExprInfo;
 Begin
-  ParseExpressionRange := False;
+  ParseExpressionRangeInfo := False;
+  expr := UnknownExpr;
   Inc(ctx.parse.expr_count);
 
   If first_idx > last_idx Then
@@ -2485,7 +3168,16 @@ Begin
       Exit;
     End;
 
-  ParseExpressionRange := True;
+  ParseExpressionRangeInfo := True;
+End;
+
+Function ParseExpressionRange(Var ctx: TCompilerContext; first_idx,
+                              last_idx: Integer): Boolean;
+Var
+  expr: TExprInfo;
+Begin
+  ParseExpressionRange := ParseExpressionRangeInfo(ctx, first_idx,
+                                                   last_idx, expr);
 End;
 
 Function ParseParenExpressionAt(Var ctx: TCompilerContext; open_idx,
@@ -2502,9 +3194,191 @@ Begin
                                                  close_idx - 1);
 End;
 
+Procedure ReturnErrorAt(Var ctx: TCompilerContext; idx: Integer; msg: TString);
+Var
+  tok: TToken;
+Begin
+  Inc(ctx.parse.return_error_count);
+  If (idx >= 1) And (idx <= ctx.lex.token_count) Then
+    tok := ctx.lex.tokens[idx]
+  Else
+    tok := ctx.lex.eof_token;
+  SourceErrorAt(ctx, tok.line, tok.col, msg);
+End;
+
+Function AddReturnIR(Var ctx: TCompilerContext; return_idx,
+                     stmt_end: Integer): Boolean;
+Var
+  proc_idx, expr_first, expr_last, close_idx: Integer;
+  expr: TExprInfo;
+Begin
+  AddReturnIR := False;
+  proc_idx := ProcIndexAtLine(ctx, ctx.lex.tokens[return_idx].line);
+  If proc_idx = 0 Then
+    Begin
+      ReturnErrorAt(ctx, return_idx, 'RETURN hors procedure');
+      Exit;
+    End;
+
+  If Not ctx.parse.procs[proc_idx].has_returns Then
+    Begin
+      ReturnErrorAt(ctx, return_idx,
+                    'RETURN dans une procedure sans RETURNS');
+      Exit;
+    End;
+
+  If TokenKindTextAt(ctx, return_idx + 1, TK_PUNCT, '(') Then
+    Begin
+      close_idx := FindMatchingParen(ctx, return_idx + 1, stmt_end - 1);
+      If close_idx = 0 Then
+        Begin
+          ReturnErrorAt(ctx, return_idx, ') attendu apres RETURN');
+          Exit;
+        End;
+      If close_idx <> stmt_end - 1 Then
+        Begin
+          ReturnErrorAt(ctx, close_idx + 1,
+                        'element inattendu apres expression RETURN');
+          Exit;
+        End;
+      expr_first := return_idx + 2;
+      expr_last := close_idx - 1;
+    End
+  Else
+    Begin
+      expr_first := return_idx + 1;
+      expr_last := stmt_end - 1;
+    End;
+
+  If Not ParseExpressionRangeInfo(ctx, expr_first, expr_last, expr) Then
+    Exit;
+
+  If expr.typ.kind <> ctx.parse.procs[proc_idx].return_type.kind Then
+    Begin
+      ReturnErrorAt(ctx, return_idx,
+                    'type de RETURN incompatible avec RETURNS');
+      Exit;
+    End;
+
+  If ctx.parse.return_count >= MAX_RETURNS Then
+    Begin
+      ReturnErrorAt(ctx, return_idx, 'trop de RETURN');
+      Exit;
+    End;
+
+  Inc(ctx.parse.return_count);
+  Inc(ctx.parse.procs[proc_idx].return_count);
+  ctx.parse.returns[ctx.parse.return_count].proc_index := proc_idx;
+  ctx.parse.returns[ctx.parse.return_count].proc_name :=
+    ctx.parse.procs[proc_idx].name;
+  ctx.parse.returns[ctx.parse.return_count].return_token := return_idx;
+  ctx.parse.returns[ctx.parse.return_count].expr_first := expr_first;
+  ctx.parse.returns[ctx.parse.return_count].expr_last := expr_last;
+  ctx.parse.returns[ctx.parse.return_count].line :=
+    ctx.lex.tokens[return_idx].line;
+  ctx.parse.returns[ctx.parse.return_count].col :=
+    ctx.lex.tokens[return_idx].col;
+  ctx.parse.returns[ctx.parse.return_count].return_reg :=
+    ctx.parse.procs[proc_idx].return_type.return_reg;
+  ctx.parse.returns[ctx.parse.return_count].epilogue_label :=
+    ctx.parse.procs[proc_idx].epilogue_label;
+  AddReturnIR := True;
+End;
+
+Procedure PutErrorAt(Var ctx: TCompilerContext; idx: Integer; msg: TString);
+Var
+  tok: TToken;
+Begin
+  Inc(ctx.parse.put_error_count);
+  If (idx >= 1) And (idx <= ctx.lex.token_count) Then
+    tok := ctx.lex.tokens[idx]
+  Else
+    tok := ctx.lex.eof_token;
+  SourceErrorAt(ctx, tok.line, tok.col, msg);
+End;
+
+Function AddPutIR(Var ctx: TCompilerContext; put_idx, stmt_end: Integer): Boolean;
+Var
+  proc_idx, close_idx: Integer;
+  kind: TPutKind;
+  expr_first, expr_last: Integer;
+Begin
+  AddPutIR := False;
+  proc_idx := ProcIndexAtLine(ctx, ctx.lex.tokens[put_idx].line);
+  If proc_idx = 0 Then
+    Begin
+      PutErrorAt(ctx, put_idx, 'PUT hors procedure');
+      Exit;
+    End;
+
+  expr_first := 0;
+  expr_last := 0;
+  If TokenTextAt(ctx, put_idx + 1, 'SKIP') Then
+    Begin
+      kind := PK_SKIP;
+      If put_idx + 2 <> stmt_end Then
+        Begin
+          PutErrorAt(ctx, put_idx + 2, 'element inattendu apres PUT SKIP');
+          Exit;
+        End;
+    End
+  Else If TokenTextAt(ctx, put_idx + 1, 'LIST') Then
+    Begin
+      kind := PK_LIST;
+      If Not TokenKindTextAt(ctx, put_idx + 2, TK_PUNCT, '(') Then
+        Begin
+          PutErrorAt(ctx, put_idx + 1, '( attendu apres PUT LIST');
+          Exit;
+        End;
+      close_idx := FindMatchingParen(ctx, put_idx + 2, stmt_end - 1);
+      If close_idx = 0 Then
+        Begin
+          PutErrorAt(ctx, put_idx + 2, ') attendu apres PUT LIST');
+          Exit;
+        End;
+      If close_idx <> stmt_end - 1 Then
+        Begin
+          PutErrorAt(ctx, close_idx + 1,
+                     'element inattendu apres PUT LIST(expr)');
+          Exit;
+        End;
+      expr_first := put_idx + 3;
+      expr_last := close_idx - 1;
+      If Not ParseExpressionRange(ctx, expr_first, expr_last) Then
+        Exit;
+    End
+  Else
+    Begin
+      PutErrorAt(ctx, put_idx + 1, 'LIST ou SKIP attendu apres PUT');
+      Exit;
+    End;
+
+  If ctx.parse.put_count >= MAX_PUTS Then
+    Begin
+      PutErrorAt(ctx, put_idx, 'trop de PUT');
+      Exit;
+    End;
+
+  Inc(ctx.parse.put_count);
+  If kind = PK_LIST Then
+    Inc(ctx.parse.put_list_count)
+  Else
+    Inc(ctx.parse.put_skip_count);
+
+  ctx.parse.puts[ctx.parse.put_count].kind := kind;
+  ctx.parse.puts[ctx.parse.put_count].proc_index := proc_idx;
+  ctx.parse.puts[ctx.parse.put_count].owner := ctx.parse.procs[proc_idx].name;
+  ctx.parse.puts[ctx.parse.put_count].put_token := put_idx;
+  ctx.parse.puts[ctx.parse.put_count].expr_first := expr_first;
+  ctx.parse.puts[ctx.parse.put_count].expr_last := expr_last;
+  ctx.parse.puts[ctx.parse.put_count].line := ctx.lex.tokens[put_idx].line;
+  ctx.parse.puts[ctx.parse.put_count].col := ctx.lex.tokens[put_idx].col;
+  AddPutIR := True;
+End;
+
 Procedure ValidateExpressions(Var ctx: TCompilerContext);
 Var
-  i, stmt_start, stmt_end, close_idx, eq_idx, to_idx, by_idx: Integer;
+  i, stmt_start, stmt_end, eq_idx, to_idx, by_idx: Integer;
 Begin
   i := 1;
   While i <= ctx.lex.token_count Do
@@ -2518,40 +3392,34 @@ Begin
           by_idx := FindTokenBefore(ctx, i + 1, stmt_end - 1, 'BY');
           If (eq_idx <> 0) And (to_idx <> 0) And (eq_idx < to_idx) Then
             Begin
-              ParseExpressionRange(ctx, eq_idx + 1, to_idx - 1);
-              If (by_idx <> 0) And (by_idx > to_idx) Then
-                Begin
-                  ParseExpressionRange(ctx, to_idx + 1, by_idx - 1);
-                  ParseExpressionRange(ctx, by_idx + 1, stmt_end - 1);
-                End
-              Else
-                ParseExpressionRange(ctx, to_idx + 1, stmt_end - 1);
+              AddDoLoopIR(ctx, i, stmt_end, eq_idx, to_idx, by_idx);
               i := stmt_end + 1;
               Continue;
-            End;
+            End
+          Else
+            DoLoopErrorAt(ctx, i, 'syntaxe DO supportee: DO I = debut TO fin');
         End
       Else If TokenTextAt(ctx, i, 'RETURN') Then
         Begin
           stmt_end := FindStatementEnd(ctx, i);
-          If TokenKindTextAt(ctx, i + 1, TK_PUNCT, '(') Then
-            ParseParenExpressionAt(ctx, i + 1, stmt_end - 1, close_idx)
-          Else
-            ParseExpressionRange(ctx, i + 1, stmt_end - 1);
+          AddReturnIR(ctx, i, stmt_end);
           i := stmt_end + 1;
           Continue;
         End
-      Else If TokenTextAt(ctx, i, 'SELECT') Or TokenTextAt(ctx, i, 'WHEN') Then
+      Else If TokenTextAt(ctx, i, 'SELECT') Then
         Begin
           stmt_end := FindStatementEnd(ctx, i);
-          If TokenKindTextAt(ctx, i + 1, TK_PUNCT, '(') Then
-            ParseParenExpressionAt(ctx, i + 1, stmt_end - 1, close_idx);
+          AddSelectIR(ctx, i, stmt_end);
+        End
+      Else If TokenTextAt(ctx, i, 'WHEN') Or TokenTextAt(ctx, i, 'OTHERWISE') Then
+        Begin
         End
       Else If TokenTextAt(ctx, i, 'PUT') Then
         Begin
           stmt_end := FindStatementEnd(ctx, i);
-          If TokenTextAt(ctx, i + 1, 'LIST') And
-             TokenKindTextAt(ctx, i + 2, TK_PUNCT, '(') Then
-            ParseParenExpressionAt(ctx, i + 2, stmt_end - 1, close_idx);
+          AddPutIR(ctx, i, stmt_end);
+          i := stmt_end + 1;
+          Continue;
         End
       Else If TokenTextAt(ctx, i, 'INITIAL') Or TokenTextAt(ctx, i, 'INIT') Then
         Begin
@@ -2569,6 +3437,391 @@ Begin
 
       Inc(i);
     End;
+End;
+
+Procedure ComputeProcAbiLayout(Var ctx: TCompilerContext; proc_idx: Integer);
+Var
+  i, frame_offset, obj_size, obj_align: Integer;
+  owner: TLabelName;
+Begin
+  If (proc_idx <= 0) Or (proc_idx > ctx.parse.proc_count) Then
+    Exit;
+
+  owner := ctx.parse.procs[proc_idx].name;
+  ctx.parse.procs[proc_idx].arg_bytes :=
+    ctx.parse.procs[proc_idx].param_count * ABI_WORD_SIZE;
+  ctx.parse.procs[proc_idx].cleanup := ABI_CLEANUP;
+  ctx.parse.procs[proc_idx].saved_regs := ABI_SAVED_REGS;
+
+  For i := 1 To ctx.symbols.count Do
+    If ctx.symbols.symbols[i].owner = owner Then
+      Begin
+        ctx.symbols.symbols[i].stack_offset := 0;
+        ctx.symbols.symbols[i].data_label := '';
+        If ctx.symbols.symbols[i].kind = SK_PARAM Then
+          ctx.symbols.symbols[i].stack_offset :=
+            ABI_FIRST_PARAM +
+            ((ctx.symbols.symbols[i].ref_index - 1) * ABI_WORD_SIZE);
+      End;
+
+  frame_offset := 0;
+  For i := 1 To ctx.symbols.count Do
+    If ctx.symbols.symbols[i].owner = owner Then
+      Begin
+        If (ctx.symbols.symbols[i].kind = SK_LOCAL) Or
+           ((ctx.symbols.symbols[i].kind = SK_ARRAY) And
+            (Not ctx.symbols.symbols[i].is_static)) Then
+          Begin
+            obj_size := ctx.symbols.symbols[i].typ.size;
+            obj_align := ctx.symbols.symbols[i].typ.align;
+            If obj_size <= 0 Then
+              obj_size := ABI_WORD_SIZE;
+            If obj_align <= 0 Then
+              obj_align := ABI_WORD_SIZE;
+            frame_offset := AlignTo(frame_offset, obj_align);
+            Inc(frame_offset, AlignTo(obj_size, ABI_WORD_SIZE));
+            ctx.symbols.symbols[i].stack_offset := -frame_offset;
+          End
+        Else If (ctx.symbols.symbols[i].kind = SK_STATIC) Or
+                ((ctx.symbols.symbols[i].kind = SK_ARRAY) And
+                 ctx.symbols.symbols[i].is_static) Then
+          ctx.symbols.symbols[i].data_label :=
+            MakeDataLabel(owner, ctx.symbols.symbols[i].name);
+      End;
+
+  ctx.parse.procs[proc_idx].local_bytes := AlignTo(frame_offset, ABI_WORD_SIZE);
+  ctx.parse.procs[proc_idx].frame_bytes := ctx.parse.procs[proc_idx].local_bytes;
+End;
+
+Procedure ComputeAbiLayout(Var ctx: TCompilerContext);
+Var
+  i: Integer;
+Begin
+  For i := 1 To ctx.parse.proc_count Do
+    ComputeProcAbiLayout(ctx, i);
+End;
+
+Function ProcAsmLabel(Var ctx: TCompilerContext; proc_idx: Integer): TLabelName;
+Var
+  i: Integer;
+Begin
+  ProcAsmLabel := '';
+  If (proc_idx <= 0) Or (proc_idx > ctx.parse.proc_count) Then
+    Exit;
+
+  For i := 1 To ctx.parse.label_count Do
+    If (ctx.parse.labels[i].kind = LK_PROC) And
+       (ctx.parse.labels[i].name = ctx.parse.procs[proc_idx].name) Then
+      Begin
+        ProcAsmLabel := ctx.parse.labels[i].asm_name;
+        Exit;
+      End;
+
+  ProcAsmLabel := 'PL1_PROC_' + AsmSafeName(ctx.parse.procs[proc_idx].name);
+End;
+
+Function MainProcIndex(Var ctx: TCompilerContext): Integer;
+Var
+  i: Integer;
+Begin
+  MainProcIndex := 0;
+  For i := 1 To ctx.parse.proc_count Do
+    If ctx.parse.procs[i].is_main Then
+      Begin
+        MainProcIndex := i;
+        Exit;
+      End;
+End;
+
+Function SymbolAsmRef(Var ctx: TCompilerContext; sym_idx: Integer): TString;
+Var
+  off: Integer;
+  s: TString;
+Begin
+  s := '<sans-adresse>';
+  If (sym_idx <= 0) Or (sym_idx > ctx.symbols.count) Then
+    Begin
+      SymbolAsmRef := s;
+      Exit;
+    End;
+
+  If ctx.symbols.symbols[sym_idx].data_label <> '' Then
+    Begin
+      SymbolAsmRef := 'DWORD PTR [' + ctx.symbols.symbols[sym_idx].data_label + ']';
+      Exit;
+    End;
+
+  off := ctx.symbols.symbols[sym_idx].stack_offset;
+  If off <> 0 Then
+    Begin
+      s := 'DWORD PTR [' + ABI_FRAME_REG;
+      If off > 0 Then
+        s := s + '+';
+      s := s + IntToLabel(off) + ']';
+    End;
+  SymbolAsmRef := s;
+End;
+
+Procedure EmitDataAsm(Var ctx: TCompilerContext; Var f: Text);
+Var
+  i: Integer;
+Begin
+  Writeln(f, '.data');
+  Writeln(f, 'PL1_RT_NEWLINE DB 13, 10');
+  Writeln(f, 'PL1_RT_I32BUF DB 16 DUP (0)');
+  Writeln(f, 'PL1_RT_WRITTEN DD 0');
+  For i := 1 To ctx.symbols.count Do
+    If ctx.symbols.symbols[i].data_label <> '' Then
+      Begin
+        If ctx.symbols.symbols[i].kind = SK_ARRAY Then
+          Writeln(f, ctx.symbols.symbols[i].data_label, ' DD ',
+                  ctx.symbols.symbols[i].elem_count, ' DUP (0)')
+        Else
+          Writeln(f, ctx.symbols.symbols[i].data_label, ' DD 0');
+      End;
+End;
+
+Procedure EmitSymbolAccessComments(Var ctx: TCompilerContext; Var f: Text;
+                                   proc_idx: Integer);
+Var
+  i: Integer;
+  owner: TLabelName;
+Begin
+  owner := ctx.parse.procs[proc_idx].name;
+  Writeln(f, '        ; Acces ABI de ', owner);
+  For i := 1 To ctx.symbols.count Do
+    If ctx.symbols.symbols[i].owner = owner Then
+      Case ctx.symbols.symbols[i].kind Of
+        SK_PARAM, SK_LOCAL, SK_STATIC, SK_ARRAY:
+          Writeln(f, '        ; ', SymKindName(ctx.symbols.symbols[i].kind),
+                  ' ', ctx.symbols.symbols[i].name, ' -> ',
+                  SymbolAsmRef(ctx, i));
+      Else
+      End;
+End;
+
+Procedure EmitProcRuntimeCalls(Var ctx: TCompilerContext; Var f: Text;
+                               proc_idx: Integer);
+Var
+  i: Integer;
+Begin
+  For i := 1 To ctx.parse.put_count Do
+    If ctx.parse.puts[i].proc_index = proc_idx Then
+      Begin
+        If ctx.parse.puts[i].kind = PK_LIST Then
+          Begin
+            Writeln(f, '        ; PUT LIST ',
+                    TokenRangeText(ctx, ctx.parse.puts[i].expr_first,
+                                   ctx.parse.puts[i].expr_last));
+            Writeln(f, '        ; TODO 23: charger l''expression dans ', ABI_RET_REG);
+            Writeln(f, '        push ', ABI_RET_REG);
+            Writeln(f, '        call PL1_RT_PUT_LIST_I32');
+            Writeln(f, '        add ', ABI_STACK_REG, ', ', ABI_WORD_SIZE);
+          End
+        Else
+          Begin
+            Writeln(f, '        ; PUT SKIP');
+            Writeln(f, '        call PL1_RT_PUT_SKIP');
+          End;
+      End;
+End;
+
+Procedure EmitProcIrComments(Var ctx: TCompilerContext; Var f: Text;
+                             proc_idx: Integer);
+Var
+  i: Integer;
+  owner: TLabelName;
+Begin
+  owner := ctx.parse.procs[proc_idx].name;
+  For i := 1 To ctx.parse.return_count Do
+    If ctx.parse.returns[i].proc_index = proc_idx Then
+      Writeln(f, '        ; RETURN ',
+              TokenRangeText(ctx, ctx.parse.returns[i].expr_first,
+                             ctx.parse.returns[i].expr_last),
+              ' -> ', ABI_RET_REG);
+
+  For i := 1 To ctx.parse.assignment_count Do
+    If ctx.parse.assignments[i].owner = owner Then
+      Writeln(f, '        ; ASSIGN ', ctx.parse.assignments[i].target_name,
+              ' := ', TokenRangeText(ctx, ctx.parse.assignments[i].expr_first,
+                                     ctx.parse.assignments[i].expr_last));
+
+  For i := 1 To ctx.parse.do_loop_count Do
+    If ctx.parse.do_loops[i].owner = owner Then
+      Writeln(f, '        ; DO ', ctx.parse.do_loops[i].control_name,
+              ' labels ', ctx.parse.do_loops[i].label_test, ', ',
+              ctx.parse.do_loops[i].label_body, ', ',
+              ctx.parse.do_loops[i].label_end);
+  EmitProcRuntimeCalls(ctx, f, proc_idx);
+End;
+
+Procedure EmitStartAsm(Var ctx: TCompilerContext; Var f: Text);
+Var
+  main_idx: Integer;
+Begin
+  main_idx := MainProcIndex(ctx);
+  If main_idx = 0 Then
+    Exit;
+  Writeln(f);
+  Writeln(f, 'PL1_START PROC');
+  Writeln(f, '        call ', ProcAsmLabel(ctx, main_idx));
+  Writeln(f, '        push 0');
+  Writeln(f, '        call ExitProcess');
+  Writeln(f, 'PL1_START ENDP');
+End;
+
+Procedure EmitRuntimeAsm(Var f: Text);
+Begin
+  Writeln(f);
+  Writeln(f, 'PL1_RT_PUT_SKIP PROC');
+  Writeln(f, '        push -11');
+  Writeln(f, '        call GetStdHandle');
+  Writeln(f, '        push 0');
+  Writeln(f, '        push OFFSET PL1_RT_WRITTEN');
+  Writeln(f, '        push 2');
+  Writeln(f, '        push OFFSET PL1_RT_NEWLINE');
+  Writeln(f, '        push eax');
+  Writeln(f, '        call WriteFile');
+  Writeln(f, '        ret');
+  Writeln(f, 'PL1_RT_PUT_SKIP ENDP');
+  Writeln(f);
+  Writeln(f, 'PL1_RT_PUT_LIST_I32 PROC');
+  Writeln(f, '        push ', ABI_FRAME_REG);
+  Writeln(f, '        mov ', ABI_FRAME_REG, ', ', ABI_STACK_REG);
+  Writeln(f, '        push ebx');
+  Writeln(f, '        push esi');
+  Writeln(f, '        push edi');
+  Writeln(f, '        mov eax, DWORD PTR [', ABI_FRAME_REG, '+8]');
+  Writeln(f, '        mov edi, OFFSET PL1_RT_I32BUF');
+  Writeln(f, '        add edi, 16');
+  Writeln(f, '        xor ecx, ecx');
+  Writeln(f, '        xor esi, esi');
+  Writeln(f, '        cmp eax, 0');
+  Writeln(f, '        jge PL1_RT_I32_ABS_READY');
+  Writeln(f, '        neg eax');
+  Writeln(f, '        mov esi, 1');
+  Writeln(f, 'PL1_RT_I32_ABS_READY:');
+  Writeln(f, '        cmp eax, 0');
+  Writeln(f, '        jne PL1_RT_I32_DIGITS');
+  Writeln(f, '        dec edi');
+  Writeln(f, '        mov BYTE PTR [edi], ''0''');
+  Writeln(f, '        inc ecx');
+  Writeln(f, '        jmp PL1_RT_I32_SIGN');
+  Writeln(f, 'PL1_RT_I32_DIGITS:');
+  Writeln(f, '        xor edx, edx');
+  Writeln(f, '        mov ebx, 10');
+  Writeln(f, '        div ebx');
+  Writeln(f, '        add dl, ''0''');
+  Writeln(f, '        dec edi');
+  Writeln(f, '        mov BYTE PTR [edi], dl');
+  Writeln(f, '        inc ecx');
+  Writeln(f, '        test eax, eax');
+  Writeln(f, '        jne PL1_RT_I32_DIGITS');
+  Writeln(f, 'PL1_RT_I32_SIGN:');
+  Writeln(f, '        cmp esi, 0');
+  Writeln(f, '        je PL1_RT_I32_WRITE');
+  Writeln(f, '        dec edi');
+  Writeln(f, '        mov BYTE PTR [edi], ''-''');
+  Writeln(f, '        inc ecx');
+  Writeln(f, 'PL1_RT_I32_WRITE:');
+  Writeln(f, '        push -11');
+  Writeln(f, '        call GetStdHandle');
+  Writeln(f, '        push 0');
+  Writeln(f, '        push OFFSET PL1_RT_WRITTEN');
+  Writeln(f, '        push ecx');
+  Writeln(f, '        push edi');
+  Writeln(f, '        push eax');
+  Writeln(f, '        call WriteFile');
+  Writeln(f, '        pop edi');
+  Writeln(f, '        pop esi');
+  Writeln(f, '        pop ebx');
+  Writeln(f, '        mov ', ABI_STACK_REG, ', ', ABI_FRAME_REG);
+  Writeln(f, '        pop ', ABI_FRAME_REG);
+  Writeln(f, '        ret');
+  Writeln(f, 'PL1_RT_PUT_LIST_I32 ENDP');
+End;
+
+Procedure EmitProcAsm(Var ctx: TCompilerContext; Var f: Text; proc_idx: Integer);
+Var
+  i: Integer;
+  label_name: TLabelName;
+  owner: TLabelName;
+Begin
+  owner := ctx.parse.procs[proc_idx].name;
+  label_name := ProcAsmLabel(ctx, proc_idx);
+  Writeln(f);
+  Writeln(f, label_name, ' PROC');
+  Writeln(f, '        push ', ABI_FRAME_REG);
+  Writeln(f, '        mov ', ABI_FRAME_REG, ', ', ABI_STACK_REG);
+  If ctx.parse.procs[proc_idx].frame_bytes > 0 Then
+    Writeln(f, '        sub ', ABI_STACK_REG, ', ',
+            ctx.parse.procs[proc_idx].frame_bytes);
+  EmitSymbolAccessComments(ctx, f, proc_idx);
+  EmitProcIrComments(ctx, f, proc_idx);
+
+  For i := 1 To ctx.parse.label_count Do
+    If (ctx.parse.labels[i].kind = LK_CONTROL) And
+       (ctx.parse.labels[i].owner = owner) Then
+      Writeln(f, ctx.parse.labels[i].asm_name, ':');
+
+  Writeln(f, ctx.parse.procs[proc_idx].epilogue_label, ':');
+  Writeln(f, '        mov ', ABI_STACK_REG, ', ', ABI_FRAME_REG);
+  Writeln(f, '        pop ', ABI_FRAME_REG);
+  Writeln(f, '        ret');
+  Writeln(f, label_name, ' ENDP');
+End;
+
+Function EmitAsm386(Var ctx: TCompilerContext): Boolean;
+Var
+  f: Text;
+  io, i: Integer;
+Begin
+  EmitAsm386 := False;
+  If Not ctx.options.emit_asm Then
+    Begin
+      EmitAsm386 := True;
+      Exit;
+    End;
+
+  Assign(f, ctx.asm_name);
+  Rewrite(f);
+  io := IOResult;
+  If io <> 0 Then
+    Begin
+      PipelineError(ctx, 'impossible de creer le fichier ASM');
+      Exit;
+    End;
+
+  Writeln(f, '; Genere par PL1CW32 ', PL1CW32_VERSION);
+  Writeln(f, '; Convention interne: frame=', ABI_FRAME_REG,
+          ', stack=', ABI_STACK_REG, ', retour=', ABI_RET_REG,
+          ', cleanup=', ABI_CLEANUP);
+  Writeln(f, '.386');
+  Writeln(f, '.model flat, C');
+  Writeln(f, 'option casemap:none');
+  Writeln(f, 'EXTERN GetStdHandle:PROC');
+  Writeln(f, 'EXTERN WriteFile:PROC');
+  Writeln(f, 'EXTERN ExitProcess:PROC');
+  Writeln(f);
+  EmitDataAsm(ctx, f);
+  Writeln(f);
+  Writeln(f, '.code');
+  EmitStartAsm(ctx, f);
+  For i := 1 To ctx.parse.proc_count Do
+    EmitProcAsm(ctx, f, i);
+  EmitRuntimeAsm(f);
+  Writeln(f);
+  Writeln(f, 'END PL1_START');
+
+  Close(f);
+  io := IOResult;
+  If io <> 0 Then
+    Begin
+      PipelineError(ctx, 'erreur d''ecriture du fichier ASM');
+      Exit;
+    End;
+
+  EmitAsm386 := True;
 End;
 
 Function ResolveLabelsAndGotos(Var ctx: TCompilerContext): Boolean;
@@ -2594,13 +3847,21 @@ Begin
                   'declaration DECLARE incomplete');
 
   For i := 1 To ctx.parse.goto_count Do
-    If FindLabel(ctx, ctx.parse.gotos[i].name) = 0 Then
-      Begin
-        Inc(ctx.parse.unresolved_gotos);
-        SourceErrorAt(ctx, ctx.parse.gotos[i].line,
-                      ctx.parse.gotos[i].col,
-                      'GOTO vers une etiquette inconnue');
-      End;
+    Begin
+      ctx.parse.gotos[i].target_index :=
+        FindScopedLabel(ctx, ctx.parse.gotos[i].name,
+                        ctx.parse.gotos[i].owner);
+      If ctx.parse.gotos[i].target_index = 0 Then
+        Begin
+          Inc(ctx.parse.unresolved_gotos);
+          SourceErrorAt(ctx, ctx.parse.gotos[i].line,
+                        ctx.parse.gotos[i].col,
+                        'GOTO vers une etiquette inconnue');
+        End
+      Else
+        ctx.parse.gotos[i].asm_target :=
+          ctx.parse.labels[ctx.parse.gotos[i].target_index].asm_name;
+    End;
 
   If ctx.parse.proc_count = 0 Then
     SourceErrorAt(ctx, 1, 1, 'aucune PROCEDURE trouvee');
@@ -2615,6 +3876,16 @@ Begin
                     'procedure non fermee par END');
 
   ValidateExpressions(ctx);
+
+  For i := 1 To ctx.parse.proc_count Do
+    If ctx.parse.procs[i].has_returns And
+       (ctx.parse.procs[i].return_count = 0) Then
+      SourceErrorAt(ctx, ctx.parse.procs[i].decl_line,
+                    ctx.parse.procs[i].decl_col,
+                    'procedure RETURNS sans RETURN');
+
+  If ctx.errors = 0 Then
+    ComputeAbiLayout(ctx);
 
   ResolveLabelsAndGotos := ctx.errors = 0;
 End;
@@ -2959,7 +4230,17 @@ Begin
           ', built-ins=', ctx.parse.builtin_call_count,
           ', built-ins invalides=', ctx.parse.builtin_error_count,
           ', affectations=', ctx.parse.assignment_count,
-          ', affectations invalides=', ctx.parse.assignment_error_count, ')');
+          ', affectations invalides=', ctx.parse.assignment_error_count,
+          ', DO=', ctx.parse.do_loop_count,
+          ', DO invalides=', ctx.parse.do_loop_error_count,
+          ', SELECT=', ctx.parse.select_count,
+          ', WHEN=', ctx.parse.when_count,
+          ', OTHERWISE=', ctx.parse.otherwise_count,
+          ', SELECT invalides=', ctx.parse.select_error_count,
+          ', RETURN=', ctx.parse.return_count,
+          ', RETURN invalides=', ctx.parse.return_error_count,
+          ', PUT=', ctx.parse.put_count,
+          ', PUT invalides=', ctx.parse.put_error_count, ')');
   Writeln('Procedures: ', ctx.parse.proc_count,
           ' (MAIN=', ctx.parse.main_proc_count, ')');
   For i := 1 To ctx.parse.proc_count Do
@@ -2974,13 +4255,168 @@ Begin
       Write(')');
       If ctx.parse.procs[i].has_returns Then
         Write(' RETURNS ', TypeKindName(ctx.parse.procs[i].return_type.kind),
-              ' via ', ctx.parse.procs[i].return_type.return_reg);
+              ' via ', ctx.parse.procs[i].return_type.return_reg,
+              ' returns=', ctx.parse.procs[i].return_count,
+              ' epilogue=', ctx.parse.procs[i].epilogue_label);
+      Write(' ABI(args=', ctx.parse.procs[i].arg_bytes,
+            ', locals=', ctx.parse.procs[i].local_bytes,
+            ', frame=', ctx.parse.procs[i].frame_bytes,
+            ', cleanup=', ctx.parse.procs[i].cleanup,
+            ', saved=', ctx.parse.procs[i].saved_regs, ')');
       If ctx.parse.procs[i].is_main Then
         Write(' OPTIONS(MAIN)');
       If ctx.parse.procs[i].closed Then
         Writeln(' END@', ctx.parse.procs[i].end_line)
       Else
         Writeln(' non fermee');
+    End;
+End;
+
+Procedure PrintAbiInfo(Var ctx: TCompilerContext);
+Var
+  i: Integer;
+Begin
+  Writeln('ABI 80386 Win32 interne: frame=', ABI_FRAME_REG,
+          ', stack=', ABI_STACK_REG,
+          ', retour=', ABI_RET_REG,
+          ', premier param=[', ABI_FRAME_REG, '+', ABI_FIRST_PARAM, ']',
+          ', cleanup=', ABI_CLEANUP,
+          ', sauvegardes=', ABI_SAVED_REGS);
+  For i := 1 To ctx.parse.proc_count Do
+    Writeln('  ', ctx.parse.procs[i].name,
+            ': args=', ctx.parse.procs[i].arg_bytes,
+            ' locals=', ctx.parse.procs[i].local_bytes,
+            ' frame=', ctx.parse.procs[i].frame_bytes,
+            ' epilogue=', ctx.parse.procs[i].epilogue_label);
+End;
+
+Procedure PrintReturnInfo(Var ctx: TCompilerContext);
+Var
+  i: Integer;
+Begin
+  Writeln('RETURN: ', ctx.parse.return_count,
+          ' (invalides=', ctx.parse.return_error_count, ')');
+  For i := 1 To ctx.parse.return_count Do
+    Writeln('  ', ctx.parse.returns[i].proc_name,
+            ' RETURN ', TokenRangeText(ctx, ctx.parse.returns[i].expr_first,
+                                       ctx.parse.returns[i].expr_last),
+            ' -> ', ctx.parse.returns[i].return_reg,
+            ' puis ', ctx.parse.returns[i].epilogue_label,
+            ' @', ctx.parse.returns[i].line);
+End;
+
+Procedure PrintPutInfo(Var ctx: TCompilerContext);
+Var
+  i: Integer;
+Begin
+  Writeln('PUT runtime: ', ctx.parse.put_count,
+          ' (LIST=', ctx.parse.put_list_count,
+          ', SKIP=', ctx.parse.put_skip_count,
+          ', invalides=', ctx.parse.put_error_count, ')');
+  For i := 1 To ctx.parse.put_count Do
+    Begin
+      Write('  ', ctx.parse.puts[i].owner, ' PUT ');
+      If ctx.parse.puts[i].kind = PK_LIST Then
+        Writeln('LIST ', TokenRangeText(ctx, ctx.parse.puts[i].expr_first,
+                                        ctx.parse.puts[i].expr_last),
+                ' -> PUT_LIST_I32 @', ctx.parse.puts[i].line)
+      Else
+        Writeln('SKIP -> PUT_SKIP @', ctx.parse.puts[i].line);
+    End;
+End;
+
+Procedure PrintLabelGotoInfo(Var ctx: TCompilerContext);
+Var
+  i: Integer;
+Begin
+  Writeln('Labels ASM: ', ctx.parse.label_count,
+          ' (GOTO=', ctx.parse.goto_count,
+          ', non resolus=', ctx.parse.unresolved_gotos,
+          ', doublons=', ctx.parse.duplicate_labels, ')');
+  For i := 1 To ctx.parse.label_count Do
+    Begin
+      Write('  ', LabelKindName(ctx.parse.labels[i].kind), ' ');
+      If ctx.parse.labels[i].owner <> '' Then
+        Write(ctx.parse.labels[i].owner, '.');
+      Writeln(ctx.parse.labels[i].name, ' -> ',
+              ctx.parse.labels[i].asm_name,
+              ' @', ctx.parse.labels[i].line);
+    End;
+  For i := 1 To ctx.parse.goto_count Do
+    Begin
+      Write('  GOTO ');
+      If ctx.parse.gotos[i].owner <> '' Then
+        Write(ctx.parse.gotos[i].owner, '.');
+      Write(ctx.parse.gotos[i].name, ' @', ctx.parse.gotos[i].line, ' -> ');
+      If ctx.parse.gotos[i].target_index <> 0 Then
+        Writeln(ctx.parse.gotos[i].asm_target)
+      Else
+        Writeln('<non resolu>');
+    End;
+End;
+
+Procedure PrintSelectInfo(Var ctx: TCompilerContext);
+Var
+  i, j, first_when: Integer;
+Begin
+  Writeln('SELECT: ', ctx.parse.select_count,
+          ' (WHEN=', ctx.parse.when_count,
+          ', OTHERWISE=', ctx.parse.otherwise_count,
+          ', profondeur max=', ctx.parse.max_select_depth,
+          ', invalides=', ctx.parse.select_error_count, ')');
+  For i := 1 To ctx.parse.select_count Do
+    Begin
+      Writeln('  SELECT ', TokenRangeText(ctx, ctx.parse.selects[i].expr_first,
+              ctx.parse.selects[i].expr_last),
+              ' lignes ', ctx.parse.selects[i].line,
+              '..', ctx.parse.selects[i].end_line,
+              ' depth=', ctx.parse.selects[i].nesting);
+      Writeln('    labels ', ctx.parse.selects[i].label_next, ', ',
+              ctx.parse.selects[i].label_otherwise, ', ',
+              ctx.parse.selects[i].label_end);
+      first_when := ctx.parse.selects[i].first_when;
+      For j := first_when To first_when + ctx.parse.selects[i].when_count - 1 Do
+        If (j >= 1) And (j <= ctx.parse.when_count) Then
+          Writeln('    WHEN ', TokenRangeText(ctx, ctx.parse.whens[j].value_first,
+                  ctx.parse.whens[j].value_last),
+                  ' (', ctx.parse.whens[j].value_count, ' valeur(s))',
+                  ' -> ', TokenRangeText(ctx, ctx.parse.whens[j].stmt_first,
+                  ctx.parse.whens[j].stmt_last),
+                  ' labels ', ctx.parse.whens[j].label_match, ', ',
+                  ctx.parse.whens[j].label_next);
+      If ctx.parse.selects[i].otherwise_token <> 0 Then
+        Writeln('    OTHERWISE @',
+                ctx.lex.tokens[ctx.parse.selects[i].otherwise_token].line);
+    End;
+End;
+
+Procedure PrintDoLoopInfo(Var ctx: TCompilerContext);
+Var
+  i: Integer;
+Begin
+  Writeln('Boucles DO: ', ctx.parse.do_loop_count,
+          ' (profondeur max=', ctx.parse.max_do_loop_depth,
+          ', invalides=', ctx.parse.do_loop_error_count, ')');
+  For i := 1 To ctx.parse.do_loop_count Do
+    Begin
+      Write('  DO ', ctx.parse.do_loops[i].owner, '.',
+            ctx.parse.do_loops[i].control_name,
+            ' = ', TokenRangeText(ctx, ctx.parse.do_loops[i].start_first,
+                                  ctx.parse.do_loops[i].start_last),
+            ' TO ', TokenRangeText(ctx, ctx.parse.do_loops[i].end_first,
+                                   ctx.parse.do_loops[i].end_last));
+      If ctx.parse.do_loops[i].has_by Then
+        Write(' BY ', TokenRangeText(ctx, ctx.parse.do_loops[i].by_first,
+                                     ctx.parse.do_loops[i].by_last))
+      Else
+        Write(' BY 1');
+      Write(' lignes ', ctx.parse.do_loops[i].line,
+            '..', ctx.parse.do_loops[i].end_line,
+            ' depth=', ctx.parse.do_loops[i].nesting);
+      Writeln;
+      Writeln('    labels ', ctx.parse.do_loops[i].label_test, ', ',
+              ctx.parse.do_loops[i].label_body, ', ',
+              ctx.parse.do_loops[i].label_end);
     End;
 End;
 
@@ -3045,6 +4481,15 @@ Begin
         Write(' STATIC');
       If ctx.symbols.symbols[i].has_initial Then
         Write(' INITIAL');
+      If ctx.symbols.symbols[i].stack_offset <> 0 Then
+        Begin
+          Write(' [', ABI_FRAME_REG);
+          If ctx.symbols.symbols[i].stack_offset > 0 Then
+            Write('+');
+          Write(ctx.symbols.symbols[i].stack_offset, ']');
+        End;
+      If ctx.symbols.symbols[i].data_label <> '' Then
+        Write(' DATA=', ctx.symbols.symbols[i].data_label);
       Writeln;
     End;
 End;
@@ -3213,6 +4658,12 @@ Begin
                 Begin
                   PrintParseInfo(ctx);
                   PrintSymbolInfo(ctx);
+                  PrintAbiInfo(ctx);
+                  PrintLabelGotoInfo(ctx);
+                  PrintReturnInfo(ctx);
+                  PrintPutInfo(ctx);
+                  PrintSelectInfo(ctx);
+                  PrintDoLoopInfo(ctx);
                   PrintAssignmentInfo(ctx);
                 End;
               RunStage := True;
@@ -3220,12 +4671,17 @@ Begin
       End;
     CS_EMIT_ASM386:
       Begin
-        { TODO 20 a 23 genereront l'assembleur 80386 Win32. }
         If ctx.last_art <> AK_AST_IR Then
           PipelineError(ctx, 'AST / IR attendu')
+        Else If Not EmitAsm386(ctx) Then
+          Begin
+            { EmitAsm386 a deja produit le diagnostic. }
+          End
         Else
           Begin
             ctx.last_art := AK_ASM_386;
+            If ctx.options.verbose And ctx.options.emit_asm Then
+              Writeln('ASM genere: ', ctx.asm_name);
             RunStage := True;
           End;
       End;
