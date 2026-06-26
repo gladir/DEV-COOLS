@@ -21,7 +21,7 @@
 12. [IMPLEMENTE] Definir la representation 32 bits des types minimaux : FIXED BINARY comme entier signe 32 bits, tableaux d'entiers 32 bits, valeurs de retour dans EAX.
 13. [IMPLEMENTE] Implementer le parseur d'expressions avec precedence : litteraux, variables, tableaux, parentheses, appels, unaire -, *, / si prevu, +, -, comparaisons.
 14. [IMPLEMENTE] Implementer les built-ins requis : ABS, MAX, MIN, MOD, avec evaluation correcte dans les expressions et preparation a d'autres built-ins PL/1.
-15. Generer le code des affectations : variable = expression, tableau(index) = expression, initialisation explicite, initialisation STATIC et locales.
+15. [IMPLEMENTE] Generer le code des affectations : variable = expression, tableau(index) = expression, initialisation explicite, initialisation STATIC et locales.
 16. Implementer DO I = debut TO fin ; ... END ; avec variable de controle, test de fin, increment implicite, labels 80386 uniques et imbrication.
 17. Implementer SELECT(expr), WHEN(valeurs), OTHERWISE et END, en generation de comparaisons et branchements structures.
 18. Implementer GOTO label et les etiquettes internes en emission ASM/OBJ, avec verification des labels inexistants ou dupliques.
@@ -60,6 +60,7 @@ Const
   MAX_SYMBOLS     = 1024;
   MAX_TOKENS      = 4096;
   MAX_CALL_ARGS   = 8;
+  MAX_ASSIGNMENTS = 512;
   ABI_WORD_SIZE   = 4;
   ABI_RET_REG     = 'EAX';
   PL1_KEYWORD_COUNT = 28;
@@ -265,6 +266,29 @@ Type
 
   TSymbolTable = Array[1..MAX_SYMBOLS] Of TSymbol;
 
+  TAssignKind = (
+    AS_VARIABLE,
+    AS_ARRAY_ELEMENT,
+    AS_INITIALIZER
+  );
+
+  TAssignment = Record
+    kind            : TAssignKind;
+    target_name     : TLabelName;
+    owner           : TLabelName;
+    symbol_index    : Integer;
+    target_token    : Integer;
+    index_first     : Integer;
+    index_last      : Integer;
+    expr_first      : Integer;
+    expr_last       : Integer;
+    line            : LongInt;
+    col             : Integer;
+    is_static_init  : Boolean;
+  End;
+
+  TAssignmentTable = Array[1..MAX_ASSIGNMENTS] Of TAssignment;
+
   TSymbolInfo = Record
     count              : Integer;
     proc_count         : Integer;
@@ -314,6 +338,11 @@ Type
     expr_error_count : Integer;
     builtin_call_count : Integer;
     builtin_error_count: Integer;
+    assignment_count : Integer;
+    assignment_var_count: Integer;
+    assignment_array_count: Integer;
+    assignment_init_count: Integer;
+    assignment_error_count: Integer;
     proc_count        : Integer;
     main_proc_count   : Integer;
     open_proc         : Integer;
@@ -337,6 +366,7 @@ Type
     procs             : TProcTable;
     labels            : TLabelTable;
     gotos             : TGotoTable;
+    assignments       : TAssignmentTable;
     have_prev         : Boolean;
     prev_token        : TToken;
     pending_goto      : Boolean;
@@ -462,6 +492,11 @@ Begin
   ctx.parse.expr_error_count := 0;
   ctx.parse.builtin_call_count := 0;
   ctx.parse.builtin_error_count := 0;
+  ctx.parse.assignment_count := 0;
+  ctx.parse.assignment_var_count := 0;
+  ctx.parse.assignment_array_count := 0;
+  ctx.parse.assignment_init_count := 0;
+  ctx.parse.assignment_error_count := 0;
   ctx.parse.proc_count := 0;
   ctx.parse.main_proc_count := 0;
   ctx.parse.open_proc := 0;
@@ -1058,6 +1093,11 @@ Begin
   ctx.parse.expr_error_count := 0;
   ctx.parse.builtin_call_count := 0;
   ctx.parse.builtin_error_count := 0;
+  ctx.parse.assignment_count := 0;
+  ctx.parse.assignment_var_count := 0;
+  ctx.parse.assignment_array_count := 0;
+  ctx.parse.assignment_init_count := 0;
+  ctx.parse.assignment_error_count := 0;
   ctx.parse.proc_count := 0;
   ctx.parse.main_proc_count := 0;
   ctx.parse.open_proc := 0;
@@ -1691,6 +1731,19 @@ Begin
       End;
 End;
 
+Function FindStatementStart(Var ctx: TCompilerContext; idx: Integer): Integer;
+Var
+  i: Integer;
+Begin
+  FindStatementStart := 1;
+  For i := idx - 1 Downto 1 Do
+    If TokenKindTextAt(ctx, i, TK_PUNCT, ';') Then
+      Begin
+        FindStatementStart := i + 1;
+        Exit;
+      End;
+End;
+
 Function FindTokenBefore(Var ctx: TCompilerContext; first_idx, last_idx: Integer;
                          text: TString): Integer;
 Var
@@ -1728,6 +1781,44 @@ Begin
     End;
 End;
 
+Function FindOpeningParen(Var ctx: TCompilerContext; close_idx: Integer;
+                          first_idx: Integer): Integer;
+Var
+  i, depth: Integer;
+Begin
+  FindOpeningParen := 0;
+  depth := 0;
+  For i := close_idx Downto first_idx Do
+    Begin
+      If TokenKindTextAt(ctx, i, TK_PUNCT, ')') Then
+        Inc(depth)
+      Else If TokenKindTextAt(ctx, i, TK_PUNCT, '(') Then
+        Begin
+          Dec(depth);
+          If depth = 0 Then
+            Begin
+              FindOpeningParen := i;
+              Exit;
+            End;
+        End;
+    End;
+End;
+
+Function ProcNameAtLine(Var ctx: TCompilerContext; line_no: LongInt): TLabelName;
+Var
+  i: Integer;
+Begin
+  ProcNameAtLine := '';
+  For i := 1 To ctx.parse.proc_count Do
+    If (line_no >= ctx.parse.procs[i].decl_line) And
+       ((ctx.parse.procs[i].end_line = 0) Or
+        (line_no <= ctx.parse.procs[i].end_line)) Then
+      Begin
+        ProcNameAtLine := ctx.parse.procs[i].name;
+        Exit;
+      End;
+End;
+
 Procedure ExprErrorAt(Var ctx: TCompilerContext; idx: Integer; msg: TString);
 Var
   tok: TToken;
@@ -1738,6 +1829,202 @@ Begin
   Else
     tok := ctx.lex.eof_token;
   SourceErrorAt(ctx, tok.line, tok.col, msg);
+End;
+
+Function AssignKindName(kind: TAssignKind): TString;
+Begin
+  Case kind Of
+    AS_VARIABLE:      AssignKindName := 'VAR';
+    AS_ARRAY_ELEMENT: AssignKindName := 'ARRAY';
+    AS_INITIALIZER:   AssignKindName := 'INIT';
+  Else
+    AssignKindName := 'UNKNOWN';
+  End;
+End;
+
+Function TokenRangeText(Var ctx: TCompilerContext; first_idx,
+                        last_idx: Integer): TString;
+Var
+  i: Integer;
+  s: TString;
+Begin
+  s := '';
+  For i := first_idx To last_idx Do
+    If (i >= 1) And (i <= ctx.lex.token_count) Then
+      Begin
+        If s <> '' Then
+          s := s + ' ';
+        s := s + ctx.lex.tokens[i].text;
+      End;
+  TokenRangeText := s;
+End;
+
+Procedure AssignmentErrorAt(Var ctx: TCompilerContext; idx: Integer; msg: TString);
+Var
+  tok: TToken;
+Begin
+  Inc(ctx.parse.assignment_error_count);
+  If (idx >= 1) And (idx <= ctx.lex.token_count) Then
+    tok := ctx.lex.tokens[idx]
+  Else
+    tok := ctx.lex.eof_token;
+  SourceErrorAt(ctx, tok.line, tok.col, msg);
+End;
+
+Procedure CountAssignment(Var ctx: TCompilerContext; kind: TAssignKind);
+Begin
+  Inc(ctx.parse.assignment_count);
+  Case kind Of
+    AS_VARIABLE:      Inc(ctx.parse.assignment_var_count);
+    AS_ARRAY_ELEMENT: Inc(ctx.parse.assignment_array_count);
+    AS_INITIALIZER:   Inc(ctx.parse.assignment_init_count);
+  Else
+  End;
+End;
+
+Function ParseExpressionRange(Var ctx: TCompilerContext; first_idx,
+                              last_idx: Integer): Boolean; Forward;
+
+Function AddAssignmentIR(Var ctx: TCompilerContext; kind: TAssignKind;
+                         target_idx, index_first, index_last,
+                         expr_first, expr_last: Integer): Boolean;
+Var
+  owner: TLabelName;
+  sym_idx: Integer;
+Begin
+  AddAssignmentIR := False;
+  If (target_idx < 1) Or (target_idx > ctx.lex.token_count) Or
+     Not IsNameToken(ctx.lex.tokens[target_idx]) Then
+    Begin
+      AssignmentErrorAt(ctx, target_idx, 'cible d''affectation attendue');
+      Exit;
+    End;
+
+  owner := ProcNameAtLine(ctx, ctx.lex.tokens[target_idx].line);
+  sym_idx := FindScopedSymbolAny(ctx, ctx.lex.tokens[target_idx].text, owner);
+  If sym_idx = 0 Then
+    Begin
+      AssignmentErrorAt(ctx, target_idx, 'cible d''affectation inconnue');
+      Exit;
+    End;
+
+  If kind = AS_ARRAY_ELEMENT Then
+    Begin
+      If ctx.symbols.symbols[sym_idx].kind <> SK_ARRAY Then
+        Begin
+          AssignmentErrorAt(ctx, target_idx,
+                            'cible tableau attendue pour affectation indexee');
+          Exit;
+        End;
+      If Not ParseExpressionRange(ctx, index_first, index_last) Then
+        Exit;
+    End
+  Else If ctx.symbols.symbols[sym_idx].kind = SK_ARRAY Then
+    Begin
+      AssignmentErrorAt(ctx, target_idx,
+                        'affectation de tableau complet non supportee');
+      Exit;
+    End
+  Else If Not ((ctx.symbols.symbols[sym_idx].kind = SK_LOCAL) Or
+               (ctx.symbols.symbols[sym_idx].kind = SK_STATIC) Or
+               (ctx.symbols.symbols[sym_idx].kind = SK_PARAM)) Then
+    Begin
+      AssignmentErrorAt(ctx, target_idx,
+                        'cible d''affectation non modifiable');
+      Exit;
+    End;
+
+  If Not ParseExpressionRange(ctx, expr_first, expr_last) Then
+    Exit;
+
+  If ctx.parse.assignment_count >= MAX_ASSIGNMENTS Then
+    Begin
+      AssignmentErrorAt(ctx, target_idx, 'trop d''affectations');
+      Exit;
+    End;
+
+  CountAssignment(ctx, kind);
+  ctx.parse.assignments[ctx.parse.assignment_count].kind := kind;
+  ctx.parse.assignments[ctx.parse.assignment_count].target_name :=
+    ctx.symbols.symbols[sym_idx].name;
+  ctx.parse.assignments[ctx.parse.assignment_count].owner :=
+    ctx.symbols.symbols[sym_idx].owner;
+  ctx.parse.assignments[ctx.parse.assignment_count].symbol_index := sym_idx;
+  ctx.parse.assignments[ctx.parse.assignment_count].target_token := target_idx;
+  ctx.parse.assignments[ctx.parse.assignment_count].index_first := index_first;
+  ctx.parse.assignments[ctx.parse.assignment_count].index_last := index_last;
+  ctx.parse.assignments[ctx.parse.assignment_count].expr_first := expr_first;
+  ctx.parse.assignments[ctx.parse.assignment_count].expr_last := expr_last;
+  ctx.parse.assignments[ctx.parse.assignment_count].line :=
+    ctx.lex.tokens[target_idx].line;
+  ctx.parse.assignments[ctx.parse.assignment_count].col :=
+    ctx.lex.tokens[target_idx].col;
+  ctx.parse.assignments[ctx.parse.assignment_count].is_static_init :=
+    (kind = AS_INITIALIZER) And ctx.symbols.symbols[sym_idx].is_static;
+  AddAssignmentIR := True;
+End;
+
+Function RegisterAssignmentAtEquals(Var ctx: TCompilerContext; stmt_start,
+                                    eq_idx, stmt_end: Integer): Boolean;
+Var
+  target_idx, open_idx, close_idx: Integer;
+Begin
+  RegisterAssignmentAtEquals := False;
+  If TokenKindTextAt(ctx, eq_idx - 1, TK_PUNCT, ')') Then
+    Begin
+      close_idx := eq_idx - 1;
+      open_idx := FindOpeningParen(ctx, close_idx, stmt_start);
+      If open_idx = 0 Then
+        Begin
+          AssignmentErrorAt(ctx, close_idx,
+                            'index de tableau mal forme dans affectation');
+          Exit;
+        End;
+      target_idx := open_idx - 1;
+      RegisterAssignmentAtEquals :=
+        AddAssignmentIR(ctx, AS_ARRAY_ELEMENT, target_idx,
+                        open_idx + 1, close_idx - 1,
+                        eq_idx + 1, stmt_end - 1);
+    End
+  Else
+    Begin
+      target_idx := eq_idx - 1;
+      RegisterAssignmentAtEquals :=
+        AddAssignmentIR(ctx, AS_VARIABLE, target_idx, 0, 0,
+                        eq_idx + 1, stmt_end - 1);
+    End;
+End;
+
+Procedure RegisterInitialAssignment(Var ctx: TCompilerContext; stmt_start,
+                                    init_idx, stmt_end: Integer);
+Var
+  i, target_idx, close_idx: Integer;
+Begin
+  target_idx := 0;
+  For i := stmt_start To init_idx - 1 Do
+    If IsNameToken(ctx.lex.tokens[i]) And
+       Not TokenTextAt(ctx, i, 'DECLARE') And
+       Not TokenTextAt(ctx, i, 'DCL') Then
+      Begin
+        target_idx := i;
+        Break;
+      End;
+
+  If target_idx = 0 Then
+    Begin
+      AssignmentErrorAt(ctx, init_idx, 'nom de variable INITIAL introuvable');
+      Exit;
+    End;
+
+  If TokenKindTextAt(ctx, init_idx + 1, TK_PUNCT, '(') Then
+    Begin
+      close_idx := FindMatchingParen(ctx, init_idx + 1, stmt_end - 1);
+      If close_idx = 0 Then
+        AssignmentErrorAt(ctx, init_idx, ') attendu apres INITIAL')
+      Else
+        AddAssignmentIR(ctx, AS_INITIALIZER, target_idx, 0, 0,
+                        init_idx + 2, close_idx - 1);
+    End;
 End;
 
 Function IsMulOp(Var ctx: TCompilerContext; idx: Integer): Boolean;
@@ -2217,11 +2504,12 @@ End;
 
 Procedure ValidateExpressions(Var ctx: TCompilerContext);
 Var
-  i, stmt_end, close_idx, eq_idx, to_idx, by_idx: Integer;
+  i, stmt_start, stmt_end, close_idx, eq_idx, to_idx, by_idx: Integer;
 Begin
   i := 1;
   While i <= ctx.lex.token_count Do
     Begin
+      stmt_start := FindStatementStart(ctx, i);
       If TokenTextAt(ctx, i, 'DO') Then
         Begin
           stmt_end := FindStatementEnd(ctx, i);
@@ -2269,12 +2557,12 @@ Begin
         Begin
           stmt_end := FindStatementEnd(ctx, i);
           If TokenKindTextAt(ctx, i + 1, TK_PUNCT, '(') Then
-            ParseParenExpressionAt(ctx, i + 1, stmt_end - 1, close_idx);
+            RegisterInitialAssignment(ctx, stmt_start, i, stmt_end);
         End
       Else If TokenKindTextAt(ctx, i, TK_OPERATOR, '=') Then
         Begin
           stmt_end := FindStatementEnd(ctx, i);
-          ParseExpressionRange(ctx, i + 1, stmt_end - 1);
+          RegisterAssignmentAtEquals(ctx, stmt_start, i, stmt_end);
           i := stmt_end + 1;
           Continue;
         End;
@@ -2669,7 +2957,9 @@ Begin
           ', expressions=', ctx.parse.expr_count,
           ', expressions invalides=', ctx.parse.expr_error_count,
           ', built-ins=', ctx.parse.builtin_call_count,
-          ', built-ins invalides=', ctx.parse.builtin_error_count, ')');
+          ', built-ins invalides=', ctx.parse.builtin_error_count,
+          ', affectations=', ctx.parse.assignment_count,
+          ', affectations invalides=', ctx.parse.assignment_error_count, ')');
   Writeln('Procedures: ', ctx.parse.proc_count,
           ' (MAIN=', ctx.parse.main_proc_count, ')');
   For i := 1 To ctx.parse.proc_count Do
@@ -2691,6 +2981,32 @@ Begin
         Writeln(' END@', ctx.parse.procs[i].end_line)
       Else
         Writeln(' non fermee');
+    End;
+End;
+
+Procedure PrintAssignmentInfo(Var ctx: TCompilerContext);
+Var
+  i: Integer;
+Begin
+  Writeln('Affectations: ', ctx.parse.assignment_count,
+          ' (variables=', ctx.parse.assignment_var_count,
+          ', tableaux=', ctx.parse.assignment_array_count,
+          ', initialisations=', ctx.parse.assignment_init_count,
+          ', invalides=', ctx.parse.assignment_error_count, ')');
+  For i := 1 To ctx.parse.assignment_count Do
+    Begin
+      Write('  ', AssignKindName(ctx.parse.assignments[i].kind), ' ');
+      If ctx.parse.assignments[i].owner <> '' Then
+        Write(ctx.parse.assignments[i].owner, '.');
+      Write(ctx.parse.assignments[i].target_name);
+      If ctx.parse.assignments[i].kind = AS_ARRAY_ELEMENT Then
+        Write('[', TokenRangeText(ctx, ctx.parse.assignments[i].index_first,
+                                  ctx.parse.assignments[i].index_last), ']');
+      Write(' := ', TokenRangeText(ctx, ctx.parse.assignments[i].expr_first,
+                                   ctx.parse.assignments[i].expr_last));
+      If ctx.parse.assignments[i].is_static_init Then
+        Write(' STATIC');
+      Writeln(' @', ctx.parse.assignments[i].line);
     End;
 End;
 
@@ -2897,6 +3213,7 @@ Begin
                 Begin
                   PrintParseInfo(ctx);
                   PrintSymbolInfo(ctx);
+                  PrintAssignmentInfo(ctx);
                 End;
               RunStage := True;
             End;
