@@ -17,9 +17,9 @@
 8. [IMPLEMENTE] Parser les declarations PROCEDURE, y compris OPTIONS(MAIN), listes de parametres, RETURNS(FIXED BINARY), corps de procedure et END nom optionnel.
 9. [IMPLEMENTE] Construire une table des symboles avec portees : procedures, parametres, variables locales, variables STATIC, tableaux, etiquettes et symboles runtime.
 10. [IMPLEMENTE] Parser les declarations DECLARE simples : FIXED BINARY, INITIAL(expr), STATIC, declarations multiples si ajoutees plus tard, et diagnostics de redeclaration.
-11. Supporter les tableaux PL/1 unidimensionnels utilises par TEST2.PLI : DECLARE TAB(10) FIXED BINARY STATIC, indexation TAB(I), bornes 1..N.
-12. Definir la representation 32 bits des types minimaux : FIXED BINARY comme entier signe 32 bits, tableaux d'entiers 32 bits, valeurs de retour dans EAX.
-13. Implementer le parseur d'expressions avec precedence : litteraux, variables, tableaux, parentheses, appels, unaire -, *, / si prevu, +, -, comparaisons.
+11. [IMPLEMENTE] Supporter les tableaux PL/1 unidimensionnels utilises par TEST2.PLI : DECLARE TAB(10) FIXED BINARY STATIC, indexation TAB(I), bornes 1..N.
+12. [IMPLEMENTE] Definir la representation 32 bits des types minimaux : FIXED BINARY comme entier signe 32 bits, tableaux d'entiers 32 bits, valeurs de retour dans EAX.
+13. [IMPLEMENTE] Implementer le parseur d'expressions avec precedence : litteraux, variables, tableaux, parentheses, appels, unaire -, *, / si prevu, +, -, comparaisons.
 14. Implementer les built-ins requis : ABS, MAX, MIN, MOD, avec evaluation correcte dans les expressions et preparation a d'autres built-ins PL/1.
 15. Generer le code des affectations : variable = expression, tableau(index) = expression, initialisation explicite, initialisation STATIC et locales.
 16. Implementer DO I = debut TO fin ; ... END ; avec variable de controle, test de fin, increment implicite, labels 80386 uniques et imbrication.
@@ -58,6 +58,9 @@ Const
   MAX_PROCS       = 128;
   MAX_PARAMS      = 16;
   MAX_SYMBOLS     = 1024;
+  MAX_TOKENS      = 4096;
+  ABI_WORD_SIZE   = 4;
+  ABI_RET_REG     = 'EAX';
   PL1_KEYWORD_COUNT = 28;
   EXT_PL1         = '.PL1';
   EXT_PLI         = '.PLI';
@@ -142,6 +145,8 @@ Type
     col     : Integer;
   End;
 
+  TTokenTable = Array[1..MAX_TOKENS] Of TToken;
+
   TLabelKind = (
     LK_PROC,
     LK_CONTROL
@@ -164,11 +169,28 @@ Type
   TGotoTable = Array[1..MAX_GOTOS] Of TGotoRef;
   TParamTable = Array[1..MAX_PARAMS] Of TLabelName;
 
+  TTypeKind = (
+    TY_NONE,
+    TY_FIXED_BINARY,
+    TY_ARRAY_FIXED_BINARY
+  );
+
+  TTypeInfo = Record
+    kind       : TTypeKind;
+    size       : Integer;
+    align      : Integer;
+    signed     : Boolean;
+    elem_kind  : TTypeKind;
+    elem_size  : Integer;
+    return_reg : String[8];
+  End;
+
   TProcInfo = Record
     name        : TLabelName;
     param_count : Integer;
     params      : TParamTable;
     has_returns : Boolean;
+    return_type : TTypeInfo;
     is_main     : Boolean;
     decl_line   : LongInt;
     decl_col    : Integer;
@@ -212,9 +234,15 @@ Type
     name      : TLabelName;
     owner     : TLabelName;
     kind      : TSymKind;
+    typ       : TTypeInfo;
     line      : LongInt;
     col       : Integer;
     ref_index : Integer;
+    is_static : Boolean;
+    has_initial: Boolean;
+    lower_bound: LongInt;
+    upper_bound: LongInt;
+    elem_count : LongInt;
   End;
 
   TSymbolTable = Array[1..MAX_SYMBOLS] Of TSymbol;
@@ -250,6 +278,7 @@ Type
     operator_count: LongInt;
     punct_count   : LongInt;
     comment_count : LongInt;
+    tokens        : TTokenTable;
     eof_token     : TToken;
   End;
 
@@ -260,6 +289,10 @@ Type
     goto_count        : Integer;
     unresolved_gotos  : Integer;
     duplicate_labels  : Integer;
+    array_ref_count   : Integer;
+    bad_array_ref_count: Integer;
+    expr_count       : Integer;
+    expr_error_count : Integer;
     proc_count        : Integer;
     main_proc_count   : Integer;
     open_proc         : Integer;
@@ -275,7 +308,11 @@ Type
     decl_static       : Boolean;
     decl_initial      : Boolean;
     decl_array        : Boolean;
+    decl_array_size   : LongInt;
     decl_paren_depth  : Integer;
+    pending_index_name: TLabelName;
+    pending_index_line: LongInt;
+    pending_index_col : Integer;
     procs             : TProcTable;
     labels            : TLabelTable;
     gotos             : TGotoTable;
@@ -398,6 +435,10 @@ Begin
   ctx.parse.goto_count := 0;
   ctx.parse.unresolved_gotos := 0;
   ctx.parse.duplicate_labels := 0;
+  ctx.parse.array_ref_count := 0;
+  ctx.parse.bad_array_ref_count := 0;
+  ctx.parse.expr_count := 0;
+  ctx.parse.expr_error_count := 0;
   ctx.parse.proc_count := 0;
   ctx.parse.main_proc_count := 0;
   ctx.parse.open_proc := 0;
@@ -672,10 +713,18 @@ End;
 Procedure ParseLabelToken(Var ctx: TCompilerContext; tok: TToken); Forward;
 Procedure ParseProcedureToken(Var ctx: TCompilerContext; tok: TToken); Forward;
 Procedure ParseDeclareToken(Var ctx: TCompilerContext; tok: TToken); Forward;
+Procedure ParseArrayUseToken(Var ctx: TCompilerContext; tok: TToken); Forward;
 
 Procedure RegisterToken(Var ctx: TCompilerContext; tok: TToken);
 Begin
+  If ctx.lex.token_count >= MAX_TOKENS Then
+    Begin
+      SourceErrorAt(ctx, tok.line, tok.col, 'trop de tokens');
+      Exit;
+    End;
   CountToken(ctx, tok.kind);
+  ctx.lex.tokens[ctx.lex.token_count] := tok;
+  ParseArrayUseToken(ctx, tok);
   ParseLabelToken(ctx, tok);
   ParseProcedureToken(ctx, tok);
   ParseDeclareToken(ctx, tok);
@@ -700,6 +749,14 @@ End;
 Function TokenIs(tok: TToken; text: TString): Boolean;
 Begin
   TokenIs := UpperStr(tok.text) = UpperStr(text);
+End;
+
+Function ParseLong(s: TString; Var value: LongInt): Boolean;
+Var
+  code: Integer;
+Begin
+  Val(s, value, code);
+  ParseLong := code = 0;
 End;
 
 Function FindLabel(Var ctx: TCompilerContext; name: TLabelName): Integer;
@@ -730,6 +787,50 @@ Begin
   Else
     SymKindName := 'UNKNOWN';
   End;
+End;
+
+Function TypeKindName(kind: TTypeKind): TString;
+Begin
+  Case kind Of
+    TY_NONE:               TypeKindName := 'NONE';
+    TY_FIXED_BINARY:       TypeKindName := 'FIXED BINARY';
+    TY_ARRAY_FIXED_BINARY: TypeKindName := 'ARRAY FIXED BINARY';
+  Else
+    TypeKindName := 'UNKNOWN';
+  End;
+End;
+
+Function NoType: TTypeInfo;
+Begin
+  NoType.kind := TY_NONE;
+  NoType.size := 0;
+  NoType.align := 1;
+  NoType.signed := False;
+  NoType.elem_kind := TY_NONE;
+  NoType.elem_size := 0;
+  NoType.return_reg := '';
+End;
+
+Function FixedBinaryType: TTypeInfo;
+Begin
+  FixedBinaryType.kind := TY_FIXED_BINARY;
+  FixedBinaryType.size := ABI_WORD_SIZE;
+  FixedBinaryType.align := ABI_WORD_SIZE;
+  FixedBinaryType.signed := True;
+  FixedBinaryType.elem_kind := TY_NONE;
+  FixedBinaryType.elem_size := 0;
+  FixedBinaryType.return_reg := ABI_RET_REG;
+End;
+
+Function ArrayFixedBinaryType(elem_count: LongInt): TTypeInfo;
+Begin
+  ArrayFixedBinaryType.kind := TY_ARRAY_FIXED_BINARY;
+  ArrayFixedBinaryType.size := elem_count * ABI_WORD_SIZE;
+  ArrayFixedBinaryType.align := ABI_WORD_SIZE;
+  ArrayFixedBinaryType.signed := True;
+  ArrayFixedBinaryType.elem_kind := TY_FIXED_BINARY;
+  ArrayFixedBinaryType.elem_size := ABI_WORD_SIZE;
+  ArrayFixedBinaryType.return_reg := '';
 End;
 
 Function FindSymbol(Var ctx: TCompilerContext; name, owner: TLabelName;
@@ -766,6 +867,17 @@ Begin
         FindScopedSymbol := i;
         Exit;
       End;
+End;
+
+Function FindScopedSymbolAny(Var ctx: TCompilerContext; name, owner: TLabelName): Integer;
+Var
+  idx: Integer;
+Begin
+  idx := FindScopedSymbol(ctx, name, owner);
+  If idx <> 0 Then
+    FindScopedSymbolAny := idx
+  Else
+    FindScopedSymbolAny := FindScopedSymbol(ctx, name, '');
 End;
 
 Function CurrentProcName(Var ctx: TCompilerContext): TLabelName;
@@ -831,11 +943,42 @@ Begin
   ctx.symbols.symbols[ctx.symbols.count].name := uname;
   ctx.symbols.symbols[ctx.symbols.count].owner := uowner;
   ctx.symbols.symbols[ctx.symbols.count].kind := kind;
+  ctx.symbols.symbols[ctx.symbols.count].typ := NoType;
   ctx.symbols.symbols[ctx.symbols.count].line := line_no;
   ctx.symbols.symbols[ctx.symbols.count].col := col_no;
   ctx.symbols.symbols[ctx.symbols.count].ref_index := ref_index;
+  ctx.symbols.symbols[ctx.symbols.count].is_static := False;
+  ctx.symbols.symbols[ctx.symbols.count].has_initial := False;
+  ctx.symbols.symbols[ctx.symbols.count].lower_bound := 0;
+  ctx.symbols.symbols[ctx.symbols.count].upper_bound := 0;
+  ctx.symbols.symbols[ctx.symbols.count].elem_count := 0;
   IncSymbolKind(ctx, kind);
   AddSymbol := True;
+End;
+
+Procedure SetSymbolStorage(Var ctx: TCompilerContext; sym_idx: Integer;
+                           is_static, has_initial: Boolean;
+                           lower_bound, upper_bound: LongInt);
+Begin
+  If (sym_idx <= 0) Or (sym_idx > ctx.symbols.count) Then
+    Exit;
+
+  ctx.symbols.symbols[sym_idx].is_static := is_static;
+  ctx.symbols.symbols[sym_idx].has_initial := has_initial;
+  ctx.symbols.symbols[sym_idx].lower_bound := lower_bound;
+  ctx.symbols.symbols[sym_idx].upper_bound := upper_bound;
+  If upper_bound >= lower_bound Then
+    ctx.symbols.symbols[sym_idx].elem_count := upper_bound - lower_bound + 1
+  Else
+    ctx.symbols.symbols[sym_idx].elem_count := 0;
+
+  If ctx.symbols.symbols[sym_idx].kind = SK_ARRAY Then
+    ctx.symbols.symbols[sym_idx].typ :=
+      ArrayFixedBinaryType(ctx.symbols.symbols[sym_idx].elem_count)
+  Else If (ctx.symbols.symbols[sym_idx].kind = SK_LOCAL) Or
+          (ctx.symbols.symbols[sym_idx].kind = SK_STATIC) Or
+          (ctx.symbols.symbols[sym_idx].kind = SK_PARAM) Then
+    ctx.symbols.symbols[sym_idx].typ := FixedBinaryType;
 End;
 
 Procedure AddRuntimeSymbols(Var ctx: TCompilerContext);
@@ -862,6 +1005,10 @@ Begin
   ctx.parse.goto_count := 0;
   ctx.parse.unresolved_gotos := 0;
   ctx.parse.duplicate_labels := 0;
+  ctx.parse.array_ref_count := 0;
+  ctx.parse.bad_array_ref_count := 0;
+  ctx.parse.expr_count := 0;
+  ctx.parse.expr_error_count := 0;
   ctx.parse.proc_count := 0;
   ctx.parse.main_proc_count := 0;
   ctx.parse.open_proc := 0;
@@ -877,7 +1024,11 @@ Begin
   ctx.parse.decl_static := False;
   ctx.parse.decl_initial := False;
   ctx.parse.decl_array := False;
+  ctx.parse.decl_array_size := 0;
   ctx.parse.decl_paren_depth := 0;
+  ctx.parse.pending_index_name := '';
+  ctx.parse.pending_index_line := 1;
+  ctx.parse.pending_index_col := 1;
   ctx.parse.have_prev := False;
   ctx.parse.prev_token.kind := TK_EOF;
   ctx.parse.prev_token.text := '';
@@ -948,6 +1099,7 @@ Begin
   ctx.parse.procs[proc_idx].name := ctx.parse.labels[label_idx].name;
   ctx.parse.procs[proc_idx].param_count := 0;
   ctx.parse.procs[proc_idx].has_returns := False;
+  ctx.parse.procs[proc_idx].return_type := NoType;
   ctx.parse.procs[proc_idx].is_main := False;
   ctx.parse.procs[proc_idx].decl_line := ctx.parse.labels[label_idx].line;
   ctx.parse.procs[proc_idx].decl_col := ctx.parse.labels[label_idx].col;
@@ -1049,6 +1201,8 @@ Begin
     ctx.parse.procs[proc_idx].param_count] := pname;
   AddSymbol(ctx, pname, ctx.parse.procs[proc_idx].name, SK_PARAM,
             tok.line, tok.col, ctx.parse.procs[proc_idx].param_count);
+  If ctx.symbols.count > 0 Then
+    ctx.symbols.symbols[ctx.symbols.count].typ := FixedBinaryType;
 End;
 
 Procedure BeginProcedureBody(Var ctx: TCompilerContext; tok: TToken);
@@ -1094,7 +1248,10 @@ Var
 Begin
   proc_idx := ctx.parse.current_decl_proc;
   If proc_idx <> 0 Then
-    ctx.parse.procs[proc_idx].has_returns := True;
+    Begin
+      ctx.parse.procs[proc_idx].has_returns := True;
+      ctx.parse.procs[proc_idx].return_type := FixedBinaryType;
+    End;
 End;
 
 Procedure CloseCurrentProcedure(Var ctx: TCompilerContext; tok: TToken;
@@ -1262,13 +1419,18 @@ Begin
   ctx.parse.decl_static := False;
   ctx.parse.decl_initial := False;
   ctx.parse.decl_array := False;
+  ctx.parse.decl_array_size := 0;
   ctx.parse.decl_paren_depth := 0;
+  ctx.parse.pending_index_name := '';
+  ctx.parse.pending_index_line := 1;
+  ctx.parse.pending_index_col := 1;
 End;
 
 Procedure FinishDeclare(Var ctx: TCompilerContext; tok: TToken);
 Var
   owner: TLabelName;
   kind: TSymKind;
+  before_count: Integer;
 Begin
   owner := CurrentProcName(ctx);
   If owner = '' Then
@@ -1294,8 +1456,19 @@ Begin
   Else
     kind := SK_LOCAL;
 
+  before_count := ctx.symbols.count;
   AddSymbol(ctx, ctx.parse.decl_name, owner, kind,
             ctx.parse.decl_line, ctx.parse.decl_col, 0);
+  If ctx.symbols.count > before_count Then
+    Begin
+      If ctx.parse.decl_array Then
+        SetSymbolStorage(ctx, ctx.symbols.count, ctx.parse.decl_static,
+                         ctx.parse.decl_initial, 1,
+                         ctx.parse.decl_array_size)
+      Else
+        SetSymbolStorage(ctx, ctx.symbols.count, ctx.parse.decl_static,
+                         ctx.parse.decl_initial, 0, 0);
+    End;
   ResetDeclareState(ctx);
 End;
 
@@ -1365,11 +1538,26 @@ Begin
       Begin
         If (tok.kind = TK_PUNCT) And (tok.text = '(') Then
           Inc(ctx.parse.decl_paren_depth)
+        Else If (tok.kind = TK_INTEGER) And (ctx.parse.decl_paren_depth = 1) Then
+          Begin
+            If (Not ParseLong(tok.text, ctx.parse.decl_array_size)) Or
+               (ctx.parse.decl_array_size <= 0) Then
+              SourceErrorAt(ctx, tok.line, tok.col,
+                            'dimension de tableau invalide');
+          End
+        Else If IsNameToken(tok) Then
+          SourceErrorAt(ctx, tok.line, tok.col,
+                        'dimension de tableau constante attendue')
         Else If (tok.kind = TK_PUNCT) And (tok.text = ')') Then
           Begin
             Dec(ctx.parse.decl_paren_depth);
             If ctx.parse.decl_paren_depth = 0 Then
-              ctx.parse.decl_state := DS_AFTER_NAME;
+              Begin
+                If ctx.parse.decl_array_size <= 0 Then
+                  SourceErrorAt(ctx, tok.line, tok.col,
+                                'dimension de tableau manquante');
+                ctx.parse.decl_state := DS_AFTER_NAME;
+              End;
           End;
       End;
     DS_INITIAL:
@@ -1388,6 +1576,406 @@ Begin
           FinishDeclare(ctx, tok);
       End;
   End;
+End;
+
+Procedure ParseArrayUseToken(Var ctx: TCompilerContext; tok: TToken);
+Var
+  sym_idx: Integer;
+  owner: TLabelName;
+Begin
+  If ctx.parse.proc_decl_state <> PDS_NONE Then
+    Exit;
+  If ctx.parse.decl_state <> DS_NONE Then
+    Exit;
+  If ctx.parse.end_pending Then
+    Exit;
+
+  If (tok.kind = TK_PUNCT) And (tok.text = '(') And
+     ctx.parse.have_prev And IsNameToken(ctx.parse.prev_token) Then
+    Begin
+      owner := CurrentProcName(ctx);
+      sym_idx := FindScopedSymbolAny(ctx, ctx.parse.prev_token.text, owner);
+      If sym_idx <> 0 Then
+        Begin
+          If ctx.symbols.symbols[sym_idx].kind = SK_ARRAY Then
+            Inc(ctx.parse.array_ref_count)
+          Else If (ctx.symbols.symbols[sym_idx].kind = SK_LOCAL) Or
+                  (ctx.symbols.symbols[sym_idx].kind = SK_STATIC) Or
+                  (ctx.symbols.symbols[sym_idx].kind = SK_PARAM) Then
+            Begin
+              Inc(ctx.parse.bad_array_ref_count);
+              SourceErrorAt(ctx, ctx.parse.prev_token.line,
+                            ctx.parse.prev_token.col,
+                            'indexation appliquee a un symbole non tableau');
+            End;
+        End;
+    End;
+End;
+
+Function TokenTextAt(Var ctx: TCompilerContext; idx: Integer;
+                     text: TString): Boolean;
+Begin
+  If (idx < 1) Or (idx > ctx.lex.token_count) Then
+    TokenTextAt := False
+  Else
+    TokenTextAt := UpperStr(ctx.lex.tokens[idx].text) = UpperStr(text);
+End;
+
+Function TokenKindTextAt(Var ctx: TCompilerContext; idx: Integer;
+                         kind: TTokenKind; text: TString): Boolean;
+Begin
+  TokenKindTextAt := (idx >= 1) And (idx <= ctx.lex.token_count) And
+                     (ctx.lex.tokens[idx].kind = kind) And
+                     (UpperStr(ctx.lex.tokens[idx].text) = UpperStr(text));
+End;
+
+Function FindStatementEnd(Var ctx: TCompilerContext; start_idx: Integer): Integer;
+Var
+  i: Integer;
+Begin
+  FindStatementEnd := Integer(ctx.lex.token_count);
+  For i := start_idx To Integer(ctx.lex.token_count) Do
+    If TokenKindTextAt(ctx, i, TK_PUNCT, ';') Then
+      Begin
+        FindStatementEnd := i;
+        Exit;
+      End;
+End;
+
+Function FindTokenBefore(Var ctx: TCompilerContext; first_idx, last_idx: Integer;
+                         text: TString): Integer;
+Var
+  i: Integer;
+Begin
+  FindTokenBefore := 0;
+  For i := first_idx To last_idx Do
+    If TokenTextAt(ctx, i, text) Then
+      Begin
+        FindTokenBefore := i;
+        Exit;
+      End;
+End;
+
+Function FindMatchingParen(Var ctx: TCompilerContext; open_idx: Integer;
+                           last_idx: Integer): Integer;
+Var
+  i, depth: Integer;
+Begin
+  FindMatchingParen := 0;
+  depth := 0;
+  For i := open_idx To last_idx Do
+    Begin
+      If TokenKindTextAt(ctx, i, TK_PUNCT, '(') Then
+        Inc(depth)
+      Else If TokenKindTextAt(ctx, i, TK_PUNCT, ')') Then
+        Begin
+          Dec(depth);
+          If depth = 0 Then
+            Begin
+              FindMatchingParen := i;
+              Exit;
+            End;
+        End;
+    End;
+End;
+
+Procedure ExprErrorAt(Var ctx: TCompilerContext; idx: Integer; msg: TString);
+Var
+  tok: TToken;
+Begin
+  Inc(ctx.parse.expr_error_count);
+  If (idx >= 1) And (idx <= ctx.lex.token_count) Then
+    tok := ctx.lex.tokens[idx]
+  Else
+    tok := ctx.lex.eof_token;
+  SourceErrorAt(ctx, tok.line, tok.col, msg);
+End;
+
+Function IsMulOp(Var ctx: TCompilerContext; idx: Integer): Boolean;
+Begin
+  IsMulOp := TokenKindTextAt(ctx, idx, TK_OPERATOR, '*') Or
+             TokenKindTextAt(ctx, idx, TK_OPERATOR, '/') Or
+             TokenTextAt(ctx, idx, 'MOD');
+End;
+
+Function IsAddOp(Var ctx: TCompilerContext; idx: Integer): Boolean;
+Begin
+  IsAddOp := TokenKindTextAt(ctx, idx, TK_OPERATOR, '+') Or
+             TokenKindTextAt(ctx, idx, TK_OPERATOR, '-');
+End;
+
+Function IsCompareOp(Var ctx: TCompilerContext; idx: Integer): Boolean;
+Begin
+  IsCompareOp := TokenKindTextAt(ctx, idx, TK_OPERATOR, '=') Or
+                 TokenKindTextAt(ctx, idx, TK_OPERATOR, '<') Or
+                 TokenKindTextAt(ctx, idx, TK_OPERATOR, '<=') Or
+                 TokenKindTextAt(ctx, idx, TK_OPERATOR, '>') Or
+                 TokenKindTextAt(ctx, idx, TK_OPERATOR, '>=') Or
+                 TokenKindTextAt(ctx, idx, TK_OPERATOR, '^=') Or
+                 TokenKindTextAt(ctx, idx, TK_OPERATOR, '~=');
+End;
+
+Function ParseExprCompare(Var ctx: TCompilerContext; Var pos: Integer;
+                          limit: Integer): Boolean; Forward;
+
+Function ParseExprPrimary(Var ctx: TCompilerContext; Var pos: Integer;
+                          limit: Integer): Boolean;
+Var
+  ok: Boolean;
+Begin
+  ParseExprPrimary := False;
+  If pos > limit Then
+    Begin
+      ExprErrorAt(ctx, limit, 'expression incomplete');
+      Exit;
+    End;
+
+  If (ctx.lex.tokens[pos].kind = TK_INTEGER) Or
+     (ctx.lex.tokens[pos].kind = TK_STRING) Then
+    Begin
+      Inc(pos);
+      ParseExprPrimary := True;
+      Exit;
+    End;
+
+  If IsNameToken(ctx.lex.tokens[pos]) Then
+    Begin
+      Inc(pos);
+      If (pos <= limit) And TokenKindTextAt(ctx, pos, TK_PUNCT, '(') Then
+        Begin
+          Inc(pos);
+          If (pos <= limit) And TokenKindTextAt(ctx, pos, TK_PUNCT, ')') Then
+            Begin
+              Inc(pos);
+              ParseExprPrimary := True;
+              Exit;
+            End;
+
+          Repeat
+            ok := ParseExprCompare(ctx, pos, limit);
+            If Not ok Then
+              Exit;
+            If (pos <= limit) And TokenKindTextAt(ctx, pos, TK_PUNCT, ',') Then
+              Inc(pos)
+            Else
+              Break;
+          Until False;
+
+          If (pos <= limit) And TokenKindTextAt(ctx, pos, TK_PUNCT, ')') Then
+            Inc(pos)
+          Else
+            Begin
+              ExprErrorAt(ctx, pos, ') attendu dans appel ou indexation');
+              Exit;
+            End;
+        End;
+      ParseExprPrimary := True;
+      Exit;
+    End;
+
+  If TokenKindTextAt(ctx, pos, TK_PUNCT, '(') Then
+    Begin
+      Inc(pos);
+      ok := ParseExprCompare(ctx, pos, limit);
+      If Not ok Then
+        Exit;
+      If (pos <= limit) And TokenKindTextAt(ctx, pos, TK_PUNCT, ')') Then
+        Begin
+          Inc(pos);
+          ParseExprPrimary := True;
+        End
+      Else
+        ExprErrorAt(ctx, pos, ') attendu dans expression');
+      Exit;
+    End;
+
+  ExprErrorAt(ctx, pos, 'terme attendu dans expression');
+End;
+
+Function ParseExprUnary(Var ctx: TCompilerContext; Var pos: Integer;
+                        limit: Integer): Boolean;
+Begin
+  If (pos <= limit) And
+     (TokenKindTextAt(ctx, pos, TK_OPERATOR, '-') Or
+      TokenKindTextAt(ctx, pos, TK_OPERATOR, '+')) Then
+    Begin
+      Inc(pos);
+      ParseExprUnary := ParseExprUnary(ctx, pos, limit);
+    End
+  Else
+    ParseExprUnary := ParseExprPrimary(ctx, pos, limit);
+End;
+
+Function ParseExprMul(Var ctx: TCompilerContext; Var pos: Integer;
+                      limit: Integer): Boolean;
+Var
+  ok: Boolean;
+Begin
+  ok := ParseExprUnary(ctx, pos, limit);
+  ParseExprMul := ok;
+  If Not ok Then
+    Exit;
+
+  While (pos <= limit) And IsMulOp(ctx, pos) Do
+    Begin
+      Inc(pos);
+      If Not ParseExprUnary(ctx, pos, limit) Then
+        Begin
+          ParseExprMul := False;
+          Exit;
+        End;
+    End;
+End;
+
+Function ParseExprAdd(Var ctx: TCompilerContext; Var pos: Integer;
+                      limit: Integer): Boolean;
+Var
+  ok: Boolean;
+Begin
+  ok := ParseExprMul(ctx, pos, limit);
+  ParseExprAdd := ok;
+  If Not ok Then
+    Exit;
+
+  While (pos <= limit) And IsAddOp(ctx, pos) Do
+    Begin
+      Inc(pos);
+      If Not ParseExprMul(ctx, pos, limit) Then
+        Begin
+          ParseExprAdd := False;
+          Exit;
+        End;
+    End;
+End;
+
+Function ParseExprCompare(Var ctx: TCompilerContext; Var pos: Integer;
+                          limit: Integer): Boolean;
+Var
+  ok: Boolean;
+Begin
+  ok := ParseExprAdd(ctx, pos, limit);
+  ParseExprCompare := ok;
+  If Not ok Then
+    Exit;
+
+  While (pos <= limit) And IsCompareOp(ctx, pos) Do
+    Begin
+      Inc(pos);
+      If Not ParseExprAdd(ctx, pos, limit) Then
+        Begin
+          ParseExprCompare := False;
+          Exit;
+        End;
+    End;
+End;
+
+Function ParseExpressionRange(Var ctx: TCompilerContext; first_idx,
+                              last_idx: Integer): Boolean;
+Var
+  pos: Integer;
+Begin
+  ParseExpressionRange := False;
+  Inc(ctx.parse.expr_count);
+
+  If first_idx > last_idx Then
+    Begin
+      ExprErrorAt(ctx, first_idx, 'expression attendue');
+      Exit;
+    End;
+
+  pos := first_idx;
+  If Not ParseExprCompare(ctx, pos, last_idx) Then
+    Exit;
+
+  If pos <= last_idx Then
+    Begin
+      ExprErrorAt(ctx, pos, 'operateur inattendu dans expression');
+      Exit;
+    End;
+
+  ParseExpressionRange := True;
+End;
+
+Function ParseParenExpressionAt(Var ctx: TCompilerContext; open_idx,
+                                limit_idx: Integer; Var close_idx: Integer): Boolean;
+Begin
+  ParseParenExpressionAt := False;
+  close_idx := FindMatchingParen(ctx, open_idx, limit_idx);
+  If close_idx = 0 Then
+    Begin
+      ExprErrorAt(ctx, open_idx, ') attendu dans expression parenthesee');
+      Exit;
+    End;
+  ParseParenExpressionAt := ParseExpressionRange(ctx, open_idx + 1,
+                                                 close_idx - 1);
+End;
+
+Procedure ValidateExpressions(Var ctx: TCompilerContext);
+Var
+  i, stmt_end, close_idx, eq_idx, to_idx, by_idx: Integer;
+Begin
+  i := 1;
+  While i <= ctx.lex.token_count Do
+    Begin
+      If TokenTextAt(ctx, i, 'DO') Then
+        Begin
+          stmt_end := FindStatementEnd(ctx, i);
+          eq_idx := FindTokenBefore(ctx, i + 1, stmt_end - 1, '=');
+          to_idx := FindTokenBefore(ctx, i + 1, stmt_end - 1, 'TO');
+          by_idx := FindTokenBefore(ctx, i + 1, stmt_end - 1, 'BY');
+          If (eq_idx <> 0) And (to_idx <> 0) And (eq_idx < to_idx) Then
+            Begin
+              ParseExpressionRange(ctx, eq_idx + 1, to_idx - 1);
+              If (by_idx <> 0) And (by_idx > to_idx) Then
+                Begin
+                  ParseExpressionRange(ctx, to_idx + 1, by_idx - 1);
+                  ParseExpressionRange(ctx, by_idx + 1, stmt_end - 1);
+                End
+              Else
+                ParseExpressionRange(ctx, to_idx + 1, stmt_end - 1);
+              i := stmt_end + 1;
+              Continue;
+            End;
+        End
+      Else If TokenTextAt(ctx, i, 'RETURN') Then
+        Begin
+          stmt_end := FindStatementEnd(ctx, i);
+          If TokenKindTextAt(ctx, i + 1, TK_PUNCT, '(') Then
+            ParseParenExpressionAt(ctx, i + 1, stmt_end - 1, close_idx)
+          Else
+            ParseExpressionRange(ctx, i + 1, stmt_end - 1);
+          i := stmt_end + 1;
+          Continue;
+        End
+      Else If TokenTextAt(ctx, i, 'SELECT') Or TokenTextAt(ctx, i, 'WHEN') Then
+        Begin
+          stmt_end := FindStatementEnd(ctx, i);
+          If TokenKindTextAt(ctx, i + 1, TK_PUNCT, '(') Then
+            ParseParenExpressionAt(ctx, i + 1, stmt_end - 1, close_idx);
+        End
+      Else If TokenTextAt(ctx, i, 'PUT') Then
+        Begin
+          stmt_end := FindStatementEnd(ctx, i);
+          If TokenTextAt(ctx, i + 1, 'LIST') And
+             TokenKindTextAt(ctx, i + 2, TK_PUNCT, '(') Then
+            ParseParenExpressionAt(ctx, i + 2, stmt_end - 1, close_idx);
+        End
+      Else If TokenTextAt(ctx, i, 'INITIAL') Or TokenTextAt(ctx, i, 'INIT') Then
+        Begin
+          stmt_end := FindStatementEnd(ctx, i);
+          If TokenKindTextAt(ctx, i + 1, TK_PUNCT, '(') Then
+            ParseParenExpressionAt(ctx, i + 1, stmt_end - 1, close_idx);
+        End
+      Else If TokenKindTextAt(ctx, i, TK_OPERATOR, '=') Then
+        Begin
+          stmt_end := FindStatementEnd(ctx, i);
+          ParseExpressionRange(ctx, i + 1, stmt_end - 1);
+          i := stmt_end + 1;
+          Continue;
+        End;
+
+      Inc(i);
+    End;
 End;
 
 Function ResolveLabelsAndGotos(Var ctx: TCompilerContext): Boolean;
@@ -1432,6 +2020,8 @@ Begin
       SourceErrorAt(ctx, ctx.parse.procs[i].decl_line,
                     ctx.parse.procs[i].decl_col,
                     'procedure non fermee par END');
+
+  ValidateExpressions(ctx);
 
   ResolveLabelsAndGotos := ctx.errors = 0;
 End;
@@ -1768,7 +2358,11 @@ Begin
           ', controle=', ctx.parse.control_label_count,
           ', GOTO=', ctx.parse.goto_count,
           ', non resolus=', ctx.parse.unresolved_gotos,
-          ', doublons=', ctx.parse.duplicate_labels, ')');
+          ', doublons=', ctx.parse.duplicate_labels,
+          ', indexations=', ctx.parse.array_ref_count,
+          ', indexations invalides=', ctx.parse.bad_array_ref_count,
+          ', expressions=', ctx.parse.expr_count,
+          ', expressions invalides=', ctx.parse.expr_error_count, ')');
   Writeln('Procedures: ', ctx.parse.proc_count,
           ' (MAIN=', ctx.parse.main_proc_count, ')');
   For i := 1 To ctx.parse.proc_count Do
@@ -1782,7 +2376,8 @@ Begin
         End;
       Write(')');
       If ctx.parse.procs[i].has_returns Then
-        Write(' RETURNS');
+        Write(' RETURNS ', TypeKindName(ctx.parse.procs[i].return_type.kind),
+              ' via ', ctx.parse.procs[i].return_type.return_reg);
       If ctx.parse.procs[i].is_main Then
         Write(' OPTIONS(MAIN)');
       If ctx.parse.procs[i].closed Then
@@ -1810,7 +2405,23 @@ Begin
       Write('  ', SymKindName(ctx.symbols.symbols[i].kind), ' ');
       If ctx.symbols.symbols[i].owner <> '' Then
         Write(ctx.symbols.symbols[i].owner, '.');
-      Writeln(ctx.symbols.symbols[i].name);
+      Write(ctx.symbols.symbols[i].name);
+      If ctx.symbols.symbols[i].kind = SK_ARRAY Then
+        Write(' [', ctx.symbols.symbols[i].lower_bound,
+              '..', ctx.symbols.symbols[i].upper_bound, ']');
+      If ctx.symbols.symbols[i].typ.kind <> TY_NONE Then
+        Begin
+          Write(' : ', TypeKindName(ctx.symbols.symbols[i].typ.kind),
+                ' size=', ctx.symbols.symbols[i].typ.size,
+                ' align=', ctx.symbols.symbols[i].typ.align);
+          If ctx.symbols.symbols[i].typ.signed Then
+            Write(' signed');
+        End;
+      If ctx.symbols.symbols[i].is_static Then
+        Write(' STATIC');
+      If ctx.symbols.symbols[i].has_initial Then
+        Write(' INITIAL');
+      Writeln;
     End;
 End;
 
