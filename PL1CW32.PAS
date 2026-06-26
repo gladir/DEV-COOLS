@@ -13,10 +13,10 @@
 4. [IMPLEMENTE] Mettre en place l'infrastructure commune : lecture source, suivi ligne/colonne, messages d'erreur clairs, codes de sortie, limites internes compatibles Turbo Pascal 7 et Free Pascal 3.2.
 5. [IMPLEMENTE] Implementer le scanner lexical PL/1 : identifiants, mots-cles, entiers, chaines, commentaires /* ... */, operateurs, parentheses, virgules, deux-points, points-virgules.
 6. [IMPLEMENTE] Construire la table des mots-cles necessaires aux exemples : PROCEDURE, OPTIONS, MAIN, DECLARE, FIXED, BINARY, INITIAL, STATIC, RETURNS, RETURN, DO, TO, END, PUT, LIST, SKIP, SELECT, WHEN, OTHERWISE, GOTO.
-7. Parser les etiquettes PL/1 de procedure et de controle : MAIN:, ABSVAL:, FIN:, avec resolution des references avant/arriere pour GOTO.
-8. Parser les declarations PROCEDURE, y compris OPTIONS(MAIN), listes de parametres, RETURNS(FIXED BINARY), corps de procedure et END nom optionnel.
-9. Construire une table des symboles avec portees : procedures, parametres, variables locales, variables STATIC, tableaux, etiquettes et symboles runtime.
-10. Parser les declarations DECLARE simples : FIXED BINARY, INITIAL(expr), STATIC, declarations multiples si ajoutees plus tard, et diagnostics de redeclaration.
+7. [IMPLEMENTE] Parser les etiquettes PL/1 de procedure et de controle : MAIN:, ABSVAL:, FIN:, avec resolution des references avant/arriere pour GOTO.
+8. [IMPLEMENTE] Parser les declarations PROCEDURE, y compris OPTIONS(MAIN), listes de parametres, RETURNS(FIXED BINARY), corps de procedure et END nom optionnel.
+9. [IMPLEMENTE] Construire une table des symboles avec portees : procedures, parametres, variables locales, variables STATIC, tableaux, etiquettes et symboles runtime.
+10. [IMPLEMENTE] Parser les declarations DECLARE simples : FIXED BINARY, INITIAL(expr), STATIC, declarations multiples si ajoutees plus tard, et diagnostics de redeclaration.
 11. Supporter les tableaux PL/1 unidimensionnels utilises par TEST2.PLI : DECLARE TAB(10) FIXED BINARY STATIC, indexation TAB(I), bornes 1..N.
 12. Definir la representation 32 bits des types minimaux : FIXED BINARY comme entier signe 32 bits, tableaux d'entiers 32 bits, valeurs de retour dans EAX.
 13. Implementer le parseur d'expressions avec precedence : litteraux, variables, tableaux, parentheses, appels, unaire -, *, / si prevu, +, -, comparaisons.
@@ -53,6 +53,11 @@ Const
   MAX_SOURCE_LINES = 12000;
   MAX_SOURCE_CHARS = 60000;
   MAX_ERRORS      = 40;
+  MAX_LABELS      = 256;
+  MAX_GOTOS       = 256;
+  MAX_PROCS       = 128;
+  MAX_PARAMS      = 16;
+  MAX_SYMBOLS     = 1024;
   PL1_KEYWORD_COUNT = 28;
   EXT_PL1         = '.PL1';
   EXT_PLI         = '.PLI';
@@ -66,6 +71,7 @@ Const
 Type
   TString = String[MAX_PATH_LEN];
   TSourceLine = String[MAX_LINE_LEN];
+  TLabelName = String[64];
   TKeyword = String[16];
   TKeywordTable = Array[1..PL1_KEYWORD_COUNT] Of TKeyword;
 
@@ -136,6 +142,96 @@ Type
     col     : Integer;
   End;
 
+  TLabelKind = (
+    LK_PROC,
+    LK_CONTROL
+  );
+
+  TLabelRef = Record
+    name : TLabelName;
+    kind : TLabelKind;
+    line : LongInt;
+    col  : Integer;
+  End;
+
+  TGotoRef = Record
+    name : TLabelName;
+    line : LongInt;
+    col  : Integer;
+  End;
+
+  TLabelTable = Array[1..MAX_LABELS] Of TLabelRef;
+  TGotoTable = Array[1..MAX_GOTOS] Of TGotoRef;
+  TParamTable = Array[1..MAX_PARAMS] Of TLabelName;
+
+  TProcInfo = Record
+    name        : TLabelName;
+    param_count : Integer;
+    params      : TParamTable;
+    has_returns : Boolean;
+    is_main     : Boolean;
+    decl_line   : LongInt;
+    decl_col    : Integer;
+    body_line   : LongInt;
+    end_line    : LongInt;
+    closed      : Boolean;
+  End;
+
+  TProcTable = Array[1..MAX_PROCS] Of TProcInfo;
+
+  TProcDeclState = (
+    PDS_NONE,
+    PDS_AFTER_PROCEDURE,
+    PDS_PARAMS,
+    PDS_AFTER_PARAMS,
+    PDS_OPTIONS,
+    PDS_OPTIONS_ARGS,
+    PDS_RETURNS,
+    PDS_RETURNS_ARGS
+  );
+
+  TDeclState = (
+    DS_NONE,
+    DS_EXPECT_NAME,
+    DS_AFTER_NAME,
+    DS_ARRAY_DIMS,
+    DS_INITIAL
+  );
+
+  TSymKind = (
+    SK_PROC,
+    SK_PARAM,
+    SK_LOCAL,
+    SK_STATIC,
+    SK_ARRAY,
+    SK_LABEL,
+    SK_RUNTIME
+  );
+
+  TSymbol = Record
+    name      : TLabelName;
+    owner     : TLabelName;
+    kind      : TSymKind;
+    line      : LongInt;
+    col       : Integer;
+    ref_index : Integer;
+  End;
+
+  TSymbolTable = Array[1..MAX_SYMBOLS] Of TSymbol;
+
+  TSymbolInfo = Record
+    count              : Integer;
+    proc_count         : Integer;
+    param_count        : Integer;
+    local_count        : Integer;
+    static_count       : Integer;
+    array_count        : Integer;
+    label_count        : Integer;
+    runtime_count      : Integer;
+    duplicate_count    : Integer;
+    symbols            : TSymbolTable;
+  End;
+
   TSourceInfo = Record
     loaded       : Boolean;
     line_count   : LongInt;
@@ -157,6 +253,38 @@ Type
     eof_token     : TToken;
   End;
 
+  TParseInfo = Record
+    label_count       : Integer;
+    proc_label_count  : Integer;
+    control_label_count: Integer;
+    goto_count        : Integer;
+    unresolved_gotos  : Integer;
+    duplicate_labels  : Integer;
+    proc_count        : Integer;
+    main_proc_count   : Integer;
+    open_proc         : Integer;
+    block_depth       : Integer;
+    proc_decl_state   : TProcDeclState;
+    current_decl_proc : Integer;
+    end_pending       : Boolean;
+    end_name          : TLabelName;
+    decl_state        : TDeclState;
+    decl_name         : TLabelName;
+    decl_line         : LongInt;
+    decl_col          : Integer;
+    decl_static       : Boolean;
+    decl_initial      : Boolean;
+    decl_array        : Boolean;
+    decl_paren_depth  : Integer;
+    procs             : TProcTable;
+    labels            : TLabelTable;
+    gotos             : TGotoTable;
+    have_prev         : Boolean;
+    prev_token        : TToken;
+    pending_goto      : Boolean;
+    pending_label     : Integer;
+  End;
+
   TCompilerContext = Record
     source_name : TString;
     asm_name    : TString;
@@ -165,6 +293,8 @@ Type
     options     : TPipelineOptions;
     source      : TSourceInfo;
     lex         : TLexInfo;
+    parse       : TParseInfo;
+    symbols     : TSymbolInfo;
     stage       : TCompileStage;
     last_art    : TArtifactKind;
     errors      : Integer;
@@ -262,6 +392,45 @@ Begin
   ctx.lex.eof_token.int_val := 0;
   ctx.lex.eof_token.line := 1;
   ctx.lex.eof_token.col := 1;
+  ctx.parse.label_count := 0;
+  ctx.parse.proc_label_count := 0;
+  ctx.parse.control_label_count := 0;
+  ctx.parse.goto_count := 0;
+  ctx.parse.unresolved_gotos := 0;
+  ctx.parse.duplicate_labels := 0;
+  ctx.parse.proc_count := 0;
+  ctx.parse.main_proc_count := 0;
+  ctx.parse.open_proc := 0;
+  ctx.parse.block_depth := 0;
+  ctx.parse.proc_decl_state := PDS_NONE;
+  ctx.parse.current_decl_proc := 0;
+  ctx.parse.end_pending := False;
+  ctx.parse.end_name := '';
+  ctx.parse.decl_state := DS_NONE;
+  ctx.parse.decl_name := '';
+  ctx.parse.decl_line := 1;
+  ctx.parse.decl_col := 1;
+  ctx.parse.decl_static := False;
+  ctx.parse.decl_initial := False;
+  ctx.parse.decl_array := False;
+  ctx.parse.decl_paren_depth := 0;
+  ctx.parse.have_prev := False;
+  ctx.parse.prev_token.kind := TK_EOF;
+  ctx.parse.prev_token.text := '';
+  ctx.parse.prev_token.int_val := 0;
+  ctx.parse.prev_token.line := 1;
+  ctx.parse.prev_token.col := 1;
+  ctx.parse.pending_goto := False;
+  ctx.parse.pending_label := 0;
+  ctx.symbols.count := 0;
+  ctx.symbols.proc_count := 0;
+  ctx.symbols.param_count := 0;
+  ctx.symbols.local_count := 0;
+  ctx.symbols.static_count := 0;
+  ctx.symbols.array_count := 0;
+  ctx.symbols.label_count := 0;
+  ctx.symbols.runtime_count := 0;
+  ctx.symbols.duplicate_count := 0;
   ctx.stage := CS_LOAD_SOURCE;
   ctx.last_art := AK_NONE;
   ctx.errors := 0;
@@ -500,6 +669,18 @@ Begin
   End;
 End;
 
+Procedure ParseLabelToken(Var ctx: TCompilerContext; tok: TToken); Forward;
+Procedure ParseProcedureToken(Var ctx: TCompilerContext; tok: TToken); Forward;
+Procedure ParseDeclareToken(Var ctx: TCompilerContext; tok: TToken); Forward;
+
+Procedure RegisterToken(Var ctx: TCompilerContext; tok: TToken);
+Begin
+  CountToken(ctx, tok.kind);
+  ParseLabelToken(ctx, tok);
+  ParseProcedureToken(ctx, tok);
+  ParseDeclareToken(ctx, tok);
+End;
+
 Procedure MakeToken(Var tok: TToken; kind: TTokenKind; text: TString;
                     line_no: LongInt; col_no: Integer);
 Begin
@@ -508,6 +689,751 @@ Begin
   tok.int_val := 0;
   tok.line := line_no;
   tok.col := col_no;
+End;
+
+Function IsNameToken(tok: TToken): Boolean;
+Begin
+  IsNameToken := (tok.kind = TK_IDENT) Or
+                 ((tok.kind = TK_KEYWORD) And (tok.text = 'MAIN'));
+End;
+
+Function TokenIs(tok: TToken; text: TString): Boolean;
+Begin
+  TokenIs := UpperStr(tok.text) = UpperStr(text);
+End;
+
+Function FindLabel(Var ctx: TCompilerContext; name: TLabelName): Integer;
+Var
+  i: Integer;
+  u: TLabelName;
+Begin
+  FindLabel := 0;
+  u := UpperStr(name);
+  For i := 1 To ctx.parse.label_count Do
+    If UpperStr(ctx.parse.labels[i].name) = u Then
+      Begin
+        FindLabel := i;
+        Exit;
+      End;
+End;
+
+Function SymKindName(kind: TSymKind): TString;
+Begin
+  Case kind Of
+    SK_PROC:    SymKindName := 'PROC';
+    SK_PARAM:   SymKindName := 'PARAM';
+    SK_LOCAL:   SymKindName := 'LOCAL';
+    SK_STATIC:  SymKindName := 'STATIC';
+    SK_ARRAY:   SymKindName := 'ARRAY';
+    SK_LABEL:   SymKindName := 'LABEL';
+    SK_RUNTIME: SymKindName := 'RUNTIME';
+  Else
+    SymKindName := 'UNKNOWN';
+  End;
+End;
+
+Function FindSymbol(Var ctx: TCompilerContext; name, owner: TLabelName;
+                    kind: TSymKind): Integer;
+Var
+  i: Integer;
+  uname, uowner: TLabelName;
+Begin
+  FindSymbol := 0;
+  uname := UpperStr(name);
+  uowner := UpperStr(owner);
+  For i := 1 To ctx.symbols.count Do
+    If (ctx.symbols.symbols[i].name = uname) And
+       (ctx.symbols.symbols[i].owner = uowner) And
+       (ctx.symbols.symbols[i].kind = kind) Then
+      Begin
+        FindSymbol := i;
+        Exit;
+      End;
+End;
+
+Function FindScopedSymbol(Var ctx: TCompilerContext; name, owner: TLabelName): Integer;
+Var
+  i: Integer;
+  uname, uowner: TLabelName;
+Begin
+  FindScopedSymbol := 0;
+  uname := UpperStr(name);
+  uowner := UpperStr(owner);
+  For i := 1 To ctx.symbols.count Do
+    If (ctx.symbols.symbols[i].name = uname) And
+       (ctx.symbols.symbols[i].owner = uowner) Then
+      Begin
+        FindScopedSymbol := i;
+        Exit;
+      End;
+End;
+
+Function CurrentProcName(Var ctx: TCompilerContext): TLabelName;
+Begin
+  If (ctx.parse.open_proc > 0) And
+     (ctx.parse.open_proc <= ctx.parse.proc_count) Then
+    CurrentProcName := ctx.parse.procs[ctx.parse.open_proc].name
+  Else If (ctx.parse.current_decl_proc > 0) And
+          (ctx.parse.current_decl_proc <= ctx.parse.proc_count) Then
+    CurrentProcName := ctx.parse.procs[ctx.parse.current_decl_proc].name
+  Else
+    CurrentProcName := '';
+End;
+
+Procedure IncSymbolKind(Var ctx: TCompilerContext; kind: TSymKind);
+Begin
+  Case kind Of
+    SK_PROC:    Inc(ctx.symbols.proc_count);
+    SK_PARAM:   Inc(ctx.symbols.param_count);
+    SK_LOCAL:   Inc(ctx.symbols.local_count);
+    SK_STATIC:  Inc(ctx.symbols.static_count);
+    SK_ARRAY:   Inc(ctx.symbols.array_count);
+    SK_LABEL:   Inc(ctx.symbols.label_count);
+    SK_RUNTIME: Inc(ctx.symbols.runtime_count);
+  Else
+  End;
+End;
+
+Function AddSymbol(Var ctx: TCompilerContext; name, owner: TLabelName;
+                   kind: TSymKind; line_no: LongInt; col_no: Integer;
+                   ref_index: Integer): Boolean;
+Var
+  uname, uowner: TLabelName;
+Begin
+  AddSymbol := False;
+  uname := UpperStr(name);
+  uowner := UpperStr(owner);
+
+  If FindSymbol(ctx, uname, uowner, kind) <> 0 Then
+    Begin
+      Inc(ctx.symbols.duplicate_count);
+      SourceErrorAt(ctx, line_no, col_no, 'symbole deja declare dans cette portee');
+      Exit;
+    End;
+
+  If (kind = SK_PARAM) Or (kind = SK_LOCAL) Or
+     (kind = SK_STATIC) Or (kind = SK_ARRAY) Then
+    If FindScopedSymbol(ctx, uname, uowner) <> 0 Then
+      Begin
+        Inc(ctx.symbols.duplicate_count);
+        SourceErrorAt(ctx, line_no, col_no,
+                      'nom deja declare dans cette portee');
+        Exit;
+      End;
+
+  If ctx.symbols.count >= MAX_SYMBOLS Then
+    Begin
+      SourceErrorAt(ctx, line_no, col_no, 'trop de symboles');
+      Exit;
+    End;
+
+  Inc(ctx.symbols.count);
+  ctx.symbols.symbols[ctx.symbols.count].name := uname;
+  ctx.symbols.symbols[ctx.symbols.count].owner := uowner;
+  ctx.symbols.symbols[ctx.symbols.count].kind := kind;
+  ctx.symbols.symbols[ctx.symbols.count].line := line_no;
+  ctx.symbols.symbols[ctx.symbols.count].col := col_no;
+  ctx.symbols.symbols[ctx.symbols.count].ref_index := ref_index;
+  IncSymbolKind(ctx, kind);
+  AddSymbol := True;
+End;
+
+Procedure AddRuntimeSymbols(Var ctx: TCompilerContext);
+Begin
+  AddSymbol(ctx, 'PUT_LIST_I32', '', SK_RUNTIME, 1, 1, 0);
+  AddSymbol(ctx, 'PUT_SKIP', '', SK_RUNTIME, 1, 1, 0);
+  AddSymbol(ctx, 'EXIT_PROCESS', '', SK_RUNTIME, 1, 1, 0);
+End;
+
+Procedure ResetParseInfo(Var ctx: TCompilerContext);
+Begin
+  ctx.symbols.count := 0;
+  ctx.symbols.proc_count := 0;
+  ctx.symbols.param_count := 0;
+  ctx.symbols.local_count := 0;
+  ctx.symbols.static_count := 0;
+  ctx.symbols.array_count := 0;
+  ctx.symbols.label_count := 0;
+  ctx.symbols.runtime_count := 0;
+  ctx.symbols.duplicate_count := 0;
+  ctx.parse.label_count := 0;
+  ctx.parse.proc_label_count := 0;
+  ctx.parse.control_label_count := 0;
+  ctx.parse.goto_count := 0;
+  ctx.parse.unresolved_gotos := 0;
+  ctx.parse.duplicate_labels := 0;
+  ctx.parse.proc_count := 0;
+  ctx.parse.main_proc_count := 0;
+  ctx.parse.open_proc := 0;
+  ctx.parse.block_depth := 0;
+  ctx.parse.proc_decl_state := PDS_NONE;
+  ctx.parse.current_decl_proc := 0;
+  ctx.parse.end_pending := False;
+  ctx.parse.end_name := '';
+  ctx.parse.decl_state := DS_NONE;
+  ctx.parse.decl_name := '';
+  ctx.parse.decl_line := 1;
+  ctx.parse.decl_col := 1;
+  ctx.parse.decl_static := False;
+  ctx.parse.decl_initial := False;
+  ctx.parse.decl_array := False;
+  ctx.parse.decl_paren_depth := 0;
+  ctx.parse.have_prev := False;
+  ctx.parse.prev_token.kind := TK_EOF;
+  ctx.parse.prev_token.text := '';
+  ctx.parse.prev_token.int_val := 0;
+  ctx.parse.prev_token.line := 1;
+  ctx.parse.prev_token.col := 1;
+  ctx.parse.pending_goto := False;
+  ctx.parse.pending_label := 0;
+  AddRuntimeSymbols(ctx);
+End;
+
+Procedure AddLabel(Var ctx: TCompilerContext; tok: TToken);
+Var
+  idx: Integer;
+Begin
+  idx := FindLabel(ctx, tok.text);
+  If idx <> 0 Then
+    Begin
+      Inc(ctx.parse.duplicate_labels);
+      SourceErrorAt(ctx, tok.line, tok.col, 'etiquette deja definie');
+      Exit;
+    End;
+
+  If ctx.parse.label_count >= MAX_LABELS Then
+    Begin
+      SourceErrorAt(ctx, tok.line, tok.col, 'trop d''etiquettes');
+      Exit;
+    End;
+
+  Inc(ctx.parse.label_count);
+  ctx.parse.labels[ctx.parse.label_count].name := UpperStr(tok.text);
+  ctx.parse.labels[ctx.parse.label_count].kind := LK_CONTROL;
+  ctx.parse.labels[ctx.parse.label_count].line := tok.line;
+  ctx.parse.labels[ctx.parse.label_count].col := tok.col;
+  Inc(ctx.parse.control_label_count);
+  AddSymbol(ctx, tok.text, CurrentProcName(ctx), SK_LABEL,
+            tok.line, tok.col, ctx.parse.label_count);
+  ctx.parse.pending_label := ctx.parse.label_count;
+End;
+
+Procedure AddProcedureFromLabel(Var ctx: TCompilerContext; label_idx: Integer;
+                                tok: TToken);
+Var
+  proc_idx: Integer;
+Begin
+  If (label_idx <= 0) Or (label_idx > ctx.parse.label_count) Then
+    Begin
+      SourceErrorAt(ctx, tok.line, tok.col,
+                    'PROCEDURE sans etiquette precedente');
+      Exit;
+    End;
+
+  If ctx.parse.open_proc <> 0 Then
+    Begin
+      SourceErrorAt(ctx, tok.line, tok.col,
+                    'declaration PROCEDURE imbriquee non supportee');
+      Exit;
+    End;
+
+  If ctx.parse.proc_count >= MAX_PROCS Then
+    Begin
+      SourceErrorAt(ctx, tok.line, tok.col, 'trop de procedures');
+      Exit;
+    End;
+
+  Inc(ctx.parse.proc_count);
+  proc_idx := ctx.parse.proc_count;
+  ctx.parse.procs[proc_idx].name := ctx.parse.labels[label_idx].name;
+  ctx.parse.procs[proc_idx].param_count := 0;
+  ctx.parse.procs[proc_idx].has_returns := False;
+  ctx.parse.procs[proc_idx].is_main := False;
+  ctx.parse.procs[proc_idx].decl_line := ctx.parse.labels[label_idx].line;
+  ctx.parse.procs[proc_idx].decl_col := ctx.parse.labels[label_idx].col;
+  ctx.parse.procs[proc_idx].body_line := 0;
+  ctx.parse.procs[proc_idx].end_line := 0;
+  ctx.parse.procs[proc_idx].closed := False;
+  AddSymbol(ctx, ctx.parse.procs[proc_idx].name, '', SK_PROC,
+            ctx.parse.procs[proc_idx].decl_line,
+            ctx.parse.procs[proc_idx].decl_col, proc_idx);
+  ctx.parse.current_decl_proc := proc_idx;
+  ctx.parse.proc_decl_state := PDS_AFTER_PROCEDURE;
+End;
+
+Procedure MarkPendingLabelAsProcedure(Var ctx: TCompilerContext; tok: TToken);
+Var
+  idx: Integer;
+Begin
+  idx := ctx.parse.pending_label;
+  If (idx > 0) And (idx <= ctx.parse.label_count) Then
+    If ctx.parse.labels[idx].kind <> LK_PROC Then
+      Begin
+        ctx.parse.labels[idx].kind := LK_PROC;
+        Inc(ctx.parse.proc_label_count);
+        Dec(ctx.parse.control_label_count);
+        AddProcedureFromLabel(ctx, idx, tok);
+      End;
+  ctx.parse.pending_label := 0;
+End;
+
+Procedure AddGotoRef(Var ctx: TCompilerContext; tok: TToken);
+Begin
+  If ctx.parse.goto_count >= MAX_GOTOS Then
+    Begin
+      SourceErrorAt(ctx, tok.line, tok.col, 'trop de GOTO');
+      Exit;
+    End;
+
+  Inc(ctx.parse.goto_count);
+  ctx.parse.gotos[ctx.parse.goto_count].name := UpperStr(tok.text);
+  ctx.parse.gotos[ctx.parse.goto_count].line := tok.line;
+  ctx.parse.gotos[ctx.parse.goto_count].col := tok.col;
+End;
+
+Procedure ParseLabelToken(Var ctx: TCompilerContext; tok: TToken);
+Begin
+  If (ctx.parse.pending_label > 0) And
+     Not ((tok.kind = TK_KEYWORD) And (tok.text = 'PROCEDURE')) Then
+    ctx.parse.pending_label := 0;
+
+  If (tok.kind = TK_KEYWORD) And (tok.text = 'PROCEDURE') Then
+    MarkPendingLabelAsProcedure(ctx, tok);
+
+  If ctx.parse.pending_goto Then
+    Begin
+      If IsNameToken(tok) Then
+        AddGotoRef(ctx, tok)
+      Else
+        SourceErrorAt(ctx, tok.line, tok.col, 'nom d''etiquette attendu apres GOTO');
+      ctx.parse.pending_goto := False;
+    End
+  Else If (tok.kind = TK_KEYWORD) And (tok.text = 'GOTO') Then
+    ctx.parse.pending_goto := True;
+
+  If (tok.kind = TK_PUNCT) And (tok.text = ':') And
+     ctx.parse.have_prev And IsNameToken(ctx.parse.prev_token) Then
+    AddLabel(ctx, ctx.parse.prev_token);
+
+  ctx.parse.prev_token := tok;
+  ctx.parse.have_prev := True;
+End;
+
+Procedure AddProcedureParam(Var ctx: TCompilerContext; tok: TToken);
+Var
+  proc_idx, i: Integer;
+  pname: TLabelName;
+Begin
+  proc_idx := ctx.parse.current_decl_proc;
+  If proc_idx = 0 Then
+    Exit;
+
+  pname := UpperStr(tok.text);
+  For i := 1 To ctx.parse.procs[proc_idx].param_count Do
+    If ctx.parse.procs[proc_idx].params[i] = pname Then
+      Begin
+        SourceErrorAt(ctx, tok.line, tok.col,
+                      'parametre deja declare dans cette procedure');
+        Exit;
+      End;
+
+  If ctx.parse.procs[proc_idx].param_count >= MAX_PARAMS Then
+    Begin
+      SourceErrorAt(ctx, tok.line, tok.col,
+                    'trop de parametres dans la procedure');
+      Exit;
+    End;
+
+  Inc(ctx.parse.procs[proc_idx].param_count);
+  ctx.parse.procs[proc_idx].params[
+    ctx.parse.procs[proc_idx].param_count] := pname;
+  AddSymbol(ctx, pname, ctx.parse.procs[proc_idx].name, SK_PARAM,
+            tok.line, tok.col, ctx.parse.procs[proc_idx].param_count);
+End;
+
+Procedure BeginProcedureBody(Var ctx: TCompilerContext; tok: TToken);
+Var
+  proc_idx: Integer;
+Begin
+  proc_idx := ctx.parse.current_decl_proc;
+  If proc_idx = 0 Then
+    Begin
+      SourceErrorAt(ctx, tok.line, tok.col,
+                    'corps de PROCEDURE sans declaration active');
+      Exit;
+    End;
+
+  ctx.parse.procs[proc_idx].body_line := tok.line;
+  ctx.parse.open_proc := proc_idx;
+  ctx.parse.block_depth := 0;
+  ctx.parse.current_decl_proc := 0;
+  ctx.parse.proc_decl_state := PDS_NONE;
+End;
+
+Procedure MarkProcedureMain(Var ctx: TCompilerContext; tok: TToken);
+Var
+  proc_idx: Integer;
+Begin
+  proc_idx := ctx.parse.current_decl_proc;
+  If proc_idx = 0 Then
+    Exit;
+
+  If Not ctx.parse.procs[proc_idx].is_main Then
+    Begin
+      ctx.parse.procs[proc_idx].is_main := True;
+      Inc(ctx.parse.main_proc_count);
+      If ctx.parse.main_proc_count > 1 Then
+        SourceErrorAt(ctx, tok.line, tok.col,
+                      'plusieurs PROCEDURE OPTIONS(MAIN)');
+    End;
+End;
+
+Procedure MarkProcedureReturns(Var ctx: TCompilerContext);
+Var
+  proc_idx: Integer;
+Begin
+  proc_idx := ctx.parse.current_decl_proc;
+  If proc_idx <> 0 Then
+    ctx.parse.procs[proc_idx].has_returns := True;
+End;
+
+Procedure CloseCurrentProcedure(Var ctx: TCompilerContext; tok: TToken;
+                                end_name: TLabelName);
+Var
+  proc_idx: Integer;
+  u: TLabelName;
+Begin
+  proc_idx := ctx.parse.open_proc;
+  If proc_idx = 0 Then
+    Begin
+      If end_name <> '' Then
+        SourceErrorAt(ctx, tok.line, tok.col,
+                      'END nom hors procedure');
+      Exit;
+    End;
+
+  u := UpperStr(end_name);
+  If (u <> '') And (u <> ctx.parse.procs[proc_idx].name) Then
+    Begin
+      SourceErrorAt(ctx, tok.line, tok.col,
+                    'END nom ne correspond pas a la procedure ouverte');
+      Exit;
+    End;
+
+  ctx.parse.procs[proc_idx].closed := True;
+  ctx.parse.procs[proc_idx].end_line := tok.line;
+  ctx.parse.open_proc := 0;
+  ctx.parse.block_depth := 0;
+End;
+
+Procedure ParseEndToken(Var ctx: TCompilerContext; tok: TToken);
+Begin
+  If (tok.kind = TK_KEYWORD) And (tok.text = 'END') Then
+    Begin
+      ctx.parse.end_pending := True;
+      ctx.parse.end_name := '';
+      Exit;
+    End;
+
+  If Not ctx.parse.end_pending Then
+    Exit;
+
+  If IsNameToken(tok) Then
+    Begin
+      ctx.parse.end_name := UpperStr(tok.text);
+      Exit;
+    End;
+
+  If (tok.kind = TK_PUNCT) And (tok.text = ';') Then
+    Begin
+      If ctx.parse.end_name <> '' Then
+        CloseCurrentProcedure(ctx, tok, ctx.parse.end_name)
+      Else If ctx.parse.block_depth > 0 Then
+        Dec(ctx.parse.block_depth)
+      Else
+        CloseCurrentProcedure(ctx, tok, '');
+      ctx.parse.end_pending := False;
+      ctx.parse.end_name := '';
+      Exit;
+    End;
+
+  SourceErrorAt(ctx, tok.line, tok.col,
+                'nom de procedure ou ; attendu apres END');
+  ctx.parse.end_pending := False;
+  ctx.parse.end_name := '';
+End;
+
+Procedure ParseProcedureToken(Var ctx: TCompilerContext; tok: TToken);
+Begin
+  If (ctx.parse.proc_decl_state = PDS_NONE) Then
+    Begin
+      If (ctx.parse.open_proc <> 0) And (Not ctx.parse.end_pending) Then
+        Begin
+          If (tok.kind = TK_KEYWORD) And
+             ((tok.text = 'DO') Or (tok.text = 'SELECT')) Then
+            Inc(ctx.parse.block_depth);
+        End;
+      ParseEndToken(ctx, tok);
+      Exit;
+    End;
+
+  Case ctx.parse.proc_decl_state Of
+    PDS_AFTER_PROCEDURE:
+      Begin
+        If (tok.kind = TK_KEYWORD) And (tok.text = 'PROCEDURE') Then
+          Exit;
+        If (tok.kind = TK_PUNCT) And (tok.text = '(') Then
+          ctx.parse.proc_decl_state := PDS_PARAMS
+        Else If (tok.kind = TK_KEYWORD) And (tok.text = 'OPTIONS') Then
+          ctx.parse.proc_decl_state := PDS_OPTIONS
+        Else If (tok.kind = TK_KEYWORD) And (tok.text = 'RETURNS') Then
+          ctx.parse.proc_decl_state := PDS_RETURNS
+        Else If (tok.kind = TK_PUNCT) And (tok.text = ';') Then
+          BeginProcedureBody(ctx, tok)
+        Else
+          SourceErrorAt(ctx, tok.line, tok.col,
+                        'element inattendu dans declaration PROCEDURE');
+      End;
+    PDS_PARAMS:
+      Begin
+        If IsNameToken(tok) Then
+          AddProcedureParam(ctx, tok)
+        Else If (tok.kind = TK_PUNCT) And (tok.text = ',') Then
+          Begin
+          End
+        Else If (tok.kind = TK_PUNCT) And (tok.text = ')') Then
+          ctx.parse.proc_decl_state := PDS_AFTER_PARAMS
+        Else
+          SourceErrorAt(ctx, tok.line, tok.col,
+                        'parametre ou ) attendu dans PROCEDURE');
+      End;
+    PDS_AFTER_PARAMS:
+      Begin
+        If (tok.kind = TK_KEYWORD) And (tok.text = 'OPTIONS') Then
+          ctx.parse.proc_decl_state := PDS_OPTIONS
+        Else If (tok.kind = TK_KEYWORD) And (tok.text = 'RETURNS') Then
+          ctx.parse.proc_decl_state := PDS_RETURNS
+        Else If (tok.kind = TK_PUNCT) And (tok.text = ';') Then
+          BeginProcedureBody(ctx, tok)
+        Else
+          SourceErrorAt(ctx, tok.line, tok.col,
+                        'OPTIONS, RETURNS ou ; attendu apres parametres');
+      End;
+    PDS_OPTIONS:
+      Begin
+        If (tok.kind = TK_PUNCT) And (tok.text = '(') Then
+          ctx.parse.proc_decl_state := PDS_OPTIONS_ARGS
+        Else
+          SourceErrorAt(ctx, tok.line, tok.col,
+                        '( attendu apres OPTIONS');
+      End;
+    PDS_OPTIONS_ARGS:
+      Begin
+        If (tok.kind = TK_KEYWORD) And (tok.text = 'MAIN') Then
+          MarkProcedureMain(ctx, tok)
+        Else If (tok.kind = TK_PUNCT) And (tok.text = ')') Then
+          ctx.parse.proc_decl_state := PDS_AFTER_PARAMS;
+      End;
+    PDS_RETURNS:
+      Begin
+        If (tok.kind = TK_PUNCT) And (tok.text = '(') Then
+          Begin
+            MarkProcedureReturns(ctx);
+            ctx.parse.proc_decl_state := PDS_RETURNS_ARGS;
+          End
+        Else
+          SourceErrorAt(ctx, tok.line, tok.col,
+                        '( attendu apres RETURNS');
+      End;
+    PDS_RETURNS_ARGS:
+      Begin
+        If (tok.kind = TK_PUNCT) And (tok.text = ')') Then
+          ctx.parse.proc_decl_state := PDS_AFTER_PARAMS;
+      End;
+  End;
+End;
+
+Procedure ResetDeclareState(Var ctx: TCompilerContext);
+Begin
+  ctx.parse.decl_state := DS_NONE;
+  ctx.parse.decl_name := '';
+  ctx.parse.decl_line := 1;
+  ctx.parse.decl_col := 1;
+  ctx.parse.decl_static := False;
+  ctx.parse.decl_initial := False;
+  ctx.parse.decl_array := False;
+  ctx.parse.decl_paren_depth := 0;
+End;
+
+Procedure FinishDeclare(Var ctx: TCompilerContext; tok: TToken);
+Var
+  owner: TLabelName;
+  kind: TSymKind;
+Begin
+  owner := CurrentProcName(ctx);
+  If owner = '' Then
+    Begin
+      SourceErrorAt(ctx, tok.line, tok.col,
+                    'DECLARE hors procedure non supporte pour le moment');
+      ResetDeclareState(ctx);
+      Exit;
+    End;
+
+  If ctx.parse.decl_name = '' Then
+    Begin
+      SourceErrorAt(ctx, tok.line, tok.col,
+                    'nom manquant dans DECLARE');
+      ResetDeclareState(ctx);
+      Exit;
+    End;
+
+  If ctx.parse.decl_array Then
+    kind := SK_ARRAY
+  Else If ctx.parse.decl_static Then
+    kind := SK_STATIC
+  Else
+    kind := SK_LOCAL;
+
+  AddSymbol(ctx, ctx.parse.decl_name, owner, kind,
+            ctx.parse.decl_line, ctx.parse.decl_col, 0);
+  ResetDeclareState(ctx);
+End;
+
+Procedure ParseDeclareToken(Var ctx: TCompilerContext; tok: TToken);
+Begin
+  If ctx.parse.proc_decl_state <> PDS_NONE Then
+    Exit;
+
+  Case ctx.parse.decl_state Of
+    DS_NONE:
+      Begin
+        If (tok.kind = TK_KEYWORD) And
+           ((tok.text = 'DECLARE') Or (tok.text = 'DCL')) Then
+          Begin
+            If ctx.parse.open_proc = 0 Then
+              SourceErrorAt(ctx, tok.line, tok.col,
+                            'DECLARE hors procedure')
+            Else
+              ctx.parse.decl_state := DS_EXPECT_NAME;
+          End;
+      End;
+    DS_EXPECT_NAME:
+      Begin
+        If IsNameToken(tok) Then
+          Begin
+            ctx.parse.decl_name := UpperStr(tok.text);
+            ctx.parse.decl_line := tok.line;
+            ctx.parse.decl_col := tok.col;
+            ctx.parse.decl_state := DS_AFTER_NAME;
+          End
+        Else
+          Begin
+            SourceErrorAt(ctx, tok.line, tok.col,
+                          'nom attendu apres DECLARE');
+            ResetDeclareState(ctx);
+          End;
+      End;
+    DS_AFTER_NAME:
+      Begin
+        If (tok.kind = TK_PUNCT) And (tok.text = '(') And
+           (Not ctx.parse.decl_array) And
+           (Not ctx.parse.decl_initial) Then
+          Begin
+            ctx.parse.decl_array := True;
+            ctx.parse.decl_paren_depth := 1;
+            ctx.parse.decl_state := DS_ARRAY_DIMS;
+          End
+        Else If (tok.kind = TK_KEYWORD) And
+                ((tok.text = 'FIXED') Or (tok.text = 'BINARY')) Then
+          Begin
+          End
+        Else If (tok.kind = TK_KEYWORD) And (tok.text = 'STATIC') Then
+          ctx.parse.decl_static := True
+        Else If (tok.kind = TK_KEYWORD) And
+                ((tok.text = 'INITIAL') Or (tok.text = 'INIT')) Then
+          Begin
+            ctx.parse.decl_initial := True;
+            ctx.parse.decl_state := DS_INITIAL;
+          End
+        Else If (tok.kind = TK_PUNCT) And (tok.text = ';') Then
+          FinishDeclare(ctx, tok)
+        Else
+          SourceErrorAt(ctx, tok.line, tok.col,
+                        'attribut DECLARE inattendu');
+      End;
+    DS_ARRAY_DIMS:
+      Begin
+        If (tok.kind = TK_PUNCT) And (tok.text = '(') Then
+          Inc(ctx.parse.decl_paren_depth)
+        Else If (tok.kind = TK_PUNCT) And (tok.text = ')') Then
+          Begin
+            Dec(ctx.parse.decl_paren_depth);
+            If ctx.parse.decl_paren_depth = 0 Then
+              ctx.parse.decl_state := DS_AFTER_NAME;
+          End;
+      End;
+    DS_INITIAL:
+      Begin
+        If (tok.kind = TK_PUNCT) And (tok.text = '(') Then
+          Inc(ctx.parse.decl_paren_depth)
+        Else If (tok.kind = TK_PUNCT) And (tok.text = ')') Then
+          Begin
+            If ctx.parse.decl_paren_depth > 0 Then
+              Dec(ctx.parse.decl_paren_depth);
+            If ctx.parse.decl_paren_depth = 0 Then
+              ctx.parse.decl_state := DS_AFTER_NAME;
+          End
+        Else If (tok.kind = TK_PUNCT) And (tok.text = ';') And
+                (ctx.parse.decl_paren_depth = 0) Then
+          FinishDeclare(ctx, tok);
+      End;
+  End;
+End;
+
+Function ResolveLabelsAndGotos(Var ctx: TCompilerContext): Boolean;
+Var
+  i: Integer;
+Begin
+  ResolveLabelsAndGotos := False;
+
+  If ctx.parse.pending_goto Then
+    SourceErrorAt(ctx, ctx.lex.eof_token.line, ctx.lex.eof_token.col,
+                  'nom d''etiquette attendu apres GOTO');
+
+  If ctx.parse.end_pending Then
+    SourceErrorAt(ctx, ctx.lex.eof_token.line, ctx.lex.eof_token.col,
+                  'fin de fichier apres END incomplet');
+
+  If ctx.parse.proc_decl_state <> PDS_NONE Then
+    SourceErrorAt(ctx, ctx.lex.eof_token.line, ctx.lex.eof_token.col,
+                  'declaration PROCEDURE incomplete');
+
+  If ctx.parse.decl_state <> DS_NONE Then
+    SourceErrorAt(ctx, ctx.lex.eof_token.line, ctx.lex.eof_token.col,
+                  'declaration DECLARE incomplete');
+
+  For i := 1 To ctx.parse.goto_count Do
+    If FindLabel(ctx, ctx.parse.gotos[i].name) = 0 Then
+      Begin
+        Inc(ctx.parse.unresolved_gotos);
+        SourceErrorAt(ctx, ctx.parse.gotos[i].line,
+                      ctx.parse.gotos[i].col,
+                      'GOTO vers une etiquette inconnue');
+      End;
+
+  If ctx.parse.proc_count = 0 Then
+    SourceErrorAt(ctx, 1, 1, 'aucune PROCEDURE trouvee');
+
+  If ctx.parse.main_proc_count = 0 Then
+    SourceErrorAt(ctx, 1, 1, 'aucune PROCEDURE OPTIONS(MAIN) trouvee');
+
+  For i := 1 To ctx.parse.proc_count Do
+    If Not ctx.parse.procs[i].closed Then
+      SourceErrorAt(ctx, ctx.parse.procs[i].decl_line,
+                    ctx.parse.procs[i].decl_col,
+                    'procedure non fermee par END');
+
+  ResolveLabelsAndGotos := ctx.errors = 0;
 End;
 
 Function LexSourceFile(Var ctx: TCompilerContext): Boolean;
@@ -538,6 +1464,7 @@ Begin
   ctx.lex.operator_count := 0;
   ctx.lex.punct_count := 0;
   ctx.lex.comment_count := 0;
+  ResetParseInfo(ctx);
   ResetSourceCursor(ctx);
 
   Assign(f, ctx.source_name);
@@ -609,7 +1536,7 @@ Begin
                 MakeToken(tok, TK_KEYWORD, UpperStr(text), line_no, start_col)
               Else
                 MakeToken(tok, TK_IDENT, text, line_no, start_col);
-              CountToken(ctx, tok.kind);
+              RegisterToken(ctx, tok);
             End
           Else If IsDigit(ch) Then
             Begin
@@ -621,7 +1548,7 @@ Begin
                   Inc(pos);
                 End;
               MakeToken(tok, TK_INTEGER, text, line_no, start_col);
-              CountToken(ctx, tok.kind);
+              RegisterToken(ctx, tok);
             End
           Else If ch = '''' Then
             Begin
@@ -640,14 +1567,14 @@ Begin
                 Begin
                   Inc(pos);
                   MakeToken(tok, TK_STRING, text, line_no, start_col);
-                  CountToken(ctx, tok.kind);
+                  RegisterToken(ctx, tok);
                 End;
             End
           Else If IsPunct(ch) Then
             Begin
               text := ch;
               MakeToken(tok, TK_PUNCT, text, line_no, pos);
-              CountToken(ctx, tok.kind);
+              RegisterToken(ctx, tok);
               Inc(pos);
             End
           Else If IsOperatorStart(ch) Then
@@ -664,7 +1591,7 @@ Begin
                     End;
                 End;
               MakeToken(tok, TK_OPERATOR, text, line_no, start_col);
-              CountToken(ctx, tok.kind);
+              RegisterToken(ctx, tok);
               Inc(pos);
             End
           Else
@@ -832,6 +1759,61 @@ Begin
           ', commentaires=', ctx.lex.comment_count, ')');
 End;
 
+Procedure PrintParseInfo(Var ctx: TCompilerContext);
+Var
+  i, j: Integer;
+Begin
+  Writeln('Etiquettes: ', ctx.parse.label_count,
+          ' (procedures=', ctx.parse.proc_label_count,
+          ', controle=', ctx.parse.control_label_count,
+          ', GOTO=', ctx.parse.goto_count,
+          ', non resolus=', ctx.parse.unresolved_gotos,
+          ', doublons=', ctx.parse.duplicate_labels, ')');
+  Writeln('Procedures: ', ctx.parse.proc_count,
+          ' (MAIN=', ctx.parse.main_proc_count, ')');
+  For i := 1 To ctx.parse.proc_count Do
+    Begin
+      Write('  ', ctx.parse.procs[i].name, '(');
+      For j := 1 To ctx.parse.procs[i].param_count Do
+        Begin
+          If j > 1 Then
+            Write(', ');
+          Write(ctx.parse.procs[i].params[j]);
+        End;
+      Write(')');
+      If ctx.parse.procs[i].has_returns Then
+        Write(' RETURNS');
+      If ctx.parse.procs[i].is_main Then
+        Write(' OPTIONS(MAIN)');
+      If ctx.parse.procs[i].closed Then
+        Writeln(' END@', ctx.parse.procs[i].end_line)
+      Else
+        Writeln(' non fermee');
+    End;
+End;
+
+Procedure PrintSymbolInfo(Var ctx: TCompilerContext);
+Var
+  i: Integer;
+Begin
+  Writeln('Symboles: ', ctx.symbols.count,
+          ' (proc=', ctx.symbols.proc_count,
+          ', param=', ctx.symbols.param_count,
+          ', local=', ctx.symbols.local_count,
+          ', static=', ctx.symbols.static_count,
+          ', array=', ctx.symbols.array_count,
+          ', label=', ctx.symbols.label_count,
+          ', runtime=', ctx.symbols.runtime_count,
+          ', doublons=', ctx.symbols.duplicate_count, ')');
+  For i := 1 To ctx.symbols.count Do
+    Begin
+      Write('  ', SymKindName(ctx.symbols.symbols[i].kind), ' ');
+      If ctx.symbols.symbols[i].owner <> '' Then
+        Write(ctx.symbols.symbols[i].owner, '.');
+      Writeln(ctx.symbols.symbols[i].name);
+    End;
+End;
+
 Function SetDefaultOutputNames(Var ctx: TCompilerContext): Boolean;
 Var
   base_name: TString;
@@ -986,14 +1968,19 @@ Begin
       End;
     CS_PARSE_AST:
       Begin
-        { TODO 8 a 18 construiront l'AST / IR PL/1. }
         If ctx.last_art <> AK_TOKEN_STREAM Then
           PipelineError(ctx, 'flux de tokens attendu')
         Else
-          Begin
-            ctx.last_art := AK_AST_IR;
-            RunStage := True;
-          End;
+          If ResolveLabelsAndGotos(ctx) Then
+            Begin
+              ctx.last_art := AK_AST_IR;
+              If ctx.options.verbose Then
+                Begin
+                  PrintParseInfo(ctx);
+                  PrintSymbolInfo(ctx);
+                End;
+              RunStage := True;
+            End;
       End;
     CS_EMIT_ASM386:
       Begin
