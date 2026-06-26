@@ -3093,6 +3093,74 @@ Begin
     WriteLn('Avertissement: execution intermediaire interrompue (limite de pas).');
 End;
 
+Function CollectLinearStartOutputs(Var ctx : TCompilerContext) : Boolean;
+Var
+  r, idx, end_idx : Integer;
+  name            : TString;
+Begin
+  CollectLinearStartOutputs := False;
+  bin_output_count := 0;
+  If Not RunLoadTokens(ctx.source_name) Then
+    Exit;
+  RunIndexProgram;
+  r := RunFindRoutine('START');
+  If r = 0 Then
+    Exit;
+
+  idx := run_routines[r].body_start;
+  end_idx := run_routines[r].body_end;
+  While idx < end_idx Do
+  Begin
+    name := RunTokVal(idx);
+    If (name = 'LET') Or (name = 'IF') Or (name = 'UNLESS') Or
+       (name = 'TEST') Or (name = 'FOR') Or (name = 'WHILE') Or
+       (name = 'UNTIL') Or (name = 'REPEAT') Or
+       (name = 'SWITCHON') Or (name = 'BREAK') Or
+       (name = 'RESULTIS') Then
+      Exit;
+
+    If name = 'WRITES' Then
+    Begin
+      Inc(idx);
+      If RunTokVal(idx) = '(' Then Inc(idx);
+      If run_tokens[idx].kind <> TK_STRING Then Exit;
+      BinOutputAdd(run_tokens[idx].val);
+      Inc(idx);
+      If RunTokVal(idx) = ')' Then Inc(idx);
+    End
+    Else If name = 'NEWLINE' Then
+    Begin
+      Inc(idx);
+      If RunTokVal(idx) = '(' Then Inc(idx);
+      If RunTokVal(idx) = ')' Then Inc(idx);
+      BinOutputAdd(#13#10);
+    End
+    Else If (name = 'WRITECH') Or (name = 'WRITEN') Then
+    Begin
+      Inc(idx);
+      If RunTokVal(idx) = '(' Then Inc(idx);
+      If run_tokens[idx].kind <> TK_INTEGER Then Exit;
+      If name = 'WRITECH' Then
+        BinOutputAdd(Chr(run_tokens[idx].int_val And $FF))
+      Else
+        BinOutputAddInt(run_tokens[idx].int_val);
+      Inc(idx);
+      If RunTokVal(idx) = ')' Then Inc(idx);
+    End
+    Else If name = 'FINISH' Then
+    Begin
+      CollectLinearStartOutputs := True;
+      Exit;
+    End
+    Else If name = '$(' Then
+      idx := RunFindMatchingBlock(idx) + 1
+    Else
+      Exit;
+  End;
+
+  CollectLinearStartOutputs := True;
+End;
+
 Procedure WritePeSectionHeader(Var f : File; Const name : TString;
                                virt_size, virt_addr, raw_size,
                                raw_ptr, flags : LongInt);
@@ -3325,7 +3393,8 @@ Var
   End;
 Begin
   EmitPeExeFile := False;
-  CollectRuntimeOutputs(ctx);
+  If Not CollectLinearStartOutputs(ctx) Then
+    CollectRuntimeOutputs(ctx);
 
   rpos := 0;
   For i := 1 To bin_output_count Do
@@ -3865,7 +3934,7 @@ Begin
   fail := 0;
   WriteLn('=== BCPLCW32 -test : validation SAMPLES\BCPL\ ===');
   WriteLn('Note: le backend binaire produit un EXE PE32 avec .text x86 genere;');
-  WriteLn('      le codegen BCPL complet statement-par-statement reste a enrichir.');
+  WriteLn('      start() lineaire est genere sans execution intermediaire.');
   WriteLn;
 
   ValidateSample('hello', BASE_DIR + 'hello.b',
