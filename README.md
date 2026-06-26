@@ -234,6 +234,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td><b>BCPL86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur BCPL pour l'assembleur du microprocesseur 8086.</td>
 		</tr>
+		<tr>
+			<td><b>BCPLCW32.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur BCPL vers l'assembleur du microprocesseur 80386 pour Windows 32 bits (Win32 PE).</td>
+		</tr>
         <tr>
 			<td><b>BIN2BGI.PAS</b></td>
 			<td>Cette programme permet l'écriture d'entête de la portion du pilote BGI.</td>
