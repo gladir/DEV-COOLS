@@ -125,7 +125,13 @@ Type
 
   TSymbolTable = Array[1..MAX_SYM] Of TSymbol;
   TBinBuffer = Array[0..MAX_BIN_CODE - 1] Of Byte;
+  TBinOutputKind = (
+    BOK_TEXT,
+    BOK_INT
+  );
   TBinOutputTable = Array[1..MAX_BIN_OUTPUT] Of TString;
+  TBinOutputKindTable = Array[1..MAX_BIN_OUTPUT] Of TBinOutputKind;
+  TBinOutputIntTable = Array[1..MAX_BIN_OUTPUT] Of LongInt;
   TRunParamNames = Array[1..MAX_RUN_PARAMS] Of TString;
 
   TRunRoutine = Record
@@ -281,6 +287,8 @@ Var
   sym_table   : TSymbolTable;
   sym_count   : Integer;
   bin_outputs : TBinOutputTable;
+  bin_output_kinds : TBinOutputKindTable;
+  bin_output_ints  : TBinOutputIntTable;
   bin_output_count: Integer;
   run_tokens  : Array[1..MAX_RUN_TOKENS] Of TToken;
   run_tok_count: Integer;
@@ -2235,7 +2243,22 @@ Begin
     Exit;
   End;
   Inc(bin_output_count);
+  bin_output_kinds[bin_output_count] := BOK_TEXT;
   bin_outputs[bin_output_count] := text;
+  bin_output_ints[bin_output_count] := 0;
+End;
+
+Procedure BinOutputAddInt(value : LongInt);
+Begin
+  If bin_output_count >= MAX_BIN_OUTPUT Then
+  Begin
+    ParseError('trop de sorties runtime statiques');
+    Exit;
+  End;
+  Inc(bin_output_count);
+  bin_output_kinds[bin_output_count] := BOK_INT;
+  bin_outputs[bin_output_count] := '';
+  bin_output_ints[bin_output_count] := value;
 End;
 
 Function RunTokVal(idx : Integer) : TString;
@@ -2744,7 +2767,7 @@ Begin
     Else If name = 'WRITEN' Then
     Begin
       v := RunEvalExpr(env, idx);
-      BinOutputAdd(LongToStr(v));
+      BinOutputAddInt(v);
     End;
     If RunTokVal(idx) = ')' Then Inc(idx);
   End
@@ -3113,18 +3136,82 @@ Var
   iat_exit_va: LongInt;
   iat_get_va : LongInt;
   iat_write_va: LongInt;
+  code_buf   : TBinBuffer;
+  code_pos   : LongInt;
+  writeint_off: LongInt;
+  entry_off  : LongInt;
+
+  Procedure CodeByte(b : Byte);
+  Begin
+    If code_pos < MAX_BIN_CODE Then
+    Begin
+      code_buf[code_pos] := b;
+      Inc(code_pos);
+    End;
+  End;
+
+  Procedure CodeWord(v : LongInt);
+  Begin
+    CodeByte(v And $FF);
+    CodeByte((v Shr 8) And $FF);
+  End;
+
+  Procedure CodeDWord(v : LongInt);
+  Begin
+    CodeByte(v And $FF);
+    CodeByte((v Shr 8) And $FF);
+    CodeByte((v Shr 16) And $FF);
+    CodeByte((v Shr 24) And $FF);
+  End;
+
+  Procedure CodePatchDWord(at_pos, v : LongInt);
+  Begin
+    If (at_pos >= 0) And (at_pos + 3 < MAX_BIN_CODE) Then
+    Begin
+      code_buf[at_pos] := v And $FF;
+      code_buf[at_pos + 1] := (v Shr 8) And $FF;
+      code_buf[at_pos + 2] := (v Shr 16) And $FF;
+      code_buf[at_pos + 3] := (v Shr 24) And $FF;
+    End;
+  End;
+
+  Function CodeJcc(op2 : Byte) : LongInt;
+  Begin
+    CodeByte($0F);
+    CodeByte(op2);
+    CodeJcc := code_pos;
+    CodeDWord(0);
+  End;
+
+  Function CodeJmp : LongInt;
+  Begin
+    CodeByte($E9);
+    CodeJmp := code_pos;
+    CodeDWord(0);
+  End;
+
+  Procedure CodePatchRel32(at_pos, target_pos : LongInt);
+  Begin
+    CodePatchDWord(at_pos, target_pos - (at_pos + 4));
+  End;
 
   Procedure CodePushImm(v : LongInt);
   Begin
-    BinWriteByte(f, $68);
-    BinWriteDWord(f, v);
+    CodeByte($68);
+    CodeDWord(v);
   End;
 
   Procedure CodeCallIat(va : LongInt);
   Begin
-    BinWriteByte(f, $FF);
-    BinWriteByte(f, $15);
-    BinWriteDWord(f, va);
+    CodeByte($FF);
+    CodeByte($15);
+    CodeDWord(va);
+  End;
+
+  Procedure CodeCallRel(target_pos : LongInt);
+  Begin
+    CodeByte($E8);
+    CodeDWord(target_pos - (code_pos + 4));
   End;
 
   Procedure RDataWriteOutput(Const s : TString);
@@ -3134,6 +3221,108 @@ Var
     For k := 1 To Length(s) Do
       BinWriteByte(f, Ord(s[k]));
   End;
+
+  Procedure CodeWriteIntRoutine;
+  Var
+    jnz_check : LongInt;
+    jmp_out_zero : LongInt;
+    jge_loop : LongInt;
+    loop_pos : LongInt;
+    jnz_loop : LongInt;
+    jne_out : LongInt;
+    out_pos : LongInt;
+  Begin
+    writeint_off := code_pos;
+    CodeByte($55);                         { push ebp }
+    CodeByte($8B); CodeByte($EC);          { mov ebp,esp }
+    CodeByte($83); CodeByte($EC); CodeByte($24); { sub esp,36 }
+    CodeByte($89); CodeByte($5D); CodeByte($EC); { mov [ebp-20],ebx }
+    CodeByte($C6); CodeByte($45); CodeByte($EB); CodeByte($00); { sign=0 }
+    CodeByte($8B); CodeByte($45); CodeByte($08); { mov eax,[ebp+8] }
+    CodeByte($8D); CodeByte($7D); CodeByte($FF); { lea edi,[ebp-1] }
+    CodeByte($31); CodeByte($F6);          { xor esi,esi }
+    CodeByte($83); CodeByte($F8); CodeByte($00); { cmp eax,0 }
+    jnz_check := CodeJcc($85);             { jnz check_negative }
+    CodeByte($C6); CodeByte($07); CodeByte(Ord('0')); { mov byte [edi],'0' }
+    CodeByte($4F);                         { dec edi }
+    CodeByte($46);                         { inc esi }
+    jmp_out_zero := CodeJmp;
+
+    CodePatchRel32(jnz_check, code_pos);
+    CodeByte($83); CodeByte($F8); CodeByte($00); { cmp eax,0 }
+    jge_loop := CodeJcc($8D);              { jge loop }
+    CodeByte($F7); CodeByte($D8);          { neg eax }
+    CodeByte($C6); CodeByte($45); CodeByte($EB); CodeByte($01); { sign=1 }
+
+    CodePatchRel32(jge_loop, code_pos);
+    loop_pos := code_pos;
+    CodeByte($BB); CodeDWord(10);          { mov ebx,10 }
+    CodeByte($31); CodeByte($D2);          { xor edx,edx }
+    CodeByte($F7); CodeByte($F3);          { div ebx }
+    CodeByte($80); CodeByte($C2); CodeByte(Ord('0')); { add dl,'0' }
+    CodeByte($88); CodeByte($17);          { mov [edi],dl }
+    CodeByte($4F);                         { dec edi }
+    CodeByte($46);                         { inc esi }
+    CodeByte($85); CodeByte($C0);          { test eax,eax }
+    jnz_loop := CodeJcc($85);              { jnz loop }
+    CodePatchRel32(jnz_loop, loop_pos);
+    CodeByte($80); CodeByte($7D); CodeByte($EB); CodeByte($01); { cmp sign,1 }
+    jne_out := CodeJcc($85);               { jne out }
+    CodeByte($C6); CodeByte($07); CodeByte(Ord('-')); { mov byte [edi],'-' }
+    CodeByte($4F);                         { dec edi }
+    CodeByte($46);                         { inc esi }
+
+    out_pos := code_pos;
+    CodePatchRel32(jmp_out_zero, out_pos);
+    CodePatchRel32(jne_out, out_pos);
+    CodeByte($47);                         { inc edi }
+    CodeByte($6A); CodeByte($00);          { push 0 }
+    CodeByte($8D); CodeByte($45); CodeByte($E8); { lea eax,[ebp-24] }
+    CodeByte($50);                         { push eax }
+    CodeByte($56);                         { push esi }
+    CodeByte($57);                         { push edi }
+    CodeByte($FF); CodeByte($75); CodeByte($EC); { push [ebp-20] }
+    CodeCallIat(iat_write_va);
+    CodeByte($8B); CodeByte($5D); CodeByte($EC); { mov ebx,[ebp-20] }
+    CodeByte($8B); CodeByte($E5);          { mov esp,ebp }
+    CodeByte($5D);                         { pop ebp }
+    CodeByte($C2); CodeWord(4);            { ret 4 }
+  End;
+
+  Procedure CodeEntryPoint;
+  Var
+    out_idx : Integer;
+  Begin
+    entry_off := code_pos;
+    CodeByte($55);                         { push ebp }
+    CodeByte($8B); CodeByte($EC);          { mov ebp,esp }
+    CodeByte($83); CodeByte($EC); CodeByte($04); { sub esp,4 }
+    CodePushImm(-11);
+    CodeCallIat(iat_get_va);
+    CodeByte($8B); CodeByte($D8);          { mov ebx,eax }
+
+    For out_idx := 1 To bin_output_count Do
+    Begin
+      If bin_output_kinds[out_idx] = BOK_INT Then
+      Begin
+        CodePushImm(bin_output_ints[out_idx]);
+        CodeCallRel(writeint_off);
+      End
+      Else If Length(bin_outputs[out_idx]) > 0 Then
+      Begin
+        CodeByte($6A); CodeByte($00);      { push 0 }
+        CodeByte($8D); CodeByte($45); CodeByte($FC); { lea eax,[ebp-4] }
+        CodeByte($50);                     { push eax }
+        CodePushImm(Length(bin_outputs[out_idx]));
+        CodePushImm(PE_IMAGE_BASE + rdata_rva + str_off[out_idx]);
+        CodeByte($53);                     { push ebx }
+        CodeCallIat(iat_write_va);
+      End;
+    End;
+
+    CodeByte($6A); CodeByte($00);          { push 0 }
+    CodeCallIat(iat_exit_va);
+  End;
 Begin
   EmitPeExeFile := False;
   CollectRuntimeOutputs(ctx);
@@ -3142,7 +3331,8 @@ Begin
   For i := 1 To bin_output_count Do
   Begin
     str_off[i] := rpos;
-    Inc(rpos, Length(bin_outputs[i]));
+    If bin_output_kinds[i] = BOK_TEXT Then
+      Inc(rpos, Length(bin_outputs[i]));
   End;
 
   desc_off := rpos;
@@ -3154,14 +3344,30 @@ Begin
   dll_off := hint_write + 2 + Length('WriteFile') + 1;
   import_sz := dll_off + Length('KERNEL32.DLL') + 1;
 
-  text_sz := 27 + bin_output_count * 23;
+  rdata_rawsz := AlignUp(import_sz, PE_FILE_ALIGN);
+  rdata_rva := 0;
+  iat_exit_va := 0;
+  iat_get_va := 0;
+  iat_write_va := 0;
+  code_pos := 0;
+  writeint_off := 0;
+  entry_off := 0;
+  CodeWriteIntRoutine;
+  CodeEntryPoint;
+  text_sz := code_pos;
   text_rawsz := AlignUp(text_sz, PE_FILE_ALIGN);
   rdata_raw := TEXT_RAW + text_rawsz;
   rdata_rva := TEXT_RVA + AlignUp(text_sz, PE_SEC_ALIGN);
-  rdata_rawsz := AlignUp(import_sz, PE_FILE_ALIGN);
   iat_exit_va := PE_IMAGE_BASE + rdata_rva + iat_off;
   iat_get_va := iat_exit_va + 4;
   iat_write_va := iat_exit_va + 8;
+
+  code_pos := 0;
+  writeint_off := 0;
+  entry_off := 0;
+  CodeWriteIntRoutine;
+  CodeEntryPoint;
+  text_sz := code_pos;
 
   Assign(f, ctx.exe_name);
   Rewrite(f, 1);
@@ -3199,7 +3405,7 @@ Begin
   BinWriteDWord(f, text_rawsz);
   BinWriteDWord(f, rdata_rawsz);
   BinWriteDWord(f, 0);
-  BinWriteDWord(f, TEXT_RVA);
+  BinWriteDWord(f, TEXT_RVA + entry_off);
   BinWriteDWord(f, TEXT_RVA);
   BinWriteDWord(f, rdata_rva);
   BinWriteDWord(f, PE_IMAGE_BASE);
@@ -3247,29 +3453,8 @@ Begin
                        rdata_raw, PE_SCN_RDATA);
   BinPadTo(f, HDR_SIZE);
 
-  BinWriteByte(f, $55);                   { PUSH EBP }
-  BinWriteByte(f, $8B); BinWriteByte(f, $EC); { MOV EBP,ESP }
-  BinWriteByte(f, $83); BinWriteByte(f, $EC); BinWriteByte(f, $04); { SUB ESP,4 }
-  CodePushImm(-11);
-  CodeCallIat(iat_get_va);
-  BinWriteByte(f, $8B); BinWriteByte(f, $D8); { MOV EBX,EAX }
-
-  For i := 1 To bin_output_count Do
-  Begin
-    If Length(bin_outputs[i]) > 0 Then
-    Begin
-      BinWriteByte(f, $6A); BinWriteByte(f, $00); { PUSH 0 }
-      BinWriteByte(f, $8D); BinWriteByte(f, $45); BinWriteByte(f, $FC); { LEA EAX,[EBP-4] }
-      BinWriteByte(f, $50); { PUSH EAX }
-      CodePushImm(Length(bin_outputs[i]));
-      CodePushImm(PE_IMAGE_BASE + rdata_rva + str_off[i]);
-      BinWriteByte(f, $53); { PUSH EBX }
-      CodeCallIat(iat_write_va);
-    End;
-  End;
-
-  BinWriteByte(f, $6A); BinWriteByte(f, $00); { PUSH 0 }
-  CodeCallIat(iat_exit_va);
+  For i := 0 To text_sz - 1 Do
+    BinWriteByte(f, code_buf[i]);
   BinPadTo(f, rdata_raw);
 
   For i := 1 To bin_output_count Do
@@ -3679,8 +3864,8 @@ Begin
   pass := 0;
   fail := 0;
   WriteLn('=== BCPLCW32 -test : validation SAMPLES\BCPL\ ===');
-  WriteLn('Note: le backend binaire produit un EXE PE32 minimal executable;');
-  WriteLn('      la generation complete du code BCPL reste a enrichir.');
+  WriteLn('Note: le backend binaire produit un EXE PE32 avec .text x86 genere;');
+  WriteLn('      le codegen BCPL complet statement-par-statement reste a enrichir.');
   WriteLn;
 
   ValidateSample('hello', BASE_DIR + 'hello.b',
