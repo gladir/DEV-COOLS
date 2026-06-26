@@ -20,7 +20,7 @@
 11. [IMPLEMENTE] Supporter les tableaux PL/1 unidimensionnels utilises par TEST2.PLI : DECLARE TAB(10) FIXED BINARY STATIC, indexation TAB(I), bornes 1..N.
 12. [IMPLEMENTE] Definir la representation 32 bits des types minimaux : FIXED BINARY comme entier signe 32 bits, tableaux d'entiers 32 bits, valeurs de retour dans EAX.
 13. [IMPLEMENTE] Implementer le parseur d'expressions avec precedence : litteraux, variables, tableaux, parentheses, appels, unaire -, *, / si prevu, +, -, comparaisons.
-14. Implementer les built-ins requis : ABS, MAX, MIN, MOD, avec evaluation correcte dans les expressions et preparation a d'autres built-ins PL/1.
+14. [IMPLEMENTE] Implementer les built-ins requis : ABS, MAX, MIN, MOD, avec evaluation correcte dans les expressions et preparation a d'autres built-ins PL/1.
 15. Generer le code des affectations : variable = expression, tableau(index) = expression, initialisation explicite, initialisation STATIC et locales.
 16. Implementer DO I = debut TO fin ; ... END ; avec variable de controle, test de fin, increment implicite, labels 80386 uniques et imbrication.
 17. Implementer SELECT(expr), WHEN(valeurs), OTHERWISE et END, en generation de comparaisons et branchements structures.
@@ -59,6 +59,7 @@ Const
   MAX_PARAMS      = 16;
   MAX_SYMBOLS     = 1024;
   MAX_TOKENS      = 4096;
+  MAX_CALL_ARGS   = 8;
   ABI_WORD_SIZE   = 4;
   ABI_RET_REG     = 'EAX';
   PL1_KEYWORD_COUNT = 28;
@@ -185,6 +186,22 @@ Type
     return_reg : String[8];
   End;
 
+  TBuiltinKind = (
+    BI_NONE,
+    BI_ABS,
+    BI_MAX,
+    BI_MIN,
+    BI_MOD
+  );
+
+  TExprInfo = Record
+    typ       : TTypeInfo;
+    is_const  : Boolean;
+    int_value : LongInt;
+  End;
+
+  TExprArgTable = Array[1..MAX_CALL_ARGS] Of TExprInfo;
+
   TProcInfo = Record
     name        : TLabelName;
     param_count : Integer;
@@ -227,7 +244,8 @@ Type
     SK_STATIC,
     SK_ARRAY,
     SK_LABEL,
-    SK_RUNTIME
+    SK_RUNTIME,
+    SK_BUILTIN
   );
 
   TSymbol = Record
@@ -256,6 +274,7 @@ Type
     array_count        : Integer;
     label_count        : Integer;
     runtime_count      : Integer;
+    builtin_count      : Integer;
     duplicate_count    : Integer;
     symbols            : TSymbolTable;
   End;
@@ -293,6 +312,8 @@ Type
     bad_array_ref_count: Integer;
     expr_count       : Integer;
     expr_error_count : Integer;
+    builtin_call_count : Integer;
+    builtin_error_count: Integer;
     proc_count        : Integer;
     main_proc_count   : Integer;
     open_proc         : Integer;
@@ -439,6 +460,8 @@ Begin
   ctx.parse.bad_array_ref_count := 0;
   ctx.parse.expr_count := 0;
   ctx.parse.expr_error_count := 0;
+  ctx.parse.builtin_call_count := 0;
+  ctx.parse.builtin_error_count := 0;
   ctx.parse.proc_count := 0;
   ctx.parse.main_proc_count := 0;
   ctx.parse.open_proc := 0;
@@ -471,6 +494,7 @@ Begin
   ctx.symbols.array_count := 0;
   ctx.symbols.label_count := 0;
   ctx.symbols.runtime_count := 0;
+  ctx.symbols.builtin_count := 0;
   ctx.symbols.duplicate_count := 0;
   ctx.stage := CS_LOAD_SOURCE;
   ctx.last_art := AK_NONE;
@@ -716,11 +740,19 @@ Procedure ParseDeclareToken(Var ctx: TCompilerContext; tok: TToken); Forward;
 Procedure ParseArrayUseToken(Var ctx: TCompilerContext; tok: TToken); Forward;
 
 Procedure RegisterToken(Var ctx: TCompilerContext; tok: TToken);
+Var
+  code: Integer;
 Begin
   If ctx.lex.token_count >= MAX_TOKENS Then
     Begin
       SourceErrorAt(ctx, tok.line, tok.col, 'trop de tokens');
       Exit;
+    End;
+  If tok.kind = TK_INTEGER Then
+    Begin
+      Val(tok.text, tok.int_val, code);
+      If code <> 0 Then
+        SourceErrorAt(ctx, tok.line, tok.col, 'entier invalide');
     End;
   CountToken(ctx, tok.kind);
   ctx.lex.tokens[ctx.lex.token_count] := tok;
@@ -784,6 +816,7 @@ Begin
     SK_ARRAY:   SymKindName := 'ARRAY';
     SK_LABEL:   SymKindName := 'LABEL';
     SK_RUNTIME: SymKindName := 'RUNTIME';
+    SK_BUILTIN: SymKindName := 'BUILTIN';
   Else
     SymKindName := 'UNKNOWN';
   End;
@@ -902,6 +935,7 @@ Begin
     SK_ARRAY:   Inc(ctx.symbols.array_count);
     SK_LABEL:   Inc(ctx.symbols.label_count);
     SK_RUNTIME: Inc(ctx.symbols.runtime_count);
+    SK_BUILTIN: Inc(ctx.symbols.builtin_count);
   Else
   End;
 End;
@@ -956,6 +990,14 @@ Begin
   AddSymbol := True;
 End;
 
+Procedure AddBuiltinSymbol(Var ctx: TCompilerContext; name: TLabelName;
+                           kind: TBuiltinKind);
+Begin
+  If AddSymbol(ctx, name, '', SK_BUILTIN, 1, 1, Ord(kind)) Then
+    If ctx.symbols.count > 0 Then
+      ctx.symbols.symbols[ctx.symbols.count].typ := FixedBinaryType;
+End;
+
 Procedure SetSymbolStorage(Var ctx: TCompilerContext; sym_idx: Integer;
                            is_static, has_initial: Boolean;
                            lower_bound, upper_bound: LongInt);
@@ -986,6 +1028,10 @@ Begin
   AddSymbol(ctx, 'PUT_LIST_I32', '', SK_RUNTIME, 1, 1, 0);
   AddSymbol(ctx, 'PUT_SKIP', '', SK_RUNTIME, 1, 1, 0);
   AddSymbol(ctx, 'EXIT_PROCESS', '', SK_RUNTIME, 1, 1, 0);
+  AddBuiltinSymbol(ctx, 'ABS', BI_ABS);
+  AddBuiltinSymbol(ctx, 'MAX', BI_MAX);
+  AddBuiltinSymbol(ctx, 'MIN', BI_MIN);
+  AddBuiltinSymbol(ctx, 'MOD', BI_MOD);
 End;
 
 Procedure ResetParseInfo(Var ctx: TCompilerContext);
@@ -998,6 +1044,7 @@ Begin
   ctx.symbols.array_count := 0;
   ctx.symbols.label_count := 0;
   ctx.symbols.runtime_count := 0;
+  ctx.symbols.builtin_count := 0;
   ctx.symbols.duplicate_count := 0;
   ctx.parse.label_count := 0;
   ctx.parse.proc_label_count := 0;
@@ -1009,6 +1056,8 @@ Begin
   ctx.parse.bad_array_ref_count := 0;
   ctx.parse.expr_count := 0;
   ctx.parse.expr_error_count := 0;
+  ctx.parse.builtin_call_count := 0;
+  ctx.parse.builtin_error_count := 0;
   ctx.parse.proc_count := 0;
   ctx.parse.main_proc_count := 0;
   ctx.parse.open_proc := 0;
@@ -1715,15 +1764,160 @@ Begin
                  TokenKindTextAt(ctx, idx, TK_OPERATOR, '~=');
 End;
 
+Function UnknownFixedExpr: TExprInfo;
+Begin
+  UnknownFixedExpr.typ := FixedBinaryType;
+  UnknownFixedExpr.is_const := False;
+  UnknownFixedExpr.int_value := 0;
+End;
+
+Function ConstFixedExpr(value: LongInt): TExprInfo;
+Begin
+  ConstFixedExpr.typ := FixedBinaryType;
+  ConstFixedExpr.is_const := True;
+  ConstFixedExpr.int_value := value;
+End;
+
+Function UnknownExpr: TExprInfo;
+Begin
+  UnknownExpr.typ := NoType;
+  UnknownExpr.is_const := False;
+  UnknownExpr.int_value := 0;
+End;
+
+Function BuiltinKindOf(name: TLabelName): TBuiltinKind;
+Var
+  u: TLabelName;
+Begin
+  u := UpperStr(name);
+  If u = 'ABS' Then
+    BuiltinKindOf := BI_ABS
+  Else If u = 'MAX' Then
+    BuiltinKindOf := BI_MAX
+  Else If u = 'MIN' Then
+    BuiltinKindOf := BI_MIN
+  Else If u = 'MOD' Then
+    BuiltinKindOf := BI_MOD
+  Else
+    BuiltinKindOf := BI_NONE;
+End;
+
+Function BuiltinName(kind: TBuiltinKind): TString;
+Begin
+  Case kind Of
+    BI_ABS: BuiltinName := 'ABS';
+    BI_MAX: BuiltinName := 'MAX';
+    BI_MIN: BuiltinName := 'MIN';
+    BI_MOD: BuiltinName := 'MOD';
+  Else
+    BuiltinName := '<unknown>';
+  End;
+End;
+
+Function BuiltinArity(kind: TBuiltinKind): Integer;
+Begin
+  Case kind Of
+    BI_ABS: BuiltinArity := 1;
+    BI_MAX: BuiltinArity := 2;
+    BI_MIN: BuiltinArity := 2;
+    BI_MOD: BuiltinArity := 2;
+  Else
+    BuiltinArity := 0;
+  End;
+End;
+
+Procedure BuiltinErrorAt(Var ctx: TCompilerContext; idx: Integer; msg: TString);
+Begin
+  Inc(ctx.parse.builtin_error_count);
+  ExprErrorAt(ctx, idx, msg);
+End;
+
+Function ValidateBuiltinCall(Var ctx: TCompilerContext; kind: TBuiltinKind;
+                             tok_idx: Integer; arg_count: Integer;
+                             Var args: TExprArgTable;
+                             Var result_expr: TExprInfo): Boolean;
+Var
+  i, expected: Integer;
+  all_const: Boolean;
+Begin
+  ValidateBuiltinCall := False;
+  result_expr := UnknownFixedExpr;
+  Inc(ctx.parse.builtin_call_count);
+
+  expected := BuiltinArity(kind);
+  If arg_count <> expected Then
+    Begin
+      BuiltinErrorAt(ctx, tok_idx, BuiltinName(kind) + ' attend ' +
+                     Chr(Ord('0') + expected) + ' argument(s)');
+      Exit;
+    End;
+
+  For i := 1 To arg_count Do
+    If args[i].typ.kind <> TY_FIXED_BINARY Then
+      Begin
+        BuiltinErrorAt(ctx, tok_idx,
+                       BuiltinName(kind) + ' attend des arguments FIXED BINARY');
+        Exit;
+      End;
+
+  all_const := True;
+  For i := 1 To arg_count Do
+    If Not args[i].is_const Then
+      all_const := False;
+
+  If all_const Then
+    Case kind Of
+      BI_ABS:
+        Begin
+          If args[1].int_value < 0 Then
+            result_expr := ConstFixedExpr(-args[1].int_value)
+          Else
+            result_expr := ConstFixedExpr(args[1].int_value);
+        End;
+      BI_MAX:
+        Begin
+          If args[1].int_value >= args[2].int_value Then
+            result_expr := ConstFixedExpr(args[1].int_value)
+          Else
+            result_expr := ConstFixedExpr(args[2].int_value);
+        End;
+      BI_MIN:
+        Begin
+          If args[1].int_value <= args[2].int_value Then
+            result_expr := ConstFixedExpr(args[1].int_value)
+          Else
+            result_expr := ConstFixedExpr(args[2].int_value);
+        End;
+      BI_MOD:
+        Begin
+          If args[2].int_value = 0 Then
+            Begin
+              BuiltinErrorAt(ctx, tok_idx, 'MOD avec diviseur constant nul');
+              Exit;
+            End;
+          result_expr := ConstFixedExpr(args[1].int_value Mod args[2].int_value);
+        End;
+    End;
+
+  ValidateBuiltinCall := True;
+End;
+
 Function ParseExprCompare(Var ctx: TCompilerContext; Var pos: Integer;
-                          limit: Integer): Boolean; Forward;
+                          limit: Integer; Var expr: TExprInfo): Boolean; Forward;
 
 Function ParseExprPrimary(Var ctx: TCompilerContext; Var pos: Integer;
-                          limit: Integer): Boolean;
+                          limit: Integer; Var expr: TExprInfo): Boolean;
 Var
   ok: Boolean;
+  name: TLabelName;
+  name_idx: Integer;
+  args: TExprArgTable;
+  arg_count: Integer;
+  arg_expr: TExprInfo;
+  builtin: TBuiltinKind;
 Begin
   ParseExprPrimary := False;
+  expr := UnknownExpr;
   If pos > limit Then
     Begin
       ExprErrorAt(ctx, limit, 'expression incomplete');
@@ -1733,6 +1927,10 @@ Begin
   If (ctx.lex.tokens[pos].kind = TK_INTEGER) Or
      (ctx.lex.tokens[pos].kind = TK_STRING) Then
     Begin
+      If ctx.lex.tokens[pos].kind = TK_INTEGER Then
+        expr := ConstFixedExpr(ctx.lex.tokens[pos].int_val)
+      Else
+        expr := UnknownExpr;
       Inc(pos);
       ParseExprPrimary := True;
       Exit;
@@ -1740,34 +1938,49 @@ Begin
 
   If IsNameToken(ctx.lex.tokens[pos]) Then
     Begin
+      name := UpperStr(ctx.lex.tokens[pos].text);
+      name_idx := pos;
+      expr := UnknownFixedExpr;
       Inc(pos);
       If (pos <= limit) And TokenKindTextAt(ctx, pos, TK_PUNCT, '(') Then
         Begin
+          arg_count := 0;
           Inc(pos);
-          If (pos <= limit) And TokenKindTextAt(ctx, pos, TK_PUNCT, ')') Then
-            Begin
-              Inc(pos);
-              ParseExprPrimary := True;
-              Exit;
-            End;
-
-          Repeat
-            ok := ParseExprCompare(ctx, pos, limit);
-            If Not ok Then
-              Exit;
-            If (pos <= limit) And TokenKindTextAt(ctx, pos, TK_PUNCT, ',') Then
-              Inc(pos)
-            Else
-              Break;
-          Until False;
-
           If (pos <= limit) And TokenKindTextAt(ctx, pos, TK_PUNCT, ')') Then
             Inc(pos)
           Else
             Begin
-              ExprErrorAt(ctx, pos, ') attendu dans appel ou indexation');
-              Exit;
+              Repeat
+                ok := ParseExprCompare(ctx, pos, limit, arg_expr);
+                If Not ok Then
+                  Exit;
+                If arg_count >= MAX_CALL_ARGS Then
+                  Begin
+                    ExprErrorAt(ctx, name_idx, 'trop d''arguments dans appel');
+                    Exit;
+                  End;
+                Inc(arg_count);
+                args[arg_count] := arg_expr;
+                If (pos <= limit) And TokenKindTextAt(ctx, pos, TK_PUNCT, ',') Then
+                  Inc(pos)
+                Else
+                  Break;
+              Until False;
+
+              If (pos <= limit) And TokenKindTextAt(ctx, pos, TK_PUNCT, ')') Then
+                Inc(pos)
+              Else
+                Begin
+                  ExprErrorAt(ctx, pos, ') attendu dans appel ou indexation');
+                  Exit;
+                End;
             End;
+
+          builtin := BuiltinKindOf(name);
+          If builtin <> BI_NONE Then
+            If Not ValidateBuiltinCall(ctx, builtin, name_idx, arg_count,
+                                       args, expr) Then
+              Exit;
         End;
       ParseExprPrimary := True;
       Exit;
@@ -1776,7 +1989,7 @@ Begin
   If TokenKindTextAt(ctx, pos, TK_PUNCT, '(') Then
     Begin
       Inc(pos);
-      ok := ParseExprCompare(ctx, pos, limit);
+      ok := ParseExprCompare(ctx, pos, limit, expr);
       If Not ok Then
         Exit;
       If (pos <= limit) And TokenKindTextAt(ctx, pos, TK_PUNCT, ')') Then
@@ -1793,33 +2006,108 @@ Begin
 End;
 
 Function ParseExprUnary(Var ctx: TCompilerContext; Var pos: Integer;
-                        limit: Integer): Boolean;
+                        limit: Integer; Var expr: TExprInfo): Boolean;
+Var
+  ok: Boolean;
 Begin
   If (pos <= limit) And
      (TokenKindTextAt(ctx, pos, TK_OPERATOR, '-') Or
       TokenKindTextAt(ctx, pos, TK_OPERATOR, '+')) Then
     Begin
-      Inc(pos);
-      ParseExprUnary := ParseExprUnary(ctx, pos, limit);
+      If TokenKindTextAt(ctx, pos, TK_OPERATOR, '-') Then
+        Begin
+          Inc(pos);
+          ok := ParseExprUnary(ctx, pos, limit, expr);
+          ParseExprUnary := ok;
+          If ok And expr.is_const Then
+            expr.int_value := -expr.int_value;
+        End
+      Else
+        Begin
+          Inc(pos);
+          ParseExprUnary := ParseExprUnary(ctx, pos, limit, expr);
+        End;
     End
   Else
-    ParseExprUnary := ParseExprPrimary(ctx, pos, limit);
+    ParseExprUnary := ParseExprPrimary(ctx, pos, limit, expr);
+End;
+
+Function ApplyBinaryConst(Var ctx: TCompilerContext; op_idx: Integer;
+                          left, right: TExprInfo;
+                          Var expr: TExprInfo): Boolean;
+Var
+  op: TString;
+Begin
+  ApplyBinaryConst := True;
+  expr := UnknownFixedExpr;
+  op := UpperStr(ctx.lex.tokens[op_idx].text);
+  If Not (left.is_const And right.is_const) Then
+    Exit;
+
+  If op = '+' Then
+    expr := ConstFixedExpr(left.int_value + right.int_value)
+  Else If op = '-' Then
+    expr := ConstFixedExpr(left.int_value - right.int_value)
+  Else If op = '*' Then
+    expr := ConstFixedExpr(left.int_value * right.int_value)
+  Else If op = '/' Then
+    Begin
+      If right.int_value = 0 Then
+        Begin
+          ExprErrorAt(ctx, op_idx, 'division constante par zero');
+          ApplyBinaryConst := False;
+          Exit;
+        End;
+      expr := ConstFixedExpr(left.int_value Div right.int_value);
+    End
+  Else If op = 'MOD' Then
+    Begin
+      If right.int_value = 0 Then
+        Begin
+          BuiltinErrorAt(ctx, op_idx, 'MOD avec diviseur constant nul');
+          ApplyBinaryConst := False;
+          Exit;
+        End;
+      expr := ConstFixedExpr(left.int_value Mod right.int_value);
+    End
+  Else If op = '=' Then
+    expr := ConstFixedExpr(Ord(left.int_value = right.int_value))
+  Else If op = '<' Then
+    expr := ConstFixedExpr(Ord(left.int_value < right.int_value))
+  Else If op = '<=' Then
+    expr := ConstFixedExpr(Ord(left.int_value <= right.int_value))
+  Else If op = '>' Then
+    expr := ConstFixedExpr(Ord(left.int_value > right.int_value))
+  Else If op = '>=' Then
+    expr := ConstFixedExpr(Ord(left.int_value >= right.int_value))
+  Else If (op = '^=') Or (op = '~=') Then
+    expr := ConstFixedExpr(Ord(left.int_value <> right.int_value));
 End;
 
 Function ParseExprMul(Var ctx: TCompilerContext; Var pos: Integer;
-                      limit: Integer): Boolean;
+                      limit: Integer; Var expr: TExprInfo): Boolean;
 Var
   ok: Boolean;
+  right: TExprInfo;
+  op_idx: Integer;
 Begin
-  ok := ParseExprUnary(ctx, pos, limit);
+  ok := ParseExprUnary(ctx, pos, limit, expr);
   ParseExprMul := ok;
   If Not ok Then
     Exit;
 
   While (pos <= limit) And IsMulOp(ctx, pos) Do
     Begin
+      op_idx := pos;
+      If TokenTextAt(ctx, op_idx, 'MOD') Then
+        Inc(ctx.parse.builtin_call_count);
       Inc(pos);
-      If Not ParseExprUnary(ctx, pos, limit) Then
+      If Not ParseExprUnary(ctx, pos, limit, right) Then
+        Begin
+          ParseExprMul := False;
+          Exit;
+        End;
+      If Not ApplyBinaryConst(ctx, op_idx, expr, right, expr) Then
         Begin
           ParseExprMul := False;
           Exit;
@@ -1828,19 +2116,27 @@ Begin
 End;
 
 Function ParseExprAdd(Var ctx: TCompilerContext; Var pos: Integer;
-                      limit: Integer): Boolean;
+                      limit: Integer; Var expr: TExprInfo): Boolean;
 Var
   ok: Boolean;
+  right: TExprInfo;
+  op_idx: Integer;
 Begin
-  ok := ParseExprMul(ctx, pos, limit);
+  ok := ParseExprMul(ctx, pos, limit, expr);
   ParseExprAdd := ok;
   If Not ok Then
     Exit;
 
   While (pos <= limit) And IsAddOp(ctx, pos) Do
     Begin
+      op_idx := pos;
       Inc(pos);
-      If Not ParseExprMul(ctx, pos, limit) Then
+      If Not ParseExprMul(ctx, pos, limit, right) Then
+        Begin
+          ParseExprAdd := False;
+          Exit;
+        End;
+      If Not ApplyBinaryConst(ctx, op_idx, expr, right, expr) Then
         Begin
           ParseExprAdd := False;
           Exit;
@@ -1849,19 +2145,27 @@ Begin
 End;
 
 Function ParseExprCompare(Var ctx: TCompilerContext; Var pos: Integer;
-                          limit: Integer): Boolean;
+                          limit: Integer; Var expr: TExprInfo): Boolean;
 Var
   ok: Boolean;
+  right: TExprInfo;
+  op_idx: Integer;
 Begin
-  ok := ParseExprAdd(ctx, pos, limit);
+  ok := ParseExprAdd(ctx, pos, limit, expr);
   ParseExprCompare := ok;
   If Not ok Then
     Exit;
 
   While (pos <= limit) And IsCompareOp(ctx, pos) Do
     Begin
+      op_idx := pos;
       Inc(pos);
-      If Not ParseExprAdd(ctx, pos, limit) Then
+      If Not ParseExprAdd(ctx, pos, limit, right) Then
+        Begin
+          ParseExprCompare := False;
+          Exit;
+        End;
+      If Not ApplyBinaryConst(ctx, op_idx, expr, right, expr) Then
         Begin
           ParseExprCompare := False;
           Exit;
@@ -1873,6 +2177,7 @@ Function ParseExpressionRange(Var ctx: TCompilerContext; first_idx,
                               last_idx: Integer): Boolean;
 Var
   pos: Integer;
+  expr: TExprInfo;
 Begin
   ParseExpressionRange := False;
   Inc(ctx.parse.expr_count);
@@ -1884,7 +2189,7 @@ Begin
     End;
 
   pos := first_idx;
-  If Not ParseExprCompare(ctx, pos, last_idx) Then
+  If Not ParseExprCompare(ctx, pos, last_idx, expr) Then
     Exit;
 
   If pos <= last_idx Then
@@ -2362,7 +2667,9 @@ Begin
           ', indexations=', ctx.parse.array_ref_count,
           ', indexations invalides=', ctx.parse.bad_array_ref_count,
           ', expressions=', ctx.parse.expr_count,
-          ', expressions invalides=', ctx.parse.expr_error_count, ')');
+          ', expressions invalides=', ctx.parse.expr_error_count,
+          ', built-ins=', ctx.parse.builtin_call_count,
+          ', built-ins invalides=', ctx.parse.builtin_error_count, ')');
   Writeln('Procedures: ', ctx.parse.proc_count,
           ' (MAIN=', ctx.parse.main_proc_count, ')');
   For i := 1 To ctx.parse.proc_count Do
@@ -2399,6 +2706,7 @@ Begin
           ', array=', ctx.symbols.array_count,
           ', label=', ctx.symbols.label_count,
           ', runtime=', ctx.symbols.runtime_count,
+          ', builtin=', ctx.symbols.builtin_count,
           ', doublons=', ctx.symbols.duplicate_count, ')');
   For i := 1 To ctx.symbols.count Do
     Begin
