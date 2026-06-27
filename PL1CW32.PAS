@@ -6354,8 +6354,40 @@ Var
   Procedure EmitProcedure(proc_idx: Integer);
   Var
     i, last_idx, stmt_end, close_idx, ret_idx, init_idx, eq_idx,
-    sym_idx, name_idx: Integer;
+    sym_idx, name_idx, to_idx, by_idx, end_tok, body_i,
+    loop_start, loop_jg_patch, loop_exit: Integer;
     owner: TLabelName;
+
+    Procedure EmitStoreInt(sym: Integer);
+    Begin
+      BinEmit8(code, code_size, $89);
+      BinEmit8(code, code_size, $45);
+      BinEmit8(code, code_size, ctx.symbols.symbols[sym].stack_offset);
+    End;
+
+    Procedure EmitSimpleAssignment(stmt_first, stmt_last: Integer);
+    Var
+      eidx, ssym: Integer;
+    Begin
+      eidx := FindTokenBefore(ctx, stmt_first, stmt_last, '=');
+      If (eidx <> 0) And IsNameToken(ctx.lex.tokens[stmt_first]) Then
+        Begin
+          ssym := FindScopedSymbolAny(ctx, ctx.lex.tokens[stmt_first].text, owner);
+          If ssym <> 0 Then
+            Begin
+              If ctx.symbols.symbols[ssym].typ.kind = TY_FLOAT Then
+                Begin
+                  If EmitFloatExpr(owner, eidx + 1, stmt_last) Then
+                    EmitFStoreMem(ssym);
+                End
+              Else
+                Begin
+                  If EmitIntExpr(owner, eidx + 1, stmt_last) Then
+                    EmitStoreInt(ssym);
+                End;
+            End;
+        End;
+    End;
   Begin
     proc_offsets[proc_idx] := code_size;
     owner := ctx.parse.procs[proc_idx].name;
@@ -6373,7 +6405,87 @@ Var
         If TokenKindTextAt(ctx, i, TK_PUNCT, ';') Then
           Begin Inc(i); Continue; End;
         stmt_end := FindStatementEnd(ctx, i);
-        If TokenTextAt(ctx, i, 'DISPLAY') Then
+        If TokenTextAt(ctx, i, 'DO') Then
+          Begin
+            eq_idx := FindTokenBefore(ctx, i, stmt_end - 1, '=');
+            to_idx := FindTokenBefore(ctx, i, stmt_end - 1, 'TO');
+            by_idx := FindTokenBefore(ctx, i, stmt_end - 1, 'BY');
+            If (eq_idx <> 0) And (to_idx <> 0) And
+               IsNameToken(ctx.lex.tokens[i + 1]) Then
+              Begin
+                sym_idx := FindScopedSymbolAny(ctx, ctx.lex.tokens[i + 1].text, owner);
+                If sym_idx <> 0 Then
+                  Begin
+                    If EmitIntExpr(owner, eq_idx + 1, to_idx - 1) Then
+                      EmitStoreInt(sym_idx);
+                    loop_start := code_size;
+                    BinEmit8(code, code_size, $8B);
+                    BinEmit8(code, code_size, $45);
+                    BinEmit8(code, code_size, ctx.symbols.symbols[sym_idx].stack_offset);
+                    EmitPushEax;
+                    If by_idx <> 0 Then
+                      EmitIntExpr(owner, to_idx + 1, by_idx - 1)
+                    Else
+                      EmitIntExpr(owner, to_idx + 1, stmt_end - 1);
+                    BinEmit8(code, code_size, $5B);
+                    BinEmit8(code, code_size, $39);
+                    BinEmit8(code, code_size, $C3);
+                    BinEmit8(code, code_size, $0F);
+                    BinEmit8(code, code_size, $8F);
+                    loop_jg_patch := code_size;
+                    BinEmit32(code, code_size, 0);
+                    end_tok := FindMatchingEndForBlock(ctx, i);
+                    body_i := stmt_end + 1;
+                    While body_i < end_tok Do
+                      Begin
+                        If TokenKindTextAt(ctx, body_i, TK_PUNCT, ';') Then
+                          Begin
+                            Inc(body_i);
+                            Continue;
+                          End;
+                        close_idx := FindStatementEnd(ctx, body_i);
+                        If TokenTextAt(ctx, body_i, 'DISPLAY') Then
+                          Begin
+                            name_idx := FindMatchingParen(ctx, body_i + 1, close_idx - 1);
+                            EmitDisplay(owner, body_i + 2, name_idx - 1);
+                          End
+                        Else If TokenTextAt(ctx, body_i, 'PUT') Then
+                          Begin
+                            If TokenTextAt(ctx, body_i + 1, 'SKIP') Then
+                              EmitPrintf0(fmt_nl_va)
+                            Else If TokenTextAt(ctx, body_i + 1, 'LIST') Then
+                              Begin
+                                name_idx := FindMatchingParen(ctx, body_i + 2, close_idx - 1);
+                                If name_idx <> 0 Then
+                                  EmitPrintfInt(owner, body_i + 3, name_idx - 1);
+                              End;
+                          End
+                        Else If Not TokenTextAt(ctx, body_i, 'END') Then
+                          EmitSimpleAssignment(body_i, close_idx - 1);
+                        body_i := close_idx + 1;
+                      End;
+                    BinEmit8(code, code_size, $8B);
+                    BinEmit8(code, code_size, $45);
+                    BinEmit8(code, code_size, ctx.symbols.symbols[sym_idx].stack_offset);
+                    EmitPushEax;
+                    If by_idx <> 0 Then
+                      EmitIntExpr(owner, by_idx + 1, stmt_end - 1)
+                    Else
+                      EmitMovEaxImm(1);
+                    BinEmit8(code, code_size, $5B);
+                    BinEmit8(code, code_size, $01);
+                    BinEmit8(code, code_size, $D8);
+                    EmitStoreInt(sym_idx);
+                    BinEmit8(code, code_size, $E9);
+                    BinEmit32(code, code_size, loop_start - (code_size + 4));
+                    loop_exit := code_size;
+                    BinPatchRel32(code, loop_jg_patch, loop_exit);
+                    i := end_tok + 2;
+                    Continue;
+                  End;
+              End;
+          End
+        Else If TokenTextAt(ctx, i, 'DISPLAY') Then
           Begin
             close_idx := FindMatchingParen(ctx, i + 1, stmt_end - 1);
             EmitDisplay(owner, i + 2, close_idx - 1);
@@ -6445,29 +6557,7 @@ Var
           End
         Else
           Begin
-            eq_idx := FindTokenBefore(ctx, i, stmt_end - 1, '=');
-            If (eq_idx <> 0) And IsNameToken(ctx.lex.tokens[i]) Then
-              Begin
-                sym_idx := FindScopedSymbolAny(ctx, ctx.lex.tokens[i].text, owner);
-                If sym_idx <> 0 Then
-                  Begin
-                    If ctx.symbols.symbols[sym_idx].typ.kind = TY_FLOAT Then
-                      Begin
-                        If EmitFloatExpr(owner, eq_idx + 1, stmt_end - 1) Then
-                          EmitFStoreMem(sym_idx);
-                      End
-                    Else
-                      Begin
-                        If EmitIntExpr(owner, eq_idx + 1, stmt_end - 1) Then
-                          Begin
-                            BinEmit8(code, code_size, $89);
-                            BinEmit8(code, code_size, $45);
-                            BinEmit8(code, code_size,
-                              ctx.symbols.symbols[sym_idx].stack_offset);
-                          End;
-                      End;
-                  End;
-              End;
+            EmitSimpleAssignment(i, stmt_end - 1);
           End;
         i := stmt_end + 1;
       End;
