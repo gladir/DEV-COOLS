@@ -646,6 +646,7 @@ Type
   TableColIndex: Integer;    { Index de la colonne courante }
   TableRowY: Integer;        { Position Y de debut de la ligne }
   TableRowHeight: Integer;   { Hauteur de la ligne courante }
+  TableCellContentX: Integer; { X de depart du contenu de la cellule en cours (pour le retour a la ligne) }
   InForm: Boolean;           { Dans un formulaire }
   InSelect: Boolean;         { Dans un element select }
   SelectOptionIndex: Integer;{ Index de l'option courante dans select }
@@ -952,6 +953,15 @@ Var
    defilement, dessinees hors de ce parcours, ne sont pas affectees. }
  InContentRenderPass: Boolean;
 
+ { True pendant la passe de mesure d'une rangee de tableau (voir
+   RenderTagTR) : on rejoue tout le rendu d'une rangee une premiere
+   fois sans rien dessiner, uniquement pour decouvrir la hauteur
+   reellement necessaire (texte d'une cellule qui deborde sur
+   plusieurs lignes), avant de la dessiner pour de vrai a la bonne
+   taille. Les enveloppes ci-dessous et AddLinkArea deviennent des
+   no-op pendant cette passe. }
+ TableMeasurePass: Boolean;
+
 { Enveloppes des primitives de dessin qui decoupent automatiquement a
   la bande verticale visible (entre la barre d'URL et la barre de
   defilement horizontale) pendant le rendu du contenu. Une rangee de
@@ -965,6 +975,7 @@ Var
   region de decoupage active par defaut. }
 Procedure OutTextXY(X, Y: Integer; Const Text: String);
 Begin
+ If TableMeasurePass Then Exit;
  If InContentRenderPass And
     ((Y < RENDER_AREA_Y) Or (Y > RENDER_AREA_Y + (RENDER_AREA_HEIGHT - SCROLLBAR_SIZE))) Then
   Exit;
@@ -975,6 +986,7 @@ Procedure Bar(X1, Y1, X2, Y2: Integer);
 Var
  VisibleBottom: Integer;
 Begin
+ If TableMeasurePass Then Exit;
  If InContentRenderPass Then Begin
   VisibleBottom := RENDER_AREA_Y + (RENDER_AREA_HEIGHT - SCROLLBAR_SIZE);
   If (Y2 < RENDER_AREA_Y) Or (Y1 > VisibleBottom) Then Exit;
@@ -988,6 +1000,7 @@ Procedure Rectangle(X1, Y1, X2, Y2: Integer);
 Var
  VisibleBottom: Integer;
 Begin
+ If TableMeasurePass Then Exit;
  If InContentRenderPass Then Begin
   VisibleBottom := RENDER_AREA_Y + (RENDER_AREA_HEIGHT - SCROLLBAR_SIZE);
   If (Y2 < RENDER_AREA_Y) Or (Y1 > VisibleBottom) Then Exit;
@@ -1001,6 +1014,7 @@ Procedure Line(X1, Y1, X2, Y2: Integer);
 Var
  VisibleBottom: Integer;
 Begin
+ If TableMeasurePass Then Exit;
  If InContentRenderPass Then Begin
   VisibleBottom := RENDER_AREA_Y + (RENDER_AREA_HEIGHT - SCROLLBAR_SIZE);
   If (Y1 < RENDER_AREA_Y) And (Y2 < RENDER_AREA_Y) Then Exit;
@@ -5487,6 +5501,7 @@ End;
 { Procedure pour ajouter une zone de lien cliquable }
 Procedure AddLinkArea(X1, Y1, X2, Y2: Integer; Href, Title: String);
 Begin
+ If TableMeasurePass Then Exit; { Passe de mesure : ne pas enregistrer deux fois la meme zone }
  If LinkCount < MAX_LINKS Then Begin
   Inc(LinkCount);
   LinkAreas[LinkCount].X1 := X1;
@@ -5532,7 +5547,15 @@ End;
 { Procedure pour passer a la ligne suivante }
 Procedure RenderNewLine(Var Ctx: RenderContext);
 Begin
- Ctx.X := RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10);
+ { Dans une cellule de tableau, revenir au bord gauche du CONTENU DE
+   LA CELLULE plutot qu'a la marge de la page : sans cette
+   distinction, un texte qui deborde sur plusieurs lignes a
+   l'interieur d'une cellule voyait sa 2e ligne (et les suivantes)
+   recommencer a la marge de la page, hors de la colonne. }
+ If Ctx.InTable Then
+  Ctx.X := Ctx.TableCellContentX
+ Else
+  Ctx.X := RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10);
  Ctx.Y := Ctx.Y + Ctx.LineHeight;
 End;
 
@@ -6583,9 +6606,7 @@ End;
 { Procedure pour rendre la balise TR (ligne de tableau) }
 Procedure RenderTagTR(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
- I: Integer;
- MaxRowHeight: Integer;
- ChildNode: HTMLNodePtr;
+ OldMeasurePass: Boolean;
 Begin
  If Not Ctx.InTable Then Begin
   { Si pas dans un tableau, rendre comme un bloc }
@@ -6599,13 +6620,33 @@ Begin
  Ctx.TableRowY := Ctx.Y;
  Ctx.TableRowHeight := RENDER_LINE_HEIGHT + (2 * TABLE_CELL_PADDING);
 
- { Dessiner la bordure gauche de la ligne }
+ { Premiere passe (mesure uniquement, rien n'est dessine) : rejoue le
+   rendu de toutes les cellules de la rangee pour decouvrir la
+   hauteur reellement necessaire (RenderTagTD/TH agrandit
+   Ctx.TableRowHeight si son contenu deborde sur plusieurs lignes).
+   Sans cette passe, la hauteur de rangee restait figee a une seule
+   ligne et le texte trop grand pour une cellule debordait dans la
+   rangee suivante au lieu de faire grandir sa propre rangee. }
+ OldMeasurePass := TableMeasurePass;
+ TableMeasurePass := True;
+ RenderChildren(Node, Ctx);
+
+ { Revenir au debut de la rangee pour la passe reelle, en conservant
+   la hauteur de rangee finale calculee ci-dessus. }
+ Ctx.TableColIndex := 0;
+ Ctx.TableCellX := Ctx.TableX;
+ Ctx.Y := Ctx.TableRowY;
+ TableMeasurePass := OldMeasurePass;
+
+ { Dessiner la bordure gauche de la ligne (no-op automatique si on
+   est nous-meme imbriques dans la passe de mesure d'une rangee
+   englobante - TableMeasurePass vaut alors deja True). }
  If YInVisibleBand(Ctx.Y, Ctx.Y + Ctx.TableRowHeight) Then Begin
   SetColor(TABLE_BORDER_COLOR);
   Line(Ctx.TableX, Ctx.Y, Ctx.TableX, Ctx.Y + Ctx.TableRowHeight);
  End;
 
- { Rendre les cellules }
+ { Rendre les cellules pour de vrai, a la hauteur finale }
  RenderChildren(Node, Ctx);
 
  { Dessiner la bordure droite de la ligne }
@@ -6630,7 +6671,8 @@ End;
 Procedure RenderTagTD(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
  CellStartX, CellStartY: Integer;
- OldMaxX: Integer;
+ OldMaxX, OldTableCellContentX: Integer;
+ CellNaturalHeight: Integer;
 Begin
  If Not Ctx.InTable Then Begin
   { Si pas dans un tableau, rendre comme un bloc }
@@ -6657,12 +6699,23 @@ Begin
  Ctx.Y := CellStartY + TABLE_CELL_PADDING;
  OldMaxX := Ctx.MaxX;
  Ctx.MaxX := CellStartX + Ctx.TableCellWidth - TABLE_CELL_PADDING;
+ OldTableCellContentX := Ctx.TableCellContentX;
+ Ctx.TableCellContentX := Ctx.X;
 
  { Rendre le contenu }
  RenderChildren(Node, Ctx);
 
- { Restaurer MaxX }
+ { Si le contenu a deborde sur plusieurs lignes (Ctx.Y a avance via
+   RenderNewLine), agrandir la hauteur de la rangee en consequence -
+   sans cela, le texte trop grand pour une seule ligne debordait dans
+   la rangee suivante au lieu de faire grandir sa propre cellule. }
+ CellNaturalHeight := (Ctx.Y - CellStartY) + Ctx.LineHeight + TABLE_CELL_PADDING;
+ If CellNaturalHeight > Ctx.TableRowHeight Then
+  Ctx.TableRowHeight := CellNaturalHeight;
+
+ { Restaurer MaxX et TableCellContentX }
  Ctx.MaxX := OldMaxX;
+ Ctx.TableCellContentX := OldTableCellContentX;
 
  { Passer a la cellule suivante }
  Ctx.TableCellX := CellStartX + Ctx.TableCellWidth + TABLE_CELL_SPACING;
@@ -6682,8 +6735,9 @@ End;
 Procedure RenderTagTH(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
  CellStartX, CellStartY: Integer;
- OldMaxX: Integer;
+ OldMaxX, OldTableCellContentX: Integer;
  OldTextStyle: Byte;
+ CellNaturalHeight: Integer;
 Begin
  If Not Ctx.InTable Then Begin
   { Si pas dans un tableau, rendre comme un bloc en gras }
@@ -6711,6 +6765,8 @@ Begin
  Ctx.Y := CellStartY + TABLE_CELL_PADDING;
  OldMaxX := Ctx.MaxX;
  Ctx.MaxX := CellStartX + Ctx.TableCellWidth - TABLE_CELL_PADDING;
+ OldTableCellContentX := Ctx.TableCellContentX;
+ Ctx.TableCellContentX := Ctx.X;
 
  { Rendre le contenu en gras }
  OldTextStyle := Ctx.TextStyle;
@@ -6718,8 +6774,15 @@ Begin
  RenderChildren(Node, Ctx);
  Ctx.TextStyle := OldTextStyle;
 
- { Restaurer MaxX }
+ { Agrandir la hauteur de la rangee si le contenu a deborde sur
+   plusieurs lignes (voir RenderTagTD pour l'explication). }
+ CellNaturalHeight := (Ctx.Y - CellStartY) + Ctx.LineHeight + TABLE_CELL_PADDING;
+ If CellNaturalHeight > Ctx.TableRowHeight Then
+  Ctx.TableRowHeight := CellNaturalHeight;
+
+ { Restaurer MaxX et TableCellContentX }
  Ctx.MaxX := OldMaxX;
+ Ctx.TableCellContentX := OldTableCellContentX;
 
  { Passer a la cellule suivante }
  Ctx.TableCellX := CellStartX + Ctx.TableCellWidth + TABLE_CELL_SPACING;

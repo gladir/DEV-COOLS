@@ -75,7 +75,7 @@ Const
   ABI_FIRST_PARAM = 8;
   ABI_SAVED_REGS  = 'EBP';
   ABI_CLEANUP     = 'caller';
-  PL1_KEYWORD_COUNT = 31;
+  PL1_KEYWORD_COUNT = 33;
   EXT_PL1         = '.PL1';
   EXT_PLI         = '.PLI';
   EXT_ASM         = '.asm';
@@ -105,6 +105,11 @@ Const
 Type
   TString = String[MAX_PATH_LEN];
   TSourceLine = String[MAX_LINE_LEN];
+{$IFDEF FPC}
+  TOutputText = AnsiString;
+{$ELSE}
+  TOutputText = String;
+{$ENDIF}
   TLabelName = String[64];
   TKeyword = String[16];
   TKeywordTable = Array[1..PL1_KEYWORD_COUNT] Of TKeyword;
@@ -228,7 +233,8 @@ Type
     BI_ABS,
     BI_MAX,
     BI_MIN,
-    BI_MOD
+    BI_MOD,
+    BI_FLOOR
   );
 
   TExprInfo = Record
@@ -579,7 +585,9 @@ Const
     'ELSE',
     'DISPLAY',
     'FLOAT',
-    'CHAR'
+    'CHAR',
+    'VARYING',
+    'FLOOR'
   );
 
 Function StageName(stage: TCompileStage): TString;
@@ -991,7 +999,8 @@ End;
 Function IsNameToken(tok: TToken): Boolean;
 Begin
   IsNameToken := (tok.kind = TK_IDENT) Or
-                 ((tok.kind = TK_KEYWORD) And (tok.text = 'MAIN'));
+                 ((tok.kind = TK_KEYWORD) And
+                  ((tok.text = 'MAIN') Or (tok.text = 'FLOOR')));
 End;
 
 Function TokenIs(tok: TToken; text: TString): Boolean;
@@ -1326,6 +1335,7 @@ Begin
   AddBuiltinSymbol(ctx, 'MAX', BI_MAX);
   AddBuiltinSymbol(ctx, 'MIN', BI_MIN);
   AddBuiltinSymbol(ctx, 'MOD', BI_MOD);
+  AddBuiltinSymbol(ctx, 'FLOOR', BI_FLOOR);
 End;
 
 Procedure ResetParseInfo(Var ctx: TCompilerContext);
@@ -1783,6 +1793,7 @@ Begin
         If (tok.kind = TK_PUNCT) And (tok.text = '(') Then
           Begin
             MarkProcedureReturns(ctx);
+            ctx.parse.decl_paren_depth := 1;
             ctx.parse.proc_decl_state := PDS_RETURNS_ARGS;
           End
         Else
@@ -1791,8 +1802,14 @@ Begin
       End;
     PDS_RETURNS_ARGS:
       Begin
-        If (tok.kind = TK_PUNCT) And (tok.text = ')') Then
-          ctx.parse.proc_decl_state := PDS_AFTER_PARAMS;
+        If (tok.kind = TK_PUNCT) And (tok.text = '(') Then
+          Inc(ctx.parse.decl_paren_depth)
+        Else If (tok.kind = TK_PUNCT) And (tok.text = ')') Then
+          Begin
+            Dec(ctx.parse.decl_paren_depth);
+            If ctx.parse.decl_paren_depth = 0 Then
+              ctx.parse.proc_decl_state := PDS_AFTER_PARAMS;
+          End;
       End;
   End;
 End;
@@ -1947,6 +1964,7 @@ Begin
     DS_AFTER_NAME:
       Begin
         If (tok.kind = TK_PUNCT) And (tok.text = '(') And
+           (ctx.parse.decl_name <> '') And
            (Not ctx.parse.decl_array) And
            (Not ctx.parse.decl_initial) Then
           Begin
@@ -1956,8 +1974,16 @@ Begin
           End
         Else If (tok.kind = TK_KEYWORD) And
                 ((tok.text = 'FIXED') Or (tok.text = 'BINARY') Or
-                 (tok.text = 'FLOAT') Or (tok.text = 'CHAR')) Then
+                 (tok.text = 'FLOAT') Or (tok.text = 'CHAR') Or
+                 (tok.text = 'VARYING')) Then
           Begin
+          End
+        Else If (tok.kind = TK_PUNCT) And (tok.text = '(') And
+                (Not ctx.parse.decl_array) And
+                (Not ctx.parse.decl_initial) Then
+          Begin
+            ctx.parse.decl_paren_depth := 1;
+            ctx.parse.decl_state := DS_INITIAL;
           End
         Else If (tok.kind = TK_PUNCT) And (tok.text = '(') And
                 (ctx.parse.decl_name = '') Then
@@ -2816,7 +2842,8 @@ End;
 Function IsAddOp(Var ctx: TCompilerContext; idx: Integer): Boolean;
 Begin
   IsAddOp := TokenKindTextAt(ctx, idx, TK_OPERATOR, '+') Or
-             TokenKindTextAt(ctx, idx, TK_OPERATOR, '-');
+             TokenKindTextAt(ctx, idx, TK_OPERATOR, '-') Or
+             TokenKindTextAt(ctx, idx, TK_OPERATOR, '||');
 End;
 
 Function IsCompareOp(Var ctx: TCompilerContext; idx: Integer): Boolean;
@@ -2864,6 +2891,8 @@ Begin
     BuiltinKindOf := BI_MIN
   Else If u = 'MOD' Then
     BuiltinKindOf := BI_MOD
+  Else If u = 'FLOOR' Then
+    BuiltinKindOf := BI_FLOOR
   Else
     BuiltinKindOf := BI_NONE;
 End;
@@ -2875,6 +2904,7 @@ Begin
     BI_MAX: BuiltinName := 'MAX';
     BI_MIN: BuiltinName := 'MIN';
     BI_MOD: BuiltinName := 'MOD';
+    BI_FLOOR: BuiltinName := 'FLOOR';
   Else
     BuiltinName := '<unknown>';
   End;
@@ -2887,6 +2917,7 @@ Begin
     BI_MAX: BuiltinArity := 2;
     BI_MIN: BuiltinArity := 2;
     BI_MOD: BuiltinArity := 2;
+    BI_FLOOR: BuiltinArity := 1;
   Else
     BuiltinArity := 0;
   End;
@@ -3522,6 +3553,11 @@ Begin
           If (eq_idx <> 0) And (to_idx <> 0) And (eq_idx < to_idx) Then
             Begin
               AddDoLoopIR(ctx, i, stmt_end, eq_idx, to_idx, by_idx);
+              i := stmt_end + 1;
+              Continue;
+            End
+          Else If TokenKindTextAt(ctx, i + 1, TK_PUNCT, ';') Then
+            Begin
               i := stmt_end + 1;
               Continue;
             End
@@ -4550,9 +4586,9 @@ Begin
 End;
 
 Function BinAddRawString(Var buf: TBinBuffer; Var size: LongInt;
-                         text: String): LongInt;
+                         text: TOutputText): LongInt;
 Var
-  i: Integer;
+  i: LongInt;
 Begin
   BinAddRawString := size;
   For i := 1 To Length(text) Do
@@ -4582,7 +4618,7 @@ Begin
                                   Length(name) - slash_pos));
 End;
 
-Function ProgramOutputForIR(Var ctx: TCompilerContext): TSourceLine;
+Function ProgramOutputForIR(Var ctx: TCompilerContext): TOutputText;
 Type
   TEvalValue = Record
     is_string: Boolean;
@@ -4599,7 +4635,7 @@ Type
   End;
   TArgValues = Array[1..MAX_CALL_ARGS] Of TEvalValue;
 Var
-  output: TSourceLine;
+  output: TOutputText;
 
   Function NumValue(n: Real): TEvalValue;
   Begin
@@ -4883,8 +4919,33 @@ Var
   End;
 
   Function EvalRange(first_idx, last_idx: Integer; Var env: TEvalEnv): TEvalValue;
+  Var
+    i, part_first, depth: Integer;
+    s: TSourceLine;
+    has_concat: Boolean;
   Begin
-    EvalRange := EvalCompare(first_idx, last_idx, env);
+    s := '';
+    part_first := first_idx;
+    depth := 0;
+    has_concat := False;
+    For i := first_idx To last_idx + 1 Do
+      Begin
+        If (i <= last_idx) And TokenKindTextAt(ctx, i, TK_PUNCT, '(') Then
+          Inc(depth)
+        Else If (i <= last_idx) And TokenKindTextAt(ctx, i, TK_PUNCT, ')') Then
+          Dec(depth);
+        If (depth = 0) And (i <= last_idx) And
+           TokenKindTextAt(ctx, i, TK_OPERATOR, '||') Then
+          Begin
+            has_concat := True;
+            s := s + ValueToText(EvalCompare(part_first, i - 1, env));
+            part_first := i + 1;
+          End;
+      End;
+    If has_concat Then
+      EvalRange := StrValue(s + ValueToText(EvalCompare(part_first, last_idx, env)))
+    Else
+      EvalRange := EvalCompare(first_idx, last_idx, env);
   End;
 
   Function EvalDisplay(first_idx, last_idx: Integer; Var env: TEvalEnv): TSourceLine;
@@ -5037,7 +5098,7 @@ Var
                        Var returned: Boolean; Var ret: TEvalValue;
                        Var next_idx: Integer);
   Var
-    sel_end, end_tok, i, close_idx, stmt_end: Integer;
+    sel_end, end_tok, i, close_idx, stmt_end, do_end: Integer;
     wanted, cur: TEvalValue;
     matched: Boolean;
   Begin
@@ -5056,13 +5117,34 @@ Var
             cur := EvalRange(i + 2, close_idx - 1, env);
             If (Not matched) And (ValueToText(cur) = ValueToText(wanted)) Then
               Begin
-                ExecSimple(env, close_idx + 1, stmt_end - 1, returned, ret);
+                If TokenTextAt(ctx, close_idx + 1, 'DO') Then
+                  Begin
+                    do_end := FindMatchingEndForBlock(ctx, close_idx + 1);
+                    ExecBlock(env, stmt_end + 1, do_end - 1, returned, ret);
+                  End
+                Else
+                  ExecSimple(env, close_idx + 1, stmt_end - 1, returned, ret);
                 matched := True;
+              End;
+            If TokenTextAt(ctx, close_idx + 1, 'DO') Then
+              Begin
+                do_end := FindMatchingEndForBlock(ctx, close_idx + 1);
+                i := do_end + 2;
+                Continue;
               End;
           End
         Else If TokenTextAt(ctx, i, 'OTHERWISE') And Not matched Then
           Begin
-            ExecSimple(env, i + 1, stmt_end - 1, returned, ret);
+            If TokenTextAt(ctx, i + 1, 'DO') Then
+              Begin
+                do_end := FindMatchingEndForBlock(ctx, i + 1);
+                ExecBlock(env, stmt_end + 1, do_end - 1, returned, ret);
+                i := do_end + 2;
+                matched := True;
+                Continue;
+              End
+            Else
+              ExecSimple(env, i + 1, stmt_end - 1, returned, ret);
             matched := True;
           End;
         i := stmt_end + 1;
@@ -5111,6 +5193,13 @@ Var
             eq_idx := FindTokenBefore(ctx, i + 1, stmt_end - 1, '=');
             to_idx := FindTokenBefore(ctx, i + 1, stmt_end - 1, 'TO');
             by_idx := FindTokenBefore(ctx, i + 1, stmt_end - 1, 'BY');
+            If (eq_idx = 0) And TokenKindTextAt(ctx, i + 1, TK_PUNCT, ';') Then
+              Begin
+                end_tok := FindMatchingEndForBlock(ctx, i);
+                ExecBlock(env, stmt_end + 1, end_tok - 1, returned, ret);
+                i := end_tok + 2;
+                Continue;
+              End;
             control := ctx.lex.tokens[i + 1].text;
             startv := EvalRange(eq_idx + 1, to_idx - 1, env);
             If by_idx <> 0 Then
@@ -5178,6 +5267,8 @@ Var
       Begin EvalProcedure := NumValue(Cos(args[1].num)); Exit; End;
     If u = 'ATAN' Then
       Begin EvalProcedure := NumValue(ArcTan(args[1].num)); Exit; End;
+    If u = 'FLOOR' Then
+      Begin EvalProcedure := NumValue(Int(args[1].num)); Exit; End;
     If u = 'ABS' Then
       Begin EvalProcedure := NumValue(Abs(args[1].num)); Exit; End;
     If u = 'MAX' Then
@@ -5489,19 +5580,27 @@ Var
   code_size, rdata_size, headers_size, text_raw_size,
   rdata_raw_size, data_size, data_raw_size, text_rva, rdata_rva,
   data_rva, image_size, text_raw_ptr, rdata_raw_ptr, data_raw_ptr,
-  import_rva, import_size, iat_get_va, iat_write_va, iat_exit_va,
-  msg_off, msg_va, written_va: LongInt;
+  import_rva, import_size, iat_get_va, iat_write_va, iat_exit_va: LongInt;
   i, io: Integer;
-  expected: TSourceLine;
   native_test: Boolean;
+
+  Procedure DeleteStaleExe;
+  Var
+    oldf: File;
+  Begin
+    Assign(oldf, ctx.exe_name);
+    Erase(oldf);
+    If IOResult <> 0 Then
+      ;
+  End;
 Begin
   LinkExePe32 := False;
+  DeleteStaleExe;
   FillChar(code, SizeOf(code), 0);
   FillChar(rdata, SizeOf(rdata), 0);
   FillChar(data, SizeOf(data), 0);
   code_size := 0;
   data_size := 4;
-  expected := ProgramOutputForIR(ctx);
   native_test := CanEmitNativeTestProgram(ctx);
 
   text_rva := PE_SEC_ALIGN;
@@ -5524,41 +5623,9 @@ Begin
     End
   Else
     Begin
-      msg_off := 0;
-      msg_va := 0;
-      If expected <> '' Then
-        Begin
-          msg_off := BinAddRawString(rdata, rdata_size, expected);
-          msg_va := PE_IMAGE_BASE + rdata_rva + msg_off;
-        End;
-      written_va := PE_IMAGE_BASE + data_rva;
-
-      If expected <> '' Then
-        Begin
-          BinEmit8(code, code_size, $6A);
-          BinEmit8(code, code_size, -11);
-          BinEmit8(code, code_size, $FF);
-          BinEmit8(code, code_size, $15);
-          BinEmit32(code, code_size, iat_get_va);
-          BinEmit8(code, code_size, $6A);
-          BinEmit8(code, code_size, 0);
-          BinEmit8(code, code_size, $68);
-          BinEmit32(code, code_size, written_va);
-          BinEmit8(code, code_size, $68);
-          BinEmit32(code, code_size, Length(expected));
-          BinEmit8(code, code_size, $68);
-          BinEmit32(code, code_size, msg_va);
-          BinEmit8(code, code_size, $50);
-          BinEmit8(code, code_size, $FF);
-          BinEmit8(code, code_size, $15);
-          BinEmit32(code, code_size, iat_write_va);
-        End;
-      BinEmit8(code, code_size, $6A);
-      BinEmit8(code, code_size, 0);
-      BinEmit8(code, code_size, $FF);
-      BinEmit8(code, code_size, $15);
-      BinEmit32(code, code_size, iat_exit_va);
-      BinEmit8(code, code_size, $C3);
+      PipelineError(ctx,
+        'generation EXE native incomplete: le linker refuse de pre-calculer la sortie du programme');
+      Exit;
     End;
 
   headers_size := AlignFile(128 + 4 + 20 + 224 + 3 * 40, PE_FILE_ALIGN);
@@ -6618,12 +6685,12 @@ Begin
     End;
 End;
 
-Function ReadSmallBinaryText(name: TString): TSourceLine;
+Function ReadSmallBinaryText(name: TString): TOutputText;
 Var
   f: File;
   b: Byte;
   n: Integer;
-  s: TSourceLine;
+  s: TOutputText;
 Begin
   s := '';
   Assign(f, name);
@@ -6635,7 +6702,7 @@ Begin
     End;
   Repeat
     BlockRead(f, b, 1, n);
-    If (n = 1) And (Length(s) < MAX_LINE_LEN) Then
+    If (n = 1) And (Length(s) < MAX_BIN_BUF) Then
       s := s + Chr(b);
   Until n <> 1;
   Close(f);
@@ -6705,7 +6772,8 @@ Function ValidateOneMode(source_name: TString; mode: Integer;
                          verbose: Boolean): Boolean;
 Var
   test_ctx: TCompilerContext;
-  expected, actual, capture_name: TSourceLine;
+  expected, actual: TOutputText;
+  capture_name: TSourceLine;
   exit_code: Integer;
 Begin
   ValidateOneMode := False;
