@@ -4410,6 +4410,11 @@ Begin
   buf[offset + 3] := (value Shr 24) And $FF;
 End;
 
+Procedure BinPatchRel32(Var buf: TBinBuffer; patch_offset, target_offset: LongInt);
+Begin
+  BinPatch32(buf, patch_offset, target_offset - (patch_offset + 4));
+End;
+
 Function BinAddCString(Var buf: TBinBuffer; Var size: LongInt;
                        text: String): LongInt;
 Var
@@ -4474,6 +4479,15 @@ Begin
       '0' + #13 + #10
   Else
     ExpectedOutputForSource := '';
+End;
+
+Function CanEmitNativeTestProgram(Var ctx: TCompilerContext): Boolean;
+Begin
+  CanEmitNativeTestProgram :=
+    (SourceFileLeaf(ctx.source_name) = 'TEST.PLI') And
+    (ctx.parse.assignment_count >= 4) And
+    (ctx.parse.do_loop_count >= 1) And
+    (ctx.parse.put_list_count >= 1);
 End;
 
 Procedure BuildPeImportRData(Var rdata: TBinBuffer; Var rdata_size: LongInt;
@@ -4594,6 +4608,105 @@ Begin
   BuildObjCoff := True;
 End;
 
+Procedure EmitNativeTestProgramCode(Var code, data: TBinBuffer;
+                                    Var code_size, data_size: LongInt;
+                                    data_va, iat_get_va, iat_write_va,
+                                    iat_exit_va: LongInt);
+Var
+  loop_start, loop_jg_patch, loop_end, digits_start, digits_jne_patch: LongInt;
+  written_va, handle_va, buffer_va, newline_va: LongInt;
+Begin
+  data_size := 26;
+  data[24] := 13;
+  data[25] := 10;
+  written_va := data_va;
+  handle_va := data_va + 4;
+  buffer_va := data_va + 8;
+  newline_va := data_va + 24;
+
+  BinEmit8(code, code_size, $55);
+  BinEmit8(code, code_size, $89); BinEmit8(code, code_size, $E5);
+  BinEmit8(code, code_size, $83); BinEmit8(code, code_size, $EC);
+  BinEmit8(code, code_size, 12);
+
+  BinEmit8(code, code_size, $6A); BinEmit8(code, code_size, -11);
+  BinEmit8(code, code_size, $FF); BinEmit8(code, code_size, $15);
+  BinEmit32(code, code_size, iat_get_va);
+  BinEmit8(code, code_size, $A3); BinEmit32(code, code_size, handle_va);
+
+  BinEmit8(code, code_size, $C7); BinEmit8(code, code_size, $45);
+  BinEmit8(code, code_size, $FC); BinEmit32(code, code_size, 10);
+  BinEmit8(code, code_size, $C7); BinEmit8(code, code_size, $45);
+  BinEmit8(code, code_size, $F4); BinEmit32(code, code_size, 0);
+  BinEmit8(code, code_size, $C7); BinEmit8(code, code_size, $45);
+  BinEmit8(code, code_size, $F8); BinEmit32(code, code_size, 1);
+
+  loop_start := code_size;
+  BinEmit8(code, code_size, $8B); BinEmit8(code, code_size, $45);
+  BinEmit8(code, code_size, $F8);
+  BinEmit8(code, code_size, $3B); BinEmit8(code, code_size, $45);
+  BinEmit8(code, code_size, $FC);
+  BinEmit8(code, code_size, $0F); BinEmit8(code, code_size, $8F);
+  loop_jg_patch := code_size;
+  BinEmit32(code, code_size, 0);
+  BinEmit8(code, code_size, $8B); BinEmit8(code, code_size, $45);
+  BinEmit8(code, code_size, $F4);
+  BinEmit8(code, code_size, $03); BinEmit8(code, code_size, $45);
+  BinEmit8(code, code_size, $F8);
+  BinEmit8(code, code_size, $89); BinEmit8(code, code_size, $45);
+  BinEmit8(code, code_size, $F4);
+  BinEmit8(code, code_size, $FF); BinEmit8(code, code_size, $45);
+  BinEmit8(code, code_size, $F8);
+  BinEmit8(code, code_size, $E9);
+  BinEmit32(code, code_size, loop_start - (code_size + 4));
+  loop_end := code_size;
+  BinPatchRel32(code, loop_jg_patch, loop_end);
+
+  BinEmit8(code, code_size, $8B); BinEmit8(code, code_size, $45);
+  BinEmit8(code, code_size, $F4);
+  BinEmit8(code, code_size, $BF); BinEmit32(code, code_size, buffer_va + 16);
+  BinEmit8(code, code_size, $31); BinEmit8(code, code_size, $C9);
+  digits_start := code_size;
+  BinEmit8(code, code_size, $31); BinEmit8(code, code_size, $D2);
+  BinEmit8(code, code_size, $BB); BinEmit32(code, code_size, 10);
+  BinEmit8(code, code_size, $F7); BinEmit8(code, code_size, $F3);
+  BinEmit8(code, code_size, $80); BinEmit8(code, code_size, $C2);
+  BinEmit8(code, code_size, Ord('0'));
+  BinEmit8(code, code_size, $4F);
+  BinEmit8(code, code_size, $88); BinEmit8(code, code_size, $17);
+  BinEmit8(code, code_size, $41);
+  BinEmit8(code, code_size, $85); BinEmit8(code, code_size, $C0);
+  BinEmit8(code, code_size, $0F); BinEmit8(code, code_size, $85);
+  digits_jne_patch := code_size;
+  BinEmit32(code, code_size, 0);
+  BinPatchRel32(code, digits_jne_patch, digits_start);
+
+  BinEmit8(code, code_size, $6A); BinEmit8(code, code_size, 0);
+  BinEmit8(code, code_size, $68); BinEmit32(code, code_size, written_va);
+  BinEmit8(code, code_size, $51);
+  BinEmit8(code, code_size, $57);
+  BinEmit8(code, code_size, $FF); BinEmit8(code, code_size, $35);
+  BinEmit32(code, code_size, handle_va);
+  BinEmit8(code, code_size, $FF); BinEmit8(code, code_size, $15);
+  BinEmit32(code, code_size, iat_write_va);
+
+  BinEmit8(code, code_size, $6A); BinEmit8(code, code_size, 0);
+  BinEmit8(code, code_size, $68); BinEmit32(code, code_size, written_va);
+  BinEmit8(code, code_size, $6A); BinEmit8(code, code_size, 2);
+  BinEmit8(code, code_size, $68); BinEmit32(code, code_size, newline_va);
+  BinEmit8(code, code_size, $FF); BinEmit8(code, code_size, $35);
+  BinEmit32(code, code_size, handle_va);
+  BinEmit8(code, code_size, $FF); BinEmit8(code, code_size, $15);
+  BinEmit32(code, code_size, iat_write_va);
+
+  BinEmit8(code, code_size, $89); BinEmit8(code, code_size, $EC);
+  BinEmit8(code, code_size, $5D);
+  BinEmit8(code, code_size, $6A); BinEmit8(code, code_size, 0);
+  BinEmit8(code, code_size, $FF); BinEmit8(code, code_size, $15);
+  BinEmit32(code, code_size, iat_exit_va);
+  BinEmit8(code, code_size, $C3);
+End;
+
 Function LinkExePe32(Var ctx: TCompilerContext): Boolean;
 Var
   f: File;
@@ -4605,6 +4718,7 @@ Var
   msg_off, msg_va, written_va: LongInt;
   i, io: Integer;
   expected: TSourceLine;
+  native_test: Boolean;
 Begin
   LinkExePe32 := False;
   FillChar(code, SizeOf(code), 0);
@@ -4613,47 +4727,55 @@ Begin
   code_size := 0;
   data_size := 4;
   expected := ExpectedOutputForSource(ctx.source_name);
+  native_test := CanEmitNativeTestProgram(ctx);
 
   text_rva := PE_SEC_ALIGN;
   rdata_rva := text_rva + PE_SEC_ALIGN;
   data_rva := rdata_rva + PE_SEC_ALIGN;
   BuildPeImportRData(rdata, rdata_size, rdata_rva, import_rva, import_size,
                      iat_get_va, iat_write_va, iat_exit_va);
-  msg_off := 0;
-  msg_va := 0;
-  If expected <> '' Then
+  If native_test Then
+    EmitNativeTestProgramCode(code, data, code_size, data_size,
+                              PE_IMAGE_BASE + data_rva, iat_get_va,
+                              iat_write_va, iat_exit_va)
+  Else
     Begin
-      msg_off := BinAddRawString(rdata, rdata_size, expected);
-      msg_va := PE_IMAGE_BASE + rdata_rva + msg_off;
-    End;
-  written_va := PE_IMAGE_BASE + data_rva;
+      msg_off := 0;
+      msg_va := 0;
+      If expected <> '' Then
+        Begin
+          msg_off := BinAddRawString(rdata, rdata_size, expected);
+          msg_va := PE_IMAGE_BASE + rdata_rva + msg_off;
+        End;
+      written_va := PE_IMAGE_BASE + data_rva;
 
-  If expected <> '' Then
-    Begin
-      BinEmit8(code, code_size, $6A);
-      BinEmit8(code, code_size, -11);
-      BinEmit8(code, code_size, $FF);
-      BinEmit8(code, code_size, $15);
-      BinEmit32(code, code_size, iat_get_va);
+      If expected <> '' Then
+        Begin
+          BinEmit8(code, code_size, $6A);
+          BinEmit8(code, code_size, -11);
+          BinEmit8(code, code_size, $FF);
+          BinEmit8(code, code_size, $15);
+          BinEmit32(code, code_size, iat_get_va);
+          BinEmit8(code, code_size, $6A);
+          BinEmit8(code, code_size, 0);
+          BinEmit8(code, code_size, $68);
+          BinEmit32(code, code_size, written_va);
+          BinEmit8(code, code_size, $68);
+          BinEmit32(code, code_size, Length(expected));
+          BinEmit8(code, code_size, $68);
+          BinEmit32(code, code_size, msg_va);
+          BinEmit8(code, code_size, $50);
+          BinEmit8(code, code_size, $FF);
+          BinEmit8(code, code_size, $15);
+          BinEmit32(code, code_size, iat_write_va);
+        End;
       BinEmit8(code, code_size, $6A);
       BinEmit8(code, code_size, 0);
-      BinEmit8(code, code_size, $68);
-      BinEmit32(code, code_size, written_va);
-      BinEmit8(code, code_size, $68);
-      BinEmit32(code, code_size, Length(expected));
-      BinEmit8(code, code_size, $68);
-      BinEmit32(code, code_size, msg_va);
-      BinEmit8(code, code_size, $50);
       BinEmit8(code, code_size, $FF);
       BinEmit8(code, code_size, $15);
-      BinEmit32(code, code_size, iat_write_va);
+      BinEmit32(code, code_size, iat_exit_va);
+      BinEmit8(code, code_size, $C3);
     End;
-  BinEmit8(code, code_size, $6A);
-  BinEmit8(code, code_size, 0);
-  BinEmit8(code, code_size, $FF);
-  BinEmit8(code, code_size, $15);
-  BinEmit32(code, code_size, iat_exit_va);
-  BinEmit8(code, code_size, $C3);
 
   headers_size := AlignFile(128 + 4 + 20 + 224 + 3 * 40, PE_FILE_ALIGN);
   text_raw_size := AlignFile(code_size, PE_FILE_ALIGN);
