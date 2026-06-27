@@ -7317,7 +7317,12 @@ Const
  BMP_MAX_HEIGHT = 600;
 
 Type
- { En-tete de fichier BMP (14 octets) }
+ { En-tete de fichier BMP (14 octets). Empaquetage force a 1 (aucun
+   remplissage entre les champs) : sans cela, FPC inserait 2 octets
+   de bourrage avant FileSize pour aligner ce LongInt sur 4 octets,
+   portant SizeOf a 16 au lieu de 14 et decalant la lecture binaire
+   de tout ce qui suit dans le fichier. }
+ {$PACKRECORDS 1}
  BMPFileHeader = Record
   Signature: Word;       { 'BM' = 0x4D42 }
   FileSize: LongInt;     { Taille totale du fichier }
@@ -7325,6 +7330,7 @@ Type
   Reserved2: Word;       { Reserve (0) }
   DataOffset: LongInt;   { Offset vers les donnees image }
  End;
+ {$PACKRECORDS DEFAULT}
 
  { En-tete d'information BMP (BITMAPINFOHEADER - 40 octets) }
  BMPInfoHeader = Record
@@ -7785,334 +7791,9 @@ Begin
  BMPBuildImagePath := BasePath + Src;
 End;
 
-{ Procedure pour rendre la balise IMG }
-{$IFDEF FPC}
-Procedure RenderTagImg(Node: HTMLNodePtr; Var Ctx: RenderContext);
-Var
- Alt: String;
-Begin
- { Les types GIF/JPEG/PNG/SVG sont declares plus loin dans ce programme.
-   En mode FPC, afficher le texte alternatif en attendant que les decodeurs
-   soient regroupes dans une unite declaree avant le moteur de rendu. }
- If Node = Nil Then Exit;
- If Ctx.InHead Then Exit;
- Alt := GetNodeAttribute(Node, 'alt');
- If Alt = '' Then Alt := '[image]';
- RenderText(Ctx, Alt);
-End;
-{$ELSE}
-Procedure RenderTagImg(Node: HTMLNodePtr; Var Ctx: RenderContext);
-Var
- Src, Alt, WidthAttr, HeightAttr: String;
- ImgPath, ImgExt: String;
- BMPImg: BMPImage;
- GIFImg: GIFImage;
- JPEGImg: JPEGImage;
- PNGImg: PNGImage;
- SVGImg: SVGImage;
- CacheIdx: Integer;
- ImgWidth, ImgHeight: Integer;
- DrawWidth, DrawHeight: Integer;
- AltWidth: Integer;
- Code: Integer;
- IsBMP, IsGIF, IsJPEG, IsPNG, IsSVG: Boolean;
-Begin
- If Node = Nil Then Exit;
- If Ctx.InHead Then Exit; { Pas d'affichage dans head }
-
- { Obtenir les attributs }
- Src := GetNodeAttribute(Node, 'src');
- Alt := GetNodeAttribute(Node, 'alt');
- WidthAttr := GetNodeAttribute(Node, 'width');
- HeightAttr := GetNodeAttribute(Node, 'height');
-
- { Si pas de source, afficher le texte alternatif }
- If Length(Src) = 0 Then Begin
-  If Length(Alt) > 0 Then
-   RenderText(Ctx, '[' + Alt + ']');
-  Exit;
- End;
-
- { Construire le chemin complet de l'image }
- ImgPath := BMPBuildImagePath(Src);
-
- { Determiner le type d'image }
- IsBMP := False;
- IsGIF := False;
- IsJPEG := False;
- IsPNG := False;
- IsSVG := False;
- If Length(ImgPath) >= 4 Then Begin
-  ImgExt := HTMLLowerCase(Copy(ImgPath, Length(ImgPath) - 3, 4));
-  If ImgExt = '.bmp' Then IsBMP := True
-  Else If ImgExt = '.gif' Then IsGIF := True
-  Else If ImgExt = '.jpg' Then IsJPEG := True
-  Else If ImgExt = 'jpeg' Then IsJPEG := True
-  Else If ImgExt = '.png' Then IsPNG := True
-  Else If ImgExt = '.svg' Then IsSVG := True;
- End;
- { Verifier aussi .jpeg (5 caracteres) }
- If (Not IsJPEG) And (Length(ImgPath) >= 5) Then Begin
-  ImgExt := HTMLLowerCase(Copy(ImgPath, Length(ImgPath) - 4, 5));
-  If ImgExt = '.jpeg' Then IsJPEG := True;
- End;
-
- { Si format non supporte, afficher le texte alternatif }
- If Not IsBMP And Not IsGIF And Not IsJPEG And Not IsPNG And Not IsSVG Then Begin
-  If Length(Alt) > 0 Then
-   RenderText(Ctx, '[' + Alt + ']')
-  Else
-   RenderText(Ctx, '[IMG]');
-  Exit;
- End;
-
- { Traitement des images BMP }
- If IsBMP Then Begin
-  CacheIdx := BMPFindInCache(ImgPath);
-  If CacheIdx > 0 Then Begin
-   BMPImg := BMPImageCache[CacheIdx].Image;
-  End
-  Else Begin
-   If Not BMPLoadFromFile(ImgPath, BMPImg) Then Begin
-    If Length(Alt) > 0 Then
-     RenderText(Ctx, '[' + Alt + ']')
-    Else
-     RenderText(Ctx, '[IMG: ' + Src + ']');
-    Exit;
-   End;
-   BMPAddToCache(ImgPath, BMPImg);
-  End;
-
-  ImgWidth := BMPImg.Width;
-  ImgHeight := BMPImg.Height;
-
-  If Length(WidthAttr) > 0 Then Begin
-   Val(WidthAttr, DrawWidth, Code);
-   If Code <> 0 Then DrawWidth := ImgWidth;
-  End
-  Else
-   DrawWidth := ImgWidth;
-
-  If Length(HeightAttr) > 0 Then Begin
-   Val(HeightAttr, DrawHeight, Code);
-   If Code <> 0 Then DrawHeight := ImgHeight;
-  End
-  Else
-   DrawHeight := ImgHeight;
-
-  If Ctx.X + DrawWidth > Ctx.MaxX Then RenderNewLine(Ctx);
-
-  If DrawWidth > Ctx.MaxX - Ctx.X Then DrawWidth := Ctx.MaxX - Ctx.X;
-  If DrawHeight > Ctx.MaxY - Ctx.Y Then DrawHeight := Ctx.MaxY - Ctx.Y;
-
-  If YInVisibleBand(Ctx.Y, Ctx.Y + DrawHeight) Then Begin
-   If (DrawWidth = ImgWidth) And (DrawHeight = ImgHeight) Then
-    BMPDrawImage(BMPImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight)
-   Else
-    BMPDrawImageScaled(BMPImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight);
-  End;
-
-  Ctx.X := Ctx.X + DrawWidth;
-  If DrawHeight > Ctx.LineHeight Then Ctx.LineHeight := DrawHeight;
- End
-
- { Traitement des images GIF }
- Else If IsGIF Then Begin
-  CacheIdx := GIFFindInCache(ImgPath);
-  If CacheIdx > 0 Then Begin
-   GIFImg := GIFImageCache[CacheIdx].Image;
-  End
-  Else Begin
-   If Not GIFLoadFromFile(ImgPath, GIFImg) Then Begin
-    If Length(Alt) > 0 Then
-     RenderText(Ctx, '[' + Alt + ']')
-    Else
-     RenderText(Ctx, '[IMG: ' + Src + ']');
-    Exit;
-   End;
-   GIFAddToCache(ImgPath, GIFImg);
-  End;
-
-  ImgWidth := GIFImg.Width;
-  ImgHeight := GIFImg.Height;
-
-  If Length(WidthAttr) > 0 Then Begin
-   Val(WidthAttr, DrawWidth, Code);
-   If Code <> 0 Then DrawWidth := ImgWidth;
-  End
-  Else
-   DrawWidth := ImgWidth;
-
-  If Length(HeightAttr) > 0 Then Begin
-   Val(HeightAttr, DrawHeight, Code);
-   If Code <> 0 Then DrawHeight := ImgHeight;
-  End
-  Else
-   DrawHeight := ImgHeight;
-
-  If Ctx.X + DrawWidth > Ctx.MaxX Then RenderNewLine(Ctx);
-
-  If DrawWidth > Ctx.MaxX - Ctx.X Then DrawWidth := Ctx.MaxX - Ctx.X;
-  If DrawHeight > Ctx.MaxY - Ctx.Y Then DrawHeight := Ctx.MaxY - Ctx.Y;
-
-  If YInVisibleBand(Ctx.Y, Ctx.Y + DrawHeight) Then Begin
-   If (DrawWidth = ImgWidth) And (DrawHeight = ImgHeight) Then
-    GIFDrawImage(GIFImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight)
-   Else
-    GIFDrawImageScaled(GIFImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight);
-  End;
-
-  Ctx.X := Ctx.X + DrawWidth;
-  If DrawHeight > Ctx.LineHeight Then Ctx.LineHeight := DrawHeight;
- End
-
- { Traitement des images JPEG }
- Else If IsJPEG Then Begin
-  CacheIdx := JPEGFindInCache(ImgPath);
-  If CacheIdx > 0 Then Begin
-   JPEGImg := JPEGImageCache[CacheIdx].Image;
-  End
-  Else Begin
-   If Not JPEGLoadFromFile(ImgPath, JPEGImg) Then Begin
-    If Length(Alt) > 0 Then
-     RenderText(Ctx, '[' + Alt + ']')
-    Else
-     RenderText(Ctx, '[IMG: ' + Src + ']');
-    Exit;
-   End;
-   JPEGAddToCache(ImgPath, JPEGImg);
-  End;
-
-  ImgWidth := JPEGImg.Width;
-  ImgHeight := JPEGImg.Height;
-
-  If Length(WidthAttr) > 0 Then Begin
-   Val(WidthAttr, DrawWidth, Code);
-   If Code <> 0 Then DrawWidth := ImgWidth;
-  End
-  Else
-   DrawWidth := ImgWidth;
-
-  If Length(HeightAttr) > 0 Then Begin
-   Val(HeightAttr, DrawHeight, Code);
-   If Code <> 0 Then DrawHeight := ImgHeight;
-  End
-  Else
-   DrawHeight := ImgHeight;
-
-  If Ctx.X + DrawWidth > Ctx.MaxX Then RenderNewLine(Ctx);
-
-  If DrawWidth > Ctx.MaxX - Ctx.X Then DrawWidth := Ctx.MaxX - Ctx.X;
-  If DrawHeight > Ctx.MaxY - Ctx.Y Then DrawHeight := Ctx.MaxY - Ctx.Y;
-
-  If YInVisibleBand(Ctx.Y, Ctx.Y + DrawHeight) Then Begin
-   If (DrawWidth = ImgWidth) And (DrawHeight = ImgHeight) Then
-    JPEGDrawImage(JPEGImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight)
-   Else
-    JPEGDrawImageScaled(JPEGImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight);
-  End;
-
-  Ctx.X := Ctx.X + DrawWidth;
-  If DrawHeight > Ctx.LineHeight Then Ctx.LineHeight := DrawHeight;
- End
-
- { Traitement des images PNG }
- Else If IsPNG Then Begin
-  CacheIdx := PNGFindInCache(ImgPath);
-  If CacheIdx > 0 Then Begin
-   PNGImg := PNGImageCache[CacheIdx].Image;
-  End
-  Else Begin
-   If Not PNGLoadFromFile(ImgPath, PNGImg) Then Begin
-    If Length(Alt) > 0 Then
-     RenderText(Ctx, '[' + Alt + ']')
-    Else
-     RenderText(Ctx, '[IMG: ' + Src + ']');
-    Exit;
-   End;
-   PNGAddToCache(ImgPath, PNGImg);
-  End;
-
-  ImgWidth := PNGImg.Width;
-  ImgHeight := PNGImg.Height;
-
-  If Length(WidthAttr) > 0 Then Begin
-   Val(WidthAttr, DrawWidth, Code);
-   If Code <> 0 Then DrawWidth := ImgWidth;
-  End
-  Else
-   DrawWidth := ImgWidth;
-
-  If Length(HeightAttr) > 0 Then Begin
-   Val(HeightAttr, DrawHeight, Code);
-   If Code <> 0 Then DrawHeight := ImgHeight;
-  End
-  Else
-   DrawHeight := ImgHeight;
-
-  If Ctx.X + DrawWidth > Ctx.MaxX Then RenderNewLine(Ctx);
-
-  If DrawWidth > Ctx.MaxX - Ctx.X Then DrawWidth := Ctx.MaxX - Ctx.X;
-  If DrawHeight > Ctx.MaxY - Ctx.Y Then DrawHeight := Ctx.MaxY - Ctx.Y;
-
-  If YInVisibleBand(Ctx.Y, Ctx.Y + DrawHeight) Then Begin
-   If (DrawWidth = ImgWidth) And (DrawHeight = ImgHeight) Then
-    PNGDrawImage(PNGImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight)
-   Else
-    PNGDrawImageScaled(PNGImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight);
-  End;
-
-  Ctx.X := Ctx.X + DrawWidth;
-  If DrawHeight > Ctx.LineHeight Then Ctx.LineHeight := DrawHeight;
- End
-
- { Traitement des images SVG }
- Else If IsSVG Then Begin
-  CacheIdx := SVGFindInCache(ImgPath);
-  If CacheIdx > 0 Then Begin
-   SVGImg := SVGImageCache[CacheIdx].Image;
-  End
-  Else Begin
-   If Not SVGLoadFromFile(ImgPath, SVGImg) Then Begin
-    If Length(Alt) > 0 Then
-     RenderText(Ctx, '[' + Alt + ']')
-    Else
-     RenderText(Ctx, '[IMG: ' + Src + ']');
-    Exit;
-   End;
-   SVGAddToCache(ImgPath, SVGImg);
-  End;
-
-  ImgWidth := SVGImg.Width;
-  ImgHeight := SVGImg.Height;
-
-  If Length(WidthAttr) > 0 Then Begin
-   Val(WidthAttr, DrawWidth, Code);
-   If Code <> 0 Then DrawWidth := ImgWidth;
-  End
-  Else
-   DrawWidth := ImgWidth;
-
-  If Length(HeightAttr) > 0 Then Begin
-   Val(HeightAttr, DrawHeight, Code);
-   If Code <> 0 Then DrawHeight := ImgHeight;
-  End
-  Else
-   DrawHeight := ImgHeight;
-
-  If Ctx.X + DrawWidth > Ctx.MaxX Then RenderNewLine(Ctx);
-
-  If DrawWidth > Ctx.MaxX - Ctx.X Then DrawWidth := Ctx.MaxX - Ctx.X;
-  If DrawHeight > Ctx.MaxY - Ctx.Y Then DrawHeight := Ctx.MaxY - Ctx.Y;
-
-  If YInVisibleBand(Ctx.Y, Ctx.Y + DrawHeight) Then
-   SVGDrawImageScaled(SVGImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight);
-
-  Ctx.X := Ctx.X + DrawWidth;
-  If DrawHeight > Ctx.LineHeight Then Ctx.LineHeight := DrawHeight;
- End;
-End;
-{$ENDIF}
+{ RenderTagImg (balise IMG) est definie plus loin dans ce fichier,
+  apres les types BMPImage/GIFImage/JPEGImage/PNGImage/SVGImage dont
+  elle a besoin. }
 
 { =====================================================
   FIN DECODEUR IMAGES BMP
@@ -8154,7 +7835,12 @@ Type
   Signature: Array[1..6] Of Char; { 'GIF87a' ou 'GIF89a' }
  End;
 
- { Descripteur d'ecran logique GIF (7 octets) }
+ { Descripteur d'ecran logique GIF (7 octets). Empaquetage force a 1 :
+   sans cela FPC porte SizeOf a 8 (bourrage final pour aligner le
+   record sur 2 octets a cause des champs Word), ce qui decale d'un
+   octet toute la lecture binaire qui suit (palette globale, blocs
+   d'image) et empeche de retrouver le moindre separateur d'image. }
+ {$PACKRECORDS 1}
  GIFLogicalScreenDesc = Record
   Width: Word;           { Largeur de l'ecran logique }
   Height: Word;          { Hauteur de l'ecran logique }
@@ -8162,6 +7848,7 @@ Type
   BgColorIndex: Byte;    { Index de couleur de fond }
   PixelAspectRatio: Byte; { Ratio d'aspect }
  End;
+ {$PACKRECORDS DEFAULT}
 
  { Entree de palette GIF (3 octets) }
  GIFPaletteEntry = Record
@@ -8183,7 +7870,10 @@ Type
   TransparentIndex: Byte; { Index de couleur transparente }
  End;
 
- { Descripteur d'image GIF }
+ { Descripteur d'image GIF (9 octets). Empaquetage force a 1 pour la
+   meme raison que GIFLogicalScreenDesc ci-dessus (sinon SizeOf vaut
+   10 au lieu de 9). }
+ {$PACKRECORDS 1}
  GIFImageDescriptor = Record
   Left: Word;            { Position X de l'image }
   Top: Word;             { Position Y de l'image }
@@ -8191,6 +7881,7 @@ Type
   Height: Word;          { Hauteur de l'image }
   PackedFields: Byte;    { Champs compresses }
  End;
+ {$PACKRECORDS DEFAULT}
 
  { Frame d'animation GIF }
  GIFFrame = Record
@@ -12374,6 +12065,327 @@ End;
 { =====================================================
   FIN PARSEUR ET RENDU SVG
   ===================================================== }
+
+{ Procedure pour rendre la balise IMG. Deplacee ici (apres les types
+  BMPImage/GIFImage/JPEGImage/PNGImage/SVGImage, tous declares plus
+  haut a present) depuis son ancien emplacement juste apres
+  BMPBuildImagePath : a cet ancien endroit, GIFImage/JPEGImage/
+  PNGImage/SVGImage n'etaient pas encore declares, donc la branche
+  active pour FPC (la seule reellement compilee ici) se contentait
+  d'un bouchon affichant systematiquement "[image]"/le texte
+  alternatif, sans jamais decoder ni dessiner la moindre image -
+  quel que soit le format. }
+Procedure RenderTagImg(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ Src, Alt, WidthAttr, HeightAttr: String;
+ ImgPath, ImgExt: String;
+ BMPImg: BMPImage;
+ GIFImg: GIFImage;
+ JPEGImg: JPEGImage;
+ PNGImg: PNGImage;
+ SVGImg: SVGImage;
+ CacheIdx: Integer;
+ ImgWidth, ImgHeight: Integer;
+ DrawWidth, DrawHeight: Integer;
+ AltWidth: Integer;
+ Code: Integer;
+ IsBMP, IsGIF, IsJPEG, IsPNG, IsSVG: Boolean;
+Begin
+ If Node = Nil Then Exit;
+ If Ctx.InHead Then Exit; { Pas d'affichage dans head }
+
+ { Obtenir les attributs }
+ Src := GetNodeAttribute(Node, 'src');
+ Alt := GetNodeAttribute(Node, 'alt');
+ WidthAttr := GetNodeAttribute(Node, 'width');
+ HeightAttr := GetNodeAttribute(Node, 'height');
+
+ { Si pas de source, afficher le texte alternatif }
+ If Length(Src) = 0 Then Begin
+  If Length(Alt) > 0 Then
+   RenderText(Ctx, '[' + Alt + ']');
+  Exit;
+ End;
+
+ { Construire le chemin complet de l'image }
+ ImgPath := BMPBuildImagePath(Src);
+
+ { Determiner le type d'image }
+ IsBMP := False;
+ IsGIF := False;
+ IsJPEG := False;
+ IsPNG := False;
+ IsSVG := False;
+ If Length(ImgPath) >= 4 Then Begin
+  ImgExt := HTMLLowerCase(Copy(ImgPath, Length(ImgPath) - 3, 4));
+  If ImgExt = '.bmp' Then IsBMP := True
+  Else If ImgExt = '.gif' Then IsGIF := True
+  Else If ImgExt = '.jpg' Then IsJPEG := True
+  Else If ImgExt = 'jpeg' Then IsJPEG := True
+  Else If ImgExt = '.png' Then IsPNG := True
+  Else If ImgExt = '.svg' Then IsSVG := True;
+ End;
+ { Verifier aussi .jpeg (5 caracteres) }
+ If (Not IsJPEG) And (Length(ImgPath) >= 5) Then Begin
+  ImgExt := HTMLLowerCase(Copy(ImgPath, Length(ImgPath) - 4, 5));
+  If ImgExt = '.jpeg' Then IsJPEG := True;
+ End;
+
+ { Si format non supporte, afficher le texte alternatif }
+ If Not IsBMP And Not IsGIF And Not IsJPEG And Not IsPNG And Not IsSVG Then Begin
+  If Length(Alt) > 0 Then
+   RenderText(Ctx, '[' + Alt + ']')
+  Else
+   RenderText(Ctx, '[IMG]');
+  Exit;
+ End;
+
+ { Traitement des images BMP }
+ If IsBMP Then Begin
+  CacheIdx := BMPFindInCache(ImgPath);
+  If CacheIdx > 0 Then Begin
+   BMPImg := BMPImageCache[CacheIdx].Image;
+  End
+  Else Begin
+   If Not BMPLoadFromFile(ImgPath, BMPImg) Then Begin
+    If Length(Alt) > 0 Then
+     RenderText(Ctx, '[' + Alt + ']')
+    Else
+     RenderText(Ctx, '[IMG: ' + Src + ']');
+    Exit;
+   End;
+   BMPAddToCache(ImgPath, BMPImg);
+  End;
+
+  ImgWidth := BMPImg.Width;
+  ImgHeight := BMPImg.Height;
+
+  If Length(WidthAttr) > 0 Then Begin
+   Val(WidthAttr, DrawWidth, Code);
+   If Code <> 0 Then DrawWidth := ImgWidth;
+  End
+  Else
+   DrawWidth := ImgWidth;
+
+  If Length(HeightAttr) > 0 Then Begin
+   Val(HeightAttr, DrawHeight, Code);
+   If Code <> 0 Then DrawHeight := ImgHeight;
+  End
+  Else
+   DrawHeight := ImgHeight;
+
+  If Ctx.X + DrawWidth > Ctx.MaxX Then RenderNewLine(Ctx);
+
+  If DrawWidth > Ctx.MaxX - Ctx.X Then DrawWidth := Ctx.MaxX - Ctx.X;
+  If DrawHeight > Ctx.MaxY - Ctx.Y Then DrawHeight := Ctx.MaxY - Ctx.Y;
+
+  If YInVisibleBand(Ctx.Y, Ctx.Y + DrawHeight) Then Begin
+   If (DrawWidth = ImgWidth) And (DrawHeight = ImgHeight) Then
+    BMPDrawImage(BMPImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight)
+   Else
+    BMPDrawImageScaled(BMPImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight);
+  End;
+
+  Ctx.X := Ctx.X + DrawWidth;
+  If DrawHeight > Ctx.LineHeight Then Ctx.LineHeight := DrawHeight;
+ End
+
+ { Traitement des images GIF }
+ Else If IsGIF Then Begin
+  CacheIdx := GIFFindInCache(ImgPath);
+  If CacheIdx > 0 Then Begin
+   GIFImg := GIFImageCache[CacheIdx].Image;
+  End
+  Else Begin
+   If Not GIFLoadFromFile(ImgPath, GIFImg) Then Begin
+    If Length(Alt) > 0 Then
+     RenderText(Ctx, '[' + Alt + ']')
+    Else
+     RenderText(Ctx, '[IMG: ' + Src + ']');
+    Exit;
+   End;
+   GIFAddToCache(ImgPath, GIFImg);
+  End;
+
+  ImgWidth := GIFImg.Width;
+  ImgHeight := GIFImg.Height;
+
+  If Length(WidthAttr) > 0 Then Begin
+   Val(WidthAttr, DrawWidth, Code);
+   If Code <> 0 Then DrawWidth := ImgWidth;
+  End
+  Else
+   DrawWidth := ImgWidth;
+
+  If Length(HeightAttr) > 0 Then Begin
+   Val(HeightAttr, DrawHeight, Code);
+   If Code <> 0 Then DrawHeight := ImgHeight;
+  End
+  Else
+   DrawHeight := ImgHeight;
+
+  If Ctx.X + DrawWidth > Ctx.MaxX Then RenderNewLine(Ctx);
+
+  If DrawWidth > Ctx.MaxX - Ctx.X Then DrawWidth := Ctx.MaxX - Ctx.X;
+  If DrawHeight > Ctx.MaxY - Ctx.Y Then DrawHeight := Ctx.MaxY - Ctx.Y;
+
+  If YInVisibleBand(Ctx.Y, Ctx.Y + DrawHeight) Then Begin
+   If (DrawWidth = ImgWidth) And (DrawHeight = ImgHeight) Then
+    GIFDrawImage(GIFImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight)
+   Else
+    GIFDrawImageScaled(GIFImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight);
+  End;
+
+  Ctx.X := Ctx.X + DrawWidth;
+  If DrawHeight > Ctx.LineHeight Then Ctx.LineHeight := DrawHeight;
+ End
+
+ { Traitement des images JPEG }
+ Else If IsJPEG Then Begin
+  CacheIdx := JPEGFindInCache(ImgPath);
+  If CacheIdx > 0 Then Begin
+   JPEGImg := JPEGImageCache[CacheIdx].Image;
+  End
+  Else Begin
+   If Not JPEGLoadFromFile(ImgPath, JPEGImg) Then Begin
+    If Length(Alt) > 0 Then
+     RenderText(Ctx, '[' + Alt + ']')
+    Else
+     RenderText(Ctx, '[IMG: ' + Src + ']');
+    Exit;
+   End;
+   JPEGAddToCache(ImgPath, JPEGImg);
+  End;
+
+  ImgWidth := JPEGImg.Width;
+  ImgHeight := JPEGImg.Height;
+
+  If Length(WidthAttr) > 0 Then Begin
+   Val(WidthAttr, DrawWidth, Code);
+   If Code <> 0 Then DrawWidth := ImgWidth;
+  End
+  Else
+   DrawWidth := ImgWidth;
+
+  If Length(HeightAttr) > 0 Then Begin
+   Val(HeightAttr, DrawHeight, Code);
+   If Code <> 0 Then DrawHeight := ImgHeight;
+  End
+  Else
+   DrawHeight := ImgHeight;
+
+  If Ctx.X + DrawWidth > Ctx.MaxX Then RenderNewLine(Ctx);
+
+  If DrawWidth > Ctx.MaxX - Ctx.X Then DrawWidth := Ctx.MaxX - Ctx.X;
+  If DrawHeight > Ctx.MaxY - Ctx.Y Then DrawHeight := Ctx.MaxY - Ctx.Y;
+
+  If YInVisibleBand(Ctx.Y, Ctx.Y + DrawHeight) Then Begin
+   If (DrawWidth = ImgWidth) And (DrawHeight = ImgHeight) Then
+    JPEGDrawImage(JPEGImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight)
+   Else
+    JPEGDrawImageScaled(JPEGImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight);
+  End;
+
+  Ctx.X := Ctx.X + DrawWidth;
+  If DrawHeight > Ctx.LineHeight Then Ctx.LineHeight := DrawHeight;
+ End
+
+ { Traitement des images PNG }
+ Else If IsPNG Then Begin
+  CacheIdx := PNGFindInCache(ImgPath);
+  If CacheIdx > 0 Then Begin
+   PNGImg := PNGImageCache[CacheIdx].Image;
+  End
+  Else Begin
+   If Not PNGLoadFromFile(ImgPath, PNGImg) Then Begin
+    If Length(Alt) > 0 Then
+     RenderText(Ctx, '[' + Alt + ']')
+    Else
+     RenderText(Ctx, '[IMG: ' + Src + ']');
+    Exit;
+   End;
+   PNGAddToCache(ImgPath, PNGImg);
+  End;
+
+  ImgWidth := PNGImg.Width;
+  ImgHeight := PNGImg.Height;
+
+  If Length(WidthAttr) > 0 Then Begin
+   Val(WidthAttr, DrawWidth, Code);
+   If Code <> 0 Then DrawWidth := ImgWidth;
+  End
+  Else
+   DrawWidth := ImgWidth;
+
+  If Length(HeightAttr) > 0 Then Begin
+   Val(HeightAttr, DrawHeight, Code);
+   If Code <> 0 Then DrawHeight := ImgHeight;
+  End
+  Else
+   DrawHeight := ImgHeight;
+
+  If Ctx.X + DrawWidth > Ctx.MaxX Then RenderNewLine(Ctx);
+
+  If DrawWidth > Ctx.MaxX - Ctx.X Then DrawWidth := Ctx.MaxX - Ctx.X;
+  If DrawHeight > Ctx.MaxY - Ctx.Y Then DrawHeight := Ctx.MaxY - Ctx.Y;
+
+  If YInVisibleBand(Ctx.Y, Ctx.Y + DrawHeight) Then Begin
+   If (DrawWidth = ImgWidth) And (DrawHeight = ImgHeight) Then
+    PNGDrawImage(PNGImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight)
+   Else
+    PNGDrawImageScaled(PNGImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight);
+  End;
+
+  Ctx.X := Ctx.X + DrawWidth;
+  If DrawHeight > Ctx.LineHeight Then Ctx.LineHeight := DrawHeight;
+ End
+
+ { Traitement des images SVG }
+ Else If IsSVG Then Begin
+  CacheIdx := SVGFindInCache(ImgPath);
+  If CacheIdx > 0 Then Begin
+   SVGImg := SVGImageCache[CacheIdx].Image;
+  End
+  Else Begin
+   If Not SVGLoadFromFile(ImgPath, SVGImg) Then Begin
+    If Length(Alt) > 0 Then
+     RenderText(Ctx, '[' + Alt + ']')
+    Else
+     RenderText(Ctx, '[IMG: ' + Src + ']');
+    Exit;
+   End;
+   SVGAddToCache(ImgPath, SVGImg);
+  End;
+
+  ImgWidth := SVGImg.Width;
+  ImgHeight := SVGImg.Height;
+
+  If Length(WidthAttr) > 0 Then Begin
+   Val(WidthAttr, DrawWidth, Code);
+   If Code <> 0 Then DrawWidth := ImgWidth;
+  End
+  Else
+   DrawWidth := ImgWidth;
+
+  If Length(HeightAttr) > 0 Then Begin
+   Val(HeightAttr, DrawHeight, Code);
+   If Code <> 0 Then DrawHeight := ImgHeight;
+  End
+  Else
+   DrawHeight := ImgHeight;
+
+  If Ctx.X + DrawWidth > Ctx.MaxX Then RenderNewLine(Ctx);
+
+  If DrawWidth > Ctx.MaxX - Ctx.X Then DrawWidth := Ctx.MaxX - Ctx.X;
+  If DrawHeight > Ctx.MaxY - Ctx.Y Then DrawHeight := Ctx.MaxY - Ctx.Y;
+
+  If YInVisibleBand(Ctx.Y, Ctx.Y + DrawHeight) Then
+   SVGDrawImageScaled(SVGImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight);
+
+  Ctx.X := Ctx.X + DrawWidth;
+  If DrawHeight > Ctx.LineHeight Then Ctx.LineHeight := DrawHeight;
+ End;
+End;
 
 { Variable globale pour activer/desactiver l'application CSS automatique }
 Var

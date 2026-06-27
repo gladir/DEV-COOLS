@@ -4582,126 +4582,650 @@ Begin
                                   Length(name) - slash_pos));
 End;
 
-Function ExpectedOutputForSource(name: TString): TSourceLine;
+Function ProgramOutputForIR(Var ctx: TCompilerContext): TSourceLine;
+Type
+  TEvalValue = Record
+    is_string: Boolean;
+    num      : Real;
+    str      : TSourceLine;
+  End;
+  TEvalVar = Record
+    name : TLabelName;
+    value: TEvalValue;
+  End;
+  TEvalEnv = Record
+    count: Integer;
+    vars : Array[1..MAX_SYMBOLS] Of TEvalVar;
+  End;
+  TArgValues = Array[1..MAX_CALL_ARGS] Of TEvalValue;
 Var
-  leaf: TString;
-Begin
-  leaf := SourceFileLeaf(name);
-  If leaf = 'BONJOUR.PLI' Then
-    ExpectedOutputForSource := 'Bonjour!' + #13 + #10
-  Else If leaf = 'CALCULCALCIUMCORRIGE.PLI' Then
-    ExpectedOutputForSource :=
-      'Si Albumine=40g/L et Calcium Total=2,28mg/L alors ' +
-      'le Calcium corrig' + Chr(195) + Chr(169) + ' vaut 2.28mg/L' +
-      #13 + #10 +
-      'Si Albumine=38g/L et Calcium Total=2,28mg/L alors ' +
-      'le Calcium corrig' + Chr(195) + Chr(169) + ' vaut 3.88mg/L' +
-      #13 + #10
-  Else If leaf = 'COORDTODELTA.PLI' Then
-    ExpectedOutputForSource :=
-      'Distance entre Montr' + Chr(195) + Chr(169) +
-      'al et Paris en Km:' + #13 + #10 +
-      '5510.17' + #13 + #10 +
-      'Distance entre Montr' + Chr(195) + Chr(169) +
-      'al et Paris en Miles:' + #13 + #10 +
-      '3423.85' + #13 + #10 +
-      'Distance entre Montr' + Chr(195) + Chr(169) +
-      'al et Paris en Miles Nautique:' + #13 + #10 +
-      '2975.30' + #13 + #10
-  Else If leaf = 'CIRCLEAREA.PLI' Then
-    ExpectedOutputForSource :=
-      'l''aire d''un cercle de rayon de 1 cm est 3.14159265358cm2' +
-      #13 + #10 +
-      'l''aire d''un cercle de rayon de 5 cm est 78.5398163395cm2' +
-      #13 + #10 +
-      'l''aire d''un cercle de rayon de 8 cm est 201.061929829cm2' +
-      #13 + #10 +
-      'l''aire d''un cercle de rayon de 10 cm est 314.159265358cm2' +
-      #13 + #10
-  Else If leaf = 'RECTANGLETRIANGLEAREA.PLI' Then
-    ExpectedOutputForSource :=
-      'L''aire d''une surface de prisme rectangulaire de 10x5x5 est 250cm2' +
-      #13 + #10 +
-      'L''aire d''une surface de prisme rectangulaire de 2x3x4 est 52cm2' +
-      #13 + #10 +
-      'L''aire d''une surface de prisme rectangulaire de 1x3x7 est 62cm2' +
-      #13 + #10
-  Else If leaf = '01_CONST.PLI' Then
-    ExpectedOutputForSource := '1' + #13 + #10
-  Else If leaf = '02_VARIABLE.PLI' Then
-    ExpectedOutputForSource := '42' + #13 + #10
-  Else If leaf = '03_ARITH.PLI' Then
-    ExpectedOutputForSource := '14' + #13 + #10
-  Else If leaf = '04_SUM_DO.PLI' Then
-    ExpectedOutputForSource :=
-      '1' + #13 + #10 +
-      '3' + #13 + #10 +
-      '6' + #13 + #10 +
-      '10' + #13 + #10 +
-      '15' + #13 + #10
-  Else If leaf = '05_DO_BY.PLI' Then
-    ExpectedOutputForSource := '30' + #13 + #10
-  Else If leaf = '06_NESTED_DO.PLI' Then
-    ExpectedOutputForSource := '21' + #13 + #10
-  Else If leaf = '07_ARRAY.PLI' Then
-    ExpectedOutputForSource := '8' + #13 + #10
-  Else If leaf = '08_ABS.PLI' Then
-    ExpectedOutputForSource := '42' + #13 + #10
-  Else If leaf = '09_MAX_MIN.PLI' Then
-    ExpectedOutputForSource := '9' + #13 + #10 + '4' + #13 + #10
-  Else If leaf = '10_MOD.PLI' Then
-    ExpectedOutputForSource := '2' + #13 + #10
-  Else If leaf = '11_SELECT_WHEN.PLI' Then
-    ExpectedOutputForSource := '20' + #13 + #10
-  Else If leaf = '12_SELECT_OTHER.PLI' Then
-    ExpectedOutputForSource := '99' + #13 + #10
-  Else If leaf = '13_GOTO.PLI' Then
-    ExpectedOutputForSource := '7' + #13 + #10
-  Else If leaf = '14_FUNCTION_ABS.PLI' Then
-    ExpectedOutputForSource := '8' + #13 + #10
-  Else If leaf = '15_FUNCTION_CONST.PLI' Then
-    ExpectedOutputForSource := '5' + #13 + #10
-  Else If leaf = '16_COMPARE.PLI' Then
-    ExpectedOutputForSource := '1' + #13 + #10
-  Else If leaf = '17_UNARY.PLI' Then
-    ExpectedOutputForSource := '-5' + #13 + #10
-  Else If leaf = '18_PARENS.PLI' Then
-    ExpectedOutputForSource := '21' + #13 + #10
-  Else If leaf = '19_ARRAY_SUM.PLI' Then
-    ExpectedOutputForSource := '6' + #13 + #10
-  Else If leaf = '20_MIXED.PLI' Then
-    ExpectedOutputForSource := '6' + #13 + #10
-  Else If leaf = 'TEST.PLI' Then
-    ExpectedOutputForSource := '55' + #13 + #10
-  Else If leaf = 'TEST2.PLI' Then
-    ExpectedOutputForSource :=
-      '1' + #13 + #10 +
-      '4' + #13 + #10 +
-      '9' + #13 + #10 +
-      '16' + #13 + #10 +
-      '25' + #13 + #10 +
-      '1000' + #13 + #10 +
-      '0' + #13 + #10 +
-      '2' + #13 + #10 +
-      '0' + #13 + #10
-  Else
-    ExpectedOutputForSource := '';
-End;
+  output: TSourceLine;
 
-Function DisplayOutputForIR(Var ctx: TCompilerContext): TSourceLine;
-Var
-  i: Integer;
-  out_text: TSourceLine;
-Begin
-  out_text := '';
-  For i := 1 To ctx.parse.put_count Do
-    If ctx.parse.puts[i].kind = PK_DISPLAY Then
+  Function NumValue(n: Real): TEvalValue;
+  Begin
+    NumValue.is_string := False;
+    NumValue.num := n;
+    NumValue.str := '';
+  End;
+
+  Function StrValue(s: TSourceLine): TEvalValue;
+  Begin
+    StrValue.is_string := True;
+    StrValue.num := 0.0;
+    StrValue.str := s;
+  End;
+
+  Function Truth(v: TEvalValue): Boolean;
+  Begin
+    If v.is_string Then
+      Truth := v.str <> ''
+    Else
+      Truth := Abs(v.num) > 0.0000001;
+  End;
+
+  Function RealToText(x: Real): TSourceLine;
+  Var
+    s: String[64];
+  Begin
+    If Abs(x - Round(x)) < 0.0000001 Then
+      Str(Round(x), s)
+    Else
       Begin
-        out_text := out_text +
-                    ctx.lex.tokens[ctx.parse.puts[i].expr_first].text +
-                    #13 + #10;
+        Str(x:0:12, s);
+        While (Length(s) > 0) And (s[Length(s)] = '0') Do
+          Delete(s, Length(s), 1);
+        If (Length(s) > 0) And (s[Length(s)] = '.') Then
+          Delete(s, Length(s), 1);
       End;
-  DisplayOutputForIR := out_text;
+    RealToText := s;
+  End;
+
+  Function ValueToText(v: TEvalValue): TSourceLine;
+  Begin
+    If v.is_string Then
+      ValueToText := v.str
+    Else
+      ValueToText := RealToText(v.num);
+  End;
+
+  Function EnvFind(Var env: TEvalEnv; name: TLabelName): Integer;
+  Var
+    i: Integer;
+    u: TLabelName;
+  Begin
+    EnvFind := 0;
+    u := UpperStr(name);
+    For i := 1 To env.count Do
+      If env.vars[i].name = u Then
+        Begin
+          EnvFind := i;
+          Exit;
+        End;
+  End;
+
+  Procedure EnvSet(Var env: TEvalEnv; name: TLabelName; value: TEvalValue);
+  Var
+    idx: Integer;
+  Begin
+    idx := EnvFind(env, name);
+    If idx = 0 Then
+      Begin
+        If env.count >= MAX_SYMBOLS Then
+          Exit;
+        Inc(env.count);
+        idx := env.count;
+        env.vars[idx].name := UpperStr(name);
+      End;
+    env.vars[idx].value := value;
+  End;
+
+  Function EnvGet(Var env: TEvalEnv; name: TLabelName): TEvalValue;
+  Var
+    idx: Integer;
+  Begin
+    idx := EnvFind(env, name);
+    If idx = 0 Then
+      EnvGet := NumValue(0.0)
+    Else
+      EnvGet := env.vars[idx].value;
+  End;
+
+  Function EvalRange(first_idx, last_idx: Integer; Var env: TEvalEnv): TEvalValue; Forward;
+  Function EvalProcedure(name: TLabelName; Var args: TArgValues;
+                         arg_count: Integer): TEvalValue; Forward;
+
+  Function FindTopOperator(first_idx, last_idx: Integer; op1, op2: TString): Integer;
+  Var
+    i, depth: Integer;
+  Begin
+    FindTopOperator := 0;
+    depth := 0;
+    For i := last_idx Downto first_idx Do
+      Begin
+        If TokenKindTextAt(ctx, i, TK_PUNCT, ')') Then
+          Inc(depth)
+        Else If TokenKindTextAt(ctx, i, TK_PUNCT, '(') Then
+          Dec(depth)
+        Else If depth = 0 Then
+          If (Not ((TokenTextAt(ctx, i, '-') Or TokenTextAt(ctx, i, '+')) And
+                   (i = first_idx))) And
+             (TokenTextAt(ctx, i, op1) Or
+              ((op2 <> '') And TokenTextAt(ctx, i, op2))) Then
+            Begin
+              FindTopOperator := i;
+              Exit;
+            End;
+      End;
+  End;
+
+  Function EvalAtom(first_idx, last_idx: Integer; Var env: TEvalEnv): TEvalValue;
+  Var
+    code, close_idx, part_first, i, arg_count, depth: Integer;
+    r: Real;
+    args: TArgValues;
+    name: TLabelName;
+  Begin
+    If first_idx > last_idx Then
+      Begin
+        EvalAtom := NumValue(0.0);
+        Exit;
+      End;
+    If TokenKindTextAt(ctx, first_idx, TK_PUNCT, '(') And
+       (FindMatchingParen(ctx, first_idx, last_idx) = last_idx) Then
+      Begin
+        EvalAtom := EvalRange(first_idx + 1, last_idx - 1, env);
+        Exit;
+      End;
+    If ctx.lex.tokens[first_idx].kind = TK_STRING Then
+      Begin
+        EvalAtom := StrValue(ctx.lex.tokens[first_idx].text);
+        Exit;
+      End;
+    If ctx.lex.tokens[first_idx].kind = TK_INTEGER Then
+      Begin
+        Val(ctx.lex.tokens[first_idx].text, r, code);
+        If code <> 0 Then
+          r := ctx.lex.tokens[first_idx].int_val;
+        EvalAtom := NumValue(r);
+        Exit;
+      End;
+    If IsNameToken(ctx.lex.tokens[first_idx]) Then
+      Begin
+        name := UpperStr(ctx.lex.tokens[first_idx].text);
+        If (first_idx < last_idx) And
+           TokenKindTextAt(ctx, first_idx + 1, TK_PUNCT, '(') Then
+          Begin
+            close_idx := FindMatchingParen(ctx, first_idx + 1, last_idx);
+            arg_count := 0;
+            part_first := first_idx + 2;
+            depth := 0;
+            For i := first_idx + 2 To close_idx Do
+              Begin
+                If (i < close_idx) And TokenKindTextAt(ctx, i, TK_PUNCT, '(') Then
+                  Inc(depth)
+                Else If (i < close_idx) And TokenKindTextAt(ctx, i, TK_PUNCT, ')') Then
+                  Dec(depth);
+                If (i = close_idx) Or
+                   ((depth = 0) And TokenKindTextAt(ctx, i, TK_PUNCT, ',')) Then
+                Begin
+                  If arg_count < MAX_CALL_ARGS Then
+                    Begin
+                      Inc(arg_count);
+                      args[arg_count] := EvalRange(part_first, i - 1, env);
+                    End;
+                  part_first := i + 1;
+                End;
+              End;
+            EvalAtom := EvalProcedure(name, args, arg_count);
+            Exit;
+          End;
+        EvalAtom := EnvGet(env, name);
+        Exit;
+      End;
+    EvalAtom := NumValue(0.0);
+  End;
+
+  Function EvalUnary(first_idx, last_idx: Integer; Var env: TEvalEnv): TEvalValue;
+  Var
+    v: TEvalValue;
+  Begin
+    If TokenKindTextAt(ctx, first_idx, TK_OPERATOR, '-') Then
+      Begin
+        v := EvalUnary(first_idx + 1, last_idx, env);
+        v.num := -v.num;
+        v.is_string := False;
+        EvalUnary := v;
+      End
+    Else
+      EvalUnary := EvalAtom(first_idx, last_idx, env);
+  End;
+
+  Function EvalMul(first_idx, last_idx: Integer; Var env: TEvalEnv): TEvalValue;
+  Var
+    op: Integer;
+    l, r: TEvalValue;
+  Begin
+    op := FindTopOperator(first_idx, last_idx, '*', '/');
+    If op = 0 Then
+      EvalMul := EvalUnary(first_idx, last_idx, env)
+    Else
+      Begin
+        l := EvalMul(first_idx, op - 1, env);
+        r := EvalUnary(op + 1, last_idx, env);
+        If TokenTextAt(ctx, op, '*') Then
+          EvalMul := NumValue(l.num * r.num)
+        Else If Abs(r.num) < 0.0000001 Then
+          EvalMul := NumValue(0.0)
+        Else
+          EvalMul := NumValue(l.num / r.num);
+      End;
+  End;
+
+  Function EvalAdd(first_idx, last_idx: Integer; Var env: TEvalEnv): TEvalValue;
+  Var
+    op: Integer;
+    l, r: TEvalValue;
+  Begin
+    op := FindTopOperator(first_idx, last_idx, '+', '-');
+    If op = 0 Then
+      EvalAdd := EvalMul(first_idx, last_idx, env)
+    Else
+      Begin
+        l := EvalAdd(first_idx, op - 1, env);
+        r := EvalMul(op + 1, last_idx, env);
+        If TokenTextAt(ctx, op, '+') Then
+          EvalAdd := NumValue(l.num + r.num)
+        Else
+          EvalAdd := NumValue(l.num - r.num);
+      End;
+  End;
+
+  Function EvalCompare(first_idx, last_idx: Integer; Var env: TEvalEnv): TEvalValue;
+  Var
+    op: Integer;
+    l, r: TEvalValue;
+    same: Boolean;
+  Begin
+    op := FindTopOperator(first_idx, last_idx, '=', '<>');
+    If op = 0 Then
+      Begin
+        op := FindTopOperator(first_idx, last_idx, '<', '>');
+        If op = 0 Then
+          Begin
+            op := FindTopOperator(first_idx, last_idx, '<=', '>=');
+            If op = 0 Then
+              Begin
+                op := FindTopOperator(first_idx, last_idx, '^=', '~=');
+                If op = 0 Then
+                  Begin
+                    EvalCompare := EvalAdd(first_idx, last_idx, env);
+                    Exit;
+                  End;
+              End;
+          End;
+      End;
+    l := EvalAdd(first_idx, op - 1, env);
+    r := EvalAdd(op + 1, last_idx, env);
+    same := ValueToText(l) = ValueToText(r);
+    If TokenTextAt(ctx, op, '=') Then
+      EvalCompare := NumValue(Ord(same))
+    Else If TokenTextAt(ctx, op, '^=') Or TokenTextAt(ctx, op, '~=') Or
+            TokenTextAt(ctx, op, '<>') Then
+      EvalCompare := NumValue(Ord(Not same))
+    Else If TokenTextAt(ctx, op, '<') Then
+      EvalCompare := NumValue(Ord(l.num < r.num))
+    Else If TokenTextAt(ctx, op, '<=') Then
+      EvalCompare := NumValue(Ord(l.num <= r.num))
+    Else If TokenTextAt(ctx, op, '>') Then
+      EvalCompare := NumValue(Ord(l.num > r.num))
+    Else
+      EvalCompare := NumValue(Ord(l.num >= r.num));
+  End;
+
+  Function EvalRange(first_idx, last_idx: Integer; Var env: TEvalEnv): TEvalValue;
+  Begin
+    EvalRange := EvalCompare(first_idx, last_idx, env);
+  End;
+
+  Function EvalDisplay(first_idx, last_idx: Integer; Var env: TEvalEnv): TSourceLine;
+  Var
+    i, part_first, depth: Integer;
+    s: TSourceLine;
+  Begin
+    s := '';
+    part_first := first_idx;
+    depth := 0;
+    For i := first_idx To last_idx + 1 Do
+      Begin
+        If (i <= last_idx) And TokenKindTextAt(ctx, i, TK_PUNCT, '(') Then
+          Inc(depth)
+        Else If (i <= last_idx) And TokenKindTextAt(ctx, i, TK_PUNCT, ')') Then
+          Dec(depth);
+        If (i = last_idx + 1) Or
+           ((depth = 0) And TokenKindTextAt(ctx, i, TK_OPERATOR, '||')) Then
+          Begin
+            s := s + ValueToText(EvalRange(part_first, i - 1, env));
+            part_first := i + 1;
+          End;
+      End;
+    EvalDisplay := s;
+  End;
+
+  Function ProcFirstToken(proc_idx: Integer): Integer;
+  Var
+    i: Integer;
+  Begin
+    ProcFirstToken := 1;
+    For i := 1 To ctx.lex.token_count Do
+      If ctx.lex.tokens[i].line > ctx.parse.procs[proc_idx].body_line Then
+        Begin
+          ProcFirstToken := i;
+          Exit;
+        End;
+  End;
+
+  Function ProcLastToken(proc_idx: Integer): Integer;
+  Var
+    i: Integer;
+  Begin
+    ProcLastToken := ctx.lex.token_count;
+    For i := 1 To ctx.lex.token_count Do
+      If (ctx.lex.tokens[i].line = ctx.parse.procs[proc_idx].end_line) And
+         TokenTextAt(ctx, i, 'END') Then
+        Begin
+          ProcLastToken := i - 1;
+          Exit;
+        End;
+  End;
+
+  Function FindAssignOp(first_idx, last_idx: Integer): Integer;
+  Var
+    i, depth: Integer;
+  Begin
+    FindAssignOp := 0;
+    depth := 0;
+    For i := first_idx To last_idx Do
+      Begin
+        If TokenKindTextAt(ctx, i, TK_PUNCT, '(') Then
+          Inc(depth)
+        Else If TokenKindTextAt(ctx, i, TK_PUNCT, ')') Then
+          Dec(depth)
+        Else If (depth = 0) And TokenKindTextAt(ctx, i, TK_OPERATOR, '=') Then
+          Begin
+            FindAssignOp := i;
+            Exit;
+          End;
+      End;
+  End;
+
+  Function FindLabelToken(first_idx, last_idx: Integer; name: TLabelName): Integer;
+  Var
+    i: Integer;
+  Begin
+    FindLabelToken := 0;
+    For i := first_idx To last_idx - 1 Do
+      If IsNameToken(ctx.lex.tokens[i]) And
+         (UpperStr(ctx.lex.tokens[i].text) = UpperStr(name)) And
+         TokenKindTextAt(ctx, i + 1, TK_PUNCT, ':') Then
+        Begin
+          FindLabelToken := i + 2;
+          Exit;
+        End;
+  End;
+
+  Procedure ExecBlock(Var env: TEvalEnv; first_idx, last_idx: Integer;
+                      Var returned: Boolean; Var ret: TEvalValue); Forward;
+
+  Procedure ExecSimple(Var env: TEvalEnv; first_idx, last_idx: Integer;
+                       Var returned: Boolean; Var ret: TEvalValue);
+  Var
+    close_idx, eq_idx, init_idx: Integer;
+  Begin
+    If first_idx > last_idx Then
+      Exit;
+    If TokenTextAt(ctx, first_idx, 'RETURN') Then
+      Begin
+        If TokenKindTextAt(ctx, first_idx + 1, TK_PUNCT, '(') Then
+          Begin
+            close_idx := FindMatchingParen(ctx, first_idx + 1, last_idx);
+            ret := EvalRange(first_idx + 2, close_idx - 1, env);
+          End
+        Else
+          ret := EvalRange(first_idx + 1, last_idx, env);
+        returned := True;
+      End
+    Else If TokenTextAt(ctx, first_idx, 'DISPLAY') Then
+      Begin
+        close_idx := FindMatchingParen(ctx, first_idx + 1, last_idx);
+        output := output + EvalDisplay(first_idx + 2, close_idx - 1, env) +
+                  #13 + #10;
+      End
+    Else If TokenTextAt(ctx, first_idx, 'PUT') Then
+      Begin
+        If TokenTextAt(ctx, first_idx + 1, 'SKIP') Then
+          output := output + #13 + #10
+        Else If TokenTextAt(ctx, first_idx + 1, 'LIST') Then
+          Begin
+            close_idx := FindMatchingParen(ctx, first_idx + 2, last_idx);
+            output := output + ValueToText(EvalRange(first_idx + 3,
+                                                     close_idx - 1, env));
+          End;
+      End
+    Else If TokenTextAt(ctx, first_idx, 'DCL') Or
+            TokenTextAt(ctx, first_idx, 'DECLARE') Then
+      Begin
+        init_idx := FindTokenBefore(ctx, first_idx, last_idx, 'INIT');
+        If init_idx = 0 Then
+          init_idx := FindTokenBefore(ctx, first_idx, last_idx, 'INITIAL');
+        If (init_idx <> 0) And IsNameToken(ctx.lex.tokens[first_idx + 2]) Then
+          Begin
+            close_idx := FindMatchingParen(ctx, init_idx + 1, last_idx);
+            EnvSet(env, ctx.lex.tokens[first_idx + 2].text,
+                   EvalRange(init_idx + 2, close_idx - 1, env));
+          End;
+      End
+    Else
+      Begin
+        eq_idx := FindAssignOp(first_idx, last_idx);
+        If (eq_idx <> 0) And IsNameToken(ctx.lex.tokens[first_idx]) Then
+          EnvSet(env, ctx.lex.tokens[first_idx].text,
+                 EvalRange(eq_idx + 1, last_idx, env));
+      End;
+  End;
+
+  Procedure ExecSelect(Var env: TEvalEnv; select_idx, last_idx: Integer;
+                       Var returned: Boolean; Var ret: TEvalValue;
+                       Var next_idx: Integer);
+  Var
+    sel_end, end_tok, i, close_idx, stmt_end: Integer;
+    wanted, cur: TEvalValue;
+    matched: Boolean;
+  Begin
+    sel_end := FindStatementEnd(ctx, select_idx);
+    close_idx := FindMatchingParen(ctx, select_idx + 1, sel_end - 1);
+    wanted := EvalRange(select_idx + 2, close_idx - 1, env);
+    end_tok := FindMatchingEndForBlock(ctx, select_idx);
+    matched := False;
+    i := sel_end + 1;
+    While (i < end_tok) And Not returned Do
+      Begin
+        stmt_end := FindStatementEnd(ctx, i);
+        If TokenTextAt(ctx, i, 'WHEN') Then
+          Begin
+            close_idx := FindMatchingParen(ctx, i + 1, stmt_end - 1);
+            cur := EvalRange(i + 2, close_idx - 1, env);
+            If (Not matched) And (ValueToText(cur) = ValueToText(wanted)) Then
+              Begin
+                ExecSimple(env, close_idx + 1, stmt_end - 1, returned, ret);
+                matched := True;
+              End;
+          End
+        Else If TokenTextAt(ctx, i, 'OTHERWISE') And Not matched Then
+          Begin
+            ExecSimple(env, i + 1, stmt_end - 1, returned, ret);
+            matched := True;
+          End;
+        i := stmt_end + 1;
+      End;
+    next_idx := end_tok + 2;
+  End;
+
+  Procedure ExecBlock(Var env: TEvalEnv; first_idx, last_idx: Integer;
+                      Var returned: Boolean; Var ret: TEvalValue);
+  Var
+    i, stmt_end, eq_idx, to_idx, by_idx, then_idx, body_start, body_end,
+    end_tok, label_idx: Integer;
+    control: TLabelName;
+    startv, endv, byv, curv, cond: TEvalValue;
+    tmp_i: Integer;
+  Begin
+    i := first_idx;
+    While (i <= last_idx) And Not returned Do
+      Begin
+        If TokenKindTextAt(ctx, i, TK_PUNCT, ';') Then
+          Begin
+            Inc(i);
+            Continue;
+          End;
+        If IsNameToken(ctx.lex.tokens[i]) And
+           TokenKindTextAt(ctx, i + 1, TK_PUNCT, ':') Then
+          Begin
+            Inc(i, 2);
+            Continue;
+          End;
+        stmt_end := FindStatementEnd(ctx, i);
+        If TokenTextAt(ctx, i, 'END') Then
+          Exit
+        Else If TokenTextAt(ctx, i, 'GOTO') Then
+          Begin
+            label_idx := FindLabelToken(first_idx, last_idx,
+                                        ctx.lex.tokens[i + 1].text);
+            If label_idx <> 0 Then
+              i := label_idx
+            Else
+              i := stmt_end + 1;
+            Continue;
+          End
+        Else If TokenTextAt(ctx, i, 'DO') Then
+          Begin
+            eq_idx := FindTokenBefore(ctx, i + 1, stmt_end - 1, '=');
+            to_idx := FindTokenBefore(ctx, i + 1, stmt_end - 1, 'TO');
+            by_idx := FindTokenBefore(ctx, i + 1, stmt_end - 1, 'BY');
+            control := ctx.lex.tokens[i + 1].text;
+            startv := EvalRange(eq_idx + 1, to_idx - 1, env);
+            If by_idx <> 0 Then
+              Begin
+                endv := EvalRange(to_idx + 1, by_idx - 1, env);
+                byv := EvalRange(by_idx + 1, stmt_end - 1, env);
+              End
+            Else
+              Begin
+                endv := EvalRange(to_idx + 1, stmt_end - 1, env);
+                byv := NumValue(1.0);
+              End;
+            end_tok := FindMatchingEndForBlock(ctx, i);
+            body_start := stmt_end + 1;
+            body_end := end_tok - 1;
+            curv := startv;
+            While ((byv.num >= 0.0) And (curv.num <= endv.num)) Or
+                  ((byv.num < 0.0) And (curv.num >= endv.num)) Do
+              Begin
+                EnvSet(env, control, curv);
+                tmp_i := body_start;
+                ExecBlock(env, tmp_i, body_end, returned, ret);
+                If returned Then
+                  Break;
+                curv.num := curv.num + byv.num;
+              End;
+            i := end_tok + 2;
+            Continue;
+          End
+        Else If TokenTextAt(ctx, i, 'SELECT') Then
+          Begin
+            ExecSelect(env, i, last_idx, returned, ret, i);
+            Continue;
+          End
+        Else If TokenTextAt(ctx, i, 'IF') Then
+          Begin
+            then_idx := FindTokenBefore(ctx, i + 1, stmt_end - 1, 'THEN');
+            cond := EvalRange(i + 1, then_idx - 1, env);
+            If Truth(cond) Then
+              ExecSimple(env, then_idx + 1, stmt_end - 1, returned, ret);
+          End
+        Else If TokenTextAt(ctx, i, 'ELSE') Then
+          ExecSimple(env, i + 1, stmt_end - 1, returned, ret)
+        Else
+          ExecSimple(env, i, stmt_end - 1, returned, ret);
+        i := stmt_end + 1;
+      End;
+  End;
+
+  Function EvalProcedure(name: TLabelName; Var args: TArgValues;
+                         arg_count: Integer): TEvalValue;
+  Var
+    proc_idx, i, first_tok, last_tok: Integer;
+    env: TEvalEnv;
+    ret: TEvalValue;
+    returned: Boolean;
+    u: TLabelName;
+  Begin
+    u := UpperStr(name);
+    If u = 'SQRT' Then
+      Begin EvalProcedure := NumValue(Sqrt(args[1].num)); Exit; End;
+    If u = 'SIN' Then
+      Begin EvalProcedure := NumValue(Sin(args[1].num)); Exit; End;
+    If u = 'COS' Then
+      Begin EvalProcedure := NumValue(Cos(args[1].num)); Exit; End;
+    If u = 'ATAN' Then
+      Begin EvalProcedure := NumValue(ArcTan(args[1].num)); Exit; End;
+    If u = 'ABS' Then
+      Begin EvalProcedure := NumValue(Abs(args[1].num)); Exit; End;
+    If u = 'MAX' Then
+      Begin If args[1].num >= args[2].num Then EvalProcedure := args[1]
+            Else EvalProcedure := args[2]; Exit; End;
+    If u = 'MIN' Then
+      Begin If args[1].num <= args[2].num Then EvalProcedure := args[1]
+            Else EvalProcedure := args[2]; Exit; End;
+    If u = 'MOD' Then
+      Begin EvalProcedure := NumValue(Round(args[1].num) Mod
+                                      Round(args[2].num)); Exit; End;
+
+    proc_idx := ProcIndexByName(ctx, u);
+    env.count := 0;
+    If proc_idx = 0 Then
+      Begin
+        EvalProcedure := StrValue(name);
+        Exit;
+      End;
+    For i := 1 To ctx.parse.procs[proc_idx].param_count Do
+      If i <= arg_count Then
+        EnvSet(env, ctx.parse.procs[proc_idx].params[i], args[i]);
+    ret := NumValue(0.0);
+    returned := False;
+    first_tok := ProcFirstToken(proc_idx);
+    last_tok := ProcLastToken(proc_idx);
+    ExecBlock(env, first_tok, last_tok, returned, ret);
+    EvalProcedure := ret;
+  End;
+
+Var
+  env: TEvalEnv;
+  main_idx, first_tok, last_tok: Integer;
+  ret: TEvalValue;
+  returned: Boolean;
+Begin
+  output := '';
+  env.count := 0;
+  main_idx := MainProcIndex(ctx);
+  If main_idx <> 0 Then
+    Begin
+      ret := NumValue(0.0);
+      returned := False;
+      first_tok := ProcFirstToken(main_idx);
+      last_tok := ProcLastToken(main_idx);
+      ExecBlock(env, first_tok, last_tok, returned, ret);
+    End;
+  ProgramOutputForIR := output;
 End;
 
 Function CanEmitNativeTestProgram(Var ctx: TCompilerContext): Boolean;
@@ -4977,9 +5501,7 @@ Begin
   FillChar(data, SizeOf(data), 0);
   code_size := 0;
   data_size := 4;
-  expected := ExpectedOutputForSource(ctx.source_name);
-  If expected = '' Then
-    expected := DisplayOutputForIR(ctx);
+  expected := ProgramOutputForIR(ctx);
   native_test := CanEmitNativeTestProgram(ctx);
 
   text_rva := PE_SEC_ALIGN;
@@ -6219,7 +6741,7 @@ Begin
           CleanupValidationArtifacts(test_ctx, capture_name);
           Exit;
         End;
-      expected := ExpectedOutputForSource(source_name);
+      expected := ProgramOutputForIR(test_ctx);
       If expected = '' Then
         Begin
           Writeln('  ECHEC: sortie attendue non definie pour ', source_name);
