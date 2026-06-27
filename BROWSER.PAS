@@ -4720,13 +4720,22 @@ Const
 
 { Trouver l'index EGA/VGA (0..15) le plus proche d'une couleur RGB 24
   bits, par distance euclidienne au carre (pas besoin de racine pour
-  comparer). }
-Function CSSRGBToIndex(R, G, B: Byte): Integer;
+  comparer). R/G/B prennent ici un Integer (pas un Byte) et sont
+  bornes explicitement a 0..255 : une valeur CSS rgb()/rgba() mal
+  formee (rare mais possible dans une feuille de style reelle de
+  plusieurs dizaines de Ko) peut sortir de cette plage, et la
+  conversion implicite vers un parametre Byte declenchait alors une
+  ERangeError - constate intermittemment, probablement selon le
+  contenu exact en cache au moment du parsing. }
+Function CSSRGBToIndex(R, G, B: Integer): Integer;
 Var
  I, DR, DG, DB: Integer;
  Dist, BestDist: LongInt;
  BestIdx: Integer;
 Begin
+ If R < 0 Then R := 0 Else If R > 255 Then R := 255;
+ If G < 0 Then G := 0 Else If G > 255 Then G := 255;
+ If B < 0 Then B := 0 Else If B > 255 Then B := 255;
  BestIdx := 0;
  BestDist := MaxLongInt;
  For I := 0 To 15 Do Begin
@@ -5508,9 +5517,9 @@ Begin
 End;
 
 { Procedure pour effacer la zone de rendu }
-Procedure ClearRenderArea;
+Procedure ClearRenderArea(BgColorIdx: Integer);
 Begin
- SetFillStyle(SolidFill, RENDER_BG_COLOR);
+ SetFillStyle(SolidFill, BgColorIdx);
  Bar(RENDER_AREA_X, RENDER_AREA_Y,
      RENDER_AREA_X + RENDER_AREA_WIDTH,
      RENDER_AREA_Y + RENDER_AREA_HEIGHT);
@@ -12564,6 +12573,9 @@ Procedure DrawHScrollBar; Forward;
 Procedure RenderHTMLDocument(Doc: HTMLNodePtr);
 Var
  Ctx: RenderContext;
+ BodyNode: HTMLNodePtr;
+ BodyStyle: DOMStyle;
+ BodyBgColor, TryBgColor: Integer;
 Begin
  If Doc = Nil Then Exit;
 
@@ -12580,8 +12592,27 @@ Begin
  { Reinitialiser les zones de liens }
  ClearLinkAreas;
 
- { Effacer la zone de rendu }
- ClearRenderArea;
+ { Couleur de fond de la page = background-color CSS du <body>, la
+   couleur la plus visible de toute la page et pourtant jusqu'ici
+   toujours blanche quelle que soit la feuille de style (ClearRenderArea
+   utilisait une constante fixe). Determinee AVANT d'effacer, puisque
+   pour le <body> (a la difference d'un <div> quelconque) la boite
+   couvre exactement toute la zone de rendu, connue d'avance - aucun
+   probleme d'ordre de dessin comme pour un fond de bloc generique. }
+ BodyBgColor := RENDER_BG_COLOR;
+ If CSSEnabled Then Begin
+  BodyNode := DOMGetBody;
+  If BodyNode <> Nil Then Begin
+   CSSResolveCascade(BodyNode, BodyStyle);
+   If Length(BodyStyle.BackgroundColor) > 0 Then Begin
+    TryBgColor := CSSColorToIndex(BodyStyle.BackgroundColor);
+    If TryBgColor >= 0 Then BodyBgColor := TryBgColor;
+   End;
+  End;
+ End;
+
+ { Effacer la zone de rendu avec cette couleur }
+ ClearRenderArea(BodyBgColor);
 
  { Rendre le document avec application des styles CSS }
  ContentOverflowX := RENDER_AREA_X;

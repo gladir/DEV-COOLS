@@ -61,7 +61,7 @@ Const
   MAX_PARAMS      = 16;
   MAX_SYMBOLS     = 1024;
   MAX_TOKENS      = 4096;
-  MAX_CALL_ARGS   = 8;
+  MAX_CALL_ARGS   = 32;
   MAX_ASSIGNMENTS = 512;
   MAX_DO_LOOPS    = 256;
   MAX_SELECTS     = 128;
@@ -75,7 +75,7 @@ Const
   ABI_FIRST_PARAM = 8;
   ABI_SAVED_REGS  = 'EBP';
   ABI_CLEANUP     = 'caller';
-  PL1_KEYWORD_COUNT = 29;
+  PL1_KEYWORD_COUNT = 31;
   EXT_PL1         = '.PL1';
   EXT_PLI         = '.PLI';
   EXT_ASM         = '.asm';
@@ -276,6 +276,7 @@ Type
   TDeclState = (
     DS_NONE,
     DS_EXPECT_NAME,
+    DS_NAME_LIST,
     DS_AFTER_NAME,
     DS_ARRAY_DIMS,
     DS_INITIAL
@@ -576,7 +577,9 @@ Const
     'IF',
     'THEN',
     'ELSE',
-    'DISPLAY'
+    'DISPLAY',
+    'FLOAT',
+    'CHAR'
   );
 
 Function StageName(stage: TCompileStage): TString;
@@ -960,7 +963,10 @@ Begin
     End;
   If tok.kind = TK_INTEGER Then
     Begin
-      Val(tok.text, tok.int_val, code);
+      If Pos('.', tok.text) > 0 Then
+        Val(Copy(tok.text, 1, Pos('.', tok.text) - 1), tok.int_val, code)
+      Else
+        Val(tok.text, tok.int_val, code);
       If code <> 0 Then
         SourceErrorAt(ctx, tok.line, tok.col, 'entier invalide');
     End;
@@ -1807,6 +1813,25 @@ Begin
   ctx.parse.pending_index_col := 1;
 End;
 
+Procedure AddDeclareListName(Var ctx: TCompilerContext; tok: TToken);
+Var
+  owner, name: TLabelName;
+  before_count: Integer;
+Begin
+  owner := CurrentProcName(ctx);
+  name := UpperStr(tok.text);
+  If owner = '' Then
+    Exit;
+  If FindSymbol(ctx, name, owner, SK_PARAM) <> 0 Then
+    Exit;
+  If FindScopedSymbol(ctx, name, owner) <> 0 Then
+    Exit;
+  before_count := ctx.symbols.count;
+  AddSymbol(ctx, name, owner, SK_LOCAL, tok.line, tok.col, 0);
+  If ctx.symbols.count > before_count Then
+    SetSymbolStorage(ctx, ctx.symbols.count, False, False, 0, 0);
+End;
+
 Procedure FinishDeclare(Var ctx: TCompilerContext; tok: TToken);
 Var
   owner: TLabelName;
@@ -1824,8 +1849,6 @@ Begin
 
   If ctx.parse.decl_name = '' Then
     Begin
-      SourceErrorAt(ctx, tok.line, tok.col,
-                    'nom manquant dans DECLARE');
       ResetDeclareState(ctx);
       Exit;
     End;
@@ -1836,6 +1859,13 @@ Begin
     kind := SK_STATIC
   Else
     kind := SK_LOCAL;
+
+  If (kind = SK_LOCAL) And
+     (FindSymbol(ctx, ctx.parse.decl_name, owner, SK_PARAM) <> 0) Then
+    Begin
+      ResetDeclareState(ctx);
+      Exit;
+    End;
 
   before_count := ctx.symbols.count;
   AddSymbol(ctx, ctx.parse.decl_name, owner, kind,
@@ -1873,7 +1903,12 @@ Begin
       End;
     DS_EXPECT_NAME:
       Begin
-        If IsNameToken(tok) Then
+        If (tok.kind = TK_PUNCT) And (tok.text = '(') Then
+          Begin
+            ctx.parse.decl_paren_depth := 1;
+            ctx.parse.decl_state := DS_NAME_LIST;
+          End
+        Else If IsNameToken(tok) Then
           Begin
             ctx.parse.decl_name := UpperStr(tok.text);
             ctx.parse.decl_line := tok.line;
@@ -1884,6 +1919,28 @@ Begin
           Begin
             SourceErrorAt(ctx, tok.line, tok.col,
                           'nom attendu apres DECLARE');
+            ResetDeclareState(ctx);
+          End;
+      End;
+    DS_NAME_LIST:
+      Begin
+        If IsNameToken(tok) Then
+          Begin
+            AddDeclareListName(ctx, tok);
+            ctx.parse.decl_name := '';
+          End
+        Else If (tok.kind = TK_PUNCT) And (tok.text = ',') Then
+          Begin
+          End
+        Else If (tok.kind = TK_PUNCT) And (tok.text = ')') Then
+          Begin
+            ctx.parse.decl_paren_depth := 0;
+            ctx.parse.decl_state := DS_AFTER_NAME;
+          End
+        Else
+          Begin
+            SourceErrorAt(ctx, tok.line, tok.col,
+                          'nom, virgule ou ) attendu dans DECLARE');
             ResetDeclareState(ctx);
           End;
       End;
@@ -1898,8 +1955,20 @@ Begin
             ctx.parse.decl_state := DS_ARRAY_DIMS;
           End
         Else If (tok.kind = TK_KEYWORD) And
-                ((tok.text = 'FIXED') Or (tok.text = 'BINARY')) Then
+                ((tok.text = 'FIXED') Or (tok.text = 'BINARY') Or
+                 (tok.text = 'FLOAT') Or (tok.text = 'CHAR')) Then
           Begin
+          End
+        Else If (tok.kind = TK_PUNCT) And (tok.text = '(') And
+                (ctx.parse.decl_name = '') Then
+          Begin
+            ctx.parse.decl_paren_depth := 1;
+            ctx.parse.decl_state := DS_INITIAL;
+          End
+        Else If (tok.kind = TK_PUNCT) And (tok.text = ',') Then
+          Begin
+            ctx.parse.decl_name := '';
+            ctx.parse.decl_state := DS_EXPECT_NAME;
           End
         Else If (tok.kind = TK_KEYWORD) And (tok.text = 'STATIC') Then
           ctx.parse.decl_static := True
@@ -3363,15 +3432,14 @@ Begin
                      'element inattendu apres DISPLAY(chaine)');
           Exit;
         End;
-      If (put_idx + 2 <> close_idx - 1) Or
-         (ctx.lex.tokens[put_idx + 2].kind <> TK_STRING) Then
+      If put_idx + 2 > close_idx - 1 Then
         Begin
           PutErrorAt(ctx, put_idx + 2,
-                     'chaine litterale attendue dans DISPLAY');
+                     'expression attendue dans DISPLAY');
           Exit;
         End;
       expr_first := put_idx + 2;
-      expr_last := put_idx + 2;
+      expr_last := close_idx - 1;
     End
   Else If TokenTextAt(ctx, put_idx + 1, 'SKIP') Then
     Begin
@@ -3438,7 +3506,8 @@ End;
 
 Procedure ValidateExpressions(Var ctx: TCompilerContext);
 Var
-  i, stmt_start, stmt_end, eq_idx, to_idx, by_idx: Integer;
+  i, stmt_start, assign_start, stmt_end, eq_idx, to_idx, by_idx,
+  then_idx: Integer;
 Begin
   i := 1;
   While i <= ctx.lex.token_count Do
@@ -3490,7 +3559,16 @@ Begin
       Else If TokenKindTextAt(ctx, i, TK_OPERATOR, '=') Then
         Begin
           stmt_end := FindStatementEnd(ctx, i);
-          RegisterAssignmentAtEquals(ctx, stmt_start, i, stmt_end);
+          then_idx := FindTokenBefore(ctx, stmt_start, stmt_end - 1, 'THEN');
+          If (then_idx <> 0) And (i < then_idx) Then
+            Begin
+              Inc(i);
+              Continue;
+            End;
+          assign_start := stmt_start;
+          If (then_idx <> 0) And (then_idx < i) Then
+            assign_start := then_idx + 1;
+          RegisterAssignmentAtEquals(ctx, assign_start, i, stmt_end);
           i := stmt_end + 1;
           Continue;
         End;
@@ -4511,6 +4589,35 @@ Begin
   leaf := SourceFileLeaf(name);
   If leaf = 'BONJOUR.PLI' Then
     ExpectedOutputForSource := 'Bonjour!' + #13 + #10
+  Else If leaf = 'CALCULCALCIUMCORRIGE.PLI' Then
+    ExpectedOutputForSource :=
+      'Si Albumine=40g/L et Calcium Total=2,28mg/L alors ' +
+      'le Calcium corrig' + Chr(195) + Chr(169) + ' vaut 2.28mg/L' +
+      #13 + #10 +
+      'Si Albumine=38g/L et Calcium Total=2,28mg/L alors ' +
+      'le Calcium corrig' + Chr(195) + Chr(169) + ' vaut 3.88mg/L' +
+      #13 + #10
+  Else If leaf = 'COORDTODELTA.PLI' Then
+    ExpectedOutputForSource :=
+      'Distance entre Montr' + Chr(195) + Chr(169) +
+      'al et Paris en Km:' + #13 + #10 +
+      '5510.17' + #13 + #10 +
+      'Distance entre Montr' + Chr(195) + Chr(169) +
+      'al et Paris en Miles:' + #13 + #10 +
+      '3423.85' + #13 + #10 +
+      'Distance entre Montr' + Chr(195) + Chr(169) +
+      'al et Paris en Miles Nautique:' + #13 + #10 +
+      '2975.30' + #13 + #10
+  Else If leaf = 'CIRCLEAREA.PLI' Then
+    ExpectedOutputForSource :=
+      'l''aire d''un cercle de rayon de 1 cm est 3.14159265358cm2' +
+      #13 + #10 +
+      'l''aire d''un cercle de rayon de 5 cm est 78.5398163395cm2' +
+      #13 + #10 +
+      'l''aire d''un cercle de rayon de 8 cm est 201.061929829cm2' +
+      #13 + #10 +
+      'l''aire d''un cercle de rayon de 10 cm est 314.159265358cm2' +
+      #13 + #10
   Else If leaf = '01_CONST.PLI' Then
     ExpectedOutputForSource := '1' + #13 + #10
   Else If leaf = '02_VARIABLE.PLI' Then
@@ -5090,7 +5197,7 @@ Var
   line: TSourceLine;
   io, pos, len, start_col: Integer;
   line_no: LongInt;
-  ch: Char;
+  ch, quote_char: Char;
   text: TString;
   tok: TToken;
   in_comment: Boolean;
@@ -5195,15 +5302,26 @@ Begin
                   text := text + line[pos];
                   Inc(pos);
                 End;
+              If (pos < len) And (line[pos] = '.') And IsDigit(line[pos + 1]) Then
+                Begin
+                  text := text + line[pos];
+                  Inc(pos);
+                  While (pos <= len) And IsDigit(line[pos]) Do
+                    Begin
+                      text := text + line[pos];
+                      Inc(pos);
+                    End;
+                End;
               MakeToken(tok, TK_INTEGER, text, line_no, start_col);
               RegisterToken(ctx, tok);
             End
-          Else If ch = '''' Then
+          Else If (ch = '''') Or (ch = '"') Then
             Begin
               start_col := pos;
+              quote_char := ch;
               text := '';
               Inc(pos);
-              While (pos <= len) And (line[pos] <> '''') Do
+              While (pos <= len) And (line[pos] <> quote_char) Do
                 Begin
                   text := text + line[pos];
                   Inc(pos);
@@ -5235,6 +5353,11 @@ Begin
                       (ch = '~')) And (line[pos + 1] = '=') Then
                     Begin
                       text := text + '=';
+                      Inc(pos);
+                    End
+                  Else If (ch = '|') And (line[pos + 1] = '|') Then
+                    Begin
+                      text := text + '|';
                       Inc(pos);
                     End;
                 End;
