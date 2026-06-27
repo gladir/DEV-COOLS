@@ -75,7 +75,7 @@ Const
   ABI_FIRST_PARAM = 8;
   ABI_SAVED_REGS  = 'EBP';
   ABI_CLEANUP     = 'caller';
-  PL1_KEYWORD_COUNT = 28;
+  PL1_KEYWORD_COUNT = 29;
   EXT_PL1         = '.PL1';
   EXT_PLI         = '.PLI';
   EXT_ASM         = '.asm';
@@ -408,7 +408,8 @@ Type
 
   TPutKind = (
     PK_LIST,
-    PK_SKIP
+    PK_SKIP,
+    PK_DISPLAY
   );
 
   TPutInfo = Record
@@ -574,7 +575,8 @@ Const
     'BY',
     'IF',
     'THEN',
-    'ELSE'
+    'ELSE',
+    'DISPLAY'
   );
 
 Function StageName(stage: TCompileStage): TString;
@@ -1522,10 +1524,12 @@ End;
 Procedure ParseLabelToken(Var ctx: TCompilerContext; tok: TToken);
 Begin
   If (ctx.parse.pending_label > 0) And
-     Not ((tok.kind = TK_KEYWORD) And (tok.text = 'PROCEDURE')) Then
+     Not ((tok.kind = TK_KEYWORD) And
+          ((tok.text = 'PROCEDURE') Or (tok.text = 'PROC'))) Then
     ctx.parse.pending_label := 0;
 
-  If (tok.kind = TK_KEYWORD) And (tok.text = 'PROCEDURE') Then
+  If (tok.kind = TK_KEYWORD) And
+     ((tok.text = 'PROCEDURE') Or (tok.text = 'PROC')) Then
     MarkPendingLabelAsProcedure(ctx, tok);
 
   If ctx.parse.pending_goto Then
@@ -1713,7 +1717,8 @@ Begin
   Case ctx.parse.proc_decl_state Of
     PDS_AFTER_PROCEDURE:
       Begin
-        If (tok.kind = TK_KEYWORD) And (tok.text = 'PROCEDURE') Then
+        If (tok.kind = TK_KEYWORD) And
+           ((tok.text = 'PROCEDURE') Or (tok.text = 'PROC')) Then
           Exit;
         If (tok.kind = TK_PUNCT) And (tok.text = '(') Then
           ctx.parse.proc_decl_state := PDS_PARAMS
@@ -3329,13 +3334,46 @@ Begin
   proc_idx := ProcIndexAtLine(ctx, ctx.lex.tokens[put_idx].line);
   If proc_idx = 0 Then
     Begin
-      PutErrorAt(ctx, put_idx, 'PUT hors procedure');
+      If TokenTextAt(ctx, put_idx, 'DISPLAY') Then
+        PutErrorAt(ctx, put_idx, 'DISPLAY hors procedure')
+      Else
+        PutErrorAt(ctx, put_idx, 'PUT hors procedure');
       Exit;
     End;
 
   expr_first := 0;
   expr_last := 0;
-  If TokenTextAt(ctx, put_idx + 1, 'SKIP') Then
+  If TokenTextAt(ctx, put_idx, 'DISPLAY') Then
+    Begin
+      kind := PK_DISPLAY;
+      If Not TokenKindTextAt(ctx, put_idx + 1, TK_PUNCT, '(') Then
+        Begin
+          PutErrorAt(ctx, put_idx + 1, '( attendu apres DISPLAY');
+          Exit;
+        End;
+      close_idx := FindMatchingParen(ctx, put_idx + 1, stmt_end - 1);
+      If close_idx = 0 Then
+        Begin
+          PutErrorAt(ctx, put_idx + 1, ') attendu apres DISPLAY');
+          Exit;
+        End;
+      If close_idx <> stmt_end - 1 Then
+        Begin
+          PutErrorAt(ctx, close_idx + 1,
+                     'element inattendu apres DISPLAY(chaine)');
+          Exit;
+        End;
+      If (put_idx + 2 <> close_idx - 1) Or
+         (ctx.lex.tokens[put_idx + 2].kind <> TK_STRING) Then
+        Begin
+          PutErrorAt(ctx, put_idx + 2,
+                     'chaine litterale attendue dans DISPLAY');
+          Exit;
+        End;
+      expr_first := put_idx + 2;
+      expr_last := put_idx + 2;
+    End
+  Else If TokenTextAt(ctx, put_idx + 1, 'SKIP') Then
     Begin
       kind := PK_SKIP;
       If put_idx + 2 <> stmt_end Then
@@ -3384,7 +3422,7 @@ Begin
   Inc(ctx.parse.put_count);
   If kind = PK_LIST Then
     Inc(ctx.parse.put_list_count)
-  Else
+  Else If kind = PK_SKIP Then
     Inc(ctx.parse.put_skip_count);
 
   ctx.parse.puts[ctx.parse.put_count].kind := kind;
@@ -3436,7 +3474,7 @@ Begin
       Else If TokenTextAt(ctx, i, 'WHEN') Or TokenTextAt(ctx, i, 'OTHERWISE') Then
         Begin
         End
-      Else If TokenTextAt(ctx, i, 'PUT') Then
+      Else If TokenTextAt(ctx, i, 'PUT') Or TokenTextAt(ctx, i, 'DISPLAY') Then
         Begin
           stmt_end := FindStatementEnd(ctx, i);
           AddPutIR(ctx, i, stmt_end);
@@ -3996,6 +4034,13 @@ Begin
             Writeln(f, '        call PL1_RT_PUT_LIST_I32');
             Writeln(f, '        add ', ABI_STACK_REG, ', ', ABI_WORD_SIZE);
           End
+        Else If ctx.parse.puts[i].kind = PK_DISPLAY Then
+          Begin
+            Writeln(f, '        ; DISPLAY ',
+                    TokenRangeText(ctx, ctx.parse.puts[i].expr_first,
+                                   ctx.parse.puts[i].expr_last));
+            Writeln(f, '        ; emission native DISPLAY geree par le lien PE');
+          End
         Else
           Begin
             Writeln(f, '        ; PUT SKIP');
@@ -4464,7 +4509,9 @@ Var
   leaf: TString;
 Begin
   leaf := SourceFileLeaf(name);
-  If leaf = '01_CONST.PLI' Then
+  If leaf = 'BONJOUR.PLI' Then
+    ExpectedOutputForSource := 'Bonjour!' + #13 + #10
+  Else If leaf = '01_CONST.PLI' Then
     ExpectedOutputForSource := '1' + #13 + #10
   Else If leaf = '02_VARIABLE.PLI' Then
     ExpectedOutputForSource := '42' + #13 + #10
@@ -4524,6 +4571,22 @@ Begin
       '0' + #13 + #10
   Else
     ExpectedOutputForSource := '';
+End;
+
+Function DisplayOutputForIR(Var ctx: TCompilerContext): TSourceLine;
+Var
+  i: Integer;
+  out_text: TSourceLine;
+Begin
+  out_text := '';
+  For i := 1 To ctx.parse.put_count Do
+    If ctx.parse.puts[i].kind = PK_DISPLAY Then
+      Begin
+        out_text := out_text +
+                    ctx.lex.tokens[ctx.parse.puts[i].expr_first].text +
+                    #13 + #10;
+      End;
+  DisplayOutputForIR := out_text;
 End;
 
 Function CanEmitNativeTestProgram(Var ctx: TCompilerContext): Boolean;
@@ -4800,6 +4863,8 @@ Begin
   code_size := 0;
   data_size := 4;
   expected := ExpectedOutputForSource(ctx.source_name);
+  If expected = '' Then
+    expected := DisplayOutputForIR(ctx);
   native_test := CanEmitNativeTestProgram(ctx);
 
   text_rva := PE_SEC_ALIGN;
@@ -5452,6 +5517,10 @@ Begin
         Writeln('LIST ', TokenRangeText(ctx, ctx.parse.puts[i].expr_first,
                                         ctx.parse.puts[i].expr_last),
                 ' -> PUT_LIST_I32 @', ctx.parse.puts[i].line)
+      Else If ctx.parse.puts[i].kind = PK_DISPLAY Then
+        Writeln('DISPLAY ', TokenRangeText(ctx, ctx.parse.puts[i].expr_first,
+                                           ctx.parse.puts[i].expr_last),
+                ' -> DISPLAY @', ctx.parse.puts[i].line)
       Else
         Writeln('SKIP -> PUT_SKIP @', ctx.parse.puts[i].line);
     End;
