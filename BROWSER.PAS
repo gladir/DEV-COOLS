@@ -12923,6 +12923,18 @@ Var
 Begin
  Doc := ParseHTML(HTMLSource);
  If Doc <> Nil Then Begin
+  { HoveredInteractiveNode pointe potentiellement vers un noeud de
+    l'ancien arbre (cellule TD/TH survolee au moment de la navigation -
+    ex: clic sur un lien pendant que la souris survole un onglet) :
+    sans cette remise a Nil, ProcessMouseHover continuait a l'utiliser
+    apres coup pour declencher onmouseout, accedant a de la memoire
+    deja liberee par FreeHTMLNode ci-dessous (EAccessViolation dans
+    GetNodeAttribute). JSEventTargetNode n'est utilise que pendant
+    l'execution synchrone d'un gestionnaire (jamais a travers une
+    navigation), mais on le remet aussi a Nil par precaution. }
+  HoveredInteractiveNode := Nil;
+  JSEventTargetNode := Nil;
+
   { Conserver l'arbre du document (au lieu de le liberer immediatement)
     pour pouvoir le re-rendre sans reparser a chaque defilement, et
     pour que DOMGetElementById/... (acces DOM depuis JS) trouvent un
@@ -14483,15 +14495,20 @@ BEGIN
     onmouseout (ex: un onglet de navigation), exercer le survol puis
     le clic pour detecter toute exception dans DispatchInlineEventHandler
     ou dans les cas particuliers this.className/window.location de
-    JSEvaluate. }
+    JSEvaluate. On navigue aussi PENDANT le survol (avant de deplacer
+    la souris) : c'est ce cas precis - une navigation qui libere
+    l'arbre DOM alors qu'une cellule de l'ancien arbre est encore
+    survolee - qui provoquait un EAccessViolation dans GetNodeAttribute
+    (HoveredInteractiveNode pointait vers de la memoire deja liberee). }
   If InteractiveAreaCount >= 1 Then Begin
    MouseX := (InteractiveAreas[1].X1 + InteractiveAreas[1].X2) Div 2;
    MouseY := (InteractiveAreas[1].Y1 + InteractiveAreas[1].Y2) Div 2;
    ProcessMouseHover;
-   HandleMouseClick(MouseX, MouseY);
+   NavigateTo(CurrentURL);
    MouseX := -100;
    MouseY := -100;
    ProcessMouseHover;
+   HandleMouseClick(MouseX, MouseY);
   End;
   WriteConsoleLine('Build ' + BROWSER_BUILD_ID +
                    ': chargement, rendu et interface termines sans exception.');
