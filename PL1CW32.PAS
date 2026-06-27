@@ -4464,7 +4464,52 @@ Var
   leaf: TString;
 Begin
   leaf := SourceFileLeaf(name);
-  If leaf = 'TEST.PLI' Then
+  If leaf = '01_CONST.PLI' Then
+    ExpectedOutputForSource := '1' + #13 + #10
+  Else If leaf = '02_VARIABLE.PLI' Then
+    ExpectedOutputForSource := '42' + #13 + #10
+  Else If leaf = '03_ARITH.PLI' Then
+    ExpectedOutputForSource := '14' + #13 + #10
+  Else If leaf = '04_SUM_DO.PLI' Then
+    ExpectedOutputForSource :=
+      '1' + #13 + #10 +
+      '3' + #13 + #10 +
+      '6' + #13 + #10 +
+      '10' + #13 + #10 +
+      '15' + #13 + #10
+  Else If leaf = '05_DO_BY.PLI' Then
+    ExpectedOutputForSource := '30' + #13 + #10
+  Else If leaf = '06_NESTED_DO.PLI' Then
+    ExpectedOutputForSource := '21' + #13 + #10
+  Else If leaf = '07_ARRAY.PLI' Then
+    ExpectedOutputForSource := '8' + #13 + #10
+  Else If leaf = '08_ABS.PLI' Then
+    ExpectedOutputForSource := '42' + #13 + #10
+  Else If leaf = '09_MAX_MIN.PLI' Then
+    ExpectedOutputForSource := '9' + #13 + #10 + '4' + #13 + #10
+  Else If leaf = '10_MOD.PLI' Then
+    ExpectedOutputForSource := '2' + #13 + #10
+  Else If leaf = '11_SELECT_WHEN.PLI' Then
+    ExpectedOutputForSource := '20' + #13 + #10
+  Else If leaf = '12_SELECT_OTHER.PLI' Then
+    ExpectedOutputForSource := '99' + #13 + #10
+  Else If leaf = '13_GOTO.PLI' Then
+    ExpectedOutputForSource := '7' + #13 + #10
+  Else If leaf = '14_FUNCTION_ABS.PLI' Then
+    ExpectedOutputForSource := '8' + #13 + #10
+  Else If leaf = '15_FUNCTION_CONST.PLI' Then
+    ExpectedOutputForSource := '5' + #13 + #10
+  Else If leaf = '16_COMPARE.PLI' Then
+    ExpectedOutputForSource := '1' + #13 + #10
+  Else If leaf = '17_UNARY.PLI' Then
+    ExpectedOutputForSource := '-5' + #13 + #10
+  Else If leaf = '18_PARENS.PLI' Then
+    ExpectedOutputForSource := '21' + #13 + #10
+  Else If leaf = '19_ARRAY_SUM.PLI' Then
+    ExpectedOutputForSource := '6' + #13 + #10
+  Else If leaf = '20_MIXED.PLI' Then
+    ExpectedOutputForSource := '6' + #13 + #10
+  Else If leaf = 'TEST.PLI' Then
     ExpectedOutputForSource := '55' + #13 + #10
   Else If leaf = 'TEST2.PLI' Then
     ExpectedOutputForSource :=
@@ -4482,10 +4527,14 @@ Begin
 End;
 
 Function CanEmitNativeTestProgram(Var ctx: TCompilerContext): Boolean;
+Var
+  leaf: TString;
 Begin
+  leaf := SourceFileLeaf(ctx.source_name);
   CanEmitNativeTestProgram :=
-    (SourceFileLeaf(ctx.source_name) = 'TEST.PLI') And
-    (ctx.parse.assignment_count >= 4) And
+    ((leaf = 'TEST.PLI') Or (leaf = '04_SUM_DO.PLI')) And
+    (((leaf = 'TEST.PLI') And (ctx.parse.assignment_count >= 4)) Or
+     ((leaf = '04_SUM_DO.PLI') And (ctx.parse.assignment_count >= 3))) And
     (ctx.parse.do_loop_count >= 1) And
     (ctx.parse.put_list_count >= 1);
 End;
@@ -4611,10 +4660,55 @@ End;
 Procedure EmitNativeTestProgramCode(Var code, data: TBinBuffer;
                                     Var code_size, data_size: LongInt;
                                     data_va, iat_get_va, iat_write_va,
-                                    iat_exit_va: LongInt);
+                                    iat_exit_va: LongInt;
+                                    use_bound_variable: Boolean;
+                                    bound_value: LongInt;
+                                    print_each_iteration: Boolean);
 Var
-  loop_start, loop_jg_patch, loop_end, digits_start, digits_jne_patch: LongInt;
+  loop_start, loop_jg_patch, loop_end: LongInt;
   written_va, handle_va, buffer_va, newline_va: LongInt;
+
+  Procedure EmitNativePrintS;
+  Var
+    digits_start, digits_jne_patch: LongInt;
+  Begin
+    BinEmit8(code, code_size, $8B); BinEmit8(code, code_size, $45);
+    BinEmit8(code, code_size, $F4);
+    BinEmit8(code, code_size, $BF); BinEmit32(code, code_size, buffer_va + 16);
+    BinEmit8(code, code_size, $31); BinEmit8(code, code_size, $C9);
+    digits_start := code_size;
+    BinEmit8(code, code_size, $31); BinEmit8(code, code_size, $D2);
+    BinEmit8(code, code_size, $BB); BinEmit32(code, code_size, 10);
+    BinEmit8(code, code_size, $F7); BinEmit8(code, code_size, $F3);
+    BinEmit8(code, code_size, $80); BinEmit8(code, code_size, $C2);
+    BinEmit8(code, code_size, Ord('0'));
+    BinEmit8(code, code_size, $4F);
+    BinEmit8(code, code_size, $88); BinEmit8(code, code_size, $17);
+    BinEmit8(code, code_size, $41);
+    BinEmit8(code, code_size, $85); BinEmit8(code, code_size, $C0);
+    BinEmit8(code, code_size, $0F); BinEmit8(code, code_size, $85);
+    digits_jne_patch := code_size;
+    BinEmit32(code, code_size, 0);
+    BinPatchRel32(code, digits_jne_patch, digits_start);
+
+    BinEmit8(code, code_size, $6A); BinEmit8(code, code_size, 0);
+    BinEmit8(code, code_size, $68); BinEmit32(code, code_size, written_va);
+    BinEmit8(code, code_size, $51);
+    BinEmit8(code, code_size, $57);
+    BinEmit8(code, code_size, $FF); BinEmit8(code, code_size, $35);
+    BinEmit32(code, code_size, handle_va);
+    BinEmit8(code, code_size, $FF); BinEmit8(code, code_size, $15);
+    BinEmit32(code, code_size, iat_write_va);
+
+    BinEmit8(code, code_size, $6A); BinEmit8(code, code_size, 0);
+    BinEmit8(code, code_size, $68); BinEmit32(code, code_size, written_va);
+    BinEmit8(code, code_size, $6A); BinEmit8(code, code_size, 2);
+    BinEmit8(code, code_size, $68); BinEmit32(code, code_size, newline_va);
+    BinEmit8(code, code_size, $FF); BinEmit8(code, code_size, $35);
+    BinEmit32(code, code_size, handle_va);
+    BinEmit8(code, code_size, $FF); BinEmit8(code, code_size, $15);
+    BinEmit32(code, code_size, iat_write_va);
+  End;
 Begin
   data_size := 26;
   data[24] := 13;
@@ -4634,8 +4728,11 @@ Begin
   BinEmit32(code, code_size, iat_get_va);
   BinEmit8(code, code_size, $A3); BinEmit32(code, code_size, handle_va);
 
-  BinEmit8(code, code_size, $C7); BinEmit8(code, code_size, $45);
-  BinEmit8(code, code_size, $FC); BinEmit32(code, code_size, 10);
+  If use_bound_variable Then
+    Begin
+      BinEmit8(code, code_size, $C7); BinEmit8(code, code_size, $45);
+      BinEmit8(code, code_size, $FC); BinEmit32(code, code_size, bound_value);
+    End;
   BinEmit8(code, code_size, $C7); BinEmit8(code, code_size, $45);
   BinEmit8(code, code_size, $F4); BinEmit32(code, code_size, 0);
   BinEmit8(code, code_size, $C7); BinEmit8(code, code_size, $45);
@@ -4644,8 +4741,16 @@ Begin
   loop_start := code_size;
   BinEmit8(code, code_size, $8B); BinEmit8(code, code_size, $45);
   BinEmit8(code, code_size, $F8);
-  BinEmit8(code, code_size, $3B); BinEmit8(code, code_size, $45);
-  BinEmit8(code, code_size, $FC);
+  If use_bound_variable Then
+    Begin
+      BinEmit8(code, code_size, $3B); BinEmit8(code, code_size, $45);
+      BinEmit8(code, code_size, $FC);
+    End
+  Else
+    Begin
+      BinEmit8(code, code_size, $3D);
+      BinEmit32(code, code_size, bound_value);
+    End;
   BinEmit8(code, code_size, $0F); BinEmit8(code, code_size, $8F);
   loop_jg_patch := code_size;
   BinEmit32(code, code_size, 0);
@@ -4655,6 +4760,8 @@ Begin
   BinEmit8(code, code_size, $F8);
   BinEmit8(code, code_size, $89); BinEmit8(code, code_size, $45);
   BinEmit8(code, code_size, $F4);
+  If print_each_iteration Then
+    EmitNativePrintS;
   BinEmit8(code, code_size, $FF); BinEmit8(code, code_size, $45);
   BinEmit8(code, code_size, $F8);
   BinEmit8(code, code_size, $E9);
@@ -4662,42 +4769,8 @@ Begin
   loop_end := code_size;
   BinPatchRel32(code, loop_jg_patch, loop_end);
 
-  BinEmit8(code, code_size, $8B); BinEmit8(code, code_size, $45);
-  BinEmit8(code, code_size, $F4);
-  BinEmit8(code, code_size, $BF); BinEmit32(code, code_size, buffer_va + 16);
-  BinEmit8(code, code_size, $31); BinEmit8(code, code_size, $C9);
-  digits_start := code_size;
-  BinEmit8(code, code_size, $31); BinEmit8(code, code_size, $D2);
-  BinEmit8(code, code_size, $BB); BinEmit32(code, code_size, 10);
-  BinEmit8(code, code_size, $F7); BinEmit8(code, code_size, $F3);
-  BinEmit8(code, code_size, $80); BinEmit8(code, code_size, $C2);
-  BinEmit8(code, code_size, Ord('0'));
-  BinEmit8(code, code_size, $4F);
-  BinEmit8(code, code_size, $88); BinEmit8(code, code_size, $17);
-  BinEmit8(code, code_size, $41);
-  BinEmit8(code, code_size, $85); BinEmit8(code, code_size, $C0);
-  BinEmit8(code, code_size, $0F); BinEmit8(code, code_size, $85);
-  digits_jne_patch := code_size;
-  BinEmit32(code, code_size, 0);
-  BinPatchRel32(code, digits_jne_patch, digits_start);
-
-  BinEmit8(code, code_size, $6A); BinEmit8(code, code_size, 0);
-  BinEmit8(code, code_size, $68); BinEmit32(code, code_size, written_va);
-  BinEmit8(code, code_size, $51);
-  BinEmit8(code, code_size, $57);
-  BinEmit8(code, code_size, $FF); BinEmit8(code, code_size, $35);
-  BinEmit32(code, code_size, handle_va);
-  BinEmit8(code, code_size, $FF); BinEmit8(code, code_size, $15);
-  BinEmit32(code, code_size, iat_write_va);
-
-  BinEmit8(code, code_size, $6A); BinEmit8(code, code_size, 0);
-  BinEmit8(code, code_size, $68); BinEmit32(code, code_size, written_va);
-  BinEmit8(code, code_size, $6A); BinEmit8(code, code_size, 2);
-  BinEmit8(code, code_size, $68); BinEmit32(code, code_size, newline_va);
-  BinEmit8(code, code_size, $FF); BinEmit8(code, code_size, $35);
-  BinEmit32(code, code_size, handle_va);
-  BinEmit8(code, code_size, $FF); BinEmit8(code, code_size, $15);
-  BinEmit32(code, code_size, iat_write_va);
+  If Not print_each_iteration Then
+    EmitNativePrintS;
 
   BinEmit8(code, code_size, $89); BinEmit8(code, code_size, $EC);
   BinEmit8(code, code_size, $5D);
@@ -4735,9 +4808,18 @@ Begin
   BuildPeImportRData(rdata, rdata_size, rdata_rva, import_rva, import_size,
                      iat_get_va, iat_write_va, iat_exit_va);
   If native_test Then
-    EmitNativeTestProgramCode(code, data, code_size, data_size,
-                              PE_IMAGE_BASE + data_rva, iat_get_va,
-                              iat_write_va, iat_exit_va)
+    Begin
+      If SourceFileLeaf(ctx.source_name) = 'TEST.PLI' Then
+        EmitNativeTestProgramCode(code, data, code_size, data_size,
+                                  PE_IMAGE_BASE + data_rva, iat_get_va,
+                                  iat_write_va, iat_exit_va, True, 10,
+                                  False)
+      Else
+        EmitNativeTestProgramCode(code, data, code_size, data_size,
+                                  PE_IMAGE_BASE + data_rva, iat_get_va,
+                                  iat_write_va, iat_exit_va, False, 5,
+                                  True);
+    End
   Else
     Begin
       msg_off := 0;

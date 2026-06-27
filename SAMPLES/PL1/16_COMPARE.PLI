@@ -1,0 +1,7 @@
+/* Comparaison comme expression entiere */
+MAIN: PROCEDURE OPTIONS(MAIN) ;
+ DECLARE R FIXED BINARY ;
+ R = 2 < 3 ;
+ PUT LIST (R) ;
+ PUT SKIP ;
+END MAIN ;

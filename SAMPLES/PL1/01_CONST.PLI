@@ -1,0 +1,5 @@
+/* Constante entiere simple */
+MAIN: PROCEDURE OPTIONS(MAIN) ;
+ PUT LIST (1) ;
+ PUT SKIP ;
+END MAIN ;

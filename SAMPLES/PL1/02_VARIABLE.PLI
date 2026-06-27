@@ -1,0 +1,7 @@
+/* Affectation et affichage d'une variable */
+MAIN: PROCEDURE OPTIONS(MAIN) ;
+ DECLARE A FIXED BINARY ;
+ A = 42 ;
+ PUT LIST (A) ;
+ PUT SKIP ;
+END MAIN ;

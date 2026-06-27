@@ -1,0 +1,7 @@
+/* Precedence arithmetique */
+MAIN: PROCEDURE OPTIONS(MAIN) ;
+ DECLARE X FIXED BINARY ;
+ X = 2 + 3 * 4 ;
+ PUT LIST (X) ;
+ PUT SKIP ;
+END MAIN ;

@@ -1,0 +1,13 @@
+/* Melange arithmetique, built-ins et boucle */
+MAIN: PROCEDURE OPTIONS(MAIN) ;
+ DECLARE I FIXED BINARY ;
+ DECLARE S FIXED BINARY INITIAL(0) ;
+ DECLARE R FIXED BINARY ;
+ S = 0 ;
+ DO I = 1 TO 4 ;
+  S = S + I * 2 ;
+ END ;
+ R = MAX(MOD(S, 7), ABS(-6)) ;
+ PUT LIST (R) ;
+ PUT SKIP ;
+END MAIN ;

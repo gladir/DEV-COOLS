@@ -1,0 +1,11 @@
+/* Somme avec boucle DO */
+MAIN: PROCEDURE OPTIONS(MAIN) ;
+ DECLARE I FIXED BINARY ;
+ DECLARE S FIXED BINARY INITIAL(0) ;
+ S = 0 ;
+DO I = 1 TO 5 ;
+ S = S + I ;
+ PUT LIST (S) ;
+ PUT SKIP ;
+END ;
+END MAIN ;

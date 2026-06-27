@@ -1,0 +1,7 @@
+/* Moins unaire */
+MAIN: PROCEDURE OPTIONS(MAIN) ;
+ DECLARE R FIXED BINARY ;
+ R = -5 ;
+ PUT LIST (R) ;
+ PUT SKIP ;
+END MAIN ;

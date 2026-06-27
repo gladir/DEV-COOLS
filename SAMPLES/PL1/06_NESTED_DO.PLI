@@ -1,0 +1,14 @@
+/* Boucles DO imbriquees */
+MAIN: PROCEDURE OPTIONS(MAIN) ;
+ DECLARE I FIXED BINARY ;
+ DECLARE J FIXED BINARY ;
+ DECLARE S FIXED BINARY INITIAL(0) ;
+ S = 0 ;
+ DO I = 1 TO 3 ;
+  DO J = 1 TO 2 ;
+   S = S + I + J ;
+  END ;
+ END ;
+ PUT LIST (S) ;
+ PUT SKIP ;
+END MAIN ;

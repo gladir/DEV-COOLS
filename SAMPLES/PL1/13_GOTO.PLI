@@ -1,0 +1,8 @@
+/* GOTO et etiquette interne */
+MAIN: PROCEDURE OPTIONS(MAIN) ;
+ GOTO FIN ;
+ PUT LIST (999) ;
+FIN:
+ PUT LIST (7) ;
+ PUT SKIP ;
+END MAIN ;

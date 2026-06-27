@@ -1,0 +1,11 @@
+/* Tableau statique simple */
+MAIN: PROCEDURE OPTIONS(MAIN) ;
+ DECLARE T (3) FIXED BINARY STATIC ;
+ DECLARE I FIXED BINARY ;
+ T(1) = 7 ;
+ T(2) = 8 ;
+ T(3) = 9 ;
+ I = 2 ;
+ PUT LIST (T(I)) ;
+ PUT SKIP ;
+END MAIN ;
