@@ -621,6 +621,18 @@ Type
   Active: Boolean;           { Zone active ou non }
  End;
 
+ { Zone interactive associee a un noeud HTML portant un attribut
+   onclick/onmouseover/onmouseout (ex: une cellule TD/TH utilisee
+   comme bouton/onglet). Les scripts eux-memes restent dans les
+   attributs du noeud (GetNodeAttribute) ; on ne stocke ici que le
+   rectangle et le noeud, pour aller les relire au moment du clic ou
+   du survol. }
+ InteractiveArea = Record
+  X1, Y1, X2, Y2: Integer;
+  Node: HTMLNodePtr;
+  Active: Boolean;
+ End;
+
  { Contexte de rendu HTML }
  RenderContext = Record
   X: Integer;                { Position X courante }
@@ -932,6 +944,13 @@ Var
  LinkAreas: Array[1..MAX_LINKS] Of LinkArea;
  LinkCount: Integer;
 
+ { Variables pour les zones interactives (onclick/onmouseover/
+   onmouseout sur des elements autres que les liens - actuellement
+   seules les cellules TD/TH les enregistrent, voir RenderTagTD/TH). }
+ InteractiveAreas: Array[1..MAX_LINKS] Of InteractiveArea;
+ InteractiveAreaCount: Integer;
+ HoveredInteractiveNode: HTMLNodePtr; { Noeud actuellement survole, pour declencher onmouseout au depart }
+
  { Variables pour l'interpreteur JavaScript }
  JSCtx: JSContext;            { Contexte d'execution JavaScript }
  JSEnabled: Boolean;          { JavaScript active ou non }
@@ -961,6 +980,12 @@ Var
    taille. Les enveloppes ci-dessous et AddLinkArea deviennent des
    no-op pendant cette passe. }
  TableMeasurePass: Boolean;
+
+ { Noeud DOM sur lequel "this" pointe pendant l'execution d'un
+   gestionnaire d'evenement inline (onclick/onmouseover/onmouseout) -
+   voir JSEvaluate (cas particulier this.className = ...) et
+   DispatchInlineEventHandler. }
+ JSEventTargetNode: HTMLNodePtr;
 
 { Enveloppes des primitives de dessin qui decoupent automatiquement a
   la bande verticale visible (entre la barre d'URL et la barre de
@@ -2174,6 +2199,15 @@ End;
 { Declaration forward pour l'evaluateur }
 Function JSEvaluate(Const Script: String): JSValue; Forward;
 
+{ Declarations forward pour les quelques affectations sur propriete
+  (this.className = ..., window.location = ...) que JSEvaluate
+  reconnait comme cas particuliers : ces procedures/fonctions sont
+  definies bien plus loin dans le fichier (navigation, DOM), mais
+  doivent etre appelables depuis l'evaluateur JS plus haut. }
+Procedure DOMSetAttribute(Node: HTMLNodePtr; AttrName, AttrValue: String); Forward;
+Procedure NavigateTo(URL: String); Forward;
+Function ResolveLinkHref(Const Href: String): String; Forward;
+
 { Appeler une fonction utilisateur }
 Function JSCallUserFunction(FuncIdx: Integer; Args: Array Of JSValue; ArgCount: Integer): JSValue;
 Var
@@ -2845,6 +2879,7 @@ Var
  ThenBlock: String;
  ElseBlock: String;
  CondValue: JSValue;
+ PropToken: JSToken;
 Begin
  JSEvaluate := JSUndefined;
  If Length(Script) = 0 Then Exit;
@@ -3028,13 +3063,59 @@ Begin
    Exit;
   End
 
-  { Expression simple (affectation ou appel de fonction) }
-  Else If Token.TokType = JS_TOK_IDENTIFIER Then Begin
+  { Expression simple (affectation ou appel de fonction). "this" est
+    inclus ici malgre son TokType JS_TOK_KEYWORD (et non IDENTIFIER) -
+    sans quoi this.className = ... tombait dans la branche generique
+    du bas, qui ne sait pas faire d'affectation sur une propriete. }
+  Else If (Token.TokType = JS_TOK_IDENTIFIER) Or
+          ((Token.TokType = JS_TOK_KEYWORD) And (Token.KeywordType = JS_KW_THIS)) Then Begin
    VarName := Token.TokValue;
    Pos := JSSkipComments(Script, Pos);
 
-   { Affectation }
-   If (Pos <= Length(Script)) And (Script[Pos] = '=') And
+   { Affectation sur une propriete (this.className = ..., window.location
+     = ...) : ce mini-interprete n'a pas de veritable systeme d'objets
+     generique (JSValue n'a pas de type "objet"), donc on reconnait ici
+     directement, par leur nom litteral, les deux seules combinaisons
+     objet.propriete realistes dans les gestionnaires HTML
+     onclick/onmouseover/onmouseout de ce navigateur. Toute autre
+     combinaison objet.propriete = ... est evaluee (l'expression a
+     droite est calculee, pour ne pas casser le flux du script) mais
+     n'a aucun effet observable. }
+   If (Pos <= Length(Script)) And (Script[Pos] = '.') Then Begin
+    Inc(Pos);
+    Pos := JSSkipComments(Script, Pos);
+    PropToken := JSGetNextToken(Script, Pos);
+    Pos := JSSkipComments(Script, Pos);
+    If (PropToken.TokType = JS_TOK_IDENTIFIER) And
+       (Pos <= Length(Script)) And (Script[Pos] = '=') And
+       ((Pos >= Length(Script)) Or (Script[Pos+1] <> '=')) Then Begin
+     Inc(Pos);
+     StartPos := Pos;
+     While (Pos <= Length(Script)) And (Script[Pos] <> ';') Do
+      Inc(Pos);
+     Value := JSEvaluate(Copy(Script, StartPos, Pos - StartPos));
+     If (HTMLLowerCase(VarName) = 'this') And
+        (HTMLLowerCase(PropToken.TokValue) = 'classname') Then Begin
+      If JSEventTargetNode <> Nil Then
+       DOMSetAttribute(JSEventTargetNode, 'class', JSValueToString(Value));
+     End
+     Else If (HTMLLowerCase(VarName) = 'window') And
+             (HTMLLowerCase(PropToken.TokValue) = 'location') Then
+      NavigateTo(ResolveLinkHref(JSValueToString(Value)));
+     If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
+    End Else Begin
+     { Pas une affectation reconnue (simple lecture, ou propriete
+       inconnue) : revenir en arriere et laisser le moteur
+       d'expressions evaluer normalement. }
+     Pos := StartPos;
+     JSEvaluate := JSEvalExpression(Script, Pos);
+     Pos := JSSkipComments(Script, Pos);
+     If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
+    End;
+   End
+
+   { Affectation a une variable simple }
+   Else If (Pos <= Length(Script)) And (Script[Pos] = '=') And
       ((Pos >= Length(Script)) Or (Script[Pos+1] <> '=')) Then Begin
     Inc(Pos);
     StartPos := Pos;
@@ -3118,6 +3199,8 @@ Begin
   DOMEventListeners[I].Handler := '';
   DOMEventListeners[I].Element := Nil;
  End;
+ JSEventTargetNode := Nil;
+ HoveredInteractiveNode := Nil;
 End;
 
 { Obtenir un attribut d'un noeud HTML }
@@ -5531,6 +5614,84 @@ Begin
  End;
 End;
 
+{ Procedure pour effacer les zones interactives (onclick/onmouseover/
+  onmouseout) avant un nouveau rendu - voir ClearLinkAreas. }
+Procedure ClearInteractiveAreas;
+Var
+ I: Integer;
+Begin
+ For I := 1 To MAX_LINKS Do Begin
+  InteractiveAreas[I].Active := False;
+  InteractiveAreas[I].Node := Nil;
+ End;
+ InteractiveAreaCount := 0;
+End;
+
+{ Procedure pour enregistrer une zone interactive (cellule TD/TH
+  portant onclick/onmouseover/onmouseout) - voir AddLinkArea. }
+Procedure AddInteractiveArea(X1, Y1, X2, Y2: Integer; Node: HTMLNodePtr);
+Begin
+ If TableMeasurePass Then Exit;
+ If InteractiveAreaCount < MAX_LINKS Then Begin
+  Inc(InteractiveAreaCount);
+  InteractiveAreas[InteractiveAreaCount].X1 := X1;
+  InteractiveAreas[InteractiveAreaCount].Y1 := Y1;
+  InteractiveAreas[InteractiveAreaCount].X2 := X2;
+  InteractiveAreas[InteractiveAreaCount].Y2 := Y2;
+  InteractiveAreas[InteractiveAreaCount].Node := Node;
+  InteractiveAreas[InteractiveAreaCount].Active := True;
+ End;
+End;
+
+{ Fonction pour trouver le noeud interactif a une position donnee
+  (0/Nil si aucun) - voir FindLinkAtPosition. }
+Function FindInteractiveNodeAtPosition(X, Y: Integer): HTMLNodePtr;
+Var
+ I: Integer;
+Begin
+ FindInteractiveNodeAtPosition := Nil;
+ For I := 1 To InteractiveAreaCount Do Begin
+  If InteractiveAreas[I].Active Then Begin
+   If (X >= InteractiveAreas[I].X1) And (X <= InteractiveAreas[I].X2) And
+      (Y >= InteractiveAreas[I].Y1) And (Y <= InteractiveAreas[I].Y2) Then Begin
+    FindInteractiveNodeAtPosition := InteractiveAreas[I].Node;
+    Exit;
+   End;
+  End;
+ End;
+End;
+
+{ Declarations forward : definies plus loin dans le fichier mais
+  necessaires a DispatchInlineEventHandler ci-dessous. }
+Function GetNodeAttribute(Node: HTMLNodePtr; AttrName: String): String; Forward;
+Procedure RescrollPage; Forward;
+
+{ Executer un gestionnaire d'evenement inline (onclick/onmouseover/
+  onmouseout) sur un noeud : lie "this" au noeud pour la duree de
+  l'execution (voir JSEvaluate, cas particulier this.className = ...),
+  puis redessine la page courante sans reparser - necessaire pour
+  qu'un changement de classe CSS via this.className soit visible. }
+Procedure DispatchInlineEventHandler(Node: HTMLNodePtr; Const AttrName: String);
+Var
+ Handler: String;
+ OldEventTargetNode: HTMLNodePtr;
+Begin
+ If Node = Nil Then Exit;
+ Handler := GetNodeAttribute(Node, AttrName);
+ If Length(Handler) = 0 Then Exit;
+ { Certaines pages ecrivent onclick/onmouseover="javascript:...:" par
+   habitude (utile dans un href, inutile - mais frequent - dans un
+   gestionnaire d'evenement) : retirer ce prefixe pour que le script
+   qui suit soit reconnu normalement. }
+ If HTMLLowerCase(Copy(Handler, 1, 11)) = 'javascript:' Then
+  Delete(Handler, 1, 11);
+ OldEventTargetNode := JSEventTargetNode;
+ JSEventTargetNode := Node;
+ JSExecuteScript(Handler);
+ JSEventTargetNode := OldEventTargetNode;
+ RescrollPage;
+End;
+
 { Procedure pour effacer la zone de rendu }
 Procedure ClearRenderArea(BgColorIdx: Integer);
 Begin
@@ -6673,6 +6834,8 @@ Var
  CellStartX, CellStartY: Integer;
  OldMaxX, OldTableCellContentX: Integer;
  CellNaturalHeight: Integer;
+ CellStyle: DOMStyle;
+ CellBgColor, TryBgColor: Integer;
 Begin
  If Not Ctx.InTable Then Begin
   { Si pas dans un tableau, rendre comme un bloc }
@@ -6684,12 +6847,27 @@ Begin
  CellStartX := Ctx.TableCellX;
  CellStartY := Ctx.TableRowY;
 
+ { Couleur de fond de la cellule = background-color CSS de cette
+   cellule (ex: classe "onglet" / "ongletOver" changee dynamiquement
+   par onmouseover/onmouseout), sinon le fond par defaut. Resolue a
+   chaque rendu (donc apres tout changement de classe via
+   this.className) plutot que mise en cache, comme pour le fond de
+   <body> dans RenderHTMLDocument. }
+ CellBgColor := RENDER_BG_COLOR;
+ If CSSEnabled Then Begin
+  CSSResolveCascade(Node, CellStyle);
+  If Length(CellStyle.BackgroundColor) > 0 Then Begin
+   TryBgColor := CSSColorToIndex(CellStyle.BackgroundColor);
+   If TryBgColor >= 0 Then CellBgColor := TryBgColor;
+  End;
+ End;
+
  { Dessiner le fond de la cellule (seulement si visible : sans cette
    verification, les rangees deja defilees au-dessus de la zone de
    rendu continuent de peindre leur fond, recouvrant la barre
    d'adresse et ses boutons un peu plus a chaque defilement). }
  If YInVisibleBand(CellStartY, CellStartY + Ctx.TableRowHeight) Then Begin
-  SetFillStyle(SolidFill, RENDER_BG_COLOR);
+  SetFillStyle(SolidFill, CellBgColor);
   Bar(CellStartX + TABLE_BORDER_WIDTH, CellStartY + TABLE_BORDER_WIDTH,
       CellStartX + Ctx.TableCellWidth, CellStartY + Ctx.TableRowHeight - TABLE_BORDER_WIDTH);
  End;
@@ -6717,6 +6895,16 @@ Begin
  Ctx.MaxX := OldMaxX;
  Ctx.TableCellContentX := OldTableCellContentX;
 
+ { Enregistrer la cellule comme zone interactive si elle porte un
+   gestionnaire onclick/onmouseover/onmouseout (ex: cellule utilisee
+   comme onglet) - voir HandleMouseClick et la detection de survol
+   dans ProcessMouseInput. La rangee a deja sa hauteur finale a ce
+   stade (passe de mesure de RenderTagTR deja effectuee). }
+ If (Length(GetNodeAttribute(Node, 'onclick')) > 0) Or
+    (Length(GetNodeAttribute(Node, 'onmouseover')) > 0) Or
+    (Length(GetNodeAttribute(Node, 'onmouseout')) > 0) Then
+  AddInteractiveArea(CellStartX, CellStartY, CellStartX + Ctx.TableCellWidth, CellStartY + Ctx.TableRowHeight, Node);
+
  { Passer a la cellule suivante }
  Ctx.TableCellX := CellStartX + Ctx.TableCellWidth + TABLE_CELL_SPACING;
  Inc(Ctx.TableColIndex);
@@ -6738,6 +6926,8 @@ Var
  OldMaxX, OldTableCellContentX: Integer;
  OldTextStyle: Byte;
  CellNaturalHeight: Integer;
+ CellStyle: DOMStyle;
+ CellBgColor, TryBgColor: Integer;
 Begin
  If Not Ctx.InTable Then Begin
   { Si pas dans un tableau, rendre comme un bloc en gras }
@@ -6752,10 +6942,21 @@ Begin
  CellStartX := Ctx.TableCellX;
  CellStartY := Ctx.TableRowY;
 
- { Dessiner le fond de la cellule d'en-tete (gris clair), seulement
-   si visible (voir RenderTagTD pour l'explication). }
+ { Couleur de fond = background-color CSS de cette cellule si presente
+   (voir RenderTagTD), sinon le gris clair par defaut des en-tetes. }
+ CellBgColor := TABLE_HEADER_BG;
+ If CSSEnabled Then Begin
+  CSSResolveCascade(Node, CellStyle);
+  If Length(CellStyle.BackgroundColor) > 0 Then Begin
+   TryBgColor := CSSColorToIndex(CellStyle.BackgroundColor);
+   If TryBgColor >= 0 Then CellBgColor := TryBgColor;
+  End;
+ End;
+
+ { Dessiner le fond de la cellule d'en-tete, seulement si visible
+   (voir RenderTagTD pour l'explication). }
  If YInVisibleBand(CellStartY, CellStartY + Ctx.TableRowHeight) Then Begin
-  SetFillStyle(SolidFill, TABLE_HEADER_BG);
+  SetFillStyle(SolidFill, CellBgColor);
   Bar(CellStartX + TABLE_BORDER_WIDTH, CellStartY + TABLE_BORDER_WIDTH,
       CellStartX + Ctx.TableCellWidth, CellStartY + Ctx.TableRowHeight - TABLE_BORDER_WIDTH);
  End;
@@ -6783,6 +6984,13 @@ Begin
  { Restaurer MaxX et TableCellContentX }
  Ctx.MaxX := OldMaxX;
  Ctx.TableCellContentX := OldTableCellContentX;
+
+ { Enregistrer la cellule comme zone interactive si elle porte un
+   gestionnaire onclick/onmouseover/onmouseout (voir RenderTagTD). }
+ If (Length(GetNodeAttribute(Node, 'onclick')) > 0) Or
+    (Length(GetNodeAttribute(Node, 'onmouseover')) > 0) Or
+    (Length(GetNodeAttribute(Node, 'onmouseout')) > 0) Then
+  AddInteractiveArea(CellStartX, CellStartY, CellStartX + Ctx.TableCellWidth, CellStartY + Ctx.TableRowHeight, Node);
 
  { Passer a la cellule suivante }
  Ctx.TableCellX := CellStartX + Ctx.TableCellWidth + TABLE_CELL_SPACING;
@@ -12666,6 +12874,7 @@ Begin
 
  { Reinitialiser les zones de liens }
  ClearLinkAreas;
+ ClearInteractiveAreas;
 
  { Couleur de fond de la page = background-color CSS du <body>, la
    couleur la plus visible de toute la page et pourtant jusqu'ici
@@ -14000,6 +14209,7 @@ End;
 Procedure HandleMouseClick(X, Y: Integer);
 Var
  LinkIdx: Integer;
+ InteractiveNode: HTMLNodePtr;
 Begin
  { Verifier si le clic est dans la barre d'URL }
  If IsClickInURLBar(X, Y) Then Begin
@@ -14047,7 +14257,38 @@ Begin
   LinkIdx := FindLinkAtPosition(X, Y);
   If LinkIdx > 0 Then Begin
    HandleLinkClick(LinkIdx);
+  End
+  Else Begin
+   { Verifier si le clic est sur une zone interactive (ex: cellule TD
+     utilisee comme onglet avec onclick="..."). }
+   InteractiveNode := FindInteractiveNodeAtPosition(X, Y);
+   If InteractiveNode <> Nil Then
+    DispatchInlineEventHandler(InteractiveNode, 'onclick');
   End;
+ End;
+End;
+
+{ Procedure pour detecter les changements de survol (onmouseover/
+  onmouseout) sur les zones interactives - independant des clics,
+  doit etre appele a chaque iteration pour suivre les deplacements de
+  la souris meme sans bouton presse. }
+Procedure ProcessMouseHover;
+Var
+ CurrentNode: HTMLNodePtr;
+Begin
+ If IsInRenderArea(MouseX, MouseY) Then
+  CurrentNode := FindInteractiveNodeAtPosition(MouseX, MouseY)
+ Else
+  CurrentNode := Nil;
+
+ If CurrentNode <> HoveredInteractiveNode Then Begin
+  HideMouse;
+  If HoveredInteractiveNode <> Nil Then
+   DispatchInlineEventHandler(HoveredInteractiveNode, 'onmouseout');
+  If CurrentNode <> Nil Then
+   DispatchInlineEventHandler(CurrentNode, 'onmouseover');
+  HoveredInteractiveNode := CurrentNode;
+  ShowMouse;
  End;
 End;
 
@@ -14058,6 +14299,8 @@ Begin
 
  { Obtenir l'etat actuel de la souris }
  GetMouseState(MouseX, MouseY, MouseButton);
+
+ ProcessMouseHover;
 
  { Detecter un clic (transition de non-presse a presse) }
  If ((MouseButton And MOUSE_LEFT_BUTTON) <> 0) And
@@ -14236,6 +14479,20 @@ BEGIN
     la barre d'adresse a chaque defilement. }
   For ScrollTestI := 1 To 10 Do
    ScrollPageBy(0, RENDER_AREA_HEIGHT);
+  { Si la page contient une cellule TD/TH avec onclick/onmouseover/
+    onmouseout (ex: un onglet de navigation), exercer le survol puis
+    le clic pour detecter toute exception dans DispatchInlineEventHandler
+    ou dans les cas particuliers this.className/window.location de
+    JSEvaluate. }
+  If InteractiveAreaCount >= 1 Then Begin
+   MouseX := (InteractiveAreas[1].X1 + InteractiveAreas[1].X2) Div 2;
+   MouseY := (InteractiveAreas[1].Y1 + InteractiveAreas[1].Y2) Div 2;
+   ProcessMouseHover;
+   HandleMouseClick(MouseX, MouseY);
+   MouseX := -100;
+   MouseY := -100;
+   ProcessMouseHover;
+  End;
   WriteConsoleLine('Build ' + BROWSER_BUILD_ID +
                    ': chargement, rendu et interface termines sans exception.');
   If MouseAvailable Then HideMouse;
