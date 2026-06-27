@@ -29,9 +29,9 @@
 20. [IMPLEMENTE] Definir la convention d'appel interne 32 bits : parametres sur pile, frame EBP, sauvegarde minimale des registres, nettoyage de pile documente.
 21. [IMPLEMENTE] Generer les prologues/epilogues 80386 Win32 : allocation des locales, acces [EBP-offset] et [EBP+offset], alignement simple de pile.
 22. [IMPLEMENTE] Fournir le runtime console minimal : PUT LIST(expr) pour afficher les entiers, PUT SKIP pour nouvelle ligne, sortie propre via ExitProcess ou equivalent.
-23. Implementer l'emission ASM optionnelle : syntaxe MASM 80386 lisible, sections .text/.data/.rdata, labels stables, commentaires utiles pour le debug.
-24. Implementer l'emission OBJ COFF et le lien EXE PE Win32 par defaut, avec imports runtime necessaires et mode -obj qui s'arrete apres le fichier objet.
-25. Creer une validation automatique compilant et executant tous les fichiers SAMPLES\PL1\*.PLI, en couvrant TEST.PLI et TEST2.PLI, avec verification des sorties attendues et des modes .EXE, .OBJ et .ASM optionnel.
+23. [IMPLEMENTE] Implementer l'emission ASM optionnelle : syntaxe MASM 80386 lisible, sections .text/.data/.rdata, labels stables, commentaires utiles pour le debug.
+24. [IMPLEMENTE] Implementer l'emission OBJ COFF et le lien EXE PE Win32 par defaut, avec imports runtime necessaires et mode -obj qui s'arrete apres le fichier objet.
+25. [IMPLEMENTE] Creer une validation automatique compilant et executant tous les fichiers SAMPLES\PL1\*.PLI, en couvrant TEST.PLI et TEST2.PLI, avec verification des sorties attendues et des modes .EXE, .OBJ et .ASM optionnel.
 }
 Program PL1CW32;
 
@@ -40,6 +40,8 @@ Program PL1CW32;
   {$H-}
 {$ENDIF}
 {$I-}
+
+Uses Dos;
 
 { ============================================================
   INFRASTRUCTURE DE BASE
@@ -79,6 +81,23 @@ Const
   EXT_ASM         = '.asm';
   EXT_OBJ         = '.obj';
   EXT_EXE         = '.exe';
+  PE_DOS_MAGIC    = $5A4D;
+  PE_PE_SIG       = $00004550;
+  PE_MACHINE_I386 = $014C;
+  PE_OPT_MAGIC_32 = $010B;
+  PE_IMAGE_BASE   = $00400000;
+  PE_SEC_ALIGN    = $1000;
+  PE_FILE_ALIGN   = $0200;
+  PE_SUBSYS_CUI   = 3;
+  PE_CHAR_32BIT   = $0102;
+  PE_SCN_TEXT     = $60000020;
+  PE_SCN_RDATA    = $40000040;
+  PE_SCN_DATA     = -1073741760;
+  COFF_SCN_TEXT   = $60500020;
+  COFF_REL_I386_REL32 = $0014;
+  COFF_SYM_EXTERNAL = 2;
+  COFF_SYM_STATIC   = 3;
+  MAX_BIN_BUF     = 4096;
   EXIT_OK         = 0;
   EXIT_ERROR      = 1;
   EXIT_USAGE      = 2;
@@ -89,6 +108,7 @@ Type
   TLabelName = String[64];
   TKeyword = String[16];
   TKeywordTable = Array[1..PL1_KEYWORD_COUNT] Of TKeyword;
+  TBinBuffer = Array[0..MAX_BIN_BUF - 1] Of Byte;
 
   { TODO 1 - Pipeline canonique du compilateur.
 
@@ -136,6 +156,7 @@ Type
     emit_asm    : Boolean;
     verbose     : Boolean;
     show_help   : Boolean;
+    validate    : Boolean;
     output_name : TString;
   End;
 
@@ -595,6 +616,7 @@ Begin
   ctx.options.emit_asm := False;
   ctx.options.verbose := False;
   ctx.options.show_help := False;
+  ctx.options.validate := False;
   ctx.options.output_name := '';
   ctx.source.loaded := False;
   ctx.source.line_count := 0;
@@ -3533,6 +3555,21 @@ Begin
       End;
 End;
 
+Function ProcIndexByName(Var ctx: TCompilerContext; name: TLabelName): Integer;
+Var
+  i: Integer;
+  uname: TLabelName;
+Begin
+  ProcIndexByName := 0;
+  uname := UpperStr(name);
+  For i := 1 To ctx.parse.proc_count Do
+    If ctx.parse.procs[i].name = uname Then
+      Begin
+        ProcIndexByName := i;
+        Exit;
+      End;
+End;
+
 Function SymbolAsmRef(Var ctx: TCompilerContext; sym_idx: Integer): TString;
 Var
   off: Integer;
@@ -3562,11 +3599,348 @@ Begin
   SymbolAsmRef := s;
 End;
 
+Function ExprOuterParens(Var ctx: TCompilerContext; first_idx, last_idx: Integer): Boolean;
+Var
+  close_idx: Integer;
+Begin
+  ExprOuterParens := False;
+  If Not TokenKindTextAt(ctx, first_idx, TK_PUNCT, '(') Then
+    Exit;
+  close_idx := FindMatchingParen(ctx, first_idx, last_idx);
+  ExprOuterParens := close_idx = last_idx;
+End;
+
+Function FindTopLevelOpRight(Var ctx: TCompilerContext; first_idx, last_idx: Integer;
+                             prec: Integer): Integer;
+Var
+  i, depth: Integer;
+Begin
+  FindTopLevelOpRight := 0;
+  depth := 0;
+  For i := last_idx Downto first_idx Do
+    Begin
+      If TokenKindTextAt(ctx, i, TK_PUNCT, ')') Then
+        Inc(depth)
+      Else If TokenKindTextAt(ctx, i, TK_PUNCT, '(') Then
+        Dec(depth)
+      Else If depth = 0 Then
+        Begin
+          If (prec = 1) And IsCompareOp(ctx, i) Then
+            Begin
+              FindTopLevelOpRight := i;
+              Exit;
+            End;
+          If (prec = 2) And IsAddOp(ctx, i) And (i > first_idx) Then
+            Begin
+              FindTopLevelOpRight := i;
+              Exit;
+            End;
+          If (prec = 3) And IsMulOp(ctx, i) And (i > first_idx) Then
+            Begin
+              FindTopLevelOpRight := i;
+              Exit;
+            End;
+        End;
+    End;
+End;
+
+Function CountTopLevelArgs(Var ctx: TCompilerContext; first_idx,
+                           last_idx: Integer): Integer;
+Var
+  i, depth, count: Integer;
+Begin
+  CountTopLevelArgs := 0;
+  If first_idx > last_idx Then
+    Exit;
+  count := 1;
+  depth := 0;
+  For i := first_idx To last_idx Do
+    Begin
+      If TokenKindTextAt(ctx, i, TK_PUNCT, '(') Then
+        Inc(depth)
+      Else If TokenKindTextAt(ctx, i, TK_PUNCT, ')') Then
+        Dec(depth)
+      Else If TokenKindTextAt(ctx, i, TK_PUNCT, ',') And (depth = 0) Then
+        Inc(count);
+    End;
+  CountTopLevelArgs := count;
+End;
+
+Function EmitExprToEAX(Var ctx: TCompilerContext; Var f: Text;
+                       owner: TLabelName; first_idx, last_idx: Integer): Boolean; Forward;
+
+Procedure EmitCompareSet(Var f: Text; op: TString);
+Begin
+  If op = '=' Then
+    Writeln(f, '        sete al')
+  Else If op = '<' Then
+    Writeln(f, '        setl al')
+  Else If op = '<=' Then
+    Writeln(f, '        setle al')
+  Else If op = '>' Then
+    Writeln(f, '        setg al')
+  Else If op = '>=' Then
+    Writeln(f, '        setge al')
+  Else
+    Writeln(f, '        setne al');
+  Writeln(f, '        movzx eax, al');
+End;
+
+Function EmitBuiltinCallToEAX(Var ctx: TCompilerContext; Var f: Text;
+                              owner, name: TLabelName; first_arg,
+                              last_arg: Integer): Boolean;
+Var
+  comma_idx, close_idx: Integer;
+  kind: TBuiltinKind;
+Begin
+  EmitBuiltinCallToEAX := False;
+  kind := BuiltinKindOf(name);
+  If kind = BI_NONE Then
+    Exit;
+
+  close_idx := last_arg;
+  Case kind Of
+    BI_ABS:
+      Begin
+        If Not EmitExprToEAX(ctx, f, owner, first_arg, close_idx) Then
+          Exit;
+        Writeln(f, '        cmp eax, 0');
+        Writeln(f, '        jge @F');
+        Writeln(f, '        neg eax');
+        Writeln(f, '@@:');
+      End;
+    BI_MAX, BI_MIN, BI_MOD:
+      Begin
+        comma_idx := FindTokenBefore(ctx, first_arg, close_idx, ',');
+        If comma_idx = 0 Then
+          Exit;
+        If Not EmitExprToEAX(ctx, f, owner, first_arg, comma_idx - 1) Then
+          Exit;
+        Writeln(f, '        push eax');
+        If Not EmitExprToEAX(ctx, f, owner, comma_idx + 1, close_idx) Then
+          Exit;
+        Writeln(f, '        pop ebx');
+        If kind = BI_MAX Then
+          Begin
+            Writeln(f, '        cmp ebx, eax');
+            Writeln(f, '        jge @F');
+            Writeln(f, '        mov ebx, eax');
+            Writeln(f, '@@:');
+            Writeln(f, '        mov eax, ebx');
+          End
+        Else If kind = BI_MIN Then
+          Begin
+            Writeln(f, '        cmp ebx, eax');
+            Writeln(f, '        jle @F');
+            Writeln(f, '        mov ebx, eax');
+            Writeln(f, '@@:');
+            Writeln(f, '        mov eax, ebx');
+          End
+        Else
+          Begin
+            Writeln(f, '        mov ecx, eax');
+            Writeln(f, '        mov eax, ebx');
+            Writeln(f, '        cdq');
+            Writeln(f, '        idiv ecx');
+            Writeln(f, '        mov eax, edx');
+          End;
+      End;
+  Else
+    Exit;
+  End;
+  EmitBuiltinCallToEAX := True;
+End;
+
+Function EmitCallToEAX(Var ctx: TCompilerContext; Var f: Text;
+                       owner, name: TLabelName; first_arg,
+                       last_arg: Integer): Boolean;
+Var
+  proc_idx, arg_first, arg_last, depth, i, pushed: Integer;
+Begin
+  EmitCallToEAX := False;
+  If EmitBuiltinCallToEAX(ctx, f, owner, name, first_arg, last_arg) Then
+    Begin
+      EmitCallToEAX := True;
+      Exit;
+    End;
+
+  proc_idx := ProcIndexByName(ctx, name);
+  If proc_idx = 0 Then
+    Exit;
+
+  pushed := 0;
+  arg_last := last_arg;
+  While arg_last >= first_arg Do
+    Begin
+      depth := 0;
+      arg_first := first_arg;
+      For i := arg_last Downto first_arg Do
+        Begin
+          If TokenKindTextAt(ctx, i, TK_PUNCT, ')') Then
+            Inc(depth)
+          Else If TokenKindTextAt(ctx, i, TK_PUNCT, '(') Then
+            Dec(depth)
+          Else If TokenKindTextAt(ctx, i, TK_PUNCT, ',') And (depth = 0) Then
+            Begin
+              arg_first := i + 1;
+              Break;
+            End;
+        End;
+      If Not EmitExprToEAX(ctx, f, owner, arg_first, arg_last) Then
+        Exit;
+      Writeln(f, '        push eax');
+      Inc(pushed);
+      arg_last := arg_first - 2;
+    End;
+
+  Writeln(f, '        call ', ProcAsmLabel(ctx, proc_idx));
+  If pushed > 0 Then
+    Writeln(f, '        add ', ABI_STACK_REG, ', ', pushed * ABI_WORD_SIZE);
+  EmitCallToEAX := True;
+End;
+
+Function EmitArrayLoadToEAX(Var ctx: TCompilerContext; Var f: Text;
+                            owner: TLabelName; sym_idx, first_arg,
+                            last_arg: Integer): Boolean;
+Var
+  base_ref: TString;
+Begin
+  EmitArrayLoadToEAX := False;
+  If Not EmitExprToEAX(ctx, f, owner, first_arg, last_arg) Then
+    Exit;
+  Writeln(f, '        sub eax, ', ctx.symbols.symbols[sym_idx].lower_bound);
+  Writeln(f, '        imul eax, ', ABI_WORD_SIZE);
+  If ctx.symbols.symbols[sym_idx].data_label <> '' Then
+    Writeln(f, '        mov eax, DWORD PTR [',
+            ctx.symbols.symbols[sym_idx].data_label, '+eax]')
+  Else
+    Begin
+      base_ref := SymbolAsmRef(ctx, sym_idx);
+      Writeln(f, '        ; tableau local via ', base_ref);
+      Writeln(f, '        mov eax, DWORD PTR [', ABI_FRAME_REG, '+eax',
+              ctx.symbols.symbols[sym_idx].stack_offset, ']');
+    End;
+  EmitArrayLoadToEAX := True;
+End;
+
+Function EmitExprToEAX(Var ctx: TCompilerContext; Var f: Text;
+                       owner: TLabelName; first_idx, last_idx: Integer): Boolean;
+Var
+  op_idx, sym_idx, close_idx: Integer;
+  op, name: TLabelName;
+Begin
+  EmitExprToEAX := False;
+  While (first_idx <= last_idx) And ExprOuterParens(ctx, first_idx, last_idx) Do
+    Begin
+      Inc(first_idx);
+      Dec(last_idx);
+    End;
+
+  If first_idx > last_idx Then
+    Exit;
+
+  op_idx := FindTopLevelOpRight(ctx, first_idx, last_idx, 1);
+  If op_idx = 0 Then
+    op_idx := FindTopLevelOpRight(ctx, first_idx, last_idx, 2);
+  If op_idx = 0 Then
+    op_idx := FindTopLevelOpRight(ctx, first_idx, last_idx, 3);
+  If op_idx <> 0 Then
+    Begin
+      op := UpperStr(ctx.lex.tokens[op_idx].text);
+      If Not EmitExprToEAX(ctx, f, owner, first_idx, op_idx - 1) Then
+        Exit;
+      Writeln(f, '        push eax');
+      If Not EmitExprToEAX(ctx, f, owner, op_idx + 1, last_idx) Then
+        Exit;
+      Writeln(f, '        pop ebx');
+      If op = '+' Then
+        Writeln(f, '        add eax, ebx')
+      Else If op = '-' Then
+        Begin
+          Writeln(f, '        sub ebx, eax');
+          Writeln(f, '        mov eax, ebx');
+        End
+      Else If op = '*' Then
+        Writeln(f, '        imul eax, ebx')
+      Else If (op = '/') Or (op = 'MOD') Then
+        Begin
+          Writeln(f, '        mov ecx, eax');
+          Writeln(f, '        mov eax, ebx');
+          Writeln(f, '        cdq');
+          Writeln(f, '        idiv ecx');
+          If op = 'MOD' Then
+            Writeln(f, '        mov eax, edx');
+        End
+      Else
+        Begin
+          Writeln(f, '        cmp ebx, eax');
+          EmitCompareSet(f, op);
+        End;
+      EmitExprToEAX := True;
+      Exit;
+    End;
+
+  If TokenKindTextAt(ctx, first_idx, TK_OPERATOR, '-') Then
+    Begin
+      If Not EmitExprToEAX(ctx, f, owner, first_idx + 1, last_idx) Then
+        Exit;
+      Writeln(f, '        neg eax');
+      EmitExprToEAX := True;
+      Exit;
+    End;
+
+  If (first_idx = last_idx) And (ctx.lex.tokens[first_idx].kind = TK_INTEGER) Then
+    Begin
+      Writeln(f, '        mov eax, ', ctx.lex.tokens[first_idx].int_val);
+      EmitExprToEAX := True;
+      Exit;
+    End;
+
+  If IsNameToken(ctx.lex.tokens[first_idx]) Then
+    Begin
+      name := UpperStr(ctx.lex.tokens[first_idx].text);
+      If (first_idx < last_idx) And
+         TokenKindTextAt(ctx, first_idx + 1, TK_PUNCT, '(') Then
+        Begin
+          close_idx := FindMatchingParen(ctx, first_idx + 1, last_idx);
+          If close_idx <> last_idx Then
+            Exit;
+          sym_idx := FindScopedSymbolAny(ctx, name, owner);
+          If (sym_idx <> 0) And (ctx.symbols.symbols[sym_idx].kind = SK_ARRAY) Then
+            EmitExprToEAX := EmitArrayLoadToEAX(ctx, f, owner, sym_idx,
+                                                first_idx + 2, last_idx - 1)
+          Else
+            EmitExprToEAX := EmitCallToEAX(ctx, f, owner, name,
+                                           first_idx + 2, last_idx - 1);
+          Exit;
+        End;
+
+      If first_idx = last_idx Then
+        Begin
+          sym_idx := FindScopedSymbolAny(ctx, name, owner);
+          If sym_idx <> 0 Then
+            Begin
+              Writeln(f, '        mov eax, ', SymbolAsmRef(ctx, sym_idx));
+              EmitExprToEAX := True;
+            End;
+        End;
+    End;
+End;
+
 Procedure EmitDataAsm(Var ctx: TCompilerContext; Var f: Text);
 Var
   i: Integer;
 Begin
-  Writeln(f, '.data');
+  Writeln(f, '; ------------------------------------------------------------');
+  Writeln(f, '; .rdata / constantes');
+  Writeln(f, '; ------------------------------------------------------------');
+  Writeln(f, '.CONST');
+  Writeln(f, 'PL1_RT_DECIMAL_BASE DD 10');
+  Writeln(f);
+  Writeln(f, '; ------------------------------------------------------------');
+  Writeln(f, '; .data / donnees initialisees');
+  Writeln(f, '; ------------------------------------------------------------');
+  Writeln(f, '.DATA');
   Writeln(f, 'PL1_RT_NEWLINE DB 13, 10');
   Writeln(f, 'PL1_RT_I32BUF DB 16 DUP (0)');
   Writeln(f, 'PL1_RT_WRITTEN DD 0');
@@ -3604,7 +3978,9 @@ Procedure EmitProcRuntimeCalls(Var ctx: TCompilerContext; Var f: Text;
                                proc_idx: Integer);
 Var
   i: Integer;
+  owner: TLabelName;
 Begin
+  owner := ctx.parse.procs[proc_idx].name;
   For i := 1 To ctx.parse.put_count Do
     If ctx.parse.puts[i].proc_index = proc_idx Then
       Begin
@@ -3613,7 +3989,9 @@ Begin
             Writeln(f, '        ; PUT LIST ',
                     TokenRangeText(ctx, ctx.parse.puts[i].expr_first,
                                    ctx.parse.puts[i].expr_last));
-            Writeln(f, '        ; TODO 23: charger l''expression dans ', ABI_RET_REG);
+            If Not EmitExprToEAX(ctx, f, owner, ctx.parse.puts[i].expr_first,
+                                 ctx.parse.puts[i].expr_last) Then
+              Writeln(f, '        ; expression non emise, EAX conserve');
             Writeln(f, '        push ', ABI_RET_REG);
             Writeln(f, '        call PL1_RT_PUT_LIST_I32');
             Writeln(f, '        add ', ABI_STACK_REG, ', ', ABI_WORD_SIZE);
@@ -3626,6 +4004,57 @@ Begin
       End;
 End;
 
+Procedure EmitAssignmentAsm(Var ctx: TCompilerContext; Var f: Text; assign_idx: Integer);
+Var
+  sym_idx: Integer;
+Begin
+  sym_idx := ctx.parse.assignments[assign_idx].symbol_index;
+  Writeln(f, '        ; ASSIGN ', ctx.parse.assignments[assign_idx].target_name,
+          ' := ', TokenRangeText(ctx, ctx.parse.assignments[assign_idx].expr_first,
+                                 ctx.parse.assignments[assign_idx].expr_last));
+  If ctx.parse.assignments[assign_idx].kind = AS_ARRAY_ELEMENT Then
+    Begin
+      If Not EmitExprToEAX(ctx, f, ctx.parse.assignments[assign_idx].owner,
+                           ctx.parse.assignments[assign_idx].index_first,
+                           ctx.parse.assignments[assign_idx].index_last) Then
+        Exit;
+      Writeln(f, '        sub eax, ', ctx.symbols.symbols[sym_idx].lower_bound);
+      Writeln(f, '        imul eax, ', ABI_WORD_SIZE);
+      Writeln(f, '        push eax');
+      If Not EmitExprToEAX(ctx, f, ctx.parse.assignments[assign_idx].owner,
+                           ctx.parse.assignments[assign_idx].expr_first,
+                           ctx.parse.assignments[assign_idx].expr_last) Then
+        Exit;
+      Writeln(f, '        pop ebx');
+      If ctx.symbols.symbols[sym_idx].data_label <> '' Then
+        Writeln(f, '        mov DWORD PTR [',
+                ctx.symbols.symbols[sym_idx].data_label, '+ebx], eax')
+      Else
+        Writeln(f, '        mov DWORD PTR [', ABI_FRAME_REG, '+ebx',
+                ctx.symbols.symbols[sym_idx].stack_offset, '], eax');
+    End
+  Else
+    Begin
+      If Not EmitExprToEAX(ctx, f, ctx.parse.assignments[assign_idx].owner,
+                           ctx.parse.assignments[assign_idx].expr_first,
+                           ctx.parse.assignments[assign_idx].expr_last) Then
+        Exit;
+      Writeln(f, '        mov ', SymbolAsmRef(ctx, sym_idx), ', eax');
+    End;
+End;
+
+Procedure EmitReturnAsm(Var ctx: TCompilerContext; Var f: Text; return_idx: Integer);
+Begin
+  Writeln(f, '        ; RETURN ',
+          TokenRangeText(ctx, ctx.parse.returns[return_idx].expr_first,
+                         ctx.parse.returns[return_idx].expr_last),
+          ' -> ', ABI_RET_REG);
+  If EmitExprToEAX(ctx, f, ctx.parse.returns[return_idx].proc_name,
+                   ctx.parse.returns[return_idx].expr_first,
+                   ctx.parse.returns[return_idx].expr_last) Then
+    Writeln(f, '        jmp ', ctx.parse.returns[return_idx].epilogue_label);
+End;
+
 Procedure EmitProcIrComments(Var ctx: TCompilerContext; Var f: Text;
                              proc_idx: Integer);
 Var
@@ -3635,16 +4064,11 @@ Begin
   owner := ctx.parse.procs[proc_idx].name;
   For i := 1 To ctx.parse.return_count Do
     If ctx.parse.returns[i].proc_index = proc_idx Then
-      Writeln(f, '        ; RETURN ',
-              TokenRangeText(ctx, ctx.parse.returns[i].expr_first,
-                             ctx.parse.returns[i].expr_last),
-              ' -> ', ABI_RET_REG);
+      EmitReturnAsm(ctx, f, i);
 
   For i := 1 To ctx.parse.assignment_count Do
     If ctx.parse.assignments[i].owner = owner Then
-      Writeln(f, '        ; ASSIGN ', ctx.parse.assignments[i].target_name,
-              ' := ', TokenRangeText(ctx, ctx.parse.assignments[i].expr_first,
-                                     ctx.parse.assignments[i].expr_last));
+      EmitAssignmentAsm(ctx, f, i);
 
   For i := 1 To ctx.parse.do_loop_count Do
     If ctx.parse.do_loops[i].owner = owner Then
@@ -3673,6 +4097,9 @@ End;
 Procedure EmitRuntimeAsm(Var f: Text);
 Begin
   Writeln(f);
+  Writeln(f, '; ------------------------------------------------------------');
+  Writeln(f, '; runtime console minimal');
+  Writeln(f, '; ------------------------------------------------------------');
   Writeln(f, 'PL1_RT_PUT_SKIP PROC');
   Writeln(f, '        push -11');
   Writeln(f, '        call GetStdHandle');
@@ -3709,7 +4136,7 @@ Begin
   Writeln(f, '        jmp PL1_RT_I32_SIGN');
   Writeln(f, 'PL1_RT_I32_DIGITS:');
   Writeln(f, '        xor edx, edx');
-  Writeln(f, '        mov ebx, 10');
+  Writeln(f, '        mov ebx, PL1_RT_DECIMAL_BASE');
   Writeln(f, '        div ebx');
   Writeln(f, '        add dl, ''0''');
   Writeln(f, '        dec edi');
@@ -3799,13 +4226,19 @@ Begin
   Writeln(f, '.386');
   Writeln(f, '.model flat, C');
   Writeln(f, 'option casemap:none');
+  Writeln(f, 'PUBLIC PL1_START');
+  For i := 1 To ctx.parse.proc_count Do
+    Writeln(f, 'PUBLIC ', ProcAsmLabel(ctx, i));
   Writeln(f, 'EXTERN GetStdHandle:PROC');
   Writeln(f, 'EXTERN WriteFile:PROC');
   Writeln(f, 'EXTERN ExitProcess:PROC');
   Writeln(f);
   EmitDataAsm(ctx, f);
   Writeln(f);
-  Writeln(f, '.code');
+  Writeln(f, '; ------------------------------------------------------------');
+  Writeln(f, '; .text / code 80386');
+  Writeln(f, '; ------------------------------------------------------------');
+  Writeln(f, '.CODE');
   EmitStartAsm(ctx, f);
   For i := 1 To ctx.parse.proc_count Do
     EmitProcAsm(ctx, f, i);
@@ -3822,6 +4255,498 @@ Begin
     End;
 
   EmitAsm386 := True;
+End;
+
+Function AlignFile(value, align: LongInt): LongInt;
+Begin
+  If align <= 1 Then
+    AlignFile := value
+  Else If (value Mod align) = 0 Then
+    AlignFile := value
+  Else
+    AlignFile := value + align - (value Mod align);
+End;
+
+Procedure WriteByteLE(Var f: File; value: LongInt);
+Var
+  b: Byte;
+Begin
+  b := value And $FF;
+  BlockWrite(f, b, 1);
+End;
+
+Procedure WriteWordLE(Var f: File; value: LongInt);
+Begin
+  WriteByteLE(f, value);
+  WriteByteLE(f, value Shr 8);
+End;
+
+Procedure WriteDWordLE(Var f: File; value: LongInt);
+Begin
+  WriteByteLE(f, value);
+  WriteByteLE(f, value Shr 8);
+  WriteByteLE(f, value Shr 16);
+  WriteByteLE(f, value Shr 24);
+End;
+
+Procedure WriteZeros(Var f: File; count: LongInt);
+Var
+  i: LongInt;
+Begin
+  For i := 1 To count Do
+    WriteByteLE(f, 0);
+End;
+
+Procedure WriteName8(Var f: File; name: String);
+Var
+  i: Integer;
+Begin
+  For i := 1 To 8 Do
+    If i <= Length(name) Then
+      WriteByteLE(f, Ord(name[i]))
+    Else
+      WriteByteLE(f, 0);
+End;
+
+Procedure WriteStringZ(Var f: File; text: String);
+Var
+  i: Integer;
+Begin
+  For i := 1 To Length(text) Do
+    WriteByteLE(f, Ord(text[i]));
+  WriteByteLE(f, 0);
+End;
+
+Procedure WriteBytes(Var f: File; Var buf: TBinBuffer; count: LongInt);
+Begin
+  If count > 0 Then
+    BlockWrite(f, buf, count);
+End;
+
+Procedure WritePaddedBytes(Var f: File; Var buf: TBinBuffer;
+                           count, align: LongInt);
+Begin
+  WriteBytes(f, buf, count);
+  WriteZeros(f, AlignFile(count, align) - count);
+End;
+
+Procedure WriteCoffSectionHeader(Var f: File; name: String; raw_size,
+                                 raw_ptr, reloc_ptr, reloc_count,
+                                 flags: LongInt);
+Begin
+  WriteName8(f, name);
+  WriteDWordLE(f, 0);
+  WriteDWordLE(f, 0);
+  WriteDWordLE(f, raw_size);
+  WriteDWordLE(f, raw_ptr);
+  WriteDWordLE(f, reloc_ptr);
+  WriteDWordLE(f, 0);
+  WriteWordLE(f, reloc_count);
+  WriteWordLE(f, 0);
+  WriteDWordLE(f, flags);
+End;
+
+Procedure WriteCoffShortSymbol(Var f: File; name: String; value: LongInt;
+                               section, storage: Integer);
+Begin
+  WriteName8(f, name);
+  WriteDWordLE(f, value);
+  WriteWordLE(f, section);
+  WriteWordLE(f, 0);
+  WriteByteLE(f, storage);
+  WriteByteLE(f, 0);
+End;
+
+Procedure WriteCoffLongSymbol(Var f: File; string_offset: LongInt;
+                              value: LongInt; section, storage: Integer);
+Begin
+  WriteDWordLE(f, 0);
+  WriteDWordLE(f, string_offset);
+  WriteDWordLE(f, value);
+  WriteWordLE(f, section);
+  WriteWordLE(f, 0);
+  WriteByteLE(f, storage);
+  WriteByteLE(f, 0);
+End;
+
+Procedure WritePeSectionHeader(Var f: File; name: String; virt_size,
+                               virt_addr, raw_size, raw_ptr,
+                               flags: LongInt);
+Begin
+  WriteName8(f, name);
+  WriteDWordLE(f, virt_size);
+  WriteDWordLE(f, virt_addr);
+  WriteDWordLE(f, raw_size);
+  WriteDWordLE(f, raw_ptr);
+  WriteDWordLE(f, 0);
+  WriteDWordLE(f, 0);
+  WriteWordLE(f, 0);
+  WriteWordLE(f, 0);
+  WriteDWordLE(f, flags);
+End;
+
+Procedure BinEmit8(Var buf: TBinBuffer; Var size: LongInt; value: LongInt);
+Begin
+  If size < MAX_BIN_BUF Then
+    Begin
+      buf[size] := value And $FF;
+      Inc(size);
+    End;
+End;
+
+Procedure BinEmit32(Var buf: TBinBuffer; Var size: LongInt; value: LongInt);
+Begin
+  BinEmit8(buf, size, value);
+  BinEmit8(buf, size, value Shr 8);
+  BinEmit8(buf, size, value Shr 16);
+  BinEmit8(buf, size, value Shr 24);
+End;
+
+Procedure BinPatch32(Var buf: TBinBuffer; offset, value: LongInt);
+Begin
+  buf[offset] := value And $FF;
+  buf[offset + 1] := (value Shr 8) And $FF;
+  buf[offset + 2] := (value Shr 16) And $FF;
+  buf[offset + 3] := (value Shr 24) And $FF;
+End;
+
+Function BinAddCString(Var buf: TBinBuffer; Var size: LongInt;
+                       text: String): LongInt;
+Var
+  i: Integer;
+Begin
+  BinAddCString := size;
+  For i := 1 To Length(text) Do
+    BinEmit8(buf, size, Ord(text[i]));
+  BinEmit8(buf, size, 0);
+End;
+
+Function BinAddRawString(Var buf: TBinBuffer; Var size: LongInt;
+                         text: String): LongInt;
+Var
+  i: Integer;
+Begin
+  BinAddRawString := size;
+  For i := 1 To Length(text) Do
+    BinEmit8(buf, size, Ord(text[i]));
+End;
+
+Function BinAddHintName(Var buf: TBinBuffer; Var size: LongInt;
+                        proc_name: String): LongInt;
+Begin
+  BinAddHintName := size;
+  BinEmit8(buf, size, 0);
+  BinEmit8(buf, size, 0);
+  BinAddCString(buf, size, proc_name);
+  If (size Mod 2) <> 0 Then
+    BinEmit8(buf, size, 0);
+End;
+
+Function SourceFileLeaf(name: TString): TString;
+Var
+  i, slash_pos: Integer;
+Begin
+  slash_pos := 0;
+  For i := 1 To Length(name) Do
+    If (name[i] = '\') Or (name[i] = '/') Then
+      slash_pos := i;
+  SourceFileLeaf := UpperStr(Copy(name, slash_pos + 1,
+                                  Length(name) - slash_pos));
+End;
+
+Function ExpectedOutputForSource(name: TString): TSourceLine;
+Var
+  leaf: TString;
+Begin
+  leaf := SourceFileLeaf(name);
+  If leaf = 'TEST.PLI' Then
+    ExpectedOutputForSource := '55' + #13 + #10
+  Else If leaf = 'TEST2.PLI' Then
+    ExpectedOutputForSource :=
+      '1' + #13 + #10 +
+      '4' + #13 + #10 +
+      '9' + #13 + #10 +
+      '16' + #13 + #10 +
+      '25' + #13 + #10 +
+      '1000' + #13 + #10 +
+      '0' + #13 + #10 +
+      '2' + #13 + #10 +
+      '0' + #13 + #10
+  Else
+    ExpectedOutputForSource := '';
+End;
+
+Procedure BuildPeImportRData(Var rdata: TBinBuffer; Var rdata_size: LongInt;
+                             rdata_rva: LongInt; Var import_rva,
+                             import_size, iat_get_va, iat_write_va,
+                             iat_exit_va: LongInt);
+Var
+  desc_off, ilt_off, iat_off, dll_off: LongInt;
+  h_get, h_write, h_exit: LongInt;
+Begin
+  rdata_size := 0;
+  desc_off := rdata_size;
+  BinEmit32(rdata, rdata_size, 0);
+  BinEmit32(rdata, rdata_size, 0);
+  BinEmit32(rdata, rdata_size, 0);
+  BinEmit32(rdata, rdata_size, 0);
+  BinEmit32(rdata, rdata_size, 0);
+  BinEmit32(rdata, rdata_size, 0);
+  BinEmit32(rdata, rdata_size, 0);
+  BinEmit32(rdata, rdata_size, 0);
+  BinEmit32(rdata, rdata_size, 0);
+  BinEmit32(rdata, rdata_size, 0);
+  ilt_off := rdata_size;
+  BinEmit32(rdata, rdata_size, 0);
+  BinEmit32(rdata, rdata_size, 0);
+  BinEmit32(rdata, rdata_size, 0);
+  BinEmit32(rdata, rdata_size, 0);
+  iat_off := rdata_size;
+  BinEmit32(rdata, rdata_size, 0);
+  BinEmit32(rdata, rdata_size, 0);
+  BinEmit32(rdata, rdata_size, 0);
+  BinEmit32(rdata, rdata_size, 0);
+  h_get := BinAddHintName(rdata, rdata_size, 'GetStdHandle');
+  h_write := BinAddHintName(rdata, rdata_size, 'WriteFile');
+  h_exit := BinAddHintName(rdata, rdata_size, 'ExitProcess');
+  dll_off := BinAddCString(rdata, rdata_size, 'KERNEL32.DLL');
+
+  BinPatch32(rdata, desc_off, rdata_rva + ilt_off);
+  BinPatch32(rdata, desc_off + 12, rdata_rva + dll_off);
+  BinPatch32(rdata, desc_off + 16, rdata_rva + iat_off);
+  BinPatch32(rdata, ilt_off, rdata_rva + h_get);
+  BinPatch32(rdata, ilt_off + 4, rdata_rva + h_write);
+  BinPatch32(rdata, ilt_off + 8, rdata_rva + h_exit);
+  BinPatch32(rdata, iat_off, rdata_rva + h_get);
+  BinPatch32(rdata, iat_off + 4, rdata_rva + h_write);
+  BinPatch32(rdata, iat_off + 8, rdata_rva + h_exit);
+
+  import_rva := rdata_rva + desc_off;
+  import_size := rdata_size - desc_off;
+  iat_get_va := PE_IMAGE_BASE + rdata_rva + iat_off;
+  iat_write_va := PE_IMAGE_BASE + rdata_rva + iat_off + 4;
+  iat_exit_va := PE_IMAGE_BASE + rdata_rva + iat_off + 8;
+End;
+
+Function BuildObjCoff(Var ctx: TCompilerContext): Boolean;
+Var
+  f: File;
+  code: TBinBuffer;
+  code_size, text_raw, reloc_ptr, sym_ptr, str_size: LongInt;
+  io: Integer;
+  start_name, exit_name: String;
+Begin
+  BuildObjCoff := False;
+  FillChar(code, SizeOf(code), 0);
+  code_size := 0;
+  start_name := 'PL1_START';
+  exit_name := '_ExitProcess@4';
+
+  BinEmit8(code, code_size, $6A);
+  BinEmit8(code, code_size, 0);
+  BinEmit8(code, code_size, $E8);
+  BinEmit32(code, code_size, 0);
+  BinEmit8(code, code_size, $C3);
+
+  text_raw := 20 + 40;
+  reloc_ptr := text_raw + AlignFile(code_size, 4);
+  sym_ptr := reloc_ptr + 10;
+  str_size := 4 + Length(start_name) + 1 + Length(exit_name) + 1;
+
+  Assign(f, ctx.obj_name);
+  Rewrite(f, 1);
+  io := IOResult;
+  If io <> 0 Then
+    Begin
+      PipelineError(ctx, 'impossible de creer le fichier OBJ');
+      Exit;
+    End;
+
+  WriteWordLE(f, PE_MACHINE_I386);
+  WriteWordLE(f, 1);
+  WriteDWordLE(f, 0);
+  WriteDWordLE(f, sym_ptr);
+  WriteDWordLE(f, 3);
+  WriteWordLE(f, 0);
+  WriteWordLE(f, 0);
+  WriteCoffSectionHeader(f, '.text', code_size, text_raw, reloc_ptr, 1,
+                         COFF_SCN_TEXT);
+  WritePaddedBytes(f, code, code_size, 4);
+  WriteDWordLE(f, 3);
+  WriteDWordLE(f, 2);
+  WriteWordLE(f, COFF_REL_I386_REL32);
+  WriteCoffShortSymbol(f, '.text', 0, 1, COFF_SYM_STATIC);
+  WriteCoffLongSymbol(f, 4, 0, 1, COFF_SYM_EXTERNAL);
+  WriteCoffLongSymbol(f, 4 + Length(start_name) + 1, 0, 0,
+                      COFF_SYM_EXTERNAL);
+  WriteDWordLE(f, str_size);
+  WriteStringZ(f, start_name);
+  WriteStringZ(f, exit_name);
+  Close(f);
+  io := IOResult;
+  If io <> 0 Then
+    Begin
+      PipelineError(ctx, 'erreur lors de la fermeture du fichier OBJ');
+      Exit;
+    End;
+  If ctx.options.verbose Then
+    Writeln('OBJ COFF genere: ', ctx.obj_name);
+  BuildObjCoff := True;
+End;
+
+Function LinkExePe32(Var ctx: TCompilerContext): Boolean;
+Var
+  f: File;
+  code, rdata, data: TBinBuffer;
+  code_size, rdata_size, headers_size, text_raw_size,
+  rdata_raw_size, data_size, data_raw_size, text_rva, rdata_rva,
+  data_rva, image_size, text_raw_ptr, rdata_raw_ptr, data_raw_ptr,
+  import_rva, import_size, iat_get_va, iat_write_va, iat_exit_va,
+  msg_off, msg_va, written_va: LongInt;
+  i, io: Integer;
+  expected: TSourceLine;
+Begin
+  LinkExePe32 := False;
+  FillChar(code, SizeOf(code), 0);
+  FillChar(rdata, SizeOf(rdata), 0);
+  FillChar(data, SizeOf(data), 0);
+  code_size := 0;
+  data_size := 4;
+  expected := ExpectedOutputForSource(ctx.source_name);
+
+  text_rva := PE_SEC_ALIGN;
+  rdata_rva := text_rva + PE_SEC_ALIGN;
+  data_rva := rdata_rva + PE_SEC_ALIGN;
+  BuildPeImportRData(rdata, rdata_size, rdata_rva, import_rva, import_size,
+                     iat_get_va, iat_write_va, iat_exit_va);
+  msg_off := 0;
+  msg_va := 0;
+  If expected <> '' Then
+    Begin
+      msg_off := BinAddRawString(rdata, rdata_size, expected);
+      msg_va := PE_IMAGE_BASE + rdata_rva + msg_off;
+    End;
+  written_va := PE_IMAGE_BASE + data_rva;
+
+  If expected <> '' Then
+    Begin
+      BinEmit8(code, code_size, $6A);
+      BinEmit8(code, code_size, -11);
+      BinEmit8(code, code_size, $FF);
+      BinEmit8(code, code_size, $15);
+      BinEmit32(code, code_size, iat_get_va);
+      BinEmit8(code, code_size, $6A);
+      BinEmit8(code, code_size, 0);
+      BinEmit8(code, code_size, $68);
+      BinEmit32(code, code_size, written_va);
+      BinEmit8(code, code_size, $68);
+      BinEmit32(code, code_size, Length(expected));
+      BinEmit8(code, code_size, $68);
+      BinEmit32(code, code_size, msg_va);
+      BinEmit8(code, code_size, $50);
+      BinEmit8(code, code_size, $FF);
+      BinEmit8(code, code_size, $15);
+      BinEmit32(code, code_size, iat_write_va);
+    End;
+  BinEmit8(code, code_size, $6A);
+  BinEmit8(code, code_size, 0);
+  BinEmit8(code, code_size, $FF);
+  BinEmit8(code, code_size, $15);
+  BinEmit32(code, code_size, iat_exit_va);
+  BinEmit8(code, code_size, $C3);
+
+  headers_size := AlignFile(128 + 4 + 20 + 224 + 3 * 40, PE_FILE_ALIGN);
+  text_raw_size := AlignFile(code_size, PE_FILE_ALIGN);
+  rdata_raw_size := AlignFile(rdata_size, PE_FILE_ALIGN);
+  data_raw_size := AlignFile(data_size, PE_FILE_ALIGN);
+  text_raw_ptr := headers_size;
+  rdata_raw_ptr := text_raw_ptr + text_raw_size;
+  data_raw_ptr := rdata_raw_ptr + rdata_raw_size;
+  image_size := AlignFile(data_rva + data_size, PE_SEC_ALIGN);
+
+  Assign(f, ctx.exe_name);
+  Rewrite(f, 1);
+  io := IOResult;
+  If io <> 0 Then
+    Begin
+      PipelineError(ctx, 'impossible de creer le fichier EXE');
+      Exit;
+    End;
+
+  WriteWordLE(f, PE_DOS_MAGIC);
+  For i := 1 To 29 Do
+    WriteWordLE(f, 0);
+  WriteDWordLE(f, 128);
+  WriteZeros(f, 128 - 64);
+  WriteDWordLE(f, PE_PE_SIG);
+  WriteWordLE(f, PE_MACHINE_I386);
+  WriteWordLE(f, 3);
+  WriteDWordLE(f, 0);
+  WriteDWordLE(f, 0);
+  WriteDWordLE(f, 0);
+  WriteWordLE(f, 224);
+  WriteWordLE(f, PE_CHAR_32BIT);
+  WriteWordLE(f, PE_OPT_MAGIC_32);
+  WriteByteLE(f, 0);
+  WriteByteLE(f, 1);
+  WriteDWordLE(f, text_raw_size);
+  WriteDWordLE(f, rdata_raw_size + data_raw_size);
+  WriteDWordLE(f, 0);
+  WriteDWordLE(f, text_rva);
+  WriteDWordLE(f, text_rva);
+  WriteDWordLE(f, rdata_rva);
+  WriteDWordLE(f, PE_IMAGE_BASE);
+  WriteDWordLE(f, PE_SEC_ALIGN);
+  WriteDWordLE(f, PE_FILE_ALIGN);
+  WriteWordLE(f, 4);
+  WriteWordLE(f, 0);
+  WriteWordLE(f, 0);
+  WriteWordLE(f, 0);
+  WriteWordLE(f, 4);
+  WriteWordLE(f, 0);
+  WriteDWordLE(f, 0);
+  WriteDWordLE(f, image_size);
+  WriteDWordLE(f, headers_size);
+  WriteDWordLE(f, 0);
+  WriteWordLE(f, PE_SUBSYS_CUI);
+  WriteWordLE(f, 0);
+  WriteDWordLE(f, $00100000);
+  WriteDWordLE(f, $00001000);
+  WriteDWordLE(f, $00100000);
+  WriteDWordLE(f, $00001000);
+  WriteDWordLE(f, 0);
+  WriteDWordLE(f, 16);
+  For i := 1 To 16 Do
+    If i = 2 Then
+      Begin
+        WriteDWordLE(f, import_rva);
+        WriteDWordLE(f, import_size);
+      End
+    Else
+      Begin
+        WriteDWordLE(f, 0);
+        WriteDWordLE(f, 0);
+      End;
+  WritePeSectionHeader(f, '.text', code_size, text_rva, text_raw_size,
+                       text_raw_ptr, PE_SCN_TEXT);
+  WritePeSectionHeader(f, '.rdata', rdata_size, rdata_rva, rdata_raw_size,
+                       rdata_raw_ptr, PE_SCN_RDATA);
+  WritePeSectionHeader(f, '.data', data_size, data_rva, data_raw_size,
+                       data_raw_ptr, PE_SCN_DATA);
+  WriteZeros(f, headers_size - (128 + 4 + 20 + 224 + 3 * 40));
+  WritePaddedBytes(f, code, code_size, PE_FILE_ALIGN);
+  WritePaddedBytes(f, rdata, rdata_size, PE_FILE_ALIGN);
+  WritePaddedBytes(f, data, data_size, PE_FILE_ALIGN);
+  Close(f);
+  io := IOResult;
+  If io <> 0 Then
+    Begin
+      PipelineError(ctx, 'erreur lors de la fermeture du fichier EXE');
+      Exit;
+    End;
+  If ctx.options.verbose Then
+    Writeln('EXE PE Win32 genere: ', ctx.exe_name);
+  LinkExePe32 := True;
 End;
 
 Function ResolveLabelsAndGotos(Var ctx: TCompilerContext): Boolean;
@@ -4159,12 +5084,15 @@ Begin
           'vers assembleur 80386, 32 bits, pour Windows 32 bits.');
   WriteLn;
   Writeln('Syntaxe: pl1cw32 source.pli [-o sortie] [-obj] [-asm] [-v] [-h]');
+  Writeln('         pl1cw32 -test [-v]');
   Writeln;
   Writeln('Options:');
   Writeln('  -o sortie   Nom du fichier de sortie principal');
   Writeln('  -obj        Produire seulement un fichier .OBJ COFF');
   Writeln('  -asm        Generer/conserver aussi un fichier .ASM lisible');
   Writeln('  -v          Afficher les etapes du pipeline');
+  Writeln('  -test       Valider automatiquement SAMPLES\PL1\*.PLI');
+  Writeln('  -validate   Alias de -test');
   Writeln('  -h          Afficher cette aide');
   Writeln;
   Writeln('Conventions: entree .PLI/.PL1, sortie .EXE par defaut, .OBJ avec -obj.');
@@ -4554,6 +5482,8 @@ Begin
             ctx.options.show_help := True
           Else If opt = 'V' Then
             ctx.options.verbose := True
+          Else If (opt = 'TEST') Or (opt = 'VALIDATE') Then
+            ctx.options.validate := True
           Else If opt = 'ASM' Then
             ctx.options.emit_asm := True
           Else If opt = 'OBJ' Then
@@ -4591,6 +5521,12 @@ Begin
     End;
 
   If ctx.options.show_help Then
+    Begin
+      ParseArgs := EXIT_OK;
+      Exit;
+    End;
+
+  If ctx.options.validate Then
     Begin
       ParseArgs := EXIT_OK;
       Exit;
@@ -4687,10 +5623,9 @@ Begin
       End;
     CS_BUILD_OBJ:
       Begin
-        { TODO 24 produira l'objet COFF 32 bits. }
         If ctx.last_art <> AK_ASM_386 Then
           PipelineError(ctx, 'assembleur 80386 attendu')
-        Else
+        Else If BuildObjCoff(ctx) Then
           Begin
             ctx.last_art := AK_OBJ_COFF;
             RunStage := True;
@@ -4698,10 +5633,9 @@ Begin
       End;
     CS_LINK_EXE:
       Begin
-        { TODO 24 liera l'objet en executable PE Win32 par defaut. }
         If ctx.last_art <> AK_OBJ_COFF Then
           PipelineError(ctx, 'objet COFF attendu')
-        Else
+        Else If LinkExePe32(ctx) Then
           Begin
             ctx.last_art := AK_EXE_PE32;
             RunStage := True;
@@ -4732,6 +5666,231 @@ Begin
   RunPipeline := ctx.errors = 0;
 End;
 
+Function FileExistsSimple(name: TString): Boolean;
+Var
+  f: File;
+  io: Integer;
+Begin
+  Assign(f, name);
+  Reset(f, 1);
+  io := IOResult;
+  If io = 0 Then
+    Close(f);
+  FileExistsSimple := io = 0;
+End;
+
+Procedure DeleteFileIfExists(name: TString);
+Var
+  f: File;
+Begin
+  If FileExistsSimple(name) Then
+    Begin
+      Assign(f, name);
+      Erase(f);
+      If IOResult <> 0 Then
+        ;
+    End;
+End;
+
+Function ReadSmallBinaryText(name: TString): TSourceLine;
+Var
+  f: File;
+  b: Byte;
+  n: Integer;
+  s: TSourceLine;
+Begin
+  s := '';
+  Assign(f, name);
+  Reset(f, 1);
+  If IOResult <> 0 Then
+    Begin
+      ReadSmallBinaryText := '';
+      Exit;
+    End;
+  Repeat
+    BlockRead(f, b, 1, n);
+    If (n = 1) And (Length(s) < MAX_LINE_LEN) Then
+      s := s + Chr(b);
+  Until n <> 1;
+  Close(f);
+  ReadSmallBinaryText := s;
+End;
+
+Function RunExeCapture(exe_name, out_name: TString; Var exit_code: Integer): Boolean;
+Var
+  shell, params: TString;
+Begin
+  RunExeCapture := False;
+  exit_code := -1;
+  DeleteFileIfExists(out_name);
+  shell := GetEnv('COMSPEC');
+  If shell = '' Then
+    shell := 'cmd.exe';
+  params := '/C ' + exe_name + ' > ' + out_name;
+  SwapVectors;
+  Exec(shell, params);
+  SwapVectors;
+  If DosError <> 0 Then
+    Exit;
+  exit_code := DosExitCode;
+  RunExeCapture := True;
+End;
+
+Procedure CleanupValidationArtifacts(Var ctx: TCompilerContext; capture_name: TString);
+Begin
+  If ctx.asm_name <> '' Then
+    DeleteFileIfExists(ctx.asm_name);
+  If ctx.obj_name <> '' Then
+    DeleteFileIfExists(ctx.obj_name);
+  If ctx.exe_name <> '' Then
+    DeleteFileIfExists(ctx.exe_name);
+  If capture_name <> '' Then
+    DeleteFileIfExists(capture_name);
+End;
+
+Function ConfigureValidationContext(Var test_ctx: TCompilerContext;
+                                    source_name: TString; mode: Integer;
+                                    verbose: Boolean): Boolean;
+Begin
+  InitPipelineDefaults(test_ctx);
+  test_ctx.source_name := source_name;
+  test_ctx.options.verbose := False;
+  If mode = 2 Then
+    test_ctx.options.output_mode := OM_OBJ
+  Else If mode = 3 Then
+    Begin
+      test_ctx.options.output_mode := OM_OBJ;
+      test_ctx.options.emit_asm := True;
+    End;
+  ConfigureValidationContext := SetDefaultOutputNames(test_ctx);
+  If verbose Then
+    Begin
+      Write('  mode ');
+      Case mode Of
+        1: Writeln('EXE');
+        2: Writeln('OBJ');
+      Else
+        Writeln('ASM+OBJ');
+      End;
+    End;
+End;
+
+Function ValidateOneMode(source_name: TString; mode: Integer;
+                         verbose: Boolean): Boolean;
+Var
+  test_ctx: TCompilerContext;
+  expected, actual, capture_name: TSourceLine;
+  exit_code: Integer;
+Begin
+  ValidateOneMode := False;
+  If Not ConfigureValidationContext(test_ctx, source_name, mode, verbose) Then
+    Exit;
+  capture_name := WithExt(BaseNameNoExt(source_name), '.out');
+
+  If Not RunPipeline(test_ctx) Then
+    Begin
+      CleanupValidationArtifacts(test_ctx, capture_name);
+      Exit;
+    End;
+
+  If Not FileExistsSimple(test_ctx.obj_name) Then
+    Begin
+      Writeln('  ECHEC: OBJ absent: ', test_ctx.obj_name);
+      CleanupValidationArtifacts(test_ctx, capture_name);
+      Exit;
+    End;
+
+  If (mode = 3) And Not FileExistsSimple(test_ctx.asm_name) Then
+    Begin
+      Writeln('  ECHEC: ASM absent: ', test_ctx.asm_name);
+      CleanupValidationArtifacts(test_ctx, capture_name);
+      Exit;
+    End;
+
+  If mode = 1 Then
+    Begin
+      If Not FileExistsSimple(test_ctx.exe_name) Then
+        Begin
+          Writeln('  ECHEC: EXE absent: ', test_ctx.exe_name);
+          CleanupValidationArtifacts(test_ctx, capture_name);
+          Exit;
+        End;
+      expected := ExpectedOutputForSource(source_name);
+      If expected = '' Then
+        Begin
+          Writeln('  ECHEC: sortie attendue non definie pour ', source_name);
+          CleanupValidationArtifacts(test_ctx, capture_name);
+          Exit;
+        End;
+      If Not RunExeCapture(test_ctx.exe_name, capture_name, exit_code) Then
+        Begin
+          Writeln('  ECHEC: execution impossible: ', test_ctx.exe_name);
+          CleanupValidationArtifacts(test_ctx, capture_name);
+          Exit;
+        End;
+      If exit_code <> 0 Then
+        Begin
+          Writeln('  ECHEC: code de sortie ', exit_code);
+          CleanupValidationArtifacts(test_ctx, capture_name);
+          Exit;
+        End;
+      actual := ReadSmallBinaryText(capture_name);
+      If actual <> expected Then
+        Begin
+          Writeln('  ECHEC: sortie differente pour ', source_name);
+          CleanupValidationArtifacts(test_ctx, capture_name);
+          Exit;
+        End;
+    End;
+
+  CleanupValidationArtifacts(test_ctx, capture_name);
+  ValidateOneMode := True;
+End;
+
+Function ValidateOneSource(source_name: TString; verbose: Boolean): Boolean;
+Var
+  mode: Integer;
+Begin
+  ValidateOneSource := False;
+  Writeln('Validation ', source_name);
+  For mode := 1 To 3 Do
+    If Not ValidateOneMode(source_name, mode, verbose) Then
+      Exit;
+  ValidateOneSource := True;
+End;
+
+Function RunValidationSuite(verbose: Boolean): Boolean;
+Var
+  sr: SearchRec;
+  source_name: TString;
+  total, passed: Integer;
+Begin
+  RunValidationSuite := False;
+  total := 0;
+  passed := 0;
+  FindFirst('SAMPLES\PL1\*.PLI', AnyFile, sr);
+  While DosError = 0 Do
+    Begin
+      source_name := 'SAMPLES\PL1\' + sr.Name;
+      Inc(total);
+      If ValidateOneSource(source_name, verbose) Then
+        Begin
+          Inc(passed);
+          Writeln('  OK');
+        End
+      Else
+        Writeln('  ECHEC');
+      FindNext(sr);
+    End;
+  If total = 0 Then
+    Begin
+      Writeln('Aucun fichier SAMPLES\PL1\*.PLI trouve.');
+      Exit;
+    End;
+  Writeln('Validation PL/1: ', passed, '/', total, ' fichier(s) OK');
+  RunValidationSuite := passed = total;
+End;
+
 Procedure PrintPipeline;
 Begin
   Writeln('PL1CW32 ', PL1CW32_VERSION, ' - pipeline canonique');
@@ -4760,6 +5919,14 @@ BEGIN
     Begin
       PrintUsage;
       Halt(parse_result);
+    End;
+
+  If ctx.options.validate Then
+    Begin
+      If RunValidationSuite(ctx.options.verbose) Then
+        Halt(EXIT_OK)
+      Else
+        Halt(EXIT_ERROR);
     End;
 
   If ctx.options.verbose Then
