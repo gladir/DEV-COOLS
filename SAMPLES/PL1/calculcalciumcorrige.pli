@@ -1,0 +1,11 @@
+ Corps: PROC options(main); 
+    display('Si Albumine=40g/L et Calcium Total=2,28mg/L alors '||
+            'le Calcium corrigé vaut '||Calccor(2.28,40)||'mg/L');
+    display('Si Albumine=38g/L et Calcium Total=2,28mg/L alors '||
+         'le Calcium corrigé vaut '||Calccor(2.28,38)||'mg/L');
+ END Corps;
+ 
+ Calccor: PROC(calciumTotal,albumine) RETURNS (float); 
+     DCL (calciumTotal,albumine) float;
+     RETURN(calciumTotal+0.8*(40.0-albumine));
+ END Calccor;

@@ -4618,6 +4618,14 @@ Begin
       #13 + #10 +
       'l''aire d''un cercle de rayon de 10 cm est 314.159265358cm2' +
       #13 + #10
+  Else If leaf = 'RECTANGLETRIANGLEAREA.PLI' Then
+    ExpectedOutputForSource :=
+      'L''aire d''une surface de prisme rectangulaire de 10x5x5 est 250cm2' +
+      #13 + #10 +
+      'L''aire d''une surface de prisme rectangulaire de 2x3x4 est 52cm2' +
+      #13 + #10 +
+      'L''aire d''une surface de prisme rectangulaire de 1x3x7 est 62cm2' +
+      #13 + #10
   Else If leaf = '01_CONST.PLI' Then
     ExpectedOutputForSource := '1' + #13 + #10
   Else If leaf = '02_VARIABLE.PLI' Then

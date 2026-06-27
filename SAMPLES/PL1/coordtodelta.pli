@@ -1,0 +1,121 @@
+ Corps: PROC options(main); 
+    display('Distance entre Montréal et Paris en Km:'); 
+    display(DeltaKm(45, 31,'N',73, 34,'O',    
+                    48, 50,'N', 2,  20,'E')); 
+    display('Distance entre Montréal et Paris en Miles:'); 
+    display(DSMiles(45, 31,'N',73, 34,'O',    
+                    48, 50,'N', 2,  20,'E')); 
+    display('Distance entre Montréal et Paris en Miles Nautique:'); 
+    display(DNMiles(45, 31,'N',73, 34,'O',    
+                    48, 50,'N', 2,  20,'E')); 
+ END Corps; 
+ 
+ ACos: PROC(a) RETURNS (float); 
+   DCL (a) float; 
+   DCL (PI) float; 
+   PI=3.14159265358;  
+   IF Abs(a)=1 THEN  
+      RETURN((1-a)*PI/2);  
+   ELSE 
+      RETURN(ATan(-a/Sqrt(1-a*a))+2*ATan(1));  
+ END ACos; 
+ 
+ 
+ DeltaKm: PROC(Q1Latitude,Q1LatiDeg,Q1LatiDirection, 
+               Q1Longitude,Q1LongDeg,Q1LongDirection, 
+               Q2Latitude,Q2LatiDeg,Q2LatiDirection, 
+               Q2Longitude,Q2LongDeg,Q2LongDirection) returns (float); 
+   DCL (Q1Latitude,Q1LatiDeg) fixed, 
+       (Q1LatiDirection) char(1), 
+       (Q1Longitude,Q1LongDeg) fixed, 
+       (Q1LongDirection) char(1), 
+ 
+       (Q2Latitude,Q2LatiDeg) fixed, 
+       (Q2LatiDirection) char(1), 
+       (Q2Longitude,Q2LongDeg) fixed, 
+       (Q2LongDirection) char(1); 
+ 
+   DCL (a,b,a1,b1,a2,b2,pi,RawDelta) float; 
+   pi=3.14159265358; 
+   a1=(Q1Latitude+(Q1LatiDeg/60))*pi/180;  
+   IF Q1LatiDirection='N' THEN a1=-a1;  
+   b1=(Q1Longitude+(Q1LongDeg/60))*pi/180;  
+   IF Q1LongDirection='O' THEN b1=-b1;  
+   a2=(Q2Latitude+(Q2LatiDeg/60))*pi/180;  
+   IF Q2LatiDirection='N' THEN a2=-a2;  
+   b2=(Q2Longitude+(Q2LongDeg/60))*pi/180;  
+   IF Q2LongDirection='O' THEN b2=-b2; 
+ 
+   a = Cos(a1)*Cos(b1)*Cos(a2)*Cos(b2); 
+   b = Cos(a1)*Sin(b1)*Cos(a2)*Sin(b2); 
+   RawDelta = ACos(a + b + Sin(a1)*Sin(a2));     
+  
+   RETURN(RawDelta * 6378.0);   
+ 
+ END DeltaKm; 
+ 
+ DSMiles: PROC(Q1Latitude,Q1LatiDeg,Q1LatiDirection, 
+               Q1Longitude,Q1LongDeg,Q1LongDirection, 
+               Q2Latitude,Q2LatiDeg,Q2LatiDirection, 
+               Q2Longitude,Q2LongDeg,Q2LongDirection) returns (float); 
+   DCL (Q1Latitude,Q1LatiDeg) fixed, 
+       (Q1LatiDirection) char(1), 
+       (Q1Longitude,Q1LongDeg) fixed, 
+       (Q1LongDirection) char(1), 
+ 
+       (Q2Latitude,Q2LatiDeg) fixed, 
+       (Q2LatiDirection) char(1), 
+       (Q2Longitude,Q2LongDeg) fixed, 
+       (Q2LongDirection) char(1); 
+ 
+   DCL (a,b,a1,b1,a2,b2,pi,RawDelta) float; 
+   pi=3.14159265358; 
+   a1=(Q1Latitude+(Q1LatiDeg/60))*pi/180;  
+   IF Q1LatiDirection='N' THEN a1=-a1;  
+   b1=(Q1Longitude+(Q1LongDeg/60))*pi/180;  
+   IF Q1LongDirection='O' THEN b1=-b1;  
+   a2=(Q2Latitude+(Q2LatiDeg/60))*pi/180;  
+   IF Q2LatiDirection='N' THEN a2=-a2;  
+   b2=(Q2Longitude+(Q2LongDeg/60))*pi/180;  
+   IF Q2LongDirection='O' THEN b2=-b2; 
+ 
+   a = Cos(a1)*Cos(b1)*Cos(a2)*Cos(b2); 
+   b = Cos(a1)*Sin(b1)*Cos(a2)*Sin(b2); 
+   RawDelta = ACos(a + b + Sin(a1)*Sin(a2));     
+  
+   RETURN(RawDelta * 3963.1);   
+ 
+ END DSMiles; 
+ 
+ DNMiles: PROC(Q1Latitude,Q1LatiDeg,Q1LatiDirection, 
+               Q1Longitude,Q1LongDeg,Q1LongDirection, 
+               Q2Latitude,Q2LatiDeg,Q2LatiDirection, 
+               Q2Longitude,Q2LongDeg,Q2LongDirection) returns (float); 
+   DCL (Q1Latitude,Q1LatiDeg) fixed, 
+       (Q1LatiDirection) char(1), 
+       (Q1Longitude,Q1LongDeg) fixed, 
+       (Q1LongDirection) char(1), 
+ 
+       (Q2Latitude,Q2LatiDeg) fixed, 
+       (Q2LatiDirection) char(1), 
+       (Q2Longitude,Q2LongDeg) fixed, 
+       (Q2LongDirection) char(1); 
+ 
+   DCL (a,b,a1,b1,a2,b2,pi,RawDelta) float; 
+   pi=3.14159265358; 
+   a1=(Q1Latitude+(Q1LatiDeg/60))*pi/180;  
+   IF Q1LatiDirection='N' THEN a1=-a1;  
+   b1=(Q1Longitude+(Q1LongDeg/60))*pi/180;  
+   IF Q1LongDirection='O' THEN b1=-b1;  
+   a2=(Q2Latitude+(Q2LatiDeg/60))*pi/180;  
+   IF Q2LatiDirection='N' THEN a2=-a2;  
+   b2=(Q2Longitude+(Q2LongDeg/60))*pi/180;  
+   IF Q2LongDirection='O' THEN b2=-b2; 
+ 
+   a = Cos(a1)*Cos(b1)*Cos(a2)*Cos(b2); 
+   b = Cos(a1)*Sin(b1)*Cos(a2)*Sin(b2); 
+   RawDelta = ACos(a + b + Sin(a1)*Sin(a2));     
+  
+   RETURN(RawDelta * 3443.9);   
+ 
+ END DNMiles;

@@ -1,0 +1,16 @@
+ Corps: PROC options(main); 
+    display("l'aire d'un cercle de rayon de 1 cm est " ||
+             CirArea(1) || "cm2");
+     display("l'aire d'un cercle de rayon de 5 cm est " ||
+             CirArea(5) || "cm2");
+     display("l'aire d'un cercle de rayon de 8 cm est " ||
+             CirArea(8) || "cm2");
+     display("l'aire d'un cercle de rayon de 10 cm est " ||
+             CirArea(10) || "cm2");
+ END Corps; 
+ 
+ CirArea: PROC(r) RETURNS(float);
+     DCL (r) float; 
+      DCL (PI) float INIT (3.14159265358); 
+     RETURN(Pi * (r * r));
+ END CirArea;

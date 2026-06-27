@@ -1,0 +1,13 @@
+ Corps: PROC options(main); 
+     display("L'aire d'une surface de prisme rectangulaire de 10x5x5 est " 
+              || RcPrSuA(10, 5, 5) || "cm2");
+    display("L'aire d'une surface de prisme rectangulaire de 2x3x4 est " 
+              || RcPrSuA(2, 3, 4) || "cm2");
+    display("L'aire d'une surface de prisme rectangulaire de 1x3x7 est " 
+              || RcPrSuA(1, 3, 7) || "cm2");
+ END Corps;
+ 
+ RcPrSuA: PROC(h, w, l) RETURNS (fixed); 
+     DCL (h, w, l) fixed;
+     RETURN((2 * h * w) + (2 * h * l) + (2 * l * w));
+ END RcPrSuA;
