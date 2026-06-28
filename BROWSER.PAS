@@ -38,11 +38,17 @@ Program BROWSER;
 
 {$IFDEF FPC}
   {$MODE TP}
-  {$H-}
+  { Chaines longues (AnsiString) par defaut, et non plus ShortString
+    limitee a 255 caracteres : necessaire depuis l'ajout du systeme
+    d'objets/tableaux JavaScript et de l'execution de scripts externes
+    (JSCookMenu.js), dont les chaines HTML generees dynamiquement
+    (document.write, innerHTML) depassent largement 255 caracteres
+    pour un menu reel - elles etaient silencieusement tronquees. }
+  {$H+}
 {$ENDIF}
 
 Uses {$IFDEF FPC}
-      Crt,PtcGraph,PtcCrt,PtcMouse
+      Crt,PtcGraph,PtcCrt,PtcMouse,SysUtils
      {$ELSE}
       Crt,Graph,Dos
      {$ENDIF};
@@ -391,6 +397,7 @@ Const
  JS_VAL_OBJECT = 5;
  JS_VAL_FUNCTION = 6;
  JS_VAL_ARRAY = 7;
+ JS_VAL_NODE = 8;            { Reference a un noeud DOM (document.getElementById, this, ...) }
 
  { Types d'operations JavaScript }
  JS_OP_ADD = 1;
@@ -596,6 +603,15 @@ Type
  { Pointeur vers un noeud HTML (declaration forward) }
  HTMLNodePtr = ^HTMLNode;
 
+ { Pointeurs pour le systeme d'objets/tableaux JavaScript (declarations
+   forward - definis plus loin, voir JSObjectRec/JSProperty pres de
+   JSValue). Un HTMLNode a besoin de JSObjectPtr pour ses proprietes
+   "expando" arbitraires posees par du JS (obj.cmPrefix = ..., utilise
+   par exemple par JSCookMenu.js) - distinctes des vrais attributs
+   HTML. }
+ JSObjectPtr = ^JSObjectRec;
+ JSPropertyPtr = ^JSPropertyRec;
+
  { Type pour un noeud HTML }
  HTMLNode = Record
   NodeType: Byte;            { Type de noeud (element, texte, commentaire, etc.) }
@@ -605,6 +621,7 @@ Type
   FirstAttribute: HTMLAttributePtr;
   LastAttribute: HTMLAttributePtr;
   AttributeCount: Integer;
+  JSExpando: JSObjectPtr;    { Proprietes JS arbitraires (Nil si aucune) }
   FirstChild: HTMLNodePtr;
   LastChild: HTMLNodePtr;
   PreviousSibling: HTMLNodePtr;
@@ -630,6 +647,20 @@ Type
  InteractiveArea = Record
   X1, Y1, X2, Y2: Integer;
   Node: HTMLNodePtr;
+  Active: Boolean;
+ End;
+
+ { Boite de mise en page (position/taille) d'un element ID'e, telle
+   que calculee lors du dernier rendu - permet d'implementer
+   offsetWidth/offsetHeight/offsetLeft/offsetTop cote JS (utilises par
+   exemple par JSCookMenu.js pour positionner ses sous-menus), alors
+   que le moteur de rendu lui-meme ne conserve normalement aucune
+   boite apres l'avoir dessinee (tout est recalcule a la volee a
+   chaque passage). Seuls les elements portant un attribut id sont
+   suivis (c'est la seule facon dont ce script accede a un element). }
+ JSNodeBox = Record
+  Node: HTMLNodePtr;
+  X, Y, Width, Height: Integer;
   Active: Boolean;
  End;
 
@@ -694,7 +725,31 @@ Type
   BoolVal: Boolean;           { Valeur booleenne }
   NumVal: Real;               { Valeur numerique }
   StrVal: String;             { Valeur chaine }
+  ObjVal: JSObjectPtr;        { Reference (objet/tableau), si ValType = JS_VAL_OBJECT/ARRAY }
+  NodeVal: HTMLNodePtr;       { Reference a un noeud DOM, si ValType = JS_VAL_NODE }
  End;
+
+ { Une propriete d'un objet/tableau JavaScript - liste chainee, sur le
+   meme principe que HTMLAttribute. Pour un tableau, Name est l'index
+   sous forme de chaine ('0', '1', ...). }
+ JSPropertyRec = Record
+  Name: String;
+  Value: JSValue;
+  Next: JSPropertyPtr;
+ End;
+
+ { Un objet ou tableau JavaScript (litteral objet, litteral tableau,
+   new Object(), new Array()). Un tableau est juste un objet dont les
+   proprietes sont des indices numeriques plus un suivi explicite de
+   la longueur. }
+ JSObjectRec = Record
+  FirstProp: JSPropertyPtr;
+  IsArray: Boolean;
+  ArrLen: Integer;            { Pertinent seulement si IsArray }
+ End;
+
+ { Ensemble de caracteres-separateurs pour JSSkipToBalanced }
+ JSCharSet = Set Of Char;
 
  { Token JavaScript }
  JSToken = Record
@@ -950,6 +1005,43 @@ Var
  InteractiveAreas: Array[1..MAX_LINKS] Of InteractiveArea;
  InteractiveAreaCount: Integer;
  HoveredInteractiveNode: HTMLNodePtr; { Noeud actuellement survole, pour declencher onmouseout au depart }
+
+ { Boites de mise en page des elements ID'es (voir JSNodeBox) }
+ JSNodeBoxes: Array[1..MAX_LINKS] Of JSNodeBox;
+ JSNodeBoxCount: Integer;
+
+ { Elements CSS position:absolute rencontres pendant la passe normale
+   de rendu (RenderHTMLNode resout deja le CSS de chaque element ;
+   on profite de ce resultat au lieu de reparcourir tout l'arbre et
+   de re-resoudre le CSS une seconde fois juste pour les retrouver -
+   voir RenderAbsolutePositionedOverlays). En pratique, tres peu
+   d'elements d'une page reelle sont position:absolute (ex: les
+   sous-menus de JSCookMenu.js), meme quand l'arbre entier comporte
+   des milliers de noeuds. }
+ AbsolutePositionedNodes: Array[1..200] Of HTMLNodePtr;
+ AbsolutePositionedCount: Integer;
+
+ { Minuterie a emplacement unique pour setTimeout/clearTimeout cote JS
+   (JSCookMenu.js n'utilise jamais qu'un seul minuteur a la fois, dans
+   _cmTimeOut) : il n'y a pas de boucle d'evenements dans BROWSER.PAS,
+   donc ce minuteur est verifie "au mieux" a chaque iteration de
+   ProcessMouseInput plutot que d'etre declenche par une vraie horloge
+   asynchrone. }
+ JSTimeoutActive: Boolean;
+ JSTimeoutHandler: String;
+ JSTimeoutFireAtTick: LongInt; { Comparer a GetTickCountApprox }
+
+ { Signaux de controle de boucle JS (break/continue) : JSEvaluate est
+   recursif (le corps d'une boucle for/while est lui-meme evalue par
+   un appel imbrique a JSEvaluate), donc ces deux instructions ne
+   peuvent pas se traduire par un simple Exit local - elles doivent
+   remonter via un drapeau global, verifie a la fois par la boucle
+   principale de JSEvaluate (pour arreter d'executer les instructions
+   suivantes du bloc courant) et par l'implementation de for/while
+   elle-meme (pour savoir si elle doit interrompre completement
+   l'iteration, ou seulement passer a la suivante). }
+ JSBreakFlag: Boolean;
+ JSContinueFlag: Boolean;
 
  { Variables pour l'interpreteur JavaScript }
  JSCtx: JSContext;            { Contexte d'execution JavaScript }
@@ -1220,14 +1312,20 @@ End;
 
 Function HTMLDecodeEntities(Const S: String): String;
 Var
- I, SemiPos, J, Digit: Integer;
+ I, SemiPos, J: LongInt;
+ Digit: Integer;
  EntityName, ResultText: String;
  CodePoint: LongInt;
  IsNumeric, IsHex, ValidNumber: Boolean;
 Begin
  ResultText := '';
  I := 1;
- While (I <= Length(S)) And (Length(ResultText) < 255) Do Begin
+ { Plus de plafond a 255 caracteres depuis le passage a AnsiString
+   ($H+) : ce plafond datait de l'epoque ou String etait limitee a
+   255 caracteres (ShortString) et tronquait silencieusement tout
+   texte plus long (ex: le contenu d'un <script> generant du HTML
+   dynamiquement). }
+ While I <= Length(S) Do Begin
   If S[I] <> '&' Then Begin
    { Les octets bruts du fichier source (Latin-1/Windows-1252, comme
      l'annoncent les pages de ce site) doivent subir la meme
@@ -1310,7 +1408,7 @@ End;
 
 Function HTMLSourceCopy(Const S: HTMLSourceBuffer; StartPos, Count: LongInt): String;
 Var
- I, CopyCount: Integer;
+ I, CopyCount: LongInt;
  ResultText: String;
 Begin
  ResultText := '';
@@ -1320,7 +1418,13 @@ Begin
  End;
  If StartPos + Count - 1 > S.DataLength Then
   Count := S.DataLength - StartPos + 1;
- If Count > 255 Then CopyCount := 255 Else CopyCount := Count;
+ { Plus de plafond a 255 caracteres depuis le passage a AnsiString
+   ($H+) : ce plafond datait de l'epoque ou String etait limitee a
+   255 caracteres (ShortString) et tronquait silencieusement tout
+   texte plus long entre deux balises (ex: le contenu d'un <script>
+   generant du HTML dynamiquement, qui depasse largement 255
+   caracteres pour un menu reel). }
+ CopyCount := Count;
  For I := 0 To CopyCount - 1 Do
   ResultText := ResultText + HTMLSourceChar(S, StartPos + I);
  HTMLSourceCopy := ResultText;
@@ -1510,6 +1614,7 @@ Begin
  Node^.FirstAttribute := Nil;
  Node^.LastAttribute := Nil;
  Node^.AttributeCount := 0;
+ Node^.JSExpando := Nil;
  Node^.FirstChild := Nil;
  Node^.LastChild := Nil;
  Node^.PreviousSibling := Nil;
@@ -1944,6 +2049,8 @@ Begin
  JSCtx.DocumentOutput := '';
  JSEnabled := True;
  JSLastAlert := '';
+ JSBreakFlag := False;
+ JSContinueFlag := False;
 
  For I := 1 To MAX_JS_VARS Do Begin
   JSCtx.Variables[I].Name := '';
@@ -1966,6 +2073,8 @@ Begin
  V.BoolVal := False;
  V.NumVal := 0;
  V.StrVal := '';
+ V.ObjVal := Nil;
+ V.NodeVal := Nil;
  JSUndefined := V;
 End;
 
@@ -1978,6 +2087,8 @@ Begin
  V.BoolVal := False;
  V.NumVal := 0;
  V.StrVal := '';
+ V.ObjVal := Nil;
+ V.NodeVal := Nil;
  JSNull := V;
 End;
 
@@ -1990,6 +2101,8 @@ Begin
  V.BoolVal := B;
  V.NumVal := 0;
  V.StrVal := '';
+ V.ObjVal := Nil;
+ V.NodeVal := Nil;
  JSBool := V;
 End;
 
@@ -2002,6 +2115,8 @@ Begin
  V.BoolVal := False;
  V.NumVal := N;
  V.StrVal := '';
+ V.ObjVal := Nil;
+ V.NodeVal := Nil;
  JSNumber := V;
 End;
 
@@ -2014,7 +2129,110 @@ Begin
  V.BoolVal := False;
  V.NumVal := 0;
  V.StrVal := S;
+ V.ObjVal := Nil;
+ V.NodeVal := Nil;
  JSString := V;
+End;
+
+{ Creer une valeur JavaScript objet/tableau a partir d'une reference
+  deja allouee (voir JSNewObject). }
+Function JSObjectValue(Obj: JSObjectPtr): JSValue;
+Var
+ V: JSValue;
+Begin
+ If (Obj <> Nil) And Obj^.IsArray Then
+  V.ValType := JS_VAL_ARRAY
+ Else
+  V.ValType := JS_VAL_OBJECT;
+ V.BoolVal := False;
+ V.NumVal := 0;
+ V.StrVal := '';
+ V.ObjVal := Obj;
+ V.NodeVal := Nil;
+ JSObjectValue := V;
+End;
+
+{ Creer une valeur JavaScript referencant un noeud DOM (document.
+  getElementById, this dans un gestionnaire d'evenement, ...). }
+Function JSNodeValue(Node: HTMLNodePtr): JSValue;
+Var
+ V: JSValue;
+Begin
+ V.ValType := JS_VAL_NODE;
+ V.BoolVal := False;
+ V.NumVal := 0;
+ V.StrVal := '';
+ V.ObjVal := Nil;
+ V.NodeVal := Node;
+ JSNodeValue := V;
+End;
+
+{ Allouer un nouvel objet ou tableau JavaScript vide. }
+Function JSNewObject(IsArray: Boolean): JSObjectPtr;
+Var
+ Obj: JSObjectPtr;
+Begin
+ New(Obj);
+ Obj^.FirstProp := Nil;
+ Obj^.IsArray := IsArray;
+ Obj^.ArrLen := 0;
+ JSNewObject := Obj;
+End;
+
+{ Trouver la propriete nommee Name dans Obj (Nil si absente). }
+Function JSObjectFindProp(Obj: JSObjectPtr; Const Name: String): JSPropertyPtr;
+Var
+ P: JSPropertyPtr;
+Begin
+ JSObjectFindProp := Nil;
+ If Obj = Nil Then Exit;
+ P := Obj^.FirstProp;
+ While P <> Nil Do Begin
+  If P^.Name = Name Then Begin
+   JSObjectFindProp := P;
+   Exit;
+  End;
+  P := P^.Next;
+ End;
+End;
+
+{ Lire la propriete Name de Obj (JSUndefined si absente ou Obj=Nil). }
+Function JSObjectGetProp(Obj: JSObjectPtr; Const Name: String): JSValue;
+Var
+ P: JSPropertyPtr;
+Begin
+ P := JSObjectFindProp(Obj, Name);
+ If P <> Nil Then
+  JSObjectGetProp := P^.Value
+ Else
+  JSObjectGetProp := JSUndefined;
+End;
+
+{ Definir (ou creer) la propriete Name de Obj. Pour un tableau, si Name
+  est un indice numerique >= la longueur actuelle, ArrLen est mis a
+  jour (Name+1) - c'est ainsi que ".length" reste correct apres
+  arr[arr.length] = x, le motif "push" utilise partout dans
+  JSCookMenu.js. }
+Procedure JSObjectSetProp(Obj: JSObjectPtr; Const Name: String; Value: JSValue);
+Var
+ P: JSPropertyPtr;
+ IdxVal: Integer;
+ Code: Integer;
+Begin
+ If Obj = Nil Then Exit;
+ P := JSObjectFindProp(Obj, Name);
+ If P = Nil Then Begin
+  New(P);
+  P^.Name := Name;
+  P^.Next := Obj^.FirstProp;
+  Obj^.FirstProp := P;
+ End;
+ P^.Value := Value;
+ If Obj^.IsArray Then Begin
+  Val(Name, IdxVal, Code);
+  If (Code = 0) And (IdxVal >= Obj^.ArrLen) Then
+   Obj^.ArrLen := IdxVal + 1;
+ End;
 End;
 
 { Convertir une valeur JavaScript en chaine }
@@ -2038,6 +2256,7 @@ Begin
   JS_VAL_OBJECT: JSValueToString := '[object Object]';
   JS_VAL_FUNCTION: JSValueToString := '[function]';
   JS_VAL_ARRAY: JSValueToString := '[array]';
+  JS_VAL_NODE: If V.NodeVal <> Nil Then JSValueToString := '[object]' Else JSValueToString := 'null';
   Else JSValueToString := '';
  End;
 End;
@@ -2070,6 +2289,8 @@ Begin
   JS_VAL_BOOLEAN: JSValueToBool := V.BoolVal;
   JS_VAL_NUMBER: JSValueToBool := V.NumVal <> 0;
   JS_VAL_STRING: JSValueToBool := Length(V.StrVal) > 0;
+  JS_VAL_OBJECT, JS_VAL_ARRAY: JSValueToBool := V.ObjVal <> Nil;
+  JS_VAL_NODE: JSValueToBool := V.NodeVal <> Nil;
   Else JSValueToBool := True;
  End;
 End;
@@ -2205,8 +2426,23 @@ Function JSEvaluate(Const Script: String): JSValue; Forward;
   definies bien plus loin dans le fichier (navigation, DOM), mais
   doivent etre appelables depuis l'evaluateur JS plus haut. }
 Procedure DOMSetAttribute(Node: HTMLNodePtr; AttrName, AttrValue: String); Forward;
+Function GetNodeAttribute(Node: HTMLNodePtr; AttrName: String): String; Forward;
 Procedure NavigateTo(URL: String); Forward;
 Function ResolveLinkHref(Const Href: String): String; Forward;
+Function DOMGetElementById(Id: String): HTMLNodePtr; Forward;
+Function DOMGetBody: HTMLNodePtr; Forward;
+Function DOMGetChildCount(Node: HTMLNodePtr): Integer; Forward;
+Procedure InitHTMLSource(Var HTML: HTMLSourceBuffer); Forward;
+Procedure FreeHTMLSource(Var HTML: HTMLSourceBuffer); Forward;
+Function LoadHTMLFile(Const FileName: String; Var HTML: HTMLSourceBuffer): Boolean; Forward;
+Procedure RescrollPage; Forward;
+Procedure JSSetInnerHTML(Node: HTMLNodePtr; Const HTML: String); Forward;
+Procedure JSSetTimeout(Const Handler: String; DelayMs: LongInt); Forward;
+Procedure JSClearTimeout; Forward;
+Function JSGetNodeBoxX(Node: HTMLNodePtr): Integer; Forward;
+Function JSGetNodeBoxY(Node: HTMLNodePtr): Integer; Forward;
+Function JSGetNodeBoxWidth(Node: HTMLNodePtr): Integer; Forward;
+Function JSGetNodeBoxHeight(Node: HTMLNodePtr): Integer; Forward;
 
 { Appeler une fonction utilisateur }
 Function JSCallUserFunction(FuncIdx: Integer; Args: Array Of JSValue; ArgCount: Integer): JSValue;
@@ -2257,7 +2493,7 @@ Begin
 End;
 
 { Ignorer les espaces blancs dans le script }
-Function JSSkipWhitespace(Const Script: String; Pos: Integer): Integer;
+Function JSSkipWhitespace(Const Script: String; Pos: LongInt): LongInt;
 Begin
  While (Pos <= Length(Script)) And JSIsWhitespace(Script[Pos]) Do
   Inc(Pos);
@@ -2265,32 +2501,44 @@ Begin
 End;
 
 { Ignorer les commentaires JavaScript }
-Function JSSkipComments(Const Script: String; Pos: Integer): Integer;
+Function JSSkipComments(Const Script: String; Pos: LongInt): LongInt;
+Var
+ PrevPos: LongInt;
 Begin
- Pos := JSSkipWhitespace(Script, Pos);
- { Commentaire sur une ligne // }
- If (Pos <= Length(Script) - 1) And (Script[Pos] = '/') And (Script[Pos + 1] = '/') Then Begin
-  Inc(Pos, 2);
-  While (Pos <= Length(Script)) And (Script[Pos] <> #10) And (Script[Pos] <> #13) Do
-   Inc(Pos);
+ { Boucler jusqu'a ce qu'aucun nouvel espace/commentaire ne soit
+   consomme : un bloc de plusieurs lignes de commentaires // qui se
+   suivent (tres frequent en pratique, ex. les bandeaux de section
+   "////.../ Titre /...////") n'etait sinon que partiellement
+   ignore - seule la PREMIERE ligne // etait sautee, laissant le '/'
+   de la ligne // suivante etre lu comme un operateur de division par
+   JSGetNextToken, corrompant tout le reste du script (d'ou les
+   "Division by zero" et autres erreurs aberrantes sur du JS
+   parfaitement valide). }
+ Repeat
+  PrevPos := Pos;
   Pos := JSSkipWhitespace(Script, Pos);
- End;
- { Commentaire multi-lignes /* */ }
- If (Pos <= Length(Script) - 1) And (Script[Pos] = '/') And (Script[Pos + 1] = '*') Then Begin
-  Inc(Pos, 2);
-  While (Pos <= Length(Script) - 1) And Not ((Script[Pos] = '*') And (Script[Pos + 1] = '/')) Do
-   Inc(Pos);
-  If Pos <= Length(Script) - 1 Then Inc(Pos, 2);
-  Pos := JSSkipWhitespace(Script, Pos);
- End;
+  { Commentaire sur une ligne // }
+  If (Pos <= Length(Script) - 1) And (Script[Pos] = '/') And (Script[Pos + 1] = '/') Then Begin
+   Inc(Pos, 2);
+   While (Pos <= Length(Script)) And (Script[Pos] <> #10) And (Script[Pos] <> #13) Do
+    Inc(Pos);
+  End
+  { Commentaire multi-lignes /* */ }
+  Else If (Pos <= Length(Script) - 1) And (Script[Pos] = '/') And (Script[Pos + 1] = '*') Then Begin
+   Inc(Pos, 2);
+   While (Pos <= Length(Script) - 1) And Not ((Script[Pos] = '*') And (Script[Pos + 1] = '/')) Do
+    Inc(Pos);
+   If Pos <= Length(Script) - 1 Then Inc(Pos, 2);
+  End;
+ Until Pos = PrevPos;
  JSSkipComments := Pos;
 End;
 
 { Obtenir le prochain token du script }
-Function JSGetNextToken(Const Script: String; Var Pos: Integer): JSToken;
+Function JSGetNextToken(Const Script: String; Var Pos: LongInt): JSToken;
 Var
  Token: JSToken;
- StartPos: Integer;
+ StartPos: LongInt;
  QuoteChar: Char;
  NumStr: String;
  Code: Integer;
@@ -2476,94 +2724,493 @@ Begin
  JSGetNextToken := Token;
 End;
 
+{ Avancer Pos jusqu'au premier caractere de StopChars rencontre a une
+  profondeur de parentheses/crochets/accolades nulle et hors chaine
+  litterale (les separateurs a l'interieur d'une chaine ou d'une
+  sous-expression/sous-litteral imbrique ne comptent pas). Utilise
+  pour decouper les arguments d'appel et les elements de litteraux
+  objet/tableau, qui peuvent eux-memes contenir des virgules ou des
+  crochets imbriques (ex: cmDraw('id', myMenu, ...) ou un tableau de
+  menu imbrique sur plusieurs niveaux). }
+Procedure JSSkipToBalanced(Const Script: String; Var Pos: LongInt; StopChars: JSCharSet);
+Var
+ Depth: Integer;
+ InStr: Boolean;
+ StrCh: Char;
+Begin
+ Depth := 0;
+ InStr := False;
+ StrCh := #0;
+ While Pos <= Length(Script) Do Begin
+  If InStr Then Begin
+   If (Script[Pos] = '\') And (Pos < Length(Script)) Then Inc(Pos)
+   Else If Script[Pos] = StrCh Then InStr := False;
+  End
+  Else If (Script[Pos] = '''') Or (Script[Pos] = '"') Then Begin
+   InStr := True;
+   StrCh := Script[Pos];
+  End
+  Else If (Depth = 0) And (Script[Pos] In StopChars) Then
+   Exit
+  Else If Script[Pos] In ['(', '[', '{'] Then
+   Inc(Depth)
+  Else If Script[Pos] In [')', ']', '}'] Then Begin
+   If Depth > 0 Then Dec(Depth)
+   Else Exit; { fermeture inattendue a profondeur 0 : on s'arrete par securite }
+  End;
+  Inc(Pos);
+ End;
+End;
+
+{ Lire/ecrire une declaration de l'attribut style="prop:val;..." d'un
+  noeud - utilise pour style.left/top/visibility (positionnement des
+  sous-menus par JSCookMenu.js). }
+Function JSGetStyleProp(Node: HTMLNodePtr; Const StyleProp: String): String;
+Var
+ Decls, Decl, Name: String;
+ SepPos, ColonPos: Integer;
+Begin
+ JSGetStyleProp := '';
+ If Node = Nil Then Exit;
+ Decls := GetNodeAttribute(Node, 'style');
+ While Length(Decls) > 0 Do Begin
+  SepPos := Pos(';', Decls);
+  If SepPos = 0 Then SepPos := Length(Decls) + 1;
+  Decl := Trim(Copy(Decls, 1, SepPos - 1));
+  Delete(Decls, 1, SepPos);
+  ColonPos := Pos(':', Decl);
+  If ColonPos > 0 Then Begin
+   Name := Trim(Copy(Decl, 1, ColonPos - 1));
+   If HTMLLowerCase(Name) = HTMLLowerCase(StyleProp) Then Begin
+    JSGetStyleProp := Trim(Copy(Decl, ColonPos + 1, Length(Decl)));
+    Exit;
+   End;
+  End;
+ End;
+End;
+
+Procedure JSSetStyleProp(Node: HTMLNodePtr; Const StyleProp, Value: String);
+Var
+ Decls, Decl, Name, NewStyle: String;
+ SepPos, ColonPos: Integer;
+ Found: Boolean;
+Begin
+ If Node = Nil Then Exit;
+ Decls := GetNodeAttribute(Node, 'style');
+ NewStyle := '';
+ Found := False;
+ While Length(Decls) > 0 Do Begin
+  SepPos := Pos(';', Decls);
+  If SepPos = 0 Then SepPos := Length(Decls) + 1;
+  Decl := Trim(Copy(Decls, 1, SepPos - 1));
+  Delete(Decls, 1, SepPos);
+  If Length(Decl) = 0 Then Continue;
+  ColonPos := Pos(':', Decl);
+  If ColonPos > 0 Then Name := Trim(Copy(Decl, 1, ColonPos - 1)) Else Name := '';
+  If HTMLLowerCase(Name) = HTMLLowerCase(StyleProp) Then Begin
+   NewStyle := NewStyle + StyleProp + ':' + Value + ';';
+   Found := True;
+  End
+  Else
+   NewStyle := NewStyle + Decl + ';';
+ End;
+ If Not Found Then
+  NewStyle := NewStyle + StyleProp + ':' + Value + ';';
+ DOMSetAttribute(Node, 'style', NewStyle);
+End;
+
+{ Lire une propriete d'un noeud DOM utilise comme objet JavaScript
+  (this dans un gestionnaire, document.getElementById(...), ...).
+  Les proprietes integrees usuelles (className, id, style.X via
+  JSGetStyleProp, offsetWidth/Height/Left/Top via le memo de boite)
+  sont reconnues explicitement ; toute autre propriete est lue dans
+  JSExpando, le sac de proprietes arbitraires pose par du JS (ex:
+  obj.cmPrefix dans JSCookMenu.js). }
+Function JSGetNodeProperty(Node: HTMLNodePtr; Const PropName: String): JSValue;
+Var
+ LowerProp: String;
+Begin
+ JSGetNodeProperty := JSUndefined;
+ If Node = Nil Then Exit;
+ LowerProp := HTMLLowerCase(PropName);
+ If LowerProp = 'classname' Then
+  JSGetNodeProperty := JSString(GetNodeAttribute(Node, 'class'))
+ Else If LowerProp = 'id' Then
+  JSGetNodeProperty := JSString(GetNodeAttribute(Node, 'id'))
+ Else If LowerProp = 'style' Then
+  { Pseudo-objet "style" : meme noeud, voir le chainage .style.X plus
+    bas qui retombe sur les noms left/top/visibility ci-dessous. }
+  JSGetNodeProperty := JSNodeValue(Node)
+ Else If LowerProp = 'left' Then
+  JSGetNodeProperty := JSString(JSGetStyleProp(Node, 'left'))
+ Else If LowerProp = 'top' Then
+  JSGetNodeProperty := JSString(JSGetStyleProp(Node, 'top'))
+ Else If LowerProp = 'visibility' Then
+  JSGetNodeProperty := JSString(JSGetStyleProp(Node, 'visibility'))
+ Else If LowerProp = 'offsetwidth' Then
+  JSGetNodeProperty := JSNumber(JSGetNodeBoxWidth(Node))
+ Else If LowerProp = 'offsetheight' Then
+  JSGetNodeProperty := JSNumber(JSGetNodeBoxHeight(Node))
+ Else If LowerProp = 'offsetleft' Then
+  JSGetNodeProperty := JSNumber(JSGetNodeBoxX(Node))
+ Else If LowerProp = 'offsettop' Then
+  JSGetNodeProperty := JSNumber(JSGetNodeBoxY(Node))
+ Else If LowerProp = 'offsetparent' Then
+  JSGetNodeProperty := JSNodeValue(Node^.Parent)
+ Else If Node^.JSExpando <> Nil Then
+  JSGetNodeProperty := JSObjectGetProp(Node^.JSExpando, PropName);
+End;
+
+{ Definir une propriete d'un noeud DOM utilise comme objet JavaScript -
+  contrepartie en ecriture de JSGetNodeProperty. className/style.X
+  sont routes vers les vrais attributs HTML (class/style) ; tout le
+  reste devient une propriete expando arbitraire dans JSExpando. }
+Procedure JSSetNodeProperty(Node: HTMLNodePtr; Const PropName: String; Value: JSValue);
+Var
+ LowerProp: String;
+Begin
+ If Node = Nil Then Exit;
+ LowerProp := HTMLLowerCase(PropName);
+ If LowerProp = 'classname' Then
+  DOMSetAttribute(Node, 'class', JSValueToString(Value))
+ Else If LowerProp = 'id' Then
+  DOMSetAttribute(Node, 'id', JSValueToString(Value))
+ Else If LowerProp = 'left' Then
+  JSSetStyleProp(Node, 'left', JSValueToString(Value))
+ Else If LowerProp = 'top' Then
+  JSSetStyleProp(Node, 'top', JSValueToString(Value))
+ Else If LowerProp = 'visibility' Then
+  JSSetStyleProp(Node, 'visibility', JSValueToString(Value))
+ Else If LowerProp = 'innerhtml' Then
+  JSSetInnerHTML(Node, JSValueToString(Value))
+ Else Begin
+  If Node^.JSExpando = Nil Then Node^.JSExpando := JSNewObject(False);
+  JSObjectSetProp(Node^.JSExpando, PropName, Value);
+ End;
+End;
+
+{ Lire une propriete generique (obj.prop ou obj[index]) sur n'importe
+  quelle valeur JS - chaine (length), tableau/objet (length, sac de
+  proprietes), noeud DOM (JSGetNodeProperty), sinon undefined. }
+Function JSGetMemberValue(Base: JSValue; Const PropName: String): JSValue;
+Begin
+ Case Base.ValType Of
+  JS_VAL_STRING: Begin
+   If HTMLLowerCase(PropName) = 'length' Then
+    JSGetMemberValue := JSNumber(Length(Base.StrVal))
+   Else
+    JSGetMemberValue := JSUndefined;
+  End;
+  JS_VAL_ARRAY: Begin
+   If HTMLLowerCase(PropName) = 'length' Then Begin
+    If Base.ObjVal <> Nil Then JSGetMemberValue := JSNumber(Base.ObjVal^.ArrLen)
+    Else JSGetMemberValue := JSNumber(0);
+   End Else
+    JSGetMemberValue := JSObjectGetProp(Base.ObjVal, PropName);
+  End;
+  JS_VAL_OBJECT: JSGetMemberValue := JSObjectGetProp(Base.ObjVal, PropName);
+  JS_VAL_NODE: JSGetMemberValue := JSGetNodeProperty(Base.NodeVal, PropName);
+  Else JSGetMemberValue := JSUndefined;
+ End;
+End;
+
+{ Appeler une "methode" sur une valeur JS - seules les quelques
+  methodes de chaine et fonctions natives realmente utilisees par
+  JSCookMenu.js sont reconnues (charAt, substr) ; tout le reste
+  retourne undefined sans erreur (ce mini-interprete n'a pas de
+  veritable systeme de methodes generique). }
+Function JSCallMethod(Base: JSValue; Const MethodName: String; Const Args: Array Of JSValue; ArgCount: Integer): JSValue;
+Var
+ LowerName: String;
+ S: String;
+ StartIdx, LenArg: Integer;
+Begin
+ JSCallMethod := JSUndefined;
+ LowerName := HTMLLowerCase(MethodName);
+ If Base.ValType = JS_VAL_STRING Then Begin
+  S := Base.StrVal;
+  If (LowerName = 'charat') And (ArgCount > 0) Then Begin
+   StartIdx := Trunc(JSValueToNumber(Args[0])) + 1;
+   If (StartIdx >= 1) And (StartIdx <= Length(S)) Then
+    JSCallMethod := JSString(S[StartIdx])
+   Else
+    JSCallMethod := JSString('');
+   Exit;
+  End;
+  If LowerName = 'substr' Then Begin
+   StartIdx := 0;
+   If ArgCount > 0 Then StartIdx := Trunc(JSValueToNumber(Args[0]));
+   If StartIdx < 0 Then StartIdx := 0;
+   If ArgCount > 1 Then LenArg := Trunc(JSValueToNumber(Args[1]))
+   Else LenArg := Length(S) - StartIdx;
+   JSCallMethod := JSString(Copy(S, StartIdx + 1, LenArg));
+   Exit;
+  End;
+  If LowerName = 'indexof' Then Begin
+   If ArgCount > 0 Then
+    JSCallMethod := JSNumber(Pos(JSValueToString(Args[0]), S) - 1)
+   Else
+    JSCallMethod := JSNumber(-1);
+   Exit;
+  End;
+  If LowerName = 'touppercase' Then Begin
+   JSCallMethod := JSString(UpperCase(S));
+   Exit;
+  End;
+  If LowerName = 'tolowercase' Then Begin
+   JSCallMethod := JSString(HTMLLowerCase(S));
+   Exit;
+  End;
+ End;
+End;
+
+{ Evaluer un litteral tableau [a, b, c, ...]. Pos doit pointer juste
+  apres le '[' d'ouverture. Les elements sont des expressions
+  quelconques (y compris des litteraux imbriques), evaluees via
+  JSEvaluate comme les arguments d'appel de fonction. }
+Function JSEvalArrayLiteral(Const Script: String; Var Pos: LongInt): JSValue;
+Var
+ Obj: JSObjectPtr;
+ Index: Integer;
+ StartPos: LongInt;
+ ElemVal: JSValue;
+Begin
+ Obj := JSNewObject(True);
+ Index := 0;
+ Pos := JSSkipComments(Script, Pos);
+ While (Pos <= Length(Script)) And (Script[Pos] <> ']') Do Begin
+  Pos := JSSkipComments(Script, Pos);
+  If (Pos <= Length(Script)) And (Script[Pos] = ',') Then Begin
+   { Element omis : [a,,b] - traite comme undefined. }
+   JSObjectSetProp(Obj, IntToStr(Index), JSUndefined);
+   Inc(Index);
+   Inc(Pos);
+   Pos := JSSkipComments(Script, Pos);
+   Continue;
+  End;
+  StartPos := Pos;
+  JSSkipToBalanced(Script, Pos, [',', ']']);
+  ElemVal := JSEvaluate(Copy(Script, StartPos, Pos - StartPos));
+  JSObjectSetProp(Obj, IntToStr(Index), ElemVal);
+  Inc(Index);
+  Pos := JSSkipComments(Script, Pos);
+  If (Pos <= Length(Script)) And (Script[Pos] = ',') Then Begin
+   Inc(Pos);
+   Pos := JSSkipComments(Script, Pos);
+  End;
+ End;
+ If (Pos <= Length(Script)) And (Script[Pos] = ']') Then Inc(Pos);
+ JSEvalArrayLiteral := JSObjectValue(Obj);
+End;
+
+{ Evaluer un litteral objet (paires cle/valeur separees par des
+  virgules). Pos doit pointer juste apres l'accolade ouvrante. }
+Function JSEvalObjectLiteral(Const Script: String; Var Pos: LongInt): JSValue;
+Var
+ Obj: JSObjectPtr;
+ Token: JSToken;
+ KeyName: String;
+ StartPos: LongInt;
+ PropVal: JSValue;
+Begin
+ Obj := JSNewObject(False);
+ Pos := JSSkipComments(Script, Pos);
+ While (Pos <= Length(Script)) And (Script[Pos] <> '}') Do Begin
+  Pos := JSSkipComments(Script, Pos);
+  Token := JSGetNextToken(Script, Pos);
+  If Token.TokType = JS_TOK_STRING Then KeyName := Token.TokValue
+  Else KeyName := Token.TokValue;
+  Pos := JSSkipComments(Script, Pos);
+  If (Pos <= Length(Script)) And (Script[Pos] = ':') Then Inc(Pos);
+  Pos := JSSkipComments(Script, Pos);
+  StartPos := Pos;
+  JSSkipToBalanced(Script, Pos, [',', '}']);
+  PropVal := JSEvaluate(Copy(Script, StartPos, Pos - StartPos));
+  JSObjectSetProp(Obj, KeyName, PropVal);
+  Pos := JSSkipComments(Script, Pos);
+  If (Pos <= Length(Script)) And (Script[Pos] = ',') Then Begin
+   Inc(Pos);
+   Pos := JSSkipComments(Script, Pos);
+  End;
+ End;
+ If (Pos <= Length(Script)) And (Script[Pos] = '}') Then Inc(Pos);
+ JSEvalObjectLiteral := JSObjectValue(Obj);
+End;
+
 { Evaluer une expression primaire (nombre, chaine, variable, parentheses) }
-Function JSEvalPrimary(Const Script: String; Var Pos: Integer): JSValue;
+{ Lire et evaluer une liste d'arguments entre parentheses, Pos devant
+  pointer juste apres la parenthese ouvrante. Utilise JSSkipToBalanced
+  pour que des arguments contenant eux-memes des virgules imbriquees
+  (litteraux tableau/objet, autres appels) soient correctement
+  decoupes - l'ancien decoupage ne suivait que les parentheses. }
+Procedure JSReadCallArgs(Const Script: String; Var Pos: LongInt; Var Args: Array Of JSValue; Var ArgCount: Integer);
+Var
+ StartPos: LongInt;
+Begin
+ ArgCount := 0;
+ Pos := JSSkipComments(Script, Pos);
+ While (Pos <= Length(Script)) And (Script[Pos] <> ')') Do Begin
+  If ArgCount <= High(Args) Then Begin
+   StartPos := Pos;
+   JSSkipToBalanced(Script, Pos, [',', ')']);
+   Args[ArgCount] := JSEvaluate(Copy(Script, StartPos, Pos - StartPos));
+   Inc(ArgCount);
+  End Else
+   JSSkipToBalanced(Script, Pos, [',', ')']);
+  If (Pos <= Length(Script)) And (Script[Pos] = ',') Then Inc(Pos);
+  Pos := JSSkipComments(Script, Pos);
+ End;
+End;
+
+{ Consommer une chaine d'acces postfixe (.prop, .methode(args),
+  [index]) sur une valeur de base deja resolue, aussi longue soit-
+  elle - ex: thisMenu.cmSubMenu[i].style.left. Chaque etape relit la
+  valeur courante via JSGetMemberValue (lecture simple) ou
+  JSCallMethod (si suivie d'une parenthese d'appel). }
+Function JSEvalPostfixChain(Const Script: String; Var Pos: LongInt; Base: JSValue): JSValue;
+Var
+ Current: JSValue;
+ PropName: String;
+ Token: JSToken;
+ IndexVal: JSValue;
+ StartPos: LongInt;
+ Args: Array[0..9] Of JSValue;
+ ArgCount: Integer;
+Begin
+ Current := Base;
+ Pos := JSSkipComments(Script, Pos);
+ While (Pos <= Length(Script)) And (Script[Pos] In ['.', '[']) And Not JSCtx.HasError Do Begin
+  If Script[Pos] = '.' Then Begin
+   Inc(Pos);
+   Pos := JSSkipComments(Script, Pos);
+   Token := JSGetNextToken(Script, Pos);
+   PropName := Token.TokValue;
+   Pos := JSSkipComments(Script, Pos);
+   If (Pos <= Length(Script)) And (Script[Pos] = '(') Then Begin
+    Inc(Pos);
+    JSReadCallArgs(Script, Pos, Args, ArgCount);
+    If (Pos <= Length(Script)) And (Script[Pos] = ')') Then Inc(Pos);
+    Current := JSCallMethod(Current, PropName, Args, ArgCount);
+   End
+   Else
+    Current := JSGetMemberValue(Current, PropName);
+  End
+  Else Begin
+   Inc(Pos);
+   StartPos := Pos;
+   JSSkipToBalanced(Script, Pos, [']']);
+   IndexVal := JSEvaluate(Copy(Script, StartPos, Pos - StartPos));
+   If (Pos <= Length(Script)) And (Script[Pos] = ']') Then Inc(Pos);
+   If IndexVal.ValType = JS_VAL_STRING Then
+    Current := JSGetMemberValue(Current, IndexVal.StrVal)
+   Else
+    Current := JSGetMemberValue(Current, JSValueToString(IndexVal));
+  End;
+  Pos := JSSkipComments(Script, Pos);
+ End;
+ JSEvalPostfixChain := Current;
+End;
+
+Function JSEvalPrimary(Const Script: String; Var Pos: LongInt): JSValue;
 Var
  Token: JSToken;
- VarName: String;
+ VarName, MemberName: String;
  FuncIdx: Integer;
  Args: Array[0..9] Of JSValue;
  ArgCount: Integer;
- SubExpr: String;
- ParenLevel: Integer;
- StartPos: Integer;
+ StartPos: LongInt;
+ Result: JSValue;
+ IncDecOp: String;
+ IncDecVal: Real;
 Begin
- JSEvalPrimary := JSUndefined;
- If JSCtx.HasError Then Exit;
+ If JSCtx.HasError Then Begin
+  JSEvalPrimary := JSUndefined;
+  Exit;
+ End;
 
+ Result := JSUndefined;
  Token := JSGetNextToken(Script, Pos);
 
  Case Token.TokType Of
-  JS_TOK_NUMBER: JSEvalPrimary := JSNumber(Token.NumValue);
-  JS_TOK_STRING: JSEvalPrimary := JSString(Token.TokValue);
-  JS_TOK_BOOLEAN: JSEvalPrimary := JSBool(Token.NumValue <> 0);
-  JS_TOK_NULL: JSEvalPrimary := JSNull;
-  JS_TOK_UNDEFINED: JSEvalPrimary := JSUndefined;
+  JS_TOK_NUMBER: Result := JSNumber(Token.NumValue);
+  JS_TOK_STRING: Result := JSString(Token.TokValue);
+  JS_TOK_BOOLEAN: Result := JSBool(Token.NumValue <> 0);
+  JS_TOK_NULL: Result := JSNull;
+  JS_TOK_UNDEFINED: Result := JSUndefined;
+
+  JS_TOK_KEYWORD: Begin
+   If Token.KeywordType = JS_KW_THIS Then
+    Result := JSNodeValue(JSEventTargetNode)
+   Else If Token.KeywordType = JS_KW_NEW Then Begin
+    { new Array(...) / new Object() - les arguments sont ignores : ni
+      l'un ni l'autre n'en a besoin dans JSCookMenu.js. }
+    Pos := JSSkipComments(Script, Pos);
+    Token := JSGetNextToken(Script, Pos);
+    VarName := Token.TokValue;
+    Pos := JSSkipComments(Script, Pos);
+    If (Pos <= Length(Script)) And (Script[Pos] = '(') Then Begin
+     Inc(Pos);
+     JSSkipToBalanced(Script, Pos, [')']);
+     If (Pos <= Length(Script)) And (Script[Pos] = ')') Then Inc(Pos);
+    End;
+    If HTMLLowerCase(VarName) = 'array' Then
+     Result := JSObjectValue(JSNewObject(True))
+    Else
+     Result := JSObjectValue(JSNewObject(False));
+   End;
+  End;
 
   JS_TOK_IDENTIFIER: Begin
    VarName := Token.TokValue;
    Pos := JSSkipComments(Script, Pos);
 
-   { Verifier si c'est un appel de fonction }
    If (Pos <= Length(Script)) And (Script[Pos] = '(') Then Begin
+    { Appel de fonction sur VarName lui-meme }
     Inc(Pos);
-    ArgCount := 0;
-
-    { Collecter les arguments }
-    Pos := JSSkipComments(Script, Pos);
-    While (Pos <= Length(Script)) And (Script[Pos] <> ')') Do Begin
-     If ArgCount < 10 Then Begin
-      { Trouver l'argument jusqu'a la virgule ou la parenthese fermante }
-      StartPos := Pos;
-      ParenLevel := 0;
-      While (Pos <= Length(Script)) Do Begin
-       If Script[Pos] = '(' Then Inc(ParenLevel)
-       Else If Script[Pos] = ')' Then Begin
-        If ParenLevel = 0 Then Break;
-        Dec(ParenLevel);
-       End
-       Else If (Script[Pos] = ',') And (ParenLevel = 0) Then Break;
-       Inc(Pos);
-      End;
-      SubExpr := Copy(Script, StartPos, Pos - StartPos);
-      Args[ArgCount] := JSEvaluate(SubExpr);
-      Inc(ArgCount);
-     End;
-     If (Pos <= Length(Script)) And (Script[Pos] = ',') Then Inc(Pos);
-     Pos := JSSkipComments(Script, Pos);
-    End;
+    JSReadCallArgs(Script, Pos, Args, ArgCount);
     If (Pos <= Length(Script)) And (Script[Pos] = ')') Then Inc(Pos);
 
-    { Traiter les fonctions natives }
     If VarName = 'alert' Then Begin
      If ArgCount > 0 Then JSNativeAlert(JSValueToString(Args[0]));
-     JSEvalPrimary := JSUndefined;
+     Result := JSUndefined;
+    End
+    Else If VarName = 'eval' Then Begin
+     If ArgCount > 0 Then Result := JSEvaluate(JSValueToString(Args[0]))
+     Else Result := JSUndefined;
+    End
+    Else If VarName = 'clearTimeout' Then Begin
+     JSClearTimeout;
+     Result := JSUndefined;
     End
     Else If VarName = 'parseInt' Then Begin
-     If ArgCount > 0 Then JSEvalPrimary := JSNumber(Trunc(JSValueToNumber(Args[0])))
-     Else JSEvalPrimary := JSNumber(0);
+     If ArgCount > 0 Then Result := JSNumber(Trunc(JSValueToNumber(Args[0])))
+     Else Result := JSNumber(0);
     End
     Else If VarName = 'parseFloat' Then Begin
-     If ArgCount > 0 Then JSEvalPrimary := JSNumber(JSValueToNumber(Args[0]))
-     Else JSEvalPrimary := JSNumber(0);
+     If ArgCount > 0 Then Result := JSNumber(JSValueToNumber(Args[0]))
+     Else Result := JSNumber(0);
     End
     Else If VarName = 'String' Then Begin
-     If ArgCount > 0 Then JSEvalPrimary := JSString(JSValueToString(Args[0]))
-     Else JSEvalPrimary := JSString('');
+     If ArgCount > 0 Then Result := JSString(JSValueToString(Args[0]))
+     Else Result := JSString('');
     End
     Else If VarName = 'Number' Then Begin
-     If ArgCount > 0 Then JSEvalPrimary := JSNumber(JSValueToNumber(Args[0]))
-     Else JSEvalPrimary := JSNumber(0);
+     If ArgCount > 0 Then Result := JSNumber(JSValueToNumber(Args[0]))
+     Else Result := JSNumber(0);
     End
     Else If VarName = 'Boolean' Then Begin
-     If ArgCount > 0 Then JSEvalPrimary := JSBool(JSValueToBool(Args[0]))
-     Else JSEvalPrimary := JSBool(False);
+     If ArgCount > 0 Then Result := JSBool(JSValueToBool(Args[0]))
+     Else Result := JSBool(False);
     End
+    Else If VarName = 'Array' Then
+     Result := JSObjectValue(JSNewObject(True))
+    Else If VarName = 'Object' Then
+     Result := JSObjectValue(JSNewObject(False))
     Else Begin
      { Fonction utilisateur }
      FuncIdx := JSFindFunction(VarName);
      If FuncIdx > 0 Then
-      JSEvalPrimary := JSCallUserFunction(FuncIdx, Args, ArgCount)
+      Result := JSCallUserFunction(FuncIdx, Args, ArgCount)
      Else Begin
       JSCtx.HasError := True;
       JSCtx.ErrorMsg := 'ReferenceError: ' + VarName + ' is not defined';
@@ -2571,91 +3218,148 @@ Begin
     End;
    End
 
-   { Verifier si c'est console.log ou document.write }
-   Else If (Pos <= Length(Script)) And (Script[Pos] = '.') Then Begin
+   Else If ((VarName = 'console') Or (VarName = 'document') Or (VarName = 'window')) And
+           (Pos <= Length(Script)) And (Script[Pos] = '.') Then Begin
+    { Les quelques membres de console/document/window reellement
+      utilises par JSCookMenu.js - ces trois noms ne sont pas de
+      vraies valeurs JS stockees (pas d'objet "document" generique
+      dans ce mini-interprete), donc reconnus ici par leur nom litteral. }
     Inc(Pos);
+    Pos := JSSkipComments(Script, Pos);
     Token := JSGetNextToken(Script, Pos);
-    If (VarName = 'console') And (Token.TokValue = 'log') Then Begin
-     { console.log() }
-     Pos := JSSkipComments(Script, Pos);
+    MemberName := HTMLLowerCase(Token.TokValue);
+    Pos := JSSkipComments(Script, Pos);
+
+    If (VarName = 'console') And (MemberName = 'log') Then Begin
      If (Pos <= Length(Script)) And (Script[Pos] = '(') Then Begin
       Inc(Pos);
-      StartPos := Pos;
-      ParenLevel := 1;
-      While (Pos <= Length(Script)) And (ParenLevel > 0) Do Begin
-       If Script[Pos] = '(' Then Inc(ParenLevel)
-       Else If Script[Pos] = ')' Then Dec(ParenLevel);
-       If ParenLevel > 0 Then Inc(Pos);
-      End;
-      SubExpr := Copy(Script, StartPos, Pos - StartPos);
-      JSNativeConsoleLog(JSValueToString(JSEvaluate(SubExpr)));
+      JSReadCallArgs(Script, Pos, Args, ArgCount);
       If (Pos <= Length(Script)) And (Script[Pos] = ')') Then Inc(Pos);
+      If ArgCount > 0 Then JSNativeConsoleLog(JSValueToString(Args[0]));
      End;
-     JSEvalPrimary := JSUndefined;
     End
-    Else If (VarName = 'document') And (Token.TokValue = 'write') Then Begin
-     { document.write() }
-     Pos := JSSkipComments(Script, Pos);
+    Else If (VarName = 'document') And (MemberName = 'write') Then Begin
      If (Pos <= Length(Script)) And (Script[Pos] = '(') Then Begin
       Inc(Pos);
-      StartPos := Pos;
-      ParenLevel := 1;
-      While (Pos <= Length(Script)) And (ParenLevel > 0) Do Begin
-       If Script[Pos] = '(' Then Inc(ParenLevel)
-       Else If Script[Pos] = ')' Then Dec(ParenLevel);
-       If ParenLevel > 0 Then Inc(Pos);
-      End;
-      SubExpr := Copy(Script, StartPos, Pos - StartPos);
-      JSNativeDocumentWrite(JSValueToString(JSEvaluate(SubExpr)));
+      JSReadCallArgs(Script, Pos, Args, ArgCount);
+      If (Pos <= Length(Script)) And (Script[Pos] = ')') Then Inc(Pos);
+      If ArgCount > 0 Then JSNativeDocumentWrite(JSValueToString(Args[0]));
+     End;
+    End
+    Else If (VarName = 'document') And (MemberName = 'getelementbyid') Then Begin
+     If (Pos <= Length(Script)) And (Script[Pos] = '(') Then Begin
+      Inc(Pos);
+      JSReadCallArgs(Script, Pos, Args, ArgCount);
+      If (Pos <= Length(Script)) And (Script[Pos] = ')') Then Inc(Pos);
+      If ArgCount > 0 Then
+       Result := JSNodeValue(DOMGetElementById(JSValueToString(Args[0])));
+     End;
+    End
+    Else If (VarName = 'document') And (MemberName = 'body') Then
+     Result := JSNodeValue(DOMGetBody)
+    Else If (VarName = 'window') And (MemberName = 'open') Then Begin
+     If (Pos <= Length(Script)) And (Script[Pos] = '(') Then Begin
+      Inc(Pos);
+      JSReadCallArgs(Script, Pos, Args, ArgCount);
+      If (Pos <= Length(Script)) And (Script[Pos] = ')') Then Inc(Pos);
+      { window.open : ce navigateur n'a pas de fenetres multiples,
+        traite comme une navigation de la page courante (comportement
+        reel pour target='_self', le cas le plus frequent ici). }
+      If (ArgCount > 0) And (Length(JSValueToString(Args[0])) > 0) Then
+       NavigateTo(ResolveLinkHref(JSValueToString(Args[0])));
+     End;
+    End
+    Else If (VarName = 'window') And (MemberName = 'settimeout') Then Begin
+     If (Pos <= Length(Script)) And (Script[Pos] = '(') Then Begin
+      Inc(Pos);
+      JSReadCallArgs(Script, Pos, Args, ArgCount);
+      If (Pos <= Length(Script)) And (Script[Pos] = ')') Then Inc(Pos);
+      If ArgCount > 1 Then
+       JSSetTimeout(JSValueToString(Args[0]), Trunc(JSValueToNumber(Args[1])));
+     End;
+    End
+    Else If (VarName = 'window') And (MemberName = 'cleartimeout') Then Begin
+     If (Pos <= Length(Script)) And (Script[Pos] = '(') Then Begin
+      Inc(Pos);
+      JSSkipToBalanced(Script, Pos, [')']);
       If (Pos <= Length(Script)) And (Script[Pos] = ')') Then Inc(Pos);
      End;
-     JSEvalPrimary := JSUndefined;
-    End
-    Else Begin
-     { Acces a une propriete d'objet - non supporte pour l'instant }
-     JSEvalPrimary := JSUndefined;
+     JSClearTimeout;
     End;
+    { Tout autre membre (document.all, window.defaultStatus en
+      lecture, ...) : Result reste undefined - suffisant pour que les
+      "if (document.all)" du code IE-only soient correctement faux. }
    End
+
    Else Begin
-    { Variable simple }
-    JSEvalPrimary := JSGetVariable(VarName);
+    { Variable simple - le chainage .prop / [index] / .methode(...)
+      est applique uniformement a la fin de cette fonction. }
+    Result := JSGetVariable(VarName);
+    { Suffixe ++ / -- (i++ / i--) : incrementer/decrementer la
+      variable APRES avoir lu sa valeur courante (semantique
+      postfixe) - utilise par exemple dans la clause d'increment
+      d'un for (i = 0; i < n; ++i) ou (... i++). }
+    If (Pos + 1 <= Length(Script)) And
+       (((Script[Pos] = '+') And (Script[Pos + 1] = '+')) Or
+        ((Script[Pos] = '-') And (Script[Pos + 1] = '-'))) Then Begin
+     IncDecVal := JSValueToNumber(Result);
+     If Script[Pos] = '+' Then IncDecVal := IncDecVal + 1 Else IncDecVal := IncDecVal - 1;
+     JSSetVariable(VarName, JSNumber(IncDecVal), False);
+     Inc(Pos, 2);
+    End;
    End;
   End;
 
   JS_TOK_PUNCTUATOR: Begin
    If Token.TokValue = '(' Then Begin
-    { Expression entre parentheses }
     StartPos := Pos;
-    ParenLevel := 1;
-    While (Pos <= Length(Script)) And (ParenLevel > 0) Do Begin
-     If Script[Pos] = '(' Then Inc(ParenLevel)
-     Else If Script[Pos] = ')' Then Dec(ParenLevel);
-     If ParenLevel > 0 Then Inc(Pos);
-    End;
-    SubExpr := Copy(Script, StartPos, Pos - StartPos);
-    JSEvalPrimary := JSEvaluate(SubExpr);
+    JSSkipToBalanced(Script, Pos, [')']);
+    Result := JSEvaluate(Copy(Script, StartPos, Pos - StartPos));
     If (Pos <= Length(Script)) And (Script[Pos] = ')') Then Inc(Pos);
-   End;
+   End
+   Else If Token.TokValue = '{' Then
+    Result := JSEvalObjectLiteral(Script, Pos)
+   Else If Token.TokValue = '[' Then
+    Result := JSEvalArrayLiteral(Script, Pos);
   End;
 
   JS_TOK_OPERATOR: Begin
    { Operateur unaire - ou ! }
    If Token.TokValue = '-' Then
-    JSEvalPrimary := JSNumber(-JSValueToNumber(JSEvalPrimary(Script, Pos)))
+    Result := JSNumber(-JSValueToNumber(JSEvalPrimary(Script, Pos)))
    Else If Token.TokValue = '!' Then
-    JSEvalPrimary := JSBool(Not JSValueToBool(JSEvalPrimary(Script, Pos)))
+    Result := JSBool(Not JSValueToBool(JSEvalPrimary(Script, Pos)))
    Else If Token.TokValue = '+' Then
-    JSEvalPrimary := JSNumber(JSValueToNumber(JSEvalPrimary(Script, Pos)));
+    Result := JSNumber(JSValueToNumber(JSEvalPrimary(Script, Pos)))
+   Else If (Token.TokValue = '++') Or (Token.TokValue = '--') Then Begin
+    { Prefixe ++i / --i : incrementer/decrementer AVANT de lire la
+      valeur (semantique prefixe) - tout aussi utilise que la forme
+      suffixe dans les boucles for de JSCookMenu.js. }
+    IncDecOp := Token.TokValue;
+    Pos := JSSkipComments(Script, Pos);
+    Token := JSGetNextToken(Script, Pos);
+    If Token.TokType = JS_TOK_IDENTIFIER Then Begin
+     IncDecVal := JSValueToNumber(JSGetVariable(Token.TokValue));
+     If IncDecOp = '++' Then IncDecVal := IncDecVal + 1 Else IncDecVal := IncDecVal - 1;
+     JSSetVariable(Token.TokValue, JSNumber(IncDecVal), False);
+     Result := JSNumber(IncDecVal);
+    End;
+   End;
   End;
  End;
+
+ { Chaine d'acces postfixe (.prop, .methode(args), [index]), repetee
+   autant de fois que necessaire - couvre aussi bien "var.a.b[c]" que
+   la suite d'un appel document.getElementById(id).style.left. }
+ JSEvalPrimary := JSEvalPostfixChain(Script, Pos, Result);
 End;
 
 { Evaluer une expression multiplicative (* / %) }
-Function JSEvalMultiplicative(Const Script: String; Var Pos: Integer): JSValue;
+Function JSEvalMultiplicative(Const Script: String; Var Pos: LongInt): JSValue;
 Var
  Left, Right: JSValue;
  Op: String;
- SavePos: Integer;
+ SavePos: LongInt;
  Token: JSToken;
 Begin
  Left := JSEvalPrimary(Script, Pos);
@@ -2704,11 +3408,11 @@ Begin
 End;
 
 { Evaluer une expression additive (+ -) }
-Function JSEvalAdditive(Const Script: String; Var Pos: Integer): JSValue;
+Function JSEvalAdditive(Const Script: String; Var Pos: LongInt): JSValue;
 Var
  Left, Right: JSValue;
  Op: String;
- SavePos: Integer;
+ SavePos: LongInt;
  Token: JSToken;
 Begin
  Left := JSEvalMultiplicative(Script, Pos);
@@ -2748,11 +3452,11 @@ Begin
 End;
 
 { Evaluer une expression de comparaison (< > <= >= == != === !==) }
-Function JSEvalComparison(Const Script: String; Var Pos: Integer): JSValue;
+Function JSEvalComparison(Const Script: String; Var Pos: LongInt): JSValue;
 Var
  Left, Right: JSValue;
  Op: String;
- SavePos: Integer;
+ SavePos: LongInt;
  Token: JSToken;
 Begin
  Left := JSEvalAdditive(Script, Pos);
@@ -2807,11 +3511,11 @@ Begin
 End;
 
 { Evaluer une expression logique (&& ||) }
-Function JSEvalLogical(Const Script: String; Var Pos: Integer): JSValue;
+Function JSEvalLogical(Const Script: String; Var Pos: LongInt): JSValue;
 Var
  Left, Right: JSValue;
  Op: String;
- SavePos: Integer;
+ SavePos: LongInt;
  Token: JSToken;
 Begin
  Left := JSEvalComparison(Script, Pos);
@@ -2856,15 +3560,50 @@ Begin
 End;
 
 { Evaluer une expression complete }
-Function JSEvalExpression(Const Script: String; Var Pos: Integer): JSValue;
+{ Evaluer une expression complete, y compris l'operateur ternaire
+  cond ? a : b (frequent dans JSCookMenu.js, ex: idSub = hasChild ?
+  cmNewID() : null). Le texte passe a cette fonction est toujours une
+  sous-chaine deja decoupee par l'appelant a la frontiere exacte de
+  l'expression (argument d'appel, element de litteral, index entre
+  crochets, ...), donc la branche "sinon" s'etend simplement jusqu'a
+  la fin de Script - aucun caractere de Script au-dela de cette
+  expression n'appartient a l'appelant. }
+Function JSEvalExpression(Const Script: String; Var Pos: LongInt): JSValue;
+Var
+ CondVal: JSValue;
+ BranchStartPos: LongInt;
+ ThenText, ElseText: String;
 Begin
- JSEvalExpression := JSEvalLogical(Script, Pos);
+ CondVal := JSEvalLogical(Script, Pos);
+ If JSCtx.HasError Then Begin
+  JSEvalExpression := CondVal;
+  Exit;
+ End;
+
+ Pos := JSSkipComments(Script, Pos);
+ If (Pos <= Length(Script)) And (Script[Pos] = '?') Then Begin
+  Inc(Pos);
+  Pos := JSSkipComments(Script, Pos);
+  BranchStartPos := Pos;
+  JSSkipToBalanced(Script, Pos, [':']);
+  ThenText := Copy(Script, BranchStartPos, Pos - BranchStartPos);
+  If (Pos <= Length(Script)) And (Script[Pos] = ':') Then Inc(Pos);
+  Pos := JSSkipComments(Script, Pos);
+  BranchStartPos := Pos;
+  JSSkipToBalanced(Script, Pos, []);
+  ElseText := Copy(Script, BranchStartPos, Pos - BranchStartPos);
+  If JSValueToBool(CondVal) Then
+   JSEvalExpression := JSEvaluate(ThenText)
+  Else
+   JSEvalExpression := JSEvaluate(ElseText);
+ End Else
+  JSEvalExpression := CondVal;
 End;
 
 { Evaluer un script JavaScript }
 Function JSEvaluate(Const Script: String): JSValue;
 Var
- Pos: Integer;
+ Pos: LongInt;
  Token: JSToken;
  VarName: String;
  Value: JSValue;
@@ -2872,7 +3611,7 @@ Var
  FuncName: String;
  FuncBody: String;
  BraceLevel: Integer;
- StartPos: Integer;
+ StartPos: LongInt;
  ParamStr: String;
  I, J: Integer;
  CondExpr: String;
@@ -2880,6 +3619,15 @@ Var
  ElseBlock: String;
  CondValue: JSValue;
  PropToken: JSToken;
+ Container: JSValue;
+ KeyName: String;
+ HasFinalStep: Boolean;
+ IndexVal: JSValue;
+ IdxStartPos: LongInt;
+ FallbackExpr: String;
+ FallbackPos: LongInt;
+ LoopInit, LoopCond, LoopIncr, LoopBody: String;
+ LoopGuard: LongInt;
 Begin
  JSEvaluate := JSUndefined;
  If Length(Script) = 0 Then Exit;
@@ -2915,10 +3663,14 @@ Begin
    Pos := JSSkipComments(Script, Pos);
    If (Pos <= Length(Script)) And (Script[Pos] = '=') Then Begin
     Inc(Pos);
-    { Trouver la fin de l'expression (jusqu'au ; ou fin) }
+    { Trouver la fin de l'expression (jusqu'au ; ou fin), en
+      respectant les crochets/accolades/chaines imbriques - un ';'
+      a l'interieur d'une chaine litterale ou d'un litteral tableau/
+      objet imbrique ne marque pas la fin de l'instruction (sans
+      cela, une chaine contenant un ';' tronquait silencieusement le
+      reste du litteral, ex: var x = [a, b, 'texte; avec point-virgule', c]; ). }
     StartPos := Pos;
-    While (Pos <= Length(Script)) And (Script[Pos] <> ';') Do
-     Inc(Pos);
+    JSSkipToBalanced(Script, Pos, [';']);
     Value := JSEvaluate(Copy(Script, StartPos, Pos - StartPos));
    End Else
     Value := JSUndefined;
@@ -3007,7 +3759,13 @@ Begin
    End Else
     CondExpr := '';
 
-   { Bloc then }
+   { Bloc then : avec ou sans accolades. Sans accolades (if (c) stmt;),
+     il faut tout de meme consommer le texte de l'instruction (avancer
+     Pos jusqu'au point-virgule) MEME SI on ne l'execute pas (condition
+     fausse) - sans quoi cette instruction, jamais consommee, serait
+     retraitee par la boucle principale comme une instruction
+     independante et s'executerait TOUJOURS, que la condition soit
+     vraie ou fausse. }
    Pos := JSSkipComments(Script, Pos);
    If (Pos <= Length(Script)) And (Script[Pos] = '{') Then Begin
     Inc(Pos);
@@ -3020,10 +3778,14 @@ Begin
     End;
     ThenBlock := Copy(Script, StartPos, Pos - StartPos);
     If (Pos <= Length(Script)) And (Script[Pos] = '}') Then Inc(Pos);
-   End Else
-    ThenBlock := '';
+   End Else Begin
+    StartPos := Pos;
+    JSSkipToBalanced(Script, Pos, [';']);
+    ThenBlock := Copy(Script, StartPos, Pos - StartPos);
+    If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
+   End;
 
-   { Bloc else optionnel }
+   { Bloc else optionnel : meme remarque que pour le bloc then. }
    ElseBlock := '';
    Pos := JSSkipComments(Script, Pos);
    StartPos := Pos;
@@ -3041,6 +3803,11 @@ Begin
      End;
      ElseBlock := Copy(Script, StartPos, Pos - StartPos);
      If (Pos <= Length(Script)) And (Script[Pos] = '}') Then Inc(Pos);
+    End Else Begin
+     StartPos := Pos;
+     JSSkipToBalanced(Script, Pos, [';']);
+     ElseBlock := Copy(Script, StartPos, Pos - StartPos);
+     If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
     End;
    End Else
     Pos := StartPos;
@@ -3056,11 +3823,147 @@ Begin
   { Instruction return }
   Else If (Token.TokType = JS_TOK_KEYWORD) And (Token.KeywordType = JS_KW_RETURN) Then Begin
    StartPos := Pos;
-   While (Pos <= Length(Script)) And (Script[Pos] <> ';') Do
-    Inc(Pos);
+   JSSkipToBalanced(Script, Pos, [';']);
    JSEvaluate := JSEvaluate(Copy(Script, StartPos, Pos - StartPos));
    If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
    Exit;
+  End
+
+  { Instructions break/continue : remontent via un drapeau global
+    (voir sa declaration) puisque JSEvaluate est recursif - le corps
+    de la boucle qui les contient est lui-meme evalue par un appel
+    imbrique, qui ne peut pas "sortir" directement la boucle Pascal
+    for/while ecrite plus bas, qui vit dans un AUTRE appel a
+    JSEvaluate (celui qui interprete l'instruction for/while
+    elle-meme). }
+  Else If (Token.TokType = JS_TOK_KEYWORD) And (Token.KeywordType = JS_KW_BREAK) Then Begin
+   JSBreakFlag := True;
+   If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
+   Exit;
+  End
+  Else If (Token.TokType = JS_TOK_KEYWORD) And (Token.KeywordType = JS_KW_CONTINUE) Then Begin
+   JSContinueFlag := True;
+   If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
+   Exit;
+  End
+
+  { Instruction for, avec trois clauses entre parentheses (init,
+    condition, increment) suivies d'un bloc - JSCookMenu.js (et la
+    plupart du JS reel) en depend constamment ; sans ceci, "for"
+    n'etant reconnu par aucune des branches ci-dessus, retombait dans
+    le filet "Autre expression" tout en bas, qui s'arrete au premier
+    point-virgule interne a la parenthese du for (entre init et
+    condition), massacrant completement l'interpretation du reste du
+    script. }
+  Else If (Token.TokType = JS_TOK_KEYWORD) And (Token.KeywordType = JS_KW_FOR) Then Begin
+   Pos := JSSkipComments(Script, Pos);
+   LoopInit := ''; LoopCond := ''; LoopIncr := '';
+   If (Pos <= Length(Script)) And (Script[Pos] = '(') Then Begin
+    Inc(Pos);
+    StartPos := Pos;
+    JSSkipToBalanced(Script, Pos, [';']);
+    LoopInit := Copy(Script, StartPos, Pos - StartPos);
+    If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
+    StartPos := Pos;
+    JSSkipToBalanced(Script, Pos, [';']);
+    LoopCond := Copy(Script, StartPos, Pos - StartPos);
+    If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
+    StartPos := Pos;
+    JSSkipToBalanced(Script, Pos, [')']);
+    LoopIncr := Copy(Script, StartPos, Pos - StartPos);
+    If (Pos <= Length(Script)) And (Script[Pos] = ')') Then Inc(Pos);
+   End;
+   Pos := JSSkipComments(Script, Pos);
+   If (Pos <= Length(Script)) And (Script[Pos] = '{') Then Begin
+    Inc(Pos);
+    StartPos := Pos;
+    BraceLevel := 1;
+    While (Pos <= Length(Script)) And (BraceLevel > 0) Do Begin
+     If Script[Pos] = '{' Then Inc(BraceLevel)
+     Else If Script[Pos] = '}' Then Dec(BraceLevel);
+     If BraceLevel > 0 Then Inc(Pos);
+    End;
+    LoopBody := Copy(Script, StartPos, Pos - StartPos);
+    If (Pos <= Length(Script)) And (Script[Pos] = '}') Then Inc(Pos);
+   End Else Begin
+    StartPos := Pos;
+    JSSkipToBalanced(Script, Pos, [';']);
+    LoopBody := Copy(Script, StartPos, Pos - StartPos);
+    If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
+   End;
+
+   JSEvaluate(LoopInit);
+   LoopGuard := 0;
+   While (Not JSCtx.HasError) And JSValueToBool(JSEvaluate(LoopCond)) Do Begin
+    Inc(LoopGuard);
+    If LoopGuard > 200000 Then Begin
+     { Garde-fou : un script casse ou un bogue d'interprete ne doit
+       jamais figer le navigateur indefiniment. }
+     JSCtx.HasError := True;
+     JSCtx.ErrorMsg := 'Error: boucle for trop longue (garde-fou)';
+     Break;
+    End;
+    JSBreakFlag := False;
+    JSContinueFlag := False;
+    JSEvaluate(LoopBody);
+    If JSCtx.HasError Then Break;
+    If JSBreakFlag Then Begin
+     JSBreakFlag := False;
+     Break;
+    End;
+    JSContinueFlag := False;
+    JSEvaluate(LoopIncr);
+   End;
+  End
+
+  { Instruction while, condition entre parentheses suivie d'un bloc }
+  Else If (Token.TokType = JS_TOK_KEYWORD) And (Token.KeywordType = JS_KW_WHILE) Then Begin
+   Pos := JSSkipComments(Script, Pos);
+   LoopCond := '';
+   If (Pos <= Length(Script)) And (Script[Pos] = '(') Then Begin
+    Inc(Pos);
+    StartPos := Pos;
+    JSSkipToBalanced(Script, Pos, [')']);
+    LoopCond := Copy(Script, StartPos, Pos - StartPos);
+    If (Pos <= Length(Script)) And (Script[Pos] = ')') Then Inc(Pos);
+   End;
+   Pos := JSSkipComments(Script, Pos);
+   If (Pos <= Length(Script)) And (Script[Pos] = '{') Then Begin
+    Inc(Pos);
+    StartPos := Pos;
+    BraceLevel := 1;
+    While (Pos <= Length(Script)) And (BraceLevel > 0) Do Begin
+     If Script[Pos] = '{' Then Inc(BraceLevel)
+     Else If Script[Pos] = '}' Then Dec(BraceLevel);
+     If BraceLevel > 0 Then Inc(Pos);
+    End;
+    LoopBody := Copy(Script, StartPos, Pos - StartPos);
+    If (Pos <= Length(Script)) And (Script[Pos] = '}') Then Inc(Pos);
+   End Else Begin
+    StartPos := Pos;
+    JSSkipToBalanced(Script, Pos, [';']);
+    LoopBody := Copy(Script, StartPos, Pos - StartPos);
+    If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
+   End;
+
+   LoopGuard := 0;
+   While (Not JSCtx.HasError) And JSValueToBool(JSEvaluate(LoopCond)) Do Begin
+    Inc(LoopGuard);
+    If LoopGuard > 200000 Then Begin
+     JSCtx.HasError := True;
+     JSCtx.ErrorMsg := 'Error: boucle while trop longue (garde-fou)';
+     Break;
+    End;
+    JSBreakFlag := False;
+    JSContinueFlag := False;
+    JSEvaluate(LoopBody);
+    If JSCtx.HasError Then Break;
+    If JSBreakFlag Then Begin
+     JSBreakFlag := False;
+     Break;
+    End;
+    JSContinueFlag := False;
+   End;
   End
 
   { Expression simple (affectation ou appel de fonction). "this" est
@@ -3072,45 +3975,90 @@ Begin
    VarName := Token.TokValue;
    Pos := JSSkipComments(Script, Pos);
 
-   { Affectation sur une propriete (this.className = ..., window.location
-     = ...) : ce mini-interprete n'a pas de veritable systeme d'objets
-     generique (JSValue n'a pas de type "objet"), donc on reconnait ici
-     directement, par leur nom litteral, les deux seules combinaisons
-     objet.propriete realistes dans les gestionnaires HTML
-     onclick/onmouseover/onmouseout de ce navigateur. Toute autre
-     combinaison objet.propriete = ... est evaluee (l'expression a
-     droite est calculee, pour ne pas casser le flux du script) mais
-     n'a aucun effet observable. }
-   If (Pos <= Length(Script)) And (Script[Pos] = '.') Then Begin
-    Inc(Pos);
-    Pos := JSSkipComments(Script, Pos);
-    PropToken := JSGetNextToken(Script, Pos);
-    Pos := JSSkipComments(Script, Pos);
-    If (PropToken.TokType = JS_TOK_IDENTIFIER) And
-       (Pos <= Length(Script)) And (Script[Pos] = '=') And
-       ((Pos >= Length(Script)) Or (Script[Pos+1] <> '=')) Then Begin
+   { Affectation sur une propriete : this.X = ..., window.location = ...,
+     ou plus generalement variable.a.b[i] = ... (chaine arbitraire de
+     proprietes/index, le dernier maillon etant la cible reelle de
+     l'affectation - utilise massivement par JSCookMenu.js, ex.
+     thisMenu.cmItems[i] = obj, subMenu.style.top = ... + 'px'). Seul
+     window.X reste un cas particulier non generique : il n'existe pas
+     de vraie "valeur objet window" dans ce mini-interprete. }
+   If (Pos <= Length(Script)) And (Script[Pos] In ['.', '[']) Then Begin
+    If (Script[Pos] = '.') And (VarName = 'window') Then Begin
      Inc(Pos);
-     StartPos := Pos;
-     While (Pos <= Length(Script)) And (Script[Pos] <> ';') Do
-      Inc(Pos);
-     Value := JSEvaluate(Copy(Script, StartPos, Pos - StartPos));
-     If (HTMLLowerCase(VarName) = 'this') And
-        (HTMLLowerCase(PropToken.TokValue) = 'classname') Then Begin
-      If JSEventTargetNode <> Nil Then
-       DOMSetAttribute(JSEventTargetNode, 'class', JSValueToString(Value));
-     End
-     Else If (HTMLLowerCase(VarName) = 'window') And
-             (HTMLLowerCase(PropToken.TokValue) = 'location') Then
-      NavigateTo(ResolveLinkHref(JSValueToString(Value)));
-     If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
-    End Else Begin
-     { Pas une affectation reconnue (simple lecture, ou propriete
-       inconnue) : revenir en arriere et laisser le moteur
-       d'expressions evaluer normalement. }
-     Pos := StartPos;
-     JSEvaluate := JSEvalExpression(Script, Pos);
      Pos := JSSkipComments(Script, Pos);
-     If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
+     PropToken := JSGetNextToken(Script, Pos);
+     Pos := JSSkipComments(Script, Pos);
+     If (Pos <= Length(Script)) And (Script[Pos] = '=') And
+        ((Pos >= Length(Script)) Or (Script[Pos+1] <> '=')) Then Begin
+      Inc(Pos);
+      StartPos := Pos;
+      JSSkipToBalanced(Script, Pos, [';']);
+      Value := JSEvaluate(Copy(Script, StartPos, Pos - StartPos));
+      If HTMLLowerCase(PropToken.TokValue) = 'location' Then
+       NavigateTo(ResolveLinkHref(JSValueToString(Value)));
+      { window.defaultStatus = ... et toute autre propriete : sans
+        effet observable (pas de barre d'etat dans ce navigateur). }
+      If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
+     End Else Begin
+      Pos := StartPos;
+      JSEvaluate := JSEvalExpression(Script, Pos);
+      Pos := JSSkipComments(Script, Pos);
+      If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
+     End;
+    End
+    Else Begin
+     { Conteneur de depart de la chaine }
+     If HTMLLowerCase(VarName) = 'this' Then
+      Container := JSNodeValue(JSEventTargetNode)
+     Else
+      Container := JSGetVariable(VarName);
+
+     { Avancer maillon par maillon (.prop ou [index]) jusqu'au DERNIER,
+       qui sera la cible de l'affectation - tous les maillons
+       precedents servent seulement a descendre dans le conteneur. }
+     HasFinalStep := False;
+     Repeat
+      If Script[Pos] = '.' Then Begin
+       Inc(Pos);
+       Pos := JSSkipComments(Script, Pos);
+       PropToken := JSGetNextToken(Script, Pos);
+       KeyName := PropToken.TokValue;
+      End
+      Else Begin { '[' }
+       Inc(Pos);
+       IdxStartPos := Pos;
+       JSSkipToBalanced(Script, Pos, [']']);
+       IndexVal := JSEvaluate(Copy(Script, IdxStartPos, Pos - IdxStartPos));
+       If (Pos <= Length(Script)) And (Script[Pos] = ']') Then Inc(Pos);
+       KeyName := JSValueToString(IndexVal);
+      End;
+      Pos := JSSkipComments(Script, Pos);
+
+      If (Pos <= Length(Script)) And (Script[Pos] In ['.', '[']) Then
+       Container := JSGetMemberValue(Container, KeyName)
+      Else
+       HasFinalStep := True;
+     Until HasFinalStep Or (Pos > Length(Script));
+
+     If (Pos <= Length(Script)) And (Script[Pos] = '=') And
+        ((Pos >= Length(Script)) Or (Script[Pos+1] <> '=')) Then Begin
+      Inc(Pos);
+      StartPos := Pos;
+      JSSkipToBalanced(Script, Pos, [';']);
+      Value := JSEvaluate(Copy(Script, StartPos, Pos - StartPos));
+      Case Container.ValType Of
+       JS_VAL_NODE: JSSetNodeProperty(Container.NodeVal, KeyName, Value);
+       JS_VAL_OBJECT, JS_VAL_ARRAY: JSObjectSetProp(Container.ObjVal, KeyName, Value);
+      End;
+      If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
+     End Else Begin
+      { Pas une affectation reconnue : revenir en arriere et laisser
+        le moteur d'expressions evaluer normalement. }
+      Pos := StartPos;
+      JSEvaluate := JSEvalExpression(Script, Pos);
+      Pos := JSSkipComments(Script, Pos);
+      If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
+     End;
     End;
    End
 
@@ -3119,8 +4067,7 @@ Begin
       ((Pos >= Length(Script)) Or (Script[Pos+1] <> '=')) Then Begin
     Inc(Pos);
     StartPos := Pos;
-    While (Pos <= Length(Script)) And (Script[Pos] <> ';') Do
-     Inc(Pos);
+    JSSkipToBalanced(Script, Pos, [';']);
     Value := JSEvaluate(Copy(Script, StartPos, Pos - StartPos));
     JSSetVariable(VarName, Value, False);
     If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
@@ -3141,14 +4088,23 @@ Begin
    { Instruction vide, continuer }
   End
 
-  { Autre expression }
+  { Autre expression (ex: litteral tableau/objet utilise seul comme
+    instruction, ou n'importe quelle expression ne commencant pas par
+    un identifiant). Decouper la sous-chaine et la reevaluer avec sa
+    PROPRE position de depart (1), pas StartPos qui repere une
+    position dans Script - la passer telle quelle a JSEvalExpression
+    revenait a sauter les premiers caracteres de la sous-chaine
+    (ex: le '[' d'un litteral tableau, lu a partir de la position 2
+    ou plus selon ce qui precedait dans Script). }
   Else Begin
    Pos := StartPos;
    StartPos := Pos;
-   While (Pos <= Length(Script)) And (Script[Pos] <> ';') Do
-    Inc(Pos);
-   If Pos > StartPos Then
-    JSEvaluate := JSEvalExpression(Copy(Script, StartPos, Pos - StartPos), StartPos);
+   JSSkipToBalanced(Script, Pos, [';']);
+   If Pos > StartPos Then Begin
+    FallbackExpr := Copy(Script, StartPos, Pos - StartPos);
+    FallbackPos := 1;
+    JSEvaluate := JSEvalExpression(FallbackExpr, FallbackPos);
+   End;
    If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
   End;
 
@@ -5661,10 +6617,155 @@ Begin
  End;
 End;
 
-{ Declarations forward : definies plus loin dans le fichier mais
-  necessaires a DispatchInlineEventHandler ci-dessous. }
-Function GetNodeAttribute(Node: HTMLNodePtr; AttrName: String): String; Forward;
-Procedure RescrollPage; Forward;
+{ Effacer les boites de mise en page memorisees (voir JSNodeBox) -
+  appele au debut de chaque rendu complet, comme ClearLinkAreas. }
+Procedure ClearJSNodeBoxes;
+Begin
+ JSNodeBoxCount := 0;
+End;
+
+{ Memoriser la boite (position/taille) d'un element ID'e juste apres
+  son rendu - voir RenderHTMLNode, qui appelle ceci pour tout element
+  portant un attribut id non vide. Remplace l'entree existante si le
+  meme noeud a deja une boite (re-rendu/defilement). }
+Procedure SetJSNodeBox(Node: HTMLNodePtr; X, Y, Width, Height: Integer);
+Var
+ I: Integer;
+Begin
+ If Node = Nil Then Exit;
+ For I := 1 To JSNodeBoxCount Do Begin
+  If JSNodeBoxes[I].Node = Node Then Begin
+   JSNodeBoxes[I].X := X;
+   JSNodeBoxes[I].Y := Y;
+   JSNodeBoxes[I].Width := Width;
+   JSNodeBoxes[I].Height := Height;
+   Exit;
+  End;
+ End;
+ If JSNodeBoxCount < MAX_LINKS Then Begin
+  Inc(JSNodeBoxCount);
+  JSNodeBoxes[JSNodeBoxCount].Node := Node;
+  JSNodeBoxes[JSNodeBoxCount].X := X;
+  JSNodeBoxes[JSNodeBoxCount].Y := Y;
+  JSNodeBoxes[JSNodeBoxCount].Width := Width;
+  JSNodeBoxes[JSNodeBoxCount].Height := Height;
+  JSNodeBoxes[JSNodeBoxCount].Active := True;
+ End;
+End;
+
+Function FindJSNodeBox(Node: HTMLNodePtr): Integer;
+Var
+ I: Integer;
+Begin
+ FindJSNodeBox := 0;
+ For I := 1 To JSNodeBoxCount Do
+  If JSNodeBoxes[I].Node = Node Then Begin
+   FindJSNodeBox := I;
+   Exit;
+  End;
+End;
+
+{ Trouver la zone interactive (voir InteractiveArea) associee a Node -
+  repli pour offsetWidth/Height/Left/Top quand Node est l'element "this"
+  d'un gestionnaire onclick/onmouseover/onmouseout (ex: une cellule de
+  menu) plutot qu'un element ID'e suivi par JSNodeBoxes. }
+Function FindInteractiveAreaIndex(Node: HTMLNodePtr): Integer;
+Var
+ I: Integer;
+Begin
+ FindInteractiveAreaIndex := 0;
+ For I := 1 To InteractiveAreaCount Do
+  If InteractiveAreas[I].Node = Node Then Begin
+   FindInteractiveAreaIndex := I;
+   Exit;
+  End;
+End;
+
+Function JSGetNodeBoxX(Node: HTMLNodePtr): Integer;
+Var I: Integer;
+Begin
+ I := FindJSNodeBox(Node);
+ If I > 0 Then Begin
+  JSGetNodeBoxX := JSNodeBoxes[I].X;
+  Exit;
+ End;
+ I := FindInteractiveAreaIndex(Node);
+ If I > 0 Then JSGetNodeBoxX := InteractiveAreas[I].X1 Else JSGetNodeBoxX := 0;
+End;
+
+Function JSGetNodeBoxY(Node: HTMLNodePtr): Integer;
+Var I: Integer;
+Begin
+ I := FindJSNodeBox(Node);
+ If I > 0 Then Begin
+  JSGetNodeBoxY := JSNodeBoxes[I].Y;
+  Exit;
+ End;
+ I := FindInteractiveAreaIndex(Node);
+ If I > 0 Then JSGetNodeBoxY := InteractiveAreas[I].Y1 Else JSGetNodeBoxY := 0;
+End;
+
+Function JSGetNodeBoxWidth(Node: HTMLNodePtr): Integer;
+Var I: Integer;
+Begin
+ I := FindJSNodeBox(Node);
+ If I > 0 Then Begin
+  JSGetNodeBoxWidth := JSNodeBoxes[I].Width;
+  Exit;
+ End;
+ I := FindInteractiveAreaIndex(Node);
+ If I > 0 Then JSGetNodeBoxWidth := InteractiveAreas[I].X2 - InteractiveAreas[I].X1
+ Else JSGetNodeBoxWidth := 0;
+End;
+
+Function JSGetNodeBoxHeight(Node: HTMLNodePtr): Integer;
+Var I: Integer;
+Begin
+ I := FindJSNodeBox(Node);
+ If I > 0 Then Begin
+  JSGetNodeBoxHeight := JSNodeBoxes[I].Height;
+  Exit;
+ End;
+ I := FindInteractiveAreaIndex(Node);
+ If I > 0 Then JSGetNodeBoxHeight := InteractiveAreas[I].Y2 - InteractiveAreas[I].Y1
+ Else JSGetNodeBoxHeight := 0;
+End;
+
+{ setTimeout/clearTimeout a emplacement unique (voir la declaration de
+  JSTimeoutActive) : enregistre simplement quand declencher Handler,
+  verifie au mieux par ProcessMouseInput a chaque iteration (pas de
+  vraie horloge asynchrone dans BROWSER.PAS). }
+Procedure JSSetTimeout(Const Handler: String; DelayMs: LongInt);
+Begin
+ JSTimeoutActive := True;
+ JSTimeoutHandler := Handler;
+ JSTimeoutFireAtTick := LongInt(GetTickCount64) + DelayMs;
+End;
+
+Procedure JSClearTimeout;
+Begin
+ JSTimeoutActive := False;
+ JSTimeoutHandler := '';
+End;
+
+{ A appeler a chaque iteration de la boucle principale (voir
+  ProcessMouseInput) : declenche le gestionnaire en attente si son
+  delai est ecoule. }
+Procedure JSCheckTimeout;
+Var
+ Handler: String;
+Begin
+ If Not JSTimeoutActive Then Exit;
+ If LongInt(GetTickCount64) < JSTimeoutFireAtTick Then Exit;
+ Handler := JSTimeoutHandler;
+ JSTimeoutActive := False;
+ JSTimeoutHandler := '';
+ JSExecuteScript(Handler);
+ RescrollPage;
+End;
+
+{ GetNodeAttribute et RescrollPage sont deja declarees Forward plus
+  haut dans le fichier (juste apres JSEvaluate), reutilisees ici. }
 
 { Executer un gestionnaire d'evenement inline (onclick/onmouseover/
   onmouseout) sur un noeud : lie "this" au noeud pour la duree de
@@ -6810,6 +7911,16 @@ Begin
  { Rendre les cellules pour de vrai, a la hauteur finale }
  RenderChildren(Node, Ctx);
 
+ { Enregistrer la rangee elle-meme comme zone interactive si elle
+   porte un gestionnaire onclick/onmouseover/onmouseout - utilise par
+   JSCookMenu.js pour les lignes de sous-menu (a la difference des
+   elements de menu principal horizontal, dont le gestionnaire est
+   pose sur la cellule TD elle-meme, deja gere par RenderTagTD). }
+ If (Length(GetNodeAttribute(Node, 'onclick')) > 0) Or
+    (Length(GetNodeAttribute(Node, 'onmouseover')) > 0) Or
+    (Length(GetNodeAttribute(Node, 'onmouseout')) > 0) Then
+  AddInteractiveArea(Ctx.TableX, Ctx.TableRowY, Ctx.TableCellX, Ctx.TableRowY + Ctx.TableRowHeight, Node);
+
  { Dessiner la bordure droite de la ligne }
  If YInVisibleBand(Ctx.TableRowY, Ctx.TableRowY + Ctx.TableRowHeight) Then Begin
   SetColor(TABLE_BORDER_COLOR);
@@ -7534,6 +8645,8 @@ Procedure RenderTagScript(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
  ScriptType, ScriptSrc: String;
  ScriptContent: String;
+ ResolvedPath: String;
+ ExtSource: HTMLSourceBuffer;
 Begin
  { Verifier le type de script }
  ScriptType := GetNodeAttribute(Node, 'type');
@@ -7547,9 +8660,24 @@ Begin
   Exit;
  End;
 
- { Les scripts externes (src=) ne sont pas supportes pour l'instant }
+ { Script externe (src=...) : resoudre le chemin relatif a la page
+   courante (meme principe que pour les images/CSS), charger le
+   fichier et l'executer comme s'il s'agissait d'un script en ligne.
+   Les URL distantes (http/https, ex: les vieux polyfills IE) ne sont
+   pas supportees, ce navigateur ne fait pas de requetes HTTP. }
  If ScriptSrc <> '' Then Begin
-  { TODO: Charger et executer le script externe }
+  If (Copy(HTMLLowerCase(ScriptSrc), 1, 7) = 'http://') Or
+     (Copy(HTMLLowerCase(ScriptSrc), 1, 8) = 'https://') Then
+   Exit;
+  ResolvedPath := ResolveLinkHref(ScriptSrc);
+  InitHTMLSource(ExtSource);
+  If LoadHTMLFile(ResolvedPath, ExtSource) Then Begin
+   ScriptContent := HTMLSourceCopy(ExtSource, 1, ExtSource.DataLength);
+   FreeHTMLSource(ExtSource);
+   If Length(ScriptContent) > 0 Then
+    JSExecuteScript(ScriptContent);
+  End Else
+   FreeHTMLSource(ExtSource);
   Exit;
  End;
 
@@ -12670,9 +13798,24 @@ Var
  OldTextStyle: Byte;
  OldNoWrap: Boolean;
  OldTextAlignMode: Byte;
+ BoxIdAttr: String;
+ BoxStartX, BoxStartY: Integer;
 Begin
  If Node = Nil Then Exit;
  If Ctx.Y > Ctx.MaxY Then Exit; { Depasse la zone de rendu }
+
+ { Memoriser la position de depart des elements ID'es, pour calculer
+   leur boite (position/taille) une fois leur contenu rendu - voir
+   JSGetNodeBoxX/Y/Width/Height (offsetWidth/Height/Left/Top cote JS,
+   utilises par exemple par JSCookMenu.js pour positionner ses
+   sous-menus). }
+ BoxIdAttr := '';
+ If Node^.NodeType = HTML_NODE_ELEMENT Then
+  BoxIdAttr := GetNodeAttribute(Node, 'id');
+ If Length(BoxIdAttr) > 0 Then Begin
+  BoxStartX := Ctx.X;
+  BoxStartY := Ctx.Y;
+ End;
 
  { Sauvegarder le contexte actuel pour restauration apres le rendu }
  OldTextColor := Ctx.TextColor;
@@ -12716,6 +13859,16 @@ Begin
 
   { Marges/padding/bordure/fond resolus en pixels pour cet element. }
   CurrentElementBox := ComputeElementBoxInfo(NodeStyle);
+
+  { Element position:absolute (ex: sous-menu de JSCookMenu.js) :
+    memorise pour la passe d'affichage en survol, voir
+    RenderAbsolutePositionedOverlays. }
+  If HTMLLowerCase(NodeStyle.PositionProp) = 'absolute' Then Begin
+   If AbsolutePositionedCount < High(AbsolutePositionedNodes) Then Begin
+    Inc(AbsolutePositionedCount);
+    AbsolutePositionedNodes[AbsolutePositionedCount] := Node;
+   End;
+  End;
  End;
 
  Case Node^.NodeType Of
@@ -12837,6 +13990,9 @@ Begin
   End;
  End;
 
+ If Length(BoxIdAttr) > 0 Then
+  SetJSNodeBox(Node, BoxStartX, BoxStartY, Ctx.MaxX - BoxStartX, (Ctx.Y - BoxStartY) + Ctx.LineHeight);
+
  { Restaurer le contexte apres le rendu de cet element }
  If CSSAutoApply And CSSEnabled And (Node^.NodeType = HTML_NODE_ELEMENT) Then Begin
   Ctx.TextColor := OldTextColor;
@@ -12853,6 +14009,41 @@ Procedure DrawVScrollBar; Forward;
 Procedure DrawHScrollBar; Forward;
 
 { Procedure pour rendre un document HTML complet }
+{ Afficher par-dessus tout le reste les elements CSS position:absolute
+  actuellement visibility:visible (ex: les sous-menus de
+  JSCookMenu.js, normalement caches et affiches au survol via
+  this.style.visibility='visible'), a leurs coordonnees style.left/
+  top - le moteur de rendu normal (RenderHTMLNode/RenderChildren) ne
+  gere que le flux de documents classique de haut en bas, jamais le
+  positionnement absolu, donc ces elements seraient sinon rendus a
+  leur position de flux normale (le plus souvent invisible, puisque
+  caches par CSS) ou pas du tout.
+
+  Les candidats (AbsolutePositionedNodes) sont collectes par
+  RenderHTMLNode pendant la passe normale, qui resout deja le CSS de
+  chaque element - inutile de reparcourir tout l'arbre et de
+  re-resoudre le CSS une seconde fois juste pour les retrouver, ce
+  qui serait couteux sur un arbre de plusieurs milliers de noeuds
+  (ex: le menu complet d'un site genere par JSCookMenu.js). }
+Procedure RenderAbsolutePositionedOverlays(Const BaseCtx: RenderContext);
+Var
+ I: Integer;
+ NodeStyle: DOMStyle;
+ OverlayCtx: RenderContext;
+Begin
+ For I := 1 To AbsolutePositionedCount Do Begin
+  CSSResolveCascade(AbsolutePositionedNodes[I], NodeStyle);
+  If HTMLLowerCase(NodeStyle.Visibility) = 'visible' Then Begin
+   OverlayCtx := BaseCtx;
+   OverlayCtx.X := RenderOriginX + CSSParseDimension(NodeStyle.LeftProp, 0);
+   OverlayCtx.Y := RenderOriginY + CSSParseDimension(NodeStyle.TopProp, 0);
+   OverlayCtx.MaxX := RENDER_AREA_X + RENDER_AREA_WIDTH - SCROLLBAR_SIZE;
+   OverlayCtx.BlockLevel := 0;
+   RenderHTMLNode(AbsolutePositionedNodes[I], OverlayCtx);
+  End;
+ End;
+End;
+
 Procedure RenderHTMLDocument(Doc: HTMLNodePtr);
 Var
  Ctx: RenderContext;
@@ -12875,6 +14066,8 @@ Begin
  { Reinitialiser les zones de liens }
  ClearLinkAreas;
  ClearInteractiveAreas;
+ ClearJSNodeBoxes;
+ AbsolutePositionedCount := 0;
 
  { Couleur de fond de la page = background-color CSS du <body>, la
    couleur la plus visible de toute la page et pourtant jusqu'ici
@@ -12902,6 +14095,7 @@ Begin
  ContentOverflowX := RENDER_AREA_X;
  InContentRenderPass := True;
  RenderHTMLNode(Doc, Ctx);
+ RenderAbsolutePositionedOverlays(Ctx);
  InContentRenderPass := False;
 
  { Determiner s'il reste du contenu a reveler par defilement : Ctx.Y
@@ -12934,6 +14128,21 @@ Begin
     navigation), mais on le remet aussi a Nil par precaution. }
   HoveredInteractiveNode := Nil;
   JSEventTargetNode := Nil;
+  JSClearTimeout;
+
+  { Repartir d'un contexte JS vierge a chaque navigation (comme un vrai
+    navigateur le fait par page) : sans cela, les variables globales
+    JS de l'ancienne page (ex: _cmCurrentItem, _cmItemList dans
+    JSCookMenu.js) restaient en memoire et pouvaient encore referencer
+    des noeuds DOM de l'arbre libere juste apres (meme risque de
+    pointeur perime que pour HoveredInteractiveNode ci-dessus). Les
+    objets/tableaux JS de l'ancienne page deviennent inaccessibles
+    mais ne sont pas liberes explicitement : un objet JS peut en
+    referencer un autre de facon cyclique (ex: subMenu.cmParentMenu /
+    thisMenu.cmSubMenu dans JSCookMenu.js), ce qui rendrait un
+    parcours de liberation recursif naif dangereux (boucle infinie ou
+    double liberation). }
+  InitJSContext;
 
   { Conserver l'arbre du document (au lieu de le liberer immediatement)
     pour pouvoir le re-rendre sans reparser a chaque defilement, et
@@ -13599,6 +14808,63 @@ Begin
   Inc(I, CopyCount);
  End;
  SetHTMLSourceFromString := True;
+End;
+
+{ Definir le contenu HTML d'un noeud (innerHTML) : parse Le fragment
+  HTML comme un mini-document (ParseHTML accepte n'importe quel
+  contenu, pas seulement un document complet avec html/body - ses
+  enfants directs sont exactement les noeuds du fragment), puis
+  detache ces enfants du document temporaire pour les rattacher au
+  noeud cible, apres avoir libere ses anciens enfants. C'est ainsi que
+  JSCookMenu.js (obj.innerHTML = str) construit reellement le menu
+  dans le DOM. }
+Procedure JSSetInnerHTML(Node: HTMLNodePtr; Const HTML: String);
+Var
+ Source: HTMLSourceBuffer;
+ FragRoot, Child, NextChild: HTMLNodePtr;
+Begin
+ If Node = Nil Then Exit;
+
+ { Detacher et liberer les anciens enfants }
+ Child := Node^.FirstChild;
+ While Child <> Nil Do Begin
+  NextChild := Child^.NextSibling;
+  FreeHTMLNode(Child);
+  Child := NextChild;
+ End;
+ Node^.FirstChild := Nil;
+ Node^.LastChild := Nil;
+ Node^.ChildCount := 0;
+
+ InitHTMLSource(Source);
+ If Not SetHTMLSourceFromString(HTML, Source) Then Begin
+  FreeHTMLSource(Source);
+  Exit;
+ End;
+
+ FragRoot := ParseHTML(Source);
+ FreeHTMLSource(Source);
+ If FragRoot = Nil Then Exit;
+
+ { Rattacher chaque enfant du document temporaire au noeud cible }
+ Child := FragRoot^.FirstChild;
+ While Child <> Nil Do Begin
+  NextChild := Child^.NextSibling;
+  Child^.PreviousSibling := Nil;
+  Child^.NextSibling := Nil;
+  Child^.Parent := Nil;
+  HTMLAppendChild(Node, Child);
+  Child := NextChild;
+ End;
+
+ { Le noeud racine temporaire n'a plus d'enfants a lui (ils ont tous
+   ete deplaces ci-dessus) : Dispose direct plutot que FreeHTMLNode,
+   qui libererait aussi les enfants qu'on vient juste de rattacher
+   ailleurs. }
+ FragRoot^.FirstChild := Nil;
+ FragRoot^.LastChild := Nil;
+ FragRoot^.ChildCount := 0;
+ FreeHTMLNode(FragRoot);
 End;
 
 { Lecture binaire par blocs chaines, sans segment contigu de 64 Ko. }
@@ -14307,6 +15573,11 @@ End;
 { Procedure pour traiter les evenements de la souris }
 Procedure ProcessMouseInput;
 Begin
+ { Verifier le minuteur JS en attente (setTimeout) a chaque iteration
+   de la boucle principale, independamment de la souris - voir
+   JSCheckTimeout. }
+ JSCheckTimeout;
+
  If Not MouseAvailable Then Exit;
 
  { Obtenir l'etat actuel de la souris }
@@ -14476,6 +15747,19 @@ BEGIN
     page) : c'est ce second appel qui a revele le debordement 16 bits
     de Pos corrige ci-dessus. }
   NavigateTo(CurrentURL);
+  { Exercer le survol de toutes les zones interactives detectees (ex:
+    les onglets/menus d'une page reelle utilisant des gestionnaires
+    onmouseover/onmouseout), pour detecter toute exception dans
+    ProcessMouseHover/DispatchInlineEventHandler sur un contenu
+    genere dynamiquement par un script externe. }
+  For ScrollTestI := 1 To InteractiveAreaCount Do Begin
+   MouseX := (InteractiveAreas[ScrollTestI].X1 + InteractiveAreas[ScrollTestI].X2) Div 2;
+   MouseY := (InteractiveAreas[ScrollTestI].Y1 + InteractiveAreas[ScrollTestI].Y2) Div 2;
+   ProcessMouseHover;
+   MouseX := -100;
+   MouseY := -100;
+   ProcessMouseHover;
+  End;
   { Valider aussi les operations executees uniquement par le mode normal. }
   ProcessMouseInput;
   { Exercer le defilement (bas/droite puis haut/gauche) pour detecter
