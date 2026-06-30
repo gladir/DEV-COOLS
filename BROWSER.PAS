@@ -45,6 +45,21 @@ Program BROWSER;
     (document.write, innerHTML) depassent largement 255 caracteres
     pour un menu reel - elles etaient silencieusement tronquees. }
   {$H+}
+  { Pile et tas agrandis : la generation du menu complet (cmDraw/
+    cmDrawSubMenu recursif, 169 Ko de HTML genere) + les multiples
+    niveaux imbriques de JSEvaluate/JSCallUserFunction epuisent les
+    limites par defaut du mode TP (heritees de Turbo Pascal : pile
+    souvent 16-64 Ko, tas parfois limite a 640 Ko). }
+  {$MAXSTACKSIZE 8388608}
+  { Heap initial de 16 Mo : la construction de la chaine HTML du menu
+    (cmDraw/cmDrawSubMenu, ~169 Ko) via de nombreux += successifs
+    cree beaucoup d'allocations/liberations AnsiString intermediaires.
+    Sans un tas initial suffisamment grand (pre-reserve d'un seul bloc
+    contigu aupres de l'OS au demarrage), ces operations fragmentent
+    le tas et font echouer les allocations ulterieures (EOutOfMemory
+    en mode -maxscreen, ou le buffer d'affichage plein ecran laisse
+    moins de memoire disponible). }
+  {$M 65536, 16777216, 67108864}
 {$ENDIF}
 
 Uses {$IFDEF FPC}
@@ -397,6 +412,14 @@ Const
  JS_VAL_OBJECT = 5;
  JS_VAL_FUNCTION = 6;
  JS_VAL_ARRAY = 7;
+ { Tableau de segments de chaine (string builder) : utilise
+   automatiquement quand une chaine JS depasse STRBUF_THRESHOLD via +=
+   (ex: cmDraw construisant 169 Ko de HTML). Evite toute allocation
+   contigüe de 50-170 Ko lors de la construction : seule la
+   concatenation finale (lors de obj.innerHTML = str) necessite un seul
+   grand bloc, pris dans la zone de croissance (wilderness) du tas. }
+ JS_VAL_STRBUF = 9;
+ STRBUF_THRESHOLD = 4096;   { Chaines > 4 Ko passent en mode STRBUF }
  JS_VAL_NODE = 8;            { Reference a un noeud DOM (document.getElementById, this, ...) }
 
  { Types d'operations JavaScript }
@@ -2239,6 +2262,8 @@ End;
 Function JSValueToString(V: JSValue): String;
 Var
  S: String;
+ P: JSPropertyPtr;
+ TotalLen, I: LongInt;
 Begin
  Case V.ValType Of
   JS_VAL_UNDEFINED: JSValueToString := 'undefined';
@@ -2253,6 +2278,33 @@ Begin
    JSValueToString := S;
   End;
   JS_VAL_STRING: JSValueToString := V.StrVal;
+  JS_VAL_STRBUF: Begin
+   { Concatener tous les segments en UNE SEULE allocation dans la zone
+     de croissance libre du tas (wilderness chunk) : parcourir les N
+     segments dans l'ordre (0..ArrLen-1) via JSObjectGetProp car les
+     segments ont ete ajoutes avec PREPEND (propriete '0' en queue de
+     liste, '1' avant, etc.) donc FirstProp -> N-1, ..., -> 0. }
+   If (V.ObjVal = Nil) Or (V.ObjVal^.ArrLen = 0) Then Begin
+    JSValueToString := '';
+    Exit;
+   End;
+   TotalLen := 0;
+   For I := 0 To V.ObjVal^.ArrLen - 1 Do Begin
+    P := JSObjectFindProp(V.ObjVal, IntToStr(I));
+    If (P <> Nil) And (P^.Value.ValType = JS_VAL_STRING) Then
+     Inc(TotalLen, Length(P^.Value.StrVal));
+   End;
+   SetLength(S, TotalLen);
+   TotalLen := 1; { reused as write cursor }
+   For I := 0 To V.ObjVal^.ArrLen - 1 Do Begin
+    P := JSObjectFindProp(V.ObjVal, IntToStr(I));
+    If (P <> Nil) And (P^.Value.ValType = JS_VAL_STRING) And (Length(P^.Value.StrVal) > 0) Then Begin
+     Move(P^.Value.StrVal[1], S[TotalLen], Length(P^.Value.StrVal));
+     Inc(TotalLen, Length(P^.Value.StrVal));
+    End;
+   End;
+   JSValueToString := S;
+  End;
   JS_VAL_OBJECT: JSValueToString := '[object Object]';
   JS_VAL_FUNCTION: JSValueToString := '[function]';
   JS_VAL_ARRAY: JSValueToString := '[array]';
@@ -2289,7 +2341,7 @@ Begin
   JS_VAL_BOOLEAN: JSValueToBool := V.BoolVal;
   JS_VAL_NUMBER: JSValueToBool := V.NumVal <> 0;
   JS_VAL_STRING: JSValueToBool := Length(V.StrVal) > 0;
-  JS_VAL_OBJECT, JS_VAL_ARRAY: JSValueToBool := V.ObjVal <> Nil;
+  JS_VAL_OBJECT, JS_VAL_ARRAY, JS_VAL_STRBUF: JSValueToBool := V.ObjVal <> Nil;
   JS_VAL_NODE: JSValueToBool := V.NodeVal <> Nil;
   Else JSValueToBool := True;
  End;
@@ -2355,12 +2407,43 @@ Function JSFindVariable(Name: String): Integer;
 Var
  I: Integer;
 Begin
+ { Recherche en ordre INVERSE (du plus recent au plus ancien) pour
+   que les variables locales d'une fonction imbriquee (ajoutees en
+   dernier dans le tableau) prennent precedence sur celles des
+   fonctions appelantes de meme nom. Sans cela, "var str='<div>'"
+   dans cmDrawSubMenu (appelee par cmDraw qui a son propre "var str")
+   trouvait et ecrasait la "str" de cmDraw plutot que de creer une
+   nouvelle variable locale - les deux boucles de generation HTML
+   s'entremèlaient et corrrompaient le HTML genere. }
  JSFindVariable := 0;
- For I := 1 To JSCtx.VarCount Do Begin
+ For I := JSCtx.VarCount DownTo 1 Do Begin
   If JSCtx.Variables[I].Name = Name Then Begin
    JSFindVariable := I;
    Exit;
   End;
+ End;
+End;
+
+{ Creer TOUJOURS un nouveau slot de variable, sans chercher si une
+  variable du meme nom existe deja dans une portee englobante.
+  A utiliser pour :
+  - La liaison des parametres d'une fonction (chaque appel de
+    fonction doit avoir SES PROPRES slots pour ses parametres, meme
+    s'ils ont le meme nom qu'une variable de l'appelant).
+  - Les declarations "var x = ..." dans le corps d'une fonction (elles
+    doivent creer une variable locale, pas modifier une variable de
+    portee externe portant le meme nom).
+  Sans cette distinction, "prefix = '\''+prefix+'\''" dans cmActionItem
+  de JSCookMenu.js ecrasait la variable "prefix" de l'appelant cmDraw
+  (meme nom, recherche inversee trouvant le slot externe en premier)
+  plutot que de travailler sur le parametre local de cmActionItem. }
+Procedure JSForceNewVariable(Const Name: String; Value: JSValue; IsConst: Boolean);
+Begin
+ If JSCtx.VarCount < MAX_JS_VARS Then Begin
+  Inc(JSCtx.VarCount);
+  JSCtx.Variables[JSCtx.VarCount].Name := Name;
+  JSCtx.Variables[JSCtx.VarCount].Value := Value;
+  JSCtx.Variables[JSCtx.VarCount].IsConst := IsConst;
  End;
 End;
 
@@ -2456,12 +2539,18 @@ Begin
  { Sauvegarder l'etat des variables }
  OldVarCount := JSCtx.VarCount;
 
- { Definir les parametres comme variables locales }
+ { Lier les parametres comme NOUVEAUX slots de variables locales, sans
+   chercher s'ils existent deja dans une portee englobante - sinon
+   une fonction ayant un parametre du meme nom qu'une variable de
+   l'appelant ecraserait la variable de l'appelant (ex: cmActionItem
+   a un parametre "prefix" comme cmDraw son appelant, et reassigne
+   prefix = "'"+prefix+"'" pour construire du JS, ce qui corrompait
+   le "prefix" de cmDraw). }
  For I := 1 To JSCtx.Functions[FuncIdx].ParamCount Do Begin
   If I <= ArgCount Then
-   JSSetVariable(JSCtx.Functions[FuncIdx].ParamNames[I], Args[I-1], False)
+   JSForceNewVariable(JSCtx.Functions[FuncIdx].ParamNames[I], Args[I-1], False)
   Else
-   JSSetVariable(JSCtx.Functions[FuncIdx].ParamNames[I], JSUndefined, False);
+   JSForceNewVariable(JSCtx.Functions[FuncIdx].ParamNames[I], JSUndefined, False);
  End;
 
  { Executer le corps de la fonction }
@@ -3285,6 +3374,24 @@ Begin
       If (Pos <= Length(Script)) And (Script[Pos] = ')') Then Inc(Pos);
      End;
      JSClearTimeout;
+    End
+    Else If (VarName = 'window') And (MemberName = 'outerwidth') Then
+     Result := JSNumber(1920)
+    Else If (VarName = 'window') And (MemberName = 'innerwidth') Then
+     Result := JSNumber(1920)
+    Else If (VarName = 'window') And (MemberName = 'outerheight') Then
+     Result := JSNumber(1080)
+    Else If (VarName = 'window') And (MemberName = 'innerheight') Then
+     Result := JSNumber(1080)
+    Else If (VarName = 'window') And (MemberName = 'screen') Then Begin
+     { window.screen : pseudo-objet qui retourne les dimensions de
+       l'ecran. Une valeur de bureau raisonnable (1920x1080) est
+       suffisante pour que la detection mobile (screen.width <= 768)
+       evaluate a faux, ce qui evite que le menu s'enveloppe dans un
+       tableau de longueur 1 via myMenu = [myMenu]. }
+     Result := JSObjectValue(JSNewObject(False));
+     JSObjectSetProp(Result.ObjVal, 'width', JSNumber(1920));
+     JSObjectSetProp(Result.ObjVal, 'height', JSNumber(1080));
     End;
     { Tout autre membre (document.all, window.defaultStatus en
       lecture, ...) : Result reste undefined - suffisant pour que les
@@ -3628,6 +3735,8 @@ Var
  FallbackPos: LongInt;
  LoopInit, LoopCond, LoopIncr, LoopBody: String;
  LoopGuard: LongInt;
+ IncDecOp: String;  { operateurs composes += -= *= /= }
+ IncDecVal: Real;   { valeur courante pour les affectations composees numeriques }
 Begin
  JSEvaluate := JSUndefined;
  If Length(Script) = 0 Then Exit;
@@ -3675,7 +3784,12 @@ Begin
    End Else
     Value := JSUndefined;
 
-   JSSetVariable(VarName, Value, IsConst);
+   { Une declaration "var"/"let"/"const" cree TOUJOURS un nouveau slot
+     local, meme si une variable du meme nom existe dans une portee
+     englobante : c'est la semantique de JS (chaque appel de fonction
+     a sa propre portee). On utilise JSForceNewVariable et non
+     JSSetVariable pour ne pas ecraser la variable externe. }
+   JSForceNewVariable(VarName, Value, IsConst);
    If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
   End
 
@@ -4062,7 +4176,12 @@ Begin
     End;
    End
 
-   { Affectation a une variable simple }
+   { Affectation a une variable simple, y compris les formes composees
+     += -= *= /= : critiques pour JSCookMenu.js qui accumule le HTML
+     genere du menu via str += '...' (49 usages) - sans cela str
+     restait toujours a sa valeur initiale et le menu ne s'affichait
+     jamais (innerHTML recevait seulement le tag d'ouverture du
+     tableau, sans aucune cellule ni sous-menu). }
    Else If (Pos <= Length(Script)) And (Script[Pos] = '=') And
       ((Pos >= Length(Script)) Or (Script[Pos+1] <> '=')) Then Begin
     Inc(Pos);
@@ -4071,7 +4190,48 @@ Begin
     Value := JSEvaluate(Copy(Script, StartPos, Pos - StartPos));
     JSSetVariable(VarName, Value, False);
     If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
-   End Else Begin
+   End
+   Else If (Pos + 1 <= Length(Script)) And
+           (Script[Pos] In ['+', '-', '*', '/']) And
+           (Script[Pos + 1] = '=') Then Begin
+    IncDecOp := Script[Pos] + '=';
+    Inc(Pos, 2);
+    StartPos := Pos;
+    JSSkipToBalanced(Script, Pos, [';']);
+    Value := JSEvaluate(Copy(Script, StartPos, Pos - StartPos));
+    If IncDecOp = '+=' Then Begin
+     If (JSGetVariable(VarName).ValType = JS_VAL_STRING) Or
+        (Value.ValType = JS_VAL_STRING) Then Begin
+      { Calculer la chaine a ajouter UNE SEULE FOIS }
+      FallbackExpr := JSValueToString(Value);
+      { Lire la chaine courante et vider le slot (ref count -> 1) }
+      KeyName := JSGetVariable(VarName).StrVal;
+      JSSetVariable(VarName, JSUndefined, False);
+      { SetLength+Move : tente l'extension en place (ReallocMem).
+        Si le bloc adjacent est libre, aucun nouveau bloc n'est alloue.
+        Sinon, ReallocMem alloue le nouveau bloc, copie, libere
+        l'ancien - pic = old+new au lieu de old+old+new avec + seul. }
+      FallbackPos := Length(KeyName);
+      SetLength(KeyName, FallbackPos + Length(FallbackExpr));
+      If Length(FallbackExpr) > 0 Then
+       Move(FallbackExpr[1], KeyName[FallbackPos + 1], Length(FallbackExpr));
+      JSSetVariable(VarName, JSString(KeyName), False);
+     End
+     Else
+      JSSetVariable(VarName, JSNumber(JSValueToNumber(JSGetVariable(VarName)) + JSValueToNumber(Value)), False);
+    End
+    Else If IncDecOp = '-=' Then
+     JSSetVariable(VarName, JSNumber(JSValueToNumber(JSGetVariable(VarName)) - JSValueToNumber(Value)), False)
+    Else If IncDecOp = '*=' Then
+     JSSetVariable(VarName, JSNumber(JSValueToNumber(JSGetVariable(VarName)) * JSValueToNumber(Value)), False)
+    Else If IncDecOp = '/=' Then Begin
+     IncDecVal := JSValueToNumber(JSGetVariable(VarName));
+     If JSValueToNumber(Value) <> 0 Then
+      JSSetVariable(VarName, JSNumber(IncDecVal / JSValueToNumber(Value)), False);
+    End;
+    If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
+   End
+   Else Begin
     { Autre expression (ex: appel de fonction isole) - revenir en
       arriere et evaluer via le moteur d'expressions, qui avance Pos
       lui-meme. Rappeler JSEvaluate sur le meme texte rebouclerait
@@ -14111,11 +14271,23 @@ Begin
 End;
 
 { Procedure pour tester le rendu avec du HTML }
-Procedure TestHTMLRender(Const HTMLSource: HTMLSourceBuffer);
+Procedure TestHTMLRender(Var HTMLSource: HTMLSourceBuffer);
 Var
  Doc: HTMLNodePtr;
 Begin
  Doc := ParseHTML(HTMLSource);
+
+ { Liberer le buffer HTML SOURCE immediatement apres le parsing, avant
+   de lancer le rendu (et l'execution JavaScript qu'il declenche).
+   ParseHTML a deja tout extrait dans l'arbre DOM : le buffer n'est
+   plus necessaire. Pour referenceelement.htm (142 Ko), cela libere
+   ~35 blocs de 4 Ko qui fragmentaient le tas et rendaient impossible
+   l'allocation de la chaine de 169 Ko construite par JSCookMenu.js
+   via str += (EOutOfMemory en mode -maxscreen). L'appelant appellera
+   encore FreeHTMLSource apres retour - ce second appel est inoffensif
+   car FirstChunk vaut deja Nil et la boucle ne fait rien. }
+ FreeHTMLSource(HTMLSource);
+
  If Doc <> Nil Then Begin
   { HoveredInteractiveNode pointe potentiellement vers un noeud de
     l'ancien arbre (cellule TD/TH survolee au moment de la navigation -
@@ -14818,12 +14990,163 @@ End;
   noeud cible, apres avoir libere ses anciens enfants. C'est ainsi que
   JSCookMenu.js (obj.innerHTML = str) construit reellement le menu
   dans le DOM. }
+
+{ Parseur HTML direct depuis une chaine (sans passer par HTMLSourceBuffer
+  et ses blocs de 4 Ko : avec une chaine de 169 Ko construite par
+  JSCookMenu.js via de nombreux += successifs, les ~168 Ko de blocs
+  de 4 Ko que SetHTMLSourceFromString aurait tente d'allouer
+  entraient en conflit avec la fragmentation du tas resultant de ces
+  += , causant un EOutOfMemory. Ce parseur accede directement a
+  S[Pos] en O(1) par caractere, sans aucune allocation intermediaire.) }
+Function ParseHTMLFromString(Const S: String): HTMLNodePtr;
+Var
+ Pos, StartPos, EndTagPos: LongInt;
+ Root, CurrentNode, NewNode, TextNode, SearchNode: HTMLNodePtr;
+ TagName, CloseTagName, TextContent: String;
+ IsClosingTag, IsSelfClosing: Boolean;
+ CurrentDepth: Integer;
+ AttrName, AttrValue: String;
+ QuoteChar: Char;
+Begin
+ Root := CreateHTMLNode;
+ Root^.NodeType := HTML_NODE_ELEMENT;
+ Root^.TagName := 'document';
+ Root^.TagType := TAG_UNKNOWN;
+ CurrentNode := Root;
+ CurrentDepth := 0;
+ Pos := 1;
+
+ While Pos <= Length(S) Do Begin
+  StartPos := Pos;
+  While (Pos <= Length(S)) And (S[Pos] <> '<') Do Inc(Pos);
+
+  { Traiter le texte avant la balise }
+  If Pos > StartPos Then Begin
+   TextContent := HTMLDecodeEntities(Copy(S, StartPos, Pos - StartPos));
+   If Trim(TextContent) <> '' Then Begin
+    TextNode := CreateHTMLNode;
+    TextNode^.NodeType := HTML_NODE_TEXT;
+    TextNode^.Content := TextContent;
+    TextNode^.Parent := CurrentNode;
+    HTMLAppendChild(CurrentNode, TextNode);
+   End;
+  End;
+  If Pos > Length(S) Then Break;
+
+  Inc(Pos); { passe '<' }
+  If Pos > Length(S) Then Break;
+
+  If S[Pos] = '!' Then Begin
+   { Commentaire ou DOCTYPE }
+   Inc(Pos);
+   If (Pos + 1 <= Length(S)) And (S[Pos] = '-') And (S[Pos+1] = '-') Then Begin
+    Inc(Pos, 2);
+    StartPos := Pos;
+    While (Pos + 2 <= Length(S)) And
+          Not ((S[Pos]='-') And (S[Pos+1]='-') And (S[Pos+2]='>')) Do Inc(Pos);
+    NewNode := CreateHTMLNode;
+    NewNode^.NodeType := HTML_NODE_COMMENT;
+    NewNode^.Content := Copy(S, StartPos, Pos - StartPos);
+    NewNode^.Parent := CurrentNode;
+    HTMLAppendChild(CurrentNode, NewNode);
+    Inc(Pos, 3);
+   End Else Begin
+    While (Pos <= Length(S)) And (S[Pos] <> '>') Do Inc(Pos);
+    If Pos <= Length(S) Then Inc(Pos);
+   End;
+   Continue;
+  End;
+
+  { Determiner si balise fermante }
+  IsClosingTag := (Pos <= Length(S)) And (S[Pos] = '/');
+  If IsClosingTag Then Inc(Pos);
+
+  { Lire le nom de la balise }
+  StartPos := Pos;
+  While (Pos <= Length(S)) And (S[Pos] In ['A'..'Z','a'..'z','0'..'9','_','-',':']) Do Inc(Pos);
+  TagName := HTMLLowerCase(Copy(S, StartPos, Pos - StartPos));
+
+  If Length(TagName) = 0 Then Begin
+   While (Pos <= Length(S)) And (S[Pos] <> '>') Do Inc(Pos);
+   If Pos <= Length(S) Then Inc(Pos);
+   Continue;
+  End;
+
+  If IsClosingTag Then Begin
+   CloseTagName := TagName;
+   While (Pos <= Length(S)) And (S[Pos] <> '>') Do Inc(Pos);
+   If Pos <= Length(S) Then Inc(Pos);
+   SearchNode := CurrentNode;
+   While (SearchNode <> Root) Do Begin
+    If HTMLLowerCase(SearchNode^.TagName) = CloseTagName Then Begin
+     CurrentNode := SearchNode^.Parent;
+     If CurrentNode = Nil Then CurrentNode := Root;
+     Dec(CurrentDepth);
+     Break;
+    End;
+    SearchNode := SearchNode^.Parent;
+   End;
+   Continue;
+  End;
+
+  { Creer l'element }
+  NewNode := CreateHTMLNode;
+  NewNode^.NodeType := HTML_NODE_ELEMENT;
+  NewNode^.TagName := TagName;
+  NewNode^.TagType := GetTagType(TagName);
+  NewNode^.Parent := CurrentNode;
+
+  { Lire les attributs }
+  While (Pos <= Length(S)) And (S[Pos] <> '>') And (S[Pos] <> '/') Do Begin
+   While (Pos <= Length(S)) And (S[Pos] In [' ', #9, #10, #13]) Do Inc(Pos);
+   If (Pos > Length(S)) Or (S[Pos] In ['>', '/']) Then Break;
+   StartPos := Pos;
+   While (Pos <= Length(S)) And Not (S[Pos] In [' ', '=', '>', '/', #9, #10, #13]) Do Inc(Pos);
+   AttrName := HTMLLowerCase(Copy(S, StartPos, Pos - StartPos));
+   If Length(AttrName) = 0 Then Begin Inc(Pos); Continue; End;
+
+   While (Pos <= Length(S)) And (S[Pos] In [' ', #9, #10, #13]) Do Inc(Pos);
+   If (Pos <= Length(S)) And (S[Pos] = '=') Then Begin
+    Inc(Pos);
+    While (Pos <= Length(S)) And (S[Pos] In [' ', #9, #10, #13]) Do Inc(Pos);
+    If (Pos <= Length(S)) And (S[Pos] In ['"', '''']) Then Begin
+     QuoteChar := S[Pos]; Inc(Pos);
+     StartPos := Pos;
+     While (Pos <= Length(S)) And (S[Pos] <> QuoteChar) Do Inc(Pos);
+     AttrValue := HTMLDecodeEntities(Copy(S, StartPos, Pos - StartPos));
+     If Pos <= Length(S) Then Inc(Pos);
+    End Else Begin
+     StartPos := Pos;
+     While (Pos <= Length(S)) And Not (S[Pos] In [' ', '>', '/', #9]) Do Inc(Pos);
+     AttrValue := HTMLDecodeEntities(Copy(S, StartPos, Pos - StartPos));
+    End;
+   End Else
+    AttrValue := '';
+   HTMLAddAttribute(NewNode, AttrName, AttrValue);
+  End;
+
+  IsSelfClosing := (Pos <= Length(S)) And (S[Pos] = '/');
+  If IsSelfClosing Then Inc(Pos);
+  If (Pos <= Length(S)) And (S[Pos] = '>') Then Inc(Pos);
+
+  HTMLAppendChild(CurrentNode, NewNode);
+
+  If Not IsSelfClosing And Not IsVoidElement(TagName) And
+     Not (NewNode^.TagType In [TAG_SCRIPT, TAG_STYLE]) Then Begin
+   CurrentNode := NewNode;
+   Inc(CurrentDepth);
+  End;
+ End;
+
+ ParseHTMLFromString := Root;
+End;
+
 Procedure JSSetInnerHTML(Node: HTMLNodePtr; Const HTML: String);
 Var
- Source: HTMLSourceBuffer;
  FragRoot, Child, NextChild: HTMLNodePtr;
 Begin
  If Node = Nil Then Exit;
+ If Length(HTML) = 0 Then Exit;
 
  { Detacher et liberer les anciens enfants }
  Child := Node^.FirstChild;
@@ -14836,14 +15159,12 @@ Begin
  Node^.LastChild := Nil;
  Node^.ChildCount := 0;
 
- InitHTMLSource(Source);
- If Not SetHTMLSourceFromString(HTML, Source) Then Begin
-  FreeHTMLSource(Source);
-  Exit;
- End;
-
- FragRoot := ParseHTML(Source);
- FreeHTMLSource(Source);
+ { Utiliser le parseur direct sur la chaine pour eviter les ~42
+   allocations de blocs de 4 Ko que SetHTMLSourceFromString ferait
+   pour une chaine de 169 Ko - ces allocations echouaient (OOM) a
+   cause de la fragmentation du tas resultant de la construction de
+   la chaine HTML par les nombreux += dans cmDraw/cmDrawSubMenu. }
+ FragRoot := ParseHTMLFromString(HTML);
  If FragRoot = Nil Then Exit;
 
  { Rattacher chaque enfant du document temporaire au noeud cible }
