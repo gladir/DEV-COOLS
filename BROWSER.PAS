@@ -45,21 +45,6 @@ Program BROWSER;
     (document.write, innerHTML) depassent largement 255 caracteres
     pour un menu reel - elles etaient silencieusement tronquees. }
   {$H+}
-  { Pile et tas agrandis : la generation du menu complet (cmDraw/
-    cmDrawSubMenu recursif, 169 Ko de HTML genere) + les multiples
-    niveaux imbriques de JSEvaluate/JSCallUserFunction epuisent les
-    limites par defaut du mode TP (heritees de Turbo Pascal : pile
-    souvent 16-64 Ko, tas parfois limite a 640 Ko). }
-  {$MAXSTACKSIZE 8388608}
-  { Heap initial de 16 Mo : la construction de la chaine HTML du menu
-    (cmDraw/cmDrawSubMenu, ~169 Ko) via de nombreux += successifs
-    cree beaucoup d'allocations/liberations AnsiString intermediaires.
-    Sans un tas initial suffisamment grand (pre-reserve d'un seul bloc
-    contigu aupres de l'OS au demarrage), ces operations fragmentent
-    le tas et font echouer les allocations ulterieures (EOutOfMemory
-    en mode -maxscreen, ou le buffer d'affichage plein ecran laisse
-    moins de memoire disponible). }
-  {$M 65536, 16777216, 67108864}
 {$ENDIF}
 
 Uses {$IFDEF FPC}
@@ -783,6 +768,45 @@ Type
   Line: Integer;              { Numero de ligne }
   Column: Integer;            { Numero de colonne }
  End;
+
+ { Variables locales de JSEvaluate, allouees sur le TAS (New/Dispose)
+   pour eviter la fragmentation de la pile d'appel lors des appels
+   recursifs (chaque frame JSEvaluate n'utilise ainsi que ~12 octets
+   de pile : le pointeur L + adresse de retour, au lieu de ~300+ octets
+   de variables locales sur la pile). }
+ TJSEvalLocals = Record
+  Pos: LongInt;
+  Token: JSToken;
+  VarName: String;
+  Value: JSValue;
+  IsConst: Boolean;
+  FuncName: String;
+  FuncBody: String;
+  BraceLevel: Integer;
+  StartPos: LongInt;
+  ParamStr: String;
+  I, J: Integer;
+  CondExpr: String;
+  ThenBlock: String;
+  ElseBlock: String;
+  CondValue: JSValue;
+  PropToken: JSToken;
+  Container: JSValue;
+  KeyName: String;
+  HasFinalStep: Boolean;
+  IndexVal: JSValue;
+  IdxStartPos: LongInt;
+  FallbackExpr: String;
+  FallbackPos: LongInt;
+  LoopInit: String;
+  LoopCond: String;
+  LoopIncr: String;
+  LoopBody: String;
+  LoopGuard: LongInt;
+  IncDecOp: String;
+  IncDecVal: Real;
+ End;
+ PJSEvalLocals = ^TJSEvalLocals;
 
  { Variable JavaScript }
  JSVariable = Record
@@ -3709,567 +3733,474 @@ End;
 
 { Evaluer un script JavaScript }
 Function JSEvaluate(Const Script: String): JSValue;
+{ Toutes les variables locales allouees sur le TAS via L (PJSEvalLocals).
+  DoBody contient la logique ; ses Exit sortent de DoBody (pas de
+  JSEvaluate). EvalResult evite l'ambiguite de "JSEvaluate :=" depuis
+  une procedure imbriquee (FPC/record : comportement imprecis). }
 Var
- Pos: LongInt;
- Token: JSToken;
- VarName: String;
- Value: JSValue;
- IsConst: Boolean;
- FuncName: String;
- FuncBody: String;
- BraceLevel: Integer;
- StartPos: LongInt;
- ParamStr: String;
- I, J: Integer;
- CondExpr: String;
- ThenBlock: String;
- ElseBlock: String;
- CondValue: JSValue;
- PropToken: JSToken;
- Container: JSValue;
- KeyName: String;
- HasFinalStep: Boolean;
- IndexVal: JSValue;
- IdxStartPos: LongInt;
- FallbackExpr: String;
- FallbackPos: LongInt;
- LoopInit, LoopCond, LoopIncr, LoopBody: String;
- LoopGuard: LongInt;
- IncDecOp: String;  { operateurs composes += -= *= /= }
- IncDecVal: Real;   { valeur courante pour les affectations composees numeriques }
+ L: PJSEvalLocals;
+ EvalResult: JSValue;
+
+ Procedure DoBody;
+ Begin
+  L^.Pos := 1;
+
+  While L^.Pos <= Length(Script) Do Begin
+   L^.Pos := JSSkipComments(Script, L^.Pos);
+   If L^.Pos > Length(Script) Then Break;
+
+   L^.StartPos := L^.Pos;
+   L^.Token := JSGetNextToken(Script, L^.Pos);
+
+   If L^.Token.TokType = JS_TOK_EOF Then Break;
+
+   { Declaration de variable (var, let, const) }
+   If (L^.Token.TokType = JS_TOK_KEYWORD) And
+      ((L^.Token.KeywordType = JS_KW_VAR) Or
+       (L^.Token.KeywordType = JS_KW_LET) Or
+       (L^.Token.KeywordType = JS_KW_CONST)) Then Begin
+    L^.IsConst := L^.Token.KeywordType = JS_KW_CONST;
+
+    L^.Token := JSGetNextToken(Script, L^.Pos);
+    If L^.Token.TokType <> JS_TOK_IDENTIFIER Then Begin
+     JSCtx.HasError := True;
+     JSCtx.ErrorMsg := 'SyntaxError: Expected identifier';
+     Exit;
+    End;
+    L^.VarName := L^.Token.TokValue;
+
+    L^.Pos := JSSkipComments(Script, L^.Pos);
+    If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = '=') Then Begin
+     Inc(L^.Pos);
+     L^.StartPos := L^.Pos;
+     JSSkipToBalanced(Script, L^.Pos, [';']);
+     L^.Value := JSEvaluate(Copy(Script, L^.StartPos, L^.Pos - L^.StartPos));
+    End Else
+     L^.Value := JSUndefined;
+
+    JSForceNewVariable(L^.VarName, L^.Value, L^.IsConst);
+    If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ';') Then Inc(L^.Pos);
+   End
+
+   { Declaration de fonction }
+   Else If (L^.Token.TokType = JS_TOK_KEYWORD) And (L^.Token.KeywordType = JS_KW_FUNCTION) Then Begin
+    L^.Token := JSGetNextToken(Script, L^.Pos);
+    If L^.Token.TokType <> JS_TOK_IDENTIFIER Then Begin
+     JSCtx.HasError := True;
+     JSCtx.ErrorMsg := 'SyntaxError: Expected function name';
+     Exit;
+    End;
+    L^.FuncName := L^.Token.TokValue;
+
+    L^.Pos := JSSkipComments(Script, L^.Pos);
+    If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = '(') Then Begin
+     Inc(L^.Pos);
+     L^.StartPos := L^.Pos;
+     While (L^.Pos <= Length(Script)) And (Script[L^.Pos] <> ')') Do
+      Inc(L^.Pos);
+     L^.ParamStr := Copy(Script, L^.StartPos, L^.Pos - L^.StartPos);
+     If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ')') Then Inc(L^.Pos);
+    End Else
+     L^.ParamStr := '';
+
+    L^.Pos := JSSkipComments(Script, L^.Pos);
+    If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = '{') Then Begin
+     Inc(L^.Pos);
+     L^.StartPos := L^.Pos;
+     L^.BraceLevel := 1;
+     While (L^.Pos <= Length(Script)) And (L^.BraceLevel > 0) Do Begin
+      If Script[L^.Pos] = '{' Then Inc(L^.BraceLevel)
+      Else If Script[L^.Pos] = '}' Then Dec(L^.BraceLevel);
+      If L^.BraceLevel > 0 Then Inc(L^.Pos);
+     End;
+     L^.FuncBody := Copy(Script, L^.StartPos, L^.Pos - L^.StartPos);
+     If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = '}') Then Inc(L^.Pos);
+    End Else
+     L^.FuncBody := '';
+
+    If JSCtx.FuncCount < MAX_JS_FUNCTIONS Then Begin
+     Inc(JSCtx.FuncCount);
+     JSCtx.Functions[JSCtx.FuncCount].Name := L^.FuncName;
+     JSCtx.Functions[JSCtx.FuncCount].Body := L^.FuncBody;
+     JSCtx.Functions[JSCtx.FuncCount].ParamCount := 0;
+
+     L^.I := 1;
+     L^.J := 0;
+     While L^.I <= Length(L^.ParamStr) Do Begin
+      While (L^.I <= Length(L^.ParamStr)) And (L^.ParamStr[L^.I] In [' ', ',']) Do Inc(L^.I);
+      L^.StartPos := L^.I;
+      While (L^.I <= Length(L^.ParamStr)) And Not (L^.ParamStr[L^.I] In [' ', ',']) Do Inc(L^.I);
+      If L^.I > L^.StartPos Then Begin
+       Inc(L^.J);
+       If L^.J <= 10 Then
+        JSCtx.Functions[JSCtx.FuncCount].ParamNames[L^.J] := Copy(L^.ParamStr, L^.StartPos, L^.I - L^.StartPos);
+      End;
+     End;
+     JSCtx.Functions[JSCtx.FuncCount].ParamCount := L^.J;
+    End;
+   End
+
+   { Instruction if }
+   Else If (L^.Token.TokType = JS_TOK_KEYWORD) And (L^.Token.KeywordType = JS_KW_IF) Then Begin
+    L^.Pos := JSSkipComments(Script, L^.Pos);
+    If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = '(') Then Begin
+     Inc(L^.Pos);
+     L^.StartPos := L^.Pos;
+     L^.BraceLevel := 1;
+     While (L^.Pos <= Length(Script)) And (L^.BraceLevel > 0) Do Begin
+      If Script[L^.Pos] = '(' Then Inc(L^.BraceLevel)
+      Else If Script[L^.Pos] = ')' Then Dec(L^.BraceLevel);
+      If L^.BraceLevel > 0 Then Inc(L^.Pos);
+     End;
+     L^.CondExpr := Copy(Script, L^.StartPos, L^.Pos - L^.StartPos);
+     If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ')') Then Inc(L^.Pos);
+    End Else
+     L^.CondExpr := '';
+
+    L^.Pos := JSSkipComments(Script, L^.Pos);
+    If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = '{') Then Begin
+     Inc(L^.Pos);
+     L^.StartPos := L^.Pos;
+     L^.BraceLevel := 1;
+     While (L^.Pos <= Length(Script)) And (L^.BraceLevel > 0) Do Begin
+      If Script[L^.Pos] = '{' Then Inc(L^.BraceLevel)
+      Else If Script[L^.Pos] = '}' Then Dec(L^.BraceLevel);
+      If L^.BraceLevel > 0 Then Inc(L^.Pos);
+     End;
+     L^.ThenBlock := Copy(Script, L^.StartPos, L^.Pos - L^.StartPos);
+     If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = '}') Then Inc(L^.Pos);
+    End Else Begin
+     L^.StartPos := L^.Pos;
+     JSSkipToBalanced(Script, L^.Pos, [';']);
+     L^.ThenBlock := Copy(Script, L^.StartPos, L^.Pos - L^.StartPos);
+     If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ';') Then Inc(L^.Pos);
+    End;
+
+    L^.ElseBlock := '';
+    L^.Pos := JSSkipComments(Script, L^.Pos);
+    L^.StartPos := L^.Pos;
+    L^.Token := JSGetNextToken(Script, L^.Pos);
+    If (L^.Token.TokType = JS_TOK_KEYWORD) And (L^.Token.KeywordType = JS_KW_ELSE) Then Begin
+     L^.Pos := JSSkipComments(Script, L^.Pos);
+     If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = '{') Then Begin
+      Inc(L^.Pos);
+      L^.StartPos := L^.Pos;
+      L^.BraceLevel := 1;
+      While (L^.Pos <= Length(Script)) And (L^.BraceLevel > 0) Do Begin
+       If Script[L^.Pos] = '{' Then Inc(L^.BraceLevel)
+       Else If Script[L^.Pos] = '}' Then Dec(L^.BraceLevel);
+       If L^.BraceLevel > 0 Then Inc(L^.Pos);
+      End;
+      L^.ElseBlock := Copy(Script, L^.StartPos, L^.Pos - L^.StartPos);
+      If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = '}') Then Inc(L^.Pos);
+     End Else Begin
+      L^.StartPos := L^.Pos;
+      JSSkipToBalanced(Script, L^.Pos, [';']);
+      L^.ElseBlock := Copy(Script, L^.StartPos, L^.Pos - L^.StartPos);
+      If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ';') Then Inc(L^.Pos);
+     End;
+    End Else
+     L^.Pos := L^.StartPos;
+
+    L^.CondValue := JSEvaluate(L^.CondExpr);
+    If JSValueToBool(L^.CondValue) Then
+     EvalResult := JSEvaluate(L^.ThenBlock)
+    Else If Length(L^.ElseBlock) > 0 Then
+     EvalResult := JSEvaluate(L^.ElseBlock);
+   End
+
+   { Instruction return }
+   Else If (L^.Token.TokType = JS_TOK_KEYWORD) And (L^.Token.KeywordType = JS_KW_RETURN) Then Begin
+    L^.StartPos := L^.Pos;
+    JSSkipToBalanced(Script, L^.Pos, [';']);
+    EvalResult := JSEvaluate(Copy(Script, L^.StartPos, L^.Pos - L^.StartPos));
+    If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ';') Then Inc(L^.Pos);
+    Exit;
+   End
+
+   { Instructions break/continue }
+   Else If (L^.Token.TokType = JS_TOK_KEYWORD) And (L^.Token.KeywordType = JS_KW_BREAK) Then Begin
+    JSBreakFlag := True;
+    If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ';') Then Inc(L^.Pos);
+    Exit;
+   End
+   Else If (L^.Token.TokType = JS_TOK_KEYWORD) And (L^.Token.KeywordType = JS_KW_CONTINUE) Then Begin
+    JSContinueFlag := True;
+    If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ';') Then Inc(L^.Pos);
+    Exit;
+   End
+
+   { Instruction for }
+   Else If (L^.Token.TokType = JS_TOK_KEYWORD) And (L^.Token.KeywordType = JS_KW_FOR) Then Begin
+    L^.Pos := JSSkipComments(Script, L^.Pos);
+    L^.LoopInit := ''; L^.LoopCond := ''; L^.LoopIncr := '';
+    If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = '(') Then Begin
+     Inc(L^.Pos);
+     L^.StartPos := L^.Pos;
+     JSSkipToBalanced(Script, L^.Pos, [';']);
+     L^.LoopInit := Copy(Script, L^.StartPos, L^.Pos - L^.StartPos);
+     If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ';') Then Inc(L^.Pos);
+     L^.StartPos := L^.Pos;
+     JSSkipToBalanced(Script, L^.Pos, [';']);
+     L^.LoopCond := Copy(Script, L^.StartPos, L^.Pos - L^.StartPos);
+     If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ';') Then Inc(L^.Pos);
+     L^.StartPos := L^.Pos;
+     JSSkipToBalanced(Script, L^.Pos, [')']);
+     L^.LoopIncr := Copy(Script, L^.StartPos, L^.Pos - L^.StartPos);
+     If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ')') Then Inc(L^.Pos);
+    End;
+    L^.Pos := JSSkipComments(Script, L^.Pos);
+    If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = '{') Then Begin
+     Inc(L^.Pos);
+     L^.StartPos := L^.Pos;
+     L^.BraceLevel := 1;
+     While (L^.Pos <= Length(Script)) And (L^.BraceLevel > 0) Do Begin
+      If Script[L^.Pos] = '{' Then Inc(L^.BraceLevel)
+      Else If Script[L^.Pos] = '}' Then Dec(L^.BraceLevel);
+      If L^.BraceLevel > 0 Then Inc(L^.Pos);
+     End;
+     L^.LoopBody := Copy(Script, L^.StartPos, L^.Pos - L^.StartPos);
+     If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = '}') Then Inc(L^.Pos);
+    End Else Begin
+     L^.StartPos := L^.Pos;
+     JSSkipToBalanced(Script, L^.Pos, [';']);
+     L^.LoopBody := Copy(Script, L^.StartPos, L^.Pos - L^.StartPos);
+     If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ';') Then Inc(L^.Pos);
+    End;
+
+    JSEvaluate(L^.LoopInit);
+    L^.LoopGuard := 0;
+    While (Not JSCtx.HasError) And JSValueToBool(JSEvaluate(L^.LoopCond)) Do Begin
+     Inc(L^.LoopGuard);
+     If L^.LoopGuard > 200000 Then Begin
+      JSCtx.HasError := True;
+      JSCtx.ErrorMsg := 'Error: boucle for trop longue (garde-fou)';
+      Break;
+     End;
+     JSBreakFlag := False;
+     JSContinueFlag := False;
+     JSEvaluate(L^.LoopBody);
+     If JSCtx.HasError Then Break;
+     If JSBreakFlag Then Begin
+      JSBreakFlag := False;
+      Break;
+     End;
+     JSContinueFlag := False;
+     JSEvaluate(L^.LoopIncr);
+    End;
+   End
+
+   { Instruction while }
+   Else If (L^.Token.TokType = JS_TOK_KEYWORD) And (L^.Token.KeywordType = JS_KW_WHILE) Then Begin
+    L^.Pos := JSSkipComments(Script, L^.Pos);
+    L^.LoopCond := '';
+    If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = '(') Then Begin
+     Inc(L^.Pos);
+     L^.StartPos := L^.Pos;
+     JSSkipToBalanced(Script, L^.Pos, [')']);
+     L^.LoopCond := Copy(Script, L^.StartPos, L^.Pos - L^.StartPos);
+     If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ')') Then Inc(L^.Pos);
+    End;
+    L^.Pos := JSSkipComments(Script, L^.Pos);
+    If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = '{') Then Begin
+     Inc(L^.Pos);
+     L^.StartPos := L^.Pos;
+     L^.BraceLevel := 1;
+     While (L^.Pos <= Length(Script)) And (L^.BraceLevel > 0) Do Begin
+      If Script[L^.Pos] = '{' Then Inc(L^.BraceLevel)
+      Else If Script[L^.Pos] = '}' Then Dec(L^.BraceLevel);
+      If L^.BraceLevel > 0 Then Inc(L^.Pos);
+     End;
+     L^.LoopBody := Copy(Script, L^.StartPos, L^.Pos - L^.StartPos);
+     If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = '}') Then Inc(L^.Pos);
+    End Else Begin
+     L^.StartPos := L^.Pos;
+     JSSkipToBalanced(Script, L^.Pos, [';']);
+     L^.LoopBody := Copy(Script, L^.StartPos, L^.Pos - L^.StartPos);
+     If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ';') Then Inc(L^.Pos);
+    End;
+
+    L^.LoopGuard := 0;
+    While (Not JSCtx.HasError) And JSValueToBool(JSEvaluate(L^.LoopCond)) Do Begin
+     Inc(L^.LoopGuard);
+     If L^.LoopGuard > 200000 Then Begin
+      JSCtx.HasError := True;
+      JSCtx.ErrorMsg := 'Error: boucle while trop longue (garde-fou)';
+      Break;
+     End;
+     JSBreakFlag := False;
+     JSContinueFlag := False;
+     JSEvaluate(L^.LoopBody);
+     If JSCtx.HasError Then Break;
+     If JSBreakFlag Then Begin
+      JSBreakFlag := False;
+      Break;
+     End;
+     JSContinueFlag := False;
+    End;
+   End
+
+   { Expression simple (affectation ou appel de fonction) }
+   Else If (L^.Token.TokType = JS_TOK_IDENTIFIER) Or
+           ((L^.Token.TokType = JS_TOK_KEYWORD) And (L^.Token.KeywordType = JS_KW_THIS)) Then Begin
+    L^.VarName := L^.Token.TokValue;
+    L^.Pos := JSSkipComments(Script, L^.Pos);
+
+    If (L^.Pos <= Length(Script)) And (Script[L^.Pos] In ['.', '[']) Then Begin
+     If (Script[L^.Pos] = '.') And (L^.VarName = 'window') Then Begin
+      Inc(L^.Pos);
+      L^.Pos := JSSkipComments(Script, L^.Pos);
+      L^.PropToken := JSGetNextToken(Script, L^.Pos);
+      L^.Pos := JSSkipComments(Script, L^.Pos);
+      If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = '=') And
+         ((L^.Pos >= Length(Script)) Or (Script[L^.Pos+1] <> '=')) Then Begin
+       Inc(L^.Pos);
+       L^.StartPos := L^.Pos;
+       JSSkipToBalanced(Script, L^.Pos, [';']);
+       L^.Value := JSEvaluate(Copy(Script, L^.StartPos, L^.Pos - L^.StartPos));
+       If HTMLLowerCase(L^.PropToken.TokValue) = 'location' Then
+        NavigateTo(ResolveLinkHref(JSValueToString(L^.Value)));
+       If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ';') Then Inc(L^.Pos);
+      End Else Begin
+       L^.Pos := L^.StartPos;
+       EvalResult := JSEvalExpression(Script, L^.Pos);
+       L^.Pos := JSSkipComments(Script, L^.Pos);
+       If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ';') Then Inc(L^.Pos);
+      End;
+     End
+     Else Begin
+      If HTMLLowerCase(L^.VarName) = 'this' Then
+       L^.Container := JSNodeValue(JSEventTargetNode)
+      Else
+       L^.Container := JSGetVariable(L^.VarName);
+
+      L^.HasFinalStep := False;
+      Repeat
+       If Script[L^.Pos] = '.' Then Begin
+        Inc(L^.Pos);
+        L^.Pos := JSSkipComments(Script, L^.Pos);
+        L^.PropToken := JSGetNextToken(Script, L^.Pos);
+        L^.KeyName := L^.PropToken.TokValue;
+       End
+       Else Begin
+        Inc(L^.Pos);
+        L^.IdxStartPos := L^.Pos;
+        JSSkipToBalanced(Script, L^.Pos, [']']);
+        L^.IndexVal := JSEvaluate(Copy(Script, L^.IdxStartPos, L^.Pos - L^.IdxStartPos));
+        If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ']') Then Inc(L^.Pos);
+        L^.KeyName := JSValueToString(L^.IndexVal);
+       End;
+       L^.Pos := JSSkipComments(Script, L^.Pos);
+
+       If (L^.Pos <= Length(Script)) And (Script[L^.Pos] In ['.', '[']) Then
+        L^.Container := JSGetMemberValue(L^.Container, L^.KeyName)
+       Else
+        L^.HasFinalStep := True;
+      Until L^.HasFinalStep Or (L^.Pos > Length(Script));
+
+      If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = '=') And
+         ((L^.Pos >= Length(Script)) Or (Script[L^.Pos+1] <> '=')) Then Begin
+       Inc(L^.Pos);
+       L^.StartPos := L^.Pos;
+       JSSkipToBalanced(Script, L^.Pos, [';']);
+       L^.Value := JSEvaluate(Copy(Script, L^.StartPos, L^.Pos - L^.StartPos));
+       Case L^.Container.ValType Of
+        JS_VAL_NODE: JSSetNodeProperty(L^.Container.NodeVal, L^.KeyName, L^.Value);
+        JS_VAL_OBJECT, JS_VAL_ARRAY: JSObjectSetProp(L^.Container.ObjVal, L^.KeyName, L^.Value);
+       End;
+       If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ';') Then Inc(L^.Pos);
+      End Else Begin
+       L^.Pos := L^.StartPos;
+       EvalResult := JSEvalExpression(Script, L^.Pos);
+       L^.Pos := JSSkipComments(Script, L^.Pos);
+       If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ';') Then Inc(L^.Pos);
+      End;
+     End;
+    End
+
+    { Affectation simple }
+    Else If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = '=') And
+       ((L^.Pos >= Length(Script)) Or (Script[L^.Pos+1] <> '=')) Then Begin
+     Inc(L^.Pos);
+     L^.StartPos := L^.Pos;
+     JSSkipToBalanced(Script, L^.Pos, [';']);
+     L^.Value := JSEvaluate(Copy(Script, L^.StartPos, L^.Pos - L^.StartPos));
+     JSSetVariable(L^.VarName, L^.Value, False);
+     If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ';') Then Inc(L^.Pos);
+    End
+    { Operateurs composes += -= *= /= }
+    Else If (L^.Pos + 1 <= Length(Script)) And
+            (Script[L^.Pos] In ['+', '-', '*', '/']) And
+            (Script[L^.Pos + 1] = '=') Then Begin
+     L^.IncDecOp := Script[L^.Pos] + '=';
+     Inc(L^.Pos, 2);
+     L^.StartPos := L^.Pos;
+     JSSkipToBalanced(Script, L^.Pos, [';']);
+     L^.Value := JSEvaluate(Copy(Script, L^.StartPos, L^.Pos - L^.StartPos));
+     If L^.IncDecOp = '+=' Then Begin
+      If (JSGetVariable(L^.VarName).ValType = JS_VAL_STRING) Or
+         (L^.Value.ValType = JS_VAL_STRING) Then Begin
+       L^.FallbackExpr := JSValueToString(L^.Value);
+       L^.KeyName := JSGetVariable(L^.VarName).StrVal;
+       JSSetVariable(L^.VarName, JSUndefined, False);
+       L^.FallbackPos := Length(L^.KeyName);
+       SetLength(L^.KeyName, L^.FallbackPos + Length(L^.FallbackExpr));
+       If Length(L^.FallbackExpr) > 0 Then
+        Move(L^.FallbackExpr[1], L^.KeyName[L^.FallbackPos + 1], Length(L^.FallbackExpr));
+       JSSetVariable(L^.VarName, JSString(L^.KeyName), False);
+      End
+      Else
+       JSSetVariable(L^.VarName, JSNumber(JSValueToNumber(JSGetVariable(L^.VarName)) + JSValueToNumber(L^.Value)), False);
+     End
+     Else If L^.IncDecOp = '-=' Then
+      JSSetVariable(L^.VarName, JSNumber(JSValueToNumber(JSGetVariable(L^.VarName)) - JSValueToNumber(L^.Value)), False)
+     Else If L^.IncDecOp = '*=' Then
+      JSSetVariable(L^.VarName, JSNumber(JSValueToNumber(JSGetVariable(L^.VarName)) * JSValueToNumber(L^.Value)), False)
+     Else If L^.IncDecOp = '/=' Then Begin
+      L^.IncDecVal := JSValueToNumber(JSGetVariable(L^.VarName));
+      If JSValueToNumber(L^.Value) <> 0 Then
+       JSSetVariable(L^.VarName, JSNumber(L^.IncDecVal / JSValueToNumber(L^.Value)), False);
+     End;
+     If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ';') Then Inc(L^.Pos);
+    End
+    Else Begin
+     L^.Pos := L^.StartPos;
+     EvalResult := JSEvalExpression(Script, L^.Pos);
+     L^.Pos := JSSkipComments(Script, L^.Pos);
+     If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ';') Then Inc(L^.Pos);
+    End;
+   End
+
+   { Point-virgule seul }
+   Else If (L^.Token.TokType = JS_TOK_PUNCTUATOR) And (L^.Token.TokValue = ';') Then Begin
+   End
+
+   { Autre expression }
+   Else Begin
+    L^.Pos := L^.StartPos;
+    L^.StartPos := L^.Pos;
+    JSSkipToBalanced(Script, L^.Pos, [';']);
+    If L^.Pos > L^.StartPos Then Begin
+     L^.FallbackExpr := Copy(Script, L^.StartPos, L^.Pos - L^.StartPos);
+     L^.FallbackPos := 1;
+     EvalResult := JSEvalExpression(L^.FallbackExpr, L^.FallbackPos);
+    End;
+    If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ';') Then Inc(L^.Pos);
+   End;
+
+   If JSCtx.HasError Then Exit;
+  End;
+ End; { DoBody }
+
 Begin
  JSEvaluate := JSUndefined;
  If Length(Script) = 0 Then Exit;
  If JSCtx.HasError Then Exit;
-
- Pos := 1;
-
- While Pos <= Length(Script) Do Begin
-  Pos := JSSkipComments(Script, Pos);
-  If Pos > Length(Script) Then Break;
-
-  { Sauvegarder la position pour analyse }
-  StartPos := Pos;
-  Token := JSGetNextToken(Script, Pos);
-
-  If Token.TokType = JS_TOK_EOF Then Break;
-
-  { Declaration de variable (var, let, const) }
-  If (Token.TokType = JS_TOK_KEYWORD) And
-     ((Token.KeywordType = JS_KW_VAR) Or
-      (Token.KeywordType = JS_KW_LET) Or
-      (Token.KeywordType = JS_KW_CONST)) Then Begin
-   IsConst := Token.KeywordType = JS_KW_CONST;
-
-   Token := JSGetNextToken(Script, Pos);
-   If Token.TokType <> JS_TOK_IDENTIFIER Then Begin
-    JSCtx.HasError := True;
-    JSCtx.ErrorMsg := 'SyntaxError: Expected identifier';
-    Exit;
-   End;
-   VarName := Token.TokValue;
-
-   Pos := JSSkipComments(Script, Pos);
-   If (Pos <= Length(Script)) And (Script[Pos] = '=') Then Begin
-    Inc(Pos);
-    { Trouver la fin de l'expression (jusqu'au ; ou fin), en
-      respectant les crochets/accolades/chaines imbriques - un ';'
-      a l'interieur d'une chaine litterale ou d'un litteral tableau/
-      objet imbrique ne marque pas la fin de l'instruction (sans
-      cela, une chaine contenant un ';' tronquait silencieusement le
-      reste du litteral, ex: var x = [a, b, 'texte; avec point-virgule', c]; ). }
-    StartPos := Pos;
-    JSSkipToBalanced(Script, Pos, [';']);
-    Value := JSEvaluate(Copy(Script, StartPos, Pos - StartPos));
-   End Else
-    Value := JSUndefined;
-
-   { Une declaration "var"/"let"/"const" cree TOUJOURS un nouveau slot
-     local, meme si une variable du meme nom existe dans une portee
-     englobante : c'est la semantique de JS (chaque appel de fonction
-     a sa propre portee). On utilise JSForceNewVariable et non
-     JSSetVariable pour ne pas ecraser la variable externe. }
-   JSForceNewVariable(VarName, Value, IsConst);
-   If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
-  End
-
-  { Declaration de fonction }
-  Else If (Token.TokType = JS_TOK_KEYWORD) And (Token.KeywordType = JS_KW_FUNCTION) Then Begin
-   Token := JSGetNextToken(Script, Pos);
-   If Token.TokType <> JS_TOK_IDENTIFIER Then Begin
-    JSCtx.HasError := True;
-    JSCtx.ErrorMsg := 'SyntaxError: Expected function name';
-    Exit;
-   End;
-   FuncName := Token.TokValue;
-
-   { Parametres }
-   Pos := JSSkipComments(Script, Pos);
-   If (Pos <= Length(Script)) And (Script[Pos] = '(') Then Begin
-    Inc(Pos);
-    StartPos := Pos;
-    While (Pos <= Length(Script)) And (Script[Pos] <> ')') Do
-     Inc(Pos);
-    ParamStr := Copy(Script, StartPos, Pos - StartPos);
-    If (Pos <= Length(Script)) And (Script[Pos] = ')') Then Inc(Pos);
-   End Else
-    ParamStr := '';
-
-   { Corps de la fonction }
-   Pos := JSSkipComments(Script, Pos);
-   If (Pos <= Length(Script)) And (Script[Pos] = '{') Then Begin
-    Inc(Pos);
-    StartPos := Pos;
-    BraceLevel := 1;
-    While (Pos <= Length(Script)) And (BraceLevel > 0) Do Begin
-     If Script[Pos] = '{' Then Inc(BraceLevel)
-     Else If Script[Pos] = '}' Then Dec(BraceLevel);
-     If BraceLevel > 0 Then Inc(Pos);
-    End;
-    FuncBody := Copy(Script, StartPos, Pos - StartPos);
-    If (Pos <= Length(Script)) And (Script[Pos] = '}') Then Inc(Pos);
-   End Else
-    FuncBody := '';
-
-   { Enregistrer la fonction }
-   If JSCtx.FuncCount < MAX_JS_FUNCTIONS Then Begin
-    Inc(JSCtx.FuncCount);
-    JSCtx.Functions[JSCtx.FuncCount].Name := FuncName;
-    JSCtx.Functions[JSCtx.FuncCount].Body := FuncBody;
-    JSCtx.Functions[JSCtx.FuncCount].ParamCount := 0;
-
-    { Parser les parametres }
-    I := 1;
-    J := 0;
-    While I <= Length(ParamStr) Do Begin
-     While (I <= Length(ParamStr)) And (ParamStr[I] In [' ', ',']) Do Inc(I);
-     StartPos := I;
-     While (I <= Length(ParamStr)) And Not (ParamStr[I] In [' ', ',']) Do Inc(I);
-     If I > StartPos Then Begin
-      Inc(J);
-      If J <= 10 Then
-       JSCtx.Functions[JSCtx.FuncCount].ParamNames[J] := Copy(ParamStr, StartPos, I - StartPos);
-     End;
-    End;
-    JSCtx.Functions[JSCtx.FuncCount].ParamCount := J;
-   End;
-  End
-
-  { Instruction if }
-  Else If (Token.TokType = JS_TOK_KEYWORD) And (Token.KeywordType = JS_KW_IF) Then Begin
-   { Condition }
-   Pos := JSSkipComments(Script, Pos);
-   If (Pos <= Length(Script)) And (Script[Pos] = '(') Then Begin
-    Inc(Pos);
-    StartPos := Pos;
-    BraceLevel := 1;
-    While (Pos <= Length(Script)) And (BraceLevel > 0) Do Begin
-     If Script[Pos] = '(' Then Inc(BraceLevel)
-     Else If Script[Pos] = ')' Then Dec(BraceLevel);
-     If BraceLevel > 0 Then Inc(Pos);
-    End;
-    CondExpr := Copy(Script, StartPos, Pos - StartPos);
-    If (Pos <= Length(Script)) And (Script[Pos] = ')') Then Inc(Pos);
-   End Else
-    CondExpr := '';
-
-   { Bloc then : avec ou sans accolades. Sans accolades (if (c) stmt;),
-     il faut tout de meme consommer le texte de l'instruction (avancer
-     Pos jusqu'au point-virgule) MEME SI on ne l'execute pas (condition
-     fausse) - sans quoi cette instruction, jamais consommee, serait
-     retraitee par la boucle principale comme une instruction
-     independante et s'executerait TOUJOURS, que la condition soit
-     vraie ou fausse. }
-   Pos := JSSkipComments(Script, Pos);
-   If (Pos <= Length(Script)) And (Script[Pos] = '{') Then Begin
-    Inc(Pos);
-    StartPos := Pos;
-    BraceLevel := 1;
-    While (Pos <= Length(Script)) And (BraceLevel > 0) Do Begin
-     If Script[Pos] = '{' Then Inc(BraceLevel)
-     Else If Script[Pos] = '}' Then Dec(BraceLevel);
-     If BraceLevel > 0 Then Inc(Pos);
-    End;
-    ThenBlock := Copy(Script, StartPos, Pos - StartPos);
-    If (Pos <= Length(Script)) And (Script[Pos] = '}') Then Inc(Pos);
-   End Else Begin
-    StartPos := Pos;
-    JSSkipToBalanced(Script, Pos, [';']);
-    ThenBlock := Copy(Script, StartPos, Pos - StartPos);
-    If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
-   End;
-
-   { Bloc else optionnel : meme remarque que pour le bloc then. }
-   ElseBlock := '';
-   Pos := JSSkipComments(Script, Pos);
-   StartPos := Pos;
-   Token := JSGetNextToken(Script, Pos);
-   If (Token.TokType = JS_TOK_KEYWORD) And (Token.KeywordType = JS_KW_ELSE) Then Begin
-    Pos := JSSkipComments(Script, Pos);
-    If (Pos <= Length(Script)) And (Script[Pos] = '{') Then Begin
-     Inc(Pos);
-     StartPos := Pos;
-     BraceLevel := 1;
-     While (Pos <= Length(Script)) And (BraceLevel > 0) Do Begin
-      If Script[Pos] = '{' Then Inc(BraceLevel)
-      Else If Script[Pos] = '}' Then Dec(BraceLevel);
-      If BraceLevel > 0 Then Inc(Pos);
-     End;
-     ElseBlock := Copy(Script, StartPos, Pos - StartPos);
-     If (Pos <= Length(Script)) And (Script[Pos] = '}') Then Inc(Pos);
-    End Else Begin
-     StartPos := Pos;
-     JSSkipToBalanced(Script, Pos, [';']);
-     ElseBlock := Copy(Script, StartPos, Pos - StartPos);
-     If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
-    End;
-   End Else
-    Pos := StartPos;
-
-   { Evaluer la condition et executer le bloc approprie }
-   CondValue := JSEvaluate(CondExpr);
-   If JSValueToBool(CondValue) Then
-    JSEvaluate := JSEvaluate(ThenBlock)
-   Else If Length(ElseBlock) > 0 Then
-    JSEvaluate := JSEvaluate(ElseBlock);
-  End
-
-  { Instruction return }
-  Else If (Token.TokType = JS_TOK_KEYWORD) And (Token.KeywordType = JS_KW_RETURN) Then Begin
-   StartPos := Pos;
-   JSSkipToBalanced(Script, Pos, [';']);
-   JSEvaluate := JSEvaluate(Copy(Script, StartPos, Pos - StartPos));
-   If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
-   Exit;
-  End
-
-  { Instructions break/continue : remontent via un drapeau global
-    (voir sa declaration) puisque JSEvaluate est recursif - le corps
-    de la boucle qui les contient est lui-meme evalue par un appel
-    imbrique, qui ne peut pas "sortir" directement la boucle Pascal
-    for/while ecrite plus bas, qui vit dans un AUTRE appel a
-    JSEvaluate (celui qui interprete l'instruction for/while
-    elle-meme). }
-  Else If (Token.TokType = JS_TOK_KEYWORD) And (Token.KeywordType = JS_KW_BREAK) Then Begin
-   JSBreakFlag := True;
-   If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
-   Exit;
-  End
-  Else If (Token.TokType = JS_TOK_KEYWORD) And (Token.KeywordType = JS_KW_CONTINUE) Then Begin
-   JSContinueFlag := True;
-   If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
-   Exit;
-  End
-
-  { Instruction for, avec trois clauses entre parentheses (init,
-    condition, increment) suivies d'un bloc - JSCookMenu.js (et la
-    plupart du JS reel) en depend constamment ; sans ceci, "for"
-    n'etant reconnu par aucune des branches ci-dessus, retombait dans
-    le filet "Autre expression" tout en bas, qui s'arrete au premier
-    point-virgule interne a la parenthese du for (entre init et
-    condition), massacrant completement l'interpretation du reste du
-    script. }
-  Else If (Token.TokType = JS_TOK_KEYWORD) And (Token.KeywordType = JS_KW_FOR) Then Begin
-   Pos := JSSkipComments(Script, Pos);
-   LoopInit := ''; LoopCond := ''; LoopIncr := '';
-   If (Pos <= Length(Script)) And (Script[Pos] = '(') Then Begin
-    Inc(Pos);
-    StartPos := Pos;
-    JSSkipToBalanced(Script, Pos, [';']);
-    LoopInit := Copy(Script, StartPos, Pos - StartPos);
-    If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
-    StartPos := Pos;
-    JSSkipToBalanced(Script, Pos, [';']);
-    LoopCond := Copy(Script, StartPos, Pos - StartPos);
-    If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
-    StartPos := Pos;
-    JSSkipToBalanced(Script, Pos, [')']);
-    LoopIncr := Copy(Script, StartPos, Pos - StartPos);
-    If (Pos <= Length(Script)) And (Script[Pos] = ')') Then Inc(Pos);
-   End;
-   Pos := JSSkipComments(Script, Pos);
-   If (Pos <= Length(Script)) And (Script[Pos] = '{') Then Begin
-    Inc(Pos);
-    StartPos := Pos;
-    BraceLevel := 1;
-    While (Pos <= Length(Script)) And (BraceLevel > 0) Do Begin
-     If Script[Pos] = '{' Then Inc(BraceLevel)
-     Else If Script[Pos] = '}' Then Dec(BraceLevel);
-     If BraceLevel > 0 Then Inc(Pos);
-    End;
-    LoopBody := Copy(Script, StartPos, Pos - StartPos);
-    If (Pos <= Length(Script)) And (Script[Pos] = '}') Then Inc(Pos);
-   End Else Begin
-    StartPos := Pos;
-    JSSkipToBalanced(Script, Pos, [';']);
-    LoopBody := Copy(Script, StartPos, Pos - StartPos);
-    If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
-   End;
-
-   JSEvaluate(LoopInit);
-   LoopGuard := 0;
-   While (Not JSCtx.HasError) And JSValueToBool(JSEvaluate(LoopCond)) Do Begin
-    Inc(LoopGuard);
-    If LoopGuard > 200000 Then Begin
-     { Garde-fou : un script casse ou un bogue d'interprete ne doit
-       jamais figer le navigateur indefiniment. }
-     JSCtx.HasError := True;
-     JSCtx.ErrorMsg := 'Error: boucle for trop longue (garde-fou)';
-     Break;
-    End;
-    JSBreakFlag := False;
-    JSContinueFlag := False;
-    JSEvaluate(LoopBody);
-    If JSCtx.HasError Then Break;
-    If JSBreakFlag Then Begin
-     JSBreakFlag := False;
-     Break;
-    End;
-    JSContinueFlag := False;
-    JSEvaluate(LoopIncr);
-   End;
-  End
-
-  { Instruction while, condition entre parentheses suivie d'un bloc }
-  Else If (Token.TokType = JS_TOK_KEYWORD) And (Token.KeywordType = JS_KW_WHILE) Then Begin
-   Pos := JSSkipComments(Script, Pos);
-   LoopCond := '';
-   If (Pos <= Length(Script)) And (Script[Pos] = '(') Then Begin
-    Inc(Pos);
-    StartPos := Pos;
-    JSSkipToBalanced(Script, Pos, [')']);
-    LoopCond := Copy(Script, StartPos, Pos - StartPos);
-    If (Pos <= Length(Script)) And (Script[Pos] = ')') Then Inc(Pos);
-   End;
-   Pos := JSSkipComments(Script, Pos);
-   If (Pos <= Length(Script)) And (Script[Pos] = '{') Then Begin
-    Inc(Pos);
-    StartPos := Pos;
-    BraceLevel := 1;
-    While (Pos <= Length(Script)) And (BraceLevel > 0) Do Begin
-     If Script[Pos] = '{' Then Inc(BraceLevel)
-     Else If Script[Pos] = '}' Then Dec(BraceLevel);
-     If BraceLevel > 0 Then Inc(Pos);
-    End;
-    LoopBody := Copy(Script, StartPos, Pos - StartPos);
-    If (Pos <= Length(Script)) And (Script[Pos] = '}') Then Inc(Pos);
-   End Else Begin
-    StartPos := Pos;
-    JSSkipToBalanced(Script, Pos, [';']);
-    LoopBody := Copy(Script, StartPos, Pos - StartPos);
-    If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
-   End;
-
-   LoopGuard := 0;
-   While (Not JSCtx.HasError) And JSValueToBool(JSEvaluate(LoopCond)) Do Begin
-    Inc(LoopGuard);
-    If LoopGuard > 200000 Then Begin
-     JSCtx.HasError := True;
-     JSCtx.ErrorMsg := 'Error: boucle while trop longue (garde-fou)';
-     Break;
-    End;
-    JSBreakFlag := False;
-    JSContinueFlag := False;
-    JSEvaluate(LoopBody);
-    If JSCtx.HasError Then Break;
-    If JSBreakFlag Then Begin
-     JSBreakFlag := False;
-     Break;
-    End;
-    JSContinueFlag := False;
-   End;
-  End
-
-  { Expression simple (affectation ou appel de fonction). "this" est
-    inclus ici malgre son TokType JS_TOK_KEYWORD (et non IDENTIFIER) -
-    sans quoi this.className = ... tombait dans la branche generique
-    du bas, qui ne sait pas faire d'affectation sur une propriete. }
-  Else If (Token.TokType = JS_TOK_IDENTIFIER) Or
-          ((Token.TokType = JS_TOK_KEYWORD) And (Token.KeywordType = JS_KW_THIS)) Then Begin
-   VarName := Token.TokValue;
-   Pos := JSSkipComments(Script, Pos);
-
-   { Affectation sur une propriete : this.X = ..., window.location = ...,
-     ou plus generalement variable.a.b[i] = ... (chaine arbitraire de
-     proprietes/index, le dernier maillon etant la cible reelle de
-     l'affectation - utilise massivement par JSCookMenu.js, ex.
-     thisMenu.cmItems[i] = obj, subMenu.style.top = ... + 'px'). Seul
-     window.X reste un cas particulier non generique : il n'existe pas
-     de vraie "valeur objet window" dans ce mini-interprete. }
-   If (Pos <= Length(Script)) And (Script[Pos] In ['.', '[']) Then Begin
-    If (Script[Pos] = '.') And (VarName = 'window') Then Begin
-     Inc(Pos);
-     Pos := JSSkipComments(Script, Pos);
-     PropToken := JSGetNextToken(Script, Pos);
-     Pos := JSSkipComments(Script, Pos);
-     If (Pos <= Length(Script)) And (Script[Pos] = '=') And
-        ((Pos >= Length(Script)) Or (Script[Pos+1] <> '=')) Then Begin
-      Inc(Pos);
-      StartPos := Pos;
-      JSSkipToBalanced(Script, Pos, [';']);
-      Value := JSEvaluate(Copy(Script, StartPos, Pos - StartPos));
-      If HTMLLowerCase(PropToken.TokValue) = 'location' Then
-       NavigateTo(ResolveLinkHref(JSValueToString(Value)));
-      { window.defaultStatus = ... et toute autre propriete : sans
-        effet observable (pas de barre d'etat dans ce navigateur). }
-      If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
-     End Else Begin
-      Pos := StartPos;
-      JSEvaluate := JSEvalExpression(Script, Pos);
-      Pos := JSSkipComments(Script, Pos);
-      If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
-     End;
-    End
-    Else Begin
-     { Conteneur de depart de la chaine }
-     If HTMLLowerCase(VarName) = 'this' Then
-      Container := JSNodeValue(JSEventTargetNode)
-     Else
-      Container := JSGetVariable(VarName);
-
-     { Avancer maillon par maillon (.prop ou [index]) jusqu'au DERNIER,
-       qui sera la cible de l'affectation - tous les maillons
-       precedents servent seulement a descendre dans le conteneur. }
-     HasFinalStep := False;
-     Repeat
-      If Script[Pos] = '.' Then Begin
-       Inc(Pos);
-       Pos := JSSkipComments(Script, Pos);
-       PropToken := JSGetNextToken(Script, Pos);
-       KeyName := PropToken.TokValue;
-      End
-      Else Begin { '[' }
-       Inc(Pos);
-       IdxStartPos := Pos;
-       JSSkipToBalanced(Script, Pos, [']']);
-       IndexVal := JSEvaluate(Copy(Script, IdxStartPos, Pos - IdxStartPos));
-       If (Pos <= Length(Script)) And (Script[Pos] = ']') Then Inc(Pos);
-       KeyName := JSValueToString(IndexVal);
-      End;
-      Pos := JSSkipComments(Script, Pos);
-
-      If (Pos <= Length(Script)) And (Script[Pos] In ['.', '[']) Then
-       Container := JSGetMemberValue(Container, KeyName)
-      Else
-       HasFinalStep := True;
-     Until HasFinalStep Or (Pos > Length(Script));
-
-     If (Pos <= Length(Script)) And (Script[Pos] = '=') And
-        ((Pos >= Length(Script)) Or (Script[Pos+1] <> '=')) Then Begin
-      Inc(Pos);
-      StartPos := Pos;
-      JSSkipToBalanced(Script, Pos, [';']);
-      Value := JSEvaluate(Copy(Script, StartPos, Pos - StartPos));
-      Case Container.ValType Of
-       JS_VAL_NODE: JSSetNodeProperty(Container.NodeVal, KeyName, Value);
-       JS_VAL_OBJECT, JS_VAL_ARRAY: JSObjectSetProp(Container.ObjVal, KeyName, Value);
-      End;
-      If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
-     End Else Begin
-      { Pas une affectation reconnue : revenir en arriere et laisser
-        le moteur d'expressions evaluer normalement. }
-      Pos := StartPos;
-      JSEvaluate := JSEvalExpression(Script, Pos);
-      Pos := JSSkipComments(Script, Pos);
-      If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
-     End;
-    End;
-   End
-
-   { Affectation a une variable simple, y compris les formes composees
-     += -= *= /= : critiques pour JSCookMenu.js qui accumule le HTML
-     genere du menu via str += '...' (49 usages) - sans cela str
-     restait toujours a sa valeur initiale et le menu ne s'affichait
-     jamais (innerHTML recevait seulement le tag d'ouverture du
-     tableau, sans aucune cellule ni sous-menu). }
-   Else If (Pos <= Length(Script)) And (Script[Pos] = '=') And
-      ((Pos >= Length(Script)) Or (Script[Pos+1] <> '=')) Then Begin
-    Inc(Pos);
-    StartPos := Pos;
-    JSSkipToBalanced(Script, Pos, [';']);
-    Value := JSEvaluate(Copy(Script, StartPos, Pos - StartPos));
-    JSSetVariable(VarName, Value, False);
-    If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
-   End
-   Else If (Pos + 1 <= Length(Script)) And
-           (Script[Pos] In ['+', '-', '*', '/']) And
-           (Script[Pos + 1] = '=') Then Begin
-    IncDecOp := Script[Pos] + '=';
-    Inc(Pos, 2);
-    StartPos := Pos;
-    JSSkipToBalanced(Script, Pos, [';']);
-    Value := JSEvaluate(Copy(Script, StartPos, Pos - StartPos));
-    If IncDecOp = '+=' Then Begin
-     If (JSGetVariable(VarName).ValType = JS_VAL_STRING) Or
-        (Value.ValType = JS_VAL_STRING) Then Begin
-      { Calculer la chaine a ajouter UNE SEULE FOIS }
-      FallbackExpr := JSValueToString(Value);
-      { Lire la chaine courante et vider le slot (ref count -> 1) }
-      KeyName := JSGetVariable(VarName).StrVal;
-      JSSetVariable(VarName, JSUndefined, False);
-      { SetLength+Move : tente l'extension en place (ReallocMem).
-        Si le bloc adjacent est libre, aucun nouveau bloc n'est alloue.
-        Sinon, ReallocMem alloue le nouveau bloc, copie, libere
-        l'ancien - pic = old+new au lieu de old+old+new avec + seul. }
-      FallbackPos := Length(KeyName);
-      SetLength(KeyName, FallbackPos + Length(FallbackExpr));
-      If Length(FallbackExpr) > 0 Then
-       Move(FallbackExpr[1], KeyName[FallbackPos + 1], Length(FallbackExpr));
-      JSSetVariable(VarName, JSString(KeyName), False);
-     End
-     Else
-      JSSetVariable(VarName, JSNumber(JSValueToNumber(JSGetVariable(VarName)) + JSValueToNumber(Value)), False);
-    End
-    Else If IncDecOp = '-=' Then
-     JSSetVariable(VarName, JSNumber(JSValueToNumber(JSGetVariable(VarName)) - JSValueToNumber(Value)), False)
-    Else If IncDecOp = '*=' Then
-     JSSetVariable(VarName, JSNumber(JSValueToNumber(JSGetVariable(VarName)) * JSValueToNumber(Value)), False)
-    Else If IncDecOp = '/=' Then Begin
-     IncDecVal := JSValueToNumber(JSGetVariable(VarName));
-     If JSValueToNumber(Value) <> 0 Then
-      JSSetVariable(VarName, JSNumber(IncDecVal / JSValueToNumber(Value)), False);
-    End;
-    If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
-   End
-   Else Begin
-    { Autre expression (ex: appel de fonction isole) - revenir en
-      arriere et evaluer via le moteur d'expressions, qui avance Pos
-      lui-meme. Rappeler JSEvaluate sur le meme texte rebouclerait
-      indefiniment dans cette meme branche sans jamais progresser. }
-    Pos := StartPos;
-    JSEvaluate := JSEvalExpression(Script, Pos);
-    Pos := JSSkipComments(Script, Pos);
-    If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
-   End;
-  End
-
-  { Point-virgule seul }
-  Else If (Token.TokType = JS_TOK_PUNCTUATOR) And (Token.TokValue = ';') Then Begin
-   { Instruction vide, continuer }
-  End
-
-  { Autre expression (ex: litteral tableau/objet utilise seul comme
-    instruction, ou n'importe quelle expression ne commencant pas par
-    un identifiant). Decouper la sous-chaine et la reevaluer avec sa
-    PROPRE position de depart (1), pas StartPos qui repere une
-    position dans Script - la passer telle quelle a JSEvalExpression
-    revenait a sauter les premiers caracteres de la sous-chaine
-    (ex: le '[' d'un litteral tableau, lu a partir de la position 2
-    ou plus selon ce qui precedait dans Script). }
-  Else Begin
-   Pos := StartPos;
-   StartPos := Pos;
-   JSSkipToBalanced(Script, Pos, [';']);
-   If Pos > StartPos Then Begin
-    FallbackExpr := Copy(Script, StartPos, Pos - StartPos);
-    FallbackPos := 1;
-    JSEvaluate := JSEvalExpression(FallbackExpr, FallbackPos);
-   End;
-   If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
-  End;
-
-  If JSCtx.HasError Then Exit;
- End;
+ New(L);
+ EvalResult := JSUndefined;
+ DoBody;
+ JSEvaluate := EvalResult;
+ Dispose(L);
 End;
 
 { Executer un script JavaScript }
