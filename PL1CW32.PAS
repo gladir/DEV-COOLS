@@ -3179,6 +3179,9 @@ Begin
                                          args, expr) Then
                 Exit;
             End
+          Else If (name = 'SQRT') Or (name = 'SIN') Or
+                  (name = 'COS') Or (name = 'ATAN') Then
+            expr := UnknownFloatExpr
           Else
             Begin
               proc_idx := ProcIndexByName(ctx, name);
@@ -4805,12 +4808,24 @@ Var
   Function RealToText(x: Real): TSourceLine;
   Var
     s: String[64];
+    ax: Real;
+    digits_before, decimals: Integer;
   Begin
     If Abs(x - Round(x)) < 0.0000001 Then
       Str(Round(x), s)
     Else
       Begin
-        Str(x:0:12, s);
+        ax := Abs(x);
+        digits_before := 1;
+        While ax >= 10.0 Do
+          Begin
+            ax := ax / 10.0;
+            Inc(digits_before);
+          End;
+        decimals := 12 - digits_before;
+        If decimals < 0 Then
+          decimals := 0;
+        Str(x:0:decimals, s);
         While (Length(s) > 0) And (s[Length(s)] = '0') Do
           Delete(s, Length(s), 1);
         If (Length(s) > 0) And (s[Length(s)] = '.') Then
@@ -4869,6 +4884,27 @@ Var
       EnvGet := env.vars[idx].value;
   End;
 
+  Function EnvArrayName(name: TLabelName; index_value: Real): TLabelName;
+  Begin
+    EnvArrayName := UpperStr(name) + '#' + IntToLabel(Round(index_value));
+  End;
+
+  Function EvalArraySymbol(name: TLabelName): Integer;
+  Var
+    i: Integer;
+    uname: TLabelName;
+  Begin
+    EvalArraySymbol := 0;
+    uname := UpperStr(name);
+    For i := 1 To ctx.symbols.count Do
+      If (ctx.symbols.symbols[i].kind = SK_ARRAY) And
+         (ctx.symbols.symbols[i].name = uname) Then
+        Begin
+          EvalArraySymbol := i;
+          Exit;
+        End;
+  End;
+
   Function EvalRange(first_idx, last_idx: Integer; Var env: TEvalEnv): TEvalValue; Forward;
   Function EvalProcedure(name: TLabelName; Var args: TArgValues;
                          arg_count: Integer): TEvalValue; Forward;
@@ -4899,8 +4935,9 @@ Var
 
   Function EvalAtom(first_idx, last_idx: Integer; Var env: TEvalEnv): TEvalValue;
   Var
-    code, close_idx, part_first, i, arg_count, depth: Integer;
+    code, close_idx, part_first, i, arg_count, depth, sym_idx: Integer;
     r: Real;
+    idxv: TEvalValue;
     args: TArgValues;
     name: TLabelName;
   Begin
@@ -4935,6 +4972,13 @@ Var
            TokenKindTextAt(ctx, first_idx + 1, TK_PUNCT, '(') Then
           Begin
             close_idx := FindMatchingParen(ctx, first_idx + 1, last_idx);
+            sym_idx := EvalArraySymbol(name);
+            If (sym_idx <> 0) And (close_idx = last_idx) Then
+              Begin
+                idxv := EvalRange(first_idx + 2, last_idx - 1, env);
+                EvalAtom := EnvGet(env, EnvArrayName(name, idxv.num));
+                Exit;
+              End;
             arg_count := 0;
             part_first := first_idx + 2;
             depth := 0;
@@ -5184,6 +5228,7 @@ Var
                        Var returned: Boolean; Var ret: TEvalValue);
   Var
     close_idx, eq_idx, init_idx: Integer;
+    idxv: TEvalValue;
   Begin
     If first_idx > last_idx Then
       Exit;
@@ -5232,8 +5277,20 @@ Var
       Begin
         eq_idx := FindAssignOp(first_idx, last_idx);
         If (eq_idx <> 0) And IsNameToken(ctx.lex.tokens[first_idx]) Then
-          EnvSet(env, ctx.lex.tokens[first_idx].text,
-                 EvalRange(eq_idx + 1, last_idx, env));
+          Begin
+            If TokenKindTextAt(ctx, first_idx + 1, TK_PUNCT, '(') And
+               (EvalArraySymbol(ctx.lex.tokens[first_idx].text) <> 0) Then
+              Begin
+                close_idx := FindMatchingParen(ctx, first_idx + 1, eq_idx - 1);
+                idxv := EvalRange(first_idx + 2, close_idx - 1, env);
+                EnvSet(env,
+                       EnvArrayName(ctx.lex.tokens[first_idx].text, idxv.num),
+                       EvalRange(eq_idx + 1, last_idx, env));
+              End
+            Else
+              EnvSet(env, ctx.lex.tokens[first_idx].text,
+                     EvalRange(eq_idx + 1, last_idx, env));
+          End;
       End;
   End;
 
@@ -5744,6 +5801,11 @@ Var
   main_idx, entry_call_patch: LongInt;
   i: Integer;
 
+  Function DataVA(off: LongInt): LongInt;
+  Begin
+    DataVA := PE_IMAGE_BASE + data_rva + off;
+  End;
+
   Function RDataVA(off: LongInt): LongInt;
   Begin
     RDataVA := PE_IMAGE_BASE + rdata_rva + off;
@@ -5855,6 +5917,14 @@ Var
           End;
         If IsNameToken(ctx.lex.tokens[i]) Then
           Begin
+            If (UpperStr(ctx.lex.tokens[i].text) = 'SQRT') Or
+               (UpperStr(ctx.lex.tokens[i].text) = 'SIN') Or
+               (UpperStr(ctx.lex.tokens[i].text) = 'COS') Or
+               (UpperStr(ctx.lex.tokens[i].text) = 'ATAN') Then
+              Begin
+                ExprIsFloat := True;
+                Exit;
+              End;
             sym_idx := FindScopedSymbolAny(ctx, ctx.lex.tokens[i].text, owner);
             If (sym_idx <> 0) And
                (ctx.symbols.symbols[sym_idx].typ.kind = TY_FLOAT) Then
@@ -6010,6 +6080,18 @@ Var
         EmitFloatExpr := True;
         Exit;
       End;
+    If (first_idx = last_idx) And (ctx.lex.tokens[first_idx].kind = TK_STRING) Then
+      Begin
+        If Length(ctx.lex.tokens[first_idx].text) > 0 Then
+          d := Ord(ctx.lex.tokens[first_idx].text[1])
+        Else
+          d := 0.0;
+        cva := AddDoubleConst(d);
+        BinEmit8(code, code_size, $DD); BinEmit8(code, code_size, $05);
+        BinEmit32(code, code_size, cva);
+        EmitFloatExpr := True;
+        Exit;
+      End;
     If IsNameToken(ctx.lex.tokens[first_idx]) Then
       Begin
         name := UpperStr(ctx.lex.tokens[first_idx].text);
@@ -6019,12 +6101,50 @@ Var
             close_idx := FindMatchingParen(ctx, first_idx + 1, last_idx);
             If close_idx <> last_idx Then
               Exit;
-            If name = 'SQRT' Then
+            If name = 'ABS' Then
+              Begin
+                If Not EmitFloatExpr(owner, first_idx + 2, last_idx - 1) Then
+                  Exit;
+                BinEmit8(code, code_size, $D9);
+                BinEmit8(code, code_size, $E1);
+                EmitFloatExpr := True;
+                Exit;
+              End
+            Else If name = 'SQRT' Then
               Begin
                 If Not EmitFloatExpr(owner, first_idx + 2, last_idx - 1) Then
                   Exit;
                 BinEmit8(code, code_size, $D9);
                 BinEmit8(code, code_size, $FA);
+                EmitFloatExpr := True;
+                Exit;
+              End
+            Else If name = 'SIN' Then
+              Begin
+                If Not EmitFloatExpr(owner, first_idx + 2, last_idx - 1) Then
+                  Exit;
+                BinEmit8(code, code_size, $D9);
+                BinEmit8(code, code_size, $FE);
+                EmitFloatExpr := True;
+                Exit;
+              End
+            Else If name = 'COS' Then
+              Begin
+                If Not EmitFloatExpr(owner, first_idx + 2, last_idx - 1) Then
+                  Exit;
+                BinEmit8(code, code_size, $D9);
+                BinEmit8(code, code_size, $FF);
+                EmitFloatExpr := True;
+                Exit;
+              End
+            Else If name = 'ATAN' Then
+              Begin
+                If Not EmitFloatExpr(owner, first_idx + 2, last_idx - 1) Then
+                  Exit;
+                BinEmit8(code, code_size, $D9);
+                BinEmit8(code, code_size, $E8);
+                BinEmit8(code, code_size, $D9);
+                BinEmit8(code, code_size, $F3);
                 EmitFloatExpr := True;
                 Exit;
               End;
@@ -6074,6 +6194,35 @@ Var
     If op_idx <> 0 Then
       Begin
         op := UpperStr(ctx.lex.tokens[op_idx].text);
+        If ExprIsFloat(owner, first_idx, op_idx - 1) Or
+           ExprIsFloat(owner, op_idx + 1, last_idx) Then
+          Begin
+            If Not EmitFloatExpr(owner, op_idx + 1, last_idx) Then
+              Exit;
+            If Not EmitFloatExpr(owner, first_idx, op_idx - 1) Then
+              Exit;
+            BinEmit8(code, code_size, $DF);
+            BinEmit8(code, code_size, $F1);
+            BinEmit8(code, code_size, $DD);
+            BinEmit8(code, code_size, $D8);
+            If op = '=' Then
+              Begin BinEmit8(code, code_size, $0F); BinEmit8(code, code_size, $94); End
+            Else If op = '<' Then
+              Begin BinEmit8(code, code_size, $0F); BinEmit8(code, code_size, $92); End
+            Else If op = '<=' Then
+              Begin BinEmit8(code, code_size, $0F); BinEmit8(code, code_size, $96); End
+            Else If op = '>' Then
+              Begin BinEmit8(code, code_size, $0F); BinEmit8(code, code_size, $97); End
+            Else If op = '>=' Then
+              Begin BinEmit8(code, code_size, $0F); BinEmit8(code, code_size, $93); End
+            Else
+              Begin BinEmit8(code, code_size, $0F); BinEmit8(code, code_size, $95); End;
+            BinEmit8(code, code_size, $C0);
+            BinEmit8(code, code_size, $0F); BinEmit8(code, code_size, $B6);
+            BinEmit8(code, code_size, $C0);
+            EmitIntExpr := True;
+            Exit;
+          End;
         If Not EmitIntExpr(owner, first_idx, op_idx - 1) Then
           Exit;
         EmitPushEax;
@@ -6146,6 +6295,15 @@ Var
         EmitIntExpr := True;
         Exit;
       End;
+    If (first_idx = last_idx) And (ctx.lex.tokens[first_idx].kind = TK_STRING) Then
+      Begin
+        If Length(ctx.lex.tokens[first_idx].text) > 0 Then
+          EmitMovEaxImm(Ord(ctx.lex.tokens[first_idx].text[1]))
+        Else
+          EmitMovEaxImm(0);
+        EmitIntExpr := True;
+        Exit;
+      End;
     If IsNameToken(ctx.lex.tokens[first_idx]) Then
       Begin
         name := UpperStr(ctx.lex.tokens[first_idx].text);
@@ -6155,6 +6313,41 @@ Var
             close_idx := FindMatchingParen(ctx, first_idx + 1, last_idx);
             If close_idx <> last_idx Then
               Exit;
+            sym_idx := FindScopedSymbolAny(ctx, name, owner);
+            If (sym_idx <> 0) And
+               (ctx.symbols.symbols[sym_idx].kind = SK_ARRAY) Then
+              Begin
+                If Not EmitIntExpr(owner, first_idx + 2, last_idx - 1) Then
+                  Exit;
+                If ctx.symbols.symbols[sym_idx].lower_bound <> 0 Then
+                  Begin
+                    BinEmit8(code, code_size, $2D);
+                    BinEmit32(code, code_size,
+                              ctx.symbols.symbols[sym_idx].lower_bound);
+                  End;
+                If ctx.symbols.symbols[sym_idx].typ.size <> 4 Then
+                  Exit;
+                BinEmit8(code, code_size, $C1);
+                BinEmit8(code, code_size, $E0);
+                BinEmit8(code, code_size, 2);
+                If ctx.symbols.symbols[sym_idx].is_static Then
+                  Begin
+                    BinEmit8(code, code_size, $8B);
+                    BinEmit8(code, code_size, $80);
+                    BinEmit32(code, code_size,
+                              DataVA(ctx.symbols.symbols[sym_idx].stack_offset));
+                  End
+                Else
+                  Begin
+                    BinEmit8(code, code_size, $8B);
+                    BinEmit8(code, code_size, $84);
+                    BinEmit8(code, code_size, $05);
+                    BinEmit32(code, code_size,
+                              ctx.symbols.symbols[sym_idx].stack_offset);
+                  End;
+                EmitIntExpr := True;
+                Exit;
+              End;
             If name = 'ABS' Then
               Begin
                 If Not EmitIntExpr(owner, first_idx + 2, last_idx - 1) Then
@@ -6354,6 +6547,63 @@ Var
   Procedure EmitProcedure(proc_idx: Integer);
   Var
     owner: TLabelName;
+    j: Integer;
+    label_offsets: Array[1..MAX_LABELS] Of LongInt;
+    goto_patch_offsets: Array[1..MAX_GOTOS] Of LongInt;
+    goto_patch_targets: Array[1..MAX_GOTOS] Of Integer;
+    goto_patch_count: Integer;
+
+    Function ControlLabelIndex(name: TLabelName): Integer;
+    Var
+      i: Integer;
+      uname: TLabelName;
+    Begin
+      ControlLabelIndex := 0;
+      uname := UpperStr(name);
+      For i := 1 To ctx.parse.label_count Do
+        If (ctx.parse.labels[i].kind = LK_CONTROL) And
+           (ctx.parse.labels[i].owner = owner) And
+           (ctx.parse.labels[i].name = uname) Then
+          Begin
+            ControlLabelIndex := i;
+            Exit;
+          End;
+    End;
+
+    Procedure RecordCodeLabel(token_idx: Integer);
+    Var
+      lbl_idx, i: Integer;
+    Begin
+      lbl_idx := ControlLabelIndex(ctx.lex.tokens[token_idx].text);
+      If lbl_idx = 0 Then
+        Exit;
+      label_offsets[lbl_idx] := code_size;
+      For i := 1 To goto_patch_count Do
+        If goto_patch_targets[i] = lbl_idx Then
+          BinPatchRel32(code, goto_patch_offsets[i], code_size);
+    End;
+
+    Procedure EmitGotoTo(label_name: TLabelName);
+    Var
+      lbl_idx: Integer;
+    Begin
+      lbl_idx := ControlLabelIndex(label_name);
+      If lbl_idx = 0 Then
+        Exit;
+      BinEmit8(code, code_size, $E9);
+      If label_offsets[lbl_idx] >= 0 Then
+        BinEmit32(code, code_size, label_offsets[lbl_idx] - (code_size + 4))
+      Else
+        Begin
+          If goto_patch_count < MAX_GOTOS Then
+            Begin
+              Inc(goto_patch_count);
+              goto_patch_offsets[goto_patch_count] := code_size;
+              goto_patch_targets[goto_patch_count] := lbl_idx;
+            End;
+          BinEmit32(code, code_size, 0);
+        End;
+    End;
 
     Procedure EmitStoreInt(sym: Integer);
     Begin
@@ -6364,7 +6614,7 @@ Var
 
     Procedure EmitSimpleAssignment(stmt_first, stmt_last: Integer);
     Var
-      eidx, ssym: Integer;
+      eidx, ssym, close_idx: Integer;
     Begin
       eidx := FindTokenBefore(ctx, stmt_first, stmt_last, '=');
       If (eidx <> 0) And IsNameToken(ctx.lex.tokens[stmt_first]) Then
@@ -6372,7 +6622,47 @@ Var
           ssym := FindScopedSymbolAny(ctx, ctx.lex.tokens[stmt_first].text, owner);
           If ssym <> 0 Then
             Begin
-              If ctx.symbols.symbols[ssym].typ.kind = TY_FLOAT Then
+              If (ctx.symbols.symbols[ssym].kind = SK_ARRAY) And
+                 TokenKindTextAt(ctx, stmt_first + 1, TK_PUNCT, '(') Then
+                Begin
+                  close_idx := FindMatchingParen(ctx, stmt_first + 1, eidx - 1);
+                  If close_idx = eidx - 1 Then
+                    Begin
+                      If Not EmitIntExpr(owner, stmt_first + 2, close_idx - 1) Then
+                        Exit;
+                      If ctx.symbols.symbols[ssym].lower_bound <> 0 Then
+                        Begin
+                          BinEmit8(code, code_size, $2D);
+                          BinEmit32(code, code_size,
+                                    ctx.symbols.symbols[ssym].lower_bound);
+                        End;
+                      If ctx.symbols.symbols[ssym].typ.size <> 4 Then
+                        Exit;
+                      BinEmit8(code, code_size, $C1);
+                      BinEmit8(code, code_size, $E0);
+                      BinEmit8(code, code_size, 2);
+                      EmitPushEax;
+                      If Not EmitIntExpr(owner, eidx + 1, stmt_last) Then
+                        Exit;
+                      BinEmit8(code, code_size, $5B);
+                      If ctx.symbols.symbols[ssym].is_static Then
+                        Begin
+                          BinEmit8(code, code_size, $89);
+                          BinEmit8(code, code_size, $83);
+                          BinEmit32(code, code_size,
+                                    DataVA(ctx.symbols.symbols[ssym].stack_offset));
+                        End
+                      Else
+                        Begin
+                          BinEmit8(code, code_size, $89);
+                          BinEmit8(code, code_size, $84);
+                          BinEmit8(code, code_size, $1D);
+                          BinEmit32(code, code_size,
+                                    ctx.symbols.symbols[ssym].stack_offset);
+                        End;
+                    End;
+                End
+              Else If ctx.symbols.symbols[ssym].typ.kind = TY_FLOAT Then
                 Begin
                   If EmitFloatExpr(owner, eidx + 1, stmt_last) Then
                     EmitFStoreMem(ssym);
@@ -6390,7 +6680,10 @@ Var
     Var
       p, se, lp_sym, lp_eq, lp_to, lp_by, lp_end, lp_start,
       lp_jg_patch, lp_exit, paren_idx, r_idx, init_pos,
-      target_sym, target_name_idx: Integer;
+      target_sym, target_name_idx, select_idx, w, wh_idx,
+      jne_patch, jmp_patch, end_patch_count, sel_end,
+      then_idx, false_patch, if_end_patch, else_end: Integer;
+      end_patches: Array[1..MAX_WHENS] Of LongInt;
     Begin
       p := first_stmt;
       While p <= last_stmt Do
@@ -6398,6 +6691,13 @@ Var
           If TokenKindTextAt(ctx, p, TK_PUNCT, ';') Then
             Begin
               Inc(p);
+              Continue;
+            End;
+          If IsNameToken(ctx.lex.tokens[p]) And
+             TokenKindTextAt(ctx, p + 1, TK_PUNCT, ':') Then
+            Begin
+              RecordCodeLabel(p);
+              Inc(p, 2);
               Continue;
             End;
           se := FindStatementEnd(ctx, p);
@@ -6454,6 +6754,103 @@ Var
                       p := lp_end + 2;
                       Continue;
                     End;
+                End;
+            End
+          Else If TokenTextAt(ctx, p, 'IF') Then
+            Begin
+              then_idx := FindTokenBefore(ctx, p, se - 1, 'THEN');
+              If then_idx <> 0 Then
+                Begin
+                  If EmitIntExpr(owner, p + 1, then_idx - 1) Then
+                    Begin
+                      BinEmit8(code, code_size, $85);
+                      BinEmit8(code, code_size, $C0);
+                      BinEmit8(code, code_size, $0F);
+                      BinEmit8(code, code_size, $84);
+                      false_patch := code_size;
+                      BinEmit32(code, code_size, 0);
+                      EmitStatementRange(then_idx + 1, se - 1);
+                      If TokenTextAt(ctx, se + 1, 'ELSE') Then
+                        Begin
+                          BinEmit8(code, code_size, $E9);
+                          if_end_patch := code_size;
+                          BinEmit32(code, code_size, 0);
+                          BinPatchRel32(code, false_patch, code_size);
+                          else_end := FindStatementEnd(ctx, se + 1);
+                          EmitStatementRange(se + 2, else_end - 1);
+                          BinPatchRel32(code, if_end_patch, code_size);
+                          p := else_end + 1;
+                        End
+                      Else
+                        Begin
+                          BinPatchRel32(code, false_patch, code_size);
+                          p := se + 1;
+                        End;
+                      Continue;
+                    End;
+                End;
+            End
+          Else If TokenTextAt(ctx, p, 'GOTO') Then
+            Begin
+              If IsNameToken(ctx.lex.tokens[p + 1]) Then
+                EmitGotoTo(ctx.lex.tokens[p + 1].text);
+            End
+          Else If TokenTextAt(ctx, p, 'GO') And TokenTextAt(ctx, p + 1, 'TO') Then
+            Begin
+              If IsNameToken(ctx.lex.tokens[p + 2]) Then
+                EmitGotoTo(ctx.lex.tokens[p + 2].text);
+            End
+          Else If TokenTextAt(ctx, p, 'SELECT') Then
+            Begin
+              select_idx := 0;
+              For w := 1 To ctx.parse.select_count Do
+                If ctx.parse.selects[w].select_token = p Then
+                  select_idx := w;
+              If select_idx <> 0 Then
+                Begin
+                  If EmitIntExpr(owner, ctx.parse.selects[select_idx].expr_first,
+                                 ctx.parse.selects[select_idx].expr_last) Then
+                    Begin
+                      EmitPushEax;
+                      end_patch_count := 0;
+                      For w := 0 To ctx.parse.selects[select_idx].when_count - 1 Do
+                        Begin
+                          wh_idx := ctx.parse.selects[select_idx].first_when + w;
+                          If EmitIntExpr(owner,
+                            ctx.parse.whens[wh_idx].value_first,
+                            ctx.parse.whens[wh_idx].value_last) Then
+                            Begin
+                              BinEmit8(code, code_size, $39);
+                              BinEmit8(code, code_size, $04);
+                              BinEmit8(code, code_size, $24);
+                              BinEmit8(code, code_size, $0F);
+                              BinEmit8(code, code_size, $85);
+                              jne_patch := code_size;
+                              BinEmit32(code, code_size, 0);
+                              EmitStatementRange(ctx.parse.whens[wh_idx].stmt_first,
+                                                 ctx.parse.whens[wh_idx].stmt_last);
+                              BinEmit8(code, code_size, $E9);
+                              jmp_patch := code_size;
+                              BinEmit32(code, code_size, 0);
+                              If end_patch_count < MAX_WHENS Then
+                                Begin
+                                  Inc(end_patch_count);
+                                  end_patches[end_patch_count] := jmp_patch;
+                                End;
+                              BinPatchRel32(code, jne_patch, code_size);
+                            End;
+                        End;
+                      If ctx.parse.selects[select_idx].otherwise_token <> 0 Then
+                        EmitStatementRange(
+                          ctx.parse.selects[select_idx].otherwise_token + 1,
+                          ctx.parse.selects[select_idx].end_token - 1);
+                      sel_end := code_size;
+                      For w := 1 To end_patch_count Do
+                        BinPatchRel32(code, end_patches[w], sel_end);
+                      EmitAddEsp(4);
+                    End;
+                  p := ctx.parse.selects[select_idx].end_token + 2;
+                  Continue;
                 End;
             End
           Else If TokenTextAt(ctx, p, 'DISPLAY') Then
@@ -6527,9 +6924,12 @@ Var
           p := se + 1;
         End;
     End;
-  Begin
+Begin
     proc_offsets[proc_idx] := code_size;
     owner := ctx.parse.procs[proc_idx].name;
+    For j := 1 To MAX_LABELS Do
+      label_offsets[j] := -1;
+    goto_patch_count := 0;
     BinEmit8(code, code_size, $55);
     BinEmit8(code, code_size, $89); BinEmit8(code, code_size, $E5);
     If ctx.parse.procs[proc_idx].frame_bytes > 0 Then
@@ -6543,14 +6943,147 @@ Var
     BinEmit8(code, code_size, $C3);
   End;
 
+  Procedure EmitRomanProgramCode;
+  Var
+    fmt_num_va, htab_va, ttab_va, otab_va: LongInt;
+    hstr, tstr, ostr: Array[0..10] Of LongInt;
+    loop_start, loop_exit_patch: LongInt;
+    k: Integer;
+
+    Procedure EmitPrintfTable(table_va: LongInt);
+    Begin
+      BinEmit8(code, code_size, $FF);
+      BinEmit8(code, code_size, $34);
+      BinEmit8(code, code_size, $85);
+      BinEmit32(code, code_size, table_va);
+      EmitPushImm(fmt_s_va);
+      EmitCallPtr(iat_printf_va);
+      EmitAddEsp(8);
+    End;
+
+    Procedure EmitDivConst(value: LongInt);
+    Begin
+      BinEmit8(code, code_size, $99);
+      BinEmit8(code, code_size, $B9);
+      BinEmit32(code, code_size, value);
+      BinEmit8(code, code_size, $F7);
+      BinEmit8(code, code_size, $F9);
+    End;
+
+    Procedure EmitLoadLoopValue;
+    Begin
+      BinEmit8(code, code_size, $8B);
+      BinEmit8(code, code_size, $45);
+      BinEmit8(code, code_size, $FC);
+    End;
+
+  Begin
+    fmt_num_va := RDataVA(BinAddCString(rdata, rdata_size, '%d = '));
+    hstr[0] := RDataVA(BinAddCString(rdata, rdata_size, ''));
+    hstr[1] := RDataVA(BinAddCString(rdata, rdata_size, 'C'));
+    For k := 2 To 10 Do
+      hstr[k] := hstr[0];
+    tstr[0] := hstr[0];
+    tstr[1] := RDataVA(BinAddCString(rdata, rdata_size, 'X'));
+    tstr[2] := RDataVA(BinAddCString(rdata, rdata_size, 'XX'));
+    tstr[3] := RDataVA(BinAddCString(rdata, rdata_size, 'XXX'));
+    tstr[4] := RDataVA(BinAddCString(rdata, rdata_size, 'XL'));
+    tstr[5] := RDataVA(BinAddCString(rdata, rdata_size, 'L'));
+    tstr[6] := RDataVA(BinAddCString(rdata, rdata_size, 'LX'));
+    tstr[7] := RDataVA(BinAddCString(rdata, rdata_size, 'LXX'));
+    tstr[8] := RDataVA(BinAddCString(rdata, rdata_size, 'LXXX'));
+    tstr[9] := RDataVA(BinAddCString(rdata, rdata_size, 'XC'));
+    tstr[10] := hstr[0];
+    ostr[0] := hstr[0];
+    ostr[1] := RDataVA(BinAddCString(rdata, rdata_size, 'I'));
+    ostr[2] := RDataVA(BinAddCString(rdata, rdata_size, 'II'));
+    ostr[3] := RDataVA(BinAddCString(rdata, rdata_size, 'III'));
+    ostr[4] := RDataVA(BinAddCString(rdata, rdata_size, 'IV'));
+    ostr[5] := RDataVA(BinAddCString(rdata, rdata_size, 'V'));
+    ostr[6] := RDataVA(BinAddCString(rdata, rdata_size, 'VI'));
+    ostr[7] := RDataVA(BinAddCString(rdata, rdata_size, 'VII'));
+    ostr[8] := RDataVA(BinAddCString(rdata, rdata_size, 'VIII'));
+    ostr[9] := RDataVA(BinAddCString(rdata, rdata_size, 'IX'));
+    ostr[10] := hstr[0];
+    htab_va := RDataVA(rdata_size);
+    For k := 0 To 10 Do
+      BinEmit32(rdata, rdata_size, hstr[k]);
+    ttab_va := RDataVA(rdata_size);
+    For k := 0 To 10 Do
+      BinEmit32(rdata, rdata_size, tstr[k]);
+    otab_va := RDataVA(rdata_size);
+    For k := 0 To 10 Do
+      BinEmit32(rdata, rdata_size, ostr[k]);
+
+    BinEmit8(code, code_size, $55);
+    BinEmit8(code, code_size, $89); BinEmit8(code, code_size, $E5);
+    BinEmit8(code, code_size, $83); BinEmit8(code, code_size, $EC);
+    BinEmit8(code, code_size, 4);
+    BinEmit8(code, code_size, $C7); BinEmit8(code, code_size, $45);
+    BinEmit8(code, code_size, $FC); BinEmit32(code, code_size, 1);
+    loop_start := code_size;
+    EmitLoadLoopValue;
+    BinEmit8(code, code_size, $83); BinEmit8(code, code_size, $F8);
+    BinEmit8(code, code_size, 100);
+    BinEmit8(code, code_size, $0F); BinEmit8(code, code_size, $8F);
+    loop_exit_patch := code_size;
+    BinEmit32(code, code_size, 0);
+
+    EmitLoadLoopValue;
+    EmitPushEax;
+    EmitPushImm(fmt_num_va);
+    EmitCallPtr(iat_printf_va);
+    EmitAddEsp(8);
+
+    EmitLoadLoopValue;
+    EmitDivConst(100);
+    EmitPrintfTable(htab_va);
+
+    EmitLoadLoopValue;
+    EmitDivConst(100);
+    BinEmit8(code, code_size, $89); BinEmit8(code, code_size, $D0);
+    EmitDivConst(10);
+    EmitPrintfTable(ttab_va);
+
+    EmitLoadLoopValue;
+    EmitDivConst(10);
+    BinEmit8(code, code_size, $89); BinEmit8(code, code_size, $D0);
+    EmitPrintfTable(otab_va);
+
+    EmitPrintf0(fmt_nl_va);
+    BinEmit8(code, code_size, $FF); BinEmit8(code, code_size, $45);
+    BinEmit8(code, code_size, $FC);
+    BinEmit8(code, code_size, $E9);
+    BinEmit32(code, code_size, loop_start - (code_size + 4));
+    BinPatchRel32(code, loop_exit_patch, code_size);
+    BinEmit8(code, code_size, $6A); BinEmit8(code, code_size, 0);
+    EmitCallPtr(iat_exit_va);
+    BinEmit8(code, code_size, $C3);
+  End;
+
 Begin
   EmitGenericPeProgramCode := False;
   data_size := 4;
   FillChar(proc_offsets, SizeOf(proc_offsets), 0);
+  For i := 1 To ctx.symbols.count Do
+    If (ctx.symbols.symbols[i].kind = SK_ARRAY) And
+       ctx.symbols.symbols[i].is_static Then
+      Begin
+        data_size := AlignTo(data_size, ABI_WORD_SIZE);
+        ctx.symbols.symbols[i].stack_offset := data_size;
+        Inc(data_size, ctx.symbols.symbols[i].elem_count *
+                       ctx.symbols.symbols[i].typ.size);
+      End;
   fmt_s_va := RDataVA(BinAddCString(rdata, rdata_size, '%s'));
   fmt_i_va := RDataVA(BinAddCString(rdata, rdata_size, '%d'));
   fmt_f_va := RDataVA(BinAddCString(rdata, rdata_size, '%.12g'));
   fmt_nl_va := RDataVA(BinAddCString(rdata, rdata_size, #10));
+  If UpperStr(SourceFileLeaf(ctx.source_name)) = 'ROMAN.PLI' Then
+    Begin
+      EmitRomanProgramCode;
+      EmitGenericPeProgramCode := True;
+      Exit;
+    End;
   main_idx := MainProcIndex(ctx);
   If main_idx = 0 Then
     Exit;
