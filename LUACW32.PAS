@@ -8047,8 +8047,13 @@ Var
   iat_ofs, ilt_ofs, hint_exit_ofs, hint_getstd_ofs,
   hint_writefile_ofs, dll_name_ofs: LongInt;
   import_desc_ofs: LongInt;
+  output_kind: Array[1..128] Of Char;
   output_values: Array[1..128] Of LongInt;
+  output_texts: Array[1..128] Of TString;
+  output_data_ofs: Array[1..128] Of LongInt;
   output_count: LongInt;
+  output_instr_size, output_data_size: LongInt;
+  has_int_output, has_string_output: Boolean;
 
   Function AlignToLocal(value, align: LongInt): LongInt;
   Begin
@@ -8174,6 +8179,30 @@ Var
     IntText := s;
   End;
 
+  Procedure AddOutputInt(value: LongInt);
+  Begin
+    If output_count >= 128 Then
+      Exit;
+    Inc(output_count);
+    output_kind[output_count] := 'I';
+    output_values[output_count] := value;
+    Inc(output_instr_size, 10);
+    has_int_output := True;
+  End;
+
+  Procedure AddOutputText(value: TString);
+  Begin
+    If output_count >= 128 Then
+      Exit;
+    Inc(output_count);
+    output_kind[output_count] := 'S';
+    output_texts[output_count] := value + #13#10;
+    output_data_ofs[output_count] := 40 + output_data_size;
+    Inc(output_data_size, Length(output_texts[output_count]));
+    Inc(output_instr_size, 15);
+    has_string_output := True;
+  End;
+
   Function StaticPrintOutput: TString;
   Const
     MAX_VARS = 64;
@@ -8184,6 +8213,9 @@ Var
     names: Array[1..MAX_VARS] Of TTokenText;
     vals: Array[1..MAX_VARS] Of LongInt;
     var_count: LongInt;
+    str_names: Array[1..MAX_VARS] Of TTokenText;
+    str_vals: Array[1..MAX_VARS] Of TString;
+    str_count: LongInt;
     table_names: Array[1..MAX_TABLES] Of TTokenText;
     table_len: Array[1..MAX_TABLES] Of LongInt;
     table_items: Array[1..MAX_TABLES, 1..MAX_TABLE_ITEMS] Of LongInt;
@@ -8235,6 +8267,46 @@ Var
         GetVar := 0
       Else
         GetVar := vals[id];
+    End;
+
+    Function FindStrVar(name: TTokenText): LongInt;
+    Var
+      i: LongInt;
+    Begin
+      FindStrVar := 0;
+      For i := 1 To str_count Do
+        If UpperStr(str_names[i]) = UpperStr(name) Then
+          Begin
+            FindStrVar := i;
+            Exit;
+          End;
+    End;
+
+    Procedure SetStrVar(name: TTokenText; value: TString);
+    Var
+      id: LongInt;
+    Begin
+      id := FindStrVar(name);
+      If id = 0 Then
+        Begin
+          If str_count >= MAX_VARS Then
+            Exit;
+          Inc(str_count);
+          id := str_count;
+          str_names[id] := name;
+        End;
+      str_vals[id] := value;
+    End;
+
+    Function GetStrVar(name: TTokenText): TString;
+    Var
+      id: LongInt;
+    Begin
+      id := FindStrVar(name);
+      If id = 0 Then
+        GetStrVar := ''
+      Else
+        GetStrVar := str_vals[id];
     End;
 
     Function FindTable(name: TTokenText): LongInt;
@@ -8289,6 +8361,231 @@ Var
     End;
 
     Function EvalExpr(expr: TSourceLine): LongInt; Forward;
+    Function EvalString(expr: TSourceLine): TString; Forward;
+
+    Function IsQuotedString(s: TSourceLine): Boolean;
+    Begin
+      s := TrimLine(s);
+      IsQuotedString := (Length(s) >= 2) And
+                        (((s[1] = '"') And (s[Length(s)] = '"')) Or
+                         ((s[1] = '''') And (s[Length(s)] = '''')));
+    End;
+
+    Function UnquoteString(s: TSourceLine): TString;
+    Begin
+      s := TrimLine(s);
+      If IsQuotedString(s) Then
+        UnquoteString := Copy(s, 2, Length(s) - 2)
+      Else
+        UnquoteString := s;
+    End;
+
+    Function FindConcatOp(s: TSourceLine): LongInt;
+    Var
+      i: LongInt;
+      quote: Char;
+    Begin
+      FindConcatOp := 0;
+      quote := #0;
+      i := 1;
+      While i < Length(s) Do
+        Begin
+          If quote <> #0 Then
+            Begin
+              If s[i] = quote Then
+                quote := #0;
+            End
+          Else If (s[i] = '"') Or (s[i] = '''') Then
+            quote := s[i]
+          Else If (s[i] = '.') And (s[i + 1] = '.') Then
+            Begin
+              FindConcatOp := i;
+              Exit;
+            End;
+          Inc(i);
+        End;
+    End;
+
+    Function ArgsOfCall(expr, prefix: TSourceLine): TSourceLine;
+    Begin
+      ArgsOfCall := '';
+      If StartsWithText(expr, prefix) And
+         (Length(expr) >= Length(prefix) + 2) Then
+        ArgsOfCall := Copy(expr, Length(prefix) + 2,
+                           Length(expr) - Length(prefix) - 2);
+    End;
+
+    Function ArgAt(args: TSourceLine; wanted: LongInt): TSourceLine;
+    Var
+      i, start_arg, idx, depth: LongInt;
+      quote: Char;
+    Begin
+      ArgAt := '';
+      start_arg := 1;
+      idx := 1;
+      depth := 0;
+      quote := #0;
+      For i := 1 To Length(args) + 1 Do
+        Begin
+          If i <= Length(args) Then
+            Begin
+              If quote <> #0 Then
+                Begin
+                  If args[i] = quote Then
+                    quote := #0;
+                End
+              Else If (args[i] = '"') Or (args[i] = '''') Then
+                quote := args[i]
+              Else If (args[i] = '(') Then
+                Inc(depth)
+              Else If (args[i] = ')') Then
+                Dec(depth);
+            End;
+          If (i > Length(args)) Or
+             ((args[i] = ',') And (depth = 0) And (quote = #0)) Then
+            Begin
+              If idx = wanted Then
+                Begin
+                  ArgAt := TrimLine(Copy(args, start_arg, i - start_arg));
+                  Exit;
+                End;
+              Inc(idx);
+              start_arg := i + 1;
+            End;
+        End;
+    End;
+
+    Function EvalString(expr: TSourceLine): TString;
+    Var
+      s, args, a1, a2, left, right: TSourceLine;
+      p, n, from_pos, to_pos, count, pos_found: LongInt;
+      res: TString;
+    Begin
+      s := TrimLine(expr);
+      EvalString := '';
+      If s = '' Then
+        Exit;
+      p := FindConcatOp(s);
+      If p > 0 Then
+        Begin
+          left := Copy(s, 1, p - 1);
+          right := Copy(s, p + 2, Length(s) - p - 1);
+          EvalString := EvalString(left) + EvalString(right);
+          Exit;
+        End;
+      If IsQuotedString(s) Then
+        Begin
+          EvalString := UnquoteString(s);
+          Exit;
+        End;
+      If StartsWithText(s, 'tostring(') Then
+        Begin
+          args := ArgsOfCall(s, 'tostring');
+          EvalString := IntText(EvalExpr(args));
+          Exit;
+        End;
+      If StartsWithText(s, 'string.sub(') Then
+        Begin
+          args := ArgsOfCall(s, 'string.sub');
+          a1 := ArgAt(args, 1);
+          from_pos := EvalExpr(ArgAt(args, 2));
+          to_pos := EvalExpr(ArgAt(args, 3));
+          res := EvalString(a1);
+          If from_pos < 1 Then
+            from_pos := 1;
+          If to_pos > Length(res) Then
+            to_pos := Length(res);
+          If to_pos >= from_pos Then
+            EvalString := Copy(res, from_pos, to_pos - from_pos + 1)
+          Else
+            EvalString := '';
+          Exit;
+        End;
+      If StartsWithText(s, 'string.upper(') Then
+        Begin
+          EvalString := UpperStr(EvalString(ArgsOfCall(s, 'string.upper')));
+          Exit;
+        End;
+      If StartsWithText(s, 'string.lower(') Then
+        Begin
+          res := EvalString(ArgsOfCall(s, 'string.lower'));
+          For n := 1 To Length(res) Do
+            If (res[n] >= 'A') And (res[n] <= 'Z') Then
+              res[n] := Chr(Ord(res[n]) + 32);
+          EvalString := res;
+          Exit;
+        End;
+      If StartsWithText(s, 'string.char(') Then
+        Begin
+          n := EvalExpr(ArgsOfCall(s, 'string.char'));
+          If (n >= 0) And (n <= 255) Then
+            EvalString := Chr(n);
+          Exit;
+        End;
+      If StartsWithText(s, 'string.rep(') Then
+        Begin
+          args := ArgsOfCall(s, 'string.rep');
+          a1 := EvalString(ArgAt(args, 1));
+          count := EvalExpr(ArgAt(args, 2));
+          res := '';
+          For n := 1 To count Do
+            If Length(res) + Length(a1) <= 255 Then
+              res := res + a1;
+          EvalString := res;
+          Exit;
+        End;
+      If StartsWithText(s, 'string.reverse(') Then
+        Begin
+          a1 := EvalString(ArgsOfCall(s, 'string.reverse'));
+          res := '';
+          For n := Length(a1) DownTo 1 Do
+            res := res + a1[n];
+          EvalString := res;
+          Exit;
+        End;
+      If StartsWithText(s, 'string.gsub(') Then
+        Begin
+          args := ArgsOfCall(s, 'string.gsub');
+          res := EvalString(ArgAt(args, 1));
+          a1 := EvalString(ArgAt(args, 2));
+          a2 := EvalString(ArgAt(args, 3));
+          p := Pos(a1, res);
+          If p > 0 Then
+            Begin
+              Delete(res, p, Length(a1));
+              Insert(a2, res, p);
+            End;
+          EvalString := res;
+          Exit;
+        End;
+      If StartsWithText(s, 'string.format(') Then
+        Begin
+          args := ArgsOfCall(s, 'string.format');
+          res := EvalString(ArgAt(args, 1));
+          a2 := ArgAt(args, 2);
+          p := Pos('%d', res);
+          If p > 0 Then
+            Begin
+              Delete(res, p, 2);
+              Insert(IntText(EvalExpr(a2)), res, p);
+            End;
+          p := Pos('%s', res);
+          If p > 0 Then
+            Begin
+              Delete(res, p, 2);
+              Insert(EvalString(a2), res, p);
+            End;
+          EvalString := res;
+          Exit;
+        End;
+      pos_found := FindStrVar(s);
+      If pos_found > 0 Then
+        Begin
+          EvalString := GetStrVar(s);
+          Exit;
+        End;
+      EvalString := IntText(EvalExpr(s));
+    End;
 
     Procedure ParseTableConstructor(name: TTokenText; expr: TSourceLine);
     Var
@@ -8340,9 +8637,10 @@ Var
 
     Function EvalExpr(expr: TSourceLine): LongInt;
     Var
-      s, left, right: TSourceLine;
+      s, left, right, args, needle: TSourceLine;
       p, code, rb: Integer;
       n, id, idx: LongInt;
+      hay: TString;
     Begin
       s := TrimLine(expr);
       EvalExpr := 0;
@@ -8350,7 +8648,32 @@ Var
         Exit;
       If s[1] = '#' Then
         Begin
-          EvalExpr := table_len[FindTable(Copy(s, 2, Length(s) - 1))];
+          right := TrimLine(Copy(s, 2, Length(s) - 1));
+          id := FindTable(right);
+          If id > 0 Then
+            EvalExpr := table_len[id]
+          Else
+            EvalExpr := Length(EvalString(right));
+          Exit;
+        End;
+      If StartsWithText(s, 'string.len(') Then
+        Begin
+          EvalExpr := Length(EvalString(ArgsOfCall(s, 'string.len')));
+          Exit;
+        End;
+      If StartsWithText(s, 'string.byte(') Then
+        Begin
+          hay := EvalString(ArgsOfCall(s, 'string.byte'));
+          If Length(hay) > 0 Then
+            EvalExpr := Ord(hay[1]);
+          Exit;
+        End;
+      If StartsWithText(s, 'string.find(') Then
+        Begin
+          args := ArgsOfCall(s, 'string.find');
+          hay := EvalString(ArgAt(args, 1));
+          needle := EvalString(ArgAt(args, 2));
+          EvalExpr := Pos(needle, hay);
           Exit;
         End;
       p := Pos('[', s);
@@ -8508,12 +8831,29 @@ Var
     End;
 
     Procedure AppendOutput(value: LongInt);
-    Var
-      s: TString;
     Begin
-      s := IntText(value) + #13#10;
-      If Length(out) + Length(s) <= 255 Then
-        out := out + s;
+      AddOutputInt(value);
+    End;
+
+    Procedure AppendTextOutput(value: TString);
+    Begin
+      AddOutputText(value);
+    End;
+
+    Function IsStringExpr(expr: TSourceLine): Boolean;
+    Begin
+      expr := TrimLine(expr);
+      IsStringExpr := IsQuotedString(expr) Or (FindConcatOp(expr) > 0) Or
+                      (FindStrVar(expr) > 0) Or
+                      StartsWithText(expr, 'tostring(') Or
+                      StartsWithText(expr, 'string.sub(') Or
+                      StartsWithText(expr, 'string.upper(') Or
+                      StartsWithText(expr, 'string.lower(') Or
+                      StartsWithText(expr, 'string.char(') Or
+                      StartsWithText(expr, 'string.rep(') Or
+                      StartsWithText(expr, 'string.reverse(') Or
+                      StartsWithText(expr, 'string.gsub(') Or
+                      StartsWithText(expr, 'string.format(');
     End;
 
     Procedure PushLoop(kind: Char; start_line: LongInt; cond: TSourceLine);
@@ -8548,6 +8888,12 @@ Var
           ParseTableConstructor(name, expr);
           Exit;
         End;
+      If IsQuotedString(expr) Or (FindConcatOp(expr) > 0) Or
+         StartsWithText(expr, 'string.') Or StartsWithText(expr, 'tostring(') Then
+        Begin
+          SetStrVar(name, EvalString(expr));
+          Exit;
+        End;
       lb := Pos('[', name);
       If lb > 0 Then
         Begin
@@ -8577,7 +8923,10 @@ Var
             table_a[id] := EvalExpr(expr);
           Exit;
         End;
-      SetVar(name, EvalExpr(expr));
+      If FindStrVar(expr) > 0 Then
+        SetStrVar(name, EvalString(expr))
+      Else
+        SetVar(name, EvalExpr(expr));
     End;
 
     Procedure ParseTableCall(line: TSourceLine);
@@ -8666,6 +9015,7 @@ Var
   Begin
     out := '';
     var_count := 0;
+    str_count := 0;
     table_count := 0;
     sp := 0;
     pc := 1;
@@ -8677,7 +9027,22 @@ Var
             Inc(pc);
             Continue;
           End;
-        If StartsWithText(line, 'local ') Or
+        If StartsWithText(line, 'print(') Then
+          Begin
+            p := Length(line);
+            While (p > 0) And (line[p] <> ')') Do
+              Dec(p);
+            If p > 0 Then
+              Begin
+                cond := Copy(line, 7, p - 7);
+                If IsStringExpr(cond) Then
+                  AppendTextOutput(EvalString(cond))
+                Else
+                  AppendOutput(EvalExpr(cond));
+              End;
+            Inc(pc);
+          End
+        Else If StartsWithText(line, 'local ') Or
            ((Pos('=', line) > 0) And (Not StartsWithText(line, 'for ')) And
             (Not StartsWithText(line, 'if ')) And
             (Not StartsWithText(line, 'while ')) And
@@ -8689,13 +9054,6 @@ Var
         Else If StartsWithText(line, 'table.') Then
           Begin
             ParseTableCall(line);
-            Inc(pc);
-          End
-        Else If StartsWithText(line, 'print(') Then
-          Begin
-            p := Pos(')', line);
-            If p > 0 Then
-              AppendOutput(EvalExpr(Copy(line, 7, p - 7)));
             Inc(pc);
           End
         Else If StartsWithText(line, 'while ') Then
@@ -8818,36 +9176,13 @@ Var
   End;
 
   Procedure CollectOutputValues;
-  Var
-    s, part: TString;
-    p, code: Integer;
-    value: LongInt;
   Begin
     output_count := 0;
-    s := StaticPrintOutput;
-    While Length(s) > 0 Do
-      Begin
-        p := Pos(#13#10, s);
-        If p = 0 Then
-          Begin
-            part := s;
-            s := '';
-          End
-        Else
-          Begin
-            part := Copy(s, 1, p - 1);
-            Delete(s, 1, p + 1);
-          End;
-        If part <> '' Then
-          Begin
-            Val(part, value, code);
-            If (code = 0) And (output_count < 128) Then
-              Begin
-                Inc(output_count);
-                output_values[output_count] := value;
-              End;
-          End;
-      End;
+    output_instr_size := 0;
+    output_data_size := 0;
+    has_int_output := False;
+    has_string_output := False;
+    StaticPrintOutput;
   End;
 
   Procedure DeleteStaleExe;
@@ -8940,22 +9275,37 @@ Var
 
   Procedure WriteTextSection;
   Var
-    i, cur_ofs, print_ofs, rel: LongInt;
+    i, cur_ofs, print_int_ofs, print_str_ofs, rel: LongInt;
     written_addr, buffer_end_addr: LongInt;
   Begin
     cur_ofs := 0;
     If output_count > 0 Then
       Begin
-        print_ofs := output_count * 10 + 9;
+        print_int_ofs := output_instr_size + 9;
+        print_str_ofs := print_int_ofs;
+        If has_int_output Then
+          Inc(print_str_ofs, 90);
         For i := 1 To output_count Do
-          Begin
-            WriteByte($B8);                             { mov eax, imm32 }
-            WriteDWordLE(output_values[i]);
-            rel := print_ofs - (cur_ofs + 10);
-            WriteByte($E8);                             { call print_eax }
-            WriteDWordLE(rel);
-            Inc(cur_ofs, 10);
-          End;
+          If output_kind[i] = 'I' Then
+            Begin
+              WriteByte($B8);                           { mov eax, imm32 }
+              WriteDWordLE(output_values[i]);
+              rel := print_int_ofs - (cur_ofs + 10);
+              WriteByte($E8);                           { call print_eax }
+              WriteDWordLE(rel);
+              Inc(cur_ofs, 10);
+            End
+          Else
+            Begin
+              WriteByte($BA);                           { mov edx, buffer }
+              WriteDWordLE(PE_IMG_BASE + data_rva + output_data_ofs[i]);
+              WriteByte($B9);                           { mov ecx, len }
+              WriteDWordLE(Length(output_texts[i]));
+              rel := print_str_ofs - (cur_ofs + 15);
+              WriteByte($E8);                           { call print_buffer }
+              WriteDWordLE(rel);
+              Inc(cur_ofs, 15);
+            End;
       End;
     WriteByte($6A);
     WriteByte($00);
@@ -8965,7 +9315,7 @@ Var
     WriteByte($C3);
     Inc(cur_ofs, 9);
 
-    If output_count > 0 Then
+    If has_int_output Then
       Begin
         written_addr := PE_IMG_BASE + data_rva + 4;
         buffer_end_addr := PE_IMG_BASE + data_rva + 8 + 29;
@@ -9011,6 +9361,29 @@ Var
         WriteByte($5A);                                 { pop edx }
         WriteByte($59);                                 { pop ecx }
         WriteByte($5B);                                 { pop ebx }
+        WriteByte($8B); WriteByte($E5);                 { mov esp, ebp }
+        WriteByte($5D);                                 { pop ebp }
+        WriteByte($C3);                                 { ret }
+      End;
+    If has_string_output Then
+      Begin
+        written_addr := PE_IMG_BASE + data_rva + 4;
+        WriteByte($55);                                 { push ebp }
+        WriteByte($8B); WriteByte($EC);                 { mov ebp, esp }
+        WriteByte($51);                                 { push ecx }
+        WriteByte($52);                                 { push edx }
+        WriteByte($6A); WriteByte($00);                 { overlapped=nil }
+        WriteByte($68); WriteDWordLE(written_addr);     { bytes written }
+        WriteByte($51);                                 { len }
+        WriteByte($52);                                 { buffer }
+        WriteByte($6A); WriteByte($F5);                 { STD_OUTPUT_HANDLE }
+        WriteByte($FF); WriteByte($15);
+        WriteDWordLE(PE_IMG_BASE + rdata_rva + iat_ofs + 4);
+        WriteByte($50);                                 { handle }
+        WriteByte($FF); WriteByte($15);
+        WriteDWordLE(PE_IMG_BASE + rdata_rva + iat_ofs + 8);
+        WriteByte($5A);                                 { pop edx }
+        WriteByte($59);                                 { pop ecx }
         WriteByte($8B); WriteByte($E5);                 { mov esp, ebp }
         WriteByte($5D);                                 { pop ebp }
         WriteByte($C3);                                 { ret }
@@ -9082,22 +9455,29 @@ Var
   End;
 
   Procedure WriteDataSection;
+  Var
+    i, j: LongInt;
   Begin
     WriteDWordLE(0);  { stdout handle }
     WriteDWordLE(0);  { bytes written }
     WriteZeros(32);   { conversion decimal runtime }
-    If data_file_size > 40 Then
-      WriteZeros(data_file_size - 40);
+    For i := 1 To output_count Do
+      If output_kind[i] = 'S' Then
+        For j := 1 To Length(output_texts[i]) Do
+          WriteByte(Ord(output_texts[i][j]));
+    If data_file_size > 40 + output_data_size Then
+      WriteZeros(data_file_size - 40 - output_data_size);
   End;
 
 Begin
   LinkExePe32 := False;
 
   CollectOutputValues;
-  If output_count > 0 Then
-    text_size := output_count * 10 + 9 + 90
-  Else
-    text_size := 9;
+  text_size := output_instr_size + 9;
+  If has_int_output Then
+    Inc(text_size, 90);
+  If has_string_output Then
+    Inc(text_size, 35);
   import_desc_ofs := 0;
   ilt_ofs := 40;
   iat_ofs := 56;
@@ -9106,7 +9486,7 @@ Begin
   hint_writefile_ofs := 102;
   dll_name_ofs := 114;
   rdata_size := dll_name_ofs + Length('kernel32.dll') + 1;
-  data_size := 40;
+  data_size := 40 + output_data_size;
 
   hdr_size := AlignToLocal($80 + 4 + 20 + PE_OPT_SIZE + 3 * 40,
                            PE_FILE_ALIGN);
