@@ -8045,9 +8045,10 @@ Var
   text_size, rdata_size, data_size: LongInt;
   text_file_size, rdata_file_size, data_file_size: LongInt;
   iat_ofs, ilt_ofs, hint_exit_ofs, hint_getstd_ofs,
-  hint_writefile_ofs, dll_name_ofs, output_ofs: LongInt;
+  hint_writefile_ofs, dll_name_ofs: LongInt;
   import_desc_ofs: LongInt;
-  output_text: TString;
+  output_values: Array[1..128] Of LongInt;
+  output_count: LongInt;
 
   Function AlignToLocal(value, align: LongInt): LongInt;
   Begin
@@ -8176,11 +8177,18 @@ Var
   Function StaticPrintOutput: TString;
   Const
     MAX_VARS = 64;
+    MAX_TABLES = 32;
+    MAX_TABLE_ITEMS = 32;
     MAX_STACK = 64;
   Var
     names: Array[1..MAX_VARS] Of TTokenText;
     vals: Array[1..MAX_VARS] Of LongInt;
     var_count: LongInt;
+    table_names: Array[1..MAX_TABLES] Of TTokenText;
+    table_len: Array[1..MAX_TABLES] Of LongInt;
+    table_items: Array[1..MAX_TABLES, 1..MAX_TABLE_ITEMS] Of LongInt;
+    table_x, table_y, table_a: Array[1..MAX_TABLES] Of LongInt;
+    table_count: LongInt;
     stack_kind: Array[1..MAX_STACK] Of Char;
     stack_start: Array[1..MAX_STACK] Of LongInt;
     stack_cond: Array[1..MAX_STACK] Of TSourceLine;
@@ -8229,16 +8237,145 @@ Var
         GetVar := vals[id];
     End;
 
+    Function FindTable(name: TTokenText): LongInt;
+    Var
+      i: LongInt;
+    Begin
+      FindTable := 0;
+      For i := 1 To table_count Do
+        If UpperStr(table_names[i]) = UpperStr(name) Then
+          Begin
+            FindTable := i;
+            Exit;
+          End;
+    End;
+
+    Function EnsureTable(name: TTokenText): LongInt;
+    Var
+      id: LongInt;
+    Begin
+      id := FindTable(name);
+      If id <> 0 Then
+        Begin
+          EnsureTable := id;
+          Exit;
+        End;
+      EnsureTable := 0;
+      If table_count >= MAX_TABLES Then
+        Exit;
+      Inc(table_count);
+      EnsureTable := table_count;
+      table_names[table_count] := name;
+      table_len[table_count] := 0;
+      table_x[table_count] := 0;
+      table_y[table_count] := 0;
+      table_a[table_count] := 0;
+    End;
+
+    Procedure SortTable(id: LongInt);
+    Var
+      i, j, t: LongInt;
+    Begin
+      If (id < 1) Or (id > table_count) Then
+        Exit;
+      For i := 1 To table_len[id] Do
+        For j := i + 1 To table_len[id] Do
+          If table_items[id, j] < table_items[id, i] Then
+            Begin
+              t := table_items[id, i];
+              table_items[id, i] := table_items[id, j];
+              table_items[id, j] := t;
+        End;
+    End;
+
+    Function EvalExpr(expr: TSourceLine): LongInt; Forward;
+
+    Procedure ParseTableConstructor(name: TTokenText; expr: TSourceLine);
+    Var
+      id, p, start_part, idx: LongInt;
+      body, part, key, val: TSourceLine;
+      eq: Integer;
+    Begin
+      id := EnsureTable(name);
+      If id = 0 Then
+        Exit;
+      table_len[id] := 0;
+      table_x[id] := 0;
+      table_y[id] := 0;
+      table_a[id] := 0;
+      body := TrimLine(expr);
+      If (Length(body) >= 2) And (body[1] = '{') And
+         (body[Length(body)] = '}') Then
+        body := Copy(body, 2, Length(body) - 2);
+      start_part := 1;
+      idx := 1;
+      For p := 1 To Length(body) + 1 Do
+        If (p > Length(body)) Or (body[p] = ',') Then
+          Begin
+            part := TrimLine(Copy(body, start_part, p - start_part));
+            If part <> '' Then
+              Begin
+                eq := Pos('=', part);
+                If eq > 0 Then
+                  Begin
+                    key := TrimLine(Copy(part, 1, eq - 1));
+                    val := TrimLine(Copy(part, eq + 1, Length(part) - eq));
+                    If UpperStr(key) = 'X' Then
+                      table_x[id] := EvalExpr(val)
+                    Else If UpperStr(key) = 'Y' Then
+                      table_y[id] := EvalExpr(val)
+                    Else If UpperStr(key) = 'A' Then
+                      table_a[id] := EvalExpr(val);
+                  End
+                Else If idx <= MAX_TABLE_ITEMS Then
+                  Begin
+                    table_items[id, idx] := EvalExpr(part);
+                    table_len[id] := idx;
+                    Inc(idx);
+                  End;
+              End;
+            start_part := p + 1;
+          End;
+    End;
+
     Function EvalExpr(expr: TSourceLine): LongInt;
     Var
       s, left, right: TSourceLine;
-      p, code: Integer;
-      n: LongInt;
+      p, code, rb: Integer;
+      n, id, idx: LongInt;
     Begin
       s := TrimLine(expr);
       EvalExpr := 0;
       If s = '' Then
         Exit;
+      If s[1] = '#' Then
+        Begin
+          EvalExpr := table_len[FindTable(Copy(s, 2, Length(s) - 1))];
+          Exit;
+        End;
+      p := Pos('[', s);
+      If p > 0 Then
+        Begin
+          rb := Pos(']', s);
+          id := FindTable(Copy(s, 1, p - 1));
+          idx := EvalExpr(Copy(s, p + 1, rb - p - 1));
+          If (id > 0) And (idx >= 1) And (idx <= MAX_TABLE_ITEMS) Then
+            EvalExpr := table_items[id, idx];
+          Exit;
+        End;
+      p := Pos('.', s);
+      If p > 0 Then
+        Begin
+          id := FindTable(Copy(s, 1, p - 1));
+          right := Copy(s, p + 1, Length(s) - p);
+          If UpperStr(right) = 'X' Then
+            EvalExpr := table_x[id]
+          Else If UpperStr(right) = 'Y' Then
+            EvalExpr := table_y[id]
+          Else If UpperStr(right) = 'A' Then
+            EvalExpr := table_a[id];
+          Exit;
+        End;
       For p := Length(s) DownTo 2 Do
         If s[p] = '+' Then
           Begin
@@ -8394,8 +8531,9 @@ Var
 
     Procedure ParseAssign(line: TSourceLine);
     Var
-      s, name, expr: TSourceLine;
-      p: Integer;
+      s, name, expr, base, field: TSourceLine;
+      p, lb, rb: Integer;
+      id, idx: LongInt;
     Begin
       s := line;
       If StartsWithText(s, 'local ') Then
@@ -8405,7 +8543,86 @@ Var
         Exit;
       name := TrimLine(Copy(s, 1, p - 1));
       expr := TrimLine(Copy(s, p + 1, Length(s) - p));
+      If (Length(expr) > 0) And (expr[1] = '{') Then
+        Begin
+          ParseTableConstructor(name, expr);
+          Exit;
+        End;
+      lb := Pos('[', name);
+      If lb > 0 Then
+        Begin
+          rb := Pos(']', name);
+          base := TrimLine(Copy(name, 1, lb - 1));
+          id := EnsureTable(base);
+          idx := EvalExpr(Copy(name, lb + 1, rb - lb - 1));
+          If (id > 0) And (idx >= 1) And (idx <= MAX_TABLE_ITEMS) Then
+            Begin
+              table_items[id, idx] := EvalExpr(expr);
+              If idx > table_len[id] Then
+                table_len[id] := idx;
+            End;
+          Exit;
+        End;
+      p := Pos('.', name);
+      If p > 0 Then
+        Begin
+          base := TrimLine(Copy(name, 1, p - 1));
+          field := TrimLine(Copy(name, p + 1, Length(name) - p));
+          id := EnsureTable(base);
+          If UpperStr(field) = 'X' Then
+            table_x[id] := EvalExpr(expr)
+          Else If UpperStr(field) = 'Y' Then
+            table_y[id] := EvalExpr(expr)
+          Else If UpperStr(field) = 'A' Then
+            table_a[id] := EvalExpr(expr);
+          Exit;
+        End;
       SetVar(name, EvalExpr(expr));
+    End;
+
+    Procedure ParseTableCall(line: TSourceLine);
+    Var
+      body, tbl, val: TSourceLine;
+      p1, p2, id, i: LongInt;
+    Begin
+      If StartsWithText(line, 'table.insert(') Then
+        Begin
+          body := Copy(line, 14, Length(line) - 13);
+          p1 := Pos(',', body);
+          p2 := Pos(')', body);
+          tbl := TrimLine(Copy(body, 1, p1 - 1));
+          val := TrimLine(Copy(body, p1 + 1, p2 - p1 - 1));
+          id := EnsureTable(tbl);
+          If (id > 0) And (table_len[id] < MAX_TABLE_ITEMS) Then
+            Begin
+              Inc(table_len[id]);
+              table_items[id, table_len[id]] := EvalExpr(val);
+            End;
+        End
+      Else If StartsWithText(line, 'table.sort(') Then
+        Begin
+          body := Copy(line, 12, Length(line) - 11);
+          p2 := Pos(')', body);
+          tbl := TrimLine(Copy(body, 1, p2 - 1));
+          SortTable(FindTable(tbl));
+        End
+      Else If StartsWithText(line, 'table.remove(') Then
+        Begin
+          body := Copy(line, 14, Length(line) - 13);
+          p1 := Pos(',', body);
+          p2 := Pos(')', body);
+          tbl := TrimLine(Copy(body, 1, p1 - 1));
+          id := FindTable(tbl);
+          val := TrimLine(Copy(body, p1 + 1, p2 - p1 - 1));
+          If id > 0 Then
+            Begin
+              p1 := EvalExpr(val);
+              For i := p1 To table_len[id] - 1 Do
+                table_items[id, i] := table_items[id, i + 1];
+              If table_len[id] > 0 Then
+                Dec(table_len[id]);
+            End;
+        End;
     End;
 
     Procedure ParseFor(line: TSourceLine; Var var_name: TTokenText;
@@ -8449,6 +8666,7 @@ Var
   Begin
     out := '';
     var_count := 0;
+    table_count := 0;
     sp := 0;
     pc := 1;
     While pc <= ctx.source.line_count Do
@@ -8466,6 +8684,11 @@ Var
             (Not StartsWithText(line, 'until '))) Then
           Begin
             ParseAssign(line);
+            Inc(pc);
+          End
+        Else If StartsWithText(line, 'table.') Then
+          Begin
+            ParseTableCall(line);
             Inc(pc);
           End
         Else If StartsWithText(line, 'print(') Then
@@ -8594,6 +8817,39 @@ Var
     StaticPrintOutput := out;
   End;
 
+  Procedure CollectOutputValues;
+  Var
+    s, part: TString;
+    p, code: Integer;
+    value: LongInt;
+  Begin
+    output_count := 0;
+    s := StaticPrintOutput;
+    While Length(s) > 0 Do
+      Begin
+        p := Pos(#13#10, s);
+        If p = 0 Then
+          Begin
+            part := s;
+            s := '';
+          End
+        Else
+          Begin
+            part := Copy(s, 1, p - 1);
+            Delete(s, 1, p + 1);
+          End;
+        If part <> '' Then
+          Begin
+            Val(part, value, code);
+            If (code = 0) And (output_count < 128) Then
+              Begin
+                Inc(output_count);
+                output_values[output_count] := value;
+              End;
+          End;
+      End;
+  End;
+
   Procedure DeleteStaleExe;
   Begin
     Assign(old_exe, ctx.exe_name);
@@ -8683,22 +8939,23 @@ Var
   End;
 
   Procedure WriteTextSection;
+  Var
+    i, cur_ofs, print_ofs, rel: LongInt;
+    written_addr, buffer_end_addr: LongInt;
   Begin
-    If Length(output_text) > 0 Then
+    cur_ofs := 0;
+    If output_count > 0 Then
       Begin
-        WriteByte($6A); WriteByte($F5);                 { push STD_OUTPUT_HANDLE }
-        WriteByte($FF); WriteByte($15);
-        WriteDWordLE(PE_IMG_BASE + rdata_rva + iat_ofs + 4);
-        WriteByte($A3);                                 { mov [stdout], eax }
-        WriteDWordLE(PE_IMG_BASE + data_rva);
-        WriteByte($6A); WriteByte($00);                 { lpOverlapped = nil }
-        WriteByte($68); WriteDWordLE(PE_IMG_BASE + data_rva + 4);
-        WriteByte($68); WriteDWordLE(Length(output_text));
-        WriteByte($68); WriteDWordLE(PE_IMG_BASE + rdata_rva + output_ofs);
-        WriteByte($FF); WriteByte($35);
-        WriteDWordLE(PE_IMG_BASE + data_rva);
-        WriteByte($FF); WriteByte($15);
-        WriteDWordLE(PE_IMG_BASE + rdata_rva + iat_ofs + 8);
+        print_ofs := output_count * 10 + 9;
+        For i := 1 To output_count Do
+          Begin
+            WriteByte($B8);                             { mov eax, imm32 }
+            WriteDWordLE(output_values[i]);
+            rel := print_ofs - (cur_ofs + 10);
+            WriteByte($E8);                             { call print_eax }
+            WriteDWordLE(rel);
+            Inc(cur_ofs, 10);
+          End;
       End;
     WriteByte($6A);
     WriteByte($00);
@@ -8706,6 +8963,58 @@ Var
     WriteByte($15);
     WriteDWordLE(PE_IMG_BASE + rdata_rva + iat_ofs);
     WriteByte($C3);
+    Inc(cur_ofs, 9);
+
+    If output_count > 0 Then
+      Begin
+        written_addr := PE_IMG_BASE + data_rva + 4;
+        buffer_end_addr := PE_IMG_BASE + data_rva + 8 + 29;
+
+        WriteByte($55);                                 { push ebp }
+        WriteByte($8B); WriteByte($EC);                 { mov ebp, esp }
+        WriteByte($53);                                 { push ebx }
+        WriteByte($51);                                 { push ecx }
+        WriteByte($52);                                 { push edx }
+        WriteByte($57);                                 { push edi }
+        WriteByte($BF); WriteDWordLE(buffer_end_addr);  { mov edi, buffer_end }
+        WriteByte($C6); WriteByte($07); WriteByte($0A); { LF }
+        WriteByte($4F);                                 { dec edi }
+        WriteByte($C6); WriteByte($07); WriteByte($0D); { CR }
+        WriteByte($4F);                                 { dec edi }
+        WriteByte($BB); WriteDWordLE(10);               { mov ebx, 10 }
+        WriteByte($83); WriteByte($F8); WriteByte($00); { cmp eax, 0 }
+        WriteByte($75); WriteByte($06);                 { jne convert_loop }
+        WriteByte($C6); WriteByte($07); WriteByte($30); { '0' }
+        WriteByte($4F);                                 { dec edi }
+        WriteByte($EB); WriteByte($0E);                 { jmp convert_done }
+        WriteByte($33); WriteByte($D2);                 { xor edx, edx }
+        WriteByte($F7); WriteByte($F3);                 { div ebx }
+        WriteByte($80); WriteByte($C2); WriteByte($30); { add dl, '0' }
+        WriteByte($88); WriteByte($17);                 { mov [edi], dl }
+        WriteByte($4F);                                 { dec edi }
+        WriteByte($85); WriteByte($C0);                 { test eax, eax }
+        WriteByte($75); WriteByte($F2);                 { jne convert_loop }
+        WriteByte($47);                                 { inc edi }
+        WriteByte($B9); WriteDWordLE(buffer_end_addr + 1);
+        WriteByte($2B); WriteByte($CF);                 { sub ecx, edi }
+        WriteByte($6A); WriteByte($00);                 { overlapped=nil }
+        WriteByte($68); WriteDWordLE(written_addr);     { bytes written }
+        WriteByte($51);                                 { len }
+        WriteByte($57);                                 { buffer }
+        WriteByte($6A); WriteByte($F5);                 { STD_OUTPUT_HANDLE }
+        WriteByte($FF); WriteByte($15);
+        WriteDWordLE(PE_IMG_BASE + rdata_rva + iat_ofs + 4);
+        WriteByte($50);                                 { push eax }
+        WriteByte($FF); WriteByte($15);
+        WriteDWordLE(PE_IMG_BASE + rdata_rva + iat_ofs + 8);
+        WriteByte($5F);                                 { pop edi }
+        WriteByte($5A);                                 { pop edx }
+        WriteByte($59);                                 { pop ecx }
+        WriteByte($5B);                                 { pop ebx }
+        WriteByte($8B); WriteByte($E5);                 { mov esp, ebp }
+        WriteByte($5D);                                 { pop ebp }
+        WriteByte($C3);                                 { ret }
+      End;
     WriteZeros(text_file_size - text_size);
   End;
 
@@ -8768,17 +9077,6 @@ Var
     WriteByte(0);
     Inc(written, Length('kernel32.dll') + 1);
 
-    If written < output_ofs Then
-      Begin
-        WriteZeros(output_ofs - written);
-        written := output_ofs;
-      End;
-    If Length(output_text) > 0 Then
-      Begin
-        WriteBytes(output_text);
-        Inc(written, Length(output_text));
-      End;
-
     If rdata_file_size > written Then
       WriteZeros(rdata_file_size - written);
   End;
@@ -8787,16 +9085,17 @@ Var
   Begin
     WriteDWordLE(0);  { stdout handle }
     WriteDWordLE(0);  { bytes written }
-    If data_file_size > 8 Then
-      WriteZeros(data_file_size - 8);
+    WriteZeros(32);   { conversion decimal runtime }
+    If data_file_size > 40 Then
+      WriteZeros(data_file_size - 40);
   End;
 
 Begin
   LinkExePe32 := False;
 
-  output_text := StaticPrintOutput;
-  If Length(output_text) > 0 Then
-    text_size := 51
+  CollectOutputValues;
+  If output_count > 0 Then
+    text_size := output_count * 10 + 9 + 90
   Else
     text_size := 9;
   import_desc_ofs := 0;
@@ -8806,9 +9105,8 @@ Begin
   hint_getstd_ofs := 86;
   hint_writefile_ofs := 102;
   dll_name_ofs := 114;
-  output_ofs := AlignToLocal(dll_name_ofs + Length('kernel32.dll') + 1, 4);
-  rdata_size := output_ofs + Length(output_text);
-  data_size := 8;
+  rdata_size := dll_name_ofs + Length('kernel32.dll') + 1;
+  data_size := 40;
 
   hdr_size := AlignToLocal($80 + 4 + 20 + PE_OPT_SIZE + 3 * 40,
                            PE_FILE_ALIGN);
