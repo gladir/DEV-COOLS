@@ -8851,7 +8851,7 @@ Var
     Function EvalCond(cond: TSourceLine): Boolean;
     Var
       s, left, right: TSourceLine;
-      p: Integer;
+      p, code: Integer;
     Begin
       s := TrimLine(cond);
       If UpperStr(s) = 'TRUE' Then
@@ -8899,7 +8899,22 @@ Var
           EvalCond := EvalExpr(left) > EvalExpr(right);
           Exit;
         End;
-      EvalCond := EvalExpr(s) <> 0;
+      If UpperStr(s) = 'NIL' Then
+        EvalCond := False
+      Else If UpperStr(s) = 'FALSE' Then
+        EvalCond := False
+      Else If UpperStr(s) = 'TRUE' Then
+        EvalCond := True
+      Else If (FindVar(s) > 0) Or (FindStrVar(s) > 0) Then
+        EvalCond := True
+      Else
+        Begin
+          Val(s, p, code);
+          If code = 0 Then
+            EvalCond := True
+          Else
+            EvalCond := EvalExpr(s) <> 0;
+        End;
     End;
 
     Function MatchingEnd(line_no: LongInt): LongInt;
@@ -8936,6 +8951,60 @@ Var
                 End
               Else
                 Dec(depth);
+            End;
+        End;
+    End;
+
+    Function FindIfFalseTarget(line_no: LongInt; Var branch_line: LongInt): LongInt;
+    Var
+      i, depth: LongInt;
+      s, cond2: TSourceLine;
+    Begin
+      FindIfFalseTarget := ctx.source.line_count + 1;
+      branch_line := 0;
+      depth := 0;
+      For i := line_no + 1 To ctx.source.line_count Do
+        Begin
+          s := StripComment(ctx.source.lines[i]);
+          If s = '' Then
+            Continue;
+          If (StartsWithText(s, 'if ')) Or
+             (StartsWithText(s, 'while ')) Or
+             (StartsWithText(s, 'for ')) Or
+             (StartsWithText(s, 'repeat')) Or
+             (StartsWithText(s, 'function ')) Or
+             (StartsWithText(s, 'local function ')) Then
+            Inc(depth)
+          Else If (UpperStr(s) = 'END') Or StartsWithText(s, 'until ') Then
+            Begin
+              If depth = 0 Then
+                Begin
+                  FindIfFalseTarget := i + 1;
+                  Exit;
+                End
+              Else
+                Dec(depth);
+            End
+          Else If depth = 0 Then
+            Begin
+              If StartsWithText(s, 'elseif ') Then
+                Begin
+                  cond2 := TrimLine(Copy(s, 8, Length(s) - 7));
+                  If Copy(cond2, Length(cond2) - 4, 5) = ' then' Then
+                    Delete(cond2, Length(cond2) - 4, 5);
+                  If EvalCond(cond2) Then
+                    Begin
+                      branch_line := i;
+                      FindIfFalseTarget := i + 1;
+                      Exit;
+                    End;
+                End
+              Else If UpperStr(s) = 'ELSE' Then
+                Begin
+                  branch_line := i;
+                  FindIfFalseTarget := i + 1;
+                  Exit;
+                End;
             End;
         End;
     End;
@@ -9173,7 +9242,7 @@ Var
     End;
 
   Var
-    pc, p, loop_idx, e: LongInt;
+    pc, p, loop_idx, e, branch_line: LongInt;
     line, cond, name: TSourceLine;
     vname: TTokenText;
     start_val, stop_val, step_val: LongInt;
@@ -9220,9 +9289,17 @@ Var
               End;
             Inc(pc);
           End
+        Else If StartsWithText(line, 'elseif ') Or (UpperStr(line) = 'ELSE') Then
+          Begin
+            e := MatchingEnd(pc);
+            If (sp > 0) And (stack_kind[sp] = 'I') Then
+              Dec(sp);
+            pc := e + 1;
+          End
         Else If StartsWithText(line, 'local ') Or
            ((Pos('=', line) > 0) And (Not StartsWithText(line, 'for ')) And
             (Not StartsWithText(line, 'if ')) And
+            (Not StartsWithText(line, 'elseif ')) And
             (Not StartsWithText(line, 'while ')) And
             (Not StartsWithText(line, 'until '))) Then
           Begin
@@ -9306,7 +9383,11 @@ Var
                 Inc(pc);
               End
             Else
-              pc := MatchingEnd(pc) + 1;
+              Begin
+                pc := FindIfFalseTarget(pc, branch_line);
+                If branch_line > 0 Then
+                  PushLoop('I', branch_line, '');
+              End;
           End
         Else If UpperStr(line) = 'BREAK' Then
           Begin
