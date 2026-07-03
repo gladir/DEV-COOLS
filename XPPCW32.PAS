@@ -34,7 +34,7 @@ Program XPPCW32;
             FatalError, WarnMsg, EXIT_OK / EXIT_ERROR / EXIT_USAGE.
             Detecter l'extension .xpp.
 
-  TODO 02 - MODELE CIBLE WIN32 ET CONSTANTES PE/COFF
+  DONE 02 - MODELE CIBLE WIN32 ET CONSTANTES PE/COFF
             Mode plat 32 bits, sections .text/.data/.bss, alignements,
             convention d'appel interne (registres/pile), prologues et
             epilogues 80386.
@@ -362,6 +362,70 @@ Begin
     Else Opt.OutFile := ChangeExt(Opt.SrcFile, '.exe');
   End;
 End;
+
+{ ============================================================ }
+{ TODO 02 - MODELE CIBLE WIN32 ET CONSTANTES PE/COFF            }
+{ ============================================================ }
+
+Const
+  { Constantes PE (Portable Executable) et COFF }
+  PE_DOS_MAGIC            = $5A4D;
+  PE_PE_SIG               = $00004550;
+  PE_MACHINE_I386         = $014C;
+  PE_IMG_BASE             = $00400000;
+  PE_SEC_ALIGN            = 4096;
+  PE_FILE_ALIGN           = 512;
+  PE_SUBSYS_CUI           = 3;
+  PE_SUBSYS_GUI           = 2;
+  PE_OPT_MAGIC_PE32       = $010B;
+  PE_SCN_CNT_CODE         = $00000020;
+  PE_SCN_CNT_INIT_DATA    = $00000040;
+  PE_SCN_CNT_UNINIT_DATA  = $00000080;
+  PE_SCN_MEM_EXECUTE      = $20000000;
+  PE_SCN_MEM_READ         = $40000000;
+  PE_SCN_MEM_WRITE        = -2147483648;
+  COFF_SYM_CLASS_EXTERNAL = 2;
+  COFF_SYM_CLASS_STATIC   = 3;
+  COFF_REL_I386_DIR32     = $0006;
+  COFF_REL_I386_REL32     = $0014;
+  BIN_SEC_TEXT            = 1;
+  BIN_SEC_DATA            = 2;
+  BIN_SEC_RDATA           = 3;
+  BIN_SEC_BSS             = 4;
+  BIN_FIX_REL32           = 1;
+  BIN_FIX_ABS32           = 2;
+  BIN_FIX_IMP32           = 3;
+
+  { Modele plat 80386 / Win32 : alignements, tailles et sections }
+  I386_STACK_SLOT_SIZE = 4;
+  I386_ARG_BASE_OFFSET = 8;
+  I386_STACK_ALIGN     = 4;
+  I386_CODE_ALIGN      = 16;
+  I386_DATA_ALIGN      = 4;
+  I386_BSS_ALIGN       = 4;
+  FLAT_TEXT_SECTION    = '.text';
+  FLAT_DATA_SECTION    = '.data';
+  FLAT_RDATA_SECTION   = '.rdata';
+  FLAT_BSS_SECTION     = '.bss';
+
+  { Limites internes du compilateur }
+  MAX_SYM    = {$IFDEF FPC}4096{$ELSE}512{$ENDIF};
+  MAX_CLASS  = {$IFDEF FPC}512{$ELSE}64{$ENDIF};
+  MAX_METHOD = {$IFDEF FPC}2048{$ELSE}256{$ENDIF};
+  MAX_LOCAL  = {$IFDEF FPC}256{$ELSE}32{$ENDIF};
+  MAX_PARAM  = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
+  MAX_LABEL  = {$IFDEF FPC}4096{$ELSE}256{$ENDIF};
+  MAX_STR    = 255;
+  MAX_ERRORS = {$IFDEF FPC}30{$ELSE}5{$ENDIF};
+
+  { Prefixes de nommage des symboles ASM generes }
+  ASM_PFX_GVAR    = '_XPP_';     { variable globale                    }
+  ASM_PFX_METHOD  = '_XPPF_';    { methode / fonction                  }
+  ASM_PFX_CLASS   = '_XPPC_';    { classe / table de methodes virtuelles }
+  ASM_PFX_STRING  = '_XPPK_';    { constante chaine litterale          }
+  ASM_PFX_RUNTIME = '_XPPRT_';   { routine runtime                     }
+  ASM_PFX_LABEL   = '_XPPL_';    { label de saut interne               }
+  ASM_PFX_TABLE   = '_XPPT_';    { table AOT simulee                   }
 
 BEGIN
   ParseArgs;
