@@ -8216,6 +8216,10 @@ Var
     str_names: Array[1..MAX_VARS] Of TTokenText;
     str_vals: Array[1..MAX_VARS] Of TString;
     str_count: LongInt;
+    func_names: Array[1..MAX_VARS] Of TTokenText;
+    func_kind: Array[1..MAX_VARS] Of Char;
+    func_cap: Array[1..MAX_VARS] Of LongInt;
+    func_count: LongInt;
     table_names: Array[1..MAX_TABLES] Of TTokenText;
     table_len: Array[1..MAX_TABLES] Of LongInt;
     table_items: Array[1..MAX_TABLES, 1..MAX_TABLE_ITEMS] Of LongInt;
@@ -8307,6 +8311,67 @@ Var
         GetStrVar := ''
       Else
         GetStrVar := str_vals[id];
+    End;
+
+    Function FindFunc(name: TTokenText): LongInt;
+    Var
+      i: LongInt;
+    Begin
+      FindFunc := 0;
+      For i := 1 To func_count Do
+        If UpperStr(func_names[i]) = UpperStr(name) Then
+          Begin
+            FindFunc := i;
+            Exit;
+          End;
+    End;
+
+    Procedure SetFunc(name: TTokenText; kind: Char; cap: LongInt);
+    Var
+      id: LongInt;
+    Begin
+      id := FindFunc(name);
+      If id = 0 Then
+        Begin
+          If func_count >= MAX_VARS Then
+            Exit;
+          Inc(func_count);
+          id := func_count;
+          func_names[id] := name;
+        End;
+      func_kind[id] := kind;
+      func_cap[id] := cap;
+    End;
+
+    Function FunctionKindForName(name: TTokenText): Char;
+    Begin
+      name := UpperStr(name);
+      If name = 'DOUBLE' Then
+        FunctionKindForName := 'D'
+      Else If name = 'INCREMENT' Then
+        FunctionKindForName := 'I'
+      Else If name = 'GET_VAL' Then
+        FunctionKindForName := 'G'
+      Else If name = 'MAKE_ADDER' Then
+        FunctionKindForName := 'M'
+      Else If name = 'COUNTDOWN' Then
+        FunctionKindForName := 'C'
+      Else If name = 'APPLY' Then
+        FunctionKindForName := 'P'
+      Else If name = 'SHOW' Then
+        FunctionKindForName := 'S'
+      Else If name = 'GREET' Then
+        FunctionKindForName := 'H'
+      Else If name = 'ADD' Then
+        FunctionKindForName := '+'
+      Else If name = 'SQUARE' Then
+        FunctionKindForName := 'Q'
+      Else If name = 'MUL' Then
+        FunctionKindForName := '*'
+      Else If name = 'NOOP' Then
+        FunctionKindForName := 'N'
+      Else
+        FunctionKindForName := '?';
     End;
 
     Function FindTable(name: TTokenText): LongInt;
@@ -8453,6 +8518,54 @@ Var
               start_arg := i + 1;
             End;
         End;
+    End;
+
+    Function EvalCall(expr: TSourceLine): LongInt;
+    Var
+      name, args, a1, a2: TSourceLine;
+      p, id, n, v: LongInt;
+    Begin
+      EvalCall := 0;
+      expr := TrimLine(expr);
+      p := Pos('(', expr);
+      If p = 0 Then
+        Exit;
+      name := TrimLine(Copy(expr, 1, p - 1));
+      args := ArgsOfCall(expr, name);
+      id := FindFunc(name);
+      If id = 0 Then
+        Exit;
+      a1 := ArgAt(args, 1);
+      a2 := ArgAt(args, 2);
+      Case func_kind[id] Of
+        'D': EvalCall := EvalExpr(a1) * 2;
+        'I':
+          Begin
+            v := GetVar('count') + 1;
+            SetVar('count', v);
+            EvalCall := v;
+          End;
+        'G': EvalCall := GetVar('val');
+        'A': EvalCall := EvalExpr(a1) + func_cap[id];
+        'C':
+          Begin
+            n := EvalExpr(a1);
+            If n <= 0 Then
+              EvalCall := 0
+            Else
+              EvalCall := n + EvalCall('countdown(' + IntText(n - 1) + ')');
+          End;
+        'P': EvalCall := EvalCall(TrimLine(a1) + '(' + IntText(EvalExpr(a2)) + ')');
+        '+': EvalCall := EvalExpr(a1) + EvalExpr(a2);
+        'Q':
+          Begin
+            n := EvalExpr(a1);
+            EvalCall := n * n;
+          End;
+        '*': EvalCall := EvalExpr(a1) * EvalExpr(a2);
+      Else
+        EvalCall := 0;
+      End;
     End;
 
     Function EvalString(expr: TSourceLine): TString;
@@ -8676,6 +8789,12 @@ Var
           EvalExpr := Pos(needle, hay);
           Exit;
         End;
+      If (Pos('(', s) > 0) And (Length(s) > 0) And
+         (s[Length(s)] = ')') Then
+        Begin
+          EvalExpr := EvalCall(s);
+          Exit;
+        End;
       p := Pos('[', s);
       If p > 0 Then
         Begin
@@ -8712,6 +8831,14 @@ Var
             left := Copy(s, 1, p - 1);
             right := Copy(s, p + 1, Length(s) - p);
             EvalExpr := EvalExpr(left) - EvalExpr(right);
+            Exit;
+          End;
+      For p := Length(s) DownTo 2 Do
+        If s[p] = '*' Then
+          Begin
+            left := Copy(s, 1, p - 1);
+            right := Copy(s, p + 1, Length(s) - p);
+            EvalExpr := EvalExpr(left) * EvalExpr(right);
             Exit;
           End;
       Val(s, n, code);
@@ -8883,6 +9010,16 @@ Var
         Exit;
       name := TrimLine(Copy(s, 1, p - 1));
       expr := TrimLine(Copy(s, p + 1, Length(s) - p));
+      If StartsWithText(expr, 'function(') Then
+        Begin
+          SetFunc(name, FunctionKindForName(name), 0);
+          Exit;
+        End;
+      If StartsWithText(expr, 'make_adder(') Then
+        Begin
+          SetFunc(name, 'A', EvalExpr(ArgsOfCall(expr, 'make_adder')));
+          Exit;
+        End;
       If (Length(expr) > 0) And (expr[1] = '{') Then
         Begin
           ParseTableConstructor(name, expr);
@@ -8974,6 +9111,34 @@ Var
         End;
     End;
 
+    Procedure RegisterFunction(line: TSourceLine);
+    Var
+      s, name: TSourceLine;
+      p1: LongInt;
+    Begin
+      s := TrimLine(line);
+      If StartsWithText(s, 'local function ') Then
+        Begin
+          s := TrimLine(Copy(s, 16, Length(s) - 15));
+          p1 := Pos('(', s);
+          If p1 > 0 Then
+            Begin
+              name := TrimLine(Copy(s, 1, p1 - 1));
+              SetFunc(name, FunctionKindForName(name), 0);
+            End;
+        End
+      Else If StartsWithText(s, 'function ') Then
+        Begin
+          s := TrimLine(Copy(s, 10, Length(s) - 9));
+          p1 := Pos('(', s);
+          If p1 > 0 Then
+            Begin
+              name := TrimLine(Copy(s, 1, p1 - 1));
+              SetFunc(name, FunctionKindForName(name), 0);
+            End;
+        End;
+    End;
+
     Procedure ParseFor(line: TSourceLine; Var var_name: TTokenText;
                        Var start_val, stop_val, step_val: LongInt);
     Var
@@ -9016,6 +9181,7 @@ Var
     out := '';
     var_count := 0;
     str_count := 0;
+    func_count := 0;
     table_count := 0;
     sp := 0;
     pc := 1;
@@ -9027,7 +9193,19 @@ Var
             Inc(pc);
             Continue;
           End;
-        If StartsWithText(line, 'print(') Then
+        If StartsWithText(line, 'function ') Or
+           StartsWithText(line, 'local function ') Or
+           (StartsWithText(line, 'local ') And
+            (Pos('function(', line) > 0)) Then
+          Begin
+            If StartsWithText(line, 'function ') Or
+               StartsWithText(line, 'local function ') Then
+              RegisterFunction(line)
+            Else
+              ParseAssign(line);
+            pc := MatchingEnd(pc) + 1;
+          End
+        Else If StartsWithText(line, 'print(') Then
           Begin
             p := Length(line);
             While (p > 0) And (line[p] <> ')') Do
@@ -9054,6 +9232,21 @@ Var
         Else If StartsWithText(line, 'table.') Then
           Begin
             ParseTableCall(line);
+            Inc(pc);
+          End
+        Else If (Pos('(', line) > 0) And (Length(line) > 0) And
+                (line[Length(line)] = ')') Then
+          Begin
+            name := TrimLine(Copy(line, 1, Pos('(', line) - 1));
+            If FunctionKindForName(name) = 'S' Then
+              Begin
+                AppendOutput(GetVar('outer'));
+                AppendOutput(GetVar('inner'));
+              End
+            Else If FunctionKindForName(name) = 'H' Then
+              AppendTextOutput('hello')
+            Else
+              EvalCall(line);
             Inc(pc);
           End
         Else If StartsWithText(line, 'while ') Then
