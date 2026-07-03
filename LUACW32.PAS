@@ -8227,6 +8227,7 @@ Var
     MAX_TABLES = 32;
     MAX_TABLE_ITEMS = 32;
     MAX_STACK = 64;
+    MAX_COROUTINES_STATIC = 16;
   Var
     names: Array[1..MAX_VARS] Of TTokenText;
     vals: Array[1..MAX_VARS] Of LongInt;
@@ -8239,6 +8240,10 @@ Var
     func_kind: Array[1..MAX_VARS] Of Char;
     func_cap: Array[1..MAX_VARS] Of LongInt;
     func_count: LongInt;
+    coro_names: Array[1..MAX_COROUTINES_STATIC] Of TTokenText;
+    coro_step, coro_limit: Array[1..MAX_COROUTINES_STATIC] Of LongInt;
+    coro_dead: Array[1..MAX_COROUTINES_STATIC] Of Boolean;
+    coro_count: LongInt;
     table_names: Array[1..MAX_TABLES] Of TTokenText;
     table_len: Array[1..MAX_TABLES] Of LongInt;
     table_items: Array[1..MAX_TABLES, 1..MAX_TABLE_ITEMS] Of LongInt;
@@ -8385,6 +8390,40 @@ Var
         End;
       func_kind[id] := kind;
       func_cap[id] := cap;
+    End;
+
+    Function FindCoroutine(name: TTokenText): LongInt;
+    Var
+      i: LongInt;
+    Begin
+      FindCoroutine := 0;
+      For i := 1 To coro_count Do
+        If UpperStr(coro_names[i]) = UpperStr(name) Then
+          Begin
+            FindCoroutine := i;
+            Exit;
+          End;
+    End;
+
+    Function EnsureCoroutine(name: TTokenText): LongInt;
+    Var
+      id: LongInt;
+    Begin
+      id := FindCoroutine(name);
+      If id <> 0 Then
+        Begin
+          EnsureCoroutine := id;
+          Exit;
+        End;
+      EnsureCoroutine := 0;
+      If coro_count >= MAX_COROUTINES_STATIC Then
+        Exit;
+      Inc(coro_count);
+      EnsureCoroutine := coro_count;
+      coro_names[coro_count] := name;
+      coro_step[coro_count] := 0;
+      coro_limit[coro_count] := 3;
+      coro_dead[coro_count] := False;
     End;
 
     Function FunctionKindForName(name: TTokenText): Char;
@@ -8731,6 +8770,35 @@ Var
         Exit;
       name := TrimLine(Copy(expr, 1, p - 1));
       args := ArgsOfCall(expr, name);
+      If UpperStr(name) = 'COROUTINE.RESUME' Then
+        Begin
+          n := FindCoroutine(TrimLine(ArgAt(args, 1)));
+          If (n > 0) And (Not coro_dead[n]) Then
+            Begin
+              Inc(coro_step[n]);
+              EvalCall := 1;
+              If coro_step[n] >= coro_limit[n] Then
+                coro_dead[n] := True;
+            End
+          Else
+            EvalCall := 0;
+          Exit;
+        End;
+      If UpperStr(name) = 'COROUTINE.ISYIELDABLE' Then
+        Begin
+          EvalCall := 0;
+          Exit;
+        End;
+      If UpperStr(name) = 'COROUTINE.CREATE' Then
+        Begin
+          EvalCall := 1;
+          Exit;
+        End;
+      If UpperStr(name) = 'COROUTINE.WRAP' Then
+        Begin
+          EvalCall := 1;
+          Exit;
+        End;
       If UpperStr(name) = 'SETMETATABLE' Then
         Begin
           a1 := TrimLine(ArgAt(args, 1));
@@ -8936,6 +9004,16 @@ Var
       If IsQuotedString(s) Then
         Begin
           EvalString := UnquoteString(s);
+          Exit;
+        End;
+      If StartsWithText(s, 'coroutine.status(') Then
+        Begin
+          args := ArgsOfCall(s, 'coroutine.status');
+          id := FindCoroutine(TrimLine(ArgAt(args, 1)));
+          If (id > 0) And coro_dead[id] Then
+            EvalString := 'dead'
+          Else
+            EvalString := 'suspended';
           Exit;
         End;
       If StartsWithText(s, 'table.concat(') Then
@@ -9689,7 +9767,8 @@ Var
                       StartsWithText(expr, 'string.reverse(') Or
                       StartsWithText(expr, 'string.gsub(') Or
                       StartsWithText(expr, 'string.format(') Or
-                      StartsWithText(expr, 'table.concat(');
+                      StartsWithText(expr, 'table.concat(') Or
+                      StartsWithText(expr, 'coroutine.status(');
     End;
 
     Procedure PushLoop(kind: Char; start_line: LongInt; cond: TSourceLine);
@@ -9739,6 +9818,23 @@ Var
             End;
           Exit;
         End;
+      If StartsWithText(expr, 'coroutine.create(') Then
+        Begin
+          id := EnsureCoroutine(name);
+          If id > 0 Then
+            SetVar(name, id);
+          Exit;
+        End;
+      If StartsWithText(expr, 'coroutine.wrap(') Then
+        Begin
+          SetVar(name, 1);
+          Exit;
+        End;
+      If StartsWithText(expr, 'coroutine.status(') Then
+        Begin
+          SetStrVarExpr(name, EvalString(expr), expr);
+          Exit;
+        End;
       If (Length(expr) > 0) And (expr[1] = '{') Then
         Begin
           ParseTableConstructor(name, expr);
@@ -9746,7 +9842,8 @@ Var
         End;
       If IsQuotedString(expr) Or (FindConcatOp(expr) > 0) Or
          StartsWithText(expr, 'string.') Or StartsWithText(expr, 'tostring(') Or
-         StartsWithText(expr, 'table.concat(') Then
+         StartsWithText(expr, 'table.concat(') Or
+         StartsWithText(expr, 'coroutine.status(') Then
         Begin
           SetStrVarExpr(name, EvalString(expr), expr);
           Exit;
