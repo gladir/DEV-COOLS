@@ -9049,6 +9049,11 @@ Var
           EvalString := 'nil';
           Exit;
         End;
+      If StartsWithText(s, 'math.type(') Then
+        Begin
+          EvalString := 'integer';
+          Exit;
+        End;
       If StartsWithText(s, 'getmetatable(') Then
         Begin
           args := ArgsOfCall(s, 'getmetatable');
@@ -9312,6 +9317,21 @@ Var
       If UpperStr(s) = 'TRUE' Then
         Begin
           EvalExpr := 1;
+          Exit;
+        End;
+      If UpperStr(s) = 'MATH.PI' Then
+        Begin
+          EvalExpr := 3;
+          Exit;
+        End;
+      If (UpperStr(s) = 'MATH.HUGE') Or (UpperStr(s) = 'MATH.MAXINTEGER') Then
+        Begin
+          EvalExpr := 2147483647;
+          Exit;
+        End;
+      If UpperStr(s) = 'MATH.MININTEGER' Then
+        Begin
+          EvalExpr := -2147483647 - 1;
           Exit;
         End;
       If (UpperStr(s) = 'FALSE') Or (UpperStr(s) = 'NIL') Then
@@ -9831,7 +9851,8 @@ Var
                       StartsWithText(expr, 'coroutine.status(') Or
                       StartsWithText(expr, 'getmetatable(') Or
                       StartsWithText(expr, 'rawget(') Or
-                      StartsWithText(expr, 'noret(');
+                      StartsWithText(expr, 'noret(') Or
+                      StartsWithText(expr, 'math.type(');
     End;
 
     Procedure PushLoop(kind: Char; start_line: LongInt; cond: TSourceLine);
@@ -9908,6 +9929,11 @@ Var
           SetStrVarExpr(name, 'nil', expr);
           Exit;
         End;
+      If StartsWithText(expr, 'math.type(') Then
+        Begin
+          SetStrVarExpr(name, EvalString(expr), expr);
+          Exit;
+        End;
       If (Length(expr) > 0) And (expr[1] = '{') Then
         Begin
           ParseTableConstructor(name, expr);
@@ -9918,7 +9944,7 @@ Var
          StartsWithText(expr, 'table.concat(') Or
          StartsWithText(expr, 'coroutine.status(') Or
          StartsWithText(expr, 'getmetatable(') Or StartsWithText(expr, 'rawget(') Or
-         StartsWithText(expr, 'noret(') Then
+         StartsWithText(expr, 'noret(') Or StartsWithText(expr, 'math.type(') Then
         Begin
           SetStrVarExpr(name, EvalString(expr), expr);
           Exit;
