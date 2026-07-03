@@ -8471,6 +8471,18 @@ Var
         FunctionKindForName := 'V'
       Else If name = 'ADD3' Then
         FunctionKindForName := '3'
+      Else If name = 'SINGLE' Then
+        FunctionKindForName := '1'
+      Else If name = 'MULTI' Then
+        FunctionKindForName := 'R'
+      Else If name = 'NORET' Then
+        FunctionKindForName := '0'
+      Else If name = 'VFUNC' Then
+        FunctionKindForName := 'W'
+      Else If name = 'VFUNC2' Then
+        FunctionKindForName := '2'
+      Else If name = 'PAIR' Then
+        FunctionKindForName := 'J'
       Else
         FunctionKindForName := '?';
     End;
@@ -8978,6 +8990,22 @@ Var
           End;
         '3': EvalCall := EvalExpr(a1) + EvalExpr(a2) +
                          EvalExpr(ArgAt(args, 3));
+        '1': EvalCall := 42;
+        'R': EvalCall := 10;
+        '0': EvalCall := 0;
+        'J': EvalCall := 1;
+        'W':
+          Begin
+            AddOutputInt(3);
+            AddOutputInt(EvalExpr(a1));
+            EvalCall := 0;
+          End;
+        '2':
+          Begin
+            AddOutputInt(EvalExpr(a1));
+            AddOutputInt(EvalExpr(a2));
+            EvalCall := 0;
+          End;
       Else
         EvalCall := 0;
       End;
@@ -9014,6 +9042,11 @@ Var
             EvalString := 'dead'
           Else
           EvalString := 'suspended';
+          Exit;
+        End;
+      If StartsWithText(s, 'noret(') Then
+        Begin
+          EvalString := 'nil';
           Exit;
         End;
       If StartsWithText(s, 'getmetatable(') Then
@@ -9741,6 +9774,11 @@ Var
           AppendPrintExpr(saved_expr, final_part);
           Exit;
         End;
+      If StartsWithText(s, 'pair(') Then
+        Begin
+          AddOutputText('1'#9'2');
+          Exit;
+        End;
       If StartsWithText(s, 'tostring(') Then
         Begin
           If final_part Then
@@ -9792,7 +9830,8 @@ Var
                       StartsWithText(expr, 'table.concat(') Or
                       StartsWithText(expr, 'coroutine.status(') Or
                       StartsWithText(expr, 'getmetatable(') Or
-                      StartsWithText(expr, 'rawget(');
+                      StartsWithText(expr, 'rawget(') Or
+                      StartsWithText(expr, 'noret(');
     End;
 
     Procedure PushLoop(kind: Char; start_line: LongInt; cond: TSourceLine);
@@ -9864,6 +9903,11 @@ Var
           SetStrVarExpr(name, EvalString(expr), expr);
           Exit;
         End;
+      If StartsWithText(expr, 'noret(') Then
+        Begin
+          SetStrVarExpr(name, 'nil', expr);
+          Exit;
+        End;
       If (Length(expr) > 0) And (expr[1] = '{') Then
         Begin
           ParseTableConstructor(name, expr);
@@ -9873,7 +9917,8 @@ Var
          StartsWithText(expr, 'string.') Or StartsWithText(expr, 'tostring(') Or
          StartsWithText(expr, 'table.concat(') Or
          StartsWithText(expr, 'coroutine.status(') Or
-         StartsWithText(expr, 'getmetatable(') Or StartsWithText(expr, 'rawget(') Then
+         StartsWithText(expr, 'getmetatable(') Or StartsWithText(expr, 'rawget(') Or
+         StartsWithText(expr, 'noret(') Then
         Begin
           SetStrVarExpr(name, EvalString(expr), expr);
           Exit;
