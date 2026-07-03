@@ -10309,7 +10309,7 @@ Var
         print_int_ofs := output_instr_size + 9;
         print_str_ofs := print_int_ofs;
         If has_int_output Then
-          Inc(print_str_ofs, 90);
+          Inc(print_str_ofs, 113);
         For i := 1 To output_count Do
           If output_kind[i] = 'I' Then
             Begin
@@ -10351,11 +10351,17 @@ Var
         WriteByte($51);                                 { push ecx }
         WriteByte($52);                                 { push edx }
         WriteByte($57);                                 { push edi }
+        WriteByte($56);                                 { push esi }
         WriteByte($BF); WriteDWordLE(buffer_end_addr);  { mov edi, buffer_end }
         WriteByte($C6); WriteByte($07); WriteByte($0A); { LF }
         WriteByte($4F);                                 { dec edi }
         WriteByte($C6); WriteByte($07); WriteByte($0D); { CR }
         WriteByte($4F);                                 { dec edi }
+        WriteByte($33); WriteByte($F6);                 { xor esi, esi }
+        WriteByte($85); WriteByte($C0);                 { test eax, eax }
+        WriteByte($79); WriteByte($07);                 { jns sign_done }
+        WriteByte($F7); WriteByte($D8);                 { neg eax }
+        WriteByte($BE); WriteDWordLE(1);                { mov esi, 1 }
         WriteByte($BB); WriteDWordLE(10);               { mov ebx, 10 }
         WriteByte($83); WriteByte($F8); WriteByte($00); { cmp eax, 0 }
         WriteByte($75); WriteByte($06);                 { jne convert_loop }
@@ -10369,6 +10375,10 @@ Var
         WriteByte($4F);                                 { dec edi }
         WriteByte($85); WriteByte($C0);                 { test eax, eax }
         WriteByte($75); WriteByte($F2);                 { jne convert_loop }
+        WriteByte($85); WriteByte($F6);                 { test esi, esi }
+        WriteByte($74); WriteByte($04);                 { jz no_minus }
+        WriteByte($C6); WriteByte($07); WriteByte($2D); { '-' }
+        WriteByte($4F);                                 { dec edi }
         WriteByte($47);                                 { inc edi }
         WriteByte($B9); WriteDWordLE(buffer_end_addr + 1);
         WriteByte($2B); WriteByte($CF);                 { sub ecx, edi }
@@ -10382,6 +10392,7 @@ Var
         WriteByte($50);                                 { push eax }
         WriteByte($FF); WriteByte($15);
         WriteDWordLE(PE_IMG_BASE + rdata_rva + iat_ofs + 8);
+        WriteByte($5E);                                 { pop esi }
         WriteByte($5F);                                 { pop edi }
         WriteByte($5A);                                 { pop edx }
         WriteByte($59);                                 { pop ecx }
@@ -10500,7 +10511,7 @@ Begin
   CollectOutputValues;
   text_size := output_instr_size + 9;
   If has_int_output Then
-    Inc(text_size, 90);
+    Inc(text_size, 113);
   If has_string_output Then
     Inc(text_size, 35);
   import_desc_ofs := 0;
