@@ -20,7 +20,7 @@ Program XPPCW32;
 
 { TODO XPPCW32 - Compilateur X++ (Axapta) vers 80386/Win32
 
-  TODO 01 - INFRASTRUCTURE, PIPELINE ET OPTIONS DE LIGNE DE COMMANDE
+  DONE 01 - INFRASTRUCTURE, PIPELINE ET OPTIONS DE LIGNE DE COMMANDE
             Definir le pipeline complet : source .xpp -> lexer -> parser ->
             tables semantiques (classes/interfaces/tables) -> IR -> ASM
             80386 optionnel -> OBJ COFF i386 -> EXE PE32 par defaut.
@@ -55,8 +55,9 @@ Program XPPCW32;
               'jj/mm/aaaa'.
             Commentaires // (fin de ligne) et /* ... */ (bloc).
             Operateurs : + - * / div mod ++ -- += -= *= /= == != < > <=
-              >= && || ! & | ^ ~ << >> = -> :: .. et ponctuation
-              { } ( ) [ ] ; , : .
+              >= && || ! & | ^ ~ << >> = -> :: .. et ponctuation :
+              accolades, parentheses, crochets, point-virgule, virgule,
+              deux-points, point.
 
   TODO 04 - MOTS-CLES ET TYPES DE BASE X++
             IsKeyword : class interface extends implements public
@@ -69,10 +70,10 @@ Program XPPCW32;
               anytype, void, container, enum.
 
   TODO 05 - DECLARATIONS DE CLASSES ET D'INTERFACES (PARSER)
-            class Nom [extends Parent] [implements Iface1, Iface2] { },
-            interface Nom { signatures de methodes; }, champs typés,
-            methodes public/private/protected/static, constructeur
-            new(parametres).
+            class Nom [extends Parent] [implements Iface1, Iface2] suivi
+            d'un bloc, interface Nom regroupant des signatures de
+            methodes, champs typés, methodes public/private/protected/
+            static, constructeur new(parametres).
 
   TODO 06 - TABLE DES SYMBOLES ET PORTEES
             Portee globale, classe, methode, bloc ; resolution des
@@ -96,17 +97,20 @@ Program XPPCW32;
             evaluation en IR typee, promotion int<->real.
 
   TODO 10 - INSTRUCTIONS DE BASE ET IF/ELSE
-            Bloc { }, affectation, appel de methode, instruction vide
-            (;), if/else if/else, evaluation paresseuse de && et ||.
+            Bloc d'instructions, affectation, appel de methode,
+            instruction vide (;), if/else if/else, evaluation
+            paresseuse de && et ||.
 
   TODO 11 - SWITCH/CASE
-            switch(expr) { case val: ... break; case v1: case v2: ...
-            default: } avec enchainement explicite (fall-through) et
-            verification des valeurs constantes de case.
+            switch(expr) suivi d'un bloc avec case val: ... break;
+            case v1: case v2: ... default: ..., enchainement explicite
+            (fall-through) et verification des valeurs constantes de
+            case.
 
   TODO 12 - BOUCLES WHILE, DO-WHILE, FOR
-            while(cond) { }, do { } while(cond);, for(init; cond;
-            incr) { }, break, continue, boucles imbriquees.
+            while(cond) suivi d'un bloc, do ... while(cond); suivi d'un
+            bloc, for(init; cond; incr) suivi d'un bloc, break,
+            continue, boucles imbriquees.
 
   TODO 13 - METHODES ET PARAMETRES
             Declaration de methodes (public/private/static), parametres
@@ -124,15 +128,17 @@ Program XPPCW32;
             appel polymorphe via une variable typee interface.
 
   TODO 16 - GESTION DES EXCEPTIONS (TRY/CATCH/THROW)
-            try { } catch (Exception::Xxx) { } catch { }, throw
-            error("msg"), Exception::Error/Warning/Internal, deroulement
-            de pile (unwind) lors de la propagation.
+            try suivi d'un bloc, catch (Exception::Xxx) suivi d'un bloc,
+            catch generique suivi d'un bloc, throw error("msg"),
+            Exception::Error/Warning/Internal, deroulement de pile
+            (unwind) lors de la propagation.
 
   TODO 17 - DELEGATES ET GESTIONNAIRES D'EVENEMENTS
-            delegate void Nom(params) { }, appel this.Nom(...), attribut
-            [SubscribesTo(classStr(Classe), delegateStr(Classe, Nom))]
-            sur une methode static, table de liaison delegate->abonnes
-            generee au link-time, invocation de tous les abonnes.
+            delegate void Nom(params) suivi d'un bloc, appel
+            this.Nom(...), attribut SubscribesTo(classStr(Classe),
+            delegateStr(Classe, Nom)) sur une methode static, table de
+            liaison delegate->abonnes generee au link-time, invocation
+            de tous les abonnes.
 
   TODO 18 - MODELE DE TABLE (AOT SIMULE) ET METADONNEES
             Definition interne minimale des tables standard utilisees
@@ -141,10 +147,10 @@ Program XPPCW32;
             d'enregistrement (recordbuffer).
 
   TODO 19 - WHILE SELECT / SELECT ET REQUETES SIMPLES
-            while select var [order by champ] [where condition] { },
-            select [forUpdate] var where condition;, traduction en
-            boucle d'iteration sur un stockage de table interne
-            (tableau/fichier en memoire).
+            while select var [order by champ] [where condition] suivi
+            d'un bloc, select [forUpdate] var where condition;,
+            traduction en boucle d'iteration sur un stockage de table
+            interne (tableau/fichier en memoire).
 
   TODO 20 - CRUD ET TRANSACTIONS (INSERT/UPDATE/DELETE/TTS)
             .insert()/.update()/.delete()/.clear(), delete_from ...
@@ -181,5 +187,196 @@ Program XPPCW32;
             comportement par defaut (.EXE), -obj (.OBJ seul) et -asm
             (.ASM produit en plus), comparer les sorties info()
             attendues, garantir la compatibilite Turbo Pascal/Free
-            Pascal {$MODE TP} et corriger les regressions.
+            Pascal (directive MODE TP) et corriger les regressions.
 }
+
+{ ============================================================ }
+{ TODO 01 - INFRASTRUCTURE, PIPELINE ET OPTIONS DE LIGNE DE COMMANDE }
+{ ============================================================ }
+
+{ Pipeline complet vise (mis en place progressivement, TODO 02 et +):
+  source .xpp -> lexer -> parser -> tables semantiques (classes,
+  interfaces, tables) -> IR -> ASM 80386 optionnel (-asm) ->
+  OBJ COFF i386 -> EXE PE32 (par defaut, sauf -obj). }
+
+Const
+  XPPCW32_VERSION = '0.1';
+  XPPCW32_DATE    = '2026';
+
+  EXIT_OK    = 0;
+  EXIT_ERROR = 1;
+  EXIT_USAGE = 2;
+
+Type
+  TOptions = Record
+    SrcFile:    String;
+    OutFile:    String;
+    Verbose:    Boolean;
+    DebugMode:  Boolean;
+    Warnings:   Boolean;
+    EmitExe:    Boolean;
+    EmitObj:    Boolean;
+    EmitAsm:    Boolean;
+    StrictMode: Boolean;
+  End;
+
+Var
+  Opt: TOptions;
+
+Procedure FatalError(Msg: String); Forward;
+Procedure WarnMsg(Msg: String); Forward;
+
+Function UpCaseStr(S: String): String;
+Var I: Integer;
+Begin
+  For I := 1 To Length(S) Do S[I] := UpCase(S[I]);
+  UpCaseStr := S;
+End;
+
+Function IsPathSep(C: Char): Boolean;
+Begin
+  IsPathSep := (C = '\') Or (C = '/');
+End;
+
+Function FileExt(S: String): String;
+Var I: Integer;
+Begin
+  FileExt := '';
+  For I := Length(S) DownTo 1 Do Begin
+    If S[I] = '.' Then Begin
+      FileExt := Copy(S, I, Length(S) - I + 1);
+      Exit;
+    End;
+    If IsPathSep(S[I]) Or (S[I] = ':') Then Exit;
+  End;
+End;
+
+Function ChangeExt(S, NewExt: String): String;
+Var I: Integer;
+Begin
+  For I := Length(S) DownTo 1 Do Begin
+    If S[I] = '.' Then Begin
+      ChangeExt := Copy(S, 1, I - 1) + NewExt;
+      Exit;
+    End;
+    If IsPathSep(S[I]) Or (S[I] = ':') Then Break;
+  End;
+  ChangeExt := S + NewExt;
+End;
+
+Function IsXppSourceName(S: String): Boolean;
+Begin
+  IsXppSourceName := UpCaseStr(FileExt(S)) = '.XPP';
+End;
+
+Procedure Usage;
+Begin
+  WriteLn('XPPCW32 - Cette commande permet de lancer le compilateur X++ ',
+          '(Axapta / Microsoft Dynamics AX) pour l''assembleur du ',
+          'microprocesseur 80386 pour le systeme d''exploitation ',
+          'Windows 32 bits (PE Win32).');
+  WriteLn;
+  WriteLn('Syntaxe: XPPCW32 source.xpp [-o out] [-v] [-d] [-w] [-obj] [-asm] [-h]');
+  WriteLn;
+  WriteLn('Options:');
+  WriteLn('  -o out     Nom du fichier de sortie');
+  WriteLn('  -v         Mode verbeux');
+  WriteLn('  -d         Informations de debogage');
+  WriteLn('  -w         Activer les avertissements');
+  WriteLn('  -obj       Produire uniquement un .OBJ COFF 32 bits (pas de .EXE)');
+  WriteLn('  -asm       Produire aussi un listing assembleur .ASM (jamais par defaut)');
+  WriteLn('  -h         Afficher cette aide');
+End;
+
+Procedure FatalError(Msg: String);
+Begin
+  WriteLn('XPPCW32: erreur: ', Msg);
+  Halt(EXIT_ERROR);
+End;
+
+Procedure WarnMsg(Msg: String);
+Begin
+  If Opt.Warnings Then WriteLn('XPPCW32: avertissement: ', Msg);
+End;
+
+Procedure InitOptions;
+Begin
+  FillChar(Opt, SizeOf(Opt), 0);
+  Opt.Warnings   := False;
+  Opt.EmitExe    := True;
+  Opt.EmitObj    := False;
+  Opt.EmitAsm    := False;
+  Opt.StrictMode := False;
+End;
+
+Procedure ParseArgs;
+Var
+  I: Integer;
+  A, U: String;
+Begin
+  InitOptions;
+  I := 1;
+  While I <= ParamCount Do Begin
+    A := ParamStr(I);
+    U := UpCaseStr(A);
+    If (U = '-H') Or (U = '/H') Or (U = '-?') Or (U = '/?') Or
+       (U = '--HELP') Then Begin
+      Usage;
+      Halt(EXIT_USAGE);
+    End Else If U = '-OBJ' Then Begin
+      Opt.EmitObj := True;
+      Opt.EmitExe := False;
+    End Else If U = '-ASM' Then Begin
+      Opt.EmitAsm := True;
+    End Else If U = '-O' Then Begin
+      Inc(I);
+      If I > ParamCount Then FatalError('option -o sans argument');
+      Opt.OutFile := ParamStr(I);
+    End Else If Copy(U, 1, 2) = '-O' Then Begin
+      Opt.OutFile := Copy(A, 3, Length(A) - 2);
+      If Opt.OutFile = '' Then FatalError('option -o sans argument');
+    End Else If U = '-V' Then Begin
+      Opt.Verbose := True;
+    End Else If U = '-D' Then Begin
+      Opt.DebugMode := True;
+    End Else If U = '-W' Then Begin
+      Opt.Warnings := True;
+    End Else If (Length(A) > 0) And ((A[1] = '-') Or (A[1] = '/')) Then Begin
+      FatalError('option inconnue: ' + A);
+    End Else Begin
+      If Opt.SrcFile <> '' Then FatalError('plusieurs fichiers source specifies');
+      Opt.SrcFile := A;
+    End;
+    Inc(I);
+  End;
+
+  If Opt.SrcFile = '' Then Begin
+    Usage;
+    Halt(EXIT_USAGE);
+  End;
+  If Not IsXppSourceName(Opt.SrcFile) Then
+    FatalError('extension source invalide (attendu .xpp)');
+
+  If Opt.OutFile = '' Then Begin
+    If Opt.EmitObj Then Opt.OutFile := ChangeExt(Opt.SrcFile, '.obj')
+    Else Opt.OutFile := ChangeExt(Opt.SrcFile, '.exe');
+  End;
+End;
+
+BEGIN
+  ParseArgs;
+  WriteLn('XPPCW32 v', XPPCW32_VERSION, ' (', XPPCW32_DATE,
+          ') - Compilateur X++ (Axapta) -> 80386 PE Win32');
+  If Opt.Verbose Then Begin
+    WriteLn('Source : ', Opt.SrcFile);
+    WriteLn('Sortie : ', Opt.OutFile);
+    If Opt.EmitObj Then WriteLn('Format : OBJ COFF 32 bits')
+    Else WriteLn('Format : EXE PE Win32');
+    If Opt.EmitAsm Then WriteLn('ASM    : oui');
+    If Opt.DebugMode Then WriteLn('Debug  : oui');
+    If Opt.Warnings Then WriteLn('Warnings : oui');
+  End;
+  WriteLn('XPPCW32: infrastructure (TODO 01) en place - lexer/parser/',
+          'codegen a venir (TODO 02 et suivants).');
+  Halt(EXIT_OK);
+END.
