@@ -1,0 +1,26 @@
+// Exemple 02 - Déclaration et types de variables de base en X++
+class VariablesDemo
+{
+    public static void main(Args _args)
+    {
+        int         qty;
+        real        price;
+        str         name;
+        boolean     isActive;
+        date        today_;
+        guid        id;
+        anytype     value;
+
+        qty      = 10;
+        price    = 19.95;
+        name     = "Clavier mécanique";
+        isActive = true;
+        today_   = today();
+        id       = newGuid();
+        value    = qty;
+
+        info(strFmt("%1 x %2 = %3 $ (actif=%4, date=%5)",
+            qty, price, qty * price, isActive, today_));
+        info(strFmt("Identifiant généré: %1", guid2Str(id)));
+    }
+}

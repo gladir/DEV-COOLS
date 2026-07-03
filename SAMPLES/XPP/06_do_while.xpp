@@ -1,0 +1,15 @@
+// Exemple 06 - Boucle do ... while (exécutée au moins une fois)
+class DoWhileDemo
+{
+    public static void main(Args _args)
+    {
+        int compteur = 0;
+
+        do
+        {
+            compteur++;
+            info(strFmt("Itération %1", compteur));
+        }
+        while (compteur < 5);
+    }
+}

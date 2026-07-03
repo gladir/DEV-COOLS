@@ -1,0 +1,35 @@
+// Exemple 17 - Insertion / mise à jour / suppression (CRUD) dans une transaction ttsBegin/ttsCommit
+// Utilise la table standard CustGroup (table de référence simple) à des fins de démonstration.
+class TableCrudDemo
+{
+    public static void main(Args _args)
+    {
+        CustGroup   custGroup;
+        CustGroupId groupId = "DEMO";
+
+        ttsBegin;
+
+        // Suppression si déjà existant (nettoyage de la démo)
+        delete_from custGroup
+            where custGroup.CustGroup == groupId;
+
+        // Insertion
+        custGroup.clear();
+        custGroup.CustGroup = groupId;
+        custGroup.Name      = "Groupe de démonstration X++";
+        custGroup.insert();
+
+        // Mise à jour
+        select forUpdate custGroup
+            where custGroup.CustGroup == groupId;
+        if (custGroup)
+        {
+            custGroup.Name = "Groupe de démonstration (modifié)";
+            custGroup.update();
+        }
+
+        ttsCommit;
+
+        info(strFmt("Groupe client '%1' créé et mis à jour.", groupId));
+    }
+}

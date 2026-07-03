@@ -1,0 +1,21 @@
+// Exemple 09 - Le type "container" (liste hétérogène native de X++)
+class ContainersDemo
+{
+    public static void main(Args _args)
+    {
+        container   fruits;
+        int         i;
+        str         fruit;
+
+        fruits = ["Pomme", "Banane", "Cerise"];
+        fruits += "Datte";
+
+        for (i = 1; i <= conLen(fruits); i++)
+        {
+            fruit = conPeek(fruits, i);
+            info(strFmt("%1: %2", i, fruit));
+        }
+
+        info(strFmt("Container complet: %1", con2Str(fruits, ", ")));
+    }
+}

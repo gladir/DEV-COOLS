@@ -1,0 +1,36 @@
+// Exemple 04 - Structure switch / case / default
+class SwitchCaseDemo
+{
+    public static void main(Args _args)
+    {
+        int jour = 3;
+        str nomJour;
+
+        switch (jour)
+        {
+            case 1:
+                nomJour = "Lundi";
+                break;
+            case 2:
+                nomJour = "Mardi";
+                break;
+            case 3:
+                nomJour = "Mercredi";
+                break;
+            case 4:
+                nomJour = "Jeudi";
+                break;
+            case 5:
+                nomJour = "Vendredi";
+                break;
+            case 6:
+            case 7:
+                nomJour = "Fin de semaine";
+                break;
+            default:
+                nomJour = "Jour invalide";
+        }
+
+        info(strFmt("Jour %1 = %2", jour, nomJour));
+    }
+}

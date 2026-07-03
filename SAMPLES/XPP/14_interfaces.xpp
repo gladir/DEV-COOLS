@@ -1,0 +1,50 @@
+// Exemple 14 - Interfaces avec "implements"
+interface IShape
+{
+    real area();
+}
+
+class Circle implements IShape
+{
+    real radius;
+
+    public void new(real _radius)
+    {
+        radius = _radius;
+    }
+
+    public real area()
+    {
+        return 3.14159 * radius * radius;
+    }
+}
+
+class Rectangle implements IShape
+{
+    real width, height;
+
+    public void new(real _width, real _height)
+    {
+        width  = _width;
+        height = _height;
+    }
+
+    public real area()
+    {
+        return width * height;
+    }
+}
+
+class InterfaceDemo
+{
+    public static void main(Args _args)
+    {
+        IShape shape;
+
+        shape = new Circle(5.0);
+        info(strFmt("Aire du cercle: %1", shape.area()));
+
+        shape = new Rectangle(4.0, 6.0);
+        info(strFmt("Aire du rectangle: %1", shape.area()));
+    }
+}

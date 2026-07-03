@@ -1,0 +1,20 @@
+// Exemple 11 - Manipulation de dates
+class DateTimeDemo
+{
+    public static void main(Args _args)
+    {
+        date    naissance;
+        date    maintenant;
+        int     age;
+
+        naissance  = str2Date("15/08/1990", 213); // 213 = ordre jour/mois/année
+        maintenant = today();
+        age        = (maintenant - naissance) div 365;
+
+        info(strFmt("Date de naissance: %1", naissance));
+        info(strFmt("Date du jour: %1", maintenant));
+        info(strFmt("Âge approximatif: %1 ans", age));
+        info(strFmt("Dans 30 jours: %1", maintenant + 30));
+        info(strFmt("Nom du mois courant: %1", mthName(mthOfYr(maintenant))));
+    }
+}

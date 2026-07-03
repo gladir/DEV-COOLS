@@ -1,0 +1,28 @@
+// Exemple 03 - Structure conditionnelle if / else if / else
+class IfElseDemo
+{
+    public static void main(Args _args)
+    {
+        int note = 72;
+        str mention;
+
+        if (note >= 90)
+        {
+            mention = "Excellent";
+        }
+        else if (note >= 75)
+        {
+            mention = "Bien";
+        }
+        else if (note >= 60)
+        {
+            mention = "Passable";
+        }
+        else
+        {
+            mention = "Échec";
+        }
+
+        info(strFmt("Note: %1 -> %2", note, mention));
+    }
+}

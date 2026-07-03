@@ -1,0 +1,28 @@
+// Exemple 19 - Delegate (événement) publié par une classe et intercepté par un gestionnaire d'événements
+class DelegatePublisher
+{
+    delegate void onCalculationDone(int _result)
+    {
+    }
+
+    public void calculate(int _a, int _b)
+    {
+        int resultat = _a + _b;
+        this.onCalculationDone(resultat);
+    }
+}
+
+class DelegateEventHandlerDemo
+{
+    [SubscribesTo(classStr(DelegatePublisher), delegateStr(DelegatePublisher, onCalculationDone))]
+    public static void afficherResultat(int _result)
+    {
+        info(strFmt("Résultat reçu via delegate: %1", _result));
+    }
+
+    public static void main(Args _args)
+    {
+        DelegatePublisher publisher = new DelegatePublisher();
+        publisher.calculate(15, 27);
+    }
+}

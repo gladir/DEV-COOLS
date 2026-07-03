@@ -1,0 +1,24 @@
+// Exemple 16 - Lecture de données avec "while select" sur une table standard AX/D365FO
+class TableSelectDemo
+{
+    public static void main(Args _args)
+    {
+        CustTable   custTable;
+        int         compteur = 0;
+
+        while select custTable
+            order by custTable.AccountNum
+            where custTable.Blocked == CustVendorBlocked::No
+        {
+            info(strFmt("Client: %1 (Groupe: %2)", custTable.AccountNum, custTable.CustGroup));
+            compteur++;
+
+            if (compteur >= 10)
+            {
+                break;
+            }
+        }
+
+        info(strFmt("%1 client(s) affiché(s).", compteur));
+    }
+}

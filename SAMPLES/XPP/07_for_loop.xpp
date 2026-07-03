@@ -1,0 +1,21 @@
+// Exemple 07 - Boucle for (incrémentale et décrémentale)
+class ForLoopDemo
+{
+    public static void main(Args _args)
+    {
+        int i;
+        int factoriel = 1;
+
+        for (i = 1; i <= 6; i++)
+        {
+            factoriel *= i;
+        }
+
+        info(strFmt("6! = %1", factoriel));
+
+        for (i = 10; i > 0; i -= 2)
+        {
+            info(strFmt("Décompte pair: %1", i));
+        }
+    }
+}

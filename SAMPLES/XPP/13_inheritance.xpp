@@ -1,0 +1,45 @@
+// Exemple 13 - Héritage de classes avec "extends" et redéfinition de méthode
+class Animal
+{
+    str nom;
+
+    public void new(str _nom)
+    {
+        nom = _nom;
+    }
+
+    public str parler()
+    {
+        return strFmt("%1 fait un bruit générique.", nom);
+    }
+}
+
+class Chien extends Animal
+{
+    public str parler()
+    {
+        return strFmt("%1 aboie: Ouaf!", nom);
+    }
+}
+
+class Chat extends Animal
+{
+    public str parler()
+    {
+        return strFmt("%1 miaule: Miaou!", nom);
+    }
+}
+
+class InheritanceDemo
+{
+    public static void main(Args _args)
+    {
+        Animal animal = new Animal("Créature");
+        Chien  chien  = new Chien("Rex");
+        Chat   chat   = new Chat("Félix");
+
+        info(animal.parler());
+        info(chien.parler());
+        info(chat.parler());
+    }
+}

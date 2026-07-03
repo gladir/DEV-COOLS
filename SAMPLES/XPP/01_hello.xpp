@@ -1,0 +1,14 @@
+// Exemple 01 - Hello World en X++ (Microsoft Dynamics AX / Dynamics 365 F&O)
+// À importer dans l'AOT comme classe (clic droit sur "Classes" > Nouvelle classe),
+// puis exécuter via clic droit > "Exécuter" (le job doit avoir une méthode static void main).
+class HelloWorld
+{
+    public static void main(Args _args)
+    {
+        info("Hello, world!");
+
+        // Ancienne syntaxe héritée d'Axapta 2.x, toujours supportée par le compilateur X++
+        print "Hello, world! (fenêtre print)";
+        pause;
+    }
+}

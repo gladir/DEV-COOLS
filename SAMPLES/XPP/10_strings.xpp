@@ -1,0 +1,24 @@
+// Exemple 10 - Fonctions natives de manipulation de chaînes
+class StringsDemo
+{
+    public static void main(Args _args)
+    {
+        str texte = "  Bonjour le monde X++  ";
+        str propre;
+        int pos;
+
+        propre = strLTrim(strRTrim(texte));
+
+        info(strFmt("Longueur: %1", strLen(propre)));
+        info(strFmt("Majuscules: %1", strUpr(propre)));
+        info(strFmt("Minuscules: %1", strLwr(propre)));
+        info(strFmt("Sous-chaîne(9,5): %1", subStr(propre, 9, 5)));
+
+        pos = strFind(propre, "monde", 1, strLen(propre));
+        info(strFmt("Position de 'monde': %1", pos));
+
+        propre = strDel(propre, pos, strLen("monde"));
+        propre = strIns("X++", propre, pos);
+        info(strFmt("Après remplacement: %1", propre));
+    }
+}

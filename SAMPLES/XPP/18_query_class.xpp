@@ -1,0 +1,25 @@
+// Exemple 18 - Construction dynamique de requêtes avec Query / QueryRun
+class QueryClassDemo
+{
+    public static void main(Args _args)
+    {
+        Query                   query;
+        QueryBuildDataSource    qbds;
+        QueryBuildRange         qbr;
+        QueryRun                queryRun;
+        CustGroup               custGroup;
+
+        query = new Query();
+        qbds  = query.addDataSource(tableNum(CustGroup));
+        qbr   = qbds.addRange(fieldNum(CustGroup, CustGroup));
+        qbr.value(SysQuery::valueNotEmpty());
+
+        queryRun = new QueryRun(query);
+
+        while (queryRun.next())
+        {
+            custGroup = queryRun.get(tableNum(CustGroup));
+            info(strFmt("Groupe: %1 - %2", custGroup.CustGroup, custGroup.Name));
+        }
+    }
+}

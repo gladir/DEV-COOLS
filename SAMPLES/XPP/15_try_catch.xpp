@@ -1,0 +1,28 @@
+// Exemple 15 - Gestion des exceptions avec try / catch / throw
+class TryCatchDemo
+{
+    public static void main(Args _args)
+    {
+        int diviseur = 0;
+        int resultat;
+
+        try
+        {
+            if (diviseur == 0)
+            {
+                throw error("Division par zéro détectée!");
+            }
+            resultat = 100 / diviseur;
+        }
+        catch (Exception::Error)
+        {
+            info("Une erreur métier a été interceptée et gérée.");
+        }
+        catch
+        {
+            info("Erreur inconnue interceptée.");
+        }
+
+        info("Fin du traitement (bloc try/catch terminé).");
+    }
+}

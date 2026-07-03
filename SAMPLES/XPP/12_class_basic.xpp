@@ -1,0 +1,37 @@
+// Exemple 12 - Classe de base : champs, constructeur "new", méthodes
+class Personne
+{
+    str     name;
+    int     age;
+
+    public void new(str _name, int _age)
+    {
+        name = _name;
+        age  = _age;
+    }
+
+    public str getName()
+    {
+        return name;
+    }
+
+    public int getAge()
+    {
+        return age;
+    }
+
+    public str toString()
+    {
+        return strFmt("%1 (%2 ans)", name, age);
+    }
+}
+
+class ClassBasicDemo
+{
+    public static void main(Args _args)
+    {
+        Personne personne = new Personne("Alice", 30);
+        info(personne.toString());
+        info(strFmt("Prénom seul: %1", personne.getName()));
+    }
+}

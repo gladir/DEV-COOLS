@@ -1,0 +1,17 @@
+// Exemple 05 - Boucle while
+class WhileLoopDemo
+{
+    public static void main(Args _args)
+    {
+        int i = 1;
+        int somme = 0;
+
+        while (i <= 10)
+        {
+            somme += i;
+            i++;
+        }
+
+        info(strFmt("Somme de 1 à 10 = %1", somme));
+    }
+}

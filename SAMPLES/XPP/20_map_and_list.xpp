@@ -1,0 +1,35 @@
+// Exemple 20 - Collections génériques natives : Map et List (avec leurs énumérateurs)
+class MapAndListDemo
+{
+    public static void main(Args _args)
+    {
+        Map             ages;
+        List            prenoms;
+        MapEnumerator   mapEnum;
+        ListEnumerator  listEnum;
+
+        ages = new Map(Types::String, Types::Integer);
+        ages.insert("Alice", 30);
+        ages.insert("Bob", 25);
+        ages.insert("Chloé", 41);
+
+        mapEnum = ages.getEnumerator();
+        while (mapEnum.moveNext())
+        {
+            info(strFmt("%1 a %2 ans", mapEnum.currentKey(), mapEnum.currentValue()));
+        }
+
+        prenoms = new List(Types::String);
+        prenoms.addEnd("Alice");
+        prenoms.addEnd("Bob");
+        prenoms.addEnd("Chloé");
+
+        listEnum = prenoms.getEnumerator();
+        while (listEnum.moveNext())
+        {
+            info(strFmt("Prénom dans la liste: %1", listEnum.current()));
+        }
+
+        info(strFmt("Nombre de prénoms: %1", prenoms.elements()));
+    }
+}
