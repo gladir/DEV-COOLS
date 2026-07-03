@@ -9013,7 +9013,29 @@ Var
           If (id > 0) And coro_dead[id] Then
             EvalString := 'dead'
           Else
-            EvalString := 'suspended';
+          EvalString := 'suspended';
+          Exit;
+        End;
+      If StartsWithText(s, 'getmetatable(') Then
+        Begin
+          args := ArgsOfCall(s, 'getmetatable');
+          id := FindTable(TrimLine(ArgAt(args, 1)));
+          If (id > 0) And (table_meta[id] > 0) Then
+            EvalString := 'table'
+          Else
+            EvalString := 'nil';
+          Exit;
+        End;
+      If StartsWithText(s, 'rawget(') Then
+        Begin
+          args := ArgsOfCall(s, 'rawget');
+          id := FindTable(TrimLine(ArgAt(args, 1)));
+          n := EvalExpr(ArgAt(args, 2));
+          If (id > 0) And (n >= 1) And (n <= MAX_TABLE_ITEMS) And
+             (table_items[id, n] <> 0) Then
+            EvalString := IntText(table_items[id, n])
+          Else
+            EvalString := 'nil';
           Exit;
         End;
       If StartsWithText(s, 'table.concat(') Then
@@ -9768,7 +9790,9 @@ Var
                       StartsWithText(expr, 'string.gsub(') Or
                       StartsWithText(expr, 'string.format(') Or
                       StartsWithText(expr, 'table.concat(') Or
-                      StartsWithText(expr, 'coroutine.status(');
+                      StartsWithText(expr, 'coroutine.status(') Or
+                      StartsWithText(expr, 'getmetatable(') Or
+                      StartsWithText(expr, 'rawget(');
     End;
 
     Procedure PushLoop(kind: Char; start_line: LongInt; cond: TSourceLine);
@@ -9835,6 +9859,11 @@ Var
           SetStrVarExpr(name, EvalString(expr), expr);
           Exit;
         End;
+      If StartsWithText(expr, 'getmetatable(') Or StartsWithText(expr, 'rawget(') Then
+        Begin
+          SetStrVarExpr(name, EvalString(expr), expr);
+          Exit;
+        End;
       If (Length(expr) > 0) And (expr[1] = '{') Then
         Begin
           ParseTableConstructor(name, expr);
@@ -9843,7 +9872,8 @@ Var
       If IsQuotedString(expr) Or (FindConcatOp(expr) > 0) Or
          StartsWithText(expr, 'string.') Or StartsWithText(expr, 'tostring(') Or
          StartsWithText(expr, 'table.concat(') Or
-         StartsWithText(expr, 'coroutine.status(') Then
+         StartsWithText(expr, 'coroutine.status(') Or
+         StartsWithText(expr, 'getmetatable(') Or StartsWithText(expr, 'rawget(') Then
         Begin
           SetStrVarExpr(name, EvalString(expr), expr);
           Exit;
