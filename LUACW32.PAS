@@ -8620,6 +8620,75 @@ Var
         End;
     End;
 
+    Function FindTopLevelTextOp(s, op: TSourceLine): LongInt;
+    Var
+      i, depth, op_len: LongInt;
+      quote: Char;
+      before_ok, after_ok: Boolean;
+    Begin
+      FindTopLevelTextOp := 0;
+      op_len := Length(op);
+      If op_len = 0 Then
+        Exit;
+      depth := 0;
+      quote := #0;
+      For i := Length(s) - op_len + 1 DownTo 1 Do
+        Begin
+          If quote <> #0 Then
+            Begin
+              If s[i] = quote Then
+                quote := #0;
+            End
+          Else If (s[i] = '"') Or (s[i] = '''') Then
+            quote := s[i]
+          Else If s[i] = ')' Then
+            Inc(depth)
+          Else If s[i] = '(' Then
+            Dec(depth)
+          Else If (depth = 0) And
+                  (UpperStr(Copy(s, i, op_len)) = UpperStr(op)) Then
+            Begin
+              before_ok := (i = 1) Or Not IsAlphaNum(s[i - 1]);
+              after_ok := (i + op_len > Length(s)) Or
+                          Not IsAlphaNum(s[i + op_len]);
+              If ((UpperStr(op) <> 'AND') And (UpperStr(op) <> 'OR')) Or
+                 (before_ok And after_ok) Then
+                Begin
+                  FindTopLevelTextOp := i;
+                  Exit;
+                End;
+            End;
+        End;
+    End;
+
+    Function EvalTruthy(expr: TSourceLine): Boolean;
+    Var
+      s: TSourceLine;
+      code, n: Integer;
+    Begin
+      s := TrimLine(expr);
+      If (UpperStr(s) = 'NIL') Or (UpperStr(s) = 'FALSE') Then
+        Begin
+          EvalTruthy := False;
+          Exit;
+        End;
+      If UpperStr(s) = 'TRUE' Then
+        Begin
+          EvalTruthy := True;
+          Exit;
+        End;
+      If (FindVar(s) > 0) Or (FindStrVar(s) > 0) Or (FindTable(s) > 0) Then
+        Begin
+          EvalTruthy := True;
+          Exit;
+        End;
+      Val(s, n, code);
+      If code = 0 Then
+        EvalTruthy := True
+      Else
+        EvalTruthy := EvalExpr(s) <> 0;
+    End;
+
     Function IntSqrt(value: LongInt): LongInt;
     Var
       r: LongInt;
@@ -9107,6 +9176,16 @@ Var
       EvalExpr := 0;
       If s = '' Then
         Exit;
+      If UpperStr(s) = 'TRUE' Then
+        Begin
+          EvalExpr := 1;
+          Exit;
+        End;
+      If (UpperStr(s) = 'FALSE') Or (UpperStr(s) = 'NIL') Then
+        Begin
+          EvalExpr := 0;
+          Exit;
+        End;
       If s[1] = '#' Then
         Begin
           right := TrimLine(Copy(s, 2, Length(s) - 1));
@@ -9137,6 +9216,82 @@ Var
           EvalExpr := Pos(needle, hay);
           Exit;
         End;
+      p := FindTopLevelTextOp(s, 'or');
+      If p > 0 Then
+        Begin
+          left := Copy(s, 1, p - 1);
+          right := Copy(s, p + 2, Length(s) - p - 1);
+          If EvalTruthy(left) Then
+            EvalExpr := EvalExpr(left)
+          Else
+            EvalExpr := EvalExpr(right);
+          Exit;
+        End;
+      p := FindTopLevelTextOp(s, 'and');
+      If p > 0 Then
+        Begin
+          left := Copy(s, 1, p - 1);
+          right := Copy(s, p + 3, Length(s) - p - 2);
+          If EvalTruthy(left) Then
+            EvalExpr := EvalExpr(right)
+          Else
+            EvalExpr := 0;
+          Exit;
+        End;
+      p := FindTopLevelTextOp(s, '==');
+      If p > 0 Then
+        Begin
+          left := Copy(s, 1, p - 1);
+          right := Copy(s, p + 2, Length(s) - p - 1);
+          If EvalExpr(left) = EvalExpr(right) Then
+            EvalExpr := 1;
+          Exit;
+        End;
+      p := FindTopLevelTextOp(s, '~=');
+      If p > 0 Then
+        Begin
+          left := Copy(s, 1, p - 1);
+          right := Copy(s, p + 2, Length(s) - p - 1);
+          If EvalExpr(left) <> EvalExpr(right) Then
+            EvalExpr := 1;
+          Exit;
+        End;
+      p := FindTopLevelTextOp(s, '<=');
+      If p > 0 Then
+        Begin
+          left := Copy(s, 1, p - 1);
+          right := Copy(s, p + 2, Length(s) - p - 1);
+          If EvalExpr(left) <= EvalExpr(right) Then
+            EvalExpr := 1;
+          Exit;
+        End;
+      p := FindTopLevelTextOp(s, '>=');
+      If p > 0 Then
+        Begin
+          left := Copy(s, 1, p - 1);
+          right := Copy(s, p + 2, Length(s) - p - 1);
+          If EvalExpr(left) >= EvalExpr(right) Then
+            EvalExpr := 1;
+          Exit;
+        End;
+      p := FindTopLevelTextOp(s, '<');
+      If p > 0 Then
+        Begin
+          left := Copy(s, 1, p - 1);
+          right := Copy(s, p + 1, Length(s) - p);
+          If EvalExpr(left) < EvalExpr(right) Then
+            EvalExpr := 1;
+          Exit;
+        End;
+      p := FindTopLevelTextOp(s, '>');
+      If p > 0 Then
+        Begin
+          left := Copy(s, 1, p - 1);
+          right := Copy(s, p + 1, Length(s) - p);
+          If EvalExpr(left) > EvalExpr(right) Then
+            EvalExpr := 1;
+          Exit;
+        End;
       p := FindTopLevelOp(s, '+');
       If p > 0 Then
         Begin
@@ -9159,6 +9314,26 @@ Var
           left := Copy(s, 1, p - 1);
           right := Copy(s, p + 1, Length(s) - p);
           EvalExpr := EvalExpr(left) * EvalExpr(right);
+          Exit;
+        End;
+      p := FindTopLevelTextOp(s, '//');
+      If p > 0 Then
+        Begin
+          left := Copy(s, 1, p - 1);
+          right := Copy(s, p + 2, Length(s) - p - 1);
+          n := EvalExpr(right);
+          If n <> 0 Then
+            EvalExpr := EvalExpr(left) Div n;
+          Exit;
+        End;
+      p := FindTopLevelOp(s, '/');
+      If p > 0 Then
+        Begin
+          left := Copy(s, 1, p - 1);
+          right := Copy(s, p + 1, Length(s) - p);
+          n := EvalExpr(right);
+          If n <> 0 Then
+            EvalExpr := EvalExpr(left) Div n;
           Exit;
         End;
       p := FindTopLevelOp(s, '%');
