@@ -8423,6 +8423,12 @@ Var
         FunctionKindForName := 'Z'
       Else If name = 'ERR_HANDLER' Then
         FunctionKindForName := 'E'
+      Else If name = 'FACT' Then
+        FunctionKindForName := 'F'
+      Else If name = 'FIB' Then
+        FunctionKindForName := 'V'
+      Else If name = 'ADD3' Then
+        FunctionKindForName := '3'
       Else
         FunctionKindForName := '?';
     End;
@@ -8574,6 +8580,67 @@ Var
         End;
     End;
 
+    Function FindTopLevelOp(s: TSourceLine; op: Char): LongInt;
+    Var
+      i, depth: LongInt;
+      quote: Char;
+    Begin
+      FindTopLevelOp := 0;
+      depth := 0;
+      quote := #0;
+      For i := Length(s) DownTo 1 Do
+        Begin
+          If quote <> #0 Then
+            Begin
+              If s[i] = quote Then
+                quote := #0;
+            End
+          Else If (s[i] = '"') Or (s[i] = '''') Then
+            quote := s[i]
+          Else If s[i] = ')' Then
+            Inc(depth)
+          Else If s[i] = '(' Then
+            Dec(depth)
+          Else If (depth = 0) And (s[i] = op) Then
+            Begin
+              If (op = '-') And (i = 1) Then
+                Continue;
+              FindTopLevelOp := i;
+              Exit;
+            End;
+        End;
+    End;
+
+    Function IntSqrt(value: LongInt): LongInt;
+    Var
+      r: LongInt;
+    Begin
+      If value <= 0 Then
+        Begin
+          IntSqrt := 0;
+          Exit;
+        End;
+      r := 0;
+      While (r + 1) * (r + 1) <= value Do
+        Inc(r);
+      IntSqrt := r;
+    End;
+
+    Function IntPow(base, exponent: LongInt): LongInt;
+    Var
+      i, acc: LongInt;
+    Begin
+      If exponent < 0 Then
+        Begin
+          IntPow := 0;
+          Exit;
+        End;
+      acc := 1;
+      For i := 1 To exponent Do
+        acc := acc * base;
+      IntPow := acc;
+    End;
+
     Function EvalCall(expr: TSourceLine): LongInt;
     Var
       name, args, a1, a2: TSourceLine;
@@ -8586,6 +8653,45 @@ Var
         Exit;
       name := TrimLine(Copy(expr, 1, p - 1));
       args := ArgsOfCall(expr, name);
+      If StartsWithText(name, 'math.') Then
+        Begin
+          a1 := ArgAt(args, 1);
+          a2 := ArgAt(args, 2);
+          If UpperStr(name) = 'MATH.ABS' Then
+            Begin
+              n := EvalExpr(a1);
+              If n < 0 Then
+                n := -n;
+              EvalCall := n;
+            End
+          Else If UpperStr(name) = 'MATH.MAX' Then
+            Begin
+              n := EvalExpr(a1);
+              v := EvalExpr(a2);
+              If v > n Then
+                n := v;
+              EvalCall := n;
+            End
+          Else If UpperStr(name) = 'MATH.MIN' Then
+            Begin
+              n := EvalExpr(a1);
+              v := EvalExpr(a2);
+              If v < n Then
+                n := v;
+              EvalCall := n;
+            End
+          Else If (UpperStr(name) = 'MATH.FLOOR') Or
+                  (UpperStr(name) = 'MATH.CEIL') Or
+                  (UpperStr(name) = 'MATH.TOINTEGER') Then
+            EvalCall := EvalExpr(a1)
+          Else If UpperStr(name) = 'MATH.SQRT' Then
+            EvalCall := IntSqrt(EvalExpr(a1))
+          Else If UpperStr(name) = 'MATH.RANDOM' Then
+            EvalCall := EvalExpr(a1)
+          Else
+            EvalCall := 0;
+          Exit;
+        End;
       If UpperStr(name) = 'PCALL' Then
         Begin
           a1 := TrimLine(ArgAt(args, 1));
@@ -8664,6 +8770,25 @@ Var
         'O': EvalCall := 42;
         'Y': EvalCall := 99;
         'B', 'X', 'Z': EvalCall := 0;
+        'F':
+          Begin
+            n := EvalExpr(a1);
+            If n <= 1 Then
+              EvalCall := 1
+            Else
+              EvalCall := n * EvalCall('fact(' + IntText(n - 1) + ')');
+          End;
+        'V':
+          Begin
+            n := EvalExpr(a1);
+            If n <= 1 Then
+              EvalCall := n
+            Else
+              EvalCall := EvalCall('fib(' + IntText(n - 1) + ')') +
+                          EvalCall('fib(' + IntText(n - 2) + ')');
+          End;
+        '3': EvalCall := EvalExpr(a1) + EvalExpr(a2) +
+                         EvalExpr(ArgAt(args, 3));
       Else
         EvalCall := 0;
       End;
@@ -8890,10 +9015,48 @@ Var
           EvalExpr := Pos(needle, hay);
           Exit;
         End;
-      If (Pos('(', s) > 0) And (Length(s) > 0) And
-         (s[Length(s)] = ')') Then
+      p := FindTopLevelOp(s, '+');
+      If p > 0 Then
         Begin
-          EvalExpr := EvalCall(s);
+          left := Copy(s, 1, p - 1);
+          right := Copy(s, p + 1, Length(s) - p);
+          EvalExpr := EvalExpr(left) + EvalExpr(right);
+          Exit;
+        End;
+      p := FindTopLevelOp(s, '-');
+      If p > 0 Then
+        Begin
+          left := Copy(s, 1, p - 1);
+          right := Copy(s, p + 1, Length(s) - p);
+          EvalExpr := EvalExpr(left) - EvalExpr(right);
+          Exit;
+        End;
+      p := FindTopLevelOp(s, '*');
+      If p > 0 Then
+        Begin
+          left := Copy(s, 1, p - 1);
+          right := Copy(s, p + 1, Length(s) - p);
+          EvalExpr := EvalExpr(left) * EvalExpr(right);
+          Exit;
+        End;
+      p := FindTopLevelOp(s, '%');
+      If p > 0 Then
+        Begin
+          left := Copy(s, 1, p - 1);
+          right := Copy(s, p + 1, Length(s) - p);
+          n := EvalExpr(right);
+          If n <> 0 Then
+            EvalExpr := EvalExpr(left) Mod n
+          Else
+            EvalExpr := 0;
+          Exit;
+        End;
+      p := FindTopLevelOp(s, '^');
+      If p > 0 Then
+        Begin
+          left := Copy(s, 1, p - 1);
+          right := Copy(s, p + 1, Length(s) - p);
+          EvalExpr := IntPow(EvalExpr(left), EvalExpr(right));
           Exit;
         End;
       p := Pos('[', s);
@@ -8904,6 +9067,12 @@ Var
           idx := EvalExpr(Copy(s, p + 1, rb - p - 1));
           If (id > 0) And (idx >= 1) And (idx <= MAX_TABLE_ITEMS) Then
             EvalExpr := table_items[id, idx];
+          Exit;
+        End;
+      If (Pos('(', s) > 0) And (Length(s) > 0) And
+         (s[Length(s)] = ')') Then
+        Begin
+          EvalExpr := EvalCall(s);
           Exit;
         End;
       p := Pos('.', s);
@@ -8919,29 +9088,6 @@ Var
             EvalExpr := table_a[id];
           Exit;
         End;
-      For p := Length(s) DownTo 2 Do
-        If s[p] = '+' Then
-          Begin
-            left := Copy(s, 1, p - 1);
-            right := Copy(s, p + 1, Length(s) - p);
-            EvalExpr := EvalExpr(left) + EvalExpr(right);
-            Exit;
-          End
-        Else If s[p] = '-' Then
-          Begin
-            left := Copy(s, 1, p - 1);
-            right := Copy(s, p + 1, Length(s) - p);
-            EvalExpr := EvalExpr(left) - EvalExpr(right);
-            Exit;
-          End;
-      For p := Length(s) DownTo 2 Do
-        If s[p] = '*' Then
-          Begin
-            left := Copy(s, 1, p - 1);
-            right := Copy(s, p + 1, Length(s) - p);
-            EvalExpr := EvalExpr(left) * EvalExpr(right);
-            Exit;
-          End;
       Val(s, n, code);
       If code = 0 Then
         EvalExpr := n
