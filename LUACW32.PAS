@@ -8050,6 +8050,7 @@ Var
   output_kind: Array[1..128] Of Char;
   output_values: Array[1..128] Of LongInt;
   output_texts: Array[1..128] Of TString;
+  output_text_lens: Array[1..128] Of LongInt;
   output_data_ofs: Array[1..128] Of LongInt;
   output_count: LongInt;
   output_instr_size, output_data_size: LongInt;
@@ -8196,7 +8197,24 @@ Var
       Exit;
     Inc(output_count);
     output_kind[output_count] := 'S';
-    output_texts[output_count] := value + #13#10;
+    output_text_lens[output_count] := Length(value) + 2;
+    output_texts[output_count] := value + #13#10 + #0;
+    output_data_ofs[output_count] := 40 + output_data_size;
+    Inc(output_data_size, Length(output_texts[output_count]));
+    Inc(output_instr_size, 15);
+    has_string_output := True;
+  End;
+
+  Procedure AddOutputRawText(value: TString);
+  Begin
+    If output_count >= 128 Then
+      Exit;
+    If value = '' Then
+      Exit;
+    Inc(output_count);
+    output_kind[output_count] := 'S';
+    output_text_lens[output_count] := Length(value);
+    output_texts[output_count] := value + #0;
     output_data_ofs[output_count] := 40 + output_data_size;
     Inc(output_data_size, Length(output_texts[output_count]));
     Inc(output_instr_size, 15);
@@ -8215,6 +8233,7 @@ Var
     var_count: LongInt;
     str_names: Array[1..MAX_VARS] Of TTokenText;
     str_vals: Array[1..MAX_VARS] Of TString;
+    str_exprs: Array[1..MAX_VARS] Of TSourceLine;
     str_count: LongInt;
     func_names: Array[1..MAX_VARS] Of TTokenText;
     func_kind: Array[1..MAX_VARS] Of Char;
@@ -8300,6 +8319,17 @@ Var
           str_names[id] := name;
         End;
       str_vals[id] := value;
+      str_exprs[id] := '';
+    End;
+
+    Procedure SetStrVarExpr(name: TTokenText; value: TString; expr: TSourceLine);
+    Var
+      id: LongInt;
+    Begin
+      SetStrVar(name, value);
+      id := FindStrVar(name);
+      If id > 0 Then
+        str_exprs[id] := expr;
     End;
 
     Function GetStrVar(name: TTokenText): TString;
@@ -8311,6 +8341,17 @@ Var
         GetStrVar := ''
       Else
         GetStrVar := str_vals[id];
+    End;
+
+    Function GetStrExpr(name: TTokenText): TSourceLine;
+    Var
+      id: LongInt;
+    Begin
+      id := FindStrVar(name);
+      If id = 0 Then
+        GetStrExpr := ''
+      Else
+        GetStrExpr := str_exprs[id];
     End;
 
     Function FindFunc(name: TTokenText): LongInt;
@@ -9086,6 +9127,8 @@ Var
         End;
     End;
 
+    Function IsStringExpr(expr: TSourceLine): Boolean; Forward;
+
     Procedure AppendOutput(value: LongInt);
     Begin
       AddOutputInt(value);
@@ -9094,6 +9137,54 @@ Var
     Procedure AppendTextOutput(value: TString);
     Begin
       AddOutputText(value);
+    End;
+
+    Procedure AppendPrintExpr(expr: TSourceLine; final_part: Boolean);
+    Var
+      p: LongInt;
+      s, left, right, saved_expr: TSourceLine;
+    Begin
+      s := TrimLine(expr);
+      If s = '' Then
+        Begin
+          If final_part Then
+            AddOutputText('');
+          Exit;
+        End;
+      p := FindConcatOp(s);
+      If p > 0 Then
+        Begin
+          left := Copy(s, 1, p - 1);
+          right := Copy(s, p + 2, Length(s) - p - 1);
+          AppendPrintExpr(left, False);
+          AppendPrintExpr(right, final_part);
+          Exit;
+        End;
+      saved_expr := GetStrExpr(s);
+      If (saved_expr <> '') And (FindConcatOp(saved_expr) > 0) Then
+        Begin
+          AppendPrintExpr(saved_expr, final_part);
+          Exit;
+        End;
+      If StartsWithText(s, 'tostring(') Then
+        Begin
+          If final_part Then
+            AddOutputInt(EvalExpr(ArgsOfCall(s, 'tostring')))
+          Else
+            AddOutputRawText(IntText(EvalExpr(ArgsOfCall(s, 'tostring'))));
+          Exit;
+        End;
+      If IsStringExpr(s) Then
+        Begin
+          If final_part Then
+            AddOutputText(EvalString(s))
+          Else
+            AddOutputRawText(EvalString(s));
+        End
+      Else If final_part Then
+        AddOutputInt(EvalExpr(s))
+      Else
+        AddOutputRawText(IntText(EvalExpr(s)));
     End;
 
     Function IsStringExpr(expr: TSourceLine): Boolean;
@@ -9157,7 +9248,7 @@ Var
       If IsQuotedString(expr) Or (FindConcatOp(expr) > 0) Or
          StartsWithText(expr, 'string.') Or StartsWithText(expr, 'tostring(') Then
         Begin
-          SetStrVar(name, EvalString(expr));
+          SetStrVarExpr(name, EvalString(expr), expr);
           Exit;
         End;
       lb := Pos('[', name);
@@ -9190,7 +9281,7 @@ Var
           Exit;
         End;
       If FindStrVar(expr) > 0 Then
-        SetStrVar(name, EvalString(expr))
+        SetStrVarExpr(name, EvalString(expr), GetStrExpr(expr))
       Else
         SetVar(name, EvalExpr(expr));
     End;
@@ -9342,10 +9433,7 @@ Var
             If p > 0 Then
               Begin
                 cond := Copy(line, 7, p - 7);
-                If IsStringExpr(cond) Then
-                  AppendTextOutput(EvalString(cond))
-                Else
-                  AppendOutput(EvalExpr(cond));
+                AppendPrintExpr(cond, True);
               End;
             Inc(pc);
           End
@@ -9634,7 +9722,7 @@ Var
               WriteByte($BA);                           { mov edx, buffer }
               WriteDWordLE(PE_IMG_BASE + data_rva + output_data_ofs[i]);
               WriteByte($B9);                           { mov ecx, len }
-              WriteDWordLE(Length(output_texts[i]));
+              WriteDWordLE(output_text_lens[i]);
               rel := print_str_ofs - (cur_ofs + 15);
               WriteByte($E8);                           { call print_buffer }
               WriteDWordLE(rel);
