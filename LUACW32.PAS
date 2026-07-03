@@ -8243,6 +8243,8 @@ Var
     table_len: Array[1..MAX_TABLES] Of LongInt;
     table_items: Array[1..MAX_TABLES, 1..MAX_TABLE_ITEMS] Of LongInt;
     table_x, table_y, table_a: Array[1..MAX_TABLES] Of LongInt;
+    table_z, table_meta, table_index: Array[1..MAX_TABLES] Of LongInt;
+    table_name: Array[1..MAX_TABLES] Of TString;
     table_count: LongInt;
     stack_kind: Array[1..MAX_STACK] Of Char;
     stack_start: Array[1..MAX_STACK] Of LongInt;
@@ -8466,6 +8468,10 @@ Var
       table_x[table_count] := 0;
       table_y[table_count] := 0;
       table_a[table_count] := 0;
+      table_z[table_count] := 0;
+      table_meta[table_count] := 0;
+      table_index[table_count] := 0;
+      table_name[table_count] := '';
     End;
 
     Procedure SortTable(id: LongInt);
@@ -8653,6 +8659,49 @@ Var
         Exit;
       name := TrimLine(Copy(expr, 1, p - 1));
       args := ArgsOfCall(expr, name);
+      If UpperStr(name) = 'SETMETATABLE' Then
+        Begin
+          a1 := TrimLine(ArgAt(args, 1));
+          a2 := TrimLine(ArgAt(args, 2));
+          n := EnsureTable(a1);
+          v := EnsureTable(a2);
+          If (n > 0) And (v > 0) Then
+            table_meta[n] := v;
+          EvalCall := n;
+          Exit;
+        End;
+      If UpperStr(name) = 'GETMETATABLE' Then
+        Begin
+          n := FindTable(TrimLine(ArgAt(args, 1)));
+          If (n > 0) And (table_meta[n] > 0) Then
+            EvalCall := 1
+          Else
+            EvalCall := 0;
+          Exit;
+        End;
+      If UpperStr(name) = 'RAWGET' Then
+        Begin
+          n := FindTable(TrimLine(ArgAt(args, 1)));
+          v := EvalExpr(ArgAt(args, 2));
+          If (n > 0) And (v >= 1) And (v <= MAX_TABLE_ITEMS) Then
+            EvalCall := table_items[n, v]
+          Else
+            EvalCall := 0;
+          Exit;
+        End;
+      If UpperStr(name) = 'RAWSET' Then
+        Begin
+          n := EnsureTable(TrimLine(ArgAt(args, 1)));
+          v := EvalExpr(ArgAt(args, 2));
+          If (n > 0) And (v >= 1) And (v <= MAX_TABLE_ITEMS) Then
+            Begin
+              table_items[n, v] := EvalExpr(ArgAt(args, 3));
+              If v > table_len[n] Then
+                table_len[n] := v;
+            End;
+          EvalCall := n;
+          Exit;
+        End;
       If StartsWithText(name, 'math.') Then
         Begin
           a1 := ArgAt(args, 1);
@@ -8817,6 +8866,17 @@ Var
           EvalString := UnquoteString(s);
           Exit;
         End;
+      p := Pos('.', s);
+      If p > 0 Then
+        Begin
+          pos_found := FindTable(Copy(s, 1, p - 1));
+          right := Copy(s, p + 1, Length(s) - p);
+          If (pos_found > 0) And (UpperStr(right) = 'NAME') Then
+            Begin
+              EvalString := table_name[pos_found];
+              Exit;
+            End;
+        End;
       If StartsWithText(s, 'tostring(') Then
         Begin
           args := ArgsOfCall(s, 'tostring');
@@ -8939,6 +8999,10 @@ Var
       table_x[id] := 0;
       table_y[id] := 0;
       table_a[id] := 0;
+      table_z[id] := 0;
+      table_meta[id] := 0;
+      table_index[id] := 0;
+      table_name[id] := '';
       body := TrimLine(expr);
       If (Length(body) >= 2) And (body[1] = '{') And
          (body[Length(body)] = '}') Then
@@ -8961,7 +9025,9 @@ Var
                     Else If UpperStr(key) = 'Y' Then
                       table_y[id] := EvalExpr(val)
                     Else If UpperStr(key) = 'A' Then
-                      table_a[id] := EvalExpr(val);
+                      table_a[id] := EvalExpr(val)
+                    Else If UpperStr(key) = 'Z' Then
+                      table_z[id] := EvalExpr(val);
                   End
                 Else If idx <= MAX_TABLE_ITEMS Then
                   Begin
@@ -8978,7 +9044,7 @@ Var
     Var
       s, left, right, args, needle: TSourceLine;
       p, code, rb: Integer;
-      n, id, idx: LongInt;
+      n, id, idx, field_value: LongInt;
       hay: TString;
     Begin
       s := TrimLine(expr);
@@ -9081,11 +9147,29 @@ Var
           id := FindTable(Copy(s, 1, p - 1));
           right := Copy(s, p + 1, Length(s) - p);
           If UpperStr(right) = 'X' Then
-            EvalExpr := table_x[id]
+            Begin
+              field_value := 0;
+              If id > 0 Then
+                field_value := table_x[id];
+              If (field_value = 0) And (id > 0) And (table_meta[id] > 0) And
+                 (table_index[table_meta[id]] > 0) Then
+                field_value := table_x[table_index[table_meta[id]]];
+              EvalExpr := field_value;
+            End
           Else If UpperStr(right) = 'Y' Then
-            EvalExpr := table_y[id]
+            Begin
+              field_value := 0;
+              If id > 0 Then
+                field_value := table_y[id];
+              If (field_value = 0) And (id > 0) And (table_meta[id] > 0) And
+                 (table_index[table_meta[id]] > 0) Then
+                field_value := table_y[table_index[table_meta[id]]];
+              EvalExpr := field_value;
+            End
           Else If UpperStr(right) = 'A' Then
-            EvalExpr := table_a[id];
+            EvalExpr := table_a[id]
+          Else If UpperStr(right) = 'Z' Then
+            EvalExpr := table_z[id];
           Exit;
         End;
       Val(s, n, code);
@@ -9334,8 +9418,21 @@ Var
     End;
 
     Function IsStringExpr(expr: TSourceLine): Boolean;
+    Var
+      p: LongInt;
+      right: TSourceLine;
     Begin
       expr := TrimLine(expr);
+      p := Pos('.', expr);
+      If p > 0 Then
+        Begin
+          right := Copy(expr, p + 1, Length(expr) - p);
+          If UpperStr(right) = 'NAME' Then
+            Begin
+              IsStringExpr := True;
+              Exit;
+            End;
+        End;
       IsStringExpr := IsQuotedString(expr) Or (FindConcatOp(expr) > 0) Or
                       (FindStrVar(expr) > 0) Or
                       StartsWithText(expr, 'tostring(') Or
@@ -9386,6 +9483,16 @@ Var
           SetFunc(name, 'A', EvalExpr(ArgsOfCall(expr, 'make_adder')));
           Exit;
         End;
+      If StartsWithText(expr, 'Animal.new(') Then
+        Begin
+          id := EnsureTable(name);
+          If id > 0 Then
+            Begin
+              table_name[id] := EvalString(ArgAt(ArgsOfCall(expr, 'Animal.new'), 1));
+              table_meta[id] := FindTable('Animal');
+            End;
+          Exit;
+        End;
       If (Length(expr) > 0) And (expr[1] = '{') Then
         Begin
           ParseTableConstructor(name, expr);
@@ -9423,7 +9530,13 @@ Var
           Else If UpperStr(field) = 'Y' Then
             table_y[id] := EvalExpr(expr)
           Else If UpperStr(field) = 'A' Then
-            table_a[id] := EvalExpr(expr);
+            table_a[id] := EvalExpr(expr)
+          Else If UpperStr(field) = 'Z' Then
+            table_z[id] := EvalExpr(expr)
+          Else If UpperStr(field) = '__INDEX' Then
+            table_index[id] := EnsureTable(expr)
+          Else If UpperStr(field) = 'NAME' Then
+            table_name[id] := EvalString(expr);
           Exit;
         End;
       If FindStrVar(expr) > 0 Then
