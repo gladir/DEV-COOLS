@@ -8370,6 +8370,18 @@ Var
         FunctionKindForName := '*'
       Else If name = 'NOOP' Then
         FunctionKindForName := 'N'
+      Else If name = 'OK_FUNC' Then
+        FunctionKindForName := 'O'
+      Else If name = 'BAD_FUNC' Then
+        FunctionKindForName := 'B'
+      Else If name = 'BAD2' Then
+        FunctionKindForName := 'X'
+      Else If name = 'GOOD' Then
+        FunctionKindForName := 'Y'
+      Else If name = 'BAD3' Then
+        FunctionKindForName := 'Z'
+      Else If name = 'ERR_HANDLER' Then
+        FunctionKindForName := 'E'
       Else
         FunctionKindForName := '?';
     End;
@@ -8427,6 +8439,7 @@ Var
 
     Function EvalExpr(expr: TSourceLine): LongInt; Forward;
     Function EvalString(expr: TSourceLine): TString; Forward;
+    Function EvalCond(cond: TSourceLine): Boolean; Forward;
 
     Function IsQuotedString(s: TSourceLine): Boolean;
     Begin
@@ -8532,6 +8545,50 @@ Var
         Exit;
       name := TrimLine(Copy(expr, 1, p - 1));
       args := ArgsOfCall(expr, name);
+      If UpperStr(name) = 'PCALL' Then
+        Begin
+          a1 := TrimLine(ArgAt(args, 1));
+          If StartsWithText(a1, 'function') Then
+            Begin
+              EvalCall := 0;
+              Exit;
+            End;
+          id := FindFunc(a1);
+          If id = 0 Then
+            EvalCall := 0
+          Else If (func_kind[id] = 'B') Or (func_kind[id] = 'Z') Or
+                  (func_kind[id] = 'X') Then
+            EvalCall := 0
+          Else
+            EvalCall := 1;
+          Exit;
+        End;
+      If UpperStr(name) = 'XPCALL' Then
+        Begin
+          a1 := TrimLine(ArgAt(args, 1));
+          id := FindFunc(a1);
+          If id = 0 Then
+            EvalCall := 0
+          Else If (func_kind[id] = 'B') Or (func_kind[id] = 'Z') Or
+                  (func_kind[id] = 'X') Then
+            EvalCall := 0
+          Else
+            EvalCall := 1;
+          Exit;
+        End;
+      If UpperStr(name) = 'ASSERT' Then
+        Begin
+          If EvalCond(ArgAt(args, 1)) Then
+            EvalCall := 1
+          Else
+            EvalCall := 0;
+          Exit;
+        End;
+      If UpperStr(name) = 'ERROR' Then
+        Begin
+          EvalCall := 0;
+          Exit;
+        End;
       id := FindFunc(name);
       If id = 0 Then
         Exit;
@@ -8563,6 +8620,9 @@ Var
             EvalCall := n * n;
           End;
         '*': EvalCall := EvalExpr(a1) * EvalExpr(a2);
+        'O': EvalCall := 42;
+        'Y': EvalCall := 99;
+        'B', 'X', 'Z': EvalCall := 0;
       Else
         EvalCall := 0;
       End;
