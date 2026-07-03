@@ -8242,6 +8242,7 @@ Var
     table_names: Array[1..MAX_TABLES] Of TTokenText;
     table_len: Array[1..MAX_TABLES] Of LongInt;
     table_items: Array[1..MAX_TABLES, 1..MAX_TABLE_ITEMS] Of LongInt;
+    table_refs: Array[1..MAX_TABLES, 1..MAX_TABLE_ITEMS] Of LongInt;
     table_x, table_y, table_a: Array[1..MAX_TABLES] Of LongInt;
     table_z, table_meta, table_index: Array[1..MAX_TABLES] Of LongInt;
     table_name: Array[1..MAX_TABLES] Of TString;
@@ -8450,7 +8451,7 @@ Var
 
     Function EnsureTable(name: TTokenText): LongInt;
     Var
-      id: LongInt;
+      id, i: LongInt;
     Begin
       id := FindTable(name);
       If id <> 0 Then
@@ -8472,6 +8473,8 @@ Var
       table_meta[table_count] := 0;
       table_index[table_count] := 0;
       table_name[table_count] := '';
+      For i := 1 To MAX_TABLE_ITEMS Do
+        table_refs[table_count, i] := 0;
     End;
 
     Procedure SortTable(id: LongInt);
@@ -8846,7 +8849,7 @@ Var
     Function EvalString(expr: TSourceLine): TString;
     Var
       s, args, a1, a2, left, right: TSourceLine;
-      p, n, from_pos, to_pos, count, pos_found: LongInt;
+      p, n, from_pos, to_pos, count, pos_found, id: LongInt;
       res: TString;
     Begin
       s := TrimLine(expr);
@@ -8866,6 +8869,22 @@ Var
           EvalString := UnquoteString(s);
           Exit;
         End;
+      If StartsWithText(s, 'table.concat(') Then
+        Begin
+          args := ArgsOfCall(s, 'table.concat');
+          id := FindTable(TrimLine(ArgAt(args, 1)));
+          a1 := EvalString(ArgAt(args, 2));
+          res := '';
+          If id > 0 Then
+            For n := 1 To table_len[id] Do
+              Begin
+                If n > 1 Then
+                  res := res + a1;
+                res := res + IntText(table_items[id, n]);
+              End;
+          EvalString := res;
+          Exit;
+        End;
       p := Pos('.', s);
       If p > 0 Then
         Begin
@@ -8873,7 +8892,12 @@ Var
           right := Copy(s, p + 1, Length(s) - p);
           If (pos_found > 0) And (UpperStr(right) = 'NAME') Then
             Begin
-              EvalString := table_name[pos_found];
+              If table_name[pos_found] <> '' Then
+                EvalString := table_name[pos_found]
+              Else If FindStrVar(s) > 0 Then
+                EvalString := GetStrVar(s)
+              Else
+                EvalString := '';
               Exit;
             End;
         End;
@@ -8988,9 +9012,11 @@ Var
 
     Procedure ParseTableConstructor(name: TTokenText; expr: TSourceLine);
     Var
-      id, p, start_part, idx: LongInt;
+      id, p, start_part, idx, depth, i: LongInt;
       body, part, key, val: TSourceLine;
+      child_name: TTokenText;
       eq: Integer;
+      in_quote: Char;
     Begin
       id := EnsureTable(name);
       If id = 0 Then
@@ -9003,14 +9029,34 @@ Var
       table_meta[id] := 0;
       table_index[id] := 0;
       table_name[id] := '';
+      For i := 1 To MAX_TABLE_ITEMS Do
+        table_refs[id, i] := 0;
       body := TrimLine(expr);
       If (Length(body) >= 2) And (body[1] = '{') And
          (body[Length(body)] = '}') Then
         body := Copy(body, 2, Length(body) - 2);
       start_part := 1;
       idx := 1;
+      depth := 0;
+      in_quote := #0;
       For p := 1 To Length(body) + 1 Do
-        If (p > Length(body)) Or (body[p] = ',') Then
+        Begin
+          If p <= Length(body) Then
+            Begin
+              If in_quote <> #0 Then
+                Begin
+                  If body[p] = in_quote Then
+                    in_quote := #0;
+                End
+              Else If (body[p] = '''') Or (body[p] = '"') Then
+                in_quote := body[p]
+              Else If body[p] = '{' Then
+                Inc(depth)
+              Else If body[p] = '}' Then
+                Dec(depth);
+            End;
+        If (p > Length(body)) Or ((body[p] = ',') And (depth = 0) And
+           (in_quote = #0)) Then
           Begin
             part := TrimLine(Copy(body, start_part, p - start_part));
             If part <> '' Then
@@ -9031,19 +9077,29 @@ Var
                   End
                 Else If idx <= MAX_TABLE_ITEMS Then
                   Begin
-                    table_items[id, idx] := EvalExpr(part);
+                    If (Length(part) >= 2) And (part[1] = '{') And
+                       (part[Length(part)] = '}') Then
+                      Begin
+                        child_name := name + '#' + IntText(idx);
+                        ParseTableConstructor(child_name, part);
+                        table_refs[id, idx] := FindTable(child_name);
+                        table_items[id, idx] := 0;
+                      End
+                    Else
+                      table_items[id, idx] := EvalExpr(part);
                     table_len[id] := idx;
                     Inc(idx);
                   End;
               End;
             start_part := p + 1;
           End;
+        End;
     End;
 
     Function EvalExpr(expr: TSourceLine): LongInt;
     Var
       s, left, right, args, needle: TSourceLine;
-      p, code, rb: Integer;
+      p, code, rb, rb2: Integer;
       n, id, idx, field_value: LongInt;
       hay: TString;
     Begin
@@ -9132,7 +9188,21 @@ Var
           id := FindTable(Copy(s, 1, p - 1));
           idx := EvalExpr(Copy(s, p + 1, rb - p - 1));
           If (id > 0) And (idx >= 1) And (idx <= MAX_TABLE_ITEMS) Then
-            EvalExpr := table_items[id, idx];
+            Begin
+              If (rb < Length(s)) And (s[rb + 1] = '[') And
+                 (table_refs[id, idx] > 0) Then
+                Begin
+                  rb2 := Pos(']', Copy(s, rb + 2, Length(s) - rb - 1));
+                  If rb2 > 0 Then
+                    Begin
+                      rb2 := rb + 1 + rb2;
+                      EvalExpr := table_items[table_refs[id, idx],
+                        EvalExpr(Copy(s, rb + 2, rb2 - rb - 2))];
+                    End;
+                End
+              Else
+                EvalExpr := table_items[id, idx];
+            End;
           Exit;
         End;
       If (Pos('(', s) > 0) And (Length(s) > 0) And
@@ -9443,7 +9513,8 @@ Var
                       StartsWithText(expr, 'string.rep(') Or
                       StartsWithText(expr, 'string.reverse(') Or
                       StartsWithText(expr, 'string.gsub(') Or
-                      StartsWithText(expr, 'string.format(');
+                      StartsWithText(expr, 'string.format(') Or
+                      StartsWithText(expr, 'table.concat(');
     End;
 
     Procedure PushLoop(kind: Char; start_line: LongInt; cond: TSourceLine);
@@ -9499,7 +9570,8 @@ Var
           Exit;
         End;
       If IsQuotedString(expr) Or (FindConcatOp(expr) > 0) Or
-         StartsWithText(expr, 'string.') Or StartsWithText(expr, 'tostring(') Then
+         StartsWithText(expr, 'string.') Or StartsWithText(expr, 'tostring(') Or
+         StartsWithText(expr, 'table.concat(') Then
         Begin
           SetStrVarExpr(name, EvalString(expr), expr);
           Exit;
