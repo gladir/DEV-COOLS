@@ -232,6 +232,22 @@ Program XPPCW32;
             pour lier deux DLL (KERNEL32.DLL et OLE32.DLL) au lieu
             d'une seule : deux blocs IAT/ILT et deux descripteurs
             d'import contigus dans .idata.
+            Un litteral de chaine (NK_LIT_STR) produit maintenant une
+            vraie adresse (tampon .rdata termine par un octet nul,
+            EmitCStringLiteral) au lieu de 0 partout ou il est evalue,
+            pas seulement au point d'appel direct d'info()/strFmt.
+            Range dans une variable str ordinaire (meme mecanisme
+            scalaire de 4 octets que les autres types), ce pointeur
+            reste valide et imprimable ensuite via _XPPRT_PrintCStr
+            (calcule la longueur a l'execution, tolere un pointeur nul
+            pour toute fonction runtime str encore stubbee). Corrige
+            l'affichage d'une variable str assignee conditionnellement
+            a des litteraux (ex. 03_if_else.xpp, 04_switch_case.xpp).
+            Reste hors de portee : les champs d'instance (aucun objet
+            reel ni "this" n'existe, TODO 24) et info(objet.methode())
+            quand la methode retourne un strFmt (12_class_basic.xpp,
+            13_inheritance.xpp) - la comparaison ==/!= entre chaines
+            compare desormais des adresses, pas du contenu.
 }
 
 { ============================================================ }
@@ -5123,6 +5139,16 @@ Begin AL('push ' + ItoS(V)); BinEmit8($68); BinEmit32(V); End;
 Procedure BinMovRegImm32(Rd: Integer; V: LongInt);
 Begin AL('mov ' + RegName(Rd) + ', ' + ItoS(V)); BinEmit8($B8 + Rd); BinEmit32(V); End;
 
+{ mov Rd, offset LName : comme BinMovRegImm32 mais l'immediat de 4
+  octets est un fixup ABS32 resolu au moment du lien PE (adresse
+  d'un litteral .rdata) ; ajoute pour les chaines reelles (extension
+  apres TODO 26) }
+Procedure BinMovRegLabelAddr(Rd: Integer; LName: String);
+Begin
+  AL('mov ' + RegName(Rd) + ', offset ' + LName);
+  BinEmit8($B8 + Rd); BinEmitRef32(LName, BIN_FIX_ABS32);
+End;
+
 Procedure BinMovRegReg(Rd, Rs: Integer);
 Begin
   AL('mov ' + RegName(Rd) + ', ' + RegName(Rs));
@@ -5296,6 +5322,11 @@ Procedure BinNegEax;   Begin AL('neg eax'); BinEmit8($F7); BinEmit8($D8); End;
 Procedure BinNotEax;   Begin AL('not eax'); BinEmit8($F7); BinEmit8($D0); End;
 Procedure BinIncEax;   Begin AL('inc eax'); BinEmit8($40); End;
 Procedure BinDecEax;   Begin AL('dec eax'); BinEmit8($48); End;
+
+{ inc R (generique) : utilise par le balayage de longueur d'une
+  chaine reelle terminee par un octet nul (extension apres TODO 26) }
+Procedure BinIncReg(R: Integer);
+Begin AL('inc ' + RegName(R)); BinEmit8($40 + R); End;
 
 Procedure BinIdivEcx;
 Begin AL('cdq'); AL('idiv ecx'); BinEmit8($99); BinEmit8($F7); BinEmit8($F9); End;
@@ -5991,6 +6022,27 @@ Begin
   ConvertUtf8ToCp850 := Res;
 End;
 
+{ Emet un litteral de chaine reel (extension apres TODO 26) : les
+  octets (transcodes CP850) suivis d'un terminateur nul, en .rdata.
+  Contrairement a CodegenPrintStringLiteral (qui imprime tout de
+  suite avec une longueur connue a la compilation), ceci construit une
+  donnee reutilisable comme valeur (affectee a une variable str,
+  passee en argument...) dont la longueur ne sera connue qu'a
+  l'execution, via _XPPRT_PrintCStr. }
+Function EmitCStringLiteral(S: String): String;
+Var StrLbl, Conv: String; K, SavedSec: Integer;
+Begin
+  Conv := ConvertUtf8ToCp850(S);
+  SavedSec := BinCurSec;
+  BinCurSec := BIN_SEC_RDATA;
+  StrLbl := NewBinLabel('CLit');
+  BinDefineLabel(StrLbl);
+  For K := 1 To Length(Conv) Do BinEmit8(Ord(Conv[K]));
+  BinEmit8(0);
+  BinCurSec := SavedSec;
+  EmitCStringLiteral := StrLbl;
+End;
+
 { Ecrit un fragment de chaine litterale (compilee en .rdata) sur la
   console, sans rien y ajouter (ni CRLF, ni longueur implicite) : le
   bloc de base reutilise par info("litteral") (TODO 24) et par le
@@ -6074,28 +6126,29 @@ Begin
           CodegenPrintStringLiteral('false');
           BinDefineLabel(LEnd);
         End Else If IRNodes[ArgNode].TypeName = 'str' Then Begin
-          If IRNodes[ArgNode].Kind = NK_LIT_STR Then
-            CodegenPrintStringLiteral(IRNodes[ArgNode].Text)
-          Else Begin
-            { guid2Str(x) (GUID reel, extension apres TODO 26) : x doit
-              etre une variable guid simple (adresse connue), imprimee
-              directement en hexadecimal plutot que comme une chaine
-              stubbee }
-            GuidCallMIdx := 0;
-            If IRNodes[ArgNode].Kind = NK_CALL Then
-              GuidCallMIdx := IRNodes[ArgNode].ResolvedMethod;
-            If (GuidCallMIdx <> 0) And (Methods[GuidCallMIdx].ClassIdx = GlobalFuncClassIdx) And
-               (Methods[GuidCallMIdx].Name = 'guid2Str') Then Begin
-              GuidArgNode := IRNodes[ArgNode].Right;
-              If (GuidArgNode <> 0) And (IRNodes[GuidArgNode].Kind = NK_IDENT) Then Begin
-                GuidOff := CgVarOffset(IRNodes[GuidArgNode].Text, GuidFound);
-                If GuidFound Then Begin
-                  BinLeaRegEbpDisp(REG_EDI, GuidOff);
-                  BinCallLabel('_XPPRT_PrintGuid');
-                End;
+          { guid2Str(x) (GUID reel, TODO 26) : x doit etre une variable
+            guid simple (adresse connue), imprimee directement en
+            hexadecimal plutot que comme une chaine ordinaire }
+          GuidCallMIdx := 0;
+          If IRNodes[ArgNode].Kind = NK_CALL Then
+            GuidCallMIdx := IRNodes[ArgNode].ResolvedMethod;
+          If (GuidCallMIdx <> 0) And (Methods[GuidCallMIdx].ClassIdx = GlobalFuncClassIdx) And
+             (Methods[GuidCallMIdx].Name = 'guid2Str') Then Begin
+            GuidArgNode := IRNodes[ArgNode].Right;
+            If (GuidArgNode <> 0) And (IRNodes[GuidArgNode].Kind = NK_IDENT) Then Begin
+              GuidOff := CgVarOffset(IRNodes[GuidArgNode].Text, GuidFound);
+              If GuidFound Then Begin
+                BinLeaRegEbpDisp(REG_EDI, GuidOff);
+                BinCallLabel('_XPPRT_PrintGuid');
               End;
-            End Else
-              CodegenExpr(ArgNode);
+            End;
+          End Else Begin
+            { toute autre expression str (litteral, variable str
+              contenant un pointeur reel, ou fonction runtime encore
+              stubbee renvoyant 0) : _XPPRT_PrintCStr gere nativement
+              le pointeur nul, extension apres TODO 26 }
+            CodegenExpr(ArgNode);
+            BinCallLabel('_XPPRT_PrintCStr');
           End;
         End Else If (IRNodes[ArgNode].TypeName = 'int') Or
                     (IRNodes[ArgNode].TypeName = 'real') Then Begin
@@ -6404,13 +6457,20 @@ Begin
 End;
 
 Procedure CodegenExpr(N: Integer);
-Var A: Integer;
+Var A: Integer; StrLbl: String;
 Begin
   If N = 0 Then Begin BinXorRegReg(REG_EAX); Exit; End;
   Case IRNodes[N].Kind Of
     NK_LIT_INT, NK_LIT_BOOL, NK_ENUMVAL: BinMovRegImm32(REG_EAX, IRNodes[N].NumVal);
     NK_LIT_FLOAT: BinMovRegImm32(REG_EAX, Round(IRNodes[N].FloatVal));
-    NK_LIT_STR, NK_LIT_CHAR, NK_LIT_DATE: BinXorRegReg(REG_EAX);
+    NK_LIT_STR: Begin
+      { chaine reelle (extension apres TODO 26) : une vraie adresse
+        (pointeur vers un tampon .rdata termine par un octet nul), pas
+        seulement 0 comme les autres types non modelises }
+      StrLbl := EmitCStringLiteral(IRNodes[N].Text);
+      BinMovRegLabelAddr(REG_EAX, StrLbl);
+    End;
+    NK_LIT_CHAR, NK_LIT_DATE: BinXorRegReg(REG_EAX);
     NK_IDENT:  CgLoadVar(IRNodes[N].Text);
     NK_THIS, NK_SUPER: BinXorRegReg(REG_EAX);
     NK_UNARY:  CodegenUnary(N);
@@ -6971,6 +7031,62 @@ Begin
   BinEmitEpilogueN(0);
 End;
 
+{ _XPPRT_PrintCStr (chaine reelle, extension apres TODO 26) : imprime
+  la chaine terminee par un octet nul dont l'adresse est fournie dans
+  EAX. Un pointeur nul (0) - c'est la valeur que renvoient encore
+  toutes les fonctions runtime str non modelisees, ex. strUpr/subStr/
+  con2Str... - est traite comme une chaine vide, imprime rien et ne
+  plante jamais. EBX (pointeur de depart) et ESI (longueur calculee)
+  sont preserves explicitement autour de l'appel a WriteFile. }
+Procedure EmitPrintCStrHelper;
+Var LScan, LDone, LSkip: String;
+Begin
+  BinCurSec := BIN_SEC_TEXT;
+  BinDefineLabel('_XPPRT_PrintCStr');
+  BinEmitPrologue(0);
+  BinPushReg(REG_EBX);
+  BinPushReg(REG_ESI);
+
+  LSkip := NewBinLabel('CsNil');
+  BinCmpEaxImm32(0);
+  BinJccLabel(CC_E, LSkip);
+
+  BinMovRegReg(REG_EBX, REG_EAX);   { ebx = pointeur de depart, fixe }
+  BinMovRegReg(REG_ESI, REG_EAX);   { esi = curseur de balayage }
+
+  LScan := NewBinLabel('CsScan');
+  LDone := NewBinLabel('CsDone');
+  BinDefineLabel(LScan);
+  BinMovzxRegBaseDispByte(REG_EAX, REG_ESI, 0);
+  BinCmpEaxImm32(0);
+  BinJccLabel(CC_E, LDone);
+  BinIncReg(REG_ESI);
+  BinJmpLabel(LScan);
+  BinDefineLabel(LDone);
+
+  BinMovRegReg(REG_EAX, REG_ESI);
+  BinMovRegReg(REG_ECX, REG_EBX);
+  BinSubEaxEcx;                      { eax = longueur = esi - ebx }
+  BinMovRegReg(REG_ESI, REG_EAX);    { esi = longueur, preservee a travers l'appel a WriteFile }
+
+  BinCmpRegImm8(REG_ESI, 0);
+  BinJccLabel(CC_E, LSkip);
+
+  BinPushImm32(-11);
+  BinCallImportRaw('GetStdHandle');
+  BinPushImm32(0);
+  BinPushLabelAddr('_XPPD_Written');
+  BinPushReg(REG_ESI);
+  BinPushReg(REG_EBX);
+  BinPushReg(REG_EAX);
+  BinCallImportRaw('WriteFile');
+
+  BinDefineLabel(LSkip);
+  BinPopReg(REG_ESI);
+  BinPopReg(REG_EBX);
+  BinEmitEpilogueN(0);
+End;
+
 { Point d'entree binaire "start" : trampoline vers static void main(),
   suivi d'un ExitProcess(0) propre. Emis en tout premier dans .text
   pour que start soit bien a l'adresse EntryRVA=TextRVA ecrite par
@@ -7004,6 +7120,7 @@ Begin
   EmitPrintHex16Helper;
   EmitPrintHex32Helper;
   EmitPrintGuidHelper;
+  EmitPrintCStrHelper;
 
   For I := 1 To MethodCount Do
     If Methods[I].BodyStmt <> 0 Then CodegenMethod(I);
