@@ -271,6 +271,19 @@ Program XPPCW32;
             _XPPRT_FormatIntToBuf) affichable directement par
             _XPPRT_PrintCStr. Corrige 09_containers.xpp integralement,
             += y compris. conIns()/conDel() restent stubbes.
+            Toutes les fonctions natives de manipulation de chaines
+            sont maintenant reelles : strLen/strUpr/strLwr/strLTrim/
+            strRTrim (convention EAX-en/EAX-sort) et subStr/strFind/
+            strDel/strIns (convention pile classique, comme un appel
+            de methode utilisateur, arguments accessibles a [ebp+8],
+            [ebp+12]... dans le callee). start/len sont toujours
+            ecretes contre la longueur reelle de la source (jamais de
+            lecture hors tampon). strDel/strIns/strLTrim/strRTrim sont
+            construits par composition (_XPPRT_SubStr + _XPPRT_StrConcat
+            + _XPPRT_StrLen) plutot que reimplementes independamment.
+            Corrige 10_strings.xpp integralement (verifie caractere par
+            caractere : longueur, casse, sous-chaine, recherche,
+            suppression+insertion combinees).
 }
 
 { ============================================================ }
@@ -5274,6 +5287,15 @@ End;
 Procedure BinAddRegReg(Rd, Rs: Integer);
 Begin AL('add ' + RegName(Rd) + ', ' + RegName(Rs)); BinEmit8($03); BinEmit8($C0 Or (Rd Shl 3) Or Rs); End;
 
+{ sub Rd, Rs / cmp Rd, Rs (registre-registre generiques) : utilises par
+  les fonctions de chaines reelles (strLTrim/strFind..., extension
+  apres TODO 26) }
+Procedure BinSubRegReg(Rd, Rs: Integer);
+Begin AL('sub ' + RegName(Rd) + ', ' + RegName(Rs)); BinEmit8($2B); BinEmit8($C0 Or (Rd Shl 3) Or Rs); End;
+
+Procedure BinCmpRegReg(Rd, Rs: Integer);
+Begin AL('cmp ' + RegName(Rd) + ', ' + RegName(Rs)); BinEmit8($3B); BinEmit8($C0 Or (Rd Shl 3) Or Rs); End;
+
 Procedure BinMovzxRegBaseDispWord(Rd, Base, Disp: LongInt);
 Begin
   AL('movzx ' + RegName(Rd) + ', word ptr [' + RegName(Base) + SignedDisp(Disp) + ']');
@@ -5424,6 +5446,20 @@ Begin
   AL('push offset ' + LName);
   BinEmit8($68);
   BinEmitRef32(LName, BIN_FIX_ABS32);
+End;
+
+{ push dword ptr [Base+Disp] : transmet un argument recu sur la pile
+  (donc adresse EBP-relative) a un appel imbrique, sans devoir d'abord
+  le charger dans un registre (extension chaines reelles, TODO 26) }
+Procedure BinPushBaseDisp(Base, Disp: LongInt);
+Begin
+  AL('push dword ptr [' + RegName(Base) + SignedDisp(Disp) + ']');
+  BinEmit8($FF);
+  If (Disp >= -128) And (Disp <= 127) Then Begin
+    BinEmit8($70 Or Base); BinEmit8(Disp And $FF);
+  End Else Begin
+    BinEmit8($B0 Or Base); BinEmit32(Disp);
+  End;
 End;
 
 Procedure BinResolveFixups;
@@ -6366,7 +6402,8 @@ End;
 
 Procedure CodegenCall(N: Integer);
 Var
-  Callee, MIdx, ArgHead, FmtCallMIdx, FmtNode, IdxArg, SepArg: Integer;
+  Callee, MIdx, ArgHead, FmtCallMIdx, FmtNode, IdxArg, SepArg,
+  Arg2, Arg3, Arg4: Integer;
   LZero, LEnd: String;
 Begin
   Callee  := IRNodes[N].Left;
@@ -6462,6 +6499,82 @@ Begin
       BinMovRegReg(REG_ECX, REG_EAX);
       BinPopReg(REG_EAX);
       BinCallLabel('_XPPRT_ConToStr');
+      Exit;
+    End;
+  End;
+
+  { fonctions natives de manipulation de chaines reelles (extension
+    apres TODO 26) : strLen/strUpr/strLwr/strLTrim/strRTrim suivent la
+    convention simple EAX-en/EAX-sort (comme _XPPRT_StrLen) ; subStr/
+    strFind/strDel/strIns suivent la convention pile classique des
+    appels de methode (evaluation droite a gauche, RET N a la charge
+    du callee) }
+  If (MIdx <> 0) And (Methods[MIdx].ClassIdx = GlobalFuncClassIdx) Then Begin
+    If (Methods[MIdx].Name = 'strLen') And (ArgHead <> 0) Then Begin
+      CodegenExpr(ArgHead);
+      BinCallLabel('_XPPRT_StrLen');
+      Exit;
+    End;
+    If (Methods[MIdx].Name = 'strUpr') And (ArgHead <> 0) Then Begin
+      CodegenExpr(ArgHead);
+      BinCallLabel('_XPPRT_StrUpr');
+      Exit;
+    End;
+    If (Methods[MIdx].Name = 'strLwr') And (ArgHead <> 0) Then Begin
+      CodegenExpr(ArgHead);
+      BinCallLabel('_XPPRT_StrLwr');
+      Exit;
+    End;
+    If (Methods[MIdx].Name = 'strLTrim') And (ArgHead <> 0) Then Begin
+      CodegenExpr(ArgHead);
+      BinCallLabel('_XPPRT_StrLTrim');
+      Exit;
+    End;
+    If (Methods[MIdx].Name = 'strRTrim') And (ArgHead <> 0) Then Begin
+      CodegenExpr(ArgHead);
+      BinCallLabel('_XPPRT_StrRTrim');
+      Exit;
+    End;
+
+    If (Methods[MIdx].Name = 'subStr') And (ArgHead <> 0) Then Begin
+      Arg2 := IRNodes[ArgHead].NextArg;
+      Arg3 := IRNodes[Arg2].NextArg;
+      CodegenExpr(Arg3);   BinPushReg(REG_EAX);
+      CodegenExpr(Arg2);   BinPushReg(REG_EAX);
+      CodegenExpr(ArgHead); BinPushReg(REG_EAX);
+      BinCallLabel('_XPPRT_SubStr');
+      Exit;
+    End;
+
+    If (Methods[MIdx].Name = 'strFind') And (ArgHead <> 0) Then Begin
+      Arg2 := IRNodes[ArgHead].NextArg;
+      Arg3 := IRNodes[Arg2].NextArg;
+      Arg4 := IRNodes[Arg3].NextArg;
+      CodegenExpr(Arg4);   BinPushReg(REG_EAX);
+      CodegenExpr(Arg3);   BinPushReg(REG_EAX);
+      CodegenExpr(Arg2);   BinPushReg(REG_EAX);
+      CodegenExpr(ArgHead); BinPushReg(REG_EAX);
+      BinCallLabel('_XPPRT_StrFind');
+      Exit;
+    End;
+
+    If (Methods[MIdx].Name = 'strDel') And (ArgHead <> 0) Then Begin
+      Arg2 := IRNodes[ArgHead].NextArg;
+      Arg3 := IRNodes[Arg2].NextArg;
+      CodegenExpr(Arg3);   BinPushReg(REG_EAX);
+      CodegenExpr(Arg2);   BinPushReg(REG_EAX);
+      CodegenExpr(ArgHead); BinPushReg(REG_EAX);
+      BinCallLabel('_XPPRT_StrDel');
+      Exit;
+    End;
+
+    If (Methods[MIdx].Name = 'strIns') And (ArgHead <> 0) Then Begin
+      Arg2 := IRNodes[ArgHead].NextArg;
+      Arg3 := IRNodes[Arg2].NextArg;
+      CodegenExpr(Arg3);   BinPushReg(REG_EAX);
+      CodegenExpr(Arg2);   BinPushReg(REG_EAX);
+      CodegenExpr(ArgHead); BinPushReg(REG_EAX);
+      BinCallLabel('_XPPRT_StrIns');
       Exit;
     End;
   End;
@@ -7723,6 +7836,458 @@ Begin
   BinEmitEpilogueN(0);
 End;
 
+{ _XPPRT_StrAlloc (extension chaines reelles apres TODO 26) : alloue
+  EAX octets sur le tas Win32 (HEAP_ZERO_MEMORY) et renvoie le
+  pointeur dans EAX. Factorise le boilerplate GetProcessHeap/HeapAlloc
+  repete par toutes les fonctions de chaines ci-dessous. }
+Procedure EmitStrAllocHelper;
+Begin
+  BinCurSec := BIN_SEC_TEXT;
+  BinDefineLabel('_XPPRT_StrAlloc');
+  BinEmitPrologue(0);
+  BinPushReg(REG_EAX);
+  BinCallImportRaw('GetProcessHeap');
+  BinPushImm32(8);
+  BinPushReg(REG_EAX);
+  BinCallImportRaw('HeapAlloc');
+  BinEmitEpilogueN(0);
+End;
+
+{ Genere _XPPRT_StrUpr ou _XPPRT_StrLwr (EAX=srcPtr -> EAX=newPtr) :
+  copie une chaine reelle en convertissant les caracteres entre
+  LoBound et HiBound de Delta (ex. 'a'..'z',-32 pour la mise en
+  majuscules). Factorise le squelette commun aux deux sens de
+  conversion de casse. }
+Procedure EmitCaseConvHelper(LabelName: String; LoBound, HiBound, Delta: Integer);
+Var LLoop, LSkip, LDone: String;
+Begin
+  BinCurSec := BIN_SEC_TEXT;
+  BinDefineLabel(LabelName);
+  BinEmitPrologue(0);
+  BinPushReg(REG_EBX);
+  BinPushReg(REG_ESI);
+
+  BinPushReg(REG_EAX);
+  BinCallLabel('_XPPRT_StrLen');
+  BinAddEaxImm32(1);
+  BinCallLabel('_XPPRT_StrAlloc');
+  BinMovRegReg(REG_ESI, REG_EAX);   { esi = bufStart, fixe }
+  BinMovRegReg(REG_EBX, REG_EAX);    { ebx = curseur destination }
+  BinPopReg(REG_ECX);                 { ecx = curseur source }
+
+  LLoop := NewBinLabel('Cv1');
+  LSkip := NewBinLabel('Cv2');
+  LDone := NewBinLabel('Cv3');
+  BinDefineLabel(LLoop);
+  BinMovzxRegBaseDispByte(REG_EAX, REG_ECX, 0);
+  BinCmpEaxImm32(0);
+  BinJccLabel(CC_E, LDone);
+  BinCmpEaxImm32(LoBound);
+  BinJccLabel(CC_L, LSkip);
+  BinCmpEaxImm32(HiBound);
+  BinJccLabel(CC_G, LSkip);
+  BinAddEaxImm32(Delta);
+  BinDefineLabel(LSkip);
+  BinMovBaseDispAl(REG_EBX, 0);
+  BinIncReg(REG_ECX);
+  BinIncReg(REG_EBX);
+  BinJmpLabel(LLoop);
+  BinDefineLabel(LDone);
+  BinMovRegImm32(REG_EAX, 0);
+  BinMovBaseDispAl(REG_EBX, 0);
+  BinMovRegReg(REG_EAX, REG_ESI);
+
+  BinPopReg(REG_ESI);
+  BinPopReg(REG_EBX);
+  BinEmitEpilogueN(0);
+End;
+
+{ _XPPRT_StrConcat (extension chaines reelles apres TODO 26) :
+  EAX=aPtr, ECX=bPtr -> EAX=nouvelle chaine = a suivi de b. Brique de
+  base reutilisee par strDel/strIns (construits par segments). }
+Procedure EmitStrConcatHelper;
+Var LCpA, LCpADone, LCpB, LCpBDone: String;
+Begin
+  BinCurSec := BIN_SEC_TEXT;
+  BinDefineLabel('_XPPRT_StrConcat');
+  BinEmitPrologue(12);
+  BinMovBaseDispReg32(REG_EBP, -4, REG_EAX);
+  BinMovBaseDispReg32(REG_EBP, -8, REG_ECX);
+
+  BinCallLabel('_XPPRT_StrLen');             { eax = lenA (a deja dans eax) }
+  BinPushReg(REG_EAX);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -8);
+  BinCallLabel('_XPPRT_StrLen');               { eax = lenB }
+  BinMovRegReg(REG_ECX, REG_EAX);
+  BinPopReg(REG_EAX);                            { eax = lenA }
+  BinAddEaxEcx;
+  BinAddEaxImm32(1);
+  BinCallLabel('_XPPRT_StrAlloc');
+  BinMovBaseDispReg32(REG_EBP, -12, REG_EAX);      { bufStart }
+
+  BinMovRegBaseDisp32(REG_EBX, REG_EBP, -4);
+  BinMovRegBaseDisp32(REG_EDI, REG_EBP, -12);
+  LCpA := NewBinLabel('Cc1');
+  LCpADone := NewBinLabel('Cc2');
+  BinDefineLabel(LCpA);
+  BinMovzxRegBaseDispByte(REG_EAX, REG_EBX, 0);
+  BinCmpEaxImm32(0);
+  BinJccLabel(CC_E, LCpADone);
+  BinMovBaseDispAl(REG_EDI, 0);
+  BinIncReg(REG_EBX);
+  BinIncReg(REG_EDI);
+  BinJmpLabel(LCpA);
+  BinDefineLabel(LCpADone);
+
+  BinMovRegBaseDisp32(REG_EBX, REG_EBP, -8);
+  LCpB := NewBinLabel('Cc3');
+  LCpBDone := NewBinLabel('Cc4');
+  BinDefineLabel(LCpB);
+  BinMovzxRegBaseDispByte(REG_EAX, REG_EBX, 0);
+  BinCmpEaxImm32(0);
+  BinJccLabel(CC_E, LCpBDone);
+  BinMovBaseDispAl(REG_EDI, 0);
+  BinIncReg(REG_EBX);
+  BinIncReg(REG_EDI);
+  BinJmpLabel(LCpB);
+  BinDefineLabel(LCpBDone);
+
+  BinMovRegImm32(REG_EAX, 0);
+  BinMovBaseDispAl(REG_EDI, 0);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -12);
+  BinEmitEpilogueN(0);
+End;
+
+{ _XPPRT_SubStr (extension chaines reelles apres TODO 26) : convention
+  pile classique (comme un appel de methode utilisateur), arguments
+  s,start,len a [ebp+8/12/16], "start" 1-indexe. start/len sont
+  ecretes contre la longueur reelle de s pour ne jamais lire hors du
+  tampon source (jamais planter, meme avec des indices hors bornes). }
+Procedure EmitSubStrHelper;
+Var L1, L2, L3, L4, L5, LCpy, LCpyDone: String;
+Begin
+  BinCurSec := BIN_SEC_TEXT;
+  BinDefineLabel('_XPPRT_SubStr');
+  BinEmitPrologue(16);
+  { [ebp-4]=s [ebp-8]=start [ebp-12]=len [ebp-16]=realLen puis bufStart }
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, 8);
+  BinMovBaseDispReg32(REG_EBP, -4, REG_EAX);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, 12);
+  BinMovBaseDispReg32(REG_EBP, -8, REG_EAX);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, 16);
+  BinMovBaseDispReg32(REG_EBP, -12, REG_EAX);
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -4);
+  BinCallLabel('_XPPRT_StrLen');
+  BinMovBaseDispReg32(REG_EBP, -16, REG_EAX);
+
+  { ecrete start a [1, realLen+1] }
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -8);
+  BinCmpEaxImm32(1);
+  L1 := NewBinLabel('Ss1');
+  BinJccLabel(CC_GE, L1);
+  BinMovRegImm32(REG_EAX, 1);
+  BinMovBaseDispReg32(REG_EBP, -8, REG_EAX);
+  BinDefineLabel(L1);
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -16);
+  BinAddEaxImm32(1);
+  BinMovRegReg(REG_ECX, REG_EAX);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -8);
+  BinCmpEaxEcx;
+  L2 := NewBinLabel('Ss2');
+  BinJccLabel(CC_LE, L2);
+  BinMovBaseDispReg32(REG_EBP, -8, REG_ECX);
+  BinDefineLabel(L2);
+
+  { avail = realLen - start + 1, ecrete a >=0 }
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -16);
+  BinMovRegBaseDisp32(REG_ECX, REG_EBP, -8);
+  BinSubEaxEcx;
+  BinAddEaxImm32(1);
+  BinCmpEaxImm32(0);
+  L3 := NewBinLabel('Ss3');
+  BinJccLabel(CC_GE, L3);
+  BinMovRegImm32(REG_EAX, 0);
+  BinDefineLabel(L3);
+  BinMovRegReg(REG_ECX, REG_EAX);   { ecx = avail }
+
+  { ecrete len a [0, avail] }
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -12);
+  BinCmpEaxImm32(0);
+  L4 := NewBinLabel('Ss4');
+  BinJccLabel(CC_GE, L4);
+  BinMovRegImm32(REG_EAX, 0);
+  BinDefineLabel(L4);
+  BinCmpEaxEcx;
+  L5 := NewBinLabel('Ss5');
+  BinJccLabel(CC_LE, L5);
+  BinMovRegReg(REG_EAX, REG_ECX);
+  BinDefineLabel(L5);
+  BinMovBaseDispReg32(REG_EBP, -12, REG_EAX);
+
+  BinAddEaxImm32(1);
+  BinCallLabel('_XPPRT_StrAlloc');
+  BinMovBaseDispReg32(REG_EBP, -16, REG_EAX);   { bufStart }
+
+  BinMovRegBaseDisp32(REG_EBX, REG_EBP, -4);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -8);
+  BinDecEax;
+  BinAddRegReg(REG_EBX, REG_EAX);                 { ebx = s+(start-1) }
+  BinMovRegBaseDisp32(REG_EDI, REG_EBP, -16);
+  BinMovRegBaseDisp32(REG_EDX, REG_EBP, -12);
+
+  LCpy := NewBinLabel('Ss6');
+  LCpyDone := NewBinLabel('Ss7');
+  BinCmpRegImm8(REG_EDX, 0);
+  BinJccLabel(CC_E, LCpyDone);
+  BinDefineLabel(LCpy);
+  BinMovzxRegBaseDispByte(REG_EAX, REG_EBX, 0);
+  BinMovBaseDispAl(REG_EDI, 0);
+  BinIncReg(REG_EBX);
+  BinIncReg(REG_EDI);
+  BinDecReg(REG_EDX);
+  BinJccLabel(CC_NE, LCpy);
+  BinDefineLabel(LCpyDone);
+
+  BinMovRegImm32(REG_EAX, 0);
+  BinMovBaseDispAl(REG_EDI, 0);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -16);
+  BinEmitEpilogueN(12);
+End;
+
+{ _XPPRT_StrFind (extension chaines reelles apres TODO 26) : convention
+  pile, arguments s,sub,startPos,endPos a [ebp+8/12/16/20]. Recherche
+  naive (comparaison caractere par caractere a chaque position dans
+  [startPos,endPos]) ; renvoie la position 1-indexee de la premiere
+  correspondance, ou 0. }
+Procedure EmitStrFindHelper;
+Var LOuter, LCmp, LMismatch, LMatched, LNotFound, LEnd: String;
+Begin
+  BinCurSec := BIN_SEC_TEXT;
+  BinDefineLabel('_XPPRT_StrFind');
+  BinEmitPrologue(16);
+  { [ebp-4]=s [ebp-8]=sub [ebp-12]=pos (boucle, puis resultat) [ebp-16]=endPos }
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, 8);
+  BinMovBaseDispReg32(REG_EBP, -4, REG_EAX);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, 12);
+  BinMovBaseDispReg32(REG_EBP, -8, REG_EAX);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, 16);
+  BinMovBaseDispReg32(REG_EBP, -12, REG_EAX);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, 20);
+  BinMovBaseDispReg32(REG_EBP, -16, REG_EAX);
+
+  LOuter    := NewBinLabel('Sf1');
+  LCmp      := NewBinLabel('Sf2');
+  LMismatch := NewBinLabel('Sf3');
+  LMatched  := NewBinLabel('Sf4');
+  LNotFound := NewBinLabel('Sf5');
+  LEnd      := NewBinLabel('Sf6');
+
+  BinDefineLabel(LOuter);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -12);
+  BinMovRegBaseDisp32(REG_ECX, REG_EBP, -16);
+  BinCmpEaxEcx;
+  BinJccLabel(CC_G, LNotFound);
+
+  BinMovRegBaseDisp32(REG_EBX, REG_EBP, -4);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -12);
+  BinDecEax;
+  BinAddRegReg(REG_EBX, REG_EAX);           { ebx = s+(pos-1) }
+  BinMovRegBaseDisp32(REG_ECX, REG_EBP, -8);  { ecx = sub, curseur }
+
+  BinDefineLabel(LCmp);
+  BinMovzxRegBaseDispByte(REG_EDX, REG_ECX, 0);
+  BinCmpRegImm8(REG_EDX, 0);
+  BinJccLabel(CC_E, LMatched);
+  BinMovzxRegBaseDispByte(REG_EAX, REG_EBX, 0);
+  BinCmpRegReg(REG_EAX, REG_EDX);
+  BinJccLabel(CC_NE, LMismatch);
+  BinIncReg(REG_EBX);
+  BinIncReg(REG_ECX);
+  BinJmpLabel(LCmp);
+
+  BinDefineLabel(LMatched);
+  BinJmpLabel(LEnd);
+
+  BinDefineLabel(LMismatch);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -12);
+  BinIncEax;
+  BinMovBaseDispReg32(REG_EBP, -12, REG_EAX);
+  BinJmpLabel(LOuter);
+
+  BinDefineLabel(LNotFound);
+  BinMovRegImm32(REG_EAX, 0);
+  BinMovBaseDispReg32(REG_EBP, -12, REG_EAX);
+
+  BinDefineLabel(LEnd);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -12);
+  BinEmitEpilogueN(16);
+End;
+
+{ _XPPRT_StrDel (extension chaines reelles apres TODO 26) : convention
+  pile, arguments s,start,len a [ebp+8/12/16]. Construit par segments :
+  SubStr(s,1,start-1) concatene a SubStr(s,start+len,StrLen(s)) (le
+  second SubStr ecrete deja len contre ce qui reste reellement). }
+Procedure EmitStrDelHelper;
+Begin
+  BinCurSec := BIN_SEC_TEXT;
+  BinDefineLabel('_XPPRT_StrDel');
+  BinEmitPrologue(0);
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, 12);
+  BinDecEax;
+  BinPushReg(REG_EAX);
+  BinPushImm32(1);
+  BinPushBaseDisp(REG_EBP, 8);
+  BinCallLabel('_XPPRT_SubStr');
+  BinPushReg(REG_EAX);                    { protege part1 }
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, 8);
+  BinCallLabel('_XPPRT_StrLen');
+  BinPushReg(REG_EAX);                    { len (dernier argument de SubStr) }
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, 12);
+  BinMovRegBaseDisp32(REG_ECX, REG_EBP, 16);
+  BinAddRegReg(REG_EAX, REG_ECX);
+  BinPushReg(REG_EAX);                    { newStart = start+len }
+  BinPushBaseDisp(REG_EBP, 8);
+  BinCallLabel('_XPPRT_SubStr');            { eax = part2 }
+
+  BinMovRegReg(REG_ECX, REG_EAX);
+  BinPopReg(REG_EAX);                       { part1 }
+  BinCallLabel('_XPPRT_StrConcat');
+
+  BinEmitEpilogueN(12);
+End;
+
+{ _XPPRT_StrIns (extension chaines reelles apres TODO 26) : convention
+  pile, arguments insertStr,sourceStr,position a [ebp+8/12/16].
+  Construit par segments : SubStr(sourceStr,1,position-1) + insertStr
+  + SubStr(sourceStr,position,StrLen(sourceStr)). }
+Procedure EmitStrInsHelper;
+Begin
+  BinCurSec := BIN_SEC_TEXT;
+  BinDefineLabel('_XPPRT_StrIns');
+  BinEmitPrologue(0);
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, 16);
+  BinDecEax;
+  BinPushReg(REG_EAX);
+  BinPushImm32(1);
+  BinPushBaseDisp(REG_EBP, 12);
+  BinCallLabel('_XPPRT_SubStr');             { eax = part1 }
+  BinMovRegBaseDisp32(REG_ECX, REG_EBP, 8);    { insertStr }
+  BinCallLabel('_XPPRT_StrConcat');              { eax = part1+insertStr }
+  BinPushReg(REG_EAX);                             { protege ce resultat intermediaire }
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, 12);
+  BinCallLabel('_XPPRT_StrLen');
+  BinPushReg(REG_EAX);
+  BinPushBaseDisp(REG_EBP, 16);
+  BinPushBaseDisp(REG_EBP, 12);
+  BinCallLabel('_XPPRT_SubStr');                    { eax = part2 }
+
+  BinMovRegReg(REG_ECX, REG_EAX);
+  BinPopReg(REG_EAX);
+  BinCallLabel('_XPPRT_StrConcat');
+
+  BinEmitEpilogueN(12);
+End;
+
+{ _XPPRT_StrLTrim/_XPPRT_StrRTrim (extension chaines reelles apres
+  TODO 26) : EAX=s -> EAX=newPtr. Comptent les espaces/tabulations de
+  tete ou de queue puis delegent la construction reelle a
+  _XPPRT_SubStr (evite de reimplementer l'allocation/copie). }
+Procedure EmitStrLTrimHelper;
+Var LScan, LNotSpace, LScanDone: String;
+Begin
+  BinCurSec := BIN_SEC_TEXT;
+  BinDefineLabel('_XPPRT_StrLTrim');
+  BinEmitPrologue(0);
+  BinPushReg(REG_EBX);
+  BinMovRegReg(REG_EBX, REG_EAX);   { ebx = s, protege }
+  BinCallLabel('_XPPRT_StrLen');
+  BinMovRegReg(REG_ECX, REG_EAX);    { ecx = longueur }
+
+  BinMovRegReg(REG_EAX, REG_EBX);      { eax = curseur de balayage }
+  BinMovRegImm32(REG_EDX, 0);            { edx = skipCount }
+  LScan     := NewBinLabel('Lt1');
+  LNotSpace := NewBinLabel('Lt2');
+  LScanDone := NewBinLabel('Lt3');
+  BinDefineLabel(LScan);
+  BinCmpRegReg(REG_EDX, REG_ECX);
+  BinJccLabel(CC_GE, LScanDone);
+  BinMovzxRegBaseDispByte(REG_ESI, REG_EAX, 0);
+  BinCmpRegImm8(REG_ESI, 32);
+  BinJccLabel(CC_NE, LNotSpace);
+  BinIncReg(REG_EAX);
+  BinIncReg(REG_EDX);
+  BinJmpLabel(LScan);
+  BinDefineLabel(LNotSpace);
+  BinCmpRegImm8(REG_ESI, 9);
+  BinJccLabel(CC_NE, LScanDone);
+  BinIncReg(REG_EAX);
+  BinIncReg(REG_EDX);
+  BinJmpLabel(LScan);
+  BinDefineLabel(LScanDone);
+
+  BinMovRegReg(REG_EAX, REG_ECX);
+  BinSubRegReg(REG_EAX, REG_EDX);     { eax = newLen }
+  BinPushReg(REG_EAX);
+  BinMovRegReg(REG_EAX, REG_EDX);
+  BinAddEaxImm32(1);                    { newStart }
+  BinPushReg(REG_EAX);
+  BinPushReg(REG_EBX);                    { s }
+  BinCallLabel('_XPPRT_SubStr');
+
+  BinPopReg(REG_EBX);
+  BinEmitEpilogueN(0);
+End;
+
+Procedure EmitStrRTrimHelper;
+Var LScan, LNotSpace, LScanDone: String;
+Begin
+  BinCurSec := BIN_SEC_TEXT;
+  BinDefineLabel('_XPPRT_StrRTrim');
+  BinEmitPrologue(0);
+  BinPushReg(REG_EBX);
+  BinMovRegReg(REG_EBX, REG_EAX);   { ebx = s, protege }
+  BinCallLabel('_XPPRT_StrLen');
+  BinMovRegReg(REG_ECX, REG_EAX);    { ecx = longueur }
+
+  BinMovRegReg(REG_EAX, REG_EBX);
+  BinAddRegReg(REG_EAX, REG_ECX);      { eax = s+longueur (juste apres le dernier caractere) }
+  BinMovRegImm32(REG_EDX, 0);            { edx = trimCount }
+  LScan     := NewBinLabel('Rt1');
+  LNotSpace := NewBinLabel('Rt2');
+  LScanDone := NewBinLabel('Rt3');
+  BinDefineLabel(LScan);
+  BinCmpRegReg(REG_EDX, REG_ECX);
+  BinJccLabel(CC_GE, LScanDone);
+  BinDecReg(REG_EAX);                    { recule d'un caractere avant de le lire }
+  BinMovzxRegBaseDispByte(REG_ESI, REG_EAX, 0);
+  BinCmpRegImm8(REG_ESI, 32);
+  BinJccLabel(CC_NE, LNotSpace);
+  BinIncReg(REG_EDX);
+  BinJmpLabel(LScan);
+  BinDefineLabel(LNotSpace);
+  BinCmpRegImm8(REG_ESI, 9);
+  BinJccLabel(CC_NE, LScanDone);
+  BinIncReg(REG_EDX);
+  BinJmpLabel(LScan);
+  BinDefineLabel(LScanDone);
+
+  BinMovRegReg(REG_EAX, REG_ECX);
+  BinSubRegReg(REG_EAX, REG_EDX);     { eax = newLen }
+  BinPushReg(REG_EAX);
+  BinPushImm32(1);                      { newStart = 1 }
+  BinPushReg(REG_EBX);                    { s }
+  BinCallLabel('_XPPRT_SubStr');
+
+  BinPopReg(REG_EBX);
+  BinEmitEpilogueN(0);
+End;
+
 { Point d'entree binaire "start" : trampoline vers static void main(),
   suivi d'un ExitProcess(0) propre. Emis en tout premier dans .text
   pour que start soit bien a l'adresse EntryRVA=TextRVA ecrite par
@@ -7761,6 +8326,16 @@ Begin
   EmitFormatIntToBufHelper;
   EmitConAppendHelper;
   EmitConToStrHelper;
+  EmitStrAllocHelper;
+  EmitCaseConvHelper('_XPPRT_StrUpr', Ord('a'), Ord('z'), -32);
+  EmitCaseConvHelper('_XPPRT_StrLwr', Ord('A'), Ord('Z'), 32);
+  EmitStrConcatHelper;
+  EmitSubStrHelper;
+  EmitStrFindHelper;
+  EmitStrDelHelper;
+  EmitStrInsHelper;
+  EmitStrLTrimHelper;
+  EmitStrRTrimHelper;
 
   For I := 1 To MethodCount Do
     If Methods[I].BodyStmt <> 0 Then CodegenMethod(I);
