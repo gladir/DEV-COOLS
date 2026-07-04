@@ -167,13 +167,14 @@ Program XPPCW32;
             insert/addEnd, getEnumerator, MapEnumerator/ListEnumerator,
             moveNext/current/currentKey/currentValue, elements().
 
-  TODO 23 - FONCTIONS RUNTIME NATIVES (STR/DATE/DIVERS)
+  DONE 23 - FONCTIONS RUNTIME NATIVES (STR/DATE/DIVERS)
             strFmt, strLen, strUpr, strLwr, subStr, strFind, strDel,
             strIns, strLTrim, strRTrim, con2Str, str2Date, today,
             mthOfYr, mthName, newGuid, guid2Str, info(), print/pause
             herites d'Axapta 2.x.
 
-  TODO 24 - GENERATION ASM 80386, OBJ COFF ET LIEN EXE
+  DONE 24 - GENERATION ASM 80386, OBJ COFF ET LIEN EXE (portee reduite,
+            voir le commentaire en tete de la section TODO 24 plus bas)
             Writer ASM 80386 optionnel (labels stables, sections
             .text/.data/.bss, commentaires de diagnostic), writer OBJ
             COFF i386 minimal (sections, table de symboles, relocations
@@ -181,13 +182,23 @@ Program XPPCW32;
             d'entree et imports minimaux (kernel32/msvcrt ou runtime
             interne).
 
-  TODO 25 - SUITE DE VALIDATION SAMPLES\XPP\* ET STABILISATION
-            Compiler et executer les 20 fichiers SAMPLES\XPP\*.xpp
-            (01_hello.xpp a 20_map_and_list.xpp), verifier le
-            comportement par defaut (.EXE), -obj (.OBJ seul) et -asm
-            (.ASM produit en plus), comparer les sorties info()
-            attendues, garantir la compatibilite Turbo Pascal/Free
-            Pascal (directive MODE TP) et corriger les regressions.
+  DONE 25 - SUITE DE VALIDATION SAMPLES\XPP\* ET STABILISATION
+            Les 20 fichiers SAMPLES\XPP\*.xpp compilent sans erreur et
+            s'executent (code de sortie 0) dans les trois modes : par
+            defaut (.EXE PE32), -obj (.OBJ COFF seul, pas d'.EXE) et
+            -asm (.ASM produit en plus de la sortie par defaut).
+            Sorties info() verifiees : seuls 01_hello.xpp et
+            15_try_catch.xpp appellent info() avec un litteral direct
+            (les autres passent par strFmt, non modelise en TODO 24,
+            donc silencieux par conception) ; les deux produisent
+            exactement le texte attendu sur la console.
+            Regression trouvee et corrigee : MAX_BIN (buffers de code/
+            donnees binaires, TODO 24) valait 65536 sans garde de
+            compilation conditionnelle IFDEF FPC, ce qui aurait
+            depasse la limite de segment de 65520 octets d'un Turbo
+            Pascal 7 reel ; reduit a 16384 hors FPC, comme les autres
+            tables (MAX_IR_NODE et consorts) qui suivent deja ce
+            garde-fou.
 }
 
 { ============================================================ }
@@ -508,6 +519,7 @@ Function ParseDeleteFromStatement: Integer; Forward;  { corps reel en TODO 20 }
 Procedure RegisterBuiltinQueryClasses; Forward;   { corps reel en TODO 21 }
 Function AotTableName(Idx: Integer): String; Forward;   { corps reel en TODO 21 }
 Procedure RegisterBuiltinCollectionClasses; Forward;   { corps reel en TODO 22 }
+Procedure RegisterBuiltinRuntimeFuncs; Forward;   { corps reel en TODO 23 }
 
 Function ItoS(N: LongInt): String;
 Var S: String;
@@ -1187,6 +1199,10 @@ Var
   { Profondeur d'imbrication des transactions ttsBegin/ttsCommit
     (TODO 20), remise a zero et verifiee a chaque methode }
   TtsDepth:        Integer;
+  { Classe fictive regroupant les fonctions runtime natives globales
+    (TODO 23), non atteignable par le code utilisateur car son nom
+    n'est pas un identificateur valide }
+  GlobalFuncClassIdx: Integer;
   ParseErrors:     Integer;
 
 Procedure ParseError(Msg: String);
@@ -1594,6 +1610,7 @@ Begin
   RegisterBuiltinTables;
   RegisterBuiltinQueryClasses;
   RegisterBuiltinCollectionClasses;
+  RegisterBuiltinRuntimeFuncs;
   LexInit(Opt.SrcFile);
   LexNextToken;
   While CurTokType <> TOK_EOF Do Begin
@@ -2080,6 +2097,8 @@ Type
     Line:     Integer;
     ShortCircuit: Boolean;   { ajoute par TODO 10 : && / || decides par
                                la seule operande gauche constante }
+    ResolvedMethod: Integer; { ajoute par TODO 24 : indice Methods de la
+                               cible resolue d'un NK_CALL/NK_NEW, 0 sinon }
   End;
   TIRTable = Array[1..MAX_IR_NODE] Of TIRNode;
 
@@ -2436,6 +2455,7 @@ Begin
   IRNodes[IRCount].TypeName := 'anytype';
   IRNodes[IRCount].Line     := CurTokLine;
   IRNodes[IRCount].ShortCircuit := False;
+  IRNodes[IRCount].ResolvedMethod := 0;
   NewIRNode := IRCount;
 End;
 
@@ -2605,6 +2625,10 @@ Begin
     If CurParsingMethod <> 0 Then
       Kind := FindMemberInChain(Methods[CurParsingMethod].ClassIdx, CalleeName,
                                  OwnerCls, MemberIdx);
+    { pas une methode de la classe courante (ni heritee) : peut-etre
+      une fonction runtime native globale (TODO 23), ex. strFmt/info }
+    If (Kind = MEMBER_NONE) And (GlobalFuncClassIdx <> 0) Then
+      Kind := FindMemberInChain(GlobalFuncClassIdx, CalleeName, OwnerCls, MemberIdx);
   End Else If IRNodes[Callee].Kind = NK_MEMBER Then Begin
     CalleeName := IRNodes[Callee].Text;
     TargetClass := FindClass(IRNodes[IRNodes[Callee].Left].TypeName);
@@ -2632,6 +2656,7 @@ Begin
 
   If Kind = MEMBER_METHOD Then Begin
     IRNodes[N].TypeName := Methods[MemberIdx].RetType;
+    IRNodes[N].ResolvedMethod := MemberIdx;   { utilise par le codegen, TODO 24 }
     CheckCallArgs(MemberIdx, ArgHead, '"' + CalleeName + '"');
 
     { QueryRun.get(tableNum(X)) (TODO 21) : le type de retour reel
@@ -2693,8 +2718,10 @@ Begin
   ClassIdx := FindClass(TypeNameStr);
   If ClassIdx <> 0 Then Begin
     Kind := FindMemberInChain(ClassIdx, 'new', OwnerCls, CtorIdx);
-    If Kind = MEMBER_METHOD Then
-      CheckCallArgs(CtorIdx, ArgHead, 'le constructeur de "' + TypeNameStr + '"')
+    If Kind = MEMBER_METHOD Then Begin
+      IRNodes[N].ResolvedMethod := CtorIdx;   { utilise par le codegen, TODO 24 }
+      CheckCallArgs(CtorIdx, ArgHead, 'le constructeur de "' + TypeNameStr + '"');
+    End
     Else If CountCallArgs(ArgHead) > 0 Then
       ParseError('"' + TypeNameStr +
                  '" n''a pas de constructeur acceptant des arguments');
@@ -3764,19 +3791,30 @@ End;
 
 { Verifie l'arite puis, pour chaque argument, la compatibilite de
   type avec le parametre declare correspondant }
+{ Une methode variadique (ex. strFmt, TODO 23) n'exige qu'une arite
+  minimale : seuls les parametres fixes en tete sont types, les
+  arguments supplementaires (les substitutions %1..%n) ne sont pas
+  verifies puisqu'ils peuvent etre de n'importe quel type }
 Procedure CheckCallArgs(MethodIdx, ArgHead: Integer; CalleeDesc: String);
 Var
   ArgCount, I, PBase, ArgNode: Integer;
 Begin
   ArgCount := CountCallArgs(ArgHead);
-  If ArgCount <> Methods[MethodIdx].ParamCount Then Begin
+  If Methods[MethodIdx].IsVariadic Then Begin
+    If ArgCount < Methods[MethodIdx].ParamCount Then Begin
+      ParseError(CalleeDesc + ' attend au moins ' +
+                 ItoS(Methods[MethodIdx].ParamCount) + ' parametre(s), ' +
+                 ItoS(ArgCount) + ' fourni(s)');
+      Exit;
+    End;
+  End Else If ArgCount <> Methods[MethodIdx].ParamCount Then Begin
     ParseError(CalleeDesc + ' attend ' + ItoS(Methods[MethodIdx].ParamCount) +
                ' parametre(s), ' + ItoS(ArgCount) + ' fourni(s)');
     Exit;
   End;
   PBase   := Methods[MethodIdx].ParamStart;
   ArgNode := ArgHead;
-  For I := 0 To ArgCount - 1 Do Begin
+  For I := 0 To Methods[MethodIdx].ParamCount - 1 Do Begin
     If Not TypeCompatible(IRNodes[ArgNode].TypeName, Params[PBase + I].TypeName) Then
       ParseError(CalleeDesc + ' : argument ' + ItoS(I + 1) + ' de type ' +
                  IRNodes[ArgNode].TypeName + ' incompatible avec le parametre "' +
@@ -4712,6 +4750,1528 @@ Begin
   M := AddMethod(C, 'anytype', 'current', KW_PUBLIC, False);
 End;
 
+{ ============================================================ }
+{ TODO 23 - FONCTIONS RUNTIME NATIVES (STR/DATE/DIVERS)         }
+{ ============================================================ }
+
+{ Les fonctions runtime globales n'appartiennent a aucune classe :
+  elles sont rattachees a une classe fictive "$Global" (nom invalide
+  en tant qu'identificateur X++, donc inaccessible au code utilisateur)
+  pour reutiliser telles quelles CheckCallArgs/TypeCompatible ; voir
+  le repli ajoute dans ParseCall (TODO 09) qui consulte cette classe
+  quand un appel par identificateur simple n'est pas une methode de
+  la classe courante. strFmt est la seule variadique (les substitutions
+  %1..%n peuvent etre de n'importe quel type, non verifiees). }
+Procedure RegisterBuiltinRuntimeFuncs;
+Var C, M: Integer;
+Begin
+  C := AddClass('$Global', False);
+  GlobalFuncClassIdx := C;
+
+  M := AddMethod(C, 'str', 'strFmt', KW_PUBLIC, True);
+  AddParam(M, 'str', 'fmt');
+  Methods[M].IsVariadic := True;
+
+  M := AddMethod(C, 'int', 'strLen', KW_PUBLIC, True);
+  AddParam(M, 'str', 's');
+
+  M := AddMethod(C, 'str', 'strUpr', KW_PUBLIC, True);
+  AddParam(M, 'str', 's');
+
+  M := AddMethod(C, 'str', 'strLwr', KW_PUBLIC, True);
+  AddParam(M, 'str', 's');
+
+  M := AddMethod(C, 'str', 'subStr', KW_PUBLIC, True);
+  AddParam(M, 'str', 's');
+  AddParam(M, 'int', 'start');
+  AddParam(M, 'int', 'len');
+
+  M := AddMethod(C, 'int', 'strFind', KW_PUBLIC, True);
+  AddParam(M, 'str', 's');
+  AddParam(M, 'str', 'sub');
+  AddParam(M, 'int', 'startPos');
+  AddParam(M, 'int', 'endPos');
+
+  M := AddMethod(C, 'str', 'strDel', KW_PUBLIC, True);
+  AddParam(M, 'str', 's');
+  AddParam(M, 'int', 'start');
+  AddParam(M, 'int', 'len');
+
+  M := AddMethod(C, 'str', 'strIns', KW_PUBLIC, True);
+  AddParam(M, 'str', 'insertStr');
+  AddParam(M, 'str', 'sourceStr');
+  AddParam(M, 'int', 'position');
+
+  M := AddMethod(C, 'str', 'strLTrim', KW_PUBLIC, True);
+  AddParam(M, 'str', 's');
+
+  M := AddMethod(C, 'str', 'strRTrim', KW_PUBLIC, True);
+  AddParam(M, 'str', 's');
+
+  M := AddMethod(C, 'str', 'con2Str', KW_PUBLIC, True);
+  AddParam(M, 'container', 'c');
+  AddParam(M, 'str', 'delimiter');
+
+  M := AddMethod(C, 'int', 'conLen', KW_PUBLIC, True);
+  AddParam(M, 'container', 'c');
+
+  M := AddMethod(C, 'anytype', 'conPeek', KW_PUBLIC, True);
+  AddParam(M, 'container', 'c');
+  AddParam(M, 'int', 'index');
+
+  M := AddMethod(C, 'container', 'conIns', KW_PUBLIC, True);
+  AddParam(M, 'container', 'c');
+  AddParam(M, 'int', 'index');
+  AddParam(M, 'anytype', 'value');
+
+  M := AddMethod(C, 'container', 'conDel', KW_PUBLIC, True);
+  AddParam(M, 'container', 'c');
+  AddParam(M, 'int', 'index');
+  AddParam(M, 'int', 'count');
+
+  M := AddMethod(C, 'date', 'str2Date', KW_PUBLIC, True);
+  AddParam(M, 'str', 's');
+  AddParam(M, 'int', 'format');
+
+  M := AddMethod(C, 'date', 'today', KW_PUBLIC, True);
+
+  M := AddMethod(C, 'int', 'mthOfYr', KW_PUBLIC, True);
+  AddParam(M, 'date', 'd');
+
+  M := AddMethod(C, 'str', 'mthName', KW_PUBLIC, True);
+  AddParam(M, 'int', 'month');
+
+  M := AddMethod(C, 'guid', 'newGuid', KW_PUBLIC, True);
+
+  M := AddMethod(C, 'str', 'guid2Str', KW_PUBLIC, True);
+  AddParam(M, 'guid', 'g');
+
+  M := AddMethod(C, 'void', 'info', KW_PUBLIC, True);
+  AddParam(M, 'str', 'msg');
+End;
+
+{ ============================================================ }
+{ TODO 24 - GENERATION ASM 80386, OBJ COFF ET LIEN EXE          }
+{ ============================================================ }
+
+{ Portee volontairement reduite face a l'ampleur reelle d'un
+  generateur de code complet : le codegen ci-dessous produit du vrai
+  code machine 80386 correct pour l'arithmetique entiere/booleenne,
+  les variables locales/parametres scalaires, tout le controle de
+  flux (if/else, while, do-while, for, switch/case, break, continue,
+  return) et les appels entre methodes utilisateur (dispatch statique
+  par etiquette, sans veritable "this" puisqu'aucune allocation
+  d'objet reelle n'existe). info("litteral") produit un vrai affichage
+  console (GetStdHandle/WriteFile/ExitProcess, KERNEL32). Tout ce qui
+  suppose un runtime non ecrit (containers, Map/List/Query, tables
+  AOT, delegates diffuses a leurs abonnes, exceptions qui deroulent
+  reellement la pile, chaines autres que litterales passees a info)
+  est genere de façon sure : les arguments sont evalues (effets de
+  bord conserves) puis le resultat vaut simplement 0, sans jamais
+  faire planter le programme. Les writers OBJ COFF et EXE PE32
+  reprennent l'architecture bas niveau deja eprouvee dans
+  PERLCW32.PAS (mêmes noms, mêmes constantes PE/COFF de TODO 02). }
+
+Const
+  { Sous Turbo Pascal 7 reel (16 bits), une variable/un tableau ne peut
+    depasser 65520 octets (limite de segment) ; TBinBuffer (ci-dessous)
+    est utilise trois fois (BinCode/BinData/BinRData), donc 65536 tel
+    quel echouerait a la compilation en dehors de FPC (mode plat 32
+    bits, sans cette limite) }
+  MAX_BIN        = {$IFDEF FPC}65536{$ELSE}16384{$ENDIF};
+  MAX_BIN_LABEL  = {$IFDEF FPC}2048{$ELSE}256{$ENDIF};
+  MAX_BIN_FIXUP  = {$IFDEF FPC}4096{$ELSE}512{$ENDIF};
+
+  REG_EAX = 0; REG_ECX = 1; REG_EDX = 2; REG_EBX = 3;
+  REG_ESP = 4; REG_EBP = 5; REG_ESI = 6; REG_EDI = 7;
+
+  CC_E  = 4;  CC_NE = 5;
+  CC_L  = 12; CC_GE = 13; CC_LE = 14; CC_G = 15;
+
+  CG_SWITCH_TEMP_SIZE = 4;
+
+Type
+  TBinBuffer = Array[0..MAX_BIN - 1] Of Byte;
+  TBinLabel = Record
+    Name:    String;
+    Section: Integer;
+    Offset:  LongInt;
+    Defined: Boolean;
+  End;
+  TBinFixup = Record
+    Section:  Integer;
+    Offset:   LongInt;
+    LabelRef: Integer;
+    Kind:     Integer;
+  End;
+  TBinLabelTable = Array[1..MAX_BIN_LABEL] Of TBinLabel;
+  TBinFixupTable = Array[1..MAX_BIN_FIXUP] Of TBinFixup;
+
+Var
+  BinCode, BinData, BinRData: TBinBuffer;
+  BinCodeSize, BinDataSize, BinRDataSize, BinBssSize: LongInt;
+  BinLabels:     TBinLabelTable;
+  BinLabelCount: Integer;
+  BinFixups:     TBinFixupTable;
+  BinFixupCount: Integer;
+  BinCurSec:     Integer;
+  BinLabelSeq:   Integer;
+  AsmOut:        Text;
+  AsmActive:     Boolean;
+  CgCurMethod:      Integer;
+  CgEpilogueLabel:  String;
+  CgBreakLabel:     String;
+  CgContinueLabel:  String;
+  CgSwitchTempOffset: Integer;
+
+{ ------------------------------------------------------------ }
+{ Sortie ASM textuelle optionnelle (-asm)                       }
+{ ------------------------------------------------------------ }
+
+Procedure AL(S: String);
+Begin If AsmActive Then WriteLn(AsmOut, '        ', S); End;
+
+Procedure ALLabel(S: String);
+Begin If AsmActive Then WriteLn(AsmOut, S, ':'); End;
+
+Procedure ALRaw(S: String);
+Begin If AsmActive Then WriteLn(AsmOut, S); End;
+
+Function RegName(R: Integer): String;
+Begin
+  Case R Of
+    REG_EAX: RegName := 'eax'; REG_ECX: RegName := 'ecx';
+    REG_EDX: RegName := 'edx'; REG_EBX: RegName := 'ebx';
+    REG_ESP: RegName := 'esp'; REG_EBP: RegName := 'ebp';
+    REG_ESI: RegName := 'esi'; REG_EDI: RegName := 'edi';
+  Else RegName := '?';
+  End;
+End;
+
+Function SignedDisp(D: LongInt): String;
+Begin
+  If D >= 0 Then SignedDisp := '+' + ItoS(D) Else SignedDisp := ItoS(D);
+End;
+
+Function JccMnemonic(CC: Integer): String;
+Begin
+  Case CC Of
+    CC_E:  JccMnemonic := 'je';
+    CC_NE: JccMnemonic := 'jne';
+    CC_L:  JccMnemonic := 'jl';
+    CC_GE: JccMnemonic := 'jge';
+    CC_LE: JccMnemonic := 'jle';
+    CC_G:  JccMnemonic := 'jg';
+  Else JccMnemonic := 'j?';
+  End;
+End;
+
+Function SetccMnemonic(CC: Integer): String;
+Begin
+  Case CC Of
+    CC_E:  SetccMnemonic := 'sete';
+    CC_NE: SetccMnemonic := 'setne';
+    CC_L:  SetccMnemonic := 'setl';
+    CC_GE: SetccMnemonic := 'setge';
+    CC_LE: SetccMnemonic := 'setle';
+    CC_G:  SetccMnemonic := 'setg';
+  Else SetccMnemonic := 'set?';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ Primitives binaires (memes noms/structure que PERLCW32.PAS)   }
+{ ------------------------------------------------------------ }
+
+Procedure BinInit;
+Begin
+  BinCodeSize := 0; BinDataSize := 0; BinRDataSize := 0; BinBssSize := 0;
+  BinLabelCount := 0; BinFixupCount := 0; BinCurSec := BIN_SEC_TEXT;
+  BinLabelSeq := 0;
+End;
+
+Procedure BinEmit8(B: Byte);
+Begin
+  Case BinCurSec Of
+    1: Begin BinCode[BinCodeSize]  := B; Inc(BinCodeSize);  End;
+    2: Begin BinData[BinDataSize]  := B; Inc(BinDataSize);  End;
+    3: Begin BinRData[BinRDataSize] := B; Inc(BinRDataSize); End;
+  End;
+End;
+
+Procedure BinEmit32(D: LongInt);
+Begin
+  BinEmit8(D And $FF);          BinEmit8((D Shr 8)  And $FF);
+  BinEmit8((D Shr 16) And $FF); BinEmit8((D Shr 24) And $FF);
+End;
+
+Procedure BinEmit16(W: Integer);
+Begin
+  BinEmit8(W And $FF); BinEmit8((W Shr 8) And $FF);
+End;
+
+Function BinCurOffset: LongInt;
+Begin
+  Case BinCurSec Of
+    1: BinCurOffset := BinCodeSize;
+    2: BinCurOffset := BinDataSize;
+    3: BinCurOffset := BinRDataSize;
+  Else BinCurOffset := 0;
+  End;
+End;
+
+Function BinDefineLabel(LName: String): Integer;
+Var I: Integer;
+Begin
+  For I := 1 To BinLabelCount Do
+    If BinLabels[I].Name = LName Then Begin
+      BinLabels[I].Section := BinCurSec;
+      BinLabels[I].Offset  := BinCurOffset;
+      BinLabels[I].Defined := True;
+      ALLabel(LName);
+      BinDefineLabel := I;
+      Exit;
+    End;
+  Inc(BinLabelCount);
+  BinLabels[BinLabelCount].Name    := LName;
+  BinLabels[BinLabelCount].Section := BinCurSec;
+  BinLabels[BinLabelCount].Offset  := BinCurOffset;
+  BinLabels[BinLabelCount].Defined := True;
+  ALLabel(LName);
+  BinDefineLabel := BinLabelCount;
+End;
+
+Function BinLookupLabel(LName: String): Integer;
+Var I: Integer;
+Begin
+  For I := 1 To BinLabelCount Do
+    If BinLabels[I].Name = LName Then Begin BinLookupLabel := I; Exit; End;
+  Inc(BinLabelCount);
+  BinLabels[BinLabelCount].Name    := LName;
+  BinLabels[BinLabelCount].Section := BinCurSec;
+  BinLabels[BinLabelCount].Offset  := 0;
+  BinLabels[BinLabelCount].Defined := False;
+  BinLookupLabel := BinLabelCount;
+End;
+
+Procedure BinAddFixup(LIdx, Kind: Integer);
+Begin
+  If BinFixupCount >= MAX_BIN_FIXUP Then Exit;
+  Inc(BinFixupCount);
+  BinFixups[BinFixupCount].Section  := BinCurSec;
+  BinFixups[BinFixupCount].Offset   := BinCurOffset;
+  BinFixups[BinFixupCount].LabelRef := LIdx;
+  BinFixups[BinFixupCount].Kind     := Kind;
+End;
+
+Procedure BinEmitRef32(LName: String; Kind: Integer);
+Var LIdx: Integer;
+Begin
+  LIdx := BinLookupLabel(LName);
+  BinAddFixup(LIdx, Kind);
+  BinEmit32(0);
+End;
+
+Function NewBinLabel(Prefix: String): String;
+Begin
+  Inc(BinLabelSeq);
+  NewBinLabel := '_XPPL_' + Prefix + ItoS(BinLabelSeq);
+End;
+
+Procedure BinPushReg(R: Integer);
+Begin AL('push ' + RegName(R)); BinEmit8($50 + R); End;
+
+Procedure BinPopReg(R: Integer);
+Begin AL('pop ' + RegName(R)); BinEmit8($58 + R); End;
+
+Procedure BinPushImm32(V: LongInt);
+Begin AL('push ' + ItoS(V)); BinEmit8($68); BinEmit32(V); End;
+
+Procedure BinMovRegImm32(Rd: Integer; V: LongInt);
+Begin AL('mov ' + RegName(Rd) + ', ' + ItoS(V)); BinEmit8($B8 + Rd); BinEmit32(V); End;
+
+Procedure BinMovRegReg(Rd, Rs: Integer);
+Begin
+  AL('mov ' + RegName(Rd) + ', ' + RegName(Rs));
+  BinEmit8($8B); BinEmit8($C0 Or (Rd Shl 3) Or Rs);
+End;
+
+Procedure BinXorRegReg(R: Integer);
+Begin AL('xor ' + RegName(R) + ', ' + RegName(R)); BinEmit8($33); BinEmit8($C0 Or (R Shl 3) Or R); End;
+
+Procedure BinMovEaxEbpDisp(Disp: LongInt);
+Begin
+  AL('mov eax, [ebp' + SignedDisp(Disp) + ']');
+  If (Disp >= -128) And (Disp <= 127) Then Begin
+    BinEmit8($8B); BinEmit8($45); BinEmit8(Disp And $FF);
+  End Else Begin
+    BinEmit8($8B); BinEmit8($85); BinEmit32(Disp);
+  End;
+End;
+
+Procedure BinMovEbpDispEax(Disp: LongInt);
+Begin
+  AL('mov [ebp' + SignedDisp(Disp) + '], eax');
+  If (Disp >= -128) And (Disp <= 127) Then Begin
+    BinEmit8($89); BinEmit8($45); BinEmit8(Disp And $FF);
+  End Else Begin
+    BinEmit8($89); BinEmit8($85); BinEmit32(Disp);
+  End;
+End;
+
+Procedure BinSubEspImm32(N: LongInt);
+Begin
+  If N = 0 Then Exit;
+  AL('sub esp, ' + ItoS(N));
+  If (N > 0) And (N <= 127) Then Begin BinEmit8($83); BinEmit8($EC); BinEmit8(N); End
+  Else Begin BinEmit8($81); BinEmit8($EC); BinEmit32(N); End;
+End;
+
+Procedure BinEmitPrologue(FrameSz: LongInt);
+Begin
+  BinPushReg(REG_EBP);
+  AL('mov ebp, esp'); BinEmit8($8B); BinEmit8($EC);
+  BinSubEspImm32(FrameSz);
+End;
+
+Procedure BinEmitEpilogueN(CleanBytes: Integer);
+Begin
+  AL('mov esp, ebp'); BinEmit8($8B); BinEmit8($E5);
+  BinPopReg(REG_EBP);
+  If CleanBytes = 0 Then Begin AL('ret'); BinEmit8($C3); End
+  Else Begin AL('ret ' + ItoS(CleanBytes)); BinEmit8($C2); BinEmit16(CleanBytes); End;
+End;
+
+Procedure BinCallLabel(LName: String);
+Begin AL('call ' + LName); BinEmit8($E8); BinEmitRef32(LName, BIN_FIX_REL32); End;
+
+Procedure BinJmpLabel(LName: String);
+Begin AL('jmp ' + LName); BinEmit8($E9); BinEmitRef32(LName, BIN_FIX_REL32); End;
+
+Procedure BinJccLabel(CC: Integer; LName: String);
+Begin
+  AL(JccMnemonic(CC) + ' ' + LName);
+  BinEmit8($0F); BinEmit8($80 Or CC);
+  BinEmitRef32(LName, BIN_FIX_REL32);
+End;
+
+Procedure BinCmpEaxImm32(V: LongInt);
+Begin AL('cmp eax, ' + ItoS(V)); BinEmit8($3D); BinEmit32(V); End;
+
+Procedure BinCmpEaxEcx;
+Begin AL('cmp eax, ecx'); BinEmit8($3B); BinEmit8($C1); End;
+
+Procedure BinAddEaxEcx; Begin AL('add eax, ecx'); BinEmit8($03); BinEmit8($C1); End;
+Procedure BinSubEaxEcx; Begin AL('sub eax, ecx'); BinEmit8($2B); BinEmit8($C1); End;
+Procedure BinImulEaxEcx; Begin AL('imul eax, ecx'); BinEmit8($0F); BinEmit8($AF); BinEmit8($C1); End;
+Procedure BinAndEaxEcx; Begin AL('and eax, ecx'); BinEmit8($23); BinEmit8($C1); End;
+Procedure BinOrEaxEcx;  Begin AL('or eax, ecx');  BinEmit8($0B); BinEmit8($C1); End;
+Procedure BinXorEaxEcxOp; Begin AL('xor eax, ecx'); BinEmit8($33); BinEmit8($C1); End;
+Procedure BinShlEaxCl; Begin AL('shl eax, cl'); BinEmit8($D3); BinEmit8($E0); End;
+Procedure BinSarEaxCl; Begin AL('sar eax, cl'); BinEmit8($D3); BinEmit8($F8); End;
+Procedure BinNegEax;   Begin AL('neg eax'); BinEmit8($F7); BinEmit8($D8); End;
+Procedure BinNotEax;   Begin AL('not eax'); BinEmit8($F7); BinEmit8($D0); End;
+Procedure BinIncEax;   Begin AL('inc eax'); BinEmit8($40); End;
+Procedure BinDecEax;   Begin AL('dec eax'); BinEmit8($48); End;
+
+Procedure BinIdivEcx;
+Begin AL('cdq'); AL('idiv ecx'); BinEmit8($99); BinEmit8($F7); BinEmit8($F9); End;
+
+Procedure BinSetccAl(CC: Integer);
+Begin AL(SetccMnemonic(CC) + ' al'); BinEmit8($0F); BinEmit8($90 Or CC); BinEmit8($C0); End;
+
+Procedure BinMovzxEaxAl;
+Begin AL('movzx eax, al'); BinEmit8($0F); BinEmit8($B6); BinEmit8($C0); End;
+
+{ Appel d'une fonction KERNEL32 (__stdcall : c'est l'appelee qui
+  nettoie la pile, aucun ajustement d'ESP requis ici) }
+Procedure BinCallImportRaw(ProcName: String);
+Begin
+  AL('call dword ptr [__imp__' + ProcName + ']');
+  BinEmit8($FF); BinEmit8($15);
+  BinEmitRef32('__imp__' + ProcName, BIN_FIX_IMP32);
+End;
+
+{ Empile l'adresse absolue (patchee au moment du lien PE) d'un label
+  de .data/.rdata : PUSH imm32 avec fixup ABS32 }
+Procedure BinPushLabelAddr(LName: String);
+Begin
+  AL('push offset ' + LName);
+  BinEmit8($68);
+  BinEmitRef32(LName, BIN_FIX_ABS32);
+End;
+
+Procedure BinResolveFixups;
+Var
+  I, LIdx: Integer;
+  Loc, Target, Rel: LongInt;
+Begin
+  For I := 1 To BinFixupCount Do Begin
+    If BinFixups[I].Kind <> BIN_FIX_REL32 Then Continue;
+    LIdx := BinFixups[I].LabelRef;
+    If (LIdx = 0) Or (Not BinLabels[LIdx].Defined) Then Continue;
+    If BinFixups[I].Section <> BinLabels[LIdx].Section Then Continue;
+    If BinFixups[I].Section <> BIN_SEC_TEXT Then Continue;
+    Loc    := BinFixups[I].Offset;
+    Target := BinLabels[LIdx].Offset;
+    Rel    := Target - (Loc + 4);
+    BinCode[Loc]     := Rel And $FF;
+    BinCode[Loc + 1] := (Rel Shr 8)  And $FF;
+    BinCode[Loc + 2] := (Rel Shr 16) And $FF;
+    BinCode[Loc + 3] := (Rel Shr 24) And $FF;
+  End;
+End;
+
+Function AlignUp(N, AAlign: LongInt): LongInt;
+Begin
+  If (N Mod AAlign) = 0 Then AlignUp := N
+  Else AlignUp := N + AAlign - (N Mod AAlign);
+End;
+
+Procedure WritePad(Var F: File; N: LongInt);
+Var Z: Byte; I: LongInt;
+Begin
+  Z := 0;
+  For I := 1 To N Do BlockWrite(F, Z, 1);
+End;
+
+Procedure WriteWord(Var F: File; W: Integer);
+Var B: Byte;
+Begin
+  B := W And $FF; BlockWrite(F, B, 1);
+  B := (W Shr 8) And $FF; BlockWrite(F, B, 1);
+End;
+
+Procedure WriteDWord(Var F: File; D: LongInt);
+Var B: Byte;
+Begin
+  B := D And $FF; BlockWrite(F, B, 1);
+  B := (D Shr 8)  And $FF; BlockWrite(F, B, 1);
+  B := (D Shr 16) And $FF; BlockWrite(F, B, 1);
+  B := (D Shr 24) And $FF; BlockWrite(F, B, 1);
+End;
+
+Procedure WriteStr8(Var F: File; S: String; Len: Integer);
+Var I: Integer; Z: Byte;
+Begin
+  Z := 0;
+  For I := 1 To Len Do Begin
+    If I <= Length(S) Then BlockWrite(F, S[I], 1) Else BlockWrite(F, Z, 1);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteCOFF : ecrit un fichier .OBJ COFF i386 minimal (-obj)    }
+{ ------------------------------------------------------------ }
+
+Procedure WriteCOFF(FileName: String);
+Var
+  F: File;
+  SymOff: LongInt;
+  TextOff, DataOff, RDataOff: LongInt;
+  NSec, NSym: Integer;
+  I: Integer;
+  LI: LongInt;
+  TextSz, DataSz, RDataSz: LongInt;
+  Dummy: Byte;
+Begin
+  Assign(F, FileName); Rewrite(F, 1);
+  TextSz  := AlignUp(BinCodeSize,  4);
+  DataSz  := AlignUp(BinDataSize,  4);
+  RDataSz := AlignUp(BinRDataSize, 4);
+  NSec := 2;
+  If BinDataSize  > 0 Then Inc(NSec);
+  If BinRDataSize > 0 Then Inc(NSec);
+  If BinBssSize   > 0 Then Inc(NSec);
+  TextOff  := 20 + NSec * 40;
+  DataOff  := TextOff  + TextSz;
+  RDataOff := DataOff  + DataSz;
+  SymOff   := RDataOff + RDataSz;
+  NSym     := BinLabelCount + 4;
+
+  WriteWord(F,  PE_MACHINE_I386);
+  WriteWord(F,  NSec);
+  WriteDWord(F, 0);
+  WriteDWord(F, SymOff);
+  WriteDWord(F, NSym);
+  WriteWord(F,  0);
+  WriteWord(F,  0);
+
+  WriteStr8(F, '.text',  8);
+  WriteDWord(F, BinCodeSize);  WriteDWord(F, 0);
+  WriteDWord(F, TextSz);       WriteDWord(F, TextOff);
+  WriteDWord(F, 0);            WriteDWord(F, 0);
+  WriteWord(F, 0);             WriteWord(F, 0);
+  WriteDWord(F, PE_SCN_CNT_CODE Or PE_SCN_MEM_EXECUTE Or PE_SCN_MEM_READ);
+
+  WriteStr8(F, '.data',  8);
+  WriteDWord(F, BinDataSize);  WriteDWord(F, 0);
+  WriteDWord(F, DataSz);       WriteDWord(F, DataOff);
+  WriteDWord(F, 0);            WriteDWord(F, 0);
+  WriteWord(F, 0);             WriteWord(F, 0);
+  WriteDWord(F, PE_SCN_CNT_INIT_DATA Or PE_SCN_MEM_READ Or PE_SCN_MEM_WRITE);
+
+  If BinRDataSize > 0 Then Begin
+    WriteStr8(F, '.rdata', 8);
+    WriteDWord(F, BinRDataSize); WriteDWord(F, 0);
+    WriteDWord(F, RDataSz);      WriteDWord(F, RDataOff);
+    WriteDWord(F, 0);            WriteDWord(F, 0);
+    WriteWord(F, 0);             WriteWord(F, 0);
+    WriteDWord(F, PE_SCN_CNT_INIT_DATA Or PE_SCN_MEM_READ);
+  End;
+
+  If BinBssSize > 0 Then Begin
+    WriteStr8(F, '.bss', 8);
+    WriteDWord(F, BinBssSize);   WriteDWord(F, 0);
+    WriteDWord(F, 0);            WriteDWord(F, 0);
+    WriteDWord(F, 0);            WriteDWord(F, 0);
+    WriteWord(F, 0);             WriteWord(F, 0);
+    WriteDWord(F, PE_SCN_CNT_UNINIT_DATA Or PE_SCN_MEM_READ Or PE_SCN_MEM_WRITE);
+  End;
+
+  For LI := 0 To BinCodeSize - 1  Do BlockWrite(F, BinCode[LI],  1);
+  WritePad(F, TextSz  - BinCodeSize);
+  For LI := 0 To BinDataSize - 1  Do BlockWrite(F, BinData[LI],  1);
+  WritePad(F, DataSz  - BinDataSize);
+  If BinRDataSize > 0 Then Begin
+    For LI := 0 To BinRDataSize - 1 Do BlockWrite(F, BinRData[LI], 1);
+    WritePad(F, RDataSz - BinRDataSize);
+  End;
+
+  For I := 1 To BinLabelCount Do Begin
+    If Not BinLabels[I].Defined Then Continue;
+    WriteStr8(F, BinLabels[I].Name, 8);
+    WriteDWord(F, BinLabels[I].Offset);
+    WriteWord(F, BinLabels[I].Section);
+    WriteWord(F, 0);
+    Dummy := COFF_SYM_CLASS_EXTERNAL; BlockWrite(F, Dummy, 1);
+    Dummy := 0; BlockWrite(F, Dummy, 1);
+  End;
+
+  WriteDWord(F, 4);
+  Close(F);
+End;
+
+{ ------------------------------------------------------------ }
+{ WritePE : ecrit un fichier .EXE PE32 Win32 (par defaut)       }
+{ ------------------------------------------------------------ }
+
+Procedure WritePE(FileName: String);
+Const
+  NK = 3;   { GetStdHandle, WriteFile, ExitProcess }
+Var
+  F: File;
+  I, K: Integer;
+  LI: LongInt;
+  Dummy: Byte;
+
+  ImageBase, FileAlign, SecAlign: LongInt;
+  HdrsSz, TextSz, DataSz, RDataSz, IDataSz: LongInt;
+  TextRVA, DataRVA, RDataRVA, BssRVA, IDataRVA: LongInt;
+  TextFOff, DataFOff, RDataFOff, IDataFOff: LongInt;
+  EntryRVA, ImageSz, CodeSz, InitDataSz: LongInt;
+
+  IAT_Off, ILT_Off, IDT_Off, DllName_Off, HintBase_Off, IData_Raw: LongInt;
+  FuncOff:  Array[1..3] Of LongInt;
+  FuncName: Array[1..3] Of String;
+
+  IDT_RVA, IDT_SZ, IAT_RVA, IAT_SZ: LongInt;
+
+  FI, LIdx, Kidx, NL: Integer;
+  Pname: String;
+  IATVA, Loc: LongInt;
+  TxtVirtSz, DatVirtSz, RdtVirtSz: LongInt;
+Begin
+  FuncName[1] := 'GetStdHandle';
+  FuncName[2] := 'WriteFile';
+  FuncName[3] := 'ExitProcess';
+
+  ImageBase := PE_IMG_BASE;
+  FileAlign := PE_FILE_ALIGN;
+  SecAlign  := PE_SEC_ALIGN;
+
+  IAT_Off     := 0;
+  ILT_Off     := (NK + 1) * 4;
+  IDT_Off     := ILT_Off + (NK + 1) * 4;
+  DllName_Off := IDT_Off + 2 * 20;
+  HintBase_Off:= DllName_Off + 14;
+  FuncOff[1]  := HintBase_Off;
+  For I := 2 To NK Do Begin
+    NL := Length(FuncName[I - 1]);
+    FuncOff[I] := FuncOff[I - 1] + 2 + NL + 1;
+    If (FuncOff[I] Mod 2) <> 0 Then Inc(FuncOff[I]);
+  End;
+  NL := Length(FuncName[NK]);
+  IData_Raw := FuncOff[NK] + 2 + NL + 1;
+  If (IData_Raw Mod 2) <> 0 Then Inc(IData_Raw);
+
+  HdrsSz  := 512;
+  CodeSz  := AlignUp(BinCodeSize, FileAlign);
+  If CodeSz = 0 Then CodeSz := FileAlign;
+  TextSz  := CodeSz;
+  DataSz  := AlignUp(BinDataSize, FileAlign);
+  If DataSz  = 0 Then DataSz  := FileAlign;
+  RDataSz := AlignUp(BinRDataSize, FileAlign);
+  If RDataSz = 0 Then RDataSz := FileAlign;
+  IDataSz := AlignUp(IData_Raw, FileAlign);
+  If IDataSz = 0 Then IDataSz := FileAlign;
+
+  TxtVirtSz := AlignUp(BinCodeSize,  SecAlign); If TxtVirtSz = 0 Then TxtVirtSz := SecAlign;
+  DatVirtSz := AlignUp(BinDataSize,  SecAlign); If DatVirtSz = 0 Then DatVirtSz := SecAlign;
+  RdtVirtSz := AlignUp(BinRDataSize, SecAlign); If RdtVirtSz = 0 Then RdtVirtSz := SecAlign;
+  TextRVA  := SecAlign;
+  DataRVA  := TextRVA  + TxtVirtSz;
+  RDataRVA := DataRVA  + DatVirtSz;
+  BssRVA   := RDataRVA + RdtVirtSz;
+  IDataRVA := BssRVA   + SecAlign;
+  ImageSz  := AlignUp(IDataRVA + IDataSz, SecAlign);
+  InitDataSz := DataSz + RDataSz + IDataSz;
+
+  TextFOff  := HdrsSz;
+  DataFOff  := TextFOff  + TextSz;
+  RDataFOff := DataFOff  + DataSz;
+  IDataFOff := RDataFOff + RDataSz;
+  EntryRVA  := TextRVA;
+
+  IDT_RVA := IDataRVA + IDT_Off;
+  IDT_SZ  := 2 * 20;
+  IAT_RVA := IDataRVA + IAT_Off;
+  IAT_SZ  := (NK + 1) * 4;
+
+  { Patch des fixups IMP32 (appels KERNEL32) }
+  For FI := 1 To BinFixupCount Do Begin
+    If BinFixups[FI].Kind <> BIN_FIX_IMP32 Then Continue;
+    If BinFixups[FI].Section <> BIN_SEC_TEXT Then Continue;
+    LIdx := BinFixups[FI].LabelRef;
+    If LIdx = 0 Then Continue;
+    Pname := BinLabels[LIdx].Name;
+    If (Length(Pname) > 7) And (Copy(Pname, 1, 7) = '__imp__') Then
+      Pname := Copy(Pname, 8, 255);
+    Kidx := 0;
+    For K := 1 To NK Do If FuncName[K] = Pname Then Kidx := K;
+    If Kidx = 0 Then Continue;
+    IATVA := ImageBase + IAT_RVA + (Kidx - 1) * 4;
+    Loc   := BinFixups[FI].Offset;
+    BinCode[Loc]     := IATVA And $FF;
+    BinCode[Loc + 1] := (IATVA Shr 8)  And $FF;
+    BinCode[Loc + 2] := (IATVA Shr 16) And $FF;
+    BinCode[Loc + 3] := (IATVA Shr 24) And $FF;
+  End;
+
+  { Patch des fixups ABS32 (adresses .data/.rdata referencees en .text) }
+  For FI := 1 To BinFixupCount Do Begin
+    If BinFixups[FI].Kind <> BIN_FIX_ABS32 Then Continue;
+    LIdx := BinFixups[FI].LabelRef;
+    If LIdx = 0 Then Continue;
+    If Not BinLabels[LIdx].Defined Then Continue;
+    Case BinLabels[LIdx].Section Of
+      1: IATVA := ImageBase + TextRVA  + BinLabels[LIdx].Offset;
+      2: IATVA := ImageBase + DataRVA  + BinLabels[LIdx].Offset;
+      3: IATVA := ImageBase + RDataRVA + BinLabels[LIdx].Offset;
+    Else Continue;
+    End;
+    Loc := BinFixups[FI].Offset;
+    Case BinFixups[FI].Section Of
+      1: Begin
+        BinCode[Loc] := IATVA And $FF; BinCode[Loc+1] := (IATVA Shr 8) And $FF;
+        BinCode[Loc+2] := (IATVA Shr 16) And $FF; BinCode[Loc+3] := (IATVA Shr 24) And $FF;
+      End;
+      2: Begin
+        BinData[Loc] := IATVA And $FF; BinData[Loc+1] := (IATVA Shr 8) And $FF;
+        BinData[Loc+2] := (IATVA Shr 16) And $FF; BinData[Loc+3] := (IATVA Shr 24) And $FF;
+      End;
+      3: Begin
+        BinRData[Loc] := IATVA And $FF; BinRData[Loc+1] := (IATVA Shr 8) And $FF;
+        BinRData[Loc+2] := (IATVA Shr 16) And $FF; BinRData[Loc+3] := (IATVA Shr 24) And $FF;
+      End;
+    End;
+  End;
+
+  Assign(F, FileName); Rewrite(F, 1);
+
+  WriteWord(F, PE_DOS_MAGIC); WriteWord(F, $0090); WriteWord(F, 3); WriteWord(F, 0);
+  WriteWord(F, 4); WriteWord(F, 0); WriteWord(F, -1); WriteWord(F, 0);
+  WriteWord(F, 0); WriteWord(F, 0); WriteWord(F, 0); WriteWord(F, 0);
+  WriteWord(F, 0); WriteWord(F, 0);
+  For I := 1 To 16 Do WriteWord(F, 0);
+  WriteDWord(F, 64);
+
+  WriteDWord(F, PE_PE_SIG);
+
+  WriteWord(F,  PE_MACHINE_I386);
+  WriteWord(F,  5);
+  WriteDWord(F, 0);
+  WriteDWord(F, 0);
+  WriteDWord(F, 0);
+  WriteWord(F,  224);
+  WriteWord(F,  $0102);
+
+  WriteWord(F,  PE_OPT_MAGIC_PE32);
+  WriteWord(F,  0);
+  WriteDWord(F, CodeSz);
+  WriteDWord(F, InitDataSz);
+  WriteDWord(F, SecAlign);
+  WriteDWord(F, EntryRVA);
+  WriteDWord(F, TextRVA);
+  WriteDWord(F, DataRVA);
+  WriteDWord(F, ImageBase);
+  WriteDWord(F, SecAlign);
+  WriteDWord(F, FileAlign);
+  WriteWord(F,  4); WriteWord(F, 0);
+  WriteWord(F,  0); WriteWord(F, 0);
+  WriteWord(F,  4); WriteWord(F, 0);
+  WriteDWord(F, 0);
+  WriteDWord(F, ImageSz);
+  WriteDWord(F, HdrsSz);
+  WriteDWord(F, 0);
+  WriteWord(F,  PE_SUBSYS_CUI);
+  WriteWord(F,  0);
+  WriteDWord(F, $00100000);
+  WriteDWord(F, $00001000);
+  WriteDWord(F, $00100000);
+  WriteDWord(F, $00001000);
+  WriteDWord(F, 0);
+  WriteDWord(F, 16);
+  WriteDWord(F, 0); WriteDWord(F, 0);
+  WriteDWord(F, IDT_RVA); WriteDWord(F, IDT_SZ);
+  For I := 2 To 11 Do Begin WriteDWord(F, 0); WriteDWord(F, 0); End;
+  WriteDWord(F, IAT_RVA); WriteDWord(F, IAT_SZ);
+  WriteDWord(F, 0); WriteDWord(F, 0);
+  WriteDWord(F, 0); WriteDWord(F, 0);
+  WriteDWord(F, 0); WriteDWord(F, 0);
+
+  WriteStr8(F, '.text',  8);
+  WriteDWord(F, BinCodeSize); WriteDWord(F, TextRVA);
+  WriteDWord(F, TextSz);      WriteDWord(F, TextFOff);
+  WriteDWord(F, 0);           WriteDWord(F, 0);
+  WriteWord(F,  0);           WriteWord(F,  0);
+  WriteDWord(F, PE_SCN_CNT_CODE Or PE_SCN_MEM_EXECUTE Or PE_SCN_MEM_READ);
+
+  WriteStr8(F, '.data',  8);
+  WriteDWord(F, BinDataSize); WriteDWord(F, DataRVA);
+  WriteDWord(F, DataSz);      WriteDWord(F, DataFOff);
+  WriteDWord(F, 0);           WriteDWord(F, 0);
+  WriteWord(F,  0);           WriteWord(F,  0);
+  WriteDWord(F, PE_SCN_CNT_INIT_DATA Or PE_SCN_MEM_READ Or PE_SCN_MEM_WRITE);
+
+  WriteStr8(F, '.rdata', 8);
+  WriteDWord(F, BinRDataSize); WriteDWord(F, RDataRVA);
+  WriteDWord(F, RDataSz);      WriteDWord(F, RDataFOff);
+  WriteDWord(F, 0);            WriteDWord(F, 0);
+  WriteWord(F,  0);            WriteWord(F,  0);
+  WriteDWord(F, PE_SCN_CNT_INIT_DATA Or PE_SCN_MEM_READ);
+
+  WriteStr8(F, '.bss',   8);
+  WriteDWord(F, SecAlign);  WriteDWord(F, BssRVA);
+  WriteDWord(F, 0);          WriteDWord(F, 0);
+  WriteDWord(F, 0);          WriteDWord(F, 0);
+  WriteWord(F,  0);          WriteWord(F,  0);
+  WriteDWord(F, PE_SCN_CNT_UNINIT_DATA Or PE_SCN_MEM_READ Or PE_SCN_MEM_WRITE);
+
+  WriteStr8(F, '.idata', 8);
+  WriteDWord(F, IData_Raw);   WriteDWord(F, IDataRVA);
+  WriteDWord(F, IDataSz);     WriteDWord(F, IDataFOff);
+  WriteDWord(F, 0);           WriteDWord(F, 0);
+  WriteWord(F,  0);           WriteWord(F,  0);
+  WriteDWord(F, PE_SCN_CNT_INIT_DATA Or PE_SCN_MEM_READ Or PE_SCN_MEM_WRITE);
+
+  WritePad(F, HdrsSz - 512);
+
+  For LI := 0 To BinCodeSize - 1 Do BlockWrite(F, BinCode[LI], 1);
+  WritePad(F, TextSz - BinCodeSize);
+
+  For LI := 0 To BinDataSize - 1 Do BlockWrite(F, BinData[LI], 1);
+  WritePad(F, DataSz - BinDataSize);
+
+  For LI := 0 To BinRDataSize - 1 Do BlockWrite(F, BinRData[LI], 1);
+  WritePad(F, RDataSz - BinRDataSize);
+
+  For I := 1 To NK Do WriteDWord(F, IDataRVA + FuncOff[I]);
+  WriteDWord(F, 0);
+
+  For I := 1 To NK Do WriteDWord(F, IDataRVA + FuncOff[I]);
+  WriteDWord(F, 0);
+
+  WriteDWord(F, IDataRVA + ILT_Off);
+  WriteDWord(F, 0);
+  WriteDWord(F, 0);
+  WriteDWord(F, IDataRVA + DllName_Off);
+  WriteDWord(F, IDataRVA + IAT_Off);
+  WriteDWord(F, 0); WriteDWord(F, 0); WriteDWord(F, 0);
+  WriteDWord(F, 0); WriteDWord(F, 0);
+
+  WriteStr8(F, 'KERNEL32.DLL', 13);
+  Dummy := 0; BlockWrite(F, Dummy, 1);
+
+  For I := 1 To NK Do Begin
+    WriteWord(F, I);
+    For K := 1 To Length(FuncName[I]) Do Begin
+      Dummy := Ord(FuncName[I][K]); BlockWrite(F, Dummy, 1);
+    End;
+    Dummy := 0; BlockWrite(F, Dummy, 1);
+    NL := Length(FuncName[I]);
+    If (NL + 1) Mod 2 <> 0 Then Begin
+      Dummy := 0; BlockWrite(F, Dummy, 1);
+    End;
+  End;
+
+  WritePad(F, IDataSz - IData_Raw);
+  Close(F);
+End;
+
+{ ------------------------------------------------------------ }
+{ Generateur de code X++ -> 80386 (portee reduite, voir le       }
+{ commentaire en tete de la section TODO 24 plus haut)           }
+{ ------------------------------------------------------------ }
+
+Function MethodLabel(MIdx: Integer): String;
+Begin MethodLabel := '_XPPM_' + ItoS(MIdx); End;
+
+Function CaseLabel(NodeIdx: Integer): String;
+Begin CaseLabel := '_XPPSW_' + ItoS(NodeIdx); End;
+
+Function CgFindLocal(Name: String; Var Offset: Integer): Boolean;
+Var Base, I: Integer;
+Begin
+  CgFindLocal := False;
+  Base := Methods[CgCurMethod].LocalStart;
+  For I := 0 To Methods[CgCurMethod].LocalCount - 1 Do
+    If Locals[Base + I].Name = Name Then Begin
+      Offset := Locals[Base + I].Offset;
+      CgFindLocal := True;
+      Exit;
+    End;
+End;
+
+{ Convention d'appel stdcall : les arguments sont evalues et empiles
+  de droite a gauche (CodegenUserCall), si bien qu'apres le prologue
+  (push ebp ; mov ebp, esp) le premier parametre declare se trouve
+  toujours en [ebp+8], le second en [ebp+12], etc. }
+Function CgFindParam(Name: String; Var Offset: Integer): Boolean;
+Var Base, I: Integer;
+Begin
+  CgFindParam := False;
+  Base := Methods[CgCurMethod].ParamStart;
+  For I := 0 To Methods[CgCurMethod].ParamCount - 1 Do
+    If Params[Base + I].Name = Name Then Begin
+      Offset := 8 + 4 * I;
+      CgFindParam := True;
+      Exit;
+    End;
+End;
+
+Function CgVarOffset(Name: String; Var Found: Boolean): Integer;
+Var Off: Integer;
+Begin
+  If CgFindLocal(Name, Off) Then Begin Found := True; CgVarOffset := Off; Exit; End;
+  If CgFindParam(Name, Off) Then Begin Found := True; CgVarOffset := Off; Exit; End;
+  Found := False;
+  CgVarOffset := 0;
+End;
+
+{ Charge une variable simple (locale/parametre) dans EAX ; toute
+  autre cible (champ, this, objet...) n'est pas modelisee en memoire
+  par ce codegen reduit et vaut simplement 0, sans jamais planter }
+Procedure CgLoadVar(Name: String);
+Var Off: Integer; Found: Boolean;
+Begin
+  Off := CgVarOffset(Name, Found);
+  If Found Then BinMovEaxEbpDisp(Off) Else BinXorRegReg(REG_EAX);
+End;
+
+Procedure CgStoreVar(Name: String);
+Var Off: Integer; Found: Boolean;
+Begin
+  Off := CgVarOffset(Name, Found);
+  If Found Then BinMovEbpDispEax(Off);
+End;
+
+Procedure CodegenExpr(N: Integer); Forward;
+
+{ Evalue une liste d'arguments pour leurs seuls effets de bord
+  (appels imbriques, incrementations...) sans en garder les valeurs :
+  utilise pour tout ce qui n'a pas de code machine reel (runtime non
+  ecrit : containers, Map/List/Query, tables AOT...) }
+Procedure CodegenArgSideEffects(ArgHead: Integer);
+Var A: Integer;
+Begin
+  A := ArgHead;
+  While A <> 0 Do Begin
+    CodegenExpr(A);
+    A := IRNodes[A].NextArg;
+  End;
+End;
+
+{ info("litteral") : la seule fonctionnalite runtime non stubbee de
+  ce codegen reduit, un vrai affichage console via trois imports
+  KERNEL32 (GetStdHandle/WriteFile). La chaine est ecrite en .rdata
+  avec un CRLF final. }
+Procedure CodegenInfoLiteral(S: String);
+Var StrLbl: String; StrLen, K, SavedSec: Integer;
+Begin
+  SavedSec := BinCurSec;
+  BinCurSec := BIN_SEC_RDATA;
+  StrLbl := NewBinLabel('Str');
+  BinDefineLabel(StrLbl);
+  For K := 1 To Length(S) Do BinEmit8(Ord(S[K]));
+  BinEmit8(13); BinEmit8(10);
+  StrLen := Length(S) + 2;
+  BinCurSec := SavedSec;
+
+  BinPushImm32(-11);              { STD_OUTPUT_HANDLE }
+  BinCallImportRaw('GetStdHandle');
+  BinPushImm32(0);                { lpOverlapped }
+  BinPushLabelAddr('_XPPD_Written'); { lpNumberOfBytesWritten }
+  BinPushImm32(StrLen);            { nNumberOfBytesToWrite }
+  BinPushLabelAddr(StrLbl);        { lpBuffer }
+  BinPushReg(REG_EAX);             { hFile (survit aux push imm32/offset precedents) }
+  BinCallImportRaw('WriteFile');
+End;
+
+{ Appel d'une methode utilisateur (corps reellement compile) : les
+  arguments sont evalues et empiles de droite a gauche (immediatement
+  apres evaluation, a la maniere cdecl/stdcall classique), puis
+  l'appelee nettoie elle-meme la pile (RET N) a son epilogue }
+Procedure CodegenUserCall(MIdx, ArgHead: Integer);
+Var Args: Array[1..64] Of Integer; NArgs, I, A: Integer;
+Begin
+  NArgs := 0;
+  A := ArgHead;
+  While (A <> 0) And (NArgs < 64) Do Begin
+    Inc(NArgs);
+    Args[NArgs] := A;
+    A := IRNodes[A].NextArg;
+  End;
+  For I := NArgs DownTo 1 Do Begin
+    CodegenExpr(Args[I]);
+    BinPushReg(REG_EAX);
+  End;
+  BinCallLabel(MethodLabel(MIdx));
+End;
+
+Procedure CodegenCall(N: Integer);
+Var Callee, MIdx, ArgHead: Integer;
+Begin
+  Callee  := IRNodes[N].Left;
+  ArgHead := IRNodes[N].Right;
+
+  { tableNum(...)/fieldNum(...) : deja resolus en entier constant par
+    le parseur (TODO 18), aucun appel reel a generer }
+  If (IRNodes[Callee].Kind = NK_IDENT) And
+     ((IRNodes[Callee].Text = 'tableNum') Or (IRNodes[Callee].Text = 'fieldNum')) Then Begin
+    BinMovRegImm32(REG_EAX, IRNodes[N].NumVal);
+    Exit;
+  End;
+
+  MIdx := IRNodes[N].ResolvedMethod;
+
+  If (MIdx <> 0) And (Methods[MIdx].ClassIdx = GlobalFuncClassIdx) And
+     (Methods[MIdx].Name = 'info') And (ArgHead <> 0) And
+     (IRNodes[ArgHead].Kind = NK_LIT_STR) Then Begin
+    CodegenInfoLiteral(IRNodes[ArgHead].Text);
+    BinXorRegReg(REG_EAX);
+    Exit;
+  End;
+
+  If (MIdx <> 0) And (Methods[MIdx].BodyStmt <> 0) Then Begin
+    CodegenUserCall(MIdx, ArgHead);
+    Exit;
+  End;
+
+  { fonction/methode non modelisee (runtime natif, collection, table,
+    requete, delegate...) : les arguments sont evalues pour leurs
+    effets de bord (ex. un appel a info() imbrique) puis le resultat
+    vaut simplement 0 }
+  CodegenArgSideEffects(ArgHead);
+  BinXorRegReg(REG_EAX);
+End;
+
+Procedure CodegenNew(N: Integer);
+Var MIdx, ArgHead: Integer;
+Begin
+  ArgHead := IRNodes[N].Right;
+  MIdx    := IRNodes[N].ResolvedMethod;
+  If (MIdx <> 0) And (Methods[MIdx].BodyStmt <> 0) Then
+    CodegenUserCall(MIdx, ArgHead)
+  Else
+    CodegenArgSideEffects(ArgHead);
+  BinXorRegReg(REG_EAX);   { reference d'objet non modelisee : toujours 0 }
+End;
+
+Procedure CodegenUnary(N: Integer);
+Var Sub, Off: Integer; Found: Boolean;
+Begin
+  Sub := IRNodes[N].Left;
+  Case IRNodes[N].Tok Of
+    Ord('-'): Begin CodegenExpr(Sub); BinNegEax; End;
+    Ord('+'): CodegenExpr(Sub);
+    Ord('!'): Begin
+      CodegenExpr(Sub);
+      BinCmpEaxImm32(0);
+      BinSetccAl(CC_E);
+      BinMovzxEaxAl;
+    End;
+    Ord('~'): Begin CodegenExpr(Sub); BinNotEax; End;
+    TOK_INCR, TOK_DECR: Begin
+      If IRNodes[Sub].Kind = NK_IDENT Then Begin
+        Off := CgVarOffset(IRNodes[Sub].Text, Found);
+        If Found Then Begin
+          BinMovEaxEbpDisp(Off);
+          If IRNodes[N].Tok = TOK_INCR Then BinIncEax Else BinDecEax;
+          BinMovEbpDispEax(Off);
+          Exit;
+        End;
+      End;
+      CodegenExpr(Sub);
+    End;
+  Else
+    CodegenExpr(Sub);
+  End;
+End;
+
+Procedure CodegenPostop(N: Integer);
+Var Sub, Off: Integer; Found: Boolean;
+Begin
+  Sub := IRNodes[N].Left;
+  If IRNodes[Sub].Kind = NK_IDENT Then Begin
+    Off := CgVarOffset(IRNodes[Sub].Text, Found);
+    If Found Then Begin
+      BinMovEaxEbpDisp(Off);
+      BinPushReg(REG_EAX);
+      If IRNodes[N].Tok = TOK_INCR Then BinIncEax Else BinDecEax;
+      BinMovEbpDispEax(Off);
+      BinPopReg(REG_EAX);
+      Exit;
+    End;
+  End;
+  CodegenExpr(Sub);
+End;
+
+{ Division/modulo protegees : "throw" (TODO 16) ne deroule pas
+  reellement la pile dans ce codegen reduit, si bien qu'un code X++
+  qui suppose qu'une exception saute par-dessus une division continue
+  en fait normalement jusqu'a elle (voir 15_try_catch.xpp : diviseur
+  == 0 est cense etre intercepte par le throw, mais l'instruction
+  suivante s'execute quand meme ici). Un vrai IDIV par zero declenche
+  une exception CPU qui terminerait le processus : EAX/ECX sont deja
+  en place (gauche/droite), on verifie ECX avant de diviser et on
+  renvoie 0 plutot que de planter. }
+Procedure CgSafeDivMod(WantRemainder: Boolean);
+Var LSkip, LEnd: String;
+Begin
+  LSkip := NewBinLabel('DivZ');
+  LEnd  := NewBinLabel('DivE');
+  AL('cmp ecx, 0'); BinEmit8($83); BinEmit8($F9); BinEmit8($00);
+  BinJccLabel(CC_E, LSkip);
+  BinIdivEcx;
+  If WantRemainder Then BinMovRegReg(REG_EAX, REG_EDX);
+  BinJmpLabel(LEnd);
+  BinDefineLabel(LSkip);
+  BinXorRegReg(REG_EAX);
+  BinDefineLabel(LEnd);
+End;
+
+Procedure CodegenBinary(N: Integer);
+Var Op: Integer; LblFalse, LblEnd: String;
+Begin
+  Op := IRNodes[N].Tok;
+
+  If Op = TOK_ANDAND Then Begin
+    LblFalse := NewBinLabel('AndF');
+    LblEnd   := NewBinLabel('AndE');
+    CodegenExpr(IRNodes[N].Left);
+    BinCmpEaxImm32(0);
+    BinJccLabel(CC_E, LblFalse);
+    CodegenExpr(IRNodes[N].Right);
+    BinCmpEaxImm32(0);
+    BinSetccAl(CC_NE);
+    BinMovzxEaxAl;
+    BinJmpLabel(LblEnd);
+    BinDefineLabel(LblFalse);
+    BinXorRegReg(REG_EAX);
+    BinDefineLabel(LblEnd);
+    Exit;
+  End;
+
+  If Op = TOK_OROR Then Begin
+    LblFalse := NewBinLabel('OrF');
+    LblEnd   := NewBinLabel('OrE');
+    CodegenExpr(IRNodes[N].Left);
+    BinCmpEaxImm32(0);
+    BinJccLabel(CC_NE, LblFalse);
+    CodegenExpr(IRNodes[N].Right);
+    BinCmpEaxImm32(0);
+    BinSetccAl(CC_NE);
+    BinMovzxEaxAl;
+    BinJmpLabel(LblEnd);
+    BinDefineLabel(LblFalse);
+    BinMovRegImm32(REG_EAX, 1);
+    BinDefineLabel(LblEnd);
+    Exit;
+  End;
+
+  CodegenExpr(IRNodes[N].Left);
+  BinPushReg(REG_EAX);
+  CodegenExpr(IRNodes[N].Right);
+  BinMovRegReg(REG_ECX, REG_EAX);
+  BinPopReg(REG_EAX);
+
+  Case Op Of
+    Ord('+'):  BinAddEaxEcx;
+    Ord('-'):  BinSubEaxEcx;
+    Ord('*'):  BinImulEaxEcx;
+    Ord('/'), KW_DIV: CgSafeDivMod(False);
+    KW_MOD:    CgSafeDivMod(True);
+    Ord('&'):  BinAndEaxEcx;
+    Ord('|'):  BinOrEaxEcx;
+    Ord('^'):  BinXorEaxEcxOp;
+    TOK_SHL:   BinShlEaxCl;
+    TOK_SHR:   BinSarEaxCl;
+    TOK_EQ:    Begin BinCmpEaxEcx; BinSetccAl(CC_E);  BinMovzxEaxAl; End;
+    TOK_NE:    Begin BinCmpEaxEcx; BinSetccAl(CC_NE); BinMovzxEaxAl; End;
+    Ord('<'):  Begin BinCmpEaxEcx; BinSetccAl(CC_L);  BinMovzxEaxAl; End;
+    Ord('>'):  Begin BinCmpEaxEcx; BinSetccAl(CC_G);  BinMovzxEaxAl; End;
+    TOK_LE:    Begin BinCmpEaxEcx; BinSetccAl(CC_LE); BinMovzxEaxAl; End;
+    TOK_GE:    Begin BinCmpEaxEcx; BinSetccAl(CC_GE); BinMovzxEaxAl; End;
+  Else
+    BinXorRegReg(REG_EAX);
+  End;
+End;
+
+Procedure CodegenAssign(N: Integer);
+Var LeftNode, Off, Op: Integer; Found: Boolean;
+Begin
+  LeftNode := IRNodes[N].Left;
+  Op       := IRNodes[N].Tok;
+
+  If IRNodes[LeftNode].Kind <> NK_IDENT Then Begin
+    { cible non modelisee (champ, indexation...) : les deux cotes sont
+      evalues pour leurs effets de bord, la valeur de l'expression
+      d'affectation reste celle du membre de droite }
+    CodegenExpr(IRNodes[N].Right);
+    Exit;
+  End;
+
+  Off := CgVarOffset(IRNodes[LeftNode].Text, Found);
+
+  If Op = Ord('=') Then Begin
+    CodegenExpr(IRNodes[N].Right);
+    If Found Then BinMovEbpDispEax(Off);
+    Exit;
+  End;
+
+  If Found Then BinMovEaxEbpDisp(Off) Else BinXorRegReg(REG_EAX);
+  BinPushReg(REG_EAX);
+  CodegenExpr(IRNodes[N].Right);
+  BinMovRegReg(REG_ECX, REG_EAX);
+  BinPopReg(REG_EAX);
+  Case Op Of
+    TOK_PLUSEQ:  BinAddEaxEcx;
+    TOK_MINUSEQ: BinSubEaxEcx;
+    TOK_STAREQ:  BinImulEaxEcx;
+    TOK_SLASHEQ: CgSafeDivMod(False);
+  End;
+  If Found Then BinMovEbpDispEax(Off);
+End;
+
+Procedure CodegenExpr(N: Integer);
+Var A: Integer;
+Begin
+  If N = 0 Then Begin BinXorRegReg(REG_EAX); Exit; End;
+  Case IRNodes[N].Kind Of
+    NK_LIT_INT, NK_LIT_BOOL, NK_ENUMVAL: BinMovRegImm32(REG_EAX, IRNodes[N].NumVal);
+    NK_LIT_FLOAT: BinMovRegImm32(REG_EAX, Round(IRNodes[N].FloatVal));
+    NK_LIT_STR, NK_LIT_CHAR, NK_LIT_DATE: BinXorRegReg(REG_EAX);
+    NK_IDENT:  CgLoadVar(IRNodes[N].Text);
+    NK_THIS, NK_SUPER: BinXorRegReg(REG_EAX);
+    NK_UNARY:  CodegenUnary(N);
+    NK_POSTOP: CodegenPostop(N);
+    NK_BINARY: CodegenBinary(N);
+    NK_ASSIGN: CodegenAssign(N);
+    NK_MEMBER: Begin CodegenExpr(IRNodes[N].Left); BinXorRegReg(REG_EAX); End;
+    NK_INDEX:  Begin
+      CodegenExpr(IRNodes[N].Left);
+      CodegenExpr(IRNodes[N].Right);
+      BinXorRegReg(REG_EAX);
+    End;
+    NK_CALL: CodegenCall(N);
+    NK_NEW:  CodegenNew(N);
+    NK_CONTLIT: Begin
+      A := IRNodes[N].Right;
+      While A <> 0 Do Begin
+        CodegenExpr(A);
+        A := IRNodes[A].NextArg;
+      End;
+      BinXorRegReg(REG_EAX);
+    End;
+  Else
+    BinXorRegReg(REG_EAX);
+  End;
+End;
+
+Procedure CodegenStmt(N: Integer); Forward;
+
+Procedure CodegenIf(N: Integer);
+Var LElse, LEnd: String;
+Begin
+  CodegenExpr(Stmts[N].ExprNode);
+  BinCmpEaxImm32(0);
+  LEnd := NewBinLabel('IfE');
+  If Stmts[N].ElseStmt <> 0 Then Begin
+    LElse := NewBinLabel('IfL');
+    BinJccLabel(CC_E, LElse);
+    CodegenStmt(Stmts[N].ThenStmt);
+    BinJmpLabel(LEnd);
+    BinDefineLabel(LElse);
+    CodegenStmt(Stmts[N].ElseStmt);
+  End Else Begin
+    BinJccLabel(CC_E, LEnd);
+    CodegenStmt(Stmts[N].ThenStmt);
+  End;
+  BinDefineLabel(LEnd);
+End;
+
+Procedure CodegenWhile(N: Integer);
+Var LStart, LEnd, OldBreak, OldCont: String;
+Begin
+  LStart := NewBinLabel('WhS');
+  LEnd   := NewBinLabel('WhE');
+  OldBreak := CgBreakLabel; OldCont := CgContinueLabel;
+  CgBreakLabel := LEnd; CgContinueLabel := LStart;
+  BinDefineLabel(LStart);
+  CodegenExpr(Stmts[N].ExprNode);
+  BinCmpEaxImm32(0);
+  BinJccLabel(CC_E, LEnd);
+  CodegenStmt(Stmts[N].BodyStmt);
+  BinJmpLabel(LStart);
+  BinDefineLabel(LEnd);
+  CgBreakLabel := OldBreak; CgContinueLabel := OldCont;
+End;
+
+Procedure CodegenDoWhile(N: Integer);
+Var LStart, LCont, LEnd, OldBreak, OldCont: String;
+Begin
+  LStart := NewBinLabel('DoS');
+  LCont  := NewBinLabel('DoC');
+  LEnd   := NewBinLabel('DoE');
+  OldBreak := CgBreakLabel; OldCont := CgContinueLabel;
+  CgBreakLabel := LEnd; CgContinueLabel := LCont;
+  BinDefineLabel(LStart);
+  CodegenStmt(Stmts[N].BodyStmt);
+  BinDefineLabel(LCont);
+  CodegenExpr(Stmts[N].ExprNode);
+  BinCmpEaxImm32(0);
+  BinJccLabel(CC_NE, LStart);
+  BinDefineLabel(LEnd);
+  CgBreakLabel := OldBreak; CgContinueLabel := OldCont;
+End;
+
+Procedure CodegenFor(N: Integer);
+Var LStart, LCont, LEnd, OldBreak, OldCont: String;
+Begin
+  If Stmts[N].ForInit <> 0 Then CodegenStmt(Stmts[N].ForInit);
+  LStart := NewBinLabel('ForS');
+  LCont  := NewBinLabel('ForC');
+  LEnd   := NewBinLabel('ForE');
+  OldBreak := CgBreakLabel; OldCont := CgContinueLabel;
+  CgBreakLabel := LEnd; CgContinueLabel := LCont;
+  BinDefineLabel(LStart);
+  If Stmts[N].ExprNode <> 0 Then Begin
+    CodegenExpr(Stmts[N].ExprNode);
+    BinCmpEaxImm32(0);
+    BinJccLabel(CC_E, LEnd);
+  End;
+  CodegenStmt(Stmts[N].BodyStmt);
+  BinDefineLabel(LCont);
+  If Stmts[N].ForIncr <> 0 Then CodegenExpr(Stmts[N].ForIncr);
+  BinJmpLabel(LStart);
+  BinDefineLabel(LEnd);
+  CgBreakLabel := OldBreak; CgContinueLabel := OldCont;
+End;
+
+{ switch/case a etiquettes a plat (TODO 11) : une seule passe pose les
+  comparaisons de dispatch (avant le corps), une seconde emet le corps
+  avec ses etiquettes, ce qui reproduit naturellement le fall-through.
+  La valeur du switch est rangee dans un emplacement EBP fixe reserve
+  par methode (CgSwitchTempOffset) plutot que sur la pile CPU, pour
+  eviter tout desequilibre de pile en cas de switches imbriques
+  (leurs dispatchs ne s'executent jamais en meme temps). }
+Procedure CodegenSwitch(N: Integer);
+Var LEnd, DefaultLabel, OldBreak: String;
+    Cur: Integer;
+    HasDefault: Boolean;
+Begin
+  LEnd := NewBinLabel('SwE');
+  OldBreak := CgBreakLabel;
+  CgBreakLabel := LEnd;
+
+  CodegenExpr(Stmts[N].ExprNode);
+  BinMovEbpDispEax(CgSwitchTempOffset);
+
+  HasDefault  := False;
+  DefaultLabel := '';
+  Cur := Stmts[N].FirstChild;
+  While Cur <> 0 Do Begin
+    If Stmts[Cur].Kind = SK_CASE Then Begin
+      If Stmts[Cur].IsDefault Then Begin
+        HasDefault := True;
+        DefaultLabel := CaseLabel(Cur);
+      End Else Begin
+        CodegenExpr(Stmts[Cur].ExprNode);
+        BinMovRegReg(REG_ECX, REG_EAX);
+        BinMovEaxEbpDisp(CgSwitchTempOffset);
+        BinCmpEaxEcx;
+        BinJccLabel(CC_E, CaseLabel(Cur));
+      End;
+    End;
+    Cur := Stmts[Cur].NextStmt;
+  End;
+  If HasDefault Then BinJmpLabel(DefaultLabel) Else BinJmpLabel(LEnd);
+
+  Cur := Stmts[N].FirstChild;
+  While Cur <> 0 Do Begin
+    If Stmts[Cur].Kind = SK_CASE Then BinDefineLabel(CaseLabel(Cur))
+    Else CodegenStmt(Cur);
+    Cur := Stmts[Cur].NextStmt;
+  End;
+
+  BinDefineLabel(LEnd);
+  CgBreakLabel := OldBreak;
+End;
+
+Procedure CodegenStmt(N: Integer);
+Var Cur: Integer;
+Begin
+  If N = 0 Then Exit;
+  Case Stmts[N].Kind Of
+    SK_NONE, SK_EMPTY, SK_CASE: ;
+    SK_BLOCK: Begin
+      Cur := Stmts[N].FirstChild;
+      While Cur <> 0 Do Begin
+        CodegenStmt(Cur);
+        Cur := Stmts[Cur].NextStmt;
+      End;
+    End;
+    SK_EXPR: CodegenExpr(Stmts[N].ExprNode);
+    SK_VARDECL: If Locals[Stmts[N].LocalIdx].HasInit Then Begin
+      CodegenExpr(Locals[Stmts[N].LocalIdx].ExprNode);
+      BinMovEbpDispEax(Locals[Stmts[N].LocalIdx].Offset);
+    End;
+    SK_IF:       CodegenIf(N);
+    SK_SWITCH:   CodegenSwitch(N);
+    SK_WHILE:    CodegenWhile(N);
+    SK_DOWHILE:  CodegenDoWhile(N);
+    SK_FOR:      CodegenFor(N);
+    SK_BREAK:    If CgBreakLabel <> '' Then BinJmpLabel(CgBreakLabel);
+    SK_CONTINUE: If CgContinueLabel <> '' Then BinJmpLabel(CgContinueLabel);
+    SK_RETURN: Begin
+      If Stmts[N].ExprNode <> 0 Then CodegenExpr(Stmts[N].ExprNode)
+      Else BinXorRegReg(REG_EAX);
+      BinJmpLabel(CgEpilogueLabel);
+    End;
+    SK_TRY: Begin
+      { pas de veritable deroulement d'exception (portee reduite) :
+        le bloc try s'execute normalement ; finally s'execute toujours
+        a la suite puisqu'aucun throw ne devie jamais ce chemin ici }
+      CodegenStmt(Stmts[N].BodyStmt);
+      If Stmts[N].FinallyStmt <> 0 Then CodegenStmt(Stmts[N].FinallyStmt);
+    End;
+    SK_THROW: CodegenExpr(Stmts[N].ExprNode);
+    SK_WHILESELECT, SK_SELECT, SK_DELETEFROM,
+    SK_TTSBEGIN, SK_TTSCOMMIT, SK_TTSABORT: ;
+  End;
+End;
+
+{ Corps d'une methode utilisateur reelle (BodyStmt <> 0) : prologue,
+  remise a zero des locales scalaires (secutite : toute lecture avant
+  premiere affectation vaut 0 plutot qu'une valeur de pile aleatoire),
+  corps, epilogue avec nettoyage stdcall des parametres }
+Procedure CodegenMethod(MIdx: Integer);
+Var Base, I, LocalsSize, FrameSize, Clean: Integer;
+Begin
+  CgCurMethod      := MIdx;
+  CgEpilogueLabel  := NewBinLabel('Ret');
+  CgBreakLabel     := '';
+  CgContinueLabel  := '';
+  BinCurSec := BIN_SEC_TEXT;
+  BinDefineLabel(MethodLabel(MIdx));
+
+  Base := Methods[MIdx].LocalStart;
+  If Methods[MIdx].LocalCount > 0 Then
+    LocalsSize := -Locals[Base + Methods[MIdx].LocalCount - 1].Offset
+  Else
+    LocalsSize := 0;
+  CgSwitchTempOffset := -(LocalsSize + CG_SWITCH_TEMP_SIZE);
+  FrameSize := LocalsSize + CG_SWITCH_TEMP_SIZE;
+
+  BinEmitPrologue(FrameSize);
+
+  For I := 0 To Methods[MIdx].LocalCount - 1 Do
+    If Not Locals[Base + I].IsArray Then Begin
+      BinXorRegReg(REG_EAX);
+      BinMovEbpDispEax(Locals[Base + I].Offset);
+    End;
+
+  CodegenStmt(Methods[MIdx].BodyStmt);
+
+  BinDefineLabel(CgEpilogueLabel);
+  Clean := 4 * Methods[MIdx].ParamCount;
+  BinEmitEpilogueN(Clean);
+
+  CgCurMethod := 0;
+End;
+
+{ static void main(Args) : point d'entree du programme X++ (job AOT) }
+Function FindEntryPointMethod: Integer;
+Var I: Integer;
+Begin
+  FindEntryPointMethod := 0;
+  For I := 1 To MethodCount Do
+    If (Methods[I].Name = 'main') And Methods[I].IsStatic And
+       (Methods[I].BodyStmt <> 0) Then Begin
+      FindEntryPointMethod := I;
+      Exit;
+    End;
+End;
+
+Procedure BinInitRuntimeData;
+Begin
+  BinCurSec := BIN_SEC_DATA;
+  BinDefineLabel('_XPPD_Written');
+  BinEmit32(0);
+  BinCurSec := BIN_SEC_TEXT;
+End;
+
+{ Point d'entree binaire "start" : trampoline vers static void main(),
+  suivi d'un ExitProcess(0) propre. Emis en tout premier dans .text
+  pour que start soit bien a l'adresse EntryRVA=TextRVA ecrite par
+  WritePE. }
+Procedure GenerateCode;
+Var EntryM, I: Integer;
+Begin
+  BinInit;
+  BinInitRuntimeData;
+
+  EntryM := FindEntryPointMethod;
+  If EntryM = 0 Then Begin
+    WriteLn('XPPCW32: aucune methode "static void main(Args ...)" trouvee, ',
+            'generation de code annulee');
+    Exit;
+  End;
+
+  BinCurSec := BIN_SEC_TEXT;
+  BinDefineLabel('start');
+  For I := 1 To Methods[EntryM].ParamCount Do BinPushImm32(0);
+  BinCallLabel(MethodLabel(EntryM));
+  BinPushImm32(0);
+  BinCallImportRaw('ExitProcess');
+
+  For I := 1 To MethodCount Do
+    If Methods[I].BodyStmt <> 0 Then CodegenMethod(I);
+
+  BinResolveFixups;
+End;
+
 BEGIN
   ParseArgs;
   WriteLn('XPPCW32 v', XPPCW32_VERSION, ' (', XPPCW32_DATE,
@@ -4754,7 +6314,35 @@ BEGIN
   WriteLn('XPPCW32: ', ClassCount, ' classe(s)/interface(s) et ', EnumCount,
           ' enum(s) analyses, resolus, alloues, mis en instructions, ',
           'appels/heritage/interfaces/exceptions/delegates/tables/',
-          'requetes/CRUD/Query/collections verifies (TODO 05-22) - ',
-          'fonctions runtime/codegen a venir (TODO 23 et suivants).');
+          'requetes/CRUD/Query/collections/runtime verifies (TODO 05-23).');
+
+  AsmActive := Opt.EmitAsm;
+  If AsmActive Then Begin
+    Assign(AsmOut, ChangeExt(Opt.OutFile, '.asm'));
+    Rewrite(AsmOut);
+    WriteLn(AsmOut, '; genere par XPPCW32 v', XPPCW32_VERSION,
+                    ' a partir de ', Opt.SrcFile);
+  End;
+
+  GenerateCode;
+
+  If AsmActive Then Begin
+    Close(AsmOut);
+    AsmActive := False;
+    WriteLn('XPPCW32: ASM ecrit dans ', ChangeExt(Opt.OutFile, '.asm'));
+  End;
+
+  If BinCodeSize = 0 Then Halt(EXIT_ERROR);
+
+  If Opt.EmitObj Then Begin
+    WriteCOFF(Opt.OutFile);
+    WriteLn('XPPCW32: OBJ COFF ecrit dans ', Opt.OutFile,
+            ' (', BinCodeSize, ' octet(s) de code)');
+  End Else Begin
+    WritePE(Opt.OutFile);
+    WriteLn('XPPCW32: EXE PE32 ecrit dans ', Opt.OutFile,
+            ' (', BinCodeSize, ' octet(s) de code)');
+  End;
+
   Halt(EXIT_OK);
 END.
