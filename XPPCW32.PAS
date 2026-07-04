@@ -248,6 +248,29 @@ Program XPPCW32;
             quand la methode retourne un strFmt (12_class_basic.xpp,
             13_inheritance.xpp) - la comparaison ==/!= entre chaines
             compare desormais des adresses, pas du contenu.
+            Les tableaux locaux fixes (int tab[N]) sont maintenant
+            reels : lecture/ecriture a une adresse calculee a
+            l'execution (&tab + (indice-1)*taille_elem, indexation a
+            partir de 1), via CgArrayElemAddrToEdi. Corrige
+            08_arrays.xpp. Portee volontairement limitee aux tableaux
+            locaux (les parametres de type tableau n'ont pas de champ
+            IsArray) et a l'affectation simple ("="), pas aux
+            affectations composees (+= etc.) sur un element.
+            Le type container est maintenant reel et heterogene : un
+            bloc aloue sur le tas Win32 (GetProcessHeap/HeapAlloc,
+            2 imports KERNEL32 de plus, jamais libere) contenant un
+            en-tete Count/Capacity suivi d'une paire Tag+Valeur par
+            element, ou Tag distingue une chaine reelle (pointeur)
+            d'une valeur brute (int/real arrondi/boolean...). Le
+            litteral entre crochets (CodegenContLit),
+            conLen(), conPeek() et fruits += x (_XPPRT_ConAppend,
+            reallocation complete + copie, pas de HeapReAlloc) sont
+            reellement implementes ; con2Str() (_XPPRT_ConToStr)
+            construit une vraie chaine resultat en deux passes (mesure
+            puis ecriture, via les nouveaux _XPPRT_StrLen et
+            _XPPRT_FormatIntToBuf) affichable directement par
+            _XPPRT_PrintCStr. Corrige 09_containers.xpp integralement,
+            += y compris. conIns()/conDel() restent stubbes.
 }
 
 { ============================================================ }
@@ -5190,6 +5213,20 @@ Begin
   End;
 End;
 
+{ mov byte ptr [Base+Disp], al : variante generique (Base quelconque,
+  pas seulement EBP), utilisee pour ecrire un octet a une adresse
+  connue seulement a l'execution (containers/chaines reels, extension
+  apres TODO 26) }
+Procedure BinMovBaseDispAl(Base, Disp: LongInt);
+Begin
+  AL('mov byte ptr [' + RegName(Base) + SignedDisp(Disp) + '], al');
+  If (Disp >= -128) And (Disp <= 127) Then Begin
+    BinEmit8($88); BinEmit8($40 Or Base); BinEmit8(Disp And $FF);
+  End Else Begin
+    BinEmit8($88); BinEmit8($80 Or Base); BinEmit32(Disp);
+  End;
+End;
+
 { lea Rd, [ebp+Disp] : adresse effective d'un emplacement EBP-relatif,
   utilisee pour obtenir un pointeur passable a WriteFile (ajoute par
   TODO 26) }
@@ -5220,6 +5257,23 @@ Begin
   End;
 End;
 
+{ mov [Base+Disp], Rs : ecriture generique (extension pour les
+  tableaux locaux reels, apres TODO 26) }
+Procedure BinMovBaseDispReg32(Base, Disp, Rs: LongInt);
+Begin
+  AL('mov [' + RegName(Base) + SignedDisp(Disp) + '], ' + RegName(Rs));
+  If (Disp >= -128) And (Disp <= 127) Then Begin
+    BinEmit8($89); BinEmit8($40 Or (Rs Shl 3) Or Base); BinEmit8(Disp And $FF);
+  End Else Begin
+    BinEmit8($89); BinEmit8($80 Or (Rs Shl 3) Or Base); BinEmit32(Disp);
+  End;
+End;
+
+{ add Rd, Rs (registre-registre generique) : utilise pour calculer une
+  adresse d'element de tableau (base + deplacement en octets) }
+Procedure BinAddRegReg(Rd, Rs: Integer);
+Begin AL('add ' + RegName(Rd) + ', ' + RegName(Rs)); BinEmit8($03); BinEmit8($C0 Or (Rd Shl 3) Or Rs); End;
+
 Procedure BinMovzxRegBaseDispWord(Rd, Base, Disp: LongInt);
 Begin
   AL('movzx ' + RegName(Rd) + ', word ptr [' + RegName(Base) + SignedDisp(Disp) + ']');
@@ -5249,6 +5303,19 @@ Begin AL('shr eax, ' + ItoS(N)); BinEmit8($C1); BinEmit8($E8); BinEmit8(N); End;
 
 Procedure BinAndEaxImm32(V: LongInt);
 Begin AL('and eax, ' + ItoS(V)); BinEmit8($25); BinEmit32(V); End;
+
+{ add eax, imm32 (extension container reel apres TODO 26) }
+Procedure BinAddEaxImm32(V: LongInt);
+Begin AL('add eax, ' + ItoS(V)); BinEmit8($05); BinEmit32(V); End;
+
+{ add R, imm8 (etendu en signe) : avance un pointeur d'un petit pas
+  constant (ex. 8 octets = un element de container), sans requerir
+  d'adressage indexe/SIB (extension container reel apres TODO 26) }
+Procedure BinAddRegImm8(R: Integer; V: Integer);
+Begin
+  AL('add ' + RegName(R) + ', ' + ItoS(V));
+  BinEmit8($83); BinEmit8($C0 Or R); BinEmit8(V And $FF);
+End;
 
 { div R : division non signee EDX:EAX / R -> EAX=quotient, EDX=reste
   (ajoute par TODO 26, decomposition decimale de _XPPRT_PrintInt) }
@@ -5327,6 +5394,10 @@ Procedure BinDecEax;   Begin AL('dec eax'); BinEmit8($48); End;
   chaine reelle terminee par un octet nul (extension apres TODO 26) }
 Procedure BinIncReg(R: Integer);
 Begin AL('inc ' + RegName(R)); BinEmit8($40 + R); End;
+
+{ dec R (generique, extension container reel apres TODO 26) }
+Procedure BinDecReg(R: Integer);
+Begin AL('dec ' + RegName(R)); BinEmit8($48 + R); End;
 
 Procedure BinIdivEcx;
 Begin AL('cdq'); AL('idiv ecx'); BinEmit8($99); BinEmit8($F7); BinEmit8($F9); End;
@@ -5512,7 +5583,8 @@ End;
 
 Procedure WritePE(FileName: String);
 Const
-  NK1 = 4;   { KERNEL32.DLL : GetStdHandle, WriteFile, ExitProcess, GetLocalTime }
+  NK1 = 6;   { KERNEL32.DLL : GetStdHandle, WriteFile, ExitProcess, GetLocalTime,
+               GetProcessHeap, HeapAlloc (containers/chaines reels, extension) }
   NK2 = 1;   { OLE32.DLL : CoCreateGuid (GUID reel, extension apres TODO 26) }
 Var
   F: File;
@@ -5544,6 +5616,8 @@ Begin
   FuncName1[2] := 'WriteFile';
   FuncName1[3] := 'ExitProcess';
   FuncName1[4] := 'GetLocalTime';
+  FuncName1[5] := 'GetProcessHeap';
+  FuncName1[6] := 'HeapAlloc';
   FuncName2[1] := 'CoCreateGuid';
 
   ImageBase := PE_IMG_BASE;
@@ -5904,6 +5978,106 @@ End;
 
 Procedure CodegenExpr(N: Integer); Forward;
 
+{ Tableaux locaux fixes reels (int tab[N], extension apres TODO 26) :
+  seules les declarations locales (pas les parametres, qui n'ont pas
+  de champ IsArray) sont modelisees. L'adresse de base du tableau est
+  deja reservee par ComputeLocalOffsets (TODO 08), un deplacement EBP
+  constant connu a la compilation ; seul l'indice est calcule a
+  l'execution. }
+Function CgFindArrayLocal(Name: String; Var Offset, ElemSize: Integer): Boolean;
+Var Base, I: Integer;
+Begin
+  CgFindArrayLocal := False;
+  Base := Methods[CgCurMethod].LocalStart;
+  For I := 0 To Methods[CgCurMethod].LocalCount - 1 Do
+    If (Locals[Base + I].Name = Name) And Locals[Base + I].IsArray Then Begin
+      Offset   := Locals[Base + I].Offset;
+      ElemSize := TypeSize(Locals[Base + I].TypeName);
+      CgFindArrayLocal := True;
+      Exit;
+    End;
+End;
+
+{ Calcule l'adresse reelle de tab[Idx] dans EDI = &tab + (Idx-1)*ElemSize
+  (indexation a partir de 1, comme X++/Axapta). Renvoie False si Obj
+  n'est pas un tableau local modelise (parametre, champ...) : l'appelant
+  doit alors retomber sur le comportement sur (evaluer et renvoyer 0). }
+Function CgArrayElemAddrToEdi(ObjNode, IdxNode: Integer): Boolean;
+Var Offset, ElemSize: Integer;
+Begin
+  CgArrayElemAddrToEdi := False;
+  If IRNodes[ObjNode].Kind <> NK_IDENT Then Exit;
+  If Not CgFindArrayLocal(IRNodes[ObjNode].Text, Offset, ElemSize) Then Exit;
+
+  CodegenExpr(IdxNode);              { eax = indice (base 1) }
+  BinDecEax;                          { eax = indice base 0 }
+  If ElemSize <> 1 Then Begin
+    BinMovRegImm32(REG_ECX, ElemSize);
+    BinImulEaxEcx;                    { eax = deplacement en octets }
+  End;
+  BinLeaRegEbpDisp(REG_EDI, Offset);   { edi = &tab[0] }
+  BinAddRegReg(REG_EDI, REG_EAX);       { edi = &tab[Idx] }
+  CgArrayElemAddrToEdi := True;
+End;
+
+Const
+  { Container reel (extension apres TODO 26) : bloc aloue sur le tas
+    Win32 (GetProcessHeap/HeapAlloc, jamais libere - pas de HeapFree,
+    coherent avec l'absence de gestion memoire ailleurs dans ce
+    runtime reduit) de disposition :
+      +0  Int32 Count
+      +4  Int32 Capacity (= Count, taille fixe a chaque (re)creation)
+      +8  Element[0] : Int32 Tag, Int32 Valeur
+      +8+8*i  Element[i]
+    Tag = CONVAL_TAG_INT (0, valeur brute : int/real arrondi/boolean/
+    date/enum...) ou CONVAL_TAG_STR (1, pointeur vers une chaine reelle
+    terminee par un octet nul, TODO 26). }
+  CONVAL_TAG_INT = 0;
+  CONVAL_TAG_STR = 1;
+
+{ Construit un container litteral ["a","b",...] : alloue un bloc de
+  taille exacte (nombre d'elements connu a la compilation) et y range
+  chaque element evalue avec son etiquette de type. EBX protege
+  l'adresse du bloc a travers l'evaluation des elements (qui peuvent
+  contenir des appels), suivant la meme convention que les autres
+  helpers runtime (_XPPRT_* le preservent tous). }
+Procedure CodegenContLit(N: Integer);
+Var ElemCount, TotalBytes, K, Elem, Tag: Integer;
+Begin
+  ElemCount := 0;
+  Elem := IRNodes[N].Right;
+  While Elem <> 0 Do Begin Inc(ElemCount); Elem := IRNodes[Elem].NextArg; End;
+  TotalBytes := 8 + 8 * ElemCount;
+
+  BinPushReg(REG_EBX);
+
+  BinCallImportRaw('GetProcessHeap');
+  BinPushImm32(TotalBytes);
+  BinPushImm32(8);              { HEAP_ZERO_MEMORY }
+  BinPushReg(REG_EAX);
+  BinCallImportRaw('HeapAlloc');
+  BinMovRegReg(REG_EBX, REG_EAX);   { ebx = pointeur du bloc, persiste }
+
+  BinMovRegImm32(REG_EAX, ElemCount);
+  BinMovBaseDispReg32(REG_EBX, 0, REG_EAX);
+  BinMovBaseDispReg32(REG_EBX, 4, REG_EAX);
+
+  Elem := IRNodes[N].Right;
+  K := 0;
+  While Elem <> 0 Do Begin
+    CodegenExpr(Elem);
+    If IRNodes[Elem].TypeName = 'str' Then Tag := CONVAL_TAG_STR Else Tag := CONVAL_TAG_INT;
+    BinMovBaseDispReg32(REG_EBX, 8 + 8 * K + 4, REG_EAX);
+    BinMovRegImm32(REG_EAX, Tag);
+    BinMovBaseDispReg32(REG_EBX, 8 + 8 * K, REG_EAX);
+    Elem := IRNodes[Elem].NextArg;
+    Inc(K);
+  End;
+
+  BinMovRegReg(REG_EAX, REG_EBX);
+  BinPopReg(REG_EBX);
+End;
+
 { Evalue une liste d'arguments pour leurs seuls effets de bord
   (appels imbriques, incrementations...) sans en garder les valeurs :
   utilise pour tout ce qui n'a pas de code machine reel (runtime non
@@ -6191,7 +6365,9 @@ Begin
 End;
 
 Procedure CodegenCall(N: Integer);
-Var Callee, MIdx, ArgHead, FmtCallMIdx, FmtNode: Integer;
+Var
+  Callee, MIdx, ArgHead, FmtCallMIdx, FmtNode, IdxArg, SepArg: Integer;
+  LZero, LEnd: String;
 Begin
   Callee  := IRNodes[N].Left;
   ArgHead := IRNodes[N].Right;
@@ -6235,6 +6411,59 @@ Begin
      (Methods[MIdx].Name = 'today') Then Begin
     BinCallLabel('_XPPRT_Today');
     Exit;
+  End;
+
+  { conLen/conPeek/con2Str (container reel, extension apres TODO 26) }
+  If (MIdx <> 0) And (Methods[MIdx].ClassIdx = GlobalFuncClassIdx) Then Begin
+    If (Methods[MIdx].Name = 'conLen') And (ArgHead <> 0) Then Begin
+      CodegenExpr(ArgHead);              { eax = pointeur container (ou 0) }
+      LZero := NewBinLabel('ClZ');
+      LEnd  := NewBinLabel('ClE');
+      BinCmpEaxImm32(0);
+      BinJccLabel(CC_E, LZero);
+      BinMovRegBaseDisp32(REG_EAX, REG_EAX, 0);
+      BinJmpLabel(LEnd);
+      BinDefineLabel(LZero);
+      BinXorRegReg(REG_EAX);
+      BinDefineLabel(LEnd);
+      Exit;
+    End;
+
+    If (Methods[MIdx].Name = 'conPeek') And (ArgHead <> 0) And
+       (IRNodes[ArgHead].NextArg <> 0) Then Begin
+      IdxArg := IRNodes[ArgHead].NextArg;
+      CodegenExpr(ArgHead);
+      BinPushReg(REG_EAX);
+      CodegenExpr(IdxArg);
+      BinDecEax;
+      BinMovRegImm32(REG_ECX, 8);
+      BinImulEaxEcx;
+      BinAddEaxImm32(8);
+      BinMovRegReg(REG_ECX, REG_EAX);
+      BinPopReg(REG_EAX);
+      LZero := NewBinLabel('CpZ');
+      LEnd  := NewBinLabel('CpE');
+      BinCmpEaxImm32(0);
+      BinJccLabel(CC_E, LZero);
+      BinAddRegReg(REG_EAX, REG_ECX);
+      BinMovRegBaseDisp32(REG_EAX, REG_EAX, 4);
+      BinJmpLabel(LEnd);
+      BinDefineLabel(LZero);
+      BinXorRegReg(REG_EAX);
+      BinDefineLabel(LEnd);
+      Exit;
+    End;
+
+    If (Methods[MIdx].Name = 'con2Str') And (ArgHead <> 0) Then Begin
+      SepArg := IRNodes[ArgHead].NextArg;
+      CodegenExpr(ArgHead);
+      BinPushReg(REG_EAX);
+      If SepArg <> 0 Then CodegenExpr(SepArg) Else BinXorRegReg(REG_EAX);
+      BinMovRegReg(REG_ECX, REG_EAX);
+      BinPopReg(REG_EAX);
+      BinCallLabel('_XPPRT_ConToStr');
+      Exit;
+    End;
   End;
 
   If (MIdx <> 0) And (Methods[MIdx].BodyStmt <> 0) Then Begin
@@ -6409,9 +6638,29 @@ Begin
   RightNode := IRNodes[N].Right;
   Op        := IRNodes[N].Tok;
 
+  { tab[i] = valeur (tableau local reel, extension apres TODO 26) :
+    calcule l'adresse de l'element AVANT d'evaluer la valeur (au cas
+    ou celle-ci contiendrait elle-meme un appel), la protege sur la
+    pile, puis range. Le += / -= / ... sur un element de tableau et
+    tout tableau non modelise (parametre...) restent une simple
+    evaluation d'effet de bord, comme les autres cibles non modelisees. }
+  If IRNodes[LeftNode].Kind = NK_INDEX Then Begin
+    If (Op = Ord('=')) And
+       CgArrayElemAddrToEdi(IRNodes[LeftNode].Left, IRNodes[LeftNode].Right) Then Begin
+      BinPushReg(REG_EDI);
+      CodegenExpr(RightNode);
+      BinPopReg(REG_EDI);
+      BinMovBaseDispReg32(REG_EDI, 0, REG_EAX);
+      Exit;
+    End Else Begin
+      CodegenExpr(RightNode);
+      Exit;
+    End;
+  End;
+
   If IRNodes[LeftNode].Kind <> NK_IDENT Then Begin
-    { cible non modelisee (champ, indexation...) : les deux cotes sont
-      evalues pour leurs effets de bord, la valeur de l'expression
+    { cible non modelisee (champ...) : les deux cotes sont evalues
+      pour leurs effets de bord, la valeur de l'expression
       d'affectation reste celle du membre de droite }
     CodegenExpr(IRNodes[N].Right);
     Exit;
@@ -6436,6 +6685,23 @@ Begin
     End;
   End;
 
+  { fruits += x (container reel, extension apres TODO 26) : ajoute un
+    element via _XPPRT_ConAppend (alloue un nouveau bloc plus grand,
+    copie les anciens elements, ajoute le nouveau) plutot que de
+    traiter += comme une addition arithmetique scalaire }
+  If (Op = TOK_PLUSEQ) And Found And (IRNodes[LeftNode].TypeName = 'container') Then Begin
+    CodegenExpr(RightNode);
+    BinMovRegReg(REG_EDX, REG_EAX);
+    If IRNodes[RightNode].TypeName = 'str' Then
+      BinMovRegImm32(REG_ECX, CONVAL_TAG_STR)
+    Else
+      BinMovRegImm32(REG_ECX, CONVAL_TAG_INT);
+    BinMovEaxEbpDisp(Off);
+    BinCallLabel('_XPPRT_ConAppend');
+    BinMovEbpDispEax(Off);
+    Exit;
+  End;
+
   If Op = Ord('=') Then Begin
     CodegenExpr(IRNodes[N].Right);
     If Found Then BinMovEbpDispEax(Off);
@@ -6457,7 +6723,7 @@ Begin
 End;
 
 Procedure CodegenExpr(N: Integer);
-Var A: Integer; StrLbl: String;
+Var StrLbl: String;
 Begin
   If N = 0 Then Begin BinXorRegReg(REG_EAX); Exit; End;
   Case IRNodes[N].Kind Of
@@ -6479,20 +6745,20 @@ Begin
     NK_ASSIGN: CodegenAssign(N);
     NK_MEMBER: Begin CodegenExpr(IRNodes[N].Left); BinXorRegReg(REG_EAX); End;
     NK_INDEX:  Begin
-      CodegenExpr(IRNodes[N].Left);
-      CodegenExpr(IRNodes[N].Right);
-      BinXorRegReg(REG_EAX);
+      { tableau local reel (extension apres TODO 26) : lecture directe
+        a l'adresse calculee ; sinon (parametre, champ...) comportement
+        sur inchange, evalue pour effet de bord et vaut 0 }
+      If CgArrayElemAddrToEdi(IRNodes[N].Left, IRNodes[N].Right) Then
+        BinMovRegBaseDisp32(REG_EAX, REG_EDI, 0)
+      Else Begin
+        CodegenExpr(IRNodes[N].Left);
+        CodegenExpr(IRNodes[N].Right);
+        BinXorRegReg(REG_EAX);
+      End;
     End;
     NK_CALL: CodegenCall(N);
     NK_NEW:  CodegenNew(N);
-    NK_CONTLIT: Begin
-      A := IRNodes[N].Right;
-      While A <> 0 Do Begin
-        CodegenExpr(A);
-        A := IRNodes[A].NextArg;
-      End;
-      BinXorRegReg(REG_EAX);
-    End;
+    NK_CONTLIT: CodegenContLit(N);
   Else
     BinXorRegReg(REG_EAX);
   End;
@@ -7087,6 +7353,376 @@ Begin
   BinEmitEpilogueN(0);
 End;
 
+{ _XPPRT_StrLen (extension container/chaine reel apres TODO 26) :
+  longueur d'une chaine terminee par un octet nul dont l'adresse est
+  fournie dans EAX (0 si l'adresse est nulle). Autonome, reutilisee
+  par _XPPRT_ConToStr pour mesurer les elements de type chaine. }
+Procedure EmitStrLenHelper;
+Var LZero, LScan, LDone: String;
+Begin
+  BinCurSec := BIN_SEC_TEXT;
+  BinDefineLabel('_XPPRT_StrLen');
+  BinEmitPrologue(0);
+  LZero := NewBinLabel('SlZ');
+  BinCmpEaxImm32(0);
+  BinJccLabel(CC_E, LZero);
+  BinPushReg(REG_EBX);
+  BinMovRegReg(REG_EBX, REG_EAX);   { ebx = curseur de balayage }
+  LScan := NewBinLabel('SlS');
+  LDone := NewBinLabel('SlD');
+  BinDefineLabel(LScan);
+  BinMovzxRegBaseDispByte(REG_ECX, REG_EBX, 0);
+  BinCmpRegImm8(REG_ECX, 0);
+  BinJccLabel(CC_E, LDone);
+  BinIncReg(REG_EBX);
+  BinJmpLabel(LScan);
+  BinDefineLabel(LDone);
+  BinMovRegReg(REG_ECX, REG_EAX);    { ecx = pointeur de depart }
+  BinMovRegReg(REG_EAX, REG_EBX);     { eax = pointeur de fin }
+  BinSubEaxEcx;                        { eax = longueur }
+  BinPopReg(REG_EBX);
+  BinEmitEpilogueN(0);
+  BinDefineLabel(LZero);
+  BinEmitEpilogueN(0);
+End;
+
+{ _XPPRT_FormatIntToBuf (extension container reel apres TODO 26) :
+  ecrit l'entier signe EAX en decimal (sans zero de tete, "0" pour la
+  valeur nulle) a l'adresse EDI, en avancant EDI d'un octet par
+  caractere ecrit (pas de terminateur nul : l'appelant construit un
+  tampon plus vaste). Meme decomposition par 10 divisions que
+  _XPPRT_PrintInt, mais ecrit en memoire au lieu d'appeler PutChar. }
+Procedure EmitFormatIntToBufHelper;
+Const NDIV = 10;
+Var
+  Divisors: Array[1..NDIV] Of LongInt;
+  K: Integer;
+  LNonNeg, LSetFlag, LPrint, LSkip: String;
+Begin
+  Divisors[1]  := 1000000000; Divisors[2] := 100000000; Divisors[3] := 10000000;
+  Divisors[4]  := 1000000;    Divisors[5] := 100000;    Divisors[6] := 10000;
+  Divisors[7]  := 1000;       Divisors[8] := 100;       Divisors[9] := 10;
+  Divisors[10] := 1;
+
+  BinCurSec := BIN_SEC_TEXT;
+  BinDefineLabel('_XPPRT_FormatIntToBuf');
+  BinEmitPrologue(0);
+  BinPushReg(REG_EBX);
+  BinPushReg(REG_ESI);
+
+  BinCmpEaxImm32(0);
+  LNonNeg := NewBinLabel('FiNN');
+  BinJccLabel(CC_GE, LNonNeg);
+  BinNegEax;
+  BinPushReg(REG_EAX);
+  BinMovRegImm32(REG_EAX, Ord('-'));
+  BinMovBaseDispAl(REG_EDI, 0);
+  BinIncReg(REG_EDI);
+  BinPopReg(REG_EAX);
+  BinDefineLabel(LNonNeg);
+
+  BinMovRegReg(REG_EBX, REG_EAX);
+  BinMovRegImm32(REG_ESI, 0);
+
+  For K := 1 To NDIV Do Begin
+    BinMovRegReg(REG_EAX, REG_EBX);
+    BinXorRegReg(REG_EDX);
+    BinMovRegImm32(REG_ECX, Divisors[K]);
+    BinDivReg(REG_ECX);
+    BinMovRegReg(REG_EBX, REG_EDX);
+
+    If Divisors[K] = 1 Then Begin
+      BinAddAlImm8(Ord('0'));
+      BinMovBaseDispAl(REG_EDI, 0);
+      BinIncReg(REG_EDI);
+    End Else Begin
+      LSetFlag := NewBinLabel('FiSF');
+      LPrint   := NewBinLabel('FiPr');
+      LSkip    := NewBinLabel('FiSk');
+      BinCmpRegImm8(REG_ESI, 0);
+      BinJccLabel(CC_NE, LPrint);
+      BinCmpEaxImm32(0);
+      BinJccLabel(CC_NE, LSetFlag);
+      BinJmpLabel(LSkip);
+      BinDefineLabel(LSetFlag);
+      BinMovRegImm32(REG_ESI, 1);
+      BinDefineLabel(LPrint);
+      BinAddAlImm8(Ord('0'));
+      BinMovBaseDispAl(REG_EDI, 0);
+      BinIncReg(REG_EDI);
+      BinDefineLabel(LSkip);
+    End;
+  End;
+
+  BinPopReg(REG_ESI);
+  BinPopReg(REG_EBX);
+  BinEmitEpilogueN(0);
+End;
+
+{ _XPPRT_ConAppend (container reel, extension apres TODO 26) :
+  fruits += x. EAX=ancien pointeur container (0 si aucun), ECX=tag du
+  nouvel element, EDX=valeur du nouvel element -> EAX=nouveau
+  pointeur. Alloue toujours un nouveau bloc de taille exacte (pas de
+  HeapReAlloc) et y copie les anciens elements avant d'ajouter le
+  nouveau ; l'ancien bloc n'est jamais libere (pas de HeapFree,
+  coherent avec l'absence de gestion memoire ailleurs). Convention
+  interne : aucun registre appelant n'est protege au-dela de ce que le
+  seul site d'appel (CodegenAssign, "+=") exige deja. }
+Procedure EmitConAppendHelper;
+Var LZeroCount, LGotCount, LNoCopy, LCopyLoop: String;
+Begin
+  BinCurSec := BIN_SEC_TEXT;
+  BinDefineLabel('_XPPRT_ConAppend');
+  BinEmitPrologue(0);
+
+  BinPushReg(REG_ECX);   { tag du nouvel element }
+  BinPushReg(REG_EDX);   { valeur du nouvel element }
+  BinMovRegReg(REG_EBX, REG_EAX);   { ebx = ancien pointeur (persiste) }
+
+  LZeroCount := NewBinLabel('CaZc');
+  LGotCount  := NewBinLabel('CaGc');
+  BinCmpRegImm8(REG_EBX, 0);
+  BinJccLabel(CC_E, LZeroCount);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBX, 0);
+  BinJmpLabel(LGotCount);
+  BinDefineLabel(LZeroCount);
+  BinXorRegReg(REG_EAX);
+  BinDefineLabel(LGotCount);
+  BinMovRegReg(REG_EDI, REG_EAX);    { edi = OldCount, persiste }
+
+  BinIncEax;                          { eax = NewCount }
+  BinPushReg(REG_EAX);                 { sauvegarde NewCount (survit a Heap*) }
+  BinMovRegImm32(REG_ECX, 8);
+  BinImulEaxEcx;
+  BinAddEaxImm32(8);                    { eax = NewBytes }
+  BinPushReg(REG_EAX);
+  BinCallImportRaw('GetProcessHeap');
+  BinPushImm32(8);
+  BinPushReg(REG_EAX);
+  BinCallImportRaw('HeapAlloc');          { eax = nouveau pointeur }
+  BinMovRegReg(REG_ESI, REG_EAX);          { esi = nouveau pointeur, persiste }
+
+  BinPopReg(REG_EAX);                       { eax = NewCount }
+  BinMovBaseDispReg32(REG_ESI, 0, REG_EAX);
+  BinMovBaseDispReg32(REG_ESI, 4, REG_EAX);
+
+  { curseur destination, toujours initialise (meme si OldCount=0) }
+  BinMovRegReg(REG_ECX, REG_ESI);
+  BinAddRegImm8(REG_ECX, 8);
+
+  LNoCopy := NewBinLabel('CaNc');
+  BinCmpRegImm8(REG_EDI, 0);
+  BinJccLabel(CC_E, LNoCopy);
+  BinMovRegReg(REG_EDX, REG_EDI);   { edx = compteur de boucle = OldCount }
+  LCopyLoop := NewBinLabel('CaCl');
+  BinDefineLabel(LCopyLoop);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBX, 8);
+  BinMovBaseDispReg32(REG_ECX, 0, REG_EAX);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBX, 12);
+  BinMovBaseDispReg32(REG_ECX, 4, REG_EAX);
+  BinAddRegImm8(REG_EBX, 8);
+  BinAddRegImm8(REG_ECX, 8);
+  BinDecReg(REG_EDX);
+  BinJccLabel(CC_NE, LCopyLoop);
+  BinDefineLabel(LNoCopy);
+
+  { ecrit le nouvel element a la position ou le curseur ecx s'est arrete }
+  BinPopReg(REG_EAX);              { valeur (empilee en dernier, depilee en premier) }
+  BinMovBaseDispReg32(REG_ECX, 4, REG_EAX);
+  BinPopReg(REG_EAX);               { tag }
+  BinMovBaseDispReg32(REG_ECX, 0, REG_EAX);
+
+  BinMovRegReg(REG_EAX, REG_ESI);
+  BinEmitEpilogueN(0);
+End;
+
+{ _XPPRT_ConToStr (container reel, extension apres TODO 26) :
+  con2Str(container, separateur). EAX=pointeur container (0 si aucun),
+  ECX=pointeur separateur (0 si aucun) -> EAX=pointeur d'une nouvelle
+  chaine reelle (allouee sur le tas, terminee par un octet nul),
+  affichable directement via _XPPRT_PrintCStr. Deux passes : la
+  premiere mesure la longueur totale (elements chaine via
+  _XPPRT_StrLen, elements entiers estimes a 12 caracteres au plus,
+  signe compris), la seconde ecrit reellement (chaines copiees octet
+  par octet, entiers formates via _XPPRT_FormatIntToBuf). Tout l'etat
+  qui doit survivre aux appels imbriques (StrLen/FormatIntToBuf, qui
+  ne preservent pas EAX/ECX/EDX) est garde dans le cadre de pile local
+  plutot que dans des registres, pour eviter toute pression de
+  registres. }
+Procedure EmitConToStrHelper;
+Var
+  LZeroCount, LGotCount: String;
+  LMeasLoop, LMeasDone, LIsStr, LGotLen, LSkipSep: String;
+  LWriteLoop, LWriteDone, LWIsStr, LWGotVal, LWSkipSep: String;
+  LCpChar, LCpDone, LCpSep, LCpSepDone: String;
+Begin
+  BinCurSec := BIN_SEC_TEXT;
+  BinDefineLabel('_XPPRT_ConToStr');
+  BinEmitPrologue(20);
+  { [ebp-4]=containerPtr [ebp-8]=sepPtr [ebp-12]=count
+    [ebp-16]=totalLen puis bufStart [ebp-20]=indice de boucle i }
+  BinMovBaseDispReg32(REG_EBP, -4, REG_EAX);
+  BinMovBaseDispReg32(REG_EBP, -8, REG_ECX);
+
+  LZeroCount := NewBinLabel('CsZc');
+  LGotCount  := NewBinLabel('CsGc');
+  BinCmpEaxImm32(0);
+  BinJccLabel(CC_E, LZeroCount);
+  BinMovRegBaseDisp32(REG_EAX, REG_EAX, 0);
+  BinJmpLabel(LGotCount);
+  BinDefineLabel(LZeroCount);
+  BinXorRegReg(REG_EAX);
+  BinDefineLabel(LGotCount);
+  BinMovBaseDispReg32(REG_EBP, -12, REG_EAX);
+
+  { --- passe 1 : mesure --- }
+  BinMovRegImm32(REG_EAX, 0);
+  BinMovBaseDispReg32(REG_EBP, -16, REG_EAX);
+  BinMovBaseDispReg32(REG_EBP, -20, REG_EAX);
+
+  LMeasLoop := NewBinLabel('CsMl');
+  LMeasDone := NewBinLabel('CsMd');
+  BinDefineLabel(LMeasLoop);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -20);
+  BinMovRegBaseDisp32(REG_ECX, REG_EBP, -12);
+  BinCmpEaxEcx;
+  BinJccLabel(CC_GE, LMeasDone);
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -20);
+  BinMovRegImm32(REG_ECX, 8);
+  BinImulEaxEcx;
+  BinAddEaxImm32(8);
+  BinMovRegReg(REG_ECX, REG_EAX);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -4);
+  BinAddRegReg(REG_EAX, REG_ECX);
+  BinMovRegBaseDisp32(REG_EDX, REG_EAX, 0);   { edx = tag }
+  BinMovRegBaseDisp32(REG_EAX, REG_EAX, 4);    { eax = valeur }
+
+  LIsStr := NewBinLabel('CsIs');
+  LGotLen := NewBinLabel('CsGl');
+  BinCmpRegImm8(REG_EDX, CONVAL_TAG_STR);
+  BinJccLabel(CC_E, LIsStr);
+  BinMovRegImm32(REG_EAX, 12);
+  BinJmpLabel(LGotLen);
+  BinDefineLabel(LIsStr);
+  BinCallLabel('_XPPRT_StrLen');
+  BinDefineLabel(LGotLen);
+
+  BinMovRegReg(REG_ECX, REG_EAX);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -16);
+  BinAddEaxEcx;
+  BinMovBaseDispReg32(REG_EBP, -16, REG_EAX);
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -20);
+  BinMovRegBaseDisp32(REG_ECX, REG_EBP, -12);
+  BinDecReg(REG_ECX);
+  BinCmpEaxEcx;
+  LSkipSep := NewBinLabel('CsSs');
+  BinJccLabel(CC_GE, LSkipSep);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -8);
+  BinCallLabel('_XPPRT_StrLen');
+  BinMovRegReg(REG_ECX, REG_EAX);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -16);
+  BinAddEaxEcx;
+  BinMovBaseDispReg32(REG_EBP, -16, REG_EAX);
+  BinDefineLabel(LSkipSep);
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -20);
+  BinIncEax;
+  BinMovBaseDispReg32(REG_EBP, -20, REG_EAX);
+  BinJmpLabel(LMeasLoop);
+  BinDefineLabel(LMeasDone);
+
+  { allocation du tampon resultat : totalLen+1 (terminateur nul) }
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -16);
+  BinAddEaxImm32(1);
+  BinPushReg(REG_EAX);
+  BinCallImportRaw('GetProcessHeap');
+  BinPushImm32(8);
+  BinPushReg(REG_EAX);
+  BinCallImportRaw('HeapAlloc');
+  BinMovBaseDispReg32(REG_EBP, -16, REG_EAX);   { reutilise -16 comme bufStart }
+
+  { --- passe 2 : ecriture --- }
+  BinMovRegImm32(REG_EAX, 0);
+  BinMovBaseDispReg32(REG_EBP, -20, REG_EAX);
+  BinMovRegBaseDisp32(REG_EDI, REG_EBP, -16);
+
+  LWriteLoop := NewBinLabel('CsWl');
+  LWriteDone := NewBinLabel('CsWd');
+  BinDefineLabel(LWriteLoop);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -20);
+  BinMovRegBaseDisp32(REG_ECX, REG_EBP, -12);
+  BinCmpEaxEcx;
+  BinJccLabel(CC_GE, LWriteDone);
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -20);
+  BinMovRegImm32(REG_ECX, 8);
+  BinImulEaxEcx;
+  BinAddEaxImm32(8);
+  BinMovRegReg(REG_ECX, REG_EAX);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -4);
+  BinAddRegReg(REG_EAX, REG_ECX);
+  BinMovRegBaseDisp32(REG_EDX, REG_EAX, 0);   { edx = tag }
+  BinMovRegBaseDisp32(REG_EAX, REG_EAX, 4);    { eax = valeur }
+
+  LWIsStr  := NewBinLabel('CsWi');
+  LWGotVal := NewBinLabel('CsWg');
+  BinCmpRegImm8(REG_EDX, CONVAL_TAG_STR);
+  BinJccLabel(CC_E, LWIsStr);
+  BinCallLabel('_XPPRT_FormatIntToBuf');    { edi avance de lui-meme }
+  BinJmpLabel(LWGotVal);
+  BinDefineLabel(LWIsStr);
+  BinMovRegReg(REG_ECX, REG_EAX);
+  LCpChar := NewBinLabel('CsCc');
+  LCpDone := NewBinLabel('CsCd');
+  BinDefineLabel(LCpChar);
+  BinMovzxRegBaseDispByte(REG_EAX, REG_ECX, 0);
+  BinCmpEaxImm32(0);
+  BinJccLabel(CC_E, LCpDone);
+  BinMovBaseDispAl(REG_EDI, 0);
+  BinIncReg(REG_EDI);
+  BinIncReg(REG_ECX);
+  BinJmpLabel(LCpChar);
+  BinDefineLabel(LCpDone);
+  BinDefineLabel(LWGotVal);
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -20);
+  BinMovRegBaseDisp32(REG_ECX, REG_EBP, -12);
+  BinDecReg(REG_ECX);
+  BinCmpEaxEcx;
+  LWSkipSep := NewBinLabel('CsWs');
+  BinJccLabel(CC_GE, LWSkipSep);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -8);
+  BinCmpEaxImm32(0);
+  BinJccLabel(CC_E, LWSkipSep);
+  BinMovRegReg(REG_ECX, REG_EAX);
+  LCpSep     := NewBinLabel('CsCs');
+  LCpSepDone := NewBinLabel('CsCz');
+  BinDefineLabel(LCpSep);
+  BinMovzxRegBaseDispByte(REG_EAX, REG_ECX, 0);
+  BinCmpEaxImm32(0);
+  BinJccLabel(CC_E, LCpSepDone);
+  BinMovBaseDispAl(REG_EDI, 0);
+  BinIncReg(REG_EDI);
+  BinIncReg(REG_ECX);
+  BinJmpLabel(LCpSep);
+  BinDefineLabel(LCpSepDone);
+  BinDefineLabel(LWSkipSep);
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -20);
+  BinIncEax;
+  BinMovBaseDispReg32(REG_EBP, -20, REG_EAX);
+  BinJmpLabel(LWriteLoop);
+  BinDefineLabel(LWriteDone);
+
+  BinMovRegImm32(REG_EAX, 0);
+  BinMovBaseDispAl(REG_EDI, 0);
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -16);
+  BinEmitEpilogueN(0);
+End;
+
 { Point d'entree binaire "start" : trampoline vers static void main(),
   suivi d'un ExitProcess(0) propre. Emis en tout premier dans .text
   pour que start soit bien a l'adresse EntryRVA=TextRVA ecrite par
@@ -7121,6 +7757,10 @@ Begin
   EmitPrintHex32Helper;
   EmitPrintGuidHelper;
   EmitPrintCStrHelper;
+  EmitStrLenHelper;
+  EmitFormatIntToBufHelper;
+  EmitConAppendHelper;
+  EmitConToStrHelper;
 
   For I := 1 To MethodCount Do
     If Methods[I].BodyStmt <> 0 Then CodegenMethod(I);
