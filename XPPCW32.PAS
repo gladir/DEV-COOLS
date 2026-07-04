@@ -216,6 +216,22 @@ Program XPPCW32;
             page de code OEM CP850 par defaut de cmd.exe, pour un
             affichage correct des caracteres accentues sans manipuler
             la console (chcp).
+
+  EXTENSION apres TODO 26 - DATE ET GUID REELS
+            today() appelle GetLocalTime (KERNEL32) et encode la date
+            systeme reelle en AAAAMMJJ (_XPPRT_Today) ; %N sur un
+            argument "date" dans strFmt l'affiche en J/M/AAAA
+            (_XPPRT_PrintDate). L'arithmetique de date (soustraction,
+            +N jours...) reste non representative : l'encodage n'est
+            pas un compteur de jours lineaire.
+            newGuid()/guid2Str() produisent desormais un vrai GUID
+            unique par execution via CoCreateGuid (OLE32.DLL), affiche
+            au format standard XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX
+            (_XPPRT_PrintGuid, avec _XPPRT_PrintHex8/16/32 et
+            _XPPRT_PrintHexNibble). Ceci a necessite d'etendre WritePE
+            pour lier deux DLL (KERNEL32.DLL et OLE32.DLL) au lieu
+            d'une seule : deux blocs IAT/ILT et deux descripteurs
+            d'import contigus dans .idata.
 }
 
 { ============================================================ }
@@ -5164,16 +5180,49 @@ End;
 { movzx Rd, word ptr [ebp+Disp] : lecture d'un champ WORD (16 bits)
   d'une structure Win32 (ex. SYSTEMTIME de GetLocalTime), etendue sans
   signe dans un registre 32 bits complet (ajoute pour la date reelle) }
-Procedure BinMovzxRegEbpDispWord(Rd, Disp: LongInt);
+{ Variantes generiques "[Base+Disp]" (Base = n'importe quel registre
+  sauf ESP, qui exigerait un octet SIB) : utilisees pour lire les
+  champs d'une structure Win32 (SYSTEMTIME, GUID) a une adresse
+  connue seulement a l'execution (ajoute pour la date/le GUID reels) }
+Procedure BinMovRegBaseDisp32(Rd, Base, Disp: LongInt);
 Begin
-  AL('movzx ' + RegName(Rd) + ', word ptr [ebp' + SignedDisp(Disp) + ']');
-  BinEmit8($0F); BinEmit8($B7);
+  AL('mov ' + RegName(Rd) + ', [' + RegName(Base) + SignedDisp(Disp) + ']');
   If (Disp >= -128) And (Disp <= 127) Then Begin
-    BinEmit8($45 Or (Rd Shl 3)); BinEmit8(Disp And $FF);
+    BinEmit8($8B); BinEmit8($40 Or (Rd Shl 3) Or Base); BinEmit8(Disp And $FF);
   End Else Begin
-    BinEmit8($85 Or (Rd Shl 3)); BinEmit32(Disp);
+    BinEmit8($8B); BinEmit8($80 Or (Rd Shl 3) Or Base); BinEmit32(Disp);
   End;
 End;
+
+Procedure BinMovzxRegBaseDispWord(Rd, Base, Disp: LongInt);
+Begin
+  AL('movzx ' + RegName(Rd) + ', word ptr [' + RegName(Base) + SignedDisp(Disp) + ']');
+  BinEmit8($0F); BinEmit8($B7);
+  If (Disp >= -128) And (Disp <= 127) Then Begin
+    BinEmit8($40 Or (Rd Shl 3) Or Base); BinEmit8(Disp And $FF);
+  End Else Begin
+    BinEmit8($80 Or (Rd Shl 3) Or Base); BinEmit32(Disp);
+  End;
+End;
+
+Procedure BinMovzxRegBaseDispByte(Rd, Base, Disp: LongInt);
+Begin
+  AL('movzx ' + RegName(Rd) + ', byte ptr [' + RegName(Base) + SignedDisp(Disp) + ']');
+  BinEmit8($0F); BinEmit8($B6);
+  If (Disp >= -128) And (Disp <= 127) Then Begin
+    BinEmit8($40 Or (Rd Shl 3) Or Base); BinEmit8(Disp And $FF);
+  End Else Begin
+    BinEmit8($80 Or (Rd Shl 3) Or Base); BinEmit32(Disp);
+  End;
+End;
+
+{ shr eax, imm8 / and eax, imm32 : decoupage en octets pour
+  l'impression hexadecimale (ajoute pour le GUID reel) }
+Procedure BinShrEaxImm8(N: Integer);
+Begin AL('shr eax, ' + ItoS(N)); BinEmit8($C1); BinEmit8($E8); BinEmit8(N); End;
+
+Procedure BinAndEaxImm32(V: LongInt);
+Begin AL('and eax, ' + ItoS(V)); BinEmit8($25); BinEmit32(V); End;
 
 { div R : division non signee EDX:EAX / R -> EAX=quotient, EDX=reste
   (ajoute par TODO 26, decomposition decimale de _XPPRT_PrintInt) }
@@ -5432,7 +5481,8 @@ End;
 
 Procedure WritePE(FileName: String);
 Const
-  NK = 4;   { GetStdHandle, WriteFile, ExitProcess, GetLocalTime }
+  NK1 = 4;   { KERNEL32.DLL : GetStdHandle, WriteFile, ExitProcess, GetLocalTime }
+  NK2 = 1;   { OLE32.DLL : CoCreateGuid (GUID reel, extension apres TODO 26) }
 Var
   F: File;
   I, K: Integer;
@@ -5445,39 +5495,63 @@ Var
   TextFOff, DataFOff, RDataFOff, IDataFOff: LongInt;
   EntryRVA, ImageSz, CodeSz, InitDataSz: LongInt;
 
-  IAT_Off, ILT_Off, IDT_Off, DllName_Off, HintBase_Off, IData_Raw: LongInt;
-  FuncOff:  Array[1..4] Of LongInt;
-  FuncName: Array[1..4] Of String;
+  IAT1_Off, IAT2_Off, ILT1_Off, ILT2_Off, IDT_Off: LongInt;
+  DllName1_Off, DllName2_Off, HintBase1_Off, HintBase2_Off, IData_Raw: LongInt;
+  FuncOff1: Array[1..NK1] Of LongInt;
+  FuncOff2: Array[1..NK2] Of LongInt;
+  FuncName1: Array[1..NK1] Of String;
+  FuncName2: Array[1..NK2] Of String;
 
   IDT_RVA, IDT_SZ, IAT_RVA, IAT_SZ: LongInt;
 
-  FI, LIdx, Kidx, NL: Integer;
+  FI, LIdx, NL: Integer;
   Pname: String;
   IATVA, Loc: LongInt;
   TxtVirtSz, DatVirtSz, RdtVirtSz: LongInt;
 Begin
-  FuncName[1] := 'GetStdHandle';
-  FuncName[2] := 'WriteFile';
-  FuncName[3] := 'ExitProcess';
-  FuncName[4] := 'GetLocalTime';
+  FuncName1[1] := 'GetStdHandle';
+  FuncName1[2] := 'WriteFile';
+  FuncName1[3] := 'ExitProcess';
+  FuncName1[4] := 'GetLocalTime';
+  FuncName2[1] := 'CoCreateGuid';
 
   ImageBase := PE_IMG_BASE;
   FileAlign := PE_FILE_ALIGN;
   SecAlign  := PE_SEC_ALIGN;
 
-  IAT_Off     := 0;
-  ILT_Off     := (NK + 1) * 4;
-  IDT_Off     := ILT_Off + (NK + 1) * 4;
-  DllName_Off := IDT_Off + 2 * 20;
-  HintBase_Off:= DllName_Off + 14;
-  FuncOff[1]  := HintBase_Off;
-  For I := 2 To NK Do Begin
-    NL := Length(FuncName[I - 1]);
-    FuncOff[I] := FuncOff[I - 1] + 2 + NL + 1;
-    If (FuncOff[I] Mod 2) <> 0 Then Inc(FuncOff[I]);
+  { Deux DLL importes (KERNEL32 puis OLE32), chacun avec son propre
+    bloc IAT/ILT contigu (extension du lieur PE, apres TODO 26, pour
+    supporter le GUID reel) }
+  IAT1_Off := 0;
+  IAT2_Off := IAT1_Off + (NK1 + 1) * 4;
+  ILT1_Off := IAT2_Off + (NK2 + 1) * 4;
+  ILT2_Off := ILT1_Off + (NK1 + 1) * 4;
+  IDT_Off  := ILT2_Off + (NK2 + 1) * 4;
+
+  DllName1_Off := IDT_Off + 3 * 20;
+  DllName2_Off := DllName1_Off + Length('KERNEL32.DLL') + 1;
+  If (DllName2_Off Mod 2) <> 0 Then Inc(DllName2_Off);
+  HintBase1_Off := DllName2_Off + Length('OLE32.DLL') + 1;
+  If (HintBase1_Off Mod 2) <> 0 Then Inc(HintBase1_Off);
+
+  FuncOff1[1] := HintBase1_Off;
+  For I := 2 To NK1 Do Begin
+    NL := Length(FuncName1[I - 1]);
+    FuncOff1[I] := FuncOff1[I - 1] + 2 + NL + 1;
+    If (FuncOff1[I] Mod 2) <> 0 Then Inc(FuncOff1[I]);
   End;
-  NL := Length(FuncName[NK]);
-  IData_Raw := FuncOff[NK] + 2 + NL + 1;
+  NL := Length(FuncName1[NK1]);
+  HintBase2_Off := FuncOff1[NK1] + 2 + NL + 1;
+  If (HintBase2_Off Mod 2) <> 0 Then Inc(HintBase2_Off);
+
+  FuncOff2[1] := HintBase2_Off;
+  For I := 2 To NK2 Do Begin
+    NL := Length(FuncName2[I - 1]);
+    FuncOff2[I] := FuncOff2[I - 1] + 2 + NL + 1;
+    If (FuncOff2[I] Mod 2) <> 0 Then Inc(FuncOff2[I]);
+  End;
+  NL := Length(FuncName2[NK2]);
+  IData_Raw := FuncOff2[NK2] + 2 + NL + 1;
   If (IData_Raw Mod 2) <> 0 Then Inc(IData_Raw);
 
   HdrsSz  := 512;
@@ -5509,11 +5583,13 @@ Begin
   EntryRVA  := TextRVA;
 
   IDT_RVA := IDataRVA + IDT_Off;
-  IDT_SZ  := 2 * 20;
-  IAT_RVA := IDataRVA + IAT_Off;
-  IAT_SZ  := (NK + 1) * 4;
+  IDT_SZ  := 3 * 20;
+  IAT_RVA := IDataRVA + IAT1_Off;
+  IAT_SZ  := (NK1 + 1 + NK2 + 1) * 4;
 
-  { Patch des fixups IMP32 (appels KERNEL32) }
+  { Patch des fixups IMP32 (appels KERNEL32/OLE32) : cherche le nom
+    importe dans les deux tables de fonctions, chacune avec son propre
+    bloc IAT }
   For FI := 1 To BinFixupCount Do Begin
     If BinFixups[FI].Kind <> BIN_FIX_IMP32 Then Continue;
     If BinFixups[FI].Section <> BIN_SEC_TEXT Then Continue;
@@ -5522,10 +5598,14 @@ Begin
     Pname := BinLabels[LIdx].Name;
     If (Length(Pname) > 7) And (Copy(Pname, 1, 7) = '__imp__') Then
       Pname := Copy(Pname, 8, 255);
-    Kidx := 0;
-    For K := 1 To NK Do If FuncName[K] = Pname Then Kidx := K;
-    If Kidx = 0 Then Continue;
-    IATVA := ImageBase + IAT_RVA + (Kidx - 1) * 4;
+    IATVA := 0;
+    For K := 1 To NK1 Do
+      If FuncName1[K] = Pname Then
+        IATVA := ImageBase + IDataRVA + IAT1_Off + (K - 1) * 4;
+    For K := 1 To NK2 Do
+      If FuncName2[K] = Pname Then
+        IATVA := ImageBase + IDataRVA + IAT2_Off + (K - 1) * 4;
+    If IATVA = 0 Then Continue;
     Loc   := BinFixups[FI].Offset;
     BinCode[Loc]     := IATVA And $FF;
     BinCode[Loc + 1] := (IATVA Shr 8)  And $FF;
@@ -5661,30 +5741,60 @@ Begin
   For LI := 0 To BinRDataSize - 1 Do BlockWrite(F, BinRData[LI], 1);
   WritePad(F, RDataSz - BinRDataSize);
 
-  For I := 1 To NK Do WriteDWord(F, IDataRVA + FuncOff[I]);
+  For I := 1 To NK1 Do WriteDWord(F, IDataRVA + FuncOff1[I]);   { IAT1 : KERNEL32 }
   WriteDWord(F, 0);
 
-  For I := 1 To NK Do WriteDWord(F, IDataRVA + FuncOff[I]);
+  For I := 1 To NK2 Do WriteDWord(F, IDataRVA + FuncOff2[I]);   { IAT2 : OLE32 }
   WriteDWord(F, 0);
 
-  WriteDWord(F, IDataRVA + ILT_Off);
+  For I := 1 To NK1 Do WriteDWord(F, IDataRVA + FuncOff1[I]);   { ILT1 (identique a IAT1, non lie) }
+  WriteDWord(F, 0);
+
+  For I := 1 To NK2 Do WriteDWord(F, IDataRVA + FuncOff2[I]);   { ILT2 (identique a IAT2, non lie) }
+  WriteDWord(F, 0);
+
+  { Descripteur d'import #1 : KERNEL32.DLL }
+  WriteDWord(F, IDataRVA + ILT1_Off);
   WriteDWord(F, 0);
   WriteDWord(F, 0);
-  WriteDWord(F, IDataRVA + DllName_Off);
-  WriteDWord(F, IDataRVA + IAT_Off);
+  WriteDWord(F, IDataRVA + DllName1_Off);
+  WriteDWord(F, IDataRVA + IAT1_Off);
+
+  { Descripteur d'import #2 : OLE32.DLL (GUID reel) }
+  WriteDWord(F, IDataRVA + ILT2_Off);
+  WriteDWord(F, 0);
+  WriteDWord(F, 0);
+  WriteDWord(F, IDataRVA + DllName2_Off);
+  WriteDWord(F, IDataRVA + IAT2_Off);
+
+  { Descripteur nul terminal }
   WriteDWord(F, 0); WriteDWord(F, 0); WriteDWord(F, 0);
   WriteDWord(F, 0); WriteDWord(F, 0);
 
   WriteStr8(F, 'KERNEL32.DLL', 13);
-  Dummy := 0; BlockWrite(F, Dummy, 1);
+  Dummy := 0; BlockWrite(F, Dummy, 1);   { octet de bourrage pour alignement pair }
 
-  For I := 1 To NK Do Begin
+  WriteStr8(F, 'OLE32.DLL', 10);
+
+  For I := 1 To NK1 Do Begin
     WriteWord(F, I);
-    For K := 1 To Length(FuncName[I]) Do Begin
-      Dummy := Ord(FuncName[I][K]); BlockWrite(F, Dummy, 1);
+    For K := 1 To Length(FuncName1[I]) Do Begin
+      Dummy := Ord(FuncName1[I][K]); BlockWrite(F, Dummy, 1);
     End;
     Dummy := 0; BlockWrite(F, Dummy, 1);
-    NL := Length(FuncName[I]);
+    NL := Length(FuncName1[I]);
+    If (NL + 1) Mod 2 <> 0 Then Begin
+      Dummy := 0; BlockWrite(F, Dummy, 1);
+    End;
+  End;
+
+  For I := 1 To NK2 Do Begin
+    WriteWord(F, I);
+    For K := 1 To Length(FuncName2[I]) Do Begin
+      Dummy := Ord(FuncName2[I][K]); BlockWrite(F, Dummy, 1);
+    End;
+    Dummy := 0; BlockWrite(F, Dummy, 1);
+    NL := Length(FuncName2[I]);
     If (NL + 1) Mod 2 <> 0 Then Begin
       Dummy := 0; BlockWrite(F, Dummy, 1);
     End;
@@ -5930,9 +6040,10 @@ End;
     autre     -> evalue pour effet de bord uniquement (silencieux) }
 Procedure CodegenPrintFormatted(FmtText: String; ArgsHead: Integer);
 Var
-  I, ArgN, Idx, ArgNode: Integer;
+  I, ArgN, Idx, ArgNode, GuidCallMIdx, GuidArgNode, GuidOff: Integer;
   Pending: String;
   LFalse, LEnd: String;
+  GuidFound: Boolean;
 Begin
   Pending := '';
   I := 1;
@@ -5965,8 +6076,27 @@ Begin
         End Else If IRNodes[ArgNode].TypeName = 'str' Then Begin
           If IRNodes[ArgNode].Kind = NK_LIT_STR Then
             CodegenPrintStringLiteral(IRNodes[ArgNode].Text)
-          Else
-            CodegenExpr(ArgNode);
+          Else Begin
+            { guid2Str(x) (GUID reel, extension apres TODO 26) : x doit
+              etre une variable guid simple (adresse connue), imprimee
+              directement en hexadecimal plutot que comme une chaine
+              stubbee }
+            GuidCallMIdx := 0;
+            If IRNodes[ArgNode].Kind = NK_CALL Then
+              GuidCallMIdx := IRNodes[ArgNode].ResolvedMethod;
+            If (GuidCallMIdx <> 0) And (Methods[GuidCallMIdx].ClassIdx = GlobalFuncClassIdx) And
+               (Methods[GuidCallMIdx].Name = 'guid2Str') Then Begin
+              GuidArgNode := IRNodes[ArgNode].Right;
+              If (GuidArgNode <> 0) And (IRNodes[GuidArgNode].Kind = NK_IDENT) Then Begin
+                GuidOff := CgVarOffset(IRNodes[GuidArgNode].Text, GuidFound);
+                If GuidFound Then Begin
+                  BinLeaRegEbpDisp(REG_EDI, GuidOff);
+                  BinCallLabel('_XPPRT_PrintGuid');
+                End;
+              End;
+            End Else
+              CodegenExpr(ArgNode);
+          End;
         End Else If (IRNodes[ArgNode].TypeName = 'int') Or
                     (IRNodes[ArgNode].TypeName = 'real') Then Begin
           CodegenExpr(ArgNode);
@@ -6220,10 +6350,11 @@ Begin
 End;
 
 Procedure CodegenAssign(N: Integer);
-Var LeftNode, Off, Op: Integer; Found: Boolean;
+Var LeftNode, RightNode, Off, Op, RMIdx: Integer; Found: Boolean;
 Begin
-  LeftNode := IRNodes[N].Left;
-  Op       := IRNodes[N].Tok;
+  LeftNode  := IRNodes[N].Left;
+  RightNode := IRNodes[N].Right;
+  Op        := IRNodes[N].Tok;
 
   If IRNodes[LeftNode].Kind <> NK_IDENT Then Begin
     { cible non modelisee (champ, indexation...) : les deux cotes sont
@@ -6234,6 +6365,23 @@ Begin
   End;
 
   Off := CgVarOffset(IRNodes[LeftNode].Text, Found);
+
+  { x = newGuid() (GUID reel, extension apres TODO 26) : au lieu du
+    schema scalaire "evalue puis range 4 octets", ecrit directement un
+    vrai GUID de 16 octets via CoCreateGuid (OLE32) a l'adresse de la
+    variable locale/parametre }
+  If (Op = Ord('=')) And Found And (IRNodes[LeftNode].TypeName = 'guid') And
+     (IRNodes[RightNode].Kind = NK_CALL) Then Begin
+    RMIdx := IRNodes[RightNode].ResolvedMethod;
+    If (RMIdx <> 0) And (Methods[RMIdx].ClassIdx = GlobalFuncClassIdx) And
+       (Methods[RMIdx].Name = 'newGuid') Then Begin
+      BinLeaRegEbpDisp(REG_EDI, Off);
+      BinPushReg(REG_EDI);
+      BinCallImportRaw('CoCreateGuid');
+      BinXorRegReg(REG_EAX);
+      Exit;
+    End;
+  End;
 
   If Op = Ord('=') Then Begin
     CodegenExpr(IRNodes[N].Right);
@@ -6533,6 +6681,7 @@ Begin
   BinDefineLabel('_XPPRT_PutChar');
   BinEmitPrologue(4);
   BinMovEbpDispAl(-1);
+  BinPushReg(REG_EDI);   { protege l'EDI de l'appelant : _XPPRT_PrintGuid y garde l'adresse du GUID a travers les appels a PutChar }
   BinLeaRegEbpDisp(REG_EDI, -1);
   BinPushImm32(-11);
   BinCallImportRaw('GetStdHandle');
@@ -6542,6 +6691,7 @@ Begin
   BinPushReg(REG_EDI);
   BinPushReg(REG_EAX);
   BinCallImportRaw('WriteFile');
+  BinPopReg(REG_EDI);
   BinEmitEpilogueN(0);
 End;
 
@@ -6633,19 +6783,19 @@ Begin
   BinPushReg(REG_EDI);
   BinCallImportRaw('GetLocalTime');
 
-  BinMovzxRegEbpDispWord(REG_EAX, -16);  { wYear, offset 0 }
+  BinMovzxRegBaseDispWord(REG_EAX, REG_EBP, -16);  { wYear, offset 0 }
   BinMovRegImm32(REG_ECX, 10000);
   BinImulEaxEcx;
   BinPushReg(REG_EAX);
 
-  BinMovzxRegEbpDispWord(REG_EAX, -14);  { wMonth, offset 2 }
+  BinMovzxRegBaseDispWord(REG_EAX, REG_EBP, -14);  { wMonth, offset 2 }
   BinMovRegImm32(REG_ECX, 100);
   BinImulEaxEcx;
   BinPopReg(REG_ECX);
   BinAddEaxEcx;
   BinPushReg(REG_EAX);
 
-  BinMovzxRegEbpDispWord(REG_EAX, -10);  { wDay, offset 6 }
+  BinMovzxRegBaseDispWord(REG_EAX, REG_EBP, -10);  { wDay, offset 6 }
   BinPopReg(REG_ECX);
   BinAddEaxEcx;
 
@@ -6692,6 +6842,135 @@ Begin
   BinEmitEpilogueN(0);
 End;
 
+{ _XPPRT_PrintHexNibble (extension GUID reel) : imprime un chiffre
+  hexadecimal majuscule (0..15 dans EAX) }
+Procedure EmitPrintHexNibbleHelper;
+Var LDigit, LEnd: String;
+Begin
+  BinCurSec := BIN_SEC_TEXT;
+  BinDefineLabel('_XPPRT_PrintHexNibble');
+  BinEmitPrologue(0);
+  BinCmpEaxImm32(10);
+  LDigit := NewBinLabel('HxD');
+  LEnd   := NewBinLabel('HxE');
+  BinJccLabel(CC_L, LDigit);
+  BinAddAlImm8(Ord('A') - 10);
+  BinJmpLabel(LEnd);
+  BinDefineLabel(LDigit);
+  BinAddAlImm8(Ord('0'));
+  BinDefineLabel(LEnd);
+  BinCallLabel('_XPPRT_PutChar');
+  BinEmitEpilogueN(0);
+End;
+
+{ _XPPRT_PrintHex8/16/32 (extension GUID reel) : impriment un octet/
+  mot/double mot (dans EAX) en hexadecimal a largeur fixe (2/4/8
+  chiffres, zeros de tete inclus), octet le plus significatif en
+  premier. EBX sert d'accumulateur temporaire, preserve par
+  _XPPRT_PrintHex8/PrintHexNibble/PutChar (memes garanties que pour
+  _XPPRT_PrintDate). }
+Procedure EmitPrintHex8Helper;
+Begin
+  BinCurSec := BIN_SEC_TEXT;
+  BinDefineLabel('_XPPRT_PrintHex8');
+  BinEmitPrologue(0);
+  BinPushReg(REG_EBX);
+  BinMovRegReg(REG_EBX, REG_EAX);
+  BinShrEaxImm8(4);
+  BinAndEaxImm32($0F);
+  BinCallLabel('_XPPRT_PrintHexNibble');
+  BinMovRegReg(REG_EAX, REG_EBX);
+  BinAndEaxImm32($0F);
+  BinCallLabel('_XPPRT_PrintHexNibble');
+  BinPopReg(REG_EBX);
+  BinEmitEpilogueN(0);
+End;
+
+Procedure EmitPrintHex16Helper;
+Begin
+  BinCurSec := BIN_SEC_TEXT;
+  BinDefineLabel('_XPPRT_PrintHex16');
+  BinEmitPrologue(0);
+  BinPushReg(REG_EBX);
+  BinMovRegReg(REG_EBX, REG_EAX);
+  BinShrEaxImm8(8);
+  BinAndEaxImm32($FF);
+  BinCallLabel('_XPPRT_PrintHex8');
+  BinMovRegReg(REG_EAX, REG_EBX);
+  BinAndEaxImm32($FF);
+  BinCallLabel('_XPPRT_PrintHex8');
+  BinPopReg(REG_EBX);
+  BinEmitEpilogueN(0);
+End;
+
+Procedure EmitPrintHex32Helper;
+Begin
+  BinCurSec := BIN_SEC_TEXT;
+  BinDefineLabel('_XPPRT_PrintHex32');
+  BinEmitPrologue(0);
+  BinPushReg(REG_EBX);
+  BinMovRegReg(REG_EBX, REG_EAX);
+  BinShrEaxImm8(24);
+  BinAndEaxImm32($FF);
+  BinCallLabel('_XPPRT_PrintHex8');
+  BinMovRegReg(REG_EAX, REG_EBX);
+  BinShrEaxImm8(16);
+  BinAndEaxImm32($FF);
+  BinCallLabel('_XPPRT_PrintHex8');
+  BinMovRegReg(REG_EAX, REG_EBX);
+  BinShrEaxImm8(8);
+  BinAndEaxImm32($FF);
+  BinCallLabel('_XPPRT_PrintHex8');
+  BinMovRegReg(REG_EAX, REG_EBX);
+  BinAndEaxImm32($FF);
+  BinCallLabel('_XPPRT_PrintHex8');
+  BinPopReg(REG_EBX);
+  BinEmitEpilogueN(0);
+End;
+
+{ _XPPRT_PrintGuid (GUID reel, extension apres TODO 26) : imprime au
+  format standard XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX le GUID de 16
+  octets (structure Win32 GUID : DWORD Data1, WORD Data2, WORD Data3,
+  BYTE Data4[8]) dont l'adresse est fournie dans EDI par l'appelant.
+  EDI survit aux appels a PrintHex8/16/32/PutChar : aucun d'eux ne
+  l'utilise, et PutChar le protege explicitement par prudence. }
+Procedure EmitPrintGuidHelper;
+Var K: Integer;
+Begin
+  BinCurSec := BIN_SEC_TEXT;
+  BinDefineLabel('_XPPRT_PrintGuid');
+  BinEmitPrologue(0);
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EDI, 0);
+  BinCallLabel('_XPPRT_PrintHex32');
+  BinMovRegImm32(REG_EAX, Ord('-'));
+  BinCallLabel('_XPPRT_PutChar');
+
+  BinMovzxRegBaseDispWord(REG_EAX, REG_EDI, 4);
+  BinCallLabel('_XPPRT_PrintHex16');
+  BinMovRegImm32(REG_EAX, Ord('-'));
+  BinCallLabel('_XPPRT_PutChar');
+
+  BinMovzxRegBaseDispWord(REG_EAX, REG_EDI, 6);
+  BinCallLabel('_XPPRT_PrintHex16');
+  BinMovRegImm32(REG_EAX, Ord('-'));
+  BinCallLabel('_XPPRT_PutChar');
+
+  BinMovzxRegBaseDispByte(REG_EAX, REG_EDI, 8);
+  BinCallLabel('_XPPRT_PrintHex8');
+  BinMovzxRegBaseDispByte(REG_EAX, REG_EDI, 9);
+  BinCallLabel('_XPPRT_PrintHex8');
+  BinMovRegImm32(REG_EAX, Ord('-'));
+  BinCallLabel('_XPPRT_PutChar');
+
+  For K := 10 To 15 Do Begin
+    BinMovzxRegBaseDispByte(REG_EAX, REG_EDI, K);
+    BinCallLabel('_XPPRT_PrintHex8');
+  End;
+
+  BinEmitEpilogueN(0);
+End;
+
 { Point d'entree binaire "start" : trampoline vers static void main(),
   suivi d'un ExitProcess(0) propre. Emis en tout premier dans .text
   pour que start soit bien a l'adresse EntryRVA=TextRVA ecrite par
@@ -6720,6 +6999,11 @@ Begin
   EmitPrintIntHelper;
   EmitTodayHelper;
   EmitPrintDateHelper;
+  EmitPrintHexNibbleHelper;
+  EmitPrintHex8Helper;
+  EmitPrintHex16Helper;
+  EmitPrintHex32Helper;
+  EmitPrintGuidHelper;
 
   For I := 1 To MethodCount Do
     If Methods[I].BodyStmt <> 0 Then CodegenMethod(I);
