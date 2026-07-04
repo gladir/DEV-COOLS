@@ -284,6 +284,23 @@ Program XPPCW32;
             Corrige 10_strings.xpp integralement (verifie caractere par
             caractere : longueur, casse, sous-chaine, recherche,
             suppression+insertion combinees).
+            L'encodage de date AAAAMMJJ (empaquetage decimal) rendait
+            toute arithmetique fausse par construction (soustraire ou
+            additionner des jours n'a pas de sens sur un tel entier).
+            Refonte complete vers un vrai compteur de jours lineaire
+            (algorithme calendaire "days_from_civil"/"civil_from_days"
+            de Howard Hinnant, domaine public, simplifie pour annee
+            >= 1 : toutes les divisions restent non signees) :
+            _XPPRT_DaysFromCivil et _XPPRT_CivilFromDays sont les deux
+            nouvelles conversions ; today()/_XPPRT_PrintDate sont
+            adaptes, et str2Date() (parse JJ/MM/AAAA via un nouveau
+            _XPPRT_ParseUInt, un seul format reconnu, celui de
+            l'echantillon), mthOfYr() et mthName() (table de 12 noms
+            de mois reels en .rdata) sont desormais reellement
+            implementes. PromoteType() reconnait maintenant date+int
+            comme "date" (necessaire pour que strFmt affiche
+            correctement "maintenant + 30"). Corrige 11_datetime.xpp
+            integralement, y compris l'age et l'arithmetique de jours.
 }
 
 { ============================================================ }
@@ -2577,6 +2594,11 @@ Function PromoteType(T1, T2: String): String;
 Begin
   If (T1 = 'real') Or (T2 = 'real') Then PromoteType := 'real'
   Else If (T1 = 'int') And (T2 = 'int') Then PromoteType := 'int'
+  { date +/- int reste une date (ex. maintenant + 30 jours) : ajoute
+    pour que l'arithmetique de date reelle (extension au-dela de
+    TODO 26) soit reconnue et affichee comme telle par strFmt }
+  Else If ((T1 = 'date') And (T2 = 'int')) Or ((T1 = 'int') And (T2 = 'date')) Then
+    PromoteType := 'date'
   Else If T1 = T2 Then PromoteType := T1
   Else PromoteType := 'anytype';
 End;
@@ -6450,6 +6472,28 @@ Begin
     Exit;
   End;
 
+  { str2Date/mthOfYr/mthName (arithmetique de date reelle, refonte
+    calendaire au-dela de TODO 26) }
+  If (MIdx <> 0) And (Methods[MIdx].ClassIdx = GlobalFuncClassIdx) Then Begin
+    If (Methods[MIdx].Name = 'str2Date') And (ArgHead <> 0) Then Begin
+      Arg2 := IRNodes[ArgHead].NextArg;
+      If Arg2 <> 0 Then CodegenExpr(Arg2);   { format : evalue pour effet de bord, ignore }
+      CodegenExpr(ArgHead);
+      BinCallLabel('_XPPRT_StrToDate');
+      Exit;
+    End;
+    If (Methods[MIdx].Name = 'mthOfYr') And (ArgHead <> 0) Then Begin
+      CodegenExpr(ArgHead);
+      BinCallLabel('_XPPRT_MthOfYr');
+      Exit;
+    End;
+    If (Methods[MIdx].Name = 'mthName') And (ArgHead <> 0) Then Begin
+      CodegenExpr(ArgHead);
+      BinCallLabel('_XPPRT_MthName');
+      Exit;
+    End;
+  End;
+
   { conLen/conPeek/con2Str (container reel, extension apres TODO 26) }
   If (MIdx <> 0) And (Methods[MIdx].ClassIdx = GlobalFuncClassIdx) Then Begin
     If (Methods[MIdx].Name = 'conLen') And (ArgHead <> 0) Then Begin
@@ -7208,11 +7252,235 @@ Begin
   BinEmitEpilogueN(0);
 End;
 
-{ _XPPRT_Today (date reelle, extension apres TODO 26) : appelle
-  GetLocalTime (KERNEL32) dans un tampon SYSTEMTIME local de 16 octets
-  et encode la date reelle du systeme en un entier AAAAMMJJ (ex.
-  4 juillet 2026 -> 20260704) renvoye dans EAX. Convention interne :
-  aucun argument, aucun nettoyage de pile au retour. }
+{ _XPPRT_DaysFromCivil (refonte calendaire reelle, au-dela de
+  l'extension "date/GUID reels" de TODO 26) : convention pile,
+  arguments annee,mois,jour a [ebp+8/12/16] -> EAX = nombre de jours
+  depuis le 1er janvier 1970 (peut etre negatif pour une date
+  anterieure, mais nos usages restent toujours des annees >= 1).
+  Algorithme "days_from_civil" de Howard Hinnant (domaine public),
+  simplifie en supposant annee >= 1 : toutes les divisions restent
+  non signees (DIV) sur des operandes toujours positifs. }
+Procedure EmitDaysFromCivilHelper;
+Var LSkipDec, LElse9, LGotAdj: String;
+Begin
+  BinCurSec := BIN_SEC_TEXT;
+  BinDefineLabel('_XPPRT_DaysFromCivil');
+  BinEmitPrologue(20);
+  { [ebp-4]=y2 [ebp-8]=era [ebp-12]=yoe [ebp-16]=doy [ebp-20]=doe }
+
+  BinMovRegBaseDisp32(REG_ECX, REG_EBP, 12);   { m }
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, 8);      { y }
+  LSkipDec := NewBinLabel('Dc1');
+  BinCmpRegImm8(REG_ECX, 2);
+  BinJccLabel(CC_G, LSkipDec);
+  BinDecEax;
+  BinDefineLabel(LSkipDec);
+  BinMovBaseDispReg32(REG_EBP, -4, REG_EAX);   { y2 }
+
+  BinXorRegReg(REG_EDX);
+  BinMovRegImm32(REG_ECX, 400);
+  BinDivReg(REG_ECX);                            { eax=era, edx=yoe }
+  BinMovBaseDispReg32(REG_EBP, -8, REG_EAX);       { era }
+  BinMovBaseDispReg32(REG_EBP, -12, REG_EDX);        { yoe }
+
+  { doy = (153*(m+adj)+2) div 5 + d - 1, adj = m>2 ? -3 : 9 }
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, 12);   { m }
+  LElse9 := NewBinLabel('Dc2');
+  LGotAdj := NewBinLabel('Dc3');
+  BinCmpEaxImm32(2);
+  BinJccLabel(CC_G, LElse9);
+  BinAddEaxImm32(9);
+  BinJmpLabel(LGotAdj);
+  BinDefineLabel(LElse9);
+  BinAddEaxImm32(-3);
+  BinDefineLabel(LGotAdj);
+  BinMovRegImm32(REG_ECX, 153);
+  BinImulEaxEcx;
+  BinAddEaxImm32(2);
+  BinXorRegReg(REG_EDX);
+  BinMovRegImm32(REG_ECX, 5);
+  BinDivReg(REG_ECX);
+  BinMovRegBaseDisp32(REG_ECX, REG_EBP, 16);   { d }
+  BinAddRegReg(REG_EAX, REG_ECX);
+  BinDecEax;
+  BinMovBaseDispReg32(REG_EBP, -16, REG_EAX);    { doy }
+
+  { doe = yoe*365 + yoe div 4 - yoe div 100 + doy }
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -12);   { yoe }
+  BinMovRegImm32(REG_ECX, 365);
+  BinImulEaxEcx;
+  BinMovRegReg(REG_EBX, REG_EAX);                  { ebx = 365*yoe (accumulateur) }
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -12);
+  BinXorRegReg(REG_EDX);
+  BinMovRegImm32(REG_ECX, 4);
+  BinDivReg(REG_ECX);
+  BinAddRegReg(REG_EBX, REG_EAX);
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -12);
+  BinXorRegReg(REG_EDX);
+  BinMovRegImm32(REG_ECX, 100);
+  BinDivReg(REG_ECX);
+  BinSubRegReg(REG_EBX, REG_EAX);
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -16);   { doy }
+  BinAddRegReg(REG_EBX, REG_EAX);
+  BinMovBaseDispReg32(REG_EBP, -20, REG_EBX);      { doe }
+
+  { resultat = era*146097 + doe - 719468 }
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -8);   { era }
+  BinMovRegImm32(REG_ECX, 146097);
+  BinImulEaxEcx;
+  BinMovRegBaseDisp32(REG_ECX, REG_EBP, -20);    { doe }
+  BinAddRegReg(REG_EAX, REG_ECX);
+  BinAddEaxImm32(-719468);
+
+  BinEmitEpilogueN(12);
+End;
+
+{ _XPPRT_CivilFromDays : convention pile, arguments jours,&annee,&mois,
+  &jour a [ebp+8/12/16/20] ; ecrit le resultat via les 3 pointeurs
+  recus (pas de valeur de retour utile). Inverse de DaysFromCivil,
+  meme algorithme de Hinnant, meme simplification (annee >= 1). }
+Procedure EmitCivilFromDaysHelper;
+Var LGe10, LGotM, LSkipInc: String;
+Begin
+  BinCurSec := BIN_SEC_TEXT;
+  BinDefineLabel('_XPPRT_CivilFromDays');
+  BinEmitPrologue(36);
+  { [ebp-4]=z2(inutilise apres) [ebp-8]=era [ebp-12]=doe [ebp-16]=yoe
+    [ebp-20]=y [ebp-24]=doy [ebp-28]=mp [ebp-32]=d [ebp-36]=m }
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, 8);
+  BinAddEaxImm32(719468);
+
+  BinXorRegReg(REG_EDX);
+  BinMovRegImm32(REG_ECX, 146097);
+  BinDivReg(REG_ECX);                              { eax=era, edx=doe }
+  BinMovBaseDispReg32(REG_EBP, -8, REG_EAX);
+  BinMovBaseDispReg32(REG_EBP, -12, REG_EDX);
+
+  { yoe = (doe - doe div 1460 + doe div 36524 - doe div 146096) div 365 }
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -12);
+  BinMovRegReg(REG_EBX, REG_EAX);                    { ebx = doe (accumulateur) }
+  BinXorRegReg(REG_EDX);
+  BinMovRegImm32(REG_ECX, 1460);
+  BinDivReg(REG_ECX);
+  BinSubRegReg(REG_EBX, REG_EAX);
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -12);
+  BinXorRegReg(REG_EDX);
+  BinMovRegImm32(REG_ECX, 36524);
+  BinDivReg(REG_ECX);
+  BinAddRegReg(REG_EBX, REG_EAX);
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -12);
+  BinXorRegReg(REG_EDX);
+  BinMovRegImm32(REG_ECX, 146096);
+  BinDivReg(REG_ECX);
+  BinSubRegReg(REG_EBX, REG_EAX);
+
+  BinMovRegReg(REG_EAX, REG_EBX);
+  BinXorRegReg(REG_EDX);
+  BinMovRegImm32(REG_ECX, 365);
+  BinDivReg(REG_ECX);                                { eax = yoe }
+  BinMovBaseDispReg32(REG_EBP, -16, REG_EAX);
+
+  { y = yoe + era*400 }
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -8);
+  BinMovRegImm32(REG_ECX, 400);
+  BinImulEaxEcx;
+  BinMovRegBaseDisp32(REG_ECX, REG_EBP, -16);
+  BinAddRegReg(REG_EAX, REG_ECX);
+  BinMovBaseDispReg32(REG_EBP, -20, REG_EAX);
+
+  { doy = doe - (365*yoe + yoe div 4 - yoe div 100) }
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -16);
+  BinMovRegImm32(REG_ECX, 365);
+  BinImulEaxEcx;
+  BinMovRegReg(REG_EBX, REG_EAX);
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -16);
+  BinXorRegReg(REG_EDX);
+  BinMovRegImm32(REG_ECX, 4);
+  BinDivReg(REG_ECX);
+  BinAddRegReg(REG_EBX, REG_EAX);
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -16);
+  BinXorRegReg(REG_EDX);
+  BinMovRegImm32(REG_ECX, 100);
+  BinDivReg(REG_ECX);
+  BinSubRegReg(REG_EBX, REG_EAX);
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -12);   { doe }
+  BinSubRegReg(REG_EAX, REG_EBX);
+  BinMovBaseDispReg32(REG_EBP, -24, REG_EAX);     { doy }
+
+  { mp = (5*doy+2) div 153 }
+  BinMovRegImm32(REG_ECX, 5);
+  BinImulEaxEcx;
+  BinAddEaxImm32(2);
+  BinXorRegReg(REG_EDX);
+  BinMovRegImm32(REG_ECX, 153);
+  BinDivReg(REG_ECX);
+  BinMovBaseDispReg32(REG_EBP, -28, REG_EAX);   { mp }
+
+  { d = doy - (153*mp+2) div 5 + 1 }
+  BinMovRegImm32(REG_ECX, 153);
+  BinImulEaxEcx;
+  BinAddEaxImm32(2);
+  BinXorRegReg(REG_EDX);
+  BinMovRegImm32(REG_ECX, 5);
+  BinDivReg(REG_ECX);
+  BinMovRegReg(REG_ECX, REG_EAX);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -24);   { doy }
+  BinSubRegReg(REG_EAX, REG_ECX);
+  BinIncEax;
+  BinMovBaseDispReg32(REG_EBP, -32, REG_EAX);     { d }
+
+  { m = mp + (mp<10 ? 3 : -9) }
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -28);   { mp }
+  LGe10 := NewBinLabel('Cf1');
+  LGotM := NewBinLabel('Cf2');
+  BinCmpEaxImm32(10);
+  BinJccLabel(CC_GE, LGe10);
+  BinAddEaxImm32(3);
+  BinJmpLabel(LGotM);
+  BinDefineLabel(LGe10);
+  BinAddEaxImm32(-9);
+  BinDefineLabel(LGotM);
+  BinMovBaseDispReg32(REG_EBP, -36, REG_EAX);   { m }
+
+  { y += (m<=2) ? 1 : 0 }
+  LSkipInc := NewBinLabel('Cf3');
+  BinCmpEaxImm32(2);
+  BinJccLabel(CC_G, LSkipInc);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -20);
+  BinIncEax;
+  BinMovBaseDispReg32(REG_EBP, -20, REG_EAX);
+  BinDefineLabel(LSkipInc);
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -20);   { y }
+  BinMovRegBaseDisp32(REG_ECX, REG_EBP, 12);      { &y }
+  BinMovBaseDispReg32(REG_ECX, 0, REG_EAX);
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -36);   { m }
+  BinMovRegBaseDisp32(REG_ECX, REG_EBP, 16);      { &m }
+  BinMovBaseDispReg32(REG_ECX, 0, REG_EAX);
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -32);   { d }
+  BinMovRegBaseDisp32(REG_ECX, REG_EBP, 20);      { &d }
+  BinMovBaseDispReg32(REG_ECX, 0, REG_EAX);
+
+  BinXorRegReg(REG_EAX);
+  BinEmitEpilogueN(16);
+End;
+
+{ _XPPRT_Today (date reelle) : appelle GetLocalTime (KERNEL32) dans un
+  tampon SYSTEMTIME local de 16 octets, puis convertit annee/mois/jour
+  en un vrai compteur de jours lineaire via _XPPRT_DaysFromCivil (au
+  lieu de l'ancien encodage AAAAMMJJ, qui rendait toute arithmetique de
+  date fausse). Convention interne : aucun argument, aucun nettoyage
+  de pile au retour. }
 Procedure EmitTodayHelper;
 Begin
   BinCurSec := BIN_SEC_TEXT;
@@ -7222,62 +7490,171 @@ Begin
   BinPushReg(REG_EDI);
   BinCallImportRaw('GetLocalTime');
 
-  BinMovzxRegBaseDispWord(REG_EAX, REG_EBP, -16);  { wYear, offset 0 }
-  BinMovRegImm32(REG_ECX, 10000);
-  BinImulEaxEcx;
-  BinPushReg(REG_EAX);
-
-  BinMovzxRegBaseDispWord(REG_EAX, REG_EBP, -14);  { wMonth, offset 2 }
-  BinMovRegImm32(REG_ECX, 100);
-  BinImulEaxEcx;
-  BinPopReg(REG_ECX);
-  BinAddEaxEcx;
-  BinPushReg(REG_EAX);
-
   BinMovzxRegBaseDispWord(REG_EAX, REG_EBP, -10);  { wDay, offset 6 }
-  BinPopReg(REG_ECX);
-  BinAddEaxEcx;
+  BinPushReg(REG_EAX);
+  BinMovzxRegBaseDispWord(REG_EAX, REG_EBP, -14);  { wMonth, offset 2 }
+  BinPushReg(REG_EAX);
+  BinMovzxRegBaseDispWord(REG_EAX, REG_EBP, -16);  { wYear, offset 0 }
+  BinPushReg(REG_EAX);
+  BinCallLabel('_XPPRT_DaysFromCivil');
 
   BinEmitEpilogueN(0);
 End;
 
-{ _XPPRT_PrintDate (extension apres TODO 26) : imprime un entier
-  AAAAMMJJ (produit par _XPPRT_Today) au format J/M/AAAA, en
-  reutilisant _XPPRT_PrintInt pour chaque partie numerique (pas de
-  zero de tete sur le jour/mois, ex. "4/7/2026"). EBX survit aux
-  appels a _XPPRT_PrintInt/_XPPRT_PutChar (tous deux le preservent). }
+{ _XPPRT_PrintDate : EAX = jours (compteur lineaire) -> imprime en
+  J/M/AAAA. Convertit d'abord en annee/mois/jour civils reels via
+  _XPPRT_CivilFromDays (3 emplacements locaux recoivent le resultat
+  par pointeur), puis reutilise _XPPRT_PrintInt pour chaque partie
+  (pas de zero de tete, ex. "4/7/2026"). }
 Procedure EmitPrintDateHelper;
 Begin
   BinCurSec := BIN_SEC_TEXT;
   BinDefineLabel('_XPPRT_PrintDate');
+  BinEmitPrologue(12);
+  { [ebp-4]=annee [ebp-8]=mois [ebp-12]=jour }
+  BinLeaRegEbpDisp(REG_ECX, -12); BinPushReg(REG_ECX);
+  BinLeaRegEbpDisp(REG_ECX, -8);  BinPushReg(REG_ECX);
+  BinLeaRegEbpDisp(REG_ECX, -4);  BinPushReg(REG_ECX);
+  BinPushReg(REG_EAX);
+  BinCallLabel('_XPPRT_CivilFromDays');
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -12);
+  BinCallLabel('_XPPRT_PrintInt');
+  BinMovRegImm32(REG_EAX, Ord('/'));
+  BinCallLabel('_XPPRT_PutChar');
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -8);
+  BinCallLabel('_XPPRT_PrintInt');
+  BinMovRegImm32(REG_EAX, Ord('/'));
+  BinCallLabel('_XPPRT_PutChar');
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -4);
+  BinCallLabel('_XPPRT_PrintInt');
+
+  BinEmitEpilogueN(0);
+End;
+
+{ _XPPRT_ParseUInt : EBX = curseur dans une chaine reelle -> EAX =
+  entier non signe accumule tant que le caractere courant est un
+  chiffre ASCII ; EBX avance jusqu'au premier caractere non-chiffre
+  (non consomme). Reutilise par _XPPRT_StrToDate pour chaque groupe
+  jour/mois/annee. }
+Procedure EmitParseUIntHelper;
+Var LLoop, LDone: String;
+Begin
+  BinCurSec := BIN_SEC_TEXT;
+  BinDefineLabel('_XPPRT_ParseUInt');
+  BinEmitPrologue(0);
+  BinMovRegImm32(REG_EAX, 0);
+  LLoop := NewBinLabel('Pu1');
+  LDone := NewBinLabel('Pu2');
+  BinDefineLabel(LLoop);
+  BinMovzxRegBaseDispByte(REG_ECX, REG_EBX, 0);
+  BinCmpRegImm8(REG_ECX, Ord('0'));
+  BinJccLabel(CC_L, LDone);
+  BinCmpRegImm8(REG_ECX, Ord('9'));
+  BinJccLabel(CC_G, LDone);
+  BinMovRegImm32(REG_EDX, Ord('0'));
+  BinSubRegReg(REG_ECX, REG_EDX);
+  BinPushReg(REG_ECX);
+  BinMovRegImm32(REG_ECX, 10);
+  BinImulEaxEcx;
+  BinPopReg(REG_ECX);
+  BinAddRegReg(REG_EAX, REG_ECX);
+  BinIncReg(REG_EBX);
+  BinJmpLabel(LLoop);
+  BinDefineLabel(LDone);
+  BinEmitEpilogueN(0);
+End;
+
+{ _XPPRT_StrToDate (str2Date) : EAX = pointeur vers une chaine reelle
+  au format JJ/MM/AAAA (le parametre "format" d'Axapta n'est pas
+  interprete de facon generale : un seul format, celui utilise par
+  l'echantillon, est reconnu) -> EAX = jours (DaysFromCivil). }
+Procedure EmitStrToDateHelper;
+Begin
+  BinCurSec := BIN_SEC_TEXT;
+  BinDefineLabel('_XPPRT_StrToDate');
   BinEmitPrologue(0);
   BinPushReg(REG_EBX);
   BinMovRegReg(REG_EBX, REG_EAX);
 
-  BinMovRegReg(REG_EAX, REG_EBX);
-  BinXorRegReg(REG_EDX);
-  BinMovRegImm32(REG_ECX, 100);
-  BinDivReg(REG_ECX);                 { eax=AAAAMM, edx=JJ }
-  BinMovRegReg(REG_EBX, REG_EAX);
-  BinMovRegReg(REG_EAX, REG_EDX);
-  BinCallLabel('_XPPRT_PrintInt');
-  BinMovRegImm32(REG_EAX, Ord('/'));
-  BinCallLabel('_XPPRT_PutChar');
+  BinCallLabel('_XPPRT_ParseUInt');   { eax = jour }
+  BinPushReg(REG_EAX);
+  BinIncReg(REG_EBX);
 
-  BinMovRegReg(REG_EAX, REG_EBX);
-  BinXorRegReg(REG_EDX);
-  BinMovRegImm32(REG_ECX, 100);
-  BinDivReg(REG_ECX);                 { eax=AAAA, edx=MM }
-  BinMovRegReg(REG_EBX, REG_EAX);
-  BinMovRegReg(REG_EAX, REG_EDX);
-  BinCallLabel('_XPPRT_PrintInt');
-  BinMovRegImm32(REG_EAX, Ord('/'));
-  BinCallLabel('_XPPRT_PutChar');
+  BinCallLabel('_XPPRT_ParseUInt');    { eax = mois }
+  BinPushReg(REG_EAX);
+  BinIncReg(REG_EBX);
 
-  BinMovRegReg(REG_EAX, REG_EBX);
-  BinCallLabel('_XPPRT_PrintInt');
+  BinCallLabel('_XPPRT_ParseUInt');     { eax = annee }
+  BinPushReg(REG_EAX);
+  BinCallLabel('_XPPRT_DaysFromCivil');
 
   BinPopReg(REG_EBX);
+  BinEmitEpilogueN(0);
+End;
+
+{ _XPPRT_MthOfYr : EAX = jours -> EAX = mois (1..12) civil reel. }
+Procedure EmitMthOfYrHelper;
+Begin
+  BinCurSec := BIN_SEC_TEXT;
+  BinDefineLabel('_XPPRT_MthOfYr');
+  BinEmitPrologue(12);
+  { [ebp-4]=annee [ebp-8]=mois [ebp-12]=jour }
+  BinLeaRegEbpDisp(REG_ECX, -12); BinPushReg(REG_ECX);
+  BinLeaRegEbpDisp(REG_ECX, -8);  BinPushReg(REG_ECX);
+  BinLeaRegEbpDisp(REG_ECX, -4);  BinPushReg(REG_ECX);
+  BinPushReg(REG_EAX);
+  BinCallLabel('_XPPRT_CivilFromDays');
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -8);
+  BinEmitEpilogueN(0);
+End;
+
+{ Table des 12 noms de mois francais (mthName), emise une seule fois
+  en .rdata : chaque nom via EmitCStringLiteral (transcodage CP850
+  deja applique), puis un tableau de 12 pointeurs (fixups ABS32). }
+Procedure EmitMonthNamesTable;
+Var Names, Labels: Array[1..12] Of String; I: Integer;
+Begin
+  Names[1]  := 'janvier';   Names[2]  := 'février';  Names[3]  := 'mars';
+  Names[4]  := 'avril';     Names[5]  := 'mai';       Names[6]  := 'juin';
+  Names[7]  := 'juillet';   Names[8]  := 'août';       Names[9]  := 'septembre';
+  Names[10] := 'octobre';   Names[11] := 'novembre';    Names[12] := 'décembre';
+
+  For I := 1 To 12 Do Labels[I] := EmitCStringLiteral(Names[I]);
+
+  BinCurSec := BIN_SEC_RDATA;
+  BinDefineLabel('_XPPD_MonthNames');
+  For I := 1 To 12 Do BinEmitRef32(Labels[I], BIN_FIX_ABS32);
+  BinCurSec := BIN_SEC_TEXT;
+End;
+
+{ _XPPRT_MthName : EAX = numero de mois (ecrete a [1,12]) -> EAX =
+  pointeur reel vers le nom (table _XPPD_MonthNames). }
+Procedure EmitMthNameHelper;
+Var LClampLo, LClampHi: String;
+Begin
+  BinCurSec := BIN_SEC_TEXT;
+  BinDefineLabel('_XPPRT_MthName');
+  BinEmitPrologue(0);
+  LClampLo := NewBinLabel('Mn1');
+  BinCmpEaxImm32(1);
+  BinJccLabel(CC_GE, LClampLo);
+  BinMovRegImm32(REG_EAX, 1);
+  BinDefineLabel(LClampLo);
+  LClampHi := NewBinLabel('Mn2');
+  BinCmpEaxImm32(12);
+  BinJccLabel(CC_LE, LClampHi);
+  BinMovRegImm32(REG_EAX, 12);
+  BinDefineLabel(LClampHi);
+  BinDecEax;
+  BinMovRegImm32(REG_ECX, 4);
+  BinImulEaxEcx;
+  BinMovRegReg(REG_ECX, REG_EAX);
+  BinMovRegLabelAddr(REG_EAX, '_XPPD_MonthNames');
+  BinAddRegReg(REG_EAX, REG_ECX);
+  BinMovRegBaseDisp32(REG_EAX, REG_EAX, 0);
   BinEmitEpilogueN(0);
 End;
 
@@ -8314,8 +8691,15 @@ Begin
 
   EmitPutCharHelper;
   EmitPrintIntHelper;
+  EmitDaysFromCivilHelper;
+  EmitCivilFromDaysHelper;
   EmitTodayHelper;
   EmitPrintDateHelper;
+  EmitParseUIntHelper;
+  EmitStrToDateHelper;
+  EmitMthOfYrHelper;
+  EmitMonthNamesTable;
+  EmitMthNameHelper;
   EmitPrintHexNibbleHelper;
   EmitPrintHex8Helper;
   EmitPrintHex16Helper;
