@@ -211,6 +211,11 @@ Program XPPCW32;
             reste silencieuse, faute de representation runtime des
             chaines (portee toujours reduite, voir TODO 24) ; c'est un
             "silence" delibere et documente, pas un manque detecte.
+            Tous les litteraux imprimes (info() direct ou via strFmt)
+            sont aussi transcodes de UTF-8 (encodage des .xpp) vers la
+            page de code OEM CP850 par defaut de cmd.exe, pour un
+            affichage correct des caracteres accentues sans manipuler
+            la console (chcp).
 }
 
 { ============================================================ }
@@ -5156,6 +5161,20 @@ Begin
   End;
 End;
 
+{ movzx Rd, word ptr [ebp+Disp] : lecture d'un champ WORD (16 bits)
+  d'une structure Win32 (ex. SYSTEMTIME de GetLocalTime), etendue sans
+  signe dans un registre 32 bits complet (ajoute pour la date reelle) }
+Procedure BinMovzxRegEbpDispWord(Rd, Disp: LongInt);
+Begin
+  AL('movzx ' + RegName(Rd) + ', word ptr [ebp' + SignedDisp(Disp) + ']');
+  BinEmit8($0F); BinEmit8($B7);
+  If (Disp >= -128) And (Disp <= 127) Then Begin
+    BinEmit8($45 Or (Rd Shl 3)); BinEmit8(Disp And $FF);
+  End Else Begin
+    BinEmit8($85 Or (Rd Shl 3)); BinEmit32(Disp);
+  End;
+End;
+
 { div R : division non signee EDX:EAX / R -> EAX=quotient, EDX=reste
   (ajoute par TODO 26, decomposition decimale de _XPPRT_PrintInt) }
 Procedure BinDivReg(R: Integer);
@@ -5413,7 +5432,7 @@ End;
 
 Procedure WritePE(FileName: String);
 Const
-  NK = 3;   { GetStdHandle, WriteFile, ExitProcess }
+  NK = 4;   { GetStdHandle, WriteFile, ExitProcess, GetLocalTime }
 Var
   F: File;
   I, K: Integer;
@@ -5427,8 +5446,8 @@ Var
   EntryRVA, ImageSz, CodeSz, InitDataSz: LongInt;
 
   IAT_Off, ILT_Off, IDT_Off, DllName_Off, HintBase_Off, IData_Raw: LongInt;
-  FuncOff:  Array[1..3] Of LongInt;
-  FuncName: Array[1..3] Of String;
+  FuncOff:  Array[1..4] Of LongInt;
+  FuncName: Array[1..4] Of String;
 
   IDT_RVA, IDT_SZ, IAT_RVA, IAT_SZ: LongInt;
 
@@ -5440,6 +5459,7 @@ Begin
   FuncName[1] := 'GetStdHandle';
   FuncName[2] := 'WriteFile';
   FuncName[3] := 'ExitProcess';
+  FuncName[4] := 'GetLocalTime';
 
   ImageBase := PE_IMG_BASE;
   FileAlign := PE_FILE_ALIGN;
@@ -5757,6 +5777,110 @@ Begin
   End;
 End;
 
+{ Les fichiers .xpp sont enregistres en UTF-8, mais la console Windows
+  (cmd.exe) affiche par defaut une page de code OEM (CP850 en France/
+  Quebec) : ecrire les octets UTF-8 bruts y produit le charabia
+  classique (ex. "g├®n├®r├®" au lieu de "généré"). Les litteraux
+  imprimes sont donc transcodes UTF-8 -> CP850 a la compilation, une
+  fois pour toutes, pour un affichage correct par defaut (ajoute par
+  TODO 26). Tout code point hors de la table (au-dela du Latin-1
+  usuel) devient '?' plutot que de planter ou d'ecrire n'importe quoi. }
+Function DecodeUtf8Char(Const S: String; Var Pos: Integer): LongInt;
+Var B0, B1, B2: Byte; CP: LongInt;
+Begin
+  B0 := Ord(S[Pos]);
+  If B0 < $80 Then Begin
+    DecodeUtf8Char := B0;
+    Inc(Pos);
+    Exit;
+  End Else If ((B0 And $E0) = $C0) And (Pos < Length(S)) Then Begin
+    B1 := Ord(S[Pos + 1]);
+    CP := ((B0 And $1F) Shl 6) Or (B1 And $3F);
+    Pos := Pos + 2;
+    DecodeUtf8Char := CP;
+    Exit;
+  End Else If ((B0 And $F0) = $E0) And (Pos + 1 < Length(S)) Then Begin
+    B1 := Ord(S[Pos + 1]);
+    B2 := Ord(S[Pos + 2]);
+    CP := ((B0 And $0F) Shl 12) Or ((B1 And $3F) Shl 6) Or (B2 And $3F);
+    Pos := Pos + 3;
+    DecodeUtf8Char := CP;
+    Exit;
+  End;
+  DecodeUtf8Char := Ord('?');
+  Inc(Pos);
+End;
+
+Function CodepointToCp850(CP: LongInt): Byte;
+Begin
+  If CP < $80 Then Begin CodepointToCp850 := CP; Exit; End;
+  Case CP Of
+    $00C7: CodepointToCp850 := $80; $00FC: CodepointToCp850 := $81;
+    $00E9: CodepointToCp850 := $82; $00E2: CodepointToCp850 := $83;
+    $00E4: CodepointToCp850 := $84; $00E0: CodepointToCp850 := $85;
+    $00E5: CodepointToCp850 := $86; $00E7: CodepointToCp850 := $87;
+    $00EA: CodepointToCp850 := $88; $00EB: CodepointToCp850 := $89;
+    $00E8: CodepointToCp850 := $8A; $00EF: CodepointToCp850 := $8B;
+    $00EE: CodepointToCp850 := $8C; $00EC: CodepointToCp850 := $8D;
+    $00C4: CodepointToCp850 := $8E; $00C5: CodepointToCp850 := $8F;
+    $00C9: CodepointToCp850 := $90; $00E6: CodepointToCp850 := $91;
+    $00C6: CodepointToCp850 := $92; $00F4: CodepointToCp850 := $93;
+    $00F6: CodepointToCp850 := $94; $00F2: CodepointToCp850 := $95;
+    $00FB: CodepointToCp850 := $96; $00F9: CodepointToCp850 := $97;
+    $00FF: CodepointToCp850 := $98; $00D6: CodepointToCp850 := $99;
+    $00DC: CodepointToCp850 := $9A; $00F8: CodepointToCp850 := $9B;
+    $00A3: CodepointToCp850 := $9C; $00D8: CodepointToCp850 := $9D;
+    $00D7: CodepointToCp850 := $9E; $0192: CodepointToCp850 := $9F;
+    $00E1: CodepointToCp850 := $A0; $00ED: CodepointToCp850 := $A1;
+    $00F3: CodepointToCp850 := $A2; $00FA: CodepointToCp850 := $A3;
+    $00F1: CodepointToCp850 := $A4; $00D1: CodepointToCp850 := $A5;
+    $00AA: CodepointToCp850 := $A6; $00BA: CodepointToCp850 := $A7;
+    $00BF: CodepointToCp850 := $A8; $00AE: CodepointToCp850 := $A9;
+    $00AC: CodepointToCp850 := $AA; $00BD: CodepointToCp850 := $AB;
+    $00BC: CodepointToCp850 := $AC; $00A1: CodepointToCp850 := $AD;
+    $00AB: CodepointToCp850 := $AE; $00BB: CodepointToCp850 := $AF;
+    $00C1: CodepointToCp850 := $B5; $00C2: CodepointToCp850 := $B6;
+    $00C0: CodepointToCp850 := $B7; $00A9: CodepointToCp850 := $B8;
+    $00A2: CodepointToCp850 := $BD; $00A5: CodepointToCp850 := $BE;
+    $00E3: CodepointToCp850 := $C6; $00C3: CodepointToCp850 := $C7;
+    $00A4: CodepointToCp850 := $CF; $00F0: CodepointToCp850 := $D0;
+    $00D0: CodepointToCp850 := $D1; $00CA: CodepointToCp850 := $D2;
+    $00CB: CodepointToCp850 := $D3; $00C8: CodepointToCp850 := $D4;
+    $0131: CodepointToCp850 := $D5; $00CD: CodepointToCp850 := $D6;
+    $00CE: CodepointToCp850 := $D7; $00CF: CodepointToCp850 := $D8;
+    $00A6: CodepointToCp850 := $DD; $00CC: CodepointToCp850 := $DE;
+    $00D3: CodepointToCp850 := $E0; $00DF: CodepointToCp850 := $E1;
+    $00D4: CodepointToCp850 := $E2; $00D2: CodepointToCp850 := $E3;
+    $00F5: CodepointToCp850 := $E4; $00D5: CodepointToCp850 := $E5;
+    $00B5: CodepointToCp850 := $E6; $00FE: CodepointToCp850 := $E7;
+    $00DE: CodepointToCp850 := $E8; $00DA: CodepointToCp850 := $E9;
+    $00DB: CodepointToCp850 := $EA; $00D9: CodepointToCp850 := $EB;
+    $00FD: CodepointToCp850 := $EC; $00DD: CodepointToCp850 := $ED;
+    $00AF: CodepointToCp850 := $EE; $00B4: CodepointToCp850 := $EF;
+    $00B1: CodepointToCp850 := $F1; $00BE: CodepointToCp850 := $F3;
+    $00B6: CodepointToCp850 := $F4; $00A7: CodepointToCp850 := $F5;
+    $00F7: CodepointToCp850 := $F6; $00B8: CodepointToCp850 := $F7;
+    $00B0: CodepointToCp850 := $F8; $00A8: CodepointToCp850 := $F9;
+    $00B7: CodepointToCp850 := $FA; $00B9: CodepointToCp850 := $FB;
+    $00B3: CodepointToCp850 := $FC; $00B2: CodepointToCp850 := $FD;
+    $00A0: CodepointToCp850 := $FF;
+  Else
+    CodepointToCp850 := Ord('?');
+  End;
+End;
+
+Function ConvertUtf8ToCp850(Const S: String): String;
+Var P: Integer; CP: LongInt; Res: String;
+Begin
+  Res := '';
+  P := 1;
+  While P <= Length(S) Do Begin
+    CP := DecodeUtf8Char(S, P);
+    Res := Res + Chr(CodepointToCp850(CP));
+  End;
+  ConvertUtf8ToCp850 := Res;
+End;
+
 { Ecrit un fragment de chaine litterale (compilee en .rdata) sur la
   console, sans rien y ajouter (ni CRLF, ni longueur implicite) : le
   bloc de base reutilise par info("litteral") (TODO 24) et par le
@@ -5764,6 +5888,7 @@ End;
 Procedure CodegenPrintStringLiteral(S: String);
 Var StrLbl: String; StrLen, K, SavedSec: Integer;
 Begin
+  S := ConvertUtf8ToCp850(S);
   If Length(S) = 0 Then Exit;
   SavedSec := BinCurSec;
   BinCurSec := BIN_SEC_RDATA;
@@ -5846,6 +5971,9 @@ Begin
                     (IRNodes[ArgNode].TypeName = 'real') Then Begin
           CodegenExpr(ArgNode);
           BinCallLabel('_XPPRT_PrintInt');
+        End Else If IRNodes[ArgNode].TypeName = 'date' Then Begin
+          CodegenExpr(ArgNode);
+          BinCallLabel('_XPPRT_PrintDate');
         End Else
           CodegenExpr(ArgNode);
       End;
@@ -5915,6 +6043,15 @@ Begin
         End;
       End;
     End;
+  End;
+
+  { today() : vraie date systeme (extension apres TODO 26), via
+    GetLocalTime encode en AAAAMMJJ par _XPPRT_Today ; ne pas ecraser
+    EAX a 0 ensuite, contrairement au stub generique plus bas }
+  If (MIdx <> 0) And (Methods[MIdx].ClassIdx = GlobalFuncClassIdx) And
+     (Methods[MIdx].Name = 'today') Then Begin
+    BinCallLabel('_XPPRT_Today');
+    Exit;
   End;
 
   If (MIdx <> 0) And (Methods[MIdx].BodyStmt <> 0) Then Begin
@@ -6482,6 +6619,79 @@ Begin
   BinEmitEpilogueN(0);
 End;
 
+{ _XPPRT_Today (date reelle, extension apres TODO 26) : appelle
+  GetLocalTime (KERNEL32) dans un tampon SYSTEMTIME local de 16 octets
+  et encode la date reelle du systeme en un entier AAAAMMJJ (ex.
+  4 juillet 2026 -> 20260704) renvoye dans EAX. Convention interne :
+  aucun argument, aucun nettoyage de pile au retour. }
+Procedure EmitTodayHelper;
+Begin
+  BinCurSec := BIN_SEC_TEXT;
+  BinDefineLabel('_XPPRT_Today');
+  BinEmitPrologue(16);
+  BinLeaRegEbpDisp(REG_EDI, -16);
+  BinPushReg(REG_EDI);
+  BinCallImportRaw('GetLocalTime');
+
+  BinMovzxRegEbpDispWord(REG_EAX, -16);  { wYear, offset 0 }
+  BinMovRegImm32(REG_ECX, 10000);
+  BinImulEaxEcx;
+  BinPushReg(REG_EAX);
+
+  BinMovzxRegEbpDispWord(REG_EAX, -14);  { wMonth, offset 2 }
+  BinMovRegImm32(REG_ECX, 100);
+  BinImulEaxEcx;
+  BinPopReg(REG_ECX);
+  BinAddEaxEcx;
+  BinPushReg(REG_EAX);
+
+  BinMovzxRegEbpDispWord(REG_EAX, -10);  { wDay, offset 6 }
+  BinPopReg(REG_ECX);
+  BinAddEaxEcx;
+
+  BinEmitEpilogueN(0);
+End;
+
+{ _XPPRT_PrintDate (extension apres TODO 26) : imprime un entier
+  AAAAMMJJ (produit par _XPPRT_Today) au format J/M/AAAA, en
+  reutilisant _XPPRT_PrintInt pour chaque partie numerique (pas de
+  zero de tete sur le jour/mois, ex. "4/7/2026"). EBX survit aux
+  appels a _XPPRT_PrintInt/_XPPRT_PutChar (tous deux le preservent). }
+Procedure EmitPrintDateHelper;
+Begin
+  BinCurSec := BIN_SEC_TEXT;
+  BinDefineLabel('_XPPRT_PrintDate');
+  BinEmitPrologue(0);
+  BinPushReg(REG_EBX);
+  BinMovRegReg(REG_EBX, REG_EAX);
+
+  BinMovRegReg(REG_EAX, REG_EBX);
+  BinXorRegReg(REG_EDX);
+  BinMovRegImm32(REG_ECX, 100);
+  BinDivReg(REG_ECX);                 { eax=AAAAMM, edx=JJ }
+  BinMovRegReg(REG_EBX, REG_EAX);
+  BinMovRegReg(REG_EAX, REG_EDX);
+  BinCallLabel('_XPPRT_PrintInt');
+  BinMovRegImm32(REG_EAX, Ord('/'));
+  BinCallLabel('_XPPRT_PutChar');
+
+  BinMovRegReg(REG_EAX, REG_EBX);
+  BinXorRegReg(REG_EDX);
+  BinMovRegImm32(REG_ECX, 100);
+  BinDivReg(REG_ECX);                 { eax=AAAA, edx=MM }
+  BinMovRegReg(REG_EBX, REG_EAX);
+  BinMovRegReg(REG_EAX, REG_EDX);
+  BinCallLabel('_XPPRT_PrintInt');
+  BinMovRegImm32(REG_EAX, Ord('/'));
+  BinCallLabel('_XPPRT_PutChar');
+
+  BinMovRegReg(REG_EAX, REG_EBX);
+  BinCallLabel('_XPPRT_PrintInt');
+
+  BinPopReg(REG_EBX);
+  BinEmitEpilogueN(0);
+End;
+
 { Point d'entree binaire "start" : trampoline vers static void main(),
   suivi d'un ExitProcess(0) propre. Emis en tout premier dans .text
   pour que start soit bien a l'adresse EntryRVA=TextRVA ecrite par
@@ -6508,6 +6718,8 @@ Begin
 
   EmitPutCharHelper;
   EmitPrintIntHelper;
+  EmitTodayHelper;
+  EmitPrintDateHelper;
 
   For I := 1 To MethodCount Do
     If Methods[I].BodyStmt <> 0 Then CodegenMethod(I);
