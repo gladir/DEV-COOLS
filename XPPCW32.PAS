@@ -199,6 +199,18 @@ Program XPPCW32;
             Pascal 7 reel ; reduit a 16384 hors FPC, comme les autres
             tables (MAX_IR_NODE et consorts) qui suivent deja ce
             garde-fou.
+
+  DONE 26 - VRAI FORMATAGE strFmt/info (au-dela du stub de TODO 24)
+            info(strFmt(gabarit_litteral, args...)) produit desormais
+            une vraie sortie console : le gabarit est decompose a la
+            compilation en fragments litteraux et substitutions %1..%9,
+            chaque argument est imprime selon son type statique (int
+            et real via un vrai convertisseur decimal 80386 ecrit en
+            code machine, _XPPRT_PrintInt ; boolean via "true"/"false").
+            Une chaine dynamique (resultat de guid2Str/concatenation...)
+            reste silencieuse, faute de representation runtime des
+            chaines (portee toujours reduite, voir TODO 24) ; c'est un
+            "silence" delibere et documente, pas un manque detecte.
 }
 
 { ============================================================ }
@@ -5119,6 +5131,49 @@ Begin
   End;
 End;
 
+{ mov byte ptr [ebp+Disp], al : reservees a la construction de petits
+  tampons locaux d'un seul octet (ajoute par TODO 26, runtime str) }
+Procedure BinMovEbpDispAl(Disp: LongInt);
+Begin
+  AL('mov byte ptr [ebp' + SignedDisp(Disp) + '], al');
+  If (Disp >= -128) And (Disp <= 127) Then Begin
+    BinEmit8($88); BinEmit8($45); BinEmit8(Disp And $FF);
+  End Else Begin
+    BinEmit8($88); BinEmit8($85); BinEmit32(Disp);
+  End;
+End;
+
+{ lea Rd, [ebp+Disp] : adresse effective d'un emplacement EBP-relatif,
+  utilisee pour obtenir un pointeur passable a WriteFile (ajoute par
+  TODO 26) }
+Procedure BinLeaRegEbpDisp(Rd, Disp: LongInt);
+Begin
+  AL('lea ' + RegName(Rd) + ', [ebp' + SignedDisp(Disp) + ']');
+  If (Disp >= -128) And (Disp <= 127) Then Begin
+    BinEmit8($8D); BinEmit8($45 Or (Rd Shl 3)); BinEmit8(Disp And $FF);
+  End Else Begin
+    BinEmit8($8D); BinEmit8($85 Or (Rd Shl 3)); BinEmit32(Disp);
+  End;
+End;
+
+{ div R : division non signee EDX:EAX / R -> EAX=quotient, EDX=reste
+  (ajoute par TODO 26, decomposition decimale de _XPPRT_PrintInt) }
+Procedure BinDivReg(R: Integer);
+Begin AL('div ' + RegName(R)); BinEmit8($F7); BinEmit8($F0 Or R); End;
+
+{ cmp R, imm8 (etendu en signe) : comparaison generique a un registre
+  autre que EAX (ajoute par TODO 26) }
+Procedure BinCmpRegImm8(R: Integer; V: Integer);
+Begin
+  AL('cmp ' + RegName(R) + ', ' + ItoS(V));
+  BinEmit8($83); BinEmit8($F8 Or R); BinEmit8(V And $FF);
+End;
+
+{ add al, imm8 : conversion chiffre (0..9) -> caractere ASCII
+  (ajoute par TODO 26) }
+Procedure BinAddAlImm8(V: Integer);
+Begin AL('add al, ' + ItoS(V)); BinEmit8($04); BinEmit8(V And $FF); End;
+
 Procedure BinSubEspImm32(N: LongInt);
 Begin
   If N = 0 Then Exit;
@@ -5702,20 +5757,20 @@ Begin
   End;
 End;
 
-{ info("litteral") : la seule fonctionnalite runtime non stubbee de
-  ce codegen reduit, un vrai affichage console via trois imports
-  KERNEL32 (GetStdHandle/WriteFile). La chaine est ecrite en .rdata
-  avec un CRLF final. }
-Procedure CodegenInfoLiteral(S: String);
+{ Ecrit un fragment de chaine litterale (compilee en .rdata) sur la
+  console, sans rien y ajouter (ni CRLF, ni longueur implicite) : le
+  bloc de base reutilise par info("litteral") (TODO 24) et par le
+  formatage reel de strFmt (TODO 26) }
+Procedure CodegenPrintStringLiteral(S: String);
 Var StrLbl: String; StrLen, K, SavedSec: Integer;
 Begin
+  If Length(S) = 0 Then Exit;
   SavedSec := BinCurSec;
   BinCurSec := BIN_SEC_RDATA;
   StrLbl := NewBinLabel('Str');
   BinDefineLabel(StrLbl);
   For K := 1 To Length(S) Do BinEmit8(Ord(S[K]));
-  BinEmit8(13); BinEmit8(10);
-  StrLen := Length(S) + 2;
+  StrLen := Length(S);
   BinCurSec := SavedSec;
 
   BinPushImm32(-11);              { STD_OUTPUT_HANDLE }
@@ -5726,6 +5781,81 @@ Begin
   BinPushLabelAddr(StrLbl);        { lpBuffer }
   BinPushReg(REG_EAX);             { hFile (survit aux push imm32/offset precedents) }
   BinCallImportRaw('WriteFile');
+End;
+
+{ info("litteral") : un vrai affichage console via trois imports
+  KERNEL32 (GetStdHandle/WriteFile), CRLF final inclus }
+Procedure CodegenInfoLiteral(S: String);
+Begin
+  CodegenPrintStringLiteral(S + Chr(13) + Chr(10));
+End;
+
+{ info(strFmt(gabarit_litteral, args...)) (TODO 26) : le gabarit est
+  connu a la compilation (toujours un litteral dans les usages reels
+  de strFmt), donc il est decompose ici en fragments litteraux et en
+  substitutions %1..%9, chacune imprimee selon le type statique de
+  l'argument correspondant :
+    int/real  -> conversion decimale reelle via _XPPRT_PrintInt (les
+                 reels sont deja arrondis a l'entier par ce codegen
+                 reduit, TODO 24, faute d'arithmetique flottante)
+    boolean   -> "true"/"false" choisi par un vrai branchement
+    str       -> imprime si l'argument est lui-meme un litteral,
+                 silencieux sinon (chaine dynamique non representee
+                 en memoire par ce runtime reduit)
+    autre     -> evalue pour effet de bord uniquement (silencieux) }
+Procedure CodegenPrintFormatted(FmtText: String; ArgsHead: Integer);
+Var
+  I, ArgN, Idx, ArgNode: Integer;
+  Pending: String;
+  LFalse, LEnd: String;
+Begin
+  Pending := '';
+  I := 1;
+  While I <= Length(FmtText) Do Begin
+    If (FmtText[I] = '%') And (I < Length(FmtText)) And
+       (FmtText[I + 1] >= '1') And (FmtText[I + 1] <= '9') Then Begin
+      CodegenPrintStringLiteral(Pending);
+      Pending := '';
+      ArgN := Ord(FmtText[I + 1]) - Ord('0');
+
+      ArgNode := ArgsHead;
+      Idx := 1;
+      While (ArgNode <> 0) And (Idx < ArgN) Do Begin
+        ArgNode := IRNodes[ArgNode].NextArg;
+        Inc(Idx);
+      End;
+
+      If (ArgNode <> 0) And (Idx = ArgN) Then Begin
+        If IRNodes[ArgNode].TypeName = 'boolean' Then Begin
+          CodegenExpr(ArgNode);
+          BinCmpEaxImm32(0);
+          LFalse := NewBinLabel('BF');
+          LEnd   := NewBinLabel('BE');
+          BinJccLabel(CC_E, LFalse);
+          CodegenPrintStringLiteral('true');
+          BinJmpLabel(LEnd);
+          BinDefineLabel(LFalse);
+          CodegenPrintStringLiteral('false');
+          BinDefineLabel(LEnd);
+        End Else If IRNodes[ArgNode].TypeName = 'str' Then Begin
+          If IRNodes[ArgNode].Kind = NK_LIT_STR Then
+            CodegenPrintStringLiteral(IRNodes[ArgNode].Text)
+          Else
+            CodegenExpr(ArgNode);
+        End Else If (IRNodes[ArgNode].TypeName = 'int') Or
+                    (IRNodes[ArgNode].TypeName = 'real') Then Begin
+          CodegenExpr(ArgNode);
+          BinCallLabel('_XPPRT_PrintInt');
+        End Else
+          CodegenExpr(ArgNode);
+      End;
+      I := I + 2;
+    End Else Begin
+      Pending := Pending + FmtText[I];
+      Inc(I);
+    End;
+  End;
+  CodegenPrintStringLiteral(Pending + Chr(13) + Chr(10));
 End;
 
 { Appel d'une methode utilisateur (corps reellement compile) : les
@@ -5750,7 +5880,7 @@ Begin
 End;
 
 Procedure CodegenCall(N: Integer);
-Var Callee, MIdx, ArgHead: Integer;
+Var Callee, MIdx, ArgHead, FmtCallMIdx, FmtNode: Integer;
 Begin
   Callee  := IRNodes[N].Left;
   ArgHead := IRNodes[N].Right;
@@ -5766,11 +5896,25 @@ Begin
   MIdx := IRNodes[N].ResolvedMethod;
 
   If (MIdx <> 0) And (Methods[MIdx].ClassIdx = GlobalFuncClassIdx) And
-     (Methods[MIdx].Name = 'info') And (ArgHead <> 0) And
-     (IRNodes[ArgHead].Kind = NK_LIT_STR) Then Begin
-    CodegenInfoLiteral(IRNodes[ArgHead].Text);
-    BinXorRegReg(REG_EAX);
-    Exit;
+     (Methods[MIdx].Name = 'info') And (ArgHead <> 0) Then Begin
+    If IRNodes[ArgHead].Kind = NK_LIT_STR Then Begin
+      CodegenInfoLiteral(IRNodes[ArgHead].Text);
+      BinXorRegReg(REG_EAX);
+      Exit;
+    End;
+    { info(strFmt(gabarit_litteral, args...)) : formatage reel (TODO 26) }
+    If IRNodes[ArgHead].Kind = NK_CALL Then Begin
+      FmtCallMIdx := IRNodes[ArgHead].ResolvedMethod;
+      If (FmtCallMIdx <> 0) And (Methods[FmtCallMIdx].ClassIdx = GlobalFuncClassIdx) And
+         (Methods[FmtCallMIdx].Name = 'strFmt') Then Begin
+        FmtNode := IRNodes[ArgHead].Right;
+        If (FmtNode <> 0) And (IRNodes[FmtNode].Kind = NK_LIT_STR) Then Begin
+          CodegenPrintFormatted(IRNodes[FmtNode].Text, IRNodes[FmtNode].NextArg);
+          BinXorRegReg(REG_EAX);
+          Exit;
+        End;
+      End;
+    End;
   End;
 
   If (MIdx <> 0) And (Methods[MIdx].BodyStmt <> 0) Then Begin
@@ -6242,6 +6386,102 @@ Begin
   BinCurSec := BIN_SEC_TEXT;
 End;
 
+{ _XPPRT_PutChar (TODO 26) : imprime le caractere passe dans AL sur la
+  console. Convention interne (pas stdcall) : aucun argument empile,
+  aucun nettoyage de pile au retour ; un tampon local d'un octet sert
+  de lpBuffer a WriteFile. }
+Procedure EmitPutCharHelper;
+Begin
+  BinCurSec := BIN_SEC_TEXT;
+  BinDefineLabel('_XPPRT_PutChar');
+  BinEmitPrologue(4);
+  BinMovEbpDispAl(-1);
+  BinLeaRegEbpDisp(REG_EDI, -1);
+  BinPushImm32(-11);
+  BinCallImportRaw('GetStdHandle');
+  BinPushImm32(0);
+  BinPushLabelAddr('_XPPD_Written');
+  BinPushImm32(1);
+  BinPushReg(REG_EDI);
+  BinPushReg(REG_EAX);
+  BinCallImportRaw('WriteFile');
+  BinEmitEpilogueN(0);
+End;
+
+{ _XPPRT_PrintInt (TODO 26) : imprime l'entier signe passe dans EAX en
+  decimal, sans zeros de tete (mais "0" pour la valeur nulle), suivi
+  d'aucun separateur. Decomposition par 10 divisions non signees
+  successives par des puissances de dix decroissantes (deroulees a la
+  compilation, pas de boucle ni d'adressage indirect necessaire au-
+  dela d'EBX/ESI utilises comme accumulateurs). EBX/ESI sont
+  preserves explicitement : ils survivent aux appels a _XPPRT_PutChar
+  (qui ne les utilise pas, et GetStdHandle/WriteFile les preservent
+  par convention stdcall), mais on les restaure par prudence. }
+Procedure EmitPrintIntHelper;
+Const
+  NDIV = 10;
+Var
+  Divisors: Array[1..NDIV] Of LongInt;
+  K: Integer;
+  LNonNeg, LSetFlag, LPrint, LSkip: String;
+Begin
+  Divisors[1]  := 1000000000; Divisors[2] := 100000000; Divisors[3] := 10000000;
+  Divisors[4]  := 1000000;    Divisors[5] := 100000;    Divisors[6] := 10000;
+  Divisors[7]  := 1000;       Divisors[8] := 100;       Divisors[9] := 10;
+  Divisors[10] := 1;
+
+  BinCurSec := BIN_SEC_TEXT;
+  BinDefineLabel('_XPPRT_PrintInt');
+  BinEmitPrologue(0);
+  BinPushReg(REG_EBX);
+  BinPushReg(REG_ESI);
+
+  BinCmpEaxImm32(0);
+  LNonNeg := NewBinLabel('PiNN');
+  BinJccLabel(CC_GE, LNonNeg);
+  BinNegEax;
+  BinPushReg(REG_EAX);
+  BinMovRegImm32(REG_EAX, Ord('-'));
+  BinCallLabel('_XPPRT_PutChar');
+  BinPopReg(REG_EAX);
+  BinDefineLabel(LNonNeg);
+
+  BinMovRegReg(REG_EBX, REG_EAX);
+  BinMovRegImm32(REG_ESI, 0);
+
+  For K := 1 To NDIV Do Begin
+    BinMovRegReg(REG_EAX, REG_EBX);
+    BinXorRegReg(REG_EDX);
+    BinMovRegImm32(REG_ECX, Divisors[K]);
+    BinDivReg(REG_ECX);
+    BinMovRegReg(REG_EBX, REG_EDX);
+
+    If Divisors[K] = 1 Then Begin
+      BinAddAlImm8(Ord('0'));
+      BinCallLabel('_XPPRT_PutChar');
+    End Else Begin
+      LSetFlag := NewBinLabel('PiSF');
+      LPrint   := NewBinLabel('PiPr');
+      LSkip    := NewBinLabel('PiSk');
+      BinCmpRegImm8(REG_ESI, 0);
+      BinJccLabel(CC_NE, LPrint);
+      BinCmpEaxImm32(0);
+      BinJccLabel(CC_NE, LSetFlag);
+      BinJmpLabel(LSkip);
+      BinDefineLabel(LSetFlag);
+      BinMovRegImm32(REG_ESI, 1);
+      BinDefineLabel(LPrint);
+      BinAddAlImm8(Ord('0'));
+      BinCallLabel('_XPPRT_PutChar');
+      BinDefineLabel(LSkip);
+    End;
+  End;
+
+  BinPopReg(REG_ESI);
+  BinPopReg(REG_EBX);
+  BinEmitEpilogueN(0);
+End;
+
 { Point d'entree binaire "start" : trampoline vers static void main(),
   suivi d'un ExitProcess(0) propre. Emis en tout premier dans .text
   pour que start soit bien a l'adresse EntryRVA=TextRVA ecrite par
@@ -6265,6 +6505,9 @@ Begin
   BinCallLabel(MethodLabel(EntryM));
   BinPushImm32(0);
   BinCallImportRaw('ExitProcess');
+
+  EmitPutCharHelper;
+  EmitPrintIntHelper;
 
   For I := 1 To MethodCount Do
     If Methods[I].BodyStmt <> 0 Then CodegenMethod(I);
