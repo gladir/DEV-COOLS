@@ -80,89 +80,89 @@ Program XPPCW32;
             membres herites, detection des doublons et des membres non
             definis, verification de la compatibilite extends/implements.
 
-  TODO 07 - TYPES COMPOSES : TABLEAUX, CONTAINERS, ENUMS
+  DONE 07 - TYPES COMPOSES : TABLEAUX, CONTAINERS, ENUMS
             int/str/... tab[N] (tableaux fixes 1-indexes), container
             (liste heterogene, operateur +=, con2Str, conLen, conPeek,
             conIns, conDel), enum (valeurs nommees accedees via ::,
             ex. CustVendorBlocked::No).
 
-  TODO 08 - VARIABLES, CONSTANTES ET ALLOCATION
+  DONE 08 - VARIABLES, CONSTANTES ET ALLOCATION
             Declaration de variables locales (offsets EBP) et de champs
             de classe (offsets d'instance), valeurs par defaut (0, "",
             false, date nulle), litteraux, evaluation constante simple.
 
-  TODO 09 - EXPRESSIONS ET OPERATEURS
+  DONE 09 - EXPRESSIONS ET OPERATEURS
             Priorites X++ (assignation, logique, comparaison, bit,
             additif, multiplicatif, unaire, acces membre/indexation),
             evaluation en IR typee, promotion int<->real.
 
-  TODO 10 - INSTRUCTIONS DE BASE ET IF/ELSE
+  DONE 10 - INSTRUCTIONS DE BASE ET IF/ELSE
             Bloc d'instructions, affectation, appel de methode,
             instruction vide (;), if/else if/else, evaluation
             paresseuse de && et ||.
 
-  TODO 11 - SWITCH/CASE
+  DONE 11 - SWITCH/CASE
             switch(expr) suivi d'un bloc avec case val: ... break;
             case v1: case v2: ... default: ..., enchainement explicite
             (fall-through) et verification des valeurs constantes de
             case.
 
-  TODO 12 - BOUCLES WHILE, DO-WHILE, FOR
+  DONE 12 - BOUCLES WHILE, DO-WHILE, FOR
             while(cond) suivi d'un bloc, do ... while(cond); suivi d'un
             bloc, for(init; cond; incr) suivi d'un bloc, break,
             continue, boucles imbriquees.
 
-  TODO 13 - METHODES ET PARAMETRES
+  DONE 13 - METHODES ET PARAMETRES
             Declaration de methodes (public/private/static), parametres
             typés, valeur de retour, recursion, verification d'arite et
             de types a chaque appel.
 
-  TODO 14 - HERITAGE (EXTENDS) ET POLYMORPHISME
+  DONE 14 - HERITAGE (EXTENDS) ET POLYMORPHISME
             extends, super(...), redefinition de methode, resolution
             dynamique via une table de methodes virtuelles par classe,
             appel du constructeur parent.
 
-  TODO 15 - INTERFACES (IMPLEMENTS)
+  DONE 15 - INTERFACES (IMPLEMENTS)
             Declaration d'interface, implements multiple, verification
             que toutes les methodes de l'interface sont implementees,
             appel polymorphe via une variable typee interface.
 
-  TODO 16 - GESTION DES EXCEPTIONS (TRY/CATCH/THROW)
+  DONE 16 - GESTION DES EXCEPTIONS (TRY/CATCH/THROW)
             try suivi d'un bloc, catch (Exception::Xxx) suivi d'un bloc,
             catch generique suivi d'un bloc, throw error("msg"),
             Exception::Error/Warning/Internal, deroulement de pile
             (unwind) lors de la propagation.
 
-  TODO 17 - DELEGATES ET GESTIONNAIRES D'EVENEMENTS
+  DONE 17 - DELEGATES ET GESTIONNAIRES D'EVENEMENTS
             delegate void Nom(params) suivi d'un bloc, appel
             this.Nom(...), attribut SubscribesTo(classStr(Classe),
             delegateStr(Classe, Nom)) sur une methode static, table de
             liaison delegate->abonnes generee au link-time, invocation
             de tous les abonnes.
 
-  TODO 18 - MODELE DE TABLE (AOT SIMULE) ET METADONNEES
+  DONE 18 - MODELE DE TABLE (AOT SIMULE) ET METADONNEES
             Definition interne minimale des tables standard utilisees
             par les samples (CustTable, CustGroup : champs et cles),
             tableNum/fieldNum, representation memoire d'un buffer
             d'enregistrement (recordbuffer).
 
-  TODO 19 - WHILE SELECT / SELECT ET REQUETES SIMPLES
+  DONE 19 - WHILE SELECT / SELECT ET REQUETES SIMPLES
             while select var [order by champ] [where condition] suivi
             d'un bloc, select [forUpdate] var where condition;,
             traduction en boucle d'iteration sur un stockage de table
             interne (tableau/fichier en memoire).
 
-  TODO 20 - CRUD ET TRANSACTIONS (INSERT/UPDATE/DELETE/TTS)
+  DONE 20 - CRUD ET TRANSACTIONS (INSERT/UPDATE/DELETE/TTS)
             .insert()/.update()/.delete()/.clear(), delete_from ...
             where ..., ttsBegin/ttsCommit/ttsAbort avec pile de
             transactions imbricables et retour arriere en memoire.
 
-  TODO 21 - QUERY, QUERYBUILDDATASOURCE, QUERYRUN
+  DONE 21 - QUERY, QUERYBUILDDATASOURCE, QUERYRUN
             new Query(), addDataSource(tableNum), addRange(fieldNum),
             .value(), new QueryRun(query), .next(), .get(tableNum),
             SysQuery::valueNotEmpty minimal.
 
-  TODO 22 - COLLECTIONS RUNTIME : MAP ET LIST
+  DONE 22 - COLLECTIONS RUNTIME : MAP ET LIST
             new Map(Types::X, Types::Y) / new List(Types::X),
             insert/addEnd, getEnumerator, MapEnumerator/ListEnumerator,
             moveNext/current/currentKey/currentValue, elements().
@@ -474,6 +474,40 @@ Var
 
 Function IsKeyword(S: String): Integer; Forward;
 Function KeywordName(K: Integer): String; Forward;
+Procedure ParseEnumDecl; Forward;   { corps reel en TODO 07 }
+Procedure ScanMethodBody(MIdx: Integer); Forward;   { corps reel en TODO 08 }
+Function ParseExpression: Integer; Forward;   { corps reel en TODO 09 }
+Function ShortCircuitConst(NodeIdx: Integer; Var Value: Boolean): Boolean; Forward;   { corps reel en TODO 10 }
+Function ParseSwitchStatement(MIdx: Integer): Integer; Forward;   { corps reel en TODO 11 }
+Function ParseWhileStatement(MIdx: Integer): Integer; Forward;    { corps reel en TODO 12 }
+Function ParseDoWhileStatement(MIdx: Integer): Integer; Forward;  { corps reel en TODO 12 }
+Function ParseForStatement(MIdx: Integer): Integer; Forward;      { corps reel en TODO 12 }
+Function ParseBreakStatement: Integer; Forward;                   { corps reel en TODO 12 }
+Function ParseContinueStatement: Integer; Forward;                { corps reel en TODO 12 }
+Function ParseReturnStatement(MIdx: Integer): Integer; Forward;   { corps reel en TODO 13 }
+Function TypeCompatible(ArgType, ParamType: String): Boolean; Forward;   { corps reel en TODO 13 }
+Function CountCallArgs(ArgHead: Integer): Integer; Forward;              { corps reel en TODO 13 }
+Procedure CheckCallArgs(MethodIdx, ArgHead: Integer; CalleeDesc: String); Forward;   { corps reel en TODO 13 }
+Function ParseTryStatement(MIdx: Integer): Integer; Forward;   { corps reel en TODO 16 }
+Function ParseThrowStatement(MIdx: Integer): Integer; Forward;   { corps reel en TODO 16 }
+Procedure RegisterBuiltinEnums; Forward;   { corps reel en TODO 16 }
+Procedure ParseAttribute(Var HasSubscribe: Boolean;
+                          Var SubClassName, SubDelegateName: String); Forward;   { corps reel en TODO 17 }
+Function FindAotTable(Name: String): Integer; Forward;                    { corps reel en TODO 18 }
+Function FindAotField(TableIdx: Integer; Name: String): Integer; Forward; { corps reel en TODO 18 }
+Function AotFieldTypeName(FieldIdx: Integer): String; Forward;            { corps reel en TODO 18 }
+Procedure ResolveTableNumCall(CallNode, ArgHead: Integer); Forward;        { corps reel en TODO 18 }
+Procedure ResolveFieldNumCall(CallNode, ArgHead: Integer); Forward;        { corps reel en TODO 18 }
+Procedure RegisterBuiltinTables; Forward;                                  { corps reel en TODO 18 }
+Function ParseWhileSelectStatement(MIdx: Integer): Integer; Forward;   { corps reel en TODO 19 }
+Function ParseSelectStatement: Integer; Forward;                       { corps reel en TODO 19 }
+Function ParseTtsBeginStatement: Integer; Forward;    { corps reel en TODO 20 }
+Function ParseTtsCommitStatement: Integer; Forward;   { corps reel en TODO 20 }
+Function ParseTtsAbortStatement: Integer; Forward;    { corps reel en TODO 20 }
+Function ParseDeleteFromStatement: Integer; Forward;  { corps reel en TODO 20 }
+Procedure RegisterBuiltinQueryClasses; Forward;   { corps reel en TODO 21 }
+Function AotTableName(Idx: Integer): String; Forward;   { corps reel en TODO 21 }
+Procedure RegisterBuiltinCollectionClasses; Forward;   { corps reel en TODO 22 }
 
 Function ItoS(N: LongInt): String;
 Var S: String;
@@ -881,6 +915,17 @@ Const
   KW_ANYTYPE  = 1050;
   KW_ENUM     = 1051;
 
+  { Litteraux booleens, ajoutes par TODO 08 pour les initialiseurs de
+    variables (valeur par defaut "false" et litteraux "true"/"false") }
+  KW_TRUE  = 1052;
+  KW_FALSE = 1053;
+
+  { Oublis de TODO 04 corriges par TODO 08 : ces deux mots doivent
+    rester reserves pour que le scanner de corps de methode ne les
+    confonde pas avec "Type Nom" (deux identificateurs qui se suivent) }
+  KW_WHERE     = 1054;
+  KW_FORUPDATE = 1055;
+
 { Resout un identificateur en mot-cle X++ (0 si identificateur libre).
   X++ est sensible a la casse : comparaison exacte, pas de UpCaseStr. }
 Function IsKeyword(S: String): Integer;
@@ -943,7 +988,13 @@ Begin
   Else If S = 'date'     Then IsKeyword := KW_DATE
   Else If S = 'guid'     Then IsKeyword := KW_GUID
   Else If S = 'anytype'  Then IsKeyword := KW_ANYTYPE
-  Else If S = 'enum'     Then IsKeyword := KW_ENUM;
+  Else If S = 'enum'     Then IsKeyword := KW_ENUM
+  { --- Litteraux booleens --- }
+  Else If S = 'true'     Then IsKeyword := KW_TRUE
+  Else If S = 'false'    Then IsKeyword := KW_FALSE
+  { --- Mots reserves des requetes, ajoutes par TODO 08 --- }
+  Else If S = 'where'     Then IsKeyword := KW_WHERE
+  Else If S = 'forUpdate' Then IsKeyword := KW_FORUPDATE;
 End;
 
 { Nom lisible d'un mot-cle, utilise par le mode debug (-d) }
@@ -1002,6 +1053,10 @@ Begin
     KW_GUID:     KeywordName := 'KW_GUID';
     KW_ANYTYPE:  KeywordName := 'KW_ANYTYPE';
     KW_ENUM:     KeywordName := 'KW_ENUM';
+    KW_TRUE:     KeywordName := 'KW_TRUE';
+    KW_FALSE:    KeywordName := 'KW_FALSE';
+    KW_WHERE:     KeywordName := 'KW_WHERE';
+    KW_FORUPDATE: KeywordName := 'KW_FORUPDATE';
   Else
     KeywordName := 'KW_' + ItoS(K);
   End;
@@ -1015,12 +1070,20 @@ Const
   MAX_FIELD_TOTAL      = {$IFDEF FPC}4096{$ELSE}256{$ENDIF};
   MAX_PARAM_TOTAL      = {$IFDEF FPC}4096{$ELSE}256{$ENDIF};
   MAX_IMPLEMENTS_TOTAL = {$IFDEF FPC}512{$ELSE}64{$ENDIF};
+  { Types composes (TODO 07) : enums declares au niveau du programme }
+  MAX_ENUM       = {$IFDEF FPC}256{$ELSE}32{$ENDIF};
+  MAX_ENUM_VALUE = {$IFDEF FPC}4096{$ELSE}256{$ENDIF};
+  { Variables locales (TODO 08), total toutes methodes confondues }
+  MAX_LOCAL_TOTAL = {$IFDEF FPC}4096{$ELSE}256{$ENDIF};
 
 Type
   TFieldInfo = Record
-    ClassIdx: Integer;
-    Name:     String;
-    TypeName: String;
+    ClassIdx:       Integer;
+    Name:           String;
+    TypeName:       String;
+    IsArray:        Boolean;   { ajoute par TODO 07 : tableau fixe Type Nom[N] }
+    ArraySize:      Integer;
+    InstanceOffset: Integer;   { ajoute par TODO 08 : deplacement dans l'objet }
   End;
   TFieldTable = Array[1..MAX_FIELD_TOTAL] Of TFieldInfo;
 
@@ -1040,8 +1103,27 @@ Type
     IsDelegate: Boolean;
     ParamStart: Integer;
     ParamCount: Integer;
+    LocalStart: Integer;   { ajoute par TODO 08 : variables locales }
+    LocalCount: Integer;
+    BodyStmt:   Integer;   { ajoute par TODO 10 : racine du bloc d'instructions }
+    IsVariadic: Boolean;   { ajoute par TODO 23 : accepte des arguments en plus des parametres fixes (ex. strFmt) }
   End;
   TMethodTable = Array[1..MAX_METHOD] Of TMethodInfo;
+
+  { Variables locales (TODO 08) : declarees dans un corps de methode,
+    avec deplacement EBP-relatif et initialiseur optionnel }
+  TLocalInfo = Record
+    MethodIdx: Integer;
+    Name:      String;
+    TypeName:  String;
+    IsArray:   Boolean;
+    ArraySize: Integer;
+    Offset:    Integer;   { EBP - Offset }
+    HasInit:   Boolean;
+    ExprNode:  Integer;   { ajoute par TODO 09 : indice dans IRNodes, 0 si aucun }
+    InitType:  String;    { type infere de l'expression d'initialisation }
+  End;
+  TLocalTable = Array[1..MAX_LOCAL_TOTAL] Of TLocalInfo;
 
   TClassInfo = Record
     Name:        String;
@@ -1054,6 +1136,8 @@ Type
     FieldCount:  Integer;
     MethodStart: Integer;
     MethodCount: Integer;
+    VTableStart: Integer;   { ajoute par TODO 14 : table des methodes virtuelles }
+    VTableCount: Integer;
   End;
   TClassTable = Array[1..MAX_CLASS] Of TClassInfo;
 
@@ -1062,6 +1146,21 @@ Type
     ResolvedIdx: Integer;   { resolu par TODO 06, 0 tant qu'inconnu }
   End;
   TImplementsTable = Array[1..MAX_IMPLEMENTS_TOTAL] Of TImplementsEntry;
+
+  { Types composes (TODO 07) : enum Nom suivi d'un bloc de valeurs,
+    ex. Valeur1, Valeur2(N), ... }
+  TEnumValueInfo = Record
+    Name:    String;
+    Ordinal: Integer;
+  End;
+  TEnumValueTable = Array[1..MAX_ENUM_VALUE] Of TEnumValueInfo;
+
+  TEnumInfo = Record
+    Name:       String;
+    ValueStart: Integer;
+    ValueCount: Integer;
+  End;
+  TEnumTable = Array[1..MAX_ENUM] Of TEnumInfo;
 
 Var
   Classes:         TClassTable;
@@ -1074,6 +1173,20 @@ Var
   ParamCount:      Integer;
   Implements:      TImplementsTable;
   ImplementsCount: Integer;
+  Enums:           TEnumTable;
+  EnumCount:       Integer;
+  EnumValues:      TEnumValueTable;
+  EnumValueCount:  Integer;
+  Locals:          TLocalTable;
+  LocalCount:      Integer;
+  { Profondeur d'imbrication courante des boucles/switch, utilisee
+    par le switch (TODO 11) et les boucles/break/continue (TODO 12)
+    pour verifier que break/continue apparaissent dans un contexte valide }
+  LoopDepth:       Integer;
+  SwitchDepth:     Integer;
+  { Profondeur d'imbrication des transactions ttsBegin/ttsCommit
+    (TODO 20), remise a zero et verifiee a chaque methode }
+  TtsDepth:        Integer;
   ParseErrors:     Integer;
 
 Procedure ParseError(Msg: String);
@@ -1116,6 +1229,8 @@ Begin
   Classes[ClassCount].FieldCount  := 0;
   Classes[ClassCount].MethodStart := MethodCount + 1;
   Classes[ClassCount].MethodCount := 0;
+  Classes[ClassCount].VTableStart := 0;
+  Classes[ClassCount].VTableCount := 0;
   AddClass := ClassCount;
 End;
 
@@ -1129,14 +1244,17 @@ Begin
   Inc(Classes[ClassIdx].ImplCount);
 End;
 
-Procedure AddField(ClassIdx: Integer; TypeName, FName: String);
+Procedure AddField(ClassIdx: Integer; TypeName, FName: String;
+                    IsArray: Boolean; ArraySize: Integer);
 Begin
   If FieldCount >= MAX_FIELD_TOTAL Then
     FatalError('trop de champs declares (limite ' + ItoS(MAX_FIELD_TOTAL) + ')');
   Inc(FieldCount);
-  Fields[FieldCount].ClassIdx := ClassIdx;
-  Fields[FieldCount].Name     := FName;
-  Fields[FieldCount].TypeName := TypeName;
+  Fields[FieldCount].ClassIdx  := ClassIdx;
+  Fields[FieldCount].Name      := FName;
+  Fields[FieldCount].TypeName  := TypeName;
+  Fields[FieldCount].IsArray   := IsArray;
+  Fields[FieldCount].ArraySize := ArraySize;
   Inc(Classes[ClassIdx].FieldCount);
 End;
 
@@ -1155,6 +1273,10 @@ Begin
   Methods[MethodCount].IsDelegate := False;
   Methods[MethodCount].ParamStart := ParamCount + 1;
   Methods[MethodCount].ParamCount := 0;
+  Methods[MethodCount].LocalStart := LocalCount + 1;
+  Methods[MethodCount].LocalCount := 0;
+  Methods[MethodCount].BodyStmt   := 0;
+  Methods[MethodCount].IsVariadic := False;
   Inc(Classes[ClassIdx].MethodCount);
   AddMethod := MethodCount;
 End;
@@ -1224,31 +1346,40 @@ Begin
   End;
 End;
 
-{ Ignore le corps d'une methode : le brace ouvrant a deja ete consomme
-  par l'appelant. Sera remplace par un vrai appel au parseur
-  d'instructions une fois les TODO 10 a 12 en place. }
-Procedure SkipMethodBody;
-Var Depth: Integer;
-Begin
-  Depth := 1;
-  While (Depth > 0) And (CurTokType <> TOK_EOF) Do Begin
-    If CurTokType = Ord('{') Then Inc(Depth)
-    Else If CurTokType = Ord('}') Then Dec(Depth);
-    LexNextToken;
-  End;
-End;
+{ Le corps d'une methode : le brace ouvrant a deja ete consomme par
+  l'appelant. ScanMethodBody (TODO 08, plus bas) reconnait les
+  declarations de variables locales et ignore le reste tel quel,
+  en attendant un vrai parseur d'instructions (TODO 10 a 12). }
 
-{ Ignore un attribut entre crochets, ex. SubscribesTo(...) ; le
-  cablage semantique reel viendra avec les delegates (TODO 17) }
-Procedure SkipAttribute;
-Var Depth: Integer;
+{ Abonnements delegate -> gestionnaire (TODO 17), extraits de
+  l'attribut [SubscribesTo(classStr(Classe), delegateStr(Classe, Nom))]
+  au-dessus d'une methode. La resolution (existence du delegate,
+  compatibilite de signature) se fait une fois le programme entier
+  analyse : voir ResolveSubscriptions. }
+Const
+  MAX_SUBSCRIPTION = {$IFDEF FPC}512{$ELSE}64{$ENDIF};
+
+Type
+  TSubscription = Record
+    TargetClassName:  String;
+    DelegateName:     String;
+    SubscriberMethod: Integer;   { indice dans Methods du gestionnaire }
+  End;
+  TSubscriptionTable = Array[1..MAX_SUBSCRIPTION] Of TSubscription;
+
+Var
+  Subscriptions:     TSubscriptionTable;
+  SubscriptionCount: Integer;
+
+Procedure AddSubscription(ClassNameStr, DelegateNameStr: String; MethodIdx: Integer);
 Begin
-  Depth := 0;
-  Repeat
-    If CurTokType = Ord('[') Then Inc(Depth)
-    Else If CurTokType = Ord(']') Then Dec(Depth);
-    LexNextToken;
-  Until (Depth = 0) Or (CurTokType = TOK_EOF);
+  If SubscriptionCount >= MAX_SUBSCRIPTION Then
+    FatalError('trop d''abonnements SubscribesTo (limite ' +
+               ItoS(MAX_SUBSCRIPTION) + ')');
+  Inc(SubscriptionCount);
+  Subscriptions[SubscriptionCount].TargetClassName  := ClassNameStr;
+  Subscriptions[SubscriptionCount].DelegateName     := DelegateNameStr;
+  Subscriptions[SubscriptionCount].SubscriberMethod := MethodIdx;
 End;
 
 Procedure ParseParam(MIdx: Integer);
@@ -1265,15 +1396,45 @@ Begin
   AddParam(MIdx, PType, PName);
 End;
 
-{ Champ : TypeName deja lu, Name est le premier nom ; accepte une
-  liste separee par des virgules partageant le meme type }
-Procedure ParseFieldRest(ClassIdx: Integer; TypeName, FirstName: String);
+{ Suffixe de tableau fixe optionnel apres un nom : Type Nom[N] ; les
+  crochets ne s'appliquent qu'au nom qui les precede immediatement }
+Procedure ParseArraySuffix(Var IsArray: Boolean; Var ArraySize: Integer);
 Begin
-  AddField(ClassIdx, TypeName, FirstName);
+  IsArray   := False;
+  ArraySize := 0;
+  If CurTokType = Ord('[') Then Begin
+    LexNextToken;
+    IsArray := True;
+    If CurTokType = TOK_INTEGER Then Begin
+      ArraySize := CurTokNum;
+      LexNextToken;
+    End Else
+      ParseError('taille de tableau (entier) attendue, trouve ' +
+                 TokenName(CurTokType));
+    Expect(Ord(']'), ']');
+    If ArraySize <= 0 Then
+      ParseError('taille de tableau invalide (doit etre superieure a 0)');
+  End;
+End;
+
+{ Champ : TypeName deja lu, Name est le premier nom ; accepte une
+  liste separee par des virgules partageant le meme type, chaque nom
+  pouvant recevoir son propre suffixe de tableau fixe }
+Procedure ParseFieldRest(ClassIdx: Integer; TypeName, FirstName: String);
+Var
+  CurName:   String;
+  IsArr:     Boolean;
+  ArrSize:   Integer;
+Begin
+  CurName := FirstName;
+  ParseArraySuffix(IsArr, ArrSize);
+  AddField(ClassIdx, TypeName, CurName, IsArr, ArrSize);
   While AcceptTok(Ord(',')) Do Begin
     If CurTokType = TOK_IDENT Then Begin
-      AddField(ClassIdx, TypeName, CurTokStr);
+      CurName := CurTokStr;
       LexNextToken;
+      ParseArraySuffix(IsArr, ArrSize);
+      AddField(ClassIdx, TypeName, CurName, IsArr, ArrSize);
     End Else
       ParseError('nom de champ attendu, trouve ' + TokenName(CurTokType));
   End;
@@ -1281,9 +1442,11 @@ Begin
 End;
 
 { Methode : parametres entre parentheses, puis soit une simple
-  signature terminee par ; (interface), soit un corps ignore }
-Procedure ParseMethodRest(ClassIdx: Integer; Visibility: Integer;
-                           IsStatic: Boolean; RetType, Name: String);
+  signature terminee par ; (interface), soit un corps ignore.
+  Renvoie l'indice de la methode ajoutee (utilise par TODO 17 pour
+  rattacher un eventuel abonnement SubscribesTo). }
+Function ParseMethodRest(ClassIdx: Integer; Visibility: Integer;
+                          IsStatic: Boolean; RetType, Name: String): Integer;
 Var MIdx: Integer;
 Begin
   MIdx := AddMethod(ClassIdx, RetType, Name, Visibility, IsStatic);
@@ -1297,21 +1460,26 @@ Begin
     LexNextToken   { signature seule : methode d'interface }
   Else Begin
     Expect(Ord('{'), '{');
-    SkipMethodBody;
+    ScanMethodBody(MIdx);
   End;
+  ParseMethodRest := MIdx;
 End;
 
 { Membre de classe/interface : attribut optionnel, delegate, ou
   membre normal (champ ou methode) selon ce qui suit le type/nom }
 Procedure ParseMember(ClassIdx: Integer);
 Var
-  IsStatic:   Boolean;
-  Visibility: Integer;
-  TypeName:   String;
-  Name:       String;
-  MIdx:       Integer;
+  IsStatic:     Boolean;
+  Visibility:   Integer;
+  TypeName:     String;
+  Name:         String;
+  MIdx:         Integer;
+  HasSubscribe: Boolean;
+  SubClassName, SubDelegateName: String;
 Begin
-  If CurTokType = Ord('[') Then SkipAttribute;
+  HasSubscribe := False;
+  If CurTokType = Ord('[') Then
+    ParseAttribute(HasSubscribe, SubClassName, SubDelegateName);
 
   If CurTokType = KW_DELEGATE Then Begin
     LexNextToken;
@@ -1326,7 +1494,10 @@ Begin
     End;
     Expect(Ord(')'), ')');
     Expect(Ord('{'), '{');
-    SkipMethodBody;
+    ScanMethodBody(MIdx);
+    If HasSubscribe Then
+      ParseError('SubscribesTo sur un delegate n''a pas de sens (il faut ' +
+                 'l''appliquer au gestionnaire qui s''y abonne)');
     Exit;
   End;
 
@@ -1334,10 +1505,14 @@ Begin
   TypeName := ParseTypeName;
   Name     := ParseMemberName;
 
-  If CurTokType = Ord('(') Then
-    ParseMethodRest(ClassIdx, Visibility, IsStatic, TypeName, Name)
-  Else
+  If CurTokType = Ord('(') Then Begin
+    MIdx := ParseMethodRest(ClassIdx, Visibility, IsStatic, TypeName, Name);
+    If HasSubscribe Then AddSubscription(SubClassName, SubDelegateName, MIdx);
+  End Else Begin
     ParseFieldRest(ClassIdx, TypeName, Name);
+    If HasSubscribe Then
+      ParseError('SubscribesTo ne peut s''appliquer qu''a une methode, pas a un champ');
+  End;
 End;
 
 { class Nom [extends Parent] [implements I1, I2, ...] suivi d'un bloc
@@ -1407,11 +1582,24 @@ Begin
   MethodCount     := 0;
   ParamCount      := 0;
   ImplementsCount := 0;
+  EnumCount       := 0;
+  EnumValueCount  := 0;
+  LocalCount      := 0;
+  LoopDepth       := 0;
+  SwitchDepth     := 0;
+  TtsDepth        := 0;
+  SubscriptionCount := 0;
   ParseErrors     := 0;
+  RegisterBuiltinEnums;
+  RegisterBuiltinTables;
+  RegisterBuiltinQueryClasses;
+  RegisterBuiltinCollectionClasses;
   LexInit(Opt.SrcFile);
   LexNextToken;
-  While CurTokType <> TOK_EOF Do
-    ParseClassOrInterface;
+  While CurTokType <> TOK_EOF Do Begin
+    If CurTokType = KW_ENUM Then ParseEnumDecl
+    Else ParseClassOrInterface;
+  End;
   LexClose;
 End;
 
@@ -1437,8 +1625,12 @@ Begin
     WriteLn;
 
     Base := Classes[I].FieldStart;
-    For J := 0 To Classes[I].FieldCount - 1 Do
-      WriteLn('    champ   ', Fields[Base + J].TypeName, ' ', Fields[Base + J].Name);
+    For J := 0 To Classes[I].FieldCount - 1 Do Begin
+      Write('    champ   ', Fields[Base + J].TypeName, ' ', Fields[Base + J].Name);
+      If Fields[Base + J].IsArray Then Write('[', Fields[Base + J].ArraySize, ']');
+      Write(' (offset instance=', Fields[Base + J].InstanceOffset, ')');
+      WriteLn;
+    End;
 
     Base := Classes[I].MethodStart;
     For J := 0 To Classes[I].MethodCount - 1 Do Begin
@@ -1477,6 +1669,22 @@ End;
 
 { Portee de classe, avec heritage : recherche un champ ou une methode
   en remontant la chaine extends (soi-meme d'abord, puis les ancetres) }
+{ ParentIdx n'est calcule qu'apres l'analyse complete du programme
+  (ResolveExtends, TODO 06). Comme la resolution d'appels (TODO 13)
+  se fait pendant l'analyse (avant que ce calcul n'ait eu lieu), on
+  retrouve ici le parent a la demande par son nom quand ParentIdx
+  n'est pas encore renseigne, pour que l'heritage fonctionne des le
+  premier passage tant que la classe parente est deja declaree. }
+Function EffectiveParentIdx(ClassIdx: Integer): Integer;
+Begin
+  If Classes[ClassIdx].ParentIdx <> 0 Then
+    EffectiveParentIdx := Classes[ClassIdx].ParentIdx
+  Else If Classes[ClassIdx].ParentName <> '' Then
+    EffectiveParentIdx := FindClass(Classes[ClassIdx].ParentName)
+  Else
+    EffectiveParentIdx := 0;
+End;
+
 Function FindMemberInChain(ClassIdx: Integer; Name: String;
                             Var OwnerClass, MemberIdx: Integer): Integer;
 Var
@@ -1504,7 +1712,7 @@ Begin
         MemberIdx  := Base + I;
         Exit;
       End;
-    Cur := Classes[Cur].ParentIdx;
+    Cur := EffectiveParentIdx(Cur);
     Inc(Steps);
   End;
 End;
@@ -1627,6 +1835,2883 @@ Begin
   For I := 1 To ClassCount Do CheckDuplicateMembers(I);
 End;
 
+{ ============================================================ }
+{ TODO 07 - TYPES COMPOSES : TABLEAUX, CONTAINERS, ENUMS        }
+{ ============================================================ }
+
+{ Les tableaux fixes (Type Nom[N]) sont geres directement dans les
+  champs via ParseArraySuffix/AddField (voir TODO 05, plus haut).
+  Le type container est deja reconnu comme type de base depuis
+  TODO 04 (KW_CONTAINER) ; ses operations (+=, con2Str, conLen,
+  conPeek, conIns, conDel) sont des expressions et seront traitees
+  avec les expressions (TODO 09) et le runtime (TODO 23). Cette
+  section ajoute la derniere piece : la declaration d'enum. }
+
+Function AddEnum(Name: String): Integer;
+Begin
+  If EnumCount >= MAX_ENUM Then
+    FatalError('trop d''enums declares (limite ' + ItoS(MAX_ENUM) + ')');
+  Inc(EnumCount);
+  Enums[EnumCount].Name       := Name;
+  Enums[EnumCount].ValueStart := EnumValueCount + 1;
+  Enums[EnumCount].ValueCount := 0;
+  AddEnum := EnumCount;
+End;
+
+Procedure AddEnumValue(EnumIdx: Integer; Name: String; Ordinal: Integer);
+Begin
+  If EnumValueCount >= MAX_ENUM_VALUE Then
+    FatalError('trop de valeurs d''enum declarees (limite ' +
+               ItoS(MAX_ENUM_VALUE) + ')');
+  Inc(EnumValueCount);
+  EnumValues[EnumValueCount].Name    := Name;
+  EnumValues[EnumValueCount].Ordinal := Ordinal;
+  Inc(Enums[EnumIdx].ValueCount);
+End;
+
+Function FindEnum(Name: String): Integer;
+Var I: Integer;
+Begin
+  FindEnum := 0;
+  For I := 1 To EnumCount Do
+    If Enums[I].Name = Name Then Begin
+      FindEnum := I;
+      Exit;
+    End;
+End;
+
+{ Cherche une valeur nommee au sein d'un enum donne (utilise plus
+  tard par la resolution de Enum::Valeur, TODO 09) }
+Function FindEnumValue(EnumIdx: Integer; Name: String;
+                        Var Ordinal: Integer): Boolean;
+Var I, Base: Integer;
+Begin
+  FindEnumValue := False;
+  Ordinal := 0;
+  Base := Enums[EnumIdx].ValueStart;
+  For I := 0 To Enums[EnumIdx].ValueCount - 1 Do
+    If EnumValues[Base + I].Name = Name Then Begin
+      Ordinal := EnumValues[Base + I].Ordinal;
+      FindEnumValue := True;
+      Exit;
+    End;
+End;
+
+{ enum Nom suivi d'un bloc de valeurs separees par des virgules ;
+  chaque valeur peut fixer explicitement son ordinal entre
+  parentheses (sinon incrementation automatique a partir de 0) }
+Procedure ParseEnumDecl;
+Var
+  Name:        String;
+  EnumIdx:     Integer;
+  NextOrdinal: Integer;
+  ValName:     String;
+  Ordinal:     Integer;
+Begin
+  LexNextToken;   { consomme enum }
+
+  If CurTokType = TOK_IDENT Then Begin
+    Name := CurTokStr;
+    LexNextToken;
+  End Else Begin
+    ParseError('nom d''enum attendu, trouve ' + TokenName(CurTokType));
+    Name := '';
+  End;
+
+  EnumIdx := AddEnum(Name);
+  Expect(Ord('{'), '{');
+
+  NextOrdinal := 0;
+  If CurTokType <> Ord('}') Then
+    While True Do Begin
+      If CurTokType = TOK_IDENT Then Begin
+        ValName := CurTokStr;
+        LexNextToken;
+      End Else Begin
+        ParseError('nom de valeur d''enum attendu, trouve ' +
+                   TokenName(CurTokType));
+        ValName := '';
+      End;
+
+      Ordinal := NextOrdinal;
+      If CurTokType = Ord('(') Then Begin
+        LexNextToken;
+        If CurTokType = TOK_INTEGER Then Begin
+          Ordinal := CurTokNum;
+          LexNextToken;
+        End Else
+          ParseError('valeur entiere attendue, trouve ' + TokenName(CurTokType));
+        Expect(Ord(')'), ')');
+      End;
+      NextOrdinal := Ordinal + 1;
+
+      AddEnumValue(EnumIdx, ValName, Ordinal);
+
+      If Not AcceptTok(Ord(',')) Then Break;
+      If CurTokType = Ord('}') Then Break;   { virgule finale toleree }
+    End;
+
+  Expect(Ord('}'), '}');
+End;
+
+Procedure CheckDuplicateEnums;
+Var I, J: Integer;
+Begin
+  For I := 1 To EnumCount Do Begin
+    If FindClass(Enums[I].Name) <> 0 Then
+      ParseError('enum "' + Enums[I].Name +
+                 '" porte le meme nom qu''une classe/interface');
+    For J := I + 1 To EnumCount Do
+      If Enums[I].Name = Enums[J].Name Then
+        ParseError('enum "' + Enums[J].Name + '" deja declare');
+  End;
+End;
+
+Procedure CheckDuplicateEnumValues(EnumIdx: Integer);
+Var I, J, Base: Integer;
+Begin
+  Base := Enums[EnumIdx].ValueStart;
+  For I := 0 To Enums[EnumIdx].ValueCount - 1 Do
+    For J := I + 1 To Enums[EnumIdx].ValueCount - 1 Do
+      If EnumValues[Base + I].Name = EnumValues[Base + J].Name Then
+        ParseError('valeur "' + EnumValues[Base + J].Name +
+                   '" de l''enum "' + Enums[EnumIdx].Name +
+                   '" deja declaree');
+End;
+
+Procedure ResolveEnums;
+Var I: Integer;
+Begin
+  CheckDuplicateEnums;
+  For I := 1 To EnumCount Do CheckDuplicateEnumValues(I);
+End;
+
+{ Recapitulatif lisible des enums analyses (mode -v) }
+Procedure DumpEnums;
+Var I, J, Base: Integer;
+Begin
+  For I := 1 To EnumCount Do Begin
+    WriteLn('enum ', Enums[I].Name);
+    Base := Enums[I].ValueStart;
+    For J := 0 To Enums[I].ValueCount - 1 Do
+      WriteLn('    valeur  ', EnumValues[Base + J].Name, ' = ',
+              EnumValues[Base + J].Ordinal);
+  End;
+End;
+
+{ ============================================================ }
+{ TODO 08 - VARIABLES, CONSTANTES ET ALLOCATION                 }
+{ ============================================================ }
+
+Const
+  { Tailles en octets utilisees pour les offsets EBP (locales) et les
+    offsets d'instance (champs), modele plat 80386 }
+  SIZE_INT       = 4;
+  SIZE_REAL      = 8;
+  SIZE_BOOLEAN   = 4;
+  SIZE_STR       = 4;    { reference vers une chaine allouee sur le tas }
+  SIZE_DATE      = 4;    { entier : nombre de jours }
+  SIZE_GUID      = 16;
+  SIZE_ANYTYPE   = 8;    { valeur etiquetee : tag + donnee/pointeur }
+  SIZE_CONTAINER = 4;    { reference vers un container aloue sur le tas }
+  SIZE_OBJREF    = 4;    { reference vers une instance de classe/interface }
+  OBJECT_HEADER_SIZE = 4;   { pointeur de table de methodes virtuelles }
+
+Type
+  { Sauvegarde/restauration de l'etat du lexeur, pour un lookahead
+    d'un token sans perturber le flux principal }
+  TLexState = Record
+    LexPos:      LongInt;
+    LexLine:     LongInt;
+    LexCol:      LongInt;
+    CurTokType:  Integer;
+    CurTokStr:   String;
+    CurTokNum:   LongInt;
+    CurTokFloat: Double;
+    CurTokLine:  LongInt;
+    CurTokCol:   LongInt;
+    LastTokType: Integer;
+  End;
+
+Var
+  { Methode dont le corps est en cours d'analyse ; utilise par
+    ResolveIdentType (TODO 09) pour retrouver le type declare d'un
+    identificateur (locale, parametre ou champ) dans une expression }
+  CurParsingMethod: Integer;
+
+Const
+  { Noeuds de l'arbre d'expressions (TODO 09), declares ici car
+    ParseLocalInitializer (juste plus bas) construit deja des
+    expressions completes pour les initialiseurs de variables locales }
+  NK_NONE      = 0;
+  NK_LIT_INT   = 1;
+  NK_LIT_FLOAT = 2;
+  NK_LIT_STR   = 3;
+  NK_LIT_CHAR  = 4;
+  NK_LIT_DATE  = 5;
+  NK_LIT_BOOL  = 6;
+  NK_IDENT     = 7;   { locale, parametre, champ ou classe : resolu par ResolveIdentType }
+  NK_THIS      = 8;
+  NK_SUPER     = 9;
+  NK_UNARY     = 10;  { operateur unaire prefixe : - + ! ~ ++ -- }
+  NK_POSTOP    = 11;  { ++ / -- postfixe }
+  NK_BINARY    = 12;  { operateur binaire arithmetique/logique/bit/comparaison }
+  NK_ASSIGN    = 13;  { = += -= *= /= }
+  NK_MEMBER    = 14;  { a.b }
+  NK_INDEX     = 15;  { a[i] }
+  NK_CALL      = 16;  { a(args) }
+  NK_NEW       = 17;  { new Type(args) }
+  NK_ENUMVAL   = 18;  { Enum::Valeur }
+  NK_CONTLIT   = 19;  { [elem, elem, ...] : litteral container }
+
+  MAX_IR_NODE = {$IFDEF FPC}8192{$ELSE}512{$ENDIF};
+
+Type
+  TIRNode = Record
+    Kind:     Integer;
+    Tok:      Integer;    { operateur (TOK_xxx/Ord(caractere)) ou type de litteral }
+    Text:     String;     { identificateur, texte de litteral chaine/char/date/enum }
+    NumVal:   LongInt;    { valeur entiere/booleenne/ordinale }
+    FloatVal: Double;     { valeur reelle }
+    Left:     Integer;    { operande gauche / objet / operande unaire / callee }
+    Right:    Integer;    { operande droit / indice / premier argument }
+    NextArg:  Integer;    { argument suivant dans un appel ou un new(...) }
+    TypeName: String;     { type infere de l'expression }
+    Line:     Integer;
+    ShortCircuit: Boolean;   { ajoute par TODO 10 : && / || decides par
+                               la seule operande gauche constante }
+  End;
+  TIRTable = Array[1..MAX_IR_NODE] Of TIRNode;
+
+Var
+  IRNodes: TIRTable;
+  IRCount: Integer;
+
+Const
+  { Arbre d'instructions (TODO 10), declare ici car ParseLocalVarDecl
+    (juste plus bas) construit deja des noeuds de declaration pour
+    s'inserer dans la sequence d'instructions d'un bloc }
+  SK_NONE    = 0;
+  SK_BLOCK   = 1;
+  SK_EXPR    = 2;
+  SK_EMPTY   = 3;
+  SK_IF      = 4;
+  SK_VARDECL = 5;
+  SK_SWITCH   = 6;   { ajoute par TODO 11 }
+  SK_CASE     = 7;   { ajoute par TODO 11 : etiquette case/default }
+  SK_WHILE    = 8;   { ajoute par TODO 12 }
+  SK_DOWHILE  = 9;   { ajoute par TODO 12 }
+  SK_FOR      = 10;  { ajoute par TODO 12 }
+  SK_BREAK    = 11;  { ajoute par TODO 12 }
+  SK_CONTINUE = 12;  { ajoute par TODO 12 }
+  SK_RETURN   = 13;  { ajoute par TODO 13 }
+  SK_TRY      = 14;  { ajoute par TODO 16 }
+  SK_CATCH    = 15;  { ajoute par TODO 16 }
+  SK_THROW    = 16;  { ajoute par TODO 16 }
+  SK_WHILESELECT = 17;  { ajoute par TODO 19 : while select ... suivi d'un bloc }
+  SK_SELECT      = 18;  { ajoute par TODO 19 : select ... ; }
+  SK_TTSBEGIN    = 19;  { ajoute par TODO 20 }
+  SK_TTSCOMMIT   = 20;  { ajoute par TODO 20 }
+  SK_TTSABORT    = 21;  { ajoute par TODO 20 }
+  SK_DELETEFROM  = 22;  { ajoute par TODO 20 : delete_from ... ; (SelectVar/ExprNode reutilises) }
+
+  MAX_STMT_NODE = {$IFDEF FPC}8192{$ELSE}512{$ENDIF};
+
+Type
+  TStmtNode = Record
+    Kind:       Integer;
+    ExprNode:   Integer;   { SK_EXPR/SK_SWITCH/SK_WHILE/SK_DOWHILE/SK_FOR/SK_THROW : expression ;
+                             SK_IF/SK_CASE : condition/valeur ; SK_CATCH : type attrape, 0 si generique ;
+                             SK_WHILESELECT/SK_SELECT : condition where, 0 si absente }
+    LocalIdx:   Integer;   { SK_VARDECL : indice dans Locals }
+    FirstChild: Integer;   { SK_BLOCK/SK_SWITCH : premiere instruction du bloc/corps ;
+                             SK_TRY : premier SK_CATCH, chaine via NextStmt }
+    NextStmt:   Integer;   { instruction suivante dans le bloc englobant }
+    ThenStmt:   Integer;   { SK_IF }
+    ElseStmt:   Integer;   { SK_IF, 0 si absent }
+    IsDefault:  Boolean;   { SK_CASE : etiquette default plutot que case }
+    BodyStmt:   Integer;   { corps de SK_WHILE/SK_DOWHILE/SK_FOR/SK_TRY/SK_CATCH/SK_WHILESELECT }
+    ForInit:    Integer;   { ajoute par TODO 12 : instruction d'initialisation du for, 0 si absente }
+    ForIncr:    Integer;   { ajoute par TODO 12 : expression d'increment du for, 0 si absente }
+    FinallyStmt: Integer;  { ajoute par TODO 16 : bloc finally d'un SK_TRY, 0 si absent }
+    SelectVar:   Integer;  { ajoute par TODO 19 : noeud IR de la variable de table }
+    OrderByHead: Integer;  { ajoute par TODO 19 : premier champ order by, chaine via NextArg }
+    ForUpdate:   Boolean;  { ajoute par TODO 19 : select forUpdate }
+    Line:       Integer;
+  End;
+  TStmtTable = Array[1..MAX_STMT_NODE] Of TStmtNode;
+
+Var
+  Stmts:     TStmtTable;
+  StmtCount: Integer;
+
+Function NewStmtNode(Kind: Integer): Integer;
+Begin
+  If StmtCount >= MAX_STMT_NODE Then
+    FatalError('trop de noeuds d''instruction (limite ' + ItoS(MAX_STMT_NODE) + ')');
+  Inc(StmtCount);
+  Stmts[StmtCount].Kind       := Kind;
+  Stmts[StmtCount].ExprNode   := 0;
+  Stmts[StmtCount].LocalIdx   := 0;
+  Stmts[StmtCount].FirstChild := 0;
+  Stmts[StmtCount].NextStmt   := 0;
+  Stmts[StmtCount].ThenStmt   := 0;
+  Stmts[StmtCount].ElseStmt   := 0;
+  Stmts[StmtCount].IsDefault  := False;
+  Stmts[StmtCount].BodyStmt   := 0;
+  Stmts[StmtCount].ForInit    := 0;
+  Stmts[StmtCount].ForIncr    := 0;
+  Stmts[StmtCount].FinallyStmt := 0;
+  Stmts[StmtCount].SelectVar   := 0;
+  Stmts[StmtCount].OrderByHead := 0;
+  Stmts[StmtCount].ForUpdate   := False;
+  Stmts[StmtCount].Line       := CurTokLine;
+  NewStmtNode := StmtCount;
+End;
+
+Procedure SaveLexState(Var S: TLexState);
+Begin
+  S.LexPos      := LexPos;
+  S.LexLine     := LexLine;
+  S.LexCol      := LexCol;
+  S.CurTokType  := CurTokType;
+  S.CurTokStr   := CurTokStr;
+  S.CurTokNum   := CurTokNum;
+  S.CurTokFloat := CurTokFloat;
+  S.CurTokLine  := CurTokLine;
+  S.CurTokCol   := CurTokCol;
+  S.LastTokType := LastTokType;
+End;
+
+Procedure RestoreLexState(Var S: TLexState);
+Begin
+  LexPos      := S.LexPos;
+  LexLine     := S.LexLine;
+  LexCol      := S.LexCol;
+  CurTokType  := S.CurTokType;
+  CurTokStr   := S.CurTokStr;
+  CurTokNum   := S.CurTokNum;
+  CurTokFloat := S.CurTokFloat;
+  CurTokLine  := S.CurTokLine;
+  CurTokCol   := S.CurTokCol;
+  LastTokType := S.LastTokType;
+End;
+
+{ Lookahead d'un token, sans consommer le token courant }
+Function PeekNextTokenType: Integer;
+Var Saved: TLexState;
+Begin
+  SaveLexState(Saved);
+  LexNextToken;
+  PeekNextTokenType := CurTokType;
+  RestoreLexState(Saved);
+End;
+
+{ Taille de stockage d'un type, utilisee pour les offsets EBP et les
+  offsets d'instance ; toute identificateur non reconnu est traite
+  comme une reference d'objet (classe/interface) sur 32 bits }
+Function TypeSize(TypeName: String): Integer;
+Begin
+  If      TypeName = 'int'       Then TypeSize := SIZE_INT
+  Else If TypeName = 'real'      Then TypeSize := SIZE_REAL
+  Else If TypeName = 'boolean'   Then TypeSize := SIZE_BOOLEAN
+  Else If TypeName = 'str'       Then TypeSize := SIZE_STR
+  Else If TypeName = 'date'      Then TypeSize := SIZE_DATE
+  Else If TypeName = 'guid'      Then TypeSize := SIZE_GUID
+  Else If TypeName = 'anytype'   Then TypeSize := SIZE_ANYTYPE
+  Else If TypeName = 'container' Then TypeSize := SIZE_CONTAINER
+  Else If TypeName = 'void'      Then TypeSize := 0
+  Else TypeSize := SIZE_OBJREF;
+End;
+
+{ Description lisible de la valeur par defaut d'un type, quand aucun
+  initialiseur n'est fourni }
+Function DefaultValueDesc(TypeName: String): String;
+Begin
+  If      TypeName = 'int'       Then DefaultValueDesc := '0'
+  Else If TypeName = 'real'      Then DefaultValueDesc := '0.0'
+  Else If TypeName = 'boolean'   Then DefaultValueDesc := 'false'
+  Else If TypeName = 'str'       Then DefaultValueDesc := '"" (chaine vide)'
+  Else If TypeName = 'date'      Then DefaultValueDesc := 'date nulle'
+  Else If TypeName = 'guid'      Then DefaultValueDesc := 'guid nul'
+  Else If TypeName = 'anytype'   Then DefaultValueDesc := 'undefined'
+  Else If TypeName = 'container' Then DefaultValueDesc := '[] (vide)'
+  Else DefaultValueDesc := 'null';
+End;
+
+{ Une declaration ressemble a Type Nom si le token courant est un
+  mot-cle de type de base, ou si deux identificateurs se suivent
+  (Type Nom ou Type est le nom d'une classe/interface) }
+Function LooksLikeVarDecl: Boolean;
+Begin
+  Case CurTokType Of
+    KW_INT, KW_REAL, KW_STR, KW_BOOLEAN, KW_DATE, KW_GUID,
+    KW_ANYTYPE, KW_CONTAINER:
+      LooksLikeVarDecl := True;
+    TOK_IDENT:
+      LooksLikeVarDecl := PeekNextTokenType = TOK_IDENT;
+  Else
+    LooksLikeVarDecl := False;
+  End;
+End;
+
+Function AddLocalVar(MIdx: Integer; TypeName, LName: String;
+                      IsArray: Boolean; ArraySize: Integer): Integer;
+Begin
+  If LocalCount >= MAX_LOCAL_TOTAL Then
+    FatalError('trop de variables locales declarees (limite ' +
+               ItoS(MAX_LOCAL_TOTAL) + ')');
+  Inc(LocalCount);
+  Locals[LocalCount].MethodIdx := MIdx;
+  Locals[LocalCount].Name      := LName;
+  Locals[LocalCount].TypeName  := TypeName;
+  Locals[LocalCount].IsArray   := IsArray;
+  Locals[LocalCount].ArraySize := ArraySize;
+  Locals[LocalCount].Offset    := 0;   { calcule par ComputeLocalOffsets }
+  Locals[LocalCount].HasInit   := False;
+  Locals[LocalCount].ExprNode  := 0;
+  Locals[LocalCount].InitType  := '';
+  Inc(Methods[MIdx].LocalCount);
+  AddLocalVar := LocalCount;
+End;
+
+{ Initialiseur d'une variable locale : un vrai parseur d'expressions
+  (TODO 09) construit maintenant un noeud IR complet, quel que soit
+  la complexite (litteral simple ou expression riche avec appels,
+  new, operateurs...). Comme ParseExpression consomme exactement les
+  tokens de l'expression (parentheses/crochets compris), la virgule
+  ou le point-virgule qui suit est deja le bon delimiteur. }
+Procedure ParseLocalInitializer(LIdx: Integer);
+Var ExprIdx: Integer;
+Begin
+  ExprIdx := ParseExpression;
+  Locals[LIdx].HasInit  := True;
+  Locals[LIdx].ExprNode := ExprIdx;
+  Locals[LIdx].InitType := IRNodes[ExprIdx].TypeName;
+End;
+
+{ Type Nom[N] = Init, Nom2[N2] = Init2, ... ; chaque nom peut avoir
+  son propre suffixe de tableau et son propre initialiseur. Renvoie
+  la premiere instruction SK_VARDECL d'une chaine (une par nom
+  declare), reliees par NextStmt, pour s'inserer dans un bloc
+  (TODO 10) comme n'importe quelle autre instruction. }
+Function ParseLocalVarDecl(MIdx: Integer): Integer;
+Var
+  TypeName: String;
+  Name:     String;
+  IsArr:    Boolean;
+  ArrSize:  Integer;
+  LIdx:     Integer;
+  Head, Tail, S: Integer;
+Begin
+  TypeName := ParseTypeName;
+  Head := 0;
+  Tail := 0;
+  Repeat
+    If CurTokType = TOK_IDENT Then Begin
+      Name := CurTokStr;
+      LexNextToken;
+    End Else Begin
+      ParseError('nom de variable attendu, trouve ' + TokenName(CurTokType));
+      Name := '';
+    End;
+    ParseArraySuffix(IsArr, ArrSize);
+    LIdx := AddLocalVar(MIdx, TypeName, Name, IsArr, ArrSize);
+    If CurTokType = Ord('=') Then Begin
+      LexNextToken;
+      ParseLocalInitializer(LIdx);
+    End;
+    S := NewStmtNode(SK_VARDECL);
+    Stmts[S].LocalIdx := LIdx;
+    If Head = 0 Then Head := S Else Stmts[Tail].NextStmt := S;
+    Tail := S;
+  Until Not AcceptTok(Ord(','));
+  Expect(Ord(';'), ';');
+  ParseLocalVarDecl := Head;
+End;
+
+{ Corps d'une methode : le brace ouvrant a deja ete consomme par
+  l'appelant. Le corps reel de ScanMethodBody est defini en TODO 10,
+  plus bas, une fois le parseur d'instructions disponible. }
+
+{ Offsets d'instance des champs d'une classe, recursif sur extends :
+  chaque classe racine reserve l'entete d'objet (pointeur de table de
+  methodes virtuelles), les classes derivees ajoutent leurs propres
+  champs apres ceux de leur parent. Renvoie la taille totale. }
+Function ComputeInstanceLayout(ClassIdx: Integer): Integer;
+Var
+  BaseSize, I, Base, FSize: Integer;
+Begin
+  If Classes[ClassIdx].ParentIdx <> 0 Then
+    BaseSize := ComputeInstanceLayout(Classes[ClassIdx].ParentIdx)
+  Else
+    BaseSize := OBJECT_HEADER_SIZE;
+
+  Base := Classes[ClassIdx].FieldStart;
+  For I := 0 To Classes[ClassIdx].FieldCount - 1 Do Begin
+    FSize := TypeSize(Fields[Base + I].TypeName);
+    If Fields[Base + I].IsArray Then FSize := FSize * Fields[Base + I].ArraySize;
+    Fields[Base + I].InstanceOffset := BaseSize;
+    BaseSize := BaseSize + FSize;
+  End;
+  ComputeInstanceLayout := BaseSize;
+End;
+
+{ Offsets EBP des variables locales d'une methode : premiere locale a
+  EBP-taille, chacune suivante empilee en dessous }
+Procedure ComputeLocalOffsets(MIdx: Integer);
+Var
+  I, Base, Sz, Running: Integer;
+Begin
+  Base    := Methods[MIdx].LocalStart;
+  Running := 0;
+  For I := 0 To Methods[MIdx].LocalCount - 1 Do Begin
+    Sz := TypeSize(Locals[Base + I].TypeName);
+    If Locals[Base + I].IsArray Then Sz := Sz * Locals[Base + I].ArraySize;
+    Running := Running + Sz;
+    Locals[Base + I].Offset := -Running;
+  End;
+End;
+
+{ Une variable locale ne doit pas porter le meme nom qu'une autre
+  locale ou qu'un parametre de la meme methode }
+Procedure CheckDuplicateLocals(MIdx: Integer);
+Var
+  I, J, LBase, PBase: Integer;
+Begin
+  LBase := Methods[MIdx].LocalStart;
+  PBase := Methods[MIdx].ParamStart;
+
+  For I := 0 To Methods[MIdx].LocalCount - 1 Do
+    For J := I + 1 To Methods[MIdx].LocalCount - 1 Do
+      If Locals[LBase + I].Name = Locals[LBase + J].Name Then
+        ParseError('variable locale "' + Locals[LBase + J].Name +
+                   '" de "' + Methods[MIdx].Name + '" deja declaree');
+
+  For I := 0 To Methods[MIdx].LocalCount - 1 Do
+    For J := 0 To Methods[MIdx].ParamCount - 1 Do
+      If Locals[LBase + I].Name = Params[PBase + J].Name Then
+        ParseError('variable locale "' + Locals[LBase + I].Name +
+                   '" masque le parametre du meme nom dans "' +
+                   Methods[MIdx].Name + '"');
+End;
+
+{ Calcule l'allocation (offsets d'instance et EBP) et verifie les
+  doublons, une fois le programme entierement analyse (TODO 05-07) }
+Procedure ResolveStorage;
+Var I: Integer;
+Begin
+  For I := 1 To ClassCount Do
+    If Not Classes[I].IsInterface Then ComputeInstanceLayout(I);
+  For I := 1 To MethodCount Do Begin
+    ComputeLocalOffsets(I);
+    CheckDuplicateLocals(I);
+  End;
+End;
+
+{ ============================================================ }
+{ TODO 09 - EXPRESSIONS ET OPERATEURS                           }
+{ ============================================================ }
+
+{ Les types NK_xxx/TIRNode et la table IRNodes sont declares plus
+  haut, dans le bloc Const/Type/Var de TODO 08 : ParseLocalInitializer
+  (TODO 08) les utilise deja pour stocker le resultat des expressions
+  d'initialisation, donc ils doivent exister avant ce point du fichier. }
+
+Function ParseAssignExpr: Integer; Forward;
+
+Function NewIRNode(Kind: Integer): Integer;
+Begin
+  If IRCount >= MAX_IR_NODE Then
+    FatalError('trop de noeuds d''expression (limite ' + ItoS(MAX_IR_NODE) + ')');
+  Inc(IRCount);
+  IRNodes[IRCount].Kind     := Kind;
+  IRNodes[IRCount].Tok      := 0;
+  IRNodes[IRCount].Text     := '';
+  IRNodes[IRCount].NumVal   := 0;
+  IRNodes[IRCount].FloatVal := 0;
+  IRNodes[IRCount].Left     := 0;
+  IRNodes[IRCount].Right    := 0;
+  IRNodes[IRCount].NextArg  := 0;
+  IRNodes[IRCount].TypeName := 'anytype';
+  IRNodes[IRCount].Line     := CurTokLine;
+  IRNodes[IRCount].ShortCircuit := False;
+  NewIRNode := IRCount;
+End;
+
+{ Symbole imprimable d'un operateur/litteral, pour le mode debug }
+Function TokenSymbol(Tok: Integer): String;
+Begin
+  Case Tok Of
+    TOK_EQ:      TokenSymbol := '==';
+    TOK_NE:      TokenSymbol := '!=';
+    TOK_LE:      TokenSymbol := '<=';
+    TOK_GE:      TokenSymbol := '>=';
+    TOK_ANDAND:  TokenSymbol := '&&';
+    TOK_OROR:    TokenSymbol := '||';
+    TOK_SHL:     TokenSymbol := '<<';
+    TOK_SHR:     TokenSymbol := '>>';
+    TOK_INCR:    TokenSymbol := '++';
+    TOK_DECR:    TokenSymbol := '--';
+    TOK_PLUSEQ:  TokenSymbol := '+=';
+    TOK_MINUSEQ: TokenSymbol := '-=';
+    TOK_STAREQ:  TokenSymbol := '*=';
+    TOK_SLASHEQ: TokenSymbol := '/=';
+    KW_DIV:      TokenSymbol := 'div';
+    KW_MOD:      TokenSymbol := 'mod';
+  Else
+    If (Tok > 0) And (Tok < 128) Then TokenSymbol := Chr(Tok)
+    Else TokenSymbol := '?';
+  End;
+End;
+
+{ Promotion de type simple pour les operateurs arithmetiques :
+  int et real se combinent en real, deux types identiques se
+  conservent, toute autre combinaison retombe sur anytype }
+Function PromoteType(T1, T2: String): String;
+Begin
+  If (T1 = 'real') Or (T2 = 'real') Then PromoteType := 'real'
+  Else If (T1 = 'int') And (T2 = 'int') Then PromoteType := 'int'
+  Else If T1 = T2 Then PromoteType := T1
+  Else PromoteType := 'anytype';
+End;
+
+{ Type declare d'un identificateur simple, cherche dans les locales
+  et parametres de la methode en cours (TODO 08), puis dans les
+  champs de sa classe en remontant l'heritage (TODO 06) }
+Function ResolveIdentType(Name: String): String;
+Var
+  I, Base, OwnerCls, MemberIdx, Kind: Integer;
+Begin
+  ResolveIdentType := 'anytype';
+  If CurParsingMethod = 0 Then Exit;
+
+  Base := Methods[CurParsingMethod].LocalStart;
+  For I := 0 To Methods[CurParsingMethod].LocalCount - 1 Do
+    If Locals[Base + I].Name = Name Then Begin
+      ResolveIdentType := Locals[Base + I].TypeName;
+      Exit;
+    End;
+
+  Base := Methods[CurParsingMethod].ParamStart;
+  For I := 0 To Methods[CurParsingMethod].ParamCount - 1 Do
+    If Params[Base + I].Name = Name Then Begin
+      ResolveIdentType := Params[Base + I].TypeName;
+      Exit;
+    End;
+
+  Kind := FindMemberInChain(Methods[CurParsingMethod].ClassIdx, Name,
+                             OwnerCls, MemberIdx);
+  If Kind = MEMBER_FIELD Then
+    ResolveIdentType := Fields[MemberIdx].TypeName
+  Else If Kind = MEMBER_METHOD Then
+    ResolveIdentType := Methods[MemberIdx].RetType;
+End;
+
+{ Le nom d'un membre est normalement un identificateur, mais insert/
+  update/delete/select restent utilisables comme noms de methode sur
+  un buffer de table (custGroup.insert(), custGroup.update()...),
+  comme en X++ reel : ce sont des mots-cles reserves uniquement en
+  position d'instruction, pas apres un point }
+Function ParseMemberAccess(Obj: Integer): Integer;
+Var
+  N: Integer;
+  MName: String;
+  AotTableIdx, AotFieldIdx: Integer;
+Begin
+  If (CurTokType = TOK_IDENT) Or (CurTokType = KW_INSERT) Or
+     (CurTokType = KW_UPDATE) Or (CurTokType = KW_DELETE) Or
+     (CurTokType = KW_SELECT) Then Begin
+    MName := CurTokStr;
+    LexNextToken;
+  End Else Begin
+    ParseError('nom de membre attendu, trouve ' + TokenName(CurTokType));
+    MName := '';
+  End;
+  N := NewIRNode(NK_MEMBER);
+  IRNodes[N].Left     := Obj;
+  IRNodes[N].Text     := MName;
+  IRNodes[N].TypeName := 'anytype';   { resolution complete avec TODO 13 }
+
+  { Si l'objet est une table AOT simulee connue (TODO 18) et que le
+    nom designe un de ses champs, on retrouve le vrai type du champ ;
+    un champ non modelise (notre AOT est volontairement minimal)
+    reste anytype sans erreur, plutot que de rejeter du code valide }
+  AotTableIdx := FindAotTable(IRNodes[Obj].TypeName);
+  If AotTableIdx <> 0 Then Begin
+    AotFieldIdx := FindAotField(AotTableIdx, MName);
+    If AotFieldIdx <> 0 Then IRNodes[N].TypeName := AotFieldTypeName(AotFieldIdx);
+  End;
+
+  ParseMemberAccess := N;
+End;
+
+Function ParseIndex(Obj: Integer): Integer;
+Var N, Idx: Integer;
+Begin
+  Idx := ParseExpression;
+  Expect(Ord(']'), ']');
+  N := NewIRNode(NK_INDEX);
+  IRNodes[N].Left     := Obj;
+  IRNodes[N].Right    := Idx;
+  IRNodes[N].TypeName := IRNodes[Obj].TypeName;
+  ParseIndex := N;
+End;
+
+{ Resout la cible d'un appel quand c'est possible : nom simple
+  (implicitement this.Nom) ou obj.Nom lorsque le type statique de obj
+  est une classe/interface declaree dans ce programme. Ne rapporte
+  rien si la cible n'a pas ete resolue (fonction globale du runtime,
+  table ou classe AOT externe...) : voir TODO 13. }
+Function ParseCall(Callee: Integer): Integer;
+Var
+  N, ArgHead, ArgTail, ArgNode: Integer;
+  OwnerCls, MemberIdx, Kind, TargetClass: Integer;
+  CalleeName: String;
+Begin
+  ArgHead := 0;
+  If CurTokType <> Ord(')') Then Begin
+    ArgHead := ParseAssignExpr;
+    ArgTail := ArgHead;
+    While AcceptTok(Ord(',')) Do Begin
+      ArgNode := ParseAssignExpr;
+      IRNodes[ArgTail].NextArg := ArgNode;
+      ArgTail := ArgNode;
+    End;
+  End;
+  Expect(Ord(')'), ')');
+  N := NewIRNode(NK_CALL);
+  IRNodes[N].Left     := Callee;
+  IRNodes[N].Right    := ArgHead;
+  IRNodes[N].TypeName := 'anytype';
+
+  { tableNum(Table) et fieldNum(Table, Champ) sont des pseudo-appels
+    resolus au moment de la compilation contre le modele de table AOT
+    simule (TODO 18), pas des methodes ordinaires }
+  If (IRNodes[Callee].Kind = NK_IDENT) And (IRNodes[Callee].Text = 'tableNum') Then Begin
+    ResolveTableNumCall(N, ArgHead);
+    ParseCall := N;
+    Exit;
+  End Else If (IRNodes[Callee].Kind = NK_IDENT) And (IRNodes[Callee].Text = 'fieldNum') Then Begin
+    ResolveFieldNumCall(N, ArgHead);
+    ParseCall := N;
+    Exit;
+  End;
+
+  Kind := MEMBER_NONE;
+  CalleeName := '';
+  If IRNodes[Callee].Kind = NK_IDENT Then Begin
+    CalleeName := IRNodes[Callee].Text;
+    If CurParsingMethod <> 0 Then
+      Kind := FindMemberInChain(Methods[CurParsingMethod].ClassIdx, CalleeName,
+                                 OwnerCls, MemberIdx);
+  End Else If IRNodes[Callee].Kind = NK_MEMBER Then Begin
+    CalleeName := IRNodes[Callee].Text;
+    TargetClass := FindClass(IRNodes[IRNodes[Callee].Left].TypeName);
+    If TargetClass <> 0 Then
+      Kind := FindMemberInChain(TargetClass, CalleeName, OwnerCls, MemberIdx)
+    Else If FindAotTable(IRNodes[IRNodes[Callee].Left].TypeName) <> 0 Then Begin
+      { methodes de buffer de table standard, simulees (TODO 20) :
+        insert/update/delete/clear n'existent dans aucune classe
+        utilisateur, elles sont reconnues directement ici }
+      If (CalleeName = 'insert') Or (CalleeName = 'update') Or
+         (CalleeName = 'delete') Or (CalleeName = 'clear') Then Begin
+        If ArgHead <> 0 Then
+          ParseError('"' + CalleeName +
+                     '" ne prend pas d''argument sur un buffer de table');
+        IRNodes[N].TypeName := 'void';
+      End;
+    End;
+  End Else If IRNodes[Callee].Kind = NK_SUPER Then Begin
+    { super(args) : appel explicite au constructeur de la classe parente }
+    CalleeName := 'new';
+    TargetClass := FindClass(IRNodes[Callee].TypeName);
+    If TargetClass <> 0 Then
+      Kind := FindMemberInChain(TargetClass, 'new', OwnerCls, MemberIdx);
+  End;
+
+  If Kind = MEMBER_METHOD Then Begin
+    IRNodes[N].TypeName := Methods[MemberIdx].RetType;
+    CheckCallArgs(MemberIdx, ArgHead, '"' + CalleeName + '"');
+
+    { QueryRun.get(tableNum(X)) (TODO 21) : le type de retour reel
+      depend de la table demandee, pas seulement de la signature
+      generique (anytype) de get() }
+    If (CalleeName = 'get') And (ArgHead <> 0) And
+       (IRNodes[ArgHead].Kind = NK_CALL) And
+       (IRNodes[ArgHead].TypeName = 'int') And
+       (IRNodes[IRNodes[ArgHead].Left].Kind = NK_IDENT) And
+       (IRNodes[IRNodes[ArgHead].Left].Text = 'tableNum') Then
+      IRNodes[N].TypeName := AotTableName(IRNodes[ArgHead].NumVal);
+  End;
+
+  ParseCall := N;
+End;
+
+{ new Type(args) : le type de l'expression est Type lui-meme, pas un
+  type de retour d'appel ordinaire }
+Function ParseNewExpr: Integer;
+Var
+  N, ArgHead, ArgTail, ArgNode: Integer;
+  ClassIdx, CtorIdx, OwnerCls, Kind: Integer;
+  TypeNameStr: String;
+Begin
+  LexNextToken;   { consomme new }
+  If CurTokType = TOK_IDENT Then Begin
+    TypeNameStr := CurTokStr;
+    LexNextToken;
+  End Else Begin
+    ParseError('nom de classe attendu apres new, trouve ' + TokenName(CurTokType));
+    TypeNameStr := '';
+  End;
+
+  ArgHead := 0;
+  If CurTokType = Ord('(') Then Begin
+    LexNextToken;
+    If CurTokType <> Ord(')') Then Begin
+      ArgHead := ParseAssignExpr;
+      ArgTail := ArgHead;
+      While AcceptTok(Ord(',')) Do Begin
+        ArgNode := ParseAssignExpr;
+        IRNodes[ArgTail].NextArg := ArgNode;
+        ArgTail := ArgNode;
+      End;
+    End;
+    Expect(Ord(')'), ')');
+  End;
+
+  N := NewIRNode(NK_NEW);
+  IRNodes[N].Text     := TypeNameStr;
+  IRNodes[N].Right    := ArgHead;
+  IRNodes[N].TypeName := TypeNameStr;
+
+  { Verification d'arite/types du constructeur (TODO 13), uniquement
+    pour les classes declarees dans ce programme ; un constructeur
+    herite (via extends) est trouve normalement par FindMemberInChain.
+    Si aucun constructeur explicite n'existe, le constructeur implicite
+    n'accepte aucun argument. }
+  ClassIdx := FindClass(TypeNameStr);
+  If ClassIdx <> 0 Then Begin
+    Kind := FindMemberInChain(ClassIdx, 'new', OwnerCls, CtorIdx);
+    If Kind = MEMBER_METHOD Then
+      CheckCallArgs(CtorIdx, ArgHead, 'le constructeur de "' + TypeNameStr + '"')
+    Else If CountCallArgs(ArgHead) > 0 Then
+      ParseError('"' + TypeNameStr +
+                 '" n''a pas de constructeur acceptant des arguments');
+  End;
+
+  ParseNewExpr := N;
+End;
+
+{ Identificateur simple, ou Enum::Valeur }
+Function ParseIdentOrEnum: Integer;
+Var
+  Name:    String;
+  N:       Integer;
+  EnumIdx: Integer;
+  Ordinal: Integer;
+Begin
+  Name := CurTokStr;
+  LexNextToken;
+
+  If CurTokType = TOK_COLONCOLON Then Begin
+    LexNextToken;
+    EnumIdx := FindEnum(Name);
+    N := NewIRNode(NK_ENUMVAL);
+    If CurTokType = TOK_IDENT Then Begin
+      IRNodes[N].Text := Name + '::' + CurTokStr;
+      If EnumIdx <> 0 Then Begin
+        If FindEnumValue(EnumIdx, CurTokStr, Ordinal) Then
+          IRNodes[N].NumVal := Ordinal
+        Else
+          ParseError('valeur "' + CurTokStr + '" inconnue dans l''enum "' +
+                     Name + '"');
+      End;
+      { EnumIdx = 0 : identificateur non declare localement (ex. un
+        enum standard de l'AOT comme CustVendorBlocked) ; accepte
+        sans verification, hors de portee de ce sous-ensemble }
+      LexNextToken;
+    End Else
+      ParseError('nom de valeur d''enum attendu, trouve ' + TokenName(CurTokType));
+    IRNodes[N].TypeName := Name;
+    ParseIdentOrEnum := N;
+    Exit;
+  End;
+
+  N := NewIRNode(NK_IDENT);
+  IRNodes[N].Text     := Name;
+  IRNodes[N].TypeName := ResolveIdentType(Name);
+  ParseIdentOrEnum := N;
+End;
+
+{ [elem, elem, ...] : litteral container, elements chaines via NextArg
+  comme les arguments d'un appel }
+Function ParseContainerLit: Integer;
+Var N, ElemHead, ElemTail, Elem: Integer;
+Begin
+  LexNextToken;   { consomme [ }
+  ElemHead := 0;
+  If CurTokType <> Ord(']') Then Begin
+    ElemHead := ParseAssignExpr;
+    ElemTail := ElemHead;
+    While AcceptTok(Ord(',')) Do Begin
+      Elem := ParseAssignExpr;
+      IRNodes[ElemTail].NextArg := Elem;
+      ElemTail := Elem;
+    End;
+  End;
+  Expect(Ord(']'), ']');
+  N := NewIRNode(NK_CONTLIT);
+  IRNodes[N].Right    := ElemHead;
+  IRNodes[N].TypeName := 'container';
+  ParseContainerLit := N;
+End;
+
+Function ParsePrimary: Integer;
+Var N: Integer;
+Begin
+  Case CurTokType Of
+    TOK_INTEGER: Begin
+      N := NewIRNode(NK_LIT_INT);
+      IRNodes[N].NumVal   := CurTokNum;
+      IRNodes[N].TypeName := 'int';
+      LexNextToken;
+    End;
+    TOK_FLOAT: Begin
+      N := NewIRNode(NK_LIT_FLOAT);
+      IRNodes[N].Text     := CurTokStr;
+      IRNodes[N].FloatVal := CurTokFloat;
+      IRNodes[N].TypeName := 'real';
+      LexNextToken;
+    End;
+    TOK_STRING: Begin
+      N := NewIRNode(NK_LIT_STR);
+      IRNodes[N].Text     := CurTokStr;
+      IRNodes[N].TypeName := 'str';
+      LexNextToken;
+    End;
+    TOK_CHAR: Begin
+      N := NewIRNode(NK_LIT_CHAR);
+      IRNodes[N].Text     := CurTokStr;
+      IRNodes[N].TypeName := 'str';
+      LexNextToken;
+    End;
+    TOK_DATELIT: Begin
+      N := NewIRNode(NK_LIT_DATE);
+      IRNodes[N].Text     := CurTokStr;
+      IRNodes[N].TypeName := 'date';
+      LexNextToken;
+    End;
+    KW_TRUE, KW_FALSE: Begin
+      N := NewIRNode(NK_LIT_BOOL);
+      If CurTokType = KW_TRUE Then IRNodes[N].NumVal := 1 Else IRNodes[N].NumVal := 0;
+      IRNodes[N].TypeName := 'boolean';
+      LexNextToken;
+    End;
+    KW_THIS: Begin
+      { le type de "this" est la classe en cours d'analyse (TODO 17),
+        pour que this.methode(...) se resolve comme n'importe quel
+        appel obj.methode(...) }
+      N := NewIRNode(NK_THIS);
+      IRNodes[N].TypeName := 'anytype';
+      If CurParsingMethod <> 0 Then
+        IRNodes[N].TypeName := Classes[Methods[CurParsingMethod].ClassIdx].Name;
+      LexNextToken;
+    End;
+    KW_SUPER: Begin
+      { le type de "super" est la classe parente de la classe en
+        cours d'analyse (TODO 14), pour que super.methode() et
+        super(...) se resolvent comme un appel sur cette classe }
+      N := NewIRNode(NK_SUPER);
+      IRNodes[N].TypeName := 'anytype';
+      If CurParsingMethod <> 0 Then Begin
+        IRNodes[N].TypeName := Classes[Methods[CurParsingMethod].ClassIdx].ParentName;
+        If IRNodes[N].TypeName = '' Then IRNodes[N].TypeName := 'anytype';
+      End;
+      LexNextToken;
+    End;
+    KW_NEW:
+      N := ParseNewExpr;
+    TOK_IDENT:
+      N := ParseIdentOrEnum;
+  Else
+    If CurTokType = Ord('(') Then Begin
+      LexNextToken;
+      N := ParseExpression;
+      Expect(Ord(')'), ')');
+    End Else If CurTokType = Ord('[') Then Begin
+      N := ParseContainerLit;
+    End Else Begin
+      ParseError('expression attendue, trouve ' + TokenName(CurTokType));
+      N := NewIRNode(NK_NONE);
+      If CurTokType <> TOK_EOF Then LexNextToken;
+    End;
+  End;
+  ParsePrimary := N;
+End;
+
+Function ParsePostfix: Integer;
+Var N, P: Integer;
+Begin
+  N := ParsePrimary;
+  While True Do Begin
+    If CurTokType = Ord('.') Then Begin
+      LexNextToken;
+      N := ParseMemberAccess(N);
+    End Else If CurTokType = Ord('[') Then Begin
+      LexNextToken;
+      N := ParseIndex(N);
+    End Else If CurTokType = Ord('(') Then Begin
+      LexNextToken;
+      N := ParseCall(N);
+    End Else If (CurTokType = TOK_INCR) Or (CurTokType = TOK_DECR) Then Begin
+      P := NewIRNode(NK_POSTOP);
+      IRNodes[P].Tok      := CurTokType;
+      IRNodes[P].Left     := N;
+      IRNodes[P].TypeName := IRNodes[N].TypeName;
+      LexNextToken;
+      N := P;
+      Break;
+    End Else
+      Break;
+  End;
+  ParsePostfix := N;
+End;
+
+Function ParseUnary: Integer;
+Var N, Sub: Integer; Op: Integer;
+Begin
+  If (CurTokType = Ord('-')) Or (CurTokType = Ord('+')) Or
+     (CurTokType = Ord('!')) Or (CurTokType = Ord('~')) Or
+     (CurTokType = TOK_INCR) Or (CurTokType = TOK_DECR) Then Begin
+    Op := CurTokType;
+    LexNextToken;
+    Sub := ParseUnary;
+    N := NewIRNode(NK_UNARY);
+    IRNodes[N].Tok  := Op;
+    IRNodes[N].Left := Sub;
+    If Op = Ord('!') Then IRNodes[N].TypeName := 'boolean'
+    Else IRNodes[N].TypeName := IRNodes[Sub].TypeName;
+    ParseUnary := N;
+  End Else
+    ParseUnary := ParsePostfix;
+End;
+
+Function ParseMultiplicative: Integer;
+Var Left, Right, N, Op: Integer;
+Begin
+  Left := ParseUnary;
+  While (CurTokType = Ord('*')) Or (CurTokType = Ord('/')) Or
+        (CurTokType = KW_DIV) Or (CurTokType = KW_MOD) Do Begin
+    Op := CurTokType;
+    LexNextToken;
+    Right := ParseUnary;
+    N := NewIRNode(NK_BINARY);
+    IRNodes[N].Tok   := Op;
+    IRNodes[N].Left  := Left;
+    IRNodes[N].Right := Right;
+    If (Op = KW_DIV) Or (Op = KW_MOD) Then
+      IRNodes[N].TypeName := 'int'
+    Else
+      IRNodes[N].TypeName := PromoteType(IRNodes[Left].TypeName, IRNodes[Right].TypeName);
+    Left := N;
+  End;
+  ParseMultiplicative := Left;
+End;
+
+Function ParseAdditive: Integer;
+Var Left, Right, N, Op: Integer;
+Begin
+  Left := ParseMultiplicative;
+  While (CurTokType = Ord('+')) Or (CurTokType = Ord('-')) Do Begin
+    Op := CurTokType;
+    LexNextToken;
+    Right := ParseMultiplicative;
+    N := NewIRNode(NK_BINARY);
+    IRNodes[N].Tok   := Op;
+    IRNodes[N].Left  := Left;
+    IRNodes[N].Right := Right;
+    If (Op = Ord('+')) And
+       ((IRNodes[Left].TypeName = 'str') Or (IRNodes[Right].TypeName = 'str')) Then
+      IRNodes[N].TypeName := 'str'
+    Else
+      IRNodes[N].TypeName := PromoteType(IRNodes[Left].TypeName, IRNodes[Right].TypeName);
+    Left := N;
+  End;
+  ParseAdditive := Left;
+End;
+
+Function ParseShift: Integer;
+Var Left, Right, N, Op: Integer;
+Begin
+  Left := ParseAdditive;
+  While (CurTokType = TOK_SHL) Or (CurTokType = TOK_SHR) Do Begin
+    Op := CurTokType;
+    LexNextToken;
+    Right := ParseAdditive;
+    N := NewIRNode(NK_BINARY);
+    IRNodes[N].Tok      := Op;
+    IRNodes[N].Left     := Left;
+    IRNodes[N].Right    := Right;
+    IRNodes[N].TypeName := 'int';
+    Left := N;
+  End;
+  ParseShift := Left;
+End;
+
+Function ParseRelational: Integer;
+Var Left, Right, N, Op: Integer;
+Begin
+  Left := ParseShift;
+  While (CurTokType = Ord('<')) Or (CurTokType = Ord('>')) Or
+        (CurTokType = TOK_LE) Or (CurTokType = TOK_GE) Do Begin
+    Op := CurTokType;
+    LexNextToken;
+    Right := ParseShift;
+    N := NewIRNode(NK_BINARY);
+    IRNodes[N].Tok      := Op;
+    IRNodes[N].Left     := Left;
+    IRNodes[N].Right    := Right;
+    IRNodes[N].TypeName := 'boolean';
+    Left := N;
+  End;
+  ParseRelational := Left;
+End;
+
+Function ParseEquality: Integer;
+Var Left, Right, N, Op: Integer;
+Begin
+  Left := ParseRelational;
+  While (CurTokType = TOK_EQ) Or (CurTokType = TOK_NE) Do Begin
+    Op := CurTokType;
+    LexNextToken;
+    Right := ParseRelational;
+    N := NewIRNode(NK_BINARY);
+    IRNodes[N].Tok      := Op;
+    IRNodes[N].Left     := Left;
+    IRNodes[N].Right    := Right;
+    IRNodes[N].TypeName := 'boolean';
+    Left := N;
+  End;
+  ParseEquality := Left;
+End;
+
+Function ParseBitAnd: Integer;
+Var Left, Right, N: Integer;
+Begin
+  Left := ParseEquality;
+  While CurTokType = Ord('&') Do Begin
+    LexNextToken;
+    Right := ParseEquality;
+    N := NewIRNode(NK_BINARY);
+    IRNodes[N].Tok      := Ord('&');
+    IRNodes[N].Left     := Left;
+    IRNodes[N].Right    := Right;
+    IRNodes[N].TypeName := 'int';
+    Left := N;
+  End;
+  ParseBitAnd := Left;
+End;
+
+Function ParseBitXor: Integer;
+Var Left, Right, N: Integer;
+Begin
+  Left := ParseBitAnd;
+  While CurTokType = Ord('^') Do Begin
+    LexNextToken;
+    Right := ParseBitAnd;
+    N := NewIRNode(NK_BINARY);
+    IRNodes[N].Tok      := Ord('^');
+    IRNodes[N].Left     := Left;
+    IRNodes[N].Right    := Right;
+    IRNodes[N].TypeName := 'int';
+    Left := N;
+  End;
+  ParseBitXor := Left;
+End;
+
+Function ParseBitOr: Integer;
+Var Left, Right, N: Integer;
+Begin
+  Left := ParseBitXor;
+  While CurTokType = Ord('|') Do Begin
+    LexNextToken;
+    Right := ParseBitXor;
+    N := NewIRNode(NK_BINARY);
+    IRNodes[N].Tok      := Ord('|');
+    IRNodes[N].Left     := Left;
+    IRNodes[N].Right    := Right;
+    IRNodes[N].TypeName := 'int';
+    Left := N;
+  End;
+  ParseBitOr := Left;
+End;
+
+Function ParseLogicalAnd: Integer;
+Var Left, Right, N: Integer; SCVal: Boolean;
+Begin
+  Left := ParseBitOr;
+  While CurTokType = TOK_ANDAND Do Begin
+    LexNextToken;
+    Right := ParseBitOr;
+    N := NewIRNode(NK_BINARY);
+    IRNodes[N].Tok      := TOK_ANDAND;
+    IRNodes[N].Left     := Left;
+    IRNodes[N].Right    := Right;
+    IRNodes[N].TypeName := 'boolean';
+    IRNodes[N].ShortCircuit := ShortCircuitConst(N, SCVal);
+    Left := N;
+  End;
+  ParseLogicalAnd := Left;
+End;
+
+Function ParseLogicalOr: Integer;
+Var Left, Right, N: Integer; SCVal: Boolean;
+Begin
+  Left := ParseLogicalAnd;
+  While CurTokType = TOK_OROR Do Begin
+    LexNextToken;
+    Right := ParseLogicalAnd;
+    N := NewIRNode(NK_BINARY);
+    IRNodes[N].Tok      := TOK_OROR;
+    IRNodes[N].Left     := Left;
+    IRNodes[N].Right    := Right;
+    IRNodes[N].TypeName := 'boolean';
+    IRNodes[N].ShortCircuit := ShortCircuitConst(N, SCVal);
+    Left := N;
+  End;
+  ParseLogicalOr := Left;
+End;
+
+{ = += -= *= /= : associatif a droite, priorite la plus basse }
+Function ParseAssignExpr: Integer;
+Var Left, Right, N, Op: Integer;
+Begin
+  Left := ParseLogicalOr;
+  If (CurTokType = Ord('=')) Or (CurTokType = TOK_PLUSEQ) Or
+     (CurTokType = TOK_MINUSEQ) Or (CurTokType = TOK_STAREQ) Or
+     (CurTokType = TOK_SLASHEQ) Then Begin
+    Op := CurTokType;
+    LexNextToken;
+    Right := ParseAssignExpr;
+    N := NewIRNode(NK_ASSIGN);
+    IRNodes[N].Tok      := Op;
+    IRNodes[N].Left     := Left;
+    IRNodes[N].Right    := Right;
+    IRNodes[N].TypeName := IRNodes[Left].TypeName;
+    ParseAssignExpr := N;
+  End Else
+    ParseAssignExpr := Left;
+End;
+
+Function ParseExpression: Integer;
+Begin
+  ParseExpression := ParseAssignExpr;
+End;
+
+{ Rendu textuel compact d'une expression, pour verification en mode -v }
+Function DescribeExpr(NodeIdx: Integer): String;
+Begin
+  If NodeIdx = 0 Then Begin
+    DescribeExpr := '?';
+    Exit;
+  End;
+  Case IRNodes[NodeIdx].Kind Of
+    NK_LIT_INT:   DescribeExpr := ItoS(IRNodes[NodeIdx].NumVal);
+    NK_LIT_FLOAT: DescribeExpr := IRNodes[NodeIdx].Text;
+    NK_LIT_STR:   DescribeExpr := '"' + IRNodes[NodeIdx].Text + '"';
+    NK_LIT_CHAR:  DescribeExpr := '''' + IRNodes[NodeIdx].Text + '''';
+    NK_LIT_DATE:  DescribeExpr := '''' + IRNodes[NodeIdx].Text + '''';
+    NK_LIT_BOOL:
+      If IRNodes[NodeIdx].NumVal <> 0 Then DescribeExpr := 'true'
+      Else DescribeExpr := 'false';
+    NK_IDENT:   DescribeExpr := IRNodes[NodeIdx].Text;
+    NK_THIS:    DescribeExpr := 'this';
+    NK_SUPER:   DescribeExpr := 'super';
+    NK_ENUMVAL: DescribeExpr := IRNodes[NodeIdx].Text;
+    NK_UNARY:
+      DescribeExpr := TokenSymbol(IRNodes[NodeIdx].Tok) +
+                      DescribeExpr(IRNodes[NodeIdx].Left);
+    NK_POSTOP:
+      DescribeExpr := DescribeExpr(IRNodes[NodeIdx].Left) +
+                      TokenSymbol(IRNodes[NodeIdx].Tok);
+    NK_BINARY:
+      DescribeExpr := '(' + DescribeExpr(IRNodes[NodeIdx].Left) + ' ' +
+                      TokenSymbol(IRNodes[NodeIdx].Tok) + ' ' +
+                      DescribeExpr(IRNodes[NodeIdx].Right) + ')';
+    NK_ASSIGN:
+      DescribeExpr := DescribeExpr(IRNodes[NodeIdx].Left) + ' ' +
+                      TokenSymbol(IRNodes[NodeIdx].Tok) + ' ' +
+                      DescribeExpr(IRNodes[NodeIdx].Right);
+    NK_MEMBER:
+      DescribeExpr := DescribeExpr(IRNodes[NodeIdx].Left) + '.' +
+                      IRNodes[NodeIdx].Text;
+    NK_INDEX:
+      DescribeExpr := DescribeExpr(IRNodes[NodeIdx].Left) + '[' +
+                      DescribeExpr(IRNodes[NodeIdx].Right) + ']';
+    NK_CALL:
+      DescribeExpr := DescribeExpr(IRNodes[NodeIdx].Left) + '(...)';
+    NK_NEW:
+      DescribeExpr := 'new ' + IRNodes[NodeIdx].Text + '(...)';
+    NK_CONTLIT:
+      DescribeExpr := '[...]';
+  Else
+    DescribeExpr := '?';
+  End;
+End;
+
+{ Recapitulatif lisible des variables locales de chaque methode,
+  avec offset EBP, type infere et expression d'initialisation
+  (litterale ou complexe, defaut sinon) (mode -v) }
+Procedure DumpLocals;
+Var
+  M, I, Base: Integer;
+Begin
+  For M := 1 To MethodCount Do Begin
+    If Methods[M].LocalCount = 0 Then Continue;
+    WriteLn('methode ', Methods[M].Name, ' (', Classes[Methods[M].ClassIdx].Name, ')');
+    Base := Methods[M].LocalStart;
+    For I := 0 To Methods[M].LocalCount - 1 Do Begin
+      Write('    locale  ', Locals[Base + I].TypeName, ' ', Locals[Base + I].Name);
+      If Locals[Base + I].IsArray Then
+        Write('[', Locals[Base + I].ArraySize, ']');
+      Write(' (EBP', Locals[Base + I].Offset, ') = ');
+      If Not Locals[Base + I].HasInit Then
+        Write(DefaultValueDesc(Locals[Base + I].TypeName), ' (defaut)')
+      Else
+        Write(DescribeExpr(Locals[Base + I].ExprNode),
+              ' : ', Locals[Base + I].InitType);
+      WriteLn;
+    End;
+  End;
+End;
+
+{ ============================================================ }
+{ TODO 10 - INSTRUCTIONS DE BASE ET IF/ELSE                     }
+{ ============================================================ }
+
+{ Determine si un && / || est decide par sa seule operande gauche,
+  sans avoir besoin d'evaluer la droite (evaluation paresseuse) :
+  false && X vaut toujours false, true || X vaut toujours true }
+Function ShortCircuitConst(NodeIdx: Integer; Var Value: Boolean): Boolean;
+Var LeftIdx: Integer;
+Begin
+  ShortCircuitConst := False;
+  Value := False;
+  If IRNodes[NodeIdx].Kind <> NK_BINARY Then Exit;
+  LeftIdx := IRNodes[NodeIdx].Left;
+  If (LeftIdx = 0) Or (IRNodes[LeftIdx].Kind <> NK_LIT_BOOL) Then Exit;
+
+  If (IRNodes[NodeIdx].Tok = TOK_ANDAND) And (IRNodes[LeftIdx].NumVal = 0) Then Begin
+    Value := False;
+    ShortCircuitConst := True;
+  End Else If (IRNodes[NodeIdx].Tok = TOK_OROR) And (IRNodes[LeftIdx].NumVal <> 0) Then Begin
+    Value := True;
+    ShortCircuitConst := True;
+  End;
+End;
+
+Function ParseStatement(MIdx: Integer): Integer; Forward;
+Function ParseStmtBlock(MIdx: Integer): Integer; Forward;
+
+{ if (cond) instruction [else instruction] ; "else if" n'est qu'un
+  else suivi d'une autre instruction if, geree par la recursion }
+Function ParseIfStatement(MIdx: Integer): Integer;
+Var
+  N, CondExpr, ThenS, ElseS: Integer;
+Begin
+  LexNextToken;   { consomme if }
+  Expect(Ord('('), '(');
+  CondExpr := ParseExpression;
+  Expect(Ord(')'), ')');
+  ThenS := ParseStatement(MIdx);
+  ElseS := 0;
+  If CurTokType = KW_ELSE Then Begin
+    LexNextToken;
+    ElseS := ParseStatement(MIdx);
+  End;
+  N := NewStmtNode(SK_IF);
+  Stmts[N].ExprNode := CondExpr;
+  Stmts[N].ThenStmt := ThenS;
+  Stmts[N].ElseStmt := ElseS;
+  ParseIfStatement := N;
+End;
+
+{ Avale un "maillon" d'instruction non encore geree, en equilibrant
+  parentheses et accolades, jusqu'a un point-virgule ou une accolade
+  fermante de niveau 0 }
+Procedure SkipStatementChunk;
+Var ParenDepth, BraceDepth: Integer;
+Begin
+  ParenDepth := 0;
+  BraceDepth := 0;
+  While CurTokType <> TOK_EOF Do Begin
+    If CurTokType = Ord('(') Then Begin
+      Inc(ParenDepth);
+      LexNextToken;
+    End Else If CurTokType = Ord(')') Then Begin
+      Dec(ParenDepth);
+      LexNextToken;
+    End Else If CurTokType = Ord('{') Then Begin
+      Inc(BraceDepth);
+      LexNextToken;
+    End Else If CurTokType = Ord('}') Then Begin
+      Dec(BraceDepth);
+      LexNextToken;
+      If (BraceDepth = 0) And (ParenDepth = 0) Then Exit;
+    End Else If (CurTokType = Ord(';')) And (ParenDepth = 0) And (BraceDepth = 0) Then Begin
+      LexNextToken;
+      Exit;
+    End Else
+      LexNextToken;
+  End;
+End;
+
+{ Ignore une instruction dont la grammaire n'est pas encore geree
+  (while, do, for, switch, try, return, break, continue, tts*,
+  select, delete_from...), en suivant les enchainements naturels
+  (catch/finally apres try, while apres un do). Chaque construction
+  garde ses parentheses et accolades equilibrees, donc l'instruction
+  suivante reprend toujours au bon endroit ; le contenu detaille sera
+  traite par les TODO consacres (11 : switch, 12 : boucles, etc). }
+Function SkipUnknownStatement: Integer;
+Begin
+  SkipStatementChunk;
+  While (CurTokType = KW_ELSE) Or (CurTokType = KW_CATCH) Or
+        (CurTokType = KW_FINALLY) Or (CurTokType = KW_WHILE) Do Begin
+    LexNextToken;
+    SkipStatementChunk;
+  End;
+  SkipUnknownStatement := NewStmtNode(SK_EMPTY);
+End;
+
+{ Une instruction : bloc, vide, if/else, declaration de variable,
+  ou instruction-expression (affectation, appel de methode) }
+Function ParseStatement(MIdx: Integer): Integer;
+Var N: Integer;
+Begin
+  If CurTokType = Ord('{') Then Begin
+    LexNextToken;
+    N := ParseStmtBlock(MIdx);
+  End Else If CurTokType = Ord(';') Then Begin
+    LexNextToken;
+    N := NewStmtNode(SK_EMPTY);
+  End Else If CurTokType = KW_IF Then
+    N := ParseIfStatement(MIdx)
+  Else If CurTokType = KW_SWITCH Then
+    N := ParseSwitchStatement(MIdx)
+  Else If CurTokType = KW_WHILE Then Begin
+    { while(cond) est une boucle ; while select ... est la requete
+      DSL (TODO 19), distinguees par lookahead }
+    If PeekNextTokenType = Ord('(') Then N := ParseWhileStatement(MIdx)
+    Else If PeekNextTokenType = KW_SELECT Then N := ParseWhileSelectStatement(MIdx)
+    Else N := SkipUnknownStatement;
+  End
+  Else If CurTokType = KW_DO Then
+    N := ParseDoWhileStatement(MIdx)
+  Else If CurTokType = KW_FOR Then
+    N := ParseForStatement(MIdx)
+  Else If CurTokType = KW_BREAK Then
+    N := ParseBreakStatement
+  Else If CurTokType = KW_CONTINUE Then
+    N := ParseContinueStatement
+  Else If CurTokType = KW_RETURN Then
+    N := ParseReturnStatement(MIdx)
+  Else If CurTokType = KW_TRY Then
+    N := ParseTryStatement(MIdx)
+  Else If CurTokType = KW_THROW Then
+    N := ParseThrowStatement(MIdx)
+  Else If CurTokType = KW_SELECT Then
+    N := ParseSelectStatement
+  Else If CurTokType = KW_TTSBEGIN Then
+    N := ParseTtsBeginStatement
+  Else If CurTokType = KW_TTSCOMMIT Then
+    N := ParseTtsCommitStatement
+  Else If CurTokType = KW_TTSABORT Then
+    N := ParseTtsAbortStatement
+  Else If CurTokType = KW_DELETE_FROM Then
+    N := ParseDeleteFromStatement
+  Else If (CurTokType = TOK_IDENT) And
+          ((CurTokStr = 'print') Or (CurTokStr = 'pause')) Then
+    { syntaxe heritee d'Axapta 2.x : print "texte" ; et pause ; ne
+      sont pas des appels de methode ordinaires (pas de parentheses) }
+    N := SkipUnknownStatement
+  Else If LooksLikeVarDecl Then
+    N := ParseLocalVarDecl(MIdx)
+  Else Begin
+    N := NewStmtNode(SK_EXPR);
+    Stmts[N].ExprNode := ParseExpression;
+    Expect(Ord(';'), ';');
+  End;
+  ParseStatement := N;
+End;
+
+{ Bloc d'instructions : l'accolade ouvrante a deja ete consommee par
+  l'appelant. Une instruction peut renvoyer plusieurs maillons
+  chaines (declarations multi-noms) : on avance jusqu'au dernier
+  avant de rattacher l'instruction suivante. }
+Function ParseStmtBlock(MIdx: Integer): Integer;
+Var Head, Tail, S: Integer;
+Begin
+  Head := NewStmtNode(SK_BLOCK);
+  Tail := 0;
+  While (CurTokType <> Ord('}')) And (CurTokType <> TOK_EOF) Do Begin
+    S := ParseStatement(MIdx);
+    If Tail = 0 Then Stmts[Head].FirstChild := S
+    Else Stmts[Tail].NextStmt := S;
+    Tail := S;
+    While Stmts[Tail].NextStmt <> 0 Do Tail := Stmts[Tail].NextStmt;
+  End;
+  Expect(Ord('}'), '}');
+  ParseStmtBlock := Head;
+End;
+
+{ Corps d'une methode : l'accolade ouvrante a deja ete consommee par
+  l'appelant (voir TODO 05). Construit desormais un vrai arbre
+  d'instructions au lieu de se contenter d'ignorer le contenu.
+  Verifie aussi (TODO 20) que ttsBegin/ttsCommit sont equilibres dans
+  la methode ; TtsDepth est restaure dans tous les cas pour ne pas
+  contaminer l'analyse de la methode suivante en cas de desequilibre. }
+Procedure ScanMethodBody(MIdx: Integer);
+Var StartTtsDepth: Integer;
+Begin
+  CurParsingMethod := MIdx;
+  StartTtsDepth := TtsDepth;
+  Methods[MIdx].BodyStmt := ParseStmtBlock(MIdx);
+  If TtsDepth <> StartTtsDepth Then
+    ParseError('ttsBegin sans ttsCommit correspondant dans "' + Methods[MIdx].Name + '"');
+  TtsDepth := StartTtsDepth;
+  CurParsingMethod := 0;
+End;
+
+{ Rendu indente d'un arbre d'instructions, pour verification (mode -v) }
+Procedure DumpStatement(NodeIdx: Integer; Indent: Integer);
+Var
+  Pad:   String;
+  I, Ch: Integer;
+Begin
+  If NodeIdx = 0 Then Exit;
+  Pad := '';
+  For I := 1 To Indent Do Pad := Pad + '  ';
+  Case Stmts[NodeIdx].Kind Of
+    SK_BLOCK: Begin
+      WriteLn(Pad, 'bloc');
+      Ch := Stmts[NodeIdx].FirstChild;
+      While Ch <> 0 Do Begin
+        DumpStatement(Ch, Indent + 1);
+        Ch := Stmts[Ch].NextStmt;
+      End;
+    End;
+    SK_EMPTY: WriteLn(Pad, '; (vide ou non geree)');
+    SK_VARDECL:
+      WriteLn(Pad, 'declaration ', Locals[Stmts[NodeIdx].LocalIdx].TypeName,
+              ' ', Locals[Stmts[NodeIdx].LocalIdx].Name);
+    SK_EXPR:
+      WriteLn(Pad, DescribeExpr(Stmts[NodeIdx].ExprNode), ' ;');
+    SK_IF: Begin
+      Write(Pad, 'if (', DescribeExpr(Stmts[NodeIdx].ExprNode), ')');
+      If IRNodes[Stmts[NodeIdx].ExprNode].ShortCircuit Then
+        Write(' [evaluation paresseuse]');
+      WriteLn;
+      DumpStatement(Stmts[NodeIdx].ThenStmt, Indent + 1);
+      If Stmts[NodeIdx].ElseStmt <> 0 Then Begin
+        WriteLn(Pad, 'else');
+        DumpStatement(Stmts[NodeIdx].ElseStmt, Indent + 1);
+      End;
+    End;
+    SK_SWITCH: Begin
+      WriteLn(Pad, 'switch (', DescribeExpr(Stmts[NodeIdx].ExprNode), ')');
+      Ch := Stmts[NodeIdx].FirstChild;
+      While Ch <> 0 Do Begin
+        DumpStatement(Ch, Indent + 1);
+        Ch := Stmts[Ch].NextStmt;
+      End;
+    End;
+    SK_CASE:
+      If Stmts[NodeIdx].IsDefault Then WriteLn(Pad, 'default:')
+      Else WriteLn(Pad, 'case ', DescribeExpr(Stmts[NodeIdx].ExprNode), ':');
+    SK_WHILE: Begin
+      WriteLn(Pad, 'while (', DescribeExpr(Stmts[NodeIdx].ExprNode), ')');
+      DumpStatement(Stmts[NodeIdx].BodyStmt, Indent + 1);
+    End;
+    SK_DOWHILE: Begin
+      WriteLn(Pad, 'do');
+      DumpStatement(Stmts[NodeIdx].BodyStmt, Indent + 1);
+      WriteLn(Pad, 'while (', DescribeExpr(Stmts[NodeIdx].ExprNode), ')');
+    End;
+    SK_FOR: Begin
+      Write(Pad, 'for (');
+      If Stmts[NodeIdx].ForInit = 0 Then Write('-') Else Write('init');
+      Write('; ');
+      If Stmts[NodeIdx].ExprNode = 0 Then Write('-')
+      Else Write(DescribeExpr(Stmts[NodeIdx].ExprNode));
+      Write('; ');
+      If Stmts[NodeIdx].ForIncr = 0 Then Write('-')
+      Else Write(DescribeExpr(Stmts[NodeIdx].ForIncr));
+      WriteLn(')');
+      If Stmts[NodeIdx].ForInit <> 0 Then
+        DumpStatement(Stmts[NodeIdx].ForInit, Indent + 1);
+      DumpStatement(Stmts[NodeIdx].BodyStmt, Indent + 1);
+    End;
+    SK_BREAK:    WriteLn(Pad, 'break ;');
+    SK_CONTINUE: WriteLn(Pad, 'continue ;');
+    SK_RETURN:
+      If Stmts[NodeIdx].ExprNode = 0 Then WriteLn(Pad, 'return ;')
+      Else WriteLn(Pad, 'return ', DescribeExpr(Stmts[NodeIdx].ExprNode), ' ;');
+    SK_TRY: Begin
+      WriteLn(Pad, 'try');
+      DumpStatement(Stmts[NodeIdx].BodyStmt, Indent + 1);
+      Ch := Stmts[NodeIdx].FirstChild;
+      While Ch <> 0 Do Begin
+        DumpStatement(Ch, Indent);
+        Ch := Stmts[Ch].NextStmt;
+      End;
+      If Stmts[NodeIdx].FinallyStmt <> 0 Then Begin
+        WriteLn(Pad, 'finally');
+        DumpStatement(Stmts[NodeIdx].FinallyStmt, Indent + 1);
+      End;
+    End;
+    SK_CATCH: Begin
+      If Stmts[NodeIdx].ExprNode = 0 Then WriteLn(Pad, 'catch')
+      Else WriteLn(Pad, 'catch (', DescribeExpr(Stmts[NodeIdx].ExprNode), ')');
+      DumpStatement(Stmts[NodeIdx].BodyStmt, Indent + 1);
+    End;
+    SK_THROW:
+      WriteLn(Pad, 'throw ', DescribeExpr(Stmts[NodeIdx].ExprNode), ' ;');
+    SK_WHILESELECT: Begin
+      Write(Pad, 'while select ');
+      If Stmts[NodeIdx].ForUpdate Then Write('forUpdate ');
+      Write(DescribeExpr(Stmts[NodeIdx].SelectVar));
+      If Stmts[NodeIdx].OrderByHead <> 0 Then Write(' order by ...');
+      If Stmts[NodeIdx].ExprNode <> 0 Then
+        Write(' where ', DescribeExpr(Stmts[NodeIdx].ExprNode));
+      WriteLn;
+      DumpStatement(Stmts[NodeIdx].BodyStmt, Indent + 1);
+    End;
+    SK_SELECT: Begin
+      Write(Pad, 'select ');
+      If Stmts[NodeIdx].ForUpdate Then Write('forUpdate ');
+      Write(DescribeExpr(Stmts[NodeIdx].SelectVar));
+      If Stmts[NodeIdx].OrderByHead <> 0 Then Write(' order by ...');
+      If Stmts[NodeIdx].ExprNode <> 0 Then
+        Write(' where ', DescribeExpr(Stmts[NodeIdx].ExprNode));
+      WriteLn(' ;');
+    End;
+    SK_TTSBEGIN:  WriteLn(Pad, 'ttsBegin ;');
+    SK_TTSCOMMIT: WriteLn(Pad, 'ttsCommit ;');
+    SK_TTSABORT:  WriteLn(Pad, 'ttsAbort ;');
+    SK_DELETEFROM: Begin
+      Write(Pad, 'delete_from ', DescribeExpr(Stmts[NodeIdx].SelectVar));
+      If Stmts[NodeIdx].ExprNode <> 0 Then
+        Write(' where ', DescribeExpr(Stmts[NodeIdx].ExprNode));
+      WriteLn(' ;');
+    End;
+  End;
+End;
+
+{ Recapitulatif de l'arbre d'instructions de chaque methode (mode -v) }
+Procedure DumpStatements;
+Var M: Integer;
+Begin
+  For M := 1 To MethodCount Do Begin
+    If Methods[M].BodyStmt = 0 Then Continue;
+    WriteLn('methode ', Methods[M].Name, ' (', Classes[Methods[M].ClassIdx].Name, ')');
+    DumpStatement(Methods[M].BodyStmt, 1);
+  End;
+End;
+
+{ ============================================================ }
+{ TODO 11 - SWITCH/CASE                                         }
+{ ============================================================ }
+
+{ Une valeur de case doit etre une constante : litteral direct, une
+  valeur d'enum, ou un entier litteral precede d'un moins unaire }
+Function IsConstExpr(NodeIdx: Integer): Boolean;
+Begin
+  IsConstExpr :=
+    (IRNodes[NodeIdx].Kind = NK_LIT_INT)  Or
+    (IRNodes[NodeIdx].Kind = NK_LIT_STR)  Or
+    (IRNodes[NodeIdx].Kind = NK_LIT_CHAR) Or
+    (IRNodes[NodeIdx].Kind = NK_LIT_BOOL) Or
+    (IRNodes[NodeIdx].Kind = NK_LIT_DATE) Or
+    (IRNodes[NodeIdx].Kind = NK_ENUMVAL)  Or
+    ((IRNodes[NodeIdx].Kind = NK_UNARY) And (IRNodes[NodeIdx].Tok = Ord('-')) And
+     (IRNodes[NodeIdx].Left <> 0) And (IRNodes[IRNodes[NodeIdx].Left].Kind = NK_LIT_INT));
+End;
+
+{ Cle de comparaison canonique d'une valeur de case constante, pour
+  detecter les doublons independamment de la sorte de litteral }
+Function ConstKey(NodeIdx: Integer): String;
+Begin
+  If (IRNodes[NodeIdx].Kind = NK_UNARY) And (IRNodes[NodeIdx].Tok = Ord('-')) Then Begin
+    ConstKey := 'I:-' + ItoS(IRNodes[IRNodes[NodeIdx].Left].NumVal);
+    Exit;
+  End;
+  Case IRNodes[NodeIdx].Kind Of
+    NK_LIT_INT:  ConstKey := 'I:' + ItoS(IRNodes[NodeIdx].NumVal);
+    NK_LIT_BOOL: ConstKey := 'B:' + ItoS(IRNodes[NodeIdx].NumVal);
+    NK_LIT_STR:  ConstKey := 'S:' + IRNodes[NodeIdx].Text;
+    NK_LIT_CHAR: ConstKey := 'C:' + IRNodes[NodeIdx].Text;
+    NK_LIT_DATE: ConstKey := 'D:' + IRNodes[NodeIdx].Text;
+    NK_ENUMVAL:  ConstKey := 'E:' + IRNodes[NodeIdx].Text;
+  Else
+    ConstKey := '?';
+  End;
+End;
+
+{ Verifie qu'il n'y a qu'un seul default et aucune valeur de case
+  dupliquee ou non constante, une fois le corps entierement analyse }
+Procedure CheckSwitchCases(SwitchNode: Integer);
+Var Ch1, Ch2, DefaultCount: Integer;
+Begin
+  DefaultCount := 0;
+  Ch1 := Stmts[SwitchNode].FirstChild;
+  While Ch1 <> 0 Do Begin
+    If Stmts[Ch1].Kind = SK_CASE Then Begin
+      If Stmts[Ch1].IsDefault Then Begin
+        Inc(DefaultCount);
+        If DefaultCount > 1 Then
+          ParseError('plusieurs "default" dans le meme switch');
+      End Else If Not IsConstExpr(Stmts[Ch1].ExprNode) Then
+        ParseError('la valeur de case doit etre une constante')
+      Else Begin
+        Ch2 := Stmts[Ch1].NextStmt;
+        While Ch2 <> 0 Do Begin
+          If (Stmts[Ch2].Kind = SK_CASE) And (Not Stmts[Ch2].IsDefault) And
+             IsConstExpr(Stmts[Ch2].ExprNode) And
+             (ConstKey(Stmts[Ch1].ExprNode) = ConstKey(Stmts[Ch2].ExprNode)) Then
+            ParseError('valeur de case dupliquee : ' + DescribeExpr(Stmts[Ch1].ExprNode));
+          Ch2 := Stmts[Ch2].NextStmt;
+        End;
+      End;
+    End;
+    Ch1 := Stmts[Ch1].NextStmt;
+  End;
+End;
+
+{ Corps d'un switch : une suite plate d'etiquettes case/default et
+  d'instructions ordinaires ; l'absence de bloc entre etiquettes
+  reproduit naturellement l'enchainement explicite (fall-through) }
+Function ParseSwitchBody(MIdx: Integer): Integer;
+Var Head, Tail, S: Integer;
+Begin
+  Head := 0;
+  Tail := 0;
+  While (CurTokType <> Ord('}')) And (CurTokType <> TOK_EOF) Do Begin
+    If CurTokType = KW_CASE Then Begin
+      LexNextToken;
+      S := NewStmtNode(SK_CASE);
+      Stmts[S].ExprNode := ParseExpression;
+      Expect(Ord(':'), ':');
+    End Else If CurTokType = KW_DEFAULT Then Begin
+      LexNextToken;
+      Expect(Ord(':'), ':');
+      S := NewStmtNode(SK_CASE);
+      Stmts[S].IsDefault := True;
+    End Else
+      S := ParseStatement(MIdx);
+
+    If Head = 0 Then Head := S Else Stmts[Tail].NextStmt := S;
+    Tail := S;
+    While Stmts[Tail].NextStmt <> 0 Do Tail := Stmts[Tail].NextStmt;
+  End;
+  ParseSwitchBody := Head;
+End;
+
+{ switch (expr) suivi d'un bloc de case/default }
+Function ParseSwitchStatement(MIdx: Integer): Integer;
+Var N, CondExpr, Body: Integer;
+Begin
+  LexNextToken;   { consomme switch }
+  Expect(Ord('('), '(');
+  CondExpr := ParseExpression;
+  Expect(Ord(')'), ')');
+  Expect(Ord('{'), '{');
+  Inc(SwitchDepth);
+  Body := ParseSwitchBody(MIdx);
+  Dec(SwitchDepth);
+  Expect(Ord('}'), '}');
+  N := NewStmtNode(SK_SWITCH);
+  Stmts[N].ExprNode   := CondExpr;
+  Stmts[N].FirstChild := Body;
+  CheckSwitchCases(N);
+  ParseSwitchStatement := N;
+End;
+
+{ ============================================================ }
+{ TODO 12 - BOUCLES WHILE, DO-WHILE, FOR                        }
+{ ============================================================ }
+
+Function ParseBreakStatement: Integer;
+Begin
+  LexNextToken;   { consomme break }
+  If (LoopDepth = 0) And (SwitchDepth = 0) Then
+    ParseError('break en dehors d''une boucle ou d''un switch');
+  Expect(Ord(';'), ';');
+  ParseBreakStatement := NewStmtNode(SK_BREAK);
+End;
+
+Function ParseContinueStatement: Integer;
+Begin
+  LexNextToken;   { consomme continue }
+  If LoopDepth = 0 Then
+    ParseError('continue en dehors d''une boucle');
+  Expect(Ord(';'), ';');
+  ParseContinueStatement := NewStmtNode(SK_CONTINUE);
+End;
+
+{ while (cond) instruction }
+Function ParseWhileStatement(MIdx: Integer): Integer;
+Var N, CondExpr, Body: Integer;
+Begin
+  LexNextToken;   { consomme while }
+  Expect(Ord('('), '(');
+  CondExpr := ParseExpression;
+  Expect(Ord(')'), ')');
+  Inc(LoopDepth);
+  Body := ParseStatement(MIdx);
+  Dec(LoopDepth);
+  N := NewStmtNode(SK_WHILE);
+  Stmts[N].ExprNode := CondExpr;
+  Stmts[N].BodyStmt := Body;
+  ParseWhileStatement := N;
+End;
+
+{ do instruction while (cond) ; }
+Function ParseDoWhileStatement(MIdx: Integer): Integer;
+Var N, Body, CondExpr: Integer;
+Begin
+  LexNextToken;   { consomme do }
+  Inc(LoopDepth);
+  Body := ParseStatement(MIdx);
+  Dec(LoopDepth);
+  Expect(KW_WHILE, 'while');
+  Expect(Ord('('), '(');
+  CondExpr := ParseExpression;
+  Expect(Ord(')'), ')');
+  Expect(Ord(';'), ';');
+  N := NewStmtNode(SK_DOWHILE);
+  Stmts[N].ExprNode := CondExpr;
+  Stmts[N].BodyStmt := Body;
+  ParseDoWhileStatement := N;
+End;
+
+{ for (init; cond; incr) instruction ; chacune des trois clauses de
+  l'entete est optionnelle (une condition absente vaut toujours vrai) }
+Function ParseForStatement(MIdx: Integer): Integer;
+Var N, InitS, CondExpr, IncrExpr, Body: Integer;
+Begin
+  LexNextToken;   { consomme for }
+  Expect(Ord('('), '(');
+
+  If CurTokType = Ord(';') Then Begin
+    InitS := 0;
+    LexNextToken;
+  End Else If LooksLikeVarDecl Then
+    InitS := ParseLocalVarDecl(MIdx)
+  Else Begin
+    InitS := NewStmtNode(SK_EXPR);
+    Stmts[InitS].ExprNode := ParseExpression;
+    Expect(Ord(';'), ';');
+  End;
+
+  If CurTokType = Ord(';') Then CondExpr := 0
+  Else CondExpr := ParseExpression;
+  Expect(Ord(';'), ';');
+
+  If CurTokType = Ord(')') Then IncrExpr := 0
+  Else IncrExpr := ParseExpression;
+  Expect(Ord(')'), ')');
+
+  Inc(LoopDepth);
+  Body := ParseStatement(MIdx);
+  Dec(LoopDepth);
+
+  N := NewStmtNode(SK_FOR);
+  Stmts[N].ForInit  := InitS;
+  Stmts[N].ExprNode := CondExpr;
+  Stmts[N].ForIncr  := IncrExpr;
+  Stmts[N].BodyStmt := Body;
+  ParseForStatement := N;
+End;
+
+{ ============================================================ }
+{ TODO 13 - METHODES ET PARAMETRES                              }
+{ ============================================================ }
+
+{ Compatibilite simple type d'argument -> type de parametre :
+  identite, promotion int/real, ou l'un des deux types n'a pas ete
+  resolu (anytype) auquel cas on ne peut rien affirmer et on accepte }
+Function TypeCompatible(ArgType, ParamType: String): Boolean;
+Begin
+  TypeCompatible :=
+    (ArgType = ParamType) Or (ArgType = 'anytype') Or (ParamType = 'anytype') Or
+    ((ArgType = 'int') And (ParamType = 'real')) Or
+    ((ArgType = 'real') And (ParamType = 'int'));
+End;
+
+Function CountCallArgs(ArgHead: Integer): Integer;
+Var N, Cnt: Integer;
+Begin
+  Cnt := 0;
+  N := ArgHead;
+  While N <> 0 Do Begin
+    Inc(Cnt);
+    N := IRNodes[N].NextArg;
+  End;
+  CountCallArgs := Cnt;
+End;
+
+{ Verifie l'arite puis, pour chaque argument, la compatibilite de
+  type avec le parametre declare correspondant }
+Procedure CheckCallArgs(MethodIdx, ArgHead: Integer; CalleeDesc: String);
+Var
+  ArgCount, I, PBase, ArgNode: Integer;
+Begin
+  ArgCount := CountCallArgs(ArgHead);
+  If ArgCount <> Methods[MethodIdx].ParamCount Then Begin
+    ParseError(CalleeDesc + ' attend ' + ItoS(Methods[MethodIdx].ParamCount) +
+               ' parametre(s), ' + ItoS(ArgCount) + ' fourni(s)');
+    Exit;
+  End;
+  PBase   := Methods[MethodIdx].ParamStart;
+  ArgNode := ArgHead;
+  For I := 0 To ArgCount - 1 Do Begin
+    If Not TypeCompatible(IRNodes[ArgNode].TypeName, Params[PBase + I].TypeName) Then
+      ParseError(CalleeDesc + ' : argument ' + ItoS(I + 1) + ' de type ' +
+                 IRNodes[ArgNode].TypeName + ' incompatible avec le parametre "' +
+                 Params[PBase + I].Name + '" de type ' + Params[PBase + I].TypeName);
+    ArgNode := IRNodes[ArgNode].NextArg;
+  End;
+End;
+
+{ return [expression] ; verifie la coherence avec le type de retour
+  declare de la methode en cours (void ou non, type compatible) }
+Function ParseReturnStatement(MIdx: Integer): Integer;
+Var
+  N, ExprIdx: Integer;
+  RetType: String;
+Begin
+  LexNextToken;   { consomme return }
+  ExprIdx := 0;
+  If CurTokType <> Ord(';') Then ExprIdx := ParseExpression;
+  Expect(Ord(';'), ';');
+
+  RetType := Methods[MIdx].RetType;
+  If (RetType = 'void') And (ExprIdx <> 0) Then
+    ParseError('"return" avec une valeur dans une methode void')
+  Else If (RetType <> 'void') And (ExprIdx = 0) Then
+    ParseError('"return" sans valeur dans une methode qui doit retourner ' + RetType)
+  Else If (ExprIdx <> 0) And (Not TypeCompatible(IRNodes[ExprIdx].TypeName, RetType)) Then
+    ParseError('type de retour ' + IRNodes[ExprIdx].TypeName +
+               ' incompatible avec ' + RetType);
+
+  N := NewStmtNode(SK_RETURN);
+  Stmts[N].ExprNode := ExprIdx;
+  ParseReturnStatement := N;
+End;
+
+{ ============================================================ }
+{ TODO 14 - HERITAGE (EXTENDS) ET POLYMORPHISME                 }
+{ ============================================================ }
+
+Const
+  MAX_VTABLE_ENTRY = {$IFDEF FPC}4096{$ELSE}256{$ENDIF};
+
+Type
+  { Une entree nommee de table de methodes virtuelles ; MethodIdx
+    pointe vers l'implementation effective (propre a la classe ou
+    heritee telle quelle d'un ancetre) }
+  TVTableEntry = Record
+    Name:      String;
+    MethodIdx: Integer;
+  End;
+  TVTableEntryTable = Array[1..MAX_VTABLE_ENTRY] Of TVTableEntry;
+
+Var
+  VTableEntries:    TVTableEntryTable;
+  VTableEntryCount: Integer;
+
+{ Une methode qui en redefinit une autre doit garder la meme arite,
+  les memes types de parametres et le meme type de retour }
+Procedure CheckOverrideCompatible(ParentMethodIdx, ChildMethodIdx: Integer);
+Var I, PBase, CBase: Integer;
+Begin
+  If Methods[ParentMethodIdx].RetType <> Methods[ChildMethodIdx].RetType Then
+    ParseError('la redefinition de "' + Methods[ChildMethodIdx].Name +
+               '" doit retourner ' + Methods[ParentMethodIdx].RetType +
+               ' comme la methode heritee');
+
+  If Methods[ParentMethodIdx].ParamCount <> Methods[ChildMethodIdx].ParamCount Then Begin
+    ParseError('la redefinition de "' + Methods[ChildMethodIdx].Name +
+               '" doit avoir ' + ItoS(Methods[ParentMethodIdx].ParamCount) +
+               ' parametre(s) comme la methode heritee');
+    Exit;
+  End;
+
+  PBase := Methods[ParentMethodIdx].ParamStart;
+  CBase := Methods[ChildMethodIdx].ParamStart;
+  For I := 0 To Methods[ParentMethodIdx].ParamCount - 1 Do
+    If Params[PBase + I].TypeName <> Params[CBase + I].TypeName Then
+      ParseError('la redefinition de "' + Methods[ChildMethodIdx].Name +
+                 '" : le parametre ' + ItoS(I + 1) + ' doit etre de type ' +
+                 Params[PBase + I].TypeName + ' comme la methode heritee');
+End;
+
+{ Construit la table des methodes virtuelles d'une classe : copie
+  d'abord celle de son parent (recursion), puis redefinit ou ajoute
+  les methodes propres (hors constructeur et delegates, qui ne sont
+  pas polymorphes). Renvoie le nombre total d'entrees. }
+Function BuildVTable(ClassIdx: Integer): Integer;
+Var
+  ParentIdx, ParentStart, ParentCount: Integer;
+  I, MBase, J, ExistingIdx: Integer;
+Begin
+  ParentIdx := Classes[ClassIdx].ParentIdx;
+  If ParentIdx <> 0 Then Begin
+    BuildVTable(ParentIdx);
+    ParentStart := Classes[ParentIdx].VTableStart;
+    ParentCount := Classes[ParentIdx].VTableCount;
+  End Else Begin
+    ParentStart := 0;
+    ParentCount := 0;
+  End;
+
+  Classes[ClassIdx].VTableStart := VTableEntryCount + 1;
+  Classes[ClassIdx].VTableCount := 0;
+  For I := 0 To ParentCount - 1 Do Begin
+    If VTableEntryCount >= MAX_VTABLE_ENTRY Then
+      FatalError('trop d''entrees de vtable (limite ' + ItoS(MAX_VTABLE_ENTRY) + ')');
+    Inc(VTableEntryCount);
+    VTableEntries[VTableEntryCount] := VTableEntries[ParentStart + I];
+    Inc(Classes[ClassIdx].VTableCount);
+  End;
+
+  MBase := Classes[ClassIdx].MethodStart;
+  For I := 0 To Classes[ClassIdx].MethodCount - 1 Do Begin
+    If Methods[MBase + I].IsCtor Or Methods[MBase + I].IsDelegate Then Continue;
+
+    ExistingIdx := 0;
+    For J := 0 To Classes[ClassIdx].VTableCount - 1 Do
+      If VTableEntries[Classes[ClassIdx].VTableStart + J].Name = Methods[MBase + I].Name Then Begin
+        ExistingIdx := Classes[ClassIdx].VTableStart + J;
+        Break;
+      End;
+
+    If ExistingIdx <> 0 Then Begin
+      CheckOverrideCompatible(VTableEntries[ExistingIdx].MethodIdx, MBase + I);
+      VTableEntries[ExistingIdx].MethodIdx := MBase + I;
+    End Else Begin
+      If VTableEntryCount >= MAX_VTABLE_ENTRY Then
+        FatalError('trop d''entrees de vtable (limite ' + ItoS(MAX_VTABLE_ENTRY) + ')');
+      Inc(VTableEntryCount);
+      VTableEntries[VTableEntryCount].Name      := Methods[MBase + I].Name;
+      VTableEntries[VTableEntryCount].MethodIdx := MBase + I;
+      Inc(Classes[ClassIdx].VTableCount);
+    End;
+  End;
+
+  BuildVTable := Classes[ClassIdx].VTableCount;
+End;
+
+{ Construit la vtable de chaque classe (pas les interfaces, qui
+  n'ont pas d'instance ni d'implementation propre) }
+Procedure ResolveVTables;
+Var I: Integer;
+Begin
+  For I := 1 To ClassCount Do
+    If Not Classes[I].IsInterface Then BuildVTable(I);
+End;
+
+{ Recapitulatif de la table des methodes virtuelles de chaque classe,
+  utile pour verifier visuellement la resolution dynamique (mode -v) }
+Procedure DumpVTables;
+Var I, J, Base, Impl: Integer;
+Begin
+  For I := 1 To ClassCount Do Begin
+    If Classes[I].IsInterface Then Continue;
+    WriteLn('vtable ', Classes[I].Name);
+    Base := Classes[I].VTableStart;
+    For J := 0 To Classes[I].VTableCount - 1 Do Begin
+      Impl := VTableEntries[Base + J].MethodIdx;
+      WriteLn('    [', J, '] ', VTableEntries[Base + J].Name, ' -> ',
+              Classes[Methods[Impl].ClassIdx].Name, '.', Methods[Impl].Name);
+    End;
+  End;
+End;
+
+{ ============================================================ }
+{ TODO 15 - INTERFACES (IMPLEMENTS)                             }
+{ ============================================================ }
+
+{ Une methode d'interface implementee doit avoir le meme type de
+  retour, la meme arite et les memes types de parametres que la
+  signature declaree dans l'interface }
+Procedure CheckInterfaceMethodSignature(IfaceMethodIdx, ClassMethodIdx: Integer;
+                                         IfaceName, ClassName: String);
+Var I, IBase, CBase: Integer;
+Begin
+  If Methods[IfaceMethodIdx].RetType <> Methods[ClassMethodIdx].RetType Then Begin
+    ParseError('"' + ClassName + '.' + Methods[ClassMethodIdx].Name +
+               '" doit retourner ' + Methods[IfaceMethodIdx].RetType +
+               ' comme dans l''interface "' + IfaceName + '"');
+    Exit;
+  End;
+  If Methods[IfaceMethodIdx].ParamCount <> Methods[ClassMethodIdx].ParamCount Then Begin
+    ParseError('"' + ClassName + '.' + Methods[ClassMethodIdx].Name +
+               '" doit avoir ' + ItoS(Methods[IfaceMethodIdx].ParamCount) +
+               ' parametre(s) comme dans l''interface "' + IfaceName + '"');
+    Exit;
+  End;
+  IBase := Methods[IfaceMethodIdx].ParamStart;
+  CBase := Methods[ClassMethodIdx].ParamStart;
+  For I := 0 To Methods[IfaceMethodIdx].ParamCount - 1 Do
+    If Params[IBase + I].TypeName <> Params[CBase + I].TypeName Then
+      ParseError('"' + ClassName + '.' + Methods[ClassMethodIdx].Name +
+                 '" : le parametre ' + ItoS(I + 1) + ' doit etre de type ' +
+                 Params[IBase + I].TypeName + ' comme dans l''interface "' +
+                 IfaceName + '"');
+End;
+
+{ Chaque methode declaree par l'interface doit se retrouver, avec une
+  signature compatible, dans la classe (directement ou via extends) }
+Procedure CheckInterfaceImplemented(ClassIdx, InterfaceIdx: Integer);
+Var
+  I, MBase, OwnerCls, MemberIdx, Kind: Integer;
+Begin
+  MBase := Classes[InterfaceIdx].MethodStart;
+  For I := 0 To Classes[InterfaceIdx].MethodCount - 1 Do Begin
+    Kind := FindMemberInChain(ClassIdx, Methods[MBase + I].Name, OwnerCls, MemberIdx);
+    If Kind <> MEMBER_METHOD Then
+      ParseError('"' + Classes[ClassIdx].Name + '" n''implemente pas la methode "' +
+                 Methods[MBase + I].Name + '" de l''interface "' +
+                 Classes[InterfaceIdx].Name + '"')
+    Else
+      CheckInterfaceMethodSignature(MBase + I, MemberIdx,
+                                     Classes[InterfaceIdx].Name, Classes[ClassIdx].Name);
+  End;
+End;
+
+Procedure CheckInterfaceCoverage(ClassIdx: Integer);
+Var I, IfaceIdx, Base: Integer;
+Begin
+  Base := Classes[ClassIdx].ImplStart;
+  For I := 0 To Classes[ClassIdx].ImplCount - 1 Do Begin
+    IfaceIdx := Implements[Base + I].ResolvedIdx;
+    If IfaceIdx <> 0 Then CheckInterfaceImplemented(ClassIdx, IfaceIdx);
+  End;
+End;
+
+{ Verifie la couverture d'interface de chaque classe (les interfaces
+  elles-memes n'ont rien a implementer) }
+Procedure ResolveInterfaceCoverage;
+Var I: Integer;
+Begin
+  For I := 1 To ClassCount Do
+    If Not Classes[I].IsInterface Then CheckInterfaceCoverage(I);
+End;
+
+{ ============================================================ }
+{ TODO 16 - GESTION DES EXCEPTIONS (TRY/CATCH/THROW)            }
+{ ============================================================ }
+
+{ Enregistre l'enum Exception (Error/Warning/Internal) comme s'il
+  avait ete declare par l'utilisateur, pour que Exception::Error et
+  compagnie soient valides comme n'importe quelle valeur d'enum
+  (typo detectee, cf. FindEnumValue) sans avoir a specialiser le
+  reste du compilateur pour ce cas }
+Procedure RegisterBuiltinEnums;
+Var EnumIdx: Integer;
+Begin
+  EnumIdx := AddEnum('Exception');
+  AddEnumValue(EnumIdx, 'Error', 0);
+  AddEnumValue(EnumIdx, 'Warning', 1);
+  AddEnumValue(EnumIdx, 'Internal', 2);
+End;
+
+{ catch (Exception::Xxx) instruction, ou catch generique (sans
+  parentheses) instruction }
+Function ParseCatchClause(MIdx: Integer): Integer;
+Var N, TypeExpr, Body: Integer;
+Begin
+  LexNextToken;   { consomme catch }
+  TypeExpr := 0;
+  If CurTokType = Ord('(') Then Begin
+    LexNextToken;
+    TypeExpr := ParseExpression;
+    Expect(Ord(')'), ')');
+  End;
+  Body := ParseStatement(MIdx);
+  N := NewStmtNode(SK_CATCH);
+  Stmts[N].ExprNode := TypeExpr;
+  Stmts[N].BodyStmt := Body;
+  ParseCatchClause := N;
+End;
+
+{ try instruction (catch instruction)* (finally instruction)? ; au
+  moins un catch ou un finally est exige. Le deroulement de pile
+  (unwind) lors de la propagation d'une exception est un mecanisme
+  d'execution : sa mise en oeuvre reelle viendra avec le generateur
+  de code (TODO 24), une fois qu'il y aura du code machine dans
+  lequel derouler quoi que ce soit. }
+Function ParseTryStatement(MIdx: Integer): Integer;
+Var N, TryBody, CatchHead, CatchTail, C, FinallyBody: Integer;
+Begin
+  LexNextToken;   { consomme try }
+  TryBody := ParseStatement(MIdx);
+
+  CatchHead := 0;
+  CatchTail := 0;
+  While CurTokType = KW_CATCH Do Begin
+    C := ParseCatchClause(MIdx);
+    If CatchHead = 0 Then CatchHead := C Else Stmts[CatchTail].NextStmt := C;
+    CatchTail := C;
+  End;
+
+  FinallyBody := 0;
+  If CurTokType = KW_FINALLY Then Begin
+    LexNextToken;
+    FinallyBody := ParseStatement(MIdx);
+  End;
+
+  If (CatchHead = 0) And (FinallyBody = 0) Then
+    ParseError('"try" doit etre suivi d''au moins un "catch" ou d''un "finally"');
+
+  N := NewStmtNode(SK_TRY);
+  Stmts[N].BodyStmt    := TryBody;
+  Stmts[N].FirstChild  := CatchHead;
+  Stmts[N].FinallyStmt := FinallyBody;
+  ParseTryStatement := N;
+End;
+
+{ throw expression ; }
+Function ParseThrowStatement(MIdx: Integer): Integer;
+Var N, ExprIdx: Integer;
+Begin
+  LexNextToken;   { consomme throw }
+  ExprIdx := ParseExpression;
+  Expect(Ord(';'), ';');
+  N := NewStmtNode(SK_THROW);
+  Stmts[N].ExprNode := ExprIdx;
+  ParseThrowStatement := N;
+End;
+
+{ ============================================================ }
+{ TODO 17 - DELEGATES ET GESTIONNAIRES D'EVENEMENTS             }
+{ ============================================================ }
+
+{ Termine la lecture d'un attribut entre crochets a partir d'une
+  profondeur de crochets/parentheses deja ouverts connue (StartDepth),
+  utilise quand la forme SubscribesTo(...) attendue n'a pas ete
+  reconnue : on ignore le reste tel quel jusqu'au ']' correspondant,
+  comme le faisait l'ancien SkipAttribute generique. }
+Procedure SkipToAttributeEnd(StartDepth: Integer);
+Var Depth: Integer;
+Begin
+  Depth := StartDepth;
+  While CurTokType <> TOK_EOF Do Begin
+    If (CurTokType = Ord('[')) Or (CurTokType = Ord('(')) Then Inc(Depth)
+    Else If CurTokType = Ord(')') Then Dec(Depth)
+    Else If CurTokType = Ord(']') Then Begin
+      Dec(Depth);
+      If Depth <= 0 Then Begin LexNextToken; Exit; End;
+    End;
+    LexNextToken;
+  End;
+End;
+
+{ Reconnait precisement [SubscribesTo(classStr(Classe),
+  delegateStr(Classe, Nom))] ; toute autre forme d'attribut (ou une
+  forme partiellement invalide) est ignoree comme avant, en retombant
+  sur un depouillement generique equilibrant crochets/parentheses. }
+Procedure ParseAttribute(Var HasSubscribe: Boolean;
+                          Var SubClassName, SubDelegateName: String);
+Var
+  ClassArg, DelClassArg, DelNameArg: String;
+  Ok:    Boolean;
+  Depth: Integer;
+Begin
+  HasSubscribe := False;
+  LexNextToken;   { consomme [ }
+  Depth := 1;
+
+  Ok := (CurTokType = TOK_IDENT) And (CurTokStr = 'SubscribesTo');
+  If Ok Then LexNextToken;
+
+  If Ok Then Ok := CurTokType = Ord('(');
+  If Ok Then Begin Inc(Depth); LexNextToken; End;
+
+  If Ok Then Ok := (CurTokType = TOK_IDENT) And (CurTokStr = 'classStr');
+  If Ok Then LexNextToken;
+
+  If Ok Then Ok := CurTokType = Ord('(');
+  If Ok Then Begin Inc(Depth); LexNextToken; End;
+
+  If Ok Then Ok := CurTokType = TOK_IDENT;
+  If Ok Then Begin ClassArg := CurTokStr; LexNextToken; End;
+
+  If Ok Then Ok := CurTokType = Ord(')');
+  If Ok Then Begin Dec(Depth); LexNextToken; End;
+
+  If Ok Then Ok := CurTokType = Ord(',');
+  If Ok Then LexNextToken;
+
+  If Ok Then Ok := (CurTokType = TOK_IDENT) And (CurTokStr = 'delegateStr');
+  If Ok Then LexNextToken;
+
+  If Ok Then Ok := CurTokType = Ord('(');
+  If Ok Then Begin Inc(Depth); LexNextToken; End;
+
+  If Ok Then Ok := CurTokType = TOK_IDENT;
+  If Ok Then Begin DelClassArg := CurTokStr; LexNextToken; End;
+
+  If Ok Then Ok := CurTokType = Ord(',');
+  If Ok Then LexNextToken;
+
+  If Ok Then Ok := CurTokType = TOK_IDENT;
+  If Ok Then Begin DelNameArg := CurTokStr; LexNextToken; End;
+
+  If Ok Then Ok := CurTokType = Ord(')');   { ferme delegateStr(...) }
+  If Ok Then Begin Dec(Depth); LexNextToken; End;
+
+  If Ok Then Ok := CurTokType = Ord(')');   { ferme SubscribesTo(...) }
+  If Ok Then Begin Dec(Depth); LexNextToken; End;
+
+  If Ok Then Ok := CurTokType = Ord(']');   { ferme l'attribut }
+  If Ok Then Begin Dec(Depth); LexNextToken; End;
+
+  If Ok Then Begin
+    HasSubscribe    := True;
+    SubClassName    := ClassArg;
+    SubDelegateName := DelNameArg;
+    If ClassArg <> DelClassArg Then
+      ParseError('SubscribesTo : classStr et delegateStr doivent designer la meme classe');
+  End Else
+    SkipToAttributeEnd(Depth);
+End;
+
+{ Un abonnement doit designer un delegate reellement declare sur la
+  classe visee, et le gestionnaire doit accepter exactement les
+  memes parametres que ce delegate (il sera invoque avec les memes
+  arguments lorsque le delegate sera declenche) }
+Procedure ResolveSubscriptions;
+Var
+  I, TargetClass, DelIdx, OwnerCls, Kind, J, DBase, SBase: Integer;
+Begin
+  For I := 1 To SubscriptionCount Do Begin
+    TargetClass := FindClass(Subscriptions[I].TargetClassName);
+    If TargetClass = 0 Then Begin
+      ParseError('SubscribesTo : classe "' + Subscriptions[I].TargetClassName +
+                 '" inconnue');
+      Continue;
+    End;
+
+    Kind := FindMemberInChain(TargetClass, Subscriptions[I].DelegateName,
+                               OwnerCls, DelIdx);
+    If (Kind <> MEMBER_METHOD) Or (Not Methods[DelIdx].IsDelegate) Then Begin
+      ParseError('SubscribesTo : "' + Subscriptions[I].DelegateName +
+                 '" n''est pas un delegate de la classe "' +
+                 Subscriptions[I].TargetClassName + '"');
+      Continue;
+    End;
+
+    SBase := Subscriptions[I].SubscriberMethod;
+    If Not Methods[SBase].IsStatic Then
+      ParseError('le gestionnaire "' + Methods[SBase].Name +
+                 '" abonne a "' + Subscriptions[I].DelegateName +
+                 '" doit etre static');
+
+    If Methods[DelIdx].ParamCount <> Methods[SBase].ParamCount Then
+      ParseError('le gestionnaire "' + Methods[SBase].Name +
+                 '" doit accepter ' + ItoS(Methods[DelIdx].ParamCount) +
+                 ' parametre(s) comme le delegate "' +
+                 Subscriptions[I].DelegateName + '"')
+    Else Begin
+      DBase := Methods[DelIdx].ParamStart;
+      For J := 0 To Methods[DelIdx].ParamCount - 1 Do
+        If Params[DBase + J].TypeName <> Params[Methods[SBase].ParamStart + J].TypeName Then
+          ParseError('le gestionnaire "' + Methods[SBase].Name +
+                     '" : le parametre ' + ItoS(J + 1) + ' doit etre de type ' +
+                     Params[DBase + J].TypeName + ' comme le delegate "' +
+                     Subscriptions[I].DelegateName + '"');
+    End;
+  End;
+End;
+
+{ Recapitulatif des liaisons delegate -> abonnes (mode -v) }
+Procedure DumpSubscriptions;
+Var I, S: Integer;
+Begin
+  For I := 1 To SubscriptionCount Do Begin
+    S := Subscriptions[I].SubscriberMethod;
+    WriteLn('abonnement ', Subscriptions[I].TargetClassName, '::',
+            Subscriptions[I].DelegateName, ' -> ',
+            Classes[Methods[S].ClassIdx].Name, '.', Methods[S].Name);
+  End;
+End;
+
+{ ============================================================ }
+{ TODO 18 - MODELE DE TABLE (AOT SIMULE) ET METADONNEES         }
+{ ============================================================ }
+
+Const
+  MAX_AOT_TABLE = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
+  MAX_AOT_FIELD = {$IFDEF FPC}512{$ELSE}64{$ENDIF};
+  RECID_SIZE    = 8;   { RecId : entier 64 bits dans une vraie table AX }
+
+Type
+  TAotField = Record
+    Name:     String;
+    TypeName: String;
+    Offset:   Integer;   { deplacement dans le buffer d'enregistrement }
+  End;
+  TAotFieldTable = Array[1..MAX_AOT_FIELD] Of TAotField;
+
+  TAotTable = Record
+    Name:         String;
+    FieldStart:   Integer;
+    FieldCount:   Integer;
+    KeyFieldName: String;   { cle primaire, simplifiee a un seul champ }
+    BufferSize:   Integer;  { taille totale du buffer d'enregistrement }
+  End;
+  TAotTableTable = Array[1..MAX_AOT_TABLE] Of TAotTable;
+
+Var
+  AotTables:     TAotTableTable;
+  AotTableCount: Integer;
+  AotFields:     TAotFieldTable;
+  AotFieldCount: Integer;
+
+Function AddAotTable(Name: String): Integer;
+Begin
+  If AotTableCount >= MAX_AOT_TABLE Then
+    FatalError('trop de tables AOT simulees (limite ' + ItoS(MAX_AOT_TABLE) + ')');
+  Inc(AotTableCount);
+  AotTables[AotTableCount].Name         := Name;
+  AotTables[AotTableCount].FieldStart   := AotFieldCount + 1;
+  AotTables[AotTableCount].FieldCount   := 0;
+  AotTables[AotTableCount].KeyFieldName := '';
+  AotTables[AotTableCount].BufferSize   := 0;
+  AddAotTable := AotTableCount;
+End;
+
+Procedure AddAotField(TableIdx: Integer; Name, TypeName: String);
+Begin
+  If AotFieldCount >= MAX_AOT_FIELD Then
+    FatalError('trop de champs AOT simules (limite ' + ItoS(MAX_AOT_FIELD) + ')');
+  Inc(AotFieldCount);
+  AotFields[AotFieldCount].Name     := Name;
+  AotFields[AotFieldCount].TypeName := TypeName;
+  AotFields[AotFieldCount].Offset   := 0;
+  Inc(AotTables[TableIdx].FieldCount);
+End;
+
+Function FindAotTable(Name: String): Integer;
+Var I: Integer;
+Begin
+  FindAotTable := 0;
+  For I := 1 To AotTableCount Do
+    If AotTables[I].Name = Name Then Begin
+      FindAotTable := I;
+      Exit;
+    End;
+End;
+
+Function FindAotField(TableIdx: Integer; Name: String): Integer;
+Var I, Base: Integer;
+Begin
+  FindAotField := 0;
+  If TableIdx = 0 Then Exit;
+  Base := AotTables[TableIdx].FieldStart;
+  For I := 0 To AotTables[TableIdx].FieldCount - 1 Do
+    If AotFields[Base + I].Name = Name Then Begin
+      FindAotField := Base + I;
+      Exit;
+    End;
+End;
+
+Function AotFieldTypeName(FieldIdx: Integer): String;
+Begin
+  AotFieldTypeName := AotFields[FieldIdx].TypeName;
+End;
+
+Procedure SetAotKey(TableIdx: Integer; KeyField: String);
+Begin
+  If FindAotField(TableIdx, KeyField) = 0 Then
+    FatalError('cle "' + KeyField + '" inconnue dans la table "' +
+               AotTables[TableIdx].Name + '"');
+  AotTables[TableIdx].KeyFieldName := KeyField;
+End;
+
+{ Deplacement de chaque champ dans le buffer d'enregistrement : un
+  RecId simule en tete (comme dans une vraie table AX), puis les
+  champs declares les uns a la suite des autres }
+Procedure ComputeAotTableLayout(TableIdx: Integer);
+Var I, Base, Offset: Integer;
+Begin
+  Offset := RECID_SIZE;
+  Base := AotTables[TableIdx].FieldStart;
+  For I := 0 To AotTables[TableIdx].FieldCount - 1 Do Begin
+    AotFields[Base + I].Offset := Offset;
+    Offset := Offset + TypeSize(AotFields[Base + I].TypeName);
+  End;
+  AotTables[TableIdx].BufferSize := Offset;
+End;
+
+{ Definition interne minimale des tables standard utilisees par les
+  samples ; volontairement incomplete (seuls les champs reellement
+  references sont modelises) }
+Procedure RegisterBuiltinTables;
+Var T: Integer;
+Begin
+  T := AddAotTable('CustTable');
+  AddAotField(T, 'AccountNum', 'str');
+  AddAotField(T, 'Name', 'str');
+  AddAotField(T, 'CustGroup', 'str');
+  AddAotField(T, 'Blocked', 'int');
+  AddAotField(T, 'Currency', 'str');
+  SetAotKey(T, 'AccountNum');
+  ComputeAotTableLayout(T);
+
+  T := AddAotTable('CustGroup');
+  AddAotField(T, 'CustGroup', 'str');
+  AddAotField(T, 'Name', 'str');
+  SetAotKey(T, 'CustGroup');
+  ComputeAotTableLayout(T);
+End;
+
+{ tableNum(Table) : Table doit etre le nom (non entre guillemets)
+  d'une table AOT connue ; renvoie un entier (l'indice interne, en
+  guise d'identifiant simule faute de veritable table de liens) }
+Procedure ResolveTableNumCall(CallNode, ArgHead: Integer);
+Var TableIdx: Integer;
+Begin
+  If (ArgHead = 0) Or (IRNodes[ArgHead].NextArg <> 0) Then Begin
+    ParseError('tableNum attend exactement un argument (le nom de la table)');
+    Exit;
+  End;
+  If IRNodes[ArgHead].Kind <> NK_IDENT Then Begin
+    ParseError('tableNum attend un nom de table, pas une expression');
+    Exit;
+  End;
+  TableIdx := FindAotTable(IRNodes[ArgHead].Text);
+  If TableIdx = 0 Then
+    ParseError('table "' + IRNodes[ArgHead].Text + '" inconnue (tableNum)')
+  Else Begin
+    IRNodes[CallNode].TypeName := 'int';
+    IRNodes[CallNode].NumVal   := TableIdx;
+  End;
+End;
+
+{ fieldNum(Table, Champ) : les deux arguments sont des noms, pas des
+  expressions ; verifie que le champ existe bien dans la table }
+Procedure ResolveFieldNumCall(CallNode, ArgHead: Integer);
+Var TableIdx, FieldIdx, Arg2: Integer;
+Begin
+  If (ArgHead = 0) Or (IRNodes[ArgHead].NextArg = 0) Or
+     (IRNodes[IRNodes[ArgHead].NextArg].NextArg <> 0) Then Begin
+    ParseError('fieldNum attend exactement deux arguments (table, champ)');
+    Exit;
+  End;
+  Arg2 := IRNodes[ArgHead].NextArg;
+  If (IRNodes[ArgHead].Kind <> NK_IDENT) Or (IRNodes[Arg2].Kind <> NK_IDENT) Then Begin
+    ParseError('fieldNum attend des noms de table et de champ, pas des expressions');
+    Exit;
+  End;
+  TableIdx := FindAotTable(IRNodes[ArgHead].Text);
+  If TableIdx = 0 Then Begin
+    ParseError('table "' + IRNodes[ArgHead].Text + '" inconnue (fieldNum)');
+    Exit;
+  End;
+  FieldIdx := FindAotField(TableIdx, IRNodes[Arg2].Text);
+  If FieldIdx = 0 Then
+    ParseError('champ "' + IRNodes[Arg2].Text + '" inconnu dans la table "' +
+               IRNodes[ArgHead].Text + '" (fieldNum)')
+  Else Begin
+    IRNodes[CallNode].TypeName := 'int';
+    IRNodes[CallNode].NumVal   := FieldIdx;
+  End;
+End;
+
+{ Recapitulatif des tables AOT simulees, avec deplacements du buffer
+  d'enregistrement (mode -v) }
+Procedure DumpAotTables;
+Var I, J, Base: Integer;
+Begin
+  For I := 1 To AotTableCount Do Begin
+    WriteLn('table ', AotTables[I].Name, ' (cle=', AotTables[I].KeyFieldName,
+            ', taille buffer=', AotTables[I].BufferSize, ')');
+    Base := AotTables[I].FieldStart;
+    For J := 0 To AotTables[I].FieldCount - 1 Do
+      WriteLn('    champ  ', AotFields[Base + J].TypeName, ' ',
+              AotFields[Base + J].Name, ' (offset=', AotFields[Base + J].Offset, ')');
+  End;
+End;
+
+{ ============================================================ }
+{ TODO 19 - WHILE SELECT / SELECT ET REQUETES SIMPLES           }
+{ ============================================================ }
+
+{ Reconnait les clauses communes a while select et select :
+  [forUpdate] Variable [order by Champ[, Champ...]] [where Condition].
+  Variable est evaluee comme une expression ordinaire (generalement un
+  simple identificateur) ; on verifie qu'elle designe bien une table
+  AOT connue (TODO 18), sans quoi la requete ne pourrait pas
+  s'executer une fois le stockage de table interne en place. }
+Procedure ParseSelectClauses(Var TargetVar, OrderHead, WhereExpr: Integer;
+                              Var ForUpdate: Boolean);
+Var OrderTail, OrderNode: Integer;
+Begin
+  ForUpdate := False;
+  OrderHead := 0;
+  WhereExpr := 0;
+
+  If CurTokType = KW_FORUPDATE Then Begin
+    ForUpdate := True;
+    LexNextToken;
+  End;
+
+  If CurTokType <> TOK_IDENT Then
+    ParseError('nom de variable de table attendu apres select, trouve ' +
+               TokenName(CurTokType));
+
+  TargetVar := ParseExpression;
+
+  If FindAotTable(IRNodes[TargetVar].TypeName) = 0 Then
+    ParseError('"' + IRNodes[TargetVar].Text +
+               '" n''est pas une table connue (select)');
+
+  If CurTokType = KW_ORDER Then Begin
+    LexNextToken;
+    Expect(KW_BY, 'by');
+    OrderNode := ParseExpression;
+    OrderHead := OrderNode;
+    OrderTail := OrderNode;
+    While AcceptTok(Ord(',')) Do Begin
+      OrderNode := ParseExpression;
+      IRNodes[OrderTail].NextArg := OrderNode;
+      OrderTail := OrderNode;
+    End;
+  End;
+
+  If CurTokType = KW_WHERE Then Begin
+    LexNextToken;
+    WhereExpr := ParseExpression;
+  End;
+End;
+
+{ while select ... suivi d'un bloc : boucle d'iteration sur la table.
+  La traduction reelle en iteration sur un stockage de table interne
+  (tableau/fichier en memoire) est un mecanisme d'execution qui
+  viendra avec le generateur de code (TODO 24), une fois qu'il y aura
+  un runtime dans lequel stocker des enregistrements. }
+Function ParseWhileSelectStatement(MIdx: Integer): Integer;
+Var
+  N, TargetVar, OrderHead, WhereExpr, Body: Integer;
+  ForUpdate: Boolean;
+Begin
+  LexNextToken;   { consomme while }
+  LexNextToken;   { consomme select }
+  ParseSelectClauses(TargetVar, OrderHead, WhereExpr, ForUpdate);
+  Expect(Ord('{'), '{');
+  Inc(LoopDepth);
+  Body := ParseStmtBlock(MIdx);
+  Dec(LoopDepth);
+  N := NewStmtNode(SK_WHILESELECT);
+  Stmts[N].SelectVar   := TargetVar;
+  Stmts[N].OrderByHead := OrderHead;
+  Stmts[N].ExprNode    := WhereExpr;
+  Stmts[N].ForUpdate   := ForUpdate;
+  Stmts[N].BodyStmt    := Body;
+  ParseWhileSelectStatement := N;
+End;
+
+{ select [forUpdate] Variable [order by ...] [where Condition] ; :
+  lecture d'un seul enregistrement, sans bloc }
+Function ParseSelectStatement: Integer;
+Var
+  N, TargetVar, OrderHead, WhereExpr: Integer;
+  ForUpdate: Boolean;
+Begin
+  LexNextToken;   { consomme select }
+  ParseSelectClauses(TargetVar, OrderHead, WhereExpr, ForUpdate);
+  Expect(Ord(';'), ';');
+  N := NewStmtNode(SK_SELECT);
+  Stmts[N].SelectVar   := TargetVar;
+  Stmts[N].OrderByHead := OrderHead;
+  Stmts[N].ExprNode    := WhereExpr;
+  Stmts[N].ForUpdate   := ForUpdate;
+  ParseSelectStatement := N;
+End;
+
+{ ============================================================ }
+{ TODO 20 - CRUD ET TRANSACTIONS (INSERT/UPDATE/DELETE/TTS)     }
+{ ============================================================ }
+
+{ .insert()/.update()/.delete()/.clear() sont geres directement dans
+  ParseCall (voir plus haut, TODO 09) des qu'un objet est reconnu
+  comme une table AOT connue (TODO 18) : ce sont des methodes de
+  buffer standard qui n'existent dans aucune classe utilisateur. }
+
+Function ParseTtsBeginStatement: Integer;
+Begin
+  LexNextToken;   { consomme ttsBegin }
+  Expect(Ord(';'), ';');
+  Inc(TtsDepth);
+  ParseTtsBeginStatement := NewStmtNode(SK_TTSBEGIN);
+End;
+
+Function ParseTtsCommitStatement: Integer;
+Begin
+  LexNextToken;   { consomme ttsCommit }
+  If TtsDepth = 0 Then
+    ParseError('ttsCommit sans ttsBegin correspondant')
+  Else
+    Dec(TtsDepth);
+  Expect(Ord(';'), ';');
+  ParseTtsCommitStatement := NewStmtNode(SK_TTSCOMMIT);
+End;
+
+{ ttsAbort deroule vers le ttsBegin le plus externe (comme une
+  exception), quel que soit le niveau d'imbrication courant : la
+  transaction entiere est annulee, pas seulement le dernier niveau }
+Function ParseTtsAbortStatement: Integer;
+Begin
+  LexNextToken;   { consomme ttsAbort }
+  If TtsDepth = 0 Then
+    ParseError('ttsAbort sans ttsBegin correspondant')
+  Else
+    TtsDepth := 0;
+  Expect(Ord(';'), ';');
+  ParseTtsAbortStatement := NewStmtNode(SK_TTSABORT);
+End;
+
+{ delete_from Variable [where Condition] ; }
+Function ParseDeleteFromStatement: Integer;
+Var N, TargetVar, WhereExpr: Integer;
+Begin
+  LexNextToken;   { consomme delete_from }
+  If CurTokType <> TOK_IDENT Then
+    ParseError('nom de variable de table attendu apres delete_from, trouve ' +
+               TokenName(CurTokType));
+  TargetVar := ParseExpression;
+  If FindAotTable(IRNodes[TargetVar].TypeName) = 0 Then
+    ParseError('"' + IRNodes[TargetVar].Text +
+               '" n''est pas une table connue (delete_from)');
+
+  WhereExpr := 0;
+  If CurTokType = KW_WHERE Then Begin
+    LexNextToken;
+    WhereExpr := ParseExpression;
+  End;
+  Expect(Ord(';'), ';');
+
+  N := NewStmtNode(SK_DELETEFROM);
+  Stmts[N].SelectVar := TargetVar;
+  Stmts[N].ExprNode  := WhereExpr;
+  ParseDeleteFromStatement := N;
+End;
+
+{ ============================================================ }
+{ TODO 21 - QUERY, QUERYBUILDDATASOURCE, QUERYRUN               }
+{ ============================================================ }
+
+{ Nom d'une table AOT simulee (TODO 18) par son indice, utilise pour
+  deduire le type de retour reel de QueryRun.get(tableNum(X)) }
+Function AotTableName(Idx: Integer): String;
+Begin
+  If (Idx >= 1) And (Idx <= AotTableCount) Then
+    AotTableName := AotTables[Idx].Name
+  Else
+    AotTableName := 'anytype';
+End;
+
+{ Query/QueryBuildDataSource/QueryBuildRange/QueryRun sont enregistres
+  comme de veritables classes (memes tables Classes/Methods/Params
+  que pour une classe utilisateur), pour que toute l'infrastructure
+  deja en place (FindMemberInChain, CheckCallArgs, verification
+  d'arite du constructeur...) s'applique sans code special, comme si
+  l'utilisateur les avait declarees lui-meme. SysQuery::valueNotEmpty
+  reste volontairement non modelise (comme tout ce qui utilise ::
+  pour un appel statique plutot qu'une valeur d'enum) : l'appel reste
+  anytype, ce qui suffit puisque QueryBuildRange.value() accepte tout
+  type compatible. }
+Procedure RegisterBuiltinQueryClasses;
+Var C, M: Integer;
+Begin
+  C := AddClass('Query', False);
+  M := AddMethod(C, 'void', 'new', KW_PUBLIC, False);
+  M := AddMethod(C, 'QueryBuildDataSource', 'addDataSource', KW_PUBLIC, False);
+  AddParam(M, 'int', 'tableId');
+
+  C := AddClass('QueryBuildDataSource', False);
+  M := AddMethod(C, 'QueryBuildRange', 'addRange', KW_PUBLIC, False);
+  AddParam(M, 'int', 'fieldId');
+
+  C := AddClass('QueryBuildRange', False);
+  M := AddMethod(C, 'void', 'value', KW_PUBLIC, False);
+  AddParam(M, 'str', 'val');
+
+  C := AddClass('QueryRun', False);
+  M := AddMethod(C, 'void', 'new', KW_PUBLIC, False);
+  AddParam(M, 'Query', 'q');
+  M := AddMethod(C, 'boolean', 'next', KW_PUBLIC, False);
+  M := AddMethod(C, 'anytype', 'get', KW_PUBLIC, False);
+  AddParam(M, 'int', 'tableId');
+End;
+
+{ ============================================================ }
+{ TODO 22 - COLLECTIONS RUNTIME : MAP ET LIST                   }
+{ ============================================================ }
+
+{ Map/List/MapEnumerator/ListEnumerator sont enregistres comme de
+  veritables classes, exactement comme Query et QueryRun (TODO 21) :
+  meme infrastructure de resolution d'appel, aucun code special.
+  Map et List sont generiques dans le vrai X++ (le type des elements
+  depend des arguments Types::xxx passes a new) ; comme ce compilateur
+  ne modelise pas de generiques (hors de portee de ce sous-ensemble),
+  insert/addEnd/current/currentKey/currentValue restent anytype,
+  compatibles avec n'importe quelle valeur passee ou lue. }
+Procedure RegisterBuiltinCollectionClasses;
+Var C, M, TypesEnum: Integer;
+Begin
+  TypesEnum := AddEnum('Types');
+  AddEnumValue(TypesEnum, 'Integer',   0);
+  AddEnumValue(TypesEnum, 'Real',      1);
+  AddEnumValue(TypesEnum, 'String',    2);
+  AddEnumValue(TypesEnum, 'Boolean',   3);
+  AddEnumValue(TypesEnum, 'Date',      4);
+  AddEnumValue(TypesEnum, 'Container', 5);
+  AddEnumValue(TypesEnum, 'Class',     6);
+  AddEnumValue(TypesEnum, 'Enum',      7);
+
+  C := AddClass('Map', False);
+  M := AddMethod(C, 'void', 'new', KW_PUBLIC, False);
+  AddParam(M, 'Types', 'keyType');
+  AddParam(M, 'Types', 'valType');
+  M := AddMethod(C, 'void', 'insert', KW_PUBLIC, False);
+  AddParam(M, 'anytype', 'key');
+  AddParam(M, 'anytype', 'value');
+  M := AddMethod(C, 'MapEnumerator', 'getEnumerator', KW_PUBLIC, False);
+
+  C := AddClass('List', False);
+  M := AddMethod(C, 'void', 'new', KW_PUBLIC, False);
+  AddParam(M, 'Types', 'elementType');
+  M := AddMethod(C, 'void', 'addEnd', KW_PUBLIC, False);
+  AddParam(M, 'anytype', 'value');
+  M := AddMethod(C, 'ListEnumerator', 'getEnumerator', KW_PUBLIC, False);
+  M := AddMethod(C, 'int', 'elements', KW_PUBLIC, False);
+
+  C := AddClass('MapEnumerator', False);
+  M := AddMethod(C, 'boolean', 'moveNext', KW_PUBLIC, False);
+  M := AddMethod(C, 'anytype', 'currentKey', KW_PUBLIC, False);
+  M := AddMethod(C, 'anytype', 'currentValue', KW_PUBLIC, False);
+
+  C := AddClass('ListEnumerator', False);
+  M := AddMethod(C, 'boolean', 'moveNext', KW_PUBLIC, False);
+  M := AddMethod(C, 'anytype', 'current', KW_PUBLIC, False);
+End;
+
 BEGIN
   ParseArgs;
   WriteLn('XPPCW32 v', XPPCW32_VERSION, ' (', XPPCW32_DATE,
@@ -1648,13 +4733,28 @@ BEGIN
   WriteLn('XPPCW32: analyse de ', Opt.SrcFile);
   ParseProgram;
   ResolveProgram;
-  If Opt.Verbose Then DumpClasses;
+  ResolveEnums;
+  ResolveStorage;
+  ResolveVTables;
+  ResolveInterfaceCoverage;
+  ResolveSubscriptions;
+  If Opt.Verbose Then Begin
+    DumpClasses;
+    DumpEnums;
+    DumpLocals;
+    DumpStatements;
+    DumpVTables;
+    DumpSubscriptions;
+    DumpAotTables;
+  End;
   If ParseErrors > 0 Then Begin
     WriteLn('XPPCW32: ', ParseErrors, ' erreur(s), abandon');
     Halt(EXIT_ERROR);
   End;
-  WriteLn('XPPCW32: ', ClassCount, ' classe(s)/interface(s) analysee(s) et ',
-          'resolue(s) (TODO 05-06) - expressions/instructions/codegen a ',
-          'venir (TODO 07 et suivants).');
+  WriteLn('XPPCW32: ', ClassCount, ' classe(s)/interface(s) et ', EnumCount,
+          ' enum(s) analyses, resolus, alloues, mis en instructions, ',
+          'appels/heritage/interfaces/exceptions/delegates/tables/',
+          'requetes/CRUD/Query/collections verifies (TODO 05-22) - ',
+          'fonctions runtime/codegen a venir (TODO 23 et suivants).');
   Halt(EXIT_OK);
 END.
