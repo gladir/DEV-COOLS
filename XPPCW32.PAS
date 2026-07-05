@@ -426,6 +426,39 @@ Program XPPCW32;
             consequence tant qu'ils restent sans effet de bord comme
             dans l'echantillon). Corrige 19_delegate_eventhandler.xpp
             integralement.
+            Map/List reelles (au-dela du modele purement declaratif de
+            TODO 22) : ni l'une ni l'autre n'a besoin d'un champ propre
+            - "new Map(...)"/"new List(...)" ignorent les generiques
+            Types::xxx (non modelises, comme pour les autres
+            collections/tables) et allouent directement un en-tete de
+            container reel vide (Count=0/Capacity=0). list.addEnd(x)
+            reutilise tel quel _XPPRT_ConAppend (strictement identique
+            a "container += x") ; map.insert(cle, valeur) utilise un
+            nouveau _XPPRT_MapInsert, meme principe mais avec une
+            entree de 16 octets (Tag+Valeur de la cle puis de la
+            valeur) au lieu de 8. MapEnumerator/ListEnumerator recoivent
+            deux vrais champs internes __srcPtr/__cursor (meme nom pour
+            les deux classes, codegen partage) : getEnumerator() les
+            alloue et y range le pointeur de la collection source ;
+            moveNext() avance __cursor et le compare au Count reel
+            (meme principe que QueryRun.next(), mais sans indirection
+            par tableIdx puisque __srcPtr est deja directement le
+            pointeur de stockage) ; current()/currentKey()/
+            currentValue() lisent l'entree a __cursor-1 et renvoient sa
+            Valeur dans EAX. Difficulte propre a anytype : ces
+            accesseurs renvoient un type dont la nature (entier ou
+            chaine) n'est connue qu'a l'execution, or la convention
+            d'appel de ce codegen ne renvoie qu'une seule valeur (EAX) -
+            resolu en laissant l'etiquette de type (CONVAL_TAG_INT/STR)
+            dans un nouvel emplacement fixe _XPPD_LastAnytypeTag, relu
+            immediatement apres par le nouveau _XPPRT_AnytypeToStr
+            (appele par %N dans strFmt, aussi bien le raccourci "print
+            direct" que la construction reelle d'une chaine resultat)
+            pour choisir entre affichage entier et affichage chaine
+            sans aucun branchement supplementaire au site d'appel.
+            list.elements() lit simplement le Count en tete de buffer.
+            Corrige 20_map_and_list.xpp integralement (Map ET List, cle
+            et valeur, y compris les prenoms accentues).
 }
 
 { ============================================================ }
@@ -5022,11 +5055,18 @@ Begin
   M := AddMethod(C, 'int', 'elements', KW_PUBLIC, False);
 
   C := AddClass('MapEnumerator', False);
+  { champs internes reels (au-dela du modele purement declaratif) :
+    __srcPtr/__cursor, meme nom que ListEnumerator (genericite du
+    codegen partage CodegenCollEnumMoveNext/CodegenCollEnumCurrent) }
+  AddField(C, 'int', '__srcPtr', False, 0);
+  AddField(C, 'int', '__cursor', False, 0);
   M := AddMethod(C, 'boolean', 'moveNext', KW_PUBLIC, False);
   M := AddMethod(C, 'anytype', 'currentKey', KW_PUBLIC, False);
   M := AddMethod(C, 'anytype', 'currentValue', KW_PUBLIC, False);
 
   C := AddClass('ListEnumerator', False);
+  AddField(C, 'int', '__srcPtr', False, 0);
+  AddField(C, 'int', '__cursor', False, 0);
   M := AddMethod(C, 'boolean', 'moveNext', KW_PUBLIC, False);
   M := AddMethod(C, 'anytype', 'current', KW_PUBLIC, False);
 End;
@@ -6311,6 +6351,14 @@ Procedure CodegenQueryAddDataSource(ArgHead, ObjNode: Integer); Forward;
 Procedure CodegenQueryNext(ObjNode: Integer); Forward;
 Procedure CodegenQueryGet(ObjNode, ArgHead: Integer); Forward;
 Procedure CodegenNewQueryRun(ArgHead: Integer); Forward;
+Procedure CodegenNewCollection(ArgHead: Integer); Forward;
+Procedure CodegenCollAddEnd(ObjNode, ArgHead: Integer); Forward;
+Procedure CodegenCollInsert(ObjNode, ArgHead: Integer); Forward;
+Procedure CodegenListElements(ObjNode: Integer); Forward;
+Procedure CodegenNewCollEnumerator(EnumClsName: String; ObjNode: Integer); Forward;
+Procedure CodegenCollEnumMoveNext(ObjNode: Integer; EnumClsName: String); Forward;
+Procedure CodegenCollEnumCurrent(ObjNode: Integer; EnumClsName: String;
+                                  EntrySize, TagOff, ValOff: Integer); Forward;
 
 { Tableaux locaux fixes reels (int tab[N], extension apres TODO 26) :
   seules les declarations locales (pas les parametres, qui n'ont pas
@@ -6665,6 +6713,17 @@ Begin
         End Else If IRNodes[ArgNode].TypeName = 'date' Then Begin
           CodegenExpr(ArgNode);
           BinCallLabel('_XPPRT_PrintDate');
+        End Else If IRNodes[ArgNode].TypeName = 'anytype' Then Begin
+          { valeur issue d'une collection reelle (Map/List, au-dela du
+            modele purement declaratif de TODO 22) : currentKey()/
+            currentValue()/current() renvoient la valeur dans EAX et
+            laissent son etiquette de type (entier/chaine) dans
+            _XPPD_LastAnytypeTag ; _XPPRT_AnytypeToStr choisit le bon
+            affichage sans qu'aucun branchement supplementaire ne soit
+            necessaire ici }
+          CodegenExpr(ArgNode);
+          BinCallLabel('_XPPRT_AnytypeToStr');
+          BinCallLabel('_XPPRT_PrintCStr');
         End Else
           CodegenExpr(ArgNode);
       End;
@@ -6782,6 +6841,13 @@ Begin
           BinXorRegReg(REG_EAX);
         End Else
           CodegenExpr(ArgNode);
+      End Else If IRNodes[ArgNode].TypeName = 'anytype' Then Begin
+        { meme mecanisme que dans CodegenPrintFormatted : la Valeur
+          (EAX) et l'etiquette de type (_XPPD_LastAnytypeTag) laissees
+          par currentKey/currentValue/current sont converties en un
+          vrai pointeur de fragment directement utilisable ici }
+        CodegenExpr(ArgNode);
+        BinCallLabel('_XPPRT_AnytypeToStr');
       End Else
         CodegenExpr(ArgNode);
     End;
@@ -7066,6 +7132,210 @@ Begin
   BinMovRegReg(REG_EAX, REG_EBX);
 End;
 
+{ ============================================================ }
+{ COLLECTIONS REELLES : MAP ET LIST (au-dela du modele purement }
+{ declaratif de TODO 22)                                        }
+{ ============================================================ }
+
+{ new Map(...)/new List(...) : les generiques (Types::X passes au
+  "constructeur") ne sont pas modelises (hors de portee, comme pour
+  les autres collections/tables) - seuls leurs effets de bord sont
+  evalues. Une Map ou une List n'est rien d'autre qu'un container reel
+  (TODO 26) reutilise tel quel : un en-tete Count/Capacity=0 alloue
+  via HEAP_ZERO_MEMORY, exactement le format attendu par
+  _XPPRT_ConAppend (List.addEnd) et par le nouveau _XPPRT_MapInsert
+  (Map.insert, paire cle+valeur au lieu d'un seul element). }
+Procedure CodegenNewCollection(ArgHead: Integer);
+Begin
+  CodegenArgSideEffects(ArgHead);
+  BinMovRegImm32(REG_EAX, 8);
+  BinCallLabel('_XPPRT_StrAlloc');
+End;
+
+{ list.addEnd(valeur) : strictement "container += valeur"
+  (_XPPRT_ConAppend), la variable list elle-meme doit etre relue/
+  reecrite (le bloc grandit a chaque ajout, jamais de HeapReAlloc) -
+  necessite donc que list soit une variable simple (locale/parametre),
+  comme dans tous les echantillons ; toute autre forme (champ...)
+  retombe sur une simple evaluation d'effet de bord, comme les autres
+  cibles non modelisees de ce codegen reduit. }
+Procedure CodegenCollAddEnd(ObjNode, ArgHead: Integer);
+Var Off: Integer; Found: Boolean;
+Begin
+  Found := False;
+  If IRNodes[ObjNode].Kind = NK_IDENT Then
+    Off := CgVarOffset(IRNodes[ObjNode].Text, Found);
+  If Not Found Then Begin
+    CodegenExpr(ObjNode);
+    CodegenExpr(ArgHead);
+    BinXorRegReg(REG_EAX);
+    Exit;
+  End;
+  CodegenExpr(ArgHead);
+  BinMovRegReg(REG_EDX, REG_EAX);
+  If IRNodes[ArgHead].TypeName = 'str' Then
+    BinMovRegImm32(REG_ECX, CONVAL_TAG_STR)
+  Else
+    BinMovRegImm32(REG_ECX, CONVAL_TAG_INT);
+  BinMovEaxEbpDisp(Off);
+  BinCallLabel('_XPPRT_ConAppend');
+  BinMovEbpDispEax(Off);
+  BinXorRegReg(REG_EAX);
+End;
+
+{ map.insert(cle, valeur) : meme principe que list.addEnd, mais chaque
+  entree stocke une PAIRE cle+valeur (chacune avec sa propre etiquette
+  de type), via le nouveau _XPPRT_MapInsert (16 octets/entree au lieu
+  de 8 pour un container/List ordinaire). }
+Procedure CodegenCollInsert(ObjNode, ArgHead: Integer);
+Var Off, KeyArg, ValArg: Integer; Found: Boolean;
+Begin
+  Found := False;
+  If IRNodes[ObjNode].Kind = NK_IDENT Then
+    Off := CgVarOffset(IRNodes[ObjNode].Text, Found);
+  If Not Found Then Begin
+    CodegenArgSideEffects(ArgHead);
+    BinXorRegReg(REG_EAX);
+    Exit;
+  End;
+  KeyArg := ArgHead;
+  ValArg := IRNodes[ArgHead].NextArg;
+
+  CodegenExpr(ValArg);
+  BinPushReg(REG_EAX);
+  If IRNodes[ValArg].TypeName = 'str' Then
+    BinPushImm32(CONVAL_TAG_STR)
+  Else
+    BinPushImm32(CONVAL_TAG_INT);
+  CodegenExpr(KeyArg);
+  BinPushReg(REG_EAX);
+  If IRNodes[KeyArg].TypeName = 'str' Then
+    BinPushImm32(CONVAL_TAG_STR)
+  Else
+    BinPushImm32(CONVAL_TAG_INT);
+  BinMovEaxEbpDisp(Off);
+  BinPushReg(REG_EAX);
+  BinCallLabel('_XPPRT_MapInsert');
+  BinMovEbpDispEax(Off);
+  BinXorRegReg(REG_EAX);
+End;
+
+{ list.elements() : simple lecture du Count en tete de buffer (0 si la
+  liste n'a jamais recu d'element - EAX resterait alors le pointeur
+  initial de 8 octets deja Count=0, donc aucune garde speciale n'est
+  meme necessaire au-dela du pointeur nul improbable). }
+Procedure CodegenListElements(ObjNode: Integer);
+Var LZero, LEnd: String;
+Begin
+  CodegenExpr(ObjNode);
+  LZero := NewBinLabel('Le1');
+  LEnd  := NewBinLabel('Le2');
+  BinCmpEaxImm32(0);
+  BinJccLabel(CC_E, LZero);
+  BinMovRegBaseDisp32(REG_EAX, REG_EAX, 0);
+  BinJmpLabel(LEnd);
+  BinDefineLabel(LZero);
+  BinXorRegReg(REG_EAX);
+  BinDefineLabel(LEnd);
+End;
+
+{ map.getEnumerator()/list.getEnumerator() : alloue un vrai
+  MapEnumerator/ListEnumerator (champs __srcPtr/__cursor, meme nom
+  pour les deux classes) et y range le pointeur de la collection
+  source ; __cursor demarre a 0 via HEAP_ZERO_MEMORY (avant le premier
+  element), comme QueryRun.__cursor. }
+Procedure CodegenNewCollEnumerator(EnumClsName: String; ObjNode: Integer);
+Var EnumCls, OffPtr: Integer;
+Begin
+  EnumCls := FindClass(EnumClsName);
+  OffPtr  := ClassFieldOffset(EnumCls, '__srcPtr');
+  CodegenExpr(ObjNode);
+  BinPushReg(REG_EAX);
+  BinMovRegImm32(REG_EAX, Classes[EnumCls].InstanceSize);
+  BinCallLabel('_XPPRT_StrAlloc');
+  BinPopReg(REG_ECX);
+  BinMovBaseDispReg32(REG_EAX, OffPtr, REG_ECX);
+End;
+
+{ mapEnum.moveNext()/listEnum.moveNext() : avance __cursor et le
+  compare au Count reel de la collection source (__srcPtr+0), exactement
+  comme QueryRun.next() mais sans indirection par tableIdx (__srcPtr
+  est deja directement le pointeur de stockage, pas besoin de
+  _XPPD_TableStoreSlots ici). }
+Procedure CodegenCollEnumMoveNext(ObjNode: Integer; EnumClsName: String);
+Var EnumCls, OffPtr, OffCursor: Integer;
+    LNoSrc, LHasRec, LEnd: String;
+Begin
+  EnumCls   := FindClass(EnumClsName);
+  OffPtr    := ClassFieldOffset(EnumCls, '__srcPtr');
+  OffCursor := ClassFieldOffset(EnumCls, '__cursor');
+
+  CodegenExpr(ObjNode);
+  BinMovRegReg(REG_EBX, REG_EAX);
+
+  BinMovRegBaseDisp32(REG_ECX, REG_EBX, OffCursor);
+  BinIncReg(REG_ECX);
+  BinPushReg(REG_ECX);
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBX, OffPtr);
+
+  LNoSrc  := NewBinLabel('Ce1');
+  LHasRec := NewBinLabel('Ce2');
+  LEnd    := NewBinLabel('Ce3');
+  BinCmpEaxImm32(0);
+  BinJccLabel(CC_E, LNoSrc);
+
+  BinMovRegBaseDisp32(REG_ECX, REG_EAX, 0);
+  BinPopReg(REG_EAX);
+  BinPushReg(REG_EAX);
+  BinCmpRegReg(REG_EAX, REG_ECX);
+  BinJccLabel(CC_LE, LHasRec);
+
+  BinDefineLabel(LNoSrc);
+  BinPopReg(REG_EAX);
+  BinXorRegReg(REG_EAX);
+  BinJmpLabel(LEnd);
+
+  BinDefineLabel(LHasRec);
+  BinPopReg(REG_EAX);
+  BinMovBaseDispReg32(REG_EBX, OffCursor, REG_EAX);
+  BinMovRegImm32(REG_EAX, 1);
+
+  BinDefineLabel(LEnd);
+End;
+
+{ listEnum.current()/mapEnum.currentKey()/mapEnum.currentValue() :
+  lit le Tag+Valeur de l'element courant (position __cursor-1 dans le
+  stockage), range le Tag dans _XPPD_LastAnytypeTag (relu juste apres
+  par %N dans strFmt, voir CodegenPrintFormatted/CodegenBuildFormatted)
+  et renvoie la Valeur dans EAX. EntrySize/TagOff/ValOff distinguent
+  List (8 octets/element, tag+valeur uniques) de Map (16 octets/entree,
+  cle en +0/+4 puis valeur en +8/+12). }
+Procedure CodegenCollEnumCurrent(ObjNode: Integer; EnumClsName: String;
+                                  EntrySize, TagOff, ValOff: Integer);
+Var EnumCls, OffPtr, OffCursor: Integer;
+Begin
+  EnumCls   := FindClass(EnumClsName);
+  OffPtr    := ClassFieldOffset(EnumCls, '__srcPtr');
+  OffCursor := ClassFieldOffset(EnumCls, '__cursor');
+
+  CodegenExpr(ObjNode);
+  BinMovRegReg(REG_EBX, REG_EAX);
+
+  BinMovRegBaseDisp32(REG_ESI, REG_EBX, OffPtr);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBX, OffCursor);
+  BinDecEax;
+  BinMovRegImm32(REG_ECX, EntrySize);
+  BinImulEaxEcx;
+  BinAddEaxImm32(8);
+  BinAddRegReg(REG_EAX, REG_ESI);
+
+  BinMovRegBaseDisp32(REG_ECX, REG_EAX, TagOff);
+  BinMovRegLabelAddr(REG_EDX, '_XPPD_LastAnytypeTag');
+  BinMovBaseDispReg32(REG_EDX, 0, REG_ECX);
+  BinMovRegBaseDisp32(REG_EAX, REG_EAX, ValOff);
+End;
+
 { Appel d'une methode utilisateur (corps reellement compile) : les
   arguments sont evalues et empiles de droite a gauche (immediatement
   apres evaluation, a la maniere cdecl/stdcall classique), puis
@@ -7238,6 +7508,61 @@ Begin
     If (Methods[MIdx].ClassIdx = FindClass('QueryRun')) And
        (Methods[MIdx].Name = 'get') Then Begin
       CodegenQueryGet(IRNodes[Callee].Left, ArgHead);
+      Exit;
+    End;
+
+    { insert/addEnd/getEnumerator/elements de Map/List et
+      moveNext/current/currentKey/currentValue de leurs enumerateurs
+      (collections reelles, au-dela du modele purement declaratif de
+      TODO 22) : meme principe d'interception directe par classe+nom }
+    If (Methods[MIdx].ClassIdx = FindClass('Map')) And
+       (Methods[MIdx].Name = 'insert') Then Begin
+      CodegenCollInsert(IRNodes[Callee].Left, ArgHead);
+      Exit;
+    End;
+    If (Methods[MIdx].ClassIdx = FindClass('Map')) And
+       (Methods[MIdx].Name = 'getEnumerator') Then Begin
+      CodegenNewCollEnumerator('MapEnumerator', IRNodes[Callee].Left);
+      Exit;
+    End;
+    If (Methods[MIdx].ClassIdx = FindClass('List')) And
+       (Methods[MIdx].Name = 'addEnd') Then Begin
+      CodegenCollAddEnd(IRNodes[Callee].Left, ArgHead);
+      Exit;
+    End;
+    If (Methods[MIdx].ClassIdx = FindClass('List')) And
+       (Methods[MIdx].Name = 'getEnumerator') Then Begin
+      CodegenNewCollEnumerator('ListEnumerator', IRNodes[Callee].Left);
+      Exit;
+    End;
+    If (Methods[MIdx].ClassIdx = FindClass('List')) And
+       (Methods[MIdx].Name = 'elements') Then Begin
+      CodegenListElements(IRNodes[Callee].Left);
+      Exit;
+    End;
+    If (Methods[MIdx].ClassIdx = FindClass('MapEnumerator')) And
+       (Methods[MIdx].Name = 'moveNext') Then Begin
+      CodegenCollEnumMoveNext(IRNodes[Callee].Left, 'MapEnumerator');
+      Exit;
+    End;
+    If (Methods[MIdx].ClassIdx = FindClass('MapEnumerator')) And
+       (Methods[MIdx].Name = 'currentKey') Then Begin
+      CodegenCollEnumCurrent(IRNodes[Callee].Left, 'MapEnumerator', 16, 0, 4);
+      Exit;
+    End;
+    If (Methods[MIdx].ClassIdx = FindClass('MapEnumerator')) And
+       (Methods[MIdx].Name = 'currentValue') Then Begin
+      CodegenCollEnumCurrent(IRNodes[Callee].Left, 'MapEnumerator', 16, 8, 12);
+      Exit;
+    End;
+    If (Methods[MIdx].ClassIdx = FindClass('ListEnumerator')) And
+       (Methods[MIdx].Name = 'moveNext') Then Begin
+      CodegenCollEnumMoveNext(IRNodes[Callee].Left, 'ListEnumerator');
+      Exit;
+    End;
+    If (Methods[MIdx].ClassIdx = FindClass('ListEnumerator')) And
+       (Methods[MIdx].Name = 'current') Then Begin
+      CodegenCollEnumCurrent(IRNodes[Callee].Left, 'ListEnumerator', 8, 0, 4);
       Exit;
     End;
   End;
@@ -7550,6 +7875,14 @@ Begin
         reelles) : le "constructeur" n'a aucun corps reel, il faut
         copier query.__tableIdx dans le nouvel objet directement ici }
       CodegenNewQueryRun(ArgHead);
+    End Else If (ClassIdx = FindClass('Map')) Or (ClassIdx = FindClass('List')) Then Begin
+      { new Map(...)/new List(...) (collections reelles, au-dela des
+        tables AOT reelles) : ni l'une ni l'autre n'a de champ propre,
+        seulement un en-tete de container vide (voir
+        CodegenNewCollection) - Classes[ClassIdx].InstanceSize resterait
+        a 0 ici (aucun champ declare), ce qui serait un HeapAlloc(0)
+        inutilisable comme en-tete Count/Capacity }
+      CodegenNewCollection(ArgHead);
     End Else Begin
       BinMovRegImm32(REG_EAX, Classes[ClassIdx].InstanceSize);
       BinCallLabel('_XPPRT_StrAlloc');
@@ -8254,6 +8587,17 @@ Begin
   BinDefineLabel('_XPPD_VCallThis');
   BinEmit32(0);
   BinDefineLabel('_XPPD_VCallTarget');
+  BinEmit32(0);
+  { emplacement global fixe (collections reelles Map/List, au-dela du
+    modele purement declaratif de TODO 22) : currentKey()/currentValue()/
+    current() renvoient la VALEUR d'un element anytype dans EAX (comme
+    toute autre fonction), mais un anytype porte aussi une etiquette de
+    type (CONVAL_TAG_INT/STR, meme convention que container) que strFmt
+    doit connaitre pour choisir entre _XPPRT_PrintInt et _XPPRT_PrintCStr
+    - un second registre de retour n'existe pas dans cette convention
+    d'appel, d'ou cet emplacement fixe, ecrit par l'accesseur et relu
+    immediatement apres par le site d'appel (%N dans strFmt) }
+  BinDefineLabel('_XPPD_LastAnytypeTag');
   BinEmit32(0);
   { un emplacement par table AOT simulee (tables reelles, au-dela des
     objets reels) : pointeur courant vers le stockage growable de ses
@@ -9134,6 +9478,120 @@ Begin
   BinMovBaseDispReg32(REG_ECX, 0, REG_EAX);
 
   BinMovRegReg(REG_EAX, REG_ESI);
+  BinEmitEpilogueN(0);
+End;
+
+{ _XPPRT_MapInsert (Map reelle, au-dela du modele purement declaratif
+  de TODO 22) : map.insert(cle, valeur). Meme principe exact que
+  _XPPRT_ConAppend (toujours une reallocation complete de taille
+  exacte, jamais de HeapReAlloc, ancien bloc jamais libere), mais
+  chaque entree fait 16 octets (Tag+Valeur de la cle, puis Tag+Valeur
+  de la valeur) au lieu de 8. Convention pile (comme _XPPRT_TableFindEq,
+  5 parametres ne tiennent pas dans 3 registres) : mapPtr@8, keyTag@12,
+  keyVal@16, valTag@20, valVal@24 -> EAX=nouveau pointeur ; nettoie ses
+  20 octets d'arguments elle-meme (RET 20). Ne preserve pas EBX/ESI/EDI
+  (meme convention que _XPPRT_ConAppend : le seul site d'appel,
+  CodegenCollInsert, n'a rien de vivant dans ces registres a travers
+  cet appel). }
+Procedure EmitMapInsertHelper;
+Var LZeroCount, LGotCount, LNoCopy, LCopyLoop: String;
+Begin
+  BinCurSec := BIN_SEC_TEXT;
+  BinDefineLabel('_XPPRT_MapInsert');
+  BinEmitPrologue(0);
+
+  BinMovRegBaseDisp32(REG_EBX, REG_EBP, 8);   { ebx = ancien pointeur, persiste }
+
+  LZeroCount := NewBinLabel('MiZc');
+  LGotCount  := NewBinLabel('MiGc');
+  BinCmpRegImm8(REG_EBX, 0);
+  BinJccLabel(CC_E, LZeroCount);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBX, 0);
+  BinJmpLabel(LGotCount);
+  BinDefineLabel(LZeroCount);
+  BinXorRegReg(REG_EAX);
+  BinDefineLabel(LGotCount);
+  BinMovRegReg(REG_EDI, REG_EAX);   { edi = OldCount, persiste }
+
+  BinIncEax;                         { eax = NewCount }
+  BinPushReg(REG_EAX);                { sauvegarde NewCount (survit a Heap*) }
+  BinMovRegImm32(REG_ECX, 16);
+  BinImulEaxEcx;
+  BinAddEaxImm32(8);                   { eax = NewBytes = 8 + NewCount*16 }
+  BinPushReg(REG_EAX);
+  BinCallImportRaw('GetProcessHeap');
+  BinPushImm32(8);
+  BinPushReg(REG_EAX);
+  BinCallImportRaw('HeapAlloc');         { eax = nouveau pointeur }
+  BinMovRegReg(REG_ESI, REG_EAX);         { esi = nouveau pointeur, persiste }
+
+  BinPopReg(REG_EAX);                      { eax = NewCount }
+  BinMovBaseDispReg32(REG_ESI, 0, REG_EAX);
+  BinMovBaseDispReg32(REG_ESI, 4, REG_EAX);
+
+  BinMovRegReg(REG_ECX, REG_ESI);   { curseur destination }
+  BinAddRegImm8(REG_ECX, 8);
+
+  LNoCopy := NewBinLabel('MiNc');
+  BinCmpRegImm8(REG_EDI, 0);
+  BinJccLabel(CC_E, LNoCopy);
+  BinMovRegReg(REG_EDX, REG_EDI);   { edx = compteur de boucle = OldCount }
+  LCopyLoop := NewBinLabel('MiCl');
+  BinDefineLabel(LCopyLoop);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBX, 8);
+  BinMovBaseDispReg32(REG_ECX, 0, REG_EAX);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBX, 12);
+  BinMovBaseDispReg32(REG_ECX, 4, REG_EAX);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBX, 16);
+  BinMovBaseDispReg32(REG_ECX, 8, REG_EAX);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBX, 20);
+  BinMovBaseDispReg32(REG_ECX, 12, REG_EAX);
+  BinAddRegImm8(REG_EBX, 16);
+  BinAddRegImm8(REG_ECX, 16);
+  BinDecReg(REG_EDX);
+  BinJccLabel(CC_NE, LCopyLoop);
+  BinDefineLabel(LNoCopy);
+
+  { ecrit la nouvelle entree a la position ou le curseur ecx s'est arrete }
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, 12);   { keyTag }
+  BinMovBaseDispReg32(REG_ECX, 0, REG_EAX);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, 16);   { keyVal }
+  BinMovBaseDispReg32(REG_ECX, 4, REG_EAX);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, 20);   { valTag }
+  BinMovBaseDispReg32(REG_ECX, 8, REG_EAX);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, 24);   { valVal }
+  BinMovBaseDispReg32(REG_ECX, 12, REG_EAX);
+
+  BinMovRegReg(REG_EAX, REG_ESI);
+  BinEmitEpilogueN(20);
+End;
+
+{ _XPPRT_AnytypeToStr (collections reelles Map/List, au-dela du modele
+  purement declaratif de TODO 22) : convertit la Valeur d'un anytype
+  (deja dans EAX, comme le renvoie currentKey/currentValue/current) en
+  un vrai pointeur de chaine affichable, en lisant l'etiquette de type
+  laissee par l'accesseur dans _XPPD_LastAnytypeTag - CONVAL_TAG_STR
+  laisse EAX inchange (deja un pointeur de chaine reel), CONVAL_TAG_INT
+  le convertit via _XPPRT_IntToStr. Utilise a la fois par le raccourci
+  "print direct" (CodegenPrintFormatted, %N puis _XPPRT_PrintCStr) et
+  par la construction reelle de strFmt (CodegenBuildFormatted, resultat
+  utilise directement comme pointeur de fragment). }
+Procedure EmitAnytypeToStrHelper;
+Var LIsStr, LDone: String;
+Begin
+  BinCurSec := BIN_SEC_TEXT;
+  BinDefineLabel('_XPPRT_AnytypeToStr');
+  BinEmitPrologue(0);
+  BinMovRegLabelAddr(REG_ECX, '_XPPD_LastAnytypeTag');
+  BinMovRegBaseDisp32(REG_ECX, REG_ECX, 0);
+  LIsStr := NewBinLabel('At1');
+  LDone  := NewBinLabel('At2');
+  BinCmpRegImm8(REG_ECX, CONVAL_TAG_STR);
+  BinJccLabel(CC_E, LIsStr);
+  BinCallLabel('_XPPRT_IntToStr');
+  BinJmpLabel(LDone);
+  BinDefineLabel(LIsStr);
+  BinDefineLabel(LDone);
   BinEmitEpilogueN(0);
 End;
 
@@ -10390,6 +10848,7 @@ Begin
   EmitStrLenHelper;
   EmitFormatIntToBufHelper;
   EmitConAppendHelper;
+  EmitMapInsertHelper;
   EmitConToStrHelper;
   EmitStrAllocHelper;
   EmitCaseConvHelper('_XPPRT_StrUpr', Ord('a'), Ord('z'), -32);
@@ -10402,6 +10861,7 @@ Begin
   EmitStrLTrimHelper;
   EmitStrRTrimHelper;
   EmitIntToStrHelper;
+  EmitAnytypeToStrHelper;
   EmitDateToStrHelper;
   EmitStrEqHelper;
   EmitTableInsertHelper;
