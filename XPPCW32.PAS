@@ -325,6 +325,26 @@ Program XPPCW32;
             reel. Corrige 12_class_basic.xpp et 13_inheritance.xpp
             integralement, y compris la redefinition de methode
             (parler() de Chien/Chat repond bien avec le bon texte).
+            Dispatch virtuel reel pour les appels via une variable
+            typee interface (jusqu'ici resolus statiquement vers la
+            declaration abstraite de l'interface, sans corps -> 0) :
+            chaque classe concrete implementant une interface recoit
+            une vtable emise en .rdata (EmitClassVTable), disposee
+            selon l'ordre de declaration des methodes de l'interface
+            (InterfaceMethodSlot, identique pour tout implementeur,
+            pas une simple coincidence meme si l'interface avait
+            plusieurs methodes). L'en-tete d'objet de 4 octets (deja
+            reserve, jusqu'ici toujours nul) recoit l'adresse de cette
+            vtable a l'allocation (CodegenNew). obj.methode() dont le
+            type statique de obj est une interface devient un vrai
+            appel indirect (CodegenInterfaceCall + BinCallReg) au lieu
+            d'un appel statique : this et la cible resolue transitent
+            par des emplacements .data fixes (_XPPD_VCallThis/
+            VCallTarget), meme technique et memes raisons que
+            _XPPD_NewObjTemp. Portee : seule la premiere interface
+            implementee determine la disposition (aucun echantillon
+            n'en implemente plusieurs a la fois). Corrige
+            14_interfaces.xpp.
 }
 
 { ============================================================ }
@@ -1862,6 +1882,22 @@ Begin
     Cur := EffectiveParentIdx(Cur);
     Inc(Steps);
   End;
+End;
+
+{ Position (0-indexee) de Name dans l'ordre de declaration des
+  methodes d'une interface : ce rang sert de numero de case de vtable,
+  identique pour tout implementeur de cette interface (dispatch
+  virtuel reel, au-dela des objets reels). -1 si absent. }
+Function InterfaceMethodSlot(IfaceIdx: Integer; Name: String): Integer;
+Var Base, K: Integer;
+Begin
+  InterfaceMethodSlot := -1;
+  Base := Classes[IfaceIdx].MethodStart;
+  For K := 0 To Classes[IfaceIdx].MethodCount - 1 Do
+    If Methods[Base + K].Name = Name Then Begin
+      InterfaceMethodSlot := K;
+      Exit;
+    End;
 End;
 
 { Detecte les classes/interfaces declarees plus d'une fois }
@@ -5338,6 +5374,11 @@ End;
 Procedure BinAddRegReg(Rd, Rs: Integer);
 Begin AL('add ' + RegName(Rd) + ', ' + RegName(Rs)); BinEmit8($03); BinEmit8($C0 Or (Rd Shl 3) Or Rs); End;
 
+{ call R : appel indirect reel a travers un registre (dispatch virtuel
+  par vtable, au-dela des objets reels) }
+Procedure BinCallReg(R: Integer);
+Begin AL('call ' + RegName(R)); BinEmit8($FF); BinEmit8($D0 Or R); End;
+
 { sub Rd, Rs / cmp Rd, Rs (registre-registre generiques) : utilises par
   les fonctions de chaines reelles (strLTrim/strFind..., extension
   apres TODO 26) }
@@ -6004,6 +6045,14 @@ End;
 Function MethodLabel(MIdx: Integer): String;
 Begin MethodLabel := '_XPPM_' + ItoS(MIdx); End;
 
+{ Nom de l'etiquette de la vtable d'une classe (dispatch virtuel reel,
+  au-dela des objets reels) : une par classe concrete implementant au
+  moins une interface. }
+Function ClassVTableLabel(ClassIdx: Integer): String;
+Begin
+  ClassVTableLabel := '_XPPD_VTable_' + ItoS(ClassIdx);
+End;
+
 Function CaseLabel(NodeIdx: Integer): String;
 Begin CaseLabel := '_XPPSW_' + ItoS(NodeIdx); End;
 
@@ -6648,10 +6697,51 @@ Begin
   BinCallLabel(MethodLabel(MIdx));
 End;
 
+{ Appel virtuel reel a travers une variable typee interface (dispatch
+  dynamique, au-dela des objets reels) : obj.methode() dont le type
+  statique de obj est une interface se resout a l'execution via la
+  vtable de l'objet (ecrite a l'allocation par CodegenNew), pas
+  statiquement vers une seule implementation. This/la cible d'appel
+  doivent survivre a l'evaluation des arguments reels : geres via les
+  emplacements globaux fixes _XPPD_VCallThis/_XPPD_VCallTarget, memes
+  raisons que _XPPD_NewObjTemp (immunises contre tout registre ou
+  position de pile perturbee par cette evaluation). }
+Procedure CodegenInterfaceCall(Slot, ArgHead, ObjNode: Integer);
+Var Args: Array[1..64] Of Integer; NArgs, I, A: Integer;
+Begin
+  CodegenExpr(ObjNode);                          { eax = pointeur objet }
+  BinMovRegBaseDisp32(REG_ECX, REG_EAX, 0);         { ecx = vtable }
+  BinMovRegBaseDisp32(REG_ECX, REG_ECX, 4 * Slot);    { ecx = adresse de methode resolue }
+  BinMovRegLabelAddr(REG_EDX, '_XPPD_VCallThis');
+  BinMovBaseDispReg32(REG_EDX, 0, REG_EAX);
+  BinMovRegLabelAddr(REG_EDX, '_XPPD_VCallTarget');
+  BinMovBaseDispReg32(REG_EDX, 0, REG_ECX);
+
+  NArgs := 0;
+  A := ArgHead;
+  While (A <> 0) And (NArgs < 64) Do Begin
+    Inc(NArgs);
+    Args[NArgs] := A;
+    A := IRNodes[A].NextArg;
+  End;
+  For I := NArgs DownTo 1 Do Begin
+    CodegenExpr(Args[I]);
+    BinPushReg(REG_EAX);
+  End;
+
+  BinMovRegLabelAddr(REG_EAX, '_XPPD_VCallThis');
+  BinMovRegBaseDisp32(REG_EAX, REG_EAX, 0);
+  BinPushReg(REG_EAX);
+
+  BinMovRegLabelAddr(REG_ECX, '_XPPD_VCallTarget');
+  BinMovRegBaseDisp32(REG_ECX, REG_ECX, 0);
+  BinCallReg(REG_ECX);
+End;
+
 Procedure CodegenCall(N: Integer);
 Var
   Callee, MIdx, ArgHead, FmtCallMIdx, FmtNode, IdxArg, SepArg,
-  Arg2, Arg3, Arg4: Integer;
+  Arg2, Arg3, Arg4, IfaceIdx, Slot: Integer;
   LZero, LEnd: String;
 Begin
   Callee  := IRNodes[N].Left;
@@ -6666,6 +6756,25 @@ Begin
   End;
 
   MIdx := IRNodes[N].ResolvedMethod;
+
+  { obj.methode() dont le type statique de obj est une interface
+    (dispatch virtuel reel, au-dela des objets reels) : la methode
+    resolue ici est la DECLARATION abstraite de l'interface (sans
+    corps, Methods[MIdx].ClassIdx est l'interface elle-meme) - le vrai
+    point d'entree se trouve a l'execution via la vtable de l'objet,
+    pas via ce MIdx statique }
+  If (MIdx <> 0) And (IRNodes[Callee].Kind = NK_MEMBER) And
+     (Methods[MIdx].ClassIdx <> 0) And Classes[Methods[MIdx].ClassIdx].IsInterface Then Begin
+    IfaceIdx := Methods[MIdx].ClassIdx;
+    Slot := InterfaceMethodSlot(IfaceIdx, Methods[MIdx].Name);
+    If Slot >= 0 Then Begin
+      CodegenInterfaceCall(Slot, ArgHead, IRNodes[Callee].Left);
+      Exit;
+    End;
+    CodegenArgSideEffects(ArgHead);
+    BinXorRegReg(REG_EAX);
+    Exit;
+  End;
 
   If (MIdx <> 0) And (Methods[MIdx].ClassIdx = GlobalFuncClassIdx) And
      (Methods[MIdx].Name = 'info') And (ArgHead <> 0) Then Begin
@@ -6925,6 +7034,10 @@ Begin
         des arguments et a tout registre ecrase par leur evaluation) }
       BinMovRegImm32(REG_EAX, Classes[ClassIdx].InstanceSize);
       BinCallLabel('_XPPRT_StrAlloc');
+      If Classes[ClassIdx].ImplCount > 0 Then Begin
+        BinMovRegLabelAddr(REG_ECX, ClassVTableLabel(ClassIdx));
+        BinMovBaseDispReg32(REG_EAX, 0, REG_ECX);
+      End;
       BinMovRegLabelAddr(REG_ECX, '_XPPD_NewObjTemp');
       BinMovBaseDispReg32(REG_ECX, 0, REG_EAX);
 
@@ -6950,6 +7063,10 @@ Begin
     End Else Begin
       BinMovRegImm32(REG_EAX, Classes[ClassIdx].InstanceSize);
       BinCallLabel('_XPPRT_StrAlloc');
+      If Classes[ClassIdx].ImplCount > 0 Then Begin
+        BinMovRegLabelAddr(REG_ECX, ClassVTableLabel(ClassIdx));
+        BinMovBaseDispReg32(REG_EAX, 0, REG_ECX);
+      End;
     End;
   End Else Begin
     CodegenArgSideEffects(ArgHead);
@@ -7467,6 +7584,34 @@ Begin
     End;
 End;
 
+{ Emet la vtable d'une classe concrete implementant une interface : un
+  emplacement par methode de l'interface (dans son ordre de
+  declaration, TODO 15/InterfaceMethodSlot), chacun pointant vers
+  l'implementation reelle de la classe (propre ou heritee via
+  FindMemberInChain). Portee : seule la PREMIERE interface implementee
+  determine la disposition (aucun echantillon n'en implemente
+  plusieurs a la fois). Les classes sans interface n'ont pas besoin de
+  vtable : leurs appels restent statiques, l'en-tete d'objet reste a 0. }
+Procedure EmitClassVTable(ClassIdx: Integer);
+Var IfaceIdx, Base, K, OwnerCls, ImplMIdx, Kind: Integer;
+Begin
+  If Classes[ClassIdx].ImplCount = 0 Then Exit;
+  IfaceIdx := Implements[Classes[ClassIdx].ImplStart].ResolvedIdx;
+  If IfaceIdx = 0 Then Exit;
+
+  BinCurSec := BIN_SEC_RDATA;
+  BinDefineLabel(ClassVTableLabel(ClassIdx));
+  Base := Classes[IfaceIdx].MethodStart;
+  For K := 0 To Classes[IfaceIdx].MethodCount - 1 Do Begin
+    Kind := FindMemberInChain(ClassIdx, Methods[Base + K].Name, OwnerCls, ImplMIdx);
+    If Kind = MEMBER_METHOD Then
+      BinEmitRef32(MethodLabel(ImplMIdx), BIN_FIX_ABS32)
+    Else
+      BinEmit32(0);   { couverture d'interface deja verifiee, TODO 15 : ne devrait pas arriver }
+  End;
+  BinCurSec := BIN_SEC_TEXT;
+End;
+
 Procedure BinInitRuntimeData;
 Begin
   BinCurSec := BIN_SEC_DATA;
@@ -7481,6 +7626,14 @@ Begin
     argument contient lui-meme un "new" imbrique ecraserait cette
     valeur avant qu'elle soit relue ; non exerce par les echantillons. }
   BinDefineLabel('_XPPD_NewObjTemp');
+  BinEmit32(0);
+  { emplacements globaux fixes pour le dispatch virtuel par vtable
+    (au-dela des objets reels) : this et l'adresse de methode resolue
+    doivent survivre a l'evaluation des arguments reels, pour la meme
+    raison et de la meme facon que _XPPD_NewObjTemp }
+  BinDefineLabel('_XPPD_VCallThis');
+  BinEmit32(0);
+  BinDefineLabel('_XPPD_VCallTarget');
   BinEmit32(0);
   BinCurSec := BIN_SEC_TEXT;
 End;
@@ -9086,6 +9239,9 @@ Begin
   BinCallLabel(MethodLabel(EntryM));
   BinPushImm32(0);
   BinCallImportRaw('ExitProcess');
+
+  For I := 1 To ClassCount Do
+    If Not Classes[I].IsInterface Then EmitClassVTable(I);
 
   EmitPutCharHelper;
   EmitPrintIntHelper;
