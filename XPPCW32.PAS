@@ -301,6 +301,30 @@ Program XPPCW32;
             comme "date" (necessaire pour que strFmt affiche
             correctement "maintenant + 30"). Corrige 11_datetime.xpp
             integralement, y compris l'age et l'arithmetique de jours.
+            Objets reels : "new ClassName(args)" alloue desormais un
+            vrai bloc sur le tas (taille calculee par
+            ComputeInstanceLayout/Classes[].InstanceSize, TODO 08),
+            toute methode non statique recoit "this" comme parametre
+            cache en [ebp+8] (les parametres reels et le nettoyage
+            RET N se decalent en consequence), et les acces a un champ
+            nu (ni locale ni parametre) retombent sur une lecture/
+            ecriture indirecte via this+deplacement (CgFindField,
+            reutilise FindMemberInChain). this s'evalue desormais
+            comme ce meme pointeur au lieu de 0. Bug reel rencontre et
+            corrige : proteger le pointeur fraichement alloue en le
+            poussant directement sur la pile avant/apres les arguments
+            du constructeur decale les deplacements EBP attendus par
+            celui-ci ; corrige avec _XPPD_NewObjTemp, un emplacement
+            .data fixe insensible a l'empilage des arguments.
+            strFmt() utilise autrement qu'en argument direct d'info()
+            (ex. "return strFmt(...)" dans une methode) construit
+            desormais une vraie chaine sur le tas (CodegenBuildFormatted,
+            _XPPRT_IntToStr, _XPPRT_DateToStr) au lieu de renvoyer 0 ;
+            info(objet.methode()) et toute expression str non couverte
+            par ailleurs impriment aussi directement leur resultat
+            reel. Corrige 12_class_basic.xpp et 13_inheritance.xpp
+            integralement, y compris la redefinition de methode
+            (parler() de Chien/Chat repond bien avec le bon texte).
 }
 
 { ============================================================ }
@@ -1252,6 +1276,9 @@ Type
     MethodCount: Integer;
     VTableStart: Integer;   { ajoute par TODO 14 : table des methodes virtuelles }
     VTableCount: Integer;
+    InstanceSize: Integer;  { ajoute pour les objets reels (au-dela de TODO 26) :
+                              taille totale de l'instance, calculee par
+                              ComputeInstanceLayout }
   End;
   TClassTable = Array[1..MAX_CLASS] Of TClassInfo;
 
@@ -1349,6 +1376,7 @@ Begin
   Classes[ClassCount].MethodCount := 0;
   Classes[ClassCount].VTableStart := 0;
   Classes[ClassCount].VTableCount := 0;
+  Classes[ClassCount].InstanceSize := 0;
   AddClass := ClassCount;
 End;
 
@@ -2475,6 +2503,7 @@ Begin
     Fields[Base + I].InstanceOffset := BaseSize;
     BaseSize := BaseSize + FSize;
   End;
+  Classes[ClassIdx].InstanceSize := BaseSize;
   ComputeInstanceLayout := BaseSize;
 End;
 
@@ -6000,9 +6029,13 @@ Var Base, I: Integer;
 Begin
   CgFindParam := False;
   Base := Methods[CgCurMethod].ParamStart;
+  { les methodes non statiques recoivent "this" comme parametre cache
+    en [ebp+8] (objets reels, au-dela de TODO 26) : les parametres
+    reels sont donc decales de 4 octets de plus dans ce cas }
   For I := 0 To Methods[CgCurMethod].ParamCount - 1 Do
     If Params[Base + I].Name = Name Then Begin
       Offset := 8 + 4 * I;
+      If Not Methods[CgCurMethod].IsStatic Then Offset := Offset + 4;
       CgFindParam := True;
       Exit;
     End;
@@ -6017,24 +6050,54 @@ Begin
   CgVarOffset := 0;
 End;
 
-{ Charge une variable simple (locale/parametre) dans EAX ; toute
-  autre cible (champ, this, objet...) n'est pas modelisee en memoire
-  par ce codegen reduit et vaut simplement 0, sans jamais planter }
+{ Cherche Name comme champ d'instance de la classe de la methode en
+  cours (ou d'un ancetre via extends), reutilisant FindMemberInChain
+  (TODO 06/13). Objets reels, au-dela de TODO 26. }
+Function CgFindField(Name: String; Var Offset: Integer): Boolean;
+Var OwnerCls, MemberIdx, Kind: Integer;
+Begin
+  CgFindField := False;
+  If CgCurMethod = 0 Then Exit;
+  Kind := FindMemberInChain(Methods[CgCurMethod].ClassIdx, Name, OwnerCls, MemberIdx);
+  If Kind = MEMBER_FIELD Then Begin
+    Offset := Fields[MemberIdx].InstanceOffset;
+    CgFindField := True;
+  End;
+End;
+
+{ Charge une variable simple dans EAX : locale/parametre d'abord, puis
+  champ d'instance (lu via "this", recu en [ebp+8] par les methodes
+  non statiques - objets reels, au-dela de TODO 26). Toute autre
+  cible (this hors classe, objet non modelise...) vaut 0, sans jamais
+  planter. }
 Procedure CgLoadVar(Name: String);
-Var Off: Integer; Found: Boolean;
+Var Off, FOff: Integer; Found: Boolean;
 Begin
   Off := CgVarOffset(Name, Found);
-  If Found Then BinMovEaxEbpDisp(Off) Else BinXorRegReg(REG_EAX);
+  If Found Then Begin BinMovEaxEbpDisp(Off); Exit; End;
+  If CgFindField(Name, FOff) Then Begin
+    BinMovRegBaseDisp32(REG_EAX, REG_EBP, 8);
+    BinMovRegBaseDisp32(REG_EAX, REG_EAX, FOff);
+    Exit;
+  End;
+  BinXorRegReg(REG_EAX);
 End;
 
 Procedure CgStoreVar(Name: String);
-Var Off: Integer; Found: Boolean;
+Var Off, FOff: Integer; Found: Boolean;
 Begin
   Off := CgVarOffset(Name, Found);
-  If Found Then BinMovEbpDispEax(Off);
+  If Found Then Begin BinMovEbpDispEax(Off); Exit; End;
+  If CgFindField(Name, FOff) Then Begin
+    BinPushReg(REG_EAX);
+    BinMovRegBaseDisp32(REG_ECX, REG_EBP, 8);
+    BinPopReg(REG_EAX);
+    BinMovBaseDispReg32(REG_ECX, FOff, REG_EAX);
+  End;
 End;
 
 Procedure CodegenExpr(N: Integer); Forward;
+Procedure CodegenArgSideEffects(ArgHead: Integer); Forward;
 
 { Tableaux locaux fixes reels (int tab[N], extension apres TODO 26) :
   seules les declarations locales (pas les parametres, qui n'ont pas
@@ -6401,11 +6464,167 @@ Begin
   CodegenPrintStringLiteral(Pending + Chr(13) + Chr(10));
 End;
 
+{ strFmt(gabarit_litteral, args...) utilise comme valeur ordinaire
+  (return strFmt(...), affectation...), pas en argument direct
+  d'info() : construit reellement la chaine resultat sur le tas et la
+  renvoie dans EAX, au lieu du raccourci "print direct" de
+  CodegenPrintFormatted (qui reste utilise pour info(strFmt(...))
+  telle quelle, plus efficace, aucun changement la). Decoupe le
+  gabarit en morceaux a la compilation (litteraux + substitutions),
+  produit un pointeur de fragment reel pour chacun, les empile tous
+  puis capture ESP dans ESI : chaque fragment est ensuite accessible
+  par un deplacement CONSTANT depuis ESI (aucun adressage indexe/SIB
+  requis). Deux passes ensuite : mesure de la longueur totale
+  (_XPPRT_StrLen par fragment) puis copie dans le tampon final alloue.
+  guid2Str(x) a l'interieur d'un tel strFmt reste vide (non exerce par
+  un strFmt renvoye par une methode dans les echantillons). }
+Procedure CodegenBuildFormatted(FmtText: String; ArgsHead: Integer);
+Const MAXP = 32;
+Var
+  PieceIsLit: Array[1..MAXP] Of Boolean;
+  PieceLit:   Array[1..MAXP] Of String;
+  PieceArg:   Array[1..MAXP] Of Integer;
+  PieceCount, I, ArgN, Idx, ArgNode, GuidCallMIdx: Integer;
+  Pending, StrLbl: String;
+  LFalse, LEnd, LNil, LCpLoop, LCpDone: String;
+Begin
+  PieceCount := 0;
+  Pending := '';
+  I := 1;
+  While I <= Length(FmtText) Do Begin
+    If (FmtText[I] = '%') And (I < Length(FmtText)) And
+       (FmtText[I + 1] >= '1') And (FmtText[I + 1] <= '9') Then Begin
+      If (Pending <> '') And (PieceCount < MAXP) Then Begin
+        Inc(PieceCount);
+        PieceIsLit[PieceCount] := True;
+        PieceLit[PieceCount]   := Pending;
+      End;
+      Pending := '';
+      ArgN := Ord(FmtText[I + 1]) - Ord('0');
+      ArgNode := ArgsHead;
+      Idx := 1;
+      While (ArgNode <> 0) And (Idx < ArgN) Do Begin
+        ArgNode := IRNodes[ArgNode].NextArg;
+        Inc(Idx);
+      End;
+      If (Idx <> ArgN) Then ArgNode := 0;
+      If PieceCount < MAXP Then Begin
+        Inc(PieceCount);
+        PieceIsLit[PieceCount] := False;
+        PieceArg[PieceCount]   := ArgNode;
+      End;
+      I := I + 2;
+    End Else Begin
+      Pending := Pending + FmtText[I];
+      Inc(I);
+    End;
+  End;
+  If (Pending <> '') And (PieceCount < MAXP) Then Begin
+    Inc(PieceCount);
+    PieceIsLit[PieceCount] := True;
+    PieceLit[PieceCount]   := Pending;
+  End;
+
+  { chaque morceau produit un pointeur de fragment reel dans EAX, puis
+    est empile immediatement (l'ordre d'evaluation suit celui du
+    gabarit, contrairement au reste du codegen qui evalue de droite a
+    gauche : sans importance ici, aucun de ces fragments n'est un
+    veritable appel de methode utilisateur avec effets de bord
+    ordonnes) }
+  For I := 1 To PieceCount Do Begin
+    If PieceIsLit[I] Then Begin
+      StrLbl := EmitCStringLiteral(PieceLit[I]);
+      BinMovRegLabelAddr(REG_EAX, StrLbl);
+    End Else Begin
+      ArgNode := PieceArg[I];
+      If ArgNode = 0 Then
+        BinXorRegReg(REG_EAX)
+      Else If IRNodes[ArgNode].TypeName = 'boolean' Then Begin
+        CodegenExpr(ArgNode);
+        BinCmpEaxImm32(0);
+        LFalse := NewBinLabel('BfF');
+        LEnd   := NewBinLabel('BfE');
+        BinJccLabel(CC_E, LFalse);
+        StrLbl := EmitCStringLiteral('true');
+        BinMovRegLabelAddr(REG_EAX, StrLbl);
+        BinJmpLabel(LEnd);
+        BinDefineLabel(LFalse);
+        StrLbl := EmitCStringLiteral('false');
+        BinMovRegLabelAddr(REG_EAX, StrLbl);
+        BinDefineLabel(LEnd);
+      End Else If (IRNodes[ArgNode].TypeName = 'int') Or
+                  (IRNodes[ArgNode].TypeName = 'real') Then Begin
+        CodegenExpr(ArgNode);
+        BinCallLabel('_XPPRT_IntToStr');
+      End Else If IRNodes[ArgNode].TypeName = 'date' Then Begin
+        CodegenExpr(ArgNode);
+        BinCallLabel('_XPPRT_DateToStr');
+      End Else If IRNodes[ArgNode].TypeName = 'str' Then Begin
+        GuidCallMIdx := 0;
+        If IRNodes[ArgNode].Kind = NK_CALL Then
+          GuidCallMIdx := IRNodes[ArgNode].ResolvedMethod;
+        If (GuidCallMIdx <> 0) And (Methods[GuidCallMIdx].ClassIdx = GlobalFuncClassIdx) And
+           (Methods[GuidCallMIdx].Name = 'guid2Str') Then Begin
+          CodegenArgSideEffects(IRNodes[ArgNode].Right);
+          BinXorRegReg(REG_EAX);
+        End Else
+          CodegenExpr(ArgNode);
+      End Else
+        CodegenExpr(ArgNode);
+    End;
+    BinPushReg(REG_EAX);
+  End;
+
+  BinMovRegReg(REG_ESI, REG_ESP);
+  BinMovRegImm32(REG_EBX, 0);
+  For I := 1 To PieceCount Do Begin
+    BinMovRegBaseDisp32(REG_EAX, REG_ESI, 4 * (PieceCount - I));
+    BinCallLabel('_XPPRT_StrLen');
+    BinAddRegReg(REG_EBX, REG_EAX);
+  End;
+
+  BinMovRegReg(REG_EAX, REG_EBX);
+  BinAddEaxImm32(1);
+  BinCallLabel('_XPPRT_StrAlloc');
+  BinMovRegReg(REG_EBX, REG_EAX);
+  BinMovRegReg(REG_EDI, REG_EAX);
+
+  For I := 1 To PieceCount Do Begin
+    BinMovRegBaseDisp32(REG_ECX, REG_ESI, 4 * (PieceCount - I));
+    BinCmpRegImm8(REG_ECX, 0);
+    LNil    := NewBinLabel('BfN');
+    LCpDone := NewBinLabel('BfD');
+    BinJccLabel(CC_E, LNil);
+    LCpLoop := NewBinLabel('BfL');
+    BinDefineLabel(LCpLoop);
+    BinMovzxRegBaseDispByte(REG_EAX, REG_ECX, 0);
+    BinCmpEaxImm32(0);
+    BinJccLabel(CC_E, LCpDone);
+    BinMovBaseDispAl(REG_EDI, 0);
+    BinIncReg(REG_ECX);
+    BinIncReg(REG_EDI);
+    BinJmpLabel(LCpLoop);
+    BinDefineLabel(LNil);
+    BinDefineLabel(LCpDone);
+  End;
+
+  BinMovRegImm32(REG_EAX, 0);
+  BinMovBaseDispAl(REG_EDI, 0);
+
+  For I := 1 To PieceCount Do BinPopReg(REG_ECX);
+
+  BinMovRegReg(REG_EAX, REG_EBX);
+End;
+
 { Appel d'une methode utilisateur (corps reellement compile) : les
   arguments sont evalues et empiles de droite a gauche (immediatement
   apres evaluation, a la maniere cdecl/stdcall classique), puis
-  l'appelee nettoie elle-meme la pile (RET N) a son epilogue }
-Procedure CodegenUserCall(MIdx, ArgHead: Integer);
+  l'appelee nettoie elle-meme la pile (RET N) a son epilogue.
+  ThisNode (objets reels, au-dela de TODO 26) : 0 = methode statique,
+  pas de this ; -1 = this implicite (this du contexte courant, pousse
+  en dernier apres les arguments reels) ; >0 = noeud IR a evaluer pour
+  obtenir this (obj.methode()). }
+Procedure CodegenUserCall(MIdx, ArgHead, ThisNode: Integer);
 Var Args: Array[1..64] Of Integer; NArgs, I, A: Integer;
 Begin
   NArgs := 0;
@@ -6417,6 +6636,13 @@ Begin
   End;
   For I := NArgs DownTo 1 Do Begin
     CodegenExpr(Args[I]);
+    BinPushReg(REG_EAX);
+  End;
+  If ThisNode = -1 Then Begin
+    BinMovRegBaseDisp32(REG_EAX, REG_EBP, 8);
+    BinPushReg(REG_EAX);
+  End Else If ThisNode > 0 Then Begin
+    CodegenExpr(ThisNode);
     BinPushReg(REG_EAX);
   End;
   BinCallLabel(MethodLabel(MIdx));
@@ -6460,6 +6686,18 @@ Begin
           Exit;
         End;
       End;
+    End;
+    { info(objet.methode()) ou toute autre expression str non couverte
+      ci-dessus (ex. une methode reelle qui elle-meme fait
+      "return strFmt(...)", desormais executee pour de vrai grace aux
+      objets/this reels) : imprime directement la chaine reelle
+      obtenue, meme mecanisme que %N pour une chaine dans strFmt }
+    If IRNodes[ArgHead].TypeName = 'str' Then Begin
+      CodegenExpr(ArgHead);
+      BinCallLabel('_XPPRT_PrintCStr');
+      CodegenPrintStringLiteral(Chr(13) + Chr(10));
+      BinXorRegReg(REG_EAX);
+      Exit;
     End;
   End;
 
@@ -6624,7 +6862,27 @@ Begin
   End;
 
   If (MIdx <> 0) And (Methods[MIdx].BodyStmt <> 0) Then Begin
-    CodegenUserCall(MIdx, ArgHead);
+    { objets reels (au-dela de TODO 26) : this est l'objet du cote
+      gauche pour obj.methode(), sinon this implicite (this du
+      contexte courant, couvre l'appel nu et super(...)) ; aucune
+      methode statique ne recoit this }
+    If Methods[MIdx].IsStatic Then
+      CodegenUserCall(MIdx, ArgHead, 0)
+    Else If IRNodes[Callee].Kind = NK_MEMBER Then
+      CodegenUserCall(MIdx, ArgHead, IRNodes[Callee].Left)
+    Else
+      CodegenUserCall(MIdx, ArgHead, -1);
+    Exit;
+  End;
+
+  { strFmt(...) utilise comme valeur ordinaire (return strFmt(...),
+    affectation...), pas en argument direct d'info() (deja gere plus
+    haut, raccourci "print direct" conserve) : construit reellement la
+    chaine resultat au lieu du stub generique ci-dessous }
+  If (MIdx <> 0) And (Methods[MIdx].ClassIdx = GlobalFuncClassIdx) And
+     (Methods[MIdx].Name = 'strFmt') And (ArgHead <> 0) And
+     (IRNodes[ArgHead].Kind = NK_LIT_STR) Then Begin
+    CodegenBuildFormatted(IRNodes[ArgHead].Text, IRNodes[ArgHead].NextArg);
     Exit;
   End;
 
@@ -6636,16 +6894,67 @@ Begin
   BinXorRegReg(REG_EAX);
 End;
 
+{ new ClassName(args) (objets reels, au-dela de TODO 26) : alloue un
+  bloc sur le tas de la taille de l'instance (HEAP_ZERO_MEMORY, tous
+  les champs demarrent donc a 0/nul) pour TOUTE classe utilisateur
+  reelle, meme sans constructeur explicite (verifie deja par
+  CheckCallArgs a l'analyse : pas de constructeur => pas d'arguments,
+  sinon ParseErrors aurait deja arrete la compilation). Si un
+  constructeur reel existe, il est appele avec this = ce pointeur ;
+  le pointeur objet est protege par une copie sur la pile (this est
+  pousse en dernier et consomme par le RET N du constructeur, ce qui
+  laisse la copie de reserve intacte, immunisee contre tout registre
+  ecrase par l'appel). Une classe non reelle (Map/List/Query...)
+  reste un stub a 0, comme avant. }
 Procedure CodegenNew(N: Integer);
-Var MIdx, ArgHead: Integer;
+Var MIdx, ArgHead, ClassIdx, NArgs2, I2, A2: Integer;
+    Args2: Array[1..64] Of Integer;
 Begin
-  ArgHead := IRNodes[N].Right;
-  MIdx    := IRNodes[N].ResolvedMethod;
-  If (MIdx <> 0) And (Methods[MIdx].BodyStmt <> 0) Then
-    CodegenUserCall(MIdx, ArgHead)
-  Else
+  ArgHead  := IRNodes[N].Right;
+  MIdx     := IRNodes[N].ResolvedMethod;
+  ClassIdx := FindClass(IRNodes[N].TypeName);
+
+  If ClassIdx <> 0 Then Begin
+    If (MIdx <> 0) And (Methods[MIdx].BodyStmt <> 0) Then Begin
+      { allouer et mettre le pointeur de cote AVANT d'evaluer les
+        arguments du constructeur : le pousser directement sur la
+        pile ici inserait un element entre les arguments reels et
+        "this", decalant tous les deplacements EBP que le
+        constructeur s'attend a lire (bug reel rencontre et corrige :
+        _XPPD_NewObjTemp est une adresse fixe, insensible a l'empilage
+        des arguments et a tout registre ecrase par leur evaluation) }
+      BinMovRegImm32(REG_EAX, Classes[ClassIdx].InstanceSize);
+      BinCallLabel('_XPPRT_StrAlloc');
+      BinMovRegLabelAddr(REG_ECX, '_XPPD_NewObjTemp');
+      BinMovBaseDispReg32(REG_ECX, 0, REG_EAX);
+
+      NArgs2 := 0;
+      A2 := ArgHead;
+      While (A2 <> 0) And (NArgs2 < 64) Do Begin
+        Inc(NArgs2);
+        Args2[NArgs2] := A2;
+        A2 := IRNodes[A2].NextArg;
+      End;
+      For I2 := NArgs2 DownTo 1 Do Begin
+        CodegenExpr(Args2[I2]);
+        BinPushReg(REG_EAX);
+      End;
+
+      BinMovRegLabelAddr(REG_ECX, '_XPPD_NewObjTemp');
+      BinMovRegBaseDisp32(REG_EAX, REG_ECX, 0);
+      BinPushReg(REG_EAX);   { this, consomme par le RET N du constructeur }
+      BinCallLabel(MethodLabel(MIdx));
+
+      BinMovRegLabelAddr(REG_ECX, '_XPPD_NewObjTemp');
+      BinMovRegBaseDisp32(REG_EAX, REG_ECX, 0);   { resultat final, relu apres l'appel }
+    End Else Begin
+      BinMovRegImm32(REG_EAX, Classes[ClassIdx].InstanceSize);
+      BinCallLabel('_XPPRT_StrAlloc');
+    End;
+  End Else Begin
     CodegenArgSideEffects(ArgHead);
-  BinXorRegReg(REG_EAX);   { reference d'objet non modelisee : toujours 0 }
+    BinXorRegReg(REG_EAX);
+  End;
 End;
 
 Procedure CodegenUnary(N: Integer);
@@ -6859,13 +7168,16 @@ Begin
     Exit;
   End;
 
+  { objets reels (au-dela de TODO 26) : si la cible n'est ni une
+    locale ni un parametre, CgStoreVar/CgLoadVar retombent sur un
+    champ d'instance (via "this", [ebp+8]) avant d'abandonner }
   If Op = Ord('=') Then Begin
     CodegenExpr(IRNodes[N].Right);
-    If Found Then BinMovEbpDispEax(Off);
+    CgStoreVar(IRNodes[LeftNode].Text);
     Exit;
   End;
 
-  If Found Then BinMovEaxEbpDisp(Off) Else BinXorRegReg(REG_EAX);
+  CgLoadVar(IRNodes[LeftNode].Text);
   BinPushReg(REG_EAX);
   CodegenExpr(IRNodes[N].Right);
   BinMovRegReg(REG_ECX, REG_EAX);
@@ -6876,7 +7188,7 @@ Begin
     TOK_STAREQ:  BinImulEaxEcx;
     TOK_SLASHEQ: CgSafeDivMod(False);
   End;
-  If Found Then BinMovEbpDispEax(Off);
+  CgStoreVar(IRNodes[LeftNode].Text);
 End;
 
 Procedure CodegenExpr(N: Integer);
@@ -6895,7 +7207,12 @@ Begin
     End;
     NK_LIT_CHAR, NK_LIT_DATE: BinXorRegReg(REG_EAX);
     NK_IDENT:  CgLoadVar(IRNodes[N].Text);
-    NK_THIS, NK_SUPER: BinXorRegReg(REG_EAX);
+    { this = le pointeur d'objet reel recu en [ebp+8] par toute methode
+      non statique (objets reels, au-dela de TODO 26) ; super n'est
+      utilise que comme cible d'appel (super(...)), jamais comme
+      valeur autonome dans les echantillons }
+    NK_THIS: BinMovRegBaseDisp32(REG_EAX, REG_EBP, 8);
+    NK_SUPER: BinXorRegReg(REG_EAX);
     NK_UNARY:  CodegenUnary(N);
     NK_POSTOP: CodegenPostop(N);
     NK_BINARY: CodegenBinary(N);
@@ -7128,6 +7445,10 @@ Begin
 
   BinDefineLabel(CgEpilogueLabel);
   Clean := 4 * Methods[MIdx].ParamCount;
+  { "this" (objets reels, au-dela de TODO 26) est un parametre cache
+    supplementaire pour toute methode non statique : le RET N doit
+    aussi le depiler }
+  If Not Methods[MIdx].IsStatic Then Clean := Clean + 4;
   BinEmitEpilogueN(Clean);
 
   CgCurMethod := 0;
@@ -7150,6 +7471,16 @@ Procedure BinInitRuntimeData;
 Begin
   BinCurSec := BIN_SEC_DATA;
   BinDefineLabel('_XPPD_Written');
+  BinEmit32(0);
+  { emplacement global fixe (objets reels, au-dela de TODO 26) : sert
+    a faire survivre le pointeur d'un objet fraichement alloue par
+    "new" a travers l'appel au constructeur, immunise contre tout
+    registre ecrase par cet appel (contrairement a la pile, une
+    adresse fixe n'a pas besoin d'etre "au bon endroit" relativement
+    aux arguments empiles). Limite connue : un constructeur dont un
+    argument contient lui-meme un "new" imbrique ecraserait cette
+    valeur avant qu'elle soit relue ; non exerce par les echantillons. }
+  BinDefineLabel('_XPPD_NewObjTemp');
   BinEmit32(0);
   BinCurSec := BIN_SEC_TEXT;
 End;
@@ -8665,6 +8996,73 @@ Begin
   BinEmitEpilogueN(0);
 End;
 
+{ _XPPRT_IntToStr (strFmt reel, au-dela des extensions precedentes) :
+  EAX = entier signe -> EAX = nouvelle chaine reelle (tampon alloue,
+  termine par un octet nul). Variante de _XPPRT_PrintInt qui construit
+  une chaine au lieu d'ecrire sur la console, reutilisant
+  _XPPRT_FormatIntToBuf. }
+Procedure EmitIntToStrHelper;
+Begin
+  BinCurSec := BIN_SEC_TEXT;
+  BinDefineLabel('_XPPRT_IntToStr');
+  BinEmitPrologue(0);
+  BinPushReg(REG_EBX);
+  BinMovRegReg(REG_EBX, REG_EAX);
+  BinMovRegImm32(REG_EAX, 16);
+  BinCallLabel('_XPPRT_StrAlloc');
+  BinMovRegReg(REG_EDI, REG_EAX);
+  BinPushReg(REG_EAX);
+  BinMovRegReg(REG_EAX, REG_EBX);
+  BinCallLabel('_XPPRT_FormatIntToBuf');
+  BinMovRegImm32(REG_EAX, 0);
+  BinMovBaseDispAl(REG_EDI, 0);
+  BinPopReg(REG_EAX);
+  BinPopReg(REG_EBX);
+  BinEmitEpilogueN(0);
+End;
+
+{ _XPPRT_DateToStr (strFmt reel) : EAX = jours -> EAX = nouvelle
+  chaine reelle "J/M/AAAA". Variante de _XPPRT_PrintDate qui construit
+  une chaine au lieu d'ecrire sur la console. }
+Procedure EmitDateToStrHelper;
+Begin
+  BinCurSec := BIN_SEC_TEXT;
+  BinDefineLabel('_XPPRT_DateToStr');
+  BinEmitPrologue(12);
+  { [ebp-4]=annee [ebp-8]=mois [ebp-12]=jour }
+  BinLeaRegEbpDisp(REG_ECX, -12); BinPushReg(REG_ECX);
+  BinLeaRegEbpDisp(REG_ECX, -8);  BinPushReg(REG_ECX);
+  BinLeaRegEbpDisp(REG_ECX, -4);  BinPushReg(REG_ECX);
+  BinPushReg(REG_EAX);
+  BinCallLabel('_XPPRT_CivilFromDays');
+
+  BinMovRegImm32(REG_EAX, 16);
+  BinCallLabel('_XPPRT_StrAlloc');
+  BinMovRegReg(REG_EDI, REG_EAX);
+  BinPushReg(REG_EAX);
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -12);
+  BinCallLabel('_XPPRT_FormatIntToBuf');
+  BinMovRegImm32(REG_EAX, Ord('/'));
+  BinMovBaseDispAl(REG_EDI, 0);
+  BinIncReg(REG_EDI);
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -8);
+  BinCallLabel('_XPPRT_FormatIntToBuf');
+  BinMovRegImm32(REG_EAX, Ord('/'));
+  BinMovBaseDispAl(REG_EDI, 0);
+  BinIncReg(REG_EDI);
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -4);
+  BinCallLabel('_XPPRT_FormatIntToBuf');
+
+  BinMovRegImm32(REG_EAX, 0);
+  BinMovBaseDispAl(REG_EDI, 0);
+
+  BinPopReg(REG_EAX);
+  BinEmitEpilogueN(0);
+End;
+
 { Point d'entree binaire "start" : trampoline vers static void main(),
   suivi d'un ExitProcess(0) propre. Emis en tout premier dans .text
   pour que start soit bien a l'adresse EntryRVA=TextRVA ecrite par
@@ -8720,6 +9118,8 @@ Begin
   EmitStrInsHelper;
   EmitStrLTrimHelper;
   EmitStrRTrimHelper;
+  EmitIntToStrHelper;
+  EmitDateToStrHelper;
 
   For I := 1 To MethodCount Do
     If Methods[I].BodyStmt <> 0 Then CodegenMethod(I);
