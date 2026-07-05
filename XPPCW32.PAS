@@ -345,6 +345,35 @@ Program XPPCW32;
             implementee determine la disposition (aucun echantillon
             n'en implemente plusieurs a la fois). Corrige
             14_interfaces.xpp.
+            Tables AOT reelles : chaque variable de table (custGroup)
+            recoit un vrai buffer a l'entree de methode (reutilise
+            l'allocateur des objets), avec lecture/ecriture de champ
+            indirecte comme un objet (custGroup.Champ). Chaque table
+            simulee (CustGroup, CustTable) recoit un stockage growable
+            reel en .data (_XPPD_TStore_<T>, meme principe de
+            reconstruction complete que les containers) : insert()
+            ajoute une copie du buffer avec un RecId = position
+            d'insertion, update() retrouve et remplace par RecId,
+            select/delete_from appliquent reellement une clause where
+            a une seule egalite de champ (entier ou chaine reelle via
+            le nouveau _XPPRT_StrEq ; toute clause plus complexe ou
+            absente laisse la table inchangee, comportement sur).
+            if (custGroup) teste desormais le RecId (0 = aucun
+            enregistrement charge), pas l'adresse du buffer (toujours
+            non nulle). Bug distinct trouve et corrige en verifiant :
+            un nom de type inconnu du compilateur (ex. CustGroupId,
+            un "extended data type" X++ sans registre dedie ici) etait
+            resout tel quel par ResolveIdentType, jamais reconnu comme
+            "str" par le reste du codegen (strFmt, comparaisons...) ;
+            NormalizeUnknownType traite maintenant tout type inconnu
+            (ni primitif, ni classe/interface/enum/table) comme un
+            alias de str. Corrige 17_table_crud.xpp integralement (et
+            aurait bloque n'importe quel echantillon futur utilisant
+            un nom d'EDT). 16_table_select.xpp reste correct (CustTable
+            n'est jamais peuplee par aucun echantillon) ; while select
+            (iteration sur plusieurs enregistrements correspondants)
+            n'a pas ete implemente, seul select forUpdate (un seul
+            enregistrement) l'a ete.
 }
 
 { ============================================================ }
@@ -2668,6 +2697,28 @@ Begin
   Else PromoteType := 'anytype';
 End;
 
+{ Un nom de type qui n'est ni un mot-cle primitif, ni une classe/
+  interface/enum/table AOT connue est un "extended data type" au sens
+  X++ (ex. CustGroupId) : ce compilateur n'a pas de registre d'EDT
+  dedie, donc un tel type est traite comme un alias de str, hypothese
+  la plus frequente en X++ reel pour ce genre de nom (identifiants/
+  codes). Necessaire pour que strFmt/les clauses where etc. traitent
+  correctement ces variables comme de vraies chaines (au-dela des
+  objets/tables reels). }
+Function NormalizeUnknownType(T: String): String;
+Begin
+  If (T = 'int') Or (T = 'real') Or (T = 'str') Or (T = 'boolean') Or
+     (T = 'date') Or (T = 'guid') Or (T = 'anytype') Or (T = 'container') Or
+     (T = 'void') Then Begin
+    NormalizeUnknownType := T;
+    Exit;
+  End;
+  If FindClass(T) <> 0 Then Begin NormalizeUnknownType := T; Exit; End;
+  If FindAotTable(T) <> 0 Then Begin NormalizeUnknownType := T; Exit; End;
+  If FindEnum(T) <> 0 Then Begin NormalizeUnknownType := T; Exit; End;
+  NormalizeUnknownType := 'str';
+End;
+
 { Type declare d'un identificateur simple, cherche dans les locales
   et parametres de la methode en cours (TODO 08), puis dans les
   champs de sa classe en remontant l'heritage (TODO 06) }
@@ -2681,23 +2732,23 @@ Begin
   Base := Methods[CurParsingMethod].LocalStart;
   For I := 0 To Methods[CurParsingMethod].LocalCount - 1 Do
     If Locals[Base + I].Name = Name Then Begin
-      ResolveIdentType := Locals[Base + I].TypeName;
+      ResolveIdentType := NormalizeUnknownType(Locals[Base + I].TypeName);
       Exit;
     End;
 
   Base := Methods[CurParsingMethod].ParamStart;
   For I := 0 To Methods[CurParsingMethod].ParamCount - 1 Do
     If Params[Base + I].Name = Name Then Begin
-      ResolveIdentType := Params[Base + I].TypeName;
+      ResolveIdentType := NormalizeUnknownType(Params[Base + I].TypeName);
       Exit;
     End;
 
   Kind := FindMemberInChain(Methods[CurParsingMethod].ClassIdx, Name,
                              OwnerCls, MemberIdx);
   If Kind = MEMBER_FIELD Then
-    ResolveIdentType := Fields[MemberIdx].TypeName
+    ResolveIdentType := NormalizeUnknownType(Fields[MemberIdx].TypeName)
   Else If Kind = MEMBER_METHOD Then
-    ResolveIdentType := Methods[MemberIdx].RetType;
+    ResolveIdentType := NormalizeUnknownType(Methods[MemberIdx].RetType);
 End;
 
 { Le nom d'un membre est normalement un identificateur, mais insert/
@@ -6053,6 +6104,42 @@ Begin
   ClassVTableLabel := '_XPPD_VTable_' + ItoS(ClassIdx);
 End;
 
+{ Tables AOT reelles (au-dela des objets reels) : nom de l'emplacement
+  .data fixe contenant le pointeur courant vers le stockage (croissant,
+  reconstruit a chaque insert()/delete_from) d'une table simulee. }
+Function TableStoreLabel(TableIdx: Integer): String;
+Begin
+  TableStoreLabel := '_XPPD_TStore_' + ItoS(TableIdx);
+End;
+
+{ Reconnait exactement Variable.Champ == Valeur ou Variable est la
+  meme variable que celle du select/delete_from en cours (tables AOT
+  reelles) : 0 = pas de clause where (rien a filtrer), 1 = egalite
+  simple reconnue (FieldOffset/CompareKind/ValueNode remplis,
+  CompareKind 0=entier 1=chaine), 2 = clause non reconnue (par
+  prudence, aucun enregistrement n'est considere correspondant). }
+Function ClassifyWhereClause(WhereNode, SelectVarNode: Integer;
+                              Var FieldOffset, CompareKind, ValueNode: Integer): Integer;
+Var LeftN, ObjN, AotT, AotF: Integer;
+Begin
+  If WhereNode = 0 Then Begin ClassifyWhereClause := 0; Exit; End;
+  ClassifyWhereClause := 2;
+  If (IRNodes[WhereNode].Kind <> NK_BINARY) Or (IRNodes[WhereNode].Tok <> TOK_EQ) Then Exit;
+  LeftN := IRNodes[WhereNode].Left;
+  If IRNodes[LeftN].Kind <> NK_MEMBER Then Exit;
+  ObjN := IRNodes[LeftN].Left;
+  If (IRNodes[ObjN].Kind <> NK_IDENT) Or (IRNodes[SelectVarNode].Kind <> NK_IDENT) Or
+     (IRNodes[ObjN].Text <> IRNodes[SelectVarNode].Text) Then Exit;
+  AotT := FindAotTable(IRNodes[ObjN].TypeName);
+  If AotT = 0 Then Exit;
+  AotF := FindAotField(AotT, IRNodes[LeftN].Text);
+  If AotF = 0 Then Exit;
+  FieldOffset := AotFields[AotF].Offset;
+  If AotFields[AotF].TypeName = 'str' Then CompareKind := 1 Else CompareKind := 0;
+  ValueNode := IRNodes[WhereNode].Right;
+  ClassifyWhereClause := 1;
+End;
+
 Function CaseLabel(NodeIdx: Integer): String;
 Begin CaseLabel := '_XPPSW_' + ItoS(NodeIdx); End;
 
@@ -6147,6 +6234,9 @@ End;
 
 Procedure CodegenExpr(N: Integer); Forward;
 Procedure CodegenArgSideEffects(ArgHead: Integer); Forward;
+Procedure CodegenTableClear(AotT, ObjNode: Integer); Forward;
+Procedure CodegenTableInsert(AotT, ObjNode: Integer); Forward;
+Procedure CodegenTableUpdate(AotT, ObjNode: Integer); Forward;
 
 { Tableaux locaux fixes reels (int tab[N], extension apres TODO 26) :
   seules les declarations locales (pas les parametres, qui n'ont pas
@@ -6665,6 +6755,63 @@ Begin
   BinMovRegReg(REG_EAX, REG_EBX);
 End;
 
+{ custGroup.clear() (table AOT reelle, au-dela des objets reels) :
+  remet a zero tous les octets du buffer (RecId compris, donc "aucun
+  enregistrement charge"), en le reutilisant tel quel (pas de
+  reallocation). }
+Procedure CodegenTableClear(AotT, ObjNode: Integer);
+Var LLoop, LDone: String;
+Begin
+  CodegenExpr(ObjNode);
+  BinMovRegReg(REG_EBX, REG_EAX);
+  BinMovRegImm32(REG_ECX, AotTables[AotT].BufferSize);
+  BinMovRegImm32(REG_EDX, 0);
+  LLoop := NewBinLabel('Tc1');
+  LDone := NewBinLabel('Tc2');
+  BinDefineLabel(LLoop);
+  BinCmpRegReg(REG_EDX, REG_ECX);
+  BinJccLabel(CC_GE, LDone);
+  BinMovRegImm32(REG_EAX, 0);
+  BinMovBaseDispAl(REG_EBX, 0);
+  BinIncReg(REG_EBX);
+  BinIncReg(REG_EDX);
+  BinJmpLabel(LLoop);
+  BinDefineLabel(LDone);
+  BinXorRegReg(REG_EAX);
+End;
+
+{ custGroup.insert() (table AOT reelle, au-dela des objets reels) :
+  ajoute une copie du buffer courant au stockage growable de la table
+  (_XPPD_TStore_<T>), apres lui avoir assigne un RecId reel (position
+  d'insertion, 1-indexee - suffisant pour distinguer les
+  enregistrements sans compteur global separe). Reallocation complete
+  a chaque insertion (meme principe que les containers, TODO 26). }
+Procedure CodegenTableInsert(AotT, ObjNode: Integer);
+Begin
+  CodegenExpr(ObjNode);
+  BinPushReg(REG_EAX);
+  BinPushImm32(AotTables[AotT].BufferSize);
+  BinMovRegLabelAddr(REG_EAX, TableStoreLabel(AotT));
+  BinPushReg(REG_EAX);
+  BinCallLabel('_XPPRT_TableInsert');
+  BinXorRegReg(REG_EAX);
+End;
+
+{ custGroup.update() (table AOT reelle, au-dela des objets reels) :
+  retrouve dans le stockage l'enregistrement dont le RecId correspond
+  a celui deja charge dans le buffer (par un select precedent) et le
+  remplace par le contenu courant du buffer. }
+Procedure CodegenTableUpdate(AotT, ObjNode: Integer);
+Begin
+  CodegenExpr(ObjNode);
+  BinPushReg(REG_EAX);
+  BinPushImm32(AotTables[AotT].BufferSize);
+  BinMovRegLabelAddr(REG_EAX, TableStoreLabel(AotT));
+  BinPushReg(REG_EAX);
+  BinCallLabel('_XPPRT_TableUpdate');
+  BinXorRegReg(REG_EAX);
+End;
+
 { Appel d'une methode utilisateur (corps reellement compile) : les
   arguments sont evalues et empiles de droite a gauche (immediatement
   apres evaluation, a la maniere cdecl/stdcall classique), puis
@@ -6741,8 +6888,9 @@ End;
 Procedure CodegenCall(N: Integer);
 Var
   Callee, MIdx, ArgHead, FmtCallMIdx, FmtNode, IdxArg, SepArg,
-  Arg2, Arg3, Arg4, IfaceIdx, Slot: Integer;
+  Arg2, Arg3, Arg4, IfaceIdx, Slot, AotT, ObjNode: Integer;
   LZero, LEnd: String;
+  MethodNameLocal: String;
 Begin
   Callee  := IRNodes[N].Left;
   ArgHead := IRNodes[N].Right;
@@ -6753,6 +6901,34 @@ Begin
      ((IRNodes[Callee].Text = 'tableNum') Or (IRNodes[Callee].Text = 'fieldNum')) Then Begin
     BinMovRegImm32(REG_EAX, IRNodes[N].NumVal);
     Exit;
+  End;
+
+  { custGroup.clear()/insert()/update() (table AOT reelle, au-dela des
+    objets reels) : ces "methodes" n'existent dans aucune classe (ni
+    utilisateur ni $Global), IRNodes[N].ResolvedMethod reste 0 - il
+    faut les reconnaitre directement sur la forme obj.methode() ou obj
+    est une variable de table AOT connue. .delete() (la methode, pas
+    delete_from) reste un stub sur, non exerce par les echantillons. }
+  If IRNodes[Callee].Kind = NK_MEMBER Then Begin
+    ObjNode := IRNodes[Callee].Left;
+    AotT := FindAotTable(IRNodes[ObjNode].TypeName);
+    If AotT <> 0 Then Begin
+      MethodNameLocal := IRNodes[Callee].Text;
+      If MethodNameLocal = 'clear' Then Begin
+        CodegenTableClear(AotT, ObjNode);
+        Exit;
+      End Else If MethodNameLocal = 'insert' Then Begin
+        CodegenTableInsert(AotT, ObjNode);
+        Exit;
+      End Else If MethodNameLocal = 'update' Then Begin
+        CodegenTableUpdate(AotT, ObjNode);
+        Exit;
+      End Else If MethodNameLocal = 'delete' Then Begin
+        CodegenExpr(ObjNode);
+        BinXorRegReg(REG_EAX);
+        Exit;
+      End;
+    End;
   End;
 
   MIdx := IRNodes[N].ResolvedMethod;
@@ -7215,7 +7391,9 @@ Begin
 End;
 
 Procedure CodegenAssign(N: Integer);
-Var LeftNode, RightNode, Off, Op, RMIdx: Integer; Found: Boolean;
+Var
+  LeftNode, RightNode, Off, Op, RMIdx, AotT, AotF: Integer;
+  Found: Boolean;
 Begin
   LeftNode  := IRNodes[N].Left;
   RightNode := IRNodes[N].Right;
@@ -7234,6 +7412,27 @@ Begin
       CodegenExpr(RightNode);
       BinPopReg(REG_EDI);
       BinMovBaseDispReg32(REG_EDI, 0, REG_EAX);
+      Exit;
+    End Else Begin
+      CodegenExpr(RightNode);
+      Exit;
+    End;
+  End;
+
+  { custGroup.Champ = valeur (table AOT reelle, au-dela des objets
+    reels) : ecriture indirecte a l'adresse du buffer + deplacement du
+    champ. Le += / -= / ... sur un champ de table et tout champ non
+    modelise restent une simple evaluation d'effet de bord. }
+  If IRNodes[LeftNode].Kind = NK_MEMBER Then Begin
+    AotT := FindAotTable(IRNodes[IRNodes[LeftNode].Left].TypeName);
+    AotF := 0;
+    If AotT <> 0 Then AotF := FindAotField(AotT, IRNodes[LeftNode].Text);
+    If (Op = Ord('=')) And (AotF <> 0) Then Begin
+      CodegenExpr(IRNodes[LeftNode].Left);
+      BinPushReg(REG_EAX);
+      CodegenExpr(RightNode);
+      BinPopReg(REG_ECX);
+      BinMovBaseDispReg32(REG_ECX, AotFields[AotF].Offset, REG_EAX);
       Exit;
     End Else Begin
       CodegenExpr(RightNode);
@@ -7309,7 +7508,7 @@ Begin
 End;
 
 Procedure CodegenExpr(N: Integer);
-Var StrLbl: String;
+Var StrLbl: String; AotT, AotF: Integer;
 Begin
   If N = 0 Then Begin BinXorRegReg(REG_EAX); Exit; End;
   Case IRNodes[N].Kind Of
@@ -7334,7 +7533,22 @@ Begin
     NK_POSTOP: CodegenPostop(N);
     NK_BINARY: CodegenBinary(N);
     NK_ASSIGN: CodegenAssign(N);
-    NK_MEMBER: Begin CodegenExpr(IRNodes[N].Left); BinXorRegReg(REG_EAX); End;
+    NK_MEMBER: Begin
+      { champ d'un buffer de table AOT reel (au-dela des objets reels) :
+        lecture indirecte a l'adresse du buffer + deplacement du champ ;
+        sinon (champ d'un objet reel non accede via une simple variable
+        nue, ou table/objet non modelise) comportement sur inchange }
+      AotT := FindAotTable(IRNodes[IRNodes[N].Left].TypeName);
+      AotF := 0;
+      If AotT <> 0 Then AotF := FindAotField(AotT, IRNodes[N].Text);
+      If AotF <> 0 Then Begin
+        CodegenExpr(IRNodes[N].Left);
+        BinMovRegBaseDisp32(REG_EAX, REG_EAX, AotFields[AotF].Offset);
+      End Else Begin
+        CodegenExpr(IRNodes[N].Left);
+        BinXorRegReg(REG_EAX);
+      End;
+    End;
     NK_INDEX:  Begin
       { tableau local reel (extension apres TODO 26) : lecture directe
         a l'adresse calculee ; sinon (parametre, champ...) comportement
@@ -7357,10 +7571,25 @@ End;
 
 Procedure CodegenStmt(N: Integer); Forward;
 
+{ Evalue une condition de if/while/for : un buffer de table AOT reel
+  nu (if (custGroup), au-dela des objets reels) doit etre teste par
+  son RecId (offset 0 du buffer, 0 = "aucun enregistrement charge"),
+  pas par l'adresse du buffer elle-meme (toujours non nulle des
+  qu'allouee par CodegenMethod). Tout le reste est evalue normalement. }
+Procedure CgEvalCondition(CondNode: Integer);
+Begin
+  If (CondNode <> 0) And (IRNodes[CondNode].Kind = NK_IDENT) And
+     (FindAotTable(IRNodes[CondNode].TypeName) <> 0) Then Begin
+    CodegenExpr(CondNode);
+    BinMovRegBaseDisp32(REG_EAX, REG_EAX, 0);
+  End Else
+    CodegenExpr(CondNode);
+End;
+
 Procedure CodegenIf(N: Integer);
 Var LElse, LEnd: String;
 Begin
-  CodegenExpr(Stmts[N].ExprNode);
+  CgEvalCondition(Stmts[N].ExprNode);
   BinCmpEaxImm32(0);
   LEnd := NewBinLabel('IfE');
   If Stmts[N].ElseStmt <> 0 Then Begin
@@ -7385,7 +7614,7 @@ Begin
   OldBreak := CgBreakLabel; OldCont := CgContinueLabel;
   CgBreakLabel := LEnd; CgContinueLabel := LStart;
   BinDefineLabel(LStart);
-  CodegenExpr(Stmts[N].ExprNode);
+  CgEvalCondition(Stmts[N].ExprNode);
   BinCmpEaxImm32(0);
   BinJccLabel(CC_E, LEnd);
   CodegenStmt(Stmts[N].BodyStmt);
@@ -7405,7 +7634,7 @@ Begin
   BinDefineLabel(LStart);
   CodegenStmt(Stmts[N].BodyStmt);
   BinDefineLabel(LCont);
-  CodegenExpr(Stmts[N].ExprNode);
+  CgEvalCondition(Stmts[N].ExprNode);
   BinCmpEaxImm32(0);
   BinJccLabel(CC_NE, LStart);
   BinDefineLabel(LEnd);
@@ -7423,7 +7652,7 @@ Begin
   CgBreakLabel := LEnd; CgContinueLabel := LCont;
   BinDefineLabel(LStart);
   If Stmts[N].ExprNode <> 0 Then Begin
-    CodegenExpr(Stmts[N].ExprNode);
+    CgEvalCondition(Stmts[N].ExprNode);
     BinCmpEaxImm32(0);
     BinJccLabel(CC_E, LEnd);
   End;
@@ -7486,7 +7715,7 @@ Begin
 End;
 
 Procedure CodegenStmt(N: Integer);
-Var Cur: Integer;
+Var Cur, SelVar, AotT, WKind, FOffset, CKind, VNode: Integer;
 Begin
   If N = 0 Then Exit;
   Case Stmts[N].Kind Of
@@ -7523,7 +7752,51 @@ Begin
       If Stmts[N].FinallyStmt <> 0 Then CodegenStmt(Stmts[N].FinallyStmt);
     End;
     SK_THROW: CodegenExpr(Stmts[N].ExprNode);
-    SK_WHILESELECT, SK_SELECT, SK_DELETEFROM,
+
+    { select forUpdate custGroup where Champ == Valeur; (table AOT
+      reelle, au-dela des objets reels) : clause where non reconnue ou
+      absente -> aucun changement (comportement sur, comme avant) }
+    SK_SELECT: Begin
+      SelVar := Stmts[N].SelectVar;
+      AotT := FindAotTable(IRNodes[SelVar].TypeName);
+      If AotT <> 0 Then Begin
+        WKind := ClassifyWhereClause(Stmts[N].ExprNode, SelVar, FOffset, CKind, VNode);
+        If WKind = 1 Then Begin
+          CodegenExpr(SelVar);
+          BinPushReg(REG_EAX);
+          CodegenExpr(VNode);
+          BinPushReg(REG_EAX);
+          BinPushImm32(CKind);
+          BinPushImm32(FOffset);
+          BinPushImm32(AotTables[AotT].BufferSize);
+          BinMovRegLabelAddr(REG_EAX, TableStoreLabel(AotT));
+          BinPushReg(REG_EAX);
+          BinCallLabel('_XPPRT_TableFindEq');
+        End;
+      End;
+    End;
+
+    { delete_from custGroup where Champ == Valeur; (table AOT reelle) :
+      meme regle, clause non reconnue ou absente -> aucun changement }
+    SK_DELETEFROM: Begin
+      SelVar := Stmts[N].SelectVar;
+      AotT := FindAotTable(IRNodes[SelVar].TypeName);
+      If AotT <> 0 Then Begin
+        WKind := ClassifyWhereClause(Stmts[N].ExprNode, SelVar, FOffset, CKind, VNode);
+        If WKind = 1 Then Begin
+          CodegenExpr(VNode);
+          BinPushReg(REG_EAX);
+          BinPushImm32(CKind);
+          BinPushImm32(FOffset);
+          BinPushImm32(AotTables[AotT].BufferSize);
+          BinMovRegLabelAddr(REG_EAX, TableStoreLabel(AotT));
+          BinPushReg(REG_EAX);
+          BinCallLabel('_XPPRT_TableDeleteEq');
+        End;
+      End;
+    End;
+
+    SK_WHILESELECT,
     SK_TTSBEGIN, SK_TTSCOMMIT, SK_TTSABORT: ;
   End;
 End;
@@ -7533,7 +7806,7 @@ End;
   premiere affectation vaut 0 plutot qu'une valeur de pile aleatoire),
   corps, epilogue avec nettoyage stdcall des parametres }
 Procedure CodegenMethod(MIdx: Integer);
-Var Base, I, LocalsSize, FrameSize, Clean: Integer;
+Var Base, I, LocalsSize, FrameSize, Clean, AotT: Integer;
 Begin
   CgCurMethod      := MIdx;
   CgEpilogueLabel  := NewBinLabel('Ret');
@@ -7552,11 +7825,22 @@ Begin
 
   BinEmitPrologue(FrameSize);
 
-  For I := 0 To Methods[MIdx].LocalCount - 1 Do
-    If Not Locals[Base + I].IsArray Then Begin
+  For I := 0 To Methods[MIdx].LocalCount - 1 Do Begin
+    AotT := FindAotTable(Locals[Base + I].TypeName);
+    If AotT <> 0 Then Begin
+      { buffer de table AOT reel (au-dela des objets reels) : chaque
+        variable de table recoit un vrai buffer des l'entree dans la
+        methode (HEAP_ZERO_MEMORY, donc RecId=0 = "aucun enregistrement
+        charge"), pas seulement un pointeur nul comme un objet non
+        modelise }
+      BinMovRegImm32(REG_EAX, AotTables[AotT].BufferSize);
+      BinCallLabel('_XPPRT_StrAlloc');
+      BinMovEbpDispEax(Locals[Base + I].Offset);
+    End Else If Not Locals[Base + I].IsArray Then Begin
       BinXorRegReg(REG_EAX);
       BinMovEbpDispEax(Locals[Base + I].Offset);
     End;
+  End;
 
   CodegenStmt(Methods[MIdx].BodyStmt);
 
@@ -7613,6 +7897,7 @@ Begin
 End;
 
 Procedure BinInitRuntimeData;
+Var I: Integer;
 Begin
   BinCurSec := BIN_SEC_DATA;
   BinDefineLabel('_XPPD_Written');
@@ -7635,6 +7920,13 @@ Begin
   BinEmit32(0);
   BinDefineLabel('_XPPD_VCallTarget');
   BinEmit32(0);
+  { un emplacement par table AOT simulee (tables reelles, au-dela des
+    objets reels) : pointeur courant vers le stockage growable de ses
+    enregistrements, nul (aucun) au demarrage }
+  For I := 1 To AotTableCount Do Begin
+    BinDefineLabel(TableStoreLabel(I));
+    BinEmit32(0);
+  End;
   BinCurSec := BIN_SEC_TEXT;
 End;
 
@@ -9216,6 +9508,506 @@ Begin
   BinEmitEpilogueN(0);
 End;
 
+{ _XPPRT_StrEq (tables AOT reelles, au-dela des objets reels) :
+  EAX=a, ECX=b (deux pointeurs de chaine reelle, ou nuls) -> EAX=1 si
+  contenu identique (deux nuls sont consideres egaux), sinon 0. }
+Procedure EmitStrEqHelper;
+Var L1, LEq, LNe, LLoop, LDone: String;
+Begin
+  BinCurSec := BIN_SEC_TEXT;
+  BinDefineLabel('_XPPRT_StrEq');
+  BinEmitPrologue(0);
+  BinPushReg(REG_EBX);
+  BinPushReg(REG_ESI);
+
+  L1    := NewBinLabel('Se1');
+  LEq   := NewBinLabel('SeEq');
+  LNe   := NewBinLabel('SeNe');
+  LLoop := NewBinLabel('SeL');
+  LDone := NewBinLabel('SeD');
+
+  BinCmpEaxImm32(0);
+  BinJccLabel(CC_NE, L1);
+  BinCmpRegImm8(REG_ECX, 0);
+  BinJccLabel(CC_E, LEq);
+  BinJmpLabel(LNe);
+
+  BinDefineLabel(L1);
+  BinCmpRegImm8(REG_ECX, 0);
+  BinJccLabel(CC_E, LNe);
+
+  BinMovRegReg(REG_EBX, REG_EAX);
+  BinMovRegReg(REG_ESI, REG_ECX);
+  BinDefineLabel(LLoop);
+  BinMovzxRegBaseDispByte(REG_EAX, REG_EBX, 0);
+  BinMovzxRegBaseDispByte(REG_ECX, REG_ESI, 0);
+  BinCmpRegReg(REG_EAX, REG_ECX);
+  BinJccLabel(CC_NE, LNe);
+  BinCmpEaxImm32(0);
+  BinJccLabel(CC_E, LEq);
+  BinIncReg(REG_EBX);
+  BinIncReg(REG_ESI);
+  BinJmpLabel(LLoop);
+
+  BinDefineLabel(LEq);
+  BinMovRegImm32(REG_EAX, 1);
+  BinJmpLabel(LDone);
+  BinDefineLabel(LNe);
+  BinMovRegImm32(REG_EAX, 0);
+  BinDefineLabel(LDone);
+
+  BinPopReg(REG_ESI);
+  BinPopReg(REG_EBX);
+  BinEmitEpilogueN(0);
+End;
+
+{ _XPPRT_TableInsert (tables AOT reelles) : convention pile,
+  storeSlotAddr@8, recordSize@12, bufPtr@16 -> ret 12. Alloue toujours
+  un nouveau stockage de taille exacte (pas de HeapReAlloc, meme
+  principe que _XPPRT_ConAppend), copie les anciens enregistrements,
+  assigne au buffer un RecId = position d'insertion (1-indexee) puis
+  copie son contenu courant dans le nouvel emplacement. }
+Procedure EmitTableInsertHelper;
+Var LZero, LGot, LSkipCopy, LCpy, LCpyDone: String;
+Begin
+  BinCurSec := BIN_SEC_TEXT;
+  BinDefineLabel('_XPPRT_TableInsert');
+  BinEmitPrologue(12);
+  { [ebp-4]=oldStore [ebp-8]=oldCount [ebp-12]=newStore }
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, 8);
+  BinMovRegBaseDisp32(REG_EAX, REG_EAX, 0);
+  BinMovBaseDispReg32(REG_EBP, -4, REG_EAX);
+
+  LZero := NewBinLabel('Ti1');
+  LGot  := NewBinLabel('Ti2');
+  BinCmpEaxImm32(0);
+  BinJccLabel(CC_E, LZero);
+  BinMovRegBaseDisp32(REG_EAX, REG_EAX, 0);
+  BinJmpLabel(LGot);
+  BinDefineLabel(LZero);
+  BinXorRegReg(REG_EAX);
+  BinDefineLabel(LGot);
+  BinMovBaseDispReg32(REG_EBP, -8, REG_EAX);
+
+  BinIncEax;
+  BinMovRegBaseDisp32(REG_ECX, REG_EBP, 12);
+  BinImulEaxEcx;
+  BinAddEaxImm32(8);
+  BinPushReg(REG_EAX);
+  BinCallImportRaw('GetProcessHeap');
+  BinPushImm32(8);
+  BinPushReg(REG_EAX);
+  BinCallImportRaw('HeapAlloc');
+  BinMovBaseDispReg32(REG_EBP, -12, REG_EAX);
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -8);
+  BinIncEax;
+  BinMovRegBaseDisp32(REG_ECX, REG_EBP, -12);
+  BinMovBaseDispReg32(REG_ECX, 0, REG_EAX);
+  BinMovBaseDispReg32(REG_ECX, 4, REG_EAX);
+
+  BinMovRegBaseDisp32(REG_EBX, REG_EBP, -4);
+  LSkipCopy := NewBinLabel('Ti3');
+  BinCmpRegImm8(REG_EBX, 0);
+  BinJccLabel(CC_E, LSkipCopy);
+  BinAddRegImm8(REG_EBX, 8);
+  BinMovRegBaseDisp32(REG_ESI, REG_EBP, -12);
+  BinAddRegImm8(REG_ESI, 8);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -8);
+  BinMovRegBaseDisp32(REG_ECX, REG_EBP, 12);
+  BinImulEaxEcx;
+  BinMovRegReg(REG_ECX, REG_EAX);
+  LCpy := NewBinLabel('Ti4');
+  LCpyDone := NewBinLabel('Ti5');
+  BinCmpRegImm8(REG_ECX, 0);
+  BinJccLabel(CC_E, LCpyDone);
+  BinDefineLabel(LCpy);
+  BinMovzxRegBaseDispByte(REG_EAX, REG_EBX, 0);
+  BinMovBaseDispAl(REG_ESI, 0);
+  BinIncReg(REG_EBX);
+  BinIncReg(REG_ESI);
+  BinDecReg(REG_ECX);
+  BinJccLabel(CC_NE, LCpy);
+  BinDefineLabel(LCpyDone);
+  BinDefineLabel(LSkipCopy);
+
+  { RecId = oldCount+1, ecrit dans le buffer avant de le copier }
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -8);
+  BinIncEax;
+  BinMovRegBaseDisp32(REG_ECX, REG_EBP, 16);
+  BinMovBaseDispReg32(REG_ECX, 0, REG_EAX);
+
+  { copie le buffer (recordSize octets) a newStore+8+oldCount*recordSize }
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -8);
+  BinMovRegBaseDisp32(REG_ECX, REG_EBP, 12);
+  BinImulEaxEcx;
+  BinMovRegBaseDisp32(REG_EDI, REG_EBP, -12);
+  BinAddRegImm8(REG_EDI, 8);
+  BinAddRegReg(REG_EDI, REG_EAX);
+
+  BinMovRegBaseDisp32(REG_ECX, REG_EBP, 16);
+  BinMovRegBaseDisp32(REG_EDX, REG_EBP, 12);
+  LCpy := NewBinLabel('Ti6');
+  LCpyDone := NewBinLabel('Ti7');
+  BinCmpRegImm8(REG_EDX, 0);
+  BinJccLabel(CC_E, LCpyDone);
+  BinDefineLabel(LCpy);
+  BinMovzxRegBaseDispByte(REG_EAX, REG_ECX, 0);
+  BinMovBaseDispAl(REG_EDI, 0);
+  BinIncReg(REG_ECX);
+  BinIncReg(REG_EDI);
+  BinDecReg(REG_EDX);
+  BinJccLabel(CC_NE, LCpy);
+  BinDefineLabel(LCpyDone);
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, 8);
+  BinMovRegBaseDisp32(REG_ECX, REG_EBP, -12);
+  BinMovBaseDispReg32(REG_EAX, 0, REG_ECX);
+
+  BinXorRegReg(REG_EAX);
+  BinEmitEpilogueN(12);
+End;
+
+{ _XPPRT_TableUpdate (tables AOT reelles) : convention pile,
+  storeSlotAddr@8, recordSize@12, bufPtr@16 -> ret 12. Retrouve dans le
+  stockage l'enregistrement dont le RecId (offset 0) correspond a
+  celui deja charge dans le buffer, et le remplace. }
+Procedure EmitTableUpdateHelper;
+Var LNoStore, LLoop, LFound, LNext, LDone, LCpy, LCpyDone: String;
+Begin
+  BinCurSec := BIN_SEC_TEXT;
+  BinDefineLabel('_XPPRT_TableUpdate');
+  BinEmitPrologue(0);
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, 8);
+  BinMovRegBaseDisp32(REG_EBX, REG_EAX, 0);
+  LNoStore := NewBinLabel('Tu1');
+  BinCmpRegImm8(REG_EBX, 0);
+  BinJccLabel(CC_E, LNoStore);
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, 16);
+  BinMovRegBaseDisp32(REG_ESI, REG_EAX, 0);
+
+  BinMovRegBaseDisp32(REG_ECX, REG_EBX, 0);
+  BinMovRegImm32(REG_EDX, 0);
+  BinMovRegReg(REG_EDI, REG_EBX);
+  BinAddRegImm8(REG_EDI, 8);
+
+  LLoop := NewBinLabel('Tu2');
+  LFound := NewBinLabel('Tu3');
+  LNext := NewBinLabel('Tu4');
+  LDone := NewBinLabel('Tu5');
+
+  BinDefineLabel(LLoop);
+  BinCmpRegReg(REG_EDX, REG_ECX);
+  BinJccLabel(CC_GE, LDone);
+  BinMovRegBaseDisp32(REG_EAX, REG_EDI, 0);
+  BinCmpRegReg(REG_EAX, REG_ESI);
+  BinJccLabel(CC_E, LFound);
+  BinDefineLabel(LNext);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, 12);
+  BinAddRegReg(REG_EDI, REG_EAX);
+  BinIncReg(REG_EDX);
+  BinJmpLabel(LLoop);
+
+  BinDefineLabel(LFound);
+  BinMovRegBaseDisp32(REG_ECX, REG_EBP, 16);
+  BinMovRegBaseDisp32(REG_EDX, REG_EBP, 12);
+  LCpy := NewBinLabel('Tu6');
+  LCpyDone := NewBinLabel('Tu7');
+  BinCmpRegImm8(REG_EDX, 0);
+  BinJccLabel(CC_E, LCpyDone);
+  BinDefineLabel(LCpy);
+  BinMovzxRegBaseDispByte(REG_EAX, REG_ECX, 0);
+  BinMovBaseDispAl(REG_EDI, 0);
+  BinIncReg(REG_ECX);
+  BinIncReg(REG_EDI);
+  BinDecReg(REG_EDX);
+  BinJccLabel(CC_NE, LCpy);
+  BinDefineLabel(LCpyDone);
+
+  BinDefineLabel(LNoStore);
+  BinDefineLabel(LDone);
+  BinXorRegReg(REG_EAX);
+  BinEmitEpilogueN(12);
+End;
+
+{ _XPPRT_TableFindEq (tables AOT reelles) : convention pile,
+  storeSlotAddr@8, recordSize@12, fieldOffset@16, compareKind@20
+  (0=entier, 1=chaine reelle via _XPPRT_StrEq), compareValue@24,
+  bufPtr@28 -> EAX=1 si trouve (et bufPtr est ecrase par
+  l'enregistrement trouve), sinon 0 (et le RecId de bufPtr est remis a
+  0, etat "aucun enregistrement charge"). Parcours lineaire simple. }
+Procedure EmitTableFindEqHelper;
+Var
+  LNoStore, LLoop, LNext, LMatch, LNotFound, LDone, LIsStr: String;
+  LCpy, LCpyDone: String;
+Begin
+  BinCurSec := BIN_SEC_TEXT;
+  BinDefineLabel('_XPPRT_TableFindEq');
+  BinEmitPrologue(0);
+  BinPushReg(REG_EBX);
+  BinPushReg(REG_ESI);
+  BinPushReg(REG_EDI);
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, 8);
+  BinMovRegBaseDisp32(REG_EBX, REG_EAX, 0);
+  LNoStore := NewBinLabel('Tf1');
+  BinCmpRegImm8(REG_EBX, 0);
+  BinJccLabel(CC_E, LNoStore);
+
+  BinMovRegBaseDisp32(REG_ECX, REG_EBX, 0);
+  BinMovRegImm32(REG_EDX, 0);
+  BinMovRegReg(REG_EDI, REG_EBX);
+  BinAddRegImm8(REG_EDI, 8);
+
+  LLoop     := NewBinLabel('Tf2');
+  LNext     := NewBinLabel('Tf3');
+  LMatch    := NewBinLabel('Tf4');
+  LNotFound := NewBinLabel('Tf5');
+  LDone     := NewBinLabel('Tf6');
+  LIsStr    := NewBinLabel('Tf7');
+  LCpy      := NewBinLabel('Tf9');
+  LCpyDone  := NewBinLabel('TfA');
+
+  BinDefineLabel(LLoop);
+  BinCmpRegReg(REG_EDX, REG_ECX);
+  BinJccLabel(CC_GE, LNotFound);
+
+  BinMovRegReg(REG_ESI, REG_EDI);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, 16);
+  BinAddRegReg(REG_ESI, REG_EAX);
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, 20);
+  BinCmpEaxImm32(1);
+  BinJccLabel(CC_E, LIsStr);
+  BinMovRegBaseDisp32(REG_EAX, REG_ESI, 0);
+  BinMovRegBaseDisp32(REG_ECX, REG_EBP, 24);
+  BinCmpRegReg(REG_EAX, REG_ECX);
+  BinJccLabel(CC_E, LMatch);
+  BinJmpLabel(LNext);
+
+  BinDefineLabel(LIsStr);
+  BinMovRegBaseDisp32(REG_EAX, REG_ESI, 0);
+  BinMovRegBaseDisp32(REG_ECX, REG_EBP, 24);
+  BinCallLabel('_XPPRT_StrEq');
+  BinCmpEaxImm32(0);
+  BinJccLabel(CC_NE, LMatch);
+
+  BinDefineLabel(LNext);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, 12);
+  BinAddRegReg(REG_EDI, REG_EAX);
+  BinIncReg(REG_EDX);
+  BinMovRegBaseDisp32(REG_ECX, REG_EBX, 0);
+  BinJmpLabel(LLoop);
+
+  BinDefineLabel(LMatch);
+  BinMovRegBaseDisp32(REG_ECX, REG_EBP, 28);
+  BinMovRegBaseDisp32(REG_EDX, REG_EBP, 12);
+  BinCmpRegImm8(REG_EDX, 0);
+  BinJccLabel(CC_E, LCpyDone);
+  BinDefineLabel(LCpy);
+  BinMovzxRegBaseDispByte(REG_EAX, REG_EDI, 0);
+  BinMovBaseDispAl(REG_ECX, 0);
+  BinIncReg(REG_EDI);
+  BinIncReg(REG_ECX);
+  BinDecReg(REG_EDX);
+  BinJccLabel(CC_NE, LCpy);
+  BinDefineLabel(LCpyDone);
+  BinMovRegImm32(REG_EAX, 1);
+  BinJmpLabel(LDone);
+
+  BinDefineLabel(LNoStore);
+  BinDefineLabel(LNotFound);
+  BinMovRegBaseDisp32(REG_ECX, REG_EBP, 28);
+  BinMovRegImm32(REG_EAX, 0);
+  BinMovBaseDispReg32(REG_ECX, 0, REG_EAX);
+  BinXorRegReg(REG_EAX);
+
+  BinDefineLabel(LDone);
+  BinPopReg(REG_EDI);
+  BinPopReg(REG_ESI);
+  BinPopReg(REG_EBX);
+  BinEmitEpilogueN(24);
+End;
+
+{ _XPPRT_TableDeleteEq (tables AOT reelles) : convention pile,
+  storeSlotAddr@8, recordSize@12, fieldOffset@16, compareKind@20,
+  compareValue@24 -> ret 20. Reconstruit un nouveau stockage ne
+  contenant que les enregistrements NE correspondant PAS a la
+  condition (meme principe de reconstruction complete que
+  _XPPRT_ConAppend/_XPPRT_TableInsert). Deux passes : mesure du nombre
+  d'enregistrements a conserver, puis copie. }
+Procedure EmitTableDeleteEqHelper;
+Var
+  LNoStore1, LMeasLoop, LMeasNext, LMeasIsStr, LMeasMatch, LMeasDone: String;
+  LNoStore2, LWriteLoop, LWriteNext, LWriteIsStr, LWriteMatch, LWriteDone: String;
+  LCpyRec, LCpyRecDone: String;
+Begin
+  BinCurSec := BIN_SEC_TEXT;
+  BinDefineLabel('_XPPRT_TableDeleteEq');
+  BinEmitPrologue(12);
+  { [ebp-4]=oldStore [ebp-8]=keepCount [ebp-12]=newStore }
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, 8);
+  BinMovRegBaseDisp32(REG_EAX, REG_EAX, 0);
+  BinMovBaseDispReg32(REG_EBP, -4, REG_EAX);
+  BinMovRegImm32(REG_ECX, 0);
+  BinMovBaseDispReg32(REG_EBP, -8, REG_ECX);
+
+  LNoStore1 := NewBinLabel('De1');
+  BinCmpEaxImm32(0);
+  BinJccLabel(CC_E, LNoStore1);
+
+  { --- passe 1 : compter les non-correspondances --- }
+  BinMovRegReg(REG_EBX, REG_EAX);
+  BinMovRegBaseDisp32(REG_ECX, REG_EBX, 0);
+  BinMovRegImm32(REG_EDX, 0);
+  BinMovRegReg(REG_EDI, REG_EBX);
+  BinAddRegImm8(REG_EDI, 8);
+
+  LMeasLoop  := NewBinLabel('De2');
+  LMeasNext  := NewBinLabel('De3');
+  LMeasIsStr := NewBinLabel('De4');
+  LMeasMatch := NewBinLabel('De5');
+  LMeasDone  := NewBinLabel('De6');
+
+  BinDefineLabel(LMeasLoop);
+  BinCmpRegReg(REG_EDX, REG_ECX);
+  BinJccLabel(CC_GE, LMeasDone);
+
+  BinMovRegReg(REG_ESI, REG_EDI);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, 16);
+  BinAddRegReg(REG_ESI, REG_EAX);
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, 20);
+  BinCmpEaxImm32(1);
+  BinJccLabel(CC_E, LMeasIsStr);
+  BinMovRegBaseDisp32(REG_EAX, REG_ESI, 0);
+  BinMovRegBaseDisp32(REG_ESI, REG_EBP, 24);
+  BinCmpRegReg(REG_EAX, REG_ESI);
+  BinJccLabel(CC_E, LMeasMatch);
+  BinJmpLabel(LMeasNext);
+
+  BinDefineLabel(LMeasIsStr);
+  BinMovRegBaseDisp32(REG_EAX, REG_ESI, 0);
+  BinMovRegBaseDisp32(REG_ECX, REG_EBP, 24);
+  BinCallLabel('_XPPRT_StrEq');
+  BinCmpEaxImm32(0);
+  BinJccLabel(CC_NE, LMeasMatch);
+
+  BinDefineLabel(LMeasNext);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -8);
+  BinIncEax;
+  BinMovBaseDispReg32(REG_EBP, -8, REG_EAX);
+
+  BinDefineLabel(LMeasMatch);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, 12);
+  BinAddRegReg(REG_EDI, REG_EAX);
+  BinIncReg(REG_EDX);
+  BinMovRegBaseDisp32(REG_ECX, REG_EBX, 0);
+  BinJmpLabel(LMeasLoop);
+
+  BinDefineLabel(LMeasDone);
+  BinDefineLabel(LNoStore1);
+
+  { --- passe 2 : allocation puis copie des non-correspondances --- }
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -8);
+  BinMovRegBaseDisp32(REG_ECX, REG_EBP, 12);
+  BinImulEaxEcx;
+  BinAddEaxImm32(8);
+  BinPushReg(REG_EAX);
+  BinCallImportRaw('GetProcessHeap');
+  BinPushImm32(8);
+  BinPushReg(REG_EAX);
+  BinCallImportRaw('HeapAlloc');
+  BinMovBaseDispReg32(REG_EBP, -12, REG_EAX);
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, -8);
+  BinMovRegBaseDisp32(REG_ECX, REG_EBP, -12);
+  BinMovBaseDispReg32(REG_ECX, 0, REG_EAX);
+  BinMovBaseDispReg32(REG_ECX, 4, REG_EAX);
+
+  BinMovRegBaseDisp32(REG_EDI, REG_EBP, -12);
+  BinAddRegImm8(REG_EDI, 8);
+
+  BinMovRegBaseDisp32(REG_ESI, REG_EBP, -4);
+  LNoStore2 := NewBinLabel('De7');
+  BinCmpRegImm8(REG_ESI, 0);
+  BinJccLabel(CC_E, LNoStore2);
+
+  BinMovRegBaseDisp32(REG_EAX, REG_ESI, 0);
+  BinMovRegBaseDisp32(REG_ECX, REG_EBP, 12);
+  BinImulEaxEcx;
+  BinMovRegReg(REG_EBX, REG_ESI);
+  BinAddRegImm8(REG_EBX, 8);
+  BinAddRegReg(REG_EBX, REG_EAX);   { ebx = adresse de fin du parcours source }
+
+  BinAddRegImm8(REG_ESI, 8);          { esi = curseur source }
+
+  LWriteLoop  := NewBinLabel('De8');
+  LWriteNext  := NewBinLabel('De9');
+  LWriteIsStr := NewBinLabel('DeA');
+  LWriteMatch := NewBinLabel('DeB');
+  LWriteDone  := NewBinLabel('DeC');
+  LCpyRec     := NewBinLabel('DeD');
+  LCpyRecDone := NewBinLabel('DeE');
+
+  BinDefineLabel(LWriteLoop);
+  BinCmpRegReg(REG_ESI, REG_EBX);
+  BinJccLabel(CC_GE, LWriteDone);
+
+  BinMovRegReg(REG_EAX, REG_ESI);
+  BinMovRegBaseDisp32(REG_ECX, REG_EBP, 16);
+  BinAddRegReg(REG_EAX, REG_ECX);
+
+  BinMovRegBaseDisp32(REG_ECX, REG_EBP, 20);
+  BinCmpRegImm8(REG_ECX, 1);
+  BinJccLabel(CC_E, LWriteIsStr);
+  BinMovRegBaseDisp32(REG_EDX, REG_EAX, 0);
+  BinMovRegBaseDisp32(REG_ECX, REG_EBP, 24);
+  BinCmpRegReg(REG_EDX, REG_ECX);
+  BinJccLabel(CC_E, LWriteMatch);
+  BinJmpLabel(LWriteNext);
+
+  BinDefineLabel(LWriteIsStr);
+  BinMovRegBaseDisp32(REG_ECX, REG_EAX, 0);
+  BinMovRegReg(REG_EAX, REG_ECX);
+  BinMovRegBaseDisp32(REG_ECX, REG_EBP, 24);
+  BinCallLabel('_XPPRT_StrEq');
+  BinCmpEaxImm32(0);
+  BinJccLabel(CC_NE, LWriteMatch);
+
+  BinDefineLabel(LWriteNext);
+  BinMovRegBaseDisp32(REG_ECX, REG_EBP, 12);
+  BinCmpRegImm8(REG_ECX, 0);
+  BinJccLabel(CC_E, LCpyRecDone);
+  BinDefineLabel(LCpyRec);
+  BinMovzxRegBaseDispByte(REG_EAX, REG_ESI, 0);
+  BinMovBaseDispAl(REG_EDI, 0);
+  BinIncReg(REG_ESI);
+  BinIncReg(REG_EDI);
+  BinDecReg(REG_ECX);
+  BinJccLabel(CC_NE, LCpyRec);
+  BinDefineLabel(LCpyRecDone);
+  BinJmpLabel(LWriteLoop);
+
+  BinDefineLabel(LWriteMatch);
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, 12);
+  BinAddRegReg(REG_ESI, REG_EAX);
+  BinJmpLabel(LWriteLoop);
+
+  BinDefineLabel(LWriteDone);
+  BinDefineLabel(LNoStore2);
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBP, 8);
+  BinMovRegBaseDisp32(REG_ECX, REG_EBP, -12);
+  BinMovBaseDispReg32(REG_EAX, 0, REG_ECX);
+
+  BinEmitEpilogueN(20);
+End;
+
 { Point d'entree binaire "start" : trampoline vers static void main(),
   suivi d'un ExitProcess(0) propre. Emis en tout premier dans .text
   pour que start soit bien a l'adresse EntryRVA=TextRVA ecrite par
@@ -9276,6 +10068,11 @@ Begin
   EmitStrRTrimHelper;
   EmitIntToStrHelper;
   EmitDateToStrHelper;
+  EmitStrEqHelper;
+  EmitTableInsertHelper;
+  EmitTableUpdateHelper;
+  EmitTableFindEqHelper;
+  EmitTableDeleteEqHelper;
 
   For I := 1 To MethodCount Do
     If Methods[I].BodyStmt <> 0 Then CodegenMethod(I);
