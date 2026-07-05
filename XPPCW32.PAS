@@ -374,6 +374,58 @@ Program XPPCW32;
             (iteration sur plusieurs enregistrements correspondants)
             n'a pas ete implemente, seul select forUpdate (un seul
             enregistrement) l'a ete.
+            Query/QueryRun reels : Query et QueryRun recoivent chacun
+            un vrai champ interne __tableIdx (et QueryRun un __cursor),
+            remplis via addDataSource(tableNum(X)) puis copies dans
+            new QueryRun(query). Comme le tableIdx cible n'est connu
+            qu'a l'execution ici (contrairement a select/delete_from ou
+            il est toujours litteral), deux nouvelles tables de
+            correspondance sont emises en .data a la compilation,
+            une entree par table AOT connue : _XPPD_TableStoreSlots
+            (adresse de chaque _XPPD_TStore_<T>, double indirection
+            pour atteindre le pointeur de stockage reel) et
+            _XPPD_TableRecordSizes (taille d'enregistrement, simple
+            valeur). queryRun.next() avance __cursor et le compare au
+            compte reel d'enregistrements de la table ciblee ;
+            queryRun.get(tableNum(X)) alloue une copie du buffer et
+            en devient un nouveau buffer de table ordinaire, relu
+            comme n'importe quel custGroup via champ. Portee
+            volontairement reduite : addRange()/.value() ne filtrent
+            rien (SysQuery::valueNotEmpty() ne s'evalue pas en quelque
+            chose d'exploitable ici), next() parcourt donc tous les
+            enregistrements de la table, ce qui reste le resultat
+            correct pour une table vide ou pour un filtre "non vide"
+            sur des donnees normalement renseignees. Bug reel rencontre
+            et corrige dans get() : EDX (taille d'enregistrement) et
+            EDI (adresse source) etaient lus apres l'appel a
+            _XPPRT_StrAlloc sans etre proteges, alors que celui-ci
+            appelle en interne GetProcessHeap/HeapAlloc (stdcall reel,
+            sans obligation de preserver EAX/ECX/EDX, contrairement a
+            nos propres helpers _XPPRT_* qui preservent EBX/ESI/EDI
+            par convention) ; EDX se retrouvait ecrase et la boucle de
+            copie ne s'executait jamais, laissant les champs toujours
+            vides. Corrige en empilant EDX/EDI avant l'appel et en les
+            depilant juste apres. 18_query_class.xpp continue de
+            produire une sortie vide (CustGroup n'y est jamais peuplee)
+            ; verifie avec un test hors suite inserant reellement des
+            enregistrements que next()/get() les retrouvent tous
+            correctement.
+            Declenchement reel des delegates (au-dela du modele
+            purement declaratif de TODO 17) : jusqu'ici,
+            this.onDelegate(...) executait le corps du delegate
+            lui-meme (toujours un bloc vide par construction du
+            langage), donc ne faisait jamais rien - aucun abonne
+            SubscribesTo n'etait jamais reellement appele. Desormais,
+            un appel dont la methode resolue a IsDelegate=True est
+            intercepte directement dans CodegenCall : au lieu
+            d'executer son corps, il parcourt la table Subscriptions
+            (deja remplie et validee par ResolveSubscriptions) et
+            appelle chaque gestionnaire statique abonne (meme classe
+            et meme nom de delegate) avec les memes arguments,
+            re-evalues pour chaque abonne (portee reduite, sans
+            consequence tant qu'ils restent sans effet de bord comme
+            dans l'echantillon). Corrige 19_delegate_eventhandler.xpp
+            integralement.
 }
 
 { ============================================================ }
@@ -4901,6 +4953,10 @@ Procedure RegisterBuiltinQueryClasses;
 Var C, M: Integer;
 Begin
   C := AddClass('Query', False);
+  { champs internes reels (au-dela des tables AOT reelles) : jamais
+    accedes par du code X++, seulement par le codegen special-case de
+    addDataSource/new QueryRun(...) ; prefixe "__" par convention }
+  AddField(C, 'int', '__tableIdx', False, 0);
   M := AddMethod(C, 'void', 'new', KW_PUBLIC, False);
   M := AddMethod(C, 'QueryBuildDataSource', 'addDataSource', KW_PUBLIC, False);
   AddParam(M, 'int', 'tableId');
@@ -4914,6 +4970,8 @@ Begin
   AddParam(M, 'str', 'val');
 
   C := AddClass('QueryRun', False);
+  AddField(C, 'int', '__tableIdx', False, 0);
+  AddField(C, 'int', '__cursor', False, 0);
   M := AddMethod(C, 'void', 'new', KW_PUBLIC, False);
   AddParam(M, 'Query', 'q');
   M := AddMethod(C, 'boolean', 'next', KW_PUBLIC, False);
@@ -6143,6 +6201,18 @@ End;
 Function CaseLabel(NodeIdx: Integer): String;
 Begin CaseLabel := '_XPPSW_' + ItoS(NodeIdx); End;
 
+{ Deplacement d'instance d'un champ connu par son nom (Query reel,
+  au-dela des tables AOT reelles) : reutilise FindMemberInChain, comme
+  CgFindField, mais pour un ClassIdx explicite plutot que la methode
+  en cours de compilation. }
+Function ClassFieldOffset(ClassIdx: Integer; FieldName: String): Integer;
+Var OwnerCls, MemberIdx, Kind: Integer;
+Begin
+  ClassFieldOffset := 0;
+  Kind := FindMemberInChain(ClassIdx, FieldName, OwnerCls, MemberIdx);
+  If Kind = MEMBER_FIELD Then ClassFieldOffset := Fields[MemberIdx].InstanceOffset;
+End;
+
 Function CgFindLocal(Name: String; Var Offset: Integer): Boolean;
 Var Base, I: Integer;
 Begin
@@ -6237,6 +6307,10 @@ Procedure CodegenArgSideEffects(ArgHead: Integer); Forward;
 Procedure CodegenTableClear(AotT, ObjNode: Integer); Forward;
 Procedure CodegenTableInsert(AotT, ObjNode: Integer); Forward;
 Procedure CodegenTableUpdate(AotT, ObjNode: Integer); Forward;
+Procedure CodegenQueryAddDataSource(ArgHead, ObjNode: Integer); Forward;
+Procedure CodegenQueryNext(ObjNode: Integer); Forward;
+Procedure CodegenQueryGet(ObjNode, ArgHead: Integer); Forward;
+Procedure CodegenNewQueryRun(ArgHead: Integer); Forward;
 
 { Tableaux locaux fixes reels (int tab[N], extension apres TODO 26) :
   seules les declarations locales (pas les parametres, qui n'ont pas
@@ -6812,6 +6886,186 @@ Begin
   BinXorRegReg(REG_EAX);
 End;
 
+{ query.addDataSource(tableNum(X)) (Query reel, au-dela des tables AOT
+  reelles) : range le tableIdx dans le champ interne __tableIdx et
+  renvoie le meme objet, reinterprete comme un QueryBuildDataSource
+  (une seule allocation partagee tout le long de la chaine
+  Query/QueryBuildDataSource/QueryBuildRange, plus simple qu'une
+  hierarchie de vraies sous-classes). }
+Procedure CodegenQueryAddDataSource(ArgHead, ObjNode: Integer);
+Var OffTableIdx: Integer;
+Begin
+  OffTableIdx := ClassFieldOffset(FindClass('Query'), '__tableIdx');
+  CodegenExpr(ObjNode);
+  BinPushReg(REG_EAX);
+  CodegenExpr(ArgHead);
+  BinPopReg(REG_ECX);
+  BinMovBaseDispReg32(REG_ECX, OffTableIdx, REG_EAX);
+  BinMovRegReg(REG_EAX, REG_ECX);
+End;
+
+{ new QueryRun(query) (Query reel) : alloue un vrai QueryRun et copie
+  query.__tableIdx dedans (__cursor demarre a 0 via HEAP_ZERO_MEMORY,
+  avant le premier enregistrement). Intercepte directement dans
+  CodegenNew puisque le "constructeur" de QueryRun n'a aucun corps
+  reel. }
+Procedure CodegenNewQueryRun(ArgHead: Integer);
+Var QRCls, OffTableIdxQR, OffTableIdxQ: Integer;
+Begin
+  QRCls := FindClass('QueryRun');
+  OffTableIdxQR := ClassFieldOffset(QRCls, '__tableIdx');
+  OffTableIdxQ  := ClassFieldOffset(FindClass('Query'), '__tableIdx');
+
+  CodegenExpr(ArgHead);
+  BinMovRegBaseDisp32(REG_EAX, REG_EAX, OffTableIdxQ);
+  BinPushReg(REG_EAX);
+
+  BinMovRegImm32(REG_EAX, Classes[QRCls].InstanceSize);
+  BinCallLabel('_XPPRT_StrAlloc');
+  BinPopReg(REG_ECX);
+  BinMovBaseDispReg32(REG_EAX, OffTableIdxQR, REG_ECX);
+End;
+
+{ queryRun.next() (Query reel) : avance __cursor et le compare au
+  nombre d'enregistrements reels actuellement stockes pour la table
+  ciblee (via les tables de correspondance _XPPD_TableStoreSlots/
+  _XPPD_TableRecordSizes, puisque le tableIdx n'est connu qu'a
+  l'execution ici, contrairement a select/delete_from ou il est
+  toujours litteral). Aucun filtrage de plage (addRange/value) n'est
+  applique : parcourt tous les enregistrements de la table, ce qui
+  est deja le resultat correct pour SysQuery::valueNotEmpty() sur des
+  donnees normalement renseignees, et pour toute table vide (0
+  iteration, quel que soit le filtre). }
+Procedure CodegenQueryNext(ObjNode: Integer);
+Var QRCls, OffTableIdx, OffCursor: Integer;
+    LNoStore, LHasRec, LEnd: String;
+Begin
+  QRCls := FindClass('QueryRun');
+  OffTableIdx := ClassFieldOffset(QRCls, '__tableIdx');
+  OffCursor   := ClassFieldOffset(QRCls, '__cursor');
+
+  CodegenExpr(ObjNode);
+  BinMovRegReg(REG_EBX, REG_EAX);
+
+  BinMovRegBaseDisp32(REG_ECX, REG_EBX, OffCursor);
+  BinIncReg(REG_ECX);
+  BinPushReg(REG_ECX);
+
+  BinMovRegBaseDisp32(REG_EAX, REG_EBX, OffTableIdx);
+  BinDecEax;
+  BinMovRegImm32(REG_ECX, 4);
+  BinImulEaxEcx;
+  BinMovRegLabelAddr(REG_ECX, '_XPPD_TableStoreSlots');
+  BinAddRegReg(REG_EAX, REG_ECX);
+  BinMovRegBaseDisp32(REG_EAX, REG_EAX, 0);
+  BinMovRegBaseDisp32(REG_EAX, REG_EAX, 0);
+
+  LNoStore := NewBinLabel('Qn1');
+  LHasRec  := NewBinLabel('Qn2');
+  LEnd     := NewBinLabel('Qn3');
+  BinCmpEaxImm32(0);
+  BinJccLabel(CC_E, LNoStore);
+
+  BinMovRegBaseDisp32(REG_ECX, REG_EAX, 0);
+  BinPopReg(REG_EAX);
+  BinPushReg(REG_EAX);
+  BinCmpRegReg(REG_EAX, REG_ECX);
+  BinJccLabel(CC_LE, LHasRec);
+
+  BinDefineLabel(LNoStore);
+  BinPopReg(REG_EAX);
+  BinXorRegReg(REG_EAX);
+  BinJmpLabel(LEnd);
+
+  BinDefineLabel(LHasRec);
+  BinPopReg(REG_EAX);
+  BinMovBaseDispReg32(REG_EBX, OffCursor, REG_EAX);
+  BinMovRegImm32(REG_EAX, 1);
+
+  BinDefineLabel(LEnd);
+End;
+
+{ queryRun.get(tableNum(X)) (Query reel) : alloue une nouvelle copie
+  de l'enregistrement courant (position __cursor-1 dans le stockage
+  reel de la table ciblee) et la renvoie ; tableIdx/recordSize sont
+  retrouves via les memes tables de correspondance que next(). }
+Procedure CodegenQueryGet(ObjNode, ArgHead: Integer);
+Var QRCls, OffTableIdx, OffCursor: Integer;
+    LCpy, LCpyDone: String;
+Begin
+  QRCls := FindClass('QueryRun');
+  OffTableIdx := ClassFieldOffset(QRCls, '__tableIdx');
+  OffCursor   := ClassFieldOffset(QRCls, '__cursor');
+
+  CodegenExpr(ArgHead);
+  CodegenExpr(ObjNode);
+  BinMovRegReg(REG_EBX, REG_EAX);
+
+  { esi = store actuel pour __tableIdx }
+  BinMovRegBaseDisp32(REG_EAX, REG_EBX, OffTableIdx);
+  BinDecEax;
+  BinMovRegImm32(REG_ECX, 4);
+  BinImulEaxEcx;
+  BinMovRegLabelAddr(REG_ECX, '_XPPD_TableStoreSlots');
+  BinAddRegReg(REG_EAX, REG_ECX);
+  BinMovRegBaseDisp32(REG_EAX, REG_EAX, 0);
+  BinMovRegBaseDisp32(REG_ESI, REG_EAX, 0);
+
+  { edx = recordSize pour __tableIdx }
+  BinMovRegBaseDisp32(REG_EAX, REG_EBX, OffTableIdx);
+  BinDecEax;
+  BinMovRegImm32(REG_ECX, 4);
+  BinImulEaxEcx;
+  BinMovRegLabelAddr(REG_ECX, '_XPPD_TableRecordSizes');
+  BinAddRegReg(REG_EAX, REG_ECX);
+  BinMovRegBaseDisp32(REG_EAX, REG_EAX, 0);
+  BinMovRegReg(REG_EDX, REG_EAX);
+
+  { edi = &store.records[__cursor-1] = esi+8+(__cursor-1)*recordSize }
+  BinMovRegBaseDisp32(REG_EAX, REG_EBX, OffCursor);
+  BinDecEax;
+  BinMovRegReg(REG_ECX, REG_EDX);
+  BinImulEaxEcx;
+  BinMovRegReg(REG_EDI, REG_ESI);
+  BinAddRegImm8(REG_EDI, 8);
+  BinAddRegReg(REG_EDI, REG_EAX);
+
+  { alloue un nouveau buffer de recordSize octets et y copie
+    l'enregistrement. EDX(recordSize)/EDI(source) doivent etre
+    proteges explicitement a travers l'appel a _XPPRT_StrAlloc : ce
+    n'est PAS un de nos propres helpers (qui protegent EBX/ESI/EDI par
+    convention), c'est GetProcessHeap/HeapAlloc en interne, qui suivent
+    le stdcall standard et n'ont aucune obligation de preserver
+    EAX/ECX/EDX (bug reel rencontre et corrige : sans cette protection,
+    EDX se retrouvait ecrase, la boucle de copie ne s'executait jamais
+    et les champs recuperes par get() restaient toujours vides). EBX
+    (queryRun) n'est plus necessaire ici, reutilise pour garder le
+    resultat pendant qu'ECX sert de curseur d'ecriture avancant. }
+  BinPushReg(REG_EDX);
+  BinPushReg(REG_EDI);
+  BinMovRegReg(REG_EAX, REG_EDX);
+  BinCallLabel('_XPPRT_StrAlloc');
+  BinMovRegReg(REG_EBX, REG_EAX);
+  BinMovRegReg(REG_ECX, REG_EAX);
+  BinPopReg(REG_EDI);
+  BinPopReg(REG_EDX);
+
+  LCpy := NewBinLabel('Qg1');
+  LCpyDone := NewBinLabel('Qg2');
+  BinCmpRegImm8(REG_EDX, 0);
+  BinJccLabel(CC_E, LCpyDone);
+  BinDefineLabel(LCpy);
+  BinMovzxRegBaseDispByte(REG_EAX, REG_EDI, 0);
+  BinMovBaseDispAl(REG_ECX, 0);
+  BinIncReg(REG_EDI);
+  BinIncReg(REG_ECX);
+  BinDecReg(REG_EDX);
+  BinJccLabel(CC_NE, LCpy);
+  BinDefineLabel(LCpyDone);
+
+  BinMovRegReg(REG_EAX, REG_EBX);
+End;
+
 { Appel d'une methode utilisateur (corps reellement compile) : les
   arguments sont evalues et empiles de droite a gauche (immediatement
   apres evaluation, a la maniere cdecl/stdcall classique), puis
@@ -6888,9 +7142,9 @@ End;
 Procedure CodegenCall(N: Integer);
 Var
   Callee, MIdx, ArgHead, FmtCallMIdx, FmtNode, IdxArg, SepArg,
-  Arg2, Arg3, Arg4, IfaceIdx, Slot, AotT, ObjNode: Integer;
+  Arg2, Arg3, Arg4, IfaceIdx, Slot, AotT, ObjNode, SubI: Integer;
   LZero, LEnd: String;
-  MethodNameLocal: String;
+  MethodNameLocal, DelClassName, DelName: String;
 Begin
   Callee  := IRNodes[N].Left;
   ArgHead := IRNodes[N].Right;
@@ -6932,6 +7186,61 @@ Begin
   End;
 
   MIdx := IRNodes[N].ResolvedMethod;
+
+  { Declenchement d'un delegate (this.onCalculationDone(x), au-dela de
+    TODO 17) : le corps du delegate (bloc obligatoirement vide) n'est
+    jamais execute lui-meme ; a la place, chaque gestionnaire statique
+    abonne via [SubscribesTo(classStr(Classe), delegateStr(Classe,
+    Nom))] est appele avec les memes arguments (deja verifies
+    compatibles en nombre et en type par ResolveSubscriptions). Les
+    arguments sont re-evalues pour chaque abonne plutot que proteges
+    une seule fois : portee reduite, suffisant tant qu'ils restent
+    sans effet de bord (comme dans tous les echantillons). Aucun
+    abonne trouve -> se comporte comme avant (aucun effet, EAX=0). }
+  If (MIdx <> 0) And Methods[MIdx].IsDelegate Then Begin
+    DelClassName := Classes[Methods[MIdx].ClassIdx].Name;
+    DelName := Methods[MIdx].Name;
+    For SubI := 1 To SubscriptionCount Do
+      If (Subscriptions[SubI].TargetClassName = DelClassName) And
+         (Subscriptions[SubI].DelegateName = DelName) Then
+        CodegenUserCall(Subscriptions[SubI].SubscriberMethod, ArgHead, 0);
+    BinXorRegReg(REG_EAX);
+    Exit;
+  End;
+
+  { addDataSource/addRange/value/next()/get() de Query/QueryRun (Query
+    reel, au-dela des tables AOT reelles) : interception directe par
+    classe+nom, comme pour les buffers de table, puisque ces methodes
+    du modele Query simule n'ont aucun corps reel (BodyStmt=0). }
+  If (MIdx <> 0) And (Methods[MIdx].ClassIdx <> 0) Then Begin
+    If (Methods[MIdx].ClassIdx = FindClass('Query')) And
+       (Methods[MIdx].Name = 'addDataSource') Then Begin
+      CodegenQueryAddDataSource(ArgHead, IRNodes[Callee].Left);
+      Exit;
+    End;
+    If (Methods[MIdx].ClassIdx = FindClass('QueryBuildDataSource')) And
+       (Methods[MIdx].Name = 'addRange') Then Begin
+      CodegenExpr(ArgHead);
+      CodegenExpr(IRNodes[Callee].Left);
+      Exit;
+    End;
+    If (Methods[MIdx].ClassIdx = FindClass('QueryBuildRange')) And
+       (Methods[MIdx].Name = 'value') Then Begin
+      CodegenExpr(ArgHead);
+      BinXorRegReg(REG_EAX);
+      Exit;
+    End;
+    If (Methods[MIdx].ClassIdx = FindClass('QueryRun')) And
+       (Methods[MIdx].Name = 'next') Then Begin
+      CodegenQueryNext(IRNodes[Callee].Left);
+      Exit;
+    End;
+    If (Methods[MIdx].ClassIdx = FindClass('QueryRun')) And
+       (Methods[MIdx].Name = 'get') Then Begin
+      CodegenQueryGet(IRNodes[Callee].Left, ArgHead);
+      Exit;
+    End;
+  End;
 
   { obj.methode() dont le type statique de obj est une interface
     (dispatch virtuel reel, au-dela des objets reels) : la methode
@@ -7236,6 +7545,11 @@ Begin
 
       BinMovRegLabelAddr(REG_ECX, '_XPPD_NewObjTemp');
       BinMovRegBaseDisp32(REG_EAX, REG_ECX, 0);   { resultat final, relu apres l'appel }
+    End Else If ClassIdx = FindClass('QueryRun') Then Begin
+      { new QueryRun(query) (Query reel, au-dela des tables AOT
+        reelles) : le "constructeur" n'a aucun corps reel, il faut
+        copier query.__tableIdx dans le nouvel objet directement ici }
+      CodegenNewQueryRun(ArgHead);
     End Else Begin
       BinMovRegImm32(REG_EAX, Classes[ClassIdx].InstanceSize);
       BinCallLabel('_XPPRT_StrAlloc');
@@ -7893,6 +8207,27 @@ Begin
     Else
       BinEmit32(0);   { couverture d'interface deja verifiee, TODO 15 : ne devrait pas arriver }
   End;
+  BinCurSec := BIN_SEC_TEXT;
+End;
+
+{ Tables de correspondance tableIdx (Query reel, au-dela des tables
+  AOT reelles) : contrairement a select/delete_from, ou le tableIdx
+  cible est toujours un litteral connu a la compilation, next()/get()
+  ne connaissent le tableIdx qu'a l'execution (lu dans le champ
+  __tableIdx d'un QueryRun) - il faut donc pouvoir, a partir de cette
+  valeur, retrouver l'ADRESSE de l'emplacement _XPPD_TStore_<T> (pour
+  le lire/l'ecrire) et la TAILLE d'enregistrement de cette table.
+  _XPPD_TableStoreSlots[i] = adresse de _XPPD_TStore_<i+1> (fixup
+  ABS32) ; _XPPD_TableRecordSizes[i] = AotTables[i+1].BufferSize
+  (valeur simple, connue a la compilation). }
+Procedure EmitTableLookupTables;
+Var I: Integer;
+Begin
+  BinCurSec := BIN_SEC_RDATA;
+  BinDefineLabel('_XPPD_TableStoreSlots');
+  For I := 1 To AotTableCount Do BinEmitRef32(TableStoreLabel(I), BIN_FIX_ABS32);
+  BinDefineLabel('_XPPD_TableRecordSizes');
+  For I := 1 To AotTableCount Do BinEmit32(AotTables[I].BufferSize);
   BinCurSec := BIN_SEC_TEXT;
 End;
 
@@ -10073,6 +10408,7 @@ Begin
   EmitTableUpdateHelper;
   EmitTableFindEqHelper;
   EmitTableDeleteEqHelper;
+  EmitTableLookupTables;
 
   For I := 1 To MethodCount Do
     If Methods[I].BodyStmt <> 0 Then CodegenMethod(I);
