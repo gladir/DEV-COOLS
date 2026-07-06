@@ -1344,7 +1344,21 @@ Begin
   EmitI('FLD  ST(0)');                { dupliquer : ST(0)=frac*10, ST(1)=frac*10 }
   EmitI('FISTP DWORD PTR [' + PFX_RT_PFX + 'ITMP]'); { pop la copie -> chiffre entier }
   EmitI('MOV  EAX, DWORD PTR [' + PFX_RT_PFX + 'ITMP]');
-  EmitI('AND  EAX, 9');              { clamp 0-9 }
+  { Clamp 0-9 : AND EAX,9 n est PAS un clamp valide (ex: 4 AND 9 = 0) et  }
+  { corrompait la plupart des chiffres. Un vrai clamp est necessaire aux }
+  { deux bornes : l arrondi-par-chiffre peut produire un reste legerement}
+  { negatif apres quelques iterations (derive d erreur flottante), et    }
+  { occasionnellement 10 (arrondi pile a la limite).                    }
+  L1 := NewLabel;
+  L2 := NewLabel;
+  EmitI('CMP  EAX, 0');
+  EmitI('JGE  ' + L2);
+  EmitI('XOR  EAX, EAX');
+  EmitLabel(L2);
+  EmitI('CMP  EAX, 9');
+  EmitI('JLE  ' + L1);
+  EmitI('MOV  EAX, 9');
+  EmitLabel(L1);
   EmitI('ADD  AL, 48');
   EmitI('MOV  BYTE PTR [EDI], AL');
   EmitI('INC  EDI');
