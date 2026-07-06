@@ -5736,6 +5736,36 @@ Const
     'STRLEN','STRCPY','STRCAT','STRCMP','MEMCPY','MEMSET','MEMMOVE','ATOI',
     'ATOL','RAND','SRAND','PUTS','FOPEN','FCLOSE','FREAD','FWRITE','FPRINTF'
   );
+  { casse exacte reelle des noms exportes (l export-by-name de Windows est
+    sensible a la casse, contrairement aux identificateurs assembleur qui
+    sont toujours convertis en majuscules par le lexer - voir ImportFuncIndex) }
+  WINAPI_REALNAME : Array[1..WINAPI_COUNT] Of String[32] = (
+    { kernel32.dll }
+    'ExitProcess','GetStdHandle','WriteFile','ReadFile','CreateFileA',
+    'CreateFileW','CloseHandle','GetLastError','SetLastError','HeapAlloc',
+    'HeapFree','GetProcessHeap','HeapReAlloc','GetModuleHandleA','GetModuleHandleW',
+    'GetProcAddress','LoadLibraryA','LoadLibraryW','GetCommandLineA','GetCommandLineW',
+    'Sleep','GetTickCount','VirtualAlloc','VirtualFree','GetSystemTime',
+    'GetLocalTime','SetConsoleTextAttribute','SetConsoleCursorPosition',
+    'GetConsoleScreenBufferInfo','FlushFileBuffers','CreateThread',
+    'WaitForSingleObject','TerminateProcess','GetCurrentProcess','GetCurrentThread',
+    'MultiByteToWideChar','WideCharToMultiByte','lstrlenA','lstrcpyA','lstrcatA',
+    'FindFirstFileA','FindNextFileA','FindClose','DeleteFileA','CreateDirectoryA',
+    'RemoveDirectoryA','SetFilePointer','GetFileSize','GetStartupInfoA','GetEnvironmentVariableA',
+    'SetEnvironmentVariableA','GetModuleFileNameA','GetCurrentDirectoryA','SetCurrentDirectoryA',
+    'CreateProcessA','ExitThread','LocalAlloc','LocalFree','GlobalAlloc','GlobalFree',
+    { user32.dll }
+    'MessageBoxA','MessageBoxW','wsprintfA','wsprintfW','GetMessageA',
+    'DispatchMessageA','TranslateMessage','RegisterClassA','RegisterClassExA',
+    'CreateWindowExA','DefWindowProcA','ShowWindow','UpdateWindow','PostQuitMessage',
+    'LoadCursorA','LoadIconA','GetWindowTextA','SetWindowTextA','GetDC','ReleaseDC',
+    'InvalidateRect','BeginPaint','EndPaint','DrawTextA','SendMessageA','SetTimer',
+    'KillTimer','GetClientRect',
+    { msvcrt.dll }
+    'printf','sprintf','scanf','exit','malloc','free','calloc','realloc',
+    'strlen','strcpy','strcat','strcmp','memcpy','memset','memmove','atoi',
+    'atol','rand','srand','puts','fopen','fclose','fread','fwrite','fprintf'
+  );
   WINAPI_DLL : Array[1..WINAPI_COUNT] Of String[16] = (
     'KERNEL32.DLL','KERNEL32.DLL','KERNEL32.DLL','KERNEL32.DLL','KERNEL32.DLL',
     'KERNEL32.DLL','KERNEL32.DLL','KERNEL32.DLL','KERNEL32.DLL','KERNEL32.DLL',
@@ -5773,11 +5803,29 @@ Begin
 End;
 
 { ============================================================
+  FindWinApiRealName : retrouver la casse EXACTE du nom exporte
+  (l export-by-name Windows est sensible a la casse, contrairement
+  au nom de symbole assembleur qui est toujours en majuscules).
+  Retourne fname inchange si non trouve (ne devrait pas arriver
+  si FindWinApiDll a deja reussi juste avant).
+  ============================================================ }
+Function FindWinApiRealName(Const fname : TString) : TString;
+Var i : Integer; up : TString;
+Begin
+  up := LexUpperCase(fname);
+  If Copy(up, 1, 6) = '__IMP_' Then up := Copy(up, 7, Length(up) - 6);
+  FindWinApiRealName := fname;
+  For i := 1 To WINAPI_COUNT Do
+    If WINAPI_NAME[i] = up Then Begin FindWinApiRealName := WINAPI_REALNAME[i]; Exit; End;
+End;
+
+{ ============================================================
   Structures de travail pour la construction de la table d import
   ============================================================ }
 Type
   TImportFunc = Record
-    name         : TSymString; { nom reel de la fonction (sans decoration) }
+    sym_name     : TSymString; { nom du symbole tel qu utilise par le fixup (majuscules) }
+    name         : TSymString; { casse EXACTE ecrite dans la table hint/name (export-by-name) }
     dll_index    : Integer;    { index 1-based dans import_dlls }
     iat_rva      : TLong;      { RVA finale de l entree IAT (remplie apres layout) }
     thunk_offset : TLong;      { offset dans .text du thunk FF25 (-1 = pas encore cree) }
@@ -5803,7 +5851,7 @@ Function ImportFuncIndex(Const nm : TSymString) : Integer;
 Var i, di : Integer; dll : TString;
 Begin
   For i := 1 To import_func_count Do
-    If import_funcs[i].name = nm Then Begin ImportFuncIndex := i; Exit; End;
+    If import_funcs[i].sym_name = nm Then Begin ImportFuncIndex := i; Exit; End;
   dll := FindWinApiDll(nm);
   If dll = '' Then
   Begin
@@ -5814,7 +5862,8 @@ Begin
   di := ImportDllIndex(dll);
   If import_func_count >= MAX_IMPORT_FUNC Then Begin ImportFuncIndex := 0; Exit; End;
   Inc(import_func_count);
-  import_funcs[import_func_count].name         := nm;
+  import_funcs[import_func_count].sym_name     := nm;
+  import_funcs[import_func_count].name         := FindWinApiRealName(nm);
   import_funcs[import_func_count].dll_index    := di;
   import_funcs[import_func_count].iat_rva      := 0;
   import_funcs[import_func_count].thunk_offset := -1;
@@ -6076,7 +6125,7 @@ Begin
   For d := 1 To import_dll_count Do
   Begin
     For i := 1 To import_func_count Do
-      If import_funcs[i].dll_index = d Then RDataAppendDWord(import_funcs[i].iat_rva);
+      If import_funcs[i].dll_index = d Then RDataAppendDWord(func_hintname_rva[i]);
     RDataAppendDWord(0);
   End;
   For d := 1 To import_dll_count Do RDataAppendStr(import_dlls[d]);
@@ -6537,11 +6586,11 @@ End;
   /coff /nologo /W0../W2 /? /help ; apres /link : /OUT: /SUBSYSTEM:
   /ENTRY: /STACK: /LIBPATH: (ignore) /DEBUG (ignore).
   ============================================================ }
-Procedure ShowUsage;
-Begin
-  Writeln('ML.PAS - clone de Microsoft Macro Assembler (ML.EXE) 80386/Win32');
-  Writeln('Usage :');
-  Writeln('  ML [options] fichier.asm [[options] [fichier.asm] ...] [/link options-de-liaison]');
+Procedure ShowUsage;Begin
+  Writeln('ML- Cette commande permet de lancer le compilateur Macro Assembler (ML.EXE) 80386/Win32.');
+  WriteLn;
+  Writeln('Syntaxe : ML [options] fichier.asm [[options] [fichier.asm] ...] [/link options-de-liaison]');
+  WriteLn;
   Writeln('Options :');
   Writeln('  /c            assembler seulement (produit un .OBJ COFF, pas d edition de liens)');
   Writeln('  /Zi /Zd       accepte, information de debogage non emise');
@@ -6673,7 +6722,7 @@ Var
   main_i       : Integer;
   main_outobj  : TString;
   main_outexe  : TString;
-Begin
+BEGIN
   BinInit;
   ParseArgs;
 
@@ -6725,5 +6774,5 @@ Begin
   End;
 
   If err_count > 0 Then Halt(1) Else Halt(0);
-End.
+END.
 
