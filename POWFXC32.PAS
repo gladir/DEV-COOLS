@@ -1132,6 +1132,9 @@ Begin
   EmitI(PFX_RT_PFX + 'DBL_LN2  DQ 0.693147180559945'); { ln(2) pour LOG }
   EmitI(PFX_RT_PFX + 'DBL_E    DQ 2.718281828459045'); { e }
   EmitI(PFX_RT_PFX + 'DBL_TEN  DQ 10.0'); { pour extraction des decimales dans NUMTOSTR }
+  EmitI(PFX_RT_PFX + 'FPUCW1   DD 0');    { sauvegarde du mot de controle FPU }
+  EmitI(PFX_RT_PFX + 'FPUCW2   DD 0');    { mot de controle temporaire (troncature) }
+  EmitI(PFX_RT_PFX + 'DBL_HULP DQ 0.0000005'); { demi-ULP pour arrondir le 6e chiffre avant troncature }
   EmitI(PFX_RT_PFX + 'ERR_DIV0 DB ''Error(Division by zero)'', 0');
   EmitI(PFX_RT_PFX + 'ERR_SQRT DB ''Error(Sqrt of negative number)'', 0');
   EmitI(PFX_RT_PFX + 'STR_TRUE DB ''true'', 0');
@@ -1301,6 +1304,16 @@ Begin
   EmitI('POP  EBP');
   EmitI('RET');
   EmitLabel(L1 + '_E');
+  { Passer le FPU en mode troncature (RC=11) le temps de l extraction des }
+  { chiffres : sans cela, FISTP arrondit chaque chiffre au plus proche,   }
+  { ce qui derive de la troncature attendue des le 3e chiffre decimal.    }
+  EmitI('FSTCW WORD PTR [' + PFX_RT_PFX + 'FPUCW1]');
+  EmitI('MOV  DWORD PTR [' + PFX_RT_PFX + 'FPUCW2], 3967'); { 0F7Fh: troncature }
+  EmitI('FLDCW WORD PTR [' + PFX_RT_PFX + 'FPUCW2]');
+  { Ajouter un demi-ULP (1e-6/2) pour que le 6e chiffre soit arrondi        }
+  { correctement plutot que simplement tronque (evite par ex. 0.999999     }
+  { au lieu de 1.000000 pour une valeur infinitesimalement sous l entier). }
+  EmitI('FADD QWORD PTR [' + PFX_RT_PFX + 'DBL_HULP]');
   { Dupliquer ST(0) pour extraire partie entiere }
   EmitI('FLD  ST(0)');              { ST(0)=val, ST(1)=val }
   { Convertir partie entiere -> EBX via FISTP }
@@ -1367,6 +1380,7 @@ Begin
   EmitI('DEC  ECX');
   EmitI('JNZ  ' + LE);
   EmitI('FSTP ST(0)');
+  EmitI('FLDCW WORD PTR [' + PFX_RT_PFX + 'FPUCW1]'); { restaurer le mode FPU d origine }
   EmitI('MOV  BYTE PTR [EDI], 0');
   EmitI('LEA  EAX, DWORD PTR [' + PFX_RT_PFX + 'NUMBUF]');
   EmitI('ADD  ESP, 12');
@@ -3336,6 +3350,28 @@ Begin
   If Mnem = 'CDQ' Then Begin BinEmitByte($99); Exit; End;
   If Mnem = 'SAHF' Then Begin BinEmitByte($9E); Exit; End;
   If (Mnem = 'FWAIT') Or (Mnem = 'WAIT') Then Begin BinEmitByte($9B); Exit; End;
+
+  { ---- FLDCW/FSTCW : mot de controle FPU (WORD PTR [mem]) ---- }
+  If Mnem = 'FLDCW' Then
+  Begin
+    If AsmStartsWith(Op1, 'WORD PTR [') Then
+    Begin
+      Bracket := AsmExtractBracket(Op1);
+      BinEmitByte($D9);
+      AsmEncodeMemory(Bracket, 5);
+      Exit;
+    End;
+  End;
+  If Mnem = 'FSTCW' Then
+  Begin
+    If AsmStartsWith(Op1, 'WORD PTR [') Then
+    Begin
+      Bracket := AsmExtractBracket(Op1);
+      BinEmitByte($D9);
+      AsmEncodeMemory(Bracket, 7);
+      Exit;
+    End;
+  End;
 
   If Mnem = 'FCHS'    Then Begin BinEmitByte($D9); BinEmitByte($E0); Exit; End;
   If Mnem = 'FTST'    Then Begin BinEmitByte($D9); BinEmitByte($E4); Exit; End;
