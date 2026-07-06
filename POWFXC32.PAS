@@ -107,6 +107,8 @@ Const
   TOK_NOT      = 25;   { !                            }
   TOK_AT       = 26;   { @                            }
   TOK_COLON    = 27;   { :                            }
+  TOK_LBRACE   = 28;   { accolade ouvrante (litteral record)  }
+  TOK_RBRACE   = 29;   { accolade fermante                    }
   TOK_UNKNOWN  = 99;
 
   { Mots-cles Power FX (insensible a la casse) }
@@ -141,6 +143,12 @@ Const
   PFX_BOOLEAN = 3;   { DWORD 0/1                     }
   PFX_BLANK   = 4;   { valeur nulle (0)              }
   PFX_ERROR   = 5;   { valeur erreur                 }
+  PFX_TABLE   = 6;   { pointeur vers un tableau/Table }
+
+  { Limites Table/Record }
+  MAX_TABLES      = 16;   { nombre de schemas de table distincts   }
+  MAX_FIELDS      = 8;    { nombre de champs max par record/table  }
+  TABLE_CAPACITY  = 64;   { nombre de lignes max par table (fixe)  }
 
   { Classes d entreposage }
   STORE_GLOBAL = 0;  { variable globale (.DATA)      }
@@ -213,6 +221,18 @@ Type
   End;
 {$ENDIF}
 
+  { Marque quels champs d un record litteral ont ete effectivement fournis }
+  TFieldFlags = Array[1..MAX_FIELDS] Of Boolean;
+
+  { Schema d une Table : champs (nom/type/offset dans une ligne) }
+  TTableSchema = Record
+    FieldCount  : Integer;
+    FieldName   : Array[1..MAX_FIELDS] Of String[32];
+    FieldType   : Array[1..MAX_FIELDS] Of Integer;   { PFX_xxx        }
+    FieldOffset : Array[1..MAX_FIELDS] Of Integer;   { octets ds ligne}
+    RowSize     : Integer;                           { octets/ligne   }
+  End;
+
   { Entree de la table des symboles }
   TSymEntry = Record
     Name      : String[48];
@@ -221,6 +241,7 @@ Type
     StoreClass: Integer;     { STORE_xxx                }
     BpOffset  : Integer;     { offset EBP si locale     }
     IsConst   : Boolean;
+    TableSchemaIdx : Integer; { index dans TableSchemas, si VarType=PFX_TABLE }
     ScopeLev  : Integer;
     HasInit   : Boolean;
   End;
@@ -271,6 +292,14 @@ Var
   SymTab     : Array[1..MAX_SYM] of TSymEntry;
   SymCount   : Integer;
   ScopeTop   : Integer;
+
+  { Schemas de Table (Collect/Patch/Remove/ForAll/Filter) }
+  TableSchemas     : Array[1..MAX_TABLES] Of TTableSchema;
+  TableSchemaCount : Integer;
+  LastTableSchemaIdx : Integer; { schema de la derniere expr PFX_TABLE evaluee }
+
+  { Portee "ligne courante" active pendant ForAll/Filter (0 = aucune) }
+  ActiveRowScope   : Integer;
 
   { Table des fonctions }
   FnTab      : Array[1..MAX_FN] of TFnEntry;
@@ -332,6 +361,7 @@ Const
 Procedure ParseExpr; Forward;
 Procedure ParseStatement; Forward;
 Procedure SkipToSemi; Forward;
+Function  FindTableField(SchemaIdx : Integer; Const FieldName : TString) : Integer; Forward;
 {$IFDEF FPC}
 Procedure BinInit; Forward;
 Procedure BinEmitByte(B : Byte); Forward;
@@ -685,6 +715,8 @@ Begin
     '^' : Begin CurTokType := TOK_POWER;    CurTokStr := '^'; End;
     '@' : Begin CurTokType := TOK_AT;       CurTokStr := '@'; End;
     ':' : Begin CurTokType := TOK_COLON;    CurTokStr := ':'; End;
+    '{' : Begin CurTokType := TOK_LBRACE;   CurTokStr := '{'; End;
+    '}' : Begin CurTokType := TOK_RBRACE;   CurTokStr := '}'; End;
     '&' :
     Begin
       If (LexColNo <= Length(LexLine)) And (LexCurChar = '&') Then
@@ -748,6 +780,9 @@ Var I : Integer;
 Begin
   SymCount := 0;
   ScopeTop := 0;
+  TableSchemaCount := 0;
+  LastTableSchemaIdx := 0;
+  ActiveRowScope := 0;
   For I := 1 To MAX_SYM Do
   Begin
     SymTab[I].Name       := '';
@@ -756,6 +791,7 @@ Begin
     SymTab[I].StoreClass := STORE_GLOBAL;
     SymTab[I].BpOffset   := 0;
     SymTab[I].IsConst    := False;
+    SymTab[I].TableSchemaIdx := 0;
     SymTab[I].ScopeLev   := 0;
     SymTab[I].HasInit    := False;
   End;
@@ -788,6 +824,7 @@ Begin
   SymTab[Idx].ScopeLev   := ScopeTop;
   SymTab[Idx].IsConst    := False;
   SymTab[Idx].HasInit    := False;
+  SymTab[Idx].TableSchemaIdx := 0;
   SymTab[Idx].AsmLabel   := PFX_VAR_PFX + AsmIdent(U);
   AddSym := Idx;
 End;
@@ -1139,6 +1176,15 @@ Begin
   EmitI(PFX_RT_PFX + 'ERR_SQRT DB ''Error(Sqrt of negative number)'', 0');
   EmitI(PFX_RT_PFX + 'STR_TRUE DB ''true'', 0');
   EmitI(PFX_RT_PFX + 'STR_FALSE DB ''false'', 0');
+  EmitBlank;
+
+  { --- Tampons et variables Table/Record ---   }
+  EmitComment('--- tampons et variables Table/Record ---');
+  EmitI(PFX_RT_PFX + 'RECBUF1  DB 64 DUP(0)'); { record: Collect/Patch(match)/Remove }
+  EmitI(PFX_RT_PFX + 'RECBUF2  DB 64 DUP(0)'); { record: Patch(mise a jour)          }
+  EmitI(PFX_RT_PFX + 'FORIDX   DD 0');         { index de ligne courant ForAll/Filter}
+  EmitI(PFX_RT_PFX + 'FORCNT   DD 0');         { nb de lignes a parcourir            }
+  EmitI(PFX_RT_PFX + 'CURROW   DD 0');         { adresse de la ligne courante        }
   EmitBlank;
 
   Emit('_DATA ENDS');
@@ -1908,6 +1954,120 @@ Begin
   EmitI('PUSH 1');
   EmitI('CALL _ExitProcess@4');
 
+  { ---- _PFXRT_TBLNEW : creer une Table (HeapAlloc) ---- }
+  { Entree : [EBP+12]=Capacite (lignes), [EBP+8]=RowSize (octets/ligne) }
+  { Sortie : EAX = pointeur ([ptr]=Count, [ptr+4]=Capacite, puis lignes) }
+  EmitBlank;
+  EmitComment('--- _PFXRT_TBLNEW : creer une Table (HeapAlloc) ---');
+  EmitComment('Entree: [EBP+12]=Capacite, [EBP+8]=RowSize. Sortie: EAX=ptr');
+  EmitLabel(PFX_RT_PFX + 'TBLNEW');
+  EmitI('PUSH EBP');
+  EmitI('MOV  EBP, ESP');
+  EmitI('PUSH EBX');
+  EmitI('MOV  EBX, DWORD PTR [EBP+12]'); { Capacite }
+  EmitI('MOV  EAX, DWORD PTR [EBP+8]');  { RowSize }
+  EmitI('IMUL EBX, EAX');
+  EmitI('ADD  EBX, 8');                 { EBX = octets totaux (avec entete) }
+  EmitI('CALL _GetProcessHeap@0');      { EAX = hHeap }
+  EmitI('PUSH EBX');
+  EmitI('PUSH 8');                      { HEAP_ZERO_MEMORY }
+  EmitI('PUSH EAX');
+  EmitI('CALL _HeapAlloc@12');          { EAX = ptr (zero-rempli) }
+  EmitI('MOV  ECX, DWORD PTR [EBP+12]'); { Capacite }
+  EmitI('MOV  DWORD PTR [EAX+4], ECX'); { [ptr+4] = Capacite }
+  EmitI('POP  EBX');
+  EmitI('POP  EBP');
+  EmitI('RET  8');
+
+  { ---- _PFXRT_TBLAPPEND : ajouter une ligne (Collect/Filter) ---- }
+  { Entree : [EBP+16]=tablePtr, [EBP+12]=recBufPtr, [EBP+8]=RowSize }
+  EmitBlank;
+  EmitComment('--- _PFXRT_TBLAPPEND : ajouter une ligne a une Table ---');
+  EmitComment('Entree: [EBP+16]=table, [EBP+12]=recbuf, [EBP+8]=RowSize');
+  EmitLabel(PFX_RT_PFX + 'TBLAPPEND');
+  EmitI('PUSH EBP');
+  EmitI('MOV  EBP, ESP');
+  EmitI('PUSH ESI');
+  EmitI('PUSH EDI');
+  EmitI('PUSH EDX');
+  EmitI('MOV  EAX, DWORD PTR [EBP+16]'); { tablePtr }
+  EmitI('MOV  ECX, DWORD PTR [EAX]');    { Count }
+  EmitI('CMP  ECX, DWORD PTR [EAX+4]');  { Capacite }
+  L1 := NewLabel; L2 := NewLabel; L3 := NewLabel;
+  EmitI('JGE  ' + L1);                  { pleine : ignorer silencieusement }
+  EmitI('MOV  EDX, DWORD PTR [EBP+8]'); { RowSize }
+  EmitI('IMUL ECX, EDX');               { Count*RowSize }
+  EmitI('ADD  ECX, 8');
+  EmitI('ADD  ECX, EAX');               { ECX = adresse destination }
+  EmitI('MOV  ESI, DWORD PTR [EBP+12]'); { recBufPtr (source) }
+  EmitI('MOV  EDI, ECX');               { destination }
+  EmitLabel(L2);
+  EmitI('TEST EDX, EDX');
+  EmitI('JZ   ' + L3);
+  EmitI('MOV  AL, BYTE PTR [ESI]');
+  EmitI('MOV  BYTE PTR [EDI], AL');
+  EmitI('INC  ESI');
+  EmitI('INC  EDI');
+  EmitI('DEC  EDX');
+  EmitI('JMP  ' + L2);
+  EmitLabel(L3);
+  EmitI('MOV  EAX, DWORD PTR [EBP+16]'); { tablePtr (relire, EAX ecrase) }
+  EmitI('MOV  ECX, DWORD PTR [EAX]');
+  EmitI('INC  ECX');
+  EmitI('MOV  DWORD PTR [EAX], ECX');   { Count++ }
+  EmitLabel(L1);
+  EmitI('POP  EDX');
+  EmitI('POP  EDI');
+  EmitI('POP  ESI');
+  EmitI('POP  EBP');
+  EmitI('RET  12');
+
+  { ---- _PFXRT_TBLREMOVEAT : retirer la ligne RowIndex (Remove) ---- }
+  { Entree : [EBP+16]=tablePtr, [EBP+12]=RowIndex, [EBP+8]=RowSize }
+  EmitBlank;
+  EmitComment('--- _PFXRT_TBLREMOVEAT : retirer une ligne d une Table ---');
+  EmitComment('Entree: [EBP+16]=table, [EBP+12]=RowIndex, [EBP+8]=RowSize');
+  EmitLabel(PFX_RT_PFX + 'TBLREMOVEAT');
+  EmitI('PUSH EBP');
+  EmitI('MOV  EBP, ESP');
+  EmitI('PUSH ESI');
+  EmitI('PUSH EDI');
+  EmitI('PUSH EBX');
+  EmitI('MOV  EAX, DWORD PTR [EBP+16]'); { tablePtr }
+  EmitI('MOV  ECX, DWORD PTR [EAX]');    { Count }
+  EmitI('MOV  EBX, DWORD PTR [EBP+12]'); { RowIndex }
+  EmitI('MOV  EDX, ECX');
+  EmitI('SUB  EDX, EBX');
+  EmitI('DEC  EDX');                    { EDX = nb de lignes a decaler }
+  EmitI('MOV  ESI, DWORD PTR [EBP+8]'); { RowSize }
+  EmitI('MOV  EDI, EBX');
+  EmitI('IMUL EDI, ESI');
+  EmitI('ADD  EDI, 8');
+  EmitI('ADD  EDI, EAX');               { EDI = destination (ligne RowIndex) }
+  EmitI('MOV  EBX, EDI');
+  EmitI('ADD  EBX, ESI');               { EBX = source (ligne RowIndex+1) }
+  EmitI('IMUL EDX, ESI');               { EDX = octets a decaler }
+  L1 := NewLabel; L2 := NewLabel;
+  EmitLabel(L1);
+  EmitI('TEST EDX, EDX');
+  EmitI('JZ   ' + L2);
+  EmitI('MOV  AL, BYTE PTR [EBX]');
+  EmitI('MOV  BYTE PTR [EDI], AL');
+  EmitI('INC  EBX');
+  EmitI('INC  EDI');
+  EmitI('DEC  EDX');
+  EmitI('JMP  ' + L1);
+  EmitLabel(L2);
+  EmitI('MOV  EAX, DWORD PTR [EBP+16]');
+  EmitI('MOV  ECX, DWORD PTR [EAX]');
+  EmitI('DEC  ECX');
+  EmitI('MOV  DWORD PTR [EAX], ECX');   { Count-- }
+  EmitI('POP  EBX');
+  EmitI('POP  EDI');
+  EmitI('POP  ESI');
+  EmitI('POP  EBP');
+  EmitI('RET  12');
+
   EmitBlank;
 End;
 
@@ -1971,6 +2131,8 @@ Var
   LblEnd : TString;
   ArgCnt : Integer;
   NumLbl : TString;
+  FIdx, Ofs, SchemaIdx, RowSize : Integer;
+  LblLoop, LblDone : TString;
 Begin
   ExprType := PFX_UNKNOWN;
 
@@ -2411,6 +2573,140 @@ Begin
             EmitLabel(LblEnd);
           End
 
+          Else If Nm = 'FILTER' Then
+          Begin
+            { Filter(table, condition) -> nouvelle Table (meme schema) }
+            If CurTokType <> TOK_IDENT Then
+            Begin
+              Error('Nom de table attendu dans Filter()');
+              ExprType := PFX_UNKNOWN;
+            End
+            Else
+            Begin
+              Nm := CurTokStr;
+              Sym := FindSym(Nm);
+              Consume;
+              If (Sym = 0) Or (SymTab[Sym].VarType <> PFX_TABLE) Then
+              Begin
+                Error(Nm + ' n''est pas une table');
+                ExprType := PFX_UNKNOWN;
+              End
+              Else
+              Begin
+                SchemaIdx := SymTab[Sym].TableSchemaIdx;
+                RowSize := TableSchemas[SchemaIdx].RowSize;
+                Expect(TOK_COMMA, ',');
+
+                { Creer la table de sortie (meme schema/capacite) }
+                EmitI('PUSH ' + IntToStr_(TABLE_CAPACITY));
+                EmitI('PUSH ' + IntToStr_(RowSize));
+                EmitI('CALL ' + PFX_RT_PFX + 'TBLNEW');
+                EmitI('PUSH EAX'); { ptr de sortie garde sur la pile durant la boucle }
+
+                GenLoadSym(Sym);   { EAX = table d entree }
+                EmitI('MOV  ECX, DWORD PTR [EAX]');
+                EmitI('MOV  DWORD PTR [' + PFX_RT_PFX + 'FORCNT], ECX');
+                EmitI('MOV  DWORD PTR [' + PFX_RT_PFX + 'FORIDX], 0');
+                LblLoop := NewLabel; LblDone := NewLabel; Lbl1 := NewLabel;
+                EmitLabel(LblLoop);
+                EmitI('MOV  EAX, DWORD PTR [' + PFX_RT_PFX + 'FORIDX]');
+                EmitI('CMP  EAX, DWORD PTR [' + PFX_RT_PFX + 'FORCNT]');
+                EmitI('JGE  ' + LblDone);
+                EmitI('IMUL EAX, ' + IntToStr_(RowSize));
+                EmitI('ADD  EAX, 8');
+                EmitI('MOV  EBX, DWORD PTR [' + SymTab[Sym].AsmLabel + ']');
+                EmitI('ADD  EAX, EBX');
+                EmitI('MOV  DWORD PTR [' + PFX_RT_PFX + 'CURROW], EAX');
+
+                ActiveRowScope := SchemaIdx;
+                ParseExpr;         { condition, doit etre Boolean }
+                ActiveRowScope := 0;
+                GenForceBool;
+                EmitI('TEST EAX, EAX');
+                EmitI('JZ   ' + Lbl1);
+                EmitI('MOV  EAX, DWORD PTR [ESP]'); { ptr table de sortie (non depile) }
+                EmitI('PUSH EAX');
+                EmitI('MOV  EAX, DWORD PTR [' + PFX_RT_PFX + 'CURROW]');
+                EmitI('PUSH EAX');
+                EmitI('PUSH ' + IntToStr_(RowSize));
+                EmitI('CALL ' + PFX_RT_PFX + 'TBLAPPEND');
+                EmitLabel(Lbl1);
+
+                EmitI('MOV  EAX, DWORD PTR [' + PFX_RT_PFX + 'FORIDX]');
+                EmitI('INC  EAX');
+                EmitI('MOV  DWORD PTR [' + PFX_RT_PFX + 'FORIDX], EAX');
+                EmitI('JMP  ' + LblLoop);
+                EmitLabel(LblDone);
+
+                EmitI('POP  EAX');  { EAX = ptr de la nouvelle table }
+                ExprType := PFX_TABLE;
+                LastTableSchemaIdx := SchemaIdx;
+              End;
+            End;
+          End
+
+          Else If Nm = 'SET' Then
+          Begin
+            { Set(var, expr) utilisable comme expression (renvoie la valeur }
+            { assignee) : permet par ex. un effet de bord dans ForAll().   }
+            If CurTokType <> TOK_IDENT Then
+            Begin
+              Error('Nom de variable attendu dans Set()');
+              ExprType := PFX_UNKNOWN;
+            End
+            Else
+            Begin
+              Nm := CurTokStr;
+              Consume;
+              Expect(TOK_COMMA, ',');
+              ParseExpr;
+              Sym := FindSym(Nm);
+              If Sym = 0 Then
+                Sym := AddSym(Nm, ExprType, STORE_GLOBAL)
+              Else
+                SymTab[Sym].VarType := ExprType;
+              If Sym > 0 Then
+              Begin
+                If ExprType = PFX_TABLE Then
+                  SymTab[Sym].TableSchemaIdx := LastTableSchemaIdx;
+                { Dupliquer avant stockage : GenStoreSym consomme ST(0)/EAX }
+                { et la valeur doit rester disponible comme resultat.      }
+                If ExprType = PFX_NUMBER Then EmitI('FLD  ST(0)');
+                GenStoreSym(Sym);
+              End;
+            End;
+          End
+
+          Else If Nm = 'COUNTROWS' Then
+          Begin
+            If CurTokType <> TOK_IDENT Then
+            Begin
+              Error('Nom de table attendu dans CountRows()');
+              EmitI('XOR  EAX, EAX');
+              ExprType := PFX_UNKNOWN;
+            End
+            Else
+            Begin
+              Nm := CurTokStr;
+              Sym := FindSym(Nm);
+              Consume;
+              If (Sym = 0) Or (SymTab[Sym].VarType <> PFX_TABLE) Then
+              Begin
+                Error(Nm + ' n''est pas une table');
+                EmitI('XOR  EAX, EAX');
+                ExprType := PFX_UNKNOWN;
+              End
+              Else
+              Begin
+                GenLoadSym(Sym);
+                EmitI('MOV  EAX, DWORD PTR [EAX]'); { Count }
+                EmitI('MOV  DWORD PTR [' + PFX_RT_PFX + 'ITMP], EAX');
+                EmitI('FILD DWORD PTR [' + PFX_RT_PFX + 'ITMP]');
+                ExprType := PFX_NUMBER;
+              End;
+            End;
+          End
+
           Else
           Begin
             { Fonction inconnue : passer les arguments et retourner 0 }
@@ -2432,12 +2728,33 @@ Begin
         End
         Else
         Begin
-          { Variable }
+          { Variable, ou champ de la ligne courante si ForAll/Filter actif }
+          FIdx := 0;
+          If ActiveRowScope <> 0 Then
+            FIdx := FindTableField(ActiveRowScope, Nm);
+          If FIdx > 0 Then
+          Begin
+            Ofs := TableSchemas[ActiveRowScope].FieldOffset[FIdx];
+            EmitI('MOV  EBX, DWORD PTR [' + PFX_RT_PFX + 'CURROW]');
+            If TableSchemas[ActiveRowScope].FieldType[FIdx] = PFX_NUMBER Then
+            Begin
+              EmitI('FLD  QWORD PTR [EBX+' + IntToStr_(Ofs) + ']');
+              ExprType := PFX_NUMBER;
+            End
+            Else
+            Begin
+              EmitI('MOV  EAX, DWORD PTR [EBX+' + IntToStr_(Ofs) + ']');
+              ExprType := TableSchemas[ActiveRowScope].FieldType[FIdx];
+            End;
+            Exit;
+          End;
           Sym := FindSym(Nm);
           If Sym > 0 Then
           Begin
             GenLoadSym(Sym);
             ExprType := SymTab[Sym].VarType;
+            If ExprType = PFX_TABLE Then
+              LastTableSchemaIdx := SymTab[Sym].TableSchemaIdx;
           End
           Else
           Begin
@@ -2738,6 +3055,108 @@ Begin
 End;
 
 { ============================================================ }
+{ TABLE/RECORD : litteraux, schemas, resolution de champ       }
+{ ============================================================ }
+
+Function FindTableField(SchemaIdx : Integer; Const FieldName : TString) : Integer;
+Var I : Integer; U : TString;
+Begin
+  FindTableField := 0;
+  U := StrUpperCase(FieldName);
+  For I := 1 To TableSchemas[SchemaIdx].FieldCount Do
+    If TableSchemas[SchemaIdx].FieldName[I] = U Then
+    Begin FindTableField := I; Exit; End;
+End;
+
+{ Parse un record litteral "NomChamp: expr, ..." (entre accolades) en     }
+{ creant un NOUVEAU schema (1ere utilisation d une table, ex: Collect sur }
+{ une variable pas encore declaree).                                     }
+Function ParseRecordLiteralInfer(Const BufLabel : TString) : Integer;
+Var SchemaIdx, FIdx, Ofs : Integer; FName : TString;
+Begin
+  ParseRecordLiteralInfer := 0;
+  If TableSchemaCount >= MAX_TABLES Then
+  Begin
+    Error('Trop de schemas de table (MAX_TABLES=' + IntToStr_(MAX_TABLES) + ')');
+    Exit;
+  End;
+  Inc(TableSchemaCount);
+  SchemaIdx := TableSchemaCount;
+  TableSchemas[SchemaIdx].FieldCount := 0;
+  Ofs := 0;
+  Expect(TOK_LBRACE, '{');
+  While CurTokType <> TOK_RBRACE Do
+  Begin
+    If CurTokType <> TOK_IDENT Then
+    Begin Error('Nom de champ attendu dans le record'); Break; End;
+    FName := StrUpperCase(CurTokStr);
+    Consume;
+    Expect(TOK_COLON, ':');
+    ParseExpr;
+    If TableSchemas[SchemaIdx].FieldCount >= MAX_FIELDS Then
+      Error('Trop de champs dans le record (MAX_FIELDS=' + IntToStr_(MAX_FIELDS) + ')')
+    Else
+    Begin
+      Inc(TableSchemas[SchemaIdx].FieldCount);
+      FIdx := TableSchemas[SchemaIdx].FieldCount;
+      TableSchemas[SchemaIdx].FieldName[FIdx]   := FName;
+      TableSchemas[SchemaIdx].FieldType[FIdx]   := ExprType;
+      TableSchemas[SchemaIdx].FieldOffset[FIdx] := Ofs;
+      If ExprType = PFX_NUMBER Then
+      Begin
+        EmitI('FSTP QWORD PTR [' + BufLabel + '+' + IntToStr_(Ofs) + ']');
+        Ofs := Ofs + 8;
+      End
+      Else
+      Begin
+        EmitI('MOV  DWORD PTR [' + BufLabel + '+' + IntToStr_(Ofs) + '], EAX');
+        Ofs := Ofs + 4;
+      End;
+    End;
+    If CurTokType = TOK_COMMA Then Consume Else Break;
+  End;
+  Expect(TOK_RBRACE, '}');
+  TableSchemas[SchemaIdx].RowSize := Ofs;
+  ParseRecordLiteralInfer := SchemaIdx;
+End;
+
+{ Parse un record litteral "NomChamp: expr, ..." selon un schema DEJA CONNU}
+{ (Collect sur une table existante, ou record de filtre/mise a jour de   }
+{ Patch/Remove). UsedField[i] est mis a True pour chaque champ fourni.   }
+Procedure ParseRecordLiteralWithSchema(SchemaIdx : Integer; Const BufLabel : TString;
+                                        Var UsedField : TFieldFlags);
+Var FName : TString; FIdx, Ofs : Integer;
+Begin
+  Expect(TOK_LBRACE, '{');
+  While CurTokType <> TOK_RBRACE Do
+  Begin
+    If CurTokType <> TOK_IDENT Then
+    Begin Error('Nom de champ attendu dans le record'); Break; End;
+    FName := StrUpperCase(CurTokStr);
+    Consume;
+    Expect(TOK_COLON, ':');
+    FIdx := FindTableField(SchemaIdx, FName);
+    If FIdx = 0 Then
+    Begin
+      Error('Champ inconnu dans la table: ' + FName);
+      ParseExpr; { consommer l expression quand meme pour resynchroniser }
+    End
+    Else
+    Begin
+      ParseExpr;
+      Ofs := TableSchemas[SchemaIdx].FieldOffset[FIdx];
+      If TableSchemas[SchemaIdx].FieldType[FIdx] = PFX_NUMBER Then
+        EmitI('FSTP QWORD PTR [' + BufLabel + '+' + IntToStr_(Ofs) + ']')
+      Else
+        EmitI('MOV  DWORD PTR [' + BufLabel + '+' + IntToStr_(Ofs) + '], EAX');
+      UsedField[FIdx] := True;
+    End;
+    If CurTokType = TOK_COMMA Then Consume Else Break;
+  End;
+  Expect(TOK_RBRACE, '}');
+End;
+
+{ ============================================================ }
 { PARSEUR : INSTRUCTIONS POWER FX                               }
 { ============================================================ }
 
@@ -2755,6 +3174,9 @@ End;
 { expr                 : expression standalone        }
 Procedure ParseStatement;
 Var Nm : TString; Sym : Integer;
+    SchemaIdx, I, Ofs, RowSize : Integer;
+    Used1, Used2 : TFieldFlags;
+    LblLoop, LblNext, LblDone : TString;
 Begin
   { Ignorer les points-virgules vides }
   While CurTokType = TOK_SEMI Do Consume;
@@ -2793,6 +3215,8 @@ Begin
       End
       Else
         SymTab[Sym].VarType := ExprType;
+      If ExprType = PFX_TABLE Then
+        SymTab[Sym].TableSchemaIdx := LastTableSchemaIdx;
       { Stocker le resultat }
       GenStoreSym(Sym);
       Expect(TOK_RPAREN, ')');
@@ -2831,20 +3255,261 @@ Begin
       If CurTokType = TOK_SEMI Then Consume;
     End;
 
-    { Stubs : Collect, Clear, Patch, Remove, ForAll, Filter }
-    KW_COLLECT, KW_CLEAR, KW_PATCH, KW_REMOVE, KW_FORALL, KW_FILTER :
+    { Collect(table, record) : ajoute une ligne, cree la table (schema      }
+    { infere du 1er record) si elle n existe pas encore.                   }
+    KW_COLLECT :
     Begin
-      EmitComment(StrUpperCase(Nm) + '(...) - stub non supporte, ignore');
       Consume;
-      If CurTokType = TOK_LPAREN Then
+      Expect(TOK_LPAREN, '(');
+      If CurTokType <> TOK_IDENT Then
+      Begin Error('Nom de table attendu dans Collect()'); SkipToSemi; Exit; End;
+      Nm := CurTokStr;
+      Consume;
+      Expect(TOK_COMMA, ',');
+      Sym := FindSym(Nm);
+      If Sym = 0 Then
       Begin
-        Consume;
-        While (CurTokType <> TOK_RPAREN) And (CurTokType <> TOK_EOF) Do
-          Consume;
-        If CurTokType = TOK_RPAREN Then Consume;
+        SchemaIdx := ParseRecordLiteralInfer(PFX_RT_PFX + 'RECBUF1');
+        If SchemaIdx = 0 Then Begin SkipToSemi; Exit; End;
+        Sym := AddSym(Nm, PFX_TABLE, STORE_GLOBAL);
+        If Sym = 0 Then Begin SkipToSemi; Exit; End;
+        SymTab[Sym].TableSchemaIdx := SchemaIdx;
+        EmitComment('Collect: creation de la table ' + Nm);
+        EmitI('PUSH ' + IntToStr_(TABLE_CAPACITY));
+        EmitI('PUSH ' + IntToStr_(TableSchemas[SchemaIdx].RowSize));
+        EmitI('CALL ' + PFX_RT_PFX + 'TBLNEW');
+        GenStoreSym(Sym);
+      End
+      Else If SymTab[Sym].VarType <> PFX_TABLE Then
+      Begin
+        Error(Nm + ' n''est pas une table');
+        SkipToSemi; Exit;
+      End
+      Else
+      Begin
+        SchemaIdx := SymTab[Sym].TableSchemaIdx;
+        For I := 1 To MAX_FIELDS Do Used1[I] := False;
+        ParseRecordLiteralWithSchema(SchemaIdx, PFX_RT_PFX + 'RECBUF1', Used1);
       End;
+      GenLoadSym(Sym);                 { EAX = tablePtr }
+      EmitI('PUSH EAX');
+      EmitI('LEA  EAX, DWORD PTR [' + PFX_RT_PFX + 'RECBUF1]');
+      EmitI('PUSH EAX');
+      EmitI('PUSH ' + IntToStr_(TableSchemas[SchemaIdx].RowSize));
+      EmitI('CALL ' + PFX_RT_PFX + 'TBLAPPEND');
+      Expect(TOK_RPAREN, ')');
       If CurTokType = TOK_SEMI Then Consume;
-      Warning(StrUpperCase(Nm) + ' non supporte, instruction ignoree');
+    End;
+
+    { Clear(table) : remet le compteur de lignes a 0 }
+    KW_CLEAR :
+    Begin
+      Consume;
+      Expect(TOK_LPAREN, '(');
+      If CurTokType <> TOK_IDENT Then
+      Begin Error('Nom de table attendu dans Clear()'); SkipToSemi; Exit; End;
+      Nm := CurTokStr;
+      Sym := FindSym(Nm);
+      Consume;
+      If (Sym = 0) Or (SymTab[Sym].VarType <> PFX_TABLE) Then
+        Error(Nm + ' n''est pas une table')
+      Else
+      Begin
+        GenLoadSym(Sym);
+        EmitI('MOV  DWORD PTR [EAX], 0');
+      End;
+      Expect(TOK_RPAREN, ')');
+      If CurTokType = TOK_SEMI Then Consume;
+    End;
+
+    { Patch(table, recordFiltre, recordMaj) : met a jour la 1ere ligne     }
+    { dont TOUS les champs du filtre correspondent.                       }
+    KW_PATCH :
+    Begin
+      Consume;
+      Expect(TOK_LPAREN, '(');
+      If CurTokType <> TOK_IDENT Then
+      Begin Error('Nom de table attendu dans Patch()'); SkipToSemi; Exit; End;
+      Nm := CurTokStr;
+      Sym := FindSym(Nm);
+      Consume;
+      If (Sym = 0) Or (SymTab[Sym].VarType <> PFX_TABLE) Then
+      Begin Error(Nm + ' n''est pas une table'); SkipToSemi; Exit; End;
+      SchemaIdx := SymTab[Sym].TableSchemaIdx;
+      RowSize := TableSchemas[SchemaIdx].RowSize;
+      Expect(TOK_COMMA, ',');
+      For I := 1 To MAX_FIELDS Do Used1[I] := False;
+      ParseRecordLiteralWithSchema(SchemaIdx, PFX_RT_PFX + 'RECBUF1', Used1);
+      Expect(TOK_COMMA, ',');
+      For I := 1 To MAX_FIELDS Do Used2[I] := False;
+      ParseRecordLiteralWithSchema(SchemaIdx, PFX_RT_PFX + 'RECBUF2', Used2);
+      Expect(TOK_RPAREN, ')');
+      If CurTokType = TOK_SEMI Then Consume;
+
+      GenLoadSym(Sym);
+      EmitI('MOV  ESI, EAX');
+      EmitI('ADD  ESI, 8');
+      EmitI('MOV  ECX, DWORD PTR [EAX]');
+      LblLoop := NewLabel; LblNext := NewLabel; LblDone := NewLabel;
+      EmitLabel(LblLoop);
+      EmitI('TEST ECX, ECX');
+      EmitI('JZ   ' + LblDone);
+      For I := 1 To TableSchemas[SchemaIdx].FieldCount Do
+      Begin
+        If Used1[I] Then
+        Begin
+          Ofs := TableSchemas[SchemaIdx].FieldOffset[I];
+          If TableSchemas[SchemaIdx].FieldType[I] = PFX_NUMBER Then
+          Begin
+            EmitI('FLD  QWORD PTR [ESI+' + IntToStr_(Ofs) + ']');
+            EmitI('FLD  QWORD PTR [' + PFX_RT_PFX + 'RECBUF1+' + IntToStr_(Ofs) + ']');
+            EmitI('FCOMI ST(0), ST(1)');
+            EmitI('FSTP ST(0)');
+            EmitI('FSTP ST(0)');
+            EmitI('JNE  ' + LblNext);
+          End
+          Else
+          Begin
+            EmitI('MOV  EDX, DWORD PTR [ESI+' + IntToStr_(Ofs) + ']');
+            EmitI('CMP  EDX, DWORD PTR [' + PFX_RT_PFX + 'RECBUF1+' + IntToStr_(Ofs) + ']');
+            EmitI('JNE  ' + LblNext);
+          End;
+        End;
+      End;
+      For I := 1 To TableSchemas[SchemaIdx].FieldCount Do
+      Begin
+        If Used2[I] Then
+        Begin
+          Ofs := TableSchemas[SchemaIdx].FieldOffset[I];
+          If TableSchemas[SchemaIdx].FieldType[I] = PFX_NUMBER Then
+          Begin
+            EmitI('FLD  QWORD PTR [' + PFX_RT_PFX + 'RECBUF2+' + IntToStr_(Ofs) + ']');
+            EmitI('FSTP QWORD PTR [ESI+' + IntToStr_(Ofs) + ']');
+          End
+          Else
+          Begin
+            EmitI('MOV  EDX, DWORD PTR [' + PFX_RT_PFX + 'RECBUF2+' + IntToStr_(Ofs) + ']');
+            EmitI('MOV  DWORD PTR [ESI+' + IntToStr_(Ofs) + '], EDX');
+          End;
+        End;
+      End;
+      EmitI('JMP  ' + LblDone);
+      EmitLabel(LblNext);
+      EmitI('ADD  ESI, ' + IntToStr_(RowSize));
+      EmitI('DEC  ECX');
+      EmitI('JMP  ' + LblLoop);
+      EmitLabel(LblDone);
+    End;
+
+    { Remove(table, recordFiltre) : retire la 1ere ligne correspondante }
+    KW_REMOVE :
+    Begin
+      Consume;
+      Expect(TOK_LPAREN, '(');
+      If CurTokType <> TOK_IDENT Then
+      Begin Error('Nom de table attendu dans Remove()'); SkipToSemi; Exit; End;
+      Nm := CurTokStr;
+      Sym := FindSym(Nm);
+      Consume;
+      If (Sym = 0) Or (SymTab[Sym].VarType <> PFX_TABLE) Then
+      Begin Error(Nm + ' n''est pas une table'); SkipToSemi; Exit; End;
+      SchemaIdx := SymTab[Sym].TableSchemaIdx;
+      RowSize := TableSchemas[SchemaIdx].RowSize;
+      Expect(TOK_COMMA, ',');
+      For I := 1 To MAX_FIELDS Do Used1[I] := False;
+      ParseRecordLiteralWithSchema(SchemaIdx, PFX_RT_PFX + 'RECBUF1', Used1);
+      Expect(TOK_RPAREN, ')');
+      If CurTokType = TOK_SEMI Then Consume;
+
+      GenLoadSym(Sym);
+      EmitI('MOV  EDI, EAX');           { EDI = tablePtr, conserve pour l appel }
+      EmitI('MOV  ESI, EAX');
+      EmitI('ADD  ESI, 8');
+      EmitI('MOV  ECX, DWORD PTR [EAX]');
+      EmitI('XOR  EBX, EBX');           { EBX = index de ligne }
+      LblLoop := NewLabel; LblNext := NewLabel; LblDone := NewLabel;
+      EmitLabel(LblLoop);
+      EmitI('TEST ECX, ECX');
+      EmitI('JZ   ' + LblDone);
+      For I := 1 To TableSchemas[SchemaIdx].FieldCount Do
+      Begin
+        If Used1[I] Then
+        Begin
+          Ofs := TableSchemas[SchemaIdx].FieldOffset[I];
+          If TableSchemas[SchemaIdx].FieldType[I] = PFX_NUMBER Then
+          Begin
+            EmitI('FLD  QWORD PTR [ESI+' + IntToStr_(Ofs) + ']');
+            EmitI('FLD  QWORD PTR [' + PFX_RT_PFX + 'RECBUF1+' + IntToStr_(Ofs) + ']');
+            EmitI('FCOMI ST(0), ST(1)');
+            EmitI('FSTP ST(0)');
+            EmitI('FSTP ST(0)');
+            EmitI('JNE  ' + LblNext);
+          End
+          Else
+          Begin
+            EmitI('MOV  EDX, DWORD PTR [ESI+' + IntToStr_(Ofs) + ']');
+            EmitI('CMP  EDX, DWORD PTR [' + PFX_RT_PFX + 'RECBUF1+' + IntToStr_(Ofs) + ']');
+            EmitI('JNE  ' + LblNext);
+          End;
+        End;
+      End;
+      EmitI('PUSH EDI');
+      EmitI('PUSH EBX');
+      EmitI('PUSH ' + IntToStr_(RowSize));
+      EmitI('CALL ' + PFX_RT_PFX + 'TBLREMOVEAT');
+      EmitI('JMP  ' + LblDone);
+      EmitLabel(LblNext);
+      EmitI('ADD  ESI, ' + IntToStr_(RowSize));
+      EmitI('INC  EBX');
+      EmitI('DEC  ECX');
+      EmitI('JMP  ' + LblLoop);
+      EmitLabel(LblDone);
+    End;
+
+    { ForAll(table, formule) : evalue formule pour chaque ligne (effets de }
+    { bord uniquement ; les noms de champs de la table sont accessibles). }
+    KW_FORALL :
+    Begin
+      Consume;
+      Expect(TOK_LPAREN, '(');
+      If CurTokType <> TOK_IDENT Then
+      Begin Error('Nom de table attendu dans ForAll()'); SkipToSemi; Exit; End;
+      Nm := CurTokStr;
+      Sym := FindSym(Nm);
+      Consume;
+      If (Sym = 0) Or (SymTab[Sym].VarType <> PFX_TABLE) Then
+      Begin Error(Nm + ' n''est pas une table'); SkipToSemi; Exit; End;
+      SchemaIdx := SymTab[Sym].TableSchemaIdx;
+      RowSize := TableSchemas[SchemaIdx].RowSize;
+      Expect(TOK_COMMA, ',');
+
+      GenLoadSym(Sym);
+      EmitI('MOV  ECX, DWORD PTR [EAX]');
+      EmitI('MOV  DWORD PTR [' + PFX_RT_PFX + 'FORCNT], ECX');
+      EmitI('MOV  DWORD PTR [' + PFX_RT_PFX + 'FORIDX], 0');
+      LblLoop := NewLabel; LblDone := NewLabel;
+      EmitLabel(LblLoop);
+      EmitI('MOV  EAX, DWORD PTR [' + PFX_RT_PFX + 'FORIDX]');
+      EmitI('CMP  EAX, DWORD PTR [' + PFX_RT_PFX + 'FORCNT]');
+      EmitI('JGE  ' + LblDone);
+      EmitI('IMUL EAX, ' + IntToStr_(RowSize));
+      EmitI('ADD  EAX, 8');
+      EmitI('MOV  EBX, DWORD PTR [' + SymTab[Sym].AsmLabel + ']');
+      EmitI('ADD  EAX, EBX');
+      EmitI('MOV  DWORD PTR [' + PFX_RT_PFX + 'CURROW], EAX');
+
+      ActiveRowScope := SchemaIdx;
+      ParseExpr;
+      ActiveRowScope := 0;
+      If ExprType = PFX_NUMBER Then EmitI('FSTP ST(0)');
+
+      EmitI('MOV  EAX, DWORD PTR [' + PFX_RT_PFX + 'FORIDX]');
+      EmitI('INC  EAX');
+      EmitI('MOV  DWORD PTR [' + PFX_RT_PFX + 'FORIDX], EAX');
+      EmitI('JMP  ' + LblLoop);
+      EmitLabel(LblDone);
+      Expect(TOK_RPAREN, ')');
+      If CurTokType = TOK_SEMI Then Consume;
     End;
 
   Else
@@ -3290,6 +3955,15 @@ Begin
           BinEmitByte((2 Shl 6) Or (RegField Shl 3) Or BaseR);
         BinEmitDWord(Disp);
       End;
+    End
+    Else
+    Begin
+      { [label+disp] : le "base" n est pas un registre (ex: NUMBUF+30).    }
+      { Traiter tout le texte du crochet comme cible de fixup ABS32 ; le   }
+      { "+" est reparti par BinResolveFixups (comme le fait deja LEA/MOV). }
+      BinEmitByte((0 Shl 6) Or (RegField Shl 3) Or 5);
+      BinAddFixup(BinCodeLen, BFK_ABS32, Bracket, True);
+      BinEmitDWord(0);
     End;
   End
   Else
