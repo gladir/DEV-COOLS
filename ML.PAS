@@ -5947,8 +5947,10 @@ Var
   section_rva_arr : Array[1..4] Of TLong;
   section_size_arr: Array[1..4] Of TLong;
   section_foff_arr: Array[1..4] Of TLong;
+  section_raw_arr : Array[1..4] Of TLong;
   section_name_arr: Array[1..4] Of String[8];
   section_class_arr: Array[1..4] Of LongWord;
+  n : Integer;
 Begin
   g_image_base := $400000;
 
@@ -6220,22 +6222,40 @@ Begin
   { DataDirectory[13..15] non utilises }
   For i := 1 To 3 Do Begin CoffWrDWord(f, 0); CoffWrDWord(f, 0); End;
 
-  { --- en-tetes de section --- }
-  section_name_arr[1] := '.text';  section_rva_arr[1] := g_text_rva;  section_size_arr[1] := text_size;  section_foff_arr[1] := text_foff;
-  section_name_arr[2] := '.rdata'; section_rva_arr[2] := g_rdata_rva; section_size_arr[2] := rdata_size; section_foff_arr[2] := rdata_foff;
-  section_name_arr[3] := '.data';  section_rva_arr[3] := g_data_rva;  section_size_arr[3] := data_size;  section_foff_arr[3] := data_foff;
-  section_name_arr[4] := '.bss';   section_rva_arr[4] := g_bss_rva;   section_size_arr[4] := bss_size;   section_foff_arr[4] := 0;
-  section_class_arr[1] := COFF_SCN_CNT_CODE  Or COFF_SCN_MEM_EXEC Or COFF_SCN_MEM_READ;
-  section_class_arr[2] := COFF_SCN_CNT_IDATA Or COFF_SCN_MEM_READ;
-  section_class_arr[3] := COFF_SCN_CNT_IDATA Or COFF_SCN_MEM_READ Or COFF_SCN_MEM_WRITE;
-  section_class_arr[4] := COFF_SCN_CNT_UDATA Or COFF_SCN_MEM_READ Or COFF_SCN_MEM_WRITE;
+  { --- en-tetes de section : seules les sections non vides sont ecrites --- }
+  n := 0;
+  Inc(n);
+  section_name_arr[n] := '.text'; section_rva_arr[n] := g_text_rva; section_size_arr[n] := text_size;
+  section_foff_arr[n] := text_foff; section_raw_arr[n] := AlignUp(text_size, $200);
+  section_class_arr[n] := COFF_SCN_CNT_CODE Or COFF_SCN_MEM_EXEC Or COFF_SCN_MEM_READ;
+  If rdata_size > 0 Then
+  Begin
+    Inc(n);
+    section_name_arr[n] := '.rdata'; section_rva_arr[n] := g_rdata_rva; section_size_arr[n] := rdata_size;
+    section_foff_arr[n] := rdata_foff; section_raw_arr[n] := AlignUp(rdata_size, $200);
+    section_class_arr[n] := COFF_SCN_CNT_IDATA Or COFF_SCN_MEM_READ;
+  End;
+  If data_size > 0 Then
+  Begin
+    Inc(n);
+    section_name_arr[n] := '.data'; section_rva_arr[n] := g_data_rva; section_size_arr[n] := data_size;
+    section_foff_arr[n] := data_foff; section_raw_arr[n] := AlignUp(data_size, $200);
+    section_class_arr[n] := COFF_SCN_CNT_IDATA Or COFF_SCN_MEM_READ Or COFF_SCN_MEM_WRITE;
+  End;
+  If bss_size > 0 Then
+  Begin
+    Inc(n);
+    section_name_arr[n] := '.bss'; section_rva_arr[n] := g_bss_rva; section_size_arr[n] := bss_size;
+    section_foff_arr[n] := 0; section_raw_arr[n] := 0;
+    section_class_arr[n] := COFF_SCN_CNT_UDATA Or COFF_SCN_MEM_READ Or COFF_SCN_MEM_WRITE;
+  End;
 
-  For i := 1 To 4 Do
+  For i := 1 To num_sections Do
   Begin
     CoffWrName8(f, section_name_arr[i]);
     CoffWrDWord(f, section_size_arr[i]);      { VirtualSize }
     CoffWrDWord(f, section_rva_arr[i]);       { VirtualAddress }
-    If i = 4 Then CoffWrDWord(f, 0) Else CoffWrDWord(f, AlignUp(section_size_arr[i], $200)); { SizeOfRawData }
+    CoffWrDWord(f, section_raw_arr[i]);       { SizeOfRawData }
     CoffWrDWord(f, section_foff_arr[i]);      { PointerToRawData }
     CoffWrDWord(f, 0); CoffWrDWord(f, 0);
     CoffWrWord(f, 0); CoffWrWord(f, 0);
