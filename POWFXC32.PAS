@@ -1122,7 +1122,7 @@ Begin
   EmitI(PFX_RT_PFX + 'STRBUF   DB 256 DUP(0)');    { buffer operations chaines }
   EmitI(PFX_RT_PFX + 'CATBUF   DB 512 DUP(0)');    { buffer concatenation }
   EmitI(PFX_RT_PFX + 'INPUTBUF DB 256 DUP(0)');    { buffer lecture console }
-  EmitI(PFX_RT_PFX + 'CRLF     DB 13, 10, 0');     { CR+LF }
+  EmitI(PFX_RT_PFX + 'CRLFBUF  DB 13, 10, 0');     { CR+LF (nom distinct de la procedure CRLF) }
   EmitI(PFX_RT_PFX + 'HSTDOUT  DD 0');             { handle stdout }
   EmitI(PFX_RT_PFX + 'HSTDIN   DD 0');             { handle stdin }
   EmitI(PFX_RT_PFX + 'WRITTEN  DD 0');             { octets ecrits }
@@ -1131,6 +1131,7 @@ Begin
   EmitI(PFX_RT_PFX + 'ITMP     DD 0');             { Entier temporaire 32 bits }
   EmitI(PFX_RT_PFX + 'DBL_LN2  DQ 0.693147180559945'); { ln(2) pour LOG }
   EmitI(PFX_RT_PFX + 'DBL_E    DQ 2.718281828459045'); { e }
+  EmitI(PFX_RT_PFX + 'DBL_TEN  DQ 10.0'); { pour extraction des decimales dans NUMTOSTR }
   EmitI(PFX_RT_PFX + 'ERR_DIV0 DB ''Error(Division by zero)'', 0');
   EmitI(PFX_RT_PFX + 'ERR_SQRT DB ''Error(Sqrt of negative number)'', 0');
   EmitI(PFX_RT_PFX + 'STR_TRUE DB ''true'', 0');
@@ -1197,7 +1198,7 @@ Begin
   EmitI('LEA  EAX, DWORD PTR [' + PFX_RT_PFX + 'WRITTEN]');
   EmitI('PUSH EAX');
   EmitI('PUSH 2');
-  EmitI('LEA  EAX, DWORD PTR [' + PFX_RT_PFX + 'CRLF]');
+  EmitI('LEA  EAX, DWORD PTR [' + PFX_RT_PFX + 'CRLFBUF]');
   EmitI('PUSH EAX');
   EmitI('PUSH DWORD PTR [' + PFX_RT_PFX + 'HSTDOUT]');
   EmitI('CALL _WriteFile@20');
@@ -1307,7 +1308,7 @@ Begin
   EmitI('MOV  EBX, DWORD PTR [' + PFX_RT_PFX + 'ITMP]');
   { Convertir EBX en ASCII (partie entiere) }
   { Methode : diviser par 10 en remontant }
-  EmitI('LEA  ESI, DWORD PTR [' + PFX_RT_PFX + 'NUMBUF + 30]'); { buffer temp }
+  EmitI('LEA  ESI, DWORD PTR [' + PFX_RT_PFX + 'NUMBUF+30]'); { buffer temp }
   EmitI('XOR  ECX, ECX');           { compteur chiffres }
   EmitLabel(L2);
   EmitI('MOV  EAX, EBX');
@@ -1339,19 +1340,16 @@ Begin
   { Generer 6 decimales }
   EmitI('MOV  ECX, 6');
   EmitLabel(LE);
-  EmitI('FMUL QWORD PTR [' + PFX_RT_PFX + 'DBL_LN2]'); { *10 approximation }
-  { Simplification : on multiplie par 10 directement via une constante }
-  { Note: DBL_LN2 utilise pour adresse, sera remplace par 10.0 dans .DATA }
-  { Pour simplicite : stocker et extraire chiffre }
-  EmitI('FISTP DWORD PTR [' + PFX_RT_PFX + 'ITMP]');
+  EmitI('FMUL QWORD PTR [' + PFX_RT_PFX + 'DBL_TEN]'); { frac *= 10 }
+  EmitI('FLD  ST(0)');                { dupliquer : ST(0)=frac*10, ST(1)=frac*10 }
+  EmitI('FISTP DWORD PTR [' + PFX_RT_PFX + 'ITMP]'); { pop la copie -> chiffre entier }
   EmitI('MOV  EAX, DWORD PTR [' + PFX_RT_PFX + 'ITMP]');
   EmitI('AND  EAX, 9');              { clamp 0-9 }
   EmitI('ADD  AL, 48');
   EmitI('MOV  BYTE PTR [EDI], AL');
   EmitI('INC  EDI');
-  EmitI('FILD DWORD PTR [' + PFX_RT_PFX + 'ITMP]'); { re-push dernier chiffre }
-  EmitI('FSUBP ST(1), ST(0)');       { soustraire chiffre }
-  EmitI('FMUL QWORD PTR [' + PFX_RT_PFX + 'DBL_LN2]');
+  EmitI('FILD DWORD PTR [' + PFX_RT_PFX + 'ITMP]'); { ST(0)=chiffre, ST(1)=frac*10 }
+  EmitI('FSUBP ST(1), ST(0)');       { ST(0) = frac*10 - chiffre = reste }
   EmitI('DEC  ECX');
   EmitI('JNZ  ' + LE);
   EmitI('FSTP ST(0)');
@@ -1782,6 +1780,10 @@ Begin
   EmitBlank;
   EmitComment('--- _PFXRT_POWER : Power(ST(0)=base, ST(1)=exp) ---');
   EmitLabel(PFX_RT_PFX + 'POWER');
+  { A l entree reelle : ST(0)=exposant, ST(1)=base (le site d appel evalue }
+  { la base avant l exposant). FYL2X exige ST(0)=base, ST(1)=exp : on      }
+  { echange donc les deux avant de calculer.                              }
+  EmitI('FXCH ST(1)');
   { ST(0)=base, ST(1)=exp -> ST(0) = base^exp }
   { Utiliser FYL2X : ST(0) = ST(1) * log2(ST(0)) }
   EmitI('FYL2X');
@@ -1839,14 +1841,14 @@ Begin
   EmitI('LEA  EAX, DWORD PTR [' + PFX_RT_PFX + 'READCNT]');
   EmitI('PUSH EAX');
   EmitI('PUSH 1');
-  EmitI('LEA  EAX, DWORD PTR [' + PFX_RT_PFX + 'INPUTBUF + 254]');
+  EmitI('LEA  EAX, DWORD PTR [' + PFX_RT_PFX + 'INPUTBUF+254]');
   EmitI('PUSH EAX');
   EmitI('PUSH DWORD PTR [' + PFX_RT_PFX + 'HSTDIN]');
   EmitI('CALL _ReadFile@20');
   EmitI('MOV  EAX, DWORD PTR [' + PFX_RT_PFX + 'READCNT]');
   EmitI('TEST EAX, EAX');
   EmitI('JZ   ' + LE);
-  EmitI('MOVZX EAX, BYTE PTR [' + PFX_RT_PFX + 'INPUTBUF + 254]');
+  EmitI('MOVZX EAX, BYTE PTR [' + PFX_RT_PFX + 'INPUTBUF+254]');
   EmitI('CMP  AL, 10');
   EmitI('JE   ' + LE);
   EmitI('CMP  AL, 13');
@@ -2298,19 +2300,27 @@ Begin
           Begin
             ParseExpr;
             If ExprType = PFX_NUMBER Then EmitI('CALL ' + PFX_RT_PFX + 'NUMTOSTR');
-            EmitI('PUSH EAX');
-            While CurTokType = TOK_COMMA Do
+            { Chaque CALL STRCAT nettoie deja sa propre pile (RET 8) et       }
+            { renvoie le resultat dans EAX. On repousse ce resultat pour     }
+            { l iteration suivante afin de chainer correctement 3+ arguments }
+            { (Concatenate(a,b,c,...)), puis on le recupere une fois la      }
+            { boucle terminee.                                              }
+            If CurTokType = TOK_COMMA Then
             Begin
-              Expect(TOK_COMMA, ',');
-              EmitI('POP  EBX');
-              ParseExpr;
-              If ExprType = PFX_NUMBER Then EmitI('CALL ' + PFX_RT_PFX + 'NUMTOSTR');
-              EmitI('PUSH EBX');
               EmitI('PUSH EAX');
-              EmitI('CALL ' + PFX_RT_PFX + 'STRCAT');
+              While CurTokType = TOK_COMMA Do
+              Begin
+                Expect(TOK_COMMA, ',');
+                EmitI('POP  EBX');
+                ParseExpr;
+                If ExprType = PFX_NUMBER Then EmitI('CALL ' + PFX_RT_PFX + 'NUMTOSTR');
+                EmitI('PUSH EBX');
+                EmitI('PUSH EAX');
+                EmitI('CALL ' + PFX_RT_PFX + 'STRCAT');
+                EmitI('PUSH EAX');
+              End;
+              EmitI('POP  EAX');
             End;
-            EmitI('POP  EAX');
-            { POP extra si nest... }
             ExprType := PFX_TEXT;
           End
 
@@ -2941,23 +2951,1793 @@ Begin
     Begin BinFindLabel := BinLabels[I].Offset; Exit; End;
 End;
 
-{ ---- BinAssemble : stub - note que le vrai assemblage necessite MASM ---- }
-{ Pour un assemblage complet, utiliser :                                      }
-{   ML /c /coff /Fo PROG.OBJ PROG.ASM                                        }
-{   LINK /SUBSYSTEM:CONSOLE /OUT:PROG.EXE PROG.OBJ kernel32.lib              }
+{ ============================================================ }
+{ ASSEMBLEUR X86 INTEGRE (encodeur d instructions -> BinCode)   }
+{ ============================================================ }
+{ Encode directement le texte .ASM (syntaxe MASM generee par ce }
+{ compilateur) en code machine 80386, sans dependance externe. }
+
+Function AsmRegIdx32(Const S : String) : Integer;
+Begin
+  If S = 'EAX' Then AsmRegIdx32 := 0
+  Else If S = 'ECX' Then AsmRegIdx32 := 1
+  Else If S = 'EDX' Then AsmRegIdx32 := 2
+  Else If S = 'EBX' Then AsmRegIdx32 := 3
+  Else If S = 'ESP' Then AsmRegIdx32 := 4
+  Else If S = 'EBP' Then AsmRegIdx32 := 5
+  Else If S = 'ESI' Then AsmRegIdx32 := 6
+  Else If S = 'EDI' Then AsmRegIdx32 := 7
+  Else AsmRegIdx32 := -1;
+End;
+
+Function AsmRegIdx8(Const S : String) : Integer;
+Begin
+  If S = 'AL' Then AsmRegIdx8 := 0
+  Else If S = 'CL' Then AsmRegIdx8 := 1
+  Else If S = 'DL' Then AsmRegIdx8 := 2
+  Else If S = 'BL' Then AsmRegIdx8 := 3
+  Else AsmRegIdx8 := -1;
+End;
+
+Function AsmFindAPI(Const S : String) : Integer;
+Var I : Integer;
+Begin
+  AsmFindAPI := -1;
+  For I := 0 To PE_NUM_API - 1 Do
+    If S = BinAPIDecorated[I] Then
+    Begin
+      AsmFindAPI := I;
+      Exit;
+    End;
+End;
+
+Function AsmParseImm(Const S : String) : LongInt;
+Var Code : Integer; V : LongInt;
+Begin
+  Val(S, V, Code);
+  If Code = 0 Then AsmParseImm := V
+  Else AsmParseImm := 0;
+End;
+
+{ Parse un litteral Double MASM (ex: '0' ou '0.693147180559945') et retourne
+  ses 8 octets IEEE-754 (little-endian) dans Out8. Utilise pour DQ. }
+Procedure AsmParseDouble(Const S : String; Var Out8 : Array of Byte);
+Var D : Double; Err : Integer;
+    Bytes : Array[0..7] Of Byte;
+    Db : Double Absolute Bytes;
+    I : Integer;
+Begin
+  Val(S, D, Err);
+  If Err <> 0 Then D := 0.0;
+  Db := D;
+  For I := 0 To 7 Do Out8[I] := Bytes[I];
+End;
+
+{ Retourne True si le contenu du crochet reference un registre (pas un label) }
+Function AsmIsRegBased(Const S : String) : Boolean;
+Var Base : String;
+    I : Integer;
+Begin
+  AsmIsRegBased := False;
+  Base := S;
+  For I := 1 To Length(Base) Do
+    If (Base[I] = '+') Or (Base[I] = '-') Or (Base[I] = '*') Then
+    Begin
+      Base := Copy(Base, 1, I - 1);
+      Break;
+    End;
+  While (Length(Base) > 0) And (Base[Length(Base)] = ' ') Do
+    Delete(Base, Length(Base), 1);
+  AsmIsRegBased := (AsmRegIdx32(Base) >= 0);
+End;
+
+Function AsmTrimLine(Const S : String) : String;
+Var I, J, K : Integer; R : String;
+Begin
+  R := S;
+  K := 0;
+  For I := 1 To Length(R) Do
+    If R[I] = ';' Then Begin K := I; Break; End;
+  If K > 0 Then R := Copy(R, 1, K - 1);
+  I := 1;
+  While (I <= Length(R)) And ((R[I] = ' ') Or (R[I] = #9)) Do Inc(I);
+  J := Length(R);
+  While (J >= I) And ((R[J] = ' ') Or (R[J] = #9)) Do Dec(J);
+  If I > J Then AsmTrimLine := ''
+  Else AsmTrimLine := Copy(R, I, J - I + 1);
+End;
+
+Function AsmIsLabel(Const S : String) : Boolean;
+Begin
+  AsmIsLabel := (Length(S) > 1) And (S[Length(S)] = ':');
+End;
+
+Function AsmExtractLabel(Const S : String) : String;
+Begin
+  AsmExtractLabel := Copy(S, 1, Length(S) - 1);
+End;
+
+Function AsmStartsWith(Const S, Prefix : String) : Boolean;
+Var I : Integer;
+Begin
+  AsmStartsWith := False;
+  If Length(S) < Length(Prefix) Then Exit;
+  For I := 1 To Length(Prefix) Do
+    If S[I] <> Prefix[I] Then Exit;
+  AsmStartsWith := True;
+End;
+
+Function AsmGetMnemonic(Const S : String) : String;
+Var I : Integer;
+Begin
+  I := 1;
+  While (I <= Length(S)) And (S[I] <> ' ') And (S[I] <> #9) Do Inc(I);
+  AsmGetMnemonic := Copy(S, 1, I - 1);
+End;
+
+Function AsmGetOperands(Const S : String) : String;
+Var I : Integer;
+Begin
+  I := 1;
+  While (I <= Length(S)) And (S[I] <> ' ') And (S[I] <> #9) Do Inc(I);
+  While (I <= Length(S)) And ((S[I] = ' ') Or (S[I] = #9)) Do Inc(I);
+  If I > Length(S) Then AsmGetOperands := ''
+  Else AsmGetOperands := Copy(S, I, Length(S) - I + 1);
+End;
+
+Procedure AsmSplitOps(Const S : String; Var Op1, Op2 : String);
+Var I : Integer;
+Begin
+  Op1 := ''; Op2 := '';
+  I := 1;
+  While (I <= Length(S)) And (S[I] <> ',') Do
+  Begin
+    Op1 := Op1 + S[I];
+    Inc(I);
+  End;
+  While (Length(Op1) > 0) And (Op1[Length(Op1)] = ' ') Do
+    Delete(Op1, Length(Op1), 1);
+  If I <= Length(S) Then
+  Begin
+    Inc(I);
+    While (I <= Length(S)) And (S[I] = ' ') Do Inc(I);
+    Op2 := Copy(S, I, Length(S) - I + 1);
+    While (Length(Op2) > 0) And (Op2[Length(Op2)] = ' ') Do
+      Delete(Op2, Length(Op2), 1);
+  End;
+End;
+
+Function AsmExtractBracket(Const S : String) : String;
+Var I, Start : Integer;
+Begin
+  AsmExtractBracket := '';
+  Start := 0;
+  For I := 1 To Length(S) Do
+    If S[I] = '[' Then Begin Start := I + 1; Break; End;
+  If Start = 0 Then Exit;
+  I := Start;
+  While (I <= Length(S)) And (S[I] <> ']') Do Inc(I);
+  AsmExtractBracket := Copy(S, Start, I - Start);
+End;
+
+{ Encode une reference memoire a l interieur des crochets.
+  RegField = champ reg du ModRM/SIB. }
+Procedure AsmEncodeMemory(Const Bracket : String; RegField : Integer);
+Var
+  PlusPos, MinusPos, I : Integer;
+  Base, Idx : String;
+  BaseR, IdxR : Integer;
+  Disp : LongInt;
+  StarP, PlusP2, ScaleV, ScaleF : Integer;
+  IdxName, ScaleAndRest, ScaleStr, DispStr : String;
+Begin
+  PlusPos := 0; MinusPos := 0;
+  For I := 1 To Length(Bracket) Do
+  Begin
+    If (Bracket[I] = '+') And (PlusPos = 0) Then PlusPos := I;
+    If (Bracket[I] = '-') And (MinusPos = 0) Then MinusPos := I;
+  End;
+
+  If (PlusPos = 0) And (MinusPos = 0) Then
+  Begin
+    { Simple: [reg] ou [label] }
+    BaseR := AsmRegIdx32(Bracket);
+    If BaseR >= 0 Then
+    Begin
+      If BaseR = 5 Then
+      Begin { [EBP] necessite mod=01 disp8=0 }
+        BinEmitByte((1 Shl 6) Or (RegField Shl 3) Or 5);
+        BinEmitByte(0);
+      End
+      Else If BaseR = 4 Then
+      Begin { [ESP] necessite SIB }
+        BinEmitByte((0 Shl 6) Or (RegField Shl 3) Or 4);
+        BinEmitByte($24);
+      End
+      Else
+        BinEmitByte((0 Shl 6) Or (RegField Shl 3) Or BaseR);
+    End
+    Else
+    Begin { [label] = [disp32] }
+      BinEmitByte((0 Shl 6) Or (RegField Shl 3) Or 5);
+      BinAddFixup(BinCodeLen, BFK_ABS32, Bracket, True);
+      BinEmitDWord(0);
+    End;
+  End
+  Else If PlusPos > 0 Then
+  Begin
+    Base := Copy(Bracket, 1, PlusPos - 1);
+    Idx := Copy(Bracket, PlusPos + 1, Length(Bracket) - PlusPos);
+    While (Length(Base) > 0) And (Base[Length(Base)] = ' ') Do
+      Delete(Base, Length(Base), 1);
+    While (Length(Idx) > 0) And (Idx[1] = ' ') Do
+      Delete(Idx, 1, 1);
+    BaseR := AsmRegIdx32(Base);
+    IdxR := AsmRegIdx32(Idx);
+    If (BaseR >= 0) And (IdxR >= 0) Then
+    Begin { [base+index] necessite SIB }
+      If BaseR = 5 Then
+      Begin { [EBP+index] necessite mod=01 disp8=0 }
+        BinEmitByte((1 Shl 6) Or (RegField Shl 3) Or 4);
+        BinEmitByte((0 Shl 6) Or (IdxR Shl 3) Or BaseR);
+        BinEmitByte(0);
+      End
+      Else
+      Begin
+        BinEmitByte((0 Shl 6) Or (RegField Shl 3) Or 4);
+        BinEmitByte((0 Shl 6) Or (IdxR Shl 3) Or BaseR);
+      End;
+    End
+    Else If (BaseR >= 0) And (Pos('*', Idx) > 0) Then
+    Begin { [base+index*scale] ou [base+index*scale+disp] }
+      Disp := 0;
+      StarP := Pos('*', Idx);
+      IdxName := Copy(Idx, 1, StarP - 1);
+      While (Length(IdxName) > 0) And (IdxName[Length(IdxName)] = ' ') Do
+        Delete(IdxName, Length(IdxName), 1);
+      ScaleAndRest := Copy(Idx, StarP + 1, Length(Idx) - StarP);
+      While (Length(ScaleAndRest) > 0) And (ScaleAndRest[1] = ' ') Do
+        Delete(ScaleAndRest, 1, 1);
+      PlusP2 := Pos('+', ScaleAndRest);
+      If PlusP2 > 0 Then
+      Begin
+        ScaleStr := Copy(ScaleAndRest, 1, PlusP2 - 1);
+        DispStr := Copy(ScaleAndRest, PlusP2 + 1, Length(ScaleAndRest) - PlusP2);
+        ScaleV := AsmParseImm(ScaleStr);
+        Disp := AsmParseImm(DispStr);
+      End
+      Else
+      Begin
+        ScaleV := AsmParseImm(ScaleAndRest);
+        Disp := 0;
+      End;
+      IdxR := AsmRegIdx32(IdxName);
+      Case ScaleV Of
+        1: ScaleF := 0;
+        2: ScaleF := 1;
+        4: ScaleF := 2;
+        8: ScaleF := 3;
+      Else ScaleF := 0;
+      End;
+      If (Disp = 0) And (BaseR <> 5) Then
+      Begin
+        BinEmitByte((0 Shl 6) Or (RegField Shl 3) Or 4);
+        BinEmitByte((ScaleF Shl 6) Or (IdxR Shl 3) Or BaseR);
+      End
+      Else If (Disp >= -128) And (Disp <= 127) Then
+      Begin
+        BinEmitByte((1 Shl 6) Or (RegField Shl 3) Or 4);
+        BinEmitByte((ScaleF Shl 6) Or (IdxR Shl 3) Or BaseR);
+        BinEmitByte(Byte(Disp And $FF));
+      End
+      Else
+      Begin
+        BinEmitByte((2 Shl 6) Or (RegField Shl 3) Or 4);
+        BinEmitByte((ScaleF Shl 6) Or (IdxR Shl 3) Or BaseR);
+        BinEmitDWord(Disp);
+      End;
+    End
+    Else If BaseR >= 0 Then
+    Begin { [base+disp] }
+      Disp := AsmParseImm(Idx);
+      If (Disp >= -128) And (Disp <= 127) Then
+      Begin
+        If BaseR = 4 Then
+        Begin
+          BinEmitByte((1 Shl 6) Or (RegField Shl 3) Or 4);
+          BinEmitByte($24);
+        End
+        Else
+          BinEmitByte((1 Shl 6) Or (RegField Shl 3) Or BaseR);
+        BinEmitByte(Byte(Disp And $FF));
+      End
+      Else
+      Begin
+        If BaseR = 4 Then
+        Begin
+          BinEmitByte((2 Shl 6) Or (RegField Shl 3) Or 4);
+          BinEmitByte($24);
+        End
+        Else
+          BinEmitByte((2 Shl 6) Or (RegField Shl 3) Or BaseR);
+        BinEmitDWord(Disp);
+      End;
+    End;
+  End
+  Else
+  Begin { [base-disp] }
+    Base := Copy(Bracket, 1, MinusPos - 1);
+    Idx := Copy(Bracket, MinusPos + 1, Length(Bracket) - MinusPos);
+    While (Length(Base) > 0) And (Base[Length(Base)] = ' ') Do
+      Delete(Base, Length(Base), 1);
+    While (Length(Idx) > 0) And (Idx[1] = ' ') Do
+      Delete(Idx, 1, 1);
+    BaseR := AsmRegIdx32(Base);
+    Disp := -AsmParseImm(Idx);
+    If (Disp >= -128) And (Disp <= 127) Then
+    Begin
+      If BaseR = 4 Then
+      Begin
+        BinEmitByte((1 Shl 6) Or (RegField Shl 3) Or 4);
+        BinEmitByte($24);
+      End
+      Else
+        BinEmitByte((1 Shl 6) Or (RegField Shl 3) Or BaseR);
+      BinEmitByte(Byte(Disp And $FF));
+    End
+    Else
+    Begin
+      If BaseR = 4 Then
+      Begin
+        BinEmitByte((2 Shl 6) Or (RegField Shl 3) Or 4);
+        BinEmitByte($24);
+      End
+      Else
+        BinEmitByte((2 Shl 6) Or (RegField Shl 3) Or BaseR);
+      BinEmitDWord(Disp);
+    End;
+  End;
+End;
+
+{ ---- AsmEncodeInstr : encoder une instruction x86 ----------- }
+Procedure AsmEncodeInstr(Const Line : String);
+Var
+  Mnem, Ops, Op1, Op2, Op3, Bracket : String;
+  R1, R2, I, CommaPos : Integer;
+  Imm : LongInt;
+  ApiIdx : Integer;
+Begin
+  Mnem := AsmGetMnemonic(Line);
+  Ops := AsmGetOperands(Line);
+  AsmSplitOps(Ops, Op1, Op2);
+
+  { ---- Instructions simples sans operande ---- }
+  If Mnem = 'RET' Then
+  Begin
+    If Length(Op1) > 0 Then
+    Begin BinEmitByte($C2); BinEmitWord(Word(AsmParseImm(Op1))); End
+    Else BinEmitByte($C3);
+    Exit;
+  End;
+  If Mnem = 'CDQ' Then Begin BinEmitByte($99); Exit; End;
+  If Mnem = 'SAHF' Then Begin BinEmitByte($9E); Exit; End;
+  If (Mnem = 'FWAIT') Or (Mnem = 'WAIT') Then Begin BinEmitByte($9B); Exit; End;
+
+  If Mnem = 'FCHS'    Then Begin BinEmitByte($D9); BinEmitByte($E0); Exit; End;
+  If Mnem = 'FTST'    Then Begin BinEmitByte($D9); BinEmitByte($E4); Exit; End;
+  If Mnem = 'FSTSW'   Then
+  Begin
+    { FSTSW AX : DF E0 }
+    If StrUpperCase(Op1) = 'AX' Then
+    Begin BinEmitByte($DF); BinEmitByte($E0); Exit; End;
+  End;
+  If Mnem = 'FSQRT'   Then Begin BinEmitByte($D9); BinEmitByte($FA); Exit; End;
+  If Mnem = 'FYL2X'   Then Begin BinEmitByte($D9); BinEmitByte($F1); Exit; End;
+  If Mnem = 'FLDL2E'  Then Begin BinEmitByte($D9); BinEmitByte($EA); Exit; End;
+  If Mnem = 'FLDLN2'  Then Begin BinEmitByte($D9); BinEmitByte($ED); Exit; End;
+  If Mnem = 'FLD1'    Then Begin BinEmitByte($D9); BinEmitByte($E8); Exit; End;
+  If Mnem = 'F2XM1'   Then Begin BinEmitByte($D9); BinEmitByte($F0); Exit; End;
+  If Mnem = 'FSCALE'  Then Begin BinEmitByte($D9); BinEmitByte($FD); Exit; End;
+  If Mnem = 'FRNDINT' Then Begin BinEmitByte($D9); BinEmitByte($FC); Exit; End;
+  If Mnem = 'FABS'    Then Begin BinEmitByte($D9); BinEmitByte($E1); Exit; End;
+
+  { ---- FPU : FCOMI (comparaison ST(0), ST(i), met a jour ZF/PF/CF) ---- }
+  If Mnem = 'FCOMI' Then
+  Begin
+    { FCOMI ST(0), ST(i) : DB F0+i }
+    If StrUpperCase(Op2) = 'ST(1)' Then
+    Begin BinEmitByte($DB); BinEmitByte($F1); Exit; End;
+    BinEmitByte($DB); BinEmitByte($F0);
+    Exit;
+  End;
+
+  { ---- FPU : FMULP / FADDP / FSUBRP / FDIVRP (sans operandes ou ST(1),ST(0)) ---- }
+  If Mnem = 'FMULP'   Then Begin BinEmitByte($DE); BinEmitByte($C9); Exit; End;
+  If Mnem = 'FADDP'   Then Begin BinEmitByte($DE); BinEmitByte($C1); Exit; End;
+  If Mnem = 'FSUBRP'  Then Begin BinEmitByte($DE); BinEmitByte($E1); Exit; End;
+  If Mnem = 'FSUBP'   Then Begin BinEmitByte($DE); BinEmitByte($E9); Exit; End;
+  If Mnem = 'FDIVRP'  Then Begin BinEmitByte($DE); BinEmitByte($F1); Exit; End;
+  If Mnem = 'FDIVP'   Then Begin BinEmitByte($DE); BinEmitByte($F9); Exit; End;
+
+  { ---- FPU : FXCH (sans operande = ST(1)) ---- }
+  If Mnem = 'FXCH' Then
+  Begin
+    { Par defaut ou avec ST(1) : D9 C9. Pas de support des autres ST(n) ici }
+    BinEmitByte($D9); BinEmitByte($C9);
+    Exit;
+  End;
+
+  { ---- FPU : FLD ST(0), FSTP ST(i), FILD/FISTP memoire ---- }
+  If Mnem = 'FLD' Then
+  Begin
+    { FLD ST(0) : duplique le sommet -> D9 C0 }
+    If (StrUpperCase(Op1) = 'ST(0)') Or (StrUpperCase(Op1) = 'ST') Or
+       (StrUpperCase(Op1) = 'ST0') Then
+    Begin BinEmitByte($D9); BinEmitByte($C0); Exit; End;
+    { FLD DWORD PTR [mem] : D9 /0 }
+    If AsmStartsWith(Op1, 'DWORD PTR [') Then
+    Begin
+      Bracket := AsmExtractBracket(Op1);
+      BinEmitByte($D9);
+      AsmEncodeMemory(Bracket, 0);
+      Exit;
+    End;
+    { FLD QWORD PTR [mem] : DD /0 }
+    If AsmStartsWith(Op1, 'QWORD PTR [') Then
+    Begin
+      Bracket := AsmExtractBracket(Op1);
+      BinEmitByte($DD);
+      AsmEncodeMemory(Bracket, 0);
+      Exit;
+    End;
+  End;
+  If Mnem = 'FSTP' Then
+  Begin
+    { FSTP ST(i) : DD D8+i (ecrase ST(0) dans ST(i) avec pop) }
+    If (StrUpperCase(Op1) = 'ST(0)') Or (StrUpperCase(Op1) = 'ST') Or
+       (StrUpperCase(Op1) = 'ST0') Then
+    Begin BinEmitByte($DD); BinEmitByte($D8); Exit; End;
+    If StrUpperCase(Op1) = 'ST(1)' Then
+    Begin BinEmitByte($DD); BinEmitByte($D9); Exit; End;
+    If StrUpperCase(Op1) = 'ST(2)' Then
+    Begin BinEmitByte($DD); BinEmitByte($DA); Exit; End;
+    If StrUpperCase(Op1) = 'ST(3)' Then
+    Begin BinEmitByte($DD); BinEmitByte($DB); Exit; End;
+    If StrUpperCase(Op1) = 'ST(4)' Then
+    Begin BinEmitByte($DD); BinEmitByte($DC); Exit; End;
+    If StrUpperCase(Op1) = 'ST(5)' Then
+    Begin BinEmitByte($DD); BinEmitByte($DD); Exit; End;
+    If StrUpperCase(Op1) = 'ST(6)' Then
+    Begin BinEmitByte($DD); BinEmitByte($DE); Exit; End;
+    If StrUpperCase(Op1) = 'ST(7)' Then
+    Begin BinEmitByte($DD); BinEmitByte($DF); Exit; End;
+    { FSTP DWORD PTR [mem] : D9 /3 }
+    If AsmStartsWith(Op1, 'DWORD PTR [') Then
+    Begin
+      Bracket := AsmExtractBracket(Op1);
+      BinEmitByte($D9);
+      AsmEncodeMemory(Bracket, 3);
+      Exit;
+    End;
+    { FSTP QWORD PTR [mem] : DD /3 }
+    If AsmStartsWith(Op1, 'QWORD PTR [') Then
+    Begin
+      Bracket := AsmExtractBracket(Op1);
+      BinEmitByte($DD);
+      AsmEncodeMemory(Bracket, 3);
+      Exit;
+    End;
+  End;
+  If Mnem = 'FILD' Then
+  Begin
+    { FILD DWORD PTR [mem] : DB /0 }
+    If AsmStartsWith(Op1, 'DWORD PTR [') Then
+    Begin
+      Bracket := AsmExtractBracket(Op1);
+      BinEmitByte($DB);
+      AsmEncodeMemory(Bracket, 0);
+      Exit;
+    End;
+  End;
+  If Mnem = 'FISTP' Then
+  Begin
+    { FISTP DWORD PTR [mem] : DB /3 }
+    If AsmStartsWith(Op1, 'DWORD PTR [') Then
+    Begin
+      Bracket := AsmExtractBracket(Op1);
+      BinEmitByte($DB);
+      AsmEncodeMemory(Bracket, 3);
+      Exit;
+    End;
+    { FISTP QWORD PTR [mem] : DF /7 }
+    If AsmStartsWith(Op1, 'QWORD PTR [') Then
+    Begin
+      Bracket := AsmExtractBracket(Op1);
+      BinEmitByte($DF);
+      AsmEncodeMemory(Bracket, 7);
+      Exit;
+    End;
+  End;
+  { ---- FPU : FADD/FSUB/FMUL/FDIV ST(0), ST(i) ---- }
+  If (Mnem = 'FADD') Or (Mnem = 'FMUL') Or (Mnem = 'FSUB') Or
+     (Mnem = 'FSUBR') Or (Mnem = 'FDIV') Or (Mnem = 'FDIVR') Then
+  Begin
+    { Forme registre : FADD ST(0), ST(i) }
+    If (StrUpperCase(Op1) = 'ST(0)') Or (StrUpperCase(Op1) = 'ST') Or
+       (StrUpperCase(Op1) = 'ST0') Then
+    Begin
+      R2 := -1;
+      If StrUpperCase(Op2) = 'ST(0)' Then R2 := 0
+      Else If StrUpperCase(Op2) = 'ST(1)' Then R2 := 1
+      Else If StrUpperCase(Op2) = 'ST(2)' Then R2 := 2
+      Else If StrUpperCase(Op2) = 'ST(3)' Then R2 := 3
+      Else If StrUpperCase(Op2) = 'ST(4)' Then R2 := 4
+      Else If StrUpperCase(Op2) = 'ST(5)' Then R2 := 5
+      Else If StrUpperCase(Op2) = 'ST(6)' Then R2 := 6
+      Else If StrUpperCase(Op2) = 'ST(7)' Then R2 := 7;
+      If R2 >= 0 Then
+      Begin
+        BinEmitByte($D8);
+        If Mnem = 'FADD'  Then BinEmitByte($C0 + R2)
+        Else If Mnem = 'FMUL'  Then BinEmitByte($C8 + R2)
+        Else If Mnem = 'FSUB'  Then BinEmitByte($E0 + R2)
+        Else If Mnem = 'FSUBR' Then BinEmitByte($E8 + R2)
+        Else If Mnem = 'FDIV'  Then BinEmitByte($F0 + R2)
+        Else                       BinEmitByte($F8 + R2);
+        Exit;
+      End;
+    End;
+    { Forme memoire seule : FMUL/FADD/FSUB/FDIV QWORD PTR [mem] -> ST(0) op= m64 }
+    If AsmStartsWith(Op1, 'QWORD PTR [') Then
+    Begin
+      Bracket := AsmExtractBracket(Op1);
+      BinEmitByte($DC);
+      If Mnem = 'FADD'  Then AsmEncodeMemory(Bracket, 0)
+      Else If Mnem = 'FMUL'  Then AsmEncodeMemory(Bracket, 1)
+      Else If Mnem = 'FSUB'  Then AsmEncodeMemory(Bracket, 4)
+      Else If Mnem = 'FSUBR' Then AsmEncodeMemory(Bracket, 5)
+      Else If Mnem = 'FDIV'  Then AsmEncodeMemory(Bracket, 6)
+      Else                       AsmEncodeMemory(Bracket, 7);
+      Exit;
+    End;
+  End;
+
+  { ---- PUSH ---- }
+  If Mnem = 'PUSH' Then
+  Begin
+    If AsmStartsWith(Op1, 'DWORD PTR [') Then
+    Begin
+      Bracket := AsmExtractBracket(Op1);
+      If AsmIsRegBased(Bracket) Then
+      Begin { Base registre : FF /6 + ModRM/SIB }
+        BinEmitByte($FF);
+        AsmEncodeMemory(Bracket, 6);
+      End
+      Else
+      Begin { Label memoire direct }
+        BinEmitByte($FF);
+        BinEmitByte($35);
+        BinAddFixup(BinCodeLen, BFK_ABS32, Bracket, True);
+        BinEmitDWord(0);
+      End;
+      Exit;
+    End;
+    R1 := AsmRegIdx32(Op1);
+    If R1 >= 0 Then
+    Begin BinEmitByte($50 + R1); Exit; End;
+    { PUSH OFFSET label -> fixup ABS32 }
+    If AsmStartsWith(Op1, 'OFFSET ') Then
+    Begin
+      BinEmitByte($68);
+      BinAddFixup(BinCodeLen, BFK_ABS32,
+        Copy(Op1, 8, Length(Op1) - 7), True);
+      BinEmitDWord(0);
+      Exit;
+    End;
+    Imm := AsmParseImm(Op1);
+    If (Imm >= -128) And (Imm <= 127) Then
+    Begin
+      BinEmitByte($6A);
+      BinEmitByte(Byte(Imm And $FF));
+    End
+    Else
+    Begin
+      BinEmitByte($68);
+      BinEmitDWord(Imm);
+    End;
+    Exit;
+  End;
+
+  { ---- POP ---- }
+  If Mnem = 'POP' Then
+  Begin
+    R1 := AsmRegIdx32(Op1);
+    If R1 >= 0 Then BinEmitByte($58 + R1);
+    Exit;
+  End;
+
+  { ---- MOV ---- }
+  If Mnem = 'MOV' Then
+  Begin
+    { MOV DWORD PTR [mem], reg32 ou imm32 }
+    If AsmStartsWith(Op1, 'DWORD PTR [') Then
+    Begin
+      Bracket := AsmExtractBracket(Op1);
+      R2 := AsmRegIdx32(Op2);
+      If R2 >= 0 Then
+      Begin
+        If AsmIsRegBased(Bracket) Then
+        Begin
+          BinEmitByte($89);
+          AsmEncodeMemory(Bracket, R2);
+        End
+        Else If R2 = 0 Then
+        Begin
+          BinEmitByte($A3);
+          BinAddFixup(BinCodeLen, BFK_ABS32, Bracket, True);
+          BinEmitDWord(0);
+        End
+        Else
+        Begin
+          BinEmitByte($89);
+          BinEmitByte((0 Shl 6) Or (R2 Shl 3) Or 5);
+          BinAddFixup(BinCodeLen, BFK_ABS32, Bracket, True);
+          BinEmitDWord(0);
+        End;
+      End
+      Else
+      Begin
+        Imm := AsmParseImm(Op2);
+        If AsmIsRegBased(Bracket) Then
+        Begin
+          BinEmitByte($C7);
+          AsmEncodeMemory(Bracket, 0);
+          BinEmitDWord(Imm);
+        End
+        Else
+        Begin
+          BinEmitByte($C7);
+          BinEmitByte($05);
+          BinAddFixup(BinCodeLen, BFK_ABS32, Bracket, True);
+          BinEmitDWord(0);
+          BinEmitDWord(Imm);
+        End;
+      End;
+      Exit;
+    End;
+    { MOV BYTE PTR [mem], reg8/imm8 }
+    If AsmStartsWith(Op1, 'BYTE PTR [') Then
+    Begin
+      Bracket := AsmExtractBracket(Op1);
+      R2 := AsmRegIdx8(Op2);
+      If R2 >= 0 Then
+      Begin
+        BinEmitByte($88);
+        AsmEncodeMemory(Bracket, R2);
+      End
+      Else
+      Begin
+        Imm := AsmParseImm(Op2);
+        BinEmitByte($C6);
+        AsmEncodeMemory(Bracket, 0);
+        BinEmitByte(Byte(Imm And $FF));
+      End;
+      Exit;
+    End;
+    { MOV reg, DWORD PTR [mem] }
+    If AsmStartsWith(Op2, 'DWORD PTR [') Then
+    Begin
+      Bracket := AsmExtractBracket(Op2);
+      R1 := AsmRegIdx32(Op1);
+      If AsmIsRegBased(Bracket) Then
+      Begin
+        BinEmitByte($8B);
+        AsmEncodeMemory(Bracket, R1);
+      End
+      Else If R1 = 0 Then
+      Begin
+        BinEmitByte($A1);
+        BinAddFixup(BinCodeLen, BFK_ABS32, Bracket, True);
+        BinEmitDWord(0);
+      End
+      Else
+      Begin
+        BinEmitByte($8B);
+        BinEmitByte((0 Shl 6) Or (R1 Shl 3) Or 5);
+        BinAddFixup(BinCodeLen, BFK_ABS32, Bracket, True);
+        BinEmitDWord(0);
+      End;
+      Exit;
+    End;
+    { MOV reg8, BYTE PTR [mem] }
+    If AsmStartsWith(Op2, 'BYTE PTR [') Then
+    Begin
+      Bracket := AsmExtractBracket(Op2);
+      R1 := AsmRegIdx8(Op1);
+      BinEmitByte($8A);
+      AsmEncodeMemory(Bracket, R1);
+      Exit;
+    End;
+    { MOV reg32, reg32 }
+    R1 := AsmRegIdx32(Op1);
+    R2 := AsmRegIdx32(Op2);
+    If (R1 >= 0) And (R2 >= 0) Then
+    Begin
+      BinEmitByte($89);
+      BinEmitByte((3 Shl 6) Or (R2 Shl 3) Or R1);
+      Exit;
+    End;
+    { MOV reg32, OFFSET label -> fixup ABS32 }
+    If (R1 >= 0) And AsmStartsWith(Op2, 'OFFSET ') Then
+    Begin
+      BinEmitByte($B8 + R1);
+      BinAddFixup(BinCodeLen, BFK_ABS32,
+        Copy(Op2, 8, Length(Op2) - 7), True);
+      BinEmitDWord(0);
+      Exit;
+    End;
+    { MOV reg32, imm32 }
+    If R1 >= 0 Then
+    Begin
+      Imm := AsmParseImm(Op2);
+      BinEmitByte($B8 + R1);
+      BinEmitDWord(Imm);
+      Exit;
+    End;
+    Exit;
+  End;
+
+  { ---- LEA ---- }
+  If Mnem = 'LEA' Then
+  Begin
+    R1 := AsmRegIdx32(Op1);
+    Bracket := AsmExtractBracket(Op2);
+    If AsmIsRegBased(Bracket) Then
+    Begin
+      BinEmitByte($8D);
+      AsmEncodeMemory(Bracket, R1);
+    End
+    Else
+    Begin
+      BinEmitByte($8D);
+      BinEmitByte((0 Shl 6) Or (R1 Shl 3) Or 5);
+      BinAddFixup(BinCodeLen, BFK_ABS32, Bracket, True);
+      BinEmitDWord(0);
+    End;
+    Exit;
+  End;
+
+  { ---- CALL ---- }
+  If Mnem = 'CALL' Then
+  Begin
+    ApiIdx := AsmFindAPI(Op1);
+    If ApiIdx >= 0 Then
+    Begin
+      BinEmitByte($FF);
+      BinEmitByte($15);
+      BinAddFixup(BinCodeLen, BFK_IAT32, Op1, True);
+      BinEmitDWord(0);
+    End
+    Else
+    Begin
+      BinEmitByte($E8);
+      BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+      BinEmitDWord(0);
+    End;
+    Exit;
+  End;
+
+  { ---- JMP ---- }
+  If Mnem = 'JMP' Then
+  Begin
+    BinEmitByte($E9);
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+    BinEmitDWord(0);
+    Exit;
+  End;
+
+  { ---- Jcc (sauts conditionnels) ---- }
+  If (Mnem = 'JZ') Or (Mnem = 'JE') Then
+  Begin
+    BinEmitByte($0F); BinEmitByte($84);
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+    BinEmitDWord(0); Exit;
+  End;
+  If (Mnem = 'JNZ') Or (Mnem = 'JNE') Then
+  Begin
+    BinEmitByte($0F); BinEmitByte($85);
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+    BinEmitDWord(0); Exit;
+  End;
+  If Mnem = 'JB' Then
+  Begin
+    BinEmitByte($0F); BinEmitByte($82);
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+    BinEmitDWord(0); Exit;
+  End;
+  If Mnem = 'JBE' Then
+  Begin
+    BinEmitByte($0F); BinEmitByte($86);
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+    BinEmitDWord(0); Exit;
+  End;
+  If (Mnem = 'JAE') Or (Mnem = 'JNC') Then
+  Begin
+    BinEmitByte($0F); BinEmitByte($83);
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+    BinEmitDWord(0); Exit;
+  End;
+  If Mnem = 'JA' Then
+  Begin
+    BinEmitByte($0F); BinEmitByte($87);
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+    BinEmitDWord(0); Exit;
+  End;
+  If Mnem = 'JGE' Then
+  Begin
+    BinEmitByte($0F); BinEmitByte($8D);
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+    BinEmitDWord(0); Exit;
+  End;
+  If Mnem = 'JNS' Then
+  Begin
+    BinEmitByte($0F); BinEmitByte($89);
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+    BinEmitDWord(0); Exit;
+  End;
+  If Mnem = 'JG' Then
+  Begin
+    BinEmitByte($0F); BinEmitByte($8F);
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+    BinEmitDWord(0); Exit;
+  End;
+  If Mnem = 'JL' Then
+  Begin
+    BinEmitByte($0F); BinEmitByte($8C);
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+    BinEmitDWord(0); Exit;
+  End;
+  If (Mnem = 'JLE') Or (Mnem = 'JNG') Then
+  Begin
+    BinEmitByte($0F); BinEmitByte($8E);
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+    BinEmitDWord(0); Exit;
+  End;
+  If Mnem = 'JS' Then
+  Begin
+    BinEmitByte($0F); BinEmitByte($88);
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+    BinEmitDWord(0); Exit;
+  End;
+
+  { ---- ADD ---- }
+  If Mnem = 'ADD' Then
+  Begin
+    If Op1 = 'AL' Then
+    Begin
+      BinEmitByte($04);
+      BinEmitByte(Byte(AsmParseImm(Op2) And $FF));
+      Exit;
+    End;
+    R1 := AsmRegIdx8(Op1);
+    If R1 >= 0 Then
+    Begin
+      BinEmitByte($80);
+      BinEmitByte($C0 Or R1);
+      BinEmitByte(Byte(AsmParseImm(Op2) And $FF));
+      Exit;
+    End;
+    R1 := AsmRegIdx32(Op1);
+    R2 := AsmRegIdx32(Op2);
+    If (R1 >= 0) And (R2 >= 0) Then
+    Begin
+      BinEmitByte($01);
+      BinEmitByte((3 Shl 6) Or (R2 Shl 3) Or R1);
+      Exit;
+    End;
+    If R1 >= 0 Then
+    Begin
+      Imm := AsmParseImm(Op2);
+      If (Imm >= -128) And (Imm <= 127) Then
+      Begin
+        BinEmitByte($83);
+        BinEmitByte($C0 Or R1);
+        BinEmitByte(Byte(Imm And $FF));
+      End
+      Else
+      Begin
+        BinEmitByte($81);
+        BinEmitByte($C0 Or R1);
+        BinEmitByte(Byte(Imm And $FF));
+        BinEmitByte(Byte((Imm Shr 8) And $FF));
+        BinEmitByte(Byte((Imm Shr 16) And $FF));
+        BinEmitByte(Byte((Imm Shr 24) And $FF));
+      End;
+      Exit;
+    End;
+    Exit;
+  End;
+
+  { ---- SUB ---- }
+  If Mnem = 'SUB' Then
+  Begin
+    If Op1 = 'AL' Then
+    Begin
+      BinEmitByte($2C);
+      BinEmitByte(Byte(AsmParseImm(Op2) And $FF));
+      Exit;
+    End;
+    R1 := AsmRegIdx8(Op1);
+    If R1 >= 0 Then
+    Begin
+      BinEmitByte($80);
+      BinEmitByte($E8 Or R1);
+      BinEmitByte(Byte(AsmParseImm(Op2) And $FF));
+      Exit;
+    End;
+    R1 := AsmRegIdx32(Op1);
+    R2 := AsmRegIdx32(Op2);
+    If (R1 >= 0) And (R2 >= 0) Then
+    Begin
+      BinEmitByte($29);
+      BinEmitByte((3 Shl 6) Or (R2 Shl 3) Or R1);
+      Exit;
+    End;
+    If R1 >= 0 Then
+    Begin
+      Imm := AsmParseImm(Op2);
+      If (Imm >= -128) And (Imm <= 127) Then
+      Begin
+        BinEmitByte($83);
+        BinEmitByte($E8 Or R1);
+        BinEmitByte(Byte(Imm And $FF));
+      End
+      Else
+      Begin
+        BinEmitByte($81);
+        BinEmitByte($E8 Or R1);
+        BinEmitByte(Byte(Imm And $FF));
+        BinEmitByte(Byte((Imm Shr 8) And $FF));
+        BinEmitByte(Byte((Imm Shr 16) And $FF));
+        BinEmitByte(Byte((Imm Shr 24) And $FF));
+      End;
+      Exit;
+    End;
+    Exit;
+  End;
+
+  { ---- XOR ---- }
+  If Mnem = 'XOR' Then
+  Begin
+    R1 := AsmRegIdx32(Op1);
+    R2 := AsmRegIdx32(Op2);
+    If (R1 >= 0) And (R2 >= 0) Then
+    Begin
+      BinEmitByte($31);
+      BinEmitByte((3 Shl 6) Or (R2 Shl 3) Or R1);
+    End;
+    Exit;
+  End;
+
+  { ---- AND ---- }
+  If Mnem = 'AND' Then
+  Begin
+    R1 := AsmRegIdx32(Op1);
+    R2 := AsmRegIdx32(Op2);
+    If (R1 >= 0) And (R2 >= 0) Then
+    Begin
+      BinEmitByte($21);
+      BinEmitByte((3 Shl 6) Or (R2 Shl 3) Or R1);
+      Exit;
+    End;
+    If R1 >= 0 Then
+    Begin
+      Imm := AsmParseImm(Op2);
+      If (Imm >= -128) And (Imm <= 127) Then
+      Begin
+        BinEmitByte($83);
+        BinEmitByte($E0 Or R1);
+        BinEmitByte(Byte(Imm And $FF));
+      End
+      Else
+      Begin
+        BinEmitByte($81);
+        BinEmitByte($E0 Or R1);
+        BinEmitDWord(Imm);
+      End;
+    End;
+    Exit;
+  End;
+
+  { ---- OR ---- }
+  If Mnem = 'OR' Then
+  Begin
+    R1 := AsmRegIdx32(Op1);
+    R2 := AsmRegIdx32(Op2);
+    If (R1 >= 0) And (R2 >= 0) Then
+    Begin
+      BinEmitByte($09);
+      BinEmitByte((3 Shl 6) Or (R2 Shl 3) Or R1);
+      Exit;
+    End;
+    If R1 >= 0 Then
+    Begin
+      Imm := AsmParseImm(Op2);
+      If (Imm >= -128) And (Imm <= 127) Then
+      Begin
+        BinEmitByte($83);
+        BinEmitByte($C8 Or R1);
+        BinEmitByte(Byte(Imm And $FF));
+      End
+      Else
+      Begin
+        BinEmitByte($81);
+        BinEmitByte($C8 Or R1);
+        BinEmitDWord(Imm);
+      End;
+    End;
+    Exit;
+  End;
+
+  { ---- XCHG ---- }
+  If Mnem = 'XCHG' Then
+  Begin
+    R1 := AsmRegIdx32(Op1);
+    R2 := AsmRegIdx32(Op2);
+    If (R1 >= 0) And (R2 >= 0) Then
+    Begin
+      BinEmitByte($87);
+      BinEmitByte((3 Shl 6) Or (R2 Shl 3) Or R1);
+    End;
+    Exit;
+  End;
+
+  { ---- CMP ---- }
+  If Mnem = 'CMP' Then
+  Begin
+    { CMP BYTE PTR [mem], imm8 }
+    If AsmStartsWith(Op1, 'BYTE PTR [') Then
+    Begin
+      Bracket := AsmExtractBracket(Op1);
+      Imm := AsmParseImm(Op2);
+      BinEmitByte($80);
+      AsmEncodeMemory(Bracket, 7);
+      BinEmitByte(Byte(Imm And $FF));
+      Exit;
+    End;
+    { CMP AL, imm8 (court) : uniquement si Op2 est un immediat }
+    If (Op1 = 'AL') And (AsmRegIdx8(Op2) < 0) Then
+    Begin
+      BinEmitByte($3C);
+      BinEmitByte(Byte(AsmParseImm(Op2) And $FF));
+      Exit;
+    End;
+    { CMP reg8, imm8 ou CMP reg8, reg8 }
+    R1 := AsmRegIdx8(Op1);
+    If R1 >= 0 Then
+    Begin
+      R2 := AsmRegIdx8(Op2);
+      If R2 >= 0 Then
+      Begin
+        BinEmitByte($38);
+        BinEmitByte((3 Shl 6) Or (R2 Shl 3) Or R1);
+      End
+      Else
+      Begin
+        Imm := AsmParseImm(Op2);
+        BinEmitByte($80);
+        BinEmitByte($F8 Or R1);
+        BinEmitByte(Byte(Imm And $FF));
+      End;
+      Exit;
+    End;
+    { CMP reg32, reg32 ou CMP reg32, imm32 ou CMP reg32, DWORD PTR [mem] }
+    R1 := AsmRegIdx32(Op1);
+    If R1 >= 0 Then
+    Begin
+      If AsmStartsWith(Op2, 'DWORD PTR [') Then
+      Begin
+        Bracket := AsmExtractBracket(Op2);
+        BinEmitByte($3B);
+        If AsmIsRegBased(Bracket) Then
+          AsmEncodeMemory(Bracket, R1)
+        Else
+        Begin
+          BinEmitByte((0 Shl 6) Or (R1 Shl 3) Or 5);
+          BinAddFixup(BinCodeLen, BFK_ABS32, Bracket, True);
+          BinEmitDWord(0);
+        End;
+        Exit;
+      End;
+      R2 := AsmRegIdx32(Op2);
+      If R2 >= 0 Then
+      Begin
+        BinEmitByte($39);
+        BinEmitByte((3 Shl 6) Or (R2 Shl 3) Or R1);
+        Exit;
+      End;
+      Imm := AsmParseImm(Op2);
+      If R1 = 0 Then
+      Begin
+        BinEmitByte($3D);
+        BinEmitDWord(Imm);
+      End
+      Else
+      Begin
+        BinEmitByte($81);
+        BinEmitByte($F8 Or R1);
+        BinEmitDWord(Imm);
+      End;
+      Exit;
+    End;
+    Exit;
+  End;
+
+  { ---- TEST ---- }
+  If Mnem = 'TEST' Then
+  Begin
+    R1 := AsmRegIdx8(Op1);
+    R2 := AsmRegIdx8(Op2);
+    If (R1 >= 0) And (R2 >= 0) Then
+    Begin
+      BinEmitByte($84);
+      BinEmitByte((3 Shl 6) Or (R2 Shl 3) Or R1);
+      Exit;
+    End;
+    R1 := AsmRegIdx32(Op1);
+    R2 := AsmRegIdx32(Op2);
+    If (R1 >= 0) And (R2 >= 0) Then
+    Begin
+      BinEmitByte($85);
+      BinEmitByte((3 Shl 6) Or (R2 Shl 3) Or R1);
+    End;
+    Exit;
+  End;
+
+  { ---- INC / DEC ---- }
+  If Mnem = 'INC' Then
+  Begin
+    R1 := AsmRegIdx32(Op1);
+    If R1 >= 0 Then
+      BinEmitByte($40 + R1)
+    Else If AsmStartsWith(Op1, 'DWORD PTR [') Then
+    Begin
+      Bracket := AsmExtractBracket(Op1);
+      BinEmitByte($FF);
+      If AsmIsRegBased(Bracket) Then
+        AsmEncodeMemory(Bracket, 0)
+      Else
+      Begin
+        BinEmitByte($05);
+        BinAddFixup(BinCodeLen, BFK_ABS32, Bracket, True);
+        BinEmitDWord(0);
+      End;
+    End;
+    Exit;
+  End;
+  If Mnem = 'DEC' Then
+  Begin
+    R1 := AsmRegIdx32(Op1);
+    If R1 >= 0 Then
+      BinEmitByte($48 + R1)
+    Else If AsmStartsWith(Op1, 'DWORD PTR [') Then
+    Begin
+      Bracket := AsmExtractBracket(Op1);
+      BinEmitByte($FF);
+      If AsmIsRegBased(Bracket) Then
+        AsmEncodeMemory(Bracket, 1)
+      Else
+      Begin
+        BinEmitByte($0D);
+        BinAddFixup(BinCodeLen, BFK_ABS32, Bracket, True);
+        BinEmitDWord(0);
+      End;
+    End;
+    Exit;
+  End;
+
+  { ---- NEG ---- }
+  If Mnem = 'NEG' Then
+  Begin
+    R1 := AsmRegIdx32(Op1);
+    If R1 >= 0 Then
+    Begin BinEmitByte($F7); BinEmitByte($D8 Or R1); End;
+    Exit;
+  End;
+
+  { ---- DIV ---- }
+  If Mnem = 'DIV' Then
+  Begin
+    R1 := AsmRegIdx32(Op1);
+    If R1 >= 0 Then
+    Begin BinEmitByte($F7); BinEmitByte($F0 Or R1); End;
+    Exit;
+  End;
+
+  { ---- IDIV ---- }
+  If Mnem = 'IDIV' Then
+  Begin
+    R1 := AsmRegIdx32(Op1);
+    If R1 >= 0 Then
+    Begin BinEmitByte($F7); BinEmitByte($F8 Or R1); End;
+    Exit;
+  End;
+
+  { ---- IMUL ---- }
+  If Mnem = 'IMUL' Then
+  Begin
+    R1 := AsmRegIdx32(Op1);
+    CommaPos := 0;
+    For I := 1 To Length(Op2) Do
+      If Op2[I] = ',' Then Begin CommaPos := I; Break; End;
+    If CommaPos > 0 Then
+    Begin
+      Op3 := Copy(Op2, CommaPos + 1, Length(Op2) - CommaPos);
+      Op2 := Copy(Op2, 1, CommaPos - 1);
+      While (Length(Op2) > 0) And (Op2[Length(Op2)] = ' ') Do
+        Delete(Op2, Length(Op2), 1);
+      While (Length(Op3) > 0) And (Op3[1] = ' ') Do
+        Delete(Op3, 1, 1);
+      R2 := AsmRegIdx32(Op2);
+      Imm := AsmParseImm(Op3);
+      If (Imm >= -128) And (Imm <= 127) Then
+      Begin
+        BinEmitByte($6B);
+        BinEmitByte((3 Shl 6) Or (R1 Shl 3) Or R2);
+        BinEmitByte(Byte(Imm And $FF));
+      End
+      Else
+      Begin
+        BinEmitByte($69);
+        BinEmitByte((3 Shl 6) Or (R1 Shl 3) Or R2);
+        BinEmitDWord(Imm);
+      End;
+    End
+    Else If Length(Op2) > 0 Then
+    Begin
+      R2 := AsmRegIdx32(Op2);
+      If R2 < 0 Then
+      Begin
+        Imm := AsmParseImm(Op2);
+        If (Imm >= -128) And (Imm <= 127) Then
+        Begin
+          BinEmitByte($6B);
+          BinEmitByte((3 Shl 6) Or (R1 Shl 3) Or R1);
+          BinEmitByte(Byte(Imm And $FF));
+        End
+        Else
+        Begin
+          BinEmitByte($69);
+          BinEmitByte((3 Shl 6) Or (R1 Shl 3) Or R1);
+          BinEmitDWord(Imm);
+        End;
+      End
+      Else
+      Begin
+        BinEmitByte($0F);
+        BinEmitByte($AF);
+        BinEmitByte((3 Shl 6) Or (R1 Shl 3) Or R2);
+      End;
+    End;
+    Exit;
+  End;
+
+  { ---- SETcc ---- }
+  If Mnem = 'SETE' Then
+  Begin
+    R1 := AsmRegIdx8(Op1);
+    BinEmitByte($0F); BinEmitByte($94);
+    BinEmitByte($C0 Or R1); Exit;
+  End;
+  If Mnem = 'SETNE' Then
+  Begin
+    R1 := AsmRegIdx8(Op1);
+    BinEmitByte($0F); BinEmitByte($95);
+    BinEmitByte($C0 Or R1); Exit;
+  End;
+  If Mnem = 'SETG' Then
+  Begin
+    R1 := AsmRegIdx8(Op1);
+    BinEmitByte($0F); BinEmitByte($9F);
+    BinEmitByte($C0 Or R1); Exit;
+  End;
+  If Mnem = 'SETGE' Then
+  Begin
+    R1 := AsmRegIdx8(Op1);
+    BinEmitByte($0F); BinEmitByte($9D);
+    BinEmitByte($C0 Or R1); Exit;
+  End;
+  If Mnem = 'SETL' Then
+  Begin
+    R1 := AsmRegIdx8(Op1);
+    BinEmitByte($0F); BinEmitByte($9C);
+    BinEmitByte($C0 Or R1); Exit;
+  End;
+  If Mnem = 'SETLE' Then
+  Begin
+    R1 := AsmRegIdx8(Op1);
+    BinEmitByte($0F); BinEmitByte($9E);
+    BinEmitByte($C0 Or R1); Exit;
+  End;
+  If Mnem = 'SETB' Then
+  Begin
+    R1 := AsmRegIdx8(Op1);
+    BinEmitByte($0F); BinEmitByte($92);
+    BinEmitByte($C0 Or R1); Exit;
+  End;
+  If Mnem = 'SETAE' Then
+  Begin
+    R1 := AsmRegIdx8(Op1);
+    BinEmitByte($0F); BinEmitByte($93);
+    BinEmitByte($C0 Or R1); Exit;
+  End;
+  If Mnem = 'SETBE' Then
+  Begin
+    R1 := AsmRegIdx8(Op1);
+    BinEmitByte($0F); BinEmitByte($96);
+    BinEmitByte($C0 Or R1); Exit;
+  End;
+  If Mnem = 'SETA' Then
+  Begin
+    R1 := AsmRegIdx8(Op1);
+    BinEmitByte($0F); BinEmitByte($97);
+    BinEmitByte($C0 Or R1); Exit;
+  End;
+
+  { ---- MOVZX ---- }
+  If Mnem = 'MOVZX' Then
+  Begin
+    R1 := AsmRegIdx32(Op1);
+    R2 := AsmRegIdx8(Op2);
+    If R2 >= 0 Then
+    Begin
+      BinEmitByte($0F); BinEmitByte($B6);
+      BinEmitByte((3 Shl 6) Or (R1 Shl 3) Or R2);
+      Exit;
+    End;
+    If AsmStartsWith(Op2, 'BYTE PTR [') Then
+    Begin
+      Bracket := AsmExtractBracket(Op2);
+      BinEmitByte($0F); BinEmitByte($B6);
+      AsmEncodeMemory(Bracket, R1);
+      Exit;
+    End;
+    Exit;
+  End;
+End;
+
+{ ---- AsmEncodeData : encoder une directive de donnees (_DATA) - }
+Procedure AsmEncodeData(Const Line : String);
+Var
+  I, J, DupPos : Integer;
+  LabelName, Rest, Directive, Tok : String;
+  DupCount, DupVal : LongInt;
+  HasLabel : Boolean;
+  DBytes : Array[0..7] Of Byte;
+Begin
+  { Extraire le premier token }
+  I := 1;
+  While (I <= Length(Line)) And (Line[I] <> ' ') Do Inc(I);
+  LabelName := Copy(Line, 1, I - 1);
+  If (LabelName = 'ASSUME') Or (LabelName = '') Then Exit;
+
+  { Le 1er token est-il une directive (ligne de continuation, sans label) ? }
+  HasLabel := Not ((LabelName = 'DB') Or (LabelName = 'DW') Or
+                   (LabelName = 'DD') Or (LabelName = 'DQ'));
+
+  If HasLabel Then
+  Begin
+    BinAddLabel(LabelName, BinDataLen);
+    BinLabels[BinLblCount - 1].InCode := False;
+
+    While (I <= Length(Line)) And (Line[I] = ' ') Do Inc(I);
+    J := I;
+    While (J <= Length(Line)) And (Line[J] <> ' ') Do Inc(J);
+    Directive := Copy(Line, I, J - I);
+    I := J;
+    While (I <= Length(Line)) And (Line[I] = ' ') Do Inc(I);
+    Rest := Copy(Line, I, Length(Line) - I + 1);
+  End
+  Else
+  Begin
+    Directive := LabelName;
+    While (I <= Length(Line)) And (Line[I] = ' ') Do Inc(I);
+    Rest := Copy(Line, I, Length(Line) - I + 1);
+  End;
+
+  If Directive = 'DQ' Then
+  Begin
+    { Nombre Double 64 bits (litteral decimal) -> 8 octets IEEE-754 }
+    AsmParseDouble(Rest, DBytes);
+    For I := 0 To 7 Do BinEmitDataByte(DBytes[I]);
+  End
+  Else If Directive = 'DD' Then
+  Begin
+    DupPos := Pos('DUP(', Rest);
+    If DupPos > 0 Then
+    Begin
+      Tok := '';
+      For I := 1 To DupPos - 1 Do
+        If Rest[I] <> ' ' Then Tok := Tok + Rest[I];
+      DupCount := AsmParseImm(Tok);
+      I := DupPos + 4;
+      Tok := '';
+      While (I <= Length(Rest)) And (Rest[I] <> ')') Do
+      Begin
+        If Rest[I] <> ' ' Then Tok := Tok + Rest[I];
+        Inc(I);
+      End;
+      DupVal := AsmParseImm(Tok);
+      For J := 1 To DupCount Do
+        BinEmitDataDWord(DupVal);
+    End
+    Else
+      BinEmitDataDWord(AsmParseImm(Rest));
+  End
+  Else If Directive = 'DB' Then
+  Begin
+    DupPos := Pos('DUP(', Rest);
+    If DupPos > 0 Then
+    Begin
+      Tok := '';
+      For I := 1 To DupPos - 1 Do
+        If Rest[I] <> ' ' Then Tok := Tok + Rest[I];
+      DupCount := AsmParseImm(Tok);
+      I := DupPos + 4;
+      Tok := '';
+      While (I <= Length(Rest)) And (Rest[I] <> ')') Do
+      Begin
+        If Rest[I] <> ' ' Then Tok := Tok + Rest[I];
+        Inc(I);
+      End;
+      DupVal := AsmParseImm(Tok);
+      For J := 1 To DupCount Do
+        BinEmitDataByte(Byte(DupVal And $FF));
+      Inc(I);
+      While (I <= Length(Rest)) And ((Rest[I] = ' ') Or (Rest[I] = ',')) Do
+        Inc(I);
+      While I <= Length(Rest) Do
+      Begin
+        Tok := '';
+        While (I <= Length(Rest)) And (Rest[I] <> ',') Do
+        Begin
+          If Rest[I] <> ' ' Then Tok := Tok + Rest[I];
+          Inc(I);
+        End;
+        If Length(Tok) > 0 Then
+          BinEmitDataByte(Byte(AsmParseImm(Tok) And $FF));
+        If (I <= Length(Rest)) And (Rest[I] = ',') Then Inc(I);
+        While (I <= Length(Rest)) And (Rest[I] = ' ') Do Inc(I);
+      End;
+    End
+    Else If (Length(Rest) > 0) And (Rest[1] = '''') Then
+    Begin
+      I := 2;
+      While I <= Length(Rest) Do
+      Begin
+        If Rest[I] = '''' Then
+        Begin
+          If (I + 1 <= Length(Rest)) And (Rest[I + 1] = '''') Then
+          Begin
+            BinEmitDataByte(Byte(Ord('''')));
+            Inc(I, 2);
+          End
+          Else
+          Begin
+            Inc(I);
+            Break;
+          End;
+        End
+        Else
+        Begin
+          BinEmitDataByte(Byte(Ord(Rest[I])));
+          Inc(I);
+        End;
+      End;
+      While (I <= Length(Rest)) And ((Rest[I] = ' ') Or (Rest[I] = ',')) Do
+        Inc(I);
+      While I <= Length(Rest) Do
+      Begin
+        If Rest[I] = '''' Then
+        Begin
+          Inc(I);
+          While I <= Length(Rest) Do
+          Begin
+            If Rest[I] = '''' Then
+            Begin
+              If (I + 1 <= Length(Rest)) And (Rest[I + 1] = '''') Then
+              Begin
+                BinEmitDataByte(Byte(Ord('''')));
+                Inc(I, 2);
+              End
+              Else
+              Begin
+                Inc(I);
+                Break;
+              End;
+            End
+            Else
+            Begin
+              BinEmitDataByte(Byte(Ord(Rest[I])));
+              Inc(I);
+            End;
+          End;
+        End
+        Else
+        Begin
+          Tok := '';
+          While (I <= Length(Rest)) And (Rest[I] <> ',') Do
+          Begin
+            If Rest[I] <> ' ' Then Tok := Tok + Rest[I];
+            Inc(I);
+          End;
+          If Length(Tok) > 0 Then
+            BinEmitDataByte(Byte(AsmParseImm(Tok) And $FF));
+        End;
+        If (I <= Length(Rest)) And (Rest[I] = ',') Then Inc(I);
+        While (I <= Length(Rest)) And (Rest[I] = ' ') Do Inc(I);
+      End;
+    End
+    Else
+    Begin
+      I := 1;
+      While I <= Length(Rest) Do
+      Begin
+        Tok := '';
+        While (I <= Length(Rest)) And (Rest[I] <> ',') Do
+        Begin
+          If Rest[I] <> ' ' Then Tok := Tok + Rest[I];
+          Inc(I);
+        End;
+        If Length(Tok) > 0 Then
+          BinEmitDataByte(Byte(AsmParseImm(Tok) And $FF));
+        If (I <= Length(Rest)) And (Rest[I] = ',') Then Inc(I);
+        While (I <= Length(Rest)) And (Rest[I] = ' ') Do Inc(I);
+      End;
+    End;
+  End;
+End;
+
+{ ---- AsmIsCodeData : la ligne est-elle DD/DB/DQ en section code ? }
+Function AsmIsCodeData(Const S : String) : Boolean;
+Var I : Integer;
+Begin
+  AsmIsCodeData := False;
+  I := 1;
+  While (I <= Length(S)) And (S[I] <> ' ') Do Inc(I);
+  While (I <= Length(S)) And (S[I] = ' ') Do Inc(I);
+  If (I + 1 <= Length(S)) And (S[I] = 'D') Then
+  Begin
+    If (S[I+1] = 'D') Or (S[I+1] = 'B') Or (S[I+1] = 'Q') Then
+    Begin
+      If (I + 2 > Length(S)) Or (S[I+2] = ' ') Then
+        AsmIsCodeData := True;
+    End;
+  End;
+End;
+
+{ ---- AsmEncodeCodeData : encoder DD/DB/DQ inline dans BinCode[] - }
+Procedure AsmEncodeCodeData(Const Line : String);
+Var
+  I, J, DupPos : Integer;
+  LabelName, Rest, Directive, Tok : String;
+  DupCount, DupVal : LongInt;
+  DBytes : Array[0..7] Of Byte;
+Begin
+  I := 1;
+  While (I <= Length(Line)) And (Line[I] <> ' ') Do Inc(I);
+  LabelName := Copy(Line, 1, I - 1);
+
+  BinAddLabel(LabelName, BinCodeLen);
+  BinLabels[BinLblCount - 1].InCode := True;
+
+  While (I <= Length(Line)) And (Line[I] = ' ') Do Inc(I);
+  J := I;
+  While (J <= Length(Line)) And (Line[J] <> ' ') Do Inc(J);
+  Directive := Copy(Line, I, J - I);
+  I := J;
+  While (I <= Length(Line)) And (Line[I] = ' ') Do Inc(I);
+  Rest := Copy(Line, I, Length(Line) - I + 1);
+
+  If Directive = 'DQ' Then
+  Begin
+    AsmParseDouble(Rest, DBytes);
+    For I := 0 To 7 Do BinEmitByte(DBytes[I]);
+  End
+  Else If Directive = 'DD' Then
+    BinEmitDWord(AsmParseImm(Rest))
+  Else If Directive = 'DB' Then
+  Begin
+    DupPos := Pos('DUP(', Rest);
+    If DupPos > 0 Then
+    Begin
+      Tok := '';
+      For I := 1 To DupPos - 1 Do
+        If Rest[I] <> ' ' Then Tok := Tok + Rest[I];
+      DupCount := AsmParseImm(Tok);
+      I := DupPos + 4;
+      Tok := '';
+      While (I <= Length(Rest)) And (Rest[I] <> ')') Do
+      Begin
+        If Rest[I] <> ' ' Then Tok := Tok + Rest[I];
+        Inc(I);
+      End;
+      DupVal := AsmParseImm(Tok);
+      For J := 1 To DupCount Do
+        BinEmitByte(Byte(DupVal And $FF));
+      Inc(I);
+      While (I <= Length(Rest)) And ((Rest[I] = ' ') Or (Rest[I] = ',')) Do
+        Inc(I);
+      While I <= Length(Rest) Do
+      Begin
+        Tok := '';
+        While (I <= Length(Rest)) And (Rest[I] <> ',') Do
+        Begin
+          If Rest[I] <> ' ' Then Tok := Tok + Rest[I];
+          Inc(I);
+        End;
+        If Length(Tok) > 0 Then
+          BinEmitByte(Byte(AsmParseImm(Tok) And $FF));
+        If (I <= Length(Rest)) And (Rest[I] = ',') Then Inc(I);
+        While (I <= Length(Rest)) And (Rest[I] = ' ') Do Inc(I);
+      End;
+    End
+    Else
+    Begin
+      I := 1;
+      While I <= Length(Rest) Do
+      Begin
+        Tok := '';
+        While (I <= Length(Rest)) And (Rest[I] <> ',') Do
+        Begin
+          If Rest[I] <> ' ' Then Tok := Tok + Rest[I];
+          Inc(I);
+        End;
+        If Length(Tok) > 0 Then
+          BinEmitByte(Byte(AsmParseImm(Tok) And $FF));
+        If (I <= Length(Rest)) And (Rest[I] = ',') Then Inc(I);
+        While (I <= Length(Rest)) And (Rest[I] = ' ') Do Inc(I);
+      End;
+    End;
+  End;
+End;
+
+{ ---- BinAssemble : relit le .ASM genere et encode chaque ligne ---- }
 Procedure BinAssemble;
+Var
+  AsmF : Text;
+  AsmPath, Line, Trimmed : String;
+  InCodeSec, InDataSec : Boolean;
 Begin
   BinInit;
-  WriteLn('POWFXC32: Note: assemblage .ASM genere -> utilisez MASM/NASM:');
-  WriteLn('  ML /c /coff /Fo ' + ReplaceExt(Opts.SrcFile, '.obj') +
-          ' ' + ReplaceExt(Opts.SrcFile, '.asm'));
-  WriteLn('  LINK /SUBSYSTEM:CONSOLE /OUT:' + Opts.OutFile +
-          ' ' + ReplaceExt(Opts.SrcFile, '.obj') + ' kernel32.lib');
-  { Creer un stub minimal INT3 + RET pour BinWriteExe }
-  BinEmitByte($CC);   { INT3 - breakpoint }
-  BinEmitByte($C3);   { RET }
-  BinAddLabel(PFX_FN_PFX + 'main', 0);
-  BinEmitDataDWord(0);
+  AsmPath := ReplaceExt(Opts.SrcFile, '.asm');
+  Assign(AsmF, AsmPath);
+  {$I-}
+  Reset(AsmF);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    WriteLn('POWFXC32: erreur assembleur: impossible de lire ', AsmPath);
+    Exit;
+  End;
+
+  InCodeSec := False;
+  InDataSec := False;
+
+  While Not EOF(AsmF) Do
+  Begin
+    ReadLn(AsmF, Line);
+    Trimmed := AsmTrimLine(Line);
+    If Length(Trimmed) = 0 Then Continue;
+
+    If AsmStartsWith(Trimmed, '_TEXT') And (Pos('SEGMENT', Trimmed) > 0) Then
+    Begin InCodeSec := True; InDataSec := False; Continue; End;
+    If AsmStartsWith(Trimmed, '_TEXT') And (Pos('ENDS', Trimmed) > 0) Then
+    Begin InCodeSec := False; Continue; End;
+    If AsmStartsWith(Trimmed, '_DATA') And (Pos('SEGMENT', Trimmed) > 0) Then
+    Begin InDataSec := True; InCodeSec := False; Continue; End;
+    If AsmStartsWith(Trimmed, '_DATA') And (Pos('ENDS', Trimmed) > 0) Then
+    Begin InDataSec := False; Continue; End;
+
+    If AsmStartsWith(Trimmed, '.') Then Continue;
+    If AsmStartsWith(Trimmed, 'ASSUME') Then Continue;
+    If AsmStartsWith(Trimmed, 'EXTRN') Then Continue;
+    If AsmStartsWith(Trimmed, 'OPTION') Then Continue;
+    If AsmStartsWith(Trimmed, 'END ') Then Continue;
+    If Trimmed = 'END' Then Continue;
+
+    If InCodeSec Then
+    Begin
+      If AsmIsLabel(Trimmed) Then
+      Begin
+        BinAddLabel(AsmExtractLabel(Trimmed), BinCodeLen);
+        BinLabels[BinLblCount - 1].InCode := True;
+      End
+      Else If AsmIsCodeData(Trimmed) Then
+        AsmEncodeCodeData(Trimmed)
+      Else
+        AsmEncodeInstr(Trimmed);
+    End
+    Else If InDataSec Then
+      AsmEncodeData(Trimmed);
+  End;
+
+  Close(AsmF);
+  WriteLn('POWFXC32: assemblage: ', BinCodeLen, ' octets code, ',
+          BinDataLen, ' octets data, ', BinLblCount, ' labels, ',
+          BinFixCount, ' fixups');
+End;
+
+{ ---- BinResolveFixups : resoudre les relocations PE ---------- }
+Procedure BinResolveFixups(TextRVA, DataRVA, IdataRVA, IatOfs : LongInt);
+Var
+  I, J : Integer;
+  TgtOfs : LongInt;
+  TgtInCode : Boolean;
+  Addr : LongInt;
+  ApiIdx : Integer;
+  TgtName : TString;
+  LblExtraOfs : LongInt;
+  PlusP : Integer;
+Begin
+  For I := 0 To BinFixCount - 1 Do
+  Begin
+    If BinFixups[I].Kind = BFK_IAT32 Then
+    Begin
+      ApiIdx := AsmFindAPI(BinFixups[I].Target);
+      If ApiIdx >= 0 Then
+      Begin
+        Addr := PE_IMG_BASE + IdataRVA + IatOfs + ApiIdx * 4;
+        BinCode[BinFixups[I].Offset]     := Byte(Addr And $FF);
+        BinCode[BinFixups[I].Offset + 1] := Byte((Addr Shr 8) And $FF);
+        BinCode[BinFixups[I].Offset + 2] := Byte((Addr Shr 16) And $FF);
+        BinCode[BinFixups[I].Offset + 3] := Byte((Addr Shr 24) And $FF);
+      End;
+    End
+    Else
+    Begin
+      TgtName := BinFixups[I].Target;
+      LblExtraOfs := 0;
+      PlusP := Pos('+', TgtName);
+      If PlusP > 0 Then
+      Begin
+        LblExtraOfs := AsmParseImm(Copy(TgtName, PlusP + 1, Length(TgtName) - PlusP));
+        TgtName := Copy(TgtName, 1, PlusP - 1);
+      End;
+      TgtOfs := -1;
+      TgtInCode := True;
+      For J := 0 To BinLblCount - 1 Do
+        If BinLabels[J].Name = TgtName Then
+        Begin
+          TgtOfs := BinLabels[J].Offset;
+          TgtInCode := BinLabels[J].InCode;
+          Break;
+        End;
+      If TgtOfs < 0 Then Continue;
+
+      TgtOfs := TgtOfs + LblExtraOfs;
+
+      If BinFixups[I].Kind = BFK_REL32 Then
+      Begin
+        Addr := TgtOfs - (BinFixups[I].Offset + 4);
+        BinCode[BinFixups[I].Offset]     := Byte(Addr And $FF);
+        BinCode[BinFixups[I].Offset + 1] := Byte((Addr Shr 8) And $FF);
+        BinCode[BinFixups[I].Offset + 2] := Byte((Addr Shr 16) And $FF);
+        BinCode[BinFixups[I].Offset + 3] := Byte((Addr Shr 24) And $FF);
+      End
+      Else If BinFixups[I].Kind = BFK_ABS32 Then
+      Begin
+        If TgtInCode Then
+          Addr := PE_IMG_BASE + TextRVA + TgtOfs
+        Else
+          Addr := PE_IMG_BASE + DataRVA + TgtOfs;
+        BinCode[BinFixups[I].Offset]     := Byte(Addr And $FF);
+        BinCode[BinFixups[I].Offset + 1] := Byte((Addr Shr 8) And $FF);
+        BinCode[BinFixups[I].Offset + 2] := Byte((Addr Shr 16) And $FF);
+        BinCode[BinFixups[I].Offset + 3] := Byte((Addr Shr 24) And $FF);
+      End;
+    End;
+  End;
 End;
 
 Procedure WriteBinByte_(Var F : File; B : Byte);
@@ -3056,6 +4836,8 @@ Var
   IatOfs         : Integer;
   DllNameOfs     : Integer;
   NumSections    : Integer;
+  HintOfs        : Array[0..PE_NUM_API - 1] Of Integer;
+  RvaVal         : LongInt;
 Begin
   Assign(F, Opts.OutFile);
   {$I-} Rewrite(F, 1); {$I+}
@@ -3078,6 +4860,7 @@ Begin
   { Hint/Name pour chaque API }
   For I := 0 To PE_NUM_API - 1 Do
   Begin
+    HintOfs[I] := IdataBufLen;
     IdataBuf[IdataBufLen] := 0; Inc(IdataBufLen);
     IdataBuf[IdataBufLen] := 0; Inc(IdataBufLen);
     For Pad := 1 To Length(BinAPIName[I]) Do
@@ -3115,9 +4898,30 @@ Begin
   IdataBuf[18] := Byte(((IdataRVA + IatOfs) Shr 16) And $FF);
   IdataBuf[19] := Byte(((IdataRVA + IatOfs) Shr 24) And $FF);
 
+  { Patcher l ILT et l IAT : chaque entree pointe vers son Hint/Name.     }
+  { Sans ceci, le loader Win32 ne resout aucune fonction importee et les }
+  { emplacements de l IAT restent a 0 (plantage au premier appel API).   }
+  For I := 0 To PE_NUM_API - 1 Do
+  Begin
+    RvaVal := IdataRVA + HintOfs[I];
+    IdataBuf[IltOfs + I * 4]     := Byte(RvaVal And $FF);
+    IdataBuf[IltOfs + I * 4 + 1] := Byte((RvaVal Shr 8) And $FF);
+    IdataBuf[IltOfs + I * 4 + 2] := Byte((RvaVal Shr 16) And $FF);
+    IdataBuf[IltOfs + I * 4 + 3] := Byte((RvaVal Shr 24) And $FF);
+    IdataBuf[IatOfs + I * 4]     := Byte(RvaVal And $FF);
+    IdataBuf[IatOfs + I * 4 + 1] := Byte((RvaVal Shr 8) And $FF);
+    IdataBuf[IatOfs + I * 4 + 2] := Byte((RvaVal Shr 16) And $FF);
+    IdataBuf[IatOfs + I * 4 + 3] := Byte((RvaVal Shr 24) And $FF);
+  End;
+
+  { Resoudre les fixups (CALL/JMP internes, adresses .DATA, imports IAT) }
+  BinResolveFixups(TextRVA, DataRVA, IdataRVA, IatOfs);
+
   { DOS Stub (128 octets) }
+  { IMAGE_DOS_HEADER fait 64 octets : e_magic (2) + reserve (58) +           }
+  { e_lfanew (4) a l offset fixe 0x3C=60, obligatoire pour le loader Win32. }
   WriteBinWord_(F, PE_DOS_MAGIC);
-  For I := 1 To 56 Do WriteBinByte_(F, 0);
+  For I := 1 To 58 Do WriteBinByte_(F, 0);
   WriteBinDWord_(F, 128);
   For I := 1 To 64 Do WriteBinByte_(F, 0);
   { PE Signature }
@@ -3180,8 +4984,8 @@ Begin
   BlockWrite(F, IdataBuf, IdataBufLen);
   Pad := IdataSize - IdataBufLen; If Pad > 0 Then WriteBinZeros_(F, Pad);
   Close(F);
-  WriteLn('POWFXC32: EXE stub genere: ', Opts.OutFile);
-  WriteLn('POWFXC32: Assemblez le .ASM avec MASM pour un EXE fonctionnel.');
+  WriteLn('POWFXC32: EXE genere: ', Opts.OutFile);
+  WriteLn('POWFXC32: assemblage et edition de liens integres, aucun outil externe requis.');
 End;
 
 {$ENDIF}
@@ -3241,9 +5045,10 @@ Begin
   WriteLn('  Actions    : Set, Print (extension compilateur)');
   WriteLn('  Stubs      : Collect, Clear, Patch, Remove, ForAll, Filter');
   WriteLn;
-  WriteLn('Assemblage :');
-  WriteLn('  ML /c /coff /Fo prog.obj prog.asm');
-  WriteLn('  LINK /SUBSYSTEM:CONSOLE /OUT:prog.exe prog.obj kernel32.lib');
+  WriteLn('Assemblage et edition de liens :');
+  WriteLn('  Integres au compilateur (assembleur x86 et writer PE maison).');
+  WriteLn('  Aucun outil externe (MASM/LINK) n''est requis : l''.EXE Win32');
+  WriteLn('  est genere directement et est immediatement executable.');
   Halt(EXIT_OK);
 End;
 
