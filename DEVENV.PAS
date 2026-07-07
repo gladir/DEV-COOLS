@@ -1041,6 +1041,8 @@ Const
 
  { Coloration syntaxique VB.NET }
  MAX_VBNET_KEYWORDS    = 152;     { nombre de mots-cles VB.NET     }
+ { Coloration syntaxique Visual Basic 6 }
+ MAX_VB6_KEYWORDS      = 110;     { nombre de mots-cles VB 6       }
 
  { Coloration syntaxique Pascal }
  MAX_PASCAL_KEYWORDS   = 65;      { nombre de mots-cles Pascal     }
@@ -3244,6 +3246,8 @@ Var
  CSharpHL     : TCSharpHighlighter;
  { Coloration syntaxique VB.NET }
  VBNetHL      : TVBNetHighlighter;
+ { Coloration syntaxique Visual Basic 6 }
+ VB6HL        : TVBNetHighlighter;
  { Coloration syntaxique Pascal }
  PascalHL     : TPascalHighlighter;
  { Coloration syntaxique Ada }
@@ -9256,6 +9260,7 @@ Var
  IsC: Boolean;
  IsCSharp: Boolean;
  IsVBNet: Boolean;
+ IsVB6: Boolean;
  IsAda: Boolean;
  IsAbap: Boolean;
  IsAWK: Boolean;
@@ -9275,7 +9280,8 @@ Begin
              (Ext = '.DPR') Or (Ext = '.LPR');
  IsC := (Ext = '.C') Or (Ext = '.H');
  IsCSharp := (Ext = '.CS');
- IsVBNet := (Ext = '.VB') Or (Ext = '.BAS');
+ IsVBNet := (Ext = '.VB');
+ IsVB6   := (Ext = '.BAS');
  IsAda := (Ext = '.ADB') Or (Ext = '.ADS') Or (Ext = '.ADA');
  IsAbap := (Ext = '.ABAP') Or (Ext = '.ABP');
  IsAWK := (Ext = '.AWK');
@@ -9327,6 +9333,9 @@ Begin
    Else If IsVBNet And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
     HighlightVBNetLine(VBNetHL, FullLine, Colors)
+   Else If IsVB6 And (Length(FullLine) > 0) And
+      (Length(FullLine) <= 255) Then
+    HighlightVBNetLine(VB6HL, FullLine, Colors)
    Else If IsAda And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
     HighlightAdaLine(AdaHL, FullLine, Colors)
@@ -11818,6 +11827,131 @@ Procedure InitVBNetHighlighter(Var HL: TVBNetHighlighter);
 Begin
  InitHighlighter(HL.Base, 'VB.NET');
  InitVBNetKeywords(HL);
+End;
+
+{ --- Mots-cles Visual Basic 6 --- }
+
+Procedure InitVB6Keywords(Var HL: TVBNetHighlighter);
+Begin
+ HL.KeywordCount := MAX_VB6_KEYWORDS;
+ HL.Keywords[0]  := 'and';
+ HL.Keywords[1]  := 'as';
+ HL.Keywords[2]  := 'boolean';
+ HL.Keywords[3]  := 'byref';
+ HL.Keywords[4]  := 'byval';
+ HL.Keywords[5]  := 'byte';
+ HL.Keywords[6]  := 'call';
+ HL.Keywords[7]  := 'case';
+ HL.Keywords[8]  := 'close';
+ HL.Keywords[9]  := 'const';
+ HL.Keywords[10] := 'currency';
+ HL.Keywords[11] := 'date';
+ HL.Keywords[12] := 'declare';
+ HL.Keywords[13] := 'defbool';
+ HL.Keywords[14] := 'defbyte';
+ HL.Keywords[15] := 'defcur';
+ HL.Keywords[16] := 'defdate';
+ HL.Keywords[17] := 'defdbl';
+ HL.Keywords[18] := 'defint';
+ HL.Keywords[19] := 'deflng';
+ HL.Keywords[20] := 'defobj';
+ HL.Keywords[21] := 'defsng';
+ HL.Keywords[22] := 'defstr';
+ HL.Keywords[23] := 'defvar';
+ HL.Keywords[24] := 'dim';
+ HL.Keywords[25] := 'do';
+ HL.Keywords[26] := 'double';
+ HL.Keywords[27] := 'each';
+ HL.Keywords[28] := 'else';
+ HL.Keywords[29] := 'elseif';
+ HL.Keywords[30] := 'empty';
+ HL.Keywords[31] := 'end';
+ HL.Keywords[32] := 'enum';
+ HL.Keywords[33] := 'erase';
+ HL.Keywords[34] := 'error';
+ HL.Keywords[35] := 'exit';
+ HL.Keywords[36] := 'explicit';
+ HL.Keywords[37] := 'false';
+ HL.Keywords[38] := 'for';
+ HL.Keywords[39] := 'friend';
+ HL.Keywords[40] := 'function';
+ HL.Keywords[41] := 'get';
+ HL.Keywords[42] := 'global';
+ HL.Keywords[43] := 'gosub';
+ HL.Keywords[44] := 'goto';
+ HL.Keywords[45] := 'if';
+ HL.Keywords[46] := 'imp';
+ HL.Keywords[47] := 'in';
+ HL.Keywords[48] := 'input';
+ HL.Keywords[49] := 'integer';
+ HL.Keywords[50] := 'is';
+ HL.Keywords[51] := 'let';
+ HL.Keywords[52] := 'lib';
+ HL.Keywords[53] := 'like';
+ HL.Keywords[54] := 'long';
+ HL.Keywords[55] := 'loop';
+ HL.Keywords[56] := 'lset';
+ HL.Keywords[57] := 'me';
+ HL.Keywords[58] := 'mod';
+ HL.Keywords[59] := 'new';
+ HL.Keywords[60] := 'next';
+ HL.Keywords[61] := 'not';
+ HL.Keywords[62] := 'nothing';
+ HL.Keywords[63] := 'null';
+ HL.Keywords[64] := 'object';
+ HL.Keywords[65] := 'on';
+ HL.Keywords[66] := 'open';
+ HL.Keywords[67] := 'option';
+ HL.Keywords[68] := 'optional';
+ HL.Keywords[69] := 'or';
+ HL.Keywords[70] := 'output';
+ HL.Keywords[71] := 'paramarray';
+ HL.Keywords[72] := 'preserve';
+ HL.Keywords[73] := 'print';
+ HL.Keywords[74] := 'private';
+ HL.Keywords[75] := 'property';
+ HL.Keywords[76] := 'public';
+ HL.Keywords[77] := 'put';
+ HL.Keywords[78] := 'random';
+ HL.Keywords[79] := 'redim';
+ HL.Keywords[80] := 'rem';
+ HL.Keywords[81] := 'resume';
+ HL.Keywords[82] := 'return';
+ HL.Keywords[83] := 'rset';
+ HL.Keywords[84] := 'select';
+ HL.Keywords[85] := 'set';
+ HL.Keywords[86] := 'single';
+ HL.Keywords[87] := 'static';
+ HL.Keywords[88] := 'step';
+ HL.Keywords[89] := 'stop';
+ HL.Keywords[90] := 'string';
+ HL.Keywords[91] := 'sub';
+ HL.Keywords[92] := 'then';
+ HL.Keywords[93] := 'to';
+ HL.Keywords[94] := 'true';
+ HL.Keywords[95] := 'type';
+ HL.Keywords[96] := 'typeof';
+ HL.Keywords[97] := 'until';
+ HL.Keywords[98] := 'variant';
+ HL.Keywords[99] := 'wend';
+ HL.Keywords[100]:= 'while';
+ HL.Keywords[101]:= 'with';
+ HL.Keywords[102]:= 'write';
+ HL.Keywords[103]:= 'xor';
+ HL.Keywords[104]:= 'alias';
+ HL.Keywords[105]:= 'append';
+ HL.Keywords[106]:= 'binary';
+ HL.Keywords[107]:= 'eqv';
+ HL.Keywords[108]:= 'shared';
+ HL.Keywords[109]:= 'access';
+End;
+
+{ --- Initialiser le moteur de coloration Visual Basic 6 --- }
+
+Procedure InitVB6Highlighter(Var HL: TVBNetHighlighter);
+Begin
+ InitHighlighter(HL.Base, 'VB6');
+ InitVB6Keywords(HL);
 End;
 
 { --- Verifier si un mot est un mot-cle VB.NET (insensible casse) --- }
@@ -51236,41 +51370,71 @@ Begin
    Exit;
   End;
  End
- Else If (Ext = '.vb') Or (Ext = '.bas') Then Begin
-  { Compilation VB.NET / Visual Basic 6 }
-  DetectVBCCompiler(VBCContext);
-  If VBCContext.CompilerFound Then Begin
-   CmdLine := VBCContext.CompilerPath + ' ' + SourceFile;
+ Else If (Ext = '.vb') Then Begin
+  { Compilation VB.NET -> VBNCW32.exe }
+  CmdLine := FindCompiler('VBNCW32');
+  If CmdLine = '' Then Begin
    AppendOutput(OutputPanel,
-    '------ Build started: ' + SourceFile + ' ------',
-    Ord(OTK_BUILD));
-   AppendOutput(OutputPanel, '> ' + CmdLine,
-    Ord(OTK_BUILD));
-   ExitCode := ExecuteCompiler(CmdLine, TempFile);
-   ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
-   CleanupTempFile(TempFile);
-   If ExitCode = 0 Then Begin
-    AppendOutput(OutputPanel,
-     '========== Build: 1 succeeded, 0 failed ==========',
-     Ord(OTK_BUILD));
-    AppendOutput(OutputPanel,
-     'Execution de ' + ExeName + '...',
-     Ord(OTK_BUILD));
-    {$IFDEF WINDOWS}
-    Exec(GetEnv('COMSPEC'), '/C ' + ExeName);
-    {$ELSE}
-    Exec('/bin/sh', '-c ./' + ExeName);
-    {$ENDIF}
-   End Else
-    AppendOutput(OutputPanel,
-     '========== Build: 0 succeeded, 1 failed ==========',
-     Ord(OTK_BUILD));
-  End Else Begin
-   AppendOutput(OutputPanel,
-    'Erreur : compilateur VB non trouve (VBCW32.exe).',
+    'Erreur : compilateur VB.NET non trouve (VBNCW32.exe).',
     Ord(OTK_BUILD));
    Exit;
   End;
+  CmdLine := CmdLine + ' ' + SourceFile;
+  AppendOutput(OutputPanel,
+   '------ Build started: ' + SourceFile + ' ------',
+   Ord(OTK_BUILD));
+  AppendOutput(OutputPanel, '> ' + CmdLine, Ord(OTK_BUILD));
+  ExitCode := ExecuteCompiler(CmdLine, TempFile);
+  ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
+  CleanupTempFile(TempFile);
+  If ExitCode = 0 Then Begin
+   AppendOutput(OutputPanel,
+    '========== Build: 1 succeeded, 0 failed ==========',
+    Ord(OTK_BUILD));
+   AppendOutput(OutputPanel,
+    'Execution de ' + ExeName + '...', Ord(OTK_BUILD));
+   {$IFDEF WINDOWS}
+   Exec(GetEnv('COMSPEC'), '/C ' + ExeName);
+   {$ELSE}
+   Exec('/bin/sh', '-c ./' + ExeName);
+   {$ENDIF}
+  End Else
+   AppendOutput(OutputPanel,
+    '========== Build: 0 succeeded, 1 failed ==========',
+    Ord(OTK_BUILD));
+ End
+ Else If (Ext = '.bas') Then Begin
+  { Compilation Visual Basic 6 -> VBCW32.exe }
+  CmdLine := FindCompiler('VBCW32');
+  If CmdLine = '' Then Begin
+   AppendOutput(OutputPanel,
+    'Erreur : compilateur VB 6 non trouve (VBCW32.exe).',
+    Ord(OTK_BUILD));
+   Exit;
+  End;
+  CmdLine := CmdLine + ' ' + SourceFile;
+  AppendOutput(OutputPanel,
+   '------ Build started: ' + SourceFile + ' ------',
+   Ord(OTK_BUILD));
+  AppendOutput(OutputPanel, '> ' + CmdLine, Ord(OTK_BUILD));
+  ExitCode := ExecuteCompiler(CmdLine, TempFile);
+  ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
+  CleanupTempFile(TempFile);
+  If ExitCode = 0 Then Begin
+   AppendOutput(OutputPanel,
+    '========== Build: 1 succeeded, 0 failed ==========',
+    Ord(OTK_BUILD));
+   AppendOutput(OutputPanel,
+    'Execution de ' + ExeName + '...', Ord(OTK_BUILD));
+   {$IFDEF WINDOWS}
+   Exec(GetEnv('COMSPEC'), '/C ' + ExeName);
+   {$ELSE}
+   Exec('/bin/sh', '-c ./' + ExeName);
+   {$ENDIF}
+  End Else
+   AppendOutput(OutputPanel,
+    '========== Build: 0 succeeded, 1 failed ==========',
+    Ord(OTK_BUILD));
  End
  Else If (Ext = '.adb') Or (Ext = '.ads') Or (Ext = '.ada') Then Begin
   { Compilation Ada }
@@ -54755,6 +54919,7 @@ BEGIN
  InitCHighlighter(CHL);
  InitCSharpHighlighter(CSharpHL);
  InitVBNetHighlighter(VBNetHL);
+ InitVB6Highlighter(VB6HL);
  InitPascalHighlighter(PascalHL);
  InitAdaHighlighter(AdaHL);
  InitAbapHighlighter(AbapHL);
