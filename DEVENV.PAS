@@ -1086,6 +1086,9 @@ Const
  { Coloration syntaxique Ruby }
  MAX_RUBY_KEYWORDS     = 45;      { mots-cles reserves Ruby           }
 
+ { Coloration syntaxique SNOBOL }
+ MAX_SNOBOL_KEYWORDS   = 30;      { mots-cles reserves SNOBOL         }
+
  { Coloration syntaxique Assembleur x86 }
  MAX_ASM_KEYWORDS      = 127;    { nombre de mnemoniques ASM      }
 
@@ -1957,6 +1960,13 @@ Type
  TRubyHighlighter = Record
   Base         : TSyntaxHighlighter;  { moteur de base              }
   Keywords     : Array[0..MAX_RUBY_KEYWORDS - 1] Of String[14];
+  KeywordCount : Integer;             { nombre de mots-cles         }
+ End;
+
+ { Coloration syntaxique specialisee SNOBOL }
+ TSnobolHighlighter = Record
+  Base         : TSyntaxHighlighter;  { moteur de base              }
+  Keywords     : Array[0..MAX_SNOBOL_KEYWORDS - 1] Of String[10];
   KeywordCount : Integer;             { nombre de mots-cles         }
  End;
 
@@ -3376,6 +3386,8 @@ Var
  SASHL        : TSASHighlighter;
  { Coloration syntaxique Ruby }
  RubyHL       : TRubyHighlighter;
+ { Coloration syntaxique SNOBOL }
+ SnobolHL     : TSnobolHighlighter;
  { Coloration syntaxique Assembleur x86 }
  AsmHL        : TAsmHighlighter;
  { Coloration syntaxique Java }
@@ -9372,6 +9384,12 @@ Procedure HighlightRubyLine(Var HL: TRubyHighlighter;
                             Line: String;
                             Var Colors: Array Of Byte); Forward;
 
+{ --- Declaration anticipee de HighlightSnobolLine --- }
+
+Procedure HighlightSnobolLine(Var HL: TSnobolHighlighter;
+                              Line: String;
+                              Var Colors: Array Of Byte); Forward;
+
 { --- Declaration anticipee de HighlightAsmLine --- }
 
 Procedure HighlightAsmLine(Var HL: TAsmHighlighter;
@@ -9451,6 +9469,7 @@ Var
  IsRust: Boolean;
  IsSAS: Boolean;
  IsRuby: Boolean;
+ IsSnobol: Boolean;
  IsAda: Boolean;
  IsAbap: Boolean;
  IsAWK: Boolean;
@@ -9482,6 +9501,7 @@ Begin
  IsRust     := (Ext = '.RS');
  IsSAS      := (Ext = '.SAS');
  IsRuby     := (Ext = '.RB') Or (Ext = '.RBW');
+ IsSnobol   := (Ext = '.SBL') Or (Ext = '.SNO');
  IsAda := (Ext = '.ADB') Or (Ext = '.ADS') Or (Ext = '.ADA');
  IsAbap := (Ext = '.ABAP') Or (Ext = '.ABP');
  IsAWK := (Ext = '.AWK');
@@ -9566,6 +9586,9 @@ Begin
    Else If IsRuby And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
     HighlightRubyLine(RubyHL, FullLine, Colors)
+   Else If IsSnobol And (Length(FullLine) > 0) And
+      (Length(FullLine) <= 255) Then
+    HighlightSnobolLine(SnobolHL, FullLine, Colors)
    Else If IsAda And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
     HighlightAdaLine(AdaHL, FullLine, Colors)
@@ -16279,6 +16302,216 @@ Begin
  While Pos <= Len Do Begin
   Start := Pos;
   TC := GetRubyTokenClass(HL, Line, Pos);
+  Clr := Byte(TokenClassToColor(TC));
+  For I := Start To Pos - 1 Do
+   If (I >= 1) And (I <= Len) Then
+    Colors[I - 1] := Clr;
+ End;
+End;
+
+{ ============================================================
+  COLORATION SYNTAXIQUE SNOBOL
+  ============================================================ }
+
+{ --- Initialiser les mots-cles SNOBOL --- }
+
+Procedure InitSnobolKeywords(Var HL: TSnobolHighlighter);
+Begin
+ HL.KeywordCount := MAX_SNOBOL_KEYWORDS;
+ { Motifs (patterns) }
+ HL.Keywords[0]  := 'ARB';
+ HL.Keywords[1]  := 'ARBN';
+ HL.Keywords[2]  := 'BAL';
+ HL.Keywords[3]  := 'BREAK';
+ HL.Keywords[4]  := 'BREAKX';
+ HL.Keywords[5]  := 'FENCE';
+ HL.Keywords[6]  := 'LEN';
+ HL.Keywords[7]  := 'NOTANY';
+ HL.Keywords[8]  := 'ANY';
+ HL.Keywords[9]  := 'POS';
+ HL.Keywords[10] := 'RPOS';
+ HL.Keywords[11] := 'RTAB';
+ HL.Keywords[12] := 'SPAN';
+ HL.Keywords[13] := 'TAB';
+ HL.Keywords[14] := 'REM';
+ { Controle de flux }
+ HL.Keywords[15] := 'ABORT';
+ HL.Keywords[16] := 'CONTINUE';
+ HL.Keywords[17] := 'FAIL';
+ HL.Keywords[18] := 'FRETURN';
+ HL.Keywords[19] := 'RETURN';
+ HL.Keywords[20] := 'SUCCEED';
+ HL.Keywords[21] := 'GOTO';
+ HL.Keywords[22] := 'END';
+ { Comparaisons }
+ HL.Keywords[23] := 'EQ';
+ HL.Keywords[24] := 'NE';
+ HL.Keywords[25] := 'GT';
+ HL.Keywords[26] := 'LT';
+ HL.Keywords[27] := 'GE';
+ HL.Keywords[28] := 'LE';
+ HL.Keywords[29] := 'LGT';
+End;
+
+{ --- Initialiser le highlighter SNOBOL --- }
+
+Procedure InitSnobolHighlighter(Var HL: TSnobolHighlighter);
+Begin
+ HL.Base.InBlockComment := False;
+ InitSnobolKeywords(HL);
+End;
+
+{ --- Tester si un mot est un mot-cle SNOBOL (insensible a la casse) --- }
+
+Function IsSnobolKeyword(Var HL: TSnobolHighlighter;
+ Word: String): Boolean;
+Var I: Integer;
+Begin
+ IsSnobolKeyword := False;
+ Word := UpCaseStr(Word);
+ For I := 0 To HL.KeywordCount - 1 Do
+  If HL.Keywords[I] = Word Then Begin
+   IsSnobolKeyword := True;
+   Exit;
+  End;
+End;
+
+{ --- Tester si un mot est une fonction built-in SNOBOL --- }
+
+Function IsSnobolBuiltin(Word: String): Boolean;
+Begin
+ Word := UpCaseStr(Word);
+ IsSnobolBuiltin :=
+  (Word = 'SIZE')     Or (Word = 'TYPE')     Or (Word = 'DATATYPE') Or
+  (Word = 'IDENT')    Or (Word = 'DIFFER')   Or (Word = 'INTEGER')  Or
+  (Word = 'OPSYN')    Or (Word = 'APPLY')    Or (Word = 'EVAL')     Or
+  (Word = 'SETEXIT')  Or (Word = 'DETACH')   Or (Word = 'ATTACH')   Or
+  (Word = 'REPLACE')  Or (Word = 'TRIM')     Or (Word = 'DUPL')     Or
+  (Word = 'DATE')     Or (Word = 'TIME')     Or (Word = 'HOST')     Or
+  (Word = 'LPAD')     Or (Word = 'RPAD')     Or (Word = 'REVERSE')  Or
+  (Word = 'CHAR')     Or (Word = 'CHOP')     Or (Word = 'INPUT')    Or
+  (Word = 'OUTPUT')   Or (Word = 'TERMINAL') Or (Word = 'DEFINE')   Or
+  (Word = 'PROTOTYPE')Or (Word = 'ARRAY')    Or (Word = 'TABLE')    Or
+  (Word = 'CONVERT')  Or (Word = 'COPY')     Or (Word = 'DUMP');
+End;
+
+{ --- Determiner la classe de token SNOBOL --- }
+
+Function GetSnobolTokenClass(Var HL: TSnobolHighlighter;
+ Line: String; Var Pos: Integer): TTokenClass;
+Var
+ Len, Start: Integer;
+ Ch, Ch2: Char;
+ Word: String;
+Begin
+ Len := Length(Line);
+ Ch := Line[Pos];
+ { Commentaire : ligne commencant par * en colonne 1 }
+ If (Pos = 1) And (Ch = '*') Then Begin
+  Pos := Len + 1;
+  GetSnobolTokenClass := TC_COMMENT;
+  Exit;
+ End;
+ { Chaine simple quote '...' }
+ If Ch = '''' Then Begin
+  Inc(Pos);
+  While Pos <= Len Do Begin
+   Ch2 := Line[Pos];
+   Inc(Pos);
+   If Ch2 = '''' Then Begin
+    If (Pos <= Len) And (Line[Pos] = '''') Then Inc(Pos)
+    Else Break;
+   End;
+  End;
+  GetSnobolTokenClass := TC_STRING;
+  Exit;
+ End;
+ { Chaine double quote "..." }
+ If Ch = '"' Then Begin
+  Inc(Pos);
+  While Pos <= Len Do Begin
+   Ch2 := Line[Pos];
+   Inc(Pos);
+   If Ch2 = '"' Then Break;
+  End;
+  GetSnobolTokenClass := TC_STRING;
+  Exit;
+ End;
+ { Variable systeme &NOM }
+ If Ch = '&' Then Begin
+  Inc(Pos);
+  While (Pos <= Len) And IsAlphaUS(Line[Pos]) Do Inc(Pos);
+  GetSnobolTokenClass := TC_TYPE;
+  Exit;
+ End;
+ { Reference d etiquette <NOM> }
+ If Ch = '<' Then Begin
+  Inc(Pos);
+  While (Pos <= Len) And (Line[Pos] <> '>') Do Inc(Pos);
+  If Pos <= Len Then Inc(Pos);
+  GetSnobolTokenClass := TC_TYPE;
+  Exit;
+ End;
+ { Variable indirecte $NOM }
+ If Ch = '$' Then Begin
+  Inc(Pos);
+  While (Pos <= Len) And
+   (IsAlphaUS(Line[Pos]) Or IsDigitChar(Line[Pos])) Do Inc(Pos);
+  GetSnobolTokenClass := TC_TYPE;
+  Exit;
+ End;
+ { Nombre }
+ If IsDigitChar(Ch) Then Begin
+  Inc(Pos);
+  While (Pos <= Len) And
+   (IsDigitChar(Line[Pos]) Or (Line[Pos] = '.')) Do Inc(Pos);
+  GetSnobolTokenClass := TC_NUMBER;
+  Exit;
+ End;
+ { Identifiant / mot-cle }
+ If IsAlphaUS(Ch) Then Begin
+  Start := Pos;
+  Inc(Pos);
+  While (Pos <= Len) And
+   (IsAlphaUS(Line[Pos]) Or IsDigitChar(Line[Pos])) Do Inc(Pos);
+  Word := Copy(Line, Start, Pos - Start);
+  If IsSnobolBuiltin(Word) Then
+   GetSnobolTokenClass := TC_TYPE
+  Else If IsSnobolKeyword(HL, Word) Then
+   GetSnobolTokenClass := TC_KEYWORD
+  Else
+   GetSnobolTokenClass := TC_IDENTIFIER;
+  Exit;
+ End;
+ { Operateur }
+ If (Ch = '=') Or (Ch = '+') Or (Ch = '-') Or (Ch = '*') Or
+    (Ch = '/') Or (Ch = '|') Or (Ch = '!') Or (Ch = '@') Then Begin
+  Inc(Pos);
+  GetSnobolTokenClass := TC_OPERATOR;
+  Exit;
+ End;
+ { Caractere normal }
+ Inc(Pos);
+ GetSnobolTokenClass := TC_NORMAL;
+End;
+
+{ --- Colorier une ligne SNOBOL --- }
+
+Procedure HighlightSnobolLine(Var HL: TSnobolHighlighter;
+                              Line: String;
+                              Var Colors: Array Of Byte);
+Var
+ Pos, Start, I, Len: Integer;
+ TC: TTokenClass;
+ Clr: Byte;
+Begin
+ Len := Length(Line);
+ For I := 0 To Len - 1 Do
+  Colors[I] := Byte(TokenClassToColor(TC_NORMAL));
+ Pos := 1;
+ While Pos <= Len Do Begin
+  Start := Pos;
+  TC := GetSnobolTokenClass(HL, Line, Pos);
   Clr := Byte(TokenClassToColor(TC));
   For I := Start To Pos - 1 Do
    If (I >= 1) And (I <= Len) Then
@@ -54468,6 +54701,39 @@ Begin
     '========== Build: 0 succeeded, 1 failed ==========',
     Ord(OTK_BUILD));
  End
+ Else If (Ext = '.sbl') Or (Ext = '.sno') Then Begin
+  { Compilation SNOBOL -> SNOBCW32.exe }
+  CmdLine := FindCompiler('SNOBCW32');
+  If CmdLine = '' Then Begin
+   AppendOutput(OutputPanel,
+    'Erreur : compilateur SNOBOL non trouve (SNOBCW32.exe).',
+    Ord(OTK_BUILD));
+   Exit;
+  End;
+  CmdLine := CmdLine + ' ' + SourceFile;
+  AppendOutput(OutputPanel,
+   '------ Build started: ' + SourceFile + ' ------',
+   Ord(OTK_BUILD));
+  AppendOutput(OutputPanel, '> ' + CmdLine, Ord(OTK_BUILD));
+  ExitCode := ExecuteCompiler(CmdLine, TempFile);
+  ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
+  CleanupTempFile(TempFile);
+  If ExitCode = 0 Then Begin
+   AppendOutput(OutputPanel,
+    '========== Build: 1 succeeded, 0 failed ==========',
+    Ord(OTK_BUILD));
+   AppendOutput(OutputPanel,
+    'Execution de ' + ExeName + '...', Ord(OTK_BUILD));
+   ClearOutput(OutputPanel, Ord(OTK_DEBUG));
+   ExitCode := ExecuteCompiler(ExeName, TempFile);
+   ReadOutputFile(TempFile, OutputPanel, Ord(OTK_DEBUG));
+   CleanupTempFile(TempFile);
+   SetActiveOutputTab(OutputPanel, OTK_DEBUG);
+  End Else
+   AppendOutput(OutputPanel,
+    '========== Build: 0 succeeded, 1 failed ==========',
+    Ord(OTK_BUILD));
+ End
  Else If (Ext = '.rb') Or (Ext = '.rbw') Then Begin
   { Compilation Ruby -> RUBYCW32.exe }
   CmdLine := FindCompiler('RUBYCW32');
@@ -57938,6 +58204,7 @@ BEGIN
  InitRustHighlighter(RustHL);
  InitSASHighlighter(SASHL);
  InitRubyHighlighter(RubyHL);
+ InitSnobolHighlighter(SnobolHL);
  InitAsmHighlighter(AsmHL);
  InitJavaHighlighter(JavaHL);
  InitPythonHighlighter(PythonHL);
