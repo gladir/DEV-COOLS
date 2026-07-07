@@ -51355,8 +51355,31 @@ Begin
     AppendOutput(OutputPanel,
      '========== Build: 0 succeeded, 1 failed ==========',
      Ord(OTK_BUILD));
+  End Else If EffectiveCPU = '-CD' Then Begin
+   { DOS 8086 : MASM.exe /EXE -> DOS MZ EXE -> emulateur }
+   CmdLine := FindCompiler('MASM');
+   If CmdLine = '' Then Begin
+    AppendOutput(OutputPanel,
+     'Erreur : assembleur MASM non trouve (MASM.exe).',
+     Ord(OTK_BUILD));
+    Exit;
+   End;
+   CmdLine := CmdLine + ' /EXE ' + SourceFile;
+   AppendOutput(OutputPanel, '> ' + CmdLine, Ord(OTK_BUILD));
+   ExitCode := ExecuteCompiler(CmdLine, TempFile);
+   ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
+   CleanupTempFile(TempFile);
+   If ExitCode = 0 Then Begin
+    AppendOutput(OutputPanel,
+     '========== Build: 1 succeeded, 0 failed ==========',
+     Ord(OTK_BUILD));
+    ShowEmulatorPanel(EmuPanel, ExeName, EffectiveCPU);
+   End Else
+    AppendOutput(OutputPanel,
+     '========== Build: 0 succeeded, 1 failed ==========',
+     Ord(OTK_BUILD));
   End Else Begin
-   { x86 (Win32 -CW32 ou DOS 8086 -CD) : ML.exe }
+   { Win32 (modele FLAT) : ML.exe -> PE Win32 -> execution directe }
    DetectMLCompiler(MLContext);
    If Not MLContext.CompilerFound Then Begin
     AppendOutput(OutputPanel,
@@ -51373,20 +51396,14 @@ Begin
     AppendOutput(OutputPanel,
      '========== Build: 1 succeeded, 0 failed ==========',
      Ord(OTK_BUILD));
-    If (EffectiveCPU = '-CW32') Or (EffectiveCPU = '-CW') Then Begin
-     { Win32 : executer directement }
-     AppendOutput(OutputPanel,
-      'Execution de ' + ExeName + '...',
-      Ord(OTK_BUILD));
-     {$IFDEF WINDOWS}
-     Exec(GetEnv('COMSPEC'), '/C ' + ExeName);
-     {$ELSE}
-     Exec('/bin/sh', '-c ./' + ExeName);
-     {$ENDIF}
-    End Else Begin
-     { DOS 8086 : emulateur integre }
-     ShowEmulatorPanel(EmuPanel, ExeName, EffectiveCPU);
-    End;
+    AppendOutput(OutputPanel,
+     'Execution de ' + ExeName + '...',
+     Ord(OTK_BUILD));
+    {$IFDEF WINDOWS}
+    Exec(GetEnv('COMSPEC'), '/C ' + ExeName);
+    {$ELSE}
+    Exec('/bin/sh', '-c ./' + ExeName);
+    {$ENDIF}
    End Else
     AppendOutput(OutputPanel,
      '========== Build: 0 succeeded, 1 failed ==========',

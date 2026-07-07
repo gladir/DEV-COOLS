@@ -148,6 +148,7 @@ Type
   TExpr = Record
     val        : TLong;    { valeur numerique de l expression }
     is_reloc   : Boolean;  { True = adresse relocalisable dans un segment }
+    is_seg_ref : Boolean;  { True = valeur de segment (vs offset) - pour FIXUP_SEG DOS }
     seg_idx    : Integer;  { index 1-base dans seg_table (si is_reloc=True) }
     is_undef   : Boolean;  { True = symbole inconnu en passe 1 (reporter passe 2) }
     ptr_size   : Integer;  { 0=non specifie,1=BYTE,2=WORD/NEAR,4=DWORD/FAR,8=QWORD,10=TBYTE }
@@ -179,6 +180,10 @@ Var
   obj_fname  : TString;  { nom du fichier objet  .OBJ }
   lst_fname  : TString;  { nom du fichier listing .LST }
   do_listing : Boolean;  { True = generer le fichier .LST }
+
+  { Sortie EXE DOS }
+  exe_mode     : Boolean;  { True = generer aussi un .EXE DOS MZ }
+  exe_fname    : TString;  { nom du fichier EXE de sortie }
 
   { Options ligne de commande }
   case_sensitive  : Boolean;  { /ML = conserver la casse des labels }
@@ -1557,6 +1562,20 @@ Begin
   p^.flags := p^.flags And Not 8; { non redefinissable }
 End;
 
+{ Creer/mettre a jour un symbole predefini de type segment (SK_SEG).
+  sidx = index dans seg_table ou grp_table (selon is_grp). }
+Procedure SymAddSegPred(Const name : TSymString; sidx : Integer);
+Var
+  p : PSymbol;
+Begin
+  p := SymFind(name);
+  If p = Nil Then
+    p := SymEnter(name, SK_SEG, 0, 0, 2);
+  p^.kind    := SK_SEG;
+  p^.seg_idx := sidx;
+  p^.flags   := (p^.flags Or 4) And Not 8;
+End;
+
 { ============================================================
   SymInit : inserer les symboles predefinis MASM
   ============================================================ }
@@ -2065,6 +2084,20 @@ Type
   TFixupTable = Array[0..MAX_FIXUP-1] Of TFixupRec;
   PFixupTable  = ^TFixupTable;
 
+  { Buffer image d un segment pour sortie EXE }
+  TSegBuf = Array[0..65534] Of Byte;
+  PSegBuf = ^TSegBuf;
+
+  { Fixup EXE : un mot dans l image qui necessite une relocation de segment }
+  TExeFixup = Record
+    src_seg : Integer;  { segment source (index dans seg_table) }
+    src_ofs : TWord;    { offset du mot dans le segment source }
+    tgt_seg : Integer;  { segment/groupe cible (index) }
+    is_grp  : Boolean;  { True si tgt_seg est un index de groupe }
+  End;
+  TExeFixupTable = Array[0..MAX_FIXUP-1] Of TExeFixup;
+  PExeFixupTable = ^TExeFixupTable;
+
 Var
   { Buffer LEDATA courant }
   ledata_buf     : Array[0..LEDATA_BUF_MAX-1] Of Byte;
@@ -2076,16 +2109,28 @@ Var
   fixup_table    : PFixupTable;
   fixup_count    : Integer;
 
+  { Buffers image de segment pour sortie EXE (alloues a la demande) }
+  seg_image      : Array[1..MAX_SEG] Of PSegBuf;
+
+  { Table de fixups EXE (relocations MZ) }
+  exe_fixup_tbl  : PExeFixupTable;
+  exe_fixup_cnt  : Integer;
+
 { ============================================================
   FixupInit : vider la table de fixups
   ============================================================ }
 Procedure FixupInit;
+Var i: Integer;
 Begin
   If fixup_table = Nil Then New(fixup_table);
   fixup_count    := 0;
   ledata_buf_len := 0;
   ledata_seg_idx := 0;
   ledata_start   := 0;
+  If exe_fixup_tbl = Nil Then New(exe_fixup_tbl);
+  exe_fixup_cnt  := 0;
+  For i := 1 To MAX_SEG Do
+    seg_image[i] := Nil;
 End;
 
 { ============================================================
@@ -2193,6 +2238,12 @@ Begin
     FlushLEDATA;
   ledata_buf[ledata_buf_len] := b;
   Inc(ledata_buf_len);
+  { Buffering pour sortie EXE }
+  If exe_mode And (cur_seg >= 1) And (cur_seg <= MAX_SEG) Then Begin
+    If seg_image[cur_seg] = Nil Then New(seg_image[cur_seg]);
+    If seg_table[cur_seg].cur_lc < 65535 Then
+      seg_image[cur_seg]^[seg_table[cur_seg].cur_lc] := b;
+  End;
   { mettre a jour le LC global }
   Inc(lc);
   { mettre a jour la taille du segment courant }
@@ -2265,6 +2316,16 @@ Begin
   fr.is_seg_rel    := seg_rel;
   fixup_table^[fixup_count] := fr;
   Inc(fixup_count);
+  { Pour la sortie EXE : enregistrer les fixups de type segment (relocation MZ) }
+  If exe_mode And (fix_type = FIXUP_SEG) And Not no_emit And
+     (exe_fixup_cnt < MAX_FIXUP) Then Begin
+    exe_fixup_tbl^[exe_fixup_cnt].src_seg := cur_seg;
+    exe_fixup_tbl^[exe_fixup_cnt].src_ofs :=
+      TWord(ledata_start + ledata_buf_len);
+    exe_fixup_tbl^[exe_fixup_cnt].tgt_seg := target_idx;
+    exe_fixup_tbl^[exe_fixup_cnt].is_grp  := False;
+    Inc(exe_fixup_cnt);
+  End;
 End;
 
 { ============================================================
@@ -2608,10 +2669,10 @@ Begin
   assume_ss        := grp_idx_dgroup; assume_ss_is_grp := True;
   assume_es        := 0;              assume_es_is_grp := False;
 
-  { symboles predefinis @DATA @CODE @STACK }
-  SymSetValue(SymFind('@DATA'),  seg_idx_data);
-  SymSetValue(SymFind('@CODE'),  seg_idx_text);
-  SymSetValue(SymFind('@STACK'), seg_idx_stack);
+  { symboles predefinis @DATA @CODE @STACK : references de segment pour FIXUP_SEG }
+  SymAddSegPred('@DATA',  grp_idx_dgroup);
+  SymAddSegPred('@CODE',  seg_idx_text);
+  SymAddSegPred('@STACK', grp_idx_dgroup);
 
   { mettre a jour le symbole @MODEL }
   SymSetValue(SymFind('@MODEL'), mem_model);
@@ -2833,29 +2894,43 @@ End;
 { ---- Helpers TExpr ---- }
 Procedure ExprMakeNum(Var e : TExpr; v : TLong);
 Begin
-  e.val      := v;
-  e.is_reloc := False;
-  e.seg_idx  := 0;
-  e.is_undef := False;
-  e.ptr_size := 0;
+  e.val        := v;
+  e.is_reloc   := False;
+  e.is_seg_ref := False;
+  e.seg_idx    := 0;
+  e.is_undef   := False;
+  e.ptr_size   := 0;
 End;
 
 Procedure ExprMakeReloc(Var e : TExpr; v : TLong; sidx : Integer);
 Begin
-  e.val      := v;
-  e.is_reloc := True;
-  e.seg_idx  := sidx;
-  e.is_undef := False;
-  e.ptr_size := 0;
+  e.val        := v;
+  e.is_reloc   := True;
+  e.is_seg_ref := False;
+  e.seg_idx    := sidx;
+  e.is_undef   := False;
+  e.ptr_size   := 0;
 End;
 
 Procedure ExprMakeUndef(Var e : TExpr);
 Begin
-  e.val      := 0;
-  e.is_reloc := False;
-  e.seg_idx  := 0;
-  e.is_undef := True;
-  e.ptr_size := 0;
+  e.val        := 0;
+  e.is_reloc   := False;
+  e.is_seg_ref := False;
+  e.seg_idx    := 0;
+  e.is_undef   := True;
+  e.ptr_size   := 0;
+End;
+
+{ Reference de segment relocalisable (valeur de segment pour FIXUP_SEG) }
+Procedure ExprMakeSegRef(Var e : TExpr; sidx : Integer);
+Begin
+  e.val        := 0;
+  e.is_reloc   := True;
+  e.is_seg_ref := True;
+  e.seg_idx    := sidx;
+  e.is_undef   := False;
+  e.ptr_size   := 2;
 End;
 
 { ---- Declarations Forward ---- }
@@ -2969,7 +3044,7 @@ Begin
       SK_EQU :
         ExprMakeNum(e, sym^.value);
       SK_SEG :
-        ExprMakeNum(e, sym^.seg_idx);
+        ExprMakeSegRef(e, sym^.seg_idx);
       SK_UNDEF :
         Begin
           If pass_num = 1 Then
@@ -3031,8 +3106,10 @@ Begin
       EU_SEG :
         Begin
           LexNext; EvalPrimary(e);
-          If e.is_reloc Then ExprMakeNum(e, e.seg_idx)
-          Else             ExprMakeNum(e, 0);
+          If e.is_reloc Then
+            ExprMakeSegRef(e, e.seg_idx)  { reference de segment relocalisable }
+          Else
+            ExprMakeNum(e, 0);
           Exit;
         End;
       EU_TYPE :
@@ -4427,6 +4504,7 @@ Type
     { immediat }
     imm        : TLong;
     imm_reloc  : Boolean;
+    imm_seg_ref: Boolean;   { True = fixup de type segment (FIXUP_SEG) }
     imm_rseg   : Integer;
     { taille forcee par PTR }
     ptr_size   : Integer;  { 0=non force, 1, 2, 4 }
@@ -4453,9 +4531,10 @@ Begin
   op.seg_ovr   := 0;
   op.is_reloc  := False;
   op.reloc_seg := 0;
-  op.imm       := 0;
-  op.imm_reloc := False;
-  op.imm_rseg  := 0;
+  op.imm         := 0;
+  op.imm_reloc   := False;
+  op.imm_seg_ref := False;
+  op.imm_rseg    := 0;
   op.ptr_size  := 0;
 End;
 
@@ -4807,7 +4886,7 @@ Begin
 
   { expression -> immediat ou adresse directe }
   EvalExpr(e);
-  If e.is_reloc And (sz_hint = 0) Then
+  If e.is_reloc And Not e.is_seg_ref And (sz_hint = 0) Then
   Begin
     { adresse de label sans [] -> OK_MEM direct }
     op.kind      := OK_MEM;
@@ -4822,11 +4901,12 @@ Begin
   End
   Else
   Begin
-    op.kind      := OK_IMM;
-    op.imm       := e.val;
-    op.imm_reloc := e.is_reloc;
-    op.imm_rseg  := e.seg_idx;
-    op.ptr_size  := sz_hint;
+    op.kind        := OK_IMM;
+    op.imm         := e.val;
+    op.imm_reloc   := e.is_reloc;
+    op.imm_seg_ref := e.is_seg_ref;
+    op.imm_rseg    := e.seg_idx;
+    op.ptr_size    := sz_hint;
   End;
 End;
 
@@ -5006,9 +5086,13 @@ Begin
     If is_word Then
     Begin
       EmitByte(Byte($B8 Or dst.reg));
-      If src.imm_reloc Then
-        GenFixup(FIXUP_OFFSET, FIXUP_TARGET_SEG, src.imm_rseg,
-                 Word(src.imm), True);
+      If src.imm_reloc Then Begin
+        If src.imm_seg_ref Then
+          GenFixup(FIXUP_SEG, FIXUP_TARGET_SEG, src.imm_rseg, 0, False)
+        Else
+          GenFixup(FIXUP_OFFSET, FIXUP_TARGET_SEG, src.imm_rseg,
+                   Word(src.imm), True);
+      End;
       EmitWord(Word(src.imm));
     End
     Else
@@ -5026,9 +5110,13 @@ Begin
     Begin
       EmitByte($C7);
       EmitModRM(0, dst);
-      If src.imm_reloc Then
-        GenFixup(FIXUP_OFFSET, FIXUP_TARGET_SEG, src.imm_rseg,
-                 Word(src.imm), True);
+      If src.imm_reloc Then Begin
+        If src.imm_seg_ref Then
+          GenFixup(FIXUP_SEG, FIXUP_TARGET_SEG, src.imm_rseg, 0, False)
+        Else
+          GenFixup(FIXUP_OFFSET, FIXUP_TARGET_SEG, src.imm_rseg,
+                   Word(src.imm), True);
+      End;
       EmitWord(Word(src.imm));
     End
     Else
@@ -5907,7 +5995,7 @@ End;
 
 
 { ============================================================
-  PUSH/POP, instructions de chaines, entr‚e/sortie, divers
+  PUSH/POP, instructions de chaines, entrï¿½e/sortie, divers
   ============================================================ }
 
 { --- PUSH --- }
@@ -9002,6 +9090,182 @@ Begin
 End;
 
 { ============================================================
+  WriteDosExe : produire un executable DOS MZ (.EXE) depuis les
+  segments et fixups accumules lors de la passe 2 (exe_mode=True).
+  Layout : _TEXT (code) suivi de DGROUP (_DATA+_BSS+CONST+STACK).
+  ============================================================ }
+Procedure WriteDosExe(Const fname : TString);
+Type
+  TMZHdr = Packed Record
+    Sign        : Array[0..1] Of Char;
+    LenN511     : Word;
+    LenShr9     : Word;
+    NmReloc     : Word;
+    HdrSize     : Word;
+    MinPara     : Word;
+    MaxPara     : Word;
+    InitSS      : Word;
+    InitSP      : Word;
+    CheckSum    : Word;
+    InitIP      : Word;
+    InitCS      : Word;
+    RelocOfs    : Word;
+    Overlay     : Word;
+  End;
+Var
+  hdr     : TMZHdr;
+  f       : File;
+  i, j    : Integer;
+  paras   : Array[1..MAX_SEG] Of LongInt;  { paragraphe debut de chaque segment }
+  total   : LongInt;
+  dgroup_start: LongInt;   { paragraphe de debut de DGROUP }
+  code_seg    : Integer;   { index _TEXT }
+  code_size   : LongInt;
+  dgroup_size : LongInt;
+  stack_size  : TWord;
+  stack_seg   : Integer;
+  img_size    : LongInt;
+  reloc_cnt   : Word;
+  rel_off     : TWord;
+  rel_seg     : TWord;
+  rel_para    : LongInt;
+  w           : Word;
+  zero        : Byte;
+Begin
+  { Identifier le segment de code et les segments DGROUP }
+  code_seg   := seg_idx_text;
+  stack_seg  := seg_idx_stack;
+  code_size  := 0;
+  dgroup_size:= 0;
+  stack_size := 512;  { valeur par defaut }
+  If (code_seg >= 1) And (code_seg <= seg_count) Then
+    code_size := seg_table[code_seg].size;
+  { Calculer la taille de DGROUP = data + bss + const + stack }
+  For i := 1 To grp_table[grp_idx_dgroup].seg_count Do Begin
+    j := grp_table[grp_idx_dgroup].segs[i];
+    If (j >= 1) And (j <= seg_count) Then
+      dgroup_size := dgroup_size + seg_table[j].size;
+  End;
+  If dgroup_size < 4 Then dgroup_size := 4;  { minimum pour le stack pointer }
+  If (stack_seg >= 1) And (stack_seg <= seg_count) And
+     (seg_table[stack_seg].size > 0) Then
+    stack_size := seg_table[stack_seg].size;
+  { Calculer les paragraphes de debut de chaque segment dans l image }
+  FillChar(paras, SizeOf(paras), 0);
+  total := 0;
+  { Code en premier }
+  If (code_seg >= 1) And (code_seg <= seg_count) Then Begin
+    paras[code_seg] := 0;
+    total := (code_size + 15) Shr 4;
+  End;
+  { Segments de DGROUP ensuite }
+  dgroup_start := total;
+  For i := 1 To grp_table[grp_idx_dgroup].seg_count Do Begin
+    j := grp_table[grp_idx_dgroup].segs[i];
+    If (j >= 1) And (j <= seg_count) And (j <> code_seg) Then Begin
+      paras[j] := total;
+      total := total + ((seg_table[j].size + 15) Shr 4);
+    End;
+  End;
+  { Appliquer les fixups FIXUP_SEG dans les images de segments }
+  For i := 0 To exe_fixup_cnt - 1 Do Begin
+    j := exe_fixup_tbl^[i].src_seg;
+    If (j >= 1) And (j <= seg_count) And (seg_image[j] <> Nil) Then Begin
+      { Calculer la valeur de segment cible = paragraphe dans l image }
+      { Pour DGROUP (grp), utiliser dgroup_start }
+      rel_para := dgroup_start;
+      { Ecrire le Word (little-endian) dans le buffer image }
+      w := Word(rel_para And $FFFF);
+      If exe_fixup_tbl^[i].src_ofs + 1 < 65535 Then Begin
+        seg_image[j]^[exe_fixup_tbl^[i].src_ofs]     := Lo(w);
+        seg_image[j]^[exe_fixup_tbl^[i].src_ofs + 1] := Hi(w);
+      End;
+    End;
+  End;
+  { Construire le header MZ }
+  FillChar(hdr, SizeOf(hdr), 0);
+  hdr.Sign[0]   := 'M';
+  hdr.Sign[1]   := 'Z';
+  reloc_cnt     := exe_fixup_cnt;
+  hdr.NmReloc   := reloc_cnt;
+  hdr.RelocOfs  := SizeOf(hdr);  { table de relocation juste apres le header fixe }
+  hdr.HdrSize   := Word((SizeOf(hdr) + reloc_cnt * 4 + 15) Div 16);
+  hdr.InitCS    := 0;    { CS = 0 = debut de l image }
+  hdr.InitIP    := entry_off;
+  hdr.InitSS    := Word(dgroup_start);
+  hdr.InitSP    := Word(dgroup_size);  { SP = taille DGROUP }
+  hdr.MinPara   := 0;
+  hdr.MaxPara   := $FFFF;
+  { Calculer taille totale de l image }
+  img_size := LongInt(hdr.HdrSize) * 16 + total * 16;
+  hdr.LenShr9 := Word((img_size + 511) Div 512);
+  If img_size Mod 512 = 0 Then hdr.LenN511 := 0
+                           Else hdr.LenN511 := Word(img_size Mod 512);
+  { Ecrire le fichier }
+  {$I-}
+  Assign(f, fname);
+  Rewrite(f, 1);
+  {$I+}
+  If IOResult <> 0 Then Begin
+    Writeln('Erreur : impossible de creer ', fname);
+    Exit;
+  End;
+  { Header }
+  BlockWrite(f, hdr, SizeOf(hdr));
+  { Table de relocation (4 octets par entree : offset Word + segment Word) }
+  For i := 0 To exe_fixup_cnt - 1 Do Begin
+    rel_off := exe_fixup_tbl^[i].src_ofs;
+    rel_seg := Word(paras[exe_fixup_tbl^[i].src_seg]);
+    BlockWrite(f, rel_off, 2);
+    BlockWrite(f, rel_seg, 2);
+  End;
+  { Padding jusqu a HdrSize*16 (header struct + table reloc + remplissage) }
+  j := (SizeOf(hdr) + reloc_cnt * 4) Mod 16;
+  If j > 0 Then Begin
+    zero := 0;
+    For i := j To 15 Do BlockWrite(f, zero, 1);
+  End;
+  { Image : code en premier }
+  If (code_seg >= 1) And (code_seg <= seg_count) Then Begin
+    If seg_image[code_seg] <> Nil Then
+      BlockWrite(f, seg_image[code_seg]^, seg_table[code_seg].size)
+    Else Begin
+      zero := 0;
+      For i := 1 To seg_table[code_seg].size Do BlockWrite(f, zero, 1);
+    End;
+    { Padding a paragraphe }
+    j := seg_table[code_seg].size Mod 16;
+    If j > 0 Then Begin
+      zero := 0;
+      For i := j To 15 Do BlockWrite(f, zero, 1);
+    End;
+  End;
+  { Segments DGROUP }
+  For i := 1 To grp_table[grp_idx_dgroup].seg_count Do Begin
+    j := grp_table[grp_idx_dgroup].segs[i];
+    If (j >= 1) And (j <= seg_count) And (j <> code_seg) Then Begin
+      If seg_table[j].size > 0 Then Begin
+        If seg_image[j] <> Nil Then
+          BlockWrite(f, seg_image[j]^, seg_table[j].size)
+        Else Begin
+          zero := 0;
+          For w := 1 To seg_table[j].size Do BlockWrite(f, zero, 1);
+        End;
+        { Padding a paragraphe }
+        w := Word(seg_table[j].size Mod 16);
+        If w > 0 Then Begin
+          zero := 0;
+          For w := w To 15 Do BlockWrite(f, zero, 1);
+        End;
+      End;
+    End;
+  End;
+  Close(f);
+  If Not silent_mode Then
+    Writeln('EXE DOS: ', fname, ' (', img_size, ' octets)');
+End;
+
+{ ============================================================
   Assemble : orchestrer les deux passes et ecrire le .OBJ.
   fname    = nom du fichier source
   out_name = nom du fichier .OBJ cible
@@ -9071,6 +9335,10 @@ Begin
   FlushLEDATA;
   ObjMODEND(has_entry, entry_seg, entry_off);
   ObjClose;
+
+  { Sortie EXE DOS si demandee }
+  If exe_mode And (err_count = 0) Then
+    WriteDosExe(exe_fname);
 
   { sections de fin de listing }
   If do_listing And lst_is_open Then
@@ -9261,6 +9529,9 @@ Begin
           Else             si^.value := 1;
         End;
       End
+      { --- /EXE : generer un executable DOS MZ en plus du .OBJ --- }
+      Else If uopt = 'EXE' Then
+        exe_mode := True
       { --- /Bn : taille buffer avec chiffre colle, ignore --- }
       Else If (Length(uopt) >= 2) And (uopt[1] = 'B') And
               (uopt[2] >= '0') And (uopt[2] <= '9') Then
@@ -9345,6 +9616,10 @@ Begin
   If obj_fname = '' Then
     obj_fname := ChangeExt(src_fname, '.OBJ');
 
+  { Deriver exe_fname si mode EXE actif }
+  If exe_mode And (exe_fname = '') Then
+    exe_fname := ChangeExt(src_fname, '.EXE');
+
   { Deriver lst_fname si listing demande et nom non fourni }
   If do_listing And (lst_fname = '') Then
     lst_fname := ChangeExt(src_fname, '.LST');
@@ -9354,6 +9629,9 @@ End;
   Programme principal
   ============================================================ }
 BEGIN
+ exe_mode      := False;
+ exe_fname     := '';
+ exe_fixup_tbl := Nil;
  InitTables;
  ObjInit;
  FixupInit;
