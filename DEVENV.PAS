@@ -1054,6 +1054,9 @@ Const
  { Coloration syntaxique AWK }
  MAX_AWK_KEYWORDS      = 36;      { nombre de mots-cles AWK        }
 
+ { Coloration syntaxique Assembleur x86 }
+ MAX_ASM_KEYWORDS      = 127;    { nombre de mnemoniques ASM      }
+
  { Coloration syntaxique Python }
  MAX_PYTHON_KEYWORDS   = 35;      { nombre de mots-cles Python     }
 
@@ -1313,6 +1316,12 @@ Const
 
  { Integration compilateur Python }
  PYTHON_COMPILER_WIN32 = 'PYTHCW32'; { compilateur Python Win32 PE    }
+
+ { Integration assembleur ML (clone MS ML.EXE, MASM x86 Win32) }
+ ML_COMPILER_WIN32    = 'ML';        { assembleur ML Win32 PE         }
+ ML_TEMP_OUTPUT       = '_mlout.tmp'; { fichier temp sortie compil    }
+ ML_EXT_SOURCE        = '.asm';      { extension source assembleur    }
+ ML_EXT_EXE           = '.exe';      { extension executable Win32     }
  PYTHON_COMPILER_DOS   = 'PYTHON86'; { compilateur Python DOS 8086    }
  PYTHON_TEMP_OUTPUT    = '_pyout.tmp'; { fichier temp sortie compil   }
  PYTHON_EXT_SOURCE     = '.py';     { extension source Python         }
@@ -1847,6 +1856,13 @@ Type
   Base         : TSyntaxHighlighter;  { moteur de base              }
   Keywords     : Array[0..MAX_AWK_KEYWORDS - 1] Of String[15];
   KeywordCount : Integer;             { nombre de mots-cles         }
+ End;
+
+ { Coloration syntaxique specialisee Assembleur x86 }
+ TAsmHighlighter = Record
+  Base         : TSyntaxHighlighter;  { moteur de base              }
+  Keywords     : Array[0..MAX_ASM_KEYWORDS - 1] Of String[10];
+  KeywordCount : Integer;             { nombre de mnemoniques       }
  End;
 
  { Coloration syntaxique specialisee Java }
@@ -2955,6 +2971,24 @@ Type
   UseWarnings    : Boolean;        { afficher avertissements         }
  End;
 
+ { Contexte compilateur assembleur ML }
+ TMLCompilerContext = Record
+  CompilerPath   : String[255];    { chemin complet du compilateur   }
+  CompilerName   : String[40];     { nom du compilateur (ML)         }
+  CompilerFound  : Boolean;        { compilateur disponible          }
+  LastResult     : TCompilerResult;{ dernier resultat de compilation }
+  ErrorCount     : Integer;        { nombre d erreurs derniere compil}
+  WarningCount   : Integer;        { nombre d avertissements         }
+  FilesCompiled  : Integer;        { nombre de fichiers compiles     }
+  TotalFiles     : Integer;        { nombre total de fichiers source }
+  OutputFile     : String[255];    { fichier de sortie genere        }
+  TempFile       : String[255];    { fichier temporaire de sortie    }
+  IsCompiling    : Boolean;        { compilation en cours            }
+  UseDebugSymbols: Boolean;        { inclure symboles de debogage    }
+  UseVerbose     : Boolean;        { mode verbeux                    }
+  UseWarnings    : Boolean;        { afficher avertissements         }
+ End;
+
  { Etat de build d un projet }
  TBuildStatus = (
   BS_PENDING,          { en attente de compilation               }
@@ -3218,6 +3252,8 @@ Var
  AbapHL       : TAbapHighlighter;
  { Coloration syntaxique AWK }
  AWKHL        : TAWKHighlighter;
+ { Coloration syntaxique Assembleur x86 }
+ AsmHL        : TAsmHighlighter;
  { Coloration syntaxique Java }
  JavaHL       : TJavaHighlighter;
  { Coloration syntaxique Python }
@@ -3276,6 +3312,8 @@ Var
  JavaContext    : TJavaCompilerContext;
  { Contexte compilateur Python }
  PythonContext  : TPythonCompilerContext;
+ { Contexte compilateur assembleur ML }
+ MLContext      : TMLCompilerContext;
  { Gestionnaire de build }
  BuildMgr       : TBuildManager;
  { Gestionnaire de configurations }
@@ -9144,6 +9182,12 @@ Procedure HighlightAWKLine(Var HL: TAWKHighlighter;
                            Line: String;
                            Var Colors: Array Of Byte); Forward;
 
+{ --- Declaration anticipee de HighlightAsmLine --- }
+
+Procedure HighlightAsmLine(Var HL: TAsmHighlighter;
+                           Line: String;
+                           Var Colors: Array Of Byte); Forward;
+
 { --- Declaration anticipee de HighlightPSPLine --- }
 
 Procedure HighlightPSPLine(Var HL: TPSPHighlighter;
@@ -9215,6 +9259,7 @@ Var
  IsJSON: Boolean;
  IsYAML: Boolean;
  IsSQL: Boolean;
+ IsAsm: Boolean;
  Ext: String;
 Begin
  { Detecter si le fichier est du Pascal }
@@ -9240,6 +9285,7 @@ Begin
  IsPSP := (Ext = '.PSP');
  IsJava := (Ext = '.JAVA');
  IsPython := (Ext = '.PY');
+ IsAsm := (Ext = '.ASM') Or (Ext = '.S');
  { Mettre a jour la gouttiere }
  Ed.GutterWidth := CalcGutterWidth(Ed.Buffer.LineCount, Ed.CharWidth);
  Ed.VisibleCols := (Ed.Width - Ed.GutterWidth) Div Ed.CharWidth;
@@ -9299,7 +9345,10 @@ Begin
     HighlightYAMLLine(FullLine, Colors)
    Else If IsSQL And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
-    HighlightSQLLine(FullLine, Colors);
+    HighlightSQLLine(FullLine, Colors)
+   Else If IsAsm And (Length(FullLine) > 0) And
+      (Length(FullLine) <= 255) Then
+    HighlightAsmLine(AsmHL, FullLine, Colors);
    { Extraire la partie visible }
    If Ed.ScrollCol <= Length(FullLine) Then Begin
     Len := Length(FullLine) - Ed.ScrollCol + 1;
@@ -13415,6 +13464,401 @@ Begin
  Begin
   Start := Pos;
   TC := GetAWKTokenClass(HL, Line, Pos);
+  Clr := Byte(TokenClassToColor(TC));
+  For I := Start To Pos - 1 Do
+  Begin
+   If (I >= 1) And (I <= Len) Then
+    Colors[I - 1] := Clr;
+  End;
+ End;
+End;
+
+{ ============================================================
+  COLORATION SYNTAXIQUE ASSEMBLEUR x86 (MASM/NASM/GAS)
+  ============================================================ }
+
+{ --- Initialiser les mnemoniques assembleur x86 --- }
+
+Procedure InitAsmKeywords(Var HL: TAsmHighlighter);
+Begin
+ HL.KeywordCount := MAX_ASM_KEYWORDS;
+ { Transfert de donnees }
+ HL.Keywords[0]   := 'mov';
+ HL.Keywords[1]   := 'movzx';
+ HL.Keywords[2]   := 'movsx';
+ HL.Keywords[3]   := 'push';
+ HL.Keywords[4]   := 'pop';
+ HL.Keywords[5]   := 'lea';
+ HL.Keywords[6]   := 'xchg';
+ HL.Keywords[7]   := 'xadd';
+ HL.Keywords[8]   := 'cmpxchg';
+ { Arithmetique entiere }
+ HL.Keywords[9]   := 'add';
+ HL.Keywords[10]  := 'sub';
+ HL.Keywords[11]  := 'mul';
+ HL.Keywords[12]  := 'imul';
+ HL.Keywords[13]  := 'div';
+ HL.Keywords[14]  := 'idiv';
+ HL.Keywords[15]  := 'inc';
+ HL.Keywords[16]  := 'dec';
+ HL.Keywords[17]  := 'neg';
+ HL.Keywords[18]  := 'adc';
+ HL.Keywords[19]  := 'sbb';
+ { Comparaison et sauts }
+ HL.Keywords[20]  := 'cmp';
+ HL.Keywords[21]  := 'jmp';
+ HL.Keywords[22]  := 'je';
+ HL.Keywords[23]  := 'jne';
+ HL.Keywords[24]  := 'jz';
+ HL.Keywords[25]  := 'jnz';
+ HL.Keywords[26]  := 'jg';
+ HL.Keywords[27]  := 'jge';
+ HL.Keywords[28]  := 'jl';
+ HL.Keywords[29]  := 'jle';
+ HL.Keywords[30]  := 'ja';
+ HL.Keywords[31]  := 'jae';
+ HL.Keywords[32]  := 'jb';
+ HL.Keywords[33]  := 'jbe';
+ HL.Keywords[34]  := 'js';
+ HL.Keywords[35]  := 'jns';
+ HL.Keywords[36]  := 'jo';
+ HL.Keywords[37]  := 'jno';
+ HL.Keywords[38]  := 'jc';
+ HL.Keywords[39]  := 'jnc';
+ HL.Keywords[40]  := 'jcxz';
+ HL.Keywords[41]  := 'jecxz';
+ { Logique et decalage de bits }
+ HL.Keywords[42]  := 'and';
+ HL.Keywords[43]  := 'or';
+ HL.Keywords[44]  := 'xor';
+ HL.Keywords[45]  := 'not';
+ HL.Keywords[46]  := 'test';
+ HL.Keywords[47]  := 'shl';
+ HL.Keywords[48]  := 'shr';
+ HL.Keywords[49]  := 'sal';
+ HL.Keywords[50]  := 'sar';
+ HL.Keywords[51]  := 'rol';
+ HL.Keywords[52]  := 'ror';
+ HL.Keywords[53]  := 'rcl';
+ HL.Keywords[54]  := 'rcr';
+ HL.Keywords[55]  := 'bsf';
+ HL.Keywords[56]  := 'bsr';
+ HL.Keywords[57]  := 'bt';
+ HL.Keywords[58]  := 'bts';
+ HL.Keywords[59]  := 'btr';
+ HL.Keywords[60]  := 'btc';
+ { Pile et appels }
+ HL.Keywords[61]  := 'call';
+ HL.Keywords[62]  := 'ret';
+ HL.Keywords[63]  := 'retf';
+ HL.Keywords[64]  := 'retn';
+ HL.Keywords[65]  := 'enter';
+ HL.Keywords[66]  := 'leave';
+ HL.Keywords[67]  := 'pushf';
+ HL.Keywords[68]  := 'popf';
+ HL.Keywords[69]  := 'pusha';
+ HL.Keywords[70]  := 'popa';
+ HL.Keywords[71]  := 'pushad';
+ HL.Keywords[72]  := 'popad';
+ { Drapeaux }
+ HL.Keywords[73]  := 'std';
+ HL.Keywords[74]  := 'cld';
+ HL.Keywords[75]  := 'sti';
+ HL.Keywords[76]  := 'cli';
+ { Instructions sur chaines }
+ HL.Keywords[77]  := 'rep';
+ HL.Keywords[78]  := 'repe';
+ HL.Keywords[79]  := 'repne';
+ HL.Keywords[80]  := 'repz';
+ HL.Keywords[81]  := 'repnz';
+ HL.Keywords[82]  := 'stosb';
+ HL.Keywords[83]  := 'stosw';
+ HL.Keywords[84]  := 'stosd';
+ HL.Keywords[85]  := 'lodsb';
+ HL.Keywords[86]  := 'lodsw';
+ HL.Keywords[87]  := 'lodsd';
+ HL.Keywords[88]  := 'scasb';
+ HL.Keywords[89]  := 'scasw';
+ HL.Keywords[90]  := 'scasd';
+ HL.Keywords[91]  := 'movsb';
+ HL.Keywords[92]  := 'movsw';
+ HL.Keywords[93]  := 'movsd';
+ HL.Keywords[94]  := 'cmpsb';
+ HL.Keywords[95]  := 'cmpsw';
+ HL.Keywords[96]  := 'cmpsd';
+ { Boucles }
+ HL.Keywords[97]  := 'loop';
+ HL.Keywords[98]  := 'loope';
+ HL.Keywords[99]  := 'loopne';
+ HL.Keywords[100] := 'loopz';
+ HL.Keywords[101] := 'loopnz';
+ { Conversions }
+ HL.Keywords[102] := 'cbw';
+ HL.Keywords[103] := 'cwd';
+ HL.Keywords[104] := 'cdq';
+ HL.Keywords[105] := 'cwde';
+ HL.Keywords[106] := 'bswap';
+ { Divers }
+ HL.Keywords[107] := 'nop';
+ HL.Keywords[108] := 'int';
+ HL.Keywords[109] := 'hlt';
+ HL.Keywords[110] := 'lock';
+ HL.Keywords[111] := 'wait';
+ HL.Keywords[112] := 'cpuid';
+ { Virgule flottante x87 }
+ HL.Keywords[113] := 'fadd';
+ HL.Keywords[114] := 'fsub';
+ HL.Keywords[115] := 'fmul';
+ HL.Keywords[116] := 'fdiv';
+ HL.Keywords[117] := 'fld';
+ HL.Keywords[118] := 'fst';
+ HL.Keywords[119] := 'fstp';
+ HL.Keywords[120] := 'fild';
+ HL.Keywords[121] := 'fistp';
+ HL.Keywords[122] := 'fcom';
+ HL.Keywords[123] := 'fabs';
+ HL.Keywords[124] := 'fchs';
+ HL.Keywords[125] := 'fsqrt';
+ HL.Keywords[126] := 'fxch';
+End;
+
+{ --- Initialiser le moteur de coloration assembleur --- }
+
+Procedure InitAsmHighlighter(Var HL: TAsmHighlighter);
+Begin
+ InitHighlighter(HL.Base, 'ASM');
+ InitAsmKeywords(HL);
+End;
+
+{ --- Verifier si un mot est un mnemonique ASM (insensible casse) --- }
+
+Function IsAsmKeyword(Var HL: TAsmHighlighter;
+                      LWord: String): Boolean;
+Var
+ I: Integer;
+Begin
+ IsAsmKeyword := False;
+ For I := 0 To HL.KeywordCount - 1 Do
+ Begin
+  If LWord = HL.Keywords[I] Then
+  Begin
+   IsAsmKeyword := True;
+   Exit;
+  End;
+ End;
+End;
+
+{ --- Verifier si un mot est un registre x86 --- }
+
+Function IsAsmRegister(Word: String): Boolean;
+Var
+ UW: String;
+Begin
+ UW := UpCaseStr(Word);
+ IsAsmRegister :=
+  { Registres 32 bits }
+  (UW = 'EAX') Or (UW = 'EBX') Or (UW = 'ECX') Or (UW = 'EDX') Or
+  (UW = 'ESI') Or (UW = 'EDI') Or (UW = 'ESP') Or (UW = 'EBP') Or
+  { Registres 16 bits }
+  (UW = 'AX') Or (UW = 'BX') Or (UW = 'CX') Or (UW = 'DX') Or
+  (UW = 'SI') Or (UW = 'DI') Or (UW = 'SP') Or (UW = 'BP') Or
+  { Registres 8 bits }
+  (UW = 'AH') Or (UW = 'AL') Or (UW = 'BH') Or (UW = 'BL') Or
+  (UW = 'CH') Or (UW = 'CL') Or (UW = 'DH') Or (UW = 'DL') Or
+  { Registres de segment }
+  (UW = 'CS') Or (UW = 'DS') Or (UW = 'ES') Or
+  (UW = 'FS') Or (UW = 'GS') Or (UW = 'SS') Or
+  { Registres FPU }
+  (UW = 'ST') Or (UW = 'ST0') Or (UW = 'ST1') Or (UW = 'ST2') Or
+  (UW = 'ST3') Or (UW = 'ST4') Or (UW = 'ST5') Or (UW = 'ST6') Or
+  (UW = 'ST7');
+End;
+
+{ --- Verifier si un mot est une directive assembleur --- }
+
+Function IsAsmDirective(Word: String): Boolean;
+Var
+ UW: String;
+Begin
+ UW := UpCaseStr(Word);
+ IsAsmDirective :=
+  { Donnees }
+  (UW = 'DB') Or (UW = 'DW') Or (UW = 'DD') Or (UW = 'DQ') Or
+  (UW = 'DT') Or (UW = 'DF') Or
+  { Definition et equivalence }
+  (UW = 'EQU') Or (UW = 'TEXTEQU') Or
+  { Procedures }
+  (UW = 'PROC') Or (UW = 'ENDP') Or (UW = 'PROTO') Or
+  (UW = 'INVOKE') Or (UW = 'LOCAL') Or
+  { Structures }
+  (UW = 'STRUCT') Or (UW = 'UNION') Or (UW = 'ENDS') Or
+  (UW = 'RECORD') Or (UW = 'TYPEDEF') Or
+  { Visibilite }
+  (UW = 'PUBLIC') Or (UW = 'EXTERN') Or (UW = 'EXTERNDEF') Or
+  { Segment }
+  (UW = 'SEGMENT') Or (UW = 'ASSUME') Or (UW = 'LABEL') Or
+  { Organisation }
+  (UW = 'ALIGN') Or (UW = 'ORG') Or (UW = 'END') Or
+  { Inclusion }
+  (UW = 'INCLUDE') Or (UW = 'INCLUDELIB') Or
+  { Macros }
+  (UW = 'MACRO') Or (UW = 'ENDM') Or
+  { Conditionnelle }
+  (UW = 'IF') Or (UW = 'ELSE') Or (UW = 'ENDIF') Or
+  (UW = 'ELSEIF') Or (UW = 'IFDEF') Or (UW = 'IFNDEF') Or
+  { Types de taille }
+  (UW = 'BYTE') Or (UW = 'WORD') Or (UW = 'DWORD') Or
+  (UW = 'QWORD') Or (UW = 'REAL4') Or (UW = 'REAL8') Or
+  { Modificateurs d adresse }
+  (UW = 'PTR') Or (UW = 'NEAR') Or (UW = 'FAR') Or
+  (UW = 'OFFSET') Or (UW = 'FLAT') Or (UW = 'OPTION');
+End;
+
+{ --- Classifier un jeton ASM (identifier -> mnemonic/register/directive) --- }
+
+Function ClassifyAsmToken(Var HL: TAsmHighlighter;
+                          Line: String;
+                          StartPos, EndPos: Integer): TTokenClass;
+Var
+ Word: String;
+Begin
+ Word := Copy(Line, StartPos, EndPos - StartPos);
+ If IsAsmRegister(Word) Then
+  ClassifyAsmToken := TC_TYPE
+ Else If IsAsmDirective(Word) Then
+  ClassifyAsmToken := TC_DIRECTIVE
+ Else If IsAsmKeyword(HL, LowerCaseStr(Word)) Then
+  ClassifyAsmToken := TC_KEYWORD
+ Else
+  ClassifyAsmToken := TC_IDENTIFIER;
+End;
+
+{ --- Obtenir la classe de jeton ASM a une position --- }
+
+Function GetAsmTokenClass(Var HL: TAsmHighlighter;
+                          Line: String;
+                          Var Pos: Integer): TTokenClass;
+Var
+ StartPos, Len: Integer;
+ Ch: Char;
+Begin
+ Len := Length(Line);
+ GetAsmTokenClass := TC_NORMAL;
+ If Pos > Len Then Exit;
+
+ Ch := Line[Pos];
+
+ { Espaces et tabulations }
+ If (Ch = ' ') Or (Ch = #9) Then Begin
+  While (Pos <= Len) And ((Line[Pos] = ' ') Or (Line[Pos] = #9)) Do
+   Inc(Pos);
+  GetAsmTokenClass := TC_NORMAL;
+  Exit;
+ End;
+
+ { Commentaire ; jusqu a fin de ligne }
+ If Ch = ';' Then Begin
+  Pos := Len + 1;
+  GetAsmTokenClass := TC_COMMENT;
+  Exit;
+ End;
+
+ { Chaine entre guillemets "..." }
+ If Ch = '"' Then Begin
+  Inc(Pos);
+  While (Pos <= Len) And (Line[Pos] <> '"') Do Begin
+   If (Line[Pos] = '\') And (Pos < Len) Then
+    Inc(Pos, 2)
+   Else
+    Inc(Pos);
+  End;
+  If Pos <= Len Then Inc(Pos);
+  GetAsmTokenClass := TC_STRING;
+  Exit;
+ End;
+
+ { Chaine entre apostrophes '...' }
+ If Ch = '''' Then Begin
+  Inc(Pos);
+  While (Pos <= Len) And (Line[Pos] <> '''') Do
+   Inc(Pos);
+  If Pos <= Len Then Inc(Pos);
+  GetAsmTokenClass := TC_STRING;
+  Exit;
+ End;
+
+ { Directive avec point : .386, .MODEL, .DATA, .CODE, etc. }
+ If Ch = '.' Then Begin
+  Inc(Pos);
+  While (Pos <= Len) And IsAlphaNumUS(Line[Pos]) Do
+   Inc(Pos);
+  GetAsmTokenClass := TC_PREPROCESSOR;
+  Exit;
+ End;
+
+ { Nombre hexadecimal 0x... }
+ If (Ch = '0') And (Pos < Len) And
+    ((Line[Pos + 1] = 'x') Or (Line[Pos + 1] = 'X')) Then Begin
+  Inc(Pos, 2);
+  While (Pos <= Len) And IsHexDigit(Line[Pos]) Do
+   Inc(Pos);
+  GetAsmTokenClass := TC_NUMBER;
+  Exit;
+ End;
+
+ { Nombre : decimal, hex avec suffixe h, binaire avec suffixe b }
+ If IsDigitChar(Ch) Then Begin
+  While (Pos <= Len) And IsHexDigit(Line[Pos]) Do Inc(Pos);
+  If (Pos <= Len) And ((Line[Pos] = 'h') Or (Line[Pos] = 'H') Or
+                       (Line[Pos] = 'b') Or (Line[Pos] = 'B') Or
+                       (Line[Pos] = 'o') Or (Line[Pos] = 'O')) Then
+   Inc(Pos);
+  GetAsmTokenClass := TC_NUMBER;
+  Exit;
+ End;
+
+ { Identifiant, mnemonique ou label }
+ If IsAlphaUS(Ch) Or (Ch = '_') Or (Ch = '@') Or (Ch = '?') Or
+    (Ch = '$') Then Begin
+  StartPos := Pos;
+  While (Pos <= Len) And (IsAlphaNumUS(Line[Pos]) Or
+        (Line[Pos] = '_') Or (Line[Pos] = '@') Or
+        (Line[Pos] = '?') Or (Line[Pos] = '$')) Do
+   Inc(Pos);
+  { Label si suivi de ':' }
+  If (Pos <= Len) And (Line[Pos] = ':') Then Begin
+   Inc(Pos);
+   GetAsmTokenClass := TC_ATTRIBUTE;
+   Exit;
+  End;
+  GetAsmTokenClass := ClassifyAsmToken(HL, Line, StartPos, Pos);
+  Exit;
+ End;
+
+ { Operateur ou autre caractere }
+ Inc(Pos);
+ GetAsmTokenClass := TC_OPERATOR;
+End;
+
+{ --- Colorier une ligne assembleur entiere --- }
+
+Procedure HighlightAsmLine(Var HL: TAsmHighlighter;
+                           Line: String;
+                           Var Colors: Array Of Byte);
+Var
+ Pos, Start, I, Len: Integer;
+ TC: TTokenClass;
+ Clr: Byte;
+Begin
+ Len := Length(Line);
+ For I := 0 To Len - 1 Do
+  Colors[I] := Byte(TokenClassToColor(TC_NORMAL));
+
+ Pos := 1;
+ While Pos <= Len Do
+ Begin
+  Start := Pos;
+  TC := GetAsmTokenClass(HL, Line, Pos);
   Clr := Byte(TokenClassToColor(TC));
   For I := Start To Pos - 1 Do
   Begin
@@ -48924,6 +49368,106 @@ Begin
 End;
 
 { ============================================================
+  INTEGRATION ASSEMBLEUR ML (clone MS ML.EXE, MASM x86 Win32)
+  ============================================================ }
+
+{ --- Detecter la cible a partir de la directive .MODEL du fichier .asm --- }
+{ Retourne '-CW32' (Win32) ou '-CD' (DOS mode reel, 8086). }
+
+Function DetectAsmModel(SourceFile: String): String;
+{ Scanne jusqu a 80 lignes du fichier pour determiner la cible :
+    '-CW32'   : .MODEL FLAT   -> Win32 PE (ML.exe + exec direct)
+    '-CD'     : .MODEL SMALL/TINY/MEDIUM/LARGE/HUGE/COMPACT
+                              -> DOS 8086 (ML.exe + emulateur)
+    '-C68000' : mnemoniques Motorola (MOVE., TRAP #, CLR.)
+                sans .MODEL   -> 68000 (asm68.exe + emulateur) }
+Var
+ F: Text;
+ Line: String;
+ UL: String;
+ I: Integer;
+ Has68K: Boolean;
+ HasModel: Boolean;
+Begin
+ DetectAsmModel := '-CW32'; { par defaut : Win32 }
+ {$I-}
+ Assign(F, SourceFile);
+ Reset(F);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ Has68K   := False;
+ HasModel := False;
+ I := 0;
+ While Not EOF(F) And (I < 80) Do Begin
+  ReadLn(F, Line);
+  Inc(I);
+  UL := UpCaseStr(TrimStr(Line));
+  { .MODEL -> determine Win32 ou DOS 8086 }
+  If Pos('.MODEL', UL) = 1 Then Begin
+   HasModel := True;
+   If Pos('FLAT', UL) > 0 Then Begin
+    DetectAsmModel := '-CW32';
+    Close(F);
+    Exit;
+   End;
+   If (Pos('SMALL', UL) > 0) Or (Pos('TINY', UL) > 0) Or
+      (Pos('MEDIUM', UL) > 0) Or (Pos('LARGE', UL) > 0) Or
+      (Pos('HUGE', UL) > 0) Or (Pos('COMPACT', UL) > 0) Then Begin
+    DetectAsmModel := '-CD';
+    Close(F);
+    Exit;
+   End;
+  End;
+  { Mnemoniques specifiques au 68000 (pas en 8086) }
+  If (Pos('MOVE.', UL) > 0) Or (Pos('MOVEA.', UL) > 0) Or
+     (Pos('CLR.', UL) > 0) Or (Pos('ADDQ.', UL) > 0) Or
+     (Pos('SUBQ.', UL) > 0) Or (Pos('TRAP #', UL) > 0) Or
+     (Pos('TRAP   #', UL) > 0) Then
+   Has68K := True;
+ End;
+ Close(F);
+ { 68000 detecte et aucun .MODEL x86 -> Motorola 68000 }
+ If Has68K And Not HasModel Then
+  DetectAsmModel := '-C68000';
+End;
+
+{ --- Initialiser le contexte du compilateur ML --- }
+
+Procedure InitMLContext(Var Ctx: TMLCompilerContext);
+Begin
+ Ctx.CompilerPath    := '';
+ Ctx.CompilerName    := '';
+ Ctx.CompilerFound   := False;
+ Ctx.LastResult      := CR_NOT_FOUND;
+ Ctx.ErrorCount      := 0;
+ Ctx.WarningCount    := 0;
+ Ctx.FilesCompiled   := 0;
+ Ctx.TotalFiles      := 0;
+ Ctx.OutputFile      := '';
+ Ctx.TempFile        := ML_TEMP_OUTPUT;
+ Ctx.IsCompiling     := False;
+ Ctx.UseDebugSymbols := False;
+ Ctx.UseVerbose      := False;
+ Ctx.UseWarnings     := True;
+End;
+
+{ --- Detecter le compilateur ML disponible --- }
+
+Procedure DetectMLCompiler(Var Ctx: TMLCompilerContext);
+Var
+ Path: String;
+Begin
+ Path := FindCompiler(ML_COMPILER_WIN32);
+ If Path <> '' Then Begin
+  Ctx.CompilerPath  := Path;
+  Ctx.CompilerName  := ML_COMPILER_WIN32;
+  Ctx.CompilerFound := True;
+  Exit;
+ End;
+ Ctx.CompilerFound := False;
+End;
+
+{ ============================================================
   INTEGRATION COMPILATEUR JAVA
   ============================================================ }
 
@@ -50548,6 +51092,7 @@ Var
  BaseName: String;
  SrcDir: String;
  I: Integer;
+ EffectiveCPU: String;
 Begin
  { Determiner le fichier source a compiler }
  SourceFile := '';
@@ -50779,6 +51324,75 @@ Begin
     Ord(OTK_BUILD));
    Exit;
   End;
+ End
+ Else If (Ext = '.asm') Or (Ext = '.s') Then Begin
+  { Detecter la cible depuis le contenu du fichier (jamais depuis le projet) }
+  EffectiveCPU := DetectAsmModel(SourceFile);
+  AppendOutput(OutputPanel,
+   '------ Build started: ' + SourceFile + ' ------',
+   Ord(OTK_BUILD));
+  If EffectiveCPU = '-C68000' Then Begin
+   { Motorola 68000 : asm68.exe -> fichier .S68 -> emulateur }
+   CmdLine := FindCompiler('asm68');
+   If CmdLine = '' Then Begin
+    AppendOutput(OutputPanel,
+     'Erreur : assembleur asm68 non trouve (asm68.exe).',
+     Ord(OTK_BUILD));
+    Exit;
+   End;
+   ExeName := SrcDir + BaseName + '.S68';
+   CmdLine := CmdLine + ' ' + SourceFile;
+   AppendOutput(OutputPanel, '> ' + CmdLine, Ord(OTK_BUILD));
+   ExitCode := ExecuteCompiler(CmdLine, TempFile);
+   ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
+   CleanupTempFile(TempFile);
+   If ExitCode = 0 Then Begin
+    AppendOutput(OutputPanel,
+     '========== Build: 1 succeeded, 0 failed ==========',
+     Ord(OTK_BUILD));
+    ShowEmulatorPanel(EmuPanel, ExeName, '-C68000');
+   End Else
+    AppendOutput(OutputPanel,
+     '========== Build: 0 succeeded, 1 failed ==========',
+     Ord(OTK_BUILD));
+  End Else Begin
+   { x86 (Win32 -CW32 ou DOS 8086 -CD) : ML.exe }
+   DetectMLCompiler(MLContext);
+   If Not MLContext.CompilerFound Then Begin
+    AppendOutput(OutputPanel,
+     'Erreur : assembleur ML non trouve (ML.exe).',
+     Ord(OTK_BUILD));
+    Exit;
+   End;
+   CmdLine := MLContext.CompilerPath + ' ' + SourceFile;
+   AppendOutput(OutputPanel, '> ' + CmdLine, Ord(OTK_BUILD));
+   ExitCode := ExecuteCompiler(CmdLine, TempFile);
+   ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
+   CleanupTempFile(TempFile);
+   If ExitCode = 0 Then Begin
+    AppendOutput(OutputPanel,
+     '========== Build: 1 succeeded, 0 failed ==========',
+     Ord(OTK_BUILD));
+    If (EffectiveCPU = '-CW32') Or (EffectiveCPU = '-CW') Then Begin
+     { Win32 : executer directement }
+     AppendOutput(OutputPanel,
+      'Execution de ' + ExeName + '...',
+      Ord(OTK_BUILD));
+     {$IFDEF WINDOWS}
+     Exec(GetEnv('COMSPEC'), '/C ' + ExeName);
+     {$ELSE}
+     Exec('/bin/sh', '-c ./' + ExeName);
+     {$ENDIF}
+    End Else Begin
+     { DOS 8086 : emulateur integre }
+     ShowEmulatorPanel(EmuPanel, ExeName, EffectiveCPU);
+    End;
+   End Else
+    AppendOutput(OutputPanel,
+     '========== Build: 0 succeeded, 1 failed ==========',
+     Ord(OTK_BUILD));
+  End;
+  Exit;
  End
  Else If (Ext = '.awk') Then Begin
   { Compilation AWK }
@@ -54101,6 +54715,7 @@ BEGIN
  InitAdaHighlighter(AdaHL);
  InitAbapHighlighter(AbapHL);
  InitAWKHighlighter(AWKHL);
+ InitAsmHighlighter(AsmHL);
  InitJavaHighlighter(JavaHL);
  InitPythonHighlighter(PythonHL);
  InitXMLHighlighter(XMLHL);
@@ -54136,6 +54751,7 @@ BEGIN
  InitABAPContext(ABAPContext);
  InitPSPContext(PSPContext);
  InitAWKContext(AWKContext);
+ InitMLContext(MLContext);
  InitJavaContext(JavaContext);
  InitPythonContext(PythonContext);
  InitBuildManager(BuildMgr);
