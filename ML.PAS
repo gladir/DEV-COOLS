@@ -6663,7 +6663,7 @@ End;
   /ENTRY: /STACK: /LIBPATH: (ignore) /DEBUG (ignore).
   ============================================================ }
 Procedure ShowUsage;Begin
-  Writeln('ML- Cette commande permet de lancer le compilateur Macro Assembler (ML.EXE) 80386/Win32.');
+  Writeln('ML - Cette commande permet de lancer le compilateur Macro Assembler (ML.EXE) 80386/Win32.');
   WriteLn;
   Writeln('Syntaxe : ML [options] fichier.asm [[options] [fichier.asm] ...] [/link options-de-liaison]');
   WriteLn;
