@@ -1062,6 +1062,9 @@ Const
  { Coloration syntaxique X++ (Dynamics AX / D365 F&O) }
  MAX_XPP_KEYWORDS      = 80;      { mots-cles X++                  }
 
+ { Coloration syntaxique Power FX (Microsoft Power Apps) }
+ MAX_POWFX_KEYWORDS    = 15;      { operateurs/mots reserves Power FX }
+
  { Coloration syntaxique Assembleur x86 }
  MAX_ASM_KEYWORDS      = 127;    { nombre de mnemoniques ASM      }
 
@@ -1878,6 +1881,13 @@ Type
   Base         : TSyntaxHighlighter;  { moteur de base              }
   Keywords     : Array[0..MAX_XPP_KEYWORDS - 1] Of String[20];
   KeywordCount : Integer;             { nombre de mots-cles         }
+ End;
+
+ { Coloration syntaxique specialisee Power FX }
+ TPowerFXHighlighter = Record
+  Base         : TSyntaxHighlighter;  { moteur de base              }
+  Keywords     : Array[0..MAX_POWFX_KEYWORDS - 1] Of String[12];
+  KeywordCount : Integer;             { nombre de mots reserves     }
  End;
 
  { Coloration syntaxique specialisee Assembleur x86 }
@@ -3280,6 +3290,8 @@ Var
  LuaHL        : TLuaHighlighter;
  { Coloration syntaxique X++ }
  XppHL        : TXppHighlighter;
+ { Coloration syntaxique Power FX }
+ PowerFXHL    : TPowerFXHighlighter;
  { Coloration syntaxique Assembleur x86 }
  AsmHL        : TAsmHighlighter;
  { Coloration syntaxique Java }
@@ -9228,6 +9240,12 @@ Procedure HighlightXppLine(Var HL: TXppHighlighter;
                            Line: String;
                            Var Colors: Array Of Byte); Forward;
 
+{ --- Declaration anticipee de HighlightPowerFXLine --- }
+
+Procedure HighlightPowerFXLine(Var HL: TPowerFXHighlighter;
+                               Line: String;
+                               Var Colors: Array Of Byte); Forward;
+
 { --- Declaration anticipee de HighlightAsmLine --- }
 
 Procedure HighlightAsmLine(Var HL: TAsmHighlighter;
@@ -9299,6 +9317,7 @@ Var
  IsVB6: Boolean;
  IsLua: Boolean;
  IsXpp: Boolean;
+ IsPowerFX: Boolean;
  IsAda: Boolean;
  IsAbap: Boolean;
  IsAWK: Boolean;
@@ -9320,8 +9339,9 @@ Begin
  IsCSharp := (Ext = '.CS');
  IsVBNet := (Ext = '.VB');
  IsVB6   := (Ext = '.BAS');
- IsLua   := (Ext = '.LUA');
- IsXpp   := (Ext = '.XPP');
+ IsLua      := (Ext = '.LUA');
+ IsXpp      := (Ext = '.XPP');
+ IsPowerFX  := (Ext = '.PFX');
  IsAda := (Ext = '.ADB') Or (Ext = '.ADS') Or (Ext = '.ADA');
  IsAbap := (Ext = '.ABAP') Or (Ext = '.ABP');
  IsAWK := (Ext = '.AWK');
@@ -9382,6 +9402,9 @@ Begin
    Else If IsXpp And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
     HighlightXppLine(XppHL, FullLine, Colors)
+   Else If IsPowerFX And (Length(FullLine) > 0) And
+      (Length(FullLine) <= 255) Then
+    HighlightPowerFXLine(PowerFXHL, FullLine, Colors)
    Else If IsAda And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
     HighlightAdaLine(AdaHL, FullLine, Colors)
@@ -14136,6 +14159,246 @@ Begin
  While Pos <= Len Do Begin
   Start := Pos;
   TC := GetXppTokenClass(HL, Line, Pos);
+  Clr := Byte(TokenClassToColor(TC));
+  For I := Start To Pos - 1 Do
+   If (I >= 1) And (I <= Len) Then
+    Colors[I - 1] := Clr;
+ End;
+End;
+
+{ ============================================================
+  COLORATION SYNTAXIQUE POWER FX (Microsoft Power Apps)
+  ============================================================ }
+
+{ --- Mots reserves Power FX (operateurs textuels) --- }
+
+Procedure InitPowerFXKeywords(Var HL: TPowerFXHighlighter);
+Begin
+ HL.KeywordCount  := MAX_POWFX_KEYWORDS;
+ HL.Keywords[0]   := 'and';
+ HL.Keywords[1]   := 'or';
+ HL.Keywords[2]   := 'not';
+ HL.Keywords[3]   := 'in';
+ HL.Keywords[4]   := 'exactin';
+ HL.Keywords[5]   := 'is';
+ HL.Keywords[6]   := 'as';
+ HL.Keywords[7]   := 'with';
+ HL.Keywords[8]   := 'self';
+ HL.Keywords[9]   := 'parent';
+ HL.Keywords[10]  := 'thisitem';
+ HL.Keywords[11]  := 'thisrecord';
+ HL.Keywords[12]  := 'true';
+ HL.Keywords[13]  := 'false';
+ HL.Keywords[14]  := 'blank';
+End;
+
+{ --- Initialiser le moteur de coloration Power FX --- }
+
+Procedure InitPowerFXHighlighter(Var HL: TPowerFXHighlighter);
+Begin
+ InitHighlighter(HL.Base, 'PowerFX');
+ InitPowerFXKeywords(HL);
+End;
+
+{ --- Verifier si un mot est un mot reserve Power FX (insensible casse) --- }
+
+Function IsPowerFXKeyword(Var HL: TPowerFXHighlighter;
+                          Word: String): Boolean;
+Var I: Integer;
+    W: String;
+Begin
+ IsPowerFXKeyword := False;
+ W := Word;
+ { mettre en minuscules }
+ For I := 1 To Length(W) Do
+  If (W[I] >= 'A') And (W[I] <= 'Z') Then
+   W[I] := Chr(Ord(W[I]) + 32);
+ For I := 0 To HL.KeywordCount - 1 Do
+  If W = HL.Keywords[I] Then Begin
+   IsPowerFXKeyword := True;
+   Exit;
+  End;
+End;
+
+{ --- Fonctions integrees Power FX --- }
+
+Function IsPowerFXBuiltin(Word: String): Boolean;
+Begin
+ IsPowerFXBuiltin :=
+  (Word = 'Filter')       Or (Word = 'Sort')          Or
+  (Word = 'SortByColumns')Or (Word = 'Search')        Or
+  (Word = 'LookUp')       Or (Word = 'First')         Or
+  (Word = 'Last')         Or (Word = 'FirstN')        Or
+  (Word = 'LastN')        Or (Word = 'Distinct')      Or
+  (Word = 'Shuffle')      Or (Word = 'Table')         Or
+  (Word = 'AddColumns')   Or (Word = 'DropColumns')   Or
+  (Word = 'ShowColumns')  Or (Word = 'RenameColumns') Or
+  (Word = 'Collect')      Or (Word = 'ClearCollect')  Or
+  (Word = 'Clear')        Or (Word = 'Remove')        Or
+  (Word = 'RemoveIf')     Or (Word = 'Patch')         Or
+  (Word = 'Refresh')      Or (Word = 'Navigate')      Or
+  (Word = 'Back')         Or (Word = 'Exit')          Or
+  (Word = 'Set')          Or (Word = 'UpdateContext') Or
+  (Word = 'If')           Or (Word = 'Switch')        Or
+  (Word = 'IfError')      Or (Word = 'ForAll')        Or
+  (Word = 'Concurrent')   Or (Word = 'With')          Or
+  (Word = 'Sum')          Or (Word = 'Average')       Or
+  (Word = 'Max')          Or (Word = 'Min')           Or
+  (Word = 'Count')        Or (Word = 'CountA')        Or
+  (Word = 'CountIf')      Or (Word = 'CountRows')     Or
+  (Word = 'Abs')          Or (Word = 'Sqrt')          Or
+  (Word = 'Int')          Or (Word = 'Mod')           Or
+  (Word = 'Power')        Or (Word = 'Round')         Or
+  (Word = 'RoundUp')      Or (Word = 'RoundDown')     Or
+  (Word = 'Len')          Or (Word = 'Left')          Or
+  (Word = 'Right')        Or (Word = 'Mid')           Or
+  (Word = 'Upper')        Or (Word = 'Lower')         Or
+  (Word = 'Trim')         Or (Word = 'TrimEnds')      Or
+  (Word = 'Concatenate')  Or (Word = 'Concat')        Or
+  (Word = 'Split')        Or (Word = 'Replace')       Or
+  (Word = 'Substitute')   Or (Word = 'Find')          Or
+  (Word = 'StartsWith')   Or (Word = 'EndsWith')      Or
+  (Word = 'Text')         Or (Word = 'Value')         Or
+  (Word = 'Boolean')      Or (Word = 'DateValue')     Or
+  (Word = 'TimeValue')    Or (Word = 'DateTimeValue') Or
+  (Word = 'Now')          Or (Word = 'Today')         Or
+  (Word = 'DateAdd')      Or (Word = 'DateDiff')      Or
+  (Word = 'Date')         Or (Word = 'Time')          Or
+  (Word = 'Year')         Or (Word = 'Month')         Or
+  (Word = 'Day')          Or (Word = 'Hour')          Or
+  (Word = 'Minute')       Or (Word = 'Second')        Or
+  (Word = 'Weekday')      Or (Word = 'WeekNum')       Or
+  (Word = 'IsBlank')      Or (Word = 'IsEmpty')       Or
+  (Word = 'IsError')      Or (Word = 'IsToday')       Or
+  (Word = 'IsType')       Or (Word = 'IsNumeric')     Or
+  (Word = 'Blank')        Or (Word = 'Error')         Or
+  (Word = 'Coalesce')     Or (Word = 'Notify')        Or
+  (Word = 'Launch')       Or (Word = 'SaveData')      Or
+  (Word = 'LoadData')     Or (Word = 'Rand')          Or
+  (Word = 'GUID')         Or (Word = 'Char')          Or
+  (Word = 'Asc')          Or (Word = 'UniChar')       Or
+  (Word = 'Unicode')      Or (Word = 'EncodeUrl')     Or
+  (Word = 'PlainText')    Or (Word = 'Match')         Or
+  (Word = 'MatchAll')     Or (Word = 'Select')        Or
+  (Word = 'SetFocus')     Or (Word = 'Reset')         Or
+  (Word = 'Defaults')     Or (Word = 'Validate')      Or
+  (Word = 'DataSourceInfo') Or (Word = 'Choices')     Or
+  (Word = 'Relate')       Or (Word = 'Unrelate');
+End;
+
+{ --- Obtenir la classe de jeton Power FX a une position --- }
+
+Function GetPowerFXTokenClass(Var HL: TPowerFXHighlighter;
+                              Line: String;
+                              Var Pos: Integer): TTokenClass;
+Var
+ StartPos, Len, I: Integer;
+ Ch: Char;
+ Word: String;
+Begin
+ Len := Length(Line);
+ GetPowerFXTokenClass := TC_NORMAL;
+ If Pos > Len Then Exit;
+
+ Ch := Line[Pos];
+
+ { Espaces }
+ If (Ch = ' ') Or (Ch = #9) Then Begin
+  While (Pos <= Len) And ((Line[Pos] = ' ') Or (Line[Pos] = #9)) Do
+   Inc(Pos);
+  GetPowerFXTokenClass := TC_NORMAL;
+  Exit;
+ End;
+
+ { Commentaire // }
+ If (Ch = '/') And (Pos < Len) And (Line[Pos + 1] = '/') Then Begin
+  Pos := Len + 1;
+  GetPowerFXTokenClass := TC_COMMENT;
+  Exit;
+ End;
+
+ { Commentaire /* ... */ }
+ If (Ch = '/') And (Pos < Len) And (Line[Pos + 1] = '*') Then Begin
+  Inc(Pos, 2);
+  While Pos < Len Do Begin
+   If (Line[Pos] = '*') And (Line[Pos + 1] = '/') Then Begin
+    Inc(Pos, 2);
+    Break;
+   End;
+   Inc(Pos);
+  End;
+  GetPowerFXTokenClass := TC_COMMENT;
+  Exit;
+ End;
+
+ { Chaine "..." }
+ If Ch = '"' Then Begin
+  Inc(Pos);
+  While (Pos <= Len) And (Line[Pos] <> '"') Do Begin
+   If (Line[Pos] = '\') And (Pos < Len) Then Inc(Pos, 2)
+   Else Inc(Pos);
+  End;
+  If Pos <= Len Then Inc(Pos);
+  GetPowerFXTokenClass := TC_STRING;
+  Exit;
+ End;
+
+ { Nombre }
+ If IsDigitChar(Ch) Then Begin
+  While (Pos <= Len) And IsDigitChar(Line[Pos]) Do Inc(Pos);
+  If (Pos <= Len) And (Line[Pos] = '.') Then Begin
+   Inc(Pos);
+   While (Pos <= Len) And IsDigitChar(Line[Pos]) Do Inc(Pos);
+  End;
+  If (Pos <= Len) And
+     ((Line[Pos] = 'e') Or (Line[Pos] = 'E')) Then Begin
+   Inc(Pos);
+   If (Pos <= Len) And
+      ((Line[Pos] = '+') Or (Line[Pos] = '-')) Then Inc(Pos);
+   While (Pos <= Len) And IsDigitChar(Line[Pos]) Do Inc(Pos);
+  End;
+  GetPowerFXTokenClass := TC_NUMBER;
+  Exit;
+ End;
+
+ { Identifiant, mot-cle ou fonction }
+ If IsAlphaUS(Ch) Then Begin
+  StartPos := Pos;
+  While (Pos <= Len) And
+        (IsAlphaUS(Line[Pos]) Or IsDigitChar(Line[Pos])) Do
+   Inc(Pos);
+  Word := Copy(Line, StartPos, Pos - StartPos);
+  If IsPowerFXBuiltin(Word) Then
+   GetPowerFXTokenClass := TC_TYPE
+  Else If IsPowerFXKeyword(HL, Word) Then
+   GetPowerFXTokenClass := TC_KEYWORD
+  Else
+   GetPowerFXTokenClass := TC_IDENTIFIER;
+  Exit;
+ End;
+
+ { Operateur / ponctuation }
+ Inc(Pos);
+ GetPowerFXTokenClass := TC_OPERATOR;
+End;
+
+{ --- Colorier une ligne Power FX entiere --- }
+
+Procedure HighlightPowerFXLine(Var HL: TPowerFXHighlighter;
+                               Line: String;
+                               Var Colors: Array Of Byte);
+Var
+ Pos, Start, I, Len: Integer;
+ TC: TTokenClass;
+ Clr: Byte;
+Begin
+ Len := Length(Line);
+ For I := 0 To Len - 1 Do
+  Colors[I] := Byte(TokenClassToColor(TC_NORMAL));
+ Pos := 1;
+ While Pos <= Len Do Begin
+  Start := Pos;
+  TC := GetPowerFXTokenClass(HL, Line, Pos);
   Clr := Byte(TokenClassToColor(TC));
   For I := Start To Pos - 1 Do
    If (I >= 1) And (I <= Len) Then
@@ -52193,6 +52456,39 @@ Begin
     '========== Build: 0 succeeded, 1 failed ==========',
     Ord(OTK_BUILD));
  End
+ Else If (Ext = '.pfx') Then Begin
+  { Compilation Power FX -> POWFXC32.exe }
+  CmdLine := FindCompiler('POWFXC32');
+  If CmdLine = '' Then Begin
+   AppendOutput(OutputPanel,
+    'Erreur : compilateur Power FX non trouve (POWFXC32.exe).',
+    Ord(OTK_BUILD));
+   Exit;
+  End;
+  CmdLine := CmdLine + ' ' + SourceFile;
+  AppendOutput(OutputPanel,
+   '------ Build started: ' + SourceFile + ' ------',
+   Ord(OTK_BUILD));
+  AppendOutput(OutputPanel, '> ' + CmdLine, Ord(OTK_BUILD));
+  ExitCode := ExecuteCompiler(CmdLine, TempFile);
+  ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
+  CleanupTempFile(TempFile);
+  If ExitCode = 0 Then Begin
+   AppendOutput(OutputPanel,
+    '========== Build: 1 succeeded, 0 failed ==========',
+    Ord(OTK_BUILD));
+   AppendOutput(OutputPanel,
+    'Execution de ' + ExeName + '...', Ord(OTK_BUILD));
+   {$IFDEF WINDOWS}
+   Exec(GetEnv('COMSPEC'), '/C ' + ExeName);
+   {$ELSE}
+   Exec('/bin/sh', '-c ./' + ExeName);
+   {$ENDIF}
+  End Else
+   AppendOutput(OutputPanel,
+    '========== Build: 0 succeeded, 1 failed ==========',
+    Ord(OTK_BUILD));
+ End
  Else If (Ext = '.awk') Then Begin
   { Compilation AWK }
   DetectAWKCompiler(AWKContext);
@@ -55517,6 +55813,7 @@ BEGIN
  InitAWKHighlighter(AWKHL);
  InitLuaHighlighter(LuaHL);
  InitXppHighlighter(XppHL);
+ InitPowerFXHighlighter(PowerFXHL);
  InitAsmHighlighter(AsmHL);
  InitJavaHighlighter(JavaHL);
  InitPythonHighlighter(PythonHL);
