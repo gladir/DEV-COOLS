@@ -1083,6 +1083,9 @@ Const
  { Coloration syntaxique SAS }
  MAX_SAS_KEYWORDS      = 50;      { mots-cles reserves SAS            }
 
+ { Coloration syntaxique Ruby }
+ MAX_RUBY_KEYWORDS     = 45;      { mots-cles reserves Ruby           }
+
  { Coloration syntaxique Assembleur x86 }
  MAX_ASM_KEYWORDS      = 127;    { nombre de mnemoniques ASM      }
 
@@ -1947,6 +1950,13 @@ Type
  TSASHighlighter = Record
   Base         : TSyntaxHighlighter;  { moteur de base              }
   Keywords     : Array[0..MAX_SAS_KEYWORDS - 1] Of String[10];
+  KeywordCount : Integer;             { nombre de mots-cles         }
+ End;
+
+ { Coloration syntaxique specialisee Ruby }
+ TRubyHighlighter = Record
+  Base         : TSyntaxHighlighter;  { moteur de base              }
+  Keywords     : Array[0..MAX_RUBY_KEYWORDS - 1] Of String[14];
   KeywordCount : Integer;             { nombre de mots-cles         }
  End;
 
@@ -3364,6 +3374,8 @@ Var
  RustHL       : TRustHighlighter;
  { Coloration syntaxique SAS }
  SASHL        : TSASHighlighter;
+ { Coloration syntaxique Ruby }
+ RubyHL       : TRubyHighlighter;
  { Coloration syntaxique Assembleur x86 }
  AsmHL        : TAsmHighlighter;
  { Coloration syntaxique Java }
@@ -9354,6 +9366,12 @@ Procedure HighlightSASLine(Var HL: TSASHighlighter;
                            Line: String;
                            Var Colors: Array Of Byte); Forward;
 
+{ --- Declaration anticipee de HighlightRubyLine --- }
+
+Procedure HighlightRubyLine(Var HL: TRubyHighlighter;
+                            Line: String;
+                            Var Colors: Array Of Byte); Forward;
+
 { --- Declaration anticipee de HighlightAsmLine --- }
 
 Procedure HighlightAsmLine(Var HL: TAsmHighlighter;
@@ -9432,6 +9450,7 @@ Var
  IsPHP: Boolean;
  IsRust: Boolean;
  IsSAS: Boolean;
+ IsRuby: Boolean;
  IsAda: Boolean;
  IsAbap: Boolean;
  IsAWK: Boolean;
@@ -9462,6 +9481,7 @@ Begin
  IsPHP      := (Ext = '.PHP') Or (Ext = '.PHP5') Or (Ext = '.PHTML');
  IsRust     := (Ext = '.RS');
  IsSAS      := (Ext = '.SAS');
+ IsRuby     := (Ext = '.RB') Or (Ext = '.RBW');
  IsAda := (Ext = '.ADB') Or (Ext = '.ADS') Or (Ext = '.ADA');
  IsAbap := (Ext = '.ABAP') Or (Ext = '.ABP');
  IsAWK := (Ext = '.AWK');
@@ -9543,6 +9563,9 @@ Begin
    Else If IsSAS And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
     HighlightSASLine(SASHL, FullLine, Colors)
+   Else If IsRuby And (Length(FullLine) > 0) And
+      (Length(FullLine) <= 255) Then
+    HighlightRubyLine(RubyHL, FullLine, Colors)
    Else If IsAda And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
     HighlightAdaLine(AdaHL, FullLine, Colors)
@@ -15994,6 +16017,268 @@ Begin
  While Pos <= Len Do Begin
   Start := Pos;
   TC := GetSASTokenClass(HL, Line, Pos);
+  Clr := Byte(TokenClassToColor(TC));
+  For I := Start To Pos - 1 Do
+   If (I >= 1) And (I <= Len) Then
+    Colors[I - 1] := Clr;
+ End;
+End;
+
+{ ============================================================
+  COLORATION SYNTAXIQUE RUBY
+  ============================================================ }
+
+{ --- Initialiser les mots-cles Ruby --- }
+
+Procedure InitRubyKeywords(Var HL: TRubyHighlighter);
+Begin
+ HL.KeywordCount := MAX_RUBY_KEYWORDS;
+ HL.Keywords[0]  := '__ENCODING__';
+ HL.Keywords[1]  := '__LINE__';
+ HL.Keywords[2]  := '__FILE__';
+ HL.Keywords[3]  := 'BEGIN';
+ HL.Keywords[4]  := 'END';
+ HL.Keywords[5]  := 'alias';
+ HL.Keywords[6]  := 'and';
+ HL.Keywords[7]  := 'begin';
+ HL.Keywords[8]  := 'break';
+ HL.Keywords[9]  := 'case';
+ HL.Keywords[10] := 'class';
+ HL.Keywords[11] := 'def';
+ HL.Keywords[12] := 'defined';
+ HL.Keywords[13] := 'do';
+ HL.Keywords[14] := 'else';
+ HL.Keywords[15] := 'elsif';
+ HL.Keywords[16] := 'end';
+ HL.Keywords[17] := 'ensure';
+ HL.Keywords[18] := 'false';
+ HL.Keywords[19] := 'for';
+ HL.Keywords[20] := 'if';
+ HL.Keywords[21] := 'in';
+ HL.Keywords[22] := 'module';
+ HL.Keywords[23] := 'next';
+ HL.Keywords[24] := 'nil';
+ HL.Keywords[25] := 'not';
+ HL.Keywords[26] := 'or';
+ HL.Keywords[27] := 'redo';
+ HL.Keywords[28] := 'rescue';
+ HL.Keywords[29] := 'retry';
+ HL.Keywords[30] := 'return';
+ HL.Keywords[31] := 'self';
+ HL.Keywords[32] := 'super';
+ HL.Keywords[33] := 'then';
+ HL.Keywords[34] := 'true';
+ HL.Keywords[35] := 'undef';
+ HL.Keywords[36] := 'unless';
+ HL.Keywords[37] := 'until';
+ HL.Keywords[38] := 'when';
+ HL.Keywords[39] := 'while';
+ HL.Keywords[40] := 'yield';
+ HL.Keywords[41] := 'protected';
+ HL.Keywords[42] := 'private';
+ HL.Keywords[43] := 'public';
+ HL.Keywords[44] := 'freeze';
+End;
+
+{ --- Initialiser le highlighter Ruby --- }
+
+Procedure InitRubyHighlighter(Var HL: TRubyHighlighter);
+Begin
+ HL.Base.InBlockComment := False;
+ InitRubyKeywords(HL);
+End;
+
+{ --- Tester si un mot est un mot-cle Ruby (sensible a la casse) --- }
+
+Function IsRubyKeyword(Var HL: TRubyHighlighter;
+ Word: String): Boolean;
+Var I: Integer;
+Begin
+ IsRubyKeyword := False;
+ For I := 0 To HL.KeywordCount - 1 Do
+  If HL.Keywords[I] = Word Then Begin
+   IsRubyKeyword := True;
+   Exit;
+  End;
+End;
+
+{ --- Tester si un mot est un builtin Ruby --- }
+
+Function IsRubyBuiltin(Word: String): Boolean;
+Begin
+ IsRubyBuiltin :=
+  (Word = 'puts')            Or (Word = 'print')         Or
+  (Word = 'p')               Or (Word = 'pp')            Or
+  (Word = 'require')         Or (Word = 'require_relative') Or
+  (Word = 'include')         Or (Word = 'extend')        Or
+  (Word = 'attr_reader')     Or (Word = 'attr_writer')   Or
+  (Word = 'attr_accessor')   Or (Word = 'raise')         Or
+  (Word = 'fail')            Or (Word = 'catch')         Or
+  (Word = 'throw')           Or (Word = 'lambda')        Or
+  (Word = 'proc')            Or (Word = 'loop')          Or
+  (Word = 'Integer')         Or (Word = 'String')        Or
+  (Word = 'Array')           Or (Word = 'Hash')          Or
+  (Word = 'Float')           Or (Word = 'Symbol')        Or
+  (Word = 'Range')           Or (Word = 'Regexp')        Or
+  (Word = 'File')            Or (Word = 'IO')            Or
+  (Word = 'Dir')             Or (Word = 'Time')          Or
+  (Word = 'Class')           Or (Word = 'Module')        Or
+  (Word = 'Object')          Or (Word = 'Numeric')       Or
+  (Word = 'NilClass')        Or (Word = 'TrueClass')     Or
+  (Word = 'FalseClass')      Or (Word = 'BasicObject')   Or
+  (Word = 'Kernel')          Or (Word = 'Comparable')    Or
+  (Word = 'Enumerable')      Or (Word = 'Exception');
+End;
+
+{ --- Determiner la classe de token Ruby --- }
+
+Function GetRubyTokenClass(Var HL: TRubyHighlighter;
+ Line: String; Var Pos: Integer): TTokenClass;
+Var
+ Len, Start: Integer;
+ Ch, Ch2: Char;
+ Word: String;
+Begin
+ Len := Length(Line);
+ Ch := Line[Pos];
+ { Commentaire de ligne # }
+ If Ch = '#' Then Begin
+  Pos := Len + 1;
+  GetRubyTokenClass := TC_COMMENT;
+  Exit;
+ End;
+ { Commentaire de bloc =begin ... =end (debut de ligne) }
+ If HL.Base.InBlockComment Then Begin
+  If (Pos = 1) And (Len >= 4) And
+     (Copy(Line, 1, 4) = '=end') Then Begin
+   HL.Base.InBlockComment := False;
+  End;
+  Pos := Len + 1;
+  GetRubyTokenClass := TC_COMMENT;
+  Exit;
+ End;
+ If (Pos = 1) And (Len >= 6) And
+    (Copy(Line, 1, 6) = '=begin') Then Begin
+  HL.Base.InBlockComment := True;
+  Pos := Len + 1;
+  GetRubyTokenClass := TC_COMMENT;
+  Exit;
+ End;
+ { Chaine double quote "..." }
+ If Ch = '"' Then Begin
+  Inc(Pos);
+  While Pos <= Len Do Begin
+   Ch2 := Line[Pos];
+   Inc(Pos);
+   If Ch2 = '\' Then Begin
+    If Pos <= Len Then Inc(Pos);
+   End Else If Ch2 = '"' Then Break;
+  End;
+  GetRubyTokenClass := TC_STRING;
+  Exit;
+ End;
+ { Chaine single quote '...' }
+ If Ch = '''' Then Begin
+  Inc(Pos);
+  While Pos <= Len Do Begin
+   Ch2 := Line[Pos];
+   Inc(Pos);
+   If Ch2 = '\' Then Begin
+    If Pos <= Len Then Inc(Pos);
+   End Else If Ch2 = '''' Then Break;
+  End;
+  GetRubyTokenClass := TC_STRING;
+  Exit;
+ End;
+ { Symbole :nom }
+ If (Ch = ':') And (Pos < Len) And IsAlphaUS(Line[Pos+1]) Then Begin
+  Inc(Pos);
+  While (Pos <= Len) And
+   (IsAlphaUS(Line[Pos]) Or IsDigitChar(Line[Pos])) Do Inc(Pos);
+  GetRubyTokenClass := TC_TYPE;
+  Exit;
+ End;
+ { Variable d instance @nom ou de classe @@nom }
+ If Ch = '@' Then Begin
+  Inc(Pos);
+  If (Pos <= Len) And (Line[Pos] = '@') Then Inc(Pos);
+  While (Pos <= Len) And
+   (IsAlphaUS(Line[Pos]) Or IsDigitChar(Line[Pos])) Do Inc(Pos);
+  GetRubyTokenClass := TC_TYPE;
+  Exit;
+ End;
+ { Variable globale $nom }
+ If Ch = '$' Then Begin
+  Inc(Pos);
+  While (Pos <= Len) And
+   (IsAlphaUS(Line[Pos]) Or IsDigitChar(Line[Pos])) Do Inc(Pos);
+  GetRubyTokenClass := TC_TYPE;
+  Exit;
+ End;
+ { Nombre }
+ If IsDigitChar(Ch) Then Begin
+  Inc(Pos);
+  If (Ch = '0') And (Pos <= Len) And
+     ((Line[Pos] = 'x') Or (Line[Pos] = 'X') Or
+      (Line[Pos] = 'b') Or (Line[Pos] = 'B') Or
+      (Line[Pos] = 'o') Or (Line[Pos] = 'O')) Then Inc(Pos);
+  While (Pos <= Len) And
+   (IsDigitChar(Line[Pos]) Or (Line[Pos] = '_') Or
+    (Line[Pos] = '.') Or
+    ((Line[Pos] >= 'a') And (Line[Pos] <= 'f')) Or
+    ((Line[Pos] >= 'A') And (Line[Pos] <= 'F'))) Do Inc(Pos);
+  GetRubyTokenClass := TC_NUMBER;
+  Exit;
+ End;
+ { Identifiant / mot-cle }
+ If IsAlphaUS(Ch) Then Begin
+  Start := Pos;
+  Inc(Pos);
+  While (Pos <= Len) And
+   (IsAlphaUS(Line[Pos]) Or IsDigitChar(Line[Pos])) Do Inc(Pos);
+  { Suffixe ? ou ! pour methodes predicates/bang }
+  If (Pos <= Len) And
+     ((Line[Pos] = '?') Or (Line[Pos] = '!')) Then Inc(Pos);
+  Word := Copy(Line, Start, Pos - Start);
+  If IsRubyBuiltin(Word) Then
+   GetRubyTokenClass := TC_TYPE
+  Else If IsRubyKeyword(HL, Word) Then
+   GetRubyTokenClass := TC_KEYWORD
+  Else
+   GetRubyTokenClass := TC_IDENTIFIER;
+  Exit;
+ End;
+ { Operateur }
+ If (Ch = '+') Or (Ch = '-') Or (Ch = '*') Or (Ch = '/') Or
+    (Ch = '=') Or (Ch = '<') Or (Ch = '>') Or (Ch = '!') Or
+    (Ch = '&') Or (Ch = '|') Or (Ch = '^') Or (Ch = '%') Or
+    (Ch = '~') Or (Ch = '?') Then Begin
+  Inc(Pos);
+  GetRubyTokenClass := TC_OPERATOR;
+  Exit;
+ End;
+ { Caractere normal }
+ Inc(Pos);
+ GetRubyTokenClass := TC_NORMAL;
+End;
+
+{ --- Colorier une ligne Ruby --- }
+
+Procedure HighlightRubyLine(Var HL: TRubyHighlighter;
+                            Line: String;
+                            Var Colors: Array Of Byte);
+Var
+ Pos, Start, I, Len: Integer;
+ TC: TTokenClass;
+ Clr: Byte;
+Begin
+ Len := Length(Line);
+ For I := 0 To Len - 1 Do
+  Colors[I] := Byte(TokenClassToColor(TC_NORMAL));
+ Pos := 1;
+ While Pos <= Len Do Begin
+  Start := Pos;
+  TC := GetRubyTokenClass(HL, Line, Pos);
   Clr := Byte(TokenClassToColor(TC));
   For I := Start To Pos - 1 Do
    If (I >= 1) And (I <= Len) Then
@@ -54183,6 +54468,39 @@ Begin
     '========== Build: 0 succeeded, 1 failed ==========',
     Ord(OTK_BUILD));
  End
+ Else If (Ext = '.rb') Or (Ext = '.rbw') Then Begin
+  { Compilation Ruby -> RUBYCW32.exe }
+  CmdLine := FindCompiler('RUBYCW32');
+  If CmdLine = '' Then Begin
+   AppendOutput(OutputPanel,
+    'Erreur : compilateur Ruby non trouve (RUBYCW32.exe).',
+    Ord(OTK_BUILD));
+   Exit;
+  End;
+  CmdLine := CmdLine + ' ' + SourceFile;
+  AppendOutput(OutputPanel,
+   '------ Build started: ' + SourceFile + ' ------',
+   Ord(OTK_BUILD));
+  AppendOutput(OutputPanel, '> ' + CmdLine, Ord(OTK_BUILD));
+  ExitCode := ExecuteCompiler(CmdLine, TempFile);
+  ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
+  CleanupTempFile(TempFile);
+  If ExitCode = 0 Then Begin
+   AppendOutput(OutputPanel,
+    '========== Build: 1 succeeded, 0 failed ==========',
+    Ord(OTK_BUILD));
+   AppendOutput(OutputPanel,
+    'Execution de ' + ExeName + '...', Ord(OTK_BUILD));
+   ClearOutput(OutputPanel, Ord(OTK_DEBUG));
+   ExitCode := ExecuteCompiler(ExeName, TempFile);
+   ReadOutputFile(TempFile, OutputPanel, Ord(OTK_DEBUG));
+   CleanupTempFile(TempFile);
+   SetActiveOutputTab(OutputPanel, OTK_DEBUG);
+  End Else
+   AppendOutput(OutputPanel,
+    '========== Build: 0 succeeded, 1 failed ==========',
+    Ord(OTK_BUILD));
+ End
  Else If (Ext = '.sas') Then Begin
   { Compilation SAS -> SASCW32.exe }
   CmdLine := FindCompiler('SASCW32');
@@ -57619,6 +57937,7 @@ BEGIN
  InitPHPHighlighter(PHPHL);
  InitRustHighlighter(RustHL);
  InitSASHighlighter(SASHL);
+ InitRubyHighlighter(RubyHL);
  InitAsmHighlighter(AsmHL);
  InitJavaHighlighter(JavaHL);
  InitPythonHighlighter(PythonHL);
