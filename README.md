@@ -8,7 +8,7 @@ Il possède également des IDE, comme DEVENV :
 <img width="639" height="479" alt="image" src="https://github.com/user-attachments/assets/bc6193a5-1ae5-471b-a9d5-54619b45407b" />
 
 <ul>	
-	<li>Lequel supporte, les langages de programmations comme ABAP/4, Ada, C, C#, Java, Pascal, Python,...</li>
+	<li>Lequel supporte, les langages de programmations comme ABAP/4, Ada, Assembleur (8086, 80386, 68000), C, C#, Java, Pascal, Python,...</li>
 	<li>Lequel supporte les terminals (CMD, PowerShell, Bash, AmigaDOS) en built-in). Les terminals support les disques d'images de fichiers montés pour les émulateurs.</li>
 	<li>Le DEVENV possède un émulateur 8086, NES, Amiga, Cray 1, Apple II, Commodore 64, MSX, CoCo 3,... intégré pour les cibles n'étant pas Windows.</li>
 	<li>Debogueur pour le 6502, 8086 intégré</li>
