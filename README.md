@@ -646,6 +646,9 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de faire des tests de charge.</td>
 		</tr>
 		<tr>
+			<td><b>POWFXC32.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur Power FX pour assembleur du microprocesseur 80386 (Windows PE 32 bits).</td>
+		<tr>
 			<td><b>PPUINFO.PAS</b></td>
 			<td>Cette commande permet de retourner les informations de version d'une unité Free Pascal.</td>
 		</tr>
