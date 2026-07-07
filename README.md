@@ -519,6 +519,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer le Macro Assembler (compilateur assembleur 8086 créant des fichiers .OBJ).</td>
 		</tr>
 		<tr>
+			<td><b>ML.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur Macro Assembler (ML.EXE) 80386/Win32.</td>
+		</tr>
+		<tr>
 			<td><b>MOD2CW32.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur Modula-2 pour l'assembleur du microprocesseur 80386 pour Windows 32 bits.</td>
 		</tr>
