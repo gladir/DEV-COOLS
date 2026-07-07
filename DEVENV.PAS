@@ -56604,6 +56604,12 @@ Begin
       (Ev.MouseY >= SolExplorer.Y) And
       (Ev.MouseY < SolExplorer.Y + SolExplorer.Height) Then Begin
     { Laisser passer vers HandleExplorerEvent }
+   End Else If OutputPanel.Visible And
+      (Ev.MouseX >= OutputPanel.X) And
+      (Ev.MouseX < OutputPanel.X + OutputPanel.Width) And
+      (Ev.MouseY >= OutputPanel.Y) And
+      (Ev.MouseY < OutputPanel.Y + OutputPanel.Height) Then Begin
+    { Laisser passer vers HandleOutputEvent }
    End Else Begin
     HandleEditorMouse(ActiveEditor, Ev);
     If Editors[WinMgr.ActiveIdx] <> Nil Then
