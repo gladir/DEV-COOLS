@@ -1065,6 +1065,9 @@ Const
  { Coloration syntaxique Power FX (Microsoft Power Apps) }
  MAX_POWFX_KEYWORDS    = 15;      { operateurs/mots reserves Power FX }
 
+ { Coloration syntaxique Oberon / Oberon-2 }
+ MAX_OBERON_KEYWORDS   = 42;      { mots-cles reserves Oberon         }
+
  { Coloration syntaxique Assembleur x86 }
  MAX_ASM_KEYWORDS      = 127;    { nombre de mnemoniques ASM      }
 
@@ -1888,6 +1891,13 @@ Type
   Base         : TSyntaxHighlighter;  { moteur de base              }
   Keywords     : Array[0..MAX_POWFX_KEYWORDS - 1] Of String[12];
   KeywordCount : Integer;             { nombre de mots reserves     }
+ End;
+
+ { Coloration syntaxique specialisee Oberon / Oberon-2 }
+ TOberonHighlighter = Record
+  Base         : TSyntaxHighlighter;  { moteur de base              }
+  Keywords     : Array[0..MAX_OBERON_KEYWORDS - 1] Of String[16];
+  KeywordCount : Integer;             { nombre de mots-cles         }
  End;
 
  { Coloration syntaxique specialisee Assembleur x86 }
@@ -3292,6 +3302,8 @@ Var
  XppHL        : TXppHighlighter;
  { Coloration syntaxique Power FX }
  PowerFXHL    : TPowerFXHighlighter;
+ { Coloration syntaxique Oberon }
+ OberonHL     : TOberonHighlighter;
  { Coloration syntaxique Assembleur x86 }
  AsmHL        : TAsmHighlighter;
  { Coloration syntaxique Java }
@@ -9246,6 +9258,12 @@ Procedure HighlightPowerFXLine(Var HL: TPowerFXHighlighter;
                                Line: String;
                                Var Colors: Array Of Byte); Forward;
 
+{ --- Declaration anticipee de HighlightOberonLine --- }
+
+Procedure HighlightOberonLine(Var HL: TOberonHighlighter;
+                              Line: String;
+                              Var Colors: Array Of Byte); Forward;
+
 { --- Declaration anticipee de HighlightAsmLine --- }
 
 Procedure HighlightAsmLine(Var HL: TAsmHighlighter;
@@ -9318,6 +9336,7 @@ Var
  IsLua: Boolean;
  IsXpp: Boolean;
  IsPowerFX: Boolean;
+ IsOberon: Boolean;
  IsAda: Boolean;
  IsAbap: Boolean;
  IsAWK: Boolean;
@@ -9342,6 +9361,7 @@ Begin
  IsLua      := (Ext = '.LUA');
  IsXpp      := (Ext = '.XPP');
  IsPowerFX  := (Ext = '.PFX');
+ IsOberon   := (Ext = '.OBN') Or (Ext = '.OB2') Or (Ext = '.MOD');
  IsAda := (Ext = '.ADB') Or (Ext = '.ADS') Or (Ext = '.ADA');
  IsAbap := (Ext = '.ABAP') Or (Ext = '.ABP');
  IsAWK := (Ext = '.AWK');
@@ -9405,6 +9425,9 @@ Begin
    Else If IsPowerFX And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
     HighlightPowerFXLine(PowerFXHL, FullLine, Colors)
+   Else If IsOberon And (Length(FullLine) > 0) And
+      (Length(FullLine) <= 255) Then
+    HighlightOberonLine(OberonHL, FullLine, Colors)
    Else If IsAda And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
     HighlightAdaLine(AdaHL, FullLine, Colors)
@@ -14399,6 +14422,218 @@ Begin
  While Pos <= Len Do Begin
   Start := Pos;
   TC := GetPowerFXTokenClass(HL, Line, Pos);
+  Clr := Byte(TokenClassToColor(TC));
+  For I := Start To Pos - 1 Do
+   If (I >= 1) And (I <= Len) Then
+    Colors[I - 1] := Clr;
+ End;
+End;
+
+{ ============================================================
+  COLORATION SYNTAXIQUE OBERON / OBERON-2
+  ============================================================ }
+
+{ --- Mots-cles reserves Oberon --- }
+
+Procedure InitOberonKeywords(Var HL: TOberonHighlighter);
+Begin
+ HL.KeywordCount  := MAX_OBERON_KEYWORDS;
+ HL.Keywords[0]   := 'MODULE';
+ HL.Keywords[1]   := 'IMPORT';
+ HL.Keywords[2]   := 'BEGIN';
+ HL.Keywords[3]   := 'END';
+ HL.Keywords[4]   := 'IF';
+ HL.Keywords[5]   := 'THEN';
+ HL.Keywords[6]   := 'ELSE';
+ HL.Keywords[7]   := 'ELSIF';
+ HL.Keywords[8]   := 'WHILE';
+ HL.Keywords[9]   := 'DO';
+ HL.Keywords[10]  := 'REPEAT';
+ HL.Keywords[11]  := 'UNTIL';
+ HL.Keywords[12]  := 'FOR';
+ HL.Keywords[13]  := 'TO';
+ HL.Keywords[14]  := 'BY';
+ HL.Keywords[15]  := 'LOOP';
+ HL.Keywords[16]  := 'EXIT';
+ HL.Keywords[17]  := 'RETURN';
+ HL.Keywords[18]  := 'WITH';
+ HL.Keywords[19]  := 'CASE';
+ HL.Keywords[20]  := 'OF';
+ HL.Keywords[21]  := 'RECORD';
+ HL.Keywords[22]  := 'ARRAY';
+ HL.Keywords[23]  := 'POINTER';
+ HL.Keywords[24]  := 'PROCEDURE';
+ HL.Keywords[25]  := 'VAR';
+ HL.Keywords[26]  := 'CONST';
+ HL.Keywords[27]  := 'TYPE';
+ HL.Keywords[28]  := 'IN';
+ HL.Keywords[29]  := 'IS';
+ HL.Keywords[30]  := 'OR';
+ HL.Keywords[31]  := 'DIV';
+ HL.Keywords[32]  := 'MOD';
+ HL.Keywords[33]  := 'NIL';
+ HL.Keywords[34]  := 'TRUE';
+ HL.Keywords[35]  := 'FALSE';
+ HL.Keywords[36]  := 'AND';
+ HL.Keywords[37]  := 'NOT';
+ HL.Keywords[38]  := 'DEFINITION';
+ HL.Keywords[39]  := 'IMPLEMENTATION';
+ HL.Keywords[40]  := 'ABSTRACT';
+ HL.Keywords[41]  := 'CLOSE';
+End;
+
+{ --- Initialiser le moteur de coloration Oberon --- }
+
+Procedure InitOberonHighlighter(Var HL: TOberonHighlighter);
+Begin
+ InitHighlighter(HL.Base, 'Oberon');
+ InitOberonKeywords(HL);
+End;
+
+{ --- Verifier si un mot est un mot-cle Oberon --- }
+
+Function IsOberonKeyword(Var HL: TOberonHighlighter;
+                         Word: String): Boolean;
+Var I: Integer;
+Begin
+ IsOberonKeyword := False;
+ For I := 0 To HL.KeywordCount - 1 Do
+  If Word = HL.Keywords[I] Then Begin
+   IsOberonKeyword := True;
+   Exit;
+  End;
+End;
+
+{ --- Types et procedures integres Oberon --- }
+
+Function IsOberonBuiltin(Word: String): Boolean;
+Begin
+ IsOberonBuiltin :=
+  { types de base }
+  (Word = 'INTEGER')  Or (Word = 'REAL')      Or (Word = 'BOOLEAN')  Or
+  (Word = 'CHAR')     Or (Word = 'BYTE')       Or (Word = 'SET')      Or
+  (Word = 'LONGINT')  Or (Word = 'SHORTINT')   Or (Word = 'LONGREAL') Or
+  (Word = 'STRING')   Or
+  { procedures standard }
+  (Word = 'INC')      Or (Word = 'DEC')        Or (Word = 'INCL')     Or
+  (Word = 'EXCL')     Or (Word = 'COPY')       Or (Word = 'NEW')      Or
+  (Word = 'DISPOSE')  Or (Word = 'HALT')       Or (Word = 'ABS')      Or
+  (Word = 'ODD')      Or (Word = 'LEN')        Or (Word = 'LSL')      Or
+  (Word = 'ASR')      Or (Word = 'ROR')        Or (Word = 'FLOOR')    Or
+  (Word = 'FLT')      Or (Word = 'ORD')        Or (Word = 'CHR')      Or
+  (Word = 'MIN')      Or (Word = 'MAX')        Or (Word = 'ASSERT')   Or
+  (Word = 'SYSTEM')   Or (Word = 'ENTIER')     Or (Word = 'SIZE');
+End;
+
+{ --- Obtenir la classe de jeton Oberon a une position --- }
+
+Function GetOberonTokenClass(Var HL: TOberonHighlighter;
+                             Line: String;
+                             Var Pos: Integer): TTokenClass;
+Var
+ StartPos, Len: Integer;
+ Ch: Char;
+ Word: String;
+Begin
+ Len := Length(Line);
+ GetOberonTokenClass := TC_NORMAL;
+ If Pos > Len Then Exit;
+
+ Ch := Line[Pos];
+
+ { Espaces }
+ If (Ch = ' ') Or (Ch = #9) Then Begin
+  While (Pos <= Len) And ((Line[Pos] = ' ') Or (Line[Pos] = #9)) Do
+   Inc(Pos);
+  GetOberonTokenClass := TC_NORMAL;
+  Exit;
+ End;
+
+ { Commentaire (* ... *) sur une ligne }
+ If (Ch = '(') And (Pos < Len) And (Line[Pos + 1] = '*') Then Begin
+  Inc(Pos, 2);
+  While Pos < Len Do Begin
+   If (Line[Pos] = '*') And (Line[Pos + 1] = ')') Then Begin
+    Inc(Pos, 2);
+    Break;
+   End;
+   Inc(Pos);
+  End;
+  If Pos = Len Then Inc(Pos);
+  GetOberonTokenClass := TC_COMMENT;
+  Exit;
+ End;
+
+ { Chaine "..." }
+ If Ch = '"' Then Begin
+  Inc(Pos);
+  While (Pos <= Len) And (Line[Pos] <> '"') Do Inc(Pos);
+  If Pos <= Len Then Inc(Pos);
+  GetOberonTokenClass := TC_STRING;
+  Exit;
+ End;
+
+ { Nombre : entier, reel, hexa (0FFH) }
+ If IsDigitChar(Ch) Then Begin
+  While (Pos <= Len) And IsDigitChar(Line[Pos]) Do Inc(Pos);
+  { partie decimale }
+  If (Pos <= Len) And (Line[Pos] = '.') And
+     (Pos < Len) And (Line[Pos + 1] <> '.') Then Begin
+   Inc(Pos);
+   While (Pos <= Len) And IsDigitChar(Line[Pos]) Do Inc(Pos);
+   If (Pos <= Len) And ((Line[Pos] = 'E') Or (Line[Pos] = 'D')) Then Begin
+    Inc(Pos);
+    If (Pos <= Len) And
+       ((Line[Pos] = '+') Or (Line[Pos] = '-')) Then Inc(Pos);
+    While (Pos <= Len) And IsDigitChar(Line[Pos]) Do Inc(Pos);
+   End;
+  End;
+  { suffixe H = hexadecimal }
+  If (Pos <= Len) And (Line[Pos] = 'H') Then Inc(Pos);
+  { suffixe X = caractere hex }
+  If (Pos <= Len) And (Line[Pos] = 'X') Then Inc(Pos);
+  GetOberonTokenClass := TC_NUMBER;
+  Exit;
+ End;
+
+ { Identifiant, type ou mot-cle }
+ If IsAlphaUS(Ch) Then Begin
+  StartPos := Pos;
+  While (Pos <= Len) And
+        (IsAlphaUS(Line[Pos]) Or IsDigitChar(Line[Pos])) Do
+   Inc(Pos);
+  Word := Copy(Line, StartPos, Pos - StartPos);
+  If IsOberonBuiltin(Word) Then
+   GetOberonTokenClass := TC_TYPE
+  Else If IsOberonKeyword(HL, Word) Then
+   GetOberonTokenClass := TC_KEYWORD
+  Else
+   GetOberonTokenClass := TC_IDENTIFIER;
+  Exit;
+ End;
+
+ { Operateur / ponctuation }
+ Inc(Pos);
+ GetOberonTokenClass := TC_OPERATOR;
+End;
+
+{ --- Colorier une ligne Oberon entiere --- }
+
+Procedure HighlightOberonLine(Var HL: TOberonHighlighter;
+                              Line: String;
+                              Var Colors: Array Of Byte);
+Var
+ Pos, Start, I, Len: Integer;
+ TC: TTokenClass;
+ Clr: Byte;
+Begin
+ Len := Length(Line);
+ For I := 0 To Len - 1 Do
+  Colors[I] := Byte(TokenClassToColor(TC_NORMAL));
+ Pos := 1;
+ While Pos <= Len Do Begin
+  Start := Pos;
+  TC := GetOberonTokenClass(HL, Line, Pos);
   Clr := Byte(TokenClassToColor(TC));
   For I := Start To Pos - 1 Do
    If (I >= 1) And (I <= Len) Then
@@ -52489,6 +52724,39 @@ Begin
     '========== Build: 0 succeeded, 1 failed ==========',
     Ord(OTK_BUILD));
  End
+ Else If (Ext = '.obn') Or (Ext = '.ob2') Or (Ext = '.mod') Then Begin
+  { Compilation Oberon -> OBERCW32.exe }
+  CmdLine := FindCompiler('OBERCW32');
+  If CmdLine = '' Then Begin
+   AppendOutput(OutputPanel,
+    'Erreur : compilateur Oberon non trouve (OBERCW32.exe).',
+    Ord(OTK_BUILD));
+   Exit;
+  End;
+  CmdLine := CmdLine + ' ' + SourceFile;
+  AppendOutput(OutputPanel,
+   '------ Build started: ' + SourceFile + ' ------',
+   Ord(OTK_BUILD));
+  AppendOutput(OutputPanel, '> ' + CmdLine, Ord(OTK_BUILD));
+  ExitCode := ExecuteCompiler(CmdLine, TempFile);
+  ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
+  CleanupTempFile(TempFile);
+  If ExitCode = 0 Then Begin
+   AppendOutput(OutputPanel,
+    '========== Build: 1 succeeded, 0 failed ==========',
+    Ord(OTK_BUILD));
+   AppendOutput(OutputPanel,
+    'Execution de ' + ExeName + '...', Ord(OTK_BUILD));
+   {$IFDEF WINDOWS}
+   Exec(GetEnv('COMSPEC'), '/C ' + ExeName);
+   {$ELSE}
+   Exec('/bin/sh', '-c ./' + ExeName);
+   {$ENDIF}
+  End Else
+   AppendOutput(OutputPanel,
+    '========== Build: 0 succeeded, 1 failed ==========',
+    Ord(OTK_BUILD));
+ End
  Else If (Ext = '.awk') Then Begin
   { Compilation AWK }
   DetectAWKCompiler(AWKContext);
@@ -55814,6 +56082,7 @@ BEGIN
  InitLuaHighlighter(LuaHL);
  InitXppHighlighter(XppHL);
  InitPowerFXHighlighter(PowerFXHL);
+ InitOberonHighlighter(OberonHL);
  InitAsmHighlighter(AsmHL);
  InitJavaHighlighter(JavaHL);
  InitPythonHighlighter(PythonHL);
