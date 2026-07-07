@@ -1092,6 +1092,9 @@ Const
  { Coloration syntaxique Modula-3 }
  MAX_MOD3_KEYWORDS     = 62;      { mots-cles reserves Modula-3       }
 
+ { Coloration syntaxique COBOL }
+ MAX_COBOL_KEYWORDS    = 80;      { mots-cles reserves COBOL          }
+
  { Coloration syntaxique Assembleur x86 }
  MAX_ASM_KEYWORDS      = 127;    { nombre de mnemoniques ASM      }
 
@@ -1977,6 +1980,13 @@ Type
  TMod3Highlighter = Record
   Base         : TSyntaxHighlighter;  { moteur de base              }
   Keywords     : Array[0..MAX_MOD3_KEYWORDS - 1] Of String[12];
+  KeywordCount : Integer;             { nombre de mots-cles         }
+ End;
+
+ { Coloration syntaxique specialisee COBOL }
+ TCobolHighlighter = Record
+  Base         : TSyntaxHighlighter;  { moteur de base              }
+  Keywords     : Array[0..MAX_COBOL_KEYWORDS - 1] Of String[16];
   KeywordCount : Integer;             { nombre de mots-cles         }
  End;
 
@@ -3400,6 +3410,8 @@ Var
  SnobolHL     : TSnobolHighlighter;
  { Coloration syntaxique Modula-3 }
  Mod3HL       : TMod3Highlighter;
+ { Coloration syntaxique COBOL }
+ CobolHL      : TCobolHighlighter;
  { Coloration syntaxique Assembleur x86 }
  AsmHL        : TAsmHighlighter;
  { Coloration syntaxique Java }
@@ -9408,6 +9420,12 @@ Procedure HighlightMod3Line(Var HL: TMod3Highlighter;
                             Line: String;
                             Var Colors: Array Of Byte); Forward;
 
+{ --- Declaration anticipee de HighlightCobolLine --- }
+
+Procedure HighlightCobolLine(Var HL: TCobolHighlighter;
+                             Line: String;
+                             Var Colors: Array Of Byte); Forward;
+
 { --- Declaration anticipee de HighlightAsmLine --- }
 
 Procedure HighlightAsmLine(Var HL: TAsmHighlighter;
@@ -9489,6 +9507,7 @@ Var
  IsRuby: Boolean;
  IsSnobol: Boolean;
  IsMod3: Boolean;
+ IsCobol: Boolean;
  IsAda: Boolean;
  IsAbap: Boolean;
  IsAWK: Boolean;
@@ -9522,6 +9541,7 @@ Begin
  IsRuby     := (Ext = '.RB') Or (Ext = '.RBW');
  IsSnobol   := (Ext = '.SBL') Or (Ext = '.SNO');
  IsMod3     := (Ext = '.M3') Or (Ext = '.I3') Or (Ext = '.MG') Or (Ext = '.IG');
+ IsCobol    := (Ext = '.CBL') Or (Ext = '.COB') Or (Ext = '.COBOL');
  IsAda := (Ext = '.ADB') Or (Ext = '.ADS') Or (Ext = '.ADA');
  IsAbap := (Ext = '.ABAP') Or (Ext = '.ABP');
  IsAWK := (Ext = '.AWK');
@@ -9612,6 +9632,9 @@ Begin
    Else If IsMod3 And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
     HighlightMod3Line(Mod3HL, FullLine, Colors)
+   Else If IsCobol And (Length(FullLine) > 0) And
+      (Length(FullLine) <= 255) Then
+    HighlightCobolLine(CobolHL, FullLine, Colors)
    Else If IsAda And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
     HighlightAdaLine(AdaHL, FullLine, Colors)
@@ -16784,6 +16807,273 @@ Begin
  While Pos <= Len Do Begin
   Start := Pos;
   TC := GetMod3TokenClass(HL, Line, Pos);
+  Clr := Byte(TokenClassToColor(TC));
+  For I := Start To Pos - 1 Do
+   If (I >= 1) And (I <= Len) Then
+    Colors[I - 1] := Clr;
+ End;
+End;
+
+{ ============================================================
+  COLORATION SYNTAXIQUE COBOL
+  ============================================================ }
+
+{ --- Initialiser les mots-cles COBOL --- }
+
+Procedure InitCobolKeywords(Var HL: TCobolHighlighter);
+Begin
+ HL.KeywordCount := MAX_COBOL_KEYWORDS;
+ { Divisions et sections }
+ HL.Keywords[0]  := 'IDENTIFICATION';
+ HL.Keywords[1]  := 'ENVIRONMENT';
+ HL.Keywords[2]  := 'DATA';
+ HL.Keywords[3]  := 'PROCEDURE';
+ HL.Keywords[4]  := 'DIVISION';
+ HL.Keywords[5]  := 'SECTION';
+ HL.Keywords[6]  := 'PROGRAM-ID';
+ HL.Keywords[7]  := 'AUTHOR';
+ HL.Keywords[8]  := 'WORKING-STORAGE';
+ HL.Keywords[9]  := 'LINKAGE';
+ HL.Keywords[10] := 'FILE-CONTROL';
+ HL.Keywords[11] := 'INPUT-OUTPUT';
+ HL.Keywords[12] := 'FILE';
+ HL.Keywords[13] := 'LOCAL-STORAGE';
+ HL.Keywords[14] := 'CONFIGURATION';
+ { Clauses de donnees }
+ HL.Keywords[15] := 'PIC';
+ HL.Keywords[16] := 'PICTURE';
+ HL.Keywords[17] := 'VALUE';
+ HL.Keywords[18] := 'VALUES';
+ HL.Keywords[19] := 'COMP';
+ HL.Keywords[20] := 'COMPUTATIONAL';
+ HL.Keywords[21] := 'OCCURS';
+ HL.Keywords[22] := 'REDEFINES';
+ HL.Keywords[23] := 'FILLER';
+ HL.Keywords[24] := 'INDEXED';
+ HL.Keywords[25] := 'SYNC';
+ HL.Keywords[26] := 'SYNCHRONIZED';
+ HL.Keywords[27] := 'USAGE';
+ HL.Keywords[28] := 'DISPLAY';
+ { Instructions de la division PROCEDURE }
+ HL.Keywords[29] := 'ACCEPT';
+ HL.Keywords[30] := 'ADD';
+ HL.Keywords[31] := 'CALL';
+ HL.Keywords[32] := 'CLOSE';
+ HL.Keywords[33] := 'COMPUTE';
+ HL.Keywords[34] := 'CONTINUE';
+ HL.Keywords[35] := 'DELETE';
+ HL.Keywords[36] := 'DIVIDE';
+ HL.Keywords[37] := 'EVALUATE';
+ HL.Keywords[38] := 'EXIT';
+ HL.Keywords[39] := 'GOBACK';
+ HL.Keywords[40] := 'GO';
+ HL.Keywords[41] := 'IF';
+ HL.Keywords[42] := 'THEN';
+ HL.Keywords[43] := 'ELSE';
+ HL.Keywords[44] := 'INITIALIZE';
+ HL.Keywords[45] := 'INSPECT';
+ HL.Keywords[46] := 'MOVE';
+ HL.Keywords[47] := 'MULTIPLY';
+ HL.Keywords[48] := 'OPEN';
+ HL.Keywords[49] := 'PERFORM';
+ HL.Keywords[50] := 'READ';
+ HL.Keywords[51] := 'RELEASE';
+ HL.Keywords[52] := 'RETURN';
+ HL.Keywords[53] := 'REWRITE';
+ HL.Keywords[54] := 'SEARCH';
+ HL.Keywords[55] := 'SET';
+ HL.Keywords[56] := 'SORT';
+ HL.Keywords[57] := 'START';
+ HL.Keywords[58] := 'STOP';
+ HL.Keywords[59] := 'STRING';
+ HL.Keywords[60] := 'SUBTRACT';
+ HL.Keywords[61] := 'UNSTRING';
+ HL.Keywords[62] := 'WRITE';
+ { Fins de blocs }
+ HL.Keywords[63] := 'END-IF';
+ HL.Keywords[64] := 'END-EVALUATE';
+ HL.Keywords[65] := 'END-PERFORM';
+ HL.Keywords[66] := 'END-READ';
+ HL.Keywords[67] := 'END-WRITE';
+ HL.Keywords[68] := 'END-COMPUTE';
+ HL.Keywords[69] := 'END-CALL';
+ HL.Keywords[70] := 'END-ADD';
+ HL.Keywords[71] := 'END-SUBTRACT';
+ HL.Keywords[72] := 'END-MULTIPLY';
+ HL.Keywords[73] := 'END-DIVIDE';
+ { Connecteurs et qualificateurs }
+ HL.Keywords[74] := 'WHEN';
+ HL.Keywords[75] := 'AND';
+ HL.Keywords[76] := 'OR';
+ HL.Keywords[77] := 'NOT';
+ HL.Keywords[78] := 'UNTIL';
+ HL.Keywords[79] := 'VARYING';
+End;
+
+{ --- Initialiser le highlighter COBOL --- }
+
+Procedure InitCobolHighlighter(Var HL: TCobolHighlighter);
+Begin
+ HL.Base.InBlockComment := False;
+ InitCobolKeywords(HL);
+End;
+
+{ --- Tester si un mot est un mot-cle COBOL (insensible a la casse) --- }
+
+Function IsCobolKeyword(Var HL: TCobolHighlighter;
+ Word: String): Boolean;
+Var I: Integer;
+Begin
+ IsCobolKeyword := False;
+ Word := UpCaseStr(Word);
+ For I := 0 To HL.KeywordCount - 1 Do
+  If HL.Keywords[I] = Word Then Begin
+   IsCobolKeyword := True;
+   Exit;
+  End;
+End;
+
+{ --- Tester si un mot est un builtin/special COBOL --- }
+
+Function IsCobolBuiltin(Word: String): Boolean;
+Begin
+ Word := UpCaseStr(Word);
+ IsCobolBuiltin :=
+  (Word = 'ZERO')        Or (Word = 'ZEROS')       Or
+  (Word = 'ZEROES')      Or (Word = 'SPACE')        Or
+  (Word = 'SPACES')      Or (Word = 'HIGH-VALUE')   Or
+  (Word = 'HIGH-VALUES') Or (Word = 'LOW-VALUE')    Or
+  (Word = 'LOW-VALUES')  Or (Word = 'QUOTE')        Or
+  (Word = 'QUOTES')      Or (Word = 'ALL')          Or
+  (Word = 'TRUE')        Or (Word = 'FALSE')        Or
+  (Word = 'INPUT')       Or (Word = 'OUTPUT')       Or
+  (Word = 'EXTEND')      Or (Word = 'STANDARD')     Or
+  (Word = 'TO')          Or (Word = 'FROM')         Or
+  (Word = 'BY')          Or (Word = 'IN')           Or
+  (Word = 'OF')          Or (Word = 'IS')           Or
+  (Word = 'ARE')         Or (Word = 'ON')           Or
+  (Word = 'RUN')         Or (Word = 'THRU')         Or
+  (Word = 'THROUGH')     Or (Word = 'GIVING')       Or
+  (Word = 'USING')       Or (Word = 'RETURNING')    Or
+  (Word = 'TIMES')       Or (Word = 'SIZE')         Or
+  (Word = 'ERROR')       Or (Word = 'ALSO')         Or
+  (Word = 'DEPENDING')   Or (Word = 'AT')           Or
+  (Word = 'END')         Or (Word = 'DEBUT');
+End;
+
+{ --- Determiner la classe de token COBOL --- }
+
+Function GetCobolTokenClass(Var HL: TCobolHighlighter;
+ Line: String; Var Pos: Integer): TTokenClass;
+Var
+ Len, Start: Integer;
+ Ch, Ch2: Char;
+ Word: String;
+Begin
+ Len := Length(Line);
+ Ch := Line[Pos];
+ { Commentaire colonne 1 : * ou / en col 1 }
+ If (Pos = 1) And ((Ch = '*') Or (Ch = '/')) Then Begin
+  Pos := Len + 1;
+  GetCobolTokenClass := TC_COMMENT;
+  Exit;
+ End;
+ { Commentaire format fixe : * en colonne 7 (si ligne assez longue) }
+ If (Pos = 1) And (Len >= 7) And (Line[7] = '*') Then Begin
+  Pos := Len + 1;
+  GetCobolTokenClass := TC_COMMENT;
+  Exit;
+ End;
+ { Commentaire inline *> (format libre) }
+ If (Ch = '*') And (Pos < Len) And (Line[Pos+1] = '>') Then Begin
+  Pos := Len + 1;
+  GetCobolTokenClass := TC_COMMENT;
+  Exit;
+ End;
+ { Chaine simple quote '...' avec '' pour guillemet incorpore }
+ If Ch = '''' Then Begin
+  Inc(Pos);
+  While Pos <= Len Do Begin
+   Ch2 := Line[Pos];
+   Inc(Pos);
+   If Ch2 = '''' Then Begin
+    If (Pos <= Len) And (Line[Pos] = '''') Then Inc(Pos)
+    Else Break;
+   End;
+  End;
+  GetCobolTokenClass := TC_STRING;
+  Exit;
+ End;
+ { Chaine double quote "..." }
+ If Ch = '"' Then Begin
+  Inc(Pos);
+  While Pos <= Len Do Begin
+   Ch2 := Line[Pos];
+   Inc(Pos);
+   If Ch2 = '"' Then Begin
+    If (Pos <= Len) And (Line[Pos] = '"') Then Inc(Pos)
+    Else Break;
+   End;
+  End;
+  GetCobolTokenClass := TC_STRING;
+  Exit;
+ End;
+ { Nombre }
+ If IsDigitChar(Ch) Then Begin
+  Inc(Pos);
+  While (Pos <= Len) And
+   (IsDigitChar(Line[Pos]) Or (Line[Pos] = '.') Or
+    (Line[Pos] = 'E') Or (Line[Pos] = 'e') Or
+    (Line[Pos] = '+') Or (Line[Pos] = '-')) Do Inc(Pos);
+  GetCobolTokenClass := TC_NUMBER;
+  Exit;
+ End;
+ { Identifiant / mot-cle (le tiret - fait partie de l identifiant COBOL) }
+ If IsAlphaUS(Ch) Or IsDigitChar(Ch) Then Begin
+  Start := Pos;
+  Inc(Pos);
+  While (Pos <= Len) And
+   (IsAlphaUS(Line[Pos]) Or IsDigitChar(Line[Pos]) Or
+    ((Line[Pos] = '-') And (Pos < Len) And
+     (IsAlphaUS(Line[Pos+1]) Or IsDigitChar(Line[Pos+1])))) Do Inc(Pos);
+  Word := Copy(Line, Start, Pos - Start);
+  If IsCobolBuiltin(Word) Then
+   GetCobolTokenClass := TC_TYPE
+  Else If IsCobolKeyword(HL, Word) Then
+   GetCobolTokenClass := TC_KEYWORD
+  Else
+   GetCobolTokenClass := TC_IDENTIFIER;
+  Exit;
+ End;
+ { Operateur }
+ If (Ch = '=') Or (Ch = '<') Or (Ch = '>') Or (Ch = '+') Or
+    (Ch = '-') Or (Ch = '*') Or (Ch = '/') Then Begin
+  Inc(Pos);
+  GetCobolTokenClass := TC_OPERATOR;
+  Exit;
+ End;
+ { Caractere normal }
+ Inc(Pos);
+ GetCobolTokenClass := TC_NORMAL;
+End;
+
+{ --- Colorier une ligne COBOL --- }
+
+Procedure HighlightCobolLine(Var HL: TCobolHighlighter;
+                             Line: String;
+                             Var Colors: Array Of Byte);
+Var
+ Pos, Start, I, Len: Integer;
+ TC: TTokenClass;
+ Clr: Byte;
+Begin
+ Len := Length(Line);
+ For I := 0 To Len - 1 Do
+  Colors[I] := Byte(TokenClassToColor(TC_NORMAL));
+ Pos := 1;
+ While Pos <= Len Do Begin
+  Start := Pos;
+  TC := GetCobolTokenClass(HL, Line, Pos);
   Clr := Byte(TokenClassToColor(TC));
   For I := Start To Pos - 1 Do
    If (I >= 1) And (I <= Len) Then
@@ -54973,6 +55263,39 @@ Begin
     '========== Build: 0 succeeded, 1 failed ==========',
     Ord(OTK_BUILD));
  End
+ Else If (Ext = '.cbl') Or (Ext = '.cob') Or (Ext = '.cobol') Then Begin
+  { Compilation COBOL -> COBOLW32.exe }
+  CmdLine := FindCompiler('COBOLW32');
+  If CmdLine = '' Then Begin
+   AppendOutput(OutputPanel,
+    'Erreur : compilateur COBOL non trouve (COBOLW32.exe).',
+    Ord(OTK_BUILD));
+   Exit;
+  End;
+  CmdLine := CmdLine + ' ' + SourceFile;
+  AppendOutput(OutputPanel,
+   '------ Build started: ' + SourceFile + ' ------',
+   Ord(OTK_BUILD));
+  AppendOutput(OutputPanel, '> ' + CmdLine, Ord(OTK_BUILD));
+  ExitCode := ExecuteCompiler(CmdLine, TempFile);
+  ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
+  CleanupTempFile(TempFile);
+  If ExitCode = 0 Then Begin
+   AppendOutput(OutputPanel,
+    '========== Build: 1 succeeded, 0 failed ==========',
+    Ord(OTK_BUILD));
+   AppendOutput(OutputPanel,
+    'Execution de ' + ExeName + '...', Ord(OTK_BUILD));
+   ClearOutput(OutputPanel, Ord(OTK_DEBUG));
+   ExitCode := ExecuteCompiler(ExeName, TempFile);
+   ReadOutputFile(TempFile, OutputPanel, Ord(OTK_DEBUG));
+   CleanupTempFile(TempFile);
+   SetActiveOutputTab(OutputPanel, OTK_DEBUG);
+  End Else
+   AppendOutput(OutputPanel,
+    '========== Build: 0 succeeded, 1 failed ==========',
+    Ord(OTK_BUILD));
+ End
  Else If (Ext = '.m3') Or (Ext = '.i3') Or
          (Ext = '.mg') Or (Ext = '.ig') Then Begin
   { Compilation Modula-3 -> MOD3CW32.exe }
@@ -58512,6 +58835,7 @@ BEGIN
  InitRubyHighlighter(RubyHL);
  InitSnobolHighlighter(SnobolHL);
  InitMod3Highlighter(Mod3HL);
+ InitCobolHighlighter(CobolHL);
  InitAsmHighlighter(AsmHL);
  InitJavaHighlighter(JavaHL);
  InitPythonHighlighter(PythonHL);
