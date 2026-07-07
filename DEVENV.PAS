@@ -1074,6 +1074,9 @@ Const
  { Coloration syntaxique PL/1 }
  MAX_PL1_KEYWORDS      = 60;      { mots-cles reserves PL/1           }
 
+ { Coloration syntaxique PHP }
+ MAX_PHP_KEYWORDS      = 50;      { mots-cles reserves PHP            }
+
  { Coloration syntaxique Assembleur x86 }
  MAX_ASM_KEYWORDS      = 127;    { nombre de mnemoniques ASM      }
 
@@ -1917,6 +1920,13 @@ Type
  TPL1Highlighter = Record
   Base         : TSyntaxHighlighter;  { moteur de base              }
   Keywords     : Array[0..MAX_PL1_KEYWORDS - 1] Of String[12];
+  KeywordCount : Integer;             { nombre de mots-cles         }
+ End;
+
+ { Coloration syntaxique specialisee PHP }
+ TPHPHighlighter = Record
+  Base         : TSyntaxHighlighter;  { moteur de base              }
+  Keywords     : Array[0..MAX_PHP_KEYWORDS - 1] Of String[14];
   KeywordCount : Integer;             { nombre de mots-cles         }
  End;
 
@@ -3328,6 +3338,8 @@ Var
  PerlHL       : TPerlHighlighter;
  { Coloration syntaxique PL/1 }
  PL1HL        : TPL1Highlighter;
+ { Coloration syntaxique PHP }
+ PHPHL        : TPHPHighlighter;
  { Coloration syntaxique Assembleur x86 }
  AsmHL        : TAsmHighlighter;
  { Coloration syntaxique Java }
@@ -9300,6 +9312,12 @@ Procedure HighlightPL1Line(Var HL: TPL1Highlighter;
                            Line: String;
                            Var Colors: Array Of Byte); Forward;
 
+{ --- Declaration anticipee de HighlightPHPLine --- }
+
+Procedure HighlightPHPLine(Var HL: TPHPHighlighter;
+                           Line: String;
+                           Var Colors: Array Of Byte); Forward;
+
 { --- Declaration anticipee de HighlightAsmLine --- }
 
 Procedure HighlightAsmLine(Var HL: TAsmHighlighter;
@@ -9375,6 +9393,7 @@ Var
  IsOberon: Boolean;
  IsPerl: Boolean;
  IsPL1: Boolean;
+ IsPHP: Boolean;
  IsAda: Boolean;
  IsAbap: Boolean;
  IsAWK: Boolean;
@@ -9402,6 +9421,7 @@ Begin
  IsOberon   := (Ext = '.OBN') Or (Ext = '.OB2') Or (Ext = '.MOD');
  IsPerl     := (Ext = '.PL') Or (Ext = '.PM') Or (Ext = '.PLS');
  IsPL1      := (Ext = '.PLI') Or (Ext = '.PL1');
+ IsPHP      := (Ext = '.PHP') Or (Ext = '.PHP5') Or (Ext = '.PHTML');
  IsAda := (Ext = '.ADB') Or (Ext = '.ADS') Or (Ext = '.ADA');
  IsAbap := (Ext = '.ABAP') Or (Ext = '.ABP');
  IsAWK := (Ext = '.AWK');
@@ -9474,6 +9494,9 @@ Begin
    Else If IsPL1 And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
     HighlightPL1Line(PL1HL, FullLine, Colors)
+   Else If IsPHP And (Length(FullLine) > 0) And
+      (Length(FullLine) <= 255) Then
+    HighlightPHPLine(PHPHL, FullLine, Colors)
    Else If IsAda And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
     HighlightAdaLine(AdaHL, FullLine, Colors)
@@ -15152,6 +15175,283 @@ Begin
  While Pos <= Len Do Begin
   Start := Pos;
   TC := GetPL1TokenClass(HL, Line, Pos);
+  Clr := Byte(TokenClassToColor(TC));
+  For I := Start To Pos - 1 Do
+   If (I >= 1) And (I <= Len) Then
+    Colors[I - 1] := Clr;
+ End;
+End;
+
+{ ============================================================
+  COLORATION SYNTAXIQUE PHP
+  ============================================================ }
+
+{ --- Mots-cles reserves PHP --- }
+
+Procedure InitPHPKeywords(Var HL: TPHPHighlighter);
+Begin
+ HL.KeywordCount  := MAX_PHP_KEYWORDS;
+ HL.Keywords[0]   := 'define';
+ HL.Keywords[1]   := 'echo';
+ HL.Keywords[2]   := 'print';
+ HL.Keywords[3]   := 'if';
+ HL.Keywords[4]   := 'else';
+ HL.Keywords[5]   := 'elseif';
+ HL.Keywords[6]   := 'while';
+ HL.Keywords[7]   := 'do';
+ HL.Keywords[8]   := 'for';
+ HL.Keywords[9]   := 'foreach';
+ HL.Keywords[10]  := 'switch';
+ HL.Keywords[11]  := 'case';
+ HL.Keywords[12]  := 'default';
+ HL.Keywords[13]  := 'break';
+ HL.Keywords[14]  := 'continue';
+ HL.Keywords[15]  := 'return';
+ HL.Keywords[16]  := 'function';
+ HL.Keywords[17]  := 'class';
+ HL.Keywords[18]  := 'interface';
+ HL.Keywords[19]  := 'trait';
+ HL.Keywords[20]  := 'extends';
+ HL.Keywords[21]  := 'implements';
+ HL.Keywords[22]  := 'new';
+ HL.Keywords[23]  := 'null';
+ HL.Keywords[24]  := 'true';
+ HL.Keywords[25]  := 'false';
+ HL.Keywords[26]  := 'and';
+ HL.Keywords[27]  := 'or';
+ HL.Keywords[28]  := 'not';
+ HL.Keywords[29]  := 'use';
+ HL.Keywords[30]  := 'namespace';
+ HL.Keywords[31]  := 'require';
+ HL.Keywords[32]  := 'include';
+ HL.Keywords[33]  := 'require_once';
+ HL.Keywords[34]  := 'include_once';
+ HL.Keywords[35]  := 'abstract';
+ HL.Keywords[36]  := 'final';
+ HL.Keywords[37]  := 'static';
+ HL.Keywords[38]  := 'public';
+ HL.Keywords[39]  := 'protected';
+ HL.Keywords[40]  := 'private';
+ HL.Keywords[41]  := 'const';
+ HL.Keywords[42]  := 'var';
+ HL.Keywords[43]  := 'try';
+ HL.Keywords[44]  := 'catch';
+ HL.Keywords[45]  := 'finally';
+ HL.Keywords[46]  := 'throw';
+ HL.Keywords[47]  := 'yield';
+ HL.Keywords[48]  := 'match';
+ HL.Keywords[49]  := 'enum';
+End;
+
+{ --- Initialiser le moteur de coloration PHP --- }
+
+Procedure InitPHPHighlighter(Var HL: TPHPHighlighter);
+Begin
+ InitHighlighter(HL.Base, 'PHP');
+ InitPHPKeywords(HL);
+End;
+
+{ --- Verifier si un mot est un mot-cle PHP --- }
+
+Function IsPHPKeyword(Var HL: TPHPHighlighter;
+                      Word: String): Boolean;
+Var I: Integer;
+    W: String;
+Begin
+ IsPHPKeyword := False;
+ W := Word;
+ For I := 1 To Length(W) Do
+  If (W[I] >= 'A') And (W[I] <= 'Z') Then
+   W[I] := Chr(Ord(W[I]) + 32);
+ For I := 0 To HL.KeywordCount - 1 Do
+  If W = HL.Keywords[I] Then Begin
+   IsPHPKeyword := True;
+   Exit;
+  End;
+End;
+
+{ --- Fonctions integrees PHP --- }
+
+Function IsPHPBuiltin(Word: String): Boolean;
+Var W: String;
+    I: Integer;
+Begin
+ W := Word;
+ For I := 1 To Length(W) Do
+  If (W[I] >= 'A') And (W[I] <= 'Z') Then
+   W[I] := Chr(Ord(W[I]) + 32);
+ IsPHPBuiltin :=
+  (W = 'strlen')         Or (W = 'str_replace')    Or (W = 'substr')      Or
+  (W = 'strpos')         Or (W = 'strtolower')      Or (W = 'strtoupper')  Or
+  (W = 'ucfirst')        Or (W = 'trim')            Or (W = 'ltrim')       Or
+  (W = 'rtrim')          Or (W = 'str_pad')         Or (W = 'str_repeat')  Or
+  (W = 'sprintf')        Or (W = 'printf')          Or (W = 'number_format')Or
+  (W = 'count')          Or (W = 'sort')            Or (W = 'rsort')       Or
+  (W = 'asort')          Or (W = 'ksort')           Or (W = 'in_array')    Or
+  (W = 'array_key_exists')Or(W = 'array_merge')     Or (W = 'array_push')  Or
+  (W = 'array_pop')      Or (W = 'array_shift')     Or (W = 'array_slice') Or
+  (W = 'implode')        Or (W = 'explode')         Or (W = 'join')        Or
+  (W = 'isset')          Or (W = 'empty')           Or (W = 'unset')       Or
+  (W = 'is_null')        Or (W = 'is_array')        Or (W = 'is_string')   Or
+  (W = 'is_int')         Or (W = 'is_float')        Or (W = 'is_bool')     Or
+  (W = 'is_numeric')     Or (W = 'is_file')         Or (W = 'is_dir')      Or
+  (W = 'var_dump')       Or (W = 'print_r')         Or (W = 'json_encode') Or
+  (W = 'json_decode')    Or (W = 'abs')             Or (W = 'ceil')        Or
+  (W = 'floor')          Or (W = 'round')           Or (W = 'sqrt')        Or
+  (W = 'pow')            Or (W = 'max')             Or (W = 'min')         Or
+  (W = 'rand')           Or (W = 'mt_rand')         Or (W = 'time')        Or
+  (W = 'date')           Or (W = 'mktime')          Or (W = 'microtime')   Or
+  (W = 'intval')         Or (W = 'floatval')        Or (W = 'strval')      Or
+  (W = 'gettype')        Or (W = 'settype')         Or (W = 'header')      Or
+  (W = 'htmlspecialchars')Or(W = 'htmlentities')    Or (W = 'strip_tags')  Or
+  (W = 'preg_match')     Or (W = 'preg_replace')    Or (W = 'preg_split')  Or
+  (W = 'file_get_contents')Or(W='file_put_contents')Or (W = 'file_exists') Or
+  (W = 'fopen')          Or (W = 'fclose')          Or (W = 'fread')       Or
+  (W = 'fwrite')         Or (W = 'fgets')           Or (W = 'feof')        Or
+  (W = 'mkdir')          Or (W = 'rmdir')           Or (W = 'unlink')      Or
+  (W = 'rename')         Or (W = 'copy')            Or (W = 'glob')        Or
+  (W = 'array_search')   Or (W = 'array_unique')    Or (W = 'array_flip')  Or
+  (W = 'str_split')      Or (W = 'chunk_split')     Or (W = 'wordwrap')    Or
+  (W = 'nl2br')          Or (W = 'ob_start')        Or (W = 'ob_get_clean');
+End;
+
+{ --- Obtenir la classe de jeton PHP a une position --- }
+
+Function GetPHPTokenClass(Var HL: TPHPHighlighter;
+                          Line: String;
+                          Var Pos: Integer): TTokenClass;
+Var
+ StartPos, Len: Integer;
+ Ch: Char;
+ Word: String;
+Begin
+ Len := Length(Line);
+ GetPHPTokenClass := TC_NORMAL;
+ If Pos > Len Then Exit;
+
+ Ch := Line[Pos];
+
+ { Espaces }
+ If (Ch = ' ') Or (Ch = #9) Then Begin
+  While (Pos <= Len) And ((Line[Pos] = ' ') Or (Line[Pos] = #9)) Do
+   Inc(Pos);
+  GetPHPTokenClass := TC_NORMAL;
+  Exit;
+ End;
+
+ { Commentaire // }
+ If (Ch = '/') And (Pos < Len) And (Line[Pos + 1] = '/') Then Begin
+  Pos := Len + 1;
+  GetPHPTokenClass := TC_COMMENT;
+  Exit;
+ End;
+
+ { Commentaire # }
+ If Ch = '#' Then Begin
+  Pos := Len + 1;
+  GetPHPTokenClass := TC_COMMENT;
+  Exit;
+ End;
+
+ { Commentaire /* ... */ }
+ If (Ch = '/') And (Pos < Len) And (Line[Pos + 1] = '*') Then Begin
+  Inc(Pos, 2);
+  While Pos < Len Do Begin
+   If (Line[Pos] = '*') And (Line[Pos + 1] = '/') Then Begin
+    Inc(Pos, 2);
+    Break;
+   End;
+   Inc(Pos);
+  End;
+  If Pos = Len Then Inc(Pos);
+  GetPHPTokenClass := TC_COMMENT;
+  Exit;
+ End;
+
+ { Chaine "..." avec interpolation \ }
+ If Ch = '"' Then Begin
+  Inc(Pos);
+  While (Pos <= Len) And (Line[Pos] <> '"') Do Begin
+   If (Line[Pos] = '\') And (Pos < Len) Then Inc(Pos, 2)
+   Else Inc(Pos);
+  End;
+  If Pos <= Len Then Inc(Pos);
+  GetPHPTokenClass := TC_STRING;
+  Exit;
+ End;
+
+ { Chaine '...' litterale }
+ If Ch = '''' Then Begin
+  Inc(Pos);
+  While (Pos <= Len) And (Line[Pos] <> '''') Do Begin
+   If (Line[Pos] = '\') And (Pos < Len) Then Inc(Pos, 2)
+   Else Inc(Pos);
+  End;
+  If Pos <= Len Then Inc(Pos);
+  GetPHPTokenClass := TC_STRING;
+  Exit;
+ End;
+
+ { Variable $name }
+ If Ch = '$' Then Begin
+  Inc(Pos);
+  While (Pos <= Len) And
+        (IsAlphaUS(Line[Pos]) Or IsDigitChar(Line[Pos])) Do
+   Inc(Pos);
+  GetPHPTokenClass := TC_TYPE;
+  Exit;
+ end;
+
+ { Nombre }
+ If IsDigitChar(Ch) Then Begin
+  While (Pos <= Len) And IsDigitChar(Line[Pos]) Do Inc(Pos);
+  If (Pos <= Len) And (Line[Pos] = '.') Then Begin
+   Inc(Pos);
+   While (Pos <= Len) And IsDigitChar(Line[Pos]) Do Inc(Pos);
+  End;
+  GetPHPTokenClass := TC_NUMBER;
+  Exit;
+ End;
+
+ { Identifiant, mot-cle ou fonction }
+ If IsAlphaUS(Ch) Then Begin
+  StartPos := Pos;
+  While (Pos <= Len) And
+        (IsAlphaUS(Line[Pos]) Or IsDigitChar(Line[Pos]) Or
+         (Line[Pos] = '_')) Do
+   Inc(Pos);
+  Word := Copy(Line, StartPos, Pos - StartPos);
+  If IsPHPBuiltin(Word) Then
+   GetPHPTokenClass := TC_TYPE
+  Else If IsPHPKeyword(HL, Word) Then
+   GetPHPTokenClass := TC_KEYWORD
+  Else
+   GetPHPTokenClass := TC_IDENTIFIER;
+  Exit;
+ End;
+
+ { Operateur / ponctuation }
+ Inc(Pos);
+ GetPHPTokenClass := TC_OPERATOR;
+End;
+
+{ --- Colorier une ligne PHP entiere --- }
+
+Procedure HighlightPHPLine(Var HL: TPHPHighlighter;
+                           Line: String;
+                           Var Colors: Array Of Byte);
+Var
+ Pos, Start, I, Len: Integer;
+ TC: TTokenClass;
+ Clr: Byte;
+Begin
+ Len := Length(Line);
+ For I := 0 To Len - 1 Do
+  Colors[I] := Byte(TokenClassToColor(TC_NORMAL));
+ Pos := 1;
+ While Pos <= Len Do Begin
+  Start := Pos;
+  TC := GetPHPTokenClass(HL, Line, Pos);
   Clr := Byte(TokenClassToColor(TC));
   For I := Start To Pos - 1 Do
    If (I >= 1) And (I <= Len) Then
@@ -53341,6 +53641,39 @@ Begin
     '========== Build: 0 succeeded, 1 failed ==========',
     Ord(OTK_BUILD));
  End
+ Else If (Ext = '.php') Or (Ext = '.php5') Or (Ext = '.phtml') Then Begin
+  { Compilation PHP -> PHPCW32.exe }
+  CmdLine := FindCompiler('PHPCW32');
+  If CmdLine = '' Then Begin
+   AppendOutput(OutputPanel,
+    'Erreur : compilateur PHP non trouve (PHPCW32.exe).',
+    Ord(OTK_BUILD));
+   Exit;
+  End;
+  CmdLine := CmdLine + ' ' + SourceFile;
+  AppendOutput(OutputPanel,
+   '------ Build started: ' + SourceFile + ' ------',
+   Ord(OTK_BUILD));
+  AppendOutput(OutputPanel, '> ' + CmdLine, Ord(OTK_BUILD));
+  ExitCode := ExecuteCompiler(CmdLine, TempFile);
+  ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
+  CleanupTempFile(TempFile);
+  If ExitCode = 0 Then Begin
+   AppendOutput(OutputPanel,
+    '========== Build: 1 succeeded, 0 failed ==========',
+    Ord(OTK_BUILD));
+   AppendOutput(OutputPanel,
+    'Execution de ' + ExeName + '...', Ord(OTK_BUILD));
+   {$IFDEF WINDOWS}
+   Exec(GetEnv('COMSPEC'), '/C ' + ExeName);
+   {$ELSE}
+   Exec('/bin/sh', '-c ./' + ExeName);
+   {$ENDIF}
+  End Else
+   AppendOutput(OutputPanel,
+    '========== Build: 0 succeeded, 1 failed ==========',
+    Ord(OTK_BUILD));
+ End
  Else If (Ext = '.awk') Then Begin
   { Compilation AWK }
   DetectAWKCompiler(AWKContext);
@@ -56669,6 +57002,7 @@ BEGIN
  InitOberonHighlighter(OberonHL);
  InitPerlHighlighter(PerlHL);
  InitPL1Highlighter(PL1HL);
+ InitPHPHighlighter(PHPHL);
  InitAsmHighlighter(AsmHL);
  InitJavaHighlighter(JavaHL);
  InitPythonHighlighter(PythonHL);
