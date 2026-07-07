@@ -1068,6 +1068,9 @@ Const
  { Coloration syntaxique Oberon / Oberon-2 }
  MAX_OBERON_KEYWORDS   = 42;      { mots-cles reserves Oberon         }
 
+ { Coloration syntaxique Perl }
+ MAX_PERL_KEYWORDS     = 40;      { mots-cles reserves Perl           }
+
  { Coloration syntaxique Assembleur x86 }
  MAX_ASM_KEYWORDS      = 127;    { nombre de mnemoniques ASM      }
 
@@ -1897,6 +1900,13 @@ Type
  TOberonHighlighter = Record
   Base         : TSyntaxHighlighter;  { moteur de base              }
   Keywords     : Array[0..MAX_OBERON_KEYWORDS - 1] Of String[16];
+  KeywordCount : Integer;             { nombre de mots-cles         }
+ End;
+
+ { Coloration syntaxique specialisee Perl }
+ TPerlHighlighter = Record
+  Base         : TSyntaxHighlighter;  { moteur de base              }
+  Keywords     : Array[0..MAX_PERL_KEYWORDS - 1] Of String[10];
   KeywordCount : Integer;             { nombre de mots-cles         }
  End;
 
@@ -3304,6 +3314,8 @@ Var
  PowerFXHL    : TPowerFXHighlighter;
  { Coloration syntaxique Oberon }
  OberonHL     : TOberonHighlighter;
+ { Coloration syntaxique Perl }
+ PerlHL       : TPerlHighlighter;
  { Coloration syntaxique Assembleur x86 }
  AsmHL        : TAsmHighlighter;
  { Coloration syntaxique Java }
@@ -9264,6 +9276,12 @@ Procedure HighlightOberonLine(Var HL: TOberonHighlighter;
                               Line: String;
                               Var Colors: Array Of Byte); Forward;
 
+{ --- Declaration anticipee de HighlightPerlLine --- }
+
+Procedure HighlightPerlLine(Var HL: TPerlHighlighter;
+                            Line: String;
+                            Var Colors: Array Of Byte); Forward;
+
 { --- Declaration anticipee de HighlightAsmLine --- }
 
 Procedure HighlightAsmLine(Var HL: TAsmHighlighter;
@@ -9337,6 +9355,7 @@ Var
  IsXpp: Boolean;
  IsPowerFX: Boolean;
  IsOberon: Boolean;
+ IsPerl: Boolean;
  IsAda: Boolean;
  IsAbap: Boolean;
  IsAWK: Boolean;
@@ -9362,6 +9381,7 @@ Begin
  IsXpp      := (Ext = '.XPP');
  IsPowerFX  := (Ext = '.PFX');
  IsOberon   := (Ext = '.OBN') Or (Ext = '.OB2') Or (Ext = '.MOD');
+ IsPerl     := (Ext = '.PL') Or (Ext = '.PM') Or (Ext = '.PLS');
  IsAda := (Ext = '.ADB') Or (Ext = '.ADS') Or (Ext = '.ADA');
  IsAbap := (Ext = '.ABAP') Or (Ext = '.ABP');
  IsAWK := (Ext = '.AWK');
@@ -9428,6 +9448,9 @@ Begin
    Else If IsOberon And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
     HighlightOberonLine(OberonHL, FullLine, Colors)
+   Else If IsPerl And (Length(FullLine) > 0) And
+      (Length(FullLine) <= 255) Then
+    HighlightPerlLine(PerlHL, FullLine, Colors)
    Else If IsAda And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
     HighlightAdaLine(AdaHL, FullLine, Colors)
@@ -14634,6 +14657,233 @@ Begin
  While Pos <= Len Do Begin
   Start := Pos;
   TC := GetOberonTokenClass(HL, Line, Pos);
+  Clr := Byte(TokenClassToColor(TC));
+  For I := Start To Pos - 1 Do
+   If (I >= 1) And (I <= Len) Then
+    Colors[I - 1] := Clr;
+ End;
+End;
+
+{ ============================================================
+  COLORATION SYNTAXIQUE PERL
+  ============================================================ }
+
+{ --- Mots-cles reserves Perl --- }
+
+Procedure InitPerlKeywords(Var HL: TPerlHighlighter);
+Begin
+ HL.KeywordCount  := MAX_PERL_KEYWORDS;
+ HL.Keywords[0]   := 'use';
+ HL.Keywords[1]   := 'no';
+ HL.Keywords[2]   := 'my';
+ HL.Keywords[3]   := 'our';
+ HL.Keywords[4]   := 'local';
+ HL.Keywords[5]   := 'sub';
+ HL.Keywords[6]   := 'if';
+ HL.Keywords[7]   := 'else';
+ HL.Keywords[8]   := 'elsif';
+ HL.Keywords[9]   := 'unless';
+ HL.Keywords[10]  := 'while';
+ HL.Keywords[11]  := 'until';
+ HL.Keywords[12]  := 'for';
+ HL.Keywords[13]  := 'foreach';
+ HL.Keywords[14]  := 'do';
+ HL.Keywords[15]  := 'last';
+ HL.Keywords[16]  := 'next';
+ HL.Keywords[17]  := 'redo';
+ HL.Keywords[18]  := 'return';
+ HL.Keywords[19]  := 'exit';
+ HL.Keywords[20]  := 'die';
+ HL.Keywords[21]  := 'warn';
+ HL.Keywords[22]  := 'require';
+ HL.Keywords[23]  := 'package';
+ HL.Keywords[24]  := 'bless';
+ HL.Keywords[25]  := 'ref';
+ HL.Keywords[26]  := 'defined';
+ HL.Keywords[27]  := 'undef';
+ HL.Keywords[28]  := 'not';
+ HL.Keywords[29]  := 'and';
+ HL.Keywords[30]  := 'or';
+ HL.Keywords[31]  := 'eq';
+ HL.Keywords[32]  := 'ne';
+ HL.Keywords[33]  := 'lt';
+ HL.Keywords[34]  := 'gt';
+ HL.Keywords[35]  := 'le';
+ HL.Keywords[36]  := 'ge';
+ HL.Keywords[37]  := 'cmp';
+ HL.Keywords[38]  := 'BEGIN';
+ HL.Keywords[39]  := 'END';
+End;
+
+{ --- Initialiser le moteur de coloration Perl --- }
+
+Procedure InitPerlHighlighter(Var HL: TPerlHighlighter);
+Begin
+ InitHighlighter(HL.Base, 'Perl');
+ InitPerlKeywords(HL);
+End;
+
+{ --- Verifier si un mot est un mot-cle Perl --- }
+
+Function IsPerlKeyword(Var HL: TPerlHighlighter;
+                       Word: String): Boolean;
+Var I: Integer;
+Begin
+ IsPerlKeyword := False;
+ For I := 0 To HL.KeywordCount - 1 Do
+  If Word = HL.Keywords[I] Then Begin
+   IsPerlKeyword := True;
+   Exit;
+  End;
+End;
+
+{ --- Fonctions integrees Perl --- }
+
+Function IsPerlBuiltin(Word: String): Boolean;
+Begin
+ IsPerlBuiltin :=
+  (Word = 'print')    Or (Word = 'say')       Or (Word = 'push')     Or
+  (Word = 'pop')      Or (Word = 'shift')     Or (Word = 'unshift')  Or
+  (Word = 'splice')   Or (Word = 'reverse')   Or (Word = 'sort')     Or
+  (Word = 'grep')     Or (Word = 'map')       Or (Word = 'join')     Or
+  (Word = 'split')    Or (Word = 'chomp')     Or (Word = 'chop')     Or
+  (Word = 'length')   Or (Word = 'substr')    Or (Word = 'index')    Or
+  (Word = 'rindex')   Or (Word = 'uc')        Or (Word = 'lc')       Or
+  (Word = 'ucfirst')  Or (Word = 'lcfirst')   Or (Word = 'sprintf')  Or
+  (Word = 'printf')   Or (Word = 'open')      Or (Word = 'close')    Or
+  (Word = 'read')     Or (Word = 'write')     Or (Word = 'seek')     Or
+  (Word = 'tell')     Or (Word = 'eof')       Or (Word = 'binmode')  Or
+  (Word = 'rename')   Or (Word = 'unlink')    Or (Word = 'mkdir')    Or
+  (Word = 'rmdir')    Or (Word = 'chdir')     Or (Word = 'stat')     Or
+  (Word = 'abs')      Or (Word = 'int')       Or (Word = 'sqrt')     Or
+  (Word = 'rand')     Or (Word = 'srand')     Or (Word = 'time')     Or
+  (Word = 'localtime')Or (Word = 'gmtime')    Or (Word = 'chr')      Or
+  (Word = 'ord')      Or (Word = 'hex')       Or (Word = 'oct')      Or
+  (Word = 'exists')   Or (Word = 'delete')    Or (Word = 'keys')     Or
+  (Word = 'values')   Or (Word = 'each')      Or (Word = 'scalar')   Or
+  (Word = 'wantarray')Or (Word = 'caller')    Or (Word = 'pos')      Or
+  (Word = 'chomp')    Or (Word = 'chop')      Or (Word = 'lc')       Or
+  (Word = 'STDIN')    Or (Word = 'STDOUT')    Or (Word = 'STDERR');
+End;
+
+{ --- Obtenir la classe de jeton Perl a une position --- }
+
+Function GetPerlTokenClass(Var HL: TPerlHighlighter;
+                           Line: String;
+                           Var Pos: Integer): TTokenClass;
+Var
+ StartPos, Len: Integer;
+ Ch: Char;
+ Word: String;
+Begin
+ Len := Length(Line);
+ GetPerlTokenClass := TC_NORMAL;
+ If Pos > Len Then Exit;
+
+ Ch := Line[Pos];
+
+ { Espaces }
+ If (Ch = ' ') Or (Ch = #9) Then Begin
+  While (Pos <= Len) And ((Line[Pos] = ' ') Or (Line[Pos] = #9)) Do
+   Inc(Pos);
+  GetPerlTokenClass := TC_NORMAL;
+  Exit;
+ End;
+
+ { Shebang ou commentaire # }
+ If Ch = '#' Then Begin
+  Pos := Len + 1;
+  GetPerlTokenClass := TC_COMMENT;
+  Exit;
+ End;
+
+ { Chaine "..." avec interpolation \ }
+ If Ch = '"' Then Begin
+  Inc(Pos);
+  While (Pos <= Len) And (Line[Pos] <> '"') Do Begin
+   If (Line[Pos] = '\') And (Pos < Len) Then Inc(Pos, 2)
+   Else Inc(Pos);
+  End;
+  If Pos <= Len Then Inc(Pos);
+  GetPerlTokenClass := TC_STRING;
+  Exit;
+ End;
+
+ { Chaine '...' litterale }
+ If Ch = '''' Then Begin
+  Inc(Pos);
+  While (Pos <= Len) And (Line[Pos] <> '''') Do Begin
+   If (Line[Pos] = '\') And (Pos < Len) Then Inc(Pos, 2)
+   Else Inc(Pos);
+  End;
+  If Pos <= Len Then Inc(Pos);
+  GetPerlTokenClass := TC_STRING;
+  Exit;
+ End;
+
+ { Variable scalaire $name, tableau @name, hash %name }
+ If (Ch = '$') Or (Ch = '@') Or (Ch = '%') Then Begin
+  Inc(Pos);
+  If (Pos <= Len) And (IsAlphaUS(Line[Pos]) Or (Line[Pos] = '{')) Then Begin
+   While (Pos <= Len) And
+         (IsAlphaUS(Line[Pos]) Or IsDigitChar(Line[Pos]) Or
+          (Line[Pos] = ':')) Do
+    Inc(Pos);
+  End;
+  GetPerlTokenClass := TC_TYPE;
+  Exit;
+ End;
+
+ { Nombre }
+ If IsDigitChar(Ch) Then Begin
+  While (Pos <= Len) And IsDigitChar(Line[Pos]) Do Inc(Pos);
+  If (Pos <= Len) And (Line[Pos] = '.') Then Begin
+   Inc(Pos);
+   While (Pos <= Len) And IsDigitChar(Line[Pos]) Do Inc(Pos);
+  End;
+  GetPerlTokenClass := TC_NUMBER;
+  Exit;
+ End;
+
+ { Identifiant ou mot-cle }
+ If IsAlphaUS(Ch) Then Begin
+  StartPos := Pos;
+  While (Pos <= Len) And
+        (IsAlphaUS(Line[Pos]) Or IsDigitChar(Line[Pos]) Or
+         (Line[Pos] = ':')) Do
+   Inc(Pos);
+  Word := Copy(Line, StartPos, Pos - StartPos);
+  If IsPerlBuiltin(Word) Then
+   GetPerlTokenClass := TC_TYPE
+  Else If IsPerlKeyword(HL, Word) Then
+   GetPerlTokenClass := TC_KEYWORD
+  Else
+   GetPerlTokenClass := TC_IDENTIFIER;
+  Exit;
+ End;
+
+ { Operateur / ponctuation }
+ Inc(Pos);
+ GetPerlTokenClass := TC_OPERATOR;
+End;
+
+{ --- Colorier une ligne Perl entiere --- }
+
+Procedure HighlightPerlLine(Var HL: TPerlHighlighter;
+                            Line: String;
+                            Var Colors: Array Of Byte);
+Var
+ Pos, Start, I, Len: Integer;
+ TC: TTokenClass;
+ Clr: Byte;
+Begin
+ Len := Length(Line);
+ For I := 0 To Len - 1 Do
+  Colors[I] := Byte(TokenClassToColor(TC_NORMAL));
+ Pos := 1;
+ While Pos <= Len Do Begin
+  Start := Pos;
+  TC := GetPerlTokenClass(HL, Line, Pos);
   Clr := Byte(TokenClassToColor(TC));
   For I := Start To Pos - 1 Do
    If (I >= 1) And (I <= Len) Then
@@ -52757,6 +53007,39 @@ Begin
     '========== Build: 0 succeeded, 1 failed ==========',
     Ord(OTK_BUILD));
  End
+ Else If (Ext = '.pl') Or (Ext = '.pm') Or (Ext = '.pls') Then Begin
+  { Compilation Perl -> PERLCW32.exe }
+  CmdLine := FindCompiler('PERLCW32');
+  If CmdLine = '' Then Begin
+   AppendOutput(OutputPanel,
+    'Erreur : compilateur Perl non trouve (PERLCW32.exe).',
+    Ord(OTK_BUILD));
+   Exit;
+  End;
+  CmdLine := CmdLine + ' ' + SourceFile;
+  AppendOutput(OutputPanel,
+   '------ Build started: ' + SourceFile + ' ------',
+   Ord(OTK_BUILD));
+  AppendOutput(OutputPanel, '> ' + CmdLine, Ord(OTK_BUILD));
+  ExitCode := ExecuteCompiler(CmdLine, TempFile);
+  ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
+  CleanupTempFile(TempFile);
+  If ExitCode = 0 Then Begin
+   AppendOutput(OutputPanel,
+    '========== Build: 1 succeeded, 0 failed ==========',
+    Ord(OTK_BUILD));
+   AppendOutput(OutputPanel,
+    'Execution de ' + ExeName + '...', Ord(OTK_BUILD));
+   {$IFDEF WINDOWS}
+   Exec(GetEnv('COMSPEC'), '/C ' + ExeName);
+   {$ELSE}
+   Exec('/bin/sh', '-c ./' + ExeName);
+   {$ENDIF}
+  End Else
+   AppendOutput(OutputPanel,
+    '========== Build: 0 succeeded, 1 failed ==========',
+    Ord(OTK_BUILD));
+ End
  Else If (Ext = '.awk') Then Begin
   { Compilation AWK }
   DetectAWKCompiler(AWKContext);
@@ -56083,6 +56366,7 @@ BEGIN
  InitXppHighlighter(XppHL);
  InitPowerFXHighlighter(PowerFXHL);
  InitOberonHighlighter(OberonHL);
+ InitPerlHighlighter(PerlHL);
  InitAsmHighlighter(AsmHL);
  InitJavaHighlighter(JavaHL);
  InitPythonHighlighter(PythonHL);
