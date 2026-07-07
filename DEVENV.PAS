@@ -1080,6 +1080,9 @@ Const
  { Coloration syntaxique Rust }
  MAX_RUST_KEYWORDS     = 40;      { mots-cles reserves Rust           }
 
+ { Coloration syntaxique SAS }
+ MAX_SAS_KEYWORDS      = 50;      { mots-cles reserves SAS            }
+
  { Coloration syntaxique Assembleur x86 }
  MAX_ASM_KEYWORDS      = 127;    { nombre de mnemoniques ASM      }
 
@@ -1937,6 +1940,13 @@ Type
  TRustHighlighter = Record
   Base         : TSyntaxHighlighter;  { moteur de base              }
   Keywords     : Array[0..MAX_RUST_KEYWORDS - 1] Of String[12];
+  KeywordCount : Integer;             { nombre de mots-cles         }
+ End;
+
+ { Coloration syntaxique specialisee SAS }
+ TSASHighlighter = Record
+  Base         : TSyntaxHighlighter;  { moteur de base              }
+  Keywords     : Array[0..MAX_SAS_KEYWORDS - 1] Of String[10];
   KeywordCount : Integer;             { nombre de mots-cles         }
  End;
 
@@ -3352,6 +3362,8 @@ Var
  PHPHL        : TPHPHighlighter;
  { Coloration syntaxique Rust }
  RustHL       : TRustHighlighter;
+ { Coloration syntaxique SAS }
+ SASHL        : TSASHighlighter;
  { Coloration syntaxique Assembleur x86 }
  AsmHL        : TAsmHighlighter;
  { Coloration syntaxique Java }
@@ -9336,6 +9348,12 @@ Procedure HighlightRustLine(Var HL: TRustHighlighter;
                             Line: String;
                             Var Colors: Array Of Byte); Forward;
 
+{ --- Declaration anticipee de HighlightSASLine --- }
+
+Procedure HighlightSASLine(Var HL: TSASHighlighter;
+                           Line: String;
+                           Var Colors: Array Of Byte); Forward;
+
 { --- Declaration anticipee de HighlightAsmLine --- }
 
 Procedure HighlightAsmLine(Var HL: TAsmHighlighter;
@@ -9413,6 +9431,7 @@ Var
  IsPL1: Boolean;
  IsPHP: Boolean;
  IsRust: Boolean;
+ IsSAS: Boolean;
  IsAda: Boolean;
  IsAbap: Boolean;
  IsAWK: Boolean;
@@ -9442,6 +9461,7 @@ Begin
  IsPL1      := (Ext = '.PLI') Or (Ext = '.PL1');
  IsPHP      := (Ext = '.PHP') Or (Ext = '.PHP5') Or (Ext = '.PHTML');
  IsRust     := (Ext = '.RS');
+ IsSAS      := (Ext = '.SAS');
  IsAda := (Ext = '.ADB') Or (Ext = '.ADS') Or (Ext = '.ADA');
  IsAbap := (Ext = '.ABAP') Or (Ext = '.ABP');
  IsAWK := (Ext = '.AWK');
@@ -9520,6 +9540,9 @@ Begin
    Else If IsRust And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
     HighlightRustLine(RustHL, FullLine, Colors)
+   Else If IsSAS And (Length(FullLine) > 0) And
+      (Length(FullLine) <= 255) Then
+    HighlightSASLine(SASHL, FullLine, Colors)
    Else If IsAda And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
     HighlightAdaLine(AdaHL, FullLine, Colors)
@@ -15713,6 +15736,264 @@ Begin
  While Pos <= Len Do Begin
   Start := Pos;
   TC := GetRustTokenClass(HL, Line, Pos);
+  Clr := Byte(TokenClassToColor(TC));
+  For I := Start To Pos - 1 Do
+   If (I >= 1) And (I <= Len) Then
+    Colors[I - 1] := Clr;
+ End;
+End;
+
+{ ============================================================
+  COLORATION SYNTAXIQUE SAS
+  ============================================================ }
+
+{ --- Initialiser les mots-cles SAS --- }
+
+Procedure InitSASKeywords(Var HL: TSASHighlighter);
+Begin
+ HL.KeywordCount := MAX_SAS_KEYWORDS;
+ { Data step }
+ HL.Keywords[0]  := 'DATA';
+ HL.Keywords[1]  := 'SET';
+ HL.Keywords[2]  := 'MERGE';
+ HL.Keywords[3]  := 'UPDATE';
+ HL.Keywords[4]  := 'BY';
+ HL.Keywords[5]  := 'WHERE';
+ HL.Keywords[6]  := 'IF';
+ HL.Keywords[7]  := 'THEN';
+ HL.Keywords[8]  := 'ELSE';
+ HL.Keywords[9]  := 'DO';
+ HL.Keywords[10] := 'END';
+ HL.Keywords[11] := 'OUTPUT';
+ HL.Keywords[12] := 'RETURN';
+ HL.Keywords[13] := 'DROP';
+ HL.Keywords[14] := 'KEEP';
+ HL.Keywords[15] := 'RENAME';
+ HL.Keywords[16] := 'ARRAY';
+ HL.Keywords[17] := 'RETAIN';
+ HL.Keywords[18] := 'LENGTH';
+ HL.Keywords[19] := 'FORMAT';
+ HL.Keywords[20] := 'INFORMAT';
+ HL.Keywords[21] := 'LABEL';
+ HL.Keywords[22] := 'ATTRIB';
+ HL.Keywords[23] := 'TO';
+ HL.Keywords[24] := 'UNTIL';
+ HL.Keywords[25] := 'WHILE';
+ HL.Keywords[26] := 'IN';
+ HL.Keywords[27] := 'OTHERWISE';
+ HL.Keywords[28] := 'SELECT';
+ HL.Keywords[29] := 'STOP';
+ HL.Keywords[30] := 'ABORT';
+ HL.Keywords[31] := 'CONTINUE';
+ { Procedures }
+ HL.Keywords[32] := 'PROC';
+ HL.Keywords[33] := 'RUN';
+ HL.Keywords[34] := 'QUIT';
+ { Declarations globales }
+ HL.Keywords[35] := 'OPTIONS';
+ HL.Keywords[36] := 'TITLE';
+ HL.Keywords[37] := 'FOOTNOTE';
+ HL.Keywords[38] := 'LIBNAME';
+ HL.Keywords[39] := 'FILENAME';
+ { Operateurs logiques textuels }
+ HL.Keywords[40] := 'NOT';
+ HL.Keywords[41] := 'AND';
+ HL.Keywords[42] := 'OR';
+ HL.Keywords[43] := 'EQ';
+ HL.Keywords[44] := 'NE';
+ HL.Keywords[45] := 'GT';
+ HL.Keywords[46] := 'LT';
+ HL.Keywords[47] := 'GE';
+ HL.Keywords[48] := 'LE';
+ HL.Keywords[49] := 'MISSING';
+End;
+
+{ --- Initialiser le highlighter SAS --- }
+
+Procedure InitSASHighlighter(Var HL: TSASHighlighter);
+Begin
+ HL.Base.InBlockComment := False;
+ InitSASKeywords(HL);
+End;
+
+{ --- Tester si un mot est un mot-cle SAS (insensible a la casse) --- }
+
+Function IsSASKeyword(Var HL: TSASHighlighter;
+ Word: String): Boolean;
+Var I: Integer;
+Begin
+ IsSASKeyword := False;
+ Word := UpCaseStr(Word);
+ For I := 0 To HL.KeywordCount - 1 Do
+  If HL.Keywords[I] = Word Then Begin
+   IsSASKeyword := True;
+   Exit;
+  End;
+End;
+
+{ --- Tester si un mot est un nom de PROC ou fonction SAS --- }
+
+Function IsSASBuiltin(Word: String): Boolean;
+Begin
+ Word := UpCaseStr(Word);
+ IsSASBuiltin :=
+  { Noms de procedures courantes }
+  (Word = 'PRINT')    Or (Word = 'SORT')     Or (Word = 'MEANS')    Or
+  (Word = 'FREQ')     Or (Word = 'TABULATE') Or (Word = 'REPORT')   Or
+  (Word = 'SQL')      Or (Word = 'IMPORT')   Or (Word = 'EXPORT')   Or
+  (Word = 'CONTENTS') Or (Word = 'DATASETS') Or (Word = 'UNIVARIATE') Or
+  (Word = 'CORR')     Or (Word = 'REG')      Or (Word = 'GLM')      Or
+  { Fonctions courantes }
+  (Word = 'SUM')      Or (Word = 'MEAN')     Or (Word = 'MIN')      Or
+  (Word = 'MAX')      Or (Word = 'ABS')      Or (Word = 'INT')      Or
+  (Word = 'ROUND')    Or (Word = 'CEIL')     Or (Word = 'FLOOR')    Or
+  (Word = 'MOD')      Or (Word = 'SQRT')     Or (Word = 'LOG')      Or
+  (Word = 'EXP')      Or (Word = 'SUBSTR')   Or (Word = 'TRIM')     Or
+  (Word = 'STRIP')    Or (Word = 'UPCASE')   Or (Word = 'LOWCASE')  Or
+  (Word = 'COMPRESS') Or (Word = 'CAT')      Or (Word = 'CATX')     Or
+  (Word = 'SCAN')     Or (Word = 'INDEX')    Or (Word = 'PUT')      Or
+  (Word = 'INPUT')    Or (Word = 'DATE')     Or (Word = 'TODAY')    Or
+  (Word = 'YEAR')     Or (Word = 'MONTH')    Or (Word = 'DAY')      Or
+  (Word = 'MDY')      Or (Word = 'DIM')      Or (Word = 'N')        Or
+  (Word = 'NMISS')    Or (Word = 'COUNT');
+End;
+
+{ --- Determiner la classe de token SAS --- }
+
+Function GetSASTokenClass(Var HL: TSASHighlighter;
+ Line: String; Var Pos: Integer): TTokenClass;
+Var
+ Len, Start: Integer;
+ Ch, Ch2: Char;
+ Word: String;
+Begin
+ Len := Length(Line);
+ Ch := Line[Pos];
+ { Commentaire de bloc /* ... */ (multi-ligne) }
+ If HL.Base.InBlockComment Then Begin
+  While Pos <= Len Do Begin
+   If (Line[Pos] = '*') And (Pos < Len) And (Line[Pos+1] = '/') Then Begin
+    Inc(Pos, 2);
+    HL.Base.InBlockComment := False;
+    GetSASTokenClass := TC_COMMENT;
+    Exit;
+   End;
+   Inc(Pos);
+  End;
+  GetSASTokenClass := TC_COMMENT;
+  Exit;
+ End;
+ { Debut commentaire de bloc /* }
+ If (Ch = '/') And (Pos < Len) And (Line[Pos+1] = '*') Then Begin
+  Inc(Pos, 2);
+  HL.Base.InBlockComment := True;
+  While Pos <= Len Do Begin
+   If (Line[Pos] = '*') And (Pos < Len) And (Line[Pos+1] = '/') Then Begin
+    Inc(Pos, 2);
+    HL.Base.InBlockComment := False;
+    GetSASTokenClass := TC_COMMENT;
+    Exit;
+   End;
+   Inc(Pos);
+  End;
+  GetSASTokenClass := TC_COMMENT;
+  Exit;
+ End;
+ { Chaine simple quote '...' }
+ If Ch = '''' Then Begin
+  Inc(Pos);
+  While Pos <= Len Do Begin
+   Ch2 := Line[Pos];
+   Inc(Pos);
+   If Ch2 = '''' Then Begin
+    If (Pos <= Len) And (Line[Pos] = '''') Then Inc(Pos)
+    Else Break;
+   End;
+  End;
+  GetSASTokenClass := TC_STRING;
+  Exit;
+ End;
+ { Chaine double quote "..." }
+ If Ch = '"' Then Begin
+  Inc(Pos);
+  While Pos <= Len Do Begin
+   Ch2 := Line[Pos];
+   Inc(Pos);
+   If Ch2 = '"' Then Break;
+  End;
+  GetSASTokenClass := TC_STRING;
+  Exit;
+ End;
+ { Variable macro &nom }
+ If Ch = '&' Then Begin
+  Inc(Pos);
+  While (Pos <= Len) And
+   (IsAlphaUS(Line[Pos]) Or IsDigitChar(Line[Pos])) Do Inc(Pos);
+  GetSASTokenClass := TC_TYPE;
+  Exit;
+ End;
+ { Instruction macro %nom }
+ If Ch = '%' Then Begin
+  Inc(Pos);
+  While (Pos <= Len) And IsAlphaUS(Line[Pos]) Do Inc(Pos);
+  GetSASTokenClass := TC_KEYWORD;
+  Exit;
+ End;
+ { Nombre }
+ If IsDigitChar(Ch) Then Begin
+  Inc(Pos);
+  While (Pos <= Len) And
+   (IsDigitChar(Line[Pos]) Or (Line[Pos] = '.') Or
+    (Line[Pos] = 'e') Or (Line[Pos] = 'E') Or
+    (Line[Pos] = '+') Or (Line[Pos] = '-')) Do Inc(Pos);
+  GetSASTokenClass := TC_NUMBER;
+  Exit;
+ End;
+ { Identifiant / mot-cle }
+ If IsAlphaUS(Ch) Then Begin
+  Start := Pos;
+  Inc(Pos);
+  While (Pos <= Len) And
+   (IsAlphaUS(Line[Pos]) Or IsDigitChar(Line[Pos])) Do Inc(Pos);
+  Word := Copy(Line, Start, Pos - Start);
+  If IsSASBuiltin(Word) Then
+   GetSASTokenClass := TC_TYPE
+  Else If IsSASKeyword(HL, Word) Then
+   GetSASTokenClass := TC_KEYWORD
+  Else
+   GetSASTokenClass := TC_IDENTIFIER;
+  Exit;
+ End;
+ { Operateur }
+ If (Ch = '=') Or (Ch = '<') Or (Ch = '>') Or (Ch = '!') Or
+    (Ch = '+') Or (Ch = '-') Or (Ch = '*') Or (Ch = '/') Or
+    (Ch = '|') Or (Ch = '^') Or (Ch = '~') Then Begin
+  Inc(Pos);
+  GetSASTokenClass := TC_OPERATOR;
+  Exit;
+ End;
+ { Caractere normal }
+ Inc(Pos);
+ GetSASTokenClass := TC_NORMAL;
+End;
+
+{ --- Colorier une ligne SAS --- }
+
+Procedure HighlightSASLine(Var HL: TSASHighlighter;
+                           Line: String;
+                           Var Colors: Array Of Byte);
+Var
+ Pos, Start, I, Len: Integer;
+ TC: TTokenClass;
+ Clr: Byte;
+Begin
+ Len := Length(Line);
+ For I := 0 To Len - 1 Do
+  Colors[I] := Byte(TokenClassToColor(TC_NORMAL));
+ Pos := 1;
+ While Pos <= Len Do Begin
+  Start := Pos;
+  TC := GetSASTokenClass(HL, Line, Pos);
   Clr := Byte(TokenClassToColor(TC));
   For I := Start To Pos - 1 Do
    If (I >= 1) And (I <= Len) Then
@@ -53902,6 +54183,39 @@ Begin
     '========== Build: 0 succeeded, 1 failed ==========',
     Ord(OTK_BUILD));
  End
+ Else If (Ext = '.sas') Then Begin
+  { Compilation SAS -> SASCW32.exe }
+  CmdLine := FindCompiler('SASCW32');
+  If CmdLine = '' Then Begin
+   AppendOutput(OutputPanel,
+    'Erreur : compilateur SAS non trouve (SASCW32.exe).',
+    Ord(OTK_BUILD));
+   Exit;
+  End;
+  CmdLine := CmdLine + ' ' + SourceFile;
+  AppendOutput(OutputPanel,
+   '------ Build started: ' + SourceFile + ' ------',
+   Ord(OTK_BUILD));
+  AppendOutput(OutputPanel, '> ' + CmdLine, Ord(OTK_BUILD));
+  ExitCode := ExecuteCompiler(CmdLine, TempFile);
+  ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
+  CleanupTempFile(TempFile);
+  If ExitCode = 0 Then Begin
+   AppendOutput(OutputPanel,
+    '========== Build: 1 succeeded, 0 failed ==========',
+    Ord(OTK_BUILD));
+   AppendOutput(OutputPanel,
+    'Execution de ' + ExeName + '...', Ord(OTK_BUILD));
+   ClearOutput(OutputPanel, Ord(OTK_DEBUG));
+   ExitCode := ExecuteCompiler(ExeName, TempFile);
+   ReadOutputFile(TempFile, OutputPanel, Ord(OTK_DEBUG));
+   CleanupTempFile(TempFile);
+   SetActiveOutputTab(OutputPanel, OTK_DEBUG);
+  End Else
+   AppendOutput(OutputPanel,
+    '========== Build: 0 succeeded, 1 failed ==========',
+    Ord(OTK_BUILD));
+ End
  Else If (Ext = '.rs') Then Begin
   { Compilation Rust -> RUSTCW32.exe }
   CmdLine := FindCompiler('RUSTCW32');
@@ -57304,6 +57618,7 @@ BEGIN
  InitPL1Highlighter(PL1HL);
  InitPHPHighlighter(PHPHL);
  InitRustHighlighter(RustHL);
+ InitSASHighlighter(SASHL);
  InitAsmHighlighter(AsmHL);
  InitJavaHighlighter(JavaHL);
  InitPythonHighlighter(PythonHL);
