@@ -1089,6 +1089,9 @@ Const
  { Coloration syntaxique SNOBOL }
  MAX_SNOBOL_KEYWORDS   = 30;      { mots-cles reserves SNOBOL         }
 
+ { Coloration syntaxique Modula-3 }
+ MAX_MOD3_KEYWORDS     = 62;      { mots-cles reserves Modula-3       }
+
  { Coloration syntaxique Assembleur x86 }
  MAX_ASM_KEYWORDS      = 127;    { nombre de mnemoniques ASM      }
 
@@ -1967,6 +1970,13 @@ Type
  TSnobolHighlighter = Record
   Base         : TSyntaxHighlighter;  { moteur de base              }
   Keywords     : Array[0..MAX_SNOBOL_KEYWORDS - 1] Of String[10];
+  KeywordCount : Integer;             { nombre de mots-cles         }
+ End;
+
+ { Coloration syntaxique specialisee Modula-3 }
+ TMod3Highlighter = Record
+  Base         : TSyntaxHighlighter;  { moteur de base              }
+  Keywords     : Array[0..MAX_MOD3_KEYWORDS - 1] Of String[12];
   KeywordCount : Integer;             { nombre de mots-cles         }
  End;
 
@@ -3388,6 +3398,8 @@ Var
  RubyHL       : TRubyHighlighter;
  { Coloration syntaxique SNOBOL }
  SnobolHL     : TSnobolHighlighter;
+ { Coloration syntaxique Modula-3 }
+ Mod3HL       : TMod3Highlighter;
  { Coloration syntaxique Assembleur x86 }
  AsmHL        : TAsmHighlighter;
  { Coloration syntaxique Java }
@@ -9390,6 +9402,12 @@ Procedure HighlightSnobolLine(Var HL: TSnobolHighlighter;
                               Line: String;
                               Var Colors: Array Of Byte); Forward;
 
+{ --- Declaration anticipee de HighlightMod3Line --- }
+
+Procedure HighlightMod3Line(Var HL: TMod3Highlighter;
+                            Line: String;
+                            Var Colors: Array Of Byte); Forward;
+
 { --- Declaration anticipee de HighlightAsmLine --- }
 
 Procedure HighlightAsmLine(Var HL: TAsmHighlighter;
@@ -9470,6 +9488,7 @@ Var
  IsSAS: Boolean;
  IsRuby: Boolean;
  IsSnobol: Boolean;
+ IsMod3: Boolean;
  IsAda: Boolean;
  IsAbap: Boolean;
  IsAWK: Boolean;
@@ -9502,6 +9521,7 @@ Begin
  IsSAS      := (Ext = '.SAS');
  IsRuby     := (Ext = '.RB') Or (Ext = '.RBW');
  IsSnobol   := (Ext = '.SBL') Or (Ext = '.SNO');
+ IsMod3     := (Ext = '.M3') Or (Ext = '.I3') Or (Ext = '.MG') Or (Ext = '.IG');
  IsAda := (Ext = '.ADB') Or (Ext = '.ADS') Or (Ext = '.ADA');
  IsAbap := (Ext = '.ABAP') Or (Ext = '.ABP');
  IsAWK := (Ext = '.AWK');
@@ -9589,6 +9609,9 @@ Begin
    Else If IsSnobol And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
     HighlightSnobolLine(SnobolHL, FullLine, Colors)
+   Else If IsMod3 And (Length(FullLine) > 0) And
+      (Length(FullLine) <= 255) Then
+    HighlightMod3Line(Mod3HL, FullLine, Colors)
    Else If IsAda And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
     HighlightAdaLine(AdaHL, FullLine, Colors)
@@ -16512,6 +16535,255 @@ Begin
  While Pos <= Len Do Begin
   Start := Pos;
   TC := GetSnobolTokenClass(HL, Line, Pos);
+  Clr := Byte(TokenClassToColor(TC));
+  For I := Start To Pos - 1 Do
+   If (I >= 1) And (I <= Len) Then
+    Colors[I - 1] := Clr;
+ End;
+End;
+
+{ ============================================================
+  COLORATION SYNTAXIQUE MODULA-3
+  ============================================================ }
+
+{ --- Initialiser les mots-cles Modula-3 --- }
+
+Procedure InitMod3Keywords(Var HL: TMod3Highlighter);
+Begin
+ HL.KeywordCount := MAX_MOD3_KEYWORDS;
+ HL.Keywords[0]  := 'AND';
+ HL.Keywords[1]  := 'ANY';
+ HL.Keywords[2]  := 'ARRAY';
+ HL.Keywords[3]  := 'AS';
+ HL.Keywords[4]  := 'BEGIN';
+ HL.Keywords[5]  := 'BITS';
+ HL.Keywords[6]  := 'BRANDED';
+ HL.Keywords[7]  := 'BY';
+ HL.Keywords[8]  := 'CASE';
+ HL.Keywords[9]  := 'CONST';
+ HL.Keywords[10] := 'DIV';
+ HL.Keywords[11] := 'DO';
+ HL.Keywords[12] := 'ELSE';
+ HL.Keywords[13] := 'ELSIF';
+ HL.Keywords[14] := 'END';
+ HL.Keywords[15] := 'EVAL';
+ HL.Keywords[16] := 'EXCEPT';
+ HL.Keywords[17] := 'EXCEPTION';
+ HL.Keywords[18] := 'EXIT';
+ HL.Keywords[19] := 'EXPORTS';
+ HL.Keywords[20] := 'FINALLY';
+ HL.Keywords[21] := 'FOR';
+ HL.Keywords[22] := 'FROM';
+ HL.Keywords[23] := 'GENERIC';
+ HL.Keywords[24] := 'IF';
+ HL.Keywords[25] := 'IMPORT';
+ HL.Keywords[26] := 'IN';
+ HL.Keywords[27] := 'INTERFACE';
+ HL.Keywords[28] := 'LOCK';
+ HL.Keywords[29] := 'LOOP';
+ HL.Keywords[30] := 'METHODS';
+ HL.Keywords[31] := 'MOD';
+ HL.Keywords[32] := 'MODULE';
+ HL.Keywords[33] := 'NOT';
+ HL.Keywords[34] := 'OBJECT';
+ HL.Keywords[35] := 'OF';
+ HL.Keywords[36] := 'OR';
+ HL.Keywords[37] := 'OVERRIDES';
+ HL.Keywords[38] := 'PROCEDURE';
+ HL.Keywords[39] := 'RAISE';
+ HL.Keywords[40] := 'RAISES';
+ HL.Keywords[41] := 'READONLY';
+ HL.Keywords[42] := 'RECORD';
+ HL.Keywords[43] := 'REF';
+ HL.Keywords[44] := 'REPEAT';
+ HL.Keywords[45] := 'RETURN';
+ HL.Keywords[46] := 'REVEAL';
+ HL.Keywords[47] := 'ROOT';
+ HL.Keywords[48] := 'SET';
+ HL.Keywords[49] := 'THEN';
+ HL.Keywords[50] := 'TO';
+ HL.Keywords[51] := 'TRY';
+ HL.Keywords[52] := 'TYPE';
+ HL.Keywords[53] := 'TYPECASE';
+ HL.Keywords[54] := 'UNSAFE';
+ HL.Keywords[55] := 'UNTIL';
+ HL.Keywords[56] := 'UNTRACED';
+ HL.Keywords[57] := 'VAR';
+ HL.Keywords[58] := 'WITH';
+ HL.Keywords[59] := 'WHILE';
+ HL.Keywords[60] := 'VALUE';
+ HL.Keywords[61] := 'SUBARRAY';
+End;
+
+{ --- Initialiser le highlighter Modula-3 --- }
+
+Procedure InitMod3Highlighter(Var HL: TMod3Highlighter);
+Begin
+ HL.Base.InBlockComment := False;
+ InitMod3Keywords(HL);
+End;
+
+{ --- Tester si un mot est un mot-cle Modula-3 (sensible a la casse) --- }
+
+Function IsMod3Keyword(Var HL: TMod3Highlighter;
+ Word: String): Boolean;
+Var I: Integer;
+Begin
+ IsMod3Keyword := False;
+ For I := 0 To HL.KeywordCount - 1 Do
+  If HL.Keywords[I] = Word Then Begin
+   IsMod3Keyword := True;
+   Exit;
+  End;
+End;
+
+{ --- Tester si un mot est un type/builtin Modula-3 --- }
+
+Function IsMod3Builtin(Word: String): Boolean;
+Begin
+ IsMod3Builtin :=
+  { Types primitifs }
+  (Word = 'INTEGER')   Or (Word = 'REAL')      Or (Word = 'LONGREAL') Or
+  (Word = 'EXTENDED')  Or (Word = 'BOOLEAN')   Or (Word = 'CHAR')     Or
+  (Word = 'TEXT')      Or (Word = 'REFANY')    Or (Word = 'ADDRESS')  Or
+  (Word = 'MUTEX')     Or (Word = 'CARDINAL')  Or (Word = 'LONGINT')  Or
+  { Valeurs }
+  (Word = 'TRUE')      Or (Word = 'FALSE')     Or (Word = 'NIL')      Or
+  { Fonctions et procedures standards }
+  (Word = 'ABS')       Or (Word = 'ADR')       Or (Word = 'ADRSIZE')  Or
+  (Word = 'BITSIZE')   Or (Word = 'BYTESIZE')  Or (Word = 'CEILING')  Or
+  (Word = 'DEC')       Or (Word = 'DISPOSE')   Or (Word = 'FIRST')    Or
+  (Word = 'FLOAT')     Or (Word = 'FLOOR')     Or (Word = 'INC')      Or
+  (Word = 'ISTYPE')    Or (Word = 'LAST')      Or (Word = 'LOOPHOLE') Or
+  (Word = 'MAX')       Or (Word = 'MIN')       Or (Word = 'NARROW')   Or
+  (Word = 'NEW')       Or (Word = 'NUMBER')    Or (Word = 'ORD')      Or
+  (Word = 'ROUND')     Or (Word = 'TRUNC')     Or (Word = 'TYPECODE') Or
+  (Word = 'VAL')       Or (Word = 'SELF')      Or (Word = 'SUPER');
+End;
+
+{ --- Determiner la classe de token Modula-3 --- }
+
+Function GetMod3TokenClass(Var HL: TMod3Highlighter;
+ Line: String; Var Pos: Integer): TTokenClass;
+Var
+ Len, Start: Integer;
+ Ch, Ch2: Char;
+ Word: String;
+Begin
+ Len := Length(Line);
+ Ch := Line[Pos];
+ { Commentaire de bloc (* ... *) imbrique }
+ If HL.Base.InBlockComment Then Begin
+  While Pos <= Len Do Begin
+   If (Line[Pos] = '*') And (Pos < Len) And (Line[Pos+1] = ')') Then Begin
+    Inc(Pos, 2);
+    HL.Base.InBlockComment := False;
+    GetMod3TokenClass := TC_COMMENT;
+    Exit;
+   End;
+   Inc(Pos);
+  End;
+  GetMod3TokenClass := TC_COMMENT;
+  Exit;
+ End;
+ { Debut commentaire (* }
+ If (Ch = '(') And (Pos < Len) And (Line[Pos+1] = '*') Then Begin
+  Inc(Pos, 2);
+  HL.Base.InBlockComment := True;
+  While Pos <= Len Do Begin
+   If (Line[Pos] = '*') And (Pos < Len) And (Line[Pos+1] = ')') Then Begin
+    Inc(Pos, 2);
+    HL.Base.InBlockComment := False;
+    GetMod3TokenClass := TC_COMMENT;
+    Exit;
+   End;
+   Inc(Pos);
+  End;
+  GetMod3TokenClass := TC_COMMENT;
+  Exit;
+ End;
+ { Chaine de texte "..." }
+ If Ch = '"' Then Begin
+  Inc(Pos);
+  While Pos <= Len Do Begin
+   Ch2 := Line[Pos];
+   Inc(Pos);
+   If Ch2 = '\' Then Begin
+    If Pos <= Len Then Inc(Pos);
+   End Else If Ch2 = '"' Then Break;
+  End;
+  GetMod3TokenClass := TC_STRING;
+  Exit;
+ End;
+ { Caractere '.' }
+ If Ch = '''' Then Begin
+  Inc(Pos);
+  While Pos <= Len Do Begin
+   Ch2 := Line[Pos];
+   Inc(Pos);
+   If Ch2 = '\' Then Begin
+    If Pos <= Len Then Inc(Pos);
+   End Else If Ch2 = '''' Then Break;
+  End;
+  GetMod3TokenClass := TC_STRING;
+  Exit;
+ End;
+ { Nombre : decimal ou base 16_xxx }
+ If IsDigitChar(Ch) Then Begin
+  Inc(Pos);
+  While (Pos <= Len) And
+   (IsDigitChar(Line[Pos]) Or (Line[Pos] = '_') Or
+    (Line[Pos] = '.') Or
+    ((Line[Pos] >= 'a') And (Line[Pos] <= 'f')) Or
+    ((Line[Pos] >= 'A') And (Line[Pos] <= 'F'))) Do Inc(Pos);
+  GetMod3TokenClass := TC_NUMBER;
+  Exit;
+ End;
+ { Identifiant / mot-cle }
+ If IsAlphaUS(Ch) Then Begin
+  Start := Pos;
+  Inc(Pos);
+  While (Pos <= Len) And
+   (IsAlphaUS(Line[Pos]) Or IsDigitChar(Line[Pos])) Do Inc(Pos);
+  Word := Copy(Line, Start, Pos - Start);
+  If IsMod3Builtin(Word) Then
+   GetMod3TokenClass := TC_TYPE
+  Else If IsMod3Keyword(HL, Word) Then
+   GetMod3TokenClass := TC_KEYWORD
+  Else
+   GetMod3TokenClass := TC_IDENTIFIER;
+  Exit;
+ End;
+ { Operateur }
+ If (Ch = '+') Or (Ch = '-') Or (Ch = '*') Or (Ch = '/') Or
+    (Ch = '=') Or (Ch = '<') Or (Ch = '>') Or (Ch = '#') Or
+    (Ch = '&') Or (Ch = '^') Or (Ch = '@') Then Begin
+  Inc(Pos);
+  GetMod3TokenClass := TC_OPERATOR;
+  Exit;
+ End;
+ { Caractere normal }
+ Inc(Pos);
+ GetMod3TokenClass := TC_NORMAL;
+End;
+
+{ --- Colorier une ligne Modula-3 --- }
+
+Procedure HighlightMod3Line(Var HL: TMod3Highlighter;
+                            Line: String;
+                            Var Colors: Array Of Byte);
+Var
+ Pos, Start, I, Len: Integer;
+ TC: TTokenClass;
+ Clr: Byte;
+Begin
+ Len := Length(Line);
+ For I := 0 To Len - 1 Do
+  Colors[I] := Byte(TokenClassToColor(TC_NORMAL));
+ Pos := 1;
+ While Pos <= Len Do Begin
+  Start := Pos;
+  TC := GetMod3TokenClass(HL, Line, Pos);
   Clr := Byte(TokenClassToColor(TC));
   For I := Start To Pos - 1 Do
    If (I >= 1) And (I <= Len) Then
@@ -54701,6 +54973,40 @@ Begin
     '========== Build: 0 succeeded, 1 failed ==========',
     Ord(OTK_BUILD));
  End
+ Else If (Ext = '.m3') Or (Ext = '.i3') Or
+         (Ext = '.mg') Or (Ext = '.ig') Then Begin
+  { Compilation Modula-3 -> MOD3CW32.exe }
+  CmdLine := FindCompiler('MOD3CW32');
+  If CmdLine = '' Then Begin
+   AppendOutput(OutputPanel,
+    'Erreur : compilateur Modula-3 non trouve (MOD3CW32.exe).',
+    Ord(OTK_BUILD));
+   Exit;
+  End;
+  CmdLine := CmdLine + ' ' + SourceFile;
+  AppendOutput(OutputPanel,
+   '------ Build started: ' + SourceFile + ' ------',
+   Ord(OTK_BUILD));
+  AppendOutput(OutputPanel, '> ' + CmdLine, Ord(OTK_BUILD));
+  ExitCode := ExecuteCompiler(CmdLine, TempFile);
+  ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
+  CleanupTempFile(TempFile);
+  If ExitCode = 0 Then Begin
+   AppendOutput(OutputPanel,
+    '========== Build: 1 succeeded, 0 failed ==========',
+    Ord(OTK_BUILD));
+   AppendOutput(OutputPanel,
+    'Execution de ' + ExeName + '...', Ord(OTK_BUILD));
+   ClearOutput(OutputPanel, Ord(OTK_DEBUG));
+   ExitCode := ExecuteCompiler(ExeName, TempFile);
+   ReadOutputFile(TempFile, OutputPanel, Ord(OTK_DEBUG));
+   CleanupTempFile(TempFile);
+   SetActiveOutputTab(OutputPanel, OTK_DEBUG);
+  End Else
+   AppendOutput(OutputPanel,
+    '========== Build: 0 succeeded, 1 failed ==========',
+    Ord(OTK_BUILD));
+ End
  Else If (Ext = '.sbl') Or (Ext = '.sno') Then Begin
   { Compilation SNOBOL -> SNOBCW32.exe }
   CmdLine := FindCompiler('SNOBCW32');
@@ -58205,6 +58511,7 @@ BEGIN
  InitSASHighlighter(SASHL);
  InitRubyHighlighter(RubyHL);
  InitSnobolHighlighter(SnobolHL);
+ InitMod3Highlighter(Mod3HL);
  InitAsmHighlighter(AsmHL);
  InitJavaHighlighter(JavaHL);
  InitPythonHighlighter(PythonHL);
