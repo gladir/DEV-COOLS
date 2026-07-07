@@ -1071,6 +1071,9 @@ Const
  { Coloration syntaxique Perl }
  MAX_PERL_KEYWORDS     = 40;      { mots-cles reserves Perl           }
 
+ { Coloration syntaxique PL/1 }
+ MAX_PL1_KEYWORDS      = 60;      { mots-cles reserves PL/1           }
+
  { Coloration syntaxique Assembleur x86 }
  MAX_ASM_KEYWORDS      = 127;    { nombre de mnemoniques ASM      }
 
@@ -1907,6 +1910,13 @@ Type
  TPerlHighlighter = Record
   Base         : TSyntaxHighlighter;  { moteur de base              }
   Keywords     : Array[0..MAX_PERL_KEYWORDS - 1] Of String[10];
+  KeywordCount : Integer;             { nombre de mots-cles         }
+ End;
+
+ { Coloration syntaxique specialisee PL/1 }
+ TPL1Highlighter = Record
+  Base         : TSyntaxHighlighter;  { moteur de base              }
+  Keywords     : Array[0..MAX_PL1_KEYWORDS - 1] Of String[12];
   KeywordCount : Integer;             { nombre de mots-cles         }
  End;
 
@@ -3316,6 +3326,8 @@ Var
  OberonHL     : TOberonHighlighter;
  { Coloration syntaxique Perl }
  PerlHL       : TPerlHighlighter;
+ { Coloration syntaxique PL/1 }
+ PL1HL        : TPL1Highlighter;
  { Coloration syntaxique Assembleur x86 }
  AsmHL        : TAsmHighlighter;
  { Coloration syntaxique Java }
@@ -9282,6 +9294,12 @@ Procedure HighlightPerlLine(Var HL: TPerlHighlighter;
                             Line: String;
                             Var Colors: Array Of Byte); Forward;
 
+{ --- Declaration anticipee de HighlightPL1Line --- }
+
+Procedure HighlightPL1Line(Var HL: TPL1Highlighter;
+                           Line: String;
+                           Var Colors: Array Of Byte); Forward;
+
 { --- Declaration anticipee de HighlightAsmLine --- }
 
 Procedure HighlightAsmLine(Var HL: TAsmHighlighter;
@@ -9356,6 +9374,7 @@ Var
  IsPowerFX: Boolean;
  IsOberon: Boolean;
  IsPerl: Boolean;
+ IsPL1: Boolean;
  IsAda: Boolean;
  IsAbap: Boolean;
  IsAWK: Boolean;
@@ -9382,6 +9401,7 @@ Begin
  IsPowerFX  := (Ext = '.PFX');
  IsOberon   := (Ext = '.OBN') Or (Ext = '.OB2') Or (Ext = '.MOD');
  IsPerl     := (Ext = '.PL') Or (Ext = '.PM') Or (Ext = '.PLS');
+ IsPL1      := (Ext = '.PLI') Or (Ext = '.PL1');
  IsAda := (Ext = '.ADB') Or (Ext = '.ADS') Or (Ext = '.ADA');
  IsAbap := (Ext = '.ABAP') Or (Ext = '.ABP');
  IsAWK := (Ext = '.AWK');
@@ -9451,6 +9471,9 @@ Begin
    Else If IsPerl And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
     HighlightPerlLine(PerlHL, FullLine, Colors)
+   Else If IsPL1 And (Length(FullLine) > 0) And
+      (Length(FullLine) <= 255) Then
+    HighlightPL1Line(PL1HL, FullLine, Colors)
    Else If IsAda And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
     HighlightAdaLine(AdaHL, FullLine, Colors)
@@ -14884,6 +14907,251 @@ Begin
  While Pos <= Len Do Begin
   Start := Pos;
   TC := GetPerlTokenClass(HL, Line, Pos);
+  Clr := Byte(TokenClassToColor(TC));
+  For I := Start To Pos - 1 Do
+   If (I >= 1) And (I <= Len) Then
+    Colors[I - 1] := Clr;
+ End;
+End;
+
+{ ============================================================
+  COLORATION SYNTAXIQUE PL/1
+  ============================================================ }
+
+{ --- Mots-cles reserves PL/1 (stockes en majuscules) --- }
+
+Procedure InitPL1Keywords(Var HL: TPL1Highlighter);
+Begin
+ HL.KeywordCount  := MAX_PL1_KEYWORDS;
+ HL.Keywords[0]   := 'PROCEDURE';
+ HL.Keywords[1]   := 'PROC';
+ HL.Keywords[2]   := 'BEGIN';
+ HL.Keywords[3]   := 'END';
+ HL.Keywords[4]   := 'DECLARE';
+ HL.Keywords[5]   := 'DCL';
+ HL.Keywords[6]   := 'IF';
+ HL.Keywords[7]   := 'THEN';
+ HL.Keywords[8]   := 'ELSE';
+ HL.Keywords[9]   := 'DO';
+ HL.Keywords[10]  := 'WHILE';
+ HL.Keywords[11]  := 'UNTIL';
+ HL.Keywords[12]  := 'SELECT';
+ HL.Keywords[13]  := 'WHEN';
+ HL.Keywords[14]  := 'OTHERWISE';
+ HL.Keywords[15]  := 'CALL';
+ HL.Keywords[16]  := 'RETURN';
+ HL.Keywords[17]  := 'GET';
+ HL.Keywords[18]  := 'PUT';
+ HL.Keywords[19]  := 'LIST';
+ HL.Keywords[20]  := 'SKIP';
+ HL.Keywords[21]  := 'LINE';
+ HL.Keywords[22]  := 'PAGE';
+ HL.Keywords[23]  := 'DATA';
+ HL.Keywords[24]  := 'EDIT';
+ HL.Keywords[25]  := 'FORMAT';
+ HL.Keywords[26]  := 'ENTRY';
+ HL.Keywords[27]  := 'RETURNS';
+ HL.Keywords[28]  := 'RECURSIVE';
+ HL.Keywords[29]  := 'OPTIONS';
+ HL.Keywords[30]  := 'MAIN';
+ HL.Keywords[31]  := 'INITIAL';
+ HL.Keywords[32]  := 'STATIC';
+ HL.Keywords[33]  := 'EXTERNAL';
+ HL.Keywords[34]  := 'INTERNAL';
+ HL.Keywords[35]  := 'BASED';
+ HL.Keywords[36]  := 'DEFINED';
+ HL.Keywords[37]  := 'PARAMETER';
+ HL.Keywords[38]  := 'AUTOMATIC';
+ HL.Keywords[39]  := 'CONTROLLED';
+ HL.Keywords[40]  := 'LIKE';
+ HL.Keywords[41]  := 'GOTO';
+ HL.Keywords[42]  := 'GO';
+ HL.Keywords[43]  := 'TO';
+ HL.Keywords[44]  := 'LEAVE';
+ HL.Keywords[45]  := 'ITERATE';
+ HL.Keywords[46]  := 'BY';
+ HL.Keywords[47]  := 'FROM';
+ HL.Keywords[48]  := 'UPTHRU';
+ HL.Keywords[49]  := 'DOWNTHRU';
+ HL.Keywords[50]  := 'ON';
+ HL.Keywords[51]  := 'SIGNAL';
+ HL.Keywords[52]  := 'REVERT';
+ HL.Keywords[53]  := 'CONDITION';
+ HL.Keywords[54]  := 'STOP';
+ HL.Keywords[55]  := 'READ';
+ HL.Keywords[56]  := 'WRITE';
+ HL.Keywords[57]  := 'OPEN';
+ HL.Keywords[58]  := 'CLOSE';
+ HL.Keywords[59]  := 'FILE';
+End;
+
+{ --- Initialiser le moteur de coloration PL/1 --- }
+
+Procedure InitPL1Highlighter(Var HL: TPL1Highlighter);
+Begin
+ InitHighlighter(HL.Base, 'PL1');
+ InitPL1Keywords(HL);
+End;
+
+{ --- Verifier si un mot est un mot-cle PL/1 (insensible casse) --- }
+
+Function IsPL1Keyword(Var HL: TPL1Highlighter;
+                      Word: String): Boolean;
+Var I: Integer;
+    W: String;
+Begin
+ IsPL1Keyword := False;
+ W := Word;
+ For I := 1 To Length(W) Do
+  If (W[I] >= 'a') And (W[I] <= 'z') Then
+   W[I] := Chr(Ord(W[I]) - 32);
+ For I := 0 To HL.KeywordCount - 1 Do
+  If W = HL.Keywords[I] Then Begin
+   IsPL1Keyword := True;
+   Exit;
+  End;
+End;
+
+{ --- Types et fonctions integrees PL/1 (insensible casse) --- }
+
+Function IsPL1Builtin(Word: String): Boolean;
+Var W: String;
+    I: Integer;
+Begin
+ W := Word;
+ For I := 1 To Length(W) Do
+  If (W[I] >= 'a') And (W[I] <= 'z') Then
+   W[I] := Chr(Ord(W[I]) - 32);
+ IsPL1Builtin :=
+  { types de base }
+  (W = 'FIXED')     Or (W = 'FLOAT')      Or (W = 'BIT')       Or
+  (W = 'CHARACTER') Or (W = 'CHAR')       Or (W = 'BINARY')    Or
+  (W = 'DECIMAL')   Or (W = 'COMPLEX')    Or (W = 'REAL')      Or
+  (W = 'PICTURE')   Or (W = 'POINTER')    Or (W = 'LABEL')     Or
+  (W = 'VARYING')   Or (W = 'ALIGNED')    Or (W = 'UNALIGNED') Or
+  (W = 'SIGNED')    Or (W = 'UNSIGNED')   Or (W = 'STRING')    Or
+  { fonctions standard }
+  (W = 'ABS')       Or (W = 'CEIL')       Or (W = 'FLOOR')     Or
+  (W = 'ROUND')     Or (W = 'SIGN')       Or (W = 'MOD')       Or
+  (W = 'MAX')       Or (W = 'MIN')        Or (W = 'SQRT')      Or
+  (W = 'EXP')       Or (W = 'LOG')        Or (W = 'LOG2')      Or
+  (W = 'LOG10')     Or (W = 'SIN')        Or (W = 'COS')       Or
+  (W = 'TAN')       Or (W = 'ATAN')       Or (W = 'SUBSTR')    Or
+  (W = 'INDEX')     Or (W = 'VERIFY')     Or (W = 'TRANSLATE') Or
+  (W = 'LENGTH')    Or (W = 'HIGH')       Or (W = 'LOW')       Or
+  (W = 'ADDR')      Or (W = 'NULL')       Or (W = 'ALLOCATION')Or
+  (W = 'DIMENSION') Or (W = 'LBOUND')     Or (W = 'HBOUND')    Or
+  (W = 'BOOL')      Or (W = 'COLLATE')    Or (W = 'EMPTY');
+End;
+
+{ --- Obtenir la classe de jeton PL/1 a une position --- }
+
+Function GetPL1TokenClass(Var HL: TPL1Highlighter;
+                          Line: String;
+                          Var Pos: Integer): TTokenClass;
+Var
+ StartPos, Len: Integer;
+ Ch: Char;
+ Word: String;
+Begin
+ Len := Length(Line);
+ GetPL1TokenClass := TC_NORMAL;
+ If Pos > Len Then Exit;
+
+ Ch := Line[Pos];
+
+ { Espaces }
+ If (Ch = ' ') Or (Ch = #9) Then Begin
+  While (Pos <= Len) And ((Line[Pos] = ' ') Or (Line[Pos] = #9)) Do
+   Inc(Pos);
+  GetPL1TokenClass := TC_NORMAL;
+  Exit;
+ End;
+
+ { Commentaire /* ... */ }
+ If (Ch = '/') And (Pos < Len) And (Line[Pos + 1] = '*') Then Begin
+  Inc(Pos, 2);
+  While Pos < Len Do Begin
+   If (Line[Pos] = '*') And (Line[Pos + 1] = '/') Then Begin
+    Inc(Pos, 2);
+    Break;
+   End;
+   Inc(Pos);
+  End;
+  If Pos = Len Then Inc(Pos);
+  GetPL1TokenClass := TC_COMMENT;
+  Exit;
+ End;
+
+ { Chaine '...' (doublement '' pour echapper) }
+ If Ch = '''' Then Begin
+  Inc(Pos);
+  While Pos <= Len Do Begin
+   If Line[Pos] = '''' Then Begin
+    Inc(Pos);
+    If (Pos <= Len) And (Line[Pos] = '''') Then Inc(Pos)
+    Else Break;
+   End Else Inc(Pos);
+  End;
+  GetPL1TokenClass := TC_STRING;
+  Exit;
+ End;
+
+ { Nombre }
+ If IsDigitChar(Ch) Then Begin
+  While (Pos <= Len) And IsDigitChar(Line[Pos]) Do Inc(Pos);
+  If (Pos <= Len) And (Line[Pos] = '.') Then Begin
+   Inc(Pos);
+   While (Pos <= Len) And IsDigitChar(Line[Pos]) Do Inc(Pos);
+  End;
+  If (Pos <= Len) And ((Line[Pos] = 'E') Or (Line[Pos] = 'e')) Then Begin
+   Inc(Pos);
+   If (Pos <= Len) And
+      ((Line[Pos] = '+') Or (Line[Pos] = '-')) Then Inc(Pos);
+   While (Pos <= Len) And IsDigitChar(Line[Pos]) Do Inc(Pos);
+  End;
+  GetPL1TokenClass := TC_NUMBER;
+  Exit;
+ End;
+
+ { Identifiant ou mot-cle }
+ If IsAlphaUS(Ch) Then Begin
+  StartPos := Pos;
+  While (Pos <= Len) And
+        (IsAlphaUS(Line[Pos]) Or IsDigitChar(Line[Pos])) Do
+   Inc(Pos);
+  Word := Copy(Line, StartPos, Pos - StartPos);
+  If IsPL1Builtin(Word) Then
+   GetPL1TokenClass := TC_TYPE
+  Else If IsPL1Keyword(HL, Word) Then
+   GetPL1TokenClass := TC_KEYWORD
+  Else
+   GetPL1TokenClass := TC_IDENTIFIER;
+  Exit;
+ End;
+
+ { Operateur / ponctuation }
+ Inc(Pos);
+ GetPL1TokenClass := TC_OPERATOR;
+End;
+
+{ --- Colorier une ligne PL/1 entiere --- }
+
+Procedure HighlightPL1Line(Var HL: TPL1Highlighter;
+                           Line: String;
+                           Var Colors: Array Of Byte);
+Var
+ Pos, Start, I, Len: Integer;
+ TC: TTokenClass;
+ Clr: Byte;
+Begin
+ Len := Length(Line);
+ For I := 0 To Len - 1 Do
+  Colors[I] := Byte(TokenClassToColor(TC_NORMAL));
+ Pos := 1;
+ While Pos <= Len Do Begin
+  Start := Pos;
+  TC := GetPL1TokenClass(HL, Line, Pos);
   Clr := Byte(TokenClassToColor(TC));
   For I := Start To Pos - 1 Do
    If (I >= 1) And (I <= Len) Then
@@ -53040,6 +53308,39 @@ Begin
     '========== Build: 0 succeeded, 1 failed ==========',
     Ord(OTK_BUILD));
  End
+ Else If (Ext = '.pli') Or (Ext = '.pl1') Then Begin
+  { Compilation PL/1 -> PL1CW32.exe }
+  CmdLine := FindCompiler('PL1CW32');
+  If CmdLine = '' Then Begin
+   AppendOutput(OutputPanel,
+    'Erreur : compilateur PL/1 non trouve (PL1CW32.exe).',
+    Ord(OTK_BUILD));
+   Exit;
+  End;
+  CmdLine := CmdLine + ' ' + SourceFile;
+  AppendOutput(OutputPanel,
+   '------ Build started: ' + SourceFile + ' ------',
+   Ord(OTK_BUILD));
+  AppendOutput(OutputPanel, '> ' + CmdLine, Ord(OTK_BUILD));
+  ExitCode := ExecuteCompiler(CmdLine, TempFile);
+  ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
+  CleanupTempFile(TempFile);
+  If ExitCode = 0 Then Begin
+   AppendOutput(OutputPanel,
+    '========== Build: 1 succeeded, 0 failed ==========',
+    Ord(OTK_BUILD));
+   AppendOutput(OutputPanel,
+    'Execution de ' + ExeName + '...', Ord(OTK_BUILD));
+   {$IFDEF WINDOWS}
+   Exec(GetEnv('COMSPEC'), '/C ' + ExeName);
+   {$ELSE}
+   Exec('/bin/sh', '-c ./' + ExeName);
+   {$ENDIF}
+  End Else
+   AppendOutput(OutputPanel,
+    '========== Build: 0 succeeded, 1 failed ==========',
+    Ord(OTK_BUILD));
+ End
  Else If (Ext = '.awk') Then Begin
   { Compilation AWK }
   DetectAWKCompiler(AWKContext);
@@ -56367,6 +56668,7 @@ BEGIN
  InitPowerFXHighlighter(PowerFXHL);
  InitOberonHighlighter(OberonHL);
  InitPerlHighlighter(PerlHL);
+ InitPL1Highlighter(PL1HL);
  InitAsmHighlighter(AsmHL);
  InitJavaHighlighter(JavaHL);
  InitPythonHighlighter(PythonHL);
