@@ -55284,13 +55284,24 @@ Begin
    AppendOutput(OutputPanel,
     '========== Build: 1 succeeded, 0 failed ==========',
     Ord(OTK_BUILD));
-   AppendOutput(OutputPanel,
-    'Execution de ' + ExeName + '...', Ord(OTK_BUILD));
-   ClearOutput(OutputPanel, Ord(OTK_DEBUG));
-   ExitCode := ExecuteCompiler(ExeName, TempFile);
-   ReadOutputFile(TempFile, OutputPanel, Ord(OTK_DEBUG));
-   CleanupTempFile(TempFile);
-   SetActiveOutputTab(OutputPanel, OTK_DEBUG);
+   { Certains compilateurs COBOL placent l EXE dans le repertoire courant }
+   If Not FileExists(ExeName) And FileExists(BaseName + '.exe') Then
+    ExeName := BaseName + '.exe';
+   If FileExists(ExeName) Then Begin
+    AppendOutput(OutputPanel,
+     'Execution de ' + ExeName + '...', Ord(OTK_BUILD));
+    ClearOutput(OutputPanel, Ord(OTK_DEBUG));
+    ExitCode := ExecuteCompiler(ExeName, TempFile);
+    ReadOutputFile(TempFile, OutputPanel, Ord(OTK_DEBUG));
+    CleanupTempFile(TempFile);
+    SetActiveOutputTab(OutputPanel, OTK_DEBUG);
+   End Else Begin
+    AppendOutput(OutputPanel,
+     'Info : ' + BaseName +
+     '.exe non genere - sortie disponible dans Sortie de build.',
+     Ord(OTK_BUILD));
+    SetActiveOutputTab(OutputPanel, OTK_BUILD);
+   End;
   End Else
    AppendOutput(OutputPanel,
     '========== Build: 0 succeeded, 1 failed ==========',

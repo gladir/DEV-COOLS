@@ -1739,6 +1739,7 @@ Var
   SymCount         : Integer;
   SymInitialized   : Boolean;
   SymStateCount    : Integer;
+  SymDataOfs       : Array[0..MAX_SYM - 1] Of LongInt; { offset .data }
 
 { ------------------------------------------------------------ }
 { CobTypeName : nom textuel d un type COBOL                    }
@@ -1844,6 +1845,7 @@ Begin
     SymTab[I].Usage        := USG_DISPLAY;
     SymTab[I].IsExternal   := False;
     SymTab[I].IsFiller     := False;
+    SymDataOfs[I]          := -1;
   End;
 End;
 
@@ -4047,11 +4049,29 @@ Begin
           { IS (optionnel) }
           If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_IS) Then
             LexNextToken;
-          { Lire la chaine PICTURE }
-          If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Or
-             (CurTokType = TOK_INTEGER) Then Begin
-            PicStr := CurTokStr;
+          { Lire la chaine PICTURE : assembler X(20) en une seule chaine }
+          PicStr := '';
+          While (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Or
+                (CurTokType = TOK_INTEGER) Or (CurTokType = TOK_LPAREN) Or
+                (CurTokType = TOK_RPAREN) Do Begin
+            If CurTokType = TOK_LPAREN Then
+              PicStr := PicStr + '('
+            Else If CurTokType = TOK_RPAREN Then
+              PicStr := PicStr + ')'
+            Else
+              PicStr := PicStr + CurTokStr;
             LexNextToken;
+            { Arreter si espace avant le prochain token (chaine PIC finie) }
+            If (CurTokType = TOK_DOT) Or
+               ((CurTokType = TOK_KEYWORD) And
+                ((CurTokNum = KW_VALUE) Or (CurTokNum = KW_USAGE) Or
+                 (CurTokNum = KW_OCCURS) Or (CurTokNum = KW_REDEFINES) Or
+                 (CurTokNum = KW_COMP) Or (CurTokNum = KW_COMP_1) Or
+                 (CurTokNum = KW_COMP_2) Or (CurTokNum = KW_COMP_3) Or
+                 (CurTokNum = KW_BINARY) Or (CurTokNum = KW_BLANK) Or
+                 (CurTokNum = KW_SYNCHRONIZED) Or
+                 (CurTokNum = KW_JUSTIFIED) Or (CurTokNum = KW_SIGN))) Then
+              Break;
           End;
           HasPic      := True;
           IsGroupItem := False;
@@ -11973,6 +11993,31 @@ Begin
 End;
 
 { ============================================================ }
+{ Constantes et Forward pour generation de code binaire PE     }
+{ ============================================================ }
+
+Const
+  { Types de fixup supplementaires (resolus dans GenPeFile) }
+  PE_FIX_RDATA_OFS   = 5; { TargetRVA = offset dans .rdata }
+  PE_FIX_DATA_OFS    = 6; { TargetRVA = offset dans .data  }
+  { Offsets des entrees IAT dans la section .rdata }
+  RDATA_IAT_EXITPROC = 56;
+  RDATA_IAT_GETSTDH  = 60;
+  RDATA_IAT_WRITEFILE= 64;
+  CG_SECT_TEXT       = 1; { PE_SECT_TEXT pour appels AddPeFixup }
+
+Var
+  CgWrittenVarOfs : LongInt; { offset var 'written' dans .data pour WriteFile }
+
+{ Forward declarations pour helpers generation de code binaire }
+Function  AddPeFixup(AOffset, ATarget : LongInt; AType, ASect : Integer) : Integer; Forward;
+Procedure CgEmitByte(B : Byte); Forward;
+Procedure CgEmitDWord(D : LongInt); Forward;
+Function  CgHere : LongInt; Forward;
+Function  CgDatStr(Const S : TString) : LongInt; Forward;
+Function  CgDatAlloc(Count : Integer) : LongInt; Forward;
+
+{ ============================================================ }
 { TODO 15 - PARSEUR : ACCEPT ET DISPLAY (E/S CONSOLE)         }
 {           DISPLAY, ACCEPT, STOP RUN                          }
 { ============================================================ }
@@ -12163,16 +12208,30 @@ End;
 
 Procedure GenDisplayLiteral(S : TString);
 Var
-  LblStr : TString;
+  StrOfs, CodeOfs : LongInt;
 Begin
-  LblStr := GenAdsLabel;
-  WriteLn('; DISPLAY literal "', S, '"');
-  WriteLn('  lea esi, [', LblStr, ']');
-  WriteLn('  mov ecx, ', Length(S));
-  GenWriteConsole;
+  StrOfs := CgDatStr(S);
+  { GetStdHandle(-11) -> eax = hStdOut }
+  CgEmitByte($6A); CgEmitByte($F5); { push -11 }
+  CgEmitByte($FF); CgEmitByte($15); { call [IAT_GetStdHandle] }
+  CodeOfs := CgHere; CgEmitDWord(0);
+  AddPeFixup(CodeOfs, RDATA_IAT_GETSTDH, PE_FIX_RDATA_OFS, CG_SECT_TEXT);
+  { WriteFile(eax, StrAddr, StrLen, &written, 0) }
+  CgEmitByte($6A); CgEmitByte($00); { push 0 (lpOverlapped) }
+  CgEmitByte($68);
+  CodeOfs := CgHere; CgEmitDWord(0);
+  AddPeFixup(CodeOfs, CgWrittenVarOfs, PE_FIX_DATA_OFS, CG_SECT_TEXT);
+  CgEmitByte($68); CgEmitDWord(Length(S)); { push nNumberOfBytesToWrite }
+  CgEmitByte($68);
+  CodeOfs := CgHere; CgEmitDWord(0);
+  AddPeFixup(CodeOfs, StrOfs, PE_FIX_DATA_OFS, CG_SECT_TEXT);
+  CgEmitByte($50); { push eax (hFile) }
+  CgEmitByte($FF); CgEmitByte($15); { call [IAT_WriteFile] }
+  CodeOfs := CgHere; CgEmitDWord(0);
+  AddPeFixup(CodeOfs, RDATA_IAT_WRITEFILE, PE_FIX_RDATA_OFS, CG_SECT_TEXT);
   Inc(AdsDisplayLitCount);
   Inc(AdsDisplayOperands);
-  Inc(AdsTotalGenerated, 3);
+  Inc(AdsTotalGenerated);
 End;
 
 { ------------------------------------------------------------ }
@@ -12181,14 +12240,40 @@ End;
 { ------------------------------------------------------------ }
 
 Procedure GenDisplayIdent(Ident : TString; Size : Integer);
+Var
+  Idx, CodeOfs : LongInt;
+  DatOfs : LongInt;
 Begin
-  WriteLn('; DISPLAY ident ', Ident);
-  WriteLn('  lea esi, [', AsmIdent(Ident), ']');
-  WriteLn('  mov ecx, ', Size);
-  GenWriteConsole;
+  Idx := SymFind(Ident);
+  If Idx >= 0 Then
+  Begin
+    DatOfs := SymDataOfs[Idx];
+    If Size = 0 Then Size := SymTab[Idx].PicSize;
+  End
+  Else
+    DatOfs := 0;
+  If Size <= 0 Then Size := 1;
+  { GetStdHandle(-11) -> eax }
+  CgEmitByte($6A); CgEmitByte($F5);
+  CgEmitByte($FF); CgEmitByte($15);
+  CodeOfs := CgHere; CgEmitDWord(0);
+  AddPeFixup(CodeOfs, RDATA_IAT_GETSTDH, PE_FIX_RDATA_OFS, CG_SECT_TEXT);
+  { WriteFile(eax, DatOfs, Size, &written, 0) }
+  CgEmitByte($6A); CgEmitByte($00);
+  CgEmitByte($68);
+  CodeOfs := CgHere; CgEmitDWord(0);
+  AddPeFixup(CodeOfs, CgWrittenVarOfs, PE_FIX_DATA_OFS, CG_SECT_TEXT);
+  CgEmitByte($68); CgEmitDWord(Size);
+  CgEmitByte($68);
+  CodeOfs := CgHere; CgEmitDWord(0);
+  AddPeFixup(CodeOfs, DatOfs, PE_FIX_DATA_OFS, CG_SECT_TEXT);
+  CgEmitByte($50);
+  CgEmitByte($FF); CgEmitByte($15);
+  CodeOfs := CgHere; CgEmitDWord(0);
+  AddPeFixup(CodeOfs, RDATA_IAT_WRITEFILE, PE_FIX_RDATA_OFS, CG_SECT_TEXT);
   Inc(AdsDisplayIdCount);
   Inc(AdsDisplayOperands);
-  Inc(AdsTotalGenerated, 3);
+  Inc(AdsTotalGenerated);
 End;
 
 { ------------------------------------------------------------ }
@@ -12219,15 +12304,27 @@ End;
 
 Procedure GenDisplayCrLf;
 Var
-  LblCrLf : TString;
+  CrLfOfs, CodeOfs : LongInt;
 Begin
-  LblCrLf := GenAdsLabel;
-  WriteLn('; Retour a la ligne (CR+LF)');
-  WriteLn('  lea esi, [', LblCrLf, ']   ; CR+LF');
-  WriteLn('  mov ecx, 2');
-  GenWriteConsole;
+  CrLfOfs := CgDatStr(#13#10);
+  CgEmitByte($6A); CgEmitByte($F5);
+  CgEmitByte($FF); CgEmitByte($15);
+  CodeOfs := CgHere; CgEmitDWord(0);
+  AddPeFixup(CodeOfs, RDATA_IAT_GETSTDH, PE_FIX_RDATA_OFS, CG_SECT_TEXT);
+  CgEmitByte($6A); CgEmitByte($00);
+  CgEmitByte($68);
+  CodeOfs := CgHere; CgEmitDWord(0);
+  AddPeFixup(CodeOfs, CgWrittenVarOfs, PE_FIX_DATA_OFS, CG_SECT_TEXT);
+  CgEmitByte($68); CgEmitDWord(2); { nNumberOfBytesToWrite = 2 }
+  CgEmitByte($68);
+  CodeOfs := CgHere; CgEmitDWord(0);
+  AddPeFixup(CodeOfs, CrLfOfs, PE_FIX_DATA_OFS, CG_SECT_TEXT);
+  CgEmitByte($50);
+  CgEmitByte($FF); CgEmitByte($15);
+  CodeOfs := CgHere; CgEmitDWord(0);
+  AddPeFixup(CodeOfs, RDATA_IAT_WRITEFILE, PE_FIX_RDATA_OFS, CG_SECT_TEXT);
   Inc(AdsCrLfCount);
-  Inc(AdsTotalGenerated, 3);
+  Inc(AdsTotalGenerated);
 End;
 
 { ------------------------------------------------------------ }
@@ -12342,10 +12439,13 @@ End;
 { ------------------------------------------------------------ }
 
 Procedure GenStopRun;
+Var
+  CodeOfs : LongInt;
 Begin
-  WriteLn('; STOP RUN');
-  WriteLn('  push 0                 ; uExitCode');
-  WriteLn('  call _ExitProcess@4');
+  CgEmitByte($6A); CgEmitByte($00); { push 0 }
+  CgEmitByte($FF); CgEmitByte($15); { call [IAT_ExitProcess] }
+  CodeOfs := CgHere; CgEmitDWord(0);
+  AddPeFixup(CodeOfs, RDATA_IAT_EXITPROC, PE_FIX_RDATA_OFS, CG_SECT_TEXT);
   Inc(AdsStopRunCount);
   Inc(AdsTotalGenerated, 2);
 End;
@@ -12387,7 +12487,12 @@ Begin
   While (CurTokType <> TOK_DOT) And
         Not ((CurTokType = TOK_KEYWORD) And
              ((CurTokNum = KW_UPON) Or (CurTokNum = KW_WITH) Or
-              (CurTokNum = KW_END_DISPLAY))) Do
+              (CurTokNum = KW_END_DISPLAY) Or
+              (CurTokNum = KW_ELSE) Or (CurTokNum = KW_END_IF) Or
+              (CurTokNum = KW_STOP) Or (CurTokNum = KW_DISPLAY) Or
+              (CurTokNum = KW_MOVE) Or (CurTokNum = KW_ADD) Or
+              (CurTokNum = KW_COMPUTE) Or (CurTokNum = KW_IF) Or
+              (CurTokNum = KW_ACCEPT))) Do
   Begin
     If CurTokType = TOK_STRING Then Begin
       GenDisplayLiteral(CurTokStr);
@@ -12408,7 +12513,12 @@ Begin
     End
     Else If (CurTokType = TOK_KEYWORD) And
             Not ((CurTokNum = KW_UPON) Or (CurTokNum = KW_WITH) Or
-                 (CurTokNum = KW_END_DISPLAY)) Then Begin
+                 (CurTokNum = KW_END_DISPLAY) Or
+                 (CurTokNum = KW_ELSE) Or (CurTokNum = KW_END_IF) Or
+                 (CurTokNum = KW_STOP) Or (CurTokNum = KW_DISPLAY) Or
+                 (CurTokNum = KW_MOVE) Or (CurTokNum = KW_ADD) Or
+                 (CurTokNum = KW_COMPUTE) Or (CurTokNum = KW_IF) Or
+                 (CurTokNum = KW_ACCEPT)) Then Begin
       { Mot-cle figuratif comme SPACES, ZEROS, etc. }
       GenDisplayLiteral(CurTokStr);
       Inc(OperandCount);
@@ -13280,6 +13390,120 @@ Begin
   GenDeclarativesEnd;
 End;
 
+{ Forward declaration for mutual recursion }
+Procedure ParseProcStatement; Forward;
+
+{ ------------------------------------------------------------ }
+{ ParseIfStatementFull : IF cond THEN body [ELSE body] END-IF  }
+{ Skips condition tokens; parses THEN+ELSE bodies recursively. }
+{ Both branches execute (no condition eval yet) — good enough  }
+{ for a first working executable.                              }
+{ ------------------------------------------------------------ }
+
+Procedure ParseIfStatementFull;
+Begin
+  { IF already consumed; skip condition tokens until THEN or statement kw }
+  While Not LexEOF Do
+  Begin
+    If (CurTokType = TOK_KEYWORD) And
+       ((CurTokNum = KW_ELSE) Or (CurTokNum = KW_END_IF) Or
+        (CurTokNum = KW_DISPLAY) Or (CurTokNum = KW_MOVE) Or
+        (CurTokNum = KW_ADD) Or (CurTokNum = KW_COMPUTE) Or
+        (CurTokNum = KW_ACCEPT) Or (CurTokNum = KW_STOP)) Then
+      Break;
+    { THEN is not a keyword constant — check by string }
+    If (UpCaseStr(CurTokStr) = 'THEN') Then Break;
+    If CurTokType = TOK_DOT Then Break;
+    LexNextToken;
+  End;
+
+  { Consume optional THEN }
+  If (UpCaseStr(CurTokStr) = 'THEN') Then
+    LexNextToken;
+
+  { Parse THEN body }
+  While Not LexEOF Do
+  Begin
+    If (CurTokType = TOK_KEYWORD) And
+       ((CurTokNum = KW_ELSE) Or (CurTokNum = KW_END_IF)) Then Break;
+    If CurTokType = TOK_DOT Then Break;
+    ParseProcStatement;
+  End;
+
+  { Parse ELSE body }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ELSE) Then
+  Begin
+    LexNextToken;
+    While Not LexEOF Do
+    Begin
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END_IF) Then Break;
+      If CurTokType = TOK_DOT Then Break;
+      ParseProcStatement;
+    End;
+  End;
+
+  { Consume END-IF }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END_IF) Then
+    LexNextToken;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseProcStatement : dispatch one PROCEDURE DIVISION stmt    }
+{ ------------------------------------------------------------ }
+
+Procedure ParseProcStatement;
+Begin
+  If CurTokType = TOK_KEYWORD Then
+  Begin
+    Case CurTokNum Of
+      KW_DISPLAY, KW_ACCEPT:
+      Begin
+        ParseAcceptDisplayStatement;
+      End;
+      KW_MOVE:
+      Begin
+        LexNextToken;
+        ParseMoveStatement;
+      End;
+      KW_ADD:
+      Begin
+        LexNextToken;
+        ParseAddStatement;
+      End;
+      KW_COMPUTE:
+      Begin
+        LexNextToken;
+        ParseComputeStatement;
+      End;
+      KW_IF:
+      Begin
+        LexNextToken;
+        ParseIfStatementFull;
+      End;
+      KW_STOP:
+      Begin
+        LexNextToken;
+        { Consume RUN keyword if present }
+        If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_RUN) Then
+          LexNextToken;
+        GenStopRun;
+      End;
+    Else
+      { Unknown keyword — skip to avoid infinite loop }
+      LexNextToken;
+    End;
+  End
+  Else If CurTokType = TOK_IDENT Then
+  Begin
+    { Could be paragraph header or PERFORM target — skip for now }
+    LexNextToken;
+    If CurTokType = TOK_DOT Then
+      LexNextToken;
+  End
+  Else
+    LexNextToken;
+End;
+
 { ------------------------------------------------------------ }
 { ParseProcedureDivision : parser la PROCEDURE DIVISION         }
 { complete avec ses sections et paragraphes                     }
@@ -13302,14 +13526,22 @@ Begin
     ParseDeclaratives;
   End;
 
-  { Lire les sections et paragraphes }
+  { Lire les sections, paragraphes et instructions }
   While Not LexEOF Do Begin
     If (CurTokType = TOK_IDENT) Then Begin
+      { Could be paragraph name (followed by dot) or identifier in statement }
       ParseParagraphHeader;
     End Else If (CurTokType = TOK_KEYWORD) Then Begin
-      { Fin de la procedure division }
-      Break;
-    End Else
+      { Dispatch statement keywords; break only on division-level keywords }
+      Case CurTokNum Of
+        KW_DATA, KW_ENVIRONMENT, KW_IDENTIFICATION:
+          Break; { Back to top-level divisions }
+      Else
+        ParseProcStatement;
+      End;
+    End Else If (CurTokType = TOK_DOT) Then
+      LexNextToken { consume stray dots }
+    Else
       LexNextToken;
   End;
 
@@ -18392,6 +18624,104 @@ Begin
   Inc(PeFixupCount);
 End;
 
+{ ============================================================ }
+{ Code-gen helpers : emit bytes into PeCodeBuffer / PeDataBuffer }
+{ ============================================================ }
+
+Procedure CgEmitByte(B : Byte);
+Begin
+  If PeCodeSize < PE_MAX_CODE_SIZE Then
+  Begin
+    PeCodeBuffer[PeCodeSize] := B;
+    Inc(PeCodeSize);
+  End;
+End;
+
+Procedure CgEmitDWord(D : LongInt);
+Begin
+  CgEmitByte(D And $FF);
+  CgEmitByte((D Shr 8) And $FF);
+  CgEmitByte((D Shr 16) And $FF);
+  CgEmitByte((D Shr 24) And $FF);
+End;
+
+Function CgHere : LongInt;
+Begin
+  CgHere := PeCodeSize;
+End;
+
+Function CgDatStr(Const S : TString) : LongInt;
+Var
+  I : Integer;
+Begin
+  CgDatStr := PeDataSize;
+  For I := 1 To Length(S) Do
+  Begin
+    If PeDataSize < PE_MAX_DATA_SIZE Then
+    Begin
+      PeDataBuffer[PeDataSize] := Ord(S[I]);
+      Inc(PeDataSize);
+    End;
+  End;
+End;
+
+Function CgDatAlloc(Count : Integer) : LongInt;
+Var
+  I : Integer;
+Begin
+  CgDatAlloc := PeDataSize;
+  For I := 1 To Count Do
+  Begin
+    If PeDataSize < PE_MAX_DATA_SIZE Then
+    Begin
+      PeDataBuffer[PeDataSize] := 0;
+      Inc(PeDataSize);
+    End;
+  End;
+End;
+
+Procedure CgAllocDataSection;
+Begin
+  { Reserve 4 bytes in .data for the lpNumberOfBytesWritten variable }
+  CgWrittenVarOfs := CgDatAlloc(4);
+End;
+
+Procedure CgAllocWorkingStorage;
+Var
+  I, J : Integer;
+  Size : Integer;
+  Ofs  : LongInt;
+  V    : TString;
+  Ch   : Char;
+Begin
+  For I := 0 To SymCount - 1 Do
+  Begin
+    If (SymTab[I].Section = SEC_WORKING_STORAGE) And
+       (SymTab[I].PicSize > 0) And
+       (Not SymTab[I].IsGroup) Then
+    Begin
+      Size := SymTab[I].PicSize;
+      Ofs  := CgDatAlloc(Size);
+      SymDataOfs[I] := Ofs;
+
+      { Initialize with VALUE clause if present }
+      V := SymTab[I].Value;
+      If V <> '' Then
+      Begin
+        For J := 0 To Size - 1 Do
+        Begin
+          If J < Length(V) Then
+            Ch := V[J + 1]
+          Else
+            Ch := ' ';
+          If (Ofs + J) < PE_MAX_DATA_SIZE Then
+            PeDataBuffer[Ofs + J] := Ord(Ch);
+        End;
+      End;
+    End;
+  End;
+End;
+
 { ------------------------------------------------------------ }
 { GenDosHeader : generer le DOS Header (64 octets)             }
 { Signature MZ + champs DOS + offset vers PE Header            }
@@ -18802,11 +19132,15 @@ Var
   ImageSize    : LongInt;
   ImportRVA    : LongInt;
   ImportSize   : LongInt;
-  IltRVA       : LongInt;
-  IatRVA       : LongInt;
-  NameRVA      : LongInt;
-  HintRVA      : LongInt;
-  DllName      : TString;
+  { .rdata layout (128 bytes, 3 imports) }
+  IltRVA       : LongInt;  { offset 40 in .rdata }
+  IatRVA       : LongInt;  { offset 56 in .rdata (= RDATA_IAT_EXITPROC) }
+  NameRVA      : LongInt;  { offset 72 in .rdata = "kernel32.dll\0" }
+  HintExit     : LongInt;  { offset 86 = ExitProcess hint/name }
+  HintGetStdH  : LongInt;  { offset 100 = GetStdHandle hint/name }
+  HintWrite    : LongInt;  { offset 116 = WriteFile hint/name }
+  Target       : LongInt;
+  Offset       : LongInt;
   I            : LongInt;
 Begin
   FileMax := PE_MAX_CODE_SIZE + PE_MAX_DATA_SIZE;
@@ -18816,7 +19150,6 @@ Begin
 
   { Calculer la disposition des sections }
   PeHdrOffset := PE_DOS_HEADER_SIZE + PE_DOS_STUB_SIZE;
-  { Aligner PeHdrOffset sur 8 }
   PeHdrOffset := AlignUp(PeHdrOffset, 8);
   HeadersSize := PeHdrOffset + 4 + PE_COFF_HEADER_SIZE +
                  PE_OPT_HEADER_SIZE + (PE_NUM_SECTIONS * 40);
@@ -18827,33 +19160,72 @@ Begin
   TextRawSize := AlignUp(PeCodeSize, PE_FILE_ALIGN);
   If TextRawSize = 0 Then TextRawSize := PE_FILE_ALIGN;
 
-  RdataRVA     := TextRVA + AlignUp(PeCodeSize, PE_SEC_ALIGN);
+  RdataRVA := TextRVA + AlignUp(PeCodeSize, PE_SEC_ALIGN);
   If AlignUp(PeCodeSize, PE_SEC_ALIGN) = 0 Then
     RdataRVA := TextRVA + PE_SEC_ALIGN;
   RdataRawOfs  := TextRawOfs + TextRawSize;
-
-  { Calculer taille rdata : import directory (40) + ILT (8) + IAT (8) }
-  { + nom DLL (~16) + hint/name entries (~32) }
   RdataRawSize := AlignUp(128, PE_FILE_ALIGN);
 
-  DataRVA      := RdataRVA + AlignUp(128, PE_SEC_ALIGN);
+  DataRVA := RdataRVA + AlignUp(128, PE_SEC_ALIGN);
   If AlignUp(128, PE_SEC_ALIGN) = 0 Then
     DataRVA := RdataRVA + PE_SEC_ALIGN;
-  DataRawOfs   := RdataRawOfs + RdataRawSize;
-  DataRawSize  := AlignUp(PeDataSize, PE_FILE_ALIGN);
+  DataRawOfs  := RdataRawOfs + RdataRawSize;
+  DataRawSize := AlignUp(PeDataSize, PE_FILE_ALIGN);
   If DataRawSize = 0 Then DataRawSize := PE_FILE_ALIGN;
 
   ImageSize := DataRVA + AlignUp(PeDataSize, PE_SEC_ALIGN);
   If AlignUp(PeDataSize, PE_SEC_ALIGN) = 0 Then
     ImageSize := DataRVA + PE_SEC_ALIGN;
 
-  { Import Table RVA et taille (dans .rdata) }
+  { .rdata sub-offsets (fixed layout for 3 imports) }
+  IltRVA     := RdataRVA + 40;   { ILT: 4 entries }
+  IatRVA     := RdataRVA + 56;   { IAT: EXITPROC@56, GETSTDH@60, WRITEFILE@64 }
+  NameRVA    := RdataRVA + 72;   { "kernel32.dll\0" }
+  HintExit   := RdataRVA + 86;   { ExitProcess hint/name }
+  HintGetStdH:= RdataRVA + 100;  { GetStdHandle hint/name }
+  HintWrite  := RdataRVA + 116;  { WriteFile hint/name }
+
   ImportRVA  := RdataRVA;
-  ImportSize := 40; { 1 descriptor + null terminator }
+  ImportSize := 40; { 1 descriptor + null }
 
   PeEntryPointRVA := TextRVA;
 
-  { Resoudre les fixups avant l ecriture }
+  { Resoudre les fixups RDATA et DATA (section-relative -> absolute VA) }
+  For I := 0 To PeFixupCount - 1 Do
+  Begin
+    Offset := PeFixups[I].Offset;
+    If PeFixups[I].SectionIdx = CG_SECT_TEXT Then
+    Begin
+      Case PeFixups[I].FixupType Of
+        PE_FIX_RDATA_OFS:
+        Begin
+          Target := PeImageBase + RdataRVA + PeFixups[I].TargetRVA;
+          If Offset + 3 < PE_MAX_CODE_SIZE Then
+          Begin
+            PeCodeBuffer[Offset]     := Byte(Target And $FF);
+            PeCodeBuffer[Offset + 1] := Byte((Target Shr 8) And $FF);
+            PeCodeBuffer[Offset + 2] := Byte((Target Shr 16) And $FF);
+            PeCodeBuffer[Offset + 3] := Byte((Target Shr 24) And $FF);
+          End;
+          Inc(PeFixupResolvedCount);
+        End;
+        PE_FIX_DATA_OFS:
+        Begin
+          Target := PeImageBase + DataRVA + PeFixups[I].TargetRVA;
+          If Offset + 3 < PE_MAX_CODE_SIZE Then
+          Begin
+            PeCodeBuffer[Offset]     := Byte(Target And $FF);
+            PeCodeBuffer[Offset + 1] := Byte((Target Shr 8) And $FF);
+            PeCodeBuffer[Offset + 2] := Byte((Target Shr 16) And $FF);
+            PeCodeBuffer[Offset + 3] := Byte((Target Shr 24) And $FF);
+          End;
+          Inc(PeFixupResolvedCount);
+        End;
+      End;
+    End;
+  End;
+
+  { Resoudre les fixups standards (PE_FIX_ABSOLUTE, RELATIVE, IAT) }
   GenFixups;
 
   { === Generer le DOS Header === }
@@ -18863,17 +19235,13 @@ Begin
   FilePos := PE_DOS_HEADER_SIZE;
   GenDosStub(FileBuf, FilePos, FileMax);
 
-  { === Aligner sur PeHdrOffset === }
   FilePos := PeHdrOffset;
 
-  { === Generer la signature PE === }
   GenPeSignature(FileBuf, FilePos, FileMax);
 
-  { === Generer le COFF Header === }
   GenCoffHeader(FileBuf, FilePos, FileMax, PE_NUM_SECTIONS,
                 PE_OPT_HEADER_SIZE);
 
-  { === Generer l Optional Header === }
   GenOptionalHeader(FileBuf, FilePos, FileMax,
                     TextRawSize, RdataRawSize, DataRawSize,
                     PeEntryPointRVA,
@@ -18881,7 +19249,6 @@ Begin
                     ImageSize, HeadersSize,
                     ImportRVA, ImportSize);
 
-  { === Generer les Section Headers === }
   GenSectionHeader(FileBuf, FilePos, FileMax, '.text',
                    PeCodeSize, TextRVA, TextRawSize, TextRawOfs,
                    PE_SCN_CODE Or PE_SCN_EXEC Or PE_SCN_READ);
@@ -18893,54 +19260,66 @@ Begin
                    LongInt(PE_SCN_IDATA) Or LongInt(PE_SCN_READ) Or
                    LongInt(-2147483648));
 
-  { === Generer la section .text === }
+  { === Section .text === }
   FilePos := TextRawOfs;
   GenTextSection(FileBuf, FilePos, FileMax);
 
-  { === Generer la section .rdata (imports) === }
+  { === Section .rdata : 3 imports from kernel32.dll === }
   FilePos := RdataRawOfs;
 
-  { Calculer les RVAs relatifs dans .rdata }
-  { Import Directory commence au debut de .rdata }
-  { ILT apres le directory (40 octets) }
-  IltRVA  := RdataRVA + 40;
-  { IAT apres le ILT (8 octets = 1 thunk + null) }
-  IatRVA  := RdataRVA + 48;
-  { Nom de la DLL apres le IAT (8 octets) }
-  NameRVA := RdataRVA + 56;
-  DllName := 'kernel32.dll';
-  { Hint/Name entry apres le nom de DLL }
-  HintRVA := RdataRVA + 56 + LongInt(Length(DllName)) + 1;
-  { Aligner sur 2 }
-  If (HintRVA Mod 2) <> 0 Then Inc(HintRVA);
+  { Import Descriptor (20 bytes): ILT, timestamp=0, fwd=-1, name, IAT }
+  WritePeDWord(FileBuf, FilePos, FileMax, IltRVA);      { OriginalFirstThunk }
+  WritePeDWord(FileBuf, FilePos, FileMax, 0);           { TimeDateStamp }
+  WritePeDWord(FileBuf, FilePos, FileMax, LongInt(-1)); { ForwarderChain }
+  WritePeDWord(FileBuf, FilePos, FileMax, NameRVA);     { Name }
+  WritePeDWord(FileBuf, FilePos, FileMax, IatRVA);      { FirstThunk }
+  Inc(PeImportDirCount); Inc(PeStateCount);
 
-  { Generer l Import Directory }
-  GenImportDirectory(FileBuf, FilePos, FileMax,
-                     IltRVA, IatRVA, NameRVA);
+  { Null descriptor (20 bytes) }
+  WritePeBlock(FileBuf, FilePos, FileMax, 20, 0);
 
-  { Generer l ILT (Import Lookup Table) }
-  WritePeDWord(FileBuf, FilePos, FileMax, HintRVA);
-  WritePeDWord(FileBuf, FilePos, FileMax, 0); { terminateur }
+  { ILT (offset 40): 3 hint/name RVAs + terminator (16 bytes) }
+  WritePeDWord(FileBuf, FilePos, FileMax, HintExit);    { ExitProcess }
+  WritePeDWord(FileBuf, FilePos, FileMax, HintGetStdH); { GetStdHandle }
+  WritePeDWord(FileBuf, FilePos, FileMax, HintWrite);   { WriteFile }
+  WritePeDWord(FileBuf, FilePos, FileMax, 0);           { terminator }
 
-  { Generer l IAT (identique a l ILT avant chargement) }
-  GenImportAddressTable(FileBuf, FilePos, FileMax, HintRVA);
+  { IAT (offset 56): same as ILT before load (16 bytes) }
+  WritePeDWord(FileBuf, FilePos, FileMax, HintExit);    { [RDATA_IAT_EXITPROC] }
+  WritePeDWord(FileBuf, FilePos, FileMax, HintGetStdH); { [RDATA_IAT_GETSTDH] }
+  WritePeDWord(FileBuf, FilePos, FileMax, HintWrite);   { [RDATA_IAT_WRITEFILE] }
+  WritePeDWord(FileBuf, FilePos, FileMax, 0);           { terminator }
+  Inc(PeIatCount); Inc(PeStateCount);
 
-  { Nom de la DLL }
-  For I := 1 To Length(DllName) Do
-    WritePeByte(FileBuf, FilePos, FileMax, Ord(DllName[I]));
+  { DLL name "kernel32.dll\0" (offset 72, 14 bytes incl pad) }
+  WritePeByte(FileBuf, FilePos, FileMax, Ord('k'));
+  WritePeByte(FileBuf, FilePos, FileMax, Ord('e'));
+  WritePeByte(FileBuf, FilePos, FileMax, Ord('r'));
+  WritePeByte(FileBuf, FilePos, FileMax, Ord('n'));
+  WritePeByte(FileBuf, FilePos, FileMax, Ord('e'));
+  WritePeByte(FileBuf, FilePos, FileMax, Ord('l'));
+  WritePeByte(FileBuf, FilePos, FileMax, Ord('3'));
+  WritePeByte(FileBuf, FilePos, FileMax, Ord('2'));
+  WritePeByte(FileBuf, FilePos, FileMax, Ord('.'));
+  WritePeByte(FileBuf, FilePos, FileMax, Ord('d'));
+  WritePeByte(FileBuf, FilePos, FileMax, Ord('l'));
+  WritePeByte(FileBuf, FilePos, FileMax, Ord('l'));
   WritePeByte(FileBuf, FilePos, FileMax, 0);
+  WritePeByte(FileBuf, FilePos, FileMax, 0); { alignment pad to 14 }
 
-  { Aligner sur 2 pour Hint/Name }
-  If (FilePos Mod 2) <> 0 Then
-    WritePeByte(FileBuf, FilePos, FileMax, 0);
-
-  { Hint/Name entry pour ExitProcess }
+  { Hint/Name: ExitProcess (offset 86, 14 bytes) }
   GenHintNameEntry(FileBuf, FilePos, FileMax, 0, 'ExitProcess');
 
-  { Padding du reste de .rdata }
+  { Hint/Name: GetStdHandle (offset 100, 16 bytes) }
+  GenHintNameEntry(FileBuf, FilePos, FileMax, 0, 'GetStdHandle');
+
+  { Hint/Name: WriteFile (offset 116, 12 bytes) }
+  GenHintNameEntry(FileBuf, FilePos, FileMax, 0, 'WriteFile');
+
+  { Pad to end of raw rdata }
   FilePos := RdataRawOfs + RdataRawSize;
 
-  { === Generer la section .data === }
+  { === Section .data === }
   FilePos := DataRawOfs;
   GenDataSection(FileBuf, FilePos, FileMax);
 
@@ -22944,6 +23323,9 @@ Begin
   { Initialiser le module Optimisations et Tests finaux }
   InitOptimizeState;
 
+  { Reserver la variable lpNumberOfBytesWritten dans .data }
+  CgAllocDataSection;
+
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
 
@@ -22965,6 +23347,7 @@ Begin
         KW_DATA : Begin
           LexNextToken;  { Avancer apres DATA }
           ParseDataDivision;
+          CgAllocWorkingStorage; { allouer les variables WS dans .data }
         End;
         KW_PROCEDURE : Begin
           ParseProcedureDivision;
@@ -22988,6 +23371,10 @@ Begin
 
   { Resultats detailles du parsing }
   ShowParseResults;
+
+  { Generer le fichier PE32 executable }
+  If (PeCodeSize > 0) And (Opts.OutFile <> '') Then
+    GenPeFile(Opts.OutFile);
 
   { Nettoyage }
   Cleanup;
