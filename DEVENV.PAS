@@ -53234,11 +53234,11 @@ Begin
     Ord(OTK_BUILD));
    AppendOutput(OutputPanel,
     'Execution de ' + ExeName + '...', Ord(OTK_BUILD));
-   {$IFDEF WINDOWS}
-   Exec(GetEnv('COMSPEC'), '/C ' + ExeName);
-   {$ELSE}
-   Exec('/bin/sh', '-c ./' + ExeName);
-   {$ENDIF}
+   ClearOutput(OutputPanel, Ord(OTK_DEBUG));
+   ExitCode := ExecuteCompiler(ExeName, TempFile);
+   ReadOutputFile(TempFile, OutputPanel, Ord(OTK_DEBUG));
+   CleanupTempFile(TempFile);
+   SetActiveOutputTab(OutputPanel, OTK_DEBUG);
   End Else
    AppendOutput(OutputPanel,
     '========== Build: 0 succeeded, 1 failed ==========',
@@ -53267,11 +53267,11 @@ Begin
     Ord(OTK_BUILD));
    AppendOutput(OutputPanel,
     'Execution de ' + ExeName + '...', Ord(OTK_BUILD));
-   {$IFDEF WINDOWS}
-   Exec(GetEnv('COMSPEC'), '/C ' + ExeName);
-   {$ELSE}
-   Exec('/bin/sh', '-c ./' + ExeName);
-   {$ENDIF}
+   ClearOutput(OutputPanel, Ord(OTK_DEBUG));
+   ExitCode := ExecuteCompiler(ExeName, TempFile);
+   ReadOutputFile(TempFile, OutputPanel, Ord(OTK_DEBUG));
+   CleanupTempFile(TempFile);
+   SetActiveOutputTab(OutputPanel, OTK_DEBUG);
   End Else
    AppendOutput(OutputPanel,
     '========== Build: 0 succeeded, 1 failed ==========',
@@ -53431,11 +53431,11 @@ Begin
     AppendOutput(OutputPanel,
      'Execution de ' + ExeName + '...',
      Ord(OTK_BUILD));
-    {$IFDEF WINDOWS}
-    Exec(GetEnv('COMSPEC'), '/C ' + ExeName);
-    {$ELSE}
-    Exec('/bin/sh', '-c ./' + ExeName);
-    {$ENDIF}
+    ClearOutput(OutputPanel, Ord(OTK_DEBUG));
+    ExitCode := ExecuteCompiler(ExeName, TempFile);
+    ReadOutputFile(TempFile, OutputPanel, Ord(OTK_DEBUG));
+    CleanupTempFile(TempFile);
+    SetActiveOutputTab(OutputPanel, OTK_DEBUG);
    End Else
     AppendOutput(OutputPanel,
      '========== Build: 0 succeeded, 1 failed ==========',
@@ -53466,11 +53466,11 @@ Begin
     Ord(OTK_BUILD));
    AppendOutput(OutputPanel,
     'Execution de ' + ExeName + '...', Ord(OTK_BUILD));
-   {$IFDEF WINDOWS}
-   Exec(GetEnv('COMSPEC'), '/C ' + ExeName);
-   {$ELSE}
-   Exec('/bin/sh', '-c ./' + ExeName);
-   {$ENDIF}
+   ClearOutput(OutputPanel, Ord(OTK_DEBUG));
+   ExitCode := ExecuteCompiler(ExeName, TempFile);
+   ReadOutputFile(TempFile, OutputPanel, Ord(OTK_DEBUG));
+   CleanupTempFile(TempFile);
+   SetActiveOutputTab(OutputPanel, OTK_DEBUG);
   End Else
    AppendOutput(OutputPanel,
     '========== Build: 0 succeeded, 1 failed ==========',
@@ -53499,11 +53499,11 @@ Begin
     Ord(OTK_BUILD));
    AppendOutput(OutputPanel,
     'Execution de ' + ExeName + '...', Ord(OTK_BUILD));
-   {$IFDEF WINDOWS}
-   Exec(GetEnv('COMSPEC'), '/C ' + ExeName);
-   {$ELSE}
-   Exec('/bin/sh', '-c ./' + ExeName);
-   {$ENDIF}
+   ClearOutput(OutputPanel, Ord(OTK_DEBUG));
+   ExitCode := ExecuteCompiler(ExeName, TempFile);
+   ReadOutputFile(TempFile, OutputPanel, Ord(OTK_DEBUG));
+   CleanupTempFile(TempFile);
+   SetActiveOutputTab(OutputPanel, OTK_DEBUG);
   End Else
    AppendOutput(OutputPanel,
     '========== Build: 0 succeeded, 1 failed ==========',
@@ -53532,11 +53532,11 @@ Begin
     Ord(OTK_BUILD));
    AppendOutput(OutputPanel,
     'Execution de ' + ExeName + '...', Ord(OTK_BUILD));
-   {$IFDEF WINDOWS}
-   Exec(GetEnv('COMSPEC'), '/C ' + ExeName);
-   {$ELSE}
-   Exec('/bin/sh', '-c ./' + ExeName);
-   {$ENDIF}
+   ClearOutput(OutputPanel, Ord(OTK_DEBUG));
+   ExitCode := ExecuteCompiler(ExeName, TempFile);
+   ReadOutputFile(TempFile, OutputPanel, Ord(OTK_DEBUG));
+   CleanupTempFile(TempFile);
+   SetActiveOutputTab(OutputPanel, OTK_DEBUG);
   End Else
    AppendOutput(OutputPanel,
     '========== Build: 0 succeeded, 1 failed ==========',
@@ -53565,11 +53565,11 @@ Begin
     Ord(OTK_BUILD));
    AppendOutput(OutputPanel,
     'Execution de ' + ExeName + '...', Ord(OTK_BUILD));
-   {$IFDEF WINDOWS}
-   Exec(GetEnv('COMSPEC'), '/C ' + ExeName);
-   {$ELSE}
-   Exec('/bin/sh', '-c ./' + ExeName);
-   {$ENDIF}
+   ClearOutput(OutputPanel, Ord(OTK_DEBUG));
+   ExitCode := ExecuteCompiler(ExeName, TempFile);
+   ReadOutputFile(TempFile, OutputPanel, Ord(OTK_DEBUG));
+   CleanupTempFile(TempFile);
+   SetActiveOutputTab(OutputPanel, OTK_DEBUG);
   End Else
    AppendOutput(OutputPanel,
     '========== Build: 0 succeeded, 1 failed ==========',
@@ -53598,11 +53598,11 @@ Begin
     Ord(OTK_BUILD));
    AppendOutput(OutputPanel,
     'Execution de ' + ExeName + '...', Ord(OTK_BUILD));
-   {$IFDEF WINDOWS}
-   Exec(GetEnv('COMSPEC'), '/C ' + ExeName);
-   {$ELSE}
-   Exec('/bin/sh', '-c ./' + ExeName);
-   {$ENDIF}
+   ClearOutput(OutputPanel, Ord(OTK_DEBUG));
+   ExitCode := ExecuteCompiler(ExeName, TempFile);
+   ReadOutputFile(TempFile, OutputPanel, Ord(OTK_DEBUG));
+   CleanupTempFile(TempFile);
+   SetActiveOutputTab(OutputPanel, OTK_DEBUG);
   End Else
    AppendOutput(OutputPanel,
     '========== Build: 0 succeeded, 1 failed ==========',
@@ -53631,11 +53631,11 @@ Begin
     Ord(OTK_BUILD));
    AppendOutput(OutputPanel,
     'Execution de ' + ExeName + '...', Ord(OTK_BUILD));
-   {$IFDEF WINDOWS}
-   Exec(GetEnv('COMSPEC'), '/C ' + ExeName);
-   {$ELSE}
-   Exec('/bin/sh', '-c ./' + ExeName);
-   {$ENDIF}
+   ClearOutput(OutputPanel, Ord(OTK_DEBUG));
+   ExitCode := ExecuteCompiler(ExeName, TempFile);
+   ReadOutputFile(TempFile, OutputPanel, Ord(OTK_DEBUG));
+   CleanupTempFile(TempFile);
+   SetActiveOutputTab(OutputPanel, OTK_DEBUG);
   End Else
    AppendOutput(OutputPanel,
     '========== Build: 0 succeeded, 1 failed ==========',
@@ -53664,11 +53664,11 @@ Begin
     Ord(OTK_BUILD));
    AppendOutput(OutputPanel,
     'Execution de ' + ExeName + '...', Ord(OTK_BUILD));
-   {$IFDEF WINDOWS}
-   Exec(GetEnv('COMSPEC'), '/C ' + ExeName);
-   {$ELSE}
-   Exec('/bin/sh', '-c ./' + ExeName);
-   {$ENDIF}
+   ClearOutput(OutputPanel, Ord(OTK_DEBUG));
+   ExitCode := ExecuteCompiler(ExeName, TempFile);
+   ReadOutputFile(TempFile, OutputPanel, Ord(OTK_DEBUG));
+   CleanupTempFile(TempFile);
+   SetActiveOutputTab(OutputPanel, OTK_DEBUG);
   End Else
    AppendOutput(OutputPanel,
     '========== Build: 0 succeeded, 1 failed ==========',
@@ -53759,11 +53759,11 @@ Begin
    { Lancer l executable }
    AppendOutput(OutputPanel, 'Execution de ' + ExeName + '...',
     Ord(OTK_BUILD));
-   {$IFDEF WINDOWS}
-   Exec(GetEnv('COMSPEC'), '/C ' + ExeName);
-   {$ELSE}
-   Exec('/bin/sh', '-c ./' + ExeName);
-   {$ENDIF}
+   ClearOutput(OutputPanel, Ord(OTK_DEBUG));
+   ExitCode := ExecuteCompiler(ExeName, TempFile);
+   ReadOutputFile(TempFile, OutputPanel, Ord(OTK_DEBUG));
+   CleanupTempFile(TempFile);
+   SetActiveOutputTab(OutputPanel, OTK_DEBUG);
   End;
  End Else Begin
   AppendOutput(OutputPanel,
