@@ -1059,6 +1059,9 @@ Const
  { Coloration syntaxique Lua }
  MAX_LUA_KEYWORDS      = 22;      { mots-cles reserves Lua 5.x     }
 
+ { Coloration syntaxique X++ (Dynamics AX / D365 F&O) }
+ MAX_XPP_KEYWORDS      = 80;      { mots-cles X++                  }
+
  { Coloration syntaxique Assembleur x86 }
  MAX_ASM_KEYWORDS      = 127;    { nombre de mnemoniques ASM      }
 
@@ -1867,6 +1870,13 @@ Type
  TLuaHighlighter = Record
   Base         : TSyntaxHighlighter;  { moteur de base              }
   Keywords     : Array[0..MAX_LUA_KEYWORDS - 1] Of String[10];
+  KeywordCount : Integer;             { nombre de mots-cles         }
+ End;
+
+ { Coloration syntaxique specialisee X++ }
+ TXppHighlighter = Record
+  Base         : TSyntaxHighlighter;  { moteur de base              }
+  Keywords     : Array[0..MAX_XPP_KEYWORDS - 1] Of String[20];
   KeywordCount : Integer;             { nombre de mots-cles         }
  End;
 
@@ -3268,6 +3278,8 @@ Var
  AWKHL        : TAWKHighlighter;
  { Coloration syntaxique Lua }
  LuaHL        : TLuaHighlighter;
+ { Coloration syntaxique X++ }
+ XppHL        : TXppHighlighter;
  { Coloration syntaxique Assembleur x86 }
  AsmHL        : TAsmHighlighter;
  { Coloration syntaxique Java }
@@ -9210,6 +9222,12 @@ Procedure HighlightLuaLine(Var HL: TLuaHighlighter;
                            Line: String;
                            Var Colors: Array Of Byte); Forward;
 
+{ --- Declaration anticipee de HighlightXppLine --- }
+
+Procedure HighlightXppLine(Var HL: TXppHighlighter;
+                           Line: String;
+                           Var Colors: Array Of Byte); Forward;
+
 { --- Declaration anticipee de HighlightAsmLine --- }
 
 Procedure HighlightAsmLine(Var HL: TAsmHighlighter;
@@ -9280,6 +9298,7 @@ Var
  IsVBNet: Boolean;
  IsVB6: Boolean;
  IsLua: Boolean;
+ IsXpp: Boolean;
  IsAda: Boolean;
  IsAbap: Boolean;
  IsAWK: Boolean;
@@ -9302,6 +9321,7 @@ Begin
  IsVBNet := (Ext = '.VB');
  IsVB6   := (Ext = '.BAS');
  IsLua   := (Ext = '.LUA');
+ IsXpp   := (Ext = '.XPP');
  IsAda := (Ext = '.ADB') Or (Ext = '.ADS') Or (Ext = '.ADA');
  IsAbap := (Ext = '.ABAP') Or (Ext = '.ABP');
  IsAWK := (Ext = '.AWK');
@@ -9359,6 +9379,9 @@ Begin
    Else If IsLua And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
     HighlightLuaLine(LuaHL, FullLine, Colors)
+   Else If IsXpp And (Length(FullLine) > 0) And
+      (Length(FullLine) <= 255) Then
+    HighlightXppLine(XppHL, FullLine, Colors)
    Else If IsAda And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
     HighlightAdaLine(AdaHL, FullLine, Colors)
@@ -13848,6 +13871,271 @@ Begin
  While Pos <= Len Do Begin
   Start := Pos;
   TC := GetLuaTokenClass(HL, Line, Pos);
+  Clr := Byte(TokenClassToColor(TC));
+  For I := Start To Pos - 1 Do
+   If (I >= 1) And (I <= Len) Then
+    Colors[I - 1] := Clr;
+ End;
+End;
+
+{ ============================================================
+  COLORATION SYNTAXIQUE X++ (Dynamics AX / D365 F&O)
+  ============================================================ }
+
+{ --- Mots-cles X++ --- }
+
+Procedure InitXppKeywords(Var HL: TXppHighlighter);
+Begin
+ HL.KeywordCount   := MAX_XPP_KEYWORDS;
+ HL.Keywords[0]    := 'abstract';
+ HL.Keywords[1]    := 'anytype';
+ HL.Keywords[2]    := 'as';
+ HL.Keywords[3]    := 'at';
+ HL.Keywords[4]    := 'boolean';
+ HL.Keywords[5]    := 'break';
+ HL.Keywords[6]    := 'by';
+ HL.Keywords[7]    := 'byref';
+ HL.Keywords[8]    := 'case';
+ HL.Keywords[9]    := 'catch';
+ HL.Keywords[10]   := 'changecompany';
+ HL.Keywords[11]   := 'class';
+ HL.Keywords[12]   := 'client';
+ HL.Keywords[13]   := 'container';
+ HL.Keywords[14]   := 'continue';
+ HL.Keywords[15]   := 'date';
+ HL.Keywords[16]   := 'default';
+ HL.Keywords[17]   := 'delegate';
+ HL.Keywords[18]   := 'delete';
+ HL.Keywords[19]   := 'delete_from';
+ HL.Keywords[20]   := 'display';
+ HL.Keywords[21]   := 'div';
+ HL.Keywords[22]   := 'do';
+ HL.Keywords[23]   := 'edit';
+ HL.Keywords[24]   := 'else';
+ HL.Keywords[25]   := 'eventhandler';
+ HL.Keywords[26]   := 'exists';
+ HL.Keywords[27]   := 'extends';
+ HL.Keywords[28]   := 'false';
+ HL.Keywords[29]   := 'final';
+ HL.Keywords[30]   := 'finally';
+ HL.Keywords[31]   := 'firstfast';
+ HL.Keywords[32]   := 'firstonly';
+ HL.Keywords[33]   := 'flush';
+ HL.Keywords[34]   := 'for';
+ HL.Keywords[35]   := 'forceliterals';
+ HL.Keywords[36]   := 'forcenested';
+ HL.Keywords[37]   := 'forceplaceholders';
+ HL.Keywords[38]   := 'forceselectorder';
+ HL.Keywords[39]   := 'from';
+ HL.Keywords[40]   := 'group';
+ HL.Keywords[41]   := 'guid';
+ HL.Keywords[42]   := 'having';
+ HL.Keywords[43]   := 'if';
+ HL.Keywords[44]   := 'implements';
+ HL.Keywords[45]   := 'insert';
+ HL.Keywords[46]   := 'insert_recordset';
+ HL.Keywords[47]   := 'int';
+ HL.Keywords[48]   := 'int64';
+ HL.Keywords[49]   := 'interface';
+ HL.Keywords[50]   := 'is';
+ HL.Keywords[51]   := 'join';
+ HL.Keywords[52]   := 'like';
+ HL.Keywords[53]   := 'mod';
+ HL.Keywords[54]   := 'new';
+ HL.Keywords[55]   := 'next';
+ HL.Keywords[56]   := 'notexists';
+ HL.Keywords[57]   := 'null';
+ HL.Keywords[58]   := 'order';
+ HL.Keywords[59]   := 'outer';
+ HL.Keywords[60]   := 'pause';
+ HL.Keywords[61]   := 'print';
+ HL.Keywords[62]   := 'private';
+ HL.Keywords[63]   := 'protected';
+ HL.Keywords[64]   := 'public';
+ HL.Keywords[65]   := 'real';
+ HL.Keywords[66]   := 'retry';
+ HL.Keywords[67]   := 'return';
+ HL.Keywords[68]   := 'select';
+ HL.Keywords[69]   := 'server';
+ HL.Keywords[70]   := 'static';
+ HL.Keywords[71]   := 'str';
+ HL.Keywords[72]   := 'super';
+ HL.Keywords[73]   := 'switch';
+ HL.Keywords[74]   := 'this';
+ HL.Keywords[75]   := 'throw';
+ HL.Keywords[76]   := 'true';
+ HL.Keywords[77]   := 'try';
+ HL.Keywords[78]   := 'ttsabort';
+ HL.Keywords[79]   := 'ttsbegin';
+End;
+
+{ --- Initialiser le moteur de coloration X++ --- }
+
+Procedure InitXppHighlighter(Var HL: TXppHighlighter);
+Begin
+ InitHighlighter(HL.Base, 'X++');
+ InitXppKeywords(HL);
+End;
+
+{ --- Verifier si un mot est un mot-cle X++ --- }
+
+Function IsXppKeyword(Var HL: TXppHighlighter; Word: String): Boolean;
+Var I: Integer;
+Begin
+ IsXppKeyword := False;
+ For I := 0 To HL.KeywordCount - 1 Do
+  If Word = HL.Keywords[I] Then Begin
+   IsXppKeyword := True;
+   Exit;
+  End;
+End;
+
+{ --- Verifier si un identifiant est une fonction integree X++ --- }
+
+Function IsXppBuiltin(Word: String): Boolean;
+Begin
+ IsXppBuiltin :=
+  (Word = 'info')       Or (Word = 'error')      Or (Word = 'warning')   Or
+  (Word = 'checkFailed')Or (Word = 'checkFix')   Or (Word = 'setPrefix') Or
+  (Word = 'Global')     Or (Word = 'classNum')   Or (Word = 'tableNum')  Or
+  (Word = 'fieldNum')   Or (Word = 'typeOf')     Or (Word = 'element')   Or
+  (Word = 'conLen')     Or (Word = 'conPeek')    Or (Word = 'conPoke')   Or
+  (Word = 'conDel')     Or (Word = 'conIns')     Or (Word = 'conFind')   Or
+  (Word = 'strLen')     Or (Word = 'strLwr')     Or (Word = 'strUpr')    Or
+  (Word = 'strFind')    Or (Word = 'subStr')     Or (Word = 'strFmt')    Or
+  (Word = 'int2Str')    Or (Word = 'str2Int')    Or (Word = 'real2Str')  Or
+  (Word = 'str2Real')   Or (Word = 'any2Str')    Or (Word = 'any2Int')   Or
+  (Word = 'any2Real')   Or (Word = 'any2Date')   Or (Word = 'mkDate')    Or
+  (Word = 'dayOfWk')    Or (Word = 'dayOfMth')   Or (Word = 'mthOfYr')   Or
+  (Word = 'year')       Or (Word = 'today')      Or (Word = 'systemDateGet') Or
+  (Word = 'max')        Or (Word = 'min')        Or (Word = 'abs');
+End;
+
+{ --- Obtenir la classe de jeton X++ a une position --- }
+
+Function GetXppTokenClass(Var HL: TXppHighlighter;
+                          Line: String;
+                          Var Pos: Integer): TTokenClass;
+Var
+ StartPos, Len: Integer;
+ Ch: Char;
+ Word: String;
+Begin
+ Len := Length(Line);
+ GetXppTokenClass := TC_NORMAL;
+ If Pos > Len Then Exit;
+
+ Ch := Line[Pos];
+
+ { Espaces }
+ If (Ch = ' ') Or (Ch = #9) Then Begin
+  While (Pos <= Len) And ((Line[Pos] = ' ') Or (Line[Pos] = #9)) Do
+   Inc(Pos);
+  GetXppTokenClass := TC_NORMAL;
+  Exit;
+ End;
+
+ { Commentaire // jusqu a fin de ligne }
+ If (Ch = '/') And (Pos < Len) And (Line[Pos + 1] = '/') Then Begin
+  Pos := Len + 1;
+  GetXppTokenClass := TC_COMMENT;
+  Exit;
+ End;
+
+ { Commentaire bloc /* ... */ (partie visible sur la ligne) }
+ If (Ch = '/') And (Pos < Len) And (Line[Pos + 1] = '*') Then Begin
+  Inc(Pos, 2);
+  While Pos < Len Do Begin
+   If (Line[Pos] = '*') And (Line[Pos + 1] = '/') Then Begin
+    Inc(Pos, 2);
+    Break;
+   End;
+   Inc(Pos);
+  End;
+  GetXppTokenClass := TC_COMMENT;
+  Exit;
+ End;
+
+ { Chaine "..." avec echappement \ }
+ If Ch = '"' Then Begin
+  Inc(Pos);
+  While (Pos <= Len) And (Line[Pos] <> '"') Do Begin
+   If (Line[Pos] = '\') And (Pos < Len) Then Inc(Pos, 2)
+   Else Inc(Pos);
+  End;
+  If Pos <= Len Then Inc(Pos);
+  GetXppTokenClass := TC_STRING;
+  Exit;
+ End;
+
+ { Chaine '@"..."' litterale (verbatim) }
+ If (Ch = '@') And (Pos < Len) And (Line[Pos + 1] = '"') Then Begin
+  Inc(Pos, 2);
+  While (Pos <= Len) And (Line[Pos] <> '"') Do Inc(Pos);
+  If Pos <= Len Then Inc(Pos);
+  GetXppTokenClass := TC_STRING;
+  Exit;
+ End;
+
+ { Nombre hexadecimal 0x... }
+ If (Ch = '0') And (Pos < Len) And
+    ((Line[Pos + 1] = 'x') Or (Line[Pos + 1] = 'X')) Then Begin
+  Inc(Pos, 2);
+  While (Pos <= Len) And
+        (((Line[Pos] >= '0') And (Line[Pos] <= '9')) Or
+         ((Line[Pos] >= 'a') And (Line[Pos] <= 'f')) Or
+         ((Line[Pos] >= 'A') And (Line[Pos] <= 'F'))) Do
+   Inc(Pos);
+  GetXppTokenClass := TC_NUMBER;
+  Exit;
+ End;
+
+ { Nombre decimal / reel }
+ If IsDigitChar(Ch) Then Begin
+  While (Pos <= Len) And IsDigitChar(Line[Pos]) Do Inc(Pos);
+  If (Pos <= Len) And (Line[Pos] = '.') Then Begin
+   Inc(Pos);
+   While (Pos <= Len) And IsDigitChar(Line[Pos]) Do Inc(Pos);
+  End;
+  GetXppTokenClass := TC_NUMBER;
+  Exit;
+ End;
+
+ { Identifiant ou mot-cle }
+ If IsAlphaUS(Ch) Then Begin
+  StartPos := Pos;
+  While (Pos <= Len) And (IsAlphaUS(Line[Pos]) Or
+        IsDigitChar(Line[Pos])) Do
+   Inc(Pos);
+  Word := Copy(Line, StartPos, Pos - StartPos);
+  If IsXppBuiltin(Word) Then GetXppTokenClass := TC_TYPE
+  Else If IsXppKeyword(HL, Word) Then GetXppTokenClass := TC_KEYWORD
+  Else GetXppTokenClass := TC_IDENTIFIER;
+  Exit;
+ End;
+
+ { Operateur ou ponctuation }
+ Inc(Pos);
+ GetXppTokenClass := TC_OPERATOR;
+End;
+
+{ --- Colorier une ligne X++ entiere --- }
+
+Procedure HighlightXppLine(Var HL: TXppHighlighter;
+                           Line: String;
+                           Var Colors: Array Of Byte);
+Var
+ Pos, Start, I, Len: Integer;
+ TC: TTokenClass;
+ Clr: Byte;
+Begin
+ Len := Length(Line);
+ For I := 0 To Len - 1 Do
+  Colors[I] := Byte(TokenClassToColor(TC_NORMAL));
+ Pos := 1;
+ While Pos <= Len Do Begin
+  Start := Pos;
+  TC := GetXppTokenClass(HL, Line, Pos);
   Clr := Byte(TokenClassToColor(TC));
   For I := Start To Pos - 1 Do
    If (I >= 1) And (I <= Len) Then
@@ -51872,6 +52160,39 @@ Begin
     '========== Build: 0 succeeded, 1 failed ==========',
     Ord(OTK_BUILD));
  End
+ Else If (Ext = '.xpp') Then Begin
+  { Compilation X++ -> XPPCW32.exe }
+  CmdLine := FindCompiler('XPPCW32');
+  If CmdLine = '' Then Begin
+   AppendOutput(OutputPanel,
+    'Erreur : compilateur X++ non trouve (XPPCW32.exe).',
+    Ord(OTK_BUILD));
+   Exit;
+  End;
+  CmdLine := CmdLine + ' ' + SourceFile;
+  AppendOutput(OutputPanel,
+   '------ Build started: ' + SourceFile + ' ------',
+   Ord(OTK_BUILD));
+  AppendOutput(OutputPanel, '> ' + CmdLine, Ord(OTK_BUILD));
+  ExitCode := ExecuteCompiler(CmdLine, TempFile);
+  ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
+  CleanupTempFile(TempFile);
+  If ExitCode = 0 Then Begin
+   AppendOutput(OutputPanel,
+    '========== Build: 1 succeeded, 0 failed ==========',
+    Ord(OTK_BUILD));
+   AppendOutput(OutputPanel,
+    'Execution de ' + ExeName + '...', Ord(OTK_BUILD));
+   {$IFDEF WINDOWS}
+   Exec(GetEnv('COMSPEC'), '/C ' + ExeName);
+   {$ELSE}
+   Exec('/bin/sh', '-c ./' + ExeName);
+   {$ENDIF}
+  End Else
+   AppendOutput(OutputPanel,
+    '========== Build: 0 succeeded, 1 failed ==========',
+    Ord(OTK_BUILD));
+ End
  Else If (Ext = '.awk') Then Begin
   { Compilation AWK }
   DetectAWKCompiler(AWKContext);
@@ -55195,6 +55516,7 @@ BEGIN
  InitAbapHighlighter(AbapHL);
  InitAWKHighlighter(AWKHL);
  InitLuaHighlighter(LuaHL);
+ InitXppHighlighter(XppHL);
  InitAsmHighlighter(AsmHL);
  InitJavaHighlighter(JavaHL);
  InitPythonHighlighter(PythonHL);
