@@ -9164,6 +9164,12 @@ Procedure HighlightCSharpLine(Var HL: TCSharpHighlighter;
                               Line: String;
                               Var Colors: Array Of Byte); Forward;
 
+{ --- Declaration anticipee de HighlightVBNetLine --- }
+
+Procedure HighlightVBNetLine(Var HL: TVBNetHighlighter;
+                             Line: String;
+                             Var Colors: Array Of Byte); Forward;
+
 { --- Declaration anticipee de HighlightAdaLine --- }
 
 Procedure HighlightAdaLine(Var HL: TAdaHighlighter;
@@ -9249,6 +9255,7 @@ Var
  IsPascal: Boolean;
  IsC: Boolean;
  IsCSharp: Boolean;
+ IsVBNet: Boolean;
  IsAda: Boolean;
  IsAbap: Boolean;
  IsAWK: Boolean;
@@ -9268,6 +9275,7 @@ Begin
              (Ext = '.DPR') Or (Ext = '.LPR');
  IsC := (Ext = '.C') Or (Ext = '.H');
  IsCSharp := (Ext = '.CS');
+ IsVBNet := (Ext = '.VB') Or (Ext = '.BAS');
  IsAda := (Ext = '.ADB') Or (Ext = '.ADS') Or (Ext = '.ADA');
  IsAbap := (Ext = '.ABAP') Or (Ext = '.ABP');
  IsAWK := (Ext = '.AWK');
@@ -9316,6 +9324,9 @@ Begin
    Else If IsCSharp And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
     HighlightCSharpLine(CSharpHL, FullLine, Colors)
+   Else If IsVBNet And (Length(FullLine) > 0) And
+      (Length(FullLine) <= 255) Then
+    HighlightVBNetLine(VBNetHL, FullLine, Colors)
    Else If IsAda And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
     HighlightAdaLine(AdaHL, FullLine, Colors)
@@ -51225,8 +51236,8 @@ Begin
    Exit;
   End;
  End
- Else If (Ext = '.vb') Then Begin
-  { Compilation VB.NET }
+ Else If (Ext = '.vb') Or (Ext = '.bas') Then Begin
+  { Compilation VB.NET / Visual Basic 6 }
   DetectVBCCompiler(VBCContext);
   If VBCContext.CompilerFound Then Begin
    CmdLine := VBCContext.CompilerPath + ' ' + SourceFile;
@@ -51238,9 +51249,25 @@ Begin
    ExitCode := ExecuteCompiler(CmdLine, TempFile);
    ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
    CleanupTempFile(TempFile);
+   If ExitCode = 0 Then Begin
+    AppendOutput(OutputPanel,
+     '========== Build: 1 succeeded, 0 failed ==========',
+     Ord(OTK_BUILD));
+    AppendOutput(OutputPanel,
+     'Execution de ' + ExeName + '...',
+     Ord(OTK_BUILD));
+    {$IFDEF WINDOWS}
+    Exec(GetEnv('COMSPEC'), '/C ' + ExeName);
+    {$ELSE}
+    Exec('/bin/sh', '-c ./' + ExeName);
+    {$ENDIF}
+   End Else
+    AppendOutput(OutputPanel,
+     '========== Build: 0 succeeded, 1 failed ==========',
+     Ord(OTK_BUILD));
   End Else Begin
    AppendOutput(OutputPanel,
-    'Erreur : compilateur VB.NET non trouve.',
+    'Erreur : compilateur VB non trouve (VBCW32.exe).',
     Ord(OTK_BUILD));
    Exit;
   End;
