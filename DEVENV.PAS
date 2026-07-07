@@ -1077,6 +1077,9 @@ Const
  { Coloration syntaxique PHP }
  MAX_PHP_KEYWORDS      = 50;      { mots-cles reserves PHP            }
 
+ { Coloration syntaxique Rust }
+ MAX_RUST_KEYWORDS     = 40;      { mots-cles reserves Rust           }
+
  { Coloration syntaxique Assembleur x86 }
  MAX_ASM_KEYWORDS      = 127;    { nombre de mnemoniques ASM      }
 
@@ -1927,6 +1930,13 @@ Type
  TPHPHighlighter = Record
   Base         : TSyntaxHighlighter;  { moteur de base              }
   Keywords     : Array[0..MAX_PHP_KEYWORDS - 1] Of String[14];
+  KeywordCount : Integer;             { nombre de mots-cles         }
+ End;
+
+ { Coloration syntaxique specialisee Rust }
+ TRustHighlighter = Record
+  Base         : TSyntaxHighlighter;  { moteur de base              }
+  Keywords     : Array[0..MAX_RUST_KEYWORDS - 1] Of String[12];
   KeywordCount : Integer;             { nombre de mots-cles         }
  End;
 
@@ -3340,6 +3350,8 @@ Var
  PL1HL        : TPL1Highlighter;
  { Coloration syntaxique PHP }
  PHPHL        : TPHPHighlighter;
+ { Coloration syntaxique Rust }
+ RustHL       : TRustHighlighter;
  { Coloration syntaxique Assembleur x86 }
  AsmHL        : TAsmHighlighter;
  { Coloration syntaxique Java }
@@ -9318,6 +9330,12 @@ Procedure HighlightPHPLine(Var HL: TPHPHighlighter;
                            Line: String;
                            Var Colors: Array Of Byte); Forward;
 
+{ --- Declaration anticipee de HighlightRustLine --- }
+
+Procedure HighlightRustLine(Var HL: TRustHighlighter;
+                            Line: String;
+                            Var Colors: Array Of Byte); Forward;
+
 { --- Declaration anticipee de HighlightAsmLine --- }
 
 Procedure HighlightAsmLine(Var HL: TAsmHighlighter;
@@ -9394,6 +9412,7 @@ Var
  IsPerl: Boolean;
  IsPL1: Boolean;
  IsPHP: Boolean;
+ IsRust: Boolean;
  IsAda: Boolean;
  IsAbap: Boolean;
  IsAWK: Boolean;
@@ -9422,6 +9441,7 @@ Begin
  IsPerl     := (Ext = '.PL') Or (Ext = '.PM') Or (Ext = '.PLS');
  IsPL1      := (Ext = '.PLI') Or (Ext = '.PL1');
  IsPHP      := (Ext = '.PHP') Or (Ext = '.PHP5') Or (Ext = '.PHTML');
+ IsRust     := (Ext = '.RS');
  IsAda := (Ext = '.ADB') Or (Ext = '.ADS') Or (Ext = '.ADA');
  IsAbap := (Ext = '.ABAP') Or (Ext = '.ABP');
  IsAWK := (Ext = '.AWK');
@@ -9497,6 +9517,9 @@ Begin
    Else If IsPHP And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
     HighlightPHPLine(PHPHL, FullLine, Colors)
+   Else If IsRust And (Length(FullLine) > 0) And
+      (Length(FullLine) <= 255) Then
+    HighlightRustLine(RustHL, FullLine, Colors)
    Else If IsAda And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
     HighlightAdaLine(AdaHL, FullLine, Colors)
@@ -15452,6 +15475,244 @@ Begin
  While Pos <= Len Do Begin
   Start := Pos;
   TC := GetPHPTokenClass(HL, Line, Pos);
+  Clr := Byte(TokenClassToColor(TC));
+  For I := Start To Pos - 1 Do
+   If (I >= 1) And (I <= Len) Then
+    Colors[I - 1] := Clr;
+ End;
+End;
+
+{ ============================================================
+  COLORATION SYNTAXIQUE RUST
+  ============================================================ }
+
+{ --- Initialiser les mots-cles Rust --- }
+
+Procedure InitRustKeywords(Var HL: TRustHighlighter);
+Begin
+ HL.KeywordCount := MAX_RUST_KEYWORDS;
+ HL.Keywords[0]  := 'as';
+ HL.Keywords[1]  := 'async';
+ HL.Keywords[2]  := 'await';
+ HL.Keywords[3]  := 'break';
+ HL.Keywords[4]  := 'const';
+ HL.Keywords[5]  := 'continue';
+ HL.Keywords[6]  := 'crate';
+ HL.Keywords[7]  := 'dyn';
+ HL.Keywords[8]  := 'else';
+ HL.Keywords[9]  := 'enum';
+ HL.Keywords[10] := 'extern';
+ HL.Keywords[11] := 'false';
+ HL.Keywords[12] := 'fn';
+ HL.Keywords[13] := 'for';
+ HL.Keywords[14] := 'if';
+ HL.Keywords[15] := 'impl';
+ HL.Keywords[16] := 'in';
+ HL.Keywords[17] := 'let';
+ HL.Keywords[18] := 'loop';
+ HL.Keywords[19] := 'match';
+ HL.Keywords[20] := 'mod';
+ HL.Keywords[21] := 'move';
+ HL.Keywords[22] := 'mut';
+ HL.Keywords[23] := 'pub';
+ HL.Keywords[24] := 'ref';
+ HL.Keywords[25] := 'return';
+ HL.Keywords[26] := 'self';
+ HL.Keywords[27] := 'Self';
+ HL.Keywords[28] := 'static';
+ HL.Keywords[29] := 'struct';
+ HL.Keywords[30] := 'super';
+ HL.Keywords[31] := 'trait';
+ HL.Keywords[32] := 'true';
+ HL.Keywords[33] := 'type';
+ HL.Keywords[34] := 'unsafe';
+ HL.Keywords[35] := 'use';
+ HL.Keywords[36] := 'where';
+ HL.Keywords[37] := 'while';
+ HL.Keywords[38] := 'yield';
+ HL.Keywords[39] := 'abstract';
+End;
+
+{ --- Initialiser le highlighter Rust --- }
+
+Procedure InitRustHighlighter(Var HL: TRustHighlighter);
+Begin
+ HL.Base.InBlockComment := False;
+ InitRustKeywords(HL);
+End;
+
+{ --- Tester si un mot est un mot-cle Rust --- }
+
+Function IsRustKeyword(Var HL: TRustHighlighter;
+ Word: String): Boolean;
+Var I: Integer;
+Begin
+ IsRustKeyword := False;
+ For I := 0 To HL.KeywordCount - 1 Do
+  If HL.Keywords[I] = Word Then Begin
+   IsRustKeyword := True;
+   Exit;
+  End;
+End;
+
+{ --- Tester si un mot est un type/builtin Rust --- }
+
+Function IsRustBuiltin(Word: String): Boolean;
+Begin
+ IsRustBuiltin :=
+  (Word = 'i8')     Or (Word = 'i16')    Or (Word = 'i32')  Or
+  (Word = 'i64')    Or (Word = 'i128')   Or (Word = 'u8')   Or
+  (Word = 'u16')    Or (Word = 'u32')    Or (Word = 'u64')  Or
+  (Word = 'u128')   Or (Word = 'f32')    Or (Word = 'f64')  Or
+  (Word = 'isize')  Or (Word = 'usize')  Or (Word = 'bool') Or
+  (Word = 'char')   Or (Word = 'str')    Or (Word = 'String') Or
+  (Word = 'Vec')    Or (Word = 'Option') Or (Word = 'Result') Or
+  (Word = 'Box')    Or (Word = 'Rc')     Or (Word = 'Arc')  Or
+  (Word = 'Some')   Or (Word = 'None')   Or (Word = 'Ok')   Or
+  (Word = 'Err')    Or (Word = 'Drop')   Or (Word = 'Clone') Or
+  (Word = 'Copy')   Or (Word = 'Send')   Or (Word = 'Sync');
+End;
+
+{ --- Determiner la classe de token Rust --- }
+
+Function GetRustTokenClass(Var HL: TRustHighlighter;
+ Line: String; Var Pos: Integer): TTokenClass;
+Var
+ Len, Start: Integer;
+ Ch, Ch2: Char;
+ Word: String;
+Begin
+ Len := Length(Line);
+ Ch := Line[Pos];
+ { Commentaire de bloc /* ... */ }
+ If HL.Base.InBlockComment Then Begin
+  While Pos <= Len Do Begin
+   If (Line[Pos] = '*') And (Pos < Len) And (Line[Pos+1] = '/') Then Begin
+    Inc(Pos, 2);
+    HL.Base.InBlockComment := False;
+    GetRustTokenClass := TC_COMMENT;
+    Exit;
+   End;
+   Inc(Pos);
+  End;
+  GetRustTokenClass := TC_COMMENT;
+  Exit;
+ End;
+ { Commentaire de ligne // }
+ If (Ch = '/') And (Pos < Len) And (Line[Pos+1] = '/') Then Begin
+  Pos := Len + 1;
+  GetRustTokenClass := TC_COMMENT;
+  Exit;
+ End;
+ { Debut de commentaire de bloc /* }
+ If (Ch = '/') And (Pos < Len) And (Line[Pos+1] = '*') Then Begin
+  Inc(Pos, 2);
+  HL.Base.InBlockComment := True;
+  While Pos <= Len Do Begin
+   If (Line[Pos] = '*') And (Pos < Len) And (Line[Pos+1] = '/') Then Begin
+    Inc(Pos, 2);
+    HL.Base.InBlockComment := False;
+    GetRustTokenClass := TC_COMMENT;
+    Exit;
+   End;
+   Inc(Pos);
+  End;
+  GetRustTokenClass := TC_COMMENT;
+  Exit;
+ End;
+ { Chaine de caracteres "..." }
+ If Ch = '"' Then Begin
+  Inc(Pos);
+  While Pos <= Len Do Begin
+   Ch2 := Line[Pos];
+   Inc(Pos);
+   If Ch2 = '\' Then Begin
+    If Pos <= Len Then Inc(Pos);
+   End Else If Ch2 = '"' Then Break;
+  End;
+  GetRustTokenClass := TC_STRING;
+  Exit;
+ End;
+ { Caractere '...' }
+ If Ch = '''' Then Begin
+  Inc(Pos);
+  While Pos <= Len Do Begin
+   Ch2 := Line[Pos];
+   Inc(Pos);
+   If Ch2 = '\' Then Begin
+    If Pos <= Len Then Inc(Pos);
+   End Else If Ch2 = '''' Then Break;
+  End;
+  GetRustTokenClass := TC_STRING;
+  Exit;
+ End;
+ { Nombre : 0x hex, 0b bin, 0o oct, decimal }
+ If IsDigitChar(Ch) Then Begin
+  Inc(Pos);
+  If (Ch = '0') And (Pos <= Len) And
+     ((Line[Pos] = 'x') Or (Line[Pos] = 'X') Or
+      (Line[Pos] = 'b') Or (Line[Pos] = 'B') Or
+      (Line[Pos] = 'o') Or (Line[Pos] = 'O')) Then Inc(Pos);
+  While (Pos <= Len) And
+   (IsDigitChar(Line[Pos]) Or (Line[Pos] = '_') Or
+    (Line[Pos] = '.') Or
+    ((Line[Pos] >= 'a') And (Line[Pos] <= 'f')) Or
+    ((Line[Pos] >= 'A') And (Line[Pos] <= 'F'))) Do Inc(Pos);
+  GetRustTokenClass := TC_NUMBER;
+  Exit;
+ End;
+ { Identifiant ou mot-cle }
+ If IsAlphaUS(Ch) Then Begin
+  Start := Pos;
+  Inc(Pos);
+  While (Pos <= Len) And (IsAlphaUS(Line[Pos]) Or IsDigitChar(Line[Pos])) Do
+   Inc(Pos);
+  { Macro Rust : identifiant suivi de ! }
+  If (Pos <= Len) And (Line[Pos] = '!') Then Begin
+   Inc(Pos);
+   GetRustTokenClass := TC_TYPE;
+   Exit;
+  End;
+  Word := Copy(Line, Start, Pos - Start);
+  If IsRustBuiltin(Word) Then
+   GetRustTokenClass := TC_TYPE
+  Else If IsRustKeyword(HL, Word) Then
+   GetRustTokenClass := TC_KEYWORD
+  Else
+   GetRustTokenClass := TC_IDENTIFIER;
+  Exit;
+ End;
+ { Operateur }
+ If (Ch = '+') Or (Ch = '-') Or (Ch = '*') Or (Ch = '/') Or
+    (Ch = '=') Or (Ch = '<') Or (Ch = '>') Or (Ch = '!') Or
+    (Ch = '&') Or (Ch = '|') Or (Ch = '^') Or (Ch = '%') Or
+    (Ch = '~') Or (Ch = '@') Or (Ch = '#') Then Begin
+  Inc(Pos);
+  GetRustTokenClass := TC_OPERATOR;
+  Exit;
+ End;
+ { Caractere normal }
+ Inc(Pos);
+ GetRustTokenClass := TC_NORMAL;
+End;
+
+{ --- Colorier une ligne Rust --- }
+
+Procedure HighlightRustLine(Var HL: TRustHighlighter;
+                            Line: String;
+                            Var Colors: Array Of Byte);
+Var
+ Pos, Start, I, Len: Integer;
+ TC: TTokenClass;
+ Clr: Byte;
+Begin
+ Len := Length(Line);
+ For I := 0 To Len - 1 Do
+  Colors[I] := Byte(TokenClassToColor(TC_NORMAL));
+ Pos := 1;
+ While Pos <= Len Do Begin
+  Start := Pos;
+  TC := GetRustTokenClass(HL, Line, Pos);
   Clr := Byte(TokenClassToColor(TC));
   For I := Start To Pos - 1 Do
    If (I >= 1) And (I <= Len) Then
@@ -53641,6 +53902,39 @@ Begin
     '========== Build: 0 succeeded, 1 failed ==========',
     Ord(OTK_BUILD));
  End
+ Else If (Ext = '.rs') Then Begin
+  { Compilation Rust -> RUSTCW32.exe }
+  CmdLine := FindCompiler('RUSTCW32');
+  If CmdLine = '' Then Begin
+   AppendOutput(OutputPanel,
+    'Erreur : compilateur Rust non trouve (RUSTCW32.exe).',
+    Ord(OTK_BUILD));
+   Exit;
+  End;
+  CmdLine := CmdLine + ' ' + SourceFile;
+  AppendOutput(OutputPanel,
+   '------ Build started: ' + SourceFile + ' ------',
+   Ord(OTK_BUILD));
+  AppendOutput(OutputPanel, '> ' + CmdLine, Ord(OTK_BUILD));
+  ExitCode := ExecuteCompiler(CmdLine, TempFile);
+  ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
+  CleanupTempFile(TempFile);
+  If ExitCode = 0 Then Begin
+   AppendOutput(OutputPanel,
+    '========== Build: 1 succeeded, 0 failed ==========',
+    Ord(OTK_BUILD));
+   AppendOutput(OutputPanel,
+    'Execution de ' + ExeName + '...', Ord(OTK_BUILD));
+   ClearOutput(OutputPanel, Ord(OTK_DEBUG));
+   ExitCode := ExecuteCompiler(ExeName, TempFile);
+   ReadOutputFile(TempFile, OutputPanel, Ord(OTK_DEBUG));
+   CleanupTempFile(TempFile);
+   SetActiveOutputTab(OutputPanel, OTK_DEBUG);
+  End Else
+   AppendOutput(OutputPanel,
+    '========== Build: 0 succeeded, 1 failed ==========',
+    Ord(OTK_BUILD));
+ End
  Else If (Ext = '.php') Or (Ext = '.php5') Or (Ext = '.phtml') Then Begin
   { Compilation PHP -> PHPCW32.exe }
   CmdLine := FindCompiler('PHPCW32');
@@ -57009,6 +57303,7 @@ BEGIN
  InitPerlHighlighter(PerlHL);
  InitPL1Highlighter(PL1HL);
  InitPHPHighlighter(PHPHL);
+ InitRustHighlighter(RustHL);
  InitAsmHighlighter(AsmHL);
  InitJavaHighlighter(JavaHL);
  InitPythonHighlighter(PythonHL);
