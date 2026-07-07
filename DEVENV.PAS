@@ -20929,6 +20929,19 @@ Begin
     Exp.NeedRepaint := True;
    End;
   End;
+ End
+ Else If (Ev.Kind = EV_KEY_CHAR) And (Ev.KeyChar = #13) Then Begin
+  { Entree : ouvrir le fichier ou basculer le noeud }
+  If (Exp.SelectedIdx >= 0) And
+     (Exp.SelectedIdx < Exp.NodeCount) Then Begin
+   If Exp.Nodes[Exp.SelectedIdx].Kind In
+    [ENK_FILE_CS, ENK_FILE_VB, ENK_FILE_PAS,
+     ENK_FILE_OTHER] Then
+    OpenExplorerFileNode(Exp, Exp.SelectedIdx)
+   Else
+    ToggleNode(Exp, Exp.SelectedIdx);
+   Exp.NeedRepaint := True;
+  End;
  End;
  { Ajuster le defilement pour garder le noeud selectionne visible. }
  If (Exp.SelectedIdx >= 0) And (Exp.SelectedIdx < Exp.NodeCount) And
