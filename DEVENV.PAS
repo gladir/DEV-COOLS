@@ -1056,6 +1056,9 @@ Const
  { Coloration syntaxique AWK }
  MAX_AWK_KEYWORDS      = 36;      { nombre de mots-cles AWK        }
 
+ { Coloration syntaxique Lua }
+ MAX_LUA_KEYWORDS      = 22;      { mots-cles reserves Lua 5.x     }
+
  { Coloration syntaxique Assembleur x86 }
  MAX_ASM_KEYWORDS      = 127;    { nombre de mnemoniques ASM      }
 
@@ -1857,6 +1860,13 @@ Type
  TAWKHighlighter = Record
   Base         : TSyntaxHighlighter;  { moteur de base              }
   Keywords     : Array[0..MAX_AWK_KEYWORDS - 1] Of String[15];
+  KeywordCount : Integer;             { nombre de mots-cles         }
+ End;
+
+ { Coloration syntaxique specialisee Lua }
+ TLuaHighlighter = Record
+  Base         : TSyntaxHighlighter;  { moteur de base              }
+  Keywords     : Array[0..MAX_LUA_KEYWORDS - 1] Of String[10];
   KeywordCount : Integer;             { nombre de mots-cles         }
  End;
 
@@ -3256,6 +3266,8 @@ Var
  AbapHL       : TAbapHighlighter;
  { Coloration syntaxique AWK }
  AWKHL        : TAWKHighlighter;
+ { Coloration syntaxique Lua }
+ LuaHL        : TLuaHighlighter;
  { Coloration syntaxique Assembleur x86 }
  AsmHL        : TAsmHighlighter;
  { Coloration syntaxique Java }
@@ -9192,6 +9204,12 @@ Procedure HighlightAWKLine(Var HL: TAWKHighlighter;
                            Line: String;
                            Var Colors: Array Of Byte); Forward;
 
+{ --- Declaration anticipee de HighlightLuaLine --- }
+
+Procedure HighlightLuaLine(Var HL: TLuaHighlighter;
+                           Line: String;
+                           Var Colors: Array Of Byte); Forward;
+
 { --- Declaration anticipee de HighlightAsmLine --- }
 
 Procedure HighlightAsmLine(Var HL: TAsmHighlighter;
@@ -9261,6 +9279,7 @@ Var
  IsCSharp: Boolean;
  IsVBNet: Boolean;
  IsVB6: Boolean;
+ IsLua: Boolean;
  IsAda: Boolean;
  IsAbap: Boolean;
  IsAWK: Boolean;
@@ -9282,6 +9301,7 @@ Begin
  IsCSharp := (Ext = '.CS');
  IsVBNet := (Ext = '.VB');
  IsVB6   := (Ext = '.BAS');
+ IsLua   := (Ext = '.LUA');
  IsAda := (Ext = '.ADB') Or (Ext = '.ADS') Or (Ext = '.ADA');
  IsAbap := (Ext = '.ABAP') Or (Ext = '.ABP');
  IsAWK := (Ext = '.AWK');
@@ -9336,6 +9356,9 @@ Begin
    Else If IsVB6 And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
     HighlightVBNetLine(VB6HL, FullLine, Colors)
+   Else If IsLua And (Length(FullLine) > 0) And
+      (Length(FullLine) <= 255) Then
+    HighlightLuaLine(LuaHL, FullLine, Colors)
    Else If IsAda And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
     HighlightAdaLine(AdaHL, FullLine, Colors)
@@ -13615,6 +13638,220 @@ Begin
    If (I >= 1) And (I <= Len) Then
     Colors[I - 1] := Clr;
   End;
+ End;
+End;
+
+{ ============================================================
+  COLORATION SYNTAXIQUE LUA
+  ============================================================ }
+
+{ --- Mots-cles reserves Lua 5.x --- }
+
+Procedure InitLuaKeywords(Var HL: TLuaHighlighter);
+Begin
+ HL.KeywordCount  := MAX_LUA_KEYWORDS;
+ HL.Keywords[0]   := 'and';
+ HL.Keywords[1]   := 'break';
+ HL.Keywords[2]   := 'do';
+ HL.Keywords[3]   := 'else';
+ HL.Keywords[4]   := 'elseif';
+ HL.Keywords[5]   := 'end';
+ HL.Keywords[6]   := 'false';
+ HL.Keywords[7]   := 'for';
+ HL.Keywords[8]   := 'function';
+ HL.Keywords[9]   := 'goto';
+ HL.Keywords[10]  := 'if';
+ HL.Keywords[11]  := 'in';
+ HL.Keywords[12]  := 'local';
+ HL.Keywords[13]  := 'nil';
+ HL.Keywords[14]  := 'not';
+ HL.Keywords[15]  := 'or';
+ HL.Keywords[16]  := 'repeat';
+ HL.Keywords[17]  := 'return';
+ HL.Keywords[18]  := 'then';
+ HL.Keywords[19]  := 'true';
+ HL.Keywords[20]  := 'until';
+ HL.Keywords[21]  := 'while';
+End;
+
+{ --- Initialiser le moteur de coloration Lua --- }
+
+Procedure InitLuaHighlighter(Var HL: TLuaHighlighter);
+Begin
+ InitHighlighter(HL.Base, 'Lua');
+ InitLuaKeywords(HL);
+End;
+
+{ --- Verifier si un mot est un mot-cle Lua --- }
+
+Function IsLuaKeyword(Var HL: TLuaHighlighter; Word: String): Boolean;
+Var I: Integer;
+Begin
+ IsLuaKeyword := False;
+ For I := 0 To HL.KeywordCount - 1 Do
+  If Word = HL.Keywords[I] Then Begin
+   IsLuaKeyword := True;
+   Exit;
+  End;
+End;
+
+{ --- Verifier si un identifiant est une fonction integree Lua --- }
+
+Function IsLuaBuiltin(Word: String): Boolean;
+Begin
+ IsLuaBuiltin :=
+  (Word = 'print')     Or (Word = 'type')      Or (Word = 'tostring')  Or
+  (Word = 'tonumber')  Or (Word = 'pairs')      Or (Word = 'ipairs')    Or
+  (Word = 'next')      Or (Word = 'error')      Or (Word = 'assert')    Or
+  (Word = 'pcall')     Or (Word = 'xpcall')     Or (Word = 'require')   Or
+  (Word = 'load')      Or (Word = 'loadfile')   Or (Word = 'dofile')    Or
+  (Word = 'rawget')    Or (Word = 'rawset')     Or (Word = 'rawequal')  Or
+  (Word = 'rawlen')    Or (Word = 'select')     Or (Word = 'unpack')    Or
+  (Word = 'setmetatable') Or (Word = 'getmetatable') Or
+  (Word = 'table')     Or (Word = 'string')     Or (Word = 'math')      Or
+  (Word = 'io')        Or (Word = 'os')         Or (Word = 'coroutine') Or
+  (Word = 'package')   Or (Word = 'collectgarbage') Or
+  (Word = 'warn')      Or (Word = 'utf8');
+End;
+
+{ --- Obtenir la classe de jeton Lua a une position --- }
+
+Function GetLuaTokenClass(Var HL: TLuaHighlighter;
+                          Line: String;
+                          Var Pos: Integer): TTokenClass;
+Var
+ StartPos, Len: Integer;
+ Ch: Char;
+ Word: String;
+Begin
+ Len := Length(Line);
+ GetLuaTokenClass := TC_NORMAL;
+ If Pos > Len Then Exit;
+
+ Ch := Line[Pos];
+
+ { Espaces }
+ If (Ch = ' ') Or (Ch = #9) Then Begin
+  While (Pos <= Len) And ((Line[Pos] = ' ') Or (Line[Pos] = #9)) Do
+   Inc(Pos);
+  GetLuaTokenClass := TC_NORMAL;
+  Exit;
+ End;
+
+ { Commentaire Lua : -- jusqu a fin de ligne (simple ou bloc --[[ }
+ If (Ch = '-') And (Pos < Len) And (Line[Pos + 1] = '-') Then Begin
+  Pos := Len + 1;
+  GetLuaTokenClass := TC_COMMENT;
+  Exit;
+ End;
+
+ { Chaine "..." avec echappement \ }
+ If Ch = '"' Then Begin
+  Inc(Pos);
+  While (Pos <= Len) And (Line[Pos] <> '"') Do Begin
+   If (Line[Pos] = '\') And (Pos < Len) Then Inc(Pos, 2)
+   Else Inc(Pos);
+  End;
+  If Pos <= Len Then Inc(Pos);
+  GetLuaTokenClass := TC_STRING;
+  Exit;
+ End;
+
+ { Chaine '...' avec echappement \ }
+ If Ch = '''' Then Begin
+  Inc(Pos);
+  While (Pos <= Len) And (Line[Pos] <> '''') Do Begin
+   If (Line[Pos] = '\') And (Pos < Len) Then Inc(Pos, 2)
+   Else Inc(Pos);
+  End;
+  If Pos <= Len Then Inc(Pos);
+  GetLuaTokenClass := TC_STRING;
+  Exit;
+ End;
+
+ { Chaine longue [[ ... ]] (une ligne visible) }
+ If (Ch = '[') And (Pos < Len) And (Line[Pos + 1] = '[') Then Begin
+  Inc(Pos, 2);
+  While Pos < Len Do Begin
+   If (Line[Pos] = ']') And (Line[Pos + 1] = ']') Then Begin
+    Inc(Pos, 2);
+    Break;
+   End;
+   Inc(Pos);
+  End;
+  GetLuaTokenClass := TC_STRING;
+  Exit;
+ End;
+
+ { Nombre hexadecimal 0x... }
+ If (Ch = '0') And (Pos < Len) And
+    ((Line[Pos + 1] = 'x') Or (Line[Pos + 1] = 'X')) Then Begin
+  Inc(Pos, 2);
+  While (Pos <= Len) And
+        (((Line[Pos] >= '0') And (Line[Pos] <= '9')) Or
+         ((Line[Pos] >= 'a') And (Line[Pos] <= 'f')) Or
+         ((Line[Pos] >= 'A') And (Line[Pos] <= 'F'))) Do
+   Inc(Pos);
+  GetLuaTokenClass := TC_NUMBER;
+  Exit;
+ End;
+
+ { Nombre decimal / flottant }
+ If IsDigitChar(Ch) Then Begin
+  While (Pos <= Len) And IsDigitChar(Line[Pos]) Do Inc(Pos);
+  If (Pos <= Len) And (Line[Pos] = '.') Then Begin
+   Inc(Pos);
+   While (Pos <= Len) And IsDigitChar(Line[Pos]) Do Inc(Pos);
+  End;
+  If (Pos <= Len) And ((Line[Pos] = 'e') Or (Line[Pos] = 'E')) Then Begin
+   Inc(Pos);
+   If (Pos <= Len) And ((Line[Pos] = '+') Or (Line[Pos] = '-')) Then
+    Inc(Pos);
+   While (Pos <= Len) And IsDigitChar(Line[Pos]) Do Inc(Pos);
+  End;
+  GetLuaTokenClass := TC_NUMBER;
+  Exit;
+ End;
+
+ { Identifiant ou mot-cle }
+ If IsAlphaUS(Ch) Then Begin
+  StartPos := Pos;
+  While (Pos <= Len) And (IsAlphaUS(Line[Pos]) Or
+        IsDigitChar(Line[Pos])) Do
+   Inc(Pos);
+  Word := Copy(Line, StartPos, Pos - StartPos);
+  If IsLuaBuiltin(Word) Then GetLuaTokenClass := TC_TYPE
+  Else If IsLuaKeyword(HL, Word) Then GetLuaTokenClass := TC_KEYWORD
+  Else GetLuaTokenClass := TC_IDENTIFIER;
+  Exit;
+ End;
+
+ { Operateur ou ponctuation }
+ Inc(Pos);
+ GetLuaTokenClass := TC_OPERATOR;
+End;
+
+{ --- Colorier une ligne Lua entiere --- }
+
+Procedure HighlightLuaLine(Var HL: TLuaHighlighter;
+                           Line: String;
+                           Var Colors: Array Of Byte);
+Var
+ Pos, Start, I, Len: Integer;
+ TC: TTokenClass;
+ Clr: Byte;
+Begin
+ Len := Length(Line);
+ For I := 0 To Len - 1 Do
+  Colors[I] := Byte(TokenClassToColor(TC_NORMAL));
+ Pos := 1;
+ While Pos <= Len Do Begin
+  Start := Pos;
+  TC := GetLuaTokenClass(HL, Line, Pos);
+  Clr := Byte(TokenClassToColor(TC));
+  For I := Start To Pos - 1 Do
+   If (I >= 1) And (I <= Len) Then
+    Colors[I - 1] := Clr;
  End;
 End;
 
@@ -51602,6 +51839,39 @@ Begin
   End;
   Exit;
  End
+ Else If (Ext = '.lua') Then Begin
+  { Compilation Lua -> LUACW32.exe }
+  CmdLine := FindCompiler('LUACW32');
+  If CmdLine = '' Then Begin
+   AppendOutput(OutputPanel,
+    'Erreur : compilateur Lua non trouve (LUACW32.exe).',
+    Ord(OTK_BUILD));
+   Exit;
+  End;
+  CmdLine := CmdLine + ' ' + SourceFile;
+  AppendOutput(OutputPanel,
+   '------ Build started: ' + SourceFile + ' ------',
+   Ord(OTK_BUILD));
+  AppendOutput(OutputPanel, '> ' + CmdLine, Ord(OTK_BUILD));
+  ExitCode := ExecuteCompiler(CmdLine, TempFile);
+  ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
+  CleanupTempFile(TempFile);
+  If ExitCode = 0 Then Begin
+   AppendOutput(OutputPanel,
+    '========== Build: 1 succeeded, 0 failed ==========',
+    Ord(OTK_BUILD));
+   AppendOutput(OutputPanel,
+    'Execution de ' + ExeName + '...', Ord(OTK_BUILD));
+   {$IFDEF WINDOWS}
+   Exec(GetEnv('COMSPEC'), '/C ' + ExeName);
+   {$ELSE}
+   Exec('/bin/sh', '-c ./' + ExeName);
+   {$ENDIF}
+  End Else
+   AppendOutput(OutputPanel,
+    '========== Build: 0 succeeded, 1 failed ==========',
+    Ord(OTK_BUILD));
+ End
  Else If (Ext = '.awk') Then Begin
   { Compilation AWK }
   DetectAWKCompiler(AWKContext);
@@ -54924,6 +55194,7 @@ BEGIN
  InitAdaHighlighter(AdaHL);
  InitAbapHighlighter(AbapHL);
  InitAWKHighlighter(AWKHL);
+ InitLuaHighlighter(LuaHL);
  InitAsmHighlighter(AsmHL);
  InitJavaHighlighter(JavaHL);
  InitPythonHighlighter(PythonHL);
