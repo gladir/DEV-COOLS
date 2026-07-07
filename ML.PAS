@@ -39,6 +39,11 @@ Program ML;
   TODO 1 - INFRASTRUCTURE DE BASE
   ============================================================ }
 
+{$Q-} { verifications de depassement arithmetique desactivees : HashName
+        et d autres calculs (AlignUp, decalages de checksum...) reposent
+        volontairement sur le comportement de retenue/troncature standard
+        des types entiers, pas sur une detection de depassement. }
+
 Uses Dos;
 
 Const
@@ -156,6 +161,10 @@ Type
     is_extern  : Boolean;  { True = symbole externe (import), fixup par nom }
     sym_name   : TSymString; { nom du symbole si is_reloc/is_extern/is_undef }
     ptr_size   : Integer;  { 0=non specifie,1=BYTE,2=WORD,4=DWORD,8=QWORD,10=TBYTE,16=OWORD }
+    is_offset_form : Boolean; { True = expression construite via OFFSET (adresse
+                                voulue explicitement) ; False = reference nue a
+                                un label, qui doit etre DEREFERENCEE (semantique
+                                MASM) plutot que traitee comme une adresse }
   End;
 
   { ------- Operande d instruction totalement analyse ------- }
@@ -1462,6 +1471,7 @@ Begin
   e.is_extern:= False;
   e.sym_name := '';
   e.ptr_size := 0;
+  e.is_offset_form := False;
 End;
 
 Procedure ExprMakeReloc(Var e : TExpr; v : TLong; sidx : Integer; Const nm : TSymString);
@@ -1473,6 +1483,7 @@ Begin
   e.is_extern:= False;
   e.sym_name := nm;
   e.ptr_size := 0;
+  e.is_offset_form := False;
 End;
 
 Procedure ExprMakeExtern(Var e : TExpr; Const nm : TSymString; sz : Integer);
@@ -1484,6 +1495,7 @@ Begin
   e.is_extern:= True;
   e.sym_name := nm;
   e.ptr_size := sz;
+  e.is_offset_form := False;
 End;
 
 Procedure ExprMakeUndef(Var e : TExpr);
@@ -1495,6 +1507,7 @@ Begin
   e.is_extern:= False;
   e.sym_name := '';
   e.ptr_size := 0;
+  e.is_offset_form := False;
 End;
 
 Procedure EvalExpr(Var e : TExpr); Forward;
@@ -1646,7 +1659,7 @@ Begin
     Case u_idx Of
       EU_OFFSET :
         Begin
-          LexNext; EvalPrimary(e); Exit;
+          LexNext; EvalPrimary(e); e.is_offset_form := True; Exit;
         End;
       EU_SEG :
         Begin
@@ -2574,8 +2587,11 @@ Begin
       Continue;
     End;
 
-    { expression (deplacement, eventuellement relogeable) }
-    EvalExpr(e);
+    { Un seul TERME du deplacement (constante/label, avec */MOD/SHL/SHR
+      autorises) - PAS EvalExpr, qui consommerait aussi un + ou - de haut
+      niveau suivant (ex: le "+ ESI" de "[array10 + ESI*4]"), une boucle
+      d accumulation deja geree ICI par ParseMemBracket lui-meme. }
+    EvalMul(e);
     If sign < 0 Then e.val := -e.val;
     If disp_set Then
     Begin
@@ -2703,22 +2719,22 @@ Begin
     Exit;
   End;
 
-  { expression : immediat ou adresse directe (sans crochets) }
+  { expression : immediat, ou reference nue a un label/EXTERN }
   EvalExpr(e);
-  If (e.is_reloc Or e.is_extern) And (op.size_hint <> DS_UNKNOWN) Then
+  If (e.is_reloc Or e.is_extern) And (Not e.is_offset_form) Then
   Begin
-    { forme "MOV EAX, DWORD PTR label" : traitee comme adresse memoire directe }
+    { "MOV EAX, label" (avec ou sans PTR explicite) : un label nu, sans
+      OFFSET ni crochets, designe l EMPLACEMENT MEMOIRE (dereference),
+      exactement comme le vrai MASM - PAS son adresse. "OFFSET label" (ou
+      une expression EXTERN utilisee comme cible d appel) reste une valeur
+      immediate (is_offset_form=True), voir EU_OFFSET et ExprMakeExtern.
+      Les instructions de branchement (JMP/CALL/Jcc/LOOP) reconnaissent
+      elles-memes cette forme OPK_MEM sans base/index comme une cible directe
+      (voir ExtractBranchTarget) : pas besoin de cas special ici. }
     op.kind     := OPK_MEM;
     op.seg_ovr  := ovr;
     op.has_disp := True;
     op.disp     := e;
-    Exit;
-  End
-  Else If e.is_reloc Or e.is_extern Then
-  Begin
-    { adresse de label utilisee comme valeur (branchement, LEA implicite, etc.) }
-    op.kind := OPK_IMM;
-    op.imm  := e;
     Exit;
   End;
   op.kind := OPK_IMM;
@@ -3256,6 +3272,32 @@ Begin
 End;
 
 { ============================================================
+  ExtractBranchTarget : reconnait une cible de branchement DIRECTE
+  dans un operande deja analyse - soit OPK_IMM (ex: cible externe,
+  ou constante), soit OPK_MEM sans base ni index (un label nu :
+  depuis le correctif des semantiques MASM, "JMP label"/"CALL label"
+  produisent desormais OPK_MEM comme tout autre label nu ; c est ICI
+  qu on les reconnait comme une adresse cible plutot que comme une
+  dereference memoire). Retourne False si l operande a une base ou
+  un index (saut/appel reellement INDIRECT, gere par EmitModRM).
+  ============================================================ }
+Function ExtractBranchTarget(Const op : TOperand; Var target : TExpr) : Boolean;
+Begin
+  ExtractBranchTarget := False;
+  If op.kind = OPK_IMM Then
+  Begin
+    target := op.imm;
+    ExtractBranchTarget := True;
+    Exit;
+  End;
+  If (op.kind = OPK_MEM) And (Not op.has_base) And (Not op.has_index) And op.has_disp Then
+  Begin
+    target := op.disp;
+    ExtractBranchTarget := True;
+  End;
+End;
+
+{ ============================================================
   EncodeJcc : saut conditionnel proche (forme 32 bits, 6 octets :
   0F 8x rel32). Simplification documentee : pas d optimisation
   vers la forme courte rel8 (2 octets).
@@ -3271,11 +3313,12 @@ End;
   EncodeJMP / EncodeCALL
   ============================================================ }
 Procedure EncodeJMP(Const op1 : TOperand);
+Var target : TExpr;
 Begin
-  If op1.kind = OPK_IMM Then
+  If ExtractBranchTarget(op1, target) Then
   Begin
     BinEmitByte($E9);
-    EmitRelToOperand(op1.imm);
+    EmitRelToOperand(target);
     Exit;
   End;
   If (op1.kind = OPK_REG) Or (op1.kind = OPK_MEM) Then
@@ -3288,11 +3331,12 @@ Begin
 End;
 
 Procedure EncodeCALL(Const op1 : TOperand);
+Var target : TExpr;
 Begin
-  If op1.kind = OPK_IMM Then
+  If ExtractBranchTarget(op1, target) Then
   Begin
     BinEmitByte($E8);
-    EmitRelToOperand(op1.imm);
+    EmitRelToOperand(target);
     Exit;
   End;
   If (op1.kind = OPK_REG) Or (op1.kind = OPK_MEM) Then
@@ -4030,6 +4074,7 @@ Var
   cc        : Integer;
   suffix    : TString;
   rep_kind  : Byte; { 0=aucun 1=F3(REP/REPE) 2=F2(REPNE) }
+  jtarget   : TExpr;
 Begin
   AssembleInstruction := True;
   mnem := mnem0;
@@ -4154,20 +4199,20 @@ Begin
     Else If mnem = 'INT'  Then Begin BinEmitByte($CD); BinEmitImmExpr(op1.imm, 1); End
     Else If mnem = 'RET'  Then Begin BinEmitByte($C2); BinEmitImmExpr(op1.imm, 2); End
     Else If mnem = 'RETN' Then Begin BinEmitByte($C2); BinEmitImmExpr(op1.imm, 2); End
-    Else If mnem = 'LOOP'   Then EncodeShortJump($E2, op1.imm)
-    Else If mnem = 'LOOPE'  Then EncodeShortJump($E1, op1.imm)
-    Else If mnem = 'LOOPZ'  Then EncodeShortJump($E1, op1.imm)
-    Else If mnem = 'LOOPNE' Then EncodeShortJump($E0, op1.imm)
-    Else If mnem = 'LOOPNZ' Then EncodeShortJump($E0, op1.imm)
-    Else If mnem = 'JECXZ'  Then EncodeShortJump($E3, op1.imm)
-    Else If mnem = 'JCXZ'   Then EncodeShortJump($E3, op1.imm)
+    Else If mnem = 'LOOP'   Then Begin ExtractBranchTarget(op1, jtarget); EncodeShortJump($E2, jtarget); End
+    Else If mnem = 'LOOPE'  Then Begin ExtractBranchTarget(op1, jtarget); EncodeShortJump($E1, jtarget); End
+    Else If mnem = 'LOOPZ'  Then Begin ExtractBranchTarget(op1, jtarget); EncodeShortJump($E1, jtarget); End
+    Else If mnem = 'LOOPNE' Then Begin ExtractBranchTarget(op1, jtarget); EncodeShortJump($E0, jtarget); End
+    Else If mnem = 'LOOPNZ' Then Begin ExtractBranchTarget(op1, jtarget); EncodeShortJump($E0, jtarget); End
+    Else If mnem = 'JECXZ'  Then Begin ExtractBranchTarget(op1, jtarget); EncodeShortJump($E3, jtarget); End
+    Else If mnem = 'JCXZ'   Then Begin ExtractBranchTarget(op1, jtarget); EncodeShortJump($E3, jtarget); End
     Else
     Begin
       If (Length(mnem) >= 2) And (mnem[1] = 'J') Then
       Begin
         suffix := Copy(mnem, 2, Length(mnem)-1);
         cc := CondCodeOf(suffix);
-        If cc >= 0 Then EncodeJcc(cc, op1.imm)
+        If cc >= 0 Then Begin ExtractBranchTarget(op1, jtarget); EncodeJcc(cc, jtarget); End
         Else handled := False;
       End
       Else If (Length(mnem) >= 4) And (Copy(mnem,1,3) = 'SET') Then
@@ -4225,30 +4270,53 @@ End;
   ============================================================ }
 Function TryReadFloatAtCurrentPos(Var f : Double) : Boolean;
 Var
-  save_pos : Integer;
-  raw      : TString;
-  p        : Integer;
+  raw     : TString;
+  intpart : TString;
+  p       : Integer;
 Begin
   TryReadFloatAtCurrentPos := False;
-  save_pos := lex_pos;
+
+  If lex_has_peek Then
+  Begin
+    { Un token a deja ete tokenize en avance dans lex_peek_tok (par un
+      LexPeekKind anterieur, ex: la verification "nom DIRECTIVE" faite par
+      ProcessLine avant meme d appeler ParseDataDeclList) ; lex_pos est deja
+      positionne juste APRES ce token. Si c etait un NOMBRE et que le
+      caractere courant est un '.' suivi d un chiffre, c est en realite un
+      litteral flottant dont seule la partie entiere a ete tokenizee. }
+    If lex_peek_tok.kind <> TK_NUMBER Then Exit;
+    If (lex_pos > Length(lex_line)) Or (lex_line[lex_pos] <> '.') Then Exit;
+    If (lex_pos + 1 > Length(lex_line)) Or (Not LexIsDigit(lex_line[lex_pos + 1])) Then Exit;
+    intpart := IntToStr_(lex_peek_tok.num_val);
+  End
+  Else
+  Begin
+    p := lex_pos;
+    While (p <= Length(lex_line)) And LexIsDigit(lex_line[p]) Do Inc(p);
+    If p = lex_pos Then Exit;
+    If (p > Length(lex_line)) Or (lex_line[p] <> '.') Then Exit;
+    intpart := Copy(lex_line, lex_pos, p - lex_pos);
+    lex_pos := p; { positionner sur le '.' pour la suite commune ci-dessous }
+  End;
+
+  { a partir d ici, lex_pos pointe sur le '.' et au moins un chiffre suit }
   p := lex_pos;
+  Inc(p); { sauter le '.' }
   While (p <= Length(lex_line)) And LexIsDigit(lex_line[p]) Do Inc(p);
-  { premiere serie de chiffres (peut etre vide si forme ".5", non geree ici) }
-  If p = lex_pos Then Exit;
-  If (p > Length(lex_line)) Or (lex_line[p] <> '.') Then Exit;
-  Inc(p); { sauter le point }
-  If (p > Length(lex_line)) Or (Not LexIsDigit(lex_line[p])) Then Exit; { pas de chiffre apres le point }
-  While (p <= Length(lex_line)) And LexIsDigit(lex_line[p]) Do Inc(p);
-  { exposant optionnel }
-  If (p <= Length(lex_line)) And ((lex_line[p] = 'E') Or (lex_line[p] = 'e')) Then
+  If (p <= Length(lex_line)) And ((lex_line[p] = 'E') Or (lex_line[p] = 'e')) And
+     (p + 1 <= Length(lex_line)) And
+     (LexIsDigit(lex_line[p+1]) Or
+      (((lex_line[p+1] = '+') Or (lex_line[p+1] = '-')) And (p + 2 <= Length(lex_line)) And
+       LexIsDigit(lex_line[p+2]))) Then
   Begin
     Inc(p);
-    If (p <= Length(lex_line)) And ((lex_line[p] = '+') Or (lex_line[p] = '-')) Then Inc(p);
-    If (p > Length(lex_line)) Or (Not LexIsDigit(lex_line[p])) Then Begin p := save_pos; Exit; End;
+    If (lex_line[p] = '+') Or (lex_line[p] = '-') Then Inc(p);
     While (p <= Length(lex_line)) And LexIsDigit(lex_line[p]) Do Inc(p);
   End;
-  raw := Copy(lex_line, lex_pos, p - lex_pos);
+
+  raw := intpart + Copy(lex_line, lex_pos, p - lex_pos);
   lex_pos := p;
+  lex_has_peek := False; { le peek eventuel est maintenant consomme/invalide }
   Val(raw, f, p);
   If p <> 0 Then f := 0.0;
   TryReadFloatAtCurrentPos := True;
@@ -4331,8 +4399,7 @@ Begin
       For i := 2 To DataSizeBytes(ds) Do BinEmitByte(0);
     End
     { flottant explicite (uniquement pour DD/DQ) }
-    Else If (Not lex_has_peek) And ((ds = DS_DWORD) Or (ds = DS_QWORD)) And
-            TryReadFloatAtCurrentPos(f) Then
+    Else If ((ds = DS_DWORD) Or (ds = DS_QWORD)) And TryReadFloatAtCurrentPos(f) Then
     Begin
       If ds = DS_QWORD Then EmitFloat64(f) Else EmitFloat32(f);
     End
@@ -4372,7 +4439,7 @@ Begin
             ExprMakeNum(dup_vals[dup_n], 0);
             dup_is_f[dup_n] := False;
           End
-          Else If (Not lex_has_peek) And ((ds = DS_DWORD) Or (ds = DS_QWORD)) And
+          Else If ((ds = DS_DWORD) Or (ds = DS_QWORD)) And
                   TryReadFloatAtCurrentPos(dup_flts[dup_n]) Then
             dup_is_f[dup_n] := True
           Else
@@ -5007,10 +5074,8 @@ End;
   ============================================================ }
 Procedure ExpandMacro(m : Integer);
 Var
-  argstr    : TString;
   args      : Array[1..16] Of TString;
   argc      : Integer;
-  p, start  : Integer;
   body_line : TString;
   outline   : TString;
   j, k      : Integer;
@@ -5019,23 +5084,34 @@ Var
   found     : Integer;
   i         : Integer;
 Begin
-  argstr := Copy(lex_line, lex_pos, Length(lex_line) - lex_pos + 1);
-  lex_pos := Length(lex_line) + 1;
-  lex_has_peek := False;
-
-  argc  := 0;
-  start := 1;
-  For p := 1 To Length(argstr) + 1 Do
+  { Capturer les arguments reels via le tokenizer normal (LexPeekKind/LexNext),
+    PAS par decoupage brut de lex_line/lex_pos : au moment ou ExpandMacro est
+    appele, ProcessLine a deja fait plusieurs LexPeekKind (pour detecter un
+    label ou une directive "nom DIRECTIVE"), ce qui a deja fait avancer
+    lex_pos via le mecanisme de lookahead (LexEnsurePeek) - une lecture brute
+    de lex_line/lex_pos a cet endroit serait desynchronisee et incorrecte. }
+  argc := 0;
+  If (LexPeekKind <> TK_NEWLINE) And (LexPeekKind <> TK_EOF) Then
   Begin
-    If (p > Length(argstr)) Or (argstr[p] = ',') Then
-    Begin
-      If argc < 16 Then
+    argc := 1;
+    args[1] := '';
+    Repeat
+      If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then
       Begin
-        Inc(argc);
-        args[argc] := TrimStr(Copy(argstr, start, p - start));
+        LexNext; { consommer la , }
+        If argc < 16 Then Inc(argc);
+        args[argc] := '';
+      End
+      Else
+      Begin
+        LexNext; { consommer le prochain token de l argument courant }
+        If args[argc] <> '' Then args[argc] := args[argc] + ' ';
+        If lex_tok.kind = TK_STRING Then
+          args[argc] := args[argc] + '''' + lex_tok.val + ''''
+        Else
+          args[argc] := args[argc] + lex_tok.val;
       End;
-      start := p + 1;
-    End;
+    Until (LexPeekKind = TK_NEWLINE) Or (LexPeekKind = TK_EOF);
   End;
 
   BeginMacroExpansion;

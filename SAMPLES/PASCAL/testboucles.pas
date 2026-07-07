@@ -1,9 +1,9 @@
 program TestBoucles;
 var
-  i, j: integer;
+  i, j: integer; { Compteur de boucle }
 
 begin
-  WriteLn('=== Comparaison WHILE vs REPEAT ===');
+  WriteLn('=== Comparaison WHILE vs REPEAT ==='); { Constante WriteLn(' }
   
   { Test WHILE - condition testée au début }
   WriteLn('WHILE (condition testée AVANT):');
