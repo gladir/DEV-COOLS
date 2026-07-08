@@ -1,4 +1,4 @@
-{ @author: Sylvain Maltais (support@gladir.com)
+﻿{ @author: Sylvain Maltais (support@gladir.com)
   @created: 2026
   @version: 1.0
   @website(https://www.gladir.com/dev-cools)
@@ -1875,13 +1875,7 @@ Begin
     WriteLn('PAS2VB : impossible d''ouvrir ',SrcName);
     Halt(EXIT_ERROR);
   End;
-  Assign(DstFile,DstName);
-  {$I-} Rewrite(DstFile); {$I+}
-  If IOResult<>0 Then Begin
-    Close(SrcFile);
-    WriteLn('PAS2VB : impossible de creer ',DstName);
-    Halt(EXIT_ERROR);
-  End;
+  { DstFile est ouvert dans le corps principal apres l'analyse }
 End;
 
 Procedure CloseFiles;
@@ -1910,12 +1904,7 @@ BEGIN
     If UsesIn  Then WriteLn('PAS2VB : In detecte.');
   End;
 
-  Assign(DstFile,DstName);
-  {$I-} Rewrite(DstFile); {$I+}
-  If IOResult<>0 Then Begin
-    WriteLn('PAS2VB : impossible de creer ',DstName);
-    Halt(EXIT_ERROR);
-  End;
+  { DstFile est ouvert dans le corps principal apres l'analyse }
 
   OutLine:='';
   OutCol:=0;

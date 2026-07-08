@@ -991,7 +991,7 @@ Const
  { Limites des menus }
  MAX_MENUS             = 16;
  MAX_MENU_ITEMS        = 32;
- MAX_CTX_ITEMS         = 16;      { items max menu contextuel     }
+ MAX_CTX_ITEMS         = 32;      { items max menu contextuel     }
 
  { Limites de l editeur de texte }
  MAX_LINES             = 65536;
@@ -21087,6 +21087,10 @@ Begin
   End;
   ENK_FILE_CS, ENK_FILE_VB, ENK_FILE_PAS, ENK_FILE_OTHER: Begin
    AddContextItem(CM, 'Ouvrir', 500);
+   If Kind = ENK_FILE_PAS Then Begin
+    AddContextSeparator(CM);
+    AddContextItem(CM, 'Transpilateur >', 600);
+   End;
    AddContextSeparator(CM);
    AddContextItem(CM, 'Renommer', 520);
    AddContextItem(CM, 'Supprimer', 521);
@@ -57944,10 +57948,90 @@ End;
 
 { --- Traiter un evenement global --- }
 
+Procedure RunTranspilerOnFile(ExeName, OutExt: String);
+Var
+ NodeIdx : Integer;
+ NodeCap : String;
+ SolDir  : String;
+ ProjDir : String;
+ SrcPath : String;
+ OutPath : String;
+ ExePath : String;
+ WIdx    : Integer;
+ I       : Integer;
+Begin
+ NodeIdx := CtxMenu.NodeIdx;
+ If (NodeIdx < 0) Or (NodeIdx >= SolExplorer.NodeCount) Then Exit;
+ NodeCap := SolExplorer.Nodes[NodeIdx].Caption;
+ If NodeCap = '' Then Exit;
+ { Construire le chemin source (meme logique que OpenExplorerFileNode) }
+ If SolutionLoaded And (CurrentSolution.ProjectCount > 0) Then Begin
+  SolDir := CurrentSolution.Info.SolutionPath;
+  If Length(SolDir) > 0 Then Begin
+   If (SolDir[Length(SolDir)] <> '\') And
+      (SolDir[Length(SolDir)] <> '/') Then
+    SolDir := SolDir + '\';
+  End;
+  ProjDir := ExtractFilePath(CurrentSolution.Projects[0].ProjectPath);
+  SrcPath := SolDir + ProjDir + NodeCap;
+  For I := 1 To Length(SrcPath) Do
+   If SrcPath[I] = '/' Then SrcPath[I] := '\';
+ End Else
+  SrcPath := NodeCap;
+ { Chemin du fichier de sortie : meme dossier, extension remplacee }
+ OutPath := ChangeFileExt(SrcPath, OutExt);
+ { Chercher le transpilateur : meme dossier que DEVENV.EXE, WIN32\, puis CWD }
+ ExePath := ExtractFilePath(ParamStr(0)) + ExeName;
+ If Not FileExists(ExePath) Then
+  ExePath := ExtractFilePath(ParamStr(0)) + 'WIN32\' + ExeName;
+ If Not FileExists(ExePath) Then
+  ExePath := ExeName;
+ If Not FileExists(ExePath) Then Begin
+  ShowMessageBox('Transpilateur',
+   'Transpilateur introuvable :' + #13#10 + ExeName,
+   MB_OK, MI_ERROR);
+  AppendOutput(OutputPanel, 'Transpilateur introuvable : ' + ExeName, 2);
+  Exit;
+ End;
+ { Lancer directement (le transpilateur cree son propre fichier de sortie) }
+ AppendOutput(OutputPanel,
+  'Transpilation : ' + ExeName + ' ' + SrcPath, 0);
+ Exec(ExePath, '"' + SrcPath + '"');
+ { Verifier le fichier produit }
+ If Not FileExists(OutPath) Then Begin
+  ShowMessageBox('Transpilateur',
+   'Aucun fichier produit :' + #13#10 + OutPath,
+   MB_OK, MI_ERROR);
+  AppendOutput(OutputPanel, 'Aucun fichier produit : ' + OutPath, 2);
+  Exit;
+ End;
+ If EditorReady And (WinMgr.ActiveIdx >= 0) And
+    (WinMgr.ActiveIdx < WinMgr.WinCount) And
+    (Editors[WinMgr.ActiveIdx] <> Nil) Then
+  Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
+ If StartPage.Visible Then Begin
+  StartPage.Visible := False;
+  FullRepaintNeeded := True;
+ End;
+ WIdx := FindEditorByFileName(OutPath);
+ If WIdx >= 0 Then
+  ActivateWindow(WIdx)
+ Else Begin
+  CreateEditorWindow(OutPath);
+  WIdx := WinMgr.ActiveIdx;
+  LoadFile(Editors[WIdx]^.Buffer, OutPath);
+  ActiveEditor := Editors[WIdx]^;
+ End;
+ EditorReady := True;
+ FullRepaintNeeded := True;
+ AppendOutput(OutputPanel, 'Transpilation terminee : ' + OutPath, 0);
+End;
+
 Procedure DispatchEvent(Var Ev: TEvent);
 Var
  CtxTag: LongInt;
  I: Integer;
+ SubX, SubY: Integer;
 Begin
  If Ev.Kind = EV_NONE Then Exit;
  { Menu contextuel en priorite si visible }
@@ -57997,6 +58081,86 @@ Begin
          (CtxMenu.NodeIdx < SolExplorer.NodeCount) Then
        OpenExplorerFileNode(SolExplorer, CtxMenu.NodeIdx);
      End;
+     600: Begin { Transpilateur : afficher le sous-menu }
+      I := CtxMenu.NodeIdx;
+      SubX := CtxMenu.X;
+      SubY := CtxMenu.Y;
+      InitContextMenu(CtxMenu);
+      CtxMenu.NodeIdx := I;
+      CtxMenu.Width := 200;
+      { Positionner a droite si l ecran le permet, sinon a gauche }
+      If SubX + 160 + 200 <= GetScreenWidth Then
+       CtxMenu.X := SubX + 160
+      Else
+       CtxMenu.X := SubX - 200;
+      If CtxMenu.X < 0 Then CtxMenu.X := 0;
+      { Clamper Y pour eviter de sortir en bas : 28 items * 16 + 4 = 452 px }
+      If SubY + 452 > GetScreenHeight Then
+       CtxMenu.Y := GetScreenHeight - 452
+      Else
+       CtxMenu.Y := SubY;
+      If CtxMenu.Y < 30 Then CtxMenu.Y := 30;
+      AddContextItem(CtxMenu, 'Vers ABAP/4',          700);
+      AddContextItem(CtxMenu, 'Vers Ada',              701);
+      AddContextItem(CtxMenu, 'Vers Algol 58',         702);
+      AddContextItem(CtxMenu, 'Vers Algol 60',         703);
+      AddContextItem(CtxMenu, 'Vers Algol 68',         704);
+      AddContextItem(CtxMenu, 'Vers AWK',              705);
+      AddContextItem(CtxMenu, 'Vers BCPL',             706);
+      AddContextItem(CtxMenu, 'Vers C',                707);
+      AddContextItem(CtxMenu, 'Vers Cobol',            708);
+      AddContextItem(CtxMenu, 'Vers C#',               709);
+      AddContextItem(CtxMenu, 'Vers Fortran 77',       710);
+      AddContextItem(CtxMenu, 'Vers Java',             711);
+      AddContextItem(CtxMenu, 'Vers Jovial',           712);
+      AddContextItem(CtxMenu, 'Vers LISP',             713);
+      AddContextItem(CtxMenu, 'Vers Lua',              714);
+      AddContextItem(CtxMenu, 'Vers Modula-2',         715);
+      AddContextItem(CtxMenu, 'Vers Modula-3',         716);
+      AddContextItem(CtxMenu, 'Vers Oberon',           717);
+      AddContextItem(CtxMenu, 'Vers Perl',             718);
+      AddContextItem(CtxMenu, 'Vers PHP',              719);
+      AddContextItem(CtxMenu, 'Vers PL/1',             720);
+      AddContextItem(CtxMenu, 'Vers Python',           721);
+      AddContextItem(CtxMenu, 'Vers QuickBasic',       722);
+      AddContextItem(CtxMenu, 'Vers Raku',             723);
+      AddContextItem(CtxMenu, 'Vers Rust',             724);
+      AddContextItem(CtxMenu, 'Vers SAS',              725);
+      AddContextItem(CtxMenu, 'Vers Visual Basic',     726);
+      AddContextItem(CtxMenu, 'Vers Visual Basic .NET',727);
+      CtxMenu.Visible := True;
+      DrawContextMenu(CtxMenu);
+      FullRepaintNeeded := True;
+     End;
+     { Transpilateurs : tags 700-727 }
+     700: RunTranspilerOnFile('PAS2ABP.EXE',  '.abap');
+     701: RunTranspilerOnFile('PAS2ADA.EXE',  '.adb');
+     702: RunTranspilerOnFile('PAS2AL58.EXE', '.a58');
+     703: RunTranspilerOnFile('PAS2AL60.EXE', '.a60');
+     704: RunTranspilerOnFile('PAS2AL68.EXE', '.a68');
+     705: RunTranspilerOnFile('PAS2AWK.EXE',  '.awk');
+     706: RunTranspilerOnFile('PAS2BCPL.EXE', '.b');
+     707: RunTranspilerOnFile('PAS2C.EXE',    '.c');
+     708: RunTranspilerOnFile('PAS2CBL.EXE',  '.cbl');
+     709: RunTranspilerOnFile('PAS2CS.EXE',   '.cs');
+     710: RunTranspilerOnFile('PAS2F77.EXE',  '.f77');
+     711: RunTranspilerOnFile('PAS2JAVA.EXE', '.java');
+     712: RunTranspilerOnFile('PAS2JOV.EXE',  '.jov');
+     713: RunTranspilerOnFile('PAS2LISP.EXE', '.lisp');
+     714: RunTranspilerOnFile('PAS2LUA.EXE',  '.lua');
+     715: RunTranspilerOnFile('PAS2MOD2.EXE', '.mod');
+     716: RunTranspilerOnFile('PAS2MOD3.EXE', '.m3');
+     717: RunTranspilerOnFile('PAS2OBER.EXE', '.obn');
+     718: RunTranspilerOnFile('PAS2PERL.EXE', '.pl');
+     719: RunTranspilerOnFile('PAS2PHP.EXE',  '.php');
+     720: RunTranspilerOnFile('PAS2PLI.EXE',  '.pli');
+     721: RunTranspilerOnFile('PAS2PY.EXE',   '.py');
+     722: RunTranspilerOnFile('PAS2QB.EXE',   '.bas');
+     723: RunTranspilerOnFile('PAS2RAKU.EXE', '.raku');
+     724: RunTranspilerOnFile('PAS2RUST.EXE', '.rs');
+     725: RunTranspilerOnFile('PAS2SAS.EXE',  '.sas');
+     726: RunTranspilerOnFile('PAS2VB.EXE',   '.bas');
+     727: RunTranspilerOnFile('PAS2VBN.EXE',  '.vb');
      399: Begin { Proprietes du projet }
       InitProjectPropertiesDialog(ProjPropDlg);
       LoadProjectProperties(ProjPropDlg, CurrentProject);

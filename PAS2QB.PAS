@@ -1,4 +1,4 @@
-{ @author: Sylvain Maltais (support@gladir.com)
+﻿{ @author: Sylvain Maltais (support@gladir.com)
   @created: 2026
   @version: 1.0
   @website(https://www.gladir.com/dev-cools)
@@ -503,7 +503,7 @@ End;
     - si Out / In doivent etre importes
   ============================================================ }
 
-{ AWK est typé dynamiquement : les "types" servent juste d'indication
+{ AWK est typÃ© dynamiquement : les "types" servent juste d'indication
   pour l'initialisation des valeurs. On retourne une valeur initiale
   par defaut comme commentaire d'aide. }
 Function MapPascalType(T:TString):TString;
@@ -1161,8 +1161,8 @@ End;
 
   Pour les types non triviaux (ARRAY, RECORD imbrique, SET, FILE),
   une approximation est emise avec un commentaire d'avertissement. }
-{ Emet une declaration VAR / CONST / TYPE en AWK. AWK est typé
-  dynamiquement : on émet seulement des initialisations dans BEGIN.
+{ Emet une declaration VAR / CONST / TYPE en AWK. AWK est typÃ©
+  dynamiquement : on Ã©met seulement des initialisations dans BEGIN.
 
   Pascal VAR :   x, y : Integer;        ->  x = 0; y = 0
   Pascal CONST:  Pi = 3.14;             ->  PI = 3.14
@@ -2140,8 +2140,8 @@ Begin
     A:=SrcName;
     I:=Length(A);
     While (I>0)and(A[I]<>'.')and(A[I]<>'\')and(A[I]<>'/') do Dec(I);
-    If (I>0)and(A[I]='.') Then DstName:=Copy(A,1,I-1)+'.awk'
-                          Else DstName:=A+'.awk';
+    If (I>0)and(A[I]='.') Then DstName:=Copy(A,1,I-1)+'.bas'
+                          Else DstName:=A+'.bas';
   End;
 End;
 
@@ -2153,13 +2153,7 @@ Begin
     WriteLn('PAS2QB : impossible d''ouvrir ',SrcName);
     Halt(EXIT_ERROR);
   End;
-  Assign(DstFile,DstName);
-  {$I-} Rewrite(DstFile); {$I+}
-  If IOResult<>0 Then Begin
-    Close(SrcFile);
-    WriteLn('PAS2QB : impossible de creer ',DstName);
-    Halt(EXIT_ERROR);
-  End;
+  { DstFile est ouvert dans le corps principal apres l'analyse }
 End;
 
 Procedure CloseFiles;
@@ -2188,12 +2182,7 @@ BEGIN
     If UsesIn  Then WriteLn('PAS2QB : In detecte.');
   End;
 
-  Assign(DstFile,DstName);
-  {$I-} Rewrite(DstFile); {$I+}
-  If IOResult<>0 Then Begin
-    WriteLn('PAS2QB : impossible de creer ',DstName);
-    Halt(EXIT_ERROR);
-  End;
+  { DstFile est ouvert dans le corps principal apres l'analyse }
 
   OutLine:='';
   OutCol:=0;

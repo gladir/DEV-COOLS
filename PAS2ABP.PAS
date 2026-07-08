@@ -2240,13 +2240,7 @@ Begin
     WriteLn('PAS2ABP : impossible d''ouvrir ',SrcName);
     Halt(EXIT_ERROR);
   End;
-  Assign(DstFile,DstName);
-  {$I-} Rewrite(DstFile); {$I+}
-  If IOResult<>0 Then Begin
-    Close(SrcFile);
-    WriteLn('PAS2ABP : impossible de creer ',DstName);
-    Halt(EXIT_ERROR);
-  End;
+  { DstFile est ouvert dans le corps principal apres l analyse }
 End;
 
 Procedure CloseFiles;
