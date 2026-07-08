@@ -1921,7 +1921,12 @@ BEGIN
     If UsesIn  Then WriteLn('PAS2VBN : In detecte.');
   End;
 
-  { DstFile est ouvert dans le corps principal apres l'analyse }
+  Assign(DstFile,DstName);
+  {$I-} Rewrite(DstFile); {$I+}
+  If IOResult<>0 Then Begin
+    WriteLn('PAS2VBN : impossible de creer ',DstName);
+    Halt(EXIT_ERROR);
+  End;
 
   OutLine:='';
   OutCol:=0;
