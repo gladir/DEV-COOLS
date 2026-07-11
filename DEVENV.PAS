@@ -942,6 +942,31 @@
               "Projet DEV-COOLS - Gladir.com"
               "Compilateurs integres : CSC, VBC, TPC"
 
+  TODO 31 - EDITEUR HEXADECIMAL (ONGLET) [IMPLEMENTE]
+            Nouveau type d onglet (TWinKind = WK_TEXT/WK_HEX) affiche
+              a la place de l editeur de texte, pour visualiser et
+              modifier un fichier octet par octet (adresse / hexa /
+              ASCII), avec sauvegarde (Ctrl+S) independante du
+              tampon texte.
+            Se declenche depuis le menu contextuel de l explorateur
+              de solution ("Edition hexadecimal", a cote de
+              "Ouvrir"), pour tout fichier.
+            THexEditor, HexEditors[], ActiveHexEditor : tampon
+              d octets (GetMem, taille dynamique) parallele a
+              Editors[]/ActiveEditor, un par fenetre WK_HEX.
+            Procedure LoadFileHex / SaveFileHex / InitHexEditor /
+              FreeHexEditor
+            Procedure CreateHexWindow / FindHexWindowByFileName
+            Procedure SyncActiveWindowOut / SyncActiveWindowIn :
+              persistent l etat (texte OU hexa) de la fenetre active
+              lors d un changement d onglet, sans dupliquer la logique
+              a chaque site d appel.
+            Procedure DrawHexEditor / HandleHexEditorMouse /
+              HandleHexEditorKey : rendu et edition (navigation,
+              ecriture par nibble en colonne hexa, par caractere en
+              colonne ASCII ; pas de selection multi-octets ni de
+              presse-papier dans cette version).
+
   ============================================================ *)
 
 Program DEVENV;
@@ -1406,6 +1431,12 @@ Const
  TAB_CLOSE_SIZE        = 12;      { taille bouton fermeture (X)    }
  TAB_PADDING           = 8;       { marge interne d un onglet      }
 
+ { Editeur hexadecimal }
+ HEX_BYTES_PER_ROW     = 16;      { octets affiches par rangee     }
+ HEX_ROW_HEIGHT        = 14;      { hauteur d une rangee en pixels }
+ HEX_ADDR_WIDTH        = 76;      { largeur colonne adresse (px)   }
+ HEX_BYTE_WIDTH        = 24;      { largeur d un octet en hexa (px)}
+
  { Dimensions de l interface en pixels }
  TOOLBAR_HEIGHT        = 28;
  MENUBAR_HEIGHT        = 20;
@@ -1697,11 +1728,15 @@ Type
   Height     : Integer;       { hauteur de la barre             }
  End;
 
+ { Type de contenu affiche par une fenetre d edition }
+ TWinKind = (WK_TEXT, WK_HEX);
+
  { Fenetre d editeur }
  PEditorWindow = ^TEditorWindow;
  TEditorWindow = Record
   Title      : String[127];   { titre affiche dans l onglet     }
   FileName   : String[255];   { chemin complet du fichier       }
+  Kind       : TWinKind;      { WK_TEXT ou WK_HEX                }
   Modified   : Boolean;       { fichier modifie                 }
   X          : Integer;       { position X dans la zone MDI     }
   Y          : Integer;       { position Y dans la zone MDI     }
@@ -1777,6 +1812,28 @@ Type
   Width          : Integer;      { largeur de la zone editeur     }
   Height         : Integer;      { hauteur de la zone editeur     }
  End;
+
+ { Tampon d octets pour l editeur hexadecimal (taille dynamique) }
+ THexByteArr = Array[0..0] Of Byte;
+ PHexByteArr = ^THexByteArr;
+
+ { Editeur hexadecimal : affiche/modifie un fichier octet par octet }
+ THexEditor = Record
+  Data        : PHexByteArr;  { octets du fichier, alloue via GetMem }
+  Size        : LongInt;      { taille reelle en octets            }
+  FileName    : String[255];  { fichier associe                    }
+  Modified    : Boolean;      { modifie depuis la derniere sauvegarde }
+  CursorOfs   : LongInt;      { offset (0-based) de l octet courant }
+  ScrollOfs   : LongInt;      { offset du premier octet visible     }
+  InAsciiPane : Boolean;      { True=edition dans la colonne ASCII  }
+  HighNibble  : Boolean;      { True=prochaine frappe = nibble haut }
+  X           : Integer;      { position X de la zone              }
+  Y           : Integer;      { position Y de la zone              }
+  Width       : Integer;      { largeur de la zone                 }
+  Height      : Integer;      { hauteur de la zone                 }
+  VisibleRows : Integer;      { nombre de rangees visibles         }
+ End;
+ PHexEditor = ^THexEditor;
 
  { Selection de texte }
  TSelection = Record
@@ -3370,6 +3427,9 @@ Var
  EditorUndo   : TUndoStack;
  EditorRedo   : TUndoStack;
  EditorReady  : Boolean;  { True si ActiveEditor est initialise }
+ { Editeurs hexadecimaux (un par fenetre de type WK_HEX) }
+ HexEditors     : Array[0..MAX_WINDOWS - 1] Of PHexEditor;
+ ActiveHexEditor: THexEditor;
  { Coloration syntaxique C }
  CHL          : TCHighlighter;
  { Coloration syntaxique C# }
@@ -7331,6 +7391,7 @@ Procedure InitEditorWindow(Var W: TEditorWindow);
 Begin
  W.Title := '';
  W.FileName := '';
+ W.Kind := WK_TEXT;
  W.Modified := False;
  W.X := 0;
  W.Y := 0;
@@ -7364,6 +7425,7 @@ Begin
  For I := 0 To MAX_WINDOWS - 1 Do Begin
   InitEditorWindow(WinMgr.Windows[I]);
   Editors[I] := Nil;
+  HexEditors[I] := Nil;
  End;
 End;
 
@@ -7381,10 +7443,32 @@ Begin
  FindEditorByFileName := -1;
  A := UpCaseStr(FN);
  For I := 0 To WinMgr.WinCount - 1 Do Begin
-  B := UpCaseStr(WinMgr.Windows[I].FileName);
-  If A = B Then Begin
-   FindEditorByFileName := I;
-   Exit;
+  If WinMgr.Windows[I].Kind = WK_TEXT Then Begin
+   B := UpCaseStr(WinMgr.Windows[I].FileName);
+   If A = B Then Begin
+    FindEditorByFileName := I;
+    Exit;
+   End;
+  End;
+ End;
+End;
+
+{ --- Chercher un editeur hexadecimal deja ouvert pour ce fichier --- }
+
+Function FindHexWindowByFileName(FN: String): Integer;
+Var
+ I: Integer;
+ A, B: String;
+Begin
+ FindHexWindowByFileName := -1;
+ A := UpCaseStr(FN);
+ For I := 0 To WinMgr.WinCount - 1 Do Begin
+  If WinMgr.Windows[I].Kind = WK_HEX Then Begin
+   B := UpCaseStr(WinMgr.Windows[I].FileName);
+   If A = B Then Begin
+    FindHexWindowByFileName := I;
+    Exit;
+   End;
   End;
  End;
 End;
@@ -7422,11 +7506,51 @@ Begin
  ActiveEditor := Editors[Idx]^;
 End;
 
+{ Declarations anticipees : definies plus bas (TODO08). }
+Procedure LoadFileHex(Var HE: THexEditor; AFileName: String); Forward;
+Procedure SaveFileHex(Var HE: THexEditor; AFileName: String); Forward;
+Procedure FreeHexEditor(Var HE: THexEditor); Forward;
+
+{ --- Creer une nouvelle fenetre d edition hexadecimale et y charger
+  le fichier --- }
+
+Procedure CreateHexWindow(AFileName: String);
+Var
+ Idx: Integer;
+Begin
+ If WinMgr.WinCount >= MAX_WINDOWS Then Exit;
+ Idx := WinMgr.WinCount;
+ InitEditorWindow(WinMgr.Windows[Idx]);
+ WinMgr.Windows[Idx].Kind := WK_HEX;
+ WinMgr.Windows[Idx].FileName := AFileName;
+ If Length(AFileName) > 0 Then
+  WinMgr.Windows[Idx].Title := GetTabLabel(AFileName) + ' (Hex)'
+ Else
+  WinMgr.Windows[Idx].Title := 'Sans titre (Hex)';
+ WinMgr.Windows[Idx].TabIndex := Idx;
+ WinMgr.Windows[Idx].Visible := True;
+ WinMgr.Windows[Idx].Maximized := True;
+ WinMgr.Windows[Idx].X := 0;
+ WinMgr.Windows[Idx].Y := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
+ WinMgr.Windows[Idx].Width := GetScreenWidth - EXPLORER_WIDTH;
+ WinMgr.Windows[Idx].Height := GetScreenHeight - MENUBAR_HEIGHT
+   - TOOLBAR_HEIGHT - TAB_HEIGHT - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
+ { Allouer et charger l editeur hexadecimal pour cette fenetre }
+ If HexEditors[Idx] = Nil Then
+  New(HexEditors[Idx]);
+ LoadFileHex(HexEditors[Idx]^, AFileName);
+ Inc(WinMgr.WinCount);
+ WinMgr.ActiveIdx := Idx;
+ ActiveHexEditor := HexEditors[Idx]^;
+End;
+
 { --- Ouvrir un fichier d aide dans un nouvel editeur --- }
 
 { Declarations anticipees : ces routines sont definies plus bas. }
 Procedure ActivateWindow(Index: Integer); Forward;
 Procedure LoadFile(Var Buf: TTextBuffer; AFileName: String); Forward;
+Procedure SyncActiveWindowOut; Forward;
+Procedure SyncActiveWindowIn(Idx: Integer); Forward;
 
 { ============================================================
   VISIONNEUSE WinHelp .HLP
@@ -8392,10 +8516,7 @@ Begin
   HlpvShow(FN, Context);
   Exit;
  End;
- If EditorReady And (WinMgr.ActiveIdx >= 0) And
-    (WinMgr.ActiveIdx < WinMgr.WinCount) And
-    (Editors[WinMgr.ActiveIdx] <> Nil) Then
-  Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
+ If EditorReady Then SyncActiveWindowOut;
  If StartPage.Visible Then Begin
   StartPage.Visible := False;
   FullRepaintNeeded := True;
@@ -8414,6 +8535,37 @@ Begin
  FullRepaintNeeded := True;
 End;
 
+{ --- Sauvegarder l etat de la fenetre active (texte ou hexa) dans
+  son tableau de stockage --- }
+
+Procedure SyncActiveWindowOut;
+Begin
+ If (WinMgr.ActiveIdx < 0) Or (WinMgr.ActiveIdx >= WinMgr.WinCount) Then
+  Exit;
+ If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_HEX Then Begin
+  If HexEditors[WinMgr.ActiveIdx] <> Nil Then
+   HexEditors[WinMgr.ActiveIdx]^ := ActiveHexEditor;
+ End Else Begin
+  If Editors[WinMgr.ActiveIdx] <> Nil Then
+   Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
+ End;
+End;
+
+{ --- Restaurer dans ActiveEditor/ActiveHexEditor l etat stocke de la
+  fenetre Idx (texte ou hexa) --- }
+
+Procedure SyncActiveWindowIn(Idx: Integer);
+Begin
+ If (Idx < 0) Or (Idx >= WinMgr.WinCount) Then Exit;
+ If WinMgr.Windows[Idx].Kind = WK_HEX Then Begin
+  If HexEditors[Idx] <> Nil Then
+   ActiveHexEditor := HexEditors[Idx]^;
+ End Else Begin
+  If Editors[Idx] <> Nil Then
+   ActiveEditor := Editors[Idx]^;
+ End;
+End;
+
 { --- Fermer une fenetre d editeur --- }
 
 Procedure CloseEditorWindow(Index: Integer);
@@ -8421,18 +8573,25 @@ Var
  I: Integer;
 Begin
  If (Index < 0) Or (Index >= WinMgr.WinCount) Then Exit;
- { Liberer l editeur }
+ { Liberer l editeur ou l editeur hexadecimal }
  If Editors[Index] <> Nil Then Begin
   Dispose(Editors[Index]);
   Editors[Index] := Nil;
+ End;
+ If HexEditors[Index] <> Nil Then Begin
+  FreeHexEditor(HexEditors[Index]^);
+  Dispose(HexEditors[Index]);
+  HexEditors[Index] := Nil;
  End;
  { Decaler les fenetres et editeurs suivants }
  For I := Index To WinMgr.WinCount - 2 Do Begin
   WinMgr.Windows[I] := WinMgr.Windows[I + 1];
   WinMgr.Windows[I].TabIndex := I;
   Editors[I] := Editors[I + 1];
+  HexEditors[I] := HexEditors[I + 1];
  End;
  Editors[WinMgr.WinCount - 1] := Nil;
+ HexEditors[WinMgr.WinCount - 1] := Nil;
  Dec(WinMgr.WinCount);
  { Ajuster l index actif }
  If WinMgr.WinCount = 0 Then Begin
@@ -8442,9 +8601,7 @@ Begin
   If WinMgr.ActiveIdx >= WinMgr.WinCount Then
    WinMgr.ActiveIdx := WinMgr.WinCount - 1;
   { Restaurer l editeur actif }
-  If (WinMgr.ActiveIdx >= 0) And
-     (Editors[WinMgr.ActiveIdx] <> Nil) Then
-   ActiveEditor := Editors[WinMgr.ActiveIdx]^;
+  SyncActiveWindowIn(WinMgr.ActiveIdx);
  End;
 End;
 
@@ -8454,15 +8611,11 @@ Procedure ActivateWindow(Index: Integer);
 Begin
  If (Index >= 0) And (Index < WinMgr.WinCount) Then Begin
   { Sauvegarder l editeur actuel }
-  If (WinMgr.ActiveIdx >= 0) And
-     (WinMgr.ActiveIdx < WinMgr.WinCount) And
-     (Editors[WinMgr.ActiveIdx] <> Nil) Then
-   Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
+  SyncActiveWindowOut;
   { Activer la nouvelle fenetre }
   WinMgr.ActiveIdx := Index;
   { Restaurer l editeur selectionne }
-  If Editors[Index] <> Nil Then
-   ActiveEditor := Editors[Index]^;
+  SyncActiveWindowIn(Index);
  End;
 End;
 
@@ -8621,16 +8774,20 @@ Var
  I: Integer;
  FN: String;
 Begin
- { Synchroniser l editeur actif avant de sauvegarder }
- If EditorReady And (WinMgr.ActiveIdx >= 0) And
-    (WinMgr.ActiveIdx < WinMgr.WinCount) And
-    (Editors[WinMgr.ActiveIdx] <> Nil) Then
-  Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
+ { Synchroniser la fenetre active avant de sauvegarder }
+ If EditorReady Then SyncActiveWindowOut;
  For I := 0 To WinMgr.WinCount - 1 Do Begin
   If (Editors[I] <> Nil) And Editors[I]^.Buffer.Modified Then Begin
    FN := WinMgr.Windows[I].FileName;
    If FN <> '' Then Begin
     SaveFile(Editors[I]^.Buffer, FN);
+    WinMgr.Windows[I].Modified := False;
+   End;
+  End;
+  If (HexEditors[I] <> Nil) And HexEditors[I]^.Modified Then Begin
+   FN := WinMgr.Windows[I].FileName;
+   If FN <> '' Then Begin
+    SaveFileHex(HexEditors[I]^, FN);
     WinMgr.Windows[I].Modified := False;
    End;
   End;
@@ -8725,15 +8882,15 @@ Function CountModifiedWindows: Integer;
 Var
  I, Total: Integer;
 Begin
- { Synchroniser l editeur actif dans le tableau }
- If EditorReady And (WinMgr.ActiveIdx >= 0) And
-    (WinMgr.ActiveIdx < WinMgr.WinCount) And
-    (Editors[WinMgr.ActiveIdx] <> Nil) Then
-  Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
+ { Synchroniser la fenetre active dans le tableau }
+ If EditorReady Then SyncActiveWindowOut;
  Total := 0;
- For I := 0 To WinMgr.WinCount - 1 Do
+ For I := 0 To WinMgr.WinCount - 1 Do Begin
   If (Editors[I] <> Nil) And Editors[I]^.Buffer.Modified Then
    Inc(Total);
+  If (HexEditors[I] <> Nil) And HexEditors[I]^.Modified Then
+   Inc(Total);
+ End;
  CountModifiedWindows := Total;
 End;
 
@@ -8933,6 +9090,99 @@ Begin
  Close(F);
  Buf.FileName := AFileName;
  Buf.Modified := False;
+End;
+
+{ --- Initialiser un editeur hexadecimal (aucun fichier charge) --- }
+
+Procedure InitHexEditor(Var HE: THexEditor);
+Begin
+ HE.Data := Nil;
+ HE.Size := 0;
+ HE.FileName := '';
+ HE.Modified := False;
+ HE.CursorOfs := 0;
+ HE.ScrollOfs := 0;
+ HE.InAsciiPane := False;
+ HE.HighNibble := True;
+ HE.X := 0;
+ HE.Y := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
+ HE.Width := GetScreenWidth - EXPLORER_WIDTH;
+ HE.Height := GetScreenHeight - MENUBAR_HEIGHT - TOOLBAR_HEIGHT
+              - TAB_HEIGHT - STATUSBAR_HEIGHT - OUTPUT_HEIGHT;
+ HE.VisibleRows := HE.Height Div HEX_ROW_HEIGHT;
+End;
+
+{ --- Liberer la memoire d un editeur hexadecimal --- }
+
+Procedure FreeHexEditor(Var HE: THexEditor);
+Begin
+ If HE.Data <> Nil Then Begin
+  FreeMem(HE.Data, HE.Size);
+  HE.Data := Nil;
+ End;
+ HE.Size := 0;
+ HE.Modified := False;
+End;
+
+{ --- Charger un fichier entier en memoire pour l edition hexadecimale --- }
+
+Procedure LoadFileHex(Var HE: THexEditor; AFileName: String);
+Var
+ F: File;
+ OldFM: Byte;
+ Got: LongInt;
+ Remain: LongInt;
+ P: LongInt;
+ Chunk: LongInt;
+Begin
+ InitHexEditor(HE);
+ HE.FileName := AFileName;
+ OldFM := FileMode;
+ FileMode := 0;
+ {$I-}
+ Assign(F, AFileName);
+ Reset(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Begin
+  FileMode := OldFM;
+  Exit;
+ End;
+ HE.Size := FileSize(F);
+ If HE.Size > 0 Then Begin
+  GetMem(HE.Data, HE.Size);
+  P := 0;
+  Remain := HE.Size;
+  While Remain > 0 Do Begin
+   If Remain > 32000 Then Chunk := 32000 Else Chunk := Remain;
+   BlockRead(F, HE.Data^[P], Chunk, Got);
+   If Got = 0 Then Break;
+   Inc(P, Got);
+   Dec(Remain, Got);
+  End;
+ End;
+ Close(F);
+ FileMode := OldFM;
+ HE.Modified := False;
+End;
+
+{ --- Sauvegarder le tampon hexadecimal dans son fichier --- }
+
+Procedure SaveFileHex(Var HE: THexEditor; AFileName: String);
+Var
+ F: File;
+ Wrote: LongInt;
+Begin
+ If Length(AFileName) = 0 Then Exit;
+ {$I-}
+ Assign(F, AFileName);
+ Rewrite(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ If (HE.Size > 0) And (HE.Data <> Nil) Then
+  BlockWrite(F, HE.Data^[0], HE.Size, Wrote);
+ Close(F);
+ HE.FileName := AFileName;
+ HE.Modified := False;
 End;
 
 { --- Obtenir une ligne du tampon --- }
@@ -10099,6 +10349,184 @@ End;
 Function IsInsertMode(Var Ed: TEditor): Boolean;
 Begin
  IsInsertMode := Ed.InsertMode;
+End;
+
+{ ============================================================
+  EDITEUR HEXADECIMAL (onglet "Edition hexadecimal")
+  ============================================================ }
+
+{ --- Dessiner l editeur hexadecimal --- }
+
+Procedure DrawHexEditor(Var HE: THexEditor);
+Var
+ R, C: Integer;
+ RowOfs, Ofs: LongInt;
+ XPos, YPos, AsciiX: Integer;
+ B: Byte;
+ Ch: String[1];
+Begin
+ SetColor(CLR_EDITOR_BG);
+ SetFillStyle(SolidFill, CLR_EDITOR_BG);
+ Bar(HE.X, HE.Y, HE.X + HE.Width - 1, HE.Y + HE.Height - 1);
+ HE.VisibleRows := HE.Height Div HEX_ROW_HEIGHT;
+ If (HE.Data = Nil) Or (HE.Size = 0) Then Begin
+  SetColor(CLR_EDITOR_TEXT);
+  OutTextXY(HE.X + 8, HE.Y + 8, '(fichier vide)');
+  Exit;
+ End;
+ AsciiX := HE.X + HEX_ADDR_WIDTH + HEX_BYTES_PER_ROW * HEX_BYTE_WIDTH + 8;
+ For R := 0 To HE.VisibleRows - 1 Do Begin
+  RowOfs := HE.ScrollOfs + LongInt(R) * HEX_BYTES_PER_ROW;
+  If RowOfs >= HE.Size Then Break;
+  YPos := HE.Y + R * HEX_ROW_HEIGHT;
+  { Adresse de la rangee }
+  SetColor(CLR_MENU_TEXT);
+  OutTextXY(HE.X + 4, YPos, HexLong(RowOfs));
+  For C := 0 To HEX_BYTES_PER_ROW - 1 Do Begin
+   Ofs := RowOfs + C;
+   If Ofs >= HE.Size Then Break;
+   B := HE.Data^[Ofs];
+   XPos := HE.X + HEX_ADDR_WIDTH + C * HEX_BYTE_WIDTH;
+   If (B >= 32) And (B <= 126) Then Ch := Chr(B) Else Ch := '.';
+   If Ofs = HE.CursorOfs Then Begin
+    { Octet sous le curseur : mis en surbrillance dans les deux
+      colonnes (hexa et ASCII) pour montrer leur correspondance. }
+    SetColor(CLR_HIGHLIGHT);
+    SetFillStyle(SolidFill, CLR_HIGHLIGHT);
+    Bar(XPos - 1, YPos - 1, XPos + 15, YPos + HEX_ROW_HEIGHT - 3);
+    SetColor(CLR_HIGHLIGHTTEXT);
+    OutTextXY(XPos, YPos, HexByte(B));
+    SetColor(CLR_HIGHLIGHT);
+    SetFillStyle(SolidFill, CLR_HIGHLIGHT);
+    Bar(AsciiX + C * 8 - 1, YPos - 1,
+        AsciiX + C * 8 + 7, YPos + HEX_ROW_HEIGHT - 3);
+    SetColor(CLR_HIGHLIGHTTEXT);
+    OutTextXY(AsciiX + C * 8, YPos, Ch);
+   End Else Begin
+    SetColor(CLR_EDITOR_TEXT);
+    OutTextXY(XPos, YPos, HexByte(B));
+    OutTextXY(AsciiX + C * 8, YPos, Ch);
+   End;
+  End;
+ End;
+End;
+
+{ --- Assurer que l octet sous le curseur reste visible --- }
+
+Procedure EnsureHexCursorVisible(Var HE: THexEditor);
+Var
+ CursorRow, FirstRow, LastRow: LongInt;
+Begin
+ If HE.VisibleRows <= 0 Then Exit;
+ CursorRow := HE.CursorOfs Div HEX_BYTES_PER_ROW;
+ FirstRow := HE.ScrollOfs Div HEX_BYTES_PER_ROW;
+ LastRow := FirstRow + HE.VisibleRows - 1;
+ If CursorRow < FirstRow Then
+  HE.ScrollOfs := CursorRow * HEX_BYTES_PER_ROW
+ Else If CursorRow > LastRow Then
+  HE.ScrollOfs := (CursorRow - HE.VisibleRows + 1) * HEX_BYTES_PER_ROW;
+ If HE.ScrollOfs < 0 Then HE.ScrollOfs := 0;
+End;
+
+{ --- Gerer un clic souris dans l editeur hexadecimal --- }
+
+Procedure HandleHexEditorMouse(Var HE: THexEditor; Ev: TEvent);
+Var
+ Row, Col: LongInt;
+ Ofs: LongInt;
+ AsciiX: Integer;
+Begin
+ If Ev.Kind <> EV_MOUSE_DOWN Then Exit;
+ If (Ev.MouseX < HE.X) Or (Ev.MouseX >= HE.X + HE.Width) Or
+    (Ev.MouseY < HE.Y) Or (Ev.MouseY >= HE.Y + HE.Height) Then Exit;
+ If (HE.Data = Nil) Or (HE.Size = 0) Then Exit;
+ Row := (Ev.MouseY - HE.Y) Div HEX_ROW_HEIGHT;
+ AsciiX := HE.X + HEX_ADDR_WIDTH + HEX_BYTES_PER_ROW * HEX_BYTE_WIDTH + 8;
+ If Ev.MouseX >= AsciiX Then Begin
+  Col := (Ev.MouseX - AsciiX) Div 8;
+  HE.InAsciiPane := True;
+ End Else Begin
+  Col := (Ev.MouseX - (HE.X + HEX_ADDR_WIDTH)) Div HEX_BYTE_WIDTH;
+  HE.InAsciiPane := False;
+ End;
+ If (Col < 0) Or (Col >= HEX_BYTES_PER_ROW) Then Exit;
+ Ofs := HE.ScrollOfs + Row * HEX_BYTES_PER_ROW + Col;
+ If Ofs < 0 Then Ofs := 0;
+ If Ofs >= HE.Size Then Ofs := HE.Size - 1;
+ If Ofs >= 0 Then HE.CursorOfs := Ofs;
+ HE.HighNibble := True;
+End;
+
+{ --- Gerer une touche dans l editeur hexadecimal --- }
+
+Procedure HandleHexEditorKey(Var HE: THexEditor; Ev: TEvent);
+Var
+ Digit: Integer;
+ B: Byte;
+Begin
+ If (HE.Data = Nil) Or (HE.Size = 0) Then Exit;
+ If Ev.Kind = EV_KEY_DOWN Then Begin
+  Case Ev.KeyCode Of
+   $48: If HE.CursorOfs >= HEX_BYTES_PER_ROW Then { Haut }
+         Dec(HE.CursorOfs, HEX_BYTES_PER_ROW);
+   $50: If HE.CursorOfs + HEX_BYTES_PER_ROW < HE.Size Then { Bas }
+         Inc(HE.CursorOfs, HEX_BYTES_PER_ROW);
+   $4B: If HE.CursorOfs > 0 Then Dec(HE.CursorOfs); { Gauche }
+   $4D: If HE.CursorOfs + 1 < HE.Size Then Inc(HE.CursorOfs); { Droite }
+   $49: Begin { Page haut }
+         Dec(HE.CursorOfs, HEX_BYTES_PER_ROW * (HE.VisibleRows - 1));
+         If HE.CursorOfs < 0 Then HE.CursorOfs := 0;
+        End;
+   $51: Begin { Page bas }
+         Inc(HE.CursorOfs, HEX_BYTES_PER_ROW * (HE.VisibleRows - 1));
+         If HE.CursorOfs >= HE.Size Then HE.CursorOfs := HE.Size - 1;
+        End;
+   $47: HE.CursorOfs := 0; { Debut }
+   $4F: HE.CursorOfs := HE.Size - 1; { Fin }
+  End;
+  HE.HighNibble := True;
+  EnsureHexCursorVisible(HE);
+  Exit;
+ End;
+ If Ev.Kind <> EV_KEY_CHAR Then Exit;
+ If Ev.KeyChar = #9 Then Begin { Tab : basculer hexa/ASCII }
+  HE.InAsciiPane := Not HE.InAsciiPane;
+  HE.HighNibble := True;
+  Exit;
+ End;
+ If HE.InAsciiPane Then Begin
+  { Colonne ASCII : la frappe remplace l octet entier }
+  If (Ev.KeyChar >= ' ') And (Ord(Ev.KeyChar) <= 126) Then Begin
+   HE.Data^[HE.CursorOfs] := Ord(Ev.KeyChar);
+   HE.Modified := True;
+   If HE.CursorOfs + 1 < HE.Size Then Inc(HE.CursorOfs);
+   EnsureHexCursorVisible(HE);
+  End;
+ End Else Begin
+  { Colonne hexadecimale : deux frappes (nibble haut puis bas) par octet }
+  Digit := -1;
+  If (Ev.KeyChar >= '0') And (Ev.KeyChar <= '9') Then
+   Digit := Ord(Ev.KeyChar) - Ord('0')
+  Else If (Ev.KeyChar >= 'a') And (Ev.KeyChar <= 'f') Then
+   Digit := Ord(Ev.KeyChar) - Ord('a') + 10
+  Else If (Ev.KeyChar >= 'A') And (Ev.KeyChar <= 'F') Then
+   Digit := Ord(Ev.KeyChar) - Ord('A') + 10;
+  If Digit >= 0 Then Begin
+   B := HE.Data^[HE.CursorOfs];
+   If HE.HighNibble Then Begin
+    B := (B And $0F) Or (Digit Shl 4);
+    HE.HighNibble := False;
+   End Else Begin
+    B := (B And $F0) Or Digit;
+    HE.HighNibble := True;
+   End;
+   HE.Data^[HE.CursorOfs] := B;
+   HE.Modified := True;
+   If HE.HighNibble And (HE.CursorOfs + 1 < HE.Size) Then
+    Inc(HE.CursorOfs);
+   EnsureHexCursorVisible(HE);
+  End;
+ End;
 End;
 
 { ============================================================
@@ -20630,11 +21058,8 @@ Begin
  End
  Else
   FullPath := FN;
- { Sauvegarder l editeur actuel }
- If EditorReady And (WinMgr.ActiveIdx >= 0) And
-    (WinMgr.ActiveIdx < WinMgr.WinCount) And
-    (Editors[WinMgr.ActiveIdx] <> Nil) Then
-  Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
+ { Sauvegarder la fenetre active }
+ If EditorReady Then SyncActiveWindowOut;
  { Masquer la page de demarrage }
  If StartPage.Visible Then Begin
   StartPage.Visible := False;
@@ -20654,6 +21079,59 @@ Begin
  LoadFile(Editors[WIdx]^.Buffer, FullPath);
  ActiveEditor := Editors[WIdx]^;
  Opts.SourceFile := FullPath;
+ EditorReady := True;
+ FullRepaintNeeded := True;
+End;
+
+{ --- Ouvrir un fichier depuis l explorateur dans l editeur
+  hexadecimal (menu contextuel "Edition hexadecimal") --- }
+
+Procedure OpenExplorerFileNodeHex(Var Exp: TSolutionExplorer;
+ NodeIdx: Integer);
+Var
+ FN: String;
+ SolDir: String;
+ ProjDir: String;
+ FullPath: String;
+ WIdx: Integer;
+ I: Integer;
+Begin
+ If (NodeIdx < 0) Or (NodeIdx >= Exp.NodeCount) Then Exit;
+ FN := Exp.Nodes[NodeIdx].Caption;
+ If FN = '' Then Exit;
+ { Construire le chemin complet du fichier }
+ If SolutionLoaded And (CurrentSolution.ProjectCount > 0) Then
+ Begin
+  SolDir := CurrentSolution.Info.SolutionPath;
+  If Length(SolDir) > 0 Then Begin
+   If (SolDir[Length(SolDir)] <> '\') And
+      (SolDir[Length(SolDir)] <> '/') Then
+    SolDir := SolDir + '\';
+  End;
+  ProjDir := ExtractFilePath(
+   CurrentSolution.Projects[0].ProjectPath);
+  FullPath := SolDir + ProjDir + FN;
+  For I := 1 To Length(FullPath) Do
+   If FullPath[I] = '/' Then FullPath[I] := '\';
+ End
+ Else
+  FullPath := FN;
+ { Sauvegarder la fenetre active }
+ If EditorReady Then SyncActiveWindowOut;
+ { Masquer la page de demarrage }
+ If StartPage.Visible Then Begin
+  StartPage.Visible := False;
+  FullRepaintNeeded := True;
+ End;
+ { Verifier si le fichier est deja ouvert en hexadecimal }
+ WIdx := FindHexWindowByFileName(FullPath);
+ If WIdx >= 0 Then Begin
+  ActivateWindow(WIdx);
+  FullRepaintNeeded := True;
+  Exit;
+ End;
+ { Ouvrir dans une nouvelle fenetre hexadecimale }
+ CreateHexWindow(FullPath);
  EditorReady := True;
  FullRepaintNeeded := True;
 End;
@@ -21087,6 +21565,7 @@ Begin
   End;
   ENK_FILE_CS, ENK_FILE_VB, ENK_FILE_PAS, ENK_FILE_OTHER: Begin
    AddContextItem(CM, 'Ouvrir', 500);
+   AddContextItem(CM, 'Edition hexadecimal', 501);
    If Kind = ENK_FILE_PAS Then Begin
     AddContextSeparator(CM);
     AddContextItem(CM, 'Transpilateur >', 600);
@@ -55634,6 +56113,20 @@ Begin
    Ord(OTK_BUILD));
   Exit;
  End;
+ If (WinMgr.ActiveIdx >= 0) And
+    (WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_HEX) Then Begin
+  FN := WinMgr.Windows[WinMgr.ActiveIdx].FileName;
+  If FN = '' Then Begin
+   AppendOutput(OutputPanel, 'Aucun nom de fichier.',
+    Ord(OTK_BUILD));
+   Exit;
+  End;
+  SaveFileHex(ActiveHexEditor, FN);
+  MarkWindowSaved(WinMgr.ActiveIdx);
+  AppendOutput(OutputPanel, 'Fichier enregistre : ' + FN,
+   Ord(OTK_BUILD));
+  Exit;
+ End;
  FN := '';
  If Opts.SourceFile <> '' Then
   FN := Opts.SourceFile
@@ -55713,6 +56206,13 @@ Var
 Begin
  If Not EditorReady Then Begin
   AppendOutput(OutputPanel, 'Aucun fichier ouvert pour COMMENT.',
+   Ord(OTK_BUILD));
+  Exit;
+ End;
+ If (WinMgr.ActiveIdx >= 0) And
+    (WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_HEX) Then Begin
+  AppendOutput(OutputPanel,
+   'COMMENT ne s''applique pas a un fichier ouvert en hexadecimal.',
    Ord(OTK_BUILD));
   Exit;
  End;
@@ -55969,11 +56469,8 @@ Var
 Begin
  FN := FileDlg.SelectedFile;
  If FN = '' Then Exit;
- { Sauvegarder l editeur actuel avant d en ouvrir un autre }
- If EditorReady And (WinMgr.ActiveIdx >= 0) And
-    (WinMgr.ActiveIdx < WinMgr.WinCount) And
-    (Editors[WinMgr.ActiveIdx] <> Nil) Then
-  Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
+ { Sauvegarder la fenetre active avant d en ouvrir une autre }
+ If EditorReady Then SyncActiveWindowOut;
  { Masquer la page de demarrage }
  If StartPage.Visible Then Begin
   StartPage.Visible := False;
@@ -56148,11 +56645,8 @@ Var
 Begin
  FN := GetNewFileFullName(NewFileDlg);
  If FN = '' Then Exit;
- { Sauvegarder l editeur actuel }
- If EditorReady And (WinMgr.ActiveIdx >= 0) And
-    (WinMgr.ActiveIdx < WinMgr.WinCount) And
-    (Editors[WinMgr.ActiveIdx] <> Nil) Then
-  Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
+ { Sauvegarder la fenetre active }
+ If EditorReady Then SyncActiveWindowOut;
  { Masquer la page de demarrage }
  If StartPage.Visible Then Begin
   StartPage.Visible := False;
@@ -56251,8 +56745,12 @@ Begin
  DrawToolBar;
  DrawWindowTabs;
  { Dessiner l editeur actif si une fenetre est ouverte }
- If EditorReady And (WinMgr.ActiveIdx >= 0) Then
-  DrawEditor(ActiveEditor);
+ If EditorReady And (WinMgr.ActiveIdx >= 0) Then Begin
+  If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_HEX Then
+   DrawHexEditor(ActiveHexEditor)
+  Else
+   DrawEditor(ActiveEditor);
+ End;
  DrawExplorer(SolExplorer);
  DrawPropertiesPanel(PropsPanel);
  { Dessiner Output et Terminal selon le z-order }
@@ -58005,10 +58503,7 @@ Begin
   AppendOutput(OutputPanel, 'Aucun fichier produit : ' + OutPath, 2);
   Exit;
  End;
- If EditorReady And (WinMgr.ActiveIdx >= 0) And
-    (WinMgr.ActiveIdx < WinMgr.WinCount) And
-    (Editors[WinMgr.ActiveIdx] <> Nil) Then
-  Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
+ If EditorReady Then SyncActiveWindowOut;
  If StartPage.Visible Then Begin
   StartPage.Visible := False;
   FullRepaintNeeded := True;
@@ -58080,6 +58575,11 @@ Begin
       If (CtxMenu.NodeIdx >= 0) And
          (CtxMenu.NodeIdx < SolExplorer.NodeCount) Then
        OpenExplorerFileNode(SolExplorer, CtxMenu.NodeIdx);
+     End;
+     501: Begin { Edition hexadecimal }
+      If (CtxMenu.NodeIdx >= 0) And
+         (CtxMenu.NodeIdx < SolExplorer.NodeCount) Then
+       OpenExplorerFileNodeHex(SolExplorer, CtxMenu.NodeIdx);
      End;
      600: Begin { Transpilateur : afficher le sous-menu }
       I := CtxMenu.NodeIdx;
@@ -58594,14 +59094,26 @@ Begin
    Exit;
   End;
   If (Ev.Kind = EV_KEY_CHAR) Or (Ev.Kind = EV_KEY_DOWN) Then Begin
-   HandleSelectionKey(ActiveEditor, EditorSel, EditorClip,
-    EditorUndo, EditorRedo, Ev);
-   { Sauvegarder l etat de l editeur dans le tableau }
-   If Editors[WinMgr.ActiveIdx] <> Nil Then
-    Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
-   { Synchroniser curseur vers TEditorWindow pour la barre d etat }
-   WinMgr.Windows[WinMgr.ActiveIdx].CursorY := ActiveEditor.CursorLine;
-   WinMgr.Windows[WinMgr.ActiveIdx].CursorX := ActiveEditor.CursorCol - 1;
+   If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_HEX Then Begin
+    HandleHexEditorKey(ActiveHexEditor, Ev);
+    If HexEditors[WinMgr.ActiveIdx] <> Nil Then
+     HexEditors[WinMgr.ActiveIdx]^ := ActiveHexEditor;
+    If ActiveHexEditor.Modified Then
+     MarkWindowModified(WinMgr.ActiveIdx);
+    WinMgr.Windows[WinMgr.ActiveIdx].CursorY :=
+     ActiveHexEditor.CursorOfs Div HEX_BYTES_PER_ROW;
+    WinMgr.Windows[WinMgr.ActiveIdx].CursorX :=
+     ActiveHexEditor.CursorOfs Mod HEX_BYTES_PER_ROW;
+   End Else Begin
+    HandleSelectionKey(ActiveEditor, EditorSel, EditorClip,
+     EditorUndo, EditorRedo, Ev);
+    { Sauvegarder l etat de l editeur dans le tableau }
+    If Editors[WinMgr.ActiveIdx] <> Nil Then
+     Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
+    { Synchroniser curseur vers TEditorWindow pour la barre d etat }
+    WinMgr.Windows[WinMgr.ActiveIdx].CursorY := ActiveEditor.CursorLine;
+    WinMgr.Windows[WinMgr.ActiveIdx].CursorX := ActiveEditor.CursorCol - 1;
+   End;
    Exit;
   End;
   If (Ev.Kind = EV_MOUSE_DOWN) Or (Ev.Kind = EV_MOUSE_MOVE) Or
@@ -58620,11 +59132,21 @@ Begin
       (Ev.MouseY < OutputPanel.Y + OutputPanel.Height) Then Begin
     { Laisser passer vers HandleOutputEvent }
    End Else Begin
-    HandleEditorMouse(ActiveEditor, Ev);
-    If Editors[WinMgr.ActiveIdx] <> Nil Then
-     Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
-    WinMgr.Windows[WinMgr.ActiveIdx].CursorY := ActiveEditor.CursorLine;
-    WinMgr.Windows[WinMgr.ActiveIdx].CursorX := ActiveEditor.CursorCol - 1;
+    If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_HEX Then Begin
+     HandleHexEditorMouse(ActiveHexEditor, Ev);
+     If HexEditors[WinMgr.ActiveIdx] <> Nil Then
+      HexEditors[WinMgr.ActiveIdx]^ := ActiveHexEditor;
+     WinMgr.Windows[WinMgr.ActiveIdx].CursorY :=
+      ActiveHexEditor.CursorOfs Div HEX_BYTES_PER_ROW;
+     WinMgr.Windows[WinMgr.ActiveIdx].CursorX :=
+      ActiveHexEditor.CursorOfs Mod HEX_BYTES_PER_ROW;
+    End Else Begin
+     HandleEditorMouse(ActiveEditor, Ev);
+     If Editors[WinMgr.ActiveIdx] <> Nil Then
+      Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
+     WinMgr.Windows[WinMgr.ActiveIdx].CursorY := ActiveEditor.CursorLine;
+     WinMgr.Windows[WinMgr.ActiveIdx].CursorX := ActiveEditor.CursorCol - 1;
+    End;
     Exit;
    End;
   End;
