@@ -21619,30 +21619,87 @@ Begin
  Exp.NeedRepaint := True;
 End;
 
+{ --- Trouver l index situe juste apres le dernier descendant d un     }
+{ noeud (ou juste apres le noeud lui-meme s il n en a aucun). Repose   }
+{ sur l invariant que les sous-arbres sont toujours contigus dans le   }
+{ tableau : tout noeud dont le niveau est strictement superieur a     }
+{ celui de NodeIdx, tant que cette condition reste vraie en avancant,  }
+{ fait partie de son sous-arbre.                                       }
+
+Function FindExplorerSubtreeEnd(Var Exp: TSolutionExplorer;
+ NodeIdx: Integer): Integer;
+Var
+ BaseLevel, I: Integer;
+Begin
+ BaseLevel := Exp.Nodes[NodeIdx].Level;
+ I := NodeIdx + 1;
+ While (I < Exp.NodeCount) And (Exp.Nodes[I].Level > BaseLevel) Do
+  Inc(I);
+ FindExplorerSubtreeEnd := I;
+End;
+
+{ --- Determiner ou inserer un nouveau noeud enfant de ParentIdx, pour }
+{ qu il apparaisse visuellement juste apres les enfants existants de   }
+{ ce parent plutot qu a la toute fin du tableau. Les noeuds racine     }
+{ (ParentIdx = -1) continuent d etre ajoutes a la fin, comme avant.    }
+
+Function FindExplorerInsertPos(Var Exp: TSolutionExplorer;
+ ParentIdx: Integer): Integer;
+Begin
+ If ParentIdx < 0 Then
+  FindExplorerInsertPos := Exp.NodeCount
+ Else
+  FindExplorerInsertPos := FindExplorerSubtreeEnd(Exp, ParentIdx);
+End;
+
+{ --- Reserver un emplacement libre a la position Pos, en decalant les }
+{ noeuds suivants d un rang et en ajustant toutes les references       }
+{ d index existantes (ParentIdx de chaque noeud, SelectedIdx,          }
+{ RenameIdx) pour qu elles continuent de designer les memes noeuds     }
+{ logiques apres le decalage.                                          }
+
+Procedure InsertExplorerNodeSlot(Var Exp: TSolutionExplorer; Pos: Integer);
+Var
+ I: Integer;
+Begin
+ If Pos < 0 Then Pos := 0;
+ If Pos > Exp.NodeCount Then Pos := Exp.NodeCount;
+ For I := Exp.NodeCount DownTo Pos + 1 Do
+  Exp.Nodes[I] := Exp.Nodes[I - 1];
+ For I := 0 To Exp.NodeCount Do
+  If (I <> Pos) And (Exp.Nodes[I].ParentIdx >= Pos) Then
+   Inc(Exp.Nodes[I].ParentIdx);
+ If Exp.SelectedIdx >= Pos Then Inc(Exp.SelectedIdx);
+ If Exp.RenameIdx >= Pos Then Inc(Exp.RenameIdx);
+ Inc(Exp.NodeCount);
+End;
+
 { --- Ajouter un noeud a l explorateur --- }
 
 Function AddExplorerNode(Var Exp: TSolutionExplorer;
  ACaption: String; Kind: TExplorerNodeKind;
  ParentIdx: Integer): Integer;
+Var
+ Pos: Integer;
 Begin
  If Exp.NodeCount >= MAX_EXPLORER_NODES Then Begin
   AddExplorerNode := -1;
   Exit;
  End;
- InitExplorerNode(Exp.Nodes[Exp.NodeCount]);
- Exp.Nodes[Exp.NodeCount].Caption := ACaption;
- Exp.Nodes[Exp.NodeCount].Kind := Kind;
- Exp.Nodes[Exp.NodeCount].ParentIdx := ParentIdx;
+ Pos := FindExplorerInsertPos(Exp, ParentIdx);
+ InsertExplorerNodeSlot(Exp, Pos);
+ InitExplorerNode(Exp.Nodes[Pos]);
+ Exp.Nodes[Pos].Caption := ACaption;
+ Exp.Nodes[Pos].Kind := Kind;
+ Exp.Nodes[Pos].ParentIdx := ParentIdx;
  If ParentIdx >= 0 Then
-  Exp.Nodes[Exp.NodeCount].Level :=
-   Exp.Nodes[ParentIdx].Level + 1
+  Exp.Nodes[Pos].Level := Exp.Nodes[ParentIdx].Level + 1
  Else
-  Exp.Nodes[Exp.NodeCount].Level := 0;
- Exp.Nodes[Exp.NodeCount].Visible := True;
+  Exp.Nodes[Pos].Level := 0;
+ Exp.Nodes[Pos].Visible := True;
  If ParentIdx >= 0 Then
   Exp.Nodes[ParentIdx].HasChildren := True;
- AddExplorerNode := Exp.NodeCount;
- Inc(Exp.NodeCount);
+ AddExplorerNode := Pos;
  Exp.NeedRepaint := True;
 End;
 
@@ -21667,6 +21724,10 @@ Begin
   Exp.SelectedIdx := -1
  Else If Exp.SelectedIdx > Index Then
   Dec(Exp.SelectedIdx);
+ If Exp.RenameIdx = Index Then
+  Exp.RenameIdx := -1
+ Else If Exp.RenameIdx > Index Then
+  Dec(Exp.RenameIdx);
  Exp.NeedRepaint := True;
 End;
 
