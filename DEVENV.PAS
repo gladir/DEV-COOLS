@@ -3622,6 +3622,8 @@ Var
  FileDlg        : TFileDialog;
  { Dialogue proprietes du projet }
  ProjPropDlg    : TProjectPropertiesDialog;
+ { Dialogue ajouter une reference }
+ AddRefDlg      : TAddReferenceDialog;
  { Dialogue gestionnaire de disques virtuels et sa sous-boite ajout/modif }
  VirtualDiskDlg : TVirtualDiskDialog;
  VirtAddDiskDlg : TVirtAddDiskDialog;
@@ -22384,7 +22386,12 @@ Begin
    Else If Exp.Nodes[HitIdx].Kind In
     [ENK_FILE_CS, ENK_FILE_VB, ENK_FILE_PAS,
      ENK_FILE_OTHER] Then
-    OpenExplorerFileNode(Exp, HitIdx);
+    OpenExplorerFileNode(Exp, HitIdx)
+   Else If Exp.Nodes[HitIdx].Kind = ENK_PROPERTIES Then Begin
+    InitProjectPropertiesDialog(ProjPropDlg);
+    LoadProjectProperties(ProjPropDlg, CurrentProject);
+    ShowProjectPropertiesDialog(ProjPropDlg);
+   End;
    Exp.NeedRepaint := True;
   End;
  End
@@ -22466,7 +22473,11 @@ Begin
       [ENK_FILE_CS, ENK_FILE_VB, ENK_FILE_PAS,
        ENK_FILE_OTHER] Then
       OpenExplorerFileNode(Exp, Exp.SelectedIdx)
-     Else
+     Else If Exp.Nodes[Exp.SelectedIdx].Kind = ENK_PROPERTIES Then Begin
+      InitProjectPropertiesDialog(ProjPropDlg);
+      LoadProjectProperties(ProjPropDlg, CurrentProject);
+      ShowProjectPropertiesDialog(ProjPropDlg);
+     End Else
       ToggleNode(Exp, Exp.SelectedIdx);
     End;
    End;
@@ -22538,7 +22549,11 @@ Begin
     [ENK_FILE_CS, ENK_FILE_VB, ENK_FILE_PAS,
      ENK_FILE_OTHER] Then
     OpenExplorerFileNode(Exp, Exp.SelectedIdx)
-   Else
+   Else If Exp.Nodes[Exp.SelectedIdx].Kind = ENK_PROPERTIES Then Begin
+    InitProjectPropertiesDialog(ProjPropDlg);
+    LoadProjectProperties(ProjPropDlg, CurrentProject);
+    ShowProjectPropertiesDialog(ProjPropDlg);
+   End Else
     ToggleNode(Exp, Exp.SelectedIdx);
    Exp.NeedRepaint := True;
   End;
@@ -31747,11 +31762,25 @@ Begin
  End;
 End;
 
+{ --- Peupler l onglet Assemblages avec les references .NET courantes --- }
+
+Procedure PopulateAddReferenceDialog(Var Dlg: TAddReferenceDialog);
+Begin
+ AddRefItem(Dlg, 'System', '4.0.0.0', '', False);
+ AddRefItem(Dlg, 'System.Core', '4.0.0.0', '', False);
+ AddRefItem(Dlg, 'System.Data', '4.0.0.0', '', False);
+ AddRefItem(Dlg, 'System.Drawing', '4.0.0.0', '', False);
+ AddRefItem(Dlg, 'System.Windows.Forms', '4.0.0.0', '', False);
+ AddRefItem(Dlg, 'System.Xml', '4.0.0.0', '', False);
+ AddRefItem(Dlg, 'System.Net.Http', '4.0.0.0', '', False);
+End;
+
 { --- Afficher le dialogue Ajouter une reference --- }
 
 Procedure ShowAddReferenceDialog(Var Dlg: TAddReferenceDialog);
 Begin
  InitAddReferenceDialog(Dlg);
+ PopulateAddReferenceDialog(Dlg);
  Dlg.Base.Visible := True;
  DrawAddReferenceDialog(Dlg);
 End;
@@ -58252,6 +58281,8 @@ Begin
   DrawFileDialog(FileDlg);
  If ProjPropDlg.Base.Visible Then
   DrawProjectPropertiesDialog(ProjPropDlg);
+ If AddRefDlg.Base.Visible Then
+  DrawAddReferenceDialog(AddRefDlg);
  If EmuPanel.Base.Visible Then
   DrawEmulatorPanel(EmuPanel);
  If FindReplaceDlg.Base.Visible Then
@@ -60000,6 +60031,43 @@ Begin
  AppendOutput(OutputPanel, 'Transpilation terminee : ' + OutPath, 0);
 End;
 
+{ --- Appliquer le resultat du dialogue Ajouter une reference : ajoute  }
+{ chaque reference cochee (non deja presente) au projet courant et au  }
+{ noeud "References" de l explorateur, puis persiste sur disque.       }
+
+Procedure ApplyAddReferenceDialogResult(Var Dlg: TAddReferenceDialog);
+Var
+ I, RefsIdx, Added: Integer;
+Begin
+ RefsIdx := -1;
+ For I := 0 To SolExplorer.NodeCount - 1 Do
+  If SolExplorer.Nodes[I].Kind = ENK_REFERENCES Then Begin
+   RefsIdx := I;
+   Break;
+  End;
+ Added := 0;
+ For I := 0 To Dlg.ItemCount - 1 Do Begin
+  If Dlg.Items[I].Checked Then Begin
+   If FindReferenceInProject(CurrentProject, Dlg.Items[I].Name) < 0 Then Begin
+    AddReferenceToProject(CurrentProject, Dlg.Items[I].Name);
+    If RefsIdx >= 0 Then Begin
+     AddExplorerNode(SolExplorer, Dlg.Items[I].Name, ENK_REFERENCE, RefsIdx);
+     SolExplorer.Nodes[RefsIdx].HasChildren := True;
+    End;
+    Inc(Added);
+   End;
+  End;
+ End;
+ If Added > 0 Then Begin
+  RefreshExplorer(SolExplorer);
+  SolExplorer.NeedRepaint := True;
+  If SolutionLoaded Then Begin
+   SolutionModified := True;
+   SaveCurrentSolution;
+  End;
+ End;
+End;
+
 Procedure DispatchEvent(Var Ev: TEvent);
 Var
  CtxTag: LongInt;
@@ -60045,6 +60113,9 @@ Begin
       FileDlg.Base.Visible := True;
       DrawFileDialog(FileDlg);
      End;
+     412: Begin { Ajouter une reference... }
+      ShowAddReferenceDialog(AddRefDlg);
+     End;
      320, 420, 520: Begin { Renommer }
       StartExplorerRename(SolExplorer, CtxMenu.NodeIdx);
       DrawExplorer(SolExplorer);
@@ -60054,7 +60125,12 @@ Begin
          (CtxMenu.NodeIdx < SolExplorer.NodeCount) Then Begin
        If SolExplorer.Nodes[CtxMenu.NodeIdx].Kind = ENK_FILE_FRM Then
         OpenExplorerFileNodeForm(SolExplorer, CtxMenu.NodeIdx)
-       Else
+       Else If SolExplorer.Nodes[CtxMenu.NodeIdx].Kind =
+        ENK_PROPERTIES Then Begin
+        InitProjectPropertiesDialog(ProjPropDlg);
+        LoadProjectProperties(ProjPropDlg, CurrentProject);
+        ShowProjectPropertiesDialog(ProjPropDlg);
+       End Else
         OpenExplorerFileNode(SolExplorer, CtxMenu.NodeIdx);
       End;
      End;
@@ -60359,6 +60435,16 @@ Begin
    FullRepaintNeeded := True;
   End Else
    DrawProjectPropertiesDialog(ProjPropDlg);
+  Exit;
+ End;
+ If AddRefDlg.Base.Visible Then Begin
+  HandleAddReferenceDialogEvent(AddRefDlg, Ev);
+  If Not AddRefDlg.Base.Visible Then Begin
+   If AddRefDlg.Confirmed Then
+    ApplyAddReferenceDialogResult(AddRefDlg);
+   FullRepaintNeeded := True;
+  End Else
+   DrawAddReferenceDialog(AddRefDlg);
   Exit;
  End;
  { Sous-boite Ajouter/Modifier en premier : elle doit recevoir les
@@ -61067,6 +61153,8 @@ BEGIN
  FileDlg.Base.Visible := False;
  InitProjectPropertiesDialog(ProjPropDlg);
  ProjPropDlg.Base.Visible := False;
+ InitAddReferenceDialog(AddRefDlg);
+ AddRefDlg.Base.Visible := False;
  InitEmulatorPanel(EmuPanel);
  EmuPanel.Base.Visible := False;
  InitCSCContext(CSCContext);
