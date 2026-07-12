@@ -66,7 +66,7 @@ Begin VB.Form frmCalculator
    Begin VB.CommandButton cmdChiffre
       Caption         =   "0"
       Height          =   495
-      Index           =   9
+      Index           =   0
       Left            =   120
       TabIndex        =   10
       Top             =   3000
@@ -75,7 +75,7 @@ Begin VB.Form frmCalculator
    Begin VB.CommandButton cmdChiffre
       Caption         =   "9"
       Height          =   495
-      Index           =   8
+      Index           =   9
       Left            =   1200
       TabIndex        =   9
       Top             =   2400
@@ -84,7 +84,7 @@ Begin VB.Form frmCalculator
    Begin VB.CommandButton cmdChiffre
       Caption         =   "8"
       Height          =   495
-      Index           =   7
+      Index           =   8
       Left            =   660
       TabIndex        =   8
       Top             =   2400
@@ -93,7 +93,7 @@ Begin VB.Form frmCalculator
    Begin VB.CommandButton cmdChiffre
       Caption         =   "7"
       Height          =   495
-      Index           =   6
+      Index           =   7
       Left            =   120
       TabIndex        =   7
       Top             =   2400
@@ -102,7 +102,7 @@ Begin VB.Form frmCalculator
    Begin VB.CommandButton cmdChiffre
       Caption         =   "6"
       Height          =   495
-      Index           =   5
+      Index           =   6
       Left            =   1200
       TabIndex        =   6
       Top             =   1800
@@ -111,7 +111,7 @@ Begin VB.Form frmCalculator
    Begin VB.CommandButton cmdChiffre
       Caption         =   "5"
       Height          =   495
-      Index           =   4
+      Index           =   5
       Left            =   660
       TabIndex        =   5
       Top             =   1800
@@ -120,7 +120,7 @@ Begin VB.Form frmCalculator
    Begin VB.CommandButton cmdChiffre
       Caption         =   "4"
       Height          =   495
-      Index           =   3
+      Index           =   4
       Left            =   120
       TabIndex        =   4
       Top             =   1800
@@ -129,7 +129,7 @@ Begin VB.Form frmCalculator
    Begin VB.CommandButton cmdChiffre
       Caption         =   "3"
       Height          =   495
-      Index           =   2
+      Index           =   3
       Left            =   1200
       TabIndex        =   3
       Top             =   1200
@@ -138,7 +138,7 @@ Begin VB.Form frmCalculator
    Begin VB.CommandButton cmdChiffre
       Caption         =   "2"
       Height          =   495
-      Index           =   1
+      Index           =   2
       Left            =   660
       TabIndex        =   2
       Top             =   1200
@@ -147,7 +147,7 @@ Begin VB.Form frmCalculator
    Begin VB.CommandButton cmdChiffre
       Caption         =   "1"
       Height          =   495
-      Index           =   0
+      Index           =   1
       Left            =   120
       TabIndex        =   1
       Top             =   1200
@@ -198,13 +198,6 @@ Private Sub cmdChiffre_Click(Index As Integer)
 End Sub
 
 Private Sub cmdOp_Click(Index As Integer)
-    Dim asOps(4) As String
-    asOps(0) = "+"
-    asOps(1) = "-"
-    asOps(2) = "x"
-    asOps(3) = "/"
-    asOps(4) = "="
-
     dOperande = CDbl(txtAffichage.Text)
 
     If sOperateur <> "" And sOperateur <> "=" Then
@@ -214,7 +207,18 @@ Private Sub cmdOp_Click(Index As Integer)
         dValeurCourante = dOperande
     End If
 
-    sOperateur = asOps(Index)
+    Select Case Index
+        Case 0
+            sOperateur = "+"
+        Case 1
+            sOperateur = "-"
+        Case 2
+            sOperateur = "x"
+        Case 3
+            sOperateur = "/"
+        Case 4
+            sOperateur = "="
+    End Select
     bAttenteSaisie = True
 End Sub
 

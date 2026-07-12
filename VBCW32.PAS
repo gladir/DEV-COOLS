@@ -699,6 +699,15 @@ Const
   PE_MAGIC_32     = $010B;
   PE_IMG_BASE     = $00400000;
   PE_SEC_ALIGN    = 4096;
+  { Palier L : ecart fixe entre les RVA de section (.text/.rdata/     }
+  { .data), reserve au debut du codegen avant de connaitre la taille  }
+  { finale de chaque section (voir AsmInit/PEComputeLayout). Un       }
+  { module .FRM avec fenetre/controles/menu genere largement plus     }
+  { de code et de donnees qu un .BAS console ; l ancien ecart d une    }
+  { seule page (PE_SEC_ALIGN=4096) provoquait un chevauchement des     }
+  { sections virtuelles (executable invalide) dès qu une section       }
+  { depassait 4 Ko.                                                    }
+  PE_SECTION_GAP  = 65536;
   PE_FILE_ALIGN   = 512;
   PE_SUBSYS_CUI   = 3;  { Console }
   PE_SUBSYS_GUI   = 2;  { Windows }
@@ -1789,6 +1798,362 @@ Begin
   End;
 End;
 
+{ ============================================================ }
+{ Palier K - PARSEUR DU BLOC DE CONCEPTION .FRM                 }
+{ Un vrai .FRM produit par l IDE VB6 commence par :              }
+{   VERSION 5.00                                                }
+{   Begin VB.Form NomForm                                       }
+{     Caption = "..."                                           }
+{     Begin VB.CommandButton NomBouton                          }
+{       ...                                                     }
+{     End                                                        }
+{     Begin VB.Menu mnuFichier                                  }
+{       Begin VB.Menu mnuFichierQuitter                         }
+{       End                                                      }
+{     End                                                        }
+{   End                                                          }
+{   Attribute VB_Name = "NomForm"                               }
+{   ... (code VB normal) ...                                    }
+{ FRMSkipDesignerHeader lit ce bloc ligne a ligne (via la meme   }
+{ LexNextLine que le lexer normal) et le remplace par une table  }
+{ de controles/menus en memoire, puis laisse le curseur du       }
+{ fichier source juste apres le "End" final du formulaire, pret  }
+{ pour le lexage normal de "Attribute VB_Name" et du code.       }
+{ ============================================================ }
+
+Const
+  FRM_MAX_CONTROL = 256;
+  FRM_MAX_MENU    = 128;
+  FRM_STACK_MAX   = 32;
+  FRM_SK_FORM     = 0;
+  FRM_SK_CONTROL  = 1;
+  FRM_SK_MENU     = 2;
+
+Type
+  TFRMControl = Record
+    Name         : TString;   { nom VB (partage entre membres d un tableau) }
+    TypeStr      : TString;   { 'FORM','COMMANDBUTTON','TEXTBOX','LABEL',   }
+                               { 'LISTBOX','COMBOBOX','CHECKBOX','TIMER'    }
+    HasIndex     : Boolean;   { True si membre d un tableau de controles    }
+    Index        : LongInt;
+    Caption      : TString;   { Caption, ou Text initial pour une TextBox  }
+    Left, Top    : LongInt;   { pixels                                     }
+    Width, Height: LongInt;   { pixels                                     }
+    Enabled      : Boolean;
+    Visible      : Boolean;
+    Value        : LongInt;   { CheckBox : 0/1                             }
+    Style        : LongInt;   { ComboBox : 0=Dropdown Combo, 2=Dropdown List}
+    Locked       : Boolean;
+    Alignment    : LongInt;
+    MultiLine    : Boolean;
+    ScrollBars   : LongInt;
+    PasswordChar : TString;
+    IsDefault    : Boolean;
+    IsCancel     : Boolean;
+    Interval     : LongInt;   { Timer : millisecondes                      }
+    FontSize     : LongInt;   { 0 = non specifie                           }
+  End;
+
+  TFRMMenu = Record
+    Name      : TString;
+    Caption   : TString;
+    Shortcut  : TString;      { forme brute "^N" (Ctrl+N) ou ''            }
+    ParentIdx : Integer;      { -1 = menu de premier niveau                }
+  End;
+
+Var
+  FRMIsForm      : Boolean;
+  FRMFormName    : TString;
+  FRMFormCaption : TString;
+  FRMFormWidth   : LongInt;
+  FRMFormHeight  : LongInt;
+  FRMFormMaxBtn  : Boolean;
+  FRMFormMinBtn  : Boolean;
+  FRMControlCnt  : Integer;
+  FRMControls    : Array[0..FRM_MAX_CONTROL-1] Of TFRMControl;
+  FRMMenuCnt     : Integer;
+  FRMMenus       : Array[0..FRM_MAX_MENU-1] Of TFRMMenu;
+
+Function FRMTrim(Const S : TString) : TString;
+Var I, J : Integer;
+Begin
+  I := 1;
+  While (I <= Length(S)) And IsWhitespace(S[I]) Do Inc(I);
+  J := Length(S);
+  While (J >= I) And IsWhitespace(S[J]) Do Dec(J);
+  If J < I Then FRMTrim := ''
+  Else FRMTrim := Copy(S, I, J - I + 1);
+End;
+
+{ Retire un commentaire VB en fin de ligne de propriete           }
+{ (ex: "1  'Right Justify" -> "1"). Ignore les apostrophes a      }
+{ l interieur d une chaine entre guillemets.                     }
+Function FRMStripComment(Const S : TString) : TString;
+Var I : Integer; InStr : Boolean;
+Begin
+  InStr := False;
+  For I := 1 To Length(S) Do
+  Begin
+    If S[I] = '"' Then InStr := Not InStr
+    Else If (S[I] = '''') And (Not InStr) Then
+    Begin
+      FRMStripComment := FRMTrim(Copy(S, 1, I - 1));
+      Exit;
+    End;
+  End;
+  FRMStripComment := FRMTrim(S);
+End;
+
+{ Retire les guillemets entourant une valeur de propriete chaine }
+Function FRMUnquote(Const S : TString) : TString;
+Begin
+  If (Length(S) >= 2) And (S[1] = '"') And (S[Length(S)] = '"') Then
+    FRMUnquote := Copy(S, 2, Length(S) - 2)
+  Else
+    FRMUnquote := S;
+End;
+
+{ Convertit une valeur numerique VB (avec eventuel commentaire    }
+{ deja retire) en LongInt. Retourne 0 si non numerique.           }
+Function FRMValInt(Const S : TString) : LongInt;
+Var I : Integer; Neg : Boolean; V : LongInt;
+Begin
+  I := 1;
+  Neg := False;
+  V := 0;
+  If (Length(S) >= 1) And (S[1] = '-') Then Begin Neg := True; I := 2; End;
+  While (I <= Length(S)) And (S[I] >= '0') And (S[I] <= '9') Do
+  Begin
+    V := V * 10 + (Ord(S[I]) - Ord('0'));
+    Inc(I);
+  End;
+  If Neg Then V := -V;
+  FRMValInt := V;
+End;
+
+{ Twips (unite VB6 des .FRM, 1440/pouce) -> pixels ecran (96 DPI) }
+Function FRMTwipsToPx(T : LongInt) : LongInt;
+Begin
+  FRMTwipsToPx := T Div 15;
+End;
+
+{ Extrait le premier "mot" d une ligne (jusqu au premier espace)  }
+{ et renvoie le reste (trimme) via VarRest.                       }
+Function FRMFirstWord(Const S : TString; Var VarRest : TString) : TString;
+Var I : Integer;
+Begin
+  I := 1;
+  While (I <= Length(S)) And (Not IsWhitespace(S[I])) Do Inc(I);
+  FRMFirstWord := Copy(S, 1, I - 1);
+  VarRest := FRMTrim(Copy(S, I, Length(S) - I + 1));
+End;
+
+Function FRMFindControl(Const Nm : TString) : Integer;
+Var I : Integer; U : TString;
+Begin
+  FRMFindControl := -1;
+  U := UpCaseStr(Nm);
+  For I := 0 To FRMControlCnt - 1 Do
+    If UpCaseStr(FRMControls[I].Name) = U Then
+    Begin
+      FRMFindControl := I;
+      Exit;
+    End;
+End;
+
+Procedure FRMInitControl(Var C : TFRMControl);
+Begin
+  C.Name := ''; C.TypeStr := ''; C.HasIndex := False; C.Index := -1;
+  C.Caption := ''; C.Left := 0; C.Top := 0; C.Width := 1215; C.Height := 375;
+  C.Enabled := True; C.Visible := True; C.Value := 0; C.Style := 0;
+  C.Locked := False; C.Alignment := 0; C.MultiLine := False;
+  C.ScrollBars := 0; C.PasswordChar := ''; C.IsDefault := False;
+  C.IsCancel := False; C.Interval := 0; C.FontSize := 0;
+End;
+
+{ Applique une propriete "Name = Value" a un controle courant.   }
+Procedure FRMApplyControlProp(Var C : TFRMControl; Const PName, PVal : TString);
+Var U : TString;
+Begin
+  U := UpCaseStr(PName);
+  If U = 'CAPTION' Then C.Caption := FRMUnquote(PVal)
+  Else If U = 'TEXT' Then C.Caption := FRMUnquote(PVal)
+  Else If U = 'LEFT' Then C.Left := FRMTwipsToPx(FRMValInt(PVal))
+  Else If U = 'TOP' Then C.Top := FRMTwipsToPx(FRMValInt(PVal))
+  Else If U = 'WIDTH' Then C.Width := FRMTwipsToPx(FRMValInt(PVal))
+  Else If U = 'HEIGHT' Then C.Height := FRMTwipsToPx(FRMValInt(PVal))
+  Else If U = 'INDEX' Then Begin C.HasIndex := True; C.Index := FRMValInt(PVal); End
+  Else If U = 'ENABLED' Then C.Enabled := (FRMValInt(PVal) <> 0)
+  Else If U = 'VISIBLE' Then C.Visible := (FRMValInt(PVal) <> 0)
+  Else If U = 'VALUE' Then C.Value := FRMValInt(PVal)
+  Else If U = 'STYLE' Then C.Style := FRMValInt(PVal)
+  Else If U = 'LOCKED' Then C.Locked := (FRMValInt(PVal) <> 0)
+  Else If U = 'ALIGNMENT' Then C.Alignment := FRMValInt(PVal)
+  Else If U = 'MULTILINE' Then C.MultiLine := (FRMValInt(PVal) <> 0)
+  Else If U = 'SCROLLBARS' Then C.ScrollBars := FRMValInt(PVal)
+  Else If U = 'PASSWORDCHAR' Then C.PasswordChar := FRMUnquote(PVal)
+  Else If U = 'DEFAULT' Then C.IsDefault := (FRMValInt(PVal) <> 0)
+  Else If U = 'CANCEL' Then C.IsCancel := (FRMValInt(PVal) <> 0)
+  Else If U = 'INTERVAL' Then C.Interval := FRMValInt(PVal);
+  { Autres proprietes (TabIndex, ClientLeft, LinkTopic, ...) ignorees }
+End;
+
+Procedure FRMApplyFormProp(Const PName, PVal : TString);
+Var U : TString;
+Begin
+  U := UpCaseStr(PName);
+  If U = 'CAPTION' Then FRMFormCaption := FRMUnquote(PVal)
+  Else If U = 'CLIENTWIDTH' Then FRMFormWidth := FRMTwipsToPx(FRMValInt(PVal))
+  Else If U = 'CLIENTHEIGHT' Then FRMFormHeight := FRMTwipsToPx(FRMValInt(PVal))
+  Else If U = 'MAXBUTTON' Then FRMFormMaxBtn := (FRMValInt(PVal) <> 0)
+  Else If U = 'MINBUTTON' Then FRMFormMinBtn := (FRMValInt(PVal) <> 0);
+End;
+
+Procedure FRMApplyMenuProp(Var M : TFRMMenu; Const PName, PVal : TString);
+Var U : TString;
+Begin
+  U := UpCaseStr(PName);
+  If U = 'CAPTION' Then M.Caption := FRMUnquote(PVal)
+  Else If U = 'SHORTCUT' Then M.Shortcut := PVal;
+End;
+
+{ Le curseur du lexer (LexLine, apres un LexNextLine) doit etre  }
+{ positionne sur la premiere ligne du fichier ("VERSION ...")    }
+{ pour que ce sous-programme soit invoque ; sinon il ne fait      }
+{ rien et le lexage normal (mode .BAS / .FRM-stub) continue.      }
+Procedure FRMSkipDesignerHeader;
+Var
+  Line, First, Rest, TypeTok, NameTok, ShortType : TString;
+  PName, PVal : TString;
+  EqPos, I    : Integer;
+  StackKind   : Array[0..FRM_STACK_MAX-1] Of Integer;
+  StackIdx    : Array[0..FRM_STACK_MAX-1] Of Integer;
+  StackTop    : Integer;
+  InFontBlock : Boolean;
+  CIdx, MIdx, ParentM : Integer;
+  Done        : Boolean;
+Begin
+  FRMControlCnt := 0;
+  FRMMenuCnt    := 0;
+  FRMIsForm     := False;
+  If FRMTrim(FRMFirstWord(FRMTrim(LexLine), Rest)) = '' Then Exit;
+  First := UpCaseStr(FRMFirstWord(FRMTrim(LexLine), Rest));
+  If First <> 'VERSION' Then Exit;   { pas un .FRM avec bloc de conception }
+
+  FRMFormCaption := '';
+  FRMFormWidth   := 400;
+  FRMFormHeight  := 300;
+  FRMFormMaxBtn  := True;
+  FRMFormMinBtn  := True;
+  StackTop    := 0;
+  InFontBlock := False;
+  Done        := False;
+
+  LexNextLine;   { consommer "VERSION 5.00" }
+  While (Not Done) And (Not LexEOF) Do
+  Begin
+    Line := FRMStripComment(FRMTrim(LexLine));
+    If Line = '' Then
+    Begin
+      LexNextLine;
+      Continue;
+    End;
+    First := FRMFirstWord(Line, Rest);
+    If UpCaseStr(First) = 'BEGINPROPERTY' Then
+      InFontBlock := True
+    Else If UpCaseStr(First) = 'ENDPROPERTY' Then
+      InFontBlock := False
+    Else If UpCaseStr(First) = 'BEGIN' Then
+    Begin
+      TypeTok := UpCaseStr(FRMFirstWord(Rest, NameTok));
+      ShortType := TypeTok;
+      I := 1;
+      While (I <= Length(ShortType)) And (ShortType[I] <> '.') Do Inc(I);
+      If I <= Length(ShortType) Then
+        ShortType := Copy(ShortType, I + 1, Length(ShortType) - I);
+      If ShortType = 'FORM' Then
+      Begin
+        FRMIsForm  := True;
+        FRMFormName := NameTok;
+        StackKind[StackTop] := FRM_SK_FORM;
+        StackIdx[StackTop]  := -1;
+        Inc(StackTop);
+      End
+      Else If ShortType = 'MENU' Then
+      Begin
+        MIdx := FRMMenuCnt;
+        If MIdx < FRM_MAX_MENU Then
+        Begin
+          FRMMenus[MIdx].Name := NameTok;
+          FRMMenus[MIdx].Caption := '';
+          FRMMenus[MIdx].Shortcut := '';
+          ParentM := -1;
+          If (StackTop > 0) And (StackKind[StackTop - 1] = FRM_SK_MENU) Then
+            ParentM := StackIdx[StackTop - 1];
+          FRMMenus[MIdx].ParentIdx := ParentM;
+          Inc(FRMMenuCnt);
+        End;
+        StackKind[StackTop] := FRM_SK_MENU;
+        StackIdx[StackTop]  := MIdx;
+        Inc(StackTop);
+      End
+      Else
+      Begin
+        CIdx := FRMControlCnt;
+        If CIdx < FRM_MAX_CONTROL Then
+        Begin
+          FRMInitControl(FRMControls[CIdx]);
+          FRMControls[CIdx].Name := NameTok;
+          FRMControls[CIdx].TypeStr := ShortType;
+          Inc(FRMControlCnt);
+        End;
+        StackKind[StackTop] := FRM_SK_CONTROL;
+        StackIdx[StackTop]  := CIdx;
+        Inc(StackTop);
+      End;
+    End
+    Else If UpCaseStr(Line) = 'END' Then
+    Begin
+      If StackTop > 0 Then Dec(StackTop);
+      If StackTop = 0 Then
+      Begin
+        LexNextLine;
+        Done := True;
+        Continue;
+      End;
+    End
+    Else
+    Begin
+      { Ligne de propriete : "Nom = Valeur" }
+      EqPos := 0;
+      For I := 1 To Length(Line) Do
+        If (Line[I] = '=') And (EqPos = 0) Then EqPos := I;
+      If EqPos > 0 Then
+      Begin
+        PName := FRMTrim(Copy(Line, 1, EqPos - 1));
+        PVal  := FRMTrim(Copy(Line, EqPos + 1, Length(Line) - EqPos));
+        If (StackTop > 0) And InFontBlock And
+           (StackKind[StackTop - 1] = FRM_SK_CONTROL) Then
+        Begin
+          If UpCaseStr(PName) = 'SIZE' Then
+            FRMControls[StackIdx[StackTop - 1]].FontSize := FRMValInt(PVal);
+        End
+        Else If StackTop > 0 Then
+        Begin
+          Case StackKind[StackTop - 1] Of
+            FRM_SK_FORM    : FRMApplyFormProp(PName, PVal);
+            FRM_SK_CONTROL : FRMApplyControlProp(FRMControls[StackIdx[StackTop - 1]],
+                                PName, PVal);
+            FRM_SK_MENU    : FRMApplyMenuProp(FRMMenus[StackIdx[StackTop - 1]],
+                                PName, PVal);
+          End;
+        End;
+      End;
+    End;
+    If Not Done Then LexNextLine;
+  End;
+End;
+
 Procedure LexInit;
 Begin
   Assign(LexSrcF, Opts.SrcFile);
@@ -1807,6 +2172,7 @@ Begin
   CurTokLine := 0;
   CurTokCol  := 0;
   LexNextLine;
+  FRMSkipDesignerHeader;
 End;
 
 Procedure LexClose;
@@ -1875,6 +2241,16 @@ Begin
   CurTokReal := 0.0;
   { Tester si c est un mot-cle VB6 }
   KW := IsKeyword(S);
+  If (KW = KW_NONE) And (Length(S) > 1) And (S[Length(S)] = '$') Then
+  Begin
+    { Palier O : de nombreuses fonctions chaine VB6 (Trim$, LCase$,     }
+    { UCase$, Left$, Right$, ...) n ont pas d entree dediee dans la     }
+    { table des mots-cles ; le "$" y est purement cosmetique (ces       }
+    { fonctions renvoient deja toujours une String). On retente sans.   }
+    KW := IsKeyword(Copy(S, 1, Length(S) - 1));
+    If KW <> KW_NONE Then
+      CurTokStr := Copy(S, 1, Length(S) - 1);
+  End;
   If KW <> KW_NONE Then
   Begin
     CurTokType := TOK_KEYWORD;
@@ -15450,8 +15826,8 @@ Begin
   AsmDataSecSize   := 0;
   { Initialiser les RVA fixes pour qu AsmDataVA/StrLitVA renvoient }
   { les bonnes adresses pendant le codegen (avant AsmAssemble).    }
-  PE_RDATA_RVA  := PE_TEXT_RVA  + PE_SEC_ALIGN;
-  PE_DATA_RVA   := PE_RDATA_RVA + PE_SEC_ALIGN;
+  PE_RDATA_RVA  := PE_TEXT_RVA  + PE_SECTION_GAP;
+  PE_DATA_RVA   := PE_RDATA_RVA + PE_SECTION_GAP;
 End;
 
 { ------------------------------------------------------------ }
@@ -16512,6 +16888,11 @@ Var
   { Types utilisateur (Type ... End Type)                          }
   CGCTypes         : Array[0..CGC_MAX_TYPE-1] Of TCGCType;
   CGCTypeCnt       : Integer;
+  { Palier O : variables globales (Dim/Public/Private de module)     }
+  { declarees "As String" - stockees en 260 octets (len+data) comme  }
+  { les locales String, au lieu du slot Long de 4 octets par defaut. }
+  CGCGlobalStrNames : Array[0..63] Of TString;
+  CGCGlobalStrCnt   : Integer;
   { With ... End With : pile de bases (offset BP local ou -1 pour  }
   { pointeur dans EAX/ECX). Pour la simplicite : on stocke         }
   { l index dans CGCLocals du var courant (qui doit etre Kind=3/4).}
@@ -16522,6 +16903,29 @@ Var
   { Long. Reset par chaque CGCParseExpr a False, mis a True pour  }
   { litteraux chaine, variables String, et fonctions de chaines.  }
   CGCExprIsString  : Boolean;
+
+{ Palier O : une variable globale (module) declaree "As String" }
+Function CGCIsGlobalString(Const Nm : TString) : Boolean;
+Var I : Integer; U : TString;
+Begin
+  CGCIsGlobalString := False;
+  U := UpCaseStr(Nm);
+  For I := 0 To CGCGlobalStrCnt - 1 Do
+    If UpCaseStr(CGCGlobalStrNames[I]) = U Then
+    Begin
+      CGCIsGlobalString := True;
+      Exit;
+    End;
+End;
+
+Procedure CGCAddGlobalString(Const Nm : TString);
+Begin
+  If CGCGlobalStrCnt < 64 Then
+  Begin
+    CGCGlobalStrNames[CGCGlobalStrCnt] := Nm;
+    Inc(CGCGlobalStrCnt);
+  End;
+End;
 
 { ------------------------------------------------------------ }
 { Helpers locaux/labels                                         }
@@ -16913,6 +17317,1310 @@ Procedure CGCEmitUDTWriteField(LIdx : Integer); Forward;
 Procedure CGCEmitErrDispatch; Forward;
 Procedure CGCEmitSetStrLit(Const PtrSym, LenSym, Msg : TString); Forward;
 
+{ ============================================================ }
+{ Palier L/M - RUNTIME FENETRE VB6                              }
+{ Creation controles Win32 reels (CreateWindowEx), WndProc,     }
+{ boucle de messages, et acces aux membres (Control.Membre,     }
+{ Me.Membre, Clipboard.Membre) en lecture/ecriture/appel.       }
+{ ============================================================ }
+
+Const
+  { Styles de fenetre }
+  FRM_WS_OVERLAPPEDWINDOW = $00CF0000;
+  FRM_WS_CHILD            = $40000000;
+  FRM_WS_VISIBLE          = $10000000;
+  FRM_WS_TABSTOP          = $00010000;
+  FRM_WS_VSCROLL          = $00200000;
+  FRM_WS_BORDER           = $00800000;
+  FRM_WS_DISABLED         = $08000000;
+  FRM_WS_MINIMIZEBOX      = $00020000;
+  FRM_WS_MAXIMIZEBOX      = $00010000;
+  FRM_BS_DEFPUSHBUTTON    = $0001;
+  FRM_BS_CHECKBOX         = $0002;
+  FRM_ES_MULTILINE        = $0004;
+  FRM_ES_PASSWORD         = $0020;
+  FRM_ES_AUTOHSCROLL      = $0080;
+  FRM_CBS_DROPDOWN        = $0000;
+  FRM_CBS_DROPDOWNLIST    = $0002;
+  FRM_CBS_HASSTRINGS      = $0200;
+  FRM_LBS_NOTIFY          = $0001;
+  FRM_CW_USEDEFAULT       = LongInt($80000000);
+  FRM_SW_SHOW             = 5;
+  FRM_IDC_ARROW           = 32512;
+  FRM_COLOR_BTNFACE_BR    = 16;         { COLOR_BTNFACE(15) + 1 }
+  { Messages }
+  FRM_WM_DESTROY          = $0002;
+  FRM_WM_CLOSE            = $0010;
+  FRM_WM_COMMAND          = $0111;
+  FRM_WM_TIMER            = $0113;
+  FRM_WM_SETFONT          = $0030;
+  FRM_BM_GETCHECK         = $00F0;
+  FRM_BM_SETCHECK         = $00F1;
+  FRM_LB_ADDSTRING        = $0180;
+  FRM_LB_DELETESTRING     = $0182;
+  FRM_LB_RESETCONTENT     = $0184;
+  FRM_LB_SETCURSEL        = $0186;
+  FRM_LB_GETCURSEL        = $0188;
+  FRM_LB_GETCOUNT         = $018B;
+  FRM_CB_ADDSTRING        = $0143;
+  FRM_CB_DELETESTRING     = $0144;
+  FRM_CB_RESETCONTENT     = $014B;
+  FRM_CB_GETCURSEL        = $0147;
+  FRM_CB_SETCURSEL        = $014E;
+  FRM_CB_GETCOUNT         = $0146;
+  FRM_EM_GETSEL           = $00B0;
+  FRM_EM_REPLACESEL       = $00C2;
+  FRM_LBN_DBLCLK          = 2;
+  { InputBox : fenetre popup modale construite a la main }
+  FRM_WS_POPUP            = LongInt($80000000);
+  FRM_WS_CAPTION          = $00C00000;
+  FRM_WS_SYSMENU          = $00080000;
+  IB_ID_OK                = 1;
+  IB_ID_CANCEL            = 2;
+
+Function FRMControlHwndSym(Idx : Integer) : TString;
+Begin
+  FRMControlHwndSym := '@FRM_HWND' + ItoS(Idx);
+End;
+
+Function FRMFontSzSym(Idx : Integer) : TString;
+Begin
+  FRMFontSzSym := '@FRM_FONTSZ' + ItoS(Idx);
+End;
+
+Function FRMControlWinID(Idx : Integer) : LongInt;
+Begin
+  FRMControlWinID := 1000 + Idx;
+End;
+
+Function FRMMenuWinID(Idx : Integer) : LongInt;
+Begin
+  FRMMenuWinID := 2000 + Idx;
+End;
+
+Function FRMWin32ClassName(Const TypeStr : TString) : TString;
+Begin
+  If TypeStr = 'COMMANDBUTTON' Then FRMWin32ClassName := 'BUTTON'
+  Else If TypeStr = 'CHECKBOX' Then FRMWin32ClassName := 'BUTTON'
+  Else If TypeStr = 'TEXTBOX' Then FRMWin32ClassName := 'EDIT'
+  Else If TypeStr = 'LABEL' Then FRMWin32ClassName := 'STATIC'
+  Else If TypeStr = 'LISTBOX' Then FRMWin32ClassName := 'LISTBOX'
+  Else If TypeStr = 'COMBOBOX' Then FRMWin32ClassName := 'COMBOBOX'
+  Else FRMWin32ClassName := 'STATIC';
+End;
+
+{ ------------------------------------------------------------ }
+{ Runtime : conversion chaine VB (ptr,len) -> C-string a NUL,   }
+{ et CDbl(chaine) -> Long (partie entiere, sans support des     }
+{ decimales : ce compilateur n a pas de type flottant).         }
+{ ------------------------------------------------------------ }
+Procedure CGCEmitFormRuntimeHelpers;
+Var L1, L2 : TString;
+Begin
+  AsmDefineData('@FRM_CSTRBUF', 512);
+  { Buffer dedie pour le texte de MsgBox : __frm_cstr partage un seul   }
+  { buffer (@FRM_CSTRBUF) entre tous ses appels, donc convertir le      }
+  { titre APRES le prompt ecraserait ce dernier s ils visaient la meme  }
+  { adresse. Le prompt est copie ici avant la conversion du titre.      }
+  AsmDefineData('@MSGBOX_TEXTBUF', 256);
+
+  { ----- __frm_cstr(ptr, len) -> EAX = ptr C-string (NUL final) ----- }
+  AsmLabel('__frm_cstr');
+  AsmPushReg(R_EBP);
+  AsmMovRegReg(R_EBP, R_ESP);
+  AsmPushReg(R_ESI);
+  AsmPushReg(R_EDI);
+  AsmPushReg(R_ECX);
+  AsmMovRegMemBP(R_ESI, 8);
+  AsmMovRegMemBP(R_ECX, 12);
+  AsmAluRegImm(ALU_CMP, R_ECX, 510);
+  L1 := CGCNewLabel('cstrCap');
+  AsmJcc(CC_LE, L1);
+  AsmMovRegImm(R_ECX, 510);
+  AsmLabel(L1);
+  AsmMovRegImm(R_EDI, AsmDataVA('@FRM_CSTRBUF'));
+  AsmRepMovsb;
+  AsmMovRegImm(R_EAX, 0);
+  AsmStosb;
+  AsmMovRegImm(R_EAX, AsmDataVA('@FRM_CSTRBUF'));
+  AsmPopReg(R_ECX);
+  AsmPopReg(R_EDI);
+  AsmPopReg(R_ESI);
+  AsmMovRegReg(R_ESP, R_EBP);
+  AsmPopReg(R_EBP);
+  AsmRet;
+
+  { ----- __cdbl(ptr, len) -> EAX = Long (partie entiere) ----- }
+  AsmLabel('__cdbl');
+  AsmPushReg(R_EBP);
+  AsmMovRegReg(R_EBP, R_ESP);
+  AsmPushReg(R_ESI);
+  AsmPushReg(R_EBX);
+  AsmPushReg(R_EDX);
+  { convertir en C-string d abord }
+  AsmMovRegMemBP(R_EAX, 12);
+  AsmPushReg(R_EAX);
+  AsmMovRegMemBP(R_EAX, 8);
+  AsmPushReg(R_EAX);
+  AsmCallLbl('__frm_cstr');
+  AsmAluRegImm(ALU_ADD, R_ESP, 8);
+  AsmMovRegReg(R_ESI, R_EAX);
+  AsmXorRegReg(R_EBX, R_EBX);       { neg := 0 }
+  AsmXorRegReg(R_EDX, R_EDX);       { resultat := 0 }
+  { premier caractere : signe '-' eventuel }
+  AsmXorRegReg(R_EAX, R_EAX);
+  AsmLodsb;
+  AsmAluRegImm(ALU_CMP, R_EAX, Ord('-'));
+  L1 := CGCNewLabel('cdblNoNeg');
+  L2 := CGCNewLabel('cdblLoopStart');
+  AsmJcc(CC_NE, L1);
+  AsmMovRegImm(R_EBX, 1);
+  AsmJmpLbl(L2);
+  AsmLabel(L1);
+  AsmDecReg(R_ESI);
+  AsmLabel(L2);
+  { boucle sur les chiffres }
+  L1 := CGCNewLabel('cdblLoop');
+  L2 := CGCNewLabel('cdblDone');
+  AsmLabel(L1);
+  AsmXorRegReg(R_EAX, R_EAX);
+  AsmLodsb;
+  AsmTestRegReg(R_EAX, R_EAX);
+  AsmJcc(CC_E, L2);
+  AsmAluRegImm(ALU_CMP, R_EAX, Ord('0'));
+  AsmJcc(CC_L, L2);
+  AsmAluRegImm(ALU_CMP, R_EAX, Ord('9'));
+  AsmJcc(CC_G, L2);
+  AsmAluRegImm(ALU_SUB, R_EAX, Ord('0'));
+  AsmPushReg(R_EAX);
+  AsmMovRegReg(R_EAX, R_EDX);
+  AsmMovRegImm(R_ECX, 10);
+  AsmImulRegReg(R_EAX, R_ECX);
+  AsmPopReg(R_ECX);
+  AsmAluRegReg(ALU_ADD, R_EAX, R_ECX);
+  AsmMovRegReg(R_EDX, R_EAX);
+  AsmJmpLbl(L1);
+  AsmLabel(L2);
+  AsmTestRegReg(R_EBX, R_EBX);
+  L1 := CGCNewLabel('cdblRet');
+  AsmJcc(CC_E, L1);
+  AsmNegReg(R_EDX);
+  AsmLabel(L1);
+  AsmMovRegReg(R_EAX, R_EDX);
+  AsmPopReg(R_EDX);
+  AsmPopReg(R_EBX);
+  AsmPopReg(R_ESI);
+  AsmMovRegReg(R_ESP, R_EBP);
+  AsmPopReg(R_EBP);
+  AsmRet;
+End;
+
+{ ------------------------------------------------------------ }
+{ InputBox : fenetre popup modale construite entierement a la  }
+{ main (pas de boite de dialogue systeme toute faite pour ce    }
+{ besoin precis). Classe enregistree une seule fois (@IB_CLASS- }
+{ REG), fenetre creee/detruite a chaque appel. @FRM_HINSTANCE,  }
+{ @FRM_HWNDMAIN et @FRM_MSG (deja definis pour la fenetre       }
+{ principale) sont reutilises directement.                     }
+{ ------------------------------------------------------------ }
+Procedure CGCEmitInputBoxHelper;
+Var
+  L1, LAlreadyReg, LLoop, LCopyLoop, LCopyDone : TString;
+  WCVA     : LongInt;
+  ClsLit, StaticLit, EditLit, ButtonLit, OKLit, CancelLit : Integer;
+Begin
+  AsmDefineData('@IB_PROMPTBUF', 256);
+  AsmDefineData('@IB_TITLEBUF',  128);
+  AsmDefineData('@IB_DEFBUF',    256);
+  AsmDefineData('@IB_RESULTBUF', 256);
+  AsmDefineData('@IB_WNDCLASS',  40);
+  AsmDefineData('@IB_HWND',      4);
+  AsmDefineData('@IB_EDIT',      4);
+  AsmDefineData('@IB_DONE',      4);
+  AsmDefineData('@IB_CLASSREG',  4);
+
+  { ----- __ib_cstr(ptr, len, destbuf) : copie (ptr,len) VB en   }
+  { C-string NUL-terminee dans destbuf (mise en cap a 254 oct.). }
+  AsmLabel('__ib_cstr');
+  AsmPushReg(R_EBP);
+  AsmMovRegReg(R_EBP, R_ESP);
+  AsmPushReg(R_ESI);
+  AsmPushReg(R_EDI);
+  AsmPushReg(R_ECX);
+  AsmMovRegMemBP(R_ESI, 8);
+  AsmMovRegMemBP(R_ECX, 12);
+  AsmAluRegImm(ALU_CMP, R_ECX, 254);
+  L1 := CGCNewLabel('ibcstrCap');
+  AsmJcc(CC_LE, L1);
+  AsmMovRegImm(R_ECX, 254);
+  AsmLabel(L1);
+  AsmMovRegMemBP(R_EDI, 16);
+  AsmRepMovsb;
+  AsmMovRegImm(R_EAX, 0);
+  AsmStosb;
+  AsmPopReg(R_ECX);
+  AsmPopReg(R_EDI);
+  AsmPopReg(R_ESI);
+  AsmMovRegReg(R_ESP, R_EBP);
+  AsmPopReg(R_EBP);
+  AsmRet;
+
+  { ----- _IB_WNDPROC : gere seulement OK/Annuler/fermeture ----- }
+  AsmLabel('_IB_WNDPROC');
+  AsmPushReg(R_EBP);
+  AsmMovRegReg(R_EBP, R_ESP);
+
+  AsmMovRegMemBP(R_EAX, 12);
+  AsmAluRegImm(ALU_CMP, R_EAX, FRM_WM_COMMAND);
+  L1 := CGCNewLabel('ibNotCmd');
+  AsmJcc(CC_NE, L1);
+  AsmMovRegMemBP(R_EAX, 16);
+  AsmAluRegImm(ALU_AND, R_EAX, $FFFF);
+  AsmAluRegImm(ALU_CMP, R_EAX, IB_ID_OK);
+  LAlreadyReg := CGCNewLabel('ibChkCancel');
+  AsmJcc(CC_NE, LAlreadyReg);
+  AsmMovRegMemAbs(R_EAX, AsmDataVA('@IB_EDIT'));
+  AsmPushImm(256);
+  AsmPushImm(AsmDataVA('@IB_RESULTBUF'));
+  AsmPushReg(R_EAX);
+  AsmCallIAT(ImpFindFunc('GetWindowTextA'));
+  AsmMovRegImm(R_EAX, 1);
+  AsmMovMemAbsReg(AsmDataVA('@IB_DONE'), R_EAX);
+  AsmMovRegImm(R_EAX, 0);
+  AsmMovRegReg(R_ESP, R_EBP);
+  AsmPopReg(R_EBP);
+  AsmRetImm(16);
+  AsmLabel(LAlreadyReg);
+  AsmAluRegImm(ALU_CMP, R_EAX, IB_ID_CANCEL);
+  LCopyDone := CGCNewLabel('ibNotCancel');
+  AsmJcc(CC_NE, LCopyDone);
+  AsmMovRegImm(R_EAX, 0);
+  AsmMovMemAbsReg(AsmDataVA('@IB_RESULTBUF'), R_EAX);
+  AsmMovRegImm(R_EAX, 2);
+  AsmMovMemAbsReg(AsmDataVA('@IB_DONE'), R_EAX);
+  AsmMovRegImm(R_EAX, 0);
+  AsmMovRegReg(R_ESP, R_EBP);
+  AsmPopReg(R_EBP);
+  AsmRetImm(16);
+  AsmLabel(LCopyDone);
+  AsmLabel(L1);
+
+  AsmMovRegMemBP(R_EAX, 12);
+  AsmAluRegImm(ALU_CMP, R_EAX, FRM_WM_CLOSE);
+  L1 := CGCNewLabel('ibNotClose');
+  AsmJcc(CC_NE, L1);
+  AsmMovRegImm(R_EAX, 0);
+  AsmMovMemAbsReg(AsmDataVA('@IB_RESULTBUF'), R_EAX);
+  AsmMovRegImm(R_EAX, 2);
+  AsmMovMemAbsReg(AsmDataVA('@IB_DONE'), R_EAX);
+  AsmMovRegImm(R_EAX, 0);
+  AsmMovRegReg(R_ESP, R_EBP);
+  AsmPopReg(R_EBP);
+  AsmRetImm(16);
+  AsmLabel(L1);
+
+  AsmMovRegMemBP(R_EAX, 20);
+  AsmPushReg(R_EAX);
+  AsmMovRegMemBP(R_EAX, 16);
+  AsmPushReg(R_EAX);
+  AsmMovRegMemBP(R_EAX, 12);
+  AsmPushReg(R_EAX);
+  AsmMovRegMemBP(R_EAX, 8);
+  AsmPushReg(R_EAX);
+  AsmCallIAT(ImpFindFunc('DefWindowProcA'));
+  AsmMovRegReg(R_ESP, R_EBP);
+  AsmPopReg(R_EBP);
+  AsmRetImm(16);
+
+  { ----- __inputbox : cree/affiche/pompe/detruit la popup, puis }
+  { renvoie EAX=ptr, EDX=len (chaine resultat, "" si Annuler).   }
+  { Les buffers @IB_PROMPTBUF/@IB_TITLEBUF/@IB_DEFBUF sont       }
+  { deja remplis (C-strings) par l appelant avant le CALL.       }
+  AsmLabel('__inputbox');
+
+  AsmMovRegMemAbs(R_EAX, AsmDataVA('@IB_CLASSREG'));
+  AsmTestRegReg(R_EAX, R_EAX);
+  LAlreadyReg := CGCNewLabel('ibClsDone');
+  AsmJcc(CC_NE, LAlreadyReg);
+
+  WCVA := AsmDataVA('@IB_WNDCLASS');
+  AsmMovRegImm(R_EAX, 0);
+  AsmMovMemAbsReg(WCVA + 0, R_EAX);
+  AsmMovMemAbsImmLbl(WCVA + 4, '_IB_WNDPROC');
+  AsmMovMemAbsReg(WCVA + 8, R_EAX);
+  AsmMovMemAbsReg(WCVA + 12, R_EAX);
+  AsmMovRegMemAbs(R_EAX, AsmDataVA('@FRM_HINSTANCE'));
+  AsmMovMemAbsReg(WCVA + 16, R_EAX);
+  AsmMovRegImm(R_EAX, 0);
+  AsmMovMemAbsReg(WCVA + 20, R_EAX);
+  AsmPushImm(FRM_IDC_ARROW);
+  AsmPushImm(0);
+  AsmCallIAT(ImpFindFunc('LoadCursorA'));
+  AsmMovMemAbsReg(WCVA + 24, R_EAX);
+  AsmMovRegImm(R_EAX, FRM_COLOR_BTNFACE_BR);
+  AsmMovMemAbsReg(WCVA + 28, R_EAX);
+  AsmMovRegImm(R_EAX, 0);
+  AsmMovMemAbsReg(WCVA + 32, R_EAX);
+  ClsLit := StrAddLit('VBCWINPUTBOX');
+  AsmMovRegStrRVA(R_EAX, ClsLit);
+  AsmMovMemAbsReg(WCVA + 36, R_EAX);
+  AsmPushImm(WCVA);
+  AsmCallIAT(ImpFindFunc('RegisterClassA'));
+  AsmMovRegImm(R_EAX, 1);
+  AsmMovMemAbsReg(AsmDataVA('@IB_CLASSREG'), R_EAX);
+  AsmLabel(LAlreadyReg);
+  ClsLit := StrAddLit('VBCWINPUTBOX');
+
+  AsmPushImm(0);
+  AsmMovRegMemAbs(R_EAX, AsmDataVA('@FRM_HINSTANCE'));
+  AsmPushReg(R_EAX);
+  AsmPushImm(0);
+  AsmMovRegMemAbs(R_EAX, AsmDataVA('@FRM_HWNDMAIN'));
+  AsmPushReg(R_EAX);
+  AsmPushImm(150);
+  AsmPushImm(320);
+  AsmPushImm(FRM_CW_USEDEFAULT);
+  AsmPushImm(FRM_CW_USEDEFAULT);
+  AsmPushImm(FRM_WS_POPUP Or FRM_WS_CAPTION Or FRM_WS_SYSMENU);
+  AsmMovRegImm(R_EAX, AsmDataVA('@IB_TITLEBUF'));
+  AsmPushReg(R_EAX);
+  AsmMovRegStrRVA(R_EAX, ClsLit);
+  AsmPushReg(R_EAX);
+  AsmPushImm(0);
+  AsmCallIAT(ImpFindFunc('CreateWindowExA'));
+  AsmMovMemAbsReg(AsmDataVA('@IB_HWND'), R_EAX);
+
+  StaticLit := StrAddLit('STATIC');
+  AsmPushImm(0);
+  AsmMovRegMemAbs(R_EAX, AsmDataVA('@FRM_HINSTANCE'));
+  AsmPushReg(R_EAX);
+  AsmPushImm(0);
+  AsmMovRegMemAbs(R_EAX, AsmDataVA('@IB_HWND'));
+  AsmPushReg(R_EAX);
+  AsmPushImm(20);
+  AsmPushImm(280);
+  AsmPushImm(10);
+  AsmPushImm(10);
+  AsmPushImm(FRM_WS_CHILD Or FRM_WS_VISIBLE);
+  AsmMovRegImm(R_EAX, AsmDataVA('@IB_PROMPTBUF'));
+  AsmPushReg(R_EAX);
+  AsmMovRegStrRVA(R_EAX, StaticLit);
+  AsmPushReg(R_EAX);
+  AsmPushImm(0);
+  AsmCallIAT(ImpFindFunc('CreateWindowExA'));
+
+  EditLit := StrAddLit('EDIT');
+  AsmPushImm(0);
+  AsmMovRegMemAbs(R_EAX, AsmDataVA('@FRM_HINSTANCE'));
+  AsmPushReg(R_EAX);
+  AsmPushImm(0);
+  AsmMovRegMemAbs(R_EAX, AsmDataVA('@IB_HWND'));
+  AsmPushReg(R_EAX);
+  AsmPushImm(24);
+  AsmPushImm(280);
+  AsmPushImm(40);
+  AsmPushImm(10);
+  AsmPushImm(FRM_WS_CHILD Or FRM_WS_VISIBLE Or FRM_WS_BORDER Or
+             FRM_WS_TABSTOP Or FRM_ES_AUTOHSCROLL);
+  AsmMovRegImm(R_EAX, AsmDataVA('@IB_DEFBUF'));
+  AsmPushReg(R_EAX);
+  AsmMovRegStrRVA(R_EAX, EditLit);
+  AsmPushReg(R_EAX);
+  AsmPushImm(0);
+  AsmCallIAT(ImpFindFunc('CreateWindowExA'));
+  AsmMovMemAbsReg(AsmDataVA('@IB_EDIT'), R_EAX);
+
+  ButtonLit := StrAddLit('BUTTON');
+  OKLit := StrAddLit('OK');
+  AsmPushImm(0);
+  AsmMovRegMemAbs(R_EAX, AsmDataVA('@FRM_HINSTANCE'));
+  AsmPushReg(R_EAX);
+  AsmPushImm(IB_ID_OK);
+  AsmMovRegMemAbs(R_EAX, AsmDataVA('@IB_HWND'));
+  AsmPushReg(R_EAX);
+  AsmPushImm(26);
+  AsmPushImm(80);
+  AsmPushImm(75);
+  AsmPushImm(60);
+  AsmPushImm(FRM_WS_CHILD Or FRM_WS_VISIBLE Or FRM_WS_TABSTOP Or
+             FRM_BS_DEFPUSHBUTTON);
+  AsmMovRegStrRVA(R_EAX, OKLit);
+  AsmPushReg(R_EAX);
+  AsmMovRegStrRVA(R_EAX, ButtonLit);
+  AsmPushReg(R_EAX);
+  AsmPushImm(0);
+  AsmCallIAT(ImpFindFunc('CreateWindowExA'));
+
+  CancelLit := StrAddLit('Annuler');
+  AsmPushImm(0);
+  AsmMovRegMemAbs(R_EAX, AsmDataVA('@FRM_HINSTANCE'));
+  AsmPushReg(R_EAX);
+  AsmPushImm(IB_ID_CANCEL);
+  AsmMovRegMemAbs(R_EAX, AsmDataVA('@IB_HWND'));
+  AsmPushReg(R_EAX);
+  AsmPushImm(26);
+  AsmPushImm(80);
+  AsmPushImm(75);
+  AsmPushImm(160);
+  AsmPushImm(FRM_WS_CHILD Or FRM_WS_VISIBLE Or FRM_WS_TABSTOP);
+  AsmMovRegStrRVA(R_EAX, CancelLit);
+  AsmPushReg(R_EAX);
+  AsmMovRegStrRVA(R_EAX, ButtonLit);
+  AsmPushReg(R_EAX);
+  AsmPushImm(0);
+  AsmCallIAT(ImpFindFunc('CreateWindowExA'));
+
+  AsmPushImm(0);
+  AsmMovRegMemAbs(R_EAX, AsmDataVA('@FRM_HWNDMAIN'));
+  AsmPushReg(R_EAX);
+  AsmCallIAT(ImpFindFunc('EnableWindow'));
+
+  AsmPushImm(FRM_SW_SHOW);
+  AsmMovRegMemAbs(R_EAX, AsmDataVA('@IB_HWND'));
+  AsmPushReg(R_EAX);
+  AsmCallIAT(ImpFindFunc('ShowWindow'));
+
+  AsmMovRegMemAbs(R_EAX, AsmDataVA('@IB_EDIT'));
+  AsmPushReg(R_EAX);
+  AsmCallIAT(ImpFindFunc('SetFocus'));
+
+  AsmMovRegImm(R_EAX, 0);
+  AsmMovMemAbsReg(AsmDataVA('@IB_DONE'), R_EAX);
+
+  LLoop := CGCNewLabel('ibLoop');
+  AsmLabel(LLoop);
+  AsmPushImm(0);
+  AsmPushImm(0);
+  AsmPushImm(0);
+  AsmPushImm(AsmDataVA('@FRM_MSG'));
+  AsmCallIAT(ImpFindFunc('GetMessageA'));
+  AsmPushImm(AsmDataVA('@FRM_MSG'));
+  AsmCallIAT(ImpFindFunc('TranslateMessage'));
+  AsmPushImm(AsmDataVA('@FRM_MSG'));
+  AsmCallIAT(ImpFindFunc('DispatchMessageA'));
+  AsmMovRegMemAbs(R_EAX, AsmDataVA('@IB_DONE'));
+  AsmTestRegReg(R_EAX, R_EAX);
+  AsmJcc(CC_E, LLoop);
+
+  AsmPushImm(1);
+  AsmMovRegMemAbs(R_EAX, AsmDataVA('@FRM_HWNDMAIN'));
+  AsmPushReg(R_EAX);
+  AsmCallIAT(ImpFindFunc('EnableWindow'));
+
+  AsmMovRegMemAbs(R_EAX, AsmDataVA('@FRM_HWNDMAIN'));
+  AsmPushReg(R_EAX);
+  AsmCallIAT(ImpFindFunc('SetForegroundWindow'));
+
+  AsmMovRegMemAbs(R_EAX, AsmDataVA('@IB_HWND'));
+  AsmPushReg(R_EAX);
+  AsmCallIAT(ImpFindFunc('DestroyWindow'));
+
+  AsmCallLbl('__str_alloc');
+  AsmMovRegReg(R_EDX, R_EAX);
+  AsmMovRegReg(R_EDI, R_EAX);
+  AsmMovRegImm(R_ESI, AsmDataVA('@IB_RESULTBUF'));
+  AsmMovRegImm(R_ECX, 0);
+  LCopyLoop := CGCNewLabel('ibCopyLoop');
+  LCopyDone := CGCNewLabel('ibCopyDone');
+  AsmLabel(LCopyLoop);
+  AsmAluRegImm(ALU_CMP, R_ECX, 255);
+  AsmJcc(CC_GE, LCopyDone);
+  AsmXorRegReg(R_EAX, R_EAX);
+  AsmLodsb;
+  AsmTestRegReg(R_EAX, R_EAX);
+  AsmJcc(CC_E, LCopyDone);
+  AsmStosb;
+  AsmIncReg(R_ECX);
+  AsmJmpLbl(LCopyLoop);
+  AsmLabel(LCopyDone);
+  AsmMovRegReg(R_EAX, R_EDX);
+  AsmMovRegReg(R_EDX, R_ECX);
+  AsmRet;
+End;
+
+{ Format$(valeur, "00") : la largeur est le nombre de caracteres du   }
+{ modele litteral (compte a la compilation). Chaque chiffre est      }
+{ empile (poids fort empile en dernier => en sommet de pile) puis     }
+{ tous depiles dans l ordre gauche->droite vers un slot du pool.      }
+{ CurTok est sur "Format"/"Format$" a l entree.                       }
+Procedure FRMParseFormatDollar;
+Var
+  Width, I : Integer;
+Begin
+  LexNextToken;
+  If CurTokType <> TOK_LPAREN Then
+    FatalError('Palier O: "(" attendue apres Format (ligne ' +
+               ItoS(CurTokLine) + ')');
+  LexNextToken;
+  CGCParseExpr;                        { EAX = valeur }
+  If CurTokType <> TOK_COMMA Then
+    FatalError('Palier O: "," attendue apres Format(valeur (ligne ' +
+               ItoS(CurTokLine) + ')');
+  LexNextToken;
+  If CurTokType <> TOK_STRING Then
+    FatalError('Palier O: modele Format$ litteral attendu (ligne ' +
+               ItoS(CurTokLine) + ')');
+  Width := Length(CurTokStr);
+  If Width < 1 Then Width := 1;
+  If Width > 8 Then Width := 8;
+  LexNextToken;
+  If CurTokType <> TOK_RPAREN Then
+    FatalError('Palier O: ")" attendue apres Format(... (ligne ' +
+               ItoS(CurTokLine) + ')');
+  LexNextToken;
+  AsmMovRegImm(R_ECX, 10);
+  For I := 1 To Width Do
+  Begin
+    AsmCdq;
+    AsmIdivReg(R_ECX);      { EAX := EAX div 10, EDX := reste }
+    AsmPushReg(R_EDX);
+  End;
+  AsmCallLbl('__str_alloc');
+  AsmMovRegReg(R_EDI, R_EAX);
+  For I := 1 To Width Do
+  Begin
+    AsmPopReg(R_EAX);
+    AsmAluRegImm(ALU_ADD, R_EAX, Ord('0'));
+    AsmStosb;
+  End;
+  AsmMovRegImm(R_EDX, Width);
+  AsmMovRegReg(R_EAX, R_EDI);
+  AsmAluRegImm(ALU_SUB, R_EAX, Width);
+  CGCExprIsString := True;
+End;
+
+{ ------------------------------------------------------------ }
+{ Constantes VB integrees (vbCrLf, vbYes, vbQuestion, ...).      }
+{ ------------------------------------------------------------ }
+Function FRMBuiltinConst(Const NmUp : TString; Var IsStr : Boolean;
+  Var IntVal : LongInt; Var StrVal : TString) : Boolean;
+Begin
+  FRMBuiltinConst := True;
+  IsStr := False;
+  IntVal := 0;
+  StrVal := '';
+  If NmUp = 'VBCRLF' Then Begin IsStr := True; StrVal := Chr(13) + Chr(10); End
+  Else If NmUp = 'VBTAB' Then Begin IsStr := True; StrVal := Chr(9); End
+  Else If NmUp = 'VBKEYRETURN' Then IntVal := 13
+  Else If NmUp = 'VBCHECKED' Then IntVal := 1
+  Else If NmUp = 'VBUNCHECKED' Then IntVal := 0
+  Else If NmUp = 'VBOK' Then IntVal := 1
+  Else If NmUp = 'VBCANCEL' Then IntVal := 2
+  Else If NmUp = 'VBABORT' Then IntVal := 3
+  Else If NmUp = 'VBRETRY' Then IntVal := 4
+  Else If NmUp = 'VBIGNORE' Then IntVal := 5
+  Else If NmUp = 'VBYES' Then IntVal := 6
+  Else If NmUp = 'VBNO' Then IntVal := 7
+  Else If NmUp = 'VBOKONLY' Then IntVal := 0
+  Else If NmUp = 'VBOKCANCEL' Then IntVal := 1
+  Else If NmUp = 'VBABORTRETRYIGNORE' Then IntVal := 2
+  Else If NmUp = 'VBYESNOCANCEL' Then IntVal := 3
+  Else If NmUp = 'VBYESNO' Then IntVal := 4
+  Else If NmUp = 'VBRETRYCANCEL' Then IntVal := 5
+  Else If NmUp = 'VBCRITICAL' Then IntVal := 16
+  Else If NmUp = 'VBQUESTION' Then IntVal := 32
+  Else If NmUp = 'VBEXCLAMATION' Then IntVal := 48
+  Else If NmUp = 'VBINFORMATION' Then IntVal := 64
+  Else FRMBuiltinConst := False;
+End;
+
+{ Charge le HWND d une fenetre/controle dans EAX. }
+Procedure FRMEmitLoadHwnd(CIdx : Integer; IsMe : Boolean);
+Begin
+  If IsMe Then
+    AsmMovRegMemAbs(R_EAX, AsmDataVA('@FRM_HWNDMAIN'))
+  Else
+    AsmMovRegMemAbs(R_EAX, AsmDataVA(FRMControlHwndSym(CIdx)));
+End;
+
+{ Resout "Membre" ou "Font.Membre2" (seul sous-membre supporte :     }
+{ Font.Size, transforme en pseudo-membre "FONTSIZE"). CurTok doit    }
+{ etre sur le premier identifiant apres le "." deja consomme.        }
+Function FRMResolveMember : TString;
+Var M1, M2 : TString;
+Begin
+  If (CurTokType <> TOK_IDENT) And (CurTokType <> TOK_KEYWORD) Then
+    FatalError('Palier M: nom de propriete/methode attendu (ligne ' +
+               ItoS(CurTokLine) + ')');
+  M1 := UpCaseStr(CurTokStr);
+  LexNextToken;
+  If (M1 = 'FONT') And (CurTokType = TOK_DOT) Then
+  Begin
+    LexNextToken;
+    If (CurTokType <> TOK_IDENT) And (CurTokType <> TOK_KEYWORD) Then
+      FatalError('Palier M: propriete Font attendue (ligne ' +
+                 ItoS(CurTokLine) + ')');
+    M2 := UpCaseStr(CurTokStr);
+    LexNextToken;
+    If M2 = 'SIZE' Then
+      FRMResolveMember := 'FONTSIZE'
+    Else
+      FatalError('Palier M: Font.' + M2 + ' non supporte (ligne ' +
+                 ItoS(CurTokLine) + ')');
+  End
+  Else
+    FRMResolveMember := M1;
+End;
+
+{ ------------------------------------------------------------ }
+{ Lecture d une propriete Control.Membre / Me.Membre en          }
+{ contexte expression. Resultat dans EAX (EDX + CGCExprIsString }
+{ pour une chaine).                                              }
+{ ------------------------------------------------------------ }
+Procedure FRMEmitPropRead(CIdx : Integer; IsMe : Boolean; Const Member : TString);
+Var TS : TString;
+Begin
+  If IsMe Then TS := 'FORM' Else TS := FRMControls[CIdx].TypeStr;
+  CGCExprIsString := False;
+  If (Member = 'CAPTION') Or (Member = 'TEXT') Then
+  Begin
+    FRMEmitLoadHwnd(CIdx, IsMe);
+    AsmMovRegReg(R_EBX, R_EAX);
+    AsmCallLbl('__str_alloc');
+    AsmMovRegReg(R_ESI, R_EAX);
+    AsmPushImm(256);
+    AsmPushReg(R_ESI);
+    AsmPushReg(R_EBX);
+    AsmCallIAT(ImpFindFunc('GetWindowTextA'));
+    AsmMovRegReg(R_EDX, R_EAX);
+    AsmMovRegReg(R_EAX, R_ESI);
+    CGCExprIsString := True;
+  End
+  Else If Member = 'VALUE' Then
+  Begin
+    FRMEmitLoadHwnd(CIdx, IsMe);
+    AsmPushImm(0);
+    AsmPushImm(0);
+    AsmPushImm(FRM_BM_GETCHECK);
+    AsmPushReg(R_EAX);
+    AsmCallIAT(ImpFindFunc('SendMessageA'));
+  End
+  Else If Member = 'LISTINDEX' Then
+  Begin
+    FRMEmitLoadHwnd(CIdx, IsMe);
+    AsmPushImm(0);
+    AsmPushImm(0);
+    If TS = 'COMBOBOX' Then AsmPushImm(FRM_CB_GETCURSEL)
+    Else AsmPushImm(FRM_LB_GETCURSEL);
+    AsmPushReg(R_EAX);
+    AsmCallIAT(ImpFindFunc('SendMessageA'));
+  End
+  Else If Member = 'LISTCOUNT' Then
+  Begin
+    FRMEmitLoadHwnd(CIdx, IsMe);
+    AsmPushImm(0);
+    AsmPushImm(0);
+    If TS = 'COMBOBOX' Then AsmPushImm(FRM_CB_GETCOUNT)
+    Else AsmPushImm(FRM_LB_GETCOUNT);
+    AsmPushReg(R_EAX);
+    AsmCallIAT(ImpFindFunc('SendMessageA'));
+  End
+  Else If Member = 'FONTSIZE' Then
+    AsmMovRegMemAbs(R_EAX, AsmDataVA(FRMFontSzSym(CIdx)))
+  Else If Member = 'SELTEXT' Then
+  Begin
+    FRMEmitLoadHwnd(CIdx, IsMe);
+    AsmMovRegReg(R_EBX, R_EAX);            { EBX = hwnd (temporaire) }
+    AsmPushImm(0);
+    AsmPushImm(0);
+    AsmPushImm(FRM_EM_GETSEL);
+    AsmPushReg(R_EBX);
+    AsmCallIAT(ImpFindFunc('SendMessageA'));    { EAX = LOWORD/HIWORD }
+    AsmMovRegReg(R_ESI, R_EAX);
+    AsmAluRegImm(ALU_AND, R_ESI, $FFFF);         { ESI = debut selection }
+    AsmMovRegReg(R_EDI, R_EAX);
+    AsmShrRegImm(R_EDI, 16);                      { EDI = fin selection }
+    AsmAluRegReg(ALU_SUB, R_EDI, R_ESI);           { EDI = longueur }
+    AsmCallLbl('__str_alloc');                     { EAX = slot }
+    AsmPushImm(256);
+    AsmPushReg(R_EAX);
+    AsmPushReg(R_EBX);
+    AsmMovRegReg(R_EBX, R_EAX);                    { EBX := slot (hwnd plus utile) }
+    AsmCallIAT(ImpFindFunc('GetWindowTextA'));
+    AsmAluRegReg(ALU_ADD, R_ESI, R_EBX);           { ESI = slot + debut }
+    AsmMovRegReg(R_EAX, R_ESI);
+    AsmMovRegReg(R_EDX, R_EDI);
+    CGCExprIsString := True;
+  End
+  Else
+    FatalError('Palier M: propriete "' + Member + '" non lisible sur ' + TS +
+               ' (ligne ' + ItoS(CurTokLine) + ')');
+End;
+
+{ ------------------------------------------------------------ }
+{ Ecriture d une propriete Control.Membre = expr / Me.Membre = }
+{ expr. A l entree : EAX/EDX/CGCExprIsString contiennent deja   }
+{ la valeur du membre de droite (RHS) evaluee par l appelant.   }
+{ ------------------------------------------------------------ }
+Procedure FRMEmitPropWrite(CIdx : Integer; IsMe : Boolean; Const Member : TString);
+Var TS, L1, L2 : TString;
+Begin
+  If IsMe Then TS := 'FORM' Else TS := FRMControls[CIdx].TypeStr;
+  If (Member = 'CAPTION') Or (Member = 'TEXT') Then
+  Begin
+    If Not CGCExprIsString Then
+    Begin
+      AsmPushReg(R_EAX);
+      AsmCallLbl('__str_long2str');
+      AsmAluRegImm(ALU_ADD, R_ESP, 4);
+    End;
+    AsmPushReg(R_EDX);
+    AsmPushReg(R_EAX);
+    AsmCallLbl('__frm_cstr');
+    AsmAluRegImm(ALU_ADD, R_ESP, 8);
+    AsmMovRegReg(R_ESI, R_EAX);
+    FRMEmitLoadHwnd(CIdx, IsMe);
+    AsmPushReg(R_ESI);
+    AsmPushReg(R_EAX);
+    AsmCallIAT(ImpFindFunc('SetWindowTextA'));
+  End
+  Else If Member = 'ENABLED' Then
+  Begin
+    If (Not IsMe) And (TS = 'TIMER') Then
+    Begin
+      { Un Timer VB6 n a pas de fenetre propre : SetTimer/KillTimer      }
+      { prennent le HWND de la fenetre principale, pas un HWND dedie.   }
+      AsmMovRegReg(R_ECX, R_EAX);
+      AsmTestRegReg(R_ECX, R_ECX);
+      L1 := CGCNewLabel('tmrOff');
+      L2 := CGCNewLabel('tmrDone');
+      AsmJcc(CC_E, L1);
+      AsmMovRegMemAbs(R_EAX, AsmDataVA('@FRM_HWNDMAIN'));
+      AsmPushImm(0);
+      AsmPushImm(FRMControls[CIdx].Interval);
+      AsmPushImm(FRMControlWinID(CIdx));
+      AsmPushReg(R_EAX);
+      AsmCallIAT(ImpFindFunc('SetTimer'));
+      AsmJmpLbl(L2);
+      AsmLabel(L1);
+      AsmMovRegMemAbs(R_EAX, AsmDataVA('@FRM_HWNDMAIN'));
+      AsmPushImm(FRMControlWinID(CIdx));
+      AsmPushReg(R_EAX);
+      AsmCallIAT(ImpFindFunc('KillTimer'));
+      AsmLabel(L2);
+    End
+    Else
+    Begin
+      AsmMovRegReg(R_ECX, R_EAX);
+      FRMEmitLoadHwnd(CIdx, IsMe);
+      AsmPushReg(R_ECX);
+      AsmPushReg(R_EAX);
+      AsmCallIAT(ImpFindFunc('EnableWindow'));
+    End;
+  End
+  Else If Member = 'LISTINDEX' Then
+  Begin
+    AsmMovRegReg(R_ECX, R_EAX);
+    FRMEmitLoadHwnd(CIdx, IsMe);
+    AsmPushImm(0);
+    AsmPushReg(R_ECX);
+    If TS = 'COMBOBOX' Then AsmPushImm(FRM_CB_SETCURSEL)
+    Else AsmPushImm(FRM_LB_SETCURSEL);
+    AsmPushReg(R_EAX);
+    AsmCallIAT(ImpFindFunc('SendMessageA'));
+  End
+  Else If Member = 'FONTSIZE' Then
+    AsmMovMemAbsReg(AsmDataVA(FRMFontSzSym(CIdx)), R_EAX)
+  Else If Member = 'SELTEXT' Then
+  Begin
+    If Not CGCExprIsString Then
+    Begin
+      AsmPushReg(R_EAX);
+      AsmCallLbl('__str_long2str');
+      AsmAluRegImm(ALU_ADD, R_ESP, 4);
+    End;
+    AsmPushReg(R_EDX);
+    AsmPushReg(R_EAX);
+    AsmCallLbl('__frm_cstr');
+    AsmAluRegImm(ALU_ADD, R_ESP, 8);
+    AsmMovRegReg(R_ESI, R_EAX);
+    FRMEmitLoadHwnd(CIdx, IsMe);
+    AsmPushReg(R_ESI);
+    AsmPushImm(1);
+    AsmPushImm(FRM_EM_REPLACESEL);
+    AsmPushReg(R_EAX);
+    AsmCallIAT(ImpFindFunc('SendMessageA'));
+  End
+  Else
+    FatalError('Palier M: propriete "' + Member + '" non inscriptible sur ' +
+               TS + ' (ligne ' + ItoS(CurTokLine) + ')');
+End;
+
+{ ------------------------------------------------------------ }
+{ Appel de methode Control.Membre[(args)] / Control.Membre args }
+{ CurTok est juste apres le nom du membre (sur "(" ou le debut  }
+{ d une expression, ou un terminateur si zero argument).        }
+{ ------------------------------------------------------------ }
+Procedure FRMEmitMethodCall(CIdx : Integer; IsMe : Boolean; Const Member : TString);
+Var TS : TString; HasParen : Boolean;
+Begin
+  If IsMe Then TS := 'FORM' Else TS := FRMControls[CIdx].TypeStr;
+  HasParen := (CurTokType = TOK_LPAREN);
+  If HasParen Then LexNextToken;
+  If Member = 'SETFOCUS' Then
+  Begin
+    FRMEmitLoadHwnd(CIdx, IsMe);
+    AsmPushReg(R_EAX);
+    AsmCallIAT(ImpFindFunc('SetFocus'));
+  End
+  Else If Member = 'CLEAR' Then
+  Begin
+    FRMEmitLoadHwnd(CIdx, IsMe);
+    AsmPushImm(0);
+    AsmPushImm(0);
+    If TS = 'COMBOBOX' Then AsmPushImm(FRM_CB_RESETCONTENT)
+    Else AsmPushImm(FRM_LB_RESETCONTENT);
+    AsmPushReg(R_EAX);
+    AsmCallIAT(ImpFindFunc('SendMessageA'));
+  End
+  Else If Member = 'ADDITEM' Then
+  Begin
+    CGCParseExpr;
+    If Not CGCExprIsString Then
+    Begin
+      AsmPushReg(R_EAX);
+      AsmCallLbl('__str_long2str');
+      AsmAluRegImm(ALU_ADD, R_ESP, 4);
+    End;
+    AsmPushReg(R_EDX);
+    AsmPushReg(R_EAX);
+    AsmCallLbl('__frm_cstr');
+    AsmAluRegImm(ALU_ADD, R_ESP, 8);
+    AsmMovRegReg(R_ESI, R_EAX);
+    FRMEmitLoadHwnd(CIdx, IsMe);
+    AsmPushReg(R_ESI);
+    AsmPushImm(0);
+    If TS = 'COMBOBOX' Then AsmPushImm(FRM_CB_ADDSTRING)
+    Else AsmPushImm(FRM_LB_ADDSTRING);
+    AsmPushReg(R_EAX);
+    AsmCallIAT(ImpFindFunc('SendMessageA'));
+  End
+  Else If Member = 'REMOVEITEM' Then
+  Begin
+    CGCParseExpr;
+    AsmMovRegReg(R_ECX, R_EAX);
+    FRMEmitLoadHwnd(CIdx, IsMe);
+    AsmPushImm(0);
+    AsmPushReg(R_ECX);
+    If TS = 'COMBOBOX' Then AsmPushImm(FRM_CB_DELETESTRING)
+    Else AsmPushImm(FRM_LB_DELETESTRING);
+    AsmPushReg(R_EAX);
+    AsmCallIAT(ImpFindFunc('SendMessageA'));
+  End
+  Else
+    FatalError('Palier M: methode "' + Member + '" non supportee sur ' +
+               TS + ' (ligne ' + ItoS(CurTokLine) + ')');
+  If HasParen Then
+  Begin
+    If CurTokType <> TOK_RPAREN Then
+      FatalError('Palier M: ")" attendue (ligne ' + ItoS(CurTokLine) + ')');
+    LexNextToken;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ Clipboard.GetText() : contexte expression. Clipboard.SetText  }
+{ texte : contexte statement (parse son propre argument).       }
+{ ------------------------------------------------------------ }
+Procedure FRMEmitClipboardGetText;
+Var HasParen : Boolean;
+    L1, L2, LNull, LAfterLock, LSkipUnlock : TString;
+Begin
+  HasParen := (CurTokType = TOK_LPAREN);
+  If HasParen Then
+  Begin
+    LexNextToken;
+    If CurTokType <> TOK_RPAREN Then
+      FatalError('Palier O: ")" attendue apres Clipboard.GetText( (ligne ' +
+                 ItoS(CurTokLine) + ')');
+    LexNextToken;
+  End;
+  AsmPushImm(0);
+  AsmCallIAT(ImpFindFunc('OpenClipboard'));
+  AsmPushImm(1);                       { CF_TEXT }
+  AsmCallIAT(ImpFindFunc('GetClipboardData'));
+  AsmMovRegReg(R_EBX, R_EAX);          { EBX = hMem (peut etre NULL si le  }
+                                        { presse-papiers est indisponible  }
+                                        { ou ne contient pas de CF_TEXT).  }
+  AsmTestRegReg(R_EBX, R_EBX);
+  LNull      := CGCNewLabel('clipNull');
+  LAfterLock := CGCNewLabel('clipAfterLock');
+  AsmJcc(CC_E, LNull);
+  AsmPushReg(R_EBX);
+  AsmCallIAT(ImpFindFunc('GlobalLock'));
+  AsmMovRegReg(R_ESI, R_EAX);          { ESI = source (ou NULL aussi) }
+  AsmJmpLbl(LAfterLock);
+  AsmLabel(LNull);
+  AsmMovRegImm(R_ESI, 0);
+  AsmLabel(LAfterLock);
+  AsmCallLbl('__str_alloc');
+  AsmMovRegReg(R_EDI, R_EAX);          { EDI = destination (avance) }
+  AsmMovRegReg(R_EDX, R_EAX);          { EDX = debut du slot }
+  AsmMovRegImm(R_ECX, 0);
+  L1 := CGCNewLabel('clipCpy');
+  L2 := CGCNewLabel('clipDone');
+  AsmLabel(L1);
+  AsmAluRegImm(ALU_CMP, R_ECX, 255);
+  AsmJcc(CC_GE, L2);
+  AsmTestRegReg(R_ESI, R_ESI);         { source NULL -> chaine vide }
+  AsmJcc(CC_E, L2);
+  AsmXorRegReg(R_EAX, R_EAX);
+  AsmLodsb;
+  AsmTestRegReg(R_EAX, R_EAX);
+  AsmJcc(CC_E, L2);
+  AsmStosb;
+  AsmIncReg(R_ECX);
+  AsmJmpLbl(L1);
+  AsmLabel(L2);
+  AsmMovRegReg(R_ESI, R_EDX);          { ESI := ptr resultat (preserve) }
+  AsmMovRegReg(R_EDI, R_ECX);          { EDI := len resultat (preserve) }
+  AsmTestRegReg(R_EBX, R_EBX);
+  LSkipUnlock := CGCNewLabel('clipSkipUnlock');
+  AsmJcc(CC_E, LSkipUnlock);
+  AsmPushReg(R_EBX);
+  AsmCallIAT(ImpFindFunc('GlobalUnlock'));
+  AsmLabel(LSkipUnlock);
+  AsmCallIAT(ImpFindFunc('CloseClipboard'));
+  AsmMovRegReg(R_EAX, R_ESI);
+  AsmMovRegReg(R_EDX, R_EDI);
+  CGCExprIsString := True;
+End;
+
+Procedure FRMEmitClipboardSetText;
+Begin
+  CGCParseExpr;
+  If Not CGCExprIsString Then
+  Begin
+    AsmPushReg(R_EAX);
+    AsmCallLbl('__str_long2str');
+    AsmAluRegImm(ALU_ADD, R_ESP, 4);
+  End;
+  AsmMovRegReg(R_EBX, R_EDX);          { EBX = longueur }
+  AsmMovRegReg(R_ESI, R_EAX);          { ESI = source }
+  AsmPushImm(0);
+  AsmCallIAT(ImpFindFunc('OpenClipboard'));
+  AsmCallIAT(ImpFindFunc('EmptyClipboard'));
+  AsmMovRegReg(R_EAX, R_EBX);
+  AsmAluRegImm(ALU_ADD, R_EAX, 1);
+  AsmPushReg(R_EAX);
+  AsmPushImm(2);                       { GMEM_MOVEABLE }
+  AsmCallIAT(ImpFindFunc('GlobalAlloc'));   { EAX = hMem }
+  AsmPushReg(R_EAX);                   { conserve hMem sur la pile }
+  AsmPushReg(R_EAX);                   { argument de GlobalLock }
+  AsmCallIAT(ImpFindFunc('GlobalLock'));    { EAX = destination }
+  AsmMovRegReg(R_EDI, R_EAX);
+  AsmMovRegReg(R_ECX, R_EBX);
+  AsmRepMovsb;
+  AsmMovRegImm(R_EAX, 0);
+  AsmStosb;
+  AsmPopReg(R_EBX);                    { EBX = hMem }
+  AsmPushReg(R_EBX);
+  AsmCallIAT(ImpFindFunc('GlobalUnlock'));
+  AsmPushReg(R_EBX);
+  AsmPushImm(1);
+  AsmCallIAT(ImpFindFunc('SetClipboardData'));
+  AsmCallIAT(ImpFindFunc('CloseClipboard'));
+End;
+
+{ ------------------------------------------------------------ }
+{ Hooks : Control.Membre / Me.Membre / Clipboard.Membre en      }
+{ lecture (expression) et en ecriture/appel (statement).        }
+{ ------------------------------------------------------------ }
+Function FRMTryReadIdent(Const Nm : TString) : Boolean;
+Var
+  NmUp, Member, StrVal : TString;
+  CIdx    : Integer;
+  IsMe, IsClip, IsStr : Boolean;
+  IntVal  : LongInt;
+  SLit    : Integer;
+Begin
+  FRMTryReadIdent := False;
+  NmUp := UpCaseStr(Nm);
+  If FRMBuiltinConst(NmUp, IsStr, IntVal, StrVal) Then
+  Begin
+    LexNextToken;
+    If IsStr Then
+    Begin
+      SLit := StrAddLit(StrVal);
+      AsmMovRegStrRVA(R_EAX, SLit);
+      AsmMovRegImm(R_EDX, Length(StrVal));
+      CGCExprIsString := True;
+    End
+    Else
+    Begin
+      AsmMovRegImm(R_EAX, IntVal);
+      CGCExprIsString := False;
+    End;
+    FRMTryReadIdent := True;
+    Exit;
+  End;
+  IsMe   := (NmUp = 'ME');
+  IsClip := (NmUp = 'CLIPBOARD');
+  CIdx   := -1;
+  If (Not IsMe) And (Not IsClip) Then CIdx := FRMFindControl(Nm);
+  If (Not IsMe) And (Not IsClip) And (CIdx < 0) Then Exit;
+  LexNextToken;
+  If CurTokType <> TOK_DOT Then
+    FatalError('Palier M: "." attendu apres "' + Nm + '" (ligne ' +
+               ItoS(CurTokLine) + ')');
+  LexNextToken;
+  Member := FRMResolveMember;
+  If IsClip Then
+  Begin
+    If Member <> 'GETTEXT' Then
+      FatalError('Palier M: Clipboard.' + Member + ' non supporte en lecture');
+    FRMEmitClipboardGetText;
+  End
+  Else
+    FRMEmitPropRead(CIdx, IsMe, Member);
+  FRMTryReadIdent := True;
+End;
+
+Function FRMTryStmtIdent(Const Nm : TString) : Boolean;
+Var NmUp, Member : TString; CIdx : Integer; IsMe, IsClip : Boolean;
+Begin
+  FRMTryStmtIdent := False;
+  NmUp := UpCaseStr(Nm);
+  IsMe := (NmUp = 'ME');
+  IsClip := (NmUp = 'CLIPBOARD');
+  CIdx := -1;
+  If (Not IsMe) And (Not IsClip) Then CIdx := FRMFindControl(Nm);
+  If (Not IsMe) And (Not IsClip) And (CIdx < 0) Then Exit;
+  LexNextToken;
+  If CurTokType <> TOK_DOT Then
+    FatalError('Palier M: "." attendu apres "' + Nm + '" (ligne ' +
+               ItoS(CurTokLine) + ')');
+  LexNextToken;
+  Member := FRMResolveMember;
+  If CurTokType = TOK_EQ Then
+  Begin
+    LexNextToken;
+    CGCParseExpr;
+    If IsClip Then
+      FatalError('Palier M: Clipboard ne supporte pas l affectation directe ' +
+                 '(ligne ' + ItoS(CurTokLine) + ')')
+    Else
+      FRMEmitPropWrite(CIdx, IsMe, Member);
+  End
+  Else
+  Begin
+    If IsClip Then
+    Begin
+      If Member <> 'SETTEXT' Then
+        FatalError('Palier M: Clipboard.' + Member + ' non supporte ' +
+                   '(ligne ' + ItoS(CurTokLine) + ')');
+      FRMEmitClipboardSetText;
+    End
+    Else
+      FRMEmitMethodCall(CIdx, IsMe, Member);
+  End;
+  FRMTryStmtIdent := True;
+End;
+
+{ ------------------------------------------------------------ }
+{ MsgBox(prompt[, buttons][, title]) : vraie signature VB6.     }
+{ Les constantes vb* (vbYesNo, vbQuestion, ...) correspondent   }
+{ numeriquement aux constantes Win32 MB_*, donc EAX en sortie   }
+{ de MessageBoxA est deja la valeur vb* (vbOK, vbYes, ...).     }
+{ Utilisable en expression (valeur retour) ou en statement.     }
+{ ------------------------------------------------------------ }
+Procedure FRMParseMsgBoxCall;
+Var HasParen  : Boolean;
+    L1, L2    : TString;
+Begin
+  LexNextToken;                          { eat "MsgBox" }
+  HasParen := (CurTokType = TOK_LPAREN);
+  If HasParen Then LexNextToken;
+  CGCParseExpr;                          { prompt }
+  If Not CGCExprIsString Then
+  Begin
+    AsmPushReg(R_EAX);
+    AsmCallLbl('__str_long2str');
+    AsmAluRegImm(ALU_ADD, R_ESP, 4);
+  End;
+  AsmPushReg(R_EDX);
+  AsmPushReg(R_EAX);
+  AsmCallLbl('__frm_cstr');
+  AsmAluRegImm(ALU_ADD, R_ESP, 8);
+  { __frm_cstr partage un seul buffer (@FRM_CSTRBUF) entre tous ses    }
+  { appels : si le titre est converti plus loin via le meme helper,    }
+  { il ecraserait le prompt puisque les deux visent la meme adresse.   }
+  { On copie donc le prompt tout de suite dans son propre buffer.      }
+  AsmMovRegReg(R_ESI, R_EAX);
+  AsmMovRegImm(R_EDI, AsmDataVA('@MSGBOX_TEXTBUF'));
+  AsmMovRegImm(R_ECX, 0);
+  L1 := CGCNewLabel('msgboxCpy');
+  L2 := CGCNewLabel('msgboxCpyDone');
+  AsmLabel(L1);
+  AsmAluRegImm(ALU_CMP, R_ECX, 254);
+  AsmJcc(CC_GE, L2);
+  AsmXorRegReg(R_EAX, R_EAX);
+  AsmLodsb;
+  AsmStosb;
+  AsmIncReg(R_ECX);
+  AsmTestRegReg(R_EAX, R_EAX);
+  AsmJcc(CC_NE, L1);
+  AsmLabel(L2);
+  AsmMovRegImm(R_EAX, 0);
+  AsmStosb;                              { garantit la terminaison NUL }
+  AsmMovRegImm(R_ESI, AsmDataVA('@MSGBOX_TEXTBUF'));   { ESI = prompt (buffer dedie) }
+  AsmMovRegImm(R_EDI, 0);                { EDI = boutons (defaut vbOKOnly) }
+  If CurTokType = TOK_COMMA Then
+  Begin
+    LexNextToken;
+    CGCParseExpr;
+    AsmMovRegReg(R_EDI, R_EAX);
+  End;
+  AsmMovRegImm(R_EBX, AsmDataVA('@FRM_EMPTYSTR'));   { EBX = titre par defaut }
+  If CurTokType = TOK_COMMA Then
+  Begin
+    LexNextToken;
+    CGCParseExpr;
+    If Not CGCExprIsString Then
+    Begin
+      AsmPushReg(R_EAX);
+      AsmCallLbl('__str_long2str');
+      AsmAluRegImm(ALU_ADD, R_ESP, 4);
+    End;
+    AsmPushReg(R_EDX);
+    AsmPushReg(R_EAX);
+    AsmCallLbl('__frm_cstr');
+    AsmAluRegImm(ALU_ADD, R_ESP, 8);
+    AsmMovRegReg(R_EBX, R_EAX);
+  End;
+  If HasParen Then
+  Begin
+    If CurTokType <> TOK_RPAREN Then
+      FatalError('Palier N: ")" attendue apres MsgBox(... (ligne ' +
+                 ItoS(CurTokLine) + ')');
+    LexNextToken;
+  End;
+  AsmPushReg(R_EDI);
+  AsmPushReg(R_EBX);
+  AsmPushReg(R_ESI);
+  AsmPushImm(0);
+  AsmCallIAT(ImpFindFunc('MessageBoxA'));
+  CGCExprIsString := False;
+End;
+
+{ InputBox(prompt[, title[, default]]) : convertit chaque argument   }
+{ (String ou Long promu) en C-string dans un buffer dedie, puis      }
+{ delegue a __inputbox (fenetre popup modale). Resultat = String.    }
+Procedure FRMParseInputBoxCall;
+Var HasParen : Boolean;
+Begin
+  LexNextToken;                          { eat "InputBox" }
+  HasParen := (CurTokType = TOK_LPAREN);
+  If HasParen Then LexNextToken;
+
+  CGCParseExpr;                          { prompt }
+  If Not CGCExprIsString Then
+  Begin
+    AsmPushReg(R_EAX);
+    AsmCallLbl('__str_long2str');
+    AsmAluRegImm(ALU_ADD, R_ESP, 4);
+  End;
+  AsmPushImm(AsmDataVA('@IB_PROMPTBUF'));
+  AsmPushReg(R_EDX);
+  AsmPushReg(R_EAX);
+  AsmCallLbl('__ib_cstr');
+  AsmAluRegImm(ALU_ADD, R_ESP, 12);
+
+  AsmMovRegImm(R_EAX, 0);
+  AsmMovRegImm(R_EDX, 0);
+  If CurTokType = TOK_COMMA Then
+  Begin
+    LexNextToken;
+    CGCParseExpr;                        { titre }
+    If Not CGCExprIsString Then
+    Begin
+      AsmPushReg(R_EAX);
+      AsmCallLbl('__str_long2str');
+      AsmAluRegImm(ALU_ADD, R_ESP, 4);
+    End;
+  End;
+  AsmPushImm(AsmDataVA('@IB_TITLEBUF'));
+  AsmPushReg(R_EDX);
+  AsmPushReg(R_EAX);
+  AsmCallLbl('__ib_cstr');
+  AsmAluRegImm(ALU_ADD, R_ESP, 12);
+
+  AsmMovRegImm(R_EAX, 0);
+  AsmMovRegImm(R_EDX, 0);
+  If CurTokType = TOK_COMMA Then
+  Begin
+    LexNextToken;
+    CGCParseExpr;                        { valeur par defaut }
+    If Not CGCExprIsString Then
+    Begin
+      AsmPushReg(R_EAX);
+      AsmCallLbl('__str_long2str');
+      AsmAluRegImm(ALU_ADD, R_ESP, 4);
+    End;
+  End;
+  AsmPushImm(AsmDataVA('@IB_DEFBUF'));
+  AsmPushReg(R_EDX);
+  AsmPushReg(R_EAX);
+  AsmCallLbl('__ib_cstr');
+  AsmAluRegImm(ALU_ADD, R_ESP, 12);
+
+  If HasParen Then
+  Begin
+    If CurTokType <> TOK_RPAREN Then
+      FatalError('Palier P: ")" attendue apres InputBox(... (ligne ' +
+                 ItoS(CurTokLine) + ')');
+    LexNextToken;
+  End;
+
+  AsmCallLbl('__inputbox');
+  CGCExprIsString := True;
+End;
+
+{ Unload Me : ferme la fenetre principale (WM_DESTROY -> PostQuitMessage). }
+Procedure FRMParseUnload;
+Begin
+  LexNextToken;                          { eat "Unload" }
+  If (Not CGCIsKW(KW_ME)) And
+     (Not ((CurTokType = TOK_IDENT) And (UpCaseStr(CurTokStr) = 'ME'))) Then
+    FatalError('Palier M: "Unload Me" attendu (ligne ' + ItoS(CurTokLine) + ')');
+  LexNextToken;
+  AsmMovRegMemAbs(R_EAX, AsmDataVA('@FRM_HWNDMAIN'));
+  AsmPushReg(R_EAX);
+  AsmCallIAT(ImpFindFunc('DestroyWindow'));
+End;
+
+{ SaveSetting appname, section, key, setting : les 4 arguments sont   }
+{ evalues (effets de bord conserves) mais cette version n effectue   }
+{ pas d ecriture registre reelle.                                     }
+Procedure FRMParseSaveSetting;
+Begin
+  LexNextToken;                          { eat "SaveSetting" }
+  CGCParseExpr;
+  If CurTokType = TOK_COMMA Then Begin LexNextToken; CGCParseExpr; End;
+  If CurTokType = TOK_COMMA Then Begin LexNextToken; CGCParseExpr; End;
+  If CurTokType = TOK_COMMA Then Begin LexNextToken; CGCParseExpr; End;
+End;
+
+{ Call NomSub[(args)] / Call Controle.Methode(...) }
+Procedure CGCParseCallStmt;
+Var Nm : TString; PI : Integer;
+Begin
+  LexNextToken;                          { eat "Call" }
+  If CurTokType <> TOK_IDENT Then
+    FatalError('Palier M: nom de Sub/Function attendu apres Call (ligne ' +
+               ItoS(CurTokLine) + ')');
+  Nm := CurTokStr;
+  PI := CGCFindProc(Nm);
+  If PI >= 0 Then
+  Begin
+    LexNextToken;
+    CGCEmitCall(PI);
+  End
+  Else If Not FRMTryStmtIdent(Nm) Then
+    FatalError('Palier M: "' + Nm + '" inconnu apres Call (ligne ' +
+               ItoS(CurTokLine) + ')');
+End;
+
 { ------------------------------------------------------------ }
 { ParsePrim : litteral entier, parens, ou identificateur        }
 { Resultat dans EAX.                                            }
@@ -16972,6 +18680,45 @@ Begin
       AsmAluRegImm(ALU_ADD, R_ESP, 4);
       CGCExprIsString := True;
     End;
+  End
+  Else If CGCIsKW(KW_TRUE) Then
+  Begin
+    AsmMovRegImm(R_EAX, -1);
+    LexNextToken;
+  End
+  Else If CGCIsKW(KW_FALSE) Then
+  Begin
+    AsmMovRegImm(R_EAX, 0);
+    LexNextToken;
+  End
+  Else If CGCIsKW(KW_CDBL) Then
+  Begin
+    { Palier O : CDbl(x) -> Long (ce compilateur n a pas de type       }
+    { flottant ; la partie decimale, si presente, est tronquee).       }
+    LexNextToken;
+    If CurTokType <> TOK_LPAREN Then
+      FatalError('Palier O: "(" attendue apres CDbl (ligne ' +
+                 ItoS(CurTokLine) + ')');
+    LexNextToken;
+    CGCParseExpr;
+    If CurTokType <> TOK_RPAREN Then
+      FatalError('Palier O: ")" attendue (ligne ' + ItoS(CurTokLine) + ')');
+    LexNextToken;
+    If CGCExprIsString Then
+    Begin
+      AsmPushReg(R_EDX);
+      AsmPushReg(R_EAX);
+      AsmCallLbl('__cdbl');
+      AsmAluRegImm(ALU_ADD, R_ESP, 8);
+    End;
+    CGCExprIsString := False;
+  End
+  Else If CGCIsKW(KW_FORMAT) Or CGCIsKW(KW_FORMAT2) Then
+  Begin
+    { Palier O : Format$(valeur, "000...0") -> zero-remplissage sur    }
+    { autant de chiffres que le modele contient de '0'. Le modele doit }
+    { etre un litteral chaine (limite acceptee pour cette version).    }
+    FRMParseFormatDollar;
   End
   Else If CGCIsKW(KW_FREEFILE) Then
   Begin
@@ -17239,6 +18986,12 @@ Begin
     LexNextToken;
     CGCExprIsString := True;
   End
+  Else If CGCIsKW(KW_MSGBOX) Then
+    FRMParseMsgBoxCall
+  Else If CGCIsKW(KW_INPUTBOX) Then
+    FRMParseInputBoxCall
+  Else If CGCIsKW(KW_ME) Then
+    FRMTryReadIdent('Me')
   Else If CurTokType = TOK_IDENT Then
   Begin
     Nm := CurTokStr;
@@ -17293,6 +19046,9 @@ Begin
       LexNextToken;
       Exit;
     End;
+    { Palier M : Control.Membre / Me.Membre / Clipboard.Membre en      }
+    { lecture, ou constante VB integree (vbCrLf, vbYes, ...).          }
+    If FRMTryReadIdent(Nm) Then Exit;
     Idx := CGCFindLocal(Nm);
     If Idx >= 0 Then
     Begin
@@ -17336,7 +19092,16 @@ Begin
         FatalError('Palier C: identificateur inconnu "' + Nm +
                    '" (ligne ' + ItoS(CurTokLine) + ')');
       End;
-      AsmMovRegMemAbs(R_EAX, AsmDataVA(Nm));
+      If CGCIsGlobalString(Nm) Then
+      Begin
+        { Global String : meme mise en page que les locales (len@+0,   }
+        { donnees@+4), mais adressage absolu (pas BP-relatif).          }
+        AsmMovRegMemAbs(R_EDX, AsmDataVA(Nm));
+        AsmMovRegImm(R_EAX, AsmDataVA(Nm) + 4);
+        CGCExprIsString := True;
+      End
+      Else
+        AsmMovRegMemAbs(R_EAX, AsmDataVA(Nm));
       LexNextToken;
     End;
   End
@@ -17379,10 +19144,14 @@ Var Op : Integer;
 Begin
   CGCParseUnary;
   While (CurTokType = TOK_STAR) Or (CurTokType = TOK_BACKSLASH) Or
-        CGCIsKW(KW_MOD) Do
+        (CurTokType = TOK_SLASH) Or CGCIsKW(KW_MOD) Do
   Begin
     Op := CurTokType;
     If CGCIsKW(KW_MOD) Then Op := -1;
+    { Palier O : "/" (division reelle VB6) n a pas d equivalent, ce   }
+    { compilateur n ayant pas de type flottant ; traitee comme "\"    }
+    { (division entiere), avec troncature du resultat.                 }
+    If Op = TOK_SLASH Then Op := TOK_BACKSLASH;
     LexNextToken;
     AsmPushReg(R_EAX);
     CGCParseUnary;
@@ -17501,7 +19270,7 @@ End;
 { ------------------------------------------------------------ }
 
 Procedure CGCParseRel;
-Var Op, Cc : Integer; LKeep : TString;
+Var Op, Cc : Integer; LKeep : TString; LStr : Boolean;
 Begin
   CGCParseConcat;
   If (CurTokType = TOK_EQ) Or (CurTokType = TOK_NE) Or
@@ -17509,9 +19278,42 @@ Begin
      (CurTokType = TOK_LE) Or (CurTokType = TOK_GE) Then
   Begin
     Op := CurTokType;
+    LStr := CGCExprIsString;
     LexNextToken;
-    AsmPushReg(R_EAX);
+    If LStr Then
+    Begin
+      AsmPushReg(R_EDX);
+      AsmPushReg(R_EAX);
+    End
+    Else
+      AsmPushReg(R_EAX);
     CGCParseConcat;
+    If LStr Or CGCExprIsString Then
+    Begin
+      { Palier O : comparaison de chaines - seuls "=" et "<>" sont    }
+      { supportes (comparaison de contenu octet par octet, pas de     }
+      { pointeur). L ordre lexicographique ("<", ">", ...) n est pas  }
+      { implemente.                                                    }
+      If Not (LStr And CGCExprIsString) Then
+        FatalError('Palier O: comparaison String/Long non supportee ' +
+                   '(ligne ' + ItoS(CurTokLine) + ')');
+      If (Op <> TOK_EQ) And (Op <> TOK_NE) Then
+        FatalError('Palier O: seuls "=" et "<>" sont supportes entre ' +
+                   'chaines (ligne ' + ItoS(CurTokLine) + ')');
+      AsmMovRegReg(R_ECX, R_EAX);          { ECX = ptr2 }
+      AsmMovRegReg(R_EBX, R_EDX);          { EBX = len2 }
+      AsmPopReg(R_EAX);                    { EAX = ptr1 }
+      AsmPopReg(R_EDX);                    { EDX = len1 }
+      AsmPushReg(R_EBX);                   { len2 }
+      AsmPushReg(R_ECX);                   { ptr2 }
+      AsmPushReg(R_EDX);                   { len1 }
+      AsmPushReg(R_EAX);                   { ptr1 }
+      AsmCallLbl('__str_eq');
+      AsmAluRegImm(ALU_ADD, R_ESP, 16);
+      If Op = TOK_NE Then AsmNotReg(R_EAX);
+      CGCExprIsString := False;
+      Exit;
+    End;
     AsmMovRegReg(R_ECX, R_EAX);
     AsmPopReg(R_EAX);
     AsmAluRegReg(ALU_CMP, R_EAX, R_ECX);   { CMP gauche, droit }
@@ -17529,6 +19331,7 @@ Begin
     AsmJcc(Cc, LKeep);            { si vrai, garder -1 }
     AsmMovRegImm(R_EAX, 0);
     AsmLabel(LKeep);
+    CGCExprIsString := False;
   End;
 End;
 
@@ -17620,6 +19423,7 @@ Var
   Neg       : Boolean;
   DK, DT    : Integer;
   DSz       : LongInt;
+  LOf       : LongInt;
 Begin
   LexNextToken;     { eat "Dim" }
   If CurTokType <> TOK_IDENT Then
@@ -17693,7 +19497,13 @@ Begin
 
   CGCEatTypeAnnotEx(DK, DSz, DT);
   If DK = 1 Then
-    CGCAddLocalString(Nm)
+  Begin
+    { Une String locale non encore assignee doit valoir "" (VB6),      }
+    { pas un contenu indetermine : initialiser son champ longueur a 0. }
+    LOf := CGCAddLocalString(Nm);
+    AsmMovRegImm(R_EAX, 0);
+    AsmMovMemBPReg(LOf, R_EAX);
+  End
   Else If (DK = 3) And (DT >= 0) Then
     CGCAddLocalUDT(Nm, DT, DSz)
   Else
@@ -17792,6 +19602,7 @@ Var
   Idx, DOf : Integer;
   Lit, Len, DwCount, SrcLI : Integer;
   L, L2    : TString;
+  GVA      : LongInt;
 Begin
   { Acces UDT : "pers.field = expr" }
   If CurTokType = TOK_DOT Then
@@ -17862,6 +19673,34 @@ Begin
     AsmJcc(CC_E, L2);
     AsmRepMovsb;
     AsmLabel(L2);
+    Exit;
+  End;
+  { Palier O : assignation a une variable globale (module) String,   }
+  { meme mise en page que les locales (len@+0, donnees@+4) mais       }
+  { adressage absolu.                                                  }
+  If CGCIsGlobalString(Nm) Then
+  Begin
+    CGCParseExpr;
+    GVA := AsmDataVA(Nm);
+    If CGCExprIsString Then
+    Begin
+      AsmMovMemAbsReg(GVA, R_EDX);
+      AsmMovRegReg(R_ESI, R_EAX);
+      AsmMovRegImm(R_EDI, GVA + 4);
+      AsmMovRegReg(R_ECX, R_EDX);
+      AsmAluRegImm(ALU_CMP, R_ECX, 256);
+      L := CGCNewLabel('agCap');
+      AsmJcc(CC_LE, L);
+      AsmMovRegImm(R_ECX, 256);
+      AsmLabel(L);
+      AsmTestRegReg(R_ECX, R_ECX);
+      L2 := CGCNewLabel('agZ');
+      AsmJcc(CC_E, L2);
+      AsmRepMovsb;
+      AsmLabel(L2);
+      Exit;
+    End;
+    AsmMovMemAbsReg(GVA, R_EAX);
     Exit;
   End;
   CGCParseExpr;
@@ -18603,6 +20442,57 @@ Begin
   AsmAluRegImm(ALU_AND, R_ECX, 7);
   AsmMovMemAbsReg(IdxVA, R_ECX);
   AsmPopReg(R_ECX);
+  AsmRet;
+
+  { ----- __str_eq(ptr1, len1, ptr2, len2) -> EAX = -1 (egales) ----- }
+  { ou 0 (differentes). Compare la longueur puis octet par octet ;    }
+  { seule comparaison de chaines implementee ("=" / "<>" via Not).    }
+  AsmLabel('__str_eq');
+  AsmPushReg(R_EBP);
+  AsmMovRegReg(R_EBP, R_ESP);
+  AsmPushReg(R_ESI);
+  AsmPushReg(R_EDI);
+  AsmPushReg(R_EBX);
+  AsmPushReg(R_ECX);
+  AsmMovRegMemBP(R_EAX, 12);          { len1 }
+  AsmMovRegMemBP(R_ECX, 20);          { len2 }
+  AsmAluRegReg(ALU_CMP, R_EAX, R_ECX);
+  L1 := CGCNewLabel('streqNe');
+  L2 := CGCNewLabel('streqLoop');
+  L3 := CGCNewLabel('streqEq');
+  L4 := CGCNewLabel('streqDone');
+  AsmJcc(CC_NE, L1);
+  AsmMovRegMemBP(R_ESI, 8);           { ptr1 (curseur) }
+  AsmMovRegMemBP(R_EDI, 16);          { ptr2 (curseur) }
+  AsmMovRegMemBP(R_ECX, 12);          { longueur restante }
+  AsmLabel(L2);
+  AsmTestRegReg(R_ECX, R_ECX);
+  AsmJcc(CC_E, L3);
+  AsmXorRegReg(R_EAX, R_EAX);
+  AsmLodsb;                            { AL = [ptr1], ESI++ }
+  AsmMovRegReg(R_EBX, R_EAX);          { EBX = octet 1 }
+  AsmPushReg(R_ESI);                   { sauver le curseur ptr1 }
+  AsmMovRegReg(R_ESI, R_EDI);
+  AsmXorRegReg(R_EAX, R_EAX);
+  AsmLodsb;                            { AL = [ptr2], curseur++ }
+  AsmMovRegReg(R_EDI, R_ESI);          { EDI = curseur ptr2 avance }
+  AsmPopReg(R_ESI);                    { restaurer le curseur ptr1 }
+  AsmAluRegReg(ALU_CMP, R_EBX, R_EAX);
+  AsmJcc(CC_NE, L1);
+  AsmDecReg(R_ECX);
+  AsmJmpLbl(L2);
+  AsmLabel(L3);
+  AsmMovRegImm(R_EAX, -1);
+  AsmJmpLbl(L4);
+  AsmLabel(L1);
+  AsmMovRegImm(R_EAX, 0);
+  AsmLabel(L4);
+  AsmPopReg(R_ECX);
+  AsmPopReg(R_EBX);
+  AsmPopReg(R_EDI);
+  AsmPopReg(R_ESI);
+  AsmMovRegReg(R_ESP, R_EBP);
+  AsmPopReg(R_EBP);
   AsmRet;
 
   { ----- __str_len(p, l) -> EAX = l ----- }
@@ -19694,17 +21584,49 @@ Procedure CGCParseIf;
 Var
   LElse, LEnd : TString;
   HasElse     : Boolean;
+  ThenLine    : LongInt;
 Begin
   LexNextToken;            { eat "If" }
   CGCParseExpr;
   If Not CGCIsKW(KW_THEN) Then
     FatalError('Palier C: "Then" attendu (ligne ' + ItoS(CurTokLine) + ')');
+  ThenLine := CurTokLine;
   LexNextToken;
-  If CurTokType <> TOK_NEWLINE Then
+
+  { Forme mono-ligne : "If cond Then stmt[:stmt...][Else stmt[:stmt...]]" }
+  { sans "End If". Le lexer ne materialise pas de token de fin de ligne  }
+  { (LexNextToken saute les retours a la ligne en interne), donc on la   }
+  { detecte en comparant le numero de ligne du token qui suit "Then" a   }
+  { celui de "Then" lui-meme : meme ligne => forme mono-ligne ; ligne    }
+  { suivante => bloc multi-ligne classique qui attend un End If.         }
+  If (CurTokType <> TOK_EOF) And (CurTokLine = ThenLine) Then
   Begin
-    { Lexer ne retourne pas TOK_NEWLINE : on accepte simplement Then }
+    LElse := CGCNewLabel('ifElseSL');
+    LEnd  := CGCNewLabel('ifEndSL');
+    AsmAluRegReg(ALU_OR, R_EAX, R_EAX);
+    AsmJcc(CC_E, LElse);
+    While (CurTokLine = ThenLine) And (CurTokType <> TOK_EOF) And
+          (Not CGCIsKW(KW_ELSE)) Do
+    Begin
+      CGCParseStatement;
+      If CurTokType = TOK_COLON Then LexNextToken;
+    End;
+    If CGCIsKW(KW_ELSE) And (CurTokLine = ThenLine) Then
+    Begin
+      AsmJmpLbl(LEnd);
+      AsmLabel(LElse);
+      LexNextToken;
+      While (CurTokLine = ThenLine) And (CurTokType <> TOK_EOF) Do
+      Begin
+        CGCParseStatement;
+        If CurTokType = TOK_COLON Then LexNextToken;
+      End;
+      AsmLabel(LEnd);
+    End
+    Else
+      AsmLabel(LElse);
+    Exit;
   End;
-  CGCSkipNewlines;
 
   LElse := CGCNewLabel('ifElse');
   LEnd  := CGCNewLabel('ifEnd');
@@ -19745,6 +21667,8 @@ End;
 Procedure CGCParseSelect;
 Var
   ScrOfs                : LongInt;
+  ScrLenOfs             : LongInt;
+  ScrIsStr              : Boolean;
   LEnd, LMatch, LNext   : TString;
   LFail                 : TString;
   Op                    : Integer;
@@ -19758,8 +21682,19 @@ Begin
   LexNextToken;          { eat 'Case' }
 
   CGCParseExpr;
+  ScrIsStr := CGCExprIsString;
   ScrOfs := CGCAddLocal('@sc_' + ItoS(CGCLabSeq));
-  AsmMovMemBPReg(ScrOfs, R_EAX);
+  If ScrIsStr Then
+  Begin
+    { Palier O : Select Case sur une chaine - seule l egalite         }
+    { (comparaison de contenu, pas de pointeur) est supportee ; pas   }
+    { de "Case Is <op>" ni de plage "Case lo To hi" pour les chaines. }
+    AsmMovMemBPReg(ScrOfs, R_EAX);
+    ScrLenOfs := CGCAddLocal('@scl_' + ItoS(CGCLabSeq));
+    AsmMovMemBPReg(ScrLenOfs, R_EDX);
+  End
+  Else
+    AsmMovMemBPReg(ScrOfs, R_EAX);
 
   LEnd    := CGCNewLabel('selEnd');
   HasElse := False;
@@ -19784,6 +21719,9 @@ Begin
     Repeat
       If CGCIsKW(KW_IS) Then
       Begin
+        If ScrIsStr Then
+          FatalError('Palier SelectCase: "Case Is" non supporte sur ' +
+                     'une chaine (ligne ' + ItoS(CurTokLine) + ')');
         LexNextToken;
         Op := CurTokType;
         If (Op <> TOK_EQ) And (Op <> TOK_NE) And
@@ -19804,6 +21742,28 @@ Begin
         Else       CC := CC_GE;
         End;
         AsmJcc(CC, LMatch);
+      End
+      Else If ScrIsStr Then
+      Begin
+        { Palier O : "Case valeur" sur une chaine - comparaison de     }
+        { contenu via __str_eq (egalite uniquement, pas de plage "To").}
+        CGCParseExpr;                       { EAX=ptr, EDX=len }
+        If Not CGCExprIsString Then
+          FatalError('Palier SelectCase: valeur "Case" String attendue ' +
+                     '(ligne ' + ItoS(CurTokLine) + ')');
+        If CGCIsKW(KW_TO) Then
+          FatalError('Palier SelectCase: plage "To" non supportee sur ' +
+                     'une chaine (ligne ' + ItoS(CurTokLine) + ')');
+        AsmPushReg(R_EDX);
+        AsmPushReg(R_EAX);
+        AsmMovRegMemBP(R_EDX, ScrLenOfs);
+        AsmMovRegMemBP(R_EAX, ScrOfs);
+        AsmPushReg(R_EDX);
+        AsmPushReg(R_EAX);
+        AsmCallLbl('__str_eq');
+        AsmAluRegImm(ALU_ADD, R_ESP, 16);
+        AsmTestRegReg(R_EAX, R_EAX);
+        AsmJcc(CC_NE, LMatch);
       End
       Else
       Begin
@@ -20134,7 +22094,15 @@ Begin
   AsmPushReg(R_EBX);
   AsmPushReg(R_ESI);
 
-  CGCParseExpr;          { EAX = ptr filename }
+  CGCParseExpr;          { EAX/EDX = (ptr,len) VB du nom de fichier }
+  { CreateFileA attend un C-string (NUL final), pas une paire (ptr,len) }
+  { VB brute : sans cette conversion, lpFileName pointe sur un buffer   }
+  { qui n est pas forcement NUL-termine (variable locale/globale) et    }
+  { CreateFileA lit alors des octets au-dela de la longueur reelle.     }
+  AsmPushReg(R_EDX);
+  AsmPushReg(R_EAX);
+  AsmCallLbl('__frm_cstr');
+  AsmAluRegImm(ALU_ADD, R_ESP, 8);
   AsmMovRegReg(R_EBX, R_EAX);
 
   { For (Input | Output | Append) }
@@ -20617,6 +22585,16 @@ Begin
   Else If (CurTokType = TOK_IDENT) And
           (UpCaseStr(CurTokStr) = 'MESSAGEBOX') Then
     CGCParseMessageBox
+  Else If CGCIsKW(KW_MSGBOX) Then
+    FRMParseMsgBoxCall
+  Else If (CurTokType = TOK_IDENT) And
+          (UpCaseStr(CurTokStr) = 'UNLOAD') Then
+    FRMParseUnload
+  Else If (CurTokType = TOK_IDENT) And
+          (UpCaseStr(CurTokStr) = 'SAVESETTING') Then
+    FRMParseSaveSetting
+  Else If CGCIsKW(KW_CALL) Then
+    CGCParseCallStmt
   Else If CGCIsKW(KW_PRINT) Or CGCIsKW(KW_DEBUG) Then
     CGCParsePrint
   Else If CGCIsKW(KW_WITH) Then
@@ -20626,6 +22604,15 @@ Begin
     { ".field = expr" dans un bloc With }
     Nm := CGCLocals[CGCWithLocal[CGCWithTop - 1]].Name;
     CGCParseAssign(Nm);
+  End
+  Else If (CurTokType = TOK_IDENT) And FRMTryStmtIdent(CurTokStr) Then
+  Begin
+    { Palier M : Control.Membre = expr / Control.Methode(...) / }
+    { Clipboard.SetText ... deja emis.                           }
+  End
+  Else If CGCIsKW(KW_ME) And FRMTryStmtIdent('Me') Then
+  Begin
+    { Palier M : Me.Membre = expr deja emis. }
   End
   Else If CurTokType = TOK_IDENT Then
   Begin
@@ -20739,6 +22726,41 @@ Begin
     { Sauter Public/Private prefixes }
     If CGCIsKW(KW_PUBLIC) Or CGCIsKW(KW_PRIVATE) Then
       LexNextToken;
+    { Palier O : Const NAME [As Type] = valeur, au niveau module.     }
+    { Seule une constante entiere litterale est supportee (pas de      }
+    { chaine ni d expression composee).                                }
+    If CGCIsKW(KW_CONST) Then
+    Begin
+      LexNextToken;                        { eat Const }
+      While CurTokType = TOK_IDENT Do
+      Begin
+        Nm := CurTokStr;
+        LexNextToken;
+        CGCEatTypeAnnot;                   { "As Integer" etc., ignore }
+        CurVal := 0;
+        If CurTokType = TOK_EQ Then
+        Begin
+          LexNextToken;
+          If CurTokType = TOK_MINUS Then
+          Begin
+            LexNextToken;
+            If (CurTokType = TOK_INTEGER) Or (CurTokType = TOK_LONG) Then
+            Begin
+              CurVal := -CurTokNum;
+              LexNextToken;
+            End;
+          End
+          Else If (CurTokType = TOK_INTEGER) Or (CurTokType = TOK_LONG) Then
+          Begin
+            CurVal := CurTokNum;
+            LexNextToken;
+          End;
+        End;
+        CGCAddConst(Nm, CurVal);
+        If CurTokType = TOK_COMMA Then LexNextToken Else Break;
+      End;
+      Continue;
+    End;
     If CGCIsKW(KW_ENUM) Then
     Begin
       LexNextToken;                       { eat Enum }
@@ -20841,10 +22863,12 @@ Procedure CGCPass1Globals;
 Var
   InProc : Boolean;
   Nm     : TString;
+  TKind  : Integer;
 Begin
   LexInit;
   LexNextToken;
   InProc := False;
+  CGCGlobalStrCnt := 0;
   While CurTokType <> TOK_EOF Do
   Begin
     If CGCIsKW(KW_SUB) Or CGCIsKW(KW_FUNCTION) Or
@@ -20882,9 +22906,17 @@ Begin
         Else
         Begin
           { eat "As Type" si present }
-          CGCEatTypeAnnot;
+          TKind := CGCEatTypeAnnotKind;
           If AsmFindData(Nm) < 0 Then
-            AsmDefineData(Nm, 4);
+          Begin
+            If TKind = 1 Then
+            Begin
+              AsmDefineData(Nm, 260);
+              CGCAddGlobalString(Nm);
+            End
+            Else
+              AsmDefineData(Nm, 4);
+          End;
         End;
       End;
       Continue;
@@ -21276,14 +23308,422 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
+{ Palier L : WndProc (callback stdcall) et demarrage de la      }
+{ fenetre/des controles pour un module .FRM.                    }
+{ ------------------------------------------------------------ }
+
+{ Y a-t-il un autre menu dont MIdx est le parent ? }
+Function FRMMenuHasChildren(MIdx : Integer) : Boolean;
+Var K : Integer;
+Begin
+  FRMMenuHasChildren := False;
+  For K := 0 To FRMMenuCnt - 1 Do
+    If FRMMenus[K].ParentIdx = MIdx Then
+    Begin
+      FRMMenuHasChildren := True;
+      Exit;
+    End;
+End;
+
+Procedure CGCEmitFormWndProc;
+Var
+  I         : Integer;
+  LNotCmd, LNotTimer, LNotDestroy, LDefault : TString;
+  LSkip     : TString;
+Begin
+  LDefault    := CGCNewLabel('wpDefault');
+  LNotCmd     := CGCNewLabel('wpNotCmd');
+  LNotTimer   := CGCNewLabel('wpNotTmr');
+  LNotDestroy := CGCNewLabel('wpNotDestroy');
+
+  AsmLabel('_FRM_WNDPROC');
+  AsmPushReg(R_EBP);
+  AsmMovRegReg(R_EBP, R_ESP);
+  { [ebp+8]=hWnd [ebp+12]=uMsg [ebp+16]=wParam [ebp+20]=lParam }
+
+  AsmMovRegMemBP(R_EAX, 12);
+  AsmAluRegImm(ALU_CMP, R_EAX, FRM_WM_COMMAND);
+  AsmJcc(CC_NE, LNotCmd);
+
+  AsmMovRegMemBP(R_EAX, 16);
+  AsmMovRegReg(R_ECX, R_EAX);
+  AsmAluRegImm(ALU_AND, R_ECX, $FFFF);        { ECX = id }
+  AsmShrRegImm(R_EAX, 16);
+  AsmMovRegReg(R_EDX, R_EAX);                 { EDX = code notification }
+
+  For I := 0 To FRMControlCnt - 1 Do
+  Begin
+    If CGCFindProc(FRMControls[I].Name + '_Click') >= 0 Then
+    Begin
+      LSkip := CGCNewLabel('wpCtlClk');
+      AsmAluRegImm(ALU_CMP, R_ECX, FRMControlWinID(I));
+      AsmJcc(CC_NE, LSkip);
+      If FRMControls[I].HasIndex Then
+      Begin
+        AsmAluRegImm(ALU_SUB, R_ESP, 4);
+        AsmMovRegImm(R_EAX, FRMControls[I].Index);
+        AsmMovMemEspReg(0, R_EAX);
+        AsmCallLbl('_proc_' + UpCaseStr(FRMControls[I].Name) + '_CLICK');
+        AsmAluRegImm(ALU_ADD, R_ESP, 4);
+      End
+      Else
+        AsmCallLbl('_proc_' + UpCaseStr(FRMControls[I].Name) + '_CLICK');
+      AsmMovRegImm(R_EAX, 0);
+      AsmMovRegReg(R_ESP, R_EBP);
+      AsmPopReg(R_EBP);
+      AsmRetImm(16);
+      AsmLabel(LSkip);
+    End;
+    If CGCFindProc(FRMControls[I].Name + '_DblClick') >= 0 Then
+    Begin
+      LSkip := CGCNewLabel('wpCtlDbl');
+      AsmAluRegImm(ALU_CMP, R_ECX, FRMControlWinID(I));
+      AsmJcc(CC_NE, LSkip);
+      AsmAluRegImm(ALU_CMP, R_EDX, FRM_LBN_DBLCLK);
+      AsmJcc(CC_NE, LSkip);
+      AsmCallLbl('_proc_' + UpCaseStr(FRMControls[I].Name) + '_DBLCLICK');
+      AsmMovRegImm(R_EAX, 0);
+      AsmMovRegReg(R_ESP, R_EBP);
+      AsmPopReg(R_EBP);
+      AsmRetImm(16);
+      AsmLabel(LSkip);
+    End;
+  End;
+  For I := 0 To FRMMenuCnt - 1 Do
+    If CGCFindProc(FRMMenus[I].Name + '_Click') >= 0 Then
+    Begin
+      LSkip := CGCNewLabel('wpMnuClk');
+      AsmAluRegImm(ALU_CMP, R_ECX, FRMMenuWinID(I));
+      AsmJcc(CC_NE, LSkip);
+      AsmCallLbl('_proc_' + UpCaseStr(FRMMenus[I].Name) + '_CLICK');
+      AsmMovRegImm(R_EAX, 0);
+      AsmMovRegReg(R_ESP, R_EBP);
+      AsmPopReg(R_EBP);
+      AsmRetImm(16);
+      AsmLabel(LSkip);
+    End;
+  AsmJmpLbl(LDefault);
+  AsmLabel(LNotCmd);
+
+  AsmMovRegMemBP(R_EAX, 12);
+  AsmAluRegImm(ALU_CMP, R_EAX, FRM_WM_TIMER);
+  AsmJcc(CC_NE, LNotTimer);
+  AsmMovRegMemBP(R_ECX, 16);
+  For I := 0 To FRMControlCnt - 1 Do
+    If (FRMControls[I].TypeStr = 'TIMER') And
+       (CGCFindProc(FRMControls[I].Name + '_Timer') >= 0) Then
+    Begin
+      LSkip := CGCNewLabel('wpTmrOk');
+      AsmAluRegImm(ALU_CMP, R_ECX, FRMControlWinID(I));
+      AsmJcc(CC_NE, LSkip);
+      AsmCallLbl('_proc_' + UpCaseStr(FRMControls[I].Name) + '_TIMER');
+      AsmMovRegImm(R_EAX, 0);
+      AsmMovRegReg(R_ESP, R_EBP);
+      AsmPopReg(R_EBP);
+      AsmRetImm(16);
+      AsmLabel(LSkip);
+    End;
+  AsmJmpLbl(LDefault);
+  AsmLabel(LNotTimer);
+
+  AsmMovRegMemBP(R_EAX, 12);
+  AsmAluRegImm(ALU_CMP, R_EAX, FRM_WM_DESTROY);
+  AsmJcc(CC_NE, LNotDestroy);
+  AsmPushImm(0);
+  AsmCallIAT(ImpFindFunc('PostQuitMessage'));
+  AsmMovRegImm(R_EAX, 0);
+  AsmMovRegReg(R_ESP, R_EBP);
+  AsmPopReg(R_EBP);
+  AsmRetImm(16);
+  AsmLabel(LNotDestroy);
+
+  AsmLabel(LDefault);
+  AsmMovRegMemBP(R_EAX, 20);
+  AsmPushReg(R_EAX);
+  AsmMovRegMemBP(R_EAX, 16);
+  AsmPushReg(R_EAX);
+  AsmMovRegMemBP(R_EAX, 12);
+  AsmPushReg(R_EAX);
+  AsmMovRegMemBP(R_EAX, 8);
+  AsmPushReg(R_EAX);
+  AsmCallIAT(ImpFindFunc('DefWindowProcA'));
+  AsmMovRegReg(R_ESP, R_EBP);
+  AsmPopReg(R_EBP);
+  AsmRetImm(16);
+End;
+
+{ Cree le popup-menu de l entree MIdx (si necessaire), l ajoute au    }
+{ menu parent ParentHMenuSym, et recurse sur ses enfants eventuels.   }
+Procedure FRMBuildMenuEntry(MIdx : Integer; Const ParentHMenuSym : TString);
+Var
+  IsPopup   : Boolean;
+  MySym     : TString;
+  CapLit    : Integer;
+  K         : Integer;
+Begin
+  IsPopup := FRMMenuHasChildren(MIdx);
+  MySym := '@FRM_HMENU' + ItoS(MIdx);
+  If IsPopup Then
+  Begin
+    AsmCallIAT(ImpFindFunc('CreatePopupMenu'));
+    AsmMovMemAbsReg(AsmDataVA(MySym), R_EAX);
+  End;
+  If FRMMenus[MIdx].Caption = '-' Then
+  Begin
+    AsmPushImm(0);                     { lpNewItem }
+    AsmPushImm(0);                     { uIDNewItem }
+    AsmPushImm($800);                  { uFlags = MF_SEPARATOR }
+    AsmMovRegMemAbs(R_EAX, AsmDataVA(ParentHMenuSym));
+    AsmPushReg(R_EAX);                 { hMenu }
+    AsmCallIAT(ImpFindFunc('AppendMenuA'));
+  End
+  Else
+  Begin
+    CapLit := StrAddLit(FRMMenus[MIdx].Caption);
+    AsmMovRegStrRVA(R_EAX, CapLit);
+    AsmPushReg(R_EAX);
+    If IsPopup Then
+    Begin
+      AsmMovRegMemAbs(R_EAX, AsmDataVA(MySym));
+      AsmPushReg(R_EAX);
+      AsmPushImm($10);                { MF_POPUP }
+    End
+    Else
+    Begin
+      AsmPushImm(FRMMenuWinID(MIdx));
+      AsmPushImm(0);                   { MF_STRING }
+    End;
+    AsmMovRegMemAbs(R_EAX, AsmDataVA(ParentHMenuSym));
+    AsmPushReg(R_EAX);
+    AsmCallIAT(ImpFindFunc('AppendMenuA'));
+  End;
+  If IsPopup Then
+    For K := 0 To FRMMenuCnt - 1 Do
+      If FRMMenus[K].ParentIdx = MIdx Then
+        FRMBuildMenuEntry(K, MySym);
+End;
+
+{ ------------------------------------------------------------ }
+{ CGCEmitFormStartup : point d entree pour un module .FRM       }
+{ (remplace CGCPass2SubMain : cree la fenetre, ses controles,   }
+{ son menu, appelle Form_Load, puis la boucle de messages).     }
+{ ------------------------------------------------------------ }
+Procedure CGCEmitFormStartup;
+Var
+  I, CapLit    : Integer;
+  WCVA         : LongInt;
+  ClsNameLit   : Integer;
+  ClassLit     : Integer;
+  StyleVal     : LongInt;
+  I2           : Integer;
+Begin
+  { --- Classe de fenetre --- }
+  ClsNameLit := StrAddLit('FRMMAINWNDCLASS');
+  WCVA := AsmDataVA('@FRM_WNDCLASS');
+  AsmMovRegImm(R_EAX, 0);
+  AsmMovMemAbsReg(WCVA + 0, R_EAX);
+  AsmMovMemAbsImmLbl(WCVA + 4, '_FRM_WNDPROC');
+  AsmMovMemAbsReg(WCVA + 8, R_EAX);
+  AsmMovMemAbsReg(WCVA + 12, R_EAX);
+  AsmMovMemAbsReg(WCVA + 20, R_EAX);
+  AsmMovMemAbsReg(WCVA + 32, R_EAX);
+
+  AsmPushImm(0);
+  AsmCallIAT(ImpFindFunc('GetModuleHandleA'));
+  AsmMovMemAbsReg(WCVA + 16, R_EAX);
+  AsmMovMemAbsReg(AsmDataVA('@FRM_HINSTANCE'), R_EAX);
+
+  AsmPushImm(FRM_IDC_ARROW);
+  AsmPushImm(0);
+  AsmCallIAT(ImpFindFunc('LoadCursorA'));
+  AsmMovMemAbsReg(WCVA + 24, R_EAX);
+
+  AsmMovRegImm(R_EAX, FRM_COLOR_BTNFACE_BR);
+  AsmMovMemAbsReg(WCVA + 28, R_EAX);
+
+  AsmMovRegStrRVA(R_EAX, ClsNameLit);
+  AsmMovMemAbsReg(WCVA + 36, R_EAX);
+
+  AsmPushImm(WCVA);
+  AsmCallIAT(ImpFindFunc('RegisterClassA'));
+
+  { --- Fenetre principale --- }
+  StyleVal := FRM_WS_OVERLAPPEDWINDOW;
+  If Not FRMFormMaxBtn Then StyleVal := StyleVal And (Not FRM_WS_MAXIMIZEBOX);
+  If Not FRMFormMinBtn Then StyleVal := StyleVal And (Not FRM_WS_MINIMIZEBOX);
+
+  AsmPushImm(0);                                  { lpParam }
+  AsmMovRegMemAbs(R_EAX, AsmDataVA('@FRM_HINSTANCE'));
+  AsmPushReg(R_EAX);                              { hInstance }
+  AsmPushImm(0);                                  { hMenu (assigne via SetMenu) }
+  AsmPushImm(0);                                  { hWndParent }
+  AsmPushImm(FRMFormHeight + 39);
+  AsmPushImm(FRMFormWidth + 16);
+  AsmPushImm(FRM_CW_USEDEFAULT);
+  AsmPushImm(FRM_CW_USEDEFAULT);
+  AsmPushImm(StyleVal);
+  If FRMFormCaption <> '' Then
+  Begin
+    CapLit := StrAddLit(FRMFormCaption);
+    AsmMovRegStrRVA(R_EAX, CapLit);
+    AsmPushReg(R_EAX);
+  End
+  Else
+    AsmPushImm(AsmDataVA('@FRM_EMPTYSTR'));
+  AsmMovRegStrRVA(R_EAX, ClsNameLit);
+  AsmPushReg(R_EAX);
+  AsmPushImm(0);
+  AsmCallIAT(ImpFindFunc('CreateWindowExA'));
+  AsmMovMemAbsReg(AsmDataVA('@FRM_HWNDMAIN'), R_EAX);
+
+  { --- Menu (si present) --- }
+  If FRMMenuCnt > 0 Then
+  Begin
+    AsmCallIAT(ImpFindFunc('CreateMenu'));
+    AsmMovMemAbsReg(AsmDataVA('@FRM_HMENUBAR'), R_EAX);
+    For I := 0 To FRMMenuCnt - 1 Do
+      If FRMMenus[I].ParentIdx = -1 Then
+        FRMBuildMenuEntry(I, '@FRM_HMENUBAR');
+    AsmMovRegMemAbs(R_EAX, AsmDataVA('@FRM_HMENUBAR'));
+    AsmPushReg(R_EAX);
+    AsmMovRegMemAbs(R_EAX, AsmDataVA('@FRM_HWNDMAIN'));
+    AsmPushReg(R_EAX);
+    AsmCallIAT(ImpFindFunc('SetMenu'));
+  End;
+
+  { --- Controles --- }
+  For I := 0 To FRMControlCnt - 1 Do
+  Begin
+    AsmMovRegImm(R_EAX, FRMControls[I].FontSize);
+    AsmMovMemAbsReg(AsmDataVA(FRMFontSzSym(I)), R_EAX);
+    If FRMControls[I].TypeStr = 'TIMER' Then Continue;
+
+    StyleVal := FRM_WS_CHILD Or FRM_WS_VISIBLE;
+    If Not FRMControls[I].Enabled Then
+      StyleVal := StyleVal Or FRM_WS_DISABLED;
+    If FRMControls[I].TypeStr = 'COMMANDBUTTON' Then
+    Begin
+      StyleVal := StyleVal Or FRM_WS_TABSTOP;
+      If FRMControls[I].IsDefault Then
+        StyleVal := StyleVal Or FRM_BS_DEFPUSHBUTTON;
+      ClassLit := 0;
+    End
+    Else If FRMControls[I].TypeStr = 'CHECKBOX' Then
+      StyleVal := StyleVal Or FRM_WS_TABSTOP Or $0003 { BS_AUTOCHECKBOX }
+    Else If FRMControls[I].TypeStr = 'TEXTBOX' Then
+    Begin
+      StyleVal := StyleVal Or FRM_WS_TABSTOP Or FRM_WS_BORDER Or
+                  FRM_ES_AUTOHSCROLL;
+      If FRMControls[I].PasswordChar <> '' Then
+        StyleVal := StyleVal Or FRM_ES_PASSWORD;
+      If FRMControls[I].MultiLine Then
+      Begin
+        StyleVal := StyleVal Or FRM_ES_MULTILINE;
+        If FRMControls[I].ScrollBars > 0 Then
+          StyleVal := StyleVal Or FRM_WS_VSCROLL;
+      End;
+    End
+    Else If FRMControls[I].TypeStr = 'LISTBOX' Then
+      StyleVal := StyleVal Or FRM_WS_BORDER Or FRM_WS_VSCROLL Or
+                  FRM_LBS_NOTIFY
+    Else If FRMControls[I].TypeStr = 'COMBOBOX' Then
+    Begin
+      StyleVal := StyleVal Or FRM_WS_TABSTOP Or FRM_CBS_HASSTRINGS;
+      If FRMControls[I].Style = 2 Then
+        StyleVal := StyleVal Or FRM_CBS_DROPDOWNLIST
+      Else
+        StyleVal := StyleVal Or FRM_CBS_DROPDOWN;
+    End;
+
+    AsmPushImm(0);                                { lpParam }
+    AsmMovRegMemAbs(R_EAX, AsmDataVA('@FRM_HINSTANCE'));
+    AsmPushReg(R_EAX);
+    AsmPushImm(FRMControlWinID(I));                { hMenu = ID enfant }
+    AsmMovRegMemAbs(R_EAX, AsmDataVA('@FRM_HWNDMAIN'));
+    AsmPushReg(R_EAX);
+    AsmPushImm(FRMControls[I].Height);
+    AsmPushImm(FRMControls[I].Width);
+    AsmPushImm(FRMControls[I].Top);
+    AsmPushImm(FRMControls[I].Left);
+    AsmPushImm(StyleVal);
+    If FRMControls[I].Caption <> '' Then
+    Begin
+      CapLit := StrAddLit(FRMControls[I].Caption);
+      AsmMovRegStrRVA(R_EAX, CapLit);
+      AsmPushReg(R_EAX);
+    End
+    Else
+      AsmPushImm(AsmDataVA('@FRM_EMPTYSTR'));
+    I2 := StrAddLit(FRMWin32ClassName(FRMControls[I].TypeStr));
+    AsmMovRegStrRVA(R_EAX, I2);
+    AsmPushReg(R_EAX);
+    AsmPushImm(0);
+    AsmCallIAT(ImpFindFunc('CreateWindowExA'));
+    AsmMovMemAbsReg(AsmDataVA(FRMControlHwndSym(I)), R_EAX);
+
+    { Combo/Liste : Style Dropdown List par defaut selectionne l item 0 }
+    If (FRMControls[I].TypeStr = 'COMBOBOX') And
+       (FRMControls[I].PasswordChar = '') Then ;   { rien de plus a faire ici }
+  End;
+
+  { --- Etat initial des minuteries (avant Form_Load) --- }
+  For I := 0 To FRMControlCnt - 1 Do
+    If (FRMControls[I].TypeStr = 'TIMER') And FRMControls[I].Enabled Then
+    Begin
+      AsmMovRegMemAbs(R_EAX, AsmDataVA('@FRM_HWNDMAIN'));
+      AsmPushImm(0);
+      AsmPushImm(FRMControls[I].Interval);
+      AsmPushImm(FRMControlWinID(I));
+      AsmPushReg(R_EAX);
+      AsmCallIAT(ImpFindFunc('SetTimer'));
+    End;
+
+  { --- Afficher la fenetre puis Form_Load --- }
+  AsmPushImm(FRM_SW_SHOW);
+  AsmMovRegMemAbs(R_EAX, AsmDataVA('@FRM_HWNDMAIN'));
+  AsmPushReg(R_EAX);
+  AsmCallIAT(ImpFindFunc('ShowWindow'));
+  AsmMovRegMemAbs(R_EAX, AsmDataVA('@FRM_HWNDMAIN'));
+  AsmPushReg(R_EAX);
+  AsmCallIAT(ImpFindFunc('UpdateWindow'));
+
+  If CGCFindProc('Form_Load') >= 0 Then
+    AsmCallLbl('_proc_FORM_LOAD');
+
+  { --- Boucle de messages --- }
+  AsmLabel('_FRM_MSGLOOP');
+  AsmPushImm(0);
+  AsmPushImm(0);
+  AsmPushImm(0);
+  AsmPushImm(AsmDataVA('@FRM_MSG'));
+  AsmCallIAT(ImpFindFunc('GetMessageA'));
+  AsmTestRegReg(R_EAX, R_EAX);
+  AsmJcc(CC_E, '_FRM_MSGDONE');
+  AsmPushImm(AsmDataVA('@FRM_MSG'));
+  AsmCallIAT(ImpFindFunc('TranslateMessage'));
+  AsmPushImm(AsmDataVA('@FRM_MSG'));
+  AsmCallIAT(ImpFindFunc('DispatchMessageA'));
+  AsmJmpLbl('_FRM_MSGLOOP');
+  AsmLabel('_FRM_MSGDONE');
+
+  AsmPushImm(0);
+  AsmCallIAT(0);
+  AsmInt3;
+End;
+
+{ ------------------------------------------------------------ }
 { CodeGenEntryPoint : pilote le mini-codegen Palier C            }
 { ------------------------------------------------------------ }
 
 Procedure CodeGenEntryPoint;
-Var DK, DU : Integer;
+Var DK, DU : Integer; I : Integer;
 Begin
   AsmInit;
   ImpReset;
+  { Palier K : detecter FRMIsForm/FRMControls/FRMMenus au plus tot,     }
+  { avant de decider quels imports/donnees ajouter ci-dessous.          }
+  LexInit;
+  LexClose;
   CGCLocalCnt      := 0;
   CGCFrameSize     := 0;
   CGCFrameInstrIdx := -1;
@@ -21317,6 +23757,58 @@ Begin
   { FILEIO : ReadFile + SetFilePointer pour Line Input / EOF    }
   ImpAddFunc(DK, 'ReadFile');
   ImpAddFunc(DK, 'SetFilePointer');
+
+  { Palier L : imports GUI pour un module .FRM (fenetre, controles,    }
+  { menu, boucle de messages, Presse-papier).                          }
+  If FRMIsForm Then
+  Begin
+    ImpAddFunc(DK, 'GetModuleHandleA');
+    ImpAddFunc(DK, 'GlobalAlloc');
+    ImpAddFunc(DK, 'GlobalLock');
+    ImpAddFunc(DK, 'GlobalUnlock');
+    ImpAddFunc(DU, 'RegisterClassA');
+    ImpAddFunc(DU, 'CreateWindowExA');
+    ImpAddFunc(DU, 'DefWindowProcA');
+    ImpAddFunc(DU, 'ShowWindow');
+    ImpAddFunc(DU, 'UpdateWindow');
+    ImpAddFunc(DU, 'GetMessageA');
+    ImpAddFunc(DU, 'TranslateMessage');
+    ImpAddFunc(DU, 'DispatchMessageA');
+    ImpAddFunc(DU, 'PostQuitMessage');
+    ImpAddFunc(DU, 'DestroyWindow');
+    ImpAddFunc(DU, 'SetWindowTextA');
+    ImpAddFunc(DU, 'GetWindowTextA');
+    ImpAddFunc(DU, 'SendMessageA');
+    ImpAddFunc(DU, 'SetFocus');
+    ImpAddFunc(DU, 'EnableWindow');
+    ImpAddFunc(DU, 'SetForegroundWindow');
+    ImpAddFunc(DU, 'SetTimer');
+    ImpAddFunc(DU, 'KillTimer');
+    ImpAddFunc(DU, 'LoadCursorA');
+    ImpAddFunc(DU, 'CreateMenu');
+    ImpAddFunc(DU, 'CreatePopupMenu');
+    ImpAddFunc(DU, 'AppendMenuA');
+    ImpAddFunc(DU, 'SetMenu');
+    ImpAddFunc(DU, 'OpenClipboard');
+    ImpAddFunc(DU, 'EmptyClipboard');
+    ImpAddFunc(DU, 'CloseClipboard');
+    ImpAddFunc(DU, 'SetClipboardData');
+    ImpAddFunc(DU, 'GetClipboardData');
+
+    AsmDefineData('@FRM_WNDCLASS',  40);
+    AsmDefineData('@FRM_HINSTANCE', 4);
+    AsmDefineData('@FRM_HWNDMAIN',  4);
+    AsmDefineData('@FRM_HMENUBAR',  4);
+    AsmDefineData('@FRM_EMPTYSTR',  1);
+    AsmDefineData('@FRM_MSG',       28);
+    For I := 0 To FRMControlCnt - 1 Do
+    Begin
+      AsmDefineData(FRMControlHwndSym(I), 4);
+      AsmDefineData(FRMFontSzSym(I), 4);
+    End;
+    For I := 0 To FRMMenuCnt - 1 Do
+      AsmDefineData('@FRM_HMENU' + ItoS(I), 4);
+  End;
 
   { Globals .data du runtime Print }
   AsmDefineData('@HSTDOUT',  4);
@@ -21354,6 +23846,15 @@ Begin
   CGCEmitPrintHelpers;
   CGCEmitFileIOHelpers;
   CGCEmitStringHelpers;
+  { __frm_cstr/__cdbl (dans CGCEmitFormRuntimeHelpers) sont d usage    }
+  { general (Open, MsgBox, CDbl) et pas specifiques aux Form : on les  }
+  { emet toujours, seuls le WndProc et InputBox restent conditionnels. }
+  CGCEmitFormRuntimeHelpers;
+  If FRMIsForm Then
+  Begin
+    CGCEmitFormWndProc;
+    CGCEmitInputBoxHelper;
+  End;
 
   { Palier G : emission des Sub/Function utilisateur (avant _start) }
   CGCPass2UserProcs;
@@ -21371,8 +23872,12 @@ Begin
   AsmMovRegImm(R_EAX, AsmDataVA('@FILEHND'));
   AsmCallLbl('__fileio_init');
 
-  { Pass 2 : corps de Sub Main }
-  CGCPass2SubMain;
+  { Pass 2 : corps de Sub Main, ou demarrage fenetre/controles pour   }
+  { un module .FRM (Palier L).                                        }
+  If FRMIsForm Then
+    CGCEmitFormStartup
+  Else
+    CGCPass2SubMain;
 
   { Calculer les offsets .rdata avant l encodage final }
   ImpBuildLayout;
@@ -21534,7 +24039,10 @@ Begin
   PEDWord(PE_SIZE_OF_IMAGE);  { SizeOfImage                 }
   PEDWord(PE_HEADERS_SIZE);   { SizeOfHeaders               }
   PEDWord(0);                 { CheckSum                    }
-  PEWord(PE_SUBSYS_CUI);      { Subsystem = 3 (Console)     }
+  If FRMIsForm Then
+    PEWord(PE_SUBSYS_GUI)     { Subsystem = 2 (Windows GUI) }
+  Else
+    PEWord(PE_SUBSYS_CUI);    { Subsystem = 3 (Console)     }
   PEWord(0);                  { DllCharacteristics          }
   PEDWord($00100000);         { SizeOfStackReserve          }
   PEDWord($00001000);         { SizeOfStackCommit           }
@@ -21579,12 +24087,12 @@ Begin
   PE_TEXT_VSZ      := TextVS;
   PE_TEXT_RAWSZ    := AlignUp(TextVS, PE_FILE_ALIGN);
 
-  { Les RVA virtuelles restent fixes (.text=0x1000, .rdata=0x2000, }
-  { .data=0x3000) tant que chaque section tient dans une page de  }
-  { SectionAlignment ; AsmDataVA est resolu au moment du codegen, }
-  { donc PE_*_RVA doit etre stable des le depart.                 }
-  PE_RDATA_RVA     := PE_TEXT_RVA  + PE_SEC_ALIGN;     { 0x2000 }
-  PE_DATA_RVA      := PE_RDATA_RVA + PE_SEC_ALIGN;     { 0x3000 }
+  { Les RVA virtuelles restent fixes (.text, .rdata, .data espaces  }
+  { de PE_SECTION_GAP) tant que chaque section tient dans cet ecart ;}
+  { AsmDataVA est resolu au moment du codegen, donc PE_*_RVA doit    }
+  { etre stable des le depart (voir AsmInit, meme formule).          }
+  PE_RDATA_RVA     := PE_TEXT_RVA  + PE_SECTION_GAP;
+  PE_DATA_RVA      := PE_RDATA_RVA + PE_SECTION_GAP;
 
   PE_RDATA_FILEPOS := PE_TEXT_FILEPOS + PE_TEXT_RAWSZ;
   PE_RDATA_RAWSZ   := AlignUp(RDataVS, PE_FILE_ALIGN);
@@ -21593,7 +24101,11 @@ Begin
   PE_DATA_RAWSZ    := AlignUp(DataVS, PE_FILE_ALIGN);
 
   PE_FILE_TOTAL    := PE_DATA_FILEPOS + PE_DATA_RAWSZ;
-  PE_SIZE_OF_IMAGE := PE_DATA_RVA + PE_SEC_ALIGN;
+  { Palier L : couvrir la taille reelle de .data (et non plus une   }
+  { seule page) - sinon l image declaree est trop petite et Windows  }
+  { refuse de charger l executable ("n est pas une application      }
+  { valide") dès que .data depasse PE_SEC_ALIGN (4 Ko).               }
+  PE_SIZE_OF_IMAGE := AlignUp(PE_DATA_RVA + DataVS, PE_SEC_ALIGN);
 End;
 
 { ------------------------------------------------------------ }
@@ -21606,9 +24118,21 @@ Begin
   { On suppose que PEPos est apres l Optional Header (= 0x178) }
   TextVS := AsmCodeSize;
   If TextVS = 0 Then TextVS := 1;
+  If TextVS > PE_SECTION_GAP Then
+    FatalError('Palier L: .text (' + ItoS(TextVS) +
+               ' octets) depasse PE_SECTION_GAP');
   { .text }
   PEFixedStr('.text', 8);
-  PEDWord(TextVS);              { VirtualSize (taille code) }
+  { Palier L : le chargeur Windows exige que chaque section soit       }
+  { virtuellement CONTIGUE avec la suivante (VirtualAddress[n+1] =     }
+  { AlignUp(VirtualAddress[n]+VirtualSize[n], SectionAlignment)) -     }
+  { toute "trou" fait echouer CreateProcess ("n est pas une            }
+  { application Win32 valide"). Comme .rdata/.data sont places a des   }
+  { RVA fixes (PE_SECTION_GAP) choisis AVANT de connaitre la taille    }
+  { finale du code (necessaire pour resoudre les adresses pendant le   }
+  { codegen), on declare VirtualSize = PE_SECTION_GAP (et non la       }
+  { taille reelle, plus petite) pour rester exactement contigu.        }
+  PEDWord(PE_SECTION_GAP);      { VirtualSize (comble jusqu au gap) }
   PEDWord(PE_TEXT_RVA);         { VirtualAddress            }
   PEDWord(PE_TEXT_RAWSZ);       { SizeOfRawData             }
   PEDWord(PE_TEXT_FILEPOS);     { PointerToRawData          }
@@ -21620,8 +24144,11 @@ Begin
   PEDWord($60000020);
 
   { .rdata }
+  If ImpRDataSize > PE_SECTION_GAP Then
+    FatalError('Palier L: .rdata (' + ItoS(ImpRDataSize) +
+               ' octets) depasse PE_SECTION_GAP');
   PEFixedStr('.rdata', 8);
-  PEDWord(ImpRDataSize);        { VirtualSize               }
+  PEDWord(PE_SECTION_GAP);      { VirtualSize (comble jusqu au gap, meme raison que .text) }
   PEDWord(PE_RDATA_RVA);        { VirtualAddress            }
   PEDWord(PE_RDATA_RAWSZ);      { SizeOfRawData             }
   PEDWord(PE_RDATA_FILEPOS);    { PointerToRawData          }
