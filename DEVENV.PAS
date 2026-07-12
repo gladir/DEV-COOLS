@@ -1201,6 +1201,7 @@ Const
  DLG_PADDING           = 10;      { marge interne du dialogue       }
  DLG_INPUT_HEIGHT      = 20;      { hauteur champ de saisie         }
  DLG_LIST_ROW_HEIGHT   = 18;      { hauteur ligne dans liste        }
+ DLG_SCROLL_ARROW      = 12;      { hauteur bouton fleche scrollbar }
  DLG_FILTER_HEIGHT     = 20;      { hauteur du s?lecteur de filtre  }
  DLG_ICON_SIZE         = 32;      { taille icone message box        }
  MAX_DLG_FILES         = 512;     { nombre max fichiers liste       }
@@ -28111,6 +28112,7 @@ End;
 Procedure DrawFileList(Var FD: TFileDialog);
 Var
  LX, LY, LW, LH, I, Row, TY: Integer;
+ SBX1, SBX2, TrackTop, TrackBot, TrackH, ThumbH, ThumbTop, MidX, LB: Integer;
  Disp: String;
 Begin
  LX := FD.Base.X + DLG_PADDING;
@@ -28144,15 +28146,49 @@ Begin
  End;
  { Barre de defilement si necessaire }
  If FD.FileCount > (LH Div DLG_LIST_ROW_HEIGHT) Then Begin
+  SBX1 := LX + LW - 13;
+  SBX2 := LX + LW - 2;
+  MidX := (SBX1 + SBX2) Div 2;
+  { La scrollbar (et donc le bouton fleche bas) ne doit pas depasser   }
+  { le haut du champ de saisie du nom de fichier dessine juste apres : }
+  { LY + LH deborde de DLG_PADDING pixels sur ce champ, d ou ce calcul }
+  { independant plutot que d utiliser LY + LH comme limite basse.     }
+  LB := FD.Base.Y + FD.Base.Height - 3 * DLG_PADDING - DLG_BUTTON_HEIGHT
+   - DLG_FILTER_HEIGHT - DLG_INPUT_HEIGHT - 1;
+  { Bouton fleche haut }
+  SetFillStyle(SolidFill, CLR_BACKGROUND);
+  Bar(SBX1, LY + 1, SBX2, LY + DLG_SCROLL_ARROW);
+  SetColor(CLR_BORDER);
+  Rectangle(SBX1, LY + 1, SBX2, LY + DLG_SCROLL_ARROW);
+  SetColor(CLR_EDITOR_TEXT);
+  Line(SBX1 + 3, LY + 8, MidX, LY + 3);
+  Line(MidX, LY + 3, SBX2 - 3, LY + 8);
+  { Bouton fleche bas }
+  SetFillStyle(SolidFill, CLR_BACKGROUND);
+  Bar(SBX1, LB - DLG_SCROLL_ARROW + 1, SBX2, LB);
+  SetColor(CLR_BORDER);
+  Rectangle(SBX1, LB - DLG_SCROLL_ARROW + 1, SBX2, LB);
+  SetColor(CLR_EDITOR_TEXT);
+  Line(SBX1 + 3, LB - 8, MidX, LB - 3);
+  Line(MidX, LB - 3, SBX2 - 3, LB - 8);
+  { Piste de la scrollbar (entre les deux boutons fleche) }
+  TrackTop := LY + 1 + DLG_SCROLL_ARROW;
+  TrackBot := LB - DLG_SCROLL_ARROW;
   SetFillStyle(SolidFill, CLR_SCROLLBAR);
-  Bar(LX + LW - 13, LY + 1, LX + LW - 2, LY + LH - 2);
+  Bar(SBX1, TrackTop, SBX2, TrackBot);
   { Curseur de la scrollbar }
+  TrackH := TrackBot - TrackTop;
+  ThumbH := 20;
+  If ThumbH > TrackH - 4 Then Begin
+   ThumbH := TrackH - 4;
+   If ThumbH < 4 Then ThumbH := 4;
+  End;
   SetFillStyle(SolidFill, CLR_BORDER);
-  If FD.FileCount > 0 Then
-   Bar(LX + LW - 12,
-    LY + 2 + (FD.ScrollTop * (LH - 24) Div FD.FileCount),
-    LX + LW - 3,
-    LY + 2 + (FD.ScrollTop * (LH - 24) Div FD.FileCount) + 20);
+  If FD.FileCount > 0 Then Begin
+   ThumbTop := TrackTop + 2 +
+    (FD.ScrollTop * (TrackH - 4 - ThumbH)) Div FD.FileCount;
+   Bar(SBX1 + 1, ThumbTop, SBX2 - 1, ThumbTop + ThumbH);
+  End;
  End;
 End;
 
@@ -28240,6 +28276,34 @@ Begin
  End;
 End;
 
+{ --- Test de clic sur les boutons fleche de la scrollbar de la liste --- }
+{ Retourne 0 = fleche haut, 1 = fleche bas, -1 = aucun.                  }
+
+Function FileScrollArrowHitTest(Var FD: TFileDialog;
+ MX, MY: Integer): Integer;
+Var
+ LX, LY, LW, LH, SBX1, SBX2, LB: Integer;
+Begin
+ FileScrollArrowHitTest := -1;
+ LX := FD.Base.X + DLG_PADDING;
+ LY := FD.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING;
+ LW := FD.Base.Width - 2 * DLG_PADDING;
+ LH := FD.Base.Height - DLG_TITLE_HEIGHT - 3 * DLG_PADDING
+  - DLG_BUTTON_HEIGHT - DLG_INPUT_HEIGHT - DLG_FILTER_HEIGHT;
+ If FD.FileCount <= (LH Div DLG_LIST_ROW_HEIGHT) Then Exit;
+ { Doit correspondre exactement a la geometrie dessinee dans           }
+ { DrawFileList (LB = limite basse independante de LY + LH).          }
+ LB := FD.Base.Y + FD.Base.Height - 3 * DLG_PADDING - DLG_BUTTON_HEIGHT
+  - DLG_FILTER_HEIGHT - DLG_INPUT_HEIGHT - 1;
+ SBX1 := LX + LW - 13;
+ SBX2 := LX + LW - 2;
+ If (MX < SBX1) Or (MX > SBX2) Then Exit;
+ If (MY >= LY + 1) And (MY <= LY + DLG_SCROLL_ARROW) Then
+  FileScrollArrowHitTest := 0
+ Else If (MY >= LB - DLG_SCROLL_ARROW + 1) And (MY <= LB) Then
+  FileScrollArrowHitTest := 1;
+End;
+
 { --- Naviguer vers un repertoire (dialogue fichier) --- }
 
 Procedure NavigateToDir(Var FD: TFileDialog; Dir: String);
@@ -28317,6 +28381,41 @@ Begin
  If Not FD.Base.Visible Then Exit;
  If Ev.Kind = EV_MOUSE_DOWN Then Begin
   If Not IsInsideDialog(FD.Base, Ev.MouseX, Ev.MouseY) Then Exit;
+  { Test de clic sur les boutons fleche de la scrollbar de la liste :  }
+  { deplace la selection d un element, comme les touches Haut/Bas.    }
+  Idx := FileScrollArrowHitTest(FD, Ev.MouseX, Ev.MouseY);
+  If Idx = 0 Then Begin
+   { Fleche haut }
+   If FD.SelIndex > 0 Then Begin
+    Dec(FD.SelIndex);
+    If FD.SelIndex < FD.ScrollTop Then
+     FD.ScrollTop := FD.SelIndex;
+    If Not FD.FileList[FD.SelIndex].IsDir Then Begin
+     FD.InputText := FD.FileList[FD.SelIndex].Name;
+     FD.InputCursor := Length(FD.InputText);
+    End Else
+     FD.InputText := '';
+   End;
+   DrawFileDialog(FD);
+   Exit;
+  End Else If Idx = 1 Then Begin
+   { Fleche bas }
+   If FD.SelIndex < FD.FileCount - 1 Then Begin
+    Inc(FD.SelIndex);
+    Idx := (FD.Base.Height - DLG_TITLE_HEIGHT - 3 * DLG_PADDING
+     - DLG_BUTTON_HEIGHT - DLG_INPUT_HEIGHT - DLG_FILTER_HEIGHT)
+     Div DLG_LIST_ROW_HEIGHT;
+    If FD.SelIndex >= FD.ScrollTop + Idx Then
+     FD.ScrollTop := FD.SelIndex - Idx + 1;
+    If Not FD.FileList[FD.SelIndex].IsDir Then Begin
+     FD.InputText := FD.FileList[FD.SelIndex].Name;
+     FD.InputCursor := Length(FD.InputText);
+    End Else
+     FD.InputText := '';
+   End;
+   DrawFileDialog(FD);
+   Exit;
+  End;
   { Test de clic sur la liste }
   Idx := FileListHitTest(FD, Ev.MouseX, Ev.MouseY);
   If Idx >= 0 Then Begin
