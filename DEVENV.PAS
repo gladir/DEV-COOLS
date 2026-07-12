@@ -9779,7 +9779,7 @@ Begin
  IsC := (Ext = '.C') Or (Ext = '.H');
  IsCSharp := (Ext = '.CS');
  IsVBNet := (Ext = '.VB');
- IsVB6   := (Ext = '.BAS');
+ IsVB6   := (Ext = '.BAS') Or (Ext = '.FRM');
  IsLua      := (Ext = '.LUA');
  IsXpp      := (Ext = '.XPP');
  IsPowerFX  := (Ext = '.PFX');
