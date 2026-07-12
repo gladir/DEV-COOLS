@@ -26,7 +26,7 @@
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
 
-  TODO 01 - INFRASTRUCTURE ET OPTIONS                    [A FAIRE]
+  TODO 01 - INFRASTRUCTURE ET OPTIONS                    [IMPLEMENTE]
          TOptions : SrcFile (.pas/.dpr), OutFile, Verbose, DebugMode,
            Warnings, AsmOutput (-asm), ObjOnly (-obj)
          ParseArgs : analyser argv
@@ -323,3 +323,333 @@
            un TODO comme [IMPLEMENTE]
 
   ============================================================ *)
+
+Program DELPHI;
+
+{$IFDEF FPC}
+  {$MODE TP}
+  {$H-}
+{$ENDIF}
+{$I-}
+
+{ ============================================================ }
+{ TODO 01 - INFRASTRUCTURE ET OPTIONS                [IMPLEMENTE] }
+{ ============================================================ }
+
+Const
+ DELPHI_VERSION = '0.1';
+ DELPHI_DATE    = '2026';
+
+ EXIT_OK    = 0;
+ EXIT_ERROR = 1;
+ EXIT_USAGE = 2;
+
+Type
+ TString = String;
+
+ TOptions = Record
+  SrcFile   : TString;   { fichier source (.pas ou .dpr)         }
+  OutFile   : TString;   { fichier sortie (.exe ou .obj)         }
+  Verbose   : Boolean;   { -v : banniere et statistiques         }
+  DebugMode : Boolean;   { -d : affichage de chaque token        }
+  Warnings  : Boolean;   { -w : afficher les avertissements      }
+  AsmOutput : Boolean;   { -asm : produire aussi un .ASM lisible }
+  ObjOnly   : Boolean;   { -obj : produire seulement un .OBJ     }
+ End;
+
+Var
+ { Options }
+ Opts : TOptions;
+
+ { Compteurs generaux }
+ ErrorCount : Integer;
+ WarnCount  : Integer;
+ TotalLines : LongInt;
+
+ { Fichier de sortie interne (pour future emission) }
+ OutF     : Text;
+ OutFOpen : Boolean;
+
+{ ------------------------------------------------------------ }
+{ Fonctions utilitaires                                        }
+{ ------------------------------------------------------------ }
+
+Function StrUpperCase(Const S: TString): TString;
+Var
+ I   : Integer;
+ Tmp : TString;
+Begin
+ Tmp := S;
+ For I := 1 To Length(Tmp) Do
+  If (Tmp[I] >= 'a') And (Tmp[I] <= 'z') Then
+   Tmp[I] := Chr(Ord(Tmp[I]) - 32);
+ StrUpperCase := Tmp;
+End;
+
+{ Retourne l extension d un chemin (avec le point, en minuscules) }
+Function ExtractExt(Const Path: TString): TString;
+Var
+ I, LastDot, LastSep: Integer;
+Begin
+ LastDot := 0;
+ LastSep := 0;
+ For I := 1 To Length(Path) Do
+ Begin
+  If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+   LastSep := I;
+  If Path[I] = '.' Then
+   LastDot := I;
+ End;
+ If (LastDot > 0) And (LastDot > LastSep) Then
+  ExtractExt := StrUpperCase(Copy(Path, LastDot,
+                  Length(Path) - LastDot + 1))
+ Else
+  ExtractExt := '';
+End;
+
+{ Remplace l extension d un chemin }
+Function ReplaceExt(Const Path, NewExt: TString): TString;
+Var
+ I, LastDot, LastSep: Integer;
+Begin
+ LastDot := 0;
+ LastSep := 0;
+ For I := 1 To Length(Path) Do
+ Begin
+  If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+   LastSep := I;
+  If Path[I] = '.' Then
+   LastDot := I;
+ End;
+ If (LastDot > 0) And (LastDot > LastSep) Then
+  ReplaceExt := Copy(Path, 1, LastDot - 1) + NewExt
+ Else
+  ReplaceExt := Path + NewExt;
+End;
+
+{ ------------------------------------------------------------ }
+{ FatalError / WarnMsg                                         }
+{ ------------------------------------------------------------ }
+
+Procedure FatalError(Const Msg: TString);
+Begin
+ WriteLn('DELPHI: FATAL: ', Msg);
+ If OutFOpen Then
+ Begin
+  Close(OutF);
+  OutFOpen := False;
+ End;
+ Halt(EXIT_ERROR);
+End;
+
+Procedure WarnMsg(Const Msg: TString);
+Begin
+ If Not Opts.Warnings Then Exit;
+ WriteLn('DELPHI: warning: ', Msg);
+ Inc(WarnCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ InitOptions                                                  }
+{ ------------------------------------------------------------ }
+
+Procedure InitOptions;
+Begin
+ Opts.SrcFile   := '';
+ Opts.OutFile   := '';
+ Opts.Verbose   := False;
+ Opts.DebugMode := False;
+ Opts.Warnings  := False;
+ Opts.AsmOutput := False;
+ Opts.ObjOnly   := False;
+End;
+
+{ ------------------------------------------------------------ }
+{ ShowHelp                                                     }
+{ ------------------------------------------------------------ }
+
+Procedure ShowHelp;
+Begin
+ WriteLn('DELPHI v', DELPHI_VERSION, ' (', DELPHI_DATE,
+         ') - Compilateur Delphi vers 80386 (Windows PE 32 bits)');
+ WriteLn('DELPHI - Cette commande permet de lancer le compilateur ',
+         'Delphi (Object Pascal) pour l''assembleur du microprocesseur ',
+         '80386 (en executable Windows 32 bits).');
+ WriteLn;
+ WriteLn('Syntaxe : DELPHI [options] <source.pas|source.dpr> [options]');
+ WriteLn;
+ WriteLn('Sortie :');
+ WriteLn('  Par defaut un .EXE (PE Windows 32 bits)');
+ WriteLn('  -obj           Produire seulement un fichier .OBJ (COFF)');
+ WriteLn('  -asm           Produire egalement un fichier .ASM lisible');
+ WriteLn;
+ WriteLn('General :');
+ WriteLn('  -v             Mode verbeux (banniere + statistiques)');
+ WriteLn('  -d             Debug tokens (affiche chaque token)');
+ WriteLn('  -w             Afficher les avertissements');
+ WriteLn('  -h, --help, /? Afficher cette aide');
+ WriteLn;
+ WriteLn('Exemples :');
+ WriteLn('  DELPHI hello.pas');
+ WriteLn('  DELPHI hello.pas hello.exe -v');
+ WriteLn('  DELPHI project.dpr -asm');
+ WriteLn('  DELPHI unit1.pas -obj -w');
+ Halt(EXIT_OK);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseArgs                                                    }
+{ ------------------------------------------------------------ }
+
+Procedure ParseArgs;
+Var
+ I   : Integer;
+ Arg : TString;
+ Ext : TString;
+Begin
+ InitOptions;
+ If ParamCount = 0 Then
+  ShowHelp;
+
+ I := 1;
+ While I <= ParamCount Do
+ Begin
+  Arg := ParamStr(I);
+
+  If (Arg = '-h') Or (Arg = '--help') Or (Arg = '/?') Or
+     (Arg = '/h') Or (Arg = '/H') Then
+   ShowHelp
+  Else If Arg = '-v' Then
+   Opts.Verbose := True
+  Else If Arg = '-d' Then
+   Opts.DebugMode := True
+  Else If Arg = '-w' Then
+   Opts.Warnings := True
+  Else If Arg = '-asm' Then
+   Opts.AsmOutput := True
+  Else If Arg = '-obj' Then
+   Opts.ObjOnly := True
+  Else If (Length(Arg) > 0) And (Arg[1] = '-') Then
+   FatalError('Option inconnue: ' + Arg)
+  Else
+  Begin
+   { Argument positionnel : fichier source ou sortie }
+   If Opts.SrcFile = '' Then
+    Opts.SrcFile := Arg
+   Else If Opts.OutFile = '' Then
+    Opts.OutFile := Arg
+   Else
+    FatalError('Argument inattendu: ' + Arg);
+  End;
+
+  Inc(I);
+ End;
+
+ { Validation : fichier source requis }
+ If Opts.SrcFile = '' Then
+ Begin
+  WriteLn('DELPHI: fichier source manquant');
+  ShowHelp;
+ End;
+
+ { Verifier l extension .pas ou .dpr }
+ Ext := ExtractExt(Opts.SrcFile);
+ If (Ext <> '.PAS') And (Ext <> '.DPR') Then
+  WarnMsg('extension attendue .pas ou .dpr, trouvee: ' + Ext);
+
+ { Fichier de sortie par defaut }
+ If Opts.OutFile = '' Then
+ Begin
+  If Opts.ObjOnly Then
+   Opts.OutFile := ReplaceExt(Opts.SrcFile, '.obj')
+  Else
+   Opts.OutFile := ReplaceExt(Opts.SrcFile, '.exe');
+ End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ShowBanner / ShowStats                                       }
+{ ------------------------------------------------------------ }
+
+Procedure ShowBanner;
+Begin
+ If Not Opts.Verbose Then Exit;
+ WriteLn('DELPHI v', DELPHI_VERSION, ' (', DELPHI_DATE,
+         ') - Compilateur Delphi -> 80386 PE Win32');
+ WriteLn('Source   : ', Opts.SrcFile);
+ WriteLn('Sortie   : ', Opts.OutFile);
+ If Opts.AsmOutput Then
+  WriteLn('ASM      : ', ReplaceExt(Opts.OutFile, '.asm'));
+ If Opts.ObjOnly Then
+  WriteLn('Mode     : OBJ seulement (COFF)')
+ Else
+  WriteLn('Mode     : EXE (PE Win32)');
+ WriteLn;
+End;
+
+Procedure ShowStats;
+Begin
+ If Not Opts.Verbose Then Exit;
+ WriteLn;
+ WriteLn('--- Statistiques ---');
+ WriteLn('Lignes analysees : ', TotalLines);
+ WriteLn('Erreurs          : ', ErrorCount);
+ WriteLn('Avertissements   : ', WarnCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ Cleanup                                                      }
+{ ------------------------------------------------------------ }
+
+Procedure Cleanup;
+Begin
+ If OutFOpen Then
+ Begin
+  Close(OutF);
+  OutFOpen := False;
+ End;
+End;
+
+{ ------------------------------------------------------------ }
+{ Run - point d entree de la compilation                       }
+{ Lexeur, analyseur syntaxique et generateur de code seront     }
+{ ajoutes par les TODO 02 et suivants. Pour l instant, Run se   }
+{ contente de valider que le fichier source existe et d annoncer }
+{ que la compilation elle-meme n est pas encore implementee.    }
+{ ------------------------------------------------------------ }
+
+Procedure Run;
+Var
+ SrcF : Text;
+Begin
+ ErrorCount := 0;
+ WarnCount  := 0;
+ TotalLines := 0;
+ OutFOpen   := False;
+
+ {$I-}
+ Assign(SrcF, Opts.SrcFile);
+ Reset(SrcF);
+ {$I+}
+ If IOResult <> 0 Then
+  FatalError('impossible d''ouvrir le fichier source: ' + Opts.SrcFile);
+ Close(SrcF);
+
+ ShowBanner;
+ WriteLn('DELPHI: TODO 01 (infrastructure et options) implemente.');
+ WriteLn('DELPHI: lexeur/analyseur/generateur de code non encore ',
+         'implementes (voir TODO 02 et suivants).');
+ ShowStats;
+ Cleanup;
+End;
+
+{ ============================================================ }
+{ Programme principal                                          }
+{ ============================================================ }
+
+Begin
+ ParseArgs;
+ Run;
+ Halt(EXIT_OK);
+End.
+
