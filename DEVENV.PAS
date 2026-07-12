@@ -1172,9 +1172,9 @@ Const
  MAX_EXPLORER_NODES    = 512;      { nombre max de noeuds           }
 
  { Panneau de proprietes }
- PROPS_PANEL_HEIGHT    = 200;      { hauteur du panneau en pixels   }
+ PROPS_PANEL_HEIGHT    = 200;      { hauteur par defaut (repli)     }
  PROPS_MIN_HEIGHT      = 80;       { hauteur minimale en pixels     }
- PROPS_MAX_HEIGHT      = 400;      { hauteur maximale en pixels     }
+ PROPS_MAX_HEIGHT      = 900;      { hauteur maximale en pixels     }
  PROPS_ROW_HEIGHT      = 20;       { hauteur d une ligne            }
  PROPS_NAME_WIDTH      = 120;      { largeur de la colonne nom      }
  PROPS_SCROLL_STEP     = 3;        { pas de defilement              }
@@ -2280,7 +2280,8 @@ Type
   PK_PROJECT,          { proprietes du projet                    }
   PK_FILE,             { proprietes du fichier                   }
   PK_SOLUTION,         { proprietes de la solution               }
-  PK_REFERENCE         { proprietes d une reference              }
+  PK_REFERENCE,        { proprietes d une reference              }
+  PK_FRM_CONTROL       { proprietes d un controle de formulaire  }
  );
 
  { Mode de tri des proprietes }
@@ -2296,6 +2297,8 @@ Type
   Category   : String[31];           { categorie (pour tri)           }
   ReadOnly   : Boolean;              { propriete en lecture seule     }
   Editing    : Boolean;              { en cours d edition             }
+  Key        : String[31];          { identifiant stable pour le commit }
+  IsEnum     : Boolean;              { valeur cyclee par simple clic  }
  End;
 
  { Panneau de proprietes }
@@ -5957,6 +5960,11 @@ Procedure HandleRunCommentTool; Forward;
 Procedure TryQuit; Forward;
 Procedure CloseEditorWindow(Index: Integer); Forward;
 Procedure ClearExplorer(Var Exp: TSolutionExplorer); Forward;
+Procedure UpdatePropsPanelForExplorerNode(Var Exp: TSolutionExplorer;
+ NodeIdx: Integer); Forward;
+Procedure SetPropertySourceFrmControl(Var PP: TPropertiesPanel;
+ Var FE: TFormEditor; CtlIdx: Integer); Forward;
+Procedure ClearPropertiesPanel(Var PP: TPropertiesPanel); Forward;
 Procedure AppendOutput(Var OP: TOutputPanel;
  AText: String; Tab: Integer); Forward;
 
@@ -9702,6 +9710,127 @@ Begin
  Dispose(Buf);
 End;
 
+{ --- Nom de la propriete VB6 portant le texte affiche, selon le type }
+{ de controle (Text pour les zones de texte, Caption pour le reste). }
+
+Function FrmCaptionPropName(TypeStr: String): String;
+Begin
+ If UpCaseStr(TypeStr) = 'TEXTBOX' Then
+  FrmCaptionPropName := 'Text'
+ Else
+  FrmCaptionPropName := 'Caption';
+End;
+
+{ --- Formater une ligne de propriete .FRM avec l alignement habituel --- }
+
+Function FrmPropLine(PropName, ValueStr: String): String;
+Var
+ S: String;
+Begin
+ S := '      ' + PropName;
+ While Length(S) < 22 Do
+  S := S + ' ';
+ FrmPropLine := S + '=   ' + ValueStr;
+End;
+
+{ --- Renommer un controle dans le fichier .FRM : remplace uniquement }
+{ le nom en fin de la ligne "Begin VB.<Type> <OldName>".              }
+
+Procedure RenameFrmControl(AFileName, OldName, NewName: String);
+Var
+ Buf: ^TTextBuffer;
+ Line, First, Rest, NameTok, Prefix: String;
+ I: Integer;
+Begin
+ New(Buf);
+ LoadFile(Buf^, AFileName);
+ For I := 0 To Buf^.LineCount - 1 Do Begin
+  Line := TrimStr(Buf^.Lines[I]);
+  First := FRMVisFirstWord(Line, Rest);
+  If UpCaseStr(First) = 'BEGIN' Then Begin
+   FRMVisFirstWord(Rest, NameTok);
+   If UpCaseStr(NameTok) = UpCaseStr(OldName) Then Begin
+    Prefix := Copy(Buf^.Lines[I], 1,
+     Length(Buf^.Lines[I]) - Length(NameTok));
+    Buf^.Lines[I] := Prefix + NewName;
+    Buf^.Modified := True;
+    Break;
+   End;
+  End;
+ End;
+ SaveFile(Buf^, AFileName);
+ Dispose(Buf);
+End;
+
+{ --- Mettre a jour (ou inserer si absente) une propriete d un        }
+{ controle existant, identifie par son nom, dans le bloc concepteur   }
+{ d un fichier .FRM. Reutilise le suivi de pile Begin/End, mais en    }
+{ retenant en plus le nom du controle associe a chaque niveau pour    }
+{ localiser exactement le bloc cible (et non un sous-controle du meme }
+{ nom par coincidence).                                                }
+
+Procedure UpdateFrmControlProperty(AFileName, CtlName, PropName,
+ NewPropVal: String; IsQuoted: Boolean);
+Var
+ Buf: ^TTextBuffer;
+ Line, First, Rest, NameTok: String;
+ StackTop, I, J, EqPos: Integer;
+ BlockStart, TargetDepth, PropLineIdx: Integer;
+ InTargetBlock: Boolean;
+ PName, ValStr: String;
+Begin
+ New(Buf);
+ LoadFile(Buf^, AFileName);
+ StackTop := 0;
+ BlockStart := -1;
+ TargetDepth := -1;
+ PropLineIdx := -1;
+ InTargetBlock := False;
+ If IsQuoted Then
+  ValStr := '"' + NewPropVal + '"'
+ Else
+  ValStr := NewPropVal;
+ I := 0;
+ While I < Buf^.LineCount Do Begin
+  Line := TrimStr(Buf^.Lines[I]);
+  First := UpCaseStr(FRMVisFirstWord(Line, Rest));
+  If First = 'BEGIN' Then Begin
+   FRMVisFirstWord(Rest, NameTok);
+   Inc(StackTop);
+   If (Not InTargetBlock) And
+      (UpCaseStr(NameTok) = UpCaseStr(CtlName)) Then Begin
+    InTargetBlock := True;
+    TargetDepth := StackTop;
+    BlockStart := I;
+   End;
+  End Else If First = 'END' Then Begin
+   If InTargetBlock And (StackTop = TargetDepth) Then
+    InTargetBlock := False;
+   If StackTop > 0 Then Dec(StackTop);
+  End Else If InTargetBlock And (StackTop = TargetDepth) Then Begin
+   EqPos := 0;
+   For J := 1 To Length(Line) Do
+    If (Line[J] = '=') And (EqPos = 0) Then EqPos := J;
+   If EqPos > 0 Then Begin
+    PName := UpCaseStr(TrimStr(Copy(Line, 1, EqPos - 1)));
+    If PName = UpCaseStr(PropName) Then
+     PropLineIdx := I;
+   End;
+  End;
+  Inc(I);
+ End;
+ If BlockStart < 0 Then Begin
+  Dispose(Buf);
+  Exit;  { controle introuvable }
+ End;
+ If PropLineIdx >= 0 Then
+  Buf^.Lines[PropLineIdx] := FrmPropLine(PropName, ValStr)
+ Else
+  InsertLine(Buf^, BlockStart + 1, FrmPropLine(PropName, ValStr));
+ SaveFile(Buf^, AFileName);
+ Dispose(Buf);
+End;
+
 { --- Inserer un caractere dans le tampon --- }
 
 Procedure InsertChar(Var Buf: TTextBuffer; ALine, ACol: LongInt;
@@ -11283,6 +11412,7 @@ Begin
    End;
   End;
   FE.SelectedCtl := HitCtl;
+  SetPropertySourceFrmControl(PropsPanel, FE, FE.SelectedCtl);
  End Else Begin
   { Outil de controle : deposer un nouveau controle a la position   }
   { cliquee et le persister immediatement dans le fichier .FRM       }
@@ -11301,6 +11431,7 @@ Begin
   FE.ScrollY := SavedSY;
   FE.SelectedCtl := FE.ControlCount - 1;
   FE.ToolSel := 0;
+  SetPropertySourceFrmControl(PropsPanel, FE, FE.SelectedCtl);
  End;
 End;
 
@@ -21407,6 +21538,30 @@ End;
   TODO 17 - EXPLORATEUR DE SOLUTION (PANNEAU DROIT) [IMPLEMENTE]
   ============================================================ }
 
+{ --- Calculer la hauteur par defaut du panneau de proprietes, comme  }
+{ environ le tiers de l espace vertical partage avec l explorateur de }
+{ solution. Utilisee par InitExplorer et InitPropertiesPanel pour que }
+{ les deux panneaux restent coherents sans dependre de l ordre        }
+{ d appel des deux procedures. Le panneau de sortie (OutputPanel)     }
+{ s etend sur toute la largeur de l ecran, y compris sous la colonne  }
+{ explorateur/proprietes : il faut donc soustraire sa hauteur (et son }
+{ propre splitter) de l espace disponible, sans quoi le panneau de    }
+{ proprietes se retrouve dessine sous le panneau de sortie et devient }
+{ totalement invisible (celui-ci est redessine par-dessus ensuite).   }
+
+Function ComputePropsPanelHeight: Integer;
+Var
+ ExpY, TotalAvail, H: Integer;
+Begin
+ ExpY := TOOLBTN_HEIGHT + TAB_HEIGHT + 2;
+ TotalAvail := GetScreenHeight - ExpY - STATUSBAR_HEIGHT
+  - OUTPUT_HEIGHT - OUTPUT_SPLITTER_HEIGHT;
+ H := TotalAvail Div 3;
+ If H < PROPS_MIN_HEIGHT Then H := PROPS_MIN_HEIGHT;
+ If H > PROPS_MAX_HEIGHT Then H := PROPS_MAX_HEIGHT;
+ ComputePropsPanelHeight := H;
+End;
+
 { --- Initialiser un noeud de l explorateur --- }
 
 Procedure InitExplorerNode(Var Node: TExplorerNode);
@@ -21434,8 +21589,9 @@ Begin
  Exp.X := GetScreenWidth - EXPLORER_WIDTH;
  Exp.Y := TOOLBTN_HEIGHT + TAB_HEIGHT + 2;
  Exp.Width := EXPLORER_WIDTH;
- Exp.Height := GetScreenHeight - Exp.Y - 20
-  - PROPS_PANEL_HEIGHT - PROPS_SPLITTER_HEIGHT;
+ Exp.Height := GetScreenHeight - Exp.Y - STATUSBAR_HEIGHT
+  - OUTPUT_HEIGHT - OUTPUT_SPLITTER_HEIGHT
+  - ComputePropsPanelHeight - PROPS_SPLITTER_HEIGHT;
  Exp.SplitterX := Exp.X - SPLITTER_WIDTH;
  Exp.Dragging := False;
  Exp.NeedRepaint := True;
@@ -22168,6 +22324,7 @@ Begin
      Exp.Nodes[Exp.SelectedIdx].Selected := False;
     Exp.SelectedIdx := HitIdx;
     Exp.Nodes[HitIdx].Selected := True;
+    UpdatePropsPanelForExplorerNode(Exp, HitIdx);
     Exp.NeedRepaint := True;
     DrawExplorer(Exp);
     ShowExplorerContextMenu(Exp, CtxMenu, HitIdx,
@@ -22219,6 +22376,7 @@ Begin
     Exp.Nodes[Exp.SelectedIdx].Selected := False;
    Exp.SelectedIdx := HitIdx;
    Exp.Nodes[HitIdx].Selected := True;
+   UpdatePropsPanelForExplorerNode(Exp, HitIdx);
    If Exp.Nodes[HitIdx].HasChildren Then
     ToggleNode(Exp, HitIdx)
    Else If Exp.Nodes[HitIdx].Kind = ENK_FILE_FRM Then
@@ -22257,6 +22415,7 @@ Begin
       Exp.Nodes[Exp.SelectedIdx].Selected := False;
       Exp.SelectedIdx := HitIdx;
       Exp.Nodes[Exp.SelectedIdx].Selected := True;
+      UpdatePropsPanelForExplorerNode(Exp, Exp.SelectedIdx);
       Exp.NeedRepaint := True;
      End;
     End;
@@ -22271,6 +22430,7 @@ Begin
       Exp.Nodes[Exp.SelectedIdx].Selected := False;
       Exp.SelectedIdx := HitIdx;
       Exp.Nodes[Exp.SelectedIdx].Selected := True;
+      UpdatePropsPanelForExplorerNode(Exp, Exp.SelectedIdx);
       Exp.NeedRepaint := True;
      End;
     End;
@@ -22284,6 +22444,7 @@ Begin
       Exp.Nodes[Exp.SelectedIdx].Selected := False;
       Exp.SelectedIdx := Exp.Nodes[Exp.SelectedIdx].ParentIdx;
       Exp.Nodes[Exp.SelectedIdx].Selected := True;
+      UpdatePropsPanelForExplorerNode(Exp, Exp.SelectedIdx);
       Exp.NeedRepaint := True;
      End;
     End;
@@ -22330,8 +22491,10 @@ Begin
       If Ev.KeyCode = 73 Then Dec(Exp.SelectedIdx)
       Else Inc(Exp.SelectedIdx);
      If (Exp.SelectedIdx >= 0) And
-        (Exp.SelectedIdx < Exp.NodeCount) Then
+        (Exp.SelectedIdx < Exp.NodeCount) Then Begin
       Exp.Nodes[Exp.SelectedIdx].Selected := True;
+      UpdatePropsPanelForExplorerNode(Exp, Exp.SelectedIdx);
+     End;
      Exp.NeedRepaint := True;
     End;
    End;
@@ -22342,8 +22505,10 @@ Begin
     While (Exp.SelectedIdx < Exp.NodeCount) And
           (Not Exp.Nodes[Exp.SelectedIdx].Visible) Do
      Inc(Exp.SelectedIdx);
-    If Exp.SelectedIdx < Exp.NodeCount Then
+    If Exp.SelectedIdx < Exp.NodeCount Then Begin
      Exp.Nodes[Exp.SelectedIdx].Selected := True;
+     UpdatePropsPanelForExplorerNode(Exp, Exp.SelectedIdx);
+    End;
     Exp.ScrollTop := 0;
     Exp.NeedRepaint := True;
    End;
@@ -22355,8 +22520,10 @@ Begin
           (Not Exp.Nodes[Exp.SelectedIdx].Visible) Do
      Dec(Exp.SelectedIdx);
     If (Exp.SelectedIdx >= 0) And
-       (Exp.SelectedIdx < Exp.NodeCount) Then
+       (Exp.SelectedIdx < Exp.NodeCount) Then Begin
      Exp.Nodes[Exp.SelectedIdx].Selected := True;
+     UpdatePropsPanelForExplorerNode(Exp, Exp.SelectedIdx);
+    End;
     Exp.NeedRepaint := True;
    End;
   End;
@@ -22757,6 +22924,8 @@ Begin
  Item.Category := '';
  Item.ReadOnly := False;
  Item.Editing := False;
+ Item.Key := '';
+ Item.IsEnum := False;
 End;
 
 { --- Initialiser le panneau de proprietes --- }
@@ -22769,9 +22938,10 @@ Begin
  PP.SelectedIdx := -1;
  PP.ScrollTop := 0;
  PP.X := GetScreenWidth - EXPLORER_WIDTH;
- PP.Y := GetScreenHeight - PROPS_PANEL_HEIGHT - STATUSBAR_HEIGHT;
+ PP.Height := ComputePropsPanelHeight;
+ PP.Y := GetScreenHeight - PP.Height - STATUSBAR_HEIGHT
+  - OUTPUT_HEIGHT - OUTPUT_SPLITTER_HEIGHT;
  PP.Width := EXPLORER_WIDTH;
- PP.Height := PROPS_PANEL_HEIGHT;
  PP.NameColWidth := PROPS_NAME_WIDTH;
  PP.SplitterY := PP.Y - PROPS_SPLITTER_HEIGHT;
  PP.Dragging := False;
@@ -22806,7 +22976,8 @@ End;
 { --- Ajouter une propriete au panneau --- }
 
 Function AddProperty(Var PP: TPropertiesPanel;
- AName, AValue, ACategory: String; AReadOnly: Boolean): Boolean;
+ AName, AValue, ACategory: String; AReadOnly: Boolean;
+ AKey: String; AIsEnum: Boolean): Boolean;
 Begin
  If PP.ItemCount >= MAX_PROPERTIES Then Begin
   AddProperty := False;
@@ -22817,6 +22988,8 @@ Begin
  PP.Items[PP.ItemCount].Category := ACategory;
  PP.Items[PP.ItemCount].ReadOnly := AReadOnly;
  PP.Items[PP.ItemCount].Editing := False;
+ PP.Items[PP.ItemCount].Key := AKey;
+ PP.Items[PP.ItemCount].IsEnum := AIsEnum;
  Inc(PP.ItemCount);
  PP.NeedRepaint := True;
  AddProperty := True;
@@ -22852,25 +23025,25 @@ Begin
  PP.SourceKind := PK_PROJECT;
  PP.SourceTitle := Proj.Info.ProjectName;
  AddProperty(PP, 'Nom de l assembly', Proj.Info.AssemblyName,
-  'General', False);
+  'General', False, 'ASSEMBLYNAME', False);
  AddProperty(PP, 'Espace de noms racine', Proj.Info.RootNamespace,
-  'General', False);
+  'General', False, 'ROOTNAMESPACE', False);
  Case Proj.Info.OutputType Of
   OT_EXE:     AddProperty(PP, 'Type de sortie', 'Exe',
-                'General', False);
+                'General', False, 'OUTPUTTYPE', True);
   OT_LIBRARY: AddProperty(PP, 'Type de sortie', 'Library',
-                'General', False);
+                'General', False, 'OUTPUTTYPE', True);
   OT_WINEXE:  AddProperty(PP, 'Type de sortie', 'WinExe',
-                'General', False);
+                'General', False, 'OUTPUTTYPE', True);
  End;
  AddProperty(PP, 'Chemin de sortie', Proj.Info.OutputPath,
-  'Build', False);
+  'Build', False, 'OUTPUTPATH', False);
  AddProperty(PP, 'Framework cible', Proj.Info.TargetFramework,
-  'General', True);
+  'General', True, 'TARGETFW', False);
  AddProperty(PP, 'Constantes', Proj.Info.DefineConstants,
-  'Build', False);
+  'Build', False, 'DEFINECONST', False);
  AddProperty(PP, 'GUID du projet', Proj.Info.ProjectGUID,
-  'Avance', True);
+  'Avance', True, 'PROJGUID', False);
  PP.NeedRepaint := True;
 End;
 
@@ -22883,25 +23056,24 @@ Begin
  PP.SourceKind := PK_FILE;
  PP.SourceTitle := PF.FileName;
  AddProperty(PP, 'Nom de fichier', PF.FileName,
-  'General', True);
+  'General', True, 'FILENAME', False);
  Case PF.BuildAction Of
   BA_COMPILE:           AddProperty(PP, 'Action de build',
-                          'Compile', 'Build', False);
+                          'Compile', 'Build', False, 'BUILDACTION', True);
   BA_CONTENT:           AddProperty(PP, 'Action de build',
-                          'Content', 'Build', False);
+                          'Content', 'Build', False, 'BUILDACTION', True);
   BA_NONE:              AddProperty(PP, 'Action de build',
-                          'None', 'Build', False);
+                          'None', 'Build', False, 'BUILDACTION', True);
   BA_EMBEDDED_RESOURCE: AddProperty(PP, 'Action de build',
-                          'EmbeddedResource', 'Build', False);
+                          'EmbeddedResource', 'Build', False,
+                          'BUILDACTION', True);
  End;
  If PF.DependentUpon <> '' Then
   AddProperty(PP, 'Depend de', PF.DependentUpon,
-   'Avance', True);
+   'Avance', True, 'DEPENDENTUPON', False);
  If PF.SubType <> '' Then
   AddProperty(PP, 'Sous-type', PF.SubType,
-   'Avance', True);
- AddProperty(PP, 'Copier dans sortie', 'Ne pas copier',
-  'Build', False);
+   'Avance', True, 'SUBTYPE', False);
  PP.NeedRepaint := True;
 End;
 
@@ -22914,13 +23086,13 @@ Begin
  PP.SourceKind := PK_SOLUTION;
  PP.SourceTitle := Sol.Info.SolutionName;
  AddProperty(PP, 'Nom', Sol.Info.SolutionName,
-  'General', True);
+  'General', True, 'SOLNAME', False);
  AddProperty(PP, 'Chemin', Sol.Info.SolutionPath,
-  'General', True);
+  'General', True, 'SOLPATH', False);
  AddProperty(PP, 'Nombre de projets', IntToStr(Sol.ProjectCount),
-  'General', True);
+  'General', True, 'PROJCOUNT', False);
  AddProperty(PP, 'Configurations', IntToStr(Sol.ConfigCount),
-  'General', True);
+  'General', True, 'CFGCOUNT', False);
  PP.NeedRepaint := True;
 End;
 
@@ -22933,13 +23105,240 @@ Begin
  PP.SourceKind := PK_REFERENCE;
  PP.SourceTitle := PR.ReferenceName;
  AddProperty(PP, 'Nom', PR.ReferenceName,
-  'General', True);
+  'General', True, 'REFNAME', False);
  If PR.HintPath <> '' Then
   AddProperty(PP, 'Chemin', PR.HintPath,
-   'General', True);
+   'General', True, 'REFPATH', False);
  If PR.ProjectGUID <> '' Then
   AddProperty(PP, 'GUID du projet', PR.ProjectGUID,
-   'Avance', True);
+   'Avance', True, 'REFGUID', False);
+ PP.NeedRepaint := True;
+End;
+
+{ --- Definir la source des proprietes (controle de formulaire         }
+{ selectionne dans l editeur de formulaire visuel) --- }
+
+Procedure SetPropertySourceFrmControl(Var PP: TPropertiesPanel;
+ Var FE: TFormEditor; CtlIdx: Integer);
+Var
+ C: TFRMVisControl;
+Begin
+ If (CtlIdx < 0) Or (CtlIdx >= FE.ControlCount) Then Begin
+  ClearPropertiesPanel(PP);
+  Exit;
+ End;
+ C := FE.Controls[CtlIdx];
+ ClearPropertiesPanel(PP);
+ PP.SourceKind := PK_FRM_CONTROL;
+ PP.SourceTitle := C.Name + ' (' + C.TypeStr + ')';
+ AddProperty(PP, '(Nom)', C.Name, 'General', False, 'CTLNAME', False);
+ If UpCaseStr(C.TypeStr) <> 'TIMER' Then
+  AddProperty(PP, FrmCaptionPropName(C.TypeStr), C.Caption,
+   'General', False, 'CTLCAPTION', False);
+ AddProperty(PP, 'Left', IntToStr(C.CtlLeft), 'Layout', False,
+  'CTLLEFT', False);
+ AddProperty(PP, 'Top', IntToStr(C.CtlTop), 'Layout', False,
+  'CTLTOP', False);
+ AddProperty(PP, 'Width', IntToStr(C.CtlWidth), 'Layout', False,
+  'CTLWIDTH', False);
+ AddProperty(PP, 'Height', IntToStr(C.CtlHeight), 'Layout', False,
+  'CTLHEIGHT', False);
+ PP.NeedRepaint := True;
+End;
+
+{ --- Mettre a jour le panneau de proprietes docke en fonction du     }
+{ noeud selectionne dans l explorateur de solution (projet, fichier,  }
+{ solution, reference). Appelee a chaque changement de selection,     }
+{ souris ou clavier.                                                   }
+
+Procedure UpdatePropsPanelForExplorerNode(Var Exp: TSolutionExplorer;
+ NodeIdx: Integer);
+Var
+ Kind: TExplorerNodeKind;
+ Idx: Integer;
+Begin
+ If (NodeIdx < 0) Or (NodeIdx >= Exp.NodeCount) Then Begin
+  ClearPropertiesPanel(PropsPanel);
+  Exit;
+ End;
+ Kind := Exp.Nodes[NodeIdx].Kind;
+ Case Kind Of
+  ENK_SOLUTION:
+   If SolutionLoaded Then
+    SetPropertySourceSolution(PropsPanel, CurrentSolution)
+   Else
+    ClearPropertiesPanel(PropsPanel);
+  ENK_PROJECT:
+   If SolutionLoaded Then
+    SetPropertySourceProject(PropsPanel, CurrentProject)
+   Else
+    ClearPropertiesPanel(PropsPanel);
+  ENK_FILE_CS, ENK_FILE_VB, ENK_FILE_PAS, ENK_FILE_FRM, ENK_FILE_OTHER: Begin
+   If SolutionLoaded Then Begin
+    Idx := FindFileInProject(CurrentProject, Exp.Nodes[NodeIdx].Caption);
+    If Idx >= 0 Then
+     SetPropertySourceFile(PropsPanel, CurrentProject.Files[Idx])
+    Else
+     ClearPropertiesPanel(PropsPanel);
+   End Else
+    ClearPropertiesPanel(PropsPanel);
+  End;
+  ENK_REFERENCE: Begin
+   If SolutionLoaded Then Begin
+    Idx := FindReferenceInProject(CurrentProject,
+     Exp.Nodes[NodeIdx].Caption);
+    If Idx >= 0 Then
+     SetPropertySourceReference(PropsPanel, CurrentProject.Refs[Idx])
+    Else
+     ClearPropertiesPanel(PropsPanel);
+   End Else
+    ClearPropertiesPanel(PropsPanel);
+  End;
+ Else
+  ClearPropertiesPanel(PropsPanel);
+ End;
+End;
+
+{ --- Valeur suivante dans le cycle d une propriete enumeree --- }
+
+Function CycleEnumValue(Key, CurValue: String): String;
+Begin
+ If Key = 'OUTPUTTYPE' Then Begin
+  If CurValue = 'Exe' Then CycleEnumValue := 'Library'
+  Else If CurValue = 'Library' Then CycleEnumValue := 'WinExe'
+  Else CycleEnumValue := 'Exe';
+ End Else If Key = 'BUILDACTION' Then Begin
+  If CurValue = 'Compile' Then CycleEnumValue := 'Content'
+  Else If CurValue = 'Content' Then CycleEnumValue := 'None'
+  Else If CurValue = 'None' Then CycleEnumValue := 'EmbeddedResource'
+  Else CycleEnumValue := 'Compile';
+ End Else
+  CycleEnumValue := CurValue;
+End;
+
+{ --- Appliquer la modification d une propriete de controle de        }
+{ formulaire : met a jour ActiveFormEditor et reecrit le .FRM sur      }
+{ disque immediatement (comme le depot d un nouveau controle).        }
+
+Procedure ApplyFrmControlPropertyCommit(Key, NewVal: String);
+Var
+ Idx: Integer;
+ OldName, PropName: String;
+ NewNum: LongInt;
+Begin
+ If (ActiveFormEditor.SelectedCtl < 0) Or
+    (ActiveFormEditor.SelectedCtl >= ActiveFormEditor.ControlCount) Then
+  Exit;
+ Idx := ActiveFormEditor.SelectedCtl;
+ If Key = 'CTLNAME' Then Begin
+  If (Length(NewVal) = 0) Or
+     (NewVal = ActiveFormEditor.Controls[Idx].Name) Then Exit;
+  OldName := ActiveFormEditor.Controls[Idx].Name;
+  RenameFrmControl(ActiveFormEditor.FileName, OldName, NewVal);
+  ActiveFormEditor.Controls[Idx].Name := NewVal;
+ End Else If Key = 'CTLCAPTION' Then Begin
+  PropName := FrmCaptionPropName(ActiveFormEditor.Controls[Idx].TypeStr);
+  UpdateFrmControlProperty(ActiveFormEditor.FileName,
+   ActiveFormEditor.Controls[Idx].Name, PropName, NewVal, True);
+  ActiveFormEditor.Controls[Idx].Caption := NewVal;
+ End Else If Key = 'CTLLEFT' Then Begin
+  NewNum := FRMVisValInt(NewVal);
+  UpdateFrmControlProperty(ActiveFormEditor.FileName,
+   ActiveFormEditor.Controls[Idx].Name, 'Left', IntToStr(NewNum), False);
+  ActiveFormEditor.Controls[Idx].CtlLeft := NewNum;
+ End Else If Key = 'CTLTOP' Then Begin
+  NewNum := FRMVisValInt(NewVal);
+  UpdateFrmControlProperty(ActiveFormEditor.FileName,
+   ActiveFormEditor.Controls[Idx].Name, 'Top', IntToStr(NewNum), False);
+  ActiveFormEditor.Controls[Idx].CtlTop := NewNum;
+ End Else If Key = 'CTLWIDTH' Then Begin
+  NewNum := FRMVisValInt(NewVal);
+  UpdateFrmControlProperty(ActiveFormEditor.FileName,
+   ActiveFormEditor.Controls[Idx].Name, 'Width', IntToStr(NewNum), False);
+  ActiveFormEditor.Controls[Idx].CtlWidth := NewNum;
+ End Else If Key = 'CTLHEIGHT' Then Begin
+  NewNum := FRMVisValInt(NewVal);
+  UpdateFrmControlProperty(ActiveFormEditor.FileName,
+   ActiveFormEditor.Controls[Idx].Name, 'Height', IntToStr(NewNum), False);
+  ActiveFormEditor.Controls[Idx].CtlHeight := NewNum;
+ End;
+ If (WinMgr.ActiveIdx >= 0) And
+    (FormEditors[WinMgr.ActiveIdx] <> Nil) Then
+  FormEditors[WinMgr.ActiveIdx]^ := ActiveFormEditor;
+End;
+
+{ --- Appliquer la modification d une propriete au donnee reelle       }
+{ correspondante (projet/fichier/controle de formulaire) et persister  }
+{ immediatement sur disque. Les proprietes en lecture seule ou sans    }
+{ cle stable n ont aucun effet ici. --- }
+
+Procedure ApplyPropertyCommit(Var PP: TPropertiesPanel; Idx: Integer;
+ NewVal: String);
+Var
+ Key: String;
+ FileIdx: Integer;
+Begin
+ If (Idx < 0) Or (Idx >= PP.ItemCount) Then Exit;
+ Key := PP.Items[Idx].Key;
+ If Key = '' Then Exit;
+ Case PP.SourceKind Of
+  PK_PROJECT: Begin
+   If Key = 'ASSEMBLYNAME' Then
+    CurrentProject.Info.AssemblyName := NewVal
+   Else If Key = 'ROOTNAMESPACE' Then
+    CurrentProject.Info.RootNamespace := NewVal
+   Else If Key = 'OUTPUTPATH' Then
+    CurrentProject.Info.OutputPath := NewVal
+   Else If Key = 'DEFINECONST' Then
+    CurrentProject.Info.DefineConstants := NewVal
+   Else If Key = 'OUTPUTTYPE' Then Begin
+    If NewVal = 'Exe' Then
+     CurrentProject.Info.OutputType := OT_EXE
+    Else If NewVal = 'Library' Then
+     CurrentProject.Info.OutputType := OT_LIBRARY
+    Else If NewVal = 'WinExe' Then
+     CurrentProject.Info.OutputType := OT_WINEXE;
+   End Else
+    Exit;
+   If SolutionLoaded Then Begin
+    SolutionModified := True;
+    SaveCurrentSolution;
+   End;
+  End;
+  PK_FILE: Begin
+   FileIdx := FindFileInProject(CurrentProject, PP.SourceTitle);
+   If FileIdx < 0 Then Exit;
+   If Key = 'BUILDACTION' Then Begin
+    If NewVal = 'Compile' Then
+     CurrentProject.Files[FileIdx].BuildAction := BA_COMPILE
+    Else If NewVal = 'Content' Then
+     CurrentProject.Files[FileIdx].BuildAction := BA_CONTENT
+    Else If NewVal = 'None' Then
+     CurrentProject.Files[FileIdx].BuildAction := BA_NONE
+    Else If NewVal = 'EmbeddedResource' Then
+     CurrentProject.Files[FileIdx].BuildAction := BA_EMBEDDED_RESOURCE;
+   End Else
+    Exit;
+   If SolutionLoaded Then Begin
+    SolutionModified := True;
+    SaveCurrentSolution;
+   End;
+  End;
+  PK_FRM_CONTROL: ApplyFrmControlPropertyCommit(Key, NewVal);
+ End;
+End;
+
+{ --- Faire cycler une propriete enumeree (clic simple sur la valeur) --- }
+
+Procedure CyclePropertyEnum(Var PP: TPropertiesPanel; Idx: Integer);
+Var
+ NewVal: String;
+Begin
+ If (Idx < 0) Or (Idx >= PP.ItemCount) Then Exit;
+ If PP.Items[Idx].ReadOnly Or (Not PP.Items[Idx].IsEnum) Then Exit;
+ NewVal := CycleEnumValue(PP.Items[Idx].Key, PP.Items[Idx].Value);
+ ApplyPropertyCommit(PP, Idx, NewVal);
+ PP.Items[Idx].Value := NewVal;
  PP.NeedRepaint := True;
 End;
 
@@ -23067,6 +23466,8 @@ Begin
   SetColor(CLR_EDITOR_TEXT);
  If PP.Items[Idx].Editing Then
   OutTextXY(ValX + 3, RowY + 3, PP.EditBuffer)
+ Else If PP.Items[Idx].IsEnum And (Not PP.Items[Idx].ReadOnly) Then
+  OutTextXY(ValX + 3, RowY + 3, PP.Items[Idx].Value + ' [v]')
  Else
   OutTextXY(ValX + 3, RowY + 3, PP.Items[Idx].Value);
  { Ligne horizontale }
@@ -23155,7 +23556,7 @@ Procedure BeginPropertyEdit(Var PP: TPropertiesPanel;
  Idx: Integer);
 Begin
  If (Idx < 0) Or (Idx >= PP.ItemCount) Then Exit;
- If PP.Items[Idx].ReadOnly Then Exit;
+ If PP.Items[Idx].ReadOnly Or PP.Items[Idx].IsEnum Then Exit;
  If PP.EditActive And (PP.SelectedIdx >= 0) And
     (PP.SelectedIdx < PP.ItemCount) Then
   PP.Items[PP.SelectedIdx].Editing := False;
@@ -23184,6 +23585,8 @@ Procedure CommitPropertyEdit(Var PP: TPropertiesPanel);
 Begin
  If PP.EditActive And (PP.SelectedIdx >= 0) And
     (PP.SelectedIdx < PP.ItemCount) Then Begin
+  If PP.EditBuffer <> PP.Items[PP.SelectedIdx].Value Then
+   ApplyPropertyCommit(PP, PP.SelectedIdx, PP.EditBuffer);
   PP.Items[PP.SelectedIdx].Value := PP.EditBuffer;
   PP.Items[PP.SelectedIdx].Editing := False;
  End;
@@ -23197,7 +23600,7 @@ End;
 Procedure HandlePropertiesEvent(Var PP: TPropertiesPanel;
  Ev: TEvent);
 Var
- Row, NewY, Visible: Integer;
+ Row, NewY, Visible, OldBottom: Integer;
 Begin
  Case Ev.Kind Of
   EV_MOUSE_DOWN: Begin
@@ -23213,6 +23616,9 @@ Begin
      If PP.EditActive Then
       CommitPropertyEdit(PP);
      PP.SelectedIdx := Row;
+     If PP.Items[Row].IsEnum And (Not PP.Items[Row].ReadOnly) And
+        (Ev.MouseX >= PP.X + PP.NameColWidth) Then
+      CyclePropertyEnum(PP, Row);
      PP.NeedRepaint := True;
     End;
    End;
@@ -23229,14 +23635,20 @@ Begin
   End;
   EV_MOUSE_MOVE: Begin
    If PP.Dragging Then Begin
+    OldBottom := PP.Y + PP.Height;
     NewY := Ev.MouseY;
-    PP.Height := PP.Y + PP.Height - NewY;
+    PP.Height := OldBottom - NewY;
     If PP.Height < PROPS_MIN_HEIGHT Then
      PP.Height := PROPS_MIN_HEIGHT;
     If PP.Height > PROPS_MAX_HEIGHT Then
      PP.Height := PROPS_MAX_HEIGHT;
-    PP.Y := NewY;
+    PP.Y := OldBottom - PP.Height;
     PP.SplitterY := PP.Y - PROPS_SPLITTER_HEIGHT;
+    { Garder l explorateur de solution adjacent, sans le chevaucher }
+    SolExplorer.Height := PP.SplitterY - SolExplorer.Y;
+    If SolExplorer.Height < EXPLORER_NODE_HEIGHT Then
+     SolExplorer.Height := EXPLORER_NODE_HEIGHT;
+    SolExplorer.NeedRepaint := True;
     PP.NeedRepaint := True;
    End;
   End;
