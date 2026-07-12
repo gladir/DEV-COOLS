@@ -1014,6 +1014,22 @@ Const
  MAX_TABS              = 64;
  MAX_FRM_VIS_CONTROLS  = 256;    { controles max dans l apercu .FRM }
 
+ { Editeur de formulaire : mise en page (boite a outils, grille,   }
+ { barres de defilement) }
+ FRM_TOOLBOX_WIDTH  = 64;        { largeur de la boite a outils     }
+ FRM_SB_SIZE         = 14;       { epaisseur des barres de defilement}
+ FRM_GRID_SPACING    = 8;        { espacement des points de grille  }
+ FRM_TOOL_HEIGHT     = 24;       { hauteur d un bouton d outil       }
+ FRM_TOOL_COUNT      = 9;        { nombre d outils dans la boite     }
+
+ { Boite a outils de l editeur de formulaire : index 0 = Pointeur   }
+ { (selection), 1..N = types de controle a deposer sur le formulaire}
+ FRMToolAbbrev: Array[0..FRM_TOOL_COUNT - 1] Of String[4] =
+  ('Ptr', 'Lbl', 'Txt', 'Btn', 'Chk', 'Opt', 'Frm', 'Lst', 'Cbo');
+ FRMToolType: Array[0..FRM_TOOL_COUNT - 1] Of String[15] =
+  ('', 'LABEL', 'TEXTBOX', 'COMMANDBUTTON', 'CHECKBOX', 'OPTIONBUTTON',
+   'FRAME', 'LISTBOX', 'COMBOBOX');
+
  { Limites des menus }
  MAX_MENUS             = 16;
  MAX_MENU_ITEMS        = 32;
@@ -1848,13 +1864,15 @@ Type
   CtlHeight: LongInt;
  End;
 
- { Editeur de formulaire : apercu visuel en lecture seule d un       }
- { fichier .FRM (bloc concepteur VERSION/Begin VB.Form/...). Aucune  }
- { edition interactive pour l instant : le texte brut reste          }
- { accessible via "Ouvrir dans l editeur texte".                     }
+ { Editeur de formulaire visuel d un fichier .FRM (bloc concepteur    }
+ { VERSION/Begin VB.Form/...) : grille de points, boite a outils a    }
+ { gauche, barres de defilement H/V, ajout de controles par clic      }
+ { outil puis clic sur le canevas (persiste dans le fichier .FRM).    }
+ { Le code (Private Sub...) reste modifiable via                     }
+ { "Ouvrir dans l editeur texte".                                     }
  TFormEditor = Record
   FileName     : String[255];
-  Modified     : Boolean;        { toujours False (lecture seule)   }
+  Modified     : Boolean;
   FormCaption  : String[127];
   FormWidth    : LongInt;        { twips                            }
   FormHeight   : LongInt;        { twips                            }
@@ -1864,6 +1882,10 @@ Type
   Y            : Integer;        { position Y de la zone            }
   Width        : Integer;        { largeur de la zone               }
   Height       : Integer;        { hauteur de la zone               }
+  ScrollX      : Integer;        { defilement horizontal (pixels)   }
+  ScrollY      : Integer;        { defilement vertical (pixels)     }
+  SelectedCtl  : Integer;        { controle selectionne, -1 = aucun }
+  ToolSel      : Integer;        { outil actif (0 = Pointeur)       }
  End;
  PFormEditor = ^TFormEditor;
 
@@ -4513,7 +4535,8 @@ Begin
                 (Ext = '.HTML')Or (Ext = '.CSS')  Or (Ext = '.SQL')  Or
                 (Ext = '.ASM') Or (Ext = '.INC')  Or (Ext = '.TXT')  Or
                 (Ext = '.ADB') Or (Ext = '.ADS')  Or (Ext = '.ADA')  Or
-                (Ext = '.ABAP')Or (Ext = '.ABP')  Or
+                (Ext = '.ABAP')Or (Ext = '.ABP')  Or (Ext = '.BAS')  Or
+                (Ext = '.FRM') Or
                 (Ext = '.PSP') Or (Ext = '.AWK')  Then Begin
      If Not FileExists(Arg) Then
       FatalError('Fichier introuvable: ' + Arg);
@@ -9306,6 +9329,10 @@ Begin
  FE.Width := GetScreenWidth - EXPLORER_WIDTH;
  FE.Height := GetScreenHeight - MENUBAR_HEIGHT - TOOLBAR_HEIGHT
               - TAB_HEIGHT - STATUSBAR_HEIGHT - OUTPUT_HEIGHT;
+ FE.ScrollX := 0;
+ FE.ScrollY := 0;
+ FE.SelectedCtl := -1;
+ FE.ToolSel := 0;
 End;
 
 Procedure FreeFormEditor(Var FE: TFormEditor);
@@ -9476,6 +9503,91 @@ Begin
  Close(F);
 End;
 
+{ --- Prefixe de nommage automatique VB6 selon le type de controle --- }
+
+Function FRMControlNamePrefix(TypeStr: String): String;
+Var
+ TS: String;
+Begin
+ TS := UpCaseStr(TypeStr);
+ If TS = 'LABEL' Then FRMControlNamePrefix := 'Label'
+ Else If TS = 'TEXTBOX' Then FRMControlNamePrefix := 'Text'
+ Else If TS = 'COMMANDBUTTON' Then FRMControlNamePrefix := 'Command'
+ Else If TS = 'CHECKBOX' Then FRMControlNamePrefix := 'Check'
+ Else If TS = 'OPTIONBUTTON' Then FRMControlNamePrefix := 'Option'
+ Else If TS = 'FRAME' Then FRMControlNamePrefix := 'Frame'
+ Else If TS = 'LISTBOX' Then FRMControlNamePrefix := 'List'
+ Else If TS = 'COMBOBOX' Then FRMControlNamePrefix := 'Combo'
+ Else FRMControlNamePrefix := 'Control';
+End;
+
+{ --- Indique si le type de controle possede une propriete Caption --- }
+
+Function FRMControlHasCaption(TypeStr: String): Boolean;
+Var
+ TS: String;
+Begin
+ TS := UpCaseStr(TypeStr);
+ FRMControlHasCaption := (TS = 'LABEL') Or (TS = 'COMMANDBUTTON') Or
+  (TS = 'CHECKBOX') Or (TS = 'OPTIONBUTTON') Or (TS = 'FRAME');
+End;
+
+{ --- Largeur/hauteur par defaut (en twips) d un nouveau controle --- }
+
+Function FRMDefaultWidth(TypeStr: String): LongInt;
+Var
+ TS: String;
+Begin
+ TS := UpCaseStr(TypeStr);
+ If TS = 'FRAME' Then FRMDefaultWidth := 1935
+ Else FRMDefaultWidth := 1215;
+End;
+
+Function FRMDefaultHeight(TypeStr: String): LongInt;
+Var
+ TS: String;
+Begin
+ TS := UpCaseStr(TypeStr);
+ If TS = 'LABEL' Then FRMDefaultHeight := 195
+ Else If TS = 'TEXTBOX' Then FRMDefaultHeight := 285
+ Else If TS = 'COMMANDBUTTON' Then FRMDefaultHeight := 375
+ Else If TS = 'CHECKBOX' Then FRMDefaultHeight := 195
+ Else If TS = 'OPTIONBUTTON' Then FRMDefaultHeight := 195
+ Else If TS = 'FRAME' Then FRMDefaultHeight := 1215
+ Else If TS = 'LISTBOX' Then FRMDefaultHeight := 645
+ Else If TS = 'COMBOBOX' Then FRMDefaultHeight := 315
+ Else FRMDefaultHeight := 375;
+End;
+
+{ --- Generer un nom de controle inedit (PrefixeN) pour le type donne --- }
+
+Function NextControlName(Var FE: TFormEditor; TypeStr: String): String;
+Var
+ Prefix, NumStr: String;
+ I, J, Num, MaxNum: Integer;
+Begin
+ Prefix := FRMControlNamePrefix(TypeStr);
+ MaxNum := 0;
+ For I := 0 To FE.ControlCount - 1 Do Begin
+  If Length(FE.Controls[I].Name) > Length(Prefix) Then Begin
+   If Copy(FE.Controls[I].Name, 1, Length(Prefix)) = Prefix Then Begin
+    NumStr := Copy(FE.Controls[I].Name, Length(Prefix) + 1,
+     Length(FE.Controls[I].Name) - Length(Prefix));
+    Num := 0;
+    For J := 1 To Length(NumStr) Do
+     If (NumStr[J] >= '0') And (NumStr[J] <= '9') Then
+      Num := Num * 10 + (Ord(NumStr[J]) - Ord('0'))
+     Else Begin
+      Num := 0;
+      Break;
+     End;
+    If (Num > 0) And (Num > MaxNum) Then MaxNum := Num;
+   End;
+  End;
+ End;
+ NextControlName := Prefix + IntToStr(MaxNum + 1);
+End;
+
 { --- Obtenir une ligne du tampon --- }
 
 Function GetLine(Var Buf: TTextBuffer; N: LongInt): String;
@@ -9530,6 +9642,64 @@ Begin
  Buf.Lines[Buf.LineCount - 1] := '';
  Dec(Buf.LineCount);
  Buf.Modified := True;
+End;
+
+{ --- Inserer un nouveau bloc "Begin VB.<Type> <Name> ... End" juste  }
+{ avant le "End" fermant du formulaire, puis sauvegarder le fichier   }
+{ .FRM. Reutilise le meme suivi de pile Begin/End que LoadFileForm    }
+{ pour localiser sans ambiguite la ligne du End du formulaire.        }
+
+Procedure AppendControlToFrmFile(AFileName, TypeStr, CName: String;
+ CLeft, CTop, CWidth, CHeight: LongInt);
+Const
+ MAX_STACK = 32;
+Var
+ Buf: ^TTextBuffer;
+ Line, First, Rest: String;
+ StackTop, I, EndLineIdx: Integer;
+ FirstLine: Boolean;
+Begin
+ New(Buf);
+ LoadFile(Buf^, AFileName);
+ StackTop := 0;
+ EndLineIdx := -1;
+ FirstLine := True;
+ I := 0;
+ While I < Buf^.LineCount Do Begin
+  Line := TrimStr(Buf^.Lines[I]);
+  If FirstLine Then Begin
+   FirstLine := False;
+   First := UpCaseStr(FRMVisFirstWord(Line, Rest));
+   If First = 'VERSION' Then Begin Inc(I); Continue; End;
+  End;
+  If Line = '' Then Begin
+   Inc(I);
+   Continue;
+  End;
+  First := UpCaseStr(FRMVisFirstWord(Line, Rest));
+  If First = 'BEGIN' Then Begin
+   If StackTop < MAX_STACK Then
+    Inc(StackTop);
+  End Else If First = 'END' Then Begin
+   If StackTop = 1 Then EndLineIdx := I;
+   If StackTop > 0 Then Dec(StackTop);
+  End;
+  Inc(I);
+ End;
+ If EndLineIdx < 0 Then Begin
+  Dispose(Buf);
+  Exit;  { fichier .FRM malforme }
+ End;
+ InsertLine(Buf^, EndLineIdx, '   End');
+ InsertLine(Buf^, EndLineIdx, '      Width           =   ' + IntToStr(CWidth));
+ InsertLine(Buf^, EndLineIdx, '      Top             =   ' + IntToStr(CTop));
+ InsertLine(Buf^, EndLineIdx, '      Left            =   ' + IntToStr(CLeft));
+ InsertLine(Buf^, EndLineIdx, '      Height          =   ' + IntToStr(CHeight));
+ If FRMControlHasCaption(TypeStr) Then
+  InsertLine(Buf^, EndLineIdx, '      Caption         =   "' + CName + '"');
+ InsertLine(Buf^, EndLineIdx, '   Begin VB.' + TypeStr + ' ' + CName);
+ SaveFile(Buf^, AFileName);
+ Dispose(Buf);
 End;
 
 { --- Inserer un caractere dans le tampon --- }
@@ -10704,8 +10874,157 @@ End;
 
 { --- Dessiner un controle du formulaire (apercu, lecture seule) --- }
 
+{ --- Calculer le rectangle du canevas (zone du formulaire), en       }
+{ excluant la boite a outils (gauche) et les deux barres de           }
+{ defilement (droite/bas). Utilise a la fois par le dessin et par     }
+{ le test de clic pour rester coherent.                                }
+
+Procedure ComputeFormEditorLayout(Var FE: TFormEditor;
+ Var CvX1, CvY1, CvX2, CvY2: Integer);
+Begin
+ CvX1 := FE.X + FRM_TOOLBOX_WIDTH;
+ CvY1 := FE.Y;
+ CvX2 := FE.X + FE.Width - 1 - FRM_SB_SIZE;
+ CvY2 := FE.Y + FE.Height - 1 - FRM_SB_SIZE;
+End;
+
+{ --- Origine (coin haut-gauche de la zone client) du formulaire a    }
+{ l ecran, en tenant compte du defilement --- }
+
+Procedure GetFormOrigin(Var FE: TFormEditor; CvX1, CvY1: Integer;
+ Var OrgX, OrgY: Integer);
+Begin
+ OrgX := CvX1 + 20 - FE.ScrollX;
+ OrgY := CvY1 + 40 - FE.ScrollY;
+End;
+
+{ --- Bornes de defilement (contenu total moins zone visible) --- }
+
+Procedure GetFormScrollLimits(Var FE: TFormEditor;
+ CvX1, CvY1, CvX2, CvY2: Integer; Var MaxSX, MaxSY: Integer);
+Var
+ ContentW, ContentH, ViewW, ViewH: Integer;
+Begin
+ ContentW := FE.FormWidth Div 15 + 40;
+ ContentH := FE.FormHeight Div 15 + 60;
+ ViewW := CvX2 - CvX1 + 1;
+ ViewH := CvY2 - CvY1 + 1;
+ MaxSX := ContentW - ViewW;
+ MaxSY := ContentH - ViewH;
+ If MaxSX < 0 Then MaxSX := 0;
+ If MaxSY < 0 Then MaxSY := 0;
+End;
+
+{ --- Icone (16x16 environ) representant un outil de la boite --- }
+
+Procedure DrawFormToolboxIcon(ToolIdx, IX, IY: Integer);
+Var
+ TS: String;
+Begin
+ If ToolIdx = 0 Then Begin
+  SetColor(0);
+  Line(IX, IY, IX, IY + 12);
+  Line(IX, IY, IX + 9, IY + 9);
+  Line(IX, IY + 12, IX + 3, IY + 9);
+  Line(IX + 3, IY + 9, IX + 9, IY + 9);
+  Exit;
+ End;
+ TS := FRMToolType[ToolIdx];
+ SetColor(0);
+ If TS = 'LABEL' Then
+  OutTextXY(IX, IY + 2, 'A')
+ Else If TS = 'TEXTBOX' Then Begin
+  Rectangle(IX, IY + 2, IX + 13, IY + 12);
+  Line(IX + 2, IY + 7, IX + 11, IY + 7);
+ End Else If TS = 'COMMANDBUTTON' Then Begin
+  SetFillStyle(SolidFill, CLR_BACKGROUND);
+  Bar(IX, IY + 2, IX + 13, IY + 12);
+  Rectangle(IX, IY + 2, IX + 13, IY + 12);
+ End Else If TS = 'CHECKBOX' Then Begin
+  Rectangle(IX, IY + 2, IX + 9, IY + 11);
+  Line(IX + 1, IY + 6, IX + 3, IY + 9);
+  Line(IX + 3, IY + 9, IX + 8, IY + 3);
+ End Else If TS = 'OPTIONBUTTON' Then
+  Circle(IX + 6, IY + 7, 5)
+ Else If TS = 'FRAME' Then Begin
+  Rectangle(IX, IY, IX + 13, IY + 13);
+  Bar(IX + 2, IY - 1, IX + 6, IY + 1);
+ End Else If TS = 'LISTBOX' Then Begin
+  Rectangle(IX, IY, IX + 13, IY + 13);
+  Line(IX + 2, IY + 4, IX + 11, IY + 4);
+  Line(IX + 2, IY + 8, IX + 11, IY + 8);
+ End Else If TS = 'COMBOBOX' Then Begin
+  Rectangle(IX, IY + 2, IX + 13, IY + 12);
+  Line(IX + 9, IY + 5, IX + 11, IY + 9);
+  Line(IX + 11, IY + 9, IX + 13, IY + 5);
+ End;
+End;
+
+{ --- Dessiner la boite a outils (gauche) de l editeur de formulaire --- }
+
+Procedure DrawFormToolbox(Var FE: TFormEditor);
+Var
+ I, TY: Integer;
+Begin
+ SetFillStyle(SolidFill, CLR_BACKGROUND);
+ Bar(FE.X, FE.Y, FE.X + FRM_TOOLBOX_WIDTH - 1, FE.Y + FE.Height - 1);
+ SetColor(CLR_BORDER);
+ Rectangle(FE.X, FE.Y, FE.X + FRM_TOOLBOX_WIDTH - 1, FE.Y + FE.Height - 1);
+ For I := 0 To FRM_TOOL_COUNT - 1 Do Begin
+  TY := FE.Y + 2 + I * FRM_TOOL_HEIGHT;
+  If TY + FRM_TOOL_HEIGHT > FE.Y + FE.Height Then Break;
+  If FE.ToolSel = I Then Begin
+   SetFillStyle(SolidFill, CLR_SELECTION);
+   Bar(FE.X + 1, TY, FE.X + FRM_TOOLBOX_WIDTH - 2, TY + FRM_TOOL_HEIGHT - 1);
+  End;
+  DrawFormToolboxIcon(I, FE.X + 4, TY + 4);
+  SetColor(CLR_EDITOR_TEXT);
+  OutTextXY(FE.X + 22, TY + 8, FRMToolAbbrev[I]);
+ End;
+End;
+
+{ --- Dessiner les points de la grille de conception dans la zone     }
+{ client du formulaire, limites a la partie visible du canevas --- }
+
+Procedure DrawFormGrid(OrgX, OrgY, FormPxW, FormPxH,
+ CvX1, CvY1, CvX2, CvY2: Integer);
+Var
+ GX, GY, X0, Y0, X1, Y1: Integer;
+Begin
+ X0 := OrgX; If X0 < CvX1 Then X0 := CvX1;
+ Y0 := OrgY; If Y0 < CvY1 Then Y0 := CvY1;
+ X1 := OrgX + FormPxW - 1; If X1 > CvX2 Then X1 := CvX2;
+ Y1 := OrgY + FormPxH - 1; If Y1 > CvY2 Then Y1 := CvY2;
+ If (X0 > X1) Or (Y0 > Y1) Then Exit;
+ { Aligner les points sur la grille du formulaire (pas sur l ecran) }
+ GY := OrgY;
+ While GY < Y0 Do Inc(GY, FRM_GRID_SPACING);
+ While GY <= Y1 Do Begin
+  GX := OrgX;
+  While GX < X0 Do Inc(GX, FRM_GRID_SPACING);
+  While GX <= X1 Do Begin
+   PutPixel(GX, GY, CLR_BORDER);
+   Inc(GX, FRM_GRID_SPACING);
+  End;
+  Inc(GY, FRM_GRID_SPACING);
+ End;
+End;
+
+{ --- Poignees de selection (style VB6) autour d un controle --- }
+
+Procedure DrawFormSelectionHandles(CX, CY, CW, CH: Integer);
+Begin
+ SetFillStyle(SolidFill, 0);
+ Bar(CX - 2, CY - 2, CX + 1, CY + 1);
+ Bar(CX + CW - 3, CY - 2, CX + CW, CY + 1);
+ Bar(CX - 2, CY + CH - 3, CX + 1, CY + CH);
+ Bar(CX + CW - 3, CY + CH - 3, CX + CW, CY + CH);
+ Bar(CX + (CW Div 2) - 2, CY - 2, CX + (CW Div 2) + 1, CY + 1);
+ Bar(CX + (CW Div 2) - 2, CY + CH - 3, CX + (CW Div 2) + 1, CY + CH);
+End;
+
 Procedure DrawFormVisControl(Var FE: TFormEditor; Var C: TFRMVisControl;
- OrgX, OrgY: Integer);
+ OrgX, OrgY: Integer; Selected: Boolean);
 Var
  CX, CY, CW, CH: Integer;
  TS: String;
@@ -10761,20 +11080,105 @@ Begin
   SetColor(CLR_MENU_TEXT);
   OutTextXY(CX + 2, CY + 2, C.Name);
  End;
+ If Selected Then
+  DrawFormSelectionHandles(CX, CY, CW, CH);
 End;
 
-{ --- Dessiner l apercu visuel (lecture seule) d un formulaire .FRM --- }
+{ --- Dessiner la barre de defilement verticale (haut/bas) --- }
+
+Procedure DrawFormVScrollbar(Var FE: TFormEditor;
+ CvY1, CvY2, SBX1, SBX2: Integer);
+Var
+ MidX, TrackTop, TrackBot, TrackH, ThumbH, ThumbTop, MaxSY: Integer;
+ Dummy: Integer;
+Begin
+ MidX := (SBX1 + SBX2) Div 2;
+ SetFillStyle(SolidFill, CLR_BACKGROUND);
+ Bar(SBX1, CvY1, SBX2, CvY1 + FRM_SB_SIZE - 1);
+ SetColor(CLR_BORDER);
+ Rectangle(SBX1, CvY1, SBX2, CvY1 + FRM_SB_SIZE - 1);
+ SetColor(CLR_EDITOR_TEXT);
+ Line(SBX1 + 3, CvY1 + 9, MidX, CvY1 + 4);
+ Line(MidX, CvY1 + 4, SBX2 - 3, CvY1 + 9);
+ SetFillStyle(SolidFill, CLR_BACKGROUND);
+ Bar(SBX1, CvY2 - FRM_SB_SIZE + 1, SBX2, CvY2);
+ SetColor(CLR_BORDER);
+ Rectangle(SBX1, CvY2 - FRM_SB_SIZE + 1, SBX2, CvY2);
+ SetColor(CLR_EDITOR_TEXT);
+ Line(SBX1 + 3, CvY2 - 8, MidX, CvY2 - 3);
+ Line(MidX, CvY2 - 3, SBX2 - 3, CvY2 - 8);
+ TrackTop := CvY1 + FRM_SB_SIZE;
+ TrackBot := CvY2 - FRM_SB_SIZE;
+ SetFillStyle(SolidFill, CLR_SCROLLBAR);
+ Bar(SBX1, TrackTop, SBX2, TrackBot);
+ TrackH := TrackBot - TrackTop;
+ ThumbH := TrackH Div 4;
+ If ThumbH < 12 Then ThumbH := 12;
+ GetFormScrollLimits(FE, FE.X, CvY1, FE.X, CvY2, Dummy, MaxSY);
+ If MaxSY > 0 Then Begin
+  SetFillStyle(SolidFill, CLR_BORDER);
+  ThumbTop := TrackTop + 1;
+  If TrackH - 2 - ThumbH > 0 Then
+   ThumbTop := ThumbTop + (FE.ScrollY * (TrackH - 2 - ThumbH)) Div MaxSY;
+  Bar(SBX1 + 1, ThumbTop, SBX2 - 1, ThumbTop + ThumbH);
+ End;
+End;
+
+{ --- Dessiner la barre de defilement horizontale (gauche/droite) --- }
+
+Procedure DrawFormHScrollbar(Var FE: TFormEditor;
+ CvX1, CvX2, SBY1, SBY2: Integer);
+Var
+ MidY, TrackLeft, TrackRight, TrackW, ThumbW, ThumbLeft, MaxSX: Integer;
+ Dummy: Integer;
+Begin
+ MidY := (SBY1 + SBY2) Div 2;
+ SetFillStyle(SolidFill, CLR_BACKGROUND);
+ Bar(CvX1, SBY1, CvX1 + FRM_SB_SIZE - 1, SBY2);
+ SetColor(CLR_BORDER);
+ Rectangle(CvX1, SBY1, CvX1 + FRM_SB_SIZE - 1, SBY2);
+ SetColor(CLR_EDITOR_TEXT);
+ Line(CvX1 + 9, SBY1 + 3, CvX1 + 4, MidY);
+ Line(CvX1 + 4, MidY, CvX1 + 9, SBY2 - 3);
+ SetFillStyle(SolidFill, CLR_BACKGROUND);
+ Bar(CvX2 - FRM_SB_SIZE + 1, SBY1, CvX2, SBY2);
+ SetColor(CLR_BORDER);
+ Rectangle(CvX2 - FRM_SB_SIZE + 1, SBY1, CvX2, SBY2);
+ SetColor(CLR_EDITOR_TEXT);
+ Line(CvX2 - 8, SBY1 + 3, CvX2 - 3, MidY);
+ Line(CvX2 - 3, MidY, CvX2 - 8, SBY2 - 3);
+ TrackLeft := CvX1 + FRM_SB_SIZE;
+ TrackRight := CvX2 - FRM_SB_SIZE;
+ SetFillStyle(SolidFill, CLR_SCROLLBAR);
+ Bar(TrackLeft, SBY1, TrackRight, SBY2);
+ TrackW := TrackRight - TrackLeft;
+ ThumbW := TrackW Div 4;
+ If ThumbW < 12 Then ThumbW := 12;
+ GetFormScrollLimits(FE, CvX1, FE.Y, CvX2, FE.Y, MaxSX, Dummy);
+ If MaxSX > 0 Then Begin
+  SetFillStyle(SolidFill, CLR_BORDER);
+  ThumbLeft := TrackLeft + 1;
+  If TrackW - 2 - ThumbW > 0 Then
+   ThumbLeft := ThumbLeft + (FE.ScrollX * (TrackW - 2 - ThumbW)) Div MaxSX;
+  Bar(ThumbLeft, SBY1 + 1, ThumbLeft + ThumbW, SBY2 - 1);
+ End;
+End;
+
+{ --- Dessiner l editeur de formulaire (grille, boite a outils,      }
+{ barres de defilement, formulaire et ses controles) --- }
 
 Procedure DrawFormEditor(Var FE: TFormEditor);
 Var
  OrgX, OrgY, FormPxW, FormPxH, I: Integer;
+ CvX1, CvY1, CvX2, CvY2: Integer;
  Caption: String;
 Begin
- SetColor(CLR_SCROLLBAR);
+ ComputeFormEditorLayout(FE, CvX1, CvY1, CvX2, CvY2);
+ DrawFormToolbox(FE);
+ { Fond du canevas }
  SetFillStyle(SolidFill, CLR_SCROLLBAR);
- Bar(FE.X, FE.Y, FE.X + FE.Width - 1, FE.Y + FE.Height - 1);
- OrgX := FE.X + 20;
- OrgY := FE.Y + 40;
+ Bar(CvX1, CvY1, CvX2, CvY2);
+ GetFormOrigin(FE, CvX1, CvY1, OrgX, OrgY);
  FormPxW := FE.FormWidth Div 15;
  FormPxH := FE.FormHeight Div 15;
  If FormPxW < 40 Then FormPxW := 40;
@@ -10793,13 +11197,111 @@ Begin
  Bar(OrgX, OrgY, OrgX + FormPxW - 1, OrgY + FormPxH - 1);
  SetColor(CLR_BORDER);
  Rectangle(OrgX - 1, OrgY - 21, OrgX + FormPxW, OrgY + FormPxH);
+ { Points de la grille de conception }
+ DrawFormGrid(OrgX, OrgY, FormPxW, FormPxH, CvX1, CvY1, CvX2, CvY2);
  { Controles }
  For I := 0 To FE.ControlCount - 1 Do
-  DrawFormVisControl(FE, FE.Controls[I], OrgX, OrgY);
- { Bandeau d information (apercu lecture seule) }
- SetColor(CLR_MENU_TEXT);
- OutTextXY(FE.X + 4, FE.Y + FE.Height - 16,
-  'Apercu lecture seule - "Ouvrir dans l''editeur texte" pour modifier le code.');
+  DrawFormVisControl(FE, FE.Controls[I], OrgX, OrgY, I = FE.SelectedCtl);
+ { Barres de defilement }
+ DrawFormVScrollbar(FE, CvY1, CvY2, CvX2 + 1, FE.X + FE.Width - 1);
+ DrawFormHScrollbar(FE, CvX1, CvX2, CvY2 + 1, FE.Y + FE.Height - 1);
+ { Coin (intersection des deux barres) }
+ SetFillStyle(SolidFill, CLR_BACKGROUND);
+ Bar(CvX2 + 1, CvY2 + 1, FE.X + FE.Width - 1, FE.Y + FE.Height - 1);
+End;
+
+{ --- Traiter un clic de souris dans l editeur de formulaire :         }
+{ selection d outil dans la boite a outils, defilement H/V, selection }
+{ d un controle existant ou depot d un nouveau controle sur le canevas}
+
+Procedure HandleFormEditorMouse(Var FE: TFormEditor; Ev: TEvent);
+Var
+ CvX1, CvY1, CvX2, CvY2, OrgX, OrgY: Integer;
+ MaxSX, MaxSY, I, TY, HitCtl, CX, CY, CW, CH: Integer;
+ SavedSX, SavedSY: Integer;
+ FormX, FormY: LongInt;
+ TypeStr, CName: String;
+Begin
+ If Ev.Kind <> EV_MOUSE_DOWN Then Exit;
+ ComputeFormEditorLayout(FE, CvX1, CvY1, CvX2, CvY2);
+ { Boite a outils }
+ If (Ev.MouseX >= FE.X) And (Ev.MouseX < FE.X + FRM_TOOLBOX_WIDTH) And
+    (Ev.MouseY >= FE.Y) And (Ev.MouseY < FE.Y + FE.Height) Then Begin
+  For I := 0 To FRM_TOOL_COUNT - 1 Do Begin
+   TY := FE.Y + 2 + I * FRM_TOOL_HEIGHT;
+   If (Ev.MouseY >= TY) And (Ev.MouseY < TY + FRM_TOOL_HEIGHT) Then Begin
+    FE.ToolSel := I;
+    Exit;
+   End;
+  End;
+  Exit;
+ End;
+ { Barre de defilement verticale (fleches haut/bas) }
+ If (Ev.MouseX > CvX2) And (Ev.MouseX <= FE.X + FE.Width - 1) And
+    (Ev.MouseY >= CvY1) And (Ev.MouseY <= CvY2) Then Begin
+  GetFormScrollLimits(FE, CvX1, CvY1, CvX2, CvY2, MaxSX, MaxSY);
+  If Ev.MouseY < CvY1 + FRM_SB_SIZE Then Begin
+   Dec(FE.ScrollY, FRM_GRID_SPACING);
+   If FE.ScrollY < 0 Then FE.ScrollY := 0;
+  End Else If Ev.MouseY > CvY2 - FRM_SB_SIZE Then Begin
+   Inc(FE.ScrollY, FRM_GRID_SPACING);
+   If FE.ScrollY > MaxSY Then FE.ScrollY := MaxSY;
+  End;
+  Exit;
+ End;
+ { Barre de defilement horizontale (fleches gauche/droite) }
+ If (Ev.MouseY > CvY2) And (Ev.MouseY <= FE.Y + FE.Height - 1) And
+    (Ev.MouseX >= CvX1) And (Ev.MouseX <= CvX2) Then Begin
+  GetFormScrollLimits(FE, CvX1, CvY1, CvX2, CvY2, MaxSX, MaxSY);
+  If Ev.MouseX < CvX1 + FRM_SB_SIZE Then Begin
+   Dec(FE.ScrollX, FRM_GRID_SPACING);
+   If FE.ScrollX < 0 Then FE.ScrollX := 0;
+  End Else If Ev.MouseX > CvX2 - FRM_SB_SIZE Then Begin
+   Inc(FE.ScrollX, FRM_GRID_SPACING);
+   If FE.ScrollX > MaxSX Then FE.ScrollX := MaxSX;
+  End;
+  Exit;
+ End;
+ { Clic dans le canevas du formulaire }
+ If (Ev.MouseX < CvX1) Or (Ev.MouseX > CvX2) Or
+    (Ev.MouseY < CvY1) Or (Ev.MouseY > CvY2) Then Exit;
+ GetFormOrigin(FE, CvX1, CvY1, OrgX, OrgY);
+ If FE.ToolSel = 0 Then Begin
+  { Outil Pointeur : selectionner le controle sous le curseur }
+  HitCtl := -1;
+  For I := FE.ControlCount - 1 DownTo 0 Do Begin
+   CX := OrgX + FE.Controls[I].CtlLeft Div 15;
+   CY := OrgY + FE.Controls[I].CtlTop Div 15;
+   CW := FE.Controls[I].CtlWidth Div 15;
+   CH := FE.Controls[I].CtlHeight Div 15;
+   If CW < 4 Then CW := 4;
+   If CH < 4 Then CH := 4;
+   If (Ev.MouseX >= CX) And (Ev.MouseX <= CX + CW - 1) And
+      (Ev.MouseY >= CY) And (Ev.MouseY <= CY + CH - 1) Then Begin
+    HitCtl := I;
+    Break;
+   End;
+  End;
+  FE.SelectedCtl := HitCtl;
+ End Else Begin
+  { Outil de controle : deposer un nouveau controle a la position   }
+  { cliquee et le persister immediatement dans le fichier .FRM       }
+  TypeStr := FRMToolType[FE.ToolSel];
+  FormX := (Ev.MouseX - OrgX) * 15;
+  FormY := (Ev.MouseY - OrgY) * 15;
+  If FormX < 0 Then FormX := 0;
+  If FormY < 0 Then FormY := 0;
+  CName := NextControlName(FE, TypeStr);
+  AppendControlToFrmFile(FE.FileName, TypeStr, CName, FormX, FormY,
+   FRMDefaultWidth(TypeStr), FRMDefaultHeight(TypeStr));
+  SavedSX := FE.ScrollX;
+  SavedSY := FE.ScrollY;
+  LoadFileForm(FE, FE.FileName);
+  FE.ScrollX := SavedSX;
+  FE.ScrollY := SavedSY;
+  FE.SelectedCtl := FE.ControlCount - 1;
+  FE.ToolSel := 0;
+ End;
 End;
 
 { --- Assurer que l octet sous le curseur reste visible --- }
@@ -55381,7 +55883,7 @@ Begin
   SB.CursorCol := WM.Windows[Idx].CursorX + 1;
   SB.FileName := WM.Windows[Idx].FileName;
   If WM.Windows[Idx].Kind = WK_FORM Then
-   SB.Language := 'Formulaire (lecture seule)'
+   SB.Language := 'Formulaire'
   Else
    SB.Language := 'Text';
  End Else Begin
@@ -59716,7 +60218,11 @@ Begin
      WinMgr.Windows[WinMgr.ActiveIdx].CursorX :=
       ActiveHexEditor.CursorOfs Mod HEX_BYTES_PER_ROW;
     End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_FORM Then Begin
-     { Apercu de formulaire : lecture seule, aucun clic traite }
+     HandleFormEditorMouse(ActiveFormEditor, Ev);
+     If FormEditors[WinMgr.ActiveIdx] <> Nil Then
+      FormEditors[WinMgr.ActiveIdx]^ := ActiveFormEditor;
+     If ActiveFormEditor.Modified Then
+      MarkWindowModified(WinMgr.ActiveIdx);
     End Else Begin
      HandleEditorMouse(ActiveEditor, Ev);
      If Editors[WinMgr.ActiveIdx] <> Nil Then
