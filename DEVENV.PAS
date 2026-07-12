@@ -1012,6 +1012,7 @@ Const
  { Limites des fenetres et onglets }
  MAX_WINDOWS           = 32;
  MAX_TABS              = 64;
+ MAX_FRM_VIS_CONTROLS  = 256;    { controles max dans l apercu .FRM }
 
  { Limites des menus }
  MAX_MENUS             = 16;
@@ -1730,14 +1731,14 @@ Type
  End;
 
  { Type de contenu affiche par une fenetre d edition }
- TWinKind = (WK_TEXT, WK_HEX);
+ TWinKind = (WK_TEXT, WK_HEX, WK_FORM);
 
  { Fenetre d editeur }
  PEditorWindow = ^TEditorWindow;
  TEditorWindow = Record
   Title      : String[127];   { titre affiche dans l onglet     }
   FileName   : String[255];   { chemin complet du fichier       }
-  Kind       : TWinKind;      { WK_TEXT ou WK_HEX                }
+  Kind       : TWinKind;      { WK_TEXT, WK_HEX ou WK_FORM       }
   Modified   : Boolean;       { fichier modifie                 }
   X          : Integer;       { position X dans la zone MDI     }
   Y          : Integer;       { position Y dans la zone MDI     }
@@ -1835,6 +1836,36 @@ Type
   VisibleRows : Integer;      { nombre de rangees visibles         }
  End;
  PHexEditor = ^THexEditor;
+
+ { Controle visuel d un formulaire .FRM (apercu lecture seule) }
+ TFRMVisControl = Record
+  Name     : String[63];      { nom du controle                    }
+  TypeStr  : String[31];      { COMMANDBUTTON, TEXTBOX, LABEL, etc. }
+  Caption  : String[127];     { texte affiche                      }
+  CtlLeft  : LongInt;         { position en twips                  }
+  CtlTop   : LongInt;
+  CtlWidth : LongInt;
+  CtlHeight: LongInt;
+ End;
+
+ { Editeur de formulaire : apercu visuel en lecture seule d un       }
+ { fichier .FRM (bloc concepteur VERSION/Begin VB.Form/...). Aucune  }
+ { edition interactive pour l instant : le texte brut reste          }
+ { accessible via "Ouvrir dans l editeur texte".                     }
+ TFormEditor = Record
+  FileName     : String[255];
+  Modified     : Boolean;        { toujours False (lecture seule)   }
+  FormCaption  : String[127];
+  FormWidth    : LongInt;        { twips                            }
+  FormHeight   : LongInt;        { twips                            }
+  ControlCount : Integer;
+  Controls     : Array[0..MAX_FRM_VIS_CONTROLS - 1] Of TFRMVisControl;
+  X            : Integer;        { position X de la zone            }
+  Y            : Integer;        { position Y de la zone            }
+  Width        : Integer;        { largeur de la zone               }
+  Height       : Integer;        { hauteur de la zone               }
+ End;
+ PFormEditor = ^TFormEditor;
 
  { Selection de texte }
  TSelection = Record
@@ -2185,6 +2216,7 @@ Type
   ENK_FILE_CS,         { fichier C# (.cs)                        }
   ENK_FILE_VB,         { fichier VB.NET (.vb)                    }
   ENK_FILE_PAS,        { fichier Pascal (.pas)                   }
+  ENK_FILE_FRM,        { fichier formulaire VB6 (.frm)           }
   ENK_FILE_OTHER       { autre type de fichier                   }
  );
 
@@ -3431,6 +3463,9 @@ Var
  { Editeurs hexadecimaux (un par fenetre de type WK_HEX) }
  HexEditors     : Array[0..MAX_WINDOWS - 1] Of PHexEditor;
  ActiveHexEditor: THexEditor;
+ { Editeurs de formulaire (un par fenetre de type WK_FORM) }
+ FormEditors     : Array[0..MAX_WINDOWS - 1] Of PFormEditor;
+ ActiveFormEditor: TFormEditor;
  { Coloration syntaxique C }
  CHL          : TCHighlighter;
  { Coloration syntaxique C# }
@@ -7427,6 +7462,7 @@ Begin
   InitEditorWindow(WinMgr.Windows[I]);
   Editors[I] := Nil;
   HexEditors[I] := Nil;
+  FormEditors[I] := Nil;
  End;
 End;
 
@@ -7474,6 +7510,27 @@ Begin
  End;
 End;
 
+{ --- Chercher une fenetre d apercu formulaire deja ouverte pour ce
+  fichier --- }
+
+Function FindFormWindowByFileName(FN: String): Integer;
+Var
+ I: Integer;
+ A, B: String;
+Begin
+ FindFormWindowByFileName := -1;
+ A := UpCaseStr(FN);
+ For I := 0 To WinMgr.WinCount - 1 Do Begin
+  If WinMgr.Windows[I].Kind = WK_FORM Then Begin
+   B := UpCaseStr(WinMgr.Windows[I].FileName);
+   If A = B Then Begin
+    FindFormWindowByFileName := I;
+    Exit;
+   End;
+  End;
+ End;
+End;
+
 { --- Creer une nouvelle fenetre d editeur --- }
 
 Procedure CreateEditorWindow(AFileName: String);
@@ -7511,6 +7568,8 @@ End;
 Procedure LoadFileHex(Var HE: THexEditor; AFileName: String); Forward;
 Procedure SaveFileHex(Var HE: THexEditor; AFileName: String); Forward;
 Procedure FreeHexEditor(Var HE: THexEditor); Forward;
+Procedure LoadFileForm(Var FE: TFormEditor; AFileName: String); Forward;
+Procedure FreeFormEditor(Var FE: TFormEditor); Forward;
 
 { --- Creer une nouvelle fenetre d edition hexadecimale et y charger
   le fichier --- }
@@ -7543,6 +7602,39 @@ Begin
  Inc(WinMgr.WinCount);
  WinMgr.ActiveIdx := Idx;
  ActiveHexEditor := HexEditors[Idx]^;
+End;
+
+{ --- Creer une nouvelle fenetre d apercu de formulaire (.FRM) et y
+  charger le fichier --- }
+
+Procedure CreateFormWindow(AFileName: String);
+Var
+ Idx: Integer;
+Begin
+ If WinMgr.WinCount >= MAX_WINDOWS Then Exit;
+ Idx := WinMgr.WinCount;
+ InitEditorWindow(WinMgr.Windows[Idx]);
+ WinMgr.Windows[Idx].Kind := WK_FORM;
+ WinMgr.Windows[Idx].FileName := AFileName;
+ If Length(AFileName) > 0 Then
+  WinMgr.Windows[Idx].Title := GetTabLabel(AFileName)
+ Else
+  WinMgr.Windows[Idx].Title := 'Sans titre';
+ WinMgr.Windows[Idx].TabIndex := Idx;
+ WinMgr.Windows[Idx].Visible := True;
+ WinMgr.Windows[Idx].Maximized := True;
+ WinMgr.Windows[Idx].X := 0;
+ WinMgr.Windows[Idx].Y := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
+ WinMgr.Windows[Idx].Width := GetScreenWidth - EXPLORER_WIDTH;
+ WinMgr.Windows[Idx].Height := GetScreenHeight - MENUBAR_HEIGHT
+   - TOOLBAR_HEIGHT - TAB_HEIGHT - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
+ { Allouer et charger l apercu de formulaire pour cette fenetre }
+ If FormEditors[Idx] = Nil Then
+  New(FormEditors[Idx]);
+ LoadFileForm(FormEditors[Idx]^, AFileName);
+ Inc(WinMgr.WinCount);
+ WinMgr.ActiveIdx := Idx;
+ ActiveFormEditor := FormEditors[Idx]^;
 End;
 
 { --- Ouvrir un fichier d aide dans un nouvel editeur --- }
@@ -8546,14 +8638,17 @@ Begin
  If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_HEX Then Begin
   If HexEditors[WinMgr.ActiveIdx] <> Nil Then
    HexEditors[WinMgr.ActiveIdx]^ := ActiveHexEditor;
+ End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_FORM Then Begin
+  If FormEditors[WinMgr.ActiveIdx] <> Nil Then
+   FormEditors[WinMgr.ActiveIdx]^ := ActiveFormEditor;
  End Else Begin
   If Editors[WinMgr.ActiveIdx] <> Nil Then
    Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
  End;
 End;
 
-{ --- Restaurer dans ActiveEditor/ActiveHexEditor l etat stocke de la
-  fenetre Idx (texte ou hexa) --- }
+{ --- Restaurer dans ActiveEditor/ActiveHexEditor/ActiveFormEditor
+  l etat stocke de la fenetre Idx (texte, hexa ou apercu formulaire) --- }
 
 Procedure SyncActiveWindowIn(Idx: Integer);
 Begin
@@ -8561,6 +8656,9 @@ Begin
  If WinMgr.Windows[Idx].Kind = WK_HEX Then Begin
   If HexEditors[Idx] <> Nil Then
    ActiveHexEditor := HexEditors[Idx]^;
+ End Else If WinMgr.Windows[Idx].Kind = WK_FORM Then Begin
+  If FormEditors[Idx] <> Nil Then
+   ActiveFormEditor := FormEditors[Idx]^;
  End Else Begin
   If Editors[Idx] <> Nil Then
    ActiveEditor := Editors[Idx]^;
@@ -8574,7 +8672,7 @@ Var
  I: Integer;
 Begin
  If (Index < 0) Or (Index >= WinMgr.WinCount) Then Exit;
- { Liberer l editeur ou l editeur hexadecimal }
+ { Liberer l editeur, l editeur hexadecimal ou l apercu de formulaire }
  If Editors[Index] <> Nil Then Begin
   Dispose(Editors[Index]);
   Editors[Index] := Nil;
@@ -8584,15 +8682,22 @@ Begin
   Dispose(HexEditors[Index]);
   HexEditors[Index] := Nil;
  End;
+ If FormEditors[Index] <> Nil Then Begin
+  FreeFormEditor(FormEditors[Index]^);
+  Dispose(FormEditors[Index]);
+  FormEditors[Index] := Nil;
+ End;
  { Decaler les fenetres et editeurs suivants }
  For I := Index To WinMgr.WinCount - 2 Do Begin
   WinMgr.Windows[I] := WinMgr.Windows[I + 1];
   WinMgr.Windows[I].TabIndex := I;
   Editors[I] := Editors[I + 1];
   HexEditors[I] := HexEditors[I + 1];
+  FormEditors[I] := FormEditors[I + 1];
  End;
  Editors[WinMgr.WinCount - 1] := Nil;
  HexEditors[WinMgr.WinCount - 1] := Nil;
+ FormEditors[WinMgr.WinCount - 1] := Nil;
  Dec(WinMgr.WinCount);
  { Ajuster l index actif }
  If WinMgr.WinCount = 0 Then Begin
@@ -9184,6 +9289,191 @@ Begin
  Close(F);
  HE.FileName := AFileName;
  HE.Modified := False;
+End;
+
+{ --- Apercu de formulaire .FRM : initialisation/liberation --- }
+
+Procedure InitFormEditor(Var FE: TFormEditor);
+Begin
+ FE.FileName := '';
+ FE.Modified := False;
+ FE.FormCaption := '';
+ FE.FormWidth := 4800;
+ FE.FormHeight := 3600;
+ FE.ControlCount := 0;
+ FE.X := 0;
+ FE.Y := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
+ FE.Width := GetScreenWidth - EXPLORER_WIDTH;
+ FE.Height := GetScreenHeight - MENUBAR_HEIGHT - TOOLBAR_HEIGHT
+              - TAB_HEIGHT - STATUSBAR_HEIGHT - OUTPUT_HEIGHT;
+End;
+
+Procedure FreeFormEditor(Var FE: TFormEditor);
+Begin
+ FE.ControlCount := 0;
+ FE.Modified := False;
+End;
+
+{ --- Extraire le premier mot d une ligne (avant le premier espace),
+  et renvoyer le reste dans Rest --- }
+
+Function FRMVisFirstWord(S: String; Var Rest: String): String;
+Var
+ I: Integer;
+Begin
+ S := TrimStr(S);
+ I := 1;
+ While (I <= Length(S)) And (S[I] <> ' ') Do Inc(I);
+ FRMVisFirstWord := Copy(S, 1, I - 1);
+ Rest := TrimStr(Copy(S, I, Length(S) - I + 1));
+End;
+
+{ --- Retirer les guillemets entourant une valeur de propriete chaine --- }
+
+Function FRMVisUnquote(S: String): String;
+Begin
+ S := TrimStr(S);
+ If (Length(S) >= 2) And (S[1] = '"') And (S[Length(S)] = '"') Then
+  FRMVisUnquote := Copy(S, 2, Length(S) - 2)
+ Else
+  FRMVisUnquote := S;
+End;
+
+{ --- Lire l entier en tete d une valeur de propriete (ignore tout
+  commentaire "'..." place apres, comme dans "0   'False") --- }
+
+Function FRMVisValInt(S: String): LongInt;
+Var
+ I: Integer;
+ Neg: Boolean;
+ V: LongInt;
+Begin
+ S := TrimStr(S);
+ I := 1;
+ Neg := False;
+ If (I <= Length(S)) And (S[I] = '-') Then Begin
+  Neg := True;
+  Inc(I);
+ End;
+ V := 0;
+ While (I <= Length(S)) And (S[I] >= '0') And (S[I] <= '9') Do Begin
+  V := V * 10 + (Ord(S[I]) - Ord('0'));
+  Inc(I);
+ End;
+ If Neg Then V := -V;
+ FRMVisValInt := V;
+End;
+
+{ --- Charger et analyser le bloc concepteur d un fichier .FRM pour en }
+{ construire un apercu visuel en lecture seule (VERSION/Begin VB.Form/}
+{ proprietes Left/Top/Width/Height/Caption/End). Les blocs VB.Menu ne }
+{ sont pas des controles visuels et sont ignores.                     }
+
+Procedure LoadFileForm(Var FE: TFormEditor; AFileName: String);
+Const
+ MAX_FRM_STACK = 32;
+Var
+ F: Text;
+ Line, First, Rest, TypeTok, NameTok, ShortType: String;
+ PName, PVal: String;
+ EqPos, I: Integer;
+ StackIsMenu: Array[0..MAX_FRM_STACK - 1] Of Boolean;
+ StackCtl   : Array[0..MAX_FRM_STACK - 1] Of Integer; { -1 = Form }
+ StackTop   : Integer;
+ CIdx       : Integer;
+ Done, FirstLine: Boolean;
+Begin
+ InitFormEditor(FE);
+ FE.FileName := AFileName;
+ {$I-}
+ Assign(F, AFileName);
+ Reset(F);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ StackTop := 0;
+ Done := False;
+ FirstLine := True;
+ While (Not Eof(F)) And (Not Done) Do Begin
+  ReadLn(F, Line);
+  Line := TrimStr(Line);
+  { Ignorer la premiere ligne "VERSION 5.00" }
+  If FirstLine Then Begin
+   FirstLine := False;
+   First := UpCaseStr(FRMVisFirstWord(Line, Rest));
+   If First = 'VERSION' Then Continue;
+  End;
+  If Line = '' Then Continue;
+  First := FRMVisFirstWord(Line, Rest);
+  If UpCaseStr(First) = 'BEGIN' Then Begin
+   TypeTok := UpCaseStr(FRMVisFirstWord(Rest, NameTok));
+   ShortType := TypeTok;
+   I := 1;
+   While (I <= Length(ShortType)) And (ShortType[I] <> '.') Do Inc(I);
+   If I <= Length(ShortType) Then
+    ShortType := Copy(ShortType, I + 1, Length(ShortType) - I);
+   If StackTop >= MAX_FRM_STACK Then Continue;
+   If ShortType = 'MENU' Then Begin
+    StackIsMenu[StackTop] := True;
+    StackCtl[StackTop] := -1;
+    Inc(StackTop);
+   End Else If ShortType = 'FORM' Then Begin
+    StackIsMenu[StackTop] := False;
+    StackCtl[StackTop] := -1;
+    Inc(StackTop);
+   End Else Begin
+    StackIsMenu[StackTop] := False;
+    If FE.ControlCount < MAX_FRM_VIS_CONTROLS Then Begin
+     CIdx := FE.ControlCount;
+     FE.Controls[CIdx].Name := NameTok;
+     FE.Controls[CIdx].TypeStr := ShortType;
+     FE.Controls[CIdx].Caption := '';
+     FE.Controls[CIdx].CtlLeft := 0;
+     FE.Controls[CIdx].CtlTop := 0;
+     FE.Controls[CIdx].CtlWidth := 1215;
+     FE.Controls[CIdx].CtlHeight := 375;
+     Inc(FE.ControlCount);
+     StackCtl[StackTop] := CIdx;
+    End Else
+     StackCtl[StackTop] := -1;
+    Inc(StackTop);
+   End;
+  End Else If UpCaseStr(Line) = 'END' Then Begin
+   If StackTop > 0 Then Dec(StackTop);
+   If StackTop = 0 Then Done := True;
+  End Else If (StackTop > 0) And (Not StackIsMenu[StackTop - 1]) Then Begin
+   EqPos := 0;
+   For I := 1 To Length(Line) Do
+    If (Line[I] = '=') And (EqPos = 0) Then EqPos := I;
+   If EqPos > 0 Then Begin
+    PName := UpCaseStr(TrimStr(Copy(Line, 1, EqPos - 1)));
+    PVal := TrimStr(Copy(Line, EqPos + 1, Length(Line) - EqPos));
+    CIdx := StackCtl[StackTop - 1];
+    If CIdx = -1 Then Begin
+     { Proprietes du formulaire lui-meme }
+     If PName = 'CAPTION' Then
+      FE.FormCaption := FRMVisUnquote(PVal)
+     Else If PName = 'CLIENTWIDTH' Then
+      FE.FormWidth := FRMVisValInt(PVal)
+     Else If PName = 'CLIENTHEIGHT' Then
+      FE.FormHeight := FRMVisValInt(PVal);
+    End Else Begin
+     If PName = 'CAPTION' Then
+      FE.Controls[CIdx].Caption := FRMVisUnquote(PVal)
+     Else If PName = 'TEXT' Then
+      FE.Controls[CIdx].Caption := FRMVisUnquote(PVal)
+     Else If PName = 'LEFT' Then
+      FE.Controls[CIdx].CtlLeft := FRMVisValInt(PVal)
+     Else If PName = 'TOP' Then
+      FE.Controls[CIdx].CtlTop := FRMVisValInt(PVal)
+     Else If PName = 'WIDTH' Then
+      FE.Controls[CIdx].CtlWidth := FRMVisValInt(PVal)
+     Else If PName = 'HEIGHT' Then
+      FE.Controls[CIdx].CtlHeight := FRMVisValInt(PVal);
+    End;
+   End;
+  End;
+ End;
+ Close(F);
 End;
 
 { --- Obtenir une ligne du tampon --- }
@@ -10410,6 +10700,106 @@ Begin
    End;
   End;
  End;
+End;
+
+{ --- Dessiner un controle du formulaire (apercu, lecture seule) --- }
+
+Procedure DrawFormVisControl(Var FE: TFormEditor; Var C: TFRMVisControl;
+ OrgX, OrgY: Integer);
+Var
+ CX, CY, CW, CH: Integer;
+ TS: String;
+Begin
+ TS := UpCaseStr(C.TypeStr);
+ If TS = 'TIMER' Then Exit;  { invisible a l execution }
+ CX := OrgX + C.CtlLeft Div 15;
+ CY := OrgY + C.CtlTop Div 15;
+ CW := C.CtlWidth Div 15;
+ CH := C.CtlHeight Div 15;
+ If CW < 4 Then CW := 4;
+ If CH < 4 Then CH := 4;
+ If (CX > FE.X + FE.Width) Or (CY > FE.Y + FE.Height) Then Exit;
+ If TS = 'LABEL' Then Begin
+  SetColor(CLR_EDITOR_TEXT);
+  OutTextXY(CX, CY, C.Caption);
+ End Else If TS = 'FRAME' Then Begin
+  SetColor(CLR_BORDER);
+  Rectangle(CX, CY, CX + CW - 1, CY + CH - 1);
+  SetColor(CLR_EDITOR_TEXT);
+  OutTextXY(CX + 6, CY - 2, C.Caption);
+ End Else If (TS = 'CHECKBOX') Or (TS = 'OPTIONBUTTON') Then Begin
+  SetColor(CLR_EDITOR_BG);
+  Bar(CX, CY + 2, CX + 9, CY + 11);
+  SetColor(CLR_BORDER);
+  Rectangle(CX, CY + 2, CX + 9, CY + 11);
+  SetColor(CLR_EDITOR_TEXT);
+  OutTextXY(CX + 14, CY, C.Caption);
+ End Else If (TS = 'TEXTBOX') Or (TS = 'LISTBOX') Or
+             (TS = 'COMBOBOX') Then Begin
+  SetFillStyle(SolidFill, CLR_EDITOR_BG);
+  Bar(CX, CY, CX + CW - 1, CY + CH - 1);
+  SetColor(CLR_BORDER);
+  Rectangle(CX, CY, CX + CW - 1, CY + CH - 1);
+  If Length(C.Caption) > 0 Then Begin
+   SetColor(CLR_EDITOR_TEXT);
+   OutTextXY(CX + 2, CY + 2, C.Caption);
+  End;
+ End Else If TS = 'COMMANDBUTTON' Then Begin
+  SetFillStyle(SolidFill, CLR_BACKGROUND);
+  Bar(CX, CY, CX + CW - 1, CY + CH - 1);
+  SetColor(CLR_BORDER);
+  Rectangle(CX, CY, CX + CW - 1, CY + CH - 1);
+  SetColor(CLR_MENU_TEXT);
+  OutTextXY(CX + (CW - Length(C.Caption) * 8) Div 2,
+   CY + (CH - 8) Div 2, C.Caption);
+ End Else Begin
+  { Type non specialise (PictureBox, Image, etc.) : boite generique }
+  SetFillStyle(SolidFill, CLR_BACKGROUND);
+  Bar(CX, CY, CX + CW - 1, CY + CH - 1);
+  SetColor(CLR_BORDER);
+  Rectangle(CX, CY, CX + CW - 1, CY + CH - 1);
+  SetColor(CLR_MENU_TEXT);
+  OutTextXY(CX + 2, CY + 2, C.Name);
+ End;
+End;
+
+{ --- Dessiner l apercu visuel (lecture seule) d un formulaire .FRM --- }
+
+Procedure DrawFormEditor(Var FE: TFormEditor);
+Var
+ OrgX, OrgY, FormPxW, FormPxH, I: Integer;
+ Caption: String;
+Begin
+ SetColor(CLR_SCROLLBAR);
+ SetFillStyle(SolidFill, CLR_SCROLLBAR);
+ Bar(FE.X, FE.Y, FE.X + FE.Width - 1, FE.Y + FE.Height - 1);
+ OrgX := FE.X + 20;
+ OrgY := FE.Y + 40;
+ FormPxW := FE.FormWidth Div 15;
+ FormPxH := FE.FormHeight Div 15;
+ If FormPxW < 40 Then FormPxW := 40;
+ If FormPxH < 40 Then FormPxH := 40;
+ { Barre de titre du formulaire }
+ SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE);
+ Bar(OrgX, OrgY - 20, OrgX + FormPxW - 1, OrgY - 1);
+ SetColor(15);
+ If Length(FE.FormCaption) > 0 Then
+  Caption := FE.FormCaption
+ Else
+  Caption := '(Formulaire)';
+ OutTextXY(OrgX + 4, OrgY - 16, Caption);
+ { Zone client du formulaire }
+ SetFillStyle(SolidFill, CLR_BACKGROUND);
+ Bar(OrgX, OrgY, OrgX + FormPxW - 1, OrgY + FormPxH - 1);
+ SetColor(CLR_BORDER);
+ Rectangle(OrgX - 1, OrgY - 21, OrgX + FormPxW, OrgY + FormPxH);
+ { Controles }
+ For I := 0 To FE.ControlCount - 1 Do
+  DrawFormVisControl(FE, FE.Controls[I], OrgX, OrgY);
+ { Bandeau d information (apercu lecture seule) }
+ SetColor(CLR_MENU_TEXT);
+ OutTextXY(FE.X + 4, FE.Y + FE.Height - 16,
+  'Apercu lecture seule - "Ouvrir dans l''editeur texte" pour modifier le code.');
 End;
 
 { --- Assurer que l octet sous le curseur reste visible --- }
@@ -20640,6 +21030,8 @@ Begin
   NodeKindFromExtension := ENK_FILE_VB
  Else If (Ext = '.pas') Or (Ext = '.pp') Then
   NodeKindFromExtension := ENK_FILE_PAS
+ Else If Ext = '.frm' Then
+  NodeKindFromExtension := ENK_FILE_FRM
  Else
   NodeKindFromExtension := ENK_FILE_OTHER;
 End;
@@ -20767,6 +21159,7 @@ Begin
   ENK_FILE_CS:     NodeKindColor := CLR_TITLEBAR_ACTIVE;
   ENK_FILE_VB:     NodeKindColor := CLR_TITLEBAR_ACTIVE;
   ENK_FILE_PAS:    NodeKindColor := CLR_LINE_HIGHLIGHT;
+  ENK_FILE_FRM:    NodeKindColor := CLR_TITLEBAR_ACTIVE;
   ENK_FILE_OTHER:  NodeKindColor := CLR_MENU_TEXT;
  Else
   NodeKindColor := CLR_MENU_TEXT;
@@ -21137,6 +21530,59 @@ Begin
  FullRepaintNeeded := True;
 End;
 
+{ --- Ouvrir un fichier .FRM depuis l explorateur dans l apercu de
+  formulaire (menu contextuel "Ouvrir", par defaut pour les .FRM) --- }
+
+Procedure OpenExplorerFileNodeForm(Var Exp: TSolutionExplorer;
+ NodeIdx: Integer);
+Var
+ FN: String;
+ SolDir: String;
+ ProjDir: String;
+ FullPath: String;
+ WIdx: Integer;
+ I: Integer;
+Begin
+ If (NodeIdx < 0) Or (NodeIdx >= Exp.NodeCount) Then Exit;
+ FN := Exp.Nodes[NodeIdx].Caption;
+ If FN = '' Then Exit;
+ { Construire le chemin complet du fichier }
+ If SolutionLoaded And (CurrentSolution.ProjectCount > 0) Then
+ Begin
+  SolDir := CurrentSolution.Info.SolutionPath;
+  If Length(SolDir) > 0 Then Begin
+   If (SolDir[Length(SolDir)] <> '\') And
+      (SolDir[Length(SolDir)] <> '/') Then
+    SolDir := SolDir + '\';
+  End;
+  ProjDir := ExtractFilePath(
+   CurrentSolution.Projects[0].ProjectPath);
+  FullPath := SolDir + ProjDir + FN;
+  For I := 1 To Length(FullPath) Do
+   If FullPath[I] = '/' Then FullPath[I] := '\';
+ End
+ Else
+  FullPath := FN;
+ { Sauvegarder la fenetre active }
+ If EditorReady Then SyncActiveWindowOut;
+ { Masquer la page de demarrage }
+ If StartPage.Visible Then Begin
+  StartPage.Visible := False;
+  FullRepaintNeeded := True;
+ End;
+ { Verifier si l apercu de ce fichier est deja ouvert }
+ WIdx := FindFormWindowByFileName(FullPath);
+ If WIdx >= 0 Then Begin
+  ActivateWindow(WIdx);
+  FullRepaintNeeded := True;
+  Exit;
+ End;
+ { Ouvrir dans une nouvelle fenetre d apercu de formulaire }
+ CreateFormWindow(FullPath);
+ EditorReady := True;
+ FullRepaintNeeded := True;
+End;
+
 Procedure HandleExplorerEvent(Var Exp: TSolutionExplorer;
  Ev: TEvent);
 Var
@@ -21273,6 +21719,8 @@ Begin
    Exp.Nodes[HitIdx].Selected := True;
    If Exp.Nodes[HitIdx].HasChildren Then
     ToggleNode(Exp, HitIdx)
+   Else If Exp.Nodes[HitIdx].Kind = ENK_FILE_FRM Then
+    OpenExplorerFileNodeForm(Exp, HitIdx)
    Else If Exp.Nodes[HitIdx].Kind In
     [ENK_FILE_CS, ENK_FILE_VB, ENK_FILE_PAS,
      ENK_FILE_OTHER] Then
@@ -21349,7 +21797,9 @@ Begin
    13: Begin { Entree : basculer ou ouvrir }
     If (Exp.SelectedIdx >= 0) And
        (Exp.SelectedIdx < Exp.NodeCount) Then Begin
-     If Exp.Nodes[Exp.SelectedIdx].Kind In
+     If Exp.Nodes[Exp.SelectedIdx].Kind = ENK_FILE_FRM Then
+      OpenExplorerFileNodeForm(Exp, Exp.SelectedIdx)
+     Else If Exp.Nodes[Exp.SelectedIdx].Kind In
       [ENK_FILE_CS, ENK_FILE_VB, ENK_FILE_PAS,
        ENK_FILE_OTHER] Then
       OpenExplorerFileNode(Exp, Exp.SelectedIdx)
@@ -21413,7 +21863,9 @@ Begin
   { Entree : ouvrir le fichier ou basculer le noeud }
   If (Exp.SelectedIdx >= 0) And
      (Exp.SelectedIdx < Exp.NodeCount) Then Begin
-   If Exp.Nodes[Exp.SelectedIdx].Kind In
+   If Exp.Nodes[Exp.SelectedIdx].Kind = ENK_FILE_FRM Then
+    OpenExplorerFileNodeForm(Exp, Exp.SelectedIdx)
+   Else If Exp.Nodes[Exp.SelectedIdx].Kind In
     [ENK_FILE_CS, ENK_FILE_VB, ENK_FILE_PAS,
      ENK_FILE_OTHER] Then
     OpenExplorerFileNode(Exp, Exp.SelectedIdx)
@@ -21571,6 +22023,14 @@ Begin
     AddContextSeparator(CM);
     AddContextItem(CM, 'Transpilateur >', 600);
    End;
+   AddContextSeparator(CM);
+   AddContextItem(CM, 'Renommer', 520);
+   AddContextItem(CM, 'Supprimer', 521);
+  End;
+  ENK_FILE_FRM: Begin
+   AddContextItem(CM, 'Ouvrir', 500);
+   AddContextItem(CM, 'Ouvrir dans l''editeur texte', 502);
+   AddContextItem(CM, 'Edition hexadecimal', 501);
    AddContextSeparator(CM);
    AddContextItem(CM, 'Renommer', 520);
    AddContextItem(CM, 'Supprimer', 521);
@@ -54920,7 +55380,10 @@ Begin
   SB.CursorLine := WM.Windows[Idx].CursorY + 1;
   SB.CursorCol := WM.Windows[Idx].CursorX + 1;
   SB.FileName := WM.Windows[Idx].FileName;
-  SB.Language := 'Text';
+  If WM.Windows[Idx].Kind = WK_FORM Then
+   SB.Language := 'Formulaire (lecture seule)'
+  Else
+   SB.Language := 'Text';
  End Else Begin
   SB.CursorLine := 1;
   SB.CursorCol := 1;
@@ -56847,6 +57310,8 @@ Begin
  If EditorReady And (WinMgr.ActiveIdx >= 0) Then Begin
   If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_HEX Then
    DrawHexEditor(ActiveHexEditor)
+  Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_FORM Then
+   DrawFormEditor(ActiveFormEditor)
   Else
    DrawEditor(ActiveEditor);
  End;
@@ -58672,13 +59137,22 @@ Begin
      End;
      500: Begin { Ouvrir }
       If (CtxMenu.NodeIdx >= 0) And
-         (CtxMenu.NodeIdx < SolExplorer.NodeCount) Then
-       OpenExplorerFileNode(SolExplorer, CtxMenu.NodeIdx);
+         (CtxMenu.NodeIdx < SolExplorer.NodeCount) Then Begin
+       If SolExplorer.Nodes[CtxMenu.NodeIdx].Kind = ENK_FILE_FRM Then
+        OpenExplorerFileNodeForm(SolExplorer, CtxMenu.NodeIdx)
+       Else
+        OpenExplorerFileNode(SolExplorer, CtxMenu.NodeIdx);
+      End;
      End;
      501: Begin { Edition hexadecimal }
       If (CtxMenu.NodeIdx >= 0) And
          (CtxMenu.NodeIdx < SolExplorer.NodeCount) Then
        OpenExplorerFileNodeHex(SolExplorer, CtxMenu.NodeIdx);
+     End;
+     502: Begin { Ouvrir dans l editeur texte (force le texte brut) }
+      If (CtxMenu.NodeIdx >= 0) And
+         (CtxMenu.NodeIdx < SolExplorer.NodeCount) Then
+       OpenExplorerFileNode(SolExplorer, CtxMenu.NodeIdx);
      End;
      600: Begin { Transpilateur : afficher le sous-menu }
       I := CtxMenu.NodeIdx;
@@ -58771,7 +59245,7 @@ Begin
       Begin
        If SolExplorer.Nodes[CtxMenu.NodeIdx].Kind In
         [ENK_FILE_CS, ENK_FILE_VB, ENK_FILE_PAS,
-         ENK_FILE_OTHER] Then
+         ENK_FILE_FRM, ENK_FILE_OTHER] Then
        Begin
         { Retirer du projet }
         If SolutionLoaded Then Begin
@@ -59203,6 +59677,8 @@ Begin
      ActiveHexEditor.CursorOfs Div HEX_BYTES_PER_ROW;
     WinMgr.Windows[WinMgr.ActiveIdx].CursorX :=
      ActiveHexEditor.CursorOfs Mod HEX_BYTES_PER_ROW;
+   End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_FORM Then Begin
+    { Apercu de formulaire : lecture seule, aucune frappe traitee }
    End Else Begin
     HandleSelectionKey(ActiveEditor, EditorSel, EditorClip,
      EditorUndo, EditorRedo, Ev);
@@ -59239,6 +59715,8 @@ Begin
       ActiveHexEditor.CursorOfs Div HEX_BYTES_PER_ROW;
      WinMgr.Windows[WinMgr.ActiveIdx].CursorX :=
       ActiveHexEditor.CursorOfs Mod HEX_BYTES_PER_ROW;
+    End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_FORM Then Begin
+     { Apercu de formulaire : lecture seule, aucun clic traite }
     End Else Begin
      HandleEditorMouse(ActiveEditor, Ev);
      If Editors[WinMgr.ActiveIdx] <> Nil Then
