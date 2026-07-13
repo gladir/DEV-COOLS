@@ -20,6 +20,12 @@ Il possède également des IDE, comme DEVENV :
 	<li>Supporte le mode pleine fenetre d'écran (-maxscreen).</li>
 </ul>
 
+Il possède également des éditeurs de ressources, comme WORKSHOP :
+
+<img width="637" height="483" alt="image" src="https://github.com/user-attachments/assets/adb5e822-19f9-4aab-8604-0dfe0ff75615" />
+
+
+
 <h2>Liste des fichiers</h2>
 
 Voici la liste des différents fichiers proposés dans DEV-COOLS :
