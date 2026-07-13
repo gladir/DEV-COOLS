@@ -219,7 +219,7 @@
            potentielle d une classe abstraite -> avertissement)
          Sealed (classe non derivable -> verification a la compilation)
 
-  TODO 16 - PROPRIETES (PROPERTY)                          [A FAIRE]
+  TODO 16 - PROPRIETES (PROPERTY)                          [IMPLEMENTE]
          property Nom: Type read Getter write Setter;
          Lecture -> appel de la methode/du champ Getter
          Ecriture -> appel de la methode/du champ Setter
@@ -2645,6 +2645,8 @@ Const
                       les records/classes confondus              }
  MAX_ENUMVAL_POOL = {$IFDEF FPC}4096{$ELSE}512{$ENDIF};  { valeurs de
                       tous les types enumeres confondus           }
+ MAX_PROP_POOL    = {$IFDEF FPC}1024{$ELSE}128{$ENDIF};  { proprietes de
+                      toutes les classes confondues (TODO 16)     }
 
 Type
  { Categories de types dans la table }
@@ -2681,6 +2683,20 @@ Type
   Value : LongInt;
  End;
 
+ { Une propriete de classe (property, TODO 16), dans le pool partage  }
+ { PropPool. Pur sucre syntaxique vers un champ ou une methode : pas   }
+ { de representation memoire propre (donc pas d Offset, contrairement }
+ { a TFieldRec).                                                       }
+ TPropRec = Record
+  Name         : TString;
+  TypeIdx      : Integer;   { type lu/ecrit par la propriete          }
+  IsIndexed    : Boolean;   { property Nom[Index: T2]: T ...           }
+  IndexTypeIdx : Integer;   { type du parametre d index, -1 si aucun  }
+  ReadName     : TString;   { champ ou methode getter, '' = aucun     }
+  WriteName    : TString;   { champ ou methode setter, '' = aucun     }
+  IsDefault    : Boolean;   { propriete tableau par defaut, acces obj[i]}
+ End;
+
  { Un enregistrement de la table des types }
  TTypeRec = Record
   Kind        : TTypeKind;
@@ -2707,6 +2723,14 @@ Type
                              { des champs, TODO 09), distincte de Size}
                              { qui reste 4 (taille d une REFERENCE de }
                              { classe, utilisee pour les variables)  }
+  PropFirst   : Integer;    { SK_CLASS : index de depart dans        }
+                             { PropPool (TODO 16), -1 si aucune       }
+  PropCount   : Integer;    { SK_CLASS : nombre de proprietes PROPRES}
+                             { (non copiees des ancetres - contrairement}
+                             { aux champs, une propriete n a pas de   }
+                             { disposition memoire a repercuter ; la  }
+                             { recherche remonte donc la chaine des    }
+                             { ancetres a la demande, PropFindInClassChain)}
  End;
 
 Var
@@ -2720,6 +2744,8 @@ Var
  FieldPoolCount : Integer;
  EnumValPool      : Array[0..MAX_ENUMVAL_POOL - 1] Of TEnumValRec;
  EnumValPoolCount : Integer;
+ PropPool      : Array[0..MAX_PROP_POOL - 1] Of TPropRec;
+ PropPoolCount : Integer;
 
 Procedure TypeInit; Forward;
 Function  TypeFindByName(Const AName: TString): Integer; Forward;
@@ -3479,6 +3505,8 @@ Begin
  TypeTab[TypeCount].VMTFirst    := -1;
  TypeTab[TypeCount].VMTCount    := 0;
  TypeTab[TypeCount].InstanceSize := 0;
+ TypeTab[TypeCount].PropFirst   := -1;
+ TypeTab[TypeCount].PropCount   := 0;
 
  TypeAdd := TypeCount;
  Inc(TypeCount);
@@ -3530,6 +3558,7 @@ Begin
  TypeCount        := 0;
  FieldPoolCount   := 0;
  EnumValPoolCount := 0;
+ PropPoolCount    := 0;
 
  For I := 0 To MAX_DP_TYPE_SIZES - 1 Do
  Begin
@@ -3937,6 +3966,116 @@ Begin
   TypeTab[RecTypeIdx].Size := Off + TypeSizeofIdx(FieldTypeIdx);
  If FAlign > TypeTab[RecTypeIdx].Align Then
   TypeTab[RecTypeIdx].Align := FAlign;
+End;
+
+{ ------------------------------------------------------------ }
+{ FieldFindInClass : cherche un champ par nom dans le FieldPool  }
+{ PROPRE a BaseTypeIdx (deja etendu aux champs herites par       }
+{ FieldInitInherit, donc pas besoin de remonter la chaine ici,    }
+{ contrairement aux methodes/proprietes). Retourne l index dans   }
+{ FieldPool, ou -1.                                                }
+{ ------------------------------------------------------------ }
+
+Function FieldFindInClass(BaseTypeIdx: Integer; Const UpName: TString): Integer;
+Var First, Cnt, I : Integer;
+Begin
+ FieldFindInClass := -1;
+ If (BaseTypeIdx < 0) Or (BaseTypeIdx >= TypeCount) Then Exit;
+ First := TypeTab[BaseTypeIdx].FieldFirst;
+ Cnt   := TypeTab[BaseTypeIdx].FieldCount;
+ If First < 0 Then Exit;
+ For I := First To First + Cnt - 1 Do
+  If FieldPool[I].Name = UpName Then
+  Begin
+   FieldFindInClass := I;
+   Exit;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeAddProperty (TODO 16) : enregistre une propriete dans le   }
+{ pool partage PropPool, comme TypeAddField pour les champs -     }
+{ mais une propriete n a pas de representation memoire propre     }
+{ (pur sucre syntaxique vers un champ ou une methode), donc pas    }
+{ d Offset/Align a calculer ici. Contrairement aux champs, les     }
+{ proprietes heritees ne sont PAS copiees dans le pool du          }
+{ descendant : PropFindInClassChain remonte la chaine a la         }
+{ demande (voir sa documentation).                                  }
+{ ------------------------------------------------------------ }
+
+Function TypeAddProperty(ClassTypeIdx: Integer; Const PName: TString;
+ PTypeIdx: Integer; IsIndexed: Boolean; IndexTypeIdx: Integer;
+ Const ReadName, WriteName: TString): Integer;
+Begin
+ If (ClassTypeIdx < 0) Or (ClassTypeIdx >= TypeCount) Or
+    (PropPoolCount >= MAX_PROP_POOL) Then
+ Begin
+  TypeAddProperty := -1;
+  Exit;
+ End;
+
+ If TypeTab[ClassTypeIdx].PropCount = 0 Then
+  TypeTab[ClassTypeIdx].PropFirst := PropPoolCount;
+
+ PropPool[PropPoolCount].Name         := StrUpperCase(PName);
+ PropPool[PropPoolCount].TypeIdx      := PTypeIdx;
+ PropPool[PropPoolCount].IsIndexed    := IsIndexed;
+ PropPool[PropPoolCount].IndexTypeIdx := IndexTypeIdx;
+ PropPool[PropPoolCount].ReadName     := StrUpperCase(ReadName);
+ PropPool[PropPoolCount].WriteName    := StrUpperCase(WriteName);
+ PropPool[PropPoolCount].IsDefault    := False;
+ TypeAddProperty := PropPoolCount;
+ Inc(PropPoolCount);
+ Inc(TypeTab[ClassTypeIdx].PropCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ PropFindInClassChain / PropFindDefault (TODO 16) : recherche   }
+{ une propriete par nom (ou la propriete tableau par defaut) en   }
+{ remontant la chaine des ancetres (BaseTypeIdx), comme           }
+{ SymFindInClassChain pour les methodes non virtuelles - une       }
+{ propriete heritee n a pas besoin d etre recopiee (aucun offset   }
+{ memoire a repercuter, contrairement a un champ).                  }
+{ ------------------------------------------------------------ }
+
+Function PropFindInClassChain(ClassTypeIdx: Integer; Const UpName: TString): Integer;
+Var T, First, Cnt, I : Integer;
+Begin
+ PropFindInClassChain := -1;
+ T := ClassTypeIdx;
+ While T >= 0 Do
+ Begin
+  First := TypeTab[T].PropFirst;
+  Cnt   := TypeTab[T].PropCount;
+  If First >= 0 Then
+   For I := First To First + Cnt - 1 Do
+    If PropPool[I].Name = UpName Then
+    Begin
+     PropFindInClassChain := I;
+     Exit;
+    End;
+  T := TypeTab[T].BaseTypeIdx;
+ End;
+End;
+
+Function PropFindDefault(ClassTypeIdx: Integer): Integer;
+Var T, First, Cnt, I : Integer;
+Begin
+ PropFindDefault := -1;
+ T := ClassTypeIdx;
+ While T >= 0 Do
+ Begin
+  First := TypeTab[T].PropFirst;
+  Cnt   := TypeTab[T].PropCount;
+  If First >= 0 Then
+   For I := First To First + Cnt - 1 Do
+    If PropPool[I].IsDefault Then
+    Begin
+     PropFindDefault := I;
+     Exit;
+    End;
+  T := TypeTab[T].BaseTypeIdx;
+ End;
 End;
 
 { ------------------------------------------------------------ }
@@ -5769,6 +5908,75 @@ End;
 Function SymFindInClassChain(ClassTypeIdx: Integer; Const Name: TString): Integer; Forward;
 
 { ------------------------------------------------------------ }
+{ GenPropertyAccessorCall (TODO 16) : appelle le getter/setter    }
+{ d une propriete (AccessorUpName, deja en MAJUSCULES) une fois     }
+{ que l APPELANT a deja empile tous les arguments necessaires,       }
+{ Self en DERNIER (meme convention que le bloc d appel de methode    }
+{ generique ci-dessous). Choisit l appel virtuel (via la VMT, si     }
+{ l accesseur y figure - EBX doit alors contenir Self) ou statique    }
+{ selon VMTFindMethod, exactement comme pour un appel de methode      }
+{ ordinaire. CleanupBytes = taille totale (en octets) des arguments   }
+{ empiles, Self compris, a nettoyer apres l appel (ADD ESP).           }
+{ ------------------------------------------------------------ }
+
+Function GenPropertyAccessorCall(BaseTypeIdx: Integer;
+ Const AccessorUpName: TString; CleanupBytes: Integer): Integer;
+Var MethodSym, VMTOffset : Integer;
+Begin
+ GenPropertyAccessorCall := -1;
+ VMTOffset := VMTFindMethod(BaseTypeIdx, AccessorUpName);
+ MethodSym := VMTFindMethodSym(BaseTypeIdx, AccessorUpName);
+ If MethodSym < 0 Then MethodSym := SymFindInClassChain(BaseTypeIdx, AccessorUpName);
+ If MethodSym < 0 Then
+ Begin
+  WarnMsg('accesseur de propriete introuvable: ' + AccessorUpName);
+  Exit;
+ End;
+ If VMTOffset >= 0 Then
+ Begin
+  EmitInstr('MOV EDX,DWORD PTR [EBX]');
+  EmitInstr('CALL DWORD PTR [EDX+' + IntToStr_(VMTOffset) + ']');
+ End
+ Else
+  EmitInstr('CALL ' + SymTab[MethodSym].MangledName);
+ EmitInstr('ADD ESP,' + IntToStr_(CleanupBytes));
+ GenPropertyAccessorCall := SymTab[MethodSym].TypeIdx;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenIndexedPropertyAssign (TODO 16) : Nom[Index] := expr ou      }
+{ Nom.Prop[Index] := expr, une fois que l APPELANT a deja empile   }
+{ (PUSH) la reference Self et que PP pointe sur le '[' de l index.  }
+{ L index et la valeur du membre droit sont evalues dans leur ORDRE }
+{ TEXTUEL naturel (index d abord, puis valeur), chacun temporairement}
+{ sauvegarde sur la pile machine, puis re-empiles dans l ordre exige }
+{ par la convention d appel (valeur, index, Self - Self en dernier,  }
+{ TODO 09/14) juste avant l appel au setter.                          }
+{ ------------------------------------------------------------ }
+
+Procedure GenIndexedPropertyAssign(BaseTypeIdx, PropIdx: Integer;
+ Const PropDisplayName: TString);
+Begin
+ PPAdvance;                    { [ }
+ ParseExpr;                     { EAX = valeur d index }
+ EmitInstr('PUSH EAX');          { index, sauvegarde temporaire }
+ PPMatch(']');
+ PPMatch(':=');
+ ParseExpr;                       { EAX = valeur a ecrire }
+ EmitInstr('POP EDX');            { EDX = index }
+ EmitInstr('POP EBX');            { EBX = Self }
+ If PropPool[PropIdx].WriteName = '' Then
+  WarnMsg('propriete en lecture seule: ' + PropDisplayName)
+ Else
+ Begin
+  EmitInstr('PUSH EAX');          { valeur }
+  EmitInstr('PUSH EDX');          { index }
+  EmitInstr('PUSH EBX');          { Self, en dernier (1er parametre) }
+  GenPropertyAccessorCall(BaseTypeIdx, PropPool[PropIdx].WriteName, 12);
+ End;
+End;
+
+{ ------------------------------------------------------------ }
 { ParseFieldAccess : Base.FieldName, ou Base est deja evaluee    }
 { (son adresse - record - ou sa reference - classe - est dans    }
 { EAX). Cherche d abord un champ (FieldPool, TODO 06/09, deja     }
@@ -5782,7 +5990,7 @@ Function SymFindInClassChain(ClassTypeIdx: Integer; Const Name: TString): Intege
 Function ParseFieldAccess(BaseTypeIdx: Integer; Const FieldName: TString): Integer;
 Var
  Up          : TString;
- First, Cnt, I, MethodSym, ArgN, VMTOffset : Integer;
+ First, Cnt, I, MethodSym, ArgN, VMTOffset, PropIdx : Integer;
  FieldTypeR  : Integer;
 Begin
  ParseFieldAccess := -1;
@@ -5824,16 +6032,60 @@ Begin
     Exit;
    End;
 
- { Pas un champ : methode d instance. VMTFindMethod(Sym) attend un    }
- { index de TYPE (BaseTypeIdx), contrairement a SymFindInClassChain   }
- { qui attend aussi un index de TYPE mais remonte la chaine des        }
- { ancetres (contrairement a SymFindInClass, limite a une seule       }
- { classe) - ne pas melanger avec l espace d index des SYMBOLES.       }
- { Une methode presente dans la VMT (virtual/dynamic/override, TODO   }
- { 15) est appelee INDIRECTEMENT via le pointeur de VMT stocke a       }
- { l offset 0 de l instance ; une methode ordinaire (jamais ajoutee   }
- { a la VMT, ex. TObject.Free) est appelee en dur, retrouvee en        }
- { remontant la hierarchie des classes.                                }
+ { Pas un champ : propriete (TODO 16) ? Recherchee AVANT les          }
+ { methodes, car le nom d une propriete ne coincide jamais avec celui  }
+ { de son propre accesseur (FField ou GetField/SetField).              }
+ PropIdx := PropFindInClassChain(BaseTypeIdx, Up);
+ If PropIdx >= 0 Then
+ Begin
+  If PropPool[PropIdx].IsIndexed Then
+  Begin
+   If Not PPMatch('[') Then
+   Begin
+    WarnMsg('propriete indexee ' + FieldName + ' : index "[...]" attendu');
+    ParseFieldAccess := PropPool[PropIdx].TypeIdx;
+    Exit;
+   End;
+   EmitInstr('MOV EBX,EAX');           { Self }
+   ParseExpr;                          { EAX = valeur d index }
+   PPMatch(']');
+   If PropPool[PropIdx].ReadName = '' Then
+   Begin
+    WarnMsg('propriete en ecriture seule: ' + FieldName);
+    ParseFieldAccess := PropPool[PropIdx].TypeIdx;
+    Exit;
+   End;
+   EmitInstr('PUSH EAX');              { index }
+   EmitInstr('PUSH EBX');              { Self, en dernier }
+   LastExprTypeIdx := GenPropertyAccessorCall(BaseTypeIdx,
+    PropPool[PropIdx].ReadName, 8);
+   ParseFieldAccess := LastExprTypeIdx;
+   Exit;
+  End;
+
+  { propriete simple : deleguer au champ ou a la methode getter -    }
+  { EAX contient deja la reference/adresse de base, exactement comme }
+  { si le code source avait ecrit Base.<ReadName> directement.        }
+  If PropPool[PropIdx].ReadName = '' Then
+  Begin
+   WarnMsg('propriete en ecriture seule: ' + FieldName);
+   ParseFieldAccess := PropPool[PropIdx].TypeIdx;
+   Exit;
+  End;
+  ParseFieldAccess := ParseFieldAccess(BaseTypeIdx, PropPool[PropIdx].ReadName);
+  Exit;
+ End;
+
+ { Pas un champ ni une propriete : methode d instance. VMTFindMethod    }
+ { (Sym) attend un index de TYPE (BaseTypeIdx), contrairement a         }
+ { SymFindInClassChain qui attend aussi un index de TYPE mais remonte   }
+ { la chaine des ancetres (contrairement a SymFindInClass, limite a      }
+ { une seule classe) - ne pas melanger avec l espace d index des         }
+ { SYMBOLES. Une methode presente dans la VMT (virtual/dynamic/override,}
+ { TODO 15) est appelee INDIRECTEMENT via le pointeur de VMT stocke a    }
+ { l offset 0 de l instance ; une methode ordinaire (jamais ajoutee a     }
+ { la VMT, ex. TObject.Free) est appelee en dur, retrouvee en remontant   }
+ { la hierarchie des classes.                                             }
  VMTOffset := VMTFindMethod(BaseTypeIdx, Up);
  MethodSym := VMTFindMethodSym(BaseTypeIdx, Up);
  If MethodSym < 0 Then
@@ -5873,7 +6125,7 @@ End;
 
 Function ParsePostfix(BaseTypeIdx: Integer): Integer;
 Var
- CurType, C, TargetIdx : Integer;
+ CurType, C, TargetIdx, RCurType, PropIdx : Integer;
  FieldName, ClassName_  : TString;
  Compatible : Boolean;
 Begin
@@ -5935,6 +6187,37 @@ Begin
     CurType := TargetIdx;
     LastExprTypeIdx := CurType;
    End;
+  End
+  Else If (PPPeekKind = TK_PUNCT) And (PPPeekVal = '[') Then
+  Begin
+   { Propriete tableau par defaut (TODO 16) : obj[Index], sans nommer  }
+   { la propriete. N intervient que pour un type classe possedant une  }
+   { propriete indexee marquee "default" (PropFindDefault) - les vrais }
+   { tableaux (TYK_ARRAY, TODO 19) ne passent pas par ParsePostfix ici. }
+   RCurType := TypeResolve(CurType);
+   PropIdx  := -1;
+   If (RCurType >= 0) And (RCurType < TypeCount) And
+      (TypeTab[RCurType].Kind = TYK_CLASS) Then
+    PropIdx := PropFindDefault(RCurType);
+
+   If PropIdx < 0 Then Break;   { pas gere ici : laisser l appelant reagir }
+
+   PPAdvance;                    { [ }
+   EmitInstr('MOV EBX,EAX');      { Self }
+   ParseExpr;                      { EAX = valeur d index }
+   PPMatch(']');
+   If PropPool[PropIdx].ReadName = '' Then
+   Begin
+    WarnMsg('propriete par defaut en ecriture seule');
+    CurType := PropPool[PropIdx].TypeIdx;
+   End
+   Else
+   Begin
+    EmitInstr('PUSH EAX');        { index }
+    EmitInstr('PUSH EBX');        { Self, en dernier }
+    CurType := GenPropertyAccessorCall(RCurType, PropPool[PropIdx].ReadName, 8);
+   End;
+   LastExprTypeIdx := CurType;
   End
   Else
    Break;
@@ -8015,6 +8298,44 @@ Begin
  If (PPPeekKind = TK_PUNCT) And (PPPeekVal = ';') Then PPAdvance;
 End;
 
+{ ------------------------------------------------------------ }
+{ PPMatchingBracketThenAssign (TODO 16) : lecture seule (restaure }
+{ toujours PP), utilisee pour distinguer une ECRITURE de          }
+{ propriete indexee (Ident[Index] := ... ou Ident.Prop[Index] :=   }
+{ ...) d un simple ACCES en lecture, SANS parser quoi que ce soit.  }
+{ StartPP doit pointer sur le '[' ouvrant ; suit la meme technique  }
+{ de comptage de profondeur que ParseCallArgs (TODO 10) pour       }
+{ retrouver le ']' correspondant, puis verifie que le jeton qui     }
+{ suit immediatement est bien ':='.                                 }
+{ ------------------------------------------------------------ }
+
+Function PPMatchingBracketThenAssign(StartPP: Integer): Boolean;
+Var Save, Depth : Integer;
+Begin
+ PPMatchingBracketThenAssign := False;
+ Save := PP;
+ PP := StartPP;
+ Depth := 0;
+ While Not PPAtEnd Do
+ Begin
+  If (PPPeekVal = '(') Or (PPPeekVal = '[') Then
+   Inc(Depth)
+  Else If (PPPeekVal = ')') Or (PPPeekVal = ']') Then
+  Begin
+   Dec(Depth);
+   If Depth = 0 Then
+   Begin
+    PPAdvance;   { la ']' fermante elle-meme }
+    PPMatchingBracketThenAssign := (PPPeekKind = TK_OP) And (PPPeekVal = ':=');
+    PP := Save;
+    Exit;
+   End;
+  End;
+  PPAdvance;
+ End;
+ PP := Save;
+End;
+
 { Forward declarations : ParseStmt et les differentes structures    }
 { de controle s appellent mutuellement (corps de boucle, branches    }
 { if/case, blocs Begin..End imbriques).                               }
@@ -8467,7 +8788,7 @@ End;
 Procedure ParseStmt;
 Var
  Up, Name, FieldName : TString;
- SI, BaseTypeIdx, FI, First, Cnt : Integer;
+ SI, BaseTypeIdx, FI, First, Cnt, PropIdx : Integer;
  Found  : Boolean;
  DestOp : TString;
 Begin
@@ -8551,6 +8872,83 @@ Begin
    Exit;
   End;
 
+  { Propriete tableau par defaut (TODO 16) : Ident[Index] := expr }
+  If (PP + 1 < TokenCount) And (TokenPool[PP + 1].Kind = TK_PUNCT) And
+     (TokenPool[PP + 1].Val = '[') And PPMatchingBracketThenAssign(PP + 1) Then
+  Begin
+   SI := SymFind(Name);
+   If SI < 0 Then
+   Begin
+    WarnMsg('identificateur inconnu: ' + Name);
+    PPAdvance;
+    ParseExpr;
+    Exit;
+   End;
+
+   BaseTypeIdx := TypeResolve(SymTab[SI].TypeIdx);
+   PropIdx := -1;
+   If (BaseTypeIdx >= 0) And (BaseTypeIdx < TypeCount) And
+      (TypeTab[BaseTypeIdx].Kind = TYK_CLASS) Then
+    PropIdx := PropFindDefault(BaseTypeIdx);
+
+   If PropIdx < 0 Then
+   Begin
+    WarnMsg('propriete tableau par defaut introuvable pour: ' + Name);
+    PPAdvance;
+    While Not ((PPPeekKind = TK_OP) And (PPPeekVal = ':=')) Do PPAdvance;
+    PPAdvance;
+    ParseExpr;
+    Exit;
+   End;
+
+   PPAdvance;                   { ident }
+   GenLoadVar(Name);             { EAX = reference de l objet }
+   EmitInstr('PUSH EAX');         { Self, sauvegarde temporaire }
+   GenIndexedPropertyAssign(BaseTypeIdx, PropIdx, Name);
+   Exit;
+  End;
+
+  { Propriete indexee nommee (TODO 16) : Ident.Prop[Index] := expr }
+  If (PP + 1 < TokenCount) And (TokenPool[PP + 1].Kind = TK_PUNCT) And
+     (TokenPool[PP + 1].Val = '.') And (PP + 3 < TokenCount) And
+     (TokenPool[PP + 3].Kind = TK_PUNCT) And (TokenPool[PP + 3].Val = '[') And
+     PPMatchingBracketThenAssign(PP + 3) Then
+  Begin
+   SI := SymFind(Name);
+   If SI < 0 Then
+   Begin
+    WarnMsg('identificateur inconnu: ' + Name);
+    PPAdvance; PPAdvance; PPAdvance;
+    ParseExpr;
+    Exit;
+   End;
+
+   BaseTypeIdx := TypeResolve(SymTab[SI].TypeIdx);
+   PPAdvance;                   { ident }
+   GenLoadVar(Name);             { EAX = reference de l objet }
+   EmitInstr('PUSH EAX');         { Self, sauvegarde temporaire }
+   PPAdvance;                     { . }
+   FieldName := StrUpperCase(TokenPool[PP].Val);
+   PPAdvance;                     { Prop }
+
+   PropIdx := -1;
+   If (BaseTypeIdx >= 0) And (BaseTypeIdx < TypeCount) Then
+    PropIdx := PropFindInClassChain(BaseTypeIdx, FieldName);
+
+   If PropIdx < 0 Then
+   Begin
+    WarnMsg('propriete indexee inconnue: ' + FieldName);
+    EmitInstr('ADD ESP,4');       { Self empile plus haut, non consomme }
+    While Not ((PPPeekKind = TK_OP) And (PPPeekVal = ':=')) Do PPAdvance;
+    PPAdvance;
+    ParseExpr;
+    Exit;
+   End;
+
+   GenIndexedPropertyAssign(BaseTypeIdx, PropIdx, FieldName);
+   Exit;
+  End;
+
   { Assignation de champ, une seule profondeur : Ident.Champ := expr }
   If (PP + 1 < TokenCount) And (TokenPool[PP + 1].Kind = TK_PUNCT) And
      (TokenPool[PP + 1].Val = '.') And (PP + 3 < TokenCount) And
@@ -8604,6 +9002,58 @@ Begin
        End;
        Break;
       End;
+   End;
+
+   { Pas un champ : propriete simple (non indexee, TODO 16) ? Le       }
+   { setter peut lui-meme etre un champ (property X: T read FX         }
+   { write FX) - repasse alors par exactement le meme code d ecriture   }
+   { de champ que ci-dessus (offset/TypeNeedsDestAddr), ou une methode  }
+   { (Procedure SetX(Value: T), appelee avec Self en dernier argument,  }
+   { meme convention que tout appel de methode).                        }
+   If Not Found And (BaseTypeIdx >= 0) And (BaseTypeIdx < TypeCount) Then
+   Begin
+    PropIdx := PropFindInClassChain(BaseTypeIdx, FieldName);
+    If (PropIdx >= 0) And Not PropPool[PropIdx].IsIndexed Then
+    Begin
+     Found := True;
+     If PropPool[PropIdx].WriteName = '' Then
+     Begin
+      WarnMsg('propriete en lecture seule: ' + FieldName);
+      ParseExpr;
+     End
+     Else
+     Begin
+      FI := FieldFindInClass(BaseTypeIdx, PropPool[PropIdx].WriteName);
+      If FI >= 0 Then
+      Begin
+       ParseExpr;   { EAX = valeur du membre droit }
+       If TypeNeedsDestAddr(FieldPool[FI].TypeIdx) Then
+       Begin
+        If FieldPool[FI].Offset = 0 Then
+         EmitInstr('MOV EDX,EBX')
+        Else
+         EmitInstr('LEA EDX,[EBX+' + IntToStr_(FieldPool[FI].Offset) + ']');
+        EmitAssign('EDX', 'EAX', FieldPool[FI].TypeIdx);
+       End
+       Else
+       Begin
+        If FieldPool[FI].Offset = 0 Then
+         DestOp := SizedPtr(FieldPool[FI].TypeIdx) + '[EBX]'
+        Else
+         DestOp := SizedPtr(FieldPool[FI].TypeIdx) + '[EBX+' +
+          IntToStr_(FieldPool[FI].Offset) + ']';
+        EmitAssign(DestOp, 'EAX', FieldPool[FI].TypeIdx);
+       End;
+      End
+      Else
+      Begin
+       ParseExpr;                    { EAX = valeur du membre droit }
+       EmitInstr('PUSH EAX');          { valeur }
+       EmitInstr('PUSH EBX');          { Self, en dernier }
+       GenPropertyAccessorCall(BaseTypeIdx, PropPool[PropIdx].WriteName, 8);
+      End;
+     End;
+    End;
    End;
 
    If Not Found Then
@@ -10043,15 +10493,100 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
+{ ParsePropertyDecl (TODO 16) : PROPERTY Nom [ '[' Idx: T2 ']' ]  }
+{ ':' Type [READ Getter] [WRITE Setter] <specificateurs ignores :  }
+{ INDEX n, DEFAULT v, STORED b, NODEFAULT, IMPLEMENTS I - stubs    }
+{ syntaxiques uniquement, aucun effet semantique> ';' suivi,        }
+{ uniquement pour une propriete INDEXEE, d un specificateur         }
+{ separe 'DEFAULT ;' qui en fait la propriete tableau par defaut    }
+{ de la classe (acces obj[i] sans nommer la propriete elle-meme,    }
+{ PropFindDefault). READ/WRITE peuvent nommer indifferemment un     }
+{ champ ou une methode : c est ParseFieldAccess/ParseStmt (acces/   }
+{ affectation) qui font la difference au moment de l USAGE, pas ici.}
+{ ------------------------------------------------------------ }
+
+Procedure ParsePropertyDecl(ClassTypeIdx: Integer);
+Var
+ PName, Up, TName, ReadName, WriteName : TString;
+ PTypeIdx, IndexTypeIdx, PropIdx : Integer;
+ IsIndexed : Boolean;
+Begin
+ PPAdvance;   { property }
+ PName := TokenPool[PP].Val;
+ PPAdvance;
+
+ IsIndexed    := False;
+ IndexTypeIdx := -1;
+ If PPMatch('[') Then
+ Begin
+  IsIndexed := True;
+  PPAdvance;   { nom du parametre d index (non conserve, TODO 16) }
+  If PPMatch(':') Then
+  Begin
+   TName := TokenPool[PP].Val;
+   PPAdvance;
+   IndexTypeIdx := TypeFindByName(TName);
+  End;
+  PPMatch(']');
+ End;
+
+ PTypeIdx := TypeFindByName('Integer');
+ If PPMatch(':') Then
+ Begin
+  TName := TokenPool[PP].Val;
+  PPAdvance;
+  PTypeIdx := TypeFindByName(TName);
+  If PTypeIdx < 0 Then PTypeIdx := TypeFindByName('Integer');
+ End;
+
+ ReadName  := '';
+ WriteName := '';
+ While (Not PPAtEnd) And
+       (Not ((PPPeekKind = TK_PUNCT) And (PPPeekVal = ';'))) Do
+ Begin
+  Up := StrUpperCase(PPPeekVal);
+  If (Up = 'READ') And (PPPeekKind = TK_IDENT) Then
+  Begin
+   PPAdvance;
+   ReadName := TokenPool[PP].Val;
+   PPAdvance;
+  End
+  Else If (Up = 'WRITE') And (PPPeekKind = TK_IDENT) Then
+  Begin
+   PPAdvance;
+   WriteName := TokenPool[PP].Val;
+   PPAdvance;
+  End
+  Else
+   PPAdvance;   { index Nb, default V, stored B, nodefault, implements I : }
+                 { specificateurs reconnus mais sans effet (TODO 16)        }
+ End;
+ SkipOptSemi;
+
+ PropIdx := TypeAddProperty(ClassTypeIdx, PName, PTypeIdx, IsIndexed,
+  IndexTypeIdx, ReadName, WriteName);
+
+ { propriete tableau par defaut : property ...[...]... ; default ;  }
+ { (specificateur SEPARE, propre aux proprietes indexees - permet    }
+ { l acces obj[i] sans nommer la propriete, TODO 16).                }
+ If IsIndexed And (PPPeekKind = TK_IDENT) And
+    (StrUpperCase(PPPeekVal) = 'DEFAULT') Then
+ Begin
+  PPAdvance;
+  SkipOptSemi;
+  If PropIdx >= 0 Then PropPool[PropIdx].IsDefault := True;
+ End;
+End;
+
+{ ------------------------------------------------------------ }
 { ParseClassDecl : CLASS[(Parent[, IInterface...])] [SEALED]      }
 { [ABSTRACT] <sections de visibilite/champs/methodes/proprietes>  }
 { END - le nom de la classe (ClassName) a deja ete lu par          }
 { l appelant (ParseTypeDecl). Sans ancetre explicite, herite de     }
 { TObject (comme en Delphi reel). Les sections de visibilite        }
-{ (private/protected/public/published/automated) et les             }
-{ proprietes (TODO 16) sont reconnues mais pas appliquees/           }
-{ implementees - une seule "unite" existe pour l instant (TODO 23). }
-{ Retourne le TypeIdx de la nouvelle classe.                         }
+{ (private/protected/public/published/automated) sont reconnues    }
+{ mais pas appliquees/implementees - une seule "unite" existe pour  }
+{ l instant (TODO 23). Retourne le TypeIdx de la nouvelle classe.    }
 { ------------------------------------------------------------ }
 
 Function ParseClassDecl(Const ClassName: TString): Integer;
@@ -10107,12 +10642,7 @@ Begin
 
    If Up = 'PROPERTY' Then
    Begin
-    { proprietes : TODO 16, reconnues et ignorees pour l instant }
-    PPAdvance;
-    While (Not PPAtEnd) And
-          (Not ((PPPeekKind = TK_PUNCT) And (PPPeekVal = ';'))) Do
-     PPAdvance;
-    SkipOptSemi;
+    ParsePropertyDecl(ClassTypeIdx);
     Continue;
    End;
 
@@ -10727,6 +11257,322 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
+{ PropAssert / PropSelfTest (TODO 16) : verifient les proprietes  }
+{ simples (champ ou methode getter/setter), indexees, et par       }
+{ defaut (acces obj[i]), en lecture et en ecriture, avec une        }
+{ classe synthetique TPointPT et des suites de tokens               }
+{ construites directement dans TokenPool, comme les self-tests des  }
+{ TODO precedents.                                                    }
+{ ------------------------------------------------------------ }
+
+Procedure PropAssert(Const Label_: TString; Cond: Boolean);
+Begin
+ If Not Cond Then
+  FatalError('PropSelfTest: ' + Label_ + ' a echoue');
+End;
+
+Procedure PropSelfTest;
+Const
+ TmpFile = 'DPPROPSELFTEST.$$$';
+Var
+ PointSymIdx, PointTypeIdx : Integer;
+ GetYSym, SetYSym, GetItemSym, SetItemSym : Integer;
+ F : Text;
+ Line : TString;
+ HasReadX, HasWriteX, HasCallGetY, HasCallSetY, HasAddEsp8Y : Boolean;
+ HasCallGetItem, HasCallSetItem, HasAddEsp8Item, HasAddEsp12Item : Boolean;
+ HasCallGetItemDef, HasCallSetItemDef : Boolean;
+
+ Procedure Tok(Kind: TTokenKind; Const Val: TString; IntVal: LongInt);
+ Var T: TToken;
+ Begin
+  T.Kind := Kind; T.Val := Val; T.IntVal := IntVal; T.RealVal := 0.0;
+  T.Line := 1; T.Col := 1;
+  TokenPoolAdd(T);
+ End;
+
+Begin
+ SymInit;
+ ClassSystemInit;
+ DataInit; DataInit2;
+ FrameInit;
+ StmtInit;
+ UserExternInit;
+
+ { --- TPointPT = class                                              }
+ {      FX: Integer;                                                  }
+ {      function GetY: Integer;  procedure SetY(Value: Integer);       }
+ {      function GetItem(Index: Integer): Integer;                     }
+ {      procedure SetItem(Index: Integer; Value: Integer);              }
+ {      property X: Integer read FX write FX;                          }
+ {      property Y: Integer read GetY write SetY;                      }
+ {      property Items[Index: Integer]: Integer                        }
+ {       read GetItem write SetItem; default;                          }
+ {      end;                                                            }
+ TokenPoolInit;
+ Tok(TK_KEYWORD, 'type', 0);
+ Tok(TK_IDENT, 'TPointPT', 0);
+ Tok(TK_OP, '=', 0);
+ Tok(TK_KEYWORD, 'class', 0);
+ Tok(TK_IDENT, 'FX', 0); Tok(TK_PUNCT, ':', 0); Tok(TK_IDENT, 'Integer', 0);
+ Tok(TK_PUNCT, ';', 0);
+ Tok(TK_KEYWORD, 'function', 0); Tok(TK_IDENT, 'GetY', 0);
+ Tok(TK_PUNCT, ':', 0); Tok(TK_IDENT, 'Integer', 0); Tok(TK_PUNCT, ';', 0);
+ Tok(TK_KEYWORD, 'procedure', 0); Tok(TK_IDENT, 'SetY', 0);
+ Tok(TK_PUNCT, '(', 0); Tok(TK_IDENT, 'Value', 0); Tok(TK_PUNCT, ':', 0);
+ Tok(TK_IDENT, 'Integer', 0); Tok(TK_PUNCT, ')', 0); Tok(TK_PUNCT, ';', 0);
+ Tok(TK_KEYWORD, 'function', 0); Tok(TK_IDENT, 'GetItem', 0);
+ Tok(TK_PUNCT, '(', 0); Tok(TK_IDENT, 'Index', 0); Tok(TK_PUNCT, ':', 0);
+ Tok(TK_IDENT, 'Integer', 0); Tok(TK_PUNCT, ')', 0); Tok(TK_PUNCT, ':', 0);
+ Tok(TK_IDENT, 'Integer', 0); Tok(TK_PUNCT, ';', 0);
+ Tok(TK_KEYWORD, 'procedure', 0); Tok(TK_IDENT, 'SetItem', 0);
+ Tok(TK_PUNCT, '(', 0); Tok(TK_IDENT, 'Index', 0); Tok(TK_PUNCT, ':', 0);
+ Tok(TK_IDENT, 'Integer', 0); Tok(TK_PUNCT, ';', 0); Tok(TK_IDENT, 'Value', 0);
+ Tok(TK_PUNCT, ':', 0); Tok(TK_IDENT, 'Integer', 0); Tok(TK_PUNCT, ')', 0);
+ Tok(TK_PUNCT, ';', 0);
+ Tok(TK_KEYWORD, 'property', 0); Tok(TK_IDENT, 'X', 0);
+ Tok(TK_PUNCT, ':', 0); Tok(TK_IDENT, 'Integer', 0);
+ Tok(TK_IDENT, 'read', 0); Tok(TK_IDENT, 'FX', 0);
+ Tok(TK_IDENT, 'write', 0); Tok(TK_IDENT, 'FX', 0); Tok(TK_PUNCT, ';', 0);
+ Tok(TK_KEYWORD, 'property', 0); Tok(TK_IDENT, 'Y', 0);
+ Tok(TK_PUNCT, ':', 0); Tok(TK_IDENT, 'Integer', 0);
+ Tok(TK_IDENT, 'read', 0); Tok(TK_IDENT, 'GetY', 0);
+ Tok(TK_IDENT, 'write', 0); Tok(TK_IDENT, 'SetY', 0); Tok(TK_PUNCT, ';', 0);
+ Tok(TK_KEYWORD, 'property', 0); Tok(TK_IDENT, 'Items', 0);
+ Tok(TK_PUNCT, '[', 0); Tok(TK_IDENT, 'Index', 0); Tok(TK_PUNCT, ':', 0);
+ Tok(TK_IDENT, 'Integer', 0); Tok(TK_PUNCT, ']', 0);
+ Tok(TK_PUNCT, ':', 0); Tok(TK_IDENT, 'Integer', 0);
+ Tok(TK_IDENT, 'read', 0); Tok(TK_IDENT, 'GetItem', 0);
+ Tok(TK_IDENT, 'write', 0); Tok(TK_IDENT, 'SetItem', 0); Tok(TK_PUNCT, ';', 0);
+ Tok(TK_IDENT, 'default', 0); Tok(TK_PUNCT, ';', 0);
+ Tok(TK_KEYWORD, 'end', 0); Tok(TK_PUNCT, ';', 0);
+ ParserInit;
+ ParseTypeDecl;
+ PropAssert('declaration TPointPT consomme tous les tokens', PPAtEnd);
+
+ PointSymIdx  := SymFind('TPointPT');
+ PropAssert('TPointPT enregistree comme classe', PointSymIdx >= 0);
+ PointTypeIdx := SymTab[PointSymIdx].TypeIdx;
+
+ PropAssert('propriete X trouvee', PropFindInClassChain(PointTypeIdx, 'X') >= 0);
+ PropAssert('propriete Y trouvee', PropFindInClassChain(PointTypeIdx, 'Y') >= 0);
+ PropAssert('propriete Items trouvee',
+  PropFindInClassChain(PointTypeIdx, 'ITEMS') >= 0);
+ PropAssert('Items est bien indexee',
+  PropPool[PropFindInClassChain(PointTypeIdx, 'ITEMS')].IsIndexed);
+ PropAssert('Items est la propriete tableau par defaut',
+  PropFindDefault(PointTypeIdx) = PropFindInClassChain(PointTypeIdx, 'ITEMS'));
+
+ GetYSym    := SymFindInClass(PointSymIdx, 'GETY');
+ SetYSym    := SymFindInClass(PointSymIdx, 'SETY');
+ GetItemSym := SymFindInClass(PointSymIdx, 'GETITEM');
+ SetItemSym := SymFindInClass(PointSymIdx, 'SETITEM');
+ PropAssert('GetY/SetY/GetItem/SetItem enregistrees',
+  (GetYSym >= 0) And (SetYSym >= 0) And (GetItemSym >= 0) And (SetItemSym >= 0));
+
+ GlobalVarDeclare('PROPCTPOINT', PointTypeIdx, 0);
+
+ { --- Lecture simple, appuyee sur un champ : PropCTPoint.X --- }
+ TokenPoolInit;
+ Tok(TK_IDENT, 'PropCTPoint', 0);
+ Tok(TK_PUNCT, '.', 0);
+ Tok(TK_IDENT, 'X', 0);
+ ParserInit;
+ EmitOpen(TmpFile);
+ ParsePrimary;
+ EmitClose('DPPROPSELFTEST_END');
+ PropAssert('PropCTPoint.X consomme tous les tokens', PPAtEnd);
+ HasReadX := False;
+ {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+ PropAssert('fichier de test (lecture X) relisible', IOResult = 0);
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  If Pos('[EAX+4]', Line) > 0 Then HasReadX := True;
+ End;
+ Close(F); Erase(F);
+ PropAssert('PropCTPoint.X lit directement le champ FX (offset 4)', HasReadX);
+
+ { --- Ecriture simple, appuyee sur un champ : PropCTPoint.X := 42; --- }
+ TokenPoolInit;
+ Tok(TK_IDENT, 'PropCTPoint', 0);
+ Tok(TK_PUNCT, '.', 0);
+ Tok(TK_IDENT, 'X', 0);
+ Tok(TK_OP, ':=', 0);
+ Tok(TK_INTEGER, '42', 42);
+ ParserInit;
+ EmitOpen(TmpFile);
+ ParseStmt;
+ EmitClose('DPPROPSELFTEST_END');
+ PropAssert('PropCTPoint.X := 42 consomme tous les tokens', PPAtEnd);
+ HasWriteX := False;
+ {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  If Pos('[EBX+4]', Line) > 0 Then HasWriteX := True;
+ End;
+ Close(F); Erase(F);
+ PropAssert('PropCTPoint.X := 42 ecrit directement le champ FX (offset 4)',
+  HasWriteX);
+
+ { --- Lecture via getter : PropCTPoint.Y --- }
+ TokenPoolInit;
+ Tok(TK_IDENT, 'PropCTPoint', 0);
+ Tok(TK_PUNCT, '.', 0);
+ Tok(TK_IDENT, 'Y', 0);
+ ParserInit;
+ EmitOpen(TmpFile);
+ ParsePrimary;
+ EmitClose('DPPROPSELFTEST_END');
+ PropAssert('PropCTPoint.Y consomme tous les tokens', PPAtEnd);
+ HasCallGetY := False;
+ {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  If Pos('CALL ' + SymTab[GetYSym].MangledName, Line) > 0 Then HasCallGetY := True;
+ End;
+ Close(F); Erase(F);
+ PropAssert('PropCTPoint.Y appelle le getter GetY', HasCallGetY);
+
+ { --- Ecriture via setter : PropCTPoint.Y := 42; --- }
+ TokenPoolInit;
+ Tok(TK_IDENT, 'PropCTPoint', 0);
+ Tok(TK_PUNCT, '.', 0);
+ Tok(TK_IDENT, 'Y', 0);
+ Tok(TK_OP, ':=', 0);
+ Tok(TK_INTEGER, '42', 42);
+ ParserInit;
+ EmitOpen(TmpFile);
+ ParseStmt;
+ EmitClose('DPPROPSELFTEST_END');
+ PropAssert('PropCTPoint.Y := 42 consomme tous les tokens', PPAtEnd);
+ HasCallSetY := False; HasAddEsp8Y := False;
+ {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  If Pos('CALL ' + SymTab[SetYSym].MangledName, Line) > 0 Then HasCallSetY := True;
+  If Pos('ADD ESP,8', Line) > 0 Then HasAddEsp8Y := True;
+ End;
+ Close(F); Erase(F);
+ PropAssert('PropCTPoint.Y := 42 appelle le setter SetY', HasCallSetY);
+ PropAssert('PropCTPoint.Y := 42 nettoie valeur+Self (8 octets)', HasAddEsp8Y);
+
+ { --- Lecture indexee nommee : PropCTPoint.Items[3] --- }
+ TokenPoolInit;
+ Tok(TK_IDENT, 'PropCTPoint', 0);
+ Tok(TK_PUNCT, '.', 0);
+ Tok(TK_IDENT, 'Items', 0);
+ Tok(TK_PUNCT, '[', 0);
+ Tok(TK_INTEGER, '3', 3);
+ Tok(TK_PUNCT, ']', 0);
+ ParserInit;
+ EmitOpen(TmpFile);
+ ParsePrimary;
+ EmitClose('DPPROPSELFTEST_END');
+ PropAssert('PropCTPoint.Items[3] consomme tous les tokens', PPAtEnd);
+ HasCallGetItem := False; HasAddEsp8Item := False;
+ {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  If Pos('CALL ' + SymTab[GetItemSym].MangledName, Line) > 0 Then
+   HasCallGetItem := True;
+  If Pos('ADD ESP,8', Line) > 0 Then HasAddEsp8Item := True;
+ End;
+ Close(F); Erase(F);
+ PropAssert('PropCTPoint.Items[3] appelle le getter GetItem', HasCallGetItem);
+ PropAssert('PropCTPoint.Items[3] nettoie index+Self (8 octets)', HasAddEsp8Item);
+
+ { --- Ecriture indexee nommee : PropCTPoint.Items[3] := 42; --- }
+ TokenPoolInit;
+ Tok(TK_IDENT, 'PropCTPoint', 0);
+ Tok(TK_PUNCT, '.', 0);
+ Tok(TK_IDENT, 'Items', 0);
+ Tok(TK_PUNCT, '[', 0);
+ Tok(TK_INTEGER, '3', 3);
+ Tok(TK_PUNCT, ']', 0);
+ Tok(TK_OP, ':=', 0);
+ Tok(TK_INTEGER, '42', 42);
+ ParserInit;
+ EmitOpen(TmpFile);
+ ParseStmt;
+ EmitClose('DPPROPSELFTEST_END');
+ PropAssert('PropCTPoint.Items[3] := 42 consomme tous les tokens', PPAtEnd);
+ HasCallSetItem := False; HasAddEsp12Item := False;
+ {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  If Pos('CALL ' + SymTab[SetItemSym].MangledName, Line) > 0 Then
+   HasCallSetItem := True;
+  If Pos('ADD ESP,12', Line) > 0 Then HasAddEsp12Item := True;
+ End;
+ Close(F); Erase(F);
+ PropAssert('PropCTPoint.Items[3] := 42 appelle le setter SetItem',
+  HasCallSetItem);
+ PropAssert('PropCTPoint.Items[3] := 42 nettoie index+valeur+Self (12 octets)',
+  HasAddEsp12Item);
+
+ { --- Lecture par defaut, sans nommer la propriete : PropCTPoint[3] --- }
+ TokenPoolInit;
+ Tok(TK_IDENT, 'PropCTPoint', 0);
+ Tok(TK_PUNCT, '[', 0);
+ Tok(TK_INTEGER, '3', 3);
+ Tok(TK_PUNCT, ']', 0);
+ ParserInit;
+ EmitOpen(TmpFile);
+ ParsePrimary;
+ EmitClose('DPPROPSELFTEST_END');
+ PropAssert('PropCTPoint[3] consomme tous les tokens', PPAtEnd);
+ HasCallGetItemDef := False;
+ {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  If Pos('CALL ' + SymTab[GetItemSym].MangledName, Line) > 0 Then
+   HasCallGetItemDef := True;
+ End;
+ Close(F); Erase(F);
+ PropAssert('PropCTPoint[3] (propriete par defaut) appelle GetItem',
+  HasCallGetItemDef);
+
+ { --- Ecriture par defaut, sans nommer la propriete : PropCTPoint[3] := 42; --- }
+ TokenPoolInit;
+ Tok(TK_IDENT, 'PropCTPoint', 0);
+ Tok(TK_PUNCT, '[', 0);
+ Tok(TK_INTEGER, '3', 3);
+ Tok(TK_PUNCT, ']', 0);
+ Tok(TK_OP, ':=', 0);
+ Tok(TK_INTEGER, '42', 42);
+ ParserInit;
+ EmitOpen(TmpFile);
+ ParseStmt;
+ EmitClose('DPPROPSELFTEST_END');
+ PropAssert('PropCTPoint[3] := 42 consomme tous les tokens', PPAtEnd);
+ HasCallSetItemDef := False;
+ {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  If Pos('CALL ' + SymTab[SetItemSym].MangledName, Line) > 0 Then
+   HasCallSetItemDef := True;
+ End;
+ Close(F); Erase(F);
+ PropAssert('PropCTPoint[3] := 42 (propriete par defaut) appelle SetItem',
+  HasCallSetItemDef);
+
+ SymInit;
+ ClassSystemInit;
+ DataInit; DataInit2;
+ FrameInit;
+ StmtInit;
+ UserExternInit;
+End;
+
+{ ------------------------------------------------------------ }
 { Run - point d entree de la compilation                       }
 { Le parseur de fichier programme complet (uses, section         }
 { principale) sera ajoute par les TODO 23 et suivants. Pour       }
@@ -10761,6 +11607,7 @@ Begin
  StmtSelfTest;
  ProcSelfTest;
  ClassSelfTest;
+ PropSelfTest;
 
  {$I-}
  Assign(LexSrcF, Opts.SrcFile);
@@ -10831,8 +11678,9 @@ Begin
  WriteLn('DELPHI: TODO 14 (procedures, fonctions et surcharge) ',
          'implemente.');
  WriteLn('DELPHI: TODO 15 (classes et heritage) implemente.');
+ WriteLn('DELPHI: TODO 16 (proprietes) implemente.');
  WriteLn('DELPHI: analyseur syntaxique et generateur de code non ',
-         'encore implementes (voir TODO 16 et suivants).');
+         'encore implementes (voir TODO 17 et suivants).');
  ShowStats;
  Cleanup;
 End;
