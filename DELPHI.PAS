@@ -257,7 +257,7 @@
            "advanced records" (methodes dans un record) en stub
          Set of T : union, intersection, difference, test IN
 
-  TODO 20 - CHAINES DE CARACTERES (ANSISTRING/WIDESTRING)  [A FAIRE]
+  TODO 20 - CHAINES DE CARACTERES (ANSISTRING/WIDESTRING)  [IMPLEMENTE]
          AnsiString : bloc precede d un en-tete cache (compteur de
            references, longueur), copy-on-write, liberation
            automatique quand le compteur atteint zero
@@ -1863,7 +1863,7 @@ Const
  DP_STR_PFX = '_DPK_';
 
  { Table des tailles des types primitifs Delphi (Win32, 32 bits) }
- MAX_DP_TYPE_SIZES = 24;
+ MAX_DP_TYPE_SIZES = 26;
 
 Type
  { Types d entrees dans le pool de donnees }
@@ -1936,7 +1936,11 @@ Const
   (Name: 'PCHAR';         Size: 4),
   (Name: 'STRING';        Size: 4),   { AnsiString/UnicodeString: ptr  }
   (Name: 'ANSISTRING';    Size: 4),
-  (Name: 'SHORTSTRING';   Size: 256)  { 255 + octet de longueur        }
+  (Name: 'SHORTSTRING';   Size: 256), { 255 + octet de longueur        }
+  (Name: 'WIDESTRING';    Size: 4),   { stub minimal (TODO 20) : simple}
+  (Name: 'UNICODESTRING'; Size: 4)    { pointeur, pas de vraie gestion }
+                                       { UTF-16 (stockage/refcompte/    }
+                                       { conversions) au-dela du minimum}
  );
 
 { ---- DataInit : initialiser le pool de donnees ---- }
@@ -3331,6 +3335,7 @@ Begin
  RegType('ANSICHAR');  RegType('WIDECHAR');
  RegType('STRING');    RegType('ANSISTRING');
  RegType('SHORTSTRING'); RegType('PCHAR');
+ RegType('WIDESTRING'); RegType('UNICODESTRING'); { stub minimal, TODO 20 }
  RegType('SINGLE');    RegType('DOUBLE');
  RegType('EXTENDED');  RegType('CURRENCY');
  RegType('POINTER');   RegType('VARIANT');
@@ -3414,12 +3419,14 @@ Begin
  RegProc('FREEANDNIL'); RegProc('ASSERT');
  RegProc('BREAK');    RegProc('CONTINUE');   { TODO 13 }
  RegProc('SETLENGTH');   { tableaux dynamiques, TODO 19 }
+ RegProc('DELETE');   RegProc('INSERT');   { AnsiString, TODO 20 }
 
  RegFunc('ORD');      RegFunc('CHR');
  RegFunc('SUCC');     RegFunc('PRED');
  RegFunc('LOW');      RegFunc('HIGH');
  RegFunc('SIZEOF');   RegFunc('LENGTH');
  RegFunc('ABS');      RegFunc('ASSIGNED');
+ RegFunc('COPY');     RegFunc('POS');   { AnsiString, TODO 20 }
 
  { -------------------------------------------------------- }
  { RTL minimale System/SysUtils (TODO 12), corps reels dans  }
@@ -3596,7 +3603,8 @@ Begin
   DPTypeKindForName := TYK_REAL
  Else If (N = 'POINTER') Then DPTypeKindForName := TYK_POINTER
  Else If (N = 'PCHAR') Then DPTypeKindForName := TYK_PCHAR
- Else If (N = 'STRING') Or (N = 'ANSISTRING') Or (N = 'SHORTSTRING') Then
+ Else If (N = 'STRING') Or (N = 'ANSISTRING') Or (N = 'SHORTSTRING') Or
+         (N = 'WIDESTRING') Or (N = 'UNICODESTRING') Then
   DPTypeKindForName := TYK_STRING
  Else
   DPTypeKindForName := TYK_INTEGER;   { INTEGER, CARDINAL, LONGINT, ... }
@@ -4659,6 +4667,14 @@ Begin
       End;
      End;
      If S = '' Then S := '0' Else S := S + ',0';
+     { En-tete cachee AnsiString (TODO 20), juste avant les octets : }
+     { compteur de references -1 (constante litterale, jamais       }
+     { liberee/incrementee/decrementee - _DPRT_STRASSIGN le           }
+     { verifie), puis la longueur. Le label reste positionne EXACTEMENT}
+     { sur le premier caractere (aucun changement au site d emploi,   }
+     { LEA EAX,[Label], deja utilise partout depuis le TODO 10).       }
+     EmitRaw('DD -1');
+     EmitRaw('DD ' + IntToStr_(Length(DataTab[I].StrVal)));
      EmitRaw(DataTab[I].LblName + '  DB ' + S);
     End;
 
@@ -5273,6 +5289,15 @@ Const
  { est fourni par TODO 20 (AnsiString) et TODO 17/18 (interfaces).   }
  DPRT_STR_ASSIGN  = '_DPRT_STRASSIGN';   { StrAssign(NewVal, VAR Dest) }
  DPRT_INTF_ASSIGN = '_DPRT_INTFASSIGN';  { IntfAssign(NewVal, VAR Dest)}
+
+ { Runtime (_DPRT_, TODO 20) pour Copy/Delete/Insert/Pos sur           }
+ { AnsiString - declarees ici (avant ParseStrCopy et consorts, TODO10) }
+ { plutot qu avec DPRT_STR_CONCAT (TODO11, plus bas) car utilisees      }
+ { plus tot dans le fichier.                                             }
+ DPRT_STR_COPY    = '_DPRT_STRCOPY';     { Copy(S,Index,Count): Pointer }
+ DPRT_STR_DELETE  = '_DPRT_STRDELETE';   { Delete(VAR S; Index,Count)  }
+ DPRT_STR_INSERT  = '_DPRT_STRINSERT';   { Insert(Src; VAR S; Index)   }
+ DPRT_STR_POS     = '_DPRT_STRPOS';      { Pos(SubStr, S): Integer     }
 
  { Runtime (_DPRT_, TODO 18) : relance/propagation d exception, geree }
  { par une pile de gestionnaires (tableaux DPRT_EXCSTACK_*, EmitRuntimeData) }
@@ -6776,9 +6801,27 @@ Begin
   If WantHigh Then EmitInstr('MOV EAX,-1') Else EmitInstr('XOR EAX,EAX');
   EmitLabel(LblDone);
  End
+ Else If (Not WantHigh) And (TI >= 0) And (TypeTab[TI].Kind = TYK_STRING) Then
+ Begin
+  { Length(S) (TODO 20) : meme en-tete cachee qu un tableau dynamique  }
+  { ([Pointeur-4]) - une AnsiString litterale (refcount -1) porte        }
+  { aussi sa longueur au meme endroit (EmitDataSeg), donc ce chemin       }
+  { fonctionne indifferemment pour une variable ou un litteral direct.    }
+  GenLoadVar(IdentTok);
+  EmitInstr('TEST EAX,EAX');
+  LblZero := LabelGen;
+  LblDone := LabelGen;
+  EmitInstr('JZ ' + LblZero);
+  EmitInstr('MOV EAX,DWORD PTR [EAX-4]');
+  EmitInstr('JMP ' + LblDone);
+  EmitLabel(LblZero);
+  EmitInstr('XOR EAX,EAX');
+  EmitLabel(LblDone);
+ End
  Else
  Begin
-  WarnMsg('Length/High attendent un tableau: ' + IdentTok);
+  WarnMsg('Length/High attendent un tableau (ou une chaine pour Length): ' +
+   IdentTok);
   EmitInstr('XOR EAX,EAX');
  End;
 
@@ -6857,6 +6900,109 @@ Begin
  PPMatch(')');
 
  ParseSetLengthCall := -1;   { procedure : pas de valeur utile }
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseStrCopy / ParseStrDelete / ParseStrInsert / ParseStrPos    }
+{ (TODO 20) : Copy/Delete/Insert/Pos sur AnsiString. Chaque         }
+{ argument est evalue dans son ORDRE TEXTUEL naturel (respecte les   }
+{ effets de bord eventuels), chacun sauvegarde temporairement sur la  }
+{ pile machine, puis re-empile dans l ordre exige par la convention   }
+{ d appel (dernier parametre declare empile en premier, Self/adresse  }
+{ en dernier) - meme technique que GenIndexedPropertyAssign (TODO 16) }
+{ et SetLength (TODO 19).                                              }
+{ ------------------------------------------------------------ }
+
+Function ParseStrCopy: Integer;
+Begin
+ PPMatch('(');
+ ParseExpr;                   { EAX = S }
+ EmitInstr('PUSH EAX');
+ PPMatch(',');
+ ParseExpr;                    { EAX = Index }
+ EmitInstr('PUSH EAX');
+ PPMatch(',');
+ ParseExpr;                     { EAX = Count }
+ EmitInstr('PUSH EAX');
+ PPMatch(')');
+ EmitInstr('POP EAX');           { Count }
+ EmitInstr('POP EDX');           { Index }
+ EmitInstr('POP EBX');           { S }
+ EmitInstr('PUSH EAX');          { Count, empile en premier (EBP+16) }
+ EmitInstr('PUSH EDX');          { Index (EBP+12) }
+ EmitInstr('PUSH EBX');          { S, en dernier (EBP+8) }
+ EmitInstr('CALL ' + DPRT_STR_COPY);
+ EmitInstr('ADD ESP,12');
+ LastExprIsAddr  := False;        { valeur (pointeur), pas une adresse-de-case }
+ LastExprTypeIdx := TypeFindByName('String');
+ ParseStrCopy := LastExprTypeIdx;
+End;
+
+Function ParseStrDelete: Integer;
+Var SName: TString;
+Begin
+ PPMatch('(');
+ SName := TokenPool[PP].Val;
+ PPAdvance;
+ PPMatch(',');
+ ParseExpr;                   { EAX = Index }
+ EmitInstr('PUSH EAX');
+ PPMatch(',');
+ ParseExpr;                    { EAX = Count }
+ EmitInstr('PUSH EAX');
+ PPMatch(')');
+ EmitInstr('POP EAX');          { Count }
+ EmitInstr('POP EDX');          { Index }
+ EmitInstr('PUSH EAX');         { Count (EBP+16) }
+ EmitInstr('PUSH EDX');         { Index (EBP+12) }
+ GenVarAddr(SName);              { adresse de S -> EDX }
+ EmitInstr('PUSH EDX');          { adresse de S, en dernier (EBP+8) }
+ EmitInstr('CALL ' + DPRT_STR_DELETE);
+ EmitInstr('ADD ESP,12');
+ ParseStrDelete := -1;           { procedure : pas de valeur utile }
+End;
+
+Function ParseStrInsert: Integer;
+Var SName: TString;
+Begin
+ PPMatch('(');
+ ParseExpr;                    { EAX = Source }
+ EmitInstr('PUSH EAX');
+ PPMatch(',');
+ SName := TokenPool[PP].Val;
+ PPAdvance;
+ PPMatch(',');
+ ParseExpr;                     { EAX = Index }
+ EmitInstr('PUSH EAX');
+ PPMatch(')');
+ EmitInstr('POP EAX');           { Index }
+ EmitInstr('POP EBX');           { Source }
+ EmitInstr('PUSH EAX');          { Index (EBP+16) }
+ GenVarAddr(SName);               { adresse de S -> EDX }
+ EmitInstr('PUSH EDX');           { adresse de S (EBP+12) }
+ EmitInstr('PUSH EBX');           { Source, en dernier (EBP+8) }
+ EmitInstr('CALL ' + DPRT_STR_INSERT);
+ EmitInstr('ADD ESP,12');
+ ParseStrInsert := -1;            { procedure : pas de valeur utile }
+End;
+
+Function ParseStrPos: Integer;
+Begin
+ PPMatch('(');
+ ParseExpr;                     { EAX = SubStr }
+ EmitInstr('PUSH EAX');
+ PPMatch(',');
+ ParseExpr;                      { EAX = S }
+ EmitInstr('PUSH EAX');
+ PPMatch(')');
+ EmitInstr('POP EAX');            { S }
+ EmitInstr('POP EBX');            { SubStr }
+ EmitInstr('PUSH EAX');           { S (EBP+12) }
+ EmitInstr('PUSH EBX');           { SubStr, en dernier (EBP+8) }
+ EmitInstr('CALL ' + DPRT_STR_POS);
+ EmitInstr('ADD ESP,8');
+ LastExprTypeIdx := TypeFindByName('Integer');
+ ParseStrPos := LastExprTypeIdx;
 End;
 
 { ------------------------------------------------------------ }
@@ -6979,6 +7125,10 @@ Begin
   If Up = 'HIGH' Then Begin ParsePrimary := ParseArrayLenHigh(True); Exit; End;
   If Up = 'LOW' Then Begin ParsePrimary := ParseArrayLow; Exit; End;
   If Up = 'SETLENGTH' Then Begin ParsePrimary := ParseSetLengthCall; Exit; End;
+  If Up = 'COPY' Then Begin ParsePrimary := ParsePostfix(ParseStrCopy); Exit; End;
+  If Up = 'DELETE' Then Begin ParsePrimary := ParseStrDelete; Exit; End;
+  If Up = 'INSERT' Then Begin ParsePrimary := ParseStrInsert; Exit; End;
+  If Up = 'POS' Then Begin ParsePrimary := ParsePostfix(ParseStrPos); Exit; End;
 
   SI := SymFind(Name);
   If SI < 0 Then
@@ -7274,11 +7424,12 @@ End;
 { ============================================================ }
 
 Const
- { Runtime (_DPRT_, TODO 07/09) pour la concatenation et la          }
- { comparaison d AnsiString - corps reel fourni par TODO 20.          }
+ { Runtime (_DPRT_, TODO 07/09) pour la concatenation d AnsiString -  }
+ { corps reel fourni par TODO 20. La comparaison reutilise directement}
+ { DPRT_COMPARESTR (deja implementee au TODO 12, meme signature       }
+ { Compare(A,B): Integer <0/0/>0) plutot que de dupliquer la meme      }
+ { boucle octet par octet sous un second nom.                          }
  DPRT_STR_CONCAT  = '_DPRT_STRCONCAT';   { Concat(A, B): Pointer      }
- DPRT_STR_COMPARE = '_DPRT_STRCOMPARE';  { Compare(A, B): Integer,    }
-                                          { <0/0/>0 comme strcmp       }
 
 { ------------------------------------------------------------ }
 { BinOpPrec : niveau de precedence d un operateur binaire Pascal.}
@@ -7489,14 +7640,17 @@ Begin
     EmitInstr('PUSH EBX');
     EmitInstr('PUSH EAX');
     EmitInstr('CALL ' + DPRT_STR_CONCAT);
+    EmitInstr('ADD ESP,8');
     LastExprTypeIdx := LeftType;
    End
    Else
    Begin
-    EmitComment('Comparaison AnsiString : runtime (TODO 20)');
+    EmitComment('Comparaison AnsiString : reutilise ' + DPRT_COMPARESTR +
+     ' (TODO 12/20)');
     EmitInstr('PUSH EBX');
     EmitInstr('PUSH EAX');
-    EmitInstr('CALL ' + DPRT_STR_COMPARE);
+    EmitInstr('CALL ' + DPRT_COMPARESTR);
+    EmitInstr('ADD ESP,8');
     { EAX = <0 / 0 / >0 (comme strcmp) : traduire en Boolean via le }
     { meme motif Jcc que les comparaisons ordinaires, mais contre 0 }
     If Op = '=' Then EmitCompareZeroJcc('JE')
@@ -8362,6 +8516,411 @@ Begin
  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
  EmitInstr('MOV EDX,DWORD PTR [EBP+12]');
  EmitInstr('MOV DWORD PTR [EAX],EDX');
+ EmitEpilog;
+ EmitBlankLine;
+
+ { --- _DPRT_STRASSIGN(NewVal, VAR Dest) (TODO 20) : comptage de     }
+ { references AnsiString, meme principe que _DPRT_INTFASSIGN mais      }
+ { avec un VRAI HeapFree du bloc (entete comprise, recul de 8 octets)   }
+ { quand le compteur atteint zero. Un compteur NEGATIF (-1) marque       }
+ { une constante litterale (DataAddSetConst/EmitDataSeg, TODO 20) :      }
+ { jamais incremente/decremente/liberee.                                  }
+ EmitComment('--- ' + DPRT_STR_ASSIGN +
+  '(NewVal, VAR Dest) : comptage de references AnsiString (TODO 20) ---');
+ EmitLabel(DPRT_STR_ASSIGN);
+ EmitProlog(0);
+ EmitInstr('MOV EAX,DWORD PTR [EBP+8]');     { adresse de Dest }
+ EmitInstr('MOV EBX,DWORD PTR [EAX]');        { ancienne valeur }
+ EmitInstr('MOV EDX,DWORD PTR [EBP+12]');     { nouvelle valeur }
+ EmitInstr('TEST EDX,EDX');
+ EmitInstr('JZ DPRT_STRASSIGN_SKIPADD');
+ EmitInstr('MOV ECX,DWORD PTR [EDX-8]');
+ EmitInstr('CMP ECX,0');
+ EmitInstr('JL DPRT_STRASSIGN_SKIPADD');
+ EmitInstr('INC ECX');
+ EmitInstr('MOV DWORD PTR [EDX-8],ECX');
+ EmitLabel('DPRT_STRASSIGN_SKIPADD');
+ EmitInstr('TEST EBX,EBX');
+ EmitInstr('JZ DPRT_STRASSIGN_SKIPREL');
+ EmitInstr('MOV ECX,DWORD PTR [EBX-8]');
+ EmitInstr('CMP ECX,0');
+ EmitInstr('JL DPRT_STRASSIGN_SKIPREL');
+ EmitInstr('DEC ECX');
+ EmitInstr('MOV DWORD PTR [EBX-8],ECX');
+ EmitInstr('CMP ECX,0');
+ EmitInstr('JG DPRT_STRASSIGN_SKIPREL');
+ EmitInstr('SUB EBX,8');                       { bloc reel (entete incluse) }
+ EmitInstr('CALL GetProcessHeap');
+ EmitInstr('PUSH EBX');
+ EmitInstr('PUSH 0');
+ EmitInstr('PUSH EAX');
+ EmitInstr('CALL HeapFree');
+ EmitLabel('DPRT_STRASSIGN_SKIPREL');
+ EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+ EmitInstr('MOV EDX,DWORD PTR [EBP+12]');
+ EmitInstr('MOV DWORD PTR [EAX],EDX');
+ EmitEpilog;
+ EmitBlankLine;
+
+ { --- _DPRT_STRCONCAT(A, B): Pointer (TODO 20) : alloue une NOUVELLE }
+ { AnsiString (entete + LenA+LenB octets + terminateur nul), copie A     }
+ { puis B, et renvoie l ADRESSE DES DONNEES (apres l entete). Compteur    }
+ { de references initialise a ZERO (pas 1) : c est l affectation qui      }
+ { suit habituellement (S3 := S1+S2, via _DPRT_STRASSIGN) qui en prend     }
+ { possession en l incrementant a 1 - un resultat de concatenation JAMAIS  }
+ { assigne (ex: WriteLn(S1+S2) seul) fuit la memoire (simplification        }
+ { documentee : pas de gestion de temporaires, comme les tableaux            }
+ { dynamiques du TODO 19).                                                    }
+ EmitComment('--- ' + DPRT_STR_CONCAT +
+  '(A, B): Pointer : concatenation AnsiString (TODO 20) ---');
+ EmitLabel(DPRT_STR_CONCAT);
+ EmitProlog(16);
+ EmitInstr('PUSH ESI');
+ EmitInstr('PUSH EDI');
+ EmitInstr('PUSH EBX');
+ EmitInstr('MOV EBX,DWORD PTR [EBP+8]');       { A }
+ EmitInstr('XOR EAX,EAX');
+ EmitInstr('TEST EBX,EBX');
+ EmitInstr('JZ DPRT_SC_ADONE');
+ EmitInstr('MOV EAX,DWORD PTR [EBX-4]');
+ EmitLabel('DPRT_SC_ADONE');
+ EmitInstr('MOV DWORD PTR [EBP-4],EAX');        { LenA }
+ EmitInstr('MOV EBX,DWORD PTR [EBP+12]');       { B }
+ EmitInstr('XOR EAX,EAX');
+ EmitInstr('TEST EBX,EBX');
+ EmitInstr('JZ DPRT_SC_BDONE');
+ EmitInstr('MOV EAX,DWORD PTR [EBX-4]');
+ EmitLabel('DPRT_SC_BDONE');
+ EmitInstr('MOV DWORD PTR [EBP-8],EAX');        { LenB }
+ EmitInstr('MOV EAX,DWORD PTR [EBP-4]');
+ EmitInstr('ADD EAX,DWORD PTR [EBP-8]');
+ EmitInstr('ADD EAX,9');                         { + entete (8) + terminateur nul (1) }
+ EmitInstr('MOV DWORD PTR [EBP-16],EAX');        { taille totale a allouer }
+ EmitInstr('CALL GetProcessHeap');
+ EmitInstr('PUSH DWORD PTR [EBP-16]');
+ EmitInstr('PUSH 0');
+ EmitInstr('PUSH EAX');
+ EmitInstr('CALL HeapAlloc');
+ EmitInstr('MOV DWORD PTR [EAX],0');             { refcount = 0, voir ci-dessus }
+ EmitInstr('MOV EDX,DWORD PTR [EBP-4]');
+ EmitInstr('ADD EDX,DWORD PTR [EBP-8]');
+ EmitInstr('MOV DWORD PTR [EAX+4],EDX');         { longueur }
+ EmitInstr('ADD EAX,8');                          { EAX = debut des donnees resultat }
+ EmitInstr('MOV DWORD PTR [EBP-12],EAX');
+ EmitInstr('MOV EDI,EAX');
+ EmitInstr('MOV ESI,DWORD PTR [EBP+8]');
+ EmitInstr('MOV ECX,DWORD PTR [EBP-4]');
+ EmitInstr('TEST ESI,ESI');
+ EmitInstr('JZ DPRT_SC_SKIPA');
+ EmitInstr('TEST ECX,ECX');
+ EmitInstr('JZ DPRT_SC_SKIPA');
+ EmitInstr('REP MOVSB');
+ EmitLabel('DPRT_SC_SKIPA');
+ EmitInstr('MOV ESI,DWORD PTR [EBP+12]');
+ EmitInstr('MOV ECX,DWORD PTR [EBP-8]');
+ EmitInstr('TEST ESI,ESI');
+ EmitInstr('JZ DPRT_SC_SKIPB');
+ EmitInstr('TEST ECX,ECX');
+ EmitInstr('JZ DPRT_SC_SKIPB');
+ EmitInstr('REP MOVSB');
+ EmitLabel('DPRT_SC_SKIPB');
+ EmitInstr('MOV BYTE PTR [EDI],0');              { terminateur nul final }
+ EmitInstr('MOV EAX,DWORD PTR [EBP-12]');        { resultat }
+ EmitInstr('POP EBX');
+ EmitInstr('POP EDI');
+ EmitInstr('POP ESI');
+ EmitEpilog;
+ EmitBlankLine;
+
+ { --- _DPRT_STRCOPY(S, Index, Count): Pointer (TODO 20) : Copy()     }
+ { Delphi (1-based, bornes ecretees comme la vraie fonction). Alloue    }
+ { une NOUVELLE AnsiString (refcount 0, meme convention que Concat).     }
+ EmitComment('--- ' + DPRT_STR_COPY +
+  '(S, Index, Count): Pointer : Copy() AnsiString (TODO 20) ---');
+ EmitLabel(DPRT_STR_COPY);
+ EmitProlog(20);
+ EmitInstr('PUSH ESI');
+ EmitInstr('PUSH EDI');
+ EmitInstr('PUSH EBX');
+ EmitInstr('MOV EBX,DWORD PTR [EBP+8]');        { S }
+ EmitInstr('XOR EAX,EAX');
+ EmitInstr('TEST EBX,EBX');
+ EmitInstr('JZ DPRT_SCOPY_LEN0');
+ EmitInstr('MOV EAX,DWORD PTR [EBX-4]');
+ EmitLabel('DPRT_SCOPY_LEN0');
+ EmitInstr('MOV DWORD PTR [EBP-4],EAX');         { Len }
+ EmitInstr('MOV EAX,DWORD PTR [EBP+12]');        { Index }
+ EmitInstr('DEC EAX');
+ EmitInstr('CMP EAX,0');
+ EmitInstr('JGE DPRT_SCOPY_IDXOK1');
+ EmitInstr('XOR EAX,EAX');
+ EmitLabel('DPRT_SCOPY_IDXOK1');
+ EmitInstr('CMP EAX,DWORD PTR [EBP-4]');
+ EmitInstr('JLE DPRT_SCOPY_IDXOK2');
+ EmitInstr('MOV EAX,DWORD PTR [EBP-4]');
+ EmitLabel('DPRT_SCOPY_IDXOK2');
+ EmitInstr('MOV DWORD PTR [EBP-8],EAX');         { Idx0 }
+ EmitInstr('MOV EAX,DWORD PTR [EBP-4]');
+ EmitInstr('SUB EAX,DWORD PTR [EBP-8]');          { restant = Len-Idx0 }
+ EmitInstr('MOV EDX,DWORD PTR [EBP+16]');         { Count demande }
+ EmitInstr('CMP EDX,EAX');
+ EmitInstr('JLE DPRT_SCOPY_CNTOK1');
+ EmitInstr('MOV EDX,EAX');
+ EmitLabel('DPRT_SCOPY_CNTOK1');
+ EmitInstr('CMP EDX,0');
+ EmitInstr('JGE DPRT_SCOPY_CNTOK2');
+ EmitInstr('XOR EDX,EDX');
+ EmitLabel('DPRT_SCOPY_CNTOK2');
+ EmitInstr('MOV DWORD PTR [EBP-12],EDX');         { ActualCount }
+ EmitInstr('MOV EAX,DWORD PTR [EBP-12]');
+ EmitInstr('ADD EAX,9');
+ EmitInstr('MOV DWORD PTR [EBP-20],EAX');
+ EmitInstr('CALL GetProcessHeap');
+ EmitInstr('PUSH DWORD PTR [EBP-20]');
+ EmitInstr('PUSH 0');
+ EmitInstr('PUSH EAX');
+ EmitInstr('CALL HeapAlloc');
+ EmitInstr('MOV DWORD PTR [EAX],0');
+ EmitInstr('MOV EDX,DWORD PTR [EBP-12]');
+ EmitInstr('MOV DWORD PTR [EAX+4],EDX');
+ EmitInstr('ADD EAX,8');
+ EmitInstr('MOV DWORD PTR [EBP-16],EAX');         { ResultDataPtr }
+ EmitInstr('MOV EDI,EAX');
+ EmitInstr('MOV ESI,DWORD PTR [EBP+8]');
+ EmitInstr('ADD ESI,DWORD PTR [EBP-8]');           { S + Idx0 }
+ EmitInstr('MOV ECX,DWORD PTR [EBP-12]');
+ EmitInstr('REP MOVSB');
+ EmitInstr('MOV BYTE PTR [EDI],0');
+ EmitInstr('MOV EAX,DWORD PTR [EBP-16]');
+ EmitInstr('POP EBX');
+ EmitInstr('POP EDI');
+ EmitInstr('POP ESI');
+ EmitEpilog;
+ EmitBlankLine;
+
+ { --- _DPRT_STRDELETE(VAR S; Index, Count) (TODO 20) : Delete()      }
+ { Delphi. Construit une nouvelle chaine (prefixe + suffixe autour de   }
+ { la portion retiree) puis la stocke dans S via _DPRT_STRASSIGN (qui   }
+ { libere correctement l ancienne valeur) - jamais de mutation sur      }
+ { place, pour ne jamais corrompre une autre variable partageant le      }
+ { meme bloc (comptage de references).                                    }
+ EmitComment('--- ' + DPRT_STR_DELETE +
+  '(VAR S; Index, Count) : Delete() AnsiString (TODO 20) ---');
+ EmitLabel(DPRT_STR_DELETE);
+ EmitProlog(24);
+ EmitInstr('PUSH ESI');
+ EmitInstr('PUSH EDI');
+ EmitInstr('PUSH EBX');
+ EmitInstr('MOV EBX,DWORD PTR [EBP+8]');          { adresse de S }
+ EmitInstr('MOV EAX,DWORD PTR [EBX]');             { valeur actuelle de S }
+ EmitInstr('XOR EDX,EDX');
+ EmitInstr('TEST EAX,EAX');
+ EmitInstr('JZ DPRT_SD_LEN0');
+ EmitInstr('MOV EDX,DWORD PTR [EAX-4]');
+ EmitLabel('DPRT_SD_LEN0');
+ EmitInstr('MOV DWORD PTR [EBP-4],EDX');           { Len }
+ EmitInstr('MOV EAX,DWORD PTR [EBP+12]');          { Index }
+ EmitInstr('DEC EAX');
+ EmitInstr('CMP EAX,0');
+ EmitInstr('JGE DPRT_SD_IDXOK1');
+ EmitInstr('XOR EAX,EAX');
+ EmitLabel('DPRT_SD_IDXOK1');
+ EmitInstr('CMP EAX,DWORD PTR [EBP-4]');
+ EmitInstr('JLE DPRT_SD_IDXOK2');
+ EmitInstr('MOV EAX,DWORD PTR [EBP-4]');
+ EmitLabel('DPRT_SD_IDXOK2');
+ EmitInstr('MOV DWORD PTR [EBP-8],EAX');            { Idx0 }
+ EmitInstr('MOV EAX,DWORD PTR [EBP-4]');
+ EmitInstr('SUB EAX,DWORD PTR [EBP-8]');
+ EmitInstr('MOV EDX,DWORD PTR [EBP+16]');            { Count }
+ EmitInstr('CMP EDX,EAX');
+ EmitInstr('JLE DPRT_SD_CNTOK1');
+ EmitInstr('MOV EDX,EAX');
+ EmitLabel('DPRT_SD_CNTOK1');
+ EmitInstr('CMP EDX,0');
+ EmitInstr('JGE DPRT_SD_CNTOK2');
+ EmitInstr('XOR EDX,EDX');
+ EmitLabel('DPRT_SD_CNTOK2');
+ EmitInstr('MOV DWORD PTR [EBP-12],EDX');            { ActualCount }
+ EmitInstr('MOV EAX,DWORD PTR [EBP-4]');
+ EmitInstr('SUB EAX,DWORD PTR [EBP-12]');
+ EmitInstr('MOV DWORD PTR [EBP-16],EAX');            { NewLen }
+ EmitInstr('ADD EAX,9');
+ EmitInstr('MOV DWORD PTR [EBP-20],EAX');
+ EmitInstr('CALL GetProcessHeap');
+ EmitInstr('PUSH DWORD PTR [EBP-20]');
+ EmitInstr('PUSH 0');
+ EmitInstr('PUSH EAX');
+ EmitInstr('CALL HeapAlloc');
+ EmitInstr('MOV DWORD PTR [EAX],0');
+ EmitInstr('MOV EDX,DWORD PTR [EBP-16]');
+ EmitInstr('MOV DWORD PTR [EAX+4],EDX');
+ EmitInstr('ADD EAX,8');
+ EmitInstr('MOV DWORD PTR [EBP-24],EAX');             { NewDataPtr }
+ EmitInstr('MOV EDI,EAX');
+ EmitInstr('MOV ESI,DWORD PTR [EBX]');
+ EmitInstr('MOV ECX,DWORD PTR [EBP-8]');               { Idx0 }
+ EmitInstr('REP MOVSB');                                { copie [0..Idx0) }
+ EmitInstr('MOV EDI,DWORD PTR [EBP-24]');
+ EmitInstr('ADD EDI,DWORD PTR [EBP-8]');
+ EmitInstr('MOV ESI,DWORD PTR [EBX]');
+ EmitInstr('ADD ESI,DWORD PTR [EBP-8]');
+ EmitInstr('ADD ESI,DWORD PTR [EBP-12]');
+ EmitInstr('MOV ECX,DWORD PTR [EBP-4]');
+ EmitInstr('SUB ECX,DWORD PTR [EBP-8]');
+ EmitInstr('SUB ECX,DWORD PTR [EBP-12]');
+ EmitInstr('REP MOVSB');                                { copie [Idx0+ActualCount..Len) }
+ EmitInstr('MOV EDI,DWORD PTR [EBP-24]');
+ EmitInstr('ADD EDI,DWORD PTR [EBP-16]');
+ EmitInstr('MOV BYTE PTR [EDI],0');
+ EmitInstr('PUSH DWORD PTR [EBP-24]');
+ EmitInstr('PUSH EBX');
+ EmitInstr('CALL ' + DPRT_STR_ASSIGN);
+ EmitInstr('ADD ESP,8');
+ EmitInstr('POP EBX');
+ EmitInstr('POP EDI');
+ EmitInstr('POP ESI');
+ EmitEpilog;
+ EmitBlankLine;
+
+ { --- _DPRT_STRINSERT(Source; VAR S; Index) (TODO 20) : Insert()     }
+ { Delphi - meme technique que Delete (nouvelle chaine, StrAssign).    }
+ EmitComment('--- ' + DPRT_STR_INSERT +
+  '(Source; VAR S; Index) : Insert() AnsiString (TODO 20) ---');
+ EmitLabel(DPRT_STR_INSERT);
+ EmitProlog(24);
+ EmitInstr('PUSH ESI');
+ EmitInstr('PUSH EDI');
+ EmitInstr('PUSH EBX');
+ EmitInstr('MOV EBX,DWORD PTR [EBP+12]');           { adresse de S }
+ EmitInstr('MOV EAX,DWORD PTR [EBX]');               { valeur actuelle de S }
+ EmitInstr('XOR EDX,EDX');
+ EmitInstr('TEST EAX,EAX');
+ EmitInstr('JZ DPRT_SI_SLEN0');
+ EmitInstr('MOV EDX,DWORD PTR [EAX-4]');
+ EmitLabel('DPRT_SI_SLEN0');
+ EmitInstr('MOV DWORD PTR [EBP-4],EDX');              { LenS }
+ EmitInstr('MOV EAX,DWORD PTR [EBP+8]');              { Source }
+ EmitInstr('XOR EDX,EDX');
+ EmitInstr('TEST EAX,EAX');
+ EmitInstr('JZ DPRT_SI_SRCLEN0');
+ EmitInstr('MOV EDX,DWORD PTR [EAX-4]');
+ EmitLabel('DPRT_SI_SRCLEN0');
+ EmitInstr('MOV DWORD PTR [EBP-8],EDX');               { LenSrc }
+ EmitInstr('MOV EAX,DWORD PTR [EBP+16]');              { Index }
+ EmitInstr('DEC EAX');
+ EmitInstr('CMP EAX,0');
+ EmitInstr('JGE DPRT_SI_IDXOK1');
+ EmitInstr('XOR EAX,EAX');
+ EmitLabel('DPRT_SI_IDXOK1');
+ EmitInstr('CMP EAX,DWORD PTR [EBP-4]');
+ EmitInstr('JLE DPRT_SI_IDXOK2');
+ EmitInstr('MOV EAX,DWORD PTR [EBP-4]');
+ EmitLabel('DPRT_SI_IDXOK2');
+ EmitInstr('MOV DWORD PTR [EBP-12],EAX');               { Idx0 }
+ EmitInstr('MOV EAX,DWORD PTR [EBP-4]');
+ EmitInstr('ADD EAX,DWORD PTR [EBP-8]');
+ EmitInstr('MOV DWORD PTR [EBP-16],EAX');               { NewLen = LenS+LenSrc }
+ EmitInstr('ADD EAX,9');
+ EmitInstr('MOV DWORD PTR [EBP-20],EAX');
+ EmitInstr('CALL GetProcessHeap');
+ EmitInstr('PUSH DWORD PTR [EBP-20]');
+ EmitInstr('PUSH 0');
+ EmitInstr('PUSH EAX');
+ EmitInstr('CALL HeapAlloc');
+ EmitInstr('MOV DWORD PTR [EAX],0');
+ EmitInstr('MOV EDX,DWORD PTR [EBP-16]');
+ EmitInstr('MOV DWORD PTR [EAX+4],EDX');
+ EmitInstr('ADD EAX,8');
+ EmitInstr('MOV DWORD PTR [EBP-24],EAX');                { NewDataPtr }
+ EmitInstr('MOV EDI,EAX');
+ EmitInstr('MOV ESI,DWORD PTR [EBX]');
+ EmitInstr('MOV ECX,DWORD PTR [EBP-12]');                 { Idx0 }
+ EmitInstr('REP MOVSB');                                   { copie S[0..Idx0) }
+ EmitInstr('MOV EDI,DWORD PTR [EBP-24]');
+ EmitInstr('ADD EDI,DWORD PTR [EBP-12]');
+ EmitInstr('MOV ESI,DWORD PTR [EBP+8]');                    { Source }
+ EmitInstr('MOV ECX,DWORD PTR [EBP-8]');                     { LenSrc }
+ EmitInstr('REP MOVSB');                                      { copie Source entier }
+ EmitInstr('MOV EDI,DWORD PTR [EBP-24]');
+ EmitInstr('ADD EDI,DWORD PTR [EBP-12]');
+ EmitInstr('ADD EDI,DWORD PTR [EBP-8]');
+ EmitInstr('MOV ESI,DWORD PTR [EBX]');
+ EmitInstr('ADD ESI,DWORD PTR [EBP-12]');
+ EmitInstr('MOV ECX,DWORD PTR [EBP-4]');
+ EmitInstr('SUB ECX,DWORD PTR [EBP-12]');
+ EmitInstr('REP MOVSB');                                       { copie S[Idx0..LenS) }
+ EmitInstr('MOV EDI,DWORD PTR [EBP-24]');
+ EmitInstr('ADD EDI,DWORD PTR [EBP-16]');
+ EmitInstr('MOV BYTE PTR [EDI],0');
+ EmitInstr('PUSH DWORD PTR [EBP-24]');
+ EmitInstr('PUSH EBX');
+ EmitInstr('CALL ' + DPRT_STR_ASSIGN);
+ EmitInstr('ADD ESP,8');
+ EmitInstr('POP EBX');
+ EmitInstr('POP EDI');
+ EmitInstr('POP ESI');
+ EmitEpilog;
+ EmitBlankLine;
+
+ { --- _DPRT_STRPOS(SubStr, S): Integer (TODO 20) : Pos() Delphi -    }
+ { recherche naive (sous-chaine dans une chaine), 1-based, 0 si         }
+ { absente ou si SubStr est vide (comme la vraie fonction).             }
+ EmitComment('--- ' + DPRT_STR_POS +
+  '(SubStr, S): Integer : Pos() AnsiString (TODO 20) ---');
+ EmitLabel(DPRT_STR_POS);
+ EmitProlog(12);
+ EmitInstr('PUSH ESI');
+ EmitInstr('PUSH EDI');
+ EmitInstr('PUSH EBX');
+ EmitInstr('MOV EBX,DWORD PTR [EBP+8]');           { SubStr }
+ EmitInstr('XOR EAX,EAX');
+ EmitInstr('TEST EBX,EBX');
+ EmitInstr('JZ DPRT_SP_SUBLEN0');
+ EmitInstr('MOV EAX,DWORD PTR [EBX-4]');
+ EmitLabel('DPRT_SP_SUBLEN0');
+ EmitInstr('MOV DWORD PTR [EBP-4],EAX');            { LenSub }
+ EmitInstr('TEST EAX,EAX');
+ EmitInstr('JZ DPRT_SP_NOTFOUND');
+ EmitInstr('MOV EDX,DWORD PTR [EBP+12]');            { S }
+ EmitInstr('XOR EAX,EAX');
+ EmitInstr('TEST EDX,EDX');
+ EmitInstr('JZ DPRT_SP_SLEN0');
+ EmitInstr('MOV EAX,DWORD PTR [EDX-4]');
+ EmitLabel('DPRT_SP_SLEN0');
+ EmitInstr('MOV DWORD PTR [EBP-8],EAX');             { LenS }
+ EmitInstr('MOV DWORD PTR [EBP-12],0');               { I = 0 }
+ EmitLabel('DPRT_SP_OUTER');
+ EmitInstr('MOV EAX,DWORD PTR [EBP-12]');
+ EmitInstr('ADD EAX,DWORD PTR [EBP-4]');
+ EmitInstr('CMP EAX,DWORD PTR [EBP-8]');
+ EmitInstr('JG DPRT_SP_NOTFOUND');
+ EmitInstr('MOV ESI,DWORD PTR [EBP+12]');
+ EmitInstr('ADD ESI,DWORD PTR [EBP-12]');
+ EmitInstr('MOV EDI,EBX');
+ EmitInstr('MOV ECX,DWORD PTR [EBP-4]');
+ EmitLabel('DPRT_SP_INNER');
+ EmitInstr('MOV AL,BYTE PTR [ESI]');
+ EmitInstr('CMP AL,BYTE PTR [EDI]');
+ EmitInstr('JNE DPRT_SP_NEXT');
+ EmitInstr('INC ESI');
+ EmitInstr('INC EDI');
+ EmitInstr('DEC ECX');
+ EmitInstr('JNZ DPRT_SP_INNER');
+ EmitInstr('MOV EAX,DWORD PTR [EBP-12]');
+ EmitInstr('INC EAX');
+ EmitInstr('JMP DPRT_SP_DONE');
+ EmitLabel('DPRT_SP_NEXT');
+ EmitInstr('MOV EAX,DWORD PTR [EBP-12]');
+ EmitInstr('INC EAX');
+ EmitInstr('MOV DWORD PTR [EBP-12],EAX');
+ EmitInstr('JMP DPRT_SP_OUTER');
+ EmitLabel('DPRT_SP_NOTFOUND');
+ EmitInstr('XOR EAX,EAX');
+ EmitLabel('DPRT_SP_DONE');
+ EmitInstr('POP EBX');
+ EmitInstr('POP EDI');
+ EmitInstr('POP ESI');
  EmitEpilog;
  EmitBlankLine;
 
@@ -13705,6 +14264,290 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
+{ StrAssert / StrSelfTest (TODO 20) : verifient l en-tete cachee   }
+{ AnsiString sur un litteral (refcount -1 + longueur), le comptage   }
+{ de references reel a l affectation (_DPRT_STRASSIGN), la             }
+{ concatenation et la comparaison (nettoyage de pile inclus - bug       }
+{ corrige au passage), Length() sur une chaine, Copy/Delete/Insert/Pos,}
+{ et l enregistrement minimal de WideString/UnicodeString, avec des     }
+{ suites de tokens construites directement dans TokenPool, comme les    }
+{ self-tests des TODO precedents.                                        }
+{ ------------------------------------------------------------ }
+
+Procedure StrAssert(Const Label_: TString; Cond: Boolean);
+Begin
+ If Not Cond Then
+  FatalError('StrSelfTest: ' + Label_ + ' a echoue');
+End;
+
+Procedure StrSelfTest;
+Const
+ TmpFile = 'DPSTRSELFTEST.$$$';
+Var
+ StrIdx, WideIdx, UnicodeIdx : Integer;
+ F : Text;
+ Line, PrevLine : TString;
+ HasHeader, HasStrAssignCall : Boolean;
+ HasConcatCall, HasConcatCleanup : Boolean;
+ HasCompareCall, HasCompareCleanup, HasJE : Boolean;
+ HasLenRead, HasCopyCall, HasCopyCleanup : Boolean;
+ HasDeleteCall, HasDeleteCleanup : Boolean;
+ HasInsertCall, HasInsertCleanup, HasPosCall, HasPosCleanup : Boolean;
+
+ Procedure Tok(Kind: TTokenKind; Const Val: TString; IntVal: LongInt);
+ Var T: TToken;
+ Begin
+  T.Kind := Kind; T.Val := Val; T.IntVal := IntVal; T.RealVal := 0.0;
+  T.Line := 1; T.Col := 1;
+  TokenPoolAdd(T);
+ End;
+
+Begin
+ SymInit;
+ ClassSystemInit;
+ DataInit; DataInit2;
+ FrameInit;
+ StmtInit;
+ UserExternInit;
+
+ StrIdx := TypeFindByName('String');
+ GlobalVarDeclare('SAPT20', StrIdx, 0);
+ GlobalVarDeclare('SBPT20', StrIdx, 0);
+
+ { --- Litteral 'hello' : en-tete cachee (refcount -1, longueur 5) --- }
+ TokenPoolInit;
+ Tok(TK_STRING, 'hello', 0);
+ ParserInit;
+ ParsePrimary;
+ EmitSkeletonProgram(TmpFile);
+ HasHeader := False; PrevLine := '';
+ {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+ StrAssert('squelette .asm relisible', IOResult = 0);
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  If (Pos('DD -1', PrevLine) > 0) And (Pos('DD 5', Line) > 0) Then
+   HasHeader := True;
+  PrevLine := Line;
+ End;
+ Close(F); Erase(F);
+ StrAssert('litteral chaine : en-tete refcount -1 puis longueur 5',
+  HasHeader);
+
+ { --- SAPT20 := SBPT20; : comptage de references reel --- }
+ TokenPoolInit;
+ Tok(TK_IDENT, 'SAPT20', 0);
+ Tok(TK_OP, ':=', 0);
+ Tok(TK_IDENT, 'SBPT20', 0);
+ ParserInit;
+ EmitOpen(TmpFile);
+ ParseStmt;
+ EmitClose('DPSTRSELFTEST_END');
+ StrAssert('SAPT20 := SBPT20 consomme tous les tokens', PPAtEnd);
+ HasStrAssignCall := False;
+ {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  If Pos('CALL ' + DPRT_STR_ASSIGN, Line) > 0 Then HasStrAssignCall := True;
+ End;
+ Close(F); Erase(F);
+ StrAssert('SAPT20 := SBPT20 appelle ' + DPRT_STR_ASSIGN, HasStrAssignCall);
+
+ { --- SAPT20 + SBPT20 : concatenation --- }
+ TokenPoolInit;
+ Tok(TK_IDENT, 'SAPT20', 0);
+ Tok(TK_OP, '+', 0);
+ Tok(TK_IDENT, 'SBPT20', 0);
+ ParserInit;
+ EmitOpen(TmpFile);
+ ParseExpr;
+ EmitClose('DPSTRSELFTEST_END');
+ StrAssert('SAPT20 + SBPT20 consomme tous les tokens', PPAtEnd);
+ HasConcatCall := False; HasConcatCleanup := False;
+ {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  If Pos('CALL ' + DPRT_STR_CONCAT, Line) > 0 Then HasConcatCall := True;
+  If Pos('ADD ESP,8', Line) > 0 Then HasConcatCleanup := True;
+ End;
+ Close(F); Erase(F);
+ StrAssert('SAPT20 + SBPT20 appelle ' + DPRT_STR_CONCAT, HasConcatCall);
+ StrAssert('SAPT20 + SBPT20 nettoie la pile (ADD ESP,8)', HasConcatCleanup);
+
+ { --- SAPT20 = SBPT20 : comparaison (reutilise DPRT_COMPARESTR) --- }
+ TokenPoolInit;
+ Tok(TK_IDENT, 'SAPT20', 0);
+ Tok(TK_OP, '=', 0);
+ Tok(TK_IDENT, 'SBPT20', 0);
+ ParserInit;
+ EmitOpen(TmpFile);
+ ParseExpr;
+ EmitClose('DPSTRSELFTEST_END');
+ StrAssert('SAPT20 = SBPT20 consomme tous les tokens', PPAtEnd);
+ HasCompareCall := False; HasCompareCleanup := False; HasJE := False;
+ {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  If Pos('CALL ' + DPRT_COMPARESTR, Line) > 0 Then HasCompareCall := True;
+  If Pos('ADD ESP,8', Line) > 0 Then HasCompareCleanup := True;
+  If Pos('JE ', Line) > 0 Then HasJE := True;
+ End;
+ Close(F); Erase(F);
+ StrAssert('SAPT20 = SBPT20 reutilise ' + DPRT_COMPARESTR, HasCompareCall);
+ StrAssert('SAPT20 = SBPT20 nettoie la pile (ADD ESP,8)', HasCompareCleanup);
+ StrAssert('SAPT20 = SBPT20 traduit le resultat via JE', HasJE);
+
+ { --- Length(SAPT20) : lecture de l en-tete cachee --- }
+ TokenPoolInit;
+ Tok(TK_IDENT, 'Length', 0);
+ Tok(TK_PUNCT, '(', 0);
+ Tok(TK_IDENT, 'SAPT20', 0);
+ Tok(TK_PUNCT, ')', 0);
+ ParserInit;
+ EmitOpen(TmpFile);
+ ParsePrimary;
+ EmitClose('DPSTRSELFTEST_END');
+ StrAssert('Length(SAPT20) consomme tous les tokens', PPAtEnd);
+ HasLenRead := False;
+ {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  If Pos('MOV EAX,DWORD PTR [EAX-4]', Line) > 0 Then HasLenRead := True;
+ End;
+ Close(F); Erase(F);
+ StrAssert('Length(SAPT20) lit la longueur dans l en-tete cachee',
+  HasLenRead);
+
+ { --- Copy(SAPT20, 2, 3) --- }
+ TokenPoolInit;
+ Tok(TK_IDENT, 'Copy', 0);
+ Tok(TK_PUNCT, '(', 0);
+ Tok(TK_IDENT, 'SAPT20', 0);
+ Tok(TK_PUNCT, ',', 0);
+ Tok(TK_INTEGER, '2', 2);
+ Tok(TK_PUNCT, ',', 0);
+ Tok(TK_INTEGER, '3', 3);
+ Tok(TK_PUNCT, ')', 0);
+ ParserInit;
+ EmitOpen(TmpFile);
+ ParsePrimary;
+ EmitClose('DPSTRSELFTEST_END');
+ StrAssert('Copy(SAPT20, 2, 3) consomme tous les tokens', PPAtEnd);
+ HasCopyCall := False; HasCopyCleanup := False;
+ {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  If Pos('CALL ' + DPRT_STR_COPY, Line) > 0 Then HasCopyCall := True;
+  If Pos('ADD ESP,12', Line) > 0 Then HasCopyCleanup := True;
+ End;
+ Close(F); Erase(F);
+ StrAssert('Copy(SAPT20, 2, 3) appelle ' + DPRT_STR_COPY, HasCopyCall);
+ StrAssert('Copy(SAPT20, 2, 3) nettoie la pile (ADD ESP,12)', HasCopyCleanup);
+
+ { --- Delete(SAPT20, 2, 3) --- }
+ TokenPoolInit;
+ Tok(TK_IDENT, 'Delete', 0);
+ Tok(TK_PUNCT, '(', 0);
+ Tok(TK_IDENT, 'SAPT20', 0);
+ Tok(TK_PUNCT, ',', 0);
+ Tok(TK_INTEGER, '2', 2);
+ Tok(TK_PUNCT, ',', 0);
+ Tok(TK_INTEGER, '3', 3);
+ Tok(TK_PUNCT, ')', 0);
+ ParserInit;
+ EmitOpen(TmpFile);
+ ParsePrimary;
+ EmitClose('DPSTRSELFTEST_END');
+ StrAssert('Delete(SAPT20, 2, 3) consomme tous les tokens', PPAtEnd);
+ HasDeleteCall := False; HasDeleteCleanup := False;
+ {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  If Pos('CALL ' + DPRT_STR_DELETE, Line) > 0 Then HasDeleteCall := True;
+  If Pos('ADD ESP,12', Line) > 0 Then HasDeleteCleanup := True;
+ End;
+ Close(F); Erase(F);
+ StrAssert('Delete(SAPT20, 2, 3) appelle ' + DPRT_STR_DELETE, HasDeleteCall);
+ StrAssert('Delete(SAPT20, 2, 3) nettoie la pile (ADD ESP,12)',
+  HasDeleteCleanup);
+
+ { --- Insert('x', SAPT20, 2) --- }
+ TokenPoolInit;
+ Tok(TK_IDENT, 'Insert', 0);
+ Tok(TK_PUNCT, '(', 0);
+ Tok(TK_STRING, 'x', 0);
+ Tok(TK_PUNCT, ',', 0);
+ Tok(TK_IDENT, 'SAPT20', 0);
+ Tok(TK_PUNCT, ',', 0);
+ Tok(TK_INTEGER, '2', 2);
+ Tok(TK_PUNCT, ')', 0);
+ ParserInit;
+ EmitOpen(TmpFile);
+ ParsePrimary;
+ EmitClose('DPSTRSELFTEST_END');
+ StrAssert('Insert(''x'', SAPT20, 2) consomme tous les tokens', PPAtEnd);
+ HasInsertCall := False; HasInsertCleanup := False;
+ {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  If Pos('CALL ' + DPRT_STR_INSERT, Line) > 0 Then HasInsertCall := True;
+  If Pos('ADD ESP,12', Line) > 0 Then HasInsertCleanup := True;
+ End;
+ Close(F); Erase(F);
+ StrAssert('Insert(''x'', SAPT20, 2) appelle ' + DPRT_STR_INSERT,
+  HasInsertCall);
+ StrAssert('Insert(''x'', SAPT20, 2) nettoie la pile (ADD ESP,12)',
+  HasInsertCleanup);
+
+ { --- Pos('l', SAPT20) --- }
+ TokenPoolInit;
+ Tok(TK_IDENT, 'Pos', 0);
+ Tok(TK_PUNCT, '(', 0);
+ Tok(TK_STRING, 'l', 0);
+ Tok(TK_PUNCT, ',', 0);
+ Tok(TK_IDENT, 'SAPT20', 0);
+ Tok(TK_PUNCT, ')', 0);
+ ParserInit;
+ EmitOpen(TmpFile);
+ ParsePrimary;
+ EmitClose('DPSTRSELFTEST_END');
+ StrAssert('Pos(''l'', SAPT20) consomme tous les tokens', PPAtEnd);
+ HasPosCall := False; HasPosCleanup := False;
+ {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  If Pos('CALL ' + DPRT_STR_POS, Line) > 0 Then HasPosCall := True;
+  If Pos('ADD ESP,8', Line) > 0 Then HasPosCleanup := True;
+ End;
+ Close(F); Erase(F);
+ StrAssert('Pos(''l'', SAPT20) appelle ' + DPRT_STR_POS, HasPosCall);
+ StrAssert('Pos(''l'', SAPT20) nettoie la pile (ADD ESP,8)', HasPosCleanup);
+
+ { --- WideString/UnicodeString : stub minimal enregistre --- }
+ WideIdx    := TypeFindByName('WIDESTRING');
+ UnicodeIdx := TypeFindByName('UNICODESTRING');
+ StrAssert('WideString enregistre comme chaine',
+  (WideIdx >= 0) And (TypeTab[WideIdx].Kind = TYK_STRING));
+ StrAssert('UnicodeString enregistre comme chaine',
+  (UnicodeIdx >= 0) And (TypeTab[UnicodeIdx].Kind = TYK_STRING));
+
+ SymInit;
+ ClassSystemInit;
+ DataInit; DataInit2;
+ FrameInit;
+ StmtInit;
+ UserExternInit;
+End;
+
+{ ------------------------------------------------------------ }
 { Run - point d entree de la compilation                       }
 { Le parseur de fichier programme complet (uses, section         }
 { principale) sera ajoute par les TODO 23 et suivants. Pour       }
@@ -13743,6 +14586,7 @@ Begin
  InterfaceSelfTest;
  ExceptionSelfTest;
  CompoundSelfTest;
+ StrSelfTest;
 
  {$I-}
  Assign(LexSrcF, Opts.SrcFile);
@@ -13817,8 +14661,9 @@ Begin
  WriteLn('DELPHI: TODO 17 (interfaces et COM de base) implemente.');
  WriteLn('DELPHI: TODO 18 (gestion des exceptions) implemente.');
  WriteLn('DELPHI: TODO 19 (tableaux, records et ensembles) implemente.');
+ WriteLn('DELPHI: TODO 20 (chaines de caracteres) implemente.');
  WriteLn('DELPHI: analyseur syntaxique et generateur de code non ',
-         'encore implementes (voir TODO 20 et suivants).');
+         'encore implementes (voir TODO 21 et suivants).');
  ShowStats;
  Cleanup;
 End;
