@@ -228,7 +228,7 @@
          Default, stored, nodefault : specificateurs -> stubs
            conserves pour compatibilite syntaxique seulement
 
-  TODO 17 - INTERFACES ET COM DE BASE                     [A FAIRE]
+  TODO 17 - INTERFACES ET COM DE BASE                     [IMPLEMENTE]
          interface IXxx ['{GUID}'] ... end
          class(TObject, IXxx, ...) : implementation d interface(s)
          Generation automatique de QueryInterface, _AddRef, _Release
@@ -236,7 +236,7 @@
          Variables de type interface : comptage de references
            automatique (voir TODO 09)
 
-  TODO 18 - GESTION DES EXCEPTIONS                         [A FAIRE]
+  TODO 18 - GESTION DES EXCEPTIONS                         [IMPLEMENTE]
          Try..Except..Finally, Raise, Raise; (relance)
          Hierarchie Exception minimale : Exception, EXxx courantes
            (EDivByZero, EInvalidCast, EAccessViolation, ERangeError)
@@ -247,7 +247,7 @@
          Liberation automatique des objets exception non geres ->
            message d erreur non traite + ExitProcess
 
-  TODO 19 - TABLEAUX, RECORDS ET ENSEMBLES (STATIQUE/DYNAMIQUE) [A FAIRE]
+  TODO 19 - TABLEAUX, RECORDS ET ENSEMBLES (STATIQUE/DYNAMIQUE) [IMPLEMENTE]
          Tableaux statiques : identiques a Turbo Pascal
          Tableaux dynamiques (Array of T) : SetLength, Length,
            High/Low, comptage de references et reallocation via
@@ -1874,7 +1874,9 @@ Type
   DK_ARRAY,   { tableau (DB ElemCount*ElemSize DUP(0))             }
   DK_RES,     { espace reserve (DB Size DUP(0))                    }
   DK_STRUCT,  { structure/record/VMT (DB Size DUP(0))              }
-  DK_ZERO     { espace initialise a zero (DB Size DUP(0))          }
+  DK_ZERO,    { espace initialise a zero (DB Size DUP(0))          }
+  DK_BYTES    { octets litteraux (DB v1,v2,...), TODO 19 : constante }
+              { ensembliste (StrVal = liste decimale prete a emettre) }
  );
 
  { Un enregistrement du pool de donnees }
@@ -1984,6 +1986,26 @@ Begin
  Lbl := DP_STR_PFX + IntToStr_(LabelGenSeq);
  DataAdd(Lbl, DK_STR, 0, S, 0, 0);
  DataAddStr := Lbl;
+End;
+
+{ ---- DataAddSetConst (TODO 19) : constante ensembliste litterale ---- }
+{ (MAX_SET_BYTES octets), un label auto-genere par litteral - pas de   }
+{ deduplication (contrairement a DataGetOrAddStr) : deux litteraux      }
+{ textuellement identiques restent rares et la dedup demanderait de     }
+{ comparer les MAX_SET_BYTES octets, pas juste une chaine.               }
+Function DataAddSetConst(Const SV: TSetVal): TString;
+Var Lbl, S : TString; I : Integer;
+Begin
+ Inc(LabelGenSeq);
+ Lbl := DP_STR_PFX + 'SET_' + IntToStr_(LabelGenSeq);
+ S := '';
+ For I := 0 To MAX_SET_BYTES - 1 Do
+ Begin
+  If S <> '' Then S := S + ',';
+  S := S + IntToStr_(SV[I]);
+ End;
+ DataAdd(Lbl, DK_BYTES, 0, S, 0, 0);
+ DataAddSetConst := Lbl;
 End;
 
 { ---- DataFindStr : rechercher si une chaine est deja dans le pool ---- }
@@ -2731,6 +2753,9 @@ Type
                              { disposition memoire a repercuter ; la  }
                              { recherche remonte donc la chaine des    }
                              { ancetres a la demande, PropFindInClassChain)}
+  GUID        : TString;    { SK_INTERFACE : GUID litteral declare   }
+                             { (TODO 17), optionnel apres le nom de   }
+                             { l interface ; '' si absent             }
  End;
 
 Var
@@ -3211,7 +3236,7 @@ End;
 
 Procedure SymRegisterBuiltins;
 Var
- TObjectIdx, ExceptionIdx : Integer;
+ TObjectIdx, ExceptionIdx, ExcCreateSym : Integer;
 
  Procedure RegType(Const Name: TString);
  Var R: Integer;
@@ -3332,14 +3357,49 @@ Begin
  SymLeaveScope;
 
  { -------------------------------------------------------- }
- { Exception : classe de base des exceptions (try/except)   }
- { herite de TObject, sans redefinir Create : SymFindInherited}
- { doit remonter jusqu a TObject.Create pour la resoudre.    }
+ { Exception : classe de base des exceptions (try/except,     }
+ { TODO 18). Redefinit sa PROPRE Create (arite 1, Msg: String)}
+ { qui masque celle de TObject (arite 0) - SymFindInClassChain}
+ { la trouve en premier, aucune resolution de surcharge par    }
+ { arite n est necessaire ici (TODO 14), c est un simple        }
+ { masquage par nom comme pour toute autre methode heritee.     }
+ { Le champ cache FMessage et les corps reels de Create/Message }
+ { sont ajoutes/emis plus tard (ClassSystemInit/EmitRuntimeLibrary)}
+ { une fois la table des types disponible.                       }
  { -------------------------------------------------------- }
  ExceptionIdx := SymDeclareClass('EXCEPTION', SK_CLASS, TObjectIdx);
  SymEnterClassScope(ExceptionIdx);
  RegMethod('Exception', 'MESSAGE');
+ ExcCreateSym := RegMethod('Exception', 'CREATE');
+ If ExcCreateSym >= 0 Then
+ Begin
+  SymTab[ExcCreateSym].IsConstructor := True;
+  SymTab[ExcCreateSym].ParamCount    := 1;
+ End;
  SymLeaveScope;
+
+ { -------------------------------------------------------- }
+ { Hierarchie minimale d exceptions courantes (TODO 18) :      }
+ { aucune n ajoute de champ/methode propre, elles n existent    }
+ { que pour etre distinguees par leur NOM de classe (approximation}
+ { statique de "on E: EDivByZero do", faute de vraie RTTI       }
+ { d instance - meme simplification que is/as, TODO 15).         }
+ { -------------------------------------------------------- }
+ SymDeclareClass('EDIVBYZERO', SK_CLASS, ExceptionIdx);
+ SymDeclareClass('EINVALIDCAST', SK_CLASS, ExceptionIdx);
+ SymDeclareClass('EACCESSVIOLATION', SK_CLASS, ExceptionIdx);
+ SymDeclareClass('ERANGEERROR', SK_CLASS, ExceptionIdx);
+
+ { -------------------------------------------------------- }
+ { IUnknown : racine de toute la hierarchie d interfaces      }
+ { (TODO 17). QueryInterface/AddRef/Release restent abstraites}
+ { ici (aucun symbole propre, VMTAddMethod avec -1) : c est    }
+ { chaque CLASSE implementant une interface qui recoit ses     }
+ { PROPRES methodes generees automatiquement (voir              }
+ { ClassEnsureIUnknownMethods, TODO 17) - la VMT elle-meme est   }
+ { initialisee dans ClassSystemInit, comme pour TObject.         }
+ { -------------------------------------------------------- }
+ SymDeclareClass('IUNKNOWN', SK_INTERFACE, -1);
 
  { -------------------------------------------------------- }
  { Procedures et fonctions de base, toujours disponibles     }
@@ -3353,6 +3413,7 @@ Begin
  RegProc('GETMEM');   RegProc('FREEMEM');
  RegProc('FREEANDNIL'); RegProc('ASSERT');
  RegProc('BREAK');    RegProc('CONTINUE');   { TODO 13 }
+ RegProc('SETLENGTH');   { tableaux dynamiques, TODO 19 }
 
  RegFunc('ORD');      RegFunc('CHR');
  RegFunc('SUCC');     RegFunc('PRED');
@@ -3425,14 +3486,20 @@ Begin
  { Self.Champ : les methodes de TObject sont dans sa portee de membres }
  SymAssert('TObject.Create (membre direct)',
   SymFindInClass(TObjIdx, 'Create') >= 0);
- SymAssert('Exception.Create absent en direct',
-  SymFindInClass(ExcIdx, 'Create') < 0);
+ { Exception redefinit sa PROPRE Create (Msg: String, TODO 18) - elle }
+ { masque donc celle de TObject, contrairement a avant le TODO 18 ou   }
+ { Exception n avait pas de Create en direct.                           }
+ SymAssert('Exception.Create present en direct (TODO 18, arite 1)',
+  (SymFindInClass(ExcIdx, 'Create') >= 0) And
+  (SymTab[SymFindInClass(ExcIdx, 'Create')].ParamCount = 1));
 
- { inherited Methode : Exception doit trouver Create via TObject }
- CreateIdx := SymFindInherited(ExcIdx, 'Create');
- SymAssert('inherited Create resolu via TObject', CreateIdx >= 0);
+ { inherited Methode : EDivByZero (TODO 18, heritee d Exception) ne    }
+ { redefinit pas Create - "inherited Create" doit donc le trouver via  }
+ { Exception, pas via TObject (masque depuis le TODO 18).                }
+ CreateIdx := SymFindInherited(SymFind('EDivByZero'), 'Create');
+ SymAssert('inherited Create resolu via Exception', CreateIdx >= 0);
  SymAssert('inherited Create pointe le bon symbole',
-  CreateIdx = SymFindInClass(TObjIdx, 'Create'));
+  CreateIdx = SymFindInClass(ExcIdx, 'Create'));
 
  { Portees imbriquees et masquage (variable globale puis locale) }
  GlobalX := SymAdd('X', SK_VAR, -1);
@@ -3507,6 +3574,7 @@ Begin
  TypeTab[TypeCount].InstanceSize := 0;
  TypeTab[TypeCount].PropFirst   := -1;
  TypeTab[TypeCount].PropCount   := 0;
+ TypeTab[TypeCount].GUID        := '';
 
  TypeAdd := TypeCount;
  Inc(TypeCount);
@@ -3734,6 +3802,24 @@ Begin
  If (R < 0) Or (R >= TypeCount) Then
  Begin TypeIsInterface := False; Exit; End;
  TypeIsInterface := TypeTab[R].Kind = TYK_INTERFACE;
+End;
+
+Function TypeIsSet(Idx: Integer): Boolean;
+Var R: Integer;
+Begin
+ R := TypeResolve(Idx);
+ If (R < 0) Or (R >= TypeCount) Then
+ Begin TypeIsSet := False; Exit; End;
+ TypeIsSet := TypeTab[R].Kind = TYK_SET;
+End;
+
+Function TypeIsArray(Idx: Integer): Boolean;
+Var R: Integer;
+Begin
+ R := TypeResolve(Idx);
+ If (R < 0) Or (R >= TypeCount) Then
+ Begin TypeIsArray := False; Exit; End;
+ TypeIsArray := TypeTab[R].Kind = TYK_ARRAY;
 End;
 
 { ------------------------------------------------------------ }
@@ -4104,6 +4190,10 @@ Begin
  TypeAddInterface := TI;
 End;
 
+{ Implementee au TODO 17 (table des interfaces implementees, bien plus }
+{ bas) mais utilisee ici : une classe implemente-t-elle une interface ?}
+Function IfaceImplFind(ClassTypeIdx, InterfaceTypeIdx: Integer): Integer; Forward;
+
 { ------------------------------------------------------------ }
 { TypeIsAssignCompatible : compatibilite d affectation implicite}
 { (Dest := Src). Couvre les promotions Delphi usuelles : meme    }
@@ -4158,6 +4248,56 @@ Begin
   Exit;
  End;
 
+ { Interface descendante -> reference a un de ses ancetres (TODO 17),  }
+ { meme principe que la chaine de classes ci-dessus (IUnknown en tete).}
+ If (TypeTab[RF].Kind = TYK_INTERFACE) And (TypeTab[RT].Kind = TYK_INTERFACE) Then
+ Begin
+  C := RF;
+  While C >= 0 Do
+  Begin
+   If C = RT Then
+   Begin TypeIsAssignCompatible := True; Exit; End;
+   C := TypeTab[C].BaseTypeIdx;
+  End;
+  TypeIsAssignCompatible := False;
+  Exit;
+ End;
+
+ { Classe implementant l interface -> variable de ce type interface    }
+ { (TODO 17). Compatible a la COMPILATION ; la conversion reelle de la }
+ { reference objet vers un pointeur de table de thunks proprement dit  }
+ { reste une approximation (copie directe du pointeur) tant que        }
+ { l emission des tables de thunks n est pas faite (TODO 24), comme    }
+ { pour les VMT de classe (VMTLabelFor).                                }
+ If (TypeTab[RF].Kind = TYK_CLASS) And (TypeTab[RT].Kind = TYK_INTERFACE) Then
+ Begin TypeIsAssignCompatible := IfaceImplFind(RF, RT) >= 0; Exit; End;
+
+ { Tableaux (TODO 19) : compatibilite STRUCTURELLE (contrairement aux   }
+ { records, qui restent nominaux comme en Delphi reel - deux records    }
+ { distincts aux champs identiques ne sont jamais compatibles) - meme   }
+ { element, memes bornes pour un tableau statique, meme caractere       }
+ { dynamique/statique des deux cotes.                                    }
+ If (TypeTab[RF].Kind = TYK_ARRAY) And (TypeTab[RT].Kind = TYK_ARRAY) Then
+ Begin
+  TypeIsAssignCompatible :=
+   (TypeTab[RF].IsDynArray = TypeTab[RT].IsDynArray) And
+   (TypeResolve(TypeTab[RF].BaseTypeIdx) = TypeResolve(TypeTab[RT].BaseTypeIdx)) And
+   (TypeTab[RF].IsDynArray Or
+    ((TypeTab[RF].Lo = TypeTab[RT].Lo) And (TypeTab[RF].Hi = TypeTab[RT].Hi)));
+  Exit;
+ End;
+
+ { Ensembles (TODO 19) : tous compatibles entre eux, quel que soit le  }
+ { type de base declare - contrairement aux tableaux, la REPRESENTATION}
+ { memoire d un ensemble ne depend jamais du type de base (toujours un }
+ { bloc de MAX_SET_BYTES octets) ; un litteral ensembliste (ParseSetLiteral)}
+ { n a d ailleurs pas de moyen simple d inferer le "vrai" type de base  }
+ { attendu par le contexte (pas d inference bidirectionnelle dans ce    }
+ { compilateur a une passe) - accepter largement ici evite d exiger      }
+ { cette inference pour un cas d usage courant (Var := [1, 2, 3]).       }
+ If (TypeTab[RF].Kind = TYK_SET) And (TypeTab[RT].Kind = TYK_SET) Then
+ Begin TypeIsAssignCompatible := True; Exit; End;
+
  If TypeIsPointer(RF) And TypeIsPointer(RT) Then
  Begin TypeIsAssignCompatible := True; Exit; End;
 
@@ -4196,6 +4336,13 @@ Begin
 
  If (TypeTab[RF].Kind = TYK_INTERFACE) And
     (TypeTab[RT].Kind = TYK_INTERFACE) Then
+ Begin TypeIsCastCompatible := True; Exit; End;
+
+ { Tableaux/ensembles (TODO 19) : un typecast explicite est plus       }
+ { permissif qu une affectation - accepte tout autre tableau/ensemble.  }
+ If (TypeTab[RF].Kind = TYK_ARRAY) And (TypeTab[RT].Kind = TYK_ARRAY) Then
+ Begin TypeIsCastCompatible := True; Exit; End;
+ If (TypeTab[RF].Kind = TYK_SET) And (TypeTab[RT].Kind = TYK_SET) Then
  Begin TypeIsCastCompatible := True; Exit; End;
 
  If (TypeIsOrdinal(RF) And TypeIsPointer(RT)) Or
@@ -4339,6 +4486,7 @@ Var
  { de LabelGenSeq (TODO 04) qui numerote les constantes chaine      }
  { (_DPK_NNNNN) dans le pool de donnees.                            }
  EmitLabelSeq : Integer;
+ SetScratchSeq : Integer;   { tampons ensemblistes rotatifs (TODO 19) }
 
 { ------------------------------------------------------------ }
 { EmitOpen / EmitClose : ouvrir/fermer le fichier .ASM de       }
@@ -4356,6 +4504,7 @@ Begin
   FatalError('impossible d''ouvrir le fichier de sortie: ' + AsmFile);
  OutFOpen     := True;
  EmitLabelSeq := 0;
+ SetScratchSeq := 0;
 End;
 
 Procedure EmitClose(Const EntryLabel: TString);
@@ -4436,6 +4585,7 @@ Begin
  EmitRaw('EXTRN _GetProcessHeap@0:NEAR');
  EmitRaw('EXTRN _HeapAlloc@12:NEAR');
  EmitRaw('EXTRN _HeapFree@12:NEAR');
+ EmitRaw('EXTRN _HeapReAlloc@16:NEAR');   { tableaux dynamiques, TODO 19 }
  EmitRaw('EXTRN _CloseHandle@4:NEAR');
  EmitBlankLine;
 End;
@@ -4532,6 +4682,9 @@ Begin
        IntToStr_(DataTab[I].IntVal) + ' DUP(0)')
      Else
       EmitRaw(DataTab[I].LblName + '  DD 0');
+
+    DK_BYTES:
+     EmitRaw(DataTab[I].LblName + '  DB ' + DataTab[I].StrVal);
    End;
   End;
   EmitBlankLine;
@@ -5121,6 +5274,22 @@ Const
  DPRT_STR_ASSIGN  = '_DPRT_STRASSIGN';   { StrAssign(NewVal, VAR Dest) }
  DPRT_INTF_ASSIGN = '_DPRT_INTFASSIGN';  { IntfAssign(NewVal, VAR Dest)}
 
+ { Runtime (_DPRT_, TODO 18) : relance/propagation d exception, geree }
+ { par une pile de gestionnaires (tableaux DPRT_EXCSTACK_*, EmitRuntimeData) }
+ { plutot que par le SEH natif Win32 (aucune primitive SEH deja        }
+ { importee, et la spec du TODO 18 autorise explicitement ce repli).  }
+ DPRT_RAISE = '_DPRT_RAISE';   { Raise(ExceptionObj: Pointer), ne revient jamais }
+
+ { Runtime (_DPRT_, TODO 19) : (re)dimensionnement d un tableau         }
+ { dynamique. Entete cachee de 8 octets (compteur de references,        }
+ { longueur) juste avant les donnees, comme une AnsiString classique -   }
+ { sans le vrai comptage de references (simplification documentee,       }
+ { comme pour EmitAssignPointer sur ces memes tableaux).                  }
+ DPRT_DYNARR_SETLENGTH = '_DPRT_DYNARR_SETLENGTH';
+ MAX_SET_SCRATCH = 4;   { tampons ensemblistes rotatifs (TODO 19) - au }
+                          { plus 4 operations +/-/* imbriquees dans une }
+                          { meme expression sans collision              }
+
 Var
  { Cadre de pile courant (parametres/locales), voir FrameInit }
  CurFrameOffset : Integer;   { prochain offset locale disponible, < 0 }
@@ -5458,6 +5627,19 @@ Begin
   Exit;
  End;
 
+ { Un tableau DYNAMIQUE (TODO 19) est une simple copie de pointeur     }
+ { (comme une classe) : sa case ne contient que l adresse des donnees, }
+ { pas les donnees elles-memes - contrairement a un tableau STATIQUE,   }
+ { qui reste une copie de bloc comme un record/ensemble. Aucun          }
+ { comptage de references reel ici (simplification documentee, comme   }
+ { pour les interfaces avant le vrai refcount du TODO 17/AnsiString du  }
+ { TODO 20) : juste le pointeur, tel quel.                                }
+ If (TypeTab[R].Kind = TYK_ARRAY) And TypeTab[R].IsDynArray Then
+ Begin
+  EmitAssignPointer(DestOperand, SrcOperand);
+  Exit;
+ End;
+
  Case TypeTab[R].Kind Of
   TYK_STRING:
    EmitAssignString(DestOperand, SrcOperand);
@@ -5738,9 +5920,14 @@ Begin
   Exit;
  End;
 
+ { Un tableau DYNAMIQUE (TODO 19) n est PAS un bloc pour la lecture :  }
+ { sa case ne contient qu un pointeur vers les donnees (comme une      }
+ { classe/chaine) - seul un tableau STATIQUE (taille fixe, donnees      }
+ { inline) se comporte comme un record/ensemble ici.                     }
  RT      := TypeResolve(SymTab[SI].TypeIdx);
  IsBlock := (RT >= 0) And (RT < TypeCount) And
-  (TypeTab[RT].Kind In [TYK_RECORD, TYK_ARRAY, TYK_SET]);
+  ((TypeTab[RT].Kind In [TYK_RECORD, TYK_SET]) Or
+   ((TypeTab[RT].Kind = TYK_ARRAY) And Not TypeTab[RT].IsDynArray));
 
  If (SymTab[SI].Kind = SK_PARAM) And
     (SymTab[SI].ParamKind In [PK_VAR, PK_CONST, PK_OUT]) Then
@@ -6126,6 +6313,7 @@ End;
 Function ParsePostfix(BaseTypeIdx: Integer): Integer;
 Var
  CurType, C, TargetIdx, RCurType, PropIdx : Integer;
+ ElemTypeIdx, ElemSize : Integer;
  FieldName, ClassName_  : TString;
  Compatible : Boolean;
 Begin
@@ -6190,11 +6378,49 @@ Begin
   End
   Else If (PPPeekKind = TK_PUNCT) And (PPPeekVal = '[') Then
   Begin
+   RCurType := TypeResolve(CurType);
+
+   If (RCurType >= 0) And (RCurType < TypeCount) And
+      (TypeTab[RCurType].Kind = TYK_ARRAY) Then
+   Begin
+    { Indexation de tableau (TODO 19) : EAX contient deja l adresse de }
+    { la case 0, que le tableau soit STATIQUE (LEA emis par            }
+    { GenLoadVar/ParseFieldAccess, TypeNeedsDestAddr) ou DYNAMIQUE (la  }
+    { case ne contient QUE ce pointeur, charge PAR VALEUR) - le meme     }
+    { calcul convient aux deux cas, Lo valant toujours 0 pour un         }
+    { tableau dynamique (TypeAddArray ne le change jamais).               }
+    PPAdvance;                    { [ }
+    ElemTypeIdx := TypeTab[RCurType].BaseTypeIdx;
+    ElemSize    := TypeSizeofIdx(ElemTypeIdx);
+    EmitInstr('MOV EBX,EAX');      { EBX = adresse de la case 0 }
+    ParseExpr;                      { EAX = valeur d index }
+    If TypeTab[RCurType].Lo <> 0 Then
+     EmitInstr('SUB EAX,' + IntToStr_(TypeTab[RCurType].Lo));
+    If ElemSize <> 1 Then
+     EmitInstr('IMUL EAX,' + IntToStr_(ElemSize));
+    EmitInstr('ADD EBX,EAX');
+    PPMatch(']');
+    If TypeNeedsDestAddr(ElemTypeIdx) Then
+    Begin
+     EmitInstr('MOV EAX,EBX');
+     LastExprIsAddr := True;
+    End
+    Else
+    Begin
+     If ElemSize = 1 Then
+      EmitInstr('MOVZX EAX,BYTE PTR [EBX]')
+     Else
+      EmitInstr('MOV EAX,' + SizedPtr(ElemTypeIdx) + '[EBX]');
+     LastExprIsAddr := False;
+    End;
+    CurType := ElemTypeIdx;
+    LastExprTypeIdx := CurType;
+    Continue;
+   End;
+
    { Propriete tableau par defaut (TODO 16) : obj[Index], sans nommer  }
    { la propriete. N intervient que pour un type classe possedant une  }
-   { propriete indexee marquee "default" (PropFindDefault) - les vrais }
-   { tableaux (TYK_ARRAY, TODO 19) ne passent pas par ParsePostfix ici. }
-   RCurType := TypeResolve(CurType);
+   { propriete indexee marquee "default" (PropFindDefault).             }
    PropIdx  := -1;
    If (RCurType >= 0) And (RCurType < TypeCount) And
       (TypeTab[RCurType].Kind = TYK_CLASS) Then
@@ -6459,6 +6685,180 @@ Begin
  ParseInherited := LastExprTypeIdx;
 End;
 
+{ Definie plus bas avec ParseTypeExpr (TODO 19) : lit une valeur      }
+{ entiere CONSTANTE simple (litteral, ou nom de constante SK_CONST).    }
+Function ParseConstIntLiteral: LongInt; Forward;
+
+{ ------------------------------------------------------------ }
+{ ParseSetLiteral (TODO 19) : [a, b..c, ...] ou [] (ensemble vide).}
+{ Elements et bornes de plage sont des CONSTANTES simples          }
+{ (ParseConstIntLiteral) - un constructeur d ensemble melangeant     }
+{ des valeurs connues seulement a l execution est hors de portee     }
+{ ici (simplification documentee : reutilise directement SetValInclude}
+{ /SetValClear du TODO 04, jamais raccordes au vrai parseur avant     }
+{ ce TODO). Le bloc de MAX_SET_BYTES octets qui en resulte est emis   }
+{ en .DATA (DataAddSetConst) et son ADRESSE renvoyee, exactement       }
+{ comme un litteral chaine (DataGetOrAddStr).                          }
+{ ------------------------------------------------------------ }
+
+Function ParseSetLiteral: Integer;
+Var
+ SV : TSetVal;
+ Lo, Hi, I : LongInt;
+ Lbl : TString;
+Begin
+ SetValClear(SV);
+ PPAdvance;   { [ }
+ If Not ((PPPeekKind = TK_PUNCT) And (PPPeekVal = ']')) Then
+  Repeat
+   Lo := ParseConstIntLiteral;
+   Hi := Lo;
+   If (PPPeekKind = TK_PUNCT) And (PPPeekVal = '..') Then
+   Begin
+    PPAdvance;
+    Hi := ParseConstIntLiteral;
+   End;
+   For I := Lo To Hi Do SetValInclude(SV, I);
+  Until Not PPMatch(',');
+ PPMatch(']');
+
+ Lbl := DataAddSetConst(SV);
+ EmitInstr('LEA EAX,[' + Lbl + ']');
+ LastExprIsAddr  := True;
+ LastExprTypeIdx := TypeAddSet(TypeFindByName('Integer'));
+ ParseSetLiteral := LastExprTypeIdx;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseArrayLenHigh / ParseArrayLow (TODO 19) : Length(Arr),       }
+{ High(Arr), Low(Arr). Un tableau STATIQUE a des bornes connues a   }
+{ la COMPILATION (Lo/Hi du type) : aucun code n est genere, juste   }
+{ une constante. Un tableau DYNAMIQUE stocke sa longueur dans        }
+{ l entete cachee juste avant les donnees ([Pointeur-4], voir         }
+{ _DPRT_DYNARR_SETLENGTH) - High = Length-1, Low = 0 toujours ;       }
+{ un pointeur nil (tableau jamais dimensionne) vaut longueur 0.        }
+{ Porte uniquement sur les TABLEAUX ici (Length/High/Low sur une      }
+{ chaine ou un type ordinal restent hors de portee de ce TODO).        }
+{ ------------------------------------------------------------ }
+
+Function ParseArrayLenHigh(WantHigh: Boolean): Integer;
+Var
+ IdentTok, LblZero, LblDone : TString;
+ VI, TI : Integer;
+Begin
+ PPMatch('(');
+ IdentTok := TokenPool[PP].Val;
+ PPAdvance;
+ PPMatch(')');
+
+ VI := SymFind(IdentTok);
+ TI := -1;
+ If VI >= 0 Then TI := TypeResolve(SymTab[VI].TypeIdx);
+
+ If (TI >= 0) And (TypeTab[TI].Kind = TYK_ARRAY) And Not TypeTab[TI].IsDynArray Then
+ Begin
+  If WantHigh Then
+   EmitInstr('MOV EAX,' + IntToStr_(TypeTab[TI].Hi))
+  Else
+   EmitInstr('MOV EAX,' + IntToStr_(TypeTab[TI].Hi - TypeTab[TI].Lo + 1));
+ End
+ Else If (TI >= 0) And (TypeTab[TI].Kind = TYK_ARRAY) And TypeTab[TI].IsDynArray Then
+ Begin
+  GenLoadVar(IdentTok);   { EAX = pointeur de donnees (0 si jamais dimensionne) }
+  EmitInstr('TEST EAX,EAX');
+  LblZero := LabelGen;
+  LblDone := LabelGen;
+  EmitInstr('JZ ' + LblZero);
+  EmitInstr('MOV EAX,DWORD PTR [EAX-4]');
+  If WantHigh Then EmitInstr('DEC EAX');
+  EmitInstr('JMP ' + LblDone);
+  EmitLabel(LblZero);
+  If WantHigh Then EmitInstr('MOV EAX,-1') Else EmitInstr('XOR EAX,EAX');
+  EmitLabel(LblDone);
+ End
+ Else
+ Begin
+  WarnMsg('Length/High attendent un tableau: ' + IdentTok);
+  EmitInstr('XOR EAX,EAX');
+ End;
+
+ LastExprTypeIdx := TypeFindByName('Integer');
+ ParseArrayLenHigh := LastExprTypeIdx;
+End;
+
+Function ParseArrayLow: Integer;
+Var
+ IdentTok : TString;
+ VI, TI : Integer;
+Begin
+ PPMatch('(');
+ IdentTok := TokenPool[PP].Val;
+ PPAdvance;
+ PPMatch(')');
+
+ VI := SymFind(IdentTok);
+ TI := -1;
+ If VI >= 0 Then TI := TypeResolve(SymTab[VI].TypeIdx);
+
+ If (TI >= 0) And (TypeTab[TI].Kind = TYK_ARRAY) Then
+  EmitInstr('MOV EAX,' + IntToStr_(TypeTab[TI].Lo))   { 0 pour un dynamique }
+ Else
+ Begin
+  WarnMsg('Low attend un tableau: ' + IdentTok);
+  EmitInstr('XOR EAX,EAX');
+ End;
+
+ LastExprTypeIdx := TypeFindByName('Integer');
+ ParseArrayLow := LastExprTypeIdx;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseSetLengthCall (TODO 19) : SetLength(Arr, NewLen) - seuls    }
+{ les tableaux DYNAMIQUES sont concernes (un tableau statique a une }
+{ taille fixee a la compilation). Appelle _DPRT_DYNARR_SETLENGTH   }
+{ avec l ADRESSE de la variable (GenVarAddr, gere deja correctement }
+{ le cas d un parametre VAR/CONST/OUT), NewLen et ElemSize.          }
+{ ------------------------------------------------------------ }
+
+Function ParseSetLengthCall: Integer;
+Var
+ ArrName : TString;
+ SI, TI, ElemTypeIdx, ElemSize : Integer;
+Begin
+ PPMatch('(');
+ ArrName := TokenPool[PP].Val;
+ PPAdvance;
+
+ SI := SymFind(ArrName);
+ TI := -1;
+ If SI >= 0 Then TI := TypeResolve(SymTab[SI].TypeIdx);
+
+ If (TI < 0) Or (TypeTab[TI].Kind <> TYK_ARRAY) Or (Not TypeTab[TI].IsDynArray) Then
+ Begin
+  WarnMsg('SetLength attend un tableau dynamique: ' + ArrName);
+  While (Not PPAtEnd) And
+        (Not ((PPPeekKind = TK_PUNCT) And (PPPeekVal = ')'))) Do PPAdvance;
+  PPMatch(')');
+  ParseSetLengthCall := -1;
+  Exit;
+ End;
+
+ ElemTypeIdx := TypeTab[TI].BaseTypeIdx;
+ ElemSize    := TypeSizeofIdx(ElemTypeIdx);
+
+ PPMatch(',');
+ EmitInstr('PUSH ' + IntToStr_(ElemSize));   { ElemSize, dernier parametre }
+ ParseExpr;                                    { EAX = NewLen }
+ EmitInstr('PUSH EAX');
+ GenVarAddr(ArrName);                          { emet le calcul, resultat EDX }
+ EmitInstr('PUSH EDX');                        { adresse variable, en dernier }
+ EmitInstr('CALL ' + DPRT_DYNARR_SETLENGTH);
+ EmitInstr('ADD ESP,12');
+ PPMatch(')');
+
+ ParseSetLengthCall := -1;   { procedure : pas de valeur utile }
+End;
+
 { ------------------------------------------------------------ }
 { ParsePrimary : litteral, identificateur (constante/variable/   }
 { parametre/type/procedure/fonction), New/Dispose/SizeOf,        }
@@ -6532,6 +6932,16 @@ Begin
   Exit;
  End;
 
+ { Litteral ensembliste [a, b..c, ...] (TODO 19) - sans ambiguite avec }
+ { l indexation de tableau/propriete (TODO 16/19, ParsePostfix), qui   }
+ { n intervient qu APRES une expression deja evaluee, jamais en        }
+ { position PRIMAIRE (debut d expression).                              }
+ If (PPPeekKind = TK_PUNCT) And (PPPeekVal = '[') Then
+ Begin
+  ParsePrimary := ParsePostfix(ParseSetLiteral);
+  Exit;
+ End;
+
  { Adresse @expr }
  If (PPPeekKind = TK_OP) And (PPPeekVal = '@') Then
  Begin
@@ -6565,6 +6975,10 @@ Begin
   If Up = 'HALT' Then Begin ParsePrimary := ParseHalt; Exit; End;
   If Up = 'INC' Then Begin ParsePrimary := ParseIncDec(True); Exit; End;
   If Up = 'DEC' Then Begin ParsePrimary := ParseIncDec(False); Exit; End;
+  If Up = 'LENGTH' Then Begin ParsePrimary := ParseArrayLenHigh(False); Exit; End;
+  If Up = 'HIGH' Then Begin ParsePrimary := ParseArrayLenHigh(True); Exit; End;
+  If Up = 'LOW' Then Begin ParsePrimary := ParseArrayLow; Exit; End;
+  If Up = 'SETLENGTH' Then Begin ParsePrimary := ParseSetLengthCall; Exit; End;
 
   SI := SymFind(Name);
   If SI < 0 Then
@@ -7045,6 +7459,8 @@ Var
  Prec     : Integer;
  LeftType : Integer;
  LblF, LblT, LblE : TString;
+ ResultLbl : TString;
+ DwI : Integer;
 Begin
  ParseUnary;
 
@@ -7150,6 +7566,41 @@ Begin
    EmitInstr('MOV EAX,1');
    EmitLabel(LblE);
    LastExprTypeIdx := TypeFindByName('Boolean');
+   Continue;
+  End;
+
+  { --- Ensembles (TODO 19) : union (+), difference (-), intersection }
+  { (*). EAX/EBX contiennent deja des ADRESSES de bloc (GenLoadVar/     }
+  { ParseFieldAccess font toujours LEA pour un TYK_SET) - combine       }
+  { DWORD par DWORD (8 * 4 = MAX_SET_BYTES octets) dans un tampon        }
+  { rotatif (DPRT_SETSCRATCH0..3, SetScratchSeq) puisque, contrairement }
+  { aux scalaires, le resultat ne tient pas dans un registre EAX.        }
+  If TypeIsSet(LeftType) And ((Op = '+') Or (Op = '-') Or (Op = '*')) Then
+  Begin
+   EmitInstr('PUSH EAX');            { adresse du set gauche }
+   ParseExprPrec(Prec + 1);           { EAX = adresse du set droit }
+   EmitInstr('MOV EBX,EAX');
+   EmitInstr('POP EAX');              { EAX = gauche, EBX = droit }
+   ResultLbl := 'DPRT_SETSCRATCH' + IntToStr_(SetScratchSeq Mod MAX_SET_SCRATCH);
+   Inc(SetScratchSeq);
+   For DwI := 0 To (MAX_SET_BYTES Div 4) - 1 Do
+   Begin
+    EmitInstr('MOV ECX,DWORD PTR [EAX+' + IntToStr_(DwI * 4) + ']');
+    If Op = '+' Then
+     EmitInstr('OR ECX,DWORD PTR [EBX+' + IntToStr_(DwI * 4) + ']')
+    Else If Op = '*' Then
+     EmitInstr('AND ECX,DWORD PTR [EBX+' + IntToStr_(DwI * 4) + ']')
+    Else   { '-' : difference = gauche AND (NOT droit) }
+    Begin
+     EmitInstr('MOV EDX,DWORD PTR [EBX+' + IntToStr_(DwI * 4) + ']');
+     EmitInstr('NOT EDX');
+     EmitInstr('AND ECX,EDX');
+    End;
+    EmitInstr('MOV DWORD PTR [' + ResultLbl + '+' + IntToStr_(DwI * 4) + '],ECX');
+   End;
+   EmitInstr('LEA EAX,[' + ResultLbl + ']');
+   LastExprIsAddr  := True;
+   LastExprTypeIdx := LeftType;
    Continue;
   End;
 
@@ -7423,6 +7874,12 @@ End;
 { ------------------------------------------------------------ }
 
 Procedure EmitRuntimeData;
+Const
+ MAX_TRY_DEPTH = 32;   { profondeur maximale de try imbriques a l  }
+                        { execution (TODO 18) - pile geree par le    }
+                        { runtime, independante de toute pile de      }
+                        { portees COMPILE-TIME (contrairement a       }
+                        { LoopBreakLbl/LoopContLbl, TODO 13)          }
 Begin
  EmitComment('--- Variables et buffers runtime (RTL minimale) ---');
  EmitRaw('DPRT_HSTDOUT       DD 0');
@@ -7436,6 +7893,18 @@ Begin
  EmitRaw('DPRT_FALSESTR      DB ''FALSE'',0');
  EmitRaw('DPRT_CRLF          DB 13,10,0');
  EmitRaw('DPRT_FLOATSTUB     DB ''0.0'',0');   { FloatToStr : FPU non geree }
+ EmitComment('--- Pile de gestionnaires d exception (TODO 18) ---');
+ EmitRaw('DPRT_EXCTOP         DD 0');   { 0 = aucun gestionnaire actif }
+ EmitRaw('DPRT_EXCSTACK_ESP   DD ' + IntToStr_(MAX_TRY_DEPTH) + ' DUP(0)');
+ EmitRaw('DPRT_EXCSTACK_EBP   DD ' + IntToStr_(MAX_TRY_DEPTH) + ' DUP(0)');
+ EmitRaw('DPRT_EXCSTACK_HANDLER DD ' + IntToStr_(MAX_TRY_DEPTH) + ' DUP(0)');
+ EmitRaw('DPRT_CUREXCEPTION   DD 0');   { objet de la derniere exception levee }
+ EmitRaw('DPRT_UNHANDLEDMSG   DB ''Exception non geree: '',0');
+ EmitComment('--- Tampons ensemblistes de travail (TODO 19) ---');
+ EmitRaw('DPRT_SETSCRATCH0    DB ' + IntToStr_(MAX_SET_BYTES) + ' DUP(0)');
+ EmitRaw('DPRT_SETSCRATCH1    DB ' + IntToStr_(MAX_SET_BYTES) + ' DUP(0)');
+ EmitRaw('DPRT_SETSCRATCH2    DB ' + IntToStr_(MAX_SET_BYTES) + ' DUP(0)');
+ EmitRaw('DPRT_SETSCRATCH3    DB ' + IntToStr_(MAX_SET_BYTES) + ' DUP(0)');
  EmitBlankLine;
 End;
 
@@ -7455,6 +7924,7 @@ End;
 Procedure EmitRuntimeLibrary;
 Var
  TObjIdx, CreateSym, DestroySym, FreeSym, DestroyVMTOffset : Integer;
+ ExcIdx, ExcCreateSym, ExcMessageSym, FMsgFieldIdx, FMsgOffset : Integer;
 Begin
  EmitComment('--- RTL minimale : _DPRT_INIT ---');
  EmitLabel(DPRT_INIT);
@@ -7861,6 +8331,40 @@ Begin
  EmitEpilog;
  EmitBlankLine;
 
+ EmitComment('--- _DPRT_INTFASSIGN(NewVal, VAR Dest) : comptage de');
+ EmitComment('    references d interface (TODO 17). Relache l ancienne');
+ EmitComment('    valeur (Release, offset IUnknown standard +8) si non');
+ EmitComment('    nulle, retient la nouvelle (AddRef, +4) si non nulle,');
+ EmitComment('    puis stocke. Correct pour un flux interface->interface');
+ EmitComment('    (le pointeur pointe deja vers une vraie table de type');
+ EmitComment('    IUnknown) ; une classe assignee directement a une');
+ EmitComment('    variable d interface reste une approximation tant que');
+ EmitComment('    la table de thunks n est pas emise (TODO 24).');
+ EmitLabel(DPRT_INTF_ASSIGN);
+ EmitProlog(0);
+ EmitInstr('MOV EAX,DWORD PTR [EBP+8]');    { EAX = adresse de Dest }
+ EmitInstr('MOV EBX,DWORD PTR [EAX]');       { EBX = ancienne valeur }
+ EmitInstr('TEST EBX,EBX');
+ EmitInstr('JZ DPRT_INTFASSIGN_SKIPREL');
+ EmitInstr('MOV ECX,DWORD PTR [EBX]');       { ECX = table (thunks/VMT) }
+ EmitInstr('PUSH EBX');
+ EmitInstr('CALL DWORD PTR [ECX+8]');        { Release }
+ EmitInstr('ADD ESP,4');
+ EmitLabel('DPRT_INTFASSIGN_SKIPREL');
+ EmitInstr('MOV EDX,DWORD PTR [EBP+12]');    { EDX = nouvelle valeur }
+ EmitInstr('TEST EDX,EDX');
+ EmitInstr('JZ DPRT_INTFASSIGN_SKIPADD');
+ EmitInstr('MOV ECX,DWORD PTR [EDX]');
+ EmitInstr('PUSH EDX');
+ EmitInstr('CALL DWORD PTR [ECX+4]');        { AddRef }
+ EmitInstr('ADD ESP,4');
+ EmitLabel('DPRT_INTFASSIGN_SKIPADD');
+ EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+ EmitInstr('MOV EDX,DWORD PTR [EBP+12]');
+ EmitInstr('MOV DWORD PTR [EAX],EDX');
+ EmitEpilog;
+ EmitBlankLine;
+
  { --- TObject : corps reels de Create/Destroy/Free (TODO 15). Ces   }
  { symboles existent des le TODO 05 (SymRegisterBuiltins) ; leurs     }
  { noms mangled reels (qualifies par classe depuis le TODO 15) sont   }
@@ -7922,6 +8426,146 @@ Begin
    EmitBlankLine;
   End;
  End;
+
+ { --- Exception : corps reels de Create(Msg)/Message (TODO 18). Le  }
+ { champ cache FMessage a ete reserve par ClassSystemInit ; son        }
+ { offset est retrouve ici dynamiquement (FieldFindInClass), comme     }
+ { le reste de ce bloc retrouve les symboles via SymFindInClass. Note :}
+ { FMsgFieldIdx/FMsgOffset restent valides plus bas (_DPRT_RAISE) meme }
+ { si Exception est introuvable (-1 : le message ne sera pas affiche). }
+ FMsgFieldIdx := -1;
+ FMsgOffset   := 0;
+ ExcIdx := SymFind('Exception');
+ If ExcIdx >= 0 Then
+ Begin
+  ExcCreateSym  := SymFindInClass(ExcIdx, 'CREATE');
+  ExcMessageSym := SymFindInClass(ExcIdx, 'MESSAGE');
+  FMsgFieldIdx  := FieldFindInClass(SymTab[ExcIdx].TypeIdx, 'FMESSAGE');
+  If FMsgFieldIdx >= 0 Then FMsgOffset := FieldPool[FMsgFieldIdx].Offset;
+
+  If (ExcCreateSym >= 0) And (FMsgFieldIdx >= 0) Then
+  Begin
+   EmitComment('--- Exception.Create(Msg) : stocke Msg dans FMessage ---');
+   EmitLabel(SymTab[ExcCreateSym].MangledName);
+   EmitProlog(0);
+   EmitInstr('MOV EAX,DWORD PTR [EBP+8]');    { Self }
+   EmitInstr('MOV EDX,DWORD PTR [EBP+12]');   { Msg (pointeur de chaine) }
+   EmitInstr('MOV DWORD PTR [EAX+' + IntToStr_(FMsgOffset) + '],EDX');
+   EmitEpilog;
+   EmitBlankLine;
+  End;
+
+  If (ExcMessageSym >= 0) And (FMsgFieldIdx >= 0) Then
+  Begin
+   EmitComment('--- Exception.Message : renvoie FMessage ---');
+   EmitLabel(SymTab[ExcMessageSym].MangledName);
+   EmitProlog(0);
+   EmitInstr('MOV EAX,DWORD PTR [EBP+8]');    { Self }
+   EmitInstr('MOV EAX,DWORD PTR [EAX+' + IntToStr_(FMsgOffset) + ']');
+   EmitEpilog;
+   EmitBlankLine;
+  End;
+ End;
+
+ { --- _DPRT_RAISE(ExceptionObj) (TODO 18) : ne revient JAMAIS a son   }
+ { appelant - soit elle saute directement dans le bloc except/finally }
+ { le plus proche (pile de gestionnaires geree par le runtime,         }
+ { DPRT_EXCSTACK_*, empilee/depilee par ParseTryStmt), en restaurant   }
+ { ESP/EBP tels qu ils etaient a l entree du try correspondant (donc    }
+ { independant de la profondeur d appel entre la levee et le try -     }
+ { setjmp/longjmp classique), soit, si aucun gestionnaire n est actif,  }
+ { affiche un message d erreur (prefixe + Message, si l objet est un    }
+ { Exception ou descendant) puis libere l objet et termine le          }
+ { processus (ExitProcess).                                             }
+ FreeSym := SymFindInClass(SymFind('TObject'), 'FREE');
+ EmitComment('--- ' + DPRT_RAISE +
+  '(ExceptionObj) : relance/propagation d exception (TODO 18) ---');
+ EmitLabel(DPRT_RAISE);
+ EmitInstr('MOV DWORD PTR [DPRT_CUREXCEPTION],EAX');
+ EmitInstr('MOV EAX,DWORD PTR [DPRT_EXCTOP]');
+ EmitInstr('CMP EAX,0');
+ EmitInstr('JLE DPRT_RAISE_UNHANDLED');
+ EmitInstr('DEC EAX');
+ EmitInstr('MOV DWORD PTR [DPRT_EXCTOP],EAX');
+ EmitInstr('MOV EDX,DWORD PTR [DPRT_EXCSTACK_HANDLER+EAX*4]');
+ EmitInstr('MOV ECX,DWORD PTR [DPRT_EXCSTACK_EBP+EAX*4]');
+ EmitInstr('MOV EBX,DWORD PTR [DPRT_EXCSTACK_ESP+EAX*4]');
+ EmitInstr('MOV EBP,ECX');
+ EmitInstr('MOV ESP,EBX');
+ EmitInstr('JMP EDX');
+ EmitLabel('DPRT_RAISE_UNHANDLED');
+ EmitInstr('PUSH OFFSET DPRT_UNHANDLEDMSG');
+ EmitInstr('CALL ' + DPRT_WRITESTR);
+ EmitInstr('ADD ESP,4');
+ EmitInstr('MOV EAX,DWORD PTR [DPRT_CUREXCEPTION]');
+ EmitInstr('TEST EAX,EAX');
+ EmitInstr('JZ DPRT_RAISE_NOMSG');
+ If FMsgFieldIdx >= 0 Then
+ Begin
+  EmitInstr('MOV EDX,DWORD PTR [EAX+' + IntToStr_(FMsgOffset) + ']');
+  EmitInstr('PUSH EDX');
+  EmitInstr('CALL ' + DPRT_WRITESTR);
+  EmitInstr('ADD ESP,4');
+ End;
+ EmitLabel('DPRT_RAISE_NOMSG');
+ EmitInstr('PUSH OFFSET DPRT_CRLF');
+ EmitInstr('CALL ' + DPRT_WRITESTR);
+ EmitInstr('ADD ESP,4');
+ EmitInstr('MOV EAX,DWORD PTR [DPRT_CUREXCEPTION]');
+ EmitInstr('TEST EAX,EAX');
+ EmitInstr('JZ DPRT_RAISE_EXIT');
+ If FreeSym >= 0 Then
+ Begin
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL ' + SymTab[FreeSym].MangledName);
+  EmitInstr('ADD ESP,4');
+ End;
+ EmitLabel('DPRT_RAISE_EXIT');
+ EmitInstr('PUSH 1');
+ EmitInstr('CALL ExitProcess');
+ EmitBlankLine;
+
+ { --- _DPRT_DYNARR_SETLENGTH(VAR ArrPtr; NewLen, ElemSize) (TODO 19) --- }
+ { (Re)dimensionne un tableau dynamique. Entete cachee de 8 octets       }
+ { (compteur de references, longueur) juste avant le pointeur de         }
+ { donnees rendu a l appelant - meme principe qu une AnsiString          }
+ { classique, sans le vrai comptage de references (simplification        }
+ { documentee : un seul HeapAlloc/HeapReAlloc, jamais de copie sur       }
+ { ecriture reelle).                                                       }
+ EmitComment('--- ' + DPRT_DYNARR_SETLENGTH +
+  '(VAR ArrPtr, NewLen, ElemSize) (TODO 19) ---');
+ EmitLabel(DPRT_DYNARR_SETLENGTH);
+ EmitProlog(4);
+ EmitInstr('MOV EAX,DWORD PTR [EBP+12]');    { NewLen }
+ EmitInstr('IMUL EAX,DWORD PTR [EBP+16]');   { * ElemSize }
+ EmitInstr('ADD EAX,8');                     { + entete (refcount+longueur) }
+ EmitInstr('MOV DWORD PTR [EBP-4],EAX');
+ EmitInstr('MOV ESI,DWORD PTR [EBP+8]');     { adresse de la variable }
+ EmitInstr('MOV EBX,DWORD PTR [ESI]');       { ancien pointeur (0 si vide) }
+ EmitInstr('TEST EBX,EBX');
+ EmitInstr('JZ DPRT_DYNARR_SL_NEW');
+ EmitInstr('SUB EBX,8');                     { bloc reel = donnees - entete }
+ EmitInstr('CALL GetProcessHeap');
+ EmitInstr('PUSH DWORD PTR [EBP-4]');
+ EmitInstr('PUSH EBX');
+ EmitInstr('PUSH 0');
+ EmitInstr('PUSH EAX');
+ EmitInstr('CALL HeapReAlloc');
+ EmitInstr('JMP DPRT_DYNARR_SL_STORE');
+ EmitLabel('DPRT_DYNARR_SL_NEW');
+ EmitInstr('CALL GetProcessHeap');
+ EmitInstr('PUSH DWORD PTR [EBP-4]');
+ EmitInstr('PUSH 0');
+ EmitInstr('PUSH EAX');
+ EmitInstr('CALL HeapAlloc');
+ EmitLabel('DPRT_DYNARR_SL_STORE');
+ EmitInstr('MOV DWORD PTR [EAX],1');         { refcount (simplification) }
+ EmitInstr('MOV EBX,DWORD PTR [EBP+12]');    { NewLen }
+ EmitInstr('MOV DWORD PTR [EAX+4],EBX');     { longueur }
+ EmitInstr('ADD EAX,8');                     { EAX = pointeur de donnees }
+ EmitInstr('MOV DWORD PTR [ESI],EAX');
+ EmitEpilog;
+ EmitBlankLine;
 End;
 
 { ------------------------------------------------------------ }
@@ -8760,18 +9404,178 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
-{ ParseTryStmt : Try..Finally / Try..Except..On E: Classe Do -   }
-{ stub honnete (spec explicite : voir TODO 18) : le bloc entier  }
-{ est ignore (aucun code de nettoyage/gestion d exception genere)}
-{ mais le parseur reste synchronise grace a SkipToMatchingEnd.    }
+{ ParseStmtSeq (TODO 18) : suite d instructions jusqu a l un des }
+{ mots-cles delimiteurs (END/EXCEPT/FINALLY/UNTIL/ELSE, deja       }
+{ reconnus par ParseStmt qui s arrete sans les consommer) - comme   }
+{ la boucle interne de ParseCompoundStmt (TODO 13), mais sans le    }
+{ BEGIN/END qui l encadre, pour les corps try/except/finally qui    }
+{ n en ont pas.                                                       }
+{ ------------------------------------------------------------ }
+
+Procedure ParseStmtSeq;
+Var SavePP: Integer; Up: TString;
+Begin
+ While Not PPAtEnd Do
+ Begin
+  If PPPeekKind = TK_KEYWORD Then
+  Begin
+   Up := StrUpperCase(PPPeekVal);
+   If (Up = 'END') Or (Up = 'EXCEPT') Or (Up = 'FINALLY') Or
+      (Up = 'UNTIL') Or (Up = 'ELSE') Then Exit;
+  End;
+  SavePP := PP;
+  ParseStmt;
+  SkipOptSemi;
+  If PP = SavePP Then PPAdvance;   { filet de securite anti-boucle infinie }
+ End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseRaiseStmt (TODO 18) : RAISE expr - leve une exception (via  }
+{ _DPRT_RAISE, qui ne revient jamais) ; RAISE ; seul (sans          }
+{ expression, uniquement utile a l interieur d un bloc except)       }
+{ relance l exception courante (deja dans DPRT_CUREXCEPTION).        }
+{ ------------------------------------------------------------ }
+
+Procedure ParseRaiseStmt;
+Begin
+ PPAdvance;   { raise }
+ If (PPPeekKind = TK_PUNCT) And (PPPeekVal = ';') Then
+ Begin
+  EmitComment('raise; : relance de l exception courante');
+  EmitInstr('MOV EAX,DWORD PTR [DPRT_CUREXCEPTION]');
+ End
+ Else
+  ParseExpr;   { EAX = objet exception, typiquement Xxx.Create(...) }
+ EmitInstr('CALL ' + DPRT_RAISE);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseTryStmt (TODO 18) : TRY <corps> (EXCEPT [ON Ident: Classe   }
+{ DO] <gestionnaire> | FINALLY <nettoyage>) END. Aucun SEH natif    }
+{ Win32 n est utilise (rien a reutiliser - aucune primitive SEH ni  }
+{ prefixe fs: n existe ailleurs dans le fichier) : la spec du       }
+{ TODO 18 autorise explicitement le repli sur une pile de            }
+{ gestionnaires geree par le runtime (DPRT_EXCSTACK_*, EmitRuntimeData}
+{ /EmitRuntimeLibrary) - equivalent a un setjmp/longjmp classique :   }
+{ TRY sauvegarde ESP/EBP courants et l adresse du gestionnaire dans   }
+{ une case de la pile RUNTIME (profondeur geree dynamiquement, donc   }
+{ correcte quel que soit le nombre d appels de procedures entre le    }
+{ TRY et le RAISE qui le declenche - contrairement a LoopBreakLbl/    }
+{ LoopContLbl, TODO 13, qui sont une pile COMPILE-TIME et ne             }
+{ conviendraient pas ici). _DPRT_RAISE restaure ESP/EBP depuis cette   }
+{ case puis saute directement dans le gestionnaire.                    }
+{ EXCEPT et FINALLY sont mutuellement exclusifs dans un meme TRY       }
+{ (comme en Delphi reel - les combiner exige d imbriquer deux TRY).    }
+{ FINALLY doit s executer QUE l exception soit levee ou non ; son      }
+{ code est donc compile DEUX FOIS (chemin normal, puis chemin           }
+{ exception suivi d une relance) en rejouant les memes jetons (PP      }
+{ restaure) - LabelGen garantit des etiquettes fraiches a chaque        }
+{ compilation, donc aucune collision entre les deux copies.             }
 { ------------------------------------------------------------ }
 
 Procedure ParseTryStmt;
+Var
+ LblHandler, LblEnd, ExcVarName, ExcTypeName : TString;
+ ExcTypeIdx, SI, SavePP : Integer;
 Begin
- WarnMsg('try/except/finally non encore implemente (attend TODO 18) : ' +
-  'bloc ignore');
  PPAdvance;   { try }
- SkipToMatchingEnd;
+
+ LblHandler := LabelGen;
+ LblEnd     := LabelGen;
+
+ EmitComment('try : empiler un cadre de gestionnaire d exception');
+ EmitInstr('MOV EAX,DWORD PTR [DPRT_EXCTOP]');
+ EmitInstr('MOV DWORD PTR [DPRT_EXCSTACK_ESP+EAX*4],ESP');
+ EmitInstr('MOV DWORD PTR [DPRT_EXCSTACK_EBP+EAX*4],EBP');
+ EmitInstr('MOV DWORD PTR [DPRT_EXCSTACK_HANDLER+EAX*4],OFFSET ' + LblHandler);
+ EmitInstr('INC EAX');
+ EmitInstr('MOV DWORD PTR [DPRT_EXCTOP],EAX');
+
+ ParseStmtSeq;   { corps protege }
+
+ If (PPPeekKind = TK_KEYWORD) And (StrUpperCase(PPPeekVal) = 'FINALLY') Then
+ Begin
+  PPAdvance;   { finally }
+
+  EmitComment('finally (chemin normal) : depiler le cadre puis nettoyer');
+  EmitInstr('DEC DWORD PTR [DPRT_EXCTOP]');
+  SavePP := PP;
+  ParseStmtSeq;
+  EmitInstr('JMP ' + LblEnd);
+
+  EmitComment('finally (chemin exception, cadre deja depile) : ' +
+   'nettoyer puis relancer');
+  EmitLabel(LblHandler);
+  PP := SavePP;
+  ParseStmtSeq;
+  EmitInstr('MOV EAX,DWORD PTR [DPRT_CUREXCEPTION]');
+  EmitInstr('CALL ' + DPRT_RAISE);
+
+  EmitLabel(LblEnd);
+  PPMatch('end');
+  SkipOptSemi;
+  Exit;
+ End;
+
+ If (PPPeekKind = TK_KEYWORD) And (StrUpperCase(PPPeekVal) = 'EXCEPT') Then
+ Begin
+  PPAdvance;   { except }
+
+  EmitComment('except (chemin normal) : depiler le cadre, sauter le ' +
+   'gestionnaire');
+  EmitInstr('DEC DWORD PTR [DPRT_EXCTOP]');
+  EmitInstr('JMP ' + LblEnd);
+
+  EmitLabel(LblHandler);
+  If (PPPeekKind = TK_IDENT) And (StrUpperCase(PPPeekVal) = 'ON') Then
+  Begin
+   PPAdvance;   { on }
+   ExcVarName := TokenPool[PP].Val;
+   PPAdvance;   { E }
+   PPMatch(':');
+   ExcTypeName := TokenPool[PP].Val;
+   PPAdvance;   { Classe }
+
+   { Aucune verification dynamique du type (pas de vraie RTTI d       }
+   { instance - meme simplification que is/as, TODO 15) : E est lie     }
+   { inconditionnellement. ExcTypeIdx sert seulement a typer E pour     }
+   { l acces a ses membres (Message, ClassName...).                      }
+   ExcTypeIdx := TypeFindByName(ExcTypeName);
+   If ExcTypeIdx < 0 Then
+   Begin
+    SI := SymFind(ExcTypeName);
+    If SI >= 0 Then ExcTypeIdx := SymTab[SI].TypeIdx;
+   End;
+   If ExcTypeIdx < 0 Then ExcTypeIdx := TypeFindByName('Integer');
+
+   If (PPPeekKind = TK_KEYWORD) And (StrUpperCase(PPPeekVal) = 'DO') Then
+    PPAdvance;
+
+   { E : alias direct vers la variable globale DPRT_CUREXCEPTION -      }
+   { aucune copie locale necessaire (meme technique que les proprietes  }
+   { en lecture directe sur un champ, TODO 16).                          }
+   SI := SymAdd(ExcVarName, SK_VAR, ExcTypeIdx);
+   If SI >= 0 Then
+   Begin
+    SymTab[SI].IsGlobal    := True;
+    SymTab[SI].MangledName := 'DPRT_CUREXCEPTION';
+   End;
+  End;
+
+  ParseStmtSeq;
+
+  EmitLabel(LblEnd);
+  PPMatch('end');
+  SkipOptSemi;
+  Exit;
+ End;
+
+ { ni FINALLY ni EXCEPT : bloc TRY vide de fait - depiler le cadre }
+ { par securite avant de continuer.                                  }
+ EmitInstr('DEC DWORD PTR [DPRT_EXCTOP]');
+ PPMatch('end');
+ SkipOptSemi;
 End;
 
 { ------------------------------------------------------------ }
@@ -8789,6 +9593,7 @@ Procedure ParseStmt;
 Var
  Up, Name, FieldName : TString;
  SI, BaseTypeIdx, FI, First, Cnt, PropIdx : Integer;
+ ElemTypeIdx, ElemSize : Integer;
  Found  : Boolean;
  DestOp : TString;
 Begin
@@ -8804,6 +9609,8 @@ Begin
   If Up = 'END' Then Exit;
   If Up = 'UNTIL' Then Exit;
   If Up = 'ELSE' Then Exit;
+  If Up = 'EXCEPT' Then Exit;    { TODO 18 : borne d un bloc try, jamais }
+  If Up = 'FINALLY' Then Exit;   { consommee ici - voir ParseStmtSeq     }
 
   If Up = 'BEGIN' Then Begin ParseCompoundStmt; Exit; End;
   If Up = 'IF' Then Begin ParseIfStmt; Exit; End;
@@ -8812,6 +9619,7 @@ Begin
   If Up = 'FOR' Then Begin ParseForStmt; Exit; End;
   If Up = 'CASE' Then Begin ParseCaseStmt; Exit; End;
   If Up = 'TRY' Then Begin ParseTryStmt; Exit; End;
+  If Up = 'RAISE' Then Begin ParseRaiseStmt; Exit; End;
 
   WarnMsg('instruction non geree: ' + PPPeekVal);
   PPAdvance;
@@ -8872,7 +9680,9 @@ Begin
    Exit;
   End;
 
-  { Propriete tableau par defaut (TODO 16) : Ident[Index] := expr }
+  { Ident[Index] := expr : indexation de tableau (TODO 19), ou repli   }
+  { sur la propriete tableau par defaut (TODO 16) si Ident n est pas    }
+  { un tableau - meme jeton declencheur, distingue par le type de Ident.}
   If (PP + 1 < TokenCount) And (TokenPool[PP + 1].Kind = TK_PUNCT) And
      (TokenPool[PP + 1].Val = '[') And PPMatchingBracketThenAssign(PP + 1) Then
   Begin
@@ -8886,6 +9696,36 @@ Begin
    End;
 
    BaseTypeIdx := TypeResolve(SymTab[SI].TypeIdx);
+
+   If (BaseTypeIdx >= 0) And (BaseTypeIdx < TypeCount) And
+      (TypeTab[BaseTypeIdx].Kind = TYK_ARRAY) Then
+   Begin
+    { Ecriture indexee (TODO 19) : meme calcul d adresse que la        }
+    { lecture (ParsePostfix) - EBX joue le role de "case 0", que le     }
+    { tableau soit statique (adresse) ou dynamique (pointeur charge     }
+    { par valeur, Lo toujours 0).                                        }
+    PPAdvance;                   { ident }
+    GenLoadVar(Name);
+    EmitInstr('MOV EBX,EAX');
+    PPAdvance;                    { [ }
+    ElemTypeIdx := TypeTab[BaseTypeIdx].BaseTypeIdx;
+    ElemSize    := TypeSizeofIdx(ElemTypeIdx);
+    ParseExpr;                     { EAX = index }
+    If TypeTab[BaseTypeIdx].Lo <> 0 Then
+     EmitInstr('SUB EAX,' + IntToStr_(TypeTab[BaseTypeIdx].Lo));
+    If ElemSize <> 1 Then
+     EmitInstr('IMUL EAX,' + IntToStr_(ElemSize));
+    EmitInstr('ADD EBX,EAX');
+    PPMatch(']');
+    PPMatch(':=');
+    ParseExpr;                      { EAX = valeur a ecrire }
+    If TypeNeedsDestAddr(ElemTypeIdx) Then
+     EmitAssign('EBX', 'EAX', ElemTypeIdx)
+    Else
+     EmitAssign(SizedPtr(ElemTypeIdx) + '[EBX]', 'EAX', ElemTypeIdx);
+    Exit;
+   End;
+
    PropIdx := -1;
    If (BaseTypeIdx >= 0) And (BaseTypeIdx < TypeCount) And
       (TypeTab[BaseTypeIdx].Kind = TYK_CLASS) Then
@@ -9096,6 +9936,7 @@ Var
  HasTest, HasJz, HasJmp, HasCmp1, HasCmp2 : Boolean;
  HasBreakJmp, HasContJmp, HasExitJmp, HasExit42, HasWriteStr : Boolean;
  HasFieldStore : Boolean;
+ HasExcPush, HasExcPop, HasReRaise : Boolean;
 
  Procedure Tok(Kind: TTokenKind; Const Val: TString; IntVal: LongInt);
  Var T: TToken;
@@ -9330,7 +10171,9 @@ Begin
  StmtAssert('champ Age a l offset 4 (0 reserve au pointeur de VMT)',
   FieldPool[FAge].Offset = 4);
 
- { --- Try : bloc entierement ignore, mais parseur synchronise --- }
+ { --- Try..Finally : geree par une pile de gestionnaires runtime,    }
+ { TODO 18 - le contenu des DEUX blocs (protege et nettoyage) est      }
+ { desormais reellement compile (plus un stub qui ignore tout).        }
  TokenPoolInit;
  Tok(TK_KEYWORD, 'try', 0);
  Tok(TK_IDENT, 'WriteLn', 0);
@@ -9349,18 +10192,28 @@ Begin
  EmitOpen(TmpFile);
  ParseStmt;
  EmitClose('DPSTMTSELFTEST_END');
- StmtAssert('try consomme tout le bloc jusqu au END correspondant', PPAtEnd);
+ StmtAssert('try..finally consomme tout le bloc jusqu au END correspondant',
+  PPAtEnd);
 
  HasWriteStr := False;
+ HasExcPush := False; HasExcPop := False; HasReRaise := False;
  {$I-} Assign(F, TmpFile); Reset(F); {$I+}
  While Not Eof(F) Do
  Begin
   ReadLn(F, Line);
   If Pos('CALL ' + DPRT_WRITESTR, Line) > 0 Then HasWriteStr := True;
+  If Pos('MOV DWORD PTR [DPRT_EXCTOP],EAX', Line) > 0 Then HasExcPush := True;
+  If Pos('DEC DWORD PTR [DPRT_EXCTOP]', Line) > 0 Then HasExcPop := True;
+  If Pos('CALL ' + DPRT_RAISE, Line) > 0 Then HasReRaise := True;
  End;
  Close(F); Erase(F);
- StmtAssert('try (stub) n execute pas le contenu du bloc',
-  Not HasWriteStr);
+ StmtAssert('try..finally compile bien le contenu des deux blocs',
+  HasWriteStr);
+ StmtAssert('try empile un cadre de gestionnaire (DPRT_EXCTOP)',
+  HasExcPush);
+ StmtAssert('finally (chemin normal) depile le cadre', HasExcPop);
+ StmtAssert('finally relance apres nettoyage (chemin exception)',
+  HasReRaise);
 
  SymInit;
  DataInit; DataInit2;
@@ -9598,8 +10451,11 @@ End;
 { Forward declarations : une procedure/fonction imbriquee (TODO 14)  }
 { apparait dans la meme position qu une section de declarations       }
 { locales - ParseProcOrFuncDecl et ParseDeclSection s appellent donc  }
-{ mutuellement.                                                        }
+{ mutuellement. ParseTypeExpr (TODO 19, definie bien plus bas avec     }
+{ ParseTypeDecl) analyse le type d une variable locale, y compris      }
+{ array/record/set inline.                                              }
 Procedure ParseProcOrFuncDecl; Forward;
+Function ParseTypeExpr: Integer; Forward;
 
 { ------------------------------------------------------------ }
 { ParseDeclSection : sections Var (locales, TODO 09) et          }
@@ -9615,7 +10471,6 @@ Var
  Up    : TString;
  Names : Array[0..MAX_PARAM_GROUP - 1] Of TString;
  NCount, I, TIdx : Integer;
- TName : TString;
 Begin
  While PPPeekKind = TK_KEYWORD Do
  Begin
@@ -9659,14 +10514,7 @@ Begin
    Until Not PPMatch(',');
 
    PPMatch(':');
-   TIdx := TypeFindByName('Integer');
-   If PPPeekKind In [TK_IDENT, TK_KEYWORD] Then
-   Begin
-    TName := TokenPool[PP].Val;
-    PPAdvance;
-    TIdx := TypeFindByName(TName);
-    If TIdx < 0 Then TIdx := TypeFindByName('Integer');
-   End;
+   TIdx := ParseTypeExpr;   { nom simple, ou array/record/set inline (TODO 19) }
 
    For I := 0 To NCount - 1 Do LocalAdd(Names[I], TIdx);
    SkipOptSemi;
@@ -10227,6 +11075,9 @@ End;
 Procedure ClassSystemInit;
 Var
  TObjIdx, ExcIdx, TObjTypeIdx, ExcTypeIdx, DestroySym : Integer;
+ IUnkIdx, IUnkTypeIdx : Integer;
+ I, SubIdx, SubTypeIdx : Integer;
+ ExcSubNames : Array[0..3] Of TString;
 Begin
  TObjIdx := SymFind('TObject');
  If TObjIdx < 0 Then Exit;
@@ -10247,6 +11098,47 @@ Begin
   Begin
    FieldInitInherit(ExcTypeIdx);
    VMTInit(ExcTypeIdx);
+   { FMessage (TODO 18) : champ cache derriere Exception.Message/     }
+   { Create(Msg), corps reels ecrits directement dans                 }
+   { EmitRuntimeLibrary (comme TObject.Create/Destroy/Free, TODO 15). }
+   TypeAddField(ExcTypeIdx, 'FMESSAGE', TypeFindByName('String'));
+  End;
+
+  { Hierarchie minimale d exceptions (TODO 18) : memes champs/VMT que }
+  { Exception (aucun ajout propre), simplement idempotent comme       }
+  { ci-dessus.                                                          }
+  ExcSubNames[0] := 'EDivByZero';
+  ExcSubNames[1] := 'EInvalidCast';
+  ExcSubNames[2] := 'EAccessViolation';
+  ExcSubNames[3] := 'ERangeError';
+  For I := 0 To 3 Do
+  Begin
+   SubIdx := SymFind(ExcSubNames[I]);
+   If SubIdx >= 0 Then
+   Begin
+    SubTypeIdx := SymTab[SubIdx].TypeIdx;
+    If TypeTab[SubTypeIdx].FieldFirst < 0 Then
+    Begin
+     FieldInitInherit(SubTypeIdx);
+     VMTInit(SubTypeIdx);
+    End;
+   End;
+  End;
+ End;
+
+ { IUnknown (TODO 17) : racine des interfaces, meme traitement que    }
+ { TObject ci-dessus mais sans FieldInitInherit (une interface n a     }
+ { pas de disposition memoire propre, seulement une VMT de signatures).}
+ IUnkIdx := SymFind('IUnknown');
+ If IUnkIdx >= 0 Then
+ Begin
+  IUnkTypeIdx := SymTab[IUnkIdx].TypeIdx;
+  If TypeTab[IUnkTypeIdx].VMTFirst < 0 Then
+  Begin
+   VMTInit(IUnkTypeIdx);
+   VMTAddMethod(IUnkTypeIdx, 'QUERYINTERFACE', -1);
+   VMTAddMethod(IUnkTypeIdx, 'ADDREF', -1);
+   VMTAddMethod(IUnkTypeIdx, 'RELEASE', -1);
   End;
  End;
 End;
@@ -10328,7 +11220,6 @@ Procedure ParseClassFieldGroup(ClassTypeIdx: Integer);
 Var
  Names : Array[0..MAX_PARAM_GROUP - 1] Of TString;
  NCount, I, TIdx : Integer;
- TName : TString;
 Begin
  NCount := 0;
  Repeat
@@ -10341,14 +11232,7 @@ Begin
  Until Not PPMatch(',');
 
  PPMatch(':');
- TIdx := TypeFindByName('Integer');
- If PPPeekKind In [TK_IDENT, TK_KEYWORD] Then
- Begin
-  TName := TokenPool[PP].Val;
-  PPAdvance;
-  TIdx := TypeFindByName(TName);
-  If TIdx < 0 Then TIdx := TypeFindByName('Integer');
- End;
+ TIdx := ParseTypeExpr;   { nom simple, ou array/record/set inline (TODO 19) }
 
  For I := 0 To NCount - 1 Do TypeAddField(ClassTypeIdx, Names[I], TIdx);
  SkipOptSemi;
@@ -10579,6 +11463,156 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
+{ ClassEnsureIUnknownMethods (TODO 17) : ajoute une seule fois,   }
+{ pour une classe (ou l un de ses ancetres) implementant au moins  }
+{ une interface, le champ cache FRefCount (compteur de references)}
+{ et les trois methodes IUnknown (QueryInterface/AddRef/Release), }
+{ avec de vrais corps ASM ecrits directement ici (comme            }
+{ TObject.Create/Destroy/Free, EmitRuntimeLibrary) plutot que via  }
+{ ParseMethodBodyDecl, puisque le code source Delphi ne fournit     }
+{ jamais leur corps lui-meme. Idempotent : verifie via              }
+{ SymFindInClassChain (et non SymFindInClass) pour que la version    }
+{ heritee d une classe ancetre soit reutilisee telle quelle, sans   }
+{ dupliquer ni le champ ni les methodes chez le descendant.          }
+{ ------------------------------------------------------------ }
+
+Procedure ClassEnsureIUnknownMethods(ClassSymIdx, ClassTypeIdx: Integer);
+Var
+ FRCFieldIdx, FRCOffset, IntIdx : Integer;
+ QISym, ARSym, RelSym, FreeSym : Integer;
+ ClassNameUp, DoneLbl : TString;
+Begin
+ If SymFindInClassChain(ClassTypeIdx, 'QUERYINTERFACE') >= 0 Then Exit;
+
+ IntIdx      := TypeFindByName('Integer');
+ FRCFieldIdx := TypeAddField(ClassTypeIdx, 'FREFCOUNT', IntIdx);
+ FRCOffset   := FieldPool[FRCFieldIdx].Offset;
+ ClassNameUp := StrUpperCase(SymTab[ClassSymIdx].Name);
+
+ SymEnterClassScope(ClassSymIdx);
+ QISym  := SymAddForce('QueryInterface', SK_METHOD, IntIdx);
+ ARSym  := SymAddForce('AddRef', SK_METHOD, IntIdx);
+ RelSym := SymAddForce('Release', SK_METHOD, IntIdx);
+ SymTab[QISym].IsExternal  := False;
+ SymTab[ARSym].IsExternal  := False;
+ SymTab[RelSym].IsExternal := False;
+ SymTab[QISym].MangledName  := DP_FUNC_PFX + ClassNameUp + '_QUERYINTERFACE';
+ SymTab[ARSym].MangledName  := DP_FUNC_PFX + ClassNameUp + '_ADDREF';
+ SymTab[RelSym].MangledName := DP_FUNC_PFX + ClassNameUp + '_RELEASE';
+ SymLeaveScope;
+
+ VMTAddMethod(ClassTypeIdx, 'QUERYINTERFACE', QISym);
+ VMTAddMethod(ClassTypeIdx, 'ADDREF', ARSym);
+ VMTAddMethod(ClassTypeIdx, 'RELEASE', RelSym);
+
+ FreeSym := SymFindInClass(SymFind('TObject'), 'FREE');
+
+ EmitComment('--- ' + SymTab[ClassSymIdx].Name +
+  ' : methodes IUnknown generees automatiquement (TODO 17) ---');
+
+ EmitLabel(SymTab[QISym].MangledName);
+ EmitProlog(0);
+ EmitComment('Approximation (TODO 17) : pas de verification de GUID');
+ EmitComment('reelle (RTTI d instance non implementee) - echoue toujours.');
+ EmitInstr('MOV EAX,-2147467262');   { E_NOINTERFACE }
+ EmitEpilog;
+ EmitBlankLine;
+
+ EmitLabel(SymTab[ARSym].MangledName);
+ EmitProlog(0);
+ EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+ EmitInstr('MOV EDX,DWORD PTR [EAX+' + IntToStr_(FRCOffset) + ']');
+ EmitInstr('INC EDX');
+ EmitInstr('MOV DWORD PTR [EAX+' + IntToStr_(FRCOffset) + '],EDX');
+ EmitInstr('MOV EAX,EDX');
+ EmitEpilog;
+ EmitBlankLine;
+
+ DoneLbl := SymTab[RelSym].MangledName + '_DONE';
+ EmitLabel(SymTab[RelSym].MangledName);
+ EmitProlog(0);
+ EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+ EmitInstr('MOV EDX,DWORD PTR [EAX+' + IntToStr_(FRCOffset) + ']');
+ EmitInstr('DEC EDX');
+ EmitInstr('MOV DWORD PTR [EAX+' + IntToStr_(FRCOffset) + '],EDX');
+ EmitInstr('CMP EDX,0');
+ EmitInstr('JG ' + DoneLbl);
+ EmitInstr('PUSH DWORD PTR [EBP+8]');
+ If FreeSym >= 0 Then
+  EmitInstr('CALL ' + SymTab[FreeSym].MangledName)
+ Else
+  WarnMsg('TObject.Free introuvable (ne devrait jamais arriver)');
+ EmitInstr('ADD ESP,4');
+ EmitLabel(DoneLbl);
+ EmitInstr('MOV EAX,EDX');
+ EmitEpilog;
+ EmitBlankLine;
+End;
+
+{ ------------------------------------------------------------ }
+{ ClassImplementInterface (TODO 17) : enregistre que ClassTypeIdx }
+{ implemente l interface nommee IfaceName (resolue via SymFind).   }
+{ Genere d abord FRefCount/QueryInterface/AddRef/Release si         }
+{ necessaire (ClassEnsureIUnknownMethods), puis pour chaque methode }
+{ de l interface (VMT de IfaceTypeIdx, deja etendue par VMTInit avec}
+{ les 3 methodes IUnknown heritees) retrouve l offset VMT reel de   }
+{ la classe qui l implemente - la rendant virtuelle au passage       }
+{ (VMTAddMethod) si elle ne l etait pas deja, puisqu une methode      }
+{ satisfaisant une interface doit etre atteignable par decalage       }
+{ constant comme n importe quelle autre methode virtuelle - et         }
+{ enregistre le thunk correspondant (IfaceImplAddThunk, TODO 08).      }
+{ L emission reelle de la table de thunks elle-meme (donnees + code   }
+{ des trampolines) reste differee au TODO 24, comme la VMT de classe.  }
+{ ------------------------------------------------------------ }
+
+Procedure ClassImplementInterface(ClassSymIdx, ClassTypeIdx: Integer;
+ Const IfaceName: TString);
+Var
+ IfaceSymIdx, IfaceTypeIdx, ImplIdx : Integer;
+ I, ClassVMTOffset, MethodSymIdx : Integer;
+Begin
+ IfaceSymIdx := SymFind(IfaceName);
+ If (IfaceSymIdx < 0) Or (SymTab[IfaceSymIdx].Kind <> SK_INTERFACE) Then
+ Begin
+  WarnMsg('interface inconnue: ' + IfaceName);
+  Exit;
+ End;
+ IfaceTypeIdx := SymTab[IfaceSymIdx].TypeIdx;
+
+ ClassEnsureIUnknownMethods(ClassSymIdx, ClassTypeIdx);
+
+ ImplIdx := IfaceImplAdd(ClassTypeIdx, IfaceTypeIdx, TypeTab[IfaceTypeIdx].GUID);
+
+ If TypeTab[IfaceTypeIdx].VMTFirst >= 0 Then
+  For I := TypeTab[IfaceTypeIdx].VMTFirst To
+   TypeTab[IfaceTypeIdx].VMTFirst + TypeTab[IfaceTypeIdx].VMTCount - 1 Do
+  Begin
+   ClassVMTOffset := VMTFindMethod(ClassTypeIdx, VMTEntryPool[I].MethodName);
+   If ClassVMTOffset < 0 Then
+   Begin
+    MethodSymIdx := SymFindInClassChain(ClassTypeIdx, VMTEntryPool[I].MethodName);
+    If MethodSymIdx >= 0 Then
+     ClassVMTOffset := VMTAddMethod(ClassTypeIdx, VMTEntryPool[I].MethodName,
+      MethodSymIdx)
+    Else
+    Begin
+     WarnMsg('la classe ' + SymTab[ClassSymIdx].Name +
+      ' n''implemente pas ' + VMTEntryPool[I].MethodName +
+      ' (interface ' + IfaceName + ')');
+     Continue;
+    End;
+   End;
+   If ImplIdx >= 0 Then
+    IfaceImplAddThunk(ImplIdx, VMTEntryPool[I].MethodName, ClassVMTOffset);
+  End;
+End;
+
+Const
+ MAX_IFACE_PER_CLASS = 8;   { interfaces implementees par une meme     }
+                             { classe dans une seule liste d ancetres  }
+                             { class(Parent, I1, I2, ...), TODO 17     }
+
+{ ------------------------------------------------------------ }
 { ParseClassDecl : CLASS[(Parent[, IInterface...])] [SEALED]      }
 { [ABSTRACT] <sections de visibilite/champs/methodes/proprietes>  }
 { END - le nom de la classe (ClassName) a deja ete lu par          }
@@ -10587,15 +11621,22 @@ End;
 { (private/protected/public/published/automated) sont reconnues    }
 { mais pas appliquees/implementees - une seule "unite" existe pour  }
 { l instant (TODO 23). Retourne le TypeIdx de la nouvelle classe.    }
+{ Les interfaces supplementaires de la liste d ancetres (TODO 17)   }
+{ sont implementees APRES le corps entier de la classe (voir         }
+{ ClassImplementInterface), afin que les methodes qui les             }
+{ satisfont puissent etre declarees n importe ou dans ce corps.       }
 { ------------------------------------------------------------ }
 
 Function ParseClassDecl(Const ClassName: TString): Integer;
 Var
  ParentName, Up : TString;
  ParentSymIdx, ClassSymIdx, ClassTypeIdx, Found : Integer;
+ IfaceNames : Array[0..MAX_IFACE_PER_CLASS - 1] Of TString;
+ IfaceCount, II : Integer;
 Begin
  PPAdvance;   { class }
 
+ IfaceCount := 0;
  ParentSymIdx := SymFind('TObject');
  If PPMatch('(') Then
  Begin
@@ -10604,8 +11645,20 @@ Begin
   Found := SymFind(ParentName);
   If Found >= 0 Then ParentSymIdx := Found
   Else WarnMsg('classe ancetre inconnue: ' + ParentName);
-  { interfaces supplementaires (TODO 17) : reconnues, non geres }
-  While PPMatch(',') Do PPAdvance;
+  { interfaces supplementaires (TODO 17) : chaque identificateur     }
+  { suivant apres la premiere virgule est resolu et implemente une   }
+  { fois le corps de la classe entierement analyse (voir plus bas),  }
+  { pour que ses propres methodes (potentiellement declarees plus   }
+  { loin dans ce meme corps) soient deja visibles.                    }
+  While PPMatch(',') Do
+  Begin
+   If IfaceCount < MAX_IFACE_PER_CLASS Then
+   Begin
+    IfaceNames[IfaceCount] := TokenPool[PP].Val;
+    Inc(IfaceCount);
+   End;
+   PPAdvance;
+  End;
   PPMatch(')');
  End;
 
@@ -10670,20 +11723,397 @@ Begin
  PPMatch('end');
  SkipOptSemi;
 
+ For II := 0 To IfaceCount - 1 Do
+  ClassImplementInterface(ClassSymIdx, ClassTypeIdx, IfaceNames[II]);
+
  ParseClassDecl := ClassTypeIdx;
 End;
 
 { ------------------------------------------------------------ }
+{ ParseInterfaceMethodDecl (TODO 17) : PROCEDURE|FUNCTION Nom     }
+{ (params)[: Type]; a l interieur d un corps d interface. Proche   }
+{ de ParseClassMethodDecl (meme analyse de signature) mais bien     }
+{ plus simple : ni constructeur/destructeur/methode de classe, ni   }
+{ directives virtual/override (une methode d interface est          }
+{ TOUJOURS implicitement abstraite - donc TOUJOURS ajoutee a la      }
+{ VMT de l interface, sans condition). Contrairement aux proprietes  }
+{ ou methodes de classe qui comptent seulement l arite, une methode  }
+{ d interface recoit un VRAI symbole SK_METHOD (IsExternal=True a    }
+{ jamais, aucun corps ne sera jamais fourni) : c est ce symbole,      }
+{ retrouve via VMTFindMethodSym, qui donne son type de retour a tout }
+{ appel a travers une variable de type interface (ParseFieldAccess). }
+{ ------------------------------------------------------------ }
+
+Procedure ParseInterfaceMethodDecl(IfaceSymIdx, IfaceTypeIdx: Integer);
+Var
+ Name, TName : TString;
+ IsFunc : Boolean;
+ MethodSymIdx, RetTypeIdx, PTypeIdx, GI, ParamCountLocal : Integer;
+Begin
+ IsFunc := StrUpperCase(PPPeekVal) = 'FUNCTION';
+ PPAdvance;   { procedure|function }
+ Name := TokenPool[PP].Val;
+ PPAdvance;
+
+ SymEnterClassScope(IfaceSymIdx);
+ MethodSymIdx := SymAddForce(Name, SK_METHOD, -1);
+ If MethodSymIdx >= 0 Then
+ Begin
+  SymTab[MethodSymIdx].IsExternal  := True;   { abstraite : jamais de corps }
+  SymTab[MethodSymIdx].MangledName :=
+   DP_FUNC_PFX + SymTab[IfaceSymIdx].Name + '_' + StrUpperCase(Name);
+ End;
+ SymLeaveScope;
+
+ ParamCountLocal := 0;
+ If PPMatch('(') Then
+ Begin
+  If Not PPMatch(')') Then
+  Begin
+   Repeat
+    If PPPeekKind = TK_KEYWORD Then
+    Begin
+     If (StrUpperCase(PPPeekVal) = 'VAR') Or
+        (StrUpperCase(PPPeekVal) = 'CONST') Or
+        (StrUpperCase(PPPeekVal) = 'OUT') Then PPAdvance;
+    End;
+
+    GI := 0;
+    Repeat
+     Inc(GI);
+     PPAdvance;
+    Until Not PPMatch(',');
+
+    PTypeIdx := TypeFindByName('Integer');
+    If PPMatch(':') Then
+    Begin
+     TName := TokenPool[PP].Val;
+     PPAdvance;
+     PTypeIdx := TypeFindByName(TName);
+     If PTypeIdx < 0 Then PTypeIdx := TypeFindByName('Integer');
+    End;
+
+    If PPMatch('=') Then ParseExpr;   { defaut : analyse et jete }
+
+    ParamCountLocal := ParamCountLocal + GI;
+   Until Not PPMatch(';');
+   PPMatch(')');
+  End;
+ End;
+
+ RetTypeIdx := TypeFindByName('Integer');
+ If IsFunc And PPMatch(':') Then
+ Begin
+  TName := TokenPool[PP].Val;
+  PPAdvance;
+  RetTypeIdx := TypeFindByName(TName);
+  If RetTypeIdx < 0 Then RetTypeIdx := TypeFindByName('Integer');
+ End;
+
+ If MethodSymIdx >= 0 Then
+ Begin
+  SymTab[MethodSymIdx].TypeIdx    := RetTypeIdx;
+  SymTab[MethodSymIdx].ParamCount := ParamCountLocal;
+ End;
+
+ PPMatch(';');
+
+ If MethodSymIdx >= 0 Then VMTAddMethod(IfaceTypeIdx, Name, MethodSymIdx);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseInterfaceDecl : INTERFACE[(Parent)] ['GUID'] <methodes>    }
+{ END - le nom de l interface (IfaceName) a deja ete lu par         }
+{ l appelant (ParseTypeDecl). Sans ancetre explicite, herite de     }
+{ IUnknown (comme en Delphi reel), qui apporte deja QueryInterface/ }
+{ AddRef/Release aux offsets VMT 0/4/8 (ClassSystemInit) - toute     }
+{ methode declaree ici s ajoute donc APRES ces trois-la. Retourne    }
+{ le TypeIdx de la nouvelle interface.                                }
+{ ------------------------------------------------------------ }
+
+Function ParseInterfaceDecl(Const IfaceName: TString): Integer;
+Var
+ ParentName, Up, GUIDStr : TString;
+ ParentSymIdx, IfaceSymIdx, IfaceTypeIdx, Found : Integer;
+Begin
+ PPAdvance;   { interface }
+
+ ParentSymIdx := SymFind('IUnknown');
+ If PPMatch('(') Then
+ Begin
+  ParentName := TokenPool[PP].Val;
+  PPAdvance;
+  Found := SymFind(ParentName);
+  If Found >= 0 Then ParentSymIdx := Found
+  Else WarnMsg('interface ancetre inconnue: ' + ParentName);
+  PPMatch(')');
+ End;
+
+ { GUID optionnel, entre crochets droits (syntaxe Delphi reelle) -    }
+ { accepte aussi la chaine seule, sans crochets, par souplesse.        }
+ GUIDStr := '';
+ If PPMatch('[') Then
+ Begin
+  If PPPeekKind = TK_STRING Then
+  Begin
+   GUIDStr := TokenPool[PP].Val;
+   PPAdvance;
+  End;
+  PPMatch(']');
+ End
+ Else If PPPeekKind = TK_STRING Then
+ Begin
+  GUIDStr := TokenPool[PP].Val;
+  PPAdvance;
+ End;
+
+ IfaceSymIdx  := SymDeclareClass(IfaceName, SK_INTERFACE, ParentSymIdx);
+ IfaceTypeIdx := SymTab[IfaceSymIdx].TypeIdx;
+ VMTInit(IfaceTypeIdx);
+ TypeTab[IfaceTypeIdx].GUID := GUIDStr;
+
+ While Not PPAtEnd Do
+ Begin
+  If PPPeekKind = TK_KEYWORD Then
+  Begin
+   Up := StrUpperCase(PPPeekVal);
+   If Up = 'END' Then Break;
+   If (Up = 'PROCEDURE') Or (Up = 'FUNCTION') Then
+   Begin
+    ParseInterfaceMethodDecl(IfaceSymIdx, IfaceTypeIdx);
+    Continue;
+   End;
+   PPAdvance;
+   Continue;
+  End;
+  Break;   { filet de securite anti-boucle infinie }
+ End;
+
+ PPMatch('end');
+ SkipOptSemi;
+
+ ParseInterfaceDecl := IfaceTypeIdx;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseTypeExpr (TODO 19) : analyse une expression de type -      }
+{ ARRAY [Lo..Hi | rien = dynamique] OF T, RECORD ... END,           }
+{ SET OF T, ou (repli) un simple nom de type deja connu. Recursif   }
+{ (l element d un tableau/ensemble, ou le type d un champ de         }
+{ record, peut lui-meme etre n importe laquelle de ces formes).      }
+{ Utilise a la fois par ParseTypeDecl (TYPE X = ...) et par toute    }
+{ position ou un type est attendu inline (Var, champ de classe,      }
+{ champ de record) - le type resultant reste ANONYME (Name='') sauf  }
+{ si l appelant le nomme explicitement apres coup (ParseTypeDecl).   }
+{ Deja forward-declaree plus haut (avant ParseDeclSection, TODO 14). }
+{ ------------------------------------------------------------ }
+
+{ ------------------------------------------------------------ }
+{ ParseConstIntLiteral (TODO 19) : lit une valeur entiere CONSTANTE }
+{ simple - litteral entier/caractere, nom de constante deja         }
+{ declaree (SK_CONST), ou l un precede de '-' unaire. Ni ConstEvalExpr}
+{ (TODO 04, base sur une chaine source, pas des jetons) ni ParseExpr }
+{ (TODO 11, qui EMET du code ASM) ne conviennent ici : les bornes    }
+{ d un tableau statique et les elements d un litteral ensembliste     }
+{ sont des METADONNEES DE TYPE evaluees a la compilation, pas des     }
+{ valeurs a calculer a l execution.                                    }
+{ ------------------------------------------------------------ }
+
+Function ParseConstIntLiteral: LongInt;
+Var Neg: Boolean; SI: Integer; V: LongInt;
+Begin
+ Neg := False;
+ If (PPPeekKind = TK_OP) And (PPPeekVal = '-') Then
+ Begin
+  Neg := True;
+  PPAdvance;
+ End;
+
+ If (PPPeekKind = TK_INTEGER) Or (PPPeekKind = TK_CHAR) Then
+ Begin
+  V := TokenPool[PP].IntVal;
+  PPAdvance;
+ End
+ Else If PPPeekKind = TK_IDENT Then
+ Begin
+  SI := SymFind(TokenPool[PP].Val);
+  If (SI >= 0) And (SymTab[SI].Kind = SK_CONST) Then
+   V := SymTab[SI].ImmVal
+  Else
+  Begin
+   WarnMsg('constante entiere attendue: ' + TokenPool[PP].Val);
+   V := 0;
+  End;
+  PPAdvance;
+ End
+ Else
+ Begin
+  WarnMsg('constante entiere attendue');
+  V := 0;
+  PPAdvance;
+ End;
+
+ { Note (piege Pascal) : relire ParseConstIntLiteral ici (hors ":=")   }
+ { RAPPELLERAIT la fonction au lieu de lire la valeur deja assignee -   }
+ { d ou le passage par la variable locale V tout du long.               }
+ If Neg Then V := -V;
+ ParseConstIntLiteral := V;
+End;
+
+{ ------------------------------------------------------------ }
+{ SkipRecordMethodStub (TODO 19) : "advanced record" - une methode  }
+{ (function/procedure) a l interieur d un corps de RECORD est        }
+{ reconnue syntaxiquement (signature, puis corps BEGIN..END eventuel,}
+{ via SkipToMatchingEnd) mais totalement ignoree - stub honnete,      }
+{ exactement comme le spec du TODO 19 le demande explicitement        }
+{ ("support minimal ... en stub").                                     }
+{ ------------------------------------------------------------ }
+
+Procedure SkipRecordMethodStub;
+Var Depth: Integer;
+Begin
+ WarnMsg('methode de record (advanced record) reconnue mais non geree ' +
+  '(stub, TODO 19) : ignoree');
+ PPAdvance;   { function|procedure }
+ Depth := 0;
+ While (Not PPAtEnd) And
+       (Not ((Depth = 0) And (PPPeekKind = TK_PUNCT) And (PPPeekVal = ';'))) Do
+ Begin
+  If (PPPeekKind = TK_PUNCT) And (PPPeekVal = '(') Then Inc(Depth);
+  If (PPPeekKind = TK_PUNCT) And (PPPeekVal = ')') Then Dec(Depth);
+  PPAdvance;
+ End;
+ SkipOptSemi;
+ If (PPPeekKind = TK_KEYWORD) And (StrUpperCase(PPPeekVal) = 'BEGIN') Then
+ Begin
+  PPAdvance;
+  SkipToMatchingEnd;
+  SkipOptSemi;
+ End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseRecordBody (TODO 19) : suite de groupes Nom[,Nom...]: Type ;}
+{ jusqu a END (non consomme, laisse a l appelant) - TypeAddField    }
+{ (TODO 06/09/15/16) fonctionne deja tel quel pour un TYK_RECORD,   }
+{ sans aucune modification (confirme par recherche prealable).      }
+{ ------------------------------------------------------------ }
+
+Procedure ParseRecordBody(RecTypeIdx: Integer);
+Var
+ Names : Array[0..MAX_PARAM_GROUP - 1] Of TString;
+ NCount, I, TIdx : Integer;
+ Up : TString;
+Begin
+ While Not PPAtEnd Do
+ Begin
+  If PPPeekKind = TK_KEYWORD Then
+  Begin
+   Up := StrUpperCase(PPPeekVal);
+   If Up = 'END' Then Break;
+   If (Up = 'FUNCTION') Or (Up = 'PROCEDURE') Then
+   Begin
+    SkipRecordMethodStub;
+    Continue;
+   End;
+   WarnMsg('construction de record non geree (ex: variant/case, ' +
+    'TODO 19+) : ignoree');
+   Break;
+  End;
+
+  If PPPeekKind <> TK_IDENT Then Break;   { filet de securite }
+
+  NCount := 0;
+  Repeat
+   If NCount < MAX_PARAM_GROUP Then
+   Begin
+    Names[NCount] := TokenPool[PP].Val;
+    Inc(NCount);
+   End;
+   PPAdvance;
+  Until Not PPMatch(',');
+
+  PPMatch(':');
+  TIdx := ParseTypeExpr;
+
+  For I := 0 To NCount - 1 Do TypeAddField(RecTypeIdx, Names[I], TIdx);
+  SkipOptSemi;
+ End;
+End;
+
+Function ParseTypeExpr: Integer;
+Var
+ Up, TName : TString;
+ Lo, Hi, ElemIdx, RecIdx, R : Integer;
+ IsDyn : Boolean;
+Begin
+ If PPPeekKind = TK_KEYWORD Then
+ Begin
+  Up := StrUpperCase(PPPeekVal);
+
+  If Up = 'ARRAY' Then
+  Begin
+   PPAdvance;   { array }
+   Lo := 0; Hi := -1; IsDyn := True;
+   If PPMatch('[') Then
+   Begin
+    IsDyn := False;
+    Lo := ParseConstIntLiteral;
+    PPMatch('..');
+    Hi := ParseConstIntLiteral;
+    PPMatch(']');
+   End;
+   If (PPPeekKind = TK_KEYWORD) And (StrUpperCase(PPPeekVal) = 'OF') Then
+    PPAdvance;
+   ElemIdx := ParseTypeExpr;
+   ParseTypeExpr := TypeAddArray(ElemIdx, Lo, Hi, IsDyn);
+   Exit;
+  End;
+
+  If Up = 'RECORD' Then
+  Begin
+   PPAdvance;   { record }
+   RecIdx := TypeAddRecord('');
+   ParseRecordBody(RecIdx);
+   PPMatch('end');
+   ParseTypeExpr := RecIdx;
+   Exit;
+  End;
+
+  If Up = 'SET' Then
+  Begin
+   PPAdvance;   { set }
+   If (PPPeekKind = TK_KEYWORD) And (StrUpperCase(PPPeekVal) = 'OF') Then
+    PPAdvance;
+   ElemIdx := ParseTypeExpr;
+   ParseTypeExpr := TypeAddSet(ElemIdx);
+   Exit;
+  End;
+ End;
+
+ { repli : nom de type simple deja connu (alias, TODO 06). Passe par }
+ { une variable locale : relire le NOM de la fonction dans une         }
+ { expression (hors ":=") RAPPELLE la fonction (recursion), ne lit PAS}
+ { la valeur deja assignee - piege Pascal classique.                    }
+ TName := TokenPool[PP].Val;
+ PPAdvance;
+ R := TypeFindByName(TName);
+ If R < 0 Then R := TypeFindByName('Integer');
+ ParseTypeExpr := R;
+End;
+
+{ ------------------------------------------------------------ }
 { ParseTypeDecl : TYPE Nom = ... ; point d entree de plus haut    }
-{ niveau. Seules les declarations de classe sont geres (spec du    }
-{ TODO 15) ; toute autre forme (record/enum/tableau/alias simple,  }
-{ TODO 06/19) est reconnue mais ignoree avec avertissement, en      }
-{ sautant jusqu au ';' de fin (en tenant compte d un RECORD..END    }
-{ imbrique via SkipToMatchingEnd, TODO 13) pour rester synchronise. }
+{ niveau. Classes et interfaces sont gerees (TODO 15/17) ; tableaux,}
+{ records et ensembles (TODO 19) passent par ParseTypeExpr, qui     }
+{ construit un type ANONYME - etiquete ici du nom declare (sauf     }
+{ pour un simple ALIAS vers un type deja nomme : ne jamais ecraser   }
+{ le nom d un type EXISTANT, ce qui corromprait TypeFindByName pour  }
+{ tout le monde).                                                     }
 { ------------------------------------------------------------ }
 
 Procedure ParseTypeDecl;
-Var Name: TString;
+Var Name: TString; TIdx: Integer;
 Begin
  PPAdvance;   { type }
  Name := TokenPool[PP].Val;
@@ -10696,19 +12126,15 @@ Begin
   Exit;
  End;
 
- WarnMsg('declaration de type non geree (seules les classes le sont, ' +
-  'TODO 15) : ' + Name + ' ignoree');
- While (Not PPAtEnd) And
-       (Not ((PPPeekKind = TK_PUNCT) And (PPPeekVal = ';'))) Do
+ If (PPPeekKind = TK_KEYWORD) And (StrUpperCase(PPPeekVal) = 'INTERFACE') Then
  Begin
-  If (PPPeekKind = TK_KEYWORD) And (StrUpperCase(PPPeekVal) = 'RECORD') Then
-  Begin
-   PPAdvance;
-   SkipToMatchingEnd;
-   Break;
-  End;
-  PPAdvance;
+  ParseInterfaceDecl(Name);
+  Exit;
  End;
+
+ TIdx := ParseTypeExpr;
+ If (TIdx >= 0) And (TIdx < TypeCount) And (TypeTab[TIdx].Name = '') Then
+  TypeTab[TIdx].Name := StrUpperCase(Name);
  SkipOptSemi;
 End;
 
@@ -11573,6 +12999,712 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
+{ IfaceAssert / InterfaceSelfTest (TODO 17) : verifient           }
+{ l interface (VMT heritee de IUnknown + GUID), une classe         }
+{ l implementant (FRefCount, QueryInterface/AddRef/Release         }
+{ generees, thunk enregistre, methode promue virtuelle) et le      }
+{ comptage de references automatique a l affectation entre          }
+{ variables d interface, avec une interface et une classe            }
+{ synthetiques (IParlantIT/TChienIT) et des suites de tokens         }
+{ construites directement dans TokenPool, comme les self-tests des  }
+{ TODO precedents.                                                    }
+{ ------------------------------------------------------------ }
+
+Procedure IfaceAssert(Const Label_: TString; Cond: Boolean);
+Begin
+ If Not Cond Then
+  FatalError('InterfaceSelfTest: ' + Label_ + ' a echoue');
+End;
+
+Procedure InterfaceSelfTest;
+Const
+ TmpFile = 'DPIFACESELFTEST.$$$';
+Var
+ IfaceSymIdx, IfaceTypeIdx : Integer;
+ ChienSymIdx, ChienTypeIdx : Integer;
+ FRCFieldIdx, ImplIdx, ThunkI, ParlerVMTOffset : Integer;
+ AddRefSym, ReleaseSym, FreeSym : Integer;
+ HasThunkParler : Boolean;
+ F : Text;
+ Line : TString;
+ HasAddRefLabel, HasIncEdx, HasReleaseLabel, HasDecEdx, HasCallFree : Boolean;
+ HasIntfAssignCall : Boolean;
+
+ Procedure Tok(Kind: TTokenKind; Const Val: TString; IntVal: LongInt);
+ Var T: TToken;
+ Begin
+  T.Kind := Kind; T.Val := Val; T.IntVal := IntVal; T.RealVal := 0.0;
+  T.Line := 1; T.Col := 1;
+  TokenPoolAdd(T);
+ End;
+
+Begin
+ SymInit;
+ ClassSystemInit;
+ DataInit; DataInit2;
+ FrameInit;
+ StmtInit;
+ UserExternInit;
+
+ { --- IParlantIT = interface, GUID entre crochets, function Parler --- }
+ TokenPoolInit;
+ Tok(TK_KEYWORD, 'type', 0);
+ Tok(TK_IDENT, 'IParlantIT', 0);
+ Tok(TK_OP, '=', 0);
+ Tok(TK_KEYWORD, 'interface', 0);
+ Tok(TK_PUNCT, '[', 0);
+ Tok(TK_STRING, '{00000000-0000-0000-0000-000000000042}', 0);
+ Tok(TK_PUNCT, ']', 0);
+ Tok(TK_KEYWORD, 'function', 0);
+ Tok(TK_IDENT, 'Parler', 0);
+ Tok(TK_PUNCT, ':', 0);
+ Tok(TK_IDENT, 'Integer', 0);
+ Tok(TK_PUNCT, ';', 0);
+ Tok(TK_KEYWORD, 'end', 0);
+ Tok(TK_PUNCT, ';', 0);
+ ParserInit;
+ ParseTypeDecl;
+ IfaceAssert('declaration IParlantIT consomme tous les tokens', PPAtEnd);
+
+ IfaceSymIdx := SymFind('IParlantIT');
+ IfaceAssert('IParlantIT enregistree comme interface',
+  (IfaceSymIdx >= 0) And (SymTab[IfaceSymIdx].Kind = SK_INTERFACE));
+ IfaceTypeIdx := SymTab[IfaceSymIdx].TypeIdx;
+
+ IfaceAssert('GUID de IParlantIT conserve',
+  TypeTab[IfaceTypeIdx].GUID = '{00000000-0000-0000-0000-000000000042}');
+ IfaceAssert('QueryInterface heritee de IUnknown a l offset 0',
+  VMTFindMethod(IfaceTypeIdx, 'QUERYINTERFACE') = 0);
+ IfaceAssert('AddRef heritee de IUnknown a l offset 4',
+  VMTFindMethod(IfaceTypeIdx, 'ADDREF') = 4);
+ IfaceAssert('Release heritee de IUnknown a l offset 8',
+  VMTFindMethod(IfaceTypeIdx, 'RELEASE') = 8);
+ IfaceAssert('Parler declaree apres les 3 methodes IUnknown, a l offset 12',
+  VMTFindMethod(IfaceTypeIdx, 'PARLER') = 12);
+
+ { --- TChienIT = class(TObject, IParlantIT)                          }
+ {      function Parler: Integer;                                      }
+ {      end;                                                            }
+ { Parler n est PAS declaree virtual : ClassImplementInterface doit    }
+ { la promouvoir elle-meme pour qu elle soit atteignable par decalage  }
+ { fixe (thunk). Genere du code (QueryInterface/AddRef/Release) : le    }
+ { fichier de sortie doit donc etre ouvert pour cette declaration.       }
+ TokenPoolInit;
+ Tok(TK_KEYWORD, 'type', 0);
+ Tok(TK_IDENT, 'TChienIT', 0);
+ Tok(TK_OP, '=', 0);
+ Tok(TK_KEYWORD, 'class', 0);
+ Tok(TK_PUNCT, '(', 0);
+ Tok(TK_IDENT, 'TObject', 0);
+ Tok(TK_PUNCT, ',', 0);
+ Tok(TK_IDENT, 'IParlantIT', 0);
+ Tok(TK_PUNCT, ')', 0);
+ Tok(TK_KEYWORD, 'function', 0);
+ Tok(TK_IDENT, 'Parler', 0);
+ Tok(TK_PUNCT, ':', 0);
+ Tok(TK_IDENT, 'Integer', 0);
+ Tok(TK_PUNCT, ';', 0);
+ Tok(TK_KEYWORD, 'end', 0);
+ Tok(TK_PUNCT, ';', 0);
+ ParserInit;
+ EmitOpen(TmpFile);
+ ParseTypeDecl;
+ EmitClose('DPIFACESELFTEST_END');
+ IfaceAssert('declaration TChienIT consomme tous les tokens', PPAtEnd);
+
+ ChienSymIdx := SymFind('TChienIT');
+ IfaceAssert('TChienIT enregistree comme classe', ChienSymIdx >= 0);
+ ChienTypeIdx := SymTab[ChienSymIdx].TypeIdx;
+
+ IfaceAssert('QueryInterface/AddRef/Release generees automatiquement',
+  SymFindInClassChain(ChienTypeIdx, 'QUERYINTERFACE') >= 0);
+
+ FRCFieldIdx := FieldFindInClass(ChienTypeIdx, 'FREFCOUNT');
+ IfaceAssert('le champ cache FRefCount existe', FRCFieldIdx >= 0);
+ IfaceAssert('FRefCount est a l offset 4 (0 = pointeur de VMT)',
+  FieldPool[FRCFieldIdx].Offset = 4);
+
+ IfaceAssert('TChienIT compatible en affectation avec IParlantIT '+
+  '(TypeIsAssignCompatible)', TypeIsAssignCompatible(ChienTypeIdx, IfaceTypeIdx));
+
+ ImplIdx := IfaceImplFind(ChienTypeIdx, IfaceTypeIdx);
+ IfaceAssert('TChienIT.implemente(IParlantIT) enregistre', ImplIdx >= 0);
+ IfaceAssert('le GUID de l interface est recopie dans l implementation',
+  IfaceImplTab[ImplIdx].GUID = '{00000000-0000-0000-0000-000000000042}');
+
+ ParlerVMTOffset := VMTFindMethod(ChienTypeIdx, 'PARLER');
+ IfaceAssert('Parler a ete promue virtuelle par ClassImplementInterface',
+  ParlerVMTOffset >= 0);
+
+ HasThunkParler := False;
+ For ThunkI := IfaceImplTab[ImplIdx].ThunkFirst To
+  IfaceImplTab[ImplIdx].ThunkFirst + IfaceImplTab[ImplIdx].ThunkCount - 1 Do
+  If (ThunkPool[ThunkI].MethodName = 'PARLER') And
+     (ThunkPool[ThunkI].VMTOffset = ParlerVMTOffset) Then
+   HasThunkParler := True;
+ IfaceAssert('un thunk PARLER -> offset VMT reel de TChienIT est enregistre',
+  HasThunkParler);
+
+ { --- Corps ASM generes automatiquement pour AddRef/Release --- }
+ AddRefSym  := SymFindInClassChain(ChienTypeIdx, 'ADDREF');
+ ReleaseSym := SymFindInClassChain(ChienTypeIdx, 'RELEASE');
+ FreeSym    := SymFindInClass(SymFind('TObject'), 'FREE');
+ HasAddRefLabel := False; HasIncEdx := False;
+ HasReleaseLabel := False; HasDecEdx := False; HasCallFree := False;
+ {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+ IfaceAssert('fichier de test (declaration TChienIT) relisible', IOResult = 0);
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  If Line = SymTab[AddRefSym].MangledName + ':' Then HasAddRefLabel := True;
+  If Pos('INC EDX', Line) > 0 Then HasIncEdx := True;
+  If Line = SymTab[ReleaseSym].MangledName + ':' Then HasReleaseLabel := True;
+  If Pos('DEC EDX', Line) > 0 Then HasDecEdx := True;
+  If Pos('CALL ' + SymTab[FreeSym].MangledName, Line) > 0 Then HasCallFree := True;
+ End;
+ Close(F); Erase(F);
+ IfaceAssert('le corps de AddRef est emis', HasAddRefLabel);
+ IfaceAssert('AddRef incremente le compteur de references', HasIncEdx);
+ IfaceAssert('le corps de Release est emis', HasReleaseLabel);
+ IfaceAssert('Release decremente le compteur de references', HasDecEdx);
+ IfaceAssert('Release appelle TObject.Free a zero reference', HasCallFree);
+
+ { --- Comptage de references automatique : IntfA := IntfB; --- }
+ GlobalVarDeclare('INTFAIT', IfaceTypeIdx, 0);
+ GlobalVarDeclare('INTFBIT', IfaceTypeIdx, 0);
+ TokenPoolInit;
+ Tok(TK_IDENT, 'IntfAIT', 0);
+ Tok(TK_OP, ':=', 0);
+ Tok(TK_IDENT, 'IntfBIT', 0);
+ ParserInit;
+ EmitOpen(TmpFile);
+ ParseStmt;
+ EmitClose('DPIFACESELFTEST_END');
+ IfaceAssert('IntfAIT := IntfBIT consomme tous les tokens', PPAtEnd);
+ HasIntfAssignCall := False;
+ {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  If Pos('CALL ' + DPRT_INTF_ASSIGN, Line) > 0 Then HasIntfAssignCall := True;
+ End;
+ Close(F); Erase(F);
+ IfaceAssert('l affectation entre variables d interface passe par '+
+  DPRT_INTF_ASSIGN + ' (comptage de references)', HasIntfAssignCall);
+
+ SymInit;
+ ClassSystemInit;
+ DataInit; DataInit2;
+ FrameInit;
+ StmtInit;
+ UserExternInit;
+End;
+
+{ ------------------------------------------------------------ }
+{ ExcAssert / ExceptionSelfTest (TODO 18) : verifient la           }
+{ hierarchie d exceptions (Message/Create heritees en chaine,      }
+{ masquant TObject.Create), la construction d une exception          }
+{ (EDivByZero.Create), RAISE (avec expression et relance nue),        }
+{ et TRY..EXCEPT..ON E: Classe DO (empilement/depilement du cadre,    }
+{ liaison de E a DPRT_CUREXCEPTION), avec des suites de tokens        }
+{ construites directement dans TokenPool, comme les self-tests des    }
+{ TODO precedents.                                                      }
+{ ------------------------------------------------------------ }
+
+Procedure ExcAssert(Const Label_: TString; Cond: Boolean);
+Begin
+ If Not Cond Then
+  FatalError('ExceptionSelfTest: ' + Label_ + ' a echoue');
+End;
+
+Procedure ExceptionSelfTest;
+Const
+ TmpFile = 'DPEXCSELFTEST.$$$';
+Var
+ ExcIdx, DivZeroIdx, ExcCreateSym, ExcMessageSym : Integer;
+ FMsgFieldIdx : Integer;
+ F : Text;
+ Line : TString;
+ HasHeapAlloc, HasCallExcCreate, HasCallRaise : Boolean;
+ HasExcPush, HasExcPop, HasCallMessage, HasLoadCurExc : Boolean;
+ HasBareReraise : Boolean;
+
+ Procedure Tok(Kind: TTokenKind; Const Val: TString; IntVal: LongInt);
+ Var T: TToken;
+ Begin
+  T.Kind := Kind; T.Val := Val; T.IntVal := IntVal; T.RealVal := 0.0;
+  T.Line := 1; T.Col := 1;
+  TokenPoolAdd(T);
+ End;
+
+Begin
+ SymInit;
+ ClassSystemInit;
+ DataInit; DataInit2;
+ FrameInit;
+ StmtInit;
+ UserExternInit;
+
+ ExcIdx     := SymFind('Exception');
+ DivZeroIdx := SymFind('EDivByZero');
+ ExcAssert('Exception enregistree', ExcIdx >= 0);
+ ExcAssert('EDivByZero enregistree et herite d Exception',
+  (DivZeroIdx >= 0) And (SymTab[DivZeroIdx].ParentClassIdx = ExcIdx));
+
+ ExcCreateSym  := SymFindInClass(ExcIdx, 'CREATE');
+ ExcMessageSym := SymFindInClass(ExcIdx, 'MESSAGE');
+ ExcAssert('Exception.Create propre (arite 1) masque TObject.Create',
+  (ExcCreateSym >= 0) And (SymTab[ExcCreateSym].ParamCount = 1));
+ ExcAssert('Exception.Message enregistree', ExcMessageSym >= 0);
+
+ FMsgFieldIdx := FieldFindInClass(SymTab[ExcIdx].TypeIdx, 'FMESSAGE');
+ ExcAssert('FMessage (champ cache) existe sur Exception', FMsgFieldIdx >= 0);
+ { FieldInitInherit RECOPIE les champs dans le pool du descendant (un   }
+ { index DIFFERENT, TODO 09/15) : c est l OFFSET qui doit rester stable,}
+ { pas l index dans FieldPool.                                            }
+ ExcAssert('EDivByZero herite FMessage au meme offset',
+  FieldPool[FieldFindInClass(SymTab[DivZeroIdx].TypeIdx, 'FMESSAGE')].Offset =
+   FieldPool[FMsgFieldIdx].Offset);
+
+ { --- EDivByZero.Create('oops') : construction via Exception.Create --- }
+ TokenPoolInit;
+ Tok(TK_IDENT, 'EDivByZero', 0);
+ Tok(TK_PUNCT, '.', 0);
+ Tok(TK_IDENT, 'Create', 0);
+ Tok(TK_PUNCT, '(', 0);
+ Tok(TK_STRING, 'oops', 0);
+ Tok(TK_PUNCT, ')', 0);
+ ParserInit;
+ EmitOpen(TmpFile);
+ ParsePrimary;
+ EmitClose('DPEXCSELFTEST_END');
+ ExcAssert('EDivByZero.Create(...) consomme tous les tokens', PPAtEnd);
+ HasHeapAlloc := False; HasCallExcCreate := False;
+ {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+ ExcAssert('fichier de test (Create) relisible', IOResult = 0);
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  If Pos('CALL HeapAlloc', Line) > 0 Then HasHeapAlloc := True;
+  If Pos('CALL ' + SymTab[ExcCreateSym].MangledName, Line) > 0 Then
+   HasCallExcCreate := True;
+ End;
+ Close(F); Erase(F);
+ ExcAssert('EDivByZero.Create alloue l instance (HeapAlloc)', HasHeapAlloc);
+ ExcAssert('EDivByZero.Create appelle le corps herite d Exception.Create',
+  HasCallExcCreate);
+
+ { --- raise EDivByZero.Create('oops'); --- }
+ TokenPoolInit;
+ Tok(TK_KEYWORD, 'raise', 0);
+ Tok(TK_IDENT, 'EDivByZero', 0);
+ Tok(TK_PUNCT, '.', 0);
+ Tok(TK_IDENT, 'Create', 0);
+ Tok(TK_PUNCT, '(', 0);
+ Tok(TK_STRING, 'oops', 0);
+ Tok(TK_PUNCT, ')', 0);
+ ParserInit;
+ EmitOpen(TmpFile);
+ ParseStmt;
+ EmitClose('DPEXCSELFTEST_END');
+ ExcAssert('raise EDivByZero.Create(...) consomme tous les tokens', PPAtEnd);
+ HasCallRaise := False;
+ {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  If Pos('CALL ' + DPRT_RAISE, Line) > 0 Then HasCallRaise := True;
+ End;
+ Close(F); Erase(F);
+ ExcAssert('raise <expr> appelle ' + DPRT_RAISE, HasCallRaise);
+
+ { --- raise; (relance nue, hors contexte - valide quand meme        }
+ { syntaxiquement : aucune verification compile-time du contexte,    }
+ { seul DPRT_EXCTOP en decide a l execution) --- }
+ TokenPoolInit;
+ Tok(TK_KEYWORD, 'raise', 0);
+ Tok(TK_PUNCT, ';', 0);
+ ParserInit;
+ EmitOpen(TmpFile);
+ ParseStmt;
+ EmitClose('DPEXCSELFTEST_END');
+ HasBareReraise := False; HasCallRaise := False;
+ {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  If Pos('[DPRT_CUREXCEPTION]', Line) > 0 Then HasBareReraise := True;
+  If Pos('CALL ' + DPRT_RAISE, Line) > 0 Then HasCallRaise := True;
+ End;
+ Close(F); Erase(F);
+ ExcAssert('raise; recharge DPRT_CUREXCEPTION', HasBareReraise);
+ ExcAssert('raise; appelle ' + DPRT_RAISE, HasCallRaise);
+
+ { --- try WriteLn('a') except on E: Exception do WriteLn(E.Message) end --- }
+ TokenPoolInit;
+ Tok(TK_KEYWORD, 'try', 0);
+ Tok(TK_IDENT, 'WriteLn', 0);
+ Tok(TK_PUNCT, '(', 0);
+ Tok(TK_STRING, 'a', 0);
+ Tok(TK_PUNCT, ')', 0);
+ Tok(TK_PUNCT, ';', 0);
+ Tok(TK_KEYWORD, 'except', 0);
+ Tok(TK_IDENT, 'on', 0);
+ Tok(TK_IDENT, 'E', 0);
+ Tok(TK_PUNCT, ':', 0);
+ Tok(TK_IDENT, 'Exception', 0);
+ Tok(TK_KEYWORD, 'do', 0);
+ Tok(TK_IDENT, 'WriteLn', 0);
+ Tok(TK_PUNCT, '(', 0);
+ Tok(TK_IDENT, 'E', 0);
+ Tok(TK_PUNCT, '.', 0);
+ Tok(TK_IDENT, 'Message', 0);
+ Tok(TK_PUNCT, ')', 0);
+ Tok(TK_PUNCT, ';', 0);
+ Tok(TK_KEYWORD, 'end', 0);
+ ParserInit;
+ EmitOpen(TmpFile);
+ ParseStmt;
+ EmitClose('DPEXCSELFTEST_END');
+ ExcAssert('try..except..on E: Exception do consomme tous les tokens',
+  PPAtEnd);
+
+ HasExcPush := False; HasExcPop := False;
+ HasCallMessage := False; HasLoadCurExc := False;
+ {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  If Pos('MOV DWORD PTR [DPRT_EXCTOP],EAX', Line) > 0 Then HasExcPush := True;
+  If Pos('DEC DWORD PTR [DPRT_EXCTOP]', Line) > 0 Then HasExcPop := True;
+  If Pos('CALL ' + SymTab[ExcMessageSym].MangledName, Line) > 0 Then
+   HasCallMessage := True;
+  If Pos('[DPRT_CUREXCEPTION]', Line) > 0 Then HasLoadCurExc := True;
+ End;
+ Close(F); Erase(F);
+ ExcAssert('try empile un cadre de gestionnaire', HasExcPush);
+ ExcAssert('except (chemin normal) depile le cadre', HasExcPop);
+ ExcAssert('E.Message appelle Exception.Message (heritee)', HasCallMessage);
+ ExcAssert('E est lie a DPRT_CUREXCEPTION', HasLoadCurExc);
+
+ SymInit;
+ ClassSystemInit;
+ DataInit; DataInit2;
+ FrameInit;
+ StmtInit;
+ UserExternInit;
+End;
+
+{ ------------------------------------------------------------ }
+{ CompAssert / CompoundSelfTest (TODO 19) : verifient les          }
+{ tableaux statiques (indexation en lecture/ecriture, bornes non     }
+{ nulles), les tableaux dynamiques (SetLength, indexation, longueur   }
+{ via l entete cachee), les records (declaration via ParseTypeDecl,   }
+{ acces aux champs), et les ensembles (litteral, union/intersection/  }
+{ difference), avec des suites de tokens construites directement       }
+{ dans TokenPool, comme les self-tests des TODO precedents.             }
+{ ------------------------------------------------------------ }
+
+Procedure CompAssert(Const Label_: TString; Cond: Boolean);
+Begin
+ If Not Cond Then
+  FatalError('CompoundSelfTest: ' + Label_ + ' a echoue');
+End;
+
+Procedure CompoundSelfTest;
+Const
+ TmpFile = 'DPCOMPSELFTEST.$$$';
+Var
+ IntIdx, StaticArrIdx, DynArrIdx, RecIdx : Integer;
+ F : Text;
+ Line : TString;
+ HasSub1, HasImul4, HasLoadEbx, HasStoreEbx : Boolean;
+ HasSetLenCall, HasPushElemSize4, HasHeaderRead : Boolean;
+ HasSetLitLea, HasOr, HasAnd, HasAndNot : Boolean;
+
+ Procedure Tok(Kind: TTokenKind; Const Val: TString; IntVal: LongInt);
+ Var T: TToken;
+ Begin
+  T.Kind := Kind; T.Val := Val; T.IntVal := IntVal; T.RealVal := 0.0;
+  T.Line := 1; T.Col := 1;
+  TokenPoolAdd(T);
+ End;
+
+Begin
+ SymInit;
+ ClassSystemInit;
+ DataInit; DataInit2;
+ FrameInit;
+ StmtInit;
+ UserExternInit;
+
+ IntIdx := TypeFindByName('Integer');
+
+ { --- Tableau statique : array[1..5] of Integer --- }
+ StaticArrIdx := TypeAddArray(IntIdx, 1, 5, False);
+ CompAssert('tableau statique : element Integer',
+  TypeTab[StaticArrIdx].BaseTypeIdx = IntIdx);
+ CompAssert('tableau statique : bornes 1..5',
+  (TypeTab[StaticArrIdx].Lo = 1) And (TypeTab[StaticArrIdx].Hi = 5));
+ CompAssert('tableau statique : taille = 5 * SizeOf(Integer)',
+  TypeTab[StaticArrIdx].Size = 20);
+ GlobalVarDeclare('ARR5PT19', StaticArrIdx, 0);
+
+ { --- Lecture indexee : Arr5PT19[3] --- }
+ TokenPoolInit;
+ Tok(TK_IDENT, 'Arr5PT19', 0);
+ Tok(TK_PUNCT, '[', 0);
+ Tok(TK_INTEGER, '3', 3);
+ Tok(TK_PUNCT, ']', 0);
+ ParserInit;
+ EmitOpen(TmpFile);
+ ParsePrimary;
+ EmitClose('DPCOMPSELFTEST_END');
+ CompAssert('Arr5PT19[3] consomme tous les tokens', PPAtEnd);
+ HasSub1 := False; HasImul4 := False; HasLoadEbx := False;
+ {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+ CompAssert('fichier de test (lecture) relisible', IOResult = 0);
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  If Pos('SUB EAX,1', Line) > 0 Then HasSub1 := True;
+  If Pos('IMUL EAX,4', Line) > 0 Then HasImul4 := True;
+  If Pos('MOV EAX,DWORD PTR [EBX]', Line) > 0 Then HasLoadEbx := True;
+ End;
+ Close(F); Erase(F);
+ CompAssert('Arr5PT19[3] soustrait la borne inferieure (SUB EAX,1)', HasSub1);
+ CompAssert('Arr5PT19[3] multiplie par SizeOf(Integer) (IMUL EAX,4)',
+  HasImul4);
+ CompAssert('Arr5PT19[3] charge la valeur depuis [EBX]', HasLoadEbx);
+
+ { --- Ecriture indexee : Arr5PT19[3] := 42; --- }
+ TokenPoolInit;
+ Tok(TK_IDENT, 'Arr5PT19', 0);
+ Tok(TK_PUNCT, '[', 0);
+ Tok(TK_INTEGER, '3', 3);
+ Tok(TK_PUNCT, ']', 0);
+ Tok(TK_OP, ':=', 0);
+ Tok(TK_INTEGER, '42', 42);
+ ParserInit;
+ EmitOpen(TmpFile);
+ ParseStmt;
+ EmitClose('DPCOMPSELFTEST_END');
+ CompAssert('Arr5PT19[3] := 42 consomme tous les tokens', PPAtEnd);
+ HasStoreEbx := False;
+ {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  If Pos('MOV DWORD PTR [EBX],EAX', Line) > 0 Then HasStoreEbx := True;
+ End;
+ Close(F); Erase(F);
+ CompAssert('Arr5PT19[3] := 42 ecrit a l adresse calculee ([EBX])',
+  HasStoreEbx);
+
+ { --- Tableau dynamique : array of Integer --- }
+ DynArrIdx := TypeAddArray(IntIdx, 0, -1, True);
+ CompAssert('tableau dynamique : IsDynArray', TypeTab[DynArrIdx].IsDynArray);
+ CompAssert('tableau dynamique : taille = 4 (pointeur)',
+  TypeTab[DynArrIdx].Size = 4);
+ GlobalVarDeclare('DARRPT19', DynArrIdx, 0);
+
+ { --- SetLength(DArrPT19, 10) --- }
+ TokenPoolInit;
+ Tok(TK_IDENT, 'SetLength', 0);
+ Tok(TK_PUNCT, '(', 0);
+ Tok(TK_IDENT, 'DArrPT19', 0);
+ Tok(TK_PUNCT, ',', 0);
+ Tok(TK_INTEGER, '10', 10);
+ Tok(TK_PUNCT, ')', 0);
+ ParserInit;
+ EmitOpen(TmpFile);
+ ParsePrimary;
+ EmitClose('DPCOMPSELFTEST_END');
+ CompAssert('SetLength(DArrPT19, 10) consomme tous les tokens', PPAtEnd);
+ HasSetLenCall := False; HasPushElemSize4 := False;
+ {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  If Pos('CALL ' + DPRT_DYNARR_SETLENGTH, Line) > 0 Then HasSetLenCall := True;
+  If Pos('PUSH 4', Line) > 0 Then HasPushElemSize4 := True;
+ End;
+ Close(F); Erase(F);
+ CompAssert('SetLength appelle ' + DPRT_DYNARR_SETLENGTH, HasSetLenCall);
+ CompAssert('SetLength passe ElemSize=4 (SizeOf Integer)', HasPushElemSize4);
+
+ { --- Length(DArrPT19) : lecture de l entete cachee [Pointeur-4] --- }
+ TokenPoolInit;
+ Tok(TK_IDENT, 'Length', 0);
+ Tok(TK_PUNCT, '(', 0);
+ Tok(TK_IDENT, 'DArrPT19', 0);
+ Tok(TK_PUNCT, ')', 0);
+ ParserInit;
+ EmitOpen(TmpFile);
+ ParsePrimary;
+ EmitClose('DPCOMPSELFTEST_END');
+ CompAssert('Length(DArrPT19) consomme tous les tokens', PPAtEnd);
+ HasHeaderRead := False;
+ {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  If Pos('MOV EAX,DWORD PTR [EAX-4]', Line) > 0 Then HasHeaderRead := True;
+ End;
+ Close(F); Erase(F);
+ CompAssert('Length(DArrPT19) lit la longueur dans l entete cachee',
+  HasHeaderRead);
+
+ { --- Record : type TPointPT19 = record X, Y: Integer; end; --- }
+ TokenPoolInit;
+ Tok(TK_KEYWORD, 'type', 0);
+ Tok(TK_IDENT, 'TPointPT19', 0);
+ Tok(TK_OP, '=', 0);
+ Tok(TK_KEYWORD, 'record', 0);
+ Tok(TK_IDENT, 'X', 0);
+ Tok(TK_PUNCT, ',', 0);
+ Tok(TK_IDENT, 'Y', 0);
+ Tok(TK_PUNCT, ':', 0);
+ Tok(TK_IDENT, 'Integer', 0);
+ Tok(TK_PUNCT, ';', 0);
+ Tok(TK_KEYWORD, 'end', 0);
+ Tok(TK_PUNCT, ';', 0);
+ ParserInit;
+ ParseTypeDecl;
+ CompAssert('declaration TPointPT19 consomme tous les tokens', PPAtEnd);
+
+ RecIdx := TypeFindByName('TPointPT19');
+ CompAssert('TPointPT19 enregistre comme record',
+  (RecIdx >= 0) And (TypeTab[RecIdx].Kind = TYK_RECORD));
+ CompAssert('TPointPT19 a 2 champs (X, Y)', TypeTab[RecIdx].FieldCount = 2);
+ CompAssert('X a l offset 0, Y a l offset 4',
+  (FieldPool[TypeTab[RecIdx].FieldFirst].Offset = 0) And
+  (FieldPool[TypeTab[RecIdx].FieldFirst + 1].Offset = 4));
+
+ GlobalVarDeclare('PTPT19', RecIdx, 0);
+ TokenPoolInit;
+ Tok(TK_IDENT, 'PtPT19', 0);
+ Tok(TK_PUNCT, '.', 0);
+ Tok(TK_IDENT, 'Y', 0);
+ ParserInit;
+ EmitOpen(TmpFile);
+ ParsePrimary;
+ EmitClose('DPCOMPSELFTEST_END');
+ CompAssert('PtPT19.Y consomme tous les tokens', PPAtEnd);
+ HasLoadEbx := False;
+ {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  If Pos('[EAX+4]', Line) > 0 Then HasLoadEbx := True;
+ End;
+ Close(F); Erase(F);
+ CompAssert('PtPT19.Y lit le champ Y a l offset 4', HasLoadEbx);
+
+ { --- Ensembles : litteral [1, 3, 5..7] --- }
+ TokenPoolInit;
+ Tok(TK_PUNCT, '[', 0);
+ Tok(TK_INTEGER, '1', 1);
+ Tok(TK_PUNCT, ',', 0);
+ Tok(TK_INTEGER, '3', 3);
+ Tok(TK_PUNCT, ',', 0);
+ Tok(TK_INTEGER, '5', 5);
+ Tok(TK_PUNCT, '..', 0);
+ Tok(TK_INTEGER, '7', 7);
+ Tok(TK_PUNCT, ']', 0);
+ ParserInit;
+ EmitOpen(TmpFile);
+ ParsePrimary;
+ EmitClose('DPCOMPSELFTEST_END');
+ CompAssert('[1, 3, 5..7] consomme tous les tokens', PPAtEnd);
+ HasSetLitLea := False;
+ {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  If (Pos('LEA EAX,[', Line) > 0) And (Pos('_DPK_SET_', Line) > 0) Then
+   HasSetLitLea := True;
+ End;
+ Close(F); Erase(F);
+ CompAssert('[1, 3, 5..7] emet l adresse d une constante ensembliste',
+  HasSetLitLea);
+
+ { --- Union : [1,2] + [3,4] --- }
+ TokenPoolInit;
+ Tok(TK_PUNCT, '[', 0); Tok(TK_INTEGER, '1', 1); Tok(TK_PUNCT, ',', 0);
+ Tok(TK_INTEGER, '2', 2); Tok(TK_PUNCT, ']', 0);
+ Tok(TK_OP, '+', 0);
+ Tok(TK_PUNCT, '[', 0); Tok(TK_INTEGER, '3', 3); Tok(TK_PUNCT, ',', 0);
+ Tok(TK_INTEGER, '4', 4); Tok(TK_PUNCT, ']', 0);
+ ParserInit;
+ EmitOpen(TmpFile);
+ ParseExpr;
+ EmitClose('DPCOMPSELFTEST_END');
+ CompAssert('[1,2] + [3,4] consomme tous les tokens', PPAtEnd);
+ HasOr := False;
+ {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  If Pos('OR ECX,DWORD PTR', Line) > 0 Then HasOr := True;
+ End;
+ Close(F); Erase(F);
+ CompAssert('[1,2] + [3,4] (union) combine par OR', HasOr);
+
+ { --- Intersection : [1,2] * [2,3] --- }
+ TokenPoolInit;
+ Tok(TK_PUNCT, '[', 0); Tok(TK_INTEGER, '1', 1); Tok(TK_PUNCT, ',', 0);
+ Tok(TK_INTEGER, '2', 2); Tok(TK_PUNCT, ']', 0);
+ Tok(TK_OP, '*', 0);
+ Tok(TK_PUNCT, '[', 0); Tok(TK_INTEGER, '2', 2); Tok(TK_PUNCT, ',', 0);
+ Tok(TK_INTEGER, '3', 3); Tok(TK_PUNCT, ']', 0);
+ ParserInit;
+ EmitOpen(TmpFile);
+ ParseExpr;
+ EmitClose('DPCOMPSELFTEST_END');
+ CompAssert('[1,2] * [2,3] consomme tous les tokens', PPAtEnd);
+ HasAnd := False;
+ {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  If Pos('AND ECX,DWORD PTR', Line) > 0 Then HasAnd := True;
+ End;
+ Close(F); Erase(F);
+ CompAssert('[1,2] * [2,3] (intersection) combine par AND', HasAnd);
+
+ { --- Difference : [1,2] - [2,3] --- }
+ TokenPoolInit;
+ Tok(TK_PUNCT, '[', 0); Tok(TK_INTEGER, '1', 1); Tok(TK_PUNCT, ',', 0);
+ Tok(TK_INTEGER, '2', 2); Tok(TK_PUNCT, ']', 0);
+ Tok(TK_OP, '-', 0);
+ Tok(TK_PUNCT, '[', 0); Tok(TK_INTEGER, '2', 2); Tok(TK_PUNCT, ',', 0);
+ Tok(TK_INTEGER, '3', 3); Tok(TK_PUNCT, ']', 0);
+ ParserInit;
+ EmitOpen(TmpFile);
+ ParseExpr;
+ EmitClose('DPCOMPSELFTEST_END');
+ CompAssert('[1,2] - [2,3] consomme tous les tokens', PPAtEnd);
+ HasAndNot := False;
+ {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  If Pos('NOT EDX', Line) > 0 Then HasAndNot := True;
+ End;
+ Close(F); Erase(F);
+ CompAssert('[1,2] - [2,3] (difference) inverse puis combine par AND',
+  HasAndNot);
+
+ SymInit;
+ ClassSystemInit;
+ DataInit; DataInit2;
+ FrameInit;
+ StmtInit;
+ UserExternInit;
+End;
+
+{ ------------------------------------------------------------ }
 { Run - point d entree de la compilation                       }
 { Le parseur de fichier programme complet (uses, section         }
 { principale) sera ajoute par les TODO 23 et suivants. Pour       }
@@ -11608,6 +13740,9 @@ Begin
  ProcSelfTest;
  ClassSelfTest;
  PropSelfTest;
+ InterfaceSelfTest;
+ ExceptionSelfTest;
+ CompoundSelfTest;
 
  {$I-}
  Assign(LexSrcF, Opts.SrcFile);
@@ -11679,8 +13814,11 @@ Begin
          'implemente.');
  WriteLn('DELPHI: TODO 15 (classes et heritage) implemente.');
  WriteLn('DELPHI: TODO 16 (proprietes) implemente.');
+ WriteLn('DELPHI: TODO 17 (interfaces et COM de base) implemente.');
+ WriteLn('DELPHI: TODO 18 (gestion des exceptions) implemente.');
+ WriteLn('DELPHI: TODO 19 (tableaux, records et ensembles) implemente.');
  WriteLn('DELPHI: analyseur syntaxique et generateur de code non ',
-         'encore implementes (voir TODO 17 et suivants).');
+         'encore implementes (voir TODO 20 et suivants).');
  ShowStats;
  Cleanup;
 End;
