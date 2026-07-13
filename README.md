@@ -3,19 +3,28 @@ Suite de commandes pour les développeur écrit en Pascal (Turbo Pascal ou Free 
 
 Le projet DEV-COOLS se veut un peu comme une solution de remplacement de BINUTILS des distributions Linux en Pascal.
 
-Il possède également des IDE, comme DEVENV :
+Il possède également plusieurs environnements de développement intégrés, aussi appelés IDE, comme DEVENV :
 
 <img width="639" height="479" alt="image" src="https://github.com/user-attachments/assets/bc6193a5-1ae5-471b-a9d5-54619b45407b" />
 
 <ul>	
-	<li>Lequel supporte, les langages de programmations comme ABAP/4, Ada, Assembleur (8086, 80386, 68000), C, C#, Java, Lua, Modula-3, Pascal, Oberon, Perl, PHP, PL/1, Power FX, Python, Ruby, Rust, SAS, Snobol, Visual Basic 6, Visual Basic .NET, X++,...</li>
-	<li>Lequel supporte les terminals (CMD, PowerShell, Bash, AmigaDOS) en built-in). Les terminals support les disques d'images de fichiers montés pour les émulateurs.</li>
-	<li>Le DEVENV possède un émulateur 8086, NES, Amiga, Cray 1, Apple II, Commodore 64, MSX, CoCo 3,... intégré pour les cibles n'étant pas Windows.</li>
-	<li>Debogueur pour le 6502, 8086 intégré</li>
-	<li>Support de la souris et du clavier</li>
-	<li>Aide en ligne de plus de 1 Mo</li>
-	<li>Supporte le mode pleine fenetre d'écran (-maxscreen).</li>
+	<li>Celui-ci prend en charge un éditeur de texte évolué permettant de créer, d’ouvrir, de modifier et d’enregistrer du code source dans de nombreux langages de programmation, notamment ABAP/4, Ada, Assembleur pour les processeurs 8086, 80386 et 68000, C, C#, Java, Lua, Modula-3, Pascal, Oberon, Perl, PHP, PL/1, Power FX, Python, Ruby, Rust, SAS, Snobol, Visual Basic 6, Visual Basic .NET, X++ et plusieurs autres langages.</li>
+	<li>Il prend également en charge un éditeur hexadécimal permettant d’afficher et de modifier directement le contenu binaire d’un fichier. Cet éditeur peut être utilisé pour examiner les octets, les adresses mémoire, les structures internes et les valeurs numériques contenues dans différents formats de fichiers.</li>
+	<li>Il propose un éditeur de formulaires permettant de concevoir visuellement des interfaces graphiques, notamment celles enregistrées dans les fichiers .FRM de Visual Basic 6. Cet éditeur facilite le placement, le déplacement, l’alignement et le redimensionnement des contrôles à l’intérieur d’une fenêtre.</li>
+	<li>Il comprend un explorateur de solutions permettant d’organiser les projets, les fichiers sources, les ressources, les bibliothèques et les dépendances. Cet explorateur prend notamment en charge les fichiers de solution portant l’extension .sln et permet de regrouper plusieurs projets dans un même environnement de travail.</li>
+	<li>Il intègre plusieurs terminaux de commande, comme CMD, PowerShell, Bash et AmigaDOS, directement dans son interface. Ces terminaux intégrés peuvent également accéder aux images de disques et aux systèmes de fichiers montés qui sont utilisés par les différents émulateurs disponibles dans l’environnement.</li>
+	<li>DEVENV possède plusieurs émulateurs intégrés destinés aux plateformes et aux architectures qui ne fonctionnent pas directement sous Windows. Il peut notamment émuler les systèmes 8086, NES, Amiga, Cray-1, Apple II, Commodore 64, MSX et CoCo 3, ainsi que plusieurs autres ordinateurs, consoles et processeurs historiques.</li>
+	<li>Il comprend un débogueur intégré pour les processeurs 6502 et 8086. Celui-ci permet d’exécuter un programme instruction par instruction, d’ajouter des points d’arrêt, d’examiner les registres, de consulter la mémoire et de suivre l’évolution des variables pendant l’exécution du programme.</li>
+	<li>Il prend en charge l’utilisation de la souris et du clavier dans les éditeurs, les fenêtres, les formulaires, les terminaux et les émulateurs. Cette compatibilité facilite la navigation dans l’interface ainsi que l’utilisation des programmes exécutés dans les différents environnements émulés.</li>
+	<li>Il fournit une aide en ligne complète contenant plus de 1 Mo de documentation. Cette aide peut inclure des descriptions de commandes, des explications sur les langages supportés, des références techniques, des exemples de code et des informations sur les différentes fonctions de l’environnement.</li>
+	<li>Enfin, DEVENV prend en charge un mode d’affichage en plein écran pouvant être activé à l’aide du paramètre -maxscreen. Ce mode permet d’agrandir l’espace de travail disponible et d’utiliser la totalité de l’écran pour afficher l’éditeur, les outils de développement ou les systèmes émulés.</li>
 </ul>
+
+Il possède également des éditeurs de ressources, comme WORKSHOP :
+
+<img width="637" height="483" alt="image" src="https://github.com/user-attachments/assets/adb5e822-19f9-4aab-8604-0dfe0ff75615" />
+
+
 
 <h2>Liste des fichiers</h2>
 
@@ -775,6 +784,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 		<tr>
 			<td><b>VBNCW32.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur Visual Basic .NET pour l'assembleur du microprocesseur 80386 (en executable Windows 32 bits).</td>
+		</tr>
+		<tr>
+			<td><b>WORKSHOP.PAS</b></td>
+			<td>Cette commande permet de lancer l'editeur de ressources.</td>
 		</tr>
 		<tr>
 			<td><b>XPPCW32.PAS</b></td>
