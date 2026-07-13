@@ -268,7 +268,7 @@
          WideString/UnicodeString : stub minimal (stockage UTF-16,
            conversions de base uniquement)
 
-  TODO 21 - INSTRUCTION ASM (BLOC ASSEMBLEUR EN LIGNE)     [A FAIRE]
+  TODO 21 - INSTRUCTION ASM (BLOC ASSEMBLEUR EN LIGNE)     [IMPLEMENTE]
          ParseAsmBlock : asm ... end
          Assembleur 80386 natif (pas de traduction 8086 necessaire,
            contrairement a TPCW32, car Delphi cible directement le
@@ -10137,6 +10137,344 @@ Begin
  SkipOptSemi;
 End;
 
+{ ============================================================ }
+{ TODO 21 - INSTRUCTION ASM (BLOC ASSEMBLEUR EN LIGNE) [IMPLEMENTE] }
+{ ============================================================ }
+
+{ ------------------------------------------------------------ }
+{ IsAsmReg : tester si un identificateur designe un registre     }
+{ 80386. Aucune table de traduction 8086->386 n est necessaire   }
+{ ici (contrairement a TPCW32) : Delphi cible directement le     }
+{ 32 bits.                                                        }
+{ ------------------------------------------------------------ }
+
+Function IsAsmReg(Const S: TString): Boolean;
+Var Up: TString;
+Begin
+ Up := StrUpperCase(S);
+ IsAsmReg :=
+  (Up = 'EAX') Or (Up = 'EBX') Or (Up = 'ECX') Or (Up = 'EDX') Or
+  (Up = 'ESI') Or (Up = 'EDI') Or (Up = 'EBP') Or (Up = 'ESP') Or
+  (Up = 'AX')  Or (Up = 'BX')  Or (Up = 'CX')  Or (Up = 'DX')  Or
+  (Up = 'SI')  Or (Up = 'DI')  Or (Up = 'BP')  Or (Up = 'SP')  Or
+  (Up = 'AL')  Or (Up = 'AH')  Or (Up = 'BL')  Or (Up = 'BH')  Or
+  (Up = 'CL')  Or (Up = 'CH')  Or (Up = 'DL')  Or (Up = 'DH')  Or
+  (Up = 'CS')  Or (Up = 'DS')  Or (Up = 'ES')  Or (Up = 'SS')  Or
+  (Up = 'FS')  Or (Up = 'GS');
+End;
+
+{ ------------------------------------------------------------ }
+{ AsmTrimSpaces : supprimer les espaces en debut et fin d une     }
+{ chaine. Les operandes d un bloc asm sont reconstruits en        }
+{ joignant les jetons par des espaces, y compris a l interieur    }
+{ d une reference [...] - ce que MASM tolere sans probleme.       }
+{ ------------------------------------------------------------ }
+
+Function AsmTrimSpaces(Const S: TString): TString;
+Var A, B: Integer;
+Begin
+ A := 1;
+ While (A <= Length(S)) And (S[A] = ' ') Do Inc(A);
+ B := Length(S);
+ While (B >= A) And (S[B] = ' ') Do Dec(B);
+ AsmTrimSpaces := Copy(S, A, B - A + 1);
+End;
+
+{ ------------------------------------------------------------ }
+{ AsmVarBracketInner : interieur (sans crochets) de la reference  }
+{ memoire d une variable/parametre/globale Pascal connue (via     }
+{ GenVarBracket, TODO 09) - pour composer un operande adresse      }
+{ manuel comme [EBX+MaVariable] a l interieur d un bloc asm.       }
+{ Retourne Name inchange si inconnu (immediat, etiquette locale). }
+{ ------------------------------------------------------------ }
+
+Function AsmVarBracketInner(Const Name: TString): TString;
+Var B: TString;
+Begin
+ B := GenVarBracket(Name);
+ If Length(B) >= 2 Then
+  AsmVarBracketInner := Copy(B, 2, Length(B) - 2)
+ Else
+  AsmVarBracketInner := Name;
+End;
+
+{ ------------------------------------------------------------ }
+{ AsmFieldOperand : traduire un operande compose 'Base.Champ'     }
+{ (Self.Champ, ou Variable-objet.Champ) en operande memoire       }
+{ complet (via GenFieldRef, TODO 09/15). x86 n a pas d adressage  }
+{ indirect double : le pointeur Base est d abord charge dans EDX  }
+{ (registre de travail, meme convention que GenVarAddr) - une      }
+{ ligne asm utilisant Self.Champ ou Objet.Champ ne doit donc pas   }
+{ compter sur la valeur preexistante de EDX. Simplification         }
+{ documentee : un seul niveau de champ est gere (pas de             }
+{ Self.Champ1.Champ2), et l usage a l interieur d une reference    }
+{ [...] n est pas gere (Self.Champ s utilise seul, sans crochets    }
+{ englobants - GenFieldRef fournit deja les crochets necessaires). }
+{ ------------------------------------------------------------ }
+
+Function AsmFieldOperand(Const BaseName, FieldName: TString): TString;
+Var
+ SI, ClassTI : Integer;
+ Base, Fld, Up : TString;
+Begin
+ Base := AsmTrimSpaces(BaseName);
+ Fld  := AsmTrimSpaces(FieldName);
+ AsmFieldOperand := Base + '.' + Fld;   { repli si non resolu }
+ Up := StrUpperCase(Base);
+
+ If Up = 'SELF' Then
+ Begin
+  If CurSelfTypeIdx < 0 Then
+  Begin
+   WarnMsg('Self utilise dans un bloc asm hors d une methode');
+   Exit;
+  End;
+  EmitInstr('MOV EDX,' + GenVarRef('SELF'));
+  AsmFieldOperand := GenFieldRef('EDX', CurSelfTypeIdx, Fld);
+  Exit;
+ End;
+
+ SI := SymFind(Base);
+ If SI < 0 Then Exit;
+ If Not TypeIsClass(SymTab[SI].TypeIdx) Then Exit;
+ ClassTI := TypeResolve(SymTab[SI].TypeIdx);
+
+ EmitInstr('MOV EDX,' + GenVarRef(Base));
+ AsmFieldOperand := GenFieldRef('EDX', ClassTI, Fld);
+End;
+
+{ ------------------------------------------------------------ }
+{ TranslateAsmOperand : traduire un operande d instruction asm    }
+{ (registre, reference memoire [...], champ Self./Objet., ou      }
+{ variable/parametre/globale/routine Pascal simple) en operande   }
+{ MASM final. Un immediat, une etiquette locale (@Nom) ou un mot- }
+{ cle de taille (BYTE/WORD/DWORD/PTR/SHORT/NEAR...) traverse       }
+{ inchange.                                                        }
+{ ------------------------------------------------------------ }
+
+Function TranslateAsmOperand(Const Op: TString): TString;
+Var
+ Up, R, Tok, Prefix, Bracket : TString;
+ I, BPos, DotPos : Integer;
+ C : Char;
+Begin
+ TranslateAsmOperand := Op;
+ If Length(Op) = 0 Then Exit;
+
+ Up := StrUpperCase(Op);
+ If IsAsmReg(Up) Then Begin TranslateAsmOperand := Up; Exit; End;
+
+ { reference memoire, avec eventuel prefixe de taille avant le '[' }
+ BPos := Pos('[', Op);
+ If (BPos > 0) And (Op[Length(Op)] = ']') Then
+ Begin
+  Prefix  := Copy(Op, 1, BPos - 1);
+  Bracket := Copy(Op, BPos, Length(Op) - BPos + 1);
+
+  R := '[';
+  I := 2;
+  While I <= Length(Bracket) Do
+  Begin
+   C := Bracket[I];
+   If ((C >= 'A') And (C <= 'Z')) Or ((C >= 'a') And (C <= 'z')) Or
+      (C = '_') Then
+   Begin
+    Tok := '';
+    While (I <= Length(Bracket)) And
+          (((Bracket[I] >= 'A') And (Bracket[I] <= 'Z')) Or
+           ((Bracket[I] >= 'a') And (Bracket[I] <= 'z')) Or
+           ((Bracket[I] >= '0') And (Bracket[I] <= '9')) Or
+           (Bracket[I] = '_')) Do
+    Begin
+     Tok := Tok + Bracket[I];
+     Inc(I);
+    End;
+    If IsAsmReg(Tok) Then
+     R := R + StrUpperCase(Tok)
+    Else If SymFind(Tok) >= 0 Then
+     R := R + AsmVarBracketInner(Tok)
+    Else
+     R := R + Tok;
+   End
+   Else Begin R := R + C; Inc(I); End;
+  End;
+
+  TranslateAsmOperand := Prefix + R;
+  Exit;
+ End;
+
+ { champ d instance : Self.Champ ou Objet.Champ (sans crochets) }
+ DotPos := Pos('.', Op);
+ If DotPos > 0 Then
+ Begin
+  TranslateAsmOperand :=
+   AsmFieldOperand(Copy(Op, 1, DotPos - 1),
+    Copy(Op, DotPos + 1, Length(Op) - DotPos));
+  Exit;
+ End;
+
+ { identificateur simple : variable/parametre/globale/routine connue }
+ If ((Op[1] >= 'A') And (Op[1] <= 'Z')) Or
+    ((Op[1] >= 'a') And (Op[1] <= 'z')) Or (Op[1] = '_') Then
+ Begin
+  I := SymFind(Op);
+  If I >= 0 Then
+  Begin
+   If SymTab[I].Kind In [SK_PROC, SK_FUNC, SK_METHOD] Then
+    TranslateAsmOperand := SymTab[I].MangledName
+   Else
+    TranslateAsmOperand := GenVarRef(Op);
+   Exit;
+  End;
+ End;
+
+ { sinon : immediat, etiquette locale (@Nom), mot-cle de taille... }
+ TranslateAsmOperand := Op;
+End;
+
+{ ------------------------------------------------------------ }
+{ AsmTranslateOperandList : decouper une liste d operandes        }
+{ separes par des virgules (profondeur 0, hors crochets) et       }
+{ traduire chacun via TranslateAsmOperand.                         }
+{ ------------------------------------------------------------ }
+
+Function AsmTranslateOperandList(Const S: TString): TString;
+Var
+ R, Cur : TString;
+ I, Depth : Integer;
+ C : Char;
+Begin
+ R := ''; Cur := ''; Depth := 0;
+ For I := 1 To Length(S) Do
+ Begin
+  C := S[I];
+  If C = '[' Then Inc(Depth);
+  If C = ']' Then Dec(Depth);
+  If (C = ',') And (Depth = 0) Then
+  Begin
+   If Length(R) > 0 Then R := R + ',';
+   R := R + TranslateAsmOperand(AsmTrimSpaces(Cur));
+   Cur := '';
+  End
+  Else
+   Cur := Cur + C;
+ End;
+ If Length(AsmTrimSpaces(Cur)) > 0 Then
+ Begin
+  If Length(R) > 0 Then R := R + ',';
+  R := R + TranslateAsmOperand(AsmTrimSpaces(Cur));
+ End;
+ AsmTranslateOperandList := R;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseAsmInstr : lire une instruction asm (jusqu au ';' ou au    }
+{ END du bloc), la reconstruire en une ligne textuelle a partir   }
+{ des jetons (chaque jeton separe par un espace - '@' colle a     }
+{ l identificateur qui suit pour former une etiquette locale de   }
+{ saut, ex: @Boucle), puis separer mnemonique et operandes et      }
+{ emettre l instruction traduite.                                  }
+{ ------------------------------------------------------------ }
+
+Procedure ParseAsmInstr;
+Var
+ LineTxt, Mne, Rest : TString;
+ I : Integer;
+Begin
+ LineTxt := '';
+ While Not PPAtEnd Do
+ Begin
+  If (PPPeekKind = TK_PUNCT) And (PPPeekVal = ';') Then Break;
+  If (PPPeekKind = TK_KEYWORD) And (StrUpperCase(PPPeekVal) = 'END') Then Break;
+
+  If Length(LineTxt) > 0 Then LineTxt := LineTxt + ' ';
+
+  If (PPPeekKind = TK_OP) And (PPPeekVal = '@') And ((PP + 1) < TokenCount) And
+     (TokenPool[PP + 1].Kind In [TK_IDENT, TK_KEYWORD]) Then
+  Begin
+   LineTxt := LineTxt + '@' + TokenPool[PP + 1].Val;
+   PPAdvance; PPAdvance;
+  End
+  Else
+  Begin
+   LineTxt := LineTxt + TokenPool[PP].Val;
+   PPAdvance;
+  End;
+ End;
+
+ LineTxt := AsmTrimSpaces(LineTxt);
+ If Length(LineTxt) = 0 Then Exit;
+
+ I := 1;
+ While (I <= Length(LineTxt)) And (LineTxt[I] <> ' ') Do Inc(I);
+ Mne  := Copy(LineTxt, 1, I - 1);
+ Rest := AsmTrimSpaces(Copy(LineTxt, I, Length(LineTxt) - I + 1));
+
+ If Length(Rest) = 0 Then
+  EmitInstr(StrUpperCase(Mne))
+ Else
+  EmitInstr(StrUpperCase(Mne) + ' ' + AsmTranslateOperandList(Rest));
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseAsmBlock : bloc ASM ... END. Accepte les etiquettes        }
+{ locales (Nom: ou @Nom:) et traduit chaque instruction via        }
+{ ParseAsmInstr. Assembleur 80386 natif : aucune table de          }
+{ traduction de mnemoniques n est necessaire (contrairement a      }
+{ TPCW32, qui traduit du 8086 vers le 386) - seuls les operandes    }
+{ (variables/champs Pascal) sont reecrits.                          }
+{ ------------------------------------------------------------ }
+
+Procedure ParseAsmBlock;
+Var LblName : TString;
+Begin
+ EmitComment('--- debut bloc asm (TODO 21) ---');
+ PPAdvance;   { consommer ASM }
+
+ While Not PPAtEnd Do
+ Begin
+  If (PPPeekKind = TK_KEYWORD) And (StrUpperCase(PPPeekVal) = 'END') Then
+  Begin
+   PPAdvance;
+   Break;
+  End;
+
+  If (PPPeekKind = TK_PUNCT) And (PPPeekVal = ';') Then
+  Begin
+   PPAdvance;
+   Continue;
+  End;
+
+  LblName := '';
+
+  If (PPPeekKind = TK_OP) And (PPPeekVal = '@') And ((PP + 1) < TokenCount) And
+     (TokenPool[PP + 1].Kind In [TK_IDENT, TK_KEYWORD]) And
+     ((PP + 2) < TokenCount) And (TokenPool[PP + 2].Kind = TK_PUNCT) And
+     (TokenPool[PP + 2].Val = ':') Then
+  Begin
+   LblName := '@' + TokenPool[PP + 1].Val;
+   PPAdvance; PPAdvance; PPAdvance;
+  End
+  Else If (PPPeekKind In [TK_IDENT, TK_KEYWORD]) And ((PP + 1) < TokenCount) And
+     (TokenPool[PP + 1].Kind = TK_PUNCT) And (TokenPool[PP + 1].Val = ':') Then
+  Begin
+   LblName := TokenPool[PP].Val;
+   PPAdvance; PPAdvance;
+  End;
+
+  If Length(LblName) > 0 Then
+  Begin
+   EmitLabel(LblName);
+   Continue;
+  End;
+
+  ParseAsmInstr;
+ End;
+
+ SkipOptSemi;
+ EmitComment('--- fin bloc asm ---');
+End;
+
 { ------------------------------------------------------------ }
 { ParseStmt : dispatch principal d une instruction. Implemente   }
 { ici l assignation (Ident := expr, et Ident.Champ := expr sur    }
@@ -10179,6 +10517,7 @@ Begin
   If Up = 'CASE' Then Begin ParseCaseStmt; Exit; End;
   If Up = 'TRY' Then Begin ParseTryStmt; Exit; End;
   If Up = 'RAISE' Then Begin ParseRaiseStmt; Exit; End;
+  If Up = 'ASM' Then Begin ParseAsmBlock; Exit; End;
 
   WarnMsg('instruction non geree: ' + PPPeekVal);
   PPAdvance;
@@ -14548,6 +14887,219 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
+{ AsmSelfTest (TODO 21) : verifie ParseAsmBlock sur des suites   }
+{ de jetons construites directement dans TokenPool, comme les    }
+{ self-tests des TODO precedents - mnemonique + registre +        }
+{ immediat, substitution d une variable locale, d une variable    }
+{ globale a l interieur d une reference [...], acces a un champ   }
+{ d instance via Self.Champ (chargement prealable dans EDX), et   }
+{ etiquette locale @Nom: avec un saut vers elle.                   }
+{ ------------------------------------------------------------ }
+
+Procedure AsmAssert(Const Label_: TString; Cond: Boolean);
+Begin
+ If Not Cond Then
+  FatalError('AsmSelfTest: ' + Label_ + ' a echoue');
+End;
+
+Procedure AsmSelfTest;
+Const
+ TmpFile = 'DPASMSELFTEST.$$$';
+Var
+ IntIdx, AsmClsSymIdx, AsmClsIdx : Integer;
+ F : Text;
+ Line : TString;
+ HasBasic, HasLocal, HasGlobal, HasSelfLoad, HasSelfField : Boolean;
+ HasLabel, HasDec, HasJmp : Boolean;
+
+ Procedure Tok(Kind: TTokenKind; Const Val: TString; IntVal: LongInt);
+ Var T: TToken;
+ Begin
+  T.Kind := Kind; T.Val := Val; T.IntVal := IntVal; T.RealVal := 0.0;
+  T.Line := 1; T.Col := 1;
+  TokenPoolAdd(T);
+ End;
+
+Begin
+ SymInit;
+ ClassSystemInit;
+ DataInit; DataInit2;
+ FrameInit;
+ StmtInit;
+ UserExternInit;
+
+ IntIdx := TypeFindByName('Integer');
+
+ { --- asm MOV EAX,1; end : mnemonique + registre + immediat --- }
+ TokenPoolInit;
+ Tok(TK_KEYWORD, 'asm', 0);
+ Tok(TK_IDENT, 'MOV', 0);
+ Tok(TK_IDENT, 'EAX', 0);
+ Tok(TK_PUNCT, ',', 0);
+ Tok(TK_INTEGER, '1', 1);
+ Tok(TK_PUNCT, ';', 0);
+ Tok(TK_KEYWORD, 'end', 0);
+ Tok(TK_PUNCT, ';', 0);
+ ParserInit;
+ EmitOpen(TmpFile);
+ ParseStmt;
+ EmitClose('DPASMSELFTEST_END');
+ AsmAssert('asm MOV EAX,1 end consomme tous les tokens', PPAtEnd);
+ HasBasic := False;
+ {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  If Pos('MOV EAX,1', Line) > 0 Then HasBasic := True;
+ End;
+ Close(F); Erase(F);
+ AsmAssert('bloc asm de base traduit MOV EAX,1', HasBasic);
+
+ { --- variable locale : asm MOV EAX,MyLocal; end --- }
+ SymEnterScope;
+  LocalAdd('MYLOCALASM', IntIdx);
+  TokenPoolInit;
+  Tok(TK_KEYWORD, 'asm', 0);
+  Tok(TK_IDENT, 'MOV', 0);
+  Tok(TK_IDENT, 'EAX', 0);
+  Tok(TK_PUNCT, ',', 0);
+  Tok(TK_IDENT, 'MyLocalAsm', 0);
+  Tok(TK_PUNCT, ';', 0);
+  Tok(TK_KEYWORD, 'end', 0);
+  ParserInit;
+  EmitOpen(TmpFile);
+  ParseStmt;
+  EmitClose('DPASMSELFTEST_END');
+  AsmAssert('asm avec variable locale consomme tous les tokens', PPAtEnd);
+ SymLeaveScope;
+ HasLocal := False;
+ {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  If Pos('MOV EAX,DWORD PTR [EBP-4]', Line) > 0 Then HasLocal := True;
+ End;
+ Close(F); Erase(F);
+ AsmAssert('variable locale traduite en [EBP-4]', HasLocal);
+
+ { --- variable globale a l interieur de [...] : asm MOV EAX,[EBX+MyGlobal]; end --- }
+ GlobalVarDeclare('MYGLOBALASM', IntIdx, 0);
+ TokenPoolInit;
+ Tok(TK_KEYWORD, 'asm', 0);
+ Tok(TK_IDENT, 'MOV', 0);
+ Tok(TK_IDENT, 'EAX', 0);
+ Tok(TK_PUNCT, ',', 0);
+ Tok(TK_PUNCT, '[', 0);
+ Tok(TK_IDENT, 'EBX', 0);
+ Tok(TK_OP, '+', 0);
+ Tok(TK_IDENT, 'MyGlobalAsm', 0);
+ Tok(TK_PUNCT, ']', 0);
+ Tok(TK_PUNCT, ';', 0);
+ Tok(TK_KEYWORD, 'end', 0);
+ ParserInit;
+ EmitOpen(TmpFile);
+ ParseStmt;
+ EmitClose('DPASMSELFTEST_END');
+ AsmAssert('asm avec variable globale en bracket consomme tous les tokens',
+  PPAtEnd);
+ HasGlobal := False;
+ {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  { les espaces autour des jetons a l interieur de [...] sont tolerees }
+  { par MASM (voir TranslateAsmOperand) : on ne verifie donc pas       }
+  { l adjacence stricte 'EBX+', seulement la presence des deux         }
+  { composantes et de l operateur.                                     }
+  If (Pos('EBX', Line) > 0) And (Pos('+', Line) > 0) And
+     (Pos(DP_VAR_PFX, Line) > 0) Then
+   HasGlobal := True;
+ End;
+ Close(F); Erase(F);
+ AsmAssert('variable globale substituee dans [EBX+...]', HasGlobal);
+
+ { --- Self.FValue : champ d instance --- }
+ FrameInit;
+ SymEnterScope;
+  AsmClsSymIdx := SymDeclareClass('TASMSELFTESTCLS', SK_CLASS, -1);
+  AsmClsIdx    := SymTab[AsmClsSymIdx].TypeIdx;
+  FieldInitInherit(AsmClsIdx);
+  TypeAddField(AsmClsIdx, 'FVALUE', IntIdx);
+  VMTInit(AsmClsIdx);
+  ParamAdd('SELF', AsmClsIdx, PK_VALUE);
+
+  TokenPoolInit;
+  Tok(TK_KEYWORD, 'asm', 0);
+  Tok(TK_IDENT, 'MOV', 0);
+  Tok(TK_IDENT, 'EAX', 0);
+  Tok(TK_PUNCT, ',', 0);
+  Tok(TK_IDENT, 'Self', 0);
+  Tok(TK_PUNCT, '.', 0);
+  Tok(TK_IDENT, 'FValue', 0);
+  Tok(TK_PUNCT, ';', 0);
+  Tok(TK_KEYWORD, 'end', 0);
+  ParserInit;
+  CurSelfTypeIdx := AsmClsIdx;
+  EmitOpen(TmpFile);
+  ParseStmt;
+  EmitClose('DPASMSELFTEST_END');
+  AsmAssert('asm avec Self.Champ consomme tous les tokens', PPAtEnd);
+  CurSelfTypeIdx := -1;
+ SymLeaveScope;
+ HasSelfLoad := False; HasSelfField := False;
+ {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  If Pos('MOV EDX,DWORD PTR [EBP+8]', Line) > 0 Then HasSelfLoad := True;
+  If Pos('MOV EAX,DWORD PTR [EDX+4]', Line) > 0 Then HasSelfField := True;
+ End;
+ Close(F); Erase(F);
+ AsmAssert('Self charge dans EDX avant l acces au champ', HasSelfLoad);
+ AsmAssert('Self.FValue traduit en [EDX+4]', HasSelfField);
+
+ { --- etiquette locale @Boucle: et saut JNZ @Boucle --- }
+ TokenPoolInit;
+ Tok(TK_KEYWORD, 'asm', 0);
+ Tok(TK_OP, '@', 0);
+ Tok(TK_IDENT, 'Boucle', 0);
+ Tok(TK_PUNCT, ':', 0);
+ Tok(TK_IDENT, 'DEC', 0);
+ Tok(TK_IDENT, 'ECX', 0);
+ Tok(TK_PUNCT, ';', 0);
+ Tok(TK_IDENT, 'JNZ', 0);
+ Tok(TK_OP, '@', 0);
+ Tok(TK_IDENT, 'Boucle', 0);
+ Tok(TK_PUNCT, ';', 0);
+ Tok(TK_KEYWORD, 'end', 0);
+ ParserInit;
+ EmitOpen(TmpFile);
+ ParseStmt;
+ EmitClose('DPASMSELFTEST_END');
+ AsmAssert('asm avec etiquette locale consomme tous les tokens', PPAtEnd);
+ HasLabel := False; HasDec := False; HasJmp := False;
+ {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  If Pos('@Boucle:', Line) > 0 Then HasLabel := True;
+  If Pos('DEC ECX', Line) > 0 Then HasDec := True;
+  If Pos('JNZ @Boucle', Line) > 0 Then HasJmp := True;
+ End;
+ Close(F); Erase(F);
+ AsmAssert('etiquette locale @Boucle: emise', HasLabel);
+ AsmAssert('DEC ECX emis inchange', HasDec);
+ AsmAssert('JNZ @Boucle emis inchange', HasJmp);
+
+ SymInit;
+ ClassSystemInit;
+ DataInit; DataInit2;
+ FrameInit;
+ StmtInit;
+ UserExternInit;
+End;
+
+{ ------------------------------------------------------------ }
 { Run - point d entree de la compilation                       }
 { Le parseur de fichier programme complet (uses, section         }
 { principale) sera ajoute par les TODO 23 et suivants. Pour       }
@@ -14587,6 +15139,7 @@ Begin
  ExceptionSelfTest;
  CompoundSelfTest;
  StrSelfTest;
+ AsmSelfTest;
 
  {$I-}
  Assign(LexSrcF, Opts.SrcFile);
@@ -14662,8 +15215,10 @@ Begin
  WriteLn('DELPHI: TODO 18 (gestion des exceptions) implemente.');
  WriteLn('DELPHI: TODO 19 (tableaux, records et ensembles) implemente.');
  WriteLn('DELPHI: TODO 20 (chaines de caracteres) implemente.');
+ WriteLn('DELPHI: TODO 21 (instruction asm, bloc assembleur en ligne) ',
+         'implemente.');
  WriteLn('DELPHI: analyseur syntaxique et generateur de code non ',
-         'encore implementes (voir TODO 21 et suivants).');
+         'encore implementes (voir TODO 22 et suivants).');
  ShowStats;
  Cleanup;
 End;
