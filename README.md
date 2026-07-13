@@ -786,6 +786,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer le compilateur Visual Basic .NET pour l'assembleur du microprocesseur 80386 (en executable Windows 32 bits).</td>
 		</tr>
 		<tr>
+			<td><b>WORKSHOP.PAS</b></td>
+			<td>Cette commande permet de lancer l'editeur de ressources.</td>
+		</tr>
+		<tr>
 			<td><b>XPPCW32.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur X++ (Axapta / Microsoft Dynamics AX) pour l'assembleur du microprocesseur 80386 pour le système d'exploitation Windows 32 bits (PE Win32).</td>
 		</tr>
