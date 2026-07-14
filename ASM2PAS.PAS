@@ -10936,6 +10936,77 @@ Begin
   ' bloc(s) detecte(s).');
 End;
 
+Procedure ProcessTurboPascalForPatterns;
+{ Reconstruit la forme Turbo Pascal d'un For croissant :
+    XOR AX,AX / MOV compteur,AX / JMP test
+  boucle:
+    INC compteur
+    ... corps ...
+  test:
+    CMP compteur,borne / JNZ boucle
+  Le compilateur place l'increment avant le corps et entre initialement par
+  le test; le For Pascal exprime directement cette structure. }
+Var
+ I,J,K,ProcIdx,PatternCount,TrIdx:LongInt;
+ A0,A1,A2,A3,ACmp,AJmp:TAsmLine;
+ CounterExpr,BoundExpr,Code:String;
+ Valid:Boolean;
+Begin
+ PatternCount:=0;
+ I:=0;
+ While I+8<SrcLineCount do Begin
+  ParseInstructionLine(I,A0);
+  ParseInstructionLine(I+1,A1);
+  ParseInstructionLine(I+2,A2);
+  ParseInstructionLine(I+3,A3);
+  Valid:=(UpCaseStr(A0.Mnemonic)='XOR')and
+    (UpCaseStr(A0.Op1.Reg)='AX')and(UpCaseStr(A0.Op2.Reg)='AX')and
+    (UpCaseStr(A1.Mnemonic)='MOV')and(A1.Op1.OpType=OT_MEM)and
+    (UpCaseStr(A1.Op2.Reg)='AX')and
+    (UpCaseStr(A2.Mnemonic)='JMP')and
+    (UpCaseStr(A3.Mnemonic)='INC')and(A3.Op1.OpType=OT_MEM)and
+    (A3.Op1.BaseReg=A1.Op1.BaseReg)and(A3.Op1.Disp=A1.Op1.Disp);
+  If Not Valid Then Begin Inc(I); Continue; End;
+
+  J:=I+4;
+  While J+1<SrcLineCount do Begin
+   ParseInstructionLine(J,ACmp);
+   ParseInstructionLine(J+1,AJmp);
+   If(UpCaseStr(ACmp.Mnemonic)='CMP')and
+     (ACmp.Op1.OpType=OT_MEM)and
+     (ACmp.Op1.BaseReg=A1.Op1.BaseReg)and(ACmp.Op1.Disp=A1.Op1.Disp)and
+     (ACmp.Op2.OpType in [OT_IMM8,OT_IMM16,OT_IMM32])and
+     ((UpCaseStr(AJmp.Mnemonic)='JNZ')or
+      (UpCaseStr(AJmp.Mnemonic)='JNE'))Then Break;
+   Inc(J);
+   If J-I>200 Then Break;
+  End;
+  If(J+1>=SrcLineCount)or(J-I>200)Then Begin Inc(I); Continue; End;
+
+  ProcIdx:=FindProcForLine(I);
+  CounterExpr:=OperandToExpr(A1.Op1,ProcIdx);
+  BoundExpr:=OperandToExpr(ACmp.Op2,ProcIdx);
+  If(CounterExpr='')or(BoundExpr='')Then Begin Inc(I); Continue; End;
+  Code:='For '+CounterExpr+' := 0 to '+BoundExpr+' do Begin';
+  SetTranslationForLine(I,Code);
+  SetTranslationForLine(I+1,'');
+  SetTranslationForLine(I+2,'');
+  SetTranslationForLine(I+3,'');
+  { Decaler le corps d'un niveau, sans depasser la limite String[255]. }
+  For K:=I+4 to J-1 do Begin
+   TrIdx:=FindTranslationForLine(K);
+   If(TrIdx>=0)and(Translations[TrIdx].PascalCode<>'')Then
+    Translations[TrIdx].PascalCode:=' '+Translations[TrIdx].PascalCode;
+  End;
+  SetTranslationForLine(J,'');
+  SetTranslationForLine(J+1,'End;');
+  Inc(PatternCount);
+  I:=J+2;
+ End;
+ WriteLn('  Reconstruction boucles For Turbo Pascal : ',PatternCount,
+  ' boucle(s) detectee(s).');
+End;
+
 Procedure ProcessTurboPascalParamStrIfPatterns;
 { Reconstruit les chaines de comparaisons generees pour :
     If (ParamStr(n)='x') or (ParamStr(n)='y') Then Begin ... End;
@@ -11539,6 +11610,8 @@ BEGIN
  ProcessTurboPascalStringCompareLadders;
  { Reconstruction des Case compiles en comparaisons de caracteres }
  ProcessTurboPascalCharCasePatterns;
+ { Reconstruction des boucles For croissantes du compilateur Turbo Pascal }
+ ProcessTurboPascalForPatterns;
  { TODO 21 - Generation en-tete Pascal }
  ProcessHeaderGeneration;
  { TODO 22 - Generation corps procedures }
