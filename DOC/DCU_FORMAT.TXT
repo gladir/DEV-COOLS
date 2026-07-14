@@ -1,0 +1,558 @@
+============================================================
+  FORMAT DE FICHIER .DCU (DELPHI COMPILED UNIT)
+  Version ciblee pour DELPHI.PAS : Delphi 7.0 (Ver=7, Win32)
+  Document de reverse-engineering - PAS une specification
+  officielle Borland/Embarcadero (jamais publiee)
+============================================================
+
+
+TABLE DES MATIERES
+------------------
+
+1.  Introduction et avertissement d'exactitude
+2.  Sources consultees
+3.  Nombre magique (identification de version)
+4.  Encodage entier a longueur variable (TNDX)
+5.  Horodatage DOS (TFileTime)
+6.  Structure generale du fichier (en-tete)
+7.  Table des enregistrements (TDCU30List0) et etiquettes (Tag)
+8.  Enregistrements courants : Unit, Var, Const, Proc, Export
+9.  Le probleme non resolu : numerotation des types (hDef/hDT)
+10. Evaluation realiste de la faisabilite pour DELPHI.PAS
+11. Portee retenue pour l'implementation DELPHI.PAS
+12. References
+
+
+1. INTRODUCTION ET AVERTISSEMENT D'EXACTITUDE
+============================================================
+
+  Le format .DCU (Delphi Compiled Unit) est un format BINAIRE
+  PROPRIETAIRE de Borland/Embarcadero, jamais documente
+  officiellement, et qui a change a chaque version majeure de
+  Delphi (2.0 a la 12.x actuelle, plus Kylix). Il n'existe
+  AUCUNE specification officielle publique.
+
+  Tout ce document provient d'un travail de reverse-engineering
+  communautaire (voir section 2, Sources) mene sur plus de 20 ans
+  par plusieurs personnes independantes, en observant des
+  fichiers .DCU reels produits par de vraies installations
+  Delphi et en deduisant leur structure par experimentation.//
+  CE TRAVAIL EST LUI-MEME PARTIEL ET RECONNU INCOMPLET PAR SES
+  AUTEURS (ex. "Info Src: Partially reconstructed by me" dans le
+  fichier source dcu32.rfi).
+
+  IMPORTANT : ce document ne permet PAS a lui seul de produire
+  un .DCU que le vrai IDE Delphi accepterait de charger/lier.
+  Voir section 9 et 10 pour une explication precise de ce qui
+  manque et pourquoi une compatibilite binaire a 100% n'est
+  raisonnablement pas atteignable sans une vraie installation
+  Delphi 7 pour comparer des .DCU reels octet par octet (les
+  handles de types predefinis - Integer, String, TObject, etc. -
+  ont des numeros FIXES dans chaque version de Delphi qui ne sont
+  documentes nulle part et ne peuvent etre retrouves qu'en
+  inspectant des System.dcu/Sysinit.dcu reels, dont nous ne
+  disposons pas ici).
+
+
+2. SOURCES CONSULTEES
+============================================================
+
+  - Projet DCU32INT (Alexei Hmelnov, alex@icc.ru), site original :
+    http://hmelnov.icc.ru/DCU/index.eng.html
+    Miroir GitHub (fichier de specification FlexT complet,
+    dcu32.rfi, ~3000 lignes) :
+    https://github.com/rfrezino/DCU32INT
+    https://github.com/sarog/DCU32INT (autre miroir)
+    https://github.com/VoSs2o0o/dcu32int (utilitaire de parsing)
+
+    Ce projet documente le format pour Delphi 2.0 a 8.0, 2005,
+    2006/Turbo Delphi, 2009, 2010, XE1-XE7/AppMethod, et Kylix
+    1.0-3.0, sous forme d'un fichier de description "FlexT"
+    (langage de description de formats binaires utilise par
+    certains outils de reverse-engineering, similaire dans
+    l'esprit a un fichier .bt d'010 Editor).
+
+  - Contributions "DoDi's DCU Documentation" (VBDis@aol.com),
+    citees en credit dans le fichier dcu32.rfi lui-meme.
+
+  - Fil de discussion Exetools (2005) confirmant l'absence de
+    documentation officielle et l'existence du decompilateur DeDe
+    (DCU_IN.pas/DCU32.pas/DCUTbl.pas) comme autre reference de
+    parsing existante :
+    https://forum.exetools.com/showthread.php?t=5196
+
+  - Page Embarcadero RAD Studio (docwiki) sur les fichiers .dcu -
+    NON consultable directement (HTTP 403), mais son existence et
+    son role general (fichier intermediaire produit par unite,
+    permettant compilation/liaison rapide) sont deja etablis par
+    les sources ci-dessus et la documentation Delphi generale.
+
+
+3. NOMBRE MAGIQUE (IDENTIFICATION DE VERSION)
+============================================================
+
+  Les 4 premiers octets du fichier (offset 0x0000, ulong
+  petit-boutiste) identifient a la fois la version du compilateur
+  ET la plateforme cible. Extrait du fichier dcu32.rfi (table
+  complete, ordre du plus recent au plus ancien) :
+
+    Magic         Version
+    ------------  --------------------------------------------
+    0x1C00034D    Delphi XE7 / AppMethod (win32)
+    0x1C00234D    Delphi XE7 / AppMethod (win64)
+    0x1C00044D    Delphi XE7 / AppMethod (osx32)
+    0x1C00144D    Delphi XE7 / AppMethod (iOS emulateur)
+    0x1C00764D    Delphi XE7 / AppMethod (iOS device)
+    0x1C00774D    Delphi XE7 / AppMethod (Android)
+    0x1B00034D    Delphi XE6 (win32)
+    0x1B00234D    Delphi XE6 (win64)
+    ...           (XE2-XE5 : plage 0x1700034B-0x1A00034B, variantes
+                   par plateforme analogues)
+    0x1600034B    Delphi XE
+    0x15000045    Delphi 2010
+    0x14000039    Delphi 2009
+    0x1200024D    Delphi 2006 (.NET)
+    0x12000023    Delphi 2006 (Win32)
+    0x1100000D    Delphi 2005 (aussi 0x11800009, variante observee
+                   dans DUnitMainForm.dcu)
+    0x10000229    Delphi 8.0 (MSIL)
+    (Magic and 0xFF80FFFF)=0xFF0000DF : Delphi 7.0 "Free"
+    (Magic and 0xFF00FFFF)=0x0F0000DF : Delphi 7.0
+    (Magic and 0xFF80FFFF)=0x0E0000DD : Delphi 6.0
+    (Magic and 0xFF80FFFF)=0x0E8000DD : Delphi 6.0 (variante "kind $80")
+    0xF21F148B    Delphi 5.0
+    0x4768A6D8    Delphi 4.0
+    0x44518641    Delphi 3.0
+    0x50505348    Delphi 2.0 ("HSPP" en ASCII)
+    0xF21F148C    Kylix 1.0
+    0x0E1011DD    Kylix 2.0
+    0x0E0001DD    Kylix 2.0 (variante "kind $00")
+    0x0F1001DD /
+    0x0F0001DD    Kylix 3.0
+
+  NOTE IMPORTANTE : pour Delphi 6.0 et 7.0, le nombre magique
+  n'est PAS une valeur fixe unique - il faut le comparer avec un
+  MASQUE (ET logique) car certains bits variables encodent
+  d'autres informations (a ce jour non totalement identifiees,
+  possiblement liees a des sous-versions/patchs). Pour DELPHI.PAS
+  (cible Delphi 7), utiliser une valeur CONCRETE dans le sous-
+  ensemble valide, ex. 0x0F0000DF (qui satisfait le masque
+  Delphi 7 exact), plutot que d'essayer de reproduire la variabilite
+  observee.
+
+  Le numero de version interne ("Ver" dans le fichier FlexT,
+  distinct du nombre magique lui-meme) vaut Ver=7 pour Delphi 7 -
+  ce nombre pilote de nombreuses branches conditionnelles dans le
+  reste du format (presence/absence de certains champs).
+
+
+4. ENCODAGE ENTIER A LONGUEUR VARIABLE (TNDX)
+============================================================
+
+  La plupart des entiers "d'index" ou "de taille" du fichier
+  (jamais les champs d'en-tete de premier niveau, qui restent des
+  ulong 32 bits classiques) utilisent un encodage COMPACT a
+  longueur variable, similaire dans l'esprit a un VLQ/LEB128 mais
+  avec sa propre convention de bits de continuation. Note :
+  contrairement a LEB128 (little-endian, 7 bits utiles par octet,
+  bit de poids fort = continuation), CET encodage place les bits
+  de "drapeau" (flag) EN TETE du premier octet (bits de poids
+  FORT), avec un nombre de bits a 1 consecutifs indiquant combien
+  d'octets SUPPLEMENTAIRES suivent :
+
+    Forme    Taille   Bits drapeau   Bits valeur   Condition
+    -------  -------  -------------  ------------  -------------------
+    TNDXB1b  1 octet  1 bit (F=0)    7 bits (V)     octet0 bit7=0
+    TNDXB2b  2 octets 2 bits (F=1)   14 bits (V)    octet0 bits7-6=10
+    TNDXB3b  3 octets 3 bits (F=3)   21 bits (V)    octet0 bits7-5=110
+    TNDXB4b  4 octets 4 bits (F=7)   28 bits (V)    octet0 bits7-4=1110
+    TNDXB5b  5 octets 8 bits (F=0xF) 32 bits (V)    octet0=0xFF (Delphi 4+)
+    TNDXB9b  9 octets ~              64 bits        octet0=0xFF special
+                                                     (Delphi 4.0, valeurs
+                                                     64 bits - Lo/Hi
+                                                     32 bits chacun)
+
+  Autrement dit (schema equivalent, du point de vue d'un OCTET
+  LU EN PREMIER, en comptant les bits a 1 de poids fort avant le
+  premier bit a 0) :
+
+    - 0xxxxxxx                      -> valeur 7 bits (0-127) sur 1 octet
+    - 10xxxxxx xxxxxxxx             -> valeur 14 bits sur 2 octets
+    - 110xxxxx xxxxxxxx xxxxxxxx    -> valeur 21 bits sur 3 octets
+    - 1110xxxx (+3 octets)          -> valeur 28 bits sur 4 octets
+    - 11111111 (+4 octets)          -> valeur 32 bits sur 5 octets
+                                        (Delphi 4.0+ uniquement)
+
+  Le champ "displ=(HEX(@.V))" du fichier FlexT indique que la
+  valeur logique reconstruite est bien V (les bits de poids FORT
+  au-dela du prefixe drapeau, PAS un simple decalage single-byte).
+  Cet encodage economise de la place pour les tres nombreux petits
+  index/tailles qui dominent un fichier .DCU (la grande majorite
+  des valeurs reelles tiennent sur 1 octet).
+
+
+5. HORODATAGE DOS (TFileTime)
+============================================================
+
+  Le champ CompileTime de l'en-tete (voir section 6) utilise le
+  format d'horodatage DOS/FAT classique (le MEME format que celui
+  utilise dans les en-tetes ZIP, bien documente independamment de
+  Delphi) : un ulong 32 bits (donc PAS un TNDX) empaquete ainsi
+  (bit 0 = LSB) :
+
+    Bits 0-4   (5 bits)  : secondes / 2   (0-29, donc 0-58 secondes)
+    Bits 5-10  (6 bits)  : minutes        (0-59)
+    Bits 11-15 (5 bits)  : heures         (0-23)
+    Bits 16-20 (5 bits)  : jour du mois   (1-31)
+    Bits 21-24 (4 bits)  : mois           (1-12)
+    Bits 25-31 (7 bits)  : annee - 1980   (0-127, donc 1980-2107)
+
+  Formule de reconstruction (le fichier FlexT la donne
+  explicitement, en commentaire) :
+    jour . mois . (annee+1980) heures:minutes:(secondes*2)
+
+
+6. STRUCTURE GENERALE DU FICHIER (EN-TETE)
+============================================================
+
+  En-tete pour Delphi 7 (Ver=7 ou Ver=8, meme structure) - extrait
+  fidele du fichier FlexT (type TDCUHeader, branche %$ELSIF
+  (Ver=7)or(Ver=8)) :
+
+    Offset  Taille  Champ         Description
+    ------  ------  ------------  -------------------------------
+    0x0000  4       Magic         ulong, voir section 3
+    0x0004  4       FileSize      ulong, taille totale du fichier
+    0x0008  4       CompileTime   ulong, horodatage DOS, voir sec.5
+    0x000C  4       Inf           ulong, role exact NON confirme
+                                  (drapeaux globaux de l'unite ?
+                                  observe non-nul, jamais documente
+                                  precisement par les sources)
+    0x0010  1       b00           byte, role exact NON confirme
+    0x0011  1       b02           byte, role exact NON confirme
+                                  (b02 n'existe QUE depuis Delphi 7;
+                                  Delphi 2-6 n'ont pas ce champ)
+    0x0012  ...     Tbl           TDCU30List0 - la table des
+                                  enregistrements, voir section 7
+
+  Pour reference, les variantes plus anciennes (structure du
+  meme TDCUHeader, mais sans "Inf"/"b00"/"b02" selon la version -
+  chaque champ absent decale simplement tous les suivants) :
+
+    Delphi 2 : FileSize, CompileTime, b00,           Tbl
+    Delphi 3 : FileSize, CompileTime, Inf, b00,       Tbl
+    Delphi 4 : FileSize, CompileTime, Inf, b00,       Tbl (identique a D3)
+    Delphi 5 : FileSize, L1(=ulong), Inf, b00,        Tbl
+    Delphi 6 : FileSize, CompileTime, Inf, b00,       Tbl
+    Delphi 7 : FileSize, CompileTime, Inf, b00, b02,  Tbl  <- CIBLE
+    D2005/6  : FileSize, CompileTime, Inf, b00, b02, Name(str), Tbl
+    D2009+   : + bFE:TNDX, X:TNDX avant Tbl (Name egalement present)
+
+  Le commentaire du fichier FlexT lui-meme note ":[@:Size=FileSize]"
+  (mis en commentaire, donc PAS verifie/actif) : cela suggere que
+  FileSize devrait correspondre a la taille reelle du fichier, mais
+  meme les auteurs originaux n'ont pas confirme cette assertion de
+  facon fiable pour toutes les versions.
+
+
+7. TABLE DES ENREGISTREMENTS (TDCU30List0) ET ETIQUETTES (Tag)
+============================================================
+
+  Apres l'en-tete, le corps du fichier est une SUITE
+  d'enregistrements a etiquette (Tag), chacun de la forme :
+
+    Tag: TDCU30RecTag (1 octet, enum char)
+    D:   (contenu specifique a Tag, voir section 8)
+
+  La suite s'arrete des que Tag >= 0x61 ('a', drStop_a) - c'est la
+  DERNIERE etiquette valide dans TOUS les formats connus. Une
+  sous-liste imbriquee (TDCU30ListC, utilisee par exemple pour le
+  contenu d'un drUnit) s'arrete plutot sur Tag=drStop1 ('c').
+
+  Etiquettes principales rencontrees pour une unite Delphi 7
+  "ordinaire" (Win32, non-package, non-MSIL) - extrait de l'enum
+  TDCU30RecTag (valeurs en car ASCII sauf indication) :
+
+    Definitions de types (SANS champ Name - types generalement
+    anonymes/references par index) :
+      drVoid='@'         drRecDef='M'        drPtrDef='E'
+      drRangeDef='D'      drChRangeDef='B'    drBoolRangeDef='A'
+      drWCharRangeDef='Q' drWideRangeDef='V'  drEnumDef='C'
+      drFloatDef='I'      drSetDef='J'        drArrayDef='L'
+      drShortStrDef='K'   drFileDef='O'       drTextDef='P'
+      drStringDef='R'     drWideStrDef='U'    drVariantDef='S'
+      drProcTypeDef='H'   drObjVMTDef='G'     drObjDef='N'
+      drClassDef='F'      drInterfaceDef='T'
+
+    Declarations (AVEC un champ Name: TNameStr, string Pascal
+    classique length-prefixed pour Ver<12) :
+      drUnit='d'          (unite elle-meme / uses)
+      drUnit1='e'         (unite, section implementation)
+      drDLL='h'           (import DLL / external)
+      drType='*'          drTypeP='&' (type nomme, pointeur)
+      drVar=0x20 (' ')    drVarC=0x27 (''')   drAbsVar='$'
+      drProc='('          drSysProc=')'
+      drConst=0x25 ('%')  drResStr='2' (Ver<10) ou '3' (Ver>=10)
+      drLabel='+'
+      drExport='i'
+      drImpType='f'       drImpVal='g'        drImpTypeDef='n'
+      drSrc='p'           drObj='q'           drRes='r'
+      drAsm='s'           (observe dans D5, possiblement present D7)
+
+    Structures/metadonnees internes :
+      drEmbeddedProcStart='j'  drEmbeddedProcEnd='k'
+      drCBlock='l'   (bloc de CODE compile - donnees opaques)
+      drFixUp='m'    (relocations internes)
+      drCodeLines=0x90    drLinNum=0x91  (info de debogage lignes)
+      drStrucScope=0x92   drSymbolRef=0x93   drLocVarTbl=0x94
+      drUnitFlags=0x96
+      drUnitAddInfo='4' (Ver=7-9) ou '5' (Ver>=10)
+      drProcAddInfo=0x9E
+      drConstAddInfo=0x9C (present des "gen7", donc Delphi 7+)
+      drInfo98=0x98   (present des Delphi 3+)
+      drSetDeft=0x9A  (valeur par defaut de parametre Set)
+
+    Marqueurs de fin :
+      drStop=0x00         drStop_a='a' (FIN DE FICHIER)
+      drStop1='c'         (fin de sous-liste imbriquee)
+      drStop2 (car special, encodage non-ASCII observe : '\xE9'
+               selon le fichier source, a verifier - marque un
+               autre point d'arret contextuel)
+
+
+8. ENREGISTREMENTS COURANTS : UNIT, VAR, CONST, PROC, EXPORT
+============================================================
+
+  Regle generale de dispatch (TDCU30Rec) : la plupart des
+  etiquettes "declaratives" (drUnit, drVar, drProc, drConst,
+  drDLL, drType, drImpType, drExport, drLabel, drSrc/drObj/drAsm,
+  drRes, drResStr, drUnitAddInfo, drStrConstRec, drSpecVar,
+  drDelayedImpInfo) partagent une forme commune :
+
+    Name: TNameStr        (string Pascal length-prefixed, Ver<12 :
+                            1 octet de longueur + N octets ASCII,
+                            PAS de terminateur nul)
+    D:    <structure specifique au Tag, voir ci-dessous>
+
+  Les etiquettes de DEFINITION DE TYPE (drVoid, drRecDef,
+  drPtrDef, drRangeDef, drEnumDef, drArrayDef, drClassDef,
+  drInterfaceDef, drObjDef, drProcTypeDef, etc.) n'ont PAS de
+  champ Name direct - elles sont numerotees IMPLICITEMENT par
+  leur POSITION D'APPARITION dans le fichier (chaque nouvelle
+  definition de type recoit l'index suivant disponible - voir
+  section 9 pour la difficulte que cela pose).
+
+  8.1 drUnit / drUnit1 (TUnitInf) - Delphi 7 :
+    hPack : TNDXB1        (Delphi 8+, absent en Delphi 7)
+    Inf   : TNDXB1 (Ver>=10) ou ulong (Ver<10 - donc ulong en D7)
+    X     : ulong          (specifique Ver=7 uniquement)
+    L     : TDCU30ListC    (sous-liste imbriquee, jusqu'a drStop1='c')
+    -> Represente une entree de la clause "uses" : chaque unite
+       referencee (System, SysUtils, etc.) est un drUnit distinct,
+       son Name etant le nom de l'unite utilisee.
+
+  8.2 drVar / drThreadVar / drVarC / drAbsVar (TVarInf) :
+    NF  : TNameFDecl (structure de drapeaux/visibilite, voir 8.6)
+    hDT : TNDXB1     (handle/index vers la DEFINITION DE TYPE de
+                       cette variable - voir probleme section 9)
+    Ofs : TNDXB1     (offset - dans le segment de donnees de
+                       l'unite, unite d'allocation non confirmee
+                       avec certitude, probablement en octets)
+
+  8.3 drConst (TConstDef) - via TConstVal imbrique :
+    NF  : TNameFDecl
+    (structure TConstVal, TNameFDecl - voir extrait ligne 788+ du
+     fichier source ; encode le type ET la valeur litterale
+     compile-time de la constante ; taille du champ Val depend
+     d'un octet Sz precedent, lu comme un TNDX)
+
+  8.4 drProc / drSysProc (TProcInf) - Delphi 7 (Ver<14, forme
+      "ancienne" du champ Name ci-dessous) :
+    NF : TNameFDecl
+    B0 : TNDXB1        (drapeaux de la procedure - calling convention,
+                        static/virtual, etc. - bits exacts NON
+                        confirmes par les sources consultees)
+    Sz : TNDXB1        (taille - probablement taille du code ou de
+                        la table d'arguments)
+    D  : TProcData     (structure imbriquee non entierement
+                        documentee dans les extraits consultes -
+                        contient vraisemblablement la reference au
+                        bloc de code drCBlock associe et la table
+                        des parametres/type de retour)
+    -> Un drProc(NoName=True) special (Name vide ou commencant par
+       '.' ou '$') sert de marqueur pour le corps principal
+       ("initialization"/point d'entree) de l'unite ou du programme.
+
+  8.5 drExport (TExportInf) :
+    hSym  : TNDXB1     (handle vers le symbole exporte, c-a-d vers
+                        un drProc/drVar/etc. deja defini plus haut
+                        dans le fichier)
+    Index : TNDXB1     (index d'exportation - ordre/numero dans la
+                        table d'export publique de l'unite)
+    -> C'est CET enregistrement qui rend un symbole visible/
+       PUBLIC pour une autre unite qui ferait "uses CetteUnite" -
+       une declaration dans la section interface qui ne serait PAS
+       suivie d'un drExport ne serait pas exportable (mais en
+       pratique, Delphi genere un drExport pour tout ce qui est
+       dans l'interface).
+
+  8.6 TNameFDecl (structure de drapeaux partagee par Var/Const/
+      Proc/Type) :
+    B  : TNDXB1        (drapeaux principaux - bit 0x40 indique la
+                        presence d'un champ Inf:ulong supplementaire
+                        immediatement apres, role exact NON confirme;
+                        bit 0x08 (Delphi 8, "Z" imbrique) etc. -
+                        aucune table de bits complete et fiable
+                        n'a ete retrouvee dans les sources
+                        consultees pour Delphi 7 specifiquement)
+    B1 : TNDXB1        (Delphi 8+ uniquement - absent en Delphi 7)
+    Inf: ulong         (conditionnel, seulement si B et 0x40)
+
+
+9. LE PROBLEME NON RESOLU : NUMEROTATION DES TYPES (hDef/hDT)
+============================================================
+
+  C'est ICI que se situe l'obstacle principal a une compatibilite
+  binaire reelle, et il n'est PAS resolu par ce document.
+
+  Chaque reference a un type dans un enregistrement (hDT dans
+  TVarInf, hDef dans TTypeInf, l'argument/retour d'un TProcInf,
+  etc.) est un simple ENTIER (TNDX) qui designe un type par sa
+  POSITION D'ENUMERATION - mais cette enumeration inclut :
+
+    (a) Les types PREDEFINIS du langage et de la RTL System/
+        SysInit (Integer, Boolean, Char, String, TObject, Pointer,
+        Extended, Variant, TClass, IInterface, etc.) - ces types
+        ont des numeros FIXES et bien connus DU COMPILATEUR DELPHI
+        REEL (ils font partie de son "monde implicite", construit
+        au demarrage du compilateur avant meme de lire System.pas),
+        mais CES NUMEROS NE SONT DOCUMENTES NULLE PART dans les
+        sources consultees pour ce document. Ils ne peuvent
+        raisonnablement etre retrouves qu'en :
+          - disposant d'une vraie installation Delphi 7,
+          - compilant une unite triviale connue,
+          - et en comparant octet par octet le .dcu produit avec
+            la structure ci-dessus pour en deduire empiriquement
+            la table de correspondance.
+        AUCUNE de ces conditions n'est remplie dans cet
+        environnement (pas d'installation Delphi 7 disponible ;
+        redistribuer un vrai System.dcu poserait de toute facon un
+        probleme de licence Borland/Embarcadero).
+
+    (b) Les types DEFINIS PAR L'UNITE elle-meme et par TOUTES LES
+        UNITES qu'elle "uses" (transitivement) - leur numero
+        depend de l'ORDRE EXACT dans lequel le VRAI compilateur
+        Delphi les enumere en interne, qui n'est PAS simplement
+        "l'ordre du code source" mais suit les regles internes du
+        compilateur (ordre de resolution des uses, generation
+        automatique de types implicites pour certaines
+        constructions, etc.) - regles elles aussi non documentees.
+
+  CONSEQUENCE CONCRETE : meme en respectant PARFAITEMENT toute la
+  structure des sections 3 a 8 ci-dessus (nombre magique, en-tete,
+  TNDX, tags, TFileTime...), un hDT/hDef pointant vers "Integer"
+  ecrit avec le MAUVAIS numero (faute de connaitre le vrai) ferait
+  echouer le chargement par un vrai IDE Delphi avec une erreur de
+  type incoherente, ou pire, une corruption silencieuse si le
+  numero coincide par hasard avec un AUTRE type reel.
+
+  Un .DCU produit par DELPHI.PAS ne peut donc PAS, en l'etat actuel
+  des connaissances rassemblees ici, etre charge par un vrai IDE
+  Delphi 7 de facon fiable - uniquement par un outil qui reimplemente
+  lui-meme cette meme table de types RTTI predefinis (comme
+  DCU32INT le fait, puisque ses auteurs ONT fait ce travail
+  d'inspection empirique sur de vrais fichiers, mais leur table de
+  correspondance precise n'apparait pas explicitement dans les
+  extraits consultes pour ce document).
+
+
+10. EVALUATION REALISTE DE LA FAISABILITE POUR DELPHI.PAS
+============================================================
+
+  Au-dela du probleme de numerotation des types (section 9), deux
+  autres obstacles structurels rendent une compatibilite a 100%
+  hors de portee raisonnable pour ce projet specifique :
+
+  (a) DELPHI.PAS a sa PROPRE representation interne des types/
+      classes/methodes (TypeTab, SymTab, VMTEntryPool...),
+      concue independamment et fondamentalement DIFFERENTE de
+      celle du vrai compilateur Delphi (VMT simplifiee sans RTTI
+      reelle, pas de systeme de "handles" numerotes globalement,
+      etc., voir project_delphi.md). Produire un .DCU fidele
+      necessiterait de faire correspondre CETTE representation a
+      celle, non documentee, du vrai Delphi - un travail de
+      traduction bien plus important que l'ecriture du fichier
+      binaire lui-meme.
+
+  (b) Le contenu du bloc drCBlock (le CODE MACHINE compile
+      lui-meme, sous une forme interne a Delphi) n'est PAS du code
+      80386 brut assemblable directement (contrairement au .OBJ
+      COFF deja produit par ce compilateur) - c'est une
+      representation propre au format DCU (possiblement une forme
+      d'IR ou de code relogeable interne), dont la structure exacte
+      n'apparait dans AUCUNE des sources consultees pour ce
+      document (seul le TAG et sa presence sont confirmes, pas son
+      contenu binaire).
+
+  CONCLUSION : ce document permet d'ecrire un fichier dont
+  l'EN-TETE et la STRUCTURE EXTERNE (nombre magique correct pour
+  Delphi 7, taille de fichier, horodatage, table d'enregistrements
+  avec les BONNES etiquettes/tags et le bon encodage TNDX) sont
+  fideles a ce qui est reellement documente/reverse-engineered -
+  mais le CONTENU SEMANTIQUE profond (numeros de types, code
+  machine interne) ne peut etre, en toute honnetete, qu'une
+  APPROXIMATION DOCUMENTEE, pas une reproduction exacte verifiee.
+
+
+11. PORTEE RETENUE POUR L'IMPLEMENTATION DELPHI.PAS
+============================================================
+
+  Compte tenu de l'evaluation ci-dessus, l'implementation dans
+  DELPHI.PAS (WriteDCUFile ou equivalent) vise le niveau de
+  fidelite suivant, CLAIREMENT documente dans le code source
+  lui-meme (commentaires) comme dans ce fichier :
+
+  - Nombre magique Delphi 7 EXACT (0x0F0000DF) en tete de fichier.
+  - En-tete TDCUHeader Delphi 7 structurellement EXACT (FileSize,
+    CompileTime au format DOS reel, Inf, b00, b02).
+  - Chaque routine/variable/constante de l'INTERFACE de l'unite
+    emise comme un enregistrement (drProc/drVar/drConst) avec son
+    Tag et son Name corrects, suivi d'un drExport correspondant -
+    STRUCTURELLEMENT correct (bon tag, bon encodage TNDX, bon nom).
+  - Les CHAMPS dont la semantique exacte n'a pas pu etre confirmee
+    (Inf, b00, b02, les drapeaux B/B1 de TNameFDecl, hDT/hDef -
+    section 9) sont ecrits avec des valeurs PLACEHOLDER
+    raisonnables (zero ou un index sequentiel local a l'unite),
+    documentees comme telles - PAS comme les vraies valeurs
+    attendues par un IDE Delphi reel.
+  - Le fichier se termine correctement par drStop_a ('a').
+  - RESULTAT ATTENDU : un fichier qui a la structure EXTERNE d'un
+    vrai .DCU Delphi 7 (nombre magique reconnu, en-tete de taille
+    correcte, table d'enregistrements bien formee et parseable par
+    un outil qui suit cette meme grammaire, ex. DCU32INT) mais qui
+    N'A PAS ete verifie comme chargeable par un vrai IDE Delphi 7
+    (aucune installation disponible pour tester) - limitation
+    explicitement assumee et documentee, dans la continuite des
+    autres approximations documentees de ce projet (VMT
+    simplifiee, PE/COFF non testes contre un vrai linker Borland,
+    etc.).
+
+
+12. REFERENCES
+============================================================
+
+  [1] DCU32INT (Alexei Hmelnov) - specification FlexT complete
+      https://github.com/rfrezino/DCU32INT/blob/master/dcu32.rfi
+      (miroir : https://github.com/sarog/DCU32INT)
+  [2] DCU32INT - utilitaire de parsing (reference d'implementation)
+      https://github.com/VoSs2o0o/dcu32int
+  [3] Forum Exetools, "Delphi DCU File Format" (2005)
+      https://forum.exetools.com/showthread.php?t=5196
+  [4] Embarcadero RAD Studio docwiki, "Delphi Compiled Unit File
+      (*.dcu)" (existence/role general du format, page non
+      accessible directement lors de la redaction de ce document -
+      HTTP 403)
+      https://docwiki.embarcadero.com/RADStudio/Athens/en/Delphi_Compiled_Unit_File_(*.dcu)
+  [5] project_delphi.md (memoire persistante de ce projet) -
+      architecture interne de DELPHI.PAS (TypeTab/SymTab/VMT),
+      pour comparaison avec la section 10(a) ci-dessus.
