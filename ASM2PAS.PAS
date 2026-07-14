@@ -8992,6 +8992,12 @@ Begin
     WriteLn(OutFile,'  End;');
     WriteLn(OutFile,'  ',Procs[I].Name,' := r;');
    End
+   Else If Procs[I].StringsReplacement='PadLabel' Then Begin
+    WriteLn(OutFile,'  Str(n, s);');
+    WriteLn(OutFile,'  While Length(s) < 4 do');
+    WriteLn(OutFile,'   s := ''0'' + s;');
+    WriteLn(OutFile,'  ',Procs[I].Name,' := s;');
+   End
    Else Begin
    { Emettre le corps simplifie avec l'appel a l'unite Strings }
    WriteLn(OutFile,'  { Pattern assembleur remplace par ',
@@ -11355,6 +11361,36 @@ Begin
    End;
   End;
   If Not(IsLong or IsInteger)Then Begin Inc(I); Continue; End;
+
+  { Variante PadLabel : Str(n,s), puis ajout de '0' a gauche tant que la
+    longueur de la shortstring est inferieure a quatre. }
+  If IsInteger and(I+29<SrcLineCount)Then Begin
+   ParseInstructionLine(I+1,A);
+   Valid:=(UpCaseStr(A.Mnemonic)='CMP')and(A.Op1.OpType=OT_MEM)and
+     (A.Op1.BaseReg=ATemp.Op1.BaseReg)and(A.Op1.Disp=ATemp.Op1.Disp)and
+     (A.Op2.Imm=4)and IsRuntimeFarCall(I+9,$0BFE)and
+     IsRuntimeFarCall(I+13,$0C7D)and IsRuntimeFarCall(I+19,$0C18)and
+     IsRuntimeFarCall(I+29,$0C18);
+   If Valid Then Begin
+    Procs[ProcIdx].ParamCount:=1;
+    With Procs[ProcIdx].Params[1] do Begin
+     Name:='n'; TypeName:='INTEGER'; PascalType:=PT_INTEGER; Size:=2;
+    End;
+    If Procs[ProcIdx].LocalCount<MAX_LOCALS Then Begin
+     Inc(Procs[ProcIdx].LocalCount);
+     With Procs[ProcIdx].Locals[Procs[ProcIdx].LocalCount] do Begin
+      Name:='s'; TypeName:='STRING'; PascalType:=PT_STRING;
+      Size:=256; Count:=1; IsIndexedMem:=False;
+      IndexOffset:=ATemp.Op1.Disp; IndexBaseReg:='BP'; IndexIndexReg:='';
+     End;
+    End;
+    Procs[ProcIdx].StringsReplacement:='PadLabel';
+    ProcStringResult[ProcIdx]:=True;
+    Inc(PatternCount);
+    I:=Procs[ProcIdx].EndLine+1;
+    Continue;
+   End;
+  End;
 
   CopyCall:=I+9;
   If(CopyCall>=SrcLineCount)or(Not IsRuntimeFarCall(CopyCall,$0C18))Then Begin
