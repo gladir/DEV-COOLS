@@ -2691,6 +2691,7 @@ Const
   BF_STRING  = 3;  { octet de chaine ASCII }
   BF_JUMPTBL = 4;  { entree de table de saut }
   BF_PADDING = 5;  { padding/alignement (NOP, INT3, 00) }
+  BF_PSTRING = 6;  { chaine Pascal : longueur sur un octet + caracteres }
 
 { ClassifyInstruction - Classifie une instruction selon son type de flux.
   Parametres :
@@ -3399,6 +3400,57 @@ Begin
   End;
 End;
 
+{ DetectPascalStrings - Recherche les chaines Pascal courtes dans les zones
+  de donnees. Leur premier octet contient le nombre de caracteres (1..255),
+  sans terminateur NUL. On accepte aussi les options courtes (par ex. /h),
+  ce qui permet de conserver l'alignement d'une suite de chaines Pascal. }
+Procedure DetectPascalStrings;
+Var
+  I, J       : LongInt;
+  StrLen     : Integer;
+  LetterCount: Integer;
+  Valid      : Boolean;
+  B          : Byte;
+Begin
+  I := 0;
+  While I < ImageSize Do Begin
+    If (ByteFlags^[I] = BF_UNKNOWN) Or (ByteFlags^[I] = BF_DATA) Then Begin
+      StrLen := ReadImageByte(I);
+      Valid := (StrLen >= 2) And (I + StrLen < ImageSize);
+      LetterCount := 0;
+
+      If Valid Then Begin
+        For J := I + 1 To I + StrLen Do Begin
+          B := ReadImageByte(J);
+          If Not ((ByteFlags^[J] = BF_UNKNOWN) Or
+                  (ByteFlags^[J] = BF_DATA)) Or
+             Not IsAsciiPrintable(B) Then Begin
+            Valid := False;
+            Break;
+          End;
+          If ((B >= Ord('A')) And (B <= Ord('Z'))) Or
+             ((B >= Ord('a')) And (B <= Ord('z'))) Then
+            Inc(LetterCount);
+        End;
+        If ((StrLen < 4) And (LetterCount < 1)) Or
+           ((StrLen >= 4) And (LetterCount < 3)) Then
+          Valid := False;
+      End;
+
+      If Valid Then Begin
+        For J := I To I + StrLen Do
+          ByteFlags^[J] := BF_PSTRING;
+        Inc(StringCount);
+        If FindLabel(I) < 0 Then
+          AddLabel(I, 'pStr_' + HexDWord(I), False, False, False);
+        I := I + StrLen + 1;
+      End Else
+        Inc(I);
+    End Else
+      Inc(I);
+  End;
+End;
+
 { DetectJumpTables - Recherche les tables de saut (switch/case) dans les
   zones non classifiees. Une table de saut est une sequence d'adresses
   (16 ou 32 bits) qui pointent toutes vers des labels connus dans les
@@ -3479,6 +3531,7 @@ Begin
     End;
     { Compter les octets de donnees }
     If (ByteFlags^[I] = BF_DATA) Or (ByteFlags^[I] = BF_STRING) Or
+       (ByteFlags^[I] = BF_PSTRING) Or
        (ByteFlags^[I] = BF_JUMPTBL) Then
       Inc(DataBytes);
   End;
@@ -3509,10 +3562,13 @@ Begin
   { Passe 3 : Detecter les chaines ASCII }
   DetectAsciiStrings;
 
-  { Passe 4 : Detecter les tables de saut }
+  { Passe 4 : Detecter les chaines Pascal (longueur + caracteres) }
+  DetectPascalStrings;
+
+  { Passe 5 : Detecter les tables de saut }
   DetectJumpTables(Mode32);
 
-  { Passe 5 : Marquer les zones restantes comme donnees }
+  { Passe 6 : Marquer les zones restantes comme donnees }
   DetectDataPatterns;
 
   { Calculer les statistiques }
@@ -4406,6 +4462,7 @@ Begin
 
     { Si c'est de la donnee, du string, du padding ou un jump table, emettre en DB }
     If (BFlag = BF_DATA) Or (BFlag = BF_STRING) Or
+       (BFlag = BF_PSTRING) Or
        (BFlag = BF_JUMPTBL) Or (BFlag = BF_PADDING) Then Begin
       { En mode DOS 16 bits, les donnees sont deja emises dans DSEG }
       If Not Mode32 Then Begin
@@ -4610,6 +4667,63 @@ Begin
   EmitASMString := StrLen;
 End;
 
+{ EmitASMPascalString - Emet une chaine Pascal courte sous la forme
+  DB longueur,'texte'. Les caracteres de controle sont conserves sous forme
+  numerique et les apostrophes sont doublees pour la syntaxe MASM. }
+Function EmitASMPascalString(Var F : Text; Addr : LongInt) : LongInt;
+Var
+  StartAddr : LongInt;
+  EndAddr   : LongInt;
+  B         : Byte;
+  InStr     : Boolean;
+  LineStr   : TString;
+  First     : Boolean;
+Begin
+  StartAddr := Addr;
+  EndAddr := Addr + ReadImageByte(Addr) + 1;
+  LineStr := '        DB      ' + IntToStr(ReadImageByte(Addr));
+  Inc(Addr);
+  InStr := False;
+  First := False;
+
+  While (Addr < EndAddr) And (Addr < ImageSize) Do Begin
+    B := ReadImageByte(Addr);
+    If IsASMSafeChar(B) Then Begin
+      If Not InStr Then Begin
+        If Not First Then LineStr := LineStr + ',';
+        LineStr := LineStr + '''';
+        InStr := True;
+      End;
+      If Chr(B) = '''' Then
+        LineStr := LineStr + ''''''
+      Else
+        LineStr := LineStr + Chr(B);
+    End Else Begin
+      If InStr Then Begin
+        LineStr := LineStr + '''';
+        InStr := False;
+      End;
+      If Not First Then LineStr := LineStr + ',';
+      LineStr := LineStr + HexByte(B) + 'h';
+    End;
+    First := False;
+    Inc(Addr);
+
+    If Length(LineStr) > 200 Then Begin
+      If InStr Then Begin
+        LineStr := LineStr + '''';
+        InStr := False;
+      End;
+      WriteLn(F, LineStr);
+      LineStr := '        DB      ';
+      First := True;
+    End;
+  End;
+  If InStr Then LineStr := LineStr + '''';
+  WriteLn(F, LineStr);
+  EmitASMPascalString := Addr - StartAddr;
+End;
+
 { WriteASMDataRange - Emet les donnees d'une plage d'adresses avec les
   directives DB, DW, DD. Detecte les chaines ASCII (BF_STRING) et les
   emet avec DB 'texte',0. Regroupe les octets consecutifs non-chaine en
@@ -4663,6 +4777,14 @@ Begin
       Continue;
     End;
 
+    { Chaine Pascal courte : emettre longueur puis texte }
+    If BFlag = BF_PSTRING Then Begin
+      StrBytes := EmitASMPascalString(F, Addr);
+      If StrBytes < 1 Then StrBytes := 1;
+      Addr := Addr + StrBytes;
+      Continue;
+    End;
+
     { Table de saut : emettre en DD avec label si possible }
     If (BFlag = BF_JUMPTBL) And (Addr + 3 < EndAddr) Then Begin
       DWordVal := ReadImageDWord(Addr);
@@ -4707,6 +4829,7 @@ Begin
         BFlag := ByteFlags^[Addr];
       { Arreter si on tombe sur du code, une chaine, un jump table ou un padding }
       If (BFlag = BF_CODE) Or (BFlag = BF_STRING) Or
+         (BFlag = BF_PSTRING) Or
          (BFlag = BF_JUMPTBL) Or (BFlag = BF_PADDING) Then
         Break;
       { Arreter si l'adresse suivante a un label (sauf le premier octet) }

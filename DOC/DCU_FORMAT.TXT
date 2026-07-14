@@ -334,7 +334,13 @@ TABLE DES MATIERES
       drCodeLines=0x90    drLinNum=0x91  (info de debogage lignes)
       drStrucScope=0x92   drSymbolRef=0x93   drLocVarTbl=0x94
       drUnitFlags=0x96
-      drUnitAddInfo='4' (Ver=7-9) ou '5' (Ver>=10)
+      drUnitAddInfo=0x34 ('4', TOUJOURS cette valeur, quelle que soit
+        la version - CORRECTION 2026-07-14 : le fichier FlexT
+        original laissait a tort penser a une variante '5'=0x35
+        pour Ver>=10 ; $35 est en realite drStrConstRec, une
+        etiquette totalement DIFFERENTE et sans rapport, confirmee
+        contre le vrai code source DCU32.pas - const drUnitAddInfo
+        =$34 { '4' } ; drStrConstRec=$35 { '5' } ;)
       drProcAddInfo=0x9E
       drConstAddInfo=0x9C (present des "gen7", donc Delphi 7+)
       drInfo98=0x98   (present des Delphi 3+)
@@ -343,9 +349,13 @@ TABLE DES MATIERES
     Marqueurs de fin :
       drStop=0x00         drStop_a='a' (FIN DE FICHIER)
       drStop1='c'         (fin de sous-liste imbriquee)
-      drStop2 (car special, encodage non-ASCII observe : '\xE9'
-               selon le fichier source, a verifier - marque un
-               autre point d'arret contextuel)
+      drStop2=0x9F (CONFIRME contre le vrai code source DCU32.pas,
+               2026-07-14 : const drStop2=$9F - le fichier FlexT
+               original ne donnait qu'un caractere non-ASCII
+               approximatif ; voir section 8.7 pour son usage exact
+               - n'est PAS un marqueur de fin malgre son nom, il peut
+               apparaitre AU MILIEU d'une liste d'imports sans y
+               mettre fin)
 
 
 8. ENREGISTREMENTS COURANTS : UNIT, VAR, CONST, PROC, EXPORT
@@ -435,6 +445,64 @@ TABLE DES MATIERES
                         consultees pour Delphi 7 specifiquement)
     B1 : TNDXB1        (Delphi 8+ uniquement - absent en Delphi 7)
     Inf: ulong         (conditionnel, seulement si B et 0x40)
+
+  8.7 LISTE IMBRIQUEE D'IMPORTS D'UN ENREGISTREMENT drUnit/drUnit1
+      (RESOLU le 2026-07-14, contre le vrai code source DCU32.pas,
+      TUnit.ReadUses - voir section 9b/12 reference [2]) :
+
+      Apres le Name (nom de l'unite utilisee) et les champs hPack/
+      Inf/X (TUnitInf, section 8.1), une BOUCLE lit des etiquettes
+      supplementaires jusqu'a rencontrer drStop1 ($63, 'c') :
+
+        drImpType    ($66, 'f') : import d'un TYPE par son nom -
+          ImpName : TNameStr (identificateur, ex. "TObject")
+          L       : ulong (role exact non confirme - PAS un TNDX,
+                    toujours 4 octets bruts, confirme par le code
+                    source reel)
+          -> Affiche par un vrai decompilateur comme "T:ImpName"
+
+        drImpTypeDef ($6E, 'n') : import d'un type, variante pour
+          une declaration de la forme "A = type B" :
+          ImpName : TNameStr
+          RTTISz  : TNDX (champ SUPPLEMENTAIRE, absent de drImpType)
+          L       : ulong
+          -> Egalement affiche comme "T:ImpName"
+
+        drImpVal     ($67, 'g') : import d'une ROUTINE/valeur/
+          adresse par son nom (ex. "TObject.Equals") :
+          ImpName : TNameStr
+          L       : ulong
+          -> Affiche comme "A:ImpName"
+
+        drStop2      ($9F) : marqueur qui peut apparaitre ENTRE deux
+          imports SANS mettre fin a la liste (la boucle continue
+          normalement apres) :
+          L : ulong (uniquement lu si Ver>=8 - Delphi 7 et anterieur
+              n'ont pas ce champ pour cette etiquette)
+
+        drConstAddInfo ($9C) : pour une cible Win32 native non-MSIL
+          et Ver<Delphi 11.0 environ, met fin a la boucle avec un
+          traitement PLUS complexe pour les autres cas (MSIL ou
+          Delphi 11+) qui n'a pas ete etudie ici (hors de portee).
+
+        (toute autre etiquette est interpretee comme la fin de la
+        liste, et DOIT alors valoir exactement drStop1 $63 - une
+        autre valeur signale une structure non prevue par ce
+        document.)
+
+      Une fois la boucle terminee sur drStop1, le flux lit ENCORE
+      une etiquette supplementaire (toujours, inconditionnellement) ;
+      si celle-ci est drProcAddInfo ($9E, uniquement pour Ver>=7),
+      un index SIGNE (TNDX) est consomme puis une AUTRE etiquette
+      est lue - c'est celle-la qui devient la "prochaine etiquette"
+      du flux principal (donc jusqu'a 2 lectures d'etiquette
+      supplementaires possibles apres la fin de la liste imbriquee
+      elle-meme).
+
+      Verifie contre de vrais .dcu (RAD Studio 21.0) : System.
+      SysUtils.dcu montre exactement ce motif dans son "uses System"
+      ("T:SizeOf, T:Extended, ..., T:TObject, ..., A:TObject.Equals,
+      A:TObject.GetHashCode, ...").
 
 
 9. NUMEROTATION DES TYPES (hDef/hDT) - RESOLU (2026-07-14)
