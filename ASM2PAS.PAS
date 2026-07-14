@@ -589,6 +589,8 @@ Var
  { Donnees (TODO 4) }
  DataVars:Array[1..MAX_DATAVARS] of TDataVar;
  DataVarCount:Integer;
+ OmitDataVar:Array[1..MAX_DATAVARS] of Boolean;
+ NeedComparedString:Boolean;
  { Labels optimises (ne pas emettre dans ProcessBodyGeneration) }
  OptLabels:Array[1..MAX_OPT_LABELS] of String;
  OptLabelCount:Integer;
@@ -6955,6 +6957,27 @@ Begin
  GetDataVarString:=S;
 End;
 
+Function CountDataVarOffsetReferences(Const VarName:String):Integer;
+{ Compte les references OFFSET afin de ne retirer qu'une chaine qui n'est
+  utilisee nulle part ailleurs que dans le motif reconstruit. }
+Var
+ I:LongInt;
+ C:Integer;
+ A:TAsmLine;
+ U:String;
+Begin
+ C:=0;
+ U:=UpCaseStr(VarName);
+ For I:=0 to SrcLineCount-1 do Begin
+  ParseInstructionLine(I,A);
+  If(A.Op1.OpType=OT_OFFSET)and(UpCaseStr(A.Op1.LabelName)=U)Then
+   Inc(C);
+  If(A.Op2.OpType=OT_OFFSET)and(UpCaseStr(A.Op2.LabelName)=U)Then
+   Inc(C);
+ End;
+ CountDataVarOffsetReferences:=C;
+End;
+
 Function TranslateINT21h(FuncAH,FuncAL,LineIdx:LongInt):String;
 { Traduit les fonctions DOS INT 21h en equivalents Pascal.
   AH=01h -> ReadKey (lecture caractere clavier, echo)
@@ -8460,6 +8483,7 @@ Begin
  For I:=1 to DataVarCount do Begin
   If DataVars[I].Section<>SEC_CONST Then Continue;
   If DataVars[I].Name='' Then Continue;
+  If OmitDataVar[I] Then Continue;
   If Not HasConst Then Begin
    WriteLn(OutFile,'Const');
    HasConst:=True;
@@ -8540,6 +8564,11 @@ Begin
  WriteLn(OutFile,'  Mem : Array[0..65535] of Byte;');
  WriteLn(OutFile,'  MemW : Array[0..32767] of Word absolute Mem;');
  Inc(VarCount,4);
+ If NeedComparedString Then Begin
+  WriteLn(OutFile,'  { Operande gauche d''une comparaison de shortstrings }');
+  WriteLn(OutFile,'  ComparedString : String;');
+  Inc(VarCount);
+ End;
  If Mode32 or(CpuLevel>=CPU_386)Then Begin
   WriteLn(OutFile,'  SaveRegEAX, SaveRegEBX, SaveRegECX, SaveRegEDX : LongInt;');
   WriteLn(OutFile,'  SaveRegESI, SaveRegEDI, SaveRegEBP, SaveRegESP : LongInt;');
@@ -8561,6 +8590,7 @@ Begin
  For I:=1 to DataVarCount do Begin
   If DataVars[I].Section=SEC_CONST Then Continue;
   If DataVars[I].Name='' Then Continue;
+  If OmitDataVar[I] Then Continue;
   { DUP -> Array }
   If(DataVars[I].ElemCount=1)and
     (DataVars[I].Elements[1].ElemType=DE_DUP)Then Begin
@@ -10744,6 +10774,80 @@ Begin
  End;
 End;
 
+Procedure ProcessTurboPascalStringCompareLadders;
+{ Reconstruit une table de comparaisons successives :
+    MOV DI,OFFSET chaine / PUSH CS / PUSH DI / CALL 0CEFh
+    JNZ suivant / MOV AX,valeur / JMP sortie_commune. }
+Var
+ I,J,K,VIdx,ClauseCount,PatternCount,TotalClauses:LongInt;
+ A,B:TAsmLine;
+ ExitLabel,S:String;
+ Valid:Boolean;
+Begin
+ PatternCount:=0;
+ TotalClauses:=0;
+ I:=0;
+ While I+20<SrcLineCount do Begin
+  J:=I;
+  ClauseCount:=0;
+  ExitLabel:='';
+  While J+6<SrcLineCount do Begin
+   ParseInstructionLine(J,A);
+   Valid:=(UpCaseStr(A.Mnemonic)='MOV')and
+    (UpCaseStr(A.Op1.Reg)='DI')and(A.Op2.OpType=OT_OFFSET)and
+    IsSimpleRegInstruction(J+1,'PUSH','CS','')and
+    IsSimpleRegInstruction(J+2,'PUSH','DI','')and
+    IsRuntimeFarCall(J+3,$0CEF);
+   If Not Valid Then Break;
+   VIdx:=FindDataVarByName(A.Op2.LabelName);
+   If(VIdx=0)or(Not IsLengthPrefixedString(VIdx))Then Break;
+   ParseInstructionLine(J+4,B);
+   If(UpCaseStr(B.Mnemonic)<>'JNZ')and(UpCaseStr(B.Mnemonic)<>'JNE')Then Break;
+   ParseInstructionLine(J+5,B);
+   If(UpCaseStr(B.Mnemonic)<>'MOV')or(UpCaseStr(B.Op1.Reg)<>'AX')or
+     (Not(B.Op2.OpType in [OT_IMM8,OT_IMM16,OT_IMM32]))Then Break;
+   ParseInstructionLine(J+6,A);
+   If UpCaseStr(A.Mnemonic)<>'JMP' Then Break;
+   S:=OperandToExpr(A.Op1,0);
+   If S='' Then Break;
+   If ExitLabel='' Then ExitLabel:=S
+   Else If UpCaseStr(ExitLabel)<>UpCaseStr(S)Then Break;
+   Inc(ClauseCount);
+   J:=J+7;
+  End;
+  If ClauseCount<3 Then Begin Inc(I); Continue; End;
+
+  NeedComparedString:=True;
+  J:=I;
+  For K:=1 to ClauseCount do Begin
+   ParseInstructionLine(J,A);
+   VIdx:=FindDataVarByName(A.Op2.LabelName);
+   ParseInstructionLine(J+5,B);
+   S:='If ComparedString = '+
+      QuotePascalString(DataVars[VIdx].Elements[2].StrValue)+
+      ' Then Begin'+#13#10+
+      '   RegAX := '+OperandToExpr(B.Op2,0)+';'+#13#10+
+      '   Exit;'+#13#10+
+      '  End;';
+   SetTranslationForLine(J,S);
+   SetTranslationForLine(J+1,'');
+   SetTranslationForLine(J+2,'');
+   SetTranslationForLine(J+3,'');
+   SetTranslationForLine(J+4,'');
+   SetTranslationForLine(J+5,'');
+   SetTranslationForLine(J+6,'');
+   If CountDataVarOffsetReferences(DataVars[VIdx].Name)=1 Then
+    OmitDataVar[VIdx]:=True;
+   J:=J+7;
+  End;
+  Inc(PatternCount);
+  Inc(TotalClauses,ClauseCount);
+  I:=J;
+ End;
+ WriteLn('  Reconstruction comparaisons de shortstrings : ',PatternCount,
+  ' table(s), ',TotalClauses,' comparaison(s).');
+End;
+
 Procedure ProcessTurboPascalParamStrIfPatterns;
 { Reconstruit les chaines de comparaisons generees pour :
     If (ParamStr(n)='x') or (ParamStr(n)='y') Then Begin ... End;
@@ -11343,6 +11447,8 @@ BEGIN
  ProcessTurboPascalParamCountIfPatterns;
  { Reconstruction des tests d'options fondes sur ParamStr }
  ProcessTurboPascalParamStrIfPatterns;
+ { Reconstruction des longues tables de comparaison de shortstrings }
+ ProcessTurboPascalStringCompareLadders;
  { TODO 21 - Generation en-tete Pascal }
  ProcessHeaderGeneration;
  { TODO 22 - Generation corps procedures }
