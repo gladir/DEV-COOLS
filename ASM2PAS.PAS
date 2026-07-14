@@ -8975,8 +8975,24 @@ Begin
   WriteLn(OutFile,'Begin');
   K:=0;
 
-  { Verifier si la procedure doit etre remplacee par un appel Strings }
+  { Verifier si la procedure doit etre remplacee par un motif de haut niveau }
   If Procs[I].StringsReplacement<>'' Then Begin
+   If Procs[I].StringsReplacement='AsmIdent' Then Begin
+    WriteLn(OutFile,'  r := prefix;');
+    WriteLn(OutFile,'  For i := 1 to Length(name) do');
+    WriteLn(OutFile,'  Begin');
+    WriteLn(OutFile,'   c := name[i];');
+    WriteLn(OutFile,'   Case c Of');
+    WriteLn(OutFile,'    ''A''..''Z'',''0''..''9'': r := r + c;');
+    WriteLn(OutFile,'    ''a''..''z'': r := r + Chr(Ord(c) - 32);');
+    WriteLn(OutFile,'    ''_'',''-'': r := r + ''_'';');
+    WriteLn(OutFile,'   Else');
+    WriteLn(OutFile,'    r := r + ''X'';');
+    WriteLn(OutFile,'   End;');
+    WriteLn(OutFile,'  End;');
+    WriteLn(OutFile,'  ',Procs[I].Name,' := r;');
+   End
+   Else Begin
    { Emettre le corps simplifie avec l'appel a l'unite Strings }
    WriteLn(OutFile,'  { Pattern assembleur remplace par ',
     Procs[I].StringsReplacement,' de l''unite Strings }');
@@ -9039,8 +9055,9 @@ Begin
       Procs[I].StringsReplacement,'(RegDI);');
    End
    Else Begin
-    { Fonction Strings generique }
+   { Fonction Strings generique }
     WriteLn(OutFile,'  ',Procs[I].StringsReplacement,';');
+   End;
    End;
    Inc(K);
   End
@@ -11161,6 +11178,19 @@ Begin
   AddRecoveredStackLocal(ProcIdx,'i',-2,PT_INTEGER,2);
   AddRecoveredStackLocal(ProcIdx,'r',-$0102,PT_STRING,256);
   AddRecoveredStackLocal(ProcIdx,'c',-$0103,PT_CHAR,1);
+  { Cette combinaison identifie la fonction AsmIdent complete. Les quatre
+    mots initialement inferes sont deux parametres String FAR. }
+  If ProcIdx>0 Then Begin
+   Procs[ProcIdx].ParamCount:=2;
+   With Procs[ProcIdx].Params[1] do Begin
+    Name:='prefix'; TypeName:='STRING'; PascalType:=PT_STRING; Size:=4;
+   End;
+   With Procs[ProcIdx].Params[2] do Begin
+    Name:='name'; TypeName:='STRING'; PascalType:=PT_STRING; Size:=4;
+   End;
+   Procs[ProcIdx].StringsReplacement:='AsmIdent';
+   ProcStringResult[ProcIdx]:=True;
+  End;
   For K:=0 to TranslationCount-1 do
    If(Translations[K].SrcLine>=Procs[ProcIdx].StartLine)and
      (Translations[K].SrcLine<=Procs[ProcIdx].EndLine)Then Begin
