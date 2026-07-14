@@ -9027,6 +9027,7 @@ Begin
     { Chercher une traduction pour cette ligne }
     TrIdx:=FindTranslationForLine(J);
     If TrIdx>=0 Then Begin
+     If Translations[TrIdx].PascalCode='' Then Continue;
      { Remplacer les references aux parametres }
      SrcText:=ReplaceParamBPReferences(Translations[TrIdx].PascalCode,I);
      If AddComments Then Begin
@@ -9097,6 +9098,7 @@ Begin
   { Chercher une traduction }
   TrIdx:=FindTranslationForLine(I);
   If TrIdx>=0 Then Begin
+   If Translations[TrIdx].PascalCode='' Then Continue;
    If AddComments Then Begin
     SrcText:=SrcLines[I]^;
     If Length(SrcText)>40 Then
@@ -10402,6 +10404,110 @@ Begin
  End;
 End;
 
+Procedure SetTranslationForLine(Line:LongInt;Code:String);
+{ Remplace une traduction existante ou en cree une. Une chaine vide marque
+  une instruction absorbee par un pattern de plus haut niveau. }
+Var
+ Idx:LongInt;
+Begin
+ Idx:=FindTranslationForLine(Line);
+ If Idx>=0 Then Begin
+  Translations[Idx].PascalCode:=Code;
+  Translations[Idx].IsTranslated:=True;
+ End Else
+  AddTranslation(Line,Code,'pattern runtime');
+End;
+
+Function IsRuntimeFarCall(Line:LongInt;RuntimeOffset:Word):Boolean;
+Var
+ A:TAsmLine;
+Begin
+ IsRuntimeFarCall:=False;
+ If(Line<0)or(Line>=SrcLineCount)Then Exit;
+ ParseInstructionLine(Line,A);
+ IsRuntimeFarCall:=(UpCaseStr(A.Mnemonic)='CALL')and
+  (A.Op1.OpType=OT_FAR)and(Word(A.Op1.Disp)=RuntimeOffset);
+End;
+
+Function IsSimpleRegInstruction(Line:LongInt;Mnem,Reg1,Reg2:String):Boolean;
+Var
+ A:TAsmLine;
+Begin
+ IsSimpleRegInstruction:=False;
+ If(Line<0)or(Line>=SrcLineCount)Then Exit;
+ ParseInstructionLine(Line,A);
+ If UpCaseStr(A.Mnemonic)<>Mnem Then Exit;
+ If UpCaseStr(A.Op1.Reg)<>Reg1 Then Exit;
+ If Reg2<>'' Then Begin
+  If UpCaseStr(A.Op2.Reg)<>Reg2 Then Exit;
+ End;
+ IsSimpleRegInstruction:=True;
+End;
+
+Procedure ProcessTurboPascalWriteLnPatterns;
+{ Reconnait le code genere par le runtime Turbo Pascal 16 bits :
+    MOV DI,088Ah / PUSH DS / PUSH DI       (fichier Output)
+    MOV DI,OFFSET chaine / PUSH CS / PUSH DI / XOR AX,AX / PUSH AX
+    CALL xxxx:08D3h                       (ecriture chaine)
+    CALL xxxx:0840h                       (fin de ligne)
+    [CALL xxxx:04F4h]                     (controle erreur E/S)
+  Plusieurs appels 08D3h consecutifs sont fusionnes dans le meme WriteLn. }
+Var
+ I,J,K,EndLine,VIdx,PatternCount,FragmentCount:LongInt;
+ A:TAsmLine;
+ TextValue,LabelName:String;
+ Valid:Boolean;
+Begin
+ PatternCount:=0;
+ I:=0;
+ While I<SrcLineCount-9 do Begin
+  ParseInstructionLine(I,A);
+  Valid:=(UpCaseStr(A.Mnemonic)='MOV')and
+    (UpCaseStr(A.Op1.Reg)='DI')and(A.Op2.Imm=$088A);
+  If Valid Then
+   Valid:=IsSimpleRegInstruction(I+1,'PUSH','DS','') and
+          IsSimpleRegInstruction(I+2,'PUSH','DI','');
+  If Not Valid Then Begin Inc(I); Continue; End;
+
+  J:=I+3;
+  TextValue:='';
+  FragmentCount:=0;
+  While J+5<SrcLineCount do Begin
+   ParseInstructionLine(J,A);
+   If(UpCaseStr(A.Mnemonic)<>'MOV')or
+     (UpCaseStr(A.Op1.Reg)<>'DI')or(A.Op2.OpType<>OT_OFFSET)Then Break;
+   LabelName:=A.Op2.LabelName;
+   VIdx:=FindDataVarByName(LabelName);
+   If(VIdx=0)or(Not IsLengthPrefixedString(VIdx))Then Break;
+   If Not IsSimpleRegInstruction(J+1,'PUSH','CS','') Then Break;
+   If Not IsSimpleRegInstruction(J+2,'PUSH','DI','') Then Break;
+   If Not IsSimpleRegInstruction(J+3,'XOR','AX','AX') Then Break;
+   If Not IsSimpleRegInstruction(J+4,'PUSH','AX','') Then Break;
+   If Not IsRuntimeFarCall(J+5,$08D3) Then Break;
+   TextValue:=TextValue+DataVars[VIdx].Elements[2].StrValue;
+   Inc(FragmentCount);
+   J:=J+6;
+  End;
+
+  If Not IsRuntimeFarCall(J,$0840) Then Begin
+   Inc(I);
+   Continue;
+  End;
+  EndLine:=J;
+  If IsRuntimeFarCall(J+1,$04F4) Then Inc(EndLine);
+
+  If FragmentCount=0 Then
+   SetTranslationForLine(I,'WriteLn;')
+  Else
+   SetTranslationForLine(I,'WriteLn('+QuotePascalString(TextValue)+');');
+  For K:=I+1 to EndLine do SetTranslationForLine(K,'');
+  Inc(PatternCount);
+  I:=EndLine+1;
+ End;
+ WriteLn('  Reconstruction WriteLn Turbo Pascal : ',PatternCount,
+  ' bloc(s) detecte(s).');
+End;
+
 { ============================================================
   Collecte des acces memoire indexes pour creer des variables
   locales - Amelioration de la lisibilite du code genere
@@ -10889,6 +10995,8 @@ BEGIN
  ProcessSubRegFixup;
  { Detection de patterns Strings dans les procedures }
  ProcessProcBodyPatterns;
+ { Reconstruction des appels d'ecriture du runtime Turbo Pascal }
+ ProcessTurboPascalWriteLnPatterns;
  { TODO 21 - Generation en-tete Pascal }
  ProcessHeaderGeneration;
  { TODO 22 - Generation corps procedures }
