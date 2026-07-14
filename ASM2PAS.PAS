@@ -10542,6 +10542,54 @@ Begin
   ' bloc(s) detecte(s).');
 End;
 
+Procedure ProcessTurboPascalDisposePatterns;
+{ Reconnait la liberation d'un pointeur FAR par le runtime Turbo Pascal :
+    PUSH [ptr+2] / PUSH [ptr] / PUSH taille / CALL xxxx:029Fh
+    XOR AX,AX / MOV [ptr],AX / MOV [ptr+2],AX
+  et restaure Dispose(ptr); ptr := nil;. }
+Var
+ I,K,BaseAddr,PatternCount:LongInt;
+ A0,A1,A2,A6,A7:TAsmLine;
+ PtrExpr,Code:String;
+ Valid:Boolean;
+Begin
+ PatternCount:=0;
+ I:=0;
+ While I<SrcLineCount-7 do Begin
+  ParseInstructionLine(I,A0);
+  ParseInstructionLine(I+1,A1);
+  ParseInstructionLine(I+2,A2);
+  ParseInstructionLine(I+6,A6);
+  ParseInstructionLine(I+7,A7);
+  Valid:=(UpCaseStr(A0.Mnemonic)='PUSH')and(A0.Op1.OpType=OT_MEM)and
+    (A0.Op1.BaseReg='')and(A0.Op1.IndexReg='')and(A0.Op1.HasDisp)and
+    (UpCaseStr(A1.Mnemonic)='PUSH')and(A1.Op1.OpType=OT_MEM)and
+    (A1.Op1.BaseReg='')and(A1.Op1.IndexReg='')and(A1.Op1.HasDisp);
+  If Valid Then Begin
+   BaseAddr:=A1.Op1.Disp;
+   Valid:=(A0.Op1.Disp=BaseAddr+2)and
+    (UpCaseStr(A2.Mnemonic)='MOV')and(UpCaseStr(A2.Op1.Reg)='AX')and
+    IsSimpleRegInstruction(I+3,'PUSH','AX','')and
+    IsRuntimeFarCall(I+4,$029F)and
+    IsSimpleRegInstruction(I+5,'XOR','AX','AX')and
+    (UpCaseStr(A6.Mnemonic)='MOV')and(A6.Op1.OpType=OT_MEM)and
+    (A6.Op1.Disp=BaseAddr)and(UpCaseStr(A6.Op2.Reg)='AX')and
+    (UpCaseStr(A7.Mnemonic)='MOV')and(A7.Op1.OpType=OT_MEM)and
+    (A7.Op1.Disp=BaseAddr+2)and(UpCaseStr(A7.Op2.Reg)='AX');
+  End;
+  If Not Valid Then Begin Inc(I); Continue; End;
+
+  PtrExpr:='PPointer(@Mem[$'+HexWord(Word(BaseAddr))+'])^';
+  Code:='Dispose('+PtrExpr+');'+#13#10+'  '+PtrExpr+' := nil;';
+  SetTranslationForLine(I,Code);
+  For K:=I+1 to I+7 do SetTranslationForLine(K,'');
+  Inc(PatternCount);
+  I:=I+8;
+ End;
+ WriteLn('  Reconstruction Dispose Turbo Pascal : ',PatternCount,
+  ' bloc(s) detecte(s).');
+End;
+
 Procedure ProcessTurboPascalHaltPatterns;
 { Reconnait le terminateur du runtime Turbo Pascal 16 bits :
     XOR AX,AX / CALL xxxx:0116h  -> Halt;
@@ -11285,6 +11333,8 @@ BEGIN
  ProcessProcBodyPatterns;
  { Reconstruction des appels d'ecriture du runtime Turbo Pascal }
  ProcessTurboPascalWriteLnPatterns;
+ { Reconstruction des liberations de pointeurs du runtime Turbo Pascal }
+ ProcessTurboPascalDisposePatterns;
  { Reconstruction de la terminaison du runtime Turbo Pascal }
  ProcessTurboPascalHaltPatterns;
  { Reconstruction des tests positifs se terminant par Halt }

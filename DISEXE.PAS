@@ -3520,7 +3520,10 @@ Begin
      { Suivre lineairement l'ilot de code revele par cette reference.
        Arreter sur une vraie chaine, un saut inconditionnel ou un retour. }
      Cur:=RecoverStart;
-     RecoverEnd:=RecoverStart+512;
+     { Une procedure Turbo Pascal peut contenir plusieurs sorties et
+       liberations consecutives; laisser le suivi continuer jusqu'a 4096
+       octets, tout en conservant les arrets structurels ci-dessous. }
+     RecoverEnd:=RecoverStart+4096;
      If RecoverEnd>ImageSize Then RecoverEnd:=ImageSize;
      While Cur<RecoverEnd do Begin
       If(ByteFlags^[Cur]=BF_STRING)or(ByteFlags^[Cur]=BF_PSTRING)Then Break;
