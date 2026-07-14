@@ -10578,7 +10578,7 @@ Procedure ProcessTurboPascalWriteLnPatterns;
     [CALL xxxx:04F4h]                     (controle erreur E/S)
   Plusieurs appels 08D3h consecutifs sont fusionnes dans le meme WriteLn. }
 Var
- I,J,K,EndLine,VIdx,PatternCount,FragmentCount:LongInt;
+ I,J,K,EndLine,VIdx,ProcIdx,PatternCount,FragmentCount:LongInt;
  A:TAsmLine;
  LabelName,Args,ItemExpr:String;
  Valid,MatchedItem:Boolean;
@@ -10611,13 +10611,50 @@ Begin
        IsSimpleRegInstruction(J+1,'PUSH','CS','')Then
       ItemExpr:=QuotePascalString(DataVars[VIdx].Elements[2].StrValue);
     End Else If A.Op2.OpType in [OT_IMM8,OT_IMM16,OT_IMM32] Then Begin
-     If IsSimpleRegInstruction(J+1,'PUSH','DS','')Then
-      ItemExpr:='PString(@Mem[$'+HexWord(Word(A.Op2.Imm))+'])^';
+     If IsSimpleRegInstruction(J+1,'PUSH','DS','')or
+       IsSimpleRegInstruction(J+1,'PUSH','CS','')Then Begin
+      { Apres le numero de ligne, Turbo Pascal reference ici la petite
+        shortstring anonyme ') : ' placee juste avant la procedure. }
+      If IsSimpleRegInstruction(J+1,'PUSH','CS','')and(FragmentCount=2)Then
+       ItemExpr:=QuotePascalString(') : ')
+      Else
+       ItemExpr:='PString(@Mem[$'+HexWord(Word(A.Op2.Imm))+'])^';
+     End;
     End;
     If(ItemExpr<>'')and IsSimpleRegInstruction(J+2,'PUSH','DI','')and
       IsSimpleRegInstruction(J+3,'XOR','AX','AX')and
       IsSimpleRegInstruction(J+4,'PUSH','AX','')and
       IsRuntimeFarCall(J+5,$08D3)Then Begin
+     MatchedItem:=True;
+     J:=J+6;
+    End;
+   End;
+
+   { Parametre shortstring FAR : LES [BP+offset],DI / PUSH ES:DI. }
+   If Not MatchedItem Then Begin
+    ParseInstructionLine(J,A);
+    If(UpCaseStr(A.Mnemonic)='LES')and(A.Op1.OpType=OT_MEM)and
+      (UpCaseStr(A.Op1.BaseReg)='BP')and
+      IsSimpleRegInstruction(J+1,'PUSH','ES','')and
+      IsSimpleRegInstruction(J+2,'PUSH','DI','')and
+      IsSimpleRegInstruction(J+3,'XOR','AX','AX')and
+      IsSimpleRegInstruction(J+4,'PUSH','AX','')and
+      IsRuntimeFarCall(J+5,$08D3)Then Begin
+     ProcIdx:=FindProcForLine(I);
+     If(ProcIdx>0)and(Procs[ProcIdx].ParamCount=2)and
+       (A.Op1.Disp=4)Then Begin
+      { RET 4h represente un unique parametre String FAR. }
+      Procs[ProcIdx].ParamCount:=1;
+      With Procs[ProcIdx].Params[1] do Begin
+       Name:='msg'; TypeName:='STRING'; PascalType:=PT_STRING; Size:=4;
+      End;
+      { AX ne contient ici que les parametres des appels runtime Write;
+        la routine source est une procedure. }
+      Procs[ProcIdx].IsFunction:=False;
+      Procs[ProcIdx].UsesAX:=False;
+      ItemExpr:='msg';
+     End Else
+      ItemExpr:=StackAccessExpr('BP',A.Op1.Disp,ProcIdx);
      MatchedItem:=True;
      J:=J+6;
     End;
@@ -11451,6 +11488,57 @@ Begin
   ' conversion(s) detectee(s).');
 End;
 
+Procedure ProcessTurboPascalStringReturnPatterns;
+{ Detecte le resultat cache des fonctions String Turbo Pascal 16 bits.
+  RET depile seulement les parametres explicites; le pointeur FAR du
+  resultat se trouve donc a [BP+4+taille_parametres]. Avant 0C18h, ce
+  pointeur est charge par LES puis passe sous la forme ES:DI. }
+Var
+ P,J,K,RetBytes,ResultOffset,PatternCount:LongInt;
+ A:TAsmLine;
+ Valid:Boolean;
+Begin
+ PatternCount:=0;
+ For P:=1 to ProcCount do Begin
+  RetBytes:=0;
+  For J:=Procs[P].StartLine to Procs[P].EndLine do Begin
+   ParseInstructionLine(J,A);
+   If UpCaseStr(A.Mnemonic)='RET' Then Begin
+    If A.Op1.OpType in [OT_IMM8,OT_IMM16,OT_IMM32]Then
+     RetBytes:=A.Op1.Imm;
+    Break;
+   End;
+  End;
+  ResultOffset:=4+RetBytes;
+  For J:=Procs[P].StartLine to Procs[P].EndLine-5 do Begin
+   ParseInstructionLine(J,A);
+   Valid:=(UpCaseStr(A.Mnemonic)='LES')and(A.Op1.OpType=OT_MEM)and
+    (UpCaseStr(A.Op1.BaseReg)='BP')and(A.Op1.Disp=ResultOffset)and
+    IsSimpleRegInstruction(J+1,'PUSH','ES','')and
+    IsSimpleRegInstruction(J+2,'PUSH','DI','');
+   If Valid Then Begin
+    ParseInstructionLine(J+3,A);
+    Valid:=(UpCaseStr(A.Mnemonic)='MOV')and
+     (UpCaseStr(A.Op1.Reg)='AX')and(A.Op2.Imm=$FF)and
+     IsSimpleRegInstruction(J+4,'PUSH','AX','')and
+     IsRuntimeFarCall(J+5,$0C18);
+   End;
+   If Valid Then Begin
+    If Not ProcStringResult[P]Then Inc(PatternCount);
+    ProcStringResult[P]:=True;
+    Procs[P].IsFunction:=True;
+    { Les parametres generiques proviennent de RET et n'incluent pas le
+      pointeur cache; aucune modification de leur liste n'est necessaire. }
+    For K:=1 to Procs[P].ParamCount do
+     If Procs[P].Params[K].Size=0 Then Procs[P].Params[K].Size:=2;
+    Break;
+   End;
+  End;
+ End;
+ WriteLn('  Detection retours String Turbo Pascal : ',PatternCount,
+  ' fonction(s) supplementaire(s).');
+End;
+
 Procedure ProcessTurboPascalForPatterns;
 { Reconstruit la forme Turbo Pascal d'un For croissant :
     XOR AX,AX / MOV compteur,AX / JMP test
@@ -12135,6 +12223,8 @@ BEGIN
  ProcessTurboPascalStringCharConcatPatterns;
  { Reconstruction des conversions numeriques effectuees par Str }
  ProcessTurboPascalStrPatterns;
+ { Detection du parametre cache retourne par les fonctions String }
+ ProcessTurboPascalStringReturnPatterns;
  { Reconstruction des boucles For croissantes du compilateur Turbo Pascal }
  ProcessTurboPascalForPatterns;
  { TODO 21 - Generation en-tete Pascal }
