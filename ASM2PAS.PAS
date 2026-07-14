@@ -10704,6 +10704,72 @@ Begin
   ' bloc(s) detecte(s).');
 End;
 
+Procedure ProcessTurboPascalDirectStringCallPatterns;
+{ Reunit un pointeur FAR CS:offset passe a une routine en un parametre
+  String Pascal direct : MOV DI,OFFSET s / PUSH CS / PUSH DI / CALL p
+  devient p('texte'). La declaration pStr devient inutile si elle n'avait
+  aucune autre reference. }
+Var
+ I,K,VIdx,TargetProc,PatternCount:LongInt;
+ A,C:TAsmLine;
+ Target,Code:String;
+ Valid,EmitsLine:Boolean;
+Begin
+ PatternCount:=0;
+ I:=0;
+ While I+3<SrcLineCount do Begin
+  ParseInstructionLine(I,A);
+  ParseInstructionLine(I+3,C);
+  Valid:=(UpCaseStr(A.Mnemonic)='MOV')and
+    (UpCaseStr(A.Op1.Reg)='DI')and(A.Op2.OpType=OT_OFFSET)and
+    IsSimpleRegInstruction(I+1,'PUSH','CS','')and
+    IsSimpleRegInstruction(I+2,'PUSH','DI','')and
+    (UpCaseStr(C.Mnemonic)='CALL')and(C.Op1.OpType<>OT_FAR);
+  If Not Valid Then Begin Inc(I); Continue; End;
+  VIdx:=FindDataVarByName(A.Op2.LabelName);
+  If(VIdx=0)or(Not IsLengthPrefixedString(VIdx))Then Begin
+   Inc(I); Continue;
+  End;
+  Target:=OperandToExpr(C.Op1,FindProcForLine(I));
+  TargetProc:=FindProcByName(Target);
+  If TargetProc=0 Then Begin Inc(I); Continue; End;
+
+  { RET 4 represente ici un unique parametre shortstring FAR, et non deux
+    mots independants correspondant au segment et a l'offset. }
+  If(Procs[TargetProc].ParamCount=2)and
+    (Procs[TargetProc].Params[1].Size=2)and
+    (Procs[TargetProc].Params[2].Size=2)Then Begin
+   Procs[TargetProc].ParamCount:=1;
+   With Procs[TargetProc].Params[1] do Begin
+    Name:='s'; TypeName:='STRING'; PascalType:=PT_STRING; Size:=4;
+   End;
+  End;
+  If Procs[TargetProc].ParamCount<>1 Then Begin Inc(I); Continue; End;
+
+  { Une routine qui termine son emission par le runtime WriteLn 0840h ne
+    retourne pas AX : les manipulations d'AX ne sont que des arguments du
+    runtime d'ecriture. }
+  EmitsLine:=False;
+  For K:=Procs[TargetProc].StartLine to Procs[TargetProc].EndLine do
+   If IsRuntimeFarCall(K,$0840)Then Begin EmitsLine:=True; Break; End;
+  If EmitsLine Then Begin
+   Procs[TargetProc].IsFunction:=False;
+   Procs[TargetProc].UsesAX:=False;
+  End;
+
+  Code:=Target+'('+
+    QuotePascalString(DataVars[VIdx].Elements[2].StrValue)+');';
+  SetTranslationForLine(I,Code);
+  For K:=I+1 to I+3 do SetTranslationForLine(K,'');
+  If CountDataVarOffsetReferences(DataVars[VIdx].Name)=1 Then
+   OmitDataVar[VIdx]:=True;
+  Inc(PatternCount);
+  I:=I+4;
+ End;
+ WriteLn('  Parametres String directs            : ',PatternCount,
+  ' appel(s) reconstruit(s).');
+End;
+
 Procedure ProcessTurboPascalNewPatterns;
 { Reconnait l'allocation d'un pointeur FAR par le runtime Turbo Pascal :
     MOV AX,[ptr] / OR AX,[ptr+2] / JNZ deja_alloue
@@ -12201,6 +12267,8 @@ BEGIN
  ProcessTurboPascalFileBlankWriteLnPatterns;
  { Reconstruction des appels d'ecriture du runtime Turbo Pascal }
  ProcessTurboPascalWriteLnPatterns;
+ { Reconstruction des arguments String FAR constants passes aux routines }
+ ProcessTurboPascalDirectStringCallPatterns;
  { Reconstruction des allocations de pointeurs du runtime Turbo Pascal }
  ProcessTurboPascalNewPatterns;
  { Reconstruction des liberations de pointeurs du runtime Turbo Pascal }
