@@ -10577,6 +10577,62 @@ Begin
   ' bloc(s) detecte(s).');
 End;
 
+Procedure ProcessTurboPascalNewPatterns;
+{ Reconnait l'allocation d'un pointeur FAR par le runtime Turbo Pascal :
+    MOV AX,[ptr] / OR AX,[ptr+2] / JNZ deja_alloue
+    MOV AX,taille / PUSH AX / CALL xxxx:028Ah
+    MOV [ptr],AX / MOV [ptr+2],DX
+  Le nom du type pointe n'existe plus dans l'EXE; la taille est donc gardee
+  en commentaire a cote du New reconstruit. }
+Var
+ I,K,BaseAddr,PatternCount:LongInt;
+ A0,A1,A2,A3,A6,A7:TAsmLine;
+ PtrExpr,Code,SizeExpr:String;
+ Valid:Boolean;
+Begin
+ PatternCount:=0;
+ I:=0;
+ While I<SrcLineCount-7 do Begin
+  ParseInstructionLine(I,A0);
+  ParseInstructionLine(I+1,A1);
+  ParseInstructionLine(I+2,A2);
+  ParseInstructionLine(I+3,A3);
+  ParseInstructionLine(I+6,A6);
+  ParseInstructionLine(I+7,A7);
+  Valid:=(UpCaseStr(A0.Mnemonic)='MOV')and
+    (UpCaseStr(A0.Op1.Reg)='AX')and(A0.Op2.OpType=OT_MEM)and
+    (A0.Op2.BaseReg='')and(A0.Op2.IndexReg='')and(A0.Op2.HasDisp);
+  If Valid Then Begin
+   BaseAddr:=A0.Op2.Disp;
+   Valid:=(UpCaseStr(A1.Mnemonic)='OR')and
+    (UpCaseStr(A1.Op1.Reg)='AX')and(A1.Op2.OpType=OT_MEM)and
+    (A1.Op2.BaseReg='')and(A1.Op2.IndexReg='')and
+    (A1.Op2.Disp=BaseAddr+2)and
+    ((UpCaseStr(A2.Mnemonic)='JNZ')or(UpCaseStr(A2.Mnemonic)='JNE'))and
+    (UpCaseStr(A3.Mnemonic)='MOV')and(UpCaseStr(A3.Op1.Reg)='AX')and
+    (A3.Op2.OpType in [OT_IMM8,OT_IMM16,OT_IMM32,OT_LABEL])and
+    IsSimpleRegInstruction(I+4,'PUSH','AX','')and
+    IsRuntimeFarCall(I+5,$028A)and
+    (UpCaseStr(A6.Mnemonic)='MOV')and(A6.Op1.OpType=OT_MEM)and
+    (A6.Op1.Disp=BaseAddr)and(UpCaseStr(A6.Op2.Reg)='AX')and
+    (UpCaseStr(A7.Mnemonic)='MOV')and(A7.Op1.OpType=OT_MEM)and
+    (A7.Op1.Disp=BaseAddr+2)and(UpCaseStr(A7.Op2.Reg)='DX');
+  End;
+  If Not Valid Then Begin Inc(I); Continue; End;
+
+  PtrExpr:='PPointer(@Mem[$'+HexWord(Word(BaseAddr))+'])^';
+  SizeExpr:=OperandToExpr(A3.Op2,FindProcForLine(I));
+  Code:='If '+PtrExpr+' = nil Then New('+PtrExpr+');'+
+    ' { taille allouee : '+SizeExpr+' octets }';
+  SetTranslationForLine(I,Code);
+  For K:=I+1 to I+7 do SetTranslationForLine(K,'');
+  Inc(PatternCount);
+  I:=I+8;
+ End;
+ WriteLn('  Reconstruction New Turbo Pascal     : ',PatternCount,
+  ' allocation(s) detectee(s).');
+End;
+
 Procedure ProcessTurboPascalDisposePatterns;
 { Reconnait la liberation d'un pointeur FAR par le runtime Turbo Pascal :
     PUSH [ptr+2] / PUSH [ptr] / PUSH taille / CALL xxxx:029Fh
@@ -11596,6 +11652,8 @@ BEGIN
  ProcessProcBodyPatterns;
  { Reconstruction des appels d'ecriture du runtime Turbo Pascal }
  ProcessTurboPascalWriteLnPatterns;
+ { Reconstruction des allocations de pointeurs du runtime Turbo Pascal }
+ ProcessTurboPascalNewPatterns;
  { Reconstruction des liberations de pointeurs du runtime Turbo Pascal }
  ProcessTurboPascalDisposePatterns;
  { Reconstruction de la terminaison du runtime Turbo Pascal }
