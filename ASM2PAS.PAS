@@ -1900,15 +1900,30 @@ Var
  StringCount,DupCount,NumCount:LongInt;
  TotalBytes:LongInt;
  J:Integer;
+ PendingLabel:String;
 Begin
  DataVarCount:=0;
+ PendingLabel:='';
  StringCount:=0;
  DupCount:=0;
  NumCount:=0;
  TotalBytes:=0;
  For I:=0 to SrcLineCount-1 do Begin
   TokenizeLine(SrcLines[I]^);
-  If TokenCount<2 Then Continue;
+  If TokenCount=0 Then Continue;
+
+  { DISEXE emet les donnees sous la forme "label:" puis "DB ..." sur
+    la ligne suivante. Memoriser ce label pour nommer la directive anonyme. }
+  If(Tokens[1].Kind=TK_LABEL)and
+    ((TokenCount=1)or((TokenCount=2)and(Tokens[2].Kind=TK_COMMENT)))Then Begin
+   PendingLabel:=Tokens[1].Value;
+   Continue;
+  End;
+
+  If TokenCount<2 Then Begin
+   If Tokens[1].Kind<>TK_COMMENT Then PendingLabel:='';
+   Continue;
+  End;
   HasData:=False;
   { Cas 1: directive en premiere position (DB val) }
   If(Tokens[1].Kind=TK_DIRECTIVE)and IsDataDirective(Tokens[1].Value)Then
@@ -1919,6 +1934,25 @@ Begin
    HasData:=True;
   If HasData Then Begin
    ParseDataLine(I);
+   If(DataVarCount>0)and(DataVars[DataVarCount].Name='')and
+     (PendingLabel<>'')Then Begin
+    DataVars[DataVarCount].Name:=PendingLabel;
+    { Enregistrer immediatement la variable. CollectLabels reutilisera ce
+      symbole et ne la reclassera pas comme une etiquette de code. }
+    If SymbolCount<MAX_SYMBOLS Then Begin
+     Inc(SymbolCount);
+     Symbols[SymbolCount].Name:=PendingLabel;
+     Symbols[SymbolCount].SymType:=SY_VAR;
+     Symbols[SymbolCount].DataType:=DataVars[DataVarCount].PascalType;
+     Symbols[SymbolCount].Size:=Word(DataVars[DataVarCount].TotalSize);
+     Symbols[SymbolCount].Offset:=0;
+     Symbols[SymbolCount].Segment:='';
+     Symbols[SymbolCount].IsPublic:=False;
+     Symbols[SymbolCount].IsExtern:=False;
+     Inc(TotalVars);
+    End;
+   End;
+   PendingLabel:='';
    { Statistiques }
    If DataVarCount>0 Then Begin
     TotalBytes:=TotalBytes+DataVars[DataVarCount].TotalSize;
@@ -1929,7 +1963,8 @@ Begin
       DE_NUMBER,DE_UNINIT:Inc(NumCount);
      End;
    End;
-  End;
+  End Else If Tokens[1].Kind<>TK_COMMENT Then
+   PendingLabel:='';
  End;
  WriteLn('Analyse des donnees : ',DataVarCount,' variables, ',
   TotalBytes,' octets.');
@@ -3739,7 +3774,16 @@ Begin
   DV:=DataVars[I];
   { DB avec une seule chaine => PChar ou String }
   If(DV.DirType=DT_DB)and(DV.ElemCount>=1)Then Begin
-   If(DV.ElemCount=1)and(DV.Elements[1].ElemType=DE_STRING)Then Begin
+   If(DV.ElemCount=2)and
+     (DV.Elements[1].ElemType=DE_NUMBER)and
+     (DV.Elements[2].ElemType=DE_STRING)and
+     (DV.Elements[1].NumValue=Length(DV.Elements[2].StrValue))Then Begin
+    { Chaine Pascal courte : DB longueur,'texte' }
+    DataVars[I].PascalType:=PT_STRING;
+    If FindSymbol(DV.Name)>0 Then
+     Symbols[FindSymbol(DV.Name)].DataType:=PT_STRING;
+   End
+   Else If(DV.ElemCount=1)and(DV.Elements[1].ElemType=DE_STRING)Then Begin
     { Chaine seule => String }
     DataVars[I].PascalType:=PT_STRING;
     { Mettre a jour le symbole }
@@ -8289,6 +8333,33 @@ Begin
  End;
 End;
 
+Function IsLengthPrefixedString(DataIdx:Integer):Boolean;
+{ Reconnait une chaine Pascal courte emise par DISEXE :
+  DB longueur,'contenu'. }
+Begin
+ IsLengthPrefixedString:=False;
+ If(DataIdx<1)or(DataIdx>DataVarCount)Then Exit;
+ With DataVars[DataIdx] do
+  IsLengthPrefixedString:=(DirType=DT_DB)and(ElemCount=2)and
+   (Elements[1].ElemType=DE_NUMBER)and
+   (Elements[2].ElemType=DE_STRING)and
+   (Elements[1].NumValue=Length(Elements[2].StrValue));
+End;
+
+Function QuotePascalString(S:String):String;
+{ Entoure un texte d'apostrophes Pascal et double les apostrophes internes. }
+Var
+ I:Integer;
+ R:String;
+Begin
+ R:='''';
+ For I:=1 to Length(S) do Begin
+  If S[I]='''' Then R:=R+'''';
+  R:=R+S[I];
+ End;
+ QuotePascalString:=R+'''';
+End;
+
 { Declaration forward pour IsLabelOptimized (definie dans TODO 24) }
 Function IsLabelOptimized(Const LabelName:String):Boolean; Forward;
 
@@ -8498,10 +8569,17 @@ Begin
     DirTypeStr(DataVars[I].DirType),';');
    Inc(VarCount);
   End
-  { Chaine terminee par 0 (DB 'texte',0) -> String }
+  { Chaine Pascal courte (DB longueur,'texte') }
+  Else If IsLengthPrefixedString(I) Then Begin
+   WriteLn(OutFile,'  ',DataVars[I].Name,' : String = ',
+    QuotePascalString(DataVars[I].Elements[2].StrValue),';');
+   Inc(VarCount);
+  End
+  { Chaine DB dont le premier element est du texte }
   Else If(DataVars[I].ElemCount>=1)and
     (DataVars[I].Elements[1].ElemType=DE_STRING)Then Begin
-   WriteLn(OutFile,'  ',DataVars[I].Name,' : String;');
+   WriteLn(OutFile,'  ',DataVars[I].Name,' : String = ',
+    QuotePascalString(DataVars[I].Elements[1].StrValue),';');
    Inc(VarCount);
   End
   { Valeur non initialisee }
@@ -8939,6 +9017,7 @@ Begin
     { Emettre le label s'il y en a un (sauf le nom de la proc et les labels optimises) }
     If(AsmL.LabelStr<>'')and
       (UpCaseStr(AsmL.LabelStr)<>UpCaseStr(Procs[I].Name))and
+      (FindDataVarByName(AsmL.LabelStr)=0)and
       (Not IsLabelOptimized(AsmL.LabelStr))Then
      WriteLn(OutFile,'  ',AsmL.LabelStr,':');
 
@@ -9007,7 +9086,8 @@ Begin
      Break;
     End;
    { N'emettre le label que s'il n'est pas un nom de proc et n'est pas optimise }
-   If(ProcIdx=0)and(Not IsLabelOptimized(AsmL.LabelStr))Then
+   If(ProcIdx=0)and(FindDataVarByName(AsmL.LabelStr)=0)and
+     (Not IsLabelOptimized(AsmL.LabelStr))Then
     WriteLn(OutFile,'  ',AsmL.LabelStr,':');
   End;
 
