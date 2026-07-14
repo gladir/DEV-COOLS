@@ -17747,6 +17747,18 @@ Begin
  AsmIsNumberLiteral := (Length(T) > 0) And (T[1] >= '0') And (T[1] <= '9');
 End;
 
+{ Desactive localement la verification de depassement/plage (portee     }
+{ limitee a cette seule fonction, reactivee juste apres) : un litteral    }
+{ hexadecimal 32 bits comme 0FFFFFFFFh (4294967295, ex. _DPRT_STRLEN,      }
+{ TODO 12/20) depasse volontairement l intervalle signe d un LongInt        }
+{ pendant l accumulation chiffre par chiffre POSITIVE (avant l eventuelle    }
+{ negation) - le bouclage (wraparound) est ici le comportement VOULU (on      }
+{ veut juste le motif de bits sur 32 bits), pas une erreur, mais les          }
+{ directives de depassement/plage (actives par defaut dans les options         }
+{ de projet standard de l EDI Free Pascal, contrairement aux compilations       }
+{ en ligne de commande utilisees pendant le developpement) transformaient        }
+{ ce bouclage intentionnel en "Runtime error 215" a l execution.                  }
+{$Q-}{$R-}
 Function AsmParseNumber(Const S: TString): LongInt;
 Var
  T     : TString;
@@ -17787,6 +17799,7 @@ Begin
  If Neg Then V := -V;
  AsmParseNumber := V;
 End;
+{$Q+}{$R+}
 
 { ------------------------------------------------------------ }
 { Registres : numerotation ModRM/SIB standard 80386.             }
