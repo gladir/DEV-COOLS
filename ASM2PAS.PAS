@@ -4100,7 +4100,8 @@ Begin
   { Chercher dans les variables locales (offset negatif) }
   If Offset<0 Then Begin
    For J:=1 to Procs[ProcIdx].LocalCount do Begin
-    If Procs[ProcIdx].Locals[J].Size>0 Then Begin
+    If(Procs[ProcIdx].Locals[J].Size>0)and
+      (Procs[ProcIdx].Locals[J].IndexOffset=Offset)Then Begin
      StackAccessExpr:=Procs[ProcIdx].Locals[J].Name;
      Exit;
     End;
@@ -11058,13 +11059,37 @@ Begin
   ' bloc(s) detecte(s).');
 End;
 
+Procedure AddRecoveredStackLocal(ProcIdx:Integer;Const LocalName:String;
+ Offset:LongInt;PType:Byte;LocalSize:Word);
+Var
+ L:Integer;
+Begin
+ If(ProcIdx<1)or(ProcIdx>ProcCount)Then Exit;
+ For L:=1 to Procs[ProcIdx].LocalCount do
+  If(UpCaseStr(Procs[ProcIdx].Locals[L].Name)=UpCaseStr(LocalName))or
+    (Procs[ProcIdx].Locals[L].IndexOffset=Offset)Then Exit;
+ If Procs[ProcIdx].LocalCount>=MAX_LOCALS Then Exit;
+ Inc(Procs[ProcIdx].LocalCount);
+ With Procs[ProcIdx].Locals[Procs[ProcIdx].LocalCount] do Begin
+  Name:=LocalName;
+  PascalType:=PType;
+  TypeName:=PascalTypeStr(PType);
+  Size:=LocalSize;
+  Count:=1;
+  IsIndexedMem:=False;
+  IndexOffset:=Offset;
+  IndexBaseReg:='BP';
+  IndexIndexReg:='';
+ End;
+End;
+
 Procedure ProcessTurboPascalRangeCasePatterns;
 { Reconnait le Case de caracteres compile en tests de plages :
     'A'..'Z','0'..'9' ; 'a'..'z' ; '_','-' ; Else.
   Les corps restent traduits normalement; seuls les tests et sauts de
   dispatch sont remplaces par la structure Case. }
 Var
- I,J,K,Jmp1,Jmp2,Jmp3,CloseLine,PatternCount,TrIdx:LongInt;
+ I,J,K,Jmp1,Jmp2,Jmp3,CloseLine,PatternCount,TrIdx,ProcIdx:LongInt;
  A:TAsmLine;
  Valid:Boolean;
  OldCode:String;
@@ -11129,6 +11154,26 @@ Begin
    End;
   End;
   If CloseLine<0 Then Begin Inc(I); Continue; End;
+
+  { Ce motif provient d'AsmIdent : les acces de pile permettent aussi de
+    retrouver i:Integer, r:String et c:Char. }
+  ProcIdx:=FindProcForLine(I);
+  AddRecoveredStackLocal(ProcIdx,'i',-2,PT_INTEGER,2);
+  AddRecoveredStackLocal(ProcIdx,'r',-$0102,PT_STRING,256);
+  AddRecoveredStackLocal(ProcIdx,'c',-$0103,PT_CHAR,1);
+  For K:=0 to TranslationCount-1 do
+   If(Translations[K].SrcLine>=Procs[ProcIdx].StartLine)and
+     (Translations[K].SrcLine<=Procs[ProcIdx].EndLine)Then Begin
+    While Pos('Local_BP_259',Translations[K].PascalCode)>0 do
+     Translations[K].PascalCode:=ReplaceInStr(Translations[K].PascalCode,
+      'Local_BP_259','c');
+    While Pos('Local_BP_258',Translations[K].PascalCode)>0 do
+     Translations[K].PascalCode:=ReplaceInStr(Translations[K].PascalCode,
+      'Local_BP_258','r');
+    While Pos('Local_BP_2',Translations[K].PascalCode)>0 do
+     Translations[K].PascalCode:=ReplaceInStr(Translations[K].PascalCode,
+      'Local_BP_2','i');
+   End;
 
   SetTranslationForLine(I,'Case Char(Lo(RegAX)) Of'+#13#10+
     '  ''A''..''Z'',''0''..''9'': Begin');
