@@ -1211,6 +1211,7 @@ Var
   { Discrimination code/donnees }
   ByteFlags      : PByteArray; { 1 octet par octet de l'image : BF_xxx }
   StringCount    : LongInt;  { nombre de chaines ASCII detectees }
+  StringRefCount : LongInt;  { immediats MOV resolus vers des chaines }
   JumpTblCount   : LongInt;  { nombre de tables de saut detectees }
 
 { ============================================================
@@ -3454,6 +3455,102 @@ Begin
   End;
 End;
 
+{ DetectStringReferences - Recherche dans les zones encore considerees comme
+  donnees les MOV registre,immediat qui chargent exactement l'adresse d'une
+  chaine deja detectee. Les compilateurs 16 bits melangent frequemment code
+  et constantes dans le meme segment; cette passe recupere ces references
+  meme lorsque le bloc englobant n'a pas ete atteint par le suivi de flux. }
+Procedure DetectStringReferences(Mode32:Boolean);
+Var
+ I,J,Cur,RecoverStart,RecoverEnd:LongInt;
+ InstrSize  :Integer;
+ RecoverSize:Integer;
+ BType      :Integer;
+ Target     :LongInt;
+ Value      :LongWord;
+ ValidBytes :Boolean;
+Begin
+ StringRefCount:=0;
+ I:=0;
+ If Mode32 Then InstrSize:=5 Else InstrSize:=3;
+
+ While I+InstrSize<=ImageSize do Begin
+  If(ReadImageByte(I)>=$B8)and(ReadImageByte(I)<=$BF)Then Begin
+   ValidBytes:=True;
+   For J:=0 to InstrSize-1 do
+    If(ByteFlags^[I+J]<>BF_UNKNOWN)and(ByteFlags^[I+J]<>BF_DATA)Then Begin
+     ValidBytes:=False;
+     Break;
+    End;
+
+   If ValidBytes Then Begin
+    { Confirmer le motif de pointeur FAR utilise par Turbo Pascal :
+      MOV reg,offset / PUSH segment / PUSH meme_reg. En mode 32 bits,
+      accepter au minimum le PUSH immediat du meme registre. }
+    If Mode32 Then Begin
+     ValidBytes:=(I+InstrSize<ImageSize)and
+      (ReadImageByte(I+InstrSize)=$50+(ReadImageByte(I)-$B8));
+    End Else Begin
+     ValidBytes:=(I+InstrSize+1<ImageSize)and
+      (ReadImageByte(I+InstrSize) in [$06,$0E,$16,$1E])and
+      (ReadImageByte(I+InstrSize+1)=$50+(ReadImageByte(I)-$B8));
+    End;
+   End;
+
+   If ValidBytes Then Begin
+    If Mode32 Then Value:=LongWord(ReadImageDWord(I+1))
+              Else Value:=LongWord(ReadImageWord(I+1));
+    Target:=LongInt(Value);
+    If Mode32 And IsPEFile And
+      (Value>=LongWord(PEOptHeader.ImageBase))and
+      (Value-LongWord(PEOptHeader.ImageBase)<LongWord(ImageSize))Then
+     Target:=LongInt(Value-LongWord(PEOptHeader.ImageBase));
+
+    If(Target>=0)and(Target<ImageSize)and
+      ((ByteFlags^[Target]=BF_STRING)or
+       (ByteFlags^[Target]=BF_PSTRING))and(FindLabel(Target)>=0)Then Begin
+     RecoverStart:=I;
+     { Inclure la selection du fichier Output placee juste avant le
+       chargement de chaine : MOV DI,088Ah / PUSH DS / PUSH DI. }
+     If(Not Mode32)and(I>=5)and(ReadImageByte(I-5)=$BF)and
+       (ReadImageWord(I-4)=$088A)and(ReadImageByte(I-2)=$1E)and
+       (ReadImageByte(I-1)=$57)Then
+      RecoverStart:=I-5;
+
+     { Suivre lineairement l'ilot de code revele par cette reference.
+       Arreter sur une vraie chaine, un saut inconditionnel ou un retour. }
+     Cur:=RecoverStart;
+     RecoverEnd:=RecoverStart+512;
+     If RecoverEnd>ImageSize Then RecoverEnd:=ImageSize;
+     While Cur<RecoverEnd do Begin
+      If(ByteFlags^[Cur]=BF_STRING)or(ByteFlags^[Cur]=BF_PSTRING)Then Break;
+      RecoverSize:=ComputeInstrSize(Cur,Mode32);
+      If RecoverSize<=0 Then Break;
+      ValidBytes:=True;
+      For J:=0 to RecoverSize-1 do
+       If(Cur+J>=ImageSize)or(ByteFlags^[Cur+J]=BF_STRING)or
+         (ByteFlags^[Cur+J]=BF_PSTRING)Then Begin
+        ValidBytes:=False;
+        Break;
+       End;
+      If Not ValidBytes Then Break;
+      For J:=0 to RecoverSize-1 do ByteFlags^[Cur+J]:=BF_CODE;
+      BType:=ClassifyInstruction(Cur,Mode32);
+      Cur:=Cur+RecoverSize;
+      If(BType=BT_JMP_REL8)or(BType=BT_JMP_REL)or
+        (BType=BT_JMP_FAR)or(BType=BT_JMP_IND)or
+        (BType=BT_RET)or(BType=BT_RETF)or(BType=BT_IRET)Then Break;
+     End;
+     Inc(StringRefCount);
+     I:=Cur;
+     Continue;
+    End;
+   End;
+  End;
+  Inc(I);
+ End;
+End;
+
 { DetectJumpTables - Recherche les tables de saut (switch/case) dans les
   zones non classifiees. Une table de saut est une sequence d'adresses
   (16 ou 32 bits) qui pointent toutes vers des labels connus dans les
@@ -3568,10 +3665,14 @@ Begin
   { Passe 4 : Detecter les chaines Pascal (longueur + caracteres) }
   DetectPascalStrings;
 
-  { Passe 5 : Detecter les tables de saut }
+  { Passe 5 : Retrouver les chargements d'adresse de chaines dans les blocs
+    que le suivi de flux n'avait pas classes comme code }
+  DetectStringReferences(Mode32);
+
+  { Passe 6 : Detecter les tables de saut }
   DetectJumpTables(Mode32);
 
-  { Passe 6 : Marquer les zones restantes comme donnees }
+  { Passe 7 : Marquer les zones restantes comme donnees }
   DetectDataPatterns;
 
   { Calculer les statistiques }
@@ -3588,6 +3689,7 @@ Begin
   WriteLn('  Octets de code      : ', CodeBytes);
   WriteLn('  Octets de donnees   : ', DataBytes);
   WriteLn('  Chaines ASCII       : ', StringCount);
+  WriteLn('  References chaines  : ', StringRefCount);
   WriteLn('  Tables de saut      : ', JumpTblCount);
   WriteLn('  Octets de padding   : ', PadBytes);
 End;
@@ -5606,6 +5708,7 @@ Begin
   WriteLn('  Exports                 : ', ExportCount);
   WriteLn('  Octets de donnees       : ', DataBytes);
   WriteLn('  Chaines ASCII           : ', StringCount);
+  WriteLn('  References chaines      : ', StringRefCount);
   WriteLn('  Tables de saut          : ', JumpTblCount);
   { Taille du fichier ASM genere }
   ASMSize := GetFileSize(OutputFileName);

@@ -77,6 +77,9 @@ Const
   MAX_BUF = 16 * 1024 * 1024;   { 16 Mo - largement suffisant pour }
                                  { n importe quelle unite reelle }
   MAX_TYPES = 16384;
+  MAX_USES  = 512;              { unites "uses" par fichier }
+  MAX_IMPORT_POOL = 32768;      { total des imports nommes, tous "uses" }
+  WRAP_WIDTH = 76;              { largeur avant retour a la ligne automatique }
 
   { --- Etiquettes (Tag) reconnues - voir DOC\DCU_FORMAT.TXT      }
   { section 7. Uniquement celles que ce programme sait traiter    }
@@ -195,6 +198,25 @@ Var
   { disponible ; TypeText[N] est la description Pascal du type #N.   }
   TypeCount  : Integer;
   TypeText   : Array[1..MAX_TYPES] Of TString;
+
+  { --- clause "uses" accumulee (pas ecrite tout de suite) : chaque   }
+  { unite "uses" rencontree (ProcessUsesUnit) s ajoute ici avec la      }
+  { plage de ses imports nommes dans ImportPool - la clause complete     }
+  { (syntaxe Pascal propre) et le bloc de commentaire distinct listant    }
+  { les imports (avec retour a la ligne automatique) ne sont ecrits          }
+  { qu une fois pour toutes par FlushUsesClause, au moment ou le premier      }
+  { enregistrement NON-"uses" est rencontre (ou a la toute fin si le              }
+  { fichier ne contient que des "uses"). Evite les lignes de centaines            }
+  { de caracteres d un seul bloc "Nom" suivi de tous ses imports en une    }
+  { fois - defaut signale par l utilisateur.                                 }
+  UsesFlushed     : Boolean;
+  UsesCount       : Integer;
+  UsesNames       : Array[1..MAX_USES] Of TString;
+  UsesImportFirst : Array[1..MAX_USES] Of Integer;
+  UsesImportCount : Array[1..MAX_USES] Of Integer;
+
+  ImportPoolCount : Integer;
+  ImportPool      : Array[1..MAX_IMPORT_POOL] Of TString;
 
 Procedure Fail(Const Msg: TString);
 Begin
@@ -483,9 +505,72 @@ End;
 { de sortie.                                                       }
 { ------------------------------------------------------------ }
 
-Procedure EmitUses(Const UnitName: TString);
+{ ------------------------------------------------------------ }
+{ FlushUsesClause : ecrit la clause "uses" accumulee (syntaxe     }
+{ Pascal normale, une unite par ligne) puis, separement, un        }
+{ bloc de commentaire listant les imports NOMMES resolus pour        }
+{ chaque unite - jamais un seul bloc "Nom" suivi de tous ses imports    }
+{ en une fois, centaines de caracteres sur une ligne (defaut signale     }
+{ l utilisateur : ca ressemblait a du code Pascal casse/tronque).        }
+{ Chaque ligne du bloc de commentaire est repliee automatiquement          }
+{ des qu elle depasserait WRAP_WIDTH colonnes - jamais un seul mot            }
+{ (nom importe) coupe en deux. Appelee UNE SEULE FOIS (UsesFlushed),          }
+{ au moment ou le premier enregistrement NON-"uses" est rencontre              }
+{ (voir ProcessOneRecord) ou a la toute fin du programme si le                  }
+{ fichier ne contenait que des "uses".                                            }
+{ ------------------------------------------------------------ }
+
+Procedure FlushUsesClause;
+Var
+  I, J, LastJ: Integer;
+  Line: TString;
 Begin
-  WriteLn(OutF, '  ', UnitName, ';');
+  If UsesFlushed Then Exit;
+  UsesFlushed := True;
+
+  Write(OutF, 'uses');
+  If UsesCount = 0 Then
+    WriteLn(OutF, ';')
+  Else
+  Begin
+    WriteLn(OutF);
+    For I := 1 To UsesCount Do
+    Begin
+      Write(OutF, '  ', UsesNames[I]);
+      If I < UsesCount Then WriteLn(OutF, ',') Else WriteLn(OutF, ';');
+    End;
+  End;
+  WriteLn(OutF);
+
+  For I := 1 To UsesCount Do
+    If UsesImportCount[I] > 0 Then
+    Begin
+      Line := '    ' + UsesNames[I] + ' : ';
+      LastJ := UsesImportFirst[I] + UsesImportCount[I] - 1;
+      For J := UsesImportFirst[I] To LastJ Do
+      Begin
+        If (Length(Line) + Length(ImportPool[J]) + 2) > WRAP_WIDTH Then
+        Begin
+          WriteLn(OutF, Line);
+          Line := '        ';
+        End;
+        Line := Line + ImportPool[J];
+        If J < LastJ Then Line := Line + ', ';
+      End;
+      WriteLn(OutF, Line);
+    End;
+
+  If ImportPoolCount > 0 Then
+  Begin
+    WriteLn(OutF);
+    WriteLn(OutF, '{ Imports resolus ci-dessus (T:type, A:routine/adresse) - ',
+      'noms tels qu importes, non verifies contre la vraie table de types ',
+      'de l unite source (voir DOC/DCU_FORMAT.TXT section 9b). }');
+  End;
+  WriteLn(OutF);
+
+  WriteLn(OutF, 'interface');
+  WriteLn(OutF);
 End;
 
 Procedure EmitVar(Const Name: TString; TypeIdx: LongInt; IsSpec: Boolean);
@@ -560,10 +645,10 @@ End;
 
 Procedure ProcessUsesUnit(TagRq: Byte);
 Var
-  Name, ImpName, ImportList: TString;
+  Name, ImpName: TString;
   HPack, Inf, L1, X: LongInt;
   RTTISz, LVal: LongInt;
-  Cnt: Integer;
+  Cnt, ImportFirst, UIdx: Integer;
 Begin
   Name := ReadIdentStr;
 
@@ -585,7 +670,10 @@ Begin
   { REELLES confirmees contre le vrai code source DCU32.pas (TUnit.        }
   { ReadUses). drStop2 peut apparaitre entre deux imports (un octet          }
   { supplementaire depuis Ver>=8) sans mettre fin a la liste - on reboucle.    }
-  ImportList := '';
+  { Chaque import va directement dans ImportPool (pas de chaine jointe     }
+  { par des virgules a redecouper plus tard) - FlushUsesClause s occupera    }
+  { du retour a la ligne automatique au moment de l ecriture reelle.          }
+  ImportFirst := ImportPoolCount + 1;
   Cnt := 0;
   Repeat
     CurTag := RB;
@@ -595,17 +683,23 @@ Begin
           ImpName := ReadIdentStr;
           If CurTag = TAG_IMPTYPEDEF Then RTTISz := ReadUIndex;
           LVal := LongInt(RUL);
-          If Cnt > 0 Then ImportList := ImportList + ', ';
-          ImportList := ImportList + 'T:' + ImpName;
-          Inc(Cnt);
+          If ImportPoolCount < MAX_IMPORT_POOL Then
+          Begin
+            Inc(ImportPoolCount);
+            ImportPool[ImportPoolCount] := 'T:' + ImpName;
+            Inc(Cnt);
+          End;
         End;
       TAG_IMPVAL:
         Begin
           ImpName := ReadIdentStr;
           LVal := LongInt(RUL);
-          If Cnt > 0 Then ImportList := ImportList + ', ';
-          ImportList := ImportList + 'A:' + ImpName;
-          Inc(Cnt);
+          If ImportPoolCount < MAX_IMPORT_POOL Then
+          Begin
+            Inc(ImportPoolCount);
+            ImportPool[ImportPoolCount] := 'A:' + ImpName;
+            Inc(Cnt);
+          End;
         End;
       TAG_STOP2:
         If Ver >= 8 Then LVal := LongInt(RUL);
@@ -624,10 +718,16 @@ Begin
     Exit;
   End;
 
-  If ImportList <> '' Then
-    EmitUses(Name + '  { ' + ImportList + ' }')
+  If UsesCount < MAX_USES Then
+  Begin
+    Inc(UsesCount);
+    UIdx := UsesCount;
+    UsesNames[UIdx] := Name;
+    UsesImportFirst[UIdx] := ImportFirst;
+    UsesImportCount[UIdx] := Cnt;
+  End
   Else
-    EmitUses(Name);
+    Fail('table des unites "uses" pleine (MAX_USES=' + IntToStr(MAX_USES) + ')');
 
   { Apres la fin de la liste (drStop1), le vrai format lit toujours une   }
   { etiquette de plus ; si c est drProcAddInfo (Ver>=7), un index signe     }
@@ -704,6 +804,17 @@ Var
   Tag: Byte;
 Begin
   Tag := CurTag;
+
+  { Des qu un enregistrement de VRAIE DECLARATION apparait (pas juste     }
+  { une autre unite "uses", ni une metadonnee source/objet/asm/ressource -  }
+  { drSrc precede SOUVENT le tout premier "uses", confirme empiriquement,    }
+  { donc PAS un declencheur valable), la clause "uses" accumulee jusqu ici     }
+  { est complete - l ecrire maintenant (voir FlushUsesClause) avant de           }
+  { traiter ce nouvel enregistrement.                                              }
+  If (Tag <> TAG_UNIT) And (Tag <> TAG_UNIT1) And (Tag <> TAG_SRC) And
+     (Tag <> TAG_OBJ) And (Tag <> TAG_ASM) And (Tag <> TAG_RES) Then
+    FlushUsesClause;
+
   Case Tag Of
     TAG_UNIT, TAG_UNIT1:
       Begin
@@ -899,6 +1010,9 @@ Var
 Begin
   Stopped := False;
   TypeCount := 0;
+  UsesFlushed := False;
+  UsesCount := 0;
+  ImportPoolCount := 0;
 
   If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
    (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
@@ -988,20 +1102,18 @@ Begin
   { Note de portee : les enregistrements ne sont PAS strictement       }
   { groupes par categorie dans le flux reel (confirme empiriquement -   }
   { un enregistrement "source" (drSrc) precede souvent le tout premier    }
-  { "uses", et d autres entrelacements sont possibles) - "uses" et         }
-  { "interface" sont donc simplement imprimes une fois ici, puis TOUS       }
-  { les enregistrements sont traites par une seule boucle ; un drUnit        }
-  { rencontre plus tard dans le flux imprime quand meme sa ligne "  Nom;"      }
-  { a l endroit ou il apparait (resultat lisible mais pas forcement            }
-  { un .pas syntaxiquement ideal - acceptable pour un OUTIL DE LECTURE,          }
-  { pas un recompilateur).                                                        }
-  WriteLn(OutF, 'uses');
-  WriteLn(OutF);
-  WriteLn(OutF, 'interface');
-  WriteLn(OutF);
+  { "uses") - chaque "uses" rencontre est donc ACCUMULE (voir                }
+  { ProcessUsesUnit) plutot qu ecrit immediatement ; la clause complete        }
+  { ("uses" + bloc de commentaire des imports resolus) n est ecrite            }
+  { qu une seule fois, par FlushUsesClause (qui ecrit aussi "interface"    }
+  { juste apres), des que le premier enregistrement NON-"uses" apparait      }
+  { (voir ProcessOneRecord) - ou plus bas, si le fichier ne contenait QUE       }
+  { des "uses".                                                                   }
 
   While (Not Stopped) And (CurTag <> TAG_STOP_A) And (CurTag <> TAG_STOP) Do
     ProcessOneRecord;
+
+  FlushUsesClause;   { au cas ou le fichier ne contenait que des "uses" }
 
   If Not Stopped Then
   Begin

@@ -4422,7 +4422,7 @@ End;
   ============================================================ }
 
 Const
- MAX_TRANSLATIONS = 8192;
+ MAX_TRANSLATIONS = 32768;
 
 Type
  TTranslation = Record
@@ -10455,8 +10455,8 @@ Procedure ProcessTurboPascalWriteLnPatterns;
 Var
  I,J,K,EndLine,VIdx,PatternCount,FragmentCount:LongInt;
  A:TAsmLine;
- TextValue,LabelName:String;
- Valid:Boolean;
+ LabelName,Args,ItemExpr:String;
+ Valid,MatchedItem:Boolean;
 Begin
  PatternCount:=0;
  I:=0;
@@ -10470,23 +10470,57 @@ Begin
   If Not Valid Then Begin Inc(I); Continue; End;
 
   J:=I+3;
-  TextValue:='';
+  Args:='';
   FragmentCount:=0;
-  While J+5<SrcLineCount do Begin
+  While J+6<SrcLineCount do Begin
+   MatchedItem:=False;
    ParseInstructionLine(J,A);
-   If(UpCaseStr(A.Mnemonic)<>'MOV')or
-     (UpCaseStr(A.Op1.Reg)<>'DI')or(A.Op2.OpType<>OT_OFFSET)Then Break;
-   LabelName:=A.Op2.LabelName;
-   VIdx:=FindDataVarByName(LabelName);
-   If(VIdx=0)or(Not IsLengthPrefixedString(VIdx))Then Break;
-   If Not IsSimpleRegInstruction(J+1,'PUSH','CS','') Then Break;
-   If Not IsSimpleRegInstruction(J+2,'PUSH','DI','') Then Break;
-   If Not IsSimpleRegInstruction(J+3,'XOR','AX','AX') Then Break;
-   If Not IsSimpleRegInstruction(J+4,'PUSH','AX','') Then Break;
-   If Not IsRuntimeFarCall(J+5,$08D3) Then Break;
-   TextValue:=TextValue+DataVars[VIdx].Elements[2].StrValue;
+
+   { Chaine litterale ou shortstring situee a une adresse DS connue. }
+   If(UpCaseStr(A.Mnemonic)='MOV')and(UpCaseStr(A.Op1.Reg)='DI')Then Begin
+    ItemExpr:='';
+    If A.Op2.OpType=OT_OFFSET Then Begin
+     LabelName:=A.Op2.LabelName;
+     VIdx:=FindDataVarByName(LabelName);
+     If(VIdx>0)and IsLengthPrefixedString(VIdx)and
+       IsSimpleRegInstruction(J+1,'PUSH','CS','')Then
+      ItemExpr:=QuotePascalString(DataVars[VIdx].Elements[2].StrValue);
+    End Else If A.Op2.OpType in [OT_IMM8,OT_IMM16,OT_IMM32] Then Begin
+     If IsSimpleRegInstruction(J+1,'PUSH','DS','')Then
+      ItemExpr:='PString(@Mem[$'+HexWord(Word(A.Op2.Imm))+'])^';
+    End;
+    If(ItemExpr<>'')and IsSimpleRegInstruction(J+2,'PUSH','DI','')and
+      IsSimpleRegInstruction(J+3,'XOR','AX','AX')and
+      IsSimpleRegInstruction(J+4,'PUSH','AX','')and
+      IsRuntimeFarCall(J+5,$08D3)Then Begin
+     MatchedItem:=True;
+     J:=J+6;
+    End;
+   End;
+
+   { Entier signe : MOV AX,[adresse] / CWD / PUSH DX:AX / largeur 0 /
+     appel d'ecriture numerique 095Bh. }
+   If Not MatchedItem Then Begin
+    ParseInstructionLine(J,A);
+    If(UpCaseStr(A.Mnemonic)='MOV')and(UpCaseStr(A.Op1.Reg)='AX')and
+      (A.Op2.OpType=OT_MEM)and(A.Op2.BaseReg='')and
+      (A.Op2.IndexReg='')and(A.Op2.HasDisp)and
+      IsSimpleRegInstruction(J+1,'CWD','','')and
+      IsSimpleRegInstruction(J+2,'PUSH','DX','')and
+      IsSimpleRegInstruction(J+3,'PUSH','AX','')and
+      IsSimpleRegInstruction(J+4,'XOR','AX','AX')and
+      IsSimpleRegInstruction(J+5,'PUSH','AX','')and
+      IsRuntimeFarCall(J+6,$095B)Then Begin
+     ItemExpr:='SmallInt(PWord(@Mem[$'+HexWord(Word(A.Op2.Disp))+'])^)';
+     MatchedItem:=True;
+     J:=J+7;
+    End;
+   End;
+
+   If Not MatchedItem Then Break;
+   If Args<>'' Then Args:=Args+', ';
+   Args:=Args+ItemExpr;
    Inc(FragmentCount);
-   J:=J+6;
   End;
 
   If Not IsRuntimeFarCall(J,$0840) Then Begin
@@ -10499,7 +10533,7 @@ Begin
   If FragmentCount=0 Then
    SetTranslationForLine(I,'WriteLn;')
   Else
-   SetTranslationForLine(I,'WriteLn('+QuotePascalString(TextValue)+');');
+   SetTranslationForLine(I,'WriteLn('+Args+');');
   For K:=I+1 to EndLine do SetTranslationForLine(K,'');
   Inc(PatternCount);
   I:=EndLine+1;
@@ -10546,6 +10580,104 @@ Begin
   Inc(PatternCount);
  End;
  WriteLn('  Reconstruction Halt Turbo Pascal    : ',PatternCount,
+  ' bloc(s) detecte(s).');
+End;
+
+Procedure ProcessTurboPascalParamCountIfPatterns;
+{ Reconstruit la validation classique des arguments :
+    CALL runtime ParamCount / CMP AX,n / JNL apres_bloc
+    ... Halt(code)
+  en If ParamCount < n Then Begin ... Halt(code); End; }
+Var
+ I,K,HaltLine,TrIdx,PatternCount:LongInt;
+ CmpA,JmpA:TAsmLine;
+ Code:String;
+Begin
+ PatternCount:=0;
+ For I:=0 to SrcLineCount-3 do Begin
+  If Not IsRuntimeFarCall(I,$0A9C) Then Continue;
+  ParseInstructionLine(I+1,CmpA);
+  ParseInstructionLine(I+2,JmpA);
+  If(UpCaseStr(CmpA.Mnemonic)<>'CMP')or
+    (UpCaseStr(CmpA.Op1.Reg)<>'AX')or
+    Not (CmpA.Op2.OpType in [OT_IMM8,OT_IMM16,OT_IMM32])Then Continue;
+  If(UpCaseStr(JmpA.Mnemonic)<>'JNL')and
+    (UpCaseStr(JmpA.Mnemonic)<>'JGE')Then Continue;
+
+  HaltLine:=-1;
+  For K:=I+3 to I+48 do Begin
+   If K>=SrcLineCount Then Break;
+   TrIdx:=FindTranslationForLine(K);
+   If(TrIdx>=0)and
+     (Pos('HALT(',UpCaseStr(Translations[TrIdx].PascalCode))=1)Then Begin
+    HaltLine:=K;
+    Break;
+   End;
+  End;
+  If HaltLine<0 Then Continue;
+
+  SetTranslationForLine(I,'If ParamCount < '+
+   IntToStr(CmpA.Op2.Imm)+' Then Begin');
+  SetTranslationForLine(I+1,'');
+  SetTranslationForLine(I+2,'');
+  TrIdx:=FindTranslationForLine(HaltLine);
+  Code:=Translations[TrIdx].PascalCode;
+  Translations[TrIdx].PascalCode:=Code+#13#10+'  End;';
+
+  For K:=I+3 to HaltLine do Begin
+   TrIdx:=FindTranslationForLine(K);
+   If(TrIdx>=0)and(Translations[TrIdx].PascalCode<>'')Then
+    Translations[TrIdx].PascalCode:=' '+Translations[TrIdx].PascalCode;
+  End;
+  Inc(PatternCount);
+ End;
+ WriteLn('  Reconstruction If/ParamCount Turbo Pascal : ',PatternCount,
+  ' bloc(s) detecte(s).');
+End;
+
+Procedure ProcessTurboPascalPositiveIfHaltPatterns;
+{ Reconstruit CMP [variable],0 / JLE apres_bloc / ... / Halt(n) sous la
+  forme If variable > 0 Then Begin ... Halt(n); End;. }
+Var
+ I,K,HaltLine,TrIdx,PatternCount:LongInt;
+ CmpA,JmpA:TAsmLine;
+ Code:String;
+Begin
+ PatternCount:=0;
+ For I:=0 to SrcLineCount-3 do Begin
+  ParseInstructionLine(I,CmpA);
+  ParseInstructionLine(I+1,JmpA);
+  If(UpCaseStr(CmpA.Mnemonic)<>'CMP')or
+    (CmpA.Op1.OpType<>OT_MEM)or(CmpA.Op1.BaseReg<>'')or
+    (CmpA.Op1.IndexReg<>'')or(Not CmpA.Op1.HasDisp)or
+    (CmpA.Op2.Imm<>0)or(UpCaseStr(JmpA.Mnemonic)<>'JLE')Then Continue;
+
+  HaltLine:=-1;
+  For K:=I+2 to I+32 do Begin
+   If K>=SrcLineCount Then Break;
+   TrIdx:=FindTranslationForLine(K);
+   If(TrIdx>=0)and
+     (Pos('HALT(',UpCaseStr(Translations[TrIdx].PascalCode))=1)Then Begin
+    HaltLine:=K;
+    Break;
+   End;
+  End;
+  If HaltLine<0 Then Continue;
+
+  SetTranslationForLine(I,'If SmallInt(PWord(@Mem[$'+
+   HexWord(Word(CmpA.Op1.Disp))+'])^) > 0 Then Begin');
+  SetTranslationForLine(I+1,'');
+  TrIdx:=FindTranslationForLine(HaltLine);
+  Code:=Translations[TrIdx].PascalCode;
+  Translations[TrIdx].PascalCode:=Code+#13#10+'  End;';
+  For K:=I+2 to HaltLine do Begin
+   TrIdx:=FindTranslationForLine(K);
+   If(TrIdx>=0)and(Translations[TrIdx].PascalCode<>'')Then
+    Translations[TrIdx].PascalCode:=' '+Translations[TrIdx].PascalCode;
+  End;
+  Inc(PatternCount);
+ End;
+ WriteLn('  Reconstruction If positif/Halt Turbo Pascal : ',PatternCount,
   ' bloc(s) detecte(s).');
 End;
 
@@ -10647,6 +10779,14 @@ Begin
   TrIdx:=FindTranslationForLine(HaltLine);
   If TrIdx>=0 Then
    Translations[TrIdx].PascalCode:='Halt;'+#13#10+'  End;';
+  { ProcessBodyGeneration ajoute deja deux espaces. Ajouter un espace aux
+    instructions du corps pour les decaler par rapport au If, tandis que
+    le End inclus ci-dessus reste aligne sur le If. }
+  For K:=BodyLine+1 to HaltLine do Begin
+   TrIdx:=FindTranslationForLine(K);
+   If(TrIdx>=0)and(Translations[TrIdx].PascalCode<>'')Then
+    Translations[TrIdx].PascalCode:=' '+Translations[TrIdx].PascalCode;
+  End;
   AddOptLabel(BodyLabel);
   AddOptLabel(NextLabel);
   Inc(PatternCount);
@@ -11147,6 +11287,10 @@ BEGIN
  ProcessTurboPascalWriteLnPatterns;
  { Reconstruction de la terminaison du runtime Turbo Pascal }
  ProcessTurboPascalHaltPatterns;
+ { Reconstruction des tests positifs se terminant par Halt }
+ ProcessTurboPascalPositiveIfHaltPatterns;
+ { Reconstruction des validations fondees sur ParamCount }
+ ProcessTurboPascalParamCountIfPatterns;
  { Reconstruction des tests d'options fondes sur ParamStr }
  ProcessTurboPascalParamStrIfPatterns;
  { TODO 21 - Generation en-tete Pascal }
