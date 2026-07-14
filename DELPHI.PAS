@@ -353,13 +353,20 @@ Type
  TString = String;
 
  TOptions = Record
-  SrcFile   : TString;   { fichier source (.pas ou .dpr)         }
-  OutFile   : TString;   { fichier sortie (.exe ou .obj)         }
-  Verbose   : Boolean;   { -v : banniere et statistiques         }
-  DebugMode : Boolean;   { -d : affichage de chaque token        }
-  Warnings  : Boolean;   { -w : afficher les avertissements      }
-  AsmOutput : Boolean;   { -asm : produire aussi un .ASM lisible }
-  ObjOnly   : Boolean;   { -obj : produire seulement un .OBJ     }
+  SrcFile      : TString;   { fichier source (.pas ou .dpr)         }
+  OutFile      : TString;   { fichier sortie (.exe ou .obj)         }
+  OutFileGiven : Boolean;   { True si l utilisateur a fourni le nom }
+                             { de sortie explicitement (2e argument }
+                             { positionnel) - False si derive par     }
+                             { defaut de SrcFile (TODO 25 : une Unit   }
+                             { compilee seule doit alors deriver .obj   }
+                             { et non .exe, aucun point d entree n etant}
+                             { possible pour un .exe).                   }
+  Verbose      : Boolean;   { -v : banniere et statistiques         }
+  DebugMode    : Boolean;   { -d : affichage de chaque token        }
+  Warnings     : Boolean;   { -w : afficher les avertissements      }
+  AsmOutput    : Boolean;   { -asm : produire aussi un .ASM lisible }
+  ObjOnly      : Boolean;   { -obj : produire seulement un .OBJ     }
  End;
 
 Var
@@ -475,13 +482,14 @@ End;
 
 Procedure InitOptions;
 Begin
- Opts.SrcFile   := '';
- Opts.OutFile   := '';
- Opts.Verbose   := False;
- Opts.DebugMode := False;
- Opts.Warnings  := False;
- Opts.AsmOutput := False;
- Opts.ObjOnly   := False;
+ Opts.SrcFile      := '';
+ Opts.OutFile      := '';
+ Opts.OutFileGiven := False;
+ Opts.Verbose      := False;
+ Opts.DebugMode    := False;
+ Opts.Warnings     := False;
+ Opts.AsmOutput    := False;
+ Opts.ObjOnly      := False;
 End;
 
 { ------------------------------------------------------------ }
@@ -557,7 +565,10 @@ Begin
    If Opts.SrcFile = '' Then
     Opts.SrcFile := Arg
    Else If Opts.OutFile = '' Then
-    Opts.OutFile := Arg
+   Begin
+    Opts.OutFile      := Arg;
+    Opts.OutFileGiven := True;
+   End
    Else
     FatalError('Argument inattendu: ' + Arg);
   End;
@@ -600,7 +611,7 @@ Begin
  WriteLn('Sortie   : ', Opts.OutFile);
  If Opts.AsmOutput Then
   WriteLn('ASM      : ', ReplaceExt(Opts.OutFile, '.asm'));
- If Opts.ObjOnly Then
+ If StrUpperCase(ExtractExt(Opts.OutFile)) = '.OBJ' Then
   WriteLn('Mode     : OBJ seulement (COFF)')
  Else
   WriteLn('Mode     : EXE (PE Win32)');
@@ -16953,23 +16964,37 @@ End;
 { END. Les declarations des DEUX sections sont enregistrees dans     }
 { la MEME table des symboles globale que pour un Program (ce           }
 { compilateur n a pas encore de frontiere de module/namespace          }
-{ separee ni de liaison .OBJ reelle entre unites - TODO 24, qui         }
-{ possede aussi le vrai export DLL des Library ci-dessus) : compiler     }
-{ directement une Unit isolee valide donc sa syntaxe et enregistre        }
-{ ses declarations, mais ne produit pas de point d entree executable       }
-{ (rien a quoi rattacher un .ASM/.OBJ tant que TODO 24 n existe pas) -       }
-{ Initialization/Finalization sont donc analysees (ParseStmtSeq,             }
-{ TODO 13) pour valider leur syntaxe, mais leur code n est pas emis           }
-{ faute d un point d attache reel (pas de fichier .asm ouvert ici).            }
+{ separee) mais, depuis le TODO 25, une Unite compilee seule PRODUIT     }
+{ desormais un vrai .OBJ (COFF) : le meme pipeline que                    }
+{ ParseProgramOrLibraryFile (EmitDataSeg/EmitCodeSeg/EmitRuntimeLibrary,    }
+{ ParseTopLevelRoutines, EmitClassVMTs, EmitInterfaceThunks,                 }
+{ EmitUserExterns) est rejoue ici, MAIS sans bloc principal                  }
+{ begin...end/ExitProcess (une Unite n en a pas) - chaque routine             }
+{ declaree dans INTERFACE devient un symbole COFF PUBLIC reel dans le          }
+{ .OBJ produit (WriteCOFFObj marque deja TOUTE etiquette PUBLIC par             }
+{ simplification, TODO 24), adressable par un editeur de liens externe.          }
+{ Initialization/Finalization sont emises comme de VRAIES routines               }
+{ etiquetees (_DPF_<NOM>_INIT/_FINI) plutot que seulement validees puis           }
+{ jetees - mais RIEN ne les appelle automatiquement : aucun vrai pilote            }
+{ multi-fichiers (chainage reel des sections Initialization de toutes les          }
+{ unites d un programme, comme le ferait un vrai linker Delphi) n existe            }
+{ dans ce compilateur - limitation documentee, restant hors de portee du            }
+{ TODO 25 (qui ne demandait que la VALIDATION des exemples existants,                }
+{ pas la liaison multi-fichiers elle-meme, deja explicitement differee au             }
+{ TODO 23/24).                                                                          }
 { ------------------------------------------------------------ }
 
-Procedure ParseUnitFile;
+Procedure ParseUnitFile(Const AsmFilePath: TString);
 Var UnitName: TString;
 Begin
  PPAdvance;   { unit }
  UnitName := TokenPool[PP].Val;
  PPAdvance;
  SkipOptSemi;
+
+ EmitOpen(AsmFilePath);
+ EmitHeader;
+ EmitComment('Unite ' + UnitName);
 
  If Not PPMatch('interface') Then
   WarnMsg('interface attendu dans l unite ' + UnitName);
@@ -16978,6 +17003,10 @@ Begin
  InInterfaceSection := True;
  ParseGlobalDeclSection;
  InInterfaceSection := False;
+
+ EmitDataSeg;
+ EmitCodeSeg;
+ EmitRuntimeLibrary;
 
  If (PPPeekKind = TK_KEYWORD) And (StrUpperCase(PPPeekVal) = 'IMPLEMENTATION') Then
  Begin
@@ -16990,16 +17019,32 @@ Begin
  Else
   WarnMsg('implementation attendu dans l unite ' + UnitName);
 
+ EmitClassVMTs;
+ EmitInterfaceThunks;
+ EmitUserExterns;
+
  If (PPPeekKind = TK_KEYWORD) And (StrUpperCase(PPPeekVal) = 'INITIALIZATION') Then
  Begin
   PPAdvance;
+  EmitComment('Initialization de ' + UnitName + ' (jamais appelee ' +
+   'automatiquement - aucun pilote multi-fichiers, TODO 25)');
+  EmitLabel(DP_FUNC_PFX + StrUpperCase(UnitName) + '_INIT');
+  EmitProlog(0);
   ParseStmtSeq;
+  EmitEpilog;
+  EmitBlankLine;
  End;
 
  If (PPPeekKind = TK_KEYWORD) And (StrUpperCase(PPPeekVal) = 'FINALIZATION') Then
  Begin
   PPAdvance;
+  EmitComment('Finalization de ' + UnitName + ' (jamais appelee ' +
+   'automatiquement - aucun pilote multi-fichiers, TODO 25)');
+  EmitLabel(DP_FUNC_PFX + StrUpperCase(UnitName) + '_FINI');
+  EmitProlog(0);
   ParseStmtSeq;
+  EmitEpilog;
+  EmitBlankLine;
  End;
 
  If Not PPMatch('end') Then
@@ -17009,10 +17054,7 @@ Begin
  If Not PPAtEnd Then
   WarnMsg('jetons superflus apres la fin de l unite ' + UnitName);
 
- If Opts.Verbose Then
-  WriteLn('Unite ', UnitName, ' compilee (declarations enregistrees) - ',
-   'aucun executable direct (pas de point d entree ; voir TODO 24 pour ',
-   'le vrai .OBJ d unite).');
+ EmitClose('');
 End;
 
 { Declarations anticipees (TODO 24) : l assembleur/emetteur PE/COFF     }
@@ -17036,10 +17078,28 @@ Procedure WriteCOFFObj(Const OutPath: TString); Forward;
 { ou texte proprietaire n a rien a voir avec du Pascal).                  }
 { ------------------------------------------------------------ }
 
+{ ------------------------------------------------------------ }
+{ AdjustOutFileForUnitIfNeeded (TODO 25) : une Unite compilee     }
+{ seule ne peut jamais devenir un .exe (pas de point d entree),   }
+{ seulement un .obj - si l utilisateur n a pas explicitement       }
+{ choisi le nom de sortie ni -obj, deriver .obj des maintenant.      }
+{ Appelee depuis Run (avant ShowBanner, pour que la banniere         }
+{ affiche deja la bonne extension/le bon mode) ET depuis               }
+{ CompileSourceFile (ou l appel est idempotent si deja fait) - PP        }
+{ doit deja pointer sur le premier jeton reel (ParserInit+lexage).         }
+{ ------------------------------------------------------------ }
+
+Procedure AdjustOutFileForUnitIfNeeded;
+Begin
+ If (PPPeekKind = TK_KEYWORD) And (StrUpperCase(PPPeekVal) = 'UNIT') And
+    (Not Opts.OutFileGiven) And (Not Opts.ObjOnly) Then
+  Opts.OutFile := ReplaceExt(Opts.SrcFile, '.obj');
+End;
+
 Procedure CompileSourceFile;
 Var
  Ext, Up, AsmFilePath : TString;
- IsProgramOrLibrary : Boolean;
+ IsProgramOrLibrary, IsUnit, DidEmit : Boolean;
  TmpAsmF : Text;
 Begin
  Ext := ExtractExt(Opts.SrcFile);
@@ -17061,6 +17121,13 @@ Begin
   Exit;
  End;
 
+ Up := StrUpperCase(PPPeekVal);
+ IsUnit := (Up = 'UNIT');
+
+ { Idempotent si deja fait par Run avant ShowBanner (TODO 25) - une     }
+ { Unite n a pas de point d entree, donc jamais de .exe direct.           }
+ AdjustOutFileForUnitIfNeeded;
+
  { Depuis le TODO 24, le texte .asm est TOUJOURS produit (l assembleur   }
  { maison en a besoin, meme si -asm n a pas ete demande) : ecrit dans le  }
  { fichier REEL si -asm, sinon dans un fichier temporaire efface a la      }
@@ -17071,7 +17138,6 @@ Begin
   AsmFilePath := 'DPASMTMP.$$$';
 
  IsProgramOrLibrary := False;
- Up := StrUpperCase(PPPeekVal);
  If Up = 'PROGRAM' Then
  Begin
   ParseProgramOrLibraryFile(False, AsmFilePath);
@@ -17082,18 +17148,21 @@ Begin
   ParseProgramOrLibraryFile(True, AsmFilePath);
   IsProgramOrLibrary := True;
  End
- Else If Up = 'UNIT' Then
-  ParseUnitFile
+ Else If IsUnit Then
+  ParseUnitFile(AsmFilePath)
  Else
   WarnMsg('Program, Unit ou Library attendu en tete de fichier (trouve: ' +
    PPPeekVal + ')');
 
- { TODO 24 : assembler le texte .asm qui vient d etre produit et ecrire  }
- { un vrai binaire - .OBJ (COFF) si -obj, sinon .EXE (PE) par defaut.      }
- { Une Unit compilee seule n a pas de point d entree (TODO 23) : rien a     }
- { assembler/lier pour elle tant que la vraie compilation multi-fichiers     }
- { (liaison .OBJ, elle aussi TODO 24) n existe pas.                            }
- If IsProgramOrLibrary And (ErrorCount = 0) Then
+ { TODO 24/25 : assembler le texte .asm qui vient d etre produit et      }
+ { ecrire un vrai binaire. Program/Library : .OBJ (COFF) si -obj, sinon    }
+ { .EXE (PE) par defaut. Unit : TOUJOURS .OBJ (COFF), quel que soit -obj    }
+ { (aucun point d entree possible pour un .exe) - chaque routine declaree    }
+ { dans son INTERFACE devient un symbole COFF PUBLIC reel (WriteCOFFObj      }
+ { marque deja toute etiquette PUBLIC par simplification, TODO 24),           }
+ { adressable par un editeur de liens externe.                                  }
+ DidEmit := IsProgramOrLibrary Or IsUnit;
+ If DidEmit And (ErrorCount = 0) Then
  Begin
   AsmAssembleFile(AsmFilePath);
   { La resolution des fixups REL32 differe entre les deux modes (TODO 24) :}
@@ -17102,7 +17171,7 @@ Begin
   { import reste une relocation COFF pour l editeur de liens) ; le mode       }
   { EXE (WritePEExe) a besoin de la resolution COMPLETE (vignettes IAT)        }
   { AVANT de calculer la disposition PE, donc appelee ici.                       }
-  If Opts.ObjOnly Then
+  If IsUnit Or Opts.ObjOnly Then
    WriteCOFFObj(Opts.OutFile)
   Else
   Begin
@@ -17111,11 +17180,11 @@ Begin
   End;
  End;
 
- { Rien a effacer pour une Unite : ParseUnitFile n appelle jamais       }
- { EmitOpen (TODO 23), donc AsmFilePath n a jamais ete cree - tenter de  }
- { l effacer quand meme declenchait une erreur d execution (fichier       }
- { introuvable) decouverte en testant reellement lextest2.pas (TODO 24).   }
- If IsProgramOrLibrary And (Not Opts.AsmOutput) Then
+ { Depuis le TODO 25, une Unite appelle elle aussi EmitOpen (comme un   }
+ { Program/Library) : le fichier .asm temporaire existe donc bien pour    }
+ { les trois cas et doit etre efface de la meme facon si -asm n a pas      }
+ { ete demande.                                                              }
+ If DidEmit And (Not Opts.AsmOutput) Then
  Begin
   Assign(TmpAsmF, AsmFilePath);
   {$I-} Erase(TmpAsmF); {$I+}
@@ -17327,7 +17396,7 @@ Begin
  Tok(TK_KEYWORD, 'end', 0);
  Tok(TK_PUNCT, '.', 0);
  ParserInit;
- ParseUnitFile;
+ ParseUnitFile(ReplaceExt(TmpFile, '.asm'));
  Prog23Assert(
   'Unit23T (signature Interface + corps Implementation) consomme ' +
   'tous les tokens (regression InInterfaceSection)', PPAtEnd);
@@ -17335,6 +17404,7 @@ Begin
  Prog23Assert('DoubleIt23 enregistree', SI >= 0);
  Prog23Assert('DoubleIt23 a recu un corps reel (plus IsExternal)',
   (SI >= 0) And Not SymTab[SI].IsExternal);
+ {$I-} Assign(F, ReplaceExt(TmpFile, '.asm')); Erase(F); {$I+}
 
  SymInit;
  ClassSystemInit;
@@ -18838,6 +18908,23 @@ Begin
  For I := 1 To Length(S) Do PEWriteByte(Ord(S[I]));
 End;
 
+{ PEWriteAnsiStr : comme PEWriteStr, mais pour un AnsiString (non    }
+{ borne a 255 caracteres, contrairement a TString = String sous la    }
+{ directive de chaines courtes active pour tout ce fichier, TODO 01) - }
+{ necessaire pour la table des chaines de WriteCOFFObj (StrTab), qui     }
+{ concatene le nom de CHAQUE etiquette/symbole du fichier (bien au-dela   }
+{ de 255 caracteres des qu un programme reel est compile, vu le nombre     }
+{ de routines RTL) : passer un AnsiString a PEWriteStr le convertirait       }
+{ d abord en TString (ShortString), tronquant silencieusement - bug          }
+{ confirme (TODO 25, table des symboles/chaines corrompue au-dela de          }
+{ 255 caracteres cumules, decouvert en relisant un .obj produit avec un        }
+{ vrai objdump).                                                                 }
+Procedure PEWriteAnsiStr(Const S: AnsiString);
+Var I: Integer;
+Begin
+ For I := 1 To Length(S) Do PEWriteByte(Ord(S[I]));
+End;
+
 Procedure PEWriteSectionBytes(Sec: Integer; Count: LongInt);
 Var I: LongInt;
 Begin
@@ -19188,7 +19275,11 @@ Var
  SymIndexOfLabel   : Array[0..MAX_ASM_LABELS - 1] Of Integer;
  SymIndexOfExtern  : Array[0..MAX_ASM_EXTERNS - 1] Of Integer;
  NextSymIdx : Integer;
- StrTab : TString;   { concatenation des noms, chacun termine par #0 }
+ StrTab : AnsiString;   { concatenation des noms, chacun termine par }
+                         { #0 - AnsiString (pas TString/ShortString,  }
+                         { limite a 255 caracteres) : depasse tres      }
+                         { largement 255 caracteres cumules des qu un    }
+                         { programme reel est compile (TODO 25).          }
  Name : TString;
  TargetSymIdx, LI, EI : Integer;
  RelocType : Integer;
@@ -19344,7 +19435,7 @@ Begin
  { table des chaines : prefixe de longueur (elle-meme comprise) puis }
  { les noms concatenes, chacun termine par un octet nul.               }
  PEWriteDWord(Length(StrTab) + 4);
- PEWriteStr(StrTab);
+ PEWriteAnsiStr(StrTab);
 
  Close(PEOutF);
 End;
@@ -19398,7 +19489,6 @@ Begin
  LexOpened   := True;
  LexSrcFName := Opts.SrcFile;
 
- ShowBanner;
  PPInitDefines;
  DataInit;
  DataInit2;
@@ -19419,6 +19509,14 @@ Begin
 
  { Enregistrer toutes les chaines litterales dans le pool de donnees }
  TokenPoolRegisterStrings;
+
+ { PP pointe deja sur le premier jeton reel (ParserInit ci-dessus) :   }
+ { ajuster Opts.OutFile AVANT ShowBanner (TODO 25) pour qu elle          }
+ { affiche deja la bonne extension/le bon mode pour une Unite (qui n a    }
+ { pas de point d entree, donc jamais de .exe direct) - CompileSourceFile }
+ { refait le meme test plus loin, sans effet (idempotent).                  }
+ AdjustOutFileForUnitIfNeeded;
+ ShowBanner;
 
  { TODO 23 : compilation reelle du fichier source (detection Program/ }
  { Unit/Library, declarations, routines, bloc principal) - remplace   }
