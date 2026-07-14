@@ -11146,6 +11146,81 @@ Begin
   ' bloc(s) detecte(s).');
 End;
 
+Procedure ProcessTurboPascalStringCharConcatPatterns;
+{ Reconnait r := r + c et r := r + Chr(Ord(c)-32), compiles via :
+    0BFEh copie de shortstring, 0D1Ah conversion Char->String,
+    0C7Dh concatenation, 0C18h recopie du resultat. }
+Var
+ I,K,ProcIdx,PatternCount,EndLine,CharMov,CharPush:LongInt;
+ A0,A3,A7,AC,AF:TAsmLine;
+ RExpr,CExpr,Code:String;
+ UpperCaseVariant,Valid:Boolean;
+Begin
+ PatternCount:=0;
+ I:=0;
+ While I+19<SrcLineCount do Begin
+  ParseInstructionLine(I,A0);
+  ParseInstructionLine(I+3,A3);
+  ParseInstructionLine(I+7,A7);
+  Valid:=(UpCaseStr(A0.Mnemonic)='LEA')and(A0.Op1.OpType=OT_MEM)and
+    IsSimpleRegInstruction(I+1,'PUSH','SS','')and
+    IsSimpleRegInstruction(I+2,'PUSH','DI','')and
+    (UpCaseStr(A3.Mnemonic)='LEA')and(A3.Op1.OpType=OT_MEM)and
+    IsSimpleRegInstruction(I+4,'PUSH','SS','')and
+    IsSimpleRegInstruction(I+5,'PUSH','DI','')and
+    IsRuntimeFarCall(I+6,$0BFE)and
+    (UpCaseStr(A7.Mnemonic)='LEA')and(A7.Op1.OpType=OT_MEM)and
+    IsSimpleRegInstruction(I+8,'PUSH','SS','')and
+    IsSimpleRegInstruction(I+9,'PUSH','DI','');
+  If Not Valid Then Begin Inc(I); Continue; End;
+
+  CharMov:=I+10;
+  ParseInstructionLine(CharMov,AC);
+  If(UpCaseStr(AC.Mnemonic)<>'MOV')or(UpCaseStr(AC.Op1.Reg)<>'AX')Then Begin
+   Inc(I); Continue;
+  End;
+  UpperCaseVariant:=False;
+  CharPush:=CharMov+1;
+  If IsSimpleRegInstruction(CharMov+1,'XOR','SP','SP')Then Begin
+   ParseInstructionLine(CharMov+2,AF);
+   If(UpCaseStr(AF.Mnemonic)<>'SUB')or(UpCaseStr(AF.Op1.Reg)<>'AX')or
+     (AF.Op2.Imm<>$20)Then Begin Inc(I); Continue; End;
+   UpperCaseVariant:=True;
+   CharPush:=CharMov+3;
+  End;
+  If Not IsSimpleRegInstruction(CharPush,'PUSH','AX','')Then Begin Inc(I); Continue; End;
+  If Not IsRuntimeFarCall(CharPush+1,$0D1A)Then Begin Inc(I); Continue; End;
+  If Not IsRuntimeFarCall(CharPush+2,$0C7D)Then Begin Inc(I); Continue; End;
+  ParseInstructionLine(CharPush+3,AF);
+  If(UpCaseStr(AF.Mnemonic)<>'LEA')or(AF.Op1.OpType<>OT_MEM)or
+    (AF.Op1.BaseReg<>A3.Op1.BaseReg)or(AF.Op1.Disp<>A3.Op1.Disp)Then Begin
+   Inc(I); Continue;
+  End;
+  If Not IsSimpleRegInstruction(CharPush+4,'PUSH','SS','')Then Begin Inc(I); Continue; End;
+  If Not IsSimpleRegInstruction(CharPush+5,'PUSH','DI','')Then Begin Inc(I); Continue; End;
+  ParseInstructionLine(CharPush+6,AF);
+  If(UpCaseStr(AF.Mnemonic)<>'MOV')or(UpCaseStr(AF.Op1.Reg)<>'AX')or
+    (AF.Op2.Imm<>$FF)Then Begin Inc(I); Continue; End;
+  If Not IsSimpleRegInstruction(CharPush+7,'PUSH','AX','')Then Begin Inc(I); Continue; End;
+  If Not IsRuntimeFarCall(CharPush+8,$0C18)Then Begin Inc(I); Continue; End;
+
+  ProcIdx:=FindProcForLine(I);
+  RExpr:=OperandToExpr(A3.Op1,ProcIdx);
+  CExpr:=OperandToExpr(AC.Op2,ProcIdx);
+  If UpperCaseVariant Then
+   Code:=RExpr+' := '+RExpr+' + Chr(Lo('+CExpr+') - 32);'
+  Else
+   Code:=RExpr+' := '+RExpr+' + Char(Lo('+CExpr+'));';
+  EndLine:=CharPush+8;
+  SetTranslationForLine(I,Code);
+  For K:=I+1 to EndLine do SetTranslationForLine(K,'');
+  Inc(PatternCount);
+  I:=EndLine+1;
+ End;
+ WriteLn('  Reconstruction concatenations String+Char : ',PatternCount,
+  ' expression(s) detectee(s).');
+End;
+
 Procedure ProcessTurboPascalForPatterns;
 { Reconstruit la forme Turbo Pascal d'un For croissant :
     XOR AX,AX / MOV compteur,AX / JMP test
@@ -11826,6 +11901,8 @@ BEGIN
  ProcessTurboPascalCharCasePatterns;
  { Reconstruction des Case dont les branches sont des intervalles }
  ProcessTurboPascalRangeCasePatterns;
+ { Reconstruction des concatenations d'une String et d'un Char }
+ ProcessTurboPascalStringCharConcatPatterns;
  { Reconstruction des boucles For croissantes du compilateur Turbo Pascal }
  ProcessTurboPascalForPatterns;
  { TODO 21 - Generation en-tete Pascal }
