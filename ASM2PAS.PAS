@@ -10288,6 +10288,11 @@ Begin
  If ProcIdx>ProcCount Then Exit;
  If Procs[ProcIdx].StartLine<0 Then Exit;
  If Procs[ProcIdx].EndLine<0 Then Exit;
+ { Les primitives Strings sont de petites routines serrees. Une grande
+   procedure applicative peut naturellement contenir SCASB/MOVSB ainsi que
+   des comparaisons A..Z; ne jamais la remplacer integralement sur ces seuls
+   indices. }
+ If Procs[ProcIdx].EndLine-Procs[ProcIdx].StartLine>160 Then Exit;
  HasRepneScasb:=False;
  HasRepMovsb:=False;
  HasRepeCmpsb:=False;
@@ -10846,6 +10851,89 @@ Begin
  End;
  WriteLn('  Reconstruction comparaisons de shortstrings : ',PatternCount,
   ' table(s), ',TotalClauses,' comparaison(s).');
+End;
+
+Procedure ProcessTurboPascalCharCasePatterns;
+{ Reunit les branches simples d'un Case Char compilees en chaine :
+    CMP AL,car / JNZ suivant / MOV AX,type / copie shortstring / JMP sortie.
+  Les branches imbriquees (<, >, &, etc.) ne sont volontairement pas
+  absorbees par ce motif simple. }
+Var
+ I,J,K,N,PatternCount:LongInt;
+ A,B:TAsmLine;
+ Code,Ch:String;
+ Valid:Boolean;
+Begin
+ PatternCount:=0;
+ I:=0;
+ While I+41<SrcLineCount do Begin
+  J:=I;
+  N:=0;
+  Code:='';
+  While J+13<SrcLineCount do Begin
+   ParseInstructionLine(J,A);
+   Valid:=(UpCaseStr(A.Mnemonic)='CMP')and
+    (UpCaseStr(A.Op1.Reg)='AL')and
+    (A.Op2.OpType in [OT_IMM8,OT_IMM16]);
+   If Not Valid Then Break;
+   ParseInstructionLine(J+1,B);
+   If(UpCaseStr(B.Mnemonic)<>'JNZ')and(UpCaseStr(B.Mnemonic)<>'JNE')Then Break;
+   ParseInstructionLine(J+2,B);
+   If(UpCaseStr(B.Mnemonic)<>'MOV')or(UpCaseStr(B.Op1.Reg)<>'AX')or
+    (Not(B.Op2.OpType in [OT_IMM8,OT_IMM16]))Then Break;
+   If Not IsSimpleRegInstruction(J+4,'PUSH','CS','')Then Break;
+   If Not IsSimpleRegInstruction(J+5,'PUSH','DI','')Then Break;
+   ParseInstructionLine(J+6,A);
+   If(UpCaseStr(A.Mnemonic)<>'MOV')or(UpCaseStr(A.Op1.Reg)<>'DI')Then Break;
+   If Not IsSimpleRegInstruction(J+7,'PUSH','DS','')Then Break;
+   If Not IsSimpleRegInstruction(J+8,'PUSH','DI','')Then Break;
+   ParseInstructionLine(J+9,A);
+   If(UpCaseStr(A.Mnemonic)<>'MOV')or(UpCaseStr(A.Op1.Reg)<>'AX')or
+    (A.Op2.Imm<>$FF)Then Break;
+   If Not IsSimpleRegInstruction(J+10,'PUSH','AX','')Then Break;
+   If Not IsRuntimeFarCall(J+11,$0C18)Then Break;
+   ParseInstructionLine(J+12,A);
+   If UpCaseStr(A.Mnemonic)<>'JMP'Then Break;
+   ParseInstructionLine(J+13,A);
+   If UpCaseStr(A.Mnemonic)<>'JMP'Then Break;
+
+   ParseInstructionLine(J,A);
+   Inc(N);
+   J:=J+14;
+  End;
+  If N<3 Then Begin Inc(I); Continue; End;
+  J:=I;
+  For K:=1 to N do Begin
+   ParseInstructionLine(J,A);
+   Ch:=Chr(Byte(A.Op2.Imm));
+   ParseInstructionLine(J+2,B);
+   Code:='  '+QuotePascalString(Ch)+': Begin'+#13#10+
+    '     RegAX := '+OperandToExpr(B.Op2,0)+';'+#13#10+
+    '     PString(@Mem[$055B])^ := '+QuotePascalString(Ch)+';'+#13#10+
+    '     Exit;'+#13#10+'    End;';
+   If K=1 Then Code:='Case Char(Lo(RegAX)) Of'+#13#10+Code;
+   If K=N Then Code:=Code+#13#10+'  End;';
+   SetTranslationForLine(J,Code);
+   SetTranslationForLine(J+1,'');
+   SetTranslationForLine(J+2,'');
+   SetTranslationForLine(J+3,'');
+   SetTranslationForLine(J+4,'');
+   SetTranslationForLine(J+5,'');
+   SetTranslationForLine(J+6,'');
+   SetTranslationForLine(J+7,'');
+   SetTranslationForLine(J+8,'');
+   SetTranslationForLine(J+9,'');
+   SetTranslationForLine(J+10,'');
+   SetTranslationForLine(J+11,'');
+   SetTranslationForLine(J+12,'');
+   SetTranslationForLine(J+13,'');
+   J:=J+14;
+  End;
+  Inc(PatternCount);
+  I:=J;
+ End;
+ WriteLn('  Reconstruction Case sur caracteres : ',PatternCount,
+  ' bloc(s) detecte(s).');
 End;
 
 Procedure ProcessTurboPascalParamStrIfPatterns;
@@ -11449,6 +11537,8 @@ BEGIN
  ProcessTurboPascalParamStrIfPatterns;
  { Reconstruction des longues tables de comparaison de shortstrings }
  ProcessTurboPascalStringCompareLadders;
+ { Reconstruction des Case compiles en comparaisons de caracteres }
+ ProcessTurboPascalCharCasePatterns;
  { TODO 21 - Generation en-tete Pascal }
  ProcessHeaderGeneration;
  { TODO 22 - Generation corps procedures }

@@ -3126,7 +3126,6 @@ Procedure DetectProcedures(StartOffset, EndOffset : LongInt;
 Var
   I          : LongInt;
   CurOffset  : LongInt;
-  ISize      : Integer;
   LIdx       : LongInt;
   NewProcs   : Integer;
   ProlProcs  : Integer;
@@ -3143,11 +3142,13 @@ Begin
     End;
   End;
 
-  { Passe 2 : Scanner le code pour des prologues non encore detectes.
-    On cherche le pattern PUSH BP/EBP + MOV BP/EBP,SP/ESP a chaque
-    frontiere d'instruction. Les adresses ou ce pattern apparait et
-    qui ne sont pas deja des labels sont ajoutees comme procedures. }
-  CurOffset := StartOffset;
+  { Passe 2 : Scanner l'image octet par octet pour les prologues non encore
+    detectes. Un parcours depuis le seul point d'entree perd ses frontieres
+    des qu'un compilateur melange code et constantes dans le meme segment;
+    il ignorait alors toutes les procedures situees apres ces donnees. }
+  { Les procedures peuvent preceder le point d'entree (cas habituel des
+    programmes Turbo Pascal). Scanner toute l'image chargee. }
+  CurOffset := 0;
   While CurOffset < EndOffset Do Begin
     If CurOffset >= ImageSize Then Break;
     If CurOffset < 0 Then Break;
@@ -3176,10 +3177,7 @@ Begin
       End;
     End;
 
-    { Avancer instruction par instruction }
-    ISize := ComputeInstrSize(CurOffset, Mode32);
-    If ISize <= 0 Then ISize := 1;
-    CurOffset := CurOffset + ISize;
+    Inc(CurOffset);
   End;
 
   { Passe 3 : Assurer que les imports et exports ont leurs vrais noms.
@@ -3248,6 +3246,7 @@ Var
   BType      : Integer;
   BadCount   : Integer;
   Visited    : Boolean;
+  TraceProc  : Boolean;
 Begin
   { Passe 1 : Tracer le code depuis chaque label connu }
   For I := 0 To LabelCount - 1 Do Begin
@@ -3255,15 +3254,17 @@ Begin
     { Verifier que le label est dans les bornes }
     If (CurOffset < 0) Or (CurOffset >= EndOffset) Then Continue;
     If CurOffset >= ImageSize Then Continue;
-    { Ne pas retracer si deja marque comme code }
-    If ByteFlags^[CurOffset] = BF_CODE Then Continue;
+    TraceProc := Labels[I].IsProc;
+    { Les procedures sont retracees meme si leur prologue etait deja marque :
+      le premier parcours a pu s'arreter sur un JMP interne. }
+    If(ByteFlags^[CurOffset]=BF_CODE)and(Not TraceProc)Then Continue;
 
     BadCount := 0;
     While CurOffset < EndOffset Do Begin
       If CurOffset >= ImageSize Then Break;
       If CurOffset < 0 Then Break;
       { Si deja marque comme code, le bloc a deja ete trace }
-      If ByteFlags^[CurOffset] = BF_CODE Then Break;
+      If(ByteFlags^[CurOffset]=BF_CODE)and(Not TraceProc)Then Break;
 
       { Calculer la taille de l'instruction }
       ISize := ComputeInstrSize(CurOffset, Mode32);
@@ -3286,8 +3287,9 @@ Begin
       CurOffset := CurOffset + ISize;
 
       { Arreter le tracage apres un saut inconditionnel ou un retour }
-      If (BType = BT_JMP_REL8) Or (BType = BT_JMP_REL) Or
-         (BType = BT_JMP_FAR) Or (BType = BT_JMP_IND) Or
+      If ((Not TraceProc) And
+         ((BType = BT_JMP_REL8) Or (BType = BT_JMP_REL) Or
+          (BType = BT_JMP_FAR) Or (BType = BT_JMP_IND))) Or
          (BType = BT_RET) Or (BType = BT_RETF) Or
          (BType = BT_IRET) Then
         Break;
