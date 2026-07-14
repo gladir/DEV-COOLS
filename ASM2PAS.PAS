@@ -559,6 +559,7 @@ Var
  SymbolCount:Integer;
  Procs:Array[1..MAX_PROCS] of TProcInfo;
  ProcCount:Integer;
+ ProcStringResult:Array[1..MAX_PROCS] of Boolean;
  TotalInstructions:LongInt;
  TranslatedInstructions:LongInt;
  InlineInstructions:LongInt;
@@ -8745,6 +8746,10 @@ Function ProcReturnType(ProcIdx:Integer):String;
 { Determine le type de retour d'une fonction.
   Si mode 32 bits, retourne LongInt, sinon Word. }
 Begin
+ If(ProcIdx>=1)and(ProcIdx<=ProcCount)and ProcStringResult[ProcIdx]Then Begin
+  ProcReturnType:='String';
+  Exit;
+ End;
  If Mode32 Then
   ProcReturnType:='LongInt'
  Else
@@ -9087,7 +9092,8 @@ Begin
    End;
 
    { Si c'est une fonction, emettre l'affectation du resultat }
-   If Procs[I].IsFunction or Procs[I].UsesAX Then Begin
+   If(Procs[I].IsFunction or Procs[I].UsesAX)and
+     (Not ProcStringResult[I])Then Begin
     If Mode32 Then
      WriteLn(OutFile,'  ',Procs[I].Name,' := RegEAX;')
     Else
@@ -11221,6 +11227,88 @@ Begin
   ' expression(s) detectee(s).');
 End;
 
+Procedure ProcessTurboPascalStrPatterns;
+{ Reconnait la procedure runtime Str (0FDFh), suivie de la copie 0C18h
+  de la shortstring temporaire vers le resultat cache de la fonction.
+  Deux formes sont gerees : LongInt en deux mots et Integer signe via CWD. }
+Var
+ I,K,ProcIdx,PatternCount,StartLine,CopyCall:LongInt;
+ A,AHi,ALo,ATemp:TAsmLine;
+ TempExpr,ValueExpr,Code:String;
+ IsLong,IsInteger,Valid:Boolean;
+Begin
+ PatternCount:=0;
+ I:=0;
+ While I<SrcLineCount do Begin
+  If Not IsRuntimeFarCall(I,$0FDF)Then Begin Inc(I); Continue; End;
+  If I<11 Then Begin Inc(I); Continue; End;
+  ProcIdx:=FindProcForLine(I);
+  If ProcIdx=0 Then Begin Inc(I); Continue; End;
+  ParseInstructionLine(I-5,ATemp);
+  Valid:=(UpCaseStr(ATemp.Mnemonic)='LEA')and(ATemp.Op1.OpType=OT_MEM)and
+    IsSimpleRegInstruction(I-4,'PUSH','SS','')and
+    IsSimpleRegInstruction(I-3,'PUSH','DI','')and
+    IsSimpleRegInstruction(I-1,'PUSH','AX','');
+  ParseInstructionLine(I-2,A);
+  Valid:=Valid and(UpCaseStr(A.Mnemonic)='MOV')and
+    (UpCaseStr(A.Op1.Reg)='AX')and(A.Op2.Imm=$FF);
+  ParseInstructionLine(I-7,A);
+  Valid:=Valid and(UpCaseStr(A.Mnemonic)='XOR')and
+    (UpCaseStr(A.Op1.Reg)='AX')and(UpCaseStr(A.Op2.Reg)='AX')and
+    IsSimpleRegInstruction(I-6,'PUSH','AX','');
+  If Not Valid Then Begin Inc(I); Continue; End;
+
+  IsLong:=False;
+  IsInteger:=False;
+  ParseInstructionLine(I-9,AHi);
+  ParseInstructionLine(I-8,ALo);
+  If(UpCaseStr(AHi.Mnemonic)='PUSH')and(AHi.Op1.OpType=OT_MEM)and
+    (UpCaseStr(ALo.Mnemonic)='PUSH')and(ALo.Op1.OpType=OT_MEM)Then Begin
+   IsLong:=True;
+   StartLine:=I-9;
+  End Else Begin
+   ParseInstructionLine(I-11,A);
+   If(UpCaseStr(A.Mnemonic)='MOV')and(UpCaseStr(A.Op1.Reg)='AX')and
+     (UpCaseStr(AHi.Mnemonic)='PUSH')and(UpCaseStr(AHi.Op1.Reg)='DX')and
+     (UpCaseStr(ALo.Mnemonic)='PUSH')and(UpCaseStr(ALo.Op1.Reg)='AX')Then Begin
+    ParseInstructionLine(I-10,AHi);
+    If UpCaseStr(AHi.Mnemonic)='CWD' Then Begin
+     IsInteger:=True;
+     StartLine:=I-11;
+     ParseInstructionLine(StartLine,AHi);
+    End;
+   End;
+  End;
+  If Not(IsLong or IsInteger)Then Begin Inc(I); Continue; End;
+
+  CopyCall:=I+9;
+  If(CopyCall>=SrcLineCount)or(Not IsRuntimeFarCall(CopyCall,$0C18))Then Begin
+   Inc(I); Continue;
+  End;
+  ParseInstructionLine(I+1,A);
+  If(UpCaseStr(A.Mnemonic)<>'LEA')or(A.Op1.OpType<>OT_MEM)or
+    (A.Op1.BaseReg<>ATemp.Op1.BaseReg)or(A.Op1.Disp<>ATemp.Op1.Disp)Then Begin
+   Inc(I); Continue;
+  End;
+
+  TempExpr:=OperandToExpr(ATemp.Op1,ProcIdx);
+  If IsLong Then Begin
+   ValueExpr:='LongInt('+OperandToExpr(ALo.Op1,ProcIdx)+') or '+
+    '(LongInt('+OperandToExpr(AHi.Op1,ProcIdx)+') shl 16)';
+  End Else
+   ValueExpr:='SmallInt('+OperandToExpr(AHi.Op2,ProcIdx)+')';
+  Code:='Str('+ValueExpr+', '+TempExpr+');'+#13#10+
+    '  '+Procs[ProcIdx].Name+' := '+TempExpr+';';
+  ProcStringResult[ProcIdx]:=True;
+  SetTranslationForLine(StartLine,Code);
+  For K:=StartLine+1 to CopyCall do SetTranslationForLine(K,'');
+  Inc(PatternCount);
+  I:=CopyCall+1;
+ End;
+ WriteLn('  Reconstruction procedure Str         : ',PatternCount,
+  ' conversion(s) detectee(s).');
+End;
+
 Procedure ProcessTurboPascalForPatterns;
 { Reconstruit la forme Turbo Pascal d'un For croissant :
     XOR AX,AX / MOV compteur,AX / JMP test
@@ -11903,6 +11991,8 @@ BEGIN
  ProcessTurboPascalRangeCasePatterns;
  { Reconstruction des concatenations d'une String et d'un Char }
  ProcessTurboPascalStringCharConcatPatterns;
+ { Reconstruction des conversions numeriques effectuees par Str }
+ ProcessTurboPascalStrPatterns;
  { Reconstruction des boucles For croissantes du compilateur Turbo Pascal }
  ProcessTurboPascalForPatterns;
  { TODO 21 - Generation en-tete Pascal }
