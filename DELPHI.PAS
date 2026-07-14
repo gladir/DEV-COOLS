@@ -19434,7 +19434,7 @@ Begin
   WriteLn('Types predefinis enregistres    : ', TypeCount);
  End;
 
- WriteLn('DELPHI: TODO 01 (infrastructure et options) implemente.');
+ {WriteLn('DELPHI: TODO 01 (infrastructure et options) implemente.');
  WriteLn('DELPHI: TODO 02 (lexeur) implemente.');
  WriteLn('DELPHI: TODO 03 (preprocesseur et directives) implemente.');
  WriteLn('DELPHI: TODO 04 (litteraux et constantes) implemente.');
@@ -19468,7 +19468,7 @@ Begin
  WriteLn('DELPHI: TODO 24 (generation PE/OBJ, EXE par defaut, ',
          'OBJ sur demande) implemente.');
  WriteLn('DELPHI: TODO 25 (validation : support complet de ',
-         'SAMPLES/DELPHI) implemente.');
+         'SAMPLES/DELPHI) implemente.');}
  ShowStats;
  Cleanup;
 End;
