@@ -3645,6 +3645,9 @@ End;
   GENERATION DU FICHIER .ASM : SECTION DE CODE
   ============================================================ }
 
+Function FormatImmediateOperand(Value : LongWord;
+                                Mode32 : Boolean) : TString; Forward;
+
 { DisassembleInstruction - Decode une instruction a l'adresse donnee.
   Parametres :
     Offset : position dans ImageBuffer
@@ -3932,11 +3935,11 @@ Begin
         OT_IMM16 : Begin
           If OpSz = 4 Then Begin
             Imm32 := ReadImageDWord(OpcOffset + 1);
-            Operands := HexDWord(Imm32) + 'h';
+            Operands := FormatImmediateOperand(LongWord(Imm32), True);
             BytesUsed := BytesUsed + 2; { 16->32 bits }
           End Else Begin
             Imm16 := ReadImageWord(OpcOffset + 1);
-            Operands := HexWord(Imm16) + 'h';
+            Operands := FormatImmediateOperand(LongWord(Imm16), False);
           End;
         End;
         OT_REL8  : Begin
@@ -4077,11 +4080,13 @@ Begin
         OT_IMM16 : Begin
           If OpSz = 4 Then Begin
             Imm32 := ReadImageDWord(OpcOffset + Entry.BaseSize - 4);
-            Operands := Operands + HexDWord(Imm32) + 'h';
+            Operands := Operands +
+                        FormatImmediateOperand(LongWord(Imm32), True);
             BytesUsed := BytesUsed + 2;
           End Else Begin
             Imm16 := ReadImageWord(OpcOffset + Entry.BaseSize - 2);
-            Operands := Operands + HexWord(Imm16) + 'h';
+            Operands := Operands +
+                        FormatImmediateOperand(LongWord(Imm16), False);
           End;
         End;
         OT_MEM16 : Begin
@@ -4575,6 +4580,44 @@ Begin
   WriteLn(F, '; ImageBase : ', HexDWord(PEOptHeader.ImageBase), 'h');
   WriteLn(F);
   WriteASMCodeRange(F, SecStart, SecEnd, True);
+End;
+
+{ FormatImmediateOperand - Remplace une valeur immediate par le label d'une
+  chaine lorsqu'elle pointe exactement sur son premier octet. Pour un PE,
+  accepte aussi bien une RVA qu'une adresse virtuelle ImageBase+RVA.
+  Les autres constantes restent numeriques afin de ne pas transformer les
+  constantes ordinaires en fausses references de donnees. }
+Function FormatImmediateOperand(Value : LongWord; Mode32 : Boolean) : TString;
+Var
+  Addr   : LongInt;
+  LblIdx : LongInt;
+  Flag   : Byte;
+Begin
+  Addr := LongInt(Value);
+  LblIdx := -1;
+
+  If (Addr >= 0) And (Addr < ImageSize) Then
+    LblIdx := FindLabel(Addr)
+  Else If Mode32 And IsPEFile And
+          (Value >= LongWord(PEOptHeader.ImageBase)) And
+          (Value - LongWord(PEOptHeader.ImageBase) < LongWord(ImageSize)) Then Begin
+    Addr := LongInt(Value - LongWord(PEOptHeader.ImageBase));
+    LblIdx := FindLabel(Addr);
+  End;
+
+  If (LblIdx >= 0) And (ByteFlags <> Nil) And
+     (Addr >= 0) And (Addr < ImageSize) Then Begin
+    Flag := ByteFlags^[Addr];
+    If (Flag = BF_STRING) Or (Flag = BF_PSTRING) Then Begin
+      FormatImmediateOperand := 'OFFSET ' + Labels[LblIdx].Name;
+      Exit;
+    End;
+  End;
+
+  If Mode32 Then
+    FormatImmediateOperand := HexDWord(LongInt(Value)) + 'h'
+  Else
+    FormatImmediateOperand := HexWord(Word(Value)) + 'h';
 End;
 
 { ============================================================
