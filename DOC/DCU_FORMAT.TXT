@@ -149,46 +149,68 @@ TABLE DES MATIERES
 4. ENCODAGE ENTIER A LONGUEUR VARIABLE (TNDX)
 ============================================================
 
+  *** CORRECTION IMPORTANTE (2026-07-14) *** : une premiere version
+  de cette section, deduite par inference abstraite a partir du
+  seul fichier de specification FlexT (dcu32.rfi), etait ERRONEE
+  (mauvaise hypothese sur l'ordre/le sens des bits de drapeau). La
+  version ci-dessous a ete corrigee et VERIFIEE contre le CODE
+  SOURCE REEL et fonctionnel du parseur DCU32INT (fonctions
+  ReadUIndex/ReadIndex de DCU_In.pas - voir reference [2]), qui
+  fait foi. Elle a de plus ete recoupee avec des .DCU REELS
+  produits par une installation Delphi authentique (RAD Studio
+  21.0, voir section 3bis) fournis par l'utilisateur de ce projet.
+
   La plupart des entiers "d'index" ou "de taille" du fichier
   (jamais les champs d'en-tete de premier niveau, qui restent des
-  ulong 32 bits classiques) utilisent un encodage COMPACT a
-  longueur variable, similaire dans l'esprit a un VLQ/LEB128 mais
-  avec sa propre convention de bits de continuation. Note :
-  contrairement a LEB128 (little-endian, 7 bits utiles par octet,
-  bit de poids fort = continuation), CET encodage place les bits
-  de "drapeau" (flag) EN TETE du premier octet (bits de poids
-  FORT), avec un nombre de bits a 1 consecutifs indiquant combien
-  d'octets SUPPLEMENTAIRES suivent :
+  ulong 32 bits classiques en little-endian) utilisent un encodage
+  COMPACT a longueur variable. Contrairement a un VLQ/LEB128
+  classique, le drapeau de continuation n'est PAS un bit unique
+  repete a chaque octet supplementaire : ce sont les 4 bits de
+  POIDS FAIBLE du PREMIER octet SEUL qui, testes un par un dans
+  l'ordre (bit 0, puis bit 1, puis bit 2, puis bit 3), decident
+  combien d'octets supplementaires suivent - la valeur finale est
+  ensuite obtenue en decalant a DROITE (shr) l'entier little-endian
+  complet (premier octet inclus) du nombre de bits de drapeau
+  consommes :
 
-    Forme    Taille   Bits drapeau   Bits valeur   Condition
-    -------  -------  -------------  ------------  -------------------
-    TNDXB1b  1 octet  1 bit (F=0)    7 bits (V)     octet0 bit7=0
-    TNDXB2b  2 octets 2 bits (F=1)   14 bits (V)    octet0 bits7-6=10
-    TNDXB3b  3 octets 3 bits (F=3)   21 bits (V)    octet0 bits7-5=110
-    TNDXB4b  4 octets 4 bits (F=7)   28 bits (V)    octet0 bits7-4=1110
-    TNDXB5b  5 octets 8 bits (F=0xF) 32 bits (V)    octet0=0xFF (Delphi 4+)
-    TNDXB9b  9 octets ~              64 bits        octet0=0xFF special
-                                                     (Delphi 4.0, valeurs
-                                                     64 bits - Lo/Hi
-                                                     32 bits chacun)
+    Test              Octets lus   Valeur (decalage a droite)
+    ----------------  -----------  --------------------------------
+    B0 and 1 = 0      1 (B0)       Result := B0 shr 1        (7 bits utiles)
+    B0 and 2 = 0      2 (B0,B1)    Result := Word(B0,B1) shr 2   (14 bits)
+    B0 and 4 = 0      3 (B0..B2)   Result := LongInt(B0..B2,0) shr 3
+                                    (B3 force a 0 ; 21 bits utiles)
+    B0 and 8 = 0      4 (B0..B3)   Result := LongInt(B0..B3) shr 4
+                                    (28 bits utiles)
+    (sinon)           5 (B0..B4)   Result := LongInt(B1..B4)
+                                    ATTENTION : B0 est ALORS ignore
+                                    pour la valeur (ses 4 bits de poids
+                                    faible n'etaient que des drapeaux
+                                    de continuation ayant TOUS servi -
+                                    forme 5 octets, valeur 32 bits
+                                    pleine dans B1..B4)
+                                    + SI Ver>3 ET (B0 and 0xF0)<>0 :
+                                      lire un ULONG SUPPLEMENTAIRE
+                                      (partie haute 64 bits, forme
+                                      etendue rarissime)
 
-  Autrement dit (schema equivalent, du point de vue d'un OCTET
-  LU EN PREMIER, en comptant les bits a 1 de poids fort avant le
-  premier bit a 0) :
+  Version signee (ReadIndex, utilisee quand la valeur peut etre
+  negative - ex. offsets relatifs) : IDENTIQUE, sauf que le
+  decalage final est un decalage ARITHMETIQUE signe (sar, pas shr)
+  preservant le signe - le bit de poids fort de la valeur repliee
+  agit comme bit de signe standard.
 
-    - 0xxxxxxx                      -> valeur 7 bits (0-127) sur 1 octet
-    - 10xxxxxx xxxxxxxx             -> valeur 14 bits sur 2 octets
-    - 110xxxxx xxxxxxxx xxxxxxxx    -> valeur 21 bits sur 3 octets
-    - 1110xxxx (+3 octets)          -> valeur 28 bits sur 4 octets
-    - 11111111 (+4 octets)          -> valeur 32 bits sur 5 octets
-                                        (Delphi 4.0+ uniquement)
+  Exemple verifie sur un .DCU reel (RAD Studio 21.0,
+  REST.OpenSSL.dcu, octet 0x17 du fichier = 0xFE = 0b11111110) :
+    B0 and 1 = 0xFE and 1 = 0  -> forme 1 octet
+    Result := 0xFE shr 1 = 0x7F = 127
 
-  Le champ "displ=(HEX(@.V))" du fichier FlexT indique que la
-  valeur logique reconstruite est bien V (les bits de poids FORT
-  au-dela du prefixe drapeau, PAS un simple decalage single-byte).
-  Cet encodage economise de la place pour les tres nombreux petits
+  Cet encodage economise la place pour les tres nombreux petits
   index/tailles qui dominent un fichier .DCU (la grande majorite
-  des valeurs reelles tiennent sur 1 octet).
+  des valeurs reelles tiennent sur 1 seul octet, valeurs 0-127).
+
+  NDXHi (partie haute 64 bits) n'est utilise que dans de rares cas
+  (valeurs constantes Int64 depassant 32 bits, observe a partir de
+  Delphi 4.0 uniquement, "Ver>3" dans le code source ci-dessus).
 
 
 5. HORODATAGE DOS (TFileTime)
@@ -538,14 +560,137 @@ TABLE DES MATIERES
     etc.).
 
 
+11bis. VERIFICATION CONTRE DE VRAIS .DCU (RAD STUDIO 21.0 REEL)
+============================================================
+
+  L'utilisateur de ce projet dispose d'une VRAIE installation RAD
+  Studio 21.0 (= Delphi 10.4 Sydney, version interne DCU32INT
+  FVer=27, dossier lib\win32\release). Plusieurs .dcu reels et
+  minuscules (REST.OpenSSL.dcu=353 octets, System.SimpleShareMem.dcu
+  =456 octets) ont ete inspectes OCTET PAR OCTET avec un petit
+  decodeur ecrit en Object Pascal (adaptant directement ReadUIndex
+  du vrai DCU32INT, voir section 4) et compile avec fpc pour
+  eviter toute erreur de calcul manuel.
+
+  CONFIRME (fiable, verifie sur 2 fichiers reels independants) :
+
+    - Magic 0x2200034D pour RAD Studio 21.0 / Delphi 10.4 (top
+      octet 0x22 - le schema "top octet croissant par version"
+      documente en section 3 se prolonge donc au moins jusque la ;
+      non present dans la table DCU32INT originale, qui s'arretait
+      a XE7=0x1C, mais deduit avec certitude via TUnit.ReadMagic
+      dans DCU32.pas, qui calcule bien FVer=BVer+(verD_XE2-$17)
+      pour toute version au-dela de XE7 selon un schema uniforme).
+    - offset 0x00: Magic (ulong)
+    - offset 0x04: FileSize (ulong) - VERIFIE EXACT (correspond a
+      la taille reelle du fichier sur les 2 echantillons).
+    - offset 0x08: Stamp (ulong, horodatage DOS, format section 5).
+    - offset 0x0C: un octet, valeur 0x12 IDENTIQUE sur les 2
+      fichiers - tres probablement une CONSTANTE LIEE A LA VERSION
+      DU COMPILATEUR (pas une donnee par-unite), a confirmer sur
+      d'autres builds.
+    - offset 0x0D: un octet, valeur 0x1A IDENTIQUE sur les 2
+      fichiers - meme remarque (constante probable).
+    - offset 0x0E: un octet drapeau (0x24/0x21 observes, non
+      identique entre les 2 fichiers - donc PROBABLEMENT une
+      vraie donnee, pas juste une autre constante - role exact
+      NON confirme).
+    - Un champ "prefixe de namespace" : une chaine Pascal
+      classique (1 octet longueur + N caracteres) contenant la
+      racine du nom d'unite AVANT LE PREMIER POINT (ex. "REST"
+      pour l'unite "REST.OpenSSL", "System" pour "System.
+      SimpleShareMem") - PAS le nom complet. Role exact non
+      confirme (indexe une table de namespaces globale ?), mais
+      la correspondance avec le nom reel de l'unite est sans
+      ambiguite sur les 2 echantillons.
+    - Une sequence de plusieurs valeurs TNDX (5 dans le premier
+      echantillon analyse) dont le role individuel reste A
+      CONFIRMER - une d'entre elles varie entre les 2 fichiers
+      (3 vs 2, peut-etre le nombre d'entrees "uses" de l'unite ?
+      hypothese plausible mais NON verifiee formellement).
+    - Un second champ "chemin source" : chaine Pascal classique
+      (longueur + N car.) contenant le CHEMIN RELATIF COMPLET du
+      fichier .pas source (ex. "sys\System.SimpleShareMem.pas"),
+      suivi de 4 octets (horodatage DOS du fichier source
+      lui-meme, format identique a Stamp) puis d'un octet TNDX
+      (valeur observee : 0) - structure identique a TSrcInf
+      documentee en section 6 (FT:TFileTime; B:TNDXB1), mais ICI
+      situee DANS l'EN-TETE lui-meme (avant le premier Tag), pas
+      comme un enregistrement drSrc classique de la table
+      principale - DIFFERENCE avec le schema Delphi 7 documente
+      en section 6, qui ne mentionne pas ce champ pour l'en-tete
+      (les versions 2009-XE5 du fichier FlexT original ont un
+      "Name: str" unique, pas cette paire prefixe+chemin-complet -
+      cette paire semble donc specifique aux versions plus
+      recentes que celles couvertes par le projet DCU32INT
+      d'origine, ou a une nuance non capturee par le fichier FlexT
+      lui-meme).
+    - Le premier VRAI enregistrement de la table (Tbl) est bien un
+      drUnit ('d', 0x64) pour l'unite "System" (l'unite implicite
+      toujours utilisee en premier), suivi de son nom en
+      TNameStr(longueur+car.), confirmant le format de la section
+      7/8.1 - mais le nombre exact d'octets TNDX entre le nom et
+      la sous-liste imbriquee (hPack/Inf/X du TUnitInf documente
+      section 8.1) n'a PAS pu etre confirme avec certitude a ce
+      stade (3 octets observes, tous a 0x00, mais leur
+      correspondance exacte avec hPack/Inf/X individuellement
+      reste una hypothese, pas une certitude verifiee).
+
+  NON CONFIRME / TRAVAIL RESTANT (le point precis ou l'analyse
+  manuelle a atteint ses limites raisonnables pour cette session) :
+
+    - Le role exact de CHAQUE octet/TNDX individuel entre le champ
+      "chemin source" et le premier Tag='d' n'est pas totalement
+      elucide malgre la localisation precise de leurs positions.
+    - La table de numerotation des types predefinis (section 9)
+      reste le blocage principal, INCHANGE par cette verification -
+      aucune occurrence d'une table de noms de types cablee en dur
+      n'a ete trouvee dans les ~15000 lignes de code source
+      DCU32INT inspectees (DCU_In.pas, DCU_Out.pas, DCU32.pas,
+      DCURecs.pas, FixUp.pas) ; il est possible que cette
+      numerotation soit en realite LOCALE A CHAQUE FICHIER (chaque
+      unite, y compris System.pas lui-meme, definit et numerote
+      SES PROPRES types dans SA PROPRE table, les references
+      inter-unites passant par un mecanisme d'import/export
+      different - drImpType/drImpVal/drExport, section 7/8.5 -
+      plutot que par un numero universel fixe), ce qui serait
+      BEAUCOUP plus favorable qu'initialement redoute (section 9),
+      mais cette hypothese elle-meme reste A VERIFIER
+      systematiquement, pas encore prouvee.
+
+  CONCLUSION DE CETTE VERIFICATION : le travail de reverse-
+  engineering necessaire pour une compatibilite fiable est
+  clairement FAISABLE avec les outils et l'acces dont on dispose
+  maintenant (vrais .dcu + vrai code source du parseur + FPC pour
+  ecrire/tester des decodeurs), mais represente un effort
+  systematique bien plus consequent qu'une seule session -
+  chaque champ restant "non confirme" ci-dessus necessiterait
+  d'ecrire un decodeur plus complet (portant une bien plus grande
+  partie des ~5000 lignes de DCU32.pas, pas seulement l'en-tete)
+  et de le tester contre des dizaines de fichiers reels varies
+  pour distinguer de facon fiable "valeur constante liee au
+  compilateur" de "donnee reellement specifique au fichier".
+
+
 12. REFERENCES
 ============================================================
 
   [1] DCU32INT (Alexei Hmelnov) - specification FlexT complete
       https://github.com/rfrezino/DCU32INT/blob/master/dcu32.rfi
       (miroir : https://github.com/sarog/DCU32INT)
-  [2] DCU32INT - utilitaire de parsing (reference d'implementation)
-      https://github.com/VoSs2o0o/dcu32int
+  [2] DCU32INT - code source Object Pascal complet du parseur
+      (reference d'implementation FAISANT FOI pour le decodage
+      TNDX, section 4 - corrige une erreur de la version [1]) :
+      https://raw.githubusercontent.com/VoSs2o0o/dcu32int/master/DCU_In.pas
+      https://raw.githubusercontent.com/VoSs2o0o/dcu32int/master/DCU_Out.pas
+      https://raw.githubusercontent.com/VoSs2o0o/dcu32int/master/DCU32.pas
+      https://raw.githubusercontent.com/VoSs2o0o/dcu32int/master/DCURecs.pas
+      https://raw.githubusercontent.com/VoSs2o0o/dcu32int/master/FixUp.pas
+  [2bis] Fichiers .dcu reels (RAD Studio 21.0 / Delphi 10.4 Sydney)
+      fournis par l'utilisateur de ce projet, dossier local :
+      C:\Program Files (x86)\Embarcadero\Studio\21.0\lib\win32\release\
+      (echantillons inspectes : REST.OpenSSL.dcu, System.
+      SimpleShareMem.dcu - voir section 11bis)
   [3] Forum Exetools, "Delphi DCU File Format" (2005)
       https://forum.exetools.com/showthread.php?t=5196
   [4] Embarcadero RAD Studio docwiki, "Delphi Compiled Unit File
