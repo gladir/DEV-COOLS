@@ -591,6 +591,7 @@ Var
  DataVarCount:Integer;
  OmitDataVar:Array[1..MAX_DATAVARS] of Boolean;
  NeedComparedString:Boolean;
+ NeedAsmText:Boolean;
  { Labels optimises (ne pas emettre dans ProcessBodyGeneration) }
  OptLabels:Array[1..MAX_OPT_LABELS] of String;
  OptLabelCount:Integer;
@@ -8464,6 +8465,14 @@ Begin
    WriteLn(OutFile,'  End;');
    Inc(TypeCount);
   End;
+ If NeedAsmText Then Begin
+  If Not HasType Then Begin
+   WriteLn(OutFile,'Type');
+   HasType:=True;
+  End;
+  WriteLn(OutFile,'  PAsmText = ^Text;');
+  Inc(TypeCount);
+ End;
  If HasType Then WriteLn(OutFile);
 
  { === Section Const === }
@@ -10479,6 +10488,57 @@ Begin
  IsSimpleRegInstruction:=True;
 End;
 
+Procedure ProcessTurboPascalFileBlankWriteLnPatterns;
+{ Reconnait WriteLn(fichier,'') lorsque Turbo Pascal place la shortstring
+  vide (un octet nul) immediatement avant le debut de la petite procedure :
+    MOV DI,fichier / PUSH DS / PUSH DI
+    MOV DI,proc-1 / PUSH CS / PUSH DI / XOR AX,AX / PUSH AX
+    CALL 08D3h / CALL 0840h. }
+Var
+ I,K,ProcIdx,PatternCount:LongInt;
+ A0,A3:TAsmLine;
+ FileAddr,StrAddr,ProcAddr:LongInt;
+ Code,ProcHex:String;
+ Valid:Boolean;
+Begin
+ PatternCount:=0;
+ I:=0;
+ While I+9<SrcLineCount do Begin
+  ParseInstructionLine(I,A0);
+  ParseInstructionLine(I+3,A3);
+  Valid:=(UpCaseStr(A0.Mnemonic)='MOV')and
+    (UpCaseStr(A0.Op1.Reg)='DI')and
+    (A0.Op2.OpType in [OT_IMM8,OT_IMM16,OT_IMM32])and
+    IsSimpleRegInstruction(I+1,'PUSH','DS','')and
+    IsSimpleRegInstruction(I+2,'PUSH','DI','')and
+    (UpCaseStr(A3.Mnemonic)='MOV')and(UpCaseStr(A3.Op1.Reg)='DI')and
+    (A3.Op2.OpType in [OT_IMM8,OT_IMM16,OT_IMM32])and
+    IsSimpleRegInstruction(I+4,'PUSH','CS','')and
+    IsSimpleRegInstruction(I+5,'PUSH','DI','')and
+    IsSimpleRegInstruction(I+6,'XOR','AX','AX')and
+    IsSimpleRegInstruction(I+7,'PUSH','AX','')and
+    IsRuntimeFarCall(I+8,$08D3)and IsRuntimeFarCall(I+9,$0840);
+  If Not Valid Then Begin Inc(I); Continue; End;
+  ProcIdx:=FindProcForLine(I);
+  If ProcIdx=0 Then Begin Inc(I); Continue; End;
+  ProcHex:=Procs[ProcIdx].Name;
+  If Pos('SUB_',UpCaseStr(ProcHex))<>1 Then Begin Inc(I); Continue; End;
+  ProcAddr:=HexToInt(Copy(ProcHex,5,Length(ProcHex)-4));
+  FileAddr:=A0.Op2.Imm;
+  StrAddr:=A3.Op2.Imm;
+  If StrAddr<>ProcAddr-1 Then Begin Inc(I); Continue; End;
+
+  NeedAsmText:=True;
+  Code:='WriteLn(PAsmText(@Mem[$'+HexWord(Word(FileAddr))+'])^);';
+  SetTranslationForLine(I,Code);
+  For K:=I+1 to I+9 do SetTranslationForLine(K,'');
+  Inc(PatternCount);
+  I:=I+10;
+ End;
+ WriteLn('  Reconstruction WriteLn sur fichier : ',PatternCount,
+  ' appel(s) vide(s) detecte(s).');
+End;
+
 Procedure ProcessTurboPascalWriteLnPatterns;
 { Reconnait le code genere par le runtime Turbo Pascal 16 bits :
     MOV DI,088Ah / PUSH DS / PUSH DI       (fichier Output)
@@ -11650,6 +11710,8 @@ BEGIN
  ProcessSubRegFixup;
  { Detection de patterns Strings dans les procedures }
  ProcessProcBodyPatterns;
+ { Reconstruction des WriteLn vides diriges vers un fichier Text }
+ ProcessTurboPascalFileBlankWriteLnPatterns;
  { Reconstruction des appels d'ecriture du runtime Turbo Pascal }
  ProcessTurboPascalWriteLnPatterns;
  { Reconstruction des allocations de pointeurs du runtime Turbo Pascal }
