@@ -11232,10 +11232,10 @@ Procedure ProcessTurboPascalStrPatterns;
   de la shortstring temporaire vers le resultat cache de la fonction.
   Deux formes sont gerees : LongInt en deux mots et Integer signe via CWD. }
 Var
- I,K,ProcIdx,PatternCount,StartLine,CopyCall:LongInt;
+ I,K,L,ProcIdx,PatternCount,StartLine,CopyCall:LongInt;
  A,AHi,ALo,ATemp:TAsmLine;
  TempExpr,ValueExpr,Code:String;
- IsLong,IsInteger,Valid:Boolean;
+ IsLong,IsInteger,Valid,FoundLocal:Boolean;
 Begin
  PatternCount:=0;
  I:=0;
@@ -11291,7 +11291,32 @@ Begin
    Inc(I); Continue;
   End;
 
-  TempExpr:=OperandToExpr(ATemp.Op1,ProcIdx);
+  { Le tampon [BP-0100h] passe a Str comme shortstring de 255 caracteres :
+    c'est une vraie variable locale Pascal, pas un registre simule. }
+  TempExpr:='s';
+  FoundLocal:=False;
+  For L:=1 to Procs[ProcIdx].LocalCount do
+   If UpCaseStr(Procs[ProcIdx].Locals[L].Name)='S'Then Begin
+    TempExpr:=Procs[ProcIdx].Locals[L].Name;
+    FoundLocal:=True;
+    Break;
+   End;
+  If Not FoundLocal Then Begin
+   If Procs[ProcIdx].LocalCount<MAX_LOCALS Then Begin
+    Inc(Procs[ProcIdx].LocalCount);
+    With Procs[ProcIdx].Locals[Procs[ProcIdx].LocalCount] do Begin
+     Name:='s';
+     TypeName:='STRING';
+     PascalType:=PT_STRING;
+     Size:=256;
+     Count:=1;
+     IsIndexedMem:=False;
+     IndexOffset:=ATemp.Op1.Disp;
+     IndexBaseReg:='BP';
+     IndexIndexReg:='';
+    End;
+   End;
+  End;
   If IsLong Then Begin
    ValueExpr:='LongInt('+OperandToExpr(ALo.Op1,ProcIdx)+') or '+
     '(LongInt('+OperandToExpr(AHi.Op1,ProcIdx)+') shl 16)';
@@ -11300,8 +11325,14 @@ Begin
   Code:='Str('+ValueExpr+', '+TempExpr+');'+#13#10+
     '  '+Procs[ProcIdx].Name+' := '+TempExpr+';';
   ProcStringResult[ProcIdx]:=True;
+  { La fonction entiere est maintenant exprimee a haut niveau : retirer la
+    reservation/liberation manuelle de la pile autour du motif. }
+  For K:=Procs[ProcIdx].StartLine to StartLine-1 do
+   SetTranslationForLine(K,'');
   SetTranslationForLine(StartLine,Code);
   For K:=StartLine+1 to CopyCall do SetTranslationForLine(K,'');
+  For K:=CopyCall+1 to Procs[ProcIdx].EndLine do
+   SetTranslationForLine(K,'');
   Inc(PatternCount);
   I:=CopyCall+1;
  End;
