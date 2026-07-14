@@ -10301,7 +10301,7 @@ Begin
    procedure applicative peut naturellement contenir SCASB/MOVSB ainsi que
    des comparaisons A..Z; ne jamais la remplacer integralement sur ces seuls
    indices. }
- If Procs[ProcIdx].EndLine-Procs[ProcIdx].StartLine>160 Then Exit;
+ If Procs[ProcIdx].EndLine-Procs[ProcIdx].StartLine>100 Then Exit;
  HasRepneScasb:=False;
  HasRepMovsb:=False;
  HasRepeCmpsb:=False;
@@ -11052,6 +11052,100 @@ Begin
   ' bloc(s) detecte(s).');
 End;
 
+Procedure ProcessTurboPascalRangeCasePatterns;
+{ Reconnait le Case de caracteres compile en tests de plages :
+    'A'..'Z','0'..'9' ; 'a'..'z' ; '_','-' ; Else.
+  Les corps restent traduits normalement; seuls les tests et sauts de
+  dispatch sont remplaces par la structure Case. }
+Var
+ I,J,K,Jmp1,Jmp2,Jmp3,CloseLine,PatternCount,TrIdx:LongInt;
+ A:TAsmLine;
+ Valid:Boolean;
+ OldCode:String;
+Begin
+ PatternCount:=0;
+ I:=0;
+ While I+20<SrcLineCount do Begin
+  ParseInstructionLine(I,A);
+  Valid:=(UpCaseStr(A.Mnemonic)='CMP')and
+    (UpCaseStr(A.Op1.Reg)='AL')and(A.Op2.Imm=$41);
+  If Valid Then Begin
+   ParseInstructionLine(I+1,A); Valid:=UpCaseStr(A.Mnemonic)='JB';
+   ParseInstructionLine(I+2,A); Valid:=Valid and(UpCaseStr(A.Mnemonic)='CMP')and(A.Op2.Imm=$5A);
+   ParseInstructionLine(I+3,A); Valid:=Valid and(UpCaseStr(A.Mnemonic)='JBE');
+   ParseInstructionLine(I+4,A); Valid:=Valid and(UpCaseStr(A.Mnemonic)='CMP')and(A.Op2.Imm=$30);
+   ParseInstructionLine(I+5,A); Valid:=Valid and(UpCaseStr(A.Mnemonic)='JB');
+   ParseInstructionLine(I+6,A); Valid:=Valid and(UpCaseStr(A.Mnemonic)='CMP')and(A.Op2.Imm=$39);
+   ParseInstructionLine(I+7,A); Valid:=Valid and
+    ((UpCaseStr(A.Mnemonic)='JNBE')or(UpCaseStr(A.Mnemonic)='JA'));
+  End;
+  If Not Valid Then Begin Inc(I); Continue; End;
+
+  Jmp1:=-1;
+  For J:=I+8 to I+50 do Begin
+   ParseInstructionLine(J,A);
+   If UpCaseStr(A.Mnemonic)='JMP' Then Begin Jmp1:=J; Break; End;
+  End;
+  If Jmp1<0 Then Begin Inc(I); Continue; End;
+  ParseInstructionLine(Jmp1+1,A);
+  If(UpCaseStr(A.Mnemonic)<>'CMP')or(A.Op2.Imm<>$61)Then Begin Inc(I); Continue; End;
+  ParseInstructionLine(Jmp1+2,A); If UpCaseStr(A.Mnemonic)<>'JB'Then Begin Inc(I); Continue; End;
+  ParseInstructionLine(Jmp1+3,A); If(UpCaseStr(A.Mnemonic)<>'CMP')or(A.Op2.Imm<>$7A)Then Begin Inc(I); Continue; End;
+  ParseInstructionLine(Jmp1+4,A); If(UpCaseStr(A.Mnemonic)<>'JNBE')and(UpCaseStr(A.Mnemonic)<>'JA')Then Begin Inc(I); Continue; End;
+
+  Jmp2:=-1;
+  For J:=Jmp1+5 to Jmp1+45 do Begin
+   ParseInstructionLine(J,A);
+   If UpCaseStr(A.Mnemonic)='JMP' Then Begin Jmp2:=J; Break; End;
+  End;
+  If Jmp2<0 Then Begin Inc(I); Continue; End;
+  ParseInstructionLine(Jmp2+1,A);
+  If(UpCaseStr(A.Mnemonic)<>'CMP')or(A.Op2.Imm<>$5F)Then Begin Inc(I); Continue; End;
+  ParseInstructionLine(Jmp2+2,A); If UpCaseStr(A.Mnemonic)<>'JZ'Then Begin Inc(I); Continue; End;
+  ParseInstructionLine(Jmp2+3,A); If(UpCaseStr(A.Mnemonic)<>'CMP')or(A.Op2.Imm<>$2D)Then Begin Inc(I); Continue; End;
+  ParseInstructionLine(Jmp2+4,A); If UpCaseStr(A.Mnemonic)<>'JNZ'Then Begin Inc(I); Continue; End;
+
+  Jmp3:=-1;
+  For J:=Jmp2+5 to Jmp2+40 do Begin
+   ParseInstructionLine(J,A);
+   If UpCaseStr(A.Mnemonic)='JMP' Then Begin Jmp3:=J; Break; End;
+  End;
+  If Jmp3<0 Then Begin Inc(I); Continue; End;
+  CloseLine:=-1;
+  For J:=Jmp3+1 to Jmp3+45 do Begin
+   ParseInstructionLine(J,A);
+   If(UpCaseStr(A.Mnemonic)='MOV')and(UpCaseStr(A.Op1.Reg)='AX')and
+     (A.Op2.OpType=OT_MEM)Then Begin
+    ParseInstructionLine(J+1,A);
+    If(UpCaseStr(A.Mnemonic)='CMP')and(UpCaseStr(A.Op1.Reg)='AX')Then Begin
+     CloseLine:=J; Break;
+    End;
+   End;
+  End;
+  If CloseLine<0 Then Begin Inc(I); Continue; End;
+
+  SetTranslationForLine(I,'Case Char(Lo(RegAX)) Of'+#13#10+
+    '  ''A''..''Z'',''0''..''9'': Begin');
+  For K:=I+1 to I+7 do SetTranslationForLine(K,'');
+  SetTranslationForLine(Jmp1,'  End;');
+  SetTranslationForLine(Jmp1+1,'  ''a''..''z'': Begin');
+  For K:=Jmp1+2 to Jmp1+4 do SetTranslationForLine(K,'');
+  SetTranslationForLine(Jmp2,'  End;');
+  SetTranslationForLine(Jmp2+1,'  ''_'',''-'': Begin');
+  For K:=Jmp2+2 to Jmp2+4 do SetTranslationForLine(K,'');
+  SetTranslationForLine(Jmp3,'  End;'+#13#10+' Else Begin');
+  TrIdx:=FindTranslationForLine(CloseLine);
+  If TrIdx>=0 Then Begin
+   OldCode:=Translations[TrIdx].PascalCode;
+   Translations[TrIdx].PascalCode:='  End;'+#13#10+'End;'+#13#10+OldCode;
+  End;
+  Inc(PatternCount);
+  I:=CloseLine+1;
+ End;
+ WriteLn('  Reconstruction Case avec intervalles : ',PatternCount,
+  ' bloc(s) detecte(s).');
+End;
+
 Procedure ProcessTurboPascalForPatterns;
 { Reconstruit la forme Turbo Pascal d'un For croissant :
     XOR AX,AX / MOV compteur,AX / JMP test
@@ -11730,6 +11824,8 @@ BEGIN
  ProcessTurboPascalStringCompareLadders;
  { Reconstruction des Case compiles en comparaisons de caracteres }
  ProcessTurboPascalCharCasePatterns;
+ { Reconstruction des Case dont les branches sont des intervalles }
+ ProcessTurboPascalRangeCasePatterns;
  { Reconstruction des boucles For croissantes du compilateur Turbo Pascal }
  ProcessTurboPascalForPatterns;
  { TODO 21 - Generation en-tete Pascal }
