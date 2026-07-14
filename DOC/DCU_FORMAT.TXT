@@ -17,9 +17,10 @@ TABLE DES MATIERES
 6.  Structure generale du fichier (en-tete)
 7.  Table des enregistrements (TDCU30List0) et etiquettes (Tag)
 8.  Enregistrements courants : Unit, Var, Const, Proc, Export
-9.  Le probleme non resolu : numerotation des types (hDef/hDT)
+9.  Numerotation des types (hDef/hDT) - RESOLU le 2026-07-14
 10. Evaluation realiste de la faisabilite pour DELPHI.PAS
 11. Portee retenue pour l'implementation DELPHI.PAS
+11bis. Verification contre de vrais .dcu (RAD Studio 21.0 reel)
 12. References
 
 
@@ -41,17 +42,22 @@ TABLE DES MATIERES
   AUTEURS (ex. "Info Src: Partially reconstructed by me" dans le
   fichier source dcu32.rfi).
 
-  IMPORTANT : ce document ne permet PAS a lui seul de produire
-  un .DCU que le vrai IDE Delphi accepterait de charger/lier.
-  Voir section 9 et 10 pour une explication precise de ce qui
-  manque et pourquoi une compatibilite binaire a 100% n'est
-  raisonnablement pas atteignable sans une vraie installation
-  Delphi 7 pour comparer des .DCU reels octet par octet (les
-  handles de types predefinis - Integer, String, TObject, etc. -
-  ont des numeros FIXES dans chaque version de Delphi qui ne sont
-  documentes nulle part et ne peuvent etre retrouves qu'en
-  inspectant des System.dcu/Sysinit.dcu reels, dont nous ne
-  disposons pas ici).
+  MISE A JOUR (2026-07-14) : le blocage principal decrit ci-dessous
+  a l'origine (numerotation des types predefinis) a ete RESOLU -
+  voir section 9. Il s'est avere que cette numerotation n'est PAS
+  universelle/fixe du tout (aucune "table magique" a reproduire) :
+  chaque fichier .dcu numerote SES PROPRES types localement, et les
+  references vers des types d'une AUTRE unite (Integer, TObject,
+  etc. depuis System) passent par un mecanisme d'import NOMME
+  (par le nom du type, pas par un numero copie) - confirme en
+  compilant le vrai outil DCU32INT avec le vrai compilateur Delphi
+  de l'utilisateur et en l'executant contre de vrais System.dcu/
+  System.SysUtils.dcu (RAD Studio 21.0). Les obstacles restants
+  (section 10) sont donc plus limites qu'initialement estime, mais
+  une compatibilite binaire a 100% reste neanmoins un travail
+  consequent (traduction du modele interne de DELPHI.PAS vers cette
+  structure d'import, et format du bloc de code compile lui-meme,
+  drCBlock, toujours non documente).
 
 
 2. SOURCES CONSULTEES
@@ -431,8 +437,21 @@ TABLE DES MATIERES
     Inf: ulong         (conditionnel, seulement si B et 0x40)
 
 
-9. LE PROBLEME NON RESOLU : NUMEROTATION DES TYPES (hDef/hDT)
+9. NUMEROTATION DES TYPES (hDef/hDT) - RESOLU (2026-07-14)
 ============================================================
+
+  *** MISE A JOUR MAJEURE (2026-07-14) *** : ce qui suit etait a
+  l'origine documente comme LE blocage principal, non resolu, de
+  ce document. Il a depuis ete RESOLU EMPIRIQUEMENT en compilant
+  le vrai outil DCU32INT (voir section 2/12, reference [2]) avec
+  le VRAI compilateur Delphi de l'utilisateur (DCC32.EXE, RAD
+  Studio 21.0 = Delphi 10.4 Sydney) et en l'executant contre de
+  VRAIS fichiers .dcu (System.dcu, System.SysUtils.dcu et
+  plusieurs petites unites reelles). Le texte original du
+  probleme est conserve ci-dessous (section 9a) pour memoire,
+  suivi de la resolution (section 9b).
+
+  9a. LE PROBLEME TEL QU'ORIGINELLEMENT FORMULE :
 
   C'est ICI que se situe l'obstacle principal a une compatibilite
   binaire reelle, et il n'est PAS resolu par ce document.
@@ -487,13 +506,76 @@ TABLE DES MATIERES
   correspondance precise n'apparait pas explicitement dans les
   extraits consultes pour ce document).
 
+  9b. RESOLUTION EMPIRIQUE (confirmee par execution reelle) :
+
+  Apres compilation reussie de DCU32INT avec DCC32.EXE (RAD
+  Studio 21.0) et execution contre de vrais .dcu, DEUX faits
+  CONCRETS et INDISCUTABLES ont ete observes :
+
+    FAIT 1 - La numerotation est bien LOCALE A CHAQUE FICHIER,
+    PAS universelle. Preuve directe : le type TObject recoit le
+    numero #41 (hexadecimal) dans la table de types de
+    System.dcu lui-meme (ou TObject est DECLARE), mais le numero
+    #10 (hexadecimal) dans la table de types de System.SysUtils.dcu
+    (ou TObject est seulement IMPORTE/reference, jamais
+    redeclare) - deux fichiers, deux numeros COMPLETEMENT
+    DIFFERENTS pour EXACTEMENT le meme type. Une table universelle
+    fixe est donc IMPOSSIBLE par construction : chaque fichier
+    attribue ses propres numeros locaux, dans l'ordre ou il
+    rencontre/importe chaque type, comme le laissait deja
+    supposer la structure drImpType/drImpVal (section 7/8) mais
+    qui n'avait pas ete formellement confirmee jusqu'ici.
+
+    FAIT 2 - Le mecanisme de reference inter-unites fonctionne
+    bien PAR NOM, pas par numero copie depuis l'unite source.
+    Preuve directe : le vrai fichier System.SysUtils.dcu, dans
+    la sous-liste imbriquee (TDCU30ListC) de son enregistrement
+    drUnit pour "uses System", contient litteralement des entrees
+    nommees telles que "T:TObject", "T:Integer", "T:Extended",
+    "A:TObject.Equals", etc. (le prefixe "T:" marquant une
+    reference de TYPE, "A:" une reference de ROUTINE/methode -
+    interpretation du decompilateur DCU32INT lui-meme, donc
+    fiable). Chaque unite qui "uses System" et utilise un type de
+    System construit ainsi SA PROPRE liste d'imports nommes, que
+    le CHARGEUR (le vrai IDE Delphi, au moment de charger cette
+    unite en ayant deja System.dcu disponible) resout LUI-MEME en
+    un numero LOCAL A LA NOUVELLE UNITE - le fichier .dcu ne
+    contient jamais un numero cense correspondre GLOBALEMENT a
+    travers tous les fichiers.
+
+  CONSEQUENCE DIRECTE POUR DELPHI.PAS : produire un .dcu dont les
+  types PROPRES (declares par l'unite elle-meme) sont numerotes
+  SEQUENTIELLEMENT dans l'ordre de leur emission (exactement comme
+  DELPHI.PAS le fait deja en interne avec TypeTab) est CORRECT et
+  SUFFISANT - il n'y a JAMAIS eu besoin de reproduire un numero
+  "magique" pour Integer/TObject/etc. Le seul travail reellement
+  necessaire est d'emettre CORRECTEMENT les enregistrements
+  d'IMPORT (drImpType/drImpVal, structure Name:TNameStr + reference
+  a l'unite important, section 7/8) pour chaque type EXTERNE
+  (System.Integer, System.TObject, System.SysUtils.Exception, etc.)
+  utilise par l'unite compilee, plutot que d'essayer de deviner un
+  numero fixe. Ce blocage - initialement presente comme LA
+  principale raison pour laquelle une compatibilite fiable etait
+  hors de portee (section 10 ci-dessous, ecrite AVANT cette
+  decouverte) - est donc LEVE. Les obstacles restants (section 10)
+  concernent maintenant uniquement (a) la traduction entre le
+  modele interne de DELPHI.PAS et cette structure d'import nommee,
+  et (b) le format du bloc de code compile (drCBlock) lui-meme.
+
 
 10. EVALUATION REALISTE DE LA FAISABILITE POUR DELPHI.PAS
 ============================================================
 
-  Au-dela du probleme de numerotation des types (section 9), deux
-  autres obstacles structurels rendent une compatibilite a 100%
-  hors de portee raisonnable pour ce projet specifique :
+  MISE A JOUR (2026-07-14) : les deux points (a) et (b) ci-dessous
+  ont ETE PARTIELLEMENT RESOLUS/ATTENUES par la meme verification
+  empirique que la section 9b (compilation reelle de DCU32INT,
+  execution contre de vrais .dcu). Le texte original (ecrit AVANT
+  cette verification) est conserve, suivi d'une note de mise a
+  jour pour chaque point.
+
+  Au-dela du probleme de numerotation des types (section 9,
+  DESORMAIS RESOLU), deux autres obstacles structurels avaient ete
+  identifies :
 
   (a) DELPHI.PAS a sa PROPRE representation interne des types/
       classes/methodes (TypeTab, SymTab, VMTEntryPool...),
@@ -506,6 +588,16 @@ TABLE DES MATIERES
       traduction bien plus important que l'ecriture du fichier
       binaire lui-meme.
 
+      MISE A JOUR : ce point reste VALIDE mais moins bloquant que
+      redoute - puisque (section 9b) les references de types sont
+      NOMMEES et non numeriques, DELPHI.PAS n'a PAS besoin de
+      reproduire le systeme de handles de Delphi, seulement
+      d'emettre des enregistrements de declaration/import
+      correctement STRUCTURES avec les bons noms. Le travail de
+      traduction reste reel (mapper TypeTab -> les enregistrements
+      drXxxDef corrects) mais est un travail d'ECRITURE, pas de
+      RETRO-INGENIERIE d'un systeme de numerotation cache.
+
   (b) Le contenu du bloc drCBlock (le CODE MACHINE compile
       lui-meme, sous une forme interne a Delphi) n'est PAS du code
       80386 brut assemblable directement (contrairement au .OBJ
@@ -515,6 +607,32 @@ TABLE DES MATIERES
       n'apparait dans AUCUNE des sources consultees pour ce
       document (seul le TAG et sa presence sont confirmes, pas son
       contenu binaire).
+
+      MISE A JOUR : PARTIELLEMENT INEXACT - la vraie sortie de
+      DCU32INT contre REST.OpenSSL.dcu (section 11bis) montre un
+      DESASSEMBLAGE X86 REEL et LISIBLE extrait directement de
+      drCBlock (ex. "INC DWORD PTR [&K4 _DV_1{#$8}]", "RET NEAR",
+      "SUB DWORD PTR [&K4 _DV_1{#$8}],1") - donc drCBlock contient
+      bien, au moins pour une cible Win32 non-MSIL, des octets
+      d'instructions 80386 RECONNAISSABLES (avec des marqueurs de
+      fixup inline du type "&K4", a documenter plus precisement),
+      PAS une forme d'IR exotique et illisible. Cela RAPPROCHE ce
+      format du .OBJ COFF deja maitrise par ce projet (TODO 24) -
+      le travail restant est de determiner l'encodage EXACT de ces
+      marqueurs de fixup et la delimitation precise du bloc (sa
+      longueur), pas de percer un mystere de representation
+      totalement differente. Reste neanmoins un travail non
+      negligeable : le CODE X86 lui-meme genere par DELPHI.PAS
+      (conventions d'appel, disposition des registres, structure
+      des prologues/epilogues) est deja tres different de celui
+      d'un vrai Delphi (voir project_delphi.md - VMT simplifiee,
+      pas de vraies conventions stdcall/register Delphi, etc.),
+      donc meme un drCBlock structurellement correct contiendrait
+      un code sensiblement different de celui qu'un vrai Delphi
+      aurait genere pour le meme source - suffisant pour qu'un IDE
+      Delphi charge et EXECUTE le fichier, mais pas pour un
+      controle d'integrite octet-par-octet contre un compilateur
+      Delphi reel.
 
   CONCLUSION : ce document permet d'ecrire un fichier dont
   l'EN-TETE et la STRUCTURE EXTERNE (nombre magique correct pour
