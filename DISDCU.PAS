@@ -369,10 +369,23 @@ End;
 { pretention a reproduire l affichage exact de DCU32INT.             }
 { ------------------------------------------------------------ }
 
+{ Pour V=MinLongInt (-2147483648, la borne basse EXACTE du type       }
+{ Integer - le cas le plus courant de tous), "-V" deborderait un        }
+{ LongInt signe (2147483648 ne rentre pas dans -2147483648..2147483647) -}
+{ meme piege deja rencontre et corrige pour ReadUIndex (voir plus haut)    }
+{ et dans DELPHI.PAS (AsmParseNumber, project_delphi.md). Calcul via       }
+{ Int64 (bien plus large, jamais de depassement possible ici) plutot        }
+{ que de simplement desactiver la verification, pour obtenir la vraie        }
+{ magnitude positive correcte, pas juste eviter le plantage.                   }
 Function FmtOrd(V: LongInt): TString;
+Var
+  Mag: Int64;
 Begin
   If V < 0 Then
-    FmtOrd := '-$' + IntToHex(-V, 1)
+  Begin
+    Mag := -Int64(V);
+    FmtOrd := '-$' + IntToHex(Mag, 1);
+  End
   Else
     FmtOrd := '$' + IntToHex(V, 1);
 End;
