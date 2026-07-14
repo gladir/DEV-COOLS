@@ -3432,7 +3432,10 @@ Begin
              ((B >= Ord('a')) And (B <= Ord('z'))) Then
             Inc(LetterCount);
         End;
-        If ((StrLen < 4) And (LetterCount < 1)) Or
+        If ((StrLen < 4) And (LetterCount < 1) And
+            Not ((StrLen = 2) And
+                 ((ReadImageByte(I + 1) = Ord('/')) Or
+                  (ReadImageByte(I + 1) = Ord('-'))))) Or
            ((StrLen >= 4) And (LetterCount < 3)) Then
           Valid := False;
       End;

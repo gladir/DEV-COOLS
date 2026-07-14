@@ -10549,6 +10549,113 @@ Begin
   ' bloc(s) detecte(s).');
 End;
 
+Function FindSourceLabelLine(LabelName:String):LongInt;
+Var
+ I:LongInt;
+ A:TAsmLine;
+Begin
+ FindSourceLabelLine:=-1;
+ For I:=0 to SrcLineCount-1 do Begin
+  ParseInstructionLine(I,A);
+  If UpCaseStr(A.LabelStr)=UpCaseStr(LabelName) Then Begin
+   FindSourceLabelLine:=I;
+   Exit;
+  End;
+ End;
+End;
+
+Procedure ProcessTurboPascalParamStrIfPatterns;
+{ Reconstruit les chaines de comparaisons generees pour :
+    If (ParamStr(n)='x') or (ParamStr(n)='y') Then Begin ... End;
+  Runtime observe : 0A4Dh=ParamStr, 0CEFh=comparaison de shortstrings,
+  chaque egalite sautant par JZ vers le meme corps. }
+Var
+ I,J,K,VIdx,ClauseCount,PatternCount:LongInt;
+ A:TAsmLine;
+ BodyLabel,NextLabel,ThisBody,OptText,Cond,Code:String;
+ BodyLine,NextLine,HaltLine,TrIdx:LongInt;
+ Valid:Boolean;
+Begin
+ PatternCount:=0;
+ I:=0;
+ While I<SrcLineCount-12 do Begin
+  ParseInstructionLine(I,A);
+  If UpCaseStr(A.Mnemonic)<>'LEA' Then Begin Inc(I); Continue; End;
+
+  J:=I;
+  ClauseCount:=0;
+  BodyLabel:='';
+  Cond:='';
+  While J+10<SrcLineCount do Begin
+   ParseInstructionLine(J,A);
+   Valid:=(UpCaseStr(A.Mnemonic)='LEA') and
+    IsSimpleRegInstruction(J+1,'PUSH','SS','') and
+    IsSimpleRegInstruction(J+2,'PUSH','DI','');
+   If Not Valid Then Break;
+
+   ParseInstructionLine(J+3,A);
+   If(UpCaseStr(A.Mnemonic)<>'MOV')or(UpCaseStr(A.Op1.Reg)<>'AX')or
+     (A.Op2.Imm<>1)Then Break;
+   If Not IsSimpleRegInstruction(J+4,'PUSH','AX','') Then Break;
+   If Not IsRuntimeFarCall(J+5,$0A4D) Then Break;
+
+   ParseInstructionLine(J+6,A);
+   If(UpCaseStr(A.Mnemonic)<>'MOV')or(UpCaseStr(A.Op1.Reg)<>'DI')or
+     (A.Op2.OpType<>OT_OFFSET)Then Break;
+   VIdx:=FindDataVarByName(A.Op2.LabelName);
+   If(VIdx=0)or(Not IsLengthPrefixedString(VIdx))Then Break;
+   OptText:=DataVars[VIdx].Elements[2].StrValue;
+
+   If Not IsSimpleRegInstruction(J+7,'PUSH','CS','') Then Break;
+   If Not IsSimpleRegInstruction(J+8,'PUSH','DI','') Then Break;
+   If Not IsRuntimeFarCall(J+9,$0CEF) Then Break;
+   ParseInstructionLine(J+10,A);
+   If UpCaseStr(A.Mnemonic)<>'JZ' Then Break;
+   ThisBody:=A.Op1.LabelName;
+   If ThisBody='' Then Break;
+   If BodyLabel='' Then BodyLabel:=ThisBody
+   Else If UpCaseStr(ThisBody)<>UpCaseStr(BodyLabel) Then Break;
+
+   If Cond<>'' Then Cond:=Cond+' or ';
+   Cond:=Cond+'(ParamStr(1)='+QuotePascalString(OptText)+')';
+   Inc(ClauseCount);
+   J:=J+11;
+  End;
+
+  If ClauseCount<2 Then Begin Inc(I); Continue; End;
+  ParseInstructionLine(J,A);
+  If(UpCaseStr(A.Mnemonic)<>'JMP')or(A.Op1.LabelName='')Then Begin
+   Inc(I);
+   Continue;
+  End;
+  NextLabel:=A.Op1.LabelName;
+  BodyLine:=FindSourceLabelLine(BodyLabel);
+  NextLine:=FindSourceLabelLine(NextLabel);
+  If(BodyLine<0)or(NextLine<=BodyLine)Then Begin Inc(I); Continue; End;
+
+  HaltLine:=-1;
+  For K:=BodyLine+1 to NextLine-1 do Begin
+   TrIdx:=FindTranslationForLine(K);
+   If(TrIdx>=0)and(Translations[TrIdx].PascalCode='Halt;')Then
+    HaltLine:=K;
+  End;
+  If HaltLine<0 Then Begin Inc(I); Continue; End;
+
+  Code:='If '+Cond+' Then Begin';
+  SetTranslationForLine(I,Code);
+  For K:=I+1 to J do SetTranslationForLine(K,'');
+  TrIdx:=FindTranslationForLine(HaltLine);
+  If TrIdx>=0 Then
+   Translations[TrIdx].PascalCode:='Halt;'+#13#10+'  End;';
+  AddOptLabel(BodyLabel);
+  AddOptLabel(NextLabel);
+  Inc(PatternCount);
+  I:=NextLine+1;
+ End;
+ WriteLn('  Reconstruction If/ParamStr Turbo Pascal : ',PatternCount,
+  ' bloc(s) detecte(s).');
+End;
+
 { ============================================================
   Collecte des acces memoire indexes pour creer des variables
   locales - Amelioration de la lisibilite du code genere
@@ -11040,6 +11147,8 @@ BEGIN
  ProcessTurboPascalWriteLnPatterns;
  { Reconstruction de la terminaison du runtime Turbo Pascal }
  ProcessTurboPascalHaltPatterns;
+ { Reconstruction des tests d'options fondes sur ParamStr }
+ ProcessTurboPascalParamStrIfPatterns;
  { TODO 21 - Generation en-tete Pascal }
  ProcessHeaderGeneration;
  { TODO 22 - Generation corps procedures }
