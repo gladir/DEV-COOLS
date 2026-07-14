@@ -10508,6 +10508,47 @@ Begin
   ' bloc(s) detecte(s).');
 End;
 
+Procedure ProcessTurboPascalHaltPatterns;
+{ Reconnait le terminateur du runtime Turbo Pascal 16 bits :
+    XOR AX,AX / CALL xxxx:0116h  -> Halt;
+    MOV AX,n  / CALL xxxx:0116h  -> Halt(n);
+  AX porte le code de sortie transmis au runtime. }
+Var
+ I,PatternCount:LongInt;
+ A:TAsmLine;
+ ExitCode:LongInt;
+ Matched:Boolean;
+Begin
+ PatternCount:=0;
+ For I:=0 to SrcLineCount-2 do Begin
+  If Not IsRuntimeFarCall(I+1,$0116) Then Continue;
+  ParseInstructionLine(I,A);
+  Matched:=False;
+  ExitCode:=0;
+
+  If(UpCaseStr(A.Mnemonic)='XOR')and
+    (UpCaseStr(A.Op1.Reg)='AX')and(UpCaseStr(A.Op2.Reg)='AX')Then Begin
+   ExitCode:=0;
+   Matched:=True;
+  End Else If(UpCaseStr(A.Mnemonic)='MOV')and
+    (UpCaseStr(A.Op1.Reg)='AX')and
+    (A.Op2.OpType in [OT_IMM8,OT_IMM16,OT_IMM32])Then Begin
+   ExitCode:=A.Op2.Imm;
+   Matched:=True;
+  End;
+
+  If Not Matched Then Continue;
+  If ExitCode=0 Then
+   SetTranslationForLine(I,'Halt;')
+  Else
+   SetTranslationForLine(I,'Halt('+IntToStr(ExitCode)+');');
+  SetTranslationForLine(I+1,'');
+  Inc(PatternCount);
+ End;
+ WriteLn('  Reconstruction Halt Turbo Pascal    : ',PatternCount,
+  ' bloc(s) detecte(s).');
+End;
+
 { ============================================================
   Collecte des acces memoire indexes pour creer des variables
   locales - Amelioration de la lisibilite du code genere
@@ -10997,6 +11038,8 @@ BEGIN
  ProcessProcBodyPatterns;
  { Reconstruction des appels d'ecriture du runtime Turbo Pascal }
  ProcessTurboPascalWriteLnPatterns;
+ { Reconstruction de la terminaison du runtime Turbo Pascal }
+ ProcessTurboPascalHaltPatterns;
  { TODO 21 - Generation en-tete Pascal }
  ProcessHeaderGeneration;
  { TODO 22 - Generation corps procedures }
