@@ -685,10 +685,86 @@ TABLE DES MATIERES
   Studio 21.0 (= Delphi 10.4 Sydney, version interne DCU32INT
   FVer=27, dossier lib\win32\release). Plusieurs .dcu reels et
   minuscules (REST.OpenSSL.dcu=353 octets, System.SimpleShareMem.dcu
-  =456 octets) ont ete inspectes OCTET PAR OCTET avec un petit
-  decodeur ecrit en Object Pascal (adaptant directement ReadUIndex
-  du vrai DCU32INT, voir section 4) et compile avec fpc pour
-  eviter toute erreur de calcul manuel.
+  =456 octets) ont d'abord ete inspectes OCTET PAR OCTET avec un
+  petit decodeur ecrit en Object Pascal (adaptant directement
+  ReadUIndex du vrai DCU32INT, voir section 4) et compile avec fpc
+  pour eviter toute erreur de calcul manuel.
+
+  11bis-A. COMPILATION ET EXECUTION REELLES DE DCU32INT (etape
+  decisive, avec autorisation explicite de l'utilisateur puisqu'il
+  s'agit de compiler/executer du code source tiers telecharge) :
+
+  Le code source complet de DCU32INT (14 fichiers .pas + le projet
+  .dpr, ~15000 lignes, reference [2]) a ete telecharge et compile
+  avec le VRAI compilateur Delphi de l'utilisateur (DCC32.EXE, RAD
+  Studio 21.0), apres quelques corrections mineures necessaires :
+    - Ajout de "-NS System;Winapi;Vcl;Data;..." (Unit Scope Names)
+      pour que "uses SysUtils" (forme courte utilisee par le code
+      source original, ecrit avant l'ere des namespaces) resolve
+      vers "System.SysUtils" (nom reellement present dans
+      lib\win32\release sous RAD Studio moderne).
+    - Ajout de "-DI64" : plusieurs fonctions (mode64, getOS64,
+      addREXBit, setREX, wasREX dans DAsmUtil.pas) sont protegees
+      par "{$IFDEF I64}" pour le support du desassemblage 64 bits,
+      mais utilisees SANS garde correspondante dans op.pas - il
+      faut donc definir I64 explicitement en ligne de commande
+      (le vrai projet .dproj devait le faire via ses options, non
+      visibles dans le .dpr texte seul).
+    - Ajout de "{$J+}" (constantes typees modifiables) : le code
+      source utilise l'idiome classique Turbo Pascal "const X:
+      String='';" comme variable initialisee, qui necessite cette
+      directive (absente du fichier tel que publie, une
+      combinaison de {$IFDEF SOME}...{$ENDIF} jamais activee
+      contenait la bonne directive mais etait inutilisee).
+    - Suppression d'un bloc de code (option "-X", extraction de
+      .dcu depuis un .dcp) utilisant des methodes de TFile/TPath
+      absentes de cette version de RAD Studio (TFile.GetSize) -
+      fonctionnalite non necessaire a notre objectif (dumper la
+      structure d'un .dcu, pas en extraire depuis un .dcp).
+  Resultat : compilation reussie (dcu32int.exe, ~1.4 Mo), executee
+  avec succes contre plusieurs .dcu reels (REST.OpenSSL.dcu,
+  System.SimpleShareMem.dcu, System.dcu, System.SysUtils.dcu),
+  produisant une sortie Pascal-lisible correcte incluant meme le
+  DESASSEMBLAGE X86 REEL du code compile (voir section 10(b)).
+
+  11bis-B. TABLE DE TYPES REELLE DE System.dcu (extrait confirme,
+  numerotation LOCALE a ce fichier uniquement - voir section 9b) :
+
+    #1  Boolean          #10 Real48           #1F LongBool
+    #2  AnsiChar          #11 Extended80       #20 string (=UnicodeString)
+    #3  Char              #12 Extended         #21 WideString
+    #4  ShortInt          #13 Double           #22 AnsiString
+    #5  SmallInt          #14 Real             #23 Variant
+    #6  Integer           #15 Comp             #24 OleVariant
+    #7  Byte              #16 Currency         #25 void
+    #8  Word              #17 ShortString      ...
+    #9  Cardinal          #18 Openstring       #35 TClass
+    #A  Pointer           #19 file             #38 TGUID
+    #B  Int64             #1A Text             #40 class of TObject
+    #C  UInt64            #1B PAnsiChar        #41 TObject
+    #D  NativeInt         #1C PWideChar        #42 class of TCustomAttribute
+    #E  NativeUInt         #1D ByteBool        #43 TCustomAttribute
+    #F  Single            #1E WordBool         #5B IInterface
+                                                #66 TInterfacedObject
+    (numerotation hexadecimale, telle qu'affichee par DCU32INT ;
+    #A=10, #1A=26, #41=65 decimal etc. - dump complet dans
+    system_dump.txt, 43137 lignes, non archive avec ce document
+    mais reproductible en re-executant DCU32INT contre System.dcu)
+
+  Pour comparaison DIRECTE prouvant le caractere LOCAL de cette
+  numerotation (section 9b, FAIT 1) : dans System.SysUtils.dcu
+  (fichier DIFFERENT), TObject porte le numero #10 (PAS #41) et
+  Exception (declaree dans ce fichier) porte le numero #B5 - deux
+  numerotations completement independantes pour le meme type
+  TObject, selon le fichier qui le reference.
+
+  Preuve du mecanisme d'import NOMME (section 9b, FAIT 2) : le
+  desassemblage de System.SysUtils.dcu montre litteralement, dans
+  la sous-liste de son "uses System", des entrees telles que
+  "T:TObject", "T:Integer", "T:Extended", "A:TObject.Equals" (le
+  prefixe T: marquant un type importe par NOM, A: une routine/
+  methode importee par NOM - interpretation du decompilateur
+  lui-meme, donc fiable).
 
   CONFIRME (fiable, verifie sur 2 fichiers reels independants) :
 
@@ -754,40 +830,47 @@ TABLE DES MATIERES
       correspondance exacte avec hPack/Inf/X individuellement
       reste una hypothese, pas une certitude verifiee).
 
-  NON CONFIRME / TRAVAIL RESTANT (le point precis ou l'analyse
-  manuelle a atteint ses limites raisonnables pour cette session) :
+  MIS A JOUR (2026-07-14, apres compilation reelle de DCU32INT,
+  voir 11bis-A/B ci-dessus) - CE QUI ETAIT "NON CONFIRME" EST
+  MAINTENANT RESOLU :
 
-    - Le role exact de CHAQUE octet/TNDX individuel entre le champ
-      "chemin source" et le premier Tag='d' n'est pas totalement
-      elucide malgre la localisation precise de leurs positions.
-    - La table de numerotation des types predefinis (section 9)
-      reste le blocage principal, INCHANGE par cette verification -
-      aucune occurrence d'une table de noms de types cablee en dur
-      n'a ete trouvee dans les ~15000 lignes de code source
-      DCU32INT inspectees (DCU_In.pas, DCU_Out.pas, DCU32.pas,
-      DCURecs.pas, FixUp.pas) ; il est possible que cette
-      numerotation soit en realite LOCALE A CHAQUE FICHIER (chaque
-      unite, y compris System.pas lui-meme, definit et numerote
-      SES PROPRES types dans SA PROPRE table, les references
-      inter-unites passant par un mecanisme d'import/export
-      different - drImpType/drImpVal/drExport, section 7/8.5 -
-      plutot que par un numero universel fixe), ce qui serait
-      BEAUCOUP plus favorable qu'initialement redoute (section 9),
-      mais cette hypothese elle-meme reste A VERIFIER
-      systematiquement, pas encore prouvee.
+    - La numerotation des types predefinis (section 9) est
+      CONFIRMEE locale a chaque fichier, PAS universelle - PROUVE
+      (pas seulement suppose) par comparaison directe de TObject
+      dans System.dcu (#41) contre System.SysUtils.dcu (#10), et
+      par l'observation directe du mecanisme d'import NOMME
+      ("T:TObject" etc.) dans le desassemblage reel. Ce n'est plus
+      une hypothese a verifier : c'est un fait etabli par execution
+      reelle d'un decompilateur correct contre de vrais fichiers.
+    - Le contenu de drCBlock est un desassemblage x86 REEL et
+      LISIBLE (section 10(b) mise a jour), pas un mystere.
 
-  CONCLUSION DE CETTE VERIFICATION : le travail de reverse-
-  engineering necessaire pour une compatibilite fiable est
-  clairement FAISABLE avec les outils et l'acces dont on dispose
-  maintenant (vrais .dcu + vrai code source du parseur + FPC pour
-  ecrire/tester des decodeurs), mais represente un effort
-  systematique bien plus consequent qu'une seule session -
-  chaque champ restant "non confirme" ci-dessus necessiterait
-  d'ecrire un decodeur plus complet (portant une bien plus grande
-  partie des ~5000 lignes de DCU32.pas, pas seulement l'en-tete)
-  et de le tester contre des dizaines de fichiers reels varies
-  pour distinguer de facon fiable "valeur constante liee au
-  compilateur" de "donnee reellement specifique au fichier".
+  TRAVAIL RESTANT (reduit par rapport a l'evaluation initiale) :
+
+    - Le role exact de chaque octet/TNDX individuel de l'en-tete
+      entre le champ "chemin source" et le premier Tag='d' reste
+      a preciser (champs mineurs, sans impact sur la faisabilite
+      globale desormais que le point bloquant - la numerotation
+      des types - est resolu).
+    - Traduire le modele interne de DELPHI.PAS (TypeTab/SymTab/
+      VMTEntryPool) vers les enregistrements drXxxDef/drImpType
+      corrects - un travail d'ECRITURE structure, plus un mystere
+      de retro-ingenierie (section 10(a) mise a jour).
+    - Documenter precisement l'encodage des marqueurs de fixup
+      inline observes dans le desassemblage (ex. "&K4") et la
+      delimitation exacte de la longueur d'un bloc drCBlock.
+
+  CONCLUSION DE CETTE VERIFICATION : une compatibilite DCU
+  fonctionnelle (chargeable par un vrai IDE Delphi) est
+  DESORMAIS UN OBJECTIF REALISTE, pas seulement une structure
+  externe plausible sans certitude sur le contenu - le blocage
+  qui semblait initialement necessiter des semaines de travail
+  suppl'ementaire (deviner une table de types fixee, non
+  documentee) s'est avere ne pas exister du tout. Le travail
+  restant est important mais d'une nature different et plus
+  tractable : ecrire methodiquement les enregistrements
+  corrects (structure deja bien documentee ci-dessus), pas
+  percer un secret supplementaire.
 
 
 12. REFERENCES
