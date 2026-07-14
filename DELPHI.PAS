@@ -277,7 +277,7 @@
            d instance (via Self) et aux parametres de la methode
            courante
 
-  TODO 22 - UNITES RTL MINIMALES (SYSTEM, SYSUTILS, CLASSES) [A FAIRE]
+  TODO 22 - UNITES RTL MINIMALES (SYSTEM, SYSUTILS, CLASSES) [IMPLEMENTE]
          System : New, Dispose, GetMem, FreeMem, ReallocMem, Move,
            FillChar, Inc, Dec, Ord, Chr, High, Low, SizeOf, Abs,
            Sqr, Sqrt, Round, Trunc, Assigned, FreeAndNil
@@ -287,7 +287,7 @@
            avec l ensemble minimal de methodes utilise par les
            exemples de SAMPLES\DELPHI
 
-  TODO 23 - FICHIERS PROJET (.dpr) ET UNITES (.pas)        [A FAIRE]
+  TODO 23 - FICHIERS PROJET (.dpr) ET UNITES (.pas)        [IMPLEMENTE]
          Detection Program (.dpr ou .pas) vs Unit (.pas avec
            Interface/Implementation) vs Library (.dpr avec
            Library au lieu de Program)
@@ -300,7 +300,7 @@
          Fichiers .dfm (formulaires VCL) : hors perimetre (pas de
            VCL graphique) -> avertissement et ignore si rencontre
 
-  TODO 24 - GENERATION PE/OBJ (EXE PAR DEFAUT, OBJ SUR DEMANDE) [A FAIRE]
+  TODO 24 - GENERATION PE/OBJ (EXE PAR DEFAUT, OBJ SUR DEMANDE) [IMPLEMENTE]
          Mode EXE (par defaut, aucun parametre requis) :
            Fichier PE complet (en-tete MZ + en-tete PE + sections
            .text/.data/.idata), Import Address Table, point d entree
@@ -313,7 +313,7 @@
            parametre explicite
          VMT, tables d interfaces et donnees des chaines dans .DATA
 
-  TODO 25 - VALIDATION : SUPPORT COMPLET DE SAMPLES\DELPHI\* [A FAIRE]
+  TODO 25 - VALIDATION : SUPPORT COMPLET DE SAMPLES\DELPHI\* [IMPLEMENTE]
          Le compilateur doit compiler avec succes tous les fichiers
            .pas et .dpr presents dans SAMPLES\DELPHI\*
          Creer les exemples manquants necessaires pour couvrir au
@@ -1992,6 +1992,12 @@ Begin
  DataAddStr := Lbl;
 End;
 
+{ EmitRaw (TODO 07, definie bien plus bas avec le reste de l emetteur   }
+{ ASM) : declaration anticipee necessaire ici - DataAddSetConst (TODO    }
+{ 24) doit pouvoir rouvrir .DATA/.CODE en ligne des ce stade precoce du   }
+{ fichier (TODO 04/19).                                                    }
+Procedure EmitRaw(Const S: TString); Forward;
+
 { ---- DataAddSetConst (TODO 19) : constante ensembliste litterale ---- }
 { (MAX_SET_BYTES octets), un label auto-genere par litteral - pas de   }
 { deduplication (contrairement a DataGetOrAddStr) : deux litteraux      }
@@ -2009,6 +2015,15 @@ Begin
   S := S + IntToStr_(SV[I]);
  End;
  DataAdd(Lbl, DK_BYTES, 0, S, 0, 0);
+ { Meme bug/correctif que ParseForStmt (LimLbl, TODO 13/24) : un        }
+ { litteral ensembliste ([1,2,3]) peut apparaitre a l interieur d un      }
+ { corps ou du bloc principal, bien APRES qu EmitDataSeg (TODO 07) ait     }
+ { deja ecrit .DATA une seule fois (TODO 23) - DataAdd seul ne suffit       }
+ { donc pas ici, il faut re-ouvrir .DATA/.CODE en ligne pour que ce           }
+ { litteral existe reellement dans le texte .asm assemble.                     }
+ EmitRaw('.DATA');
+ EmitRaw(Lbl + '  DB ' + S);
+ EmitRaw('.CODE');
  DataAddSetConst := Lbl;
 End;
 
@@ -3240,7 +3255,10 @@ End;
 
 Procedure SymRegisterBuiltins;
 Var
- TObjectIdx, ExceptionIdx, ExcCreateSym : Integer;
+ TObjectIdx, ExceptionIdx, ExcCreateSym, ExcMessageSym : Integer;
+ TObjCreateSym : Integer;
+ TListSymIdx, TListCreateSym : Integer;
+ TStringListSymIdx, TSLCreateSym : Integer;
 
  Procedure RegType(Const Name: TString);
  Var R: Integer;
@@ -3354,7 +3372,20 @@ Begin
  { -------------------------------------------------------- }
  TObjectIdx := SymDeclareClass('TOBJECT', SK_CLASS, -1);
  SymEnterClassScope(TObjectIdx);
- RegMethod('TObject', 'CREATE');
+ TObjCreateSym := RegMethod('TObject', 'CREATE');
+ { Bug trouve en instanciant reellement une classe SANS Create propre     }
+ { (TODO 25 : "TAnimal.Create" ou TAnimal n a jamais redefini Create doit  }
+ { resoudre l HERITE TObject.Create via SymFindInClassChain) : RegMethod    }
+ { seule ne marque PAS IsConstructor (voir Exception.Create ci-dessous,      }
+ { qui le fait explicitement) - sans cette ligne, ParseClassMemberAccess       }
+ { ne reconnaissait JAMAIS TObject.Create comme un constructeur et             }
+ { avertissait "ni un constructeur ni une methode de classe" pour TOUTE          }
+ { classe n ayant pas explicitement redeclare son propre Create.                  }
+ If TObjCreateSym >= 0 Then
+ Begin
+  SymTab[TObjCreateSym].IsConstructor := True;
+  SymTab[TObjCreateSym].ParamCount    := 0;
+ End;
  RegMethod('TObject', 'DESTROY');
  RegMethod('TObject', 'FREE');
  RegMethod('TObject', 'CLASSNAME');
@@ -3374,7 +3405,9 @@ Begin
  { -------------------------------------------------------- }
  ExceptionIdx := SymDeclareClass('EXCEPTION', SK_CLASS, TObjectIdx);
  SymEnterClassScope(ExceptionIdx);
- RegMethod('Exception', 'MESSAGE');
+ ExcMessageSym := RegMethod('Exception', 'MESSAGE');
+ If ExcMessageSym >= 0 Then
+  SymTab[ExcMessageSym].TypeIdx := TypeFindByName('STRING');
  ExcCreateSym := RegMethod('Exception', 'CREATE');
  If ExcCreateSym >= 0 Then
  Begin
@@ -3407,6 +3440,53 @@ Begin
  SymDeclareClass('IUNKNOWN', SK_INTERFACE, -1);
 
  { -------------------------------------------------------- }
+ { TList (TODO 22, Classes minimal - stub optionnel) : liste  }
+ { dynamique de Pointer (pas de generiques dans ce compilateur}
+ { - un seul type de liste "brute"). Redefinit sa PROPRE       }
+ { Create (arite 0, comme TObject, mais avec un vrai corps qui }
+ { initialise ses champs - voir ClassSystemInit/                }
+ { EmitRuntimeLibrary) : les instances ne sont PAS mises a zero}
+ { par l allocateur (HeapAlloc avec dwFlags=0, TODO 15/22),     }
+ { donc une classe qui a des champs a initialiser DOIT avoir   }
+ { sa propre Create, meme d arite identique a celle heritee.    }
+ { -------------------------------------------------------- }
+ TListSymIdx := SymDeclareClass('TLIST', SK_CLASS, TObjectIdx);
+ SymEnterClassScope(TListSymIdx);
+ TListCreateSym := RegMethod('TList', 'CREATE');
+ If TListCreateSym >= 0 Then
+ Begin
+  SymTab[TListCreateSym].IsConstructor := True;
+  SymTab[TListCreateSym].ParamCount    := 0;
+ End;
+ RegMethod('TList', 'ADD');
+ RegMethod('TList', 'GET');
+ RegMethod('TList', 'DELETE');
+ RegMethod('TList', 'CLEAR');
+ RegMethod('TList', 'COUNT');
+ SymLeaveScope;
+
+ { -------------------------------------------------------- }
+ { TStringList (TODO 22) : meme principe que TList, mais       }
+ { stockage d AnsiString (Add/Get/Delete passent par              }
+ { _DPRT_STRASSIGN, TODO 20, pour le comptage de references de   }
+ { chaque slot).                                                   }
+ { -------------------------------------------------------- }
+ TStringListSymIdx := SymDeclareClass('TSTRINGLIST', SK_CLASS, TObjectIdx);
+ SymEnterClassScope(TStringListSymIdx);
+ TSLCreateSym := RegMethod('TStringList', 'CREATE');
+ If TSLCreateSym >= 0 Then
+ Begin
+  SymTab[TSLCreateSym].IsConstructor := True;
+  SymTab[TSLCreateSym].ParamCount    := 0;
+ End;
+ RegMethod('TStringList', 'ADD');
+ RegMethod('TStringList', 'GET');
+ RegMethod('TStringList', 'DELETE');
+ RegMethod('TStringList', 'CLEAR');
+ RegMethod('TStringList', 'COUNT');
+ SymLeaveScope;
+
+ { -------------------------------------------------------- }
  { Procedures et fonctions de base, toujours disponibles     }
  { (le detail des signatures viendra avec TODO 22)           }
  { -------------------------------------------------------- }
@@ -3420,6 +3500,8 @@ Begin
  RegProc('BREAK');    RegProc('CONTINUE');   { TODO 13 }
  RegProc('SETLENGTH');   { tableaux dynamiques, TODO 19 }
  RegProc('DELETE');   RegProc('INSERT');   { AnsiString, TODO 20 }
+ RegProc('REALLOCMEM');   { TODO 22 }
+ RegProc('MOVE');      RegProc('FILLCHAR');   { TODO 22 }
 
  RegFunc('ORD');      RegFunc('CHR');
  RegFunc('SUCC');     RegFunc('PRED');
@@ -3427,6 +3509,8 @@ Begin
  RegFunc('SIZEOF');   RegFunc('LENGTH');
  RegFunc('ABS');      RegFunc('ASSIGNED');
  RegFunc('COPY');     RegFunc('POS');   { AnsiString, TODO 20 }
+ RegFunc('SQR');      RegFunc('SQRT');     { TODO 22 }
+ RegFunc('ROUND');    RegFunc('TRUNC');    { TODO 22 }
 
  { -------------------------------------------------------- }
  { RTL minimale System/SysUtils (TODO 12), corps reels dans  }
@@ -4880,11 +4964,14 @@ Type
 
  { Une classe implemente une interface : GUID + plage de thunks }
  TInterfaceImplRec = Record
-  ClassTypeIdx     : Integer;
-  InterfaceTypeIdx : Integer;
-  GUID             : TString;
-  ThunkFirst       : Integer;
-  ThunkCount       : Integer;
+  ClassTypeIdx      : Integer;
+  InterfaceTypeIdx  : Integer;
+  GUID              : TString;
+  ThunkFirst        : Integer;
+  ThunkCount        : Integer;
+  HiddenFieldOffset : Integer;  { champ cache (pointeur vers la table }
+                                  { de thunks de cette interface), TODO 25 }
+  VTblLabel         : TString;  { etiquette .DATA de la table de thunks }
  End;
 
 Var
@@ -5597,6 +5684,7 @@ Begin
  EmitInstr('PUSH ' + SrcOperand);
  EmitInstr('PUSH ' + DestAddrOperand);
  EmitInstr('CALL ' + DPRT_STR_ASSIGN);
+ EmitInstr('ADD ESP,8');
 End;
 
 Procedure EmitAssignInterface(Const DestAddrOperand, SrcOperand: TString);
@@ -5605,6 +5693,7 @@ Begin
  EmitInstr('PUSH ' + SrcOperand);
  EmitInstr('PUSH ' + DestAddrOperand);
  EmitInstr('CALL ' + DPRT_INTF_ASSIGN);
+ EmitInstr('ADD ESP,8');
 End;
 
 { ------------------------------------------------------------ }
@@ -5632,6 +5721,34 @@ Begin
   EmitInstr('REP MOVSB');
  End;
 End;
+
+{ ------------------------------------------------------------ }
+{ EmitClassToInterfaceCoerce (TODO 25) : quand le membre droit     }
+{ d une affectation vers une variable d interface est une          }
+{ expression de type CLASSE (assignation directe classe->          }
+{ interface, ex. G := Impl ou Impl: TFrenchGreeter), EAX contient   }
+{ pour l instant le pointeur d OBJET brut - mais une variable        }
+{ d interface doit contenir l ADRESSE du champ cache stampe par      }
+{ ParseClassMemberAccess (le pointeur vers la table de thunks de      }
+{ CETTE interface, EmitInterfaceThunks), pas le pointeur d objet        }
+{ lui-meme : dereferencer une fois cette adresse donne la table de       }
+{ thunks, et chaque thunk retranche ce meme offset pour retrouver         }
+{ l objet reel avant de sauter vers la vraie methode (meme                 }
+{ disposition qu un objet COM/Delphi reel). Sans cette correction,           }
+{ un appel via la variable d interface utilisait l offset VMT propre          }
+{ a l INTERFACE applique a la VMT REELLE de la classe (qui commence            }
+{ par Destroy, herite de TObject) et atterrissait silencieusement sur           }
+{ la mauvaise methode - limitation documentee depuis le TODO 17,                }
+{ corrigee ici. N agit que si le membre droit est REELLEMENT de type             }
+{ classe (LastExprTypeIdx, convention TODO 09/10) - une affectation               }
+{ interface->interface (le membre droit est deja de ce type) reste                }
+{ une simple copie de pointeur, deja correcte. `nil` reste `nil`.                  }
+{ Implementation plus bas (TODO 10, apres la declaration de la globale}
+{ LastExprTypeIdx) - seule la signature est necessaire ici.            }
+{ ------------------------------------------------------------ }
+
+Procedure EmitClassToInterfaceCoerce(Const SrcOperand: TString;
+ DestIfaceTypeIdxResolved: Integer); Forward;
 
 { ------------------------------------------------------------ }
 { EmitAssign : point d entree unique de l affectation := ; route }
@@ -5669,7 +5786,10 @@ Begin
   TYK_STRING:
    EmitAssignString(DestOperand, SrcOperand);
   TYK_INTERFACE:
+  Begin
+   EmitClassToInterfaceCoerce(SrcOperand, R);
    EmitAssignInterface(DestOperand, SrcOperand);
+  End;
   TYK_CLASS, TYK_POINTER, TYK_PCHAR, TYK_PROCTYPE:
    EmitAssignPointer(DestOperand, SrcOperand);
   TYK_RECORD, TYK_ARRAY, TYK_SET:
@@ -5836,6 +5956,16 @@ Var
  { 'inherited' sans avoir besoin d un vrai parseur de methodes.        }
  CurSelfTypeIdx : Integer;
 
+ { InInterfaceSection (TODO 23) : True pendant l analyse de la        }
+ { section INTERFACE d une Unit. Une signature Procedure/Function y   }
+ { est une simple DECLARATION (pas de corps - il vient plus tard,     }
+ { dans IMPLEMENTATION) : ParseProcOrFuncDecl la traite alors comme    }
+ { un FORWARD implicite (memes symptome/IsExternal qu un vrai          }
+ { 'forward;'), permettant a IMPLEMENTATION de redefinir proprement    }
+ { le meme symbole avec un corps reel (SymAdd sait deja faire cela     }
+ { pour un forward, TODO 14).                                          }
+ InInterfaceSection : Boolean;
+
 { ------------------------------------------------------------ }
 { ParserInit : reinitialiser le curseur de parsing et le        }
 { contexte d expression avant de compiler un corps.              }
@@ -5847,6 +5977,41 @@ Begin
  LastExprTypeIdx := -1;
  LastExprIsAddr  := False;
  CurSelfTypeIdx  := -1;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitClassToInterfaceCoerce (TODO 25) : implementation (voir la  }
+{ signature/Forward plus haut, avant EmitAssign, pour l explication}
+{ complete) - definie ici, apres LastExprTypeIdx, puisqu elle en    }
+{ a besoin.                                                          }
+{ ------------------------------------------------------------ }
+
+Procedure EmitClassToInterfaceCoerce(Const SrcOperand: TString;
+ DestIfaceTypeIdxResolved: Integer);
+Var
+ SrcClassTypeIdx, ImplIdx : Integer;
+ LblSkip : TString;
+Begin
+ SrcClassTypeIdx := TypeResolve(LastExprTypeIdx);
+ If (SrcClassTypeIdx < 0) Or (SrcClassTypeIdx >= TypeCount) Then Exit;
+ If TypeTab[SrcClassTypeIdx].Kind <> TYK_CLASS Then Exit;
+ If SrcOperand <> 'EAX' Then Exit;   { convention EAX uniquement, TODO 09 }
+
+ ImplIdx := IfaceImplFind(SrcClassTypeIdx, DestIfaceTypeIdxResolved);
+ If ImplIdx < 0 Then
+ Begin
+  WarnMsg('la classe n''implemente pas directement cette interface ' +
+   '(affectation classe->interface)');
+  Exit;
+ End;
+
+ LblSkip := LabelGen;
+ EmitComment('classe -> interface (TODO 25) : EAX devient l adresse du ' +
+  'champ cache de thunks, sauf si nil');
+ EmitInstr('CMP EAX,0');
+ EmitInstr('JE ' + LblSkip);
+ EmitInstr('ADD EAX,' + IntToStr_(IfaceImplTab[ImplIdx].HiddenFieldOffset));
+ EmitLabel(LblSkip);
 End;
 
 { ------------------------------------------------------------ }
@@ -6051,6 +6216,12 @@ Function ParseExpr: Integer; Forward;
 Function ParsePrimary: Integer; Forward;
 Function ParsePostfix(BaseTypeIdx: Integer): Integer; Forward;
 Function ParseCallArgs: Integer; Forward;
+
+{ EmitCompareZeroJcc (TODO 11, definie plus bas avec le reste du   }
+{ codegen des comparaisons) est reutilisee par ParseAssigned        }
+{ (TODO 22) : declaration anticipee necessaire, l ordre habituel     }
+{ du fichier la place APRES les fonctions ParseXxx du TODO 10.        }
+Procedure EmitCompareZeroJcc(Const Jcc: TString); Forward;
 
 { Write/WriteLn/Read/ReadLn (TODO 12) sont variadiques et routees   }
 { depuis ParsePrimary avant meme d atteindre la table des symboles ; }
@@ -6669,6 +6840,328 @@ Begin
  ParseSizeOf := LastExprTypeIdx;
 End;
 
+{ ============================================================ }
+{ TODO 22 - UNITES RTL MINIMALES (SYSTEM, SYSUTILS, CLASSES) [IMPLEMENTE] }
+{ ============================================================ }
+
+{ ------------------------------------------------------------ }
+{ ParseGetMem : GetMem(P, Size) - allocation brute de Size       }
+{ octets via HeapAlloc (meme primitive que New, mais avec une     }
+{ taille explicite plutot que deduite du type pointe). P doit     }
+{ etre un identificateur simple (variable pointeur), comme New/   }
+{ Dispose (simplification documentee, TODO 09).                    }
+{ ------------------------------------------------------------ }
+
+Function ParseGetMem: Integer;
+Var IdentTok: TString;
+Begin
+ PPMatch('(');
+ IdentTok := TokenPool[PP].Val;
+ PPAdvance;
+ PPMatch(',');
+ ParseExpr;               { EAX := Size }
+ PPMatch(')');
+
+ EmitComment('GetMem(' + IdentTok + ',Size) : allocation via HeapAlloc');
+ EmitInstr('PUSH EAX');            { dwBytes, empile en premier }
+ EmitInstr('CALL GetProcessHeap'); { EAX := handle - Size reste protege sur la pile }
+ EmitInstr('PUSH 0');              { dwFlags }
+ EmitInstr('PUSH EAX');            { hHeap, en dernier }
+ EmitInstr('CALL HeapAlloc');
+ GenStoreVar(IdentTok, 'EAX');
+
+ LastExprTypeIdx := -1;
+ ParseGetMem := -1;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseFreeMem : FreeMem(P) - libere via HeapFree le bloc pointe  }
+{ par P (identique a Dispose : ce compilateur ne distingue pas    }
+{ le typage du pointeur pour la liberation elle-meme).             }
+{ ------------------------------------------------------------ }
+
+Function ParseFreeMem: Integer;
+Var IdentTok: TString;
+Begin
+ PPMatch('(');
+ IdentTok := TokenPool[PP].Val;
+ PPAdvance;
+ PPMatch(')');
+
+ GenLoadVar(IdentTok);   { EAX := valeur du pointeur }
+ EmitComment('FreeMem(' + IdentTok + ') : liberation via HeapFree');
+ EmitInstr('MOV ESI,EAX');
+ EmitInstr('CALL GetProcessHeap');
+ EmitInstr('PUSH ESI');
+ EmitInstr('PUSH 0');
+ EmitInstr('PUSH EAX');
+ EmitInstr('CALL HeapFree');
+
+ LastExprTypeIdx := -1;
+ ParseFreeMem := -1;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseReallocMem : ReallocMem(P, NewSize) - redimensionne le     }
+{ bloc pointe par P via HeapReAlloc (meme primitive que           }
+{ _DPRT_DYNARR_SETLENGTH, TODO 19, mais sans l entete cachee       }
+{ refcount/longueur : P est un pointeur brut).                     }
+{ ------------------------------------------------------------ }
+
+Function ParseReallocMem: Integer;
+Var IdentTok: TString;
+Begin
+ PPMatch('(');
+ IdentTok := TokenPool[PP].Val;
+ PPAdvance;
+ PPMatch(',');
+ ParseExpr;                        { EAX := NewSize }
+ PPMatch(')');
+
+ EmitComment('ReallocMem(' + IdentTok + ',NewSize) : via HeapReAlloc');
+ EmitInstr('PUSH EAX');            { dwBytes, empile en premier }
+ GenLoadVar(IdentTok);              { EAX := ancien pointeur }
+ EmitInstr('PUSH EAX');            { lpMem }
+ EmitInstr('CALL GetProcessHeap'); { EAX := handle }
+ EmitInstr('PUSH 0');              { dwFlags }
+ EmitInstr('PUSH EAX');            { hHeap, en dernier }
+ EmitInstr('CALL HeapReAlloc');
+ GenStoreVar(IdentTok, 'EAX');
+
+ LastExprTypeIdx := -1;
+ ParseReallocMem := -1;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseMove : Move(Source, Dest, Count) - copie brute de Count    }
+{ octets via REP MOVSB. Source/Dest doivent etre des               }
+{ identificateurs simples (variables) : GenVarAddr calcule           }
+{ l adresse de la variable ELLE-MEME (pas sa valeur dereferencee),    }
+{ exactement la semantique des parametres non types de Move en       }
+{ vrai Delphi. Simplification documentee : pas de Source^/Dest^      }
+{ (dereference explicite), comme New/Dispose/GetMem/FreeMem.          }
+{ ------------------------------------------------------------ }
+
+Function ParseMove: Integer;
+Var SrcName, DestName: TString;
+Begin
+ PPMatch('(');
+ SrcName := TokenPool[PP].Val;
+ PPAdvance;
+ PPMatch(',');
+ DestName := TokenPool[PP].Val;
+ PPAdvance;
+ PPMatch(',');
+ ParseExpr;                  { EAX := Count }
+ PPMatch(')');
+
+ EmitComment('Move(' + SrcName + ',' + DestName + ',Count)');
+ EmitInstr('PUSH EAX');       { conserver Count }
+ GenVarAddr(SrcName);         { EDX := adresse source }
+ EmitInstr('MOV ESI,EDX');
+ GenVarAddr(DestName);        { EDX := adresse destination }
+ EmitInstr('MOV EDI,EDX');
+ EmitInstr('POP ECX');
+ EmitInstr('CLD');
+ EmitInstr('REP MOVSB');
+
+ LastExprTypeIdx := -1;
+ ParseMove := -1;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseFillChar : FillChar(X, Count, Value) - remplissage brut    }
+{ de Count octets via REP STOSB. X doit etre un identificateur     }
+{ simple (meme simplification que Move ci-dessus).                  }
+{ ------------------------------------------------------------ }
+
+Function ParseFillChar: Integer;
+Var XName: TString;
+Begin
+ PPMatch('(');
+ XName := TokenPool[PP].Val;
+ PPAdvance;
+ PPMatch(',');
+ ParseExpr;                 { EAX := Count }
+ EmitInstr('PUSH EAX');
+ PPMatch(',');
+ ParseExpr;                 { EAX := Value (AL utilise par STOSB) }
+ PPMatch(')');
+
+ EmitComment('FillChar(' + XName + ',Count,Value)');
+ GenVarAddr(XName);          { EDX := adresse de X }
+ EmitInstr('MOV EDI,EDX');
+ EmitInstr('POP ECX');
+ EmitInstr('CLD');
+ EmitInstr('REP STOSB');
+
+ LastExprTypeIdx := -1;
+ ParseFillChar := -1;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseOrd : Ord(X) - un Char/Boolean/enumeration/sous-intervalle }
+{ partage deja la representation entiere de son type de base       }
+{ (TODO 06) : aucun code n est necessaire au-dela de l evaluation   }
+{ de l expression elle-meme, seul le type du resultat change.        }
+{ ------------------------------------------------------------ }
+
+Function ParseOrd: Integer;
+Begin
+ PPMatch('(');
+ ParseExpr;      { EAX := valeur ordinale, deja une representation entiere }
+ PPMatch(')');
+ LastExprTypeIdx := TypeFindByName('Integer');
+ ParseOrd := LastExprTypeIdx;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseChr : Chr(X) - reinterprete un entier comme un Char        }
+{ (masque au octet bas, comme le fait deja ConstEvalAtom pour la  }
+{ version compile-time de Chr).                                    }
+{ ------------------------------------------------------------ }
+
+Function ParseChr: Integer;
+Begin
+ PPMatch('(');
+ ParseExpr;       { EAX := valeur entiere }
+ PPMatch(')');
+ EmitInstr('AND EAX,0FFh');
+ LastExprTypeIdx := TypeFindByName('Char');
+ ParseChr := LastExprTypeIdx;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseAbs / ParseSqr : intrinseques arithmetiques ENTIERS purs   }
+{ (aucun FPU necessaire) - Abs par negation conditionnelle, Sqr   }
+{ par IMUL EAX,EAX. Le type du resultat est conserve tel quel      }
+{ (Integer typiquement).                                           }
+{ ------------------------------------------------------------ }
+
+Function ParseAbs: Integer;
+Var LblPos: TString;
+Begin
+ PPMatch('(');
+ ParseExpr;
+ PPMatch(')');
+ LblPos := LabelGen;
+ EmitInstr('CMP EAX,0');
+ EmitInstr('JGE ' + LblPos);
+ EmitInstr('NEG EAX');
+ EmitLabel(LblPos);
+ ParseAbs := LastExprTypeIdx;
+End;
+
+Function ParseSqr: Integer;
+Begin
+ PPMatch('(');
+ ParseExpr;
+ PPMatch(')');
+ EmitInstr('IMUL EAX,EAX');
+ ParseSqr := LastExprTypeIdx;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseFloatIntrinsicStub : Sqrt/Round/Trunc necessiteraient un   }
+{ vrai codegen FPU (FLD/FSQRT/FISTP...), qui n existe nulle part   }
+{ ailleurs dans ce fichier (l arithmetique flottante elle-meme     }
+{ n est encore qu un avertissement, voir ParseExprPrec et le cas   }
+{ TK_REAL de ParsePrimary) - meme simplification deja assumee la : }
+{ la routine est reconnue et consomme correctement ses arguments,  }
+{ mais n effectue pas encore le calcul reel (avertissement +        }
+{ resultat 0). Un vrai support demandera d introduire une           }
+{ convention FPU generale, hors de la portee raisonnable de ce       }
+{ seul TODO.                                                        }
+{ ------------------------------------------------------------ }
+
+Function ParseFloatIntrinsicStub(Const Name: TString): Integer;
+Begin
+ PPMatch('(');
+ ParseExpr;
+ PPMatch(')');
+ WarnMsg(Name + ' : arithmetique flottante non encore implementee (FPU)');
+ EmitInstr('XOR EAX,EAX');
+ LastExprTypeIdx := TypeFindByName('Integer');
+ ParseFloatIntrinsicStub := LastExprTypeIdx;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseAssigned : Assigned(X) - sucre syntaxique pour X <> nil.  }
+{ nil est deja represente par l entier 0 (RegConst('NIL', 0)) :   }
+{ reutilise directement EmitCompareZeroJcc (meme motif que les     }
+{ comparaisons ordinaires, TODO 11).                                }
+{ ------------------------------------------------------------ }
+
+Function ParseAssigned: Integer;
+Begin
+ PPMatch('(');
+ ParseExpr;          { EAX := reference/pointeur }
+ PPMatch(')');
+ EmitCompareZeroJcc('JNE');
+ LastExprTypeIdx := TypeFindByName('Boolean');
+ ParseAssigned := LastExprTypeIdx;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseFreeAndNil : FreeAndNil(X) - equivalent a X.Free suivi de }
+{ X := nil. Reutilise exactement la meme resolution de methode     }
+{ (VMTFindMethod/VMTFindMethodSym/SymFindInClassChain) et la        }
+{ meme sequence d appel (Self empile en dernier, ADD ESP apres)      }
+{ que ParseFieldAccess pour un appel de methode ordinaire.           }
+{ ------------------------------------------------------------ }
+
+Function ParseFreeAndNil: Integer;
+Var
+ IdentTok : TString;
+ VI, TI, VMTOffset, MethodSym : Integer;
+Begin
+ PPMatch('(');
+ IdentTok := TokenPool[PP].Val;
+ PPAdvance;
+ PPMatch(')');
+
+ VI := SymFind(IdentTok);
+ If VI < 0 Then
+ Begin
+  WarnMsg('FreeAndNil: variable inconnue: ' + IdentTok);
+  ParseFreeAndNil := -1;
+  Exit;
+ End;
+ TI := TypeResolve(SymTab[VI].TypeIdx);
+ If Not TypeIsClass(TI) Then
+ Begin
+  WarnMsg('FreeAndNil attend une instance de classe: ' + IdentTok);
+  ParseFreeAndNil := -1;
+  Exit;
+ End;
+
+ GenLoadVar(IdentTok);        { EAX := instance }
+ EmitComment('FreeAndNil(' + IdentTok + ')');
+ VMTOffset := VMTFindMethod(TI, 'FREE');
+ MethodSym := VMTFindMethodSym(TI, 'FREE');
+ If MethodSym < 0 Then MethodSym := SymFindInClassChain(TI, 'FREE');
+
+ If MethodSym >= 0 Then
+ Begin
+  EmitInstr('MOV EBX,EAX');
+  EmitInstr('PUSH EBX');
+  If VMTOffset >= 0 Then
+  Begin
+   EmitInstr('MOV EDX,DWORD PTR [EBX]');
+   EmitInstr('CALL DWORD PTR [EDX+' + IntToStr_(VMTOffset) + ']');
+  End
+  Else
+   EmitInstr('CALL ' + SymTab[MethodSym].MangledName);
+  EmitInstr('ADD ESP,4');
+ End
+ Else
+  WarnMsg('FreeAndNil: methode Free introuvable pour ' + IdentTok);
+
+ GenStoreVar(IdentTok, '0');
+ LastExprTypeIdx := -1;
+ ParseFreeAndNil := -1;
+End;
+
 { ------------------------------------------------------------ }
 { ParseInherited : inherited Methode - resout Methode dans la    }
 { classe ancetre de CurSelfTypeIdx (SymFindInherited, TODO 05) et }
@@ -6755,21 +7248,74 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
-{ ParseArrayLenHigh / ParseArrayLow (TODO 19) : Length(Arr),       }
-{ High(Arr), Low(Arr). Un tableau STATIQUE a des bornes connues a   }
-{ la COMPILATION (Lo/Hi du type) : aucun code n est genere, juste   }
-{ une constante. Un tableau DYNAMIQUE stocke sa longueur dans        }
-{ l entete cachee juste avant les donnees ([Pointeur-4], voir         }
-{ _DPRT_DYNARR_SETLENGTH) - High = Length-1, Low = 0 toujours ;       }
-{ un pointeur nil (tableau jamais dimensionne) vaut longueur 0.        }
-{ Porte uniquement sur les TABLEAUX ici (Length/High/Low sur une      }
-{ chaine ou un type ordinal restent hors de portee de ce TODO).        }
+{ OrdinalTypeBounds (TODO 22) : bornes Lo/Hi d un type ORDINAL   }
+{ designe par son NOM (et non par une variable) - sous-intervalle}
+{ (Lo/Hi deja stockes par TypeAddSubrange), enumeration (bornes   }
+{ deduites du premier/dernier EnumValPool) ou type ordinal        }
+{ predefini (Byte/Char/Boolean/ShortInt/Word/SmallInt/Integer/    }
+{ LongInt - bornes classiques Delphi, en dur faute de table de     }
+{ bornes dediee pour ces types de base). Utilise par High/Low     }
+{ (ParseArrayLenHigh/ParseArrayLow) quand l argument n est PAS     }
+{ une variable mais un nom de type - ex: High(Byte), Low(TCouleur)}
+{ ------------------------------------------------------------ }
+
+Function OrdinalTypeBounds(TI: Integer; Var LoV, HiV: LongInt): Boolean;
+Var Up: TString;
+Begin
+ OrdinalTypeBounds := False;
+ If (TI < 0) Or (TI >= TypeCount) Then Exit;
+
+ If TypeTab[TI].Kind = TYK_SUBRANGE Then
+ Begin
+  LoV := TypeTab[TI].Lo; HiV := TypeTab[TI].Hi;
+  OrdinalTypeBounds := True;
+  Exit;
+ End;
+
+ If (TypeTab[TI].Kind = TYK_ENUM) And (TypeTab[TI].EnumCount > 0) Then
+ Begin
+  LoV := EnumValPool[TypeTab[TI].EnumFirst].Value;
+  HiV := EnumValPool[TypeTab[TI].EnumFirst + TypeTab[TI].EnumCount - 1].Value;
+  OrdinalTypeBounds := True;
+  Exit;
+ End;
+
+ Up := StrUpperCase(TypeTab[TI].Name);
+ If (Up = 'BYTE') Or (Up = 'CHAR') Then
+ Begin LoV := 0; HiV := 255; OrdinalTypeBounds := True; Exit; End;
+ If Up = 'BOOLEAN' Then
+ Begin LoV := 0; HiV := 1; OrdinalTypeBounds := True; Exit; End;
+ If Up = 'SHORTINT' Then
+ Begin LoV := -128; HiV := 127; OrdinalTypeBounds := True; Exit; End;
+ If Up = 'WORD' Then
+ Begin LoV := 0; HiV := 65535; OrdinalTypeBounds := True; Exit; End;
+ If Up = 'SMALLINT' Then
+ Begin LoV := -32768; HiV := 32767; OrdinalTypeBounds := True; Exit; End;
+ If (Up = 'INTEGER') Or (Up = 'LONGINT') Then
+ Begin LoV := -2147483647 - 1; HiV := 2147483647; OrdinalTypeBounds := True; Exit; End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseArrayLenHigh / ParseArrayLow (TODO 19, etendu TODO 22) :  }
+{ Length(Arr), High(Arr), Low(Arr). Un tableau STATIQUE a des     }
+{ bornes connues a la COMPILATION (Lo/Hi du type) : aucun code n }
+{ est genere, juste une constante. Un tableau DYNAMIQUE stocke sa}
+{ longueur dans l entete cachee juste avant les donnees            }
+{ ([Pointeur-4], voir _DPRT_DYNARR_SETLENGTH) - High = Length-1,   }
+{ Low = 0 toujours ; un pointeur nil (tableau jamais dimensionne)  }
+{ vaut longueur 0. Depuis TODO 22, High/Low acceptent aussi un      }
+{ NOM DE TYPE ordinal (sous-intervalle, enumeration, ou type        }
+{ predefini) via OrdinalTypeBounds - Length reste reserve aux       }
+{ tableaux/chaines (High/Low(TypeOrdinal) n a pas d equivalent      }
+{ Length).                                                           }
 { ------------------------------------------------------------ }
 
 Function ParseArrayLenHigh(WantHigh: Boolean): Integer;
 Var
  IdentTok, LblZero, LblDone : TString;
  VI, TI : Integer;
+ LoV, HiV : LongInt;
+ IsVarSym : Boolean;
 Begin
  PPMatch('(');
  IdentTok := TokenPool[PP].Val;
@@ -6777,17 +7323,26 @@ Begin
  PPMatch(')');
 
  VI := SymFind(IdentTok);
+ { Un nom de TYPE (Byte, TCouleur...) est aussi enregistre comme      }
+ { symbole (RegType, SK_TYPE) : IsVarSym distingue une VRAIE variable  }
+ { (SK_VAR/SK_PARAM, chemin tableau/chaine) d un simple nom de type     }
+ { (chemin bornes ordinales High/Low(TypeName), TODO 22) - VI >= 0 ne   }
+ { suffit PAS a lui seul pour ce distinguo.                              }
+ IsVarSym := (VI >= 0) And (SymTab[VI].Kind In [SK_VAR, SK_PARAM]);
  TI := -1;
- If VI >= 0 Then TI := TypeResolve(SymTab[VI].TypeIdx);
+ If IsVarSym Then TI := TypeResolve(SymTab[VI].TypeIdx)
+ Else TI := TypeResolve(TypeFindByName(IdentTok));
 
- If (TI >= 0) And (TypeTab[TI].Kind = TYK_ARRAY) And Not TypeTab[TI].IsDynArray Then
+ If IsVarSym And (TI >= 0) And (TypeTab[TI].Kind = TYK_ARRAY) And
+    Not TypeTab[TI].IsDynArray Then
  Begin
   If WantHigh Then
    EmitInstr('MOV EAX,' + IntToStr_(TypeTab[TI].Hi))
   Else
    EmitInstr('MOV EAX,' + IntToStr_(TypeTab[TI].Hi - TypeTab[TI].Lo + 1));
  End
- Else If (TI >= 0) And (TypeTab[TI].Kind = TYK_ARRAY) And TypeTab[TI].IsDynArray Then
+ Else If IsVarSym And (TI >= 0) And (TypeTab[TI].Kind = TYK_ARRAY) And
+    TypeTab[TI].IsDynArray Then
  Begin
   GenLoadVar(IdentTok);   { EAX = pointeur de donnees (0 si jamais dimensionne) }
   EmitInstr('TEST EAX,EAX');
@@ -6801,7 +7356,8 @@ Begin
   If WantHigh Then EmitInstr('MOV EAX,-1') Else EmitInstr('XOR EAX,EAX');
   EmitLabel(LblDone);
  End
- Else If (Not WantHigh) And (TI >= 0) And (TypeTab[TI].Kind = TYK_STRING) Then
+ Else If (Not WantHigh) And IsVarSym And (TI >= 0) And
+    (TypeTab[TI].Kind = TYK_STRING) Then
  Begin
   { Length(S) (TODO 20) : meme en-tete cachee qu un tableau dynamique  }
   { ([Pointeur-4]) - une AnsiString litterale (refcount -1) porte        }
@@ -6818,10 +7374,18 @@ Begin
   EmitInstr('XOR EAX,EAX');
   EmitLabel(LblDone);
  End
+ Else If (Not IsVarSym) And OrdinalTypeBounds(TI, LoV, HiV) Then
+ Begin
+  { High(NomDeType)/Low(NomDeType) (TODO 22) : borne constante }
+  If WantHigh Then
+   EmitInstr('MOV EAX,' + IntToStr_(HiV))
+  Else
+   EmitInstr('MOV EAX,' + IntToStr_(LoV));
+ End
  Else
  Begin
-  WarnMsg('Length/High attendent un tableau (ou une chaine pour Length): ' +
-   IdentTok);
+  WarnMsg('Length/High attendent un tableau, une chaine (Length), ' +
+   'ou un type ordinal (High/Low): ' + IdentTok);
   EmitInstr('XOR EAX,EAX');
  End;
 
@@ -6833,6 +7397,8 @@ Function ParseArrayLow: Integer;
 Var
  IdentTok : TString;
  VI, TI : Integer;
+ LoV, HiV : LongInt;
+ IsVarSym : Boolean;
 Begin
  PPMatch('(');
  IdentTok := TokenPool[PP].Val;
@@ -6840,14 +7406,18 @@ Begin
  PPMatch(')');
 
  VI := SymFind(IdentTok);
+ IsVarSym := (VI >= 0) And (SymTab[VI].Kind In [SK_VAR, SK_PARAM]);
  TI := -1;
- If VI >= 0 Then TI := TypeResolve(SymTab[VI].TypeIdx);
+ If IsVarSym Then TI := TypeResolve(SymTab[VI].TypeIdx)
+ Else TI := TypeResolve(TypeFindByName(IdentTok));
 
- If (TI >= 0) And (TypeTab[TI].Kind = TYK_ARRAY) Then
+ If IsVarSym And (TI >= 0) And (TypeTab[TI].Kind = TYK_ARRAY) Then
   EmitInstr('MOV EAX,' + IntToStr_(TypeTab[TI].Lo))   { 0 pour un dynamique }
+ Else If (Not IsVarSym) And OrdinalTypeBounds(TI, LoV, HiV) Then
+  EmitInstr('MOV EAX,' + IntToStr_(LoV))
  Else
  Begin
-  WarnMsg('Low attend un tableau: ' + IdentTok);
+  WarnMsg('Low attend un tableau ou un type ordinal: ' + IdentTok);
   EmitInstr('XOR EAX,EAX');
  End;
 
@@ -7129,6 +7699,20 @@ Begin
   If Up = 'DELETE' Then Begin ParsePrimary := ParseStrDelete; Exit; End;
   If Up = 'INSERT' Then Begin ParsePrimary := ParseStrInsert; Exit; End;
   If Up = 'POS' Then Begin ParsePrimary := ParsePostfix(ParseStrPos); Exit; End;
+  If Up = 'GETMEM' Then Begin ParsePrimary := ParseGetMem; Exit; End;
+  If Up = 'FREEMEM' Then Begin ParsePrimary := ParseFreeMem; Exit; End;
+  If Up = 'REALLOCMEM' Then Begin ParsePrimary := ParseReallocMem; Exit; End;
+  If Up = 'MOVE' Then Begin ParsePrimary := ParseMove; Exit; End;
+  If Up = 'FILLCHAR' Then Begin ParsePrimary := ParseFillChar; Exit; End;
+  If Up = 'ORD' Then Begin ParsePrimary := ParseOrd; Exit; End;
+  If Up = 'CHR' Then Begin ParsePrimary := ParseChr; Exit; End;
+  If Up = 'ABS' Then Begin ParsePrimary := ParseAbs; Exit; End;
+  If Up = 'SQR' Then Begin ParsePrimary := ParseSqr; Exit; End;
+  If Up = 'SQRT' Then Begin ParsePrimary := ParseFloatIntrinsicStub('Sqrt'); Exit; End;
+  If Up = 'ROUND' Then Begin ParsePrimary := ParseFloatIntrinsicStub('Round'); Exit; End;
+  If Up = 'TRUNC' Then Begin ParsePrimary := ParseFloatIntrinsicStub('Trunc'); Exit; End;
+  If Up = 'ASSIGNED' Then Begin ParsePrimary := ParseAssigned; Exit; End;
+  If Up = 'FREEANDNIL' Then Begin ParsePrimary := ParseFreeAndNil; Exit; End;
 
   SI := SymFind(Name);
   If SI < 0 Then
@@ -8079,6 +8663,10 @@ Procedure EmitRuntimeLibrary;
 Var
  TObjIdx, CreateSym, DestroySym, FreeSym, DestroyVMTOffset : Integer;
  ExcIdx, ExcCreateSym, ExcMessageSym, FMsgFieldIdx, FMsgOffset : Integer;
+ TListIdx, TLCreateSym, TLAddSym, TLGetSym, TLDelSym, TLClearSym, TLCountSym : Integer;
+ TLItemsOff, TLCountOff, TLCapOff : Integer;
+ TSLIdx, TSLCreateSym, TSLAddSym, TSLGetSym, TSLDelSym, TSLClearSym, TSLCountSym : Integer;
+ TSLItemsOff, TSLCountOff, TSLCapOff : Integer;
 Begin
  EmitComment('--- RTL minimale : _DPRT_INIT ---');
  EmitLabel(DPRT_INIT);
@@ -8943,6 +9531,7 @@ Begin
    EmitProlog(0);
    EmitEpilog;
    EmitBlankLine;
+   SymTab[CreateSym].IsExternal := False;
   End;
 
   If DestroySym >= 0 Then
@@ -8952,6 +9541,7 @@ Begin
    EmitProlog(0);
    EmitEpilog;
    EmitBlankLine;
+   SymTab[DestroySym].IsExternal := False;
   End;
 
   If (FreeSym >= 0) And (DestroySym >= 0) Then
@@ -8983,6 +9573,7 @@ Begin
    EmitLabel('DPRT_TOBJECT_FREE_DONE');
    EmitEpilog;
    EmitBlankLine;
+   SymTab[FreeSym].IsExternal := False;
   End;
  End;
 
@@ -9012,6 +9603,7 @@ Begin
    EmitInstr('MOV DWORD PTR [EAX+' + IntToStr_(FMsgOffset) + '],EDX');
    EmitEpilog;
    EmitBlankLine;
+   SymTab[ExcCreateSym].IsExternal := False;
   End;
 
   If (ExcMessageSym >= 0) And (FMsgFieldIdx >= 0) Then
@@ -9023,6 +9615,7 @@ Begin
    EmitInstr('MOV EAX,DWORD PTR [EAX+' + IntToStr_(FMsgOffset) + ']');
    EmitEpilog;
    EmitBlankLine;
+   SymTab[ExcMessageSym].IsExternal := False;
   End;
  End;
 
@@ -9095,6 +9688,8 @@ Begin
   '(VAR ArrPtr, NewLen, ElemSize) (TODO 19) ---');
  EmitLabel(DPRT_DYNARR_SETLENGTH);
  EmitProlog(4);
+ EmitInstr('PUSH ESI');
+ EmitInstr('PUSH EBX');
  EmitInstr('MOV EAX,DWORD PTR [EBP+12]');    { NewLen }
  EmitInstr('IMUL EAX,DWORD PTR [EBP+16]');   { * ElemSize }
  EmitInstr('ADD EAX,8');                     { + entete (refcount+longueur) }
@@ -9123,8 +9718,360 @@ Begin
  EmitInstr('MOV DWORD PTR [EAX+4],EBX');     { longueur }
  EmitInstr('ADD EAX,8');                     { EAX = pointeur de donnees }
  EmitInstr('MOV DWORD PTR [ESI],EAX');
+ EmitInstr('POP EBX');
+ EmitInstr('POP ESI');
  EmitEpilog;
  EmitBlankLine;
+
+ { --- TList (TODO 22, Classes minimal) : liste dynamique de       }
+ { Pointer. Stockage brut (HeapAlloc/HeapReAlloc, dwFlags=0 - pas   }
+ { de mise a zero necessaire, les elements sont de simples pointeurs}
+ { ecrits directement, jamais dereferences comme en-tete de bloc).   }
+ { Champs caches FITEMS (Pointer)/FCOUNT/FCAPACITY (Integer) ajoutes }
+ { par ClassSystemInit ; offsets retrouves ici dynamiquement, comme   }
+ { FMessage/Exception ci-dessus.                                       }
+ { Note : les champs FITEMS/FCOUNT/FCAPACITY ne sont ajoutes qu au    }
+ { premier appel de ClassSystemInit - or EmitRuntimeLibrary peut       }
+ { s executer AVANT (ex: EmitSelfTest, appele tot dans Run, produit    }
+ { un squelette .asm avant tout ClassSystemInit). FieldFindInClass     }
+ { renvoie -1 sans crasher dans ce cas (TypeTab[...].FieldFirst < 0),  }
+ { mais indexer FieldPool avec -1 crasherait : le garde-fou             }
+ { TypeTab[...].FieldFirst >= 0 evite d emettre ces corps (avec des      }
+ { offsets bidons) tant que les champs ne sont pas encore poses -        }
+ { la VRAIE compilation (Run), elle, a toujours appele ClassSystemInit  }
+ { avant d atteindre EmitSkeletonProgram.                                 }
+ TListIdx := SymFind('TList');
+ If (TListIdx >= 0) And (TypeTab[SymTab[TListIdx].TypeIdx].FieldFirst >= 0) Then
+ Begin
+  TLCreateSym := SymFindInClass(TListIdx, 'CREATE');
+  TLAddSym    := SymFindInClass(TListIdx, 'ADD');
+  TLGetSym    := SymFindInClass(TListIdx, 'GET');
+  TLDelSym    := SymFindInClass(TListIdx, 'DELETE');
+  TLClearSym  := SymFindInClass(TListIdx, 'CLEAR');
+  TLCountSym  := SymFindInClass(TListIdx, 'COUNT');
+  TLItemsOff  := FieldPool[FieldFindInClass(SymTab[TListIdx].TypeIdx, 'FITEMS')].Offset;
+  TLCountOff  := FieldPool[FieldFindInClass(SymTab[TListIdx].TypeIdx, 'FCOUNT')].Offset;
+  TLCapOff    := FieldPool[FieldFindInClass(SymTab[TListIdx].TypeIdx, 'FCAPACITY')].Offset;
+
+  If TLCreateSym >= 0 Then
+  Begin
+   EmitComment('--- TList.Create : initialise FItems/FCount/FCapacity ---');
+   EmitLabel(SymTab[TLCreateSym].MangledName);
+   EmitProlog(0);
+   EmitInstr('MOV EAX,DWORD PTR [EBP+8]');   { Self }
+   EmitInstr('MOV DWORD PTR [EAX+' + IntToStr_(TLItemsOff) + '],0');
+   EmitInstr('MOV DWORD PTR [EAX+' + IntToStr_(TLCountOff) + '],0');
+   EmitInstr('MOV DWORD PTR [EAX+' + IntToStr_(TLCapOff) + '],0');
+   EmitEpilog;
+   EmitBlankLine;
+   SymTab[TLCreateSym].IsExternal := False;
+  End;
+
+  If TLAddSym >= 0 Then
+  Begin
+   EmitComment('--- TList.Add(Item): Integer - agrandit si necessaire ---');
+   EmitLabel(SymTab[TLAddSym].MangledName);
+   EmitProlog(0);
+   EmitInstr('MOV EBX,DWORD PTR [EBP+8]');    { Self }
+   EmitInstr('MOV EAX,DWORD PTR [EBX+' + IntToStr_(TLCountOff) + ']');
+   EmitInstr('CMP EAX,DWORD PTR [EBX+' + IntToStr_(TLCapOff) + ']');
+   EmitInstr('JL DPRT_TLADD_NOGROW');
+   EmitInstr('MOV ESI,DWORD PTR [EBX+' + IntToStr_(TLCapOff) + ']');
+   EmitInstr('SHL ESI,1');
+   EmitInstr('TEST ESI,ESI');
+   EmitInstr('JNZ DPRT_TLADD_CAPOK');
+   EmitInstr('MOV ESI,4');
+   EmitLabel('DPRT_TLADD_CAPOK');
+   EmitInstr('MOV EDI,ESI');
+   EmitInstr('SHL EDI,2');                    { EDI = NewCap*4 octets }
+   EmitInstr('MOV EAX,DWORD PTR [EBX+' + IntToStr_(TLItemsOff) + ']');
+   EmitInstr('TEST EAX,EAX');
+   EmitInstr('JZ DPRT_TLADD_ALLOCNEW');
+   EmitInstr('CALL GetProcessHeap');
+   EmitInstr('PUSH EDI');
+   EmitInstr('PUSH DWORD PTR [EBX+' + IntToStr_(TLItemsOff) + ']');
+   EmitInstr('PUSH 0');
+   EmitInstr('PUSH EAX');
+   EmitInstr('CALL HeapReAlloc');
+   EmitInstr('JMP DPRT_TLADD_GROWDONE');
+   EmitLabel('DPRT_TLADD_ALLOCNEW');
+   EmitInstr('CALL GetProcessHeap');
+   EmitInstr('PUSH EDI');
+   EmitInstr('PUSH 0');
+   EmitInstr('PUSH EAX');
+   EmitInstr('CALL HeapAlloc');
+   EmitLabel('DPRT_TLADD_GROWDONE');
+   EmitInstr('MOV DWORD PTR [EBX+' + IntToStr_(TLItemsOff) + '],EAX');
+   EmitInstr('MOV DWORD PTR [EBX+' + IntToStr_(TLCapOff) + '],ESI');
+   EmitLabel('DPRT_TLADD_NOGROW');
+   EmitInstr('MOV EAX,DWORD PTR [EBX+' + IntToStr_(TLItemsOff) + ']');
+   EmitInstr('MOV EDX,DWORD PTR [EBX+' + IntToStr_(TLCountOff) + ']');
+   EmitInstr('MOV ECX,DWORD PTR [EBP+12]');    { Item }
+   EmitInstr('MOV DWORD PTR [EAX+EDX*4],ECX');
+   EmitInstr('MOV EAX,DWORD PTR [EBX+' + IntToStr_(TLCountOff) + ']');
+   EmitInstr('INC DWORD PTR [EBX+' + IntToStr_(TLCountOff) + ']');
+   EmitEpilog;
+   EmitBlankLine;
+   SymTab[TLAddSym].IsExternal := False;
+  End;
+
+  If TLGetSym >= 0 Then
+  Begin
+   EmitComment('--- TList.Get(Index): Pointer ---');
+   EmitLabel(SymTab[TLGetSym].MangledName);
+   EmitProlog(0);
+   EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+   EmitInstr('MOV EAX,DWORD PTR [EAX+' + IntToStr_(TLItemsOff) + ']');
+   EmitInstr('MOV EDX,DWORD PTR [EBP+12]');
+   EmitInstr('MOV EAX,DWORD PTR [EAX+EDX*4]');
+   EmitEpilog;
+   EmitBlankLine;
+   SymTab[TLGetSym].IsExternal := False;
+  End;
+
+  If TLDelSym >= 0 Then
+  Begin
+   EmitComment('--- TList.Delete(Index) - decale les elements suivants ---');
+   EmitLabel(SymTab[TLDelSym].MangledName);
+   EmitProlog(0);
+   EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
+   EmitInstr('MOV EDI,DWORD PTR [EBX+' + IntToStr_(TLItemsOff) + ']');
+   EmitInstr('MOV EDX,DWORD PTR [EBP+12]');    { Index }
+   EmitInstr('MOV ECX,DWORD PTR [EBX+' + IntToStr_(TLCountOff) + ']');
+   EmitInstr('SUB ECX,EDX');
+   EmitInstr('DEC ECX');                        { nb elements a decaler }
+   EmitInstr('CMP ECX,0');
+   EmitInstr('JLE DPRT_TLDEL_SKIPSHIFT');
+   EmitInstr('PUSH EDI');
+   EmitInstr('LEA ESI,[EDI+EDX*4+4]');
+   EmitInstr('LEA EDI,[EDI+EDX*4]');
+   EmitInstr('CLD');
+   EmitInstr('REP MOVSD');
+   EmitInstr('POP EDI');
+   EmitLabel('DPRT_TLDEL_SKIPSHIFT');
+   EmitInstr('DEC DWORD PTR [EBX+' + IntToStr_(TLCountOff) + ']');
+   EmitEpilog;
+   EmitBlankLine;
+   SymTab[TLDelSym].IsExternal := False;
+  End;
+
+  If TLClearSym >= 0 Then
+  Begin
+   EmitComment('--- TList.Clear - remet le compteur a zero (garde le bloc) ---');
+   EmitLabel(SymTab[TLClearSym].MangledName);
+   EmitProlog(0);
+   EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+   EmitInstr('MOV DWORD PTR [EAX+' + IntToStr_(TLCountOff) + '],0');
+   EmitEpilog;
+   EmitBlankLine;
+   SymTab[TLClearSym].IsExternal := False;
+  End;
+
+  If TLCountSym >= 0 Then
+  Begin
+   EmitComment('--- TList.Count: Integer ---');
+   EmitLabel(SymTab[TLCountSym].MangledName);
+   EmitProlog(0);
+   EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+   EmitInstr('MOV EAX,DWORD PTR [EAX+' + IntToStr_(TLCountOff) + ']');
+   EmitEpilog;
+   EmitBlankLine;
+   SymTab[TLCountSym].IsExternal := False;
+  End;
+ End;
+
+ { --- TStringList (TODO 22) : meme structure que TList, mais       }
+ { elements AnsiString avec comptage de references reel              }
+ { (_DPRT_STRASSIGN, TODO 20) sur chaque slot. Croissance avec        }
+ { HEAP_ZERO_MEMORY (dwFlags=8, contrairement a TList) : un slot      }
+ { fraichement alloue DOIT valoir nil avant sa premiere ecriture,      }
+ { sans quoi _DPRT_STRASSIGN interpreterait un octet de bloc heap     }
+ { non initialise comme un ancien pointeur de chaine a liberer.        }
+ { Delete() libere explicitement le slot supprime (StrAssign(nil,..)) }
+ { PUIS remet a nil l ancien DERNIER slot apres decalage : sans cela   }
+ { ce slot garderait une copie brute (non comptee) du dernier pointeur}
+ { de chaine, causant une double liberation le jour ou Add() l ecrase.}
+ TSLIdx := SymFind('TStringList');
+ If (TSLIdx >= 0) And (TypeTab[SymTab[TSLIdx].TypeIdx].FieldFirst >= 0) Then
+ Begin
+  TSLCreateSym := SymFindInClass(TSLIdx, 'CREATE');
+  TSLAddSym    := SymFindInClass(TSLIdx, 'ADD');
+  TSLGetSym    := SymFindInClass(TSLIdx, 'GET');
+  TSLDelSym    := SymFindInClass(TSLIdx, 'DELETE');
+  TSLClearSym  := SymFindInClass(TSLIdx, 'CLEAR');
+  TSLCountSym  := SymFindInClass(TSLIdx, 'COUNT');
+  TSLItemsOff  := FieldPool[FieldFindInClass(SymTab[TSLIdx].TypeIdx, 'FITEMS')].Offset;
+  TSLCountOff  := FieldPool[FieldFindInClass(SymTab[TSLIdx].TypeIdx, 'FCOUNT')].Offset;
+  TSLCapOff    := FieldPool[FieldFindInClass(SymTab[TSLIdx].TypeIdx, 'FCAPACITY')].Offset;
+
+  If TSLCreateSym >= 0 Then
+  Begin
+   EmitComment('--- TStringList.Create : initialise FItems/FCount/FCapacity ---');
+   EmitLabel(SymTab[TSLCreateSym].MangledName);
+   EmitProlog(0);
+   EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+   EmitInstr('MOV DWORD PTR [EAX+' + IntToStr_(TSLItemsOff) + '],0');
+   EmitInstr('MOV DWORD PTR [EAX+' + IntToStr_(TSLCountOff) + '],0');
+   EmitInstr('MOV DWORD PTR [EAX+' + IntToStr_(TSLCapOff) + '],0');
+   EmitEpilog;
+   EmitBlankLine;
+   SymTab[TSLCreateSym].IsExternal := False;
+  End;
+
+  If TSLAddSym >= 0 Then
+  Begin
+   EmitComment('--- TStringList.Add(S: String): Integer ---');
+   EmitLabel(SymTab[TSLAddSym].MangledName);
+   EmitProlog(0);
+   EmitInstr('MOV EBX,DWORD PTR [EBP+8]');    { Self }
+   EmitInstr('MOV EAX,DWORD PTR [EBX+' + IntToStr_(TSLCountOff) + ']');
+   EmitInstr('CMP EAX,DWORD PTR [EBX+' + IntToStr_(TSLCapOff) + ']');
+   EmitInstr('JL DPRT_TSLADD_NOGROW');
+   EmitInstr('MOV ESI,DWORD PTR [EBX+' + IntToStr_(TSLCapOff) + ']');
+   EmitInstr('SHL ESI,1');
+   EmitInstr('TEST ESI,ESI');
+   EmitInstr('JNZ DPRT_TSLADD_CAPOK');
+   EmitInstr('MOV ESI,4');
+   EmitLabel('DPRT_TSLADD_CAPOK');
+   EmitInstr('MOV EDI,ESI');
+   EmitInstr('SHL EDI,2');
+   EmitInstr('MOV EAX,DWORD PTR [EBX+' + IntToStr_(TSLItemsOff) + ']');
+   EmitInstr('TEST EAX,EAX');
+   EmitInstr('JZ DPRT_TSLADD_ALLOCNEW');
+   EmitInstr('CALL GetProcessHeap');
+   EmitInstr('PUSH EDI');
+   EmitInstr('PUSH DWORD PTR [EBX+' + IntToStr_(TSLItemsOff) + ']');
+   EmitInstr('PUSH 8');                        { HEAP_ZERO_MEMORY }
+   EmitInstr('PUSH EAX');
+   EmitInstr('CALL HeapReAlloc');
+   EmitInstr('JMP DPRT_TSLADD_GROWDONE');
+   EmitLabel('DPRT_TSLADD_ALLOCNEW');
+   EmitInstr('CALL GetProcessHeap');
+   EmitInstr('PUSH EDI');
+   EmitInstr('PUSH 8');                        { HEAP_ZERO_MEMORY }
+   EmitInstr('PUSH EAX');
+   EmitInstr('CALL HeapAlloc');
+   EmitLabel('DPRT_TSLADD_GROWDONE');
+   EmitInstr('MOV DWORD PTR [EBX+' + IntToStr_(TSLItemsOff) + '],EAX');
+   EmitInstr('MOV DWORD PTR [EBX+' + IntToStr_(TSLCapOff) + '],ESI');
+   EmitLabel('DPRT_TSLADD_NOGROW');
+   EmitInstr('MOV EAX,DWORD PTR [EBX+' + IntToStr_(TSLItemsOff) + ']');
+   EmitInstr('MOV EDX,DWORD PTR [EBX+' + IntToStr_(TSLCountOff) + ']');
+   EmitInstr('LEA EDI,[EAX+EDX*4]');            { &slot[FCount] }
+   { _DPRT_STRASSIGN utilise librement EAX/EBX/ECX/EDX (ce n est pas   }
+   { une convention "registres appelant preserves" comme les API       }
+   { Win32) : EBX (Self) doit donc etre sauvegarde explicitement        }
+   { autour de l appel pour rester valide juste apres (FCount).         }
+   EmitInstr('PUSH EBX');                       { sauver Self }
+   EmitInstr('PUSH DWORD PTR [EBP+12]');        { S (NewVal), empile en premier }
+   EmitInstr('PUSH EDI');                       { Dest addr, en dernier }
+   EmitInstr('CALL ' + DPRT_STR_ASSIGN);
+   EmitInstr('ADD ESP,8');
+   EmitInstr('POP EBX');                        { restaurer Self }
+   EmitInstr('MOV EAX,DWORD PTR [EBX+' + IntToStr_(TSLCountOff) + ']');
+   EmitInstr('INC DWORD PTR [EBX+' + IntToStr_(TSLCountOff) + ']');
+   EmitEpilog;
+   EmitBlankLine;
+   SymTab[TSLAddSym].IsExternal := False;
+  End;
+
+  If TSLGetSym >= 0 Then
+  Begin
+   EmitComment('--- TStringList.Get(Index): String ---');
+   EmitLabel(SymTab[TSLGetSym].MangledName);
+   EmitProlog(0);
+   EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+   EmitInstr('MOV EAX,DWORD PTR [EAX+' + IntToStr_(TSLItemsOff) + ']');
+   EmitInstr('MOV EDX,DWORD PTR [EBP+12]');
+   EmitInstr('MOV EAX,DWORD PTR [EAX+EDX*4]');
+   EmitEpilog;
+   EmitBlankLine;
+   SymTab[TSLGetSym].IsExternal := False;
+  End;
+
+  If TSLDelSym >= 0 Then
+  Begin
+   EmitComment('--- TStringList.Delete(Index) : libere puis decale ---');
+   EmitLabel(SymTab[TSLDelSym].MangledName);
+   EmitProlog(0);
+   EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
+   EmitInstr('MOV EDI,DWORD PTR [EBX+' + IntToStr_(TSLItemsOff) + ']');
+   EmitInstr('MOV EDX,DWORD PTR [EBP+12]');     { Index }
+   EmitInstr('LEA EAX,[EDI+EDX*4]');
+   EmitInstr('PUSH EBX');                        { sauver Self (voir Add ci-dessus) }
+   EmitInstr('PUSH EDX');                        { sauver Index (aussi ecrase par l appel) }
+   EmitInstr('PUSH 0');                          { NewVal = nil }
+   EmitInstr('PUSH EAX');                        { Dest addr }
+   EmitInstr('CALL ' + DPRT_STR_ASSIGN);
+   EmitInstr('ADD ESP,8');
+   EmitInstr('POP EDX');                         { restaurer Index }
+   EmitInstr('POP EBX');                         { restaurer Self }
+   EmitInstr('MOV EDI,DWORD PTR [EBX+' + IntToStr_(TSLItemsOff) + ']');
+   EmitInstr('MOV ECX,DWORD PTR [EBX+' + IntToStr_(TSLCountOff) + ']');
+   EmitInstr('SUB ECX,EDX');
+   EmitInstr('DEC ECX');
+   EmitInstr('CMP ECX,0');
+   EmitInstr('JLE DPRT_TSLDEL_SKIPSHIFT');
+   EmitInstr('PUSH EDI');
+   EmitInstr('LEA ESI,[EDI+EDX*4+4]');
+   EmitInstr('LEA EDI,[EDI+EDX*4]');
+   EmitInstr('CLD');
+   EmitInstr('REP MOVSD');
+   EmitInstr('POP EDI');
+   EmitLabel('DPRT_TSLDEL_SKIPSHIFT');
+   { effacer le dernier slot (desormais un doublon brut non compte  }
+   { apres le decalage, ou le slot deja libere ci-dessus si aucun    }
+   { decalage n a eu lieu - idempotent dans les deux cas) }
+   EmitInstr('MOV EAX,DWORD PTR [EBX+' + IntToStr_(TSLCountOff) + ']');
+   EmitInstr('DEC EAX');
+   EmitInstr('MOV DWORD PTR [EDI+EAX*4],0');
+   EmitInstr('DEC DWORD PTR [EBX+' + IntToStr_(TSLCountOff) + ']');
+   EmitEpilog;
+   EmitBlankLine;
+   SymTab[TSLDelSym].IsExternal := False;
+  End;
+
+  If TSLClearSym >= 0 Then
+  Begin
+   EmitComment('--- TStringList.Clear : libere chaque slot puis remet a zero ---');
+   EmitLabel(SymTab[TSLClearSym].MangledName);
+   EmitProlog(0);
+   EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
+   EmitInstr('MOV ESI,DWORD PTR [EBX+' + IntToStr_(TSLItemsOff) + ']');
+   EmitInstr('MOV ECX,0');
+   EmitLabel('DPRT_TSLCLEAR_LOOP');
+   EmitInstr('CMP ECX,DWORD PTR [EBX+' + IntToStr_(TSLCountOff) + ']');
+   EmitInstr('JGE DPRT_TSLCLEAR_DONE');
+   EmitInstr('LEA EAX,[ESI+ECX*4]');
+   EmitInstr('PUSH EBX');                        { sauver Self (voir Add ci-dessus) }
+   EmitInstr('PUSH ECX');                        { sauver l indice de boucle }
+   EmitInstr('PUSH 0');
+   EmitInstr('PUSH EAX');
+   EmitInstr('CALL ' + DPRT_STR_ASSIGN);
+   EmitInstr('ADD ESP,8');
+   EmitInstr('POP ECX');
+   EmitInstr('POP EBX');                         { restaurer Self }
+   EmitInstr('INC ECX');
+   EmitInstr('JMP DPRT_TSLCLEAR_LOOP');
+   EmitLabel('DPRT_TSLCLEAR_DONE');
+   EmitInstr('MOV DWORD PTR [EBX+' + IntToStr_(TSLCountOff) + '],0');
+   EmitEpilog;
+   EmitBlankLine;
+   SymTab[TSLClearSym].IsExternal := False;
+  End;
+
+  If TSLCountSym >= 0 Then
+  Begin
+   EmitComment('--- TStringList.Count: Integer ---');
+   EmitLabel(SymTab[TSLCountSym].MangledName);
+   EmitProlog(0);
+   EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+   EmitInstr('MOV EAX,DWORD PTR [EAX+' + IntToStr_(TSLCountOff) + ']');
+   EmitEpilog;
+   EmitBlankLine;
+   SymTab[TSLCountSym].IsExternal := False;
+  End;
+ End;
 End;
 
 { ------------------------------------------------------------ }
@@ -9810,6 +10757,19 @@ Begin
  ParseExpr;
  LimLbl := LabelGen;
  DataAdd(LimLbl, DK_DWORD, 0, '', 0, 0);
+ { Bug trouve en assemblant reellement un vrai programme pour la        }
+ { premiere fois (TODO 24) : EmitDataSeg (un seul passage, TODO 07) a     }
+ { deja ecrit .DATA bien avant qu un FOR a l interieur d un corps ou du    }
+ { bloc principal ne soit atteint (TODO 23, phases Declarations puis       }
+ { Routines) - DataAdd seul, sans emission immediate, laissait donc         }
+ { LimLbl reference (MOV/CMP) sans jamais etre reellement declare quelque    }
+ { part dans le texte .asm. Corrige en re-ouvrant .DATA/.CODE en ligne,       }
+ { exactement au point d usage (les directives simplifiees MASM/cet             }
+ { assembleur maison acceptent .DATA/.CODE repetes n importe ou dans le           }
+ { fichier).                                                                        }
+ EmitRaw('.DATA');
+ EmitRaw(LimLbl + '  DD 0');
+ EmitRaw('.CODE');
  EmitInstr('MOV DWORD PTR [' + LimLbl + '],EAX');
 
  LblTest := LabelGen;
@@ -10087,7 +11047,7 @@ Begin
   EmitInstr('JMP ' + LblEnd);
 
   EmitLabel(LblHandler);
-  If (PPPeekKind = TK_IDENT) And (StrUpperCase(PPPeekVal) = 'ON') Then
+  If (PPPeekKind = TK_KEYWORD) And (StrUpperCase(PPPeekVal) = 'ON') Then
   Begin
    PPAdvance;   { on }
    ExcVarName := TokenPool[PP].Val;
@@ -10616,7 +11576,15 @@ Begin
     EmitInstr('ADD EBX,EAX');
     PPMatch(']');
     PPMatch(':=');
+    { EBX (adresse cible) doit survivre a l evaluation du RHS, qui peut  }
+    { elle-meme utiliser EBX comme registre de travail pour un operateur }
+    { binaire (ex. (I+1)*10, IMUL EAX,EBX) - sans cette sauvegarde,       }
+    { l ecriture finale visait une adresse ecrasee par le dernier         }
+    { operande du RHS au lieu de la case du tableau (bogue confirme par   }
+    { execution reelle, TODO 25).                                          }
+    EmitInstr('PUSH EBX');
     ParseExpr;                      { EAX = valeur a ecrire }
+    EmitInstr('POP EBX');
     If TypeNeedsDestAddr(ElemTypeIdx) Then
      EmitAssign('EBX', 'EAX', ElemTypeIdx)
     Else
@@ -10720,7 +11688,12 @@ Begin
       If FieldPool[FI].Name = FieldName Then
       Begin
        Found := True;
+       { EBX (Self) doit survivre a l evaluation du RHS, qui peut elle-  }
+       { meme utiliser EBX comme registre de travail pour un operateur   }
+       { binaire (meme bogue que l indexation de tableau, TODO 25).       }
+       EmitInstr('PUSH EBX');
        ParseExpr;   { EAX = valeur du membre droit }
+       EmitInstr('POP EBX');
        If TypeNeedsDestAddr(FieldPool[FI].TypeIdx) Then
        Begin
         If FieldPool[FI].Offset = 0 Then
@@ -10764,7 +11737,9 @@ Begin
       FI := FieldFindInClass(BaseTypeIdx, PropPool[PropIdx].WriteName);
       If FI >= 0 Then
       Begin
+       EmitInstr('PUSH EBX');   { Self doit survivre au RHS, voir ci-dessus }
        ParseExpr;   { EAX = valeur du membre droit }
+       EmitInstr('POP EBX');
        If TypeNeedsDestAddr(FieldPool[FI].TypeIdx) Then
        Begin
         If FieldPool[FI].Offset = 0 Then
@@ -10785,7 +11760,9 @@ Begin
       End
       Else
       Begin
+       EmitInstr('PUSH EBX');          { Self doit survivre au RHS, voir ci-dessus }
        ParseExpr;                    { EAX = valeur du membre droit }
+       EmitInstr('POP EBX');
        EmitInstr('PUSH EAX');          { valeur }
        EmitInstr('PUSH EBX');          { Self, en dernier }
        GenPropertyAccessorCall(BaseTypeIdx, PropPool[PropIdx].WriteName, 8);
@@ -11604,7 +12581,11 @@ Begin
   Exit;
  End;
 
- If IsForwardOnly Then
+ { Une signature rencontree dans la section INTERFACE d une Unit       }
+ { (TODO 23) n a jamais de corps ici (il vient plus tard, dans          }
+ { IMPLEMENTATION) : traitee comme un FORWARD implicite, exactement      }
+ { comme IsForwardOnly ci-dessous.                                        }
+ If IsForwardOnly Or InInterfaceSection Then
  Begin
   SymTab[ProcSymIdx].IsExternal := True;
   SymLeaveScope;
@@ -11976,6 +12957,7 @@ Var
  IUnkIdx, IUnkTypeIdx : Integer;
  I, SubIdx, SubTypeIdx : Integer;
  ExcSubNames : Array[0..3] Of TString;
+ TListIdx2, TListTypeIdx, TSLIdx2, TSLTypeIdx : Integer;
 Begin
  TObjIdx := SymFind('TObject');
  If TObjIdx < 0 Then Exit;
@@ -12037,6 +13019,38 @@ Begin
    VMTAddMethod(IUnkTypeIdx, 'QUERYINTERFACE', -1);
    VMTAddMethod(IUnkTypeIdx, 'ADDREF', -1);
    VMTAddMethod(IUnkTypeIdx, 'RELEASE', -1);
+  End;
+ End;
+
+ { TList/TStringList (TODO 22, Classes minimal) : memes 3 champs      }
+ { caches (stockage brut, compteur, capacite) - Create/Add/Get/        }
+ { Delete/Clear/Count ont leurs corps reels ecrits directement dans     }
+ { EmitRuntimeLibrary, comme TObject/Exception ci-dessus.                }
+ TListIdx2 := SymFind('TList');
+ If TListIdx2 >= 0 Then
+ Begin
+  TListTypeIdx := SymTab[TListIdx2].TypeIdx;
+  If TypeTab[TListTypeIdx].FieldFirst < 0 Then
+  Begin
+   FieldInitInherit(TListTypeIdx);
+   VMTInit(TListTypeIdx);
+   TypeAddField(TListTypeIdx, 'FITEMS', TypeFindByName('Pointer'));
+   TypeAddField(TListTypeIdx, 'FCOUNT', TypeFindByName('Integer'));
+   TypeAddField(TListTypeIdx, 'FCAPACITY', TypeFindByName('Integer'));
+  End;
+ End;
+
+ TSLIdx2 := SymFind('TStringList');
+ If TSLIdx2 >= 0 Then
+ Begin
+  TSLTypeIdx := SymTab[TSLIdx2].TypeIdx;
+  If TypeTab[TSLTypeIdx].FieldFirst < 0 Then
+  Begin
+   FieldInitInherit(TSLTypeIdx);
+   VMTInit(TSLTypeIdx);
+   TypeAddField(TSLTypeIdx, 'FITEMS', TypeFindByName('Pointer'));
+   TypeAddField(TSLTypeIdx, 'FCOUNT', TypeFindByName('Integer'));
+   TypeAddField(TSLTypeIdx, 'FCAPACITY', TypeFindByName('Integer'));
   End;
  End;
 End;
@@ -12105,6 +13119,137 @@ Function VMTLabelFor(ClassTypeIdx: Integer): TString;
 Begin
  VMTLabelFor := DP_CLS_PFX + SymTab[TypeTab[ClassTypeIdx].ClassSymIdx].Name +
   '_VMT';
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitClassVMTs (TODO 25) : ecrire la vraie table VMT de chaque    }
+{ classe (DD <nom mangled>,<nom mangled>,... - un pointeur de        }
+{ methode par emplacement, dans l ordre des offsets deja fixes par     }
+{ VMTInit/VMTAddMethod) - l emission promise depuis le TODO 07/08/24     }
+{ mais jamais ecrite (VMTLabelFor ne faisait que NOMMER le label de       }
+{ facon deterministe). Appelee APRES ParseTopLevelRoutines (pas depuis     }
+{ EmitDataSeg elle-meme, deja fermee a ce stade du fichier) : IsExternal    }
+{ ne distingue fiablement "abstraite/externe, jamais de corps" de            }
+{ "corps pas encore analyse" qu une fois TOUS les corps hors-ligne              }
+{ analyses (ParseMethodBodyDecl remet IsExternal a False au moment ou            }
+{ elle fournit le corps reel, TODO 14/15) - une methode encore IsExternal          }
+{ a CE stade est donc reellement abstraite/externe, et recoit un pointeur           }
+{ NUL (comme le ferait un vrai Delphi pour une methode abstraite jamais              }
+{ appelee) plutot qu une etiquette qui n existera jamais dans le texte .asm            }
+{ (l assembleur echouerait sinon avec 'etiquette introuvable'). Reutilise                }
+{ le meme "reouvrir .DATA/.CODE en ligne" que DataAddSetConst/ParseForStmt                }
+{ (TODO 13/19/24), puisque .DATA/.CODE sont deja fermes ici.                                }
+{ ------------------------------------------------------------ }
+
+Procedure EmitClassVMTs;
+Var
+ I, J, MSym : Integer;
+ S : TString;
+Begin
+ EmitRaw('.DATA');
+ EmitComment('--- Tables VMT (TODO 25) ---');
+ For I := 0 To TypeCount - 1 Do
+  If (TypeTab[I].Kind = TYK_CLASS) And (TypeTab[I].VMTFirst >= 0) And
+     (TypeTab[I].VMTCount > 0) Then
+  Begin
+   S := '';
+   For J := TypeTab[I].VMTFirst To
+    TypeTab[I].VMTFirst + TypeTab[I].VMTCount - 1 Do
+   Begin
+    If S <> '' Then S := S + ',';
+    MSym := VMTEntryPool[J].MethodSymIdx;
+    If (MSym >= 0) And (Not SymTab[MSym].IsExternal) Then
+     S := S + SymTab[MSym].MangledName
+    Else
+     S := S + '0';
+   End;
+   EmitRaw(VMTLabelFor(I) + '  DD ' + S);
+  End;
+ EmitRaw('.CODE');
+End;
+
+{ ------------------------------------------------------------ }
+{ VMTMethodSymAtOffset : retrouver le symbole de methode place    }
+{ par VMTAddMethod a un offset VMT donne, pour une classe. Utilise }
+{ par EmitInterfaceThunks (TODO 25) pour retrouver le nom mangled  }
+{ reel derriere l offset deja calcule par ClassImplementInterface  }
+{ (TODO 17, ClassVMTOffset).                                        }
+{ ------------------------------------------------------------ }
+
+Function VMTMethodSymAtOffset(ClassTypeIdx, TargetOffset: Integer): Integer;
+Var J : Integer;
+Begin
+ VMTMethodSymAtOffset := -1;
+ If TypeTab[ClassTypeIdx].VMTFirst < 0 Then Exit;
+ For J := TypeTab[ClassTypeIdx].VMTFirst To
+  TypeTab[ClassTypeIdx].VMTFirst + TypeTab[ClassTypeIdx].VMTCount - 1 Do
+  If VMTEntryPool[J].Offset = TargetOffset Then
+  Begin
+   VMTMethodSymAtOffset := VMTEntryPool[J].MethodSymIdx;
+   Exit;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitInterfaceThunks (TODO 25) : pour chaque implementation      }
+{ classe/interface (IfaceImplTab, TODO 17), ecrit la vraie table   }
+{ de thunks - le morceau explicitement differe depuis le TODO 17    }
+{ ("l emission reelle de la table de thunks elle-meme (donnees +     }
+{ code des trampolines) reste differee au TODO 24"), qui n avait       }
+{ finalement pas ete fait non plus en TODO 24. Sans cette table,         }
+{ un appel de methode via une variable d interface (G.Methode, ou G       }
+{ est typee IGreeter) utilisait l offset VMT propre a l INTERFACE          }
+{ (QueryInterface=0/AddRef=4/Release=8/Methode=12) applique a la            }
+{ VMT REELLE de la classe (qui commence par Destroy, herite de               }
+{ TObject, decalant tout de 4) - atterrissant silencieusement sur             }
+{ la MAUVAISE methode (ex: Release au lieu de Methode). Chaque                 }
+{ thunk retranche l offset du champ cache (ClassImplementInterface)             }
+{ de "Self" (qui, vu par le thunk, est l ADRESSE de ce champ cache -             }
+{ voir EmitAssign/TYK_INTERFACE) pour retrouver l adresse reelle de              }
+{ l objet, puis saute (JMP, pas CALL : appel terminal, aucun retour              }
+{ a corriger) vers la vraie methode - Self est TOUJOURS le dernier              }
+{ argument empile par l appelant (TODO 09/14), donc systematiquement            }
+{ a [ESP+4] a l entree d une fonction quel que soit son nombre de               }
+{ parametres reels : le thunk n a besoin d aucun prolog/epilog.                 }
+{ ------------------------------------------------------------ }
+
+Procedure EmitInterfaceThunks;
+Var
+ I, K, MSym : Integer;
+ ThunkLbl, VTblBody, Entry : TString;
+Begin
+ If IfaceImplCount = 0 Then Exit;
+ EmitComment('--- Tables de thunks d interface (TODO 25) ---');
+ For I := 0 To IfaceImplCount - 1 Do
+ Begin
+  If Length(IfaceImplTab[I].VTblLabel) = 0 Then Continue;
+
+  EmitRaw('.CODE');
+  VTblBody := '';
+  For K := 0 To IfaceImplTab[I].ThunkCount - 1 Do
+  Begin
+   MSym := VMTMethodSymAtOffset(IfaceImplTab[I].ClassTypeIdx,
+    ThunkPool[IfaceImplTab[I].ThunkFirst + K].VMTOffset);
+   If (MSym >= 0) And (Not SymTab[MSym].IsExternal) Then
+   Begin
+    ThunkLbl := IfaceImplTab[I].VTblLabel + '_T' + IntToStr_(K);
+    EmitLabel(ThunkLbl);
+    EmitInstr('SUB DWORD PTR [ESP+4],' +
+     IntToStr_(IfaceImplTab[I].HiddenFieldOffset));
+    EmitInstr('JMP ' + SymTab[MSym].MangledName);
+    Entry := ThunkLbl;
+   End
+   Else
+    Entry := '0';
+   If VTblBody <> '' Then VTblBody := VTblBody + ',';
+   VTblBody := VTblBody + Entry;
+  End;
+
+  EmitRaw('.DATA');
+  If VTblBody <> '' Then
+   EmitRaw(IfaceImplTab[I].VTblLabel + '  DD ' + VTblBody);
+ End;
+ EmitRaw('.CODE');
 End;
 
 { ------------------------------------------------------------ }
@@ -12468,6 +13613,7 @@ Procedure ClassImplementInterface(ClassSymIdx, ClassTypeIdx: Integer;
 Var
  IfaceSymIdx, IfaceTypeIdx, ImplIdx : Integer;
  I, ClassVMTOffset, MethodSymIdx : Integer;
+ HiddenFieldIdx, PtrTypeIdx : Integer;
 Begin
  IfaceSymIdx := SymFind(IfaceName);
  If (IfaceSymIdx < 0) Or (SymTab[IfaceSymIdx].Kind <> SK_INTERFACE) Then
@@ -12480,6 +13626,29 @@ Begin
  ClassEnsureIUnknownMethods(ClassSymIdx, ClassTypeIdx);
 
  ImplIdx := IfaceImplAdd(ClassTypeIdx, IfaceTypeIdx, TypeTab[IfaceTypeIdx].GUID);
+
+ { Champ cache (TODO 25) : contient l adresse de la table de thunks de  }
+ { cette interface pour cette classe - une valeur CONSTANTE, la meme     }
+ { pour toute instance, stampee au site d appel de Create (comme le      }
+ { pointeur de VMT lui-meme, ParseClassMemberAccess). L ADRESSE de ce     }
+ { champ (et non le pointeur d objet lui-meme) est ce qu une variable      }
+ { d interface recoit lors d une affectation classe->interface           }
+ { (EmitAssign) : la dereferencer une fois donne la table de thunks, et    }
+ { chaque thunk retranche cet offset avant de sauter vers la vraie         }
+ { methode pour retrouver le pointeur d objet reel - meme technique que    }
+ { la disposition d objet COM/Delphi reelle, evitant ainsi l offset VMT     }
+ { errone (numerotation de l interface applique a la VMT de la classe)      }
+ { qui restait une approximation documentee depuis le TODO 17.               }
+ PtrTypeIdx := TypeFindByName('POINTER');
+ HiddenFieldIdx := TypeAddField(ClassTypeIdx,
+  '_DPI_' + StrUpperCase(SymTab[ClassSymIdx].Name) + '_' + StrUpperCase(IfaceName),
+  PtrTypeIdx);
+ If (ImplIdx >= 0) And (HiddenFieldIdx >= 0) Then
+ Begin
+  IfaceImplTab[ImplIdx].HiddenFieldOffset := FieldPool[HiddenFieldIdx].Offset;
+  IfaceImplTab[ImplIdx].VTblLabel := DP_CLS_PFX +
+   StrUpperCase(SymTab[ClassSymIdx].Name) + '_' + StrUpperCase(IfaceName) + '_VTBL';
+ End;
 
  If TypeTab[IfaceTypeIdx].VMTFirst >= 0 Then
   For I := TypeTab[IfaceTypeIdx].VMTFirst To
@@ -12941,10 +14110,36 @@ End;
 
 Function ParseTypeExpr: Integer;
 Var
- Up, TName : TString;
+ Up, TName, ValName : TString;
  Lo, Hi, ElemIdx, RecIdx, R : Integer;
  IsDyn : Boolean;
+ EnumIdx, EVIdx, SI : Integer;
 Begin
+ { Enumeration : TYPE T = (Val1, Val2, ...) - infrastructure TypeAddEnum/ }
+ { TypeAddEnumValue deja existante (TODO 06) mais jamais reliee a un      }
+ { vrai parseur avant ce TODO (aucun TODO precedent, y compris le 19,    }
+ { n en avait la charge explicite). Chaque valeur est aussi enregistree   }
+ { comme une CONSTANTE ordinaire (SK_CONST) dans la portee courante -     }
+ { c est ainsi que Delphi les rend utilisables en expression (X := Red). }
+ If (PPPeekKind = TK_PUNCT) And (PPPeekVal = '(') Then
+ Begin
+  PPAdvance;   { ( }
+  EnumIdx := TypeAddEnum('');
+  Repeat
+   ValName := TokenPool[PP].Val;
+   PPAdvance;
+   EVIdx := TypeAddEnumValue(EnumIdx, ValName, False, 0);
+   If EVIdx >= 0 Then
+   Begin
+    SI := SymAdd(ValName, SK_CONST, EnumIdx);
+    If SI >= 0 Then SymTab[SI].ImmVal := EnumValPool[EVIdx].Value;
+   End;
+  Until Not PPMatch(',');
+  PPMatch(')');
+  ParseTypeExpr := EnumIdx;
+  Exit;
+ End;
+
  If PPPeekKind = TK_KEYWORD Then
  Begin
   Up := StrUpperCase(PPPeekVal);
@@ -13010,10 +14205,16 @@ End;
 { tout le monde).                                                     }
 { ------------------------------------------------------------ }
 
-Procedure ParseTypeDecl;
+{ ParseOneTypeDecl : Nom = ... ; SANS consommer le mot-cle TYPE lui-  }
+{ meme (contrairement a ParseTypeDecl ci-dessous, qui reste inchange   }
+{ pour les self-tests existants) - permet a ParseGlobalDeclSection      }
+{ (TODO 23) de boucler sur PLUSIEURS declarations partageant un seul     }
+{ mot-cle TYPE (Type A = ...; B = ...; C = ...;), le style Delphi le     }
+{ plus courant, qu un unique appel a ParseTypeDecl ne peut pas gerer      }
+{ (il consommerait TYPE une seconde fois au lieu de lire B).               }
+Procedure ParseOneTypeDecl;
 Var Name: TString; TIdx: Integer;
 Begin
- PPAdvance;   { type }
  Name := TokenPool[PP].Val;
  PPAdvance;
  PPMatch('=');
@@ -13034,6 +14235,12 @@ Begin
  If (TIdx >= 0) And (TIdx < TypeCount) And (TypeTab[TIdx].Name = '') Then
   TypeTab[TIdx].Name := StrUpperCase(Name);
  SkipOptSemi;
+End;
+
+Procedure ParseTypeDecl;
+Begin
+ PPAdvance;   { type }
+ ParseOneTypeDecl;
 End;
 
 { ------------------------------------------------------------ }
@@ -13215,7 +14422,7 @@ End;
 Function ParseClassMemberAccess(ClassSymIdx: Integer): Integer;
 Var
  MemberName, Up : TString;
- MethodSymIdx, ClassTypeIdx, ArgN : Integer;
+ MethodSymIdx, ClassTypeIdx, ArgN, II : Integer;
 Begin
  ParseClassMemberAccess := -1;
  PPAdvance;   { . }
@@ -13249,6 +14456,20 @@ Begin
   EmitInstr('MOV EBX,EAX');   { EBX = nouvelle instance, conservee pendant l init }
   EmitComment('Pointeur de VMT (table de donnees emise au TODO 24)');
   EmitInstr('MOV DWORD PTR [EBX],OFFSET ' + VMTLabelFor(ClassTypeIdx));
+
+  { Champs caches de thunks d interface (TODO 25) : une valeur       }
+  { CONSTANTE par interface implementee directement par cette classe, }
+  { stampee ici comme le pointeur de VMT ci-dessus (memes raisons -     }
+  { aucune init specifique n existe dans TObject.Create/le constructeur }
+  { herite, qui ignorent tout des interfaces implementees par un          }
+  { descendant).                                                            }
+  For II := 0 To IfaceImplCount - 1 Do
+   If (IfaceImplTab[II].ClassTypeIdx = ClassTypeIdx) And
+      (Length(IfaceImplTab[II].VTblLabel) > 0) Then
+    EmitInstr('MOV DWORD PTR [EBX+' +
+     IntToStr_(IfaceImplTab[II].HiddenFieldOffset) + '],OFFSET ' +
+     IfaceImplTab[II].VTblLabel);
+
   ArgN := ParseCallArgs;
   EmitInstr('PUSH EBX');   { Self, en dernier }
   EmitInstr('CALL ' + SymTab[MethodSymIdx].MangledName);
@@ -14247,7 +15468,7 @@ Begin
  Tok(TK_PUNCT, ')', 0);
  Tok(TK_PUNCT, ';', 0);
  Tok(TK_KEYWORD, 'except', 0);
- Tok(TK_IDENT, 'on', 0);
+ Tok(TK_KEYWORD, 'on', 0);
  Tok(TK_IDENT, 'E', 0);
  Tok(TK_PUNCT, ':', 0);
  Tok(TK_IDENT, 'Exception', 0);
@@ -15100,17 +16321,3028 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
+{ Rtl22SelfTest (TODO 22) : verifie les intrinseques System      }
+{ (GetMem/FreeMem/ReallocMem/Move/FillChar/Sqr/Abs/Assigned/      }
+{ FreeAndNil/High-Low sur un type ordinal) et les corps reels      }
+{ de TList/TStringList emis par EmitRuntimeLibrary, avec des        }
+{ suites de tokens construites directement dans TokenPool, comme    }
+{ les self-tests des TODO precedents.                                 }
+{ ------------------------------------------------------------ }
+
+Procedure Rtl22Assert(Const Label_: TString; Cond: Boolean);
+Begin
+ If Not Cond Then
+  FatalError('Rtl22SelfTest: ' + Label_ + ' a echoue');
+End;
+
+Procedure Rtl22SelfTest;
+Const
+ TmpFile = 'DPRTL22SELFTEST.$$$';
+Var
+ IntIdx, PtrIdx : Integer;
+ TListIdx, TSLIdx : Integer;
+ TLCreateSym, TLAddSym, TLDelSym : Integer;
+ TSLCreateSym, TSLAddSym, TSLDelSym, TSLClearSym : Integer;
+ F : Text;
+ Line : TString;
+ HasGetMemAlloc, HasFreeMemFree, HasReallocCall : Boolean;
+ HasMoveRep, HasFillRep : Boolean;
+ HasSqrMul, HasAbsNeg, HasAssignedCmp : Boolean;
+ HasFreeAndNilCall, HasFreeAndNilNil : Boolean;
+ HasHighByte, HasLowByte : Boolean;
+ HasTLCreateLbl, HasTLAddLbl, HasTLHeapAlloc, HasTLHeapRealloc, HasTLDelShift : Boolean;
+ StrAssignCount : Integer;
+
+ Procedure Tok(Kind: TTokenKind; Const Val: TString; IntVal: LongInt);
+ Var T: TToken;
+ Begin
+  T.Kind := Kind; T.Val := Val; T.IntVal := IntVal; T.RealVal := 0.0;
+  T.Line := 1; T.Col := 1;
+  TokenPoolAdd(T);
+ End;
+
+Begin
+ SymInit;
+ ClassSystemInit;
+ DataInit; DataInit2;
+ FrameInit;
+ StmtInit;
+ UserExternInit;
+
+ IntIdx := TypeFindByName('Integer');
+ PtrIdx := TypeFindByName('Pointer');
+
+ SymEnterScope;
+  LocalAdd('PPTR22', PtrIdx);
+
+  { --- GetMem(P, 10) --- }
+  TokenPoolInit;
+  Tok(TK_IDENT, 'GetMem', 0);
+  Tok(TK_PUNCT, '(', 0);
+  Tok(TK_IDENT, 'PPtr22', 0);
+  Tok(TK_PUNCT, ',', 0);
+  Tok(TK_INTEGER, '10', 10);
+  Tok(TK_PUNCT, ')', 0);
+  ParserInit;
+  EmitOpen(TmpFile);
+  ParseStmt;
+  EmitClose('DPRTL22_END');
+  Rtl22Assert('GetMem consomme tous les tokens', PPAtEnd);
+  HasGetMemAlloc := False;
+  {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+  While Not Eof(F) Do
+  Begin
+   ReadLn(F, Line);
+   If Pos('CALL HeapAlloc', Line) > 0 Then HasGetMemAlloc := True;
+  End;
+  Close(F); Erase(F);
+  Rtl22Assert('GetMem appelle HeapAlloc', HasGetMemAlloc);
+
+  { --- FreeMem(P) --- }
+  TokenPoolInit;
+  Tok(TK_IDENT, 'FreeMem', 0);
+  Tok(TK_PUNCT, '(', 0);
+  Tok(TK_IDENT, 'PPtr22', 0);
+  Tok(TK_PUNCT, ')', 0);
+  ParserInit;
+  EmitOpen(TmpFile);
+  ParseStmt;
+  EmitClose('DPRTL22_END');
+  Rtl22Assert('FreeMem consomme tous les tokens', PPAtEnd);
+  HasFreeMemFree := False;
+  {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+  While Not Eof(F) Do
+  Begin
+   ReadLn(F, Line);
+   If Pos('CALL HeapFree', Line) > 0 Then HasFreeMemFree := True;
+  End;
+  Close(F); Erase(F);
+  Rtl22Assert('FreeMem appelle HeapFree', HasFreeMemFree);
+
+  { --- ReallocMem(P, 20) --- }
+  TokenPoolInit;
+  Tok(TK_IDENT, 'ReallocMem', 0);
+  Tok(TK_PUNCT, '(', 0);
+  Tok(TK_IDENT, 'PPtr22', 0);
+  Tok(TK_PUNCT, ',', 0);
+  Tok(TK_INTEGER, '20', 20);
+  Tok(TK_PUNCT, ')', 0);
+  ParserInit;
+  EmitOpen(TmpFile);
+  ParseStmt;
+  EmitClose('DPRTL22_END');
+  Rtl22Assert('ReallocMem consomme tous les tokens', PPAtEnd);
+  HasReallocCall := False;
+  {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+  While Not Eof(F) Do
+  Begin
+   ReadLn(F, Line);
+   If Pos('CALL HeapReAlloc', Line) > 0 Then HasReallocCall := True;
+  End;
+  Close(F); Erase(F);
+  Rtl22Assert('ReallocMem appelle HeapReAlloc', HasReallocCall);
+
+  { --- Move(Src, Dest, 5) / FillChar(Src, 5, 0) --- }
+  LocalAdd('SRC22', IntIdx);
+  LocalAdd('DST22', IntIdx);
+  TokenPoolInit;
+  Tok(TK_IDENT, 'Move', 0);
+  Tok(TK_PUNCT, '(', 0);
+  Tok(TK_IDENT, 'Src22', 0);
+  Tok(TK_PUNCT, ',', 0);
+  Tok(TK_IDENT, 'Dst22', 0);
+  Tok(TK_PUNCT, ',', 0);
+  Tok(TK_INTEGER, '5', 5);
+  Tok(TK_PUNCT, ')', 0);
+  ParserInit;
+  EmitOpen(TmpFile);
+  ParseStmt;
+  EmitClose('DPRTL22_END');
+  Rtl22Assert('Move consomme tous les tokens', PPAtEnd);
+  HasMoveRep := False;
+  {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+  While Not Eof(F) Do
+  Begin
+   ReadLn(F, Line);
+   If Pos('REP MOVSB', Line) > 0 Then HasMoveRep := True;
+  End;
+  Close(F); Erase(F);
+  Rtl22Assert('Move emet REP MOVSB', HasMoveRep);
+
+  TokenPoolInit;
+  Tok(TK_IDENT, 'FillChar', 0);
+  Tok(TK_PUNCT, '(', 0);
+  Tok(TK_IDENT, 'Src22', 0);
+  Tok(TK_PUNCT, ',', 0);
+  Tok(TK_INTEGER, '5', 5);
+  Tok(TK_PUNCT, ',', 0);
+  Tok(TK_INTEGER, '0', 0);
+  Tok(TK_PUNCT, ')', 0);
+  ParserInit;
+  EmitOpen(TmpFile);
+  ParseStmt;
+  EmitClose('DPRTL22_END');
+  Rtl22Assert('FillChar consomme tous les tokens', PPAtEnd);
+  HasFillRep := False;
+  {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+  While Not Eof(F) Do
+  Begin
+   ReadLn(F, Line);
+   If Pos('REP STOSB', Line) > 0 Then HasFillRep := True;
+  End;
+  Close(F); Erase(F);
+  Rtl22Assert('FillChar emet REP STOSB', HasFillRep);
+
+  { --- Sqr(Src22) / Abs(Src22) / Assigned(Src22) --- }
+  TokenPoolInit;
+  Tok(TK_IDENT, 'Sqr', 0);
+  Tok(TK_PUNCT, '(', 0);
+  Tok(TK_IDENT, 'Src22', 0);
+  Tok(TK_PUNCT, ')', 0);
+  ParserInit;
+  EmitOpen(TmpFile);
+  ParsePrimary;
+  EmitClose('DPRTL22_END');
+  Rtl22Assert('Sqr consomme tous les tokens', PPAtEnd);
+  HasSqrMul := False;
+  {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+  While Not Eof(F) Do
+  Begin
+   ReadLn(F, Line);
+   If Pos('IMUL EAX,EAX', Line) > 0 Then HasSqrMul := True;
+  End;
+  Close(F); Erase(F);
+  Rtl22Assert('Sqr emet IMUL EAX,EAX', HasSqrMul);
+
+  TokenPoolInit;
+  Tok(TK_IDENT, 'Abs', 0);
+  Tok(TK_PUNCT, '(', 0);
+  Tok(TK_IDENT, 'Src22', 0);
+  Tok(TK_PUNCT, ')', 0);
+  ParserInit;
+  EmitOpen(TmpFile);
+  ParsePrimary;
+  EmitClose('DPRTL22_END');
+  Rtl22Assert('Abs consomme tous les tokens', PPAtEnd);
+  HasAbsNeg := False;
+  {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+  While Not Eof(F) Do
+  Begin
+   ReadLn(F, Line);
+   If Pos('NEG EAX', Line) > 0 Then HasAbsNeg := True;
+  End;
+  Close(F); Erase(F);
+  Rtl22Assert('Abs emet NEG EAX', HasAbsNeg);
+
+  TokenPoolInit;
+  Tok(TK_IDENT, 'Assigned', 0);
+  Tok(TK_PUNCT, '(', 0);
+  Tok(TK_IDENT, 'Src22', 0);
+  Tok(TK_PUNCT, ')', 0);
+  ParserInit;
+  EmitOpen(TmpFile);
+  ParsePrimary;
+  EmitClose('DPRTL22_END');
+  Rtl22Assert('Assigned consomme tous les tokens', PPAtEnd);
+  HasAssignedCmp := False;
+  {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+  While Not Eof(F) Do
+  Begin
+   ReadLn(F, Line);
+   If Pos('JNE ', Line) > 0 Then HasAssignedCmp := True;
+  End;
+  Close(F); Erase(F);
+  Rtl22Assert('Assigned utilise JNE (EmitCompareZeroJcc)', HasAssignedCmp);
+ SymLeaveScope;
+
+ { --- High(Byte) / Low(Byte) : bornes d un type ordinal predefini --- }
+ TokenPoolInit;
+ Tok(TK_IDENT, 'High', 0);
+ Tok(TK_PUNCT, '(', 0);
+ Tok(TK_IDENT, 'Byte', 0);
+ Tok(TK_PUNCT, ')', 0);
+ ParserInit;
+ EmitOpen(TmpFile);
+ ParsePrimary;
+ EmitClose('DPRTL22_END');
+ Rtl22Assert('High(Byte) consomme tous les tokens', PPAtEnd);
+ HasHighByte := False;
+ {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  If Pos('MOV EAX,255', Line) > 0 Then HasHighByte := True;
+ End;
+ Close(F); Erase(F);
+ Rtl22Assert('High(Byte) = 255', HasHighByte);
+
+ TokenPoolInit;
+ Tok(TK_IDENT, 'Low', 0);
+ Tok(TK_PUNCT, '(', 0);
+ Tok(TK_IDENT, 'Byte', 0);
+ Tok(TK_PUNCT, ')', 0);
+ ParserInit;
+ EmitOpen(TmpFile);
+ ParsePrimary;
+ EmitClose('DPRTL22_END');
+ Rtl22Assert('Low(Byte) consomme tous les tokens', PPAtEnd);
+ HasLowByte := False;
+ {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  If Pos('MOV EAX,0', Line) > 0 Then HasLowByte := True;
+ End;
+ Close(F); Erase(F);
+ Rtl22Assert('Low(Byte) = 0', HasLowByte);
+
+ { --- FreeAndNil(Obj) : X.Free suivi de X := nil --- }
+ SymEnterScope;
+  LocalAdd('OBJ22', SymTab[SymFind('TObject')].TypeIdx);
+  TokenPoolInit;
+  Tok(TK_IDENT, 'FreeAndNil', 0);
+  Tok(TK_PUNCT, '(', 0);
+  Tok(TK_IDENT, 'Obj22', 0);
+  Tok(TK_PUNCT, ')', 0);
+  ParserInit;
+  EmitOpen(TmpFile);
+  ParsePrimary;
+  EmitClose('DPRTL22_END');
+  Rtl22Assert('FreeAndNil consomme tous les tokens', PPAtEnd);
+  HasFreeAndNilCall := False; HasFreeAndNilNil := False;
+  {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+  While Not Eof(F) Do
+  Begin
+   ReadLn(F, Line);
+   If Pos('CALL ', Line) > 0 Then HasFreeAndNilCall := True;
+   If Pos('MOV EAX,0', Line) > 0 Then HasFreeAndNilNil := True;
+  End;
+  Close(F); Erase(F);
+  Rtl22Assert('FreeAndNil appelle une methode (Free)', HasFreeAndNilCall);
+  Rtl22Assert('FreeAndNil affecte nil (0) a la variable', HasFreeAndNilNil);
+ SymLeaveScope;
+
+ { --- TList/TStringList : corps reels emis par EmitRuntimeLibrary --- }
+ EmitSkeletonProgram(TmpFile);
+ TListIdx := SymFind('TList');
+ TSLIdx   := SymFind('TStringList');
+ Rtl22Assert('TList enregistre', TListIdx >= 0);
+ Rtl22Assert('TStringList enregistre', TSLIdx >= 0);
+ TLCreateSym  := SymFindInClass(TListIdx, 'CREATE');
+ TLAddSym     := SymFindInClass(TListIdx, 'ADD');
+ TLDelSym     := SymFindInClass(TListIdx, 'DELETE');
+ TSLCreateSym := SymFindInClass(TSLIdx, 'CREATE');
+ TSLAddSym    := SymFindInClass(TSLIdx, 'ADD');
+ TSLDelSym    := SymFindInClass(TSLIdx, 'DELETE');
+ TSLClearSym  := SymFindInClass(TSLIdx, 'CLEAR');
+
+ HasTLCreateLbl := False; HasTLAddLbl := False;
+ HasTLHeapAlloc := False; HasTLHeapRealloc := False; HasTLDelShift := False;
+ StrAssignCount := 0;
+ {$I-} Assign(F, TmpFile); Reset(F); {$I+}
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  If (TLCreateSym >= 0) And (Line = SymTab[TLCreateSym].MangledName + ':') Then
+   HasTLCreateLbl := True;
+  If (TLAddSym >= 0) And (Line = SymTab[TLAddSym].MangledName + ':') Then
+   HasTLAddLbl := True;
+  If Pos('CALL HeapAlloc', Line) > 0 Then HasTLHeapAlloc := True;
+  If Pos('CALL HeapReAlloc', Line) > 0 Then HasTLHeapRealloc := True;
+  If Pos('REP MOVSD', Line) > 0 Then HasTLDelShift := True;
+  If Pos('CALL ' + DPRT_STR_ASSIGN, Line) > 0 Then Inc(StrAssignCount);
+ End;
+ Close(F); Erase(F);
+ Rtl22Assert('TList.Create emis (' + SymTab[TLCreateSym].MangledName + ')',
+  HasTLCreateLbl);
+ Rtl22Assert('TList.Add emis (' + SymTab[TLAddSym].MangledName + ')', HasTLAddLbl);
+ Rtl22Assert('TList utilise HeapAlloc (premiere allocation)', HasTLHeapAlloc);
+ Rtl22Assert('TList utilise HeapReAlloc (croissance)', HasTLHeapRealloc);
+ Rtl22Assert('TList.Delete decale via REP MOVSD', HasTLDelShift);
+ Rtl22Assert('TStringList appelle ' + DPRT_STR_ASSIGN + ' (Add/Delete/Clear)',
+  StrAssignCount >= 3);
+ Rtl22Assert('TStringList.Create/Add/Delete/Clear enregistres',
+  (TSLCreateSym >= 0) And (TSLAddSym >= 0) And (TSLDelSym >= 0) And
+  (TSLClearSym >= 0));
+
+ SymInit;
+ ClassSystemInit;
+ DataInit; DataInit2;
+ FrameInit;
+ StmtInit;
+ UserExternInit;
+End;
+
+{ ============================================================ }
+{ TODO 23 - FICHIERS PROJET (.dpr) ET UNITES (.pas) [IMPLEMENTE] }
+{ ============================================================ }
+
+{ ------------------------------------------------------------ }
+{ ParseConstDecl : CONST Nom = ValeurEntiere; [Nom2 = ...;]*     }
+{ Reutilise ParseConstIntLiteral (TODO 19, litteral entier/char   }
+{ ou nom de constante deja definie, avec signe optionnel) plutot  }
+{ que ParseExpr (qui emettrait du code) ou ConstEvalExpr (qui      }
+{ travaille sur du TEXTE de directive, pas sur le TokenPool) -      }
+{ simplification documentee : pas de constantes chaine/flottantes  }
+{ ni d expression arithmetique generale (a+b, a*b...) pour l       }
+{ instant, seulement litteral/constante-nommee avec signe.          }
+{ ------------------------------------------------------------ }
+
+Procedure ParseConstDecl;
+Var
+ Name, Up : TString;
+ V    : LongInt;
+ SI   : Integer;
+Begin
+ PPAdvance;   { const }
+ While PPPeekKind = TK_IDENT Do
+ Begin
+  Name := TokenPool[PP].Val;
+  PPAdvance;
+  PPMatch('=');
+  V := ParseConstIntLiteral;
+  SI := SymAdd(Name, SK_CONST, TypeFindByName('Integer'));
+  If SI >= 0 Then SymTab[SI].ImmVal := V;
+
+  { Filet de securite : une valeur non geree par ParseConstIntLiteral   }
+  { (chaine, flottant, concatenation 'A'#13#10'B'...) peut laisser des   }
+  { jetons non consommes avant le ';' - les ignorer plutot que de         }
+  { desynchroniser tout le reste du fichier (Const/Type/Var suivants,      }
+  { puis Procedure/Function, puis Begin...End.). ParseConstIntLiteral a     }
+  { deja emis un avertissement dans ce cas ; ce filet ne fait que limiter   }
+  { les degats a CETTE seule constante (valeur 0), pas au fichier entier.    }
+  While Not PPAtEnd Do
+  Begin
+   If (PPPeekKind = TK_PUNCT) And (PPPeekVal = ';') Then Break;
+   If PPPeekKind = TK_KEYWORD Then
+   Begin
+    Up := StrUpperCase(PPPeekVal);
+    If (Up = 'CONST') Or (Up = 'TYPE') Or (Up = 'VAR') Or (Up = 'BEGIN') Or
+       (Up = 'PROCEDURE') Or (Up = 'FUNCTION') Then Break;
+   End;
+   PPAdvance;
+  End;
+  SkipOptSemi;
+ End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseGlobalDeclSection : sections Const/Type/Var au niveau      }
+{ PRINCIPAL d un Program/Unit (pas a l interieur d une procedure/  }
+{ fonction - voir ParseDeclSection, TODO 09/14, pour les sections   }
+{ LOCALES, qui restent inchangees). Var y utilise GlobalVarDeclare  }
+{ (TODO 09 : reserve l espace en .DATA ET la table des symboles)    }
+{ plutot que LocalAdd (qui suppose un cadre de pile EBP-relatif,     }
+{ inexistant au niveau principal). Const/Type sont ici reellement    }
+{ geres (ParseConstDecl ci-dessus / ParseTypeDecl, TODO 15/17/19),    }
+{ contrairement au stub avertissement+saut de ParseDeclSection.       }
+{                                                                      }
+{ SIMPLIFICATION DOCUMENTEE (TODO 23) : toutes les sections            }
+{ Const/Type/Var d une meme zone de declarations (avant Begin, ou      }
+{ avant le premier Procedure/Function/methode hors-ligne) doivent      }
+{ preceder TEXTUELLEMENT cette premiere routine - Pascal autorise en   }
+{ toute generalite un entrelacement arbitraire (var, procedure, var,   }
+{ procedure, ...), mais ce compilateur emet le code de chaque          }
+{ procedure/fonction IMMEDIATEMENT au moment de son analyse (pas de    }
+{ registre differe ni de second passage, TODO 22) alors que .DATA      }
+{ (EmitDataSeg) doit etre emis EN BLOC, une seule fois, une fois        }
+{ TOUTES les globales connues - cette regle evite d avoir a re-ouvrir   }
+{ .DATA apres avoir deja commence a emettre du code. Cette boucle       }
+{ s arrete donc des qu elle rencontre Procedure/Function/Constructor/   }
+{ Destructor/Begin, laissant l appelant driver (ParseProgramOrLibrary/  }
+{ ParseUnitFile) continuer a partir de la.                               }
+{ ------------------------------------------------------------ }
+
+Procedure ParseGlobalDeclSection;
+Var
+ Up    : TString;
+ Names : Array[0..MAX_PARAM_GROUP - 1] Of TString;
+ NCount, I, TIdx : Integer;
+Begin
+ While PPPeekKind = TK_KEYWORD Do
+ Begin
+  Up := StrUpperCase(PPPeekVal);
+
+  If Up = 'CONST' Then Begin ParseConstDecl; Continue; End;
+
+  If Up = 'TYPE' Then
+  Begin
+   { Un seul mot-cle TYPE couvre generalement PLUSIEURS declarations   }
+   { (Type A = ...; B = ...; C = ...;) - le style Delphi le plus        }
+   { courant. ParseOneTypeDecl (contrairement a ParseTypeDecl) ne         }
+   { consomme pas TYPE elle-meme : boucler ici tant qu un identificateur   }
+   { suit (chaque declaration commence par Nom '=').                       }
+   PPAdvance;   { type }
+   While PPPeekKind = TK_IDENT Do ParseOneTypeDecl;
+   Continue;
+  End;
+
+  If Up = 'VAR' Then
+  Begin
+   PPAdvance;   { var }
+   While PPPeekKind = TK_IDENT Do
+   Begin
+    NCount := 0;
+    Repeat
+     If NCount < MAX_PARAM_GROUP Then
+     Begin
+      Names[NCount] := TokenPool[PP].Val;
+      Inc(NCount);
+     End;
+     PPAdvance;
+    Until Not PPMatch(',');
+
+    PPMatch(':');
+    TIdx := ParseTypeExpr;
+
+    For I := 0 To NCount - 1 Do GlobalVarDeclare(Names[I], TIdx, 0);
+    SkipOptSemi;
+   End;
+   Continue;
+  End;
+
+  { Dans une section INTERFACE (TODO 23), une signature Procedure/     }
+  { Function n a pas de corps : ParseProcOrFuncDecl la traite comme    }
+  { un forward implicite (InInterfaceSection) et revient aussitot,      }
+  { sans rien emettre - donc sans danger vis-a-vis de l ordre           }
+  { EmitDataSeg/EmitCodeSeg. Ailleurs (Program ou section                }
+  { IMPLEMENTATION), une Procedure/Function a un VRAI corps qui doit     }
+  { attendre que .DATA/.CODE soient deja emis (ParseTopLevelRoutines,     }
+  { appelee par l appelant APRES cette section) : on s arrete donc ici.   }
+  If (Up = 'PROCEDURE') Or (Up = 'FUNCTION') Then
+  Begin
+   If InInterfaceSection Then Begin ParseProcOrFuncDecl; Continue; End;
+   Break;
+  End;
+
+  Break;
+ End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseUsesClause : USES Nom1 [IN 'Fichier1.pas'] [, Nom2 ...] ;  }
+{ Analyse et valide la syntaxe (y compris la forme 'IN' propre     }
+{ aux .dpr). SIMPLIFICATION DOCUMENTEE (TODO 23) : la compilation   }
+{ multi-fichiers reelle (lecture/compilation de chaque Unit.pas     }
+{ referencee, puis liaison) attend le veritable emetteur OBJ         }
+{ (TODO 24, explicitement reserve a cet effet par la feuille de       }
+{ route elle-meme) - les unites systeme (System/SysUtils/Classes)     }
+{ sont de toute facon deja disponibles globalement comme des           }
+{ symboles integres (TODO 12/18/19/20/22), sans fichier .pas reel a     }
+{ charger.                                                                }
+{ ------------------------------------------------------------ }
+
+Procedure ParseUsesClause;
+Begin
+ PPAdvance;   { uses }
+ Repeat
+  PPAdvance;   { nom d unite }
+  If (PPPeekKind = TK_KEYWORD) And (StrUpperCase(PPPeekVal) = 'IN') Then
+  Begin
+   PPAdvance;   { in }
+   PPAdvance;   { 'Fichier.pas' }
+  End;
+ Until Not PPMatch(',');
+ SkipOptSemi;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseTopLevelRoutines : boucle sur les declarations Procedure/  }
+{ Function/Constructor/Destructor de plus haut niveau - routines   }
+{ ordinaires (ParseProcOrFuncDecl, TODO 14) ou corps hors-ligne     }
+{ d une methode deja declaree dans un corps de classe               }
+{ (ParseMethodBodyDecl, TODO 15 : motif Classe.Methode, reconnu      }
+{ par la presence d un '.' au troisieme jeton). Reutilisee par le     }
+{ Program/Library principal et par la section Implementation d une   }
+{ Unit.                                                                 }
+{ ------------------------------------------------------------ }
+
+Procedure ParseTopLevelRoutines;
+Var Up: TString;
+Begin
+ While PPPeekKind = TK_KEYWORD Do
+ Begin
+  Up := StrUpperCase(PPPeekVal);
+  If (Up <> 'PROCEDURE') And (Up <> 'FUNCTION') And
+     (Up <> 'CONSTRUCTOR') And (Up <> 'DESTRUCTOR') Then
+   Break;
+
+  If ((PP + 2) < TokenCount) And (TokenPool[PP + 2].Kind = TK_PUNCT) And
+     (TokenPool[PP + 2].Val = '.') Then
+   ParseMethodBodyDecl
+  Else
+   ParseProcOrFuncDecl;
+ End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseProgramOrLibraryFile : PROGRAM|LIBRARY Nom; [uses ...;]     }
+{ <Const/Type/Var...> <Procedure/Function/methode...> Begin ...     }
+{ End. Pilote le tout premier compile REEL d un fichier source de     }
+{ ce compilateur (TODO 23) : jusqu ici, ParseStmt/ParseDeclSection/    }
+{ ParseProcOrFuncDecl/ParseClassDecl (TODO 10-22) n etaient exerces     }
+{ que par leurs propres self-tests, sur des suites de jetons             }
+{ synthetiques - aucun point d entree de plus haut niveau ne les          }
+{ enchainait sur un VRAI fichier .pas/.dpr lexe en entier.                  }
+{ Library (bibliotheque dynamique) est reconnue et suit exactement le      }
+{ meme chemin qu un Program ici - un point d entree/export DLL reel         }
+{ specifique attend la generation PE/OBJ (TODO 24, qui possede aussi le     }
+{ vrai .OBJ des Unit ci-dessous).                                            }
+{ ------------------------------------------------------------ }
+
+Procedure ParseProgramOrLibraryFile(IsLibrary: Boolean; Const AsmFilePath: TString);
+Var ProgName: TString;
+Begin
+ PPAdvance;   { program|library }
+ ProgName := TokenPool[PP].Val;
+ PPAdvance;
+ SkipOptSemi;
+
+ If (PPPeekKind = TK_KEYWORD) And (StrUpperCase(PPPeekVal) = 'USES') Then
+  ParseUsesClause;
+
+ { Depuis le TODO 24, la generation de code (texte .asm intermediaire,   }
+ { toujours produit maintenant - plus seulement sous -asm) est           }
+ { INCONDITIONNELLE : c est l assembleur maison (AsmAssembleFile, plus     }
+ { bas) qui relit ensuite ce texte pour ecrire un vrai .exe/.obj. -asm      }
+ { ne controle plus que la CONSERVATION de ce fichier intermediaire         }
+ { (sinon efface par Run une fois l assemblage termine).                      }
+ EmitOpen(AsmFilePath);
+ EmitHeader;
+ If IsLibrary Then
+  EmitComment('Bibliotheque (LIBRARY) ' + ProgName +
+   ' : export/entree DLL reels -> TODO 24')
+ Else
+  EmitComment('Programme ' + ProgName);
+
+ ParseGlobalDeclSection;
+
+ EmitDataSeg;
+ EmitCodeSeg;
+ EmitRuntimeLibrary;
+
+ ParseTopLevelRoutines;
+
+ EmitClassVMTs;   { maintenant que tous les corps hors-ligne sont connus (TODO 25) }
+ EmitInterfaceThunks;   { idem, tables de thunks d interface (TODO 25) }
+ EmitUserExterns;   { maintenant que tout 'external' est connu }
+
+ EmitLabel(DP_FUNC_PFX + 'MAIN');
+ EmitProlog(0);
+ EmitInstr('CALL ' + DPRT_INIT);
+
+ If (PPPeekKind = TK_KEYWORD) And (StrUpperCase(PPPeekVal) = 'BEGIN') Then
+  ParseCompoundStmt
+ Else
+  WarnMsg('bloc principal begin...end. attendu');
+ If Not PPMatch('.') Then
+  WarnMsg('"." attendu apres le end du bloc principal de ' + ProgName);
+ If Not PPAtEnd Then
+  WarnMsg('jetons superflus apres la fin du programme ' + ProgName);
+
+ EmitInstr('PUSH 0');
+ EmitInstr('CALL ExitProcess');
+ EmitEpilog;
+ EmitClose(DP_FUNC_PFX + 'MAIN');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseUnitFile : UNIT Nom; INTERFACE [uses ...;] <declarations>  }
+{ IMPLEMENTATION [uses ...;] <declarations + routines> [           }
+{ INITIALIZATION <instructions>] [FINALIZATION <instructions>]      }
+{ END. Les declarations des DEUX sections sont enregistrees dans     }
+{ la MEME table des symboles globale que pour un Program (ce           }
+{ compilateur n a pas encore de frontiere de module/namespace          }
+{ separee ni de liaison .OBJ reelle entre unites - TODO 24, qui         }
+{ possede aussi le vrai export DLL des Library ci-dessus) : compiler     }
+{ directement une Unit isolee valide donc sa syntaxe et enregistre        }
+{ ses declarations, mais ne produit pas de point d entree executable       }
+{ (rien a quoi rattacher un .ASM/.OBJ tant que TODO 24 n existe pas) -       }
+{ Initialization/Finalization sont donc analysees (ParseStmtSeq,             }
+{ TODO 13) pour valider leur syntaxe, mais leur code n est pas emis           }
+{ faute d un point d attache reel (pas de fichier .asm ouvert ici).            }
+{ ------------------------------------------------------------ }
+
+Procedure ParseUnitFile;
+Var UnitName: TString;
+Begin
+ PPAdvance;   { unit }
+ UnitName := TokenPool[PP].Val;
+ PPAdvance;
+ SkipOptSemi;
+
+ If Not PPMatch('interface') Then
+  WarnMsg('interface attendu dans l unite ' + UnitName);
+ If (PPPeekKind = TK_KEYWORD) And (StrUpperCase(PPPeekVal) = 'USES') Then
+  ParseUsesClause;
+ InInterfaceSection := True;
+ ParseGlobalDeclSection;
+ InInterfaceSection := False;
+
+ If (PPPeekKind = TK_KEYWORD) And (StrUpperCase(PPPeekVal) = 'IMPLEMENTATION') Then
+ Begin
+  PPAdvance;
+  If (PPPeekKind = TK_KEYWORD) And (StrUpperCase(PPPeekVal) = 'USES') Then
+   ParseUsesClause;
+  ParseGlobalDeclSection;
+  ParseTopLevelRoutines;
+ End
+ Else
+  WarnMsg('implementation attendu dans l unite ' + UnitName);
+
+ If (PPPeekKind = TK_KEYWORD) And (StrUpperCase(PPPeekVal) = 'INITIALIZATION') Then
+ Begin
+  PPAdvance;
+  ParseStmtSeq;
+ End;
+
+ If (PPPeekKind = TK_KEYWORD) And (StrUpperCase(PPPeekVal) = 'FINALIZATION') Then
+ Begin
+  PPAdvance;
+  ParseStmtSeq;
+ End;
+
+ If Not PPMatch('end') Then
+  WarnMsg('end attendu en fin de l unite ' + UnitName);
+ If Not PPMatch('.') Then
+  WarnMsg('"." attendu apres end en fin de l unite ' + UnitName);
+ If Not PPAtEnd Then
+  WarnMsg('jetons superflus apres la fin de l unite ' + UnitName);
+
+ If Opts.Verbose Then
+  WriteLn('Unite ', UnitName, ' compilee (declarations enregistrees) - ',
+   'aucun executable direct (pas de point d entree ; voir TODO 24 pour ',
+   'le vrai .OBJ d unite).');
+End;
+
+{ Declarations anticipees (TODO 24) : l assembleur/emetteur PE/COFF     }
+{ est defini plus bas dans le fichier (apres CompileSourceFile, qui       }
+{ pilote la compilation reelle TODO 23) mais est appele DEPUIS              }
+{ CompileSourceFile - ordre habituel du fichier (TODO le plus recent en      }
+{ dernier), donc Forward ici, comme ParseProcOrFuncDecl/ParseTypeExpr        }
+{ (TODO 14/19) plus haut.                                                       }
+Procedure AsmAssembleFile(Const AsmPath: TString); Forward;
+Procedure AsmResolveRel32Fixups; Forward;
+Procedure WritePEExe(Const OutPath: TString); Forward;
+Procedure WriteCOFFObj(Const OutPath: TString); Forward;
+
+{ ------------------------------------------------------------ }
+{ CompileSourceFile : detecte Program vs Unit vs Library (premier }
+{ mot-cle reel du fichier lexe) et pilote le compilateur en         }
+{ consequence - point d entree unique du TODO 23. Un fichier .dfm     }
+{ (formulaire VCL) est hors perimetre (pas de VCL graphique dans       }
+{ ce projet) : detecte par extension et simplement ignore, avec un      }
+{ avertissement, sans tenter de le lexer/parser (sa syntaxe binaire      }
+{ ou texte proprietaire n a rien a voir avec du Pascal).                  }
+{ ------------------------------------------------------------ }
+
+Procedure CompileSourceFile;
+Var
+ Ext, Up, AsmFilePath : TString;
+ IsProgramOrLibrary : Boolean;
+ TmpAsmF : Text;
+Begin
+ Ext := ExtractExt(Opts.SrcFile);
+ If Ext = '.DFM' Then
+ Begin
+  WarnMsg('fichier .dfm (formulaire VCL) hors perimetre : ignore');
+  Exit;
+ End;
+
+ If PPAtEnd Then
+ Begin
+  WarnMsg('fichier source vide');
+  Exit;
+ End;
+
+ If PPPeekKind <> TK_KEYWORD Then
+ Begin
+  WarnMsg('Program, Unit ou Library attendu en tete de fichier');
+  Exit;
+ End;
+
+ { Depuis le TODO 24, le texte .asm est TOUJOURS produit (l assembleur   }
+ { maison en a besoin, meme si -asm n a pas ete demande) : ecrit dans le  }
+ { fichier REEL si -asm, sinon dans un fichier temporaire efface a la      }
+ { fin de cette procedure.                                                   }
+ If Opts.AsmOutput Then
+  AsmFilePath := ReplaceExt(Opts.OutFile, '.asm')
+ Else
+  AsmFilePath := 'DPASMTMP.$$$';
+
+ IsProgramOrLibrary := False;
+ Up := StrUpperCase(PPPeekVal);
+ If Up = 'PROGRAM' Then
+ Begin
+  ParseProgramOrLibraryFile(False, AsmFilePath);
+  IsProgramOrLibrary := True;
+ End
+ Else If Up = 'LIBRARY' Then
+ Begin
+  ParseProgramOrLibraryFile(True, AsmFilePath);
+  IsProgramOrLibrary := True;
+ End
+ Else If Up = 'UNIT' Then
+  ParseUnitFile
+ Else
+  WarnMsg('Program, Unit ou Library attendu en tete de fichier (trouve: ' +
+   PPPeekVal + ')');
+
+ { TODO 24 : assembler le texte .asm qui vient d etre produit et ecrire  }
+ { un vrai binaire - .OBJ (COFF) si -obj, sinon .EXE (PE) par defaut.      }
+ { Une Unit compilee seule n a pas de point d entree (TODO 23) : rien a     }
+ { assembler/lier pour elle tant que la vraie compilation multi-fichiers     }
+ { (liaison .OBJ, elle aussi TODO 24) n existe pas.                            }
+ If IsProgramOrLibrary And (ErrorCount = 0) Then
+ Begin
+  AsmAssembleFile(AsmFilePath);
+  { La resolution des fixups REL32 differe entre les deux modes (TODO 24) :}
+  { -obj (WriteCOFFObj) fait SA PROPRE resolution "locale seulement"        }
+  { (AsmResolveLocalRel32Fixups, pas de vignette IAT - un CALL vers un        }
+  { import reste une relocation COFF pour l editeur de liens) ; le mode       }
+  { EXE (WritePEExe) a besoin de la resolution COMPLETE (vignettes IAT)        }
+  { AVANT de calculer la disposition PE, donc appelee ici.                       }
+  If Opts.ObjOnly Then
+   WriteCOFFObj(Opts.OutFile)
+  Else
+  Begin
+   AsmResolveRel32Fixups;
+   WritePEExe(Opts.OutFile);
+  End;
+ End;
+
+ { Rien a effacer pour une Unite : ParseUnitFile n appelle jamais       }
+ { EmitOpen (TODO 23), donc AsmFilePath n a jamais ete cree - tenter de  }
+ { l effacer quand meme declenchait une erreur d execution (fichier       }
+ { introuvable) decouverte en testant reellement lextest2.pas (TODO 24).   }
+ If IsProgramOrLibrary And (Not Opts.AsmOutput) Then
+ Begin
+  Assign(TmpAsmF, AsmFilePath);
+  {$I-} Erase(TmpAsmF); {$I+}
+ End;
+End;
+
+{ ------------------------------------------------------------ }
+{ Prog23SelfTest (TODO 23) : verifie ParseConstDecl, la section   }
+{ globale Const/Type/Var de ParseGlobalDeclSection, ParseUsesClause}
+{ (formes simple et 'in'), puis un compile REEL de bout en bout    }
+{ (ParseProgramOrLibraryFile et ParseUnitFile) sur des suites de    }
+{ jetons construites directement dans TokenPool, comme les self-     }
+{ tests des TODO precedents - y compris un test de non-regression    }
+{ pour le piege trouve pendant le developpement : une signature       }
+{ Procedure/Function dans la section INTERFACE d une Unit (sans        }
+{ corps ni 'forward' explicite) desynchronisait silencieusement le      }
+{ parseur avant la correction (InInterfaceSection).                       }
+{ ------------------------------------------------------------ }
+
+Procedure Prog23Assert(Const Label_: TString; Cond: Boolean);
+Begin
+ If Not Cond Then
+  FatalError('Prog23SelfTest: ' + Label_ + ' a echoue');
+End;
+
+Procedure Prog23SelfTest;
+Const
+ TmpFile = 'DPPROG23SELFTEST.$$$';
+Var
+ SI, GTypeIdx, RecTypeIdx : Integer;
+ F : Text;
+ Line : TString;
+ SavedAsmOutput : Boolean;
+ SavedOutFile : TString;
+ HasGVarStore, HasMainCall : Boolean;
+
+ Procedure Tok(Kind: TTokenKind; Const Val: TString; IntVal: LongInt);
+ Var T: TToken;
+ Begin
+  T.Kind := Kind; T.Val := Val; T.IntVal := IntVal; T.RealVal := 0.0;
+  T.Line := 1; T.Col := 1;
+  TokenPoolAdd(T);
+ End;
+
+Begin
+ SymInit;
+ ClassSystemInit;
+ DataInit; DataInit2;
+ FrameInit;
+ StmtInit;
+ UserExternInit;
+ InInterfaceSection := False;
+
+ { --- ParseConstDecl : Const MyConst23 = 42; --- }
+ TokenPoolInit;
+ Tok(TK_KEYWORD, 'const', 0);
+ Tok(TK_IDENT, 'MyConst23', 0);
+ Tok(TK_OP, '=', 0);
+ Tok(TK_INTEGER, '42', 42);
+ Tok(TK_PUNCT, ';', 0);
+ ParserInit;
+ ParseConstDecl;
+ Prog23Assert('Const consomme tous les tokens', PPAtEnd);
+ SI := SymFind('MyConst23');
+ Prog23Assert('MyConst23 enregistree', SI >= 0);
+ Prog23Assert('MyConst23 = 42', SymTab[SI].ImmVal = 42);
+
+ { --- ParseGlobalDeclSection : Type/Const/Var combines --- }
+ TokenPoolInit;
+ Tok(TK_KEYWORD, 'type', 0);
+ Tok(TK_IDENT, 'TRec23', 0);
+ Tok(TK_OP, '=', 0);
+ Tok(TK_KEYWORD, 'record', 0);
+ Tok(TK_IDENT, 'F', 0);
+ Tok(TK_PUNCT, ':', 0);
+ Tok(TK_IDENT, 'Integer', 0);
+ Tok(TK_PUNCT, ';', 0);
+ Tok(TK_KEYWORD, 'end', 0);
+ Tok(TK_PUNCT, ';', 0);
+ Tok(TK_KEYWORD, 'var', 0);
+ Tok(TK_IDENT, 'GVar23', 0);
+ Tok(TK_PUNCT, ':', 0);
+ Tok(TK_IDENT, 'Integer', 0);
+ Tok(TK_PUNCT, ';', 0);
+ ParserInit;
+ ParseGlobalDeclSection;
+ Prog23Assert('section Type/Var globale consomme tous les tokens', PPAtEnd);
+ RecTypeIdx := TypeFindByName('TRec23');
+ Prog23Assert('TRec23 enregistre comme record', RecTypeIdx >= 0);
+ GTypeIdx := SymFind('GVar23');
+ Prog23Assert('GVar23 enregistree', GTypeIdx >= 0);
+ Prog23Assert('GVar23 est globale (GlobalVarDeclare, pas LocalAdd)',
+  (GTypeIdx >= 0) And SymTab[GTypeIdx].IsGlobal);
+
+ { --- ParseUsesClause : forme simple et forme 'in' --- }
+ TokenPoolInit;
+ Tok(TK_KEYWORD, 'uses', 0);
+ Tok(TK_IDENT, 'SysUtils', 0);
+ Tok(TK_PUNCT, ',', 0);
+ Tok(TK_IDENT, 'Classes', 0);
+ Tok(TK_PUNCT, ';', 0);
+ ParserInit;
+ ParseUsesClause;
+ Prog23Assert('uses SysUtils, Classes consomme tous les tokens', PPAtEnd);
+
+ TokenPoolInit;
+ Tok(TK_KEYWORD, 'uses', 0);
+ Tok(TK_IDENT, 'Unit1', 0);
+ Tok(TK_KEYWORD, 'in', 0);
+ Tok(TK_STRING, 'Unit1.pas', 0);
+ Tok(TK_PUNCT, ';', 0);
+ ParserInit;
+ ParseUsesClause;
+ Prog23Assert('uses Unit1 in ''Unit1.pas'' consomme tous les tokens', PPAtEnd);
+
+ { --- Compile reel de bout en bout : Program avec Const/Var/Procedure --- }
+ { Program Prog23T; Const K23=5; Var V23: Integer; Procedure Proc23;      }
+ { Begin V23 := K23; End; Begin Proc23; End.                               }
+ TokenPoolInit;
+ Tok(TK_KEYWORD, 'program', 0);
+ Tok(TK_IDENT, 'Prog23T', 0);
+ Tok(TK_PUNCT, ';', 0);
+ Tok(TK_KEYWORD, 'const', 0);
+ Tok(TK_IDENT, 'K23', 0);
+ Tok(TK_OP, '=', 0);
+ Tok(TK_INTEGER, '5', 5);
+ Tok(TK_PUNCT, ';', 0);
+ Tok(TK_KEYWORD, 'var', 0);
+ Tok(TK_IDENT, 'V23', 0);
+ Tok(TK_PUNCT, ':', 0);
+ Tok(TK_IDENT, 'Integer', 0);
+ Tok(TK_PUNCT, ';', 0);
+ Tok(TK_KEYWORD, 'procedure', 0);
+ Tok(TK_IDENT, 'Proc23', 0);
+ Tok(TK_PUNCT, ';', 0);
+ Tok(TK_KEYWORD, 'begin', 0);
+ Tok(TK_IDENT, 'V23', 0);
+ Tok(TK_OP, ':=', 0);
+ Tok(TK_IDENT, 'K23', 0);
+ Tok(TK_PUNCT, ';', 0);
+ Tok(TK_KEYWORD, 'end', 0);
+ Tok(TK_PUNCT, ';', 0);
+ Tok(TK_KEYWORD, 'begin', 0);
+ Tok(TK_IDENT, 'Proc23', 0);
+ Tok(TK_PUNCT, ';', 0);
+ Tok(TK_KEYWORD, 'end', 0);
+ Tok(TK_PUNCT, '.', 0);
+ ParserInit;
+
+ SavedAsmOutput := Opts.AsmOutput;
+ SavedOutFile   := Opts.OutFile;
+ Opts.AsmOutput := True;
+ Opts.OutFile   := TmpFile;
+ ParseProgramOrLibraryFile(False, ReplaceExt(TmpFile, '.asm'));
+ Opts.AsmOutput := SavedAsmOutput;
+ Opts.OutFile   := SavedOutFile;
+
+ Prog23Assert('Program Prog23T consomme tous les tokens', PPAtEnd);
+ HasGVarStore := False; HasMainCall := False;
+ {$I-} Assign(F, ReplaceExt(TmpFile, '.asm')); Reset(F); {$I+}
+ Prog23Assert('Program Prog23T produit un .asm relisible', IOResult = 0);
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  If Pos('MOV DWORD PTR [_DPV_V23],EAX', Line) > 0 Then HasGVarStore := True;
+  If Pos('CALL _DPF_PROC23', Line) > 0 Then HasMainCall := True;
+ End;
+ Close(F); Erase(F);
+ Prog23Assert('K23 (const=5) affecte a la globale V23', HasGVarStore);
+ Prog23Assert('le bloc principal appelle Proc23', HasMainCall);
+
+ { --- Unit avec signature Interface puis corps Implementation : le }
+ { piege corrige (InInterfaceSection) - Function DoubleIt declaree   }
+ { SANS corps ni 'forward' en Interface, REDEFINIE avec un corps en   }
+ { Implementation.                                                     }
+ TokenPoolInit;
+ Tok(TK_KEYWORD, 'unit', 0);
+ Tok(TK_IDENT, 'Unit23T', 0);
+ Tok(TK_PUNCT, ';', 0);
+ Tok(TK_KEYWORD, 'interface', 0);
+ Tok(TK_KEYWORD, 'function', 0);
+ Tok(TK_IDENT, 'DoubleIt23', 0);
+ Tok(TK_PUNCT, '(', 0);
+ Tok(TK_IDENT, 'X', 0);
+ Tok(TK_PUNCT, ':', 0);
+ Tok(TK_IDENT, 'Integer', 0);
+ Tok(TK_PUNCT, ')', 0);
+ Tok(TK_PUNCT, ':', 0);
+ Tok(TK_IDENT, 'Integer', 0);
+ Tok(TK_PUNCT, ';', 0);
+ Tok(TK_KEYWORD, 'implementation', 0);
+ Tok(TK_KEYWORD, 'function', 0);
+ Tok(TK_IDENT, 'DoubleIt23', 0);
+ Tok(TK_PUNCT, '(', 0);
+ Tok(TK_IDENT, 'X', 0);
+ Tok(TK_PUNCT, ':', 0);
+ Tok(TK_IDENT, 'Integer', 0);
+ Tok(TK_PUNCT, ')', 0);
+ Tok(TK_PUNCT, ':', 0);
+ Tok(TK_IDENT, 'Integer', 0);
+ Tok(TK_PUNCT, ';', 0);
+ Tok(TK_KEYWORD, 'begin', 0);
+ Tok(TK_IDENT, 'Result', 0);
+ Tok(TK_OP, ':=', 0);
+ Tok(TK_IDENT, 'X', 0);
+ Tok(TK_PUNCT, ';', 0);
+ Tok(TK_KEYWORD, 'end', 0);
+ Tok(TK_PUNCT, ';', 0);
+ Tok(TK_KEYWORD, 'end', 0);
+ Tok(TK_PUNCT, '.', 0);
+ ParserInit;
+ ParseUnitFile;
+ Prog23Assert(
+  'Unit23T (signature Interface + corps Implementation) consomme ' +
+  'tous les tokens (regression InInterfaceSection)', PPAtEnd);
+ SI := SymFind('DoubleIt23');
+ Prog23Assert('DoubleIt23 enregistree', SI >= 0);
+ Prog23Assert('DoubleIt23 a recu un corps reel (plus IsExternal)',
+  (SI >= 0) And Not SymTab[SI].IsExternal);
+
+ SymInit;
+ ClassSystemInit;
+ DataInit; DataInit2;
+ FrameInit;
+ StmtInit;
+ UserExternInit;
+ InInterfaceSection := False;
+End;
+
+{ ============================================================ }
+{ TODO 24 - GENERATION PE/OBJ (EXE PAR DEFAUT, OBJ SUR DEMANDE) }
+{ [IMPLEMENTE]                                                   }
+{ ============================================================ }
+{ NOTE : les forward-declarations AsmAssembleFile/AsmResolveRel32Fixups/}
+{ WritePEExe/WriteCOFFObj (juste avant CompileSourceFile, TODO 23-24)    }
+{ rendent ces noms deja utilisables ici par Todo24SelfTest, place AVANT  }
+{ leur vraie definition plus bas (meme motif que ParseProcOrFuncDecl/     }
+{ ParseTypeExpr, TODO 14/19).                                              }
+
+Procedure Todo24Assert(Const Label_: TString; Cond: Boolean);
+Begin
+ If Not Cond Then
+  FatalError('Todo24SelfTest: ' + Label_ + ' a echoue');
+End;
+
+{ ------------------------------------------------------------ }
+{ Todo24SelfTest : compile un Program minimal de bout en bout    }
+{ (comme Prog23SelfTest, TODO 23) puis va PLUS LOIN - assemble      }
+{ reellement le texte .asm produit et verifie la SIGNATURE BINAIRE   }
+{ du fichier obtenu (MZ/PE pour l EXE, Machine i386 pour l OBJ) :      }
+{ le premier self-test de ce fichier qui verifie des OCTETS reels,     }
+{ pas seulement des motifs dans du texte .asm - necessaire car c est    }
+{ exactement ce que TODO 24 ajoute (un assembleur+emetteur PE/COFF       }
+{ maison, TODO 23 ne produisait que du texte .asm jamais reassemble).     }
+{ ------------------------------------------------------------ }
+
+Procedure Todo24SelfTest;
+Const
+ TmpFile = 'DPTODO24SELFTEST.$$$';
+Var
+ SavedOutFile : TString;
+ SavedObjOnly : Boolean;
+ F : File Of Byte;
+ B1, B2, B3, B4 : Byte;
+
+ Procedure Tok(Kind: TTokenKind; Const Val: TString; IntVal: LongInt);
+ Var T: TToken;
+ Begin
+  T.Kind := Kind; T.Val := Val; T.IntVal := IntVal; T.RealVal := 0.0;
+  T.Line := 1; T.Col := 1;
+  TokenPoolAdd(T);
+ End;
+
+ Procedure BuildMinimalProgram;
+ Begin
+  TokenPoolInit;
+  Tok(TK_KEYWORD, 'program', 0);
+  Tok(TK_IDENT, 'P24T', 0);
+  Tok(TK_PUNCT, ';', 0);
+  Tok(TK_KEYWORD, 'begin', 0);
+  Tok(TK_KEYWORD, 'end', 0);
+  Tok(TK_PUNCT, '.', 0);
+  ParserInit;
+ End;
+
+Begin
+ SymInit; ClassSystemInit; DataInit; DataInit2; FrameInit; StmtInit;
+ UserExternInit; InInterfaceSection := False;
+
+ SavedOutFile := Opts.OutFile;
+ SavedObjOnly := Opts.ObjOnly;
+
+ { --- Mode EXE : Program P24T; Begin End. -> vrai .exe PE --- }
+ BuildMinimalProgram;
+ Opts.OutFile := TmpFile;
+ Opts.ObjOnly := False;
+ ParseProgramOrLibraryFile(False, ReplaceExt(TmpFile, '.asm'));
+ Todo24Assert('Program P24T (EXE) consomme tous les tokens', PPAtEnd);
+ AsmAssembleFile(ReplaceExt(TmpFile, '.asm'));
+ AsmResolveRel32Fixups;
+ WritePEExe(ReplaceExt(TmpFile, '.exe'));
+
+ {$I-} Assign(F, ReplaceExt(TmpFile, '.exe')); Reset(F); {$I+}
+ Todo24Assert('WritePEExe produit un fichier relisible', IOResult = 0);
+ Read(F, B1); Read(F, B2);
+ Todo24Assert('signature MZ ($4D,$5A) en tete du .exe',
+  (B1 = $4D) And (B2 = $5A));
+ Seek(F, 64);
+ Read(F, B1); Read(F, B2); Read(F, B3); Read(F, B4);
+ Todo24Assert('signature PE\0\0 a e_lfanew=64',
+  (B1 = Ord('P')) And (B2 = Ord('E')) And (B3 = 0) And (B4 = 0));
+ Close(F);
+ {$I-} Erase(F); {$I+}
+ {$I-} Assign(F, ReplaceExt(TmpFile, '.asm')); Erase(F); {$I+}
+
+ { --- Mode OBJ : meme programme, verifie la signature COFF --- }
+ SymInit; ClassSystemInit; DataInit; DataInit2; FrameInit; StmtInit;
+ UserExternInit; InInterfaceSection := False;
+ BuildMinimalProgram;
+ ParseProgramOrLibraryFile(False, ReplaceExt(TmpFile, '.asm'));
+ Todo24Assert('Program P24T (OBJ) consomme tous les tokens', PPAtEnd);
+ AsmAssembleFile(ReplaceExt(TmpFile, '.asm'));
+ WriteCOFFObj(ReplaceExt(TmpFile, '.obj'));
+
+ {$I-} Assign(F, ReplaceExt(TmpFile, '.obj')); Reset(F); {$I+}
+ Todo24Assert('WriteCOFFObj produit un fichier relisible', IOResult = 0);
+ Read(F, B1); Read(F, B2);
+ Todo24Assert('Machine=i386 ($014C, petit-boutiste) en tete du .obj',
+  (B1 = $4C) And (B2 = $01));
+ Close(F);
+ {$I-} Erase(F); {$I+}
+ {$I-} Assign(F, ReplaceExt(TmpFile, '.asm')); Erase(F); {$I+}
+
+ Opts.OutFile := SavedOutFile;
+ Opts.ObjOnly := SavedObjOnly;
+
+ SymInit; ClassSystemInit; DataInit; DataInit2; FrameInit; StmtInit;
+ UserExternInit; InInterfaceSection := False;
+End;
+{ Un assembleur 80386 maison (pas MASM/ML.EXE externe) relit le    }
+{ texte .ASM deja produit par EmitOpen/EmitInstr/... (TODO 07) et    }
+{ produit directement un fichier binaire reel : PE (.exe, mode        }
+{ par defaut) ou COFF (.obj, -obj). Porte du meme esprit que            }
+{ l assembleur de ML.PAS (projet frere, deja verifie fonctionnel        }
+{ sur de vrais .exe) mais REECRIT ICI, plus etroit : uniquement le        }
+{ repertoire d instructions/directives que CE compilateur emet          }
+{ reellement (enumere par relecture de tous les EmitInstr du fichier),   }
+{ pas un clone general de MASM. Une instruction ASM utilisateur            }
+{ (bloc asm en ligne, TODO 21) hors de ce repertoire produit une            }
+{ erreur fatale claire plutot que des octets faux.                          }
+{ ------------------------------------------------------------ }
+
+Const
+ ASMSEC_TEXT  = 0;
+ ASMSEC_DATA  = 1;
+ ASMSEC_IDATA = 2;
+ ASMSEC_COUNT = 3;
+
+ MAX_ASM_BYTES   = {$IFDEF FPC}1048576{$ELSE}65536{$ENDIF};
+ MAX_ASM_LABELS  = 4096;
+ MAX_ASM_FIXUPS  = 16384;
+ MAX_ASM_EXTERNS = 256;
+ MAX_ASM_THUNKS  = 256;
+
+ { Table d alias : nom "nu" (tel qu ecrit par les sites d appel du     }
+ { generateur de code, ex. 'CALL ExitProcess') -> nom decore reel de   }
+ { l import (tel que declare par EmitHeader, ex. '_ExitProcess@4').     }
+ { Simplification deliberee (TODO 24) : plutot que de retoucher les       }
+ { dizaines de sites d emission CALL/JMP existants pour leur faire        }
+ { ecrire le nom decore, l assembleur resout lui-meme cet alias -          }
+ { seul endroit du fichier qui a besoin de connaitre cette correspondance.}
+ ASM_API_ALIAS_COUNT = 9;
+ AsmApiAliasBare : Array[0..ASM_API_ALIAS_COUNT - 1] Of TString = (
+  'ExitProcess', 'GetStdHandle', 'WriteFile', 'ReadFile',
+  'GetProcessHeap', 'HeapAlloc', 'HeapFree', 'HeapReAlloc', 'CloseHandle');
+ AsmApiAliasReal : Array[0..ASM_API_ALIAS_COUNT - 1] Of TString = (
+  '_ExitProcess@4', '_GetStdHandle@4', '_WriteFile@20', '_ReadFile@20',
+  '_GetProcessHeap@0', '_HeapAlloc@12', '_HeapFree@12', '_HeapReAlloc@16',
+  '_CloseHandle@4');
+
+Type
+ TAsmFixKind = (AFX_REL32, AFX_ABS32);
+
+ TAsmLabel = Record
+  Name    : TString;
+  Sec     : Integer;   { ASMSEC_xxx }
+  Ofs     : LongInt;   { position dans le tampon de cette section }
+ End;
+
+ TAsmFixup = Record
+  Sec        : Integer;    { section CONTENANT le champ a corriger }
+  Pos        : LongInt;    { position de ce champ (32 bits) dans cette section }
+  Kind       : TAsmFixKind;
+  TargetName : TString;    { nom du symbole (local, extern ou alias API) vise }
+  Addend     : LongInt;    { deplacement supplementaire (Label+N) }
+ End;
+
+Var
+ AsmBuf      : Array[ASMSEC_TEXT..ASMSEC_IDATA] Of Array[0..MAX_ASM_BYTES - 1] Of Byte;
+ AsmLen      : Array[ASMSEC_TEXT..ASMSEC_IDATA] Of LongInt;
+ AsmCurSec   : Integer;
+
+ AsmLabels     : Array[0..MAX_ASM_LABELS - 1] Of TAsmLabel;
+ AsmLabelCount : Integer;
+
+ AsmFixups     : Array[0..MAX_ASM_FIXUPS - 1] Of TAsmFixup;
+ AsmFixupCount : Integer;
+
+ AsmExterns     : Array[0..MAX_ASM_EXTERNS - 1] Of TString;
+ AsmExternCount : Integer;
+
+ { Vignettes IAT (TODO 24) : un CALL/JMP vers un symbole EXTERN ne peut }
+ { pas etre un rel32 direct (l adresse reelle de la DLL est inconnue     }
+ { avant le chargement) - il saute plutot vers une petite vignette        }
+ { locale ('JMP DWORD PTR [case IAT]', 6 octets, meme technique que        }
+ { ML.PAS/tout compilateur Win32 reel) placee dans .text, UNE fois par      }
+ { symbole extern reellement appele. AsmThunkOfs[I] = position (dans        }
+ { AsmBuf[ASMSEC_TEXT]) de la vignette du I-eme extern d AsmExterns.          }
+ AsmThunkOfs      : Array[0..MAX_ASM_EXTERNS - 1] Of LongInt;
+ AsmThunkExists   : Array[0..MAX_ASM_EXTERNS - 1] Of Boolean;
+
+{ ------------------------------------------------------------ }
+{ AsmInit : reinitialiser tout l etat de l assembleur (TODO 24), }
+{ avant l assemblage d un nouveau fichier .asm.                   }
+{ ------------------------------------------------------------ }
+
+Procedure AsmInit;
+Var I: Integer;
+Begin
+ AsmLen[ASMSEC_TEXT]  := 0;
+ AsmLen[ASMSEC_DATA]  := 0;
+ AsmLen[ASMSEC_IDATA] := 0;
+ AsmCurSec       := ASMSEC_TEXT;
+ AsmLabelCount   := 0;
+ AsmFixupCount   := 0;
+ AsmExternCount  := 0;
+ For I := 0 To MAX_ASM_EXTERNS - 1 Do AsmThunkExists[I] := False;
+End;
+
+{ ------------------------------------------------------------ }
+{ AsmEmitByte/Word/DWord : ecrire des octets bruts dans la        }
+{ section COURANTE (AsmCurSec), a la position AsmLen[AsmCurSec],  }
+{ en little-endian (convention x86 native).                        }
+{ ------------------------------------------------------------ }
+
+Procedure AsmEmitByte(B: Integer);
+Begin
+ If AsmLen[AsmCurSec] >= MAX_ASM_BYTES Then
+ Begin
+  FatalError('assembleur : section pleine (MAX_ASM_BYTES=' +
+   IntToStr_(MAX_ASM_BYTES) + ')');
+  Exit;
+ End;
+ AsmBuf[AsmCurSec][AsmLen[AsmCurSec]] := B And $FF;
+ Inc(AsmLen[AsmCurSec]);
+End;
+
+Procedure AsmEmitWord(W: Integer);
+Begin
+ AsmEmitByte(W And $FF);
+ AsmEmitByte((W Shr 8) And $FF);
+End;
+
+Procedure AsmEmitDWord(D: LongInt);
+Begin
+ AsmEmitByte(D And $FF);
+ AsmEmitByte((D Shr 8) And $FF);
+ AsmEmitByte((D Shr 16) And $FF);
+ AsmEmitByte((D Shr 24) And $FF);
+End;
+
+{ ------------------------------------------------------------ }
+{ AsmAddFixup : enregistrer une correction differee (adresse pas  }
+{ encore connue - label en avant, ou symbole extern) a l emplacement}
+{ des 4 derniers octets ecrits dans SecOfFixup (deja reserves via   }
+{ AsmEmitDWord(0) par l appelant). Resolue par AsmResolveFixups     }
+{ une fois tout le fichier assemble (donc tous les labels connus).  }
+{ ------------------------------------------------------------ }
+
+Procedure AsmAddFixup(SecOfFixup: Integer; Kind: TAsmFixKind;
+ Const TargetName: TString; Addend: LongInt);
+Begin
+ If AsmFixupCount >= MAX_ASM_FIXUPS Then
+ Begin
+  FatalError('assembleur : table des corrections pleine (MAX_ASM_FIXUPS=' +
+   IntToStr_(MAX_ASM_FIXUPS) + ')');
+  Exit;
+ End;
+ AsmFixups[AsmFixupCount].Sec        := SecOfFixup;
+ AsmFixups[AsmFixupCount].Pos        := AsmLen[SecOfFixup] - 4;
+ AsmFixups[AsmFixupCount].Kind       := Kind;
+ AsmFixups[AsmFixupCount].TargetName := TargetName;
+ AsmFixups[AsmFixupCount].Addend     := Addend;
+ Inc(AsmFixupCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ AsmDefineLabel : enregistrer Name a la position COURANTE de la  }
+{ section COURANTE (etiquette ASM, EmitLabel/DataTab[I].LblName). }
+{ ------------------------------------------------------------ }
+
+Procedure AsmDefineLabel(Const Name: TString);
+Begin
+ If AsmLabelCount >= MAX_ASM_LABELS Then
+ Begin
+  FatalError('assembleur : table des etiquettes pleine (MAX_ASM_LABELS=' +
+   IntToStr_(MAX_ASM_LABELS) + ')');
+  Exit;
+ End;
+ AsmLabels[AsmLabelCount].Name := StrUpperCase(Name);
+ AsmLabels[AsmLabelCount].Sec  := AsmCurSec;
+ AsmLabels[AsmLabelCount].Ofs  := AsmLen[AsmCurSec];
+ Inc(AsmLabelCount);
+End;
+
+Function AsmFindLabel(Const Name: TString): Integer;
+Var I: Integer; Up: TString;
+Begin
+ AsmFindLabel := -1;
+ Up := StrUpperCase(Name);
+ For I := 0 To AsmLabelCount - 1 Do
+  If AsmLabels[I].Name = Up Then
+  Begin
+   AsmFindLabel := I;
+   Exit;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AsmExternIndex : trouver (ou enregistrer) un symbole EXTRN par  }
+{ son nom REEL decore (deja resolu par AsmResolveApiAlias). Une    }
+{ 'EXTRN Nom:NEAR' explicite (Win32 de base ou 'external' utilisateur,}
+{ TODO 22) l enregistre d avance ; un appel jamais precede d une       }
+{ ligne EXTRN correspondante est une erreur (symbole non declare).      }
+{ ------------------------------------------------------------ }
+
+Function AsmExternIndex(Const Name: TString): Integer;
+Var I: Integer; Up: TString;
+Begin
+ Up := StrUpperCase(Name);
+ For I := 0 To AsmExternCount - 1 Do
+  If AsmExterns[I] = Up Then
+  Begin
+   AsmExternIndex := I;
+   Exit;
+  End;
+ AsmExternIndex := -1;
+End;
+
+Procedure AsmDeclareExtern(Const Name: TString);
+Begin
+ If AsmExternIndex(Name) >= 0 Then Exit;   { deja declare }
+ If AsmExternCount >= MAX_ASM_EXTERNS Then
+ Begin
+  FatalError('assembleur : table des imports externes pleine ' +
+   '(MAX_ASM_EXTERNS=' + IntToStr_(MAX_ASM_EXTERNS) + ')');
+  Exit;
+ End;
+ AsmExterns[AsmExternCount] := StrUpperCase(Name);
+ Inc(AsmExternCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ AsmResolveApiAlias : traduire un nom "nu" (CALL ExitProcess) en }
+{ son nom EXTRN decore reel (_ExitProcess@4) s il figure dans la  }
+{ table d alias ci-dessus ; sinon renvoie Name inchange (etiquette}
+{ locale ou symbole deja decore).                                  }
+{ ------------------------------------------------------------ }
+
+Function AsmResolveApiAlias(Const Name: TString): TString;
+Var I: Integer; Up: TString;
+Begin
+ Up := StrUpperCase(Name);
+ For I := 0 To ASM_API_ALIAS_COUNT - 1 Do
+  If StrUpperCase(AsmApiAliasBare[I]) = Up Then
+  Begin
+   AsmResolveApiAlias := AsmApiAliasReal[I];
+   Exit;
+  End;
+ AsmResolveApiAlias := Name;
+End;
+
+{ ------------------------------------------------------------ }
+{ AsmExportNameFor : nom REEL EXPORTE par la DLL pour un symbole  }
+{ decore (ex: '_ExitProcess@4' -> 'ExitProcess') - c est CE nom     }
+{ (sans decoration stdcall) que le CHARGEUR Windows cherche dans     }
+{ la table d export de kernel32.dll (Hint/Name, WritePEExe) : la      }
+{ decoration _Nom@N n existe qu au niveau du symbole EXTRN/OBJ, elle   }
+{ n a jamais ete un nom REELLEMENT exporte par la DLL. L oublier ici    }
+{ (ecrire le nom decore dans la table d import) produit un .exe qui      }
+{ semble valide mais que Windows refuse de charger                        }
+{ (STATUS_ENTRYPOINT_NOT_FOUND, 0xC0000139) - bug trouve et corrige         }
+{ en testant reellement l executable produit (TODO 24).                       }
+{ Repli (aucun alias trouve, import 'external' utilisateur, TODO 22) :         }
+{ le nom decore est utilise tel quel - un utilisateur import de DLL tierce      }
+{ doit alors fournir NAME 'NomReel' pour un nom different (deja gere par         }
+{ ParseProcOrFuncDecl, ExportName), mais ce nom-la n atteint pas encore           }
+{ l assembleur (seul le nom mangled traverse l EXTRN texte, TODO 24 -              }
+{ limitation documentee, identique a celle du choix "tout KERNEL32.DLL").          }
+{ ------------------------------------------------------------ }
+
+Function AsmExportNameFor(Const DecoratedName: TString): TString;
+Var I: Integer; Up: TString;
+Begin
+ Up := StrUpperCase(DecoratedName);
+ For I := 0 To ASM_API_ALIAS_COUNT - 1 Do
+  If StrUpperCase(AsmApiAliasReal[I]) = Up Then
+  Begin
+   AsmExportNameFor := AsmApiAliasBare[I];
+   Exit;
+  End;
+ AsmExportNameFor := DecoratedName;
+End;
+
+{ ------------------------------------------------------------ }
+{ AsmTrimSpaces / AsmIsNumberLiteral / AsmParseNumber : petits    }
+{ utilitaires texte reutilises par l assembleur (AsmTrimSpaces     }
+{ existe deja depuis le TODO 21 - reutilisee telle quelle ici).     }
+{ AsmParseNumber gere le decimal (signe optionnel) et l hexadecimal }
+{ style MASM (suffixe 'h', toujours precede d un chiffre par         }
+{ construction - EmitInstr n emet jamais 'FFh' mais '0FFh').          }
+{ ------------------------------------------------------------ }
+
+Function AsmIsNumberLiteral(Const S: TString): Boolean;
+Var T: TString;
+Begin
+ T := S;
+ If (Length(T) > 0) And (T[1] = '-') Then T := Copy(T, 2, Length(T) - 1);
+ AsmIsNumberLiteral := (Length(T) > 0) And (T[1] >= '0') And (T[1] <= '9');
+End;
+
+Function AsmParseNumber(Const S: TString): LongInt;
+Var
+ T     : TString;
+ Neg   : Boolean;
+ IsHex : Boolean;
+ V     : LongInt;
+ I     : Integer;
+ C     : Char;
+Begin
+ T := S;
+ Neg := False;
+ If (Length(T) > 0) And (T[1] = '-') Then
+ Begin
+  Neg := True;
+  T := Copy(T, 2, Length(T) - 1);
+ End;
+
+ IsHex := (Length(T) > 0) And
+  ((T[Length(T)] = 'h') Or (T[Length(T)] = 'H'));
+ If IsHex Then T := Copy(T, 1, Length(T) - 1);
+
+ V := 0;
+ For I := 1 To Length(T) Do
+ Begin
+  C := T[I];
+  If IsHex Then
+  Begin
+   If (C >= '0') And (C <= '9') Then V := V * 16 + (Ord(C) - Ord('0'))
+   Else If (C >= 'A') And (C <= 'F') Then V := V * 16 + (Ord(C) - Ord('A') + 10)
+   Else If (C >= 'a') And (C <= 'f') Then V := V * 16 + (Ord(C) - Ord('a') + 10);
+  End
+  Else
+  Begin
+   If (C >= '0') And (C <= '9') Then V := V * 10 + (Ord(C) - Ord('0'));
+  End;
+ End;
+
+ If Neg Then V := -V;
+ AsmParseNumber := V;
+End;
+
+{ ------------------------------------------------------------ }
+{ Registres : numerotation ModRM/SIB standard 80386.             }
+{ 32 bits : EAX=0 ECX=1 EDX=2 EBX=3 ESP=4 EBP=5 ESI=6 EDI=7.      }
+{ 8 bits  : AL=0  CL=1  DL=2  BL=3  AH=4  CH=5  DH=6  BH=7.       }
+{ ------------------------------------------------------------ }
+
+Function AsmReg32(Const Name: TString): Integer;
+Var Up: TString;
+Begin
+ Up := StrUpperCase(Name);
+ If Up = 'EAX' Then AsmReg32 := 0
+ Else If Up = 'ECX' Then AsmReg32 := 1
+ Else If Up = 'EDX' Then AsmReg32 := 2
+ Else If Up = 'EBX' Then AsmReg32 := 3
+ Else If Up = 'ESP' Then AsmReg32 := 4
+ Else If Up = 'EBP' Then AsmReg32 := 5
+ Else If Up = 'ESI' Then AsmReg32 := 6
+ Else If Up = 'EDI' Then AsmReg32 := 7
+ Else AsmReg32 := -1;
+End;
+
+Function AsmReg8(Const Name: TString): Integer;
+Var Up: TString;
+Begin
+ Up := StrUpperCase(Name);
+ If Up = 'AL' Then AsmReg8 := 0
+ Else If Up = 'CL' Then AsmReg8 := 1
+ Else If Up = 'DL' Then AsmReg8 := 2
+ Else If Up = 'BL' Then AsmReg8 := 3
+ Else If Up = 'AH' Then AsmReg8 := 4
+ Else If Up = 'CH' Then AsmReg8 := 5
+ Else If Up = 'DH' Then AsmReg8 := 6
+ Else If Up = 'BH' Then AsmReg8 := 7
+ Else AsmReg8 := -1;
+End;
+
+{ ------------------------------------------------------------ }
+{ TAsmOperand : operande d instruction decode (registre,         }
+{ immediat, reference memoire [...], ou "immediat a corriger"     }
+{ - OFFSET Nom, ou une cible CALL/JMP/Jcc nommee).                 }
+{ ------------------------------------------------------------ }
+
+Type
+ TAsmOpKind = (AOK_REG, AOK_IMM, AOK_MEM, AOK_LABELIMM);
+
+ TAsmOperand = Record
+  Kind      : TAsmOpKind;
+  RegNum    : Integer;
+  RegSize   : Integer;
+  ImmVal    : LongInt;
+  HasBase   : Boolean;
+  BaseReg   : Integer;
+  HasIndex  : Boolean;
+  IndexReg  : Integer;
+  Scale     : Integer;
+  Disp      : LongInt;
+  DispLabel : TString;
+  MemSize   : Integer;
+  LabelName : TString;
+ End;
+
+{ ------------------------------------------------------------ }
+{ AsmParseMemInner : contenu ENTRE crochets d une reference        }
+{ memoire ('EBP-4', 'EAX', 'ESI+ECX*4', 'EDI+EDX*4+4',              }
+{ 'DPRT_EXCSTACK_EBP+EAX*4', 'DPRT_HSTDOUT'...). Decoupe en          }
+{ termes signes separes par '+'/'-' au niveau superieur (aucun        }
+{ identificateur/etiquette de ce compilateur ne contient l un de       }
+{ ces deux caracteres) : chaque terme est soit un registre (base,       }
+{ premiere occurrence), soit 'Registre*Echelle' (index), soit un         }
+{ entier (deplacement, accumule avec son signe), soit un nom              }
+{ (etiquette, base ABSENTE - jamais combinee avec une base registre        }
+{ dans le code emis par ce compilateur, seulement avec un index).          }
+{ ------------------------------------------------------------ }
+
+Procedure AsmParseMemInner(Const Inner: TString; Var HasBase: Boolean;
+ Var BaseReg: Integer; Var HasIndex: Boolean; Var IndexReg, Scale: Integer;
+ Var Disp: LongInt; Var DispLabel: TString);
+Var
+ I, TermStart, StarPos, RN : Integer;
+ Sign : Integer;
+ Term, RegPart, ScalePart : TString;
+Begin
+ HasBase := False; BaseReg := 0;
+ HasIndex := False; IndexReg := 0; Scale := 1;
+ Disp := 0; DispLabel := '';
+
+ Sign := 1;
+ TermStart := 1;
+ I := 1;
+ While I <= Length(Inner) + 1 Do
+ Begin
+  If (I > Length(Inner)) Or (Inner[I] = '+') Or (Inner[I] = '-') Then
+  Begin
+   Term := Copy(Inner, TermStart, I - TermStart);
+   If Length(Term) > 0 Then
+   Begin
+    StarPos := Pos('*', Term);
+    If StarPos > 0 Then
+    Begin
+     RegPart   := Copy(Term, 1, StarPos - 1);
+     ScalePart := Copy(Term, StarPos + 1, Length(Term) - StarPos);
+     HasIndex  := True;
+     IndexReg  := AsmReg32(RegPart);
+     Scale     := AsmParseNumber(ScalePart);
+    End
+    Else If AsmIsNumberLiteral(Term) Then
+     Disp := Disp + Sign * AsmParseNumber(Term)
+    Else
+    Begin
+     RN := AsmReg32(Term);
+     If RN >= 0 Then
+     Begin
+      HasBase := True;
+      BaseReg := RN;
+     End
+     Else
+      DispLabel := Term;
+    End;
+   End;
+   If I <= Length(Inner) Then
+   Begin
+    If Inner[I] = '+' Then Sign := 1 Else Sign := -1;
+   End;
+   TermStart := I + 1;
+  End;
+  Inc(I);
+ End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AsmParseOperand : decoder un operande textuel complet (avec      }
+{ eventuel prefixe de taille BYTE/WORD/DWORD PTR).                  }
+{ ------------------------------------------------------------ }
+
+Procedure AsmParseOperand(Const RawOp: TString; Var Op: TAsmOperand);
+Var
+ S   : TString;
+ Up  : TString;
+ Inner : TString;
+ SizePfx : Integer;
+Begin
+ S := AsmTrimSpaces(RawOp);
+ Op.Kind := AOK_IMM; Op.ImmVal := 0; Op.MemSize := 0;
+ Op.HasBase := False; Op.HasIndex := False; Op.Scale := 1; Op.Disp := 0;
+ Op.DispLabel := ''; Op.LabelName := ''; Op.RegNum := 0; Op.RegSize := 4;
+ Op.BaseReg := 0; Op.IndexReg := 0;
+
+ SizePfx := 0;
+ Up := StrUpperCase(S);
+ If Pos('DWORD PTR ', Up) = 1 Then
+ Begin SizePfx := 4; S := AsmTrimSpaces(Copy(S, 11, Length(S) - 10)); End
+ Else If Pos('WORD PTR ', Up) = 1 Then
+ Begin SizePfx := 2; S := AsmTrimSpaces(Copy(S, 10, Length(S) - 9)); End
+ Else If Pos('BYTE PTR ', Up) = 1 Then
+ Begin SizePfx := 1; S := AsmTrimSpaces(Copy(S, 10, Length(S) - 9)); End;
+
+ If (Length(S) > 0) And (S[1] = '[') Then
+ Begin
+  Inner := Copy(S, 2, Length(S) - 2);
+  Op.Kind := AOK_MEM;
+  Op.MemSize := SizePfx;
+  AsmParseMemInner(Inner, Op.HasBase, Op.BaseReg, Op.HasIndex, Op.IndexReg,
+   Op.Scale, Op.Disp, Op.DispLabel);
+  Exit;
+ End;
+
+ Up := StrUpperCase(S);
+ If Pos('OFFSET ', Up) = 1 Then
+ Begin
+  Op.Kind := AOK_LABELIMM;
+  Op.LabelName := AsmTrimSpaces(Copy(S, 8, Length(S) - 7));
+  Exit;
+ End;
+
+ If AsmIsNumberLiteral(S) Then
+ Begin
+  Op.Kind := AOK_IMM;
+  Op.ImmVal := AsmParseNumber(S);
+  Exit;
+ End;
+
+ If AsmReg32(S) >= 0 Then
+ Begin
+  Op.Kind := AOK_REG;
+  Op.RegNum := AsmReg32(S);
+  Op.RegSize := 4;
+  Exit;
+ End;
+
+ If AsmReg8(S) >= 0 Then
+ Begin
+  Op.Kind := AOK_REG;
+  Op.RegNum := AsmReg8(S);
+  Op.RegSize := 1;
+  Exit;
+ End;
+
+ { Filet de securite (TODO 24) : un operande vide (ou reduit a un        }
+ { simple mot-cle de taille sans rien derriere, ex. 'DWORD PTR' seul       }
+ { sans '[...]') signale presque toujours un BUG EN AMONT dans le           }
+ { generateur de code (ex: GenVarRef/GenVarBracket qui renvoie '' pour       }
+ { un symbole mal resolu - trouve en testant reellement lextest3.pas,          }
+ { TODO 24 : une variable nommee comme un builtin, 'Write', produisait          }
+ { 'MOV DWORD PTR ,EAX'). Sans ce garde-fou, le repli silencieux vers            }
+ { AOK_LABELIMM avec un nom vide finissait par ecrire a l adresse ABSOLUE          }
+ { 0 (Mem.DispLabel vide + Mem.Disp=0 par defaut dans AsmEmitRM) - une              }
+ { corruption memoire SILENCIEUSE (plantage a l execution, bien plus dur             }
+ { a diagnostiquer que cette erreur claire, immediate, au moment de                   }
+ { l assemblage).                                                                       }
+ If (Length(S) = 0) Or (Up = 'DWORD') Or (Up = 'WORD') Or (Up = 'BYTE') Or
+    (Up = 'PTR') Then
+ Begin
+  FatalError('assembleur : operande vide ou malforme (''' + RawOp +
+   ''') - bug probable en amont dans le generateur de code');
+  Exit;
+ End;
+
+ Op.Kind := AOK_LABELIMM;
+ Op.LabelName := S;
+End;
+
+{ ------------------------------------------------------------ }
+{ AsmSplitOperands : separer jusqu a 2 operandes par une virgule  }
+{ de PROFONDEUR 0 (hors crochets) - au plus 2 operandes dans tout  }
+{ le repertoire emis par ce compilateur.                            }
+{ ------------------------------------------------------------ }
+
+Procedure AsmSplitOperands(Const S: TString; Var Op1, Op2: TString;
+ Var OpCount: Integer);
+Var
+ I, Depth : Integer;
+ C   : Char;
+ Cur : TString;
+Begin
+ Op1 := ''; Op2 := ''; OpCount := 0;
+ Cur := ''; Depth := 0;
+ For I := 1 To Length(S) Do
+ Begin
+  C := S[I];
+  If C = '[' Then Inc(Depth);
+  If C = ']' Then Dec(Depth);
+  If (C = ',') And (Depth = 0) Then
+  Begin
+   If OpCount = 0 Then Op1 := AsmTrimSpaces(Cur) Else Op2 := AsmTrimSpaces(Cur);
+   Inc(OpCount);
+   Cur := '';
+  End
+  Else
+   Cur := Cur + C;
+ End;
+ If Length(AsmTrimSpaces(Cur)) > 0 Then
+ Begin
+  If OpCount = 0 Then Op1 := AsmTrimSpaces(Cur) Else Op2 := AsmTrimSpaces(Cur);
+  Inc(OpCount);
+ End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AsmEmitRM : emettre ModRM(+SIB)(+disp32) pour RegField (champ   }
+{ Reg du ModRM - un vrai registre, ou l extension d opcode /digit  }
+{ des groupes ALU/unaires) et l operande Mem (registre ou memoire).}
+{ Simplification documentee (TODO 24) : toujours disp32 des qu une }
+{ base registre existe (jamais Mod=00, qui a un sens special pour   }
+{ EBP/SIB-base=101 - ce choix uniforme evite ce piege d encodage     }
+{ sans avoir a traiter EBP a part) - cout : quelques octets de plus   }
+{ par acces memoire, aucun impact sur la correction.                   }
+{ ------------------------------------------------------------ }
+
+Procedure AsmEmitRM(RegField: Integer; Const Mem: TAsmOperand);
+Var ModRM, SIB, ScaleBits: Integer;
+Begin
+ If Mem.Kind = AOK_REG Then
+ Begin
+  ModRM := ($C0) Or (RegField Shl 3) Or Mem.RegNum;
+  AsmEmitByte(ModRM);
+  Exit;
+ End;
+
+ If Mem.HasIndex Or (Mem.HasBase And (Mem.BaseReg = 4)) Then
+ Begin
+  Case Mem.Scale Of
+   1: ScaleBits := 0;
+   2: ScaleBits := 1;
+   4: ScaleBits := 2;
+   8: ScaleBits := 3;
+   Else ScaleBits := 2;
+  End;
+
+  If Mem.HasBase Then
+  Begin
+   ModRM := ($80) Or (RegField Shl 3) Or 4;
+   AsmEmitByte(ModRM);
+   If Mem.HasIndex Then
+    SIB := (ScaleBits Shl 6) Or (Mem.IndexReg Shl 3) Or Mem.BaseReg
+   Else
+    SIB := (0 Shl 6) Or (4 Shl 3) Or Mem.BaseReg;
+   AsmEmitByte(SIB);
+   AsmEmitDWord(Mem.Disp);
+  End
+  Else
+  Begin
+   ModRM := (0 Shl 6) Or (RegField Shl 3) Or 4;
+   AsmEmitByte(ModRM);
+   SIB := (ScaleBits Shl 6) Or (Mem.IndexReg Shl 3) Or 5;
+   AsmEmitByte(SIB);
+   If Length(Mem.DispLabel) > 0 Then
+   Begin
+    AsmEmitDWord(0);
+    AsmAddFixup(AsmCurSec, AFX_ABS32, Mem.DispLabel, Mem.Disp);
+   End
+   Else
+    AsmEmitDWord(Mem.Disp);
+  End;
+  Exit;
+ End;
+
+ If Mem.HasBase Then
+ Begin
+  ModRM := ($80) Or (RegField Shl 3) Or Mem.BaseReg;
+  AsmEmitByte(ModRM);
+  AsmEmitDWord(Mem.Disp);
+  Exit;
+ End;
+
+ ModRM := (0 Shl 6) Or (RegField Shl 3) Or 5;
+ AsmEmitByte(ModRM);
+ If Length(Mem.DispLabel) > 0 Then
+ Begin
+  AsmEmitDWord(0);
+  AsmAddFixup(AsmCurSec, AFX_ABS32, Mem.DispLabel, Mem.Disp);
+ End
+ Else
+  AsmEmitDWord(Mem.Disp);
+End;
+
+{ ------------------------------------------------------------ }
+{ Encodeurs d instructions (TODO 24) - un par famille d opcode,  }
+{ couvrant exactement le repertoire enumere par relecture de       }
+{ tous les EmitInstr de ce fichier (aucune ambition MASM generale).}
+{ ------------------------------------------------------------ }
+
+Procedure AsmEncodeAlu(GroupDigit: Integer; Const Op1Text, Op2Text: TString);
+Var
+ Op1, Op2 : TAsmOperand;
+ Size : Integer;
+Begin
+ AsmParseOperand(Op1Text, Op1);
+ AsmParseOperand(Op2Text, Op2);
+
+ If Op1.Kind = AOK_REG Then Size := Op1.RegSize
+ Else If (Op1.Kind = AOK_MEM) And (Op1.MemSize > 0) Then Size := Op1.MemSize
+ Else Size := 4;
+
+ If Op2.Kind = AOK_IMM Then
+ Begin
+  If Size = 1 Then
+  Begin
+   AsmEmitByte($80);
+   AsmEmitRM(GroupDigit, Op1);
+   AsmEmitByte(Op2.ImmVal And $FF);
+  End
+  Else
+  Begin
+   AsmEmitByte($81);
+   AsmEmitRM(GroupDigit, Op1);
+   AsmEmitDWord(Op2.ImmVal);
+  End;
+  Exit;
+ End;
+
+ If Op1.Kind = AOK_REG Then
+ Begin
+  If Size = 1 Then AsmEmitByte($02 + (GroupDigit Shl 3))
+  Else AsmEmitByte($03 + (GroupDigit Shl 3));
+  AsmEmitRM(Op1.RegNum, Op2);
+ End
+ Else
+ Begin
+  If Size = 1 Then AsmEmitByte($00 + (GroupDigit Shl 3))
+  Else AsmEmitByte($01 + (GroupDigit Shl 3));
+  AsmEmitRM(Op2.RegNum, Op1);
+ End;
+End;
+
+Procedure AsmEncodeMov(Const Op1Text, Op2Text: TString);
+Var Op1, Op2: TAsmOperand; Size: Integer;
+Begin
+ AsmParseOperand(Op1Text, Op1);
+ AsmParseOperand(Op2Text, Op2);
+
+ If Op1.Kind = AOK_REG Then Size := Op1.RegSize
+ Else If (Op1.Kind = AOK_MEM) And (Op1.MemSize > 0) Then Size := Op1.MemSize
+ Else Size := 4;
+
+ If (Op2.Kind = AOK_IMM) Or (Op2.Kind = AOK_LABELIMM) Then
+ Begin
+  If Size = 1 Then
+  Begin
+   AsmEmitByte($C6);
+   AsmEmitRM(0, Op1);
+   If Op2.Kind = AOK_IMM Then AsmEmitByte(Op2.ImmVal And $FF)
+   Else Begin AsmEmitByte(0); AsmAddFixup(AsmCurSec, AFX_ABS32, Op2.LabelName, 0); End;
+  End
+  Else
+  Begin
+   AsmEmitByte($C7);
+   AsmEmitRM(0, Op1);
+   If Op2.Kind = AOK_IMM Then AsmEmitDWord(Op2.ImmVal)
+   Else Begin AsmEmitDWord(0); AsmAddFixup(AsmCurSec, AFX_ABS32, Op2.LabelName, 0); End;
+  End;
+  Exit;
+ End;
+
+ If Op1.Kind = AOK_REG Then
+ Begin
+  If Size = 1 Then AsmEmitByte($8A) Else AsmEmitByte($8B);
+  AsmEmitRM(Op1.RegNum, Op2);
+ End
+ Else
+ Begin
+  If Size = 1 Then AsmEmitByte($88) Else AsmEmitByte($89);
+  AsmEmitRM(Op2.RegNum, Op1);
+ End;
+End;
+
+Procedure AsmEncodeMovzx(Const Op1Text, Op2Text: TString);
+Var Op1, Op2: TAsmOperand;
+Begin
+ AsmParseOperand(Op1Text, Op1);
+ AsmParseOperand(Op2Text, Op2);
+ AsmEmitByte($0F);
+ AsmEmitByte($B6);
+ AsmEmitRM(Op1.RegNum, Op2);
+End;
+
+Procedure AsmEncodeLea(Const Op1Text, Op2Text: TString);
+Var Op1, Op2: TAsmOperand;
+Begin
+ AsmParseOperand(Op1Text, Op1);
+ AsmParseOperand(Op2Text, Op2);
+ AsmEmitByte($8D);
+ AsmEmitRM(Op1.RegNum, Op2);
+End;
+
+Procedure AsmEncodePush(Const Op1Text: TString);
+Var Op1: TAsmOperand;
+Begin
+ AsmParseOperand(Op1Text, Op1);
+ If Op1.Kind = AOK_REG Then
+  AsmEmitByte($50 + Op1.RegNum)
+ Else If Op1.Kind = AOK_IMM Then
+ Begin
+  AsmEmitByte($68);
+  AsmEmitDWord(Op1.ImmVal);
+ End
+ Else If Op1.Kind = AOK_LABELIMM Then
+ Begin
+  AsmEmitByte($68);
+  AsmEmitDWord(0);
+  AsmAddFixup(AsmCurSec, AFX_ABS32, Op1.LabelName, 0);
+ End
+ Else
+ Begin
+  AsmEmitByte($FF);
+  AsmEmitRM(6, Op1);
+ End;
+End;
+
+Procedure AsmEncodePop(Const Op1Text: TString);
+Var Op1: TAsmOperand;
+Begin
+ AsmParseOperand(Op1Text, Op1);
+ If Op1.Kind = AOK_REG Then
+  AsmEmitByte($58 + Op1.RegNum)
+ Else
+ Begin
+  AsmEmitByte($8F);
+  AsmEmitRM(0, Op1);
+ End;
+End;
+
+Procedure AsmEncodeIncDec(IsInc: Boolean; Const Op1Text: TString);
+Var Op1: TAsmOperand; Size, Digit: Integer;
+Begin
+ AsmParseOperand(Op1Text, Op1);
+ If Op1.Kind = AOK_REG Then Size := Op1.RegSize
+ Else If Op1.MemSize > 0 Then Size := Op1.MemSize Else Size := 4;
+
+ If IsInc Then Digit := 0 Else Digit := 1;
+
+ If (Op1.Kind = AOK_REG) And (Size = 4) Then
+ Begin
+  If IsInc Then AsmEmitByte($40 + Op1.RegNum) Else AsmEmitByte($48 + Op1.RegNum);
+  Exit;
+ End;
+
+ If Size = 1 Then AsmEmitByte($FE) Else AsmEmitByte($FF);
+ AsmEmitRM(Digit, Op1);
+End;
+
+Procedure AsmEncodeNegNot(IsNeg: Boolean; Const Op1Text: TString);
+Var Op1: TAsmOperand; Digit: Integer;
+Begin
+ AsmParseOperand(Op1Text, Op1);
+ If IsNeg Then Digit := 3 Else Digit := 2;
+ AsmEmitByte($F7);
+ AsmEmitRM(Digit, Op1);
+End;
+
+Procedure AsmEncodeImul(Const Op1Text, Op2Text: TString);
+Var Op1, Op2: TAsmOperand;
+Begin
+ AsmParseOperand(Op1Text, Op1);
+ AsmParseOperand(Op2Text, Op2);
+
+ { IMUL r32,imm32 (ex. IMUL EAX,4) ou la forme a 3 operandes reg,reg,imm}
+ { dont AsmSplitOperands ne garde que le 1er et le dernier operande     }
+ { (IMUL EAX,EAX,10 -> Op1=EAX,Op2=10) - les deux emissions de ce        }
+ { compilateur (ParsePostfix/EmitInstr, TODO 19/20) ont toujours          }
+ { r/m32 = Op1 lui-meme (destination = multiplicande) : encode via        }
+ { 0x69 /r id (IMUL r32,r/m32,imm32) avec r/m32 = Op1.                      }
+ If Op2.Kind = AOK_IMM Then
+ Begin
+  AsmEmitByte($69);
+  AsmEmitRM(Op1.RegNum, Op1);
+  AsmEmitDWord(Op2.ImmVal);
+  Exit;
+ End;
+
+ AsmEmitByte($0F);
+ AsmEmitByte($AF);
+ AsmEmitRM(Op1.RegNum, Op2);
+End;
+
+Procedure AsmEncodeDivIdiv(IsIdiv: Boolean; Const Op1Text: TString);
+Var Op1: TAsmOperand; Digit: Integer;
+Begin
+ AsmParseOperand(Op1Text, Op1);
+ If IsIdiv Then Digit := 7 Else Digit := 6;
+ AsmEmitByte($F7);
+ AsmEmitRM(Digit, Op1);
+End;
+
+Procedure AsmEncodeTest(Const Op1Text, Op2Text: TString);
+Var Op1, Op2: TAsmOperand;
+Begin
+ AsmParseOperand(Op1Text, Op1);
+ AsmParseOperand(Op2Text, Op2);
+ If Op2.Kind = AOK_IMM Then
+ Begin
+  AsmEmitByte($F7);
+  AsmEmitRM(0, Op1);
+  AsmEmitDWord(Op2.ImmVal);
+  Exit;
+ End;
+ AsmEmitByte($85);
+ AsmEmitRM(Op2.RegNum, Op1);
+End;
+
+Procedure AsmEncodeBt(Const Op1Text, Op2Text: TString);
+Var Op1, Op2: TAsmOperand;
+Begin
+ AsmParseOperand(Op1Text, Op1);
+ AsmParseOperand(Op2Text, Op2);
+ AsmEmitByte($0F);
+ AsmEmitByte($A3);
+ AsmEmitRM(Op2.RegNum, Op1);
+End;
+
+Procedure AsmEncodeShift(Digit: Integer; Const Op1Text, Op2Text: TString);
+Var Op1, Op2: TAsmOperand;
+Begin
+ AsmParseOperand(Op1Text, Op1);
+ AsmParseOperand(Op2Text, Op2);
+ AsmEmitByte($C1);
+ AsmEmitRM(Digit, Op1);
+ AsmEmitByte(Op2.ImmVal And $FF);
+End;
+
+Procedure AsmEncodeCall(Const Op1Text: TString);
+Var Op1: TAsmOperand; ResolvedName: TString;
+Begin
+ AsmParseOperand(Op1Text, Op1);
+ If (Op1.Kind = AOK_MEM) Or (Op1.Kind = AOK_REG) Then
+ Begin
+  AsmEmitByte($FF);
+  AsmEmitRM(2, Op1);
+  Exit;
+ End;
+ ResolvedName := AsmResolveApiAlias(Op1.LabelName);
+ AsmEmitByte($E8);
+ AsmEmitDWord(0);
+ AsmAddFixup(AsmCurSec, AFX_REL32, ResolvedName, 0);
+End;
+
+Procedure AsmEncodeJmp(Const Op1Text: TString);
+Var Op1: TAsmOperand; ResolvedName: TString;
+Begin
+ AsmParseOperand(Op1Text, Op1);
+ If (Op1.Kind = AOK_MEM) Or (Op1.Kind = AOK_REG) Then
+ Begin
+  AsmEmitByte($FF);
+  AsmEmitRM(4, Op1);
+  Exit;
+ End;
+ ResolvedName := AsmResolveApiAlias(Op1.LabelName);
+ AsmEmitByte($E9);
+ AsmEmitDWord(0);
+ AsmAddFixup(AsmCurSec, AFX_REL32, ResolvedName, 0);
+End;
+
+Procedure AsmEncodeJcc(Const Mnemonic, Op1Text: TString);
+Var Op1: TAsmOperand; Cond: Integer; Up: TString;
+Begin
+ AsmParseOperand(Op1Text, Op1);
+ Up := StrUpperCase(Mnemonic);
+ If (Up = 'JE') Or (Up = 'JZ') Then Cond := $84
+ Else If (Up = 'JNE') Or (Up = 'JNZ') Then Cond := $85
+ Else If Up = 'JG' Then Cond := $8F
+ Else If Up = 'JGE' Then Cond := $8D
+ Else If Up = 'JL' Then Cond := $8C
+ Else If Up = 'JLE' Then Cond := $8E
+ Else If Up = 'JC' Then Cond := $82
+ Else Cond := $85;
+
+ AsmEmitByte($0F);
+ AsmEmitByte(Cond);
+ AsmEmitDWord(0);
+ AsmAddFixup(AsmCurSec, AFX_REL32, Op1.LabelName, 0);
+End;
+
+Procedure AsmEncodeRepOp(Const FullLine: TString);
+Var Up: TString;
+Begin
+ Up := StrUpperCase(FullLine);
+ If Up = 'REP MOVSB' Then Begin AsmEmitByte($F3); AsmEmitByte($A4); End
+ Else If Up = 'REP MOVSD' Then Begin AsmEmitByte($F3); AsmEmitByte($A5); End
+ Else If Up = 'REP STOSB' Then Begin AsmEmitByte($F3); AsmEmitByte($AA); End
+ Else If Up = 'REPNE SCASB' Then Begin AsmEmitByte($F2); AsmEmitByte($AE); End
+ Else FatalError('assembleur : forme REP non geree: ' + FullLine);
+End;
+
+{ ------------------------------------------------------------ }
+{ AsmAssembleInstrLine : dispatcher mnemonique -> encodeur.       }
+{ ------------------------------------------------------------ }
+
+Procedure AsmAssembleInstrLine(Const RawLine: TString);
+Var
+ Line, Mnemonic, Rest, Op1, Op2, Up : TString;
+ I, OpCount : Integer;
+Begin
+ Line := AsmTrimSpaces(RawLine);
+ If Length(Line) = 0 Then Exit;
+
+ Up := StrUpperCase(Line);
+ If (Pos('REP MOVSB', Up) = 1) Or (Pos('REP MOVSD', Up) = 1) Or
+    (Pos('REP STOSB', Up) = 1) Or (Pos('REPNE SCASB', Up) = 1) Then
+ Begin
+  AsmEncodeRepOp(Line);
+  Exit;
+ End;
+
+ I := 1;
+ While (I <= Length(Line)) And (Line[I] <> ' ') Do Inc(I);
+ Mnemonic := Copy(Line, 1, I - 1);
+ Rest := AsmTrimSpaces(Copy(Line, I, Length(Line) - I + 1));
+ AsmSplitOperands(Rest, Op1, Op2, OpCount);
+
+ Up := StrUpperCase(Mnemonic);
+
+ If Up = 'MOV' Then Begin AsmEncodeMov(Op1, Op2); Exit; End;
+ If Up = 'MOVZX' Then Begin AsmEncodeMovzx(Op1, Op2); Exit; End;
+ If Up = 'LEA' Then Begin AsmEncodeLea(Op1, Op2); Exit; End;
+ If Up = 'ADD' Then Begin AsmEncodeAlu(0, Op1, Op2); Exit; End;
+ If Up = 'OR' Then Begin AsmEncodeAlu(1, Op1, Op2); Exit; End;
+ If Up = 'AND' Then Begin AsmEncodeAlu(4, Op1, Op2); Exit; End;
+ If Up = 'SUB' Then Begin AsmEncodeAlu(5, Op1, Op2); Exit; End;
+ If Up = 'XOR' Then Begin AsmEncodeAlu(6, Op1, Op2); Exit; End;
+ If Up = 'CMP' Then Begin AsmEncodeAlu(7, Op1, Op2); Exit; End;
+ If Up = 'PUSH' Then Begin AsmEncodePush(Op1); Exit; End;
+ If Up = 'POP' Then Begin AsmEncodePop(Op1); Exit; End;
+ If Up = 'INC' Then Begin AsmEncodeIncDec(True, Op1); Exit; End;
+ If Up = 'DEC' Then Begin AsmEncodeIncDec(False, Op1); Exit; End;
+ If Up = 'NEG' Then Begin AsmEncodeNegNot(True, Op1); Exit; End;
+ If Up = 'NOT' Then Begin AsmEncodeNegNot(False, Op1); Exit; End;
+ If Up = 'IMUL' Then Begin AsmEncodeImul(Op1, Op2); Exit; End;
+ If Up = 'DIV' Then Begin AsmEncodeDivIdiv(False, Op1); Exit; End;
+ If Up = 'IDIV' Then Begin AsmEncodeDivIdiv(True, Op1); Exit; End;
+ If Up = 'TEST' Then Begin AsmEncodeTest(Op1, Op2); Exit; End;
+ If Up = 'BT' Then Begin AsmEncodeBt(Op1, Op2); Exit; End;
+ If Up = 'SHL' Then Begin AsmEncodeShift(4, Op1, Op2); Exit; End;
+ If Up = 'SHR' Then Begin AsmEncodeShift(5, Op1, Op2); Exit; End;
+ If Up = 'CALL' Then Begin AsmEncodeCall(Op1); Exit; End;
+ If Up = 'JMP' Then Begin AsmEncodeJmp(Op1); Exit; End;
+ If (Up = 'JE') Or (Up = 'JZ') Or (Up = 'JNE') Or (Up = 'JNZ') Or
+    (Up = 'JG') Or (Up = 'JGE') Or (Up = 'JL') Or (Up = 'JLE') Or
+    (Up = 'JC') Then
+ Begin AsmEncodeJcc(Up, Op1); Exit; End;
+ If Up = 'CDQ' Then Begin AsmEmitByte($99); Exit; End;
+ If Up = 'CLD' Then Begin AsmEmitByte($FC); Exit; End;
+ If Up = 'RET' Then Begin AsmEmitByte($C3); Exit; End;
+
+ FatalError('assembleur : mnemonique non geree: ' + Mnemonic);
+End;
+
+{ ------------------------------------------------------------ }
+{ AsmEmitDataItem / AsmAssembleDataLine : declarations DB/DD du   }
+{ segment .DATA (litteraux 'texte', entiers, N DUP(valeur)).       }
+{ ------------------------------------------------------------ }
+
+Procedure AsmEmitDataItem(Const ItemRaw: TString; ByteWidth: Integer);
+Var
+ Item, NStr, ValStr : TString;
+ I, DupPos : Integer;
+ N, V : LongInt;
+Begin
+ Item := AsmTrimSpaces(ItemRaw);
+ If Length(Item) = 0 Then Exit;
+
+ If Item[1] = '''' Then
+ Begin
+  For I := 2 To Length(Item) - 1 Do AsmEmitByte(Ord(Item[I]));
+  Exit;
+ End;
+
+ DupPos := Pos('DUP', StrUpperCase(Item));
+ If DupPos > 0 Then
+ Begin
+  NStr := AsmTrimSpaces(Copy(Item, 1, DupPos - 1));
+  N := AsmParseNumber(NStr);
+  ValStr := Copy(Item, DupPos + 4, Length(Item) - DupPos - 4);
+  If (Length(ValStr) > 0) And (ValStr[Length(ValStr)] = ')') Then
+   ValStr := Copy(ValStr, 1, Length(ValStr) - 1);
+  V := AsmParseNumber(AsmTrimSpaces(ValStr));
+  For I := 1 To N Do
+   If ByteWidth = 1 Then AsmEmitByte(V) Else AsmEmitDWord(V);
+  Exit;
+ End;
+
+ { Filet de securite (TODO 25) : un item DD/DB non numerique et non     }
+ { 'texte'/DUP est une REFERENCE A UNE ETIQUETTE (ex: 'DD _DPF_TDOG_SPEAK'}
+ { dans une table VMT, EmitClassVMTs) - AsmParseNumber, elle, renvoie      }
+ { silencieusement 0 pour tout texte non numerique, ce qui aurait produit  }
+ { un pointeur NUL sans le moindre avertissement (bug trouve en concevant   }
+ { EmitClassVMTs : une table VMT est justement une LISTE d etiquettes,       }
+ { jamais des nombres). Seul DD (4 octets) peut porter une adresse ;         }
+ { DB (1 octet) ne le peut pas - une reference d etiquette y est une           }
+ { erreur reelle, signalee clairement plutot que tronquee en silence.          }
+ If Not AsmIsNumberLiteral(Item) Then
+ Begin
+  If ByteWidth <> 4 Then
+  Begin
+   FatalError('assembleur : reference d etiquette (''' + Item +
+    ''') invalide dans une declaration DB (1 octet, adresse impossible)');
+   Exit;
+  End;
+  AsmEmitDWord(0);
+  AsmAddFixup(AsmCurSec, AFX_ABS32, Item, 0);
+  Exit;
+ End;
+
+ V := AsmParseNumber(Item);
+ If ByteWidth = 1 Then AsmEmitByte(V) Else AsmEmitDWord(V);
+End;
+
+Procedure AsmAssembleDataLine(Const RawLine: TString);
+Var
+ Line, LabelName, Rest, Up : TString;
+ I, J, ByteWidth : Integer;
+ InQuote : Boolean;
+ Cur : TString;
+ C : Char;
+Begin
+ Line := AsmTrimSpaces(RawLine);
+ If Length(Line) = 0 Then Exit;
+
+ I := 1;
+ While (I <= Length(Line)) And
+       (((Line[I] >= 'A') And (Line[I] <= 'Z')) Or
+        ((Line[I] >= 'a') And (Line[I] <= 'z')) Or
+        ((Line[I] >= '0') And (Line[I] <= '9')) Or (Line[I] = '_')) Do
+  Inc(I);
+
+ LabelName := Copy(Line, 1, I - 1);
+ Rest := AsmTrimSpaces(Copy(Line, I, Length(Line) - I + 1));
+ Up := StrUpperCase(Rest);
+
+ If (Length(LabelName) > 0) And
+    ((Pos('DB ', Up) = 1) Or (Pos('DD ', Up) = 1)) Then
+  AsmDefineLabel(LabelName)
+ Else
+ Begin
+  Rest := Line;
+  LabelName := '';
+ End;
+
+ Up := StrUpperCase(Rest);
+ If Pos('DD ', Up) = 1 Then
+ Begin
+  ByteWidth := 4;
+  Rest := AsmTrimSpaces(Copy(Rest, 3, Length(Rest) - 2));
+ End
+ Else If Pos('DB ', Up) = 1 Then
+ Begin
+  ByteWidth := 1;
+  Rest := AsmTrimSpaces(Copy(Rest, 3, Length(Rest) - 2));
+ End
+ Else
+ Begin
+  FatalError('assembleur : declaration de donnees non geree: ' + Line);
+  Exit;
+ End;
+
+ Cur := ''; InQuote := False;
+ For J := 1 To Length(Rest) Do
+ Begin
+  C := Rest[J];
+  If C = '''' Then InQuote := Not InQuote;
+  If (C = ',') And (Not InQuote) Then
+  Begin
+   AsmEmitDataItem(Cur, ByteWidth);
+   Cur := '';
+  End
+  Else
+   Cur := Cur + C;
+ End;
+ If Length(AsmTrimSpaces(Cur)) > 0 Then AsmEmitDataItem(Cur, ByteWidth);
+End;
+
+{ ------------------------------------------------------------ }
+{ AsmAssembleFile : relire le fichier .asm deja ecrit            }
+{ (EmitOpen/EmitInstr/..., TODO 07) et assembler chaque ligne      }
+{ vers AsmBuf. Capture aussi l etiquette de point d entree depuis  }
+{ la ligne finale 'END <Nom>' (EmitClose).                          }
+{ ------------------------------------------------------------ }
+
+Var AsmEntryLabelName : TString;
+
+Procedure AsmAssembleFile(Const AsmPath: TString);
+Var
+ F : Text;
+ Line, Trimmed, Up : TString;
+ ColonPos : Integer;
+Begin
+ AsmInit;
+ AsmEntryLabelName := '';
+
+ {$I-} Assign(F, AsmPath); Reset(F); {$I+}
+ If IOResult <> 0 Then
+ Begin
+  FatalError('assembleur : impossible de relire le fichier .asm: ' + AsmPath);
+  Exit;
+ End;
+
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  Trimmed := AsmTrimSpaces(Line);
+  If Length(Trimmed) = 0 Then Continue;
+  If Trimmed[1] = ';' Then Continue;
+
+  Up := StrUpperCase(Trimmed);
+
+  If (Up = '.386') Or (Pos('.MODEL', Up) = 1) Then Continue;
+  If Up = '.DATA' Then Begin AsmCurSec := ASMSEC_DATA; Continue; End;
+  If Up = '.CODE' Then Begin AsmCurSec := ASMSEC_TEXT; Continue; End;
+
+  If Pos('EXTRN ', Up) = 1 Then
+  Begin
+   ColonPos := Pos(':', Trimmed);
+   If ColonPos > 0 Then
+    AsmDeclareExtern(AsmTrimSpaces(Copy(Trimmed, 7, ColonPos - 7)))
+   Else
+    AsmDeclareExtern(AsmTrimSpaces(Copy(Trimmed, 7, Length(Trimmed) - 6)));
+   Continue;
+  End;
+
+  If (Up = 'END') Or (Pos('END ', Up) = 1) Then
+  Begin
+   If Length(Trimmed) > 4 Then
+    AsmEntryLabelName := AsmTrimSpaces(Copy(Trimmed, 5, Length(Trimmed) - 4));
+   Break;
+  End;
+
+  If Trimmed[Length(Trimmed)] = ':' Then
+  Begin
+   AsmDefineLabel(Copy(Trimmed, 1, Length(Trimmed) - 1));
+   Continue;
+  End;
+
+  If AsmCurSec = ASMSEC_DATA Then
+   AsmAssembleDataLine(Trimmed)
+  Else
+   AsmAssembleInstrLine(Trimmed);
+ End;
+
+ Close(F);
+End;
+
+{ ------------------------------------------------------------ }
+{ AsmCreateThunk : vignette IAT (TODO 24) - un CALL/JMP vers un   }
+{ symbole EXTERN ne peut pas etre un rel32 direct (l adresse        }
+{ reelle de la DLL est inconnue avant le chargement) : il saute       }
+{ vers une petite vignette locale ('JMP DWORD PTR [case IAT]', 6        }
+{ octets), UNE fois par symbole extern reellement appele. L adresse      }
+{ de la case IAT elle-meme n est connue qu une fois la disposition        }
+{ PE calculee (WritePEExe) - d ou le fixup ABS32 special '@IAT:Nom'.       }
+{ ------------------------------------------------------------ }
+
+Procedure AsmCreateThunk(ExternIdx: Integer);
+Var SavedSec: Integer;
+Begin
+ If AsmThunkExists[ExternIdx] Then Exit;
+ SavedSec := AsmCurSec;
+ AsmCurSec := ASMSEC_TEXT;
+ AsmThunkOfs[ExternIdx] := AsmLen[ASMSEC_TEXT];
+ AsmThunkExists[ExternIdx] := True;
+ AsmEmitByte($FF);
+ AsmEmitByte($25);
+ AsmEmitDWord(0);
+ AsmAddFixup(ASMSEC_TEXT, AFX_ABS32, '@IAT:' + AsmExterns[ExternIdx], 0);
+ AsmCurSec := SavedSec;
+End;
+
+{ ------------------------------------------------------------ }
+{ AsmResolveRel32Fixups : corriger tous les fixups REL32 (toujours}
+{ intra-.text : etiquette locale, ou vignette IAT nouvellement       }
+{ creee) et retirer ces entrees de AsmFixups - seuls les fixups        }
+{ ABS32 (adresse absolue, connue seulement une fois la disposition      }
+{ PE/COFF calculee) restent apres cet appel. La boucle relit             }
+{ AsmFixupCount a CHAQUE iteration (While, pas For) car                   }
+{ AsmCreateThunk peut ajouter de NOUVEAUX fixups ABS32 en fin de           }
+{ table pendant le parcours.                                                }
+{ ------------------------------------------------------------ }
+
+Procedure AsmResolveRel32Fixups;
+Var
+ I, LI, EI : Integer;
+ TargetOfs : LongInt;
+ KeepList : Array[0..MAX_ASM_FIXUPS - 1] Of TAsmFixup;
+ KeepCount : Integer;
+Begin
+ KeepCount := 0;
+ I := 0;
+ While I < AsmFixupCount Do
+ Begin
+  If AsmFixups[I].Kind = AFX_REL32 Then
+  Begin
+   LI := AsmFindLabel(AsmFixups[I].TargetName);
+   If LI >= 0 Then
+    TargetOfs := AsmLabels[LI].Ofs
+   Else
+   Begin
+    EI := AsmExternIndex(AsmFixups[I].TargetName);
+    If EI < 0 Then
+    Begin
+     FatalError('assembleur : symbole introuvable (CALL/JMP): ' +
+      AsmFixups[I].TargetName);
+     Exit;
+    End;
+    AsmCreateThunk(EI);
+    TargetOfs := AsmThunkOfs[EI];
+   End;
+   TargetOfs := TargetOfs - (AsmFixups[I].Pos + 4);
+   AsmBuf[AsmFixups[I].Sec][AsmFixups[I].Pos]     := TargetOfs And $FF;
+   AsmBuf[AsmFixups[I].Sec][AsmFixups[I].Pos + 1] := (TargetOfs Shr 8) And $FF;
+   AsmBuf[AsmFixups[I].Sec][AsmFixups[I].Pos + 2] := (TargetOfs Shr 16) And $FF;
+   AsmBuf[AsmFixups[I].Sec][AsmFixups[I].Pos + 3] := (TargetOfs Shr 24) And $FF;
+  End
+  Else
+  Begin
+   KeepList[KeepCount] := AsmFixups[I];
+   Inc(KeepCount);
+  End;
+  Inc(I);
+ End;
+
+ For I := 0 To KeepCount - 1 Do AsmFixups[I] := KeepList[I];
+ AsmFixupCount := KeepCount;
+End;
+
+Function AsmAlignUp(V, Align: LongInt): LongInt;
+Begin
+ If V Mod Align = 0 Then AsmAlignUp := V
+ Else AsmAlignUp := ((V Div Align) + 1) * Align;
+End;
+
+Function AsmSectionRva(Sec: Integer; TRva, DRva, IRva: LongInt): LongInt;
+Begin
+ Case Sec Of
+  ASMSEC_TEXT  : AsmSectionRva := TRva;
+  ASMSEC_DATA  : AsmSectionRva := DRva;
+  ASMSEC_IDATA : AsmSectionRva := IRva;
+  Else AsmSectionRva := 0;
+ End;
+End;
+
+{ ------------------------------------------------------------ }
+{ PEOutF / PEWriteXxx : primitives d ecriture binaire brute (petit}
+{ boutiste, convention x86 native) vers le fichier .exe/.obj final.}
+{ ------------------------------------------------------------ }
+
+Var PEOutF : File;
+
+Procedure PEWriteByte(B: Integer);
+Var Bt: Byte;
+Begin
+ Bt := B And $FF;
+ BlockWrite(PEOutF, Bt, 1);
+End;
+
+Procedure PEWriteWord(W: Integer);
+Begin
+ PEWriteByte(W And $FF);
+ PEWriteByte((W Shr 8) And $FF);
+End;
+
+Procedure PEWriteDWord(D: LongInt);
+Begin
+ PEWriteByte(D And $FF);
+ PEWriteByte((D Shr 8) And $FF);
+ PEWriteByte((D Shr 16) And $FF);
+ PEWriteByte((D Shr 24) And $FF);
+End;
+
+Procedure PEWriteZeros(N: LongInt);
+Var I: LongInt;
+Begin
+ For I := 1 To N Do PEWriteByte(0);
+End;
+
+Procedure PEWriteStr(Const S: TString);
+Var I: Integer;
+Begin
+ For I := 1 To Length(S) Do PEWriteByte(Ord(S[I]));
+End;
+
+Procedure PEWriteSectionBytes(Sec: Integer; Count: LongInt);
+Var I: LongInt;
+Begin
+ For I := 0 To Count - 1 Do PEWriteByte(AsmBuf[Sec][I]);
+End;
+
+{ ------------------------------------------------------------ }
+{ WritePEExe (TODO 24) : ecrire un fichier PE (.exe) complet a     }
+{ partir de AsmBuf/AsmLabels/AsmFixups/AsmExterns deja assembles   }
+{ (AsmAssembleFile + AsmResolveRel32Fixups deja executes par        }
+{ l appelant). Structure/constantes reprises de ML.PAS (projet       }
+{ frere, deja verifie sur de vrais .exe qui s executent) : base        }
+{ image $400000, alignement section $1000, alignement fichier         }
+{ $200, en-tete optionnel PE32 224 octets, disposition en DEUX          }
+{ etapes (mesurer, puis ecrire). Simplification documentee (TODO 24) :   }
+{ TOUS les imports externes sont supposes venir de KERNEL32.DLL (les      }
+{ imports utilisateur d autres DLL, 'external', TODO 14/22, n ont pas       }
+{ encore leur nom de DLL propage jusqu ici - seulement en commentaire        }
+{ non analyse) - correct pour tout ce que ce compilateur importe            }
+{ reellement aujourd hui (les 9 imports de base, EmitHeader).                 }
+{ ------------------------------------------------------------ }
+
+Procedure WritePEExe(Const OutPath: TString);
+Const
+ IMAGE_BASE = $400000;
+ SEC_ALIGN  = $1000;
+ FILE_ALIGN = $200;
+ KERNEL32_NAME = 'KERNEL32.DLL';
+Var
+ NImp, I, LI, FixI : Integer;
+ HintNameOfs : Array[0..MAX_ASM_EXTERNS - 1] Of LongInt;
+ IltOfs, IatOfs, DllNameOfs, HintNameTotal : LongInt;
+ IdataExtra : LongInt;
+ TextSize, DataSize, IdataSize : LongInt;
+ TextRva, DataRva, IdataRva : LongInt;
+ TextFileOfs, DataFileOfs, IdataFileOfs : LongInt;
+ TextRawSize, DataRawSize, IdataRawSize : LongInt;
+ HdrSize, HdrSizeAligned : LongInt;
+ EntryRva, EntryLI : Integer;
+ ImportDirRva, IltRva, IatRva, DllNameRva : LongInt;
+ ImageSize : LongInt;
+ Name : TString;
+ V : LongInt;
+ HnLen : Integer;
+Begin
+ { --- 1. mesurer le bloc d import (a l interieur de .idata) --- }
+ NImp := AsmExternCount;
+ IltOfs := 40;                        { table des import : 1 descripteur + 1 nul }
+ IatOfs := IltOfs + (NImp + 1) * 4;
+ HintNameTotal := 0;
+ For I := 0 To NImp - 1 Do
+ Begin
+  HintNameOfs[I] := IatOfs + (NImp + 1) * 4 + HintNameTotal;
+  HnLen := 2 + Length(AsmExportNameFor(AsmExterns[I])) + 1;
+  If HnLen Mod 2 <> 0 Then Inc(HnLen);
+  HintNameTotal := HintNameTotal + HnLen;
+ End;
+ DllNameOfs := IatOfs + (NImp + 1) * 4 + HintNameTotal;
+ IdataExtra := DllNameOfs + Length(KERNEL32_NAME) + 1;
+ If IdataExtra Mod 2 <> 0 Then Inc(IdataExtra);
+
+ { --- 2. tailles finales des sections (toujours 3, jamais vides   }
+ { en pratique : donnees/code runtime toujours presents) --- }
+ TextSize  := AsmLen[ASMSEC_TEXT];
+ DataSize  := AsmLen[ASMSEC_DATA];
+ IdataSize := AsmLen[ASMSEC_IDATA] + IdataExtra;
+
+ { --- 3. disposition RVA/fichier (deux passes, comme ML.PAS) --- }
+ HdrSize := 64 + 4 + 20 + 224 + 3 * 40;
+ HdrSizeAligned := AsmAlignUp(HdrSize, FILE_ALIGN);
+
+ TextRva     := SEC_ALIGN;
+ TextFileOfs := HdrSizeAligned;
+ TextRawSize := AsmAlignUp(TextSize, FILE_ALIGN);
+
+ DataRva     := TextRva + AsmAlignUp(TextSize, SEC_ALIGN);
+ DataFileOfs := TextFileOfs + TextRawSize;
+ DataRawSize := AsmAlignUp(DataSize, FILE_ALIGN);
+
+ IdataRva     := DataRva + AsmAlignUp(DataSize, SEC_ALIGN);
+ IdataFileOfs := DataFileOfs + DataRawSize;
+ IdataRawSize := AsmAlignUp(IdataSize, FILE_ALIGN);
+
+ ImageSize := AsmAlignUp(IdataRva + IdataSize, SEC_ALIGN);
+
+ ImportDirRva := IdataRva + AsmLen[ASMSEC_IDATA];
+ IltRva       := IdataRva + AsmLen[ASMSEC_IDATA] + IltOfs;
+ IatRva       := IdataRva + AsmLen[ASMSEC_IDATA] + IatOfs;
+ DllNameRva   := IdataRva + AsmLen[ASMSEC_IDATA] + DllNameOfs;
+
+ { --- 4. corriger les fixups ABS32 (adresses absolues) : soit une }
+ { etiquette locale (.text/.data/.idata + son offset), soit une      }
+ { vignette IAT ('@IAT:Nom' - la case IAT de cet import).              }
+ For FixI := 0 To AsmFixupCount - 1 Do
+ Begin
+  Name := AsmFixups[FixI].TargetName;
+  If Pos('@IAT:', Name) = 1 Then
+  Begin
+   LI := AsmExternIndex(Copy(Name, 6, Length(Name) - 5));
+   If LI < 0 Then
+   Begin
+    FatalError('assembleur : import introuvable pour la vignette IAT: ' + Name);
+    Exit;
+   End;
+   V := IMAGE_BASE + IatRva + LI * 4;
+  End
+  Else
+  Begin
+   LI := AsmFindLabel(Name);
+   If LI < 0 Then
+   Begin
+    FatalError('assembleur : etiquette introuvable: ' + Name);
+    Exit;
+   End;
+   V := IMAGE_BASE +
+    AsmSectionRva(AsmLabels[LI].Sec, TextRva, DataRva, IdataRva) +
+    AsmLabels[LI].Ofs + AsmFixups[FixI].Addend;
+  End;
+  AsmBuf[AsmFixups[FixI].Sec][AsmFixups[FixI].Pos]     := V And $FF;
+  AsmBuf[AsmFixups[FixI].Sec][AsmFixups[FixI].Pos + 1] := (V Shr 8) And $FF;
+  AsmBuf[AsmFixups[FixI].Sec][AsmFixups[FixI].Pos + 2] := (V Shr 16) And $FF;
+  AsmBuf[AsmFixups[FixI].Sec][AsmFixups[FixI].Pos + 3] := (V Shr 24) And $FF;
+ End;
+
+ { --- 5. point d entree --- }
+ EntryLI := AsmFindLabel(AsmEntryLabelName);
+ If EntryLI >= 0 Then
+  EntryRva := AsmSectionRva(AsmLabels[EntryLI].Sec, TextRva, DataRva, IdataRva) +
+   AsmLabels[EntryLI].Ofs
+ Else
+  EntryRva := TextRva;
+
+ { --- 6. ecrire le fichier --- }
+ {$I-} Assign(PEOutF, OutPath); Rewrite(PEOutF, 1); {$I+}
+ If IOResult <> 0 Then
+ Begin
+  FatalError('impossible de creer le fichier de sortie: ' + OutPath);
+  Exit;
+ End;
+
+ { en-tete MZ minimal (64 octets : seuls e_magic et e_lfanew comptent) }
+ PEWriteWord($5A4D);           { 'MZ' }
+ PEWriteZeros(58);
+ PEWriteDWord(64);             { e_lfanew : l en-tete PE suit immediatement }
+
+ PEWriteDWord($00004550);      { "PE\0\0" }
+
+ { IMAGE_FILE_HEADER (20 octets) }
+ PEWriteWord($014C);           { Machine = i386 }
+ PEWriteWord(3);               { NumberOfSections }
+ PEWriteDWord(0);              { TimeDateStamp }
+ PEWriteDWord(0);              { PointerToSymbolTable }
+ PEWriteDWord(0);              { NumberOfSymbols }
+ PEWriteWord(224);             { SizeOfOptionalHeader }
+ PEWriteWord($010F);           { Characteristics }
+
+ { IMAGE_OPTIONAL_HEADER32 (224 octets) }
+ PEWriteWord($10B);            { Magic = PE32 }
+ PEWriteByte(1); PEWriteByte(0);   { MajorLinkerVersion, Minor }
+ PEWriteDWord(AsmAlignUp(TextSize, FILE_ALIGN));    { SizeOfCode }
+ PEWriteDWord(AsmAlignUp(DataSize, FILE_ALIGN) +
+  AsmAlignUp(IdataSize, FILE_ALIGN));                 { SizeOfInitializedData }
+ PEWriteDWord(0);              { SizeOfUninitializedData }
+ PEWriteDWord(EntryRva);       { AddressOfEntryPoint }
+ PEWriteDWord(TextRva);        { BaseOfCode }
+ PEWriteDWord(DataRva);        { BaseOfData }
+ PEWriteDWord(IMAGE_BASE);     { ImageBase }
+ PEWriteDWord(SEC_ALIGN);      { SectionAlignment }
+ PEWriteDWord(FILE_ALIGN);     { FileAlignment }
+ PEWriteWord(4); PEWriteWord(0);   { OS version }
+ PEWriteWord(0); PEWriteWord(0);   { Image version }
+ PEWriteWord(4); PEWriteWord(0);   { Subsystem version }
+ PEWriteDWord(0);              { Win32VersionValue }
+ PEWriteDWord(ImageSize);      { SizeOfImage }
+ PEWriteDWord(HdrSizeAligned); { SizeOfHeaders }
+ PEWriteDWord(0);              { CheckSum }
+ PEWriteWord(3);               { Subsystem = CUI (console) }
+ PEWriteWord(0);               { DllCharacteristics }
+ PEWriteDWord($100000);        { SizeOfStackReserve }
+ PEWriteDWord($1000);          { SizeOfStackCommit }
+ PEWriteDWord($100000);        { SizeOfHeapReserve }
+ PEWriteDWord($1000);          { SizeOfHeapCommit }
+ PEWriteDWord(0);              { LoaderFlags }
+ PEWriteDWord(16);             { NumberOfRvaAndSizes }
+ PEWriteDWord(0); PEWriteDWord(0);              { [0] Export }
+ PEWriteDWord(ImportDirRva); PEWriteDWord(40);  { [1] Import }
+ PEWriteDWord(0); PEWriteDWord(0);              { [2] Resource }
+ PEWriteDWord(0); PEWriteDWord(0);              { [3] Exception }
+ PEWriteDWord(0); PEWriteDWord(0);              { [4] Security }
+ PEWriteDWord(0); PEWriteDWord(0);              { [5] BaseReloc }
+ PEWriteDWord(0); PEWriteDWord(0);              { [6] Debug }
+ PEWriteDWord(0); PEWriteDWord(0);              { [7] Architecture }
+ PEWriteDWord(0); PEWriteDWord(0);              { [8] GlobalPtr }
+ PEWriteDWord(0); PEWriteDWord(0);              { [9] TLS }
+ PEWriteDWord(0); PEWriteDWord(0);              { [10] LoadConfig }
+ PEWriteDWord(0); PEWriteDWord(0);              { [11] BoundImport }
+ PEWriteDWord(IatRva); PEWriteDWord((NImp + 1) * 4);  { [12] IAT }
+ PEWriteDWord(0); PEWriteDWord(0);              { [13] DelayImport }
+ PEWriteDWord(0); PEWriteDWord(0);              { [14] COM descriptor }
+ PEWriteDWord(0); PEWriteDWord(0);              { [15] reserve }
+
+ { table des sections (3 en-tetes de 40 octets) }
+ PEWriteStr('.text'); PEWriteZeros(8 - Length('.text'));
+ PEWriteDWord(TextSize); PEWriteDWord(TextRva);
+ PEWriteDWord(TextRawSize); PEWriteDWord(TextFileOfs);
+ PEWriteDWord(0); PEWriteDWord(0); PEWriteWord(0); PEWriteWord(0);
+ PEWriteDWord($60000020);      { CODE | EXECUTE | READ }
+
+ PEWriteStr('.data'); PEWriteZeros(8 - Length('.data'));
+ PEWriteDWord(DataSize); PEWriteDWord(DataRva);
+ PEWriteDWord(DataRawSize); PEWriteDWord(DataFileOfs);
+ PEWriteDWord(0); PEWriteDWord(0); PEWriteWord(0); PEWriteWord(0);
+ PEWriteDWord(-1073741760);    { $C0000040 = INITIALIZED_DATA|READ|WRITE, }
+                                { ecrit en decimal signe (le bit de poids }
+                                { fort deborde un LongInt signe litteral) }
+
+ PEWriteStr('.idata'); PEWriteZeros(8 - Length('.idata'));
+ PEWriteDWord(IdataSize); PEWriteDWord(IdataRva);
+ PEWriteDWord(IdataRawSize); PEWriteDWord(IdataFileOfs);
+ PEWriteDWord(0); PEWriteDWord(0); PEWriteWord(0); PEWriteWord(0);
+ PEWriteDWord(-1073741760);    { $C0000040 = INITIALIZED_DATA|READ|WRITE, }
+                                { ecrit en decimal signe (le bit de poids }
+                                { fort deborde un LongInt signe litteral) }
+
+ PEWriteZeros(HdrSizeAligned - HdrSize);
+
+ { --- .text --- }
+ PEWriteSectionBytes(ASMSEC_TEXT, TextSize);
+ PEWriteZeros(TextRawSize - TextSize);
+
+ { --- .data --- }
+ PEWriteSectionBytes(ASMSEC_DATA, DataSize);
+ PEWriteZeros(DataRawSize - DataSize);
+
+ { --- .idata : donnees utilisateur puis table d import --- }
+ PEWriteSectionBytes(ASMSEC_IDATA, AsmLen[ASMSEC_IDATA]);
+
+ { Import Directory Table : 1 descripteur KERNEL32.DLL + 1 nul }
+ PEWriteDWord(IltRva);         { OriginalFirstThunk }
+ PEWriteDWord(0);              { TimeDateStamp }
+ PEWriteDWord(0);              { ForwarderChain }
+ PEWriteDWord(DllNameRva);     { Name }
+ PEWriteDWord(IatRva);         { FirstThunk }
+ PEWriteZeros(20);             { descripteur nul terminal }
+
+ { Import Lookup Table (ILT) : une RVA Hint/Name par import + nul }
+ For I := 0 To NImp - 1 Do
+  PEWriteDWord(IdataRva + AsmLen[ASMSEC_IDATA] + HintNameOfs[I]);
+ PEWriteDWord(0);
+
+ { Import Address Table (IAT) : identique a l ILT au depart (le    }
+ { chargeur la remplace par les vraies adresses au demarrage) }
+ For I := 0 To NImp - 1 Do
+  PEWriteDWord(IdataRva + AsmLen[ASMSEC_IDATA] + HintNameOfs[I]);
+ PEWriteDWord(0);
+
+ { entrees Hint/Name : le nom REEL exporte par la DLL (AsmExportNameFor,   }
+ { pas le nom mangled/decore '_Nom@N' - le chargeur Windows cherche ce      }
+ { nom textuellement dans la table d export de kernel32.dll, TODO 24).       }
+ For I := 0 To NImp - 1 Do
+ Begin
+  PEWriteWord(0);              { Hint }
+  PEWriteStr(AsmExportNameFor(AsmExterns[I]));
+  PEWriteByte(0);
+  HnLen := 2 + Length(AsmExportNameFor(AsmExterns[I])) + 1;
+  If HnLen Mod 2 <> 0 Then PEWriteByte(0);
+ End;
+
+ { nom de la DLL }
+ PEWriteStr(KERNEL32_NAME);
+ PEWriteByte(0);
+ If (DllNameOfs + Length(KERNEL32_NAME) + 1) <> IdataExtra Then
+  PEWriteZeros(IdataExtra - (DllNameOfs + Length(KERNEL32_NAME) + 1));
+
+ PEWriteZeros(IdataRawSize - IdataSize);
+
+ Close(PEOutF);
+End;
+
+{ ------------------------------------------------------------ }
+{ AsmResolveLocalRel32Fixups (TODO 24, mode -obj) : comme          }
+{ AsmResolveRel32Fixups, mais SANS creer de vignette IAT pour un    }
+{ REL32 vers un symbole EXTERN - en mode OBJ, un CALL/JMP vers un     }
+{ import reste une vraie relocation COFF (REL32), resolue par           }
+{ l EDITEUR DE LIENS lors de la liaison finale avec kernel32.lib          }
+{ (ou toute autre unite .OBJ). Seules les references INTRA-fichier         }
+{ (etiquette locale) sont resolues ici en offset relatif final -           }
+{ elles restent valables telles quelles quel que soit l endroit ou          }
+{ l editeur de liens placera la section (l ecart entre deux positions        }
+{ de la MEME section ne change pas).                                          }
+{ ------------------------------------------------------------ }
+
+Procedure AsmResolveLocalRel32Fixups;
+Var
+ I, LI : Integer;
+ TargetOfs : LongInt;
+ KeepList : Array[0..MAX_ASM_FIXUPS - 1] Of TAsmFixup;
+ KeepCount : Integer;
+Begin
+ KeepCount := 0;
+ For I := 0 To AsmFixupCount - 1 Do
+ Begin
+  LI := -1;
+  If AsmFixups[I].Kind = AFX_REL32 Then LI := AsmFindLabel(AsmFixups[I].TargetName);
+  If (AsmFixups[I].Kind = AFX_REL32) And (LI >= 0) Then
+  Begin
+   TargetOfs := AsmLabels[LI].Ofs - (AsmFixups[I].Pos + 4);
+   AsmBuf[AsmFixups[I].Sec][AsmFixups[I].Pos]     := TargetOfs And $FF;
+   AsmBuf[AsmFixups[I].Sec][AsmFixups[I].Pos + 1] := (TargetOfs Shr 8) And $FF;
+   AsmBuf[AsmFixups[I].Sec][AsmFixups[I].Pos + 2] := (TargetOfs Shr 16) And $FF;
+   AsmBuf[AsmFixups[I].Sec][AsmFixups[I].Pos + 3] := (TargetOfs Shr 24) And $FF;
+  End
+  Else
+  Begin
+   KeepList[KeepCount] := AsmFixups[I];
+   Inc(KeepCount);
+  End;
+ End;
+ For I := 0 To KeepCount - 1 Do AsmFixups[I] := KeepList[I];
+ AsmFixupCount := KeepCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteCOFFObj (TODO 24, -obj) : ecrire un fichier COFF (.obj)     }
+{ minimal mais reel - IMAGE_FILE_HEADER, sections .text/.data        }
+{ (donnees brutes, sans alignement fichier - un .OBJ n a pas besoin   }
+{ d etre aligne au secteur comme un .EXE), relocations DIR32/REL32     }
+{ (une par fixup restant apres AsmResolveLocalRel32Fixups - toute       }
+{ reference intra-fichier deja resolue en dur), table des symboles       }
+{ (une entree par section + par etiquette [PUBLIC par simplification,    }
+{ TODO 24 : aucun suivi PUBLIC/STATIC explicite] + par import EXTERN),     }
+{ table des chaines (tous les noms de symboles y passent, y compris        }
+{ courts - simplification valide vis-a-vis du format COFF, qui l autorise). }
+{ ------------------------------------------------------------ }
+
+Procedure WriteCOFFObj(Const OutPath: TString);
+Const
+ COFF_REL_DIR32 = $0006;
+ COFF_REL_REL32 = $0014;
+ COFF_SYMCLASS_EXTERNAL = 2;
+ COFF_SYMCLASS_STATIC   = 3;
+Var
+ I, FixI, RelocCount : Integer;
+ TextRelocCount, DataRelocCount : Integer;
+ SecHdrOfs, TextDataOfs, DataDataOfs : LongInt;
+ TextRelocOfs, DataRelocOfs, SymTabOfs : LongInt;
+ SymIndexOfSection : Array[0..1] Of Integer;   { 0=.text, 1=.data }
+ SymIndexOfLabel   : Array[0..MAX_ASM_LABELS - 1] Of Integer;
+ SymIndexOfExtern  : Array[0..MAX_ASM_EXTERNS - 1] Of Integer;
+ NextSymIdx : Integer;
+ StrTab : TString;   { concatenation des noms, chacun termine par #0 }
+ Name : TString;
+ TargetSymIdx, LI, EI : Integer;
+ RelocType : Integer;
+ SecOf : Integer;
+
+ Function StrTabAdd(Const Nm: TString): LongInt;
+ Begin
+  StrTabAdd := Length(StrTab) + 4;   { +4 : le prefixe de longueur COFF }
+  StrTab := StrTab + Nm + #0;
+ End;
+
+Begin
+ AsmResolveLocalRel32Fixups;
+
+ { --- table des symboles : .text, .data, chaque etiquette, chaque   }
+ { import extern (dans cet ordre, pour calculer les index a l avance) }
+ NextSymIdx := 0;
+ SymIndexOfSection[0] := NextSymIdx; Inc(NextSymIdx);   { .text }
+ SymIndexOfSection[1] := NextSymIdx; Inc(NextSymIdx);   { .data }
+ For I := 0 To AsmLabelCount - 1 Do
+ Begin
+  SymIndexOfLabel[I] := NextSymIdx;
+  Inc(NextSymIdx);
+ End;
+ For I := 0 To AsmExternCount - 1 Do
+ Begin
+  SymIndexOfExtern[I] := NextSymIdx;
+  Inc(NextSymIdx);
+ End;
+
+ { --- compter les relocations par section --- }
+ TextRelocCount := 0; DataRelocCount := 0;
+ For FixI := 0 To AsmFixupCount - 1 Do
+ Begin
+  If AsmFixups[FixI].Sec = ASMSEC_TEXT Then Inc(TextRelocCount)
+  Else If AsmFixups[FixI].Sec = ASMSEC_DATA Then Inc(DataRelocCount);
+ End;
+
+ { --- disposition fichier : en-tete + 2 sections + donnees brutes + }
+ { relocations + table des symboles + table des chaines --- }
+ SecHdrOfs    := 20;
+ TextDataOfs  := SecHdrOfs + 2 * 40;
+ DataDataOfs  := TextDataOfs + AsmLen[ASMSEC_TEXT];
+ TextRelocOfs := DataDataOfs + AsmLen[ASMSEC_DATA];
+ DataRelocOfs := TextRelocOfs + TextRelocCount * 10;
+ SymTabOfs    := DataRelocOfs + DataRelocCount * 10;
+
+ StrTab := '';
+
+ {$I-} Assign(PEOutF, OutPath); Rewrite(PEOutF, 1); {$I+}
+ If IOResult <> 0 Then
+ Begin
+  FatalError('impossible de creer le fichier de sortie: ' + OutPath);
+  Exit;
+ End;
+
+ { IMAGE_FILE_HEADER }
+ PEWriteWord($014C);                { Machine = i386 }
+ PEWriteWord(2);                    { NumberOfSections }
+ PEWriteDWord(0);                   { TimeDateStamp }
+ PEWriteDWord(SymTabOfs);           { PointerToSymbolTable }
+ PEWriteDWord(NextSymIdx);          { NumberOfSymbols }
+ PEWriteWord(0);                    { SizeOfOptionalHeader (aucun pour un .OBJ) }
+ PEWriteWord(0);                    { Characteristics }
+
+ { en-tete de section .text }
+ PEWriteStr('.text'); PEWriteZeros(8 - Length('.text'));
+ PEWriteDWord(0);                   { VirtualSize (non utilise pour un .OBJ) }
+ PEWriteDWord(0);                   { VirtualAddress }
+ PEWriteDWord(AsmLen[ASMSEC_TEXT]); { SizeOfRawData }
+ PEWriteDWord(TextDataOfs);         { PointerToRawData }
+ PEWriteDWord(TextRelocOfs);        { PointerToRelocations }
+ PEWriteDWord(0);                   { PointerToLinenumbers }
+ PEWriteWord(TextRelocCount);       { NumberOfRelocations }
+ PEWriteWord(0);                    { NumberOfLinenumbers }
+ PEWriteDWord($60000020);           { CODE | EXECUTE | READ }
+
+ { en-tete de section .data }
+ PEWriteStr('.data'); PEWriteZeros(8 - Length('.data'));
+ PEWriteDWord(0);
+ PEWriteDWord(0);
+ PEWriteDWord(AsmLen[ASMSEC_DATA]);
+ PEWriteDWord(DataDataOfs);
+ PEWriteDWord(DataRelocOfs);
+ PEWriteDWord(0);
+ PEWriteWord(DataRelocCount);
+ PEWriteWord(0);
+ PEWriteDWord(-1073741760);         { $C0000040 = INITIALIZED_DATA|READ|WRITE }
+
+ { donnees brutes }
+ PEWriteSectionBytes(ASMSEC_TEXT, AsmLen[ASMSEC_TEXT]);
+ PEWriteSectionBytes(ASMSEC_DATA, AsmLen[ASMSEC_DATA]);
+
+ { relocations .text puis .data }
+ For SecOf := ASMSEC_TEXT To ASMSEC_DATA Do
+  For FixI := 0 To AsmFixupCount - 1 Do
+   If AsmFixups[FixI].Sec = SecOf Then
+   Begin
+    Name := AsmFixups[FixI].TargetName;
+    LI := AsmFindLabel(Name);
+    If LI >= 0 Then
+     TargetSymIdx := SymIndexOfLabel[LI]
+    Else
+    Begin
+     EI := AsmExternIndex(Name);
+     If EI >= 0 Then
+      TargetSymIdx := SymIndexOfExtern[EI]
+     Else
+     Begin
+      FatalError('assembleur (.obj) : symbole introuvable: ' + Name);
+      Exit;
+     End;
+    End;
+    If AsmFixups[FixI].Kind = AFX_REL32 Then RelocType := COFF_REL_REL32
+    Else RelocType := COFF_REL_DIR32;
+    PEWriteDWord(AsmFixups[FixI].Pos);
+    PEWriteDWord(TargetSymIdx);
+    PEWriteWord(RelocType);
+   End;
+
+ { table des symboles (18 octets chacun) : .text, .data, etiquettes, }
+ { imports externes - toutes les entrees utilisent la table des        }
+ { chaines pour le nom (simplification valide, TODO 24 : le format        }
+ { COFF autorise cette forme meme pour un nom court de 8 caracteres        }
+ { ou moins, qui pourrait sinon tenir en ligne).                             }
+ PEWriteDWord(0); PEWriteDWord(StrTabAdd('.text'));
+ PEWriteDWord(0); PEWriteWord(1); PEWriteWord(0);   { section 1, Type=0 (usuel) }
+ PEWriteByte(COFF_SYMCLASS_STATIC); PEWriteByte(0);
+
+ PEWriteDWord(0); PEWriteDWord(StrTabAdd('.data'));
+ PEWriteDWord(0); PEWriteWord(2); PEWriteWord(0);
+ PEWriteByte(COFF_SYMCLASS_STATIC); PEWriteByte(0);
+
+ For I := 0 To AsmLabelCount - 1 Do
+ Begin
+  PEWriteDWord(0); PEWriteDWord(StrTabAdd(AsmLabels[I].Name));
+  PEWriteDWord(AsmLabels[I].Ofs);
+  If AsmLabels[I].Sec = ASMSEC_TEXT Then PEWriteWord(1) Else PEWriteWord(2);
+  PEWriteWord(0);
+  PEWriteByte(COFF_SYMCLASS_EXTERNAL);   { PUBLIC par simplification, TODO 24 }
+  PEWriteByte(0);
+ End;
+
+ For I := 0 To AsmExternCount - 1 Do
+ Begin
+  PEWriteDWord(0); PEWriteDWord(StrTabAdd(AsmExterns[I]));
+  PEWriteDWord(0); PEWriteWord(0);       { section 0 = symbole non defini ici }
+  PEWriteWord(0);
+  PEWriteByte(COFF_SYMCLASS_EXTERNAL);
+  PEWriteByte(0);
+ End;
+
+ { table des chaines : prefixe de longueur (elle-meme comprise) puis }
+ { les noms concatenes, chacun termine par un octet nul.               }
+ PEWriteDWord(Length(StrTab) + 4);
+ PEWriteStr(StrTab);
+
+ Close(PEOutF);
+End;
+
+{ ------------------------------------------------------------ }
 { Run - point d entree de la compilation                       }
-{ Le parseur de fichier programme complet (uses, section         }
-{ principale) sera ajoute par les TODO 23 et suivants. Pour       }
-{ l instant, Run verifie les briques deja posees (constantes,     }
-{ symboles/portees, types, emetteur ASM, segment de donnees/VMT/  }
-{ interfaces, variables/affectations, expressions primaires et    }
-{ binaires, E/S et RTL minimale, structures de controle,          }
-{ procedures/fonctions et surcharge, classes et heritage), fait   }
-{ passer le lexeur sur tout le fichier source, genere un          }
-{ squelette .ASM assemblable si -asm est demande, et annonce que  }
-{ l analyse syntaxique n est pas encore implementee.              }
+{ Fait passer le lexeur sur tout le fichier source, puis pilote   }
+{ la compilation reelle via CompileSourceFile (TODO 23 :          }
+{ detection Program/Unit/Library, section(s) de declarations,     }
+{ routines, bloc principal) et genere un .ASM assemblable si      }
+{ -asm est demande.                                                }
 { ------------------------------------------------------------ }
 
 Procedure Run;
@@ -15140,6 +19372,9 @@ Begin
  CompoundSelfTest;
  StrSelfTest;
  AsmSelfTest;
+ Rtl22SelfTest;
+ Prog23SelfTest;
+ Todo24SelfTest;
 
  {$I-}
  Assign(LexSrcF, Opts.SrcFile);
@@ -15172,15 +19407,11 @@ Begin
  { Enregistrer toutes les chaines litterales dans le pool de donnees }
  TokenPoolRegisterStrings;
 
- { TODO 07 : produire un squelette .ASM assemblable si demande. Le    }
- { corps reel du programme viendra avec le parseur de fichier         }
- { programme complet (TODO 23 et suivants) : ParsePrimary/ParseExpr/  }
- { ParseStmt/ParseProcOrFuncDecl/ParseClassDecl (TODO 10/11/13/14/15) }
- { ne sont pour l instant exerces que par leurs self-tests, faute      }
- { d un point d entree de plus haut niveau (Program/Uses/section       }
- { principale) pour les piloter depuis un vrai fichier source.          }
- If Opts.AsmOutput Then
-  EmitSkeletonProgram(ReplaceExt(Opts.OutFile, '.asm'));
+ { TODO 23 : compilation reelle du fichier source (detection Program/ }
+ { Unit/Library, declarations, routines, bloc principal) - remplace   }
+ { l ancien squelette fixe (EmitSkeletonProgram, conserve pour les     }
+ { self-tests qui l utilisent encore tel quel).                        }
+ CompileSourceFile;
 
  If Opts.Verbose Then
  Begin
@@ -15217,8 +19448,14 @@ Begin
  WriteLn('DELPHI: TODO 20 (chaines de caracteres) implemente.');
  WriteLn('DELPHI: TODO 21 (instruction asm, bloc assembleur en ligne) ',
          'implemente.');
- WriteLn('DELPHI: analyseur syntaxique et generateur de code non ',
-         'encore implementes (voir TODO 22 et suivants).');
+ WriteLn('DELPHI: TODO 22 (unites RTL minimales System/SysUtils/Classes) ',
+         'implemente.');
+ WriteLn('DELPHI: TODO 23 (fichiers projet .dpr et unites .pas) ',
+         'implemente.');
+ WriteLn('DELPHI: TODO 24 (generation PE/OBJ, EXE par defaut, ',
+         'OBJ sur demande) implemente.');
+ WriteLn('DELPHI: TODO 25 (validation : support complet de ',
+         'SAMPLES/DELPHI) implemente.');
  ShowStats;
  Cleanup;
 End;
@@ -15227,9 +19464,9 @@ End;
 { Programme principal                                          }
 { ============================================================ }
 
-Begin
+BEGIN
  ParseArgs;
  Run;
  Halt(EXIT_OK);
-End.
+END.
 
