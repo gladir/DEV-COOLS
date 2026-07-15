@@ -11384,7 +11384,7 @@ Procedure ProcessTurboPascalConcatEmitPatterns;
     literal + FonctionEntiere(valeur) + suffixe
   puis passee directement a une procedure d'emission. }
 Var
- I,K,L,VIdx,ProcIdx,ConvProc,EmitProc,PatternCount:LongInt;
+ I,K,L,VIdx,SuffixIdx,ProcIdx,ConvProc,EmitProc,PatternCount:LongInt;
  A0,A3,A7,A10,A11,A13,A17:TAsmLine;
  PrefixExpr,SuffixExpr,ValueExpr,ConvName,EmitName,Code:String;
  Valid,FoundLocal:Boolean;
@@ -11451,9 +11451,15 @@ Begin
   End;
   PrefixExpr:=QuotePascalString(DataVars[VIdx].Elements[2].StrValue);
   ValueExpr:=OperandToExpr(A10.Op1,ProcIdx);
-  If Not ShortStringAtImageOffset(A13.Op2.Imm,SuffixExpr)Then Begin
-   Inc(I);
-   Continue;
+  SuffixIdx:=0;
+  If A13.Op2.OpType=OT_OFFSET Then Begin
+   SuffixIdx:=FindDataVarByName(A13.Op2.LabelName);
+   If(SuffixIdx=0)or(Not IsLengthPrefixedString(SuffixIdx))Then Begin
+    Inc(I); Continue;
+   End;
+   SuffixExpr:=DataVars[SuffixIdx].Elements[2].StrValue;
+  End Else If Not ShortStringAtImageOffset(A13.Op2.Imm,SuffixExpr)Then Begin
+   Inc(I); Continue;
   End;
   Code:=EmitName+'('+PrefixExpr+' + '+ConvName+'('+ValueExpr+') + '+
     QuotePascalString(SuffixExpr)+');';
@@ -11461,10 +11467,80 @@ Begin
   For K:=I+1 to I+17 do SetTranslationForLine(K,'');
   If CountDataVarOffsetReferences(DataVars[VIdx].Name)=1 Then
    OmitDataVar[VIdx]:=True;
+  If(SuffixIdx>0)and
+    (CountDataVarOffsetReferences(DataVars[SuffixIdx].Name)=1)Then
+   OmitDataVar[SuffixIdx]:=True;
   Inc(PatternCount);
   I:=I+18;
  End;
  WriteLn('  Concat String vers emission          : ',PatternCount,
+  ' expression(s) reconstruite(s).');
+End;
+
+Procedure ProcessTurboPascalNumericAndLocalConcatEmitPatterns;
+{ Reconnait un temporaire String forme de :
+    litteral + FonctionEntiere(valeur) + litteral + chaine_locale
+  puis passe directement a une procedure d'emission. }
+Var
+ I,K,V1,V2,ProcIdx,ConvProc,EmitProc,PatternCount:LongInt;
+ A0,A3,A7,A10,A11,A13,A17,A21:TAsmLine;
+ PrefixText,MiddleText,ValueExpr,LocalExpr,ConvName,EmitName,Code:String;
+ Valid:Boolean;
+Begin
+ PatternCount:=0; I:=0;
+ While I+21<SrcLineCount do Begin
+  ParseInstructionLine(I,A0);   ParseInstructionLine(I+3,A3);
+  ParseInstructionLine(I+7,A7); ParseInstructionLine(I+10,A10);
+  ParseInstructionLine(I+11,A11); ParseInstructionLine(I+13,A13);
+  ParseInstructionLine(I+17,A17); ParseInstructionLine(I+21,A21);
+  Valid:=(UpCaseStr(A0.Mnemonic)='LEA')and(A0.Op1.OpType=OT_MEM)and
+    IsSimpleRegInstruction(I+1,'PUSH','SS','')and
+    IsSimpleRegInstruction(I+2,'PUSH','DI','')and
+    (UpCaseStr(A3.Mnemonic)='MOV')and(UpCaseStr(A3.Op1.Reg)='DI')and
+    (A3.Op2.OpType=OT_OFFSET)and
+    IsSimpleRegInstruction(I+4,'PUSH','CS','')and
+    IsSimpleRegInstruction(I+5,'PUSH','DI','')and
+    IsRuntimeFarCall(I+6,$0BFE)and
+    (UpCaseStr(A7.Mnemonic)='LEA')and(A7.Op1.OpType=OT_MEM)and
+    IsSimpleRegInstruction(I+8,'PUSH','SS','')and
+    IsSimpleRegInstruction(I+9,'PUSH','DI','')and
+    (UpCaseStr(A10.Mnemonic)='PUSH')and
+    (UpCaseStr(A11.Mnemonic)='CALL')and(A11.Op1.OpType<>OT_FAR)and
+    IsRuntimeFarCall(I+12,$0C7D)and
+    (UpCaseStr(A13.Mnemonic)='MOV')and(UpCaseStr(A13.Op1.Reg)='DI')and
+    (A13.Op2.OpType=OT_OFFSET)and
+    IsSimpleRegInstruction(I+14,'PUSH','CS','')and
+    IsSimpleRegInstruction(I+15,'PUSH','DI','')and
+    IsRuntimeFarCall(I+16,$0C7D)and
+    (UpCaseStr(A17.Mnemonic)='LEA')and(A17.Op1.OpType=OT_MEM)and
+    IsSimpleRegInstruction(I+18,'PUSH','SS','')and
+    IsSimpleRegInstruction(I+19,'PUSH','DI','')and
+    IsRuntimeFarCall(I+20,$0C7D)and
+    (UpCaseStr(A21.Mnemonic)='CALL')and(A21.Op1.OpType<>OT_FAR);
+  If Not Valid Then Begin Inc(I); Continue; End;
+  V1:=FindDataVarByName(A3.Op2.LabelName);
+  V2:=FindDataVarByName(A13.Op2.LabelName);
+  ProcIdx:=FindProcForLine(I);
+  ConvName:=OperandToExpr(A11.Op1,ProcIdx);
+  EmitName:=OperandToExpr(A21.Op1,ProcIdx);
+  ConvProc:=FindProcByName(ConvName); EmitProc:=FindProcByName(EmitName);
+  If(V1=0)or(V2=0)or(Not IsLengthPrefixedString(V1))or
+    (Not IsLengthPrefixedString(V2))or(ConvProc=0)or(EmitProc=0)Then Begin
+   Inc(I); Continue;
+  End;
+  PrefixText:=DataVars[V1].Elements[2].StrValue;
+  MiddleText:=DataVars[V2].Elements[2].StrValue;
+  ValueExpr:=OperandToExpr(A10.Op1,ProcIdx);
+  LocalExpr:=OperandToExpr(A17.Op1,ProcIdx);
+  Code:=EmitName+'('+QuotePascalString(PrefixText)+' + '+ConvName+'('+
+    ValueExpr+') + '+QuotePascalString(MiddleText)+' + '+LocalExpr+');';
+  SetTranslationForLine(I,Code);
+  For K:=I+1 to I+21 do SetTranslationForLine(K,'');
+  If CountDataVarOffsetReferences(DataVars[V1].Name)=1 Then OmitDataVar[V1]:=True;
+  If CountDataVarOffsetReferences(DataVars[V2].Name)=1 Then OmitDataVar[V2]:=True;
+  Inc(PatternCount); I:=I+22;
+ End;
+ WriteLn('  Concat nombre/litteral/String emission: ',PatternCount,
   ' expression(s) reconstruite(s).');
 End;
 
@@ -13286,6 +13362,7 @@ BEGIN
  ProcessTurboPascalConcatStringArgumentPatterns;
  { Reconstruction des concatenations temporaires passees aux emetteurs }
  ProcessTurboPascalConcatEmitPatterns;
+ ProcessTurboPascalNumericAndLocalConcatEmitPatterns;
  { Reconstruction des While combinant TokIsKw et cur_tok_str }
  ProcessTurboPascalTokenOptionWhilePatterns;
  { Reconstruction de literal + chaine locale vers Emit/EmitI }
