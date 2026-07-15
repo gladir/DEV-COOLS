@@ -6960,6 +6960,58 @@ Begin
  GetDataVarString:=S;
 End;
 
+Function DataVarImageOffset(VarIdx:Integer):LongInt;
+{ Retrouve l'offset d'une directive DB anonyme en partant du dernier label
+  pStr_XXXXXXXX precedent et en cumulant les tailles des directives. }
+Var
+ J,K:Integer;
+ Base,Ofs:LongInt;
+ N:String;
+Begin
+ DataVarImageOffset:=-1;
+ If(VarIdx<1)or(VarIdx>DataVarCount)Then Exit;
+ For J:=VarIdx downto 1 do Begin
+  N:=UpCaseStr(DataVars[J].Name);
+  If Pos('PSTR_',N)=1 Then Begin
+   Base:=HexToInt(Copy(N,6,Length(N)-5));
+   Ofs:=Base;
+   For K:=J to VarIdx-1 do Inc(Ofs,DataVars[K].TotalSize);
+   DataVarImageOffset:=Ofs;
+   Exit;
+  End;
+ End;
+End;
+
+Function ShortStringAtImageOffset(Addr:LongInt;Var S:String):Boolean;
+{ Lit une shortstring stockee dans une directive DB, meme si DISEXE ne lui
+  a pas attribue de label pStr. }
+Var
+ I,J,N:Integer;
+ Raw:String;
+ E:TDataElem;
+Begin
+ ShortStringAtImageOffset:=False;
+ S:='';
+ For I:=1 to DataVarCount do Begin
+  If DataVarImageOffset(I)<>Addr Then Continue;
+  If DataVars[I].DirType<>DT_DB Then Exit;
+  Raw:='';
+  For J:=1 to DataVars[I].ElemCount do Begin
+   E:=DataVars[I].Elements[J];
+   If E.ElemType=DE_NUMBER Then
+    Raw:=Raw+Chr(Byte(E.NumValue))
+   Else If E.ElemType=DE_STRING Then
+    Raw:=Raw+E.StrValue;
+  End;
+  If Raw='' Then Exit;
+  N:=Ord(Raw[1]);
+  If Length(Raw)-1<N Then Exit;
+  S:=Copy(Raw,2,N);
+  ShortStringAtImageOffset:=True;
+  Exit;
+ End;
+End;
+
 Function CountDataVarOffsetReferences(Const VarName:String):Integer;
 { Compte les references OFFSET afin de ne retirer qu'une chaine qui n'est
   utilisee nulle part ailleurs que dans le motif reconstruit. }
@@ -10770,6 +10822,95 @@ Begin
   ' appel(s) reconstruit(s).');
 End;
 
+Procedure ProcessTurboPascalConcatEmitPatterns;
+{ Reconnait une expression String construite dans un temporaire :
+    literal + FonctionEntiere(valeur) + suffixe
+  puis passee directement a une procedure d'emission. }
+Var
+ I,K,L,VIdx,ProcIdx,ConvProc,EmitProc,PatternCount:LongInt;
+ A0,A3,A7,A10,A11,A13,A17:TAsmLine;
+ PrefixExpr,SuffixExpr,ValueExpr,ConvName,EmitName,Code:String;
+ Valid,FoundLocal:Boolean;
+Begin
+ PatternCount:=0;
+ I:=0;
+ While I+17<SrcLineCount do Begin
+  ParseInstructionLine(I,A0);
+  ParseInstructionLine(I+3,A3);
+  ParseInstructionLine(I+7,A7);
+  ParseInstructionLine(I+10,A10);
+  ParseInstructionLine(I+11,A11);
+  ParseInstructionLine(I+13,A13);
+  ParseInstructionLine(I+17,A17);
+  Valid:=(UpCaseStr(A0.Mnemonic)='LEA')and(A0.Op1.OpType=OT_MEM)and
+    IsSimpleRegInstruction(I+1,'PUSH','SS','')and
+    IsSimpleRegInstruction(I+2,'PUSH','DI','')and
+    (UpCaseStr(A3.Mnemonic)='MOV')and(UpCaseStr(A3.Op1.Reg)='DI')and
+    (A3.Op2.OpType=OT_OFFSET)and
+    IsSimpleRegInstruction(I+4,'PUSH','CS','')and
+    IsSimpleRegInstruction(I+5,'PUSH','DI','')and
+    IsRuntimeFarCall(I+6,$0BFE)and
+    (UpCaseStr(A7.Mnemonic)='LEA')and(A7.Op1.OpType=OT_MEM)and
+    IsSimpleRegInstruction(I+8,'PUSH','SS','')and
+    IsSimpleRegInstruction(I+9,'PUSH','DI','')and
+    (UpCaseStr(A10.Mnemonic)='PUSH')and
+    (UpCaseStr(A11.Mnemonic)='CALL')and(A11.Op1.OpType<>OT_FAR)and
+    IsRuntimeFarCall(I+12,$0C7D)and
+    (UpCaseStr(A13.Mnemonic)='MOV')and(UpCaseStr(A13.Op1.Reg)='DI')and
+    IsSimpleRegInstruction(I+14,'PUSH','CS','')and
+    IsSimpleRegInstruction(I+15,'PUSH','DI','')and
+    IsRuntimeFarCall(I+16,$0C7D)and
+    (UpCaseStr(A17.Mnemonic)='CALL')and(A17.Op1.OpType<>OT_FAR);
+  If Not Valid Then Begin Inc(I); Continue; End;
+  VIdx:=FindDataVarByName(A3.Op2.LabelName);
+  ConvName:=OperandToExpr(A11.Op1,FindProcForLine(I));
+  EmitName:=OperandToExpr(A17.Op1,FindProcForLine(I));
+  ConvProc:=FindProcByName(ConvName);
+  EmitProc:=FindProcByName(EmitName);
+  If(VIdx=0)or(Not IsLengthPrefixedString(VIdx))or
+    (ConvProc=0)or(EmitProc=0)Then Begin Inc(I); Continue; End;
+
+  ProcIdx:=FindProcForLine(I);
+  { Le mot local utilise pour le deplacement BP est une variable Integer. }
+  If(A10.Op1.OpType=OT_MEM)and(UpCaseStr(A10.Op1.BaseReg)='BP')and
+    (A10.Op1.Disp<0)and(ProcIdx>0)Then Begin
+   FoundLocal:=False;
+   For L:=1 to Procs[ProcIdx].LocalCount do
+    If Procs[ProcIdx].Locals[L].IndexOffset=A10.Op1.Disp Then Begin
+     Procs[ProcIdx].Locals[L].Name:='bp';
+     Procs[ProcIdx].Locals[L].PascalType:=PT_INTEGER;
+     Procs[ProcIdx].Locals[L].TypeName:='INTEGER';
+     FoundLocal:=True;
+     Break;
+    End;
+   If(Not FoundLocal)and(Procs[ProcIdx].LocalCount<MAX_LOCALS)Then Begin
+    Inc(Procs[ProcIdx].LocalCount);
+    With Procs[ProcIdx].Locals[Procs[ProcIdx].LocalCount] do Begin
+     Name:='bp'; TypeName:='INTEGER'; PascalType:=PT_INTEGER;
+     Size:=2; Count:=1; IsIndexedMem:=False;
+     IndexOffset:=A10.Op1.Disp; IndexBaseReg:='BP'; IndexIndexReg:='';
+    End;
+   End;
+  End;
+  PrefixExpr:=QuotePascalString(DataVars[VIdx].Elements[2].StrValue);
+  ValueExpr:=OperandToExpr(A10.Op1,ProcIdx);
+  If Not ShortStringAtImageOffset(A13.Op2.Imm,SuffixExpr)Then Begin
+   Inc(I);
+   Continue;
+  End;
+  Code:=EmitName+'('+PrefixExpr+' + '+ConvName+'('+ValueExpr+') + '+
+    QuotePascalString(SuffixExpr)+');';
+  SetTranslationForLine(I,Code);
+  For K:=I+1 to I+17 do SetTranslationForLine(K,'');
+  If CountDataVarOffsetReferences(DataVars[VIdx].Name)=1 Then
+   OmitDataVar[VIdx]:=True;
+  Inc(PatternCount);
+  I:=I+18;
+ End;
+ WriteLn('  Concat String vers emission          : ',PatternCount,
+  ' expression(s) reconstruite(s).');
+End;
+
 Procedure ProcessTurboPascalNewPatterns;
 { Reconnait l'allocation d'un pointeur FAR par le runtime Turbo Pascal :
     MOV AX,[ptr] / OR AX,[ptr+2] / JNZ deja_alloue
@@ -11605,6 +11746,45 @@ Begin
   ' fonction(s) supplementaire(s).');
 End;
 
+Procedure ProcessOmitInlinedStringConstants;
+{ Retire une constante pStr lorsque toutes ses references OFFSET ont deja
+  ete absorbees par une reconstruction de haut niveau. Contrairement au
+  test historique "une seule reference", ceci gere aussi un meme litteral
+  utilise plusieurs fois. }
+Var
+ V,I,TrIdx,RefCount,OmittedCount:LongInt;
+ A:TAsmLine;
+ U,Code:String;
+ HasLiveRef:Boolean;
+Begin
+ OmittedCount:=0;
+ For V:=1 to DataVarCount do Begin
+  If OmitDataVar[V]or(Not IsLengthPrefixedString(V))or
+    (DataVars[V].Name='')Then Continue;
+  U:=UpCaseStr(DataVars[V].Name);
+  RefCount:=0;
+  HasLiveRef:=False;
+  For I:=0 to SrcLineCount-1 do Begin
+   ParseInstructionLine(I,A);
+   If Not(((A.Op1.OpType=OT_OFFSET)and
+      (UpCaseStr(A.Op1.LabelName)=U))or
+     ((A.Op2.OpType=OT_OFFSET)and
+      (UpCaseStr(A.Op2.LabelName)=U)))Then Continue;
+   Inc(RefCount);
+   TrIdx:=FindTranslationForLine(I);
+   If TrIdx<0 Then Begin HasLiveRef:=True; Break; End;
+   Code:=UpCaseStr(Translations[TrIdx].PascalCode);
+   If Pos(U,Code)>0 Then Begin HasLiveRef:=True; Break; End;
+  End;
+  If(RefCount>0)and(Not HasLiveRef)Then Begin
+   OmitDataVar[V]:=True;
+   Inc(OmittedCount);
+  End;
+ End;
+ WriteLn('  Constantes String entierement inlinees : ',OmittedCount,
+  ' declaration(s) retiree(s).');
+End;
+
 Procedure ProcessTurboPascalForPatterns;
 { Reconstruit la forme Turbo Pascal d'un For croissant :
     XOR AX,AX / MOV compteur,AX / JMP test
@@ -12269,6 +12449,8 @@ BEGIN
  ProcessTurboPascalWriteLnPatterns;
  { Reconstruction des arguments String FAR constants passes aux routines }
  ProcessTurboPascalDirectStringCallPatterns;
+ { Reconstruction des concatenations temporaires passees aux emetteurs }
+ ProcessTurboPascalConcatEmitPatterns;
  { Reconstruction des allocations de pointeurs du runtime Turbo Pascal }
  ProcessTurboPascalNewPatterns;
  { Reconstruction des liberations de pointeurs du runtime Turbo Pascal }
@@ -12295,6 +12477,8 @@ BEGIN
  ProcessTurboPascalStringReturnPatterns;
  { Reconstruction des boucles For croissantes du compilateur Turbo Pascal }
  ProcessTurboPascalForPatterns;
+ { Suppression des pStr dont toutes les references ont ete inlinees }
+ ProcessOmitInlinedStringConstants;
  { TODO 21 - Generation en-tete Pascal }
  ProcessHeaderGeneration;
  { TODO 22 - Generation corps procedures }

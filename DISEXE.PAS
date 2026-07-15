@@ -3554,6 +3554,43 @@ Begin
   End;
   Inc(I);
  End;
+
+ { Les references situees dans du code deja atteint par l'analyse de flux
+   n'ont pas besoin d'etre recuperees, mais elles doivent tout de meme etre
+   comptees. Parcourir les ilots BF_CODE instruction par instruction evite
+   de confondre un octet B8..BF contenu dans un operande avec un opcode. }
+ StringRefCount:=0;
+ I:=0;
+ While I<ImageSize do Begin
+  If ByteFlags^[I]<>BF_CODE Then Begin Inc(I); Continue; End;
+  InstrSize:=ComputeInstrSize(I,Mode32);
+  If InstrSize<=0 Then Begin Inc(I); Continue; End;
+  If(ReadImageByte(I)>=$B8)and(ReadImageByte(I)<=$BF)Then Begin
+   ValidBytes:=False;
+   If Mode32 Then Begin
+    ValidBytes:=(InstrSize>=5)and(I+5<ImageSize)and
+      (ReadImageByte(I+5)=$50+(ReadImageByte(I)-$B8));
+    If ValidBytes Then Value:=LongWord(ReadImageDWord(I+1));
+   End Else Begin
+    ValidBytes:=(InstrSize>=3)and(I+4<ImageSize)and
+      (ReadImageByte(I+3) in [$06,$0E,$16,$1E])and
+      (ReadImageByte(I+4)=$50+(ReadImageByte(I)-$B8));
+    If ValidBytes Then Value:=LongWord(ReadImageWord(I+1));
+   End;
+   If ValidBytes Then Begin
+    Target:=LongInt(Value);
+    If Mode32 And IsPEFile And
+      (Value>=LongWord(PEOptHeader.ImageBase))and
+      (Value-LongWord(PEOptHeader.ImageBase)<LongWord(ImageSize))Then
+     Target:=LongInt(Value-LongWord(PEOptHeader.ImageBase));
+    If(Target>=0)and(Target<ImageSize)and
+      ((ByteFlags^[Target]=BF_STRING)or
+       (ByteFlags^[Target]=BF_PSTRING))and(FindLabel(Target)>=0)Then
+     Inc(StringRefCount);
+   End;
+  End;
+  Inc(I,InstrSize);
+ End;
 End;
 
 { DetectJumpTables - Recherche les tables de saut (switch/case) dans les
