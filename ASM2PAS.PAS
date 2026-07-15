@@ -592,6 +592,7 @@ Var
  DataVarCount:Integer;
  OmitDataVar:Array[1..MAX_DATAVARS] of Boolean;
  NeedAsmText:Boolean;
+ NeedRecoveredFormTable:Boolean;
  RecoveredGlobalStringCount:Integer;
  RecoveredGlobalStringAddr:Array[1..256] of LongInt;
  RecoveredGlobalNames:Array[1..256] of String;
@@ -8532,6 +8533,15 @@ Begin
   WriteLn(OutFile,'  PAsmText = ^Text;');
   Inc(TypeCount);
  End;
+ If NeedRecoveredFormTable Then Begin
+  If Not HasType Then Begin WriteLn(OutFile,'Type'); HasType:=True; End;
+  WriteLn(OutFile,'  TRecoveredFormEntry = Record');
+  WriteLn(OutFile,'    asm_label : String;');
+  WriteLn(OutFile,'  End;');
+  WriteLn(OutFile,'  TRecoveredFormTable = Array[0..32] of TRecoveredFormEntry;');
+  WriteLn(OutFile,'  PRecoveredFormTable = ^TRecoveredFormTable;');
+  Inc(TypeCount,3);
+ End;
  If HasType Then WriteLn(OutFile);
 
  { === Section Const === }
@@ -8641,6 +8651,11 @@ Begin
  For I:=1 to RecoveredGlobalStringCount do Begin
   WriteLn(OutFile,'  ',RecoveredGlobalNames[I],' : String;');
   Inc(VarCount);
+ End;
+ If NeedRecoveredFormTable Then Begin
+  WriteLn(OutFile,'  form_table : PRecoveredFormTable;');
+  WriteLn(OutFile,'  form_count : Integer;');
+  Inc(VarCount,2);
  End;
  If Mode32 or(CpuLevel>=CPU_386)Then Begin
   WriteLn(OutFile,'  SaveRegEAX, SaveRegEBX, SaveRegECX, SaveRegEDX : LongInt;');
@@ -10901,6 +10916,84 @@ Begin
   ' appel(s) reconstruit(s).');
 End;
 
+Procedure ProcessTurboPascalStringFunctionFieldAssignments;
+{ Reconnait le resultat String cache d'une fonction a deux parametres FAR,
+  immediatement copie par 0C18h dans un champ de la table des FORMs. }
+Var
+ I,K,L,VIdx,ProcIdx,FuncProc,PatternCount:LongInt;
+ A0,A3,A6,A9,A10,A11,A12,A14,A17:TAsmLine;
+ LiteralText,FuncName,LocalName,Code:String;
+ Valid,FoundLocal:Boolean;
+Begin
+ PatternCount:=0; I:=0;
+ While I+19<SrcLineCount do Begin
+  ParseInstructionLine(I,A0); ParseInstructionLine(I+3,A3);
+  ParseInstructionLine(I+6,A6); ParseInstructionLine(I+9,A9);
+  ParseInstructionLine(I+10,A10); ParseInstructionLine(I+11,A11);
+  ParseInstructionLine(I+12,A12); ParseInstructionLine(I+14,A14);
+  ParseInstructionLine(I+17,A17);
+  Valid:=(UpCaseStr(A0.Mnemonic)='LEA')and(A0.Op1.OpType=OT_MEM)and
+    IsSimpleRegInstruction(I+1,'PUSH','SS','')and
+    IsSimpleRegInstruction(I+2,'PUSH','DI','')and
+    (UpCaseStr(A3.Mnemonic)='MOV')and(A3.Op2.OpType=OT_OFFSET)and
+    IsSimpleRegInstruction(I+4,'PUSH','CS','')and
+    IsSimpleRegInstruction(I+5,'PUSH','DI','')and
+    (UpCaseStr(A6.Mnemonic)='LEA')and(A6.Op1.OpType=OT_MEM)and
+    IsSimpleRegInstruction(I+7,'PUSH','SS','')and
+    IsSimpleRegInstruction(I+8,'PUSH','DI','')and
+    (UpCaseStr(A9.Mnemonic)='CALL')and(A9.Op1.OpType<>OT_FAR)and
+    (UpCaseStr(A10.Mnemonic)='MOV')and(A10.Op2.Imm=$0490)and
+    (UpCaseStr(A11.Mnemonic)='MUL')and(A11.Op1.OpType=OT_MEM)and
+    (A11.Op1.Disp=$076F)and
+    (UpCaseStr(A12.Mnemonic)='LES')and(A12.Op1.OpType=OT_MEM)and
+    (A12.Op1.Disp=$076B)and
+    (UpCaseStr(A14.Mnemonic)='ADD')and
+    (UpCaseStr(A14.Op1.Reg)='DI')and
+    IsSimpleRegInstruction(I+15,'PUSH','ES','')and
+    IsSimpleRegInstruction(I+16,'PUSH','DI','')and
+    (UpCaseStr(A17.Mnemonic)='MOV')and(A17.Op2.Imm=$30)and
+    IsSimpleRegInstruction(I+18,'PUSH','AX','')and
+    IsRuntimeFarCall(I+19,$0C18);
+  If Not Valid Then Begin Inc(I); Continue; End;
+  VIdx:=FindDataVarByName(A3.Op2.LabelName);
+  ProcIdx:=FindProcForLine(I);
+  FuncName:=OperandToExpr(A9.Op1,ProcIdx);
+  FuncProc:=FindProcByName(FuncName);
+  If(VIdx=0)or(Not IsLengthPrefixedString(VIdx))or
+    (ProcIdx=0)or(FuncProc=0)Then Begin Inc(I); Continue; End;
+  LiteralText:=DataVars[VIdx].Elements[2].StrValue;
+  If Pos('ABAP_FORM',UpCaseStr(LiteralText))>0 Then LocalName:='u'
+  Else LocalName:='name';
+  FoundLocal:=False;
+  For L:=1 to Procs[ProcIdx].LocalCount do
+   If Procs[ProcIdx].Locals[L].IndexOffset=A6.Op1.Disp Then Begin
+    Procs[ProcIdx].Locals[L].Name:=LocalName;
+    Procs[ProcIdx].Locals[L].PascalType:=PT_STRING;
+    Procs[ProcIdx].Locals[L].TypeName:='STRING';
+    Procs[ProcIdx].Locals[L].Size:=256;
+    FoundLocal:=True; Break;
+   End;
+  If(Not FoundLocal)and(Procs[ProcIdx].LocalCount<MAX_LOCALS)Then Begin
+   Inc(Procs[ProcIdx].LocalCount);
+   With Procs[ProcIdx].Locals[Procs[ProcIdx].LocalCount] do Begin
+    Name:=LocalName; TypeName:='STRING'; PascalType:=PT_STRING;
+    Size:=256; Count:=1; IsIndexedMem:=False;
+    IndexOffset:=A6.Op1.Disp; IndexBaseReg:='BP'; IndexIndexReg:='';
+   End;
+  End;
+  NeedRecoveredFormTable:=True;
+  Code:='form_table^[form_count].asm_label := '+FuncName+'('+
+    QuotePascalString(LiteralText)+', '+LocalName+');';
+  SetTranslationForLine(I,Code);
+  For K:=I+1 to I+19 do SetTranslationForLine(K,'');
+  If CountDataVarOffsetReferences(DataVars[VIdx].Name)=1 Then
+   OmitDataVar[VIdx]:=True;
+  Inc(PatternCount); I:=I+20;
+ End;
+ WriteLn('  Resultats String vers champs         : ',PatternCount,
+  ' affectation(s) reconstruite(s).');
+End;
+
 Procedure ProcessTurboPascalConcatThreeStringArgumentPatterns;
 { Forme literal + variable String + literal, construite par 0BFEh/0C7Dh
   puis passee comme un seul parametre FAR a une procedure. }
@@ -12686,6 +12779,8 @@ BEGIN
  ProcessTurboPascalGlobalStringAssignments;
  { Reconstruction des arguments String FAR constants passes aux routines }
  ProcessTurboPascalDirectStringCallPatterns;
+ { Reconstruction des retours String copies dans un champ de structure }
+ ProcessTurboPascalStringFunctionFieldAssignments;
  { Reconstruction de literal + String + literal passes comme argument }
  ProcessTurboPascalConcatThreeStringArgumentPatterns;
  { Reconstruction de literal + String passes comme un seul argument }
