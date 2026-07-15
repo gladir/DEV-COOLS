@@ -5879,6 +5879,8 @@ Begin
   (U='STRLEN');
 End;
 
+Function IsRuntimeFarCall(Line:LongInt;RuntimeOffset:Word):Boolean; Forward;
+
 Function TranslateCALL(Var AsmL:TAsmLine;LineIdx:LongInt;
  ProcIdx:Integer):String;
 { CALL label -> NomProc(args) ou NomProc si pas de parametres.
@@ -5895,6 +5897,7 @@ Var
  Conv:Byte;
  R:String;
  PascalName:String;
+ K:LongInt;
 Begin
  { CALL FAR avec adresse absolue: non traduisible, generer un commentaire }
  If AsmL.Op1.OpType=OT_FAR Then Begin
@@ -5904,8 +5907,26 @@ Begin
  End;
  Target:=OperandToExpr(AsmL.Op1,ProcIdx);
  TargetProc:=FindProcByName(Target);
+ { Une cible NEAR numerique est nommee sub_xxxx par la detection des
+   procedures implicites. Ne jamais laisser OperandToExpr produire un faux
+   identificateur Pascal tel que "$04F5". }
+ If(TargetProc=0)and
+   (AsmL.Op1.OpType in [OT_IMM8,OT_IMM16,OT_IMM32])Then Begin
+  Target:='sub_'+HexWord(Word(AsmL.Op1.Imm));
+  TargetProc:=FindProcByName(Target);
+ End;
  R:='';
  If TargetProc>0 Then Begin
+  { Les petites routines d'emission qui aboutissent au WriteLn du runtime
+    utilisent AX uniquement pour preparer l'ecriture. Elles ne retournent
+    pas de valeur Pascal (par exemple sub_04F5 = EmitBlank). }
+  If Procs[TargetProc].ParamCount=0 Then
+   For K:=Procs[TargetProc].StartLine to Procs[TargetProc].EndLine do
+    If IsRuntimeFarCall(K,$0840)Then Begin
+     Procs[TargetProc].IsFunction:=False;
+     Procs[TargetProc].UsesAX:=False;
+     Break;
+    End;
   { Procedure connue : utiliser le nombre de parametres declares }
   ArgCount:=Procs[TargetProc].ParamCount;
   Conv:=Procs[TargetProc].Convention;
