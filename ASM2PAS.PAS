@@ -11185,7 +11185,13 @@ Begin
     Expr:='('+Expr+' + '+OperandToExpr(A.Op2,ProcIdx)+')'
    Else If HaveExpr and(UpCaseStr(A.Mnemonic)='SUB')and
      (UpCaseStr(A.Op1.Reg)='AX')Then
-    Expr:='('+Expr+' - '+OperandToExpr(A.Op2,ProcIdx)+')'
+   Expr:='('+Expr+' - '+OperandToExpr(A.Op2,ProcIdx)+')'
+   Else If HaveExpr and(UpCaseStr(A.Mnemonic)='INC')and
+     (UpCaseStr(A.Op1.Reg)='AX')Then
+    Expr:='('+Expr+' + 1)'
+   Else If HaveExpr and(UpCaseStr(A.Mnemonic)='DEC')and
+     (UpCaseStr(A.Op1.Reg)='AX')Then
+    Expr:='('+Expr+' - 1)'
    Else If HaveExpr and(UpCaseStr(A.Mnemonic)='SHL')and
      (UpCaseStr(A.Op1.Reg)='AX')Then
     Expr:='('+Expr+' shl '+OperandToExpr(A.Op2,ProcIdx)+')'
