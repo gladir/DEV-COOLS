@@ -11788,10 +11788,10 @@ Procedure ProcessTurboPascalConcatEmitPatterns;
     literal + FonctionEntiere(valeur) + suffixe
   puis passee directement a une procedure d'emission. }
 Var
- I,K,L,VIdx,SuffixIdx,ProcIdx,ConvProc,EmitProc,PatternCount:LongInt;
+ I,K,VIdx,SuffixIdx,ProcIdx,ConvProc,EmitProc,PatternCount,SuffixAddr:LongInt;
  A0,A3,A7,A10,A11,A13,A17:TAsmLine;
  PrefixExpr,SuffixExpr,ValueExpr,ConvName,EmitName,Code:String;
- Valid,FoundLocal:Boolean;
+ Valid:Boolean;
 Begin
  PatternCount:=0;
  I:=0;
@@ -11826,37 +11826,22 @@ Begin
   VIdx:=FindDataVarByName(A3.Op2.LabelName);
   ConvName:=OperandToExpr(A11.Op1,FindProcForLine(I));
   EmitName:=OperandToExpr(A17.Op1,FindProcForLine(I));
-  If(FindProcByName(ConvName)=0)and(A11.Op1.OpType=OT_LABEL)Then
-   ConvName:='sub_'+HexWord(Word(HexToInt(A11.Op1.LabelName)));
-  If(FindProcByName(EmitName)=0)and(A17.Op1.OpType=OT_LABEL)Then
-   EmitName:='sub_'+HexWord(Word(HexToInt(A17.Op1.LabelName)));
+  If(A11.Op1.OpType=OT_LABEL)and
+    (Copy(UpCaseStr(A11.Op1.LabelName),1,4)<>'SUB_')Then
+   ConvName:='sub_'+HexWord(Word(HexToInt(A11.Op1.LabelName)))
+  Else If A11.Op1.OpType in [OT_IMM8,OT_IMM16,OT_IMM32]Then
+   ConvName:='sub_'+HexWord(Word(A11.Op1.Imm));
+  If(A17.Op1.OpType=OT_LABEL)and
+    (Copy(UpCaseStr(A17.Op1.LabelName),1,4)<>'SUB_')Then
+   EmitName:='sub_'+HexWord(Word(HexToInt(A17.Op1.LabelName)))
+  Else If A17.Op1.OpType in [OT_IMM8,OT_IMM16,OT_IMM32]Then
+   EmitName:='sub_'+HexWord(Word(A17.Op1.Imm));
   ConvProc:=FindProcByName(ConvName);
   EmitProc:=FindProcByName(EmitName);
   If(VIdx=0)or(Not IsLengthPrefixedString(VIdx))or
     (ConvProc=0)or(EmitProc=0)Then Begin Inc(I); Continue; End;
 
   ProcIdx:=FindProcForLine(I);
-  { Le mot local utilise pour le deplacement BP est une variable Integer. }
-  If(A10.Op1.OpType=OT_MEM)and(UpCaseStr(A10.Op1.BaseReg)='BP')and
-    (A10.Op1.Disp<0)and(ProcIdx>0)Then Begin
-   FoundLocal:=False;
-   For L:=1 to Procs[ProcIdx].LocalCount do
-    If Procs[ProcIdx].Locals[L].IndexOffset=A10.Op1.Disp Then Begin
-     Procs[ProcIdx].Locals[L].Name:='bp';
-     Procs[ProcIdx].Locals[L].PascalType:=PT_INTEGER;
-     Procs[ProcIdx].Locals[L].TypeName:='INTEGER';
-     FoundLocal:=True;
-     Break;
-    End;
-   If(Not FoundLocal)and(Procs[ProcIdx].LocalCount<MAX_LOCALS)Then Begin
-    Inc(Procs[ProcIdx].LocalCount);
-    With Procs[ProcIdx].Locals[Procs[ProcIdx].LocalCount] do Begin
-     Name:='bp'; TypeName:='INTEGER'; PascalType:=PT_INTEGER;
-     Size:=2; Count:=1; IsIndexedMem:=False;
-     IndexOffset:=A10.Op1.Disp; IndexBaseReg:='BP'; IndexIndexReg:='';
-    End;
-   End;
-  End;
   PrefixExpr:=QuotePascalString(DataVars[VIdx].Elements[2].StrValue);
   ValueExpr:=OperandToExpr(A10.Op1,ProcIdx);
   SuffixIdx:=0;
@@ -11866,8 +11851,13 @@ Begin
     Inc(I); Continue;
    End;
    SuffixExpr:=DataVars[SuffixIdx].Elements[2].StrValue;
-  End Else If Not ShortStringAtImageOffset(A13.Op2.Imm,SuffixExpr)Then Begin
-   Inc(I); Continue;
+  End Else Begin
+   SuffixAddr:=A13.Op2.Imm;
+   If(A13.Op2.OpType=OT_LABEL)and(A13.Op2.LabelName<>'')Then
+    SuffixAddr:=HexToInt(A13.Op2.LabelName);
+   If Not ShortStringAtImageOffset(SuffixAddr,SuffixExpr)Then Begin
+    Inc(I); Continue;
+   End;
   End;
   Code:=EmitName+'('+PrefixExpr+' + '+ConvName+'('+ValueExpr+') + '+
     QuotePascalString(SuffixExpr)+');';
