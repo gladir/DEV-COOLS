@@ -591,11 +591,13 @@ Var
  DataVars:Array[1..MAX_DATAVARS] of TDataVar;
  DataVarCount:Integer;
  OmitDataVar:Array[1..MAX_DATAVARS] of Boolean;
- NeedComparedString:Boolean;
  NeedAsmText:Boolean;
  RecoveredGlobalStringCount:Integer;
  RecoveredGlobalStringAddr:Array[1..256] of LongInt;
  RecoveredGlobalNames:Array[1..256] of String;
+ RecoveredKeywordCount:Integer;
+ RecoveredKeywordNames:Array[1..256] of String;
+ RecoveredKeywordValues:Array[1..256] of LongInt;
  { Labels optimises (ne pas emettre dans ProcessBodyGeneration) }
  OptLabels:Array[1..MAX_OPT_LABELS] of String;
  OptLabelCount:Integer;
@@ -8545,6 +8547,12 @@ Begin
    WriteLn(OutFile,'  ',Symbols[I].Name,' = ',Symbols[I].Offset,';');
    Inc(ConstCount);
   End;
+ For I:=1 to RecoveredKeywordCount do Begin
+  If Not HasConst Then Begin WriteLn(OutFile,'Const'); HasConst:=True; End;
+  WriteLn(OutFile,'  ',RecoveredKeywordNames[I],' = ',
+   RecoveredKeywordValues[I],';');
+  Inc(ConstCount);
+ End;
  { Donnees en lecture seule (section .CONST) }
  For I:=1 to DataVarCount do Begin
   If DataVars[I].Section<>SEC_CONST Then Continue;
@@ -8630,11 +8638,6 @@ Begin
  WriteLn(OutFile,'  Mem : Array[0..65535] of Byte;');
  WriteLn(OutFile,'  MemW : Array[0..32767] of Word absolute Mem;');
  Inc(VarCount,4);
- If NeedComparedString Then Begin
-  WriteLn(OutFile,'  { Operande gauche d''une comparaison de shortstrings }');
-  WriteLn(OutFile,'  ComparedString : String;');
-  Inc(VarCount);
- End;
  For I:=1 to RecoveredGlobalStringCount do Begin
   WriteLn(OutFile,'  ',RecoveredGlobalNames[I],' : String;');
   Inc(VarCount);
@@ -11245,75 +11248,85 @@ Begin
  End;
 End;
 
+Function AddRecoveredKeyword(Const Text:String;Value:LongInt):String;
+Var I:Integer; N:String; C:Char;
+Begin
+ N:='KW_';
+ For I:=1 to Length(Text)do Begin
+  C:=UpCase(Text[I]);
+  If C in ['A'..'Z','0'..'9','_']Then N:=N+C Else N:=N+'_';
+ End;
+ For I:=1 to RecoveredKeywordCount do
+  If RecoveredKeywordNames[I]=N Then Begin AddRecoveredKeyword:=N; Exit; End;
+ If RecoveredKeywordCount<256 Then Begin
+  Inc(RecoveredKeywordCount);
+  RecoveredKeywordNames[RecoveredKeywordCount]:=N;
+  RecoveredKeywordValues[RecoveredKeywordCount]:=Value;
+ End;
+ AddRecoveredKeyword:=N;
+End;
+
 Procedure ProcessTurboPascalStringCompareLadders;
-{ Reconstruit une table de comparaisons successives :
-    MOV DI,OFFSET chaine / PUSH CS / PUSH DI / CALL 0CEFh
-    JNZ suivant / MOV AX,valeur / JMP sortie_commune. }
+{ Reconnait les comparaisons Turbo Pascal d'un parametre String FAR :
+    LES [BP+4],DI / PUSH ES:DI / MOV DI,OFFSET texte / PUSH CS:DI
+    CALL 0CEFh / JNZ suivant / MOV AX,valeur / JMP sortie. }
 Var
- I,J,K,VIdx,ClauseCount,PatternCount,TotalClauses:LongInt;
+ I,J,K,VIdx,ProcIdx,ClauseCount,PatternCount,TotalClauses,Value:LongInt;
  A,B:TAsmLine;
- ExitLabel,S:String;
+ ExitLabel,Text,ConstName,Code:String;
  Valid:Boolean;
 Begin
- PatternCount:=0;
- TotalClauses:=0;
- I:=0;
- While I+20<SrcLineCount do Begin
-  J:=I;
-  ClauseCount:=0;
-  ExitLabel:='';
-  While J+6<SrcLineCount do Begin
+ PatternCount:=0; TotalClauses:=0; I:=0;
+ While I+29<SrcLineCount do Begin
+  J:=I; ClauseCount:=0; ExitLabel:='';
+  While J+9<SrcLineCount do Begin
    ParseInstructionLine(J,A);
-   Valid:=(UpCaseStr(A.Mnemonic)='MOV')and
+   Valid:=(UpCaseStr(A.Mnemonic)='LES')and(A.Op1.OpType=OT_MEM)and
+    (UpCaseStr(A.Op1.BaseReg)='BP')and(A.Op1.Disp=4)and
+    IsSimpleRegInstruction(J+1,'PUSH','ES','')and
+    IsSimpleRegInstruction(J+2,'PUSH','DI','');
+   ParseInstructionLine(J+3,A);
+   Valid:=Valid and(UpCaseStr(A.Mnemonic)='MOV')and
     (UpCaseStr(A.Op1.Reg)='DI')and(A.Op2.OpType=OT_OFFSET)and
-    IsSimpleRegInstruction(J+1,'PUSH','CS','')and
-    IsSimpleRegInstruction(J+2,'PUSH','DI','')and
-    IsRuntimeFarCall(J+3,$0CEF);
+    IsSimpleRegInstruction(J+4,'PUSH','CS','')and
+    IsSimpleRegInstruction(J+5,'PUSH','DI','')and
+    IsRuntimeFarCall(J+6,$0CEF);
    If Not Valid Then Break;
    VIdx:=FindDataVarByName(A.Op2.LabelName);
    If(VIdx=0)or(Not IsLengthPrefixedString(VIdx))Then Break;
-   ParseInstructionLine(J+4,B);
+   ParseInstructionLine(J+7,B);
    If(UpCaseStr(B.Mnemonic)<>'JNZ')and(UpCaseStr(B.Mnemonic)<>'JNE')Then Break;
-   ParseInstructionLine(J+5,B);
+   ParseInstructionLine(J+8,B);
    If(UpCaseStr(B.Mnemonic)<>'MOV')or(UpCaseStr(B.Op1.Reg)<>'AX')or
      (Not(B.Op2.OpType in [OT_IMM8,OT_IMM16,OT_IMM32]))Then Break;
-   ParseInstructionLine(J+6,A);
-   If UpCaseStr(A.Mnemonic)<>'JMP' Then Break;
-   S:=OperandToExpr(A.Op1,0);
-   If S='' Then Break;
-   If ExitLabel='' Then ExitLabel:=S
-   Else If UpCaseStr(ExitLabel)<>UpCaseStr(S)Then Break;
-   Inc(ClauseCount);
-   J:=J+7;
+   ParseInstructionLine(J+9,A);
+   If UpCaseStr(A.Mnemonic)<>'JMP'Then Break;
+   Code:=OperandToExpr(A.Op1,0);
+   If ExitLabel=''Then ExitLabel:=Code
+   Else If UpCaseStr(ExitLabel)<>UpCaseStr(Code)Then Break;
+   Inc(ClauseCount); J:=J+10;
   End;
   If ClauseCount<3 Then Begin Inc(I); Continue; End;
-
-  NeedComparedString:=True;
+  ProcIdx:=FindProcForLine(I);
+  If ProcIdx=0 Then Begin Inc(I); Continue; End;
+  Procs[ProcIdx].ParamCount:=1;
+  With Procs[ProcIdx].Params[1] do Begin
+   Name:='s'; TypeName:='STRING'; PascalType:=PT_STRING; Size:=4;
+  End;
   J:=I;
   For K:=1 to ClauseCount do Begin
-   ParseInstructionLine(J,A);
+   ParseInstructionLine(J+3,A);
    VIdx:=FindDataVarByName(A.Op2.LabelName);
-   ParseInstructionLine(J+5,B);
-   S:='If ComparedString = '+
-      QuotePascalString(DataVars[VIdx].Elements[2].StrValue)+
-      ' Then Begin'+#13#10+
-      '   RegAX := '+OperandToExpr(B.Op2,0)+';'+#13#10+
-      '   Exit;'+#13#10+
-      '  End;';
-   SetTranslationForLine(J,S);
-   SetTranslationForLine(J+1,'');
-   SetTranslationForLine(J+2,'');
-   SetTranslationForLine(J+3,'');
-   SetTranslationForLine(J+4,'');
-   SetTranslationForLine(J+5,'');
-   SetTranslationForLine(J+6,'');
-   If CountDataVarOffsetReferences(DataVars[VIdx].Name)=1 Then
-    OmitDataVar[VIdx]:=True;
-   J:=J+7;
+   Text:=DataVars[VIdx].Elements[2].StrValue;
+   ParseInstructionLine(J+8,B); Value:=B.Op2.Imm;
+   ConstName:=AddRecoveredKeyword(Text,Value);
+   Code:='If s = '+QuotePascalString(Text)+' Then Begin '+
+    Procs[ProcIdx].Name+' := '+ConstName+'; Exit; End;';
+   SetTranslationForLine(J,Code);
+   For Value:=J+1 to J+9 do SetTranslationForLine(Value,'');
+   J:=J+10;
   End;
-  Inc(PatternCount);
-  Inc(TotalClauses,ClauseCount);
-  I:=J;
+  Inc(PatternCount); Inc(TotalClauses,ClauseCount); I:=J;
  End;
  WriteLn('  Reconstruction comparaisons de shortstrings : ',PatternCount,
   ' table(s), ',TotalClauses,' comparaison(s).');
