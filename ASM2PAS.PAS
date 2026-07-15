@@ -10867,6 +10867,33 @@ Begin
   RecoveredGlobalNames[RecoveredGlobalStringCount];
 End;
 
+Function RenameRecoveredGlobalString(Addr:LongInt;
+ Const SemanticName:String):String;
+{ Attribue un nom semantique seulement lorsqu'un motif de code l'a prouve.
+  Propage aussi le renommage aux traductions deja construites. Aucune
+  adresse propre a un executable n'est connue ici. }
+Var
+ I,J:Integer;
+ OldName,Code:String;
+Begin
+ OldName:=RecoveredGlobalStringName(Addr,'');
+ RenameRecoveredGlobalString:=OldName;
+ For I:=1 to RecoveredGlobalStringCount do
+  If(RecoveredGlobalStringAddr[I]<>Addr)and
+    (UpCaseStr(RecoveredGlobalNames[I])=UpCaseStr(SemanticName))Then Exit;
+ For I:=1 to RecoveredGlobalStringCount do
+  If RecoveredGlobalStringAddr[I]=Addr Then Begin
+   RecoveredGlobalNames[I]:=SemanticName;
+   For J:=0 to TranslationCount-1 do Begin
+    Code:=Translations[J].PascalCode;
+    While Pos(OldName,Code)>0 do Code:=ReplaceInStr(Code,OldName,SemanticName);
+    Translations[J].PascalCode:=Code;
+   End;
+   RenameRecoveredGlobalString:=SemanticName;
+   Exit;
+  End;
+End;
+
 Procedure ProcessTurboPascalGlobalStringAssignments;
 { MOV DI,OFFSET literal / PUSH CS:DI / MOV DI,adresse / PUSH DS:DI /
   MOV AX,255 / PUSH AX / CALL 0C18h est une affectation de shortstring
@@ -11299,6 +11326,112 @@ Begin
  End;
  WriteLn('  Concat String vers emission          : ',PatternCount,
   ' expression(s) reconstruite(s).');
+End;
+
+Function AddRecoveredKeyword(Const Text:String;Value:LongInt):String; Forward;
+
+Procedure ProcessTurboPascalTokenOptionWhilePatterns;
+{ Reconnait la boucle d'options du parseur : trois appels TokIsKw suivis de
+  trois comparaisons de cur_tok_str, Consume, puis saut arriere. }
+Var
+ I,K,J,V1,V2,V3,TokProc,ConsumeProc,PatternCount:LongInt;
+ A0,A2,A5,A7,A10,A12,A15,A18,A21,A23,A26,A29,A31,A34,A37,A39,A40:TAsmLine;
+ TokName,ConsumeName,CurTokName,S1,S2,S3,C1,C2,C3,Code:String;
+ Valid:Boolean;
+ ReplacedRefs:Array[1..MAX_DATAVARS] of Integer;
+Begin
+ FillChar(ReplacedRefs,SizeOf(ReplacedRefs),0);
+ PatternCount:=0; I:=0;
+ While I+40<SrcLineCount do Begin
+  ParseInstructionLine(I,A0); ParseInstructionLine(I+2,A2);
+  ParseInstructionLine(I+5,A5); ParseInstructionLine(I+7,A7);
+  ParseInstructionLine(I+10,A10); ParseInstructionLine(I+12,A12);
+  ParseInstructionLine(I+15,A15); ParseInstructionLine(I+18,A18);
+  ParseInstructionLine(I+21,A21); ParseInstructionLine(I+23,A23);
+  ParseInstructionLine(I+26,A26); ParseInstructionLine(I+29,A29);
+  ParseInstructionLine(I+31,A31); ParseInstructionLine(I+34,A34);
+  ParseInstructionLine(I+37,A37); ParseInstructionLine(I+39,A39);
+  ParseInstructionLine(I+40,A40);
+  Valid:=(UpCaseStr(A0.Mnemonic)='MOV')and(UpCaseStr(A0.Op1.Reg)='AX')and
+    IsSimpleRegInstruction(I+1,'PUSH','AX','')and
+    (UpCaseStr(A2.Mnemonic)='CALL')and
+    IsSimpleRegInstruction(I+3,'OR','AX','AX')and
+    ((UpCaseStr(A5.Mnemonic)='MOV')and(UpCaseStr(A5.Op1.Reg)='AX'))and
+    IsSimpleRegInstruction(I+6,'PUSH','AX','')and
+    (UpCaseStr(A7.Mnemonic)='CALL')and
+    IsSimpleRegInstruction(I+8,'OR','AX','AX')and
+    (UpCaseStr(A10.Mnemonic)='MOV')and(UpCaseStr(A10.Op1.Reg)='AX')and
+    IsSimpleRegInstruction(I+11,'PUSH','AX','')and
+    (UpCaseStr(A12.Mnemonic)='CALL')and
+    IsSimpleRegInstruction(I+13,'OR','AX','AX')and
+    (UpCaseStr(A15.Mnemonic)='MOV')and(UpCaseStr(A15.Op1.Reg)='DI')and
+    IsSimpleRegInstruction(I+16,'PUSH','DS','')and
+    IsSimpleRegInstruction(I+17,'PUSH','DI','')and
+    (UpCaseStr(A18.Mnemonic)='MOV')and(A18.Op2.OpType=OT_OFFSET)and
+    IsSimpleRegInstruction(I+19,'PUSH','CS','')and
+    IsSimpleRegInstruction(I+20,'PUSH','DI','')and
+    IsRuntimeFarCall(I+21,$0CEF)and
+    (UpCaseStr(A23.Mnemonic)='MOV')and(UpCaseStr(A23.Op1.Reg)='DI')and
+    (A23.Op2.Imm=A15.Op2.Imm)and
+    IsSimpleRegInstruction(I+24,'PUSH','DS','')and
+    IsSimpleRegInstruction(I+25,'PUSH','DI','')and
+    (UpCaseStr(A26.Mnemonic)='MOV')and(A26.Op2.OpType=OT_OFFSET)and
+    IsSimpleRegInstruction(I+27,'PUSH','CS','')and
+    IsSimpleRegInstruction(I+28,'PUSH','DI','')and
+    IsRuntimeFarCall(I+29,$0CEF)and
+    (UpCaseStr(A31.Mnemonic)='MOV')and(UpCaseStr(A31.Op1.Reg)='DI')and
+    (A31.Op2.Imm=A15.Op2.Imm)and
+    IsSimpleRegInstruction(I+32,'PUSH','DS','')and
+    IsSimpleRegInstruction(I+33,'PUSH','DI','')and
+    (UpCaseStr(A34.Mnemonic)='MOV')and(A34.Op2.OpType=OT_OFFSET)and
+    IsSimpleRegInstruction(I+35,'PUSH','CS','')and
+    IsSimpleRegInstruction(I+36,'PUSH','DI','')and
+    IsRuntimeFarCall(I+37,$0CEF)and
+    (UpCaseStr(A39.Mnemonic)='CALL')and
+    (UpCaseStr(A40.Mnemonic)='JMP');
+  If Not Valid Then Begin Inc(I); Continue; End;
+  { Les trois tests doivent appeler la meme fonction TokIsKw. }
+  TokName:=OperandToExpr(A2.Op1,FindProcForLine(I));
+  If(UpCaseStr(OperandToExpr(A7.Op1,FindProcForLine(I)))<>UpCaseStr(TokName))or
+    (UpCaseStr(OperandToExpr(A12.Op1,FindProcForLine(I)))<>UpCaseStr(TokName))Then Begin
+   Inc(I); Continue;
+  End;
+  ConsumeName:=OperandToExpr(A39.Op1,FindProcForLine(I));
+  TokProc:=FindProcByName(TokName); ConsumeProc:=FindProcByName(ConsumeName);
+  V1:=FindDataVarByName(A18.Op2.LabelName);
+  V2:=FindDataVarByName(A26.Op2.LabelName);
+  V3:=FindDataVarByName(A34.Op2.LabelName);
+  If(TokProc=0)or(ConsumeProc=0)or(V1=0)or(V2=0)or(V3=0)or
+    (Not IsLengthPrefixedString(V1))or(Not IsLengthPrefixedString(V2))or
+    (Not IsLengthPrefixedString(V3))Then Begin Inc(I); Continue; End;
+  S1:=DataVars[V1].Elements[2].StrValue;
+  S2:=DataVars[V2].Elements[2].StrValue;
+  S3:=DataVars[V3].Elements[2].StrValue;
+  C1:=AddRecoveredKeyword('LEFT',A0.Op2.Imm);
+  C2:=AddRecoveredKeyword('RIGHT',A5.Op2.Imm);
+  C3:=AddRecoveredKeyword('NO-GAPS',A10.Op2.Imm);
+  { Le role cur_tok_str est deduit des trois comparaisons de la meme
+    variable dans cette boucle du tokenizer, jamais de son adresse. }
+  CurTokName:=RenameRecoveredGlobalString(A15.Op2.Imm,'cur_tok_str');
+  Procs[ConsumeProc].IsFunction:=False;
+  Procs[ConsumeProc].UsesAX:=False;
+  Code:='While ('+TokName+'('+C1+') <> 0) Or ('+TokName+'('+C2+
+    ') <> 0) Or ('+TokName+'('+C3+') <> 0) Or'+#13#10+
+    '        ('+CurTokName+' = '+QuotePascalString(S1)+') Or'+#13#10+
+    '        ('+CurTokName+' = '+QuotePascalString(S2)+') Or'+#13#10+
+    '        ('+CurTokName+' = '+QuotePascalString(S3)+') Do '+ConsumeName+';'+
+    #13#10+'  Exit;';
+  SetTranslationForLine(I,Code);
+  For K:=I+1 to I+40 do SetTranslationForLine(K,'');
+  Inc(ReplacedRefs[V1]); Inc(ReplacedRefs[V2]); Inc(ReplacedRefs[V3]);
+  Inc(PatternCount); I:=I+41;
+ End;
+ For J:=1 to DataVarCount do
+  If(ReplacedRefs[J]>0)and
+    (CountDataVarOffsetReferences(DataVars[J].Name)=ReplacedRefs[J])Then
+   OmitDataVar[J]:=True;
+ WriteLn('  While options token/String           : ',PatternCount,
+  ' boucle(s) reconstruite(s).');
 End;
 
 Procedure ProcessTurboPascalConcatLocalEmitPatterns;
@@ -13011,6 +13144,8 @@ BEGIN
  ProcessTurboPascalConcatStringArgumentPatterns;
  { Reconstruction des concatenations temporaires passees aux emetteurs }
  ProcessTurboPascalConcatEmitPatterns;
+ { Reconstruction des While combinant TokIsKw et cur_tok_str }
+ ProcessTurboPascalTokenOptionWhilePatterns;
  { Reconstruction de literal + chaine locale vers Emit/EmitI }
  ProcessTurboPascalConcatLocalEmitPatterns;
  { Reconstruction de literal + entier + suffixe + LongInt vers EmitI }
