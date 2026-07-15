@@ -12089,6 +12089,11 @@ Begin
   If Not Valid Then Begin Inc(I); Continue; End;
   VIdx:=FindDataVarByName(A3.Op2.LabelName);
   EmitName:=OperandToExpr(A11.Op1,FindProcForLine(I));
+  If(A11.Op1.OpType=OT_LABEL)and
+    (Copy(UpCaseStr(A11.Op1.LabelName),1,4)<>'SUB_')Then
+   EmitName:='sub_'+HexWord(Word(HexToInt(A11.Op1.LabelName)))
+  Else If A11.Op1.OpType in [OT_IMM8,OT_IMM16,OT_IMM32]Then
+   EmitName:='sub_'+HexWord(Word(A11.Op1.Imm));
   EmitProc:=FindProcByName(EmitName);
   If(VIdx=0)or(Not IsLengthPrefixedString(VIdx))or(EmitProc=0)or
     (Procs[EmitProc].ParamCount<>1)Then Begin Inc(I); Continue; End;
