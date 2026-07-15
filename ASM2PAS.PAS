@@ -595,6 +595,8 @@ Var
  DataVarOffsetRefCacheBuilt:Boolean;
  NeedAsmText:Boolean;
  NeedRecoveredFormTable:Boolean;
+ NeedRecoveredSymTable:Boolean;
+ NeedRecoveredNumberHelpers:Boolean;
  RecoveredGlobalStringCount:Integer;
  RecoveredGlobalStringAddr:Array[1..256] of LongInt;
  RecoveredGlobalNames:Array[1..256] of String;
@@ -8578,6 +8580,15 @@ Begin
   WriteLn(OutFile,'  PRecoveredFormTable = ^TRecoveredFormTable;');
   Inc(TypeCount,3);
  End;
+ If NeedRecoveredSymTable Then Begin
+  If Not HasType Then Begin WriteLn(OutFile,'Type'); HasType:=True; End;
+  WriteLn(OutFile,'  TRecoveredSymEntry = Record');
+  WriteLn(OutFile,'    init_num : LongInt;');
+  WriteLn(OutFile,'  End;');
+  WriteLn(OutFile,'  TRecoveredSymTable = Array[0..255] of TRecoveredSymEntry;');
+  WriteLn(OutFile,'  PRecoveredSymTable = ^TRecoveredSymTable;');
+  Inc(TypeCount,3);
+ End;
  If HasType Then WriteLn(OutFile);
 
  { === Section Const === }
@@ -8691,6 +8702,11 @@ Begin
  If NeedRecoveredFormTable Then Begin
   WriteLn(OutFile,'  form_table : PRecoveredFormTable;');
   WriteLn(OutFile,'  form_count : Integer;');
+  Inc(VarCount,2);
+ End;
+ If NeedRecoveredSymTable Then Begin
+  WriteLn(OutFile,'  sym_table : PRecoveredSymTable;');
+  WriteLn(OutFile,'  sym_idx : Integer;');
   Inc(VarCount,2);
  End;
  If Mode32 or(CpuLevel>=CPU_386)Then Begin
@@ -9026,6 +9042,17 @@ Begin
  FuncCount:=0;
  InstrInProc:=0;
  InstrInMain:=0;
+
+ If NeedRecoveredNumberHelpers Then Begin
+  WriteLn(OutFile,'Function ItoS(n : LongInt) : String;');
+  WriteLn(OutFile,'Var s : String;');
+  WriteLn(OutFile,'Begin Str(n, s); ItoS := s; End;');
+  WriteLn(OutFile);
+  WriteLn(OutFile,'Function ItoSI(n : Integer) : String;');
+  WriteLn(OutFile,'Var s : String;');
+  WriteLn(OutFile,'Begin Str(n, s); ItoSI := s; End;');
+  WriteLn(OutFile);
+ End;
 
  { === Generation des procedures et fonctions === }
  For I:=1 to ProcCount do Begin
@@ -11274,6 +11301,111 @@ Begin
   ' expression(s) reconstruite(s).');
 End;
 
+Procedure ProcessTurboPascalDualNumericConcatEmitPatterns;
+{ Reconnait :
+    EmitI(litteral + ItoSI(bpoff) + suffixe +
+          ItoS(sym_table^[sym_idx].init_num));
+  Le champ LongInt est passe mot haut/mot bas apres le calcul de l'entree
+  de 190 octets dans la table des symboles. }
+Var
+ I,K,VIdx,ProcIdx,PatternCount:LongInt;
+ A0,A3,A7,A10,A11,A13,A17,A20,A21,A22,A23,A24,A25,A26,A28:TAsmLine;
+ PrefixText,SuffixText,ConvIntName,ConvLongName,EmitName,Code:String;
+ Valid,Found:Boolean;
+
+ Procedure NameLocal(Offset:LongInt;Const NewName,ATypeName:String;
+  APascalType:Byte;ASize:Word);
+ Var J:Integer;
+ Begin
+  If ProcIdx=0 Then Exit;
+  Found:=False;
+  For J:=1 to Procs[ProcIdx].LocalCount do
+   If Procs[ProcIdx].Locals[J].IndexOffset=Offset Then Begin
+    Procs[ProcIdx].Locals[J].Name:=NewName;
+    Procs[ProcIdx].Locals[J].TypeName:=ATypeName;
+    Procs[ProcIdx].Locals[J].PascalType:=APascalType;
+    Procs[ProcIdx].Locals[J].Size:=ASize;
+    Found:=True; Break;
+   End;
+  If(Not Found)and(Procs[ProcIdx].LocalCount<MAX_LOCALS)Then Begin
+   Inc(Procs[ProcIdx].LocalCount);
+   With Procs[ProcIdx].Locals[Procs[ProcIdx].LocalCount] do Begin
+    Name:=NewName; TypeName:=ATypeName; PascalType:=APascalType;
+    Size:=ASize; Count:=1; IsIndexedMem:=False;
+    IndexOffset:=Offset; IndexBaseReg:='BP'; IndexIndexReg:='';
+   End;
+  End;
+ End;
+
+Begin
+ PatternCount:=0; I:=0;
+ While I+28<SrcLineCount do Begin
+  ParseInstructionLine(I,A0); ParseInstructionLine(I+3,A3);
+  ParseInstructionLine(I+7,A7); ParseInstructionLine(I+10,A10);
+  ParseInstructionLine(I+11,A11); ParseInstructionLine(I+13,A13);
+  ParseInstructionLine(I+17,A17); ParseInstructionLine(I+20,A20);
+  ParseInstructionLine(I+21,A21); ParseInstructionLine(I+22,A22);
+  ParseInstructionLine(I+23,A23); ParseInstructionLine(I+24,A24);
+  ParseInstructionLine(I+25,A25); ParseInstructionLine(I+26,A26);
+  ParseInstructionLine(I+28,A28);
+  Valid:=(UpCaseStr(A0.Mnemonic)='LEA')and(A0.Op1.OpType=OT_MEM)and
+    IsSimpleRegInstruction(I+1,'PUSH','SS','')and
+    IsSimpleRegInstruction(I+2,'PUSH','DI','')and
+    (UpCaseStr(A3.Mnemonic)='MOV')and(A3.Op2.OpType=OT_OFFSET)and
+    IsSimpleRegInstruction(I+4,'PUSH','CS','')and
+    IsSimpleRegInstruction(I+5,'PUSH','DI','')and
+    IsRuntimeFarCall(I+6,$0BFE)and
+    (UpCaseStr(A7.Mnemonic)='LEA')and(A7.Op1.OpType=OT_MEM)and
+    IsSimpleRegInstruction(I+8,'PUSH','SS','')and
+    IsSimpleRegInstruction(I+9,'PUSH','DI','')and
+    (UpCaseStr(A10.Mnemonic)='PUSH')and(A10.Op1.OpType=OT_MEM)and
+    (UpCaseStr(A11.Mnemonic)='CALL')and
+    IsRuntimeFarCall(I+12,$0C7D)and
+    (UpCaseStr(A13.Mnemonic)='MOV')and(UpCaseStr(A13.Op1.Reg)='DI')and
+    IsSimpleRegInstruction(I+14,'PUSH','CS','')and
+    IsSimpleRegInstruction(I+15,'PUSH','DI','')and
+    IsRuntimeFarCall(I+16,$0C7D)and
+    (UpCaseStr(A17.Mnemonic)='LEA')and(A17.Op1.OpType=OT_MEM)and
+    IsSimpleRegInstruction(I+18,'PUSH','SS','')and
+    IsSimpleRegInstruction(I+19,'PUSH','DI','')and
+    (UpCaseStr(A20.Mnemonic)='MOV')and(UpCaseStr(A20.Op1.Reg)='AX')and
+    (A20.Op2.Imm=$BE)and(UpCaseStr(A21.Mnemonic)='MUL')and
+    (UpCaseStr(A22.Mnemonic)='LES')and(UpCaseStr(A23.Mnemonic)='ADD')and
+    (UpCaseStr(A23.Op1.Reg)='DI')and(UpCaseStr(A23.Op2.Reg)='AX')and
+    (UpCaseStr(A24.Mnemonic)='PUSH')and(A24.Op1.OpType=OT_MEM)and
+    (A24.Op1.Disp=-6)and(UpCaseStr(A25.Mnemonic)='PUSH')and
+    (A25.Op1.OpType=OT_MEM)and(A25.Op1.Disp=-8)and
+    (UpCaseStr(A26.Mnemonic)='CALL')and IsRuntimeFarCall(I+27,$0C7D)and
+    (UpCaseStr(A28.Mnemonic)='CALL');
+  If Not Valid Then Begin Inc(I); Continue; End;
+  VIdx:=FindDataVarByName(A3.Op2.LabelName);
+  If(VIdx=0)or(Not IsLengthPrefixedString(VIdx))or
+    (Not ShortStringAtImageOffset(A13.Op2.Imm,SuffixText))Then Begin
+   Inc(I); Continue;
+  End;
+  ConvIntName:=OperandToExpr(A11.Op1,FindProcForLine(I));
+  ConvLongName:=OperandToExpr(A26.Op1,FindProcForLine(I));
+  EmitName:=OperandToExpr(A28.Op1,FindProcForLine(I));
+  If(FindProcByName(ConvIntName)=0)or(FindProcByName(ConvLongName)=0)or
+    (FindProcByName(EmitName)=0)Then Begin Inc(I); Continue; End;
+  PrefixText:=DataVars[VIdx].Elements[2].StrValue;
+  ProcIdx:=FindProcForLine(I);
+  NameLocal(A10.Op1.Disp,'bpoff','INTEGER',PT_INTEGER,2);
+  NameLocal(A21.Op1.Disp,'sym_idx','INTEGER',PT_INTEGER,2);
+  NeedRecoveredSymTable:=True;
+  NeedRecoveredNumberHelpers:=True;
+  Code:=EmitName+'('+QuotePascalString(PrefixText)+' + ItoSI(bpoff) + '+
+    QuotePascalString(SuffixText)+' + ItoS(sym_table^[sym_idx].init_num));';
+  SetTranslationForLine(I,Code);
+  For K:=I+1 to I+28 do SetTranslationForLine(K,'');
+  If CountDataVarOffsetReferences(DataVars[VIdx].Name)=1 Then
+   OmitDataVar[VIdx]:=True;
+  Inc(PatternCount); I:=I+29;
+ End;
+ WriteLn('  Concat double numerique vers emission: ',PatternCount,
+  ' expression(s) reconstruite(s).');
+End;
+
 Procedure ProcessTurboPascalNewPatterns;
 { Reconnait l'allocation d'un pointeur FAR par le runtime Turbo Pascal :
     MOV AX,[ptr] / OR AX,[ptr+2] / JNZ deja_alloue
@@ -12832,6 +12964,8 @@ BEGIN
  ProcessTurboPascalConcatStringArgumentPatterns;
  { Reconstruction des concatenations temporaires passees aux emetteurs }
  ProcessTurboPascalConcatEmitPatterns;
+ { Reconstruction de literal + entier + suffixe + LongInt vers EmitI }
+ ProcessTurboPascalDualNumericConcatEmitPatterns;
  { Reconstruction des allocations de pointeurs du runtime Turbo Pascal }
  ProcessTurboPascalNewPatterns;
  { Reconstruction des liberations de pointeurs du runtime Turbo Pascal }
