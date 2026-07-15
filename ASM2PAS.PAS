@@ -593,6 +593,9 @@ Var
  OmitDataVar:Array[1..MAX_DATAVARS] of Boolean;
  NeedComparedString:Boolean;
  NeedAsmText:Boolean;
+ RecoveredGlobalStringCount:Integer;
+ RecoveredGlobalStringAddr:Array[1..256] of LongInt;
+ RecoveredGlobalNames:Array[1..256] of String;
  { Labels optimises (ne pas emettre dans ProcessBodyGeneration) }
  OptLabels:Array[1..MAX_OPT_LABELS] of String;
  OptLabelCount:Integer;
@@ -8632,6 +8635,10 @@ Begin
   WriteLn(OutFile,'  ComparedString : String;');
   Inc(VarCount);
  End;
+ For I:=1 to RecoveredGlobalStringCount do Begin
+  WriteLn(OutFile,'  ',RecoveredGlobalNames[I],' : String;');
+  Inc(VarCount);
+ End;
  If Mode32 or(CpuLevel>=CPU_386)Then Begin
   WriteLn(OutFile,'  SaveRegEAX, SaveRegEBX, SaveRegECX, SaveRegEDX : LongInt;');
   WriteLn(OutFile,'  SaveRegESI, SaveRegEDI, SaveRegEBP, SaveRegESP : LongInt;');
@@ -10756,6 +10763,75 @@ Begin
   ' bloc(s) detecte(s).');
 End;
 
+Function RecoveredGlobalStringName(Addr:LongInt;Const InitialValue:String):String;
+Var I:Integer;
+Begin
+ For I:=1 to RecoveredGlobalStringCount do
+  If RecoveredGlobalStringAddr[I]=Addr Then Begin
+   RecoveredGlobalStringName:=RecoveredGlobalNames[I];
+   Exit;
+  End;
+ If RecoveredGlobalStringCount>=256 Then Begin
+  RecoveredGlobalStringName:='String_'+HexWord(Word(Addr));
+  Exit;
+ End;
+ Inc(RecoveredGlobalStringCount);
+ RecoveredGlobalStringAddr[RecoveredGlobalStringCount]:=Addr;
+ If UpCaseStr(InitialValue)='ZPROGRAM'Then
+  RecoveredGlobalNames[RecoveredGlobalStringCount]:='prog_name'
+ Else
+  RecoveredGlobalNames[RecoveredGlobalStringCount]:=
+   'String_'+HexWord(Word(Addr));
+ RecoveredGlobalStringName:=
+  RecoveredGlobalNames[RecoveredGlobalStringCount];
+End;
+
+Procedure ProcessTurboPascalGlobalStringAssignments;
+{ MOV DI,OFFSET literal / PUSH CS:DI / MOV DI,adresse / PUSH DS:DI /
+  MOV AX,255 / PUSH AX / CALL 0C18h est une affectation de shortstring
+  globale, et non une suite de manipulations de registres. }
+Var
+ I,K,VIdx,PatternCount:LongInt;
+ A0,A3,A6:TAsmLine;
+ S,DestName,Code:String;
+ Valid:Boolean;
+Begin
+ PatternCount:=0;
+ I:=0;
+ While I+8<SrcLineCount do Begin
+  ParseInstructionLine(I,A0);
+  ParseInstructionLine(I+3,A3);
+  ParseInstructionLine(I+6,A6);
+  Valid:=(UpCaseStr(A0.Mnemonic)='MOV')and
+    (UpCaseStr(A0.Op1.Reg)='DI')and(A0.Op2.OpType=OT_OFFSET)and
+    IsSimpleRegInstruction(I+1,'PUSH','CS','')and
+    IsSimpleRegInstruction(I+2,'PUSH','DI','')and
+    (UpCaseStr(A3.Mnemonic)='MOV')and(UpCaseStr(A3.Op1.Reg)='DI')and
+    (A3.Op2.OpType in [OT_IMM8,OT_IMM16,OT_IMM32])and
+    IsSimpleRegInstruction(I+4,'PUSH','DS','')and
+    IsSimpleRegInstruction(I+5,'PUSH','DI','')and
+    (UpCaseStr(A6.Mnemonic)='MOV')and(UpCaseStr(A6.Op1.Reg)='AX')and
+    (A6.Op2.Imm=$FF)and IsSimpleRegInstruction(I+7,'PUSH','AX','')and
+    IsRuntimeFarCall(I+8,$0C18);
+  If Not Valid Then Begin Inc(I); Continue; End;
+  VIdx:=FindDataVarByName(A0.Op2.LabelName);
+  If(VIdx=0)or(Not IsLengthPrefixedString(VIdx))Then Begin
+   Inc(I); Continue;
+  End;
+  S:=DataVars[VIdx].Elements[2].StrValue;
+  DestName:=RecoveredGlobalStringName(A3.Op2.Imm,S);
+  Code:=DestName+' := '+QuotePascalString(S)+';';
+  SetTranslationForLine(I,Code);
+  For K:=I+1 to I+8 do SetTranslationForLine(K,'');
+  If CountDataVarOffsetReferences(DataVars[VIdx].Name)=1 Then
+   OmitDataVar[VIdx]:=True;
+  Inc(PatternCount);
+  I:=I+9;
+ End;
+ WriteLn('  Affectations String globales         : ',PatternCount,
+  ' affectation(s) reconstruite(s).');
+End;
+
 Procedure ProcessTurboPascalDirectStringCallPatterns;
 { Reunit un pointeur FAR CS:offset passe a une routine en un parametre
   String Pascal direct : MOV DI,OFFSET s / PUSH CS / PUSH DI / CALL p
@@ -12447,6 +12523,8 @@ BEGIN
  ProcessTurboPascalFileBlankWriteLnPatterns;
  { Reconstruction des appels d'ecriture du runtime Turbo Pascal }
  ProcessTurboPascalWriteLnPatterns;
+ { Reconstruction des copies de litteraux vers les String globales }
+ ProcessTurboPascalGlobalStringAssignments;
  { Reconstruction des arguments String FAR constants passes aux routines }
  ProcessTurboPascalDirectStringCallPatterns;
  { Reconstruction des concatenations temporaires passees aux emetteurs }
