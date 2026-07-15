@@ -10901,6 +10901,78 @@ Begin
   ' appel(s) reconstruit(s).');
 End;
 
+Procedure ProcessTurboPascalConcatStringArgumentPatterns;
+{ Reunit literal + shortstring dans un temporaire, puis passe directement
+  l'expression a une procedure. La source peut etre une copie locale d'une
+  String globale effectuee peu avant le bloc. }
+Var
+ I,J,K,VIdx,ProcIdx,TargetProc,PatternCount:LongInt;
+ A0,A3,A7,A11,P0,P3:TAsmLine;
+ PrefixExpr,SourceExpr,Target,Code:String;
+ Valid,FoundSource:Boolean;
+Begin
+ PatternCount:=0; I:=0;
+ While I+11<SrcLineCount do Begin
+  ParseInstructionLine(I,A0); ParseInstructionLine(I+3,A3);
+  ParseInstructionLine(I+7,A7); ParseInstructionLine(I+11,A11);
+  Valid:=(UpCaseStr(A0.Mnemonic)='LEA')and(A0.Op1.OpType=OT_MEM)and
+    IsSimpleRegInstruction(I+1,'PUSH','SS','')and
+    IsSimpleRegInstruction(I+2,'PUSH','DI','')and
+    (UpCaseStr(A3.Mnemonic)='MOV')and(UpCaseStr(A3.Op1.Reg)='DI')and
+    (A3.Op2.OpType=OT_OFFSET)and
+    IsSimpleRegInstruction(I+4,'PUSH','CS','')and
+    IsSimpleRegInstruction(I+5,'PUSH','DI','')and
+    IsRuntimeFarCall(I+6,$0BFE)and
+    (UpCaseStr(A7.Mnemonic)='LEA')and(A7.Op1.OpType=OT_MEM)and
+    IsSimpleRegInstruction(I+8,'PUSH','SS','')and
+    IsSimpleRegInstruction(I+9,'PUSH','DI','')and
+    IsRuntimeFarCall(I+10,$0C7D)and
+    (UpCaseStr(A11.Mnemonic)='CALL')and(A11.Op1.OpType<>OT_FAR);
+  If Not Valid Then Begin Inc(I); Continue; End;
+  VIdx:=FindDataVarByName(A3.Op2.LabelName);
+  ProcIdx:=FindProcForLine(I);
+  Target:=OperandToExpr(A11.Op1,ProcIdx);
+  TargetProc:=FindProcByName(Target);
+  If(VIdx=0)or(Not IsLengthPrefixedString(VIdx))or(TargetProc=0)Then Begin
+   Inc(I); Continue;
+  End;
+
+  SourceExpr:=''; FoundSource:=False;
+  J:=I-1;
+  While(J>=0)and(I-J<=24)do Begin
+   ParseInstructionLine(J,P0);
+   If(UpCaseStr(P0.Mnemonic)='LEA')and(P0.Op1.OpType=OT_MEM)and
+     (UpCaseStr(P0.Op1.BaseReg)=UpCaseStr(A7.Op1.BaseReg))and
+     (P0.Op1.Disp=A7.Op1.Disp)and(J+8<I)Then Begin
+    ParseInstructionLine(J+3,P3);
+    If(UpCaseStr(P3.Mnemonic)='MOV')and(UpCaseStr(P3.Op1.Reg)='DI')and
+      (P3.Op2.OpType in [OT_IMM8,OT_IMM16,OT_IMM32])and
+      IsSimpleRegInstruction(J+1,'PUSH','SS','')and
+      IsSimpleRegInstruction(J+2,'PUSH','DI','')and
+      IsSimpleRegInstruction(J+4,'PUSH','DS','')and
+      IsSimpleRegInstruction(J+5,'PUSH','DI','')and
+      IsSimpleRegInstruction(J+7,'PUSH','AX','')and
+      IsRuntimeFarCall(J+8,$0C18)Then Begin
+     SourceExpr:=RecoveredGlobalStringName(P3.Op2.Imm,'');
+     FoundSource:=True;
+     Break;
+    End;
+   End;
+   Dec(J);
+  End;
+  If Not FoundSource Then Begin Inc(I); Continue; End;
+  PrefixExpr:=QuotePascalString(DataVars[VIdx].Elements[2].StrValue);
+  Code:=Target+'('+PrefixExpr+' + '+SourceExpr+');';
+  SetTranslationForLine(I,Code);
+  For K:=I+1 to I+11 do SetTranslationForLine(K,'');
+  If CountDataVarOffsetReferences(DataVars[VIdx].Name)=1 Then
+   OmitDataVar[VIdx]:=True;
+  Inc(PatternCount); I:=I+12;
+ End;
+ WriteLn('  Concat String passee en parametre    : ',PatternCount,
+  ' appel(s) reconstruit(s).');
+End;
+
 Procedure ProcessTurboPascalConcatEmitPatterns;
 { Reconnait une expression String construite dans un temporaire :
     literal + FonctionEntiere(valeur) + suffixe
@@ -12540,6 +12612,8 @@ BEGIN
  ProcessTurboPascalGlobalStringAssignments;
  { Reconstruction des arguments String FAR constants passes aux routines }
  ProcessTurboPascalDirectStringCallPatterns;
+ { Reconstruction de literal + String passes comme un seul argument }
+ ProcessTurboPascalConcatStringArgumentPatterns;
  { Reconstruction des concatenations temporaires passees aux emetteurs }
  ProcessTurboPascalConcatEmitPatterns;
  { Reconstruction des allocations de pointeurs du runtime Turbo Pascal }
