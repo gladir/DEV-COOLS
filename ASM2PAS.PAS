@@ -597,6 +597,7 @@ Var
  NeedRecoveredFormTable:Boolean;
  NeedRecoveredSymTable:Boolean;
  NeedRecoveredNumberHelpers:Boolean;
+ NeedRecoveredTableStringHelper:Boolean;
  RecoveredGlobalStringCount:Integer;
  RecoveredGlobalStringAddr:Array[1..256] of LongInt;
  RecoveredGlobalNames:Array[1..256] of String;
@@ -7013,19 +7014,18 @@ Begin
  End;
 End;
 
-Function ShortStringAtImageOffset(Addr:LongInt;Var S:String):Boolean;
-{ Lit une shortstring stockee dans une directive DB, meme si DISEXE ne lui
-  a pas attribue de label pStr. }
+Function DataByteAtImageOffset(Addr:LongInt;Var B:Byte):Boolean;
 Var
- I,J,N:Integer;
+ I,J,Rel:Integer;
+ Base:LongInt;
  Raw:String;
  E:TDataElem;
 Begin
- ShortStringAtImageOffset:=False;
- S:='';
+ DataByteAtImageOffset:=False;
  For I:=1 to DataVarCount do Begin
-  If DataVarImageOffset(I)<>Addr Then Continue;
-  If DataVars[I].DirType<>DT_DB Then Exit;
+  Base:=DataVarImageOffset(I);
+  If(Base<0)or(Addr<Base)or(Addr>=Base+DataVars[I].TotalSize)Then Continue;
+  If DataVars[I].DirType<>DT_DB Then Continue;
   Raw:='';
   For J:=1 to DataVars[I].ElemCount do Begin
    E:=DataVars[I].Elements[J];
@@ -7034,13 +7034,29 @@ Begin
    Else If E.ElemType=DE_STRING Then
     Raw:=Raw+E.StrValue;
   End;
-  If Raw='' Then Exit;
-  N:=Ord(Raw[1]);
-  If Length(Raw)-1<N Then Exit;
-  S:=Copy(Raw,2,N);
-  ShortStringAtImageOffset:=True;
+  Rel:=Integer(Addr-Base)+1;
+  If(Rel<1)or(Rel>Length(Raw))Then Continue;
+  B:=Ord(Raw[Rel]);
+  DataByteAtImageOffset:=True;
   Exit;
  End;
+End;
+
+Function ShortStringAtImageOffset(Addr:LongInt;Var S:String):Boolean;
+{ Lit une shortstring a travers les limites de directives DB. Turbo Pascal
+  peut faire chevaucher un suffixe avec le premier octet du bloc suivant. }
+Var
+ I,N:Integer;
+ B:Byte;
+Begin
+ ShortStringAtImageOffset:=False; S:='';
+ If Not DataByteAtImageOffset(Addr,B)Then Exit;
+ N:=B;
+ For I:=1 to N do Begin
+  If Not DataByteAtImageOffset(Addr+I,B)Then Begin S:=''; Exit; End;
+  S:=S+Chr(B);
+ End;
+ ShortStringAtImageOffset:=True;
 End;
 
 Function CountDataVarOffsetReferences(Const VarName:String):Integer;
@@ -9053,6 +9069,16 @@ Begin
   WriteLn(OutFile,'Begin Str(n, s); ItoSI := s; End;');
   WriteLn(OutFile);
  End;
+ If NeedRecoveredTableStringHelper Then Begin
+  WriteLn(OutFile,'Function RecoveredTableString(TablePtrAddr : Word; ',
+    'Index, Stride, FieldDisp : Integer) : String;');
+  WriteLn(OutFile,'Var Addr : Word;');
+  WriteLn(OutFile,'Begin');
+  WriteLn(OutFile,' Addr := PWord(@Mem[TablePtrAddr])^ + Index * Stride + FieldDisp;');
+  WriteLn(OutFile,' RecoveredTableString := PString(@Mem[Addr])^;');
+  WriteLn(OutFile,'End;');
+  WriteLn(OutFile);
+ End;
 
  { === Generation des procedures et fonctions === }
  For I:=1 to ProcCount do Begin
@@ -10878,6 +10904,10 @@ Var
 Begin
  OldName:=RecoveredGlobalStringName(Addr,'');
  RenameRecoveredGlobalString:=OldName;
+ { Le meme role semantique peut etre reconnu plusieurs fois dans un fichier.
+   Remplacer un nom par lui-meme laisserait Pos() toujours positif et
+   provoquerait une boucle infinie pendant la propagation. }
+ If UpCaseStr(OldName)=UpCaseStr(SemanticName)Then Exit;
  For I:=1 to RecoveredGlobalStringCount do
   If(RecoveredGlobalStringAddr[I]<>Addr)and
     (UpCaseStr(RecoveredGlobalNames[I])=UpCaseStr(SemanticName))Then Exit;
@@ -11097,11 +11127,13 @@ Procedure ProcessTurboPascalConcatThreeStringArgumentPatterns;
 { Forme literal + variable String + literal, construite par 0BFEh/0C7Dh
   puis passee comme un seul parametre FAR a une procedure. }
 Var
- I,K,L,V1,V2,ProcIdx,TargetProc,PatternCount:LongInt;
+ I,J,K,L,V1,V2,ProcIdx,TargetProc,PatternCount:LongInt;
  A0,A3,A7,A11,A15:TAsmLine;
  PrefixText,SuffixText,LocalName,Target,Code:String;
  Valid,FoundLocal:Boolean;
+ ReplacedRefs:Array[1..MAX_DATAVARS] of Integer;
 Begin
+ FillChar(ReplacedRefs,SizeOf(ReplacedRefs),0);
  PatternCount:=0; I:=0;
  While I+15<SrcLineCount do Begin
   ParseInstructionLine(I,A0); ParseInstructionLine(I+3,A3);
@@ -11118,23 +11150,31 @@ Begin
     IsSimpleRegInstruction(I+8,'PUSH','SS','')and
     IsSimpleRegInstruction(I+9,'PUSH','DI','')and
     IsRuntimeFarCall(I+10,$0C7D)and
-    (UpCaseStr(A11.Mnemonic)='MOV')and(A11.Op2.OpType=OT_OFFSET)and
+    (UpCaseStr(A11.Mnemonic)='MOV')and(UpCaseStr(A11.Op1.Reg)='DI')and
+    (A11.Op2.OpType in [OT_OFFSET,OT_IMM8,OT_IMM16,OT_IMM32])and
     IsSimpleRegInstruction(I+12,'PUSH','CS','')and
     IsSimpleRegInstruction(I+13,'PUSH','DI','')and
     IsRuntimeFarCall(I+14,$0C7D)and
     (UpCaseStr(A15.Mnemonic)='CALL')and(A15.Op1.OpType<>OT_FAR);
   If Not Valid Then Begin Inc(I); Continue; End;
   V1:=FindDataVarByName(A3.Op2.LabelName);
-  V2:=FindDataVarByName(A11.Op2.LabelName);
+  If A11.Op2.OpType=OT_OFFSET Then
+   V2:=FindDataVarByName(A11.Op2.LabelName)
+  Else V2:=0;
   ProcIdx:=FindProcForLine(I);
   Target:=OperandToExpr(A15.Op1,ProcIdx);
   TargetProc:=FindProcByName(Target);
-  If(V1=0)or(V2=0)or(Not IsLengthPrefixedString(V1))or
-    (Not IsLengthPrefixedString(V2))or(ProcIdx=0)or(TargetProc=0)Then Begin
+  If(V1=0)or(Not IsLengthPrefixedString(V1))or
+    (ProcIdx=0)or(TargetProc=0)Then Begin
    Inc(I); Continue;
   End;
   PrefixText:=DataVars[V1].Elements[2].StrValue;
-  SuffixText:=DataVars[V2].Elements[2].StrValue;
+  If V2>0 Then Begin
+   If Not IsLengthPrefixedString(V2)Then Begin Inc(I); Continue; End;
+   SuffixText:=DataVars[V2].Elements[2].StrValue;
+  End Else If Not ShortStringAtImageOffset(A11.Op2.Imm,SuffixText)Then Begin
+   Inc(I); Continue;
+  End;
   If Pos('LIKE: VARIABLE INCONNUE',UpCaseStr(PrefixText))=1 Then
    LocalName:='refname'
   Else LocalName:='text_value';
@@ -11159,12 +11199,112 @@ Begin
     QuotePascalString(SuffixText)+');';
   SetTranslationForLine(I,Code);
   For K:=I+1 to I+15 do SetTranslationForLine(K,'');
-  If CountDataVarOffsetReferences(DataVars[V1].Name)=1 Then OmitDataVar[V1]:=True;
-  If CountDataVarOffsetReferences(DataVars[V2].Name)=1 Then OmitDataVar[V2]:=True;
+  Inc(ReplacedRefs[V1]);
+  If V2>0 Then Inc(ReplacedRefs[V2]);
   Inc(PatternCount); I:=I+16;
  End;
+ For J:=1 to DataVarCount do
+  If(ReplacedRefs[J]>0)and
+    (CountDataVarOffsetReferences(DataVars[J].Name)=ReplacedRefs[J])Then
+   OmitDataVar[J]:=True;
  WriteLn('  Concat String a trois fragments      : ',PatternCount,
   ' appel(s) reconstruit(s).');
+End;
+
+Procedure ProcessTurboPascalTableStringConcatEmitPatterns;
+{ Forme literal + champ String d'une table indexee + suffixe anonyme,
+  puis appel Emit/EmitI. Les adresses et dimensions sont lues dans le code. }
+Var
+ I,J,K,VIdx,ProcIdx,TargetProc,PatternCount:LongInt;
+ A0,A3,A7,A8,A9,A10,A11,A15,A19:TAsmLine;
+ PrefixText,SuffixText,IndexExpr,Target,Code:String;
+ BaseAddr,Stride,FieldDisp,SuffixAddr:LongInt;
+ Valid:Boolean;
+ ReplacedRefs:Array[1..MAX_DATAVARS] of Integer;
+Begin
+ FillChar(ReplacedRefs,SizeOf(ReplacedRefs),0);
+ PatternCount:=0; I:=0;
+ While I+19<SrcLineCount do Begin
+  ParseInstructionLine(I,A0); ParseInstructionLine(I+3,A3);
+  ParseInstructionLine(I+7,A7); ParseInstructionLine(I+8,A8);
+  ParseInstructionLine(I+9,A9); ParseInstructionLine(I+10,A10);
+  ParseInstructionLine(I+11,A11); ParseInstructionLine(I+15,A15);
+  ParseInstructionLine(I+19,A19);
+  Valid:=(UpCaseStr(A0.Mnemonic)='LEA')and(A0.Op1.OpType=OT_MEM)and
+    IsSimpleRegInstruction(I+1,'PUSH','SS','')and
+    IsSimpleRegInstruction(I+2,'PUSH','DI','')and
+    (UpCaseStr(A3.Mnemonic)='MOV')and(A3.Op2.OpType=OT_OFFSET)and
+    IsSimpleRegInstruction(I+4,'PUSH','CS','')and
+    IsSimpleRegInstruction(I+5,'PUSH','DI','')and
+    IsRuntimeFarCall(I+6,$0BFE)and
+    (UpCaseStr(A7.Mnemonic)='MOV')and(UpCaseStr(A7.Op1.Reg)='AX')and
+    (UpCaseStr(A8.Mnemonic)='MUL')and(A8.Op1.OpType=OT_MEM)and
+    (UpCaseStr(A9.Mnemonic)='LES')and(A9.Op1.OpType=OT_MEM)and
+    (UpCaseStr(A10.Mnemonic)='ADD')and(UpCaseStr(A10.Op1.Reg)='DI')and
+    (UpCaseStr(A10.Op2.Reg)='AX')and
+    (UpCaseStr(A11.Mnemonic)='ADD')and(UpCaseStr(A11.Op1.Reg)='DI')and
+    IsSimpleRegInstruction(I+12,'PUSH','ES','')and
+    IsSimpleRegInstruction(I+13,'PUSH','DI','')and
+    IsRuntimeFarCall(I+14,$0C7D)and
+    (UpCaseStr(A15.Mnemonic)='MOV')and(UpCaseStr(A15.Op1.Reg)='DI')and
+    (A15.Op2.OpType in [OT_IMM8,OT_IMM16,OT_IMM32,OT_LABEL,OT_OFFSET])and
+    IsSimpleRegInstruction(I+16,'PUSH','CS','')and
+    IsSimpleRegInstruction(I+17,'PUSH','DI','')and
+    IsRuntimeFarCall(I+18,$0C7D)and
+    (UpCaseStr(A19.Mnemonic)='CALL')and(A19.Op1.OpType<>OT_FAR);
+  If Not Valid Then Begin Inc(I); Continue; End;
+  VIdx:=FindDataVarByName(A3.Op2.LabelName);
+  ProcIdx:=FindProcForLine(I);
+  Target:=OperandToExpr(A19.Op1,ProcIdx);
+  TargetProc:=FindProcByName(Target);
+  If(TargetProc=0)and
+    (A19.Op1.OpType in [OT_IMM8,OT_IMM16,OT_IMM32])Then Begin
+   Target:='sub_'+HexWord(Word(A19.Op1.Imm));
+   TargetProc:=FindProcByName(Target);
+  End;
+  If(TargetProc=0)and(A19.Op1.OpType=OT_LABEL)and
+    (A19.Op1.LabelName<>'')Then Begin
+   Target:='sub_'+HexWord(Word(HexToInt(A19.Op1.LabelName)));
+   TargetProc:=FindProcByName(Target);
+  End;
+  SuffixAddr:=A15.Op2.Imm;
+  If(A15.Op2.OpType in [OT_LABEL,OT_OFFSET])and
+    (A15.Op2.LabelName<>'')Then
+   SuffixAddr:=HexToInt(A15.Op2.LabelName);
+  If A15.Op2.OpType=OT_OFFSET Then Begin
+   J:=FindDataVarByName(A15.Op2.LabelName);
+   If(J>0)and IsLengthPrefixedString(J)Then
+    SuffixText:=DataVars[J].Elements[2].StrValue
+   Else If Not ShortStringAtImageOffset(SuffixAddr,SuffixText)Then
+    SuffixText:='';
+  End Else If Not ShortStringAtImageOffset(SuffixAddr,SuffixText)Then
+   SuffixText:='';
+  If(VIdx=0)or(Not IsLengthPrefixedString(VIdx))or(TargetProc=0)or
+    (SuffixText='')Then Begin
+   Inc(I); Continue;
+  End;
+  PrefixText:=DataVars[VIdx].Elements[2].StrValue;
+  IndexExpr:=OperandToExpr(A8.Op1,ProcIdx);
+  BaseAddr:=A9.Op1.Disp; Stride:=A7.Op2.Imm;
+  FieldDisp:=A11.Op2.Imm;
+  If(A11.Op2.OpType=OT_LABEL)and(A11.Op2.LabelName<>'')Then
+   FieldDisp:=HexToInt(A11.Op2.LabelName);
+  If FieldDisp>$7FFF Then FieldDisp:=FieldDisp-$10000;
+  NeedRecoveredTableStringHelper:=True;
+  Code:=Target+'('+QuotePascalString(PrefixText)+
+    ' + RecoveredTableString($'+HexWord(Word(BaseAddr))+', '+IndexExpr+', '+
+    IntToStr(Stride)+', '+IntToStr(FieldDisp)+') + '+
+    QuotePascalString(SuffixText)+');';
+  SetTranslationForLine(I,Code);
+  For K:=I+1 to I+19 do SetTranslationForLine(K,'');
+  Inc(ReplacedRefs[VIdx]); Inc(PatternCount); I:=I+20;
+ End;
+ For J:=1 to DataVarCount do
+  If(ReplacedRefs[J]>0)and
+    (CountDataVarOffsetReferences(DataVars[J].Name)=ReplacedRefs[J])Then
+   OmitDataVar[J]:=True;
+ WriteLn('  Concat champ String table vers emit : ',PatternCount,
+  ' expression(s) reconstruite(s).');
 End;
 
 Procedure ProcessTurboPascalConcatStringArgumentPatterns;
@@ -13140,6 +13280,8 @@ BEGIN
  ProcessTurboPascalStringFunctionFieldAssignments;
  { Reconstruction de literal + String + literal passes comme argument }
  ProcessTurboPascalConcatThreeStringArgumentPatterns;
+ { Reconstruction de literal + champ String de table + suffixe vers Emit }
+ ProcessTurboPascalTableStringConcatEmitPatterns;
  { Reconstruction de literal + String passes comme un seul argument }
  ProcessTurboPascalConcatStringArgumentPatterns;
  { Reconstruction des concatenations temporaires passees aux emetteurs }
