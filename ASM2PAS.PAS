@@ -11213,6 +11213,161 @@ Begin
   ' expression(s) reconstruite(s).');
 End;
 
+Procedure ProcessTurboPascalTableStringNoSuffixEmitPatterns;
+{ literal + champ String d'une table indexee, sans suffixe. }
+Var I,K,V,ProcIdx,PatternCount:LongInt; A0,A3,A7,A8,A9,A10,A11,A15:TAsmLine;
+ PrefixText,Target,IndexExpr,Code:String; FieldDisp:LongInt;
+Begin
+ PatternCount:=0; I:=0;
+ While I+15<SrcLineCount do Begin
+  ParseInstructionLine(I,A0); ParseInstructionLine(I+3,A3);
+  ParseInstructionLine(I+7,A7); ParseInstructionLine(I+8,A8);
+  ParseInstructionLine(I+9,A9); ParseInstructionLine(I+10,A10);
+  ParseInstructionLine(I+11,A11); ParseInstructionLine(I+15,A15);
+  If Not((UpCaseStr(A0.Mnemonic)='LEA')and IsSimpleRegInstruction(I+1,'PUSH','SS','')and
+    IsSimpleRegInstruction(I+2,'PUSH','DI','')and(A3.Op2.OpType=OT_OFFSET)and
+    IsSimpleRegInstruction(I+4,'PUSH','CS','')and IsSimpleRegInstruction(I+5,'PUSH','DI','')and
+    IsRuntimeFarCall(I+6,$0BFE)and(UpCaseStr(A7.Mnemonic)='MOV')and
+    (UpCaseStr(A7.Op1.Reg)='AX')and(UpCaseStr(A8.Mnemonic)='MUL')and
+    (UpCaseStr(A9.Mnemonic)='LES')and(UpCaseStr(A10.Mnemonic)='ADD')and
+    (UpCaseStr(A11.Mnemonic)='ADD')and IsSimpleRegInstruction(I+12,'PUSH','ES','')and
+    IsSimpleRegInstruction(I+13,'PUSH','DI','')and IsRuntimeFarCall(I+14,$0C7D)and
+    (UpCaseStr(A15.Mnemonic)='CALL'))Then Begin Inc(I); Continue; End;
+  V:=FindDataVarByName(A3.Op2.LabelName); ProcIdx:=FindProcForLine(I);
+  Target:=OperandToExpr(A15.Op1,ProcIdx);
+  If(A15.Op1.OpType=OT_LABEL)and
+    (Copy(UpCaseStr(A15.Op1.LabelName),1,4)<>'SUB_')Then
+   Target:='sub_'+HexWord(Word(HexToInt(A15.Op1.LabelName)))
+  Else If A15.Op1.OpType in [OT_IMM8,OT_IMM16,OT_IMM32]Then
+   Target:='sub_'+HexWord(Word(A15.Op1.Imm));
+  If(V=0)or(Not IsLengthPrefixedString(V))or(FindProcByName(Target)=0)Then Begin Inc(I); Continue; End;
+  PrefixText:=DataVars[V].Elements[2].StrValue; IndexExpr:=OperandToExpr(A8.Op1,ProcIdx);
+  FieldDisp:=A11.Op2.Imm; If FieldDisp>$7FFF Then FieldDisp:=FieldDisp-$10000;
+  NeedRecoveredTableStringHelper:=True;
+  Code:=Target+'('+QuotePascalString(PrefixText)+' + RecoveredTableString($'+
+    HexWord(Word(A9.Op1.Disp))+', '+IndexExpr+', '+IntToStr(A7.Op2.Imm)+', '+
+    IntToStr(FieldDisp)+'));';
+  SetTranslationForLine(I,Code); For K:=I+1 to I+15 do SetTranslationForLine(K,'');
+  Inc(ReconstructedConcatRefs[V]);
+  If CountDataVarOffsetReferences(DataVars[V].Name)=ReconstructedConcatRefs[V]Then OmitDataVar[V]:=True;
+  Inc(PatternCount); I:=I+16;
+ End;
+ WriteLn('  Concat champ table sans suffixe      : ',PatternCount,' expression(s).');
+End;
+
+Procedure ProcessTurboPascalFixedStringSuffixEmitPatterns;
+{ literal + champ String d'un enregistrement pointe + suffixe. }
+Var I,J,K,V1,V2,ProcIdx,PatternCount:LongInt; A0,A3,A7,A8,A12,A16:TAsmLine;
+ Target,Code:String; FieldDisp:LongInt; Refs:Array[1..MAX_DATAVARS]of Integer;
+Begin
+ FillChar(Refs,SizeOf(Refs),0); PatternCount:=0; I:=0;
+ While I+16<SrcLineCount do Begin
+  ParseInstructionLine(I,A0); ParseInstructionLine(I+3,A3);
+  ParseInstructionLine(I+7,A7); ParseInstructionLine(I+8,A8);
+  ParseInstructionLine(I+12,A12); ParseInstructionLine(I+16,A16);
+  If Not((UpCaseStr(A0.Mnemonic)='LEA')and IsSimpleRegInstruction(I+1,'PUSH','SS','')and
+    IsSimpleRegInstruction(I+2,'PUSH','DI','')and(A3.Op2.OpType=OT_OFFSET)and
+    IsSimpleRegInstruction(I+4,'PUSH','CS','')and IsSimpleRegInstruction(I+5,'PUSH','DI','')and
+    IsRuntimeFarCall(I+6,$0BFE)and(UpCaseStr(A7.Mnemonic)='LES')and
+    (UpCaseStr(A8.Mnemonic)='ADD')and IsSimpleRegInstruction(I+9,'PUSH','ES','')and
+    IsSimpleRegInstruction(I+10,'PUSH','DI','')and IsRuntimeFarCall(I+11,$0C7D)and
+    (UpCaseStr(A12.Mnemonic)='MOV')and(A12.Op2.OpType=OT_OFFSET)and
+    IsSimpleRegInstruction(I+13,'PUSH','CS','')and IsSimpleRegInstruction(I+14,'PUSH','DI','')and
+    IsRuntimeFarCall(I+15,$0C7D)and(UpCaseStr(A16.Mnemonic)='CALL'))Then Begin Inc(I); Continue; End;
+  V1:=FindDataVarByName(A3.Op2.LabelName); V2:=FindDataVarByName(A12.Op2.LabelName);
+  ProcIdx:=FindProcForLine(I); Target:=OperandToExpr(A16.Op1,ProcIdx);
+  If(A16.Op1.OpType=OT_LABEL)and
+    (Copy(UpCaseStr(A16.Op1.LabelName),1,4)<>'SUB_')Then
+   Target:='sub_'+HexWord(Word(HexToInt(A16.Op1.LabelName)))
+  Else If A16.Op1.OpType in [OT_IMM8,OT_IMM16,OT_IMM32]Then
+   Target:='sub_'+HexWord(Word(A16.Op1.Imm));
+  If(V1=0)or(V2=0)or(Not IsLengthPrefixedString(V1))or(Not IsLengthPrefixedString(V2))or
+    (FindProcByName(Target)=0)Then Begin Inc(I); Continue; End;
+  FieldDisp:=A8.Op2.Imm; If FieldDisp>$7FFF Then FieldDisp:=FieldDisp-$10000;
+  NeedRecoveredTableStringHelper:=True;
+  Code:=Target+'('+QuotePascalString(DataVars[V1].Elements[2].StrValue)+
+    ' + RecoveredTableString($'+HexWord(Word(A7.Op1.Disp))+', 0, 0, '+
+    IntToStr(FieldDisp)+') + '+QuotePascalString(DataVars[V2].Elements[2].StrValue)+');';
+  SetTranslationForLine(I,Code); For K:=I+1 to I+16 do SetTranslationForLine(K,'');
+  Inc(Refs[V1]); Inc(Refs[V2]); Inc(PatternCount); I:=I+17;
+ End;
+ For J:=1 to DataVarCount do If(Refs[J]>0)and
+   (CountDataVarOffsetReferences(DataVars[J].Name)=Refs[J])Then OmitDataVar[J]:=True;
+ WriteLn('  Concat champ pointe avec suffixe     : ',PatternCount,' expression(s).');
+End;
+
+Procedure ProcessTurboPascalLiteralFunctionEmitPatterns;
+{ literal + second literal + resultat String d'une fonction. }
+Var I,K,V1,V2,ProcIdx,PatternCount:LongInt; A0,A3,A7,A10,A13,A16,A18:TAsmLine;
+ Fn,Target,Code:String;
+Begin
+ PatternCount:=0; I:=0;
+ While I+18<SrcLineCount do Begin
+  ParseInstructionLine(I,A0); ParseInstructionLine(I+3,A3); ParseInstructionLine(I+7,A7);
+  ParseInstructionLine(I+10,A10); ParseInstructionLine(I+13,A13);
+  ParseInstructionLine(I+16,A16); ParseInstructionLine(I+18,A18);
+  If Not((UpCaseStr(A0.Mnemonic)='LEA')and(A3.Op2.OpType=OT_OFFSET)and
+    IsRuntimeFarCall(I+6,$0BFE)and(UpCaseStr(A7.Mnemonic)='LEA')and
+    (UpCaseStr(A10.Mnemonic)='MOV')and(A10.Op2.OpType=OT_OFFSET)and
+    IsSimpleRegInstruction(I+11,'PUSH','CS','')and IsSimpleRegInstruction(I+12,'PUSH','DI','')and
+    (UpCaseStr(A13.Mnemonic)='LEA')and IsSimpleRegInstruction(I+14,'PUSH','SS','')and
+    IsSimpleRegInstruction(I+15,'PUSH','DI','')and(UpCaseStr(A16.Mnemonic)='CALL')and
+    IsRuntimeFarCall(I+17,$0C7D)and(UpCaseStr(A18.Mnemonic)='CALL'))Then Begin Inc(I); Continue; End;
+  V1:=FindDataVarByName(A3.Op2.LabelName); V2:=FindDataVarByName(A10.Op2.LabelName);
+  ProcIdx:=FindProcForLine(I); Fn:=OperandToExpr(A16.Op1,ProcIdx); Target:=OperandToExpr(A18.Op1,ProcIdx);
+  If(V1=0)or(V2=0)or(FindProcByName(Fn)=0)or(FindProcByName(Target)=0)Then Begin Inc(I); Continue; End;
+  Code:=Target+'('+QuotePascalString(DataVars[V1].Elements[2].StrValue)+' + '+
+    QuotePascalString(DataVars[V2].Elements[2].StrValue)+' + '+Fn+'());';
+  SetTranslationForLine(I,Code); For K:=I+1 to I+18 do SetTranslationForLine(K,'');
+  If CountDataVarOffsetReferences(DataVars[V1].Name)=1 Then OmitDataVar[V1]:=True;
+  If CountDataVarOffsetReferences(DataVars[V2].Name)=1 Then OmitDataVar[V2]:=True;
+  Inc(PatternCount); I:=I+19;
+ End;
+ WriteLn('  Concat litteraux avec fonction       : ',PatternCount,' expression(s).');
+End;
+
+Procedure ProcessTurboPascalLocalSuffixGlobalEmitPatterns;
+{ literal + String locale + suffixe + String globale. }
+Var I,K,V1,V2,ProcIdx,PatternCount:LongInt; A0,A3,A7,A11,A15,A19:TAsmLine;
+ LocalExpr,GlobalExpr,Target,Code:String;
+Begin
+ PatternCount:=0; I:=0;
+ While I+19<SrcLineCount do Begin
+  ParseInstructionLine(I,A0); ParseInstructionLine(I+3,A3);
+  ParseInstructionLine(I+7,A7); ParseInstructionLine(I+11,A11);
+  ParseInstructionLine(I+15,A15); ParseInstructionLine(I+19,A19);
+  If Not((UpCaseStr(A0.Mnemonic)='LEA')and(A3.Op2.OpType=OT_OFFSET)and
+    IsSimpleRegInstruction(I+1,'PUSH','SS','')and IsSimpleRegInstruction(I+2,'PUSH','DI','')and
+    IsSimpleRegInstruction(I+4,'PUSH','CS','')and IsSimpleRegInstruction(I+5,'PUSH','DI','')and
+    IsRuntimeFarCall(I+6,$0BFE)and(UpCaseStr(A7.Mnemonic)='LEA')and
+    IsSimpleRegInstruction(I+8,'PUSH','SS','')and IsSimpleRegInstruction(I+9,'PUSH','DI','')and
+    IsRuntimeFarCall(I+10,$0C7D)and(UpCaseStr(A11.Mnemonic)='MOV')and
+    (A11.Op2.OpType=OT_OFFSET)and IsSimpleRegInstruction(I+12,'PUSH','CS','')and
+    IsSimpleRegInstruction(I+13,'PUSH','DI','')and IsRuntimeFarCall(I+14,$0C7D)and
+    (UpCaseStr(A15.Mnemonic)='MOV')and IsSimpleRegInstruction(I+16,'PUSH','DS','')and
+    IsSimpleRegInstruction(I+17,'PUSH','DI','')and IsRuntimeFarCall(I+18,$0C7D)and
+    (UpCaseStr(A19.Mnemonic)='CALL'))Then Begin Inc(I); Continue; End;
+  V1:=FindDataVarByName(A3.Op2.LabelName); V2:=FindDataVarByName(A11.Op2.LabelName);
+  ProcIdx:=FindProcForLine(I); Target:=OperandToExpr(A19.Op1,ProcIdx);
+  If(A19.Op1.OpType=OT_LABEL)and
+    (Copy(UpCaseStr(A19.Op1.LabelName),1,4)<>'SUB_')Then
+   Target:='sub_'+HexWord(Word(HexToInt(A19.Op1.LabelName)))
+  Else If A19.Op1.OpType in [OT_IMM8,OT_IMM16,OT_IMM32]Then
+   Target:='sub_'+HexWord(Word(A19.Op1.Imm));
+  If(V1=0)or(V2=0)or(Not IsLengthPrefixedString(V1))or(Not IsLengthPrefixedString(V2))or
+    (FindProcByName(Target)=0)Then Begin Inc(I); Continue; End;
+  LocalExpr:=OperandToExpr(A7.Op1,ProcIdx);
+  GlobalExpr:=RecoveredGlobalStringName(A15.Op2.Imm,'');
+  Code:=Target+'('+QuotePascalString(DataVars[V1].Elements[2].StrValue)+' + '+LocalExpr+
+    ' + '+QuotePascalString(DataVars[V2].Elements[2].StrValue)+' + '+GlobalExpr+');';
+  SetTranslationForLine(I,Code); For K:=I+1 to I+19 do SetTranslationForLine(K,'');
+  If CountDataVarOffsetReferences(DataVars[V1].Name)=1 Then OmitDataVar[V1]:=True;
+  If CountDataVarOffsetReferences(DataVars[V2].Name)=1 Then OmitDataVar[V2]:=True;
+  Inc(PatternCount); I:=I+20;
+ End;
+ WriteLn('  Concat locale/suffixe/globale        : ',PatternCount,' expression(s).');
+End;
+
 Procedure ProcessTurboPascalDirectStringCallPatterns;
 { Reunit un pointeur FAR CS:offset passe a une routine en un parametre
   String Pascal direct : MOV DI,OFFSET s / PUSH CS / PUSH DI / CALL p
@@ -13613,6 +13768,10 @@ BEGIN
  ProcessTurboPascalSimpleNumericConcatEmitPatterns;
  ProcessTurboPascalLongNumericSuffixConcatEmitPatterns;
  ProcessTurboPascalComputedNumericConcatEmitPatterns;
+ ProcessTurboPascalTableStringNoSuffixEmitPatterns;
+ ProcessTurboPascalFixedStringSuffixEmitPatterns;
+ ProcessTurboPascalLiteralFunctionEmitPatterns;
+ ProcessTurboPascalLocalSuffixGlobalEmitPatterns;
  ProcessTurboPascalNumericAndLocalConcatEmitPatterns;
  { Reconstruction des While combinant TokIsKw et cur_tok_str }
  ProcessTurboPascalTokenOptionWhilePatterns;
