@@ -11531,10 +11531,10 @@ Procedure ProcessTurboPascalConcatThreeStringArgumentPatterns;
 { Forme literal + variable String + literal, construite par 0BFEh/0C7Dh
   puis passee comme un seul parametre FAR a une procedure. }
 Var
- I,J,K,L,V1,V2,ProcIdx,TargetProc,PatternCount:LongInt;
+ I,J,K,V1,V2,ProcIdx,TargetProc,PatternCount,SuffixAddr:LongInt;
  A0,A3,A7,A11,A15:TAsmLine;
- PrefixText,SuffixText,LocalName,Target,Code:String;
- Valid,FoundLocal:Boolean;
+ PrefixText,SuffixText,SourceExpr,Target,Code:String;
+ Valid:Boolean;
  ReplacedRefs:Array[1..MAX_DATAVARS] of Integer;
 Begin
  FillChar(ReplacedRefs,SizeOf(ReplacedRefs),0);
@@ -11555,7 +11555,7 @@ Begin
     IsSimpleRegInstruction(I+9,'PUSH','DI','')and
     IsRuntimeFarCall(I+10,$0C7D)and
     (UpCaseStr(A11.Mnemonic)='MOV')and(UpCaseStr(A11.Op1.Reg)='DI')and
-    (A11.Op2.OpType in [OT_OFFSET,OT_IMM8,OT_IMM16,OT_IMM32])and
+    (A11.Op2.OpType in [OT_OFFSET,OT_LABEL,OT_IMM8,OT_IMM16,OT_IMM32])and
     IsSimpleRegInstruction(I+12,'PUSH','CS','')and
     IsSimpleRegInstruction(I+13,'PUSH','DI','')and
     IsRuntimeFarCall(I+14,$0C7D)and
@@ -11567,6 +11567,11 @@ Begin
   Else V2:=0;
   ProcIdx:=FindProcForLine(I);
   Target:=OperandToExpr(A15.Op1,ProcIdx);
+  If(A15.Op1.OpType=OT_LABEL)and
+    (Copy(UpCaseStr(A15.Op1.LabelName),1,4)<>'SUB_')Then
+   Target:='sub_'+HexWord(Word(HexToInt(A15.Op1.LabelName)))
+  Else If A15.Op1.OpType in [OT_IMM8,OT_IMM16,OT_IMM32]Then
+   Target:='sub_'+HexWord(Word(A15.Op1.Imm));
   TargetProc:=FindProcByName(Target);
   If(V1=0)or(Not IsLengthPrefixedString(V1))or
     (ProcIdx=0)or(TargetProc=0)Then Begin
@@ -11576,30 +11581,18 @@ Begin
   If V2>0 Then Begin
    If Not IsLengthPrefixedString(V2)Then Begin Inc(I); Continue; End;
    SuffixText:=DataVars[V2].Elements[2].StrValue;
-  End Else If Not ShortStringAtImageOffset(A11.Op2.Imm,SuffixText)Then Begin
-   Inc(I); Continue;
-  End;
-  If Pos('LIKE: VARIABLE INCONNUE',UpCaseStr(PrefixText))=1 Then
-   LocalName:='refname'
-  Else LocalName:='text_value';
-  FoundLocal:=False;
-  For L:=1 to Procs[ProcIdx].LocalCount do
-   If Procs[ProcIdx].Locals[L].IndexOffset=A7.Op1.Disp Then Begin
-    Procs[ProcIdx].Locals[L].Name:=LocalName;
-    Procs[ProcIdx].Locals[L].PascalType:=PT_STRING;
-    Procs[ProcIdx].Locals[L].TypeName:='STRING';
-    Procs[ProcIdx].Locals[L].Size:=256;
-    FoundLocal:=True; Break;
-   End;
-  If(Not FoundLocal)and(Procs[ProcIdx].LocalCount<MAX_LOCALS)Then Begin
-   Inc(Procs[ProcIdx].LocalCount);
-   With Procs[ProcIdx].Locals[Procs[ProcIdx].LocalCount] do Begin
-    Name:=LocalName; TypeName:='STRING'; PascalType:=PT_STRING;
-    Size:=256; Count:=1; IsIndexedMem:=False;
-    IndexOffset:=A7.Op1.Disp; IndexBaseReg:='BP'; IndexIndexReg:='';
+  End Else Begin
+   SuffixAddr:=A11.Op2.Imm;
+   If(A11.Op2.OpType=OT_LABEL)and(A11.Op2.LabelName<>'')Then
+    SuffixAddr:=HexToInt(A11.Op2.LabelName);
+   If Not ShortStringAtImageOffset(SuffixAddr,SuffixText)Then Begin
+    Inc(I); Continue;
    End;
   End;
-  Code:=Target+'('+QuotePascalString(PrefixText)+' + '+LocalName+' + '+
+  { L'expression source vient de l'operande LEA. Aucun nom semantique et
+    aucun texte particulier ne sont supposes par ce motif generique. }
+  SourceExpr:=OperandToExpr(A7.Op1,ProcIdx);
+  Code:=Target+'('+QuotePascalString(PrefixText)+' + '+SourceExpr+' + '+
     QuotePascalString(SuffixText)+');';
   SetTranslationForLine(I,Code);
   For K:=I+1 to I+15 do SetTranslationForLine(K,'');
@@ -12099,6 +12092,45 @@ Begin
  End;
  WriteLn('  Concat String locale vers emission   : ',PatternCount,
   ' expression(s) reconstruite(s).');
+End;
+
+Procedure ProcessTurboPascalFarStringConcatEmitPatterns;
+{ Reconnait literal + parametre String FAR charge par LES. }
+Var I,K,VIdx,ProcIdx,EmitProc,PatternCount:LongInt;
+ A0,A3,A7,A11:TAsmLine; LiteralText,SourceExpr,EmitName,Code:String;
+Begin
+ PatternCount:=0; I:=0;
+ While I+11<SrcLineCount do Begin
+  ParseInstructionLine(I,A0); ParseInstructionLine(I+3,A3);
+  ParseInstructionLine(I+7,A7); ParseInstructionLine(I+11,A11);
+  If Not((UpCaseStr(A0.Mnemonic)='LEA')and(A0.Op1.OpType=OT_MEM)and
+    IsSimpleRegInstruction(I+1,'PUSH','SS','')and IsSimpleRegInstruction(I+2,'PUSH','DI','')and
+    (UpCaseStr(A3.Mnemonic)='MOV')and(A3.Op2.OpType=OT_OFFSET)and
+    IsSimpleRegInstruction(I+4,'PUSH','CS','')and IsSimpleRegInstruction(I+5,'PUSH','DI','')and
+    IsRuntimeFarCall(I+6,$0BFE)and(UpCaseStr(A7.Mnemonic)='LES')and
+    IsSimpleRegInstruction(I+8,'PUSH','ES','')and IsSimpleRegInstruction(I+9,'PUSH','DI','')and
+    IsRuntimeFarCall(I+10,$0C7D)and(UpCaseStr(A11.Mnemonic)='CALL'))Then Begin
+   Inc(I); Continue;
+  End;
+  VIdx:=FindDataVarByName(A3.Op2.LabelName); ProcIdx:=FindProcForLine(I);
+  EmitName:=OperandToExpr(A11.Op1,ProcIdx);
+  If(A11.Op1.OpType=OT_LABEL)and
+    (Copy(UpCaseStr(A11.Op1.LabelName),1,4)<>'SUB_')Then
+   EmitName:='sub_'+HexWord(Word(HexToInt(A11.Op1.LabelName)))
+  Else If A11.Op1.OpType in [OT_IMM8,OT_IMM16,OT_IMM32]Then
+   EmitName:='sub_'+HexWord(Word(A11.Op1.Imm));
+  EmitProc:=FindProcByName(EmitName);
+  If(VIdx=0)or(Not IsLengthPrefixedString(VIdx))or(EmitProc=0)Then Begin
+   Inc(I); Continue;
+  End;
+  LiteralText:=DataVars[VIdx].Elements[2].StrValue;
+  SourceExpr:=OperandToExpr(A7.Op1,ProcIdx);
+  Code:=EmitName+'('+QuotePascalString(LiteralText)+' + '+SourceExpr+');';
+  SetTranslationForLine(I,Code); For K:=I+1 to I+11 do SetTranslationForLine(K,'');
+  If CountDataVarOffsetReferences(DataVars[VIdx].Name)=1 Then OmitDataVar[VIdx]:=True;
+  Inc(PatternCount); I:=I+12;
+ End;
+ WriteLn('  Concat parametre String FAR           : ',PatternCount,' expression(s).');
 End;
 
 Procedure ProcessTurboPascalDualNumericConcatEmitPatterns;
@@ -13778,6 +13810,7 @@ BEGIN
  ProcessTurboPascalTokenOptionWhilePatterns;
  { Reconstruction de literal + chaine locale vers Emit/EmitI }
  ProcessTurboPascalConcatLocalEmitPatterns;
+ ProcessTurboPascalFarStringConcatEmitPatterns;
  { Reconstruction de literal + entier + suffixe + LongInt vers EmitI }
  ProcessTurboPascalDualNumericConcatEmitPatterns;
  { Reconstruction des allocations de pointeurs du runtime Turbo Pascal }
