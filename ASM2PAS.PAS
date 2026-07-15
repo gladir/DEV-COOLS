@@ -10901,6 +10901,80 @@ Begin
   ' appel(s) reconstruit(s).');
 End;
 
+Procedure ProcessTurboPascalConcatThreeStringArgumentPatterns;
+{ Forme literal + variable String + literal, construite par 0BFEh/0C7Dh
+  puis passee comme un seul parametre FAR a une procedure. }
+Var
+ I,K,L,V1,V2,ProcIdx,TargetProc,PatternCount:LongInt;
+ A0,A3,A7,A11,A15:TAsmLine;
+ PrefixText,SuffixText,LocalName,Target,Code:String;
+ Valid,FoundLocal:Boolean;
+Begin
+ PatternCount:=0; I:=0;
+ While I+15<SrcLineCount do Begin
+  ParseInstructionLine(I,A0); ParseInstructionLine(I+3,A3);
+  ParseInstructionLine(I+7,A7); ParseInstructionLine(I+11,A11);
+  ParseInstructionLine(I+15,A15);
+  Valid:=(UpCaseStr(A0.Mnemonic)='LEA')and(A0.Op1.OpType=OT_MEM)and
+    IsSimpleRegInstruction(I+1,'PUSH','SS','')and
+    IsSimpleRegInstruction(I+2,'PUSH','DI','')and
+    (UpCaseStr(A3.Mnemonic)='MOV')and(A3.Op2.OpType=OT_OFFSET)and
+    IsSimpleRegInstruction(I+4,'PUSH','CS','')and
+    IsSimpleRegInstruction(I+5,'PUSH','DI','')and
+    IsRuntimeFarCall(I+6,$0BFE)and
+    (UpCaseStr(A7.Mnemonic)='LEA')and(A7.Op1.OpType=OT_MEM)and
+    IsSimpleRegInstruction(I+8,'PUSH','SS','')and
+    IsSimpleRegInstruction(I+9,'PUSH','DI','')and
+    IsRuntimeFarCall(I+10,$0C7D)and
+    (UpCaseStr(A11.Mnemonic)='MOV')and(A11.Op2.OpType=OT_OFFSET)and
+    IsSimpleRegInstruction(I+12,'PUSH','CS','')and
+    IsSimpleRegInstruction(I+13,'PUSH','DI','')and
+    IsRuntimeFarCall(I+14,$0C7D)and
+    (UpCaseStr(A15.Mnemonic)='CALL')and(A15.Op1.OpType<>OT_FAR);
+  If Not Valid Then Begin Inc(I); Continue; End;
+  V1:=FindDataVarByName(A3.Op2.LabelName);
+  V2:=FindDataVarByName(A11.Op2.LabelName);
+  ProcIdx:=FindProcForLine(I);
+  Target:=OperandToExpr(A15.Op1,ProcIdx);
+  TargetProc:=FindProcByName(Target);
+  If(V1=0)or(V2=0)or(Not IsLengthPrefixedString(V1))or
+    (Not IsLengthPrefixedString(V2))or(ProcIdx=0)or(TargetProc=0)Then Begin
+   Inc(I); Continue;
+  End;
+  PrefixText:=DataVars[V1].Elements[2].StrValue;
+  SuffixText:=DataVars[V2].Elements[2].StrValue;
+  If Pos('LIKE: VARIABLE INCONNUE',UpCaseStr(PrefixText))=1 Then
+   LocalName:='refname'
+  Else LocalName:='text_value';
+  FoundLocal:=False;
+  For L:=1 to Procs[ProcIdx].LocalCount do
+   If Procs[ProcIdx].Locals[L].IndexOffset=A7.Op1.Disp Then Begin
+    Procs[ProcIdx].Locals[L].Name:=LocalName;
+    Procs[ProcIdx].Locals[L].PascalType:=PT_STRING;
+    Procs[ProcIdx].Locals[L].TypeName:='STRING';
+    Procs[ProcIdx].Locals[L].Size:=256;
+    FoundLocal:=True; Break;
+   End;
+  If(Not FoundLocal)and(Procs[ProcIdx].LocalCount<MAX_LOCALS)Then Begin
+   Inc(Procs[ProcIdx].LocalCount);
+   With Procs[ProcIdx].Locals[Procs[ProcIdx].LocalCount] do Begin
+    Name:=LocalName; TypeName:='STRING'; PascalType:=PT_STRING;
+    Size:=256; Count:=1; IsIndexedMem:=False;
+    IndexOffset:=A7.Op1.Disp; IndexBaseReg:='BP'; IndexIndexReg:='';
+   End;
+  End;
+  Code:=Target+'('+QuotePascalString(PrefixText)+' + '+LocalName+' + '+
+    QuotePascalString(SuffixText)+');';
+  SetTranslationForLine(I,Code);
+  For K:=I+1 to I+15 do SetTranslationForLine(K,'');
+  If CountDataVarOffsetReferences(DataVars[V1].Name)=1 Then OmitDataVar[V1]:=True;
+  If CountDataVarOffsetReferences(DataVars[V2].Name)=1 Then OmitDataVar[V2]:=True;
+  Inc(PatternCount); I:=I+16;
+ End;
+ WriteLn('  Concat String a trois fragments      : ',PatternCount,
+  ' appel(s) reconstruit(s).');
+End;
+
 Procedure ProcessTurboPascalConcatStringArgumentPatterns;
 { Reunit literal + shortstring dans un temporaire, puis passe directement
   l'expression a une procedure. La source peut etre une copie locale d'une
@@ -12612,6 +12686,8 @@ BEGIN
  ProcessTurboPascalGlobalStringAssignments;
  { Reconstruction des arguments String FAR constants passes aux routines }
  ProcessTurboPascalDirectStringCallPatterns;
+ { Reconstruction de literal + String + literal passes comme argument }
+ ProcessTurboPascalConcatThreeStringArgumentPatterns;
  { Reconstruction de literal + String passes comme un seul argument }
  ProcessTurboPascalConcatStringArgumentPatterns;
  { Reconstruction des concatenations temporaires passees aux emetteurs }
