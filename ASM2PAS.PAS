@@ -591,6 +591,8 @@ Var
  DataVars:Array[1..MAX_DATAVARS] of TDataVar;
  DataVarCount:Integer;
  OmitDataVar:Array[1..MAX_DATAVARS] of Boolean;
+ DataVarOffsetRefCache:Array[1..MAX_DATAVARS] of Integer;
+ DataVarOffsetRefCacheBuilt:Boolean;
  NeedAsmText:Boolean;
  NeedRecoveredFormTable:Boolean;
  RecoveredGlobalStringCount:Integer;
@@ -7023,20 +7025,33 @@ Function CountDataVarOffsetReferences(Const VarName:String):Integer;
   utilisee nulle part ailleurs que dans le motif reconstruit. }
 Var
  I:LongInt;
- C:Integer;
+ VIdx,J:Integer;
  A:TAsmLine;
- U:String;
 Begin
- C:=0;
- U:=UpCaseStr(VarName);
- For I:=0 to SrcLineCount-1 do Begin
-  ParseInstructionLine(I,A);
-  If(A.Op1.OpType=OT_OFFSET)and(UpCaseStr(A.Op1.LabelName)=U)Then
-   Inc(C);
-  If(A.Op2.OpType=OT_OFFSET)and(UpCaseStr(A.Op2.LabelName)=U)Then
-   Inc(C);
+ VIdx:=FindDataVarByName(VarName);
+ If Not DataVarOffsetRefCacheBuilt Then Begin
+  { Une seule passe pour toutes les chaines. L'ancien comptage reparsait les
+    20 000 lignes pour chaque littéral et rendait les gros blocs Emit tres
+    couteux a reconstruire. La valeur stockee est nombre+1 afin que zero
+    continue de signifier « cache non initialise ». }
+  For I:=0 to SrcLineCount-1 do Begin
+   ParseInstructionLine(I,A);
+   If A.Op1.OpType=OT_OFFSET Then Begin
+    J:=FindDataVarByName(A.Op1.LabelName);
+    If J>0 Then Inc(DataVarOffsetRefCache[J]);
+   End;
+   If A.Op2.OpType=OT_OFFSET Then Begin
+    J:=FindDataVarByName(A.Op2.LabelName);
+    If J>0 Then Inc(DataVarOffsetRefCache[J]);
+   End;
+  End;
+  For J:=1 to DataVarCount do Inc(DataVarOffsetRefCache[J]);
+  DataVarOffsetRefCacheBuilt:=True;
  End;
- CountDataVarOffsetReferences:=C;
+ If VIdx>0 Then
+  CountDataVarOffsetReferences:=DataVarOffsetRefCache[VIdx]-1
+ Else
+  CountDataVarOffsetReferences:=0;
 End;
 
 Function TranslateINT21h(FuncAH,FuncAL,LineIdx:LongInt):String;
@@ -10878,6 +10893,15 @@ Begin
   End;
   Target:=OperandToExpr(C.Op1,FindProcForLine(I));
   TargetProc:=FindProcByName(Target);
+  { DISEXE conserve souvent une cible NEAR sous sa forme numerique
+    (CALL 03FEh), tandis que la procedure implicite porte le nom sub_03FE.
+    OperandToExpr retourne alors $03FE et l'ancien test abandonnait le
+    pattern, bien que le passage CS:DI soit sans ambiguite. }
+  If(TargetProc=0)and
+    (C.Op1.OpType in [OT_IMM8,OT_IMM16,OT_IMM32])Then Begin
+   Target:='sub_'+HexWord(Word(C.Op1.Imm));
+   TargetProc:=FindProcByName(Target);
+  End;
   If TargetProc=0 Then Begin Inc(I); Continue; End;
 
   { RET 4 represente ici un unique parametre shortstring FAR, et non deux
