@@ -11301,6 +11301,53 @@ Begin
   ' expression(s) reconstruite(s).');
 End;
 
+Procedure ProcessTurboPascalConcatLocalEmitPatterns;
+{ Reconnait un temporaire String forme de :
+    litteral + chaine_locale
+  puis passe directement a Emit/EmitI. Ce motif est notamment utilise pour
+  'JNZ     ' + etiquette et 'JMP     ' + etiquette. }
+Var
+ I,K,VIdx,ProcIdx,EmitProc,PatternCount:LongInt;
+ A0,A3,A7,A11:TAsmLine;
+ LiteralText,SourceExpr,EmitName,Code:String;
+ Valid:Boolean;
+Begin
+ PatternCount:=0; I:=0;
+ While I+11<SrcLineCount do Begin
+  ParseInstructionLine(I,A0); ParseInstructionLine(I+3,A3);
+  ParseInstructionLine(I+7,A7); ParseInstructionLine(I+11,A11);
+  Valid:=(UpCaseStr(A0.Mnemonic)='LEA')and(A0.Op1.OpType=OT_MEM)and
+    IsSimpleRegInstruction(I+1,'PUSH','SS','')and
+    IsSimpleRegInstruction(I+2,'PUSH','DI','')and
+    (UpCaseStr(A3.Mnemonic)='MOV')and(A3.Op2.OpType=OT_OFFSET)and
+    IsSimpleRegInstruction(I+4,'PUSH','CS','')and
+    IsSimpleRegInstruction(I+5,'PUSH','DI','')and
+    IsRuntimeFarCall(I+6,$0BFE)and
+    (UpCaseStr(A7.Mnemonic)='LEA')and(A7.Op1.OpType=OT_MEM)and
+    IsSimpleRegInstruction(I+8,'PUSH','SS','')and
+    IsSimpleRegInstruction(I+9,'PUSH','DI','')and
+    IsRuntimeFarCall(I+10,$0C7D)and
+    (UpCaseStr(A11.Mnemonic)='CALL')and(A11.Op1.OpType<>OT_FAR);
+  If Not Valid Then Begin Inc(I); Continue; End;
+  VIdx:=FindDataVarByName(A3.Op2.LabelName);
+  EmitName:=OperandToExpr(A11.Op1,FindProcForLine(I));
+  EmitProc:=FindProcByName(EmitName);
+  If(VIdx=0)or(Not IsLengthPrefixedString(VIdx))or(EmitProc=0)or
+    (Procs[EmitProc].ParamCount<>1)Then Begin Inc(I); Continue; End;
+  ProcIdx:=FindProcForLine(I);
+  SourceExpr:=OperandToExpr(A7.Op1,ProcIdx);
+  LiteralText:=DataVars[VIdx].Elements[2].StrValue;
+  Code:=EmitName+'('+QuotePascalString(LiteralText)+' + '+SourceExpr+');';
+  SetTranslationForLine(I,Code);
+  For K:=I+1 to I+11 do SetTranslationForLine(K,'');
+  If CountDataVarOffsetReferences(DataVars[VIdx].Name)=1 Then
+   OmitDataVar[VIdx]:=True;
+  Inc(PatternCount); I:=I+12;
+ End;
+ WriteLn('  Concat String locale vers emission   : ',PatternCount,
+  ' expression(s) reconstruite(s).');
+End;
+
 Procedure ProcessTurboPascalDualNumericConcatEmitPatterns;
 { Reconnait :
     EmitI(litteral + ItoSI(bpoff) + suffixe +
@@ -12964,6 +13011,8 @@ BEGIN
  ProcessTurboPascalConcatStringArgumentPatterns;
  { Reconstruction des concatenations temporaires passees aux emetteurs }
  ProcessTurboPascalConcatEmitPatterns;
+ { Reconstruction de literal + chaine locale vers Emit/EmitI }
+ ProcessTurboPascalConcatLocalEmitPatterns;
  { Reconstruction de literal + entier + suffixe + LongInt vers EmitI }
  ProcessTurboPascalDualNumericConcatEmitPatterns;
  { Reconstruction des allocations de pointeurs du runtime Turbo Pascal }
