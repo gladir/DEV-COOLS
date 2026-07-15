@@ -11138,6 +11138,81 @@ Begin
   ' expression(s) reconstruite(s).');
 End;
 
+Procedure ProcessTurboPascalComputedNumericConcatEmitPatterns;
+{ Reconnait literal + conversion d'une petite expression calculee dans AX
+  (MOV, ADD/SUB, SHL), puis passee directement a Emit/EmitI. }
+Var
+ I,K,P,VIdx,ProcIdx,ConvProc,EmitProc,PatternCount:LongInt;
+ A0,A3,A7,A:TAsmLine;
+ PrefixText,Expr,ConvName,EmitName,Code:String;
+ Valid,HaveExpr:Boolean;
+
+ Function ResolveCall(Const L:TAsmLine):String;
+ Var B:TAsmLine; R:String;
+ Begin
+  B:=L; R:=OperandToExpr(B.Op1,ProcIdx);
+  If FindProcByName(R)=0 Then Begin
+   If B.Op1.OpType in [OT_IMM8,OT_IMM16,OT_IMM32]Then
+    R:='sub_'+HexWord(Word(B.Op1.Imm))
+   Else If(B.Op1.OpType=OT_LABEL)and(B.Op1.LabelName<>'')Then
+    R:='sub_'+HexWord(Word(HexToInt(B.Op1.LabelName)));
+  End;
+  ResolveCall:=R;
+ End;
+Begin
+ PatternCount:=0; I:=0;
+ While I+15<SrcLineCount do Begin
+  ParseInstructionLine(I,A0); ParseInstructionLine(I+3,A3);
+  ParseInstructionLine(I+7,A7);
+  Valid:=(UpCaseStr(A0.Mnemonic)='LEA')and(A0.Op1.OpType=OT_MEM)and
+    IsSimpleRegInstruction(I+1,'PUSH','SS','')and
+    IsSimpleRegInstruction(I+2,'PUSH','DI','')and
+    (UpCaseStr(A3.Mnemonic)='MOV')and(A3.Op2.OpType=OT_OFFSET)and
+    IsSimpleRegInstruction(I+4,'PUSH','CS','')and
+    IsSimpleRegInstruction(I+5,'PUSH','DI','')and IsRuntimeFarCall(I+6,$0BFE)and
+    (UpCaseStr(A7.Mnemonic)='LEA')and IsSimpleRegInstruction(I+8,'PUSH','SS','')and
+    IsSimpleRegInstruction(I+9,'PUSH','DI','');
+  If Not Valid Then Begin Inc(I); Continue; End;
+  VIdx:=FindDataVarByName(A3.Op2.LabelName); ProcIdx:=FindProcForLine(I);
+  If(VIdx=0)or(Not IsLengthPrefixedString(VIdx))Then Begin Inc(I); Continue; End;
+  Expr:=''; HaveExpr:=False; P:=I+10;
+  While P<=I+13 do Begin
+   ParseInstructionLine(P,A);
+   If(UpCaseStr(A.Mnemonic)='MOV')and(UpCaseStr(A.Op1.Reg)='AX')Then Begin
+    Expr:=OperandToExpr(A.Op2,ProcIdx); HaveExpr:=True;
+   End Else If HaveExpr and(UpCaseStr(A.Mnemonic)='ADD')and
+     (UpCaseStr(A.Op1.Reg)='AX')Then
+    Expr:='('+Expr+' + '+OperandToExpr(A.Op2,ProcIdx)+')'
+   Else If HaveExpr and(UpCaseStr(A.Mnemonic)='SUB')and
+     (UpCaseStr(A.Op1.Reg)='AX')Then
+    Expr:='('+Expr+' - '+OperandToExpr(A.Op2,ProcIdx)+')'
+   Else If HaveExpr and(UpCaseStr(A.Mnemonic)='SHL')and
+     (UpCaseStr(A.Op1.Reg)='AX')Then
+    Expr:='('+Expr+' shl '+OperandToExpr(A.Op2,ProcIdx)+')'
+   Else If HaveExpr and(UpCaseStr(A.Mnemonic)='PUSH')and
+     (UpCaseStr(A.Op1.Reg)='AX')Then Break
+   Else Begin HaveExpr:=False; Break; End;
+   Inc(P);
+  End;
+  If(Not HaveExpr)or(P>I+13)Then Begin Inc(I); Continue; End;
+  ParseInstructionLine(P+1,A); ConvName:=ResolveCall(A);
+  If Not IsRuntimeFarCall(P+2,$0C7D)Then Begin Inc(I); Continue; End;
+  ParseInstructionLine(P+3,A); EmitName:=ResolveCall(A);
+  ConvProc:=FindProcByName(ConvName); EmitProc:=FindProcByName(EmitName);
+  If(ConvProc=0)or(EmitProc=0)Then Begin Inc(I); Continue; End;
+  PrefixText:=DataVars[VIdx].Elements[2].StrValue;
+  Code:=EmitName+'('+QuotePascalString(PrefixText)+' + '+ConvName+'('+Expr+'));';
+  SetTranslationForLine(I,Code);
+  For K:=I+1 to P+3 do SetTranslationForLine(K,'');
+  Inc(ReconstructedConcatRefs[VIdx]);
+  If CountDataVarOffsetReferences(DataVars[VIdx].Name)=ReconstructedConcatRefs[VIdx]Then
+   OmitDataVar[VIdx]:=True;
+  Inc(PatternCount); I:=P+4;
+ End;
+ WriteLn('  Concat expression numerique emission : ',PatternCount,
+  ' expression(s) reconstruite(s).');
+End;
+
 Procedure ProcessTurboPascalDirectStringCallPatterns;
 { Reunit un pointeur FAR CS:offset passe a une routine en un parametre
   String Pascal direct : MOV DI,OFFSET s / PUSH CS / PUSH DI / CALL p
@@ -13537,6 +13612,7 @@ BEGIN
  ProcessTurboPascalConcatEmitPatterns;
  ProcessTurboPascalSimpleNumericConcatEmitPatterns;
  ProcessTurboPascalLongNumericSuffixConcatEmitPatterns;
+ ProcessTurboPascalComputedNumericConcatEmitPatterns;
  ProcessTurboPascalNumericAndLocalConcatEmitPatterns;
  { Reconstruction des While combinant TokIsKw et cur_tok_str }
  ProcessTurboPascalTokenOptionWhilePatterns;
