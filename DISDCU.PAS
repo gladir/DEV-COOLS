@@ -107,6 +107,7 @@ Const
   TAG_VOID           = $40;   { '@' }
   TAG_LABEL          = $2B;   { '+' }
   TAG_SPECVAR        = $37;   { '7', Ver>=10 }
+  TAG_CLASSVAR       = $36;   { arClassVar, en test comme etiquette principale }
   TAG_RESSTR_OLD     = $32;   { '2', Ver<10 }
   TAG_RESSTR_NEW     = $33;   { '3', Ver>=10 }
   TAG_THREADVAR_OLD  = $31;   { '1', Ver<10 }
@@ -130,6 +131,68 @@ Const
   TAG_IMPVAL         = $67;   { 'g' }
   TAG_EXPORT         = $69;   { 'i' }
   TAG_STOP2          = $9F;
+
+  { --- etiquettes de la liste d arguments d une procedure/fonction   }
+  { (ReadDeclList LK=dlArgs) - valeurs REELLES confirmees contre le      }
+  { vrai code source (DCU32.pas const arVal=$21, etc.). Portee : seuls      }
+  { les cas simples (parametre ordinaire, convention d appel, valeur         }
+  { par defaut "set") sont decodes - voir SkipArgList.                        }
+  TAG_ARG_VAL        = $21;   { '!' }
+  TAG_ARG_VAR        = $22;   { '"' }
+  TAG_ARG_RESULT     = $23;   { '#' }
+  TAG_ARG_FLD        = $2C;   { ',' }
+  TAG_ARG_METHOD     = $2D;   { '-' }
+  TAG_ARG_CONSTR     = $2E;   { '.' }
+  TAG_ARG_DESTR      = $2F;   { '/' }
+  TAG_ARG_CDECL      = $81;
+  TAG_ARG_PASCAL     = $82;
+  TAG_ARG_STDCALL    = $83;
+  TAG_ARG_SAFECALL   = $84;
+  TAG_ARG_SETDEFT    = $9A;
+  { arProperty, valeur EMPIRIQUE (2026-07-16, Access2000.dcu, membre    }
+  { d interface) : $31, PAS la valeur $30 citee dans le texte source        }
+  { (meme constat que pour drStrConstRec/drTypeP - a verifier au cas          }
+  { par cas plutot que faire confiance au texte seul).                            }
+  TAG_ARG_PROPERTY   = $31;
+  { $30, empirique (2026-07-16, Access2000.dcu) : precede directement    }
+  { le nom "Destroy" (destructeur), exactement comme $2F (deja               }
+  { TAG_ARG_DESTR) precede "Create" (constructeur) - meme famille de tag        }
+  { que les methodes, structure IDENTIQUE (voir SkipMethodDecl).                  }
+  TAG_ARG_DESTR2     = $30;
+  TAG_ANON_BLOCK     = $01;   { arAnonymousBlock, Ver>=verD2010 : 2 TNDX }
+  TAG_DELAYED_IMP    = $B0;   { drDelayedImpInfo, Ver>=verD2009 }
+  TAG_A5INFO         = $A5;   { generiques, Ver>=verD2009 }
+  TAG_A6INFO         = $A6;   { generiques, Ver>=verD2009 }
+  TAG_A7INFO         = $A7;   { generiques (TTemplateParmsDeclModifier) }
+  TAG_A8INFO         = $A8;   { generiques, simple (un seul TNDX) }
+  TAG_EMBEDDED_PROC_START = $6A;   { 'j' }
+  TAG_EMBEDDED_PROC_END   = $6B;   { 'k' }
+
+  { --- "genre de liste" (LK reel, TDeclListKind) - influence la          }
+  { structure exacte de TLocalDecl.Create (voir SkipLocalDecl) : LK_ARGS   }
+  { (dlArgs/dlArgsT, parametres) autorise le decorateur "[REF]" ; LK_INTF     }
+  { (dlInterface/dlDispInterface, membres d interface) lit un champ NDXB       }
+  { supplementaire ; LK_OTHER (dlFields/dlClass) n a ni l un ni l autre.         }
+  LK_ARGS     = 0;
+  LK_OTHER    = 1;
+  LK_INTF     = 2;
+  { LK_DISPINTF (dlDispInterface) : comme LK_INTF pour NDXB, mais       }
+  { arProperty y utilise TDispPropDecl - qui herite de TLocalDecl (PAS de  }
+  { TPropDecl!) - structure DIFFERENTE et bien plus courte, confirmee        }
+  { (DCURecs.pas : "TDispPropDecl = class(TLocalDecl)", aucun Create          }
+  { redefini). Bogue trouve empiriquement (Access2000.dcu, tag $FF               }
+  { apres la propriete "Application" traitee via TPropDecl - hypothese            }
+  { erronee, puisque le vrai dispatch utilise TLocalDecl pour ce contexte).           }
+  LK_DISPINTF = 3;
+
+  { --- corps de procedure (implementation) - structure CONFIRMEE :   }
+  { drCBlock = taille (TNDX) + N octets de code machine brut ; drFixUp   }
+  { = compte (TNDX) puis, par entree, dOfs(TNDX)+octet+NDX(TNDX). Le        }
+  { CODE lui-meme n est PAS decompile (portee documentee), seulement          }
+  { correctement SAUTE pour atteindre les declarations suivantes.               }
+  TAG_CBLOCK         = $6C;   { 'l' }
+  TAG_FIXUP          = $6D;   { 'm' }
+  TAG_OREC           = $6F;   { 'o', drORec, Ver>=verD8(8) }
 
   { --- definitions de types ORDINAUX/SIMPLES : structure connue   }
   { (paire de bornes ou reference unique) - donc traitees.          }
@@ -210,6 +273,15 @@ Var
   { fichier ne contient que des "uses"). Evite les lignes de centaines            }
   { de caracteres d un seul bloc "Nom" suivi de tous ses imports en une    }
   { fois - defaut signale par l utilisateur.                                 }
+  { Compteur d "echappement" pour drEmbeddedProcStart/drEmbeddedProcEnd    }
+  { isoles (sans paire correspondante au meme niveau d imbrication) -        }
+  { CONFIRME (DCU32.pas, variable EmbEndCnt) : un drEmbeddedProcEnd "nu"        }
+  { rencontre dans un contexte dlArgs/dlArgsT incremente ce compteur SANS          }
+  { rien ouvrir ; un drEmbeddedProcStart rencontre alors que ce compteur                }
+  { est >0 se contente de le decrementer plutot que d ouvrir un vrai bloc                }
+  { imbrique (annule un "echappement" en attente au lieu d en creer un nouveau).            }
+  EmbEndCnt       : Integer;
+
   UsesFlushed     : Boolean;
   UsesCount       : Integer;
   UsesNames       : Array[1..MAX_USES] Of TString;
@@ -460,53 +532,180 @@ End;
 { et renvoie l INDEX local du type enregistre.                       }
 { ------------------------------------------------------------ }
 
-Function DefRange(Const Kind: TString): Integer;
+{ CORRECTION MAJEURE (2026-07-16, empirique + confirmee contre le vrai   }
+{ code source DCURecs.pas) : TOUTES les definitions de types ANONYMES       }
+{ (TRangeBaseDef/TFloatDef/TPtrDef/TSetDef/TVoidDef, et plus tard              }
+{ TRecDef/TClassDef/etc.) heritent DIRECTEMENT de TTypeDef (aucune              }
+{ ne redefinit son propre Create) - or TTypeDef.Create lit LUI-MEME un            }
+{ en-tete commun AVANT les champs propres a chaque sous-type : RTTISz              }
+{ (TNDX) + Sz (TNDX signe) + hAddrDef (TNDX) + [X (TNDX) si Ver dans                 }
+{ [verD2005..verK1)]. Aucune des fonctions Def* ne lisait cet en-tete -               }
+{ desynchronisation a CHAQUE type anonyme rencontre (trouve en tracant                  }
+{ octet par octet REST.OpenSSL.dcu : meme apres avoir corrige les champs                  }
+{ propres a TRangeDef, l echec persistait, decalage exactement de la                        }
+{ taille de cet en-tete manquant).                                                              }
+
+Procedure ReadTypeDefHeader;
 Var
-  Lo, Hi: LongInt;
+  RTTISz, Sz, HAddrDef, X: LongInt;
 Begin
-  Lo := ReadSIndex;
-  Hi := ReadSIndex;
-  DefRange := RegisterType(FmtOrd(Lo) + '..' + FmtOrd(Hi) +
-    ' { ' + Kind + ' }');
+  RTTISz := ReadUIndex;
+  Sz := ReadSIndex;
+  HAddrDef := ReadUIndex;
+  If (Ver >= 9) And (Ver < 100) Then X := ReadUIndex;
 End;
 
+Function DefRange(Const Kind: TString): Integer;
+Var
+  HDTBase: LongInt;
+  Lo, Hi: LongInt;
+  B: LongInt;
+Begin
+  ReadTypeDefHeader;
+  HDTBase := ReadUIndex;
+  Lo := ReadSIndex;
+  Hi := ReadSIndex;
+  If (Ver >= 8) And (Ver < 100) Then
+    B := ReadUIndex
+  Else
+    B := RB;
+  DefRange := RegisterType(FmtOrd(Lo) + '..' + FmtOrd(Hi) +
+    ' { ' + Kind + ' de ' + TypeRefText(HDTBase) + ' }');
+End;
+
+{ TPtrDef.Create confirme : hRefDT (TNDX) + [TNDX supplementaire si    }
+{ Ver>=verD2009(12), champ non exploite ici].                             }
 Function DefPtr: Integer;
 Var
   Target: LongInt;
 Begin
+  ReadTypeDefHeader;
   Target := ReadUIndex;
+  If (Ver >= 12) And (Ver < 100) Then ReadUIndex;
   DefPtr := RegisterType('^' + TypeRefText(Target));
 End;
 
+{ TSetDef.Create confirme : BStart (UN OCTET BRUT, PAS un TNDX) puis   }
+{ hBaseDT (TNDX) - le code precedent ne lisait pas BStart du tout.        }
 Function DefSet: Integer;
 Var
+  BStart: Byte;
   Base: LongInt;
 Begin
+  ReadTypeDefHeader;
+  BStart := RB;
   Base := ReadUIndex;
   DefSet := RegisterType('set of ' + TypeRefText(Base));
 End;
 
+{ TFloatDef.Create confirme : B (UN OCTET). Pour Ver>=verD_XE3(17),    }
+{ si B and $80<>0 (fkExtra), B:=B and not $80 PUIS un octet             }
+{ SUPPLEMENTAIRE est lu (champ non exploite ici). Kind 0=Real (pas         }
+{ Single - decalage corrige par rapport au code precedent, qui              }
+{ commencait a 0=Single ; erreur seulement d affichage, sans consequence      }
+{ sur l alignement puisque Kind est deja un octet dans les deux cas).          }
 Function DefFloat: Integer;
+Const
+  FK_EXTRA = $80;
 Var
   Kind: Byte;
   S: TString;
 Begin
+  ReadTypeDefHeader;
   Kind := RB;
+  If (Ver >= 17) And (Ver < 100) Then
+  Begin
+    If (Kind And FK_EXTRA) <> 0 Then
+    Begin
+      Kind := Kind And (Not FK_EXTRA);
+      RB;
+    End;
+  End;
   Case Kind Of
-    0: S := 'Single';
-    1: S := 'Double';
-    2: S := 'Extended';
-    3: S := 'Comp';
-    4: S := 'Currency';
+    0: S := 'Real';
+    1: S := 'Single';
+    2: S := 'Double';
+    3: S := 'Extended';
+    4: S := 'Comp';
+    5: S := 'Currency';
   Else
     S := 'float(kind ' + IntToStr(Kind) + ')';
   End;
   DefFloat := RegisterType(S);
 End;
 
+{ TVoidDef.Create confirme : [UN OCTET BRUT supplementaire si Ver     }
+{ dans [verD_XE(15)..verK1(100))].                                       }
 Function DefVoid: Integer;
 Begin
+  ReadTypeDefHeader;
+  If (Ver >= 15) And (Ver < 100) Then RB;
   DefVoid := RegisterType('void');
+End;
+
+{ TEnumDef.Create confirme (TEnumDef herite de TRangeBaseDef, qui       }
+{ herite de TTypeDef - meme en-tete commun) : hDTBase (TNDX) + [TNDX      }
+{ supplementaire si Ver>=verD2009(12)] + NDX (TNDX signe) + Lo (TNDX          }
+{ signe) + Hi (TNDX signe) + B (TNDX si Ver>=verD8, sinon UN OCTET).             }
+{ Les noms des valeurs de l enumeration eux-memes (ex. clRed, clBlue)              }
+{ ne font PAS partie de cette structure - ce sont des enregistrements                }
+{ drConst SEPARES ailleurs dans le fichier (deja geres par                              }
+{ ProcessConstDecl), rattaches a ce type par hDT plutot que d etre                        }
+{ imbriques ici.                                                                             }
+Function DefEnum: Integer;
+Var
+  HDTBase, Lo, Hi, B: LongInt;
+Begin
+  ReadTypeDefHeader;
+  HDTBase := ReadUIndex;
+  If (Ver >= 12) And (Ver < 100) Then ReadUIndex;
+  ReadSIndex;   { NDX }
+  Lo := ReadSIndex;
+  Hi := ReadSIndex;
+  If (Ver >= 8) And (Ver < 100) Then
+    B := ReadUIndex
+  Else
+    B := RB;
+  DefEnum := RegisterType('enum(' + FmtOrd(Lo) + '..' + FmtOrd(Hi) +
+    ') { de ' + TypeRefText(HDTBase) + ' }');
+End;
+
+{ TArrayDef0.Create(IsStr) confirme - PARTAGE par drArrayDef (IsStr=  }
+{ Faux, TArrayDef.Create(false)) ET drShortStrDef/drStringDef/            }
+{ drWideStrDef/drUnicodeStringDef (IsStr=Vrai, TShortStrDef.Create /          }
+{ TStringDef.Create - structure IDENTIQUE dans les deux classes) :              }
+{ en-tete TTypeDef + B1 (UN OCTET) + hDTNdx (TNDX, type d index/bornes)           }
+{ + hDTEl (TNDX, type d element) + [CP (TNDX, page de code) si IsStr et              }
+{ Ver>=verD2009(12)].                                                                   }
+Function DefArrayLike(IsStr: Boolean; Const Kind: TString): Integer;
+Var
+  B1: Byte;
+  HDTNdx, HDTEl, CP: LongInt;
+Begin
+  ReadTypeDefHeader;
+  B1 := RB;
+  HDTNdx := ReadUIndex;
+  HDTEl := ReadUIndex;
+  If IsStr And (Ver >= 12) And (Ver < 100) Then CP := ReadUIndex;
+  If IsStr Then
+    DefArrayLike := RegisterType(Kind)
+  Else
+    DefArrayLike := RegisterType('array[' + TypeRefText(HDTNdx) + '] of ' +
+      TypeRefText(HDTEl));
+End;
+
+{ TDynArrayDef herite de TPtrDef SANS le redefinir (Ver>=verD2009) -   }
+{ structure IDENTIQUE a DefPtr (en-tete TTypeDef + hRefDT (TNDX) +          }
+{ [TNDX supplementaire si Ver>=12]) - seul l affichage differe               }
+{ ("array of X" plutot que "^X").                                                }
+Function DefDynArray: Integer;
+Var
+  Target: LongInt;
+Begin
+  ReadTypeDefHeader;
+  Target := ReadUIndex;
+  If (Ver >= 12) And (Ver < 100) Then ReadUIndex;
+  DefDynArray := RegisterType('array of ' + TypeRefText(Target));
 End;
 
 { ------------------------------------------------------------ }
@@ -623,8 +822,8 @@ End;
 { explicitement hors de portee) : F1 and $80 <> 0 (champs B2/F3 additionnels).  }
 { ------------------------------------------------------------ }
 
-Procedure ReadNameFHeader(Var Name: TString; Var F: LongInt; Var HasInf: Boolean;
-  Var Inf: LongWord);
+Procedure ReadNameFHeaderEx(Var Name: TString; Var F: LongInt; Var HasInf: Boolean;
+  Var Inf: LongWord; NoInf: Boolean);
 Var
   F1: LongInt;
 Begin
@@ -633,12 +832,86 @@ Begin
   F1 := 0;
   If Ver >= 8 Then F1 := ReadUIndex;
   If Ver >= 12 Then ReadUIndex;   { F4 : non exploite ici }
-  HasInf := (F And $40) <> 0;
+  { NoInf force l absence du champ Inf, quel que soit F and $40 -       }
+  { utilise par TSysProc8Decl (drSysProc, Ver>=verD8) : le vrai code       }
+  { source (DCURecs.pas) confirme un appel avec ce parametre a Vrai.         }
+  HasInf := (Not NoInf) And ((F And $40) <> 0);
   If HasInf Then Inf := RUL Else Inf := 0;
   If (Ver >= 8) And ((F1 And $80) <> 0) Then
     Fail('en-tete "' + Name + '" : indicateur F1 and $80 rencontre ' +
       '(champs additionnels MSIL non pris en charge - hors de portee, ' +
       'voir DISDCU.PAS en-tete)');
+End;
+
+Procedure ReadNameFHeader(Var Name: TString; Var F: LongInt; Var HasInf: Boolean;
+  Var Inf: LongWord);
+Begin
+  ReadNameFHeaderEx(Name, F, HasInf, Inf, False);
+End;
+
+{ ------------------------------------------------------------ }
+{ Petits lecteurs "sauter N octets" utilises par plusieurs          }
+{ structures (drConstAddInfo, liste d arguments, etc.) : SkipNDXStr =  }
+{ ReadNDXStr/ReadNDXStrRef reels (DCU_In.pas) : longueur en TNDX (PAS     }
+{ un octet fixe comme ReadIdentStr) puis ce nombre d octets bruts.          }
+{ SkipRawBlock = SkipBlock reel (DCU_In.pas) : N octets bruts, valeur          }
+{ non interpretee.                                                                }
+{ ------------------------------------------------------------ }
+
+Procedure SkipRawBlock(N: LongInt);
+Var
+  I: LongInt;
+Begin
+  For I := 1 To N Do RB;
+End;
+
+Procedure SkipNDXStr;
+Var
+  L: LongInt;
+Begin
+  L := ReadUIndex;
+  SkipRawBlock(L);
+End;
+
+{ ------------------------------------------------------------ }
+{ TConstValInfo (Kind+ValSz+Val/ValPtr) - structure CONFIRMEE          }
+{ contre le vrai code source (DCURecs.pas, TConstValInfo.Read) -         }
+{ partagee par drConst (ProcessConstDecl), les arguments d attribut          }
+{ (SkipOneAttribute) et les constantes anonymes d une liste                     }
+{ d arguments (SkipConstArg). La valeur elle-meme n est PAS interpretee            }
+{ (Kind=0 scalaire,1 chaine,2 resourcestring,3 flottant,4 set/pointeur,              }
+{ 5 chaine Unicode) : structure lue et correctement sautee seulement.                 }
+{ ------------------------------------------------------------ }
+
+Procedure SkipConstValInfo(Const Context: TString; Var Kind: LongInt);
+Var
+  NeedVal: Boolean;
+  ValSz: LongInt;
+  Val: LongInt;
+  I: LongInt;
+Begin
+  NeedVal := True;
+  Kind := 0;
+  If Ver > 4 Then
+  Begin
+    Kind := ReadUIndex;
+    If (Kind < 0) Or (Kind > 5) Then
+    Begin
+      Fail(Context + ' : Kind hors intervalle attendu (0..5) : ' +
+        IntToStr(Kind) + ' - desynchronisation probable');
+      Exit;
+    End;
+    If (Ver >= 16) And (Ver < 100) Then
+      NeedVal := (Kind <> 4);
+  End;
+
+  ValSz := ReadUIndex;
+  If ValSz = 0 Then
+  Begin
+    If NeedVal Then Val := ReadSIndex;
+  End
+  Else
+    For I := 1 To ValSz Do RB;   { bloc memoire brut (ValPtr), valeur non interpretee }
 End;
 
 { ------------------------------------------------------------ }
@@ -732,7 +1005,10 @@ Var
 Begin
   Name := ReadIdentStr;
 
-  If Ver >= 8 Then HPack := ReadUIndex;
+  { CORRECTION (2026-07-16, DCU32.pas, TUnit.ReadUses) : hPack n est PAS   }
+  { lu pour drDLL specifiquement (seulement drUnit/drUnit1) - condition       }
+  { reelle "if (TagRq<>drDLL) and (Ver>=verD8)".                                 }
+  If (Ver >= 8) And (TagRq <> TAG_DLL) Then HPack := ReadUIndex;
 
   If Ver >= 10 Then
     Inf := ReadUIndex
@@ -845,12 +1121,824 @@ Begin
   EmitVar(Name, HDT, Tag = TAG_SPECVAR);
 End;
 
+{ CONFIRME EMPIRIQUEMENT (2026-07-16, System.Classes.dcu et                }
+{ Vcl.Controls.dcu) : $36, rencontre comme etiquette PRINCIPALE (pas          }
+{ dans une liste de membres), est arClassVar (TClassVarDecl = TLocalDecl        }
+{ SANS redefinition - Name simple, PAS d en-tete F/F1/F4/Inf) apparaissant           }
+{ comme declaration autonome, de la meme facon que drSpecVar (TAG_SPECVAR)             }
+{ apparait deja seul au niveau principal pour les variables de classe.                    }
+{ Un OCTET SUPPLEMENTAIRE (nature exacte non identifiee, peut-etre liee a                    }
+{ un indicateur de visibilite) suit systematiquement NDX - confirme en                          }
+{ retombant exactement sur l etiquette suivante (validee independamment,                           }
+{ TAG_TYPEP) dans les deux fichiers testes ; ce seul octet a debloque                                 }
+{ plusieurs centaines de Ko supplementaires dans chacun des deux fichiers.                              }
+Procedure ProcessClassVarTopLevel;
+Var
+  Name: TString;
+  HDT: LongInt;
+Begin
+  Name := ReadIdentStr;
+  ReadUIndex;    { LocFlags }
+  If Ver >= 8 Then ReadUIndex;    { LocFlagsX }
+  If (Ver >= 12) And (Ver < 100) Then ReadUIndex;   { B3 }
+  HDT := ReadUIndex;
+  ReadSIndex;    { NDX }
+  RB;            { octet supplementaire non identifie - voir commentaire ci-dessus }
+  WriteLn(OutF, '  { class var } ', Name, ': ', TypeRefText(HDT), ';');
+End;
+
+{ ------------------------------------------------------------ }
+{ Determine si un nom de procedure/fonction est la convention        }
+{ interne "sans nom" du compilateur (TProcDecl.IsUnnamed reelle) :     }
+{ vide, ".", ".." (Ver>=verD6), premier caractere "." (Ver>=verD8),      }
+{ ou premier caractere "$" (Ver dans [verD_XE..verK1)). Quand VRAI,        }
+{ TProcDecl.Create NE LIT PAS VProc/hDTRes/hClass/CallKind/liste            }
+{ d arguments du tout - la signature s arrete net apres B0/Sz/X.               }
+{ ------------------------------------------------------------ }
+
+Function IsUnnamedProcName(Const Name: TString): Boolean;
+Begin
+  IsUnnamedProcName := True;
+  If (Length(Name) = 0) Or (Name = '.') Then Exit;
+  If (Ver >= 6) And (Ver < 100) And (Name = '..') Then Exit;
+  If Ver >= 8 Then
+  Begin
+    If Name[1] = '.' Then Exit;
+    If (Name[1] = '$') And (Ver >= 15) And (Ver < 100) Then Exit;
+  End;
+  IsUnnamedProcName := False;
+End;
+
+{ ------------------------------------------------------------ }
+{ Une entree simple de liste d arguments (TLocalDecl, cas M=Faux :   }
+{ arVal/arVar/arResult/arFld/drVar - PAS arMethod/arConstr/arDestr,     }
+{ qui utilisent une structure differente non geree ici, hors de           }
+{ portee pour une simple liste de parametres). Structure CONFIRMEE          }
+{ (DCURecs.pas, TLocalDecl.Create) : Name (TNameStr, PAS d en-tete             }
+{ TNameFDecl - TLocalDecl herite de TNameDecl directement) + LocFlags          }
+{ (TNDX) + [LocFlagsX brut si Ver>=verD8] + [B3 si Ver>=verD2009] +               }
+{ [ULong "[REF]" si Ver>=verD_XE4 et LocFlags and $40] + hDT (TNDX) +             }
+{ NDX (TNDX SIGNE).                                                                 }
+{ ------------------------------------------------------------ }
+
+{ CORRECTION (2026-07-16) : ajout du parametre LK (genre de liste),   }
+{ necessaire pour decoder les MEMBRES D INTERFACE (arMethod/arConstr/   }
+{ arDestr, LK_INTF) - structure DIFFERENTE des parametres simples :        }
+{ hDT/NDX utilisent ReadIndex (signe) au lieu de ReadUIndex, ET un            }
+{ champ NDXB (TNDX) supplementaire est lu entre les deux quand                    }
+{ LK=LK_INTF (dlInterface/dlDispInterface) - confirme (DCURecs.pas,                  }
+{ TLocalDecl.Create). Le decorateur "[REF]" ne s applique qu a LK_ARGS.                 }
+Procedure SkipLocalDecl(Tag: Byte; LK: Byte);
+Var
+  Name: TString;
+  LocFlags: LongInt;
+  IsMethod: Boolean;
+Begin
+  Name := ReadIdentStr;
+  LocFlags := ReadUIndex;
+  If Ver >= 8 Then ReadUIndex;    { LocFlagsX brut, valeur non exploitee }
+  If (Ver >= 12) And (Ver < 100) Then ReadUIndex;   { B3 }
+  If (Ver >= 18) And (Ver < 100) And (LK = LK_ARGS) And
+    ((LocFlags And $40) <> 0) Then RUL;
+
+  IsMethod := (Tag = TAG_ARG_METHOD) Or (Tag = TAG_ARG_CONSTR) Or
+    (Tag = TAG_ARG_DESTR);
+
+  If IsMethod Then ReadSIndex Else ReadUIndex;   { hDT }
+  If (LK = LK_INTF) Or (LK = LK_DISPINTF) Then ReadUIndex;   { NDXB }
+  If IsMethod Then ReadUIndex Else ReadSIndex;    { NDX }
+End;
+
+{ TMethodDecl (arMethod/arConstr/arDestr HORS interface/dispinterface -  }
+{ InIntrf=Faux) : herite de TLocalDecl (voir SkipLocalDecl ci-dessus,       }
+{ deja applique) PUIS lit des champs SUPPLEMENTAIRES, CONFIRMES              }
+{ (DCURecs.pas, TMethodDecl.Create, cas non-MSIL) : [UN OCTET si                 }
+{ Ver>=verD2009(12) et Name non vide] + [hImport (TNDX) si Ver>=verD7(7)             }
+{ ou Name vide] + [pour arMethod SEULEMENT, si Ver>=verD2009(12) : une                 }
+{ SUITE d octets appartenant a un ensemble precis (sSkip, dont la taille                 }
+{ depend d etapes de version - CONFIRME, DCU_In.pas ReadByteFrom = PEEK,                    }
+{ ne consomme que si l octet appartient a l ensemble)].                                        }
+
+Function ComputeMethodSkipIdx: Integer;
+Var
+  N: Integer;
+Begin
+  N := 0;
+  If Ver >= 14 Then
+  Begin
+    Inc(N);
+    If Ver >= 16 Then
+    Begin
+      Inc(N);
+      If Ver >= 17 Then
+      Begin
+        Inc(N);
+        If Ver >= 18 Then
+        Begin
+          Inc(N);
+          If Ver >= 21 Then
+          Begin
+            Inc(N);
+            If Ver >= 22 Then
+            Begin
+              Inc(N);
+              If Ver >= 25 Then Inc(N);
+            End;
+          End;
+        End;
+      End;
+    End;
+  End;
+  ComputeMethodSkipIdx := N;
+End;
+
+Function ByteInSkipSet(B: Byte; SetIdx: Integer): Boolean;
+Begin
+  ByteInSkipSet := False;
+  Case SetIdx Of
+    0: ByteInSkipSet := B In [$00,$02,$04,$08,$10,$18,$20,$80,$84,$21,$61];
+    1: ByteInSkipSet := B In [$00,$01,$02,$04,$08,$10,$18,$20,$80,$84,$21,$61];
+    2: ByteInSkipSet := B In [$00,$01,$02,$04,$08,$10,$18,$20,$28,$38,$80,
+                              $84,$21,$61];
+    3: ByteInSkipSet := B In [$00,$01,$02,$04,$08,$10,$18,$20,$28,$38,$42,
+                              $22,$09,$80,$84,$21,$61];
+    4: ByteInSkipSet := B In [$00,$01,$02,$04,$08,$10,$18,$20,$28,$38,$42,
+                              $22,$09,$47,$4F,$80,$84,$21,$61];
+    5: ByteInSkipSet := B In [$00,$01,$02,$04,$08,$10,$18,$20,$28,$38,$42,
+                              $22,$09,$47,$4F,$60,$80,$84,$21,$61];
+    6: ByteInSkipSet := B In [$00,$01,$02,$04,$08,$10,$18,$20,$28,$38,$42,
+                              $22,$09,$47,$4F,$60,$A1,$80,$84,$21,$61];
+    7: ByteInSkipSet := B In [$00,$01,$02,$04,$08,$10,$18,$20,$28,$38,$42,
+                              $22,$09,$47,$4F,$60,$A1,$07,$41,$80,$84,$21,$61];
+  End;
+End;
+
+Procedure SkipMethodDecl(Tag: Byte; LK: Byte);
+Var
+  Name: TString;
+  InIntrf: Boolean;
+  SkipIdx: Integer;
+Begin
+  Name := ReadIdentStr;
+  ReadUIndex;    { LocFlags }
+  If Ver >= 8 Then ReadUIndex;    { LocFlagsX brut }
+  If (Ver >= 12) And (Ver < 100) Then ReadUIndex;   { B3 }
+
+  ReadSIndex;    { hDT }
+  If (LK = LK_INTF) Or (LK = LK_DISPINTF) Then ReadUIndex;   { NDXB }
+  ReadUIndex;    { NDX }
+
+  InIntrf := (LK = LK_INTF) Or (LK = LK_DISPINTF);
+  If Not InIntrf Then
+  Begin
+    If (Ver >= 12) And (Ver < 100) And (Length(Name) > 0) Then RB;
+    If ((Ver >= 7) And (Ver < 100)) Or (Length(Name) = 0) Then ReadUIndex;
+
+    If (Ver >= 12) And (Ver < 100) And (Tag = TAG_ARG_METHOD) Then
+    Begin
+      SkipIdx := ComputeMethodSkipIdx;
+      While (Not Stopped) And ByteInSkipSet(PeekByte, SkipIdx) Do RB;
+    End;
+  End;
+End;
+
+{ arSetDeft (valeur par defaut d un parametre "set") : PAS de nom,   }
+{ juste hConst+hArg (2 TNDX) - confirme (DCURecs.pas, TSetDeftInfo).   }
+Procedure SkipSetDeft;
+Begin
+  ReadUIndex;
+  ReadUIndex;
+End;
+
+{ arProperty (TPropDecl.Create, herite de TNameDecl - Name simple,    }
+{ SANS en-tete F/F1/F4/Inf) - structure CONFIRMEE (DCURecs.pas) :        }
+{ LocFlags (TNDX signe) + [LocFlagsX brut si Ver>=verD8] + [X4 si            }
+{ Ver>=verD2009] + hDT (TNDX) + NDX (TNDX signe) + hIndex (TNDX signe)          }
+{ + hRead+hWrite+hStored (3 TNDX) + [hReadOrig+hWriteOrig (2 TNDX) si              }
+{ Ver>=verD8] + hDeft (TNDX signe, valeur par defaut "default").                     }
+Procedure SkipProperty;
+Begin
+  ReadIdentStr;      { Name }
+  ReadSIndex;        { LocFlags }
+  If Ver >= 8 Then ReadUIndex;    { LocFlagsX }
+  If (Ver >= 12) And (Ver < 100) Then ReadUIndex;   { X4 }
+  ReadUIndex;   { hDT }
+  ReadSIndex;   { NDX }
+  ReadSIndex;   { hIndex }
+  ReadUIndex;   { hRead }
+  ReadUIndex;   { hWrite }
+  ReadUIndex;   { hStored }
+  If (Ver >= 8) And (Ver < 100) Then
+  Begin
+    ReadUIndex;   { hReadOrig }
+    ReadUIndex;   { hWriteOrig }
+  End;
+  ReadSIndex;   { hDeft }
+End;
+
+{ Variante SILENCIEUSE (aucune sortie) de ProcessNamedType/           }
+{ ProcessTypeP/ProcessConstDecl, pour un type/const ANONYME declare     }
+{ localement dans une liste d arguments (type d un parametre, valeur      }
+{ par defaut) - jamais une declaration Pascal visible au niveau du           }
+{ fichier de sortie.                                                            }
+Procedure SkipTypeArg;
+Var
+  Name: TString;
+  F: LongInt;
+  HasInf: Boolean;
+  Inf: LongWord;
+Begin
+  ReadNameFHeader(Name, F, HasInf, Inf);
+  If Stopped Then Exit;
+  ReadUIndex;   { hDef }
+End;
+
+Procedure SkipTypePArg;
+Var
+  Name: TString;
+  F: LongInt;
+  HasInf: Boolean;
+  Inf: LongWord;
+Begin
+  ReadNameFHeader(Name, F, HasInf, Inf);
+  If Stopped Then Exit;
+  ReadUIndex;   { hDT }
+  ReadUIndex;   { ofs }
+End;
+
+Procedure SkipConstArg;
+Var
+  Name: TString;
+  F: LongInt;
+  HasInf: Boolean;
+  Inf: LongWord;
+  Kind: LongInt;
+Begin
+  ReadNameFHeader(Name, F, HasInf, Inf);
+  If Stopped Then Exit;
+  ReadUIndex;   { hDT }
+  SkipConstValInfo('constante (argument)', Kind);
+End;
+
+{ Declaration anticipee (Forward) : ProcessConstAddInfo est definie      }
+{ plus bas (elle-meme dependante de SkipAttributes/SkipOneAttribute)       }
+{ mais SkipArgList doit deja pouvoir l appeler (drConstAddInfo peut             }
+{ egalement apparaitre a l interieur d une liste d arguments/membres,             }
+{ ex. attribut "deprecated" sur une methode d interface).                            }
+Procedure ProcessConstAddInfo; Forward;
+Procedure ProcessOneRecord; Forward;
+
+{ Bloc de declarations LOCALES (drEmbeddedProcStart/drEmbeddedProcEnd)  }
+{ pouvant apparaitre DIRECTEMENT dans une liste de membres/arguments        }
+{ (pas seulement au niveau principal, deja gere dans ProcessOneRecord) -      }
+{ meme logique, reutilisee ici pour SkipArgList.                                }
+Procedure SkipEmbeddedBlock;
+Begin
+  { CONFIRME (DCU32.pas) : un drEmbeddedProcStart rencontre alors que      }
+  { EmbEndCnt>0 (Ver>=verD2009) annule simplement un "echappement" deja       }
+  { enregistre par un drEmbeddedProcEnd isole plus tot - PAS un nouveau           }
+  { bloc imbrique. On ne fait alors RIEN d autre (le tag suivant reste                }
+  { celui deja en cours de traitement par l appelant).                                  }
+  If (Ver >= 12) And (Ver < 100) And (EmbEndCnt > 0) Then
+  Begin
+    Dec(EmbEndCnt);
+    CurTag := RB;
+    Exit;
+  End;
+
+  CurTag := RB;
+  While (Not Stopped) And (CurTag <> TAG_EMBEDDED_PROC_END) Do
+    ProcessOneRecord;
+  If Stopped Then Exit;
+  CurTag := RB;
+End;
+
+{ ------------------------------------------------------------ }
+{ Liste d arguments d une procedure/fonction (ReadDeclList,        }
+{ LK=dlArgs) - boucle jusqu a l etiquette terminale drStop1=$63,     }
+{ exactement comme ProcessUsesUnit pour la liste d import. Portee :   }
+{ seuls les cas confirmes/simples sont geres (voir ci-dessus) ;         }
+{ toute autre etiquette (arMethod/arConstr/arDestr/arProperty/            }
+{ arClassVar/drEmbeddedProcStart, generiques...) provoque un arret          }
+{ propre plutot qu une supposition.                                            }
+{ ------------------------------------------------------------ }
+
+Procedure SkipArgList(FirstTag: Byte; LK: Byte);
+Var
+  Tag: Byte;
+  AlreadyAdvanced: Boolean;
+Begin
+  { IMPORTANT : le premier tag est deja lu par l appelant (ProcessProc a  }
+  { du le lire pour verifier s il s agissait d une convention d appel ou      }
+  { d un marqueur de generique) - le relire ici via RB desalignerait          }
+  { tout, notamment pour une liste VIDE (ex. "Finalization", qui n a               }
+  { aucun parametre : le premier tag EST DEJA drStop1) - bogue trouve             }
+  { empiriquement (System.SimpleShareMem.dcu, REST.OpenSSL.dcu).                    }
+  Tag := FirstTag;
+  Repeat
+    AlreadyAdvanced := False;
+    Case Tag Of
+      TAG_ARG_VAL, TAG_ARG_VAR, TAG_ARG_RESULT, TAG_ARG_FLD, TAG_VAR:
+        SkipLocalDecl(Tag, LK);
+      TAG_ARG_METHOD, TAG_ARG_CONSTR, TAG_ARG_DESTR, TAG_ARG_DESTR2:
+        SkipMethodDecl(Tag, LK);
+      TAG_ARG_CDECL, TAG_ARG_PASCAL, TAG_ARG_STDCALL, TAG_ARG_SAFECALL:
+        ;   { conventions d appel : aucune donnee associee }
+      TAG_ARG_SETDEFT:
+        SkipSetDeft;
+      TAG_ARG_PROPERTY:
+        { arProperty utilise TPropDecl (interface normale) SAUF en          }
+        { dispinterface, ou TDispPropDecl (qui herite de TLocalDecl, PAS      }
+        { de TPropDecl) prend le relais - structure bien plus courte,           }
+        { confirmee (DCURecs.pas : "TDispPropDecl = class(TLocalDecl)").            }
+        If LK = LK_DISPINTF Then
+          SkipLocalDecl(Tag, LK)
+        Else
+          SkipProperty;
+      TAG_TYPE:
+        SkipTypeArg;
+      TAG_TYPEP:
+        SkipTypePArg;
+      TAG_CONST:
+        SkipConstArg;
+      TAG_PROC_ADD_INFO:
+        ReadSIndex;   { peut apparaitre a l interieur d une liste d arguments aussi }
+      TAG_CONST_ADD_INFO:
+        ProcessConstAddInfo;   { idem (attribut/deprecated sur un membre) }
+      TAG_ANON_BLOCK:
+        Begin
+          ReadUIndex;
+          ReadUIndex;
+        End;
+      TAG_DELAYED_IMP:
+        Begin
+          { TDelayedImpRec : Name simple + Inf(ULONG brut) + F(TNDX) - }
+          { confirme (DCURecs.pas).                                       }
+          ReadIdentStr;
+          RUL;
+          ReadUIndex;
+        End;
+      TAG_EMBEDDED_PROC_START:
+        Begin
+          { declarations locales imbriquees directement dans une liste   }
+          { de membres (ex. valeur par defaut complexe d une methode) -      }
+          { meme traitement que dans ProcessOneRecord.                            }
+          SkipEmbeddedBlock;
+          If Stopped Then Exit;
+          Tag := CurTag;
+          AlreadyAdvanced := True;
+        End;
+      TAG_EMBEDDED_PROC_END:
+        { CONFIRME (DCU32.pas) : un drEmbeddedProcEnd "nu" (sans           }
+        { drEmbeddedProcStart correspondant a ce niveau) marque un               }
+        { "echappement" vers un niveau d imbrication superieur - dans un              }
+        { contexte LK_ARGS (dlArgs/dlArgsT reel), il incremente juste                    }
+        { EmbEndCnt et la liste CONTINUE (ni fin, ni nouvelle donnee) ;                     }
+        { dans les autres contextes, le vrai code source "Break" (la liste                    }
+        { CACTUELLE s arrete la, comme un drStop1 implicite - non confirme                       }
+        { au-dela de ce point, mais evite un arret pour cette seule variation).                     }
+        If LK = LK_ARGS Then
+          Inc(EmbEndCnt)
+        Else
+        Begin
+          AlreadyAdvanced := True;
+          Tag := TAG_STOP1;
+        End;
+      TAG_STOP1:
+        ;   { fin normale de la liste }
+    Else
+      Fail('liste d arguments : etiquette non prise en charge ($' +
+        IntToHex(Tag, 2) + ') - structure non confirmee a cet endroit ' +
+        '(portee documentee)');
+    End;
+    If Stopped Then Exit;
+    If Tag = TAG_STOP1 Then Exit;
+    If Not AlreadyAdvanced Then
+    Begin
+      Tag := RB;
+      If Stopped Then Exit;
+    End;
+  Until False;
+End;
+
+{ ------------------------------------------------------------ }
+{ Traitement de drProcTypeDef ($48, type "procedure"/"function" -   }
+{ ex. TNotifyEvent) : TProcTypeDef herite de TRecBaseDef, qui herite     }
+{ de TTypeDef (meme en-tete commun). CONFIRME (DCURecs.pas,                  }
+{ TProcTypeDef.Create) : [NDX0 (TNDX) si Ver>verD2] + hDTRes (TNDX,             }
+{ type de retour, 0=procedure) puis une boucle lisant des etiquettes              }
+{ (convention d appel / marqueurs generiques drA5Info-drA8Info) jusqu a             }
+{ drEmbeddedProcStart ($6A) - ou arret NET si drStop1 apparait avant                 }
+{ (type procedure sans parametres et sans "of object"). Une fois                       }
+{ drEmbeddedProcStart trouve, une liste d arguments SUIT (structure                       }
+{ IDENTIQUE a dlArgs pour les cas simples - reutilise SkipArgList).                          }
+{ Generiques (drA7Info, TTemplateParmsDeclModifier) : structure non                            }
+{ confirmee - arret propre plutot que deviner.                                                    }
+{ ------------------------------------------------------------ }
+
+Function DefProcType: Integer;
+Var
+  HDTRes: LongInt;
+  Tag: Byte;
+  Done: Boolean;
+Begin
+  DefProcType := 0;
+  ReadTypeDefHeader;
+  If Ver > 2 Then ReadUIndex;   { NDX0 }
+  HDTRes := ReadUIndex;
+
+  Tag := RB;
+  If Stopped Then Exit;
+  Done := False;
+  Repeat
+    If Tag = TAG_STOP1 Then
+    Begin
+      DefProcType := RegisterType('procedure { type, retour=' +
+        TypeRefText(HDTRes) + ' }');
+      Exit;
+    End;
+    If Tag = TAG_EMBEDDED_PROC_START Then
+      Done := True
+    Else
+    Begin
+      If (Tag >= TAG_ARG_CDECL) And (Tag <= TAG_ARG_SAFECALL) Then
+        Tag := RB
+      Else
+      Begin
+        If (Ver >= 12) And (Ver < 100) Then
+        Begin
+          Case Tag Of
+            TAG_A5INFO: ;
+            TAG_A8INFO: ReadUIndex;
+            TAG_A7INFO:
+              Begin
+                Fail('type procedure : parametres generiques (drA7Info) ' +
+                  'rencontres - structure non confirmee (portee documentee)');
+                Exit;
+              End;
+          End;
+        End;
+        Tag := RB;
+      End;
+      If Stopped Then Exit;
+    End;
+  Until Done Or Stopped;
+  If Stopped Then Exit;
+
+  { drEmbeddedProcStart trouve : la vraie liste d arguments suit,     }
+  { introduite par un tag frais (ReadFields reel) - reutilise                }
+  { SkipArgList (structure partagee avec dlArgs pour les cas simples).            }
+  Tag := RB;
+  If Stopped Then Exit;
+  SkipArgList(Tag, LK_ARGS);
+  If Stopped Then Exit;
+
+  DefProcType := RegisterType('procedure { type, retour=' +
+    TypeRefText(HDTRes) + ' }');
+End;
+
+{ ------------------------------------------------------------ }
+{ Traitement de drRecDef ($4D, TRecDef - herite de TRecBaseDef,   }
+{ qui herite de TTypeDef, meme en-tete commun). CONFIRME (DCURecs.pas, }
+{ TRecDef.Create, cas non-MSIL) : B2 (UN OCTET, inconditionnel) puis,      }
+{ pour Ver>=verD2005(9) : [B1+X0 (deux OCTETS) si Ver>=verD2006(10)] +        }
+{ X (TNDX) + [si Ver>=verD2009(12) : deux TNDX de plus, + un TNDX                }
+{ supplementaire si Ver>=verD2010(14)]. Puis la liste des CHAMPS                    }
+{ (ReadFields(dlFields) reel) - reutilise SkipArgList (structure                       }
+{ partagee : arFld y est deja gere ; arMethod/arProperty/arClassVar                       }
+{ - "advanced records" avec methodes/proprietes - provoquent un arret                        }
+{ propre via le "Else Fail" deja present, cas non confirme).                                    }
+{ ------------------------------------------------------------ }
+
+Function DefRecord: Integer;
+Var
+  B2, B1, X0: Byte;
+  Tag: Byte;
+Begin
+  DefRecord := 0;
+  ReadTypeDefHeader;
+  B2 := RB;
+  If (Ver >= 9) And (Ver < 100) Then
+  Begin
+    If (Ver >= 10) And (Ver < 100) Then
+    Begin
+      B1 := RB;
+      X0 := RB;
+    End;
+    ReadUIndex;   { X }
+    If Ver >= 12 Then
+    Begin
+      ReadUIndex;
+      ReadUIndex;
+      If Ver >= 14 Then ReadUIndex;
+    End;
+  End;
+
+  Tag := RB;
+  If Stopped Then Exit;
+  SkipArgList(Tag, LK_OTHER);
+  If Stopped Then Exit;
+
+  DefRecord := RegisterType('record { non decompile en detail } end');
+End;
+
+{ Liste des interfaces implementees par une classe (ReadClassInterfaces  }
+{ reel, DCURecs.pas) - CONFIRME, cas non-MSIL : ICnt (TNDX signe) puis,     }
+{ par interface, hIntf+MCnt (2 TNDX) + [X1+MatchCnt (2 TNDX) si                }
+{ Ver>=verD2006(10)] + [X3+X4 (2 TNDX) puis MatchCnt fois (octet+Name+           }
+{ 2 TNDX) si Ver>=verD2010(14)].                                                    }
+Function SkipClassInterfaces: LongInt;
+Var
+  ICnt, I, J, MatchCnt: LongInt;
+  Dummy: TString;
+Begin
+  ICnt := ReadSIndex;
+  SkipClassInterfaces := ICnt;
+  If ICnt <= 0 Then Exit;
+  For I := 1 To ICnt Do
+  Begin
+    ReadUIndex;   { hIntf }
+    ReadUIndex;   { MCnt }
+    If (Ver >= 10) And (Ver < 100) Then
+    Begin
+      ReadUIndex;            { X1 }
+      MatchCnt := ReadUIndex;
+      If (Ver >= 14) And (Ver < 100) Then
+      Begin
+        ReadUIndex;          { X3 }
+        ReadUIndex;          { X4 }
+        For J := 1 To MatchCnt Do
+        Begin
+          RB;                       { B }
+          Dummy := ReadIdentStr;    { MName }
+          ReadUIndex;               { N }
+          ReadUIndex;               { hMember }
+        End;
+      End;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ Traitement de drClassDef ($46, TClassDef - herite de TOOTypeDef,   }
+{ qui herite de TRecBaseDef, qui herite de TTypeDef, meme en-tete       }
+{ commun). CONFIRME (DCURecs.pas, TClassDef.Create, cas non-MSIL,          }
+{ non-package - toujours vrai pour un .dcu charge depuis le disque) :        }
+{ [BX (UN OCTET) si Ver>=verD2006(10)] + [si Ver>=verD2009(12) :                }
+{ BX1 (OCTET si Ver>=verD_XE2(17), sinon TNDX) + BX2 (OCTET)] + hParent           }
+{ (TNDX) + InstBaseRTTISz (TNDX) + InstBaseSz (TNDX signe) + InstBaseV               }
+{ (TNDX) + VMCnt (TNDX) + NdxFE (TNDX) + PropCnt (TNDX) + B04 (TNDX si                }
+{ Ver>=verD8, sinon OCTET) + [BX3 (TNDX) si Ver>=verD2010(14)] + liste des                }
+{ interfaces (SkipClassInterfaces, si Ver>verD2) + liste des MEMBRES                        }
+{ (ReadFields(dlClass) reel - reutilise SkipArgList ; methodes/proprietes/                   }
+{ variables de classe non confirmees en detail, arret propre si rencontrees).                  }
+{ ------------------------------------------------------------ }
+
+Function DefClass: Integer;
+Var
+  B04: LongInt;
+  HParent: LongInt;
+  Tag: Byte;
+Begin
+  DefClass := 0;
+  ReadTypeDefHeader;
+
+  If (Ver >= 10) And (Ver < 100) Then RB;   { BX }
+  If (Ver >= 12) And (Ver < 100) Then
+  Begin
+    If (Ver >= 17) And (Ver < 100) Then RB Else ReadUIndex;   { BX1 }
+    RB;   { BX2 }
+  End;
+
+  HParent := ReadUIndex;
+  ReadUIndex;    { InstBaseRTTISz }
+  ReadSIndex;    { InstBaseSz }
+  ReadUIndex;    { InstBaseV }
+  ReadUIndex;    { VMCnt }
+  ReadUIndex;    { NdxFE }
+  ReadUIndex;    { PropCnt }
+
+  If (Ver >= 8) And (Ver < 100) Then
+    B04 := ReadUIndex
+  Else
+    B04 := RB;
+
+  If (Ver >= 14) And (Ver < 100) Then ReadUIndex;   { BX3 }
+
+  { FromPackage est toujours Faux pour un .dcu charge depuis le disque   }
+  { (confirme, DCU32.pas, TUnit.LoadFromMem) - branche jamais empruntee.     }
+
+  If Ver > 2 Then SkipClassInterfaces;
+
+  Tag := RB;
+  If Stopped Then Exit;
+  SkipArgList(Tag, LK_OTHER);
+  If Stopped Then Exit;
+
+  If HParent <> 0 Then
+    DefClass := RegisterType('class(' + TypeRefText(HParent) +
+      ') { non decompilee en detail } end')
+  Else
+    DefClass := RegisterType('class { non decompilee en detail } end');
+End;
+
+{ ------------------------------------------------------------ }
+{ Traitement de drInterfaceDef ($54, TInterfaceDef - herite de     }
+{ TOOTypeDef, meme en-tete commun TTypeDef). CONFIRME (DCURecs.pas,     }
+{ TInterfaceDef.Create) : [BX (UN OCTET) si Ver>=verD2009(12)] +             }
+{ hParent (TNDX) + VMCnt (TNDX signe) + GUID (16 OCTETS BRUTS,                    }
+{ SizeOf(TGUID) - CONFIRME) + B (UN OCTET, bit $4 = dispinterface) +                }
+{ [si Ver>=verD8(8) : BY (TNDX si Ver>=verD2010(14)) + Cnt (TNDX) puis                }
+{ Cnt fois 2 TNDX (table d ancetres)] puis la liste des MEMBRES                          }
+{ (ReadFields(LK) reel, LK=dlDispInterface si B and $4<>0 sinon                            }
+{ dlInterface - reutilise SkipArgList avec LK_INTF : les methodes                             }
+{ d interface (arMethod) utilisent une structure DIFFERENTE d un simple                          }
+{ parametre - deja geree par SkipLocalDecl LK_INTF).                                                }
+{ ------------------------------------------------------------ }
+
+Function DefInterface: Integer;
+Var
+  HParent: LongInt;
+  B: Byte;
+  Cnt, I, BY: LongInt;
+  Tag: Byte;
+Begin
+  DefInterface := 0;
+  ReadTypeDefHeader;
+
+  If (Ver >= 12) And (Ver < 100) Then RB;   { BX }
+
+  HParent := ReadUIndex;
+  ReadSIndex;             { VMCnt }
+  SkipRawBlock(16);        { GUID, SizeOf(TGUID) }
+  B := RB;
+
+  If (Ver >= 8) And (Ver < 100) Then
+  Begin
+    If Ver >= 14 Then BY := ReadUIndex;
+    Cnt := ReadUIndex;
+    For I := 1 To Cnt Do
+    Begin
+      ReadUIndex;
+      ReadUIndex;
+    End;
+  End;
+
+  Tag := RB;
+  If Stopped Then Exit;
+  If (B And $4) <> 0 Then
+    SkipArgList(Tag, LK_DISPINTF)
+  Else
+    SkipArgList(Tag, LK_INTF);
+  If Stopped Then Exit;
+
+  If HParent <> 0 Then
+    DefInterface := RegisterType('interface(' + TypeRefText(HParent) +
+      ') { non decompilee en detail } end')
+  Else
+    DefInterface := RegisterType('interface { non decompilee en detail } end');
+End;
+
+{ ------------------------------------------------------------ }
+{ Traitement de drObjVMTDef ($47, TObjVMTDef - herite de TTypeDef   }
+{ directement, meme en-tete commun). CONFIRME (DCURecs.pas,               }
+{ TObjVMTDef.Create) : hObjDT (TNDX) + VMTSz (TNDX) - represente             }
+{ "class of X" pour un ancien type "object" (metaclasse).                        }
+{ ------------------------------------------------------------ }
+
+Function DefObjVMT: Integer;
+Var
+  HObjDT: LongInt;
+Begin
+  ReadTypeDefHeader;
+  HObjDT := ReadUIndex;
+  ReadUIndex;   { VMTSz }
+  DefObjVMT := RegisterType('class of ' + TypeRefText(HObjDT));
+End;
+
+{ ------------------------------------------------------------ }
+{ Traitement de drObjDef ($4E, TObjDef - ancien style Turbo Pascal  }
+{ "object ... end", herite de TOOTypeDef, meme en-tete commun            }
+{ TTypeDef). CONFIRME (DCURecs.pas, TObjDef.Create) : B03 (UN OCTET)          }
+{ + [BX (TNDX) si Ver>=verD2006(10)] + [BX1 (OCTET) si Ver>=verD_XE(15)] +       }
+{ hParent (TNDX) + VMTOfs (TNDX) + hVMT (TNDX signe) + VMCnt (TNDX                 }
+{ signe) + [BX2 (TNDX) si Ver>=verD_XE2(16)] puis la liste des CHAMPS                }
+{ (ReadFields(dlFields) reel - reutilise SkipArgList avec LK_OTHER).                    }
+{ ------------------------------------------------------------ }
+
+Function DefObj: Integer;
+Var
+  HParent: LongInt;
+  Tag: Byte;
+Begin
+  DefObj := 0;
+  ReadTypeDefHeader;
+  RB;   { B03 }
+  If (Ver >= 10) And (Ver < 100) Then ReadUIndex;   { BX }
+  If (Ver >= 15) And (Ver < 100) Then RB;            { BX1 }
+  HParent := ReadUIndex;
+  ReadUIndex;   { VMTOfs }
+  ReadSIndex;   { hVMT }
+  ReadSIndex;   { VMCnt }
+  If (Ver >= 16) And (Ver < 100) Then ReadUIndex;   { BX2 }
+
+  Tag := RB;
+  If Stopped Then Exit;
+  SkipArgList(Tag, LK_OTHER);
+  If Stopped Then Exit;
+
+  If HParent <> 0 Then
+    DefObj := RegisterType('object(' + TypeRefText(HParent) +
+      ') { non decompile en detail } end')
+  Else
+    DefObj := RegisterType('object { non decompile en detail } end');
+End;
+
+{ ------------------------------------------------------------ }
+{ Corps de procedure (implementation) : drCBlock (taille TNDX +   }
+{ N octets de code machine brut, CONFIRME - DCU_In.pas, ReadMem/       }
+{ SkipBlock) et drFixUp (compte TNDX, puis par entree dOfs(TNDX)+           }
+{ octet+NDX(TNDX), CONFIRME - DCU32.pas, TUnit.LoadFixups). Le vrai            }
+{ code source (DCU32.pas, TUnit.ReadDeclList) montre que ce sont des             }
+{ enregistrements du dispatcheur PRINCIPAL comme les autres (pas geres              }
+{ specialement par TProcDecl) - simples procedures a forme fixe,                     }
+{ compatibles avec la queue commune de ProcessOneRecord (CurTag:=RB           }
+{ apres coup). Tables de debug (drCodeLines/drLinNum/drStrucScope/               }
+{ drLocVarTbl/drSymbolRef, presentes seulement si le fichier a ete                    }
+{ compile avec informations de debogage) : non gerees ici - arret                       }
+{ propre si rencontrees (portee documentee).                                               }
+{ ------------------------------------------------------------ }
+
+Procedure ProcessCBlock;
+Var
+  Sz: LongInt;
+Begin
+  Sz := ReadUIndex;
+  SkipRawBlock(Sz);
+End;
+
+Procedure ProcessFixup;
+Var
+  Cnt, I: LongInt;
+Begin
+  Cnt := ReadUIndex;
+  For I := 1 To Cnt Do
+  Begin
+    ReadUIndex;   { dOfs }
+    RB;           { octet }
+    ReadUIndex;   { NDX }
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ Traitement de drORec ($6F, TORecDecl - herite de TNameDecl        }
+{ directement, Name simple SANS en-tete F/F1/F4/Inf). CONFIRME           }
+{ (DCURecs.pas, TORecDecl.Create) : DW (ULONG brut, 4 octets) + B0            }
+{ (UN OCTET) + B1 (UN OCTET) puis une liste imbriquee (dlA6, structure           }
+{ associee aux attributs/generiques MSIL - "goes before drCBlock in                }
+{ MSIL" per DCU32.pas, mais rencontre aussi en Win32 natif) terminee             }
+{ par drStop1 - reutilise SkipArgList (LK_OTHER, meilleure approximation           }
+{ disponible ; le contenu exact de dlA6 n est pas confirme au-dela des               }
+{ tags deja geres par SkipArgList - arret propre si un tag non gere y                 }
+{ apparait). Pour Ver<verD8(8) (hors de portee courante) : un simple                    }
+{ TNDX au lieu de toute cette structure.                                                    }
+{ ------------------------------------------------------------ }
+
+Procedure ProcessORec;
+Var
+  Name: TString;
+  Tag: Byte;
+Begin
+  If (Ver < 8) Then
+  Begin
+    ReadUIndex;
+    CurTag := RB;
+    Exit;
+  End;
+
+  Name := ReadIdentStr;
+  RUL;   { DW }
+  RB;    { B0 }
+  RB;    { B1 }
+
+  Tag := RB;
+  If Stopped Then Exit;
+  SkipArgList(Tag, LK_OTHER);
+  If Stopped Then Exit;
+
+  CurTag := RB;
+End;
+
 { ------------------------------------------------------------ }
 { Traitement d une signature de procedure/fonction (TProcInf) :   }
-{ NF (TNameFDecl, comme ci-dessus), B0 (TNDX, drapeaux), Sz (TNDX). }
-{ Le corps reel (TProcData - arguments, bloc de code) n est PAS     }
-{ decode (portee documentee) : on s arrete sciemment a la              }
-{ signature et on emet un corps vide.                                    }
+{ en-tete TNameFDecl + B0 (TNDX, drapeaux) + Sz (TNDX) + [octet si    }
+{ Ver dans [verD_XE..verK1)]. Si le nom n est pas la convention          }
+{ "sans nom" du compilateur (voir IsUnnamedProcName), suivent aussi          }
+{ VProc/hDTRes/[hClass]/[convention d appel]/[generiques]/liste               }
+{ d arguments (voir SkipArgList). Le corps reel (code machine, voir              }
+{ SkipCBlockIfPresent) N EST JAMAIS DECOMPILE en instructions Pascal              }
+{ structurees (hors de portee, comme DCU32INT lui-meme) - seulement                }
+{ correctement SAUTE pour atteindre les declarations suivantes.                      }
 { ------------------------------------------------------------ }
 
 Procedure ProcessProc(Tag: Byte);
@@ -860,27 +1948,83 @@ Var
   HasInf: Boolean;
   Inf: LongWord;
   B0, Sz, X: LongInt;
+  NoName: Boolean;
+  NextTag: Byte;
 Begin
-  { CORRECTION (2026-07-16) : utilise desormais ReadNameFHeader (comme     }
-  { ProcessVarLike/ProcessNamedType) au lieu d une lecture d en-tete            }
-  { dupliquee et incomplete (F4 manquant pour Ver>=12, ET Inf declare en          }
-  { LongInt signe au lieu de LongWord non signe - ce dernier point provoquait       }
-  { un vrai plantage "ERangeError" des que Inf avait son bit de poids fort            }
-  { positionne, trouve en testant contre de vrais fichiers volumineux                  }
-  { (Access2000.dcu) une fois l alignement corrige assez loin pour atteindre              }
-  { une vraie signature de procedure).                                                     }
-  ReadNameFHeader(Name, F, HasInf, Inf);
+  If (Tag = TAG_SYSPROC) And (Ver < 8) Then
+  Begin
+    { TSysProcDecl (drSysProc, Ver<verD8) : structure TOTALEMENT       }
+    { differente de TProcDecl - Name simple (sans F/F1/F4/Inf) puis        }
+    { F(TNDX) + NDX(TNDX signe) - confirme (DCURecs.pas).                     }
+    Name := ReadIdentStr;
+    ReadUIndex;
+    ReadSIndex;
+    CurTag := RB;
+    Exit;
+  End;
+
+  { TAG_SYSPROC pour Ver>=verD8 utilise TSysProc8Decl = TProcDecl avec   }
+  { NoInf=Vrai (le champ Inf n est JAMAIS lu, meme si F and $40) -           }
+  { confirme (DCURecs.pas, TSysProc8Decl.Create).                                }
+  ReadNameFHeaderEx(Name, F, HasInf, Inf, Tag = TAG_SYSPROC);
   If Stopped Then Exit;
 
   B0 := ReadUIndex;
   Sz := ReadUIndex;
-  If Ver >= 14 Then X := RB;
+  If (Ver >= 15) And (Ver < 100) Then X := RB;
 
-  { La ou s arreterait normalement la lecture de TProcData (corps :  }
-  { arguments + bloc de code) - non decodee ici (portee documentee).  }
-  Fail('signature de "' + Name + '" lue, mais le corps (TProcData : ' +
-    'arguments + bloc de code drCBlock) n est pas encore decode - ' +
-    'voir la portee documentee en tete de ce programme');
+  NoName := IsUnnamedProcName(Name);
+
+  If Not NoName Then
+  Begin
+    If Ver > 2 Then ReadUIndex;   { VProc }
+    ReadUIndex;                    { hDTRes }
+    If (Ver > 7) And (Ver < 100) Then ReadUIndex;   { hClass }
+
+    NextTag := RB;
+    If Stopped Then Exit;
+
+    { Convention d appel (CallKind) : si le tag est dans [arCDecl..     }
+    { arSafeCall], il est consomme et remplace par le VRAI tag suivant -   }
+    { confirme (DCU32.pas, ReadCallKind).                                       }
+    If (NextTag >= TAG_ARG_CDECL) And (NextTag <= TAG_ARG_SAFECALL) Then
+    Begin
+      NextTag := RB;
+      If Stopped Then Exit;
+    End;
+
+    { Generiques (Ver>=verD2009) : drA5Info precede toujours drA6Info -   }
+    { ce dernier (TA6Def, parametres de modele) n est pas confirme -           }
+    { arret propre plutot que deviner sa structure.                                }
+    If (Ver >= 12) And (Ver < 100) Then
+    Begin
+      If NextTag = TAG_A5INFO Then
+      Begin
+        NextTag := RB;
+        If Stopped Then Exit;
+      End;
+      If NextTag = TAG_A6INFO Then
+      Begin
+        Fail('procedure "' + Name + '" : parametres generiques ' +
+          '(drA6Info/TA6Def) rencontres - structure non confirmee ' +
+          '(portee documentee)');
+        Exit;
+      End;
+    End;
+
+    SkipArgList(NextTag, LK_ARGS);
+    If Stopped Then Exit;
+  End;
+
+  { La signature (et l eventuelle liste d arguments) est terminee -   }
+  { le VRAI tag suivant (drProcAddInfo, drCBlock si un corps existe,     }
+  { ou directement une AUTRE declaration si la procedure n en a pas)        }
+  { est laisse au dispatcheur principal, qui gere desormais lui-meme            }
+  { drCBlock/drFixUp comme n importe quel autre enregistrement (voir               }
+  { ProcessCBlock/ProcessFixup) - conforme au vrai code source                       }
+  { (DCU32.pas, TUnit.ReadDeclList) qui ne les traite PAS specialement                 }
+  { a l interieur de TProcDecl.                                                          }
+  CurTag := RB;
 End;
 
 { ------------------------------------------------------------ }
@@ -983,37 +2127,6 @@ End;
 { pas une const Pascal valide sans "=valeur").                                          }
 { ------------------------------------------------------------ }
 
-Procedure SkipConstValInfo(Const Context: TString; Var Kind: LongInt);
-Var
-  NeedVal: Boolean;
-  ValSz: LongInt;
-  Val: LongInt;
-  I: LongInt;
-Begin
-  NeedVal := True;
-  Kind := 0;
-  If Ver > 4 Then
-  Begin
-    Kind := ReadUIndex;
-    If (Kind < 0) Or (Kind > 5) Then
-    Begin
-      Fail(Context + ' : Kind hors intervalle attendu (0..5) : ' +
-        IntToStr(Kind) + ' - desynchronisation probable');
-      Exit;
-    End;
-    If (Ver >= 16) And (Ver < 100) Then
-      NeedVal := (Kind <> 4);
-  End;
-
-  ValSz := ReadUIndex;
-  If ValSz = 0 Then
-  Begin
-    If NeedVal Then Val := ReadSIndex;
-  End
-  Else
-    For I := 1 To ValSz Do RB;   { bloc memoire brut (ValPtr), valeur non interpretee }
-End;
-
 Procedure ProcessConstDecl;
 Var
   Name: TString;
@@ -1032,29 +2145,6 @@ Begin
 
   WriteLn(OutF, '  { const ', Name, ' : ', TypeRefText(HDT),
     '  (valeur non decodee, Kind=', IntToStr(Kind), ') }');
-End;
-
-{ ------------------------------------------------------------ }
-{ Petits lecteurs "sauter N octets" utilises par drConstAddInfo :  }
-{ SkipNDXStr = ReadNDXStr/ReadNDXStrRef reels (DCU_In.pas, source     }
-{ telecharge le 2026-07-16) : longueur en TNDX (PAS un octet fixe       }
-{ comme ReadIdentStr) puis ce nombre d octets bruts. SkipRawBlock =        }
-{ SkipBlock reel (DCU_In.pas) : N octets bruts, valeur non interpretee.    }
-{ ------------------------------------------------------------ }
-
-Procedure SkipRawBlock(N: LongInt);
-Var
-  I: LongInt;
-Begin
-  For I := 1 To N Do RB;
-End;
-
-Procedure SkipNDXStr;
-Var
-  L: LongInt;
-Begin
-  L := ReadUIndex;
-  SkipRawBlock(L);
 End;
 
 { ------------------------------------------------------------ }
@@ -1341,16 +2431,35 @@ Begin
   { traiter ce nouvel enregistrement.                                              }
   If (Tag <> TAG_UNIT) And (Tag <> TAG_UNIT1) And (Tag <> TAG_SRC) And
      (Tag <> TAG_OBJ) And (Tag <> TAG_ASM) And (Tag <> TAG_RES) And
-     (Tag <> TAG_UNIT_INLINE_SRC) Then
+     (Tag <> TAG_UNIT_INLINE_SRC) And (Tag <> TAG_DLL) Then
     FlushUsesClause;
 
   Case Tag Of
-    TAG_UNIT, TAG_UNIT1:
+    TAG_UNIT, TAG_UNIT1, TAG_DLL:
       Begin
         { ProcessUsesUnit gere elle-meme CurTag jusqu au bout (liste       }
         { d import de longueur variable, puis eventuel drProcAddInfo) -     }
         { ne PAS laisser le code commun ci-dessous relire une etiquette.      }
+        { drDLL (import de fonctions externes, ex. kernel32.dll) reutilise      }
+        { la MEME fonction reelle (TUnit.ReadUses) que drUnit/drUnit1 -           }
+        { confirme (DCU32.pas) - jamais decode auparavant (System.SysUtils.dcu,    }
+        { position $423F).                                                            }
         ProcessUsesUnit(Tag);
+        Exit;
+      End;
+
+    TAG_EMBEDDED_PROC_START:
+      Begin
+        { drEmbeddedProcStart/drEmbeddedProcEnd encadrent les declarations   }
+        { LOCALES d une procedure (types/consts declares dans son corps) -      }
+        { CONFIRME (DCU32.pas, TUnit.ReadDeclList) : un bloc imbrique qui           }
+        { reutilise le MEME aiguilleur que le niveau principal (recursion          }
+        { directe sur ProcessOneRecord), termine par drEmbeddedProcEnd -              }
+        { voir SkipEmbeddedBlock (partagee avec SkipArgList). Ces declarations         }
+        { locales ne sont pas des declarations Pascal visibles au niveau de              }
+        { l unite (portee limitee au corps d une procedure non decompile) -                }
+        { on les saute sans rien imprimer.                                                     }
+        SkipEmbeddedBlock;
         Exit;
       End;
 
@@ -1358,11 +2467,29 @@ Begin
     TAG_RESSTR_NEW, TAG_THREADVAR_OLD:
       ProcessVarLike(Tag);
 
+    TAG_CLASSVAR:
+      ProcessClassVarTopLevel;
+
     TAG_CONST:
       ProcessConstDecl;
 
     TAG_PROC, TAG_SYSPROC:
-      ProcessProc(Tag);
+      Begin
+        { ProcessProc gere elle-meme CurTag jusqu au bout (liste          }
+        { d arguments de longueur variable, puis corps eventuel              }
+        { drCBlock/drFixUp) - ne PAS laisser le code commun ci-dessous          }
+        { relire une etiquette.                                                    }
+        ProcessProc(Tag);
+        Exit;
+      End;
+
+    TAG_OREC:
+      Begin
+        { ProcessORec gere elle-meme CurTag jusqu au bout (liste       }
+        { imbriquee dlA6 de longueur variable).                             }
+        ProcessORec;
+        Exit;
+      End;
 
     TAG_TYPE:
       ProcessNamedType;
@@ -1385,6 +2512,32 @@ Begin
       DefFloat;
     TAG_VOID:
       DefVoid;
+    TAG_ENUMDEF:
+      DefEnum;
+    TAG_ARRAYDEF:
+      DefArrayLike(False, '');
+    TAG_SHORTSTRDEF:
+      DefArrayLike(True, 'ShortString');
+    TAG_STRINGDEF:
+      DefArrayLike(True, 'AnsiString');
+    TAG_WIDESTRDEF:
+      DefArrayLike(True, 'WideString');
+    TAG_UNICODESTRDEF:
+      DefArrayLike(True, 'UnicodeString');
+    TAG_DYNARRAYDEF:
+      DefDynArray;
+    TAG_PROCTYPEDEF:
+      DefProcType;
+    TAG_RECDEF:
+      DefRecord;
+    TAG_CLASSDEF:
+      DefClass;
+    TAG_INTERFACEDEF:
+      DefInterface;
+    TAG_OBJVMTDEF:
+      DefObjVMT;
+    TAG_OBJDEF:
+      DefObj;
 
     TAG_EXPORT:
       { drExport (TExportInf) : hSym+Index, deux TNDX simples - purement   }
@@ -1407,16 +2560,26 @@ Begin
     TAG_CONST_ADD_INFO:
       ProcessConstAddInfo;
 
-    TAG_UNITFLAGS, TAG_UNIT_ADD_INFO,
-    TAG_PROC_ADD_INFO, TAG_INFO98:
+    TAG_PROC_ADD_INFO:
+      { drProcAddInfo (Ver>=verD7) : un seul TNDX signe (V), utilise en   }
+      { interne par le vrai outil pour retrouver la derniere procedure       }
+      { (=2 apres Finalization, =$FE apres Initialization, par exemple) -       }
+      { confirme (DCU32.pas) : rien d autre a lire, rien a imprimer.               }
+      ReadSIndex;
+
+    TAG_CBLOCK:
+      ProcessCBlock;
+    TAG_FIXUP:
+      ProcessFixup;
+
+    TAG_UNITFLAGS, TAG_UNIT_ADD_INFO, TAG_INFO98:
       Fail('etiquette de metadonnees $' + IntToHex(Tag, 2) +
         ' rencontree hors de l en-tete - structure non prise en charge ' +
         'a cet endroit (portee documentee)');
 
-    TAG_RECDEF, TAG_CLASSDEF, TAG_OBJDEF, TAG_OBJVMTDEF, TAG_PROCTYPEDEF,
-    TAG_ENUMDEF, TAG_SHORTSTRDEF, TAG_ARRAYDEF, TAG_FILEDEF, TAG_TEXTDEF,
-    TAG_STRINGDEF, TAG_VARIANTDEF, TAG_INTERFACEDEF, TAG_WIDESTRDEF,
-    TAG_METACLASSDEF, TAG_DYNARRAYDEF, TAG_UNICODESTRDEF:
+    TAG_FILEDEF, TAG_TEXTDEF,
+    TAG_VARIANTDEF,
+    TAG_METACLASSDEF:
       FailUnknownTag(Tag, 'definition de type complexe');
 
     TAG_SRC:
@@ -1430,7 +2593,7 @@ Begin
     TAG_UNIT_INLINE_SRC:
       ProcessSrcInf('source inline');
 
-    TAG_DLL, TAG_LABEL:
+    TAG_LABEL:
       FailUnknownTag(Tag, 'enregistrement');
 
   Else
@@ -1552,6 +2715,7 @@ Var
 Begin
   Stopped := False;
   TypeCount := 0;
+  EmbEndCnt := 0;
   UsesFlushed := False;
   UsesCount := 0;
   ImportPoolCount := 0;
