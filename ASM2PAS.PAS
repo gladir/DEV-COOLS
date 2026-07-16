@@ -11424,6 +11424,71 @@ Begin
  WriteLn('  Resultat fonction String + litteral  : ',PatternCount,' expression(s).');
 End;
 
+Procedure ProcessTurboPascalFunctionNumericSuffixEmitPatterns;
+{ Fonction(String) + literal anonyme + conversion numerique + suffixe. }
+Var I,K,VIdx,ProcIdx,FnProc,ConvProc,TargetProc,PatternCount:LongInt;
+ A0,A3,A6,A7,A11,A14,A15,A18,A20,A24:TAsmLine;
+ FirstLiteral,SuffixText,SourceExpr,ValueExpr,FnName,ConvName,Target,Code:String;
+ LiteralAddr:LongInt;
+
+ Function ResolveNearCall(Const L:TAsmLine):String;
+ Var B:TAsmLine; R:String;
+ Begin
+  B:=L; R:=OperandToExpr(B.Op1,ProcIdx);
+  If(B.Op1.OpType=OT_LABEL)and
+    (Copy(UpCaseStr(B.Op1.LabelName),1,4)<>'SUB_')Then
+   R:='sub_'+HexWord(Word(HexToInt(B.Op1.LabelName)))
+  Else If B.Op1.OpType in [OT_IMM8,OT_IMM16,OT_IMM32]Then
+   R:='sub_'+HexWord(Word(B.Op1.Imm));
+  ResolveNearCall:=R;
+ End;
+Begin
+ PatternCount:=0; I:=0;
+ While I+24<SrcLineCount do Begin
+  ParseInstructionLine(I,A0); ParseInstructionLine(I+3,A3);
+  ParseInstructionLine(I+6,A6); ParseInstructionLine(I+7,A7);
+  ParseInstructionLine(I+11,A11); ParseInstructionLine(I+14,A14);
+  ParseInstructionLine(I+15,A15); ParseInstructionLine(I+18,A18);
+  ParseInstructionLine(I+20,A20); ParseInstructionLine(I+24,A24);
+  If Not((UpCaseStr(A0.Mnemonic)='LEA')and IsSimpleRegInstruction(I+1,'PUSH','SS','')and
+    IsSimpleRegInstruction(I+2,'PUSH','DI','')and(UpCaseStr(A3.Mnemonic)='LEA')and
+    IsSimpleRegInstruction(I+4,'PUSH','SS','')and IsSimpleRegInstruction(I+5,'PUSH','DI','')and
+    (UpCaseStr(A6.Mnemonic)='CALL')and(UpCaseStr(A7.Mnemonic)='MOV')and
+    IsSimpleRegInstruction(I+8,'PUSH','CS','')and IsSimpleRegInstruction(I+9,'PUSH','DI','')and
+    IsRuntimeFarCall(I+10,$0C7D)and(UpCaseStr(A11.Mnemonic)='LEA')and
+    IsSimpleRegInstruction(I+12,'PUSH','SS','')and IsSimpleRegInstruction(I+13,'PUSH','DI','')and
+    (UpCaseStr(A14.Mnemonic)='MOV')and(UpCaseStr(A14.Op1.Reg)='AX')and
+    (UpCaseStr(A15.Mnemonic)='CWD')and IsSimpleRegInstruction(I+16,'PUSH','DX','')and
+    IsSimpleRegInstruction(I+17,'PUSH','AX','')and(UpCaseStr(A18.Mnemonic)='CALL')and
+    IsRuntimeFarCall(I+19,$0C7D)and(UpCaseStr(A20.Mnemonic)='MOV')and
+    (A20.Op2.OpType=OT_OFFSET)and IsSimpleRegInstruction(I+21,'PUSH','CS','')and
+    IsSimpleRegInstruction(I+22,'PUSH','DI','')and IsRuntimeFarCall(I+23,$0C7D)and
+    (UpCaseStr(A24.Mnemonic)='CALL'))Then Begin Inc(I); Continue; End;
+  VIdx:=FindDataVarByName(A20.Op2.LabelName); ProcIdx:=FindProcForLine(I);
+  FnName:=ResolveNearCall(A6); ConvName:=ResolveNearCall(A18); Target:=ResolveNearCall(A24);
+  FnProc:=FindProcByName(FnName); ConvProc:=FindProcByName(ConvName);
+  TargetProc:=FindProcByName(Target);
+  If(VIdx=0)or(Not IsLengthPrefixedString(VIdx))or(FnProc=0)or
+    (ConvProc=0)or(TargetProc=0)Then Begin Inc(I); Continue; End;
+  LiteralAddr:=A7.Op2.Imm;
+  If(A7.Op2.OpType=OT_LABEL)and(A7.Op2.LabelName<>'')Then
+   LiteralAddr:=HexToInt(A7.Op2.LabelName);
+  If Not ShortStringAtImageOffset(LiteralAddr,FirstLiteral)Then Begin Inc(I); Continue; End;
+  SuffixText:=DataVars[VIdx].Elements[2].StrValue;
+  SourceExpr:=OperandToExpr(A3.Op1,ProcIdx);
+  ValueExpr:=OperandToExpr(A14.Op2,ProcIdx);
+  Procs[FnProc].IsFunction:=True; ProcStringResult[FnProc]:=True;
+  Procs[ConvProc].IsFunction:=True; ProcStringResult[ConvProc]:=True;
+  Code:=Target+'('+FnName+'('+SourceExpr+') + '+QuotePascalString(FirstLiteral)+
+    ' + '+ConvName+'(LongInt(Integer('+ValueExpr+'))) + '+
+    QuotePascalString(SuffixText)+');';
+  SetTranslationForLine(I,Code); For K:=I+1 to I+24 do SetTranslationForLine(K,'');
+  If CountDataVarOffsetReferences(DataVars[VIdx].Name)=1 Then OmitDataVar[VIdx]:=True;
+  Inc(PatternCount); I:=I+25;
+ End;
+ WriteLn('  Fonction + nombre + suffixe String  : ',PatternCount,' expression(s).');
+End;
+
 Procedure ProcessTurboPascalDirectStringCallPatterns;
 { Reunit un pointeur FAR CS:offset passe a une routine en un parametre
   String Pascal direct : MOV DI,OFFSET s / PUSH CS / PUSH DI / CALL p
@@ -13856,6 +13921,7 @@ BEGIN
  ProcessTurboPascalLiteralFunctionEmitPatterns;
  ProcessTurboPascalLocalSuffixGlobalEmitPatterns;
  ProcessTurboPascalFunctionResultLiteralEmitPatterns;
+ ProcessTurboPascalFunctionNumericSuffixEmitPatterns;
  ProcessTurboPascalNumericAndLocalConcatEmitPatterns;
  { Reconstruction des While combinant TokIsKw et cur_tok_str }
  ProcessTurboPascalTokenOptionWhilePatterns;

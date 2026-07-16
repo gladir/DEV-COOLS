@@ -94,6 +94,7 @@ Const
   TAG_SRC            = $70;   { 'p' }
   TAG_OBJ            = $71;   { 'q' }
   TAG_RES            = $72;   { 'r' }
+  TAG_UNIT_INLINE_SRC = $76;  { 'v', Ver>=verD2010(14) - meme structure que drSrc }
   TAG_ASM            = $73;   { 's' }
   TAG_CONST          = $25;   { '%' }
   TAG_TYPE           = $2A;   { '*' }
@@ -256,6 +257,14 @@ Begin
   B0 := RB; B1 := RB; B2 := RB; B3 := RB;
   RUL := LongWord(B0) Or (LongWord(B1) Shl 8) Or (LongWord(B2) Shl 16) Or
     (LongWord(B3) Shl 24);
+End;
+
+{ Lit l octet courant SANS avancer le curseur - necessaire quand le      }
+{ nombre d octets a consommer depend du CONTENU de l octet suivant       }
+{ (ex. ProcessStrConstRec : suite variable de marqueurs drStop1).         }
+Function PeekByte: Byte;
+Begin
+  If P < BufLen Then PeekByte := Buf[P] Else PeekByte := 0;
 End;
 
 { ------------------------------------------------------------ }
@@ -517,7 +526,9 @@ End;
 { (nom importe) coupe en deux. Appelee UNE SEULE FOIS (UsesFlushed),          }
 { au moment ou le premier enregistrement NON-"uses" est rencontre              }
 { (voir ProcessOneRecord) ou a la toute fin du programme si le                  }
-{ fichier ne contenait que des "uses".                                            }
+{ fichier ne contenait que des "uses". Le mot-cle "interface" est ECRIT          }
+{ AVANT cette clause (ordre reel Delphi), directement dans le programme           }
+{ principal - pas ici.                                                              }
 { ------------------------------------------------------------ }
 
 Procedure FlushUsesClause;
@@ -542,35 +553,37 @@ Begin
   End;
   WriteLn(OutF);
 
-  For I := 1 To UsesCount Do
-    If UsesImportCount[I] > 0 Then
-    Begin
-      Line := '    ' + UsesNames[I] + ' : ';
-      LastJ := UsesImportFirst[I] + UsesImportCount[I] - 1;
-      For J := UsesImportFirst[I] To LastJ Do
-      Begin
-        If (Length(Line) + Length(ImportPool[J]) + 2) > WRAP_WIDTH Then
-        Begin
-          WriteLn(OutF, Line);
-          Line := '        ';
-        End;
-        Line := Line + ImportPool[J];
-        If J < LastJ Then Line := Line + ', ';
-      End;
-      WriteLn(OutF, Line);
-    End;
-
+  { IMPORTANT : ce bloc entier est un COMMENTAIRE Pascal accolade -     }
+  { les noms importes eux-memes (T:Xxx, A:Xxx) ne sont PAS des            }
+  { declarations valides a cet endroit (ancien bogue : ces lignes           }
+  { etaient ecrites en texte brut, produisant un fichier .pas invalide         }
+  { meme pour la partie reellement decodee avec succes - signale par             }
+  { l utilisateur).                                                                  }
   If ImportPoolCount > 0 Then
   Begin
+    WriteLn(OutF, '{ Imports resolus (T:type, A:routine/adresse) - noms ',
+      'tels qu importes, non verifies contre la vraie table de types de ',
+      'l unite source (voir DOC/DCU_FORMAT.TXT section 9b) :');
+    For I := 1 To UsesCount Do
+      If UsesImportCount[I] > 0 Then
+      Begin
+        Line := '    ' + UsesNames[I] + ' : ';
+        LastJ := UsesImportFirst[I] + UsesImportCount[I] - 1;
+        For J := UsesImportFirst[I] To LastJ Do
+        Begin
+          If (Length(Line) + Length(ImportPool[J]) + 2) > WRAP_WIDTH Then
+          Begin
+            WriteLn(OutF, Line);
+            Line := '        ';
+          End;
+          Line := Line + ImportPool[J];
+          If J < LastJ Then Line := Line + ', ';
+        End;
+        WriteLn(OutF, Line);
+      End;
+    WriteLn(OutF, '}');
     WriteLn(OutF);
-    WriteLn(OutF, '{ Imports resolus ci-dessus (T:type, A:routine/adresse) - ',
-      'noms tels qu importes, non verifies contre la vraie table de types ',
-      'de l unite source (voir DOC/DCU_FORMAT.TXT section 9b). }');
   End;
-  WriteLn(OutF);
-
-  WriteLn(OutF, 'interface');
-  WriteLn(OutF);
 End;
 
 Procedure EmitVar(Const Name: TString; TypeIdx: LongInt; IsSpec: Boolean);
@@ -595,19 +608,86 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
-{ Traitement d une definition de type NOMMEE (drType/drTypeP) :   }
-{ Name (TNameStr) + hDef (TNDX, index vers le type deja           }
-{ enregistre juste avant, dans TypeText).                          }
+{ En-tete commun "TNameFDecl" (Name+F+[F1 si Ver>=8]+[F4 si       }
+{ Ver>=12, ignore ici]+[Inf ulong si F and $40]) - CONFIRME contre }
+{ le vrai code source (DCURecs.pas, TNameFDecl.Create) et PORTE     }
+{ par drType/drTypeP/drVar/drConst/drProc/etc, toute declaration       }
+{ nommee. BOGUE CORRIGE (2026-07-16) : le champ F4 (Ver>=verD2009=12)   }
+{ n etait lu par AUCUNE des procedures existantes (ProcessNamedType       }
+{ ne lisait meme pas F du tout) - dela desynchronisait le flux des le      }
+{ premier drType/drVar/drConst rencontre dans un fichier recent (Ver>=12,   }
+{ dont Access2000.dcu, Ver=27). F and $40 marque la visibilite INTERFACE     }
+{ (confirme : TNameFDecl.IsVisible, dlMain => F and $40 <> 0) - utile plus tard }
+{ si on veut filtrer les declarations prive/implementation.                    }
+{ Cas non traite (arret propre plutot que deviner, portee MSIL/Kylix         }
+{ explicitement hors de portee) : F1 and $80 <> 0 (champs B2/F3 additionnels).  }
+{ ------------------------------------------------------------ }
+
+Procedure ReadNameFHeader(Var Name: TString; Var F: LongInt; Var HasInf: Boolean;
+  Var Inf: LongWord);
+Var
+  F1: LongInt;
+Begin
+  Name := ReadIdentStr;
+  F := ReadUIndex;
+  F1 := 0;
+  If Ver >= 8 Then F1 := ReadUIndex;
+  If Ver >= 12 Then ReadUIndex;   { F4 : non exploite ici }
+  HasInf := (F And $40) <> 0;
+  If HasInf Then Inf := RUL Else Inf := 0;
+  If (Ver >= 8) And ((F1 And $80) <> 0) Then
+    Fail('en-tete "' + Name + '" : indicateur F1 and $80 rencontre ' +
+      '(champs additionnels MSIL non pris en charge - hors de portee, ' +
+      'voir DISDCU.PAS en-tete)');
+End;
+
+{ ------------------------------------------------------------ }
+{ Traitement d une definition de type NOMMEE (drType, $2A) :      }
+{ en-tete TNameFDecl (voir ci-dessus) + hDef (TNDX, index vers le  }
+{ type deja enregistre juste avant, dans TypeText).                 }
 { ------------------------------------------------------------ }
 
 Procedure ProcessNamedType;
 Var
   Name: TString;
+  F: LongInt;
+  HasInf: Boolean;
+  Inf: LongWord;
   HDef: LongInt;
 Begin
-  Name := ReadIdentStr;
+  ReadNameFHeader(Name, F, HasInf, Inf);
+  If Stopped Then Exit;
   HDef := ReadUIndex;
   WriteLn(OutF, '  ', Name, ' = ', TypeRefText(HDef), ';');
+End;
+
+{ ------------------------------------------------------------ }
+{ Traitement de drTypeP ($26) : STRUCTURE DIFFERENTE de drType -   }
+{ CORRECTION (2026-07-16, empirique + confirmee contre le vrai       }
+{ code source DCURecs.pas) : drTypeP utilise TTypePDecl, qui herite    }
+{ de TVarCDecl (PAS de TTypeDecl) - c est un pointeur de VMT             }
+{ ("PutKW('VMT')" dans TTypePDecl.Show), structure IDENTIQUE a un        }
+{ TVarDecl normal : en-tete TNameFDecl + hDT (TNDX, type) + ofs             }
+{ (TNDX) - DEUX index, pas un seul comme drType. L ancien code               }
+{ traitait drType et drTypeP de facon identique (un seul hDef) -              }
+{ desalignement d un champ ("ofs") a chaque drTypeP rencontre,                 }
+{ trouve empiriquement (Access2000.dcu, position $8927) en comparant             }
+{ la position finale reelle du fichier a la position d arret.                      }
+{ ------------------------------------------------------------ }
+
+Procedure ProcessTypeP;
+Var
+  Name: TString;
+  F: LongInt;
+  HasInf: Boolean;
+  Inf: LongWord;
+  HDT, Ofs: LongInt;
+Begin
+  ReadNameFHeader(Name, F, HasInf, Inf);
+  If Stopped Then Exit;
+  HDT := ReadUIndex;
+  Ofs := ReadUIndex;
+  WriteLn(OutF, '  { ', Name, ' : ', TypeRefText(HDT), '  (pointeur de VMT) }');
 End;
 
 { ------------------------------------------------------------ }
@@ -751,13 +831,13 @@ End;
 Procedure ProcessVarLike(Tag: Byte);
 Var
   Name: TString;
-  B, B1, Inf: LongInt;
+  F: LongInt;
+  HasInf: Boolean;
+  Inf: LongWord;
   HDT, Ofs: LongInt;
 Begin
-  Name := ReadIdentStr;
-  B := ReadUIndex;
-  If Ver >= 8 Then B1 := ReadUIndex;
-  If (B And $40) <> 0 Then Inf := RUL;
+  ReadNameFHeader(Name, F, HasInf, Inf);
+  If Stopped Then Exit;
 
   HDT := ReadUIndex;
   Ofs := ReadUIndex;
@@ -776,13 +856,21 @@ End;
 Procedure ProcessProc(Tag: Byte);
 Var
   Name: TString;
-  B, B1, Inf: LongInt;
+  F: LongInt;
+  HasInf: Boolean;
+  Inf: LongWord;
   B0, Sz, X: LongInt;
 Begin
-  Name := ReadIdentStr;
-  B := ReadUIndex;
-  If Ver >= 8 Then B1 := ReadUIndex;
-  If (B And $40) <> 0 Then Inf := RUL;
+  { CORRECTION (2026-07-16) : utilise desormais ReadNameFHeader (comme     }
+  { ProcessVarLike/ProcessNamedType) au lieu d une lecture d en-tete            }
+  { dupliquee et incomplete (F4 manquant pour Ver>=12, ET Inf declare en          }
+  { LongInt signe au lieu de LongWord non signe - ce dernier point provoquait       }
+  { un vrai plantage "ERangeError" des que Inf avait son bit de poids fort            }
+  { positionne, trouve en testant contre de vrais fichiers volumineux                  }
+  { (Access2000.dcu) une fois l alignement corrige assez loin pour atteindre              }
+  { une vraie signature de procedure).                                                     }
+  ReadNameFHeader(Name, F, HasInf, Inf);
+  If Stopped Then Exit;
 
   B0 := ReadUIndex;
   Sz := ReadUIndex;
@@ -793,6 +881,446 @@ Begin
   Fail('signature de "' + Name + '" lue, mais le corps (TProcData : ' +
     'arguments + bloc de code drCBlock) n est pas encore decode - ' +
     'voir la portee documentee en tete de ce programme');
+End;
+
+{ ------------------------------------------------------------ }
+{ Traitement de drStrConstRec ($35, TStrConstDecl) : bloc         }
+{ constant genere par le compilateur pour un litteral chaine        }
+{ (pas une declaration Pascal visible en soi). En-tete TNameFDecl      }
+{ (voir ReadNameFHeader) puis un seul TNDX (Ofs).                        }
+{ CORRECTION EMPIRIQUE (2026-07-16, contre les octets reels               }
+{ d Access2000.dcu, Ver=27 - methode deja utilisee pour resoudre la          }
+{ numerotation des types, voir DOC section 9b) : le texte source lu             }
+{ dans DCURecs.pas (TStrConstDecl.Create) suggerait un DEUXIEME TNDX               }
+{ ("Sz") puis un octet brut inconditionnel pour Ver>=verD_XE - mais la               }
+{ comparaison octet par octet de 4 enregistrements drStrConstRec REELS               }
+{ consecutifs (Access2000, System, UITypes, Variants) montre qu il n y a               }
+{ PAS de second TNDX, et que l octet brut supplementaire n apparait QUE               }
+{ quand Inf a ete lu (F and $40 <> 0) - pas inconditionnellement. Les 4               }
+{ frontieres d enregistrements calculees avec cette regle tombent EXACTEMENT         }
+{ sur le octet suivant "$35" (tag) a chaque fois ; l hypothese tiree du            }
+{ texte source ne fonctionnait pas (desynchronisation immediate, tag "y"         }
+{ ($79) invalide rencontre). Source qui prevaut en cas de conflit : les            }
+{ octets reels, conformement a la methode choisie par l utilisateur.               }
+{ RAFFINEMENT EMPIRIQUE SUPPLEMENTAIRE : l octet additionnel n est pas UN            }
+{ octet fixe mais une SUITE de zero ou plusieurs marqueurs drStop1 ($63) -             }
+{ confirme par un 7e enregistrement reel (StdVCL) qui en contient DEUX a la             }
+{ suite avant l etiquette suivante. Condition de presence (zero, un ou                  }
+{ plusieurs) : Inf a ete lu ET Ofs (valeur brute) <> 0 - confirme sur 7                    }
+{ enregistrements reels consecutifs (Access2000, System, UITypes, Variants,                 }
+{ Win, ComObj, StdVCL).                                                                       }
+{ Pure metadonnee interne - consommee et annotee en commentaire, jamais              }
+{ une declaration Delphi visible (meme traitement que ProcessSrcInf).                }
+{ ------------------------------------------------------------ }
+
+Procedure ProcessStrConstRec;
+Var
+  Name: TString;
+  F: LongInt;
+  HasInf: Boolean;
+  Inf: LongWord;
+  Ofs: LongInt;
+Begin
+  ReadNameFHeader(Name, F, HasInf, Inf);
+  If Stopped Then Exit;
+
+  Ofs := ReadUIndex;
+  If HasInf And (Ofs <> 0) Then
+    While (Not Stopped) And (PeekByte = TAG_STOP1) Do RB;
+
+  If Length(Name) > 0 Then
+    WriteLn(OutF, '{ constante chaine interne : ', Name, ' }')
+  Else
+    WriteLn(OutF, '{ constante chaine interne (anonyme) }');
+End;
+
+{ ------------------------------------------------------------ }
+{ Traitement du GROUPE d enregistrements drStrConstRec : confirme    }
+{ empiriquement (9 enregistrements reels consecutifs d Access2000.dcu)  }
+{ que toute la SUITE de drStrConstRec forme une liste imbriquee unique,   }
+{ exactement comme la liste d import de ProcessUsesUnit - terminee par      }
+{ UN drStop1 ($63) final APRES le dernier enregistrement (en plus des         }
+{ eventuels marqueurs internes par enregistrement, voir ProcessStrConstRec).  }
+{ Gere donc CurTag elle-meme jusqu au bout, comme ProcessUsesUnit.              }
+{ ------------------------------------------------------------ }
+
+Procedure ProcessStrConstRecGroup;
+Begin
+  Repeat
+    ProcessStrConstRec;
+    If Stopped Then Exit;
+    CurTag := RB;
+  Until Stopped Or (CurTag <> TAG_STRCONSTREC);
+
+  If Stopped Then Exit;
+
+  { CORRECTION EMPIRIQUE (2026-07-16, System.Classes.dcu) : un drStop1     }
+  { final APRES la suite de drStrConstRec n est pas toujours present -      }
+  { l hypothese initiale (un groupe toujours ferme par un terminateur)        }
+  { ne se verifie pas partout dans un fichier reel (seulement observee         }
+  { juste apres le tout premier groupe suivant la clause "uses"). Le          }
+  { comportement tolerant est donc : consommer UN drStop1 s il est la           }
+  { (cas observe sur Access2000.dcu), sinon continuer directement SANS           }
+  { exiger sa presence (cas observe sur System.Classes.dcu) - jamais              }
+  { d arret pour cette seule variation.                                              }
+  If CurTag = TAG_STOP1 Then
+    CurTag := RB;
+End;
+
+{ ------------------------------------------------------------ }
+{ Traitement de drConst ($25, TConstDecl) : en-tete TNameFDecl      }
+{ (voir ReadNameFHeader) + hDT (TNDX, type) + TConstValInfo -           }
+{ structure CONFIRMEE contre le vrai code source (DCURecs.pas,           }
+{ TConstDecl.Create + TConstValInfo.Read) : Kind (TNDX, si Ver>4),          }
+{ ValSz (TNDX) puis, si ValSz=0 : Val (TNDX SIGNE, sauf si Kind=4           }
+{ "Pointer/Nil" pour Ver>=verD_XE2(16) - alors aucune valeur) ; si            }
+{ ValSz<>0 : ValSz OCTETS BRUTS (bloc memoire, ex. chaine/set/tableau           }
+{ de constante typee). La valeur elle-meme n est PAS interpretee ici              }
+{ (Kind=0 scalaire,1 chaine,2 resourcestring,3 flottant,4 set/pointeur,            }
+{ 5 chaine Unicode - interpretation binaire exacte hors de portee                   }
+{ actuelle) : structure lue et correctement sautee, constante annotee                }
+{ en commentaire plutot qu une fausse syntaxe "Nom: Type;" (qui ne serait              }
+{ pas une const Pascal valide sans "=valeur").                                          }
+{ ------------------------------------------------------------ }
+
+Procedure SkipConstValInfo(Const Context: TString; Var Kind: LongInt);
+Var
+  NeedVal: Boolean;
+  ValSz: LongInt;
+  Val: LongInt;
+  I: LongInt;
+Begin
+  NeedVal := True;
+  Kind := 0;
+  If Ver > 4 Then
+  Begin
+    Kind := ReadUIndex;
+    If (Kind < 0) Or (Kind > 5) Then
+    Begin
+      Fail(Context + ' : Kind hors intervalle attendu (0..5) : ' +
+        IntToStr(Kind) + ' - desynchronisation probable');
+      Exit;
+    End;
+    If (Ver >= 16) And (Ver < 100) Then
+      NeedVal := (Kind <> 4);
+  End;
+
+  ValSz := ReadUIndex;
+  If ValSz = 0 Then
+  Begin
+    If NeedVal Then Val := ReadSIndex;
+  End
+  Else
+    For I := 1 To ValSz Do RB;   { bloc memoire brut (ValPtr), valeur non interpretee }
+End;
+
+Procedure ProcessConstDecl;
+Var
+  Name: TString;
+  F: LongInt;
+  HasInf: Boolean;
+  Inf: LongWord;
+  HDT: LongInt;
+  Kind: LongInt;
+Begin
+  ReadNameFHeader(Name, F, HasInf, Inf);
+  If Stopped Then Exit;
+
+  HDT := ReadUIndex;
+  SkipConstValInfo('constante "' + Name + '"', Kind);
+  If Stopped Then Exit;
+
+  WriteLn(OutF, '  { const ', Name, ' : ', TypeRefText(HDT),
+    '  (valeur non decodee, Kind=', IntToStr(Kind), ') }');
+End;
+
+{ ------------------------------------------------------------ }
+{ Petits lecteurs "sauter N octets" utilises par drConstAddInfo :  }
+{ SkipNDXStr = ReadNDXStr/ReadNDXStrRef reels (DCU_In.pas, source     }
+{ telecharge le 2026-07-16) : longueur en TNDX (PAS un octet fixe       }
+{ comme ReadIdentStr) puis ce nombre d octets bruts. SkipRawBlock =        }
+{ SkipBlock reel (DCU_In.pas) : N octets bruts, valeur non interpretee.    }
+{ ------------------------------------------------------------ }
+
+Procedure SkipRawBlock(N: LongInt);
+Var
+  I: LongInt;
+Begin
+  For I := 1 To N Do RB;
+End;
+
+Procedure SkipNDXStr;
+Var
+  L: LongInt;
+Begin
+  L := ReadUIndex;
+  SkipRawBlock(L);
+End;
+
+{ ------------------------------------------------------------ }
+{ Un attribut personnalise (utilise par drConstAddInfo tag $01,     }
+{ ReadAttributes/TAttributeDeclModifier.Read) - structure CONFIRMEE    }
+{ contre le vrai code source (DCURecs.pas) : hAttrCtor+hMember+hAttrDT      }
+{ (3 TNDX) puis ArgCnt (TNDX) arguments, chacun Kind(TNDX) puis soit          }
+{ Kind=0 "const" (hDT:TNDX + TConstValInfo, reutilise SkipConstValInfo)         }
+{ soit Kind=1 "TypeInfo(DT)" (2 TNDX) - toute autre valeur de Kind est            }
+{ un arret propre (structure non prevue par le vrai outil non plus).              }
+{ ------------------------------------------------------------ }
+
+Procedure SkipOneAttribute;
+Var
+  HAttrCtor, HMember, HAttrDT, ArgCnt, J, Kind, CHDT, KindDummy: LongInt;
+Begin
+  HAttrCtor := ReadUIndex;
+  HMember := ReadUIndex;
+  HAttrDT := ReadUIndex;
+  ArgCnt := ReadUIndex;
+  For J := 1 To ArgCnt Do
+  Begin
+    Kind := ReadUIndex;
+    Case Kind Of
+      0:
+        Begin
+          CHDT := ReadUIndex;
+          SkipConstValInfo('attribut (argument constante)', KindDummy);
+        End;
+      1:
+        Begin
+          ReadUIndex;   { hDT }
+          ReadUIndex;   { hDTAddr }
+        End;
+    Else
+      Fail('attribut : genre d argument inattendu (Kind=' + IntToStr(Kind) +
+        ') - structure non prevue');
+    End;
+    If Stopped Then Exit;
+  End;
+End;
+
+Procedure SkipAttributes;
+Var
+  N, I: LongInt;
+Begin
+  N := ReadUIndex;
+  For I := 1 To N Do
+  Begin
+    SkipOneAttribute;
+    If Stopped Then Exit;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ Traitement de drConstAddInfo ($9C) : metadonnee ANNEXE attachee     }
+{ a la declaration precedente (deprecated/plateforme/bibliotheque,       }
+{ attributs personnalises, generation de code .NET) - PAS une              }
+{ declaration en soi. Structure CONFIRMEE contre le vrai code source          }
+{ (DCU32.pas, TUnit.ReadConstAddInfo) : une SUITE d etiquettes-octet             }
+{ (PAS des TNDX - RB direct), chacune avec sa propre charge, jusqu a              }
+{ une etiquette terminale caiStop dependant de la version. Portee :               }
+{ TOUTES les sous-etiquettes confirmees sont decodees, SAUF la branche              }
+{ "directive inline" de l etiquette $01 (F and cafInline<>0) : la               }
+{ fonction reelle dont elle depend (ReadInlineInfo) est absente des                }
+{ 6 fichiers source officiels du depot DCU32INT (DCU32.pas/DCURecs.pas/            }
+{ DCUTbl.pas/DCU_In.pas/DCU_Out.pas/FixUp.pas, tous verifies le                     }
+{ 2026-07-16) - seul son SITE D APPEL existe, jamais sa definition ;                 }
+{ DEVINER sa structure irait a l encontre de la methode de ce projet                  }
+{ (jamais de suppositions non verifiees) - arret propre explicite si                   }
+{ ce bit specifique est rencontre, plutot qu un decodage risque.                        }
+{ ------------------------------------------------------------ }
+
+Procedure ProcessConstAddInfo;
+Var
+  CaiStop: Byte;
+  Tag: Byte;
+  Result_, F, IP2, Len, I, V1, V2, V3, CafInline, CafBigVal: LongInt;
+Begin
+  If (Ver <= 7) Or (Ver >= 100) Then
+    CaiStop := $06
+  Else Begin
+    CaiStop := $0D;
+    If Ver >= 9 Then
+    Begin
+      CaiStop := $0F;
+      If Ver >= 12 Then CaiStop := $FF;
+    End;
+  End;
+
+  Repeat
+    Tag := RB;
+    If Stopped Then Exit;
+    If Tag >= CaiStop Then Break;
+
+    Case Tag Of
+      $01:
+        Begin
+          Result_ := ReadUIndex;
+          F := ReadUIndex;
+          { plateformes mobiles/emulateur hors de portee de ce programme      }
+          { (Win32 natif uniquement) - la condition reelle "not(Platform in   }
+          { mobiles)" est donc toujours VRAIE ici.                              }
+          If (Ver >= 10) And (Ver <= 23) And (Ver < 100) Then
+          Begin
+            If (F And $1000000) <> 0 Then IP2 := ReadUIndex;
+          End;
+          If (Ver >= 9) And (Ver < 100) Then
+          Begin
+            CafInline := $80000;
+            CafBigVal := $100000;
+            If Ver >= 12 Then
+            Begin
+              If (F And $800000) <> 0 Then IP2 := ReadUIndex;
+              If (F And $1) <> 0 Then SkipNDXStr;   { deprecated : ReadNDXStrRef }
+              If (Ver >= 20) And ((F And LongInt($80000000)) <> 0) Then
+                SkipAttributes;
+              CafInline := $40000;
+              CafBigVal := $80000;
+            End;
+            If (F And CafInline) <> 0 Then
+            Begin
+              Fail('drConstAddInfo : directive inline (F and $' +
+                IntToHex(CafInline, 6) + ') rencontree - la fonction reelle ' +
+                'ReadInlineInfo dont depend cette branche est absente des ' +
+                'sources officielles DCU32INT disponibles (voir DOC/' +
+                'DCU_FORMAT.TXT) - arret propre plutot que deviner sa structure');
+              Exit;
+            End;
+            If (F And CafBigVal) <> 0 Then IP2 := ReadUIndex;
+          End;
+        End;
+
+      $04:
+        Begin
+          If Not ((Ver >= 10) And (Ver < 100)) Then Break;
+          ReadUIndex; ReadUIndex;
+        End;
+
+      $06:
+        Begin
+          ReadUIndex; ReadUIndex; ReadUIndex; ReadUIndex;
+        End;
+
+      $07:
+        Begin
+          ReadUIndex; ReadUIndex; ReadUIndex; ReadUIndex;
+        End;
+
+      $08:
+        Begin
+          ReadUIndex;
+          Len := ReadUIndex;
+          SkipRawBlock(Len);
+        End;
+
+      $09:
+        Begin
+          ReadUIndex; ReadUIndex;
+        End;
+
+      $0A:
+        Begin
+          ReadUIndex;
+          ReadUIndex;
+          F := ReadUIndex;
+          If (F And $01) <> 0 Then ReadUIndex;
+          If (F And $02) <> 0 Then ReadUIndex;
+          If (F And $04) <> 0 Then ReadUIndex;
+          If (F And $08) <> 0 Then ReadUIndex;
+          If (F And $10) <> 0 Then ReadUIndex;
+          If (F And $20) <> 0 Then ReadUIndex;
+          If (F And $40) <> 0 Then
+          Begin
+            Len := ReadUIndex;   { ArgCnt de TExtraArgsDeclModifier }
+            For I := 1 To Len Do
+            Begin
+              SkipNDXStr;
+              ReadUIndex; ReadUIndex; ReadUIndex;
+            End;
+          End;
+          If (F And $80) <> 0 Then
+          Begin
+            ReadUIndex; ReadUIndex; ReadUIndex;
+          End;
+          If (F And $100) <> 0 Then SkipNDXStr;
+          If (F And $200) <> 0 Then SkipNDXStr;
+          If (F And $400) <> 0 Then ReadUIndex;
+          If (F And $800) <> 0 Then ReadUIndex;
+          If (F And $1000) <> 0 Then ReadUIndex;
+          If (F And $2000) <> 0 Then ReadUIndex;
+          If (F And $4000) <> 0 Then ReadUIndex;
+        End;
+
+      $0C:
+        Begin
+          ReadUIndex; ReadUIndex; ReadUIndex;
+        End;
+
+      $0D:
+        Begin
+          If (Ver < 9) Or (Ver >= 100) Then Break;
+          ReadUIndex;
+          SkipNDXStr;
+        End;
+
+      $10:
+        Begin
+          If (Ver < 12) Or (Ver >= 100) Then Break;
+          ReadUIndex; ReadUIndex; ReadUIndex;
+        End;
+
+      $11:
+        Begin
+          If (Ver < 18) Or (Ver >= 100) Then Break;
+          ReadUIndex; ReadUIndex;
+        End;
+
+      $12:
+        Begin
+          If (Ver < 12) Or (Ver >= 100) Then Break;
+          ReadUIndex; ReadUIndex;
+        End;
+
+      $13:
+        Begin
+          If (Ver < 12) Or (Ver >= 100) Then Break;
+          ReadUIndex; ReadUIndex; ReadUIndex;
+          SkipNDXStr; SkipNDXStr; SkipNDXStr;
+        End;
+
+      $14:
+        Begin
+          If (Ver < 12) Or (Ver >= 100) Then Break;
+          ReadUIndex; ReadUIndex;
+          Len := ReadUIndex;
+          For I := 1 To Len Do
+          Begin
+            ReadUIndex; ReadUIndex; ReadUIndex;
+            SkipNDXStr;
+          End;
+        End;
+
+      $15:
+        Begin
+          If (Ver < 16) Or (Ver >= 100) Then Break;
+          ReadUIndex; ReadUIndex; ReadUIndex;
+        End;
+
+      $16:
+        Begin
+          ReadUIndex;
+          Len := ReadUIndex;
+          SkipRawBlock(Len);
+        End;
+
+    Else
+      Break;
+    End;
+
+    If Stopped Then Exit;
+  Until False;
+
+  If Tag <> CaiStop Then
+    Fail('drConstAddInfo : etiquette inattendue en sortie de boucle ($' +
+      IntToHex(Tag, 2) + ', attendu $' + IntToHex(CaiStop, 2) + ')');
 End;
 
 { ------------------------------------------------------------ }
@@ -812,7 +1340,8 @@ Begin
   { est complete - l ecrire maintenant (voir FlushUsesClause) avant de           }
   { traiter ce nouvel enregistrement.                                              }
   If (Tag <> TAG_UNIT) And (Tag <> TAG_UNIT1) And (Tag <> TAG_SRC) And
-     (Tag <> TAG_OBJ) And (Tag <> TAG_ASM) And (Tag <> TAG_RES) Then
+     (Tag <> TAG_OBJ) And (Tag <> TAG_ASM) And (Tag <> TAG_RES) And
+     (Tag <> TAG_UNIT_INLINE_SRC) Then
     FlushUsesClause;
 
   Case Tag Of
@@ -830,17 +1359,15 @@ Begin
       ProcessVarLike(Tag);
 
     TAG_CONST:
-      { drConst (TConstDef) utilise TConstVal, une structure DIFFERENTE }
-      { de TVarInf (Sz:TNDX + Val de taille variable selon Sz) dont      }
-      { l encodage exact n est pas confirme (voir portee documentee) -    }
-      { la traiter comme TVarInf serait une DEVINETTE : arret propre.       }
-      FailUnknownTag(Tag, 'constante (TConstDef/TConstVal non confirme)');
+      ProcessConstDecl;
 
     TAG_PROC, TAG_SYSPROC:
       ProcessProc(Tag);
 
-    TAG_TYPE, TAG_TYPEP:
+    TAG_TYPE:
       ProcessNamedType;
+    TAG_TYPEP:
+      ProcessTypeP;
 
     TAG_RANGEDEF:
       DefRange('intervalle');
@@ -867,8 +1394,21 @@ Begin
         ReadUIndex;
       End;
 
-    TAG_UNITFLAGS, TAG_UNIT_ADD_INFO, TAG_STRCONSTREC,
-    TAG_PROC_ADD_INFO, TAG_CONST_ADD_INFO, TAG_INFO98:
+    TAG_STRCONSTREC:
+      Begin
+        { ProcessStrConstRecGroup gere elle-meme CurTag jusqu au bout      }
+        { (toute la suite de drStrConstRec est UNE liste imbriquee,          }
+        { terminee par un seul drStop1 final) - ne PAS laisser le code          }
+        { commun ci-dessous relire une etiquette.                                }
+        ProcessStrConstRecGroup;
+        Exit;
+      End;
+
+    TAG_CONST_ADD_INFO:
+      ProcessConstAddInfo;
+
+    TAG_UNITFLAGS, TAG_UNIT_ADD_INFO,
+    TAG_PROC_ADD_INFO, TAG_INFO98:
       Fail('etiquette de metadonnees $' + IntToHex(Tag, 2) +
         ' rencontree hors de l en-tete - structure non prise en charge ' +
         'a cet endroit (portee documentee)');
@@ -887,6 +1427,8 @@ Begin
       ProcessSrcInf('asm');
     TAG_RES:
       ProcessSrcInf('ressource');
+    TAG_UNIT_INLINE_SRC:
+      ProcessSrcInf('source inline');
 
     TAG_DLL, TAG_LABEL:
       FailUnknownTag(Tag, 'enregistrement');
@@ -1099,19 +1641,44 @@ Begin
   WriteLn(OutF, 'unit ', ChangeFileExt(ExtractFileName(InName), ''), ';');
   WriteLn(OutF);
 
+  { "interface" precede toujours la clause "uses" en Delphi reel (l ordre  }
+  { inverse etait une erreur : FlushUsesClause ecrivait "interface" APRES   }
+  { "uses", signale par l utilisateur) - on l ecrit donc ici, immediatement  }
+  { apres l en-tete de l unite, avant toute accumulation de "uses".            }
+  WriteLn(OutF, 'interface');
+  WriteLn(OutF);
+
   { Note de portee : les enregistrements ne sont PAS strictement       }
   { groupes par categorie dans le flux reel (confirme empiriquement -   }
   { un enregistrement "source" (drSrc) precede souvent le tout premier    }
   { "uses") - chaque "uses" rencontre est donc ACCUMULE (voir                }
   { ProcessUsesUnit) plutot qu ecrit immediatement ; la clause complete        }
   { ("uses" + bloc de commentaire des imports resolus) n est ecrite            }
-  { qu une seule fois, par FlushUsesClause (qui ecrit aussi "interface"    }
-  { juste apres), des que le premier enregistrement NON-"uses" apparait      }
-  { (voir ProcessOneRecord) - ou plus bas, si le fichier ne contenait QUE       }
-  { des "uses".                                                                   }
+  { qu une seule fois, par FlushUsesClause, des que le premier enregistrement    }
+  { NON-"uses" apparait (voir ProcessOneRecord) - ou plus bas, si le fichier        }
+  { ne contenait QUE des "uses". "interface" est deja ecrit plus haut, AVANT       }
+  { toute accumulation de "uses" (ordre reel Delphi : interface precede uses).      }
 
-  While (Not Stopped) And (CurTag <> TAG_STOP_A) And (CurTag <> TAG_STOP) Do
+  { CORRECTION (2026-07-16, contre le vrai code source DCU32.pas,        }
+  { TUnit.LoadFromMem) : le VRAI analyseur n a AUCUN cas special pour       }
+  { drStop=$00 dans son grand aiguilleur - ce n est PAS une etiquette de     }
+  { fin de fichier reconnue ("// if Tag<>drStop then DCUError(...)" est       }
+  { en commentaire, donc desactive, dans la vraie source). Traiter $00           }
+  { comme une fin silencieuse valide MASQUAIT un vrai desalignement en          }
+  { profondeur (confirme empiriquement : DIAGNOSTIC montrait une position          }
+  { finale a ~35 Ko alors que le vrai fichier fait 1,5 a 2 Mo - la "reussite"        }
+  { etait donc une COINCIDENCE d octet, pas une vraie fin de fichier). Seul            }
+  { TAG_STOP_A=$61 reste un arret silencieux (constante reelle "Last Tag in           }
+  { all files") ; $00 rencontre inopinement doit maintenant passer par                  }
+  { l aiguilleur normal (FailUnknownTag) comme n importe quelle autre                     }
+  { etiquette non reconnue.                                                                }
+  While (Not Stopped) And (CurTag <> TAG_STOP_A) Do
     ProcessOneRecord;
+
+  If Not Stopped Then
+    WriteLn(ErrOutput, 'DISDCU: DIAGNOSTIC position finale = $', IntToHex(P, 8),
+      ' / taille fichier = $', IntToHex(BufLen, 8), ' (etiquette de fin : $',
+      IntToHex(CurTag, 2), ')');
 
   FlushUsesClause;   { au cas ou le fichier ne contenait que des "uses" }
 
