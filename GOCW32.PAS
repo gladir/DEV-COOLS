@@ -1040,6 +1040,7 @@ End;
 Procedure LexInit;
 Begin
   LexLineNo   := 0;
+  TotalLines  := 0;
   LexColNo    := 1;
   LexEOF      := False;
   LexLine     := '';
@@ -3659,10 +3660,24 @@ Var
   ExprArgKey   : Array[0..MAX_EXPR_ARG - 1] Of TString;
   ExprArgCount : Integer;
 
+  { NoCompositeLit : Vrai pendant l analyse d une expression d en-tete   }
+  { de if/for/switch (condition, tag, collection de range) - la ou un        }
+  { litteral compose SANS parentheses est structurellement ambigu avec           }
+  { l accolade ouvrante de l instruction elle-meme (regle reelle de la               }
+  { spec Go : dans l en-tete d un "for range", l accolade qui suit le                    }
+  { nom de la collection doit se lire comme le debut du corps de la                          }
+  { boucle, PAS comme l ouverture d un litteral compose sur ce nom).                             }
+  { Remis a Faux des qu on entre dans une sous-expression NON AMBIGUE                               }
+  { (parentheses, crochets d index/tranchage, arguments d appel,                                       }
+  { interieur d un litteral compose deja introduit) - chaque site de                                      }
+  { remise a Faux sauvegarde puis restaure l ancienne valeur (TODO 07).                                       }
+  NoCompositeLit : Boolean;
+
 Procedure ExprInit;
 Begin
-  ExprCount    := 0;
-  ExprArgCount := 0;
+  ExprCount      := 0;
+  ExprArgCount   := 0;
+  NoCompositeLit := False;
 End;
 
 Function ExprNew(K: TExprKind): Integer;
@@ -3863,6 +3878,7 @@ Var
   TIdx, SI, N, ValIdx : Integer;
   KeyName             : TString;
   ArgStart, Cnt        : Integer;
+  SavedNCL             : Boolean;
 Begin
   TIdx := -1;
   SI := SymFind(TypeName);
@@ -3871,6 +3887,8 @@ Begin
   Else FatalError('type inconnu dans un litteral compose: ' + TypeName);
 
   PPAdvance;   { '{' }
+  SavedNCL := NoCompositeLit;
+  NoCompositeLit := False;
   PPSkipSemis;
 
   ArgStart := ExprArgCount;
@@ -3891,6 +3909,7 @@ Begin
     If Not PPMatch(',') Then Break;
     PPSkipSemis;
   Until PPIsOp('}');
+  NoCompositeLit := SavedNCL;
 
   If Not PPMatch('}') Then
     FatalError('accolade fermante attendue dans un litteral compose');
@@ -3908,9 +3927,11 @@ End;
 { d arguments (tolerance virgule/point-virgule finale, meme piege ASI            }
 { que ParseCompositeLiteral juste au-dessus).                                        }
 Function ParseCallArgs(Callee: Integer): Integer;
-Var N, A, ArgStart, Cnt : Integer;
+Var N, A, ArgStart, Cnt : Integer; SavedNCL: Boolean;
 Begin
   PPAdvance;   { '(' }
+  SavedNCL := NoCompositeLit;
+  NoCompositeLit := False;
   PPSkipSemis;
   ArgStart := ExprArgCount;
   Cnt := 0;
@@ -3923,6 +3944,7 @@ Begin
     If Not PPMatch(',') Then Break;
     PPSkipSemis;
   Until PPIsOp(')');
+  NoCompositeLit := SavedNCL;
 
   If Not PPMatch(')') Then
     FatalError('parenthese fermante attendue dans un appel');
@@ -3943,9 +3965,11 @@ End;
 { syntaxes de type des TODO 11/12/15, pas encore disponibles ; arret               }
 { propre documente dans ce cas (via ParseTypeExpr lui-meme).                          }
 Function ParseNewOrMake(Const FuncName: TString): Integer;
-Var N, TIdx, ArgStart, Cnt, A : Integer;
+Var N, TIdx, ArgStart, Cnt, A : Integer; SavedNCL: Boolean;
 Begin
   PPAdvance;   { '(' }
+  SavedNCL := NoCompositeLit;
+  NoCompositeLit := False;
   TIdx := ParseTypeExpr;
   ArgStart := ExprArgCount;
   Cnt := 0;
@@ -3955,6 +3979,7 @@ Begin
     ExprArgPush(A, '');
     Inc(Cnt);
   End;
+  NoCompositeLit := SavedNCL;
   If Not PPMatch(')') Then
     FatalError('parenthese fermante attendue dans ' + FuncName + '(...)');
 
@@ -3971,7 +3996,7 @@ Begin
 End;
 
 Function ParseOperand: Integer;
-Var Nam: TString; Inner: Integer;
+Var Nam: TString; Inner: Integer; SavedNCL: Boolean;
 Begin
   ParseOperand := 0;
 
@@ -4011,7 +4036,8 @@ Begin
         Else If Nam = 'nil' Then ParseOperand := ExprAddNilLit
         Else If Nam = 'new' Then ParseOperand := ParseNewOrMake('new')
         Else If Nam = 'make' Then ParseOperand := ParseNewOrMake('make')
-        Else If PPIsOp('{') Then ParseOperand := ParseCompositeLiteral(Nam)
+        Else If PPIsOp('{') And (Not NoCompositeLit) Then
+          ParseOperand := ParseCompositeLiteral(Nam)
         Else ParseOperand := ExprAddIdent(Nam);
       End;
     TOK_OP:
@@ -4019,7 +4045,10 @@ Begin
         If PPIsOp('(') Then
         Begin
           PPAdvance;
+          SavedNCL := NoCompositeLit;
+          NoCompositeLit := False;
           Inner := ParseExpr;
+          NoCompositeLit := SavedNCL;
           If Not PPIsOp(')') Then
             FatalError('parenthese fermante attendue')
           Else
@@ -4040,6 +4069,7 @@ Var
   TIdx, N  : Integer;
   LowIdx, HighIdx, MaxIdx : Integer;
   ArgStart : Integer;
+  SavedNCL : Boolean;
 Begin
   Result_ := ParseOperand;
 
@@ -4051,6 +4081,20 @@ Begin
       If PPIsOp('(') Then
       Begin
         PPAdvance;
+        { x.(type) : marqueur reserve exclusivement a l en-tete d un        }
+        { "switch" (TODO 07, TypeSwitchGuard) - PAS une vraie expression         }
+        { de type ; Extra=-2 signale ce cas special au lieu d un TypeIdx reel.        }
+        If (PPKind = TOK_IDENT) And (PPVal = 'type') Then
+        Begin
+          PPAdvance;
+          If Not PPMatch(')') Then
+            FatalError('parenthese fermante attendue apres ".(type)"');
+          N := ExprNew(EK_TYPEASSERT);
+          ExprPool[N].Left  := Result_;
+          ExprPool[N].Extra := -2;
+          Result_ := N;
+          Continue;
+        End;
         TIdx := ParseTypeExpr;
         If Not PPMatch(')') Then
           FatalError('parenthese fermante attendue dans une assertion de type');
@@ -4077,12 +4121,15 @@ Begin
     Else If PPIsOp('[') Then
     Begin
       PPAdvance;
+      SavedNCL := NoCompositeLit;
+      NoCompositeLit := False;
       LowIdx := -1; HighIdx := -1; MaxIdx := -1;
       If Not PPIsOp(':') Then LowIdx := ParseExpr;
       If PPMatch(':') Then
       Begin
         If (Not PPIsOp(':')) And (Not PPIsOp(']')) Then HighIdx := ParseExpr;
         If PPMatch(':') Then MaxIdx := ParseExpr;
+        NoCompositeLit := SavedNCL;
         If Not PPMatch(']') Then
           FatalError('crochet fermant attendu dans un tranchage (slice)');
         N := ExprNew(EK_SLICE);
@@ -4098,6 +4145,7 @@ Begin
       End
       Else
       Begin
+        NoCompositeLit := SavedNCL;
         If Not PPMatch(']') Then
           FatalError('crochet fermant attendu dans une indexation');
         N := ExprNew(EK_INDEX);
@@ -4357,6 +4405,966 @@ Begin
   SymInit;
 End;
 
+{ ============================================================ }
+{ TODO 07 - INSTRUCTIONS DE CONTROLE : IF / FOR / SWITCH / GOTO }
+{ ============================================================ }
+{ Meme principe que le TODO 06 : construit un AST (StmtPool, pool a    }
+{ taille fixe comme ExprPool/TypeTab/SymTab) plutot que d emettre du       }
+{ code, puisque le backend (TODO 21) n existe toujours pas. Ce TODO           }
+{ n a PAS ENCORE d appelant reel (ParseFileTopLevel s arrete toujours              }
+{ proprement a la premiere "func" - les corps de fonctions arrivent au                }
+{ TODO 08) : chaque forme est construite et testee de facon autonome                     }
+{ via StmtSelfTest, exactement comme ExprSelfTest l a fait pour le                          }
+{ TODO 06 avant que rien n utilise ParseExpr en pratique.                                      }
+
+Const
+  MAX_STMT     = 8192;
+  MAX_STMT_ARG = 8192;
+  MAX_CASE     = 2048;
+
+Type
+  TStmtKind = (
+    STK_EMPTY, STK_BLOCK, STK_EXPR, STK_ASSIGN, STK_SHORTVAR, STK_INCDEC,
+    STK_VARDECL, STK_CONSTDECL, STK_TYPEDECL,
+    STK_IF, STK_FOR, STK_FORRANGE, STK_SWITCH, STK_TYPESWITCH,
+    STK_BREAK, STK_CONTINUE, STK_GOTO, STK_LABELED, STK_RETURN,
+    STK_FALLTHROUGH
+  );
+
+  TStmtNode = Record
+    Kind       : TStmtKind;
+    Op         : TString;    { STK_ASSIGN/STK_INCDEC : texte de l operateur }
+    Left       : Integer;    { voir tableau d usage par Kind ci-dessous }
+    Right      : Integer;
+    Extra      : Integer;
+    Extra2     : Integer;
+    NameVal    : TString;
+    NameVal2   : TString;
+    IsDeclRange: Boolean;
+    ArgFirst   : Integer;
+    ArgCount   : Integer;
+  End;
+
+  { Usage des champs par Kind (documente une seule fois ici plutot que    }
+  { repete partout) :                                                        }
+  {   STK_BLOCK        ArgFirst/Count -> instructions (StmtArgPool[i])          }
+  {   STK_EXPR         Left -> expression                                          }
+  {   STK_ASSIGN       Op ; ArgFirst/Count -> paires (StmtArgPool[i]=cible,           }
+  {                    StmtArgPool2[i]=valeur)                                          }
+  {   STK_SHORTVAR     ArgFirst/Count -> paires (StmtArgName[i]=nom,                       }
+  {                    StmtArgPool2[i]=valeur)                                                 }
+  {   STK_INCDEC       Op ; Left -> cible                                                         }
+  {   STK_VARDECL/CONSTDECL/TYPEDECL  (aucune charge utile : delegue aux                              }
+  {                    parseurs du TODO 05, deja appeles au moment de creer                              }
+  {                    ce noeud - simple marqueur pour ParseStatement)                                      }
+  {   STK_IF           Left=Init(-1 si absent) ; Extra=Condition ;                                              }
+  {                    Right=Bloc-Alors ; Extra2=Bloc/Instruction-Sinon(-1)                                        }
+  {   STK_FOR          Left=Init(-1) ; Extra=Condition(-1) ; Extra2=Post(-1) ;                                        }
+  {                    Right=Corps                                                                                       }
+  {   STK_FORRANGE     NameVal=nom cle, NameVal2=nom valeur (vide si absent                                                 }
+  {                    ou "_") ; IsDeclRange (:= vs =) ; Left=Collection ;                                                     }
+  {                    Right=Corps                                                                                                }
+  {   STK_SWITCH       Left=Init(-1) ; Extra=Etiquette/Tag(-1 si sans tag) ;                                                        }
+  {                    ArgFirst/Count -> plage dans CaseClausePool                                                                     }
+  {   STK_TYPESWITCH   Left=Init(-1) ; Extra=Expression de base (x de x.(type)) ;                                                         }
+  {                    NameVal=nom lie (v de "v := x.(type)", vide si absent) ;                                                              }
+  {                    ArgFirst/Count -> plage dans CaseClausePool (dont                                                                        }
+  {                    ExprFirst/Count y contiennent des TypeIdx BRUTS, pas                                                                        }
+  {                    des index de noeud - documente dans TCaseClause)                                                                              }
+  {   STK_BREAK/CONTINUE  NameVal=etiquette (vide si absente)                                                                                            }
+  {   STK_GOTO/STK_LABELED  NameVal=etiquette ; Left=instruction (LABELED seul.)                                                                            }
+  {   STK_RETURN       ArgFirst/Count -> expressions de retour (StmtArgPool[i])                                                                               }
+  {   STK_FALLTHROUGH  (aucune charge utile)                                                                                                                     }
+
+  TCaseClause = Record
+    ExprFirst   : Integer;   { dans ExprArgPool : valeurs "case V1, V2:" ; }
+                             { pour STK_TYPESWITCH, contient des TypeIdx      }
+                             { BRUTS (pas des index de ExprPool)                 }
+    ExprCount   : Integer;
+    IsDefault   : Boolean;
+    BodyFirst   : Integer;   { dans StmtArgPool : instructions du corps }
+    BodyCount   : Integer;
+    Fallthrough : Boolean;   { corps termine par l instruction "fallthrough" }
+  End;
+
+Var
+  StmtPool     : Array[0..MAX_STMT - 1] Of TStmtNode;
+  StmtCount    : Integer;
+  StmtArgPool  : Array[0..MAX_STMT_ARG - 1] Of Integer;
+  StmtArgPool2 : Array[0..MAX_STMT_ARG - 1] Of Integer;
+  StmtArgName  : Array[0..MAX_STMT_ARG - 1] Of TString;
+  StmtArgCount : Integer;
+  CaseClausePool  : Array[0..MAX_CASE - 1] Of TCaseClause;
+  CaseClauseCount : Integer;
+
+Procedure StmtInit;
+Begin
+  StmtCount       := 0;
+  StmtArgCount    := 0;
+  CaseClauseCount := 0;
+End;
+
+Function StmtNew(K: TStmtKind): Integer;
+Begin
+  If StmtCount >= MAX_STMT Then
+  Begin
+    FatalError('table des noeuds d''instruction pleine (MAX_STMT)');
+    StmtNew := 0;
+    Exit;
+  End;
+  StmtPool[StmtCount].Kind        := K;
+  StmtPool[StmtCount].Op          := '';
+  StmtPool[StmtCount].Left        := -1;
+  StmtPool[StmtCount].Right       := -1;
+  StmtPool[StmtCount].Extra       := -1;
+  StmtPool[StmtCount].Extra2      := -1;
+  StmtPool[StmtCount].NameVal     := '';
+  StmtPool[StmtCount].NameVal2    := '';
+  StmtPool[StmtCount].IsDeclRange := False;
+  StmtPool[StmtCount].ArgFirst    := -1;
+  StmtPool[StmtCount].ArgCount    := 0;
+  StmtNew := StmtCount;
+  Inc(StmtCount);
+End;
+
+Function StmtArgPush(A, B: Integer; Const Nm: TString): Integer;
+Begin
+  If StmtArgCount >= MAX_STMT_ARG Then
+  Begin
+    FatalError('table des arguments d''instruction pleine (MAX_STMT_ARG)');
+    StmtArgPush := 0;
+    Exit;
+  End;
+  StmtArgPool[StmtArgCount]  := A;
+  StmtArgPool2[StmtArgCount] := B;
+  StmtArgName[StmtArgCount]  := Nm;
+  StmtArgPush := StmtArgCount;
+  Inc(StmtArgCount);
+End;
+
+Function CaseClauseNew: Integer;
+Begin
+  If CaseClauseCount >= MAX_CASE Then
+  Begin
+    FatalError('table des clauses "case" pleine (MAX_CASE)');
+    CaseClauseNew := 0;
+    Exit;
+  End;
+  CaseClausePool[CaseClauseCount].ExprFirst   := -1;
+  CaseClausePool[CaseClauseCount].ExprCount   := 0;
+  CaseClausePool[CaseClauseCount].IsDefault   := False;
+  CaseClausePool[CaseClauseCount].BodyFirst   := -1;
+  CaseClausePool[CaseClauseCount].BodyCount   := 0;
+  CaseClausePool[CaseClauseCount].Fallthrough := False;
+  CaseClauseNew := CaseClauseCount;
+  Inc(CaseClauseCount);
+End;
+
+{ PPPeekKind/PPPeekVal : lecture a N jetons d avance (N=0 -> jeton      }
+{ courant, comme PPKind/PPVal), SANS consommer - generalise PP2Kind/       }
+{ PP2Val (TODO 06, equivalents a N=1) pour la detection de "for ... range"     }
+{ qui a besoin de regarder jusqu a 3-4 jetons en avant.                          }
+Function PPPeekKind(N: Integer): TTokenKind;
+Begin
+  If (PP + N >= TokenCount) Or (PP + N < 0) Then PPPeekKind := TOK_EOF
+  Else PPPeekKind := TokenPool[PP + N].Kind;
+End;
+
+Function PPPeekVal(N: Integer): TString;
+Begin
+  If (PP + N >= TokenCount) Or (PP + N < 0) Then PPPeekVal := ''
+  Else PPPeekVal := TokenPool[PP + N].Val;
+End;
+
+{ IsForRangeAhead : Vrai si les jetons a partir de PP correspondent a  }
+{ "Ident [',' Ident] (':=' | '=') 'range'" - pure LECTURE (aucun jeton     }
+{ consomme, aucun effet de bord) : necessaire pour decider, AVANT toute        }
+{ consommation, si "for" introduit la forme range-avec-variables plutot            }
+{ que la forme classique/while (les deux commencent par un identificateur).           }
+Function IsForRangeAhead: Boolean;
+Var Offset: Integer;
+Begin
+  IsForRangeAhead := False;
+  If PPKind <> TOK_IDENT Then Exit;
+  Offset := 1;
+  If (PPPeekKind(Offset) = TOK_OP) And (PPPeekVal(Offset) = ',') Then
+  Begin
+    Inc(Offset);
+    If PPPeekKind(Offset) <> TOK_IDENT Then Exit;
+    Inc(Offset);
+  End;
+  If Not (((PPPeekKind(Offset) = TOK_OP) And (PPPeekVal(Offset) = ':=')) Or
+          ((PPPeekKind(Offset) = TOK_OP) And (PPPeekVal(Offset) = '='))) Then Exit;
+  Inc(Offset);
+  IsForRangeAhead := (PPPeekKind(Offset) = TOK_IDENT) And (PPPeekVal(Offset) = 'range');
+End;
+
+Function ParseStatement: Integer; Forward;
+Function ParseBlock: Integer; Forward;
+
+{ ParseSimpleStmt : expression / incrementation-decrementation /       }
+{ affectation (simple ou composee) / declaration courte := - ne consomme   }
+{ JAMAIS le separateur final (point-virgule reel ou insere par l ASI) :        }
+{ les appelants (bloc, if, for, switch) le gerent chacun selon leur PROPRE          }
+{ grammaire (le for a par exemple DEUX ';' explicites dans son en-tete,               }
+{ pas un separateur d instruction ordinaire).                                            }
+Function ParseSimpleStmt: Integer;
+Var
+  Targets  : Array[0..15] Of Integer;
+  TCount   : Integer;
+  N, I     : Integer;
+  Op       : TString;
+  ValIdx   : Integer;
+  ArgStart : Integer;
+  Nam      : TString;
+  AnyNew   : Boolean;
+Begin
+  TCount := 0;
+  Targets[0] := ParseExpr;
+  Inc(TCount);
+  While PPMatch(',') Do
+  Begin
+    If TCount <= High(Targets) Then
+    Begin
+      Targets[TCount] := ParseExpr;
+      Inc(TCount);
+    End
+    Else
+      ParseExpr;
+  End;
+
+  If PPMatch(':=') Then
+  Begin
+    ArgStart := StmtArgCount;
+    I := 0;
+    AnyNew := False;
+    Repeat
+      ValIdx := ParseExpr;
+      If I < TCount Then
+      Begin
+        If ExprPool[Targets[I]].Kind = EK_IDENT Then
+        Begin
+          Nam := ExprPool[Targets[I]].NameVal;
+          StmtArgPush(-1, ValIdx, Nam);
+          If SymFindInScope(Nam, CurScopeId) < 0 Then
+          Begin
+            SymAdd(Nam, SK_VAR, ExprPool[ValIdx].TypeIdx);
+            AnyNew := True;
+          End;
+        End
+        Else
+        Begin
+          FatalError('nom de variable attendu a gauche de ":="');
+          StmtArgPush(-1, ValIdx, '');
+        End;
+      End;
+      Inc(I);
+    Until Not PPMatch(',');
+
+    If Not AnyNew Then
+      WarnMsg(':= sans aucune nouvelle variable a gauche (no new variables ' +
+        'on left side of :=)');
+
+    N := StmtNew(STK_SHORTVAR);
+    StmtPool[N].ArgFirst := ArgStart;
+    StmtPool[N].ArgCount := TCount;
+    ParseSimpleStmt := N;
+    Exit;
+  End;
+
+  If PPIsOp('=') Or PPIsOp('+=') Or PPIsOp('-=') Or PPIsOp('*=') Or
+     PPIsOp('/=') Or PPIsOp('%=') Or PPIsOp('&=') Or PPIsOp('|=') Or
+     PPIsOp('^=') Or PPIsOp('<<=') Or PPIsOp('>>=') Or PPIsOp('&^=') Then
+  Begin
+    Op := PPVal;
+    PPAdvance;
+    ArgStart := StmtArgCount;
+    I := 0;
+    Repeat
+      ValIdx := ParseExpr;
+      If I < TCount Then StmtArgPush(Targets[I], ValIdx, '')
+      Else StmtArgPush(-1, ValIdx, '');
+      Inc(I);
+    Until Not PPMatch(',');
+    N := StmtNew(STK_ASSIGN);
+    StmtPool[N].Op       := Op;
+    StmtPool[N].ArgFirst := ArgStart;
+    StmtPool[N].ArgCount := TCount;
+    ParseSimpleStmt := N;
+    Exit;
+  End;
+
+  If PPIsOp('++') Or PPIsOp('--') Then
+  Begin
+    Op := PPVal;
+    PPAdvance;
+    N := StmtNew(STK_INCDEC);
+    StmtPool[N].Op   := Op;
+    StmtPool[N].Left := Targets[0];
+    ParseSimpleStmt := N;
+    Exit;
+  End;
+
+  If TCount > 1 Then
+    FatalError('liste d''expressions invalide comme instruction (":=" ou ' +
+      '"=" attendu)');
+  N := StmtNew(STK_EXPR);
+  StmtPool[N].Left := Targets[0];
+  ParseSimpleStmt := N;
+End;
+
+{ ParseIfStmt : if [SimpleStmt ';'] Expression Bloc [else (IfStmt|Bloc)]  }
+{ Meme technique de LEVEE D AMBIGUITE que pour "for" juste plus bas : on     }
+{ parse d abord un SimpleStmt (qui, faute de mieux, PEUT etre juste une         }
+{ expression nue) ; si un ';' suit, ce qu on vient de parser etait l Init,             }
+{ sinon c etait DEJA la condition (son Kind doit alors etre STK_EXPR).                    }
+Function ParseIfStmt: Integer;
+Var
+  Init, Cond, ThenBlk, ElseBr, S1, N : Integer;
+  SavedNCL : Boolean;
+Begin
+  PPAdvance;   { if }
+  SymEnterScope;
+
+  { l en-tete (Init/Condition) est un contexte AMBIGU pour un litteral    }
+  { compose sans parentheses (voir NoCompositeLit) - leve seulement une      }
+  { fois ParseBlock atteint (l accolade qui suit est alors sans ambiguite       }
+  { possible : c est le corps du "if").                                            }
+  SavedNCL := NoCompositeLit;
+  NoCompositeLit := True;
+  S1 := ParseSimpleStmt;
+  If PPMatch(';') Then
+  Begin
+    Init := S1;
+    Cond := ParseExpr;
+  End
+  Else
+  Begin
+    Init := -1;
+    If StmtPool[S1].Kind = STK_EXPR Then
+      Cond := StmtPool[S1].Left
+    Else
+    Begin
+      FatalError('condition attendue apres "if" (point-virgule manquant ?)');
+      Cond := -1;
+    End;
+  End;
+  NoCompositeLit := SavedNCL;
+
+  ThenBlk := ParseBlock;
+
+  ElseBr := -1;
+  If PPMatch('else') Then
+  Begin
+    If (PPKind = TOK_IDENT) And (PPVal = 'if') Then
+      ElseBr := ParseIfStmt
+    Else
+      ElseBr := ParseBlock;
+  End;
+
+  SymLeaveScope;
+
+  N := StmtNew(STK_IF);
+  StmtPool[N].Left   := Init;
+  StmtPool[N].Extra  := Cond;
+  StmtPool[N].Right  := ThenBlk;
+  StmtPool[N].Extra2 := ElseBr;
+  ParseIfStmt := N;
+End;
+
+{ ParseForStmt : les TROIS+ formes Go (infinie / while / classique 3-    }
+{ clauses / range-avec-ou-sans-variables), un seul mot-cle "for". La forme      }
+{ range est detectee AVANT toute consommation via IsForRangeAhead - toutes         }
+{ les autres formes partagent la meme levee d ambiguite que "if".                     }
+Function ParseForStmt: Integer;
+Var
+  N, Init, Cond, Post, Body, S1 : Integer;
+  KeyName, ValName : TString;
+  IsDecl : Boolean;
+  SavedNCL : Boolean;
+Begin
+  PPAdvance;   { for }
+  SymEnterScope;
+
+  { meme ambiguite documentee que ParseIfStmt (voir NoCompositeLit) -   }
+  { levee juste avant chacun des 4 appels a ParseBlock ci-dessous.         }
+  SavedNCL := NoCompositeLit;
+  NoCompositeLit := True;
+
+  If PPIsOp('{') Then
+  Begin
+    NoCompositeLit := SavedNCL;
+    Body := ParseBlock;
+    N := StmtNew(STK_FOR);
+    StmtPool[N].Right := Body;
+    SymLeaveScope;
+    ParseForStmt := N;
+    Exit;
+  End;
+
+  If (PPKind = TOK_IDENT) And (PPVal = 'range') Then
+  Begin
+    PPAdvance;   { range }
+    N := StmtNew(STK_FORRANGE);
+    StmtPool[N].Left  := ParseExpr;
+    NoCompositeLit := SavedNCL;
+    StmtPool[N].Right := ParseBlock;
+    SymLeaveScope;
+    ParseForStmt := N;
+    Exit;
+  End;
+
+  If IsForRangeAhead Then
+  Begin
+    KeyName := ''; ValName := ''; IsDecl := False;
+    KeyName := PPVal;
+    PPAdvance;   { premier ident }
+    If PPMatch(',') Then
+    Begin
+      ValName := PPVal;
+      PPAdvance;   { second ident }
+    End;
+    If PPMatch(':=') Then IsDecl := True Else PPMatch('=');
+    PPAdvance;   { 'range' - deja confirme par IsForRangeAhead }
+
+    N := StmtNew(STK_FORRANGE);
+    StmtPool[N].NameVal     := KeyName;
+    StmtPool[N].NameVal2    := ValName;
+    StmtPool[N].IsDeclRange := IsDecl;
+    StmtPool[N].Left        := ParseExpr;
+    If IsDecl Then
+    Begin
+      { Type reel connu seulement une fois le type de la collection      }
+      { resolu (slice/map/string/chan : TODO 11/12/14/15) - PDT_INT au        }
+      { mieux ici, affine plus tard, meme discipline que ExprInferBinaryType. }
+      If (KeyName <> '') And (KeyName <> '_') Then SymAdd(KeyName, SK_VAR, PDT_INT);
+      If (ValName <> '') And (ValName <> '_') Then SymAdd(ValName, SK_VAR, PDT_INT);
+    End;
+    NoCompositeLit := SavedNCL;
+    StmtPool[N].Right := ParseBlock;
+    SymLeaveScope;
+    ParseForStmt := N;
+    Exit;
+  End;
+
+  If PPIsOp(';') Then S1 := -1 Else S1 := ParseSimpleStmt;
+
+  If PPMatch(';') Then
+  Begin
+    Init := S1;
+    If PPIsOp(';') Then Cond := -1 Else Cond := ParseExpr;
+    If Not PPMatch(';') Then
+      FatalError('point-virgule attendu dans l''en-tete du "for"');
+    If PPIsOp('{') Then Post := -1 Else Post := ParseSimpleStmt;
+  End
+  Else
+  Begin
+    Init := -1;
+    Post := -1;
+    If S1 = -1 Then Cond := -1
+    Else If StmtPool[S1].Kind = STK_EXPR Then Cond := StmtPool[S1].Left
+    Else
+    Begin
+      FatalError('condition attendue dans l''en-tete du "for"');
+      Cond := -1;
+    End;
+  End;
+  NoCompositeLit := SavedNCL;
+
+  Body := ParseBlock;
+  N := StmtNew(STK_FOR);
+  StmtPool[N].Left   := Init;
+  StmtPool[N].Extra  := Cond;
+  StmtPool[N].Extra2 := Post;
+  StmtPool[N].Right  := Body;
+  SymLeaveScope;
+  ParseForStmt := N;
+End;
+
+{ ParseCaseClause : "case" Expr (',' Expr)* ':' Instructions | "default"  }
+{ ':' Instructions - chaque clause ouvre sa PROPRE portee (regle Go : le      }
+{ corps d un "case" est un bloc implicite). IsTypeSwitchCtx bascule le           }
+{ contenu de "case" entre une liste d EXPRESSIONS et une liste de TYPES              }
+{ (stockes comme des TypeIdx bruts dans ExprArgPool, documente dans                    }
+{ TCaseClause) - c est le "switch" appelant qui sait laquelle des deux                    }
+{ formes est en cours (tag ordinaire vs garde de type switch).                               }
+Function ParseCaseClause(IsTypeSwitchCtx: Boolean): Integer;
+Var
+  C, ExprStart, ExprCnt, BodyStart, BodyCnt, SIdx, TIdx : Integer;
+  IsDefault : Boolean;
+Begin
+  SymEnterScope;
+  IsDefault := False;
+  ExprStart := ExprArgCount;
+  ExprCnt := 0;
+
+  If PPMatch('case') Then
+  Begin
+    Repeat
+      If IsTypeSwitchCtx Then
+      Begin
+        TIdx := ParseTypeExpr;
+        ExprArgPush(TIdx, '');
+      End
+      Else
+        ExprArgPush(ParseExpr, '');
+      Inc(ExprCnt);
+    Until Not PPMatch(',');
+  End
+  Else If PPMatch('default') Then
+    IsDefault := True
+  Else
+    FatalError('"case" ou "default" attendu');
+
+  If Not PPMatch(':') Then
+    FatalError('":" attendu apres "case"/"default"');
+
+  PPSkipSemis;
+  BodyStart := StmtArgCount;
+  BodyCnt := 0;
+  While (Not PPAtEnd) And (Not PPIsOp('}')) And
+        (Not ((PPKind = TOK_IDENT) And ((PPVal = 'case') Or (PPVal = 'default')))) Do
+  Begin
+    SIdx := ParseStatement;
+    StmtArgPush(SIdx, -1, '');
+    Inc(BodyCnt);
+    PPSkipSemis;
+  End;
+
+  SymLeaveScope;
+
+  C := CaseClauseNew;
+  CaseClausePool[C].ExprFirst := ExprStart;
+  CaseClausePool[C].ExprCount := ExprCnt;
+  CaseClausePool[C].IsDefault := IsDefault;
+  CaseClausePool[C].BodyFirst := BodyStart;
+  CaseClausePool[C].BodyCount := BodyCnt;
+  CaseClausePool[C].Fallthrough := (BodyCnt > 0) And
+    (StmtPool[StmtArgPool[BodyStart + BodyCnt - 1]].Kind = STK_FALLTHROUGH);
+  ParseCaseClause := C;
+End;
+
+{ ParseSwitchStmt : switch, SimpleStmt optionnel suivi de ';', Tag         }
+{ optionnel, accolade ouvrante, une ou plusieurs clauses case/default,      }
+{ accolade fermante. Detecte le "type switch" (garde de la forme               }
+{ "v := x.(type)" ou simplement "x.(type)" en tag) en inspectant la               }
+{ FORME du tag deja parse (STK_EXPR enveloppant un EK_TYPEASSERT marque           }
+{ Extra=-2, ou STK_SHORTVAR a 1 seul nom dont la valeur est ce meme                  }
+{ marqueur) - le marqueur lui-meme est pose par ParsePrimaryExpr                       }
+{ (TODO 06, patch TODO 07) des qu il reconnait la garde ".(type)".                        }
+Function ParseSwitchStmt: Integer;
+Var
+  N, Init, TagStmt, TagExprIdx, FirstArgIdx : Integer;
+  IsTypeSwitch : Boolean;
+  TSVarName    : TString;
+  ArgStart, Cnt : Integer;
+  SavedNCL : Boolean;
+Begin
+  PPAdvance;   { switch }
+  SymEnterScope;
+
+  Init := -1;
+  TagStmt := -1;
+  IsTypeSwitch := False;
+  TSVarName := '';
+  TagExprIdx := -1;
+
+  { meme ambiguite documentee que ParseIfStmt/ParseForStmt (voir          }
+  { NoCompositeLit) - levee juste avant l accolade ouvrante du corps.        }
+  SavedNCL := NoCompositeLit;
+  NoCompositeLit := True;
+  If Not PPIsOp('{') Then
+  Begin
+    TagStmt := ParseSimpleStmt;
+    If PPMatch(';') Then
+    Begin
+      Init := TagStmt;
+      TagStmt := -1;
+      If Not PPIsOp('{') Then TagStmt := ParseSimpleStmt;
+    End;
+  End;
+  NoCompositeLit := SavedNCL;
+
+  If TagStmt >= 0 Then
+  Begin
+    If StmtPool[TagStmt].Kind = STK_EXPR Then
+    Begin
+      TagExprIdx := StmtPool[TagStmt].Left;
+      If (ExprPool[TagExprIdx].Kind = EK_TYPEASSERT) And
+         (ExprPool[TagExprIdx].Extra = -2) Then
+      Begin
+        IsTypeSwitch := True;
+        TagExprIdx := ExprPool[TagExprIdx].Left;
+      End;
+    End
+    Else If StmtPool[TagStmt].Kind = STK_SHORTVAR Then
+    Begin
+      FirstArgIdx := StmtPool[TagStmt].ArgFirst;
+      If (StmtPool[TagStmt].ArgCount = 1) And
+         (ExprPool[StmtArgPool2[FirstArgIdx]].Kind = EK_TYPEASSERT) And
+         (ExprPool[StmtArgPool2[FirstArgIdx]].Extra = -2) Then
+      Begin
+        IsTypeSwitch := True;
+        TSVarName    := StmtArgName[FirstArgIdx];
+        TagExprIdx   := ExprPool[StmtArgPool2[FirstArgIdx]].Left;
+      End
+      Else
+        FatalError('forme de "switch" avec declaration courte non prise ' +
+          'en charge (seul "v := x.(type)" est reconnu ici)');
+    End
+    Else
+      FatalError('en-tete de "switch" invalide');
+  End;
+
+  If Not PPMatch('{') Then
+    FatalError('accolade ouvrante attendue apres l''en-tete de "switch"');
+  PPSkipSemis;
+
+  ArgStart := CaseClauseCount;
+  Cnt := 0;
+  While (Not PPAtEnd) And (Not PPIsOp('}')) Do
+  Begin
+    ParseCaseClause(IsTypeSwitch);
+    Inc(Cnt);
+  End;
+  If Not PPMatch('}') Then
+    FatalError('accolade fermante attendue a la fin du "switch"');
+
+  If IsTypeSwitch Then N := StmtNew(STK_TYPESWITCH) Else N := StmtNew(STK_SWITCH);
+  StmtPool[N].Left     := Init;
+  StmtPool[N].Extra    := TagExprIdx;
+  StmtPool[N].NameVal  := TSVarName;
+  StmtPool[N].ArgFirst := ArgStart;
+  StmtPool[N].ArgCount := Cnt;
+  SymLeaveScope;
+  ParseSwitchStmt := N;
+End;
+
+Function ParseBreakStmt: Integer;
+Var N: Integer;
+Begin
+  PPAdvance;   { break }
+  N := StmtNew(STK_BREAK);
+  { une etiquette de break est TOUJOURS sur la MEME ligne (sinon l ASI    }
+  { aurait deja insere un ';' juste apres "break", et PPKind serait ici       }
+  { TOK_SEMI, pas TOK_IDENT) - aucune ambiguite possible. }
+  If PPKind = TOK_IDENT Then
+  Begin
+    StmtPool[N].NameVal := PPVal;
+    PPAdvance;
+  End;
+  ParseBreakStmt := N;
+End;
+
+Function ParseContinueStmt: Integer;
+Var N: Integer;
+Begin
+  PPAdvance;   { continue }
+  N := StmtNew(STK_CONTINUE);
+  If PPKind = TOK_IDENT Then
+  Begin
+    StmtPool[N].NameVal := PPVal;
+    PPAdvance;
+  End;
+  ParseContinueStmt := N;
+End;
+
+Function ParseGotoStmt: Integer;
+Var N: Integer;
+Begin
+  PPAdvance;   { goto }
+  N := StmtNew(STK_GOTO);
+  If PPKind = TOK_IDENT Then
+  Begin
+    StmtPool[N].NameVal := PPVal;
+    PPAdvance;
+  End
+  Else
+    FatalError('etiquette attendue apres "goto"');
+  ParseGotoStmt := N;
+End;
+
+{ ParseReturnStmt : reserve pour le TODO 08 (retours multiples/nommes) -  }
+{ ici, se contente de parser 0..N expressions separees par des virgules :      }
+{ le VERIFICATION que leur nombre/type correspond a la signature de la               }
+{ fonction englobante n a de toute facon aucun sens avant que le TODO 08                }
+{ ne fasse exister des fonctions.                                                          }
+Function ParseReturnStmt: Integer;
+Var N, ArgStart, Cnt, EIdx : Integer;
+Begin
+  PPAdvance;   { return }
+  N := StmtNew(STK_RETURN);
+  ArgStart := StmtArgCount;
+  Cnt := 0;
+  If (PPKind <> TOK_SEMI) And (Not PPAtEnd) And (Not PPIsOp('}')) Then
+  Repeat
+    EIdx := ParseExpr;
+    StmtArgPush(EIdx, -1, '');
+    Inc(Cnt);
+  Until Not PPMatch(',');
+  StmtPool[N].ArgFirst := ArgStart;
+  StmtPool[N].ArgCount := Cnt;
+  ParseReturnStmt := N;
+End;
+
+Function ParseFallthroughStmt: Integer;
+Begin
+  PPAdvance;   { fallthrough }
+  ParseFallthroughStmt := StmtNew(STK_FALLTHROUGH);
+End;
+
+Function ParseBlock: Integer;
+Var N, ArgStart, Cnt, SIdx : Integer;
+Begin
+  If Not PPMatch('{') Then
+  Begin
+    FatalError('accolade ouvrante attendue');
+    ParseBlock := StmtNew(STK_BLOCK);
+    Exit;
+  End;
+  SymEnterScope;
+  PPSkipSemis;
+  ArgStart := StmtArgCount;
+  Cnt := 0;
+  While (Not PPAtEnd) And (Not PPIsOp('}')) Do
+  Begin
+    SIdx := ParseStatement;
+    StmtArgPush(SIdx, -1, '');
+    Inc(Cnt);
+    PPSkipSemis;
+  End;
+  If Not PPMatch('}') Then
+    FatalError('accolade fermante attendue a la fin du bloc');
+  SymLeaveScope;
+
+  N := StmtNew(STK_BLOCK);
+  StmtPool[N].ArgFirst := ArgStart;
+  StmtPool[N].ArgCount := Cnt;
+  ParseBlock := N;
+End;
+
+Function ParseStatement: Integer;
+Var Nam: TString; N: Integer;
+Begin
+  If PPIsOp(';') Then
+  Begin
+    ParseStatement := StmtNew(STK_EMPTY);
+    Exit;
+  End;
+  If PPIsOp('{') Then
+  Begin
+    ParseStatement := ParseBlock;
+    Exit;
+  End;
+
+  If PPKind = TOK_IDENT Then
+  Begin
+    Nam := PPVal;
+    If Nam = 'if' Then Begin ParseStatement := ParseIfStmt; Exit; End;
+    If Nam = 'for' Then Begin ParseStatement := ParseForStmt; Exit; End;
+    If Nam = 'switch' Then Begin ParseStatement := ParseSwitchStmt; Exit; End;
+    If Nam = 'break' Then Begin ParseStatement := ParseBreakStmt; Exit; End;
+    If Nam = 'continue' Then Begin ParseStatement := ParseContinueStmt; Exit; End;
+    If Nam = 'goto' Then Begin ParseStatement := ParseGotoStmt; Exit; End;
+    If Nam = 'return' Then Begin ParseStatement := ParseReturnStmt; Exit; End;
+    If Nam = 'fallthrough' Then Begin ParseStatement := ParseFallthroughStmt; Exit; End;
+    If Nam = 'var' Then
+    Begin
+      ParseVarDecl;
+      ParseStatement := StmtNew(STK_VARDECL);
+      Exit;
+    End;
+    If Nam = 'const' Then
+    Begin
+      ParseConstDecl;
+      ParseStatement := StmtNew(STK_CONSTDECL);
+      Exit;
+    End;
+    If Nam = 'type' Then
+    Begin
+      ParseTypeDecl;
+      ParseStatement := StmtNew(STK_TYPEDECL);
+      Exit;
+    End;
+
+    { instruction etiquetee : Ident ':' - ':=' est TOUJOURS un seul jeton   }
+    { distinct depuis le lexeur (TODO 02), donc PPPeekVal(1)=':' ne peut         }
+    { jamais matcher accidentellement un ':=' ; aucune ambiguite reelle.             }
+    If (PPPeekKind(1) = TOK_OP) And (PPPeekVal(1) = ':') Then
+    Begin
+      N := StmtNew(STK_LABELED);
+      StmtPool[N].NameVal := Nam;
+      PPAdvance;   { ident }
+      PPAdvance;   { ':' }
+      StmtPool[N].Left := ParseStatement;
+      ParseStatement := N;
+      Exit;
+    End;
+  End;
+
+  ParseStatement := ParseSimpleStmt;
+End;
+
+{ ------------------------------------------------------------ }
+{ StmtSelfTest : if/else-if/else, for (4 formes), switch (avec/       }
+{ sans tag, type switch, fallthrough), break/continue etiquetes,          }
+{ goto+etiquette, return, portees de bloc.                                    }
+{ ------------------------------------------------------------ }
+
+Procedure StmtAssert(Const Label_: TString; Cond: Boolean);
+Begin
+  If Not Cond Then
+    FatalError('StmtSelfTest: ' + Label_ + ' a echoue');
+End;
+
+Function StmtParseString(Const Src: TString): Integer;
+Const
+  TmpFile = 'GOCWSTMTSELFTEST.$$$';
+Var
+  F: Text;
+Begin
+  Assign(F, TmpFile);
+  Rewrite(F);
+  Write(F, Src);
+  Close(F);
+
+  Assign(LexSrcF, TmpFile);
+  Reset(LexSrcF);
+  LexOpened := True;
+  LexInit;
+  LexAll;
+  LexClose;
+  Erase(F);
+
+  PP := 0;
+  StmtParseString := ParseStatement;
+End;
+
+Procedure StmtSelfTest;
+Var
+  S, C0, C1 : Integer;
+Begin
+  ExprInit;
+  StmtInit;
+  SymInit;
+  TypeInit;
+  SymAdd('x', SK_VAR, PDT_INT);
+  SymAdd('arr', SK_VAR, PDT_INT);
+
+  { if / else if / else }
+  S := StmtParseString('if x > 0 { return } else if x < 0 { return } else { return }');
+  StmtAssert('if... est STK_IF', StmtPool[S].Kind = STK_IF);
+  StmtAssert('if... Init absent', StmtPool[S].Left = -1);
+  StmtAssert('if... a un "else if" (STK_IF imbrique)',
+    StmtPool[StmtPool[S].Extra2].Kind = STK_IF);
+
+  { if avec instruction d''initialisation avant la condition }
+  S := StmtParseString('if n := x; n > 0 { return }');
+  StmtAssert('if avec Init : STK_IF', StmtPool[S].Kind = STK_IF);
+  StmtAssert('if avec Init : Init est STK_SHORTVAR',
+    StmtPool[StmtPool[S].Left].Kind = STK_SHORTVAR);
+
+  { for infini }
+  S := StmtParseString('for { break }');
+  StmtAssert('for infini : STK_FOR', StmtPool[S].Kind = STK_FOR);
+  StmtAssert('for infini : pas de condition', StmtPool[S].Extra = -1);
+
+  { for while-style }
+  S := StmtParseString('for x > 0 { break }');
+  StmtAssert('for while-style : STK_FOR', StmtPool[S].Kind = STK_FOR);
+  StmtAssert('for while-style : Init absent', StmtPool[S].Left = -1);
+  StmtAssert('for while-style : condition presente', StmtPool[S].Extra >= 0);
+
+  { for classique 3 clauses }
+  S := StmtParseString('for i := 0; i < 10; i++ { break }');
+  StmtAssert('for classique : STK_FOR', StmtPool[S].Kind = STK_FOR);
+  StmtAssert('for classique : Init est STK_SHORTVAR',
+    StmtPool[StmtPool[S].Left].Kind = STK_SHORTVAR);
+  StmtAssert('for classique : Post est STK_INCDEC',
+    StmtPool[StmtPool[S].Extra2].Kind = STK_INCDEC);
+
+  { for range sans variables }
+  S := StmtParseString('for range arr { break }');
+  StmtAssert('for range sans variables : STK_FORRANGE', StmtPool[S].Kind = STK_FORRANGE);
+  StmtAssert('for range sans variables : pas de nom de cle', StmtPool[S].NameVal = '');
+
+  { for range avec 1 variable }
+  S := StmtParseString('for i := range arr { break }');
+  StmtAssert('for range 1 var : STK_FORRANGE', StmtPool[S].Kind = STK_FORRANGE);
+  StmtAssert('for range 1 var : NameVal="i"', StmtPool[S].NameVal = 'i');
+  StmtAssert('for range 1 var : IsDeclRange', StmtPool[S].IsDeclRange);
+
+  { for range avec 2 variables }
+  S := StmtParseString('for i, v := range arr { break }');
+  StmtAssert('for range 2 vars : NameVal="i"', StmtPool[S].NameVal = 'i');
+  StmtAssert('for range 2 vars : NameVal2="v"', StmtPool[S].NameVal2 = 'v');
+
+  { switch sans tag, avec default et fallthrough }
+  S := StmtParseString('switch { case x > 0: fallthrough' + Chr(10) +
+    'case x < 0: break' + Chr(10) + 'default: break }');
+  StmtAssert('switch sans tag : STK_SWITCH', StmtPool[S].Kind = STK_SWITCH);
+  StmtAssert('switch sans tag : 3 clauses', StmtPool[S].ArgCount = 3);
+  C0 := StmtPool[S].ArgFirst;
+  StmtAssert('switch : 1ere clause a "fallthrough" en fin de corps',
+    CaseClausePool[C0].Fallthrough);
+  StmtAssert('switch : derniere clause est le default',
+    CaseClausePool[C0 + 2].IsDefault);
+
+  { switch avec tag }
+  S := StmtParseString('switch x { case 1, 2: break' + Chr(10) + 'default: break }');
+  StmtAssert('switch avec tag : Extra (tag) present', StmtPool[S].Extra >= 0);
+  C1 := StmtPool[S].ArgFirst;
+  StmtAssert('switch avec tag : 1ere clause a 2 valeurs',
+    CaseClausePool[C1].ExprCount = 2);
+
+  { type switch }
+  S := StmtParseString('switch v := x.(type) { case int: break' + Chr(10) +
+    'default: break }');
+  StmtAssert('type switch : STK_TYPESWITCH', StmtPool[S].Kind = STK_TYPESWITCH);
+  StmtAssert('type switch : nom lie "v"', StmtPool[S].NameVal = 'v');
+
+  { break/continue avec etiquette }
+  S := StmtParseString('break Boucle1');
+  StmtAssert('break etiquette : NameVal="Boucle1"', StmtPool[S].NameVal = 'Boucle1');
+  S := StmtParseString('continue Boucle1');
+  StmtAssert('continue etiquette : NameVal="Boucle1"', StmtPool[S].NameVal = 'Boucle1');
+
+  { goto + instruction etiquetee (dans un bloc, pour tester les deux) }
+  S := StmtParseString('{ goto Fin' + Chr(10) + 'Fin: return }');
+  StmtAssert('bloc goto+etiquette : STK_BLOCK', StmtPool[S].Kind = STK_BLOCK);
+  StmtAssert('bloc goto+etiquette : 2 instructions', StmtPool[S].ArgCount = 2);
+  StmtAssert('1ere instruction est STK_GOTO',
+    StmtPool[StmtArgPool[StmtPool[S].ArgFirst]].Kind = STK_GOTO);
+  StmtAssert('1ere instruction : etiquette "Fin"',
+    StmtPool[StmtArgPool[StmtPool[S].ArgFirst]].NameVal = 'Fin');
+  StmtAssert('2e instruction est STK_LABELED',
+    StmtPool[StmtArgPool[StmtPool[S].ArgFirst + 1]].Kind = STK_LABELED);
+  StmtAssert('2e instruction : etiquette "Fin"',
+    StmtPool[StmtArgPool[StmtPool[S].ArgFirst + 1]].NameVal = 'Fin');
+  StmtAssert('2e instruction : instruction interne est STK_RETURN',
+    StmtPool[StmtPool[StmtArgPool[StmtPool[S].ArgFirst + 1]].Left].Kind = STK_RETURN);
+
+  { return sans valeur / avec 2 valeurs }
+  S := StmtParseString('return');
+  StmtAssert('return sans valeur : 0 expression', StmtPool[S].ArgCount = 0);
+  S := StmtParseString('return 1, 2');
+  StmtAssert('return 2 valeurs : ArgCount=2', StmtPool[S].ArgCount = 2);
+
+  { portee de bloc : une variable declaree dans un bloc ne doit pas         }
+  { rester visible apres - verifie via SymCount avant/apres }
+  SymEnterScope;
+  S := StmtParseString('{ y := 1' + Chr(10) + '_ = y }');
+  StmtAssert('bloc avec declaration locale : STK_BLOCK', StmtPool[S].Kind = STK_BLOCK);
+  StmtAssert('"y" n''est plus visible apres le bloc (portee fermee)',
+    SymFindInScope('y', CurScopeId) < 0);
+  SymLeaveScope;
+
+  { re-initialise les tables globales pour ne pas polluer Run reel }
+  ExprInit;
+  StmtInit;
+  SymInit;
+End;
+
 Procedure Run;
 Begin
   ErrorCount := 0;
@@ -4370,12 +5378,14 @@ Begin
   TypeSelfTest;
   DeclSelfTest;
   ExprSelfTest;
+  StmtSelfTest;
 
   ParseArgs;
   ShowBanner;
 
   TypeInit;
   ExprInit;
+  StmtInit;
   If Opts.Verbose Then
     WriteLn('Types predeclares enregistres : ', TypeCount);
 
@@ -4402,10 +5412,10 @@ Begin
   If Opts.Verbose Then
     WriteLn('Symboles de portee paquet declares : ', SymCount);
 
-  WriteLn('GOCW32: lexeur+classification+types+declarations+expressions ',
-    '(TODO 02-06) complets - ', TokenCount, ' tokens, ', SymCount,
-    ' symboles - analyse s''arrete a la premiere "func" (corps de ',
-    'fonctions : TODO 08+).');
+  WriteLn('GOCW32: lexeur+classification+types+declarations+expressions+',
+    'instructions (TODO 02-07) complets - ', TokenCount, ' tokens, ',
+    SymCount, ' symboles - analyse s''arrete a la premiere "func" (corps ',
+    'de fonctions : TODO 08+).');
 
   ShowStats;
 End;
