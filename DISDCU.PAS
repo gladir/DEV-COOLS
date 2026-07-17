@@ -291,6 +291,2625 @@ Var
   ImportPoolCount : Integer;
   ImportPool      : Array[1..MAX_IMPORT_POOL] Of TString;
 
+{ ================================================================ }
+{ DESASSEMBLAGE 80386 DES CORPS DE PROCEDURE (Assembler; asm...end;) }
+{ ================================================================ }
+{ Moteur de decodage x86 porte depuis DISEXE.PAS (meme projet) - un  }
+{ desassembleur MZ/PE deja complet et teste. Seul le coeur pur       }
+{ (tables d opcodes, decodage ModR/M-SIB-prefixes, DisassembleInstruction)  }
+{ est repris ici ; toute la partie specifique PE (sections, imports    }
+{ Windows, annotations) est omise - hors de portee pour une DCU.        }
+{                                                                        }
+{ Adaptation au contexte DCU (PAS un fichier EXE lie) : le bloc de code   }
+{ (drCBlock, TAG_CBLOCK) est un blob NON RELOGE - les operandes CALL/JMP    }
+{ relatifs contiennent des deplacements PLACEHOLDER, le vrai destinataire     }
+{ etant indique par la table des correctifs (drFixUp, TAG_FIXUP) via un        }
+{ index NDX. La resolution de symbole se fait donc PAR OFFSET DE CORRECTIF       }
+{ (FindFixupAt), PAS par adresse cible calculee comme dans DISEXE.PAS            }
+{ (concu pour un PE deja lie, adresses finales) - voir DisassembleInstruction.    }
+{                                                                                   }
+{ Portee assumee (best effort, voir NextAddrDef) : la numerotation des index    }
+{ d adresse ("address-def", TNameDecl.hDecl du vrai DCU32.pas) est reconstruite  }
+{ en comptant, dans le MEME ordre que le fichier, chaque declaration NOMMEE        }
+{ rencontree (types/vars/consts/procs/champs/methodes/proprietes/imports) -         }
+{ CONFIRME (DCURecs.pas) : ces objets heritent tous de TNameDecl.Create, qui          }
+{ reserve un index sequentiel via AddAddrDef. Les definitions de types ANONYMES        }
+{ (Def* : DefRange/DefRecord/DefClass/etc) utilisent un espace d index SEPARE           }
+{ (hAddrDef lu directement du fichier, PAS compte) - jamais cible d un CALL/JMP,          }
+{ donc hors de portee ici. Si la correlation echoue pour une routine donnee               }
+{ (aucune plage drFixUp trouvee pour son propre index), son corps est annonce               }
+{ comme non attribue plutot que d afficher des octets errones - jamais de nom                 }
+{ invente pour un symbole non confirme.                                                          }
+
+Const
+  { --- types d operandes de la table d opcodes (portes de DISEXE.PAS) --- }
+  OT_NONE    = 0;
+  OT_REG8    = 1;
+  OT_REG16   = 2;
+  OT_SEGREG  = 3;
+  OT_MEM     = 4;
+  OT_RM8     = 5;
+  OT_RM16    = 6;
+  OT_IMM8    = 7;
+  OT_IMM16   = 8;
+  OT_REL8    = 9;
+  OT_REL16   = 10;
+  OT_FAR     = 11;
+  OT_AL      = 12;
+  OT_AX      = 13;
+  OT_CL      = 14;
+  OT_DX      = 15;
+  OT_ONE     = 16;
+  OT_CS      = 17;
+  OT_DS      = 18;
+  OT_ES      = 19;
+  OT_SS      = 20;
+  OT_MEM16   = 21;
+  OT_IMM8X   = 22;
+  OT_REG32   = 23;
+  OT_RM32    = 24;
+  OT_IMM32   = 25;
+  OT_EAX     = 26;
+  OT_FS      = 27;
+  OT_GS      = 28;
+  OT_CR      = 29;
+  OT_DR      = 30;
+  OT_TR      = 31;
+  OT_REL32   = 32;
+
+  MAX_CODE    = 8 * 1024 * 1024;   { 8 Mo - taille max du bloc de code drCBlock }
+  MAX_LABELS  = 65536;
+  MAX_ADDRDEF = 262144;            { bornes larges : compte tous les TNameDecl }
+  MAX_FIXUPS  = 262144;
+  MAX_PROCS   = 65536;
+
+Type
+  TLabelInfo = Record
+    Address  : LongInt;
+    Name     : TString;
+    IsProc   : Boolean;
+    IsImport : Boolean;
+    IsExport : Boolean;
+  End;
+
+  TOpcodeEntry = Record
+    Mnemonic  : String[10];
+    OpCount   : Byte;
+    Op1Type   : Byte;
+    Op2Type   : Byte;
+    NeedModRM : Boolean;
+    BaseSize  : Byte;
+  End;
+
+  TProcInfo = Record
+    AddrIdx : LongInt;
+    Name    : TString;
+    IsFunc  : Boolean;
+  End;
+Const
+  { Registres 8 bits (indices 0..7) }
+  RegNames8 : Array[0..7] Of String[2] = (
+    'AL', 'CL', 'DL', 'BL', 'AH', 'CH', 'DH', 'BH'
+  );
+
+  { Registres 16 bits (indices 0..7) }
+  RegNames16 : Array[0..7] Of String[2] = (
+    'AX', 'CX', 'DX', 'BX', 'SP', 'BP', 'SI', 'DI'
+  );
+
+  { Registres de segment (indices 0..3) }
+  SegRegNames : Array[0..3] Of String[2] = (
+    'ES', 'CS', 'SS', 'DS'
+  );
+
+  { Registres 32 bits (indices 0..7, 80386+) }
+  RegNames32 : Array[0..7] Of String[3] = (
+    'EAX', 'ECX', 'EDX', 'EBX', 'ESP', 'EBP', 'ESI', 'EDI'
+  );
+
+  { Registres de segment etendus (indices 0..5, FS/GS sur 80386+) }
+  SegRegNames6 : Array[0..5] Of String[2] = (
+    'ES', 'CS', 'SS', 'DS', 'FS', 'GS'
+  );
+
+  { Registres de controle (indices 0..3, 80386+) }
+  CRegNames : Array[0..3] Of String[3] = (
+    'CR0', 'CR1', 'CR2', 'CR3'
+  );
+
+  { Registres de debogage (indices 0..7, 80386+) }
+  DRegNames : Array[0..7] Of String[3] = (
+    'DR0', 'DR1', 'DR2', 'DR3', 'DR4', 'DR5', 'DR6', 'DR7'
+  );
+
+  { Registres de test (indices 0..7, 80386+) }
+  TRegNames : Array[0..7] Of String[3] = (
+    'TR0', 'TR1', 'TR2', 'TR3', 'TR4', 'TR5', 'TR6', 'TR7'
+  );
+
+{ ============================================================
+  TABLE DES 256 OPCODES 8086/8088
+  ============================================================ }
+
+  OpcodeTable : Array[0..255] Of TOpcodeEntry = (
+    { $00 ADD r/m8, r8 }
+    (Mnemonic:'ADD';      OpCount:2; Op1Type:OT_RM8;   Op2Type:OT_REG8;  NeedModRM:True;  BaseSize:1),
+    { $01 ADD r/m16, r16 }
+    (Mnemonic:'ADD';      OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_REG16; NeedModRM:True;  BaseSize:1),
+    { $02 ADD r8, r/m8 }
+    (Mnemonic:'ADD';      OpCount:2; Op1Type:OT_REG8;  Op2Type:OT_RM8;   NeedModRM:True;  BaseSize:1),
+    { $03 ADD r16, r/m16 }
+    (Mnemonic:'ADD';      OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:1),
+    { $04 ADD AL, imm8 }
+    (Mnemonic:'ADD';      OpCount:2; Op1Type:OT_AL;    Op2Type:OT_IMM8;  NeedModRM:False; BaseSize:2),
+    { $05 ADD AX, imm16 }
+    (Mnemonic:'ADD';      OpCount:2; Op1Type:OT_AX;    Op2Type:OT_IMM16; NeedModRM:False; BaseSize:3),
+    { $06 PUSH ES }
+    (Mnemonic:'PUSH';     OpCount:1; Op1Type:OT_ES;    Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $07 POP ES }
+    (Mnemonic:'POP';      OpCount:1; Op1Type:OT_ES;    Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $08 OR r/m8, r8 }
+    (Mnemonic:'OR';       OpCount:2; Op1Type:OT_RM8;   Op2Type:OT_REG8;  NeedModRM:True;  BaseSize:1),
+    { $09 OR r/m16, r16 }
+    (Mnemonic:'OR';       OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_REG16; NeedModRM:True;  BaseSize:1),
+    { $0A OR r8, r/m8 }
+    (Mnemonic:'OR';       OpCount:2; Op1Type:OT_REG8;  Op2Type:OT_RM8;   NeedModRM:True;  BaseSize:1),
+    { $0B OR r16, r/m16 }
+    (Mnemonic:'OR';       OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:1),
+    { $0C OR AL, imm8 }
+    (Mnemonic:'OR';       OpCount:2; Op1Type:OT_AL;    Op2Type:OT_IMM8;  NeedModRM:False; BaseSize:2),
+    { $0D OR AX, imm16 }
+    (Mnemonic:'OR';       OpCount:2; Op1Type:OT_AX;    Op2Type:OT_IMM16; NeedModRM:False; BaseSize:3),
+    { $0E PUSH CS }
+    (Mnemonic:'PUSH';     OpCount:1; Op1Type:OT_CS;    Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $0F (prefixe 0F - opcodes etendus 80286+, voir Opcode0FTable) }
+    (Mnemonic:'0F';       OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $10 ADC r/m8, r8 }
+    (Mnemonic:'ADC';      OpCount:2; Op1Type:OT_RM8;   Op2Type:OT_REG8;  NeedModRM:True;  BaseSize:1),
+    { $11 ADC r/m16, r16 }
+    (Mnemonic:'ADC';      OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_REG16; NeedModRM:True;  BaseSize:1),
+    { $12 ADC r8, r/m8 }
+    (Mnemonic:'ADC';      OpCount:2; Op1Type:OT_REG8;  Op2Type:OT_RM8;   NeedModRM:True;  BaseSize:1),
+    { $13 ADC r16, r/m16 }
+    (Mnemonic:'ADC';      OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:1),
+    { $14 ADC AL, imm8 }
+    (Mnemonic:'ADC';      OpCount:2; Op1Type:OT_AL;    Op2Type:OT_IMM8;  NeedModRM:False; BaseSize:2),
+    { $15 ADC AX, imm16 }
+    (Mnemonic:'ADC';      OpCount:2; Op1Type:OT_AX;    Op2Type:OT_IMM16; NeedModRM:False; BaseSize:3),
+    { $16 PUSH SS }
+    (Mnemonic:'PUSH';     OpCount:1; Op1Type:OT_SS;    Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $17 POP SS }
+    (Mnemonic:'POP';      OpCount:1; Op1Type:OT_SS;    Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $18 SBB r/m8, r8 }
+    (Mnemonic:'SBB';      OpCount:2; Op1Type:OT_RM8;   Op2Type:OT_REG8;  NeedModRM:True;  BaseSize:1),
+    { $19 SBB r/m16, r16 }
+    (Mnemonic:'SBB';      OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_REG16; NeedModRM:True;  BaseSize:1),
+    { $1A SBB r8, r/m8 }
+    (Mnemonic:'SBB';      OpCount:2; Op1Type:OT_REG8;  Op2Type:OT_RM8;   NeedModRM:True;  BaseSize:1),
+    { $1B SBB r16, r/m16 }
+    (Mnemonic:'SBB';      OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:1),
+    { $1C SBB AL, imm8 }
+    (Mnemonic:'SBB';      OpCount:2; Op1Type:OT_AL;    Op2Type:OT_IMM8;  NeedModRM:False; BaseSize:2),
+    { $1D SBB AX, imm16 }
+    (Mnemonic:'SBB';      OpCount:2; Op1Type:OT_AX;    Op2Type:OT_IMM16; NeedModRM:False; BaseSize:3),
+    { $1E PUSH DS }
+    (Mnemonic:'PUSH';     OpCount:1; Op1Type:OT_DS;    Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $1F POP DS }
+    (Mnemonic:'POP';      OpCount:1; Op1Type:OT_DS;    Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $20 AND r/m8, r8 }
+    (Mnemonic:'AND';      OpCount:2; Op1Type:OT_RM8;   Op2Type:OT_REG8;  NeedModRM:True;  BaseSize:1),
+    { $21 AND r/m16, r16 }
+    (Mnemonic:'AND';      OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_REG16; NeedModRM:True;  BaseSize:1),
+    { $22 AND r8, r/m8 }
+    (Mnemonic:'AND';      OpCount:2; Op1Type:OT_REG8;  Op2Type:OT_RM8;   NeedModRM:True;  BaseSize:1),
+    { $23 AND r16, r/m16 }
+    (Mnemonic:'AND';      OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:1),
+    { $24 AND AL, imm8 }
+    (Mnemonic:'AND';      OpCount:2; Op1Type:OT_AL;    Op2Type:OT_IMM8;  NeedModRM:False; BaseSize:2),
+    { $25 AND AX, imm16 }
+    (Mnemonic:'AND';      OpCount:2; Op1Type:OT_AX;    Op2Type:OT_IMM16; NeedModRM:False; BaseSize:3),
+    { $26 ES: (prefixe de segment) }
+    (Mnemonic:'ES:';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $27 DAA }
+    (Mnemonic:'DAA';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $28 SUB r/m8, r8 }
+    (Mnemonic:'SUB';      OpCount:2; Op1Type:OT_RM8;   Op2Type:OT_REG8;  NeedModRM:True;  BaseSize:1),
+    { $29 SUB r/m16, r16 }
+    (Mnemonic:'SUB';      OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_REG16; NeedModRM:True;  BaseSize:1),
+    { $2A SUB r8, r/m8 }
+    (Mnemonic:'SUB';      OpCount:2; Op1Type:OT_REG8;  Op2Type:OT_RM8;   NeedModRM:True;  BaseSize:1),
+    { $2B SUB r16, r/m16 }
+    (Mnemonic:'SUB';      OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:1),
+    { $2C SUB AL, imm8 }
+    (Mnemonic:'SUB';      OpCount:2; Op1Type:OT_AL;    Op2Type:OT_IMM8;  NeedModRM:False; BaseSize:2),
+    { $2D SUB AX, imm16 }
+    (Mnemonic:'SUB';      OpCount:2; Op1Type:OT_AX;    Op2Type:OT_IMM16; NeedModRM:False; BaseSize:3),
+    { $2E CS: (prefixe de segment) }
+    (Mnemonic:'CS:';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $2F DAS }
+    (Mnemonic:'DAS';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $30 XOR r/m8, r8 }
+    (Mnemonic:'XOR';      OpCount:2; Op1Type:OT_RM8;   Op2Type:OT_REG8;  NeedModRM:True;  BaseSize:1),
+    { $31 XOR r/m16, r16 }
+    (Mnemonic:'XOR';      OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_REG16; NeedModRM:True;  BaseSize:1),
+    { $32 XOR r8, r/m8 }
+    (Mnemonic:'XOR';      OpCount:2; Op1Type:OT_REG8;  Op2Type:OT_RM8;   NeedModRM:True;  BaseSize:1),
+    { $33 XOR r16, r/m16 }
+    (Mnemonic:'XOR';      OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:1),
+    { $34 XOR AL, imm8 }
+    (Mnemonic:'XOR';      OpCount:2; Op1Type:OT_AL;    Op2Type:OT_IMM8;  NeedModRM:False; BaseSize:2),
+    { $35 XOR AX, imm16 }
+    (Mnemonic:'XOR';      OpCount:2; Op1Type:OT_AX;    Op2Type:OT_IMM16; NeedModRM:False; BaseSize:3),
+    { $36 SS: (prefixe de segment) }
+    (Mnemonic:'SS:';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $37 AAA }
+    (Mnemonic:'AAA';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $38 CMP r/m8, r8 }
+    (Mnemonic:'CMP';      OpCount:2; Op1Type:OT_RM8;   Op2Type:OT_REG8;  NeedModRM:True;  BaseSize:1),
+    { $39 CMP r/m16, r16 }
+    (Mnemonic:'CMP';      OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_REG16; NeedModRM:True;  BaseSize:1),
+    { $3A CMP r8, r/m8 }
+    (Mnemonic:'CMP';      OpCount:2; Op1Type:OT_REG8;  Op2Type:OT_RM8;   NeedModRM:True;  BaseSize:1),
+    { $3B CMP r16, r/m16 }
+    (Mnemonic:'CMP';      OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:1),
+    { $3C CMP AL, imm8 }
+    (Mnemonic:'CMP';      OpCount:2; Op1Type:OT_AL;    Op2Type:OT_IMM8;  NeedModRM:False; BaseSize:2),
+    { $3D CMP AX, imm16 }
+    (Mnemonic:'CMP';      OpCount:2; Op1Type:OT_AX;    Op2Type:OT_IMM16; NeedModRM:False; BaseSize:3),
+    { $3E DS: (prefixe de segment) }
+    (Mnemonic:'DS:';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $3F AAS }
+    (Mnemonic:'AAS';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $40..$47 INC r16 (AX..DI) }
+    (Mnemonic:'INC';      OpCount:1; Op1Type:OT_REG16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    (Mnemonic:'INC';      OpCount:1; Op1Type:OT_REG16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    (Mnemonic:'INC';      OpCount:1; Op1Type:OT_REG16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    (Mnemonic:'INC';      OpCount:1; Op1Type:OT_REG16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    (Mnemonic:'INC';      OpCount:1; Op1Type:OT_REG16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    (Mnemonic:'INC';      OpCount:1; Op1Type:OT_REG16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    (Mnemonic:'INC';      OpCount:1; Op1Type:OT_REG16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    (Mnemonic:'INC';      OpCount:1; Op1Type:OT_REG16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $48..$4F DEC r16 (AX..DI) }
+    (Mnemonic:'DEC';      OpCount:1; Op1Type:OT_REG16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    (Mnemonic:'DEC';      OpCount:1; Op1Type:OT_REG16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    (Mnemonic:'DEC';      OpCount:1; Op1Type:OT_REG16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    (Mnemonic:'DEC';      OpCount:1; Op1Type:OT_REG16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    (Mnemonic:'DEC';      OpCount:1; Op1Type:OT_REG16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    (Mnemonic:'DEC';      OpCount:1; Op1Type:OT_REG16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    (Mnemonic:'DEC';      OpCount:1; Op1Type:OT_REG16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    (Mnemonic:'DEC';      OpCount:1; Op1Type:OT_REG16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $50..$57 PUSH r16 (AX..DI) }
+    (Mnemonic:'PUSH';     OpCount:1; Op1Type:OT_REG16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    (Mnemonic:'PUSH';     OpCount:1; Op1Type:OT_REG16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    (Mnemonic:'PUSH';     OpCount:1; Op1Type:OT_REG16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    (Mnemonic:'PUSH';     OpCount:1; Op1Type:OT_REG16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    (Mnemonic:'PUSH';     OpCount:1; Op1Type:OT_REG16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    (Mnemonic:'PUSH';     OpCount:1; Op1Type:OT_REG16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    (Mnemonic:'PUSH';     OpCount:1; Op1Type:OT_REG16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    (Mnemonic:'PUSH';     OpCount:1; Op1Type:OT_REG16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $58..$5F POP r16 (AX..DI) }
+    (Mnemonic:'POP';      OpCount:1; Op1Type:OT_REG16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    (Mnemonic:'POP';      OpCount:1; Op1Type:OT_REG16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    (Mnemonic:'POP';      OpCount:1; Op1Type:OT_REG16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    (Mnemonic:'POP';      OpCount:1; Op1Type:OT_REG16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    (Mnemonic:'POP';      OpCount:1; Op1Type:OT_REG16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    (Mnemonic:'POP';      OpCount:1; Op1Type:OT_REG16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    (Mnemonic:'POP';      OpCount:1; Op1Type:OT_REG16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    (Mnemonic:'POP';      OpCount:1; Op1Type:OT_REG16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $60..$6F : instructions 80186/80286 }
+    { $60 PUSHA }
+    (Mnemonic:'PUSHA';    OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $61 POPA }
+    (Mnemonic:'POPA';     OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $62 BOUND r16, m16&16 }
+    (Mnemonic:'BOUND';    OpCount:2; Op1Type:OT_REG16; Op2Type:OT_MEM;   NeedModRM:True;  BaseSize:1),
+    { $63 ARPL r/m16, r16 (mode protege 80286) }
+    (Mnemonic:'ARPL';     OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_REG16; NeedModRM:True;  BaseSize:1),
+    { $64 FS: (prefixe segment FS sur 80386+) }
+    (Mnemonic:'FS:';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $65 GS: (prefixe segment GS sur 80386+) }
+    (Mnemonic:'GS:';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $66 OPSIZ (prefixe taille operande sur 80386+) }
+    (Mnemonic:'OPSIZ';    OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $67 ADDRSIZ (prefixe taille adresse sur 80386+) }
+    (Mnemonic:'ADDRSIZ';  OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $68 PUSH imm16 }
+    (Mnemonic:'PUSH';     OpCount:1; Op1Type:OT_IMM16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:3),
+    { $69 IMUL r16, r/m16, imm16 }
+    (Mnemonic:'IMUL';     OpCount:2; Op1Type:OT_REG16; Op2Type:OT_IMM16; NeedModRM:True;  BaseSize:1),
+    { $6A PUSH imm8 (signe-etendu a 16 bits) }
+    (Mnemonic:'PUSH';     OpCount:1; Op1Type:OT_IMM8X; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $6B IMUL r16, r/m16, imm8 }
+    (Mnemonic:'IMUL';     OpCount:2; Op1Type:OT_REG16; Op2Type:OT_IMM8X; NeedModRM:True;  BaseSize:1),
+    { $6C INSB }
+    (Mnemonic:'INSB';     OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $6D INSW }
+    (Mnemonic:'INSW';     OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $6E OUTSB }
+    (Mnemonic:'OUTSB';    OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $6F OUTSW }
+    (Mnemonic:'OUTSW';    OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $70..$7F Jcc rel8 (sauts conditionnels courts) }
+    (Mnemonic:'JO';       OpCount:1; Op1Type:OT_REL8;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'JNO';      OpCount:1; Op1Type:OT_REL8;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'JB';       OpCount:1; Op1Type:OT_REL8;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'JNB';      OpCount:1; Op1Type:OT_REL8;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'JZ';       OpCount:1; Op1Type:OT_REL8;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'JNZ';      OpCount:1; Op1Type:OT_REL8;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'JBE';      OpCount:1; Op1Type:OT_REL8;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'JNBE';     OpCount:1; Op1Type:OT_REL8;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'JS';       OpCount:1; Op1Type:OT_REL8;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'JNS';      OpCount:1; Op1Type:OT_REL8;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'JP';       OpCount:1; Op1Type:OT_REL8;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'JNP';      OpCount:1; Op1Type:OT_REL8;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'JL';       OpCount:1; Op1Type:OT_REL8;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'JNL';      OpCount:1; Op1Type:OT_REL8;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'JLE';      OpCount:1; Op1Type:OT_REL8;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'JNLE';     OpCount:1; Op1Type:OT_REL8;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $80 GRP1 r/m8, imm8 (ADD/OR/ADC/SBB/AND/SUB/XOR/CMP selon reg) }
+    (Mnemonic:'GRP1';     OpCount:2; Op1Type:OT_RM8;   Op2Type:OT_IMM8;  NeedModRM:True;  BaseSize:1),
+    { $81 GRP1 r/m16, imm16 }
+    (Mnemonic:'GRP1';     OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_IMM16; NeedModRM:True;  BaseSize:1),
+    { $82 GRP1 r/m8, imm8 (alias de $80) }
+    (Mnemonic:'GRP1';     OpCount:2; Op1Type:OT_RM8;   Op2Type:OT_IMM8;  NeedModRM:True;  BaseSize:1),
+    { $83 GRP1 r/m16, imm8 (signe-etendu) }
+    (Mnemonic:'GRP1';     OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_IMM8X; NeedModRM:True;  BaseSize:1),
+    { $84 TEST r/m8, r8 }
+    (Mnemonic:'TEST';     OpCount:2; Op1Type:OT_RM8;   Op2Type:OT_REG8;  NeedModRM:True;  BaseSize:1),
+    { $85 TEST r/m16, r16 }
+    (Mnemonic:'TEST';     OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_REG16; NeedModRM:True;  BaseSize:1),
+    { $86 XCHG r/m8, r8 }
+    (Mnemonic:'XCHG';     OpCount:2; Op1Type:OT_RM8;   Op2Type:OT_REG8;  NeedModRM:True;  BaseSize:1),
+    { $87 XCHG r/m16, r16 }
+    (Mnemonic:'XCHG';     OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_REG16; NeedModRM:True;  BaseSize:1),
+    { $88 MOV r/m8, r8 }
+    (Mnemonic:'MOV';      OpCount:2; Op1Type:OT_RM8;   Op2Type:OT_REG8;  NeedModRM:True;  BaseSize:1),
+    { $89 MOV r/m16, r16 }
+    (Mnemonic:'MOV';      OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_REG16; NeedModRM:True;  BaseSize:1),
+    { $8A MOV r8, r/m8 }
+    (Mnemonic:'MOV';      OpCount:2; Op1Type:OT_REG8;  Op2Type:OT_RM8;   NeedModRM:True;  BaseSize:1),
+    { $8B MOV r16, r/m16 }
+    (Mnemonic:'MOV';      OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:1),
+    { $8C MOV r/m16, Sreg }
+    (Mnemonic:'MOV';      OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_SEGREG;NeedModRM:True;  BaseSize:1),
+    { $8D LEA r16, m }
+    (Mnemonic:'LEA';      OpCount:2; Op1Type:OT_REG16; Op2Type:OT_MEM;   NeedModRM:True;  BaseSize:1),
+    { $8E MOV Sreg, r/m16 }
+    (Mnemonic:'MOV';      OpCount:2; Op1Type:OT_SEGREG;Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:1),
+    { $8F POP r/m16 }
+    (Mnemonic:'POP';      OpCount:1; Op1Type:OT_RM16;  Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:1),
+    { $90 NOP (XCHG AX,AX) }
+    (Mnemonic:'NOP';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $91..$97 XCHG AX, r16 }
+    (Mnemonic:'XCHG';     OpCount:2; Op1Type:OT_AX;    Op2Type:OT_REG16; NeedModRM:False; BaseSize:1),
+    (Mnemonic:'XCHG';     OpCount:2; Op1Type:OT_AX;    Op2Type:OT_REG16; NeedModRM:False; BaseSize:1),
+    (Mnemonic:'XCHG';     OpCount:2; Op1Type:OT_AX;    Op2Type:OT_REG16; NeedModRM:False; BaseSize:1),
+    (Mnemonic:'XCHG';     OpCount:2; Op1Type:OT_AX;    Op2Type:OT_REG16; NeedModRM:False; BaseSize:1),
+    (Mnemonic:'XCHG';     OpCount:2; Op1Type:OT_AX;    Op2Type:OT_REG16; NeedModRM:False; BaseSize:1),
+    (Mnemonic:'XCHG';     OpCount:2; Op1Type:OT_AX;    Op2Type:OT_REG16; NeedModRM:False; BaseSize:1),
+    (Mnemonic:'XCHG';     OpCount:2; Op1Type:OT_AX;    Op2Type:OT_REG16; NeedModRM:False; BaseSize:1),
+    { $98 CBW }
+    (Mnemonic:'CBW';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $99 CWD }
+    (Mnemonic:'CWD';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $9A CALL far ptr16:16 }
+    (Mnemonic:'CALL';     OpCount:1; Op1Type:OT_FAR;   Op2Type:OT_NONE;  NeedModRM:False; BaseSize:5),
+    { $9B WAIT/FWAIT }
+    (Mnemonic:'FWAIT';    OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $9C PUSHF }
+    (Mnemonic:'PUSHF';    OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $9D POPF }
+    (Mnemonic:'POPF';     OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $9E SAHF }
+    (Mnemonic:'SAHF';     OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $9F LAHF }
+    (Mnemonic:'LAHF';     OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $A0 MOV AL, moffs8 }
+    (Mnemonic:'MOV';      OpCount:2; Op1Type:OT_AL;    Op2Type:OT_MEM16; NeedModRM:False; BaseSize:3),
+    { $A1 MOV AX, moffs16 }
+    (Mnemonic:'MOV';      OpCount:2; Op1Type:OT_AX;    Op2Type:OT_MEM16; NeedModRM:False; BaseSize:3),
+    { $A2 MOV moffs8, AL }
+    (Mnemonic:'MOV';      OpCount:2; Op1Type:OT_MEM16; Op2Type:OT_AL;    NeedModRM:False; BaseSize:3),
+    { $A3 MOV moffs16, AX }
+    (Mnemonic:'MOV';      OpCount:2; Op1Type:OT_MEM16; Op2Type:OT_AX;    NeedModRM:False; BaseSize:3),
+    { $A4 MOVSB }
+    (Mnemonic:'MOVSB';    OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $A5 MOVSW }
+    (Mnemonic:'MOVSW';    OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $A6 CMPSB }
+    (Mnemonic:'CMPSB';    OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $A7 CMPSW }
+    (Mnemonic:'CMPSW';    OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $A8 TEST AL, imm8 }
+    (Mnemonic:'TEST';     OpCount:2; Op1Type:OT_AL;    Op2Type:OT_IMM8;  NeedModRM:False; BaseSize:2),
+    { $A9 TEST AX, imm16 }
+    (Mnemonic:'TEST';     OpCount:2; Op1Type:OT_AX;    Op2Type:OT_IMM16; NeedModRM:False; BaseSize:3),
+    { $AA STOSB }
+    (Mnemonic:'STOSB';    OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $AB STOSW }
+    (Mnemonic:'STOSW';    OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $AC LODSB }
+    (Mnemonic:'LODSB';    OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $AD LODSW }
+    (Mnemonic:'LODSW';    OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $AE SCASB }
+    (Mnemonic:'SCASB';    OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $AF SCASW }
+    (Mnemonic:'SCASW';    OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $B0..$B7 MOV r8, imm8 (AL..BH) }
+    (Mnemonic:'MOV';      OpCount:2; Op1Type:OT_REG8;  Op2Type:OT_IMM8;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'MOV';      OpCount:2; Op1Type:OT_REG8;  Op2Type:OT_IMM8;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'MOV';      OpCount:2; Op1Type:OT_REG8;  Op2Type:OT_IMM8;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'MOV';      OpCount:2; Op1Type:OT_REG8;  Op2Type:OT_IMM8;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'MOV';      OpCount:2; Op1Type:OT_REG8;  Op2Type:OT_IMM8;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'MOV';      OpCount:2; Op1Type:OT_REG8;  Op2Type:OT_IMM8;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'MOV';      OpCount:2; Op1Type:OT_REG8;  Op2Type:OT_IMM8;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'MOV';      OpCount:2; Op1Type:OT_REG8;  Op2Type:OT_IMM8;  NeedModRM:False; BaseSize:2),
+    { $B8..$BF MOV r16, imm16 (AX..DI) }
+    (Mnemonic:'MOV';      OpCount:2; Op1Type:OT_REG16; Op2Type:OT_IMM16; NeedModRM:False; BaseSize:3),
+    (Mnemonic:'MOV';      OpCount:2; Op1Type:OT_REG16; Op2Type:OT_IMM16; NeedModRM:False; BaseSize:3),
+    (Mnemonic:'MOV';      OpCount:2; Op1Type:OT_REG16; Op2Type:OT_IMM16; NeedModRM:False; BaseSize:3),
+    (Mnemonic:'MOV';      OpCount:2; Op1Type:OT_REG16; Op2Type:OT_IMM16; NeedModRM:False; BaseSize:3),
+    (Mnemonic:'MOV';      OpCount:2; Op1Type:OT_REG16; Op2Type:OT_IMM16; NeedModRM:False; BaseSize:3),
+    (Mnemonic:'MOV';      OpCount:2; Op1Type:OT_REG16; Op2Type:OT_IMM16; NeedModRM:False; BaseSize:3),
+    (Mnemonic:'MOV';      OpCount:2; Op1Type:OT_REG16; Op2Type:OT_IMM16; NeedModRM:False; BaseSize:3),
+    (Mnemonic:'MOV';      OpCount:2; Op1Type:OT_REG16; Op2Type:OT_IMM16; NeedModRM:False; BaseSize:3),
+    { $C0 GRP2 r/m8, imm8 (80186+ : shifts/rotations avec immediat) }
+    (Mnemonic:'GRP2';     OpCount:2; Op1Type:OT_RM8;   Op2Type:OT_IMM8;  NeedModRM:True;  BaseSize:1),
+    { $C1 GRP2 r/m16, imm8 (80186+ : shifts/rotations avec immediat) }
+    (Mnemonic:'GRP2';     OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_IMM8;  NeedModRM:True;  BaseSize:1),
+    { $C2 RET imm16 (near return avec pop) }
+    (Mnemonic:'RET';      OpCount:1; Op1Type:OT_IMM16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:3),
+    { $C3 RET (near return) }
+    (Mnemonic:'RET';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $C4 LES r16, m16:16 }
+    (Mnemonic:'LES';      OpCount:2; Op1Type:OT_REG16; Op2Type:OT_MEM;   NeedModRM:True;  BaseSize:1),
+    { $C5 LDS r16, m16:16 }
+    (Mnemonic:'LDS';      OpCount:2; Op1Type:OT_REG16; Op2Type:OT_MEM;   NeedModRM:True;  BaseSize:1),
+    { $C6 MOV r/m8, imm8 }
+    (Mnemonic:'MOV';      OpCount:2; Op1Type:OT_RM8;   Op2Type:OT_IMM8;  NeedModRM:True;  BaseSize:1),
+    { $C7 MOV r/m16, imm16 }
+    (Mnemonic:'MOV';      OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_IMM16; NeedModRM:True;  BaseSize:1),
+    { $C8 ENTER imm16, imm8 (80186+) }
+    (Mnemonic:'ENTER';    OpCount:2; Op1Type:OT_IMM16; Op2Type:OT_IMM8;  NeedModRM:False; BaseSize:4),
+    { $C9 LEAVE (80186+) }
+    (Mnemonic:'LEAVE';    OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $CA RETF imm16 (far return avec pop) }
+    (Mnemonic:'RETF';     OpCount:1; Op1Type:OT_IMM16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:3),
+    { $CB RETF (far return) }
+    (Mnemonic:'RETF';     OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $CC INT 3 (implicite, pas d'octet immediat) }
+    (Mnemonic:'INT3';     OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $CD INT imm8 }
+    (Mnemonic:'INT';      OpCount:1; Op1Type:OT_IMM8;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $CE INTO }
+    (Mnemonic:'INTO';     OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $CF IRET }
+    (Mnemonic:'IRET';     OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $D0 GRP2 r/m8, 1 (ROL/ROR/RCL/RCR/SHL/SHR/-/SAR) }
+    (Mnemonic:'GRP2';     OpCount:2; Op1Type:OT_RM8;   Op2Type:OT_ONE;   NeedModRM:True;  BaseSize:1),
+    { $D1 GRP2 r/m16, 1 }
+    (Mnemonic:'GRP2';     OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_ONE;   NeedModRM:True;  BaseSize:1),
+    { $D2 GRP2 r/m8, CL }
+    (Mnemonic:'GRP2';     OpCount:2; Op1Type:OT_RM8;   Op2Type:OT_CL;    NeedModRM:True;  BaseSize:1),
+    { $D3 GRP2 r/m16, CL }
+    (Mnemonic:'GRP2';     OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_CL;    NeedModRM:True;  BaseSize:1),
+    { $D4 AAM (imm8 = 0Ah implicite) }
+    (Mnemonic:'AAM';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $D5 AAD (imm8 = 0Ah implicite) }
+    (Mnemonic:'AAD';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $D6 (reserve/SALC non documente) }
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $D7 XLAT }
+    (Mnemonic:'XLAT';     OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $D8..$DF ESC (opcodes coprocesseur x87) }
+    (Mnemonic:'ESC';      OpCount:1; Op1Type:OT_RM16;  Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:1),
+    (Mnemonic:'ESC';      OpCount:1; Op1Type:OT_RM16;  Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:1),
+    (Mnemonic:'ESC';      OpCount:1; Op1Type:OT_RM16;  Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:1),
+    (Mnemonic:'ESC';      OpCount:1; Op1Type:OT_RM16;  Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:1),
+    (Mnemonic:'ESC';      OpCount:1; Op1Type:OT_RM16;  Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:1),
+    (Mnemonic:'ESC';      OpCount:1; Op1Type:OT_RM16;  Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:1),
+    (Mnemonic:'ESC';      OpCount:1; Op1Type:OT_RM16;  Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:1),
+    (Mnemonic:'ESC';      OpCount:1; Op1Type:OT_RM16;  Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:1),
+    { $E0 LOOPNZ rel8 }
+    (Mnemonic:'LOOPNZ';   OpCount:1; Op1Type:OT_REL8;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $E1 LOOPZ rel8 }
+    (Mnemonic:'LOOPZ';    OpCount:1; Op1Type:OT_REL8;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $E2 LOOP rel8 }
+    (Mnemonic:'LOOP';     OpCount:1; Op1Type:OT_REL8;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $E3 JCXZ rel8 }
+    (Mnemonic:'JCXZ';     OpCount:1; Op1Type:OT_REL8;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $E4 IN AL, imm8 }
+    (Mnemonic:'IN';       OpCount:2; Op1Type:OT_AL;    Op2Type:OT_IMM8;  NeedModRM:False; BaseSize:2),
+    { $E5 IN AX, imm8 }
+    (Mnemonic:'IN';       OpCount:2; Op1Type:OT_AX;    Op2Type:OT_IMM8;  NeedModRM:False; BaseSize:2),
+    { $E6 OUT imm8, AL }
+    (Mnemonic:'OUT';      OpCount:2; Op1Type:OT_IMM8;  Op2Type:OT_AL;    NeedModRM:False; BaseSize:2),
+    { $E7 OUT imm8, AX }
+    (Mnemonic:'OUT';      OpCount:2; Op1Type:OT_IMM8;  Op2Type:OT_AX;    NeedModRM:False; BaseSize:2),
+    { $E8 CALL rel16 }
+    (Mnemonic:'CALL';     OpCount:1; Op1Type:OT_REL16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:3),
+    { $E9 JMP rel16 }
+    (Mnemonic:'JMP';      OpCount:1; Op1Type:OT_REL16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:3),
+    { $EA JMP far ptr16:16 }
+    (Mnemonic:'JMP';      OpCount:1; Op1Type:OT_FAR;   Op2Type:OT_NONE;  NeedModRM:False; BaseSize:5),
+    { $EB JMP rel8 }
+    (Mnemonic:'JMP';      OpCount:1; Op1Type:OT_REL8;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $EC IN AL, DX }
+    (Mnemonic:'IN';       OpCount:2; Op1Type:OT_AL;    Op2Type:OT_DX;    NeedModRM:False; BaseSize:1),
+    { $ED IN AX, DX }
+    (Mnemonic:'IN';       OpCount:2; Op1Type:OT_AX;    Op2Type:OT_DX;    NeedModRM:False; BaseSize:1),
+    { $EE OUT DX, AL }
+    (Mnemonic:'OUT';      OpCount:2; Op1Type:OT_DX;    Op2Type:OT_AL;    NeedModRM:False; BaseSize:1),
+    { $EF OUT DX, AX }
+    (Mnemonic:'OUT';      OpCount:2; Op1Type:OT_DX;    Op2Type:OT_AX;    NeedModRM:False; BaseSize:1),
+    { $F0 LOCK (prefixe) }
+    (Mnemonic:'LOCK';     OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $F1 (reserve / INT1 non documente) }
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $F2 REPNZ (prefixe) }
+    (Mnemonic:'REPNZ';    OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $F3 REP/REPZ (prefixe) }
+    (Mnemonic:'REP';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $F4 HLT }
+    (Mnemonic:'HLT';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $F5 CMC }
+    (Mnemonic:'CMC';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $F6 GRP3a r/m8 (TEST/???/NOT/NEG/MUL/IMUL/DIV/IDIV) }
+    (Mnemonic:'GRP3';     OpCount:1; Op1Type:OT_RM8;   Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:1),
+    { $F7 GRP3b r/m16 }
+    (Mnemonic:'GRP3';     OpCount:1; Op1Type:OT_RM16;  Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:1),
+    { $F8 CLC }
+    (Mnemonic:'CLC';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $F9 STC }
+    (Mnemonic:'STC';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $FA CLI }
+    (Mnemonic:'CLI';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $FB STI }
+    (Mnemonic:'STI';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $FC CLD }
+    (Mnemonic:'CLD';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $FD STD }
+    (Mnemonic:'STD';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $FE GRP4 r/m8 (INC/DEC) }
+    (Mnemonic:'GRP4';     OpCount:1; Op1Type:OT_RM8;   Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:1),
+    { $FF GRP5 r/m16 (INC/DEC/CALL/CALL far/JMP/JMP far/PUSH) }
+    (Mnemonic:'GRP5';     OpCount:1; Op1Type:OT_RM16;  Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:1)
+  );
+
+  { Mnemoniques du groupe 1 (opcodes $80-$83, selon champ reg de ModR/M) }
+  Grp1Mnemonics : Array[0..7] Of String[3] = (
+    'ADD', 'OR', 'ADC', 'SBB', 'AND', 'SUB', 'XOR', 'CMP'
+  );
+
+  { Mnemoniques du groupe 2 (opcodes $D0-$D3, selon champ reg de ModR/M) }
+  Grp2Mnemonics : Array[0..7] Of String[3] = (
+    'ROL', 'ROR', 'RCL', 'RCR', 'SHL', 'SHR', '???', 'SAR'
+  );
+
+  { Mnemoniques du groupe 3 (opcodes $F6-$F7, selon champ reg de ModR/M) }
+  Grp3Mnemonics : Array[0..7] Of String[4] = (
+    'TEST', '???', 'NOT', 'NEG', 'MUL', 'IMUL', 'DIV', 'IDIV'
+  );
+
+  { Mnemoniques du groupe 4 (opcode $FE, selon champ reg de ModR/M) }
+  Grp4Mnemonics : Array[0..7] Of String[3] = (
+    'INC', 'DEC', '???', '???', '???', '???', '???', '???'
+  );
+
+  { Mnemoniques du groupe 5 (opcode $FF, selon champ reg de ModR/M) }
+  Grp5Mnemonics : Array[0..7] Of String[4] = (
+    'INC', 'DEC', 'CALL', 'CALL', 'JMP', 'JMP', 'PUSH', '???'
+  );
+
+  { Mnemoniques du groupe 6 (opcode 0F 00, selon champ reg de ModR/M) }
+  { Instructions mode protege 80286 }
+  Grp6Mnemonics : Array[0..7] Of String[4] = (
+    'SLDT', 'STR', 'LLDT', 'LTR', 'VERR', 'VERW', '???', '???'
+  );
+
+  { Mnemoniques du groupe 7 (opcode 0F 01, selon champ reg de ModR/M) }
+  { Instructions mode protege 80286 }
+  Grp7Mnemonics : Array[0..7] Of String[4] = (
+    'SGDT', 'SIDT', 'LGDT', 'LIDT', 'SMSW', '???', 'LMSW', '???'
+  );
+
+  { Mnemoniques du groupe 8 (opcode 0F BA, selon champ reg de ModR/M) }
+  { Instructions bit test 80386+ }
+  Grp8Mnemonics : Array[0..7] Of String[3] = (
+    '???', '???', '???', '???', 'BT', 'BTS', 'BTR', 'BTC'
+  );
+
+{ ============================================================
+  TABLE DES OPCODES ETENDUS 0Fh (80286+)
+  ============================================================ }
+
+  { Nombre d'opcodes etendus 0Fh definis }
+  MAX_0F_OPCODES = 256;
+
+  Opcode0FTable : Array[0..255] Of TOpcodeEntry = (
+    { $0F 00 GRP6 r/m16 (SLDT/STR/LLDT/LTR/VERR/VERW) }
+    (Mnemonic:'GRP6';     OpCount:1; Op1Type:OT_RM16;  Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:2),
+    { $0F 01 GRP7 (SGDT/SIDT/LGDT/LIDT/SMSW/LMSW) }
+    (Mnemonic:'GRP7';     OpCount:1; Op1Type:OT_RM16;  Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:2),
+    { $0F 02 LAR r16, r/m16 }
+    (Mnemonic:'LAR';      OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F 03 LSL r16, r/m16 }
+    (Mnemonic:'LSL';      OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F 04 reserve }
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F 05 reserve (LOADALL 80286 / SYSCALL 686+) }
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F 06 CLTS (Clear Task-Switched Flag) }
+    (Mnemonic:'CLTS';     OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F 07 reserve (LOADALL 80386 / SYSRET 686+) }
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F 08 INVD (Invalidate Cache, 80486+) }
+    (Mnemonic:'INVD';     OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F 09 WBINVD (Write Back and Invalidate Cache, 80486+) }
+    (Mnemonic:'WBINVD';   OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F 0A..$0F 0F reserves }
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F 10..$0F 1F reserves }
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F 20..$0F 2F MOV CRn/DRn/TRn (80386+) }
+    { $0F 20 MOV r32, CRn }
+    (Mnemonic:'MOV';      OpCount:2; Op1Type:OT_REG32; Op2Type:OT_CR;    NeedModRM:True;  BaseSize:2),
+    { $0F 21 MOV r32, DRn }
+    (Mnemonic:'MOV';      OpCount:2; Op1Type:OT_REG32; Op2Type:OT_DR;    NeedModRM:True;  BaseSize:2),
+    { $0F 22 MOV CRn, r32 }
+    (Mnemonic:'MOV';      OpCount:2; Op1Type:OT_CR;    Op2Type:OT_REG32; NeedModRM:True;  BaseSize:2),
+    { $0F 23 MOV DRn, r32 }
+    (Mnemonic:'MOV';      OpCount:2; Op1Type:OT_DR;    Op2Type:OT_REG32; NeedModRM:True;  BaseSize:2),
+    { $0F 24 MOV r32, TRn }
+    (Mnemonic:'MOV';      OpCount:2; Op1Type:OT_REG32; Op2Type:OT_TR;    NeedModRM:True;  BaseSize:2),
+    { $0F 25 reserve }
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F 26 MOV TRn, r32 }
+    (Mnemonic:'MOV';      OpCount:2; Op1Type:OT_TR;    Op2Type:OT_REG32; NeedModRM:True;  BaseSize:2),
+    { $0F 27 reserve }
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F 28..$0F 2F reserves }
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F 30..$0F 3F instructions systeme (Pentium+) }
+    { $0F 30 WRMSR (Write Model Specific Register) }
+    (Mnemonic:'WRMSR';    OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F 31 RDTSC (Read Time Stamp Counter) }
+    (Mnemonic:'RDTSC';    OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F 32 RDMSR (Read Model Specific Register) }
+    (Mnemonic:'RDMSR';    OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F 33 RDPMC (Read Performance Monitoring Counter, P6+) }
+    (Mnemonic:'RDPMC';    OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F 34..$0F 3F reserves }
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F 40..$0F 4F CMOVcc r16, r/m16 (P6+) }
+    { $0F 40 CMOVO }
+    (Mnemonic:'CMOVO';    OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F 41 CMOVNO }
+    (Mnemonic:'CMOVNO';   OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F 42 CMOVB }
+    (Mnemonic:'CMOVB';    OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F 43 CMOVNB }
+    (Mnemonic:'CMOVNB';   OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F 44 CMOVZ }
+    (Mnemonic:'CMOVZ';    OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F 45 CMOVNZ }
+    (Mnemonic:'CMOVNZ';   OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F 46 CMOVBE }
+    (Mnemonic:'CMOVBE';   OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F 47 CMOVNBE }
+    (Mnemonic:'CMOVNBE';  OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F 48 CMOVS }
+    (Mnemonic:'CMOVS';    OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F 49 CMOVNS }
+    (Mnemonic:'CMOVNS';   OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F 4A CMOVP }
+    (Mnemonic:'CMOVP';    OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F 4B CMOVNP }
+    (Mnemonic:'CMOVNP';   OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F 4C CMOVL }
+    (Mnemonic:'CMOVL';    OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F 4D CMOVNL }
+    (Mnemonic:'CMOVNL';   OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F 4E CMOVLE }
+    (Mnemonic:'CMOVLE';   OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F 4F CMOVNLE }
+    (Mnemonic:'CMOVNLE';  OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F 50..$0F 5F reserves }
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F 60..$0F 6F reserves }
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F 70..$0F 7F reserves }
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F 80..$0F 8F Jcc rel16 (sauts conditionnels longs, 80386+) }
+    (Mnemonic:'JO';       OpCount:1; Op1Type:OT_REL16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:4),
+    (Mnemonic:'JNO';      OpCount:1; Op1Type:OT_REL16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:4),
+    (Mnemonic:'JB';       OpCount:1; Op1Type:OT_REL16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:4),
+    (Mnemonic:'JNB';      OpCount:1; Op1Type:OT_REL16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:4),
+    (Mnemonic:'JZ';       OpCount:1; Op1Type:OT_REL16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:4),
+    (Mnemonic:'JNZ';      OpCount:1; Op1Type:OT_REL16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:4),
+    (Mnemonic:'JBE';      OpCount:1; Op1Type:OT_REL16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:4),
+    (Mnemonic:'JNBE';     OpCount:1; Op1Type:OT_REL16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:4),
+    (Mnemonic:'JS';       OpCount:1; Op1Type:OT_REL16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:4),
+    (Mnemonic:'JNS';      OpCount:1; Op1Type:OT_REL16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:4),
+    (Mnemonic:'JP';       OpCount:1; Op1Type:OT_REL16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:4),
+    (Mnemonic:'JNP';      OpCount:1; Op1Type:OT_REL16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:4),
+    (Mnemonic:'JL';       OpCount:1; Op1Type:OT_REL16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:4),
+    (Mnemonic:'JNL';      OpCount:1; Op1Type:OT_REL16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:4),
+    (Mnemonic:'JLE';      OpCount:1; Op1Type:OT_REL16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:4),
+    (Mnemonic:'JNLE';     OpCount:1; Op1Type:OT_REL16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:4),
+    { $0F 90..$0F 9F SETcc r/m8 (set byte on condition, 80386+) }
+    (Mnemonic:'SETO';     OpCount:1; Op1Type:OT_RM8;   Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:2),
+    (Mnemonic:'SETNO';    OpCount:1; Op1Type:OT_RM8;   Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:2),
+    (Mnemonic:'SETB';     OpCount:1; Op1Type:OT_RM8;   Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:2),
+    (Mnemonic:'SETNB';    OpCount:1; Op1Type:OT_RM8;   Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:2),
+    (Mnemonic:'SETZ';     OpCount:1; Op1Type:OT_RM8;   Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:2),
+    (Mnemonic:'SETNZ';    OpCount:1; Op1Type:OT_RM8;   Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:2),
+    (Mnemonic:'SETBE';    OpCount:1; Op1Type:OT_RM8;   Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:2),
+    (Mnemonic:'SETNBE';   OpCount:1; Op1Type:OT_RM8;   Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:2),
+    (Mnemonic:'SETS';     OpCount:1; Op1Type:OT_RM8;   Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:2),
+    (Mnemonic:'SETNS';    OpCount:1; Op1Type:OT_RM8;   Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:2),
+    (Mnemonic:'SETP';     OpCount:1; Op1Type:OT_RM8;   Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:2),
+    (Mnemonic:'SETNP';    OpCount:1; Op1Type:OT_RM8;   Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:2),
+    (Mnemonic:'SETL';     OpCount:1; Op1Type:OT_RM8;   Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:2),
+    (Mnemonic:'SETNL';    OpCount:1; Op1Type:OT_RM8;   Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:2),
+    (Mnemonic:'SETLE';    OpCount:1; Op1Type:OT_RM8;   Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:2),
+    (Mnemonic:'SETNLE';   OpCount:1; Op1Type:OT_RM8;   Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:2),
+    { $0F A0..$0F AF (PUSH FS/GS, BT/BTS/BTR/BTC, SHLD/SHRD, IMUL sur 80386+) }
+    { $0F A0 PUSH FS }
+    (Mnemonic:'PUSH';     OpCount:1; Op1Type:OT_FS;    Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F A1 POP FS }
+    (Mnemonic:'POP';      OpCount:1; Op1Type:OT_FS;    Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F A2 CPUID (Pentium+, reserve ici) }
+    (Mnemonic:'CPUID';    OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F A3 BT r/m16, r16 }
+    (Mnemonic:'BT';       OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_REG16; NeedModRM:True;  BaseSize:2),
+    { $0F A4 SHLD r/m16, r16, imm8 }
+    (Mnemonic:'SHLD';     OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_IMM8;  NeedModRM:True;  BaseSize:2),
+    { $0F A5 SHLD r/m16, r16, CL }
+    (Mnemonic:'SHLD';     OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_CL;    NeedModRM:True;  BaseSize:2),
+    { $0F A6 reserve }
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F A7 reserve }
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F A8 PUSH GS }
+    (Mnemonic:'PUSH';     OpCount:1; Op1Type:OT_GS;    Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F A9 POP GS }
+    (Mnemonic:'POP';      OpCount:1; Op1Type:OT_GS;    Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F AA RSM (resume from SMM, Pentium+) }
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F AB BTS r/m16, r16 }
+    (Mnemonic:'BTS';      OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_REG16; NeedModRM:True;  BaseSize:2),
+    { $0F AC SHRD r/m16, r16, imm8 }
+    (Mnemonic:'SHRD';     OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_IMM8;  NeedModRM:True;  BaseSize:2),
+    { $0F AD SHRD r/m16, r16, CL }
+    (Mnemonic:'SHRD';     OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_CL;    NeedModRM:True;  BaseSize:2),
+    { $0F AE reserve (FXSAVE/FXRSTOR/etc., Pentium+) }
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F AF IMUL r16, r/m16 }
+    (Mnemonic:'IMUL';     OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F B0..$0F BF (CMPXCHG, MOVZX, MOVSX, BSF, BSR sur 80386+) }
+    { $0F B0 CMPXCHG r/m8, r8 (80486+) }
+    (Mnemonic:'CMPXCHG';  OpCount:2; Op1Type:OT_RM8;   Op2Type:OT_REG8;  NeedModRM:True;  BaseSize:2),
+    { $0F B1 CMPXCHG r/m16, r16 (80486+) }
+    (Mnemonic:'CMPXCHG';  OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_REG16; NeedModRM:True;  BaseSize:2),
+    { $0F B2 LSS r16, m16:16 }
+    (Mnemonic:'LSS';      OpCount:2; Op1Type:OT_REG16; Op2Type:OT_MEM;   NeedModRM:True;  BaseSize:2),
+    { $0F B3 BTR r/m16, r16 }
+    (Mnemonic:'BTR';      OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_REG16; NeedModRM:True;  BaseSize:2),
+    { $0F B4 LFS r16, m16:16 }
+    (Mnemonic:'LFS';      OpCount:2; Op1Type:OT_REG16; Op2Type:OT_MEM;   NeedModRM:True;  BaseSize:2),
+    { $0F B5 LGS r16, m16:16 }
+    (Mnemonic:'LGS';      OpCount:2; Op1Type:OT_REG16; Op2Type:OT_MEM;   NeedModRM:True;  BaseSize:2),
+    { $0F B6 MOVZX r16, r/m8 }
+    (Mnemonic:'MOVZX';    OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM8;   NeedModRM:True;  BaseSize:2),
+    { $0F B7 MOVZX r32, r/m16 }
+    (Mnemonic:'MOVZX';    OpCount:2; Op1Type:OT_REG32; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F B8 reserve }
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F B9 reserve }
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F BA GRP8 r/m16, imm8 (BT/BTS/BTR/BTC) }
+    (Mnemonic:'GRP8';     OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_IMM8;  NeedModRM:True;  BaseSize:2),
+    { $0F BB BTC r/m16, r16 }
+    (Mnemonic:'BTC';      OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_REG16; NeedModRM:True;  BaseSize:2),
+    { $0F BC BSF r16, r/m16 }
+    (Mnemonic:'BSF';      OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F BD BSR r16, r/m16 }
+    (Mnemonic:'BSR';      OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F BE MOVSX r16, r/m8 }
+    (Mnemonic:'MOVSX';    OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM8;   NeedModRM:True;  BaseSize:2),
+    { $0F BF MOVSX r32, r/m16 }
+    (Mnemonic:'MOVSX';    OpCount:2; Op1Type:OT_REG32; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F C0..$0F CF (XADD, BSWAP sur 80486+) }
+    { $0F C0 XADD r/m8, r8 (80486+) }
+    (Mnemonic:'XADD';     OpCount:2; Op1Type:OT_RM8;   Op2Type:OT_REG8;  NeedModRM:True;  BaseSize:2),
+    { $0F C1 XADD r/m16, r16 (80486+) }
+    (Mnemonic:'XADD';     OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_REG16; NeedModRM:True;  BaseSize:2),
+    { $0F C2..$0F C7 reserves }
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F C8..$0F CF BSWAP r32 (80486+) }
+    (Mnemonic:'BSWAP';    OpCount:1; Op1Type:OT_REG32; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'BSWAP';    OpCount:1; Op1Type:OT_REG32; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'BSWAP';    OpCount:1; Op1Type:OT_REG32; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'BSWAP';    OpCount:1; Op1Type:OT_REG32; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'BSWAP';    OpCount:1; Op1Type:OT_REG32; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'BSWAP';    OpCount:1; Op1Type:OT_REG32; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'BSWAP';    OpCount:1; Op1Type:OT_REG32; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'BSWAP';    OpCount:1; Op1Type:OT_REG32; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F D0..$0F DF reserves }
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F E0..$0F EF reserves }
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F F0..$0F FF reserves }
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2)
+  );
+Var
+  { --- bloc de code brut (drCBlock), retenu au lieu d etre saute --- }
+  CodeBuf     : Array[0..MAX_CODE - 1] Of Byte;
+  CodeSize    : LongInt;
+
+  { --- table des labels resolus (adresse dans CodeBuf -> nom) --- }
+  Labels      : Array[0..MAX_LABELS - 1] Of TLabelInfo;
+  LabelCount  : LongInt;
+
+  { --- numerotation des index d adresse ("address-def"/NDX), voir   }
+  { l en-tete de section ci-dessus (NextAddrDef) --- }
+  AddrDefCounter  : LongInt;
+  AddrDefName     : Array[1..MAX_ADDRDEF] Of TString;
+  AddrDefIsProc   : Array[1..MAX_ADDRDEF] Of Boolean;
+  AddrDefIsImport : Array[1..MAX_ADDRDEF] Of Boolean;
+
+  { --- table brute des correctifs (drFixUp), decodee par ProcessFixup --- }
+  FixupCount   : LongInt;
+  FixupOfsArr  : Array[1..MAX_FIXUPS] Of LongInt;
+  FixupKindArr : Array[1..MAX_FIXUPS] Of Byte;
+  FixupNDXArr  : Array[1..MAX_FIXUPS] Of LongInt;
+  FxStartMark  : Byte;
+  FxEndMark    : Byte;
+
+  { --- plage de code (offset/taille dans CodeBuf) par index d adresse,  }
+  { etablie par ProcessFixup (paires fxStart/fxEnd) --- }
+  ProcCodeOfs : Array[1..MAX_ADDRDEF] Of LongInt;
+  ProcCodeSz  : Array[1..MAX_ADDRDEF] Of LongInt;
+
+  { --- procedures/fonctions NOMMEES rencontrees, dans l ordre du fichier --- }
+  ProcList    : Array[1..MAX_PROCS] Of TProcInfo;
+  ProcListCnt : LongInt;
+Function HexByte(B: Byte): TString;
+Const
+  HexDigits: Array[0..15] Of Char = '0123456789ABCDEF';
+Begin
+  HexByte := HexDigits[B Shr 4] + HexDigits[B And $0F];
+End;
+
+Function HexWord(W: Word): TString;
+Begin
+  HexWord := HexByte(Hi(W)) + HexByte(Lo(W));
+End;
+
+Function HexDWord(D: LongInt): TString;
+Begin
+  HexDWord := HexWord(Word(D Shr 16)) + HexWord(Word(D And $FFFF));
+End;
+
+{ --- lecteurs bornes sur CodeBuf/CodeSize (equivalent de ReadImageByte     }
+{ etc. de DISEXE.PAS, mais sur le blob de code de la DCU au lieu d une      }
+{ image PE/MZ) --- }
+Function ReadCodeByte(Ofs: LongInt): Byte;
+Begin
+  If (Ofs < 0) Or (Ofs >= CodeSize) Then
+    ReadCodeByte := 0
+  Else
+    ReadCodeByte := CodeBuf[Ofs];
+End;
+
+Function ReadCodeWord(Ofs: LongInt): Word;
+Begin
+  ReadCodeWord := Word(ReadCodeByte(Ofs)) Or (Word(ReadCodeByte(Ofs + 1)) Shl 8);
+End;
+
+Function ReadCodeDWord(Ofs: LongInt): LongInt;
+Begin
+  ReadCodeDWord := LongInt(ReadCodeByte(Ofs)) Or
+    (LongInt(ReadCodeByte(Ofs + 1)) Shl 8) Or
+    (LongInt(ReadCodeByte(Ofs + 2)) Shl 16) Or
+    (LongInt(ReadCodeByte(Ofs + 3)) Shl 24);
+End;
+
+{ --- numerotation des index d adresse (voir en-tete de section) --- }
+Function NextAddrDef: LongInt;
+Begin
+  Inc(AddrDefCounter);
+  If AddrDefCounter <= MAX_ADDRDEF Then
+  Begin
+    AddrDefName[AddrDefCounter] := '';
+    AddrDefIsProc[AddrDefCounter] := False;
+    AddrDefIsImport[AddrDefCounter] := False;
+  End;
+  NextAddrDef := AddrDefCounter;
+End;
+
+{ --- recherche d un correctif (drFixUp) exactement a l offset donne du    }
+{ blob de code - c est ce mecanisme, PAS une adresse cible calculee, qui    }
+{ indique le VRAI destinataire d un CALL/JMP dans un blob non encore relie   }
+{ (voir en-tete de section). Recherche lineaire : le nombre de correctifs      }
+{ par routine reste petit, pas besoin d index trie. --- }
+Function FindFixupAt(Ofs: LongInt): LongInt;
+Var
+  I: LongInt;
+Begin
+  FindFixupAt := -1;
+  For I := 1 To FixupCount Do
+    If (FixupOfsArr[I] = Ofs) And (FixupKindArr[I] <> FxStartMark) And
+       (FixupKindArr[I] <> FxEndMark) Then
+    Begin
+      FindFixupAt := FixupNDXArr[I];
+      Exit;
+    End;
+End;
+
+{ --- resout un index d adresse (NDX) en texte de symbole si on connait   }
+{ son nom (procedure locale nommee ou import) ; chaine vide sinon --- }
+Function ResolveAddrDefName(Idx: LongInt): TString;
+Begin
+  If (Idx >= 1) And (Idx <= MAX_ADDRDEF) And (Idx <= AddrDefCounter) And
+     (AddrDefName[Idx] <> '') Then
+    ResolveAddrDefName := AddrDefName[Idx]
+  Else
+    ResolveAddrDefName := '';
+End;
+
+Function AddLabel(Addr: LongInt; AName: TString; Proc, Imp, Exp: Boolean): Boolean;
+Var
+  I: LongInt;
+Begin
+  For I := 0 To LabelCount - 1 Do
+    If Labels[I].Address = Addr Then
+    Begin
+      If Proc Then Labels[I].IsProc := True;
+      If Imp Then Labels[I].IsImport := True;
+      If Exp Then Labels[I].IsExport := True;
+      If (AName <> '') And (Labels[I].Name = '') Then Labels[I].Name := AName;
+      AddLabel := False;
+      Exit;
+    End;
+  If LabelCount >= MAX_LABELS Then
+  Begin
+    AddLabel := False;
+    Exit;
+  End;
+  Labels[LabelCount].Address := Addr;
+  Labels[LabelCount].Name := AName;
+  Labels[LabelCount].IsProc := Proc;
+  Labels[LabelCount].IsImport := Imp;
+  Labels[LabelCount].IsExport := Exp;
+  Inc(LabelCount);
+  AddLabel := True;
+End;
+
+Function FindLabel(Addr: LongInt): LongInt;
+Var
+  I: LongInt;
+Begin
+  For I := 0 To LabelCount - 1 Do
+    If Labels[I].Address = Addr Then
+    Begin
+      FindLabel := I;
+      Exit;
+    End;
+  FindLabel := -1;
+End;
+
+Const
+  { Noms des 8 modes d'adressage effectifs 16 bits (r/m 0..7, mod<>11) }
+  RM16Names : Array[0..7] Of String[5] = (
+    'BX+SI', 'BX+DI', 'BP+SI', 'BP+DI',
+    'SI',    'DI',    'BP',    'BX'
+  );
+
+{ DecodeModRM16 - Decode l'octet ModR/M pour le mode 16 bits.
+  Parametres :
+    Offset    : position dans l'image (pointe vers l'octet ModR/M)
+    OpSize    : taille de l'operande (1 = 8 bits, 2 = 16 bits)
+  Resultats retournes par var :
+    RegField  : valeur du champ reg (3 bits, indice de registre)
+    RMStr     : chaine d'operande pour le champ r/m
+    BytesUsed : nombre d'octets consommes (1 pour ModR/M + deplacements)
+}
+Procedure DecodeModRM16(Offset : LongInt; OpSize : Byte;
+                        Var RegField : Byte; Var RMStr : TString;
+                        Var BytesUsed : Integer);
+Var
+  ModRM    : Byte;
+  ModVal   : Byte;   { champ mod (2 bits superieurs) }
+  RegVal   : Byte;   { champ reg (3 bits du milieu) }
+  RMVal    : Byte;   { champ r/m (3 bits inferieurs) }
+  Disp8    : ShortInt;
+  Disp16   : SmallInt;
+  DispW    : Word;
+Begin
+  ModRM := ReadCodeByte(Offset);
+  ModVal := (ModRM Shr 6) And $03;
+  RegVal := (ModRM Shr 3) And $07;
+  RMVal  := ModRM And $07;
+  RegField := RegVal;
+  BytesUsed := 1; { au minimum, l'octet ModR/M lui-meme }
+
+  Case ModVal Of
+    { mod=11 : registre direct }
+    3 : Begin
+      If OpSize = 1 Then
+        RMStr := RegNames8[RMVal]
+      Else
+        RMStr := RegNames16[RMVal];
+    End;
+    { mod=00 : pas de deplacement (sauf cas special r/m=110 -> disp16) }
+    0 : Begin
+      If RMVal = 6 Then Begin
+        { Cas special : adresse directe 16 bits }
+        DispW := ReadCodeWord(Offset + 1);
+        RMStr := '[' + HexWord(DispW) + 'h]';
+        BytesUsed := 3; { ModR/M + disp16 }
+      End Else Begin
+        RMStr := '[' + RM16Names[RMVal] + ']';
+      End;
+    End;
+    { mod=01 : deplacement 8 bits signe }
+    1 : Begin
+      Disp8 := ShortInt(ReadCodeByte(Offset + 1));
+      BytesUsed := 2; { ModR/M + disp8 }
+      If Disp8 = 0 Then
+        RMStr := '[' + RM16Names[RMVal] + ']'
+      Else If Disp8 > 0 Then
+        RMStr := '[' + RM16Names[RMVal] + '+' + HexByte(Byte(Disp8)) + 'h]'
+      Else
+        RMStr := '[' + RM16Names[RMVal] + '-' + HexByte(Byte(-Disp8)) + 'h]';
+    End;
+    { mod=10 : deplacement 16 bits }
+    2 : Begin
+      Disp16 := SmallInt(ReadCodeWord(Offset + 1));
+      BytesUsed := 3; { ModR/M + disp16 }
+      If Disp16 = 0 Then
+        RMStr := '[' + RM16Names[RMVal] + ']'
+      Else If Disp16 > 0 Then Begin
+        DispW := Word(Disp16);
+        RMStr := '[' + RM16Names[RMVal] + '+' + HexWord(DispW) + 'h]';
+      End Else Begin
+        DispW := Word(-Disp16);
+        RMStr := '[' + RM16Names[RMVal] + '-' + HexWord(DispW) + 'h]';
+      End;
+    End;
+  End;
+End;
+
+{ DecodeRegField16 - Retourne le nom du registre pour le champ reg (mode 16 bits).
+  OpSize = 1 : registre 8 bits, OpSize = 2 : registre 16 bits }
+Function DecodeRegField16(RegIndex : Byte; OpSize : Byte) : TString;
+Begin
+  If OpSize = 1 Then
+    DecodeRegField16 := RegNames8[RegIndex And $07]
+  Else
+    DecodeRegField16 := RegNames16[RegIndex And $07];
+End;
+
+{ DecodeModRM16Full - Decode ModR/M et retourne les deux operandes.
+  Parametres :
+    Offset    : position dans l'image (pointe vers l'octet ModR/M)
+    OpSize    : taille de l'operande (1 = 8 bits, 2 = 16 bits)
+    DirBit    : True = reg est destination (reg, r/m), False = r/m est destination (r/m, reg)
+  Resultats retournes par var :
+    Op1Str    : chaine du 1er operande
+    Op2Str    : chaine du 2e operande
+    BytesUsed : nombre d'octets consommes (ModR/M + deplacements)
+}
+Procedure DecodeModRM16Full(Offset : LongInt; OpSize : Byte; DirBit : Boolean;
+                            Var Op1Str, Op2Str : TString;
+                            Var BytesUsed : Integer);
+Var
+  RegField  : Byte;
+  RMStr     : TString;
+  RegStr    : TString;
+Begin
+  DecodeModRM16(Offset, OpSize, RegField, RMStr, BytesUsed);
+  RegStr := DecodeRegField16(RegField, OpSize);
+  If DirBit Then Begin
+    { reg est destination : op1=reg, op2=r/m }
+    Op1Str := RegStr;
+    Op2Str := RMStr;
+  End Else Begin
+    { r/m est destination : op1=r/m, op2=reg }
+    Op1Str := RMStr;
+    Op2Str := RegStr;
+  End;
+End;
+
+{ ============================================================
+  DECODAGE MODR/M ET SIB 32 BITS
+  ============================================================ }
+
+Const
+  { Facteurs d'echelle SIB : scale field (2 bits) -> multiplicateur }
+  ScaleFactors : Array[0..3] Of Byte = (1, 2, 4, 8);
+
+{ DecodeSIB - Decode l'octet SIB (Scale-Index-Base) pour le mode 32 bits.
+  Parametres :
+    SIBByte   : valeur de l'octet SIB
+    ModVal    : valeur du champ mod de l'octet ModR/M (pour cas special base=5)
+    Offset    : position dans l'image apres l'octet SIB (pour lire disp32)
+  Resultats retournes par var :
+    SIBStr    : chaine d'adresse generee (sans crochets)
+    ExtraBytes: nombre d'octets supplementaires consommes (0 ou 4 pour disp32)
+}
+Procedure DecodeSIB(SIBByte : Byte; ModVal : Byte; Offset : LongInt;
+                    Var SIBStr : TString; Var ExtraBytes : Integer);
+Var
+  Scale  : Byte;    { champ scale (2 bits superieurs) }
+  Idx    : Byte;    { champ index (3 bits du milieu) }
+  Base   : Byte;    { champ base (3 bits inferieurs) }
+  Disp32 : LongInt;
+  HasBase  : Boolean;
+  HasIndex : Boolean;
+Begin
+  Scale := (SIBByte Shr 6) And $03;
+  Idx   := (SIBByte Shr 3) And $07;
+  Base  := SIBByte And $07;
+  ExtraBytes := 0;
+  SIBStr := '';
+  HasBase := True;
+  HasIndex := True;
+
+  { index=100 (ESP) signifie pas d'index }
+  If Idx = 4 Then
+    HasIndex := False;
+
+  { base=101 (EBP) avec mod=00 signifie pas de base, disp32 a la place }
+  If (Base = 5) And (ModVal = 0) Then Begin
+    HasBase := False;
+    Disp32 := ReadCodeDWord(Offset);
+    ExtraBytes := 4;
+  End;
+
+  { Construire la chaine d'adresse }
+  If HasBase Then
+    SIBStr := RegNames32[Base];
+
+  If HasIndex Then Begin
+    If SIBStr <> '' Then
+      SIBStr := SIBStr + '+';
+    SIBStr := SIBStr + RegNames32[Idx];
+    If Scale > 0 Then
+      SIBStr := SIBStr + '*' + IntToStr(ScaleFactors[Scale]);
+  End;
+
+  If Not HasBase Then Begin
+    { disp32 sans base }
+    If SIBStr <> '' Then
+      SIBStr := SIBStr + '+' + HexDWord(Disp32) + 'h'
+    Else
+      SIBStr := HexDWord(Disp32) + 'h';
+  End;
+
+  { Si aucun composant (ne devrait pas arriver normalement) }
+  If SIBStr = '' Then
+    SIBStr := '0';
+End;
+
+{ DecodeModRM32 - Decode l'octet ModR/M pour le mode 32 bits.
+  Parametres :
+    Offset    : position dans l'image (pointe vers l'octet ModR/M)
+    OpSize    : taille de l'operande (1 = 8 bits, 4 = 32 bits)
+  Resultats retournes par var :
+    RegField  : valeur du champ reg (3 bits, indice de registre)
+    RMStr     : chaine d'operande pour le champ r/m
+    BytesUsed : nombre d'octets consommes (ModR/M + SIB + deplacements)
+}
+Procedure DecodeModRM32(Offset : LongInt; OpSize : Byte;
+                        Var RegField : Byte; Var RMStr : TString;
+                        Var BytesUsed : Integer);
+Var
+  ModRM    : Byte;
+  ModVal   : Byte;    { champ mod (2 bits superieurs) }
+  RegVal   : Byte;    { champ reg (3 bits du milieu) }
+  RMVal    : Byte;    { champ r/m (3 bits inferieurs) }
+  SIBByte  : Byte;
+  SIBStr   : TString;
+  SIBExtra : Integer;
+  Disp8    : ShortInt;
+  Disp32   : LongInt;
+  DispDW   : LongInt;
+Begin
+  ModRM := ReadCodeByte(Offset);
+  ModVal := (ModRM Shr 6) And $03;
+  RegVal := (ModRM Shr 3) And $07;
+  RMVal  := ModRM And $07;
+  RegField := RegVal;
+  BytesUsed := 1; { au minimum, l'octet ModR/M lui-meme }
+
+  Case ModVal Of
+    { mod=11 : registre direct }
+    3 : Begin
+      If OpSize = 1 Then
+        RMStr := RegNames8[RMVal]
+      Else
+        RMStr := RegNames32[RMVal];
+    End;
+    { mod=00 : pas de deplacement }
+    0 : Begin
+      If RMVal = 5 Then Begin
+        { Cas special : adresse directe 32 bits (disp32) }
+        Disp32 := ReadCodeDWord(Offset + 1);
+        RMStr := '[' + HexDWord(Disp32) + 'h]';
+        BytesUsed := 5; { ModR/M + disp32 }
+      End
+      Else If RMVal = 4 Then Begin
+        { SIB byte suit le ModR/M }
+        SIBByte := ReadCodeByte(Offset + 1);
+        DecodeSIB(SIBByte, ModVal, Offset + 2, SIBStr, SIBExtra);
+        RMStr := '[' + SIBStr + ']';
+        BytesUsed := 2 + SIBExtra; { ModR/M + SIB + eventuellement disp32 }
+      End Else Begin
+        RMStr := '[' + RegNames32[RMVal] + ']';
+      End;
+    End;
+    { mod=01 : deplacement 8 bits signe }
+    1 : Begin
+      If RMVal = 4 Then Begin
+        { SIB byte suit le ModR/M, puis disp8 }
+        SIBByte := ReadCodeByte(Offset + 1);
+        DecodeSIB(SIBByte, ModVal, Offset + 2, SIBStr, SIBExtra);
+        Disp8 := ShortInt(ReadCodeByte(Offset + 2 + SIBExtra));
+        BytesUsed := 3 + SIBExtra; { ModR/M + SIB + disp8 + SIBExtra }
+        If Disp8 = 0 Then
+          RMStr := '[' + SIBStr + ']'
+        Else If Disp8 > 0 Then
+          RMStr := '[' + SIBStr + '+' + HexByte(Byte(Disp8)) + 'h]'
+        Else
+          RMStr := '[' + SIBStr + '-' + HexByte(Byte(-Disp8)) + 'h]';
+      End Else Begin
+        Disp8 := ShortInt(ReadCodeByte(Offset + 1));
+        BytesUsed := 2; { ModR/M + disp8 }
+        If Disp8 = 0 Then
+          RMStr := '[' + RegNames32[RMVal] + ']'
+        Else If Disp8 > 0 Then
+          RMStr := '[' + RegNames32[RMVal] + '+' + HexByte(Byte(Disp8)) + 'h]'
+        Else
+          RMStr := '[' + RegNames32[RMVal] + '-' + HexByte(Byte(-Disp8)) + 'h]';
+      End;
+    End;
+    { mod=10 : deplacement 32 bits }
+    2 : Begin
+      If RMVal = 4 Then Begin
+        { SIB byte suit le ModR/M, puis disp32 }
+        SIBByte := ReadCodeByte(Offset + 1);
+        DecodeSIB(SIBByte, ModVal, Offset + 2, SIBStr, SIBExtra);
+        Disp32 := ReadCodeDWord(Offset + 2 + SIBExtra);
+        BytesUsed := 6 + SIBExtra; { ModR/M + SIB + disp32 + SIBExtra }
+        If Disp32 = 0 Then
+          RMStr := '[' + SIBStr + ']'
+        Else If Disp32 > 0 Then Begin
+          DispDW := Disp32;
+          RMStr := '[' + SIBStr + '+' + HexDWord(DispDW) + 'h]';
+        End Else Begin
+          DispDW := -Disp32;
+          RMStr := '[' + SIBStr + '-' + HexDWord(DispDW) + 'h]';
+        End;
+      End Else Begin
+        Disp32 := ReadCodeDWord(Offset + 1);
+        BytesUsed := 5; { ModR/M + disp32 }
+        If Disp32 = 0 Then
+          RMStr := '[' + RegNames32[RMVal] + ']'
+        Else If Disp32 > 0 Then Begin
+          DispDW := Disp32;
+          RMStr := '[' + RegNames32[RMVal] + '+' + HexDWord(DispDW) + 'h]';
+        End Else Begin
+          DispDW := -Disp32;
+          RMStr := '[' + RegNames32[RMVal] + '-' + HexDWord(DispDW) + 'h]';
+        End;
+      End;
+    End;
+  End;
+End;
+
+{ DecodeRegField32 - Retourne le nom du registre pour le champ reg (mode 32 bits).
+  OpSize = 1 : registre 8 bits, OpSize = 4 : registre 32 bits }
+Function DecodeRegField32(RegIndex : Byte; OpSize : Byte) : TString;
+Begin
+  If OpSize = 1 Then
+    DecodeRegField32 := RegNames8[RegIndex And $07]
+  Else
+    DecodeRegField32 := RegNames32[RegIndex And $07];
+End;
+
+{ DecodeModRM32Full - Decode ModR/M et retourne les deux operandes (mode 32 bits).
+  Parametres :
+    Offset    : position dans l'image (pointe vers l'octet ModR/M)
+    OpSize    : taille de l'operande (1 = 8 bits, 4 = 32 bits)
+    DirBit    : True = reg est destination (reg, r/m), False = r/m est destination (r/m, reg)
+  Resultats retournes par var :
+    Op1Str    : chaine du 1er operande
+    Op2Str    : chaine du 2e operande
+    BytesUsed : nombre d'octets consommes (ModR/M + SIB + deplacements)
+}
+Procedure DecodeModRM32Full(Offset : LongInt; OpSize : Byte; DirBit : Boolean;
+                            Var Op1Str, Op2Str : TString;
+                            Var BytesUsed : Integer);
+Var
+  RegField  : Byte;
+  RMStr     : TString;
+  RegStr    : TString;
+Begin
+  DecodeModRM32(Offset, OpSize, RegField, RMStr, BytesUsed);
+  RegStr := DecodeRegField32(RegField, OpSize);
+  If DirBit Then Begin
+    { reg est destination : op1=reg, op2=r/m }
+    Op1Str := RegStr;
+    Op2Str := RMStr;
+  End Else Begin
+    { r/m est destination : op1=r/m, op2=reg }
+    Op1Str := RMStr;
+    Op2Str := RegStr;
+  End;
+End;
+
+{ ============================================================
+  DECODAGE DES PREFIXES D'INSTRUCTIONS
+  ============================================================ }
+
+Type
+  { Etat des prefixes accumules avant une instruction }
+  TPrefixState = Record
+    HasSegOverride : Boolean;    { True si un prefixe de segment est present }
+    SegOverride    : Byte;       { indice segment (0=ES,1=CS,2=SS,3=DS,4=FS,5=GS) }
+    SegOverrideStr : String[3];  { chaine du segment ('ES:','CS:',...) }
+    HasLock        : Boolean;    { True si LOCK (F0h) est present }
+    HasRep         : Boolean;    { True si REP/REPE (F3h) est present }
+    HasRepNE       : Boolean;    { True si REPNE (F2h) est present }
+    HasOpSize      : Boolean;    { True si prefixe taille operande (66h) }
+    HasAddrSize    : Boolean;    { True si prefixe taille adresse (67h) }
+    PrefixCount    : Integer;    { nombre total d'octets de prefixes consommes }
+    EffOpSize      : Byte;       { taille effective de l'operande (1, 2 ou 4) }
+    EffAddrSize    : Byte;       { taille effective de l'adresse (2 ou 4) }
+  End;
+
+{ IsPrefix - Retourne True si l'octet est un prefixe d'instruction.
+  Prefixes reconnus : 26h,2Eh,36h,3Eh (seg 8086+), 64h,65h (seg 386+),
+                      66h (OpSize), 67h (AddrSize), F0h (LOCK),
+                      F2h (REPNE), F3h (REP/REPE) }
+Function IsPrefix(B : Byte) : Boolean;
+Begin
+  Case B Of
+    $26, $2E, $36, $3E,  { ES:, CS:, SS:, DS: }
+    $64, $65,             { FS:, GS: }
+    $66,                  { operand size override }
+    $67,                  { address size override }
+    $F0,                  { LOCK }
+    $F2,                  { REPNE/REPNZ }
+    $F3 :                 { REP/REPE/REPZ }
+      IsPrefix := True;
+  Else
+    IsPrefix := False;
+  End;
+End;
+
+{ InitPrefixState - Initialise l'etat des prefixes.
+  Mode32 : True si le mode par defaut est 32 bits, False si 16 bits.
+  En mode 16 bits : operande 16 bits, adresse 16 bits par defaut.
+  En mode 32 bits : operande 32 bits, adresse 32 bits par defaut. }
+Procedure InitPrefixState(Var PFX : TPrefixState; Mode32 : Boolean);
+Begin
+  PFX.HasSegOverride := False;
+  PFX.SegOverride    := 0;
+  PFX.SegOverrideStr := '';
+  PFX.HasLock        := False;
+  PFX.HasRep         := False;
+  PFX.HasRepNE       := False;
+  PFX.HasOpSize      := False;
+  PFX.HasAddrSize    := False;
+  PFX.PrefixCount    := 0;
+  If Mode32 Then Begin
+    PFX.EffOpSize   := 4;   { 32 bits par defaut }
+    PFX.EffAddrSize := 4;
+  End Else Begin
+    PFX.EffOpSize   := 2;   { 16 bits par defaut }
+    PFX.EffAddrSize := 2;
+  End;
+End;
+
+{ DecodePrefixes - Lit les octets de prefixes a partir de Offset dans l'image.
+  Accumule tous les prefixes consecutifs et met a jour l'etat PFX.
+  Mode32 : True si le mode courant est 32 bits.
+  PFX doit etre initialise par InitPrefixState avant l'appel.
+  Apres l'appel, PFX.PrefixCount contient le nombre d'octets de prefixes.
+  L'opcode reel se trouve donc a Offset + PFX.PrefixCount. }
+Procedure DecodePrefixes(Offset : LongInt; Mode32 : Boolean;
+                         Var PFX : TPrefixState);
+Var
+  B    : Byte;
+  Done : Boolean;
+Begin
+  Done := False;
+  While Not Done Do Begin
+    If (Offset + PFX.PrefixCount) >= CodeSize Then
+      Break;
+    B := ReadCodeByte(Offset + PFX.PrefixCount);
+    Case B Of
+      $26 : Begin { ES: segment override }
+        PFX.HasSegOverride := True;
+        PFX.SegOverride    := 0;
+        PFX.SegOverrideStr := 'ES:';
+        Inc(PFX.PrefixCount);
+      End;
+      $2E : Begin { CS: segment override }
+        PFX.HasSegOverride := True;
+        PFX.SegOverride    := 1;
+        PFX.SegOverrideStr := 'CS:';
+        Inc(PFX.PrefixCount);
+      End;
+      $36 : Begin { SS: segment override }
+        PFX.HasSegOverride := True;
+        PFX.SegOverride    := 2;
+        PFX.SegOverrideStr := 'SS:';
+        Inc(PFX.PrefixCount);
+      End;
+      $3E : Begin { DS: segment override }
+        PFX.HasSegOverride := True;
+        PFX.SegOverride    := 3;
+        PFX.SegOverrideStr := 'DS:';
+        Inc(PFX.PrefixCount);
+      End;
+      $64 : Begin { FS: segment override (80386+) }
+        PFX.HasSegOverride := True;
+        PFX.SegOverride    := 4;
+        PFX.SegOverrideStr := 'FS:';
+        Inc(PFX.PrefixCount);
+      End;
+      $65 : Begin { GS: segment override (80386+) }
+        PFX.HasSegOverride := True;
+        PFX.SegOverride    := 5;
+        PFX.SegOverrideStr := 'GS:';
+        Inc(PFX.PrefixCount);
+      End;
+      $66 : Begin { operand size override (80386+) }
+        PFX.HasOpSize := True;
+        Inc(PFX.PrefixCount);
+        { Bascule la taille d'operande : 32->16 ou 16->32 }
+        If Mode32 Then
+          PFX.EffOpSize := 2
+        Else
+          PFX.EffOpSize := 4;
+      End;
+      $67 : Begin { address size override (80386+) }
+        PFX.HasAddrSize := True;
+        Inc(PFX.PrefixCount);
+        { Bascule la taille d'adresse : 32->16 ou 16->32 }
+        If Mode32 Then
+          PFX.EffAddrSize := 2
+        Else
+          PFX.EffAddrSize := 4;
+      End;
+      $F0 : Begin { LOCK }
+        PFX.HasLock := True;
+        Inc(PFX.PrefixCount);
+      End;
+      $F2 : Begin { REPNE/REPNZ }
+        PFX.HasRepNE := True;
+        PFX.HasRep   := False;  { REPNE ecrase REP si deja vu }
+        Inc(PFX.PrefixCount);
+      End;
+      $F3 : Begin { REP/REPE/REPZ }
+        PFX.HasRep   := True;
+        PFX.HasRepNE := False;  { REP ecrase REPNE si deja vu }
+        Inc(PFX.PrefixCount);
+      End;
+    Else
+      Done := True;  { octet non-prefixe : on arrete }
+    End;
+  End;
+End;
+
+{ PrefixToStr - Retourne la chaine des prefixes accumules pour l'affichage.
+  Exemple : 'LOCK REP ES:' si LOCK, REP et ES: sont presents.
+  Retourne une chaine vide si aucun prefixe n'est present. }
+Function PrefixToStr(Const PFX : TPrefixState) : TString;
+Var
+  S : TString;
+Begin
+  S := '';
+  If PFX.HasLock Then
+    S := S + 'LOCK ';
+  If PFX.HasRep Then
+    S := S + 'REP ';
+  If PFX.HasRepNE Then
+    S := S + 'REPNE ';
+  PrefixToStr := S;
+End;
+
+{ InjectSegOvr - Insere un prefixe de segment devant la premiere reference
+  memoire '[' dans la chaine d'operandes S.
+  Si aucune reference memoire n'est present, retourne S inchange.
+  Exemple : InjectSegOvr('SS:', '[0148h], SP') -> 'SS:[0148h], SP' }
+Function InjectSegOvr(Const SegOvr, S : TString) : TString;
+Var
+  P : Integer;
+Begin
+  If SegOvr = '' Then Begin
+    InjectSegOvr := S;
+    Exit;
+  End;
+  P := Pos('[', S);
+  If P > 0 Then
+    InjectSegOvr := Copy(S, 1, P - 1) + SegOvr + Copy(S, P, Length(S))
+  Else
+    InjectSegOvr := S;
+End;
+
+{ ============================================================
+  DECODAGE DES OPCODES ETENDUS 0Fh
+  ============================================================ }
+
+{ Decode0FOpcode - Decode un opcode etendu 0Fh et retourne le mnemonique,
+  les operandes et le nombre d'octets consommes APRES l'octet 0Fh.
+  Parametres :
+    SecondByte : valeur du second octet (apres le 0Fh)
+    Offset     : position dans l'image du premier octet APRES le second octet
+                 (c.-a-d. l'octet ModR/M ou immediat eventuel)
+    PFX        : etat des prefixes (EffOpSize, EffAddrSize, etc.)
+  Resultats retournes par var :
+    Mnem       : mnemonique de l'instruction (ex: 'JNZ', 'MOVZX', ...)
+    Operands   : chaine des operandes (ex: 'EAX, [EBX+04h]')
+    BytesUsed  : nombre d'octets consommes APRES le 0Fh (inclut le second octet)
+}
+Procedure Decode0FOpcode(SecondByte : Byte; Offset : LongInt;
+                         Const PFX : TPrefixState;
+                         Var Mnem : TString; Var Operands : TString;
+                         Var BytesUsed : Integer);
+Var
+  Entry      : TOpcodeEntry;
+  RegField   : Byte;
+  RMStr      : TString;
+  RegStr     : TString;
+  ModRMBytes : Integer;
+  Rel16      : SmallInt;
+  Rel32      : LongInt;
+  Imm8       : Byte;
+  TargetAddr : LongInt;
+  OpSz       : Byte;       { taille effective d'operande (2 ou 4) }
+  AddrSz     : Byte;       { taille effective d'adresse (2 ou 4) }
+  ModRM      : Byte;
+  RegIdx     : Byte;
+Begin
+  Entry := Opcode0FTable[SecondByte];
+  OpSz  := PFX.EffOpSize;
+  AddrSz := PFX.EffAddrSize;
+  Mnem := Entry.Mnemonic;
+  Operands := '';
+  BytesUsed := 1; { le second octet lui-meme est toujours consomme }
+
+  { Instructions inconnues ou reservees }
+  If Entry.Mnemonic = '???' Then Begin
+    Mnem := 'DB';
+    Operands := '0Fh, ' + HexByte(SecondByte) + 'h';
+    Exit;
+  End;
+
+  { --- Cas speciaux des instructions de groupe (GRP6/GRP7/GRP8) --- }
+  If Entry.Mnemonic = 'GRP6' Then Begin
+    If Offset < CodeSize Then Begin
+      ModRM := ReadCodeByte(Offset);
+      RegField := (ModRM Shr 3) And $07;
+      Mnem := Grp6Mnemonics[RegField];
+      If AddrSz = 4 Then
+        DecodeModRM32(Offset, 2, RegField, RMStr, ModRMBytes)
+      Else
+        DecodeModRM16(Offset, 2, RegField, RMStr, ModRMBytes);
+      Operands := RMStr;
+      BytesUsed := 1 + ModRMBytes;
+    End;
+    Exit;
+  End;
+
+  If Entry.Mnemonic = 'GRP7' Then Begin
+    If Offset < CodeSize Then Begin
+      ModRM := ReadCodeByte(Offset);
+      RegField := (ModRM Shr 3) And $07;
+      Mnem := Grp7Mnemonics[RegField];
+      If AddrSz = 4 Then
+        DecodeModRM32(Offset, 2, RegField, RMStr, ModRMBytes)
+      Else
+        DecodeModRM16(Offset, 2, RegField, RMStr, ModRMBytes);
+      Operands := RMStr;
+      BytesUsed := 1 + ModRMBytes;
+    End;
+    Exit;
+  End;
+
+  If Entry.Mnemonic = 'GRP8' Then Begin
+    If Offset < CodeSize Then Begin
+      ModRM := ReadCodeByte(Offset);
+      RegField := (ModRM Shr 3) And $07;
+      Mnem := Grp8Mnemonics[RegField];
+      If AddrSz = 4 Then
+        DecodeModRM32(Offset, OpSz, RegField, RMStr, ModRMBytes)
+      Else
+        DecodeModRM16(Offset, OpSz, RegField, RMStr, ModRMBytes);
+      Imm8 := ReadCodeByte(Offset + ModRMBytes);
+      Operands := RMStr + ', ' + HexByte(Imm8) + 'h';
+      BytesUsed := 1 + ModRMBytes + 1;
+    End;
+    Exit;
+  End;
+
+  { --- BSWAP : registre encode dans les 3 bits bas du second octet --- }
+  If (SecondByte >= $C8) And (SecondByte <= $CF) And
+     (Entry.Mnemonic = 'BSWAP') Then Begin
+    RegIdx := SecondByte And $07;
+    Operands := RegNames32[RegIdx];
+    Exit;
+  End;
+
+  { --- Jcc near : deplacement relatif 16/32 bits --- }
+  If (SecondByte >= $80) And (SecondByte <= $8F) Then Begin
+    If OpSz = 4 Then Begin
+      Rel32 := ReadCodeDWord(Offset);
+      TargetAddr := Offset + 4 + Rel32;
+      Operands := HexDWord(TargetAddr) + 'h';
+      BytesUsed := 1 + 4;
+    End Else Begin
+      Rel16 := SmallInt(ReadCodeWord(Offset));
+      TargetAddr := Offset + 2 + Rel16;
+      Operands := HexWord(Word(TargetAddr And $FFFF)) + 'h';
+      BytesUsed := 1 + 2;
+    End;
+    Exit;
+  End;
+
+  { --- MOV CRn/DRn/TRn : registres speciaux --- }
+  If (SecondByte >= $20) And (SecondByte <= $27) And
+     (Entry.Mnemonic = 'MOV') Then Begin
+    If Offset < CodeSize Then Begin
+      ModRM := ReadCodeByte(Offset);
+      RegField := (ModRM Shr 3) And $07;
+      RegIdx := ModRM And $07;
+      BytesUsed := 1 + 1; { second byte + ModR/M }
+      Case SecondByte Of
+        $20 : Operands := RegNames32[RegIdx] + ', ' + CRegNames[RegField And $03];
+        $21 : Operands := RegNames32[RegIdx] + ', ' + DRegNames[RegField];
+        $22 : Operands := CRegNames[RegField And $03] + ', ' + RegNames32[RegIdx];
+        $23 : Operands := DRegNames[RegField] + ', ' + RegNames32[RegIdx];
+        $24 : Operands := RegNames32[RegIdx] + ', ' + TRegNames[RegField];
+        $26 : Operands := TRegNames[RegField] + ', ' + RegNames32[RegIdx];
+      Else
+        Operands := '???';
+      End;
+    End;
+    Exit;
+  End;
+
+  { --- SHLD/SHRD : 3 operandes (r/m, reg, imm8 ou CL) --- }
+  If ((SecondByte = $A4) Or (SecondByte = $A5) Or
+      (SecondByte = $AC) Or (SecondByte = $AD)) And
+     ((Entry.Mnemonic = 'SHLD') Or (Entry.Mnemonic = 'SHRD')) Then Begin
+    If Offset < CodeSize Then Begin
+      If AddrSz = 4 Then Begin
+        DecodeModRM32(Offset, OpSz, RegField, RMStr, ModRMBytes);
+        If OpSz = 4 Then
+          RegStr := RegNames32[RegField]
+        Else
+          RegStr := RegNames16[RegField];
+      End Else Begin
+        DecodeModRM16(Offset, OpSz, RegField, RMStr, ModRMBytes);
+        If OpSz = 4 Then
+          RegStr := RegNames32[RegField]
+        Else
+          RegStr := RegNames16[RegField];
+      End;
+      If (SecondByte = $A4) Or (SecondByte = $AC) Then Begin
+        { SHLD/SHRD r/m, r, imm8 }
+        Imm8 := ReadCodeByte(Offset + ModRMBytes);
+        Operands := RMStr + ', ' + RegStr + ', ' + HexByte(Imm8) + 'h';
+        BytesUsed := 1 + ModRMBytes + 1;
+      End Else Begin
+        { SHLD/SHRD r/m, r, CL }
+        Operands := RMStr + ', ' + RegStr + ', CL';
+        BytesUsed := 1 + ModRMBytes;
+      End;
+    End;
+    Exit;
+  End;
+
+  { --- Instructions sans operande (CLTS, CPUID, INVD, WBINVD, etc.) --- }
+  If Entry.OpCount = 0 Then Begin
+    Operands := '';
+    Exit;
+  End;
+
+  { --- Instructions avec 1 operande (SETcc, PUSH/POP FS/GS) --- }
+  If Entry.OpCount = 1 Then Begin
+    Case Entry.Op1Type Of
+      OT_RM8 : Begin
+        If Offset < CodeSize Then Begin
+          If AddrSz = 4 Then
+            DecodeModRM32(Offset, 1, RegField, RMStr, ModRMBytes)
+          Else
+            DecodeModRM16(Offset, 1, RegField, RMStr, ModRMBytes);
+          Operands := RMStr;
+          BytesUsed := 1 + ModRMBytes;
+        End;
+      End;
+      OT_FS : Operands := 'FS';
+      OT_GS : Operands := 'GS';
+      OT_REG32 : Begin
+        { BSWAP fallback (deja traite au-dessus normalement) }
+        RegIdx := SecondByte And $07;
+        Operands := RegNames32[RegIdx];
+      End;
+    Else
+      Operands := '???';
+    End;
+    Exit;
+  End;
+
+  { --- Instructions avec 2 operandes (generique) --- }
+  If Entry.OpCount = 2 Then Begin
+    { Determiner la taille d'operande effective pour les types 16-bit }
+    { Les types RM16/REG16 deviennent RM32/REG32 si EffOpSize=4 }
+
+    { Cas: premier operande = registre, second = r/m (direction reg<-r/m) }
+    If (Entry.Op1Type In [OT_REG16, OT_REG32]) And
+       (Entry.Op2Type In [OT_RM8, OT_RM16, OT_RM32, OT_MEM]) Then Begin
+      If Entry.Op2Type = OT_RM8 Then Begin
+        { MOVZX/MOVSX r16, r/m8 ou r32, r/m8 }
+        If Offset < CodeSize Then Begin
+          If AddrSz = 4 Then
+            DecodeModRM32(Offset, 1, RegField, RMStr, ModRMBytes)
+          Else
+            DecodeModRM16(Offset, 1, RegField, RMStr, ModRMBytes);
+          If (Entry.Op1Type = OT_REG32) Or (OpSz = 4) Then
+            RegStr := RegNames32[RegField]
+          Else
+            RegStr := RegNames16[RegField];
+          Operands := RegStr + ', ' + RMStr;
+          BytesUsed := 1 + ModRMBytes;
+        End;
+      End
+      Else If Entry.Op2Type = OT_RM16 Then Begin
+        { MOVZX/MOVSX r32, r/m16 ou CMOVcc r, r/m etc. }
+        If Offset < CodeSize Then Begin
+          If (Entry.Op1Type = OT_REG32) Then Begin
+            { Op1 toujours 32 bits, Op2 toujours 16 bits }
+            If AddrSz = 4 Then
+              DecodeModRM32(Offset, 2, RegField, RMStr, ModRMBytes)
+            Else
+              DecodeModRM16(Offset, 2, RegField, RMStr, ModRMBytes);
+            RegStr := RegNames32[RegField];
+          End Else Begin
+            { Op taille selon EffOpSize }
+            If AddrSz = 4 Then
+              DecodeModRM32(Offset, OpSz, RegField, RMStr, ModRMBytes)
+            Else
+              DecodeModRM16(Offset, OpSz, RegField, RMStr, ModRMBytes);
+            If OpSz = 4 Then
+              RegStr := RegNames32[RegField]
+            Else
+              RegStr := RegNames16[RegField];
+          End;
+          Operands := RegStr + ', ' + RMStr;
+          BytesUsed := 1 + ModRMBytes;
+        End;
+      End
+      Else If Entry.Op2Type = OT_MEM Then Begin
+        { LSS/LFS/LGS r, m16:16 }
+        If Offset < CodeSize Then Begin
+          If AddrSz = 4 Then
+            DecodeModRM32(Offset, OpSz, RegField, RMStr, ModRMBytes)
+          Else
+            DecodeModRM16(Offset, OpSz, RegField, RMStr, ModRMBytes);
+          If OpSz = 4 Then
+            RegStr := RegNames32[RegField]
+          Else
+            RegStr := RegNames16[RegField];
+          Operands := RegStr + ', ' + RMStr;
+          BytesUsed := 1 + ModRMBytes;
+        End;
+      End
+      Else Begin
+        { Autre cas RM32, etc. }
+        If Offset < CodeSize Then Begin
+          If AddrSz = 4 Then
+            DecodeModRM32(Offset, OpSz, RegField, RMStr, ModRMBytes)
+          Else
+            DecodeModRM16(Offset, OpSz, RegField, RMStr, ModRMBytes);
+          If OpSz = 4 Then
+            RegStr := RegNames32[RegField]
+          Else
+            RegStr := RegNames16[RegField];
+          Operands := RegStr + ', ' + RMStr;
+          BytesUsed := 1 + ModRMBytes;
+        End;
+      End;
+      Exit;
+    End;
+
+    { Cas: premier operande = r/m, second = registre (direction r/m<-reg) }
+    If (Entry.Op1Type In [OT_RM8, OT_RM16, OT_RM32]) And
+       (Entry.Op2Type In [OT_REG8, OT_REG16, OT_REG32, OT_IMM8, OT_CL]) Then Begin
+      If Offset < CodeSize Then Begin
+        If Entry.Op1Type = OT_RM8 Then Begin
+          If AddrSz = 4 Then
+            DecodeModRM32(Offset, 1, RegField, RMStr, ModRMBytes)
+          Else
+            DecodeModRM16(Offset, 1, RegField, RMStr, ModRMBytes);
+          If Entry.Op2Type = OT_REG8 Then
+            RegStr := RegNames8[RegField]
+          Else If Entry.Op2Type = OT_IMM8 Then Begin
+            Imm8 := ReadCodeByte(Offset + ModRMBytes);
+            Operands := RMStr + ', ' + HexByte(Imm8) + 'h';
+            BytesUsed := 1 + ModRMBytes + 1;
+            Exit;
+          End Else
+            RegStr := 'CL';
+        End Else Begin
+          { RM16 ou RM32 }
+          If AddrSz = 4 Then
+            DecodeModRM32(Offset, OpSz, RegField, RMStr, ModRMBytes)
+          Else
+            DecodeModRM16(Offset, OpSz, RegField, RMStr, ModRMBytes);
+          If Entry.Op2Type = OT_REG8 Then
+            RegStr := RegNames8[RegField]
+          Else If Entry.Op2Type = OT_REG16 Then Begin
+            If OpSz = 4 Then
+              RegStr := RegNames32[RegField]
+            Else
+              RegStr := RegNames16[RegField];
+          End
+          Else If Entry.Op2Type = OT_REG32 Then
+            RegStr := RegNames32[RegField]
+          Else If Entry.Op2Type = OT_IMM8 Then Begin
+            Imm8 := ReadCodeByte(Offset + ModRMBytes);
+            Operands := RMStr + ', ' + HexByte(Imm8) + 'h';
+            BytesUsed := 1 + ModRMBytes + 1;
+            Exit;
+          End
+          Else If Entry.Op2Type = OT_CL Then
+            RegStr := 'CL'
+          Else
+            RegStr := '???';
+        End;
+        Operands := RMStr + ', ' + RegStr;
+        BytesUsed := 1 + ModRMBytes;
+      End;
+      Exit;
+    End;
+
+    { Cas: MOV CRn/DRn/TRn (deja traite ci-dessus normalement) }
+    { Fallback generique pour les autres cas a 2 operandes }
+    Operands := '???';
+  End;
+End;
+
+{ ============================================================
+  ANALYSE DU FLUX DE CONTROLE ET REFERENCES CROISEES
+  ============================================================ }
+
+{ AddLabel - Ajoute un label a la table des labels.
+  Si l'adresse existe deja, ne fait rien (evite les doublons).
+  Parametres :
+    Addr   : adresse dans l'image
+    AName  : nom du label (vide pour auto-generation)
+    Proc   : True si c'est un sous-programme (cible de CALL)
+    Imp    : True si c'est un import
+    Exp    : True si c'est un export
+  Retourne True si le label a ete ajoute, False si deja present ou table pleine. }
+{ FormatImmediateOperand - version simplifiee pour le blob de code d une   }
+{ DCU (PAS un PE/EXE deja relie) : une constante immediate n a PAS d       }
+{ ImageBase/section a comparer (voir la version complete, PE, dans          }
+{ DISEXE.PAS) - on se contente de la chaine hexadecimale, sauf si elle        }
+{ pointe exactement sur un label deja connu a l interieur du MEME blob         }
+{ (rare pour un immediat, mais couvre le cas d une adresse de procedure          }
+{ locale deja resolue par ProcessFixup/EmitAllProcAsmBlocks).                       }
+Function FormatImmediateOperand(Value: LongWord; Mode32: Boolean): TString;
+Var
+  Addr: LongInt;
+  LblIdx: LongInt;
+Begin
+  Addr := LongInt(Value);
+  If (Addr >= 0) And (Addr < CodeSize) Then
+  Begin
+    LblIdx := FindLabel(Addr);
+    If LblIdx >= 0 Then
+    Begin
+      FormatImmediateOperand := 'OFFSET ' + Labels[LblIdx].Name;
+      Exit;
+    End;
+  End;
+  If Mode32 Then
+    FormatImmediateOperand := HexDWord(LongInt(Value)) + 'h'
+  Else
+    FormatImmediateOperand := HexWord(Word(Value)) + 'h';
+End;
+
+Procedure DisassembleInstruction(Offset : LongInt; Mode32 : Boolean;
+                                  Var Mnem : TString; Var Operands : TString;
+                                  Var BytesUsed : Integer);
+Var
+  PFX       : TPrefixState;
+  OpcOffset : LongInt;
+  Opcode    : Byte;
+  Entry     : TOpcodeEntry;
+  OpSz      : Byte;
+  AddrSz    : Byte;
+  RegField  : Byte;
+  ModRM     : Byte;
+  MRMBytes  : Integer;
+  RMStr     : TString;
+  RegStr    : TString;
+  Imm8      : Byte;
+  Imm16     : Word;
+  Imm32     : LongInt;
+  Rel8      : ShortInt;
+  Rel16     : SmallInt;
+  Rel32     : LongInt;
+  TargetAddr: LongInt;
+  PrefStr   : TString;
+  LblIdx    : LongInt;
+  TotalSize : Integer;
+  SecByte   : Byte;
+  Mnem0F    : TString;
+  Ops0F     : TString;
+  Bytes0F   : Integer;
+  NDX       : LongInt;
+  SymName   : TString;
+Begin
+  Mnem := '';
+  Operands := '';
+  BytesUsed := 1;
+
+  If (Offset < 0) Or (Offset >= CodeSize) Then Begin
+    Mnem := 'DB';
+    Operands := '??';
+    Exit;
+  End;
+
+  { Decoder les prefixes }
+  InitPrefixState(PFX, Mode32);
+  DecodePrefixes(Offset, Mode32, PFX);
+  OpcOffset := Offset + PFX.PrefixCount;
+  OpSz  := PFX.EffOpSize;
+  AddrSz := PFX.EffAddrSize;
+  TotalSize := PFX.PrefixCount;
+
+  If OpcOffset >= CodeSize Then Begin
+    Mnem := 'DB';
+    Operands := HexByte(ReadCodeByte(Offset)) + 'h';
+    BytesUsed := 1;
+    Exit;
+  End;
+
+  Opcode := ReadCodeByte(OpcOffset);
+  PrefStr := PrefixToStr(PFX);
+
+  { Opcode etendu 0Fh }
+  If Opcode = $0F Then Begin
+    If OpcOffset + 1 < CodeSize Then Begin
+      SecByte := ReadCodeByte(OpcOffset + 1);
+      Decode0FOpcode(SecByte, OpcOffset + 2, PFX, Mnem0F, Ops0F, Bytes0F);
+      Mnem := PrefStr + Mnem0F;
+      Operands := InjectSegOvr(PFX.SegOverrideStr, Ops0F);
+      BytesUsed := TotalSize + 1 + Bytes0F; { prefixes + 0F byte + (second+rest) }
+    End Else Begin
+      Mnem := 'DB';
+      Operands := '0Fh';
+      BytesUsed := TotalSize + 1;
+    End;
+    Exit;
+  End;
+
+  Entry := OpcodeTable[Opcode];
+
+  { Instruction inconnue }
+  If Entry.Mnemonic = '???' Then Begin
+    Mnem := 'DB';
+    Operands := HexByte(Opcode) + 'h';
+    BytesUsed := TotalSize + 1;
+    Exit;
+  End;
+
+  { Instructions de groupe }
+  If (Entry.Mnemonic = 'GRP1') Or (Entry.Mnemonic = 'GRP2') Or
+     (Entry.Mnemonic = 'GRP3') Or (Entry.Mnemonic = 'GRP4') Or
+     (Entry.Mnemonic = 'GRP5') Then Begin
+    If OpcOffset + 1 >= CodeSize Then Begin
+      Mnem := 'DB';
+      Operands := HexByte(Opcode) + 'h';
+      BytesUsed := TotalSize + 1;
+      Exit;
+    End;
+    ModRM := ReadCodeByte(OpcOffset + 1);
+    RegField := (ModRM Shr 3) And $07;
+    Case Entry.Mnemonic[4] Of
+      '1' : Mnem := Grp1Mnemonics[RegField];
+      '2' : Mnem := Grp2Mnemonics[RegField];
+      '3' : Mnem := Grp3Mnemonics[RegField];
+      '4' : Mnem := Grp4Mnemonics[RegField];
+      '5' : Mnem := Grp5Mnemonics[RegField];
+    Else
+      Mnem := '???';
+    End;
+    Mnem := PrefStr + Mnem;
+    { Decoder l'operande r/m }
+    If AddrSz = 4 Then
+      DecodeModRM32(OpcOffset + 1, OpSz, RegField, RMStr, MRMBytes)
+    Else
+      DecodeModRM16(OpcOffset + 1, OpSz, RegField, RMStr, MRMBytes);
+    Operands := RMStr;
+    BytesUsed := TotalSize + 1 + MRMBytes;
+    { Ajouter l'immediat pour certains groupes }
+    Case Opcode Of
+      $80 : Begin { GRP1 r/m8, imm8 }
+        Imm8 := ReadCodeByte(OpcOffset + 1 + MRMBytes);
+        Operands := Operands + ', ' + HexByte(Imm8) + 'h';
+        Inc(BytesUsed);
+      End;
+      $81 : Begin { GRP1 r/m, imm16/32 }
+        If OpSz = 4 Then Begin
+          Imm32 := ReadCodeDWord(OpcOffset + 1 + MRMBytes);
+          Operands := Operands + ', ' + HexDWord(Imm32) + 'h';
+          BytesUsed := BytesUsed + 4;
+        End Else Begin
+          Imm16 := ReadCodeWord(OpcOffset + 1 + MRMBytes);
+          Operands := Operands + ', ' + HexWord(Imm16) + 'h';
+          BytesUsed := BytesUsed + 2;
+        End;
+      End;
+      $82 : Begin { GRP1 r/m8, imm8 (alias) }
+        Imm8 := ReadCodeByte(OpcOffset + 1 + MRMBytes);
+        Operands := Operands + ', ' + HexByte(Imm8) + 'h';
+        Inc(BytesUsed);
+      End;
+      $83 : Begin { GRP1 r/m, imm8 sign-extended }
+        Imm8 := ReadCodeByte(OpcOffset + 1 + MRMBytes);
+        Operands := Operands + ', ' + HexByte(Imm8) + 'h';
+        Inc(BytesUsed);
+      End;
+      $C0 : Begin { GRP2 r/m8, imm8 }
+        Imm8 := ReadCodeByte(OpcOffset + 1 + MRMBytes);
+        Operands := Operands + ', ' + HexByte(Imm8) + 'h';
+        Inc(BytesUsed);
+      End;
+      $C1 : Begin { GRP2 r/m, imm8 }
+        Imm8 := ReadCodeByte(OpcOffset + 1 + MRMBytes);
+        Operands := Operands + ', ' + HexByte(Imm8) + 'h';
+        Inc(BytesUsed);
+      End;
+      $D0, $D1 : Begin { GRP2 r/m, 1 }
+        Operands := Operands + ', 1';
+      End;
+      $D2, $D3 : Begin { GRP2 r/m, CL }
+        Operands := Operands + ', CL';
+      End;
+      $F6 : Begin { GRP3 r/m8 }
+        If RegField = 0 Then Begin { TEST r/m8, imm8 }
+          Imm8 := ReadCodeByte(OpcOffset + 1 + MRMBytes);
+          Operands := Operands + ', ' + HexByte(Imm8) + 'h';
+          Inc(BytesUsed);
+        End;
+      End;
+      $F7 : Begin { GRP3 r/m }
+        If RegField = 0 Then Begin { TEST r/m, imm }
+          If OpSz = 4 Then Begin
+            Imm32 := ReadCodeDWord(OpcOffset + 1 + MRMBytes);
+            Operands := Operands + ', ' + HexDWord(Imm32) + 'h';
+            BytesUsed := BytesUsed + 4;
+          End Else Begin
+            Imm16 := ReadCodeWord(OpcOffset + 1 + MRMBytes);
+            Operands := Operands + ', ' + HexWord(Imm16) + 'h';
+            BytesUsed := BytesUsed + 2;
+          End;
+        End;
+      End;
+    End; { case }
+    Operands := InjectSegOvr(PFX.SegOverrideStr, Operands);
+    Exit;
+  End;
+
+  { Instruction normale - commencer par le mnemonique }
+  Mnem := PrefStr + Entry.Mnemonic;
+  BytesUsed := TotalSize + Entry.BaseSize;
+
+  { Instructions sans operande }
+  If Entry.OpCount = 0 Then Begin
+    Operands := '';
+    Exit;
+  End;
+
+  { Instructions avec ModR/M et deux operandes }
+  If Entry.NeedModRM Then Begin
+    If Entry.OpCount = 2 Then Begin
+      If AddrSz = 4 Then
+        DecodeModRM32Full(OpcOffset + 1, OpSz, (Opcode And $02) <> 0,
+                          RMStr, RegStr, MRMBytes)
+      Else
+        DecodeModRM16Full(OpcOffset + 1, OpSz, (Opcode And $02) <> 0,
+                          RMStr, RegStr, MRMBytes);
+      BytesUsed := TotalSize + 1 + MRMBytes;
+      { Selon direction bit : reg,r/m ou r/m,reg }
+      If (Opcode And $02) <> 0 Then
+        Operands := RMStr + ', ' + RegStr
+      Else
+        Operands := RMStr + ', ' + RegStr;
+      { Ajouter immediat si Op2 est un immediat }
+      If Entry.Op2Type = OT_IMM8 Then Begin
+        Imm8 := ReadCodeByte(OpcOffset + 1 + MRMBytes);
+        Operands := RMStr + ', ' + HexByte(Imm8) + 'h';
+        Inc(BytesUsed);
+      End Else If Entry.Op2Type = OT_IMM8X Then Begin
+        Imm8 := ReadCodeByte(OpcOffset + 1 + MRMBytes);
+        Operands := RMStr + ', ' + HexByte(Imm8) + 'h';
+        Inc(BytesUsed);
+      End Else If Entry.Op2Type = OT_IMM16 Then Begin
+        If OpSz = 4 Then Begin
+          Imm32 := ReadCodeDWord(OpcOffset + 1 + MRMBytes);
+          Operands := RMStr + ', ' + HexDWord(Imm32) + 'h';
+          BytesUsed := BytesUsed + 4;
+        End Else Begin
+          Imm16 := ReadCodeWord(OpcOffset + 1 + MRMBytes);
+          Operands := RMStr + ', ' + HexWord(Imm16) + 'h';
+          BytesUsed := BytesUsed + 2;
+        End;
+      End;
+    End Else Begin
+      { 1 operande avec ModR/M }
+      RegField := 0;
+      If AddrSz = 4 Then
+        DecodeModRM32(OpcOffset + 1, OpSz, RegField, RMStr, MRMBytes)
+      Else
+        DecodeModRM16(OpcOffset + 1, OpSz, RegField, RMStr, MRMBytes);
+      Operands := RMStr;
+      BytesUsed := TotalSize + 1 + MRMBytes;
+    End;
+    Operands := InjectSegOvr(PFX.SegOverrideStr, Operands);
+    Exit;
+  End;
+
+  { Instructions sans ModR/M - operandes implicites ou immediats }
+  Case Entry.OpCount Of
+    1 : Begin
+      Case Entry.Op1Type Of
+        OT_AL    : Operands := 'AL';
+        OT_AX    : If OpSz = 4 Then Operands := 'EAX' Else Operands := 'AX';
+        OT_CL    : Operands := 'CL';
+        OT_DX    : Operands := 'DX';
+        OT_ONE   : Operands := '1';
+        OT_CS    : Operands := 'CS';
+        OT_DS    : Operands := 'DS';
+        OT_ES    : Operands := 'ES';
+        OT_SS    : Operands := 'SS';
+        OT_FS    : Operands := 'FS';
+        OT_GS    : Operands := 'GS';
+        OT_REG8  : Begin
+          RegField := Opcode And $07;
+          Operands := RegNames8[RegField];
+        End;
+        OT_REG16 : Begin
+          RegField := Opcode And $07;
+          If OpSz = 4 Then
+            Operands := RegNames32[RegField]
+          Else
+            Operands := RegNames16[RegField];
+        End;
+        OT_SEGREG : Begin
+          RegField := (Opcode Shr 3) And $03;
+          Operands := SegRegNames[RegField];
+        End;
+        OT_IMM8  : Begin
+          Imm8 := ReadCodeByte(OpcOffset + 1);
+          Operands := HexByte(Imm8) + 'h';
+        End;
+        OT_IMM16 : Begin
+          If OpSz = 4 Then Begin
+            Imm32 := ReadCodeDWord(OpcOffset + 1);
+            Operands := FormatImmediateOperand(LongWord(Imm32), True);
+            BytesUsed := BytesUsed + 2; { 16->32 bits }
+          End Else Begin
+            Imm16 := ReadCodeWord(OpcOffset + 1);
+            Operands := FormatImmediateOperand(LongWord(Imm16), False);
+          End;
+        End;
+        OT_REL8  : Begin
+          Rel8 := ShortInt(ReadCodeByte(OpcOffset + 1));
+          TargetAddr := OpcOffset + 2 + LongInt(Rel8);
+          LblIdx := FindLabel(TargetAddr);
+          If LblIdx >= 0 Then
+            Operands := Labels[LblIdx].Name
+          Else If Mode32 Then
+            Operands := HexDWord(TargetAddr) + 'h'
+          Else
+            Operands := HexWord(Word(TargetAddr)) + 'h';
+        End;
+        OT_REL16 : Begin
+          SymName := '';
+          If OpSz = 4 Then Begin
+            Rel32 := ReadCodeDWord(OpcOffset + 1);
+            TargetAddr := OpcOffset + 5 + Rel32;
+            BytesUsed := BytesUsed + 2; { 16->32 bits }
+            { Bloc de code non relie (drCBlock brut) : le deplacement ci-  }
+            { dessus n est qu un PLACEHOLDER - le vrai destinataire (autre  }
+            { procedure locale ou routine importee) est indique par un        }
+            { correctif drFixUp exactement a l offset du champ rel32 - voir      }
+            { FindFixupAt (en-tete de section). On ne fait confiance a la          }
+            { cible CALCULEE (FindLabel) que si AUCUN correctif ne couvre cet         }
+            { octet (cas rare, mais conforme - un saut interne resolu des la           }
+            { compilation n a pas forcement besoin d un correctif).                       }
+            NDX := FindFixupAt(OpcOffset + 1);
+            If NDX >= 0 Then SymName := ResolveAddrDefName(NDX);
+          End Else Begin
+            Rel16 := SmallInt(ReadCodeWord(OpcOffset + 1));
+            TargetAddr := OpcOffset + 3 + LongInt(Rel16);
+          End;
+          If SymName <> '' Then
+            Operands := SymName
+          Else Begin
+            LblIdx := FindLabel(TargetAddr);
+            If LblIdx >= 0 Then
+              Operands := Labels[LblIdx].Name
+            Else If Mode32 Then
+              Operands := HexDWord(TargetAddr) + 'h'
+            Else
+              Operands := HexWord(Word(TargetAddr)) + 'h';
+          End;
+        End;
+        OT_FAR   : Begin
+          If OpSz = 4 Then Begin
+            Imm32 := ReadCodeDWord(OpcOffset + 1);
+            Imm16 := ReadCodeWord(OpcOffset + 5);
+            Operands := HexWord(Imm16) + ':' + HexDWord(Imm32) + 'h';
+            BytesUsed := BytesUsed + 2; { 32 bit offset }
+          End Else Begin
+            Imm16 := ReadCodeWord(OpcOffset + 1);
+            Operands := HexWord(ReadCodeWord(OpcOffset + 3)) + ':' + HexWord(Imm16) + 'h';
+          End;
+        End;
+        OT_MEM16 : Begin
+          If AddrSz = 4 Then Begin
+            Imm32 := ReadCodeDWord(OpcOffset + 1);
+            Operands := '[' + HexDWord(Imm32) + 'h]';
+            BytesUsed := BytesUsed + 2; { 16->32 adresse }
+          End Else Begin
+            Imm16 := ReadCodeWord(OpcOffset + 1);
+            Operands := '[' + HexWord(Imm16) + 'h]';
+          End;
+        End;
+      Else
+        Operands := '?';
+      End;
+    End;
+    2 : Begin
+      { Deux operandes sans ModR/M (operandes implicites) }
+      { Premiere operande }
+      Case Entry.Op1Type Of
+        OT_AL    : Operands := 'AL, ';
+        OT_AX    : If OpSz = 4 Then Operands := 'EAX, ' Else Operands := 'AX, ';
+        OT_CL    : Operands := 'CL, ';
+        OT_DX    : Operands := 'DX, ';
+        OT_CS    : Operands := 'CS, ';
+        OT_DS    : Operands := 'DS, ';
+        OT_ES    : Operands := 'ES, ';
+        OT_SS    : Operands := 'SS, ';
+        OT_FS    : Operands := 'FS, ';
+        OT_GS    : Operands := 'GS, ';
+        OT_REG8  : Begin
+          RegField := Opcode And $07;
+          Operands := RegNames8[RegField] + ', ';
+        End;
+        OT_REG16 : Begin
+          RegField := Opcode And $07;
+          If OpSz = 4 Then
+            Operands := RegNames32[RegField] + ', '
+          Else
+            Operands := RegNames16[RegField] + ', ';
+        End;
+        OT_REG32 : Begin
+          RegField := Opcode And $07;
+          Operands := RegNames32[RegField] + ', ';
+        End;
+        OT_SEGREG : Begin
+          RegField := (Opcode Shr 3) And $03;
+          Operands := SegRegNames[RegField] + ', ';
+        End;
+        OT_MEM16 : Begin
+          If AddrSz = 4 Then Begin
+            Imm32 := ReadCodeDWord(OpcOffset + 1);
+            Operands := '[' + HexDWord(Imm32) + 'h], ';
+            BytesUsed := BytesUsed + 2;
+          End Else Begin
+            Imm16 := ReadCodeWord(OpcOffset + 1);
+            Operands := '[' + HexWord(Imm16) + 'h], ';
+          End;
+        End;
+      Else
+        Operands := '?, ';
+      End;
+      { Deuxieme operande }
+      Case Entry.Op2Type Of
+        OT_AL    : Operands := Operands + 'AL';
+        OT_AX    : If OpSz = 4 Then Operands := Operands + 'EAX' Else Operands := Operands + 'AX';
+        OT_DX    : Operands := Operands + 'DX';
+        OT_CL    : Operands := Operands + 'CL';
+        OT_ONE   : Operands := Operands + '1';
+        OT_CS    : Operands := Operands + 'CS';
+        OT_DS    : Operands := Operands + 'DS';
+        OT_ES    : Operands := Operands + 'ES';
+        OT_SS    : Operands := Operands + 'SS';
+        OT_FS    : Operands := Operands + 'FS';
+        OT_GS    : Operands := Operands + 'GS';
+        OT_REG8  : Begin
+          RegField := Opcode And $07;
+          Operands := Operands + RegNames8[RegField];
+        End;
+        OT_REG16 : Begin
+          RegField := Opcode And $07;
+          If OpSz = 4 Then
+            Operands := Operands + RegNames32[RegField]
+          Else
+            Operands := Operands + RegNames16[RegField];
+        End;
+        OT_REG32 : Begin
+          RegField := Opcode And $07;
+          Operands := Operands + RegNames32[RegField];
+        End;
+        OT_SEGREG : Begin
+          RegField := (Opcode Shr 3) And $03;
+          Operands := Operands + SegRegNames[RegField];
+        End;
+        OT_IMM8  : Begin
+          Imm8 := ReadCodeByte(OpcOffset + Entry.BaseSize - 1);
+          Operands := Operands + HexByte(Imm8) + 'h';
+        End;
+        OT_IMM16 : Begin
+          If OpSz = 4 Then Begin
+            Imm32 := ReadCodeDWord(OpcOffset + Entry.BaseSize - 4);
+            Operands := Operands +
+                        FormatImmediateOperand(LongWord(Imm32), True);
+            BytesUsed := BytesUsed + 2;
+          End Else Begin
+            Imm16 := ReadCodeWord(OpcOffset + Entry.BaseSize - 2);
+            Operands := Operands +
+                        FormatImmediateOperand(LongWord(Imm16), False);
+          End;
+        End;
+        OT_MEM16 : Begin
+          If AddrSz = 4 Then Begin
+            Imm32 := ReadCodeDWord(OpcOffset + 1);
+            Operands := Operands + '[' + HexDWord(Imm32) + 'h]';
+            BytesUsed := BytesUsed + 2;
+          End Else Begin
+            Imm16 := ReadCodeWord(OpcOffset + 1);
+            Operands := Operands + '[' + HexWord(Imm16) + 'h]';
+          End;
+        End;
+      Else
+        Operands := Operands + '?';
+      End;
+    End;
+  End;
+  Operands := InjectSegOvr(PFX.SegOverrideStr, Operands);
+End;
+{ --- determine, selon la version Delphi, quelles valeurs d octet B1   }
+{ signifient "debut/fin de plage de code d une declaration" dans la     }
+{ table des correctifs (drFixUp) - CONFIRME (FixUp.pas, TUnit.SetupFixups,  }
+{ table des constantes fxStart2010/fxStart100/fxStart70/fxStart30/fxStart20). }
+{ Porte reduite au natif Win32 (jamais Kylix/MSIL, comme tout ce programme) : }
+{ verK1=100 est toujours hors de portee (Ver<100 partout ailleurs dans ce      }
+{ fichier), donc la reservation supplementaire RefAddrDef(hPack) du vrai code    }
+{ (seulement pour Ver<verD2009=12) n a jamais besoin d etre reproduite ici -       }
+{ tous les fichiers reels testes sont Ver=27. --- }
+Procedure SetupFixupMarkers;
+Begin
+  If Ver = 2 Then Begin FxStartMark := 3; FxEndMark := 4; End
+  Else If Ver < 7 Then Begin FxStartMark := 5; FxEndMark := 6; End
+  Else If (Ver >= 10) And (Ver <= 12) Then Begin FxStartMark := 12; FxEndMark := 13; End
+  Else If (Ver >= 14) And (Ver < 100) Then Begin FxStartMark := 0; FxEndMark := 1; End
+  Else Begin FxStartMark := 6; FxEndMark := 7; End;
+End;
+
+{ EmitAllProcAsmBlocks - emet, pour chaque procedure/fonction NOMMEE     }
+{ rencontree (ProcList, dans l ordre du fichier), sa signature suivie      }
+{ d un bloc "Assembler; asm ... end;" desassemble a partir de la plage       }
+{ de code retrouvee via ProcessFixup (ProcCodeOfs/ProcCodeSz, indexes par      }
+{ le meme index d adresse que la procedure elle-meme - voir NextAddrDef).       }
+{ Si aucune plage n a ete retrouvee (correlation NDX incertaine pour cette       }
+{ routine precise), un commentaire honnete remplace le bloc assembleur au        }
+{ lieu d afficher des octets qui n appartiendraient pas a la bonne routine. }
+Procedure EmitAllProcAsmBlocks;
+Var
+  I: LongInt;
+  Idx: LongInt;
+  Addr, EndAddr: LongInt;
+  Mnem, Ops: TString;
+  InstrSize: Integer;
+  LineStr: TString;
+Begin
+  If ProcListCnt = 0 Then Exit;
+
+  WriteLn(OutF);
+  WriteLn(OutF, '{ ============================================================ }');
+  WriteLn(OutF, '{ CORPS DES PROCEDURES/FONCTIONS (desassemblage 80386)          }');
+  WriteLn(OutF, '{ ============================================================ }');
+
+  For I := 1 To ProcListCnt Do
+  Begin
+    Idx := ProcList[I].AddrIdx;
+    WriteLn(OutF);
+    If ProcList[I].IsFunc Then
+      WriteLn(OutF, 'function ', ProcList[I].Name, ';')
+    Else
+      WriteLn(OutF, 'procedure ', ProcList[I].Name, ';');
+
+    If (Idx >= 1) And (Idx <= MAX_ADDRDEF) And (ProcCodeSz[Idx] > 0) Then
+    Begin
+      WriteLn(OutF, 'Assembler;');
+      WriteLn(OutF, 'asm');
+      Addr := ProcCodeOfs[Idx];
+      EndAddr := Addr + ProcCodeSz[Idx];
+      While Addr < EndAddr Do
+      Begin
+        DisassembleInstruction(Addr, True, Mnem, Ops, InstrSize);
+        If InstrSize < 1 Then InstrSize := 1;
+        If Ops <> '' Then
+          LineStr := '  ' + Mnem + '  ' + Ops
+        Else
+          LineStr := '  ' + Mnem;
+        WriteLn(OutF, LineStr);
+        Addr := Addr + InstrSize;
+      End;
+      WriteLn(OutF, 'end;');
+    End
+    Else
+    Begin
+      WriteLn(OutF, 'begin');
+      WriteLn(OutF, '  { corps non attribue : aucune plage de code drFixUp ',
+        'ne correspond a l index d adresse de cette routine (voir NextAddrDef ',
+        '- portee documentee en tete de section) }');
+      WriteLn(OutF, 'end;');
+    End;
+  End;
+End;
+
+
 Procedure Fail(Const Msg: TString);
 Begin
   WriteLn(ErrOutput, 'DISDCU: ARRET : ', Msg, ' (position fichier : $',
@@ -930,6 +3549,7 @@ Var
 Begin
   ReadNameFHeader(Name, F, HasInf, Inf);
   If Stopped Then Exit;
+  NextAddrDef;   { drType (TTypeDecl) : consomme un index d adresse, jamais cible d un CALL/JMP - non nomme }
   HDef := ReadUIndex;
   WriteLn(OutF, '  ', Name, ' = ', TypeRefText(HDef), ';');
 End;
@@ -958,6 +3578,7 @@ Var
 Begin
   ReadNameFHeader(Name, F, HasInf, Inf);
   If Stopped Then Exit;
+  NextAddrDef;   { drTypeP (TTypePDecl) : consomme un index d adresse - non nomme }
   HDT := ReadUIndex;
   Ofs := ReadUIndex;
   WriteLn(OutF, '  { ', Name, ' : ', TypeRefText(HDT), '  (pointeur de VMT) }');
@@ -1002,6 +3623,7 @@ Var
   HPack, Inf, L1, X: LongInt;
   RTTISz, LVal: LongInt;
   Cnt, ImportFirst, UIdx: Integer;
+  ImpIdx: LongInt;
 Begin
   Name := ReadIdentStr;
 
@@ -1021,6 +3643,12 @@ Begin
   If Ver >= 12 Then
     X := ReadUIndex;
 
+  { CONFIRME (DCU32.pas, TUnit.ReadUses) : la reference d unite elle-meme   }
+  { (TUnitImpDef, "Ch") consomme deja un index d adresse via AddAddrDef,      }
+  { AVANT la liste des imports nommes ci-dessous - a compter ici pour ne         }
+  { pas desynchroniser la numerotation des index suivants (voir NextAddrDef).      }
+  NextAddrDef;
+
   { Liste imbriquee des imports NOMMES (drImpType/drImpTypeDef pour un   }
   { TYPE, drImpVal pour une routine/adresse) - structure et etiquettes     }
   { REELLES confirmees contre le vrai code source DCU32.pas (TUnit.        }
@@ -1036,9 +3664,15 @@ Begin
     Case CurTag Of
       TAG_IMPTYPE, TAG_IMPTYPEDEF:
         Begin
+          ImpIdx := NextAddrDef;
           ImpName := ReadIdentStr;
           If CurTag = TAG_IMPTYPEDEF Then RTTISz := ReadUIndex;
           LVal := LongInt(RUL);
+          If (ImpIdx >= 1) And (ImpIdx <= MAX_ADDRDEF) Then
+          Begin
+            AddrDefName[ImpIdx] := Name + '.' + ImpName;
+            AddrDefIsImport[ImpIdx] := True;
+          End;
           If ImportPoolCount < MAX_IMPORT_POOL Then
           Begin
             Inc(ImportPoolCount);
@@ -1048,8 +3682,14 @@ Begin
         End;
       TAG_IMPVAL:
         Begin
+          ImpIdx := NextAddrDef;
           ImpName := ReadIdentStr;
           LVal := LongInt(RUL);
+          If (ImpIdx >= 1) And (ImpIdx <= MAX_ADDRDEF) Then
+          Begin
+            AddrDefName[ImpIdx] := Name + '.' + ImpName;
+            AddrDefIsImport[ImpIdx] := True;
+          End;
           If ImportPoolCount < MAX_IMPORT_POOL Then
           Begin
             Inc(ImportPoolCount);
@@ -1114,6 +3754,7 @@ Var
 Begin
   ReadNameFHeader(Name, F, HasInf, Inf);
   If Stopped Then Exit;
+  NextAddrDef;   { drVar/drVarC/drAbsVar/drSpecVar/... : consomme un index d adresse }
 
   HDT := ReadUIndex;
   Ofs := ReadUIndex;
@@ -1137,6 +3778,7 @@ Var
   Name: TString;
   HDT: LongInt;
 Begin
+  NextAddrDef;   { arClassVar (TClassVarDecl=TLocalDecl) : consomme un index d adresse }
   Name := ReadIdentStr;
   ReadUIndex;    { LocFlags }
   If Ver >= 8 Then ReadUIndex;    { LocFlagsX }
@@ -1194,6 +3836,7 @@ Var
   LocFlags: LongInt;
   IsMethod: Boolean;
 Begin
+  NextAddrDef;   { TLocalDecl (arVal/arVar/arResult/arFld) : consomme un index d adresse }
   Name := ReadIdentStr;
   LocFlags := ReadUIndex;
   If Ver >= 8 Then ReadUIndex;    { LocFlagsX brut, valeur non exploitee }
@@ -1279,6 +3922,7 @@ Var
   InIntrf: Boolean;
   SkipIdx: Integer;
 Begin
+  NextAddrDef;   { TMethodDecl (arMethod/arConstr/arDestr) : consomme un index d adresse }
   Name := ReadIdentStr;
   ReadUIndex;    { LocFlags }
   If Ver >= 8 Then ReadUIndex;    { LocFlagsX brut }
@@ -1318,6 +3962,7 @@ End;
 { Ver>=verD8] + hDeft (TNDX signe, valeur par defaut "default").                     }
 Procedure SkipProperty;
 Begin
+  NextAddrDef;   { TPropDecl (arProperty) : consomme un index d adresse }
   ReadIdentStr;      { Name }
   ReadSIndex;        { LocFlags }
   If Ver >= 8 Then ReadUIndex;    { LocFlagsX }
@@ -1872,21 +4517,80 @@ End;
 Procedure ProcessCBlock;
 Var
   Sz: LongInt;
+  I: LongInt;
+  B: Byte;
 Begin
   Sz := ReadUIndex;
-  SkipRawBlock(Sz);
+  If Sz > MAX_CODE Then
+  Begin
+    Fail('drCBlock : taille (' + IntToStr(Sz) + ' octets) depasse ' +
+      'MAX_CODE=' + IntToStr(MAX_CODE) + ' - augmenter la constante');
+    Exit;
+  End;
+  For I := 0 To Sz - 1 Do
+  Begin
+    B := RB;
+    CodeBuf[I] := B;
+  End;
+  CodeSize := Sz;
 End;
 
+{ Traitement de drFixUp : CONFIRME (DCU32.pas, TUnit.LoadFixups) - deux    }
+{ passes. La PREMIERE decode chaque entree (dOfs delta-encode + octet B1 +   }
+{ NDX) en offset CUMULE dans le blob de code (CodeBuf). La SECONDE parcourt     }
+{ ces entrees dans l ordre et, a chaque marqueur "debut/fin de plage"             }
+{ (B1=FxStartMark ou FxEndMark, voir SetupFixupMarkers), ferme la plage de           }
+{ code de l index d adresse PRECEDENT (hPrevDecl) et en ouvre une nouvelle             }
+{ pour le NDX du marqueur courant - c est cette plage qui, associee au nom              }
+{ de procedure connu via NextAddrDef (voir ProcessProc), permet d attribuer               }
+{ le desassemblage de chaque routine a la bonne portion du blob (voir                       }
+{ EmitAllProcAsmBlocks). Les entrees qui ne sont PAS des marqueurs (F in                       }
+{ fxValid du vrai code, ex. fxAddr/fxJmpAddr0) restent dans FixupOfsArr/NDXArr                    }
+{ pour la resolution de symbole CALL/JMP par offset exact (voir FindFixupAt,                        }
+{ utilise par DisassembleInstruction) - PAS par adresse cible calculee, le                             }
+{ blob de code d une DCU n etant pas encore relie (voir l en-tete de section).                            }
 Procedure ProcessFixup;
 Var
   Cnt, I: LongInt;
+  CurOfs, DOfs: LongInt;
+  B1: Byte;
+  NDX: LongInt;
+  HPrevDecl: LongInt;
+  PrevDeclOfs: LongInt;
 Begin
+  SetupFixupMarkers;
   Cnt := ReadUIndex;
+  CurOfs := 0;
+  FixupCount := 0;
   For I := 1 To Cnt Do
   Begin
-    ReadUIndex;   { dOfs }
-    RB;           { octet }
-    ReadUIndex;   { NDX }
+    DOfs := ReadUIndex;
+    CurOfs := CurOfs + DOfs;
+    B1 := RB;
+    NDX := ReadUIndex;
+    If FixupCount < MAX_FIXUPS Then
+    Begin
+      Inc(FixupCount);
+      FixupOfsArr[FixupCount] := CurOfs;
+      FixupKindArr[FixupCount] := B1;
+      FixupNDXArr[FixupCount] := NDX;
+    End;
+  End;
+
+  HPrevDecl := 0;
+  PrevDeclOfs := 0;
+  For I := 1 To FixupCount Do
+  Begin
+    If (FixupKindArr[I] = FxStartMark) Or (FixupKindArr[I] = FxEndMark) Then
+    Begin
+      If (HPrevDecl >= 1) And (HPrevDecl <= MAX_ADDRDEF) Then
+      Begin
+        ProcCodeOfs[HPrevDecl] := PrevDeclOfs;
+        ProcCodeSz[HPrevDecl] := FixupOfsArr[I] - PrevDeclOfs;
+      End;
+      HPrevDecl := FixupNDXArr[I];
+      PrevDeclOfs := FixupOfsArr[I];
+    End;
   End;
 End;
 
@@ -1916,6 +4620,7 @@ Begin
     Exit;
   End;
 
+  NextAddrDef;   { TORecDecl (drORec) herite directement de TNameDecl : consomme un index d adresse }
   Name := ReadIdentStr;
   RUL;   { DW }
   RB;    { B0 }
@@ -1950,7 +4655,17 @@ Var
   B0, Sz, X: LongInt;
   NoName: Boolean;
   NextTag: Byte;
+  MyAddrIdx: LongInt;
+  HDTRes: LongInt;
 Begin
+  { CONFIRME (DCURecs.pas, TNameDecl.Create0/TProcDeclBase/TSysProcDecl) :   }
+  { toute variante de declaration de procedure (y compris le cas special       }
+  { Ver<verD8 ci-dessous) consomme exactement UN index d adresse - voir          }
+  { NextAddrDef (en-tete de section). C est cet index qui sera retrouve             }
+  { plus tard dans drFixUp (ProcessFixup) pour attribuer le bon intervalle             }
+  { de code du blob (drCBlock) a CETTE routine precise.                                  }
+  MyAddrIdx := NextAddrDef;
+
   If (Tag = TAG_SYSPROC) And (Ver < 8) Then
   Begin
     { TSysProcDecl (drSysProc, Ver<verD8) : structure TOTALEMENT       }
@@ -1974,11 +4689,12 @@ Begin
   If (Ver >= 15) And (Ver < 100) Then X := RB;
 
   NoName := IsUnnamedProcName(Name);
+  HDTRes := 0;
 
   If Not NoName Then
   Begin
     If Ver > 2 Then ReadUIndex;   { VProc }
-    ReadUIndex;                    { hDTRes }
+    HDTRes := ReadUIndex;          { hDTRes : 0 = procedure, sinon fonction }
     If (Ver > 7) And (Ver < 100) Then ReadUIndex;   { hClass }
 
     NextTag := RB;
@@ -2014,6 +4730,33 @@ Begin
 
     SkipArgList(NextTag, LK_ARGS);
     If Stopped Then Exit;
+  End;
+
+  If (Not NoName) And (MyAddrIdx >= 1) And (MyAddrIdx <= MAX_ADDRDEF) Then
+  Begin
+    AddrDefName[MyAddrIdx] := Name;
+    AddrDefIsProc[MyAddrIdx] := True;
+    If ProcListCnt < MAX_PROCS Then
+    Begin
+      Inc(ProcListCnt);
+      ProcList[ProcListCnt].AddrIdx := MyAddrIdx;
+      ProcList[ProcListCnt].Name := Name;
+      { CONFIRME (DCU32.pas, TUnit.TypeIsVoid) : hDTRes=0 EST un cas de     }
+      { "pas de resultat", mais PAS le seul - hDTRes designe le plus          }
+      { souvent un index de type valide qui REFERENCE la definition             }
+      { speciale "void" (DefVoid, TAG_VOID, RegisterType('void')) plutot            }
+      { qu un simple 0 - un test hDTRes<>0 seul classait donc TOUTE procedure         }
+      { (y compris "procedure DoNothing") comme "function" (bogue trouve             }
+      { empiriquement, MiniTest.dcu).                                                   }
+      { Limite connue et assumee : quand hDTRes reference un type IMPORTE   }
+      { (hors de la table locale TypeText, ex. System.Integer) plutot         }
+      { qu une definition locale, ce test ne peut pas confirmer s il s agit         }
+      { du pseudo-type "void" partage ou d un vrai type de retour importe -            }
+      { le mot-cle (function/procedure) peut alors etre incorrect. Ceci reste                 }
+      { cosmetique : le contenu du bloc Assembler lui-meme n en depend pas.                        }
+      ProcList[ProcListCnt].IsFunc := (HDTRes <> 0) And
+        (TypeRefText(HDTRes) <> 'void');
+    End;
   End;
 
   { La signature (et l eventuelle liste d arguments) est terminee -   }
@@ -2067,6 +4810,7 @@ Var
 Begin
   ReadNameFHeader(Name, F, HasInf, Inf);
   If Stopped Then Exit;
+  NextAddrDef;   { drStrConstRec (TStrConstDecl) : consomme un index d adresse }
 
   Ofs := ReadUIndex;
   If HasInf And (Ofs <> 0) Then
@@ -2138,6 +4882,7 @@ Var
 Begin
   ReadNameFHeader(Name, F, HasInf, Inf);
   If Stopped Then Exit;
+  NextAddrDef;   { drConst (TConstDecl) : consomme un index d adresse }
 
   HDT := ReadUIndex;
   SkipConstValInfo('constante "' + Name + '"', Kind);
@@ -2846,16 +5591,32 @@ Begin
 
   FlushUsesClause;   { au cas ou le fichier ne contenait que des "uses" }
 
+  { Le desassemblage des corps de routine (EmitAllProcAsmBlocks) ne depend    }
+  { QUE de drCBlock/drFixUp (avant-derniere/derniere etiquette du fichier) -    }
+  { il est donc emis des que du code a ete capture (CodeSize>0), MEME si          }
+  { l unite s arrete plus loin sur une etiquette non geree (ex. les tables de          }
+  { debogage drCodeLines/drLinNum, hors de portee - voir l en-tete de ce                  }
+  { programme) : une decompilation partielle reste utile, comme partout                     }
+  { ailleurs dans ce programme.                                                                }
   If Not Stopped Then
   Begin
     WriteLn(OutF);
     WriteLn(OutF, 'implementation');
+    If CodeSize > 0 Then EmitAllProcAsmBlocks;
     WriteLn(OutF);
     WriteLn(OutF, 'end.');
   End
   Else
+  Begin
+    If CodeSize > 0 Then
+    Begin
+      WriteLn(OutF);
+      WriteLn(OutF, 'implementation');
+      EmitAllProcAsmBlocks;
+    End;
     WriteLn(OutF, #10, '{ *** ARRET ICI - voir le message ci-dessus/dans ',
       'la sortie d erreur *** }');
+  End;
 
   Close(OutF);
 
