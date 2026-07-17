@@ -21,7 +21,8 @@ TABLE DES MATIERES
 10. Evaluation realiste de la faisabilite pour DELPHI.PAS
 11. Portee retenue pour l'implementation DELPHI.PAS
 11bis. Verification contre de vrais .dcu (RAD Studio 21.0 reel)
-12. References
+12. Implementation reelle dans DELPHI.PAS (-CC, WriteDCUFile)
+13. References
 
 
 1. INTRODUCTION ET AVERTISSEMENT D'EXACTITUDE
@@ -941,7 +942,177 @@ TABLE DES MATIERES
   percer un secret supplementaire.
 
 
-12. REFERENCES
+12. IMPLEMENTATION REELLE DANS DELPHI.PAS (-CC, WriteDCUFile)
+============================================================
+
+  MISE A JOUR (2026-07-16) : WriteDCUFile a ete ECRIT dans DELPHI.PAS
+  (declenche par le nouveau parametre -CC, uniquement pour une Unit -
+  toujours EN PLUS du .OBJ deja produit, jamais a sa place). Cette
+  section documente les choix CONCRETS retenus, plusieurs d'entre eux
+  CONFIRMES (pas seulement approximes) en recoupant directement le
+  lecteur deja valide DISDCU.PAS (ProcessVarLike/ProcessConstDecl/
+  ProcessProc/ProcessUsesUnit) - plus fiable que les descriptions
+  initiales non confirmees des sections 8.1/8.3/8.4 ci-dessus, ecrites
+  avant que ce recoupement ne soit fait.
+
+  12.0 SEMANTIQUE DE -CC (CORRIGEE, 2026-07-16) : la premiere version
+  de -CC avait le sens INVERSE du vrai dcc32, signale par l'utilisateur.
+  Comportement CORRECT (et desormais implemente) : compiler une Unit
+  produit TOUJOURS un .DCU (par defaut, sans aucun parametre) ; -CC
+  ajoute EN PLUS un .OBJ (COFF, via WriteCOFFObj, deja utilise pour
+  Program/Library). Sans -CC : SEULEMENT le .DCU, jamais de .OBJ pour
+  une Unit. Le parametre -obj (Program/Library : .OBJ au lieu du .EXE
+  par defaut) est inchange et n'a plus d'effet sur une Unit (qui ne
+  produit jamais de .EXE de toute facon).
+
+  12.1 CIBLE : Delphi 7 (Ver=7, Magic=0x0F0000DF), pas la version
+  moderne (Ver=27) que DISDCU.PAS sait LIRE. Choix delibere : Ver=7
+  est la forme la plus SIMPLE documentee (aucun champ conditionnel
+  Ver>=8/10/12/15 a se tromper d'omettre ou d'inclure a tort).
+
+  12.2 EN-TETE : structurellement conforme a la section 6 (Magic,
+  FileSize patche apres coup via Seek, CompileTime/Inf/b00/b02 en
+  PLACEHOLDER 0 - semantique exacte toujours non confirmee).
+
+  12.3 UN SEUL drUnit ('System', sans sous-liste d'imports nommes) -
+  structure CONFIRMEE pour Ver=7 exactement (Name + Inf:ULONG BRUT
+  [Ver<10] + L1:ULONG BRUT [present car Ver=7 precisement, condition
+  "Ver=7 Or (Ver>=8 And TagRq=drDLL)"] + sous-liste vide terminee
+  drStop1). Les autres unites reellement "uses" par le source NE SONT
+  PAS reproduites comme des drUnit distincts (DELPHI.PAS ne charge/
+  analyse pas reellement les unites referencees - TODO 23) : limitation
+  v1 assumee.
+
+  12.4 SYMBOLES EXPORTES : DELPHI.PAS n'a pas de marqueur explicite
+  "declare dans l'interface" par symbole (TSymRec) - la plage
+  SymTab[DCUIfaceSymStart..DCUIfaceSymEnd-1], capturee autour de
+  l'UNIQUE appel a ParseGlobalDeclSection pour la section interface
+  (ParseUnitFile), suffit (aucune modification de TSymRec necessaire).
+  Pour chaque symbole SK_VAR/SK_CONST/SK_PROC/SK_FUNC de cette plage :
+  un drVar/drConst/drProc suivi d'un drExport. Structures CONFIRMEES
+  pour Ver=7 (recoupement DISDCU.PAS) :
+    drVar   : NF(B=0, pas de champ Inf puisque B and $40=0) + hDT + Ofs
+    drConst : NF(B=0) + hDT + Kind(=0, scalaire) + ValSz(=0) + Val(signe)
+    drProc  : NF(B=0) + B0 + Sz + VProc(present car Ver=7>2) + hDTRes
+              + UN octet drStop1 (liste d'arguments vide - PAS de
+              VProc pour Ver<=2, PAS de hClass car Ver=7 n'est PAS >7,
+              PAS d'octet X car Ver=7 n'est PAS >=15)
+  hDT/Ofs/B0/Sz/VProc sont des PLACEHOLDER 0 (semantique exacte non
+  confirmee, DOC section 9/10a). SK_CLASS/SK_INTERFACE sont geres
+  depuis le 2026-07-16 (section 12.9 ci-dessous) ; SK_TYPE simple
+  (alias/tableau/etc., ex. "TRange = array[1..10] of Integer") reste
+  ignore en v1 (aucune table de types RTTI n'est emise pour ces cas).
+
+  12.5 hDTRes TOUJOURS 0 : meme pour un SK_FUNC (Delphi "function"),
+  hDTRes est ecrit 0 - donc "procedure" structurellement (confirme,
+  TUnit.TypeIsVoid : hDef<=0 => void). Ecrire un index de type non nul
+  pointerait vers une table de types que ce fichier n'emet pas (v1) -
+  limitation cosmetique documentee, symetrique au bogue equivalent deja
+  trouve et corrige cote LECTEUR (DISDCU.PAS, ProcessProc/IsFunc).
+
+  12.6 AUCUN CORPS DE ROUTINE (pas de drCBlock/drFixUp) : chaque
+  drProc a une liste d'arguments vide et s'arrete la - le contenu
+  binaire exact de drCBlock reste hors de portee (section 10b).
+  Consequence directe cote LECTEUR (verifiee, DISDCU.PAS) : sans
+  drCBlock, CodeSize reste 0 pour tout le fichier, et EmitAllProcAsmBlocks
+  (feature de desassemblage ajoutee au lecteur le 2026-07-16) n'est
+  alors JAMAIS appelee - les signatures de routines ecrites par
+  WriteDCUFile n'apparaissent donc PAS du tout dans une decompilation
+  DISDCU d'un tel fichier (pas un bogue : simple consequence de
+  l'absence volontaire de corps, la aussi documentee).
+
+  12.7 VERIFICATION REELLE EFFECTUEE : chaque .dcu produit par
+  WriteDCUFile a ete relu avec succes par DISDCU.PAS lui-meme (les
+  DEUX outils de ce projet, ecriture et lecture, developpes et
+  verifies INDEPENDAMMENT l'un de l'autre) - la position finale de
+  lecture correspond EXACTEMENT a la taille du fichier et a l'etiquette
+  de fin attendue (drStop_a) sur plusieurs exemplaires reels (une Unit
+  a classe/methodes/property sans aucun symbole top-level exportable
+  en v1, et une Unit avec Const/Var/Function/Procedure top-level -
+  ces deux derniers verifies visibles et correctement decodes cote
+  lecteur). Ceci CONFIRME que la structure externe (section 3 a 8) est
+  fidelement reproduite, au moins pour ce sous-ensemble Ver=7 simplifie -
+  mais ne prouve PAS qu'un vrai IDE Delphi 7 chargerait ce fichier (voir
+  conclusion section 11, inchangee : aucune installation Delphi 7
+  disponible pour ce test final).
+
+  12.8 TRAVAIL RESTANT (si une fidelite plus poussee est souhaitee un
+  jour) : emettre les drUnit pour les VRAIES unites "uses" du source
+  (necessite que DELPHI.PAS charge/analyse reellement les unites
+  referencees, TODO 23, actuellement hors de portee) ; emettre un
+  drCBlock/drFixUp reel a partir du code deja assemble par ce meme
+  compilateur (AsmBuf, deja utilise par WriteCOFFObj/WritePEExe) -
+  probablement l'etape la plus valorisante pour rendre les .dcu
+  produits utilisables (le corps de routine y apparaitrait alors dans
+  une decompilation DISDCU, section 12.6 ci-dessus) ; emettre les
+  proprietes (arProperty) des classes (voir 12.9, explicitement hors
+  de portee de cette extension) ; reproduire la hierarchie d'heritage
+  reelle (hParent, actuellement toujours 0, voir 12.9).
+
+  12.9 CLASSES/INTERFACES (ajout du 2026-07-16, suite a une demande
+  explicite de l'utilisateur - "TAnimal, IShape et leurs methodes") :
+  DCUWriteClassDef/DCUWriteInterfaceDef emettent respectivement un
+  drClassDef/drInterfaceDef anonyme (reclamant un index de type LOCAL
+  via un compteur DCUTypeIdxSeq, remis a 0 par fichier - equivalent
+  d'ecriture de TypeCount/RegisterType cote lecteur), suivi d'un
+  drType nomme le referencant (Name, HDef=cet index) + drExport -
+  pour chaque symbole SK_CLASS/SK_INTERFACE de la plage d'interface.
+  Structures CONFIRMEES pour Ver=7 (recoupement DISDCU.PAS DefClass/
+  DefInterface/SkipClassInterfaces) :
+    drClassDef     : TypeDefHeader + hParent + InstBaseRTTISz +
+                     InstBaseSz(REEL, TypeTab.InstanceSize - pas un
+                     placeholder, disponible gratuitement) +
+                     InstBaseV + VMCnt + NdxFE + PropCnt + B04(UN
+                     OCTET BRUT car Ver=7 n'est PAS >=verD8) +
+                     SkipClassInterfaces(ICnt=0, car Ver=7>2 - la
+                     liste des interfaces IMPLEMENTEES n'est PAS
+                     reproduite) + liste des membres (drStop1)
+    drInterfaceDef : TypeDefHeader + hParent + VMCnt(signe) +
+                     GUID(16 OCTETS, PLACEHOLDER zero - le texte reel
+                     EST disponible via TypeTab.GUID:TString mais sa
+                     conversion en 16 octets n'a pas ete implementee,
+                     travail restant mineur) + B(dispinterface=Faux)
+                     + liste des membres (drStop1) - PAS de bloc
+                     BY/Cnt (table d'ancetres), CONTRAIREMENT a une
+                     premiere hypothese erronee : ce bloc n'existe que
+                     si Ver>=8, et Ver=7 n'est PAS >=8 (bogue trouve
+                     et corrige par round-trip via DISDCU.PAS, voir
+                     ci-dessous).
+  MEMBRES : les METHODES (constructeur/destructeur/methode ordinaire,
+  arConstr/arMethod - destructeurs non distingues faute de marqueur
+  dedie cote DELPHI.PAS, sans consequence structurelle car les deux
+  tags partagent la MEME forme binaire) restent dans SymTab (SK_METHOD,
+  ScopeId=MemberScopeId de la classe/interface). Les CHAMPS (arFld),
+  en revanche, ne sont PAS dans SymTab du tout (aucun SK_FIELD n'y est
+  jamais cree) - ils vivent dans le pool partage FieldPool, accessible
+  via TypeTab[SymTab[I].TypeIdx].FieldFirst/FieldCount (bogue trouve
+  par round-trip : la premiere version cherchait des SK_FIELD
+  inexistants dans SymTab, omettant silencieusement TOUS les champs -
+  pas un plantage, juste une omission qui n'aurait ete visible qu'en
+  relisant le fichier). Les PROPRIETES (arProperty) restent hors de
+  portee (scope explicitement demande par l'utilisateur : "classes et
+  leurs methodes", pas les proprietes) - PropCnt reste donc 0 (champ
+  purement informationnel cote lecteur, jamais utilise pour borner
+  SkipArgList - verifie sans risque structurel meme s'il ne
+  correspondait pas au vrai compte). hParent reste TOUJOURS 0
+  (hierarchie d'heritage non reproduite - simplification deliberee,
+  bien que TTypeRec.BaseTypeIdx/SymTab.ParentClassIdx existent et
+  pourraient permettre de la reproduire pour un futur travail).
+  VERIFICATION : round-trip complet reussi via DISDCU.PAS sur 3
+  fichiers reels (lextest2.pas : 1 classe methodes+champ+property
+  omise a raison, 1 interface ; dcutest2.pas : 2 classes + 1 interface,
+  constructeurs/destructeur/fonction/procedure avec parametre) -
+  chaque fois "position finale = taille fichier" ET etiquette de fin
+  drStop_a, confirmant une structure externe fidele pour ce sous-
+  ensemble Ver=7. DEUX bogues trouves et corriges PENDANT cette
+  verification (tous deux via une premiere tentative qui echouait a la
+  relecture, jamais via une simple relecture du code) : le bloc BY/Cnt
+  erronement ecrit pour drInterfaceDef (ci-dessus), et les champs de
+  classe omis (ci-dessus) - tous deux desormais confirmes corrects par
+  le round-trip reussi.
+
+
+13. REFERENCES
 ============================================================
 
   [1] DCU32INT (Alexei Hmelnov) - specification FlexT complete

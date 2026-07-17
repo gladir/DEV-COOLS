@@ -367,6 +367,12 @@ Type
   Warnings     : Boolean;   { -w : afficher les avertissements      }
   AsmOutput    : Boolean;   { -asm : produire aussi un .ASM lisible }
   ObjOnly      : Boolean;   { -obj : produire seulement un .OBJ     }
+  UnitAlsoObj  : Boolean;   { -CC : pour une Unit, produire AUSSI un   }
+                             { .OBJ en plus du .DCU (deja TOUJOURS       }
+                             { produit par defaut pour une Unit, comme    }
+                             { le vrai dcc32 - CORRECTION 2026-07-16,       }
+                             { l inverse du comportement initial) - voir       }
+                             { WriteDCUFile, DOC/DCU_FORMAT.TXT section 11/13. }
  End;
 
 Var
@@ -490,6 +496,7 @@ Begin
  Opts.Warnings     := False;
  Opts.AsmOutput    := False;
  Opts.ObjOnly      := False;
+ Opts.UnitAlsoObj  := False;
 End;
 
 { ------------------------------------------------------------ }
@@ -507,8 +514,11 @@ Begin
  WriteLn('Syntaxe : DELPHI [options] <source.pas|source.dpr> [options]');
  WriteLn;
  WriteLn('Sortie :');
- WriteLn('  Par defaut un .EXE (PE Windows 32 bits)');
- WriteLn('  -obj           Produire seulement un fichier .OBJ (COFF)');
+ WriteLn('  Program/Library : par defaut un .EXE (PE Windows 32 bits)');
+ WriteLn('  Unit            : toujours un .DCU (voir DOC/DCU_FORMAT.TXT)');
+ WriteLn('  -obj           Program/Library : produire un fichier .OBJ (COFF)');
+ WriteLn('                 au lieu d''un .EXE');
+ WriteLn('  -CC            Unit : produire aussi un .OBJ en plus du .DCU');
  WriteLn('  -asm           Produire egalement un fichier .ASM lisible');
  WriteLn;
  WriteLn('General :');
@@ -557,6 +567,8 @@ Begin
    Opts.AsmOutput := True
   Else If Arg = '-obj' Then
    Opts.ObjOnly := True
+  Else If Arg = '-CC' Then
+   Opts.UnitAlsoObj := True
   Else If (Length(Arg) > 0) And (Arg[1] = '-') Then
    FatalError('Option inconnue: ' + Arg)
   Else
@@ -2897,6 +2909,18 @@ Var
  { Table des symboles }
  SymTab   : Array[0..MAX_SYM - 1] Of TSymRec;
  SymCount : Integer;
+
+ { Plage [DCUIfaceSymStart..DCUIfaceSymEnd-1] de SymTab couvrant           }
+ { exactement les declarations de la section INTERFACE d une Unit          }
+ { (Var/Const/Type/Procedure/Function - voir ParseUnitFile) - utilisee      }
+ { par WriteDCUFile (-CC) pour savoir quels symboles exporter, sans          }
+ { avoir a distinguer interface/implementation dans TSymRec lui-meme          }
+ { (ParseGlobalDeclSection n est appelee QU UNE FOIS pour l interface,          }
+ { avant celle de l implementation - la plage SymCount avant/apres cet           }
+ { unique appel suffit).                                                          }
+ DCUIfaceSymStart : Integer;
+ DCUIfaceSymEnd   : Integer;
+ DCULastUnitName  : TString;   { nom de l unite en cours, pour WriteDCUFile }
 
  { Pile des portees actives : unite (globale) -> classe -> methode ->
    bloc. ScopeStack[0..ScopeStackTop] contient les ScopeId visibles en
@@ -16996,12 +17020,16 @@ Begin
  EmitHeader;
  EmitComment('Unite ' + UnitName);
 
+ DCULastUnitName := UnitName;
+
  If Not PPMatch('interface') Then
   WarnMsg('interface attendu dans l unite ' + UnitName);
  If (PPPeekKind = TK_KEYWORD) And (StrUpperCase(PPPeekVal) = 'USES') Then
   ParseUsesClause;
  InInterfaceSection := True;
+ DCUIfaceSymStart := SymCount;
  ParseGlobalDeclSection;
+ DCUIfaceSymEnd := SymCount;
  InInterfaceSection := False;
 
  EmitDataSeg;
@@ -17067,6 +17095,7 @@ Procedure AsmAssembleFile(Const AsmPath: TString); Forward;
 Procedure AsmResolveRel32Fixups; Forward;
 Procedure WritePEExe(Const OutPath: TString); Forward;
 Procedure WriteCOFFObj(Const OutPath: TString); Forward;
+Procedure WriteDCUFile(Const OutPath: TString); Forward;
 
 { ------------------------------------------------------------ }
 { CompileSourceFile : detecte Program vs Unit vs Library (premier }
@@ -17091,9 +17120,13 @@ Procedure WriteCOFFObj(Const OutPath: TString); Forward;
 
 Procedure AdjustOutFileForUnitIfNeeded;
 Begin
+ { Une Unite produit TOUJOURS un .DCU (comme le vrai dcc32 - CORRECTION   }
+ { 2026-07-16 : l ancien comportement derivait .obj par defaut, l inverse    }
+ { du vrai compilateur Delphi, signale par l utilisateur) - -obj n a plus       }
+ { de sens pour une Unite (voir -CC, qui ajoute un .OBJ EN PLUS).                }
  If (PPPeekKind = TK_KEYWORD) And (StrUpperCase(PPPeekVal) = 'UNIT') And
-    (Not Opts.OutFileGiven) And (Not Opts.ObjOnly) Then
-  Opts.OutFile := ReplaceExt(Opts.SrcFile, '.obj');
+    (Not Opts.OutFileGiven) Then
+  Opts.OutFile := ReplaceExt(Opts.SrcFile, '.dcu');
 End;
 
 Procedure CompileSourceFile;
@@ -17156,25 +17189,33 @@ Begin
 
  { TODO 24/25 : assembler le texte .asm qui vient d etre produit et      }
  { ecrire un vrai binaire. Program/Library : .OBJ (COFF) si -obj, sinon    }
- { .EXE (PE) par defaut. Unit : TOUJOURS .OBJ (COFF), quel que soit -obj    }
- { (aucun point d entree possible pour un .exe) - chaque routine declaree    }
- { dans son INTERFACE devient un symbole COFF PUBLIC reel (WriteCOFFObj      }
- { marque deja toute etiquette PUBLIC par simplification, TODO 24),           }
- { adressable par un editeur de liens externe.                                  }
+ { .EXE (PE) par defaut. Unit : TOUJOURS un .DCU (comme le vrai dcc32 -       }
+ { CORRECTION 2026-07-16, l ancien comportement produisait TOUJOURS un            }
+ { .OBJ par defaut pour une Unite, jamais de .DCU - signale par l utilisateur       }
+ { comme l inverse du vrai compilateur) ; -CC ajoute EN PLUS un .OBJ (COFF)          }
+ { - chaque routine declaree dans l INTERFACE devient alors un symbole COFF            }
+ { PUBLIC reel (WriteCOFFObj marque deja toute etiquette PUBLIC par                     }
+ { simplification, TODO 24), adressable par un editeur de liens externe.                  }
  DidEmit := IsProgramOrLibrary Or IsUnit;
  If DidEmit And (ErrorCount = 0) Then
  Begin
   AsmAssembleFile(AsmFilePath);
-  { La resolution des fixups REL32 differe entre les deux modes (TODO 24) :}
-  { -obj (WriteCOFFObj) fait SA PROPRE resolution "locale seulement"        }
-  { (AsmResolveLocalRel32Fixups, pas de vignette IAT - un CALL vers un        }
-  { import reste une relocation COFF pour l editeur de liens) ; le mode       }
-  { EXE (WritePEExe) a besoin de la resolution COMPLETE (vignettes IAT)        }
-  { AVANT de calculer la disposition PE, donc appelee ici.                       }
-  If IsUnit Or Opts.ObjOnly Then
+  If IsUnit Then
+  Begin
+   WriteDCUFile(Opts.OutFile);
+   If Opts.UnitAlsoObj Then
+    WriteCOFFObj(ReplaceExt(Opts.OutFile, '.obj'));
+  End
+  Else If Opts.ObjOnly Then
    WriteCOFFObj(Opts.OutFile)
   Else
   Begin
+   { La resolution des fixups REL32 differe entre les deux modes (TODO 24) :}
+   { -obj (WriteCOFFObj) fait SA PROPRE resolution "locale seulement"        }
+   { (AsmResolveLocalRel32Fixups, pas de vignette IAT - un CALL vers un        }
+   { import reste une relocation COFF pour l editeur de liens) ; le mode       }
+   { EXE (WritePEExe) a besoin de la resolution COMPLETE (vignettes IAT)        }
+   { AVANT de calculer la disposition PE, donc appelee ici.                       }
    AsmResolveRel32Fixups;
    WritePEExe(Opts.OutFile);
   End;
@@ -19436,6 +19477,378 @@ Begin
  { les noms concatenes, chacun termine par un octet nul.               }
  PEWriteDWord(Length(StrTab) + 4);
  PEWriteAnsiStr(StrTab);
+
+ Close(PEOutF);
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteDCUFile (-CC) : ecrire un fichier .DCU (Delphi Compiled     }
+{ Unit) pour l unite en cours de compilation - voir                  }
+{ DOC/DCU_FORMAT.TXT section 11/13 pour la portee EXACTE et            }
+{ documentee de cette implementation. Resume :                          }
+{                                                                          }
+{   - Cible Delphi 7 (Ver=7, magic 0x0F0000DF) - la version la PLUS         }
+{     SIMPLE documentee (pas de champs Ver>=8/10/12), donc la plus            }
+{     sure a ecrire sans se tromper sur un champ conditionnel absent.          }
+{   - En-tete TDCUHeader Delphi 7 structurellement correct (Magic,               }
+{     FileSize patche a la fin, CompileTime/Inf/b00/b02 en valeurs                }
+{     PLACEHOLDER documentees - leur semantique exacte n a jamais ete              }
+{     confirmee, voir DOC section 6).                                                }
+{   - UN SEUL drUnit ('uses System', implicite, sans sous-liste                        }
+{     d imports nommes) - les autres unites reellement "used" par                       }
+{     le source ne sont PAS reproduites comme des drUnit distincts en                    }
+{     v1 (limitation assumee : ce compilateur ne charge/analyse pas                        }
+{     reellement les unites referencees, TODO 23).                                            }
+{   - Pour CHAQUE symbole de la section INTERFACE (plage                                          }
+{     DCUIfaceSymStart..DCUIfaceSymEnd-1, capturee par ParseUnitFile) de                             }
+{     categorie SK_VAR/SK_CONST/SK_PROC/SK_FUNC : un enregistrement                                    }
+{     drVar/drConst/drProc STRUCTURELLEMENT correct (structure/ordre des                                 }
+{     champs pour Ver=7 CONFIRMES par recoupement direct avec le lecteur                                   }
+{     deja valide DISDCU.PAS - ProcessVarLike/ProcessConstDecl/ProcessProc,                                  }
+{     plus fiable que la description initiale, non confirmee, de la doc                                        }
+{     elle-meme pour ces enregistrements), suivi d un drExport - avec des                                        }
+{     valeurs PLACEHOLDER (0) pour tout champ dont la semantique exacte                                            }
+{     n a pas ete confirmee (hDT, Ofs, B0/Sz, VProc, hDTRes...) - voir DOC                                            }
+{     section 9/10(a). Les declarations de TYPE (SK_TYPE/SK_CLASS/                                                     }
+{     SK_INTERFACE) ne sont PAS emises en v1 (aucune table de types RTTI                                                 }
+{     produite - DOC section 10(a) : un travail de traduction separe,                                                      }
+{     hors de portee de cette premiere version).                                                                             }
+{   - hDTRes est TOUJOURS ecrit 0 (donc "procedure", jamais "function"                                                          }
+{     structurellement) MEME pour un SK_FUNC : ecrire un index de type                                                            }
+{     non-nul pointerait vers une table de types que ce fichier n emet                                                              }
+{     pas (v1) - 0 (TypeIsVoid, confirme DCU32.pas) est le seul choix                                                                 }
+{     qui ne cree pas de reference pendante. Limitation cosmetique                                                                      }
+{     assumee et documentee (comme le probleme symetrique deja trouve                                                                     }
+{     et documente du cote lecteur, DISDCU.PAS).                                                                                            }
+{   - Corps de routine : AUCUN (liste d arguments vide, pas de drCBlock/                                                                       }
+{     drFixUp) - le contenu binaire exact de drCBlock reste, comme documente,                                                                    }
+{     hors de portee (DOC section 10(b)).                                                                                                          }
+{   - RESULTAT ATTENDU (identique a la conclusion deja ecrite dans la doc,                                                                           }
+{     section 11) : un fichier a la structure EXTERNE valide d un .DCU                                                                                }
+{     Delphi 7 (parseable par un outil qui suit la meme grammaire, ex.                                                                                  }
+{     DISDCU.PAS/DCU32INT), mais N EST PAS verifie chargeable par un vrai                                                                                 }
+{     IDE Delphi (aucune installation Delphi 7 disponible pour tester -                                                                                    }
+{     RAD Studio 21.0/Delphi 10.4 disponible ne charge QUE son propre                                                                                        }
+{     format de version courante, incompatible par construction).                                                                                             }
+{ ------------------------------------------------------------ }
+
+Const
+ DCU_MAGIC_D7  = LongWord($0F0000DF);   { Delphi 7, valeur concrete du sous-ensemble valide (DOC section 3) }
+ DCU_TAG_UNIT      = $64;   { drUnit      ('d') }
+ DCU_TAG_TYPE      = $2A;   { drType      ('*') }
+ DCU_TAG_VAR       = $20;   { drVar       (' ') }
+ DCU_TAG_CONST     = $25;   { drConst     ('%') }
+ DCU_TAG_PROC      = $28;   { drProc      ('(') }
+ DCU_TAG_EXPORT    = $69;   { drExport    ('i') }
+ DCU_TAG_STOP1     = $63;   { fin de sous-liste imbriquee ('c') }
+ DCU_TAG_STOP_A    = $61;   { derniere etiquette du fichier ('a') }
+ DCU_TAG_CLASSDEF     = $46;   { drClassDef     ('F') }
+ DCU_TAG_INTERFACEDEF = $54;   { drInterfaceDef ('T') }
+ DCU_ARG_FLD    = $2C;   { arFld    (',') }
+ DCU_ARG_METHOD = $2D;   { arMethod ('-') }
+ DCU_ARG_CONSTR = $2E;   { arConstr ('.') }
+
+{ TNDX (entier a longueur variable, DOC section 4) : par simplicite et    }
+{ surtout par SURETE (eviter tout bogue de decalage de bits fin dans les    }
+{ formes intermediaires a 2/3/4 octets, jamais necessaires ici vu la          }
+{ petite taille de nos fichiers), on n utilise QUE deux formes, toutes           }
+{ deux confirmees directement contre le lecteur deja valide DISDCU.PAS            }
+{ (ReadUIndex/ReadSIndex) : la forme a 1 octet (valeurs 0..127) et la               }
+{ forme complete a 5 octets (n importe quelle valeur 32 bits, signee ou               }
+{ non - le bit0..3 du premier octet a 1 selectionnant cette forme, DISDCU                }
+{ la relit alors comme LongWord(B1..B4) EXACT, sans decalage). }
+Procedure DCUWriteIndex(V: LongInt);
+Begin
+ If (V >= 0) And (V <= 127) Then
+  PEWriteByte(Byte(V Shl 1))
+ Else
+ Begin
+  PEWriteByte($0F);
+  PEWriteDWord(V);
+ End;
+End;
+
+{ TNameStr (DOC section 7/8) : chaine Pascal classique, 1 octet de     }
+{ longueur (max 255, jamais la forme etendue - Ver=7 cible) + N octets   }
+{ ASCII bruts, sans terminateur nul. }
+Procedure DCUWriteNameStr(Const S: TString);
+Var I: Integer;
+Begin
+ PEWriteByte(Length(S));
+ For I := 1 To Length(S) Do PEWriteByte(Ord(S[I]));
+End;
+
+Var
+ { compteur d index de type LOCAL au fichier .dcu en cours d ecriture -   }
+ { remis a 0 au debut de chaque appel a WriteDCUFile (une definition de     }
+ { type anonyme, ex. drClassDef, reclame le prochain index disponible,        }
+ { exactement comme TypeCount/RegisterType cote lecteur DISDCU.PAS). }
+ DCUTypeIdxSeq : Integer;
+
+{ En-tete commun TTypeDef (DOC section 9, confirme cote lecteur par     }
+{ ReadTypeDefHeader) : RTTISz(TNDX) + Sz(TNDX SIGNE) + hAddrDef(TNDX) +    }
+{ [X si Ver>=9 - PAS pour Ver=7]. Valeurs PLACEHOLDER 0 (semantique          }
+{ exacte non confirmee, DOC section 9/10a). }
+Procedure DCUWriteTypeDefHeader;
+Begin
+ DCUWriteIndex(0);   { RTTISz }
+ DCUWriteIndex(0);   { Sz }
+ DCUWriteIndex(0);   { hAddrDef }
+End;
+
+{ Emet un membre CHAMP (arFld) ou METHODE (arMethod/arConstr) d une      }
+{ classe/objet (LK_OTHER, structure CONFIRMEE - DISDCU.PAS SkipLocalDecl/  }
+{ SkipMethodDecl, chemin Ver=7 : ni LocFlagsX/B3 [Ver<8/<12], hImport       }
+{ TOUJOURS present car Ver=7>=7). Les destructeurs ne sont PAS distingues     }
+{ des methodes normales (DELPHI.PAS n a pas de marqueur IsDestructor dedie -    }
+{ sans consequence structurelle, arMethod/arConstr/arDestr partagent la          }
+{ MEME forme binaire cote lecteur - DOC section 12). }
+{ CORRECTION (round-trip DISDCU.PAS) : les champs (FName, etc.) ne sont   }
+{ PAS des SK_FIELD dans SymTab (aucun symbole de ce type n y est jamais    }
+{ cree) - DELPHI.PAS les stocke dans le pool partage FieldPool/TypeTab       }
+{ (TFieldRec, voir FieldFirst/FieldCount de TTypeRec), accessible via          }
+{ SymTab[SymIdx].TypeIdx. Les methodes, elles, restent bien dans SymTab           }
+{ (SK_METHOD, meme ScopeId=MemberScopeId) - d ou les DEUX sources ci-dessous. }
+Procedure DCUWriteClassMethod(SymIdx: Integer);
+Begin
+ If SymTab[SymIdx].IsConstructor Then
+  PEWriteByte(DCU_ARG_CONSTR)
+ Else
+  PEWriteByte(DCU_ARG_METHOD);
+ DCUWriteNameStr(SymTab[SymIdx].Name);
+ DCUWriteIndex(0);   { LocFlags }
+ DCUWriteIndex(0);   { hDT (signe) }
+ DCUWriteIndex(0);   { NDX }
+ DCUWriteIndex(0);   { hImport }
+End;
+
+Procedure DCUWriteClassMembers(SymIdx: Integer);
+Var
+ J, TIdx, FI : Integer;
+Begin
+ TIdx := SymTab[SymIdx].TypeIdx;
+ If (TIdx >= 0) And (TIdx < TypeCount) Then
+  For FI := TypeTab[TIdx].FieldFirst To
+            TypeTab[TIdx].FieldFirst + TypeTab[TIdx].FieldCount - 1 Do
+  Begin
+   { arFld (TLocalDecl, LK_OTHER) : Name + LocFlags + hDT + NDX(signe) }
+   PEWriteByte(DCU_ARG_FLD);
+   DCUWriteNameStr(FieldPool[FI].Name);
+   DCUWriteIndex(0);   { LocFlags }
+   DCUWriteIndex(0);   { hDT : placeholder }
+   DCUWriteIndex(0);   { NDX : placeholder }
+  End;
+
+ For J := DCUIfaceSymStart To DCUIfaceSymEnd - 1 Do
+  If (SymTab[J].ScopeId = SymTab[SymIdx].MemberScopeId) And
+     (SymTab[J].Kind = SK_METHOD) Then
+   DCUWriteClassMethod(J);
+ PEWriteByte(DCU_TAG_STOP1);
+End;
+
+{ Emet un membre METHODE d une interface (arMethod, LK_INTF, Ver=7) :   }
+{ Name + LocFlags + hDT(signe) + NDXB + NDX - PAS de hImport (InIntrf=  }
+{ Vrai pour LK_INTF, le bloc "If Not InIntrf" est saute - confirme         }
+{ SkipMethodDecl). }
+Procedure DCUWriteInterfaceMember(SymIdx: Integer);
+Begin
+ If SymTab[SymIdx].Kind <> SK_METHOD Then Exit;
+ PEWriteByte(DCU_ARG_METHOD);
+ DCUWriteNameStr(SymTab[SymIdx].Name);
+ DCUWriteIndex(0);   { LocFlags }
+ DCUWriteIndex(0);   { hDT (signe) }
+ DCUWriteIndex(0);   { NDXB }
+ DCUWriteIndex(0);   { NDX }
+End;
+
+Procedure DCUWriteInterfaceMembers(MemberScopeId: Integer);
+Var J: Integer;
+Begin
+ For J := DCUIfaceSymStart To DCUIfaceSymEnd - 1 Do
+  If (SymTab[J].ScopeId = MemberScopeId) And (SymTab[J].Kind = SK_METHOD) Then
+   DCUWriteInterfaceMember(J);
+ PEWriteByte(DCU_TAG_STOP1);
+End;
+
+{ drClassDef (DOC section 12, TClassDef, chemin Ver=7 confirme contre    }
+{ DISDCU.PAS DefClass) : pas de BX/BX1/BX2 (Ver<10/<12) + hParent +         }
+{ InstBaseRTTISz + InstBaseSz(signe) + InstBaseV + VMCnt + NdxFE + PropCnt   }
+{ + B04 (UN OCTET BRUT car Ver=7 n est PAS >=verD8) + [SkipClassInterfaces      }
+{ car Ver=7>2, ICnt=0 ici] + liste des membres. hParent est TOUJOURS 0           }
+{ (hierarchie d heritage non reproduite - simplification v1, DOC 12) ;           }
+{ PropCnt est TOUJOURS 0 (proprietes non emises en v1, DOC 12 - portee              }
+{ explicitement demandee par l utilisateur : classes+methodes, pas                    }
+{ proprietes). Retourne l index de type LOCAL reclame (pour le drType               }
+{ qui le referencera). }
+Function DCUWriteClassDef(SymIdx: Integer): Integer;
+Var InstSz, TIdx: Integer;
+Begin
+ TIdx := SymTab[SymIdx].TypeIdx;
+ If (TIdx >= 0) And (TIdx < TypeCount) Then
+  InstSz := TypeTab[TIdx].InstanceSize
+ Else
+  InstSz := 0;
+
+ PEWriteByte(DCU_TAG_CLASSDEF);
+ DCUWriteTypeDefHeader;
+ DCUWriteIndex(0);   { hParent : placeholder, voir en-tete }
+ DCUWriteIndex(0);   { InstBaseRTTISz }
+ DCUWriteIndex(InstSz);   { InstBaseSz : taille reelle (TypeTab.InstanceSize) }
+ DCUWriteIndex(0);   { InstBaseV }
+ DCUWriteIndex(0);   { VMCnt }
+ DCUWriteIndex(0);   { NdxFE }
+ DCUWriteIndex(0);   { PropCnt : voir en-tete, proprietes hors de portee v1 }
+ PEWriteByte(0);      { B04 : OCTET BRUT, Ver=7 }
+ DCUWriteIndex(0);   { SkipClassInterfaces : ICnt=0 }
+ DCUWriteClassMembers(SymIdx);
+
+ Inc(DCUTypeIdxSeq);
+ DCUWriteClassDef := DCUTypeIdxSeq;
+End;
+
+{ drInterfaceDef (DOC section 12, TInterfaceDef, chemin Ver=7 confirme   }
+{ contre DISDCU.PAS DefInterface) : pas de BX (Ver<12) + hParent +           }
+{ VMCnt(signe) + GUID(16 octets, PLACEHOLDER zero - non capture par le          }
+{ parseur DELPHI.PAS, DOC 12) + B(1 octet, bit $4=dispinterface, jamais            }
+{ mis en v1) + [bloc BY/Cnt (table d ancetres) SEULEMENT si Ver>=8 -               }
+{ CORRECTION : Ver=7 N EST PAS >=8 (7>=8 est Faux), donc ce bloc est                }
+{ ENTIEREMENT ABSENT pour Ver=7 - bogue trouve empiriquement (round-trip               }
+{ via DISDCU.PAS, tag $00 inattendu) : le premier jet ecrivait a tort un                  }
+{ Cnt=0 ici, desynchronisant tout ce qui suit] + liste des membres (LK_INTF). }
+Function DCUWriteInterfaceDef(SymIdx: Integer): Integer;
+Var K: Integer;
+Begin
+ PEWriteByte(DCU_TAG_INTERFACEDEF);
+ DCUWriteTypeDefHeader;
+ DCUWriteIndex(0);   { hParent : placeholder }
+ DCUWriteIndex(0);   { VMCnt (signe) }
+ For K := 1 To 16 Do PEWriteByte(0);   { GUID : placeholder, voir en-tete }
+ PEWriteByte(0);      { B : dispinterface=Faux }
+ { PAS de bloc BY/Cnt : Ver=7 n est pas >=8, voir commentaire ci-dessus }
+ DCUWriteInterfaceMembers(SymTab[SymIdx].MemberScopeId);
+
+ Inc(DCUTypeIdxSeq);
+ DCUWriteInterfaceDef := DCUTypeIdxSeq;
+End;
+
+Procedure WriteDCUFile(Const OutPath: TString);
+Var
+ I, ExportIdx, HSym, MyTypeIdx : Integer;
+ EndPos : LongInt;
+Begin
+ {$I-} Assign(PEOutF, OutPath); Rewrite(PEOutF, 1); {$I+}
+ If IOResult <> 0 Then
+ Begin
+  WarnMsg('impossible de creer le fichier .dcu: ' + OutPath);
+  Exit;
+ End;
+
+ DCUTypeIdxSeq := 0;
+
+ { --- en-tete Delphi 7 (DOC section 6) --- }
+ PEWriteDWord(DCU_MAGIC_D7);   { Magic }
+ PEWriteDWord(0);              { FileSize : patche a la fin (voir plus bas) }
+ PEWriteDWord(0);              { CompileTime : placeholder DOS (DOC section 5/6), non exact }
+ PEWriteDWord(0);              { Inf : placeholder, role exact non confirme }
+ PEWriteByte(0);               { b00 : placeholder }
+ PEWriteByte(0);               { b02 : placeholder (specifique Ver=7) }
+
+ { --- drUnit ('uses System' implicite, sans sous-liste d imports    }
+ { nommes - limitation v1, voir commentaire d en-tete ci-dessus) :     }
+ { Name + Inf(ULONG BRUT, Ver<10) + L1(ULONG BRUT, present car Ver=7    }
+ { exactement) - structure CONFIRMEE contre DISDCU.PAS ProcessUsesUnit.  }
+ PEWriteByte(DCU_TAG_UNIT);
+ DCUWriteNameStr('System');
+ PEWriteDWord(0);   { Inf }
+ PEWriteDWord(0);   { L1 }
+ PEWriteByte(DCU_TAG_STOP1);   { sous-liste d imports vide }
+
+ { --- une declaration + un export par symbole d interface --- }
+ ExportIdx := 0;
+ For I := DCUIfaceSymStart To DCUIfaceSymEnd - 1 Do
+ Begin
+  HSym := I - DCUIfaceSymStart + 1;
+  Case SymTab[I].Kind Of
+   SK_VAR:
+    Begin
+     { drVar (DOC 8.2, confirme DISDCU ProcessVarLike) : NF(B=0, pas de }
+     { champ Inf optionnel puisque B and $40=0) + hDT + Ofs.              }
+     PEWriteByte(DCU_TAG_VAR);
+     DCUWriteNameStr(SymTab[I].Name);
+     DCUWriteIndex(0);   { B (TNameFDecl) }
+     DCUWriteIndex(0);   { hDT : placeholder, aucune table de types emise (DOC 10a) }
+     DCUWriteIndex(0);   { Ofs : placeholder }
+    End;
+   SK_CONST:
+    Begin
+     { drConst (DOC 8.3, confirme DISDCU ProcessConstDecl/SkipConstValInfo) : }
+     { NF(B=0) + hDT + Kind(TConstValInfo, 0=scalaire) + ValSz(=0) +             }
+     { Val(TNDX signe, puisque ValSz=0).                                          }
+     PEWriteByte(DCU_TAG_CONST);
+     DCUWriteNameStr(SymTab[I].Name);
+     DCUWriteIndex(0);   { B }
+     DCUWriteIndex(0);   { hDT }
+     DCUWriteIndex(0);   { Kind = 0 (scalaire) }
+     DCUWriteIndex(0);   { ValSz = 0 }
+     DCUWriteIndex(SymTab[I].ImmVal);   { Val }
+    End;
+   SK_PROC, SK_FUNC:
+    Begin
+     { drProc (DOC 8.4, confirme DISDCU ProcessProc, chemin Ver=7 =    }
+     { Ver>2 mais PAS Ver>=15/Ver>7) : NF(B=0) + B0 + Sz + [VProc, car    }
+     { Ver=7>2] + hDTRes(TOUJOURS 0, voir commentaire d en-tete) + un       }
+     { octet de "premiere etiquette" de la liste d arguments (vide, donc       }
+     { directement drStop1) - PAS de corps (pas de drCBlock/drFixUp), voir       }
+     { commentaire d en-tete.                                                      }
+     PEWriteByte(DCU_TAG_PROC);
+     DCUWriteNameStr(SymTab[I].Name);
+     DCUWriteIndex(0);   { B }
+     DCUWriteIndex(0);   { B0 }
+     DCUWriteIndex(0);   { Sz }
+     DCUWriteIndex(0);   { VProc }
+     DCUWriteIndex(0);   { hDTRes = 0 -> "procedure" structurellement, voir en-tete }
+     PEWriteByte(DCU_TAG_STOP1);   { liste d arguments vide }
+    End;
+   SK_CLASS:
+    Begin
+     { drType(Name, HDef=<drClassDef anonyme deja emis>) - la definition   }
+     { EST ecrite EN PREMIER (RegisterType-equivalent) pour qu une              }
+     { decompilation DISDCU montre "class ... end" au lieu d une reference          }
+     { non resolue (l ordre importe pour l affichage cote lecteur, pas               }
+     { pour la validite structurelle - voir DOC 12).                                    }
+     MyTypeIdx := DCUWriteClassDef(I);
+     PEWriteByte(DCU_TAG_TYPE);
+     DCUWriteNameStr(SymTab[I].Name);
+     DCUWriteIndex(0);   { B (TNameFDecl) }
+     DCUWriteIndex(MyTypeIdx);   { HDef }
+    End;
+   SK_INTERFACE:
+    Begin
+     MyTypeIdx := DCUWriteInterfaceDef(I);
+     PEWriteByte(DCU_TAG_TYPE);
+     DCUWriteNameStr(SymTab[I].Name);
+     DCUWriteIndex(0);
+     DCUWriteIndex(MyTypeIdx);
+    End;
+  Else
+   Continue;   { SK_TYPE/SK_FIELD/SK_METHOD/etc : non exportables directement, }
+                { deja geres comme membres imbriques ci-dessus le cas echeant   }
+  End;
+
+  { drExport (DOC 8.5, confirme DISDCU : hSym+Index, 2 TNDX simples) }
+  PEWriteByte(DCU_TAG_EXPORT);
+  DCUWriteIndex(HSym);
+  DCUWriteIndex(ExportIdx);
+  Inc(ExportIdx);
+ End;
+
+ PEWriteByte(DCU_TAG_STOP_A);
+
+ { --- patcher FileSize (DOC section 6) --- }
+ EndPos := FilePos(PEOutF);
+ Seek(PEOutF, 4);
+ PEWriteDWord(EndPos);
+ Seek(PEOutF, EndPos);
 
  Close(PEOutF);
 End;
