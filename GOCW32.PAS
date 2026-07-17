@@ -2174,11 +2174,14 @@ Type
   );
 
   TFieldRec = Record
-    Name    : TString;   { nom du champ/parametre ; '' pour un resultat     }
-                          { non nomme (cas usuel des retours multiples)      }
-    TypeIdx : Integer;
-    Offset  : Integer;    { TYK_STRUCT seulement - octets depuis le debut     }
-                           { de la struct ; non exploite pour params/retours    }
+    Name       : TString;   { nom du champ/parametre ; '' pour un resultat  }
+                             { non nomme (cas usuel des retours multiples)    }
+    TypeIdx    : Integer;
+    Offset     : Integer;   { TYK_STRUCT seulement - octets depuis le debut   }
+                             { de la struct ; non exploite pour params/retours  }
+    IsEmbedded : Boolean;    { TYK_STRUCT seulement (TODO 09) : champ           }
+                             { anonyme/embarque ("Animal" ou "*Animal" seul,       }
+                             { sans nom separe - Name = nom du type embarque)         }
   End;
 
   TTypeRec = Record
@@ -3046,14 +3049,46 @@ End;
 { ------------------------------------------------------------ }
 { ParseTypeExpr : resout une expression de type EN UN TypeIdx.    }
 { PORTEE (documentee) : type predeclare, pointeur (*T, recursif),     }
-{ ou nom de type deja declare (SK_TYPE) - la syntaxe des types            }
-{ COMPOSES (tableau/slice/map/canal/fonction/struct/interface) est           }
-{ EXPLICITEMENT hors de portee ici, chacune relevant de son propre             }
-{ TODO dedie (09/11/12/15) : arret propre plutot que deviner.                     }
+{ type fonction (func(...) ..., TODO 08), ou nom de type deja               }
+{ declare (SK_TYPE) - la syntaxe des types COMPOSES restants                    }
+{ (tableau/slice/map/canal/struct/interface) est EXPLICITEMENT hors               }
+{ de portee ici, chacune relevant de son propre TODO dedie                          }
+{ (09/11/12/15) : arret propre plutot que deviner.                                     }
 { ------------------------------------------------------------ }
 
+{ ParseFuncSignature (implementee au TODO 08, apres ParseBlock) construit  }
+{ un TypeIdx TYK_FUNC a partir de "(Params) [Resultats]" - forward-        }
+{ declaree ici car ParseTypeExpr (TODO 05) en a besoin pour "func(...)          }
+{ ..." utilise comme TYPE (ex. "var f func(int) int"), bien avant que              }
+{ le TODO 08 ne soit ecrit plus bas dans le fichier.                                    }
+Function ParseFuncSignature: Integer; Forward;
+
+{ ParseStructType (implementee au TODO 09, avec le reste des structs)   }
+{ construit un TypeIdx TYK_STRUCT a partir du mot-cle "struct" suivi          }
+{ d une liste de champs entre accolades - forward-declaree ici pour la               }
+{ meme raison que ParseFuncSignature juste au-dessus.                                    }
+Function ParseStructType: Integer; Forward;
+
+{ ParseInterfaceType (implementee au TODO 10, avec le reste des          }
+{ interfaces) construit un TypeIdx TYK_INTERFACE a partir du mot-cle           }
+{ "interface" suivi d une liste de signatures de methodes entre                    }
+{ accolades - la liste peut etre VIDE (interface totalement vide,                     }
+{ equivalente a "any") - forward-declaree ici pour la meme raison que                    }
+{ ParseFuncSignature/ParseStructType juste au-dessus.                                       }
+Function ParseInterfaceType: Integer; Forward;
+
+{ ParseMapType (implementee au TODO 12, avec le reste des maps)         }
+{ construit un TypeIdx TYK_MAP a partir du mot-cle "map" DEJA CONSOMME       }
+{ (le crochet ouvrant du type cle est le prochain jeton attendu) - forward-       }
+{ declaree ici pour la meme raison que ParseFuncSignature/ParseStructType/         }
+{ ParseInterfaceType juste au-dessus, et reutilisee telle quelle par             }
+{ ParseOperand (TODO 06) pour les litteraux composes de map.                        }
+Function ParseMapType: Integer; Forward;
+
 Function ParseTypeExpr: Integer;
-Var Nam: TString; Base, SI: Integer;
+Var
+  Nam: TString; Base, SI, Elem, NewIdx : Integer;
+  LenVal : TConstVal;
 Begin
   ParseTypeExpr := -1;
 
@@ -3065,11 +3100,62 @@ Begin
     Exit;
   End;
 
+  If PPIsOp('[') Then
+  Begin
+    PPAdvance;   { '[' }
+    If PPMatch(']') Then
+    Begin
+      { slice []T : en-tete Ptr+Len+Cap (TODO 04/11), 3 x 4 octets  }
+      Elem := ParseTypeExpr;
+      ParseTypeExpr := TypeAdd(TYK_SLICE, '', 12, 4, False, Elem, -1);
+      Exit;
+    End;
+    { tableau fixe [N]T : la longueur DOIT etre une expression         }
+    { CONSTANTE (reutilise ConstEvalExpr, TODO 05 - hors de tout contexte     }
+    { iota ici, une simple expression de longueur ordinaire).                    }
+    LenVal := ConstEvalExpr;
+    If Not PPMatch(']') Then
+      FatalError('crochet fermant attendu apres la longueur du tableau');
+    Elem := ParseTypeExpr;
+    NewIdx := TypeAdd(TYK_ARRAY, '', LenVal.IntVal * TypeTab[Elem].Size,
+      TypeTab[Elem].Align, False, Elem, -1);
+    TypeTab[NewIdx].ArrayLen := LenVal.IntVal;
+    ParseTypeExpr := NewIdx;
+    Exit;
+  End;
+
+  If (PPKind = TOK_IDENT) And (PPVal = 'func') Then
+  Begin
+    PPAdvance;
+    ParseTypeExpr := ParseFuncSignature;
+    Exit;
+  End;
+
+  If (PPKind = TOK_IDENT) And (PPVal = 'struct') Then
+  Begin
+    PPAdvance;
+    ParseTypeExpr := ParseStructType;
+    Exit;
+  End;
+
+  If (PPKind = TOK_IDENT) And (PPVal = 'map') Then
+  Begin
+    PPAdvance;
+    ParseTypeExpr := ParseMapType;
+    Exit;
+  End;
+
+  If (PPKind = TOK_IDENT) And (PPVal = 'interface') Then
+  Begin
+    PPAdvance;
+    ParseTypeExpr := ParseInterfaceType;
+    Exit;
+  End;
+
   If PPKind <> TOK_IDENT Then
   Begin
     FatalError('expression de type non prise en charge a ce point ' +
-      '(tableau/slice/map/canal/fonction/struct/interface : voir TODO ' +
-      '09/11/12/15)');
+      '(tableau/slice/map/canal : voir TODO 11/12/15)');
     Exit;
   End;
 
@@ -3328,9 +3414,22 @@ Begin
   Under := ParseTypeExpr;
   If Under < 0 Then Exit;
 
-  NewIdx := TypeAdd(TypeTab[Under].Kind, Nam, TypeTab[Under].Size,
-    TypeTab[Under].Align, TypeTab[Under].IsUnsigned,
-    TypeTab[Under].ElemTypeIdx, TypeTab[Under].KeyTypeIdx);
+  If TypeCount >= MAX_TYPE Then
+  Begin
+    WarnMsg('table des types pleine (MAX_TYPE)');
+    Exit;
+  End;
+  NewIdx := TypeCount;
+  { copie INTEGRALE de l enregistrement (assignation de Record complete   }
+  { en Pascal) - CORRIGE (TODO 09) : l ancienne version ne recopiait via         }
+  { un second TypeAdd que Size/Align/IsUnsigned/ElemTypeIdx/KeyTypeIdx,               }
+  { perdant SILENCIEUSEMENT FieldFirst/FieldCount (struct) et ParamFirst/                }
+  { ParamCount/ResultFirst/ResultCount/IsVariadic (func) - invisible tant                   }
+  { qu aucun type NOMME base sur un struct ou une signature de fonction               }
+  { n existait reellement ; TODO 09 (structs) est le premier a l avoir revele.            }
+  TypeTab[NewIdx] := TypeTab[Under];
+  TypeTab[NewIdx].Name := Nam;
+  Inc(TypeCount);
 
   If IsAlias Then
     TypeTab[NewIdx].AliasOfTypeIdx := Under
@@ -3441,6 +3540,11 @@ End;
 { l appelant (Run) rapporter jusqu ou l analyse est allee.                        }
 { ------------------------------------------------------------ }
 
+{ ParseFuncDecl est implementee au TODO 08, bien plus bas - forward-  }
+{ declaree ici car ParseFileTopLevel (TODO 05) doit deja savoir router      }
+{ le mot-cle "func" vers elle des qu il apparait en tete de fichier.           }
+Procedure ParseFuncDecl; Forward;
+
 Procedure ParseFileTopLevel;
 Var Up: TString;
 Begin
@@ -3466,7 +3570,8 @@ Begin
     If Up = 'const'  Then Begin ParseConstDecl; PPSkipSemis; Continue; End;
     If Up = 'var'    Then Begin ParseVarDecl;   PPSkipSemis; Continue; End;
     If Up = 'type'   Then Begin ParseTypeDecl;  PPSkipSemis; Continue; End;
-    Break;   { "func" ou autre : hors de portee (TODO 08+), arret propre }
+    If Up = 'func'   Then Begin ParseFuncDecl;  PPSkipSemis; Continue; End;
+    Break;   { autre chose qu une declaration de haut niveau connue : arret propre }
   End;
 End;
 
@@ -3633,8 +3738,11 @@ Type
                     { si omis) dans ExprArgPool                           }
     EK_SELECTOR,    { Left = base ; NameVal = nom du champ/methode        }
     EK_TYPEASSERT,  { Left = base ; Extra = TypeIdx vise                  }
-    EK_COMPOSITE    { Extra = TypeIdx ; ArgFirst/Count = elements         }
+    EK_COMPOSITE,   { Extra = TypeIdx ; ArgFirst/Count = elements         }
                     { (ExprArgKeyPool[i] = nom du champ, '' si positionnel) }
+    EK_FUNCLIT      { fonction anonyme/fermeture (TODO 08) ; Extra=TypeIdx   }
+                    { de la signature (TYK_FUNC) ; Right=index du bloc          }
+                    { corps dans StmtPool (STK_BLOCK)                              }
   );
 
   TExprNode = Record
@@ -3859,34 +3967,33 @@ End;
 
 Function ParseExpr: Integer; Forward;
 
-{ ParseCompositeLiteral : Nom, accolade ouvrante, liste d elements     }
+{ ParseCompositeLiteralForType : accolade ouvrante, liste d elements   }
 { optionnellement precedes de "Ident deux-points", separes par des        }
-{ virgules, virgule finale optionnelle, accolade fermante.                    }
-{ PORTEE (documentee) : uniquement les litteraux composes de type          }
-{ NOMME (struct-like, TODO 09) - les formes elidees slice/tableau/map          }
-{ et les elements imbriques SANS type explicite dependent d une                    }
-{ syntaxe de type (crochets de slice/tableau, map cle-valeur) que                       }
-{ ParseTypeExpr (TODO 05) ne sait pas encore reconnaitre - arret                            }
-{ propre documente, meme principe que ParseTypeExpr lui-meme, plutot                            }
-{ que deviner. Tolere un point-virgule INSERE PAR L ASI juste avant                                 }
-{ une virgule ou une accolade fermante (piege bien connu de Go : une                                    }
-{ accolade fermante seule sur sa ligne, apres un dernier element SANS                                       }
-{ virgule finale, recoit un point-virgule automatique du lexeur -                                               }
-{ PPSkipSemis absorbe ce cas).                                                                                      }
-Function ParseCompositeLiteral(Const TypeName: TString): Integer;
+{ virgules, virgule finale optionnelle, accolade fermante - le TypeIdx           }
+{ est deja resolu par l appelant (ParseCompositeLiteral pour un type              }
+{ NOMME, ParseOperand directement pour "[]T"/"[N]T" depuis le TODO 11).              }
+{ PORTEE (documentee) : les elements imbriques SANS type explicite                     }
+{ (elision du type repete dans un slice de struct imbrique) restent               }
+{ hors de portee - chaque element imbrique doit repeter son type                        }
+{ explicitement. Les MAPS restent hors de portee jusqu au TODO 12.                             }
+{ Tolere un point-virgule                                                                       }
+{ INSERE PAR L ASI juste avant une virgule ou une accolade fermante                                  }
+{ (piege bien connu de Go : une accolade fermante seule sur sa ligne,                                    }
+{ apres un dernier element SANS virgule finale, recoit un point-virgule                                     }
+{ automatique du lexeur - PPSkipSemis absorbe ce cas).                                                          }
+Function ParseCompositeLiteralForType(TIdx: Integer): Integer;
 Var
-  TIdx, SI, N, ValIdx : Integer;
-  KeyName             : TString;
-  ArgStart, Cnt        : Integer;
-  SavedNCL             : Boolean;
+  N, ValIdx     : Integer;
+  KeyName       : TString;
+  ArgStart, Cnt : Integer;
+  SavedNCL      : Boolean;
 Begin
-  TIdx := -1;
-  SI := SymFind(TypeName);
-  If (SI >= 0) And (SymTab[SI].Kind = SK_TYPE) Then TIdx := SymTab[SI].TypeIdx
-  Else If IsPredeclaredType(TypeName) <> 0 Then TIdx := IsPredeclaredType(TypeName)
-  Else FatalError('type inconnu dans un litteral compose: ' + TypeName);
-
-  PPAdvance;   { '{' }
+  ParseCompositeLiteralForType := 0;
+  If Not PPMatch('{') Then
+  Begin
+    FatalError('accolade ouvrante attendue dans un litteral compose');
+    Exit;
+  End;
   SavedNCL := NoCompositeLit;
   NoCompositeLit := False;
   PPSkipSemis;
@@ -3900,6 +4007,20 @@ Begin
     Begin
       KeyName := PPVal;
       PPAdvance;   { ident cle }
+      PPAdvance;   { ':' }
+    End
+    Else If ((PPKind = TOK_STRING) Or (PPKind = TOK_RAWSTRING)) And
+            (PP2Kind = TOK_OP) And (PP2Val = ':') Then
+    Begin
+      { cle de litteral map sous forme de chaine (TODO 12, cles de type       }
+      { string entre guillemets suivies de deux-points) - reutilise le           }
+      { meme champ ExprArgKey (String) que les cles de champ de struct               }
+      { (identifiants) - PORTEE (documentee)                                             }
+      { limitee aux cles CHAINE ou IDENTIFIANT ; les cles ENTIERES ou               }
+      { expressions plus generales restent hors de portee (meme discipline               }
+      { que l elision de type dans un litteral compose imbrique, TODO 11).                  }
+      KeyName := TokenPool[PP].Val;
+      PPAdvance;   { chaine cle }
       PPAdvance;   { ':' }
     End;
     ValIdx := ParseExpr;
@@ -3919,7 +4040,24 @@ Begin
   ExprPool[N].TypeIdx  := TIdx;
   ExprPool[N].ArgFirst := ArgStart;
   ExprPool[N].ArgCount := Cnt;
-  ParseCompositeLiteral := N;
+  ParseCompositeLiteralForType := N;
+End;
+
+{ ParseCompositeLiteral : forme "NomDeType" suivie d elements entre     }
+{ accolades (type NOMME - struct-like, TODO 09) - resout TypeName en             }
+{ TypeIdx puis delegue a ParseCompositeLiteralForType. La forme                        }
+{ slice/tableau (crochets suivis d elements entre accolades, TODO 11)                     }
+{ est geree directement par ParseOperand (le TypeIdx y est deja connu                       }
+{ via ParseTypeExpr, pas besoin de repasser par un nom).                                        }
+Function ParseCompositeLiteral(Const TypeName: TString): Integer;
+Var TIdx, SI : Integer;
+Begin
+  TIdx := -1;
+  SI := SymFind(TypeName);
+  If (SI >= 0) And (SymTab[SI].Kind = SK_TYPE) Then TIdx := SymTab[SI].TypeIdx
+  Else If IsPredeclaredType(TypeName) <> 0 Then TIdx := IsPredeclaredType(TypeName)
+  Else FatalError('type inconnu dans un litteral compose: ' + TypeName);
+  ParseCompositeLiteral := ParseCompositeLiteralForType(TIdx);
 End;
 
 { ParseCallArgs : '(' construit deja consomme par l appelant est FAUX -  }
@@ -3954,16 +4092,29 @@ Begin
   ExprPool[N].ArgFirst := ArgStart;
   ExprPool[N].ArgCount := Cnt;
   If ExprPool[Callee].Kind = EK_IDENT Then
+  Begin
     ExprPool[N].NameVal := ExprPool[Callee].NameVal;
+    { inference au mieux pour les fonctions integrees de slice (TODO 11) -  }
+    { len/cap/copy retournent toujours int ; append retourne le MEME             }
+    { type de slice que son premier argument (aucune verification que                }
+    { le nom resolve reellement au builtin plutot qu a une fonction                       }
+    { utilisateur du meme nom - simplification documentee, sans consequence                  }
+    { reelle avant que le TODO 19 ne fasse la distinction correctement). }
+    If (ExprPool[N].NameVal = 'len') Or (ExprPool[N].NameVal = 'cap') Or
+       (ExprPool[N].NameVal = 'copy') Then
+      ExprPool[N].TypeIdx := PDT_INT
+    Else If (ExprPool[N].NameVal = 'append') And (Cnt > 0) Then
+      ExprPool[N].TypeIdx := ExprPool[ExprArgPool[ArgStart]].TypeIdx;
+  End;
   ParseCallArgs := N;
 End;
 
 { ParseNewOrMake : new(Type) / make(Type [, Expr [, Expr]]) - grammaire   }
 { speciale de Go (le PREMIER argument est un TYPE, pas une expression) -     }
-{ PORTEE : uniquement les types deja reconnus par ParseTypeExpr             }
-{ (predeclare/pointeur/nomme) - make(chan/map/slice...) necessite les          }
-{ syntaxes de type des TODO 11/12/15, pas encore disponibles ; arret               }
-{ propre documente dans ce cas (via ParseTypeExpr lui-meme).                          }
+{ PORTEE : tous les types deja reconnus par ParseTypeExpr (predeclare/         }
+{ pointeur/nomme/slice/tableau depuis le TODO 11) - make(map[K]V) et              }
+{ make(chan T) restent hors de portee jusqu aux TODO 12/15 respectifs,               }
+{ arret propre documente dans ce cas (via ParseTypeExpr lui-meme).                      }
 Function ParseNewOrMake(Const FuncName: TString): Integer;
 Var N, TIdx, ArgStart, Cnt, A : Integer; SavedNCL: Boolean;
 Begin
@@ -3995,8 +4146,15 @@ Begin
   ParseNewOrMake := N;
 End;
 
+{ ParseFuncLiteral (implementee au TODO 08) construit une fonction        }
+{ anonyme/fermeture ("func" suivi d une signature puis d un corps de           }
+{ bloc, utilisee comme EXPRESSION, pas comme declaration de haut                    }
+{ niveau) - forward-declaree ici car ParseOperand en a besoin bien                     }
+{ avant que le TODO 08 ne soit ecrit.                                                     }
+Function ParseFuncLiteral: Integer; Forward;
+
 Function ParseOperand: Integer;
-Var Nam: TString; Inner: Integer; SavedNCL: Boolean;
+Var Nam: TString; Inner, TIdx: Integer; SavedNCL: Boolean;
 Begin
   ParseOperand := 0;
 
@@ -4036,6 +4194,9 @@ Begin
         Else If Nam = 'nil' Then ParseOperand := ExprAddNilLit
         Else If Nam = 'new' Then ParseOperand := ParseNewOrMake('new')
         Else If Nam = 'make' Then ParseOperand := ParseNewOrMake('make')
+        Else If Nam = 'func' Then ParseOperand := ParseFuncLiteral
+        Else If Nam = 'map' Then
+          ParseOperand := ParseCompositeLiteralForType(ParseMapType)
         Else If PPIsOp('{') And (Not NoCompositeLit) Then
           ParseOperand := ParseCompositeLiteral(Nam)
         Else ParseOperand := ExprAddIdent(Nam);
@@ -4055,6 +4216,16 @@ Begin
             PPAdvance;
           ParseOperand := Inner;
         End
+        Else If PPIsOp('[') And (Not NoCompositeLit) Then
+        Begin
+          { litteral compose slice/tableau (TODO 11) : "[...]T" est une   }
+          { expression de TYPE valide ici (ParseTypeExpr, TODO 05, etendue    }
+          { au TODO 11 pour reconnaitre "[]T"/"[N]T") immediatement suivie          }
+          { d elements entre accolades - TypeIdx deja resolu, pas besoin de              }
+          { repasser par un nom comme le fait ParseCompositeLiteral.                        }
+          TIdx := ParseTypeExpr;
+          ParseOperand := ParseCompositeLiteralForType(TIdx);
+        End
         Else
           FatalError('jeton inattendu dans une expression: ' + PPVal);
       End;
@@ -4062,6 +4233,14 @@ Begin
     FatalError('jeton inattendu dans une expression');
   End;
 End;
+
+{ ResolveSelectorType (implementee au TODO 09, avec les structs) resout   }
+{ au mieux le TypeIdx d un noeud EK_SELECTOR (champ ou methode, avec           }
+{ auto-dereference et promotion par embarquement) - forward-declaree             }
+{ ici pour la meme raison que ParseFuncSignature/ParseStructType plus              }
+{ haut : ParsePrimaryExpr (TODO 06) en a besoin bien avant que le TODO 09              }
+{ ne soit ecrit.                                                                       }
+Procedure ResolveSelectorType(SelNode: Integer); Forward;
 
 Function ParsePrimaryExpr: Integer;
 Var
@@ -4110,6 +4289,7 @@ Begin
         ExprPool[N].Left    := Result_;
         ExprPool[N].NameVal := PPVal;
         PPAdvance;
+        ResolveSelectorType(N);
         Result_ := N;
       End
       Else
@@ -4428,7 +4608,7 @@ Type
     STK_VARDECL, STK_CONSTDECL, STK_TYPEDECL,
     STK_IF, STK_FOR, STK_FORRANGE, STK_SWITCH, STK_TYPESWITCH,
     STK_BREAK, STK_CONTINUE, STK_GOTO, STK_LABELED, STK_RETURN,
-    STK_FALLTHROUGH
+    STK_FALLTHROUGH, STK_DEFER
   );
 
   TStmtNode = Record
@@ -4601,6 +4781,35 @@ End;
 
 Function ParseStatement: Integer; Forward;
 Function ParseBlock: Integer; Forward;
+{ ParseDeferStmt est implementee au TODO 08, bien plus bas - forward-  }
+{ declaree ici car ParseStatement (TODO 07) doit deja savoir router          }
+{ le mot-cle "defer" vers elle.                                                 }
+Function ParseDeferStmt: Integer; Forward;
+
+{ ExprIsCommaOkSource : Vrai si Idx est une expression pouvant fournir   }
+{ la forme comma-ok ("v, ok := ...", UNE seule expression a droite pour        }
+{ DEUX noms a gauche) - assertion de type (TODO 06/10, "x.(T)") ou               }
+{ indexation d une MAP (TODO 12, "m[cle]" - le second booleen "ok"                  }
+{ indique si la cle etait presente). L indexation d un slice/tableau               }
+{ (TODO 11) N EST PAS comma-ok en Go reel (un index hors bornes PANIQUE            }
+{ au lieu de renvoyer un booleen), d ou le test explicite du Kind TYK_MAP              }
+{ et non simplement "est-ce un EK_INDEX".                                                 }
+Function ExprIsCommaOkSource(Idx: Integer): Boolean;
+Var BaseTypeIdx: Integer;
+Begin
+  ExprIsCommaOkSource := False;
+  If ExprPool[Idx].Kind = EK_TYPEASSERT Then
+  Begin
+    ExprIsCommaOkSource := True;
+    Exit;
+  End;
+  If ExprPool[Idx].Kind = EK_INDEX Then
+  Begin
+    BaseTypeIdx := ExprPool[ExprPool[Idx].Left].TypeIdx;
+    If (BaseTypeIdx >= 0) And (TypeTab[BaseTypeIdx].Kind = TYK_MAP) Then
+      ExprIsCommaOkSource := True;
+  End;
+End;
 
 { ParseSimpleStmt : expression / incrementation-decrementation /       }
 { affectation (simple ou composee) / declaration courte := - ne consomme   }
@@ -4611,10 +4820,11 @@ Function ParseBlock: Integer; Forward;
 Function ParseSimpleStmt: Integer;
 Var
   Targets  : Array[0..15] Of Integer;
-  TCount   : Integer;
+  Vals     : Array[0..15] Of Integer;
+  TCount, VCount : Integer;
   N, I     : Integer;
   Op       : TString;
-  ValIdx   : Integer;
+  ValIdx, OkIdx : Integer;
   ArgStart : Integer;
   Nam      : TString;
   AnyNew   : Boolean;
@@ -4635,31 +4845,80 @@ Begin
 
   If PPMatch(':=') Then
   Begin
-    ArgStart := StmtArgCount;
-    I := 0;
-    AnyNew := False;
+    { evalue d abord TOUTES les valeurs du membre droit dans Vals AVANT   }
+    { de decider comment les associer aux noms - necessaire pour la           }
+    { forme comma-ok (TODO 10) : "v, ok := x.(T)" a DEUX noms a gauche             }
+    { mais une SEULE expression a droite (contrairement a "a, b := 1, 2",              }
+    { qui en a autant que de noms) - on ne peut le savoir qu APRES avoir                  }
+    { vu qu aucune virgule ne suit la premiere (et unique) valeur.                            }
+    VCount := 0;
     Repeat
       ValIdx := ParseExpr;
-      If I < TCount Then
+      If VCount <= High(Vals) Then
       Begin
-        If ExprPool[Targets[I]].Kind = EK_IDENT Then
-        Begin
-          Nam := ExprPool[Targets[I]].NameVal;
-          StmtArgPush(-1, ValIdx, Nam);
-          If SymFindInScope(Nam, CurScopeId) < 0 Then
-          Begin
-            SymAdd(Nam, SK_VAR, ExprPool[ValIdx].TypeIdx);
-            AnyNew := True;
-          End;
-        End
-        Else
-        Begin
-          FatalError('nom de variable attendu a gauche de ":="');
-          StmtArgPush(-1, ValIdx, '');
-        End;
-      End;
-      Inc(I);
+        Vals[VCount] := ValIdx;
+        Inc(VCount);
+      End
+      Else
+        Inc(VCount);
     Until Not PPMatch(',');
+
+    ArgStart := StmtArgCount;
+    AnyNew := False;
+
+    If (VCount = 1) And (TCount = 2) And ExprIsCommaOkSource(Vals[0]) Then
+    Begin
+      { forme comma-ok : le second nom recoit un booleen "ok" SYNTHETIQUE -   }
+      { aucun noeud d expression reel ne le calcule (rien a evaluer sans          }
+      { backend, TODO 21+), juste un TypeIdx=PDT_BOOL coherent pour le                 }
+      { suivi de type.                                                                    }
+      If ExprPool[Targets[0]].Kind = EK_IDENT Then
+      Begin
+        Nam := ExprPool[Targets[0]].NameVal;
+        StmtArgPush(-1, Vals[0], Nam);
+        If SymFindInScope(Nam, CurScopeId) < 0 Then
+        Begin
+          SymAdd(Nam, SK_VAR, ExprPool[Vals[0]].TypeIdx);
+          AnyNew := True;
+        End;
+      End
+      Else
+        FatalError('nom de variable attendu a gauche de ":="');
+
+      If ExprPool[Targets[1]].Kind = EK_IDENT Then
+      Begin
+        Nam := ExprPool[Targets[1]].NameVal;
+        OkIdx := ExprAddBoolLit(False);
+        StmtArgPush(-1, OkIdx, Nam);
+        If SymFindInScope(Nam, CurScopeId) < 0 Then
+        Begin
+          SymAdd(Nam, SK_VAR, PDT_BOOL);
+          AnyNew := True;
+        End;
+      End
+      Else
+        FatalError('nom de variable attendu a gauche de ":="');
+    End
+    Else
+      For I := 0 To VCount - 1 Do
+        If I < TCount Then
+        Begin
+          If ExprPool[Targets[I]].Kind = EK_IDENT Then
+          Begin
+            Nam := ExprPool[Targets[I]].NameVal;
+            StmtArgPush(-1, Vals[I], Nam);
+            If SymFindInScope(Nam, CurScopeId) < 0 Then
+            Begin
+              SymAdd(Nam, SK_VAR, ExprPool[Vals[I]].TypeIdx);
+              AnyNew := True;
+            End;
+          End
+          Else
+          Begin
+            FatalError('nom de variable attendu a gauche de ":="');
+            StmtArgPush(-1, Vals[I], '');
+          End;
+        End;
 
     If Not AnyNew Then
       WarnMsg(':= sans aucune nouvelle variable a gauche (no new variables ' +
@@ -4678,14 +4937,33 @@ Begin
   Begin
     Op := PPVal;
     PPAdvance;
-    ArgStart := StmtArgCount;
-    I := 0;
+    VCount := 0;
     Repeat
       ValIdx := ParseExpr;
-      If I < TCount Then StmtArgPush(Targets[I], ValIdx, '')
-      Else StmtArgPush(-1, ValIdx, '');
-      Inc(I);
+      If VCount <= High(Vals) Then
+      Begin
+        Vals[VCount] := ValIdx;
+        Inc(VCount);
+      End
+      Else
+        Inc(VCount);
     Until Not PPMatch(',');
+
+    ArgStart := StmtArgCount;
+    If (VCount = 1) And (TCount = 2) And (Op = '=') And
+       ExprIsCommaOkSource(Vals[0]) Then
+    Begin
+      { forme comma-ok par simple affectation : "v, ok = x.(T)" (v et ok    }
+      { deja declares plus tot) - meme synthese que ci-dessus pour ok.            }
+      StmtArgPush(Targets[0], Vals[0], '');
+      OkIdx := ExprAddBoolLit(False);
+      StmtArgPush(Targets[1], OkIdx, '');
+    End
+    Else
+      For I := 0 To VCount - 1 Do
+        If I < TCount Then StmtArgPush(Targets[I], Vals[I], '')
+        Else StmtArgPush(-1, Vals[I], '');
+
     N := StmtNew(STK_ASSIGN);
     StmtPool[N].Op       := Op;
     StmtPool[N].ArgFirst := ArgStart;
@@ -4782,6 +5060,7 @@ Var
   KeyName, ValName : TString;
   IsDecl : Boolean;
   SavedNCL : Boolean;
+  CollTypeIdx, KeyTypeIdx, ValTypeIdx : Integer;
 Begin
   PPAdvance;   { for }
   SymEnterScope;
@@ -4834,11 +5113,29 @@ Begin
     StmtPool[N].Left        := ParseExpr;
     If IsDecl Then
     Begin
-      { Type reel connu seulement une fois le type de la collection      }
-      { resolu (slice/map/string/chan : TODO 11/12/14/15) - PDT_INT au        }
-      { mieux ici, affine plus tard, meme discipline que ExprInferBinaryType. }
-      If (KeyName <> '') And (KeyName <> '_') Then SymAdd(KeyName, SK_VAR, PDT_INT);
-      If (ValName <> '') And (ValName <> '_') Then SymAdd(ValName, SK_VAR, PDT_INT);
+      { Type reel de la cle/valeur : pour un slice/tableau (TODO 11), la    }
+      { cle est TOUJOURS un index (PDT_INT) et la valeur est le VRAI              }
+      { ElemTypeIdx de la collection ; pour une MAP (TODO 12), la cle EST              }
+      { le vrai KeyTypeIdx de la map et la valeur son vrai ElemTypeIdx (le             }
+      { type "valeur" de la map) - pour toute autre collection (string/                    }
+      { chan, TODO 14/15), PDT_INT reste le meilleur repli possible ici,                       }
+      { meme discipline que ExprInferBinaryType.                                                  }
+      CollTypeIdx := ExprPool[StmtPool[N].Left].TypeIdx;
+      KeyTypeIdx  := PDT_INT;
+      ValTypeIdx  := PDT_INT;
+      If CollTypeIdx >= 0 Then
+      Begin
+        If (TypeTab[CollTypeIdx].Kind = TYK_SLICE) Or
+           (TypeTab[CollTypeIdx].Kind = TYK_ARRAY) Then
+          ValTypeIdx := TypeTab[CollTypeIdx].ElemTypeIdx
+        Else If TypeTab[CollTypeIdx].Kind = TYK_MAP Then
+        Begin
+          KeyTypeIdx := TypeTab[CollTypeIdx].KeyTypeIdx;
+          ValTypeIdx := TypeTab[CollTypeIdx].ElemTypeIdx;
+        End;
+      End;
+      If (KeyName <> '') And (KeyName <> '_') Then SymAdd(KeyName, SK_VAR, KeyTypeIdx);
+      If (ValName <> '') And (ValName <> '_') Then SymAdd(ValName, SK_VAR, ValTypeIdx);
     End;
     NoCompositeLit := SavedNCL;
     StmtPool[N].Right := ParseBlock;
@@ -5168,6 +5465,14 @@ Begin
     If Nam = 'goto' Then Begin ParseStatement := ParseGotoStmt; Exit; End;
     If Nam = 'return' Then Begin ParseStatement := ParseReturnStmt; Exit; End;
     If Nam = 'fallthrough' Then Begin ParseStatement := ParseFallthroughStmt; Exit; End;
+    If Nam = 'defer' Then Begin ParseStatement := ParseDeferStmt; Exit; End;
+    If Nam = 'go' Then
+    Begin
+      FatalError('instruction "go" (lancement de goroutine) non prise ' +
+        'en charge (voir TODO 15)');
+      ParseStatement := StmtNew(STK_EMPTY);
+      Exit;
+    End;
     If Nam = 'var' Then
     Begin
       ParseVarDecl;
@@ -5365,6 +5670,1502 @@ Begin
   SymInit;
 End;
 
+{ ============================================================ }
+{ TODO 08 - FONCTIONS : RETOURS MULTIPLES, VARIADIQUES, FERMETURES }
+{ ============================================================ }
+{ Premier TODO qui donne enfin un VRAI appelant a ParseBlock (TODO 07) :  }
+{ ParseFileTopLevel (TODO 05) s arretait proprement sur "func" depuis           }
+{ le debut - a partir de maintenant elle analyse le corps complet des              }
+{ fonctions, ce qui fait de ce TODO le premier test d integration bout-              }
+{ en-bout reel sur les fichiers SAMPLES\GO existants (hello.go en                        }
+{ particulier, dont le corps de "main" n avait encore JAMAIS ete analyse                   }
+{ par rien de plus qu un lexeur).                                                             }
+{                                                                          }
+{ Fermetures (closures) : AUCUN travail supplementaire n est necessaire   }
+{ ici cote analyse - SymFind (TODO 05) resout deja du plus imbrique au        }
+{ plus englobant sur la TOTALITE de SymTab, quelle que soit la portee            }
+{ active ; une fonction anonyme analysee alors que des portees locales               }
+{ englobantes sont encore ouvertes (Portee non fermee par SymLeaveScope)                }
+{ "voit" donc deja naturellement les variables englobantes SANS aucun                      }
+{ mecanisme special. La "capture par reference, environnement alloue au                       }
+{ tas" mentionnee au TODO 08 releve entierement de la GENERATION DE CODE                          }
+{ (TODO 21+), pas de l analyse : rien a faire de plus ici, deliberement.                              }
+
+{ FieldPoolAdd : ajoute une entree (nom, type) a la fin de FieldPool -   }
+{ premier VRAI consommateur du pool partage reserve depuis le TODO 04      }
+{ ("future func params/results" y etait deja annonce) ; sert aux                 }
+{ parametres ET aux resultats (nommes ou non) des signatures de fonction.            }
+Function FieldPoolAdd(Const Nm: TString; TIdx: Integer; Embedded: Boolean): Integer;
+Begin
+  If FieldPoolCount >= MAX_FIELD_POOL Then
+  Begin
+    FatalError('table des champs/parametres pleine (MAX_FIELD_POOL)');
+    FieldPoolAdd := 0;
+    Exit;
+  End;
+  FieldPool[FieldPoolCount].Name       := Nm;
+  FieldPool[FieldPoolCount].TypeIdx    := TIdx;
+  FieldPool[FieldPoolCount].Offset     := 0;
+  FieldPool[FieldPoolCount].IsEmbedded := Embedded;
+  FieldPoolAdd := FieldPoolCount;
+  Inc(FieldPoolCount);
+End;
+
+{ TFieldBufNames/TFieldBufTypes : tampons LOCAUX (jamais dans FieldPool   }
+{ directement) utilises par ParseParamOrResultGroup/ParseParamList/           }
+{ ParseResultList - voir la note "BUG reel corrige" au-dessus de                  }
+{ ParseParamList pour pourquoi ce tampon est necessaire.                              }
+Type
+  TFieldBufNames = Array[0..63] Of TString;
+  TFieldBufTypes = Array[0..63] Of Integer;
+
+{ ParseParamOrResultGroup : "Nom1 [, Nom2 ...] ['...'] Type" - un GROUPE  }
+{ de noms partageant un meme type final (forme Go reelle, ex. "a, b        }
+{ int"). Algorithme (correct pour ce cas, verifie a la main sur les              }
+{ exemples "a, b int, c string" et "nums ...int") : on avale d abord TOUS               }
+{ les identificateurs separes par une virgule DIRECTEMENT suivante -                       }
+{ des qu un identificateur n est PAS suivi d une virgule, le groupe de                        }
+{ noms est termine et ce qui suit (apres un "..." variadique optionnel)                          }
+{ est FORCEMENT le type partage (aucune autre lecture n est possible               }
+{ dans une liste 100% NOMMEE, voir la restriction ci-dessous).                                       }
+{ PORTEE (documentee) : ne prend en charge QUE les parametres NOMMES        }
+{ (chaque groupe doit se terminer par un type reel, sinon erreur claire) -    }
+{ les listes de parametres NON nommees (types seuls, ex. un type fonction         }
+{ "func(int, string) bool" utilise pour une VARIABLE plutot qu une                  }
+{ fonction reellement definie) sont hors de portee ici - AllowVariadic              }
+{ desactive la marque "..." pour les listes de RESULTATS (Go n a pas             }
+{ de resultats variadiques). N ecrit PLUS directement dans FieldPool -            }
+{ accumule dans le tampon BufNames/BufTypes du LISTE APPELANTE, qui fait                }
+{ le vrai FieldPoolAdd tout a la fin (voir la note "BUG reel corrige"                    }
+{ juste au-dessus de ParseParamList).                                                       }
+Procedure ParseParamOrResultGroup(AllowVariadic: Boolean;
+  Var BufNames: TFieldBufNames; Var BufTypes: TFieldBufTypes; Var BufCnt: Integer;
+  Var IsVariadic: Boolean);
+Var
+  Names  : TDeclNameList;
+  NCount : Integer;
+  TIdx, I : Integer;
+  WasVariadic : Boolean;
+Begin
+  NCount := 0;
+  Repeat
+    If PPKind <> TOK_IDENT Then
+    Begin
+      FatalError('nom de parametre/resultat attendu (listes non nommees ' +
+        'non prises en charge ici)');
+      Exit;
+    End;
+    If NCount <= High(Names) Then
+    Begin
+      Names[NCount] := PPVal;
+      Inc(NCount);
+    End;
+    PPAdvance;
+  Until Not PPMatch(',');
+
+  WasVariadic := False;
+  If AllowVariadic And PPMatch('...') Then WasVariadic := True;
+  TIdx := ParseTypeExpr;   { peut pousser d autres entrees dans FieldPool de   }
+                           { facon imbriquee (ex. type "func(int) int") - SANS      }
+                           { consequence ici puisqu on n ecrit que dans le               }
+                           { tampon LOCAL BufNames/BufTypes, jamais directement              }
+                           { dans FieldPool.                                                    }
+
+  For I := 0 To NCount - 1 Do
+    If BufCnt <= High(BufNames) Then
+    Begin
+      BufNames[BufCnt] := Names[I];
+      BufTypes[BufCnt] := TIdx;
+      Inc(BufCnt);
+    End
+    Else
+      WarnMsg('trop de parametres/resultats dans une seule liste (tampon plein)');
+  If WasVariadic Then IsVariadic := True;
+End;
+
+{ ParseParamList : parametres NOMMES ("func Sum(nums ...int) int",       }
+{ presque toujours le cas pour une fonction reellement DEFINIE) OU NON        }
+{ NOMMES ("var Callback func(int) int" - un type fonction utilise comme          }
+{ type de VARIABLE n a evidemment aucun besoin de nommer ses parametres,             }
+{ TODO 08 lui-meme le mentionne : "types func(...) (...)"). Meme                          }
+{ technique de detection de mode par lecture d essai que ParseResultList                     }
+{ juste au-dessus - necessaire ici aussi puisque les DEUX formes sont                             }
+{ courantes pour des parametres (contrairement aux resultats, ou le                                   }
+{ non-nomme domine tres largement). "..." interdit sauf sur le TOUT                                       }
+{ DERNIER groupe/parametre, nomme ou non.                                                                    }
+{                                                                          }
+{ BUG reel corrige (TODO 10) : cette procedure (et ParseResultList,           }
+{ ParseFuncSignature, ParseStructType/ParseInterfaceType plus bas)                 }
+{ capturait AUPARAVANT FieldFirst := FieldPoolCount AVANT la boucle, en              }
+{ supposant que les Cnt prochaines entrees POUSSEES seraient les MIENNES,               }
+{ CONTIGUES. Faux des qu un parametre/champ/methode a un TYPE compose                      }
+{ (func/struct/interface) : ParseTypeExpr le resout en rappelant                              }
+{ ParseFuncSignature/ParseStructType/ParseInterfaceType, qui poussent                            }
+{ EUX-MEMES leurs propres entrees dans FieldPool AVANT que la mienne ne                          }
+{ soit poussee - intercalant des entrees "etrangeres" au milieu de MA                               }
+{ propre plage et cassant [FieldFirst, FieldFirst+Cnt) comme "ma" plage                                }
+{ contigue. Invisible tant qu aucun parametre/champ/methode n avait un                                    }
+{ type compose (TODO 08/09) - revele par le TOUT PREMIER test d interface                                    }
+{ du TODO 10 (CHAQUE methode d interface a sa PROPRE signature imbriquee,                                       }
+{ donc CHAQUE methode declenche le probleme). Corrige en accumulant                                                }
+{ d abord dans un tampon LOCAL (BufNames/BufTypes, immunise contre tout                                              }
+{ entrelacement puisque ce sont de simples tableaux Pascal), puis en                                                    }
+{ poussant tout d un coup dans FieldPool a la toute fin - a ce moment-la,                                                  }
+{ plus AUCUN appel imbrique ne peut plus se produire pour cette liste,                                                       }
+{ donc la plage [FieldFirst, FieldFirst+Cnt) qui vient d etre poussee EST                                                       }
+{ garantie contigue.                                                                                                               }
+Procedure ParseParamList(Var FieldFirst, Cnt: Integer; Var IsVariadic: Boolean);
+Var
+  BufNames : TFieldBufNames;
+  BufTypes : TFieldBufTypes;
+  BufCnt, I : Integer;
+  SavedPP : Integer;
+  IsNamed : Boolean;
+  TIdx    : Integer;
+  WasVariadic : Boolean;
+Begin
+  BufCnt := 0;
+  IsVariadic := False;
+
+  If Not PPIsOp(')') Then
+  Begin
+    SavedPP := PP;
+    If PPIsOp('...') Then
+      IsNamed := False
+    Else
+    Begin
+      IsNamed := True;
+      Repeat
+        If PPKind <> TOK_IDENT Then
+        Begin
+          IsNamed := False;
+          Break;
+        End;
+        PPAdvance;
+      Until Not PPMatch(',');
+      If IsNamed Then
+        IsNamed := (PPKind = TOK_IDENT) Or PPIsOp('*') Or PPIsOp('...') Or
+          PPIsOp('[');
+    End;
+    PP := SavedPP;
+
+    If IsNamed Then
+      Repeat
+        If IsVariadic Then
+          FatalError('parametre apres le parametre variadique "...T" (doit ' +
+            'etre le dernier)');
+        ParseParamOrResultGroup(True, BufNames, BufTypes, BufCnt, IsVariadic);
+      Until Not PPMatch(',')
+    Else
+      Repeat
+        If IsVariadic Then
+          FatalError('parametre apres le parametre variadique "...T" (doit ' +
+            'etre le dernier)');
+        WasVariadic := False;
+        If PPMatch('...') Then WasVariadic := True;
+        TIdx := ParseTypeExpr;
+        If BufCnt <= High(BufNames) Then
+        Begin
+          BufNames[BufCnt] := '';
+          BufTypes[BufCnt] := TIdx;
+          Inc(BufCnt);
+        End;
+        If WasVariadic Then IsVariadic := True;
+      Until Not PPMatch(',');
+  End;
+
+  FieldFirst := FieldPoolCount;
+  For I := 0 To BufCnt - 1 Do
+    FieldPoolAdd(BufNames[I], BufTypes[I], False);
+  Cnt := BufCnt;
+End;
+
+{ ParseResultList : contrairement aux parametres, les RESULTATS sont     }
+{ TRES SOUVENT non nommes en Go reel (l idiome canonique "func DivMod(a,   }
+{ b int) (int, int)" du TODO 08 lui-meme en est l exemple). Determine le            }
+{ mode (nomme/non nomme) via une lecture d ESSAI qui NE CONSOMME RIEN                  }
+{ (sauvegarde/restaure PP) : on essaie de lire un groupe de noms comme                    }
+{ pour les parametres, puis on regarde si un vrai type plausible suit -                       }
+{ si oui, la liste ENTIERE est nommee (regle Go reelle : au sein d une                            }
+{ meme liste, les noms sont TOUS presents ou TOUS absents) ; sinon,                                   }
+{ chaque element separe par une virgule est directement un type seul.                                    }
+{ Meme tampon local + bulk-push final que ParseParamList (voir sa note         }
+{ "BUG reel corrige" juste au-dessus).                                                    }
+Procedure ParseResultList(Var FieldFirst, Cnt: Integer);
+Var
+  BufNames : TFieldBufNames;
+  BufTypes : TFieldBufTypes;
+  BufCnt, I : Integer;
+  SavedPP : Integer;
+  IsNamed, DummyVariadic : Boolean;
+  TIdx : Integer;
+Begin
+  BufCnt := 0;
+  If Not PPIsOp(')') Then
+  Begin
+    SavedPP := PP;
+    IsNamed := True;
+    Repeat
+      If PPKind <> TOK_IDENT Then
+      Begin
+        IsNamed := False;
+        Break;
+      End;
+      PPAdvance;
+    Until Not PPMatch(',');
+    If IsNamed Then
+      IsNamed := (PPKind = TOK_IDENT) Or PPIsOp('*') Or PPIsOp('[');
+    PP := SavedPP;
+
+    DummyVariadic := False;
+    If IsNamed Then
+      Repeat
+        ParseParamOrResultGroup(False, BufNames, BufTypes, BufCnt, DummyVariadic);
+      Until Not PPMatch(',')
+    Else
+      Repeat
+        TIdx := ParseTypeExpr;
+        If BufCnt <= High(BufNames) Then
+        Begin
+          BufNames[BufCnt] := '';
+          BufTypes[BufCnt] := TIdx;
+          Inc(BufCnt);
+        End;
+      Until Not PPMatch(',');
+  End;
+
+  FieldFirst := FieldPoolCount;
+  For I := 0 To BufCnt - 1 Do
+    FieldPoolAdd(BufNames[I], BufTypes[I], False);
+  Cnt := BufCnt;
+End;
+
+{ ParseFuncSignature : "(" Parametres ")" [Resultats] - Resultats est     }
+{ soit absent (rien avant le "{" du corps), soit un seul type SANS            }
+{ parentheses ("... int"), soit une liste entre parentheses (nommee ou           }
+{ non). PP doit deja pointer juste APRES le mot-cle "func" au moment de              }
+{ l appel (aussi bien pour une declaration de haut niveau que pour une                  }
+{ fonction anonyme ou un type fonction utilise comme type de variable).                    }
+Function ParseFuncSignature: Integer;
+Var
+  ParamFirst, ParamCnt, ResultFirst, ResultCnt, TIdx, FT : Integer;
+  IsVariadic : Boolean;
+Begin
+  ParseFuncSignature := -1;
+  If Not PPMatch('(') Then
+  Begin
+    FatalError('parenthese ouvrante attendue apres "func"');
+    Exit;
+  End;
+  ParseParamList(ParamFirst, ParamCnt, IsVariadic);
+  If Not PPMatch(')') Then
+    FatalError('parenthese fermante attendue apres les parametres');
+
+  ResultFirst := -1;
+  ResultCnt := 0;
+  If PPIsOp('(') Then
+  Begin
+    PPAdvance;
+    ParseResultList(ResultFirst, ResultCnt);
+    If Not PPMatch(')') Then
+      FatalError('parenthese fermante attendue apres les resultats');
+  End
+  Else If (Not PPIsOp('{')) And (Not PPAtEnd) And (PPKind <> TOK_SEMI) Then
+  Begin
+    { TIdx resolu AVANT de capturer ResultFirst (et non l inverse) -    }
+    { meme raison que la note "BUG reel corrige" de ParseParamList : si       }
+    { ce resultat unique est lui-meme un type compose (ex. "func() func(int)     }
+    { int"), ParseTypeExpr pousse D ABORD ses propres entrees imbriquees             }
+    { dans FieldPool ; capturer ResultFirst seulement ENSUITE garantit que              }
+    { l unique entree poussee juste apres EST bien celle-ci, pas une                      }
+    { entree imbriquee etrangere.                                                            }
+    TIdx := ParseTypeExpr;
+    ResultFirst := FieldPoolCount;
+    FieldPoolAdd('', TIdx, False);
+    ResultCnt := 1;
+  End;
+
+  FT := TypeAdd(TYK_FUNC, '', 4, 4, False, -1, -1);
+  TypeTab[FT].ParamFirst  := ParamFirst;
+  TypeTab[FT].ParamCount  := ParamCnt;
+  TypeTab[FT].ResultFirst := ResultFirst;
+  TypeTab[FT].ResultCount := ResultCnt;
+  TypeTab[FT].IsVariadic  := IsVariadic;
+  ParseFuncSignature := FT;
+End;
+
+{ RegisterFuncScopeSymbols : declare les parametres ET les resultats      }
+{ NOMMES d une signature comme variables locales visibles dans le corps -    }
+{ partagee entre ParseFuncDecl et ParseFuncLiteral. Rend gratuitement            }
+{ possible le "retour nu" (naked return - un resultat NOMME reaffecte              }
+{ puis un "return" sans expression) : le nom du resultat est une                       }
+{ variable locale ordinaire des ce point, une simple affectation lui                       }
+{ suffit avant un "return" sans expression (deja pris en charge tel                            }
+{ quel par ParseReturnStmt, TODO 07).                                                             }
+Procedure RegisterFuncScopeSymbols(FT: Integer);
+Var I: Integer;
+Begin
+  For I := 0 To TypeTab[FT].ParamCount - 1 Do
+    SymAdd(FieldPool[TypeTab[FT].ParamFirst + I].Name, SK_VAR,
+      FieldPool[TypeTab[FT].ParamFirst + I].TypeIdx);
+  For I := 0 To TypeTab[FT].ResultCount - 1 Do
+    If FieldPool[TypeTab[FT].ResultFirst + I].Name <> '' Then
+      SymAdd(FieldPool[TypeTab[FT].ResultFirst + I].Name, SK_VAR,
+        FieldPool[TypeTab[FT].ResultFirst + I].TypeIdx);
+End;
+
+{ ParseFuncLiteral : fonction anonyme utilisee comme EXPRESSION (donc     }
+{ potentiellement une fermeture si son corps reference des variables         }
+{ d une portee englobante encore ouverte - voir la note en tete de              }
+{ section). PP est deja juste apres "func" (consomme par ParseOperand).             }
+Function ParseFuncLiteral: Integer;
+Var FT, BodyIdx, N : Integer;
+Begin
+  FT := ParseFuncSignature;
+  SymEnterScope;
+  RegisterFuncScopeSymbols(FT);
+  BodyIdx := ParseBlock;
+  SymLeaveScope;
+
+  N := ExprNew(EK_FUNCLIT);
+  ExprPool[N].Extra   := FT;
+  ExprPool[N].Right   := BodyIdx;
+  ExprPool[N].TypeIdx := FT;
+  ParseFuncLiteral := N;
+End;
+
+{ TFuncDefRec/FuncDefPool : fonctions NOMMEES de haut niveau uniquement   }
+{ (les fonctions anonymes/fermetures restent de simples expressions            }
+{ EK_FUNCLIT, sans entree ici - rien ne les nomme, une table par nom               }
+{ ne leur servirait a rien). MAX_FUNC deja reserve au TODO 01.                          }
+Type
+  TFuncDefRec = Record
+    Name        : TString;
+    TypeIdx     : Integer;   { TYK_FUNC }
+    BodyStmtIdx : Integer;   { STK_BLOCK dans StmtPool }
+  End;
+
+Var
+  FuncDefPool  : Array[0..MAX_FUNC - 1] Of TFuncDefRec;
+  FuncDefCount : Integer;
+
+Procedure FuncDefInit;
+Begin
+  FuncDefCount := 0;
+End;
+
+{ ParseFuncDecl : implementee plus bas (TODO 09), une fois le receveur   }
+{ de methode (facultatif) pris en charge en plus du cas simple "func         }
+{ Nom(...)..." du TODO 08 - une seule implementation couvre desormais              }
+{ les deux cas.                                                                       }
+
+{ ParseDeferStmt : "defer" Expression - empile un appel differe.        }
+{ PORTEE (documentee) : la regle Go reelle exige que l expression soit    }
+{ un appel de fonction/methode ; ce compilateur accepte ici N IMPORTE          }
+{ QUELLE expression sans le verifier (l analyse semantique complete,               }
+{ TODO 19, est le bon endroit pour rejeter un defer non-appel - inutile                }
+{ de dupliquer cette verification ici alors qu aucun code n est encore                    }
+{ genere, TODO 21+, pour donner un sens concret a "empiler LIFO").                             }
+Function ParseDeferStmt: Integer;
+Var N: Integer;
+Begin
+  PPAdvance;   { defer }
+  N := StmtNew(STK_DEFER);
+  StmtPool[N].Left := ParseExpr;
+  ParseDeferStmt := N;
+End;
+
+{ ------------------------------------------------------------ }
+{ FuncSelfTest : signature (retours multiples/nommes/variadique),  }
+{ retour nu, litteral de fonction/fermeture, defer - puis            }
+{ verification bout-en-bout sur hello.go/types.go/lextest.go via          }
+{ ParseFileTopLevel (qui, a partir de ce TODO, analyse enfin les              }
+{ corps de fonctions au lieu de s arreter a "func").                             }
+{ ------------------------------------------------------------ }
+
+Procedure FuncAssert(Const Label_: TString; Cond: Boolean);
+Begin
+  If Not Cond Then
+    FatalError('FuncSelfTest: ' + Label_ + ' a echoue');
+End;
+
+Procedure FuncParseTopLevel(Const Src: TString);
+Const
+  TmpFile = 'GOCWFUNCSELFTEST.$$$';
+Var
+  F: Text;
+Begin
+  Assign(F, TmpFile);
+  Rewrite(F);
+  Write(F, Src);
+  Close(F);
+
+  Assign(LexSrcF, TmpFile);
+  Reset(LexSrcF);
+  LexOpened := True;
+  LexInit;
+  LexAll;
+  LexClose;
+  Erase(F);
+
+  PP := 0;
+  ParseFileTopLevel;
+End;
+
+Procedure FuncSelfTest;
+Var
+  FT, SI : Integer;
+Begin
+  ExprInit;
+  StmtInit;
+  SymInit;
+  TypeInit;
+  FuncDefInit;
+
+  { retours multiples non nommes : "func DivMod(a, b int) (int, int)" }
+  FuncParseTopLevel('package main' + Chr(10) +
+    'func DivMod(a, b int) (int, int) {' + Chr(10) +
+    '	return a, b' + Chr(10) + '}');
+  SI := SymFind('DivMod');
+  FuncAssert('DivMod declaree', SI >= 0);
+  FuncAssert('DivMod : symbole de type SK_FUNC', SymTab[SI].Kind = SK_FUNC);
+  FT := SymTab[SI].TypeIdx;
+  FuncAssert('DivMod : 2 parametres', TypeTab[FT].ParamCount = 2);
+  FuncAssert('DivMod : 2 resultats', TypeTab[FT].ResultCount = 2);
+  FuncAssert('DivMod : resultats non nommes',
+    FieldPool[TypeTab[FT].ResultFirst].Name = '');
+  FuncAssert('DivMod : parametres groupes "a, b int" -> meme type',
+    FieldPool[TypeTab[FT].ParamFirst].TypeIdx =
+    FieldPool[TypeTab[FT].ParamFirst + 1].TypeIdx);
+
+  { resultat unique nomme + retour nu (n reaffectee puis "return" seul) }
+  SymInit; TypeInit; FuncDefInit;
+  FuncParseTopLevel('package main' + Chr(10) +
+    'func F() (n int) {' + Chr(10) + '	n = 42' + Chr(10) + '	return' + Chr(10) + '}');
+  SI := SymFind('F');
+  FuncAssert('F declaree', SI >= 0);
+  FT := SymTab[SI].TypeIdx;
+  FuncAssert('F : 1 resultat nomme "n"',
+    (TypeTab[FT].ResultCount = 1) And
+    (FieldPool[TypeTab[FT].ResultFirst].Name = 'n'));
+
+  { variadique : "func Sum(nums ...int) int" }
+  SymInit; TypeInit; FuncDefInit;
+  FuncParseTopLevel('package main' + Chr(10) +
+    'func Sum(nums ...int) int {' + Chr(10) + '	return 0' + Chr(10) + '}');
+  SI := SymFind('Sum');
+  FT := SymTab[SI].TypeIdx;
+  FuncAssert('Sum : IsVariadic', TypeTab[FT].IsVariadic);
+  FuncAssert('Sum : resultat unique non nomme, type int',
+    (TypeTab[FT].ResultCount = 1) And
+    (FieldPool[TypeTab[FT].ResultFirst].TypeIdx = PDT_INT));
+
+  { fonction sans aucun resultat, corps vide }
+  SymInit; TypeInit; FuncDefInit;
+  FuncParseTopLevel('package main' + Chr(10) + 'func P() {' + Chr(10) + '}');
+  SI := SymFind('P');
+  FT := SymTab[SI].TypeIdx;
+  FuncAssert('P : 0 resultat', TypeTab[FT].ResultCount = 0);
+
+  { fermeture/litteral de fonction capturant une variable englobante :    }
+  { x locale a G, reference depuis le corps d une fonction anonyme            }
+  { affectee a f, elle-meme locale a G                                          }
+  SymInit; TypeInit; FuncDefInit;
+  FuncParseTopLevel('package main' + Chr(10) +
+    'func G() {' + Chr(10) +
+    '	x := 1' + Chr(10) +
+    '	f := func() int {' + Chr(10) + '		return x' + Chr(10) + '	}' + Chr(10) +
+    '	_ = f' + Chr(10) + '}');
+  FuncAssert('G analysee sans erreur (fermeture capturant x)', ErrorCount = 0);
+
+  { defer : instruction "defer" a l interieur du corps de H }
+  SymInit; TypeInit; FuncDefInit;
+  FuncParseTopLevel('package main' + Chr(10) +
+    'func H() {' + Chr(10) + '	defer Close()' + Chr(10) + '}');
+  FuncAssert('H analysee sans erreur (defer)', ErrorCount = 0);
+
+  { defer sans reinitialiser ErrorCount avant : verifie ExplicitEment    }
+  { que ParseStatement route bien "defer" vers STK_DEFER }
+  SymInit; TypeInit; FuncDefInit;
+
+  { type fonction utilise comme type de variable : "var Callback func(int) int" }
+  FuncParseTopLevel('package main' + Chr(10) +
+    'var Callback func(int) int');
+  SI := SymFind('Callback');
+  FuncAssert('Callback declaree', SI >= 0);
+  FuncAssert('Callback : type TYK_FUNC', TypeTab[SymTab[SI].TypeIdx].Kind = TYK_FUNC);
+
+  { re-initialise les tables globales pour ne pas polluer Run reel }
+  ExprInit;
+  StmtInit;
+  SymInit;
+  FuncDefInit;
+End;
+
+{ ============================================================ }
+{ TODO 09 - STRUCTS ET METHODES (RECEVEURS VALEUR/POINTEUR)     }
+{ ============================================================ }
+{ Deux ajouts distincts : (1) la syntaxe de type "struct" (via              }
+{ ParseTypeExpr, comme "func" au TODO 08) et (2) les METHODES - des             }
+{ declarations de haut niveau "func" avec un RECEVEUR entre "func" et             }
+{ le nom, distinctes des fonctions ordinaires du TODO 08 (registree               }
+{ separement, pas dans SymTab : une methode ne s appelle jamais toute                 }
+{ seule, seulement via un selecteur "valeur.Methode(...)").                                }
+
+Function AlignUp(V, A: Integer): Integer;
+Begin
+  If A <= 1 Then AlignUp := V
+  Else AlignUp := ((V + A - 1) Div A) * A;
+End;
+
+{ TFieldBufEmbed : tampon Booleen parallele a BufNames/BufTypes,        }
+{ necessaire ici puisque les champs de struct (contrairement aux             }
+{ parametres/resultats) portent un IsEmbedded (TODO 09).                        }
+Type
+  TFieldBufEmbed = Array[0..63] Of Boolean;
+
+{ ParseStructFieldEntry est implementee juste apres ParseStructType -   }
+{ forward-declaree ici puisque ParseStructType (son seul appelant)             }
+{ vient en premier dans le fichier.                                                }
+Procedure ParseStructFieldEntry(Var BufNames: TFieldBufNames;
+  Var BufTypes: TFieldBufTypes; Var BufEmbed: TFieldBufEmbed;
+  Var BufCnt: Integer); Forward;
+
+{ ParseStructType : "struct" (deja consomme par l appelant) suivi d une  }
+{ liste de champs entre accolades. Calcule aussi Offset/Size/Align par              }
+{ un layout simple style C/Go reel (bourrage final aligne sur le plus                  }
+{ grand alignement de champ) - PREMIERE vraie utilisation de                                }
+{ TFieldRec.Offset, reserve depuis le TODO 04 mais jamais rempli avant                        }
+{ ce point. Utilise le meme tampon local + bulk-push final que                                }
+{ ParseParamList/ParseResultList (voir leur note "BUG reel corrige") :                            }
+{ un champ dont le type est lui-meme compose (ex. "F func(int) int")                                }
+{ pousserait sinon ses propres entrees AVANT celle du champ lui-meme,                                  }
+{ cassant la contigute de [FieldFirst, FieldFirst+Cnt).                                                   }
+Function ParseStructType: Integer;
+Var
+  FT, FieldStart, Cnt, CurOffset, MaxAlign, FAlign, I : Integer;
+  BufNames : TFieldBufNames;
+  BufTypes : TFieldBufTypes;
+  BufEmbed : TFieldBufEmbed;
+  BufCnt   : Integer;
+Begin
+  ParseStructType := -1;
+  If Not PPMatch('{') Then
+  Begin
+    FatalError('accolade ouvrante attendue apres "struct"');
+    Exit;
+  End;
+  PPSkipSemis;
+
+  BufCnt := 0;
+  While (Not PPAtEnd) And (Not PPIsOp('}')) Do
+  Begin
+    ParseStructFieldEntry(BufNames, BufTypes, BufEmbed, BufCnt);
+    PPSkipSemis;
+  End;
+  If Not PPMatch('}') Then
+    FatalError('accolade fermante attendue a la fin du "struct"');
+
+  FieldStart := FieldPoolCount;
+  Cnt := BufCnt;
+  For I := 0 To BufCnt - 1 Do
+    FieldPoolAdd(BufNames[I], BufTypes[I], BufEmbed[I]);
+
+  CurOffset := 0;
+  MaxAlign  := 1;
+  For I := FieldStart To FieldStart + Cnt - 1 Do
+  Begin
+    FAlign := TypeTab[FieldPool[I].TypeIdx].Align;
+    If FAlign < 1 Then FAlign := 1;
+    CurOffset := AlignUp(CurOffset, FAlign);
+    FieldPool[I].Offset := CurOffset;
+    CurOffset := CurOffset + TypeTab[FieldPool[I].TypeIdx].Size;
+    If FAlign > MaxAlign Then MaxAlign := FAlign;
+  End;
+
+  FT := TypeAdd(TYK_STRUCT, '', AlignUp(CurOffset, MaxAlign), MaxAlign, False, -1, -1);
+  TypeTab[FT].FieldFirst := FieldStart;
+  TypeTab[FT].FieldCount := Cnt;
+  ParseStructType := FT;
+End;
+
+{ ParseStructFieldEntry : UNE ligne de la liste de champs - soit un      }
+{ groupe NOMME partageant un type ("Nom1, Nom2 Type", meme algorithme          }
+{ que ParseParamOrResultGroup du TODO 08), soit un champ EMBARQUE/anonyme          }
+{ (juste un nom de type, sans nom de champ separe - "Animal" ou "*Animal",             }
+{ regle reelle de la spec Go pour la composition/promotion). Un '*' en                    }
+{ tete de ligne ne peut JAMAIS etre un nom de champ (les noms sont des                        }
+{ identificateurs), donc AUCUNE ambiguite pour la forme pointeur embarquee.                       }
+{ Accumule dans le tampon de l appelant (ParseStructType) plutot que                     }
+{ d ecrire directement dans FieldPool - voir sa note "BUG reel corrige".                     }
+Procedure ParseStructFieldEntry(Var BufNames: TFieldBufNames;
+  Var BufTypes: TFieldBufTypes; Var BufEmbed: TFieldBufEmbed;
+  Var BufCnt: Integer);
+Var
+  Names   : TDeclNameList;
+  NCount  : Integer;
+  TIdx, SI, PtrTIdx : Integer;
+  I : Integer;
+Begin
+  If PPIsOp('*') Then
+  Begin
+    PPAdvance;
+    If PPKind <> TOK_IDENT Then
+    Begin
+      FatalError('nom de type attendu apres "*" (champ embarque)');
+      Exit;
+    End;
+    Names[0] := PPVal;   { le nom promu = le nom du type pointe, PAS "*Nom" }
+    TIdx := ParseTypeExpr;
+    PtrTIdx := TypeAdd(TYK_POINTER, '', 4, 4, False, TIdx, -1);
+    If BufCnt <= High(BufNames) Then
+    Begin
+      BufNames[BufCnt] := Names[0];
+      BufTypes[BufCnt] := PtrTIdx;
+      BufEmbed[BufCnt] := True;
+      Inc(BufCnt);
+    End;
+    Exit;
+  End;
+
+  NCount := 0;
+  Repeat
+    If PPKind <> TOK_IDENT Then
+    Begin
+      FatalError('nom de champ ou nom de type attendu');
+      Exit;
+    End;
+    If NCount <= High(Names) Then
+    Begin
+      Names[NCount] := PPVal;
+      Inc(NCount);
+    End;
+    PPAdvance;
+  Until Not PPMatch(',');
+
+  If (PPKind = TOK_IDENT) Or PPIsOp('*') Or PPIsOp('[') Then
+  Begin
+    { groupe NOMME classique : Names[0..NCount-1] partagent ce type }
+    TIdx := ParseTypeExpr;
+    For I := 0 To NCount - 1 Do
+      If BufCnt <= High(BufNames) Then
+      Begin
+        BufNames[BufCnt] := Names[I];
+        BufTypes[BufCnt] := TIdx;
+        BufEmbed[BufCnt] := False;
+        Inc(BufCnt);
+      End;
+  End
+  Else If NCount = 1 Then
+  Begin
+    { un seul identificateur, rien d autre ne suit : il EST lui-meme le  }
+    { type - champ embarque sans pointeur ("Animal" seul).                  }
+    SI := SymFind(Names[0]);
+    If (SI >= 0) And (SymTab[SI].Kind = SK_TYPE) Then TIdx := SymTab[SI].TypeIdx
+    Else If IsPredeclaredType(Names[0]) <> 0 Then TIdx := IsPredeclaredType(Names[0])
+    Else
+    Begin
+      FatalError('type inconnu (champ embarque): ' + Names[0]);
+      Exit;
+    End;
+    If BufCnt <= High(BufNames) Then
+    Begin
+      BufNames[BufCnt] := Names[0];
+      BufTypes[BufCnt] := TIdx;
+      BufEmbed[BufCnt] := True;
+      Inc(BufCnt);
+    End;
+  End
+  Else
+    FatalError('type attendu apres les noms de champs');
+End;
+
+{ StructFindField : recherche un champ par nom, D ABORD directement,    }
+{ PUIS (recursivement, promotion multi-niveaux) dans chaque champ            }
+{ EMBARQUE - deref une indirection pointeur si le champ embarque est               }
+{ "*Animal". Simplification documentee : en cas de nom promouvable a la               }
+{ MEME profondeur depuis DEUX embarquements differents, la vraie regle Go                 }
+{ exigerait une erreur d ambiguite explicite - ce compilateur prend                          }
+{ simplement le PREMIER trouve (ordre de declaration des champs) ;                              }
+{ verification complete deferee au TODO 19 (analyse semantique).                                   }
+Function StructFindField(STypeIdx: Integer; Const FName: TString): Integer;
+Var I, EmbTypeIdx, Found : Integer;
+Begin
+  StructFindField := -1;
+  If (STypeIdx < 0) Or (TypeTab[STypeIdx].Kind <> TYK_STRUCT) Then Exit;
+
+  For I := TypeTab[STypeIdx].FieldFirst To TypeTab[STypeIdx].FieldFirst +
+    TypeTab[STypeIdx].FieldCount - 1 Do
+    If FieldPool[I].Name = FName Then
+    Begin
+      StructFindField := I;
+      Exit;
+    End;
+
+  For I := TypeTab[STypeIdx].FieldFirst To TypeTab[STypeIdx].FieldFirst +
+    TypeTab[STypeIdx].FieldCount - 1 Do
+    If FieldPool[I].IsEmbedded Then
+    Begin
+      EmbTypeIdx := FieldPool[I].TypeIdx;
+      If TypeTab[EmbTypeIdx].Kind = TYK_POINTER Then
+        EmbTypeIdx := TypeTab[EmbTypeIdx].ElemTypeIdx;
+      Found := StructFindField(EmbTypeIdx, FName);
+      If Found >= 0 Then
+      Begin
+        StructFindField := Found;
+        Exit;
+      End;
+    End;
+End;
+
+{ TMethodDefRec/MethodDefPool : methodes de haut niveau - une fonction    }
+{ avec un RECEVEUR entre "func" et le nom. PAS enregistrees dans SymTab       }
+{ (contrairement aux fonctions du TODO 08) : une methode Go n existe                }
+{ jamais comme identificateur autonome, seulement via un selecteur                     }
+{ "valeur.Methode".                                                                       }
+{ MAX_FUNC (deja reserve au TODO 01) est reutilise tel quel - une methode              }
+{ est, structurellement, juste une fonction avec un receveur en plus.                     }
+Type
+  TMethodDefRec = Record
+    RecvName      : TString;
+    RecvTypeIdx   : Integer;   { type du receveur (struct OU pointeur-vers-struct) }
+    IsPointerRecv : Boolean;
+    Name          : TString;
+    TypeIdx       : Integer;   { signature TYK_FUNC }
+    BodyStmtIdx   : Integer;   { STK_BLOCK dans StmtPool }
+  End;
+
+Var
+  MethodDefPool  : Array[0..MAX_FUNC - 1] Of TMethodDefRec;
+  MethodDefCount : Integer;
+
+Procedure MethodDefInit;
+Begin
+  MethodDefCount := 0;
+End;
+
+{ MethodFind : meme principe que StructFindField (direct puis promotion  }
+{ recursive via les champs embarques), mais sur MethodDefPool - resout        }
+{ "valeur.Methode" en cherchant une methode dont le receveur (depointerise         }
+{ si nomme par pointeur) correspond au type de "valeur" (lui-meme                    }
+{ depointerise si "valeur" est un pointeur - c est ResolveSelectorType             }
+{ ci-dessous qui gere ce premier niveau de dereference).                                }
+Function MethodFind(STypeIdx: Integer; Const MName: TString): Integer;
+Var I, EmbTypeIdx, RTIdx, Found : Integer;
+Begin
+  MethodFind := -1;
+  If (STypeIdx < 0) Or (TypeTab[STypeIdx].Kind <> TYK_STRUCT) Then Exit;
+
+  For I := 0 To MethodDefCount - 1 Do
+  Begin
+    RTIdx := MethodDefPool[I].RecvTypeIdx;
+    If TypeTab[RTIdx].Kind = TYK_POINTER Then RTIdx := TypeTab[RTIdx].ElemTypeIdx;
+    If (RTIdx = STypeIdx) And (MethodDefPool[I].Name = MName) Then
+    Begin
+      MethodFind := I;
+      Exit;
+    End;
+  End;
+
+  For I := TypeTab[STypeIdx].FieldFirst To TypeTab[STypeIdx].FieldFirst +
+    TypeTab[STypeIdx].FieldCount - 1 Do
+    If FieldPool[I].IsEmbedded Then
+    Begin
+      EmbTypeIdx := FieldPool[I].TypeIdx;
+      If TypeTab[EmbTypeIdx].Kind = TYK_POINTER Then
+        EmbTypeIdx := TypeTab[EmbTypeIdx].ElemTypeIdx;
+      Found := MethodFind(EmbTypeIdx, MName);
+      If Found >= 0 Then
+      Begin
+        MethodFind := Found;
+        Exit;
+      End;
+    End;
+End;
+
+{ ResolveSelectorType : appelee par ParsePrimaryExpr (TODO 06/patch       }
+{ TODO 09/10) juste apres avoir cree un noeud EK_SELECTOR - resout au           }
+{ mieux son TypeIdx (champ OU methode), avec AUTO-DEREFERENCE si la base            }
+{ est un pointeur vers struct (regle Go reelle : "p.Champ" fonctionne                  }
+{ aussi bien si p est *T que si p est T). Best-effort STRICT, meme                        }
+{ discipline que tout le reste du fichier depuis le TODO 06 : aucune                          }
+{ erreur n est levee ici si le champ/methode reste introuvable (base de                          }
+{ type inconnu, ex. "fmt", ou vraie erreur de programme) - la                                        }
+{ verification EXHAUSTIVE est le travail du TODO 19.                                                     }
+{ Cas TYK_INTERFACE (TODO 10) : resout a la signature DECLAREE par                                          }
+{ l interface elle-meme (methode reellement resolue au moment de                                              }
+{ l EXECUTION selon le type concret dynamique, pas de l analyse - table                                          }
+{ de methodes simplifiee documentee dans le TODO 10 lui-meme, "_GOT_                                                }
+{ descripteur de type" complet reste un sujet de generation de code,                                                  }
+{ TODO 21+).                                                                                                             }
+Procedure ResolveSelectorType(SelNode: Integer);
+Var BaseTypeIdx, FIdx, MIdx, I : Integer;
+Begin
+  BaseTypeIdx := ExprPool[ExprPool[SelNode].Left].TypeIdx;
+  If BaseTypeIdx < 0 Then Exit;
+
+  If TypeTab[BaseTypeIdx].Kind = TYK_POINTER Then
+    BaseTypeIdx := TypeTab[BaseTypeIdx].ElemTypeIdx;
+  If BaseTypeIdx < 0 Then Exit;
+
+  If TypeTab[BaseTypeIdx].Kind = TYK_INTERFACE Then
+  Begin
+    For I := TypeTab[BaseTypeIdx].MethodFirst To TypeTab[BaseTypeIdx].MethodFirst +
+      TypeTab[BaseTypeIdx].MethodCount - 1 Do
+      If FieldPool[I].Name = ExprPool[SelNode].NameVal Then
+      Begin
+        ExprPool[SelNode].TypeIdx := FieldPool[I].TypeIdx;
+        Exit;
+      End;
+    Exit;
+  End;
+
+  If TypeTab[BaseTypeIdx].Kind <> TYK_STRUCT Then Exit;
+
+  FIdx := StructFindField(BaseTypeIdx, ExprPool[SelNode].NameVal);
+  If FIdx >= 0 Then
+  Begin
+    ExprPool[SelNode].TypeIdx := FieldPool[FIdx].TypeIdx;
+    Exit;
+  End;
+
+  MIdx := MethodFind(BaseTypeIdx, ExprPool[SelNode].NameVal);
+  If MIdx >= 0 Then
+    ExprPool[SelNode].TypeIdx := MethodDefPool[MIdx].TypeIdx;
+End;
+
+{ ParseFuncDecl (etendue) : detecte maintenant un RECEVEUR optionnel     }
+{ entre "func" et le nom - "func (r T) Nom(...)..." (methode) au lieu de       }
+{ "func Nom(...)..." (fonction ordinaire, TODO 08, comportement inchange).        }
+{ Le type du receveur passe par ParseTypeExpr lui-meme (qui gere deja "*T"           }
+{ recursivement depuis le TODO 05) - pas besoin de retraiter le prefixe                  }
+{ pointeur ici, juste de constater APRES coup si le TypeIdx obtenu est                     }
+{ TYK_POINTER.                                                                                }
+Procedure ParseFuncDecl;
+Var
+  Nam, RecvName : TString;
+  FT, BodyIdx, RecvTypeIdx : Integer;
+  IsMethod, IsPtrRecv : Boolean;
+Begin
+  PPAdvance;   { func }
+  IsMethod := PPIsOp('(');
+  RecvName := '';
+  RecvTypeIdx := -1;
+  IsPtrRecv := False;
+
+  If IsMethod Then
+  Begin
+    PPAdvance;   { '(' }
+    If PPKind <> TOK_IDENT Then
+    Begin
+      FatalError('nom de receveur attendu');
+      Exit;
+    End;
+    RecvName := PPVal;
+    PPAdvance;
+    RecvTypeIdx := ParseTypeExpr;
+    IsPtrRecv := (RecvTypeIdx >= 0) And (TypeTab[RecvTypeIdx].Kind = TYK_POINTER);
+    If Not PPMatch(')') Then
+      FatalError('parenthese fermante attendue apres le receveur');
+  End;
+
+  If PPKind <> TOK_IDENT Then
+  Begin
+    FatalError('nom de fonction/methode attendu');
+    Exit;
+  End;
+  Nam := PPVal;
+  PPAdvance;
+
+  FT := ParseFuncSignature;
+  SymEnterScope;
+  If IsMethod And (RecvName <> '') And (RecvName <> '_') Then
+    SymAdd(RecvName, SK_VAR, RecvTypeIdx);
+  RegisterFuncScopeSymbols(FT);
+  BodyIdx := ParseBlock;
+  SymLeaveScope;
+
+  If IsMethod Then
+  Begin
+    If MethodDefCount < MAX_FUNC Then
+    Begin
+      MethodDefPool[MethodDefCount].RecvName      := RecvName;
+      MethodDefPool[MethodDefCount].RecvTypeIdx   := RecvTypeIdx;
+      MethodDefPool[MethodDefCount].IsPointerRecv := IsPtrRecv;
+      MethodDefPool[MethodDefCount].Name          := Nam;
+      MethodDefPool[MethodDefCount].TypeIdx       := FT;
+      MethodDefPool[MethodDefCount].BodyStmtIdx   := BodyIdx;
+      Inc(MethodDefCount);
+    End
+    Else
+      WarnMsg('table des methodes pleine (MAX_FUNC)');
+  End
+  Else
+  Begin
+    SymAdd(Nam, SK_FUNC, FT);
+    If FuncDefCount < MAX_FUNC Then
+    Begin
+      FuncDefPool[FuncDefCount].Name        := Nam;
+      FuncDefPool[FuncDefCount].TypeIdx     := FT;
+      FuncDefPool[FuncDefCount].BodyStmtIdx := BodyIdx;
+      Inc(FuncDefCount);
+    End
+    Else
+      WarnMsg('table des fonctions pleine (MAX_FUNC)');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ StructSelfTest : champs groupes, champ embarque valeur et      }
+{ pointeur, promotion de champ ET de methode, receveur valeur       }
+{ vs pointeur, acces avec auto-dereference, decalages/taille.           }
+{ ------------------------------------------------------------ }
+
+Procedure StructAssert(Const Label_: TString; Cond: Boolean);
+Begin
+  If Not Cond Then
+    FatalError('StructSelfTest: ' + Label_ + ' a echoue');
+End;
+
+Procedure StructSelfTest;
+Var
+  TIdx, SI, FIdx, MIdx : Integer;
+Begin
+  ExprInit; StmtInit; SymInit; TypeInit; FuncDefInit; MethodDefInit;
+
+  { struct avec 2 champs groupes partageant le meme type (X, Y int) }
+  FuncParseTopLevel('package main' + Chr(10) +
+    'type Point struct {' + Chr(10) + '	X, Y int' + Chr(10) + '}');
+  SI := SymFind('Point');
+  StructAssert('Point declaree', SI >= 0);
+  StructAssert('Point : SK_TYPE', SymTab[SI].Kind = SK_TYPE);
+  TIdx := SymTab[SI].TypeIdx;
+  StructAssert('Point : TYK_STRUCT', TypeTab[TIdx].Kind = TYK_STRUCT);
+  StructAssert('Point : 2 champs (X, Y groupes)', TypeTab[TIdx].FieldCount = 2);
+  StructAssert('Point : X et Y de meme type (int)',
+    FieldPool[TypeTab[TIdx].FieldFirst].TypeIdx =
+    FieldPool[TypeTab[TIdx].FieldFirst + 1].TypeIdx);
+  StructAssert('Point : Y a un decalage > 0 (apres X)',
+    FieldPool[TypeTab[TIdx].FieldFirst + 1].Offset > 0);
+  StructAssert('Point : taille totale = 8 (2 x int 4 octets)',
+    TypeTab[TIdx].Size = 8);
+
+  { embarquement (composition) : Chien embarque Animal par VALEUR,      }
+  { avec un champ nomme en plus, et une methode Parler sur *Animal          }
+  { promue jusqu a Chien - exemple canonique du TODO 09 lui-meme.               }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  FuncParseTopLevel('package main' + Chr(10) +
+    'type Animal struct {' + Chr(10) + '	Nom string' + Chr(10) + '}' + Chr(10) +
+    'func (a *Animal) Parler() string {' + Chr(10) +
+    '	return a.Nom' + Chr(10) + '}' + Chr(10) +
+    'type Chien struct {' + Chr(10) +
+    '	Animal' + Chr(10) + '	Race string' + Chr(10) + '}');
+  SI := SymFind('Chien');
+  StructAssert('Chien declaree', SI >= 0);
+  TIdx := SymTab[SI].TypeIdx;
+  StructAssert('Chien : 2 champs (Animal embarque + Race)', TypeTab[TIdx].FieldCount = 2);
+  StructAssert('Chien : premier champ EST embarque',
+    FieldPool[TypeTab[TIdx].FieldFirst].IsEmbedded);
+  StructAssert('Chien : nom du champ embarque = "Animal"',
+    FieldPool[TypeTab[TIdx].FieldFirst].Name = 'Animal');
+
+  { promotion de CHAMP : Chien.Nom doit resoudre jusqu au champ Nom      }
+  { d Animal (profondeur 1) }
+  FIdx := StructFindField(TIdx, 'Nom');
+  StructAssert('Chien.Nom promu depuis Animal (champ trouve)', FIdx >= 0);
+
+  { promotion de METHODE : Chien doit "avoir" Parler() bien qu elle      }
+  { soit declaree sur *Animal, pas sur Chien lui-meme                       }
+  MIdx := MethodFind(TIdx, 'Parler');
+  StructAssert('Chien.Parler() promue depuis *Animal', MIdx >= 0);
+  StructAssert('Parler a un receveur POINTEUR', MethodDefPool[MIdx].IsPointerRecv);
+
+  { acces a un champ avec AUTO-DEREFERENCE : une variable de type        }
+  { *Animal doit quand meme resoudre p.Nom (pas besoin de (*p).Nom)          }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  FuncParseTopLevel('package main' + Chr(10) +
+    'type Animal struct {' + Chr(10) + '	Nom string' + Chr(10) + '}' + Chr(10) +
+    'func F(p *Animal) string {' + Chr(10) + '	return p.Nom' + Chr(10) + '}');
+  StructAssert('acces p.Nom via *Animal analyse sans erreur (auto-deref)',
+    ErrorCount = 0);
+
+  { receveur par VALEUR (copie) vs receveur par POINTEUR (modifie       }
+  { l original) - juste la distinction structurelle IsPointerRecv,             }
+  { la vraie semantique de copie/modification est un sujet de                     }
+  { GENERATION DE CODE (TODO 21+), hors de portee de l analyse pure.                 }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  FuncParseTopLevel('package main' + Chr(10) +
+    'type Compteur struct {' + Chr(10) + '	N int' + Chr(10) + '}' + Chr(10) +
+    'func (c Compteur) Lire() int {' + Chr(10) + '	return c.N' + Chr(10) + '}' +
+    Chr(10) +
+    'func (c *Compteur) Incrementer() {' + Chr(10) + '	c.N = c.N + 1' +
+    Chr(10) + '}');
+  StructAssert('2 methodes enregistrees (Lire + Incrementer)', MethodDefCount = 2);
+  StructAssert('Lire : receveur VALEUR', Not MethodDefPool[0].IsPointerRecv);
+  StructAssert('Incrementer : receveur POINTEUR', MethodDefPool[1].IsPointerRecv);
+
+  { re-initialise les tables globales pour ne pas polluer Run reel }
+  ExprInit; StmtInit; SymInit; FuncDefInit; MethodDefInit;
+End;
+
+{ ============================================================ }
+{ TODO 10 - INTERFACES, ASSERTIONS ET DISPATCH DYNAMIQUE        }
+{ ============================================================ }
+{ La verification de SATISFACTION d interface (un type concret            }
+{ implemente une interface des qu il possede toutes ses methodes, SANS           }
+{ declaration explicite) est EXPLICITEMENT confiee au TODO 19 par le             }
+{ roadmap lui-meme ("verification a la compilation") - ce TODO se limite               }
+{ donc a la SYNTAXE des interfaces (declaration, interface totalement            }
+{ vide equivalente a any, embarquement d interface) et au CABLAGE de                    }
+{ deux mecanismes qui                                                                     }
+{ existaient deja partiellement : l assertion de type (TODO 06) et le                           }
+{ type switch (TODO 07) obtiennent ici leur forme comma-ok complete, et                            }
+{ ResolveSelectorType (TODO 09) sait desormais resoudre un selecteur sur                              }
+{ une base de type INTERFACE (pas seulement struct).                                                     }
+
+{ ParseInterfaceMemberEntry est implementee juste apres ParseInterfaceType }
+{ - forward-declaree ici puisque ParseInterfaceType (son seul appelant)      }
+{ vient en premier dans le fichier (meme pattern que ParseStructType/            }
+{ ParseStructFieldEntry au TODO 09).                                                  }
+Procedure ParseInterfaceMemberEntry(Var BufNames: TFieldBufNames;
+  Var BufTypes: TFieldBufTypes; Var BufCnt: Integer); Forward;
+
+{ ParseInterfaceType : "interface" (deja consomme par l appelant) suivi  }
+{ d une liste de membres entre accolades - reutilise FieldPool (comme         }
+{ les champs de struct et les parametres/resultats de fonction) pour              }
+{ stocker CHAQUE methode requise (Name=nom de la methode, TypeIdx=sa                 }
+{ signature TYK_FUNC), mais reference la plage via MethodFirst/                          }
+{ MethodCount plutot que FieldFirst/FieldCount - PREMIERE vraie                              }
+{ utilisation de ces deux champs, reserves depuis le TODO 04 mais                               }
+{ jamais remplis avant ce point (les methodes de STRUCT, elles,                                    }
+{ restent volontairement hors de TypeTab, voir MethodDefPool au TODO                                  }
+{ 09 - une interface, elle, declare ses methodes INLINE comme des                                        }
+{ champs de struct, donc une plage contigue convient parfaitement ici).                                     }
+{ Meme tampon local + bulk-push final que ParseParamList/ParseStructType             }
+{ (voir leur note "BUG reel corrige") : c est PRECISEMENT ce cas -                          }
+{ CHAQUE methode d interface a sa propre signature imbriquee (parametres/               }
+{ resultats) qui pousse ses propres entrees dans FieldPool - qui a REVELE               }
+{ le probleme en premier lieu, chaque interface a 2+ methodes le                                }
+{ declenchant a coup sur.                                                                          }
+Function ParseInterfaceType: Integer;
+Var
+  FT, MethodStart, Cnt, I : Integer;
+  BufNames : TFieldBufNames;
+  BufTypes : TFieldBufTypes;
+  BufCnt   : Integer;
+Begin
+  ParseInterfaceType := -1;
+  If Not PPMatch('{') Then
+  Begin
+    FatalError('accolade ouvrante attendue apres "interface"');
+    Exit;
+  End;
+  PPSkipSemis;
+
+  BufCnt := 0;
+  While (Not PPAtEnd) And (Not PPIsOp('}')) Do
+  Begin
+    ParseInterfaceMemberEntry(BufNames, BufTypes, BufCnt);
+    PPSkipSemis;
+  End;
+  If Not PPMatch('}') Then
+    FatalError('accolade fermante attendue a la fin du "interface"');
+
+  MethodStart := FieldPoolCount;
+  Cnt := BufCnt;
+  For I := 0 To BufCnt - 1 Do
+    FieldPoolAdd(BufNames[I], BufTypes[I], False);
+
+  FT := TypeAdd(TYK_INTERFACE, '', 8, 4, False, -1, -1);
+  TypeTab[FT].MethodFirst := MethodStart;
+  TypeTab[FT].MethodCount := Cnt;
+  ParseInterfaceType := FT;
+End;
+
+{ ParseInterfaceMemberEntry : UN membre - soit "NomMethode(Params)         }
+{ [Resultats]" (signature complete, SANS corps - reutilise directement         }
+{ ParseFuncSignature du TODO 08, PP est deja positionne juste avant le             }
+{ "(" des parametres exactement comme elle l attend), soit le nom D UNE               }
+{ INTERFACE DEJA DECLAREE (embarquement - "Reader" seul, sans                             }
+{ parentheses). L embarquement est APLATI (methodes copiees directement                     }
+{ dans celle-ci) plutot que garde comme reference recursive - plus                              }
+{ simple, et suffisant puisqu aucune verification de satisfaction                                  }
+{ d interface (TODO 19) ne depend de la distinction structurelle entre                                }
+{ "declaree directement" et "promue par embarquement". Accumule dans le          }
+{ tampon de l appelant (ParseInterfaceType), voir sa note "BUG reel                        }
+{ corrige".                                                                                    }
+Procedure ParseInterfaceMemberEntry(Var BufNames: TFieldBufNames;
+  Var BufTypes: TFieldBufTypes; Var BufCnt: Integer);
+Var
+  Nam : TString;
+  FT, SI, I : Integer;
+Begin
+  If PPKind <> TOK_IDENT Then
+  Begin
+    FatalError('nom de methode ou d''interface embarquee attendu');
+    Exit;
+  End;
+  Nam := PPVal;
+  PPAdvance;
+
+  If PPIsOp('(') Then
+  Begin
+    FT := ParseFuncSignature;
+    If BufCnt <= High(BufNames) Then
+    Begin
+      BufNames[BufCnt] := Nam;
+      BufTypes[BufCnt] := FT;
+      Inc(BufCnt);
+    End;
+  End
+  Else
+  Begin
+    SI := SymFind(Nam);
+    If (SI < 0) Or (SymTab[SI].Kind <> SK_TYPE) Or
+       (TypeTab[SymTab[SI].TypeIdx].Kind <> TYK_INTERFACE) Then
+    Begin
+      FatalError('interface embarquee inconnue: ' + Nam);
+      Exit;
+    End;
+    FT := SymTab[SI].TypeIdx;
+    For I := TypeTab[FT].MethodFirst To TypeTab[FT].MethodFirst +
+      TypeTab[FT].MethodCount - 1 Do
+      If BufCnt <= High(BufNames) Then
+      Begin
+        BufNames[BufCnt] := FieldPool[I].Name;
+        BufTypes[BufCnt] := FieldPool[I].TypeIdx;
+        Inc(BufCnt);
+      End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ InterfaceSelfTest : declaration d interface (signatures de       }
+{ methodes), interface vide (equivalente a any), embarquement          }
+{ d interface (methodes promues/aplaties), assertion comma-ok             }
+{ (:= et =), dispatch simplifie sur une base de type interface.               }
+{ ------------------------------------------------------------ }
+
+Procedure InterfaceAssert(Const Label_: TString; Cond: Boolean);
+Begin
+  If Not Cond Then
+    FatalError('InterfaceSelfTest: ' + Label_ + ' a echoue');
+End;
+
+Procedure InterfaceSelfTest;
+Var
+  TIdx, SI, N : Integer;
+Begin
+  ExprInit; StmtInit; SymInit; TypeInit; FuncDefInit; MethodDefInit;
+
+  { interface avec 2 signatures de methode }
+  FuncParseTopLevel('package main' + Chr(10) +
+    'type Shape interface {' + Chr(10) +
+    '	Area() float64' + Chr(10) +
+    '	Perimeter() float64' + Chr(10) + '}');
+  SI := SymFind('Shape');
+  InterfaceAssert('Shape declaree', SI >= 0);
+  TIdx := SymTab[SI].TypeIdx;
+  InterfaceAssert('Shape : TYK_INTERFACE', TypeTab[TIdx].Kind = TYK_INTERFACE);
+  InterfaceAssert('Shape : 2 methodes', TypeTab[TIdx].MethodCount = 2);
+  InterfaceAssert('Shape : 1ere methode "Area"',
+    FieldPool[TypeTab[TIdx].MethodFirst].Name = 'Area');
+  InterfaceAssert('Shape.Area() retourne float64',
+    TypeTab[FieldPool[TypeTab[TIdx].MethodFirst].TypeIdx].ResultCount = 1);
+
+  { interface totalement vide - equivalente a any, 0 methode }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  FuncParseTopLevel('package main' + Chr(10) + 'var W interface{}');
+  SI := SymFind('W');
+  InterfaceAssert('W declaree', SI >= 0);
+  TIdx := SymTab[SI].TypeIdx;
+  InterfaceAssert('W : TYK_INTERFACE', TypeTab[TIdx].Kind = TYK_INTERFACE);
+  InterfaceAssert('interface{} : 0 methode', TypeTab[TIdx].MethodCount = 0);
+
+  { embarquement d interface : ReadWriter embarque Reader et Writer,    }
+  { ses methodes doivent etre la SOMME des deux (promotion/aplatissement) }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  FuncParseTopLevel('package main' + Chr(10) +
+    'type Reader interface {' + Chr(10) + '	Read() int' + Chr(10) + '}' + Chr(10) +
+    'type Writer interface {' + Chr(10) + '	Write() int' + Chr(10) + '}' + Chr(10) +
+    'type ReadWriter interface {' + Chr(10) +
+    '	Reader' + Chr(10) + '	Writer' + Chr(10) + '}');
+  SI := SymFind('ReadWriter');
+  InterfaceAssert('ReadWriter declaree', SI >= 0);
+  TIdx := SymTab[SI].TypeIdx;
+  InterfaceAssert('ReadWriter : 2 methodes promues (Read + Write)',
+    TypeTab[TIdx].MethodCount = 2);
+
+  { assertion comma-ok, forme := }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  SymAdd('x', SK_VAR, PDT_ANY);
+  N := StmtParseString('v, ok := x.(int)');
+  InterfaceAssert('v, ok := x.(int) est STK_SHORTVAR', StmtPool[N].Kind = STK_SHORTVAR);
+  InterfaceAssert('comma-ok := : 2 entrees (v et ok)', StmtPool[N].ArgCount = 2);
+  SI := SymFind('v');
+  InterfaceAssert('v declaree avec le type asserte (int)',
+    (SI >= 0) And (SymTab[SI].TypeIdx = PDT_INT));
+  SI := SymFind('ok');
+  InterfaceAssert('ok declaree avec le type bool',
+    (SI >= 0) And (SymTab[SI].TypeIdx = PDT_BOOL));
+
+  { assertion comma-ok, forme = (v et ok deja declarees) }
+  SymAdd('v2', SK_VAR, PDT_INT);
+  SymAdd('ok2', SK_VAR, PDT_BOOL);
+  N := StmtParseString('v2, ok2 = x.(int)');
+  InterfaceAssert('v2, ok2 = x.(int) est STK_ASSIGN', StmtPool[N].Kind = STK_ASSIGN);
+  InterfaceAssert('comma-ok = : 2 entrees', StmtPool[N].ArgCount = 2);
+
+  { dispatch simplifie sur une base de type INTERFACE : la methode       }
+  { resout a la signature DECLAREE par l interface (pas de vraie itable,      }
+  { simplification documentee) }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  FuncParseTopLevel('package main' + Chr(10) +
+    'type Shape interface {' + Chr(10) + '	Area() float64' + Chr(10) + '}' + Chr(10) +
+    'func F(s Shape) float64 {' + Chr(10) + '	return s.Area()' + Chr(10) + '}');
+  InterfaceAssert('s.Area() via interface analyse sans erreur', ErrorCount = 0);
+
+  { re-initialise les tables globales pour ne pas polluer Run reel }
+  ExprInit; StmtInit; SymInit; FuncDefInit; MethodDefInit;
+End;
+
+{ ============================================================ }
+{ TODO 11 - TABLEAUX ET SLICES : MAKE/APPEND/COPY/LEN/CAP       }
+{ ============================================================ }
+{ Deux ajouts distincts, comme pour struct/interface avant : la SYNTAXE   }
+{ de type crochets ("[N]T" tableau fixe, "[]T" slice - deja cablee dans      }
+{ ParseTypeExpr plus haut dans le fichier, TODO 05, puisqu elle doit             }
+{ etre disponible avant ce bloc) et les litteraux composes/fonctions               }
+{ integrees qui les manipulent. La distinction de SEMANTIQUE tableau                  }
+{ (VALEUR, copie integrale) vs slice (REFERENCE, en-tete copie mais                      }
+{ pointant vers le meme tableau sous-jacent) reste, comme les fermetures                     }
+{ du TODO 08, un sujet de GENERATION DE CODE (TODO 21+) - rien a faire                          }
+{ de plus ici au niveau de l analyse pure, qui ne fait que DISTINGUER                              }
+{ TYK_ARRAY de TYK_SLICE (deja le cas, ce sont deux TTypeKind distincts).                              }
+{                                                                          }
+{ append/copy/len/cap (BI_APPEND/BI_COPY/BI_LEN/BI_CAP, deja classifies       }
+{ comme identificateurs predeclares depuis le TODO 03) n ont besoin                    }
+{ d AUCUNE syntaxe speciale - "len(s)"/"append(s, v)" etc. sont deja               }
+{ des appels de fonction ORDINAIRES pour ParsePrimaryExpr/ParseCallArgs                  }
+{ (TODO 06), la seule chose ajoutee ici est l INFERENCE DE TYPE best-                       }
+{ effort (len/cap/copy -> int, append -> meme type que son 1er argument)                       }
+{ dans ParseCallArgs, plus haut dans le fichier.                                                   }
+
+{ ------------------------------------------------------------ }
+{ ArraySelfTest : type tableau fixe, type slice, multidimensionnel,  }
+{ make([]T, Len[, Cap]), litteral compose tableau/slice, inference        }
+{ de type append/len/cap/copy, for-range avec le vrai ElemTypeIdx.           }
+{ ------------------------------------------------------------ }
+
+Procedure ArrayAssert(Const Label_: TString; Cond: Boolean);
+Begin
+  If Not Cond Then
+    FatalError('ArraySelfTest: ' + Label_ + ' a echoue');
+End;
+
+Procedure ArraySelfTest;
+Var
+  TIdx, SI, E : Integer;
+Begin
+  ExprInit; StmtInit; SymInit; TypeInit; FuncDefInit; MethodDefInit;
+
+  { tableau fixe [5]int }
+  FuncParseTopLevel('package main' + Chr(10) + 'var A [5]int');
+  SI := SymFind('A');
+  ArrayAssert('A declaree', SI >= 0);
+  TIdx := SymTab[SI].TypeIdx;
+  ArrayAssert('A : TYK_ARRAY', TypeTab[TIdx].Kind = TYK_ARRAY);
+  ArrayAssert('A : longueur 5', TypeTab[TIdx].ArrayLen = 5);
+  ArrayAssert('A : taille = 20 (5 x int 4 octets)', TypeTab[TIdx].Size = 20);
+  ArrayAssert('A : ElemTypeIdx = int', TypeTab[TIdx].ElemTypeIdx = PDT_INT);
+
+  { slice []int }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  FuncParseTopLevel('package main' + Chr(10) + 'var S []int');
+  SI := SymFind('S');
+  TIdx := SymTab[SI].TypeIdx;
+  ArrayAssert('S : TYK_SLICE', TypeTab[TIdx].Kind = TYK_SLICE);
+  ArrayAssert('S : ElemTypeIdx = int', TypeTab[TIdx].ElemTypeIdx = PDT_INT);
+
+  { multidimensionnel : [][]int (slice de slices) et [3][3]int (tableau  }
+  { de tableaux) - recursivite naturelle de ParseTypeExpr, aucun code               }
+  { special necessaire. }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  FuncParseTopLevel('package main' + Chr(10) +
+    'var M [][]int' + Chr(10) + 'var G [3][3]int');
+  SI := SymFind('M');
+  TIdx := SymTab[SI].TypeIdx;
+  ArrayAssert('M : TYK_SLICE (exterieur)', TypeTab[TIdx].Kind = TYK_SLICE);
+  ArrayAssert('M : element est aussi TYK_SLICE',
+    TypeTab[TypeTab[TIdx].ElemTypeIdx].Kind = TYK_SLICE);
+  SI := SymFind('G');
+  TIdx := SymTab[SI].TypeIdx;
+  ArrayAssert('G : TYK_ARRAY (exterieur), longueur 3', (TypeTab[TIdx].Kind = TYK_ARRAY)
+    And (TypeTab[TIdx].ArrayLen = 3));
+  ArrayAssert('G : element est aussi TYK_ARRAY, longueur 3',
+    (TypeTab[TypeTab[TIdx].ElemTypeIdx].Kind = TYK_ARRAY) And
+    (TypeTab[TypeTab[TIdx].ElemTypeIdx].ArrayLen = 3));
+
+  { make([]int, 3, 10) }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  E := ExprParseString('make([]int, 3, 10)');
+  ArrayAssert('make([]int,...) : TypeIdx est TYK_SLICE',
+    TypeTab[ExprPool[E].TypeIdx].Kind = TYK_SLICE);
+  ArrayAssert('make([]int,...) : 2 arguments (Len, Cap)', ExprPool[E].ArgCount = 2);
+
+  { litteral compose tableau et slice }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  E := ExprParseString('[3]int{1, 2, 3}');
+  ArrayAssert('[3]int{...} est EK_COMPOSITE', ExprPool[E].Kind = EK_COMPOSITE);
+  ArrayAssert('[3]int{...} : TypeIdx est TYK_ARRAY',
+    TypeTab[ExprPool[E].TypeIdx].Kind = TYK_ARRAY);
+  ArrayAssert('[3]int{...} : 3 elements', ExprPool[E].ArgCount = 3);
+
+  E := ExprParseString('[]int{1, 2, 3}');
+  ArrayAssert('[]int{...} : TypeIdx est TYK_SLICE',
+    TypeTab[ExprPool[E].TypeIdx].Kind = TYK_SLICE);
+
+  { inference de type : len/cap/copy -> int, append -> meme type que s }
+  SymAdd('s', SK_VAR, TypeAdd(TYK_SLICE, '', 12, 4, False, PDT_INT, -1));
+  E := ExprParseString('len(s)');
+  ArrayAssert('len(s) : type int', ExprPool[E].TypeIdx = PDT_INT);
+  E := ExprParseString('cap(s)');
+  ArrayAssert('cap(s) : type int', ExprPool[E].TypeIdx = PDT_INT);
+  E := ExprParseString('append(s, 1)');
+  ArrayAssert('append(s, 1) : meme type que s (slice)',
+    TypeTab[ExprPool[E].TypeIdx].Kind = TYK_SLICE);
+
+  { for-range avec le vrai ElemTypeIdx d un slice }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  FuncParseTopLevel('package main' + Chr(10) +
+    'func F(arr []int) {' + Chr(10) +
+    '	for i, v := range arr {' + Chr(10) +
+    '		_ = i' + Chr(10) + '		_ = v' + Chr(10) + '	}' + Chr(10) + '}');
+  ArrayAssert('for-range sur []int analyse sans erreur', ErrorCount = 0);
+
+  { re-initialise les tables globales pour ne pas polluer Run reel }
+  ExprInit; StmtInit; SymInit; FuncDefInit; MethodDefInit;
+End;
+
+{ ============================================================ }
+{ TODO 12 - MAPS : TABLE DE HACHAGE SIMPLIFIEE                  }
+{ ============================================================ }
+{ La fonction de hachage elle-meme ("simplifiee pour les cles usuelles",  }
+{ texte du TODO 12 lui-meme) est un sujet d IMPLEMENTATION RUNTIME               }
+{ (_GORT_, TODO 23) - il n existe rien a hacher tant qu aucune valeur                 }
+{ n est reellement stockee en memoire (aucun backend, TODO 21+) ; ce                    }
+{ TODO se limite donc, comme les precedents, a la SYNTAXE et au                            }
+{ CABLAGE des mecanismes deja generiques (indexation EK_INDEX du                              }
+{ TODO 06, comma-ok du TODO 10, for-range du TODO 07/11).                                          }
+
+{ ParseMapType : "map" (deja consomme par l appelant) suivi de "["      }
+{ TypeCle "]" TypeValeur - represente comme un simple pointeur (4              }
+{ octets) vers une table de hachage runtime, meme convention qu une                  }
+{ interface (descripteur+donnees) ou qu un slice (en-tete) : la               }
+{ REPRESENTATION MEMOIRE exacte est un sujet de generation de code                       }
+{ (TODO 21+), ce TypeIdx sert uniquement a l analyse. KeyTypeIdx (TODO           }
+{ 04, jamais rempli avant ce point puisque aucun autre TTypeKind ne                  }
+{ l utilise) est ENFIN mis a contribution ici.                                             }
+Function ParseMapType: Integer;
+Var KeyTIdx, ValTIdx, NewIdx : Integer;
+Begin
+  ParseMapType := -1;
+  If Not PPMatch('[') Then
+  Begin
+    FatalError('crochet ouvrant attendu apres "map"');
+    Exit;
+  End;
+  KeyTIdx := ParseTypeExpr;
+  If Not PPMatch(']') Then
+    FatalError('crochet fermant attendu apres la cle d''un type map');
+  ValTIdx := ParseTypeExpr;
+  NewIdx := TypeAdd(TYK_MAP, '', 4, 4, False, ValTIdx, KeyTIdx);
+  ParseMapType := NewIdx;
+End;
+
+{ ------------------------------------------------------------ }
+{ MapSelfTest : type map, make(map[K]V[, Cap]), indexation          }
+{ lecture/ecriture, comma-ok "v, ok := m[cle]", delete(m, cle),          }
+{ litteral compose a cles chaine, for-range avec les vrais               }
+{ KeyTypeIdx/ElemTypeIdx.                                                    }
+{ ------------------------------------------------------------ }
+
+Procedure MapAssert(Const Label_: TString; Cond: Boolean);
+Begin
+  If Not Cond Then
+    FatalError('MapSelfTest: ' + Label_ + ' a echoue');
+End;
+
+Procedure MapSelfTest;
+Var
+  TIdx, SI, E, N : Integer;
+Begin
+  ExprInit; StmtInit; SymInit; TypeInit; FuncDefInit; MethodDefInit;
+
+  { type map[string]int }
+  FuncParseTopLevel('package main' + Chr(10) + 'var M map[string]int');
+  SI := SymFind('M');
+  MapAssert('M declaree', SI >= 0);
+  TIdx := SymTab[SI].TypeIdx;
+  MapAssert('M : TYK_MAP', TypeTab[TIdx].Kind = TYK_MAP);
+  MapAssert('M : cle string', TypeTab[TIdx].KeyTypeIdx = PDT_STRING);
+  MapAssert('M : valeur int', TypeTab[TIdx].ElemTypeIdx = PDT_INT);
+
+  { make(map[string]int) et make(map[string]int, 10) }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  E := ExprParseString('make(map[string]int)');
+  MapAssert('make(map[string]int) : TypeIdx TYK_MAP',
+    TypeTab[ExprPool[E].TypeIdx].Kind = TYK_MAP);
+  E := ExprParseString('make(map[string]int, 10)');
+  MapAssert('make(map[string]int, 10) : 1 argument (Cap)', ExprPool[E].ArgCount = 1);
+
+  { indexation lecture/ecriture }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  SymAdd('m', SK_VAR, TypeAdd(TYK_MAP, '', 4, 4, False, PDT_INT, PDT_STRING));
+  E := ExprParseString('m["cle"]');
+  MapAssert('m["cle"] est EK_INDEX', ExprPool[E].Kind = EK_INDEX);
+  MapAssert('m["cle"] : type de la VALEUR (int)', ExprPool[E].TypeIdx = PDT_INT);
+
+  N := StmtParseString('m["cle"] = 42');
+  MapAssert('m["cle"] = 42 est STK_ASSIGN', StmtPool[N].Kind = STK_ASSIGN);
+
+  { comma-ok : v, ok := m[cle] }
+  N := StmtParseString('v, ok := m["cle"]');
+  MapAssert('v, ok := m[cle] est STK_SHORTVAR', StmtPool[N].Kind = STK_SHORTVAR);
+  MapAssert('comma-ok map : 2 entrees', StmtPool[N].ArgCount = 2);
+  SI := SymFind('v');
+  MapAssert('v : type de la valeur (int)',
+    (SI >= 0) And (SymTab[SI].TypeIdx = PDT_INT));
+  SI := SymFind('ok');
+  MapAssert('ok : type bool', (SI >= 0) And (SymTab[SI].TypeIdx = PDT_BOOL));
+
+  { delete(m, cle) }
+  E := ExprParseString('delete(m, "cle")');
+  MapAssert('delete(m, cle) est EK_CALL', ExprPool[E].Kind = EK_CALL);
+  MapAssert('delete(m, cle) : 2 arguments', ExprPool[E].ArgCount = 2);
+
+  { litteral compose de map avec 2 cles chaine }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  E := ExprParseString('map[string]int{"a": 1, "b": 2}');
+  MapAssert('map[string]int{...} est EK_COMPOSITE', ExprPool[E].Kind = EK_COMPOSITE);
+  MapAssert('map[string]int{...} : TypeIdx TYK_MAP',
+    TypeTab[ExprPool[E].TypeIdx].Kind = TYK_MAP);
+  MapAssert('map[string]int{...} : 2 elements', ExprPool[E].ArgCount = 2);
+  MapAssert('map[string]int{"a":1,...} : 1ere cle "a"',
+    ExprArgKey[ExprPool[E].ArgFirst] = 'a');
+
+  { for-range sur une map : vrais KeyTypeIdx/ElemTypeIdx }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  FuncParseTopLevel('package main' + Chr(10) +
+    'func F(m map[string]int) {' + Chr(10) +
+    '	for k, v := range m {' + Chr(10) +
+    '		_ = k' + Chr(10) + '		_ = v' + Chr(10) + '	}' + Chr(10) + '}');
+  MapAssert('for-range sur map[string]int analyse sans erreur', ErrorCount = 0);
+
+  { re-initialise les tables globales pour ne pas polluer Run reel }
+  ExprInit; StmtInit; SymInit; FuncDefInit; MethodDefInit;
+End;
+
 Procedure Run;
 Begin
   ErrorCount := 0;
@@ -5379,6 +7180,11 @@ Begin
   DeclSelfTest;
   ExprSelfTest;
   StmtSelfTest;
+  FuncSelfTest;
+  StructSelfTest;
+  InterfaceSelfTest;
+  ArraySelfTest;
+  MapSelfTest;
 
   ParseArgs;
   ShowBanner;
@@ -5386,6 +7192,8 @@ Begin
   TypeInit;
   ExprInit;
   StmtInit;
+  FuncDefInit;
+  MethodDefInit;
   If Opts.Verbose Then
     WriteLn('Types predeclares enregistres : ', TypeCount);
 
@@ -5410,12 +7218,17 @@ Begin
   ParseFileTopLevel;
 
   If Opts.Verbose Then
+  Begin
     WriteLn('Symboles de portee paquet declares : ', SymCount);
+    WriteLn('Fonctions de haut niveau declarees  : ', FuncDefCount);
+    WriteLn('Methodes declarees                  : ', MethodDefCount);
+  End;
 
   WriteLn('GOCW32: lexeur+classification+types+declarations+expressions+',
-    'instructions (TODO 02-07) complets - ', TokenCount, ' tokens, ',
-    SymCount, ' symboles - analyse s''arrete a la premiere "func" (corps ',
-    'de fonctions : TODO 08+).');
+    'instructions+fonctions+structs+interfaces+tableaux/slices+maps ',
+    '(TODO 02-12) complets - ', TokenCount, ' tokens, ', SymCount,
+    ' symboles, ', FuncDefCount, ' fonctions, ', MethodDefCount,
+    ' methodes - canaux/chaines/goroutines : TODO 13+).');
 
   ShowStats;
 End;
