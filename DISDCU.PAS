@@ -112,6 +112,24 @@ Const
   TAG_RESSTR_NEW     = $33;   { '3', Ver>=10 }
   TAG_THREADVAR_OLD  = $31;   { '1', Ver<10 }
   TAG_UNITFLAGS      = $96;
+  { --- tables de debogage/symboles (presentes seulement si l unite a   }
+  { ete compilee avec informations de debogage/reference de symboles -    }
+  { CONFIRME, DCU32.pas : drCodeLines..drLocVarTbl, dispatchees par le        }
+  { MEME aiguilleur principal que drCBlock/drFixUp, PAS imbriquees dans          }
+  { une autre structure). Pure metadonnee (correspondance ligne source/            }
+  { portee de bloc/variables locales), jamais une declaration Pascal              }
+  { visible - lue et sautee, comme ProcessSrcInf.                                    }
+  TAG_CODELINES      = $90;   { drCodeLines }
+  TAG_LINNUM         = $91;   { drLinNum }
+  TAG_STRUCSCOPE     = $92;   { drStrucScope }
+  TAG_SYMBOLREF      = $93;   { drSymbolRef }
+  TAG_LOCVARTBL      = $94;   { drLocVarTbl }
+  { --- table des segments/sections de code (Ver>=verD_XE2(16)) - CONFIRME  }
+  { (DCU32.pas, TUnit.LoadAddrToSegInfo) : associe chaque declaration a un    }
+  { "segment" (code/donnees/etc) - pure metadonnee de mise en page, jamais       }
+  { une declaration Pascal visible.                                                }
+  TAG_SEGINFO        = $B1;   { drSegInfo }
+  TAG_ADDRTOSEGINFO  = $B2;   { drAddrToSegInfo }
   { CORRECTION (2026-07-14, contre le vrai code source DCU32.pas -    }
   { const drXxx=$YY - et non plus le fichier de specification FlexT     }
   { abstrait, moins fiable) : drUnitAddInfo vaut TOUJOURS $34, quelle     }
@@ -4595,6 +4613,130 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
+{ Tables de debogage/symboles (drCodeLines/drLinNum/drStrucScope/       }
+{ drSymbolRef/drLocVarTbl, $90-$94) : presentes uniquement si l unite      }
+{ a ete compilee avec informations de debogage et/ou reference de            }
+{ symboles ("Debug Information"/"Local Symbols"/"Symbol Reference Info"          }
+{ dans les options du projet). Structures CONFIRMEES (DCU32.pas,                    }
+{ TUnit.LoadCodeLines/LoadLineRanges/LoadStrucScope/LoadSymbolInfo/                     }
+{ LoadLocVarTbl) - pure metadonnee de debogage (correspondance ligne                       }
+{ source/portee de bloc/variables locales), jamais une declaration Pascal                     }
+{ visible : lue et sautee, comme ProcessSrcInf. LoadLocVarTbl a un cas                            }
+{ special Win64 (enregistrement supplementaire par procedure) explicitement                          }
+{ hors de portee (ce programme, comme DISEXE.PAS/DELPHI.PAS, ne vise que                                 }
+{ le Win32 natif) - seul le chemin 32 bits (3 TNDX par entree) est reproduit.                                }
+{ ------------------------------------------------------------ }
+
+Procedure ProcessCodeLines;
+Var
+  Cnt, I: LongInt;
+Begin
+  Cnt := ReadUIndex;
+  For I := 1 To Cnt Do
+  Begin
+    ReadSIndex;   { dL : delta de numero de ligne, signe }
+    ReadUIndex;   { dOfs : delta d offset dans le blob de code }
+  End;
+End;
+
+Procedure ProcessLinNum;
+Var
+  Cnt, I: LongInt;
+Begin
+  Cnt := ReadUIndex;
+  For I := 1 To Cnt Do
+  Begin
+    ReadUIndex;   { Line0 }
+    ReadUIndex;   { LineNum }
+    ReadUIndex;   { hFile }
+  End;
+End;
+
+Procedure ProcessStrucScope;
+Var
+  Cnt, N, I: LongInt;
+Begin
+  Cnt := ReadUIndex;
+  N := 5;   { hType, hVar, Ofs, LnStart, LnCnt }
+  If (Ver >= 26) And (Ver < 100) Then N := 6;   { champ supplementaire, Ver>=verD_10_3 }
+  For I := 1 To Cnt * N Do ReadUIndex;
+End;
+
+Procedure ProcessSymbolRef;
+Var
+  Cnt, NPrimary, I, J, Sz: LongInt;
+Begin
+  Cnt := ReadUIndex;
+  NPrimary := ReadUIndex;
+  For I := 1 To Cnt Do
+  Begin
+    ReadUIndex;   { hSym }
+    ReadUIndex;   { hMember }
+    Sz := ReadUIndex;
+    ReadUIndex;   { hDef }
+    For J := 1 To Sz Do ReadUIndex;
+  End;
+End;
+
+Procedure ProcessLocVarTbl;
+Var
+  Cnt, I: LongInt;
+Begin
+  Cnt := ReadUIndex;
+  For I := 1 To Cnt Do
+  Begin
+    ReadUIndex;   { Sym }
+    ReadUIndex;   { Ofs }
+    ReadSIndex;   { frame, signe }
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ drSegInfo ($B1) : table nommant les "segments" (code/donnees/etc) -   }
+{ CONFIRME (DCU32.pas, TUnit.ReadDeclList, cas drSegInfo) : Cnt(TNDX)      }
+{ puis, par entree, un NOM COURT (ReadShortName : UN OCTET de longueur +      }
+{ ce nombre d octets bruts, SANS l extension $FF de ReadName/ReadIdentStr)       }
+{ + UN OCTET + TNDX.                                                              }
+{ drAddrToSegInfo ($B2) : associe chaque declaration (hAddr, un index         }
+{ d adresse) a un segment de cette table - CONFIRME (DCU32.pas,                    }
+{ TUnit.LoadAddrToSegInfo) : Cnt(TNDX) puis, par entree, hAddr(TNDX) +                 }
+{ hSeg(TNDX) + UN OCTET + TNDX + Fix0(TNDX) + Size(TNDX) + TNDX.                          }
+{ Les deux n apparaissent qu a partir de Ver>=verD_XE2(16) et sont pure               }
+{ metadonnee de mise en page, jamais une declaration Pascal visible.                    }
+{ ------------------------------------------------------------ }
+
+Procedure ProcessSegInfo;
+Var
+  Cnt, I, J, L: LongInt;
+Begin
+  Cnt := ReadUIndex;
+  For I := 1 To Cnt Do
+  Begin
+    L := RB;                  { longueur du nom court }
+    For J := 1 To L Do RB;    { nom court, brut }
+    RB;                       { octet }
+    ReadUIndex;                { TNDX }
+  End;
+End;
+
+Procedure ProcessAddrToSegInfo;
+Var
+  Cnt, I: LongInt;
+Begin
+  Cnt := ReadUIndex;
+  For I := 1 To Cnt Do
+  Begin
+    ReadUIndex;   { hAddr }
+    ReadUIndex;   { hSeg }
+    RB;           { octet }
+    ReadUIndex;
+    ReadUIndex;   { Fix0 }
+    ReadUIndex;   { Size }
+    ReadUIndex;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
 { Traitement de drORec ($6F, TORecDecl - herite de TNameDecl        }
 { directement, Name simple SANS en-tete F/F1/F4/Inf). CONFIRME           }
 { (DCURecs.pas, TORecDecl.Create) : DW (ULONG brut, 4 octets) + B0            }
@@ -5317,6 +5459,21 @@ Begin
     TAG_FIXUP:
       ProcessFixup;
 
+    TAG_CODELINES:
+      ProcessCodeLines;
+    TAG_LINNUM:
+      ProcessLinNum;
+    TAG_STRUCSCOPE:
+      ProcessStrucScope;
+    TAG_SYMBOLREF:
+      ProcessSymbolRef;
+    TAG_LOCVARTBL:
+      ProcessLocVarTbl;
+    TAG_SEGINFO:
+      ProcessSegInfo;
+    TAG_ADDRTOSEGINFO:
+      ProcessAddrToSegInfo;
+
     TAG_UNITFLAGS, TAG_UNIT_ADD_INFO, TAG_INFO98:
       Fail('etiquette de metadonnees $' + IntToHex(Tag, 2) +
         ' rencontree hors de l en-tete - structure non prise en charge ' +
@@ -5534,9 +5691,13 @@ Begin
   WriteLn(OutF, '{ Decompile par DISDCU a partir de : ', InName, ' }');
   WriteLn(OutF, '{ Nombre magique : $', IntToHex(Magic, 8),
     '  (Ver interne = ', VerName, ') }');
-  WriteLn(OutF, '{ ATTENTION : decompilation partielle - voir l entete de ',
-    'DISDCU.PAS pour la portee exacte (types complexes et corps de ',
-    'routines non decompiles). }');
+  WriteLn(OutF, '{ ATTENTION : portee partielle (pas necessairement cette ',
+    'decompilation precise - voir l entete de DISDCU.PAS pour la portee ',
+    'exacte : certains types complexes/tags recents non pris en charge). ',
+    'Les corps de routine SONT desassembles en blocs Assembler;asm...end; ',
+    'quand la correlation adresse-declaration reussit (voir NextAddrDef) - ',
+    'sinon un commentaire "corps non attribue" remplace le bloc plutot ',
+    'que d afficher des octets errones. }');
   WriteLn(OutF);
 
   CurTag := ReadHeader(BufLen);
