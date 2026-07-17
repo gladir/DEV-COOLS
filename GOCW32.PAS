@@ -889,39 +889,3523 @@ Begin
   WriteLn('Avertissements   : ', WarnCount);
 End;
 
+{ ============================================================ }
+{ TODO 02 - TOKENISEUR GO (LEXER) ET INSERTION AUTOMATIQUE DE ; }
+{ ============================================================ }
+
+Type
+  TTokenKind = (
+    TOK_EOF,        { fin de fichier                                }
+    TOK_IDENT,      { identificateur (mots-cles INCLUS - voir TODO 03,}
+                     { la classification complete est deferee la-bas ; }
+                     { seule l eligibilite ASI de break/continue/       }
+                     { fallthrough/return est traitee ICI, necessaire     }
+                     { au lexeur lui-meme, voir LexIsASIKeyword)           }
+    TOK_INT,        { litteral entier (decimal/hex/octal/binaire)   }
+    TOK_FLOAT,      { litteral flottant                              }
+    TOK_RUNE,       { litteral rune 'x' '\n' '￿' ...             }
+    TOK_STRING,     { chaine interpretee "..." (echappements decodes) }
+    TOK_RAWSTRING,  { chaine brute `...` (aucun echappement)          }
+    TOK_SEMI,       { point-virgule REEL ou INSERE par l ASI          }
+    TOK_OP          { operateur/ponctuation ; distingue par Val       }
+  );
+
+  TToken = Record
+    Kind      : TTokenKind;
+    Val       : TString;    { texte brut (identificateur, operateur, }
+                             { ou forme decodee pour rune/chaine)      }
+    IntVal    : LongInt;     { valeur entiere (TOK_INT, code point     }
+                              { TOK_RUNE)                                }
+    RealVal   : Real;        { valeur flottante (TOK_FLOAT)             }
+    Line      : Integer;     { ligne source (1-base)                    }
+    Col       : Integer;     { colonne source (1-base)                  }
+    Inserted  : Boolean;     { True si ce TOK_SEMI a ete SYNTHETISE par  }
+                              { l ASI plutot qu ecrit explicitement dans   }
+                              { le source (utile pour le debug -d)          }
+  End;
+
+Var
+  { Lexeur }
+  LexSrcF     : Text;
+  LexSrcFName : TString;
+  LexOpened   : Boolean;
+  LexLine     : TString;
+  LexLineNo   : Integer;
+  LexColNo    : Integer;
+  LexEOF      : Boolean;
+  CurToken    : TToken;
+
+  { Etat necessaire a l ASI (Automatic Semicolon Insertion) : classe et  }
+  { texte du dernier "vrai" token retourne par LexNextToken (un TOK_SEMI  }
+  { insere compte lui-meme comme "dernier token" pour eviter d en inserer    }
+  { un deuxieme consecutif). LexHaveLast reste Faux avant le tout premier      }
+  { token du fichier (l ASI ne peut jamais s appliquer en tete de fichier).      }
+  LexLastKind : TTokenKind;
+  LexLastVal  : TString;
+  LexHaveLast : Boolean;
+
 { ------------------------------------------------------------ }
-{ Run - point d entree de la compilation                       }
-{ TODO 01 seul est implemente pour l instant : options, banniere,}
-{ ouverture/validation du fichier source. Le lexeur (TODO 02), le }
-{ parseur, l analyse semantique et les backends ASM/OBJ/EXE          }
-{ restent a ecrire dans les TODOs suivants - Run s arrete donc ici     }
-{ apres avoir prouve que le fichier source est bien accessible,          }
-{ sans pretendre compiler quoi que ce soit pour l instant.                  }
+{ Classification de caracteres                                 }
 { ------------------------------------------------------------ }
 
-Procedure Run;
+Function IsIdentStart(Ch: Char): Boolean;
+Begin
+  IsIdentStart := ((Ch >= 'A') And (Ch <= 'Z')) Or
+                  ((Ch >= 'a') And (Ch <= 'z')) Or (Ch = '_');
+End;
+
+Function IsIdentCont(Ch: Char): Boolean;
+Begin
+  IsIdentCont := IsIdentStart(Ch) Or ((Ch >= '0') And (Ch <= '9'));
+End;
+
+Function IsDigitCh(Ch: Char): Boolean;
+Begin
+  IsDigitCh := (Ch >= '0') And (Ch <= '9');
+End;
+
+Function IsHexDigit(Ch: Char): Boolean;
+Begin
+  IsHexDigit := IsDigitCh(Ch) Or
+                ((Ch >= 'A') And (Ch <= 'F')) Or
+                ((Ch >= 'a') And (Ch <= 'f'));
+End;
+
+Function HexVal(Ch: Char): Integer;
+Begin
+  If IsDigitCh(Ch) Then HexVal := Ord(Ch) - Ord('0')
+  Else If (Ch >= 'A') And (Ch <= 'F') Then HexVal := Ord(Ch) - Ord('A') + 10
+  Else HexVal := Ord(Ch) - Ord('a') + 10;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexPeekChar / LexPeekChar2 / LexPeekChar3 / LexNextChar        }
+{ Lecture en avant SANS consommer (Peek) et avance d un caractere }
+{ (Next) dans la ligne courante - #0 si hors limites (fin de       }
+{ ligne). LexPeekChar3 EXCEDE legerement la portee textuelle du       }
+{ TODO 02 (qui ne nommait que Peek/Peek2) mais est necessaire pour     }
+{ reconnaitre sans ambiguite les operateurs a 3 caracteres de Go        }
+{ ('...' '<<=' '>>=' '&^=') par la methode du "plus long match".         }
+{ ------------------------------------------------------------ }
+
+Function LexPeekChar: Char;
+Begin
+  If LexColNo <= Length(LexLine) Then LexPeekChar := LexLine[LexColNo]
+  Else LexPeekChar := #0;
+End;
+
+Function LexPeekChar2: Char;
+Begin
+  If LexColNo + 1 <= Length(LexLine) Then LexPeekChar2 := LexLine[LexColNo + 1]
+  Else LexPeekChar2 := #0;
+End;
+
+Function LexPeekChar3: Char;
+Begin
+  If LexColNo + 2 <= Length(LexLine) Then LexPeekChar3 := LexLine[LexColNo + 2]
+  Else LexPeekChar3 := #0;
+End;
+
+Procedure LexNextChar;
+Begin
+  If LexColNo <= Length(LexLine) Then Inc(LexColNo);
+End;
+
+{ ------------------------------------------------------------ }
+{ LexNextLine / LexInit / LexClose                              }
+{ Modele "tampon d une ligne" (ReadLn + LexColNo), identique dans  }
+{ l esprit a DELPHI.PAS/PERLCW32.PAS de ce meme projet - PAS de      }
+{ pile d inclusion (Go, tel que couvert ici, est mono-fichier,         }
+{ TODO 18) : plus simple que DELPHI.PAS sur ce point precis.             }
+{ ------------------------------------------------------------ }
+
+Procedure LexNextLine;
+Begin
+  If LexEOF Then Exit;
+  If EOF(LexSrcF) Then
+  Begin
+    LexEOF   := True;
+    LexLine  := '';
+    LexColNo := 1;
+  End
+  Else
+  Begin
+    ReadLn(LexSrcF, LexLine);
+    Inc(LexLineNo);
+    Inc(TotalLines);
+    LexColNo := 1;
+  End;
+End;
+
+Procedure LexInit;
+Begin
+  LexLineNo   := 0;
+  LexColNo    := 1;
+  LexEOF      := False;
+  LexLine     := '';
+  LexHaveLast := False;
+  LexLastKind := TOK_EOF;
+  LexLastVal  := '';
+  CurToken.Kind     := TOK_EOF;
+  CurToken.Val      := '';
+  CurToken.IntVal   := 0;
+  CurToken.RealVal  := 0.0;
+  CurToken.Line     := 0;
+  CurToken.Col      := 0;
+  CurToken.Inserted := False;
+  LexNextLine;
+End;
+
+Procedure LexClose;
+Begin
+  If LexOpened Then
+  Begin
+    Close(LexSrcF);
+    LexOpened := False;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ Regle d insertion automatique de point-virgule (ASI)          }
+{ CONFIRME (Go Language Specification, "Semicolons") : eligible    }
+{ si le DERNIER token est un identificateur (mots-cles break/       }
+{ continue/fallthrough/return INCLUS - ce sont lexicalement des        }
+{ identificateurs dans ce lexeur simplifie, voir TOK_IDENT ci-dessus),   }
+{ un litteral entier/flottant/rune/chaine, OU l un des operateurs/          }
+{ ponctuations "++", "--", parenthese fermante, crochet fermant ou            }
+{ accolade fermante - PAS les 21 AUTRES mots-cles Go (if/for/func/etc.),         }
+{ d ou LexIsReservedWord ci-dessous : un identificateur qui EST l un              }
+{ de ces 21 mots-cles n est PAS eligible (contrairement a un identificateur       }
+{ ordinaire), sauf s il s agit precisement de break/continue/fallthrough/return.  }
+{ ------------------------------------------------------------ }
+
+{ IsKeyword est la vraie classification (TODO 03, plus bas dans ce   }
+{ fichier) - declaree ici Forward pour que LexIsReservedWord (TODO 02,  }
+{ deja ecrit et teste) puisse s y appuyer SANS dupliquer la liste des     }
+{ 25 mots reserves une seconde fois (risque de divergence entre les          }
+{ deux copies sinon).                                                          }
+Function IsKeyword(Const S: TString): Integer; Forward;
+
+Function LexIsReservedWord(Const S: TString): Boolean;
+Begin
+  LexIsReservedWord := IsKeyword(S) <> 0;
+End;
+
+Function LexIsASIKeyword(Const S: TString): Boolean;
+Begin
+  LexIsASIKeyword := (S = 'break') Or (S = 'continue') Or
+                      (S = 'fallthrough') Or (S = 'return');
+End;
+
+Function LexASIEligible: Boolean;
+Begin
+  LexASIEligible := False;
+  If Not LexHaveLast Then Exit;
+  Case LexLastKind Of
+    TOK_IDENT:
+      LexASIEligible := (Not LexIsReservedWord(LexLastVal)) Or
+                         LexIsASIKeyword(LexLastVal);
+    TOK_INT, TOK_FLOAT, TOK_RUNE, TOK_STRING, TOK_RAWSTRING:
+      LexASIEligible := True;
+    TOK_OP:
+      LexASIEligible := (LexLastVal = '++') Or (LexLastVal = '--') Or
+                         (LexLastVal = ')')  Or (LexLastVal = ']')  Or
+                         (LexLastVal = '}');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexScanIdent : identificateur (mots-cles INCLUS, voir en-tete   }
+{ de section - classification complete deferee au TODO 03).       }
+{ Go est sensible a la casse : AUCUN changement de casse ici       }
+{ (contrairement au Pascal de DELPHI.PAS, insensible a la casse).    }
+{ ------------------------------------------------------------ }
+
+Procedure LexScanIdent;
 Var
-  SrcF : Text;
+  S : TString;
+Begin
+  S := '';
+  While IsIdentCont(LexPeekChar) Do
+  Begin
+    If Length(S) < MAX_STR Then S := S + LexPeekChar;
+    LexNextChar;
+  End;
+  CurToken.Kind := TOK_IDENT;
+  CurToken.Val  := S;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexScanNumber : entier (decimal/hex/octal nouveau et ancien     }
+{ style/binaire) ou flottant, avec soulignes separateurs           }
+{ optionnels (1_000_000). Le suffixe imaginaire 'i' (1i, 1.5i)        }
+{ est explicitement HORS DE PORTEE (voir TODO 02 de l en-tete) :         }
+{ reconnu puis rejete par une erreur fatale claire plutot que d etre        }
+{ silencieusement ignore ou mal interprete.                                  }
+{ ------------------------------------------------------------ }
+
+Procedure LexScanNumber;
+Var
+  S        : TString;
+  IsFloatV : Boolean;
+  N        : LongInt;
+  FracVal  : Real;
+  FracDiv  : Real;
+  K        : Integer;
+Begin
+  S := '';
+  IsFloatV := False;
+
+  { --- prefixes de base non-decimale : 0x / 0o / 0b --- }
+  If (LexPeekChar = '0') And ((LexPeekChar2 = 'x') Or (LexPeekChar2 = 'X')) Then
+  Begin
+    LexNextChar; LexNextChar;
+    N := 0;
+    While IsHexDigit(LexPeekChar) Or (LexPeekChar = '_') Do
+    Begin
+      If LexPeekChar <> '_' Then N := N * 16 + HexVal(LexPeekChar);
+      LexNextChar;
+    End;
+    CurToken.Kind   := TOK_INT;
+    CurToken.IntVal := N;
+    Str(N, CurToken.Val);
+    Exit;
+  End;
+
+  If (LexPeekChar = '0') And ((LexPeekChar2 = 'o') Or (LexPeekChar2 = 'O')) Then
+  Begin
+    LexNextChar; LexNextChar;
+    N := 0;
+    While ((LexPeekChar >= '0') And (LexPeekChar <= '7')) Or
+          (LexPeekChar = '_') Do
+    Begin
+      If LexPeekChar <> '_' Then N := N * 8 + (Ord(LexPeekChar) - Ord('0'));
+      LexNextChar;
+    End;
+    CurToken.Kind   := TOK_INT;
+    CurToken.IntVal := N;
+    Str(N, CurToken.Val);
+    Exit;
+  End;
+
+  If (LexPeekChar = '0') And ((LexPeekChar2 = 'b') Or (LexPeekChar2 = 'B')) Then
+  Begin
+    LexNextChar; LexNextChar;
+    N := 0;
+    While (LexPeekChar = '0') Or (LexPeekChar = '1') Or (LexPeekChar = '_') Do
+    Begin
+      If LexPeekChar <> '_' Then N := N * 2 + (Ord(LexPeekChar) - Ord('0'));
+      LexNextChar;
+    End;
+    CurToken.Kind   := TOK_INT;
+    CurToken.IntVal := N;
+    Str(N, CurToken.Val);
+    Exit;
+  End;
+
+  { --- partie entiere (decimale, ou octal ANCIEN style '0755' -   }
+  { heritage C conserve par Go - detecte APRES coup ci-dessous) --- }
+  N := 0;
+  While IsDigitCh(LexPeekChar) Or (LexPeekChar = '_') Do
+  Begin
+    If LexPeekChar <> '_' Then
+    Begin
+      S := S + LexPeekChar;
+      N := N * 10 + (Ord(LexPeekChar) - Ord('0'));
+    End;
+    LexNextChar;
+  End;
+
+  { --- partie decimale .ddd (mais pas si suivie d un autre '.',   }
+  { qui appartiendrait a l operateur '...') --- }
+  FracVal := 0.0;
+  FracDiv := 10.0;
+  If (LexPeekChar = '.') And (LexPeekChar2 <> '.') Then
+  Begin
+    IsFloatV := True;
+    S := S + '.';
+    LexNextChar;
+    While IsDigitCh(LexPeekChar) Or (LexPeekChar = '_') Do
+    Begin
+      If LexPeekChar <> '_' Then
+      Begin
+        S := S + LexPeekChar;
+        FracVal := FracVal + (Ord(LexPeekChar) - Ord('0')) / FracDiv;
+        FracDiv := FracDiv * 10.0;
+      End;
+      LexNextChar;
+    End;
+  End;
+
+  { --- exposant e/E [+-]ddd --- }
+  If (LexPeekChar = 'e') Or (LexPeekChar = 'E') Then
+  Begin
+    IsFloatV := True;
+    S := S + LexPeekChar;
+    LexNextChar;
+    If (LexPeekChar = '+') Or (LexPeekChar = '-') Then
+    Begin
+      S := S + LexPeekChar;
+      LexNextChar;
+    End;
+    While IsDigitCh(LexPeekChar) Or (LexPeekChar = '_') Do
+    Begin
+      If LexPeekChar <> '_' Then S := S + LexPeekChar;
+      LexNextChar;
+    End;
+  End;
+
+  { --- suffixe imaginaire : HORS DE PORTEE, arret propre --- }
+  If (LexPeekChar = 'i') Then
+    FatalError('litteraux imaginaires (ex. ' + S + 'i) non supportes ' +
+      '(hors de portee, voir TODO 02 de l en-tete du fichier)');
+
+  If IsFloatV Then
+  Begin
+    CurToken.Kind := TOK_FLOAT;
+    { Val() exige un chiffre avant le point (".5" doit devenir "0.5") ;   }
+    { de meme un point final sans decimales ("1." -> S="1.") doit avoir     }
+    { au moins un zero apres pour rester un reel valide pour Val().          }
+    If (Length(S) > 0) And (S[1] = '.') Then S := '0' + S;
+    If (Length(S) > 0) And (S[Length(S)] = '.') Then S := S + '0';
+    Val(S, CurToken.RealVal, N);
+    CurToken.Val := S;
+  End
+  Else
+  Begin
+    CurToken.Kind := TOK_INT;
+    { octal ANCIEN style : '0' suivi d au moins un autre chiffre,   }
+    { sans point ni exposant (deja exclus par IsFloatV=Faux ici) -    }
+    { comportement herite du C, conserve par la spec Go elle-meme.       }
+    If (Length(S) > 1) And (S[1] = '0') Then
+    Begin
+      N := 0;
+      For K := 2 To Length(S) Do
+        N := N * 8 + (Ord(S[K]) - Ord('0'));
+    End;
+    CurToken.IntVal := N;
+    CurToken.Val := S;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexScanEscape : decode UNE sequence d echappement (le curseur   }
+{ doit deja pointer juste APRES le '\') - partagee par rune et      }
+{ chaine interpretee (memes echappements, voir TODO 02 de l en-tete).  }
+{ Retourne le CODE (LongInt, pas juste un octet - nécessaire pour       }
+{ ￿/\U0001F600) du caractere/rune resultant.                          }
+{ ------------------------------------------------------------ }
+
+Function LexScanEscape: LongInt;
+Var
+  V, I : LongInt;
+  Ch   : Char;
+Begin
+  Ch := LexPeekChar;
+  Case Ch Of
+    'a' : Begin LexNextChar; LexScanEscape := 7;  Exit; End;
+    'b' : Begin LexNextChar; LexScanEscape := 8;  Exit; End;
+    'f' : Begin LexNextChar; LexScanEscape := 12; Exit; End;
+    'n' : Begin LexNextChar; LexScanEscape := 10; Exit; End;
+    'r' : Begin LexNextChar; LexScanEscape := 13; Exit; End;
+    't' : Begin LexNextChar; LexScanEscape := 9;  Exit; End;
+    'v' : Begin LexNextChar; LexScanEscape := 11; Exit; End;
+    '\' : Begin LexNextChar; LexScanEscape := Ord('\'); Exit; End;
+    ''''  : Begin LexNextChar; LexScanEscape := Ord(''''); Exit; End;
+    '"' : Begin LexNextChar; LexScanEscape := Ord('"'); Exit; End;
+  End;
+
+  If Ch = 'x' Then
+  Begin
+    LexNextChar;
+    V := 0;
+    For I := 1 To 2 Do
+    Begin
+      If Not IsHexDigit(LexPeekChar) Then
+        FatalError('sequence d echappement \x incomplete (2 chiffres ' +
+          'hexadecimaux attendus)');
+      V := V * 16 + HexVal(LexPeekChar);
+      LexNextChar;
+    End;
+    LexScanEscape := V;
+    Exit;
+  End;
+
+  If Ch = 'u' Then
+  Begin
+    LexNextChar;
+    V := 0;
+    For I := 1 To 4 Do
+    Begin
+      If Not IsHexDigit(LexPeekChar) Then
+        FatalError('sequence d echappement \u incomplete (4 chiffres ' +
+          'hexadecimaux attendus)');
+      V := V * 16 + HexVal(LexPeekChar);
+      LexNextChar;
+    End;
+    LexScanEscape := V;
+    Exit;
+  End;
+
+  If Ch = 'U' Then
+  Begin
+    LexNextChar;
+    V := 0;
+    For I := 1 To 8 Do
+    Begin
+      If Not IsHexDigit(LexPeekChar) Then
+        FatalError('sequence d echappement \U incomplete (8 chiffres ' +
+          'hexadecimaux attendus)');
+      V := V * 16 + HexVal(LexPeekChar);
+      LexNextChar;
+    End;
+    LexScanEscape := V;
+    Exit;
+  End;
+
+  If (Ch >= '0') And (Ch <= '7') Then
+  Begin
+    V := 0;
+    For I := 1 To 3 Do
+    Begin
+      If (LexPeekChar < '0') Or (LexPeekChar > '7') Then
+        FatalError('sequence d echappement octale incomplete (3 ' +
+          'chiffres 0-7 attendus)');
+      V := V * 8 + (Ord(LexPeekChar) - Ord('0'));
+      LexNextChar;
+    End;
+    LexScanEscape := V;
+    Exit;
+  End;
+
+  FatalError('sequence d echappement inconnue: \' + Ch);
+  LexScanEscape := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexScanRune : litteral rune 'x' ou 'echappement'. SIMPLIFICATION }
+{ DOCUMENTEE (voir TODO 14) : un caractere non-ASCII ecrit           }
+{ DIRECTEMENT (pas via \u/\U) dans le source, ex. 'e', serait en        }
+{ UTF-8 multi-octets dans le fichier reel - ce lexeur lit alors SEUL       }
+{ le premier octet de cette sequence (decodage UTF-8 correct differe          }
+{ au TODO 14) ; sans consequence pour les runes ASCII ou celles                }
+{ ecrites via \u/\U, qui couvrent l ecrasante majorite des cas reels.             }
+{ ------------------------------------------------------------ }
+
+Procedure LexScanRune;
+Var
+  V : LongInt;
+Begin
+  LexNextChar;   { sauter apostrophe ouvrante }
+  If LexPeekChar = '\' Then
+  Begin
+    LexNextChar;
+    V := LexScanEscape;
+  End
+  Else
+  Begin
+    If (LexPeekChar = #0) Or (LexPeekChar = '''') Then
+      FatalError('litteral rune vide ('''') - au moins un caractere ' +
+        'ou une sequence d echappement est attendu');
+    V := Ord(LexPeekChar);
+    LexNextChar;
+  End;
+  If LexPeekChar <> '''' Then
+    FatalError('litteral rune mal forme (apostrophe fermante attendue)');
+  LexNextChar;
+  CurToken.Kind   := TOK_RUNE;
+  CurToken.IntVal := V;
+  CurToken.Val    := Chr(V And $FF);
+End;
+
+{ ------------------------------------------------------------ }
+{ LexScanString : chaine interpretee "..." (echappements decodes,  }
+{ voir LexScanEscape). Un saut de ligne litteral a l interieur EST    }
+{ une erreur en Go (contrairement a une chaine brute `...`, voir       }
+{ LexScanRawString ci-dessous).                                          }
+{ ------------------------------------------------------------ }
+
+Procedure LexScanString;
+Var
+  S : TString;
+  V : LongInt;
+Begin
+  S := '';
+  LexNextChar;   { sauter guillemet ouvrant }
+  While LexPeekChar <> '"' Do
+  Begin
+    If LexColNo > Length(LexLine) Then
+      FatalError('chaine interpretee "..." non fermee avant fin de ' +
+        'ligne (utiliser une chaine brute `...` pour un saut de ' +
+        'ligne litteral)');
+    If LexPeekChar = '\' Then
+    Begin
+      LexNextChar;
+      V := LexScanEscape;
+      If Length(S) < MAX_STR Then S := S + Chr(V And $FF);
+    End
+    Else
+    Begin
+      If Length(S) < MAX_STR Then S := S + LexPeekChar;
+      LexNextChar;
+    End;
+  End;
+  LexNextChar;   { sauter guillemet fermant }
+  CurToken.Kind := TOK_STRING;
+  CurToken.Val  := S;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexScanRawString : chaine brute `...` - AUCUN echappement       }
+{ traite, les retours a la ligne a l interieur sont LITTERAUX         }
+{ (peuvent donc s etendre sur plusieurs appels a LexNextLine).          }
+{ ------------------------------------------------------------ }
+
+Procedure LexScanRawString;
+Var
+  S : TString;
+Begin
+  S := '';
+  LexNextChar;   { sauter l accent grave ouvrant }
+  While True Do
+  Begin
+    If LexColNo > Length(LexLine) Then
+    Begin
+      If LexEOF Then
+        FatalError('chaine brute `...` non fermee avant fin de fichier');
+      If Length(S) < MAX_STR Then S := S + #10;
+      LexNextLine;
+      Continue;
+    End;
+    If LexPeekChar = '`' Then
+    Begin
+      LexNextChar;
+      Break;
+    End;
+    If Length(S) < MAX_STR Then S := S + LexPeekChar;
+    LexNextChar;
+  End;
+  CurToken.Kind := TOK_RAWSTRING;
+  CurToken.Val  := S;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexSkipBlockComment : commentaire /* ... */, peut s etendre sur }
+{ plusieurs lignes. Retourne True si AU MOINS un saut de ligne a     }
+{ ete traverse - regle Go EXPLICITE (spec, "Comments") : un tel         }
+{ commentaire compte alors comme un saut de ligne pour l ASI               }
+{ (contrairement a un commentaire /* */ tenant sur une seule ligne,          }
+{ qui est de la simple espace ignoree sans effet sur l ASI).                    }
+{ ------------------------------------------------------------ }
+
+Function LexSkipBlockComment: Boolean;
+Var
+  CrossedLine : Boolean;
+Begin
+  CrossedLine := False;
+  LexNextChar; LexNextChar;   { sauter '/' et '*' }
+  While True Do
+  Begin
+    If LexColNo > Length(LexLine) Then
+    Begin
+      If LexEOF Then
+        FatalError('commentaire /* non ferme avant fin de fichier');
+      CrossedLine := True;
+      LexNextLine;
+      Continue;
+    End;
+    If (LexPeekChar = '*') And (LexPeekChar2 = '/') Then
+    Begin
+      LexNextChar; LexNextChar;
+      Break;
+    End;
+    LexNextChar;
+  End;
+  LexSkipBlockComment := CrossedLine;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexScanOperator : plus long operateur/ponctuation reconnu a la  }
+{ position courante (methode du "maximal munch" - 3, puis 2, puis   }
+{ 1 caractere). Couvre AUSSI la ponctuation simple : parentheses,   }
+{ crochets, accolades, virgule et deux-points (pas de forme multi-   }
+{ caractere pour elles, sauf '.' qui peut devenir '...').               }
+{ ------------------------------------------------------------ }
+
+Procedure LexScanOperator;
+Var
+  C1, C2, C3 : Char;
+Begin
+  C1 := LexPeekChar;
+  C2 := LexPeekChar2;
+  C3 := LexPeekChar3;
+  CurToken.Kind := TOK_OP;
+
+  If (C1 = '.') And (C2 = '.') And (C3 = '.') Then
+  Begin CurToken.Val := '...'; LexNextChar; LexNextChar; LexNextChar; Exit; End;
+  If (C1 = '<') And (C2 = '<') And (C3 = '=') Then
+  Begin CurToken.Val := '<<='; LexNextChar; LexNextChar; LexNextChar; Exit; End;
+  If (C1 = '>') And (C2 = '>') And (C3 = '=') Then
+  Begin CurToken.Val := '>>='; LexNextChar; LexNextChar; LexNextChar; Exit; End;
+  If (C1 = '&') And (C2 = '^') And (C3 = '=') Then
+  Begin CurToken.Val := '&^='; LexNextChar; LexNextChar; LexNextChar; Exit; End;
+
+  If (C1 = '&') And (C2 = '^') Then
+  Begin CurToken.Val := '&^'; LexNextChar; LexNextChar; Exit; End;
+  If (C1 = '<') And (C2 = '-') Then
+  Begin CurToken.Val := '<-'; LexNextChar; LexNextChar; Exit; End;
+  If (C1 = '+') And (C2 = '+') Then
+  Begin CurToken.Val := '++'; LexNextChar; LexNextChar; Exit; End;
+  If (C1 = '-') And (C2 = '-') Then
+  Begin CurToken.Val := '--'; LexNextChar; LexNextChar; Exit; End;
+  If (C1 = '&') And (C2 = '&') Then
+  Begin CurToken.Val := '&&'; LexNextChar; LexNextChar; Exit; End;
+  If (C1 = '|') And (C2 = '|') Then
+  Begin CurToken.Val := '||'; LexNextChar; LexNextChar; Exit; End;
+  If (C1 = '<') And (C2 = '<') Then
+  Begin CurToken.Val := '<<'; LexNextChar; LexNextChar; Exit; End;
+  If (C1 = '>') And (C2 = '>') Then
+  Begin CurToken.Val := '>>'; LexNextChar; LexNextChar; Exit; End;
+  If (C1 = '=') And (C2 = '=') Then
+  Begin CurToken.Val := '=='; LexNextChar; LexNextChar; Exit; End;
+  If (C1 = '!') And (C2 = '=') Then
+  Begin CurToken.Val := '!='; LexNextChar; LexNextChar; Exit; End;
+  If (C1 = '<') And (C2 = '=') Then
+  Begin CurToken.Val := '<='; LexNextChar; LexNextChar; Exit; End;
+  If (C1 = '>') And (C2 = '=') Then
+  Begin CurToken.Val := '>='; LexNextChar; LexNextChar; Exit; End;
+  If (C1 = ':') And (C2 = '=') Then
+  Begin CurToken.Val := ':='; LexNextChar; LexNextChar; Exit; End;
+  If (C1 = '+') And (C2 = '=') Then
+  Begin CurToken.Val := '+='; LexNextChar; LexNextChar; Exit; End;
+  If (C1 = '-') And (C2 = '=') Then
+  Begin CurToken.Val := '-='; LexNextChar; LexNextChar; Exit; End;
+  If (C1 = '*') And (C2 = '=') Then
+  Begin CurToken.Val := '*='; LexNextChar; LexNextChar; Exit; End;
+  If (C1 = '/') And (C2 = '=') Then
+  Begin CurToken.Val := '/='; LexNextChar; LexNextChar; Exit; End;
+  If (C1 = '%') And (C2 = '=') Then
+  Begin CurToken.Val := '%='; LexNextChar; LexNextChar; Exit; End;
+  If (C1 = '&') And (C2 = '=') Then
+  Begin CurToken.Val := '&='; LexNextChar; LexNextChar; Exit; End;
+  If (C1 = '|') And (C2 = '=') Then
+  Begin CurToken.Val := '|='; LexNextChar; LexNextChar; Exit; End;
+  If (C1 = '^') And (C2 = '=') Then
+  Begin CurToken.Val := '^='; LexNextChar; LexNextChar; Exit; End;
+
+  If C1 = #0 Then
+    FatalError('caractere inattendu en fin de ligne')
+  Else If (C1 < ' ') Or (C1 > '~') Then
+    FatalError('caractere inattendu (code ' + Chr(Ord('0') + Ord(C1) Div 100) +
+      ')' { diagnostic minimal, voir TODO 24 pour un message plus riche })
+  Else
+  Begin
+    CurToken.Val := C1;
+    LexNextChar;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexNextToken : produit le prochain token, ASI incluse.          }
+{ La verification d eligibilite ASI (LexASIEligible) est faite       }
+{ AVANT de sauter une fin de ligne reelle, AVANT de signaler EOF,      }
+{ et APRES un commentaire /* */ qui a traverse au moins un saut de       }
+{ ligne - les TROIS points ou Go considere qu une "nouvelle ligne" a         }
+{ ete rencontree pour les besoins de cette regle (spec, "Semicolons").        }
+{ ------------------------------------------------------------ }
+
+Procedure LexNextToken;
+Var
+  Ch                : Char;
+  Scanning          : Boolean;
+  CommentHadNewline : Boolean;
+Begin
+  CurToken.IntVal   := 0;
+  CurToken.RealVal  := 0.0;
+  CurToken.Inserted := False;
+
+  Scanning := True;
+  While Scanning Do
+  Begin
+    If (Not LexEOF) And (LexColNo > Length(LexLine)) Then
+    Begin
+      If LexASIEligible Then
+      Begin
+        CurToken.Kind     := TOK_SEMI;
+        CurToken.Val      := ';';
+        CurToken.Line     := LexLineNo;
+        CurToken.Col      := LexColNo;
+        CurToken.Inserted := True;
+        LexNextLine;
+        LexLastKind := TOK_SEMI;
+        LexLastVal  := ';';
+        LexHaveLast := True;
+        Exit;
+      End;
+      LexNextLine;
+      Continue;
+    End;
+
+    If LexEOF Then
+    Begin
+      If LexASIEligible Then
+      Begin
+        CurToken.Kind     := TOK_SEMI;
+        CurToken.Val      := ';';
+        CurToken.Line     := LexLineNo;
+        CurToken.Col      := LexColNo;
+        CurToken.Inserted := True;
+        LexLastKind := TOK_SEMI;   { evite une seconde insertion en boucle }
+        LexLastVal  := ';';
+        Exit;
+      End;
+      CurToken.Kind := TOK_EOF;
+      CurToken.Val  := '';
+      CurToken.Line := LexLineNo;
+      CurToken.Col  := LexColNo;
+      LexLastKind := TOK_EOF;
+      LexLastVal  := '';
+      LexHaveLast := True;
+      Exit;
+    End;
+
+    Ch := LexPeekChar;
+
+    If (Ch = ' ') Or (Ch = #9) Or (Ch = #13) Then
+    Begin
+      LexNextChar;
+      Continue;
+    End;
+
+    If (Ch = '/') And (LexPeekChar2 = '/') Then
+    Begin
+      LexColNo := Length(LexLine) + 1;
+      Continue;
+    End;
+
+    If (Ch = '/') And (LexPeekChar2 = '*') Then
+    Begin
+      CommentHadNewline := LexSkipBlockComment;
+      If CommentHadNewline And LexASIEligible Then
+      Begin
+        CurToken.Kind     := TOK_SEMI;
+        CurToken.Val      := ';';
+        CurToken.Line     := LexLineNo;
+        CurToken.Col      := LexColNo;
+        CurToken.Inserted := True;
+        LexLastKind := TOK_SEMI;
+        LexLastVal  := ';';
+        LexHaveLast := True;
+        Exit;
+      End;
+      Continue;
+    End;
+
+    CurToken.Line := LexLineNo;
+    CurToken.Col  := LexColNo;
+
+    If IsIdentStart(Ch) Then
+    Begin
+      LexScanIdent;
+      Scanning := False;
+    End
+    Else If IsDigitCh(Ch) Or ((Ch = '.') And IsDigitCh(LexPeekChar2)) Then
+    Begin
+      LexScanNumber;
+      Scanning := False;
+    End
+    Else If Ch = '''' Then
+    Begin
+      LexScanRune;
+      Scanning := False;
+    End
+    Else If Ch = '"' Then
+    Begin
+      LexScanString;
+      Scanning := False;
+    End
+    Else If Ch = '`' Then
+    Begin
+      LexScanRawString;
+      Scanning := False;
+    End
+    Else If Ch = ';' Then
+    Begin
+      LexNextChar;
+      CurToken.Kind     := TOK_SEMI;
+      CurToken.Val      := ';';
+      CurToken.Inserted := False;
+      Scanning := False;
+    End
+    Else
+    Begin
+      LexScanOperator;
+      Scanning := False;
+    End;
+  End;
+
+  LexLastKind := CurToken.Kind;
+  LexLastVal  := CurToken.Val;
+  LexHaveLast := True;
+End;
+
+{ ------------------------------------------------------------ }
+{ PrintToken : affichage debug (-d) de chaque token             }
+{ ------------------------------------------------------------ }
+
+Procedure PrintToken(Const T: TToken);
+Begin
+  If Not Opts.DebugMode Then Exit;
+  Write('  [', T.Line, ',', T.Col, '] ');
+  Case T.Kind Of
+    TOK_EOF       : Write('EOF');
+    TOK_IDENT     : Write('IDENT(', T.Val, ')');
+    TOK_INT       : Write('INT(', T.IntVal, ')');
+    TOK_FLOAT     : Write('FLOAT(', T.Val, ')');
+    TOK_RUNE      : Write('RUNE(', T.IntVal, ')');
+    TOK_STRING    : Write('STRING("', T.Val, '")');
+    TOK_RAWSTRING : Write('RAWSTRING(`', T.Val, '`)');
+    TOK_SEMI      : If T.Inserted Then Write('SEMI(insere)') Else Write('SEMI');
+    TOK_OP        : Write('OP(', T.Val, ')');
+  End;
+  WriteLn;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexSelfTest (TODO 24 anticipe partiellement, comme le fait      }
+{ deja DELPHI.PAS/PERLCW32.PAS pour leurs propres fonctions de       }
+{ base) : tokenise un petit extrait Go ecrit dans un fichier            }
+{ temporaire, verifie la sequence de tokens attendue - couvre           }
+{ identificateurs, mots-cles(ASI), entiers (dec/hex/octal/binaire),        }
+{ flottant, rune, chaine, chaine brute multi-ligne, operateurs multi-        }
+{ caracteres, et surtout l ASI (le point le plus delicat de ce TODO).         }
+{ ------------------------------------------------------------ }
+
+Procedure LexAssert(Const Label_: TString; Cond: Boolean);
+Begin
+  If Not Cond Then
+    FatalError('LexSelfTest: ' + Label_ + ' a echoue');
+End;
+
+Procedure LexSelfTest;
+Const
+  TmpFile = 'GOCWLEXSELFTEST.$$$';
+Var
+  F : Text;
+Begin
+  Assign(F, TmpFile);
+  Rewrite(F);
+  WriteLn(F, 'x := 42');
+  WriteLn(F, 'y := 0x1F + 0o17 + 0b101 + 1_000');
+  WriteLn(F, 'z := 1.5e-3');
+  WriteLn(F, 'r := ''\n''');
+  WriteLn(F, 's := "hi\tthere"');
+  WriteLn(F, 'raw := `line1');
+  WriteLn(F, 'line2`');
+  WriteLn(F, 'a <- ch');
+  WriteLn(F, 'i++');
+  Close(F);
+
+  Assign(LexSrcF, TmpFile);
+  Reset(LexSrcF);
+  LexOpened := True;
+  LexInit;
+
+  { ligne 1 : x := 42 <SEMI inseree> }
+  LexNextToken; LexAssert('1: IDENT x', (CurToken.Kind = TOK_IDENT) And (CurToken.Val = 'x'));
+  LexNextToken; LexAssert('1: OP :=', (CurToken.Kind = TOK_OP) And (CurToken.Val = ':='));
+  LexNextToken; LexAssert('1: INT 42', (CurToken.Kind = TOK_INT) And (CurToken.IntVal = 42));
+  LexNextToken; LexAssert('1: SEMI inseree', (CurToken.Kind = TOK_SEMI) And CurToken.Inserted);
+
+  { ligne 2 : y := 0x1F + 0o17 + 0b101 + 1_000 <SEMI> }
+  LexNextToken; LexAssert('2: IDENT y', CurToken.Val = 'y');
+  LexNextToken; LexAssert('2: OP :=', CurToken.Val = ':=');
+  LexNextToken; LexAssert('2: HEX 0x1F=31', CurToken.IntVal = 31);
+  LexNextToken; LexAssert('2: OP +', CurToken.Val = '+');
+  LexNextToken; LexAssert('2: OCT 0o17=15', CurToken.IntVal = 15);
+  LexNextToken; LexAssert('2: OP +', CurToken.Val = '+');
+  LexNextToken; LexAssert('2: BIN 0b101=5', CurToken.IntVal = 5);
+  LexNextToken; LexAssert('2: OP +', CurToken.Val = '+');
+  LexNextToken; LexAssert('2: souligne 1_000=1000', CurToken.IntVal = 1000);
+  LexNextToken; LexAssert('2: SEMI inseree', (CurToken.Kind = TOK_SEMI) And CurToken.Inserted);
+
+  { ligne 3 : z := 1.5e-3 <SEMI> }
+  LexNextToken; LexAssert('3: IDENT z', CurToken.Val = 'z');
+  LexNextToken; LexAssert('3: OP :=', CurToken.Val = ':=');
+  LexNextToken; LexAssert('3: FLOAT', (CurToken.Kind = TOK_FLOAT) And
+    (CurToken.RealVal > 0.0014) And (CurToken.RealVal < 0.0016));
+  LexNextToken; LexAssert('3: SEMI inseree', (CurToken.Kind = TOK_SEMI) And CurToken.Inserted);
+
+  { ligne 4 : r := '\n' <SEMI> }
+  LexNextToken; LexAssert('4: IDENT r', CurToken.Val = 'r');
+  LexNextToken; LexAssert('4: OP :=', CurToken.Val = ':=');
+  LexNextToken; LexAssert('4: RUNE \n=10', (CurToken.Kind = TOK_RUNE) And (CurToken.IntVal = 10));
+  LexNextToken; LexAssert('4: SEMI inseree', (CurToken.Kind = TOK_SEMI) And CurToken.Inserted);
+
+  { ligne 5 : s := "hi\tthere" <SEMI> }
+  LexNextToken; LexAssert('5: IDENT s', CurToken.Val = 's');
+  LexNextToken; LexAssert('5: OP :=', CurToken.Val = ':=');
+  LexNextToken; LexAssert('5: STRING', (CurToken.Kind = TOK_STRING) And
+    (CurToken.Val = 'hi' + Chr(9) + 'there'));
+  LexNextToken; LexAssert('5: SEMI inseree', (CurToken.Kind = TOK_SEMI) And CurToken.Inserted);
+
+  { lignes 6-7 : raw := `line1<LF>line2` <SEMI> - chaine brute multi-ligne }
+  LexNextToken; LexAssert('6: IDENT raw', CurToken.Val = 'raw');
+  LexNextToken; LexAssert('6: OP :=', CurToken.Val = ':=');
+  LexNextToken; LexAssert('6-7: RAWSTRING multi-ligne',
+    (CurToken.Kind = TOK_RAWSTRING) And (CurToken.Val = 'line1' + Chr(10) + 'line2'));
+  LexNextToken; LexAssert('7: SEMI inseree', (CurToken.Kind = TOK_SEMI) And CurToken.Inserted);
+
+  { ligne 8 : a <- ch <SEMI> }
+  LexNextToken; LexAssert('8: IDENT a', CurToken.Val = 'a');
+  LexNextToken; LexAssert('8: OP <-', CurToken.Val = '<-');
+  LexNextToken; LexAssert('8: IDENT ch', CurToken.Val = 'ch');
+  LexNextToken; LexAssert('8: SEMI inseree', (CurToken.Kind = TOK_SEMI) And CurToken.Inserted);
+
+  { ligne 9 : i++ <SEMI, eligible via OP '++'> puis EOF (avec sa propre SEMI) }
+  LexNextToken; LexAssert('9: IDENT i', CurToken.Val = 'i');
+  LexNextToken; LexAssert('9: OP ++', CurToken.Val = '++');
+  LexNextToken; LexAssert('9: SEMI inseree (post ++)', (CurToken.Kind = TOK_SEMI) And CurToken.Inserted);
+  LexNextToken; LexAssert('EOF final', CurToken.Kind = TOK_EOF);
+
+  LexClose;
+  Erase(F);
+End;
+
+{ ============================================================ }
+{ TODO 03 - MOTS-CLES ET IDENTIFICATEURS PREDECLARES            }
+{ ============================================================ }
+{ Le lexeur (TODO 02) produit TOK_IDENT pour tout ce qui a la      }
+{ forme d un identificateur, mots-cles INCLUS - cette section          }
+{ fournit la VRAIE classification, utilisee par le parseur              }
+{ (TODO 05+) : IsKeyword distingue les 25 mots RESERVES (qui ne          }
+{ peuvent JAMAIS servir d identificateur ordinaire) des identificateurs      }
+{ PREDECLARES (types/constantes/fonctions integrees - qui PEUVENT en         }
+{ theorie etre masques par une declaration locale, ex. "var len int"           }
+{ est LEGAL en Go bien que deconseille - la regle d ombrage elle-meme            }
+{ relevera de l analyse semantique, TODO 19, pas d ici). LexIsReservedWord        }
+{ (TODO 02) est desormais un simple alias de IsKeyword<>0, pour eviter          }
+{ de maintenir deux listes independantes qui pourraient diverger.                 }
+
+Const
+  { --- Mots-cles (les 25, EXHAUSTIFS - Go n en a pas d autres) --- }
+  KW_BREAK       = 1;
+  KW_CASE        = 2;
+  KW_CHAN        = 3;
+  KW_CONST       = 4;
+  KW_CONTINUE    = 5;
+  KW_DEFAULT     = 6;
+  KW_DEFER       = 7;
+  KW_ELSE        = 8;
+  KW_FALLTHROUGH = 9;
+  KW_FOR         = 10;
+  KW_FUNC        = 11;
+  KW_GO          = 12;
+  KW_GOTO        = 13;
+  KW_IF          = 14;
+  KW_IMPORT      = 15;
+  KW_INTERFACE   = 16;
+  KW_MAP         = 17;
+  KW_PACKAGE     = 18;
+  KW_RANGE       = 19;
+  KW_RETURN      = 20;
+  KW_SELECT      = 21;
+  KW_STRUCT      = 22;
+  KW_SWITCH      = 23;
+  KW_TYPE        = 24;
+  KW_VAR         = 25;
+
+  { --- Types predeclares (20, dont "any" = alias Go 1.18+ de       }
+  { l interface vide) - ces codes PDT_xxx sont concus pour etre         }
+  { reutilises directement comme TypeIdx de base par le TODO 04            }
+  { (TypeTab), une fois cette derniere ecrite : meme ordre, memes valeurs.  }
+  PDT_BOOL       = 1;
+  PDT_BYTE       = 2;
+  PDT_COMPLEX64  = 3;
+  PDT_COMPLEX128 = 4;
+  PDT_ERROR      = 5;
+  PDT_FLOAT32    = 6;
+  PDT_FLOAT64    = 7;
+  PDT_INT        = 8;
+  PDT_INT8       = 9;
+  PDT_INT16      = 10;
+  PDT_INT32      = 11;
+  PDT_INT64      = 12;
+  PDT_RUNE       = 13;
+  PDT_STRING     = 14;
+  PDT_UINT       = 15;
+  PDT_UINT8      = 16;
+  PDT_UINT16     = 17;
+  PDT_UINT32     = 18;
+  PDT_UINT64     = 19;
+  PDT_UINTPTR    = 20;
+  PDT_ANY        = 21;
+
+  { --- Constantes predeclarees --- }
+  PDC_TRUE  = 1;
+  PDC_FALSE = 2;
+  PDC_IOTA  = 3;
+  PDC_NIL   = 4;
+
+  { --- Fonctions integrees (15) --- }
+  BI_APPEND  = 1;
+  BI_CAP     = 2;
+  BI_CLOSE   = 3;
+  BI_COMPLEX = 4;
+  BI_COPY    = 5;
+  BI_DELETE  = 6;
+  BI_IMAG    = 7;
+  BI_LEN     = 8;
+  BI_MAKE    = 9;
+  BI_NEW     = 10;
+  BI_PANIC   = 11;
+  BI_PRINT   = 12;
+  BI_PRINTLN = 13;
+  BI_REAL    = 14;
+  BI_RECOVER = 15;
+
+{ IsKeyword : 0 si S n est PAS l un des 25 mots reserves, sinon le  }
+{ code KW_xxx correspondant. Sensible a la casse (Go l est).          }
+Function IsKeyword(Const S: TString): Integer;
+Begin
+  IsKeyword := 0;
+  If      S = 'break'       Then IsKeyword := KW_BREAK
+  Else If S = 'case'        Then IsKeyword := KW_CASE
+  Else If S = 'chan'        Then IsKeyword := KW_CHAN
+  Else If S = 'const'       Then IsKeyword := KW_CONST
+  Else If S = 'continue'    Then IsKeyword := KW_CONTINUE
+  Else If S = 'default'     Then IsKeyword := KW_DEFAULT
+  Else If S = 'defer'       Then IsKeyword := KW_DEFER
+  Else If S = 'else'        Then IsKeyword := KW_ELSE
+  Else If S = 'fallthrough' Then IsKeyword := KW_FALLTHROUGH
+  Else If S = 'for'         Then IsKeyword := KW_FOR
+  Else If S = 'func'        Then IsKeyword := KW_FUNC
+  Else If S = 'go'          Then IsKeyword := KW_GO
+  Else If S = 'goto'        Then IsKeyword := KW_GOTO
+  Else If S = 'if'          Then IsKeyword := KW_IF
+  Else If S = 'import'      Then IsKeyword := KW_IMPORT
+  Else If S = 'interface'   Then IsKeyword := KW_INTERFACE
+  Else If S = 'map'         Then IsKeyword := KW_MAP
+  Else If S = 'package'     Then IsKeyword := KW_PACKAGE
+  Else If S = 'range'       Then IsKeyword := KW_RANGE
+  Else If S = 'return'      Then IsKeyword := KW_RETURN
+  Else If S = 'select'      Then IsKeyword := KW_SELECT
+  Else If S = 'struct'      Then IsKeyword := KW_STRUCT
+  Else If S = 'switch'      Then IsKeyword := KW_SWITCH
+  Else If S = 'type'        Then IsKeyword := KW_TYPE
+  Else If S = 'var'         Then IsKeyword := KW_VAR;
+End;
+
+{ IsPredeclaredType : 0 si S n est pas un nom de type predeclare,   }
+{ sinon le code PDT_xxx correspondant. }
+Function IsPredeclaredType(Const S: TString): Integer;
+Begin
+  IsPredeclaredType := 0;
+  If      S = 'bool'       Then IsPredeclaredType := PDT_BOOL
+  Else If S = 'byte'       Then IsPredeclaredType := PDT_BYTE
+  Else If S = 'complex64'  Then IsPredeclaredType := PDT_COMPLEX64
+  Else If S = 'complex128' Then IsPredeclaredType := PDT_COMPLEX128
+  Else If S = 'error'      Then IsPredeclaredType := PDT_ERROR
+  Else If S = 'float32'    Then IsPredeclaredType := PDT_FLOAT32
+  Else If S = 'float64'    Then IsPredeclaredType := PDT_FLOAT64
+  Else If S = 'int'        Then IsPredeclaredType := PDT_INT
+  Else If S = 'int8'       Then IsPredeclaredType := PDT_INT8
+  Else If S = 'int16'      Then IsPredeclaredType := PDT_INT16
+  Else If S = 'int32'      Then IsPredeclaredType := PDT_INT32
+  Else If S = 'int64'      Then IsPredeclaredType := PDT_INT64
+  Else If S = 'rune'       Then IsPredeclaredType := PDT_RUNE
+  Else If S = 'string'     Then IsPredeclaredType := PDT_STRING
+  Else If S = 'uint'       Then IsPredeclaredType := PDT_UINT
+  Else If S = 'uint8'      Then IsPredeclaredType := PDT_UINT8
+  Else If S = 'uint16'     Then IsPredeclaredType := PDT_UINT16
+  Else If S = 'uint32'     Then IsPredeclaredType := PDT_UINT32
+  Else If S = 'uint64'     Then IsPredeclaredType := PDT_UINT64
+  Else If S = 'uintptr'    Then IsPredeclaredType := PDT_UINTPTR
+  Else If S = 'any'        Then IsPredeclaredType := PDT_ANY;
+End;
+
+{ IsPredeclaredConst : 0 si S n est pas une constante predeclaree,  }
+{ sinon le code PDC_xxx correspondant. }
+Function IsPredeclaredConst(Const S: TString): Integer;
+Begin
+  IsPredeclaredConst := 0;
+  If      S = 'true'  Then IsPredeclaredConst := PDC_TRUE
+  Else If S = 'false' Then IsPredeclaredConst := PDC_FALSE
+  Else If S = 'iota'  Then IsPredeclaredConst := PDC_IOTA
+  Else If S = 'nil'   Then IsPredeclaredConst := PDC_NIL;
+End;
+
+{ IsBuiltinFunc : 0 si S n est pas une fonction integree Go,        }
+{ sinon le code BI_xxx correspondant. }
+Function IsBuiltinFunc(Const S: TString): Integer;
+Begin
+  IsBuiltinFunc := 0;
+  If      S = 'append'  Then IsBuiltinFunc := BI_APPEND
+  Else If S = 'cap'     Then IsBuiltinFunc := BI_CAP
+  Else If S = 'close'   Then IsBuiltinFunc := BI_CLOSE
+  Else If S = 'complex' Then IsBuiltinFunc := BI_COMPLEX
+  Else If S = 'copy'    Then IsBuiltinFunc := BI_COPY
+  Else If S = 'delete'  Then IsBuiltinFunc := BI_DELETE
+  Else If S = 'imag'    Then IsBuiltinFunc := BI_IMAG
+  Else If S = 'len'     Then IsBuiltinFunc := BI_LEN
+  Else If S = 'make'    Then IsBuiltinFunc := BI_MAKE
+  Else If S = 'new'     Then IsBuiltinFunc := BI_NEW
+  Else If S = 'panic'   Then IsBuiltinFunc := BI_PANIC
+  Else If S = 'print'   Then IsBuiltinFunc := BI_PRINT
+  Else If S = 'println' Then IsBuiltinFunc := BI_PRINTLN
+  Else If S = 'real'    Then IsBuiltinFunc := BI_REAL
+  Else If S = 'recover' Then IsBuiltinFunc := BI_RECOVER;
+End;
+
+{ ------------------------------------------------------------ }
+{ KeywordSelfTest : verifie IsKeyword/IsPredeclaredType/           }
+{ IsPredeclaredConst/IsBuiltinFunc sur un echantillon representatif  }
+{ de chaque categorie, ET verifie qu un identificateur ORDINAIRE        }
+{ (ex. "monVar") n est classe dans AUCUNE des quatre.                     }
+{ ------------------------------------------------------------ }
+
+Procedure KeywordAssert(Const Label_: TString; Cond: Boolean);
+Begin
+  If Not Cond Then
+    FatalError('KeywordSelfTest: ' + Label_ + ' a echoue');
+End;
+
+Procedure KeywordSelfTest;
+Begin
+  KeywordAssert('func est un mot-cle',       IsKeyword('func') = KW_FUNC);
+  KeywordAssert('package est un mot-cle',    IsKeyword('package') = KW_PACKAGE);
+  KeywordAssert('return est un mot-cle',     IsKeyword('return') = KW_RETURN);
+  KeywordAssert('var n''est pas un type',    IsPredeclaredType('var') = 0);
+  KeywordAssert('monVar n''est pas un mot-cle', IsKeyword('monVar') = 0);
+
+  KeywordAssert('int est un type predeclare',    IsPredeclaredType('int') = PDT_INT);
+  KeywordAssert('string est un type predeclare', IsPredeclaredType('string') = PDT_STRING);
+  KeywordAssert('any est un type predeclare',    IsPredeclaredType('any') = PDT_ANY);
+  KeywordAssert('monVar n''est pas un type',     IsPredeclaredType('monVar') = 0);
+  KeywordAssert('int n''est pas un mot-cle',     IsKeyword('int') = 0);
+
+  KeywordAssert('true est une constante predeclaree', IsPredeclaredConst('true') = PDC_TRUE);
+  KeywordAssert('nil est une constante predeclaree',  IsPredeclaredConst('nil') = PDC_NIL);
+  KeywordAssert('iota est une constante predeclaree', IsPredeclaredConst('iota') = PDC_IOTA);
+  KeywordAssert('monVar n''est pas une constante',    IsPredeclaredConst('monVar') = 0);
+
+  KeywordAssert('len est une fonction integree',    IsBuiltinFunc('len') = BI_LEN);
+  KeywordAssert('append est une fonction integree', IsBuiltinFunc('append') = BI_APPEND);
+  KeywordAssert('make est une fonction integree',   IsBuiltinFunc('make') = BI_MAKE);
+  KeywordAssert('monVar n''est pas une fonction integree', IsBuiltinFunc('monVar') = 0);
+
+  { les 4 categories sont mutuellement exclusives : aucun mot-cle    }
+  { n est aussi un type/constante/fonction predeclare, et vice-versa. }
+  KeywordAssert('for (mot-cle) n''est ni type ni const ni builtin',
+    (IsPredeclaredType('for') = 0) And (IsPredeclaredConst('for') = 0) And
+    (IsBuiltinFunc('for') = 0));
+End;
+
+{ ------------------------------------------------------------ }
+{ Run - point d entree de la compilation                       }
+{ TODO 01+02+03 implementes : options, banniere, lexeur complet     }
+{ (avec ASI), classification mots-cles/identificateurs predeclares.    }
+{ Le parseur, l analyse semantique et les backends ASM/OBJ/EXE restent    }
+{ a ecrire dans les TODOs suivants - Run se contente donc ici de              }
+{ tokeniser integralement le fichier source en annotant chaque                 }
+{ identificateur de sa classification (si -d), sans construire quoi que          }
+{ ce soit au-dela pour l instant.                                                   }
+{ ------------------------------------------------------------ }
+
+{ Annote un token IDENT de sa classification (TODO 03), si -d :   }
+{ mot-cle, type/constante/fonction predeclare, ou identificateur     }
+{ ordinaire - separee de PrintToken (TODO 02) plutot que d y ajouter   }
+{ une dependance vers IsKeyword/etc. (definies plus bas dans ce           }
+{ fichier, TODO 03) - evite un Forward supplementaire sans necessite.       }
+Procedure PrintIdentClass(Const T: TToken);
+Var
+  KwCode, TyCode, CoCode, BiCode : Integer;
+Begin
+  If (Not Opts.DebugMode) Or (T.Kind <> TOK_IDENT) Then Exit;
+  KwCode := IsKeyword(T.Val);
+  TyCode := IsPredeclaredType(T.Val);
+  CoCode := IsPredeclaredConst(T.Val);
+  BiCode := IsBuiltinFunc(T.Val);
+  If KwCode <> 0 Then
+    WriteLn('        -> mot-cle (KW_', KwCode, ')')
+  Else If TyCode <> 0 Then
+    WriteLn('        -> type predeclare (PDT_', TyCode, ')')
+  Else If CoCode <> 0 Then
+    WriteLn('        -> constante predeclaree (PDC_', CoCode, ')')
+  Else If BiCode <> 0 Then
+    WriteLn('        -> fonction integree (BI_', BiCode, ')');
+End;
+
+{ ============================================================ }
+{ TODO 04 - SYSTEME DE TYPES : REPRESENTATION ET TABLE DES TYPES}
+{ ============================================================ }
+{ Table des types INSPIREE de celle de DELPHI.PAS (meme projet,   }
+{ TypeTab/FieldPool partage) mais adaptee au systeme de types Go :   }
+{ pas de classes/VMT, mais slice/carte/canal/interface/fonctions a       }
+{ retours multiples. Cible 80386/Win32 32 bits (TAILLES ci-dessous          }
+{ pour CETTE cible - "int"/"uint"/"uintptr" valent 4 octets, PAS 8,             }
+{ contrairement a un Go 64 bits reel, regle explicite de la spec Go               }
+{ elle-meme : la taille de "int" depend de la plateforme cible).                    }
+
+Type
+  TTypeKind = (
+    TYK_INVALID,    { entree 0 reservee (voir TypeInit ci-dessous)     }
+    TYK_BOOL,
+    TYK_INT,        { signe OU non signe (IsUnsigned), taille 1/2/4/8   }
+    TYK_FLOAT,      { taille 4 (float32) ou 8 (float64)                  }
+    TYK_COMPLEX,    { complex64/128 - ARITHMETIQUE NON IMPLEMENTEE,        }
+                     { seul le NOM/la TAILLE sont enregistres (hors de       }
+                     { portee documentee, DOC en-tete section TODO 04)          }
+    TYK_STRING,
+    TYK_ARRAY,      { taille FIXE, ArrayLen elements de ElemTypeIdx        }
+    TYK_SLICE,      { Ptr+Len+Cap - reference vers ElemTypeIdx               }
+    TYK_STRUCT,     { champs dans FieldPool[FieldFirst..+FieldCount-1]         }
+    TYK_POINTER,    { *ElemTypeIdx                                              }
+    TYK_FUNC,       { params/retours dans FieldPool (voir ParamFirst/            }
+                     { ResultFirst) - retours MULTIPLES, IsVariadic                }
+    TYK_INTERFACE,  { methodes : reserve pour le TODO 10                          }
+    TYK_ERROR,      { cas particulier de TYK_INTERFACE (interface a UNE            }
+                     { seule methode Error() string) - distingue pour des             }
+                     { verifications rapides sans comparer les ensembles              }
+                     { de methodes, avant que le TODO 10 ne soit ecrit                   }
+    TYK_MAP,        { KeyTypeIdx -> ElemTypeIdx, TODO 12                            }
+    TYK_CHAN        { ElemTypeIdx, TODO 15                                          }
+  );
+
+  TFieldRec = Record
+    Name    : TString;   { nom du champ/parametre ; '' pour un resultat     }
+                          { non nomme (cas usuel des retours multiples)      }
+    TypeIdx : Integer;
+    Offset  : Integer;    { TYK_STRUCT seulement - octets depuis le debut     }
+                           { de la struct ; non exploite pour params/retours    }
+  End;
+
+  TTypeRec = Record
+    Kind            : TTypeKind;
+    Name            : TString;    { '' si type anonyme (litteral compose) }
+    Size            : Integer;    { octets, representation runtime (voir  }
+                                   { en-tete de section pour string/slice/  }
+                                   { interface/map/chan)                     }
+    Align           : Integer;
+    IsUnsigned      : Boolean;    { TYK_INT seulement                     }
+    AliasOfTypeIdx  : Integer;    { -1 si type distinct ; sinon INDEX du   }
+                                   { type reellement identique (ex. "byte"   }
+                                   { est un alias de "uint8", "rune" de        }
+                                   { "int32" - memes regles qu un LongInt=       }
+                                   { Integer chez DELPHI.PAS, meme projet)         }
+    ElemTypeIdx     : Integer;    { pointeur/slice/array/chan : type pointe/ }
+                                   { element ; -1 sinon                        }
+    KeyTypeIdx      : Integer;    { TYK_MAP seulement : type de la cle ;    }
+                                   { -1 sinon                                  }
+    ArrayLen        : LongInt;    { TYK_ARRAY seulement : nombre fixe        }
+                                   { d elements (ex. [10]int -> 10)              }
+    FieldFirst      : Integer;    { TYK_STRUCT : index de depart dans        }
+                                   { FieldPool, -1 si aucun champ               }
+    FieldCount      : Integer;
+    MethodFirst     : Integer;    { reserve pour le TODO 09 (methodes a      }
+                                   { recepteur valeur/pointeur) - TOUJOURS      }
+                                   { -1/0 pour l instant, rien n y ecrit ici        }
+    MethodCount     : Integer;
+    ParamFirst      : Integer;    { TYK_FUNC : index de depart dans          }
+                                   { FieldPool pour les PARAMETRES              }
+    ParamCount      : Integer;
+    ResultFirst     : Integer;    { TYK_FUNC : index de depart dans          }
+                                   { FieldPool pour les RESULTATS (retours       }
+                                   { MULTIPLES, TODO 08)                            }
+    ResultCount     : Integer;
+    IsVariadic      : Boolean;    { TYK_FUNC : dernier parametre ...T      }
+    UnderlyingTypeIdx : Integer;  { TODO 05 : "type Nom Type" (definition   }
+                                   { DISTINCTE, meme representation) - -1      }
+                                   { sinon. DIFFERENT de AliasOfTypeIdx : deux     }
+                                   { valeurs Nom/Type ne sont PAS interchangeables  }
+                                   { sans conversion explicite T(x), regle de la      }
+                                   { spec Go elle-meme, contrairement a un vrai         }
+                                   { alias ("type Nom = Type", lui AliasOfTypeIdx).       }
+  End;
+
+Var
+  TypeTab        : Array[0..MAX_TYPE - 1] Of TTypeRec;
+  TypeCount      : Integer;
+  FieldPool      : Array[0..MAX_FIELD_POOL - 1] Of TFieldRec;
+  FieldPoolCount : Integer;
+
+{ ------------------------------------------------------------ }
+{ TypeAdd : ajoute un type "simple" (scalaire/pointeur/slice/    }
+{ array/map/chan - PAS struct/func, construits par des             }
+{ fonctions dediees plus bas une fois FieldPool rempli). Les         }
+{ champs specifiques a struct/func restent a leur valeur "aucun"        }
+{ (-1/0/Faux) et pourront etre completes ensuite directement, comme         }
+{ le fait deja DELPHI.PAS pour ses propres champs specialises              }
+{ (ClassSymIdx, VMTFirst, etc. - meme convention).                            }
+{ ------------------------------------------------------------ }
+
+Function TypeAdd(Kind: TTypeKind; Const AName: TString; ASize, AAlign: Integer;
+  AUnsigned: Boolean; AElemTypeIdx, AKeyTypeIdx: Integer): Integer;
+Begin
+  If TypeCount >= MAX_TYPE Then
+  Begin
+    WarnMsg('table des types pleine (MAX_TYPE)');
+    TypeAdd := -1;
+    Exit;
+  End;
+
+  TypeTab[TypeCount].Kind           := Kind;
+  TypeTab[TypeCount].Name           := AName;
+  TypeTab[TypeCount].Size           := ASize;
+  TypeTab[TypeCount].Align          := AAlign;
+  TypeTab[TypeCount].IsUnsigned     := AUnsigned;
+  TypeTab[TypeCount].AliasOfTypeIdx := -1;
+  TypeTab[TypeCount].ElemTypeIdx    := AElemTypeIdx;
+  TypeTab[TypeCount].KeyTypeIdx     := AKeyTypeIdx;
+  TypeTab[TypeCount].ArrayLen       := 0;
+  TypeTab[TypeCount].FieldFirst     := -1;
+  TypeTab[TypeCount].FieldCount     := 0;
+  TypeTab[TypeCount].MethodFirst    := -1;
+  TypeTab[TypeCount].MethodCount    := 0;
+  TypeTab[TypeCount].ParamFirst     := -1;
+  TypeTab[TypeCount].ParamCount     := 0;
+  TypeTab[TypeCount].ResultFirst    := -1;
+  TypeTab[TypeCount].ResultCount    := 0;
+  TypeTab[TypeCount].IsVariadic     := False;
+  TypeTab[TypeCount].UnderlyingTypeIdx := -1;
+
+  TypeAdd := TypeCount;
+  Inc(TypeCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeFindByName : recherche EXACTE (sensible a la casse - Go     }
+{ l est, contrairement au Pascal de DELPHI.PAS qui normalise en      }
+{ majuscules). -1 si non trouve.                                       }
+{ ------------------------------------------------------------ }
+
+Function TypeFindByName(Const AName: TString): Integer;
+Var I : Integer;
+Begin
+  TypeFindByName := -1;
+  For I := 0 To TypeCount - 1 Do
+    If TypeTab[I].Name = AName Then
+    Begin
+      TypeFindByName := I;
+      Exit;
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeResolveAlias : suit AliasOfTypeIdx jusqu au type REELLEMENT }
+{ distinct (ex. "byte" -> "uint8", "rune" -> "int32") - Go les       }
+{ traite comme des types RIGOUREUSEMENT IDENTIQUES, pas de simples       }
+{ synonymes d affichage (contrairement a "type MyInt int" du               }
+{ TODO 05, qui cree un type DISTINCT malgre la meme representation).            }
+{ ------------------------------------------------------------ }
+
+Function TypeResolveAlias(Idx: Integer): Integer;
+Var Depth : Integer;
+Begin
+  Depth := 0;
+  While (Idx >= 0) And (Idx < TypeCount) And
+        (TypeTab[Idx].AliasOfTypeIdx >= 0) And (Depth < 8) Do
+  Begin
+    Idx := TypeTab[Idx].AliasOfTypeIdx;
+    Inc(Depth);
+  End;
+  TypeResolveAlias := Idx;
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeIsNilZero : Vrai si la valeur zero de ce type est "nil"     }
+{ (pointeur/slice/map/chan/func/interface) plutot que 0/false/""       }
+{ (numerique/bool/string, directement derivable du Kind) ou une            }
+{ structure a zero RECURSIF (TYK_STRUCT - chaque champ suit sa                }
+{ propre regle, naturellement gere une fois le TODO 09 en place,                }
+{ pas besoin d une fonction dediee ici pour ce cas precis).                        }
+{ ------------------------------------------------------------ }
+
+Function TypeIsNilZero(Idx: Integer): Boolean;
+Begin
+  TypeIsNilZero := False;
+  If (Idx < 0) Or (Idx >= TypeCount) Then Exit;
+  TypeIsNilZero := TypeTab[Idx].Kind In
+    [TYK_POINTER, TYK_SLICE, TYK_MAP, TYK_CHAN, TYK_FUNC, TYK_INTERFACE,
+     TYK_ERROR];
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeInit : enregistre les 21 types predeclares Go, DANS LE       }
+{ MEME ORDRE que les codes PDT_xxx du TODO 03 - une entree           }
+{ sentinelle TYK_INVALID est ajoutee EN PREMIER (index 0) pour que        }
+{ "bool" (PDT_BOOL=1) tombe exactement sur TypeTab[1], "byte"                 }
+{ (PDT_BYTE=2) sur TypeTab[2], etc. : les codes PDT_xxx du TODO 03               }
+{ SONT donc directement des TypeIdx valides des cette table remplie,                }
+{ sans conversion ni table de correspondance separee (design deja                     }
+{ annonce au TODO 03).                                                                   }
+{ ------------------------------------------------------------ }
+
+Procedure TypeInit;
+Var
+  TIByte, TIUint8, TIRune, TIInt32 : Integer;
+Begin
+  TypeCount      := 0;
+  FieldPoolCount := 0;
+
+  TypeAdd(TYK_INVALID, '', 0, 0, False, -1, -1);                    { 0 }
+
+  TypeAdd(TYK_BOOL,      'bool',       1,  1, False, -1, -1);        { 1  PDT_BOOL      }
+  TIByte := TypeAdd(TYK_INT, 'byte',   1,  1, True,  -1, -1);        { 2  PDT_BYTE      }
+  TypeAdd(TYK_COMPLEX,   'complex64',  8,  4, False, -1, -1);        { 3  PDT_COMPLEX64 }
+  TypeAdd(TYK_COMPLEX,   'complex128', 16, 4, False, -1, -1);        { 4  PDT_COMPLEX128}
+  TypeAdd(TYK_ERROR,     'error',      8,  4, False, -1, -1);        { 5  PDT_ERROR     }
+  TypeAdd(TYK_FLOAT,     'float32',    4,  4, False, -1, -1);        { 6  PDT_FLOAT32   }
+  TypeAdd(TYK_FLOAT,     'float64',    8,  4, False, -1, -1);        { 7  PDT_FLOAT64   }
+  TypeAdd(TYK_INT,       'int',        4,  4, False, -1, -1);        { 8  PDT_INT       }
+  TypeAdd(TYK_INT,       'int8',       1,  1, False, -1, -1);        { 9  PDT_INT8      }
+  TypeAdd(TYK_INT,       'int16',      2,  2, False, -1, -1);        { 10 PDT_INT16     }
+  TIInt32 := TypeAdd(TYK_INT, 'int32', 4,  4, False, -1, -1);        { 11 PDT_INT32     }
+  TypeAdd(TYK_INT,       'int64',      8,  4, False, -1, -1);        { 12 PDT_INT64     }
+  TIRune := TypeAdd(TYK_INT, 'rune',   4,  4, False, -1, -1);        { 13 PDT_RUNE      }
+  TypeAdd(TYK_STRING,    'string',     8,  4, False, -1, -1);        { 14 PDT_STRING    }
+  TypeAdd(TYK_INT,       'uint',       4,  4, True,  -1, -1);        { 15 PDT_UINT      }
+  TIUint8 := TypeAdd(TYK_INT, 'uint8', 1,  1, True,  -1, -1);        { 16 PDT_UINT8     }
+  TypeAdd(TYK_INT,       'uint16',     2,  2, True,  -1, -1);        { 17 PDT_UINT16    }
+  TypeAdd(TYK_INT,       'uint32',     4,  4, True,  -1, -1);        { 18 PDT_UINT32    }
+  TypeAdd(TYK_INT,       'uint64',     8,  4, True,  -1, -1);        { 19 PDT_UINT64    }
+  TypeAdd(TYK_INT,       'uintptr',    4,  4, True,  -1, -1);        { 20 PDT_UINTPTR   }
+  TypeAdd(TYK_INTERFACE, 'any',        8,  4, False, -1, -1);        { 21 PDT_ANY       }
+
+  { alias STRICTS (memes types, noms differents) - confirme par la  }
+  { spec Go elle-meme ("byte is an alias for uint8", "rune is an       }
+  { alias for int32"), pas une simple convention de ce compilateur.       }
+  TypeTab[TIByte].AliasOfTypeIdx := TIUint8;
+  TypeTab[TIRune].AliasOfTypeIdx := TIInt32;
+
+  If Opts.DebugMode Then
+    WriteLn('  [TypeInit] ', TypeCount, ' types predeclares enregistres');
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeSelfTest : verifie l alignement PDT_xxx <-> TypeIdx, les     }
+{ tailles cle (32 bits pour int/uint/uintptr, PAS 64 - specifique       }
+{ a cette cible), les alias byte/rune, et la regle du zero nil.            }
+{ ------------------------------------------------------------ }
+
+Procedure TypeAssert(Const Label_: TString; Cond: Boolean);
+Begin
+  If Not Cond Then
+    FatalError('TypeSelfTest: ' + Label_ + ' a echoue');
+End;
+
+Procedure TypeSelfTest;
+Var
+  IdxInt, IdxStr, IdxByte, IdxRune, IdxUint8, IdxInt32, IdxPtr : Integer;
+Begin
+  TypeInit;
+
+  TypeAssert('21 types + sentinelle = 22 entrees', TypeCount = 22);
+
+  IdxInt := TypeFindByName('int');
+  TypeAssert('int trouve par nom',    IdxInt = PDT_INT);
+  TypeAssert('int correspond a PDT_INT (design TODO 03)', IdxInt = PDT_INT);
+  TypeAssert('int fait 4 octets (cible 32 bits, PAS 8)', TypeTab[IdxInt].Size = 4);
+  TypeAssert('int est signe',         Not TypeTab[IdxInt].IsUnsigned);
+
+  IdxStr := TypeFindByName('string');
+  TypeAssert('string trouve == PDT_STRING', IdxStr = PDT_STRING);
+  TypeAssert('string fait 8 octets ({Ptr,Len} 32 bits)', TypeTab[IdxStr].Size = 8);
+
+  IdxByte  := TypeFindByName('byte');
+  IdxUint8 := TypeFindByName('uint8');
+  TypeAssert('byte est un alias de uint8', TypeResolveAlias(IdxByte) = IdxUint8);
+
+  IdxRune  := TypeFindByName('rune');
+  IdxInt32 := TypeFindByName('int32');
+  TypeAssert('rune est un alias de int32', TypeResolveAlias(IdxRune) = IdxInt32);
+
+  TypeAssert('bool n''est PAS a zero nil', Not TypeIsNilZero(PDT_BOOL));
+  TypeAssert('int n''est PAS a zero nil',  Not TypeIsNilZero(PDT_INT));
+  TypeAssert('string n''est PAS a zero nil', Not TypeIsNilZero(PDT_STRING));
+
+  { types composes non encore predeclares (pointeur/slice/map/chan/  }
+  { interface) : construits a la volee ici juste pour verifier la       }
+  { regle du zero nil - la vraie construction (a partir du parseur)        }
+  { viendra aux TODO 09/11/12/15.                                             }
+  IdxPtr := TypeAdd(TYK_POINTER, '', 4, 4, False, IdxInt, -1);
+  TypeAssert('*int est a zero nil', TypeIsNilZero(IdxPtr));
+  TypeAssert('error est a zero nil (interface)', TypeIsNilZero(PDT_ERROR));
+  TypeAssert('any est a zero nil (interface)', TypeIsNilZero(PDT_ANY));
+End;
+
+{ ============================================================ }
+{ TODO 05 - DECLARATIONS : VAR, CONST, TYPE, IOTA ET PORTEES    }
+{ ============================================================ }
+{ Premier TODO de PARSING reel (pas juste lexer/classification/   }
+{ types). Necessite une infrastructure non nommee explicitement       }
+{ par le titre du TODO mais indispensable a tout parseur recursif-        }
+{ descendant : un TokenPool (tous les tokens du fichier, pre-lexes           }
+{ une seule fois via LexAll) parcouru par un curseur PP - meme                  }
+{ architecture que DELPHI.PAS/PERLCW32.PAS (meme projet), PAS le                   }
+{ flux "un token a la fois" du TODO 02 - necessaire notamment pour la                 }
+{ regle iota "expression repetee" plus bas (revenir en arriere dans le                   }
+{ flux pour re-evaluer la MEME expression avec un iota different).                          }
+
+Const
+  MAX_TOKEN = {$IFDEF FPC}65536{$ELSE}8192{$ENDIF};
+
+Type
+  TDeclNameList = Array[0..15] Of TString;
+
+Var
+  TokenPool  : Array[0..MAX_TOKEN - 1] Of TToken;
+  TokenCount : Integer;
+  PP         : Integer;
+
+{ ------------------------------------------------------------ }
+{ LexAll : tokenise le fichier ENTIER (deja ouvert via LexInit    }
+{ par l appelant) dans TokenPool.                                    }
+{ ------------------------------------------------------------ }
+
+Procedure LexAll;
+Begin
+  TokenCount := 0;
+  Repeat
+    LexNextToken;
+    If TokenCount < MAX_TOKEN Then
+    Begin
+      TokenPool[TokenCount] := CurToken;
+      Inc(TokenCount);
+    End
+    Else
+    Begin
+      WarnMsg('pool de tokens plein (MAX_TOKEN) - fichier tronque');
+      Break;
+    End;
+  Until CurToken.Kind = TOK_EOF;
+End;
+
+{ ------------------------------------------------------------ }
+{ PP* : lecture en avant dans TokenPool - PAS le lexeur direct.   }
+{ PPMatch compare le TEXTE EXACT (Go est sensible a la casse,        }
+{ contrairement au PPMatch de DELPHI.PAS qui normalise en majuscules).  }
+{ ------------------------------------------------------------ }
+
+Function PPAtEnd: Boolean;
+Begin
+  PPAtEnd := (PP < 0) Or (PP >= TokenCount) Or
+             (TokenPool[PP].Kind = TOK_EOF);
+End;
+
+Function PPKind: TTokenKind;
+Begin
+  If PPAtEnd Then PPKind := TOK_EOF Else PPKind := TokenPool[PP].Kind;
+End;
+
+Function PPVal: TString;
+Begin
+  If PPAtEnd Then PPVal := '' Else PPVal := TokenPool[PP].Val;
+End;
+
+{ PP2Kind/PP2Val : un jeton d avance (sans consommer) - necessaire     }
+{ pour distinguer "Ident: Valeur" (element cle d un litteral compose,    }
+{ TODO 06) de "Ident" simple sans faire de retour en arriere.                }
+Function PP2Kind: TTokenKind;
+Begin
+  If (PP + 1 >= TokenCount) Or (PP + 1 < 0) Then PP2Kind := TOK_EOF
+  Else PP2Kind := TokenPool[PP + 1].Kind;
+End;
+
+Function PP2Val: TString;
+Begin
+  If (PP + 1 >= TokenCount) Or (PP + 1 < 0) Then PP2Val := ''
+  Else PP2Val := TokenPool[PP + 1].Val;
+End;
+
+{ PPIsOp : Vrai si le token courant est TOK_OP et vaut exactement    }
+{ S - VOLONTAIREMENT distinct de "PPVal=S" seul : un litteral            }
+{ chaine dont le CONTENU vaut par hasard "+" (ex. const X = "a"+"+")           }
+{ ne doit jamais etre pris pour l operateur "+" (bogue trouve en                  }
+{ concevant ConstEvalBinOp ci-dessous, jamais rencontre dans les                     }
+{ echantillons reels mais structurellement possible).                                   }
+Function PPIsOp(Const S: TString): Boolean;
+Begin
+  PPIsOp := (Not PPAtEnd) And (TokenPool[PP].Kind = TOK_OP) And
+            (TokenPool[PP].Val = S);
+End;
+
+Procedure PPAdvance;
+Begin
+  If Not PPAtEnd Then Inc(PP);
+End;
+
+{ Saute un ou plusieurs TOK_SEMI consecutifs (reels OU inseres par }
+{ l ASI, TODO 02) - un bloc Go peut contenir des lignes vides,        }
+{ donc plusieurs point-virgules d affilee une fois l ASI appliquee.      }
+Procedure PPSkipSemis;
+Begin
+  While (Not PPAtEnd) And (PPKind = TOK_SEMI) Do PPAdvance;
+End;
+
+Function PPMatch(Const S: TString): Boolean;
+Begin
+  PPMatch := False;
+  If PPAtEnd Then Exit;
+  If TokenPool[PP].Val = S Then
+  Begin
+    PPAdvance;
+    PPMatch := True;
+  End;
+End;
+
+Procedure ParserInit;
+Begin
+  PP := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ Table des symboles et portees - modele deja eprouve par         }
+{ DELPHI.PAS/PERLCW32.PAS (meme projet) : portee empilee,             }
+{ resolution DU PLUS IMBRIQUE VERS LE PLUS GLOBAL (SymFind), ce         }
+{ qui donne a Go son "shadowing" (une variable locale peut masquer         }
+{ un identificateur PREDECLARE comme "len", ou une variable de              }
+{ portee englobante - legal en Go, juste deconseille par convention).          }
+{ ------------------------------------------------------------ }
+
+Type
+  TSymKind = (
+    SK_CONST,   { constante nommee (const X = ...)          }
+    SK_TYPE,    { type nomme (type X ...)                    }
+    SK_VAR,     { variable (var/:=), portee quelconque         }
+    SK_FUNC     { fonction top-level - reserve, TODO 08          }
+  );
+
+  { Valeur d une constante Go - TAGGEE (contrairement a un simple   }
+  { Integer) car une constante Go peut etre entiere, flottante,        }
+  { booleenne, chaine ou rune (deja un entier, code point).               }
+  TConstKind = (CK_INT, CK_FLOAT, CK_BOOL, CK_STRING);
+
+  TConstVal = Record
+    Kind    : TConstKind;
+    IntVal  : LongInt;    { CK_INT (et CK_BOOL : 0/1) }
+    RealVal : Real;       { CK_FLOAT }
+    StrVal  : TString;    { CK_STRING }
+  End;
+
+  TDeclValList = Array[0..15] Of TConstVal;
+
+  TSymRec = Record
+    Name       : TString;    { sensible a la casse, PAS normalise }
+    Kind       : TSymKind;
+    TypeIdx    : Integer;    { -1 si pas encore resolu/inconnu }
+    ScopeLevel : Integer;    { 0 = portee paquet (package-level) }
+    ScopeId    : Integer;
+    IsGlobal   : Boolean;
+    ConstVal   : TConstVal;  { SK_CONST (et SK_VAR si initialisee) }
+  End;
+
+Var
+  SymTab   : Array[0..MAX_SYM - 1] Of TSymRec;
+  SymCount : Integer;
+
+  ScopeStack    : Array[0..MAX_SCOPE - 1] Of Integer;
+  ScopeStackTop : Integer;
+  CurScopeLevel : Integer;
+  CurScopeId    : Integer;
+  ScopeIdSeq    : Integer;
+
+Procedure SymInit;
+Begin
+  SymCount      := 0;
+  ScopeStackTop := -1;
+  CurScopeLevel := 0;
+  CurScopeId    := 0;
+  ScopeIdSeq    := 0;
+End;
+
+Procedure SymEnterScope;
+Begin
+  If ScopeStackTop >= MAX_SCOPE - 1 Then
+  Begin
+    WarnMsg('profondeur de portee maximale atteinte (MAX_SCOPE)');
+    Exit;
+  End;
+  Inc(ScopeStackTop);
+  Inc(ScopeIdSeq);
+  ScopeStack[ScopeStackTop] := ScopeIdSeq;
+  CurScopeId    := ScopeIdSeq;
+  CurScopeLevel := ScopeStackTop + 1;
+End;
+
+Procedure SymLeaveScope;
+Begin
+  If ScopeStackTop < 0 Then
+  Begin
+    WarnMsg('tentative de quitter la portee paquet (package-level)');
+    Exit;
+  End;
+  Dec(ScopeStackTop);
+  CurScopeLevel := ScopeStackTop + 1;
+  If ScopeStackTop < 0 Then CurScopeId := 0
+  Else CurScopeId := ScopeStack[ScopeStackTop];
+End;
+
+{ SymFindInScope : cherche UNIQUEMENT dans la portee SId (pas les  }
+{ englobantes) - sert a detecter une redeclaration illegale DANS LA   }
+{ MEME portee (ex. "var x int" deux fois dans le meme bloc est une      }
+{ erreur en Go, mais masquer x dans un bloc IMBRIQUE est legal).           }
+Function SymFindInScope(Const Name: TString; SId: Integer): Integer;
+Var I: Integer;
+Begin
+  SymFindInScope := -1;
+  For I := SymCount - 1 DownTo 0 Do
+    If (SymTab[I].ScopeId = SId) And (SymTab[I].Name = Name) Then
+    Begin
+      SymFindInScope := I;
+      Exit;
+    End;
+End;
+
+{ SymFind : resolution normale - la portee la PLUS IMBRIQUEE        }
+{ d abord (parcours DECROISSANT de SymTab, qui reflete l ordre          }
+{ chronologique de declaration - un symbole plus recent masque un           }
+{ symbole plus ancien de meme nom).                                            }
+Function SymFind(Const Name: TString): Integer;
+Var I: Integer;
+Begin
+  SymFind := -1;
+  For I := SymCount - 1 DownTo 0 Do
+    If SymTab[I].Name = Name Then
+    Begin
+      SymFind := I;
+      Exit;
+    End;
+End;
+
+Function SymAdd(Const Name: TString; Kind: TSymKind; TIdx: Integer): Integer;
+Var Dup: Integer;
+Begin
+  If SymCount >= MAX_SYM Then
+  Begin
+    WarnMsg('table des symboles pleine (MAX_SYM)');
+    SymAdd := -1;
+    Exit;
+  End;
+
+  Dup := SymFindInScope(Name, CurScopeId);
+  If Dup >= 0 Then
+    WarnMsg('symbole deja declare dans cette portee: ' + Name);
+
+  SymTab[SymCount].Name       := Name;
+  SymTab[SymCount].Kind       := Kind;
+  SymTab[SymCount].TypeIdx    := TIdx;
+  SymTab[SymCount].ScopeLevel := CurScopeLevel;
+  SymTab[SymCount].ScopeId    := CurScopeId;
+  SymTab[SymCount].IsGlobal   := (CurScopeLevel = 0);
+  SymTab[SymCount].ConstVal.Kind    := CK_INT;
+  SymTab[SymCount].ConstVal.IntVal  := 0;
+  SymTab[SymCount].ConstVal.RealVal := 0.0;
+  SymTab[SymCount].ConstVal.StrVal  := '';
+
+  SymAdd := SymCount;
+  Inc(SymCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ iota : compteur remis a 0 a l entree d un bloc "const ( ... )",  }
+{ incremente APRES chaque ConstSpec (chaque ligne du bloc).           }
+{ ------------------------------------------------------------ }
+
+Var
+  CurIota : LongInt;
+
+{ ------------------------------------------------------------ }
+{ Petits constructeurs de TConstVal (evitent de repeter les 4     }
+{ affectations de champs partout).                                   }
+{ ------------------------------------------------------------ }
+
+Function CVInt(V: LongInt): TConstVal;
+Begin
+  CVInt.Kind    := CK_INT;
+  CVInt.IntVal  := V;
+  CVInt.RealVal := 0.0;
+  CVInt.StrVal  := '';
+End;
+
+Function CVFloat(V: Real): TConstVal;
+Begin
+  CVFloat.Kind    := CK_FLOAT;
+  CVFloat.IntVal  := Trunc(V);
+  CVFloat.RealVal := V;
+  CVFloat.StrVal  := '';
+End;
+
+Function CVBool(V: Boolean): TConstVal;
+Begin
+  CVBool.Kind := CK_BOOL;
+  If V Then CVBool.IntVal := 1 Else CVBool.IntVal := 0;
+  CVBool.RealVal := 0.0;
+  CVBool.StrVal  := '';
+End;
+
+Function CVString(Const V: TString): TConstVal;
+Begin
+  CVString.Kind    := CK_STRING;
+  CVString.IntVal  := 0;
+  CVString.RealVal := 0.0;
+  CVString.StrVal  := V;
+End;
+
+{ CVAsReal : vue flottante d une TConstVal numerique (arithmetique  }
+{ mixte entier/flottant, ex. "1.5 * 2"). }
+Function CVAsReal(Const V: TConstVal): Real;
+Begin
+  If V.Kind = CK_FLOAT Then CVAsReal := V.RealVal
+  Else CVAsReal := V.IntVal;
+End;
+
+{ ------------------------------------------------------------ }
+{ Evaluateur d expression CONSTANTE (repliee a l analyse, pas de   }
+{ code genere - aucun backend n existe encore, TODO 21+). Couvre       }
+{ litteraux, iota, identificateurs de constantes DEJA declarees, et       }
+{ les operateurs Go dans leur PRECEDENCE reelle (5 haut : * / % << >>          }
+{ & &^, 4 : + - | ^, 3 : comparaisons, 2 : ET logique, 1 bas : OU              }
+{ logique). PORTEE : seulement des operandes eux-memes CONSTANTS               }
+{ (litteraux, iota, autres const) - une reference a une variable ou               }
+{ un appel de fonction dans un "const" est de toute facon une erreur                 }
+{ Go, pas seulement une limitation de ce compilateur.                                  }
+{ ------------------------------------------------------------ }
+
+Function ConstEvalExpr: TConstVal; Forward;
+
+Function ConstEvalPrimary: TConstVal;
+Var Nam: TString; SI: Integer;
+Begin
+  ConstEvalPrimary := CVInt(0);
+
+  If PPAtEnd Then
+  Begin
+    FatalError('expression constante incomplete');
+    Exit;
+  End;
+
+  Case PPKind Of
+    TOK_INT:
+      Begin
+        ConstEvalPrimary := CVInt(TokenPool[PP].IntVal);
+        PPAdvance;
+      End;
+    TOK_FLOAT:
+      Begin
+        ConstEvalPrimary := CVFloat(TokenPool[PP].RealVal);
+        PPAdvance;
+      End;
+    TOK_RUNE:
+      Begin
+        ConstEvalPrimary := CVInt(TokenPool[PP].IntVal);
+        PPAdvance;
+      End;
+    TOK_STRING, TOK_RAWSTRING:
+      Begin
+        ConstEvalPrimary := CVString(TokenPool[PP].Val);
+        PPAdvance;
+      End;
+    TOK_IDENT:
+      Begin
+        Nam := TokenPool[PP].Val;
+        PPAdvance;
+        If Nam = 'iota' Then
+          ConstEvalPrimary := CVInt(CurIota)
+        Else If Nam = 'true' Then
+          ConstEvalPrimary := CVBool(True)
+        Else If Nam = 'false' Then
+          ConstEvalPrimary := CVBool(False)
+        Else
+        Begin
+          SI := SymFind(Nam);
+          If (SI >= 0) And (SymTab[SI].Kind = SK_CONST) Then
+            ConstEvalPrimary := SymTab[SI].ConstVal
+          Else
+            FatalError('identificateur non constant dans une expression ' +
+              'constante: ' + Nam);
+        End;
+      End;
+    TOK_OP:
+      Begin
+        If PPIsOp('(') Then
+        Begin
+          PPAdvance;
+          ConstEvalPrimary := ConstEvalExpr;
+          If Not PPIsOp(')') Then
+            FatalError('parenthese fermante attendue dans une expression ' +
+              'constante')
+          Else
+            PPAdvance;
+        End
+        Else
+          FatalError('jeton inattendu dans une expression constante: ' +
+            PPVal);
+      End;
+  Else
+    FatalError('jeton inattendu dans une expression constante');
+  End;
+End;
+
+Function ConstEvalUnary: TConstVal;
+Var V: TConstVal;
+Begin
+  If PPIsOp('+') Then
+  Begin
+    PPAdvance;
+    ConstEvalUnary := ConstEvalUnary;
+    Exit;
+  End;
+  If PPIsOp('-') Then
+  Begin
+    PPAdvance;
+    V := ConstEvalUnary;
+    If V.Kind = CK_FLOAT Then ConstEvalUnary := CVFloat(-V.RealVal)
+    Else ConstEvalUnary := CVInt(-V.IntVal);
+    Exit;
+  End;
+  If PPIsOp('!') Then
+  Begin
+    PPAdvance;
+    V := ConstEvalUnary;
+    ConstEvalUnary := CVBool(V.IntVal = 0);
+    Exit;
+  End;
+  If PPIsOp('^') Then
+  Begin
+    PPAdvance;
+    V := ConstEvalUnary;
+    ConstEvalUnary := CVInt(Not V.IntVal);
+    Exit;
+  End;
+  ConstEvalUnary := ConstEvalPrimary;
+End;
+
+{ ConstEvalBinOp : applique UN operateur binaire deja identifie    }
+{ (Op) a deux valeurs deja evaluees (L, R). Simplification            }
+{ DOCUMENTEE : la coercion entier/flottant se fait des qu AU MOINS UN     }
+{ operande est CK_FLOAT (les deux cotes sont alors vus en Real) -            }
+{ les combinaisons franchement invalides en vrai Go (ex. chaine * entier)       }
+{ ne sont pas toutes rejetees explicitement ici (l analyse semantique              }
+{ complete, TODO 19, n existe pas encore) - portee limitee aux                        }
+{ combinaisons SENSEES, suffisantes pour les expressions constantes                     }
+{ Go usuelles (arithmetique, decalages/masques de bits avec iota,                          }
+{ concatenation de chaines, comparaisons).                                                    }
+Function ConstEvalBinOp(Const L, R: TConstVal; Const Op: TString): TConstVal;
+Var
+  BothFloat : Boolean;
+  LF, RF    : Real;
+Begin
+  ConstEvalBinOp := CVInt(0);
+
+  If (Op = '+') And (L.Kind = CK_STRING) And (R.Kind = CK_STRING) Then
+  Begin
+    ConstEvalBinOp := CVString(L.StrVal + R.StrVal);
+    Exit;
+  End;
+
+  BothFloat := (L.Kind = CK_FLOAT) Or (R.Kind = CK_FLOAT);
+  LF := CVAsReal(L);
+  RF := CVAsReal(R);
+
+  If Op = '+' Then
+  Begin
+    If BothFloat Then ConstEvalBinOp := CVFloat(LF + RF)
+    Else ConstEvalBinOp := CVInt(L.IntVal + R.IntVal);
+    Exit;
+  End;
+  If Op = '-' Then
+  Begin
+    If BothFloat Then ConstEvalBinOp := CVFloat(LF - RF)
+    Else ConstEvalBinOp := CVInt(L.IntVal - R.IntVal);
+    Exit;
+  End;
+  If Op = '*' Then
+  Begin
+    If BothFloat Then ConstEvalBinOp := CVFloat(LF * RF)
+    Else ConstEvalBinOp := CVInt(L.IntVal * R.IntVal);
+    Exit;
+  End;
+  If Op = '/' Then
+  Begin
+    If BothFloat Then ConstEvalBinOp := CVFloat(LF / RF)
+    Else If R.IntVal = 0 Then
+      FatalError('division entiere par zero dans une expression constante')
+    Else
+      ConstEvalBinOp := CVInt(L.IntVal Div R.IntVal);
+    Exit;
+  End;
+  If Op = '%' Then
+  Begin
+    If R.IntVal = 0 Then
+      FatalError('modulo par zero dans une expression constante')
+    Else
+      ConstEvalBinOp := CVInt(L.IntVal Mod R.IntVal);
+    Exit;
+  End;
+  If Op = '<<' Then Begin ConstEvalBinOp := CVInt(L.IntVal Shl R.IntVal); Exit; End;
+  If Op = '>>' Then Begin ConstEvalBinOp := CVInt(L.IntVal Shr R.IntVal); Exit; End;
+  If Op = '&'  Then Begin ConstEvalBinOp := CVInt(L.IntVal And R.IntVal); Exit; End;
+  If Op = '|'  Then Begin ConstEvalBinOp := CVInt(L.IntVal Or R.IntVal); Exit; End;
+  If Op = '^'  Then Begin ConstEvalBinOp := CVInt(L.IntVal Xor R.IntVal); Exit; End;
+  If Op = '&^' Then Begin ConstEvalBinOp := CVInt(L.IntVal And (Not R.IntVal)); Exit; End;
+
+  If Op = '==' Then
+  Begin
+    If (L.Kind = CK_STRING) And (R.Kind = CK_STRING) Then
+      ConstEvalBinOp := CVBool(L.StrVal = R.StrVal)
+    Else If BothFloat Then ConstEvalBinOp := CVBool(LF = RF)
+    Else ConstEvalBinOp := CVBool(L.IntVal = R.IntVal);
+    Exit;
+  End;
+  If Op = '!=' Then
+  Begin
+    If (L.Kind = CK_STRING) And (R.Kind = CK_STRING) Then
+      ConstEvalBinOp := CVBool(L.StrVal <> R.StrVal)
+    Else If BothFloat Then ConstEvalBinOp := CVBool(LF <> RF)
+    Else ConstEvalBinOp := CVBool(L.IntVal <> R.IntVal);
+    Exit;
+  End;
+  If Op = '<'  Then Begin If BothFloat Then ConstEvalBinOp := CVBool(LF < RF)  Else ConstEvalBinOp := CVBool(L.IntVal < R.IntVal);  Exit; End;
+  If Op = '<=' Then Begin If BothFloat Then ConstEvalBinOp := CVBool(LF <= RF) Else ConstEvalBinOp := CVBool(L.IntVal <= R.IntVal); Exit; End;
+  If Op = '>'  Then Begin If BothFloat Then ConstEvalBinOp := CVBool(LF > RF)  Else ConstEvalBinOp := CVBool(L.IntVal > R.IntVal);  Exit; End;
+  If Op = '>=' Then Begin If BothFloat Then ConstEvalBinOp := CVBool(LF >= RF) Else ConstEvalBinOp := CVBool(L.IntVal >= R.IntVal); Exit; End;
+
+  If Op = '&&' Then Begin ConstEvalBinOp := CVBool((L.IntVal <> 0) And (R.IntVal <> 0)); Exit; End;
+  If Op = '||' Then Begin ConstEvalBinOp := CVBool((L.IntVal <> 0) Or (R.IntVal <> 0)); Exit; End;
+
+  FatalError('operateur constant non pris en charge: ' + Op);
+End;
+
+Function ConstEvalMul: TConstVal;
+Var L: TConstVal; Op: TString;
+Begin
+  L := ConstEvalUnary;
+  While PPIsOp('*') Or PPIsOp('/') Or PPIsOp('%') Or PPIsOp('<<') Or
+        PPIsOp('>>') Or PPIsOp('&') Or PPIsOp('&^') Do
+  Begin
+    Op := PPVal;
+    PPAdvance;
+    L := ConstEvalBinOp(L, ConstEvalUnary, Op);
+  End;
+  ConstEvalMul := L;
+End;
+
+Function ConstEvalAdd: TConstVal;
+Var L: TConstVal; Op: TString;
+Begin
+  L := ConstEvalMul;
+  While PPIsOp('+') Or PPIsOp('-') Or PPIsOp('|') Or PPIsOp('^') Do
+  Begin
+    Op := PPVal;
+    PPAdvance;
+    L := ConstEvalBinOp(L, ConstEvalMul, Op);
+  End;
+  ConstEvalAdd := L;
+End;
+
+Function ConstEvalRel: TConstVal;
+Var L: TConstVal; Op: TString;
+Begin
+  L := ConstEvalAdd;
+  While PPIsOp('==') Or PPIsOp('!=') Or PPIsOp('<') Or PPIsOp('<=') Or
+        PPIsOp('>') Or PPIsOp('>=') Do
+  Begin
+    Op := PPVal;
+    PPAdvance;
+    L := ConstEvalBinOp(L, ConstEvalAdd, Op);
+  End;
+  ConstEvalRel := L;
+End;
+
+Function ConstEvalAnd: TConstVal;
+Var L: TConstVal;
+Begin
+  L := ConstEvalRel;
+  While PPIsOp('&&') Do
+  Begin
+    PPAdvance;
+    L := ConstEvalBinOp(L, ConstEvalRel, '&&');
+  End;
+  ConstEvalAnd := L;
+End;
+
+Function ConstEvalExpr: TConstVal;
+Var L: TConstVal;
+Begin
+  L := ConstEvalAnd;
+  While PPIsOp('||') Do
+  Begin
+    PPAdvance;
+    L := ConstEvalBinOp(L, ConstEvalAnd, '||');
+  End;
+  ConstEvalExpr := L;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseTypeExpr : resout une expression de type EN UN TypeIdx.    }
+{ PORTEE (documentee) : type predeclare, pointeur (*T, recursif),     }
+{ ou nom de type deja declare (SK_TYPE) - la syntaxe des types            }
+{ COMPOSES (tableau/slice/map/canal/fonction/struct/interface) est           }
+{ EXPLICITEMENT hors de portee ici, chacune relevant de son propre             }
+{ TODO dedie (09/11/12/15) : arret propre plutot que deviner.                     }
+{ ------------------------------------------------------------ }
+
+Function ParseTypeExpr: Integer;
+Var Nam: TString; Base, SI: Integer;
+Begin
+  ParseTypeExpr := -1;
+
+  If PPIsOp('*') Then
+  Begin
+    PPAdvance;
+    Base := ParseTypeExpr;
+    ParseTypeExpr := TypeAdd(TYK_POINTER, '', 4, 4, False, Base, -1);
+    Exit;
+  End;
+
+  If PPKind <> TOK_IDENT Then
+  Begin
+    FatalError('expression de type non prise en charge a ce point ' +
+      '(tableau/slice/map/canal/fonction/struct/interface : voir TODO ' +
+      '09/11/12/15)');
+    Exit;
+  End;
+
+  Nam := PPVal;
+  PPAdvance;
+
+  If IsPredeclaredType(Nam) <> 0 Then
+  Begin
+    ParseTypeExpr := IsPredeclaredType(Nam);   { design TODO 03/04 : PDT_xxx = TypeIdx }
+    Exit;
+  End;
+
+  SI := SymFind(Nam);
+  If (SI >= 0) And (SymTab[SI].Kind = SK_TYPE) Then
+  Begin
+    ParseTypeExpr := SymTab[SI].TypeIdx;
+    Exit;
+  End;
+
+  FatalError('type inconnu: ' + Nam);
+End;
+
+{ ------------------------------------------------------------ }
+{ var Nom1, Nom2 [Type] [= Expr1, Expr2] ; et var ( ... ) --      }
+{ initialiseurs LIMITES aux expressions CONSTANTES (ConstEvalExpr) :  }
+{ aucun backend de code n existe encore (TODO 21+), un "var x =           }
+{ FonctionAppelee()" n aurait de toute facon nulle part ou generer            }
+{ du code reel pour l instant - portee assumee et documentee.                    }
+{ ------------------------------------------------------------ }
+
+Procedure ParseVarSpec;
+Var
+  Names   : TDeclNameList;
+  NCount  : Integer;
+  TIdx    : Integer;
+  Vals    : TDeclValList;
+  HasInit : Boolean;
+  I, SI   : Integer;
+Begin
+  NCount := 0;
+  Repeat
+    If PPKind <> TOK_IDENT Then
+    Begin
+      FatalError('nom de variable attendu');
+      Exit;
+    End;
+    If NCount <= High(Names) Then
+    Begin
+      Names[NCount] := PPVal;
+      Inc(NCount);
+    End;
+    PPAdvance;
+  Until Not PPMatch(',');
+
+  TIdx := -1;
+  If (Not PPIsOp('=')) And (PPKind <> TOK_SEMI) And (Not PPAtEnd) Then
+    TIdx := ParseTypeExpr;
+
+  HasInit := PPMatch('=');
+  If HasInit Then
+  Begin
+    I := 0;
+    Repeat
+      If I <= High(Vals) Then
+      Begin
+        Vals[I] := ConstEvalExpr;
+        Inc(I);
+      End
+      Else
+        ConstEvalExpr;
+    Until Not PPMatch(',');
+  End;
+
+  For I := 0 To NCount - 1 Do
+  Begin
+    SI := SymAdd(Names[I], SK_VAR, TIdx);
+    If (SI >= 0) And HasInit And (I <= High(Vals)) Then
+    Begin
+      SymTab[SI].ConstVal := Vals[I];
+      If TIdx < 0 Then
+        Case Vals[I].Kind Of
+          CK_INT    : SymTab[SI].TypeIdx := PDT_INT;
+          CK_FLOAT  : SymTab[SI].TypeIdx := PDT_FLOAT64;
+          CK_BOOL   : SymTab[SI].TypeIdx := PDT_BOOL;
+          CK_STRING : SymTab[SI].TypeIdx := PDT_STRING;
+        End;
+    End;
+  End;
+End;
+
+Procedure ParseVarDecl;
+Begin
+  PPAdvance;   { var }
+  If PPIsOp('(') Then
+  Begin
+    PPAdvance;
+    PPSkipSemis;
+    While (Not PPAtEnd) And (Not PPIsOp(')')) Do
+    Begin
+      ParseVarSpec;
+      PPSkipSemis;
+    End;
+    PPMatch(')');
+  End
+  Else
+    ParseVarSpec;
+End;
+
+{ ------------------------------------------------------------ }
+{ const Nom [Type] = ExprConstante ; et const ( ... ) -- avec      }
+{ iota (remis a 0 a l entree du bloc, incremente apres chaque         }
+{ ligne) et la regle "expression repetee" : une ligne SANS "="            }
+{ reutilise la MEME expression que la derniere ligne du bloc qui EN            }
+{ avait une, reevaluee avec le NOUVEL iota (LastExprStartPP retient              }
+{ ou, dans TokenPool, cette expression commencait, pour y revenir).                }
+{ ------------------------------------------------------------ }
+
+Procedure ParseConstSpec(Var LastExprStartPP: Integer; Var HadExpr: Boolean);
+Var
+  Names       : TDeclNameList;
+  NCount      : Integer;
+  TIdx        : Integer;
+  Vals        : TDeclValList;
+  I, SI       : Integer;
+  SavedPP     : Integer;
+  ExprStart   : Integer;
+Begin
+  NCount := 0;
+  Repeat
+    If PPKind <> TOK_IDENT Then
+    Begin
+      FatalError('nom de constante attendu');
+      Exit;
+    End;
+    If NCount <= High(Names) Then
+    Begin
+      Names[NCount] := PPVal;
+      Inc(NCount);
+    End;
+    PPAdvance;
+  Until Not PPMatch(',');
+
+  TIdx := -1;
+  If (Not PPIsOp('=')) And (PPKind <> TOK_SEMI) And (Not PPAtEnd) Then
+    TIdx := ParseTypeExpr;
+
+  If PPMatch('=') Then
+  Begin
+    ExprStart := PP;
+    I := 0;
+    Repeat
+      If I <= High(Vals) Then
+      Begin
+        Vals[I] := ConstEvalExpr;
+        Inc(I);
+      End
+      Else
+        ConstEvalExpr;
+    Until Not PPMatch(',');
+    LastExprStartPP := ExprStart;
+    HadExpr := True;
+  End
+  Else If HadExpr Then
+  Begin
+    SavedPP := PP;
+    PP := LastExprStartPP;
+    I := 0;
+    Repeat
+      If I <= High(Vals) Then
+      Begin
+        Vals[I] := ConstEvalExpr;
+        Inc(I);
+      End
+      Else
+        ConstEvalExpr;
+    Until Not PPMatch(',');
+    PP := SavedPP;
+  End
+  Else
+  Begin
+    FatalError('constante sans valeur et sans expression precedente a ' +
+      'repeter (la premiere ligne d''un bloc const doit avoir "= expr")');
+    Exit;
+  End;
+
+  For I := 0 To NCount - 1 Do
+  Begin
+    SI := SymAdd(Names[I], SK_CONST, TIdx);
+    If (SI >= 0) And (I <= High(Vals)) Then
+    Begin
+      SymTab[SI].ConstVal := Vals[I];
+      If TIdx < 0 Then
+        Case Vals[I].Kind Of
+          CK_INT    : SymTab[SI].TypeIdx := PDT_INT;
+          CK_FLOAT  : SymTab[SI].TypeIdx := PDT_FLOAT64;
+          CK_BOOL   : SymTab[SI].TypeIdx := PDT_BOOL;
+          CK_STRING : SymTab[SI].TypeIdx := PDT_STRING;
+        End;
+    End;
+  End;
+End;
+
+Procedure ParseConstDecl;
+Var
+  LastExprStartPP : Integer;
+  HadExpr         : Boolean;
+Begin
+  PPAdvance;   { const }
+  LastExprStartPP := -1;
+  HadExpr := False;
+
+  If PPIsOp('(') Then
+  Begin
+    PPAdvance;
+    PPSkipSemis;
+    CurIota := 0;
+    While (Not PPAtEnd) And (Not PPIsOp(')')) Do
+    Begin
+      ParseConstSpec(LastExprStartPP, HadExpr);
+      Inc(CurIota);
+      PPSkipSemis;
+    End;
+    PPMatch(')');
+  End
+  Else
+  Begin
+    CurIota := 0;
+    ParseConstSpec(LastExprStartPP, HadExpr);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ type Nom Type (definition DISTINCTE, meme representation -    }
+{ UnderlyingTypeIdx, TODO 04) et type Nom = Type (alias VRAI -       }
+{ Nom et Type deviennent EXACTEMENT le meme type, AliasOfTypeIdx,       }
+{ meme mecanisme que byte/rune). Distingues syntaxiquement par la          }
+{ presence ou non de "=" apres le nom - regle reelle de la spec Go.            }
+{ ------------------------------------------------------------ }
+
+Procedure ParseTypeSpec;
+Var
+  Nam     : TString;
+  IsAlias : Boolean;
+  Under   : Integer;
+  NewIdx  : Integer;
+Begin
+  If PPKind <> TOK_IDENT Then
+  Begin
+    FatalError('nom de type attendu');
+    Exit;
+  End;
+  Nam := PPVal;
+  PPAdvance;
+
+  IsAlias := PPMatch('=');
+  Under := ParseTypeExpr;
+  If Under < 0 Then Exit;
+
+  NewIdx := TypeAdd(TypeTab[Under].Kind, Nam, TypeTab[Under].Size,
+    TypeTab[Under].Align, TypeTab[Under].IsUnsigned,
+    TypeTab[Under].ElemTypeIdx, TypeTab[Under].KeyTypeIdx);
+
+  If IsAlias Then
+    TypeTab[NewIdx].AliasOfTypeIdx := Under
+  Else
+    TypeTab[NewIdx].UnderlyingTypeIdx := Under;
+
+  SymAdd(Nam, SK_TYPE, NewIdx);
+End;
+
+Procedure ParseTypeDecl;
+Begin
+  PPAdvance;   { type }
+  If PPIsOp('(') Then
+  Begin
+    PPAdvance;
+    PPSkipSemis;
+    While (Not PPAtEnd) And (Not PPIsOp(')')) Do
+    Begin
+      ParseTypeSpec;
+      PPSkipSemis;
+    End;
+    PPMatch(')');
+  End
+  Else
+    ParseTypeSpec;
+End;
+
+{ ------------------------------------------------------------ }
+{ ShortVarDecl : mecanisme de Nom1, Nom2 := Expr1, Expr2 (regle   }
+{ Go : AU MOINS une nouvelle variable a gauche, dans la portee          }
+{ COURANTE - les noms deja presents dans CETTE MEME portee sont             }
+{ silencieusement REUTILISES/reaffectes, pas redeclares - c est la               }
+{ difference cle avec "var"). Pas encore integree a un vrai parseur                }
+{ d instructions (TODO 07, aucun "if/for/bloc" n existe encore) -                     }
+{ testee ISOLEMENT ci-dessous (DeclSelfTest) en attendant un vrai                        }
+{ appelant.                                                                                 }
+{ ------------------------------------------------------------ }
+
+Function ShortVarDecl(Const Names: TDeclNameList; NCount: Integer;
+  Const Vals: TDeclValList): Boolean;
+Var
+  I, SI  : Integer;
+  AnyNew : Boolean;
+Begin
+  AnyNew := False;
+  For I := 0 To NCount - 1 Do
+    If SymFindInScope(Names[I], CurScopeId) < 0 Then AnyNew := True;
+
+  If Not AnyNew Then
+  Begin
+    WarnMsg(':= sans aucune nouvelle variable a gauche (no new variables ' +
+      'on left side of :=)');
+    ShortVarDecl := False;
+    Exit;
+  End;
+
+  For I := 0 To NCount - 1 Do
+  Begin
+    SI := SymFindInScope(Names[I], CurScopeId);
+    If SI < 0 Then
+    Begin
+      Case Vals[I].Kind Of
+        CK_INT    : SI := SymAdd(Names[I], SK_VAR, PDT_INT);
+        CK_FLOAT  : SI := SymAdd(Names[I], SK_VAR, PDT_FLOAT64);
+        CK_BOOL   : SI := SymAdd(Names[I], SK_VAR, PDT_BOOL);
+        CK_STRING : SI := SymAdd(Names[I], SK_VAR, PDT_STRING);
+      End;
+    End;
+    { qu elle vienne d etre creee ou qu elle existait deja (reaffectation), }
+    { on suit la derniere valeur connue - aucun CODE n est genere ici         }
+    { (pas de backend, TODO 21+), seule la table des symboles suit.              }
+    If SI >= 0 Then SymTab[SI].ConstVal := Vals[I];
+  End;
+  ShortVarDecl := True;
+End;
+
+{ ------------------------------------------------------------ }
+{ SkipImportDecl : import "chemin" ou import ( "c1" ; "c2" ; ... )  }
+{ - SYNTAXE validee et consommee mais rien n est charge/enregistre    }
+{ (meme simplification que le "uses" de DELPHI.PAS, meme projet) -        }
+{ la vraie resolution de package est le sujet du TODO 18. Necessaire         }
+{ ici pour pouvoir seulement ATTEINDRE les declarations const/var/type          }
+{ qui suivent un import dans un fichier .go reel (voir hello.go/types.go).         }
+{ ------------------------------------------------------------ }
+
+Procedure SkipImportDecl;
+Begin
+  PPAdvance;   { import }
+  If PPIsOp('(') Then
+  Begin
+    PPAdvance;
+    PPSkipSemis;
+    While (Not PPAtEnd) And (Not PPIsOp(')')) Do
+    Begin
+      PPAdvance;
+      PPSkipSemis;
+    End;
+    PPMatch(')');
+  End
+  Else
+    PPAdvance;   { le chemin importe (chaine) }
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseFileTopLevel : package Nom ; puis import/const/var/type    }
+{ en boucle - s arrete PROPREMENT (sans erreur) des qu elle           }
+{ rencontre "func" ou autre chose (portee du TODO 08+), laissant             }
+{ l appelant (Run) rapporter jusqu ou l analyse est allee.                        }
+{ ------------------------------------------------------------ }
+
+Procedure ParseFileTopLevel;
+Var Up: TString;
+Begin
+  PPSkipSemis;
+  If Not PPMatch('package') Then
+  Begin
+    FatalError('mot-cle "package" attendu en tete de fichier');
+    Exit;
+  End;
+  If PPKind <> TOK_IDENT Then
+  Begin
+    FatalError('nom de package attendu apres "package"');
+    Exit;
+  End;
+  PPAdvance;   { nom du package }
+  PPSkipSemis;
+
+  While Not PPAtEnd Do
+  Begin
+    If PPKind <> TOK_IDENT Then Break;
+    Up := PPVal;
+    If Up = 'import' Then Begin SkipImportDecl; PPSkipSemis; Continue; End;
+    If Up = 'const'  Then Begin ParseConstDecl; PPSkipSemis; Continue; End;
+    If Up = 'var'    Then Begin ParseVarDecl;   PPSkipSemis; Continue; End;
+    If Up = 'type'   Then Begin ParseTypeDecl;  PPSkipSemis; Continue; End;
+    Break;   { "func" ou autre : hors de portee (TODO 08+), arret propre }
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ DeclSelfTest : var/const-bloc-avec-iota-et-repetition/type       }
+{ alias/type distinct/ShortVarDecl, sur un extrait synthetique         }
+{ (fichier temporaire, meme methode que LexSelfTest).                     }
+{ ------------------------------------------------------------ }
+
+Procedure DeclAssert(Const Label_: TString; Cond: Boolean);
+Begin
+  If Not Cond Then
+    FatalError('DeclSelfTest: ' + Label_ + ' a echoue');
+End;
+
+Procedure DeclSelfTest;
+Const
+  TmpFile = 'GOCWDECLSELFTEST.$$$';
+Var
+  F : Text;
+  SI : Integer;
+  SVNames : TDeclNameList;
+  SVVals  : TDeclValList;
+Begin
+  Assign(F, TmpFile);
+  Rewrite(F);
+  WriteLn(F, 'package main');
+  WriteLn(F, 'const (');
+  WriteLn(F, '	Sunday = iota');
+  WriteLn(F, '	Monday');
+  WriteLn(F, '	Tuesday');
+  WriteLn(F, ')');
+  WriteLn(F, 'const Flag = 1 << iota');
+  WriteLn(F, 'var Count int = 42');
+  WriteLn(F, 'var Name, Greeting = "go", "hello"');
+  WriteLn(F, 'type MyInt int');
+  WriteLn(F, 'type Celsius = float64');
+  Close(F);
+
+  SymInit;
+  TypeInit;
+
+  Assign(LexSrcF, TmpFile);
+  Reset(LexSrcF);
+  LexOpened := True;
+  LexInit;
+  LexAll;
+  LexClose;
+  Erase(F);
+
+  ParserInit;
+  ParseFileTopLevel;
+
+  SI := SymFind('Sunday');
+  DeclAssert('Sunday trouve',  SI >= 0);
+  DeclAssert('Sunday = 0 (iota)', SymTab[SI].ConstVal.IntVal = 0);
+  SI := SymFind('Monday');
+  DeclAssert('Monday = 1 (iota, expression repetee)', SymTab[SI].ConstVal.IntVal = 1);
+  SI := SymFind('Tuesday');
+  DeclAssert('Tuesday = 2 (iota, expression repetee)', SymTab[SI].ConstVal.IntVal = 2);
+
+  SI := SymFind('Flag');
+  DeclAssert('Flag = 1<<iota (nouveau bloc, iota=0) = 1', SymTab[SI].ConstVal.IntVal = 1);
+
+  SI := SymFind('Count');
+  DeclAssert('Count trouve avec type explicite', SI >= 0);
+  DeclAssert('Count = 42', SymTab[SI].ConstVal.IntVal = 42);
+  DeclAssert('Count : int', SymTab[SI].TypeIdx = PDT_INT);
+
+  SI := SymFind('Name');
+  DeclAssert('Name = "go" (inference de type)', SymTab[SI].ConstVal.StrVal = 'go');
+  DeclAssert('Name : string (inferee)', SymTab[SI].TypeIdx = PDT_STRING);
+  SI := SymFind('Greeting');
+  DeclAssert('Greeting = "hello"', SymTab[SI].ConstVal.StrVal = 'hello');
+
+  SI := SymFind('MyInt');
+  DeclAssert('MyInt declare', SI >= 0);
+  DeclAssert('MyInt : type DISTINCT (UnderlyingTypeIdx=int, PAS un alias)',
+    (TypeTab[SymTab[SI].TypeIdx].UnderlyingTypeIdx = PDT_INT) And
+    (TypeTab[SymTab[SI].TypeIdx].AliasOfTypeIdx = -1));
+
+  SI := SymFind('Celsius');
+  DeclAssert('Celsius declare', SI >= 0);
+  DeclAssert('Celsius : ALIAS VRAI de float64 (AliasOfTypeIdx)',
+    TypeResolveAlias(SymTab[SI].TypeIdx) = PDT_FLOAT64);
+
+  { ShortVarDecl, teste isolement (pas encore d appelant reel, TODO 07) }
+  SymEnterScope;
+  SVNames[0] := 'a';
+  SVNames[1] := 'b';
+  SVVals[0]  := CVInt(10);
+  SVVals[1]  := CVInt(20);
+  DeclAssert('a, b := 10, 20 accepte (2 nouvelles variables)',
+    ShortVarDecl(SVNames, 2, SVVals));
+  SI := SymFindInScope('a', CurScopeId);
+  DeclAssert('a declaree dans la portee courante', SI >= 0);
+  DeclAssert('a = 10', SymTab[SI].ConstVal.IntVal = 10);
+  SVNames[0] := 'b';
+  SVNames[1] := 'c';
+  SVVals[0]  := CVInt(99);
+  SVVals[1]  := CVInt(30);
+  DeclAssert('b, c := 99, 30 accepte (b reaffecte, c nouvelle)',
+    ShortVarDecl(SVNames, 2, SVVals));
+  SI := SymFindInScope('b', CurScopeId);
+  DeclAssert('b reaffectee (toujours une seule entree, valeur = 99)',
+    SymTab[SI].ConstVal.IntVal = 99);
+  SI := SymFindInScope('c', CurScopeId);
+  DeclAssert('c nouvellement declaree', SI >= 0);
+
+  SVNames[0] := 'a';
+  SVNames[1] := 'a';
+  DeclAssert(':= sans aucune nouvelle variable est refuse',
+    Not ShortVarDecl(SVNames, 1, SVVals));
+  SymLeaveScope;
+End;
+
+{ ============================================================ }
+{ TODO 06 - EXPRESSIONS, OPERATEURS ET LITTERAUX COMPOSES       }
+{ ============================================================ }
+{ Premiere difference structurelle importante avec le reste du         }
+{ projet (DELPHI.PAS/PERLCW32.PAS) : ces compilateurs generent le          }
+{ code ASSEMBLEUR directement pendant l analyse (ParseExpr y retourne          }
+{ un TypeIdx et emet des instructions au passage), parce que leur                 }
+{ backend d assemblage existe deja des le debut. Ici, le backend                     }
+{ (TODO 21-23) n existe pas encore et n arrivera que bien plus tard -                   }
+{ ce TODO construit donc un vrai ARBRE (AST, ExprPool) plutot que du                       }
+{ code, sur le meme principe de POOL A TAILLE FIXE deja utilise pour                          }
+{ TypeTab/FieldPool (TODO 04) et SymTab (TODO 05). Le generateur de                               }
+{ code du TODO 21 parcourra cet arbre.                                                                }
+{                                                                       }
+{ Cohabitation VOLONTAIRE avec ConstEvalExpr (TODO 05) : celui-ci        }
+{ reste tel quel pour les initialiseurs de var/const (Go exige une          }
+{ VALEUR pleinement calculee a la compilation pour une expression              }
+{ constante, avec iota - un AST n apporterait rien de plus la). Le                 }
+{ nouveau ParseExpr ci-dessous sert aux expressions GENERALES              }
+{ (futurs corps d instructions/fonctions, TODO 07/08) - Go lui-meme            }
+{ distingue ces deux modes d evaluation (constante vs generale) tout               }
+{ au long de sa propre specification, ce n est donc pas une             }
+{ duplication accidentelle mais deux besoins reellement distincts.      }
+{                                                                       }
+{ Portee assumee et documentee (verification stricte des types           }
+{ reportee a l analyse semantique du TODO 19, comme l indique deja le            }
+{ TODO 06 dans l en-tete du fichier) : le TypeIdx attache a chaque              }
+{ noeud est un inference AU MIEUX (litteral -> son type, identificateur           }
+{ -> type connu dans SymTab, operation binaire -> regle simplifiee               }
+{ ci-dessous) - AUCUNE erreur n est levee ici pour un "int + float",              }
+{ ce sera le role du TODO 19.                                              }
+
+Const
+  MAX_EXPR     = 8192;
+  MAX_EXPR_ARG = 4096;
+
+Type
+  TExprKind = (
+    EK_INTLIT, EK_FLOATLIT, EK_RUNELIT, EK_STRINGLIT, EK_BOOLLIT, EK_NILLIT,
+    EK_IDENT,
+    EK_UNARY,       { Op ; Left = operande                                }
+    EK_BINARY,      { Op ; Left, Right                                    }
+    EK_ADDR,        { &X ; Left = operande                                }
+    EK_DEREF,       { *X ; Left = operande                                }
+    EK_CALL,        { Left = callee (souvent EK_IDENT) ; ArgFirst/Count   }
+    EK_INDEX,       { Left = base ; Right = index                         }
+    EK_SLICE,       { Left = base ; ArgFirst/Count=3 (Low,High,Max, -1    }
+                    { si omis) dans ExprArgPool                           }
+    EK_SELECTOR,    { Left = base ; NameVal = nom du champ/methode        }
+    EK_TYPEASSERT,  { Left = base ; Extra = TypeIdx vise                  }
+    EK_COMPOSITE    { Extra = TypeIdx ; ArgFirst/Count = elements         }
+                    { (ExprArgKeyPool[i] = nom du champ, '' si positionnel) }
+  );
+
+  TExprNode = Record
+    Kind    : TExprKind;
+    Op      : TString;    { EK_UNARY/EK_BINARY : texte de l operateur }
+    Left    : Integer;    { -1 si absent }
+    Right   : Integer;    { -1 si absent }
+    Extra   : Integer;    { TypeIdx (EK_TYPEASSERT/EK_COMPOSITE) ou -1 }
+    NameVal : TString;    { EK_IDENT / EK_SELECTOR }
+    IntVal  : LongInt;
+    RealVal : Real;
+    StrVal  : TString;
+    TypeIdx : Integer;    { inference au mieux, -1 si inconnu }
+    IsConst : Boolean;
+    ArgFirst: Integer;
+    ArgCount: Integer;
+  End;
+
+Var
+  ExprPool     : Array[0..MAX_EXPR - 1] Of TExprNode;
+  ExprCount    : Integer;
+  ExprArgPool  : Array[0..MAX_EXPR_ARG - 1] Of Integer;
+  ExprArgKey   : Array[0..MAX_EXPR_ARG - 1] Of TString;
+  ExprArgCount : Integer;
+
+Procedure ExprInit;
+Begin
+  ExprCount    := 0;
+  ExprArgCount := 0;
+End;
+
+Function ExprNew(K: TExprKind): Integer;
+Begin
+  If ExprCount >= MAX_EXPR Then
+  Begin
+    FatalError('table des noeuds d''expression pleine (MAX_EXPR)');
+    ExprNew := 0;
+    Exit;
+  End;
+  ExprPool[ExprCount].Kind     := K;
+  ExprPool[ExprCount].Op       := '';
+  ExprPool[ExprCount].Left     := -1;
+  ExprPool[ExprCount].Right    := -1;
+  ExprPool[ExprCount].Extra    := -1;
+  ExprPool[ExprCount].NameVal  := '';
+  ExprPool[ExprCount].IntVal   := 0;
+  ExprPool[ExprCount].RealVal  := 0.0;
+  ExprPool[ExprCount].StrVal   := '';
+  ExprPool[ExprCount].TypeIdx  := -1;
+  ExprPool[ExprCount].IsConst  := False;
+  ExprPool[ExprCount].ArgFirst := -1;
+  ExprPool[ExprCount].ArgCount := 0;
+  ExprNew := ExprCount;
+  Inc(ExprCount);
+End;
+
+{ ExprArgPush : ajoute EIdx (avec sa cle optionnelle, '' si aucune)  }
+{ a la fin de ExprArgPool - utilise pour les arguments d appel ET       }
+{ les elements de litteral compose ET les 3 bornes d un slice.             }
+Function ExprArgPush(EIdx: Integer; Const Key: TString): Integer;
+Begin
+  If ExprArgCount >= MAX_EXPR_ARG Then
+  Begin
+    FatalError('table des arguments d''expression pleine (MAX_EXPR_ARG)');
+    ExprArgPush := 0;
+    Exit;
+  End;
+  ExprArgPool[ExprArgCount] := EIdx;
+  ExprArgKey[ExprArgCount]  := Key;
+  ExprArgPush := ExprArgCount;
+  Inc(ExprArgCount);
+End;
+
+Function ExprAddIntLit(V: LongInt): Integer;
+Var N: Integer;
+Begin
+  N := ExprNew(EK_INTLIT);
+  ExprPool[N].IntVal  := V;
+  ExprPool[N].TypeIdx := PDT_INT;
+  ExprPool[N].IsConst := True;
+  ExprAddIntLit := N;
+End;
+
+Function ExprAddFloatLit(V: Real): Integer;
+Var N: Integer;
+Begin
+  N := ExprNew(EK_FLOATLIT);
+  ExprPool[N].RealVal := V;
+  ExprPool[N].TypeIdx := PDT_FLOAT64;
+  ExprPool[N].IsConst := True;
+  ExprAddFloatLit := N;
+End;
+
+Function ExprAddRuneLit(V: LongInt): Integer;
+Var N: Integer;
+Begin
+  N := ExprNew(EK_RUNELIT);
+  ExprPool[N].IntVal  := V;
+  ExprPool[N].TypeIdx := PDT_RUNE;
+  ExprPool[N].IsConst := True;
+  ExprAddRuneLit := N;
+End;
+
+Function ExprAddStringLit(Const V: TString): Integer;
+Var N: Integer;
+Begin
+  N := ExprNew(EK_STRINGLIT);
+  ExprPool[N].StrVal  := V;
+  ExprPool[N].TypeIdx := PDT_STRING;
+  ExprPool[N].IsConst := True;
+  ExprAddStringLit := N;
+End;
+
+Function ExprAddBoolLit(V: Boolean): Integer;
+Var N: Integer;
+Begin
+  N := ExprNew(EK_BOOLLIT);
+  If V Then ExprPool[N].IntVal := 1 Else ExprPool[N].IntVal := 0;
+  ExprPool[N].TypeIdx := PDT_BOOL;
+  ExprPool[N].IsConst := True;
+  ExprAddBoolLit := N;
+End;
+
+Function ExprAddNilLit: Integer;
+Var N: Integer;
+Begin
+  N := ExprNew(EK_NILLIT);
+  ExprPool[N].TypeIdx := -1;   { nil est non-type tant qu il n est pas contextualise }
+  ExprPool[N].IsConst := True;
+  ExprAddNilLit := N;
+End;
+
+Function ExprAddIdent(Const Nam: TString): Integer;
+Var N, SI: Integer;
+Begin
+  N := ExprNew(EK_IDENT);
+  ExprPool[N].NameVal := Nam;
+  SI := SymFind(Nam);
+  If SI >= 0 Then
+  Begin
+    ExprPool[N].TypeIdx := SymTab[SI].TypeIdx;
+    ExprPool[N].IsConst := (SymTab[SI].Kind = SK_CONST);
+  End;
+  ExprAddIdent := N;
+End;
+
+{ ExprInferBinaryType : regle SIMPLIFIEE (pas de coercion implicite   }
+{ reelle en Go, la stricte verification releve du TODO 19) - donne un      }
+{ TypeIdx PLAUSIBLE pour l affichage/self-tests, jamais une erreur ici.       }
+Function ExprInferBinaryType(LTIdx, RTIdx: Integer; Const Op: TString): Integer;
+Begin
+  If (Op = '==') Or (Op = '!=') Or (Op = '<') Or (Op = '<=') Or
+     (Op = '>') Or (Op = '>=') Or (Op = '&&') Or (Op = '||') Then
+  Begin
+    ExprInferBinaryType := PDT_BOOL;
+    Exit;
+  End;
+  If (LTIdx = PDT_FLOAT64) Or (RTIdx = PDT_FLOAT64) Then
+    ExprInferBinaryType := PDT_FLOAT64
+  Else If (LTIdx = PDT_FLOAT32) Or (RTIdx = PDT_FLOAT32) Then
+    ExprInferBinaryType := PDT_FLOAT32
+  Else If (LTIdx = PDT_STRING) Or (RTIdx = PDT_STRING) Then
+    ExprInferBinaryType := PDT_STRING
+  Else
+    ExprInferBinaryType := LTIdx;
+End;
+
+Function ExprNewBinary(Const Op: TString; L, R: Integer): Integer;
+Var N: Integer;
+Begin
+  N := ExprNew(EK_BINARY);
+  ExprPool[N].Op      := Op;
+  ExprPool[N].Left    := L;
+  ExprPool[N].Right   := R;
+  ExprPool[N].TypeIdx := ExprInferBinaryType(ExprPool[L].TypeIdx,
+    ExprPool[R].TypeIdx, Op);
+  ExprPool[N].IsConst := ExprPool[L].IsConst And ExprPool[R].IsConst;
+  ExprNewBinary := N;
+End;
+
+Function ExprNewUnary(Const Op: TString; K: TExprKind; Sub: Integer): Integer;
+Var N: Integer;
+Begin
+  N := ExprNew(K);
+  ExprPool[N].Op      := Op;
+  ExprPool[N].Left    := Sub;
+  ExprPool[N].IsConst := ExprPool[Sub].IsConst;
+  Case K Of
+    EK_ADDR  : ExprPool[N].TypeIdx :=
+      TypeAdd(TYK_POINTER, '', 4, 4, False, ExprPool[Sub].TypeIdx, -1);
+    EK_DEREF :
+      If ExprPool[Sub].TypeIdx >= 0 Then
+        ExprPool[N].TypeIdx := TypeTab[ExprPool[Sub].TypeIdx].ElemTypeIdx;
+  Else
+    ExprPool[N].TypeIdx := ExprPool[Sub].TypeIdx;
+  End;
+  ExprNewUnary := N;
+End;
+
+{ ------------------------------------------------------------ }
+{ Chaine de parsing recursif-descendant, precedence Go (5        }
+{ niveaux, du plus fort au plus faible) :                            }
+{   ParseExpr (||) -> ParseAndExpr (&&) -> ParseRelExpr           }
+{   (== != < <= > >=) -> ParseAddExpr (+ - | ^) -> ParseMulExpr       }
+{   (* / % << >> & &^) -> ParseUnaryExpr (+ - ! ^ * &) ->                }
+{   ParsePrimaryExpr (postfixes : . [ ] ( ) .( ) ) -> ParseOperand          }
+{ ------------------------------------------------------------ }
+
+Function ParseExpr: Integer; Forward;
+
+{ ParseCompositeLiteral : Nom, accolade ouvrante, liste d elements     }
+{ optionnellement precedes de "Ident deux-points", separes par des        }
+{ virgules, virgule finale optionnelle, accolade fermante.                    }
+{ PORTEE (documentee) : uniquement les litteraux composes de type          }
+{ NOMME (struct-like, TODO 09) - les formes elidees slice/tableau/map          }
+{ et les elements imbriques SANS type explicite dependent d une                    }
+{ syntaxe de type (crochets de slice/tableau, map cle-valeur) que                       }
+{ ParseTypeExpr (TODO 05) ne sait pas encore reconnaitre - arret                            }
+{ propre documente, meme principe que ParseTypeExpr lui-meme, plutot                            }
+{ que deviner. Tolere un point-virgule INSERE PAR L ASI juste avant                                 }
+{ une virgule ou une accolade fermante (piege bien connu de Go : une                                    }
+{ accolade fermante seule sur sa ligne, apres un dernier element SANS                                       }
+{ virgule finale, recoit un point-virgule automatique du lexeur -                                               }
+{ PPSkipSemis absorbe ce cas).                                                                                      }
+Function ParseCompositeLiteral(Const TypeName: TString): Integer;
+Var
+  TIdx, SI, N, ValIdx : Integer;
+  KeyName             : TString;
+  ArgStart, Cnt        : Integer;
+Begin
+  TIdx := -1;
+  SI := SymFind(TypeName);
+  If (SI >= 0) And (SymTab[SI].Kind = SK_TYPE) Then TIdx := SymTab[SI].TypeIdx
+  Else If IsPredeclaredType(TypeName) <> 0 Then TIdx := IsPredeclaredType(TypeName)
+  Else FatalError('type inconnu dans un litteral compose: ' + TypeName);
+
+  PPAdvance;   { '{' }
+  PPSkipSemis;
+
+  ArgStart := ExprArgCount;
+  Cnt := 0;
+  If Not PPIsOp('}') Then
+  Repeat
+    KeyName := '';
+    If (PPKind = TOK_IDENT) And (PP2Kind = TOK_OP) And (PP2Val = ':') Then
+    Begin
+      KeyName := PPVal;
+      PPAdvance;   { ident cle }
+      PPAdvance;   { ':' }
+    End;
+    ValIdx := ParseExpr;
+    ExprArgPush(ValIdx, KeyName);
+    Inc(Cnt);
+    PPSkipSemis;
+    If Not PPMatch(',') Then Break;
+    PPSkipSemis;
+  Until PPIsOp('}');
+
+  If Not PPMatch('}') Then
+    FatalError('accolade fermante attendue dans un litteral compose');
+
+  N := ExprNew(EK_COMPOSITE);
+  ExprPool[N].Extra    := TIdx;
+  ExprPool[N].TypeIdx  := TIdx;
+  ExprPool[N].ArgFirst := ArgStart;
+  ExprPool[N].ArgCount := Cnt;
+  ParseCompositeLiteral := N;
+End;
+
+{ ParseCallArgs : '(' construit deja consomme par l appelant est FAUX -  }
+{ ici '(' est encore le token courant ; consomme puis parse la liste          }
+{ d arguments (tolerance virgule/point-virgule finale, meme piege ASI            }
+{ que ParseCompositeLiteral juste au-dessus).                                        }
+Function ParseCallArgs(Callee: Integer): Integer;
+Var N, A, ArgStart, Cnt : Integer;
+Begin
+  PPAdvance;   { '(' }
+  PPSkipSemis;
+  ArgStart := ExprArgCount;
+  Cnt := 0;
+  If Not PPIsOp(')') Then
+  Repeat
+    A := ParseExpr;
+    ExprArgPush(A, '');
+    Inc(Cnt);
+    PPSkipSemis;
+    If Not PPMatch(',') Then Break;
+    PPSkipSemis;
+  Until PPIsOp(')');
+
+  If Not PPMatch(')') Then
+    FatalError('parenthese fermante attendue dans un appel');
+
+  N := ExprNew(EK_CALL);
+  ExprPool[N].Left     := Callee;
+  ExprPool[N].ArgFirst := ArgStart;
+  ExprPool[N].ArgCount := Cnt;
+  If ExprPool[Callee].Kind = EK_IDENT Then
+    ExprPool[N].NameVal := ExprPool[Callee].NameVal;
+  ParseCallArgs := N;
+End;
+
+{ ParseNewOrMake : new(Type) / make(Type [, Expr [, Expr]]) - grammaire   }
+{ speciale de Go (le PREMIER argument est un TYPE, pas une expression) -     }
+{ PORTEE : uniquement les types deja reconnus par ParseTypeExpr             }
+{ (predeclare/pointeur/nomme) - make(chan/map/slice...) necessite les          }
+{ syntaxes de type des TODO 11/12/15, pas encore disponibles ; arret               }
+{ propre documente dans ce cas (via ParseTypeExpr lui-meme).                          }
+Function ParseNewOrMake(Const FuncName: TString): Integer;
+Var N, TIdx, ArgStart, Cnt, A : Integer;
+Begin
+  PPAdvance;   { '(' }
+  TIdx := ParseTypeExpr;
+  ArgStart := ExprArgCount;
+  Cnt := 0;
+  While PPMatch(',') Do
+  Begin
+    A := ParseExpr;
+    ExprArgPush(A, '');
+    Inc(Cnt);
+  End;
+  If Not PPMatch(')') Then
+    FatalError('parenthese fermante attendue dans ' + FuncName + '(...)');
+
+  N := ExprNew(EK_CALL);
+  ExprPool[N].NameVal  := FuncName;
+  ExprPool[N].Extra    := TIdx;
+  ExprPool[N].ArgFirst := ArgStart;
+  ExprPool[N].ArgCount := Cnt;
+  If FuncName = 'new' Then
+    ExprPool[N].TypeIdx := TypeAdd(TYK_POINTER, '', 4, 4, False, TIdx, -1)
+  Else
+    ExprPool[N].TypeIdx := TIdx;
+  ParseNewOrMake := N;
+End;
+
+Function ParseOperand: Integer;
+Var Nam: TString; Inner: Integer;
+Begin
+  ParseOperand := 0;
+
+  If PPAtEnd Then
+  Begin
+    FatalError('expression incomplete');
+    Exit;
+  End;
+
+  Case PPKind Of
+    TOK_INT:
+      Begin
+        ParseOperand := ExprAddIntLit(TokenPool[PP].IntVal);
+        PPAdvance;
+      End;
+    TOK_FLOAT:
+      Begin
+        ParseOperand := ExprAddFloatLit(TokenPool[PP].RealVal);
+        PPAdvance;
+      End;
+    TOK_RUNE:
+      Begin
+        ParseOperand := ExprAddRuneLit(TokenPool[PP].IntVal);
+        PPAdvance;
+      End;
+    TOK_STRING, TOK_RAWSTRING:
+      Begin
+        ParseOperand := ExprAddStringLit(TokenPool[PP].Val);
+        PPAdvance;
+      End;
+    TOK_IDENT:
+      Begin
+        Nam := TokenPool[PP].Val;
+        PPAdvance;
+        If Nam = 'true' Then ParseOperand := ExprAddBoolLit(True)
+        Else If Nam = 'false' Then ParseOperand := ExprAddBoolLit(False)
+        Else If Nam = 'nil' Then ParseOperand := ExprAddNilLit
+        Else If Nam = 'new' Then ParseOperand := ParseNewOrMake('new')
+        Else If Nam = 'make' Then ParseOperand := ParseNewOrMake('make')
+        Else If PPIsOp('{') Then ParseOperand := ParseCompositeLiteral(Nam)
+        Else ParseOperand := ExprAddIdent(Nam);
+      End;
+    TOK_OP:
+      Begin
+        If PPIsOp('(') Then
+        Begin
+          PPAdvance;
+          Inner := ParseExpr;
+          If Not PPIsOp(')') Then
+            FatalError('parenthese fermante attendue')
+          Else
+            PPAdvance;
+          ParseOperand := Inner;
+        End
+        Else
+          FatalError('jeton inattendu dans une expression: ' + PPVal);
+      End;
+  Else
+    FatalError('jeton inattendu dans une expression');
+  End;
+End;
+
+Function ParsePrimaryExpr: Integer;
+Var
+  Result_  : Integer;
+  TIdx, N  : Integer;
+  LowIdx, HighIdx, MaxIdx : Integer;
+  ArgStart : Integer;
+Begin
+  Result_ := ParseOperand;
+
+  While True Do
+  Begin
+    If PPIsOp('.') Then
+    Begin
+      PPAdvance;
+      If PPIsOp('(') Then
+      Begin
+        PPAdvance;
+        TIdx := ParseTypeExpr;
+        If Not PPMatch(')') Then
+          FatalError('parenthese fermante attendue dans une assertion de type');
+        N := ExprNew(EK_TYPEASSERT);
+        ExprPool[N].Left    := Result_;
+        ExprPool[N].Extra   := TIdx;
+        ExprPool[N].TypeIdx := TIdx;
+        Result_ := N;
+      End
+      Else If PPKind = TOK_IDENT Then
+      Begin
+        N := ExprNew(EK_SELECTOR);
+        ExprPool[N].Left    := Result_;
+        ExprPool[N].NameVal := PPVal;
+        PPAdvance;
+        Result_ := N;
+      End
+      Else
+      Begin
+        FatalError('nom de champ/methode ou assertion de type attendu apres "."');
+        Break;
+      End;
+    End
+    Else If PPIsOp('[') Then
+    Begin
+      PPAdvance;
+      LowIdx := -1; HighIdx := -1; MaxIdx := -1;
+      If Not PPIsOp(':') Then LowIdx := ParseExpr;
+      If PPMatch(':') Then
+      Begin
+        If (Not PPIsOp(':')) And (Not PPIsOp(']')) Then HighIdx := ParseExpr;
+        If PPMatch(':') Then MaxIdx := ParseExpr;
+        If Not PPMatch(']') Then
+          FatalError('crochet fermant attendu dans un tranchage (slice)');
+        N := ExprNew(EK_SLICE);
+        ExprPool[N].Left := Result_;
+        ArgStart := ExprArgCount;
+        ExprArgPush(LowIdx, '');
+        ExprArgPush(HighIdx, '');
+        ExprArgPush(MaxIdx, '');
+        ExprPool[N].ArgFirst := ArgStart;
+        ExprPool[N].ArgCount := 3;
+        If ExprPool[Result_].TypeIdx >= 0 Then
+          ExprPool[N].TypeIdx := ExprPool[Result_].TypeIdx;
+      End
+      Else
+      Begin
+        If Not PPMatch(']') Then
+          FatalError('crochet fermant attendu dans une indexation');
+        N := ExprNew(EK_INDEX);
+        ExprPool[N].Left  := Result_;
+        ExprPool[N].Right := LowIdx;
+        If ExprPool[Result_].TypeIdx >= 0 Then
+          ExprPool[N].TypeIdx := TypeTab[ExprPool[Result_].TypeIdx].ElemTypeIdx;
+      End;
+      Result_ := N;
+    End
+    Else If PPIsOp('(') Then
+      Result_ := ParseCallArgs(Result_)
+    Else
+      Break;
+  End;
+
+  ParsePrimaryExpr := Result_;
+End;
+
+Function ParseUnaryExpr: Integer;
+Begin
+  If PPIsOp('+') Then
+  Begin
+    PPAdvance;
+    ParseUnaryExpr := ParseUnaryExpr;
+    Exit;
+  End;
+  If PPIsOp('-') Then
+  Begin
+    PPAdvance;
+    ParseUnaryExpr := ExprNewUnary('-', EK_UNARY, ParseUnaryExpr);
+    Exit;
+  End;
+  If PPIsOp('!') Then
+  Begin
+    PPAdvance;
+    ParseUnaryExpr := ExprNewUnary('!', EK_UNARY, ParseUnaryExpr);
+    Exit;
+  End;
+  If PPIsOp('^') Then
+  Begin
+    PPAdvance;
+    ParseUnaryExpr := ExprNewUnary('^', EK_UNARY, ParseUnaryExpr);
+    Exit;
+  End;
+  If PPIsOp('*') Then
+  Begin
+    PPAdvance;
+    ParseUnaryExpr := ExprNewUnary('*', EK_DEREF, ParseUnaryExpr);
+    Exit;
+  End;
+  If PPIsOp('&') Then
+  Begin
+    PPAdvance;
+    ParseUnaryExpr := ExprNewUnary('&', EK_ADDR, ParseUnaryExpr);
+    Exit;
+  End;
+  If PPIsOp('<-') Then
+  Begin
+    FatalError('reception de canal <- non prise en charge (voir TODO 15)');
+    Exit;
+  End;
+  ParseUnaryExpr := ParsePrimaryExpr;
+End;
+
+Function ParseMulExpr: Integer;
+Var L: Integer; Op: TString;
+Begin
+  L := ParseUnaryExpr;
+  While PPIsOp('*') Or PPIsOp('/') Or PPIsOp('%') Or PPIsOp('<<') Or
+        PPIsOp('>>') Or PPIsOp('&') Or PPIsOp('&^') Do
+  Begin
+    Op := PPVal;
+    PPAdvance;
+    L := ExprNewBinary(Op, L, ParseUnaryExpr);
+  End;
+  ParseMulExpr := L;
+End;
+
+Function ParseAddExpr: Integer;
+Var L: Integer; Op: TString;
+Begin
+  L := ParseMulExpr;
+  While PPIsOp('+') Or PPIsOp('-') Or PPIsOp('|') Or PPIsOp('^') Do
+  Begin
+    Op := PPVal;
+    PPAdvance;
+    L := ExprNewBinary(Op, L, ParseMulExpr);
+  End;
+  ParseAddExpr := L;
+End;
+
+Function ParseRelExpr: Integer;
+Var L: Integer; Op: TString;
+Begin
+  L := ParseAddExpr;
+  While PPIsOp('==') Or PPIsOp('!=') Or PPIsOp('<') Or PPIsOp('<=') Or
+        PPIsOp('>') Or PPIsOp('>=') Do
+  Begin
+    Op := PPVal;
+    PPAdvance;
+    L := ExprNewBinary(Op, L, ParseAddExpr);
+  End;
+  ParseRelExpr := L;
+End;
+
+Function ParseAndExpr: Integer;
+Var L: Integer;
+Begin
+  L := ParseRelExpr;
+  While PPIsOp('&&') Do
+  Begin
+    PPAdvance;
+    L := ExprNewBinary('&&', L, ParseRelExpr);
+  End;
+  ParseAndExpr := L;
+End;
+
+Function ParseExpr: Integer;
+Var L: Integer;
+Begin
+  L := ParseAndExpr;
+  While PPIsOp('||') Do
+  Begin
+    PPAdvance;
+    L := ExprNewBinary('||', L, ParseAndExpr);
+  End;
+  ParseExpr := L;
+End;
+
+{ ------------------------------------------------------------ }
+{ ExprSelfTest : precedence, unaires, litteraux composes,        }
+{ index/slice (2 et 3 bornes), assertion de type, appel, new -       }
+{ y compris le piege ASI multi-lignes dans un litteral compose.          }
+{ ------------------------------------------------------------ }
+
+Procedure ExprAssert(Const Label_: TString; Cond: Boolean);
+Begin
+  If Not Cond Then
+    FatalError('ExprSelfTest: ' + Label_ + ' a echoue');
+End;
+
+Function ExprParseString(Const Src: TString): Integer;
+Const
+  TmpFile = 'GOCWEXPRSELFTEST.$$$';
+Var
+  F: Text;
+Begin
+  Assign(F, TmpFile);
+  Rewrite(F);
+  Write(F, Src);
+  Close(F);
+
+  Assign(LexSrcF, TmpFile);
+  Reset(LexSrcF);
+  LexOpened := True;
+  LexInit;
+  LexAll;
+  LexClose;
+  Erase(F);
+
+  PP := 0;
+  ExprParseString := ParseExpr;
+End;
+
+Procedure ExprSelfTest;
+Var
+  E, SI : Integer;
+Begin
+  ExprInit;
+  SymInit;
+  TypeInit;
+
+  { precedence : 2 + 3 * 4 -> BINARY(+, 2, BINARY(*, 3, 4)) }
+  E := ExprParseString('2 + 3 * 4');
+  ExprAssert('2+3*4 racine est +', ExprPool[E].Op = '+');
+  ExprAssert('2+3*4 partie droite est *', ExprPool[ExprPool[E].Right].Op = '*');
+  ExprAssert('2+3*4 partie gauche est le litteral 2',
+    ExprPool[ExprPool[E].Left].IntVal = 2);
+
+  { unaires : -x, !ok, ^m, &v, *p }
+  SymAdd('x', SK_VAR, PDT_INT);
+  E := ExprParseString('-x');
+  ExprAssert('-x est EK_UNARY "-"', (ExprPool[E].Kind = EK_UNARY) And
+    (ExprPool[E].Op = '-'));
+
+  SymAdd('v', SK_VAR, PDT_INT);
+  E := ExprParseString('&v');
+  ExprAssert('&v est EK_ADDR', ExprPool[E].Kind = EK_ADDR);
+  ExprAssert('&v : TypeIdx est un pointeur (TYK_POINTER)',
+    TypeTab[ExprPool[E].TypeIdx].Kind = TYK_POINTER);
+
+  { litteral compose sur un type nomme, forme keyee ET positionnelle }
+  SymInit;
+  TypeInit;
+  SI := TypeAdd(TYK_STRUCT, 'Point', 8, 4, False, -1, -1);
+  SymAdd('Point', SK_TYPE, SI);
+  E := ExprParseString('Point{X: 1, Y: 2}');
+  ExprAssert('Point{...} est EK_COMPOSITE', ExprPool[E].Kind = EK_COMPOSITE);
+  ExprAssert('Point{...} a 2 elements', ExprPool[E].ArgCount = 2);
+  ExprAssert('Point{X:1,...} premier element clef "X"',
+    ExprArgKey[ExprPool[E].ArgFirst] = 'X');
+
+  E := ExprParseString('Point{1, 2}');
+  ExprAssert('Point{1,2} a 2 elements positionnels', ExprPool[E].ArgCount = 2);
+  ExprAssert('Point{1,2} elements sans clef',
+    ExprArgKey[ExprPool[E].ArgFirst] = '');
+
+  { piege ASI : accolade fermante seule sur sa ligne, SANS virgule finale }
+  E := ExprParseString('Point{' + Chr(10) + 'X: 1,' + Chr(10) +
+    'Y: 2' + Chr(10) + '}');
+  ExprAssert('litteral compose multi-lignes sans virgule finale (piege ASI)',
+    ExprPool[E].ArgCount = 2);
+
+  { index et slice 2/3 bornes }
+  SymAdd('arr', SK_VAR, PDT_INT);
+  E := ExprParseString('arr[1]');
+  ExprAssert('arr[1] est EK_INDEX', ExprPool[E].Kind = EK_INDEX);
+
+  E := ExprParseString('arr[1:2]');
+  ExprAssert('arr[1:2] est EK_SLICE', ExprPool[E].Kind = EK_SLICE);
+  ExprAssert('arr[1:2] Max omis (-1)', ExprArgPool[ExprPool[E].ArgFirst + 2] = -1);
+
+  E := ExprParseString('arr[1:2:3]');
+  ExprAssert('arr[1:2:3] Max present', ExprArgPool[ExprPool[E].ArgFirst + 2] >= 0);
+
+  { appel avec arguments + trailing comma multi-lignes }
+  E := ExprParseString('foo(1, 2)');
+  ExprAssert('foo(1,2) est EK_CALL', ExprPool[E].Kind = EK_CALL);
+  ExprAssert('foo(1,2) 2 arguments', ExprPool[E].ArgCount = 2);
+  ExprAssert('foo(1,2) NameVal="foo"', ExprPool[E].NameVal = 'foo');
+
+  E := ExprParseString('foo(' + Chr(10) + '1,' + Chr(10) + '2,' + Chr(10) + ')');
+  ExprAssert('appel multi-lignes avec virgule finale : 2 arguments',
+    ExprPool[E].ArgCount = 2);
+
+  { assertion de type }
+  E := ExprParseString('v.(int)');
+  ExprAssert('v.(int) est EK_TYPEASSERT', ExprPool[E].Kind = EK_TYPEASSERT);
+  ExprAssert('v.(int) : Extra = PDT_INT', ExprPool[E].Extra = PDT_INT);
+
+  { new(T) }
+  E := ExprParseString('new(int)');
+  ExprAssert('new(int) : TypeIdx est un pointeur', TypeTab[ExprPool[E].TypeIdx].Kind = TYK_POINTER);
+
+  { selecteur de champ }
+  E := ExprParseString('v.Champ');
+  ExprAssert('v.Champ est EK_SELECTOR', ExprPool[E].Kind = EK_SELECTOR);
+  ExprAssert('v.Champ NameVal="Champ"', ExprPool[E].NameVal = 'Champ');
+
+  { comparaison/logique -> PDT_BOOL }
+  E := ExprParseString('1 < 2 && 3 > 2');
+  ExprAssert('1<2 && 3>2 -> type bool', ExprPool[E].TypeIdx = PDT_BOOL);
+
+  { re-initialise les tables globales pour ne pas polluer Run reel }
+  ExprInit;
+  SymInit;
+End;
+
+Procedure Run;
 Begin
   ErrorCount := 0;
   WarnCount  := 0;
   TotalLines := 0;
   OutFOpen   := False;
+  LexOpened  := False;
+
+  LexSelfTest;
+  KeywordSelfTest;
+  TypeSelfTest;
+  DeclSelfTest;
+  ExprSelfTest;
 
   ParseArgs;
   ShowBanner;
 
+  TypeInit;
+  ExprInit;
+  If Opts.Verbose Then
+    WriteLn('Types predeclares enregistres : ', TypeCount);
+
   {$I-}
-  Assign(SrcF, Opts.SrcFile);
-  Reset(SrcF);
+  Assign(LexSrcF, Opts.SrcFile);
+  Reset(LexSrcF);
   {$I+}
   If IOResult <> 0 Then
     FatalError('impossible d''ouvrir le fichier source: ' + Opts.SrcFile);
-  Close(SrcF);
+  LexOpened   := True;
+  LexSrcFName := Opts.SrcFile;
 
-  WriteLn('GOCW32: infrastructure (TODO 01) prete - fichier source ',
-    'trouve (', Opts.SrcFile, '), sortie prevue (', Opts.OutFile, ') - ',
-    'lexeur/parseur/backends non encore implementes (TODO 02+).');
+  LexInit;
+  LexAll;
+  LexClose;
+
+  If Opts.Verbose Then
+    WriteLn('Tokens produits : ', TokenCount, ' (', TotalLines, ' lignes)');
+
+  SymInit;
+  ParserInit;
+  ParseFileTopLevel;
+
+  If Opts.Verbose Then
+    WriteLn('Symboles de portee paquet declares : ', SymCount);
+
+  WriteLn('GOCW32: lexeur+classification+types+declarations+expressions ',
+    '(TODO 02-06) complets - ', TokenCount, ' tokens, ', SymCount,
+    ' symboles - analyse s''arrete a la premiere "func" (corps de ',
+    'fonctions : TODO 08+).');
 
   ShowStats;
 End;
