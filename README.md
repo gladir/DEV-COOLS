@@ -388,6 +388,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			 <td>Cette commande permet de deboguer un programme.</td>
 		</tr>
 		<tr>
+			<td><b>DELPHI.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur Delphi (Object Pascal) pour l'assembleur du microprocesseur 80386 (en executable Windows 32 bits).</td>
+		</tr>
+		<tr>
 			<td><b>DIR.PAS</b></td>
 			<td>Cette commande permet d'afficher les fichiers d'un répertoire et de transformer la sortie en CSV, JSON, HTML, PASCAL, SQL, XML,...</td>
 		</tr>
