@@ -5598,25 +5598,20 @@ Begin
   { debogage drCodeLines/drLinNum, hors de portee - voir l en-tete de ce                  }
   { programme) : une decompilation partielle reste utile, comme partout                     }
   { ailleurs dans ce programme.                                                                }
-  If Not Stopped Then
-  Begin
-    WriteLn(OutF);
-    WriteLn(OutF, 'implementation');
-    If CodeSize > 0 Then EmitAllProcAsmBlocks;
-    WriteLn(OutF);
-    WriteLn(OutF, 'end.');
-  End
-  Else
-  Begin
-    If CodeSize > 0 Then
-    Begin
-      WriteLn(OutF);
-      WriteLn(OutF, 'implementation');
-      EmitAllProcAsmBlocks;
-    End;
+  { Une unite Delphi bien formee a TOUJOURS une section "implementation"    }
+  { et se termine TOUJOURS par "end." - meme une decompilation partielle       }
+  { (Stopped=Vrai) doit respecter cette forme plutot que de laisser un            }
+  { fichier .pas tronque sans "end." final.                                          }
+  WriteLn(OutF);
+  WriteLn(OutF, 'implementation');
+  If CodeSize > 0 Then EmitAllProcAsmBlocks;
+
+  If Stopped Then
     WriteLn(OutF, #10, '{ *** ARRET ICI - voir le message ci-dessus/dans ',
       'la sortie d erreur *** }');
-  End;
+
+  WriteLn(OutF);
+  WriteLn(OutF, 'end.');
 
   Close(OutF);
 
