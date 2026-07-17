@@ -412,6 +412,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de désassembler un code binaire de microprocesseur 8086 en langage de programmation assembleur 8086.</td>
 		</tr>	
 		<tr>
+			<td><b>DISDCU.PAS</b></td>
+			<td>Cette commande permet de décompilateur .DCU vers .PAS</td>
+		</tr>
+		<tr>
 			<td><b>DISEXE.PAS</b></td>
 			<td>Cette commande permet de lancer le désassembleur de fichiers EXE (MZ DOS 16 bits / PE Windows 32 bits).</td>
 		</tr>
