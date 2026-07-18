@@ -534,6 +534,100 @@ Program GOCW32;
               unsafe, modele de concurrence simplifie)
   ============================================================ *)
 
+(* ============================================================
+  TODO 25 - VALIDATION FINALE : ETAT REEL, HONNETEMENT DOCUMENTE
+  ============================================================
+  Compile+EXECUTE reellement (pas seulement "compile sans erreur")
+  a ete verifie pour CHAQUE SAMPLES\GO\*.go, avec le resultat suivant :
+
+  REUSSITE COMPLETE (compile, produit un .EXE PE Win32 REEL, EXECUTE
+  sur Windows reel, code de sortie 0, sortie standard EXACTEMENT
+  celle qu'un vrai "go run" produirait) :
+    hello.go     - imprime "Hello, world!" (fmt.Println, chaine unique)
+    codegen.go   - arithmetique/boucle/if-else (Add/Factorial/Max),
+                   imprime "fact plus grand ou egal" (20 > 120 = faux)
+
+  ARRET PROPRE DOCUMENTE (compile jusqu'au frontend complet -
+  lexeur/types/declarations/expressions/instructions/semantique/
+  bibliotheque standard, TODO 02-20, TOUS reussissent sans exception
+  pour TOUS les fichiers - c'est UNIQUEMENT le GENERATEUR DE CODE,
+  TODO 21, qui s'arrete proprement, jamais un plantage ni une sortie
+  binaire silencieusement fausse) : arrays.go, channels.go,
+  defer_panic.go, errors.go, interfaces.go, lextest.go, maps.go,
+  packages.go, pointers.go, semantic.go, stdlib.go, strings.go,
+  structs.go, types.go - chacun necessite AU MOINS UNE, et le plus
+  souvent PLUSIEURS EN COMBINAISON, des extensions suivantes,
+  AUCUNE desquelles n'est couverte par le generateur de code actuel
+  (portee volontairement restreinte, decidee et documentee au TODO 21
+  lui-meme) :
+    - arithmetique/litteraux FLOTTANTS (x87) : lextest.go, types.go
+    - structs/champs/methodes/embarquement : errors.go, interfaces.go,
+      pointers.go, semantic.go, structs.go
+    - interfaces (satisfaction structurelle, dispatch de methode) :
+      errors.go, interfaces.go, semantic.go
+    - slices/tableaux (disposition memoire, make/append/indexation/
+      litteraux composes) : arrays.go, maps.go (via make), pointers.go,
+      types.go
+    - maps (disposition memoire, make/index/comma-ok/delete) : maps.go
+    - retours MULTIPLES (convention "pointeur de sortie cache" deja
+      documentee au TODO 21, jamais implementee) : errors.go,
+      packages.go (strconv.Atoi), semantic.go, stdlib.go
+    - defer/panic/recover (deroulement de pile) : defer_panic.go
+    - goroutines/canaux/select (modele cooperatif, TODO 15) :
+      channels.go
+    - switch/type switch/for-range/goto : arrays.go, maps.go,
+      strings.go (UTF-8 rune-par-rune), types.go
+    - new()/make() eux-memes (allocation memoire reelle - aucun
+      allocateur n'existe encore, HeapAlloc/GetProcessHeap jamais
+      cables) : maps.go, pointers.go, types.go
+    - bibliotheque standard AU-DELA de fmt.Println/Print(chaine
+      unique) - strings.*/strconv.*/math.*/os.*/fmt.Sprintf/Errorf/
+      Fprintln, errors.New (StdlibTab, TODO 20, entierement RECONNUE
+      par le frontend mais SANS AUCUNE contrepartie runtime au-dela
+      de ce seul cas) : interfaces.go, packages.go, stdlib.go
+  Verifie qu'AUCUNE combinaison ci-dessus ne se limite a UN SEUL
+  fichier "facile" isole des autres : chaque fichier bloque necessite
+  au moins deux de ces extensions SIMULTANEMENT (ex. errors.go a lui
+  seul a besoin de structs+methodes+interfaces+litteraux composes+
+  retours multiples+bibliotheque standard etendue) - il n'existe donc
+  PAS d'extension isolee, a faible risque, qui debloquerait un exemple
+  supplementaire sans se rapprocher d'un second generateur de code
+  quasi complet. Decision explicite, coherente avec la discipline de
+  tout ce fichier depuis le TODO 05 ("reduire la portee, documenter
+  clairement, ne jamais simuler un resultat") : ne PAS tenter cette
+  extension a la hate dans ce TODO 25, la documenter comme travail
+  futur precis plutot que de risquer une regression de qualite sur
+  le generateur de code deja verifie par EXECUTION REELLE (TODO 23).
+
+  LIMITATIONS ASSUMEES (demandees explicitement par ce TODO 25,
+  comme les autres compilateurs de ce projet) :
+    - Portee du generateur de code : voir la liste ci-dessus - le
+      FRONTEND (lexeur/types/declarations/expressions/instructions/
+      analyse semantique/bibliotheque standard, TODO 02-20) couvre
+      la totalite du langage decrit par ce roadmap ; SEUL le backend
+      (TODO 21-23) reste delibrement partiel.
+    - Aucun vrai ramasse-miettes (GC) : aucune structure de donnees
+      dynamique (slice/map/chan/interface/closure) n'a de duree de
+      vie geree - consequence directe de l'absence d'allocateur
+      memoire reel (new/make non couverts, ci-dessus).
+    - Aucun vrai module multi-fichiers : un seul fichier .go par
+      compilation ("package main" obligatoire, TODO 05/18) - pas de
+      "import" d'un autre paquet Go reel, seuls fmt/strings/strconv/
+      os/math/errors sont reconnus PAR NOM QUALIFIE (TODO 20).
+    - Package "unsafe" : totalement absent, jamais mentionne ni
+      reconnu comme import valide (TODO 18).
+    - Modele de concurrence : cooperatif simplifie (TODO 15,
+      decision documentee sur place) - PAS de vrais threads Win32
+      (CreateThread/CreateEvent/EnterCriticalSection ne sont jamais
+      emis) ; de toute facon sans consequence pratique aujourd'hui,
+      goroutines/canaux n'ayant aucune contrepartie dans le
+      generateur de code (TODO 21).
+    - Aucune relocation dans le .EXE produit (TODO 23) : chargeable
+      SEULEMENT a l'ImageBase fixe $00400000 (pas de section
+      .reloc) - suffisant pour un executable autonome simple, pas
+      pour une DLL ni pour ASLR.
+  ============================================================ *)
+
 { ============================================================ }
 { TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF      }
 { ============================================================ }
@@ -638,6 +732,21 @@ Var
   WarnCount  : Integer;
   TotalLines : LongInt;
 
+  { TODO 19 : Vrai pendant PrescanTopLevelFuncs (passe prealable         }
+  { d enregistrement des signatures de fonctions de haut niveau, avant   }
+  { la vraie analyse) - FatalError devient alors NON BLOQUANT (n appelle  }
+  { pas Halt) puisque cette passe est purement SPECULATIVE : une         }
+  { fonction dont la signature reference un type encore inconnu a ce     }
+  { stade (declare plus loin dans le fichier) sera de toute facon        }
+  { correctement resolue par la vraie passe qui suit juste apres.        }
+  PrescanMode : Boolean;
+  CurFuncSig  : Integer;   { TODO 19 : TypeIdx (TYK_FUNC) de la fonction/ }
+                            { methode dont le corps est EN COURS d etre   }
+                            { analyse (-1 hors de tout corps) - permet a  }
+                            { ParseReturnStmt de verifier l assignabilite  }
+                            { des valeurs retournees vis-a-vis des        }
+                            { resultats declares. }
+
   { Fichier de sortie interne (pour future emission) }
   OutF     : Text;
   OutFOpen : Boolean;
@@ -720,6 +829,11 @@ End;
 
 Procedure FatalError(Const Msg: TString);
 Begin
+  { TODO 19 : pendant le pre-scan des signatures de haut niveau, une      }
+  { "erreur fatale" (typiquement : type encore inconnu, car declare plus  }
+  { loin dans le fichier) ne doit PAS arreter le programme - elle sera    }
+  { re-signalee normalement par la vraie passe si le probleme persiste.   }
+  If PrescanMode Then Exit;
   WriteLn('GOCW32: FATAL: ', Msg);
   If OutFOpen Then
   Begin
@@ -1384,13 +1498,60 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
-{ LexScanRune : litteral rune 'x' ou 'echappement'. SIMPLIFICATION }
-{ DOCUMENTEE (voir TODO 14) : un caractere non-ASCII ecrit           }
-{ DIRECTEMENT (pas via \u/\U) dans le source, ex. 'e', serait en        }
-{ UTF-8 multi-octets dans le fichier reel - ce lexeur lit alors SEUL       }
-{ le premier octet de cette sequence (decodage UTF-8 correct differe          }
-{ au TODO 14) ; sans consequence pour les runes ASCII ou celles                }
-{ ecrites via \u/\U, qui couvrent l ecrasante majorite des cas reels.             }
+{ LexDecodeUTF8 (TODO 14) : decode UNE sequence UTF-8 a partir de       }
+{ LexPeekChar (1 a 4 octets, regle reelle du standard) et avance le            }
+{ lexeur exactement du nombre d octets consommes - remplace la                    }
+{ SIMPLIFICATION precedemment documentee ici (un caractere non-ASCII                  }
+{ ecrit DIRECTEMENT, pas via \u/\U, ne lisait avant ce TODO que son                      }
+{ PREMIER octet). Octet de tete invalide ou octet de continuation             }
+{ manquant -> erreur claire + caractere de remplacement Unicode U+FFFD,           }
+{ plutot qu un comportement indefini.                                                  }
+{ ------------------------------------------------------------ }
+
+Function LexDecodeUTF8: LongInt;
+Var
+  B0, Len, I : Integer;
+  V : LongInt;
+Begin
+  B0 := Ord(LexPeekChar);
+  If (B0 And $80) = 0 Then
+  Begin
+    LexDecodeUTF8 := B0;
+    LexNextChar;
+    Exit;
+  End;
+
+  If (B0 And $E0) = $C0 Then Begin Len := 2; V := B0 And $1F; End
+  Else If (B0 And $F0) = $E0 Then Begin Len := 3; V := B0 And $0F; End
+  Else If (B0 And $F8) = $F0 Then Begin Len := 4; V := B0 And $07; End
+  Else
+  Begin
+    FatalError('sequence UTF-8 invalide (octet de tete incorrect)');
+    LexNextChar;
+    LexDecodeUTF8 := $FFFD;
+    Exit;
+  End;
+
+  LexNextChar;   { consomme l octet de tete }
+  For I := 2 To Len Do
+  Begin
+    If (Ord(LexPeekChar) And $C0) <> $80 Then
+    Begin
+      FatalError('sequence UTF-8 invalide (octet de continuation attendu)');
+      LexDecodeUTF8 := $FFFD;
+      Exit;
+    End;
+    V := (V Shl 6) Or (Ord(LexPeekChar) And $3F);
+    LexNextChar;
+  End;
+  LexDecodeUTF8 := V;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexScanRune : litteral rune 'x' ou 'echappement' - un caractere       }
+{ non-ASCII ecrit DIRECTEMENT dans le source (pas via \u/\U) passe           }
+{ desormais par LexDecodeUTF8 (TODO 14) plutot que de ne lire que son            }
+{ premier octet.                                                               }
 { ------------------------------------------------------------ }
 
 Procedure LexScanRune;
@@ -1408,8 +1569,7 @@ Begin
     If (LexPeekChar = #0) Or (LexPeekChar = '''') Then
       FatalError('litteral rune vide ('''') - au moins un caractere ' +
         'ou une sequence d echappement est attendu');
-    V := Ord(LexPeekChar);
-    LexNextChar;
+    V := LexDecodeUTF8;
   End;
   If LexPeekChar <> '''' Then
     FatalError('litteral rune mal forme (apostrophe fermante attendue)');
@@ -2317,6 +2477,122 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
+{ DerefIfPointer (TODO 13) : suit UN SEUL niveau de TYK_POINTER  }
+{ (ElemTypeIdx = type pointe) - centralise la regle Go reelle de           }
+{ DEREFERENCEMENT IMPLICITE, jusqu ici recopiee inline SEULEMENT dans           }
+{ ResolveSelectorType (TODO 09, "p.Champ" fonctionne aussi bien si p est          }
+{ *T que si p est T) - reutilisee au TODO 13 pour etendre EXACTEMENT              }
+{ la meme regle a l indexation ("p[i]" sur un p de type *[N]T ou *[]T,               }
+{ qui doit se comporter comme "(*p)[i]", jusqu ici un gap non couvert).                  }
+{ Un seul niveau (pas de boucle) : Go lui-meme n autorise qu un SEUL                    }
+{ niveau de dereferencement implicite (p.Champ marche pour *T, PAS pour                    }
+{ **T - il faut alors explicitement (**p).Champ).                                             }
+{ ------------------------------------------------------------ }
+
+Function DerefIfPointer(TIdx: Integer): Integer;
+Begin
+  If (TIdx >= 0) And (TypeTab[TIdx].Kind = TYK_POINTER) Then
+    DerefIfPointer := TypeTab[TIdx].ElemTypeIdx
+  Else
+    DerefIfPointer := TIdx;
+End;
+
+{ MethodFind est implementee bien plus bas (TODO 09/10, avec le reste  }
+{ des mecanismes de methodes/structs) - forward-declaree ici car            }
+{ TypeSatisfiesInterface (TODO 19) en a besoin, et doit elle-meme etre           }
+{ utilisable des ParseSimpleStmt (bien avant dans le fichier).                       }
+Function MethodFind(STypeIdx: Integer; Const MName: TString): Integer; Forward;
+
+{ ------------------------------------------------------------ }
+{ TypeSatisfiesInterface / TypesAssignable (TODO 19)             }
+{ ------------------------------------------------------------ }
+
+{ TypeSatisfiesInterface (lien direct TODO 10) : Vrai si            }
+{ ConcreteType possede TOUTES les methodes exigees par                  }
+{ InterfaceType - typage STRUCTUREL Go reel (aucune declaration              }
+{ explicite de type d "implements" requise, contrairement a Delphi/         }
+{ Java) - reutilise MethodFind (TODO 09/10) pour chaque methode                 }
+{ exigee ; ConcreteType est d abord depointerise (une methode a                    }
+{ receveur pointeur compte quand meme, exactement comme pour un                       }
+{ acces normal a une methode via ResolveSelectorType).                                    }
+Function TypeSatisfiesInterface(ConcreteType, InterfaceType: Integer): Boolean;
+Var I, DerefType : Integer;
+Begin
+  TypeSatisfiesInterface := False;
+  If (ConcreteType < 0) Or (InterfaceType < 0) Or
+     (InterfaceType >= TypeCount) Then Exit;
+  If (TypeTab[InterfaceType].Kind <> TYK_INTERFACE) And
+     (TypeTab[InterfaceType].Kind <> TYK_ERROR) Then Exit;
+  DerefType := DerefIfPointer(ConcreteType);
+  For I := TypeTab[InterfaceType].MethodFirst To
+    TypeTab[InterfaceType].MethodFirst + TypeTab[InterfaceType].MethodCount - 1 Do
+    If MethodFind(DerefType, FieldPool[I].Name) < 0 Then Exit;
+  TypeSatisfiesInterface := True;
+End;
+
+{ TypesStructurallyEqual : Vrai si A et B representent le MEME type -    }
+{ soit LITTERALEMENT (meme TypeIdx apres resolution d ALIAS,                  }
+{ TypeResolveAlias/TODO 04), soit STRUCTURELLEMENT pour un type                    }
+{ COMPOSE ANONYME (Name = '' des deux cotes - pointeur/slice/tableau/                  }
+{ map/chan ecrit inline, ex. "map[string]int"/"*int"/"[]T") : ce                          }
+{ compilateur NE CANONICALISE PAS ces types (chaque occurrence textuelle                     }
+{ obtient son PROPRE TypeIdx via TypeAdd), donc DEUX ecritures du MEME                           }
+{ type compose anonyme (ex. le resultat declare "*int" d une fonction                               }
+{ et le "&x" d un appelant) ont des TypeIdx DIFFERENTS bien qu ils                                       }
+{ soient assignables l un a l autre en Go reel - contrairement a deux                                        }
+{ types NOMMES distincts (Name non vide des deux cotes), qui restent                                             }
+{ TOUJOURS distincts sauf identite exacte (deja testee) - c est                                                     }
+{ PRECISEMENT la regle stricte que TODO 19 doit reproduire pour ceux-la.                                                }
+Function TypesStructurallyEqual(A, B: Integer): Boolean;
+Begin
+  TypesStructurallyEqual := False;
+  If (A < 0) Or (B < 0) Then Exit;
+  A := TypeResolveAlias(A);
+  B := TypeResolveAlias(B);
+  If A = B Then
+  Begin
+    TypesStructurallyEqual := True;
+    Exit;
+  End;
+  If TypeTab[A].Kind <> TypeTab[B].Kind Then Exit;
+  If (TypeTab[A].Name <> '') Or (TypeTab[B].Name <> '') Then Exit;
+  Case TypeTab[A].Kind Of
+    TYK_POINTER, TYK_SLICE, TYK_ARRAY, TYK_CHAN:
+      TypesStructurallyEqual := (TypeTab[A].ArrayLen = TypeTab[B].ArrayLen) And
+        TypesStructurallyEqual(TypeTab[A].ElemTypeIdx, TypeTab[B].ElemTypeIdx);
+    TYK_MAP:
+      TypesStructurallyEqual :=
+        TypesStructurallyEqual(TypeTab[A].KeyTypeIdx, TypeTab[B].KeyTypeIdx) And
+        TypesStructurallyEqual(TypeTab[A].ElemTypeIdx, TypeTab[B].ElemTypeIdx);
+  End;
+End;
+
+{ TypesAssignable : regle d assignabilite Go REELLE, simplifiee -        }
+{ deux TypeIdx sont assignables si : (1) l un des deux cote est -1          }
+{ (type encore INCONNU, best-effort - ne jamais bloquer sur une                }
+{ inconnue) ; (2) ILS SONT STRUCTURELLEMENT IDENTIQUES                            }
+{ (TypesStructurallyEqual ci-dessus) - regle STRICTE de Go : deux                    }
+{ types NOMMES DISTINCTS de MEME representation sous-jacente (ex.                        }
+{ "type Celsius float64") ne sont PAS assignables sans conversion                            }
+{ EXPLICITE T(x), contrairement a un VRAI alias ("type Celsius =                                }
+{ float64") ; (3) la cible est une interface (TYK_INTERFACE/TYK_ERROR)                              }
+{ et la source la satisfait STRUCTURELLEMENT (TypeSatisfiesInterface                                    }
+{ ci-dessus).                                                                                                }
+Function TypesAssignable(SrcType, DstType: Integer): Boolean;
+Begin
+  TypesAssignable := True;
+  If (SrcType < 0) Or (DstType < 0) Then Exit;
+  If TypesStructurallyEqual(SrcType, DstType) Then Exit;
+  If (TypeTab[DstType].Kind = TYK_INTERFACE) Or
+     (TypeTab[DstType].Kind = TYK_ERROR) Then
+  Begin
+    TypesAssignable := TypeSatisfiesInterface(SrcType, DstType);
+    Exit;
+  End;
+  TypesAssignable := False;
+End;
+
+{ ------------------------------------------------------------ }
 { TypeIsNilZero : Vrai si la valeur zero de ce type est "nil"     }
 { (pointeur/slice/map/chan/func/interface) plutot que 0/false/""       }
 { (numerique/bool/string, directement derivable du Kind) ou une            }
@@ -2345,9 +2621,196 @@ End;
 { annonce au TODO 03).                                                                   }
 { ------------------------------------------------------------ }
 
+{ FieldPoolAdd est implementee au TODO 08, bien plus bas - forward-     }
+{ declaree ici car TypeInit (TODO 17) en a desormais besoin pour                 }
+{ synthetiser la methode "Error" de l interface predeclaree "error".              }
+Function FieldPoolAdd(Const Nm: TString; TIdx: Integer; Embedded: Boolean): Integer; Forward;
+
+{ ------------------------------------------------------------ }
+{ StdlibTab (TODO 20) : bibliotheque standard minimale             }
+{ (fmt/strings/strconv/os/math) - AUCUN package n est reellement     }
+{ resolu (import simplifie/ignore depuis le TODO 05, meme convention        }
+{ que DELPHI.PAS pour "uses") : chaque fonction/valeur reconnue PAR             }
+{ NOM QUALIFIE ("pkg.Nom") est ici associee a une signature/un type                }
+{ SYNTHETISE directement (pas parse depuis une source Go, exactement                  }
+{ comme "error.Error()" en TODO 17) - generalise et REMPLACE la                           }
+{ reconnaissance etroite (seulement errors.New/fmt.Errorf) du TODO 17.                        }
+{ SLK_FUNC : TypeIdx est une VRAIE signature TYK_FUNC - une fois               }
+{ affectee au noeud EK_SELECTOR (ResolveSelectorType, plus bas), le                  }
+{ mecanisme GENERIQUE deja existant dans ParseCallArgs (TODO 08/17,                       }
+{ "callee resolve a TYK_FUNC") s en empare SANS AUCUN changement : Extra                     }
+{ est renseigne, TypeIdx recoit le premier resultat, et le multi-retour                          }
+{ de ParseSimpleStmt (TODO 08/17) fonctionne desormais aussi pour              }
+{ "n, err := strconv.Atoi(s)" - un vrai bug latent (err jamais declaree,                        }
+{ puisqu aucune signature TYK_FUNC n existait pour ce callee avant ce                              }
+{ TODO) que ce mecanisme corrige au passage. SLK_VALUE : TypeIdx est le                                }
+{ type de la VALEUR elle-meme (os.Args/os.Stdout/os.Stderr/                                                }
+{ math.MaxInt32/math.MinInt32 - jamais appelee, juste selectionnee).                                           }
+{ ------------------------------------------------------------ }
+
+Const
+  MAX_STDLIB = 64;
+
+Type
+  TStdlibKind = (SLK_FUNC, SLK_VALUE);
+  TStdlibRec = Record
+    Pkg     : TString;
+    Name    : TString;
+    Kind    : TStdlibKind;
+    TypeIdx : Integer;
+  End;
+
+Var
+  StdlibTab   : Array[0..MAX_STDLIB - 1] Of TStdlibRec;
+  StdlibCount : Integer;
+
+Function StdlibAdd(Const APkg, AName: TString; AKind: TStdlibKind;
+  ATypeIdx: Integer): Integer;
+Begin
+  If StdlibCount >= MAX_STDLIB Then
+  Begin
+    WarnMsg('table de la bibliotheque standard pleine (MAX_STDLIB)');
+    StdlibAdd := -1;
+    Exit;
+  End;
+  StdlibTab[StdlibCount].Pkg     := APkg;
+  StdlibTab[StdlibCount].Name    := AName;
+  StdlibTab[StdlibCount].Kind    := AKind;
+  StdlibTab[StdlibCount].TypeIdx := ATypeIdx;
+  StdlibAdd := StdlibCount;
+  Inc(StdlibCount);
+End;
+
+{ StdlibFind : recherche EXACTE (sensible a la casse, comme Go       }
+{ lui-meme) par (paquet, nom) - lineaire, table de taille fixe             }
+{ modeste (MAX_STDLIB), adequat ici (analyse uniquement, aucune                 }
+{ contrainte de performance de code genere).                                        }
+Function StdlibFind(Const APkg, AName: TString): Integer;
+Var I: Integer;
+Begin
+  StdlibFind := -1;
+  For I := 0 To StdlibCount - 1 Do
+    If (StdlibTab[I].Pkg = APkg) And (StdlibTab[I].Name = AName) Then
+    Begin
+      StdlibFind := I;
+      Exit;
+    End;
+End;
+
+{ StdlibMakeFunc : construit une signature TYK_FUNC ne portant QUE      }
+{ ses resultats (RCount 0/1/2 - aucune fonction de la bibliotheque             }
+{ standard minimale d ici n a besoin de plus de 2 resultats reels)                }
+{ - les PARAMETRES ne sont volontairement PAS renseignes (ParamFirst/               }
+{ ParamCount restent a -1/0, valeurs par defaut de TypeAdd) puisqu AUCUN               }
+{ mecanisme de ce compilateur ne verifie jamais les types d arguments                     }
+{ d appel (best-effort partout depuis le TODO 06) - seuls le NOMBRE et                       }
+{ les TYPES des RESULTATS ont une consequence observable (multi-retour                          }
+{ TODO 08/17, typage d une valeur simple).                                                          }
+Function StdlibMakeFunc(RCount, R1, R2: Integer): Integer;
+Var FT, RFirst: Integer;
+Begin
+  RFirst := FieldPoolCount;
+  If RCount >= 1 Then FieldPoolAdd('', R1, False);
+  If RCount >= 2 Then FieldPoolAdd('', R2, False);
+  FT := TypeAdd(TYK_FUNC, '', 4, 4, False, -1, -1);
+  TypeTab[FT].ResultFirst := RFirst;
+  TypeTab[FT].ResultCount := RCount;
+  StdlibMakeFunc := FT;
+End;
+
+{ StdlibInit : synthetise chaque entree "au minimum" listee par le      }
+{ roadmap du TODO 20 (fmt : Println/Print/Printf/Sprintf/Sprintln/           }
+{ Errorf, plus Fprintln - implicite dans la description meme de                  }
+{ os.Stdout/Stderr, "writers minimaux pour fmt.Fprintln" ; strings :                  }
+{ ToUpper/ToLower/Contains/HasPrefix/HasSuffix/Split/Join/TrimSpace/                       }
+{ Trim/Replace/ReplaceAll/Index/Repeat/Fields ; strconv : Itoa/Atoi/                           }
+{ ParseInt/ParseFloat/FormatInt/FormatFloat/Quote ; os : Args/Exit/                                }
+{ Stdout/Stderr ; math : Sqrt/Abs/Pow/Floor/Ceil/Max/Min/Mod/Inf/NaN/                                  }
+{ IsNaN/MaxInt32/MinInt32). Appelee depuis TypeInit (doit etre                                            }
+{ re-executee a chaque reinitialisation des types, puisqu elle          }
+{ synthetise dans TypeTab/FieldPool comme "error.Error()" le fait                }
+{ deja depuis le TODO 17 - memes tables, meme cycle de vie).                        }
+Procedure StdlibInit;
+Var TSliceStr, TFile: Integer;
+Begin
+  StdlibCount := 0;
+
+  { fmt }
+  StdlibAdd('fmt', 'Println',  SLK_FUNC, StdlibMakeFunc(2, PDT_INT, PDT_ERROR));
+  StdlibAdd('fmt', 'Print',    SLK_FUNC, StdlibMakeFunc(2, PDT_INT, PDT_ERROR));
+  StdlibAdd('fmt', 'Printf',   SLK_FUNC, StdlibMakeFunc(2, PDT_INT, PDT_ERROR));
+  StdlibAdd('fmt', 'Fprintln', SLK_FUNC, StdlibMakeFunc(2, PDT_INT, PDT_ERROR));
+  StdlibAdd('fmt', 'Sprintf',  SLK_FUNC, StdlibMakeFunc(1, PDT_STRING, -1));
+  StdlibAdd('fmt', 'Sprintln', SLK_FUNC, StdlibMakeFunc(1, PDT_STRING, -1));
+  StdlibAdd('fmt', 'Errorf',   SLK_FUNC, StdlibMakeFunc(1, PDT_ERROR, -1));
+
+  { errors - deja reconnu par nom qualifie depuis le TODO 17            }
+  { ("errors.New"), desormais via ce MEME mecanisme generique plutot           }
+  { que le special-case etroit d origine (retire de ParseCallArgs). }
+  StdlibAdd('errors', 'New', SLK_FUNC, StdlibMakeFunc(1, PDT_ERROR, -1));
+
+  { strings - Split/Fields partagent le MEME TypeIdx "[]string"      }
+  { anonyme (TypesStructurallyEqual, TODO 19, les rend de toute facon      }
+  { assignables l un a l autre meme sans ce partage - simple economie          }
+  { d une allocation TypeTab en plus). }
+  TSliceStr := TypeAdd(TYK_SLICE, '', 12, 4, False, PDT_STRING, -1);
+  StdlibAdd('strings', 'ToUpper',    SLK_FUNC, StdlibMakeFunc(1, PDT_STRING, -1));
+  StdlibAdd('strings', 'ToLower',    SLK_FUNC, StdlibMakeFunc(1, PDT_STRING, -1));
+  StdlibAdd('strings', 'Contains',   SLK_FUNC, StdlibMakeFunc(1, PDT_BOOL, -1));
+  StdlibAdd('strings', 'HasPrefix',  SLK_FUNC, StdlibMakeFunc(1, PDT_BOOL, -1));
+  StdlibAdd('strings', 'HasSuffix',  SLK_FUNC, StdlibMakeFunc(1, PDT_BOOL, -1));
+  StdlibAdd('strings', 'Split',      SLK_FUNC, StdlibMakeFunc(1, TSliceStr, -1));
+  StdlibAdd('strings', 'Join',       SLK_FUNC, StdlibMakeFunc(1, PDT_STRING, -1));
+  StdlibAdd('strings', 'TrimSpace',  SLK_FUNC, StdlibMakeFunc(1, PDT_STRING, -1));
+  StdlibAdd('strings', 'Trim',       SLK_FUNC, StdlibMakeFunc(1, PDT_STRING, -1));
+  StdlibAdd('strings', 'Replace',    SLK_FUNC, StdlibMakeFunc(1, PDT_STRING, -1));
+  StdlibAdd('strings', 'ReplaceAll', SLK_FUNC, StdlibMakeFunc(1, PDT_STRING, -1));
+  StdlibAdd('strings', 'Index',      SLK_FUNC, StdlibMakeFunc(1, PDT_INT, -1));
+  StdlibAdd('strings', 'Repeat',     SLK_FUNC, StdlibMakeFunc(1, PDT_STRING, -1));
+  StdlibAdd('strings', 'Fields',     SLK_FUNC, StdlibMakeFunc(1, TSliceStr, -1));
+
+  { strconv - Atoi/ParseInt/ParseFloat suivent l idiome (valeur,       }
+  { error) EXACTEMENT comme la fonction utilisateur Parse de errors.go       }
+  { (TODO 17) - meme mecanisme generique des deux cotes. }
+  StdlibAdd('strconv', 'Itoa',        SLK_FUNC, StdlibMakeFunc(1, PDT_STRING, -1));
+  StdlibAdd('strconv', 'Atoi',        SLK_FUNC, StdlibMakeFunc(2, PDT_INT, PDT_ERROR));
+  StdlibAdd('strconv', 'ParseInt',    SLK_FUNC, StdlibMakeFunc(2, PDT_INT64, PDT_ERROR));
+  StdlibAdd('strconv', 'ParseFloat',  SLK_FUNC, StdlibMakeFunc(2, PDT_FLOAT64, PDT_ERROR));
+  StdlibAdd('strconv', 'FormatInt',   SLK_FUNC, StdlibMakeFunc(1, PDT_STRING, -1));
+  StdlibAdd('strconv', 'FormatFloat', SLK_FUNC, StdlibMakeFunc(1, PDT_STRING, -1));
+  StdlibAdd('strconv', 'Quote',       SLK_FUNC, StdlibMakeFunc(1, PDT_STRING, -1));
+
+  { os - "File" est un type-support MINIMAL (struct anonyme sans       }
+  { champ) juste pour donner a os.Stdout/os.Stderr un TypeIdx COHERENT       }
+  { et REUTILISABLE (le meme pour les deux, comme le "*os.File" reel de           }
+  { Go) - aucune vraie E/S n existe avant un backend (TODO 21+/23).                  }
+  TFile := TypeAdd(TYK_STRUCT, 'File', 0, 1, False, -1, -1);
+  StdlibAdd('os', 'Exit',   SLK_FUNC,  StdlibMakeFunc(0, -1, -1));
+  StdlibAdd('os', 'Args',   SLK_VALUE, TSliceStr);
+  StdlibAdd('os', 'Stdout', SLK_VALUE, TFile);
+  StdlibAdd('os', 'Stderr', SLK_VALUE, TFile);
+
+  { math - MaxInt32/MinInt32 sont des VALEURS (constantes predeclarees   }
+  { du paquet reel), pas des fonctions - SLK_VALUE, type int32 direct. }
+  StdlibAdd('math', 'Sqrt',  SLK_FUNC, StdlibMakeFunc(1, PDT_FLOAT64, -1));
+  StdlibAdd('math', 'Abs',   SLK_FUNC, StdlibMakeFunc(1, PDT_FLOAT64, -1));
+  StdlibAdd('math', 'Pow',   SLK_FUNC, StdlibMakeFunc(1, PDT_FLOAT64, -1));
+  StdlibAdd('math', 'Floor', SLK_FUNC, StdlibMakeFunc(1, PDT_FLOAT64, -1));
+  StdlibAdd('math', 'Ceil',  SLK_FUNC, StdlibMakeFunc(1, PDT_FLOAT64, -1));
+  StdlibAdd('math', 'Max',   SLK_FUNC, StdlibMakeFunc(1, PDT_FLOAT64, -1));
+  StdlibAdd('math', 'Min',   SLK_FUNC, StdlibMakeFunc(1, PDT_FLOAT64, -1));
+  StdlibAdd('math', 'Mod',   SLK_FUNC, StdlibMakeFunc(1, PDT_FLOAT64, -1));
+  StdlibAdd('math', 'Inf',   SLK_FUNC, StdlibMakeFunc(1, PDT_FLOAT64, -1));
+  StdlibAdd('math', 'NaN',   SLK_FUNC, StdlibMakeFunc(1, PDT_FLOAT64, -1));
+  StdlibAdd('math', 'IsNaN', SLK_FUNC, StdlibMakeFunc(1, PDT_BOOL, -1));
+  StdlibAdd('math', 'MaxInt32', SLK_VALUE, PDT_INT32);
+  StdlibAdd('math', 'MinInt32', SLK_VALUE, PDT_INT32);
+End;
+
 Procedure TypeInit;
 Var
   TIByte, TIUint8, TIRune, TIInt32 : Integer;
+  ErrorFuncT, RFirst, MFirst : Integer;
 Begin
   TypeCount      := 0;
   FieldPoolCount := 0;
@@ -2382,6 +2845,35 @@ Begin
   TypeTab[TIByte].AliasOfTypeIdx := TIUint8;
   TypeTab[TIRune].AliasOfTypeIdx := TIInt32;
 
+  { "error" (TODO 17) est l interface predeclaree exigeant une seule       }
+  { methode "Error" retournant une string - synthetisee ICI directement          }
+  { (pas parsee depuis une source Go, puisque "error" est PREDECLAREE)               }
+  { plutot que laissee sans aucune methode comme au TODO 04 (simplification              }
+  { alors documentee comme temporaire, en attendant que le TODO 10                            }
+  { construise le vrai mecanisme d interface). DOIT venir ICI, APRES                              }
+  { l enregistrement complet des 21 types predeclares ci-dessus : le type              }
+  { de RESULTAT de cette methode est string (PDT_STRING=14), enregistre                              }
+  { PLUS TARD que error lui-meme (PDT_ERROR=5) dans l ordre des codes                                    }
+  { PDT_xxx du TODO 03 - impossible d y faire reference avant que string                                }
+  { existe reellement dans TypeTab. Ne change PAS le Kind de error (reste                                   }
+  { TYK_ERROR, pas TYK_INTERFACE - la distinction "verification rapide"                                        }
+  { du TODO 04 reste valable) ; seul ResolveSelectorType (plus bas) doit                                          }
+  { desormais traiter les deux Kind de facon identique pour la resolution                                            }
+  { de methode.                                                                                                          }
+  ErrorFuncT := TypeAdd(TYK_FUNC, '', 4, 4, False, -1, -1);
+  RFirst := FieldPoolCount;
+  FieldPoolAdd('', PDT_STRING, False);
+  TypeTab[ErrorFuncT].ResultFirst := RFirst;
+  TypeTab[ErrorFuncT].ResultCount := 1;
+  MFirst := FieldPoolCount;
+  FieldPoolAdd('Error', ErrorFuncT, False);
+  TypeTab[PDT_ERROR].MethodFirst := MFirst;
+  TypeTab[PDT_ERROR].MethodCount := 1;
+
+  { bibliotheque standard minimale (TODO 20) - memes tables/cycle de   }
+  { vie que "error.Error()" juste au-dessus. }
+  StdlibInit;
+
   If Opts.DebugMode Then
     WriteLn('  [TypeInit] ', TypeCount, ' types predeclares enregistres');
 End;
@@ -2404,7 +2896,15 @@ Var
 Begin
   TypeInit;
 
-  TypeAssert('21 types + sentinelle = 22 entrees', TypeCount = 22);
+  { 21 types predeclares + sentinelle TYK_INVALID + 1 (TODO 17 : le      }
+  { TYK_FUNC synthetise pour la signature "() string" de la methode           }
+  { "Error" de l interface predeclaree "error") + 43 (TODO 20 :                    }
+  { StdlibInit - 1 "[]string" partagee (strings.Split/Fields/os.Args) +               }
+  { 1 "File" (os.Stdout/Stderr) + 41 signatures TYK_FUNC synthetisees,                    }
+  { une par fonction reconnue de fmt/errors/strings/strconv/os/math) =                       }
+  { 66 entrees. }
+  TypeAssert('21 types + sentinelle + 1 (Error()) + 43 (StdlibInit) = 66 entrees',
+    TypeCount = 66);
 
   IdxInt := TypeFindByName('int');
   TypeAssert('int trouve par nom',    IdxInt = PDT_INT);
@@ -2602,6 +3102,29 @@ Type
     ScopeId    : Integer;
     IsGlobal   : Boolean;
     ConstVal   : TConstVal;  { SK_CONST (et SK_VAR si initialisee) }
+    Used       : Boolean;    { TODO 19 : Vrai des la premiere reference   }
+                              { LUE (ExprAddIdent) - sert a detecter les   }
+                              { variables LOCALES declarees et jamais       }
+                              { utilisees (erreur Go reelle, pas juste un    }
+                              { avertissement - voir SymLeaveScope).          }
+    IsParam    : Boolean;    { TODO 19 : Vrai pour un parametre/resultat   }
+                              { nomme/recepteur (RegisterFuncScopeSymbols,   }
+                              { ParseFuncDecl) - EXEMPTE de la verification   }
+                              { "declaree et non utilisee" (regle Go reelle : }
+                              { seules les VRAIES variables locales sont       }
+                              { concernees, pas les parametres).                }
+    Offset     : Integer;    { TODO 21 : position memoire pour un SK_VAR   }
+                              { LOCAL (portee > 0) - positif ([EBP+Offset]),  }
+                              { CROISSANT par 4, pour un vrai parametre/         }
+                              { recepteur entrant (SymAddIsParam=Vrai au             }
+                              { moment de l ajout) ; negatif ([EBP+Offset],              }
+                              { donc en pratique [EBP-N]), DECROISSANT de la               }
+                              { taille reelle du type, pour un resultat NOMME                 }
+                              { ou une variable de corps (var/:=) - non                          }
+                              { pertinent (jamais consulte) pour un symbole                        }
+                              { de portee paquet (IsGlobal), adresse par son                          }
+                              { NOM (ASM_PFX_GVAR+Name) plutot que par un                                }
+                              { decalage EBP. }
   End;
 
 Var
@@ -2614,13 +3137,40 @@ Var
   CurScopeId    : Integer;
   ScopeIdSeq    : Integer;
 
+  { TODO 21 : disposition memoire (pile) des symboles LOCAUX d une      }
+  { fonction/methode/fermeture EN COURS d analyse - reinitialises        }
+  { (CurParamOffset:=8 ; CurLocalOffset:=0) puis SAUVEGARDES/RESTAURES        }
+  { (comme CurFuncSig, TODO 19) autour du corps d une fermeture IMBRIQUEE          }
+  { (ParseFuncLiteral), pour que la fonction ENGLOBANTE reprenne EXACTEMENT           }
+  { ou elle en etait une fois la fermeture entierement analysee - AUCUN                 }
+  { rapport avec ScopeId/ScopeStack ci-dessus (portee LEXICALE pour la                     }
+  { resolution de noms, TODO 05) : ici, disposition MEMOIRE pour le                            }
+  { generateur de code, TODO 21. }
+  CurParamOffset : Integer;
+  CurLocalOffset : Integer;
+  SymAddIsParam  : Boolean;   { Vrai PENDANT l enregistrement d un VRAI      }
+                               { parametre entrant ou d un recepteur              }
+                               { (RegisterFuncScopeSymbols/ParseFuncDecl) -             }
+                               { indique a SymAdd d utiliser CurParamOffset                 }
+                               { (positif, CROISSANT) plutot que CurLocalOffset                 }
+                               { (negatif, DECROISSANT) pour LE PROCHAIN symbole                    }
+                               { SK_VAR ajoute - un resultat NOMME (registre                           }
+                               { SEPAREMENT, meme fonction) reste a Faux :                                }
+                               { alloue comme un vrai local, pas comme un                                    }
+                               { parametre entrant (regle Go reelle : un                                         }
+                               { resultat nomme est alloue par l APPELE, pas                                        }
+                               { fourni par l APPELANT).                                                                }
+
 Procedure SymInit;
 Begin
-  SymCount      := 0;
-  ScopeStackTop := -1;
-  CurScopeLevel := 0;
-  CurScopeId    := 0;
-  ScopeIdSeq    := 0;
+  SymCount       := 0;
+  ScopeStackTop  := -1;
+  CurScopeLevel  := 0;
+  CurScopeId     := 0;
+  ScopeIdSeq     := 0;
+  CurParamOffset := 8;
+  CurLocalOffset := 0;
+  SymAddIsParam  := False;
 End;
 
 Procedure SymEnterScope;
@@ -2637,13 +3187,34 @@ Begin
   CurScopeLevel := ScopeStackTop + 1;
 End;
 
+{ TODO 19 : a la fermeture d une portee LOCALE (fonction/bloc), toute      }
+{ variable (SK_VAR) declaree DANS CETTE portee et jamais LUE               }
+{ (SymTab[I].Used) est une erreur Go REELLE ("declared and not used" -     }
+{ contrairement a beaucoup de langages ou ce n est qu un avertissement) -    }
+{ l identifiant "_" (blanc) est TOUJOURS exempte, par definition. Les       }
+{ constantes/types/fonctions LOCALES ne sont PAS concernes (seules les       }
+{ variables le sont en Go reel). Mode strict (Opts.StrictMode, actif par     }
+{ defaut) = FatalError, comme le vrai compilateur Go ; sinon, simple         }
+{ avertissement (permet de desactiver cette rigueur si besoin, TODO 01).      }
 Procedure SymLeaveScope;
+Var I, ClosingId: Integer;
 Begin
   If ScopeStackTop < 0 Then
   Begin
     WarnMsg('tentative de quitter la portee paquet (package-level)');
     Exit;
   End;
+  ClosingId := CurScopeId;
+  For I := 0 To SymCount - 1 Do
+    If (SymTab[I].ScopeId = ClosingId) And (SymTab[I].Kind = SK_VAR) And
+       (Not SymTab[I].IsParam) And
+       (Not SymTab[I].Used) And (SymTab[I].Name <> '_') Then
+    Begin
+      If Opts.StrictMode Then
+        FatalError('variable declaree et non utilisee: ' + SymTab[I].Name)
+      Else
+        WarnMsg('variable declaree et non utilisee: ' + SymTab[I].Name);
+    End;
   Dec(ScopeStackTop);
   CurScopeLevel := ScopeStackTop + 1;
   If ScopeStackTop < 0 Then CurScopeId := 0
@@ -2682,6 +3253,19 @@ Begin
     End;
 End;
 
+{ LocalSlotSize (TODO 21) : taille (en octets, arrondie a 4 minimum -   }
+{ aucun alignement plus strict que 4 n est impose ici, simplification         }
+{ documentee : x86-32 tolere un acces non aligne, juste potentiellement            }
+{ plus lent, aucune consequence de CORRECTION) reservee sur la pile pour            }
+{ un local de type TIdx - 4 par defaut si TIdx est encore inconnu (-1,                 }
+{ best-effort, comme partout ailleurs dans ce fichier depuis le TODO 06).                 }
+Function LocalSlotSize(TIdx: Integer): Integer;
+Begin
+  If (TIdx < 0) Or (TIdx >= TypeCount) Then LocalSlotSize := 4
+  Else If TypeTab[TIdx].Size < 4 Then LocalSlotSize := 4
+  Else LocalSlotSize := TypeTab[TIdx].Size;
+End;
+
 Function SymAdd(Const Name: TString; Kind: TSymKind; TIdx: Integer): Integer;
 Var Dup: Integer;
 Begin
@@ -2706,6 +3290,26 @@ Begin
   SymTab[SymCount].ConstVal.IntVal  := 0;
   SymTab[SymCount].ConstVal.RealVal := 0.0;
   SymTab[SymCount].ConstVal.StrVal  := '';
+  SymTab[SymCount].Used             := False;
+  SymTab[SymCount].IsParam          := False;
+
+  { TODO 21 : disposition memoire - seul un SK_VAR de portee LOCALE     }
+  { (ScopeLevel > 0) en a besoin (un global est adresse par son NOM,          }
+  { un type/const/fonction n occupe jamais d emplacement sur la pile). }
+  SymTab[SymCount].Offset := 0;
+  If (Kind = SK_VAR) And (CurScopeLevel > 0) Then
+  Begin
+    If SymAddIsParam Then
+    Begin
+      SymTab[SymCount].Offset := CurParamOffset;
+      Inc(CurParamOffset, 4);
+    End
+    Else
+    Begin
+      Dec(CurLocalOffset, LocalSlotSize(TIdx));
+      SymTab[SymCount].Offset := CurLocalOffset;
+    End;
+  End;
 
   SymAdd := SymCount;
   Inc(SymCount);
@@ -3085,6 +3689,13 @@ Function ParseInterfaceType: Integer; Forward;
 { ParseOperand (TODO 06) pour les litteraux composes de map.                        }
 Function ParseMapType: Integer; Forward;
 
+{ ParseChanType (implementee au TODO 15, avec le reste des canaux)      }
+{ construit un TypeIdx TYK_CHAN a partir du mot-cle "chan" DEJA               }
+{ CONSOMME - forward-declaree ici pour la meme raison que                            }
+{ ParseFuncSignature/ParseStructType/ParseInterfaceType/ParseMapType                    }
+{ juste au-dessus.                                                                }
+Function ParseChanType: Integer; Forward;
+
 Function ParseTypeExpr: Integer;
 Var
   Nam: TString; Base, SI, Elem, NewIdx : Integer;
@@ -3097,6 +3708,26 @@ Begin
     PPAdvance;
     Base := ParseTypeExpr;
     ParseTypeExpr := TypeAdd(TYK_POINTER, '', 4, 4, False, Base, -1);
+    Exit;
+  End;
+
+  If PPIsOp('<-') Then
+  Begin
+    { "<-chan T" (reception seulement) - le marqueur de direction PRECEDE   }
+    { "chan" ici, contrairement a "chan<- T" (envoi seulement, marqueur              }
+    { APRES "chan" - gere DANS ParseChanType). Direction NON conservee               }
+    { dans les deux cas (simplification documentee, TODO 15 : la                        }
+    { verification de bon usage d un canal directionnel est un sujet du                    }
+    { TODO 19 ; ce compilateur simplifie n a pas non plus besoin de la                        }
+    { distinguer pour la generation de code, TODO 21+).                                          }
+    PPAdvance;
+    If (PPKind <> TOK_IDENT) Or (PPVal <> 'chan') Then
+    Begin
+      FatalError('"chan" attendu apres "<-" dans un type canal');
+      Exit;
+    End;
+    PPAdvance;
+    ParseTypeExpr := ParseChanType;
     Exit;
   End;
 
@@ -3145,6 +3776,13 @@ Begin
     Exit;
   End;
 
+  If (PPKind = TOK_IDENT) And (PPVal = 'chan') Then
+  Begin
+    PPAdvance;
+    ParseTypeExpr := ParseChanType;
+    Exit;
+  End;
+
   If (PPKind = TOK_IDENT) And (PPVal = 'interface') Then
   Begin
     PPAdvance;
@@ -3154,8 +3792,7 @@ Begin
 
   If PPKind <> TOK_IDENT Then
   Begin
-    FatalError('expression de type non prise en charge a ce point ' +
-      '(tableau/slice/map/canal : voir TODO 11/12/15)');
+    FatalError('expression de type non prise en charge a ce point');
     Exit;
   End;
 
@@ -3507,15 +4144,99 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
-{ SkipImportDecl : import "chemin" ou import ( "c1" ; "c2" ; ... )  }
-{ - SYNTAXE validee et consommee mais rien n est charge/enregistre    }
-{ (meme simplification que le "uses" de DELPHI.PAS, meme projet) -        }
-{ la vraie resolution de package est le sujet du TODO 18. Necessaire         }
-{ ici pour pouvoir seulement ATTEINDRE les declarations const/var/type          }
-{ qui suivent un import dans un fichier .go reel (voir hello.go/types.go).         }
+{ ImportedPackages (TODO 19) : trace, pour le fichier en cours          }
+{ d analyse, chaque paquet importe (reconnu, IsKnownPackage) et si            }
+{ AU MOINS UN appel qualifie "pkg.Nom(...)" l a REFERENCE (marque par         }
+{ ParseCallArgs) - permet de detecter un "import declare et non              }
+{ utilise" (ERREUR Go reelle, meme regle stricte que pour les                    }
+{ variables locales - voir SymLeaveScope) a la fin de                              }
+{ ParseFileTopLevel. Reinitialise a chaque appel de ParseFileTopLevel               }
+{ (partagee par les auto-tests via FuncParseTopLevel ET la vraie                       }
+{ compilation).                                                                            }
 { ------------------------------------------------------------ }
 
-Procedure SkipImportDecl;
+Const
+  MAX_IMPORT = 32;
+
+Type
+  TImportRec = Record
+    Name : TString;
+    Used : Boolean;
+  End;
+
+Var
+  ImportedPackages : Array[0..MAX_IMPORT - 1] Of TImportRec;
+  ImportedCount    : Integer;
+
+Procedure RegisterImport(Const Nam: TString);
+Var I: Integer;
+Begin
+  For I := 0 To ImportedCount - 1 Do
+    If ImportedPackages[I].Name = Nam Then Exit;   { deja enregistre }
+  If ImportedCount >= MAX_IMPORT Then Exit;
+  ImportedPackages[ImportedCount].Name := Nam;
+  ImportedPackages[ImportedCount].Used := False;
+  Inc(ImportedCount);
+End;
+
+Procedure MarkImportUsed(Const Nam: TString);
+Var I: Integer;
+Begin
+  For I := 0 To ImportedCount - 1 Do
+    If ImportedPackages[I].Name = Nam Then
+    Begin
+      ImportedPackages[I].Used := True;
+      Exit;
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsKnownPackage (TODO 18) : TABLE FIXE des SEULS paquets reellement      }
+{ cables a de vraies fonctions runtime (TODO 20 - fmt/strings/strconv/        }
+{ os/math), plus "errors" (deja reconnu par nom qualifie depuis le              }
+{ TODO 17, "errors.New"). AUCUNE autre bibliotheque standard Go n est                 }
+{ implementee - importer autre chose est un ARRET PROPRE DOCUMENTE                       }
+{ (FatalError explicite), PAS un echec silencieux qui laisserait                            }
+{ l utilisateur croire, a tort, qu un paquet quelconque "fonctionne".                           }
+{ ------------------------------------------------------------ }
+
+Function IsKnownPackage(Const Nam: TString): Boolean;
+Begin
+  IsKnownPackage := (Nam = 'fmt') Or (Nam = 'strings') Or (Nam = 'strconv') Or
+    (Nam = 'os') Or (Nam = 'math') Or (Nam = 'errors');
+End;
+
+{ ------------------------------------------------------------ }
+{ IsExported (TODO 18) : regle d export Go REELLE - un identificateur    }
+{ de package est visible hors du package des qu il commence par une              }
+{ MAJUSCULE (minuscule = prive), SANS AUCUN mot-cle dedie (contrairement            }
+{ a "public"/"private" en Delphi/C++/Java) - fournie ici comme utilitaire            }
+{ documente pour la coherence de l analyse, mais SANS AUCUNE consequence               }
+{ pratique aujourd hui (roadmap lui-meme) : ce compilateur est mono-                     }
+{ fichier/mono-paquet (tout vit dans "main"), donc rien ne peut jamais                     }
+{ etre "hors du package" pour de vrai - aucun appelant ne l utilise                           }
+{ encore pour REJETER quoi que ce soit, uniquement disponible pour une                          }
+{ eventuelle analyse future (TODO 19+) si une vraie compilation multi-                              }
+{ paquets etait un jour envisagee (hors de portee actuelle).                                            }
+{ ------------------------------------------------------------ }
+
+Function IsExported(Const Nam: TString): Boolean;
+Begin
+  IsExported := (Length(Nam) > 0) And (Nam[1] >= 'A') And (Nam[1] <= 'Z');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseImportDecl : import "chemin" ou import ( "c1" ; "c2" ; ... )  }
+{ - SYNTAXE validee ET CHAQUE CHEMIN VERIFIE contre IsKnownPackage           }
+{ ci-dessus (TODO 18 - avant ce TODO, "SkipImportDecl" avalait                    }
+{ n importe quel import SANS le regarder, meme simplification que le               }
+{ "uses" de DELPHI.PAS, meme projet). Rien n est charge/enregistre pour                 }
+{ un paquet reconnu (aucune vraie resolution de symboles de package -                      }
+{ TODO 20 cable des fonctions PAR NOM QUALIFIE, pas par un vrai import).                       }
+{ ------------------------------------------------------------ }
+
+Procedure ParseImportDecl;
+Var PkgNam: TString;
 Begin
   PPAdvance;   { import }
   If PPIsOp('(') Then
@@ -3524,13 +4245,35 @@ Begin
     PPSkipSemis;
     While (Not PPAtEnd) And (Not PPIsOp(')')) Do
     Begin
+      If (PPKind = TOK_STRING) Or (PPKind = TOK_RAWSTRING) Then
+      Begin
+        PkgNam := PPVal;
+        If Not IsKnownPackage(PkgNam) Then
+          FatalError('paquet importe non pris en charge: "' + PkgNam +
+            '" (seuls fmt/strings/strconv/os/math/errors sont cables, ' +
+            'voir TODO 20)')
+        Else
+          RegisterImport(PkgNam);
+      End;
       PPAdvance;
       PPSkipSemis;
     End;
     PPMatch(')');
   End
   Else
+  Begin
+    If (PPKind = TOK_STRING) Or (PPKind = TOK_RAWSTRING) Then
+    Begin
+      PkgNam := PPVal;
+      If Not IsKnownPackage(PkgNam) Then
+        FatalError('paquet importe non pris en charge: "' + PkgNam +
+          '" (seuls fmt/strings/strconv/os/math/errors sont cables, ' +
+          'voir TODO 20)')
+      Else
+        RegisterImport(PkgNam);
+    End;
     PPAdvance;   { le chemin importe (chaine) }
+  End;
 End;
 
 { ------------------------------------------------------------ }
@@ -3545,9 +4288,18 @@ End;
 { le mot-cle "func" vers elle des qu il apparait en tete de fichier.           }
 Procedure ParseFuncDecl; Forward;
 
+{ PrescanTopLevelFuncs est implementee au TODO 19, bien plus bas (juste  }
+{ avant ParseFuncDecl, dont elle reutilise les mecanismes) - forward-        }
+{ declaree ici car ParseFileTopLevel doit deja pouvoir l appeler AVANT           }
+{ sa vraie boucle de declarations (passe prealable d enregistrement des             }
+{ signatures de fonctions de haut niveau, permettant les references Go                 }
+{ "avant declaration textuelle").                                                          }
+Procedure PrescanTopLevelFuncs; Forward;
+
 Procedure ParseFileTopLevel;
-Var Up: TString;
+Var Up: TString; I: Integer;
 Begin
+  ImportedCount := 0;
   PPSkipSemis;
   If Not PPMatch('package') Then
   Begin
@@ -3559,20 +4311,50 @@ Begin
     FatalError('nom de package attendu apres "package"');
     Exit;
   End;
+  { "package main" OBLIGATOIRE (TODO 18) - seul package supporte comme      }
+  { point d entree, portee mono-fichier/mono-paquet assumee (meme                  }
+  { simplification que le "uses" de DELPHI.PAS, meme projet) : aucune                  }
+  { vraie compilation multi-paquets n est prevue, donc un autre nom de                     }
+  { package n a de toute facon aucun sens ici.                                                }
+  If PPVal <> 'main' Then
+    FatalError('seul "package main" est pris en charge (pas de vraie ' +
+      'compilation multi-paquets, voir TODO 18)');
   PPAdvance;   { nom du package }
   PPSkipSemis;
+
+  { TODO 19 : passe prealable - enregistre le nom+signature de chaque   }
+  { fonction de haut niveau SANS receveur AVANT d analyser le moindre        }
+  { corps, pour que les references Go "avant declaration textuelle"             }
+  { (autorisees entre declarations de haut niveau, contrairement a                  }
+  { Pascal) resolvent correctement des la premiere passe reelle              }
+  { ci-dessous.                                                                    }
+  PrescanTopLevelFuncs;
 
   While Not PPAtEnd Do
   Begin
     If PPKind <> TOK_IDENT Then Break;
     Up := PPVal;
-    If Up = 'import' Then Begin SkipImportDecl; PPSkipSemis; Continue; End;
+    If Up = 'import' Then Begin ParseImportDecl; PPSkipSemis; Continue; End;
     If Up = 'const'  Then Begin ParseConstDecl; PPSkipSemis; Continue; End;
     If Up = 'var'    Then Begin ParseVarDecl;   PPSkipSemis; Continue; End;
     If Up = 'type'   Then Begin ParseTypeDecl;  PPSkipSemis; Continue; End;
     If Up = 'func'   Then Begin ParseFuncDecl;  PPSkipSemis; Continue; End;
     Break;   { autre chose qu une declaration de haut niveau connue : arret propre }
   End;
+
+  { TODO 19 : "import declare et non utilise" est une erreur Go REELLE,   }
+  { exactement comme une variable locale jamais lue (voir SymLeaveScope) -    }
+  { meme discipline strict/non-strict (Opts.StrictMode, defaut True                }
+  { seulement APRES ParseArgs - donc TOUJOURS False, silencieux, pendant                }
+  { les auto-tests qui utilisent ParseFileTopLevel via FuncParseTopLevel).                    }
+  For I := 0 To ImportedCount - 1 Do
+    If Not ImportedPackages[I].Used Then
+    Begin
+      If Opts.StrictMode Then
+        FatalError('paquet importe et non utilise: "' + ImportedPackages[I].Name + '"')
+      Else
+        WarnMsg('paquet importe et non utilise: "' + ImportedPackages[I].Name + '"');
+    End;
 End;
 
 { ------------------------------------------------------------ }
@@ -3733,6 +4515,11 @@ Type
     EK_ADDR,        { &X ; Left = operande                                }
     EK_DEREF,       { *X ; Left = operande                                }
     EK_CALL,        { Left = callee (souvent EK_IDENT) ; ArgFirst/Count   }
+                    { d arguments ; Extra = TypeIdx de la signature              }
+                    { TYK_FUNC du callee si resolue (TODO 17), -1 sinon           }
+                    { (callee non resolu ou fonction integree) - permet a               }
+                    { ParseSimpleStmt de retrouver le VRAI type de CHAQUE                    }
+                    { resultat pour les retours multiples ("n, err := F()")           }
     EK_INDEX,       { Left = base ; Right = index                         }
     EK_SLICE,       { Left = base ; ArgFirst/Count=3 (Low,High,Max, -1    }
                     { si omis) dans ExprArgPool                           }
@@ -3740,9 +4527,13 @@ Type
     EK_TYPEASSERT,  { Left = base ; Extra = TypeIdx vise                  }
     EK_COMPOSITE,   { Extra = TypeIdx ; ArgFirst/Count = elements         }
                     { (ExprArgKeyPool[i] = nom du champ, '' si positionnel) }
-    EK_FUNCLIT      { fonction anonyme/fermeture (TODO 08) ; Extra=TypeIdx   }
+    EK_FUNCLIT,     { fonction anonyme/fermeture (TODO 08) ; Extra=TypeIdx   }
                     { de la signature (TYK_FUNC) ; Right=index du bloc          }
                     { corps dans StmtPool (STK_BLOCK)                              }
+    EK_CONVERT,     { conversion de type explicite "T(x)" (TODO 14) ;       }
+                    { Left = expression source ; Extra=TypeIdx=type CIBLE       }
+    EK_RECV         { reception de canal "<-ch" (TODO 15) ; Left = canal ;   }
+                    { TypeIdx = ElemTypeIdx du canal (type des valeurs recues)   }
   );
 
   TExprNode = Record
@@ -3899,6 +4690,7 @@ Begin
   Begin
     ExprPool[N].TypeIdx := SymTab[SI].TypeIdx;
     ExprPool[N].IsConst := (SymTab[SI].Kind = SK_CONST);
+    SymTab[SI].Used := True;   { TODO 19 : toute reference lue "utilise" }
   End;
   ExprAddIdent := N;
 End;
@@ -3948,6 +4740,12 @@ Begin
     EK_ADDR  : ExprPool[N].TypeIdx :=
       TypeAdd(TYK_POINTER, '', 4, 4, False, ExprPool[Sub].TypeIdx, -1);
     EK_DEREF :
+      If ExprPool[Sub].TypeIdx >= 0 Then
+        ExprPool[N].TypeIdx := TypeTab[ExprPool[Sub].TypeIdx].ElemTypeIdx;
+    EK_RECV :
+      { "<-ch" (TODO 15) : type des valeurs RECUES = ElemTypeIdx du canal,  }
+      { exactement comme EK_DEREF pour un pointeur (meme forme "unaire            }
+      { qui devoile ce qu il y a derriere"). }
       If ExprPool[Sub].TypeIdx >= 0 Then
         ExprPool[N].TypeIdx := TypeTab[ExprPool[Sub].TypeIdx].ElemTypeIdx;
   Else
@@ -4065,7 +4863,7 @@ End;
 { d arguments (tolerance virgule/point-virgule finale, meme piege ASI            }
 { que ParseCompositeLiteral juste au-dessus).                                        }
 Function ParseCallArgs(Callee: Integer): Integer;
-Var N, A, ArgStart, Cnt : Integer; SavedNCL: Boolean;
+Var N, A, ArgStart, Cnt, CalleeSig : Integer; SavedNCL: Boolean; PkgNam: TString;
 Begin
   PPAdvance;   { '(' }
   SavedNCL := NoCompositeLit;
@@ -4091,6 +4889,25 @@ Begin
   ExprPool[N].Left     := Callee;
   ExprPool[N].ArgFirst := ArgStart;
   ExprPool[N].ArgCount := Cnt;
+
+  { inference GENERALE (TODO 17) : si le callee resolve a une VRAIE        }
+  { signature TYK_FUNC (nom de fonction, methode, ou variable de type            }
+  { fonction - TypeIdx du callee EST alors deja cette signature, quel que          }
+  { soit le cas), Extra retient cette signature (necessaire a                          }
+  { ParseSimpleStmt pour les retours MULTIPLES, "n, err := F()") et                       }
+  { TypeIdx recoit le PREMIER resultat declare (usage a une seule                           }
+  { valeur, "x := F()"/"return F()"). Ne s applique JAMAIS aux fonctions                        }
+  { integrees (len/append/...) puisqu elles ne sont jamais de VRAIS                                }
+  { symboles SK_FUNC - leur callee reste toujours non resolu (TypeIdx=-1).                            }
+  If (ExprPool[Callee].TypeIdx >= 0) And
+     (TypeTab[ExprPool[Callee].TypeIdx].Kind = TYK_FUNC) Then
+  Begin
+    CalleeSig := ExprPool[Callee].TypeIdx;
+    ExprPool[N].Extra := CalleeSig;
+    If TypeTab[CalleeSig].ResultCount >= 1 Then
+      ExprPool[N].TypeIdx := FieldPool[TypeTab[CalleeSig].ResultFirst].TypeIdx;
+  End;
+
   If ExprPool[Callee].Kind = EK_IDENT Then
   Begin
     ExprPool[N].NameVal := ExprPool[Callee].NameVal;
@@ -4104,7 +4921,28 @@ Begin
        (ExprPool[N].NameVal = 'copy') Then
       ExprPool[N].TypeIdx := PDT_INT
     Else If (ExprPool[N].NameVal = 'append') And (Cnt > 0) Then
-      ExprPool[N].TypeIdx := ExprPool[ExprArgPool[ArgStart]].TypeIdx;
+      ExprPool[N].TypeIdx := ExprPool[ExprArgPool[ArgStart]].TypeIdx
+    Else If ExprPool[N].NameVal = 'recover' Then
+      { recover() (TODO 16) retourne la valeur passee a panic(), typee     }
+      { "any" en Go reel (interface vide - elle peut etre n importe quoi) ;      }
+      { nil si aucune panique n est en cours - meme discipline que les              }
+      { autres fonctions integrees ci-dessus, best-effort sans verifier              }
+      { que "recover" resolve reellement au builtin. }
+      ExprPool[N].TypeIdx := PDT_ANY;
+  End
+  Else If (ExprPool[Callee].Kind = EK_SELECTOR) And (ExprPool[Callee].Left >= 0)
+          And (ExprPool[ExprPool[Callee].Left].Kind = EK_IDENT) Then
+  Begin
+    { marque le paquet REFERENCE (TODO 19) - le TYPAGE du retour lui-meme  }
+    { (errors.New/fmt.Errorf, et desormais tout fmt./strings./strconv./           }
+    { os./math. reconnu, TODO 20) n a PLUS besoin d etre special-case ici :             }
+    { ResolveSelectorType (appelee plus tot, a la creation du noeud                     }
+    { EK_SELECTOR lui-meme) a deja affecte ExprPool[Callee].TypeIdx via                     }
+    { StdlibTab si "PkgNam" est un paquet connu - le bloc GENERIQUE                             }
+    { juste au-dessus (callee resolvant a TYK_FUNC) s en occupe alors                              }
+    { deja, exactement comme pour un symbole SK_FUNC reel.                                            }
+    PkgNam := ExprPool[ExprPool[Callee].Left].NameVal;
+    MarkImportUsed(PkgNam);
   End;
   ParseCallArgs := N;
 End;
@@ -4144,6 +4982,34 @@ Begin
   Else
     ExprPool[N].TypeIdx := TIdx;
   ParseNewOrMake := N;
+End;
+
+{ ParseTypeConversion : "T(x)" - conversion de type EXPLICITE (TODO 14,   }
+{ motivee par string([]byte)/[]byte(string)/etc., mais implementee de              }
+{ facon GENERALE puisque la syntaxe Go elle-meme ne distingue pas les              }
+{ conversions "de chaine" des autres - "int(x)"/"MyType(x)" suivent                    }
+{ EXACTEMENT la meme grammaire). TIdx (le type CIBLE) est deja resolu             }
+{ par l appelant (ParseOperand, qui a deja distingue une conversion               }
+{ d un appel de fonction ordinaire ou d un litteral compose AVANT                        }
+{ d appeler cette fonction). Tolere une virgule finale optionnelle                       }
+{ (Go l autorise meme pour un seul argument, ex. "int(x,)").                              }
+Function ParseTypeConversion(TIdx: Integer): Integer;
+Var N, A : Integer; SavedNCL : Boolean;
+Begin
+  PPAdvance;   { '(' }
+  SavedNCL := NoCompositeLit;
+  NoCompositeLit := False;
+  A := ParseExpr;
+  PPMatch(',');
+  NoCompositeLit := SavedNCL;
+  If Not PPMatch(')') Then
+    FatalError('parenthese fermante attendue dans une conversion de type');
+
+  N := ExprNew(EK_CONVERT);
+  ExprPool[N].Left    := A;
+  ExprPool[N].Extra   := TIdx;
+  ExprPool[N].TypeIdx := TIdx;
+  ParseTypeConversion := N;
 End;
 
 { ParseFuncLiteral (implementee au TODO 08) construit une fonction        }
@@ -4197,6 +5063,21 @@ Begin
         Else If Nam = 'func' Then ParseOperand := ParseFuncLiteral
         Else If Nam = 'map' Then
           ParseOperand := ParseCompositeLiteralForType(ParseMapType)
+        Else If PPIsOp('(') And (SymFind(Nam) >= 0) And
+                (SymTab[SymFind(Nam)].Kind = SK_TYPE) Then
+          { conversion de type explicite "T(x)" (TODO 14) - un nom DEJA    }
+          { resolu dans SymTab en SK_TYPE (declare via "type", visible          }
+          { dans la portee courante) gagne TOUJOURS sur la reconnaissance         }
+          { en type predeclare, meme regle de priorite que SymFind partout            }
+          { ailleurs dans ce fichier (le plus imbrique/le plus recent               }
+          { d abord - couvre aussi le cas ou un nom predeclare est masque             }
+          { localement par autre chose, ex. "var int = 5" : SI trouve alors          }
+          { SK_VAR, pas SK_TYPE, donc cette branche ne matche pas et on                 }
+          { retombe correctement sur le fallback identificateur ordinaire).                }
+          ParseOperand := ParseTypeConversion(SymTab[SymFind(Nam)].TypeIdx)
+        Else If PPIsOp('(') And (SymFind(Nam) < 0) And
+                (IsPredeclaredType(Nam) <> 0) Then
+          ParseOperand := ParseTypeConversion(IsPredeclaredType(Nam))
         Else If PPIsOp('{') And (Not NoCompositeLit) Then
           ParseOperand := ParseCompositeLiteral(Nam)
         Else ParseOperand := ExprAddIdent(Nam);
@@ -4218,13 +5099,17 @@ Begin
         End
         Else If PPIsOp('[') And (Not NoCompositeLit) Then
         Begin
-          { litteral compose slice/tableau (TODO 11) : "[...]T" est une   }
-          { expression de TYPE valide ici (ParseTypeExpr, TODO 05, etendue    }
-          { au TODO 11 pour reconnaitre "[]T"/"[N]T") immediatement suivie          }
-          { d elements entre accolades - TypeIdx deja resolu, pas besoin de              }
-          { repasser par un nom comme le fait ParseCompositeLiteral.                        }
+          { "[...]T" est une expression de TYPE valide ici (ParseTypeExpr,   }
+          { TODO 05, etendue au TODO 11 pour reconnaitre "[]T"/"[N]T")               }
+          { immediatement suivie SOIT d elements entre accolades (litteral               }
+          { compose, TODO 11), SOIT d une parenthese (conversion "[]byte(s)"/               }
+          { "[]rune(s)", TODO 14) - TypeIdx deja resolu dans les deux cas,                      }
+          { pas besoin de repasser par un nom comme le fait ParseCompositeLiteral.                 }
           TIdx := ParseTypeExpr;
-          ParseOperand := ParseCompositeLiteralForType(TIdx);
+          If PPIsOp('(') Then
+            ParseOperand := ParseTypeConversion(TIdx)
+          Else
+            ParseOperand := ParseCompositeLiteralForType(TIdx);
         End
         Else
           FatalError('jeton inattendu dans une expression: ' + PPVal);
@@ -4320,8 +5205,22 @@ Begin
         ExprArgPush(MaxIdx, '');
         ExprPool[N].ArgFirst := ArgStart;
         ExprPool[N].ArgCount := 3;
-        If ExprPool[Result_].TypeIdx >= 0 Then
-          ExprPool[N].TypeIdx := ExprPool[Result_].TypeIdx;
+        { tranchage (slice) : deref implicite (TODO 13) si la base est un    }
+        { pointeur, PUIS - regle Go reelle - le RESULTAT est TOUJOURS un          }
+        { slice (TYK_SLICE), meme si la base tranchee etait elle-meme un              }
+        { tableau fixe (TYK_ARRAY) ou un pointeur vers un tableau fixe               }
+        { (bogue mineur preexistant corrige au passage : avant l existence            }
+        { de TYK_ARRAY, TODO 11, cette branche recopiait simplement le                    }
+        { TypeIdx de la base sans distinction).                                              }
+        TIdx := DerefIfPointer(ExprPool[Result_].TypeIdx);
+        If TIdx >= 0 Then
+        Begin
+          If TypeTab[TIdx].Kind = TYK_ARRAY Then
+            ExprPool[N].TypeIdx := TypeAdd(TYK_SLICE, '', 12, 4, False,
+              TypeTab[TIdx].ElemTypeIdx, -1)
+          Else
+            ExprPool[N].TypeIdx := TIdx;
+        End;
       End
       Else
       Begin
@@ -4331,8 +5230,12 @@ Begin
         N := ExprNew(EK_INDEX);
         ExprPool[N].Left  := Result_;
         ExprPool[N].Right := LowIdx;
+        { auto-dereference (TODO 13) : "p[i]" sur un p de type *[N]T ou     }
+        { *[]T se comporte comme "(*p)[i]" - meme regle Go que le                 }
+        { dereferencement implicite deja applique a "p.Champ" (TODO 09).            }
         If ExprPool[Result_].TypeIdx >= 0 Then
-          ExprPool[N].TypeIdx := TypeTab[ExprPool[Result_].TypeIdx].ElemTypeIdx;
+          ExprPool[N].TypeIdx :=
+            TypeTab[DerefIfPointer(ExprPool[Result_].TypeIdx)].ElemTypeIdx;
       End;
       Result_ := N;
     End
@@ -4385,7 +5288,8 @@ Begin
   End;
   If PPIsOp('<-') Then
   Begin
-    FatalError('reception de canal <- non prise en charge (voir TODO 15)');
+    PPAdvance;
+    ParseUnaryExpr := ExprNewUnary('<-', EK_RECV, ParseUnaryExpr);
     Exit;
   End;
   ParseUnaryExpr := ParsePrimaryExpr;
@@ -4608,7 +5512,8 @@ Type
     STK_VARDECL, STK_CONSTDECL, STK_TYPEDECL,
     STK_IF, STK_FOR, STK_FORRANGE, STK_SWITCH, STK_TYPESWITCH,
     STK_BREAK, STK_CONTINUE, STK_GOTO, STK_LABELED, STK_RETURN,
-    STK_FALLTHROUGH, STK_DEFER
+    STK_FALLTHROUGH, STK_DEFER,
+    STK_SEND, STK_GO, STK_SELECT
   );
 
   TStmtNode = Record
@@ -4665,6 +5570,12 @@ Type
     BodyFirst   : Integer;   { dans StmtArgPool : instructions du corps }
     BodyCount   : Integer;
     Fallthrough : Boolean;   { corps termine par l instruction "fallthrough" }
+    HeaderStmt  : Integer;   { STK_SELECT (TODO 15) SEULEMENT : index dans      }
+                             { StmtPool de l instruction d envoi/reception -        }
+                             { -1 pour un switch/type switch ordinaire ou un              }
+                             { "default" de select (ExprFirst/Count restent               }
+                             { inutilises ici, un select n a pas de "valeurs                  }
+                             { de case", juste UNE operation de canal).                          }
   End;
 
 Var
@@ -4736,6 +5647,7 @@ Begin
   CaseClausePool[CaseClauseCount].BodyFirst   := -1;
   CaseClausePool[CaseClauseCount].BodyCount   := 0;
   CaseClausePool[CaseClauseCount].Fallthrough := False;
+  CaseClausePool[CaseClauseCount].HeaderStmt  := -1;
   CaseClauseNew := CaseClauseCount;
   Inc(CaseClauseCount);
 End;
@@ -4785,20 +5697,31 @@ Function ParseBlock: Integer; Forward;
 { declaree ici car ParseStatement (TODO 07) doit deja savoir router          }
 { le mot-cle "defer" vers elle.                                                 }
 Function ParseDeferStmt: Integer; Forward;
+{ ParseGoStmt/ParseSelectStmt sont implementees au TODO 15, bien plus     }
+{ bas - forward-declarees ici pour la meme raison que ParseDeferStmt              }
+{ juste au-dessus.                                                             }
+Function ParseGoStmt: Integer; Forward;
+Function ParseSelectStmt: Integer; Forward;
 
 { ExprIsCommaOkSource : Vrai si Idx est une expression pouvant fournir   }
 { la forme comma-ok ("v, ok := ...", UNE seule expression a droite pour        }
-{ DEUX noms a gauche) - assertion de type (TODO 06/10, "x.(T)") ou               }
-{ indexation d une MAP (TODO 12, "m[cle]" - le second booleen "ok"                  }
-{ indique si la cle etait presente). L indexation d un slice/tableau               }
-{ (TODO 11) N EST PAS comma-ok en Go reel (un index hors bornes PANIQUE            }
-{ au lieu de renvoyer un booleen), d ou le test explicite du Kind TYK_MAP              }
-{ et non simplement "est-ce un EK_INDEX".                                                 }
+{ DEUX noms a gauche) - assertion de type (TODO 06/10, "x.(T)"),                  }
+{ indexation d une MAP (TODO 12, "m[cle]" - le second booleen "ok"                    }
+{ indique si la cle etait presente), ou reception de canal (TODO 15,                    }
+{ "<-ch" - ok=false si le canal est FERME et VIDE). L indexation d un                        }
+{ slice/tableau (TODO 11) N EST PAS comma-ok en Go reel (un index hors                    }
+{ bornes PANIQUE au lieu de renvoyer un booleen), d ou le test explicite                    }
+{ du Kind TYK_MAP et non simplement "est-ce un EK_INDEX".                                       }
 Function ExprIsCommaOkSource(Idx: Integer): Boolean;
 Var BaseTypeIdx: Integer;
 Begin
   ExprIsCommaOkSource := False;
   If ExprPool[Idx].Kind = EK_TYPEASSERT Then
+  Begin
+    ExprIsCommaOkSource := True;
+    Exit;
+  End;
+  If ExprPool[Idx].Kind = EK_RECV Then
   Begin
     ExprIsCommaOkSource := True;
     Exit;
@@ -4899,6 +5822,40 @@ Begin
       Else
         FatalError('nom de variable attendu a gauche de ":="');
     End
+    Else If (VCount = 1) And (TCount > 1) And
+            (ExprPool[Vals[0]].Kind = EK_CALL) And
+            (ExprPool[Vals[0]].Extra >= 0) And
+            (TypeTab[ExprPool[Vals[0]].Extra].Kind = TYK_FUNC) And
+            (TypeTab[ExprPool[Vals[0]].Extra].ResultCount = TCount) Then
+    Begin
+      { retours MULTIPLES (TODO 08/17) : "resultat, err := F(...)" - une   }
+      { SEULE expression evaluee (l appel) a droite, mais la signature            }
+      { DECLAREE de F a EXACTEMENT TCount resultats - chaque nom recoit               }
+      { le type REEL du resultat a SA position (FieldPool via                            }
+      { ResultFirst+I), pas un TypeIdx generique unique. Meme discipline                     }
+      { que la forme comma-ok ci-dessus : aucun code n est genere pour                          }
+      { "extraire" la Ieme valeur de retour (TODO 21+), chaque nom pousse                           }
+      { simplement une reference a la MEME (et unique) expression d appel.                            }
+      For I := 0 To TCount - 1 Do
+      Begin
+        If ExprPool[Targets[I]].Kind = EK_IDENT Then
+        Begin
+          Nam := ExprPool[Targets[I]].NameVal;
+          StmtArgPush(-1, Vals[0], Nam);
+          If SymFindInScope(Nam, CurScopeId) < 0 Then
+          Begin
+            SymAdd(Nam, SK_VAR,
+              FieldPool[TypeTab[ExprPool[Vals[0]].Extra].ResultFirst + I].TypeIdx);
+            AnyNew := True;
+          End;
+        End
+        Else
+        Begin
+          FatalError('nom de variable attendu a gauche de ":="');
+          StmtArgPush(-1, Vals[0], '');
+        End;
+      End;
+    End
     Else
       For I := 0 To VCount - 1 Do
         If I < TCount Then
@@ -4959,9 +5916,31 @@ Begin
       OkIdx := ExprAddBoolLit(False);
       StmtArgPush(Targets[1], OkIdx, '');
     End
+    Else If (VCount = 1) And (TCount > 1) And (Op = '=') And
+            (ExprPool[Vals[0]].Kind = EK_CALL) And
+            (ExprPool[Vals[0]].Extra >= 0) And
+            (TypeTab[ExprPool[Vals[0]].Extra].Kind = TYK_FUNC) And
+            (TypeTab[ExprPool[Vals[0]].Extra].ResultCount = TCount) Then
+      { retours multiples par simple affectation (TODO 08/17) - meme        }
+      { principe que la forme := ci-dessus, noms deja declares plus tot. }
+      For I := 0 To TCount - 1 Do
+        StmtArgPush(Targets[I], Vals[0], '')
     Else
       For I := 0 To VCount - 1 Do
-        If I < TCount Then StmtArgPush(Targets[I], Vals[I], '')
+        If I < TCount Then
+        Begin
+          { TODO 19 : regle d assignabilite Go REELLE (TypesAssignable) -   }
+          { seulement pour "=" simple (les operateurs composes "+=" etc.         }
+          { ont une semantique differente, hors de portee ici) et seulement          }
+          { quand la cible est un identifiant nomme (evite les cibles                }
+          { EK_INDEX/EK_SELECTOR, dont le TypeIdx est deja moins fiable).                }
+          If (Op = '=') And (ExprPool[Targets[I]].Kind = EK_IDENT) And
+             (Not TypesAssignable(ExprPool[Vals[I]].TypeIdx,
+               ExprPool[Targets[I]].TypeIdx)) Then
+            WarnMsg('valeur non assignable (types incompatibles) a "' +
+              ExprPool[Targets[I]].NameVal + '"');
+          StmtArgPush(Targets[I], Vals[I], '');
+        End
         Else StmtArgPush(-1, Vals[I], '');
 
     N := StmtNew(STK_ASSIGN);
@@ -4979,6 +5958,21 @@ Begin
     N := StmtNew(STK_INCDEC);
     StmtPool[N].Op   := Op;
     StmtPool[N].Left := Targets[0];
+    ParseSimpleStmt := N;
+    Exit;
+  End;
+
+  If PPIsOp('<-') Then
+  Begin
+    { instruction d envoi (TODO 15) : "Canal <- Valeur" - UNE seule       }
+    { expression a gauche (le canal, deja dans Targets[0]) ; contrairement            }
+    { a la reception ("<-ch"), l envoi est une INSTRUCTION a part entiere              }
+    { en Go (grammaire SendStmt), pas une expression - jamais utilisable                 }
+    { comme membre droit d une affectation.                                                  }
+    PPAdvance;
+    N := StmtNew(STK_SEND);
+    StmtPool[N].Left  := Targets[0];
+    StmtPool[N].Right := ParseExpr;
     ParseSimpleStmt := N;
     Exit;
   End;
@@ -5118,9 +6112,17 @@ Begin
       { ElemTypeIdx de la collection ; pour une MAP (TODO 12), la cle EST              }
       { le vrai KeyTypeIdx de la map et la valeur son vrai ElemTypeIdx (le             }
       { type "valeur" de la map) - pour toute autre collection (string/                    }
-      { chan, TODO 14/15), PDT_INT reste le meilleur repli possible ici,                       }
-      { meme discipline que ExprInferBinaryType.                                                  }
-      CollTypeIdx := ExprPool[StmtPool[N].Left].TypeIdx;
+      { chan (TODO 15), PDT_INT reste le meilleur repli possible ici,                          }
+      { meme discipline que ExprInferBinaryType. Pour une STRING (TODO 14),           }
+      { la cle est l offset en OCTETS (PDT_INT, deja correct par defaut) et                }
+      { la valeur est le RUNE DECODE a cet offset (PDT_RUNE) - le VRAI                          }
+      { decodage UTF-8 octet-par-octet reste un sujet d EXECUTION (TODO 21+/                       }
+      { 23), aucune valeur n existant encore en memoire ; seul le TYPE de                              }
+      { "v" est fixe ici.                                                                                 }
+      { deref implicite (TODO 13) : "for i, v := range p" fonctionne aussi   }
+      { bien si p est *[N]T (pointeur vers tableau) que si p est [N]T             }
+      { directement - meme regle que p.Champ/p[i].                                    }
+      CollTypeIdx := DerefIfPointer(ExprPool[StmtPool[N].Left].TypeIdx);
       KeyTypeIdx  := PDT_INT;
       ValTypeIdx  := PDT_INT;
       If CollTypeIdx >= 0 Then
@@ -5132,7 +6134,9 @@ Begin
         Begin
           KeyTypeIdx := TypeTab[CollTypeIdx].KeyTypeIdx;
           ValTypeIdx := TypeTab[CollTypeIdx].ElemTypeIdx;
-        End;
+        End
+        Else If TypeTab[CollTypeIdx].Kind = TYK_STRING Then
+          ValTypeIdx := PDT_RUNE;
       End;
       If (KeyName <> '') And (KeyName <> '_') Then SymAdd(KeyName, SK_VAR, KeyTypeIdx);
       If (ValName <> '') And (ValName <> '_') Then SymAdd(ValName, SK_VAR, ValTypeIdx);
@@ -5185,10 +6189,15 @@ End;
 { (stockes comme des TypeIdx bruts dans ExprArgPool, documente dans                    }
 { TCaseClause) - c est le "switch" appelant qui sait laquelle des deux                    }
 { formes est en cours (tag ordinaire vs garde de type switch).                               }
+{ TODO 21 : BodyStart/BodyCnt souffrent du MEME bogue d entrelacement    }
+{ que ParseBlock (voir sa propre note, juste au-dessus) - corrige avec le      }
+{ MEME remede (tampon local puis push en bloc). }
 Function ParseCaseClause(IsTypeSwitchCtx: Boolean): Integer;
+Const MAX_CASEBODY_BUF = 128;
 Var
-  C, ExprStart, ExprCnt, BodyStart, BodyCnt, SIdx, TIdx : Integer;
+  C, ExprStart, ExprCnt, BodyStart, BodyCnt, SIdx, TIdx, I : Integer;
   IsDefault : Boolean;
+  BodyBuf : Array[0..MAX_CASEBODY_BUF - 1] Of Integer;
 Begin
   SymEnterScope;
   IsDefault := False;
@@ -5217,18 +6226,26 @@ Begin
     FatalError('":" attendu apres "case"/"default"');
 
   PPSkipSemis;
-  BodyStart := StmtArgCount;
   BodyCnt := 0;
   While (Not PPAtEnd) And (Not PPIsOp('}')) And
         (Not ((PPKind = TOK_IDENT) And ((PPVal = 'case') Or (PPVal = 'default')))) Do
   Begin
     SIdx := ParseStatement;
-    StmtArgPush(SIdx, -1, '');
-    Inc(BodyCnt);
+    If BodyCnt < MAX_CASEBODY_BUF Then
+    Begin
+      BodyBuf[BodyCnt] := SIdx;
+      Inc(BodyCnt);
+    End
+    Else
+      WarnMsg('corps de "case" trop grand pour le tampon local (MAX_CASEBODY_BUF), TODO 21');
     PPSkipSemis;
   End;
 
   SymLeaveScope;
+
+  BodyStart := StmtArgCount;
+  For I := 0 To BodyCnt - 1 Do
+    StmtArgPush(BodyBuf[I], -1, '');
 
   C := CaseClauseNew;
   CaseClausePool[C].ExprFirst := ExprStart;
@@ -5387,7 +6404,7 @@ End;
 { fonction englobante n a de toute facon aucun sens avant que le TODO 08                }
 { ne fasse exister des fonctions.                                                          }
 Function ParseReturnStmt: Integer;
-Var N, ArgStart, Cnt, EIdx : Integer;
+Var N, ArgStart, Cnt, EIdx, I, ExpCnt : Integer;
 Begin
   PPAdvance;   { return }
   N := StmtNew(STK_RETURN);
@@ -5401,6 +6418,29 @@ Begin
   Until Not PPMatch(',');
   StmtPool[N].ArgFirst := ArgStart;
   StmtPool[N].ArgCount := Cnt;
+
+  { TODO 19 : verifie l assignabilite de chaque valeur retournee vis-a-vis  }
+  { du resultat DECLARE a la meme position, pour la fonction/methode/         }
+  { fermeture ACTUELLEMENT en cours d analyse (CurFuncSig) - "return" nu             }
+  { (Cnt=0, resultats deja nommes/assignes) reste hors de portee ici, le               }
+  { decompte EXACT est le cas le plus courant et le plus fiable a                          }
+  { verifier sans faux positif.                                                              }
+  If (CurFuncSig >= 0) And (Cnt > 0) Then
+  Begin
+    ExpCnt := TypeTab[CurFuncSig].ResultCount;
+    If ExpCnt = Cnt Then
+    Begin
+      For I := 0 To Cnt - 1 Do
+        If Not TypesAssignable(ExprPool[StmtArgPool[ArgStart + I]].TypeIdx,
+             FieldPool[TypeTab[CurFuncSig].ResultFirst + I].TypeIdx) Then
+          WarnMsg('valeur de retour non assignable (types incompatibles) ' +
+            'au resultat declare');
+    End
+    Else
+      WarnMsg('nombre de valeurs retournees incompatible avec la ' +
+        'signature declaree');
+  End;
+
   ParseReturnStmt := N;
 End;
 
@@ -5410,8 +6450,29 @@ Begin
   ParseFallthroughStmt := StmtNew(STK_FALLTHROUGH);
 End;
 
+{ TODO 21 : bogue LATENT depuis le TODO 07, du MEME type que              }
+{ l entrelacement de FieldPool trouve au TODO 10 - reste invisible jusqu a          }
+{ ce qu un code VERITABLEMENT ecrit/lise StmtArgPool par plage CONTIGUE               }
+{ (ici, le generateur de code, premier a vraiment PARCOURIR l arbre StmtPool                 }
+{ via ArgFirst/ArgCount plutot que de simplement le CONSTRUIRE). Capturer                        }
+{ "ArgStart := StmtArgCount" PUIS pousser une entree par instruction AU FUR            }
+{ ET A MESURE (ancien code) suppose que RIEN d autre ne pousse dans                            }
+{ StmtArgPool entre deux iterations - FAUX des qu une instruction enfant                             }
+{ (ex. une affectation simple, "_= v") pousse ELLE-MEME sa PROPRE entree                                 }
+{ (cible/valeur) dans ce MEME pool AVANT que le bloc englobant n ait pu                                      }
+{ y pousser SA PROPRE entree (l index de cette instruction) pour CETTE                                           }
+{ meme iteration - les deux listes s entrelacent, et la plage                                                        }
+{ "ArgFirst/ArgCount" du bloc pointe alors, en partie, vers les entrees                                                  }
+{ D UNE AUTRE instruction plutot que les siennes. Corrige EXACTEMENT comme                                                  }
+{ au TODO 10 : accumuler dans un TAMPON LOCAL (immunise a l entrelacement)                                                      }
+{ et ne pousser dans StmtArgPool qu APRES que plus aucune analyse imbriquee                                                         }
+{ ne puisse survenir pour CETTE liste precise - a ce moment, la plage                                                                   }
+{ [StmtArgCount-avant-le-bulk-push, +Cnt) est GARANTIE contigue.                                                                            }
 Function ParseBlock: Integer;
-Var N, ArgStart, Cnt, SIdx : Integer;
+Const MAX_BLOCK_BUF = 128;
+Var
+  N, ArgFirst, Cnt, SIdx, I : Integer;
+  Buf : Array[0..MAX_BLOCK_BUF - 1] Of Integer;
 Begin
   If Not PPMatch('{') Then
   Begin
@@ -5421,21 +6482,29 @@ Begin
   End;
   SymEnterScope;
   PPSkipSemis;
-  ArgStart := StmtArgCount;
   Cnt := 0;
   While (Not PPAtEnd) And (Not PPIsOp('}')) Do
   Begin
     SIdx := ParseStatement;
-    StmtArgPush(SIdx, -1, '');
-    Inc(Cnt);
+    If Cnt < MAX_BLOCK_BUF Then
+    Begin
+      Buf[Cnt] := SIdx;
+      Inc(Cnt);
+    End
+    Else
+      WarnMsg('bloc trop grand pour le tampon local (MAX_BLOCK_BUF), TODO 21');
     PPSkipSemis;
   End;
   If Not PPMatch('}') Then
     FatalError('accolade fermante attendue a la fin du bloc');
   SymLeaveScope;
 
+  ArgFirst := StmtArgCount;
+  For I := 0 To Cnt - 1 Do
+    StmtArgPush(Buf[I], -1, '');
+
   N := StmtNew(STK_BLOCK);
-  StmtPool[N].ArgFirst := ArgStart;
+  StmtPool[N].ArgFirst := ArgFirst;
   StmtPool[N].ArgCount := Cnt;
   ParseBlock := N;
 End;
@@ -5466,13 +6535,8 @@ Begin
     If Nam = 'return' Then Begin ParseStatement := ParseReturnStmt; Exit; End;
     If Nam = 'fallthrough' Then Begin ParseStatement := ParseFallthroughStmt; Exit; End;
     If Nam = 'defer' Then Begin ParseStatement := ParseDeferStmt; Exit; End;
-    If Nam = 'go' Then
-    Begin
-      FatalError('instruction "go" (lancement de goroutine) non prise ' +
-        'en charge (voir TODO 15)');
-      ParseStatement := StmtNew(STK_EMPTY);
-      Exit;
-    End;
+    If Nam = 'go' Then Begin ParseStatement := ParseGoStmt; Exit; End;
+    If Nam = 'select' Then Begin ParseStatement := ParseSelectStmt; Exit; End;
     If Nam = 'var' Then
     Begin
       ParseVarDecl;
@@ -6003,15 +7067,31 @@ End;
 { suffit avant un "return" sans expression (deja pris en charge tel                            }
 { quel par ParseReturnStmt, TODO 07).                                                             }
 Procedure RegisterFuncScopeSymbols(FT: Integer);
-Var I: Integer;
+Var I, SI: Integer;
 Begin
+  { TODO 21 : SymAddIsParam=Vrai UNIQUEMENT pour ce premier groupe (VRAIS   }
+  { parametres entrants, [EBP+8], [EBP+12], ... via CurParamOffset) - un        }
+  { resultat NOMME (second groupe plus bas) reste IsParam=Vrai (TODO 19,             }
+  { exempte de "declaree/non utilisee") mais PAS SymAddIsParam (regle Go               }
+  { reelle : un resultat nomme est alloue par l APPELE sur SA PROPRE pile,               }
+  { pas fourni en argument par l appelant - donc CurLocalOffset, negatif).                  }
+  SymAddIsParam := True;
   For I := 0 To TypeTab[FT].ParamCount - 1 Do
-    SymAdd(FieldPool[TypeTab[FT].ParamFirst + I].Name, SK_VAR,
+  Begin
+    SI := SymAdd(FieldPool[TypeTab[FT].ParamFirst + I].Name, SK_VAR,
       FieldPool[TypeTab[FT].ParamFirst + I].TypeIdx);
+    If SI >= 0 Then SymTab[SI].IsParam := True;   { TODO 19 : exempte de }
+                                                    { "declaree/non       }
+                                                    { utilisee" (regle Go)}
+  End;
+  SymAddIsParam := False;
   For I := 0 To TypeTab[FT].ResultCount - 1 Do
     If FieldPool[TypeTab[FT].ResultFirst + I].Name <> '' Then
-      SymAdd(FieldPool[TypeTab[FT].ResultFirst + I].Name, SK_VAR,
+    Begin
+      SI := SymAdd(FieldPool[TypeTab[FT].ResultFirst + I].Name, SK_VAR,
         FieldPool[TypeTab[FT].ResultFirst + I].TypeIdx);
+      If SI >= 0 Then SymTab[SI].IsParam := True;
+    End;
 End;
 
 { ParseFuncLiteral : fonction anonyme utilisee comme EXPRESSION (donc     }
@@ -6019,13 +7099,33 @@ End;
 { d une portee englobante encore ouverte - voir la note en tete de              }
 { section). PP est deja juste apres "func" (consomme par ParseOperand).             }
 Function ParseFuncLiteral: Integer;
-Var FT, BodyIdx, N : Integer;
+Var FT, BodyIdx, N, SavedCFS, SavedParamOfs, SavedLocalOfs : Integer;
 Begin
   FT := ParseFuncSignature;
+
+  { TODO 21 : contrairement a une fonction/methode de haut niveau            }
+  { (ParseFuncDecl), une fermeture PEUT etre imbriquee dans le corps               }
+  { d une autre fonction deja en cours d analyse - sauvegarder/restaurer             }
+  { CurParamOffset/CurLocalOffset (meme discipline que CurFuncSig, TODO 19)             }
+  { est indispensable pour que la fonction ENGLOBANTE reprenne sa PROPRE                    }
+  { disposition memoire EXACTEMENT ou elle en etait, une fois la                                }
+  { fermeture entierement analysee (sa PROPRE disposition, elle, repart                            }
+  { toujours de zero : [EBP+8]/[EBP-4], comme toute fonction).                                        }
+  SavedParamOfs := CurParamOffset;
+  SavedLocalOfs := CurLocalOffset;
+  CurParamOffset := 8;
+  CurLocalOffset := 0;
+
   SymEnterScope;
   RegisterFuncScopeSymbols(FT);
+  SavedCFS := CurFuncSig;   { TODO 19 : une fermeture a SA PROPRE }
+  CurFuncSig := FT;         { signature de resultats pour "return" }
   BodyIdx := ParseBlock;
+  CurFuncSig := SavedCFS;
   SymLeaveScope;
+
+  CurParamOffset := SavedParamOfs;
+  CurLocalOffset := SavedLocalOfs;
 
   N := ExprNew(EK_FUNCLIT);
   ExprPool[N].Extra   := FT;
@@ -6043,6 +7143,16 @@ Type
     Name        : TString;
     TypeIdx     : Integer;   { TYK_FUNC }
     BodyStmtIdx : Integer;   { STK_BLOCK dans StmtPool }
+    LocalFrameSize: Integer; { TODO 21 : octets a reserver (SUB ESP,N)  }
+                               { pour TOUS les locaux/resultats nommes - il      }
+                               { est CAPITAL que ce champ soit remis a jour           }
+                               { LORS DU RATTACHEMENT (voir ParseFuncDecl,               }
+                               { cas "deja pre-enregistree" du TODO 19) et pas             }
+                               { seulement lors de la creation initiale : le                  }
+                               { pre-scan (PrescanTopLevelFuncs) ne parcourt                     }
+                               { jamais de corps, donc ne connait JAMAIS la                         }
+                               { bonne valeur - seul le VRAI passage (celui                            }
+                               { qui analyse reellement le corps) la calcule.                             }
   End;
 
 Var
@@ -6109,6 +7219,8 @@ Begin
   Erase(F);
 
   PP := 0;
+  PrescanMode := False;
+  CurFuncSig  := -1;
   ParseFileTopLevel;
 End;
 
@@ -6433,6 +7545,10 @@ Type
     Name          : TString;
     TypeIdx       : Integer;   { signature TYK_FUNC }
     BodyStmtIdx   : Integer;   { STK_BLOCK dans StmtPool }
+    LocalFrameSize: Integer;   { TODO 21 : octets a reserver (SUB ESP,N) }
+                                { pour TOUS les locaux/resultats nommes -    }
+                                { -CurLocalOffset au moment ou le corps a         }
+                                { fini d etre analyse. }
   End;
 
 Var
@@ -6497,18 +7613,42 @@ End;
 { l EXECUTION selon le type concret dynamique, pas de l analyse - table                                          }
 { de methodes simplifiee documentee dans le TODO 10 lui-meme, "_GOT_                                                }
 { descripteur de type" complet reste un sujet de generation de code,                                                  }
-{ TODO 21+).                                                                                                             }
+{ TODO 21+). TYK_ERROR (TODO 17) est traite IDENTIQUEMENT a TYK_INTERFACE           }
+{ ici - "error" reste son propre TTypeKind distinct (verification rapide,           }
+{ TODO 04) mais possede desormais une VRAIE methode "Error" enregistree               }
+{ (TypeInit, TODO 17) exactement comme une interface ordinaire.                          }
 Procedure ResolveSelectorType(SelNode: Integer);
-Var BaseTypeIdx, FIdx, MIdx, I : Integer;
+Var BaseTypeIdx, FIdx, MIdx, I, BaseNode, SLI : Integer;
 Begin
-  BaseTypeIdx := ExprPool[ExprPool[SelNode].Left].TypeIdx;
+  BaseNode := ExprPool[SelNode].Left;
+  BaseTypeIdx := ExprPool[BaseNode].TypeIdx;
+  If BaseTypeIdx < 0 Then
+  Begin
+    { TODO 20 : base non resolue (aucun symbole reel - c est le cas       }
+    { normal pour un nom de PAQUET comme "fmt"/"math", puisque les             }
+    { imports restent simplifies/ignores depuis le TODO 05) - tente               }
+    { une resolution PAR NOM QUALIFIE dans la bibliotheque standard                  }
+    { minimale (StdlibTab/StdlibFind, TODO 20). Pour une fonction                        }
+    { (SLK_FUNC), TypeIdx recoit directement sa signature TYK_FUNC - le                     }
+    { mecanisme GENERIQUE deja existant dans ParseCallArgs (TODO 08/17)                        }
+    { s en empare ensuite sans aucun changement, exactement comme pour                            }
+    { un symbole SK_FUNC reel. Pour une valeur (SLK_VALUE - os.Args/                                  }
+    { os.Stdout/os.Stderr/math.MaxInt32/etc.), TypeIdx recoit le type de                                 }
+    { la valeur elle-meme directement.                                                                     }
+    If ExprPool[BaseNode].Kind = EK_IDENT Then
+    Begin
+      SLI := StdlibFind(ExprPool[BaseNode].NameVal, ExprPool[SelNode].NameVal);
+      If SLI >= 0 Then
+        ExprPool[SelNode].TypeIdx := StdlibTab[SLI].TypeIdx;
+    End;
+    Exit;
+  End;
+
+  BaseTypeIdx := DerefIfPointer(BaseTypeIdx);
   If BaseTypeIdx < 0 Then Exit;
 
-  If TypeTab[BaseTypeIdx].Kind = TYK_POINTER Then
-    BaseTypeIdx := TypeTab[BaseTypeIdx].ElemTypeIdx;
-  If BaseTypeIdx < 0 Then Exit;
-
-  If TypeTab[BaseTypeIdx].Kind = TYK_INTERFACE Then
+  If (TypeTab[BaseTypeIdx].Kind = TYK_INTERFACE) Or
+     (TypeTab[BaseTypeIdx].Kind = TYK_ERROR) Then
   Begin
     For I := TypeTab[BaseTypeIdx].MethodFirst To TypeTab[BaseTypeIdx].MethodFirst +
       TypeTab[BaseTypeIdx].MethodCount - 1 Do
@@ -6534,6 +7674,133 @@ Begin
     ExprPool[SelNode].TypeIdx := MethodDefPool[MIdx].TypeIdx;
 End;
 
+{ SkipBraceBlock (TODO 19) : PP DOIT pointer SUR l accolade ouvrante    }
+{ "{" - avance jusqu a APRES la MATCHING accolade fermante, profondeur       }
+{ correctement geree pour les blocs imbriques (if/for/switch/etc a               }
+{ l interieur) - utilisee par PrescanTopLevelFuncs pour SAUTER un corps               }
+{ de fonction sans l analyser (seule la SIGNATURE nous interesse a ce                    }
+{ stade).                                                                                    }
+Procedure SkipBraceBlock;
+Var Depth: Integer;
+Begin
+  If Not PPMatch('{') Then Exit;
+  Depth := 1;
+  While (Depth > 0) And (Not PPAtEnd) Do
+  Begin
+    If PPIsOp('{') Then Inc(Depth)
+    Else If PPIsOp('}') Then Dec(Depth);
+    PPAdvance;
+  End;
+End;
+
+{ SkipToNextTopLevelDecl (TODO 19) : avance PP JETON PAR JETON en          }
+{ suivant une profondeur COMBINEE de "(", "[" et "{" (incrementee pour           }
+{ chacune de ces trois ouvrantes, decrementee pour leur fermante                    }
+{ correspondante), jusqu a ce que la profondeur revienne a 0 ET que le                 }
+{ jeton COURANT soit l un des mots-cles de haut niveau reconnus                             }
+{ ("import"/"const"/"var"/"type"/"func") ou la fin du fichier. PUREMENT                        }
+{ MECANIQUE (n interprete JAMAIS le contenu saute) - donc robuste face a                          }
+{ n importe quel contenu syntaxiquement valide entre deux declarations                                }
+{ (litteraux composes, appels imbriques, litteraux de fonction, etc.),                                    }
+{ sans risque de mal interpreter une construction qui ne devrait pas                                          }
+{ etre traitee comme une nouvelle declaration de haut niveau. Doit etre                                          }
+{ appelee APRES avoir deja consomme le mot-cle de la declaration a       }
+{ sauter elle-meme (sinon elle s arreterait immediatement sur CE MEME    }
+{ mot-cle, encore courant, a la profondeur 0).                                                                          }
+Procedure SkipToNextTopLevelDecl;
+Var Depth: Integer;
+Begin
+  Depth := 0;
+  While Not PPAtEnd Do
+  Begin
+    If (Depth = 0) And (PPKind = TOK_IDENT) And
+       ((PPVal = 'import') Or (PPVal = 'const') Or (PPVal = 'var') Or
+        (PPVal = 'type') Or (PPVal = 'func')) Then Exit;
+    If PPIsOp('(') Or PPIsOp('[') Or PPIsOp('{') Then Inc(Depth)
+    Else If PPIsOp(')') Or PPIsOp(']') Or PPIsOp('}') Then Dec(Depth);
+    PPAdvance;
+  End;
+End;
+
+{ PrescanTopLevelFuncs (TODO 19) : PASSE PREALABLE qui enregistre le      }
+{ NOM et la SIGNATURE de chaque fonction top-level SANS RECEVEUR (une         }
+{ methode reste hors de portee ici - limitation documentee, les                  }
+{ methodes restent resolues dans l ordre textuel comme avant TODO 19)                }
+{ AVANT que la vraie passe (ParseFileTopLevel) n analyse le moindre                     }
+{ corps de fonction - permet les references Go REELLES "avant                              }
+{ declaration textuelle" (contrairement a Pascal, ou l ordre textuel                            }
+{ est obligatoire). Chaque corps de fonction rencontre ici est SAUTE                                }
+{ (SkipBraceBlock) sans etre analyse : aucune instruction n est                                        }
+{ construite, aucun symbole LOCAL n est cree - seule la signature                                          }
+{ (donc le nom+type de la fonction elle-meme) devient visible pour la                                          }
+{ VRAIE passe qui suit. Toute erreur rencontree ICI (typiquement : un                                              }
+{ type encore inconnu, car declare plus loin dans le fichier) est                                                      }
+{ NON BLOQUANTE (PrescanMode desactive Halt() dans FatalError) - la                                                        }
+{ vraie passe la re-signalera normalement si le probleme persiste                                                             }
+{ reellement. Les declarations import/const/var/type sont hors de                                                                 }
+{ portee de ce pre-scan : on les saute mecaniquement (SkipToNextTopLevelDecl)                                                       }
+{ sans y toucher, la vraie passe s en chargera normalement ensuite.                                                                    }
+Procedure PrescanTopLevelFuncs;
+Var SavedPP, FT, SI : Integer; Nam : TString;
+Begin
+  SavedPP := PP;
+  PrescanMode := True;
+  PPSkipSemis;
+  While Not PPAtEnd Do
+  Begin
+    If PPKind <> TOK_IDENT Then Break;
+    If PPVal = 'func' Then
+    Begin
+      PPAdvance;   { func }
+      If PPIsOp('(') Then
+      Begin
+        { methode : hors de portee de ce pre-scan (limitation documentee) -  }
+        { reutilise les VRAIS parseurs pour AVANCER PP correctement au-dela      }
+        { de la signature (gere donc correctement N IMPORTE QUEL type de              }
+        { parametre, y compris un struct/interface/func anonyme) sans RIEN                 }
+        { enregistrer (ni SymTab ni MethodDefPool), puis saute le corps.                       }
+        PPAdvance;   { '(' }
+        If PPKind = TOK_IDENT Then PPAdvance;   { nom du receveur, ignore }
+        If Not PPIsOp(')') Then ParseTypeExpr;  { type du receveur }
+        PPMatch(')');
+        If PPKind = TOK_IDENT Then PPAdvance;   { nom de la methode, ignore }
+        ParseFuncSignature;
+        If PPIsOp('{') Then SkipBraceBlock;
+      End
+      Else If PPKind = TOK_IDENT Then
+      Begin
+        Nam := PPVal;
+        PPAdvance;
+        FT := ParseFuncSignature;
+        SI := SymAdd(Nam, SK_FUNC, FT);
+        If (SI >= 0) And (FuncDefCount < MAX_FUNC) Then
+        Begin
+          FuncDefPool[FuncDefCount].Name          := Nam;
+          FuncDefPool[FuncDefCount].TypeIdx       := FT;
+          FuncDefPool[FuncDefCount].BodyStmtIdx   := -1;
+          FuncDefPool[FuncDefCount].LocalFrameSize:= 0;
+          Inc(FuncDefCount);
+        End;
+        If PPIsOp('{') Then SkipBraceBlock;
+      End;
+      PPSkipSemis;
+    End
+    Else If (PPVal = 'import') Or (PPVal = 'const') Or (PPVal = 'var') Or
+            (PPVal = 'type') Then
+    Begin
+      PPAdvance;   { avance au-dela du mot-cle lui-meme AVANT d appeler   }
+                    { SkipToNextTopLevelDecl, qui s arreterait sinon                }
+                    { IMMEDIATEMENT sur ce meme mot-cle.                                }
+      SkipToNextTopLevelDecl;
+      PPSkipSemis;
+    End
+    Else
+      Break;
+  End;
+  PrescanMode := False;
+  PP := SavedPP;
+End;
+
 { ParseFuncDecl (etendue) : detecte maintenant un RECEVEUR optionnel     }
 { entre "func" et le nom - "func (r T) Nom(...)..." (methode) au lieu de       }
 { "func Nom(...)..." (fonction ordinaire, TODO 08, comportement inchange).        }
@@ -6544,7 +7811,7 @@ End;
 Procedure ParseFuncDecl;
 Var
   Nam, RecvName : TString;
-  FT, BodyIdx, RecvTypeIdx : Integer;
+  FT, BodyIdx, RecvTypeIdx, PreSI, I, SavedCFS : Integer;
   IsMethod, IsPtrRecv : Boolean;
 Begin
   PPAdvance;   { func }
@@ -6577,41 +7844,90 @@ Begin
   Nam := PPVal;
   PPAdvance;
 
+  { TODO 19 : une fonction SANS receveur peut deja avoir ete            }
+  { pre-enregistree (nom + signature) par PrescanTopLevelFuncs, AVANT    }
+  { meme que la moindre autre declaration de haut level n ait ete          }
+  { analysee - permet les references Go REELLES "avant declaration          }
+  { textuelle" (contrairement a Pascal). Si c est le cas, on ne cree PAS       }
+  { un second symbole/une seconde entree FuncDefPool : on reutilise            }
+  { celle deja en place et on se contente d y RATTACHER le VRAI corps              }
+  { (et la signature FRAICHE, potentiellement plus complete si un type               }
+  { qu elle referencait n etait pas encore connu lors du pre-scan).                     }
+  PreSI := -1;
+  If Not IsMethod Then
+  Begin
+    PreSI := SymFindInScope(Nam, 0);
+    If (PreSI >= 0) And (SymTab[PreSI].Kind <> SK_FUNC) Then PreSI := -1;
+  End;
+
   FT := ParseFuncSignature;
+  If PreSI >= 0 Then SymTab[PreSI].TypeIdx := FT;
+
+  { TODO 21 : une fonction/methode de haut niveau n est JAMAIS imbriquee   }
+  { dans une autre (contrairement a une fermeture, ParseFuncLiteral) -            }
+  { simple reinitialisation, sans sauvegarde/restauration necessaire.                 }
+  CurParamOffset := 8;
+  CurLocalOffset := 0;
   SymEnterScope;
   If IsMethod And (RecvName <> '') And (RecvName <> '_') Then
-    SymAdd(RecvName, SK_VAR, RecvTypeIdx);
+  Begin
+    SymAddIsParam := True;
+    I := SymAdd(RecvName, SK_VAR, RecvTypeIdx);
+    SymAddIsParam := False;
+    If I >= 0 Then SymTab[I].IsParam := True;
+  End;
   RegisterFuncScopeSymbols(FT);
+  SavedCFS := CurFuncSig;
+  CurFuncSig := FT;
   BodyIdx := ParseBlock;
+  CurFuncSig := SavedCFS;
   SymLeaveScope;
 
   If IsMethod Then
   Begin
     If MethodDefCount < MAX_FUNC Then
     Begin
-      MethodDefPool[MethodDefCount].RecvName      := RecvName;
-      MethodDefPool[MethodDefCount].RecvTypeIdx   := RecvTypeIdx;
-      MethodDefPool[MethodDefCount].IsPointerRecv := IsPtrRecv;
-      MethodDefPool[MethodDefCount].Name          := Nam;
-      MethodDefPool[MethodDefCount].TypeIdx       := FT;
-      MethodDefPool[MethodDefCount].BodyStmtIdx   := BodyIdx;
+      MethodDefPool[MethodDefCount].RecvName       := RecvName;
+      MethodDefPool[MethodDefCount].RecvTypeIdx    := RecvTypeIdx;
+      MethodDefPool[MethodDefCount].IsPointerRecv  := IsPtrRecv;
+      MethodDefPool[MethodDefCount].Name           := Nam;
+      MethodDefPool[MethodDefCount].TypeIdx        := FT;
+      MethodDefPool[MethodDefCount].BodyStmtIdx    := BodyIdx;
+      MethodDefPool[MethodDefCount].LocalFrameSize := -CurLocalOffset;
       Inc(MethodDefCount);
     End
     Else
       WarnMsg('table des methodes pleine (MAX_FUNC)');
   End
-  Else
+  Else If PreSI < 0 Then
   Begin
     SymAdd(Nam, SK_FUNC, FT);
     If FuncDefCount < MAX_FUNC Then
     Begin
-      FuncDefPool[FuncDefCount].Name        := Nam;
-      FuncDefPool[FuncDefCount].TypeIdx     := FT;
-      FuncDefPool[FuncDefCount].BodyStmtIdx := BodyIdx;
+      FuncDefPool[FuncDefCount].Name          := Nam;
+      FuncDefPool[FuncDefCount].TypeIdx       := FT;
+      FuncDefPool[FuncDefCount].BodyStmtIdx   := BodyIdx;
+      FuncDefPool[FuncDefCount].LocalFrameSize:= -CurLocalOffset;
       Inc(FuncDefCount);
     End
     Else
       WarnMsg('table des fonctions pleine (MAX_FUNC)');
+  End
+  Else
+  Begin
+    { deja pre-enregistree (nom+signature+entree FuncDefPool) : y        }
+    { rattache simplement le corps maintenant analyse, et rafraichit           }
+    { la signature au cas ou elle aurait ete completee ci-dessus - ainsi           }
+    { que LocalFrameSize (TODO 21), que le pre-scan n a JAMAIS pu calculer               }
+    { correctement puisqu il ne parcourt jamais le corps lui-meme.                          }
+    For I := 0 To FuncDefCount - 1 Do
+      If FuncDefPool[I].Name = Nam Then
+      Begin
+        FuncDefPool[I].TypeIdx        := FT;
+        FuncDefPool[I].BodyStmtIdx    := BodyIdx;
+        FuncDefPool[I].LocalFrameSize := -CurLocalOffset;
+        Break;
+      End;
   End;
 End;
 
@@ -7166,14 +8482,3648 @@ Begin
   ExprInit; StmtInit; SymInit; FuncDefInit; MethodDefInit;
 End;
 
-Procedure Run;
-Begin
-  ErrorCount := 0;
-  WarnCount  := 0;
-  TotalLines := 0;
-  OutFOpen   := False;
-  LexOpened  := False;
+{ ============================================================ }
+{ TODO 13 - POINTEURS ET GESTION MEMOIRE                        }
+{ ============================================================ }
+{ La plupart des mecanismes de ce TODO existaient DEJA, construits           }
+{ comme prealables necessaires a des TODO anterieurs : &x/*p (EK_ADDR/            }
+{ EK_DEREF, TODO 06), new(T) (ParseNewOrMake, TODO 08), dereferencement                }
+{ implicite pour "p.Champ" (ResolveSelectorType, TODO 09). Le vrai                        }
+{ travail NEUF ici est double : (1) etendre la MEME regle de                                  }
+{ dereferencement implicite, jusqu ici limitee au selecteur de champ,                            }
+{ a l indexation/tranchage/for-range (un p de type *[N]T ou *[]T doit                               }
+{ se comporter EXACTEMENT comme [N]T/[]T pour "p[i]", "p[a:b]" et                                       }
+{ "range p") via un nouvel helper centralise DerefIfPointer, et (2)                                        }
+{ documenter EXPLICITEMENT les deux non-fonctionnalites du roadmap                                            }
+{ ("Pas de veritable GC" / "Pas d'arithmetique de pointeurs") comme des                                          }
+{ ABSENCES DELIBEREES plutot que des oublis :                                                                       }
+{   - GC : le tas grandira via HeapAlloc/VirtualAlloc Win32 (TODO 23)               }
+{     SANS aucun recyclage automatique - limitation documentee des le                    }
+{     depart, dans la continuite des autres compilateurs de ce projet               }
+{     (aucun d entre eux n implemente de GC reel non plus).                                }
+{   - Arithmetique de pointeurs : ce compilateur n a JAMAIS ajoute + / -        }
+{     comme operateurs valides sur un TypeIdx TYK_POINTER (contrairement             }
+{     a C) - simple ABSENCE de code plutot qu un rejet actif ; le              }
+{     package "unsafe" (seul endroit ou l arithmetique de pointeurs                    }
+{     aurait un sens en Go reel) reste totalement hors de portee.                        }
 
+{ ------------------------------------------------------------ }
+{ PointerSelfTest : &x/*p, pointeur vers pointeur (**T), new(T)     }
+{ pour un type predeclare/struct/slice, comparaison a nil,             }
+{ auto-dereference pour le champ ET l indexation ET le for-range,          }
+{ affectation A TRAVERS un pointeur ("*p = valeur").                       }
+{ ------------------------------------------------------------ }
+
+Procedure PointerAssert(Const Label_: TString; Cond: Boolean);
+Begin
+  If Not Cond Then
+    FatalError('PointerSelfTest: ' + Label_ + ' a echoue');
+End;
+
+Procedure PointerSelfTest;
+Var
+  TIdx, SI, E, N : Integer;
+Begin
+  ExprInit; StmtInit; SymInit; TypeInit; FuncDefInit; MethodDefInit;
+
+  { &x et *p, types associes }
+  SymAdd('x', SK_VAR, PDT_INT);
+  E := ExprParseString('&x');
+  PointerAssert('&x est EK_ADDR', ExprPool[E].Kind = EK_ADDR);
+  PointerAssert('&x : TypeIdx est un pointeur vers int',
+    (TypeTab[ExprPool[E].TypeIdx].Kind = TYK_POINTER) And
+    (TypeTab[ExprPool[E].TypeIdx].ElemTypeIdx = PDT_INT));
+
+  SymAdd('p', SK_VAR, TypeAdd(TYK_POINTER, '', 4, 4, False, PDT_INT, -1));
+  E := ExprParseString('*p');
+  PointerAssert('*p est EK_DEREF', ExprPool[E].Kind = EK_DEREF);
+  PointerAssert('*p : TypeIdx = int (type pointe)', ExprPool[E].TypeIdx = PDT_INT);
+
+  { pointeur vers pointeur : **T }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  FuncParseTopLevel('package main' + Chr(10) + 'var PP **int');
+  SI := SymFind('PP');
+  PointerAssert('PP declaree', SI >= 0);
+  TIdx := SymTab[SI].TypeIdx;
+  PointerAssert('PP : TYK_POINTER (exterieur)', TypeTab[TIdx].Kind = TYK_POINTER);
+  PointerAssert('PP : element est aussi TYK_POINTER',
+    TypeTab[TypeTab[TIdx].ElemTypeIdx].Kind = TYK_POINTER);
+  PointerAssert('PP : pointeur-vers-pointeur-vers-int',
+    TypeTab[TypeTab[TIdx].ElemTypeIdx].ElemTypeIdx = PDT_INT);
+
+  { new(T) pour un type predeclare ET pour un type struct nomme }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  E := ExprParseString('new(int)');
+  PointerAssert('new(int) : pointeur vers int',
+    (TypeTab[ExprPool[E].TypeIdx].Kind = TYK_POINTER) And
+    (TypeTab[ExprPool[E].TypeIdx].ElemTypeIdx = PDT_INT));
+
+  SI := TypeAdd(TYK_STRUCT, 'Point', 8, 4, False, -1, -1);
+  SymAdd('Point', SK_TYPE, SI);
+  E := ExprParseString('new(Point)');
+  PointerAssert('new(Point) : pointeur vers Point',
+    (TypeTab[ExprPool[E].TypeIdx].Kind = TYK_POINTER) And
+    (TypeTab[ExprPool[E].TypeIdx].ElemTypeIdx = SI));
+
+  { comparaison a nil }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  SymAdd('p', SK_VAR, TypeAdd(TYK_POINTER, '', 4, 4, False, PDT_INT, -1));
+  E := ExprParseString('p == nil');
+  PointerAssert('p == nil : type bool', ExprPool[E].TypeIdx = PDT_BOOL);
+
+  { auto-dereference pour l INDEXATION : p de type *[5]int, "p[0]"      }
+  { doit se comporter comme "(*p)[0]" (TypeIdx = int, pas [5]int).             }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  TIdx := TypeAdd(TYK_ARRAY, '', 20, 4, False, PDT_INT, -1);
+  TypeTab[TIdx].ArrayLen := 5;
+  SymAdd('p', SK_VAR, TypeAdd(TYK_POINTER, '', 4, 4, False, TIdx, -1));
+  E := ExprParseString('p[0]');
+  PointerAssert('p[0] via *[5]int : TypeIdx = int (auto-deref)',
+    ExprPool[E].TypeIdx = PDT_INT);
+
+  { auto-dereference pour le TRANCHAGE : "p[1:2]" sur *[5]int doit      }
+  { produire un SLICE ([]int), pas rester un tableau ([5]int).                }
+  E := ExprParseString('p[1:2]');
+  PointerAssert('p[1:2] via *[5]int : resultat TYK_SLICE (pas TYK_ARRAY)',
+    TypeTab[ExprPool[E].TypeIdx].Kind = TYK_SLICE);
+  PointerAssert('p[1:2] : element du slice resultant = int',
+    TypeTab[ExprPool[E].TypeIdx].ElemTypeIdx = PDT_INT);
+
+  { tranchage direct (SANS pointeur) d un tableau fixe : meme regle,    }
+  { verifie le bogue mineur corrige au passage (avant TODO 13, cette             }
+  { branche recopiait le TypeIdx du tableau tel quel, TYK_ARRAY au lieu             }
+  { de TYK_SLICE). }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  TIdx := TypeAdd(TYK_ARRAY, '', 20, 4, False, PDT_INT, -1);
+  TypeTab[TIdx].ArrayLen := 5;
+  SymAdd('arr', SK_VAR, TIdx);
+  E := ExprParseString('arr[1:2]');
+  PointerAssert('arr[1:2] (tableau direct) : resultat TYK_SLICE',
+    TypeTab[ExprPool[E].TypeIdx].Kind = TYK_SLICE);
+
+  { auto-dereference pour le FOR-RANGE : "for i, v := range p" sur un   }
+  { p de type *[3]int doit donner a v le vrai type int (pas [3]int).           }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  FuncParseTopLevel('package main' + Chr(10) +
+    'func F(p *[3]int) {' + Chr(10) +
+    '	for i, v := range p {' + Chr(10) +
+    '		_ = i' + Chr(10) + '		_ = v' + Chr(10) + '	}' + Chr(10) + '}');
+  PointerAssert('for-range sur *[3]int analyse sans erreur (auto-deref)',
+    ErrorCount = 0);
+
+  { affectation A TRAVERS un pointeur : "*p = 42" }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  SymAdd('p', SK_VAR, TypeAdd(TYK_POINTER, '', 4, 4, False, PDT_INT, -1));
+  N := StmtParseString('*p = 42');
+  PointerAssert('*p = 42 est STK_ASSIGN', StmtPool[N].Kind = STK_ASSIGN);
+
+  { auto-dereference pour l ACCES A UN CHAMP (deja construit au TODO      }
+  { 09, revalide ici pour completude du theme "pointeurs") }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  FuncParseTopLevel('package main' + Chr(10) +
+    'type Animal struct {' + Chr(10) + '	Nom string' + Chr(10) + '}' + Chr(10) +
+    'func F(p *Animal) string {' + Chr(10) + '	return p.Nom' + Chr(10) + '}');
+  PointerAssert('p.Nom via *Animal analyse sans erreur (auto-deref, TODO 09)',
+    ErrorCount = 0);
+
+  { re-initialise les tables globales pour ne pas polluer Run reel }
+  ExprInit; StmtInit; SymInit; FuncDefInit; MethodDefInit;
+End;
+
+{ ============================================================ }
+{ TODO 14 - CHAINES, RUNES ET UTF-8                             }
+{ ============================================================ }
+{ string (sequence d octets IMMUABLE) et rune/byte (alias de int32/       }
+{ uint8) existent DEJA depuis le TODO 04 - la vraie nouveaute ici est          }
+{ triple : (1) LexDecodeUTF8, un decodage UTF-8 minimal (1 a 4 octets)               }
+{ qui remplace la simplification documentee depuis le TODO 02 (un                       }
+{ caractere non-ASCII ecrit directement dans un litteral rune ne lisait                    }
+{ auparavant que son premier octet) ; (2) for-range sur une string                             }
+{ (cle=PDT_INT en octets, valeur=PDT_RUNE) ; (3) les conversions de                                }
+{ type explicites "T(x)" en general (motivees par string([]byte)/                                    }
+{ []byte(string)/[]rune(string)/etc. du roadmap, mais implementees SANS                                  }
+{ distinction pour toute paire de types - "int(x)"/"MyType(x)" suivent                                      }
+{ la meme grammaire Go). Concatenation +/comparaison lexicographique/                                          }
+{ len(s) en octets/chaines brutes existaient deja tels quels (TODO 02/                                            }
+{ 05/06/11) - aucun changement necessaire, la SEMANTIQUE D EXECUTION                                                  }
+{ (comparaison octet-a-octet reelle, decodage UTF-8 au moment du                                                        }
+{ for-range reel) restant un sujet de generation de code (TODO 21+),                                                       }
+{ meme discipline que tous les TODO precedents depuis le TODO 08.                                                             }
+
+{ ------------------------------------------------------------ }
+{ StringSelfTest : decodage UTF-8 direct (2 et 3 octets) dans un      }
+{ litteral rune, for-range sur une string (cle=int, valeur=rune),        }
+{ conversions de type "T(x)" (predeclare, slice-vers-string et              }
+{ inverse, type nomme utilisateur).                                              }
+{ ------------------------------------------------------------ }
+
+Procedure StringAssert(Const Label_: TString; Cond: Boolean);
+Begin
+  If Not Cond Then
+    FatalError('StringSelfTest: ' + Label_ + ' a echoue');
+End;
+
+Procedure StringSelfTest;
+Var
+  SI, E : Integer;
+  Src : TString;
+Begin
+  ExprInit; StmtInit; SymInit; TypeInit; FuncDefInit; MethodDefInit;
+
+  { litteral rune avec un caractere UTF-8 direct sur 2 octets : 'e     }
+  { accent aigu' (U+00E9) code en UTF-8 comme les octets $C3 $A9. }
+  Src := Chr(39) + Chr($C3) + Chr($A9) + Chr(39);
+  E := ExprParseString(Src);
+  StringAssert('rune UTF-8 2 octets (U+00E9) : IntVal = 233',
+    ExprPool[E].IntVal = 233);
+
+  { litteral rune avec un caractere UTF-8 direct sur 3 octets :        }
+  { U+65E5 ("jour" en japonais) code en UTF-8 comme $E6 $97 $A5. }
+  Src := Chr(39) + Chr($E6) + Chr($97) + Chr($A5) + Chr(39);
+  E := ExprParseString(Src);
+  StringAssert('rune UTF-8 3 octets (U+65E5) : IntVal = 26085',
+    ExprPool[E].IntVal = 26085);
+
+  { for-range sur une string : cle=int (offset octet), valeur=rune }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  FuncParseTopLevel('package main' + Chr(10) +
+    'func F(s string) {' + Chr(10) +
+    '	for i, r := range s {' + Chr(10) +
+    '		_ = i' + Chr(10) + '		_ = r' + Chr(10) + '	}' + Chr(10) + '}');
+  StringAssert('for-range sur string analyse sans erreur', ErrorCount = 0);
+
+  { conversions de type "T(x)" }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  SymAdd('x', SK_VAR, PDT_INT);
+  E := ExprParseString('float64(x)');
+  StringAssert('float64(x) est EK_CONVERT', ExprPool[E].Kind = EK_CONVERT);
+  StringAssert('float64(x) : TypeIdx = float64', ExprPool[E].TypeIdx = PDT_FLOAT64);
+
+  SymAdd('bs', SK_VAR, TypeAdd(TYK_SLICE, '', 12, 4, False, PDT_UINT8, -1));
+  E := ExprParseString('string(bs)');
+  StringAssert('string(bs) est EK_CONVERT', ExprPool[E].Kind = EK_CONVERT);
+  StringAssert('string(bs) : TypeIdx = string', ExprPool[E].TypeIdx = PDT_STRING);
+
+  SymAdd('s', SK_VAR, PDT_STRING);
+  E := ExprParseString('[]byte(s)');
+  StringAssert('[]byte(s) est EK_CONVERT', ExprPool[E].Kind = EK_CONVERT);
+  StringAssert('[]byte(s) : TypeIdx TYK_SLICE d octets',
+    (TypeTab[ExprPool[E].TypeIdx].Kind = TYK_SLICE) And
+    (TypeResolveAlias(TypeTab[ExprPool[E].TypeIdx].ElemTypeIdx) = PDT_UINT8));
+
+  E := ExprParseString('[]rune(s)');
+  StringAssert('[]rune(s) est EK_CONVERT', ExprPool[E].Kind = EK_CONVERT);
+
+  { conversion vers un type NOMME utilisateur : "type Celsius float64" }
+  SI := TypeAdd(TYK_FLOAT, 'Celsius', 8, 4, False, -1, -1);
+  SymAdd('Celsius', SK_TYPE, SI);
+  E := ExprParseString('Celsius(x)');
+  StringAssert('Celsius(x) est EK_CONVERT', ExprPool[E].Kind = EK_CONVERT);
+  StringAssert('Celsius(x) : TypeIdx = Celsius', ExprPool[E].TypeIdx = SI);
+
+  { un nom predeclare masque localement N EST PLUS traite comme un      }
+  { type - "var int = 5" puis "int" seul reste un IDENTIFIANT ordinaire.   }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  SymAdd('int', SK_VAR, PDT_INT);
+  E := ExprParseString('int');
+  StringAssert('"int" masque localement reste EK_IDENT (pas une conversion)',
+    ExprPool[E].Kind = EK_IDENT);
+
+  { re-initialise les tables globales pour ne pas polluer Run reel }
+  ExprInit; StmtInit; SymInit; FuncDefInit; MethodDefInit;
+End;
+
+{ ============================================================ }
+{ TODO 15 - GOROUTINES ET CANAUX (MODELE DE CONCURRENCE SIMPLIFIE) }
+{ ============================================================ }
+{ DECISION A FIGER (exigee explicitement par le roadmap lui-meme) :      }
+{ MODELE COOPERATIF SIMPLIFIE, PAS des vrais threads Win32 (CreateThread).      }
+{ Justification, pour reference future (TODO 21-23, ou cette decision              }
+{ prendra reellement effet - aucun code executable n existe encore) :                 }
+{   - Un vrai ordonnanceur M:N (comme le runtime Go reel) est hors de                    }
+{     portee par construction (deja exclu par le roadmap lui-meme,                         }
+{     "sans support d un vrai ordonnanceur preemptif dans ce compilateur").                    }
+{   - Entre les deux options RESTANTES (cooperatif vs 1 thread Win32 reel                        }
+{     par goroutine), le modele cooperatif est retenu car il evite toute                            }
+{     synchronisation OS reelle (sections critiques, mutex Win32) pour la                              }
+{     grande majorite des cas - un seul thread d execution, les                                           }
+{     goroutines cedent explicitement le controle SEULEMENT aux points de                                     }
+{     blocage reels de Go (envoi/reception de canal, "select" bloquant) -                                        }
+{     coherent avec la discipline de simplification DEJA appliquee partout                                          }
+{     ailleurs dans ce projet (pas de vrai GC, pas de vraie itable Go                                                   }
+{     complete, TODO 10, etc.).                                                                                            }
+{   - Contrepartie ACCEPTEE : un vrai parallelisme MULTI-CŒUR n est pas                                                       }
+{     reproduit (toutes les "goroutines" s executent en serie, jamais                                                            }
+{     simultanement) - documente comme limitation, sans consequence pour                                                            }
+{     des programmes Go CORRECTS qui utilisent les canaux pour la                                                                       }
+{     SYNCHRONISATION (et non pour esperer un vrai gain de performance                                                                     }
+{     par parallelisme, hors de portee de toute facon pour un compilateur                                                                     }
+{     de cette envergure).                                                                                                                       }
+{ CONSEQUENCE CONCRETE pour CE TODO (analyse/syntaxe uniquement, aucun                       }
+{ codegen n existe encore) : aucune primitive de synchronisation Win32                          }
+{ (section critique, mutex, WaitGroup) n est necessaire ici - la clause                            }
+{ "sync minimal SEULEMENT si le modele a threads reels est retenu" du                                 }
+{ roadmap est donc SANS OBJET, exactement comme le roadmap l anticipait.                                 }
+
+{ ParseGoStmt : "go" Expression - lance une "goroutine" (analyse            }
+{ identique a "defer", TODO 08 : accepte N IMPORTE QUELLE expression              }
+{ sans verifier qu elle est reellement un appel - la regle Go reelle              }
+{ l exige, mais la verifier ici dupliquerait un travail qui appartient                }
+{ de toute facon au TODO 19, sans qu aucun code genere n existe pour lui               }
+{ donner un sens concret pour l instant).                                                }
+Function ParseGoStmt: Integer;
+Var N: Integer;
+Begin
+  PPAdvance;   { go }
+  N := StmtNew(STK_GO);
+  StmtPool[N].Left := ParseExpr;
+  ParseGoStmt := N;
+End;
+
+{ ParseChanType : "chan" (deja consomme par l appelant) suivi              }
+{ optionnellement de "<-" (envoi seulement, "chan<- T") puis du type           }
+{ d element - la forme "<-chan T" (reception seulement) est geree            }
+{ SEPAREMENT par ParseTypeExpr (le "<-" y precede "chan" au lieu de le             }
+{ suivre). Represente comme un simple pointeur (4 octets) vers une                 }
+{ structure de canal runtime, meme convention que map/slice/interface                 }
+{ (la representation memoire EXACTE est un sujet de generation de code,                 }
+{ TODO 21+).                                                                              }
+Function ParseChanType: Integer;
+Var ElemT, NewIdx : Integer;
+Begin
+  PPMatch('<-');
+  ElemT := ParseTypeExpr;
+  NewIdx := TypeAdd(TYK_CHAN, '', 4, 4, False, ElemT, -1);
+  ParseChanType := NewIdx;
+End;
+
+{ ParseSelectCaseClause : UNE clause "case" de select - son en-tete       }
+{ DOIT etre soit un ENVOI (STK_SEND, "ch <- v"), soit une RECEPTION              }
+{ (une expression EK_RECV nue "<-ch", ou affectee/declaree via "v :=            }
+{ <-ch"/"v, ok := <-ch") - ParseSimpleStmt (TODO 07, deja generique)              }
+{ suffit a TOUT parser correctement ; cette fonction se contente de                  }
+{ VERIFIER APRES COUP que le resultat a bien l une de ces deux formes,                  }
+{ rejetant tout le reste (Go n autorise RIEN d autre en tete de "case"               }
+{ de select). Reutilise CaseClausePool (TODO 07) comme le switch, mais                  }
+{ via son nouveau champ HeaderStmt plutot que ExprFirst/ExprCount (qui                  }
+{ n ont pas de sens ici : un select n a pas de "valeurs de case", juste                  }
+{ UNE operation de canal par clause).                                                       }
+{ TODO 21 : BodyStart/BodyCnt souffrent du MEME bogue d entrelacement    }
+{ que ParseBlock/ParseCaseClause (voir leurs propres notes) - corrige avec  }
+{ le MEME remede (tampon local puis push en bloc). }
+Function ParseSelectCaseClause: Integer;
+Const MAX_SELECTBODY_BUF = 128;
+Var
+  C, BodyStart, BodyCnt, SIdx, HeaderStmt, FirstArgIdx, I : Integer;
+  IsDefault, HeaderOk : Boolean;
+  BodyBuf : Array[0..MAX_SELECTBODY_BUF - 1] Of Integer;
+Begin
+  SymEnterScope;
+  IsDefault := False;
+  HeaderStmt := -1;
+
+  If PPMatch('case') Then
+  Begin
+    HeaderStmt := ParseSimpleStmt;
+    HeaderOk := StmtPool[HeaderStmt].Kind = STK_SEND;
+    If (Not HeaderOk) And (StmtPool[HeaderStmt].Kind = STK_EXPR) Then
+      HeaderOk := ExprPool[StmtPool[HeaderStmt].Left].Kind = EK_RECV;
+    If (Not HeaderOk) And ((StmtPool[HeaderStmt].Kind = STK_SHORTVAR) Or
+       (StmtPool[HeaderStmt].Kind = STK_ASSIGN)) And
+       (StmtPool[HeaderStmt].ArgCount >= 1) Then
+    Begin
+      FirstArgIdx := StmtPool[HeaderStmt].ArgFirst;
+      HeaderOk := ExprPool[StmtArgPool2[FirstArgIdx]].Kind = EK_RECV;
+    End;
+    If Not HeaderOk Then
+      FatalError('en-tete de "case" de "select" invalide (un envoi ou ' +
+        'une reception de canal est attendu)');
+  End
+  Else If PPMatch('default') Then
+    IsDefault := True
+  Else
+    FatalError('"case" ou "default" attendu dans "select"');
+
+  If Not PPMatch(':') Then
+    FatalError('":" attendu apres "case"/"default"');
+
+  PPSkipSemis;
+  BodyCnt := 0;
+  While (Not PPAtEnd) And (Not PPIsOp('}')) And
+        (Not ((PPKind = TOK_IDENT) And ((PPVal = 'case') Or (PPVal = 'default')))) Do
+  Begin
+    SIdx := ParseStatement;
+    If BodyCnt < MAX_SELECTBODY_BUF Then
+    Begin
+      BodyBuf[BodyCnt] := SIdx;
+      Inc(BodyCnt);
+    End
+    Else
+      WarnMsg('corps de "case" (select) trop grand pour le tampon local (MAX_SELECTBODY_BUF), TODO 21');
+    PPSkipSemis;
+  End;
+
+  SymLeaveScope;
+
+  BodyStart := StmtArgCount;
+  For I := 0 To BodyCnt - 1 Do
+    StmtArgPush(BodyBuf[I], -1, '');
+
+  C := CaseClauseNew;
+  CaseClausePool[C].IsDefault  := IsDefault;
+  CaseClausePool[C].HeaderStmt := HeaderStmt;
+  CaseClausePool[C].BodyFirst  := BodyStart;
+  CaseClausePool[C].BodyCount  := BodyCnt;
+  ParseSelectCaseClause := C;
+End;
+
+{ ParseSelectStmt : mot-cle "select", accolade ouvrante, une ou            }
+{ plusieurs clauses case/default, accolade fermante - structurellement           }
+{ un "switch" sans tag ni Init (TODO 07) dont chaque clause a une                }
+{ grammaire d en-tete differente (imposee par ParseSelectCaseClause               }
+{ ci-dessus) plutot qu une liste d expressions - reutilise donc                        }
+{ CaseClausePool de la meme facon (ArgFirst/ArgCount = plage de                            }
+{ clauses).                                                                                }
+Function ParseSelectStmt: Integer;
+Var N, ArgStart, Cnt : Integer;
+Begin
+  PPAdvance;   { select }
+  If Not PPMatch('{') Then
+    FatalError('accolade ouvrante attendue apres "select"');
+  PPSkipSemis;
+
+  ArgStart := CaseClauseCount;
+  Cnt := 0;
+  While (Not PPAtEnd) And (Not PPIsOp('}')) Do
+  Begin
+    ParseSelectCaseClause;
+    Inc(Cnt);
+  End;
+  If Not PPMatch('}') Then
+    FatalError('accolade fermante attendue a la fin du "select"');
+
+  N := StmtNew(STK_SELECT);
+  StmtPool[N].ArgFirst := ArgStart;
+  StmtPool[N].ArgCount := Cnt;
+  ParseSelectStmt := N;
+End;
+
+{ ------------------------------------------------------------ }
+{ ChannelSelfTest : type canal (bidirectionnel + les deux formes    }
+{ directionnelles), make(chan T[, Cap]), envoi, reception,             }
+{ comma-ok reception, close(ch), instruction go, select avec               }
+{ envoi/reception/comma-ok/default.                                            }
+{ ------------------------------------------------------------ }
+
+Procedure ChannelAssert(Const Label_: TString; Cond: Boolean);
+Begin
+  If Not Cond Then
+    FatalError('ChannelSelfTest: ' + Label_ + ' a echoue');
+End;
+
+Procedure ChannelSelfTest;
+Var
+  TIdx, SI, E, N, C0 : Integer;
+Begin
+  ExprInit; StmtInit; SymInit; TypeInit; FuncDefInit; MethodDefInit;
+
+  { type canal bidirectionnel }
+  FuncParseTopLevel('package main' + Chr(10) + 'var Ch chan int');
+  SI := SymFind('Ch');
+  ChannelAssert('Ch declaree', SI >= 0);
+  TIdx := SymTab[SI].TypeIdx;
+  ChannelAssert('Ch : TYK_CHAN', TypeTab[TIdx].Kind = TYK_CHAN);
+  ChannelAssert('Ch : element int', TypeTab[TIdx].ElemTypeIdx = PDT_INT);
+
+  { formes directionnelles : "<-chan int" et "chan<- int" }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  FuncParseTopLevel('package main' + Chr(10) +
+    'var RecvOnly <-chan int' + Chr(10) + 'var SendOnly chan<- int');
+  SI := SymFind('RecvOnly');
+  ChannelAssert('RecvOnly : TYK_CHAN (direction non conservee)',
+    TypeTab[SymTab[SI].TypeIdx].Kind = TYK_CHAN);
+  SI := SymFind('SendOnly');
+  ChannelAssert('SendOnly : TYK_CHAN (direction non conservee)',
+    TypeTab[SymTab[SI].TypeIdx].Kind = TYK_CHAN);
+
+  { make(chan int) et make(chan int, 10) }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  E := ExprParseString('make(chan int)');
+  ChannelAssert('make(chan int) : TypeIdx TYK_CHAN',
+    TypeTab[ExprPool[E].TypeIdx].Kind = TYK_CHAN);
+  E := ExprParseString('make(chan int, 10)');
+  ChannelAssert('make(chan int, 10) : 1 argument (Cap)', ExprPool[E].ArgCount = 1);
+
+  { envoi et reception }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  SymAdd('ch', SK_VAR, TypeAdd(TYK_CHAN, '', 4, 4, False, PDT_INT, -1));
+  N := StmtParseString('ch <- 5');
+  ChannelAssert('ch <- 5 est STK_SEND', StmtPool[N].Kind = STK_SEND);
+
+  E := ExprParseString('<-ch');
+  ChannelAssert('<-ch est EK_RECV', ExprPool[E].Kind = EK_RECV);
+  ChannelAssert('<-ch : TypeIdx = int (element du canal)',
+    ExprPool[E].TypeIdx = PDT_INT);
+
+  { comma-ok reception : v, ok := <-ch }
+  N := StmtParseString('v, ok := <-ch');
+  ChannelAssert('v, ok := <-ch est STK_SHORTVAR', StmtPool[N].Kind = STK_SHORTVAR);
+  ChannelAssert('comma-ok reception : 2 entrees', StmtPool[N].ArgCount = 2);
+  SI := SymFind('v');
+  ChannelAssert('v : type int (element du canal)',
+    (SI >= 0) And (SymTab[SI].TypeIdx = PDT_INT));
+  SI := SymFind('ok');
+  ChannelAssert('ok : type bool', (SI >= 0) And (SymTab[SI].TypeIdx = PDT_BOOL));
+
+  { close(ch) }
+  E := ExprParseString('close(ch)');
+  ChannelAssert('close(ch) est EK_CALL', ExprPool[E].Kind = EK_CALL);
+
+  { instruction go }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  FuncParseTopLevel('package main' + Chr(10) +
+    'func Worker() {' + Chr(10) + '}' + Chr(10) +
+    'func F() {' + Chr(10) + '	go Worker()' + Chr(10) + '}');
+  ChannelAssert('go Worker() analyse sans erreur', ErrorCount = 0);
+
+  { select avec envoi/reception/comma-ok/default }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  FuncParseTopLevel('package main' + Chr(10) +
+    'func F(ch1, ch2 chan int) {' + Chr(10) +
+    '	select {' + Chr(10) +
+    '	case v := <-ch1:' + Chr(10) + '		_ = v' + Chr(10) +
+    '	case ch2 <- 1:' + Chr(10) +
+    '	case v2, ok := <-ch1:' + Chr(10) +
+    '		_ = v2' + Chr(10) + '		_ = ok' + Chr(10) +
+    '	default:' + Chr(10) + '	}' + Chr(10) + '}');
+  ChannelAssert('select a 4 branches analyse sans erreur', ErrorCount = 0);
+
+  N := StmtParseString('select {' + Chr(10) +
+    'case v := <-ch:' + Chr(10) + '	_ = v' + Chr(10) +
+    'default:' + Chr(10) + '}');
+  ChannelAssert('select est STK_SELECT', StmtPool[N].Kind = STK_SELECT);
+  ChannelAssert('select : 2 clauses', StmtPool[N].ArgCount = 2);
+  C0 := StmtPool[N].ArgFirst;
+  ChannelAssert('1ere clause : pas "default"', Not CaseClausePool[C0].IsDefault);
+  ChannelAssert('1ere clause : HeaderStmt resolu', CaseClausePool[C0].HeaderStmt >= 0);
+  ChannelAssert('2e clause : "default"', CaseClausePool[C0 + 1].IsDefault);
+
+  { re-initialise les tables globales pour ne pas polluer Run reel }
+  ExprInit; StmtInit; SymInit; FuncDefInit; MethodDefInit;
+End;
+
+{ ============================================================ }
+{ TODO 16 - DEFER, PANIC ET RECOVER                             }
+{ ============================================================ }
+{ Le plus etroit des TODO de ce fichier jusqu ici en termes de code            }
+{ NEUF : "defer" existe DEJA depuis le TODO 08 (STK_DEFER, accepte                 }
+{ n importe quelle expression sans verifier qu elle est un appel,                    }
+{ exactement la meme portee que "go" au TODO 15) ; "panic(v)"/                             }
+{ "recover()" sont DEJA des identificateurs predeclares classifies                        }
+{ comme fonctions integrees depuis le TODO 03 (BI_PANIC/BI_RECOVER) et                       }
+{ n ont, syntaxiquement, RIEN de special par rapport a un appel                                 }
+{ ordinaire ("panic(x)" est deja parse comme "len(x)" ou "close(ch)"                               }
+{ l ont toujours ete) - seule l INFERENCE DE TYPE de "recover()"                                      }
+{ (retourne "any", comme la valeur passee a panic) manquait reellement.                                  }
+{                                                                          }
+{ TOUT le reste du roadmap de ce TODO est un sujet D EXECUTION pure,          }
+{ explicitement hors de portee de l analyse/du parsing tant qu aucun               }
+{ backend n existe (TODO 21+/23), meme discipline que le modele de                     }
+{ concurrence du TODO 15, la semantique valeur/reference du TODO 11, et                   }
+{ l absence de GC du TODO 13 :                                                              }
+{   - La pile de defer PAR APPEL et son deroulement LIFO (normal OU par            }
+{     panique) n existent qu au moment ou une fonction s execute                          }
+{     REELLEMENT - rien a construire ici sans generateur de code.                              }
+{   - Le deroulement de pile par panic() (executer chaque defer traverse            }
+{     jusqu a un recover(), sinon jusqu au sommet avec code de sortie                     }
+{     non nul) est un mecanisme runtime a part entiere (_GORT_, TODO 23).                    }
+{   - Les 5 paniques RUNTIME IMPLICITES du roadmap (indice hors bornes,                  }
+{     dereference de pointeur nil, assertion de type ratee, division                        }
+{     entiere par zero, envoi sur canal ferme) necessitent chacune une                         }
+{     VERIFICATION generee AU POINT D UTILISATION (ex. une comparaison                             }
+{     avant chaque acces indexe) - impossible a emettre sans generateur                               }
+{     de code ; la SEULE de ces 5 verifications deja possible AVANT tout               }
+{     backend est la division par une constante ZERO connue au moment                     }
+{     de la compilation, deja detectee par ConstEvalBinOp depuis le                          }
+{     TODO 05 (une expression comme "1/0" est deja un vrai echec de                            }
+{     compilation, pas une panique a l execution qui n existe pas encore).                        }
+{   - La validite de recover() (n a d effet que si appelee directement                  }
+{     depuis une fonction differee en cours de deroulement de panique)                         }
+{     est elle-meme une propriete D EXECUTION, pas une propriete                                  }
+{     STATIQUE du code environnant - meme le vrai compilateur Go ne le                            }
+{     rejette PAS a la compilation (un recover() hors contexte est un                             }
+{     simple no-op silencieux a l execution) ; aucune verification a                              }
+{     ajouter ici, ni maintenant ni au TODO 19.                                                       }
+
+{ ------------------------------------------------------------ }
+{ DeferPanicSelfTest : plusieurs defer dans une fonction (ordre            }
+{ textuel de declaration, LIFO reste un sujet d execution),               }
+{ panic(v), recover() et son type "any", et l idiome CANONIQUE               }
+{ Go "recover et convertir en erreur" via une fermeture differee               }
+{ qui modifie un RESULTAT NOMME de la fonction englobante.                       }
+{ ------------------------------------------------------------ }
+
+Procedure DeferPanicAssert(Const Label_: TString; Cond: Boolean);
+Begin
+  If Not Cond Then
+    FatalError('DeferPanicSelfTest: ' + Label_ + ' a echoue');
+End;
+
+Procedure DeferPanicSelfTest;
+Var
+  E : Integer;
+Begin
+  ExprInit; StmtInit; SymInit; TypeInit; FuncDefInit; MethodDefInit;
+
+  { recover() : type "any" }
+  E := ExprParseString('recover()');
+  DeferPanicAssert('recover() est EK_CALL', ExprPool[E].Kind = EK_CALL);
+  DeferPanicAssert('recover() : TypeIdx = any', ExprPool[E].TypeIdx = PDT_ANY);
+
+  { panic(v) : appel ordinaire, aucune inference speciale attendue }
+  SymAdd('v', SK_VAR, PDT_STRING);
+  E := ExprParseString('panic(v)');
+  DeferPanicAssert('panic(v) est EK_CALL', ExprPool[E].Kind = EK_CALL);
+  DeferPanicAssert('panic(v) : 1 argument', ExprPool[E].ArgCount = 1);
+
+  { plusieurs defer + panic dans une meme fonction }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  FuncParseTopLevel('package main' + Chr(10) +
+    'func F(fail bool) {' + Chr(10) +
+    '	defer Close1()' + Chr(10) +
+    '	defer Close2()' + Chr(10) +
+    '	if fail {' + Chr(10) + '		panic("erreur")' + Chr(10) + '	}' + Chr(10) +
+    '}');
+  DeferPanicAssert('plusieurs defer + panic analyses sans erreur', ErrorCount = 0);
+
+  { idiome canonique : recover() dans une fermeture differee QUI MODIFIE  }
+  { un RESULTAT NOMME de la fonction englobante ("named return" +               }
+  { fermeture, TODO 08) - LE pattern Go standard de conversion d une                  }
+  { panique en erreur retournee normalement par la fonction.                              }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  FuncParseTopLevel('package main' + Chr(10) +
+    'func Safe() (err error) {' + Chr(10) +
+    '	defer func() {' + Chr(10) +
+    '		if r := recover(); r != nil {' + Chr(10) +
+    '			err = r' + Chr(10) +
+    '		}' + Chr(10) +
+    '	}()' + Chr(10) +
+    '	panic("boom")' + Chr(10) +
+    '}');
+  DeferPanicAssert('idiome recover-vers-erreur analyse sans erreur '+
+    '(fermeture modifiant un resultat nomme)', ErrorCount = 0);
+
+  { re-initialise les tables globales pour ne pas polluer Run reel }
+  ExprInit; StmtInit; SymInit; FuncDefInit; MethodDefInit;
+End;
+
+{ ============================================================ }
+{ TODO 17 - INTERFACE ERROR ET IDIOME DE GESTION D ERREURS      }
+{ ============================================================ }
+{ "L idiome dominant" du roadmap lui-meme (retours multiples suivis          }
+{ d une verification immediate de l erreur) est explicitement decrit               }
+{ comme "une simple                                                                       }
+{ consequence des retours multiples (TODO 08) et des interfaces (TODO           }
+{ 10), pas un mecanisme special du langage" - et en verifiant si c etait                 }
+{ VRAIMENT deja le cas, un bogue REEL est apparu : "n, err := F()" (une                    }
+{ fonction a DEUX resultats, destructuree sur DEUX noms) ne poussait                          }
+{ auparavant qu UNE seule entree dans StmtArgPool (la boucle generique                          }
+{ "For I := 0 To VCount-1" ne fait qu UN tour quand VCount=1, meme si                               }
+{ TCount=2) tout en annoncant ArgCount=TCount=2 - "err" ne devenait                                    }
+{ JAMAIS une variable declaree. Invisible avant ce TODO car aucun test                                    }
+{ anterieur n avait exerce use fonction a plusieurs VRAIS resultats                                          }
+{ destructuree par ":="/"=" (TODO 08 ne testait que "return a, b" DANS                                          }
+{ une fonction, jamais la RECEPTION cote appelant). Corrige en donnant                                             }
+{ a EK_CALL un Extra=TypeIdx de la signature TYK_FUNC du callee (quand                                                 }
+{ resolue) et en ajoutant, dans ParseSimpleStmt, un troisieme cas                                                        }
+{ (parallele au comma-ok) qui detecte "UNE expression appelee, dont la                                                    }
+{ signature declaree a EXACTEMENT TCount resultats" et assigne a CHAQUE                                                       }
+{ nom le VRAI type de sa position - la meme correction beneficie aussi                                                            }
+{ a TOUTE fonction multi-retour, pas seulement a l idiome erreur.                                                                     }
+{                                                                          }
+{ Le reste de ce TODO complete l interface predeclaree "error" (deja               }
+{ un TYK_ERROR distinct depuis le TODO 04, mais SANS aucune methode              }
+{ enregistree avant ce point - la methode "Error" est desormais                       }
+{ synthetisee dans TypeInit) et reconnait par NOM QUALIFIE les deux                       }
+{ fonctions bibliotheque explicitement demandees ici (errors.New,                            }
+{ fmt.Errorf) - PAS le reste de fmt/errors, reserve au TODO 20. Le               }
+{ deballage errors.Is/errors.As et le verbe %w restent EXPLICITEMENT             }
+{ hors de portee (roadmap lui-meme) - %w n est de toute facon qu un               }
+{ detail de CONTENU d une chaine de format, jamais inspectee par ce                  }
+{ compilateur (une chaine de format est juste une TString ordinaire).                     }
+
+{ ------------------------------------------------------------ }
+{ ErrorSelfTest : err.Error() via l interface predeclaree, un       }
+{ type utilisateur satisfaisant structurellement "error" via sa          }
+{ propre methode Error(), errors.New/fmt.Errorf, et LE bogue           }
+{ corrige (retours multiples destructures, avec et sans le nom            }
+{ "err" specifiquement - la correction est generale).                       }
+{ ------------------------------------------------------------ }
+
+Procedure ErrorAssert(Const Label_: TString; Cond: Boolean);
+Begin
+  If Not Cond Then
+    FatalError('ErrorSelfTest: ' + Label_ + ' a echoue');
+End;
+
+Procedure ErrorSelfTest;
+Var
+  E, N, SI, TIdx, FT, RFirst2 : Integer;
+Begin
+  ExprInit; StmtInit; SymInit; TypeInit; FuncDefInit; MethodDefInit;
+
+  { err.Error() via l interface predeclaree "error" }
+  SymAdd('err', SK_VAR, PDT_ERROR);
+  E := ExprParseString('err.Error()');
+  ErrorAssert('err.Error() est EK_CALL', ExprPool[E].Kind = EK_CALL);
+  ErrorAssert('err.Error() : TypeIdx = string', ExprPool[E].TypeIdx = PDT_STRING);
+
+  { errors.New(msg) et fmt.Errorf(...) }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  E := ExprParseString('errors.New("echec")');
+  ErrorAssert('errors.New(...) : TypeIdx = error', ExprPool[E].TypeIdx = PDT_ERROR);
+  E := ExprParseString('fmt.Errorf("echec: %d", 42)');
+  ErrorAssert('fmt.Errorf(...) : TypeIdx = error', ExprPool[E].TypeIdx = PDT_ERROR);
+
+  { type utilisateur satisfaisant "error" via sa propre methode Error() }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  FuncParseTopLevel('package main' + Chr(10) +
+    'type MyError struct {' + Chr(10) + '	Msg string' + Chr(10) + '}' + Chr(10) +
+    'func (e *MyError) Error() string {' + Chr(10) +
+    '	return e.Msg' + Chr(10) + '}');
+  SI := SymFind('MyError');
+  ErrorAssert('MyError declaree', SI >= 0);
+  TIdx := SymTab[SI].TypeIdx;
+  ErrorAssert('MyError.Error() resolue via MethodFind (TODO 09)',
+    MethodFind(TIdx, 'Error') >= 0);
+
+  { LE bogue corrige : retours multiples destructures via ":=" ("n, err   }
+  { := F()", fonction a 2 resultats non nommes) - err DOIT devenir une            }
+  { variable REELLEMENT declaree avec le VRAI type error (le bogue la               }
+  { laissait totalement non declaree, seul "n" recevait une entree).                    }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  FT := TypeAdd(TYK_FUNC, '', 4, 4, False, -1, -1);
+  RFirst2 := FieldPoolCount;
+  FieldPoolAdd('', PDT_INT, False);
+  FieldPoolAdd('', PDT_ERROR, False);
+  TypeTab[FT].ResultFirst := RFirst2;
+  TypeTab[FT].ResultCount := 2;
+  SymAdd('F', SK_FUNC, FT);
+
+  N := StmtParseString('n, err := F()');
+  ErrorAssert('n, err := F() est STK_SHORTVAR', StmtPool[N].Kind = STK_SHORTVAR);
+  ErrorAssert('n, err := F() : 2 entrees (le bogue en laissait 1)',
+    StmtPool[N].ArgCount = 2);
+  SI := SymFind('n');
+  ErrorAssert('n declaree avec le type int',
+    (SI >= 0) And (SymTab[SI].TypeIdx = PDT_INT));
+  SI := SymFind('err');
+  ErrorAssert('err declaree avec le type error (LE bogue corrige)',
+    (SI >= 0) And (SymTab[SI].TypeIdx = PDT_ERROR));
+
+  { meme correction via l affectation simple "=" (noms deja declares) }
+  N := StmtParseString('n, err = F()');
+  ErrorAssert('n, err = F() est STK_ASSIGN', StmtPool[N].Kind = STK_ASSIGN);
+  ErrorAssert('n, err = F() : 2 entrees (le bogue en laissait 1)',
+    StmtPool[N].ArgCount = 2);
+
+  { idiome dominant complet du roadmap lui-meme, dans un contexte de       }
+  { fonction REEL (declaration + appel + verification de l erreur), pas         }
+  { juste des expressions isolees comme les tests precedents. }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  FuncParseTopLevel('package main' + Chr(10) +
+    'func F() (int, error) {' + Chr(10) +
+    '	return 0, nil' + Chr(10) + '}' + Chr(10) +
+    'func G() {' + Chr(10) +
+    '	n, err := F()' + Chr(10) +
+    '	if err != nil {' + Chr(10) + '		return' + Chr(10) + '	}' + Chr(10) +
+    '	_ = n' + Chr(10) + '}');
+  ErrorAssert('idiome dominant complet analyse sans erreur', ErrorCount = 0);
+
+  { re-initialise les tables globales pour ne pas polluer Run reel }
+  ExprInit; StmtInit; SymInit; FuncDefInit; MethodDefInit;
+End;
+
+{ ============================================================ }
+{ TODO 18 - PACKAGES ET IMPORTS (MODELE MONO-FICHIER SIMPLIFIE) }
+{ ============================================================ }
+{ Le plus etroit des TODO de ce fichier en termes de NOUVELLES               }
+{ constructions syntaxiques (aucune - "package"/"import" existent DEJA          }
+{ depuis le TODO 05, comme SkipImportDecl le documentait deja lui-meme :             }
+{ "la vraie resolution de package est le sujet du TODO 18") : ce TODO NE          }
+{ FAIT QUE DURCIR trois REGLES deja identifiees mais non appliquees                    }
+{ jusqu ici -                                                                              }
+{   1. "package main" devient OBLIGATOIRE (avant : n importe quel nom              }
+{      de package etait silencieusement accepte).                                            }
+{   2. Chaque import est verifie contre une TABLE FIXE de paquets                             }
+{      reellement cables (avant : SkipImportDecl avalait n importe quoi                  }
+{      sans jamais regarder le contenu de la chaine importee).                                   }
+{   3. "func main" devient OBLIGATOIRE - mais UNIQUEMENT sur le VRAI                                  }
+{      fichier source compile par la CLI (Run), PAS a l interieur de                                    }
+{      ParseFileTopLevel elle-meme, qui reste PARTAGEE par la quasi-                                        }
+{      totalite des auto-tests depuis le TODO 08 (chacun declarant ses                                        }
+{      propres fonctions de test, jamais nommees "main") - rendre cette                                          }
+{      regle obligatoire au niveau partage aurait fait Halt() la quasi-                                             }
+{      totalite des auto-tests existants de ce fichier.                                                                }
+{ La regle d EXPORT (majuscule = visible hors package) est fournie                            }
+{ (IsExported) mais reste SANS AUCUNE consequence pratique aujourd hui                          }
+{ (roadmap lui-meme) : ce compilateur est mono-fichier/mono-paquet, rien              }
+{ ne peut jamais etre "hors du package" pour de vrai ici.                                        }
+
+{ ------------------------------------------------------------ }
+{ PackageSelfTest : chemins d ACCEPTATION uniquement ("package main"      }
+{ + import(s) CONNU(S) analyses sans erreur) et IsExported. Les CAS DE          }
+{ REJET (mauvais nom de package, import inconnu, "func main" absent)               }
+{ ne peuvent PAS etre exerces ici : FatalError appelle Halt(), ce qui                  }
+{ arreterait tout le programme (auto-tests suivants ET compilation                        }
+{ reelle) au lieu de se contenter d echouer CETTE assertion - ces trois                      }
+{ regles sont donc verifiees seulement par LECTURE DU CODE (ci-dessus)                          }
+{ plutot que par un auto-test qui les declencherait reellement.                                    }
+{ ------------------------------------------------------------ }
+
+Procedure PackageAssert(Const Label_: TString; Cond: Boolean);
+Begin
+  If Not Cond Then
+    FatalError('PackageSelfTest: ' + Label_ + ' a echoue');
+End;
+
+Procedure PackageSelfTest;
+Begin
+  ExprInit; StmtInit; SymInit; TypeInit; FuncDefInit; MethodDefInit;
+
+  { "package main" accepte, avec un import CONNU }
+  FuncParseTopLevel('package main' + Chr(10) + 'import "fmt"' + Chr(10) +
+    'func F() {' + Chr(10) + '}');
+  PackageAssert('package main + import "fmt" analyses sans erreur',
+    ErrorCount = 0);
+
+  { import CONNU sous forme de bloc parenthese }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  FuncParseTopLevel('package main' + Chr(10) + 'import (' + Chr(10) +
+    '	"fmt"' + Chr(10) + '	"strings"' + Chr(10) + ')' + Chr(10) +
+    'func F() {' + Chr(10) + '}');
+  PackageAssert('bloc import avec 2 paquets connus analyse sans erreur',
+    ErrorCount = 0);
+
+  { IsExported : majuscule = exporte, minuscule = prive }
+  PackageAssert('"Foo" est exporte (majuscule)', IsExported('Foo'));
+  PackageAssert('"foo" n''est PAS exporte (minuscule)', Not IsExported('foo'));
+  PackageAssert('chaine vide n''est PAS exportee', Not IsExported(''));
+
+  { re-initialise les tables globales pour ne pas polluer Run reel }
+  ExprInit; StmtInit; SymInit; FuncDefInit; MethodDefInit;
+End;
+
+{ ------------------------------------------------------------ }
+{ SemanticSelfTest (TODO 19) : passe prealable de resolution        }
+{ (references AVANT declaration textuelle), TypesAssignable/                }
+{ TypeSatisfiesInterface (appeles DIRECTEMENT sur des TypeIdx                    }
+{ construits a la main - plus precis qu un comptage de WarnMsg,                      }
+{ silencieux par defaut ici puisque Opts.Warnings=False pendant TOUS             }
+{ les auto-tests, ParseArgs n ayant pas encore ete appelee), et                          }
+{ variable/import "declare et non utilise". Les CAS DE REJET (erreur              }
+{ Go REELLE, "declared and not used") ne peuvent PAS etre exerces ICI              }
+{ en mode strict (FatalError -> Halt(), meme limitation documentee que                  }
+{ PackageSelfTest ci-dessus) - verifies separement sur des fichiers                        }
+{ jetables via la VRAIE CLI (SAMPLES/GO/semantic.go pour le chemin                            }
+{ d ACCEPTATION ; rejet confirme manuellement lors du developpement).                             }
+{ Le chemin de rejet (variable/import inutilise) est verifie ICI en                                   }
+{ inspectant DIRECTEMENT le drapeau "Used" (SymTab/ImportedPackages)                                       }
+{ plutot qu en forcant Opts.Warnings pour observer WarnMsg s imprimer                                          }
+{ (une premiere version faisait cela, mais WarnMsg ecrit REELLEMENT sur                                            }
+{ la sortie standard des qu il est actif - polluant la sortie de CHAQUE                                                }
+{ execution du compilateur, meme sans "-w" - corrige au moment meme du                                                    }
+{ TODO 19, voir le journal de memoire pour le detail du bogue).                                                                }
+{ ------------------------------------------------------------ }
+
+Procedure SemanticAssert(Const Label_: TString; Cond: Boolean);
+Begin
+  If Not Cond Then
+    FatalError('SemanticSelfTest: ' + Label_ + ' a echoue');
+End;
+
+Procedure SemanticSelfTest;
+Var SI, T1, T2, TNamedA, TNamedB : Integer;
+Begin
+  ExprInit; StmtInit; SymInit; TypeInit; FuncDefInit; MethodDefInit;
+
+  { reference AVANT declaration textuelle (TODO 19) : main() appelle F(),  }
+  { declaree PLUS LOIN dans le fichier - illegal en Pascal (ordre textuel        }
+  { obligatoire) mais LEGAL en Go entre declarations de haut niveau -             }
+  { necessite PrescanTopLevelFuncs (passe prealable de signatures).                  }
+  FuncParseTopLevel('package main' + Chr(10) +
+    'func main() {' + Chr(10) +
+    '	n, err := F("x")' + Chr(10) +
+    '	_ = n' + Chr(10) + '	_ = err' + Chr(10) + '}' + Chr(10) +
+    'func F(s string) (int, error) {' + Chr(10) +
+    '	return 1, nil' + Chr(10) + '}');
+  SemanticAssert('F (declaree APRES main) resolue via le pre-scan',
+    SymFind('F') >= 0);
+  SemanticAssert('F : SK_FUNC', SymTab[SymFind('F')].Kind = SK_FUNC);
+  SemanticAssert('main et F toutes deux enregistrees (aucun doublon)',
+    FuncDefCount = 2);
+  SI := SymFind('err');
+  SemanticAssert('"err" declare (via retours multiples de F, resolue en avance)',
+    SI >= 0);
+  SemanticAssert('"err" correctement type "error" (signature de F connue ' +
+    'AVANT sa declaration textuelle)', SymTab[SI].TypeIdx = PDT_ERROR);
+
+  { TypesAssignable : identite, best-effort sur type inconnu, rejet entre  }
+  { types predeclares distincts. }
+  SemanticAssert('int assignable a int (identite)',
+    TypesAssignable(PDT_INT, PDT_INT));
+  SemanticAssert('int NON assignable a string',
+    Not TypesAssignable(PDT_INT, PDT_STRING));
+  SemanticAssert('type encore inconnu (-1) toujours assignable (best-effort)',
+    TypesAssignable(-1, PDT_INT) And TypesAssignable(PDT_INT, -1));
+
+  { deux types COMPOSES ANONYMES ecrits separement ("*int" via deux appels  }
+  { TypeAdd distincts, aucune canonicalisation) restent STRUCTURELLEMENT        }
+  { identiques - assignables l un a l autre (TypesStructurallyEqual). }
+  T1 := TypeAdd(TYK_POINTER, '', 4, 4, False, PDT_INT, -1);
+  T2 := TypeAdd(TYK_POINTER, '', 4, 4, False, PDT_INT, -1);
+  SemanticAssert('deux "*int" anonymes distincts (TypeIdx differents) restent ' +
+    'assignables (type compose STRUCTUREL)', TypesAssignable(T1, T2));
+
+  { deux types NOMMES distincts de MEME representation sous-jacente (ex.   }
+  { "type Celsius float64" / "type Fahrenheit float64") NE sont PAS             }
+  { assignables entre eux SANS conversion explicite - regle stricte de              }
+  { Go que TODO 19 doit reproduire (contrairement a un simple alias). }
+  TNamedA := TypeAdd(TYK_FLOAT, 'Celsius', 8, 8, False, -1, -1);
+  TNamedB := TypeAdd(TYK_FLOAT, 'Fahrenheit', 8, 8, False, -1, -1);
+  SemanticAssert('deux types NOMMES distincts (meme repr. sous-jacente) ' +
+    'NE sont PAS assignables', Not TypesAssignable(TNamedA, TNamedB));
+
+  { TypeSatisfiesInterface / assignation a une interface (TODO 10 direct) - }
+  { un type struct SANS la methode exigee ne satisfait PAS l interface,           }
+  { un type struct AVEC toutes les methodes exigees la satisfait. }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  FuncParseTopLevel('package main' + Chr(10) +
+    'type Shape interface {' + Chr(10) + '	Area() int' + Chr(10) + '}' + Chr(10) +
+    'type Square struct {' + Chr(10) + '	Side int' + Chr(10) + '}' + Chr(10) +
+    'func (s Square) Area() int {' + Chr(10) + '	return s.Side' + Chr(10) + '}' +
+    Chr(10) + 'type Circle struct {' + Chr(10) + '	Radius int' + Chr(10) + '}');
+  SemanticAssert('Square satisfait Shape (possede Area())',
+    TypeSatisfiesInterface(SymTab[SymFind('Square')].TypeIdx,
+      SymTab[SymFind('Shape')].TypeIdx));
+  SemanticAssert('Circle NE satisfait PAS Shape (Area() absente)',
+    Not TypeSatisfiesInterface(SymTab[SymFind('Circle')].TypeIdx,
+      SymTab[SymFind('Shape')].TypeIdx));
+
+  { variable/import declares et non utilises (TODO 19) : verifie ICI      }
+  { directement le drapeau "Used" (SymTab/ImportedPackages) plutot que de       }
+  { forcer Opts.Warnings=True pour observer WarnMsg - celui-ci IMPRIME             }
+  { reellement sur la sortie standard des qu il est actif, ce qui                        }
+  { polluerait la sortie de CHAQUE execution du compilateur (meme sans                       }
+  { "-w" : WarnMsg ecrit AVANT que WarnCount ne soit lu/remis a zero) - la                      }
+  { regle est neanmoins bel et bien EVALUEE ici (seul son WarnMsg final                              }
+  { reste silencieux, Opts.Warnings=False par defaut pendant les auto-tests). }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  FuncParseTopLevel('package main' + Chr(10) +
+    'import "fmt"' + Chr(10) +
+    'func main() {' + Chr(10) + '	x := 1' + Chr(10) + '	_ = x' + Chr(10) +
+    '	fmt.Println("hi")' + Chr(10) + '}');
+  SemanticAssert('variable "x" (utilisee via "_ = x") marquee Used',
+    SymTab[SymFind('x')].Used);
+  SemanticAssert('import "fmt" (reference via fmt.Println) marque Used',
+    (ImportedCount = 1) And (ImportedPackages[0].Name = 'fmt') And
+    ImportedPackages[0].Used);
+
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  FuncParseTopLevel('package main' + Chr(10) +
+    'import "strings"' + Chr(10) +
+    'func main() {' + Chr(10) + '	y := 1' + Chr(10) + '}');
+  SemanticAssert('variable "y" (jamais lue) reste NON marquee Used',
+    Not SymTab[SymFind('y')].Used);
+  SemanticAssert('import "strings" (jamais reference) reste NON marque Used',
+    (ImportedCount = 1) And (ImportedPackages[0].Name = 'strings') And
+    (Not ImportedPackages[0].Used));
+
+  { re-initialise les tables globales pour ne pas polluer Run reel }
+  ExprInit; StmtInit; SymInit; FuncDefInit; MethodDefInit;
+End;
+
+{ ------------------------------------------------------------ }
+{ StdlibSelfTest (TODO 20) : bibliotheque standard minimale        }
+{ (fmt/errors/strings/strconv/os/math), reconnue PAR NOM QUALIFIE            }
+{ via StdlibTab/ResolveSelectorType - verifie a la fois le TYPAGE                 }
+{ direct (appel simple, valeur SLK_VALUE) et, surtout, que le                          }
+{ mecanisme GENERIQUE de retours multiples (TODO 08/17) fonctionne                        }
+{ desormais aussi pour un appel de bibliotheque standard                                     }
+{ (strconv.Atoi) exactement comme pour une fonction utilisateur -                                }
+{ c est le VRAI bug latent (err jamais declaree) trouve en concevant                                 }
+{ ce TODO, corrige par construction une fois StdlibTab branche dans                                     }
+{ ResolveSelectorType plutot que par un correctif specifique.                                                }
+{ ------------------------------------------------------------ }
+
+Procedure StdlibAssert(Const Label_: TString; Cond: Boolean);
+Begin
+  If Not Cond Then
+    FatalError('StdlibSelfTest: ' + Label_ + ' a echoue');
+End;
+
+Procedure StdlibSelfTest;
+Var SI: Integer;
+Begin
+  ExprInit; StmtInit; SymInit; TypeInit; FuncDefInit; MethodDefInit;
+
+  { retours multiples (TODO 08/17/19) a travers un appel de           }
+  { bibliotheque standard - "err" doit etre reellement declaree, avec       }
+  { le type "error", exactement comme pour la fonction utilisateur Parse         }
+  { de errors.go (TODO 17). C EST le bug que ce TODO corrige. }
+  FuncParseTopLevel('package main' + Chr(10) +
+    'import "strconv"' + Chr(10) +
+    'func main() {' + Chr(10) +
+    '	n, err := strconv.Atoi("42")' + Chr(10) +
+    '	_ = n' + Chr(10) + '	_ = err' + Chr(10) + '}');
+  SI := SymFind('err');
+  StdlibAssert('"err" (strconv.Atoi) reellement declaree', SI >= 0);
+  StdlibAssert('"err" (strconv.Atoi) correctement typee "error"',
+    SymTab[SI].TypeIdx = PDT_ERROR);
+  SI := SymFind('n');
+  StdlibAssert('"n" (strconv.Atoi) correctement typee "int"',
+    SymTab[SI].TypeIdx = PDT_INT);
+
+  { appel simple (une seule valeur utile) : fmt.Sprintf, strings.ToUpper, }
+  { math.Sqrt - chacun via le MEME mecanisme generique (EK_CALL.TypeIdx     }
+  { = premier resultat declare). }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  FuncParseTopLevel('package main' + Chr(10) +
+    'import (' + Chr(10) + '	"fmt"' + Chr(10) + '	"strings"' + Chr(10) +
+    '	"math"' + Chr(10) + ')' + Chr(10) +
+    'func main() {' + Chr(10) +
+    '	s := fmt.Sprintf("%d", 42)' + Chr(10) +
+    '	u := strings.ToUpper(s)' + Chr(10) +
+    '	r := math.Sqrt(4.0)' + Chr(10) +
+    '	_ = u' + Chr(10) + '	_ = r' + Chr(10) + '}');
+  StdlibAssert('fmt.Sprintf(...) : type string',
+    SymTab[SymFind('s')].TypeIdx = PDT_STRING);
+  StdlibAssert('strings.ToUpper(...) : type string',
+    SymTab[SymFind('u')].TypeIdx = PDT_STRING);
+  StdlibAssert('math.Sqrt(...) : type float64',
+    SymTab[SymFind('r')].TypeIdx = PDT_FLOAT64);
+
+  { valeurs (SLK_VALUE, jamais appelees) : os.Args/os.Stdout/          }
+  { math.MaxInt32 - resolues directement par ResolveSelectorType sans        }
+  { passer par ParseCallArgs (aucune parenthese). }
+  SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  FuncParseTopLevel('package main' + Chr(10) +
+    'import (' + Chr(10) + '	"os"' + Chr(10) + '	"math"' + Chr(10) + ')' +
+    Chr(10) + 'func main() {' + Chr(10) +
+    '	a := os.Args' + Chr(10) + '	w := os.Stdout' + Chr(10) +
+    '	m := math.MaxInt32' + Chr(10) +
+    '	_ = a' + Chr(10) + '	_ = w' + Chr(10) + '	_ = m' + Chr(10) + '}');
+  StdlibAssert('os.Args : slice de string (TYK_SLICE, element string)',
+    (TypeTab[SymTab[SymFind('a')].TypeIdx].Kind = TYK_SLICE) And
+    (TypeTab[SymTab[SymFind('a')].TypeIdx].ElemTypeIdx = PDT_STRING));
+  StdlibAssert('os.Stdout : type coherent (non -1)',
+    SymTab[SymFind('w')].TypeIdx >= 0);
+  StdlibAssert('math.MaxInt32 : type int32',
+    SymTab[SymFind('m')].TypeIdx = PDT_INT32);
+
+  { re-initialise les tables globales pour ne pas polluer Run reel }
+  ExprInit; StmtInit; SymInit; FuncDefInit; MethodDefInit;
+End;
+
+{ ------------------------------------------------------------ }
+{ TODO 21 - GENERATEUR DE CODE 80386 ET SORTIE .ASM                }
+{ ------------------------------------------------------------ }
+{ Contrairement a DELPHI.PAS/PERLCW32.PAS (memes projet, meme         }
+{ inspiration architecturale - "miroir des GenXxx des autres            }
+{ compilateurs", roadmap lui-meme) qui emettent l ASM DIRECTEMENT            }
+{ pendant l analyse syntaxique (aucun AST, juste un curseur de jetons             }
+{ PP) : GOCW32 possede DEJA un AST complet et reel (ExprPool/StmtPool/               }
+{ TypeTab/SymTab/FuncDefPool, TODO 06-20) - ce generateur de code est                    }
+{ donc un PARCOURS de cet AST (CompileExpr/CompileStmt, recursifs, un                       }
+{ noeud a la fois) plutot qu un second parseur qui re-emettrait en                              }
+{ parsant. La convention d appel/ecriture ASM elle-meme (segments                                  }
+{ .386/.MODEL FLAT STDCALL, cadre EBP, EAX/EBX comme "registres de                                      }
+{ travail" fixes pour toute expression binaire, Jcc materialisant un                                        }
+{ Booleen 0/1 dans EAX plutot qu un flag brut, LabelGen sequentiel,                                             }
+{ E/S console via l API Win32 GetStdHandle/WriteFile) REPREND fidelement                                            }
+{ celle de DELPHI.PAS, seule l ABSENCE d AST y differe structurellement.                                                }
+{                                                                                                                          }
+{ PORTEE DE CE TODO (deliberement scindee, meme discipline "arret          }
+{ propre documente" que chaque TODO precedent depuis le TODO 05) :             }
+{ litteraux entier/booleen/rune/chaine/nil, variables locales ET               }
+{ globales (chargement/stockage), operateurs binaires/unaires ENTIERS               }
+{ (+ court-circuit && ||), adresse-de/dereference, if/for(3-clauses ou               }
+{ infini), bloc, expression-instruction, affectation/:=  A UNE SEULE                    }
+{ CIBLE, incdec, return (0 OU 1 valeur), appel DIRECT a une fonction                        }
+{ utilisateur A UN SEUL RESULTAT, et fmt.Println/Print AVEC UN SEUL                            }
+{ ARGUMENT DE TYPE CHAINE (assez pour hello.go). PAS couvert ici (arret                            }
+{ propre, FatalError explicite) : flottants (arithmetique ET litteraux -                              }
+{ necessiterait le jeu d instructions x87, une famille entiere en plus),                                  }
+{ retours MULTIPLES (l ABI a "pointeur de sortie cache" du roadmap est                                        }
+{ documentee mais PAS implementee ici, risque de bug trop eleve sous                                              }
+{ contrainte de temps pour une premiere version), structs/methodes/                                                   }
+{ interfaces/slices/maps/tableaux, fermetures, goroutines/canaux,                                                         }
+{ defer/panic/recover, switch/for-range, et tout fmt./strings./etc au                                                        }
+{ dela du seul fmt.Println/Print(chaine unique). Chacun de ces gaps               }
+{ reste un FatalError CLAIR (pas un plantage/silence) - TODO 22/23                {finalisera}
+{ le veritable backend .OBJ/.EXE et pourra alors etendre cette couverture.               }
+
+Var
+  CgOutF      : Text;
+  CgOutOpen   : Boolean;
+  CgLabelSeq  : Integer;
+  CurRetLabel : TString;   { label de l epilogue PARTAGE de la fonction/  }
+                             { methode EN COURS de generation - "return"       }
+                             { emet un JMP vers celui-ci (meme principe que          }
+                             { CurFuncSig, TODO 19 : sauvegarde/restauration            }
+                             { autour d une fermeture imbriquee si un jour               }
+                             { couverte).                                                    }
+
+  { Pool de chaines litterales (TODO 21) : chaque EK_STRINGLIT rencontre  }
+  { pendant CgCollectStrings (parcours PREALABLE de TOUT le programme,           }
+  { avant la moindre ligne .CODE) recoit une entree ICI (deduplication            }
+  { PAR VALEUR - deux occurrences du meme texte partagent le meme label)             }
+  { et son propre label _GOK_N ; CgStrPoolOfExpr[E] retient, pour CHAQUE                 }
+  { noeud EK_STRINGLIT (index E dans ExprPool), l index dans CE pool -                       }
+  { evite de dupliquer les octets ET de re-analyser le texte lors du                             }
+  { VRAI passage de generation de code (CompileExpr n a plus qu a lire                              }
+  { CgStrPoolOfExpr[E]).                                                                               }
+  CgStrPool       : Array[0..MAX_STDLIB - 1] Of TString;
+  CgStrCount      : Integer;
+  CgStrPoolOfExpr : Array[0..MAX_EXPR - 1] Of Integer;
+
+Function IntToStrG(N: LongInt): TString;
+Var S: TString;
+Begin
+  Str(N, S);
+  IntToStrG := S;
+End;
+
+Procedure EmitOpen(Const AsmFile: TString);
+Begin
+  Assign(CgOutF, AsmFile);
+  Rewrite(CgOutF);
+  CgOutOpen := True;
+End;
+
+Procedure EmitClose;
+Begin
+  If CgOutOpen Then
+  Begin
+    Close(CgOutF);
+    CgOutOpen := False;
+  End;
+End;
+
+Procedure EmitRaw(Const S: TString);
+Begin
+  WriteLn(CgOutF, S);
+End;
+
+Procedure EmitLabel(Const Lbl: TString);
+Begin
+  WriteLn(CgOutF, Lbl, ':');
+End;
+
+Procedure EmitInstr(Const S: TString);
+Begin
+  WriteLn(CgOutF, '        ', S);
+End;
+
+Procedure EmitComment(Const S: TString);
+Begin
+  WriteLn(CgOutF, '; ', S);
+End;
+
+Procedure EmitBlankLine;
+Begin
+  WriteLn(CgOutF);
+End;
+
+Function CgLabelGen: TString;
+Begin
+  Inc(CgLabelSeq);
+  CgLabelGen := ASM_PFX_LABEL + IntToStrG(CgLabelSeq);
+End;
+
+{ CgVarOperand : operande ASM texte pour LIRE/ECRIRE le symbole SI -    }
+{ soit son NOM mangle (global, ASM_PFX_GVAR+Name, adresse par ETIQUETTE      }
+{ dans .DATA), soit un decalage EBP (local/parametre/resultat nomme,           }
+{ SymTab[SI].Offset deja calcule au moment meme de la declaration,                }
+{ TODO 21 - voir SymAdd/RegisterFuncScopeSymbols) - AUCUN autre code               }
+{ n a besoin de refaire ce calcul, un seul point de verite. }
+Function CgVarOperand(SI: Integer): TString;
+Begin
+  If SymTab[SI].IsGlobal Then
+    CgVarOperand := '[' + ASM_PFX_GVAR + SymTab[SI].Name + ']'
+  Else If SymTab[SI].Offset >= 0 Then
+    CgVarOperand := '[EBP+' + IntToStrG(SymTab[SI].Offset) + ']'
+  Else
+    CgVarOperand := '[EBP-' + IntToStrG(-SymTab[SI].Offset) + ']';
+End;
+
+{ EmitHeader : boilerplate Intel/MASM (.386, modele FLAT STDCALL,      }
+{ imports Win32 necessaires au runtime minimal de ce TODO - E/S            }
+{ console et sortie de processus uniquement ; alloc memoire/threads               }
+{ restent reserves au vrai runtime du TODO 23) - meme dialecte que              }
+{ DELPHI.PAS/PERLCW32.PAS (memes projet).                                            }
+Procedure EmitHeader;
+Begin
+  EmitComment('GOCW32 - code genere (TODO 21) - NE PAS EDITER A LA MAIN');
+  EmitRaw('.386');
+  EmitRaw('.MODEL FLAT, STDCALL');
+  EmitBlankLine;
+  EmitRaw('EXTRN _ExitProcess@4:NEAR');
+  EmitRaw('EXTRN _GetStdHandle@4:NEAR');
+  EmitRaw('EXTRN _WriteFile@20:NEAR');
+  EmitBlankLine;
+End;
+
+{ EmitDataSeg : la section .DATA COMPLETE en une seule fois - variables  }
+{ globales (parcours de SymTab, IsGlobal) puis pool de chaines            }
+{ litterales (CgCollectStrings a deja tourne AVANT cet appel, voir              }
+{ CompileProgram) - simplification documentee (TODO 21) : seuls les                }
+{ globaux de representation ENTIERE/BOOLEENNE/POINTEUR (4 octets, la                    }
+{ valeur constante REELLE si connue - TODO 05, ConstVal) sont           }
+{ correctement initialises ; tout autre type de global (flottant,                          }
+{ chaine, struct, etc.) recoit un simple "DD 0" (case a zero, PAS le                            }
+{ VRAI initialiseur) - couverture complete de CES cas reste hors de                                 }
+{ portee de ce TODO (arithmetique flottante/refs de chaines globales,                                   }
+{ blocs struct, tous explicitement non couverts par ailleurs ici).                                          }
+Procedure EmitDataSeg;
+Var I: Integer;
+Begin
+  EmitRaw('.DATA');
+  EmitRaw(ASM_PFX_RUNTIME + 'NEWLINE  DB 10');
+  For I := 0 To SymCount - 1 Do
+    If (SymTab[I].Kind = SK_VAR) And SymTab[I].IsGlobal Then
+    Begin
+      If (SymTab[I].TypeIdx >= 0) And (SymTab[I].TypeIdx < TypeCount) And
+         (TypeTab[SymTab[I].TypeIdx].Kind In [TYK_INT, TYK_BOOL, TYK_POINTER]) Then
+        EmitRaw(ASM_PFX_GVAR + SymTab[I].Name + '  DD ' +
+          IntToStrG(SymTab[I].ConstVal.IntVal))
+      Else
+        EmitRaw(ASM_PFX_GVAR + SymTab[I].Name + '  DD 0');
+    End;
+  For I := 0 To CgStrCount - 1 Do
+    EmitRaw(ASM_PFX_STRING + IntToStrG(I) + '  DB "' + CgStrPool[I] + '", 0');
+  EmitBlankLine;
+End;
+
+Procedure EmitCodeSeg;
+Begin
+  EmitRaw('.CODE');
+  EmitBlankLine;
+End;
+
+{ EmitRuntimeLibrary : runtime minimal ecrit directement dans le .asm    }
+{ emis (aucune bibliotheque externe liee - meme principe que                }
+{ DELPHI.PAS/_DPRT_*) - ICI, une SEULE routine, _GORT_PRINTLN_STR             }
+{ (imprime la chaine C pointee par [EBP+8], terminee par un saut de              }
+{ ligne, via l API Win32 GetStdHandle/WriteFile - PAS INT 21h) : c est               }
+{ tout ce qu il faut pour que "fmt.Println(<chaine unique>)" (la SEULE                   }
+{ forme couverte par ce TODO, voir CompileExpr/EK_CALL) fasse reellement                     }
+{ quelque chose, une fois un vrai assembleur/lieur disponible (TODO 22/23).                      }
+Procedure EmitRuntimeLibrary;
+Begin
+  { TODO 22 : "[ESI+ECX]" (base+index, SANS echelle) exigerait un VRAI       }
+  { octet SIB de l encodeur 80386 - hors de portee volontaire (DELPHI.PAS,          }
+  { meme projet, dont ce TODO reprend fidelement l architecture, n encode                }
+  { lui non plus JAMAIS d adressage base+index) - recrit ici pour n avoir                    }
+  { besoin QUE d un adressage base seule ("[ESI]", ESI increment a chaque                        }
+  { iteration) ou absolu (etiquette), les deux SEULES formes couvertes par                            }
+  { BinEmitModRM plus bas. Comportement observable INCHANGE. }
+  EmitLabel(ASM_PFX_RUNTIME + 'STRLEN');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');
+  EmitInstr('XOR ECX,ECX');
+  EmitLabel(ASM_PFX_RUNTIME + 'STRLEN_LOOP');
+  EmitInstr('CMP BYTE PTR [ESI],0');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'STRLEN_DONE');
+  EmitInstr('INC ESI');
+  EmitInstr('INC ECX');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'STRLEN_LOOP');
+  EmitLabel(ASM_PFX_RUNTIME + 'STRLEN_DONE');
+  EmitInstr('MOV EAX,ECX');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _GORT_PRINT_STR : imprime la chaine C pointee par [EBP+8] SANS         }
+  { saut de ligne (fmt.Print reel) - WriteFile est STDCALL (l APPELE                }
+  { nettoie SA PROPRE pile - AUCUN "ADD ESP" apres son CALL,                             }
+  { contrairement a la convention cdecl-like des fonctions Go/_GORT_*                       }
+  { elles-memes) ; ordre des arguments POUSSES = DROITE A GAUCHE (hFile                        }
+  { en DERNIER, PUSH juste avant le CALL). }
+  EmitLabel(ASM_PFX_RUNTIME + 'PRINT_STR');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('SUB ESP,4');                    { [EBP-4] : octets ecrits (sortie WriteFile, ignore) }
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');    { ESI = pointeur chaine C (NUL-terminee) }
+  EmitInstr('PUSH ESI');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STRLEN');
+  EmitInstr('ADD ESP,4');
+  { BOGUE REEL trouve par EXECUTION reelle (pas par la compilation ni      }
+  { par une relecture du texte .asm) : _GORT_STRLEN utilise ESI en                  }
+  { INTERNE pour parcourir la chaine (voir sa propre definition,                        }
+  { juste au-dessus) et ne le RESTAURE jamais avant de rendre la main -                    }
+  { a son retour, ESI pointe desormais sur le TERMINATEUR NUL de la                            }
+  { chaine (la fin), PAS son debut - recharge ESI ICI depuis [EBP+8]                              }
+  { (le parametre original, intact sur la pile, JAMAIS touche par                                    }
+  { STRLEN) avant de le reutiliser comme lpBuffer plus bas, sinon                                        }
+  { WriteFile ecrit les octets qui SUIVENT la chaine (ici, du bourrage                                       }
+  { a zero) au lieu de la chaine elle-meme. }
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');
+  EmitInstr('MOV EBX,EAX');                  { EBX = longueur }
+  EmitInstr('PUSH -11');                     { STD_OUTPUT_HANDLE }
+  EmitInstr('CALL _GetStdHandle@4');
+  EmitInstr('MOV EDI,EAX');                  { EDI = handle stdout }
+  EmitInstr('PUSH 0');                       { lpOverlapped }
+  EmitInstr('LEA EAX,[EBP-4]');
+  EmitInstr('PUSH EAX');                     { lpNumberOfBytesWritten }
+  EmitInstr('PUSH EBX');                     { nNumberOfBytesToWrite }
+  EmitInstr('PUSH ESI');                     { lpBuffer }
+  EmitInstr('PUSH EDI');                     { hFile }
+  EmitInstr('CALL _WriteFile@20');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _GORT_PRINTLN_STR : _GORT_PRINT_STR PUIS le saut de ligne unique     }
+  { constant _GORT_NEWLINE (fmt.Println reel - meme argument, un seul                }
+  { appel supplementaire pour l unique octet de fin de ligne). }
+  EmitLabel(ASM_PFX_RUNTIME + 'PRINTLN_STR');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('SUB ESP,4');
+  EmitInstr('PUSH DWORD PTR [EBP+8]');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'PRINT_STR');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('PUSH -11');
+  EmitInstr('CALL _GetStdHandle@4');
+  EmitInstr('MOV EDI,EAX');
+  EmitInstr('PUSH 0');
+  EmitInstr('LEA EAX,[EBP-4]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH 1');
+  EmitInstr('LEA EAX,[' + ASM_PFX_RUNTIME + 'NEWLINE]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH EDI');
+  EmitInstr('CALL _WriteFile@20');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+End;
+
+Procedure EmitProlog(LocalSize: Integer);
+Begin
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  If LocalSize > 0 Then
+    EmitInstr('SUB ESP,' + IntToStrG(LocalSize));
+End;
+
+Procedure EmitEpilog;
+Begin
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+End;
+
+{ EmitCompareJcc : materialise dans EAX un VRAI Booleen 0/1 (PAS juste  }
+{ un fanion brut) a partir d une comparaison EAX/EBX - meme idiome que       }
+{ DELPHI.PAS (memes projet) : Jcc conditionnel plutot que SETcc (choix               }
+{ deja fait par ce projet pour d autres compilateurs, repris ici pour la                 }
+{ coherence). }
+Procedure EmitCompareJcc(Const Jcc: TString);
+Var LblT, LblE: TString;
+Begin
+  LblT := CgLabelGen;
+  LblE := CgLabelGen;
+  EmitInstr('CMP EAX,EBX');
+  EmitInstr(Jcc + ' ' + LblT);
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('JMP ' + LblE);
+  EmitLabel(LblT);
+  EmitInstr('MOV EAX,1');
+  EmitLabel(LblE);
+End;
+
+{ EmitBinOp : EAX := EAX <Op> EBX - convention FIXE (pas d allocateur   }
+{ de registres) partagee par CompileExpr(EK_BINARY) : le membre GAUCHE       }
+{ est deja en EAX, le membre DROIT en EBX, au moment de cet appel. }
+Procedure EmitBinOp(Const Op: TString);
+Begin
+  If Op = '+' Then EmitInstr('ADD EAX,EBX')
+  Else If Op = '-' Then EmitInstr('SUB EAX,EBX')
+  Else If Op = '*' Then EmitInstr('IMUL EAX,EBX')
+  Else If Op = '/' Then Begin EmitInstr('CDQ'); EmitInstr('IDIV EBX'); End
+  Else If Op = '%' Then
+  Begin
+    EmitInstr('CDQ');
+    EmitInstr('IDIV EBX');
+    EmitInstr('MOV EAX,EDX');
+  End
+  Else If Op = '&' Then EmitInstr('AND EAX,EBX')
+  Else If Op = '|' Then EmitInstr('OR EAX,EBX')
+  Else If Op = '^' Then EmitInstr('XOR EAX,EBX')
+  Else If Op = '&^' Then
+  Begin
+    EmitInstr('NOT EBX');
+    EmitInstr('AND EAX,EBX');
+  End
+  Else If Op = '<<' Then
+  Begin
+    EmitInstr('MOV ECX,EBX');
+    EmitInstr('SHL EAX,CL');
+  End
+  Else If Op = '>>' Then
+  Begin
+    EmitInstr('MOV ECX,EBX');
+    EmitInstr('SAR EAX,CL');
+  End
+  Else If Op = '==' Then EmitCompareJcc('JE')
+  Else If Op = '!=' Then EmitCompareJcc('JNE')
+  Else If Op = '<'  Then EmitCompareJcc('JL')
+  Else If Op = '<=' Then EmitCompareJcc('JLE')
+  Else If Op = '>'  Then EmitCompareJcc('JG')
+  Else If Op = '>=' Then EmitCompareJcc('JGE')
+  Else
+    FatalError('TODO 21 : generateur de code, operateur binaire non ' +
+      'couvert (entiers/booleens seulement pour l instant) : ' + Op);
+End;
+
+{ CgCollectStrings : parcours PREALABLE (avant la moindre ligne .CODE)   }
+{ de TOUT le programme - deduplique chaque litteral chaine PAR VALEUR         }
+{ dans CgStrPool, et retient pour CHAQUE noeud EK_STRINGLIT (index dans           }
+{ ExprPool) l index du pool dans CgStrPoolOfExpr - permet a EmitDataSeg               }
+{ d ecrire la section .DATA en une seule fois, AVANT le moindre .CODE                     }
+{ (necessaire ici puisque .DATA precede .CODE dans le fichier emis, alors                    }
+{ que les chaines ne sont normalement decouvertes qu EN PARCOURANT les                           }
+{ corps de fonction bien plus tard). }
+Procedure CgCollectStrings;
+Var E, J, Found: Integer;
+Begin
+  CgStrCount := 0;
+  For E := 0 To ExprCount - 1 Do
+    If ExprPool[E].Kind = EK_STRINGLIT Then
+    Begin
+      Found := -1;
+      For J := 0 To CgStrCount - 1 Do
+        If CgStrPool[J] = ExprPool[E].StrVal Then
+        Begin
+          Found := J;
+          Break;
+        End;
+      If Found < 0 Then
+      Begin
+        If CgStrCount < MAX_STDLIB Then
+        Begin
+          CgStrPool[CgStrCount] := ExprPool[E].StrVal;
+          Found := CgStrCount;
+          Inc(CgStrCount);
+        End
+        Else
+        Begin
+          WarnMsg('table du generateur de code pleine (chaines litterales)');
+          Found := 0;
+        End;
+      End;
+      CgStrPoolOfExpr[E] := Found;
+    End;
+End;
+
+Procedure CompileExpr(E: Integer); Forward;
+
+{ CompileCallExpr : separee de CompileExpr (EK_CALL) car la DETECTION    }
+{ elle-meme (bibliotheque standard minimale reconnue PAR NOM QUALIFIE,        }
+{ TODO 20, vs. appel DIRECT a une fonction utilisateur, TODO 08) merite            }
+{ sa propre procedure plutot que d alourdir le grand "Case" de                        }
+{ CompileExpr. PORTEE (voir l en-tete de section TODO 21) : SEULEMENT              }
+{ fmt.Println/Print avec EXACTEMENT UN argument, et l appel DIRECT               }
+{ (jamais indirect/methode) d une fonction utilisateur a AU PLUS UN                    }
+{ resultat - tout le reste est un arret propre documente (FatalError). }
+Procedure CompileCallExpr(E: Integer);
+Var
+  Callee, ArgFirst, ArgCount, I, FDI : Integer;
+  PkgNam, FnNam : TString;
+Begin
+  Callee   := ExprPool[E].Left;
+  ArgFirst := ExprPool[E].ArgFirst;
+  ArgCount := ExprPool[E].ArgCount;
+
+  { TODO 21 : "new(T)"/"make(T,...)" (ParseNewOrMake, TODO 08/11) sont       }
+  { des FORMES SPECIALES sans VRAI callee - Left reste a -1 (jamais         }
+  { renseigne, la "fonction" est ExprPool[E].NameVal directement, pas               }
+  { une expression) - deverser ExprPool[-1] (lecture hors limites,                    }
+  { verification de plage desactivee par defaut) plutot que de le                          }
+  { detecter EXPLICITEMENT ici                        }
+  { provoquait un VRAI plantage (acces memoire invalide, "Runtime error                     }
+  { 216") au lieu d un arret propre - alloc memoire (slices/maps) reste                        }
+  { de toute facon HORS DE PORTEE de ce TODO (TODO 22/23, runtime            }
+  { embarque). }
+  If Callee < 0 Then
+  Begin
+    FatalError('TODO 21 : generateur de code, appel integre non couvert ' +
+      '(new/make/len/cap/append/copy/delete/close/recover/panic restent ' +
+      'TODO 22/23) : ' + ExprPool[E].NameVal);
+    Exit;
+  End;
+
+  If (ExprPool[Callee].Kind = EK_SELECTOR) And (ExprPool[Callee].Left >= 0) And
+     (ExprPool[ExprPool[Callee].Left].Kind = EK_IDENT) Then
+  Begin
+    PkgNam := ExprPool[ExprPool[Callee].Left].NameVal;
+    FnNam  := ExprPool[Callee].NameVal;
+    If (PkgNam = 'fmt') And ((FnNam = 'Println') Or (FnNam = 'Print')) And
+       (ArgCount = 1) Then
+    Begin
+      CompileExpr(ExprArgPool[ArgFirst]);
+      EmitInstr('PUSH EAX');
+      If FnNam = 'Println' Then
+        EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'PRINTLN_STR')
+      Else
+        EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'PRINT_STR');
+      EmitInstr('ADD ESP,4');
+      Exit;
+    End;
+    FatalError('TODO 21 : generateur de code, appel de bibliotheque ' +
+      'standard non couvert (seul fmt.Println/Print avec un seul ' +
+      'argument chaine l''est) : ' + PkgNam + '.' + FnNam);
+    Exit;
+  End;
+
+  If ExprPool[Callee].Kind = EK_IDENT Then
+  Begin
+    FDI := -1;
+    For I := 0 To FuncDefCount - 1 Do
+      If FuncDefPool[I].Name = ExprPool[Callee].NameVal Then
+      Begin
+        FDI := I;
+        Break;
+      End;
+    If FDI < 0 Then
+    Begin
+      FatalError('TODO 21 : generateur de code, appel non couvert (ni ' +
+        'fonction utilisateur connue, ni fmt.Println/Print) : ' +
+        ExprPool[Callee].NameVal);
+      Exit;
+    End;
+    If TypeTab[FuncDefPool[FDI].TypeIdx].ResultCount > 1 Then
+    Begin
+      FatalError('TODO 21 : generateur de code, retours MULTIPLES non ' +
+        'couverts (fonction "' + FuncDefPool[FDI].Name + '") - voir TODO 22/23');
+      Exit;
+    End;
+    For I := ArgCount - 1 DownTo 0 Do
+    Begin
+      CompileExpr(ExprArgPool[ArgFirst + I]);
+      EmitInstr('PUSH EAX');
+    End;
+    EmitInstr('CALL ' + ASM_PFX_FUNC + FuncDefPool[FDI].Name);
+    If ArgCount > 0 Then
+      EmitInstr('ADD ESP,' + IntToStrG(ArgCount * 4));
+    Exit;
+  End;
+
+  FatalError('TODO 21 : generateur de code, forme d''appel non couverte ' +
+    '(methodes/valeurs-fonction/fonctions integrees restent TODO 22/23)');
+End;
+
+{ CompileExpr : compile RECURSIVEMENT le noeud E de ExprPool - laisse    }
+{ TOUJOURS son resultat dans EAX (convention FIXE, PAS d allocateur de       }
+{ registres - meme discipline que DELPHI.PAS/memes projet). Toute forme            }
+{ d expression hors de la portee documentee en tete de section (TODO 21)             }
+{ s arrete PROPREMENT (FatalError explicite), jamais un plantage/silence.               }
+Procedure CompileExpr(E: Integer);
+Var SI: Integer; LblE: TString;
+Begin
+  If E < 0 Then Exit;
+  Case ExprPool[E].Kind Of
+    EK_INTLIT, EK_RUNELIT, EK_BOOLLIT:
+      EmitInstr('MOV EAX,' + IntToStrG(ExprPool[E].IntVal));
+    EK_NILLIT:
+      EmitInstr('MOV EAX,0');
+    EK_STRINGLIT:
+      EmitInstr('LEA EAX,[' + ASM_PFX_STRING + IntToStrG(CgStrPoolOfExpr[E]) + ']');
+    EK_IDENT:
+      Begin
+        SI := SymFind(ExprPool[E].NameVal);
+        If SI < 0 Then
+          FatalError('TODO 21 : generateur de code, identifiant non ' +
+            'resolu: ' + ExprPool[E].NameVal)
+        Else
+          EmitInstr('MOV EAX,DWORD PTR ' + CgVarOperand(SI));
+      End;
+    EK_ADDR:
+      Begin
+        If ExprPool[ExprPool[E].Left].Kind = EK_IDENT Then
+        Begin
+          SI := SymFind(ExprPool[ExprPool[E].Left].NameVal);
+          If SI < 0 Then
+            FatalError('TODO 21 : generateur de code, identifiant non ' +
+              'resolu ("&"): ' + ExprPool[ExprPool[E].Left].NameVal)
+          Else
+            EmitInstr('LEA EAX,' + CgVarOperand(SI));
+        End
+        Else
+          FatalError('TODO 21 : generateur de code, "&" non couvert sur ' +
+            'cette forme d''expression (voir TODO 22/23)');
+      End;
+    EK_DEREF:
+      Begin
+        CompileExpr(ExprPool[E].Left);
+        EmitInstr('MOV EAX,DWORD PTR [EAX]');
+      End;
+    EK_UNARY:
+      Begin
+        CompileExpr(ExprPool[E].Left);
+        If ExprPool[E].Op = '-' Then EmitInstr('NEG EAX')
+        Else If ExprPool[E].Op = '!' Then EmitInstr('XOR EAX,1')
+        Else If ExprPool[E].Op = '^' Then EmitInstr('NOT EAX')
+        Else FatalError('TODO 21 : generateur de code, operateur unaire ' +
+          'non couvert: ' + ExprPool[E].Op);
+      End;
+    EK_BINARY:
+      If (ExprPool[E].Op = '&&') Or (ExprPool[E].Op = '||') Then
+      Begin
+        { court-circuit REEL (le membre DROIT n est evalue QUE si          }
+        { necessaire) - meme idiome que DELPHI.PAS/memes projet pour le          }
+        { AND/OR booleen, PAS un simple AND/OR bit-a-bit (EmitBinOp,               }
+        { reserve aux operandes non booleens comme "&"/"|"). }
+        CompileExpr(ExprPool[E].Left);
+        LblE := CgLabelGen;
+        EmitInstr('TEST EAX,EAX');
+        If ExprPool[E].Op = '&&' Then EmitInstr('JZ ' + LblE)
+        Else EmitInstr('JNZ ' + LblE);
+        CompileExpr(ExprPool[E].Right);
+        EmitLabel(LblE);
+      End
+      Else
+      Begin
+        CompileExpr(ExprPool[E].Left);
+        EmitInstr('PUSH EAX');
+        CompileExpr(ExprPool[E].Right);
+        EmitInstr('MOV EBX,EAX');
+        EmitInstr('POP EAX');
+        EmitBinOp(ExprPool[E].Op);
+      End;
+    EK_CALL:
+      CompileCallExpr(E);
+  Else
+    FatalError('TODO 21 : generateur de code, forme d''expression non ' +
+      'couverte (flottants/structs/slices/maps/interfaces/fermetures/' +
+      'canaux restent TODO 22/23)');
+  End;
+End;
+
+{ CompileStmt : compile RECURSIVEMENT le noeud S de StmtPool - portee    }
+{ documentee en tete de section (TODO 21) ; tout le reste s arrete             }
+{ PROPREMENT (FatalError explicite). }
+Procedure CompileStmt(S: Integer);
+Var
+  I, SI : Integer;
+  RNam  : TString;
+  LblElse, LblEnd, LblTop : TString;
+Begin
+  If S < 0 Then Exit;
+  Case StmtPool[S].Kind Of
+    STK_EMPTY: ;
+    STK_BLOCK:
+      For I := StmtPool[S].ArgFirst To StmtPool[S].ArgFirst + StmtPool[S].ArgCount - 1 Do
+        CompileStmt(StmtArgPool[I]);
+    STK_EXPR:
+      CompileExpr(StmtPool[S].Left);
+    STK_ASSIGN:
+      If StmtPool[S].Op <> '=' Then
+        FatalError('TODO 21 : generateur de code, operateur d''affectation ' +
+          'compose non couvert (seul "=" simple l''est) : ' + StmtPool[S].Op)
+      Else If StmtPool[S].ArgCount <> 1 Then
+        FatalError('TODO 21 : generateur de code, affectation MULTIPLE non ' +
+          'couverte (une seule cible a la fois)')
+      Else If ExprPool[StmtArgPool[StmtPool[S].ArgFirst]].Kind <> EK_IDENT Then
+        FatalError('TODO 21 : generateur de code, cible d''affectation non ' +
+          'couverte (seul un identifiant simple l''est)')
+      Else
+      Begin
+        SI := SymFind(ExprPool[StmtArgPool[StmtPool[S].ArgFirst]].NameVal);
+        CompileExpr(StmtArgPool2[StmtPool[S].ArgFirst]);
+        If SI >= 0 Then
+          EmitInstr('MOV DWORD PTR ' + CgVarOperand(SI) + ',EAX');
+      End;
+    STK_SHORTVAR:
+      For I := StmtPool[S].ArgFirst To StmtPool[S].ArgFirst + StmtPool[S].ArgCount - 1 Do
+        If StmtArgName[I] = '_' Then
+          CompileExpr(StmtArgPool2[I])
+        Else
+        Begin
+          SI := SymFind(StmtArgName[I]);
+          CompileExpr(StmtArgPool2[I]);
+          If SI >= 0 Then
+            EmitInstr('MOV DWORD PTR ' + CgVarOperand(SI) + ',EAX');
+        End;
+    STK_INCDEC:
+      If ExprPool[StmtPool[S].Left].Kind <> EK_IDENT Then
+        FatalError('TODO 21 : generateur de code, "++"/"--" non couvert ' +
+          'sur cette forme d''expression')
+      Else
+      Begin
+        SI := SymFind(ExprPool[StmtPool[S].Left].NameVal);
+        If SI < 0 Then
+          FatalError('TODO 21 : generateur de code, "++"/"--" cible non resolue')
+        Else
+        Begin
+          EmitInstr('MOV EAX,DWORD PTR ' + CgVarOperand(SI));
+          If StmtPool[S].Op = '++' Then EmitInstr('INC EAX') Else EmitInstr('DEC EAX');
+          EmitInstr('MOV DWORD PTR ' + CgVarOperand(SI) + ',EAX');
+        End;
+      End;
+    STK_IF:
+      Begin
+        If StmtPool[S].Left >= 0 Then CompileStmt(StmtPool[S].Left);
+        CompileExpr(StmtPool[S].Extra);
+        LblElse := CgLabelGen;
+        EmitInstr('TEST EAX,EAX');
+        EmitInstr('JZ ' + LblElse);
+        CompileStmt(StmtPool[S].Right);
+        If StmtPool[S].Extra2 >= 0 Then
+        Begin
+          LblEnd := CgLabelGen;
+          EmitInstr('JMP ' + LblEnd);
+          EmitLabel(LblElse);
+          CompileStmt(StmtPool[S].Extra2);
+          EmitLabel(LblEnd);
+        End
+        Else
+          EmitLabel(LblElse);
+      End;
+    STK_FOR:
+      Begin
+        If StmtPool[S].Left >= 0 Then CompileStmt(StmtPool[S].Left);
+        LblTop := CgLabelGen;
+        LblEnd := CgLabelGen;
+        EmitLabel(LblTop);
+        If StmtPool[S].Extra >= 0 Then
+        Begin
+          CompileExpr(StmtPool[S].Extra);
+          EmitInstr('TEST EAX,EAX');
+          EmitInstr('JZ ' + LblEnd);
+        End;
+        CompileStmt(StmtPool[S].Right);
+        If StmtPool[S].Extra2 >= 0 Then CompileStmt(StmtPool[S].Extra2);
+        EmitInstr('JMP ' + LblTop);
+        EmitLabel(LblEnd);
+      End;
+    STK_RETURN:
+      If StmtPool[S].ArgCount > 1 Then
+        FatalError('TODO 21 : generateur de code, retours MULTIPLES non ' +
+          'couverts (voir TODO 22/23)')
+      Else If StmtPool[S].ArgCount = 1 Then
+      Begin
+        CompileExpr(StmtArgPool[StmtPool[S].ArgFirst]);
+        EmitInstr('JMP ' + CurRetLabel);
+      End
+      Else
+      Begin
+        { "return" nu (TODO 08) : Cnt=0 - soit une fonction sans aucun     }
+        { resultat (rien a charger), soit UN resultat NOMME (charge sa           }
+        { valeur ACTUELLE dans EAX avant de sauter a l epilogue - regle Go              }
+        { reelle) - plusieurs resultats nommes restent HORS DE PORTEE.                     }
+        If (CurFuncSig >= 0) And (TypeTab[CurFuncSig].ResultCount = 1) Then
+        Begin
+          RNam := FieldPool[TypeTab[CurFuncSig].ResultFirst].Name;
+          SI := SymFind(RNam);
+          If SI >= 0 Then
+            EmitInstr('MOV EAX,DWORD PTR ' + CgVarOperand(SI));
+        End
+        Else If (CurFuncSig >= 0) And (TypeTab[CurFuncSig].ResultCount > 1) Then
+          FatalError('TODO 21 : generateur de code, "return" nu avec ' +
+            'plusieurs resultats nommes non couvert (voir TODO 22/23)');
+        EmitInstr('JMP ' + CurRetLabel);
+      End;
+  Else
+    FatalError('TODO 21 : generateur de code, forme d''instruction non ' +
+      'couverte (switch/for-range/defer/go/select/goto restent TODO 22/23)');
+  End;
+End;
+
+{ CompileFuncDef : genere le corps COMPLET (etiquette+prolog+corps+       }
+{ epilog) d une fonction NOMMEE de haut niveau (FuncDefPool) - les            }
+{ methodes (MethodDefPool) restent HORS DE PORTEE de ce TODO (aucun               }
+{ mecanisme de repartition/appel de methode n est genere - inutile de                 }
+{ generer un corps qu aucun appel ne peut jamais atteindre). }
+Procedure CompileFuncDef(FDI: Integer);
+Var SavedRetLabel: TString;
+Begin
+  If FuncDefPool[FDI].BodyStmtIdx < 0 Then Exit;
+  EmitLabel(ASM_PFX_FUNC + FuncDefPool[FDI].Name);
+  EmitProlog(FuncDefPool[FDI].LocalFrameSize);
+  SavedRetLabel := CurRetLabel;
+  CurRetLabel   := CgLabelGen;
+  CurFuncSig    := FuncDefPool[FDI].TypeIdx;
+  CompileStmt(FuncDefPool[FDI].BodyStmtIdx);
+  EmitLabel(CurRetLabel);
+  EmitEpilog;
+  CurRetLabel := SavedRetLabel;
+  EmitBlankLine;
+End;
+
+{ CompileProgram : pilote de haut niveau (TODO 21) - genere un fichier   }
+{ .asm COMPLET et coherent (meme structure de segments que DELPHI.PAS,        }
+{ memes projet) : entete, .DATA (globaux+chaines), .CODE (runtime puis            }
+{ chaque fonction utilisateur), point d entree minimal "_GOSTART". Ce                 }
+{ point d entree sera REMPLACE par le vrai runtime embarque/IAT complet                   }
+{ du TODO 23 - ici, juste assez pour que le fichier soit un PROGRAMME                        }
+{ complet dans le meme dialecte, avant qu un assembleur/lieur (TODO 22)                          }
+{ n existe pour le transformer en binaire reel. }
+Procedure CompileProgram(Const AsmFileName: TString);
+Var I: Integer;
+Begin
+  CgLabelSeq  := 0;
+  CurRetLabel := '';
+  CgCollectStrings;
+
+  EmitOpen(AsmFileName);
+  EmitHeader;
+  EmitDataSeg;
+  EmitCodeSeg;
+  EmitRuntimeLibrary;
+  For I := 0 To FuncDefCount - 1 Do
+    CompileFuncDef(I);
+
+  EmitLabel('_GOSTART');
+  EmitInstr('CALL ' + ASM_PFX_FUNC + 'main');
+  EmitInstr('PUSH 0');
+  EmitInstr('CALL _ExitProcess@4');
+  EmitRaw('END _GOSTART');
+  EmitClose;
+End;
+
+{ ------------------------------------------------------------ }
+{ CodegenSelfTest (TODO 21) : meme methode que DELPHI.PAS/memes         }
+{ projet (EmitSelfTest/BinSelfTest) - genere un VRAI fichier .asm a          }
+{ partir d un extrait Go synthetique (via FuncParseTopLevel, comme                }
+{ toute la suite d auto-tests depuis le TODO 08), le RELIT ligne par                  }
+{ ligne, et verifie par SOUS-CHAINE que les instructions attendues                       }
+{ apparaissent bien (structure du fichier, appel direct, operateurs                         }
+{ arithmetique/comparaison, branchement conditionnel) - PAS l EXECUTION                          }
+{ reelle du code genere (aucun assembleur/lieur n existe encore, TODO             }
+{ 22/23) : c est exactement la meme limite documentee que celle de                   }
+{ DELPHI.PAS pour son propre EmitSelfTest.                                                }
+{ ------------------------------------------------------------ }
+
+Function CgFileHasSubstring(Const FileName, Sub: TString): Boolean;
+Var F: Text; Line: TString; Found: Boolean;
+Begin
+  Found := False;
+  Assign(F, FileName);
+  Reset(F);
+  While Not Eof(F) Do
+  Begin
+    ReadLn(F, Line);
+    If Pos(Sub, Line) > 0 Then
+    Begin
+      Found := True;
+      Break;
+    End;
+  End;
+  Close(F);
+  CgFileHasSubstring := Found;
+End;
+
+Procedure CodegenAssert(Const Label_: TString; Cond: Boolean);
+Begin
+  If Not Cond Then
+    FatalError('CodegenSelfTest: ' + Label_ + ' a echoue');
+End;
+
+Procedure CodegenSelfTest;
+Const TmpAsm = 'GOCWCODEGENSELFTEST.$$$';
+Begin
+  ExprInit; StmtInit; SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  FuncParseTopLevel('package main' + Chr(10) +
+    'func Add(a, b int) int {' + Chr(10) + '	return a + b' + Chr(10) + '}' +
+    Chr(10) + 'func main() {' + Chr(10) +
+    '	x := Add(1, 2)' + Chr(10) +
+    '	if x > 0 {' + Chr(10) + '		x = x - 1' + Chr(10) + '	}' + Chr(10) +
+    '	fmt.Println("ok")' + Chr(10) + '	_ = x' + Chr(10) + '}');
+
+  CompileProgram(TmpAsm);
+
+  CodegenAssert('en-tete .386/.MODEL FLAT STDCALL present',
+    CgFileHasSubstring(TmpAsm, '.386') And
+    CgFileHasSubstring(TmpAsm, '.MODEL FLAT, STDCALL'));
+  CodegenAssert('sections .DATA et .CODE presentes',
+    CgFileHasSubstring(TmpAsm, '.DATA') And CgFileHasSubstring(TmpAsm, '.CODE'));
+  CodegenAssert('etiquette de la fonction "Add" presente',
+    CgFileHasSubstring(TmpAsm, ASM_PFX_FUNC + 'Add:'));
+  CodegenAssert('etiquette de la fonction "main" presente',
+    CgFileHasSubstring(TmpAsm, ASM_PFX_FUNC + 'main:'));
+  CodegenAssert('"a + b" compile en ADD EAX,EBX (convention EAX/EBX fixe)',
+    CgFileHasSubstring(TmpAsm, 'ADD EAX,EBX'));
+  CodegenAssert('appel direct "Add(1, 2)" compile en CALL ' + ASM_PFX_FUNC + 'Add',
+    CgFileHasSubstring(TmpAsm, 'CALL ' + ASM_PFX_FUNC + 'Add'));
+  CodegenAssert('"x > 0" compile en une comparaison Jcc materialisant un ' +
+    'Booleen dans EAX', CgFileHasSubstring(TmpAsm, 'JG ' + ASM_PFX_LABEL));
+  CodegenAssert('"x - 1" (dans le "if") compile en SUB EAX,EBX',
+    CgFileHasSubstring(TmpAsm, 'SUB EAX,EBX'));
+  CodegenAssert('fmt.Println("ok") appelle le runtime _GORT_PRINTLN_STR',
+    CgFileHasSubstring(TmpAsm, 'CALL ' + ASM_PFX_RUNTIME + 'PRINTLN_STR'));
+  CodegenAssert('point d''entree _GOSTART present, appelle ' + ASM_PFX_FUNC +
+    'main puis ExitProcess',
+    CgFileHasSubstring(TmpAsm, '_GOSTART:') And
+    CgFileHasSubstring(TmpAsm, 'CALL ' + ASM_PFX_FUNC + 'main') And
+    CgFileHasSubstring(TmpAsm, 'CALL _ExitProcess@4'));
+
+  { CgOutF reste ASSOCIE a TmpAsm (Assign fait par EmitOpen) meme APRES     }
+  { sa fermeture (EmitClose, deja appelee par CompileProgram) - reutilise           }
+  { cette MEME variable-fichier pour Erase, comme FuncParseTopLevel le               }
+  { fait deja pour son propre fichier temporaire. }
+  Erase(CgOutF);
+
+  { re-initialise les tables globales pour ne pas polluer Run reel }
+  ExprInit; StmtInit; SymInit; FuncDefInit; MethodDefInit;
+End;
+
+{ ------------------------------------------------------------ }
+{ TODO 22 - BACKEND BINAIRE .OBJ COFF WIN32                        }
+{ ------------------------------------------------------------ }
+{ Meme architecture EXACTE que DELPHI.PAS (memes projet, deja           }
+{ eprouvee - roadmap lui-meme) : le fichier .asm TEXTE (TODO 21) reste            }
+{ la SEULE sortie du generateur de code lui-meme ; ICI, une passe                    }
+{ COMPLETEMENT SEPAREE (BinAssembleFile) RELIT ce meme texte, ligne par                  }
+{ ligne, et encode chaque instruction en octets REELS (BinEmitInstr,                        }
+{ ModRM/SIB) - exactement comme le "AsmAssembleFile" de DELPHI.PAS relit                        }
+{ le sien. Portee volontairement scindee sur l ADRESSAGE (pas sur le                                }
+{ JEU D INSTRUCTIONS lui-meme, deja couvert au complet pour tout ce que                                 }
+{ TODO 21 peut emettre) : seuls le mode registre, "[BASE+disp32]" (TOUJOURS                                 }
+{ disp32, jamais disp8, meme simplification que DELPHI.PAS - evite tout                                        }
+{ le cas special EBP/SIB=101) et "[etiquette]" absolu (SANS registre de                                            }
+{ base) sont encodes - PAS d adressage base+INDEX (SIB avec un second                                                 }
+{ registre, ex. feu "[ESI+ECX]" - DELPHI.PAS lui-meme n encode jamais                                                     }
+{ cette forme non plus, voir la note de _GORT_STRLEN plus haut, retravaillee                                                 }
+{ pour ne plus en avoir besoin).                                                                                                }
+{ Fixups a DEUX genres seulement (REL32/ABS32), PAS trois, memes           }
+{ constatations que chez DELPHI.PAS (documentees en detail sur place) :          }
+{ un "IMP32" separe n apporterait rien ici - un REL32 vers un symbole             }
+{ externe non resolu (import Win32) reste simplement un REL32 EN ATTENTE, qui           }
+{ devient une VRAIE relocation COFF (le lieur externe s en chargera) au                        }
+{ lieu d etre corrige ici ; SEULS les REL32 vers une etiquette LOCALE de                            }
+{ la MEME section sont resolus directement ICI (le deplacement relatif                                 }
+{ entre deux points d une MEME section est invariant, quel que soit                                        }
+{ l endroit ou cette section finira par etre chargee - contrairement a                                        }
+{ une adresse ABSOLUE, qui ne peut JAMAIS etre connue avant l edition de                                          }
+{ liens, meme pour une cible du meme module : TOUT ABS32 devient donc                                                }
+{ TOUJOURS une relocation COFF, sans exception).                                                                         }
+{ ------------------------------------------------------------ }
+
+Const
+  BINSEC_TEXT = False;
+  BINSEC_DATA = True;
+
+Type
+  TBinFixKind = (BFX_REL32, BFX_ABS32);
+
+  TBinLabel = Record
+    Name   : TString;
+    IsData : Boolean;   { Faux = .text (BinCode) ; Vrai = .data (BinData) }
+    Ofs    : LongInt;
+  End;
+
+  TBinFixup = Record
+    IsData     : Boolean;   { section CONTENANT le champ 32 bits a corriger }
+    Pos        : LongInt;   { position de ce champ DANS cette section }
+    Kind       : TBinFixKind;
+    TargetName : TString;
+    Resolved   : Boolean;   { Vrai si deja corrige ICI (REL32 local) - EXCLU  }
+                             { de la table de relocations COFF ; Faux ->        }
+                             { devient une VRAIE relocation (WriteCOFFObj).        }
+  End;
+
+Var
+  BinCode       : Array[0..MAX_BIN - 1] Of Byte;
+  BinCodeLen    : LongInt;
+  BinData       : Array[0..MAX_BIN - 1] Of Byte;
+  BinDataLen    : LongInt;
+  BinCurIsData  : Boolean;
+
+  BinLabels     : Array[0..MAX_BIN_LABEL - 1] Of TBinLabel;
+  BinLabelCount : Integer;
+
+  BinFixups     : Array[0..MAX_BIN_FIXUP - 1] Of TBinFixup;
+  BinFixupCount : Integer;
+
+  BinImports     : Array[0..MAX_BIN_IMPORT - 1] Of TString;
+  BinImportCount : Integer;
+
+Procedure BinInit;
+Begin
+  BinCodeLen    := 0;
+  BinDataLen    := 0;
+  BinCurIsData  := BINSEC_TEXT;
+  BinLabelCount := 0;
+  BinFixupCount := 0;
+  BinImportCount:= 0;
+End;
+
+Function BinCurOfs: LongInt;
+Begin
+  If BinCurIsData Then BinCurOfs := BinDataLen Else BinCurOfs := BinCodeLen;
+End;
+
+Procedure BinEmit8(B: Integer);
+Begin
+  If BinCurIsData Then
+  Begin
+    If BinDataLen >= MAX_BIN Then
+    Begin
+      FatalError('assembleur : tampon .data plein (MAX_BIN)');
+      Exit;
+    End;
+    BinData[BinDataLen] := B And $FF;
+    Inc(BinDataLen);
+  End
+  Else
+  Begin
+    If BinCodeLen >= MAX_BIN Then
+    Begin
+      FatalError('assembleur : tampon .text plein (MAX_BIN)');
+      Exit;
+    End;
+    BinCode[BinCodeLen] := B And $FF;
+    Inc(BinCodeLen);
+  End;
+End;
+
+Procedure BinEmit16(W: Integer);
+Begin
+  BinEmit8(W);
+  BinEmit8(W Shr 8);
+End;
+
+Procedure BinEmit32(D: LongInt);
+Begin
+  BinEmit8(D);
+  BinEmit8(D Shr 8);
+  BinEmit8(D Shr 16);
+  BinEmit8(D Shr 24);
+End;
+
+{ BinPatch32 : ecrase 4 octets DEJA emis (toujours un PLACEHOLDER 0,     }
+{ pose par un BinEmit32(0) anterieur) - utilise par BinAddFixup lui-meme          }
+{ pour retrouver leur position, et par BinResolveFixups pour les                     }
+{ corriger une fois la cible connue. }
+Procedure BinPatch32(IsData: Boolean; Pos: LongInt; D: LongInt);
+Begin
+  If IsData Then
+  Begin
+    BinData[Pos]     := D And $FF;
+    BinData[Pos + 1] := (D Shr 8) And $FF;
+    BinData[Pos + 2] := (D Shr 16) And $FF;
+    BinData[Pos + 3] := (D Shr 24) And $FF;
+  End
+  Else
+  Begin
+    BinCode[Pos]     := D And $FF;
+    BinCode[Pos + 1] := (D Shr 8) And $FF;
+    BinCode[Pos + 2] := (D Shr 16) And $FF;
+    BinCode[Pos + 3] := (D Shr 24) And $FF;
+  End;
+End;
+
+Procedure BinDefineLabel(Const Name: TString);
+Begin
+  If BinLabelCount >= MAX_BIN_LABEL Then
+  Begin
+    WarnMsg('assembleur : table des etiquettes pleine (MAX_BIN_LABEL)');
+    Exit;
+  End;
+  BinLabels[BinLabelCount].Name   := Name;
+  BinLabels[BinLabelCount].IsData := BinCurIsData;
+  BinLabels[BinLabelCount].Ofs    := BinCurOfs;
+  Inc(BinLabelCount);
+End;
+
+Function BinFindLabel(Const Name: TString): Integer;
+Var I: Integer;
+Begin
+  BinFindLabel := -1;
+  For I := 0 To BinLabelCount - 1 Do
+    If BinLabels[I].Name = Name Then
+    Begin
+      BinFindLabel := I;
+      Exit;
+    End;
+End;
+
+Function BinFindImport(Const Name: TString): Integer;
+Var I: Integer;
+Begin
+  BinFindImport := -1;
+  For I := 0 To BinImportCount - 1 Do
+    If BinImports[I] = Name Then
+    Begin
+      BinFindImport := I;
+      Exit;
+    End;
+End;
+
+Procedure BinDeclareImport(Const Name: TString);
+Begin
+  If BinFindImport(Name) >= 0 Then Exit;
+  If BinImportCount >= MAX_BIN_IMPORT Then
+  Begin
+    WarnMsg('assembleur : table des imports pleine (MAX_BIN_IMPORT)');
+    Exit;
+  End;
+  BinImports[BinImportCount] := Name;
+  Inc(BinImportCount);
+End;
+
+{ BinAddFixup : appelee IMMEDIATEMENT APRES avoir deja emis 4 octets      }
+{ PLACEHOLDER (BinEmit32(0)) pour le champ a corriger - calcule Pos            }
+{ (position de CES 4 octets) a partir de la position COURANTE. }
+Procedure BinAddFixup(Kind: TBinFixKind; Const TargetName: TString);
+Begin
+  If BinFixupCount >= MAX_BIN_FIXUP Then
+  Begin
+    WarnMsg('assembleur : table des correctifs pleine (MAX_BIN_FIXUP)');
+    Exit;
+  End;
+  BinFixups[BinFixupCount].IsData     := BinCurIsData;
+  BinFixups[BinFixupCount].Pos        := BinCurOfs - 4;
+  BinFixups[BinFixupCount].Kind       := Kind;
+  BinFixups[BinFixupCount].TargetName := TargetName;
+  BinFixups[BinFixupCount].Resolved   := False;
+  Inc(BinFixupCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ Analyse d operandes texte (BinParseOperand) - le texte relu est      }
+{ TOUJOURS celui que ce MEME fichier a lui-meme ecrit (EmitInstr,          }
+{ TODO 21), jamais une entree externe/arbitraire - l analyse peut donc         }
+{ rester SIMPLE (formes fixes et connues) plutot qu un vrai parseur                 }
+{ d assembleur general.                                                                }
+{ ------------------------------------------------------------ }
+
+Type
+  TBinOpKind = (BOK_REG, BOK_IMM, BOK_MEM, BOK_LABEL);
+  TBinOperand = Record
+    Kind      : TBinOpKind;
+    RegNum    : Integer;    { BOK_REG : 0..7 (EAX..EDI, numerotation ModRM/SIB) }
+    ImmVal    : LongInt;    { BOK_IMM }
+    BaseReg   : Integer;    { BOK_MEM avec base : 0..7 ; -1 si absolu (etiquette) }
+    Disp      : LongInt;    { BOK_MEM avec base : deplacement }
+    LabelName : TString;    { BOK_MEM absolu (etiquette entre crochets), OU        }
+                             { BOK_LABEL (cible de JMP/Jcc/CALL, ou LEA absolu)         }
+    IsByte    : Boolean;    { Vrai si prefixe par "BYTE PTR" (sinon DWORD implicite) }
+  End;
+
+Function BinTrim(Const S: TString): TString;
+Var I, J: Integer;
+Begin
+  I := 1;
+  While (I <= Length(S)) And (S[I] = ' ') Do Inc(I);
+  J := Length(S);
+  While (J >= I) And (S[J] = ' ') Do Dec(J);
+  If J < I Then BinTrim := '' Else BinTrim := Copy(S, I, J - I + 1);
+End;
+
+Function BinStrToInt(Const S: TString): LongInt;
+Var N: LongInt; Code: Integer;
+Begin
+  Val(S, N, Code);
+  BinStrToInt := N;
+End;
+
+{ BinReg32 : numerotation ModRM/SIB standard 80386 - EAX=0 ECX=1 EDX=2   }
+{ EBX=3 ESP=4 EBP=5 ESI=6 EDI=7 (meme convention que DELPHI.PAS, memes          }
+{ projet) - -1 si ce n est pas un nom de registre 32 bits reconnu. }
+Function BinReg32(Const Name: TString): Integer;
+Begin
+  If      Name = 'EAX' Then BinReg32 := 0
+  Else If Name = 'ECX' Then BinReg32 := 1
+  Else If Name = 'EDX' Then BinReg32 := 2
+  Else If Name = 'EBX' Then BinReg32 := 3
+  Else If Name = 'ESP' Then BinReg32 := 4
+  Else If Name = 'EBP' Then BinReg32 := 5
+  Else If Name = 'ESI' Then BinReg32 := 6
+  Else If Name = 'EDI' Then BinReg32 := 7
+  Else BinReg32 := -1;
+End;
+
+Function BinParseOperand(S: TString): TBinOperand;
+Var Op: TBinOperand; Inner, NumPart: TString; SignPos, I: Integer; Neg: Boolean;
+Begin
+  Op.Kind      := BOK_REG;
+  Op.RegNum    := -1;
+  Op.ImmVal    := 0;
+  Op.BaseReg   := -1;
+  Op.Disp      := 0;
+  Op.LabelName := '';
+  Op.IsByte    := False;
+
+  S := BinTrim(S);
+  If Copy(S, 1, 9) = 'BYTE PTR ' Then
+  Begin
+    Op.IsByte := True;
+    S := BinTrim(Copy(S, 10, Length(S) - 9));
+  End
+  Else If Copy(S, 1, 10) = 'DWORD PTR ' Then
+    S := BinTrim(Copy(S, 11, Length(S) - 10));
+
+  If (Length(S) > 0) And (S[1] = '[') Then
+  Begin
+    Op.Kind := BOK_MEM;
+    Inner := Copy(S, 2, Length(S) - 2);   { retire "[" et "]" }
+    SignPos := 0;
+    For I := 2 To Length(Inner) Do   { position 1 ne peut pas etre un signe de deplacement }
+      If (Inner[I] = '+') Or (Inner[I] = '-') Then
+      Begin
+        SignPos := I;
+        Break;
+      End;
+    If SignPos > 0 Then
+    Begin
+      Op.BaseReg := BinReg32(Copy(Inner, 1, SignPos - 1));
+      Neg     := (Inner[SignPos] = '-');
+      NumPart := Copy(Inner, SignPos + 1, Length(Inner) - SignPos);
+      Op.Disp := BinStrToInt(NumPart);
+      If Neg Then Op.Disp := -Op.Disp;
+    End
+    Else
+    Begin
+      Op.BaseReg := BinReg32(Inner);
+      If Op.BaseReg < 0 Then
+        Op.LabelName := Inner;   { "[etiquette]" absolu, sans registre de base }
+    End;
+    BinParseOperand := Op;
+    Exit;
+  End;
+
+  Op.RegNum := BinReg32(S);
+  If Op.RegNum >= 0 Then
+  Begin
+    Op.Kind := BOK_REG;
+    BinParseOperand := Op;
+    Exit;
+  End;
+
+  If (Length(S) > 0) And ((S[1] = '-') Or ((S[1] >= '0') And (S[1] <= '9'))) Then
+  Begin
+    Op.Kind   := BOK_IMM;
+    Op.ImmVal := BinStrToInt(S);
+    BinParseOperand := Op;
+    Exit;
+  End;
+
+  Op.Kind      := BOK_LABEL;
+  Op.LabelName := S;
+  BinParseOperand := Op;
+End;
+
+{ BinEmitModRM : coeur PARTAGE ModRM(+disp32) de tous les encodeurs      }
+{ ci-dessous - reprend fidelement la simplification de DELPHI.PAS               }
+{ (memes projet) : TOUJOURS un deplacement complet sur 32 bits quand un             }
+{ registre de base est present (jamais Mod=01/disp8), ce qui evite                    }
+{ completement le cas particulier EBP/SIB=101 sans perdre de generalite                    }
+{ pour ce dont ce compilateur a reellement besoin. Aucun adressage                            }
+{ BASE+INDEX (SIB avec un second registre) n est gere - hors de portee                            }
+{ documentee (voir l en-tete de section) ; Mem.Kind doit toujours etre                                 }
+{ BOK_REG (registre direct) ou BOK_MEM (base+disp32 ou absolu+etiquette).                                  }
+Procedure BinEmitModRM(RegField: Integer; Const Mem: TBinOperand);
+Begin
+  If Mem.Kind = BOK_REG Then
+  Begin
+    BinEmit8($C0 Or (RegField Shl 3) Or Mem.RegNum);
+    Exit;
+  End;
+  If Mem.BaseReg >= 0 Then
+  Begin
+    BinEmit8($80 Or (RegField Shl 3) Or Mem.BaseReg);
+    BinEmit32(Mem.Disp);
+    Exit;
+  End;
+  { absolu (etiquette, sans registre de base) : Mod=00/RM=101 - CAS       }
+  { PARTICULIER du 80386 signifiant "disp32 SEUL suit, aucun octet SIB"      }
+  { (uniquement quand Mod=00 - ne pas confondre avec RM=100, qui lui             }
+  { signifie TOUJOURS "un octet SIB suit", quel que soit Mod). }
+  BinEmit8((RegField Shl 3) Or 5);
+  BinEmit32(0);
+  BinAddFixup(BFX_ABS32, Mem.LabelName);
+End;
+
+{ ------------------------------------------------------------ }
+{ Encodeurs par mnemonique (TODO 22) - un PAR forme reellement       }
+{ EMISE par le generateur de code (TODO 21) ou la bibliotheque             }
+{ runtime (TODO 21) - toute AUTRE forme est un arret propre                  }
+{ (FatalError, jamais un octet errone silencieux), exactement le                  }
+{ meme principe "portee volontairement restreinte, documentee" que                  }
+{ chaque section precedente de ce fichier.                                              }
+{ ------------------------------------------------------------ }
+
+Procedure BinEncodeMov(Const Op1Text, Op2Text: TString);
+Var Op1, Op2: TBinOperand;
+Begin
+  Op1 := BinParseOperand(Op1Text);
+  Op2 := BinParseOperand(Op2Text);
+  If Op1.Kind = BOK_REG Then
+  Begin
+    If Op2.Kind = BOK_IMM Then
+    Begin
+      BinEmit8($B8 Or Op1.RegNum);
+      BinEmit32(Op2.ImmVal);
+      Exit;
+    End;
+    { "MOV reg,reg" OU "MOV reg,[mem]" - la meme forme ModRM couvre les    }
+    { deux (BinEmitModRM sait deja distinguer BOK_REG de BOK_MEM). }
+    BinEmit8($8B);
+    BinEmitModRM(Op1.RegNum, Op2);
+    Exit;
+  End;
+  { destination memoire : "MOV [mem],reg" (jamais "MOV [mem],imm" dans   }
+  { ce que le TODO 21 emet - la valeur passe TOUJOURS par EAX d abord). }
+  BinEmit8($89);
+  BinEmitModRM(Op2.RegNum, Op1);
+End;
+
+Procedure BinEncodePush(Const Op1Text: TString);
+Var Op1: TBinOperand;
+Begin
+  Op1 := BinParseOperand(Op1Text);
+  If Op1.Kind = BOK_REG Then
+  Begin
+    BinEmit8($50 Or Op1.RegNum);
+    Exit;
+  End;
+  If Op1.Kind = BOK_IMM Then
+  Begin
+    BinEmit8($68);
+    BinEmit32(Op1.ImmVal);
+    Exit;
+  End;
+  If Op1.Kind = BOK_MEM Then
+  Begin
+    BinEmit8($FF);
+    BinEmitModRM(6, Op1);   { groupe FF /6 = PUSH r/m32 }
+    Exit;
+  End;
+  FatalError('assembleur : forme de PUSH non couverte : ' + Op1Text);
+End;
+
+Procedure BinEncodePop(Const Op1Text: TString);
+Var Op1: TBinOperand;
+Begin
+  Op1 := BinParseOperand(Op1Text);
+  If Op1.Kind = BOK_REG Then
+  Begin
+    BinEmit8($58 Or Op1.RegNum);
+    Exit;
+  End;
+  FatalError('assembleur : forme de POP non couverte : ' + Op1Text);
+End;
+
+Procedure BinEncodeLea(Const Op1Text, Op2Text: TString);
+Var Op1, Op2: TBinOperand;
+Begin
+  Op1 := BinParseOperand(Op1Text);
+  Op2 := BinParseOperand(Op2Text);
+  If (Op1.Kind <> BOK_REG) Or (Op2.Kind <> BOK_MEM) Then
+  Begin
+    FatalError('assembleur : forme de LEA non couverte : ' + Op1Text + ',' + Op2Text);
+    Exit;
+  End;
+  BinEmit8($8D);
+  BinEmitModRM(Op1.RegNum, Op2);
+End;
+
+{ BinEncodeAlu : ADD/SUB/AND/OR/XOR/CMP - deux formes, "reg,reg" (dest=      }
+{ champ reg de ModRM, source=r/m - ordre choisi arbitrairement, sans          }
+{ consequence pour deux OPERANDES REGISTRE) et "reg,imm32" (groupe 81,             }
+{ sous-opcode dans le champ reg de ModRM) - PLUS le cas 8 bits (opcode 80,                }
+{ imm8) pour l UNIQUE forme "CMP BYTE PTR [...],imm" de _GORT_STRLEN. }
+Procedure BinEncodeAlu(Const Mnemonic, Op1Text, Op2Text: TString);
+Var Op1, Op2: TBinOperand; SubOp, Opc: Integer;
+Begin
+  Op1 := BinParseOperand(Op1Text);
+  Op2 := BinParseOperand(Op2Text);
+
+  If      Mnemonic = 'ADD' Then Begin Opc := $03; SubOp := 0; End
+  Else If Mnemonic = 'OR'  Then Begin Opc := $0B; SubOp := 1; End
+  Else If Mnemonic = 'AND' Then Begin Opc := $23; SubOp := 4; End
+  Else If Mnemonic = 'SUB' Then Begin Opc := $2B; SubOp := 5; End
+  Else If Mnemonic = 'XOR' Then Begin Opc := $33; SubOp := 6; End
+  Else If Mnemonic = 'CMP' Then Begin Opc := $3B; SubOp := 7; End
+  Else
+  Begin
+    FatalError('assembleur : operateur arithmetique/logique non couvert : ' + Mnemonic);
+    Exit;
+  End;
+
+  If Op2.Kind = BOK_IMM Then
+  Begin
+    If Op1.IsByte Then
+    Begin
+      BinEmit8($80);
+      BinEmitModRM(SubOp, Op1);
+      BinEmit8(Op2.ImmVal);
+    End
+    Else
+    Begin
+      BinEmit8($81);
+      BinEmitModRM(SubOp, Op1);
+      BinEmit32(Op2.ImmVal);
+    End;
+    Exit;
+  End;
+
+  BinEmit8(Opc);
+  BinEmitModRM(Op1.RegNum, Op2);
+End;
+
+Procedure BinEncodeTest(Const Op1Text, Op2Text: TString);
+Var Op1, Op2: TBinOperand;
+Begin
+  Op1 := BinParseOperand(Op1Text);
+  Op2 := BinParseOperand(Op2Text);
+  BinEmit8($85);
+  BinEmitModRM(Op2.RegNum, Op1);
+End;
+
+Procedure BinEncodeImul(Const Op1Text, Op2Text: TString);
+Var Op1, Op2: TBinOperand;
+Begin
+  Op1 := BinParseOperand(Op1Text);
+  Op2 := BinParseOperand(Op2Text);
+  BinEmit8($0F);
+  BinEmit8($AF);
+  BinEmitModRM(Op1.RegNum, Op2);
+End;
+
+Procedure BinEncodeIdiv(Const Op1Text: TString);
+Var Op1: TBinOperand;
+Begin
+  Op1 := BinParseOperand(Op1Text);
+  BinEmit8($F7);
+  BinEmitModRM(7, Op1);
+End;
+
+Procedure BinEncodeNotNeg(Const Mnemonic, Op1Text: TString);
+Var Op1: TBinOperand;
+Begin
+  Op1 := BinParseOperand(Op1Text);
+  BinEmit8($F7);
+  If Mnemonic = 'NOT' Then BinEmitModRM(2, Op1) Else BinEmitModRM(3, Op1);
+End;
+
+Procedure BinEncodeIncDec(Const Mnemonic, Op1Text: TString);
+Var Op1: TBinOperand;
+Begin
+  Op1 := BinParseOperand(Op1Text);
+  If Op1.Kind <> BOK_REG Then
+  Begin
+    FatalError('assembleur : forme de INC/DEC non couverte : ' + Op1Text);
+    Exit;
+  End;
+  If Mnemonic = 'INC' Then BinEmit8($40 Or Op1.RegNum) Else BinEmit8($48 Or Op1.RegNum);
+End;
+
+{ BinEncodeShift : SHL/SAR/SHR - SEULEMENT la forme "reg,CL" (comptage    }
+{ dans CL, groupe D3) - ce compilateur n emet jamais de decalage par           }
+{ une constante litterale immediate. }
+Procedure BinEncodeShift(Const Mnemonic, Op1Text, Op2Text: TString);
+Var Op1: TBinOperand;
+Begin
+  If BinTrim(Op2Text) <> 'CL' Then
+  Begin
+    FatalError('assembleur : forme de decalage non couverte (seul ",CL" ' +
+      'est gere) : ' + Op2Text);
+    Exit;
+  End;
+  Op1 := BinParseOperand(Op1Text);
+  BinEmit8($D3);
+  If Mnemonic = 'SHL' Then BinEmitModRM(4, Op1)
+  Else If Mnemonic = 'SAR' Then BinEmitModRM(7, Op1)
+  Else If Mnemonic = 'SHR' Then BinEmitModRM(5, Op1)
+  Else FatalError('assembleur : mnemonique de decalage non couverte : ' + Mnemonic);
+End;
+
+Procedure BinEncodeJmp(Const Op1Text: TString);
+Begin
+  BinEmit8($E9);
+  BinEmit32(0);
+  BinAddFixup(BFX_REL32, BinTrim(Op1Text));
+End;
+
+{ BinEncodeJcc : forme LONGUE uniquement (0F 8x + disp32), jamais la     }
+{ forme courte (7x + disp8) - meme simplification que DELPHI.PAS (memes         }
+{ projet) : correcte dans TOUS les cas (une portee plus longue n est               }
+{ jamais un probleme), juste pas la plus compacte possible. }
+Procedure BinEncodeJcc(Const Mnemonic, Op1Text: TString);
+Var Cond: Integer;
+Begin
+  If      (Mnemonic = 'JE')  Or (Mnemonic = 'JZ')  Then Cond := $84
+  Else If (Mnemonic = 'JNE') Or (Mnemonic = 'JNZ') Then Cond := $85
+  Else If Mnemonic = 'JL'  Then Cond := $8C
+  Else If Mnemonic = 'JLE' Then Cond := $8E
+  Else If Mnemonic = 'JG'  Then Cond := $8F
+  Else If Mnemonic = 'JGE' Then Cond := $8D
+  Else
+  Begin
+    FatalError('assembleur : branchement conditionnel non couvert : ' + Mnemonic);
+    Exit;
+  End;
+  BinEmit8($0F);
+  BinEmit8(Cond);
+  BinEmit32(0);
+  BinAddFixup(BFX_REL32, BinTrim(Op1Text));
+End;
+
+{ BinEncodeCall : E8+disp32 - IDENTIQUE que la cible soit une etiquette   }
+{ LOCALE (fonction utilisateur, "_GOF_Add") ou un IMPORT externe decore              }
+{ stdcall ("_WriteFile@20") - la DISTINCTION ne se fait qu a la resolution               }
+{ (BinResolveFixups/WriteCOFFObj), PAR NOM, jamais ici. }
+Procedure BinEncodeCall(Const Op1Text: TString);
+Begin
+  BinEmit8($E8);
+  BinEmit32(0);
+  BinAddFixup(BFX_REL32, BinTrim(Op1Text));
+End;
+
+Procedure BinSplitMnemonic(Const Line: TString; Var Mnemonic, Rest: TString);
+Var P: Integer;
+Begin
+  P := Pos(' ', Line);
+  If P = 0 Then
+  Begin
+    Mnemonic := Line;
+    Rest := '';
+  End
+  Else
+  Begin
+    Mnemonic := Copy(Line, 1, P - 1);
+    Rest := BinTrim(Copy(Line, P + 1, Length(Line) - P));
+  End;
+End;
+
+{ BinSplitOperands : coupe sur la PREMIERE virgule - sans risque ici    }
+{ puisqu aucune forme emise par le TODO 21 ne place jamais de virgule           }
+{ a l interieur de crochets (pas d adressage indexe/mis a l echelle,               }
+{ voir l en-tete de section). }
+Procedure BinSplitOperands(Const S: TString; Var Op1, Op2: TString);
+Var P: Integer;
+Begin
+  P := Pos(',', S);
+  If P = 0 Then
+  Begin
+    Op1 := S;
+    Op2 := '';
+  End
+  Else
+  Begin
+    Op1 := BinTrim(Copy(S, 1, P - 1));
+    Op2 := BinTrim(Copy(S, P + 1, Length(S) - P));
+  End;
+End;
+
+{ BinEmitInstr : point d entree UNIQUE (dispatch par mnemonique) pour    }
+{ encoder une ligne d instruction DEJA extraite (sans l indentation, voir            }
+{ BinAssembleFile plus bas, qui l isole des lignes d etiquette/directive). }
+Procedure BinEmitInstr(Const Line: TString);
+Var Mnemonic, Rest, Op1, Op2: TString;
+Begin
+  BinSplitMnemonic(BinTrim(Line), Mnemonic, Rest);
+  BinSplitOperands(Rest, Op1, Op2);
+
+  If Mnemonic = 'MOV' Then Begin BinEncodeMov(Op1, Op2); Exit; End;
+  If Mnemonic = 'PUSH' Then Begin BinEncodePush(Op1); Exit; End;
+  If Mnemonic = 'POP' Then Begin BinEncodePop(Op1); Exit; End;
+  If Mnemonic = 'LEA' Then Begin BinEncodeLea(Op1, Op2); Exit; End;
+  If (Mnemonic = 'ADD') Or (Mnemonic = 'SUB') Or (Mnemonic = 'AND') Or
+     (Mnemonic = 'OR') Or (Mnemonic = 'XOR') Or (Mnemonic = 'CMP') Then
+  Begin
+    BinEncodeAlu(Mnemonic, Op1, Op2);
+    Exit;
+  End;
+  If Mnemonic = 'TEST' Then Begin BinEncodeTest(Op1, Op2); Exit; End;
+  If Mnemonic = 'IMUL' Then Begin BinEncodeImul(Op1, Op2); Exit; End;
+  If Mnemonic = 'IDIV' Then Begin BinEncodeIdiv(Op1); Exit; End;
+  If (Mnemonic = 'NOT') Or (Mnemonic = 'NEG') Then
+  Begin
+    BinEncodeNotNeg(Mnemonic, Op1);
+    Exit;
+  End;
+  If (Mnemonic = 'INC') Or (Mnemonic = 'DEC') Then
+  Begin
+    BinEncodeIncDec(Mnemonic, Op1);
+    Exit;
+  End;
+  If (Mnemonic = 'SHL') Or (Mnemonic = 'SAR') Or (Mnemonic = 'SHR') Then
+  Begin
+    BinEncodeShift(Mnemonic, Op1, Op2);
+    Exit;
+  End;
+  If Mnemonic = 'JMP' Then Begin BinEncodeJmp(Op1); Exit; End;
+  If (Length(Mnemonic) >= 2) And (Mnemonic[1] = 'J') Then
+  Begin
+    BinEncodeJcc(Mnemonic, Op1);
+    Exit;
+  End;
+  If Mnemonic = 'CALL' Then Begin BinEncodeCall(Op1); Exit; End;
+  If Mnemonic = 'RET' Then Begin BinEmit8($C3); Exit; End;
+  If Mnemonic = 'CDQ' Then Begin BinEmit8($99); Exit; End;
+
+  FatalError('assembleur : mnemonique non geree (portee volontairement ' +
+    'restreinte a ce que le TODO 21 emet reellement) : ' + Mnemonic);
+End;
+
+{ BinAssembleDataLine : une ligne de .DATA est TOUJOURS de la forme      }
+{ "NOM  DD <entier>" ou "NOM  DB <entier>" ou "NOM  DB ""texte"", 0"                 }
+{ (EmitDataSeg, TODO 21 - jamais rien d autre) - deux espaces separent               }
+{ TOUJOURS le nom de la directive. }
+Procedure BinAssembleDataLine(Const Line: TString);
+Var P, Q: Integer; Name, Rest, ValuePart, TextPart: TString;
+Begin
+  P := Pos('  ', Line);
+  If P = 0 Then Exit;
+  Name := Copy(Line, 1, P - 1);
+  Rest := BinTrim(Copy(Line, P + 1, Length(Line) - P));
+  BinDefineLabel(Name);
+
+  If Copy(Rest, 1, 3) = 'DD ' Then
+  Begin
+    BinEmit32(BinStrToInt(BinTrim(Copy(Rest, 4, Length(Rest) - 3))));
+    Exit;
+  End;
+
+  If Copy(Rest, 1, 3) = 'DB ' Then
+  Begin
+    ValuePart := BinTrim(Copy(Rest, 4, Length(Rest) - 3));
+    If (Length(ValuePart) > 0) And (ValuePart[1] = '"') Then
+    Begin
+      { "texte", 0 - trouve la guillemet FERMANTE (le texte lui-meme ne     }
+      { contient jamais de guillemet - deja garanti par le lexeur Go,             }
+      { TODO 02) puis emet chaque octet suivi d un NUL terminal unique               }
+      { (le ", 0" final n a pas besoin d etre analyse separement : c est                  }
+      { TOUJOURS exactement ce que EmitDataSeg ecrit). }
+      Q := 2;
+      While (Q <= Length(ValuePart)) And (ValuePart[Q] <> '"') Do Inc(Q);
+      TextPart := Copy(ValuePart, 2, Q - 2);
+      For P := 1 To Length(TextPart) Do
+        BinEmit8(Ord(TextPart[P]));
+      BinEmit8(0);
+    End
+    Else
+      BinEmit8(BinStrToInt(ValuePart));
+    Exit;
+  End;
+End;
+
+{ BinAssembleFile : RELIT le fichier .asm TEXTE (deja ecrit par le      }
+{ generateur de code, TODO 21) et encode chaque instruction/donnee en             }
+{ octets reels - passe COMPLETEMENT SEPAREE de l emission textuelle,                 }
+{ exactement comme le "AsmAssembleFile" de DELPHI.PAS (memes projet). }
+Procedure BinAssembleFile(Const AsmFileName: TString);
+Var F: Text; Line, ExternName: TString; P: Integer;
+Begin
+  BinInit;
+  Assign(F, AsmFileName);
+  Reset(F);
+  While Not Eof(F) Do
+  Begin
+    ReadLn(F, Line);
+    Line := BinTrim(Line);
+    If Length(Line) = 0 Then Continue;
+    If Line[1] = ';' Then Continue;
+
+    If Line = '.386' Then Continue;
+    If Copy(Line, 1, 6) = '.MODEL' Then Continue;
+    If Line = '.DATA' Then Begin BinCurIsData := BINSEC_DATA; Continue; End;
+    If Line = '.CODE' Then Begin BinCurIsData := BINSEC_TEXT; Continue; End;
+
+    If Copy(Line, 1, 6) = 'EXTRN ' Then
+    Begin
+      ExternName := Copy(Line, 7, Length(Line) - 6);
+      P := Pos(':', ExternName);
+      If P > 0 Then ExternName := Copy(ExternName, 1, P - 1);
+      BinDeclareImport(ExternName);
+      Continue;
+    End;
+
+    If Copy(Line, 1, 4) = 'END ' Then Break;   { fin logique du fichier }
+
+    If Line[Length(Line)] = ':' Then
+    Begin
+      BinDefineLabel(Copy(Line, 1, Length(Line) - 1));
+      Continue;
+    End;
+
+    If BinCurIsData Then
+      BinAssembleDataLine(Line)
+    Else
+      BinEmitInstr(Line);
+  End;
+  Close(F);
+End;
+
+{ BinResolveFixups : SEULS les REL32 dont la cible est une ETIQUETTE     }
+{ LOCALE de la MEME section sont resolus ICI (deplacement invariant,           }
+{ quel que soit l endroit ou la section finira par etre chargee) - TOUT             }
+{ le reste (REL32 vers un import externe, ET tout ABS32 sans exception,                 }
+{ meme vers une etiquette locale - une adresse ABSOLUE ne peut JAMAIS               }
+{ etre connue avant l edition de liens) reste marque Resolved=Faux et                  }
+{ devient une VRAIE relocation COFF dans WriteCOFFObj. }
+Procedure BinResolveFixups;
+Var I, LI: Integer; Disp: LongInt;
+Begin
+  For I := 0 To BinFixupCount - 1 Do
+    If BinFixups[I].Kind = BFX_REL32 Then
+    Begin
+      LI := BinFindLabel(BinFixups[I].TargetName);
+      If (LI >= 0) And (BinLabels[LI].IsData = BinFixups[I].IsData) Then
+      Begin
+        Disp := BinLabels[LI].Ofs - (BinFixups[I].Pos + 4);
+        BinPatch32(BinFixups[I].IsData, BinFixups[I].Pos, Disp);
+        BinFixups[I].Resolved := True;
+      End;
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteCOFFObj : ecrit un vrai fichier .OBJ COFF Win32          }
+{ (IMAGE_FILE_HEADER, Machine=I386) - DEUX sections seulement, .text        }
+{ et .data (ni .rdata ni .bss : les litteraux chaine vont directement          }
+{ dans .data, meme simplification que DELPHI.PAS/memes projet). Toute            }
+{ relocation restante APRES BinResolveFixups (REL32 vers un import                  }
+{ externe, ou N IMPORTE QUEL ABS32) devient une VRAIE relocation COFF               }
+{ (IMAGE_REL_I386_REL32/DIR32) - au lieur externe de la resoudre.                        }
+{ ------------------------------------------------------------ }
+
+{ PE_MACHINE_I386/COFF_REL_I386_DIR32/COFF_REL_I386_REL32/                }
+{ COFF_SYM_CLASS_EXTERNAL/COFF_SYM_CLASS_STATIC/PE_SCN_CNT_*/                  }
+{ PE_SCN_MEM_* sont DEJA reservees depuis le TODO 01 (constantes                     }
+{ PE/COFF "identiques aux autres compilateurs de ce projet") - la                        }
+{ combinaison PE_SCN_CNT_CODE Or PE_SCN_MEM_EXECUTE Or PE_SCN_MEM_READ                        }
+{ redonne exactement $60000020, et PE_SCN_CNT_INIT_DATA Or                                        }
+{ PE_SCN_MEM_READ Or PE_SCN_MEM_WRITE redonne exactement $C0000040 -                                  }
+{ inutile de redefinir ces valeurs. }
+
+Procedure WriteCOFFObj(Const ObjFileName: TString);
+Var
+  ObjF : File;
+  StrTab : TString;
+  I, LI, TargetSymIdx : Integer;
+  TextRelocCount, DataRelocCount, SymCountTotal : Integer;
+  SecHdrOfs, TextDataOfs, DataDataOfs, TextRelocOfs, DataRelocOfs, SymTabOfs : LongInt;
+
+  Function StrTabAdd(Const Name: TString): LongInt;
+  Begin
+    StrTabAdd := Length(StrTab) + 4;
+    StrTab := StrTab + Name + Chr(0);
+  End;
+
+  Procedure OW8(B: Integer);
+  Var Buf: Byte;
+  Begin
+    Buf := B And $FF;
+    BlockWrite(ObjF, Buf, 1);
+  End;
+
+  Procedure OW16(W: Integer);
+  Begin
+    OW8(W);
+    OW8(W Shr 8);
+  End;
+
+  Procedure OW32(D: LongInt);
+  Begin
+    OW8(D);
+    OW8(D Shr 8);
+    OW8(D Shr 16);
+    OW8(D Shr 24);
+  End;
+
+  Procedure OWStr(Const S: TString);
+  Var K: Integer;
+  Begin
+    For K := 1 To Length(S) Do OW8(Ord(S[K]));
+  End;
+
+  Procedure OWZeros(N: Integer);
+  Var K: Integer;
+  Begin
+    For K := 1 To N Do OW8(0);
+  End;
+
+  { les noms de section (".text"/".data") sont TOUJOURS assez courts       }
+  { pour l inscription DIRECTE sur 8 octets - jamais besoin de la table          }
+  { des chaines pour eux (reservee aux SYMBOLES, plus bas). }
+  Procedure OWSecName(Const Name: TString);
+  Begin
+    OWStr(Name);
+    If Length(Name) < 8 Then OWZeros(8 - Length(Name));
+  End;
+
+Begin
+  TextRelocCount := 0;
+  DataRelocCount := 0;
+  For I := 0 To BinFixupCount - 1 Do
+    If Not BinFixups[I].Resolved Then
+    Begin
+      If BinFixups[I].IsData Then Inc(DataRelocCount) Else Inc(TextRelocCount);
+    End;
+
+  SecHdrOfs    := 20;                          { taille de IMAGE_FILE_HEADER }
+  TextDataOfs  := SecHdrOfs + 40 * 2;           { 2 en-tetes de section, 40 octets chacune }
+  DataDataOfs  := TextDataOfs + BinCodeLen;
+  TextRelocOfs := DataDataOfs + BinDataLen;
+  DataRelocOfs := TextRelocOfs + TextRelocCount * 10;
+  SymTabOfs    := DataRelocOfs + DataRelocCount * 10;
+  SymCountTotal:= 2 + BinLabelCount + BinImportCount;
+
+  StrTab := '';
+  Assign(ObjF, ObjFileName);
+  Rewrite(ObjF, 1);
+
+  { IMAGE_FILE_HEADER (20 octets) }
+  OW16(PE_MACHINE_I386);
+  OW16(2);                   { NumberOfSections : .text + .data uniquement }
+  OW32(0);                   { TimeDateStamp }
+  OW32(SymTabOfs);           { PointerToSymbolTable }
+  OW32(SymCountTotal);       { NumberOfSymbols }
+  OW16(0);                   { SizeOfOptionalHeader (aucun en .OBJ) }
+  OW16(0);                   { Characteristics }
+
+  { en-tetes de section (40 octets chacune) }
+  OWSecName('.text');
+  OW32(0); OW32(0);          { VirtualSize/VirtualAddress : sans objet en .OBJ }
+  OW32(BinCodeLen);
+  OW32(TextDataOfs);
+  OW32(TextRelocOfs);
+  OW32(0);
+  OW16(TextRelocCount);
+  OW16(0);
+  OW32(PE_SCN_CNT_CODE Or PE_SCN_MEM_EXECUTE Or PE_SCN_MEM_READ);
+
+  OWSecName('.data');
+  OW32(0); OW32(0);
+  OW32(BinDataLen);
+  OW32(DataDataOfs);
+  OW32(DataRelocOfs);
+  OW32(0);
+  OW16(DataRelocCount);
+  OW16(0);
+  OW32(PE_SCN_CNT_INIT_DATA Or PE_SCN_MEM_READ Or PE_SCN_MEM_WRITE);
+
+  { octets bruts des deux sections }
+  If BinCodeLen > 0 Then BlockWrite(ObjF, BinCode, BinCodeLen);
+  If BinDataLen > 0 Then BlockWrite(ObjF, BinData, BinDataLen);
+
+  { relocations .text (10 octets chacune), puis .data - un symbole cible   }
+  { est soit une ETIQUETTE locale (index 2+LI, voir la table des                    }
+  { symboles plus bas) soit un IMPORT externe (index 2+BinLabelCount+II). }
+  For I := 0 To BinFixupCount - 1 Do
+    If (Not BinFixups[I].Resolved) And (Not BinFixups[I].IsData) Then
+    Begin
+      LI := BinFindLabel(BinFixups[I].TargetName);
+      If LI >= 0 Then TargetSymIdx := 2 + LI
+      Else TargetSymIdx := 2 + BinLabelCount + BinFindImport(BinFixups[I].TargetName);
+      OW32(BinFixups[I].Pos);
+      OW32(TargetSymIdx);
+      If BinFixups[I].Kind = BFX_REL32 Then OW16(COFF_REL_I386_REL32) Else OW16(COFF_REL_I386_DIR32);
+    End;
+  For I := 0 To BinFixupCount - 1 Do
+    If (Not BinFixups[I].Resolved) And BinFixups[I].IsData Then
+    Begin
+      LI := BinFindLabel(BinFixups[I].TargetName);
+      If LI >= 0 Then TargetSymIdx := 2 + LI
+      Else TargetSymIdx := 2 + BinLabelCount + BinFindImport(BinFixups[I].TargetName);
+      OW32(BinFixups[I].Pos);
+      OW32(TargetSymIdx);
+      If BinFixups[I].Kind = BFX_REL32 Then OW16(COFF_REL_I386_REL32) Else OW16(COFF_REL_I386_DIR32);
+    End;
+
+  { table des symboles (18 octets chacun) : .text puis .data (les DEUX      }
+  { symboles de SECTION eux-memes, indices 0/1), puis un par etiquette             }
+  { (indices 2..2+BinLabelCount-1 - PUBLIC par simplification, aucun               }
+  { suivi STATIC/PUBLIC reel, meme choix documente que DELPHI.PAS), puis                }
+  { un par import externe (section 0 = non defini ici, au lieur de le                     }
+  { resoudre). Chaque nom passe TOUJOURS par la table des chaines (jamais                    }
+  { la forme "inline sur 8 octets"), meme simplification que DELPHI.PAS.                        }
+  OW32(0); OW32(StrTabAdd('.text'));
+  OW32(0); OW16(1); OW16(0); OW8(COFF_SYM_CLASS_STATIC); OW8(0);
+
+  OW32(0); OW32(StrTabAdd('.data'));
+  OW32(0); OW16(2); OW16(0); OW8(COFF_SYM_CLASS_STATIC); OW8(0);
+
+  For I := 0 To BinLabelCount - 1 Do
+  Begin
+    OW32(0); OW32(StrTabAdd(BinLabels[I].Name));
+    OW32(BinLabels[I].Ofs);
+    If BinLabels[I].IsData Then OW16(2) Else OW16(1);
+    OW16(0);
+    OW8(COFF_SYM_CLASS_EXTERNAL);
+    OW8(0);
+  End;
+
+  For I := 0 To BinImportCount - 1 Do
+  Begin
+    OW32(0); OW32(StrTabAdd(BinImports[I]));
+    OW32(0); OW16(0);
+    OW16(0);
+    OW8(COFF_SYM_CLASS_EXTERNAL);
+    OW8(0);
+  End;
+
+  { table des chaines : prefixe de longueur sur 4 octets (SE COMPTANT      }
+  { LUI-MEME) puis les entrees "nom" + NUL concatenees. }
+  OW32(Length(StrTab) + 4);
+  OWStr(StrTab);
+
+  Close(ObjF);
+End;
+
+{ ------------------------------------------------------------ }
+{ BinEncoderSelfTest (TODO 24) : LACUNE reelle comblee par cet audit -    }
+{ BinObjSelfTest/PEExeSelfTest (TODO 22/23) ne verifient que la                  }
+{ STRUCTURE d ensemble d un fichier compile (Machine/NumberOfSections/                 }
+{ Subsystem/tailles) - jamais un SEUL opcode/ModRM precis. Ici,                              }
+{ BinEmitInstr est appelee DIRECTEMENT (BinInit avant chaque cas pour                            }
+{ repartir d un tampon .text vide) et BinCode est inspecte OCTET PAR                                 }
+{ OCTET contre la valeur EXACTE attendue - le niveau de rigueur qui                                      }
+{ aurait le mieux protege contre le genre d erreur d encodage (mauvais                                       }
+{ opcode/ModRM) qu aucun auto-test anterieur n aurait pu detecter (les                                           }
+{ deux VRAIS bogues trouves au TODO 23 etaient d un AUTRE ordre -                                                    }
+{ registre non preserve/bourrage d alignement manquant - mais cette                                                     }
+{ lacune PRECISE, elle, restait ouverte jusqu ici). }
+{ ------------------------------------------------------------ }
+
+Procedure BinEncAssert(Const Label_: TString; Cond: Boolean);
+Begin
+  If Not Cond Then
+    FatalError('BinEncoderSelfTest: ' + Label_ + ' a echoue');
+End;
+
+Procedure BinEncoderSelfTest;
+Begin
+  BinInit;
+  BinEmitInstr('MOV EAX,EBX');
+  BinEncAssert('MOV EAX,EBX -> 8B C3',
+    (BinCodeLen = 2) And (BinCode[0] = $8B) And (BinCode[1] = $C3));
+
+  BinInit;
+  BinEmitInstr('MOV EAX,5');
+  BinEncAssert('MOV EAX,5 -> B8 05 00 00 00',
+    (BinCodeLen = 5) And (BinCode[0] = $B8) And (BinCode[1] = 5) And
+    (BinCode[2] = 0) And (BinCode[3] = 0) And (BinCode[4] = 0));
+
+  BinInit;
+  BinEmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  BinEncAssert('MOV EAX,[EBP+8] -> 8B 85 08 00 00 00 (base+disp32, ' +
+    'jamais disp8 - meme simplification que DELPHI.PAS)',
+    (BinCodeLen = 6) And (BinCode[0] = $8B) And (BinCode[1] = $85) And
+    (BinCode[2] = 8) And (BinCode[3] = 0) And (BinCode[4] = 0) And (BinCode[5] = 0));
+
+  BinInit;
+  BinEmitInstr('PUSH EAX');
+  BinEncAssert('PUSH EAX -> 50', (BinCodeLen = 1) And (BinCode[0] = $50));
+
+  BinInit;
+  BinEmitInstr('PUSH EBP');
+  BinEncAssert('PUSH EBP -> 55', (BinCodeLen = 1) And (BinCode[0] = $55));
+
+  BinInit;
+  BinEmitInstr('POP EBP');
+  BinEncAssert('POP EBP -> 5D', (BinCodeLen = 1) And (BinCode[0] = $5D));
+
+  BinInit;
+  BinEmitInstr('ADD EAX,EBX');
+  BinEncAssert('ADD EAX,EBX -> 03 C3',
+    (BinCodeLen = 2) And (BinCode[0] = $03) And (BinCode[1] = $C3));
+
+  BinInit;
+  BinEmitInstr('SUB ESP,16');
+  BinEncAssert('SUB ESP,16 -> 81 EC 10 00 00 00',
+    (BinCodeLen = 6) And (BinCode[0] = $81) And (BinCode[1] = $EC) And
+    (BinCode[2] = 16) And (BinCode[3] = 0) And (BinCode[4] = 0) And (BinCode[5] = 0));
+
+  BinInit;
+  BinEmitInstr('IMUL EAX,EBX');
+  BinEncAssert('IMUL EAX,EBX -> 0F AF C3',
+    (BinCodeLen = 3) And (BinCode[0] = $0F) And (BinCode[1] = $AF) And
+    (BinCode[2] = $C3));
+
+  BinInit;
+  BinEmitInstr('CDQ');
+  BinEncAssert('CDQ -> 99', (BinCodeLen = 1) And (BinCode[0] = $99));
+
+  BinInit;
+  BinEmitInstr('IDIV EBX');
+  BinEncAssert('IDIV EBX -> F7 FB',
+    (BinCodeLen = 2) And (BinCode[0] = $F7) And (BinCode[1] = $FB));
+
+  BinInit;
+  BinEmitInstr('RET');
+  BinEncAssert('RET -> C3', (BinCodeLen = 1) And (BinCode[0] = $C3));
+
+  { CALL/Jcc vers une etiquette encore INCONNUE (le cas normal - la     }
+  { cible n a pas forcement ete definie AVANT le point d appel/de saut          }
+  { dans le fichier .asm) : E8/0F-8x + placeholder 0, PLUS un correctif             }
+  { REL32 en attente portant le NOM exact de la cible - jamais resolu                    }
+  { ICI (BinResolveFixups/BinResolveFixupsForExe s en chargent plus                          }
+  { tard, une fois TOUTES les etiquettes connues). }
+  BinInit;
+  BinEmitInstr('CALL SOMELABEL');
+  BinEncAssert('CALL etiquette inconnue -> E8 + correctif REL32 en attente',
+    (BinCodeLen = 5) And (BinCode[0] = $E8) And (BinCode[1] = 0) And
+    (BinCode[2] = 0) And (BinCode[3] = 0) And (BinCode[4] = 0) And
+    (BinFixupCount = 1) And (BinFixups[0].Kind = BFX_REL32) And
+    (BinFixups[0].TargetName = 'SOMELABEL') And (Not BinFixups[0].Resolved));
+
+  BinInit;
+  BinEmitInstr('JE SOMELABEL');
+  BinEncAssert('JE etiquette -> 0F 84 + correctif REL32 en attente',
+    (BinCodeLen = 6) And (BinCode[0] = $0F) And (BinCode[1] = $84) And
+    (BinFixupCount = 1) And (BinFixups[0].Kind = BFX_REL32));
+
+  BinInit;
+  BinEmitInstr('LEA EAX,[SOMELABEL]');
+  BinEncAssert('LEA EAX,[etiquette] -> 8D 05 + correctif ABS32 en attente ' +
+    '(etiquette absolue, sans registre de base)',
+    (BinCodeLen = 6) And (BinCode[0] = $8D) And (BinCode[1] = 5) And
+    (BinFixupCount = 1) And (BinFixups[0].Kind = BFX_ABS32) And
+    (BinFixups[0].TargetName = 'SOMELABEL'));
+
+  { re-initialise pour ne pas polluer Run reel }
+  BinInit;
+End;
+
+{ ------------------------------------------------------------ }
+{ BinObjSelfTest (TODO 22) : meme methode que "Todo24SelfTest" de       }
+{ DELPHI.PAS (memes projet) - compile un extrait Go synthetique de              }
+{ bout en bout (parse -> .asm TODO 21 -> BinAssembleFile/                            }
+{ BinResolveFixups/WriteCOFFObj TODO 22), puis RELIT le fichier .obj                     }
+{ produit en OCTETS BRUTS et verifie sa signature/structure - PAS que                       }
+{ le contenu soit LOGIQUEMENT execute par quoi que ce soit (aucun                                 }
+{ lieur/chargeur n existe encore, TODO 23) : exactement la meme limite                              }
+{ documentee que celle de DELPHI.PAS pour son propre auto-test binaire.                                 }
+{ ------------------------------------------------------------ }
+
+Procedure BinObjAssert(Const Label_: TString; Cond: Boolean);
+Begin
+  If Not Cond Then
+    FatalError('BinObjSelfTest: ' + Label_ + ' a echoue');
+End;
+
+Procedure BinObjSelfTest;
+Const
+  TmpAsm = 'GOCWBINSELFTEST.$$$';
+  TmpObj = 'GOCWBINSELFTEST.OB$';
+Var
+  F : File;
+  B4 : Array[0..3] Of Byte;
+  ObjSize : LongInt;
+  I, ResolvedCount : Integer;
+Begin
+  ExprInit; StmtInit; SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  FuncParseTopLevel('package main' + Chr(10) +
+    'func Add(a, b int) int {' + Chr(10) + '	return a + b' + Chr(10) + '}' +
+    Chr(10) + 'func main() {' + Chr(10) +
+    '	x := Add(1, 2)' + Chr(10) + '	_ = x' + Chr(10) +
+    '	fmt.Println("ok")' + Chr(10) + '}');
+
+  CompileProgram(TmpAsm);
+  BinAssembleFile(TmpAsm);
+  BinObjAssert('au moins une etiquette reconnue (BinAssembleFile a bien ' +
+    'relu le .asm)', BinLabelCount > 0);
+  BinObjAssert('au moins un import externe reconnu (EXTRN)', BinImportCount > 0);
+  BinObjAssert('des octets de code REELS ont ete encodes (.text non vide)',
+    BinCodeLen > 0);
+  BinObjAssert('des octets de donnees REELS ont ete encodes (.data non vide, ' +
+    'chaine litterale + constante de fin de ligne)', BinDataLen > 0);
+
+  BinResolveFixups;
+  ResolvedCount := 0;
+  For I := 0 To BinFixupCount - 1 Do
+    If BinFixups[I].Resolved Then Inc(ResolvedCount);
+  BinObjAssert('au moins un correctif REL32 LOCAL resolu directement ' +
+    '(saut interne/appel a une fonction utilisateur, TODO 22)',
+    ResolvedCount > 0);
+  BinObjAssert('au moins un correctif reste EN ATTENTE (import externe ' +
+    'ou ABS32 - devient une VRAIE relocation COFF)',
+    ResolvedCount < BinFixupCount);
+
+  WriteCOFFObj(TmpObj);
+
+  Assign(F, TmpObj);
+  Reset(F, 1);
+  BlockRead(F, B4, 4);
+  ObjSize := FileSize(F);
+  Close(F);
+
+  BinObjAssert('signature Machine=I386 ($4C,$01) en tete du .obj',
+    (B4[0] = $4C) And (B4[1] = $01));
+  BinObjAssert('NumberOfSections=2 (.text+.data uniquement) en tete du .obj',
+    (B4[2] = 2) And (B4[3] = 0));
+  BinObjAssert('fichier .obj de taille plausible (au moins l en-tete + 2 ' +
+    'sections + du contenu reel)', ObjSize > 100);
+
+  Erase(F);
+  Assign(F, TmpAsm);
+  Erase(F);
+
+  { re-initialise les tables globales pour ne pas polluer Run reel }
+  ExprInit; StmtInit; SymInit; FuncDefInit; MethodDefInit;
+End;
+
+{ ------------------------------------------------------------ }
+{ TODO 23 - BACKEND BINAIRE .EXE PE WIN32 ET RUNTIME EMBARQUE      }
+{ ------------------------------------------------------------ }
+{ Meme architecture EXACTE que WritePEExe de DELPHI.PAS (memes           }
+{ projet, deja eprouvee) - reutilise TOUTE l infrastructure Bin*                 }
+{ TEXT/DATA du TODO 22 SANS LA MODIFIER (BinCode/BinData/BinLabels/                  }
+{ BinFixups/BinImports restent EXACTEMENT ce qu ils etaient) : la SEULE                  }
+{ vraie difference .OBJ vs .EXE est COMMENT les correctifs REL32/ABS32                       }
+{ sont resolus (BinResolveFixupsForExe, NOUVELLE, plutot que                                     }
+{ BinResolveFixups du TODO 22 - un .EXE ne peut laisser AUCUNE                                       }
+{ relocation "en attente pour le lieur", contrairement a un .OBJ,                                        }
+{ puisqu il n y a PLUS de lieur a ce stade) - et le format du fichier                                        }
+{ produit (MZ+PE+IMAGE_OPTIONAL_HEADER32+3 sections .text/.data/.idata                                          }
+{ avec table d import/IAT KERNEL32.DLL reelle, PAS 2 sections+table                                                 }
+{ de symboles COFF). Point d entree = "_GOSTART" (deja emis par                                                        }
+{ CompileProgram, TODO 21) ; runtime embarque = EXACTEMENT celui deja                                                      }
+{ ecrit par EmitRuntimeLibrary (TODO 21, _GORT_PRINT_STR/PRINTLN_STR) -                                                        }
+{ aucune extension n est faite ici (alloc/panic-recover/slice/map/chan                                                            }
+{ restent hors de portee, comme documente depuis le TODO 21 lui-meme) - un    }
+{ .EXE genere aujourd hui ne peut executer QUE ce que CompileExpr/                }
+{ CompileStmt savent deja compiler). ImageBase $00400000, SectionAlignment                                                                      }
+{ 4096, FileAlignment 512, sous-systeme CUI (console) - valeurs                                                                                    }
+{ IDENTIQUES a DELPHI.PAS (memes projet, aucune raison de deviner                                                                                       }
+{ autrement).                                                                                                                                             }
+{ ------------------------------------------------------------ }
+
+{ PE_IMG_BASE/PE_SEC_ALIGN/PE_FILE_ALIGN/PE_MACHINE_I386/PE_OPT_MAGIC_PE32/   }
+{ PE_SUBSYS_CUI/PE_SCN_CNT_*/PE_SCN_MEM_*/COFF_SYM_CLASS_*/COFF_REL_I386_*      }
+{ sont DEJA reservees depuis le TODO 01 (voir plus haut, section des               }
+{ constantes PE/COFF "identiques aux autres compilateurs de ce projet") -              }
+{ reutilisees ICI et dans WriteCOFFObj (TODO 22, qui definissait par                        }
+{ erreur ses PROPRES doublons locaux - corrige au passage pour la                              }
+{ coherence) plutot que d en redefinir de nouvelles. }
+Const
+  PE_KERNEL32 = 'KERNEL32.DLL';
+
+Var
+  BinThunkOfs    : Array[0..MAX_BIN_IMPORT - 1] Of LongInt;
+  BinThunkExists : Array[0..MAX_BIN_IMPORT - 1] Of Boolean;
+
+Function BinAlignUp(V, Align: LongInt): LongInt;
+Begin
+  If V Mod Align = 0 Then BinAlignUp := V
+  Else BinAlignUp := ((V Div Align) + 1) * Align;
+End;
+
+{ BinExportNameFor : retrouve le nom REELLEMENT exporte par la DLL       }
+{ (ex. "WriteFile") a partir du nom decore stdcall utilise dans les             }
+{ instructions CALL de ce compilateur (ex. "_WriteFile@20") - retire le            }
+{ "_" de tete et le "@N" de queue, tous deux de simples conventions                    }
+{ d appel Win32 (jamais presents dans la table d export REELLE de la                       }
+{ DLL elle-meme, consultee par le chargeur via le nom Hint/Name). }
+Function BinExportNameFor(Const DecoratedName: TString): TString;
+Var S: TString; P: Integer;
+Begin
+  S := DecoratedName;
+  If (Length(S) > 0) And (S[1] = '_') Then Delete(S, 1, 1);
+  P := Pos('@', S);
+  If P > 0 Then S := Copy(S, 1, P - 1);
+  BinExportNameFor := S;
+End;
+
+{ BinCreateThunk : petit relais de 6 octets ("FF 25 <disp32>" = JMP      }
+{ DWORD PTR [case-IAT]) place dans .text, UN SEUL PAR IMPORT (idempotent           }
+{ - plusieurs CALL au meme import partagent le MEME relais) - c est LA                 }
+{ CIBLE que le REL32 d un "CALL Import" resout desormais vers, PLUTOT               }
+{ que l adresse de la DLL elle-meme (jamais connue avant le chargement) :               }
+{ le relais, lui, fait le SAUT INDIRECT reel via la case d IAT               }
+{ correspondante (elle-meme corrigee par le CHARGEUR Windows au                            }
+{ demarrage du processus, PAS par ce compilateur). }
+Procedure BinCreateThunk(ExternIdx: Integer);
+Var SavedIsData: Boolean;
+Begin
+  If BinThunkExists[ExternIdx] Then Exit;
+  SavedIsData := BinCurIsData;
+  BinCurIsData := BINSEC_TEXT;
+  BinThunkOfs[ExternIdx] := BinCodeLen;
+  BinThunkExists[ExternIdx] := True;
+  BinEmit8($FF);
+  BinEmit8($25);
+  BinEmit32(0);
+  BinAddFixup(BFX_ABS32, '@IAT:' + BinImports[ExternIdx]);
+  BinCurIsData := SavedIsData;
+End;
+
+{ BinResolveFixupsForExe : contrairement a BinResolveFixups (TODO 22,    }
+{ .OBJ - seuls les REL32 LOCAUX sont resolus, le reste devient une             }
+{ vraie relocation COFF pour le lieur externe), un .EXE n a PLUS AUCUN               }
+{ lieur en aval - TOUT REL32 doit disparaitre ICI, qu il vise une                        }
+{ etiquette locale (resolue directement) OU un import externe (resolu                       }
+{ via un relais, BinCreateThunk). Les ABS32 restent volontairement EN                          }
+{ ATTENTE (une adresse ABSOLUE ne peut jamais etre connue avant que                                }
+{ chaque section n ait sa VRAIE RVA finale - calculee par WritePEExe                                   }
+{ lui-meme, plus bas, une fois la disposition du fichier entierement                                       }
+{ determinee). }
+Procedure BinResolveFixupsForExe;
+Var I, LI, EI: Integer; TargetOfs, Disp: LongInt;
+Begin
+  For I := 0 To MAX_BIN_IMPORT - 1 Do BinThunkExists[I] := False;
+  For I := 0 To BinFixupCount - 1 Do
+    If BinFixups[I].Kind = BFX_REL32 Then
+    Begin
+      LI := BinFindLabel(BinFixups[I].TargetName);
+      If LI >= 0 Then
+        TargetOfs := BinLabels[LI].Ofs
+      Else
+      Begin
+        EI := BinFindImport(BinFixups[I].TargetName);
+        If EI < 0 Then
+        Begin
+          FatalError('assembleur : symbole introuvable (CALL/JMP) : ' +
+            BinFixups[I].TargetName);
+          Exit;
+        End;
+        BinCreateThunk(EI);
+        TargetOfs := BinThunkOfs[EI];
+      End;
+      Disp := TargetOfs - (BinFixups[I].Pos + 4);
+      BinPatch32(BinFixups[I].IsData, BinFixups[I].Pos, Disp);
+      BinFixups[I].Resolved := True;
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ WritePEExe : ecrit un vrai fichier .EXE PE Win32 - stub MZ           }
+{ minimal, IMAGE_FILE_HEADER, IMAGE_OPTIONAL_HEADER32, TROIS sections            }
+{ (.text/.data/.idata - PAS deux comme WriteCOFFObj/TODO 22 : .idata                }
+{ heberge la VRAIE table d import KERNEL32.DLL/IAT que le chargeur                     }
+{ Windows exige pour resoudre GetStdHandle/WriteFile/ExitProcess au                          }
+{ demarrage du processus), sous-systeme CUI (console), ImageBase                                 }
+{ $00400000. AUCUNE table de relocations (.reloc, DataDirectory[5])                                  }
+{ n existe - ce fichier n est chargeable qu a CETTE adresse fixe                                        }
+{ precise, exactement comme DELPHI.PAS (memes projet). }
+Procedure WritePEExe(Const ExeFileName: TString);
+Var
+  ObjF : File;
+  NImp : Integer;
+  HdrSize, HdrSizeAligned : LongInt;
+  TextRva, TextFileOfs, TextRawSize : LongInt;
+  DataRva, DataFileOfs, DataRawSize : LongInt;
+  IltOfs, IatOfs, DllNameOfs, IdataSizeRaw, IdataSize, IdataRawSize : LongInt;
+  IdataRva, IdataFileOfs : LongInt;
+  ImageSize : LongInt;
+  HintNameOfs : Array[0..MAX_BIN_IMPORT - 1] Of LongInt;
+  I, HnLen : Integer;
+  HintNameTotal : LongInt;
+  EntryLI : Integer;
+  EntryRva : LongInt;
+  TargetName, ExpName : TString;
+  V : LongInt;
+  LI, EI : Integer;
+
+  Procedure OW8(B: Integer);
+  Var Buf: Byte;
+  Begin
+    Buf := B And $FF;
+    BlockWrite(ObjF, Buf, 1);
+  End;
+
+  Procedure OW16(W: Integer);
+  Begin
+    OW8(W);
+    OW8(W Shr 8);
+  End;
+
+  Procedure OW32(D: LongInt);
+  Begin
+    OW8(D);
+    OW8(D Shr 8);
+    OW8(D Shr 16);
+    OW8(D Shr 24);
+  End;
+
+  Procedure OWStr(Const S: TString);
+  Var K: Integer;
+  Begin
+    For K := 1 To Length(S) Do OW8(Ord(S[K]));
+  End;
+
+  Procedure OWZeros(N: Integer);
+  Var K: Integer;
+  Begin
+    For K := 1 To N Do OW8(0);
+  End;
+
+  Procedure OWSecName(Const Nm: TString);
+  Begin
+    OWStr(Nm);
+    If Length(Nm) < 8 Then OWZeros(8 - Length(Nm));
+  End;
+
+Begin
+  { TOUT REL32 doit disparaitre ICI - un .EXE n a PLUS AUCUN lieur en    }
+  { aval (contrairement a un .OBJ, TODO 22) pour resoudre quoi que ce           }
+  { soit apres coup. }
+  BinResolveFixupsForExe;
+
+  NImp := BinImportCount;
+
+  { disposition de la table d import (.idata) - UN SEUL DLL suppose      }
+  { (KERNEL32.DLL, simplification documentee, meme choix que DELPHI.PAS/          }
+  { memes projet) : 1 descripteur reel + 1 descripteur NUL terminal (20              }
+  { octets chacun), puis ILT, puis IAT (identiques au depart - le                        }
+  { chargeur Windows ecrase l IAT avec les VRAIES adresses au                                 }
+  { chargement), puis les entrees Hint/Nom (alignees sur 2 octets), puis                          }
+  { le nom de la DLL elle-meme. }
+  IltOfs := 40;
+  IatOfs := IltOfs + (NImp + 1) * 4;
+  HintNameTotal := 0;
+  For I := 0 To NImp - 1 Do
+  Begin
+    HintNameOfs[I] := IatOfs + (NImp + 1) * 4 + HintNameTotal;
+    HnLen := 2 + Length(BinExportNameFor(BinImports[I])) + 1;
+    If HnLen Mod 2 <> 0 Then Inc(HnLen);
+    HintNameTotal := HintNameTotal + HnLen;
+  End;
+  DllNameOfs  := IatOfs + (NImp + 1) * 4 + HintNameTotal;
+  IdataSizeRaw := DllNameOfs + Length(PE_KERNEL32) + 1;
+  IdataSize    := IdataSizeRaw;
+  If IdataSize Mod 2 <> 0 Then Inc(IdataSize);
+
+  { disposition generale - RVA alignees sur PE_SEC_ALIGN, decalages       }
+  { fichier alignes sur PE_FILE_ALIGN (regle PE classique : la taille          }
+  { RAW en fichier suit l alignement-FICHIER, mais la PROCHAINE RVA                  }
+  { suit toujours l alignement-SECTION, independamment de la taille                      }
+  { RAW reelle du contenu precedent). }
+  HdrSize        := 64 + 4 + 20 + 224 + 3 * 40;
+  HdrSizeAligned := BinAlignUp(HdrSize, PE_FILE_ALIGN);
+
+  TextRva     := PE_SEC_ALIGN;
+  TextFileOfs := HdrSizeAligned;
+  TextRawSize := BinAlignUp(BinCodeLen, PE_FILE_ALIGN);
+
+  DataRva     := TextRva + BinAlignUp(BinCodeLen, PE_SEC_ALIGN);
+  DataFileOfs := TextFileOfs + TextRawSize;
+  DataRawSize := BinAlignUp(BinDataLen, PE_FILE_ALIGN);
+
+  IdataRva     := DataRva + BinAlignUp(BinDataLen, PE_SEC_ALIGN);
+  IdataFileOfs := DataFileOfs + DataRawSize;
+  IdataRawSize := BinAlignUp(IdataSize, PE_FILE_ALIGN);
+
+  ImageSize := BinAlignUp(IdataRva + IdataSize, PE_SEC_ALIGN);
+
+  { resolution des correctifs ABS32 - adresses ABSOLUES completes           }
+  { (ImageBase+RVA+deplacement), JAMAIS de simples RVA - possible                  }
+  { SEULEMENT maintenant que chaque section a sa VRAIE RVA finale                     }
+  { (aucune table de relocations, TODO 23, n existe pour corriger cela                    }
+  { plus tard comme le ferait un VRAI executable relogeable). }
+  For I := 0 To BinFixupCount - 1 Do
+    If BinFixups[I].Kind = BFX_ABS32 Then
+    Begin
+      TargetName := BinFixups[I].TargetName;
+      If Copy(TargetName, 1, 5) = '@IAT:' Then
+      Begin
+        EI := BinFindImport(Copy(TargetName, 6, Length(TargetName) - 5));
+        V := PE_IMG_BASE + IdataRva + IatOfs + EI * 4;
+      End
+      Else
+      Begin
+        LI := BinFindLabel(TargetName);
+        If LI < 0 Then
+        Begin
+          FatalError('assembleur : etiquette introuvable (adresse absolue) : ' +
+            TargetName);
+          Exit;
+        End;
+        If BinLabels[LI].IsData Then
+          V := PE_IMG_BASE + DataRva + BinLabels[LI].Ofs
+        Else
+          V := PE_IMG_BASE + TextRva + BinLabels[LI].Ofs;
+      End;
+      BinPatch32(BinFixups[I].IsData, BinFixups[I].Pos, V);
+    End;
+
+  { point d entree : RVA de "_GOSTART" (CompileProgram, TODO 21) - repli   }
+  { sur le tout debut de .text si, par une anomalie quelconque, cette             }
+  { etiquette precise restait introuvable (ne devrait jamais arriver en             }
+  { pratique : CompileProgram l emet TOUJOURS). }
+  EntryLI := BinFindLabel('_GOSTART');
+  If EntryLI >= 0 Then
+  Begin
+    If BinLabels[EntryLI].IsData Then EntryRva := DataRva + BinLabels[EntryLI].Ofs
+    Else EntryRva := TextRva + BinLabels[EntryLI].Ofs;
+  End
+  Else
+    EntryRva := TextRva;
+
+  Assign(ObjF, ExeFileName);
+  Rewrite(ObjF, 1);
+
+  { en-tete MZ minimal (64 octets : seuls e_magic/e_lfanew comptent -    }
+  { aucun VRAI code de stub DOS, meme simplification que DELPHI.PAS). }
+  OW16(PE_DOS_MAGIC);
+  OWZeros(58);
+  OW32(64);
+
+  OW32(PE_PE_SIG);
+
+  { IMAGE_FILE_HEADER }
+  OW16(PE_MACHINE_I386);
+  OW16(3);              { NumberOfSections : .text/.data/.idata }
+  OW32(0);              { TimeDateStamp }
+  OW32(0);              { PointerToSymbolTable (aucune table COFF dans un .EXE) }
+  OW32(0);              { NumberOfSymbols }
+  OW16(224);            { SizeOfOptionalHeader (IMAGE_OPTIONAL_HEADER32) }
+  OW16($010F);          { Characteristics }
+
+  { IMAGE_OPTIONAL_HEADER32 (224 octets) }
+  OW16(PE_OPT_MAGIC_PE32);
+  OW8(1); OW8(0);                     { MajorLinkerVersion, Minor }
+  OW32(TextRawSize);                  { SizeOfCode }
+  OW32(DataRawSize + IdataRawSize);   { SizeOfInitializedData }
+  OW32(0);                            { SizeOfUninitializedData }
+  OW32(EntryRva);                     { AddressOfEntryPoint }
+  OW32(TextRva);                      { BaseOfCode }
+  OW32(DataRva);                      { BaseOfData }
+  OW32(PE_IMG_BASE);
+  OW32(PE_SEC_ALIGN);
+  OW32(PE_FILE_ALIGN);
+  OW16(4); OW16(0);                   { MajorOSVersion, Minor }
+  OW16(0); OW16(0);                   { MajorImageVersion, Minor }
+  OW16(4); OW16(0);                   { MajorSubsystemVersion, Minor }
+  OW32(0);                            { Win32VersionValue }
+  OW32(ImageSize);                    { SizeOfImage }
+  OW32(HdrSizeAligned);               { SizeOfHeaders }
+  OW32(0);                            { CheckSum }
+  OW16(PE_SUBSYS_CUI);
+  OW16(0);                            { DllCharacteristics }
+  OW32($100000);                      { SizeOfStackReserve }
+  OW32($1000);                        { SizeOfStackCommit }
+  OW32($100000);                      { SizeOfHeapReserve }
+  OW32($1000);                        { SizeOfHeapCommit }
+  OW32(0);                            { LoaderFlags }
+  OW32(16);                           { NumberOfRvaAndSizes }
+
+  { DataDirectory (16 entrees x 8 octets) - seuls [1]=Import et            }
+  { [12]=IAT sont renseignees (aucune export/ressource/relocations/etc            }
+  { dans ce backend minimal). }
+  OW32(0); OW32(0);                              { [0] Export }
+  OW32(IdataRva); OW32(40);                      { [1] Import }
+  For I := 1 To 10 Do Begin OW32(0); OW32(0); End; { [2..11] }
+  OW32(IdataRva + IatOfs); OW32((NImp + 1) * 4); { [12] IAT }
+  For I := 1 To 3 Do Begin OW32(0); OW32(0); End;  { [13..15] }
+
+  { en-tetes de section (40 octets chacune) : .text/.data/.idata }
+  OWSecName('.text');
+  OW32(BinCodeLen); OW32(TextRva);
+  OW32(TextRawSize); OW32(TextFileOfs);
+  OW32(0); OW32(0); OW16(0); OW16(0);
+  OW32(PE_SCN_CNT_CODE Or PE_SCN_MEM_EXECUTE Or PE_SCN_MEM_READ);
+
+  OWSecName('.data');
+  OW32(BinDataLen); OW32(DataRva);
+  OW32(DataRawSize); OW32(DataFileOfs);
+  OW32(0); OW32(0); OW16(0); OW16(0);
+  OW32(PE_SCN_CNT_INIT_DATA Or PE_SCN_MEM_READ Or PE_SCN_MEM_WRITE);
+
+  OWSecName('.idata');
+  OW32(IdataSize); OW32(IdataRva);
+  OW32(IdataRawSize); OW32(IdataFileOfs);
+  OW32(0); OW32(0); OW16(0); OW16(0);
+  OW32(PE_SCN_CNT_INIT_DATA Or PE_SCN_MEM_READ Or PE_SCN_MEM_WRITE);
+
+  { bourrage jusqu a HdrSizeAligned (TextFileOfs) - les en-tetes         }
+  { eux-memes (MZ+PE+IMAGE_FILE_HEADER+IMAGE_OPTIONAL_HEADER32+3           }
+  { en-tetes de section) totalisent HdrSize (432 octets ICI - 3                  }
+  { sections), MAIS .text ne peut commencer QUE sur la PROCHAINE                       }
+  { limite alignee-fichier (PE_FILE_ALIGN) - SANS ce bourrage EXPLICITE,                   }
+  { chaque section serait ecrite HdrSizeAligned-HdrSize octets TROP TOT                        }
+  { par rapport a ce que les PointerToRawData deja ecrits ci-dessus                               }
+  { PROMETTENT, tronquant le fichier final du meme nombre d octets a la                              }
+  { fin - EXACTEMENT le bogue qui rendait le tout premier .exe genere                                    }
+  { par ce TODO illisible par Windows ("n est pas une application                                          }
+  { valide"), trouve en decodant METHODIQUEMENT chaque champ de l en-tete                                       }
+  { produit contre sa valeur attendue plutot qu en supposant le fichier                                             }
+  { correct simplement parce qu il s ouvrait sans erreur de compilation. }
+  OWZeros(HdrSizeAligned - HdrSize);
+
+  { octets bruts .text/.data, chacun bourre de zeros jusqu a la taille    }
+  { RAW alignee-fichier. }
+  If BinCodeLen > 0 Then BlockWrite(ObjF, BinCode, BinCodeLen);
+  OWZeros(TextRawSize - BinCodeLen);
+
+  If BinDataLen > 0 Then BlockWrite(ObjF, BinData, BinDataLen);
+  OWZeros(DataRawSize - BinDataLen);
+
+  { .idata : Table des Import (1 descripteur KERNEL32.DLL + 1 nul), ILT,  }
+  { IAT, entrees Hint/Nom, nom de la DLL. }
+  OW32(IdataRva + IltOfs);        { OriginalFirstThunk }
+  OW32(0);                        { TimeDateStamp }
+  OW32(0);                        { ForwarderChain }
+  OW32(IdataRva + DllNameOfs);    { Name }
+  OW32(IdataRva + IatOfs);        { FirstThunk }
+  OWZeros(20);                    { descripteur NUL terminal }
+
+  For I := 0 To NImp - 1 Do OW32(IdataRva + HintNameOfs[I]);
+  OW32(0);
+
+  For I := 0 To NImp - 1 Do OW32(IdataRva + HintNameOfs[I]);
+  OW32(0);
+
+  For I := 0 To NImp - 1 Do
+  Begin
+    OW16(0);   { Hint }
+    ExpName := BinExportNameFor(BinImports[I]);
+    OWStr(ExpName);
+    OW8(0);
+    HnLen := 2 + Length(ExpName) + 1;
+    If HnLen Mod 2 <> 0 Then OW8(0);
+  End;
+
+  OWStr(PE_KERNEL32);
+  OW8(0);
+  If IdataSizeRaw Mod 2 <> 0 Then OW8(0);
+
+  OWZeros(IdataRawSize - IdataSize);
+
+  Close(ObjF);
+End;
+
+{ ------------------------------------------------------------ }
+{ PEExeSelfTest (TODO 23) : meme methode ET MEME LIMITE documentee     }
+{ que "Todo24SelfTest" de DELPHI.PAS (memes projet) - compile un                 }
+{ extrait Go de bout en bout (parse -> .asm -> BinAssembleFile ->                    }
+{ BinResolveFixupsForExe -> WritePEExe), puis RELIT le .exe produit en                   }
+{ OCTETS BRUTS et verifie sa signature/structure (MZ, PE\0\0 a                              }
+{ e_lfanew=64, Machine=I386, Subsystem=CUI, taille de fichier EXACTEMENT                        }
+{ un multiple de PE_FILE_ALIGN) - PAS que le fichier s EXECUTE reellement                          }
+{ (verifie MANUELLEMENT lors du developpement de ce TODO, voir le journal                             }
+{ de memoire - la validation AUTOMATISEE de l execution reelle de chaque                                   }
+{ SAMPLES\GO\*.go reste explicitement le travail du TODO 25, exactement                                        }
+{ comme le roadmap lui-meme le precise). }
+{ ------------------------------------------------------------ }
+
+Procedure PEExeAssert(Const Label_: TString; Cond: Boolean);
+Begin
+  If Not Cond Then
+    FatalError('PEExeSelfTest: ' + Label_ + ' a echoue');
+End;
+
+Procedure PEExeSelfTest;
+Const
+  TmpAsm = 'GOCWPESELFTEST.$$$';
+  TmpExe = 'GOCWPESELFTEST.EX$';
+Var
+  F : File;
+  B4 : Array[0..3] Of Byte;
+  ExeSize : LongInt;
+Begin
+  ExprInit; StmtInit; SymInit; TypeInit; FuncDefInit; MethodDefInit;
+  FuncParseTopLevel('package main' + Chr(10) +
+    'func Add(a, b int) int {' + Chr(10) + '	return a + b' + Chr(10) + '}' +
+    Chr(10) + 'func main() {' + Chr(10) +
+    '	x := Add(1, 2)' + Chr(10) + '	_ = x' + Chr(10) +
+    '	fmt.Println("ok")' + Chr(10) + '}');
+
+  CompileProgram(TmpAsm);
+  BinAssembleFile(TmpAsm);
+  WritePEExe(TmpExe);
+
+  Assign(F, TmpExe);
+  Reset(F, 1);
+  ExeSize := FileSize(F);
+  BlockRead(F, B4, 4);
+  PEExeAssert('signature MZ ($4D,$5A) en tete du .exe',
+    (B4[0] = $4D) And (B4[1] = $5A));
+
+  Seek(F, 60);
+  BlockRead(F, B4, 4);
+  PEExeAssert('e_lfanew=64 (offset 60, DWORD)',
+    (B4[0] = 64) And (B4[1] = 0) And (B4[2] = 0) And (B4[3] = 0));
+
+  Seek(F, 64);
+  BlockRead(F, B4, 4);
+  PEExeAssert('signature PE\0\0 a e_lfanew=64',
+    (B4[0] = Ord('P')) And (B4[1] = Ord('E')) And (B4[2] = 0) And (B4[3] = 0));
+
+  Seek(F, 68);
+  BlockRead(F, B4, 4);
+  PEExeAssert('Machine=I386 ($4C,$01) et NumberOfSections=3 en tete de ' +
+    'IMAGE_FILE_HEADER', (B4[0] = $4C) And (B4[1] = $01) And
+    (B4[2] = 3) And (B4[3] = 0));
+
+  { IMAGE_OPTIONAL_HEADER32 commence a l offset 88 (64+4+20) ; Subsystem  }
+  { y est a son propre offset local 68 (Magic+Linker+SizeOfCode+                  }
+  { SizeOfInitData+SizeOfUninitData+EntryPoint+BaseOfCode+BaseOfData+                    }
+  { ImageBase+SecAlign+FileAlign+OSVer+ImgVer+SubsysVer+Win32VersionValue+                   }
+  { SizeOfImage+SizeOfHeaders+CheckSum = 2+2+4+4+4+4+4+4+4+4+4+2+2+2+2+2+                        }
+  { 4+4+4+4 = 68) - donc 88+68=156 en absolu. }
+  Seek(F, 156);
+  BlockRead(F, B4, 2);
+  PEExeAssert('Subsystem=3 (CUI, console) dans IMAGE_OPTIONAL_HEADER32',
+    (B4[0] = 3) And (B4[1] = 0));
+
+  Close(F);
+
+  PEExeAssert('fichier .exe de taille EXACTEMENT un multiple de ' +
+    'PE_FILE_ALIGN (en-tetes+3 sections toutes alignees-fichier)',
+    ExeSize Mod PE_FILE_ALIGN = 0);
+  PEExeAssert('fichier .exe de taille plausible (en-tetes + 3 sections ' +
+    'avec du contenu reel)', ExeSize >= 4 * PE_FILE_ALIGN);
+
+  Assign(F, TmpExe);
+  Erase(F);
+  Assign(F, TmpAsm);
+  Erase(F);
+
+  { re-initialise les tables globales pour ne pas polluer Run reel }
+  ExprInit; StmtInit; SymInit; FuncDefInit; MethodDefInit;
+End;
+
+{ ------------------------------------------------------------ }
+{ TODO 24 - AUTO-TESTS (SELF-TESTS INTERNES)                       }
+{ ------------------------------------------------------------ }
+{ Un SelfTest par sous-systeme majeur existe deja - un a chaque TODO           }
+{ depuis le TODO 02, jamais reporte a "plus tard" (chaque TODO de ce               }
+{ fichier a systematiquement ajoute le sien EN MEME TEMPS que la                       }
+{ fonctionnalite elle-meme, jamais apres coup) - ce TODO ne les CREE                       }
+{ donc pas, il les REGROUPE (RunAllSelfTests ci-dessous, plutot                                }
+{ qu inlines dans Run lui-meme - separe clairement la responsabilite                               }
+{ "auto-tests" de la responsabilite "compiler le VRAI fichier .go" de                                  }
+{ Run) et COMBLE la seule LACUNE reelle trouvee lors de cet audit :                                        }
+{ aucun auto-test existant ne verifie l ENCODAGE 80386 lui-meme OCTET                                          }
+{ PAR OCTET pour un mnemonique donne (BinObjSelfTest/PEExeSelfTest,                                                }
+{ TODO 22/23, ne verifient que la STRUCTURE d ensemble d un fichier                                                    }
+{ compile - Machine/NumberOfSections/Subsystem/tailles - jamais un                                                         }
+{ SEUL opcode precis) - ajoute BinEncoderSelfTest pour cela.                                                                   }
+{ Noms REELS (colonne gauche) vs noms aspirationnels du TODO 01                                                                    }
+{ (colonne droite, ecrits avant que la moindre ligne de parseur                                                                        }
+{ n existe - de simples PREVISIONS, jamais un contrat a respecter a la                                                                     }
+{ lettre une fois l architecture reelle en place, meme discipline que                                                                          }
+{ pour les noms Bin*/Asm* du TODO 22) : LexSelfTest=LexSelfTest,                                                                                   }
+{ KeywordSelfTest=KeywordSelfTest, TypeSelfTest=TypeSelfTest,                                                                                          }
+{ DeclSelfTest~ParseDeclSelfTest, ExprSelfTest~ParseExprSelfTest,                                                                                          }
+{ StmtSelfTest~ParseControlFlowSelfTest, FuncSelfTest~ParseFuncSelfTest,                                                                                       }
+{ StructSelfTest~StructMethodSelfTest, InterfaceSelfTest=InterfaceSelfTest,                                                                                        }
+{ ArraySelfTest+MapSelfTest~SliceMapSelfTest (scinde en deux, TODO 11/12                                                                                               }
+{ separes), DeferPanicSelfTest~DeferPanicRecoverSelfTest,                                                                                                                  }
+{ ChannelSelfTest~GoroutineChanSelfTest, StdlibSelfTest=StdlibSelfTest,                                                                                                       }
+{ CodegenSelfTest~EmitSelfTest, BinObjSelfTest+PEExeSelfTest~BinSelfTest                                                                                                          }
+{ (scinde en deux, .OBJ TODO 22 vs .EXE TODO 23) - PLUS PointerSelfTest/                                                                                                             }
+{ StringSelfTest/ErrorSelfTest/PackageSelfTest/SemanticSelfTest, jamais                                                                                                                  }
+{ anticipes du tout par la liste aspirationnelle du TODO 01 (ecrite         }
+{ avant que pointeurs/chaines/error/paquets/analyse semantique ne                 }
+{ soient meme concus). }
+{ ------------------------------------------------------------ }
+
+Procedure RunAllSelfTests;
+Begin
   LexSelfTest;
   KeywordSelfTest;
   TypeSelfTest;
@@ -7185,6 +12135,42 @@ Begin
   InterfaceSelfTest;
   ArraySelfTest;
   MapSelfTest;
+  PointerSelfTest;
+  StringSelfTest;
+  ChannelSelfTest;
+  DeferPanicSelfTest;
+  ErrorSelfTest;
+  PackageSelfTest;
+  SemanticSelfTest;
+  StdlibSelfTest;
+  CodegenSelfTest;
+  BinObjSelfTest;
+  PEExeSelfTest;
+  BinEncoderSelfTest;
+End;
+
+Procedure Run;
+Var
+  SI : Integer;
+  AsmFileName : TString;
+Begin
+  ErrorCount  := 0;
+  WarnCount   := 0;
+  TotalLines  := 0;
+  OutFOpen    := False;
+  LexOpened   := False;
+  PrescanMode := False;
+  CurFuncSig  := -1;
+
+  RunAllSelfTests;
+
+  { SemanticSelfTest verifie le chemin de rejet "variable/import          }
+  { inutilise" en inspectant directement des drapeaux (voir sa propre         }
+  { note) et n imprime donc plus rien lui-meme - ce reset defensif de                }
+  { WarnCount reste neanmoins utile : il garantit que les statistiques                   }
+  { finales ne comptent QUE les avertissements du VRAI fichier compile,                       }
+  { auto-tests eux-memes.                                                                 }
+  WarnCount := 0;
 
   ParseArgs;
   ShowBanner;
@@ -7217,6 +12203,19 @@ Begin
   ParserInit;
   ParseFileTopLevel;
 
+  { "func main" est le point d entree OBLIGATOIRE du package main (TODO   }
+  { 18, regle Go reelle) - verifie UNIQUEMENT ici, sur le VRAI fichier             }
+  { source en cours de compilation, PAS a l interieur de ParseFileTopLevel               }
+  { elle-meme : celle-ci est aussi utilisee par FuncParseTopLevel pour                     }
+  { la QUASI-TOTALITE des auto-tests depuis le TODO 08 (StructSelfTest,                       }
+  { InterfaceSelfTest, etc.), qui declarent volontairement d autres noms                          }
+  { de fonction ("F", "Worker", "Safe", ...) sur des extraits isoles -                                }
+  { rendre cette regle obligatoire A CET ENDROIT aurait fait echouer                                      }
+  { (Halt) la quasi-totalite des auto-tests existants.                                                       }
+  SI := SymFind('main');
+  If (SI < 0) Or (SymTab[SI].Kind <> SK_FUNC) Then
+    FatalError('fonction "main" manquante (obligatoire dans le package main)');
+
   If Opts.Verbose Then
   Begin
     WriteLn('Symboles de portee paquet declares : ', SymCount);
@@ -7224,11 +12223,57 @@ Begin
     WriteLn('Methodes declarees                  : ', MethodDefCount);
   End;
 
-  WriteLn('GOCW32: lexeur+classification+types+declarations+expressions+',
-    'instructions+fonctions+structs+interfaces+tableaux/slices+maps ',
-    '(TODO 02-12) complets - ', TokenCount, ' tokens, ', SymCount,
-    ' symboles, ', FuncDefCount, ' fonctions, ', MethodDefCount,
-    ' methodes - canaux/chaines/goroutines : TODO 13+).');
+  { TODO 21 : genere le fichier .asm - AUCUN assembleur/lieur n existe    }
+  { encore (TODO 22/23) pour le transformer en .obj/.exe reel, mais              }
+  { c est deja la SORTIE REELLE de ce TODO (titre de la roadmap lui-meme :         }
+  { "GENERATEUR DE CODE 80386 ET SORTIE .ASM") - ecrit systematiquement,               }
+  { independamment de -asm/-obj (aucun AUTRE format de sortie n existe               }
+  { encore pour prendre le relais). Portee VOLONTAIREMENT etroite (voir                 }
+  { l en-tete de la section codegen plus haut) : toute construction NON                     }
+  { couverte s arrete PROPREMENT via FatalError, jamais un .asm silencieusement                  }
+  { faux.                                                                                          }
+  AsmFileName := ReplaceExt(Opts.SrcFile, '.asm');
+  CompileProgram(AsmFileName);
+  WriteLn('Code assembleur genere : ', AsmFileName, ' (TODO 21 - portee ',
+    'partielle)');
+
+  { RELIT ce meme fichier .asm (passe totalement separee, BinAssembleFile,  }
+  { TODO 22) pour l encoder en octets 80386 REELS - le TOUT PREMIER fichier             }
+  { BINAIRE REEL produit par ce compilateur (TODO 01-20 n avaient jamais                    }
+  { rien ecrit d autre que du texte .asm/rien du tout). Opts.ObjOnly (-obj,                     }
+  { TODO 01) choisit ENSUITE lequel des deux backends binaires produit le                          }
+  { fichier final : .OBJ COFF Win32 (TODO 22 - correctifs REL32 LOCAUX               }
+  { seulement resolus, le reste devient une vraie relocation COFF pour un                 }
+  { lieur EXTERNE) par defaut si demande, ou .EXE PE Win32 DIRECTEMENT                        }
+  { EXECUTABLE (TODO 23 - TOUT REL32 doit disparaitre ICI, runtime                                 }
+  { embarque via l IAT KERNEL32.DLL, aucun lieur externe requis) sinon -                              }
+  { c est la VALEUR PAR DEFAUT (matche la description de -obj du TODO 01                                 }
+  { lui-meme : "SEULEMENT un .OBJ" implique qu un .EXE est le resultat                                        }
+  { normal, complet, sans cette option).                                                                        }
+  BinAssembleFile(AsmFileName);
+  If Opts.ObjOnly Then
+  Begin
+    BinResolveFixups;
+    WriteCOFFObj(Opts.OutFile);
+    WriteLn('Fichier objet COFF genere : ', Opts.OutFile, ' (TODO 22 - ',
+      'portee partielle - correctifs externes laisses au lieur)');
+  End
+  Else
+  Begin
+    BinResolveFixupsForExe;
+    WritePEExe(Opts.OutFile);
+    WriteLn('Fichier executable PE genere : ', Opts.OutFile, ' (TODO 23 - ',
+      'portee partielle, memes limites documentees que le generateur de ',
+      'code lui-meme, TODO 21)');
+  End;
+
+  WriteLn('GOCW32: frontend complet (lexeur a bibliotheque standard, ',
+    'TODO 02-20) + generateur de code/backend .OBJ/.EXE a PORTEE ',
+    'VOLONTAIREMENT PARTIELLE (TODO 21-23, voir l''en-tete du fichier, ',
+    'section TODO 25, pour le detail exact de ce qui est/n''est pas ',
+    'couvert) - roadmap 25/25 traite - ', TokenCount, ' tokens, ',
+    SymCount, ' symboles, ', FuncDefCount, ' fonctions, ', MethodDefCount,
+    ' methodes.');
 
   ShowStats;
 End;
