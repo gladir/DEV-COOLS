@@ -570,6 +570,15 @@ Program GOCW32;
     types.go     - AJOUTE en meme temps (meme bloc) : len(chaine)
                    ajoute au passage (garde explicite contre un
                    pointeur NUL) - code de sortie 0, verifie CORRECT.
+    interfaces.go - AJOUTE dans une extension ULTERIEURE (voir bloc
+                   "EXTENSION INTERFACES" plus bas) : dispatch dynamique
+                   de methode, boxing (valeur ET pointeur), assertion de
+                   type comma-ok, type switch - code de sortie 0,
+                   verifie CORRECT via un test dedie exhaustif.
+    semantic.go  - AJOUTE dans la MEME extension (dispatch dynamique de
+                   methode a travers un parametre d'interface) - code
+                   de sortie 0, sortie "forme non vide" CONFORME a un
+                   vrai "go run".
 
   ARRET PROPRE DOCUMENTE (compile jusqu'au frontend complet -
   lexeur/types/declarations/expressions/instructions/semantique/
@@ -577,24 +586,15 @@ Program GOCW32;
   pour TOUS les fichiers - c'est UNIQUEMENT le GENERATEUR DE CODE,
   TODO 21, qui s'arrete proprement, jamais un plantage ni une sortie
   binaire silencieusement fausse) : channels.go, defer_panic.go,
-  errors.go, interfaces.go, lextest.go, maps.go, packages.go,
-  semantic.go, stdlib.go, strings.go - chacun necessite AU MOINS UNE,
-  et le plus souvent PLUSIEURS EN COMBINAISON, des extensions
-  suivantes, AUCUNE desquelles n'est couverte par le generateur de
-  code actuel (portee volontairement restreinte, decidee et
-  documentee au TODO 21 lui-meme) :
-    - interfaces (satisfaction structurelle, dispatch de methode a
-      travers une variable d'interface/"any" - PAS le meme cas que
-      les methodes sur un type CONCRET connu a la compilation, deja
-      couvert, voir plus bas) : errors.go, interfaces.go, semantic.go
+  errors.go, lextest.go, maps.go, packages.go, stdlib.go, strings.go -
+  chacun necessite AU MOINS UNE, et le plus souvent PLUSIEURS EN
+  COMBINAISON, des extensions suivantes, AUCUNE desquelles n'est
+  couverte par le generateur de code actuel (portee volontairement
+  restreinte, decidee et documentee au TODO 21 lui-meme) :
     - maps (disposition memoire, make/index/comma-ok/delete) : maps.go
     - defer/panic/recover (deroulement de pile) : defer_panic.go
     - goroutines/canaux/select (modele cooperatif, TODO 15) :
       channels.go, lextest.go
-    - type switch ("switch v := x.(type)" - necessite une VRAIE
-      information de type a l'execution/un descripteur de type,
-      contrairement au switch ORDINAIRE, desormais couvert, voir plus
-      bas) : interfaces.go
     - chaines etendues (concatenation reelle, for-range UTF-8
       rune-par-rune, conversions []byte(s)/[]rune(s)/string(x),
       int<->float64) : strings.go
@@ -602,14 +602,14 @@ Program GOCW32;
       unique) - strings.*/strconv.*/math.*/os.*/fmt.Sprintf/Errorf/
       Fprintln, errors.New (StdlibTab, TODO 20, entierement RECONNUE
       par le frontend mais SANS AUCUNE contrepartie runtime au-dela
-      de ce seul cas) : errors.go, interfaces.go, packages.go, stdlib.go
-  Chaque fichier restant necessite au moins deux extensions
-  SIMULTANEMENT (ex. errors.go a lui seul a besoin d'interfaces+
-  bibliotheque standard etendue+multi-return - CE DERNIER desormais
-  couvert, mais les deux autres non) - contrairement a arrays.go/
-  structs.go/pointers.go/types.go (qui, eux, ne necessitaient QUE les
-  extensions deja traitees APRES ce TODO 25, voir les deux blocs
-  "EXTENSION" plus bas, sans toucher au reste).
+      de ce seul cas) : errors.go, packages.go, stdlib.go
+  Chaque fichier restant necessite au moins UNE de ces categories,
+  parfois PLUSIEURS EN COMBINAISON (ex. errors.go a besoin
+  d'interfaces - desormais couvert - ET de bibliotheque standard
+  etendue - toujours pas) - contrairement a arrays.go/structs.go/
+  pointers.go/types.go/interfaces.go/semantic.go (qui, eux, ne
+  necessitaient QUE les extensions deja traitees APRES ce TODO 25,
+  voir les blocs "EXTENSION" plus bas, sans toucher au reste).
 
   EXTENSION ARRAYS/SLICES (ajoutee APRES ce TODO 25, sur demande
   explicite de l'utilisateur suite au rapport "arrays.go ne genere
@@ -742,27 +742,122 @@ Program GOCW32;
       "default" qui n'est pas en derniere position), goto/etiquettes
       (prefixe ASM UNIQUE par fonction, CurGotoLabelPfx, evite toute
       collision entre deux fonctions reutilisant le meme nom
-      d'etiquette). Le TYPE SWITCH ("switch v := x.(type)") reste
-      EXPLICITEMENT hors de portee (StmtPool[S].Kind=STK_TYPESWITCH,
-      FatalError clair) : il necessiterait une VRAIE information de
-      type a l'EXECUTION (descripteur de type/interface), qui n'existe
-      pas plus ici qu'avant cette extension - AUCUN SAMPLES\GO\*.go
-      n'est debloque par le switch ORDINAIRE seul (chacun de ceux qui
-      utilisent "switch" a besoin, en plus, d'interfaces ou de maps).
+      d'etiquette). Le TYPE SWITCH ("switch v := x.(type)") restait,
+      A CE STADE de cette extension, EXPLICITEMENT hors de portee
+      (StmtPool[S].Kind=STK_TYPESWITCH, FatalError clair) : il
+      necessite une VRAIE information de type a l'EXECUTION (un
+      descripteur de type/interface, qui n'existait pas encore) -
+      couvert PLUS TARD par l'EXTENSION INTERFACES ci-dessous. AUCUN
+      SAMPLES\GO\*.go n'est debloque par le switch ORDINAIRE seul a
+      ce stade (chacun de ceux qui utilisent "switch" a besoin, en
+      plus, d'interfaces ou de maps).
   Trois fichiers precedemment bloques rejoignent la liste "REUSSITE
   COMPLETE" grace a ce bloc : structs.go (structs/methodes), pointers.go
   (new generalise/tranchage/double dereferencement - PAS besoin de
   retours multiples/flottants/switch), types.go (len(chaine) SEUL a
   suffi - aucun des quatre autres sous-systemes n'etait necessaire).
   AUCUN autre fichier n'est debloque par les sous-systemes eux-memes
-  (retours multiples, flottants, switch/goto) : verifie explicitement
-  qu'aucun fichier restant n'a besoin QUE d'un seul de ces trois -
-  chacun a TOUJOURS besoin, en plus, d'interfaces et/ou de bibliotheque
-  standard etendue et/ou de maps/canaux/defer-panic (voir la liste
-  "ARRET PROPRE" ci-dessus, desormais precise a ce sujet) - retours
-  multiples/flottants/switch-goto restent donc verifies CORRECTS par
-  des tests SYNTHETIQUES dedies plutot que par un SAMPLES\GO\*.go
-  existant qui en depend de facon isolee (aucun n'existe).
+  (retours multiples, flottants, switch/goto) a ce stade : verifie
+  explicitement qu'aucun fichier restant n'a besoin QUE d'un seul de
+  ces trois - chacun a TOUJOURS besoin, en plus, d'interfaces et/ou de
+  bibliotheque standard etendue et/ou de maps/canaux/defer-panic -
+  retours multiples/flottants/switch-goto restent donc verifies
+  CORRECTS par des tests SYNTHETIQUES dedies plutot que par un
+  SAMPLES\GO\*.go existant qui en depend de facon isolee (aucun
+  n'existe pour ces trois specifiquement).
+
+  EXTENSION INTERFACES (ajoutee, dans une session ULTERIEURE, sur
+  nouvelle demande explicite de l'utilisateur de "terminer" le
+  compilateur apres avoir recu, via l'executable REEL, un message de
+  portee residuelle mentionnant "interfaces/maps/goroutines/canaux/
+  defer/panic/bibliotheque standard etendue") :
+    - MODELE MEMOIRE : une valeur d'interface (interface{}/any/error/
+      toute interface utilisateur) est un unique POINTEUR de 4 octets
+      (meme convention EAX que le reste de ce generateur de code) vers
+      une "boite" allouee sur le tas via le _GORT_ALLOC deja existant
+      (8 octets : +0 l'index TypeTab du type CONCRET boite - qui sert
+      DIRECTEMENT d'etiquette de type a l'execution, aucun descripteur/
+      vtable separe n'etant necessaire puisque ce compilateur, comme Go
+      lui-meme ici, n'a aucun chargement dynamique de type ; +4 un
+      pointeur vers la donnee elle-meme - la valeur INLINE pour un
+      scalaire/pointeur/struct/tableau, un pointeur de 8 octets alloue
+      a part pour un float64 puisque la boite elle-meme n'a que 4 octets
+      utiles cote donnee).
+    - BOXING AUTOMATIQUE (CompileBoxValue), a DEUX points d'entree :
+      (a) affectation dans une variable DEJA declaree de type interface
+      (STK_ASSIGN), (b) passage d'un argument CONCRET a un parametre de
+      fonction declare interface/error (verifie via le TypeIdx du
+      FieldPool du parametre, CompileCallExpr). Route selon la nature de
+      la source : deja une boite (simple copie du pointeur) ; pointeur
+      existant (copie directe) ; struct/tableau (copie mot par mot dans
+      un nouveau bloc alloue) ; flottant (ExprIsFloatTyped - alloue 8
+      octets, FSTP) ; scalaire (alloue 4 octets, MOV).
+    - DISPATCH DYNAMIQUE (CompileInterfaceMethodCall) : PAS de vtable -
+      une chaine SEQUENTIELLE de comparaisons (CMP/JE) de l'etiquette de
+      type de la boite contre chaque candidat de MethodDefPool portant
+      le nom de methode appele, meme philosophie "correction avant
+      vitesse" que CompileSwitch ; repli sur EAX=0 (jamais un plantage)
+      si aucun candidat ne correspond. Le receveur POINTEUR est passe
+      directement (DataPtr) ; le receveur VALEUR est copie mot par mot
+      depuis DataPtr avant l'appel.
+    - TYPE SWITCH (CompileTypeSwitch, STK_TYPESWITCH desormais couvert -
+      voir la note maintenant obsolete plus haut) et ASSERTION COMMA-OK
+      ("v, ok := x.(T)", dans STK_SHORTVAR) : meme technique de
+      comparaison de l'etiquette de type de la boite, cette fois contre
+      des TypeIdx CONNUS A LA COMPILATION plutot que des receveurs de
+      methode. SIMPLIFICATION ASSUMEE (documentee, pas cachee) : la
+      variable liee "v" d'un type switch garde TOUJOURS son type
+      d'interface D'ORIGINE (jamais retrecie par case, contrairement au
+      vrai Go) - SymFind n'ayant aucune notion de portees lexicales
+      SOEURS au sein d'une meme fonction (seulement fonction-contre-
+      fonction, via CgRestrictSymRange), un retrecissement par case
+      exigerait un symbole PAR CASE, que SymFind ne saurait pas
+      distinguer.
+    - CINQ BOGUES REELS trouves PAR EXECUTION (jamais par la
+      compilation ni une relecture du .asm), tous corriges :
+      (1) ParseCallArgs (et, par prudence, quatre autres fonctions
+      d'analyse partageant le meme pool d'arguments : ParseCompositeLiteralForType,
+      ParseNewOrMake, ParseCaseClause, ParseReturnStmt) capturait
+      ArgStart AVANT une boucle appelant ParseExpr, qui pouvait elle-
+      meme pousser RECURSIVEMENT dans le MEME pool partage pour un
+      appel/litterale/fermeture IMBRIQUE - corrompant ArgFirst/ArgCount
+      de l'appel EXTERIEUR des que son premier argument contenait lui-
+      meme un appel (ex. fmt.Println(Describe(sh)) sautait purement et
+      simplement l'appel interne) ; corrige en tamponnant TOUS les
+      arguments dans un tableau LOCAL avant de les pousser, une fois
+      l'analyse (y compris toute recursion) entierement terminee - meme
+      remede que celui deja en place ailleurs dans ce fichier (ex.
+      ParseBlock). (2) quatre sites SymAdd non gardes dans
+      ParseSimpleStmt (comma-ok et multi-affectation) enregistraient
+      "_" comme un VRAI symbole - un "_ = Describe(s)" SANS RAPPORT,
+      plus loin dans le meme fichier, resolvait alors "_" via SymFind
+      vers CE symbole (typiquement float64), ce qui aiguillait a tort
+      un appel (EK_CALL) vers CompileFloatExpr (qui n'a aucun cas pour
+      EK_CALL) - corrige en excluant "_" de ces quatre SymAdd. (3)
+      ParseSwitchStmt creait un DOUBLON du symbole de garde d'un type
+      switch (deja enregistre par ParseSimpleStmt) au lieu de mettre a
+      jour le TypeIdx du symbole EXISTANT - corrige via SymFindInScope.
+      (4) mon propre codegen initial du comma-ok ecrivait un immediat
+      DIRECTEMENT en memoire pour le booleen "ok" (MOV [var],1) - forme
+      que BinEncodeMov ne supporte pas (seulement MOV [mem],reg) -
+      corrige en passant par EAX. (5) l'ABSENCE totale de boxing des
+      ARGUMENTS d'appel de fonction (seul STK_ASSIGN etait couvert au
+      depart) faisait planter tout appel du type F(42) vers un
+      parametre "any" (valeur brute dereferencee comme si c'etait deja
+      une boite) - corrige par le point d'entree (b) ci-dessus.
+    - LIMITATIONS ASSUMEES specifiques a cette extension : aucun
+      retrecissement de type dans un type switch (voir plus haut) ;
+      assertion de type/type switch UNIQUEMENT testes sur des cibles
+      SCALAIRES/chaine (aucun SAMPLES\GO\*.go existant n'exige une
+      cible struct/tableau) ; toujours aucune liberation memoire pour
+      une boite (meme fuite assumee que les slices, voir plus bas).
+  Deux fichiers precedemment bloques rejoignent la liste "REUSSITE
+  COMPLETE" grace a ce bloc : interfaces.go (boxing/dispatch/type
+  switch/comma-ok, tous exerces), semantic.go (dispatch dynamique de
+  methode a travers un parametre d'interface uniquement - pas besoin
+  de type switch). errors.go reste bloque : il a besoin d'interfaces
+  ET de bibliotheque standard etendue (errors.New/fmt.Errorf) -
+  desormais un seul manque au lieu de deux.
 
   LIMITATIONS ASSUMEES (demandees explicitement par ce TODO 25,
   comme les autres compilateurs de ce projet) :
@@ -5005,11 +5100,14 @@ Function ParseExpr: Integer; Forward;
 { apres un dernier element SANS virgule finale, recoit un point-virgule                                     }
 { automatique du lexeur - PPSkipSemis absorbe ce cas).                                                          }
 Function ParseCompositeLiteralForType(TIdx: Integer): Integer;
+Const MAX_COMPOSITE_ELEMS = 128;
 Var
-  N, ValIdx     : Integer;
+  N, ValIdx, I  : Integer;
   KeyName       : TString;
   ArgStart, Cnt : Integer;
   SavedNCL      : Boolean;
+  Vals : Array[0..MAX_COMPOSITE_ELEMS - 1] Of Integer;
+  Keys : Array[0..MAX_COMPOSITE_ELEMS - 1] Of TString;
 Begin
   ParseCompositeLiteralForType := 0;
   If Not PPMatch('{') Then
@@ -5021,7 +5119,12 @@ Begin
   NoCompositeLit := False;
   PPSkipSemis;
 
-  ArgStart := ExprArgCount;
+  { extension interfaces : meme bogue, et meme correctif, que              }
+  { ParseCallArgs (voir sa propre note) - "ArgStart := ExprArgCount"               }
+  { capture APRES avoir analyse TOUS les elements (dans Vals/Keys, jamais              }
+  { le pool partage directement), plutot qu AVANT : un element contenant                    }
+  { un appel ou un litteral compose IMBRIQUE pousserait sinon DANS le                           }
+  { MEME pool AVANT que ce niveau n ait pousse ses propres entrees.                                 }
   Cnt := 0;
   If Not PPIsOp('}') Then
   Repeat
@@ -5047,8 +5150,17 @@ Begin
       PPAdvance;   { ':' }
     End;
     ValIdx := ParseExpr;
-    ExprArgPush(ValIdx, KeyName);
-    Inc(Cnt);
+    If Cnt < MAX_COMPOSITE_ELEMS Then
+    Begin
+      Vals[Cnt] := ValIdx;
+      Keys[Cnt] := KeyName;
+      Inc(Cnt);
+    End
+    Else
+    Begin
+      WarnMsg('trop d''elements dans un litteral compose (MAX_COMPOSITE_ELEMS depasse)');
+      Inc(Cnt);
+    End;
     PPSkipSemis;
     If Not PPMatch(',') Then Break;
     PPSkipSemis;
@@ -5057,6 +5169,10 @@ Begin
 
   If Not PPMatch('}') Then
     FatalError('accolade fermante attendue dans un litteral compose');
+
+  ArgStart := ExprArgCount;
+  For I := 0 To Cnt - 1 Do
+    If I < MAX_COMPOSITE_ELEMS Then ExprArgPush(Vals[I], Keys[I]);
 
   N := ExprNew(EK_COMPOSITE);
   ExprPool[N].Extra    := TIdx;
@@ -5088,19 +5204,39 @@ End;
 { d arguments (tolerance virgule/point-virgule finale, meme piege ASI            }
 { que ParseCompositeLiteral juste au-dessus).                                        }
 Function ParseCallArgs(Callee: Integer): Integer;
-Var N, A, ArgStart, Cnt, CalleeSig : Integer; SavedNCL: Boolean; PkgNam: TString;
+Const MAX_CALL_ARGS = 64;
+Var
+  N, A, ArgStart, Cnt, I, CalleeSig : Integer;
+  Vals : Array[0..MAX_CALL_ARGS - 1] Of Integer;
+  SavedNCL: Boolean; PkgNam: TString;
 Begin
   PPAdvance;   { '(' }
   SavedNCL := NoCompositeLit;
   NoCompositeLit := False;
   PPSkipSemis;
-  ArgStart := ExprArgCount;
+  { extension interfaces : BOGUE REEL trouve par EXECUTION (jamais par la  }
+  { compilation ni une relecture du .asm - "fmt.Println(Describe(5))"                    }
+  { plantait, la valeur passee a Println etait "5" au lieu du RESULTAT de              }
+  { Describe) : "ArgStart := ExprArgCount" etait capture AVANT la boucle,                  }
+  { alors que "A := ParseExpr" (l analyse de CHAQUE argument) peut ELLE-                       }
+  { MEME pousser dans le MEME ExprArgPool PARTAGE si cet argument contient                          }
+  { un appel IMBRIQUE - les propres entrees de CE NIVEAU se retrouvaient                                 }
+  { alors DECALEES apres celles de l appel imbrique, ArgFirst pointant vers                                 }
+  { la MAUVAISE plage. Corrige en analysant TOUTES les valeurs D ABORD                                          }
+  { (dans un tampon LOCAL, jamais le pool partage), puis en les poussant                                            }
+  { TOUTES APRES coup, une fois qu AUCUNE analyse recursive ne peut plus                                                }
+  { survenir - ArgStart, capture SEULEMENT maintenant, pointe alors                                                         }
+  { TOUJOURS vers les entrees CONTIGUES et CORRECTES de ce niveau. }
   Cnt := 0;
   If Not PPIsOp(')') Then
   Repeat
     A := ParseExpr;
-    ExprArgPush(A, '');
-    Inc(Cnt);
+    If Cnt < MAX_CALL_ARGS Then Begin Vals[Cnt] := A; Inc(Cnt); End
+    Else
+    Begin
+      WarnMsg('trop d''arguments dans un appel (MAX_CALL_ARGS depasse)');
+      Inc(Cnt);
+    End;
     PPSkipSemis;
     If Not PPMatch(',') Then Break;
     PPSkipSemis;
@@ -5109,6 +5245,10 @@ Begin
 
   If Not PPMatch(')') Then
     FatalError('parenthese fermante attendue dans un appel');
+
+  ArgStart := ExprArgCount;
+  For I := 0 To Cnt - 1 Do
+    If I < MAX_CALL_ARGS Then ExprArgPush(Vals[I], '');
 
   N := ExprNew(EK_CALL);
   ExprPool[N].Left     := Callee;
@@ -5179,23 +5319,31 @@ End;
 { make(chan T) restent hors de portee jusqu aux TODO 12/15 respectifs,               }
 { arret propre documente dans ce cas (via ParseTypeExpr lui-meme).                      }
 Function ParseNewOrMake(Const FuncName: TString): Integer;
-Var N, TIdx, ArgStart, Cnt, A : Integer; SavedNCL: Boolean;
+Var N, TIdx, ArgStart, Cnt, A, I : Integer; SavedNCL: Boolean;
+    Vals : Array[0..3] Of Integer;
 Begin
   PPAdvance;   { '(' }
   SavedNCL := NoCompositeLit;
   NoCompositeLit := False;
   TIdx := ParseTypeExpr;
-  ArgStart := ExprArgCount;
+  { extension interfaces : meme correctif que ParseCallArgs (voir sa      }
+  { propre note) - analyse D ABORD (Vals, jamais le pool partage), pousse            }
+  { SEULEMENT APRES, pour rester correct si "len"/"cap" contiennent eux-              }
+  { memes un appel imbrique. }
   Cnt := 0;
   While PPMatch(',') Do
   Begin
     A := ParseExpr;
-    ExprArgPush(A, '');
-    Inc(Cnt);
+    If Cnt <= High(Vals) Then Begin Vals[Cnt] := A; Inc(Cnt); End
+    Else Inc(Cnt);
   End;
   NoCompositeLit := SavedNCL;
   If Not PPMatch(')') Then
     FatalError('parenthese fermante attendue dans ' + FuncName + '(...)');
+
+  ArgStart := ExprArgCount;
+  For I := 0 To Cnt - 1 Do
+    If I <= High(Vals) Then ExprArgPush(Vals[I], '');
 
   N := ExprNew(EK_CALL);
   ExprPool[N].NameVal  := FuncName;
@@ -6027,7 +6175,18 @@ Begin
       Begin
         Nam := ExprPool[Targets[0]].NameVal;
         StmtArgPush(-1, Vals[0], Nam);
-        If SymFindInScope(Nam, CurScopeId) < 0 Then
+        { extension interfaces : BOGUE REEL trouve par EXECUTION (jamais    }
+        { par la compilation ni une relecture du .asm) - "_" (identifiant           }
+        { blanc Go) n a JAMAIS ete exclu ICI (contrairement, par exemple, a               }
+        { STK_SHORTVAR generique plus bas OU au comportement REEL de Go, ou                     }
+        { "_" n est JAMAIS une vraie variable stockable) : "_, ok := x.(T)"                          }
+        { creait alors un VRAI symbole nomme "_" - partage ensuite, par                                 }
+        { erreur, par TOUTE AUTRE cible "_" SANS RAPPORT ailleurs dans la                                    }
+        { MEME fonction (SymFind resout au NOM, pas a l identite) - un                                          }
+        { symptome trouve via "_ = Describe(s)" (s Shape) resolvant                                                 }
+        { accidentellement au "_" cree par un "_, bok := x.(string)"                                                    }
+        { totalement independant, plus loin dans la MEME fonction. }
+        If (Nam <> '_') And (SymFindInScope(Nam, CurScopeId) < 0) Then
         Begin
           SymAdd(Nam, SK_VAR, ExprPool[Vals[0]].TypeIdx);
           AnyNew := True;
@@ -6041,7 +6200,7 @@ Begin
         Nam := ExprPool[Targets[1]].NameVal;
         OkIdx := ExprAddBoolLit(False);
         StmtArgPush(-1, OkIdx, Nam);
-        If SymFindInScope(Nam, CurScopeId) < 0 Then
+        If (Nam <> '_') And (SymFindInScope(Nam, CurScopeId) < 0) Then
         Begin
           SymAdd(Nam, SK_VAR, PDT_BOOL);
           AnyNew := True;
@@ -6070,7 +6229,7 @@ Begin
         Begin
           Nam := ExprPool[Targets[I]].NameVal;
           StmtArgPush(-1, Vals[0], Nam);
-          If SymFindInScope(Nam, CurScopeId) < 0 Then
+          If (Nam <> '_') And (SymFindInScope(Nam, CurScopeId) < 0) Then
           Begin
             SymAdd(Nam, SK_VAR,
               FieldPool[TypeTab[ExprPool[Vals[0]].Extra].ResultFirst + I].TypeIdx);
@@ -6092,7 +6251,7 @@ Begin
           Begin
             Nam := ExprPool[Targets[I]].NameVal;
             StmtArgPush(-1, Vals[I], Nam);
-            If SymFindInScope(Nam, CurScopeId) < 0 Then
+            If (Nam <> '_') And (SymFindInScope(Nam, CurScopeId) < 0) Then
             Begin
               SymAdd(Nam, SK_VAR, ExprPool[Vals[I]].TypeIdx);
               AnyNew := True;
@@ -6426,29 +6585,43 @@ Var
   C, ExprStart, ExprCnt, BodyStart, BodyCnt, SIdx, TIdx, I : Integer;
   IsDefault : Boolean;
   BodyBuf : Array[0..MAX_CASEBODY_BUF - 1] Of Integer;
+  ExprBuf : Array[0..MAX_CASEBODY_BUF - 1] Of Integer;
 Begin
   SymEnterScope;
   IsDefault := False;
-  ExprStart := ExprArgCount;
   ExprCnt := 0;
 
+  { extension interfaces : meme correctif que ParseCallArgs/                }
+  { ParseCompositeLiteralForType (voir leurs propres notes) - accumule             }
+  { D ABORD dans un tampon LOCAL (ExprBuf), pousse dans ExprArgPool                    }
+  { SEULEMENT APRES : une valeur de "case" contenant un appel/litteral                    }
+  { compose IMBRIQUE (ex. "case Foo(), Bar():") pousserait sinon dans                          }
+  { CE MEME pool avant que cette clause n ait pu y placer SES PROPRES                              }
+  { entrees. }
   If PPMatch('case') Then
   Begin
     Repeat
       If IsTypeSwitchCtx Then
+        TIdx := ParseTypeExpr
+      Else
+        TIdx := ParseExpr;
+      If ExprCnt < MAX_CASEBODY_BUF Then
       Begin
-        TIdx := ParseTypeExpr;
-        ExprArgPush(TIdx, '');
+        ExprBuf[ExprCnt] := TIdx;
+        Inc(ExprCnt);
       End
       Else
-        ExprArgPush(ParseExpr, '');
-      Inc(ExprCnt);
+        Inc(ExprCnt);
     Until Not PPMatch(',');
   End
   Else If PPMatch('default') Then
     IsDefault := True
   Else
     FatalError('"case" ou "default" attendu');
+
+  ExprStart := ExprArgCount;
+  For I := 0 To ExprCnt - 1 Do
+    If I < MAX_CASEBODY_BUF Then ExprArgPush(ExprBuf[I], '');
 
   If Not PPMatch(':') Then
     FatalError('":" attendu apres "case"/"default"');
@@ -6496,7 +6669,7 @@ End;
 { (TODO 06, patch TODO 07) des qu il reconnait la garde ".(type)".                        }
 Function ParseSwitchStmt: Integer;
 Var
-  N, Init, TagStmt, TagExprIdx, FirstArgIdx : Integer;
+  N, Init, TagStmt, TagExprIdx, FirstArgIdx, VExistingSI : Integer;
   IsTypeSwitch : Boolean;
   TSVarName    : TString;
   ArgStart, Cnt : Integer;
@@ -6549,6 +6722,32 @@ Begin
         IsTypeSwitch := True;
         TSVarName    := StmtArgName[FirstArgIdx];
         TagExprIdx   := ExprPool[StmtArgPool2[FirstArgIdx]].Left;
+        { extension interfaces : "v" a DEJA ete enregistre comme un VRAI    }
+        { symbole SK_VAR par le traitement GENERIQUE de ":=" ci-dessus                  }
+        { (ParseSimpleStmt, avant meme que CE code n ait pu detecter qu il                  }
+        { s agissait en realite d une garde de type switch) - avec pour                             }
+        { TYPE celui, sans grand sens, du marqueur EK_TYPEASSERT lui-meme                                }
+        { (Extra=-2), PAS un type utilisable. Corrige ICI le TYPE de CE                                      }
+        { MEME symbole existant (SymFindInScope, jamais un SECOND SymAdd -                                       }
+        { BOGUE REEL trouve par EXECUTION, "variable declaree et non                                                 }
+        { utilisee: v" alors que "_= v" REFERENCE bel et bien "v" : un                                                   }
+        { second SymAdd ici aurait cree un DOUBLON, le PREMIER - jamais              }
+        { marque "utilise" puisque toute reference future resout au             }
+        { PLUS RECENT via SymFind - restant en faute au moment de                  }
+        { SymLeaveScope). Simplification ASSUMEE (voir aussi la note de                }
+        { CompileTypeSwitch, TODO 21) : garde le type DECLARE de x lui-                    }
+        { meme (jamais NARROWED vers le type concret du "case" - la regle                      }
+        { Go reelle - un symbole PAR CLAUSE romprait SymFind, qui ne                                }
+        { distingue que des FONCTIONS entre elles, jamais deux portees                                 }
+        { SOEURS dans la MEME fonction). }
+        If (TSVarName <> '') And (TSVarName <> '_') Then
+        Begin
+          VExistingSI := SymFindInScope(TSVarName, CurScopeId);
+          If VExistingSI >= 0 Then
+            SymTab[VExistingSI].TypeIdx := ExprPool[TagExprIdx].TypeIdx
+          Else
+            SymAdd(TSVarName, SK_VAR, ExprPool[TagExprIdx].TypeIdx);
+        End;
       End
       Else
         FatalError('forme de "switch" avec declaration courte non prise ' +
@@ -6632,18 +6831,29 @@ End;
 { fonction englobante n a de toute facon aucun sens avant que le TODO 08                }
 { ne fasse exister des fonctions.                                                          }
 Function ParseReturnStmt: Integer;
+Const MAX_RETURN_VALS = 16;
 Var N, ArgStart, Cnt, EIdx, I, ExpCnt : Integer;
+    Vals : Array[0..MAX_RETURN_VALS - 1] Of Integer;
 Begin
   PPAdvance;   { return }
   N := StmtNew(STK_RETURN);
-  ArgStart := StmtArgCount;
+  { extension interfaces : meme correctif que ParseCallArgs (voir sa      }
+  { propre note) - accumule D ABORD (Vals), pousse dans StmtArgPool                     }
+  { SEULEMENT APRES : une valeur de retour contenant un litteral de                        }
+  { fonction (fermeture) AVEC CORPS (un "return" immediatement suivi              }
+  { d une fermeture invoquee sur place) pousserait                                       }
+  { sinon SES PROPRES instructions dans ce MEME pool avant que "return"                          }
+  { n ait pu y placer SA PROPRE entree. }
   Cnt := 0;
   If (PPKind <> TOK_SEMI) And (Not PPAtEnd) And (Not PPIsOp('}')) Then
   Repeat
     EIdx := ParseExpr;
-    StmtArgPush(EIdx, -1, '');
-    Inc(Cnt);
+    If Cnt < MAX_RETURN_VALS Then Begin Vals[Cnt] := EIdx; Inc(Cnt); End
+    Else Inc(Cnt);
   Until Not PPMatch(',');
+  ArgStart := StmtArgCount;
+  For I := 0 To Cnt - 1 Do
+    If I < MAX_RETURN_VALS Then StmtArgPush(Vals[I], -1, '');
   StmtPool[N].ArgFirst := ArgStart;
   StmtPool[N].ArgCount := Cnt;
 
@@ -10489,6 +10699,10 @@ End;
 Procedure CompileExpr(E: Integer); Forward;
 Procedure CompileMethodCall(E, Callee, BaseTypeIdx, ArgFirst, ArgCount: Integer); Forward;
 Function MethodAsmLabel(MIdx: Integer): TString; Forward;
+Procedure CompileBoxValue(SrcExpr: Integer); Forward;
+Procedure CompileInterfaceMethodCall(Callee, ArgFirst, ArgCount: Integer); Forward;
+Procedure CompileStructCompositeIntoAddr(CE: Integer); Forward;
+Procedure CompileArrayCompositeIntoAddr(CE: Integer); Forward;
 
 { ------------------------------------------------------------ }
 { make([]T,...)/len/cap/append (extension arrays/slices, meme demande    }
@@ -10751,7 +10965,7 @@ End;
 { resultat - tout le reste est un arret propre documente (FatalError). }
 Procedure CompileCallExpr(E: Integer);
 Var
-  Callee, ArgFirst, ArgCount, I, FDI, MBaseTypeIdx : Integer;
+  Callee, ArgFirst, ArgCount, I, FDI, MBaseTypeIdx, ParamTIdx : Integer;
   PkgNam, FnNam : TString;
 Begin
   Callee   := ExprPool[E].Left;
@@ -10799,6 +11013,16 @@ Begin
     If (MBaseTypeIdx >= 0) And (TypeTab[MBaseTypeIdx].Kind = TYK_STRUCT) Then
     Begin
       CompileMethodCall(E, Callee, MBaseTypeIdx, ArgFirst, ArgCount);
+      Exit;
+    End;
+    { extension interfaces : "valeur.Methode(...)" ou "valeur" (SANS       }
+    { depointerisation - une interface n est jamais un pointeur Go, ce               }
+    { serait une erreur de type) est de type INTERFACE/ERROR - dispatch                    }
+    { DYNAMIQUE, voir CompileInterfaceMethodCall. }
+    If (ExprPool[ExprPool[Callee].Left].TypeIdx >= 0) And
+       (TypeTab[ExprPool[ExprPool[Callee].Left].TypeIdx].Kind In [TYK_INTERFACE, TYK_ERROR]) Then
+    Begin
+      CompileInterfaceMethodCall(Callee, ArgFirst, ArgCount);
       Exit;
     End;
   End;
@@ -10871,7 +11095,20 @@ Begin
     End;
     For I := ArgCount - 1 DownTo 0 Do
     Begin
-      CompileExpr(ExprArgPool[ArgFirst + I]);
+      { extension interfaces : boxing AUTOMATIQUE d un argument CONCRET      }
+      { passe a un PARAMETRE declare interface/error/"any" - BOGUE REEL             }
+      { trouve par EXECUTION (segmentation fault, jamais par la compilation                  }
+      { ni une relecture du .asm) : sans ce boxing, la valeur BRUTE (ex.                         }
+      { l entier 42 lui-meme) est poussee telle quelle, et le CORPS de la                             }
+      { fonction la deref-reference comme si c etait DEJA un pointeur de                                 }
+      { boite - acces memoire invalide. }
+      ParamTIdx := -1;
+      If I < TypeTab[FuncDefPool[FDI].TypeIdx].ParamCount Then
+        ParamTIdx := FieldPool[TypeTab[FuncDefPool[FDI].TypeIdx].ParamFirst + I].TypeIdx;
+      If (ParamTIdx >= 0) And (TypeTab[ParamTIdx].Kind In [TYK_INTERFACE, TYK_ERROR]) Then
+        CompileBoxValue(ExprArgPool[ArgFirst + I])
+      Else
+        CompileExpr(ExprArgPool[ArgFirst + I]);
       EmitInstr('PUSH EAX');
     End;
     EmitInstr('CALL ' + ASM_PFX_FUNC + FuncDefPool[FDI].Name);
@@ -11128,6 +11365,240 @@ Begin
     EmitInstr('CALL ' + MethodAsmLabel(MIdx));
     EmitInstr('ADD ESP,' + IntToStrG((ArgCount + RecvWords) * 4));
   End;
+End;
+
+{ ------------------------------------------------------------ }
+{ Interfaces (extension demandee explicitement, "terminer le             }
+{ compilateur") - modele CHOISI ICI, documente une seule fois : une                  }
+{ VALEUR d interface (y compris "error"/"any") est TOUJOURS un POINTEUR                    }
+{ (4 octets, meme convention EAX que tout le reste) vers une BOITE               }
+{ allouee sur le tas (_GORT_ALLOC, meme allocateur que arrays/slices) de                 }
+{ 8 octets : [+0]=TypeIdx CONCRET (l entier TypeTab reel du type BOITE,               }
+{ deja depointerise - reutilise DIRECTEMENT comme etiquette d execution,                    }
+{ aucun descripteur de type separe/vtable necessaire, puisque TOUS les                        }
+{ types sont connus a la COMPILATION dans ce compilateur - pas de                                 }
+{ chargement dynamique de type possible en Go de toute facon) ;                                      }
+{ [+4]=DataPtr (adresse de la VALEUR sous-jacente - le pointeur lui-meme                                 }
+{ si la source etait DEJA un pointeur, sinon l adresse d une VRAIE COPIE                                     }
+{ fraichement allouee sur le tas, boxing de valeur reel comme en Go).                                            }
+{ nil interne = boite pointeur 0, DEJA correct sans aucun code special                                              }
+{ (meme convention "0 = valeur zero" que partout ailleurs). Dispatch de                                                }
+{ methode (CompileInterfaceMethodCall) : PAS de vtable - une CHAINE de                                                    }
+{ comparaisons du TypeIdx boite contre chaque methode DECLAREE sous ce                                                        }
+{ nom dans MethodDefPool (le nombre de types reels etant petit et connu                                                          }
+{ a la compilation, une simple chaine sequentielle est LARGEMENT                                                                    }
+{ suffisante - meme discipline "correction avant vitesse" que                                                                          }
+{ CompileSwitch). LIMITATIONS ASSUMEES : type assertion ("x.(T)") et                                                                        }
+{ type switch ("switch v := x.(type)") restent HORS DE PORTEE (auraient                                                                        }
+{ pu reutiliser la MEME boite/TypeIdx, mais non implementes ICI par                                                                              }
+{ manque de temps) - un FatalError CLAIR les signale, jamais un plantage.                                                                             }
+{ ------------------------------------------------------------ }
+
+{ CompileBoxValue : "boite" SrcExpr dans une NOUVELLE boite d interface  }
+{ (ou copie simplement le pointeur de boite existant si SrcExpr est                    }
+{ LUI-MEME deja de type interface/error - AUCUN re-boxing dans ce cas,                     }
+{ affectation interface-a-interface ordinaire). Laisse le pointeur de                          }
+{ boite (resultat) dans EAX. }
+Procedure CompileBoxValue(SrcExpr: Integer);
+Var
+  SrcTypeIdx, DerefTypeIdx, Sz : Integer;
+  LblTop, LblEnd : TString;
+Begin
+  SrcTypeIdx := ExprPool[SrcExpr].TypeIdx;
+
+  If (SrcTypeIdx >= 0) And
+     ((TypeTab[SrcTypeIdx].Kind = TYK_INTERFACE) Or (TypeTab[SrcTypeIdx].Kind = TYK_ERROR)) Then
+  Begin
+    CompileExpr(SrcExpr);   { deja une boite - simple copie du pointeur }
+    Exit;
+  End;
+
+  DerefTypeIdx := DerefIfPointer(SrcTypeIdx);
+
+  If (SrcTypeIdx >= 0) And (TypeTab[SrcTypeIdx].Kind = TYK_POINTER) Then
+    CompileExpr(SrcExpr)                          { EAX = DataPtr = valeur du pointeur }
+  Else If (DerefTypeIdx >= 0) And
+          (TypeTab[DerefTypeIdx].Kind In [TYK_STRUCT, TYK_ARRAY]) Then
+  Begin
+    { valeur MULTI-MOTS (struct/tableau) : VRAIE copie sur le tas, mot     }
+    { par mot - EDI/ESI librement utilisables ICI (aucun appel n intervient          }
+    { dans cette boucle). }
+    Sz := TypeTab[DerefTypeIdx].Size;
+    If Sz < 4 Then Sz := 4;
+    EmitInstr('PUSH ' + IntToStrG(Sz));
+    EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+    EmitInstr('ADD ESP,4');                        { EAX = nouvelle copie }
+
+    If ExprPool[SrcExpr].Kind = EK_COMPOSITE Then
+    Begin
+      { source = litteral compose DIRECT (ex. "Square(Side:4)" avec        }
+      { accolades Go notees entre parentheses ici), PAS une                    }
+      { variable adressable - CompileAddrOf n a rien a lui offrir (pas de           }
+      { case EK_COMPOSITE) : remplit la copie DIRECTEMENT (zero-fill puis                 }
+      { chaque champ/element, meme logique que CompileStructCompositeInto/                    }
+      { CompileArrayCompositeInto mais visant une adresse de tas plutot                          }
+      { qu un slot local - voir CompileStructCompositeIntoAddr). }
+      If TypeTab[DerefTypeIdx].Kind = TYK_STRUCT Then
+        CompileStructCompositeIntoAddr(SrcExpr)
+      Else
+        CompileArrayCompositeIntoAddr(SrcExpr);
+      { EAX = adresse de la copie (deja remplie) = DataPtr. }
+    End
+    Else
+    Begin
+      EmitInstr('MOV EDI,EAX');
+      EmitInstr('PUSH EDI');                          { conserve l adresse de la copie }
+      If (ExprPool[SrcExpr].TypeIdx >= 0) And
+         (TypeTab[ExprPool[SrcExpr].TypeIdx].Kind = TYK_POINTER) Then
+        CompileExpr(SrcExpr)
+      Else
+        CompileAddrOf(SrcExpr);
+      EmitInstr('MOV ESI,EAX');                       { adresse SOURCE }
+      EmitInstr('MOV EDI,DWORD PTR [ESP]');           { adresse de la copie (relue, EAX vient d etre ecrase) }
+      EmitInstr('MOV ECX,' + IntToStrG(Sz Div 4));
+      LblTop := CgLabelGen;
+      LblEnd := CgLabelGen;
+      EmitLabel(LblTop);
+      EmitInstr('CMP ECX,0');
+      EmitInstr('JLE ' + LblEnd);
+      EmitInstr('MOV EAX,DWORD PTR [ESI]');
+      EmitInstr('MOV DWORD PTR [EDI],EAX');
+      EmitInstr('ADD ESI,4');
+      EmitInstr('ADD EDI,4');
+      EmitInstr('DEC ECX');
+      EmitInstr('JMP ' + LblTop);
+      EmitLabel(LblEnd);
+      EmitInstr('POP EAX');                            { EAX = DataPtr (adresse de la copie) }
+    End;
+  End
+  Else If ExprIsFloatTyped(SrcExpr) Then
+  Begin
+    { extension flottants+interfaces : float64 - alloue 8 octets (PAS 4,   }
+    { un Double COMPLET) et stocke la VALEUR via la pile FPU (FSTP), PAS         }
+    { CompileExpr (convention EAX ENTIERE, incompatible). }
+    EmitInstr('PUSH 8');
+    EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+    EmitInstr('ADD ESP,4');                          { EAX = nouvelle adresse (8 octets) }
+    EmitInstr('MOV EBX,EAX');
+    CompileFloatExpr(SrcExpr);                        { ST(0) = valeur }
+    EmitInstr('FSTP [EBX]');
+    EmitInstr('MOV EAX,EBX');                          { EAX = DataPtr }
+  End
+  Else
+  Begin
+    { scalaire (int/bool/etc.) : alloue 4 octets, stocke la VALEUR         }
+    { directement (CompileExpr la donne deja, pas une adresse a copier). }
+    CompileExpr(SrcExpr);
+    EmitInstr('PUSH EAX');
+    EmitInstr('PUSH 4');
+    EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+    EmitInstr('ADD ESP,4');                          { EAX = nouvelle adresse }
+    EmitInstr('MOV EBX,EAX');
+    EmitInstr('POP EAX');
+    EmitInstr('MOV DWORD PTR [EBX],EAX');
+    EmitInstr('MOV EAX,EBX');                        { EAX = DataPtr }
+  End;
+
+  { EAX = DataPtr - alloue la BOITE (8 octets) et remplit ses deux mots. }
+  EmitInstr('PUSH EAX');                             { DataPtr }
+  EmitInstr('PUSH 8');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+  EmitInstr('ADD ESP,4');                            { EAX = boite }
+  EmitInstr('MOV EBX,EAX');
+  EmitInstr('MOV EAX,' + IntToStrG(DerefTypeIdx));
+  EmitInstr('MOV DWORD PTR [EBX],EAX');
+  EmitInstr('MOV EAX,DWORD PTR [ESP]');              { DataPtr }
+  EmitInstr('MOV DWORD PTR [EBX+4],EAX');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('MOV EAX,EBX');                          { resultat = pointeur de boite }
+End;
+
+{ CompileInterfaceMethodCall : "base.Nom(args...)" ou base (Left du       }
+{ selecteur) est de type INTERFACE/ERROR - dispatch DYNAMIQUE (le VRAI               }
+{ type concret n est connu qu a l EXECUTION, contrairement a                                }
+{ CompileMethodCall/receveur statique) via une chaine de comparaisons du               }
+{ TypeIdx boite contre chaque candidat MethodDefPool portant ce nom. }
+Procedure CompileInterfaceMethodCall(Callee, ArgFirst, ArgCount: Integer);
+Const MAX_IFACE_CAND = 32;
+Var
+  MName : TString;
+  I, J, RTIdx, MI, CandCount, RecvSize, RecvWords : Integer;
+  CandMI  : Array[0..MAX_IFACE_CAND - 1] Of Integer;
+  CandLbl : Array[0..MAX_IFACE_CAND - 1] Of TString;
+  LblDone : TString;
+Begin
+  MName := ExprPool[Callee].NameVal;
+
+  CandCount := 0;
+  For MI := 0 To MethodDefCount - 1 Do
+    If (MethodDefPool[MI].Name = MName) And (CandCount < MAX_IFACE_CAND) Then
+    Begin
+      CandMI[CandCount] := MI;
+      CandLbl[CandCount] := CgLabelGen;
+      Inc(CandCount);
+    End;
+
+  If CandCount = 0 Then
+  Begin
+    FatalError('TODO 21 : generateur de code, methode inconnue a ' +
+      'travers une interface : ' + MName);
+    Exit;
+  End;
+
+  CompileExpr(ExprPool[Callee].Left);          { EAX = boite }
+  EmitInstr('PUSH EAX');                         { [ESP+0]=boite }
+  For I := ArgCount - 1 DownTo 0 Do
+  Begin
+    CompileExpr(ExprArgPool[ArgFirst + I]);
+    EmitInstr('PUSH EAX');
+  End;
+  { pile : [ESP+0]=arg[0], ..., [ESP+4*(ArgCount-1)]=arg[ArgCount-1],    }
+  { [ESP+4*ArgCount]=boite. }
+
+  LblDone := CgLabelGen;
+  EmitInstr('MOV EBX,DWORD PTR [ESP+' + IntToStrG(4 * ArgCount) + ']');   { boite }
+  EmitInstr('MOV EBX,DWORD PTR [EBX]');          { EBX = TypeIdx concret }
+  For I := 0 To CandCount - 1 Do
+  Begin
+    RTIdx := MethodDefPool[CandMI[I]].RecvTypeIdx;
+    If TypeTab[RTIdx].Kind = TYK_POINTER Then RTIdx := TypeTab[RTIdx].ElemTypeIdx;
+    EmitInstr('CMP EBX,' + IntToStrG(RTIdx));
+    EmitInstr('JE ' + CandLbl[I]);
+  End;
+  { aucune correspondance : ne devrait jamais arriver si TypeSatisfiesInterface  }
+  { (analyse, TODO 10/19) a fait son travail - repli SUR (EAX:=0, jamais         }
+  { un comportement indefini) plutot qu un plantage. }
+  EmitInstr('MOV EAX,0');
+  EmitInstr('JMP ' + LblDone);
+
+  For I := 0 To CandCount - 1 Do
+  Begin
+    EmitLabel(CandLbl[I]);
+    MI := CandMI[I];
+    EmitInstr('MOV EAX,DWORD PTR [ESP+' + IntToStrG(4 * ArgCount) + ']');  { boite }
+    EmitInstr('MOV EAX,DWORD PTR [EAX+4]');       { DataPtr }
+    If MethodDefPool[MI].IsPointerRecv Then
+    Begin
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL ' + MethodAsmLabel(MI));
+      EmitInstr('ADD ESP,' + IntToStrG((ArgCount + 1 + 1) * 4));   { args+receveur+boite }
+    End
+    Else
+    Begin
+      RTIdx := MethodDefPool[MI].RecvTypeIdx;
+      RecvSize := LocalSlotSize(RTIdx);
+      RecvWords := RecvSize Div 4;
+      If RecvWords < 1 Then RecvWords := 1;
+      EmitInstr('MOV EDI,EAX');
+      For J := RecvWords - 1 DownTo 0 Do
+        EmitInstr('PUSH DWORD PTR [EDI+' + IntToStrG(J * 4) + ']');
+      EmitInstr('CALL ' + MethodAsmLabel(MI));
+      EmitInstr('ADD ESP,' + IntToStrG((ArgCount + RecvWords + 1) * 4));   { args+receveur+boite }
+    End;
+    EmitInstr('JMP ' + LblDone);
+  End;
+
+  EmitLabel(LblDone);
 End;
 
 { CompileSliceExpr : extension structs/methodes (pointeurs, TODO 21) -   }
@@ -11408,6 +11879,127 @@ Begin
   End;
 End;
 
+{ CompileStructCompositeIntoAddr/CompileArrayCompositeIntoAddr :         }
+{ extension interfaces (TODO 21) - EXACTEMENT les memes deux fonctions           }
+{ que CompileStructCompositeInto/CompileArrayCompositeInto ci-dessus,               }
+{ mais visant une ADRESSE DE TAS DEJA CALCULEE (EAX au moment de l appel,             }
+{ typiquement une allocation _GORT_ALLOC fraiche - CompileBoxValue,                    }
+{ boxing d un litteral compose DIRECT, "Shape = Square(Side:4)", qui n a               }
+{ pas de VARIABLE adressable a offrir a CompileAddrOf) plutot qu un slot                 }
+{ LOCAL (CgVarOperand(SI)) - PUSH cette adresse immediatement pour la                        }
+{ duree du remplissage (chaque element peut contenir un appel arbitraire                        }
+{ qui clobber EAX/EBX/etc.), la restaure dans EAX avant de rendre la main. }
+Procedure CompileStructCompositeIntoAddr(CE: Integer);
+Var TIdx, ArgFirst, ArgCount, I, FIdx, FOfs, ZN: Integer;
+    LblZTop, LblZEnd: TString;
+Begin
+  EmitInstr('PUSH EAX');   { [ESP+0] = adresse destination }
+
+  TIdx     := ExprPool[CE].Extra;
+  ArgFirst := ExprPool[CE].ArgFirst;
+  ArgCount := ExprPool[CE].ArgCount;
+
+  ZN := TypeTab[TIdx].Size;
+  If ZN < 4 Then ZN := 4;
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('MOV EDI,DWORD PTR [ESP]');
+  EmitInstr('MOV ECX,' + IntToStrG(ZN Div 4));
+  LblZTop := CgLabelGen;
+  LblZEnd := CgLabelGen;
+  EmitLabel(LblZTop);
+  EmitInstr('CMP ECX,0');
+  EmitInstr('JLE ' + LblZEnd);
+  EmitInstr('MOV DWORD PTR [EDI],EAX');
+  EmitInstr('ADD EDI,4');
+  EmitInstr('DEC ECX');
+  EmitInstr('JMP ' + LblZTop);
+  EmitLabel(LblZEnd);
+
+  For I := 0 To ArgCount - 1 Do
+  Begin
+    If ExprArgKey[ArgFirst + I] = '' Then
+    Begin
+      FIdx := TypeTab[TIdx].FieldFirst + I;
+      If (I < 0) Or (I >= TypeTab[TIdx].FieldCount) Then
+      Begin
+        FatalError('TODO 21 : generateur de code, litteral compose de ' +
+          'struct positionnel : trop d''elements');
+        Exit;
+      End;
+      FOfs := FieldPool[FIdx].Offset;
+    End
+    Else
+    Begin
+      FIdx := FindFieldWithOffset(TIdx, ExprArgKey[ArgFirst + I], FOfs);
+      If FIdx < 0 Then
+      Begin
+        FatalError('TODO 21 : generateur de code, champ inconnu dans un ' +
+          'litteral compose de struct : ' + ExprArgKey[ArgFirst + I]);
+        Exit;
+      End;
+    End;
+
+    EmitInstr('MOV EAX,DWORD PTR [ESP]');
+    If FOfs <> 0 Then
+      EmitInstr('ADD EAX,' + IntToStrG(FOfs));
+    EmitInstr('PUSH EAX');
+    CompileExpr(ExprArgPool[ArgFirst + I]);
+    EmitInstr('POP EBX');
+    EmitInstr('MOV DWORD PTR [EBX],EAX');
+  End;
+
+  EmitInstr('POP EAX');   { restaure EAX = adresse destination }
+End;
+
+Procedure CompileArrayCompositeIntoAddr(CE: Integer);
+Var TIdx, ElemTypeIdx, ElemSize, ArgFirst, ArgCount, I, ZN: Integer;
+    LblZTop, LblZEnd: TString;
+Begin
+  EmitInstr('PUSH EAX');   { [ESP+0] = adresse destination }
+
+  TIdx        := ExprPool[CE].Extra;
+  ElemTypeIdx := TypeTab[TIdx].ElemTypeIdx;
+  ElemSize    := LocalSlotSize(ElemTypeIdx);
+  ArgFirst    := ExprPool[CE].ArgFirst;
+  ArgCount    := ExprPool[CE].ArgCount;
+
+  ZN := TypeTab[TIdx].Size;
+  If ZN < 4 Then ZN := 4;
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('MOV EDI,DWORD PTR [ESP]');
+  EmitInstr('MOV ECX,' + IntToStrG(ZN Div 4));
+  LblZTop := CgLabelGen;
+  LblZEnd := CgLabelGen;
+  EmitLabel(LblZTop);
+  EmitInstr('CMP ECX,0');
+  EmitInstr('JLE ' + LblZEnd);
+  EmitInstr('MOV DWORD PTR [EDI],EAX');
+  EmitInstr('ADD EDI,4');
+  EmitInstr('DEC ECX');
+  EmitInstr('JMP ' + LblZTop);
+  EmitLabel(LblZEnd);
+
+  For I := 0 To ArgCount - 1 Do
+  Begin
+    If ExprArgKey[ArgFirst + I] <> '' Then
+    Begin
+      FatalError('TODO 21 : generateur de code, litteral compose de ' +
+        'tableau avec cle non couvert (seuls les elements POSITIONNELS ' +
+        'le sont)');
+      Exit;
+    End;
+    EmitInstr('MOV EAX,DWORD PTR [ESP]');
+    If I > 0 Then
+      EmitInstr('ADD EAX,' + IntToStrG(I * ElemSize));
+    EmitInstr('PUSH EAX');
+    CompileExpr(ExprArgPool[ArgFirst + I]);
+    EmitInstr('POP EBX');
+    EmitInstr('MOV DWORD PTR [EBX],EAX');
+  End;
+
+  EmitInstr('POP EAX');   { restaure EAX = adresse destination }
+End;
+
 { CompileExpr : compile RECURSIVEMENT le noeud E de ExprPool - laisse    }
 { TOUJOURS son resultat dans EAX (convention FIXE, PAS d allocateur de       }
 { registres - meme discipline que DELPHI.PAS/memes projet). Toute forme            }
@@ -11552,6 +12144,7 @@ Begin
 End;
 
 Procedure CompileSwitch(S: Integer); Forward;
+Procedure CompileTypeSwitch(S: Integer); Forward;
 
 { CompileStmt : compile RECURSIVEMENT le noeud S de StmtPool - portee    }
 { documentee en tete de section (TODO 21) ; tout le reste s arrete             }
@@ -11560,8 +12153,10 @@ Procedure CompileStmt(S: Integer);
 Var
   I, SI, ZN, RgCollTypeIdx, RgElemTypeIdx, RgElemSize : Integer;
   MRCallE, MRCallee, MRFDI, MRSI, MRArgFirst, MRArgCount, HOfs : Integer;
+  TAExpr, TATIdx, TAVSI, TAOkSI : Integer;
   RNam  : TString;
   LblElse, LblEnd, LblTop, LblZTop, LblZEnd : TString;
+  LblTAMatch, LblTANoMatch, LblTADone : TString;
 Begin
   If S < 0 Then Exit;
   Case StmtPool[S].Kind Of
@@ -11678,6 +12273,15 @@ Begin
           CompileFloatExpr(StmtArgPool2[StmtPool[S].ArgFirst]);
           EmitInstr('FSTP ' + CgVarOperand(SI));
         End
+        Else If (SI >= 0) And (SymTab[SI].TypeIdx >= 0) And
+                (TypeTab[SymTab[SI].TypeIdx].Kind In [TYK_INTERFACE, TYK_ERROR]) Then
+        Begin
+          { extension interfaces : cible declaree de type interface/error   }
+          { - "boite" la source (CompileBoxValue detecte lui-meme si la               }
+          { source est deja une interface, auquel cas simple copie). }
+          CompileBoxValue(StmtArgPool2[StmtPool[S].ArgFirst]);
+          EmitInstr('MOV DWORD PTR ' + CgVarOperand(SI) + ',EAX');
+        End
         Else
         Begin
           CompileExpr(StmtArgPool2[StmtPool[S].ArgFirst]);
@@ -11763,6 +12367,85 @@ Begin
             End;
           End;
         End;
+      End
+      Else If (StmtPool[S].ArgCount = 2) And
+              (ExprPool[StmtArgPool2[StmtPool[S].ArgFirst]].Kind = EK_TYPEASSERT) And
+              (ExprPool[StmtArgPool2[StmtPool[S].ArgFirst]].Extra <> -2) Then
+      Begin
+        { extension interfaces : "v, ok := x.(T)" - assertion de type       }
+        { avec comma-ok (distincte du type SWITCH, marqueur Extra=-2,               }
+        { deja exclu ci-dessus) - compare le TypeIdx CONCRET de la boite               }
+        { (x, toujours une expression d interface/error) a T ; ok=1 si                  }
+        { egalite, sinon 0 (et v recoit alors la valeur ZERO de T, jamais                   }
+        { une valeur indeterminee). "v" recoit une COPIE de la boite elle-                    }
+        { meme si T est LUI-MEME une interface/error (aucune extraction a               }
+        { faire), sinon le contenu du DataPtr (meme regle que                    }
+        { CompileBoxValue : un mot, deref supplementaire depuis DataPtr). }
+        TAExpr := StmtArgPool2[StmtPool[S].ArgFirst];
+        TATIdx := ExprPool[TAExpr].Extra;
+        CompileExpr(ExprPool[TAExpr].Left);      { EAX = boite }
+        EmitInstr('PUSH EAX');                     { conservee pour la duree du test }
+        EmitInstr('MOV EBX,DWORD PTR [ESP]');
+        EmitInstr('MOV EBX,DWORD PTR [EBX]');       { EBX = TypeIdx concret }
+        LblTAMatch   := CgLabelGen;
+        LblTANoMatch := CgLabelGen;
+        LblTADone    := CgLabelGen;
+        EmitInstr('CMP EBX,' + IntToStrG(TATIdx));
+        EmitInstr('JE ' + LblTAMatch);
+        EmitInstr('JMP ' + LblTANoMatch);
+
+        EmitLabel(LblTAMatch);
+        If TypeTab[TATIdx].Kind In [TYK_INTERFACE, TYK_ERROR] Then
+          EmitInstr('MOV EAX,DWORD PTR [ESP]')
+        Else
+        Begin
+          EmitInstr('MOV EAX,DWORD PTR [ESP]');
+          EmitInstr('MOV EAX,DWORD PTR [EAX+4]');   { DataPtr }
+          EmitInstr('MOV EAX,DWORD PTR [EAX]');      { valeur }
+        End;
+        If StmtArgName[StmtPool[S].ArgFirst] <> '_' Then
+        Begin
+          TAVSI := SymFind(StmtArgName[StmtPool[S].ArgFirst]);
+          If TAVSI >= 0 Then
+            EmitInstr('MOV DWORD PTR ' + CgVarOperand(TAVSI) + ',EAX');
+        End;
+        If StmtArgName[StmtPool[S].ArgFirst + 1] <> '_' Then
+        Begin
+          TAOkSI := SymFind(StmtArgName[StmtPool[S].ArgFirst + 1]);
+          If TAOkSI >= 0 Then
+          Begin
+            { "MOV [mem],imm" n est PAS une forme couverte par l assembleur   }
+            { (BinEncodeMov, TODO 22 - seul "MOV [mem],reg" l est, la valeur              }
+            { passe TOUJOURS par EAX d abord partout ailleurs dans ce                 }
+            { fichier) - route l immediat par EAX, meme discipline. }
+            EmitInstr('MOV EAX,1');
+            EmitInstr('MOV DWORD PTR ' + CgVarOperand(TAOkSI) + ',EAX');
+          End;
+        End;
+        EmitInstr('JMP ' + LblTADone);
+
+        EmitLabel(LblTANoMatch);
+        If StmtArgName[StmtPool[S].ArgFirst] <> '_' Then
+        Begin
+          TAVSI := SymFind(StmtArgName[StmtPool[S].ArgFirst]);
+          If TAVSI >= 0 Then
+          Begin
+            EmitInstr('MOV EAX,0');
+            EmitInstr('MOV DWORD PTR ' + CgVarOperand(TAVSI) + ',EAX');
+          End;
+        End;
+        If StmtArgName[StmtPool[S].ArgFirst + 1] <> '_' Then
+        Begin
+          TAOkSI := SymFind(StmtArgName[StmtPool[S].ArgFirst + 1]);
+          If TAOkSI >= 0 Then
+          Begin
+            EmitInstr('MOV EAX,0');
+            EmitInstr('MOV DWORD PTR ' + CgVarOperand(TAOkSI) + ',EAX');
+          End;
+        End;
+
+        EmitLabel(LblTADone);
+        EmitInstr('ADD ESP,4');
       End
       Else
         For I := StmtPool[S].ArgFirst To StmtPool[S].ArgFirst + StmtPool[S].ArgCount - 1 Do
@@ -11996,6 +12679,8 @@ Begin
       End;
     STK_SWITCH:
       CompileSwitch(S);
+    STK_TYPESWITCH:
+      CompileTypeSwitch(S);
     STK_GOTO:
       { extension switch/goto (TODO 21) : etiquette PROPRE a la fonction   }
       { EN COURS de generation (CurGotoLabelPfx, positionne par                       }
@@ -12010,7 +12695,7 @@ Begin
       End;
   Else
     FatalError('TODO 21 : generateur de code, forme d''instruction non ' +
-      'couverte (type switch/defer/go/select restent TODO 22/23)');
+      'couverte (defer/go/select restent TODO 22/23)');
   End;
 End;
 
@@ -12040,14 +12725,6 @@ Var
   LblEnd : TString;
   HasTag : Boolean;
 Begin
-  If StmtPool[S].Kind <> STK_SWITCH Then
-  Begin
-    FatalError('TODO 21 : generateur de code, "type switch" non couvert ' +
-      '(necessiterait une VRAIE information de type a l''execution, hors ' +
-      'de portee de cette extension)');
-    Exit;
-  End;
-
   CCnt := StmtPool[S].ArgCount;
   If CCnt > MAX_SW_CASE Then
   Begin
@@ -12138,6 +12815,98 @@ Begin
 
   EmitLabel(LblEnd);
   If HasTag Then EmitInstr('ADD ESP,4');
+End;
+
+{ CompileTypeSwitch : extension interfaces (TODO 21) - "switch [v :=]     }
+{ x.(type) (case T1: Corps ; ... ; default: Corps)" (accolades Go notees          }
+{ entre parentheses ici) - EXACTEMENT le meme squelette de dispatch                }
+{ sequentiel que CompileSwitch (voir sa propre note), mais compare le                    }
+{ TypeIdx CONCRET de la boite (x est TOUJOURS une expression de type                          }
+{ INTERFACE/ERROR, jamais un tag ordinaire) contre des valeurs BRUTES                              }
+{ (TypeIdx directement, PAS des index ExprPool - deja documente dans                                   }
+{ TCaseClause) - AUCUN "fallthrough" possible dans un vrai type switch                                     }
+{ Go (regle du langage, pas une limitation de ce compilateur). "v" (si                                        }
+{ lie) recoit une copie du pointeur de boite LUI-MEME dans TOUTES les                                             }
+{ clauses (jamais NARROWED vers le type concret specifique - voir la                                                  }
+{ note de ParseSwitchStmt : SymFind ne distingue pas deux portees SOEURS                                                  }
+{ dans la MEME fonction, donc "v" reste UN SEUL symbole partage, du type                                                     }
+{ DECLARE de x). }
+Procedure CompileTypeSwitch(S: Integer);
+Var
+  CI, CJ, CCnt, HasDefault, DefIdx, VSI : Integer;
+  TestLbl, BodyLbl : Array[0..MAX_SW_CASE - 1] Of TString;
+  NextTgt : Array[0..MAX_SW_CASE] Of TString;
+  LblEnd : TString;
+Begin
+  CCnt := StmtPool[S].ArgCount;
+  If CCnt > MAX_SW_CASE Then
+  Begin
+    FatalError('TODO 21 : generateur de code, "type switch" trop grand ' +
+      '(MAX_SW_CASE depasse)');
+    Exit;
+  End;
+
+  If StmtPool[S].Left >= 0 Then CompileStmt(StmtPool[S].Left);
+
+  CompileExpr(StmtPool[S].Extra);        { EAX = boite (valeur de x) }
+  EmitInstr('PUSH EAX');                  { conservee pour la duree du dispatch }
+
+  HasDefault := 0;
+  DefIdx := -1;
+  For CI := 0 To CCnt - 1 Do
+  Begin
+    TestLbl[CI] := CgLabelGen;
+    BodyLbl[CI] := CgLabelGen;
+    If CaseClausePool[StmtPool[S].ArgFirst + CI].IsDefault Then
+    Begin
+      HasDefault := 1;
+      DefIdx := CI;
+    End;
+  End;
+  LblEnd := CgLabelGen;
+
+  If HasDefault = 1 Then NextTgt[CCnt] := BodyLbl[DefIdx] Else NextTgt[CCnt] := LblEnd;
+  For CI := CCnt - 1 DownTo 0 Do
+  Begin
+    NextTgt[CI] := NextTgt[CI + 1];
+    If Not CaseClausePool[StmtPool[S].ArgFirst + CI].IsDefault Then
+      NextTgt[CI] := TestLbl[CI];
+  End;
+
+  For CI := 0 To CCnt - 1 Do
+    If Not CaseClausePool[StmtPool[S].ArgFirst + CI].IsDefault Then
+    Begin
+      EmitLabel(TestLbl[CI]);
+      EmitInstr('MOV EBX,DWORD PTR [ESP]');    { boite }
+      EmitInstr('MOV EBX,DWORD PTR [EBX]');     { EBX = TypeIdx concret }
+      For CJ := 0 To CaseClausePool[StmtPool[S].ArgFirst + CI].ExprCount - 1 Do
+      Begin
+        EmitInstr('CMP EBX,' + IntToStrG(
+          ExprArgPool[CaseClausePool[StmtPool[S].ArgFirst + CI].ExprFirst + CJ]));
+        EmitInstr('JE ' + BodyLbl[CI]);
+      End;
+      EmitInstr('JMP ' + NextTgt[CI + 1]);
+    End;
+
+  For CI := 0 To CCnt - 1 Do
+  Begin
+    EmitLabel(BodyLbl[CI]);
+    If StmtPool[S].NameVal <> '' Then
+    Begin
+      VSI := SymFind(StmtPool[S].NameVal);
+      If VSI >= 0 Then
+      Begin
+        EmitInstr('MOV EAX,DWORD PTR [ESP]');    { boite, INCHANGEE - voir la note de tete de fonction }
+        EmitInstr('MOV DWORD PTR ' + CgVarOperand(VSI) + ',EAX');
+      End;
+    End;
+    For CJ := 0 To CaseClausePool[StmtPool[S].ArgFirst + CI].BodyCount - 1 Do
+      CompileStmt(StmtArgPool[CaseClausePool[StmtPool[S].ArgFirst + CI].BodyFirst + CJ]);
+    EmitInstr('JMP ' + LblEnd);
+  End;
+
+  EmitLabel(LblEnd);
+  EmitInstr('ADD ESP,4');
 End;
 
 { CompileFuncDef : genere le corps COMPLET (etiquette+prolog+corps+       }
@@ -14279,9 +15048,10 @@ Begin
     'aucune limite rencontree (', TokenCount, ' tokens, ', SymCount,
     ' symboles, ', FuncDefCount, ' fonctions, ', MethodDefCount, ' methodes).');
   WriteLn('(le compilateur, dans son ensemble, ne couvre pas encore 100% ',
-    'du langage Go - un AUTRE fichier utilisant structs/switch/interfaces/',
-    'maps/etc. pourrait rencontrer un arret propre documente ; voir ',
-    'l''en-tete du fichier source, section TODO 25, pour la liste exacte)');
+    'du langage Go - un AUTRE fichier utilisant interfaces/maps/goroutines/',
+    'canaux/defer/panic/bibliotheque standard etendue pourrait rencontrer ',
+    'un arret propre documente ; voir l''en-tete du fichier source, ',
+    'section TODO 25, pour la liste exacte)');
 
   ShowStats;
 End;
