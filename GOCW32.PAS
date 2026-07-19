@@ -14234,10 +14234,18 @@ Begin
   { l en-tete de la section codegen plus haut) : toute construction NON                     }
   { couverte s arrete PROPREMENT via FatalError, jamais un .asm silencieusement                  }
   { faux.                                                                                          }
+  { NOTE (message clarifie - l ancien libelle "portee partielle" laissait   }
+  { croire, a tort, que CE fichier precis avait rencontre une limite -           }
+  { faux : atteindre cette ligne signifie deja que CompileProgram s est                }
+  { terminee SANS AUCUN FatalError, donc que ce fichier est ENTIEREMENT              }
+  { couvert par le backend, quelles que soient les limites GENERALES du                  }
+  { compilateur (TODO 25) qui restent, elles, honnetement rappelees                          }
+  { seulement dans le tout dernier message, pas repetees ici comme si                           }
+  { elles s appliquaient a CETTE compilation. }
   AsmFileName := ReplaceExt(Opts.SrcFile, '.asm');
   CompileProgram(AsmFileName);
-  WriteLn('Code assembleur genere : ', AsmFileName, ' (TODO 21 - portee ',
-    'partielle)');
+  WriteLn('Code assembleur genere (compilation reussie, aucune limite ',
+    'rencontree pour ce fichier) : ', AsmFileName);
 
   { RELIT ce meme fichier .asm (passe totalement separee, BinAssembleFile,  }
   { TODO 22) pour l encoder en octets 80386 REELS - le TOUT PREMIER fichier             }
@@ -14257,25 +14265,23 @@ Begin
   Begin
     BinResolveFixups;
     WriteCOFFObj(Opts.OutFile);
-    WriteLn('Fichier objet COFF genere : ', Opts.OutFile, ' (TODO 22 - ',
-      'portee partielle - correctifs externes laisses au lieur)');
+    WriteLn('Fichier objet COFF genere (correctifs externes REL32 ',
+      'laisses au lieur, normal pour un .OBJ) : ', Opts.OutFile);
   End
   Else
   Begin
     BinResolveFixupsForExe;
     WritePEExe(Opts.OutFile);
-    WriteLn('Fichier executable PE genere : ', Opts.OutFile, ' (TODO 23 - ',
-      'portee partielle, memes limites documentees que le generateur de ',
-      'code lui-meme, TODO 21)');
+    WriteLn('Fichier executable PE genere - PRET A EXECUTER : ', Opts.OutFile);
   End;
 
-  WriteLn('GOCW32: frontend complet (lexeur a bibliotheque standard, ',
-    'TODO 02-20) + generateur de code/backend .OBJ/.EXE a PORTEE ',
-    'VOLONTAIREMENT PARTIELLE (TODO 21-23, voir l''en-tete du fichier, ',
-    'section TODO 25, pour le detail exact de ce qui est/n''est pas ',
-    'couvert) - roadmap 25/25 traite - ', TokenCount, ' tokens, ',
-    SymCount, ' symboles, ', FuncDefCount, ' fonctions, ', MethodDefCount,
-    ' methodes.');
+  WriteLn('GOCW32: CE FICHIER a compile ET assemble avec SUCCES, sans ',
+    'aucune limite rencontree (', TokenCount, ' tokens, ', SymCount,
+    ' symboles, ', FuncDefCount, ' fonctions, ', MethodDefCount, ' methodes).');
+  WriteLn('(le compilateur, dans son ensemble, ne couvre pas encore 100% ',
+    'du langage Go - un AUTRE fichier utilisant structs/switch/interfaces/',
+    'maps/etc. pourrait rencontrer un arret propre documente ; voir ',
+    'l''en-tete du fichier source, section TODO 25, pour la liste exacte)');
 
   ShowStats;
 End;
