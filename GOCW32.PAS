@@ -10404,6 +10404,22 @@ Var
   { confusion avec un emplacement de cle de struct, jamais interne). }
   CgStrPoolOfArgKey : Array[0..MAX_EXPR_ARG - 1] Of Integer;
 
+  { extension bibliotheque standard etendue : fmt.Sprintf/Errorf("...%s...",   }
+  { args...) - le format est TOUJOURS un litteral connu A LA COMPILATION            }
+  { dans les fichiers reellement rencontres (jamais un format calcule a           }
+  { l execution) : decoupe ICI, dans la MEME pre-passe que CgCollectStrings,           }
+  { en segments autour de chaque "%s" - CgFmtSegFirst/Cnt[E] (indexes par            }
+  { noeud ExprPool E de l APPEL fmt.Sprintf/Errorf lui-meme, PAS par                    }
+  { argument - -1/0 si E n est pas un tel appel) donnent la plage dans           }
+  { CgFmtSegPool ou chaque segment est un index DANS CgStrPool (deja                     }
+  { deduplique, memes chaines partagees que le reste du programme). SEUL "%s"                  }
+  { est reconnu (aucun %d/%v/%f - "100%" de la bibliotheque standard reste                 }
+  { hors de portee, voir l en-tete du fichier, section TODO 25). }
+  CgFmtSegPool  : Array[0..511] Of Integer;
+  CgFmtSegCount : Integer;
+  CgFmtSegFirst : Array[0..MAX_EXPR - 1] Of Integer;
+  CgFmtSegCnt   : Array[0..MAX_EXPR - 1] Of Integer;
+
   { extension flottants (TODO 21) : meme principe EXACT que CgStrPool/    }
   { CgStrPoolOfExpr ci-dessus, mais pour chaque EK_FLOATLIT (deduplication            }
   { PAR VALEUR BINAIRE - Real, jamais une comparaison de texte, deux           }
@@ -10572,6 +10588,25 @@ Begin
   { JAMAIS recupere. }
   EmitRaw(ASM_PFX_RUNTIME + 'PANIC_PREFIX_MSG  DB "panic: ", 0');
   EmitRaw(ASM_PFX_RUNTIME + 'PANIC_GENERIC_MSG  DB "(valeur non-affichable par ce runtime)", 0');
+  { extension chaines etendues : _GORT_UTF8_DECODE (EmitRuntimeLibrary)     }
+  { ne peut renvoyer QUE le codepoint dans EAX - le nombre d octets              }
+  { CONSOMMES (1-4) transite ICI, meme idiome que FSCRATCH pour les                  }
+  { conversions flottantes. }
+  EmitRaw(ASM_PFX_RUNTIME + 'UTF8_WIDTH  DD 0');
+  { extension bibliotheque standard : FSCRATCH2 (8 octets, un Double         }
+  { SEPARE de FSCRATCH - math.Pow y range la BASE pendant que FSCRATCH               }
+  { lui-meme sert a convertir l EXPOSANT en entier, les deux en meme               }
+  { temps) ; NAN_BITS est le motif binaire IEEE754 d un NaN "silencieux"                  }
+  { (quiet NaN) standard - math.NaN() le charge directement (FLD), aucun               }
+  { calcul necessaire pour l obtenir. }
+  EmitRaw(ASM_PFX_RUNTIME + 'FSCRATCH2  DD 0');
+  EmitRaw(ASM_PFX_RUNTIME + 'FSCRATCH2B  DD 0');
+  EmitRaw(ASM_PFX_RUNTIME + 'NAN_LO  DD 0');
+  EmitRaw(ASM_PFX_RUNTIME + 'NAN_HI  DD 2146959360');
+  EmitRaw(ASM_PFX_RUNTIME + 'EMPTY_SLICE_HEADER  DD 0');
+  EmitRaw(ASM_PFX_RUNTIME + 'EMPTY_SLICE_HEADER_B  DD 0');
+  EmitRaw(ASM_PFX_RUNTIME + 'EMPTY_SLICE_HEADER_C  DD 0');
+  EmitRaw(ASM_PFX_RUNTIME + 'ATOI_ERRMSG  DB "strconv.Atoi: parsing: invalid syntax", 0');
   For I := 0 To SymCount - 1 Do
     If (SymTab[I].Kind = SK_VAR) And SymTab[I].IsGlobal Then
     Begin
@@ -11026,6 +11061,868 @@ Begin
   EmitInstr('POP EBP');
   EmitInstr('RET');
   EmitBlankLine;
+
+  { ------------------------------------------------------------ }
+  { Extension chaines etendues/bibliotheque standard : _GORT_STRCAT       }
+  { (concatenation REELLE - alloue un NOUVEAU tampon, jamais de           }
+  { modification en place, cohérent avec le fait qu une chaine Go est                 }
+  { IMMUABLE) et le decodeur/encodeur UTF-8 (_GORT_UTF8_DECODE/ENCODE,                 }
+  { partages par le for-range sur chaine, []rune(s)/string(rs), TODO 21).                    }
+  { ------------------------------------------------------------ }
+
+  { _GORT_STRCAT([EBP+8]=P1,[EBP+12]=P2) -> EAX = nouveau tampon NUL-       }
+  { termine = octets(P1)+octets(P2) - copie OCTET PAR OCTET (MOVZX pour              }
+  { lire, MOV BYTE PTR pour ecrire - les deux formes ajoutees a               }
+  { l assembleur, TODO 22, pour l extension maps precedente). }
+  EmitLabel(ASM_PFX_RUNTIME + 'STRCAT');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH DWORD PTR [EBP+8]');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STRLEN');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('PUSH EAX');                              { [ESP+0]=Len1 }
+  EmitInstr('PUSH DWORD PTR [EBP+12]');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STRLEN');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('PUSH EAX');                              { [ESP+0]=Len2,[ESP+4]=Len1 }
+  EmitInstr('MOV EAX,DWORD PTR [ESP]');
+  EmitInstr('ADD EAX,DWORD PTR [ESP+4]');
+  EmitInstr('ADD EAX,1');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+  EmitInstr('ADD ESP,4');                             { EAX=Dest ; [ESP+0]=Len2,[ESP+4]=Len1 }
+  EmitInstr('PUSH EAX');                               { [ESP+0]=Dest,[ESP+4]=Len2,[ESP+8]=Len1 }
+
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');
+  EmitInstr('MOV EDI,DWORD PTR [ESP]');
+  EmitInstr('MOV ECX,DWORD PTR [ESP+8]');
+  EmitLabel(ASM_PFX_RUNTIME + 'STRCAT_CPY1');
+  EmitInstr('CMP ECX,0');
+  EmitInstr('JLE ' + ASM_PFX_RUNTIME + 'STRCAT_CPY1END');
+  EmitInstr('MOVZX EAX,BYTE PTR [ESI]');
+  EmitInstr('MOV BYTE PTR [EDI],EAX');
+  EmitInstr('INC ESI');
+  EmitInstr('INC EDI');
+  EmitInstr('DEC ECX');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'STRCAT_CPY1');
+  EmitLabel(ASM_PFX_RUNTIME + 'STRCAT_CPY1END');
+
+  EmitInstr('MOV ESI,DWORD PTR [EBP+12]');
+  EmitInstr('MOV ECX,DWORD PTR [ESP+4]');
+  EmitLabel(ASM_PFX_RUNTIME + 'STRCAT_CPY2');
+  EmitInstr('CMP ECX,0');
+  EmitInstr('JLE ' + ASM_PFX_RUNTIME + 'STRCAT_CPY2END');
+  EmitInstr('MOVZX EAX,BYTE PTR [ESI]');
+  EmitInstr('MOV BYTE PTR [EDI],EAX');
+  EmitInstr('INC ESI');
+  EmitInstr('INC EDI');
+  EmitInstr('DEC ECX');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'STRCAT_CPY2');
+  EmitLabel(ASM_PFX_RUNTIME + 'STRCAT_CPY2END');
+
+  EmitInstr('MOV EAX,0');
+  EmitInstr('MOV BYTE PTR [EDI],EAX');
+  EmitInstr('MOV EAX,DWORD PTR [ESP]');
+  EmitInstr('ADD ESP,12');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _GORT_UTF8_DECODE([EBP+8]=pointeur) -> EAX = codepoint decode,          }
+  { ET ecrit dans UTF8_WIDTH (.DATA, lu par l appelant juste apres le            }
+  { retour - meme idiome que FSCRATCH pour les flottants, un SEUL             }
+  { registre EAX ne peut porter que la moitie de ce qu il faut renvoyer               }
+  { ici) le nombre d octets CONSOMMES (1-4) - suit la regle UTF-8              }
+  { standard sur les bits de tete du PREMIER octet ; toute sequence            }
+  { invalide degenere PROPREMENT en un octet brut de largeur 1 (jamais        }
+  { un plantage), best-effort documente. }
+  EmitLabel(ASM_PFX_RUNTIME + 'UTF8_DECODE');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');
+  EmitInstr('MOVZX EAX,BYTE PTR [ESI]');
+  EmitInstr('MOV EBX,EAX');
+  EmitInstr('AND EBX,128');
+  EmitInstr('CMP EBX,0');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'UTF8D_1BYTE');
+  EmitInstr('MOV EBX,EAX');
+  EmitInstr('AND EBX,224');
+  EmitInstr('CMP EBX,192');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'UTF8D_2BYTE');
+  EmitInstr('MOV EBX,EAX');
+  EmitInstr('AND EBX,240');
+  EmitInstr('CMP EBX,224');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'UTF8D_3BYTE');
+  EmitInstr('MOV EBX,EAX');
+  EmitInstr('AND EBX,248');
+  EmitInstr('CMP EBX,240');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'UTF8D_4BYTE');
+  EmitLabel(ASM_PFX_RUNTIME + 'UTF8D_1BYTE');
+  EmitInstr('MOV EBX,1');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'UTF8D_DONE');
+  { l assembleur (BinEncodeShift, TODO 22) n accepte QUE "SHL/SHR reg,CL"     }
+  { (jamais un compte IMMEDIAT) - EBX porte l accumulateur DE BITS DE POIDS               }
+  { FORT (decale a gauche de 6 avant chaque fusion), ECX EST le registre           }
+  { CL/compte de decalage (recharge a 6 avant CHAQUE SHL, jamais reutilise                    }
+  { pour autre chose entre-temps). }
+  EmitLabel(ASM_PFX_RUNTIME + 'UTF8D_2BYTE');
+  EmitInstr('MOV EBX,EAX');
+  EmitInstr('AND EBX,31');
+  EmitInstr('MOV ECX,6');
+  EmitInstr('SHL EBX,CL');
+  EmitInstr('MOVZX EAX,BYTE PTR [ESI+1]');
+  EmitInstr('AND EAX,63');
+  EmitInstr('OR EAX,EBX');
+  EmitInstr('MOV EBX,2');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'UTF8D_DONE');
+  EmitLabel(ASM_PFX_RUNTIME + 'UTF8D_3BYTE');
+  EmitInstr('MOV EBX,EAX');
+  EmitInstr('AND EBX,15');
+  EmitInstr('MOV ECX,6');
+  EmitInstr('SHL EBX,CL');
+  EmitInstr('MOVZX EAX,BYTE PTR [ESI+1]');
+  EmitInstr('AND EAX,63');
+  EmitInstr('OR EBX,EAX');
+  EmitInstr('MOV ECX,6');
+  EmitInstr('SHL EBX,CL');
+  EmitInstr('MOVZX EAX,BYTE PTR [ESI+2]');
+  EmitInstr('AND EAX,63');
+  EmitInstr('OR EAX,EBX');
+  EmitInstr('MOV EBX,3');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'UTF8D_DONE');
+  EmitLabel(ASM_PFX_RUNTIME + 'UTF8D_4BYTE');
+  EmitInstr('MOV EBX,EAX');
+  EmitInstr('AND EBX,7');
+  EmitInstr('MOV ECX,6');
+  EmitInstr('SHL EBX,CL');
+  EmitInstr('MOVZX EAX,BYTE PTR [ESI+1]');
+  EmitInstr('AND EAX,63');
+  EmitInstr('OR EBX,EAX');
+  EmitInstr('MOV ECX,6');
+  EmitInstr('SHL EBX,CL');
+  EmitInstr('MOVZX EAX,BYTE PTR [ESI+2]');
+  EmitInstr('AND EAX,63');
+  EmitInstr('OR EBX,EAX');
+  EmitInstr('MOV ECX,6');
+  EmitInstr('SHL EBX,CL');
+  EmitInstr('MOVZX EAX,BYTE PTR [ESI+3]');
+  EmitInstr('AND EAX,63');
+  EmitInstr('OR EAX,EBX');
+  EmitInstr('MOV EBX,4');
+  EmitLabel(ASM_PFX_RUNTIME + 'UTF8D_DONE');
+  EmitInstr('MOV DWORD PTR [' + ASM_PFX_RUNTIME + 'UTF8_WIDTH],EBX');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _GORT_UTF8_ENCODE([EBP+8]=codepoint,[EBP+12]=destination) : ecrit       }
+  { 1-4 octets UTF-8 a Destination - renvoie dans EAX le nombre d octets                }
+  { ECRITS (meme convention "renvoye directement", contrairement au              }
+  { decodeur qui doit passer par UTF8_WIDTH - ici un SEUL entier suffit,               }
+  { rien d autre a renvoyer). }
+  EmitLabel(ASM_PFX_RUNTIME + 'UTF8_ENCODE');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('MOV EDI,DWORD PTR [EBP+12]');
+  EmitInstr('CMP EAX,128');
+  EmitInstr('JL ' + ASM_PFX_RUNTIME + 'UTF8E_1BYTE');
+  EmitInstr('CMP EAX,2048');
+  EmitInstr('JL ' + ASM_PFX_RUNTIME + 'UTF8E_2BYTE');
+  EmitInstr('CMP EAX,65536');
+  EmitInstr('JL ' + ASM_PFX_RUNTIME + 'UTF8E_3BYTE');
+  { meme contrainte que le decodeur ci-dessus ("SHL/SHR reg,CL" SEULEMENT,      }
+  { jamais un compte immediat) : EBX preserve le codepoint ORIGINAL entier             }
+  { (jamais modifie), ECX est TOUJOURS le compte de decalage (recharge avant             }
+  { CHAQUE SHR), EAX porte l octet EXTRAIT courant (seul registre requis             }
+  { pour "MOV BYTE PTR [mem],reg", avec ECX/EDX/EBX). }
+  EmitInstr('MOV EBX,EAX');
+  EmitInstr('MOV ECX,18');
+  EmitInstr('SHR EAX,CL');
+  EmitInstr('AND EAX,7');
+  EmitInstr('OR EAX,240');
+  EmitInstr('MOV BYTE PTR [EDI],EAX');
+  EmitInstr('MOV EAX,EBX');
+  EmitInstr('MOV ECX,12');
+  EmitInstr('SHR EAX,CL');
+  EmitInstr('AND EAX,63');
+  EmitInstr('OR EAX,128');
+  EmitInstr('MOV BYTE PTR [EDI+1],EAX');
+  EmitInstr('MOV EAX,EBX');
+  EmitInstr('MOV ECX,6');
+  EmitInstr('SHR EAX,CL');
+  EmitInstr('AND EAX,63');
+  EmitInstr('OR EAX,128');
+  EmitInstr('MOV BYTE PTR [EDI+2],EAX');
+  EmitInstr('MOV EAX,EBX');
+  EmitInstr('AND EAX,63');
+  EmitInstr('OR EAX,128');
+  EmitInstr('MOV BYTE PTR [EDI+3],EAX');
+  EmitInstr('MOV EAX,4');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'UTF8E_DONE');
+  EmitLabel(ASM_PFX_RUNTIME + 'UTF8E_3BYTE');
+  EmitInstr('MOV EBX,EAX');
+  EmitInstr('MOV ECX,12');
+  EmitInstr('SHR EAX,CL');
+  EmitInstr('AND EAX,15');
+  EmitInstr('OR EAX,224');
+  EmitInstr('MOV BYTE PTR [EDI],EAX');
+  EmitInstr('MOV EAX,EBX');
+  EmitInstr('MOV ECX,6');
+  EmitInstr('SHR EAX,CL');
+  EmitInstr('AND EAX,63');
+  EmitInstr('OR EAX,128');
+  EmitInstr('MOV BYTE PTR [EDI+1],EAX');
+  EmitInstr('MOV EAX,EBX');
+  EmitInstr('AND EAX,63');
+  EmitInstr('OR EAX,128');
+  EmitInstr('MOV BYTE PTR [EDI+2],EAX');
+  EmitInstr('MOV EAX,3');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'UTF8E_DONE');
+  EmitLabel(ASM_PFX_RUNTIME + 'UTF8E_2BYTE');
+  EmitInstr('MOV EBX,EAX');
+  EmitInstr('MOV ECX,6');
+  EmitInstr('SHR EAX,CL');
+  EmitInstr('AND EAX,31');
+  EmitInstr('OR EAX,192');
+  EmitInstr('MOV BYTE PTR [EDI],EAX');
+  EmitInstr('MOV EAX,EBX');
+  EmitInstr('AND EAX,63');
+  EmitInstr('OR EAX,128');
+  EmitInstr('MOV BYTE PTR [EDI+1],EAX');
+  EmitInstr('MOV EAX,2');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'UTF8E_DONE');
+  EmitLabel(ASM_PFX_RUNTIME + 'UTF8E_1BYTE');
+  EmitInstr('MOV BYTE PTR [EDI],EAX');
+  EmitInstr('MOV EAX,1');
+  EmitLabel(ASM_PFX_RUNTIME + 'UTF8E_DONE');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { ------------------------------------------------------------ }
+  { Extension bibliotheque standard etendue : strings.TrimSpace/          }
+  { ToUpper, strconv.Atoi/Itoa, fmt.Fprintln(handle,...) - un runtime           }
+  { MINIMAL, restreint aux fonctions REELLEMENT appelees par errors.go/           }
+  { packages.go/stdlib.go (voir l en-tete du fichier, section TODO 25,               }
+  { pour la liste precise de ce qui reste hors de portee : strings.Contains/            }
+  { HasPrefix/HasSuffix/Repeat/Fields/Replace/ReplaceAll/Index,              }
+  { strconv.ParseInt/ParseFloat/FormatInt/FormatFloat/Quote, math.Floor/                  }
+  { Ceil/Max/Min/Mod/Inf - aucun SAMPLES\GO\*.go existant ne les appelle). }
+  { ------------------------------------------------------------ }
+
+  { _GORT_STR_TRIM([EBP+8]=P) -> EAX = nouvelle chaine, espace/tab/CR/LF          }
+  { retires des DEUX bouts (strings.TrimSpace reel - PORTEE : les QUATRE                  }
+  { seuls caracteres ASCII blancs reconnus par ce runtime, jamais Unicode                    }
+  { "espace" etendu, deja une simplification honnete de la vraie regle             }
+  { unicode.IsSpace). }
+  EmitLabel(ASM_PFX_RUNTIME + 'STR_TRIM');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');
+  EmitLabel(ASM_PFX_RUNTIME + 'TRIM_FRONT');
+  EmitInstr('MOVZX EAX,BYTE PTR [ESI]');
+  EmitInstr('CMP EAX,32');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'TRIM_ISWSF');
+  EmitInstr('CMP EAX,9');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'TRIM_ISWSF');
+  EmitInstr('CMP EAX,10');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'TRIM_ISWSF');
+  EmitInstr('CMP EAX,13');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'TRIM_ISWSF');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'TRIM_FRONTDONE');
+  EmitLabel(ASM_PFX_RUNTIME + 'TRIM_ISWSF');
+  EmitInstr('INC ESI');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'TRIM_FRONT');
+  EmitLabel(ASM_PFX_RUNTIME + 'TRIM_FRONTDONE');
+  EmitInstr('PUSH ESI');                              { [ESP+0]=Start }
+  EmitInstr('PUSH ESI');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STRLEN');
+  EmitInstr('ADD ESP,4');                             { EAX=Len ; [ESP+0]=Start }
+  EmitInstr('MOV EBX,DWORD PTR [ESP]');
+  EmitInstr('ADD EBX,EAX');                            { EBX = pointeur NUL final }
+  EmitLabel(ASM_PFX_RUNTIME + 'TRIM_BACK');
+  EmitInstr('CMP EBX,DWORD PTR [ESP]');
+  EmitInstr('JLE ' + ASM_PFX_RUNTIME + 'TRIM_BACKDONE');
+  EmitInstr('MOVZX EAX,BYTE PTR [EBX-1]');
+  EmitInstr('CMP EAX,32');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'TRIM_ISWSB');
+  EmitInstr('CMP EAX,9');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'TRIM_ISWSB');
+  EmitInstr('CMP EAX,10');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'TRIM_ISWSB');
+  EmitInstr('CMP EAX,13');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'TRIM_ISWSB');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'TRIM_BACKDONE');
+  EmitLabel(ASM_PFX_RUNTIME + 'TRIM_ISWSB');
+  EmitInstr('DEC EBX');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'TRIM_BACK');
+  EmitLabel(ASM_PFX_RUNTIME + 'TRIM_BACKDONE');
+  EmitInstr('MOV EAX,EBX');
+  EmitInstr('SUB EAX,DWORD PTR [ESP]');                { NewLen }
+  EmitInstr('PUSH EAX');                                { [ESP+0]=NewLen,[ESP+4]=Start }
+  EmitInstr('MOV EAX,DWORD PTR [ESP]');
+  EmitInstr('ADD EAX,1');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+  EmitInstr('ADD ESP,4');                               { EAX=Dest ; [ESP+0]=NewLen,[ESP+4]=Start }
+  EmitInstr('PUSH EAX');                                { [ESP+0]=Dest,[ESP+4]=NewLen,[ESP+8]=Start }
+  EmitInstr('MOV ESI,DWORD PTR [ESP+8]');
+  EmitInstr('MOV EDI,DWORD PTR [ESP]');
+  EmitInstr('MOV ECX,DWORD PTR [ESP+4]');
+  EmitLabel(ASM_PFX_RUNTIME + 'TRIM_CPY');
+  EmitInstr('CMP ECX,0');
+  EmitInstr('JLE ' + ASM_PFX_RUNTIME + 'TRIM_CPYDONE');
+  EmitInstr('MOVZX EAX,BYTE PTR [ESI]');
+  EmitInstr('MOV BYTE PTR [EDI],EAX');
+  EmitInstr('INC ESI');
+  EmitInstr('INC EDI');
+  EmitInstr('DEC ECX');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'TRIM_CPY');
+  EmitLabel(ASM_PFX_RUNTIME + 'TRIM_CPYDONE');
+  EmitInstr('MOV EAX,0');
+  EmitInstr('MOV BYTE PTR [EDI],EAX');
+  EmitInstr('MOV EAX,DWORD PTR [ESP]');
+  EmitInstr('ADD ESP,12');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _GORT_STR_UPPER([EBP+8]=P) -> EAX = nouvelle chaine, a-z -> A-Z          }
+  { (ASCII SEULEMENT - strings.ToUpper reel gere tout Unicode, hors de              }
+  { portee ici, meme simplification honnete que TrimSpace ci-dessus). }
+  EmitLabel(ASM_PFX_RUNTIME + 'STR_UPPER');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH DWORD PTR [EBP+8]');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STRLEN');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('PUSH EAX');                                 { [ESP+0]=Len }
+  EmitInstr('MOV EAX,DWORD PTR [ESP]');
+  EmitInstr('ADD EAX,1');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+  EmitInstr('ADD ESP,4');                                { EAX=Dest ; [ESP+0]=Len }
+  EmitInstr('PUSH EAX');                                 { [ESP+0]=Dest,[ESP+4]=Len }
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');
+  EmitInstr('MOV EDI,DWORD PTR [ESP]');
+  EmitInstr('MOV ECX,DWORD PTR [ESP+4]');
+  EmitLabel(ASM_PFX_RUNTIME + 'UPPER_TOP');
+  EmitInstr('CMP ECX,0');
+  EmitInstr('JLE ' + ASM_PFX_RUNTIME + 'UPPER_DONE');
+  EmitInstr('MOVZX EAX,BYTE PTR [ESI]');
+  EmitInstr('CMP EAX,97');
+  EmitInstr('JL ' + ASM_PFX_RUNTIME + 'UPPER_NOX');
+  EmitInstr('CMP EAX,122');
+  EmitInstr('JG ' + ASM_PFX_RUNTIME + 'UPPER_NOX');
+  EmitInstr('SUB EAX,32');
+  EmitLabel(ASM_PFX_RUNTIME + 'UPPER_NOX');
+  EmitInstr('MOV BYTE PTR [EDI],EAX');
+  EmitInstr('INC ESI');
+  EmitInstr('INC EDI');
+  EmitInstr('DEC ECX');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'UPPER_TOP');
+  EmitLabel(ASM_PFX_RUNTIME + 'UPPER_DONE');
+  EmitInstr('MOV EAX,0');
+  EmitInstr('MOV BYTE PTR [EDI],EAX');
+  EmitInstr('MOV EAX,DWORD PTR [ESP]');
+  EmitInstr('ADD ESP,8');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _GORT_STRCONV_ATOI([EBP+8]=P,[EBP+12]=ErrOutPtr) -> EAX = entier          }
+  { decode (0 en cas d echec) - ECRIT dans *ErrOutPtr un pointeur de              }
+  { boite d erreur (via ALLOC, TypeIdx=PDT_ERROR, DataPtr->message FIXE)                  }
+  { si l analyse echoue (chaine vide, caractere non-chiffre rencontre),               }
+  { ou 0/nil si elle reussit - meme convention "pointeur de sortie cache"                  }
+  { que le multi-retour d une fonction UTILISATEUR (TODO 21), reutilisee                   }
+  { ICI pour cette fonction de bibliotheque standard SPECIFIQUE puisqu           }
+  { elle est ELLE-MEME appelee via "n, err := strconv.Atoi(s)". Signe          }
+  { optionnel ("-"/"+") en tete ; PORTEE : decimal SEULEMENT (jamais              }
+  { hexadecimal/octal/binaire - strconv.ParseInt couvrirait cela en Go               }
+  { reel, hors de portee ici). }
+  EmitLabel(ASM_PFX_RUNTIME + 'STRCONV_ATOI');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');
+  EmitInstr('MOV EBX,1');                                { signe }
+  EmitInstr('MOVZX EAX,BYTE PTR [ESI]');
+  EmitInstr('CMP EAX,45');
+  EmitInstr('JNE ' + ASM_PFX_RUNTIME + 'ATOI_CHKPLUS');
+  EmitInstr('MOV EBX,-1');
+  EmitInstr('INC ESI');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'ATOI_SIGNDONE');
+  EmitLabel(ASM_PFX_RUNTIME + 'ATOI_CHKPLUS');
+  EmitInstr('CMP EAX,43');
+  EmitInstr('JNE ' + ASM_PFX_RUNTIME + 'ATOI_SIGNDONE');
+  EmitInstr('INC ESI');
+  EmitLabel(ASM_PFX_RUNTIME + 'ATOI_SIGNDONE');
+  EmitInstr('PUSH EBX');                                 { [ESP+0]=Signe }
+  EmitInstr('MOV EAX,0');
+  EmitInstr('PUSH EAX');                                 { [ESP+0]=NbChiffres,[ESP+4]=Signe }
+  EmitInstr('MOV EAX,0');
+  EmitInstr('PUSH EAX');                                 { [ESP+0]=Accumulateur,[ESP+4]=NbChiffres,[ESP+8]=Signe }
+  EmitLabel(ASM_PFX_RUNTIME + 'ATOI_TOP');
+  EmitInstr('MOVZX EAX,BYTE PTR [ESI]');
+  EmitInstr('CMP EAX,48');
+  EmitInstr('JL ' + ASM_PFX_RUNTIME + 'ATOI_DONE');
+  EmitInstr('CMP EAX,57');
+  EmitInstr('JG ' + ASM_PFX_RUNTIME + 'ATOI_DONE');
+  EmitInstr('SUB EAX,48');
+  EmitInstr('MOV EBX,DWORD PTR [ESP]');
+  EmitInstr('MOV ECX,10');
+  EmitInstr('IMUL EBX,ECX');
+  EmitInstr('ADD EBX,EAX');
+  EmitInstr('MOV DWORD PTR [ESP],EBX');
+  EmitInstr('MOV EAX,DWORD PTR [ESP+4]');
+  EmitInstr('INC EAX');
+  EmitInstr('MOV DWORD PTR [ESP+4],EAX');
+  EmitInstr('INC ESI');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'ATOI_TOP');
+  EmitLabel(ASM_PFX_RUNTIME + 'ATOI_DONE');
+  EmitInstr('CMP BYTE PTR [ESI],0');
+  EmitInstr('JNE ' + ASM_PFX_RUNTIME + 'ATOI_FAIL');
+  EmitInstr('MOV EAX,DWORD PTR [ESP+4]');
+  EmitInstr('CMP EAX,0');
+  EmitInstr('JLE ' + ASM_PFX_RUNTIME + 'ATOI_FAIL');
+  EmitInstr('MOV EAX,DWORD PTR [ESP]');
+  EmitInstr('IMUL EAX,DWORD PTR [ESP+8]');
+  EmitInstr('MOV EBX,0');
+  EmitInstr('MOV DWORD PTR [EBP+12],EBX');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'ATOI_RET');
+  EmitLabel(ASM_PFX_RUNTIME + 'ATOI_FAIL');
+  EmitInstr('LEA EBX,[' + ASM_PFX_RUNTIME + 'ATOI_ERRMSG]');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH 4');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('MOV EBX,EAX');
+  EmitInstr('POP EAX');
+  EmitInstr('MOV DWORD PTR [EBX],EAX');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH 8');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('MOV ECX,EAX');
+  EmitInstr('MOV EAX,' + IntToStrG(PDT_ERROR));
+  EmitInstr('MOV DWORD PTR [ECX],EAX');
+  EmitInstr('MOV EAX,DWORD PTR [ESP]');
+  EmitInstr('MOV DWORD PTR [ECX+4],EAX');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('MOV DWORD PTR [EBP+12],ECX');
+  EmitInstr('MOV EAX,0');
+  EmitLabel(ASM_PFX_RUNTIME + 'ATOI_RET');
+  { BOGUE REEL trouve en RELISANT ce code (masque, jamais visible en          }
+  { EXECUTION - MOV ESP,EBP juste apres remet ESP a une valeur ABSOLUE            }
+  { CORRECTE quel que soit ce residu, l epilogue "absorbe" silencieusement                  }
+  { tout desequilibre interne, meme raisonnement deja etabli pour               }
+  { l abandon d une expression par panic()) : TROIS mots ont ete empiles                    }
+  { (Signe,NbChiffres,Accumulateur), pas deux - "ADD ESP,8" ne retire            }
+  { QUE deux (NbChiffres,Accumulateur), LAISSANT Signe non retire avant                     }
+  { que "MOV ESP,EBP" ne le masque - CORRIGE pour rester AUTO-COHERENT,               }
+  { meme si le comportement OBSERVABLE etait deja correct. }
+  EmitInstr('ADD ESP,12');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _GORT_STRCONV_ITOA([EBP+8]=N) -> EAX = nouvelle chaine decimale          }
+  { (signe "-" en tete si negatif ; "0" pour zero - jamais une chaine             }
+  { vide). Genere les chiffres a l ENVERS dans un tampon LOCAL fixe          }
+  { ([EBP-36]..[EBP-5], 32 octets - largement suffisant pour un entier 32          }
+  { bits, au plus 10 chiffres), PUIS copie a l endroit dans le tampon             }
+  { FINAL alloue. [EBP-40] est un QUATRIEME emplacement DEDIE (SEPARE du                  }
+  { tampon de chiffres, jamais ecrase par lui) qui sauvegarde le pointeur                    }
+  { de chaine A RENVOYER - BOGUE REEL trouve en RELISANT ce code (jamais            }
+  { exerce par un test avant cette relecture, deux fois de suite) : (1) le               }
+  { tampon de chiffres commencait a l origine a [EBP-4] et croissait VERS              }
+  { LE HAUT (INC EDI) - pour un entier a 10 chiffres, la derniere ecriture                  }
+  { atteignait [EBP+5], BIEN AU-DELA des 32 octets reserves (SUB ESP,32),               }
+  { ecrasant l EBP SAUVEGARDE et l ADRESSE DE RETOUR de CETTE fonction                       }
+  { elle-meme - corruption de pile silencieuse, jamais un plantage             }
+  { immediat mais un RET vers une adresse arbitraire ; (2) la valeur de              }
+  { retour ecrivait "EDI-EDI" (toujours 0) au lieu du pointeur de chaine,                  }
+  { EDI ayant deja avance par la boucle de copie a ce point - corrige en                }
+  { deplacant le tampon de chiffres VERS LE BAS ([EBP-36], a l INTERIEUR             }
+  { des 40 octets desormais reserves) et en sauvegardant le pointeur de              }
+  { chaine des sa creation, AVANT toute ecriture, dans [EBP-40]. }
+  EmitLabel(ASM_PFX_RUNTIME + 'STRCONV_ITOA');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('SUB ESP,40');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('MOV EBX,0');
+  EmitInstr('CMP EAX,0');
+  EmitInstr('JGE ' + ASM_PFX_RUNTIME + 'ITOA_NONNEG');
+  EmitInstr('MOV EBX,1');
+  EmitInstr('NEG EAX');
+  EmitLabel(ASM_PFX_RUNTIME + 'ITOA_NONNEG');
+  EmitInstr('LEA EDI,[EBP-36]');
+  EmitInstr('MOV ECX,0');
+  EmitLabel(ASM_PFX_RUNTIME + 'ITOA_DIGLOOP');
+  { BOGUE REEL trouve par EXECUTION (regression totale - "MOV BYTE PTR         }
+  { [mem],ESI" est REJETE par l assembleur, ESI n a pas d equivalent 8            }
+  { bits, voir la note de BinEncodeMov ; UNE PREMIERE correction naive          }
+  { deplacait juste "digit+48" dans EAX SANS REALISER que EAX porte              }
+  { encore le QUOTIENT necessaire a la CONDITION DE BOUCLE - "CMP EAX,0"                 }
+  { juste apres n aurait alors plus JAMAIS ete vrai (boucle infinie) ; DE                  }
+  { PLUS, "IDIV EDX" est ILLEGAL (EDX est TOUJOURS la moitie haute IMPLICITE                 }
+  { du dividende pour IDIV, il ne peut PAS etre AUSSI le diviseur explicite               }
+  { - aucun "CDQ" n etait meme present pour l initialiser correctement).                    }
+  { Corrige en gardant EAX/ECX/EBX INTACTS tout au long (quotient/compteur/               }
+  { signe) : ESI porte le diviseur temporaire (libre a cet instant precis),            }
+  { EDX (deja le REGISTRE de reste d IDIV, ET l un des quatre autorises            }
+  { pour "MOV BYTE PTR") recoit directement le chiffre - AUCUN transit par                  }
+  { un autre registre necessaire. }
+  EmitInstr('MOV ESI,10');
+  EmitInstr('CDQ');
+  EmitInstr('IDIV ESI');
+  EmitInstr('ADD EDX,48');
+  EmitInstr('MOV BYTE PTR [EDI],EDX');
+  EmitInstr('INC EDI');
+  EmitInstr('INC ECX');
+  EmitInstr('CMP EAX,0');
+  EmitInstr('JNE ' + ASM_PFX_RUNTIME + 'ITOA_DIGLOOP');
+  EmitInstr('MOV EAX,ECX');
+  EmitInstr('CMP EBX,0');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'ITOA_NOSIGN');
+  EmitInstr('INC EAX');
+  EmitLabel(ASM_PFX_RUNTIME + 'ITOA_NOSIGN');
+  EmitInstr('ADD EAX,1');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('MOV EDI,EAX');
+  EmitInstr('MOV DWORD PTR [EBP-40],EDI');              { sauvegarde le pointeur a RENVOYER }
+  EmitInstr('CMP EBX,0');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'ITOA_NOSIGN2');
+  EmitInstr('MOV EAX,45');
+  EmitInstr('MOV BYTE PTR [EDI],EAX');
+  EmitInstr('INC EDI');
+  EmitLabel(ASM_PFX_RUNTIME + 'ITOA_NOSIGN2');
+  EmitInstr('LEA ESI,[EBP-36]');
+  EmitInstr('ADD ESI,ECX');
+  EmitLabel(ASM_PFX_RUNTIME + 'ITOA_CPYTOP');
+  EmitInstr('CMP ECX,0');
+  EmitInstr('JLE ' + ASM_PFX_RUNTIME + 'ITOA_CPYDONE');
+  EmitInstr('DEC ESI');
+  EmitInstr('MOVZX EAX,BYTE PTR [ESI]');
+  EmitInstr('MOV BYTE PTR [EDI],EAX');
+  EmitInstr('INC EDI');
+  EmitInstr('DEC ECX');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'ITOA_CPYTOP');
+  EmitLabel(ASM_PFX_RUNTIME + 'ITOA_CPYDONE');
+  EmitInstr('MOV EAX,0');
+  EmitInstr('MOV BYTE PTR [EDI],EAX');
+  EmitInstr('MOV EAX,DWORD PTR [EBP-40]');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _GORT_FPRINTLN_STR([EBP+8]=handle,[EBP+12]=chaine) : identique a          }
+  { _GORT_PRINTLN_STR (TODO 21) mais avec un HANDLE explicite plutot que              }
+  { le STD_OUTPUT_HANDLE fixe - fmt.Fprintln(os.Stdout/os.Stderr, ...). }
+  EmitLabel(ASM_PFX_RUNTIME + 'FPRINTLN_STR');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('SUB ESP,4');
+  EmitInstr('MOV ESI,DWORD PTR [EBP+12]');
+  EmitInstr('PUSH ESI');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STRLEN');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('MOV ESI,DWORD PTR [EBP+12]');
+  EmitInstr('MOV EBX,EAX');
+  EmitInstr('MOV EDI,DWORD PTR [EBP+8]');
+  EmitInstr('PUSH 0');
+  EmitInstr('LEA EAX,[EBP-4]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH EDI');
+  EmitInstr('CALL _WriteFile@20');
+  EmitInstr('PUSH 0');
+  EmitInstr('LEA EAX,[EBP-4]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH 1');
+  EmitInstr('LEA EAX,[' + ASM_PFX_RUNTIME + 'NEWLINE]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('MOV EDI,DWORD PTR [EBP+8]');
+  EmitInstr('PUSH EDI');
+  EmitInstr('CALL _WriteFile@20');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { ------------------------------------------------------------ }
+  { strings.Split/Join - construites sur DEUX primitives REUTILISABLES          }
+  { (_GORT_STR_FINDSUB/_GORT_STR_COPYRANGE) plutot qu ecrites d une seule           }
+  { piece : chaque appel CALL "reinitialise" la complexite des decalages              }
+  { de pile a zero pour l appelant, ce qui a REELLEMENT evite plusieurs             }
+  { bogues de decalage pendant l ecriture de ce bloc (relis avant test,                    }
+  { pas seulement apres). REGLE ABSOLUE suivie PARTOUT dans les quatre               }
+  { routines ci-dessous, enoncee ICI une seule fois plutot que repetee :               }
+  { AUCUN registre (pas meme ESI/EDI/EBX) n est suppose survivre A UN                  }
+  { SEUL appel CALL, sauf verification EXPLICITE que la routine appelee                    }
+  { ne le modifie JAMAIS en interne (STRLEN/STRCAT/ALLOC ne touchent                        }
+  { jamais EBX, par exemple - verifie au cas par cas, jamais suppose) -                        }
+  { toute autre valeur devant survivre transite par la PILE. Cette regle                     }
+  { a ete etablie APRES avoir trouve, par execution, le meme bogue de              }
+  { registre-ecrase-par-un-appel-transitif a TROIS reprises differentes             }
+  { dans cette meme extension (MAP_FIND/STREQ, le compteur de runes de           }
+  { []rune(s), et une premiere version de cette fonction elle-meme, jamais              }
+  { testee avant d etre entierement reecrite selon cette regle). }
+  { ------------------------------------------------------------ }
+
+  { _GORT_STR_FINDSUB([EBP+8]=Haystack,[EBP+12]=Needle) -> EAX = pointeur    }
+  { vers la PREMIERE occurrence de Needle dans Haystack, ou 0 si absente             }
+  { (ou si Needle est vide - evite toute boucle infinie chez l appelant,               }
+  { Go reel definit "" comme correspondant partout, mais aucun appelant            }
+  { de cette routine, dans cette extension, n a besoin de ce cas limite). }
+  EmitLabel(ASM_PFX_RUNTIME + 'STR_FINDSUB');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH DWORD PTR [EBP+12]');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STRLEN');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('CMP EAX,0');
+  EmitInstr('JLE ' + ASM_PFX_RUNTIME + 'FINDSUB_NOTFOUND');
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');
+  EmitLabel(ASM_PFX_RUNTIME + 'FINDSUB_OUTER');
+  EmitInstr('CMP BYTE PTR [ESI],0');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'FINDSUB_NOTFOUND');
+  EmitInstr('MOV EBX,ESI');
+  EmitInstr('MOV EDI,DWORD PTR [EBP+12]');
+  EmitLabel(ASM_PFX_RUNTIME + 'FINDSUB_INNER');
+  EmitInstr('MOVZX EAX,BYTE PTR [EDI]');
+  EmitInstr('CMP EAX,0');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'FINDSUB_HIT');
+  EmitInstr('MOVZX ECX,BYTE PTR [EBX]');
+  EmitInstr('CMP ECX,0');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'FINDSUB_OUTERNEXT');
+  EmitInstr('CMP ECX,EAX');
+  EmitInstr('JNE ' + ASM_PFX_RUNTIME + 'FINDSUB_OUTERNEXT');
+  EmitInstr('INC EBX');
+  EmitInstr('INC EDI');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'FINDSUB_INNER');
+  EmitLabel(ASM_PFX_RUNTIME + 'FINDSUB_HIT');
+  EmitInstr('MOV EAX,ESI');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'FINDSUB_DONE');
+  EmitLabel(ASM_PFX_RUNTIME + 'FINDSUB_OUTERNEXT');
+  EmitInstr('INC ESI');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'FINDSUB_OUTER');
+  EmitLabel(ASM_PFX_RUNTIME + 'FINDSUB_NOTFOUND');
+  EmitInstr('MOV EAX,0');
+  EmitLabel(ASM_PFX_RUNTIME + 'FINDSUB_DONE');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _GORT_STR_COPYRANGE([EBP+8]=Start,[EBP+12]=End) -> EAX = nouvelle        }
+  { chaine NUL-terminee = octets [Start,End) - End est EXCLUSIF (le          }
+  { pointeur RENVOYE par STR_FINDSUB, jamais depasse). }
+  EmitLabel(ASM_PFX_RUNTIME + 'STR_COPYRANGE');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+12]');
+  EmitInstr('SUB EAX,DWORD PTR [EBP+8]');
+  EmitInstr('PUSH EAX');                                { [ESP+0]=Longueur }
+  EmitInstr('ADD EAX,1');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+  EmitInstr('ADD ESP,4');                                { EAX=Dest ; [ESP+0]=Longueur }
+  EmitInstr('PUSH EAX');                                 { [ESP+0]=Dest,[ESP+4]=Longueur }
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');
+  EmitInstr('MOV EDI,DWORD PTR [ESP]');
+  EmitInstr('MOV ECX,DWORD PTR [ESP+4]');
+  EmitLabel(ASM_PFX_RUNTIME + 'CPYRANGE_TOP');
+  EmitInstr('CMP ECX,0');
+  EmitInstr('JLE ' + ASM_PFX_RUNTIME + 'CPYRANGE_DONE');
+  EmitInstr('MOVZX EAX,BYTE PTR [ESI]');
+  EmitInstr('MOV BYTE PTR [EDI],EAX');
+  EmitInstr('INC ESI');
+  EmitInstr('INC EDI');
+  EmitInstr('DEC ECX');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'CPYRANGE_TOP');
+  EmitLabel(ASM_PFX_RUNTIME + 'CPYRANGE_DONE');
+  EmitInstr('MOV EAX,0');
+  EmitInstr('MOV BYTE PTR [EDI],EAX');
+  EmitInstr('MOV EAX,DWORD PTR [ESP]');
+  EmitInstr('ADD ESP,8');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _GORT_STR_SPLIT([EBP+8]=P,[EBP+12]=SepP) -> EAX = []string - deux        }
+  { passes (compte les occurrences de SepP D ABORD, alloue EXACTEMENT ce               }
+  { qu il faut, PUIS extrait chaque partie) - meme discipline en deux             }
+  { passes que []rune(s)/string(rs) (extension chaines etendues) pour la                  }
+  { MEME raison (eviter une croissance dynamique pour un besoin ponctuel). }
+  EmitLabel(ASM_PFX_RUNTIME + 'STR_SPLIT');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('PUSH EAX');                                 { [ESP+0]=PosCourante }
+  EmitInstr('MOV EAX,0');
+  EmitInstr('PUSH EAX');                                 { [ESP+0]=NbOccurrences,[ESP+4]=PosCourante }
+  EmitLabel(ASM_PFX_RUNTIME + 'SPLIT_CNT');
+  EmitInstr('PUSH DWORD PTR [EBP+12]');
+  EmitInstr('PUSH DWORD PTR [ESP+8]');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STR_FINDSUB');
+  EmitInstr('ADD ESP,8');                                { EAX=trouve ou 0 ; [ESP+0]=NbOccurrences,[ESP+4]=PosCourante }
+  EmitInstr('CMP EAX,0');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'SPLIT_CNTDONE');
+  EmitInstr('MOV EBX,DWORD PTR [ESP]');
+  EmitInstr('INC EBX');
+  EmitInstr('MOV DWORD PTR [ESP],EBX');
+  EmitInstr('MOV EBX,EAX');                              { EBX = position trouvee - STRLEN ne touche jamais EBX }
+  EmitInstr('PUSH DWORD PTR [EBP+12]');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STRLEN');
+  EmitInstr('ADD ESP,4');                                { EAX=SepLen }
+  EmitInstr('ADD EBX,EAX');
+  EmitInstr('MOV DWORD PTR [ESP+4],EBX');                { PosCourante := trouve+SepLen }
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'SPLIT_CNT');
+  EmitLabel(ASM_PFX_RUNTIME + 'SPLIT_CNTDONE');
+  { [ESP+0]=NbOccurrences,[ESP+4]=PosCourante }
+  EmitInstr('MOV EAX,DWORD PTR [ESP]');
+  EmitInstr('INC EAX');                                  { NbParties }
+  EmitInstr('PUSH EAX');                                 { [ESP+0]=NbParties,[ESP+4]=NbOccurrences,[ESP+8]=PosCourante }
+  EmitInstr('MOV EBX,4');
+  EmitInstr('IMUL EAX,EBX');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+  EmitInstr('ADD ESP,4');                                { EAX=DataBuf ; [ESP+0]=NbParties,[ESP+4]=NbOccurrences,[ESP+8]=PosCourante }
+  EmitInstr('PUSH EAX');                                 { [ESP+0]=DataBuf,[ESP+4]=NbParties,[ESP+8]=NbOccurrences,[ESP+12]=PosCourante }
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('PUSH EAX');                                 { [ESP+0]=CurStart(reinit=P),[ESP+4]=DataBuf,... }
+  EmitInstr('MOV EAX,DWORD PTR [ESP+4]');
+  EmitInstr('PUSH EAX');                                 { [ESP+0]=WritePtr(=DataBuf),[ESP+4]=CurStart,[ESP+8]=DataBuf,... }
+  EmitLabel(ASM_PFX_RUNTIME + 'SPLIT_FILL');
+  EmitInstr('PUSH DWORD PTR [EBP+12]');
+  EmitInstr('PUSH DWORD PTR [ESP+8]');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STR_FINDSUB');
+  EmitInstr('ADD ESP,8');                                { EAX=trouve ou 0 ; [ESP+0]=WritePtr,[ESP+4]=CurStart,[ESP+8]=DataBuf,... }
+  EmitInstr('CMP EAX,0');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'SPLIT_FILLLAST');
+  EmitInstr('PUSH EAX');                                 { [ESP+0]=Trouve,[ESP+4]=WritePtr,[ESP+8]=CurStart,[ESP+12]=DataBuf,... }
+  EmitInstr('PUSH DWORD PTR [ESP]');                     { copie de Trouve -> arg2=End }
+  EmitInstr('PUSH DWORD PTR [ESP+12]');                  { copie de CurStart (desormais a ESP+12) -> arg1=Start, pousse EN DERNIER }
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STR_COPYRANGE');
+  EmitInstr('ADD ESP,8');                                { EAX=nouvelle partie ; [ESP+0]=Trouve,[ESP+4]=WritePtr,[ESP+8]=CurStart,[ESP+12]=DataBuf,... }
+  EmitInstr('MOV EBX,DWORD PTR [ESP+4]');                { WritePtr }
+  EmitInstr('MOV DWORD PTR [EBX],EAX');
+  EmitInstr('ADD EBX,4');
+  EmitInstr('MOV DWORD PTR [ESP+4],EBX');                { WritePtr += 4 }
+  EmitInstr('MOV EBX,DWORD PTR [ESP]');                  { Trouve }
+  EmitInstr('PUSH DWORD PTR [EBP+12]');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STRLEN');
+  EmitInstr('ADD ESP,4');                                { EAX=SepLen ; EBX (Trouve) intact, STRLEN ne le touche jamais }
+  EmitInstr('ADD EBX,EAX');
+  EmitInstr('MOV DWORD PTR [ESP+8],EBX');                { CurStart := Trouve+SepLen }
+  EmitInstr('ADD ESP,4');                                { retire Trouve }
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'SPLIT_FILL');
+  EmitLabel(ASM_PFX_RUNTIME + 'SPLIT_FILLLAST');
+  { [ESP+0]=WritePtr,[ESP+4]=CurStart,[ESP+8]=DataBuf,[ESP+12]=NbParties,[ESP+16]=NbOccurrences }
+  EmitInstr('PUSH DWORD PTR [ESP+4]');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STRLEN');
+  EmitInstr('ADD ESP,4');                                { EAX=longueur restante }
+  EmitInstr('MOV EBX,DWORD PTR [ESP+4]');
+  EmitInstr('ADD EBX,EAX');                              { EBX = pointeur NUL final ("End" de la derniere partie) }
+  EmitInstr('PUSH EBX');                                 { [ESP+0]=End,[ESP+4]=WritePtr,[ESP+8]=CurStart,... }
+  EmitInstr('PUSH DWORD PTR [ESP]');                     { copie de End -> arg2 }
+  EmitInstr('PUSH DWORD PTR [ESP+12]');                  { copie de CurStart (desormais a ESP+12) -> arg1, pousse EN DERNIER }
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STR_COPYRANGE');
+  EmitInstr('ADD ESP,12');                               { retire End,CopieEnd,CopieCurStart - remet la pile a l etat d avant ce bloc }
+  EmitInstr('MOV EBX,DWORD PTR [ESP]');                  { WritePtr }
+  EmitInstr('MOV DWORD PTR [EBX],EAX');
+  EmitInstr('ADD ESP,8');                                { retire WritePtr,CurStart ; [ESP+0]=DataBuf,[ESP+4]=NbParties,[ESP+8]=NbOccurrences }
+  EmitInstr('PUSH 12');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+  EmitInstr('ADD ESP,4');                                { EAX=Header }
+  EmitInstr('MOV EBX,EAX');
+  EmitInstr('MOV EAX,DWORD PTR [ESP]');
+  EmitInstr('MOV DWORD PTR [EBX],EAX');
+  EmitInstr('MOV EAX,DWORD PTR [ESP+4]');
+  EmitInstr('MOV DWORD PTR [EBX+4],EAX');
+  EmitInstr('MOV DWORD PTR [EBX+8],EAX');
+  EmitInstr('ADD ESP,12');
+  EmitInstr('MOV EAX,EBX');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _GORT_STR_JOIN([EBP+8]=Header([]string),[EBP+12]=SepP) -> EAX = nouvelle    }
+  { chaine, tous les elements concatenes avec SepP ENTRE chacun (jamais            }
+  { en tete ni en queue) - chaine vide si le slice est vide. }
+  EmitLabel(ASM_PFX_RUNTIME + 'STR_JOIN');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
+  EmitInstr('MOV EAX,DWORD PTR [EBX+4]');
+  EmitInstr('CMP EAX,0');
+  EmitInstr('JG ' + ASM_PFX_RUNTIME + 'JOIN_HAVEELEMS');
+  EmitInstr('PUSH 1');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('MOV EBX,EAX');
+  EmitInstr('MOV EAX,0');
+  EmitInstr('MOV BYTE PTR [EBX],EAX');
+  EmitInstr('MOV EAX,EBX');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitLabel(ASM_PFX_RUNTIME + 'JOIN_HAVEELEMS');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
+  EmitInstr('MOV ESI,DWORD PTR [EBX]');
+  EmitInstr('MOV EAX,DWORD PTR [ESI]');
+  EmitInstr('PUSH EAX');                                 { [ESP+0]=Resultat }
+  EmitInstr('MOV EAX,1');
+  EmitInstr('PUSH EAX');                                 { [ESP+0]=Indice,[ESP+4]=Resultat }
+  EmitLabel(ASM_PFX_RUNTIME + 'JOIN_TOP');
+  EmitInstr('MOV EAX,DWORD PTR [ESP]');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
+  EmitInstr('MOV ECX,DWORD PTR [EBX+4]');
+  EmitInstr('CMP EAX,ECX');
+  EmitInstr('JGE ' + ASM_PFX_RUNTIME + 'JOIN_DONE');
+  EmitInstr('PUSH DWORD PTR [EBP+12]');
+  EmitInstr('PUSH DWORD PTR [ESP+8]');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STRCAT');
+  EmitInstr('ADD ESP,8');                                { EAX=Resultat+Sep ; [ESP+0]=Indice,[ESP+4]=Resultat }
+  EmitInstr('MOV DWORD PTR [ESP+4],EAX');
+  EmitInstr('MOV EAX,DWORD PTR [ESP]');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
+  EmitInstr('MOV ESI,DWORD PTR [EBX]');
+  EmitInstr('MOV ECX,4');
+  EmitInstr('IMUL EAX,ECX');
+  EmitInstr('ADD ESI,EAX');
+  EmitInstr('MOV EAX,DWORD PTR [ESI]');                  { Element[Indice] }
+  EmitInstr('PUSH EAX');                                 { [ESP+0]=Element,[ESP+4]=Indice,[ESP+8]=Resultat }
+  EmitInstr('PUSH DWORD PTR [ESP+8]');                   { copie Resultat }
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STRCAT');
+  EmitInstr('ADD ESP,8');                                { EAX=Resultat+Element ; [ESP+0]=Indice,[ESP+4]=Resultat }
+  EmitInstr('MOV DWORD PTR [ESP+4],EAX');
+  EmitInstr('MOV EAX,DWORD PTR [ESP]');
+  EmitInstr('INC EAX');
+  EmitInstr('MOV DWORD PTR [ESP],EAX');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'JOIN_TOP');
+  EmitLabel(ASM_PFX_RUNTIME + 'JOIN_DONE');
+  EmitInstr('MOV EAX,DWORD PTR [ESP+4]');
+  EmitInstr('ADD ESP,8');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
 End;
 
 Procedure EmitProlog(LocalSize: Integer);
@@ -11176,7 +12073,8 @@ End;
 Function MapKeyIsStringMode(TIdx: Integer): Integer; Forward;
 
 Procedure CgCollectStrings;
-Var E, J, Found, I: Integer;
+Var E, J, Found, I, CallLeft, SegStart, LastCut, I2: Integer;
+    FmtText, Seg: TString;
 Begin
   CgStrCount := 0;
   For I := 0 To MAX_EXPR_ARG - 1 Do
@@ -11243,6 +12141,100 @@ Begin
           End;
           CgStrPoolOfArgKey[I] := Found;
         End;
+
+  { extension bibliotheque standard etendue : voir la note de              }
+  { CgFmtSegPool - decoupe le format LITTERAL de chaque fmt.Sprintf/Errorf              }
+  { autour de "%s", internant chaque SEGMENT (texte entre deux "%s", ou             }
+  { avant le premier/apres le dernier) dans CgStrPool comme n importe               }
+  { quelle autre chaine litterale. }
+  CgFmtSegCount := 0;
+  For E := 0 To ExprCount - 1 Do
+  Begin
+    CgFmtSegFirst[E] := -1;
+    CgFmtSegCnt[E] := 0;
+    If (ExprPool[E].Kind = EK_CALL) And (ExprPool[E].Left >= 0) Then
+    Begin
+      CallLeft := ExprPool[E].Left;
+      If (ExprPool[CallLeft].Kind = EK_SELECTOR) And (ExprPool[CallLeft].Left >= 0) And
+         (ExprPool[ExprPool[CallLeft].Left].Kind = EK_IDENT) And
+         (ExprPool[ExprPool[CallLeft].Left].NameVal = 'fmt') And
+         ((ExprPool[CallLeft].NameVal = 'Sprintf') Or (ExprPool[CallLeft].NameVal = 'Errorf')) And
+         (ExprPool[E].ArgCount >= 1) And
+         (ExprPool[ExprArgPool[ExprPool[E].ArgFirst]].Kind = EK_STRINGLIT) Then
+      Begin
+        FmtText := ExprPool[ExprArgPool[ExprPool[E].ArgFirst]].StrVal;
+        SegStart := CgFmtSegCount;
+        LastCut := 1;
+        I2 := 1;
+        While I2 <= Length(FmtText) - 1 Do
+        Begin
+          If (FmtText[I2] = '%') And (FmtText[I2 + 1] = 's') Then
+          Begin
+            Seg := Copy(FmtText, LastCut, I2 - LastCut);
+            Found := -1;
+            For J := 0 To CgStrCount - 1 Do
+              If CgStrPool[J] = Seg Then
+              Begin
+                Found := J;
+                Break;
+              End;
+            If Found < 0 Then
+            Begin
+              If CgStrCount < MAX_STDLIB Then
+              Begin
+                CgStrPool[CgStrCount] := Seg;
+                Found := CgStrCount;
+                Inc(CgStrCount);
+              End
+              Else
+              Begin
+                WarnMsg('table du generateur de code pleine (segments de format)');
+                Found := 0;
+              End;
+            End;
+            If CgFmtSegCount <= 510 Then
+            Begin
+              CgFmtSegPool[CgFmtSegCount] := Found;
+              Inc(CgFmtSegCount);
+            End;
+            LastCut := I2 + 2;
+            I2 := I2 + 2;
+          End
+          Else
+            Inc(I2);
+        End;
+        Seg := Copy(FmtText, LastCut, Length(FmtText) - LastCut + 1);
+        Found := -1;
+        For J := 0 To CgStrCount - 1 Do
+          If CgStrPool[J] = Seg Then
+          Begin
+            Found := J;
+            Break;
+          End;
+        If Found < 0 Then
+        Begin
+          If CgStrCount < MAX_STDLIB Then
+          Begin
+            CgStrPool[CgStrCount] := Seg;
+            Found := CgStrCount;
+            Inc(CgStrCount);
+          End
+          Else
+          Begin
+            WarnMsg('table du generateur de code pleine (segments de format)');
+            Found := 0;
+          End;
+        End;
+        If CgFmtSegCount <= 510 Then
+        Begin
+          CgFmtSegPool[CgFmtSegCount] := Found;
+          Inc(CgFmtSegCount);
+        End;
+        CgFmtSegFirst[E] := SegStart;
+        CgFmtSegCnt[E] := CgFmtSegCount - SegStart;
+      End;
+    End;
+  End;
 End;
 
 { CgCollectFloats : extension flottants (TODO 21) - meme principe EXACT  }
@@ -11292,6 +12284,18 @@ Begin
     (TypeResolveAlias(ExprPool[E].TypeIdx) = PDT_FLOAT64);
 End;
 
+{ ExprIsStringTyped : extension chaines etendues - meme principe EXACT   }
+{ que ExprIsFloatTyped ci-dessus, utilise par EK_BINARY ("+"/"=="/"!=")               }
+{ pour detourner vers _GORT_STRCAT/_GORT_STREQ plutot que EmitBinOp (qui             }
+{ ne connait QUE l arithmetique/comparaison ENTIERE, un simple CMP EAX,EBX               }
+{ de pointeurs pour "==" - FAUX pour des chaines qui ne sont pas la MEME             }
+{ instance .DATA). }
+Function ExprIsStringTyped(E: Integer): Boolean;
+Begin
+  ExprIsStringTyped := (E >= 0) And (ExprPool[E].TypeIdx >= 0) And
+    (TypeResolveAlias(ExprPool[E].TypeIdx) = PDT_STRING);
+End;
+
 { CompileFloatExpr : extension flottants (x87, TODO 21) - EQUIVALENT     }
 { de CompileExpr, mais pour une sous-expression FLOTTANTE : laisse            }
 { TOUJOURS son resultat au SOMMET de la pile FPU (ST(0)), JAMAIS dans              }
@@ -11306,8 +12310,10 @@ End;
 { de plus que cela pour etre PARTIELLEMENT debloque (voir la note de                                        }
 { section, en-tete du fichier, TODO 25, pour le detail exact de ce qui                                         }
 { reste hors de portee). }
+Procedure CompileExpr(E: Integer); Forward;
+
 Procedure CompileFloatExpr(E: Integer);
-Var SI: Integer;
+Var SI, ArgFirst2: Integer; FnNam2, LblPowLoop, LblPowDone2: TString;
 Begin
   Case ExprPool[E].Kind Of
     EK_FLOATLIT:
@@ -11334,6 +12340,96 @@ Begin
             'non couvert (comparaisons restent hors de portee de cette ' +
             'extension) : ' + ExprPool[E].Op);
       End;
+    EK_CONVERT:
+      { extension chaines etendues : int->float64 ("float64(i)") - le SEUL   }
+      { sens qui manquait encore (float->int transite lui par CompileExpr,           }
+      { pas CompileFloatExpr - voir sa propre note, EK_CONVERT) : compile la              }
+      { source ENTIERE via la convention EAX habituelle, l ecrit dans le             }
+      { scratch commun FSCRATCH, PUIS FILD (charge ET convertit en un SEUL              }
+      { instruction - symetrique de FISTP, deja utilise pour float->int). }
+      If Not ExprIsFloatTyped(ExprPool[E].Left) Then
+      Begin
+        CompileExpr(ExprPool[E].Left);
+        EmitInstr('MOV DWORD PTR [' + ASM_PFX_RUNTIME + 'FSCRATCH],EAX');
+        EmitInstr('FILD [' + ASM_PFX_RUNTIME + 'FSCRATCH]');
+      End
+      Else
+        FatalError('TODO 21 : generateur de code, conversion flottante non ' +
+          'couverte sur cette forme (seul int->float64 l''est ici)');
+    EK_CALL:
+      { extension bibliotheque standard etendue : math.Sqrt/Pow/NaN - les     }
+      { TROIS SEULES fonctions de bibliotheque standard a SIGNATURE                 }
+      { flottante couvertes (un appel de fonction UTILISATEUR a signature               }
+      { flottante reste, lui, hors de portee - voir la note de section) :               }
+      { special-casees ICI DIRECTEMENT plutot que via le mecanisme d appel                  }
+      { normal (CompileCallExpr, convention EAX) puisque leur RESULTAT doit           }
+      { rester sur la pile FPU, pas transiter par EAX. math.Sqrt utilise                    }
+      { l instruction x87 FSQRT (ajoutee a l assembleur pour cette                             }
+      { extension) ; math.NaN charge un motif binaire IEEE754 FIXE (NAN_LO/                    }
+      { HI, .DATA) ; math.Pow(x,y) n a AUCUN equivalent x87 direct pour un                  }
+      { exposant REEL arbitraire (le calcul complet via FYL2X/F2XM1/FSCALE                    }
+      { exigerait des formes ST(i) explicites que cet assembleur ne gere                    }
+      { pas encore) - PORTEE (documentee, pas silencieuse) : MULTIPLICATION            }
+      { REPETEE, correcte pour un exposant ENTIER POSITIF OU NUL SEULEMENT                  }
+      { (x^0=1 via FLD1, x^n=x*x*...*x via n-1 FMULP) - un exposant negatif             }
+      { ou non-entier degenere silencieusement vers 1.0 ou une troncature,                   }
+      { AUCUN SAMPLES\GO\*.go existant n en a besoin au-dela d un exposant             }
+      { entier positif (stdlib.go : "math.Pow(r, 2)"). }
+      If (ExprPool[E].Left >= 0) And (ExprPool[ExprPool[E].Left].Kind = EK_SELECTOR) And
+         (ExprPool[ExprPool[E].Left].Left >= 0) And
+         (ExprPool[ExprPool[ExprPool[E].Left].Left].Kind = EK_IDENT) And
+         (ExprPool[ExprPool[ExprPool[E].Left].Left].NameVal = 'math') Then
+      Begin
+        FnNam2    := ExprPool[ExprPool[E].Left].NameVal;
+        ArgFirst2 := ExprPool[E].ArgFirst;
+        If (FnNam2 = 'Sqrt') And (ExprPool[E].ArgCount = 1) Then
+        Begin
+          CompileFloatExpr(ExprArgPool[ArgFirst2]);
+          EmitInstr('FSQRT');
+        End
+        Else If (FnNam2 = 'NaN') And (ExprPool[E].ArgCount = 0) Then
+          EmitInstr('FLD [' + ASM_PFX_RUNTIME + 'NAN_LO]')
+        Else If (FnNam2 = 'Pow') And (ExprPool[E].ArgCount = 2) Then
+        Begin
+          CompileFloatExpr(ExprArgPool[ArgFirst2]);
+          EmitInstr('FSTP [' + ASM_PFX_RUNTIME + 'FSCRATCH2]');
+          { l exposant peut etre un LITTERAL/expression ENTIER non-flottant     }
+          { (ex. "math.Pow(r, 2)", stdlib.go) - le convertir en flottant           }
+          { PUIS le reconvertir en entier serait absurde ET ferait echouer                  }
+          { CompileFloatExpr (aucun cas EK_INTLIT dans son "Case" - BOGUE               }
+          { REEL trouve par EXECUTION, jamais par la compilation) : lit                   }
+          { directement l entier via CompileExpr (convention EAX habituelle)               }
+          { quand il n est PAS deja de type flottant. }
+          If ExprIsFloatTyped(ExprArgPool[ArgFirst2 + 1]) Then
+          Begin
+            CompileFloatExpr(ExprArgPool[ArgFirst2 + 1]);
+            EmitInstr('FISTP [' + ASM_PFX_RUNTIME + 'FSCRATCH]');
+            EmitInstr('MOV EAX,DWORD PTR [' + ASM_PFX_RUNTIME + 'FSCRATCH]');
+          End
+          Else
+            CompileExpr(ExprArgPool[ArgFirst2 + 1]);
+          EmitInstr('FLD1');
+          LblPowLoop  := CgLabelGen;
+          LblPowDone2 := CgLabelGen;
+          EmitInstr('CMP EAX,0');
+          EmitInstr('JLE ' + LblPowDone2);
+          EmitLabel(LblPowLoop);
+          EmitInstr('CMP EAX,0');
+          EmitInstr('JLE ' + LblPowDone2);
+          EmitInstr('FLD [' + ASM_PFX_RUNTIME + 'FSCRATCH2]');
+          EmitInstr('FMULP');
+          EmitInstr('DEC EAX');
+          EmitInstr('JMP ' + LblPowLoop);
+          EmitLabel(LblPowDone2);
+        End
+        Else
+          FatalError('TODO 21 : generateur de code, fonction flottante ' +
+            'de bibliotheque standard non couverte : math.' + FnNam2);
+      End
+      Else
+        FatalError('TODO 21 : generateur de code, appel flottant non ' +
+          'couvert (seul math.Sqrt/Pow/NaN l''est - un appel de fonction ' +
+          'UTILISATEUR a signature flottante reste hors de portee)');
   Else
     FatalError('TODO 21 : generateur de code, expression flottante non ' +
       'couverte sur cette forme (appels/comparaisons/conversions ' +
@@ -11341,7 +12437,6 @@ Begin
   End;
 End;
 
-Procedure CompileExpr(E: Integer); Forward;
 Procedure CompileMethodCall(E, Callee, BaseTypeIdx, ArgFirst, ArgCount: Integer); Forward;
 Function MethodAsmLabel(MIdx: Integer): TString; Forward;
 Procedure CompileBoxValue(SrcExpr: Integer); Forward;
@@ -11793,6 +12888,72 @@ Begin
   EmitInstr('ADD ESP,12');
 End;
 
+{ CompileSprintfLike : fmt.Sprintf/Errorf("...%s...%s...", a1, a2, ...) -  }
+{ le format a deja ete DECOUPE en segments A LA COMPILATION (CgCollectStrings,        }
+{ voir sa propre note - CgFmtSegFirst/Cnt[E]) : concatene (via _GORT_STRCAT)             }
+{ Seg0+Arg0+Seg1+Arg1+...+SegN dans cet ordre, laissant le RESULTAT dans           }
+{ EAX (fmt.Sprintf) - fmt.Errorf le boite ensuite lui-meme (voir son          }
+{ propre appelant, CompileCallExpr). Aucun format autre que des "%s"                 }
+{ litteraux n est couvert (%d/%v/%f, ou un format calcule a l execution,                     }
+{ restent hors de portee - CgFmtSegCnt[E]=0 si le format n a pas pu etre            }
+{ decoupe A LA COMPILATION). }
+Procedure CompileSprintfLike(E: Integer);
+Var SegFirst, SegCnt, ArgFirst, I: Integer;
+Begin
+  SegFirst := CgFmtSegFirst[E];
+  SegCnt   := CgFmtSegCnt[E];
+  ArgFirst := ExprPool[E].ArgFirst;
+  If SegCnt <= 0 Then
+  Begin
+    FatalError('TODO 21 : generateur de code, format fmt.Sprintf/Errorf ' +
+      'non couvert (seul un format LITTERAL, avec uniquement "%s", l''est)');
+    Exit;
+  End;
+  EmitInstr('LEA EAX,[' + ASM_PFX_STRING + IntToStrG(CgFmtSegPool[SegFirst]) + ']');
+  For I := 1 To SegCnt - 1 Do
+  Begin
+    EmitInstr('PUSH EAX');                        { [ESP+0]=Resultat }
+    CompileExpr(ExprArgPool[ArgFirst + I]);       { EAX = argument }
+    EmitInstr('PUSH EAX');                        { [ESP+0]=Argument,[ESP+4]=Resultat }
+    EmitInstr('PUSH DWORD PTR [ESP+4]');          { [ESP+0]=ResultatCopie,[ESP+4]=Argument,[ESP+8]=Resultat }
+    EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STRCAT');
+    EmitInstr('ADD ESP,12');                      { EAX = Resultat+Argument }
+    EmitInstr('PUSH EAX');
+    EmitInstr('LEA EAX,[' + ASM_PFX_STRING + IntToStrG(CgFmtSegPool[SegFirst + I]) + ']');
+    EmitInstr('PUSH EAX');
+    EmitInstr('PUSH DWORD PTR [ESP+4]');
+    EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STRCAT');
+    EmitInstr('ADD ESP,12');
+  End;
+End;
+
+{ CompileBoxErrorFromEAX : boite le pointeur de chaine deja present en    }
+{ EAX comme une valeur "error" (meme modele que l extension interfaces -                }
+{ TypeIdx=PDT_ERROR+DataPtr vers une cellule contenant ce pointeur) -             }
+{ reutilise par errors.New(s) et fmt.Errorf(...) (une fois son format             }
+{ deja substitue par CompileSprintfLike ci-dessus). }
+Procedure CompileBoxErrorFromEAX;
+Begin
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH 4');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('MOV EBX,EAX');
+  EmitInstr('POP EAX');
+  EmitInstr('MOV DWORD PTR [EBX],EAX');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH 8');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('MOV ECX,EAX');
+  EmitInstr('MOV EAX,' + IntToStrG(PDT_ERROR));
+  EmitInstr('MOV DWORD PTR [ECX],EAX');
+  EmitInstr('MOV EAX,DWORD PTR [ESP]');
+  EmitInstr('MOV DWORD PTR [ECX+4],EAX');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('MOV EAX,ECX');
+End;
+
 { CompileCallExpr : separee de CompileExpr (EK_CALL) car la DETECTION    }
 { elle-meme (bibliotheque standard minimale reconnue PAR NOM QUALIFIE,        }
 { TODO 20, vs. appel DIRECT a une fonction utilisateur, TODO 08) merite            }
@@ -11803,9 +12964,9 @@ End;
 { resultat - tout le reste est un arret propre documente (FatalError). }
 Procedure CompileCallExpr(E: Integer);
 Var
-  Callee, ArgFirst, ArgCount, I, FDI, MBaseTypeIdx, ParamTIdx : Integer;
+  Callee, ArgFirst, ArgCount, I, FDI, MBaseTypeIdx, ParamTIdx, HandleArgE : Integer;
   PkgNam, FnNam : TString;
-  LblRecNo, LblRecDone, LblNoPanic : TString;
+  LblRecNo, LblRecDone, LblNoPanic, LblIsNaN1, LblIsNaN2 : TString;
 Begin
   Callee   := ExprPool[E].Left;
   ArgFirst := ExprPool[E].ArgFirst;
@@ -11884,6 +13045,173 @@ Begin
       Else
         EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'PRINT_STR');
       EmitInstr('ADD ESP,4');
+      Exit;
+    End;
+    { extension bibliotheque standard etendue : errors.New(s) - boite s     }
+    { comme une valeur "error" (CompileBoxErrorFromEAX, meme modele que              }
+    { l extension interfaces). }
+    If (PkgNam = 'errors') And (FnNam = 'New') And (ArgCount = 1) Then
+    Begin
+      CompileExpr(ExprArgPool[ArgFirst]);
+      CompileBoxErrorFromEAX;
+      Exit;
+    End;
+    { fmt.Errorf(format, args...) - substitue le format (CompileSprintfLike,       }
+    { format LITTERAL avec "%s" SEULEMENT) PUIS boite le resultat comme            }
+    { "error", exactement comme errors.New ci-dessus. }
+    If (PkgNam = 'fmt') And (FnNam = 'Errorf') And (ArgCount >= 1) Then
+    Begin
+      CompileSprintfLike(E);
+      CompileBoxErrorFromEAX;
+      Exit;
+    End;
+    { fmt.Sprintf(format, args...) - identique a Errorf ci-dessus, mais             }
+    { renvoie directement la chaine (jamais boitee - le type de retour est               }
+    { "string", pas "error"). }
+    If (PkgNam = 'fmt') And (FnNam = 'Sprintf') And (ArgCount >= 1) Then
+    Begin
+      CompileSprintfLike(E);
+      Exit;
+    End;
+    { fmt.Fprintln(os.Stdout/os.Stderr, msg) - PORTEE : seul le PREMIER          }
+    { argument reconnu comme le SELECTEUR "os.Stdout"/"os.Stderr" resout a         }
+    { un VRAI handle Win32 (STD_OUTPUT_HANDLE=-11/STD_ERROR_HANDLE=-12,                  }
+    { constantes directement compilees, jamais une VRAIE valeur "os.File"                 }
+    { generique) - tout AUTRE premier argument reste hors de portee. }
+    If (PkgNam = 'fmt') And (FnNam = 'Fprintln') And (ArgCount = 2) Then
+    Begin
+      { _GORT_FPRINTLN_STR attend [EBP+8]=handle,[EBP+12]=chaine - donc le    }
+      { HANDLE doit etre le DERNIER pousse (le plus proche de l adresse de              }
+      { retour) et la CHAINE le PREMIER : calcule/pousse la chaine D ABORD,             }
+      { PUIS le handle (une simple constante, jamais clobberisee par            }
+      { CompileExpr du message) - BOGUE REEL trouve par EXECUTION              }
+      { (segmentation fault, jamais par la compilation) : la version                  }
+      { initiale poussait le handle EN PREMIER, ce qui l envoyait a                          }
+      { [EBP+12] et la chaine a [EBP+8] - EXACTEMENT l inverse de ce que              }
+      { _GORT_FPRINTLN_STR lit. }
+      HandleArgE := ExprArgPool[ArgFirst];
+      CompileExpr(ExprArgPool[ArgFirst + 1]);
+      EmitInstr('PUSH EAX');
+      If (ExprPool[HandleArgE].Kind = EK_SELECTOR) And (ExprPool[HandleArgE].Left >= 0) And
+         (ExprPool[ExprPool[HandleArgE].Left].Kind = EK_IDENT) And
+         (ExprPool[ExprPool[HandleArgE].Left].NameVal = 'os') And
+         (ExprPool[HandleArgE].NameVal = 'Stdout') Then
+        EmitInstr('MOV EAX,-11')
+      Else If (ExprPool[HandleArgE].Kind = EK_SELECTOR) And (ExprPool[HandleArgE].Left >= 0) And
+         (ExprPool[ExprPool[HandleArgE].Left].Kind = EK_IDENT) And
+         (ExprPool[ExprPool[HandleArgE].Left].NameVal = 'os') And
+         (ExprPool[HandleArgE].NameVal = 'Stderr') Then
+        EmitInstr('MOV EAX,-12')
+      Else
+      Begin
+        FatalError('TODO 21 : generateur de code, fmt.Fprintln non ' +
+          'couvert sur cette destination (seuls os.Stdout/os.Stderr le sont)');
+        Exit;
+      End;
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'FPRINTLN_STR');
+      EmitInstr('ADD ESP,8');
+      Exit;
+    End;
+    { strings.TrimSpace(s)/ToUpper(s) - deux fonctions REELLES a un seul         }
+    { argument, chacune deja construite comme un runtime autonome                    }
+    { (EmitRuntimeLibrary, extension bibliotheque standard etendue). }
+    If (PkgNam = 'strings') And (FnNam = 'TrimSpace') And (ArgCount = 1) Then
+    Begin
+      CompileExpr(ExprArgPool[ArgFirst]);
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STR_TRIM');
+      EmitInstr('ADD ESP,4');
+      Exit;
+    End;
+    If (PkgNam = 'strings') And (FnNam = 'ToUpper') And (ArgCount = 1) Then
+    Begin
+      CompileExpr(ExprArgPool[ArgFirst]);
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STR_UPPER');
+      EmitInstr('ADD ESP,4');
+      Exit;
+    End;
+    { strings.Split(s, sep)/Join(parts, sep) - voir _GORT_STR_SPLIT/JOIN             }
+    { (EmitRuntimeLibrary) pour le detail complet du modele et des deux             }
+    { bogues de decalage de pile REELS trouves (et corriges) en ECRIVANT               }
+    { ce code, avant meme le premier test. }
+    If (PkgNam = 'strings') And (FnNam = 'Split') And (ArgCount = 2) Then
+    Begin
+      CompileExpr(ExprArgPool[ArgFirst]);
+      EmitInstr('PUSH EAX');
+      CompileExpr(ExprArgPool[ArgFirst + 1]);
+      EmitInstr('PUSH EAX');
+      EmitInstr('PUSH DWORD PTR [ESP+4]');
+      EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STR_SPLIT');
+      EmitInstr('ADD ESP,8');
+      EmitInstr('ADD ESP,4');
+      Exit;
+    End;
+    If (PkgNam = 'strings') And (FnNam = 'Join') And (ArgCount = 2) Then
+    Begin
+      CompileExpr(ExprArgPool[ArgFirst]);
+      EmitInstr('PUSH EAX');
+      CompileExpr(ExprArgPool[ArgFirst + 1]);
+      EmitInstr('PUSH EAX');
+      EmitInstr('PUSH DWORD PTR [ESP+4]');
+      EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STR_JOIN');
+      EmitInstr('ADD ESP,8');
+      EmitInstr('ADD ESP,4');
+      Exit;
+    End;
+    { strconv.Itoa(n) - strconv.Atoi(s) est SEPAREMENT special-cased dans          }
+    { STK_SHORTVAR (retours multiples, "n, err := strconv.Atoi(s)"),                     }
+    { jamais ICI (un appel EK_CALL simple, sans comma/multi-cible, n a               }
+    { aucun sens pour Atoi qui a TOUJOURS deux resultats en Go reel). }
+    If (PkgNam = 'strconv') And (FnNam = 'Itoa') And (ArgCount = 1) Then
+    Begin
+      CompileExpr(ExprArgPool[ArgFirst]);
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STRCONV_ITOA');
+      EmitInstr('ADD ESP,4');
+      Exit;
+    End;
+    { math.IsNaN(x) - PAS un FatalError meme si x est flottant (le type de       }
+    { RETOUR de cet appel, bool, transite par EAX comme d habitude - seul               }
+    { son ARGUMENT est flottant) : teste directement le MOTIF BINAIRE            }
+    { IEEE754 (tous les bits d exposant a 1 ET une mantisse NON NULLE)                  }
+    { plutot qu une VRAIE comparaison flottante (x!=x, la definition               }
+    { usuelle de NaN) - aucune comparaison flottante n existe encore dans                 }
+    { ce compilateur (extension flottants, TODO 21, portee documentee),                    }
+    { et cette approche l evite completement. }
+    If (PkgNam = 'math') And (FnNam = 'IsNaN') And (ArgCount = 1) Then
+    Begin
+      CompileFloatExpr(ExprArgPool[ArgFirst]);
+      EmitInstr('FSTP [' + ASM_PFX_RUNTIME + 'FSCRATCH2]');
+      EmitInstr('MOV EAX,DWORD PTR [' + ASM_PFX_RUNTIME + 'FSCRATCH2B]');
+      EmitInstr('AND EAX,2146435072');
+      LblIsNaN1 := CgLabelGen; LblIsNaN2 := CgLabelGen;
+      EmitInstr('CMP EAX,2146435072');
+      EmitInstr('JNE ' + LblIsNaN1);
+      EmitInstr('MOV EAX,DWORD PTR [' + ASM_PFX_RUNTIME + 'FSCRATCH2B]');
+      EmitInstr('AND EAX,1048575');
+      EmitInstr('CMP EAX,0');
+      EmitInstr('JNE ' + LblIsNaN2);
+      EmitInstr('MOV EAX,DWORD PTR [' + ASM_PFX_RUNTIME + 'FSCRATCH2]');
+      EmitInstr('CMP EAX,0');
+      EmitInstr('JNE ' + LblIsNaN2);
+      EmitLabel(LblIsNaN1);
+      EmitInstr('MOV EAX,0');
+      EmitInstr('JMP ' + LblIsNaN2 + '_SKIP');
+      EmitLabel(LblIsNaN2);
+      EmitInstr('MOV EAX,1');
+      EmitLabel(LblIsNaN2 + '_SKIP');
+      Exit;
+    End;
+    { os.Exit(n) - CALL DIRECT a _ExitProcess@4 (STDCALL, l APPELE nettoie              }
+    { sa propre pile) - ne rend JAMAIS la main, aucun ADD ESP necessaire                  }
+    { apres. }
+    If (PkgNam = 'os') And (FnNam = 'Exit') And (ArgCount = 1) Then
+    Begin
+      CompileExpr(ExprArgPool[ArgFirst]);
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL _ExitProcess@4');
       Exit;
     End;
     FatalError('TODO 21 : generateur de code, appel de bibliotheque ' +
@@ -12445,6 +13773,26 @@ Begin
       Inc(CandCount);
     End;
 
+  { extension bibliotheque standard etendue : ".Error()" a travers une      }
+  { interface/error dont la boite provient d errors.New/fmt.Errorf (une            }
+  { simple chaine boitee, PDT_ERROR/PDT_STRING comme etiquette - JAMAIS un                  }
+  { VRAI type utilisateur avec une VRAIE methode Error() enregistree dans                    }
+  { MethodDefPool) : AUCUN candidat ne matchera jamais dans ce cas (la              }
+  { boite n a pas ete produite par CompileBoxValue sur une VALEUR d un                     }
+  { type reel, mais par CompileBoxErrorFromEAX/CompileRuntimePanic - DataPtr              }
+  { pointe DIRECTEMENT vers le pointeur de la chaine du message) - repli           }
+  { EXPLICITE, jamais un simple EAX:=0 comme pour une methode INCONNUE                  }
+  { ordinaire : deref DataPtr et renvoie la chaine directement, EXACTEMENT             }
+  { ce que la methode Error du type errorString INTERNE de Go reel ferait                 }
+  { (elle renvoie simplement son propre champ chaine tel quel). }
+  If (CandCount = 0) And (MName = 'Error') Then
+  Begin
+    CompileExpr(ExprPool[Callee].Left);          { EAX = boite }
+    EmitInstr('MOV EAX,DWORD PTR [EAX+4]');       { DataPtr }
+    EmitInstr('MOV EAX,DWORD PTR [EAX]');          { chaine }
+    Exit;
+  End;
+
   If CandCount = 0 Then
   Begin
     FatalError('TODO 21 : generateur de code, methode inconnue a ' +
@@ -12473,9 +13821,33 @@ Begin
     EmitInstr('JE ' + CandLbl[I]);
   End;
   { aucune correspondance : ne devrait jamais arriver si TypeSatisfiesInterface  }
-  { (analyse, TODO 10/19) a fait son travail - repli SUR (EAX:=0, jamais         }
-  { un comportement indefini) plutot qu un plantage. }
-  EmitInstr('MOV EAX,0');
+  { (analyse, TODO 10/19) a fait son travail POUR UN VRAI TYPE UTILISATEUR -            }
+  { SAUF pour ".Error()" sur une boite errors.New/fmt.Errorf (voir la note                  }
+  { de tete de procedure - CandCount>0 ICI signifie qu AU MOINS UN type            }
+  { utilisateur definit bien Error(), mais CETTE boite precise n en est                     }
+  { pas une) : meme repli explicite que le cas CandCount=0, plutot qu un                }
+  { simple EAX:=0 qui romprait silencieusement Describe(errors.New("x")). }
+  { BOGUE REEL LATENT trouve en RELISANT ce code (jamais exerce avant -   }
+  { TypeSatisfiesInterface, TODO 10/19, garantit qu un type utilisateur                    }
+  { REEL trouve toujours son candidat, ce chemin n etait donc JAMAIS                   }
+  { atteint avant que ".Error()" sur une boite errors.New/fmt.Errorf ne                    }
+  { l exerce REELLEMENT pour la premiere fois) : NI cette branche NI            }
+  { l ancienne version (juste "MOV EAX,0") ne retirait boite+arguments               }
+  { de la pile avant de sauter a LblDone - contrairement a CHAQUE candidat               }
+  { apparie, qui le fait via son propre "ADD ESP,...". Sans ce retrait, la               }
+  { pile de l APPELANT fuit (ArgCount+1)*4 octets a CHAQUE appel qui                        }
+  { n aboutit a AUCUN candidat - jamais un plantage IMMEDIAT, une VRAIE                        }
+  { corruption de pile qui finit par en provoquer un, bien plus loin. }
+  EmitInstr('ADD ESP,' + IntToStrG(4 * ArgCount));
+  If MName = 'Error' Then
+  Begin
+    EmitInstr('MOV EAX,DWORD PTR [ESP]');
+    EmitInstr('MOV EAX,DWORD PTR [EAX+4]');
+    EmitInstr('MOV EAX,DWORD PTR [EAX]');
+  End
+  Else
+    EmitInstr('MOV EAX,0');
+  EmitInstr('ADD ESP,4');
   EmitInstr('JMP ' + LblDone);
 
   For I := 0 To CandCount - 1 Do
@@ -12907,13 +14279,262 @@ Begin
   EmitInstr('POP EAX');   { restaure EAX = adresse destination }
 End;
 
+{ ------------------------------------------------------------ }
+{ Extension chaines etendues : conversions []byte(s)/[]rune(s)/            }
+{ string(bs)/string(rs) - toutes les QUATRE construisent un NOUVEAU              }
+{ tampon (jamais un alias de la source - une chaine Go est IMMUABLE,               }
+{ un []byte/[]rune resultant d une conversion est INDEPENDANT de la              }
+{ source, meme regle reelle). []rune(s)/string(rs) font DEUX passes                  }
+{ (compte les runes/la taille encodee D ABORD, alloue EXACTEMENT ce               }
+{ qu il faut, PUIS decode/encode une seconde fois) plutot que de faire               }
+{ croitre un tampon dynamiquement (CompileAppend existe deja pour cela,               }
+{ mais deux passes simples evitent ici toute complexite de croissance               }
+{ pour un besoin ponctuel). }
+{ ------------------------------------------------------------ }
+
+Procedure CompileConvertStringToBytes(SrcExpr: Integer);
+Var LblTop, LblEnd: TString;
+Begin
+  CompileExpr(SrcExpr);                                { EAX = pointeur chaine }
+  EmitInstr('PUSH EAX');                                 { [ESP+0]=Str }
+  EmitInstr('PUSH DWORD PTR [ESP]');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STRLEN');
+  EmitInstr('ADD ESP,4');                                { EAX=Len ; [ESP+0]=Str }
+  EmitInstr('PUSH EAX');                                 { [ESP+0]=Len,[ESP+4]=Str }
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+  EmitInstr('ADD ESP,4');                                { EAX=Data ; [ESP+0]=Len,[ESP+4]=Str }
+  EmitInstr('PUSH EAX');                                 { [ESP+0]=Data,[ESP+4]=Len,[ESP+8]=Str }
+
+  EmitInstr('MOV ESI,DWORD PTR [ESP+8]');
+  EmitInstr('MOV EDI,DWORD PTR [ESP]');
+  EmitInstr('MOV ECX,DWORD PTR [ESP+4]');
+  LblTop := CgLabelGen; LblEnd := CgLabelGen;
+  EmitLabel(LblTop);
+  EmitInstr('CMP ECX,0');
+  EmitInstr('JLE ' + LblEnd);
+  EmitInstr('MOVZX EAX,BYTE PTR [ESI]');
+  EmitInstr('MOV BYTE PTR [EDI],EAX');
+  EmitInstr('INC ESI');
+  EmitInstr('INC EDI');
+  EmitInstr('DEC ECX');
+  EmitInstr('JMP ' + LblTop);
+  EmitLabel(LblEnd);
+
+  EmitInstr('PUSH 12');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+  EmitInstr('ADD ESP,4');                                { EAX=Header ; [ESP+0]=Data,[ESP+4]=Len,[ESP+8]=Str }
+  EmitInstr('MOV EBX,EAX');
+  EmitInstr('MOV EAX,DWORD PTR [ESP]');
+  EmitInstr('MOV DWORD PTR [EBX],EAX');
+  EmitInstr('MOV EAX,DWORD PTR [ESP+4]');
+  EmitInstr('MOV DWORD PTR [EBX+4],EAX');
+  EmitInstr('MOV DWORD PTR [EBX+8],EAX');
+  EmitInstr('ADD ESP,12');
+  EmitInstr('MOV EAX,EBX');
+End;
+
+Procedure CompileConvertBytesToString(SrcExpr: Integer);
+Var LblTop, LblEnd: TString;
+Begin
+  CompileExpr(SrcExpr);                                { EAX = en-tete slice }
+  EmitInstr('PUSH EAX');                                 { [ESP+0]=Header }
+  EmitInstr('MOV EBX,DWORD PTR [ESP]');
+  EmitInstr('MOV EAX,DWORD PTR [EBX+4]');                { Len }
+  EmitInstr('ADD EAX,1');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+  EmitInstr('ADD ESP,4');                                { EAX=Dest ; [ESP+0]=Header }
+  EmitInstr('PUSH EAX');                                 { [ESP+0]=Dest,[ESP+4]=Header }
+
+  EmitInstr('MOV EBX,DWORD PTR [ESP+4]');
+  EmitInstr('MOV ESI,DWORD PTR [EBX]');
+  EmitInstr('MOV EDI,DWORD PTR [ESP]');
+  EmitInstr('MOV ECX,DWORD PTR [EBX+4]');
+  LblTop := CgLabelGen; LblEnd := CgLabelGen;
+  EmitLabel(LblTop);
+  EmitInstr('CMP ECX,0');
+  EmitInstr('JLE ' + LblEnd);
+  EmitInstr('MOVZX EAX,BYTE PTR [ESI]');
+  EmitInstr('MOV BYTE PTR [EDI],EAX');
+  EmitInstr('INC ESI');
+  EmitInstr('INC EDI');
+  EmitInstr('DEC ECX');
+  EmitInstr('JMP ' + LblTop);
+  EmitLabel(LblEnd);
+
+  EmitInstr('MOV EAX,0');
+  EmitInstr('MOV BYTE PTR [EDI],EAX');
+  EmitInstr('MOV EAX,DWORD PTR [ESP]');
+  EmitInstr('ADD ESP,8');
+End;
+
+Procedure CompileConvertStringToRunes(SrcExpr: Integer);
+Var LblCount, LblCountDone, LblFill, LblFillDone: TString;
+Begin
+  CompileExpr(SrcExpr);                                { EAX = pointeur chaine }
+  EmitInstr('PUSH EAX');                                 { [ESP+0]=Str }
+  EmitInstr('MOV EAX,0');
+  EmitInstr('PUSH EAX');                                 { [ESP+0]=NRunes,[ESP+4]=Str }
+
+  { BOGUE REEL trouve par EXECUTION (len() d un []rune donnait une valeur     }
+  { absurde des qu une chaine contenait un caractere multi-octets, jamais              }
+  { sur de l ASCII pur) : _GORT_UTF8_DECODE utilise ECX en INTERNE (compte           }
+  { de decalage SHL/SHR, meme piege que EBX/ESI/EDI pour STRLEN/STREQ,               }
+  { deja documente) DANS SES BRANCHES MULTI-OCTETS SEULEMENT - un compteur              }
+  { de runes tenu dans ECX A TRAVERS l appel (comme l ecrivait la version                 }
+  { initiale de cette boucle) survit intact tant que seul de l ASCII est                    }
+  { rencontre, puis se corrompt SILENCIEUSEMENT a la premiere sequence               }
+  { multi-octets - jamais un plantage, une VALEUR FAUSSE. Corrige en               }
+  { gardant le compteur SUR LA PILE (charge/incremente/range a CHAQUE               }
+  { iteration), jamais dans un registre suppose survivre a l appel - meme               }
+  { discipline que partout ailleurs dans ce fichier pour toute valeur qui                   }
+  { doit survivre a un CALL. }
+  EmitInstr('MOV ESI,DWORD PTR [ESP+4]');
+  LblCount := CgLabelGen; LblCountDone := CgLabelGen;
+  EmitLabel(LblCount);
+  EmitInstr('CMP BYTE PTR [ESI],0');
+  EmitInstr('JE ' + LblCountDone);
+  EmitInstr('PUSH ESI');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'UTF8_DECODE');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('MOV EBX,DWORD PTR [' + ASM_PFX_RUNTIME + 'UTF8_WIDTH]');
+  EmitInstr('ADD ESI,EBX');
+  EmitInstr('MOV EAX,DWORD PTR [ESP]');
+  EmitInstr('INC EAX');
+  EmitInstr('MOV DWORD PTR [ESP],EAX');
+  EmitInstr('JMP ' + LblCount);
+  EmitLabel(LblCountDone);
+  { [ESP+0]=NRunes,[ESP+4]=Str }
+
+  EmitInstr('MOV EAX,DWORD PTR [ESP]');
+  EmitInstr('MOV EBX,4');
+  EmitInstr('IMUL EAX,EBX');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+  EmitInstr('ADD ESP,4');                                { EAX=DataBuf ; [ESP+0]=NRunes,[ESP+4]=Str }
+  EmitInstr('PUSH EAX');                                 { [ESP+0]=DataBuf,[ESP+4]=NRunes,[ESP+8]=Str }
+
+  EmitInstr('MOV ESI,DWORD PTR [ESP+8]');
+  EmitInstr('MOV EDI,DWORD PTR [ESP]');
+  LblFill := CgLabelGen; LblFillDone := CgLabelGen;
+  EmitLabel(LblFill);
+  EmitInstr('CMP BYTE PTR [ESI],0');
+  EmitInstr('JE ' + LblFillDone);
+  EmitInstr('PUSH ESI');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'UTF8_DECODE');
+  EmitInstr('ADD ESP,4');                                { EAX = rune decodee }
+  EmitInstr('MOV DWORD PTR [EDI],EAX');
+  EmitInstr('ADD EDI,4');
+  EmitInstr('MOV EBX,DWORD PTR [' + ASM_PFX_RUNTIME + 'UTF8_WIDTH]');
+  EmitInstr('ADD ESI,EBX');
+  EmitInstr('JMP ' + LblFill);
+  EmitLabel(LblFillDone);
+
+  EmitInstr('PUSH 12');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+  EmitInstr('ADD ESP,4');                                { EAX=Header ; [ESP+0]=DataBuf,[ESP+4]=NRunes,[ESP+8]=Str }
+  EmitInstr('MOV EBX,EAX');
+  EmitInstr('MOV EAX,DWORD PTR [ESP]');
+  EmitInstr('MOV DWORD PTR [EBX],EAX');
+  EmitInstr('MOV EAX,DWORD PTR [ESP+4]');
+  EmitInstr('MOV DWORD PTR [EBX+4],EAX');
+  EmitInstr('MOV DWORD PTR [EBX+8],EAX');
+  EmitInstr('ADD ESP,12');
+  EmitInstr('MOV EAX,EBX');
+End;
+
+Procedure CompileConvertRunesToString(SrcExpr: Integer);
+Var LblSum, LblSumW1, LblSumW2, LblSumW3, LblSumNext, LblSumDone : TString;
+    LblEnc, LblEncDone : TString;
+Begin
+  CompileExpr(SrcExpr);                                { EAX = en-tete slice de runes }
+  EmitInstr('PUSH EAX');                                 { [ESP+0]=Header }
+
+  EmitInstr('MOV EBX,DWORD PTR [ESP]');
+  EmitInstr('MOV ESI,DWORD PTR [EBX]');
+  EmitInstr('MOV ECX,DWORD PTR [EBX+4]');
+  EmitInstr('MOV EDX,0');
+  LblSum := CgLabelGen; LblSumW1 := CgLabelGen; LblSumW2 := CgLabelGen;
+  LblSumW3 := CgLabelGen; LblSumNext := CgLabelGen; LblSumDone := CgLabelGen;
+  EmitLabel(LblSum);
+  EmitInstr('CMP ECX,0');
+  EmitInstr('JLE ' + LblSumDone);
+  EmitInstr('MOV EAX,DWORD PTR [ESI]');
+  EmitInstr('CMP EAX,128');
+  EmitInstr('JL ' + LblSumW1);
+  EmitInstr('CMP EAX,2048');
+  EmitInstr('JL ' + LblSumW2);
+  EmitInstr('CMP EAX,65536');
+  EmitInstr('JL ' + LblSumW3);
+  EmitInstr('ADD EDX,4');
+  EmitInstr('JMP ' + LblSumNext);
+  EmitLabel(LblSumW1);
+  EmitInstr('ADD EDX,1');
+  EmitInstr('JMP ' + LblSumNext);
+  EmitLabel(LblSumW2);
+  EmitInstr('ADD EDX,2');
+  EmitInstr('JMP ' + LblSumNext);
+  EmitLabel(LblSumW3);
+  EmitInstr('ADD EDX,3');
+  EmitLabel(LblSumNext);
+  EmitInstr('ADD ESI,4');
+  EmitInstr('DEC ECX');
+  EmitInstr('JMP ' + LblSum);
+  EmitLabel(LblSumDone);
+
+  EmitInstr('PUSH EDX');                                 { [ESP+0]=TotalOctets,[ESP+4]=Header }
+  EmitInstr('MOV EAX,EDX');
+  EmitInstr('ADD EAX,1');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+  EmitInstr('ADD ESP,4');                                { EAX=Dest ; [ESP+0]=TotalOctets,[ESP+4]=Header }
+  EmitInstr('PUSH EAX');                                 { [ESP+0]=Dest,[ESP+4]=TotalOctets,[ESP+8]=Header }
+
+  { meme bogue, et meme correctif, que CompileConvertStringToRunes ci-       }
+  { dessus (voir sa propre note) : _GORT_UTF8_ENCODE utilise lui aussi ECX             }
+  { en INTERNE (SHR, branches multi-octets) - le compte de runes RESTANTES               }
+  { doit rester SUR LA PILE, jamais dans ECX a travers l appel. ESI/EDI               }
+  { restent des registres SURS (jamais modifies EN INTERNE par ENCODE au                }
+  { dela de leur rechargement initial depuis les parametres - seul un              }
+  { registre utilise comme ACCUMULATEUR/COMPTEUR A TRAVERS l appel, comme                    }
+  { ECX ici, est en danger). }
+  EmitInstr('MOV EBX,DWORD PTR [ESP+8]');
+  EmitInstr('MOV ESI,DWORD PTR [EBX]');
+  EmitInstr('MOV EAX,DWORD PTR [EBX+4]');
+  EmitInstr('PUSH EAX');                                 { [ESP+0]=Restantes,[ESP+4]=Dest,[ESP+8]=TotalOctets,[ESP+12]=Header }
+  EmitInstr('MOV EDI,DWORD PTR [ESP+4]');
+  LblEnc := CgLabelGen; LblEncDone := CgLabelGen;
+  EmitLabel(LblEnc);
+  EmitInstr('CMP DWORD PTR [ESP],0');
+  EmitInstr('JLE ' + LblEncDone);
+  EmitInstr('MOV EAX,DWORD PTR [ESI]');
+  EmitInstr('PUSH EDI');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'UTF8_ENCODE');
+  EmitInstr('ADD ESP,8');                                { EAX = largeur ecrite }
+  EmitInstr('ADD EDI,EAX');
+  EmitInstr('ADD ESI,4');
+  EmitInstr('MOV EAX,DWORD PTR [ESP]');
+  EmitInstr('DEC EAX');
+  EmitInstr('MOV DWORD PTR [ESP],EAX');
+  EmitInstr('JMP ' + LblEnc);
+  EmitLabel(LblEncDone);
+  EmitInstr('ADD ESP,4');                                { retire Restantes ; [ESP+0]=Dest,[ESP+4]=TotalOctets,[ESP+8]=Header }
+
+  EmitInstr('MOV EAX,0');
+  EmitInstr('MOV BYTE PTR [EDI],EAX');
+  EmitInstr('MOV EAX,DWORD PTR [ESP]');
+  EmitInstr('ADD ESP,12');
+End;
+
 { CompileExpr : compile RECURSIVEMENT le noeud E de ExprPool - laisse    }
 { TOUJOURS son resultat dans EAX (convention FIXE, PAS d allocateur de       }
 { registres - meme discipline que DELPHI.PAS/memes projet). Toute forme            }
 { d expression hors de la portee documentee en tete de section (TODO 21)             }
 { s arrete PROPREMENT (FatalError explicite), jamais un plantage/silence.               }
 Procedure CompileExpr(E: Integer);
-Var SI, TATIdx: Integer; LblE, LblTAMatch2, LblTADone2: TString;
+Var SI, TATIdx, AddrCE, AddrTIdx: Integer; LblE, LblTAMatch2, LblTADone2: TString;
 Begin
   If E < 0 Then Exit;
   Case ExprPool[E].Kind Of
@@ -12942,6 +14563,38 @@ Begin
               'resolu ("&"): ' + ExprPool[ExprPool[E].Left].NameVal)
           Else
             EmitInstr('LEA EAX,' + CgVarOperand(SI));
+        End
+        Else If ExprPool[ExprPool[E].Left].Kind = EK_COMPOSITE Then
+        Begin
+          { extension bibliotheque standard etendue : "&" applique a un      }
+          { litteral compose (accolades notees ici entre parentheses pour               }
+          { ne pas fermer ce commentaire), "&Struct(...)" - ALLOUE sur le           }
+          { tas (contrairement a un litteral compose simple,               }
+          { ":="-seulement, valeur INLINE - ICI le resultat est un VRAI               }
+          { pointeur, la valeur elle-meme n a PAS besoin d exister ailleurs)                 }
+          { PUIS remplit via CompileStructCompositeIntoAddr/                                    }
+          { CompileArrayCompositeIntoAddr (extension interfaces, deja               }
+          { ecrites pour CompileBoxValue - reutilisees TELLES QUELLES ICI,               }
+          { meme protocole "adresse destination deja en EAX en entree"). }
+          AddrCE   := ExprPool[E].Left;
+          AddrTIdx := ExprPool[AddrCE].Extra;
+          If (AddrTIdx >= 0) And (TypeTab[AddrTIdx].Kind = TYK_STRUCT) Then
+          Begin
+            EmitInstr('PUSH ' + IntToStrG(LocalSlotSize(AddrTIdx)));
+            EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+            EmitInstr('ADD ESP,4');
+            CompileStructCompositeIntoAddr(AddrCE);
+          End
+          Else If (AddrTIdx >= 0) And (TypeTab[AddrTIdx].Kind = TYK_ARRAY) Then
+          Begin
+            EmitInstr('PUSH ' + IntToStrG(LocalSlotSize(AddrTIdx)));
+            EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+            EmitInstr('ADD ESP,4');
+            CompileArrayCompositeIntoAddr(AddrCE);
+          End
+          Else
+            FatalError('TODO 21 : generateur de code, "&" sur un ' +
+              'litteral compose non couvert (seuls struct/tableau le sont)');
         End
         Else
           FatalError('TODO 21 : generateur de code, "&" non couvert sur ' +
@@ -12976,6 +14629,41 @@ Begin
         CompileExpr(ExprPool[E].Right);
         EmitLabel(LblE);
       End
+      Else If (ExprIsStringTyped(ExprPool[E].Left) Or ExprIsStringTyped(ExprPool[E].Right)) And
+              (ExprPool[E].Op = '+') Then
+      Begin
+        { extension chaines etendues : "s1 + s2" - concatenation REELLE       }
+        { (_GORT_STRCAT, alloue un NOUVEAU tampon - une chaine Go est                    }
+        { IMMUABLE, jamais de modification en place). }
+        CompileExpr(ExprPool[E].Left);
+        EmitInstr('PUSH EAX');
+        CompileExpr(ExprPool[E].Right);
+        EmitInstr('PUSH EAX');
+        EmitInstr('POP EBX');
+        EmitInstr('POP EAX');
+        EmitInstr('PUSH EBX');
+        EmitInstr('PUSH EAX');
+        EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STRCAT');
+        EmitInstr('ADD ESP,8');
+      End
+      Else If (ExprIsStringTyped(ExprPool[E].Left) Or ExprIsStringTyped(ExprPool[E].Right)) And
+              ((ExprPool[E].Op = '==') Or (ExprPool[E].Op = '!=')) Then
+      Begin
+        { extension chaines etendues : "s1 == s2"/"s1 != s2" - egalite PAR    }
+        { CONTENU (_GORT_STREQ, extension maps) - un simple CMP EAX,EBX de           }
+        { pointeurs (comportement PRE-EXISTANT avant cette extension) est                  }
+        { FAUX des que l une des deux chaines n est pas la MEME instance             }
+        { .DATA deduplique (ex. le resultat de strings.TrimSpace/+, jamais             }
+        { pointeur-identique a un litteral). }
+        CompileExpr(ExprPool[E].Left);
+        EmitInstr('PUSH EAX');
+        CompileExpr(ExprPool[E].Right);
+        EmitInstr('PUSH EAX');
+        EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STREQ');
+        EmitInstr('ADD ESP,8');
+        If ExprPool[E].Op = '!=' Then
+          EmitInstr('XOR EAX,1');
+      End
       Else
       Begin
         CompileExpr(ExprPool[E].Left);
@@ -13002,6 +14690,23 @@ Begin
         EmitInstr('MOV EAX,DWORD PTR [EAX]');
       End;
     EK_SELECTOR:
+      { extension bibliotheque standard etendue : math.MaxInt32/MinInt32/    }
+      { os.Args - trois VALEURS (SLK_VALUE, TODO 20, PAS un appel) de              }
+      { bibliotheque standard - math.MaxInt32/MinInt32 sont de VRAIES                    }
+      { constantes compilees directement ; os.Args reste un EMPTY SLICE            }
+      { STATIQUE fixe (.DATA, jamais les VRAIS arguments de ligne de              }
+      { commande - PORTEE documentee, aucun SAMPLES\GO\*.go existant n en             }
+      { LIT le contenu, seulement une affectation suivie d un "_ ="). }
+      If (ExprPool[E].Left >= 0) And (ExprPool[ExprPool[E].Left].Kind = EK_IDENT) And
+         (ExprPool[ExprPool[E].Left].NameVal = 'math') And (ExprPool[E].NameVal = 'MaxInt32') Then
+        EmitInstr('MOV EAX,2147483647')
+      Else If (ExprPool[E].Left >= 0) And (ExprPool[ExprPool[E].Left].Kind = EK_IDENT) And
+         (ExprPool[ExprPool[E].Left].NameVal = 'math') And (ExprPool[E].NameVal = 'MinInt32') Then
+        EmitInstr('MOV EAX,-2147483648')
+      Else If (ExprPool[E].Left >= 0) And (ExprPool[ExprPool[E].Left].Kind = EK_IDENT) And
+         (ExprPool[ExprPool[E].Left].NameVal = 'os') And (ExprPool[E].NameVal = 'Args') Then
+        EmitInstr('LEA EAX,[' + ASM_PFX_RUNTIME + 'EMPTY_SLICE_HEADER]')
+      Else
       Begin
         { extension structs/methodes : lecture d un CHAMP - un champ lui-  }
         { meme de type struct/tableau (multi-mots) ne peut PAS transiter               }
@@ -13037,9 +14742,33 @@ Begin
         EmitInstr('FISTP [' + ASM_PFX_RUNTIME + 'FSCRATCH]');
         EmitInstr('MOV EAX,DWORD PTR [' + ASM_PFX_RUNTIME + 'FSCRATCH]');
       End
+      { extension chaines etendues : []byte(s)/[]rune(s)/string(bs)/            }
+      { string(rs) - detectees PAR LE TYPE (Extra=type CIBLE, Left=source),               }
+      { jamais par une syntaxe speciale (T(x) est deja un noeud EK_CONVERT             }
+      { generique, TODO 06/14). float64(i) (int->float) N ARRIVE JAMAIS ICI -           }
+      { ExprIsFloatTyped(E) route ce cas via CompileFloatExpr a la place                  }
+      { (voir sa propre note), exactement comme float->int est routé ICI ET          }
+      { PAS dans CompileFloatExpr. }
+      Else If (ExprPool[E].Extra >= 0) And (TypeTab[ExprPool[E].Extra].Kind = TYK_SLICE) And
+              (TypeResolveAlias(TypeTab[ExprPool[E].Extra].ElemTypeIdx) = PDT_UINT8) Then
+        CompileConvertStringToBytes(ExprPool[E].Left)
+      Else If (ExprPool[E].Extra >= 0) And (TypeTab[ExprPool[E].Extra].Kind = TYK_SLICE) And
+              (TypeResolveAlias(TypeTab[ExprPool[E].Extra].ElemTypeIdx) = PDT_INT32) Then
+        CompileConvertStringToRunes(ExprPool[E].Left)
+      Else If (ExprPool[E].Extra >= 0) And (TypeResolveAlias(ExprPool[E].Extra) = PDT_STRING) And
+              (ExprPool[ExprPool[E].Left].TypeIdx >= 0) And
+              (TypeTab[ExprPool[ExprPool[E].Left].TypeIdx].Kind = TYK_SLICE) And
+              (TypeResolveAlias(TypeTab[ExprPool[ExprPool[E].Left].TypeIdx].ElemTypeIdx) = PDT_UINT8) Then
+        CompileConvertBytesToString(ExprPool[E].Left)
+      Else If (ExprPool[E].Extra >= 0) And (TypeResolveAlias(ExprPool[E].Extra) = PDT_STRING) And
+              (ExprPool[ExprPool[E].Left].TypeIdx >= 0) And
+              (TypeTab[ExprPool[ExprPool[E].Left].TypeIdx].Kind = TYK_SLICE) And
+              (TypeResolveAlias(TypeTab[ExprPool[ExprPool[E].Left].TypeIdx].ElemTypeIdx) = PDT_INT32) Then
+        CompileConvertRunesToString(ExprPool[E].Left)
       Else
         FatalError('TODO 21 : generateur de code, conversion de type non ' +
-          'couverte (seul float->int, via l''extension flottants, l''est)');
+          'couverte (float<->int, []byte(chaine)/[]rune(chaine)/' +
+          'string([]byte)/string([]rune) seulement)');
     EK_COMPOSITE:
       If (ExprPool[E].Extra >= 0) And (TypeTab[ExprPool[E].Extra].Kind = TYK_SLICE) Then
         CompileSliceComposite(E)
@@ -13418,10 +15147,47 @@ Begin
         { "extraire" apres l appel, la variable cible EST deja remplie.                                                }
         MRCallE  := StmtArgPool2[StmtPool[S].ArgFirst];
         MRCallee := ExprPool[MRCallE].Left;
-        If (MRCallee < 0) Or (ExprPool[MRCallee].Kind <> EK_IDENT) Then
+        If (MRCallee >= 0) And (ExprPool[MRCallee].Kind = EK_SELECTOR) And
+           (ExprPool[MRCallee].Left >= 0) And
+           (ExprPool[ExprPool[MRCallee].Left].Kind = EK_IDENT) And
+           (ExprPool[ExprPool[MRCallee].Left].NameVal = 'strconv') And
+           (ExprPool[MRCallee].NameVal = 'Atoi') And (StmtPool[S].ArgCount = 2) Then
+        Begin
+          { extension bibliotheque standard etendue : "n, err :=          }
+          { strconv.Atoi(s)" - SPECIAL-CASE, jamais via FuncDefPool               }
+          { (strconv.Atoi n est PAS une fonction utilisateur) : reutilise           }
+          { LA MEME convention "pointeur de sortie cache" que le retour               }
+          { multiple d une fonction utilisateur, mais _GORT_STRCONV_ATOI                 }
+          { (EmitRuntimeLibrary) implemente CETTE convention ELLE-MEME,               }
+          { directement en assembleur ecrit a la main, plutot que via le              }
+          { mecanisme generique CALL+HOfs cible aux fonctions COMPILEES par          }
+          { CE generateur de code. }
+          If StmtArgName[StmtPool[S].ArgFirst + 1] = '_' Then
+            EmitInstr('LEA EAX,[' + ASM_PFX_RUNTIME + 'FSCRATCH]')
+          Else
+          Begin
+            MRSI := SymFind(StmtArgName[StmtPool[S].ArgFirst + 1]);
+            If MRSI >= 0 Then
+              EmitInstr('LEA EAX,' + CgVarOperand(MRSI))
+            Else
+              EmitInstr('LEA EAX,[' + ASM_PFX_RUNTIME + 'FSCRATCH]');
+          End;
+          EmitInstr('PUSH EAX');
+          CompileExpr(ExprArgPool[ExprPool[MRCallE].ArgFirst]);
+          EmitInstr('PUSH EAX');
+          EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STRCONV_ATOI');
+          EmitInstr('ADD ESP,8');
+          If StmtArgName[StmtPool[S].ArgFirst] <> '_' Then
+          Begin
+            MRSI := SymFind(StmtArgName[StmtPool[S].ArgFirst]);
+            If MRSI >= 0 Then
+              EmitInstr('MOV DWORD PTR ' + CgVarOperand(MRSI) + ',EAX');
+          End;
+        End
+        Else If (MRCallee < 0) Or (ExprPool[MRCallee].Kind <> EK_IDENT) Then
           FatalError('TODO 21 : generateur de code, retours multiples non ' +
             'couverts sur cette forme d''appel (seul un appel DIRECT a ' +
-            'une fonction utilisateur l''est)')
+            'une fonction utilisateur, ou strconv.Atoi, l''est)')
         Else
         Begin
           MRFDI := -1;
@@ -13725,6 +15491,67 @@ Begin
         { dans ce generateur de code) : [ESP+0]=i (index courant),                        }
         { [ESP+4]=Len, [ESP+8]=DataBase (adresse du premier element). }
         RgCollTypeIdx := DerefIfPointer(ExprPool[StmtPool[S].Left].TypeIdx);
+        If (RgCollTypeIdx >= 0) And (TypeResolveAlias(RgCollTypeIdx) = PDT_STRING) Then
+        Begin
+          { extension chaines etendues : "for [indexOctet[, rune]] := range   }
+          { s (Corps)" - decodage UTF-8 REEL (_GORT_UTF8_DECODE), PAS un                 }
+          { simple parcours OCTET par octet (une meme boucle sur "hello"                    }
+          { donnerait le meme resultat par coincidence - seulement des                          }
+          { octets ASCII - mais serait FAUSSE sur un caractere multi-octets                          }
+          { comme "e" accentue ou un ideogramme). Le premier nom lie recoit               }
+          { l INDEX OCTET (pas l index de rune - regle Go reelle), le second                    }
+          { la VALEUR de la rune deja decodee. Trois emplacements de pile :                 }
+          { [ESP+0]=Largeur (octets consommes par CE caractere, sauvegardee                   }
+          { IMMEDIATEMENT apres le decodage - UTF8_WIDTH est un SEUL           }
+          { emplacement .DATA partage, une iteration IMBRIQUEE sur une AUTRE                    }
+          { chaine a l interieur du Corps l ecraserait sinon avant l avance              }
+          { de CETTE boucle), [ESP+4]=IndexOctet, [ESP+8]=PointeurCourant. }
+          CompileExpr(StmtPool[S].Left);                { EAX = pointeur chaine }
+          EmitInstr('PUSH EAX');                          { [ESP+0]=Ptr }
+          EmitInstr('MOV EAX,0');
+          EmitInstr('PUSH EAX');                          { [ESP+0]=IndexOctet,[ESP+4]=Ptr }
+          EmitInstr('PUSH EAX');                          { [ESP+0]=Largeur,[ESP+4]=IndexOctet,[ESP+8]=Ptr }
+
+          LblTop := CgLabelGen;
+          LblEnd := CgLabelGen;
+          EmitLabel(LblTop);
+          EmitInstr('MOV EAX,DWORD PTR [ESP+8]');
+          EmitInstr('CMP BYTE PTR [EAX],0');
+          EmitInstr('JE ' + LblEnd);
+          EmitInstr('PUSH EAX');
+          EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'UTF8_DECODE');
+          EmitInstr('ADD ESP,4');                         { EAX = rune decodee }
+          EmitInstr('MOV EBX,DWORD PTR [' + ASM_PFX_RUNTIME + 'UTF8_WIDTH]');
+          EmitInstr('MOV DWORD PTR [ESP],EBX');            { sauvegarde la largeur }
+
+          If (StmtPool[S].NameVal <> '') And (StmtPool[S].NameVal <> '_') Then
+          Begin
+            SI := SymFind(StmtPool[S].NameVal);
+            EmitInstr('MOV EBX,DWORD PTR [ESP+4]');        { IndexOctet }
+            If SI >= 0 Then
+              EmitInstr('MOV DWORD PTR ' + CgVarOperand(SI) + ',EBX');
+          End;
+          If (StmtPool[S].NameVal2 <> '') And (StmtPool[S].NameVal2 <> '_') Then
+          Begin
+            SI := SymFind(StmtPool[S].NameVal2);
+            If SI >= 0 Then
+              EmitInstr('MOV DWORD PTR ' + CgVarOperand(SI) + ',EAX');
+          End;
+
+          CompileStmt(StmtPool[S].Right);
+
+          EmitInstr('MOV EAX,DWORD PTR [ESP]');            { Largeur }
+          EmitInstr('MOV EBX,DWORD PTR [ESP+4]');
+          EmitInstr('ADD EBX,EAX');
+          EmitInstr('MOV DWORD PTR [ESP+4],EBX');          { IndexOctet += Largeur }
+          EmitInstr('MOV EBX,DWORD PTR [ESP+8]');
+          EmitInstr('ADD EBX,EAX');
+          EmitInstr('MOV DWORD PTR [ESP+8],EBX');          { Ptr += Largeur }
+          EmitInstr('JMP ' + LblTop);
+          EmitLabel(LblEnd);
+          EmitInstr('ADD ESP,12');
+          Exit;
+        End;
         If (RgCollTypeIdx >= 0) And (TypeTab[RgCollTypeIdx].Kind = TYK_MAP) Then
         Begin
           { extension maps : "for [cle[, valeur]] := range m (Corps)" -    }
@@ -13792,8 +15619,8 @@ Begin
             (TypeTab[RgCollTypeIdx].Kind <> TYK_ARRAY)) Then
         Begin
           FatalError('TODO 21 : generateur de code, "for range" non ' +
-            'couvert sur cette collection (seuls tableaux/slices/maps le ' +
-            'sont - chaines/canaux restent TODO 22/23)');
+            'couvert sur cette collection (seuls tableaux/slices/maps/' +
+            'chaines le sont - canaux restent TODO 22/23)');
           Exit;
         End;
         RgElemTypeIdx := TypeTab[RgCollTypeIdx].ElemTypeIdx;
@@ -15176,6 +17003,14 @@ Begin
   If Mnemonic = 'FSUBP' Then Begin BinEmit8($DE); BinEmit8($E9); Exit; End;
   If Mnemonic = 'FMULP' Then Begin BinEmit8($DE); BinEmit8($C9); Exit; End;
   If Mnemonic = 'FDIVP' Then Begin BinEmit8($DE); BinEmit8($F9); Exit; End;
+  { extension bibliotheque standard (math.Sqrt/Abs/Pow) : trois instructions      }
+  { x87 SANS operande (comme FADDP et consorts ci-dessus) - FSQRT/FABS               }
+  { operent directement sur ST(0) en place ; FLD1 pousse la constante 1.0                  }
+  { (necessaire pour math.Pow, x^0=1 et l accumulateur de multiplication              }
+  { repetee). }
+  If Mnemonic = 'FSQRT' Then Begin BinEmit8($D9); BinEmit8($FA); Exit; End;
+  If Mnemonic = 'FABS'  Then Begin BinEmit8($D9); BinEmit8($E1); Exit; End;
+  If Mnemonic = 'FLD1'  Then Begin BinEmit8($D9); BinEmit8($E8); Exit; End;
 
   FatalError('assembleur : mnemonique non geree (portee volontairement ' +
     'restreinte a ce que le TODO 21 emet reellement) : ' + Mnemonic);
@@ -16382,10 +18217,10 @@ Begin
     'aucune limite rencontree (', TokenCount, ' tokens, ', SymCount,
     ' symboles, ', FuncDefCount, ' fonctions, ', MethodDefCount, ' methodes).');
   WriteLn('(le compilateur, dans son ensemble, ne couvre pas encore 100% ',
-    'du langage Go - un AUTRE fichier utilisant interfaces/maps/goroutines/',
-    'canaux/defer/panic/bibliotheque standard etendue pourrait rencontrer ',
-    'un arret propre documente ; voir l''en-tete du fichier source, ',
-    'section TODO 25, pour la liste exacte)');
+    'du langage Go - un AUTRE fichier utilisant goroutines/canaux/',
+    'bibliotheque standard etendue/chaines etendues/fermetures capturantes ',
+    'pourrait rencontrer un arret propre documente ; voir l''en-tete du ',
+    'fichier source, section TODO 25, pour la liste exacte)');
 
   ShowStats;
 End;
