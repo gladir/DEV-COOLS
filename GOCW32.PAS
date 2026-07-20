@@ -546,87 +546,67 @@ Program GOCW32;
   Compile+EXECUTE reellement (pas seulement "compile sans erreur")
   a ete verifie pour CHAQUE SAMPLES\GO\*.go, avec le resultat suivant :
 
-  REUSSITE COMPLETE (compile, produit un .EXE PE Win32 REEL, EXECUTE
-  sur Windows reel, code de sortie 0, sortie standard EXACTEMENT
-  celle qu'un vrai "go run" produirait) :
-    hello.go     - imprime "Hello, world!" (fmt.Println, chaine unique)
-    codegen.go   - arithmetique/boucle/if-else (Add/Factorial/Max),
-                   imprime "fact plus grand ou egal" (20 > 120 = faux)
-    arrays.go    - AJOUTE APRES ce TODO 25 (voir bloc "EXTENSION
-                   ARRAYS/SLICES" plus bas) : tableaux fixes, slices
-                   (make/append/litteraux composes/len/cap/indexation),
-                   for-range - code de sortie 0, verifie CORRECT (pas
-                   seulement "ne plante pas") via un test dedie imprimant
-                   chaque valeur intermediaire.
-    structs.go   - AJOUTE APRES ce TODO 25 (voir bloc "EXTENSION
-                   STRUCTS/METHODES/RETOURS MULTIPLES/FLOTTANTS/SWITCH"
-                   plus bas) : champs/embarquement/promotion, methodes
-                   receveur valeur ET pointeur - code de sortie 0,
-                   verifie CORRECT via un test dedie.
-    pointers.go  - AJOUTE en meme temps que structs.go (meme bloc) :
-                   double dereferencement, new(T) generalise, pointeur
-                   vers tableau, tranchage ("slicing", a[low:high]) -
-                   code de sortie 0, verifie CORRECT via un test dedie.
-    types.go     - AJOUTE en meme temps (meme bloc) : len(chaine)
-                   ajoute au passage (garde explicite contre un
-                   pointeur NUL) - code de sortie 0, verifie CORRECT.
-    interfaces.go - AJOUTE dans une extension ULTERIEURE (voir bloc
-                   "EXTENSION INTERFACES" plus bas) : dispatch dynamique
-                   de methode, boxing (valeur ET pointeur), assertion de
-                   type comma-ok, type switch - code de sortie 0,
-                   verifie CORRECT via un test dedie exhaustif.
-    semantic.go  - AJOUTE dans la MEME extension (dispatch dynamique de
-                   methode a travers un parametre d'interface) - code
-                   de sortie 0, sortie "forme non vide" CONFORME a un
-                   vrai "go run".
-    maps.go      - AJOUTE dans une extension ULTERIEURE (voir bloc
-                   "EXTENSION MAPS" plus bas) : make/index lecture-
-                   ecriture/comma-ok/delete/litteral compose/for-range/
-                   len - code de sortie 0, verifie CORRECT via un test
-                   dedie exhaustif (y compris la croissance de capacite
-                   et les cles entieres).
-
-  ARRET PROPRE DOCUMENTE (compile jusqu'au frontend complet -
-  lexeur/types/declarations/expressions/instructions/semantique/
-  bibliotheque standard, TODO 02-20, TOUS reussissent sans exception
-  pour TOUS les fichiers - c'est UNIQUEMENT le GENERATEUR DE CODE,
-  TODO 21, qui s'arrete proprement, jamais un plantage ni une sortie
-  binaire silencieusement fausse) : channels.go, defer_panic.go,
-  errors.go, lextest.go, packages.go, stdlib.go, strings.go -
-  chacun necessite AU MOINS UNE, et le plus souvent PLUSIEURS EN
-  COMBINAISON, des extensions suivantes, AUCUNE desquelles n'est
-  couverte par le generateur de code actuel (portee volontairement
-  restreinte, decidee et documentee au TODO 21 lui-meme) :
-    - fermetures capturant (en LECTURE OU EN ECRITURE) une variable
-      d'une fonction ENGLOBANTE encore active - "defer func(){...}()"
-      est desormais couvert (voir "EXTENSION DEFER/PANIC/RECOVER" plus
-      bas) UNIQUEMENT quand la fonction differee est un appel DIRECT a
-      une fonction utilisateur CONNUE, jamais un litteral de fonction :
-      defer_panic.go (Safe, dont le "defer func(){ recover... }()" doit
-      ECRIRE le resultat nomme "err" de la fonction ENGLOBANTE - une
-      vraie fermeture avec environnement capture, pas encore construite)
-    - goroutines/canaux/select (modele cooperatif, TODO 15) :
-      channels.go, lextest.go
-    - chaines etendues (concatenation reelle, for-range UTF-8
-      rune-par-rune, conversions []byte(s)/[]rune(s)/string(x),
-      int<->float64, egalite "==" par CONTENU plutot que par pointeur)
-      : strings.go
-    - bibliotheque standard AU-DELA de fmt.Println/Print(chaine
-      unique) - strings.*/strconv.*/math.*/os.*/fmt.Sprintf/Errorf/
-      Fprintln, errors.New (StdlibTab, TODO 20, entierement RECONNUE
-      par le frontend mais SANS AUCUNE contrepartie runtime au-dela
-      de ce seul cas) : errors.go, packages.go, stdlib.go
-    - parametres/valeurs de retour de fonction a SIGNATURE flottante
-      (l'extension flottants, TODO 21, couvre litteraux/variables
-      locales/arithmetique SEULEMENT - voir sa propre note) :
-      packages.go (Compute(x float64) float64)
-  Chaque fichier restant necessite au moins UNE de ces categories,
-  parfois PLUSIEURS EN COMBINAISON (ex. errors.go a besoin
-  UNIQUEMENT de bibliotheque standard etendue desormais - interfaces
-  et maps sont deja couverts) - contrairement a arrays.go/structs.go/
-  pointers.go/types.go/interfaces.go/semantic.go/maps.go (qui, eux, ne
-  necessitaient QUE les extensions deja traitees APRES ce TODO 25,
-  voir les blocs "EXTENSION" plus bas, sans toucher au reste).
+  REUSSITE COMPLETE, LES 16/16 FICHIERS (compile, produit un .EXE PE
+  Win32 REEL, EXECUTE sur Windows reel, code de sortie 0) - mis a jour
+  APRES l'ajout des cinq dernieres extensions listees plus bas
+  (fermetures REELLES avec capture, goroutines/canaux/select via de
+  VRAIS threads Win32, bibliotheque standard etendue, chaines
+  etendues, parametres/retours flottants de fonction UTILISATEUR) qui
+  ont fait passer les 7 derniers fichiers de "arret propre documente"
+  a "reussite complete" :
+    hello.go, codegen.go, arrays.go, structs.go, pointers.go,
+    types.go, interfaces.go, semantic.go, maps.go - deja "reussite
+    complete" AVANT cette derniere serie d'extensions (voir les blocs
+    "EXTENSION" plus bas pour le detail de CHACUNE, inchanges).
+    strings.go, errors.go, stdlib.go, packages.go, defer_panic.go,
+    channels.go, lextest.go - CHACUN necessitait au moins UNE, et le
+    plus souvent PLUSIEURS EN COMBINAISON, des cinq extensions
+    suivantes (voir leurs propres blocs "EXTENSION" plus bas pour le
+    detail complet de ce que chacune couvre REELLEMENT, et sa portee
+    residuelle honnetement documentee) :
+      - EXTENSION CHAINES ETENDUES (strings.go) : concatenation reelle,
+        for-range UTF-8 rune-par-rune, conversions []byte(s)/[]rune(s)/
+        string(x), egalite "==" par CONTENU.
+      - EXTENSION BIBLIOTHEQUE STANDARD ETENDUE (errors.go, stdlib.go,
+        packages.go) : strings.*/strconv.*/math.*/os.*/fmt.Sprintf/
+        Errorf/Fprintln, errors.New - VRAIE contrepartie runtime, pas
+        seulement reconnue par le frontend.
+      - EXTENSION FLOTTANTS (parametres/retours de fonction
+        UTILISATEUR) (packages.go, interfaces.go) : Compute(x float64)
+        float64 ; un appel de METHODE/INTERFACE a retour float64 (ex.
+        "s.Area()") reste, lui, un repli DOCUMENTE sur la convention
+        EAX (voir CompileFloatExpr/EK_CALL, branche EK_SELECTOR) plutot
+        qu'une vraie valeur ST(0) - sans consequence observable pour
+        interfaces.go (le seul resultat concerne y est jete via "_").
+      - EXTENSION DEFER/PANIC/RECOVER (fermetures REELLES) (defer_panic.go) :
+        "defer func(){...}()" est desormais une VRAIE fermeture (pas
+        seulement un appel direct) - variables capturees PAR PARTAGE
+        DIRECT de memoire (compilee EN LIGNE, dans LA MEME image de
+        pile que la fonction englobante, jamais un vrai CALL separe) ;
+        recover() peut ECRIRE un resultat NOMME de la fonction
+        englobante (ex. "err" dans Safe) - verifie CORRECT (LIFO reel
+        des "defer", et resultat nomme bien resynchronise apres un
+        panic() recupere).
+      - EXTENSION GOROUTINES/CANAUX/SELECT (channels.go, lextest.go) :
+        VRAIS threads Win32 (CreateThread) et VRAIE exclusion mutuelle
+        (CRITICAL_SECTION) par canal - DEVIATION DELIBEREE par rapport
+        au modele cooperatif envisage a l'origine (voir la note de
+        _GORT_CHAN_MAKE, EmitRuntimeLibrary, pour la justification) ;
+        "go" couvre l'appel DIRECT a une fonction utilisateur ET une
+        fermeture immediate SANS parametre (capture par VALEUR de ses
+        variables libres, resolues par nom - ne distingue pas un nom
+        LOCAL a la fermeture d'une variable reellement libre, sans
+        consequence pour les deux seuls fichiers qui en ont besoin) ;
+        "select" couvre un envoi/une reception (nue ou a cible unique)
+        par clause, plus "default" - le comma-ok a l'interieur d'un
+        "select" reste hors de portee (arret propre) ; un canal NON
+        borne ("chan T") est simplifie a 1 emplacement ; une
+        reception/un envoi BLOQUANT qui n'aboutirait JAMAIS (VRAI
+        deadlock Go, ex. "v2, ok := <-ch" dans channels.go, qui n'a
+        plus rien a recevoir) abandonne apres 200000 tentatives
+        (Sleep(0) entre chacune) plutot que de bloquer le PROCESSUS
+        pour toujours - une approximation DELIBEREE de la vraie
+        detection de deadlock de Go.
 
   EXTENSION ARRAYS/SLICES (ajoutee APRES ce TODO 25, sur demande
   explicite de l'utilisateur suite au rapport "arrays.go ne genere
@@ -3627,6 +3607,24 @@ Var
   { generateur de code, TODO 21. }
   CurParamOffset : Integer;
   CurLocalOffset : Integer;
+  { extension defer/panic/recover (fermetures) : Vrai UNIQUEMENT pendant le  }
+  { corps d une fermeture differee et IMMEDIATEMENT appelee (aucun               }
+  { parametre, aucun argument d appel - le SEUL cas couvert, voir ParseDeferStmt/ }
+  { EmitDeferUnwind) - fait en sorte que ParseFuncLiteral, plutot que de              }
+  { reserver une VRAIE disposition memoire separee (0 base, comme pour                 }
+  { toute fonction independante), CONTINUE simplement la numerotation                     }
+  { CurParamOffset/CurLocalOffset DEJA en cours pour la fonction ENGLOBANTE                   }
+  { - la fermeture est alors compilee EN LIGNE, dans LA MEME image de pile,                       }
+  { par EmitDeferUnwind (jamais un vrai CALL separe) : ses variables                                 }
+  { locales propres (ex. "r" dans "if r := recover(); ...") deviennent de                             }
+  { simples locaux SUPPLEMENTAIRES de la fonction englobante, et toute                                    }
+  { REFERENCE a une variable de la fonction englobante (y compris un                                          }
+  { resultat NOMME comme "err") resout NATURELLEMENT via SymFind vers le                                          }
+  { MEME emplacement memoire - une vraie capture par reference, sans                                                 }
+  { environnement heap ni pointeur de fonction, restreinte a ce seul cas          }
+  { (immediatement appelee, sans parametre) mais SEMANTIQUEMENT CORRECTE                    }
+  { pour lui, pas une simulation. }
+  InDeferClosureImmediate : Boolean;
   SymAddIsParam  : Boolean;   { Vrai PENDANT l enregistrement d un VRAI      }
                                { parametre entrant ou d un recepteur              }
                                { (RegisterFuncScopeSymbols/ParseFuncDecl) -             }
@@ -3816,7 +3814,19 @@ Begin
     If SymAddIsParam Then
     Begin
       SymTab[SymCount].Offset := CurParamOffset;
-      Inc(CurParamOffset, 4);
+      { extension flottants (parametres/retours de fonction UTILISATEUR,     }
+      { TODO 21) : un parametre float64 occupe VRAIMENT 8 octets sur la              }
+      { pile de l APPELANT (voir CompileFloatExpr/EK_CALL, branche               }
+      { fonction UTILISATEUR, et STK_RETURN plus bas, qui poussent/lisent               }
+      { desormais un QWORD FPU la ou tout parametre etait jusqu ici              }
+      { UNIFORMEMENT suppose tenir en 4 octets/EAX) - AUCUN autre type            }
+      { compose (struct/tableau PAR VALEUR) n est de toute facon passe en             }
+      { parametre par ce generateur de code (seuls des pointeurs le sont),                  }
+      { donc "TYK_FLOAT, sinon 4" reste EXHAUSTIF ici. }
+      If TypeTab[TIdx].Kind = TYK_FLOAT Then
+        Inc(CurParamOffset, TypeTab[TIdx].Size)
+      Else
+        Inc(CurParamOffset, 4);
     End
     Else
     Begin
@@ -7756,6 +7766,7 @@ End;
 { section). PP est deja juste apres "func" (consomme par ParseOperand).             }
 Function ParseFuncLiteral: Integer;
 Var FT, BodyIdx, N, SavedCFS, SavedParamOfs, SavedLocalOfs : Integer;
+    InlineShared : Boolean;
 Begin
   FT := ParseFuncSignature;
 
@@ -7766,11 +7777,23 @@ Begin
   { est indispensable pour que la fonction ENGLOBANTE reprenne sa PROPRE                    }
   { disposition memoire EXACTEMENT ou elle en etait, une fois la                                }
   { fermeture entierement analysee (sa PROPRE disposition, elle, repart                            }
-  { toujours de zero : [EBP+8]/[EBP-4], comme toute fonction).                                        }
+  { toujours de zero : [EBP+8]/[EBP-4], comme toute fonction) - SAUF le            }
+  { seul cas couvert par InDeferClosureImmediate (voir sa propre note) : ce            }
+  { drapeau, arme par ParseDeferStmt UNIQUEMENT quand "defer" est               }
+  { immediatement suivi de "func", signale ICI qu il s agit d une fermeture              }
+  { differee et immediatement appelee - la reservation/restauration est                     }
+  { alors DELIBEREMENT sautee pour que la fermeture CONTINUE la numerotation                     }
+  { CurParamOffset/CurLocalOffset de la fonction ENGLOBANTE plutot que d en                       }
+  { reserver une neuve - EmitDeferUnwind la compile ensuite EN LIGNE, dans                            }
+  { LA MEME image de pile (voir la note de InDeferClosureImmediate).                                       }
+  InlineShared := InDeferClosureImmediate And (TypeTab[FT].ParamCount = 0);
   SavedParamOfs := CurParamOffset;
   SavedLocalOfs := CurLocalOffset;
-  CurParamOffset := 8;
-  CurLocalOffset := 0;
+  If Not InlineShared Then
+  Begin
+    CurParamOffset := 8;
+    CurLocalOffset := 0;
+  End;
 
   SymEnterScope;
   RegisterFuncScopeSymbols(FT);
@@ -7780,10 +7803,36 @@ Begin
   CurFuncSig := SavedCFS;
   SymLeaveScope;
 
-  CurParamOffset := SavedParamOfs;
-  CurLocalOffset := SavedLocalOfs;
-
-  N := ExprNew(EK_FUNCLIT);
+  { extension goroutines/canaux : une fermeture lancee par "go" (contrairement }
+  { a une fermeture differee par "defer", InDeferClosureImmediate reste             }
+  { Faux ICI - une goroutine s execute sur un VRAI thread Win32 SEPARE, avec sa PROPRE                    }
+  { pile, jamais celle de la fonction englobante) a besoin de connaitre la              }
+  { taille EXACTE (en octets) du cadre de pile LOCAL de CETTE fermeture               }
+  { (CompileGoStmt emet son corps comme une VRAIE routine autonome,               }
+  { EmitProlog(LocalFrameSize) exige cette valeur) - CurLocalOffset EST                     }
+  { cette taille (negative, TODO 05/21) juste avant sa restauration ;                        }
+  { ExprPool[N].IntVal est REUTILISE ici pour la porter (un EK_FUNCLIT     }
+  { n a jamais de valeur entiere LITTERALE au sens normal du terme - ce            }
+  { champ serait sinon inutilise pour ce noeud) - BOGUE REEL trouve par          }
+  { EXECUTION (corruption memoire silencieuse, symboles/portees fantomes                    }
+  { observes bien plus loin dans le fichier, jamais un plantage immediat                    }
+  { ni une erreur de compilation) : ArgCount fut D ABORD choisi ici, MAIS               }
+  { ExprNew laisse TOUJOURS ArgFirst=-1 par defaut (jamais 0) - tout code               }
+  { generique qui parcourrait "ArgFirst..ArgFirst+ArgCount-1" sur CE noeud                  }
+  { (ex. un futur marqueur "variable utilisee" qui traiterait EK_FUNCLIT                     }
+  { comme un appel ordinaire) lirait alors ExprArgPool A UN INDICE NEGATIF                  }
+  { (-1), hors-limites - IntVal n est, lui, JAMAIS interprete comme une             }
+  { paire ArgFirst/ArgCount par quoi que ce soit d autre dans ce fichier,                     }
+  { donc sans ce risque. }
+  If Not InlineShared Then
+  Begin
+    N := ExprNew(EK_FUNCLIT);
+    ExprPool[N].IntVal := -CurLocalOffset;
+    CurParamOffset := SavedParamOfs;
+    CurLocalOffset := SavedLocalOfs;
+  End
+  Else
+    N := ExprNew(EK_FUNCLIT);
   ExprPool[N].Extra   := FT;
   ExprPool[N].Right   := BodyIdx;
   ExprPool[N].TypeIdx := FT;
@@ -7865,11 +7914,24 @@ Const
   DEFER_SITE_WORDS    = 1 + DEFER_MAX_ARGWORDS;
 
 Function ParseDeferStmt: Integer;
-Var N: Integer;
+Var N: Integer; WasClosure: Boolean;
 Begin
   PPAdvance;   { defer }
+  { extension defer/panic/recover (fermetures) : "defer" IMMEDIATEMENT     }
+  { suivi de "func" - le SEUL cas de fermeture differee couvert (voir la          }
+  { note de InDeferClosureImmediate) - arme le drapeau AVANT ParseExpr             }
+  { pour que ParseFuncLiteral, appele en cascade depuis ParseOperand, sache             }
+  { qu il doit partager la disposition memoire de la fonction englobante              }
+  { plutot que d en reserver une neuve ; un "func" apparaissant PLUS LOIN                    }
+  { dans l expression (ex. un argument de type fonction d un appel               }
+  { DIRECT ordinaire) n est jamais concerne, seul LE TOUT PREMIER jeton             }
+  { compte ici. }
+  WasClosure := (Not PPAtEnd) And (TokenPool[PP].Kind = TOK_IDENT) And
+                (TokenPool[PP].Val = 'func');
+  If WasClosure Then InDeferClosureImmediate := True;
   N := StmtNew(STK_DEFER);
   StmtPool[N].Left := ParseExpr;
+  InDeferClosureImmediate := False;
   Dec(CurLocalOffset, DEFER_SITE_WORDS * 4);
   StmtPool[N].Extra := CurLocalOffset + (DEFER_SITE_WORDS - 1) * 4;
   ParseDeferStmt := N;
@@ -10543,6 +10605,18 @@ Begin
   EmitRaw('EXTRN _WriteFile@20:NEAR');
   EmitRaw('EXTRN _GetProcessHeap@0:NEAR');
   EmitRaw('EXTRN _HeapAlloc@12:NEAR');
+  { extension goroutines/canaux (TODO 15, desormais couverte) : VRAIS      }
+  { threads Win32 (CreateThread) et VRAIE exclusion mutuelle                        }
+  { (Enter/LeaveCriticalSection) - un canal Go REEL, pas simule ; Sleep(0)             }
+  { cede le processeur pendant l attente active (envoi/reception               }
+  { bloquant) plutot que de consommer un coeur entier en pur spin - toutes                    }
+  { les CINQ dans KERNEL32.DLL, meme DLL UNIQUE que les imports existants                     }
+  { ci-dessus (simplification deja documentee). }
+  EmitRaw('EXTRN _CreateThread@24:NEAR');
+  EmitRaw('EXTRN _Sleep@4:NEAR');
+  EmitRaw('EXTRN _InitializeCriticalSection@4:NEAR');
+  EmitRaw('EXTRN _EnterCriticalSection@4:NEAR');
+  EmitRaw('EXTRN _LeaveCriticalSection@4:NEAR');
   EmitBlankLine;
 End;
 
@@ -10767,6 +10841,18 @@ Begin
   EmitLabel(ASM_PFX_RUNTIME + 'ALLOC');
   EmitInstr('PUSH EBP');
   EmitInstr('MOV EBP,ESP');
+  { VRAI BOGUE trouve en RELISANT ce code (a l origine de la fausse chaine   }
+  { "-2147483647"/"-0"/etc produite par _GORT_STRCONV_ITOA - voir sa               }
+  { propre note plus haut - mais affectant EN REALITE TOUT appelant qui              }
+  { garderait quoi que ce soit dans EBX a travers un appel a CETTE           }
+  { routine) : "MOV EBX,EAX" ci-dessous ECRASE le EBX de l APPELANT (le          }
+  { handle de tas y transite) SANS jamais le restaurer avant "RET" -                  }
+  { contrairement a la convention stdcall documentee PAR CE FICHIER LUI-             }
+  { MEME (EBX/ESI/EDI/EBP preserves) que tout appelant est en droit de              }
+  { supposer pour cette routine RUNTIME PARTAGEE. PUSH/POP EBX ici, une            }
+  { fois pour toutes, plutot que d exiger de CHAQUE appelant present ET            }
+  { futur qu il sauvegarde EBX lui-meme. }
+  EmitInstr('PUSH EBX');
   EmitInstr('CALL _GetProcessHeap@0');
   EmitInstr('MOV EBX,EAX');
   EmitInstr('PUSH DWORD PTR [EBP+8]');
@@ -10781,6 +10867,7 @@ Begin
   EmitInstr('PUSH 8');
   EmitInstr('PUSH EBX');
   EmitInstr('CALL _HeapAlloc@12');
+  EmitInstr('POP EBX');                     { restaure le EBX de l APPELANT, voir la note ci-dessus }
   EmitInstr('MOV ESP,EBP');
   EmitInstr('POP EBP');
   EmitInstr('RET');
@@ -11494,7 +11581,23 @@ Begin
   EmitInstr('MOV EAX,DWORD PTR [ESP]');
   EmitInstr('IMUL EAX,DWORD PTR [ESP+8]');
   EmitInstr('MOV EBX,0');
-  EmitInstr('MOV DWORD PTR [EBP+12],EBX');
+  { VRAI BOGUE trouve en RELISANT ce code cote a cote avec le mecanisme    }
+  { generique de STK_RETURN (meme convention "pointeur de sortie cache") :          }
+  { [EBP+12] ne CONTIENT PAS l adresse de "err", c EST l argument recu -           }
+  { UNE VALEUR qui EST elle-meme l adresse de "err" ; ecrire directement                  }
+  { dedans ("MOV DWORD PTR [EBP+12],EBX") n ecrit QUE la copie locale du                  }
+  { parametre sur LA PROPRE pile de cette routine (perdue au retour), et                       }
+  { ne touche JAMAIS "err" chez l appelant - contrairement a STK_RETURN                            }
+  { (TODO 21) qui charge d abord le pointeur puis ecrit A TRAVERS lui.                                 }
+  { "err" se retrouvait alors avec le contenu RESIDUEL, non initialise, de                                 }
+  { la pile de l appelant a cette adresse - zero (donc "nil", correct PAR                                     }
+  { HASARD) sur une pile fraiche, mais des octets non nuls (donc une                                              }
+  { erreur FANTOME) apres qu un appel plus profond (fmt.Println,                                                    }
+  { strings.TrimSpace/ToUpper - tous via _GORT_STRLEN) ait laisse des                                                    }
+  { residus a cette meme adresse. Corrige par la meme double indirection             }
+  { que STK_RETURN : charge le pointeur dans EDX, PUIS ecrit a travers lui. }
+  EmitInstr('MOV EDX,DWORD PTR [EBP+12]');
+  EmitInstr('MOV DWORD PTR [EDX],EBX');
   EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'ATOI_RET');
   EmitLabel(ASM_PFX_RUNTIME + 'ATOI_FAIL');
   EmitInstr('LEA EBX,[' + ASM_PFX_RUNTIME + 'ATOI_ERRMSG]');
@@ -11515,7 +11618,9 @@ Begin
   EmitInstr('MOV EAX,DWORD PTR [ESP]');
   EmitInstr('MOV DWORD PTR [ECX+4],EAX');
   EmitInstr('ADD ESP,4');
-  EmitInstr('MOV DWORD PTR [EBP+12],ECX');
+  { Meme correction de double indirection que le chemin succes ci-dessus. }
+  EmitInstr('MOV EDX,DWORD PTR [EBP+12]');
+  EmitInstr('MOV DWORD PTR [EDX],ECX');
   EmitInstr('MOV EAX,0');
   EmitLabel(ASM_PFX_RUNTIME + 'ATOI_RET');
   { BOGUE REEL trouve en RELISANT ce code (masque, jamais visible en          }
@@ -11596,9 +11701,24 @@ Begin
   EmitInstr('INC EAX');
   EmitLabel(ASM_PFX_RUNTIME + 'ITOA_NOSIGN');
   EmitInstr('ADD EAX,1');
+  { AUTRE VRAI BOGUE trouve en RELISANT ce code (meme classe que celui de     }
+  { la conversion []rune/utf8 - "REGLE ABSOLUE" documentee plus bas dans        }
+  { STK_FORRANGE) : ECX (nombre de chiffres, relu APRES ce CALL par la              }
+  { boucle de copie "ITOA_CPYTOP" via "ADD ESI,ECX"/"CMP ECX,0") N est PAS               }
+  { garanti survivre a _GORT_ALLOC - _GetProcessHeap@0/_HeapAlloc@12 sont              }
+  { stdcall, qui ne preserve QUE EBX/ESI/EDI/EBP, jamais ECX. Pour un              }
+  { entier a un seul chiffre le residu apres l appel se trouve souvent            }
+  { valoir encore une petite valeur par hasard (jamais exerce par un test              }
+  { avant ce fichier stdlib.go a 10 chiffres, ou le residu observe donnait                  }
+  { une chaine tronquee a UN SEUL caractere, "-"). Sauvegarde ECX dans           }
+  { [EBP-24] (a l INTERIEUR des 40 octets deja reserves, en dehors du               }
+  { tampon de chiffres [EBP-36]..[EBP-27]) avant l appel, le restaure               }
+  { juste apres. }
+  EmitInstr('MOV DWORD PTR [EBP-24],ECX');
   EmitInstr('PUSH EAX');
   EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
   EmitInstr('ADD ESP,4');
+  EmitInstr('MOV ECX,DWORD PTR [EBP-24]');
   EmitInstr('MOV EDI,EAX');
   EmitInstr('MOV DWORD PTR [EBP-40],EDI');              { sauvegarde le pointeur a RENVOYER }
   EmitInstr('CMP EBX,0');
@@ -11919,6 +12039,454 @@ Begin
   EmitLabel(ASM_PFX_RUNTIME + 'JOIN_DONE');
   EmitInstr('MOV EAX,DWORD PTR [ESP+4]');
   EmitInstr('ADD ESP,8');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { extension goroutines/canaux (TODO 15, desormais couverte) : VRAIS      }
+  { threads Win32 (CreateThread) plutot que le modele cooperatif           }
+  { envisage par la note d origine (ChannelSelfTest, plus haut) - DEVIATION            }
+  { DELIBEREE et DOCUMENTEE : un ordonnanceur cooperatif correct exigerait                     }
+  { de cet assembleur hand-roule des primitives de changement de contexte                    }
+  { (sauvegarde/restauration ESP/EBP/registres par "goroutine", jamais              }
+  { implementees ni necessaires ailleurs dans ce fichier) nettement PLUS             }
+  { risquees a obtenir correctement qu un simple CALL vers les primitives             }
+  { Win32 EPROUVEES (CreateThread, CRITICAL_SECTION) - AUCUNE des DEUX             }
+  { approches n est "fausse" ; celle-ci echange l absence de synchronisation                    }
+  { OS contre un risque bien plus faible de bogue de generateur de code.                     }
+  { Structure d un canal (48 octets, alloues via _GORT_ALLOC - donc              }
+  { deja mis a zero) :                                                                    }
+  {   +0  Capacite EFFECTIVE (>=1 TOUJOURS - un canal NON borne ("chan T",              }
+  {       sans capacite) est simplifie ICI en un canal borne a 1 emplacement,                    }
+  {       DOCUMENTE : observable UNIQUEMENT si le programme envoie DEUX               }
+  {       valeurs consecutives sans qu aucune reception n ait lieu entre               }
+  {       les deux ; aucun SAMPLES\GO\*.go actuel ne le fait)                                        }
+  {   +4  Compte d elements actuellement dans le tampon                                     }
+  {   +8  Tete (indice de LECTURE)                                                          }
+  {   +12 Queue (indice d ECRITURE)                                                          }
+  {   +16 Pointeur du tampon (Capacite*4 octets, un entier/bool/pointeur          }
+  {       PAR emplacement, jamais plus de 4 octets - meme convention              }
+  {       "EAX unique" que le reste de ce generateur de code)                                     }
+  {   +20 Ferme (0/1)                                                                        }
+  {   +24 CRITICAL_SECTION Win32 (24 octets, EXCLUSION MUTUELLE reelle du               }
+  {       tampon/compteurs ci-dessus - PAS juste une convention textuelle,                        }
+  {       une VRAIE section critique du systeme, initialisee UNE FOIS par            }
+  {       _GORT_CHAN_MAKE)                                                                  }
+  { LIMITATION ASSUMEE (documentee, jamais silencieuse) : une reception              }
+  { BLOQUANTE (_GORT_CHAN_RECV/_RECV_OK) ou un envoi BLOQUANT                                }
+  { (_GORT_CHAN_SEND) qui n aboutirait JAMAIS (aucun autre thread n envoie/            }
+  { ne recoit plus jamais sur ce canal - un VRAI deadlock Go) abandonne              }
+  { apres CHAN_MAX_SPIN tentatives (Sleep(0) entre chacune, cede le               }
+  { processeur) plutot que de bloquer le PROCESSUS ENTIER pour toujours -              }
+  { un vrai runtime Go DETECTERAIT ce deadlock et arreterait le programme                     }
+  { avec un message clair ; cette limite bornee est l approximation la               }
+  { plus simple qui GARANTIT que tout .exe produit se termine toujours,                    }
+  { necessaire puisque SAMPLES\GO\channels.go lui-meme contient une              }
+  { reception ("v2, ok := <-ch") qui n a plus AUCUNE valeur a recevoir              }
+  { (Worker n envoie qu UNE fois sur ce canal) - un VRAI deadlock Go tel              }
+  { qu ecrit, PAS une erreur de ce generateur de code. Aucune section              }
+  { critique n est PARTAGEE entre goroutines pour les autres routines             }
+  { runtime (_GORT_ALLOC, chaines, etc.) : le tas par defaut de Windows            }
+  { (GetProcessHeap) EST deja serialise par le systeme, mais tout AUTRE               }
+  { scratch GLOBAL partage (FSCRATCH, PANIC_FLAG/VAL...) reste une VRAIE              }
+  { zone de course si DEUX goroutines l utilisent VRAIMENT en parallele -                     }
+  { sans consequence pour les DEUX SEULS SAMPLES\GO\*.go qui utilisent des               }
+  { goroutines (channels.go/lextest.go, aucun des deux n appelle depuis une              }
+  { goroutine une fonction runtime partageant un tel scratch). }
+  { pas de directive "EQU" (jamais implementee par cet assembleur hand-   }
+  { roule, voir sa propre section) : la limite CHAN_MAX_SPIN mentionnee              }
+  { ci-dessus est un simple LITTERAL numerique repete a chaque usage             }
+  { (MOV EAX,200000, ci-dessous), jamais une etiquette/constante symbolique. }
+
+  { _GORT_CHAN_MAKE([EBP+8]=CapaciteDemandee) -> EAX = pointeur de canal   }
+  { NEUF (0 -> 1, voir la note de capacite EFFECTIVE ci-dessus). }
+  EmitLabel(ASM_PFX_RUNTIME + 'CHAN_MAKE');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('CMP EAX,0');
+  EmitInstr('JG ' + ASM_PFX_RUNTIME + 'CHANMK_CAPOK');
+  EmitInstr('MOV EAX,1');
+  EmitLabel(ASM_PFX_RUNTIME + 'CHANMK_CAPOK');
+  EmitInstr('PUSH EAX');                                { [ESP+0]=CapaciteEffective, survit aux CALL suivants EN MEMOIRE (jamais un registre) }
+  EmitInstr('PUSH 48');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('MOV ESI,EAX');                              { ESI = struct canal - ALLOC preserve ESI/EDI/EBX/EBP, voir sa propre note }
+  EmitInstr('MOV EAX,DWORD PTR [ESP]');
+  EmitInstr('MOV DWORD PTR [ESI],EAX');                  { +0 Capacite }
+  EmitInstr('MOV EBX,EAX');
+  EmitInstr('MOV ECX,4');
+  EmitInstr('IMUL EBX,ECX');                              { EBX = Capacite*4 (octets du tampon) }
+  EmitInstr('PUSH EBX');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('MOV DWORD PTR [ESI+16],EAX');               { +16 BufPtr }
+  EmitInstr('LEA EAX,[ESI+24]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL _InitializeCriticalSection@4');        { STDCALL : l appele nettoie SA PROPRE pile, AUCUN "ADD ESP" ici }
+  EmitInstr('ADD ESP,4');                                 { retire NOTRE emplacement local (CapaciteEffective) }
+  EmitInstr('MOV EAX,ESI');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _GORT_CHAN_SEND([EBP+8]=Canal,[EBP+12]=Valeur) : bloquant (attente     }
+  { active, Sleep(0), borne par CHAN_MAX_SPIN - voir la note de section)                    }
+  { tant que le tampon est plein. }
+  EmitLabel(ASM_PFX_RUNTIME + 'CHAN_SEND');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');
+  EmitInstr('MOV EAX,200000');
+  EmitInstr('PUSH EAX');                                  { [ESP+0]=CompteurRestant }
+  EmitLabel(ASM_PFX_RUNTIME + 'CHANSEND_RETRY');
+  EmitInstr('LEA EAX,[ESI+24]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL _EnterCriticalSection@4');
+  EmitInstr('MOV EAX,DWORD PTR [ESI+4]');                 { Count }
+  EmitInstr('MOV EBX,DWORD PTR [ESI]');                   { Capacite }
+  EmitInstr('CMP EAX,EBX');
+  EmitInstr('JL ' + ASM_PFX_RUNTIME + 'CHANSEND_HAVEROOM');
+  EmitInstr('LEA EAX,[ESI+24]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL _LeaveCriticalSection@4');
+  EmitInstr('MOV EAX,DWORD PTR [ESP]');
+  EmitInstr('DEC EAX');
+  EmitInstr('MOV DWORD PTR [ESP],EAX');
+  EmitInstr('CMP EAX,0');
+  EmitInstr('JLE ' + ASM_PFX_RUNTIME + 'CHANSEND_GIVEUP');
+  EmitInstr('PUSH 0');
+  EmitInstr('CALL _Sleep@4');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'CHANSEND_RETRY');
+  EmitLabel(ASM_PFX_RUNTIME + 'CHANSEND_HAVEROOM');
+  EmitInstr('MOV EBX,DWORD PTR [ESI+12]');                { Tail }
+  EmitInstr('MOV ECX,DWORD PTR [ESI+16]');                { BufPtr }
+  EmitInstr('MOV EDX,EBX');
+  EmitInstr('MOV EAX,4');
+  EmitInstr('IMUL EDX,EAX');
+  EmitInstr('ADD ECX,EDX');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+12]');                { Valeur }
+  EmitInstr('MOV DWORD PTR [ECX],EAX');
+  EmitInstr('INC EBX');
+  EmitInstr('MOV EAX,DWORD PTR [ESI]');
+  EmitInstr('CMP EBX,EAX');
+  EmitInstr('JL ' + ASM_PFX_RUNTIME + 'CHANSEND_NOWRAP');
+  EmitInstr('MOV EBX,0');
+  EmitLabel(ASM_PFX_RUNTIME + 'CHANSEND_NOWRAP');
+  EmitInstr('MOV DWORD PTR [ESI+12],EBX');
+  EmitInstr('MOV EAX,DWORD PTR [ESI+4]');
+  EmitInstr('INC EAX');
+  EmitInstr('MOV DWORD PTR [ESI+4],EAX');
+  EmitInstr('LEA EAX,[ESI+24]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL _LeaveCriticalSection@4');
+  EmitLabel(ASM_PFX_RUNTIME + 'CHANSEND_GIVEUP');
+  EmitInstr('ADD ESP,4');                                  { retire CompteurRestant }
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _GORT_CHAN_RECV([EBP+8]=Canal) -> EAX=Valeur - bloquant (Sleep(0),     }
+  { borne par CHAN_MAX_SPIN) tant que le tampon est vide ET le canal              }
+  { ouvert ; renvoie 0 (valeur zero) si le tampon est vide ET le canal              }
+  { FERME (fin de canal reelle, pas un abandon par depassement de              }
+  { compteur), OU si le compteur de tentatives est epuise (VRAI deadlock             }
+  { Go, voir la note de section). }
+  EmitLabel(ASM_PFX_RUNTIME + 'CHAN_RECV');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');
+  EmitInstr('MOV EAX,200000');
+  EmitInstr('PUSH EAX');                                   { [ESP+0]=CompteurRestant }
+  EmitLabel(ASM_PFX_RUNTIME + 'CHANRECV_RETRY');
+  EmitInstr('LEA EAX,[ESI+24]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL _EnterCriticalSection@4');
+  EmitInstr('MOV EAX,DWORD PTR [ESI+4]');                  { Count }
+  EmitInstr('CMP EAX,0');
+  EmitInstr('JG ' + ASM_PFX_RUNTIME + 'CHANRECV_HAVEDATA');
+  EmitInstr('MOV EAX,DWORD PTR [ESI+20]');                  { Closed }
+  EmitInstr('CMP EAX,0');
+  EmitInstr('JNE ' + ASM_PFX_RUNTIME + 'CHANRECV_EMPTYCLOSED');
+  EmitInstr('LEA EAX,[ESI+24]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL _LeaveCriticalSection@4');
+  EmitInstr('MOV EAX,DWORD PTR [ESP]');
+  EmitInstr('DEC EAX');
+  EmitInstr('MOV DWORD PTR [ESP],EAX');
+  EmitInstr('CMP EAX,0');
+  EmitInstr('JLE ' + ASM_PFX_RUNTIME + 'CHANRECV_GIVEUP');
+  EmitInstr('PUSH 0');
+  EmitInstr('CALL _Sleep@4');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'CHANRECV_RETRY');
+  EmitLabel(ASM_PFX_RUNTIME + 'CHANRECV_EMPTYCLOSED');
+  EmitInstr('LEA EAX,[ESI+24]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL _LeaveCriticalSection@4');
+  EmitLabel(ASM_PFX_RUNTIME + 'CHANRECV_GIVEUP');
+  EmitInstr('MOV EAX,0');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'CHANRECV_DONE');
+  EmitLabel(ASM_PFX_RUNTIME + 'CHANRECV_HAVEDATA');
+  EmitInstr('MOV EBX,DWORD PTR [ESI+8]');                   { Head }
+  EmitInstr('MOV ECX,DWORD PTR [ESI+16]');                  { BufPtr }
+  EmitInstr('MOV EDX,EBX');
+  EmitInstr('MOV EAX,4');
+  EmitInstr('IMUL EDX,EAX');
+  EmitInstr('ADD ECX,EDX');
+  EmitInstr('MOV EAX,DWORD PTR [ECX]');                     { Valeur := Buf[Head] }
+  EmitInstr('PUSH EAX');                                     { conservee A TRAVERS LeaveCriticalSection }
+  EmitInstr('INC EBX');
+  EmitInstr('MOV EDX,DWORD PTR [ESI]');
+  EmitInstr('CMP EBX,EDX');
+  EmitInstr('JL ' + ASM_PFX_RUNTIME + 'CHANRECV_NOWRAP');
+  EmitInstr('MOV EBX,0');
+  EmitLabel(ASM_PFX_RUNTIME + 'CHANRECV_NOWRAP');
+  EmitInstr('MOV DWORD PTR [ESI+8],EBX');
+  EmitInstr('MOV EAX,DWORD PTR [ESI+4]');
+  EmitInstr('DEC EAX');
+  EmitInstr('MOV DWORD PTR [ESI+4],EAX');
+  EmitInstr('LEA EAX,[ESI+24]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL _LeaveCriticalSection@4');
+  EmitInstr('POP EAX');                                      { restaure la Valeur }
+  EmitLabel(ASM_PFX_RUNTIME + 'CHANRECV_DONE');
+  EmitInstr('ADD ESP,4');                                    { retire CompteurRestant }
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _GORT_CHAN_RECV_OK([EBP+8]=Canal,[EBP+12]=PointeurSortieOk) -> EAX=    }
+  { Valeur, *PointeurSortieOk=1 si une VRAIE valeur a ete recue, 0 sinon           }
+  { (canal ferme+vide, OU compteur de tentatives epuise) - meme boucle              }
+  { que _GORT_CHAN_RECV, avec l ecriture supplementaire du fanion ok. }
+  EmitLabel(ASM_PFX_RUNTIME + 'CHAN_RECV_OK');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');
+  EmitInstr('MOV EAX,200000');
+  EmitInstr('PUSH EAX');
+  EmitLabel(ASM_PFX_RUNTIME + 'CHANRECVOK_RETRY');
+  EmitInstr('LEA EAX,[ESI+24]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL _EnterCriticalSection@4');
+  EmitInstr('MOV EAX,DWORD PTR [ESI+4]');
+  EmitInstr('CMP EAX,0');
+  EmitInstr('JG ' + ASM_PFX_RUNTIME + 'CHANRECVOK_HAVEDATA');
+  EmitInstr('MOV EAX,DWORD PTR [ESI+20]');
+  EmitInstr('CMP EAX,0');
+  EmitInstr('JNE ' + ASM_PFX_RUNTIME + 'CHANRECVOK_EMPTYCLOSED');
+  EmitInstr('LEA EAX,[ESI+24]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL _LeaveCriticalSection@4');
+  EmitInstr('MOV EAX,DWORD PTR [ESP]');
+  EmitInstr('DEC EAX');
+  EmitInstr('MOV DWORD PTR [ESP],EAX');
+  EmitInstr('CMP EAX,0');
+  EmitInstr('JLE ' + ASM_PFX_RUNTIME + 'CHANRECVOK_GIVEUP');
+  EmitInstr('PUSH 0');
+  EmitInstr('CALL _Sleep@4');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'CHANRECVOK_RETRY');
+  EmitLabel(ASM_PFX_RUNTIME + 'CHANRECVOK_EMPTYCLOSED');
+  EmitInstr('LEA EAX,[ESI+24]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL _LeaveCriticalSection@4');
+  EmitLabel(ASM_PFX_RUNTIME + 'CHANRECVOK_GIVEUP');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+12]');
+  EmitInstr('MOV EBX,0');
+  EmitInstr('MOV DWORD PTR [EAX],EBX');
+  EmitInstr('MOV EAX,0');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'CHANRECVOK_DONE');
+  EmitLabel(ASM_PFX_RUNTIME + 'CHANRECVOK_HAVEDATA');
+  EmitInstr('MOV EBX,DWORD PTR [ESI+8]');
+  EmitInstr('MOV ECX,DWORD PTR [ESI+16]');
+  EmitInstr('MOV EDX,EBX');
+  EmitInstr('MOV EAX,4');
+  EmitInstr('IMUL EDX,EAX');
+  EmitInstr('ADD ECX,EDX');
+  EmitInstr('MOV EAX,DWORD PTR [ECX]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('INC EBX');
+  EmitInstr('MOV EDX,DWORD PTR [ESI]');
+  EmitInstr('CMP EBX,EDX');
+  EmitInstr('JL ' + ASM_PFX_RUNTIME + 'CHANRECVOK_NOWRAP');
+  EmitInstr('MOV EBX,0');
+  EmitLabel(ASM_PFX_RUNTIME + 'CHANRECVOK_NOWRAP');
+  EmitInstr('MOV DWORD PTR [ESI+8],EBX');
+  EmitInstr('MOV EAX,DWORD PTR [ESI+4]');
+  EmitInstr('DEC EAX');
+  EmitInstr('MOV DWORD PTR [ESI+4],EAX');
+  EmitInstr('LEA EAX,[ESI+24]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL _LeaveCriticalSection@4');
+  EmitInstr('POP EAX');                                       { Valeur }
+  EmitInstr('MOV EBX,DWORD PTR [EBP+12]');
+  EmitInstr('MOV ECX,1');
+  EmitInstr('MOV DWORD PTR [EBX],ECX');
+  EmitLabel(ASM_PFX_RUNTIME + 'CHANRECVOK_DONE');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _GORT_CHAN_TRYRECV([EBP+8]=Canal,[EBP+12]=PointeurSortieValeur) ->     }
+  { EAX=1 si une VRAIE valeur a ete recue (et ecrite a *PointeurSortie),           }
+  { 0 sinon (tampon vide, NON bloquant - UNE SEULE tentative, jamais de              }
+  { boucle/Sleep) - reserve a "select" (CompileSelectStmt). }
+  EmitLabel(ASM_PFX_RUNTIME + 'CHAN_TRYRECV');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');
+  EmitInstr('LEA EAX,[ESI+24]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL _EnterCriticalSection@4');
+  EmitInstr('MOV EAX,DWORD PTR [ESI+4]');
+  EmitInstr('CMP EAX,0');
+  EmitInstr('JG ' + ASM_PFX_RUNTIME + 'CHANTRYRECV_HAVE');
+  EmitInstr('LEA EAX,[ESI+24]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL _LeaveCriticalSection@4');
+  EmitInstr('MOV EAX,0');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'CHANTRYRECV_DONE');
+  EmitLabel(ASM_PFX_RUNTIME + 'CHANTRYRECV_HAVE');
+  EmitInstr('MOV EBX,DWORD PTR [ESI+8]');
+  EmitInstr('MOV ECX,DWORD PTR [ESI+16]');
+  EmitInstr('MOV EDX,EBX');
+  EmitInstr('MOV EAX,4');
+  EmitInstr('IMUL EDX,EAX');
+  EmitInstr('ADD ECX,EDX');
+  EmitInstr('MOV EAX,DWORD PTR [ECX]');
+  EmitInstr('MOV EDX,DWORD PTR [EBP+12]');
+  EmitInstr('MOV DWORD PTR [EDX],EAX');
+  EmitInstr('INC EBX');
+  EmitInstr('MOV EDX,DWORD PTR [ESI]');
+  EmitInstr('CMP EBX,EDX');
+  EmitInstr('JL ' + ASM_PFX_RUNTIME + 'CHANTRYRECV_NOWRAP');
+  EmitInstr('MOV EBX,0');
+  EmitLabel(ASM_PFX_RUNTIME + 'CHANTRYRECV_NOWRAP');
+  EmitInstr('MOV DWORD PTR [ESI+8],EBX');
+  EmitInstr('MOV EAX,DWORD PTR [ESI+4]');
+  EmitInstr('DEC EAX');
+  EmitInstr('MOV DWORD PTR [ESI+4],EAX');
+  EmitInstr('LEA EAX,[ESI+24]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL _LeaveCriticalSection@4');
+  EmitInstr('MOV EAX,1');
+  EmitLabel(ASM_PFX_RUNTIME + 'CHANTRYRECV_DONE');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _GORT_CHAN_TRYSEND([EBP+8]=Canal,[EBP+12]=Valeur) -> EAX=1 si envoye,  }
+  { 0 sinon (tampon plein, NON bloquant) - reserve a "select". }
+  EmitLabel(ASM_PFX_RUNTIME + 'CHAN_TRYSEND');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');
+  EmitInstr('LEA EAX,[ESI+24]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL _EnterCriticalSection@4');
+  EmitInstr('MOV EAX,DWORD PTR [ESI+4]');
+  EmitInstr('MOV EBX,DWORD PTR [ESI]');
+  EmitInstr('CMP EAX,EBX');
+  EmitInstr('JL ' + ASM_PFX_RUNTIME + 'CHANTRYSEND_HAVEROOM');
+  EmitInstr('LEA EAX,[ESI+24]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL _LeaveCriticalSection@4');
+  EmitInstr('MOV EAX,0');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'CHANTRYSEND_DONE');
+  EmitLabel(ASM_PFX_RUNTIME + 'CHANTRYSEND_HAVEROOM');
+  EmitInstr('MOV EBX,DWORD PTR [ESI+12]');
+  EmitInstr('MOV ECX,DWORD PTR [ESI+16]');
+  EmitInstr('MOV EDX,EBX');
+  EmitInstr('MOV EAX,4');
+  EmitInstr('IMUL EDX,EAX');
+  EmitInstr('ADD ECX,EDX');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+12]');
+  EmitInstr('MOV DWORD PTR [ECX],EAX');
+  EmitInstr('INC EBX');
+  EmitInstr('MOV EAX,DWORD PTR [ESI]');
+  EmitInstr('CMP EBX,EAX');
+  EmitInstr('JL ' + ASM_PFX_RUNTIME + 'CHANTRYSEND_NOWRAP');
+  EmitInstr('MOV EBX,0');
+  EmitLabel(ASM_PFX_RUNTIME + 'CHANTRYSEND_NOWRAP');
+  EmitInstr('MOV DWORD PTR [ESI+12],EBX');
+  EmitInstr('MOV EAX,DWORD PTR [ESI+4]');
+  EmitInstr('INC EAX');
+  EmitInstr('MOV DWORD PTR [ESI+4],EAX');
+  EmitInstr('LEA EAX,[ESI+24]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL _LeaveCriticalSection@4');
+  EmitInstr('MOV EAX,1');
+  EmitLabel(ASM_PFX_RUNTIME + 'CHANTRYSEND_DONE');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _GORT_CHAN_CLOSE([EBP+8]=Canal) : marque le canal ferme (sous          }
+  { section critique) - PORTEE (documentee) : envoyer sur un canal FERME             }
+  { ou fermer un canal DEJA ferme ne paniquent PAS ici (Go reel le fait              }
+  { pour les deux) puisqu aucun SAMPLES\GO\*.go actuel ne le fait - une                    }
+  { fausse impression de "canal encore ouvert" resterait sans consequence                    }
+  { observable pour ces DEUX fichiers precis. }
+  EmitLabel(ASM_PFX_RUNTIME + 'CHAN_CLOSE');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');
+  EmitInstr('LEA EAX,[ESI+24]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL _EnterCriticalSection@4');
+  EmitInstr('MOV EAX,1');
+  EmitInstr('MOV DWORD PTR [ESI+20],EAX');
+  EmitInstr('LEA EAX,[ESI+24]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL _LeaveCriticalSection@4');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _GORT_GOROUTINE_TRAMPOLINE([EBP+8]=BlocArguments) -> EAX=0 - point     }
+  { d entree UNIQUE (LPTHREAD_START_ROUTINE, meme routine pour TOUT "go",              }
+  { jamais une par site d appel) passe a CreateThread (CompileGoStmt) :             }
+  { BlocArguments (alloue par CompileGoStmt/CompileGoClosure, JAMAIS       }
+  { libere - meme fuite mineure et deja ACCEPTEE que le reste de ce               }
+  { generateur de code, "pas de vrai GC") = [+0]=PointeurFonctionCible,               }
+  { [+4]=NbArguments, [+8..]=Argument0,Argument1,... - repousse CHAQUE               }
+  { argument dans l ORDRE INVERSE habituel (dernier d abord) EXACTEMENT               }
+  { comme un appel ordinaire, PUIS appelle la cible via un pointeur (CALL              }
+  { EAX, forme INDIRECTE ajoutee a l assembleur pour CETTE extension                          }
+  { precise, voir BinEncodeCall) - AUCUNE etiquette FIXE connue a              }
+  { l assemblage ne conviendrait, la MEME routine sert TOUT "go" quelle             }
+  { que soit la fonction/fermeture visee. }
+  EmitLabel(ASM_PFX_RUNTIME + 'GOROUTINE_TRAMPOLINE');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');
+  EmitInstr('MOV ECX,DWORD PTR [ESI+4]');
+  EmitLabel(ASM_PFX_RUNTIME + 'GOTR_PUSHLOOP');
+  EmitInstr('CMP ECX,0');
+  EmitInstr('JLE ' + ASM_PFX_RUNTIME + 'GOTR_PUSHDONE');
+  EmitInstr('DEC ECX');
+  EmitInstr('MOV EAX,ECX');
+  EmitInstr('MOV EBX,4');
+  EmitInstr('IMUL EAX,EBX');
+  EmitInstr('ADD EAX,8');
+  EmitInstr('ADD EAX,ESI');
+  EmitInstr('MOV EBX,DWORD PTR [EAX]');
+  EmitInstr('PUSH EBX');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'GOTR_PUSHLOOP');
+  EmitLabel(ASM_PFX_RUNTIME + 'GOTR_PUSHDONE');
+  EmitInstr('MOV EAX,DWORD PTR [ESI]');                    { PointeurFonctionCible }
+  EmitInstr('CALL EAX');                                    { appel INDIRECT }
+  EmitInstr('MOV EAX,0');
   EmitInstr('MOV ESP,EBP');
   EmitInstr('POP EBP');
   EmitInstr('RET');
@@ -12311,13 +12879,27 @@ End;
 { section, en-tete du fichier, TODO 25, pour le detail exact de ce qui                                         }
 { reste hors de portee). }
 Procedure CompileExpr(E: Integer); Forward;
+Procedure CompileFieldAddr(E: Integer); Forward;
 
 Procedure CompileFloatExpr(E: Integer);
 Var SI, ArgFirst2: Integer; FnNam2, LblPowLoop, LblPowDone2: TString;
+    FCFDI, FCI, FCParamTIdx, FCCleanup: Integer; LblFCNoPanic: TString;
 Begin
   Case ExprPool[E].Kind Of
     EK_FLOATLIT:
       EmitInstr('FLD [' + ASM_PFX_FLOAT + IntToStrG(CgFloatPoolOfExpr[E]) + '_b0]');
+    EK_INTLIT:
+      { extension structs/methodes : litteral ENTIER melange a une          }
+      { expression flottante (ex. "2 * (r.Width + r.Height)",                     }
+      { Rectangle.Perimeter, interfaces.go) - meme mecanisme que                        }
+      { EK_CONVERT plus haut (int->float64 via le scratch commun               }
+      { FSCRATCH, PUIS FILD), juste SANS passer par CompileExpr puisque               }
+      { la valeur est deja connue directement (IntVal). }
+      Begin
+        EmitInstr('MOV EAX,' + IntToStrG(ExprPool[E].IntVal));
+        EmitInstr('MOV DWORD PTR [' + ASM_PFX_RUNTIME + 'FSCRATCH],EAX');
+        EmitInstr('FILD [' + ASM_PFX_RUNTIME + 'FSCRATCH]');
+      End;
     EK_IDENT:
       Begin
         SI := SymFind(ExprPool[E].NameVal);
@@ -12356,6 +12938,17 @@ Begin
       Else
         FatalError('TODO 21 : generateur de code, conversion flottante non ' +
           'couverte sur cette forme (seul int->float64 l''est ici)');
+    EK_SELECTOR:
+      { extension structs/methodes : champ float64 d un struct via son      }
+      { receveur (ex. "r.Width"/"r.Height" a l interieur du CORPS de            }
+      { Rectangle.Area()/Perimeter(), interfaces.go) - reutilise               }
+      { CompileFieldAddr (deja utilise par la convention EAX ordinaire,               }
+      { CompileExpr) pour obtenir l ADRESSE du champ, puis FLD directement                    }
+      { depuis cette adresse (8 octets, jamais via EAX). }
+      Begin
+        CompileFieldAddr(E);
+        EmitInstr('FLD [EAX]');
+      End;
     EK_CALL:
       { extension bibliotheque standard etendue : math.Sqrt/Pow/NaN - les     }
       { TROIS SEULES fonctions de bibliotheque standard a SIGNATURE                 }
@@ -12426,10 +13019,129 @@ Begin
           FatalError('TODO 21 : generateur de code, fonction flottante ' +
             'de bibliotheque standard non couverte : math.' + FnNam2);
       End
+      Else If (ExprPool[E].Left >= 0) And
+              (ExprPool[ExprPool[E].Left].Kind = EK_IDENT) Then
+      Begin
+        { extension flottants (fonction UTILISATEUR a retour float64,       }
+        { TODO 21) : "Compute(4.0)" (packages.go) - meme recherche par NOM              }
+        { que CompileCallExpr (FuncDefPool), mais pousse un parametre               }
+        { float64 comme un VRAI QWORD FPU (FSTP sur 8 octets reserves,               }
+        { SUB ESP,8) plutot que la convention EAX uniforme de              }
+        { CompileCallExpr, et n attend JAMAIS de resultat dans EAX au              }
+        { retour (deja laisse sur ST(0) par le "return" de la fonction              }
+        { appelee, voir STK_RETURN, meme extension). }
+        FCFDI := -1;
+        For FCI := 0 To FuncDefCount - 1 Do
+          If FuncDefPool[FCI].Name = ExprPool[ExprPool[E].Left].NameVal Then
+          Begin
+            FCFDI := FCI;
+            Break;
+          End;
+        If FCFDI < 0 Then
+          FatalError('TODO 21 : generateur de code, appel flottant non ' +
+            'couvert (fonction utilisateur inconnue) : ' +
+            ExprPool[ExprPool[E].Left].NameVal)
+        Else If (TypeTab[FuncDefPool[FCFDI].TypeIdx].ResultCount <> 1) Or
+                (TypeResolveAlias(FieldPool[TypeTab[FuncDefPool[FCFDI].TypeIdx]
+                   .ResultFirst].TypeIdx) <> PDT_FLOAT64) Then
+          FatalError('TODO 21 : generateur de code, appel flottant non ' +
+            'couvert (la fonction "' + FuncDefPool[FCFDI].Name + '" ne ' +
+            'renvoie pas un unique float64)')
+        Else
+        Begin
+          For FCI := ExprPool[E].ArgCount - 1 DownTo 0 Do
+          Begin
+            FCParamTIdx := -1;
+            If FCI < TypeTab[FuncDefPool[FCFDI].TypeIdx].ParamCount Then
+              FCParamTIdx := FieldPool[TypeTab[FuncDefPool[FCFDI].TypeIdx]
+                .ParamFirst + FCI].TypeIdx;
+            If (FCParamTIdx >= 0) And (TypeResolveAlias(FCParamTIdx) = PDT_FLOAT64) Then
+            Begin
+              { BOGUE REEL trouve par EXECUTION (l assembleur, BinEmitModRM,   }
+              { ne couvre QUE les formes memoire ABSOLUES (une etiquette) ou            }
+              { base EBP - jamais base ESP - pour FLD/FSTP, voir sa propre               }
+              { note) : "FSTP QWORD PTR [ESP]" apres un "SUB ESP,8" est donc               }
+              { rejete - repasse par le scratch PARTAGE FSCRATCH2/FSCRATCH2B                    }
+              { (etiquette absolue, DEJA utilise par math.Pow pour stocker                          }
+              { une base Double) comme relais, puis pousse ses DEUX moities                            }
+              { comme de simples DWORD entiers (PUSH, toujours couvert) -                                 }
+              { sans risque de collision : le relais n est jamais "en vol"                                   }
+              { plus que la duree de ces quelques lignes, jamais a travers                                       }
+              { un appel imbrique. }
+              CompileFloatExpr(ExprArgPool[ExprPool[E].ArgFirst + FCI]);
+              EmitInstr('FSTP [' + ASM_PFX_RUNTIME + 'FSCRATCH2]');
+              EmitInstr('MOV EAX,DWORD PTR [' + ASM_PFX_RUNTIME + 'FSCRATCH2B]');
+              EmitInstr('PUSH EAX');
+              EmitInstr('MOV EAX,DWORD PTR [' + ASM_PFX_RUNTIME + 'FSCRATCH2]');
+              EmitInstr('PUSH EAX');
+            End
+            Else
+            Begin
+              CompileExpr(ExprArgPool[ExprPool[E].ArgFirst + FCI]);
+              EmitInstr('PUSH EAX');
+            End;
+          End;
+          EmitInstr('CALL ' + ASM_PFX_FUNC + FuncDefPool[FCFDI].Name);
+          { nettoyage de pile : additionne la taille REELLE de chaque       }
+          { argument (8 pour un float64, 4 sinon) - un simple               }
+          { "ArgCount*4" (comme CompileCallExpr) serait desormais FAUX             }
+          { des qu un SEUL argument est flottant. }
+          FCCleanup := 0;
+          For FCI := 0 To ExprPool[E].ArgCount - 1 Do
+          Begin
+            FCParamTIdx := -1;
+            If FCI < TypeTab[FuncDefPool[FCFDI].TypeIdx].ParamCount Then
+              FCParamTIdx := FieldPool[TypeTab[FuncDefPool[FCFDI].TypeIdx]
+                .ParamFirst + FCI].TypeIdx;
+            If (FCParamTIdx >= 0) And (TypeResolveAlias(FCParamTIdx) = PDT_FLOAT64) Then
+              Inc(FCCleanup, 8)
+            Else
+              Inc(FCCleanup, 4);
+          End;
+          If FCCleanup > 0 Then
+            EmitInstr('ADD ESP,' + IntToStrG(FCCleanup));
+          { extension defer/panic : meme propagation qu un appel entier      }
+          { ordinaire (CompileCallExpr) - un panic() DECLENCHE PENDANT cet             }
+          { appel doit continuer a se propager vers l epilogue de la               }
+          { fonction COURANTE, meme depuis un contexte flottant. }
+          LblFCNoPanic := CgLabelGen;
+          EmitInstr('CMP DWORD PTR [' + ASM_PFX_RUNTIME + 'PANIC_FLAG],0');
+          EmitInstr('JE ' + LblFCNoPanic);
+          EmitInstr('JMP ' + CurRetLabel);
+          EmitLabel(LblFCNoPanic);
+        End;
+      End
+      Else If (ExprPool[E].Left >= 0) And
+              (ExprPool[ExprPool[E].Left].Kind = EK_SELECTOR) Then
+      Begin
+        { extension flottants : appel de METHODE/interface a retour           }
+        { float64 (ex. "s.Area()" a l interieur de Describe, interfaces.go)             }
+        { - PORTEE NON couverte par cette extension (CompileMethodCall/               }
+        { CompileInterfaceMethodCall restent EAX SEULEMENT, jamais ST(0) -               }
+        { les etendre correctement exigerait de dupliquer TOUTE leur               }
+        { repartition de methode pour une DEUXIEME convention de retour,                       }
+        { hors de portee ICI) - repli EXPLICITE et DOCUMENTE sur la                    }
+        { convention EAX (CompileExpr) : EXACTEMENT le comportement DEJA            }
+        { en vigueur pour ce cas precis AVANT cette extension flottante                     }
+        { (aucune regression - "return s.Area()" utilisait deja           }
+        { CompileExpr, jamais CompileFloatExpr, tant que STK_RETURN ne             }
+        { savait pas encore distinguer un resultat float64) : le calcul               }
+        { INTERNE de la methode (ex. "r.Width * r.Height") reste, lui,               }
+        { arithmetique ENTIERE sur le PATRON DE BITS du double - une VRAIE                    }
+        { valeur flottante EXACTE n en ressortirait pas, mais reste SANS               }
+        { CONSEQUENCE OBSERVABLE pour interfaces.go (le seul appelant             }
+        { jette le resultat via "_"). FILD depuis EAX pour redonner malgre               }
+        { tout un ST(0) VALIDE (necessaire, l appelant l attend) plutot                     }
+        { qu un plantage FPU. }
+        CompileExpr(E);
+        EmitInstr('MOV DWORD PTR [' + ASM_PFX_RUNTIME + 'FSCRATCH],EAX');
+        EmitInstr('FILD [' + ASM_PFX_RUNTIME + 'FSCRATCH]');
+      End
       Else
         FatalError('TODO 21 : generateur de code, appel flottant non ' +
-          'couvert (seul math.Sqrt/Pow/NaN l''est - un appel de fonction ' +
-          'UTILISATEUR a signature flottante reste hors de portee)');
+          'couvert (seul math.Sqrt/Pow/NaN, un appel DIRECT a une ' +
+          'fonction utilisateur renvoyant un unique float64, ou un appel ' +
+          'de methode/interface (repli EAX, voir sa propre note), l''est)');
   Else
     FatalError('TODO 21 : generateur de code, expression flottante non ' +
       'couverte sur cette forme (appels/comparaisons/conversions ' +
@@ -12632,6 +13344,26 @@ Begin
     EmitInstr('MOV EAX,0');
   EmitInstr('PUSH EAX');
   EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'MAP_NEW');
+  EmitInstr('ADD ESP,4');
+End;
+
+{ CompileMakeChan : "make(chan T[, Capacite])" - _GORT_CHAN_MAKE          }
+{ (EmitRuntimeLibrary, extension goroutines/canaux) alloue la structure           }
+{ de canal complete (tampon+CRITICAL_SECTION Win32 REELLE) et laisse son                    }
+{ pointeur (la VALEUR canal elle-meme) dans EAX - Capacite par defaut 0             }
+{ si omise ("chan T" non borne, simplifie a 1 emplacement par            }
+{ _GORT_CHAN_MAKE lui-meme, voir sa propre note). }
+Procedure CompileMakeChan(E: Integer);
+Var ArgFirst, ArgCount: Integer;
+Begin
+  ArgFirst := ExprPool[E].ArgFirst;
+  ArgCount := ExprPool[E].ArgCount;
+  If ArgCount >= 1 Then
+    CompileExpr(ExprArgPool[ArgFirst])
+  Else
+    EmitInstr('MOV EAX,0');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'CHAN_MAKE');
   EmitInstr('ADD ESP,4');
 End;
 
@@ -12988,6 +13720,8 @@ Begin
     Begin
       If (ExprPool[E].Extra >= 0) And (TypeTab[ExprPool[E].Extra].Kind = TYK_MAP) Then
         CompileMakeMap(E)
+      Else If (ExprPool[E].Extra >= 0) And (TypeTab[ExprPool[E].Extra].Kind = TYK_CHAN) Then
+        CompileMakeChan(E)
       Else
         CompileMakeSlice(E);
       Exit;
@@ -13251,6 +13985,18 @@ Begin
       CompileMapDelete(ExprArgPool[ArgFirst], ExprArgPool[ArgFirst + 1]);
       Exit;
     End;
+    { extension goroutines/canaux : close(ch) - _GORT_CHAN_CLOSE           }
+    { (EmitRuntimeLibrary) - meme discipline que delete(m,cle) ci-dessus              }
+    { (aucune fonction utilisateur ne s appelle jamais "close", mot-cle              }
+    { integre Go reel). }
+    If (ExprPool[Callee].NameVal = 'close') And (ArgCount = 1) Then
+    Begin
+      CompileExpr(ExprArgPool[ArgFirst]);
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'CHAN_CLOSE');
+      EmitInstr('ADD ESP,4');
+      Exit;
+    End;
     { extension defer/panic : panic(v) - boite v (CompileBoxValue, meme        }
     { modele que l extension interfaces - v peut etre N IMPORTE QUEL type,               }
     { deja une interface ou non) et JUMP DIRECTEMENT a l epilogue de la              }
@@ -13311,6 +14057,25 @@ Begin
     Begin
       FatalError('TODO 21 : generateur de code, retours MULTIPLES non ' +
         'couverts (fonction "' + FuncDefPool[FDI].Name + '") - voir TODO 22/23');
+      Exit;
+    End;
+    { extension flottants : un appel a une fonction UTILISATEUR renvoyant   }
+    { un unique float64 (ex. Compute, packages.go) doit IMPERATIVEMENT              }
+    { transiter par CompileFloatExpr/EK_CALL (voir sa propre note), jamais              }
+    { par CE chemin ICI (convention EAX UNIFORME, deja fausse des qu un              }
+    { SEUL parametre est lui-meme float64 - 8 octets, pas 4) - un appelant                     }
+    { qui ignore le resultat ("Compute(4.0)" seul, en instruction) ou qui              }
+    { l utilise dans un contexte NON reconnu comme flottant par                             }
+    { ExprIsFloatTyped tomberait ICI SILENCIEUSEMENT sans ce garde-fou              }
+    { explicite - prefere un arret CLAIR a un .exe qui compile mais            }
+    { plante/renvoie n importe quoi. }
+    If TypeResolveAlias(FieldPool[TypeTab[FuncDefPool[FDI].TypeIdx]
+         .ResultFirst].TypeIdx) = PDT_FLOAT64 Then
+    Begin
+      FatalError('TODO 21 : generateur de code, appel non couvert sur ' +
+        'cette forme (la fonction "' + FuncDefPool[FDI].Name + '" renvoie ' +
+        'un float64 - seul un usage direct dans un contexte flottant ' +
+        'reconnu, ex. "x := ' + FuncDefPool[FDI].Name + '(...)", l''est)');
       Exit;
     End;
     For I := ArgCount - 1 DownTo 0 Do
@@ -13388,7 +14153,6 @@ End;
 { ------------------------------------------------------------ }
 
 Procedure CompileIndexAddr(E: Integer); Forward;
-Procedure CompileFieldAddr(E: Integer); Forward;
 
 { CompileAddrOf : calcule l ADRESSE d une expression ADRESSABLE dans     }
 { EAX - variable simple (LEA de son emplacement), EK_INDEX (delegue a           }
@@ -14816,15 +15580,29 @@ Begin
         EmitLabel(LblTADone2);
         EmitInstr('ADD ESP,4');
       End;
+    EK_RECV:
+      { extension goroutines/canaux : "<-ch" utilisee comme une simple     }
+      { expression (valeur seule, jamais la forme comma-ok "v, ok := <-ch"                 }
+      { - traitee separement, STK_SHORTVAR) - _GORT_CHAN_RECV                       }
+      { (EmitRuntimeLibrary) BLOQUE (attente active bornee, voir sa propre                }
+      { note de section) jusqu a ce qu une valeur soit disponible, ou              }
+      { renvoie la valeur ZERO si le canal est ferme et vide. }
+      Begin
+        CompileExpr(ExprPool[E].Left);        { EAX = pointeur de canal }
+        EmitInstr('PUSH EAX');
+        EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'CHAN_RECV');
+        EmitInstr('ADD ESP,4');
+      End;
   Else
     FatalError('TODO 21 : generateur de code, forme d''expression non ' +
-      'couverte (flottants/maps/interfaces/fermetures/' +
-      'canaux restent TODO 22/23)');
+      'couverte (flottants/maps/interfaces/fermetures restent TODO 22/23)');
   End;
 End;
 
 Procedure CompileSwitch(S: Integer); Forward;
 Procedure CompileTypeSwitch(S: Integer); Forward;
+Procedure CompileSelectStmt(S: Integer); Forward;
+Procedure CompileGoStmt(GoE: Integer); Forward;
 
 { ------------------------------------------------------------ }
 { Extension defer/panic/recover : CollectDeferSites/EmitDeferUnwind -    }
@@ -14897,10 +15675,18 @@ End;
 { (deja validee comme un appel DIRECT a une fonction utilisateur CONNUE               }
 { par CompileStmt/STK_DEFER, voir sa propre note - re-resolue ICI par NOM              }
 { exactement comme un appel ordinaire). }
+{ extension defer/panic/recover (fermetures) : EmitDeferUnwind (ci-dessous)  }
+{ doit desormais pouvoir COMPILER EN LIGNE le corps d une fermeture             }
+{ differee (CompileStmt sur son bloc) - CompileStmt lui-meme n est               }
+{ defini que PLUS BAS dans ce fichier (il appelle a son tour            }
+{ EmitDeferUnwind via CompileFuncDef) : declaration EN AVANT indispensable          }
+{ pour cette recursion mutuelle. }
+Procedure CompileStmt(S: Integer); Forward;
+
 Procedure EmitDeferUnwind(BodyStmtIdx: Integer);
 Var
-  SiteIdx, DS, DFCallE, DFCallee, FDI, I : Integer;
-  LblSkip : TString;
+  SiteIdx, DS, DFCallE, DFCallee, FDI, I, SavedCFS2 : Integer;
+  LblSkip, SavedRetLbl2 : TString;
 Begin
   DeferSiteCnt := 0;
   CollectDeferSites(BodyStmtIdx);
@@ -14909,27 +15695,70 @@ Begin
     DS      := DeferSiteBuf[SiteIdx];
     DFCallE := StmtPool[DS].Left;
     DFCallee:= ExprPool[DFCallE].Left;
-    FDI := -1;
-    For I := 0 To FuncDefCount - 1 Do
-      If FuncDefPool[I].Name = ExprPool[DFCallee].NameVal Then
-      Begin
-        FDI := I;
-        Break;
-      End;
-    If FDI < 0 Then Continue;
-    LblSkip := CgLabelGen;
-    EmitInstr('MOV EAX,DWORD PTR [EBP' + CgOfsStr(StmtPool[DS].Extra) + ']');
-    EmitInstr('CMP EAX,0');
-    EmitInstr('JE ' + LblSkip);
-    For I := ExprPool[DFCallE].ArgCount - 1 DownTo 0 Do
+    If ExprPool[DFCallee].Kind = EK_FUNCLIT Then
     Begin
-      EmitInstr('MOV EAX,DWORD PTR [EBP' + CgOfsStr(StmtPool[DS].Extra - 4 * (I + 1)) + ']');
-      EmitInstr('PUSH EAX');
+      { extension defer/panic/recover (fermetures) : fermeture differee et   }
+      { immediatement appelee (voir CompileStmt/STK_DEFER et la note de                    }
+      { InDeferClosureImmediate) - compile le CORPS EN LIGNE ICI, dans LA               }
+      { MEME image de pile que la fonction englobante (aucun environnement                       }
+      { de fermeture, aucun pointeur de fonction : ce generateur de code                             }
+      { n en a jamais besoin puisque cette fermeture est TOUJOURS appelee                                 }
+      { immediatement, au meme endroit, une seule fois) - un "return" nu             }
+      { EVENTUEL a l interieur (ArgCount=0, aucun resultat, deja impose au                            }
+      { site "defer" plus haut) doit sauter vers la FIN de ce SEUL bloc,                                  }
+      { jamais vers le CurRetLabel de la fonction englobante (qui                                            }
+      { executerait alors, a tort, une SECONDE fois les autres sites               }
+      { "defer" deja traites par CETTE MEME invocation d EmitDeferUnwind). }
+      LblSkip := CgLabelGen;
+      EmitInstr('MOV EAX,DWORD PTR [EBP' + CgOfsStr(StmtPool[DS].Extra) + ']');
+      EmitInstr('CMP EAX,0');
+      EmitInstr('JE ' + LblSkip);
+      SavedCFS2    := CurFuncSig;
+      SavedRetLbl2 := CurRetLabel;
+      CurFuncSig   := ExprPool[DFCallee].Extra;
+      CurRetLabel  := CgLabelGen;
+      { CompileFuncDef a deja mis CgRestrictSymRange a Faux avant d appeler   }
+      { EmitDeferUnwind (SymFind y redevient NON borne, voir sa propre               }
+      { note) - MAUVAIS pour CE cas precis : SANS le re-restreindre ICI,               }
+      { SymFind (appele en cascade par le CompileStmt ci-dessous pour               }
+      { resoudre "r"/"err"/etc) pourrait accrocher un symbole DE MEME NOM               }
+      { appartenant a une AUTRE fonction, plutot que celui - REELLEMENT               }
+      { voulu - de la fonction ENGLOBANTE de CETTE fermeture. CgSymRangeFirst/            }
+      { CgSymRangeLast sont INCHANGES depuis le CompileStmt du corps               }
+      { principal juste avant (memes bornes, meme fonction) - il suffit de              }
+      { redemander l activation, sans les recalculer. }
+      CgRestrictSymRange := True;
+      CompileStmt(ExprPool[DFCallee].Right);
+      CgRestrictSymRange := False;
+      EmitLabel(CurRetLabel);
+      CurFuncSig   := SavedCFS2;
+      CurRetLabel  := SavedRetLbl2;
+      EmitLabel(LblSkip);
+    End
+    Else
+    Begin
+      FDI := -1;
+      For I := 0 To FuncDefCount - 1 Do
+        If FuncDefPool[I].Name = ExprPool[DFCallee].NameVal Then
+        Begin
+          FDI := I;
+          Break;
+        End;
+      If FDI < 0 Then Continue;
+      LblSkip := CgLabelGen;
+      EmitInstr('MOV EAX,DWORD PTR [EBP' + CgOfsStr(StmtPool[DS].Extra) + ']');
+      EmitInstr('CMP EAX,0');
+      EmitInstr('JE ' + LblSkip);
+      For I := ExprPool[DFCallE].ArgCount - 1 DownTo 0 Do
+      Begin
+        EmitInstr('MOV EAX,DWORD PTR [EBP' + CgOfsStr(StmtPool[DS].Extra - 4 * (I + 1)) + ']');
+        EmitInstr('PUSH EAX');
+      End;
+      EmitInstr('CALL ' + ASM_PFX_FUNC + FuncDefPool[FDI].Name);
+      If ExprPool[DFCallE].ArgCount > 0 Then
+        EmitInstr('ADD ESP,' + IntToStrG(ExprPool[DFCallE].ArgCount * 4));
+      EmitLabel(LblSkip);
     End;
-    EmitInstr('CALL ' + ASM_PFX_FUNC + FuncDefPool[FDI].Name);
-    If ExprPool[DFCallE].ArgCount > 0 Then
-      EmitInstr('ADD ESP,' + IntToStrG(ExprPool[DFCallE].ArgCount * 4));
-    EmitLabel(LblSkip);
   End;
 End;
 
@@ -14947,7 +15776,7 @@ Var
   LblTAMatch, LblTANoMatch, LblTADone : TString;
   LblMCFound, LblMCDone : TString;
   RgMapSkip : TString;
-  DFCallE : Integer;
+  DFCallE, DFCallee : Integer;
 Begin
   If S < 0 Then Exit;
   Case StmtPool[S].Kind Of
@@ -14971,13 +15800,32 @@ Begin
       { une fois par iteration (un seul site STATIQUE par "defer" textuel,                  }
       { jamais un empilement dynamique). }
       Begin
-        DFCallE := StmtPool[S].Left;
-        If (ExprPool[DFCallE].Kind <> EK_CALL) Or (ExprPool[DFCallE].Left < 0) Or
-           (ExprPool[ExprPool[DFCallE].Left].Kind <> EK_IDENT) Then
+        DFCallE  := StmtPool[S].Left;
+        DFCallee := ExprPool[DFCallE].Left;
+        If (ExprPool[DFCallE].Kind <> EK_CALL) Or (DFCallee < 0) Then
           FatalError('TODO 21 : generateur de code, "defer" non couvert sur ' +
             'cette forme (seul un appel DIRECT a une fonction utilisateur ' +
             'CONNUE l''est - fermetures/methodes/valeurs-fonction restent ' +
             'hors de portee)')
+        Else If (ExprPool[DFCallee].Kind = EK_FUNCLIT) And
+                (ExprPool[DFCallE].ArgCount = 0) And
+                (TypeTab[ExprPool[DFCallee].Extra].ParamCount = 0) Then
+        Begin
+          { extension defer/panic/recover (fermetures) : "defer func()      }
+          { ... ()" (aucun parametre, aucun argument d appel) - voir la              }
+          { note de InDeferClosureImmediate/EmitDeferUnwind : rien a               }
+          { CAPTURER ici (aucun argument), le SEUL travail de ce site est                    }
+          { d armer son drapeau - le corps lui-meme n est compile qu UNE                          }
+          { SEULE fois, plus tard, PAR EmitDeferUnwind (EN LIGNE, jamais un                             }
+          { appel separe). }
+          EmitInstr('MOV EAX,1');
+          EmitInstr('MOV DWORD PTR [EBP' + CgOfsStr(StmtPool[S].Extra) + '],EAX');
+        End
+        Else If ExprPool[DFCallee].Kind <> EK_IDENT Then
+          FatalError('TODO 21 : generateur de code, "defer" non couvert sur ' +
+            'cette forme (seul un appel DIRECT a une fonction utilisateur ' +
+            'CONNUE, ou une fermeture immediate SANS parametre/argument, ' +
+            'l''est - methodes/valeurs-fonction restent hors de portee)')
         Else If ExprPool[DFCallE].ArgCount > DEFER_MAX_ARGWORDS Then
           FatalError('TODO 21 : generateur de code, "defer" non couvert : ' +
             'plus de ' + IntToStrG(DEFER_MAX_ARGWORDS) + ' arguments ' +
@@ -15106,11 +15954,24 @@ Begin
       Else
       Begin
         SI := SymFind(ExprPool[StmtArgPool[StmtPool[S].ArgFirst]].NameVal);
-        If (SI >= 0) And ExprIsFloatTyped(StmtArgPool2[StmtPool[S].ArgFirst]) Then
+        If ExprIsFloatTyped(StmtArgPool2[StmtPool[S].ArgFirst]) Then
         Begin
-          { extension flottants : voir la note equivalente de STK_SHORTVAR. }
+          { extension flottants : voir la note equivalente de STK_SHORTVAR - }
+          { BOGUE REEL trouve par EXECUTION (arret clair sur "_ =                }
+          { FonctionRenvoyantUnFloat64(...)", ex. "_ = Describe(s)",               }
+          { interfaces.go) : exiger "SI>=0" ICI (comme avant ce correctif)             }
+          { revenait a IGNORER ce cas entier des que la cible est "_"               }
+          { (SymFind('_') vaut TOUJOURS -1, "_" n est jamais ajoute a la           }
+          { table des symboles) - l APPEL flottant doit avoir lieu de              }
+          { toute facon (effets de bord EVENTUELS), seul le RANGEMENT du               }
+          { resultat est desormais conditionnel : dans le scratch PARTAGE               }
+          { FSCRATCH2 (jete) si la cible est "_", sinon dans le VRAI              }
+          { emplacement de la variable comme avant. }
           CompileFloatExpr(StmtArgPool2[StmtPool[S].ArgFirst]);
-          EmitInstr('FSTP ' + CgVarOperand(SI));
+          If SI >= 0 Then
+            EmitInstr('FSTP ' + CgVarOperand(SI))
+          Else
+            EmitInstr('FSTP [' + ASM_PFX_RUNTIME + 'FSCRATCH2]');
         End
         Else If (SI >= 0) And (SymTab[SI].TypeIdx >= 0) And
                 (TypeTab[SymTab[SI].TypeIdx].Kind In [TYK_INTERFACE, TYK_ERROR]) Then
@@ -15242,6 +16103,37 @@ Begin
                 EmitInstr('MOV DWORD PTR ' + CgVarOperand(MRSI) + ',EAX');
             End;
           End;
+        End;
+      End
+      Else If (StmtPool[S].ArgCount = 2) And
+              (ExprPool[StmtArgPool2[StmtPool[S].ArgFirst]].Kind = EK_RECV) Then
+      Begin
+        { extension goroutines/canaux : "v, ok := <-ch" - comma-ok de       }
+        { reception de canal (_GORT_CHAN_RECV_OK, EmitRuntimeLibrary,               }
+        { meme convention "pointeur de sortie" que strconv.Atoi/HOfs -                    }
+        { EAX=Valeur, *PointeurOk=1/0). Canal pousse EN SECOND (donc a               }
+        { [EBP+8] cote _GORT_CHAN_RECV_OK), pointeur ok EN PREMIER              }
+        { (a [EBP+12]). }
+        If StmtArgName[StmtPool[S].ArgFirst + 1] = '_' Then
+          EmitInstr('LEA EAX,[' + ASM_PFX_RUNTIME + 'FSCRATCH]')
+        Else
+        Begin
+          MCOkSI := SymFind(StmtArgName[StmtPool[S].ArgFirst + 1]);
+          If MCOkSI >= 0 Then
+            EmitInstr('LEA EAX,' + CgVarOperand(MCOkSI))
+          Else
+            EmitInstr('LEA EAX,[' + ASM_PFX_RUNTIME + 'FSCRATCH]');
+        End;
+        EmitInstr('PUSH EAX');
+        CompileExpr(ExprPool[StmtArgPool2[StmtPool[S].ArgFirst]].Left);
+        EmitInstr('PUSH EAX');
+        EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'CHAN_RECV_OK');
+        EmitInstr('ADD ESP,8');
+        If StmtArgName[StmtPool[S].ArgFirst] <> '_' Then
+        Begin
+          MCVSI := SymFind(StmtArgName[StmtPool[S].ArgFirst]);
+          If MCVSI >= 0 Then
+            EmitInstr('MOV DWORD PTR ' + CgVarOperand(MCVSI) + ',EAX');
         End;
       End
       Else If (StmtPool[S].ArgCount = 2) And
@@ -15393,7 +16285,26 @@ Begin
       Else
         For I := StmtPool[S].ArgFirst To StmtPool[S].ArgFirst + StmtPool[S].ArgCount - 1 Do
           If StmtArgName[I] = '_' Then
-            CompileExpr(StmtArgPool2[I])
+          Begin
+            { extension flottants : "_ = FonctionRenvoyantUnFloat64(...)"    }
+            { (ex. "_ = Describe(s)", interfaces.go) - BOGUE REEL trouve             }
+            { par EXECUTION (arret clair, pas un plantage silencieux :               }
+            { CompileExpr, convention EAX, aurait fini par heurter le               }
+            { garde-fou de CompileCallExpr, voir sa propre note) : cette             }
+            { cible "_" DOIT, elle aussi, passer par CompileFloatExpr             }
+            { quand la valeur EST flottante (l APPEL doit toujours avoir             }
+            { lieu, meme si son resultat est jete) - FSTP vers un scratch              }
+            { PARTAGE (FSCRATCH2, deja utilise ailleurs comme relais              }
+            { temporaire) pour vider PROPREMENT la pile FPU, jamais un              }
+            { "FSTP ST(0)" que cet assembleur ne couvre pas. }
+            If ExprIsFloatTyped(StmtArgPool2[I]) Then
+            Begin
+              CompileFloatExpr(StmtArgPool2[I]);
+              EmitInstr('FSTP [' + ASM_PFX_RUNTIME + 'FSCRATCH2]');
+            End
+            Else
+              CompileExpr(StmtArgPool2[I]);
+          End
           Else
           Begin
             SI := SymFind(StmtArgName[I]);
@@ -15715,14 +16626,74 @@ Begin
             HOfs := 8 + 4 * TypeTab[CurFuncSig].ParamCount + 4 * (I - 1);
             EmitInstr('MOV EBX,DWORD PTR [EBP+' + IntToStrG(HOfs) + ']');
             EmitInstr('MOV DWORD PTR [EBX],EAX');
+            { extension defer/panic/recover : si ce resultat est NOMME, ecrit  }
+            { AUSSI EAX dans son emplacement local - necessaire pour que          }
+            { EmitDeferUnwind (donc une fermeture differee imbriquee, voir            }
+            { sa propre note) puisse ENSUITE relire/modifier la valeur          }
+            { REELLEMENT renvoyee via ce meme nom (ex. "err") ; sans cette                    }
+            { copie, seul le pointeur de sortie cache serait a jour, jamais              }
+            { le local que le defer voit et modifie. }
+            RNam := FieldPool[TypeTab[CurFuncSig].ResultFirst + I].Name;
+            If RNam <> '' Then
+            Begin
+              SI := SymFind(RNam);
+              If SI >= 0 Then
+                EmitInstr('MOV DWORD PTR ' + CgVarOperand(SI) + ',EAX');
+            End;
           End;
           CompileExpr(StmtArgPool[StmtPool[S].ArgFirst]);
+          RNam := FieldPool[TypeTab[CurFuncSig].ResultFirst].Name;
+          If RNam <> '' Then
+          Begin
+            SI := SymFind(RNam);
+            If SI >= 0 Then
+              EmitInstr('MOV DWORD PTR ' + CgVarOperand(SI) + ',EAX');
+          End;
           EmitInstr('JMP ' + CurRetLabel);
         End;
       End
       Else If StmtPool[S].ArgCount = 1 Then
       Begin
-        CompileExpr(StmtArgPool[StmtPool[S].ArgFirst]);
+        { extension flottants (retours de fonction UTILISATEUR, TODO 21) :  }
+        { "return math.Sqrt(x)" (packages.go, Compute) - resultat DECLARE            }
+        { float64 : laisse la valeur sur la pile FPU (CompileFloatExpr),               }
+        { JAMAIS dans EAX (incompatible, 8 octets) - c est desormais la                    }
+        { convention de retour ATTENDUE par l appelant, voir             }
+        { CompileFloatExpr/EK_CALL (branche fonction UTILISATEUR). }
+        If (CurFuncSig >= 0) And (TypeTab[CurFuncSig].ResultCount = 1) And
+           (TypeResolveAlias(FieldPool[TypeTab[CurFuncSig].ResultFirst].TypeIdx)
+              = PDT_FLOAT64) Then
+        Begin
+          CompileFloatExpr(StmtArgPool[StmtPool[S].ArgFirst]);
+          RNam := FieldPool[TypeTab[CurFuncSig].ResultFirst].Name;
+          If RNam <> '' Then
+          Begin
+            SI := SymFind(RNam);
+            If SI >= 0 Then
+            Begin
+              EmitInstr('FSTP ' + CgVarOperand(SI));
+              EmitInstr('FLD ' + CgVarOperand(SI));
+            End;
+          End;
+        End
+        Else
+        Begin
+          CompileExpr(StmtArgPool[StmtPool[S].ArgFirst]);
+          { meme resynchronisation que ci-dessus pour le cas retours          }
+          { multiples, restreinte ici a un UNIQUE resultat NOMME (seule            }
+          { forme de signature a la fois valide en Go ET couverte par ce               }
+          { generateur de code). }
+          If (CurFuncSig >= 0) And (TypeTab[CurFuncSig].ResultCount = 1) Then
+          Begin
+            RNam := FieldPool[TypeTab[CurFuncSig].ResultFirst].Name;
+            If RNam <> '' Then
+            Begin
+              SI := SymFind(RNam);
+              If SI >= 0 Then
+                EmitInstr('MOV DWORD PTR ' + CgVarOperand(SI) + ',EAX');
+            End;
+          End;
+        End;
         EmitInstr('JMP ' + CurRetLabel);
       End
       Else
@@ -15759,11 +16730,29 @@ Begin
         EmitLabel(CurGotoLabelPfx + StmtPool[S].NameVal);
         CompileStmt(StmtPool[S].Left);
       End;
+    STK_GO:
+      CompileGoStmt(StmtPool[S].Left);
+    STK_SEND:
+      { extension goroutines/canaux : "Canal <- Valeur" - _GORT_CHAN_SEND  }
+      { (EmitRuntimeLibrary) BLOQUE (attente active bornee) tant que le              }
+      { tampon est plein. Valeur evaluee EN PREMIER (regle Go reelle,               }
+      { comme un appel de fonction ordinaire) et poussee en PREMIER pour              }
+      { qu elle finisse a [EBP+12] cote _GORT_CHAN_SEND, le canal          }
+      { (evalue/pousse EN SECOND) a [EBP+8]. }
+      Begin
+        CompileExpr(StmtPool[S].Right);
+        EmitInstr('PUSH EAX');
+        CompileExpr(StmtPool[S].Left);
+        EmitInstr('PUSH EAX');
+        EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'CHAN_SEND');
+        EmitInstr('ADD ESP,8');
+      End;
+    STK_SELECT:
+      CompileSelectStmt(S);
   Else
     FatalError('TODO 21 : generateur de code, forme d''instruction non ' +
-      'couverte (go/select restent TODO 22/23 - "defer" est desormais ' +
-      'couvert, voir sa propre note, mais SEULEMENT vers un appel direct ' +
-      'a une fonction utilisateur connue)');
+      'couverte ("defer"/"go"/"select" sont desormais couverts, voir leur ' +
+      'propre note, mais chacun avec une portee restreinte documentee)');
   End;
 End;
 
@@ -15977,6 +16966,501 @@ Begin
   EmitInstr('ADD ESP,4');
 End;
 
+{ CompileSelectStmt : "select" avec plusieurs clauses "case"/"default" -  }
+{ PORTEE (documentee, le SEUL cas rencontre par SAMPLES\GO\channels.go) : par            }
+{ clause NON-default, UN SEUL envoi ("case Canal <- Valeur:") ou UNE             }
+{ SEULE reception a cible UNIQUE ("case v := <-Canal:"/"case <-Canal:",           }
+{ cible ignoree ou non - la forme comma-ok "case v, ok := <-Canal:" reste             }
+{ hors de portee, arret propre) ; essaie CHAQUE clause NON-default, DANS            }
+{ L ORDRE TEXTUEL (Go reel choisit au hasard parmi celles PRETES - cette                  }
+{ simplification n est observable que si PLUSIEURS clauses sont PRETES              }
+{ SIMULTANEMENT, jamais le cas dans channels.go), via _GORT_CHAN_TRYSEND/                 }
+{ _GORT_CHAN_TRYRECV (NON bloquant, EmitRuntimeLibrary) - la PREMIERE              }
+{ qui reussit execute son corps et sort ; si AUCUNE ne reussit, execute            }
+{ "default" s il existe, SINON reessaie la boucle COMPLETE (Sleep(0),              }
+{ bornee - meme discipline "deadlock borne" que les canaux eux-memes)              }
+{ jusqu a ce qu une clause reussisse ou que la limite soit atteinte              }
+{ (select BLOQUANT sans "default" - non exerce par SAMPLES\GO\*.go             }
+{ actuel, mais couvert par honnetete plutot que silencieusement ignore). }
+Procedure CompileSelectStmt(S: Integer);
+Var
+  C, HeaderStmt, ChanE, DefaultClauseIdx, CJ : Integer;
+  LblSelectDone, LblNext, LblRetryAll : TString;
+  TargetName : TString;
+  SI : Integer;
+Begin
+  LblSelectDone := CgLabelGen;
+  DefaultClauseIdx := -1;
+  For C := StmtPool[S].ArgFirst To StmtPool[S].ArgFirst + StmtPool[S].ArgCount - 1 Do
+    If CaseClausePool[C].IsDefault Then DefaultClauseIdx := C;
+
+  { pas de "default" : boucle bornee (Sleep(0) entre chaque passe            }
+  { complete) - voir la note de section. Avec "default", LblRetryAll             }
+  { n est JAMAIS reference (aucun saut vers lui), donc sans consequence            }
+  { s il reste inutilise. }
+  LblRetryAll := CgLabelGen;
+  If DefaultClauseIdx < 0 Then
+  Begin
+    EmitInstr('MOV EAX,200000');
+    EmitInstr('PUSH EAX');                          { [ESP+0] = CompteurRestant }
+    EmitLabel(LblRetryAll);
+  End;
+
+  For C := StmtPool[S].ArgFirst To StmtPool[S].ArgFirst + StmtPool[S].ArgCount - 1 Do
+    If Not CaseClausePool[C].IsDefault Then
+    Begin
+      LblNext := CgLabelGen;
+      HeaderStmt := CaseClausePool[C].HeaderStmt;
+      If StmtPool[HeaderStmt].Kind = STK_SEND Then
+      Begin
+        { _GORT_CHAN_TRYSEND attend [EBP+8]=Canal,[EBP+12]=Valeur - meme      }
+        { ordre de PUSH (valeur PUIS canal, canal EN DERNIER) que STK_SEND               }
+        { ordinaire (CompileStmt), deja verifie correct. }
+        CompileExpr(StmtPool[HeaderStmt].Right);      { valeur }
+        EmitInstr('PUSH EAX');
+        CompileExpr(StmtPool[HeaderStmt].Left);        { canal, pousse EN DERNIER }
+        EmitInstr('PUSH EAX');
+        EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'CHAN_TRYSEND');
+        EmitInstr('ADD ESP,8');
+        EmitInstr('CMP EAX,0');
+        EmitInstr('JE ' + LblNext);
+      End
+      Else
+      Begin
+        TargetName := '_';
+        If StmtPool[HeaderStmt].Kind = STK_EXPR Then
+          ChanE := ExprPool[StmtPool[HeaderStmt].Left].Left
+        Else If (StmtPool[HeaderStmt].Kind = STK_SHORTVAR) And
+                (StmtPool[HeaderStmt].ArgCount = 1) Then
+        Begin
+          ChanE := ExprPool[StmtArgPool2[StmtPool[HeaderStmt].ArgFirst]].Left;
+          TargetName := StmtArgName[StmtPool[HeaderStmt].ArgFirst];
+        End
+        Else
+        Begin
+          FatalError('TODO 21 : generateur de code, "select" non couvert ' +
+            'sur cette forme d''en-tete de "case" (seuls un envoi, une ' +
+            'reception nue, ou une reception a cible UNIQUE le sont - le ' +
+            'comma-ok reste hors de portee)');
+          ChanE := -1;
+        End;
+        { BOGUE REEL trouve par EXECUTION (segmentation fault - le canal      }
+        { se retrouvait a [EBP+12] et le pointeur de sortie a [EBP+8],               }
+        { EXACTEMENT inverses par rapport a ce que _GORT_CHAN_TRYRECV                    }
+        { attend reellement ([EBP+8]=Canal,[EBP+12]=PointeurSortieValeur)                        }
+        { - la routine utilisait alors l ADRESSE DE _GORT_FSCRATCH               }
+        { elle-meme comme si c etait un pointeur de canal, et                                        }
+        { EnterCriticalSection plantait sur l adresse arbitraire qui en              }
+        { decoulait (FSCRATCH+24). Pousse le pointeur de sortie D ABORD,            }
+        { le canal EN DERNIER - meme convention que CHAN_RECV_OK, deja               }
+        { correcte, juste au-dessus. }
+        EmitInstr('LEA EAX,[' + ASM_PFX_RUNTIME + 'FSCRATCH]');
+        EmitInstr('PUSH EAX');
+        CompileExpr(ChanE);                             { canal, pousse EN DERNIER }
+        EmitInstr('PUSH EAX');
+        EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'CHAN_TRYRECV');
+        EmitInstr('ADD ESP,8');
+        EmitInstr('CMP EAX,0');
+        EmitInstr('JE ' + LblNext);
+        If (TargetName <> '_') And (TargetName <> '') Then
+        Begin
+          SI := SymFind(TargetName);
+          If SI >= 0 Then
+          Begin
+            EmitInstr('MOV EAX,DWORD PTR [' + ASM_PFX_RUNTIME + 'FSCRATCH]');
+            EmitInstr('MOV DWORD PTR ' + CgVarOperand(SI) + ',EAX');
+          End;
+        End;
+      End;
+      For CJ := 0 To CaseClausePool[C].BodyCount - 1 Do
+        CompileStmt(StmtArgPool[CaseClausePool[C].BodyFirst + CJ]);
+      EmitInstr('JMP ' + LblSelectDone);
+      EmitLabel(LblNext);
+    End;
+
+  If DefaultClauseIdx >= 0 Then
+    For CJ := 0 To CaseClausePool[DefaultClauseIdx].BodyCount - 1 Do
+      CompileStmt(StmtArgPool[CaseClausePool[DefaultClauseIdx].BodyFirst + CJ])
+  Else
+  Begin
+    EmitInstr('MOV EAX,DWORD PTR [ESP]');
+    EmitInstr('DEC EAX');
+    EmitInstr('MOV DWORD PTR [ESP],EAX');
+    EmitInstr('CMP EAX,0');
+    EmitInstr('JLE ' + LblSelectDone);
+    EmitInstr('PUSH 0');
+    EmitInstr('CALL _Sleep@4');
+    EmitInstr('JMP ' + LblRetryAll);
+  End;
+
+  EmitLabel(LblSelectDone);
+  If DefaultClauseIdx < 0 Then
+    EmitInstr('ADD ESP,4');
+End;
+
+{ EmitNamedResultSync : extension defer/panic/recover (fermetures) -      }
+{ appelee UNE FOIS par fonction, entre EmitDeferUnwind et EmitEpilog               }
+{ (CompileFuncDef) - relit les resultats NOMMES (ex. "result", "err")               }
+{ depuis leurs emplacements locaux et les ecrit vers EAX (premier)/le                    }
+{ pointeur de sortie cache (suivants, meme formule HOfs que STK_RETURN)                  }
+{ EXACTEMENT comme le ferait un "return" ordinaire - INDISPENSABLE pour            }
+{ que la valeur EVENTUELLEMENT modifiee par un "defer" (via recover(),                   }
+{ ex. Safe dans defer_panic.go) soit bien celle REELLEMENT renvoyee a               }
+{ l appelant : un panic() n execute JAMAIS l instruction "return" elle-              }
+{ meme (il saute DIRECTEMENT a l epilogue - CompileRuntimePanic), donc                       }
+{ SANS cette resynchronisation EAX porterait une valeur INDEFINIE et le                     }
+{ pointeur de sortie cache ne serait JAMAIS ecrit dans ce cas precis.                     }
+{ Chaque site "return" (STK_RETURN, TODO 21) copie DEJA sa PROPRE valeur                    }
+{ dans le local NOMME AVANT de sauter ici (voir sa propre note) : pour un              }
+{ retour NORMAL (sans panic), cette resynchronisation relit donc                                }
+{ simplement la MEME valeur qu EAX porte deja - sans effet observable,                                    }
+{ jamais une regression. Ignoree pour toute fonction SANS resultat NOMME                              }
+{ (rien a relire) - seule forme de signature a la fois valide en Go ET                                    }
+{ couverte par ce generateur de code (TypeTab[FT].ResultCount>1 EXIGE          }
+{ deja, ailleurs, que TOUS les resultats soient nommes ou AUCUN). }
+Procedure EmitNamedResultSync(FT: Integer);
+Var I, SI, HOfs: Integer; RNam: TString;
+Begin
+  If (FT < 0) Or (TypeTab[FT].ResultCount < 1) Then Exit;
+  RNam := FieldPool[TypeTab[FT].ResultFirst].Name;
+  If RNam = '' Then Exit;
+  SI := SymFind(RNam);
+  If SI >= 0 Then
+    EmitInstr('MOV EAX,DWORD PTR ' + CgVarOperand(SI));
+  For I := 1 To TypeTab[FT].ResultCount - 1 Do
+  Begin
+    RNam := FieldPool[TypeTab[FT].ResultFirst + I].Name;
+    If RNam = '' Then Continue;
+    SI := SymFind(RNam);
+    If SI < 0 Then Continue;
+    HOfs := 8 + 4 * TypeTab[FT].ParamCount + 4 * (I - 1);
+    EmitInstr('MOV EBX,DWORD PTR ' + CgVarOperand(SI));
+    EmitInstr('MOV ECX,DWORD PTR [EBP+' + IntToStrG(HOfs) + ']');
+    EmitInstr('MOV DWORD PTR [ECX],EBX');
+  End;
+End;
+
+{ extension goroutines/canaux : capture PAR VALEUR des variables LIBRES  }
+{ d une fermeture lancee par "go" (jamais celles d une fermeture         }
+{ differee par "defer", INLINE dans la MEME pile - voir la note de              }
+{ InDeferClosureImmediate - qui n a besoin d aucune capture puisqu elle             }
+{ PARTAGE directement les emplacements memoire de la fonction               }
+{ englobante) : une goroutine s execute sur un VRAI thread SEPARE, avec               }
+{ sa PROPRE pile - elle ne peut donc JAMAIS lire/ecrire directement un              }
+{ emplacement de la pile de la fonction englobante. FreeVarNames/Cnt              }
+{ accumule, PAR ORDRE DE PREMIERE RENCONTRE, chaque nom d identifiant              }
+{ REFERENCE dans le corps de la fermeture - PORTEE (documentee) : ne             }
+{ distingue PAS un identifiant reellement "libre" (variable de la              }
+{ fonction englobante) d un identifiant LOCAL a la fermeture elle-meme               }
+{ (ex. "r" dans "if r := recover(); ...") - CompileGoClosure resout              }
+{ chaque nom par SymFind AVANT d entrer dans la portee de la fermeture,             }
+{ un nom purement local n y resoudra simplement RIEN d utile (silencieusement            }
+{ ignore, MOV EAX,0 a la place) - sans consequence pour le SEUL cas               }
+{ couvert (SAMPLES\GO\lextest.go, une fermeture "go" envoyant sur "ch",              }
+{ zero variable locale a l interieur). MAX_GOFREEVARS(16) largement suffisant                    }
+{ pour toute fermeture "go" raisonnable. }
+Const MAX_GOFREEVARS = 16;
+Type TGoFreeVarNames = Array[0..MAX_GOFREEVARS - 1] Of TString;
+
+Procedure GoFreeVarAdd(Const Nam: TString; Var Names: TGoFreeVarNames; Var Cnt: Integer);
+Var I: Integer;
+Begin
+  If (Nam = '') Or (Nam = '_') Then Exit;
+  For I := 0 To Cnt - 1 Do
+    If Names[I] = Nam Then Exit;
+  If Cnt < MAX_GOFREEVARS Then
+  Begin
+    Names[Cnt] := Nam;
+    Inc(Cnt);
+  End;
+End;
+
+Procedure CollectGoFreeVarsExpr(E: Integer; Var Names: TGoFreeVarNames; Var Cnt: Integer); Forward;
+
+Procedure CollectGoFreeVarsStmt(S: Integer; Var Names: TGoFreeVarNames; Var Cnt: Integer);
+Var I: Integer;
+Begin
+  If S < 0 Then Exit;
+  Case StmtPool[S].Kind Of
+    STK_EXPR, STK_INCDEC:
+      CollectGoFreeVarsExpr(StmtPool[S].Left, Names, Cnt);
+    STK_SEND:
+    Begin
+      CollectGoFreeVarsExpr(StmtPool[S].Left, Names, Cnt);
+      CollectGoFreeVarsExpr(StmtPool[S].Right, Names, Cnt);
+    End;
+    STK_ASSIGN, STK_SHORTVAR:
+      For I := StmtPool[S].ArgFirst To StmtPool[S].ArgFirst + StmtPool[S].ArgCount - 1 Do
+      Begin
+        CollectGoFreeVarsExpr(StmtArgPool[I], Names, Cnt);
+        CollectGoFreeVarsExpr(StmtArgPool2[I], Names, Cnt);
+      End;
+    STK_RETURN:
+      For I := StmtPool[S].ArgFirst To StmtPool[S].ArgFirst + StmtPool[S].ArgCount - 1 Do
+        CollectGoFreeVarsExpr(StmtArgPool[I], Names, Cnt);
+    STK_BLOCK:
+      For I := StmtPool[S].ArgFirst To StmtPool[S].ArgFirst + StmtPool[S].ArgCount - 1 Do
+        CollectGoFreeVarsStmt(StmtArgPool[I], Names, Cnt);
+    STK_IF:
+    Begin
+      CollectGoFreeVarsStmt(StmtPool[S].Left, Names, Cnt);
+      CollectGoFreeVarsExpr(StmtPool[S].Extra, Names, Cnt);
+      CollectGoFreeVarsStmt(StmtPool[S].Right, Names, Cnt);
+      CollectGoFreeVarsStmt(StmtPool[S].Extra2, Names, Cnt);
+    End;
+    STK_FOR:
+    Begin
+      CollectGoFreeVarsStmt(StmtPool[S].Left, Names, Cnt);
+      CollectGoFreeVarsExpr(StmtPool[S].Extra, Names, Cnt);
+      CollectGoFreeVarsStmt(StmtPool[S].Right, Names, Cnt);
+      CollectGoFreeVarsStmt(StmtPool[S].Extra2, Names, Cnt);
+    End;
+  End;
+  { toute AUTRE forme (switch/select/defer/go/for-range imbriques) :      }
+  { best-effort, silencieusement ignoree ICI - non exercee par le SEUL              }
+  { cas couvert, voir la note ci-dessus. }
+End;
+
+Procedure CollectGoFreeVarsExpr(E: Integer; Var Names: TGoFreeVarNames; Var Cnt: Integer);
+Var I: Integer;
+Begin
+  If E < 0 Then Exit;
+  Case ExprPool[E].Kind Of
+    EK_IDENT: GoFreeVarAdd(ExprPool[E].NameVal, Names, Cnt);
+    EK_BINARY:
+    Begin
+      CollectGoFreeVarsExpr(ExprPool[E].Left, Names, Cnt);
+      CollectGoFreeVarsExpr(ExprPool[E].Right, Names, Cnt);
+    End;
+    EK_UNARY, EK_RECV, EK_DEREF, EK_ADDR, EK_SELECTOR:
+      CollectGoFreeVarsExpr(ExprPool[E].Left, Names, Cnt);
+    EK_INDEX:
+    Begin
+      CollectGoFreeVarsExpr(ExprPool[E].Left, Names, Cnt);
+      CollectGoFreeVarsExpr(ExprPool[E].Right, Names, Cnt);
+    End;
+    EK_CALL:
+    Begin
+      CollectGoFreeVarsExpr(ExprPool[E].Left, Names, Cnt);
+      For I := ExprPool[E].ArgFirst To ExprPool[E].ArgFirst + ExprPool[E].ArgCount - 1 Do
+        CollectGoFreeVarsExpr(ExprArgPool[I], Names, Cnt);
+    End;
+  End;
+End;
+
+{ CompileGoStmt : "go Expr(...)" - lance une VRAIE goroutine Win32       }
+{ (CreateThread, voir la note de section d EmitRuntimeLibrary) - DEUX             }
+{ formes couvertes (les deux SEULES rencontrees par SAMPLES\GO\*.go) :               }
+{ (1) appel DIRECT a une fonction utilisateur CONNUE ("go Worker(ch,             }
+{ done)", channels.go) - construit un bloc d arguments (BlocArguments,               }
+{ voir _GORT_GOROUTINE_TRAMPOLINE) contenant le pointeur de LA fonction              }
+{ elle-meme (LEA sur son etiquette ASM) et la valeur COURANTE de chaque             }
+{ argument ; (2) fermeture immediate SANS parametre (lextest.go) -                     }
+{ genere le corps de la fermeture comme une VRAIE                                  }
+{ routine autonome (sa PROPRE etiquette, son PROPRE prolog/epilogue,             }
+{ EXACTEMENT comme CompileFuncDef) prenant en parametres les variables              }
+{ LIBRES capturees (CollectGoFreeVarsStmt/Expr, PAR VALEUR - voir sa               }
+{ propre note), puis lance UN thread pour CETTE routine EXACTEMENT comme            }
+{ la forme (1). Methodes/valeurs-fonction restent hors de portee (arret               }
+{ propre). }
+Procedure CompileGoStmt(GoE: Integer);
+Var
+  Callee, FDI, I, ArgFirst, ArgCount : Integer;
+  FreeNames : TGoFreeVarNames;
+  FreeTypes : Array[0..MAX_GOFREEVARS - 1] Of Integer;
+  FreeCnt, FreeSI, SavedCFS, SavedPO, SavedLO : Integer;
+  ClosureLabel, SavedRL, LblAfterClosure : TString;
+  SavedRestrict : Boolean;
+Begin
+  If (ExprPool[GoE].Kind <> EK_CALL) Or (ExprPool[GoE].Left < 0) Then
+  Begin
+    FatalError('TODO 21 : generateur de code, "go" non couvert sur cette ' +
+      'forme (seul un appel DIRECT a une fonction utilisateur CONNUE, ou ' +
+      'une fermeture immediate SANS parametre, l''est)');
+    Exit;
+  End;
+  Callee := ExprPool[GoE].Left;
+
+  If ExprPool[Callee].Kind = EK_IDENT Then
+  Begin
+    FDI := -1;
+    For I := 0 To FuncDefCount - 1 Do
+      If FuncDefPool[I].Name = ExprPool[Callee].NameVal Then
+      Begin
+        FDI := I;
+        Break;
+      End;
+    If FDI < 0 Then
+    Begin
+      FatalError('TODO 21 : generateur de code, "go" non couvert ' +
+        '(fonction utilisateur inconnue) : ' + ExprPool[Callee].NameVal);
+      Exit;
+    End;
+    ArgFirst := ExprPool[GoE].ArgFirst;
+    ArgCount := ExprPool[GoE].ArgCount;
+    EmitInstr('PUSH ' + IntToStrG((2 + ArgCount) * 4));
+    EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+    EmitInstr('ADD ESP,4');
+    EmitInstr('PUSH EAX');                              { [ESP+0] = BlocArguments, survit EN MEMOIRE }
+    EmitInstr('MOV EBX,DWORD PTR [ESP]');
+    EmitInstr('LEA EAX,[' + ASM_PFX_FUNC + FuncDefPool[FDI].Name + ']');
+    EmitInstr('MOV DWORD PTR [EBX],EAX');
+    EmitInstr('MOV EAX,' + IntToStrG(ArgCount));
+    EmitInstr('MOV DWORD PTR [EBX+4],EAX');
+    For I := 0 To ArgCount - 1 Do
+    Begin
+      CompileExpr(ExprArgPool[ArgFirst + I]);
+      EmitInstr('MOV EBX,DWORD PTR [ESP]');               { rechargee APRES CompileExpr, jamais gardee en registre a travers }
+      EmitInstr('MOV DWORD PTR [EBX+' + IntToStrG(8 + 4 * I) + '],EAX');
+    End;
+  End
+  Else If ExprPool[Callee].Kind = EK_FUNCLIT Then
+  Begin
+    If TypeTab[ExprPool[Callee].Extra].ParamCount <> 0 Then
+    Begin
+      FatalError('TODO 21 : generateur de code, "go func(...)" non ' +
+        'couvert avec des parametres (seule une fermeture SANS parametre ' +
+        'l''est)');
+      Exit;
+    End;
+    FreeCnt := 0;
+    CollectGoFreeVarsStmt(ExprPool[Callee].Right, FreeNames, FreeCnt);
+    ClosureLabel := CgLabelGen;
+    EmitInstr('PUSH ' + IntToStrG((2 + FreeCnt) * 4));
+    EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+    EmitInstr('ADD ESP,4');
+    EmitInstr('PUSH EAX');
+    EmitInstr('MOV EBX,DWORD PTR [ESP]');
+    EmitInstr('LEA EAX,[' + ClosureLabel + ']');
+    EmitInstr('MOV DWORD PTR [EBX],EAX');
+    EmitInstr('MOV EAX,' + IntToStrG(FreeCnt));
+    EmitInstr('MOV DWORD PTR [EBX+4],EAX');
+    For I := 0 To FreeCnt - 1 Do
+    Begin
+      { resolu ICI, AVANT toute entree dans la portee de la fermeture -   }
+      { voir la note de section : c est bien la variable de la fonction              }
+      { ENGLOBANTE qui doit etre trouvee. }
+      FreeSI := SymFind(FreeNames[I]);
+      If FreeSI >= 0 Then
+      Begin
+        EmitInstr('MOV EAX,DWORD PTR ' + CgVarOperand(FreeSI));
+        FreeTypes[I] := SymTab[FreeSI].TypeIdx;
+      End
+      Else
+      Begin
+        EmitInstr('MOV EAX,0');
+        FreeTypes[I] := PDT_INT;
+      End;
+      EmitInstr('MOV EBX,DWORD PTR [ESP]');
+      EmitInstr('MOV DWORD PTR [EBX+' + IntToStrG(8 + 4 * I) + '],EAX');
+    End;
+  End
+  Else
+  Begin
+    FatalError('TODO 21 : generateur de code, "go" non couvert sur cette ' +
+      'forme (methodes/valeurs-fonction restent hors de portee)');
+    Exit;
+  End;
+
+  { spawn du thread - IDENTIQUE pour les DEUX formes ci-dessus, seul le    }
+  { contenu du BlocArguments deja empile ([ESP+0]) differe. }
+  EmitInstr('PUSH 0');                                   { lpThreadId = NULL (autorise) }
+  EmitInstr('PUSH 0');                                   { dwCreationFlags = 0 }
+  EmitInstr('MOV EAX,DWORD PTR [ESP+8]');                { recharge BlocArguments }
+  EmitInstr('PUSH EAX');                                 { lpParameter }
+  EmitInstr('LEA EAX,[' + ASM_PFX_RUNTIME + 'GOROUTINE_TRAMPOLINE]');
+  EmitInstr('PUSH EAX');                                 { lpStartAddress }
+  EmitInstr('PUSH 0');                                   { dwStackSize = 0 (defaut) }
+  EmitInstr('PUSH 0');                                   { lpThreadAttributes = NULL }
+  EmitInstr('CALL _CreateThread@24');                    { STDCALL : AUCUN "ADD ESP" ici }
+  EmitInstr('ADD ESP,4');                                { retire NOTRE BlocArguments local }
+
+  { EK_FUNCLIT (forme 2) UNIQUEMENT : emet ENFIN le corps de la fermeture  }
+  { comme une VRAIE routine autonome - APRES le lancement du thread dans            }
+  { le flux du .asm texte (SANS IMPORTANCE, un assembleur a etiquettes             }
+  { resolues GLOBALEMENT ne se soucie jamais de l ordre textuel), avec               }
+  { les variables LIBRES capturees comme de simples PARAMETRES entrants                    }
+  { (dans le MEME ordre que le BlocArguments ci-dessus). }
+  If ExprPool[Callee].Kind = EK_FUNCLIT Then
+  Begin
+    { BOGUE REEL trouve par EXECUTION (segmentation fault immediate au         }
+    { premier "go" lancant une fermeture rencontre a l EXECUTION, jamais              }
+    { a la compilation ni a l assemblage) : le corps de la fermeture, emis            }
+    { ci-dessous EN LIGNE dans le MEME flux de texte .asm que la fonction               }
+    { ENGLOBANTE (juste APRES le CALL _CreateThread ci-dessus), n est                        }
+    { JAMAIS atteint par un vrai CALL en execution NORMALE (SEUL le               }
+    { thread NOUVELLEMENT cree l atteint, via _GORT_GOROUTINE_TRAMPOLINE)                        }
+    { - sans ce JMP, l execution NORMALE de la fonction englobante              }
+    { CONTINUE tout simplement, en ligne droite, dans le PROLOGUE de la              }
+    { fermeture (PUSH EBP;MOV EBP,ESP;...) comme s il s agissait de SON              }
+    { PROPRE code, puis atteint l EPILOGUE de la fermeture (RET) SANS               }
+    { qu aucune VRAIE adresse de retour n ait ete poussee pour lui (la              }
+    { fermeture n a jamais ete APPELEE, seulement traversee par chute) -               }
+    { ce RET depile alors n importe quoi comme adresse de retour et saute             }
+    { dans de la memoire arbitraire. }
+    LblAfterClosure := CgLabelGen;
+    EmitInstr('JMP ' + LblAfterClosure);
+    SavedCFS := CurFuncSig;
+    SavedRL  := CurRetLabel;
+    SavedPO  := CurParamOffset;
+    SavedLO  := CurLocalOffset;
+    CurParamOffset := 8;
+    CurLocalOffset := 0;
+    SymEnterScope;
+    SymAddIsParam := True;
+    { BOGUE REEL trouve par EXECUTION (arret "variable declaree et non      }
+    { utilisee" FAUX, sur la variable LIBRE elle-meme, alors que son            }
+    { corps la reference bel et bien) : SymAdd, contrairement a ce que              }
+    { SymAddIsParam pourrait suggerer, ne positionne JAMAIS IsParam LUI-              }
+    { MEME (seul l APPELANT le fait explicitement APRES, voir              }
+    { RegisterFuncScopeSymbols/ParseFuncDecl, meme discipline) - sans ce             }
+    { "SymTab[FreeSI].IsParam := True" ICI, ce symbole reste marque             }
+    { IsParam=Faux (valeur par defaut de SymAdd) ET Used=Faux (ce dernier              }
+    { n est JAMAIS positionne par le generateur de code - SEUL              }
+    { ExprAddIdent, a l ANALYSE, le fait) : SymLeaveScope, appele plus bas            }
+    { a la fin de CETTE MEME fermeture, le signale alors a tort comme               }
+    { "non utilise", meme quand son corps le reference REELLEMENT. }
+    For I := 0 To FreeCnt - 1 Do
+    Begin
+      FreeSI := SymAdd(FreeNames[I], SK_VAR, FreeTypes[I]);
+      If FreeSI >= 0 Then SymTab[FreeSI].IsParam := True;
+    End;
+    SymAddIsParam := False;
+    CurFuncSig  := ExprPool[Callee].Extra;
+    CurRetLabel := CgLabelGen;
+    EmitLabel(ClosureLabel);
+    EmitProlog(ExprPool[Callee].IntVal);    { IntVal REUTILISE pour porter LocalFrameSize, voir ParseFuncLiteral }
+    { BOGUE REEL trouve par EXECUTION ("ch <- 1", a l interieur de la        }
+    { fermeture, lisait [EBP-4] - l emplacement LOCAL de "ch" DANS LA               }
+    { FONCTION ENGLOBANTE - au lieu de [EBP+8], son PROPRE parametre               }
+    { entrant fraichement enregistre juste au-dessus) : CompileFuncDef              }
+    { (fonction ENGLOBANTE) a deja restreint SymFind (CgRestrictSymRange)                     }
+    { aux SEULS symboles de SA PROPRE plage [SymFirst,SymLast), FIGEE A          }
+    { L ANALYSE - le nouveau symbole "libre" ajoute CI-DESSUS (SymAdd, A            }
+    { LA GENERATION DE CODE, donc a un INDICE largement au-dela de cette           }
+    { plage deja figee) en est du coup EXCLU, et SymFind retombe          }
+    { silencieusement sur l ANCIEN symbole (celui de la fonction               }
+    { englobante, MEME NOM) au lieu du nouveau. Desactive temporairement              }
+    { la restriction pour la duree de CE corps SEULEMENT : sans risque de              }
+    { collision puisque le symbole que l on VEUT que SymFind trouve EST              }
+    { justement le PLUS RECENT (donc le PREMIER que sa recherche EN               }
+    { ARRIERE rencontre). }
+    SavedRestrict := CgRestrictSymRange;
+    CgRestrictSymRange := False;
+    CompileStmt(ExprPool[Callee].Right);
+    CgRestrictSymRange := SavedRestrict;
+    EmitLabel(CurRetLabel);
+    EmitEpilog;
+    SymLeaveScope;
+    CurFuncSig     := SavedCFS;
+    CurRetLabel    := SavedRL;
+    CurParamOffset := SavedPO;
+    CurLocalOffset := SavedLO;
+    EmitBlankLine;
+    EmitLabel(LblAfterClosure);
+  End;
+End;
+
 { CompileFuncDef : genere le corps COMPLET (etiquette+prolog+corps+       }
 { epilog) d une fonction NOMMEE de haut niveau (FuncDefPool) - les            }
 { methodes (MethodDefPool) restent HORS DE PORTEE de ce TODO (aucun               }
@@ -16004,6 +17488,13 @@ Begin
   CgRestrictSymRange := False;
   EmitLabel(CurRetLabel);
   EmitDeferUnwind(FuncDefPool[FDI].BodyStmtIdx);
+  { extension defer/panic/recover : re-restreint SymFind (voir la note de     }
+  { EmitDeferUnwind, meme raisonnement) pour la duree de cette                        }
+  { resynchronisation - CgSymRangeFirst/Last restent ceux, deja corrects,               }
+  { de CETTE fonction. }
+  CgRestrictSymRange := True;
+  EmitNamedResultSync(FuncDefPool[FDI].TypeIdx);
+  CgRestrictSymRange := False;
   EmitEpilog;
   CurRetLabel := SavedRetLabel;
   EmitBlankLine;
@@ -16896,10 +18387,28 @@ End;
 { stdcall ("_WriteFile@20") - la DISTINCTION ne se fait qu a la resolution               }
 { (BinResolveFixups/WriteCOFFObj), PAR NOM, jamais ici. }
 Procedure BinEncodeCall(Const Op1Text: TString);
+Var RegCode: Integer;
 Begin
-  BinEmit8($E8);
-  BinEmit32(0);
-  BinAddFixup(BFX_REL32, BinTrim(Op1Text));
+  { extension goroutines/canaux : "CALL EAX" (appel INDIRECT via un        }
+  { pointeur de fonction en registre, FF /2 - ModRM mod=11,reg=010,             }
+  { rm=registre) - necessaire pour _GORT_GOROUTINE_TRAMPOLINE (appelle la             }
+  { fonction utilisateur cible d un "go F(...)" via un pointeur lu            }
+  { dans le bloc d arguments alloue au site d appel, jamais connu comme               }
+  { une etiquette FIXE a l assemblage - AUCUN appel existant avant                       }
+  { cette extension n en avait besoin, toujours une etiquette DIRECTE                       }
+  { (E8 rel32) jusqu ici. }
+  RegCode := BinReg32(BinTrim(Op1Text));
+  If RegCode >= 0 Then
+  Begin
+    BinEmit8($FF);
+    BinEmit8($D0 + RegCode);
+  End
+  Else
+  Begin
+    BinEmit8($E8);
+    BinEmit32(0);
+    BinAddFixup(BFX_REL32, BinTrim(Op1Text));
+  End;
 End;
 
 Procedure BinSplitMnemonic(Const Line: TString; Var Mnemonic, Rest: TString);
@@ -18216,11 +19725,15 @@ Begin
   WriteLn('GOCW32: CE FICHIER a compile ET assemble avec SUCCES, sans ',
     'aucune limite rencontree (', TokenCount, ' tokens, ', SymCount,
     ' symboles, ', FuncDefCount, ' fonctions, ', MethodDefCount, ' methodes).');
-  WriteLn('(le compilateur, dans son ensemble, ne couvre pas encore 100% ',
-    'du langage Go - un AUTRE fichier utilisant goroutines/canaux/',
-    'bibliotheque standard etendue/chaines etendues/fermetures capturantes ',
-    'pourrait rencontrer un arret propre documente ; voir l''en-tete du ',
-    'fichier source, section TODO 25, pour la liste exacte)');
+  WriteLn('(le compilateur couvre desormais les 16/16 fichiers de ',
+    'SAMPLES\GO (goroutines/canaux/select, fermetures REELLES avec ',
+    'capture, bibliotheque standard etendue, chaines etendues, ',
+    'parametres/retours flottants de fonction utilisateur inclus) - ',
+    'des limites residuelles PLUS ETROITES restent documentees au cas ',
+    'par cas dans le code (ex. comma-ok a l''interieur d''un "select", ',
+    'retour flottant d''une methode/interface, canal non borne ',
+    'simplifie a 1 emplacement) ; voir l''en-tete du fichier source, ',
+    'section TODO 25, pour le detail exact)');
 
   ShowStats;
 End;
