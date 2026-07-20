@@ -592,5 +592,396 @@ Program SWIFTW32;
               affirmation globale non verifiee fichier par fichier
   ============================================================ *)
 
+{ ============================================================ }
+{ TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF      }
+{ ============================================================ }
+
+Const
+  SWIFTW32_VERSION = '0.1';
+  SWIFTW32_DATE    = '2026';
+
+  EXIT_OK    = 0;
+  EXIT_ERROR = 1;
+  EXIT_USAGE = 2;
+
+  { --- Constantes PE/COFF (identiques aux autres compilateurs   }
+  { de ce projet - format Win32 universel, pas specifique a       }
+  { Swift). }
+  PE_DOS_MAGIC            = $5A4D;
+  PE_PE_SIG               = $00004550;
+  PE_MACHINE_I386         = $014C;
+  PE_IMG_BASE             = $00400000;
+  PE_SEC_ALIGN            = 4096;
+  PE_FILE_ALIGN           = 512;
+  PE_SUBSYS_CUI           = 3;
+  PE_SUBSYS_GUI           = 2;
+  PE_OPT_MAGIC_PE32       = $010B;
+  PE_SCN_CNT_CODE         = $00000020;
+  PE_SCN_CNT_INIT_DATA    = $00000040;
+  PE_SCN_CNT_UNINIT_DATA  = $00000080;
+  PE_SCN_MEM_EXECUTE      = $20000000;
+  PE_SCN_MEM_READ         = $40000000;
+  PE_SCN_MEM_WRITE        = -2147483648;
+  COFF_SYM_CLASS_EXTERNAL = 2;
+  COFF_SYM_CLASS_STATIC   = 3;
+  COFF_REL_I386_DIR32     = $0006;
+  COFF_REL_I386_REL32     = $0014;
+  BIN_SEC_TEXT            = 1;
+  BIN_SEC_DATA            = 2;
+  BIN_SEC_RDATA           = 3;
+  BIN_SEC_BSS             = 4;
+  BIN_FIX_REL32           = 1;
+  BIN_FIX_ABS32           = 2;
+  BIN_FIX_IMP32           = 3;
+
+  { --- Limites internes (table plus large sous FPC ; Turbo      }
+  { Pascal classique reste supporte avec des tables plus modestes  }
+  { par prudence memoire - meme convention que GOCW32.PAS/            }
+  { PERLCW32.PAS/MOD3CW32.PAS/POWFXC32.PAS de ce meme projet).        }
+  MAX_SYM           = {$IFDEF FPC}4096{$ELSE}512{$ENDIF};
+  MAX_FUNC          = {$IFDEF FPC}512{$ELSE}64{$ENDIF};
+  MAX_TYPE          = {$IFDEF FPC}1024{$ELSE}128{$ENDIF};
+  MAX_FIELD_POOL    = {$IFDEF FPC}4096{$ELSE}512{$ENDIF};
+  MAX_PARAM         = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
+  MAX_LOCAL         = {$IFDEF FPC}256{$ELSE}32{$ENDIF};
+  MAX_LABEL         = {$IFDEF FPC}4096{$ELSE}256{$ENDIF};
+  MAX_STR           = 255;
+  MAX_ERRORS        = {$IFDEF FPC}30{$ELSE}5{$ENDIF};
+  MAX_CLASS         = {$IFDEF FPC}256{$ELSE}32{$ENDIF};
+  MAX_PROTO         = {$IFDEF FPC}128{$ELSE}16{$ENDIF};
+  MAX_ENUMCASE      = {$IFDEF FPC}512{$ELSE}64{$ENDIF};
+  MAX_GENERIC_PARAM = {$IFDEF FPC}16{$ELSE}4{$ENDIF};
+  MAX_SCOPE         = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
+  MAX_BIN           = 65536;
+  MAX_BIN_LABEL     = {$IFDEF FPC}2048{$ELSE}256{$ENDIF};
+  MAX_BIN_FIXUP     = {$IFDEF FPC}4096{$ELSE}512{$ENDIF};
+  MAX_BIN_IMPORT    = {$IFDEF FPC}128{$ELSE}32{$ENDIF};
+
+  { --- Prefixes de nommage ASM (voir en-tete du fichier) --- }
+  ASM_PFX_GVAR    = '_SW_';     { variable globale                    }
+  ASM_PFX_FUNC    = '_SWF_';    { fonction top-level                  }
+  ASM_PFX_METHOD  = '_SWM_';    { methode (struct/class)               }
+  ASM_PFX_STRING  = '_SWK_';    { constante chaine/litteral            }
+  ASM_PFX_FLOAT   = '_SWFL_';   { constante flottante (Double, 8 octets)}
+  ASM_PFX_RUNTIME = '_SWRT_';   { routine runtime                      }
+  ASM_PFX_LABEL   = '_SWL_';    { label de saut interne                }
+  ASM_PFX_TYPEDESC= '_SWT_';    { descripteur de type/vtable simplifiee}
+  ASM_PFX_CLOSURE = '_SWC_';    { corps de fermeture (closure)         }
+  ASM_PFX_ENUMCASE= '_SWE_';    { case d'enumeration (valeurs associees)}
+
+Type
+  TString = String;
+
+  TOptions = Record
+    SrcFile      : TString;   { fichier source (.swift)              }
+    OutFile      : TString;   { fichier sortie (.exe, .obj ou .asm)   }
+    OutFileGiven : Boolean;   { True si fourni explicitement (-o)     }
+    Verbose      : Boolean;   { -v : banniere et statistiques         }
+    DebugMode    : Boolean;   { -d : affichage de chaque token        }
+    Warnings     : Boolean;   { -w : afficher les avertissements      }
+    AsmOutput    : Boolean;   { -asm : produire aussi un .ASM lisible }
+    ObjOnly      : Boolean;   { -obj : produire seulement un .OBJ     }
+    StrictMode   : Boolean;   { -strict : erreurs Swift strictes       }
+                               { (variable declaree et non utilisee,    }
+                               { voir TODO 19) traitees comme fatales    }
+                               { meme sans ce parametre - reserve pour    }
+                               { assouplir ce comportement plus tard,     }
+                               { actuellement toujours strict par defaut. }
+  End;
+
+Var
+  { Options }
+  Opts : TOptions;
+
+  { Compteurs generaux }
+  ErrorCount : Integer;
+  WarnCount  : Integer;
+  TotalLines : LongInt;
+
+  { Fichier de sortie interne (pour future emission) }
+  OutF     : Text;
+  OutFOpen : Boolean;
+
+{ ------------------------------------------------------------ }
+{ Fonctions utilitaires                                        }
+{ ------------------------------------------------------------ }
+
+Function StrUpperCase(Const S: TString): TString;
+Var
+  I   : Integer;
+  Tmp : TString;
+Begin
+  Tmp := S;
+  For I := 1 To Length(Tmp) Do
+    If (Tmp[I] >= 'a') And (Tmp[I] <= 'z') Then
+      Tmp[I] := Chr(Ord(Tmp[I]) - 32);
+  StrUpperCase := Tmp;
+End;
+
+{ Retourne l extension d un chemin (avec le point, en majuscules) }
+Function ExtractExt(Const Path: TString): TString;
+Var
+  I, LastDot, LastSep: Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ExtractExt := StrUpperCase(Copy(Path, LastDot,
+                    Length(Path) - LastDot + 1))
+  Else
+    ExtractExt := '';
+End;
+
+{ Remplace l extension d un chemin }
+Function ReplaceExt(Const Path, NewExt: TString): TString;
+Var
+  I, LastDot, LastSep: Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ReplaceExt := Copy(Path, 1, LastDot - 1) + NewExt
+  Else
+    ReplaceExt := Path + NewExt;
+End;
+
+{ Retourne le repertoire d un chemin (avec le separateur final) }
+Function ExtractDir(Const Path: TString): TString;
+Var
+  I, LastSep: Integer;
+Begin
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+  If LastSep > 0 Then
+    ExtractDir := Copy(Path, 1, LastSep)
+  Else
+    ExtractDir := '';
+End;
+
+{ ------------------------------------------------------------ }
+{ FatalError / WarnMsg                                         }
+{ ------------------------------------------------------------ }
+
+Procedure FatalError(Const Msg: TString);
+Begin
+  WriteLn('SWIFTW32: FATAL: ', Msg);
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+  Halt(EXIT_ERROR);
+End;
+
+Procedure WarnMsg(Const Msg: TString);
+Begin
+  If Not Opts.Warnings Then Exit;
+  WriteLn('SWIFTW32: warning: ', Msg);
+  Inc(WarnCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ InitOptions                                                  }
+{ ------------------------------------------------------------ }
+
+Procedure InitOptions;
+Begin
+  Opts.SrcFile      := '';
+  Opts.OutFile      := '';
+  Opts.OutFileGiven := False;
+  Opts.Verbose      := False;
+  Opts.DebugMode    := False;
+  Opts.Warnings     := False;
+  Opts.AsmOutput    := False;
+  Opts.ObjOnly      := False;
+  Opts.StrictMode   := True;
+End;
+
+{ ------------------------------------------------------------ }
+{ ShowHelp                                                     }
+{ ------------------------------------------------------------ }
+
+Procedure ShowHelp;
+Begin
+  WriteLn('SWIFTW32 v', SWIFTW32_VERSION, ' (', SWIFTW32_DATE,
+          ') - Compilateur Swift vers 80386 (Windows PE 32 bits)');
+  WriteLn('SWIFTW32 - Cette commande permet de lancer le compilateur ',
+          'Swift pour l''assembleur du microprocesseur 80386 (en ',
+          'executable Windows 32 bits).');
+  WriteLn;
+  WriteLn('Syntaxe : SWIFTW32 [options] <source.swift> [options]');
+  WriteLn;
+  WriteLn('Sortie :');
+  WriteLn('  Par defaut un .EXE (PE Windows 32 bits)');
+  WriteLn('  -obj           Produire seulement un fichier .OBJ (COFF)');
+  WriteLn('  -asm           Produire egalement un fichier .ASM lisible');
+  WriteLn;
+  WriteLn('General :');
+  WriteLn('  -v             Mode verbeux (banniere + statistiques)');
+  WriteLn('  -d             Debug tokens (affiche chaque token)');
+  WriteLn('  -w             Afficher les avertissements');
+  WriteLn('  -h, --help, /? Afficher cette aide');
+  WriteLn;
+  WriteLn('Exemples :');
+  WriteLn('  SWIFTW32 hello.swift');
+  WriteLn('  SWIFTW32 hello.swift hello.exe -v');
+  WriteLn('  SWIFTW32 structs.swift -obj -w');
+  Halt(EXIT_OK);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseArgs                                                    }
+{ ------------------------------------------------------------ }
+
+Procedure ParseArgs;
+Var
+  I   : Integer;
+  Arg : TString;
+  Ext : TString;
+Begin
+  InitOptions;
+  If ParamCount = 0 Then
+    ShowHelp;
+
+  I := 1;
+  While I <= ParamCount Do
+  Begin
+    Arg := ParamStr(I);
+
+    If (Arg = '-h') Or (Arg = '--help') Or (Arg = '/?') Or
+       (Arg = '/h') Or (Arg = '/H') Then
+      ShowHelp
+    Else If Arg = '-v' Then
+      Opts.Verbose := True
+    Else If Arg = '-d' Then
+      Opts.DebugMode := True
+    Else If Arg = '-w' Then
+      Opts.Warnings := True
+    Else If Arg = '-asm' Then
+      Opts.AsmOutput := True
+    Else If Arg = '-obj' Then
+      Opts.ObjOnly := True
+    Else If (Length(Arg) > 0) And (Arg[1] = '-') Then
+      FatalError('Option inconnue: ' + Arg)
+    Else
+    Begin
+      { Argument positionnel : fichier source ou sortie }
+      If Opts.SrcFile = '' Then
+        Opts.SrcFile := Arg
+      Else If Opts.OutFile = '' Then
+      Begin
+        Opts.OutFile      := Arg;
+        Opts.OutFileGiven := True;
+      End
+      Else
+        FatalError('Argument inattendu: ' + Arg);
+    End;
+
+    Inc(I);
+  End;
+
+  { Validation : fichier source requis }
+  If Opts.SrcFile = '' Then
+  Begin
+    WriteLn('SWIFTW32: fichier source manquant');
+    ShowHelp;
+  End;
+
+  { Verifier l extension .swift - la structure reelle du fichier      }
+  { (declarations top-level valides, etc.) ne peut etre validee        }
+  { qu une fois le lexeur/analyseur disponibles (TODO 02+) ; ce n est    }
+  { PAS encore fait ici, portee volontairement limitee a                  }
+  { l infrastructure (TODO 01). }
+  Ext := ExtractExt(Opts.SrcFile);
+  If Ext <> '.SWIFT' Then
+    WarnMsg('extension attendue .swift, trouvee: ' + Ext);
+
+  { Fichier de sortie par defaut }
+  If Opts.OutFile = '' Then
+  Begin
+    If Opts.ObjOnly Then
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.obj')
+    Else
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.exe');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ShowBanner / ShowStats                                       }
+{ ------------------------------------------------------------ }
+
+Procedure ShowBanner;
+Begin
+  If Not Opts.Verbose Then Exit;
+  WriteLn('SWIFTW32 v', SWIFTW32_VERSION, ' (', SWIFTW32_DATE,
+          ') - Compilateur Swift -> 80386 PE Win32');
+  WriteLn('Source   : ', Opts.SrcFile);
+  WriteLn('Sortie   : ', Opts.OutFile);
+  If Opts.ObjOnly Then
+    WriteLn('Mode     : OBJ seulement (COFF)')
+  Else
+    WriteLn('Mode     : EXE (PE Win32)');
+  WriteLn;
+End;
+
+Procedure ShowStats;
+Begin
+  If Not Opts.Verbose Then Exit;
+  WriteLn;
+  WriteLn('--- Statistiques ---');
+  WriteLn('Lignes analysees : ', TotalLines);
+  WriteLn('Erreurs          : ', ErrorCount);
+  WriteLn('Avertissements   : ', WarnCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ Run : point d entree - portee TODO 01 SEULEMENT (aucun lexeur/  }
+{ analyseur/generateur de code n existe encore, TODO 02+) : se     }
+{ contente de valider que le fichier source s ouvre reellement,      }
+{ puis le signale honnetement plutot que de simuler une             }
+{ compilation qui n a pas encore lieu.                                }
+{ ------------------------------------------------------------ }
+
+Procedure Run;
+Var
+  SrcF : Text;
+Begin
+  ParseArgs;
+  ShowBanner;
+
+  {$I-}
+  Assign(SrcF, Opts.SrcFile);
+  Reset(SrcF);
+  {$I+}
+  If IOResult <> 0 Then
+    FatalError('impossible d''ouvrir le fichier source: ' + Opts.SrcFile);
+  Close(SrcF);
+
+  ShowStats;
+  WriteLn('SWIFTW32: infrastructure (TODO 01) en place - lexeur/',
+    'analyseur/generateur de code pas encore implementes (TODO 02+).');
+End;
+
 BEGIN
+  ErrorCount := 0;
+  WarnCount  := 0;
+  TotalLines := 0;
+  OutFOpen   := False;
+  Run;
 END.
