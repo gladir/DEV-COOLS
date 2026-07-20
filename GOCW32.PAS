@@ -19725,7 +19725,7 @@ Begin
   WriteLn('GOCW32: CE FICHIER a compile ET assemble avec SUCCES, sans ',
     'aucune limite rencontree (', TokenCount, ' tokens, ', SymCount,
     ' symboles, ', FuncDefCount, ' fonctions, ', MethodDefCount, ' methodes).');
-  WriteLn('(le compilateur couvre desormais les 16/16 fichiers de ',
+(*  WriteLn('(le compilateur couvre desormais les 16/16 fichiers de ',
     'SAMPLES\GO (goroutines/canaux/select, fermetures REELLES avec ',
     'capture, bibliotheque standard etendue, chaines etendues, ',
     'parametres/retours flottants de fonction utilisateur inclus) - ',
@@ -19733,7 +19733,7 @@ Begin
     'par cas dans le code (ex. comma-ok a l''interieur d''un "select", ',
     'retour flottant d''une methode/interface, canal non borne ',
     'simplifie a 1 emplacement) ; voir l''en-tete du fichier source, ',
-    'section TODO 25, pour le detail exact)');
+    'section TODO 25, pour le detail exact)');*)
 
   ShowStats;
 End;
