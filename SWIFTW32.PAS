@@ -600,13 +600,15 @@ Program SWIFTW32;
   de "seulement tokeniser" a une VRAIE tentative de compilation complete
   - voir la note d en-tete de Run() plus bas), avec le resultat suivant :
 
-  REUSSITE COMPLETE, 10/12 FICHIERS (compile, produit un .EXE PE Win32 REEL,
-  EXECUTE sur Windows reel - Git Bash ET PowerShell natif -, sortie
-  EXACTEMENT conforme a ce qu un vrai compilateur Swift produirait, code
-  de sortie 0) - MIS A JOUR apres SIX extensions post-TODO25 (controle
-  de flux, construction de classe, compilation de fonctions, defer au
-  niveau fichier, parametres "inout", "??"/deballage force - voir leurs
-  propres blocs plus bas pour le detail complet de chacune) :
+  REUSSITE COMPLETE, 12/12 FICHIERS - TOUS LES SAMPLES\SWIFT\*.swift
+  (compile, produit un .EXE PE Win32 REEL, EXECUTE sur Windows reel -
+  Git Bash ET PowerShell natif -, sortie EXACTEMENT conforme a ce qu un
+  vrai compilateur Swift produirait, code de sortie 0) - MIS A JOUR
+  apres HUIT extensions post-TODO25 (controle de flux, construction de
+  classe, compilation de fonctions, defer au niveau fichier, parametres
+  "inout", "??"/deballage force, construction de struct A UN SEUL CHAMP,
+  construction de struct MULTI-MOTS - voir leurs propres blocs plus bas
+  pour le detail complet de chacune) :
     hello.swift    ("Hello, 8086!" / "1" / "1")
     arrays.swift   (10/20/30/40/50/5/0/1/2/3/4)
     classes.swift  (42)
@@ -625,15 +627,30 @@ Program SWIFTW32;
       compilee quand meme) EN UN SEUL fichier)
     optionals.swift(42/42/99 - "??" (court-circuit REEL) ET deballage
       force ("!"), sur un Optional AVEC valeur ET SANS valeur (nil))
+    protos.swift   (1 - "Circle(radius: 5)", struct A UN SEUL champ
+      Int (4 octets, tient dans EAX) ; "c" lui-meme jamais RELU par ce
+      fichier, sa VRAIE valeur confirmee par inspection manuelle du .asm,
+      "-asm")
+    structs.swift  (50 - "Point(x:0,y:0)"/"Rectangle(width:10,height:5)",
+      DEUX structs A DEUX CHAMPS (8 octets, stockage MULTI-MOTS REEL) ;
+      "origin"/"rect" jamais RELUS par ce fichier, leurs VRAIES valeurs
+      confirmees par inspection manuelle du .asm, "-asm" - DERNIER des
+      12 echantillons a atteindre la reussite complete)
 
-  ARRET PROPRE, 2/12 FICHIERS RESTANTS (FatalError EXACT et PRECIS,
-  jamais un plantage, jamais une valeur devinee) :
-    - protos.swift    : "let c: Circle = Circle(radius: 5)" -
-        initialiseur de global non repliable (construction de STRUCT,
-        valeur MULTI-MOTS incompatible avec la convention EAX unique -
-        contrairement a une classe, un pointeur UNIQUE ne suffit pas).
-    - structs.swift   : "let origin: Point = Point(x: 0, y: 0)" -
-        meme raison exacte que protos.swift (construction de struct).
+  AUCUN FICHIER NE S ARRETE PLUS - la portee de premiere passe du
+  codegen/assembleur/ecrivain PE (TODO 21-23), etendue par les HUIT
+  extensions post-TODO25 ci-dessus, couvre desormais 100% des 12
+  SAMPLES\SWIFT\*.swift. Ceci NE signifie PAS que ce generateur de code
+  couvre l INTEGRALITE du langage Swift (voir les "LIMITATIONS ASSUMEES"
+  de CHAQUE extension, plus bas, pour ce qui reste explicitement hors de
+  portee - accès aux champs d une struct/classe, "if let"/"guard let",
+  fermetures, generiques REELLEMENT monomorphises, "async"/"await",
+  etc.) : uniquement que les 12 fichiers CHOISIS pour ce projet comme
+  echantillons representatifs le sont, EXACTEMENT le standard fixe par
+  le roadmap d en-tete du TODO 25 lui-meme. Toute EXTENSION future
+  resterait bienvenue mais devrait etre motivee par un NOUVEL echantillon
+  ou un besoin reel, jamais devinee par anticipation - meme discipline
+  multi-session que GOCW32.PAS/DELPHI.PAS.
 
   BOGUE REEL trouve et corrige PENDANT ce TODO 25 (par EXECUTION reelle,
   jamais par relecture du .asm ni par un self-test structurel) :
@@ -1016,6 +1033,123 @@ Program SWIFTW32;
   deballage conditionnel) ; chaining optionnel (?.) ; Optional<String>/
   Optional<classe> dans un "??"/deballage force (limite ici a Int/Bool,
   seuls types exerces par optionals.swift) restent hors de portee.
+  ============================================================ *)
+
+(* ============================================================
+  EXTENSION CONSTRUCTION DE STRUCT A UN SEUL CHAMP (ajoutee APRES l
+  EXTENSION "??"/DEBALLAGE FORCE ci-dessus, sur demande explicite de l
+  utilisateur suite au rapport "protos.swift : initialiseur non
+  repliable" - meme discipline incrementale que toutes les extensions
+  post-TODO25 de ce fichier).
+  ============================================================
+  DECOUVERTE PREALABLE A TOUT CODE : protos.swift n a besoin QUE de
+  "Circle(radius: 5)" - or Circle N A QU UN SEUL champ ("var radius:
+  Int", 4 octets) - CONTRAIREMENT a ce que le rapport precedent (fin de
+  l EXTENSION "??") anticipait ("le cas difficile, une VALEUR
+  MULTI-MOTS"). La VRAIE difficulte (Point/Rectangle, structs.swift,
+  DEUX champs = 8 octets) ne concerne PAS protos.swift - verifiee en
+  relisant simplement les DEUX fichiers avant d ecrire une seule ligne
+  de code, plutot que de supposer que "construction de struct" est UNE
+  seule extension monolithique.
+
+  AJOUTE : CgIsSingleFieldStructCtorCall reconnait "NomDeStruct(champ:
+  Valeur)" UNIQUEMENT quand TypeTab[Struct].FieldCount=1 ET Size<=4 -
+  la struct COMPLETE tient alors dans EAX, et sa VALEUR EST directement
+  celle de son unique champ (type VALEUR reel, jamais un pointeur -
+  DIFFERENCE CENTRALE avec CgIsClassCtorCall/l allocation tas : ici,
+  simplement CompileExpr de l argument constructeur, RIEN d autre,
+  aucune memoire supplementaire). Troisieme (avec classe/fonction/
+  Optional) cas de "global non repliable desormais initialisable A
+  L EXECUTION" dans EmitDataSeg/CompileGlobalRuntimeInits. Une struct A
+  DEUX CHAMPS OU PLUS declenche desormais un FatalError PRECIS et
+  SEPARE (distinct du message generique) citant explicitement "Point/
+  Rectangle" comme exemple de ce qui reste hors de portee.
+
+  REUSSITE COMPLETE : protos.swift (1, verifie par EXECUTION reelle -
+  Git Bash ET PowerShell natif - ET par inspection MANUELLE du .asm reel
+  via "-asm", puisque "c" lui-meme n est jamais RELU par ce fichier : la
+  sortie du PROGRAMME seule ne suffisait pas a prouver la VRAIE valeur
+  stockee, contrairement a tous les correctifs precedents ou la sortie
+  imprimee suffisait - "MOV EAX,5" suivi de "MOV DWORD PTR [_SW_c],EAX"
+  confirmes directement dans le texte assembleur produit).
+
+  LIMITATIONS ASSUMEES : struct A DEUX CHAMPS OU PLUS (structs.swift,
+  Point/Rectangle) - necessiterait soit une allocation tas comme pour
+  une classe (pragmatique mais SEMANTIQUEMENT FAUX pour un VRAI type
+  VALEUR - copier une struct copierait alors un pointeur PARTAGE, pas
+  une VRAIE copie independante), soit une toute nouvelle convention de
+  passage de valeur MULTI-MOTS (bien plus gros qu une extension
+  incrementale habituelle de ce fichier) ; acces aux champs d une struct
+  (c.radius) apres construction ; methodes d instance struct/protocole
+  restent toutes hors de portee.
+  ============================================================ *)
+
+(* ============================================================
+  EXTENSION CONSTRUCTION DE STRUCT MULTI-MOTS (ajoutee APRES l EXTENSION
+  CONSTRUCTION DE STRUCT A UN SEUL CHAMP ci-dessus, sur demande explicite
+  de l utilisateur suite au rapport "structs.swift : initialiseur non
+  repliable" - DERNIER des 12 SAMPLES\SWIFT\*.swift a atteindre la
+  reussite complete, cloturant la serie d extensions post-TODO25 ouverte
+  par le rapport de validation lui-meme).
+  ============================================================
+  LA VRAIE difficulte annoncee par le rapport precedent (Point/
+  Rectangle, DEUX champs = 8 octets, NE TIENNENT PAS dans EAX) - PAS
+  contournee, RESOLUE directement, sans avoir besoin d une refonte
+  architecturale majeure ni d une allocation tas (ce qui aurait ete
+  SEMANTIQUEMENT FAUX pour un VRAI type VALEUR - voir la limitation
+  notee par l extension precedente).
+
+  AJOUTE : CgIsMultiFieldStructCtorCall (FieldCount>=2, ArgCount=FieldCount,
+  memberwise complet) - TROIS changements COORDONNES, aucun ne suffisant
+  seul :
+  (1) EmitDataSeg reserve desormais TypeTab[...].Size OCTETS REELS pour
+      un tel global (CgZeroDDList genere "0, 0, ..." - syntaxe MASM
+      standard pour PLUSIEURS mots consecutifs sur une seule ligne "DD"),
+      PAS la case UNIQUE de 4 octets utilisee partout ailleurs dans ce
+      generateur de code ;
+  (2) CompileGlobalRuntimeInits (SEUL endroit a connaitre ce cas - JAMAIS
+      via CompileExpr sur l appel constructeur ENTIER, impossible avec
+      la convention EAX unique) ecrit CHAQUE argument SEPAREMENT a son
+      PROPRE deplacement (0, 4, 8, ... - ordre textuel des parametres,
+      memberwise) DANS ce stockage multi-mots ;
+  (3) l adressage necessaire ("[EBX+4]", un registre GENERAL plus un
+      deplacement immediat, jamais utilise avant pour un AUTRE registre
+      que EBP) fonctionnait DEJA sans AUCUNE modification de
+      l assembleur (BinParseOperand/BinReg32, TODO 22, parsent
+      GENERIQUEMENT "[REG+N]" pour N IMPORTE QUEL registre depuis
+      l origine) - verifie EN PREMIER, avant d ecrire une seule ligne de
+      code, plutot que de supposer un changement d assembleur necessaire.
+      LEA EBX recalcule l ADRESSE de base APRES chaque argument (jamais
+      reutilisee entre deux champs), une precaution DELIBEREE meme si
+      non exercee par structs.swift (arguments litteraux uniquement).
+
+  REUSSITE COMPLETE : structs.swift (50, verifie par EXECUTION reelle -
+  Git Bash ET PowerShell natif - ET par inspection MANUELLE du .asm reel
+  via "-asm", puisque "origin"/"rect" ne sont JAMAIS RELUS par ce
+  fichier - MEME methode de verification que protos.swift, la sortie du
+  PROGRAMME seule etant a nouveau insuffisante pour prouver la VRAIE
+  valeur stockee : "MOV EAX,0"/"MOV DWORD PTR [EBX],EAX" PUIS "MOV
+  EAX,0"/"MOV DWORD PTR [EBX+4],EAX" pour origin=Point(x:0,y:0), et de
+  meme "MOV EAX,10"/"MOV EAX,5" avec les MEMES deplacements pour
+  rect=Rectangle(width:10,height:5), confirmes directement dans le
+  texte assembleur produit).
+
+  CECI CLOT LA SERIE D EXTENSIONS POST-TODO25 OUVERTE PAR LE RAPPORT DE
+  VALIDATION LUI-MEME : les 12/12 SAMPLES\SWIFT\*.swift compilent et
+  s executent desormais CORRECTEMENT - voir le rapport TODO 25 mis a
+  jour en tete de fichier pour le detail complet, fichier par fichier,
+  et les LIMITATIONS ASSUMEES de chacune des HUIT extensions pour ce qui
+  reste explicitement hors de portee du langage Swift (jamais devine,
+  toujours documente).
+
+  LIMITATIONS ASSUMEES : acces aux champs d une struct multi-mots
+  (origin.x) apres construction ; passage d une struct multi-mots comme
+  parametre/retour de fonction (convention EAX unique toujours en
+  vigueur partout AILLEURS que l initialisation d un global) ; struct
+  imbriquee (un champ struct A L INTERIEUR d une autre struct) ;
+  mutation via "mutating func" ; methodes d instance restent toutes
+  hors de portee - seule la CONSTRUCTION d un global a ete resolue ici,
+  strictement ce qu exigeait le rapport "structs.swift".
   ============================================================ *)
 
 { ============================================================ }
@@ -12078,6 +12212,64 @@ Begin
      (ExprPool[E].Kind = EK_FORCEDUNWRAP));
 End;
 
+{ CgIsSingleFieldStructCtorCall : Vrai pour "NomDeStruct(champ: Valeur)"  }
+{ (extension "construction de struct A UN SEUL CHAMP", TODO 21, suite            }
+{ au rapport "protos.swift") - UNIQUEMENT quand la struct COMPLETE tient           }
+{ dans UN SEUL mot de 4 octets (Size<=4, UN SEUL champ) : la VALEUR de           }
+{ la struct EST ALORS directement la valeur de son UNIQUE champ, SANS            }
+{ AUCUNE allocation ni memoire supplementaire necessaire - un simple             }
+{ CompileExpr de l argument suffit (voir CompileExpr, EK_CALL). Une            }
+{ struct a DEUX CHAMPS OU PLUS (ex. Point/Rectangle, structs.swift)              }
+{ reste HORS de portee ICI : sa valeur ne TIENDRAIT PAS dans EAX (la              }
+{ convention UNIQUE de ce generateur de code), un VRAI stockage                          }
+{ multi-mots restant une extension future BEAUCOUP plus grosse                                }
+{ (architecture de passage de valeur entierement differente). }
+Function CgIsSingleFieldStructCtorCall(E: Integer): Boolean;
+Begin
+  CgIsSingleFieldStructCtorCall := (E >= 0) And (E < ExprCount) And
+    (ExprPool[E].Kind = EK_CALL) And
+    (ExprPool[E].TypeIdx >= 0) And (ExprPool[E].TypeIdx < TypeCount) And
+    (TypeTab[ExprPool[E].TypeIdx].Kind = TYK_STRUCT) And
+    (TypeTab[ExprPool[E].TypeIdx].FieldCount = 1) And
+    (TypeTab[ExprPool[E].TypeIdx].Size <= 4) And
+    (ExprPool[E].ArgCount = 1);
+End;
+
+{ CgIsMultiFieldStructCtorCall : Vrai pour "NomDeStruct(champ1: V1,      }
+{ champ2: V2, ...)" a DEUX CHAMPS OU PLUS (extension "construction de              }
+{ struct MULTI-MOTS", TODO 21, suite au rapport "structs.swift") - le            }
+{ VRAI cas difficile deja identifie (Point/Rectangle, 8 octets, NE                     }
+{ TIENNENT PAS dans EAX). CONTRAIREMENT a CgIsSingleFieldStructCtorCall,          }
+{ ce cas n est JAMAIS compile via CompileExpr (qui ne peut laisser              }
+{ qu UNE SEULE valeur EAX) : SEUL CompileGlobalRuntimeInits le reconnait           }
+{ et le traite a part, champ par champ, DIRECTEMENT dans le stockage             }
+{ .DATA de plusieurs mots reserve par EmitDataSeg (voir sa propre note           }
+{ d en-tete) - jamais via une valeur "de la struct" unique. Chaque              }
+{ champ DOIT etre fourni positionnellement (ArgCount=FieldCount, memberwise             }
+{ complet - seul cas exerce par structs.swift, aucun "init" personnalise). }
+Function CgIsMultiFieldStructCtorCall(E: Integer): Boolean;
+Begin
+  CgIsMultiFieldStructCtorCall := (E >= 0) And (E < ExprCount) And
+    (ExprPool[E].Kind = EK_CALL) And
+    (ExprPool[E].TypeIdx >= 0) And (ExprPool[E].TypeIdx < TypeCount) And
+    (TypeTab[ExprPool[E].TypeIdx].Kind = TYK_STRUCT) And
+    (TypeTab[ExprPool[E].TypeIdx].FieldCount >= 2) And
+    (ExprPool[E].ArgCount = TypeTab[ExprPool[E].TypeIdx].FieldCount);
+End;
+
+{ CgZeroDDList : "0, 0, ..., 0" (N fois, separes par virgule) - syntaxe   }
+{ MASM standard pour reserver PLUSIEURS mots de 4 octets consecutifs sur          }
+{ UNE SEULE ligne "DD" (extension "struct multi-mots", suite au rapport            }
+{ "structs.swift"). }
+Function CgZeroDDList(N: Integer): TString;
+Var S : TString; I : Integer;
+Begin
+  S := '0';
+  For I := 2 To N Do
+    S := S + ', 0';
+  CgZeroDDList := S;
+End;
+
 { EmitDataSeg : section .DATA COMPLETE en une fois - globaux (parcours   }
 { de SymTab, IsGlobal) puis pool de chaines litterales (CgCollectStrings          }
 { deja execute AVANT cet appel, voir CompileProgram). DIFFERENCE REELLE            }
@@ -12136,7 +12328,9 @@ Begin
          Not ExprPool[SymTab[I].InitExprIdx].IsConst And
          Not CgIsClassCtorCall(SymTab[I].InitExprIdx) And
          Not CgIsUserFuncCall(SymTab[I].InitExprIdx) And
-         Not CgIsOptionalRuntimeInit(SymTab[I].InitExprIdx) Then
+         Not CgIsOptionalRuntimeInit(SymTab[I].InitExprIdx) And
+         Not CgIsSingleFieldStructCtorCall(SymTab[I].InitExprIdx) And
+         Not CgIsMultiFieldStructCtorCall(SymTab[I].InitExprIdx) Then
         FatalError('TODO 21 : generateur de code, initialiseur de global "' +
           SymTab[I].Name + '" non repliable a la compilation (appel de ' +
           'fonction utilisateur, expression Optional, etc.) - seuls les ' +
@@ -12159,6 +12353,19 @@ Begin
       Else If (SymTab[I].TypeIdx >= 0) And (SymTab[I].TypeIdx < TypeCount) And
          (TypeTab[TypeResolveOptional(SymTab[I].TypeIdx)].Kind In [TYK_INT, TYK_BOOL]) Then
         EmitRaw(CgVarLabel(I) + '  DD ' + IntToStrSW(SymTab[I].ConstVal.IntVal))
+      { struct MULTI-MOTS (extension, suite au rapport "structs.swift" -   }
+      { TODO 25) : contrairement a TOUT AUTRE global de ce fichier (une            }
+      { SEULE case de 4 octets chacun), celui-ci a besoin de              }
+      { TypeTab[...].Size OCTETS REELS (8 pour Point/Rectangle, 2 champs)           }
+      { - CgZeroDDList genere autant de "0" separes par virgule que de              }
+      { mots de 4 octets necessaires (syntaxe MASM standard, plusieurs               }
+      { DD sur UNE SEULE ligne). La VRAIE valeur de CHAQUE champ est                    }
+      { ecrite A L EXECUTION (CompileGlobalRuntimeInits), PAS ici (aucun          }
+      { registre unique EAX ne peut porter TOUTE la struct a la fois). }
+      Else If (SymTab[I].TypeIdx >= 0) And (SymTab[I].TypeIdx < TypeCount) And
+         (TypeTab[SymTab[I].TypeIdx].Kind = TYK_STRUCT) And
+         (TypeTab[SymTab[I].TypeIdx].FieldCount >= 2) Then
+        EmitRaw(CgVarLabel(I) + '  DD ' + CgZeroDDList(TypeTab[SymTab[I].TypeIdx].Size Div 4))
       Else
         EmitRaw(CgVarLabel(I) + '  DD 0');
     End;
@@ -12589,6 +12796,22 @@ Begin
           'argument(s) non couvert pour cette premiere passe (seul ' +
           '"NomDeClasse()" SANS argument l''est - un VRAI "init" ecrit par ' +
           'l''utilisateur reste une extension future)')
+      { construction de struct A UN SEUL CHAMP (extension, suite au             }
+      { rapport "protos.swift" - TODO 25) : "NomDeStruct(champ: Valeur)"           }
+      { quand la struct COMPLETE tient dans EAX (CgIsSingleFieldStructCtorCall           }
+      { ci-dessus, voir sa propre note d en-tete) - la VALEUR de la struct           }
+      { EST directement celle de son UNIQUE champ, AUCUNE memoire                          }
+      { supplementaire necessaire (contrairement a une classe, une struct           }
+      { EST un type VALEUR, jamais un pointeur). }
+      Else If CgIsSingleFieldStructCtorCall(E) Then
+        CompileExpr(ExprArgPool[ExprPool[E].ArgFirst])
+      Else If (ExprPool[E].TypeIdx >= 0) And (ExprPool[E].TypeIdx < TypeCount) And
+         (TypeTab[ExprPool[E].TypeIdx].Kind = TYK_STRUCT) Then
+        FatalError('TODO 21 : generateur de code, construction de struct A ' +
+          'PLUSIEURS champs non couverte pour cette premiere passe (seule ' +
+          'une struct tenant dans UN SEUL mot de 4 octets - UN SEUL champ - ' +
+          'l''est, ex. Circle(radius:) - une VRAIE disposition memoire ' +
+          'multi-mots reste une extension future majeure, ex. Point/Rectangle)')
       { appel a une fonction UTILISATEUR de haut niveau (extension           }
       { "compilation de fonctions", TODO 21, suite au rapport                                }
       { "control.swift") - CgIsUserFuncCall (ci-dessus) confirme deja que              }
@@ -12992,15 +13215,41 @@ End;
 { globale avant de l ecrire), matcher l ordre reel d un compilateur                    }
 { Swift reste la discipline honnete a suivre. }
 Procedure CompileGlobalRuntimeInits;
-Var I : Integer;
+Var I, E, FI : Integer;
 Begin
   For I := 0 To SymCount - 1 Do
-    If (SymTab[I].Kind = SK_VAR) And SymTab[I].IsGlobal And SymTab[I].HasInit And
-       (CgIsClassCtorCall(SymTab[I].InitExprIdx) Or CgIsUserFuncCall(SymTab[I].InitExprIdx) Or
-        CgIsOptionalRuntimeInit(SymTab[I].InitExprIdx)) Then
+    If (SymTab[I].Kind = SK_VAR) And SymTab[I].IsGlobal And SymTab[I].HasInit Then
     Begin
-      CompileExpr(SymTab[I].InitExprIdx);
-      EmitInstr('MOV DWORD PTR ' + CgVarOperand(I) + ',EAX');
+      If CgIsClassCtorCall(SymTab[I].InitExprIdx) Or CgIsUserFuncCall(SymTab[I].InitExprIdx) Or
+         CgIsOptionalRuntimeInit(SymTab[I].InitExprIdx) Or
+         CgIsSingleFieldStructCtorCall(SymTab[I].InitExprIdx) Then
+      Begin
+        CompileExpr(SymTab[I].InitExprIdx);
+        EmitInstr('MOV DWORD PTR ' + CgVarOperand(I) + ',EAX');
+      End
+      { struct MULTI-MOTS (extension, suite au rapport "structs.swift" -    }
+      { TODO 25) : CHAQUE champ est ECRIT SEPAREMENT a son PROPRE           }
+      { deplacement (0, 4, 8, ...) DANS le stockage MULTI-MOTS reserve             }
+      { par EmitDataSeg - JAMAIS via CompileExpr sur l APPEL constructeur           }
+      { entier (impossible, EAX ne peut porter qu UN SEUL mot a la fois).            }
+      { LEA EBX recalcule l ADRESSE de base APRES chaque CompileExpr              }
+      { (jamais reutilisee entre deux champs) pour rester correct meme si            }
+      { un futur argument plus complexe venait a utiliser EBX comme                       }
+      { registre de travail (aucun echantillon actuel ne le fait - les                    }
+      { arguments de structs.swift sont de simples litteraux entiers). }
+      Else If CgIsMultiFieldStructCtorCall(SymTab[I].InitExprIdx) Then
+      Begin
+        E := SymTab[I].InitExprIdx;
+        For FI := 0 To ExprPool[E].ArgCount - 1 Do
+        Begin
+          CompileExpr(ExprArgPool[ExprPool[E].ArgFirst + FI]);
+          EmitInstr('LEA EBX,' + CgVarOperand(I));
+          If FI = 0 Then
+            EmitInstr('MOV DWORD PTR [EBX],EAX')
+          Else
+            EmitInstr('MOV DWORD PTR [EBX+' + IntToStrSW(FI * 4) + '],EAX');
+        End;
+      End;
     End;
 End;
 
@@ -13641,6 +13890,121 @@ Begin
     'recoivent un placeholder .DATA "DD 0" (valeur reelle ecrite A ' +
     'L EXECUTION) present',
     CgFileHasSubstring(TmpAsm, ASM_PFX_GVAR + 'result  DD 0'));
+
+  Assign(CgOutF, TmpAsm);
+  Erase(CgOutF);
+
+  { re-initialise les tables globales pour ne pas polluer Run reel }
+  StmtInit;
+  ExprInit;
+  SymInit;
+  FuncDefInit;
+  MethodPoolInit;
+  EnumCaseInit;
+
+  { protos.swift EN ENTIER (extension "construction de struct A UN SEUL   }
+  { CHAMP", TODO 21, suite au rapport "protos.swift : initialiseur non           }
+  { repliable" - TODO 25) - deja verifie par EXECUTION reelle (Git Bash           }
+  { ET PowerShell natif, sortie "1" conforme) ET par inspection MANUELLE           }
+  { du .asm reel (option "-asm" - "MOV EAX,5" suivi de "MOV DWORD PTR              }
+  { [_SW_c],EAX", confirmant que la VRAIE valeur du champ unique "radius"           }
+  { est bien celle stockee dans "c", "c" lui-meme n etant jamais RELU               }
+  { par protos.swift) AVANT d ecrire ces assertions structurelles. }
+  Assign(LexSrcF, TmpSrc);
+  Rewrite(LexSrcF);
+  WriteLn(LexSrcF, 'protocol Drawable {');
+  WriteLn(LexSrcF, 'func draw() -> Int');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, 'struct Circle {');
+  WriteLn(LexSrcF, 'var radius: Int');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, 'extension Circle: Drawable {');
+  WriteLn(LexSrcF, 'func draw() -> Int {');
+  WriteLn(LexSrcF, 'return 1');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, 'let c: Circle = Circle(radius: 5)');
+  WriteLn(LexSrcF, 'print(1)');
+  Close(LexSrcF);
+  Assign(LexSrcF, TmpSrc);
+  Reset(LexSrcF);
+  LexOpened := True;
+  LexInit;
+  LexAll;
+  LexClose;
+  Erase(LexSrcF);
+  ParserInit;
+  ParseSwiftProgram;
+
+  CompileProgram(TmpAsm);
+
+  CodegenAssert('"c" (struct a un seul champ) recoit un placeholder .DATA ' +
+    '"DD 0" present',
+    CgFileHasSubstring(TmpAsm, ASM_PFX_GVAR + 'c  DD 0'));
+  CodegenAssert('CompileGlobalRuntimeInits : valeur REELLE du champ ' +
+    'unique ("radius: 5") calculee (MOV EAX,5) present',
+    CgFileHasSubstring(TmpAsm, 'MOV EAX,5'));
+  CodegenAssert('CompileGlobalRuntimeInits : cette valeur ecrite dans "c" present',
+    CgFileHasSubstring(TmpAsm, 'MOV DWORD PTR [' + ASM_PFX_GVAR + 'c],EAX'));
+
+  Assign(CgOutF, TmpAsm);
+  Erase(CgOutF);
+
+  { re-initialise les tables globales pour ne pas polluer Run reel }
+  StmtInit;
+  ExprInit;
+  SymInit;
+  FuncDefInit;
+  MethodPoolInit;
+  EnumCaseInit;
+
+  { structs.swift EN ENTIER (extension "construction de struct           }
+  { MULTI-MOTS", TODO 21, suite au rapport "structs.swift : initialiseur           }
+  { non repliable" - TODO 25, DERNIER des 12 SAMPLES\SWIFT a atteindre               }
+  { la reussite complete) - deja verifie par EXECUTION reelle (Git Bash            }
+  { ET PowerShell natif, sortie "50" conforme) ET par inspection MANUELLE           }
+  { du .asm reel (option "-asm" - "origin"/"rect" ne sont JAMAIS RELUS               }
+  { par ce fichier, la sortie du PROGRAMME seule ne suffit donc pas :                    }
+  { confirme "MOV EAX,0"+"MOV DWORD PTR [EBX],EAX"/"MOV DWORD PTR                       }
+  { [EBX+4],EAX" pour origin=Point(x:0,y:0), et "MOV EAX,10"/"MOV EAX,5"           }
+  { avec les MEMES deplacements pour rect=Rectangle(width:10,height:5)). }
+  Assign(LexSrcF, TmpSrc);
+  Rewrite(LexSrcF);
+  WriteLn(LexSrcF, 'struct Point {');
+  WriteLn(LexSrcF, 'var x: Int');
+  WriteLn(LexSrcF, 'var y: Int');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, 'struct Rectangle {');
+  WriteLn(LexSrcF, 'var width: Int');
+  WriteLn(LexSrcF, 'var height: Int');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, 'let origin: Point = Point(x: 0, y: 0)');
+  WriteLn(LexSrcF, 'let rect: Rectangle = Rectangle(width: 10, height: 5)');
+  WriteLn(LexSrcF, 'print(50)');
+  Close(LexSrcF);
+  Assign(LexSrcF, TmpSrc);
+  Reset(LexSrcF);
+  LexOpened := True;
+  LexInit;
+  LexAll;
+  LexClose;
+  Erase(LexSrcF);
+  ParserInit;
+  ParseSwiftProgram;
+
+  CompileProgram(TmpAsm);
+
+  CodegenAssert('"origin"/"rect" (struct a DEUX champs) recoivent 8 ' +
+    'octets de placeholder .DATA ("DD 0, 0") present',
+    CgFileHasSubstring(TmpAsm, ASM_PFX_GVAR + 'origin  DD 0, 0'));
+  CodegenAssert('CompileGlobalRuntimeInits : adresse de base LEA EBX present',
+    CgFileHasSubstring(TmpAsm, 'LEA EBX,'));
+  CodegenAssert('CompileGlobalRuntimeInits : ecriture du PREMIER champ ' +
+    '(deplacement 0, MOV DWORD PTR [EBX],EAX) present',
+    CgFileHasSubstring(TmpAsm, 'MOV DWORD PTR [EBX],EAX'));
+  CodegenAssert('CompileGlobalRuntimeInits : ecriture du SECOND champ ' +
+    '(deplacement +4, MOV DWORD PTR [EBX+4],EAX) present',
+    CgFileHasSubstring(TmpAsm, 'MOV DWORD PTR [EBX+4],EAX'));
 
   Assign(CgOutF, TmpAsm);
   Erase(CgOutF);
