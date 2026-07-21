@@ -600,33 +600,38 @@ Program SWIFTW32;
   de "seulement tokeniser" a une VRAIE tentative de compilation complete
   - voir la note d en-tete de Run() plus bas), avec le resultat suivant :
 
-  REUSSITE COMPLETE, 1/12 FICHIER (compile, produit un .EXE PE Win32 REEL,
+  REUSSITE COMPLETE, 3/12 FICHIERS (compile, produit un .EXE PE Win32 REEL,
   EXECUTE sur Windows reel - Git Bash ET PowerShell natif -, sortie
   EXACTEMENT conforme a ce qu un vrai compilateur Swift produirait, code
-  de sortie 0) :
-    hello.swift ("Hello, 8086!" / "1" / "1")
+  de sortie 0) - MIS A JOUR apres l EXTENSION CONTROLE DE FLUX (if/while/
+  repeat-while/for-in sur intervalle/break/continue/comparaisons,
+  ajoutee APRES ce TODO 25 sur demande explicite de l utilisateur suite
+  au rapport "arrays.swift : boucle for-in non couverte" ci-dessous -
+  voir le bloc "EXTENSION CONTROLE DE FLUX" plus bas pour le detail
+  complet) :
+    hello.swift  ("Hello, 8086!" / "1" / "1")
+    arrays.swift (10/20/30/40/50/5/0/1/2/3/4)
+    loops.swift  (0/1/2/3/4/10/9/8/0/1/2/3/4/0/1/2/0/1/3/4/5 - exerce
+      while/repeat-while/for-in/break/continue EN UN SEUL fichier)
 
-  ARRET PROPRE, 11/12 FICHIERS (FatalError EXACT et PRECIS, jamais un
-  plantage, jamais une valeur devinee) :
-    - arrays.swift    : "for i in 0..<5 { print(i) }" - boucle for-in non
-        couverte (STK_FORRANGE) ; les 6 print() de litteraux constants
-        qui PRECEDENT dans le fichier auraient, eux, ete corrects.
+  ARRET PROPRE, 9/12 FICHIERS RESTANTS (FatalError EXACT et PRECIS,
+  jamais un plantage, jamais une valeur devinee) :
     - classes.swift   : "let pet: Animal = Animal()" - initialiseur de
         global non repliable a la compilation (instanciation de classe,
         aucun codegen de constructeur n existe).
     - control.swift   : "let valid: Int = checkAge(25)" - initialiseur de
         global non repliable (appel de fonction utilisateur) ; if/else et
-        switch, plus loin dans le fichier, restent EUX AUSSI non couverts
-        (jamais atteints, ce premier arret masque les suivants).
+        switch, plus loin dans le fichier (desormais REELLEMENT couverts
+        pour if/else depuis l EXTENSION CONTROLE DE FLUX), restent malgre
+        tout jamais atteints (ce premier arret, sur le global, survient
+        AVANT meme la premiere instruction executable).
     - enums.swift     : "switch dir { ... }" - switch non couvert
-        (STK_SWITCH) ; "let dir"/"let earth" (litteraux), avant, auraient
-        ete corrects.
+        (STK_SWITCH, toujours hors de portee) ; "let dir"/"let earth"
+        (litteraux), avant, auraient ete corrects.
     - errors.swift    : "let ok: Int = process()" - initialiseur de
         global non repliable (appel de fonction utilisateur).
     - generics.swift  : "let x: Int = identity(42)" - initialiseur de
         global non repliable (appel de fonction GENERIQUE utilisateur).
-    - loops.swift     : "while i < 5 { ... }" - boucle non couverte
-        (STK_WHILE), la toute premiere rencontree dans le fichier.
     - math.swift      : "let sum: Int = add(x, y)" - initialiseur de
         global non repliable (appel de fonction utilisateur).
     - optionals.swift : "let result: Int = maybeValue ?? 0" -
@@ -670,6 +675,63 @@ Program SWIFTW32;
   separe, futur, ajoute UNE A LA FOIS avec son propre self-test ET sa
   propre verification par execution reelle - meme discipline multi-
   session que GOCW32.PAS/DELPHI.PAS.
+  ============================================================ *)
+
+(* ============================================================
+  EXTENSION CONTROLE DE FLUX (ajoutee APRES ce TODO 25, sur demande
+  explicite de l utilisateur suite au rapport ci-dessus signalant que
+  arrays.swift/loops.swift s arretaient au premier for-in/while) - meme
+  discipline "petite extension verifiee, PAS une reecriture" que TOUTES
+  les extensions post-TODO25 de GOCW32.PAS.
+  ============================================================
+  AJOUTE a CompileExpr/CompileStmt (TODO 21) : if/else-if/else (SANS
+  liaison "if let"/"if var", HORS de portee), while, repeat-while, for-in
+  SUR UN INTERVALLE ENTIER SEULEMENT (a..<b/a...b - iteration sur Array/
+  Dictionary/Set/String reste une extension future, TODO 16/17), break/
+  continue NON etiquetes, et les 6 operateurs de comparaison (<, <=, >,
+  >=, ==, !=) dans EK_BINARY - MEME architecture EXACTE que GOCW32.PAS
+  pour if/while (CMP+TEST/Jcc, JAMAIS de SETcc - voir EmitCompareJcc) ;
+  break/continue et le for-in sur intervalle N ONT PAS d equivalent a
+  porter (confirme par recherche : GOCW32.PAS ne compile pas non plus
+  break/continue a cette date), concus ICI a partir de zero (pile
+  CgLoopBreakLbl/CgLoopContinueLbl, permet l imbrication).
+
+  BOGUE REEL trouve et corrige PENDANT cette extension (execution du
+  rapport TODO 25 lui-meme, PAS un self-test) : le PREMIER essai retirait
+  simplement le filtre IsGlobal d EmitDataSeg (necessaire pour donner un
+  VRAI stockage .DATA a une variable de boucle for-in, IsGlobal=Faux vu
+  qu aucune fonction n est encore compilee) - mais ce retrait capturait
+  AUSSI les VRAIS parametres/variables locales de fonction (ex. "temp"
+  dans math.swift, "status" dans errors.swift), desormais signales A
+  TORT comme des "globaux" non repliables dans le message FatalError.
+  CORRIGE en ajoutant TSymRec.IsTopLevelLocal (Vrai UNIQUEMENT pour une
+  variable de boucle for-in, ParseForInStmt) - EmitDataSeg ne considere
+  desormais qu IsGlobal OU IsTopLevelLocal, jamais un VRAI local/
+  parametre de fonction. Trouve en RE-executant le rapport TODO 25 sur
+  les 12 echantillons apres le premier essai, pas par un self-test
+  (aucun des 12 echantillons n a de fonction AVEC parametre non-const
+  parmi ceux qui atteignent desormais ce code) - meme discipline
+  "verifier par execution reelle, pas seulement par les self-tests" que
+  chaque bogue precedent de ce fichier.
+
+  Etiquette .DATA d une variable de boucle : CgVarLabel rend chaque
+  variable IsTopLevelLocal UNIQUE par index SymTab (ex. "_SW_L12_i"),
+  jamais par simple nom - permet a DEUX boucles for-in SIBLING de
+  reutiliser legalement le MEME nom de variable sans partager le meme
+  emplacement memoire.
+
+  REUSSITE COMPLETE : arrays.swift, loops.swift (voir le rapport TODO 25
+  mis a jour ci-dessus) - loops.swift exerce a lui seul while/repeat-
+  while/for-in/break/continue/comparaisons, verifie par EXECUTION reelle
+  (Git Bash ET PowerShell natif), sortie EXACTEMENT conforme (21 valeurs
+  imprimees, toutes correctes, y compris l effet du "if" imbrique/break/
+  continue a l interieur du for-in).
+
+  LIMITATIONS ASSUMEES (inchangees pour tout le reste) : "if let"/"if
+  var"/guard/switch restent hors de portee ; for-in sur Array/Dictionary/
+  Set/String reste une extension future ; break/continue ETIQUETES
+  restent hors de portee ; &&/|| (court-circuit) restent hors de portee
+  (non exerces par aucun echantillon actuel).
   ============================================================ *)
 
 { ============================================================ }
@@ -2968,6 +3030,25 @@ Type
                               { convention EXACTE que GOCW32.PAS (parametres              }
                               { positifs a partir de +8, locaux negatifs a             }
                               { partir de -4). }
+    IsTopLevelLocal : Boolean; { TODO 21 (extension controle de flux) : Vrai   }
+                              { UNIQUEMENT pour une variable de boucle for-in            }
+                              { (ParseForInStmt) - AUCUNE fonction n est                        }
+                              { encore compilee (CompileFuncDef n existe pas),            }
+                              { donc IsGlobal=Faux ne peut actuellement              }
+                              { signifier QUE "portee imbriquee au niveau              }
+                              { FICHIER" (if/while/for-in top-level) - CE               }
+                              { CHAMP existe pour que EmitDataSeg distingue               }
+                              { PRECISEMENT ce cas (storage .DATA legitime,              }
+                              { voir CgVarLabel) d un VRAI parametre/local de              }
+                              { fonction (ex. "temp" dans math.swift, "status"           }
+                              { dans errors.swift - AUCUN stockage .DATA               }
+                              { n est necessaire ni correct pour ceux-la,                       }
+                              { leurs fonctions n etant jamais compilees) -              }
+                              { bogue REEL trouve en executant le rapport               }
+                              { TODO 25 : sans ce champ, EmitDataSeg (si son              }
+                              { filtre IsGlobal etait simplement retire)                        }
+                              { rapportait a tort "temp"/"status" comme des               }
+                              { "globaux" non repliables. }
   End;
 
 Var
@@ -3113,6 +3194,7 @@ Begin
   SymTab[SymCount].Used        := False;
   SymTab[SymCount].WasVarDecl  := False;
   SymTab[SymCount].Offset      := 0;
+  SymTab[SymCount].IsTopLevelLocal := False;
 
   SymAdd := SymCount;
   Inc(SymCount);
@@ -5389,7 +5471,11 @@ Type
   {   STK_WHILE       Extra=Condition ; Right=Corps                                      }
   {   STK_REPEATWHILE Right=Corps ; Extra=Condition (testee APRES le corps)              }
   {   STK_FORRANGE    NameVal=nom de la variable ('_' si ignoree) ;                      }
-  {                   Left=intervalle (a..<b/a...b) ; Right=Corps                            }
+  {                   Left=intervalle (a..<b/a...b) ; Right=Corps ;                          }
+  {                   Extra=index SymTab de la variable DEJA RESOLU (-1 si           }
+  {                   '_' - TODO 21, generateur de code : voir la note                     }
+  {                   d en-tete de ParseForInStmt pour pourquoi SymFind                    }
+  {                   seul ne suffit pas ici)                                                    }
   {   STK_BREAK/CONTINUE  NameVal=etiquette visee ('' si absente)                            }
   {   STK_RETURN      Left=expression (-1 si "return" nu, fonction Void)                     }
   {   STK_FALLTHROUGH (aucune charge utile)                                                  }
@@ -6009,7 +6095,7 @@ End;
 Function ParseForInStmt: Integer;
 Var
   VarNam : TString;
-  N, RangeExpr, ElemT, Body, RangeBaseT : Integer;
+  N, RangeExpr, ElemT, Body, RangeBaseT, LoopVarSI : Integer;
   SavedNTC : Boolean;
 Begin
   PPAdvance;   { for }
@@ -6059,7 +6145,12 @@ Begin
         ElemT := PDT_CHARACTER;
     End;
   End;
-  If VarNam <> '_' Then SymAdd(VarNam, SK_VAR, ElemT, True);
+  If VarNam <> '_' Then
+  Begin
+    LoopVarSI := SymAdd(VarNam, SK_VAR, ElemT, True);
+    SymTab[LoopVarSI].IsTopLevelLocal := True;
+  End
+  Else LoopVarSI := -1;
 
   Body := ParseBlock;
   SymLeaveScope;
@@ -6068,6 +6159,17 @@ Begin
   StmtPool[N].NameVal := VarNam;
   StmtPool[N].Left     := RangeExpr;
   StmtPool[N].Right    := Body;
+  { Extra : index SymTab de la variable de boucle DEJA RESOLU ici (-1 si   }
+  { "_") - TODO 21 (extension controle de flux, generateur de code) en a           }
+  { besoin pour initialiser/incrementer la variable SANS repasser par              }
+  { SymFind(NameVal) au moment de la generation de code (executee bien              }
+  { APRES la fermeture de CETTE portee, SymLeaveScope juste au-dessus) :          }
+  { SymFind ferait un balayage par NOM sur TOUT SymTab (ne respecte pas           }
+  { les portees fermees, voir sa propre note d en-tete) et pourrait donc            }
+  { resoudre au MAUVAIS symbole si DEUX boucles for-in SIBLING reutilisent           }
+  { le MEME nom de variable plus loin dans le fichier - champ AUPARAVANT             }
+  { inutilise pour ce Kind (voir le tableau d usage d en-tete de section). }
+  StmtPool[N].Extra := LoopVarSI;
   ParseForInStmt := N;
 End;
 
@@ -11442,20 +11544,31 @@ Begin
   CgLabelGen := ASM_PFX_LABEL + IntToStrSW(CgLabelSeq);
 End;
 
-{ CgVarOperand : operande ASM pour LIRE/ECRIRE le symbole SI - MEME       }
-{ convention EXACTE que GOCW32.PAS (adresse par NOM mangle pour un                  }
-{ GLOBAL, deplacement EBP-relatif sinon) - AUCUN symbole non-global                       }
-{ n existe encore a ce stade (aucune fonction n est compilee cette                          }
-{ premiere passe), la branche EBP reste donc du code MORT pour l instant,              }
-{ deja correcte et prete pour la prochaine extension (fonctions). }
-Function CgVarOperand(SI: Integer): TString;
+{ CgVarLabel : etiquette .DATA UNIQUE pour le symbole SI - un GLOBAL      }
+{ (IsGlobal, portee fichier) est adresse par son NOM (deux globaux ne             }
+{ peuvent jamais partager un nom, deja garanti par SymAdd). Un symbole           }
+{ IsGlobal=Faux (TODO 21, extension controle de flux : variable de               }
+{ boucle for-in, seul cas rencontre pour l instant - AUCUNE fonction              }
+{ n est encore compilee, CompileFuncDef n existe pas) recoit lui aussi            }
+{ un stockage .DATA (aucune VRAIE pile de fonction n existe encore a              }
+{ ce niveau), mais son etiquette inclut l index SymTab pour rester                       }
+{ UNIQUE meme si DEUX boucles for-in SIBLING reutilisent le MEME nom              }
+{ de variable (ex. deux "for i in ..." successifs) - l ancien branchement            }
+{ EBP-relatif (reserve depuis le TODO 05/21, TSymRec.Offset) attend                    }
+{ toujours la VRAIE compilation de fonctions, une extension future qui           }
+{ devra alors distinguer une portee de fonction REELLE d une simple                    }
+{ imbrication top-level comme celle-ci. }
+Function CgVarLabel(SI: Integer): TString;
 Begin
   If SymTab[SI].IsGlobal Then
-    CgVarOperand := '[' + ASM_PFX_GVAR + SymTab[SI].Name + ']'
-  Else If SymTab[SI].Offset >= 0 Then
-    CgVarOperand := '[EBP+' + IntToStrSW(SymTab[SI].Offset) + ']'
+    CgVarLabel := ASM_PFX_GVAR + SymTab[SI].Name
   Else
-    CgVarOperand := '[EBP-' + IntToStrSW(-SymTab[SI].Offset) + ']';
+    CgVarLabel := ASM_PFX_GVAR + 'L' + IntToStrSW(SI) + '_' + SymTab[SI].Name;
+End;
+
+Function CgVarOperand(SI: Integer): TString;
+Begin
+  CgVarOperand := '[' + CgVarLabel(SI) + ']';
 End;
 
 { CgCollectStrings : PRE-PASSE sur TOUT le programme (avant la moindre    }
@@ -11534,8 +11647,20 @@ Begin
   EmitRaw('.DATA');
   EmitRaw(ASM_PFX_RUNTIME + 'NEWLINE  DB 10');
   For I := 0 To SymCount - 1 Do
-    If (SymTab[I].Kind = SK_VAR) And SymTab[I].IsGlobal Then
+    If (SymTab[I].Kind = SK_VAR) And (SymTab[I].IsGlobal Or SymTab[I].IsTopLevelLocal) Then
     Begin
+      { TODO 21 (extension controle de flux) : le filtre couvre desormais     }
+      { IsGlobal OU IsTopLevelLocal (variable de boucle for-in, portee             }
+      { imbriquee MAIS toujours au niveau FICHIER - AUCUNE fonction n est               }
+      { encore compilee, pas de VRAIE pile EBP, voir CgVarLabel) - PAS un              }
+      { simple retrait du filtre IsGlobal (essaye PUIS CORRIGE pendant                       }
+      { cette meme extension : un retrait total aurait AUSSI capture les              }
+      { VRAIS parametres/locales de fonction, ex. "temp" dans math.swift/                    }
+      { "status" dans errors.swift, et les aurait signales a tort comme            }
+      { des "globaux" non repliables dans le message FatalError ci-dessous            }
+      { - bogue trouve en executant le rapport TODO 25 lui-meme, CORRIGE            }
+      { en ajoutant IsTopLevelLocal, mis a Vrai UNIQUEMENT par                       }
+      { ParseForInStmt). }
       { TODO 25 (validation) : bogue REEL trouve par EXECUTION (jamais par     }
       { relecture du .asm ni par un self-test structurel) - generics.swift/           }
       { math.swift/optionals.swift COMPILAIENT et s EXECUTAIENT sans              }
@@ -11547,8 +11672,13 @@ Begin
       { utilisateur, "??" sur une variable, etc. - CompileFuncDef n existe              }
       { toujours pas) DOIT s arreter PROPREMENT ICI, jamais deviner 0 en              }
       { silence - exactement la discipline appliquee partout ailleurs dans              }
-      { ce fichier. }
-      If SymTab[I].HasInit And Not ExprPool[SymTab[I].InitExprIdx].IsConst Then
+      { ce fichier. InitExprIdx>=0 protege contre une liaison "if let"/               }
+      { "guard let" (HasInit force a Vrai, TODO 14, MAIS InitExprIdx JAMAIS            }
+      { assigne pour ce cas precis) - non exercee par aucun echantillon               }
+      { actuel, reste donc un stockage "DD 0" inerte plutot qu un acces               }
+      { hors bornes de ExprPool. }
+      If SymTab[I].HasInit And (SymTab[I].InitExprIdx >= 0) And
+         Not ExprPool[SymTab[I].InitExprIdx].IsConst Then
         FatalError('TODO 21 : generateur de code, initialiseur de global "' +
           SymTab[I].Name + '" non repliable a la compilation (appel de ' +
           'fonction utilisateur, expression Optional, etc.) - seuls les ' +
@@ -11558,12 +11688,12 @@ Begin
       Else If (SymTab[I].TypeIdx >= 0) And (SymTab[I].TypeIdx < TypeCount) And
          (TypeTab[SymTab[I].TypeIdx].Kind = TYK_STRING) And
          (SymTab[I].ConstVal.Kind = CK_STRING) Then
-        EmitRaw(ASM_PFX_GVAR + SymTab[I].Name + '  DB "' + SymTab[I].ConstVal.StrVal + '", 0')
+        EmitRaw(CgVarLabel(I) + '  DB "' + SymTab[I].ConstVal.StrVal + '", 0')
       Else If (SymTab[I].TypeIdx >= 0) And (SymTab[I].TypeIdx < TypeCount) And
          (TypeTab[SymTab[I].TypeIdx].Kind In [TYK_INT, TYK_BOOL]) Then
-        EmitRaw(ASM_PFX_GVAR + SymTab[I].Name + '  DD ' + IntToStrSW(SymTab[I].ConstVal.IntVal))
+        EmitRaw(CgVarLabel(I) + '  DD ' + IntToStrSW(SymTab[I].ConstVal.IntVal))
       Else
-        EmitRaw(ASM_PFX_GVAR + SymTab[I].Name + '  DD 0');
+        EmitRaw(CgVarLabel(I) + '  DD 0');
     End;
   For I := 0 To CgStrCount - 1 Do
     EmitRaw(ASM_PFX_STRING + IntToStrSW(I) + '  DB "' + CgStrPool[I] + '", 0');
@@ -11758,6 +11888,60 @@ Begin
   EmitBlankLine;
 End;
 
+{ EmitCompareJcc : traduit une comparaison en une VRAIE valeur 0/1 dans  }
+{ EAX (Bool Swift) - PAS de SETcc (jamais porte par l assembleur du               }
+{ TODO 22, aucun mnemonique/octet-registre necessaire ailleurs), plutot           }
+{ un CMP+Jcc+branchement XOR/MOV, MEME PATTERN EXACT que GOCW32.PAS               }
+{ (EmitCompareJcc, TODO 21 de ce fichier frere) - EAX/EBX deja les DEUX           }
+{ operandes (convention EK_BINARY existante, voir CompileExpr). }
+Procedure EmitCompareJcc(Const Jcc: TString);
+Var LblTrue, LblDone : TString;
+Begin
+  LblTrue := CgLabelGen;
+  LblDone := CgLabelGen;
+  EmitInstr('CMP EAX,EBX');
+  EmitInstr(Jcc + ' ' + LblTrue);
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('JMP ' + LblDone);
+  EmitLabel(LblTrue);
+  EmitInstr('MOV EAX,1');
+  EmitLabel(LblDone);
+End;
+
+{ Pile des etiquettes "break"/"continue" de la boucle COURANTE (TODO 21, }
+{ extension controle de flux) - permet l imbrication (while dans un              }
+{ for-in, etc.) : chaque boucle empile SA PROPRE paire d etiquettes             }
+{ juste avant de compiler son corps, la depile juste apres - "break"/           }
+{ "continue" (non etiquetes, seul cas couvert ici) sautent TOUJOURS vers                }
+{ le SOMMET de cette pile (la boucle la plus imbriquee). Aucun equivalent          }
+{ direct dans GOCW32.PAS a cette date (break/continue n y sont pas                     }
+{ encore compiles non plus - confirme par recherche, TODO 21 de ce                     }
+{ fichier est donc EN AVANCE sur son propre modele pour ce point precis). }
+Const
+  MAX_CG_LOOP_DEPTH = 32;
+Var
+  CgLoopBreakLbl    : Array[0..MAX_CG_LOOP_DEPTH - 1] Of TString;
+  CgLoopContinueLbl : Array[0..MAX_CG_LOOP_DEPTH - 1] Of TString;
+  CgLoopDepth       : Integer;
+
+Procedure CgLoopPush(Const BreakLbl, ContinueLbl: TString);
+Begin
+  If CgLoopDepth >= MAX_CG_LOOP_DEPTH Then
+    FatalError('TODO 21 : generateur de code, boucles imbriquees trop ' +
+      'profondement (MAX_CG_LOOP_DEPTH)')
+  Else
+  Begin
+    CgLoopBreakLbl[CgLoopDepth]    := BreakLbl;
+    CgLoopContinueLbl[CgLoopDepth] := ContinueLbl;
+    Inc(CgLoopDepth);
+  End;
+End;
+
+Procedure CgLoopPop;
+Begin
+  If CgLoopDepth > 0 Then Dec(CgLoopDepth);
+End;
+
 { CompileExpr : compile RECURSIVEMENT le noeud E de ExprPool - laisse    }
 { TOUJOURS son resultat dans EAX (convention FIXE, AUCUN allocateur de              }
 { registres - meme discipline que GOCW32.PAS). Toute forme hors de la                  }
@@ -11791,10 +11975,20 @@ Begin
           EmitInstr('MOV EAX,DWORD PTR ' + CgVarOperand(SI));
       End;
     EK_BINARY:
-      If (ExprPool[E].Op <> '+') And (ExprPool[E].Op <> '-') And (ExprPool[E].Op <> '*') Then
+      { comparaisons (TODO 21, extension controle de flux) AJOUTEES au     }
+      { seul +/-/* de la premiere passe - meme structure PUSH/POP EAX/EBX,       }
+      { juste un dispatch supplementaire vers EmitCompareJcc (ci-dessus)             }
+      { pour les 6 operateurs relationnels. && / || (court-circuit) restent          }
+      { HORS de portee (non exerces par aucun echantillon actuel - ni                    }
+      { arrays.swift ni loops.swift ne les utilisent), tombent donc dans              }
+      { le Else FatalError final comme tout autre operateur non couvert. }
+      If (ExprPool[E].Op <> '+') And (ExprPool[E].Op <> '-') And (ExprPool[E].Op <> '*') And
+         (ExprPool[E].Op <> '<') And (ExprPool[E].Op <> '<=') And
+         (ExprPool[E].Op <> '>') And (ExprPool[E].Op <> '>=') And
+         (ExprPool[E].Op <> '==') And (ExprPool[E].Op <> '!=') Then
         FatalError('TODO 21 : generateur de code, operateur binaire non couvert ' +
-          'pour cette premiere passe (seuls +/-/* le sont ; / et % attendent ' +
-          'le mecanisme panique/erreur, extension future) : ' + ExprPool[E].Op)
+          'pour cette premiere passe (+/-/* et les 6 comparaisons le sont ; ' +
+          '&&/||/ et % attendent une extension future) : ' + ExprPool[E].Op)
       Else
       Begin
         CompileExpr(ExprPool[E].Left);
@@ -11804,7 +11998,13 @@ Begin
         EmitInstr('POP EAX');
         If ExprPool[E].Op = '+' Then EmitInstr('ADD EAX,EBX')
         Else If ExprPool[E].Op = '-' Then EmitInstr('SUB EAX,EBX')
-        Else EmitInstr('IMUL EAX,EBX');
+        Else If ExprPool[E].Op = '*' Then EmitInstr('IMUL EAX,EBX')
+        Else If ExprPool[E].Op = '<' Then EmitCompareJcc('JL')
+        Else If ExprPool[E].Op = '<=' Then EmitCompareJcc('JLE')
+        Else If ExprPool[E].Op = '>' Then EmitCompareJcc('JG')
+        Else If ExprPool[E].Op = '>=' Then EmitCompareJcc('JGE')
+        Else If ExprPool[E].Op = '==' Then EmitCompareJcc('JE')
+        Else EmitCompareJcc('JNE');
       End;
     EK_CALL:
       { seul "print(_:)" (un seul argument, StdlibTab, TODO 20) est          }
@@ -11850,9 +12050,23 @@ Begin
   End;
 End;
 
-{ CompileStmt : compile RECURSIVEMENT le noeud S de StmtPool. }
+{ CompileStmt : compile RECURSIVEMENT le noeud S de StmtPool. Extension  }
+{ controle de flux (TODO 21, apres le rapport de validation TODO 25             }
+{ signalant que arrays.swift/loops.swift s arretaient au premier for-in/                }
+{ while) : if/else-if/else, while, repeat-while, for-in SUR UN               }
+{ INTERVALLE ENTIER SEULEMENT (a..<b/a...b - Array/Dictionary/Set/               }
+{ String restent une extension future, TODO 16/17), break/continue NON            }
+{ etiquetes. "if let"/"guard"/switch/func/struct/class/etc. restent               }
+{ HORS de portee (voir le Else FatalError final). Meme architecture                    }
+{ EXACTE que GOCW32.PAS pour if/while (CMP+TEST/Jcc, PAS de SETcc) - voir              }
+{ EmitCompareJcc ci-dessus ; break/continue et le for-in sur intervalle           }
+{ N ONT PAS d equivalent existant a porter (confirme par recherche :                    }
+{ GOCW32.PAS ne les compile pas non plus a cette date), concus ICI a                    }
+{ partir de zero (pile CgLoopBreakLbl/CgLoopContinueLbl ci-dessus). }
 Procedure CompileStmt(S: Integer);
-Var I, TgtSI : Integer;
+Var
+  I, TgtSI, LoopVarSI, RangeE : Integer;
+  LblElse, LblEnd, LblTop, LblCont : TString;
 Begin
   If S < 0 Then Exit;
   Case StmtPool[S].Kind Of
@@ -11884,10 +12098,126 @@ Begin
           FatalError('TODO 21 : generateur de code, cible d''affectation non ' +
             'resolue: ' + ExprPool[StmtPool[S].Left].NameVal);
       End;
+    STK_IF:
+      If StmtPool[S].NameVal <> '' Then
+        FatalError('TODO 21 : generateur de code, "if let"/"if var" (liaison ' +
+          'optionnelle) non couvert pour cette premiere passe - seule la ' +
+          'forme "if Condition { }" SANS liaison l''est')
+      Else
+      Begin
+        CompileExpr(StmtPool[S].Extra);
+        LblElse := CgLabelGen;
+        EmitInstr('TEST EAX,EAX');
+        EmitInstr('JZ ' + LblElse);
+        CompileStmt(StmtPool[S].Right);
+        If StmtPool[S].Left >= 0 Then
+        Begin
+          LblEnd := CgLabelGen;
+          EmitInstr('JMP ' + LblEnd);
+          EmitLabel(LblElse);
+          CompileStmt(StmtPool[S].Left);
+          EmitLabel(LblEnd);
+        End
+        Else
+          EmitLabel(LblElse);
+      End;
+    STK_WHILE:
+      Begin
+        LblTop := CgLabelGen;
+        LblEnd := CgLabelGen;
+        EmitLabel(LblTop);
+        CompileExpr(StmtPool[S].Extra);
+        EmitInstr('TEST EAX,EAX');
+        EmitInstr('JZ ' + LblEnd);
+        CgLoopPush(LblEnd, LblTop);
+        CompileStmt(StmtPool[S].Right);
+        CgLoopPop;
+        EmitInstr('JMP ' + LblTop);
+        EmitLabel(LblEnd);
+      End;
+    STK_REPEATWHILE:
+      Begin
+        LblTop  := CgLabelGen;
+        LblCont := CgLabelGen;
+        LblEnd  := CgLabelGen;
+        EmitLabel(LblTop);
+        CgLoopPush(LblEnd, LblCont);
+        CompileStmt(StmtPool[S].Right);
+        CgLoopPop;
+        EmitLabel(LblCont);
+        CompileExpr(StmtPool[S].Extra);
+        EmitInstr('TEST EAX,EAX');
+        EmitInstr('JNZ ' + LblTop);
+        EmitLabel(LblEnd);
+      End;
+    STK_FORRANGE:
+      Begin
+        RangeE := StmtPool[S].Left;
+        If (RangeE < 0) Or (ExprPool[RangeE].Kind <> EK_BINARY) Or
+           ((ExprPool[RangeE].Op <> '..<') And (ExprPool[RangeE].Op <> '...')) Then
+          FatalError('TODO 21 : generateur de code, "for-in" non couvert pour ' +
+            'cette premiere passe (seul un intervalle ENTIER a..<b/a...b l''est ' +
+            '- iteration sur Array/Dictionary/Set/String reste une extension ' +
+            'future, TODO 16/17)')
+        Else If StmtPool[S].Extra < 0 Then
+          FatalError('TODO 21 : generateur de code, "for _ in ..." (variable ' +
+            'de boucle ignoree) non couvert pour cette premiere passe')
+        Else
+        Begin
+          LoopVarSI := StmtPool[S].Extra;
+
+          CompileExpr(ExprPool[RangeE].Left);
+          EmitInstr('MOV DWORD PTR ' + CgVarOperand(LoopVarSI) + ',EAX');
+
+          LblTop  := CgLabelGen;
+          LblCont := CgLabelGen;
+          LblEnd  := CgLabelGen;
+          EmitLabel(LblTop);
+
+          EmitInstr('MOV EAX,DWORD PTR ' + CgVarOperand(LoopVarSI));
+          EmitInstr('PUSH EAX');
+          CompileExpr(ExprPool[RangeE].Right);
+          EmitInstr('MOV EBX,EAX');
+          EmitInstr('POP EAX');
+          If ExprPool[RangeE].Op = '..<' Then
+            EmitCompareJcc('JL')
+          Else
+            EmitCompareJcc('JLE');
+          EmitInstr('TEST EAX,EAX');
+          EmitInstr('JZ ' + LblEnd);
+
+          CgLoopPush(LblEnd, LblCont);
+          CompileStmt(StmtPool[S].Right);
+          CgLoopPop;
+
+          EmitLabel(LblCont);
+          EmitInstr('MOV EAX,DWORD PTR ' + CgVarOperand(LoopVarSI));
+          EmitInstr('ADD EAX,1');
+          EmitInstr('MOV DWORD PTR ' + CgVarOperand(LoopVarSI) + ',EAX');
+          EmitInstr('JMP ' + LblTop);
+          EmitLabel(LblEnd);
+        End;
+      End;
+    STK_BREAK:
+      If StmtPool[S].NameVal <> '' Then
+        FatalError('TODO 21 : generateur de code, "break" etiquete non couvert ' +
+          'pour cette premiere passe')
+      Else If CgLoopDepth <= 0 Then
+        FatalError('TODO 21 : generateur de code, "break" hors de toute boucle')
+      Else
+        EmitInstr('JMP ' + CgLoopBreakLbl[CgLoopDepth - 1]);
+    STK_CONTINUE:
+      If StmtPool[S].NameVal <> '' Then
+        FatalError('TODO 21 : generateur de code, "continue" etiquete non ' +
+          'couvert pour cette premiere passe')
+      Else If CgLoopDepth <= 0 Then
+        FatalError('TODO 21 : generateur de code, "continue" hors de toute boucle')
+      Else
+        EmitInstr('JMP ' + CgLoopContinueLbl[CgLoopDepth - 1]);
   Else
     FatalError('TODO 21 : generateur de code, forme d''instruction non couverte ' +
-      'pour cette premiere passe (if/while/for/switch/guard/func/struct/class/' +
-      'etc. restent une extension future, voir la note d''en-tete de section) : ' +
+      'pour cette premiere passe (guard/switch/func/struct/class/etc. restent ' +
+      'une extension future, voir la note d''en-tete de section) : ' +
       'Kind=' + IntToStrSW(Ord(StmtPool[S].Kind)));
   End;
 End;
@@ -11930,6 +12260,7 @@ Procedure CompileProgram(Const AsmFileName: TString);
 Var I : Integer;
 Begin
   CgLabelSeq := 0;
+  CgLoopDepth := 0;
   CgCollectStrings;
 
   EmitOpen(AsmFileName);
@@ -12040,6 +12371,80 @@ Begin
   CodegenAssert('sortie propre CALL _ExitProcess@4 present',
     CgFileHasSubstring(TmpAsm, 'CALL _ExitProcess@4'));
   CodegenAssert('point d''entree END _SWSTART present', CgFileHasSubstring(TmpAsm, 'END _SWSTART'));
+
+  Assign(CgOutF, TmpAsm);
+  Erase(CgOutF);
+
+  { re-initialise les tables globales pour ne pas polluer Run reel }
+  StmtInit;
+  ExprInit;
+  SymInit;
+  FuncDefInit;
+  MethodPoolInit;
+  EnumCaseInit;
+
+  { loops.swift EN ENTIER (extension controle de flux, TODO 21, ajoutee   }
+  { suite au rapport de validation TODO 25 : if/while/repeat-while/               }
+  { for-in sur intervalle/break/continue/comparaisons - exerce les SIX             }
+  { a la fois, EXACTEMENT le contenu REEL de SAMPLES\SWIFT\loops.swift,           }
+  { deja verifie par EXECUTION reelle (Git Bash ET PowerShell natif,               }
+  { sortie EXACTEMENT conforme a un vrai compilateur Swift) AVANT               }
+  { d ecrire ces assertions structurelles). }
+  Assign(LexSrcF, TmpSrc);
+  Rewrite(LexSrcF);
+  WriteLn(LexSrcF, 'var i: Int = 0');
+  WriteLn(LexSrcF, 'while i < 5 {');
+  WriteLn(LexSrcF, 'print(i)');
+  WriteLn(LexSrcF, 'i = i + 1');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, 'var j: Int = 10');
+  WriteLn(LexSrcF, 'repeat {');
+  WriteLn(LexSrcF, 'print(j)');
+  WriteLn(LexSrcF, 'j = j - 1');
+  WriteLn(LexSrcF, '} while j > 7');
+  WriteLn(LexSrcF, 'for k in 0..<5 {');
+  WriteLn(LexSrcF, 'print(k)');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, 'for m in 0..<100 {');
+  WriteLn(LexSrcF, 'if m == 3 {');
+  WriteLn(LexSrcF, 'break');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, 'print(m)');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, 'for n in 0..<6 {');
+  WriteLn(LexSrcF, 'if n == 2 {');
+  WriteLn(LexSrcF, 'continue');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, 'print(n)');
+  WriteLn(LexSrcF, '}');
+  Close(LexSrcF);
+  Assign(LexSrcF, TmpSrc);
+  Reset(LexSrcF);
+  LexOpened := True;
+  LexInit;
+  LexAll;
+  LexClose;
+  Erase(LexSrcF);
+  ParserInit;
+  ParseSwiftProgram;
+
+  CompileProgram(TmpAsm);
+
+  CodegenAssert('while : comparaison "<" -> CMP EAX,EBX present',
+    CgFileHasSubstring(TmpAsm, 'CMP EAX,EBX'));
+  CodegenAssert('while : saut conditionnel de sortie JZ present',
+    CgFileHasSubstring(TmpAsm, 'JZ '));
+  CodegenAssert('while : retour au sommet JMP present', CgFileHasSubstring(TmpAsm, 'JMP '));
+  CodegenAssert('repeat-while : condition testee APRES le corps, JNZ present',
+    CgFileHasSubstring(TmpAsm, 'JNZ '));
+  CodegenAssert('for-in : comparaison "..<" -> JL (borne exclusive) present',
+    CgFileHasSubstring(TmpAsm, 'JL '));
+  CodegenAssert('if/comparaison "==" -> JE present', CgFileHasSubstring(TmpAsm, 'JE '));
+  CodegenAssert('for-in : variable de boucle stockee dans .DATA (etiquette ' +
+    'mangle "L<index>_nom", IsTopLevelLocal) present',
+    CgFileHasSubstring(TmpAsm, ASM_PFX_GVAR + 'L'));
+  CodegenAssert('for-in : incrementation de la variable de boucle (ADD EAX,1) present',
+    CgFileHasSubstring(TmpAsm, 'ADD EAX,1'));
 
   Assign(CgOutF, TmpAsm);
   Erase(CgOutF);
