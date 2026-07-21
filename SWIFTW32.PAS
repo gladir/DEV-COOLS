@@ -600,28 +600,28 @@ Program SWIFTW32;
   de "seulement tokeniser" a une VRAIE tentative de compilation complete
   - voir la note d en-tete de Run() plus bas), avec le resultat suivant :
 
-  REUSSITE COMPLETE, 7/12 FICHIERS (compile, produit un .EXE PE Win32 REEL,
+  REUSSITE COMPLETE, 8/12 FICHIERS (compile, produit un .EXE PE Win32 REEL,
   EXECUTE sur Windows reel - Git Bash ET PowerShell natif -, sortie
   EXACTEMENT conforme a ce qu un vrai compilateur Swift produirait, code
-  de sortie 0) - MIS A JOUR apres TROIS extensions post-TODO25 (controle
-  de flux, construction de classe, compilation de fonctions - voir leurs
-  propres blocs plus bas pour le detail complet de chacune) :
+  de sortie 0) - MIS A JOUR apres QUATRE extensions post-TODO25 (controle
+  de flux, construction de classe, compilation de fonctions, defer au
+  niveau fichier - voir leurs propres blocs plus bas pour le detail
+  complet de chacune) :
     hello.swift    ("Hello, 8086!" / "1" / "1")
     arrays.swift   (10/20/30/40/50/5/0/1/2/3/4)
     classes.swift  (42)
     control.swift  (2/30/1 - if/else-if/else, switch, fonction avec guard/
       return, appel depuis un initialiseur de global, EN UN SEUL fichier)
     enums.swift    (1/3)
+    errors.swift   (1/99 - fonction avec local non-constant, defer au
+      niveau fichier execute EN DERNIER, juste avant la sortie)
     generics.swift (42/20 - fonctions GENERIQUES, "juste assez" pour
       passer par la convention EAX sans monomorphisation reelle)
     loops.swift    (0/1/2/3/4/10/9/8/0/1/2/3/4/0/1/2/0/1/3/4/5 - exerce
       while/repeat-while/for-in/break/continue EN UN SEUL fichier)
 
-  ARRET PROPRE, 5/12 FICHIERS RESTANTS (FatalError EXACT et PRECIS,
+  ARRET PROPRE, 4/12 FICHIERS RESTANTS (FatalError EXACT et PRECIS,
   jamais un plantage, jamais une valeur devinee) :
-    - errors.swift    : "defer { print(99) }" (STK_DEFER, Kind=15) - AUCUN
-        mecanisme LIFO de defer n existe encore au niveau du generateur
-        de code (reserve pour une extension future, TODO 15/21).
     - math.swift      : fonction "swap" avec DEUX parametres "inout" -
         alias PAR ADRESSE non couvert (extension future) ; "add"/
         "multiply"/"factorial" (recursion COMPRISE), eux, compilent et
@@ -836,6 +836,62 @@ Program SWIFTW32;
   nil-coalescing sur une variable non-constante (optionals.swift) ;
   "guard let"/"switch" avec motif complexe ; closures ; methodes
   d instance (struct/class) restent toutes hors de portee.
+  ============================================================ *)
+
+(* ============================================================
+  EXTENSION DEFER AU NIVEAU FICHIER + CORRECTIF STK_DECL (ajoutee APRES
+  l EXTENSION COMPILATION DE FONCTIONS ci-dessus, sur demande explicite
+  de l utilisateur suite au rapport "errors.swift : STK_DEFER/Kind=15
+  non couvert" - meme discipline incrementale que toutes les extensions
+  post-TODO25 de ce fichier).
+  ============================================================
+  AJOUTE : ParseDeferStmt (TODO 15) documentait DEJA "collecte-puis-
+  rejeu-inverse, meme mecanisme que le TODO 16 de GOCW32.PAS" - CompileProgram
+  applique desormais EXACTEMENT cela pour un "defer" rencontre
+  DIRECTEMENT dans TopLevelStmts (la portee englobante d un script Swift
+  EST le fichier entier) : chaque corps differe est mis de cote PENDANT
+  le parcours principal de TopLevelStmts (jamais compile sur place),
+  PUIS rejoue en ORDRE INVERSE (LIFO - regle Swift REELLE pour plusieurs
+  "defer") juste avant la sortie de processus propre. Un "defer" a
+  l INTERIEUR d une fonction ou d un bloc imbrique (if/while/etc.) reste
+  HORS de portee (CompileStmt lui-meme n a AUCUN cas STK_DEFER).
+
+  BOGUE REEL trouve et corrige PENDANT cette extension (par EXECUTION
+  reelle du fichier PRODUIT, PAS un self-test) : une fois le "defer"
+  lui-meme couvert, errors.swift compilait et s executait SANS ERREUR
+  mais imprimait "0" au lieu du "1" attendu pour "print(ok)". Cause
+  racine : "let status: Int = openFile(\"test.txt\")" - une variable
+  LOCALE (a l interieur de la fonction "process", PAS un global) dont
+  l initialiseur est un appel de fonction (non repliable). STK_DECL
+  restait, depuis le TODO 05, un pur "rien a generer" (documente comme
+  correct SEULEMENT pour un global, deja entierement pris en charge par
+  EmitDataSeg/CompileGlobalRuntimeInits) - mais un LOCAL de fonction n a,
+  lui, JAMAIS d autre occasion d etre initialise : son emplacement
+  EBP-relatif contenait une valeur de PILE QUELCONQUE (jamais garantie
+  zero) tant que rien n y ecrivait explicitement. Corrige en deux temps :
+  (1) StmtNew(STK_DECL) capture desormais (ParseStatement, meme
+  technique EXACTE que STK_FORRANGE.Extra/TFuncDefRec.ParamSymFirst) la
+  plage SymTab EXACTE des symboles crees par cette instruction
+  (Left=premier index, Extra=leur nombre - supporte "let a = 1, b = 2") ;
+  (2) CompileStmt/STK_DECL evalue REELLEMENT l initialiseur de CHAQUE
+  symbole NON-global de cette plage et l ecrit dans son emplacement
+  (CgVarOperand), au lieu de ne rien faire. Une VALEUR FAUSSE imprimee
+  silencieusement (encore) - meme classe de bogue EXACTE que le premier
+  bogue du TODO 25 lui-meme (generics.swift/math.swift/optionals.swift),
+  cette fois au niveau LOCAL plutot que global - confirme, une fois de
+  plus, que seule une EXECUTION reelle (jamais un self-test structurel
+  ni une relecture du .asm) pouvait reveler ce defaut.
+
+  REUSSITE COMPLETE : errors.swift (1/99, verifie par EXECUTION reelle,
+  Git Bash ET PowerShell natif - "1" AVANT "99", confirmant a la fois la
+  correction du local "status" ET l ordre LIFO du "defer").
+
+  LIMITATIONS ASSUMEES : "defer" a l interieur d une fonction ou d un
+  bloc imbrique reste hors de portee ; plusieurs "defer" au niveau
+  fichier fonctionneraient (ordre LIFO deja code) mais ne sont exerces
+  par aucun echantillon actuel ; "throw"/"do"/"catch"/"try" restent hors
+  de portee (STK_THROW/STK_DO, jamais rencontres par errors.swift lui-
+  meme puisqu aucune VRAIE erreur n y est jamais lancee).
   ============================================================ *)
 
 { ============================================================ }
@@ -5562,9 +5618,16 @@ Type
   {   STK_BLOCK       ArgFirst/Count -> instructions (StmtArgPool[i])          }
   {   STK_EXPR        Left -> expression                                          }
   {   STK_ASSIGN      Op ; Left=cible ; Right=valeur                              }
-  {   STK_DECL        (aucune charge utile - delegue a ParseLetVarDecl/           }
-  {                   ParseTypeAliasDecl, TODO 05, deja appeles au moment            }
-  {                   de creer ce noeud, simple marqueur pour ParseBlock)             }
+  {   STK_DECL        Left=index SymTab du PREMIER symbole cree par cette   }
+  {                   instruction ; Extra=leur NOMBRE (0 pour "typealias",           }
+  {                   >1 pour "let a = 1, b = 2" - virgules multiples,               }
+  {                   ParseLetVarDecl) - TODO 21 (generateur de code,               }
+  {                   extension "defer au niveau fichier" : a du, en la              }
+  {                   corrigeant, etendre STK_DECL AU-DELA du simple                       }
+  {                   marqueur "rien a faire" qu il etait depuis le                        }
+  {                   TODO 05, un VRAI bogue ayant ete trouve par                          }
+  {                   execution reelle - voir la note d en-tete de                         }
+  {                   CompileStmt/STK_DECL, section TODO 21)                                     }
   {   STK_IF          Extra=Condition ; Right=Bloc-Alors ;                            }
   {                   Left=Sinon (-1, ou STK_IF pour "else if", ou               }
   {                   STK_BLOCK pour "else" final)                                   }
@@ -6413,7 +6476,7 @@ End;
 Function ParseStatement: Integer;
 Var
   Lbl    : TString;
-  N, Kw  : Integer;
+  N, Kw, DeclSymFirst : Integer;
 Begin
   Lbl := '';
   If IsLoopLabelAhead Then
@@ -6443,8 +6506,22 @@ Begin
     Else If Kw = KW_CONTINUE Then N := ParseContinueStmt
     Else If Kw = KW_RETURN Then N := ParseReturnStmt
     Else If Kw = KW_FALLTHROUGH Then N := ParseFallthroughStmt
-    Else If Kw = KW_LET Then Begin ParseLetVarDecl(True); N := StmtNew(STK_DECL); End
-    Else If Kw = KW_VAR Then Begin ParseLetVarDecl(False); N := StmtNew(STK_DECL); End
+    Else If Kw = KW_LET Then
+    Begin
+      DeclSymFirst := SymCount;
+      ParseLetVarDecl(True);
+      N := StmtNew(STK_DECL);
+      StmtPool[N].Left  := DeclSymFirst;
+      StmtPool[N].Extra := SymCount - DeclSymFirst;
+    End
+    Else If Kw = KW_VAR Then
+    Begin
+      DeclSymFirst := SymCount;
+      ParseLetVarDecl(False);
+      N := StmtNew(STK_DECL);
+      StmtPool[N].Left  := DeclSymFirst;
+      StmtPool[N].Extra := SymCount - DeclSymFirst;
+    End
     Else If Kw = KW_TYPEALIAS Then Begin ParseTypeAliasDecl; N := StmtNew(STK_DECL); End
     Else If Kw = KW_DEFER Then N := ParseDeferStmt
     Else If Kw = KW_THROW Then N := ParseThrowStmt
@@ -12335,9 +12412,31 @@ Begin
     STK_EXPR:
       CompileExpr(StmtPool[S].Left);
     STK_DECL:
-      ;   { rien a generer ICI - reservation/initialisation CONSTANTE deja  }
-          { entierement geree par EmitDataSeg (niveau GLOBAL seulement,             }
-          { seul niveau couvert par cette premiere passe). }
+      { REEL bogue trouve par EXECUTION (errors.swift : "let status: Int = }
+      { openFile(...)" a l INTERIEUR de la fonction "process", pas un                    }
+      { self-test) - NON un simple "rien a generer" pour un symbole              }
+      { GLOBAL (IsGlobal - deja entierement gere par EmitDataSeg/                        }
+      { CompileGlobalRuntimeInits, la RAISON d etre de cette branche              }
+      { d origine) : un local de FONCTION (extension "compilation de              }
+      { fonctions") n a, lui, JAMAIS d autre occasion d etre initialise -            }
+      { son emplacement EBP-relatif contient une valeur de PILE               }
+      { QUELCONQUE tant que RIEN n y ecrit explicitement. Le laisser SANS           }
+      { code ici faisait silencieusement lire une valeur NON INITIALISEE            }
+      { (errors.swift imprimait "0" au lieu du "1" attendu - "status" par           }
+      { coincidence souvent zero au tout DEBUT d une pile fraiche, jamais           }
+      { garanti). Corrige en evaluant REELLEMENT l initialiseur de CHAQUE           }
+      { symbole non-global cree par cette instruction (Left..Left+Extra-1,          }
+      { voir ParseStatement) - un symbole GLOBAL dans cette meme plage                    }
+      { (jamais le cas au niveau fichier top-level, uniquement possible            }
+      { si un "let"/"var" apparaissait DANS TopLevelStmts - non exerce                  }
+      { actuellement) reste, lui, delegue a EmitDataSeg comme avant. }
+      For I := StmtPool[S].Left To StmtPool[S].Left + StmtPool[S].Extra - 1 Do
+        If (SymTab[I].Kind = SK_VAR) And (Not SymTab[I].IsGlobal) And
+           SymTab[I].HasInit And (SymTab[I].InitExprIdx >= 0) Then
+        Begin
+          CompileExpr(SymTab[I].InitExprIdx);
+          EmitInstr('MOV DWORD PTR ' + CgVarOperand(I) + ',EAX');
+        End;
     STK_ASSIGN:
       If StmtPool[S].Op <> '=' Then
         FatalError('TODO 21 : generateur de code, operateur d''affectation ' +
@@ -12717,9 +12816,26 @@ End;
 { ParseSwiftProgram) sous l etiquette d entree "_SWSTART" (jamais               }
 { "_SWF_main" - Swift n exige pas ce nom, contrairement a "func main()"            }
 { en Go) - PRECEDE de CompileGlobalRuntimeInits (extension "construction           }
-{ de classe"/"compilation de fonctions"). }
+{ de classe"/"compilation de fonctions"). Extension "defer au niveau              }
+{ fichier" (TODO 21, suite au rapport "errors.swift") : ParseDeferStmt              }
+{ (TODO 15) documente DEJA "collecte-puis-rejeu-inverse, meme mecanisme            }
+{ que le TODO 16 de GOCW32.PAS" - ce generateur de code applique             }
+{ desormais EXACTEMENT cela pour les "defer" rencontres DIRECTEMENT dans           }
+{ TopLevelStmts (la PORTEE ENGLOBANTE d un script Swift est le fichier              }
+{ ENTIER - le corps differe donc du "defer" pour EmitInstr sur place :          }
+{ chaque bloc est mis de cote PENDANT le parcours principal, PUIS               }
+{ rejoue en ORDRE INVERSE (LIFO - le DERNIER "defer" enregistre s execute          }
+{ en PREMIER, regle Swift REELLE) juste avant la sortie de processus              }
+{ propre. Un "defer" A L INTERIEUR d une fonction ou d un bloc imbrique           }
+{ (if/while/etc.) reste HORS de portee (CompileStmt lui-meme n a AUCUN           }
+{ cas STK_DEFER - seul CE point d entree le reconnait) - arret propre               }
+{ via le Else FatalError deja existant de CompileStmt. }
 Procedure CompileProgram(Const AsmFileName: TString);
-Var I : Integer;
+Const
+  MAX_CG_TOPLEVEL_DEFER = 16;
+Var
+  I, DeferCount : Integer;
+  DeferBody : Array[0..MAX_CG_TOPLEVEL_DEFER - 1] Of Integer;
 Begin
   CgLabelSeq := 0;
   CgLoopDepth := 0;
@@ -12734,8 +12850,25 @@ Begin
 
   EmitLabel('_SWSTART');
   CompileGlobalRuntimeInits;
+
+  DeferCount := 0;
   For I := 0 To TopLevelStmtCount - 1 Do
-    CompileStmt(TopLevelStmts[I]);
+    If StmtPool[TopLevelStmts[I]].Kind = STK_DEFER Then
+    Begin
+      If DeferCount < MAX_CG_TOPLEVEL_DEFER Then
+      Begin
+        DeferBody[DeferCount] := StmtPool[TopLevelStmts[I]].Right;
+        Inc(DeferCount);
+      End
+      Else
+        WarnMsg('trop de "defer" au niveau fichier (MAX_CG_TOPLEVEL_DEFER)');
+    End
+    Else
+      CompileStmt(TopLevelStmts[I]);
+
+  For I := DeferCount - 1 DownTo 0 Do
+    CompileStmt(DeferBody[I]);
+
   EmitInstr('PUSH 0');
   EmitInstr('CALL _ExitProcess@4');
   EmitRaw('END _SWSTART');
@@ -13052,6 +13185,65 @@ Begin
   CodegenAssert('"valid" (appel de fonction) recoit un placeholder .DATA ' +
     '"DD 0" present',
     CgFileHasSubstring(TmpAsm, ASM_PFX_GVAR + 'valid  DD 0'));
+
+  Assign(CgOutF, TmpAsm);
+  Erase(CgOutF);
+
+  { re-initialise les tables globales pour ne pas polluer Run reel }
+  StmtInit;
+  ExprInit;
+  SymInit;
+  FuncDefInit;
+  MethodPoolInit;
+  EnumCaseInit;
+
+  { errors.swift EN ENTIER (extension "defer au niveau fichier" +         }
+  { CORRECTIF STK_DECL, TODO 21, suite au rapport "errors.swift" -                    }
+  { TODO 25) - deja verifie par EXECUTION reelle (Git Bash ET PowerShell            }
+  { natif, sortie "1"/"99" EXACTEMENT conforme - PAS "0"/"99" comme le              }
+  { PREMIER essai, sans le correctif STK_DECL, le produisait) AVANT               }
+  { d ecrire ces assertions structurelles. }
+  Assign(LexSrcF, TmpSrc);
+  Rewrite(LexSrcF);
+  WriteLn(LexSrcF, 'func openFile(_ name: String) -> Int {');
+  WriteLn(LexSrcF, 'return 1');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, 'func process() -> Int {');
+  WriteLn(LexSrcF, 'let status: Int = openFile("test.txt")');
+  WriteLn(LexSrcF, 'if status == 0 {');
+  WriteLn(LexSrcF, 'return 0');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, 'return 1');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, 'defer {');
+  WriteLn(LexSrcF, 'print(99)');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, 'let ok: Int = process()');
+  WriteLn(LexSrcF, 'print(ok)');
+  Close(LexSrcF);
+  Assign(LexSrcF, TmpSrc);
+  Reset(LexSrcF);
+  LexOpened := True;
+  LexInit;
+  LexAll;
+  LexClose;
+  Erase(LexSrcF);
+  ParserInit;
+  ParseSwiftProgram;
+
+  CompileProgram(TmpAsm);
+
+  CodegenAssert('STK_DECL (correctif) : initialisation REELLE du local ' +
+    '"status" (MOV DWORD PTR [EBP-4],EAX) present - PAS un simple "rien ' +
+    'a faire" comme avant ce correctif',
+    CgFileHasSubstring(TmpAsm, 'MOV DWORD PTR [EBP-4],EAX'));
+  CodegenAssert('"defer" au niveau fichier : le corps differe reste ' +
+    'compile (CALL _SWRT_STRCONV_ITOA/PRINTLN_STR present, partage avec ' +
+    'tout autre print(Int))',
+    CgFileHasSubstring(TmpAsm, 'CALL ' + ASM_PFX_RUNTIME + 'STRCONV_ITOA'));
+  CodegenAssert('sortie propre CALL _ExitProcess@4 toujours present ' +
+    '(APRES le corps differe, jamais avant)',
+    CgFileHasSubstring(TmpAsm, 'CALL _ExitProcess@4'));
 
   Assign(CgOutF, TmpAsm);
   Erase(CgOutF);
