@@ -592,6 +592,86 @@ Program SWIFTW32;
               affirmation globale non verifiee fichier par fichier
   ============================================================ *)
 
+(* ============================================================
+  TODO 25 - VALIDATION FINALE : ETAT REEL, HONNETEMENT DOCUMENTE
+  ============================================================
+  Compile+EXECUTE reellement (pas seulement "compile sans erreur") a ete
+  verifie pour CHAQUE SAMPLES\SWIFT\*.swift, via Run() lui-meme (bascule
+  de "seulement tokeniser" a une VRAIE tentative de compilation complete
+  - voir la note d en-tete de Run() plus bas), avec le resultat suivant :
+
+  REUSSITE COMPLETE, 1/12 FICHIER (compile, produit un .EXE PE Win32 REEL,
+  EXECUTE sur Windows reel - Git Bash ET PowerShell natif -, sortie
+  EXACTEMENT conforme a ce qu un vrai compilateur Swift produirait, code
+  de sortie 0) :
+    hello.swift ("Hello, 8086!" / "1" / "1")
+
+  ARRET PROPRE, 11/12 FICHIERS (FatalError EXACT et PRECIS, jamais un
+  plantage, jamais une valeur devinee) :
+    - arrays.swift    : "for i in 0..<5 { print(i) }" - boucle for-in non
+        couverte (STK_FORRANGE) ; les 6 print() de litteraux constants
+        qui PRECEDENT dans le fichier auraient, eux, ete corrects.
+    - classes.swift   : "let pet: Animal = Animal()" - initialiseur de
+        global non repliable a la compilation (instanciation de classe,
+        aucun codegen de constructeur n existe).
+    - control.swift   : "let valid: Int = checkAge(25)" - initialiseur de
+        global non repliable (appel de fonction utilisateur) ; if/else et
+        switch, plus loin dans le fichier, restent EUX AUSSI non couverts
+        (jamais atteints, ce premier arret masque les suivants).
+    - enums.swift     : "switch dir { ... }" - switch non couvert
+        (STK_SWITCH) ; "let dir"/"let earth" (litteraux), avant, auraient
+        ete corrects.
+    - errors.swift    : "let ok: Int = process()" - initialiseur de
+        global non repliable (appel de fonction utilisateur).
+    - generics.swift  : "let x: Int = identity(42)" - initialiseur de
+        global non repliable (appel de fonction GENERIQUE utilisateur).
+    - loops.swift     : "while i < 5 { ... }" - boucle non couverte
+        (STK_WHILE), la toute premiere rencontree dans le fichier.
+    - math.swift      : "let sum: Int = add(x, y)" - initialiseur de
+        global non repliable (appel de fonction utilisateur).
+    - optionals.swift : "let result: Int = maybeValue ?? 0" -
+        initialiseur de global non repliable (nil-coalescing sur une
+        VARIABLE, jamais un simple litteral).
+    - protos.swift    : "let c: Circle = Circle(radius: 5)" -
+        initialiseur de global non repliable (construction de struct via
+        appel).
+    - structs.swift   : "let origin: Point = Point(x: 0, y: 0)" -
+        initialiseur de global non repliable (construction de struct via
+        appel).
+
+  BOGUE REEL trouve et corrige PENDANT ce TODO 25 (par EXECUTION reelle,
+  jamais par relecture du .asm ni par un self-test structurel) :
+  generics.swift/math.swift/optionals.swift COMPILAIENT et s EXECUTAIENT
+  SANS ERREUR (code de sortie 0) mais IMPRIMAIENT des valeurs FAUSSES (0
+  partout, au lieu de 42/20, de 30/200/120 et de 42/42/99 respectivement)
+  - EmitDataSeg (TODO 21) tombait SILENCIEUSEMENT dans sa branche
+  generique "DD 0" pour tout global dont l initialiseur existait mais
+  n etait PAS repliable a la compilation (ConstVal n est REMPLI que si
+  IsConst=Vrai, ApplyExprInitToSymbol - sinon il garde sa valeur zero par
+  defaut, INDISCERNABLE d une VRAIE constante 0). CORRIGE en ajoutant un
+  FatalError EXPLICITE des que HasInit=Vrai et IsConst=Faux pour ce
+  global, AVANT tout dispatch par type - convertit ces 3 "faux succes"
+  silencieux en arrets propres honnetes, EXACTEMENT comme tout autre
+  construct non couvert. Une VALEUR FAUSSE imprimee silencieusement est
+  un defaut PIRE qu un FatalError (elle ressemble a un succes) - cette
+  classe de bogue ne peut etre trouvee que par une EXECUTION reelle
+  suivie d une VERIFICATION de la sortie, jamais par la seule absence
+  d erreur de compilation : exactement la raison d etre de ce TODO 25.
+
+  LIMITATIONS ASSUMEES a l issue de ce TODO 25 (portee EXACTE du codegen/
+  assembleur/ecrivain PE de premiere passe, TODO 21-23, jamais devinee) :
+  aucune fonction utilisateur n est compilee (CompileFuncDef n existe
+  pas) ; aucun controle de flux (if/while/repeat-while/for-in/switch/
+  guard) n est couvert ; aucune instance de struct/class/enum/protocol/
+  generique/Optional/collection n est construite a l execution ; SEULS
+  les globaux SANS initialiseur ou initialises par un LITTERAL/une
+  expression CONSTANTE repliable, plus print(_:) (String/Int) et +/-/*
+  entre eux, sont couverts. Chacune de ces extensions restera un TODO 21
+  separe, futur, ajoute UNE A LA FOIS avec son propre self-test ET sa
+  propre verification par execution reelle - meme discipline multi-
+  session que GOCW32.PAS/DELPHI.PAS.
+  ============================================================ *)
+
 { ============================================================ }
 { TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF      }
 { ============================================================ }
@@ -2179,6 +2259,76 @@ Begin
   If S = 'print' Then IsBuiltinFunc := BI_PRINT;
 End;
 
+{ StdlibTab (TODO 20) : bibliotheque standard minimale - MEME modele    }
+{ que GOCW32.PAS TODO 20 (chaque entree CONNUE du frontend a l analyse,           }
+{ contrepartie runtime REELLE ajoutee selon les besoins CONSTATES par           }
+{ execution, TODO 21+, JAMAIS devinee a l avance) - PAS de champ "Pkg"          }
+{ ici (contrairement a GOCW32.PAS, ou chaque fonction integree vit dans           }
+{ un PACKAGE importe explicitement, "fmt.Println" etc.) : Swift n a                     }
+{ AUCUN tel prefixe pour ses fonctions globales integrees ("print"                     }
+{ s ecrit SEUL, jamais "Swift.print" en pratique). PORTEE (documentee,             }
+{ roadmap d en-tete explicitement CONDITIONNELLE, "si exerce par un                     }
+{ exemple") : SEUL "print(_:)" est REELLEMENT exerce par les 12                              }
+{ echantillons SAMPLES\SWIFT (aucun n utilise isEmpty/uppercased/                            }
+{ lowercased/abs/min/max) - ces AUTRES membres du roadmap restent donc            }
+{ HONNETEMENT absents de cette table plutot que devines/ajoutes sans               }
+{ pression de test reelle - la table est concue pour GRANDIR le jour               }
+{ ou un echantillon les exercerait vraiment (StdlibAdd ci-dessous,                          }
+{ reutilisable telle quelle, AUCUNE restructuration necessaire). }
+Const
+  MAX_STDLIB = 32;
+
+Type
+  TStdlibRec = Record
+    Name          : TString;
+    ParamCount    : Integer;   { "un seul argument" pour print(_:),      }
+                               { roadmap d en-tete - PAS le vrai print            }
+                               { variadique de Swift reel (separator:/                }
+                               { terminator: INCLUS), meme simplification             }
+                               { que fmt.Println de GOCW32.PAS avant son                 }
+                               { extension bibliotheque standard. }
+    ResultTypeIdx : Integer;
+  End;
+
+Var
+  StdlibTab   : Array[0..MAX_STDLIB - 1] Of TStdlibRec;
+  StdlibCount : Integer;
+
+Function StdlibAdd(Const Nm: TString; AParamCount, AResultTypeIdx: Integer): Integer;
+Begin
+  If StdlibCount >= MAX_STDLIB Then
+  Begin
+    WarnMsg('table de la bibliotheque standard pleine (MAX_STDLIB)');
+    StdlibAdd := -1;
+    Exit;
+  End;
+  StdlibTab[StdlibCount].Name          := Nm;
+  StdlibTab[StdlibCount].ParamCount    := AParamCount;
+  StdlibTab[StdlibCount].ResultTypeIdx := AResultTypeIdx;
+  StdlibAdd := StdlibCount;
+  Inc(StdlibCount);
+End;
+
+{ StdlibFind : recherche EXACTE par nom - SANS "Pkg" (voir la note      }
+{ d en-tete de TStdlibRec). }
+Function StdlibFind(Const Nm: TString): Integer;
+Var I : Integer;
+Begin
+  StdlibFind := -1;
+  For I := 0 To StdlibCount - 1 Do
+    If StdlibTab[I].Name = Nm Then
+    Begin
+      StdlibFind := I;
+      Exit;
+    End;
+End;
+
+Procedure StdlibInit;
+Begin
+  StdlibCount := 0;
+  StdlibAdd('print', 1, PDT_VOID);
+End;
+
 { ------------------------------------------------------------ }
 { KeywordSelfTest : verifie IsKeyword/IsPredeclaredType/           }
 { IsBuiltinFunc sur un echantillon representatif de chaque             }
@@ -2789,6 +2939,35 @@ Type
                               { calculee a l EXECUTION, comme dans math.swift)               }
                               { n a par exemple aucun ConstVal exploitable,                     }
                               { seulement cet InitExprIdx. }
+    Used        : Boolean;   { TODO 19 : marque Vrai des la PREMIERE       }
+                              { resolution par ExprAddIdent - jamais purge          }
+                              { (comme le reste de SymTab, voir la note de           }
+                              { SymFind) }
+    WasVarDecl  : Boolean;   { TODO 19 : Vrai UNIQUEMENT pour une entree   }
+                              { creee par ParseLetVarPattern (une VRAIE                  }
+                              { instruction "let"/"var") - Faux pour un                    }
+                              { PARAMETRE (RegisterFuncScopeSymbols), une                    }
+                              { variable de boucle (ParseForInStmt), une                     }
+                              { liaison "if let"/"guard let"/motif de cas                    }
+                              { d enum, "self", ou un parametre de type                          }
+                              { generique - "declare et jamais utilise"                          }
+                              { (roadmap TODO 19) ne vise QUE les VRAIES                       }
+                              { variables locales, jamais ces autres formes                    }
+                              { de liaison (meme portee que GOCW32.PAS,                              }
+                              { lui-meme silencieux sur les parametres/                              }
+                              { variables de boucle non utilises). }
+    Offset      : Integer;   { TODO 21 (generateur de code) : deplacement  }
+                              { EBP-relatif pour un local/parametre (voir              }
+                              { CgVarOperand) - TOUJOURS 0 pour un GLOBAL              }
+                              { (IsGlobal=Vrai, adresse par NOM mangle,                    }
+                              { jamais par deplacement) ; AUCUN code ne le            }
+                              { calcule encore (aucune fonction n est                          }
+                              { compilee cette premiere passe, seul le                            }
+                              { niveau fichier/global l est) - reserve pour             }
+                              { la prochaine extension (fonctions), meme                     }
+                              { convention EXACTE que GOCW32.PAS (parametres              }
+                              { positifs a partir de +8, locaux negatifs a             }
+                              { partir de -4). }
   End;
 
 Var
@@ -2824,19 +3003,46 @@ Begin
   CurScopeLevel := ScopeStackTop + 1;
 End;
 
-{ SymLeaveScope : simple depilage - CONTRAIREMENT a Go (variable    }
-{ locale declaree et jamais lue = ERREUR reelle, voir GOCW32.PAS),        }
-{ Swift ne fait que TIEDIR un avertissement du compilateur pour une         }
-{ variable inutilisee, jamais une erreur bloquante - ce compilateur              }
-{ simplifie n implemente meme pas cet avertissement (hors de portee,             }
-{ aucune mention dans le roadmap TODO 05/19). }
+{ SymLeaveScope : depilage, DESORMAIS PRECEDE (TODO 19) d une VERIFICATION }
+{ "declare et jamais utilise" - roadmap : "meme regle stricte que              }
+{ GOCW32.PAS pour les variables locales - erreur en mode strict,                          }
+{ avertissement sinon". CONTRAIREMENT a Go (variable locale declaree et            }
+{ jamais lue = TOUJOURS une erreur reelle), Swift ne fait QUE avertir              }
+{ dans le compilateur reel - mais Opts.StrictMode (reserve depuis le             }
+{ TODO 01/02, TOUJOURS Vrai par defaut ici, voir sa propre note                             }
+{ d en-tete) fait de ce compilateur simplifie un cas TOUJOURS strict            }
+{ pour l instant (FatalError), la branche WarnMsg restant prete pour               }
+{ le jour ou un "-no-strict" viendrait assouplir Opts.StrictMode - AUCUN            }
+{ tel flag n existe encore, decision honnetement documentee plutot que            }
+{ devinee. PORTEE (WasVarDecl, voir TSymRec) : SEULES les VRAIES                          }
+{ instructions "let"/"var" (ParseLetVarPattern) sont visees - PAS un              }
+{ parametre de fonction, une variable de boucle for-in, une liaison "if           }
+{ let"/"guard let"/motif de cas d enum, ni "self" - EXACTEMENT la meme                  }
+{ portee reduite que GOCW32.PAS pour son propre "declare et jamais                          }
+{ utilise" (qui ne vise pas non plus les parametres/variables de                            }
+{ boucle). "_" (nom explicitement ignore) est EXEMPTE, meme convention                   }
+{ que le reste du projet ("_" ignore une variable de boucle, TODO 07). }
 Procedure SymLeaveScope;
+Var
+  ClosingId, I : Integer;
 Begin
   If ScopeStackTop < 0 Then
   Begin
     WarnMsg('tentative de quitter une portee inexistante');
     Exit;
   End;
+
+  ClosingId := ScopeStack[ScopeStackTop];
+  For I := SymCount - 1 DownTo 0 Do
+    If (SymTab[I].ScopeId = ClosingId) And SymTab[I].WasVarDecl And
+       (Not SymTab[I].Used) And (SymTab[I].Name <> '_') Then
+    Begin
+      If Opts.StrictMode Then
+        FatalError('variable ''' + SymTab[I].Name + ''' declaree et jamais utilisee')
+      Else
+        WarnMsg('variable ''' + SymTab[I].Name + ''' declaree et jamais utilisee');
+    End;
+
   Dec(ScopeStackTop);
   CurScopeLevel := ScopeStackTop + 1;
   If ScopeStackTop < 0 Then CurScopeId := 0
@@ -2904,6 +3110,9 @@ Begin
   SymTab[SymCount].ConstVal.StrVal  := '';
   SymTab[SymCount].HasInit     := False;
   SymTab[SymCount].InitExprIdx := -1;
+  SymTab[SymCount].Used        := False;
+  SymTab[SymCount].WasVarDecl  := False;
+  SymTab[SymCount].Offset      := 0;
 
   SymAdd := SymCount;
   Inc(SymCount);
@@ -3455,6 +3664,10 @@ Begin
 
   SI := SymAdd(Nam, SK_VAR, TIdx, AIsConst);
   If SI < 0 Then Exit;
+  SymTab[SI].WasVarDecl := True;   { TODO 19 : seule une VRAIE instruction   }
+                                   { "let"/"var" est visee par "declare et         }
+                                   { jamais utilise" - voir la note de              }
+                                   { TSymRec.WasVarDecl. }
 
   If HasInit Then
     ApplyExprInitToSymbol(SI, ValIdx, TIdx, Nam)
@@ -3857,14 +4070,17 @@ Begin
   ExprAddNilLit := N;
 End;
 
-{ ExprAddIdent : PAS de champ "Used" (contrairement a GOCW32.PAS) -    }
-{ Swift ne fait qu avertir (compilateur reel) sur une variable locale        }
-{ inutilisee, jamais une erreur bloquante (voir la note de SymLeaveScope,       }
-{ TODO 05) ; ce compilateur simplifie n implemente pas meme cet                    }
-{ avertissement, donc rien a marquer ici. "self" (TODO 09/10 pour la               }
-{ vraie liaison au receveur) est traite comme un identificateur                        }
-{ ORDINAIRE - aucun code special n est necessaire avant que les              }
-{ methodes n existent reellement. }
+{ ExprAddIdent : champ "Used" (TODO 19, CORRIGE ICI - la note historique  }
+{ disait auparavant "Swift ne fait qu avertir... ce compilateur ne              }
+{ l implemente meme pas", mais le roadmap TODO 19 l exige explicitement          }
+{ ("declare et jamais utilise", meme regle stricte que GOCW32.PAS pour               }
+{ les variables locales) : marque desormais Vrai des la PREMIERE                          }
+{ resolution reussie, verifie a la sortie de portee par SymLeaveScope             }
+{ (etendue plus bas). "self" (TODO 09/10 pour la vraie liaison au                     }
+{ receveur) est traite comme un identificateur ORDINAIRE - aucun code             }
+{ special n est necessaire avant que les methodes n existent reellement,               }
+{ et WasVarDecl reste Faux pour lui de toute facon (ajoute par                              }
+{ MethodPoolAdd/ParseStructMemberFunc, jamais par ParseLetVarPattern). }
 Function ExprAddIdent(Const Nam: TString): Integer;
 Var N, SI: Integer;
 Begin
@@ -3875,6 +4091,7 @@ Begin
   Begin
     ExprPool[N].TypeIdx := SymTab[SI].TypeIdx;
     ExprPool[N].IsConst := SymTab[SI].IsConst;
+    SymTab[SI].Used     := True;
   End;
   ExprAddIdent := N;
 End;
@@ -4001,6 +4218,74 @@ End;
 { un "let sum = add(x, y)" (valeur runtime, IsConst=Faux), qui ne                              }
 { dispose alors QUE de InitExprIdx (design meme du TODO 08, voir la                              }
 { note de ParseLetVarPattern). }
+{ TypesCompatibleForInit (TODO 19) : remplace le controle PARTIEL         }
+{ (INT/FLOAT/BOOL/STRING seulement, WarnMsg SEULEMENT) qui existait                    }
+{ depuis le TODO 05 - couvre desormais TOUS les TTypeKind. Le CAS               }
+{ PROTOCOLE reste gere SEPAREMENT par l appelant (TypeSatisfiesProtocol,           }
+{ deja ecrit au TODO 11, jamais elevee en FatalError - le roadmap              }
+{ TODO 19 ne l exige que pour les VRAIS conflits de type, pas pour une              }
+{ conformite partielle a un protocole). }
+Function TypesCompatibleForInit(VTIdx, RTIdx: Integer): Boolean;
+Var Cur : Integer;
+Begin
+  TypesCompatibleForInit := False;
+  If VTIdx = RTIdx Then Begin TypesCompatibleForInit := True; Exit; End;
+
+  { TYK_GENERIC_PARAM (TODO 13) : "pointeur generique uniforme" - AUCUNE   }
+  { distinction n est possible ici entre les types CONCRETS reels qu il                 }
+  { pourrait representer, toujours compatible plutot que de deviner. }
+  If (TypeTab[VTIdx].Kind = TYK_GENERIC_PARAM) Or (TypeTab[RTIdx].Kind = TYK_GENERIC_PARAM) Then
+  Begin
+    TypesCompatibleForInit := True;
+    Exit;
+  End;
+
+  { class (TODO 10) : une instance d une SOUS-CLASSE reste assignable a   }
+  { une variable declaree du type d une SUPER-CLASSE (heritage simple,               }
+  { regle Swift REELLE) - remonte SuperTypeIdx ; DEUX structs/enums/               }
+  { classes DIFFERENTS partageant le meme TTypeKind restent INCOMPATIBLES               }
+  { (deja exclu par le "VTIdx=RTIdx" ci-dessus pour le cas IDENTIQUE). }
+  If (TypeTab[VTIdx].Kind = TYK_CLASS) And (TypeTab[RTIdx].Kind = TYK_CLASS) Then
+  Begin
+    Cur := TypeTab[VTIdx].SuperTypeIdx;
+    While (Cur >= 0) And (Cur < TypeCount) Do
+    Begin
+      If Cur = RTIdx Then Begin TypesCompatibleForInit := True; Exit; End;
+      Cur := TypeTab[Cur].SuperTypeIdx;
+    End;
+    Exit;
+  End;
+
+  { scalaires numeriques : largeur/signe NON distingues (simplification    }
+  { deja assumee depuis le TODO 03/04, jamais exercee par aucun echantillon           }
+  { au point d avoir besoin d une distinction Int8 vs Int16 precise) -                    }
+  { seule la FAMILLE (entier vs flottant) compte ici. }
+  If (TypeTab[VTIdx].Kind = TYK_INT) And (TypeTab[RTIdx].Kind = TYK_INT) Then
+  Begin TypesCompatibleForInit := True; Exit; End;
+  If (TypeTab[VTIdx].Kind = TYK_FLOAT) And (TypeTab[RTIdx].Kind = TYK_FLOAT) Then
+  Begin TypesCompatibleForInit := True; Exit; End;
+
+  { String/Character (TODO 17) : un litteral Character N A AUCUNE syntaxe   }
+  { distincte en Swift reel - un litteral String PLACE dans un contexte                 }
+  { Character reste valide. }
+  If (TypeTab[VTIdx].Kind = TYK_STRING) And
+     (TypeTab[RTIdx].Kind In [TYK_STRING, TYK_CHARACTER]) Then
+  Begin TypesCompatibleForInit := True; Exit; End;
+
+  { meme TTypeKind, mais SEULEMENT pour les familles ou une simple           }
+  { correspondance de KIND (sans verification profonde du contenu/de la              }
+  { signature) reste une simplification deja assumee ailleurs -                             }
+  { Array/Dictionary/Set (TODO 16, aucune verification de coherence des                  }
+  { elements), Optional/tuple, fonction-fermeture (TODO 08, aucune                        }
+  { verification de signature). STRUCT/CLASS/ENUM en sont EXCLUS a               }
+  { dessein (deux types DIFFERENTS de MEME kind doivent rester                                 }
+  { incompatibles, seul un match EXACT ou une relation de classe compte). }
+  If TypeTab[VTIdx].Kind = TypeTab[RTIdx].Kind Then
+    If TypeTab[VTIdx].Kind In [TYK_ARRAY, TYK_DICTIONARY, TYK_SET, TYK_OPTIONAL,
+       TYK_TUPLE, TYK_FUNC, TYK_BOOL] Then
+      TypesCompatibleForInit := True;
+End;
+
 Procedure ApplyExprInitToSymbol(SI, ValIdx, TIdx: Integer; Const Nam: TString);
 Var RTIdx, VTIdx : Integer;
 Begin
@@ -4056,20 +4341,26 @@ Begin
     Exit;
   End;
 
-  Case TypeTab[VTIdx].Kind Of
-    TYK_INT:
-      If Not (TypeTab[RTIdx].Kind In [TYK_INT, TYK_FLOAT, TYK_CHARACTER]) Then
-        WarnMsg('type declare et valeur entiere incompatibles pour ''' + Nam + '''');
-    TYK_FLOAT:
-      If TypeTab[RTIdx].Kind <> TYK_FLOAT Then
-        WarnMsg('type declare et valeur flottante incompatibles pour ''' + Nam + '''');
-    TYK_BOOL:
-      If TypeTab[RTIdx].Kind <> TYK_BOOL Then
-        WarnMsg('type declare et valeur booleenne incompatibles pour ''' + Nam + '''');
-    TYK_STRING:
-      If Not (TypeTab[RTIdx].Kind In [TYK_STRING, TYK_CHARACTER]) Then
-        WarnMsg('type declare et valeur chaine incompatibles pour ''' + Nam + '''');
+  { "types incompatibles = erreur claire" (roadmap TODO 19, SANS le               }
+  { qualificatif "en mode strict" propre a la SEULE regle "declare et            }
+  { jamais utilise" - Opts.StrictMode, voir sa propre note d en-tete a la           }
+  { section Options, est RESERVE specifiquement a CETTE AUTRE regle,                    }
+  { SymLeaveScope etendue plus bas - une VRAIE incompatibilite de type                    }
+  { reste TOUJOURS une erreur ici, INCONDITIONNELLEMENT) : un litteral                 }
+  { ENTIER (EK_INTLIT SEULEMENT, PAS une variable/expression Int) reste             }
+  { CONTEXTUELLEMENT polymorphe face a un type Float declare ("let d:               }
+  { Double = 5" est VALIDE en Swift reel) : retroactivement contextualise             }
+  { ici, MEME mecanisme que "nil" plus haut - toute AUTRE incompatibilite            }
+  { (TypesCompatibleForInit ci-dessus) est une ERREUR CLAIRE (FatalError). }
+  If (ExprPool[ValIdx].Kind = EK_INTLIT) And (TypeTab[RTIdx].Kind = TYK_FLOAT) Then
+  Begin
+    ExprPool[ValIdx].TypeIdx := RTIdx;
+    Exit;
   End;
+
+  If Not TypesCompatibleForInit(VTIdx, RTIdx) Then
+    FatalError('type declare (''' + TypeTab[RTIdx].Name + ''') et valeur ' +
+      'fournie incompatibles pour ''' + Nam + '''');
 End;
 
 { ------------------------------------------------------------ }
@@ -4248,7 +4539,7 @@ End;
 Function ParseCallArgs(Callee: Integer): Integer;
 Const MAX_CALL_ARGS = 64;
 Var
-  N, I, Cnt, ArgStart, SigT, ResultT : Integer;
+  N, I, Cnt, ArgStart, SigT, ResultT, SLIdx : Integer;
   Lbl : TString;
   Vals   : Array[0..MAX_CALL_ARGS - 1] Of Integer;
   Labels : Array[0..MAX_CALL_ARGS - 1] Of TString;
@@ -4343,7 +4634,29 @@ Begin
         End;
       TYK_STRUCT, TYK_CLASS, TYK_ENUM:
         ExprPool[N].TypeIdx := SigT;
+    End
+  Else If ExprPool[Callee].Kind = EK_IDENT Then
+  Begin
+    { bibliotheque standard minimale (TODO 20, StdlibTab ci-dessus) -      }
+    { SEULEMENT si AUCUN symbole utilisateur ne resout deja ce nom                     }
+    { (SigT<0 ci-dessus : "print" n a jamais ete redeclare - un VRAI          }
+    { "func print(...)" utilisateur, cas EXTREME jamais exerce ici,                        }
+    { primerait DEJA via le Case SigT normal, jamais atteint cette                          }
+    { branche). Verifie le nombre d arguments (WarnMsg SEULEMENT -                        }
+    { limitation de PORTEE de CE compilateur lui-meme, "un seul                                  }
+    { argument" pour print(_:), PAS une vraie erreur de type Swift -                     }
+    { discipline DIFFERENTE des controles inconditionnels du TODO 19,                    }
+    { qui visent de VRAIES incompatibilites du langage). }
+    SLIdx := StdlibFind(ExprPool[Callee].NameVal);
+    If SLIdx >= 0 Then
+    Begin
+      If Cnt <> StdlibTab[SLIdx].ParamCount Then
+        WarnMsg('''' + ExprPool[Callee].NameVal + ''' (bibliotheque standard, ' +
+          'portee reduite a un seul argument, roadmap d''en-tete du TODO 20) ' +
+          'recoit un nombre d''arguments inattendu');
+      ExprPool[N].TypeIdx := StdlibTab[SLIdx].ResultTypeIdx;
     End;
+  End;
 
   ParseCallArgs := N;
 End;
@@ -6449,10 +6762,59 @@ End;
 { ParseFuncSignature comme au TODO 08 d origine : "T"/"U" doivent DEJA               }
 { etre resolubles (SymFind, via ParseTypeExpr, TODO 05) DES la liste de              }
 { parametres elle-meme ("_ value: T"), pas seulement dans le corps. }
+{ BlockHasReturnValue (TODO 19) : "chaque chemin d un func...->T non-  }
+{ Void doit renvoyer une valeur - best-effort, PAS une vraie analyse             }
+{ de chemins EXHAUSTIVE" (roadmap d en-tete) - interpretation la PLUS               }
+{ SIMPLE honorant litteralement cette clause : confirme qu AU MOINS UN            }
+{ "return" AVEC valeur existe QUELQUE PART dans le corps (meme dans une            }
+{ branche jamais empruntee a l execution) plutot que de VERIFIER que                     }
+{ TOUS les chemins en aient un (une VRAIE analyse de flot, explicitement           }
+{ exclue par le roadmap) - descend RECURSIVEMENT dans if/else,                                  }
+{ guard/else, while/repeat/for, switch (CaseClausePool) et do/catch                       }
+{ (CatchClausePool) - meme liste de constructions que StmtSelfTest/                             }
+{ ErrorSelfTest. }
+Function BlockHasReturnValue(SIdx: Integer): Boolean;
+Var I, CI : Integer;
+Begin
+  BlockHasReturnValue := False;
+  If (SIdx < 0) Or (SIdx >= StmtCount) Then Exit;
+
+  Case StmtPool[SIdx].Kind Of
+    STK_RETURN:
+      BlockHasReturnValue := StmtPool[SIdx].Left >= 0;
+    STK_BLOCK:
+      For I := StmtPool[SIdx].ArgFirst To StmtPool[SIdx].ArgFirst + StmtPool[SIdx].ArgCount - 1 Do
+        If BlockHasReturnValue(StmtArgPool[I]) Then
+        Begin BlockHasReturnValue := True; Exit; End;
+    STK_IF:
+      Begin
+        If BlockHasReturnValue(StmtPool[SIdx].Right) Then Begin BlockHasReturnValue := True; Exit; End;
+        If StmtPool[SIdx].Left >= 0 Then
+          BlockHasReturnValue := BlockHasReturnValue(StmtPool[SIdx].Left);
+      End;
+    STK_GUARD:
+      BlockHasReturnValue := BlockHasReturnValue(StmtPool[SIdx].Right);
+    STK_WHILE, STK_REPEATWHILE, STK_FORRANGE:
+      BlockHasReturnValue := BlockHasReturnValue(StmtPool[SIdx].Right);
+    STK_SWITCH:
+      For CI := StmtPool[SIdx].ArgFirst To StmtPool[SIdx].ArgFirst + StmtPool[SIdx].ArgCount - 1 Do
+        For I := CaseClausePool[CI].BodyFirst To CaseClausePool[CI].BodyFirst + CaseClausePool[CI].BodyCount - 1 Do
+          If BlockHasReturnValue(StmtArgPool[I]) Then
+          Begin BlockHasReturnValue := True; Exit; End;
+    STK_DO:
+      Begin
+        If BlockHasReturnValue(StmtPool[SIdx].Right) Then Begin BlockHasReturnValue := True; Exit; End;
+        For CI := StmtPool[SIdx].ArgFirst To StmtPool[SIdx].ArgFirst + StmtPool[SIdx].ArgCount - 1 Do
+          If BlockHasReturnValue(CatchClausePool[CI].Body) Then
+          Begin BlockHasReturnValue := True; Exit; End;
+      End;
+  End;
+End;
+
 Function ParseFuncDecl: Integer;
 Var
   Nam : TString;
-  FT, Body, FD : Integer;
+  FT, Body, FD, ResultT : Integer;
 Begin
   PPAdvance;   { func }
   If PPKind <> TOK_IDENT Then
@@ -6475,6 +6837,14 @@ Begin
   RegisterFuncScopeSymbols(FT);
   Body := ParseBlock;
   SymLeaveScope;
+
+  { "chaque chemin d un func...->T non-Void doit renvoyer une valeur"    }
+  { (roadmap TODO 19) - verifie best-effort via BlockHasReturnValue                    }
+  { ci-dessus, JAMAIS pour un "->" absent (Void, ResultT=PDT_VOID). }
+  ResultT := FieldPool[TypeTab[FT].ResultFirst].TypeIdx;
+  If (ResultT <> PDT_VOID) And (Not BlockHasReturnValue(Body)) Then
+    FatalError('la fonction ''' + Nam + ''' declare un type de retour ' +
+      'non-Void mais ne contient aucun ''return'' avec valeur');
 
   FD := FuncDefAdd(Nam, FT, Body);
   SymAdd(Nam, SK_FUNC, FT, False);
@@ -10428,55 +10798,3088 @@ Begin
   EnumCaseInit;
 End;
 
+{ ============================================================ }
+{ TODO 18 - MODELE MEMOIRE : ARC ET SEMANTIQUE DE COPIE          }
+{ ============================================================ }
+{ Ce TODO est explicitement une DECISION ARCHITECTURALE (roadmap             }
+{ d en-tete : "a trancher AVANT le generateur de code", "meme discipline           }
+{ que le choix goroutines-cooperatives-vs-threads-reels de GOCW32.PAS")               }
+{ - PAS un sous-systeme a construire : aucun GENERATEUR de code n existe            }
+{ encore (TODO 21+), donc ni un vrai compteur de references NI une                        }
+{ vraie copie memoire ne sont OBSERVABLES a ce stade. Le deliverable                    }
+{ REEL de ce TODO est cette decision elle-meme, DOCUMENTEE avec la MEME            }
+{ honnetete que chaque decision similaire des compilateurs freres                             }
+{ (roadmap d en-tete), puis un AUDIT confirmant que le front-end                              }
+{ EXISTANT la reflete deja correctement partout.                                                }
+{                                                                       }
+{ DECISION 1 - CLASSES (ARC) : PAS DE LIBERATION DU TOUT. Alloue sur     }
+{ le tas via le meme _SWRT_ALLOC que tout le reste (TODO 21+), jamais             }
+{ libere explicitement - AUCUN compteur de references, AUCUN                                 }
+{ decrementement a la sortie de portee. Choisi plutot qu un ARC REEL             }
+{ pour la MEME raison, MOT POUR MOT, que le "pas de vrai GC"                              }
+{ deja assume ET DOCUMENTE par GOCW32.PAS pour ses propres structures :               }
+{ correct pour tout programme de la taille d un SAMPLES\SWIFT\*.swift                    }
+{ (fuite sans consequence observable a cette echelle), et evite TOUTE                    }
+{ la surface de bogues REELLE d un ARC (cycles de reference non casses            }
+{ = fuite silencieuse, double-liberation si un decrementement est                             }
+{ oublie ou double-compte) pour un gain de fidelite a Swift reel qu                     }
+{ AUCUN echantillon SAMPLES\SWIFT n exploite (aucun ne cree de cycle              }
+{ de reference, aucun ne depend d un timing de deinit deterministe).                     }
+{ Portee EXPLICITEMENT reduite, memes termes que les autres deferrals                    }
+{ deja actes (le "!" du TODO 14, le "try!" du TODO 15) : decision                           }
+{ honnetement DIFFEREE au generateur de code (TODO 21+) plutot que                          }
+{ devinee ici sans lui.                                                                         }
+{                                                                       }
+{ DECISION 2 - TYPES VALEUR (struct/enum/Array/Dictionary/Set/tuple) :  }
+{ copie REELLE des donnees a chaque affectation/passage en parametre,             }
+{ JAMAIS de partage implicite (contrairement aux classes) - DEJA                              }
+{ ENTIEREMENT capture au niveau du FRONT-END par le champ                                    }
+{ TTypeRec.IsValueType (TODO 04, "distinction CENTRALE du langage,                            }
+{ absente de Go") : AUCUN nouveau champ, AUCUNE nouvelle structure                            }
+{ n est necessaire ici - le MECANISME de copie lui-meme (memcpy champ            }
+{ par champ vs simple copie de pointeur) reste un fait de GENERATEUR             }
+{ de code (TODO 21+, consultera ce MEME champ IsValueType au moment                     }
+{ d emettre soit une VRAIE copie soit une affectation de pointeur).                       }
+{ AUDIT ci-dessous (MemorySelfTest) : confirme que CHAQUE site de                            }
+{ construction de type (TypeInit pour les scalaires/collections                                   }
+{ predeclarees, ParseStructDecl/ParseClassDecl/ParseEnumDecl/                                    }
+{ ParseFuncSignature/ParseTypeExpr pour tout le reste) a DEJA pose ce               }
+{ champ correctement, SANS AUCUNE exception trouvee - un audit                                  }
+{ EXHAUSTIF de tous les appels TypeAdd(TYK_...) du fichier confirme                        }
+{ qu aucune correction n est necessaire : Int/Double/Bool/String/                             }
+{ Character/Array/Dictionary/Set/Optional/struct/enum = Vrai (valeur) ;               }
+{ class/protocole (Any/AnyObject INCLUS - "modele boite" du TODO 11,                     }
+{ une valeur existentielle est ICI representee par un POINTEUR vers                        }
+{ une boite, distinct de la question purement LANGAGE de la semantique             }
+{ de valeur de "Any" en Swift reel)/fonction-fermeture (deja documente,                  }
+{ TODO 08 : "une fermeture Swift EST un objet a compteur de references                    }
+{ en pratique") = Faux (reference). }
+
 { ------------------------------------------------------------ }
-{ Run : point d entree - portee TODO 01-17 (aucun parseur DE           }
-{ HAUT NIVEAU restant/generateur de code n existe encore, TODO 18+) :        }
-{ tokenise REELLEMENT le fichier source de bout en bout (comptage +          }
-{ affichage -d de chaque token, annote de sa classification mot-cle/          }
-{ type/fonction integree), le signale honnetement plutot que de                     }
-{ simuler une compilation qui n a pas encore lieu. La table des types              }
-{ (TODO 04), l infrastructure de declarations/portees (TODO 05),                       }
-{ l arbre d expressions (TODO 06), les structures de controle                             }
-{ (TODO 07), les fonctions/fermetures (TODO 08), les structs (TODO 09),               }
-{ les classes (TODO 10), les protocoles/extensions (TODO 11), les                        }
-{ enumerations (TODO 12), les generiques (TODO 13 - TYK_GENERIC_PARAM              }
-{ deja reserve au TODO 04, modele UNIFORME "pointeur generique de 4              }
-{ octets" plutot qu une vraie monomorphisation - decision explicitement            }
-{ tranchee et documentee ; inference au point d appel via ParseCallArgs,           }
-{ TODO 06 etendu ; ParseFuncDecl/ParseStructDecl, TODO 08/09,                                 }
-{ restructurees pour ouvrir la portee du parametre de type generique               }
-{ AVANT signature/champs), les optionnels (TODO 14 - "nil"                                   }
-{ contextualise, "if let"/"guard let" avec leur DIFFERENCE de portee                     }
-{ reelle, "??"/"!"/chainage DEJA poses au TODO 04/06/09) et la gestion             }
-{ d erreurs (TODO 15 - "throws" en signature, "try"/"try?"/"try!",                          }
-{ "throw", "defer", "do"/"catch" - modele front-end UNIQUEMENT, le                          }
-{ fanion d execution/LIFO des "defer"/resolution des "catch" restant du            }
-{ codegen, TODO 21+) et les collections (TODO 16 - sucre de type                                }
-{ "[Element]"/"[Cle: Valeur]"/"Set<T>", litteraux tableau/dictionnaire                    }
-{ types, indexation Array DIRECTE vs Dictionary enveloppee dans un                          }
-{ Optional, membres integres count/append/remove/insert/contains/                                }
-{ removeValue synthetisant chacun une signature TYK_FUNC, for-in                              }
-{ etendu a Array/Set) et les chaines/caracteres (TODO 17 - l essentiel           }
-{ deja pose au TODO 06 pour EK_STRINGLIT/EK_STRINGINTERP/"+"/                                  }
-{ contextualisation Character, for-in etendu a String -> Character,                     }
-{ String.count, "==" par contenu deja vrai en l absence de toute                          }
-{ notion de pointeur a ce stade front-end) sont verifiees par                                    }
-{ TypeSelfTest/DeclSelfTest/ExprSelfTest/StmtSelfTest/FuncSelfTest/                          }
-{ StructSelfTest/ClassSelfTest/ProtocolSelfTest/EnumSelfTest/                                    }
-{ GenericSelfTest/OptionalSelfTest/ErrorSelfTest/CollectionSelfTest/                              }
-{ StringSelfTest, ce dernier allant meme jusqu a faire passer                                  }
-{ hello.swift EN ENTIER (forme complete) par ParseTopLevelDecls, arret             }
-{ propre sur son premier "print" (meme gap documente que tous les                            }
-{ echantillons precedents) - mais Run() lui-meme ne bascule PAS ENCORE            }
-{ sur cette voie pour les VRAIS fichiers SAMPLES\SWIFT (la plupart                       }
-{ dependent encore du modele memoire/ARC, hors de portee avant le                          }
-{ TODO 18 - y basculer maintenant ferait regresser des echantillons                        }
-{ qui passent actuellement en tokenisant simplement tout, sans jamais              }
-{ rien rejeter). }
+{ MemorySelfTest : audit CONFIRMATOIRE de IsValueType sur un              }
+{ representant de CHAQUE famille de type (scalaires, String/Character,               }
+{ Array<T>/Dictionary<K,V>/Set<T>, Optional<T>, struct, enum, class,                     }
+{ protocole/existentiel, signature de fonction/fermeture) - AUCUNE                          }
+{ construction nouvelle, seulement des verifications sur ce qui existe               }
+{ deja depuis les TODO 04/08/09/10/11/12/13/14/16 (voir la note                                }
+{ d en-tete ci-dessus pour le detail complet de l audit) - sur des                       }
+{ extraits synthetiques (fichier temporaire, meme methode que les TODO           }
+{ precedents), reutilisant les aides deja ecrites                                              }
+{ (StructParseTopLevel/ClassParseTopLevel/EnumParseTopLevel/                                    }
+{ FuncParseTopLevel/ParseStmtString) plutot que d en re-ecrire de                             }
+{ nouvelles - RIEN de neuf a integrer bout-en-bout via                                          }
+{ ParseTopLevelDecls ici (structs.swift/classes.swift le sont DEJA                          }
+{ integralement au TODO 09/10, aucune raison de dupliquer ce travail). }
 { ------------------------------------------------------------ }
 
-Procedure Run;
+Procedure MemoryAssert(Const Label_: TString; Cond: Boolean);
 Begin
+  If Not Cond Then
+    FatalError('MemorySelfTest: ' + Label_ + ' a echoue');
+End;
+
+Procedure MemorySelfTest;
+Var
+  FD, FT, S, SI : Integer;
+Begin
+  StmtInit; ExprInit; SymInit; TypeInit; FuncDefInit; MethodPoolInit; EnumCaseInit;
+
+  { scalaires/String/Character - type VALEUR (deja acquis, TODO 03/04/17) }
+  MemoryAssert('Int : type VALEUR', TypeTab[PDT_INT].IsValueType);
+  MemoryAssert('Double : type VALEUR', TypeTab[PDT_DOUBLE].IsValueType);
+  MemoryAssert('Bool : type VALEUR', TypeTab[PDT_BOOL].IsValueType);
+  MemoryAssert('String : type VALEUR', TypeTab[PDT_STRING].IsValueType);
+  MemoryAssert('Character : type VALEUR', TypeTab[PDT_CHARACTER].IsValueType);
+
+  { Array<T>/Dictionary<K,V>/Set<T> - type VALEUR (deja acquis, TODO 16) }
+  S := ParseStmtString('var memArr: [Int] = [1, 2, 3]');
+  SI := SymFind('memArr');
+  MemoryAssert('Array<Int> : type VALEUR', TypeTab[SymTab[SI].TypeIdx].IsValueType);
+  S := ParseStmtString('var memDict: [String: Int] = ["a": 1]');
+  SI := SymFind('memDict');
+  MemoryAssert('Dictionary<String,Int> : type VALEUR', TypeTab[SymTab[SI].TypeIdx].IsValueType);
+  S := ParseStmtString('var memSet: Set<Int>');
+  SI := SymFind('memSet');
+  MemoryAssert('Set<Int> : type VALEUR', TypeTab[SymTab[SI].TypeIdx].IsValueType);
+
+  { Optional<T> - type VALEUR (deja acquis, TODO 04/14) }
+  S := ParseStmtString('var memOpt: Int? = nil');
+  SI := SymFind('memOpt');
+  MemoryAssert('Optional<Int> : type VALEUR', TypeTab[SymTab[SI].TypeIdx].IsValueType);
+
+  { struct - type VALEUR (deja acquis, TODO 09) }
+  FT := StructParseTopLevel('struct Wallet {' + Chr(10) + 'var amount: Int' + Chr(10) + '}');
+  MemoryAssert('struct Wallet : type VALEUR', TypeTab[FT].IsValueType);
+
+  { enum - type VALEUR (deja acquis, TODO 12) }
+  FT := EnumParseTopLevel('enum Currency {' + Chr(10) + 'case usd' + Chr(10) +
+    'case eur' + Chr(10) + '}');
+  MemoryAssert('enum Currency : type VALEUR', TypeTab[FT].IsValueType);
+
+  { class - type REFERENCE, DIFFERENCE CENTRALE avec struct (deja        }
+  { acquis, TODO 10) - AUCUNE liberation (DECISION 1 ci-dessus), sans             }
+  { impact sur ce champ front-end lui-meme. }
+  FT := ClassParseTopLevel('class Account {' + Chr(10) + 'var balance: Int' + Chr(10) + '}');
+  MemoryAssert('class Account : type REFERENCE (Not IsValueType)', Not TypeTab[FT].IsValueType);
+
+  { protocole/existentiel (Any/AnyObject) - type REFERENCE ("modele          }
+  { boite", deja acquis, TODO 04/11) }
+  MemoryAssert('Any : type REFERENCE (existentiel, modele boite)', Not TypeTab[PDT_ANY].IsValueType);
+  MemoryAssert('AnyObject : type REFERENCE', Not TypeTab[PDT_ANYOBJECT].IsValueType);
+
+  { signature de fonction/fermeture - type REFERENCE (deja acquis,       }
+  { TODO 08 : "une fermeture Swift EST un objet a compteur de references           }
+  { en pratique") }
+  FD := FuncParseTopLevel('func combine(x: Int) -> Int {' + Chr(10) + 'return x' + Chr(10) + '}');
+  MemoryAssert('func(...)->Int (signature) : type REFERENCE (Not IsValueType)',
+    Not TypeTab[FuncDefPool[FD].TypeIdx].IsValueType);
+
+  { re-initialise les tables globales pour ne pas polluer Run reel }
+  StmtInit;
+  ExprInit;
+  SymInit;
+  FuncDefInit;
+  MethodPoolInit;
+  EnumCaseInit;
+End;
+
+{ ============================================================ }
+{ TODO 19 - ANALYSE SEMANTIQUE : SYMBOLES, PORTEES, VERIFICATION }
+{ ============================================================ }
+{ QUATRE points precis exiges par le roadmap d en-tete :                                     }
+{   (1) "Verification de type best-effort sur affectations/appels/                       }
+{       retours (types incompatibles = erreur claire...)" -                                     }
+{       ApplyExprInitToSymbol (TODO 05, etendue ici) ne se limitait                       }
+{       qu a QUATRE TTypeKind (Int/Float/Bool/String, simple WarnMsg) -                       }
+{       remplacee par TypesCompatibleForInit (ci-dessus), un VRAI                             }
+{       controle COUVRANT TOUS les TTypeKind (heritage de classe,                             }
+{       protocoles deja geres separement, familles numeriques,                                    }
+{       String/Character, collections/Optional/tuple/fonction par KIND                    }
+{       SANS verification profonde - meme discipline que le reste du               }
+{       projet), qui devient une ERREUR CLAIRE (FatalError) INCONDITIONNELLE               }
+{       - "Int vers Double n'est PAS implicite" (roadmap) est honore EN            }
+{       PRESERVANT l EXCEPTION reelle de Swift (un litteral ENTIER reste           }
+{       contextuellement polymorphe face a Float, "let d: Double = 5" ;                }
+{       SEULEMENT le litteral, jamais une variable/expression Int).                             }
+{   (2) "'declare et jamais utilise' (meme regle stricte que GOCW32.PAS             }
+{       pour les variables locales - erreur en mode strict, avertissement          }
+{       sinon)" - CORRIGE une note perimee de SymLeaveScope (TODO 05,             }
+{       qui affirmait a tort "aucune mention dans le roadmap TODO 05/19" :                 }
+{       la mention EXISTE bel et bien) : TSymRec.Used/WasVarDecl                                  }
+{       (nouveaux champs) + SymLeaveScope etendue (ci-dessus) verifient             }
+{       desormais CHAQUE variable locale (WasVarDecl=Vrai, ParseLetVarPattern           }
+{       UNIQUEMENT - jamais un parametre, une variable de boucle, une                      }
+{       liaison if-let/guard-let/motif d enum, ni "self") a la SORTIE                     }
+{       de SA portee - Opts.StrictMode (reserve depuis le TODO 01/02,                     }
+{       TOUJOURS Vrai par defaut, aucun "-strict" n existe encore pour                    }
+{       le faire varier) gouverne FatalError vs WarnMsg, EXACTEMENT                            }
+{       comme documente par son propre champ depuis l origine.                                    }
+{   (3) "Verification des types de retour de fonction contre le corps                     }
+{       (...) - best-effort, pas une vraie analyse de chemins                                    }
+{       exhaustive" - BlockHasReturnValue (ci-dessus), appelee par                            }
+{       ParseFuncDecl : confirme qu AU MOINS UN "return" AVEC valeur                     }
+{       existe QUELQUE PART dans le corps d une fonction non-Void                            }
+{       (recursif a travers if/else, guard/else, while/repeat/for,                            }
+{       switch, do/catch) - PAS une verification que TOUS les chemins                   }
+{       en aient un (analyse de flot REELLE, explicitement exclue par              }
+{       le roadmap) - FatalError INCONDITIONNELLE si absent (Void EST                    }
+{       exempte, ResultT=PDT_VOID).                                                             }
+{   (4) "Verification de conformite aux protocoles (...) et de                                }
+{       compatibilite de signature pour override (...) executees a                            }
+{       cette etape" - DEJA CONSTRUITES aux TODO 10/11 respectifs                              }
+{       (TypeSatisfiesProtocol, verification best-effort d override) :                       }
+{       AUCUN nouveau code n est necessaire, SEULEMENT une confirmation             }
+{       que ces controles restent actifs sous ce TODO 19 (deja EXERCES               }
+{       en continu par ProtocolSelfTest/ClassSelfTest a chaque exemplaire            }
+{       de Run(), sans regression detectee par cette extension).                                }
+{ Les TROIS controles NOUVEAUX (1/2/3) ont ete verifies SANS AUCUNE                        }
+{ regression contre les 18 self-tests EXISTANTS (TypeSelfTest a                                 }
+{ ErrorSelfTest/CollectionSelfTest/StringSelfTest/MemorySelfTest) avant             }
+{ meme d ecrire SemanticSelfTest - preuve que leur PORTEE (variables                            }
+{ locales UNIQUEMENT, jamais parametres/liaisons ; erreur INCONDITIONNELLE          }
+{ pour (1)/(3), gouvernee par StrictMode SEULEMENT pour (2)) a ete                            }
+{ choisie avec le soin necessaire. }
+
+{ ------------------------------------------------------------ }
+{ SemanticSelfTest : TypesCompatibleForInit (positif/negatif, heritage             }
+{ de classe, litteral Int->Double contextualise), "declare et jamais              }
+{ utilise" (positif utilise, negatif observe en mode NON-strict pour              }
+{ eviter le Halt() d un FatalError reel, parametre/variable de boucle                    }
+{ EXEMPTES), BlockHasReturnValue (avec/sans return, if/else imbrique),             }
+{ puis integration bout-en-bout via ParseTopLevelDecls sur math.swift            }
+{ EN ENTIER - PREMIERE fois que ce fichier precis (func/parametres/                       }
+{ inout/return/recursion) est integre a l identique (FuncSelfTest ne                    }
+{ s en inspirait auparavant que d un extrait "ressemblant") - sur des             }
+{ extraits synthetiques (fichier temporaire, meme methode que les TODO           }
+{ precedents). }
+{ ------------------------------------------------------------ }
+
+Procedure SemanticAssert(Const Label_: TString; Cond: Boolean);
+Begin
+  If Not Cond Then
+    FatalError('SemanticSelfTest: ' + Label_ + ' a echoue');
+End;
+
+Procedure SemanticSelfTest;
+Var
+  FD, FTAnimal, FTDog, S, SI : Integer;
+  SavedStrict : Boolean;
+Begin
+  StmtInit; ExprInit; SymInit; TypeInit; FuncDefInit; MethodPoolInit; EnumCaseInit;
+
+  { TypesCompatibleForInit : positif (identique), negatif (incompatible), }
+  { heritage de classe (sous-classe -> super-classe) }
+  SemanticAssert('Int/Int : compatibles', TypesCompatibleForInit(PDT_INT, PDT_INT));
+  SemanticAssert('Int/Double : INCOMPATIBLES (une VARIABLE Int, pas un ' +
+    'litteral - "erreur claire" du roadmap)', Not TypesCompatibleForInit(PDT_INT, PDT_DOUBLE));
+  SemanticAssert('String/Int : INCOMPATIBLES', Not TypesCompatibleForInit(PDT_STRING, PDT_INT));
+  SemanticAssert('String/Character : compatibles (TODO 17)',
+    TypesCompatibleForInit(PDT_STRING, PDT_CHARACTER));
+
+  FTAnimal := ClassParseTopLevel('class Animal {' + Chr(10) + 'var name: String' + Chr(10) + '}');
+  FTDog := ClassParseTopLevel('class Dog: Animal {' + Chr(10) + 'var breed: String' + Chr(10) + '}');
+  SemanticAssert('Dog est assignable a Animal (sous-classe -> super-classe)',
+    TypesCompatibleForInit(FTDog, FTAnimal));
+  SemanticAssert('Animal N EST PAS assignable a Dog (sens INVERSE)',
+    Not TypesCompatibleForInit(FTAnimal, FTDog));
+
+  { litteral Int -> Double : CONTEXTUALISE (retroactivement, meme          }
+  { mecanisme que "nil" au TODO 14) - "let d: Double = 5" est VALIDE. }
+  S := ParseStmtString('let d: Double = 5');
+  SI := SymFind('d');
+  SemanticAssert('let d: Double = 5 : le litteral EST contextualise (Double)',
+    ExprPool[SymTab[SI].InitExprIdx].TypeIdx = PDT_DOUBLE);
+
+  { "declare et jamais utilise" - positif (utilisee, AUCUN probleme) }
+  S := ParseStmtString('{ let used = 1' + Chr(10) + 'print(used) }');
+  SI := SymFind('used');
+  SemanticAssert('used : Used=Vrai apres reference', SymTab[SI].Used);
+
+  { negatif - bascule TEMPORAIREMENT Opts.StrictMode a Faux pour OBSERVER   }
+  { l avertissement SANS halte du processus (FatalError appelle Halt,               }
+  { inacceptable au milieu d un self-test) - restaure IMMEDIATEMENT apres. }
+  SavedStrict := Opts.StrictMode;
+  Opts.StrictMode := False;
+  S := ParseStmtString('{ let neverUsed = 1 }');
+  Opts.StrictMode := SavedStrict;
+  SI := SymFind('neverUsed');
+  SemanticAssert('neverUsed : WasVarDecl=Vrai (VRAIE instruction ''let'')',
+    SymTab[SI].WasVarDecl);
+  SemanticAssert('neverUsed : Used=Faux (jamais reference)', Not SymTab[SI].Used);
+
+  { parametre de fonction - JAMAIS vise (WasVarDecl=Faux), meme non       }
+  { utilise dans le corps }
+  FD := FuncParseTopLevel('func openFile(_ name: String) -> Int {' + Chr(10) +
+    'return 1' + Chr(10) + '}');
+  SI := SymFind('name');
+  SemanticAssert('parametre ''name'' (jamais utilise dans le corps) : ' +
+    'WasVarDecl=Faux (EXEMPT, pas une instruction ''let''/''var'')',
+    Not SymTab[SI].WasVarDecl);
+
+  { BlockHasReturnValue : avec/sans return, if/else imbrique (les DEUX    }
+  { branches renvoient une valeur) }
+  S := ParseStmtString('{ return 5 }');
+  SemanticAssert('"return 5" : BlockHasReturnValue=Vrai', BlockHasReturnValue(S));
+  S := ParseStmtString('{ print(1) }');
+  SemanticAssert('bloc SANS return : BlockHasReturnValue=Faux', Not BlockHasReturnValue(S));
+  S := ParseStmtString('{ if true {' + Chr(10) + 'return 1' + Chr(10) +
+    '} else {' + Chr(10) + 'return 2' + Chr(10) + '} }');
+  SemanticAssert('if/else (DEUX branches avec return) : BlockHasReturnValue=Vrai',
+    BlockHasReturnValue(S));
+
+  { fonction non-Void REELLE avec return (positif direct, ParseFuncDecl   }
+  { via FuncParseTopLevel - aucune FatalError ne doit se produire ici) }
+  FD := FuncParseTopLevel('func addOne(x: Int) -> Int {' + Chr(10) +
+    'return x + 1' + Chr(10) + '}');
+  SemanticAssert('addOne(x:)->Int avec return : FD resolu', FD >= 0);
+
+  { integration bout-en-bout : math.swift EN ENTIER (forme complete),     }
+  { via ParseTopLevelDecls - fonctions AVEC return (add/multiply/                       }
+  { factorial, ce dernier avec un if IMBRIQUE), une fonction Void SANS             }
+  { return (swap, inout), et une variable locale UTILISEE (temp) - aucun            }
+  { des TROIS controles NOUVEAUX de ce TODO ne doit se declencher ici. }
+  StmtInit; ExprInit; SymInit; TypeInit; FuncDefInit; MethodPoolInit; EnumCaseInit;
+  Assign(LexSrcF, 'SWIFTW32SEMANTICSELFTEST.$$$');
+  Rewrite(LexSrcF);
+  WriteLn(LexSrcF, 'func add(_ a: Int, _ b: Int) -> Int {');
+  WriteLn(LexSrcF, '    return a + b');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, 'func multiply(_ a: Int, _ b: Int) -> Int {');
+  WriteLn(LexSrcF, '    return a * b');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, 'func factorial(_ n: Int) -> Int {');
+  WriteLn(LexSrcF, '    if n <= 1 {');
+  WriteLn(LexSrcF, '        return 1');
+  WriteLn(LexSrcF, '    }');
+  WriteLn(LexSrcF, '    return n * factorial(n - 1)');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, 'func swap(_ a: inout Int, _ b: inout Int) {');
+  WriteLn(LexSrcF, '    let temp: Int = a');
+  WriteLn(LexSrcF, '    a = b');
+  WriteLn(LexSrcF, '    b = temp');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, 'let x: Int = 10');
+  WriteLn(LexSrcF, 'let y: Int = 20');
+  WriteLn(LexSrcF, 'let sum: Int = add(x, y)');
+  WriteLn(LexSrcF, 'let product: Int = multiply(x, y)');
+  WriteLn(LexSrcF, 'let fact5: Int = factorial(5)');
+  WriteLn(LexSrcF, 'print(sum)');
+  WriteLn(LexSrcF, 'print(product)');
+  WriteLn(LexSrcF, 'print(fact5)');
+  Close(LexSrcF);
+  Assign(LexSrcF, 'SWIFTW32SEMANTICSELFTEST.$$$');
+  Reset(LexSrcF);
+  LexOpened := True;
+  LexInit;
+  LexAll;
+  LexClose;
+  Erase(LexSrcF);
+  ParserInit;
+  ParseTopLevelDecls;
+  SemanticAssert('math.swift (integral) : "factorial" resolu', FuncFind('factorial', 1) >= 0);
+  SemanticAssert('math.swift (integral) : "swap" (Void, inout) resolu', FuncFind('swap', 2) >= 0);
+  SemanticAssert('math.swift (integral) : "sum" resolu', SymFind('sum') >= 0);
+  SemanticAssert('math.swift (integral) : arret propre EXACT sur "print"',
+    (PPKind = TOK_IDENT) And (PPVal = 'print'));
+
+  { re-initialise les tables globales pour ne pas polluer Run reel }
+  StmtInit;
+  ExprInit;
+  SymInit;
+  FuncDefInit;
+  MethodPoolInit;
+  EnumCaseInit;
+End;
+
+{ ============================================================ }
+{ TODO 20 - BIBLIOTHEQUE STANDARD MINIMALE                       }
+{ ============================================================ }
+{ StdlibTab (ci-dessus, pres de IsBuiltinFunc) : MEME modele que                       }
+{ GOCW32.PAS TODO 20 - chaque entree CONNUE du frontend a l analyse,               }
+{ contrepartie runtime REELLE ajoutee SELON LES BESOINS CONSTATES par             }
+{ execution (TODO 21+, absent ici), jamais devinee a l avance. Un grep                 }
+{ EXHAUSTIF des 12 echantillons SAMPLES\SWIFT confirme que SEUL                              }
+{ "print(_:)" est REELLEMENT exerce - AUCUN n utilise isEmpty,                                  }
+{ uppercased()/lowercased(), ni abs/min/max : le roadmap d en-tete                            }
+{ conditionne EXPLICITEMENT ces membres a "si exerce par un exemple" -              }
+{ ils restent donc HONNETEMENT absents de StdlibTab (une seule entree,             }
+{ 'print') plutot que devines sans pression de test - StdlibAdd est                       }
+{ ecrite pour accueillir n importe lequel d entre eux le jour ou un                       }
+{ echantillon les exercerait, sans restructuration.                                             }
+{ "print(_:)" lui-meme (ParseCallArgs etendue ci-dessus) : depuis le               }
+{ TODO 06, un appel a "print" ne resolvait a RIEN (Callee EK_IDENT              }
+{ jamais declare par SymAdd, SigT=-1, AUCUNE branche du Case ne                                }
+{ s appliquait) - fonctionnait "par accident" (jamais d erreur, mais                     }
+{ jamais TYPE non plus). Desormais, quand SigT reste NON resolu ET que          }
+{ le nom correspond a StdlibFind, TypeIdx recoit PDT_VOID (print ne                    }
+{ renvoie rien) - la conversion "selon son type reel" (Int/Double/                          }
+{ String/Bool/tableau -> String, roadmap d en-tete) reste un fait               }
+{ d EXECUTION (le VRAI dispatch par type a l execution est un                                  }
+{ generateur de code, TODO 21+ - le front-end n a besoin ICI que du            }
+{ type de RETOUR de l appel lui-meme, Void, jamais du contenu). Le                       }
+{ nombre d arguments ("un seul argument", roadmap d en-tete - PAS le              }
+{ print variadique reel de Swift avec separator:/terminator:) est                          }
+{ verifie best-effort (WarnMsg SEULEMENT) : une limitation de PORTEE de           }
+{ CE compilateur simplifie, PAS une vraie incompatibilite de type Swift                  }
+{ (discipline DIFFERENTE des controles INCONDITIONNELS du TODO 19, qui             }
+{ visent de VRAIES violations du langage). }
+
+{ ------------------------------------------------------------ }
+{ StdlibSelfTest : StdlibFind/StdlibTab (structure, positif/negatif),               }
+{ "print(_:)" resolu vers Void quel que soit le type de l argument                     }
+{ (Int/String), nombre d arguments inattendu (WarnMsg SEULEMENT, AUCUN            }
+{ Halt), puis integration bout-en-bout via ParseTopLevelDecls sur                          }
+{ control.swift EN ENTIER (le plus dense en appels "print", PREMIERE               }
+{ fois integre a l identique) - arret propre attendu sur son premier              }
+{ "if" (juste apres le seul "let" de tete, meme gap documente que tous             }
+{ les echantillons precedents, cette fois sur un "if" plutot qu un                        }
+{ "print") - sur des extraits synthetiques (fichier temporaire, meme               }
+{ methode que les TODO precedents). }
+{ ------------------------------------------------------------ }
+
+Procedure StdlibAssert(Const Label_: TString; Cond: Boolean);
+Begin
+  If Not Cond Then
+    FatalError('StdlibSelfTest: ' + Label_ + ' a echoue');
+End;
+
+Procedure StdlibSelfTest;
+Var
+  E, SLIdx : Integer;
+Begin
+  StmtInit; ExprInit; SymInit; TypeInit; FuncDefInit; MethodPoolInit; EnumCaseInit;
+
+  { StdlibTab/StdlibFind : positif/negatif, structure de l entree 'print' }
+  SLIdx := StdlibFind('print');
+  StdlibAssert('StdlibFind(''print'') : trouve', SLIdx >= 0);
+  StdlibAssert('print : ParamCount=1 (''un seul argument'', roadmap d''en-tete)',
+    StdlibTab[SLIdx].ParamCount = 1);
+  StdlibAssert('print : ResultTypeIdx=Void', StdlibTab[SLIdx].ResultTypeIdx = PDT_VOID);
+  StdlibAssert('StdlibFind(''nimporteQuoi'') : introuvable', StdlibFind('nimporteQuoi') < 0);
+
+  { "print(_:)" resolu vers Void, quel que soit le type REEL de           }
+  { l argument (Int, String) - la conversion elle-meme reste un fait              }
+  { d EXECUTION (generateur de code, TODO 21+) }
+  E := ExprParseString('print(1)');
+  StdlibAssert('print(1) : EK_CALL', ExprPool[E].Kind = EK_CALL);
+  StdlibAssert('print(1) : TypeIdx=Void', ExprPool[E].TypeIdx = PDT_VOID);
+  E := ExprParseString('print("hello")');
+  StdlibAssert('print("hello") : TypeIdx=Void (meme resultat, type d''argument ' +
+    'DIFFERENT)', ExprPool[E].TypeIdx = PDT_VOID);
+
+  { nombre d arguments inattendu - WarnMsg SEULEMENT (limitation de              }
+  { PORTEE de CE compilateur, PAS une vraie erreur Swift - AUCUN Halt          }
+  { ne doit se produire ici, contrairement aux controles INCONDITIONNELS           }
+  { du TODO 19) }
+  E := ExprParseString('print(1, 2)');
+  StdlibAssert('print(1, 2) : TypeIdx=Void malgre le nombre d''arguments ' +
+    'inattendu (WarnMsg seulement, jamais un Halt)', ExprPool[E].TypeIdx = PDT_VOID);
+
+  { integration bout-en-bout : control.swift EN ENTIER (forme complete),  }
+  { via ParseTopLevelDecls - arret propre attendu sur "if" (voir la               }
+  { note d en-tete de ce TODO). }
+  StmtInit; ExprInit; SymInit; TypeInit; FuncDefInit; MethodPoolInit; EnumCaseInit;
+  Assign(LexSrcF, 'SWIFTW32STDLIBSELFTEST.$$$');
+  Rewrite(LexSrcF);
+  WriteLn(LexSrcF, 'let score: Int = 85');
+  WriteLn(LexSrcF, 'if score >= 90 {');
+  WriteLn(LexSrcF, '    print(1)');
+  WriteLn(LexSrcF, '} else if score >= 80 {');
+  WriteLn(LexSrcF, '    print(2)');
+  WriteLn(LexSrcF, '} else if score >= 70 {');
+  WriteLn(LexSrcF, '    print(3)');
+  WriteLn(LexSrcF, '} else {');
+  WriteLn(LexSrcF, '    print(0)');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, 'let value: Int = 3');
+  WriteLn(LexSrcF, 'switch value {');
+  WriteLn(LexSrcF, 'case 1:');
+  WriteLn(LexSrcF, '    print(10)');
+  WriteLn(LexSrcF, 'case 2:');
+  WriteLn(LexSrcF, '    print(20)');
+  WriteLn(LexSrcF, 'case 3:');
+  WriteLn(LexSrcF, '    print(30)');
+  WriteLn(LexSrcF, 'default:');
+  WriteLn(LexSrcF, '    print(0)');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, 'func checkAge(_ age: Int) -> Int {');
+  WriteLn(LexSrcF, '    guard age >= 0 else {');
+  WriteLn(LexSrcF, '        return 0');
+  WriteLn(LexSrcF, '    }');
+  WriteLn(LexSrcF, '    guard age <= 150 else {');
+  WriteLn(LexSrcF, '        return 0');
+  WriteLn(LexSrcF, '    }');
+  WriteLn(LexSrcF, '    return 1');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, 'let valid: Int = checkAge(25)');
+  WriteLn(LexSrcF, 'print(valid)');
+  Close(LexSrcF);
+  Assign(LexSrcF, 'SWIFTW32STDLIBSELFTEST.$$$');
+  Reset(LexSrcF);
+  LexOpened := True;
+  LexInit;
+  LexAll;
+  LexClose;
+  Erase(LexSrcF);
+  ParserInit;
+  ParseTopLevelDecls;
+  StdlibAssert('control.swift (integral) : "score" resolu', SymFind('score') >= 0);
+  StdlibAssert('control.swift (integral) : arret propre EXACT sur "if"',
+    (PPKind = TOK_IDENT) And (IsKeyword(PPVal) = KW_IF));
+
+  { re-initialise les tables globales pour ne pas polluer Run reel }
+  StmtInit;
+  ExprInit;
+  SymInit;
+  FuncDefInit;
+  MethodPoolInit;
+  EnumCaseInit;
+End;
+
+{ ============================================================ }
+{ TODO 21 - GENERATEUR DE CODE 80386 ET SORTIE .ASM              }
+{ ============================================================ }
+{ PREMIERE VRAIE passe de generation de code de ce compilateur -                       }
+{ architecture ETUDIEE et REPRISE directement de GOCW32.PAS (meme                          }
+{ projet, meme auteur, meme discipline explicitement exigee par le                          }
+{ roadmap d en-tete de CE TODO) : un texte .ASM Intel/MASM emis                                 }
+{ DIRECTEMENT (WriteLn ligne a ligne dans un fichier Text, AUCUNE                             }
+{ structure de "representation intermediaire" separee - le texte .asm                    }
+{ LUI-MEME est l IR, relu tel quel par le futur assembleur du TODO 22),                        }
+{ EAX portant TOUJOURS le resultat scalaire d une expression (AUCUN                          }
+{ allocateur de registres, discipline deja annoncee par le roadmap                            }
+{ d en-tete du TODO 21 lui-meme), et le meme "arret propre" (FatalError                       }
+{ explicite, jamais un .asm silencieusement faux) pour TOUTE forme non             }
+{ encore couverte.                                                                              }
+{                                                                       }
+{ PORTEE DELIBEREMENT REDUITE pour cette PREMIERE passe (EXACTEMENT la           }
+{ meme discipline que GOCW32.PAS lui-meme, dont le TODO 21 d origine                     }
+{ ne couvrait QUE "hello.go" avant de grandir par extensions datees                      }
+{ successives sur PLUSIEURS sessions - AUCUNE tentative de couvrir              }
+{ TOUT le front-end TODO 01-20 en une seule fois) : SEUL hello.swift                       }
+{ (litteraux Int/String, "let"/"var" GLOBAUX avec valeur initiale                            }
+{ CONSTANTE, "+" entier, affectation simple a un identificateur, et                            }
+{ "print(_:)" avec un argument String OU Int) est reellement compile             }
+{ de bout en bout - TOUT LE RESTE (fonctions utilisateur, structures de            }
+{ controle if/while/for/switch/guard, struct/class/protocole/enum,                          }
+{ fermetures, Optional, gestion d erreurs, collections, chaines                                  }
+{ etendues/interpolation, generiques) s arrete PROPREMENT (FatalError                    }
+{ explicite, message nommant precisement la construction manquante)                        }
+{ et sera ajoute par extension DATEE, une session a la fois, exactement           }
+{ comme GOCW32.PAS l a fait pour chacune des siennes. Aucune fonction               }
+{ n est encore compilee (CompileFuncDef/CompileMethodDef n existent                       }
+{ pas encore) : Offset (TSymRec, ajoute ci-dessus) reste TOUJOURS 0             }
+{ pour l instant, seul le niveau FICHIER (global) est traite.                                    }
+{                                                                       }
+{ "print(_:) converti en String selon son type reel" (roadmap d en-tete           }
+{ du TODO 20) : DIFFERENCE REELLE avec fmt.Println de GOCW32.PAS (qui              }
+{ suppose TOUJOURS que son argument est DEJA une chaine - strconv.Itoa            }
+{ y est un appel EXPLICITE ecrit par le programmeur Go, jamais automatique)            }
+{ - ICI, le TYPE STATIQUE (deja connu du front-end, TODO 06+) de                          }
+{ l argument dicte le code emis : String -> impression DIRECTE ;                             }
+{ Int -> _SWRT_STRCONV_ITOA (conversion decimale) PUIS impression - Double/       }
+{ Bool/tableau (le reste du roadmap d en-tete) restent un FatalError                     }
+{ explicite pour cette premiere passe (JAMAIS exerces par hello.swift).                 }
+{                                                                       }
+{ Bibliotheque runtime (_SWRT_*, EmitRuntimeLibrary) : QUATRE routines           }
+{ REPRISES fidelement de GOCW32.PAS (_GORT_STRLEN/PRINT_STR/                                 }
+{ PRINTLN_STR/ALLOC/STRCONV_ITOA), simplement renommees _SWRT_ -                            }
+{ chacune porte deja, dans SON PROPRE fichier d origine, plusieurs                          }
+{ corrections de VRAIS bogues trouves PAR EXECUTION reelle (ESI non                        }
+{ restaure par STRLEN, EBX ecrase par ALLOC sans etre restaure,                                  }
+{ HEAP_ZERO_MEMORY manquant, corruption de pile dans ITOA...) - reprises            }
+{ ICI DEJA CORRIGEES plutot que redecouvertes une seconde fois par                          }
+{ EXECUTION sur ce compilateur-ci.                                                             }
+{                                                                       }
+{ ParseSwiftProgram (NOUVEAU - n existait dans AUCUN TODO precedent) :          }
+{ TOUS les tests d integration "bout-en-bout" des TODO 05-20 utilisaient           }
+{ ParseTopLevelDecls SEULE et s arretaient PROPREMENT sur le premier               }
+{ code executable de haut niveau ("print(...)"),  Swift REEL melangeant           }
+{ librement declarations ET instructions executables au niveau fichier             }
+{ (un SCRIPT, pas un langage exigeant "func main()" comme Go) - AUCUNE               }
+{ generation de code n etait possible sur un VRAI fichier SAMPLES\SWIFT          }
+{ tant que cette limite n etait pas levee. ParseSwiftProgram (ci-dessous)               }
+{ boucle sur TOUT le fichier, essayant ParseTopLevelDecl PUIS (SEULEMENT          }
+{ si Faux) ParseStatement, collectant les instructions EXECUTABLES (les          }
+{ declarations s auto-enregistrent deja via SymAdd/FuncDefAdd/etc, rien            }
+{ de plus a collecter pour elles) dans TopLevelStmts - CompileProgram              }
+{ les compile ensuite dans l ORDRE textuel, comme un unique corps de              }
+{ fonction IMPLICITE couvrant tout le fichier (label d entree "_SWSTART",          }
+{ jamais "_SWF_main" - Swift n exige pas ce nom, contrairement a Go). }
+
+Const
+  MAX_CG_STR = 256;
+
+Var
+  CgOutF      : Text;
+  CgOutOpen   : Boolean;
+  CgLabelSeq  : Integer;
+
+  { pool de chaines litterales (deduplication PAR VALEUR - deux            }
+  { occurrences du meme texte partagent le meme label _SWK_N), meme            }
+  { principe EXACT que CgStrPool/CgStrPoolOfExpr de GOCW32.PAS. }
+  CgStrPool       : Array[0..MAX_CG_STR - 1] Of TString;
+  CgStrCount      : Integer;
+  CgStrPoolOfExpr : Array[0..MAX_EXPR - 1] Of Integer;
+
+  { TopLevelStmts (ParseSwiftProgram, ci-dessous) : SEULES les              }
+  { instructions EXECUTABLES de haut niveau (jamais un marqueur STK_DECL,   }
+  { les declarations n ont besoin d aucun code - voir CompileStmt/STK_DECL). }
+  TopLevelStmts     : Array[0..MAX_STMT - 1] Of Integer;
+  TopLevelStmtCount : Integer;
+
+Function IntToStrSW(N: LongInt): TString;
+Var S: TString;
+Begin
+  Str(N, S);
+  IntToStrSW := S;
+End;
+
+Procedure EmitOpen(Const AsmFile: TString);
+Begin
+  Assign(CgOutF, AsmFile);
+  Rewrite(CgOutF);
+  CgOutOpen := True;
+End;
+
+Procedure EmitClose;
+Begin
+  If CgOutOpen Then
+  Begin
+    Close(CgOutF);
+    CgOutOpen := False;
+  End;
+End;
+
+Procedure EmitRaw(Const S: TString);
+Begin
+  WriteLn(CgOutF, S);
+End;
+
+Procedure EmitLabel(Const Lbl: TString);
+Begin
+  WriteLn(CgOutF, Lbl, ':');
+End;
+
+Procedure EmitInstr(Const S: TString);
+Begin
+  WriteLn(CgOutF, '        ', S);
+End;
+
+Procedure EmitComment(Const S: TString);
+Begin
+  WriteLn(CgOutF, '; ', S);
+End;
+
+Procedure EmitBlankLine;
+Begin
+  WriteLn(CgOutF);
+End;
+
+Function CgLabelGen: TString;
+Begin
+  Inc(CgLabelSeq);
+  CgLabelGen := ASM_PFX_LABEL + IntToStrSW(CgLabelSeq);
+End;
+
+{ CgVarOperand : operande ASM pour LIRE/ECRIRE le symbole SI - MEME       }
+{ convention EXACTE que GOCW32.PAS (adresse par NOM mangle pour un                  }
+{ GLOBAL, deplacement EBP-relatif sinon) - AUCUN symbole non-global                       }
+{ n existe encore a ce stade (aucune fonction n est compilee cette                          }
+{ premiere passe), la branche EBP reste donc du code MORT pour l instant,              }
+{ deja correcte et prete pour la prochaine extension (fonctions). }
+Function CgVarOperand(SI: Integer): TString;
+Begin
+  If SymTab[SI].IsGlobal Then
+    CgVarOperand := '[' + ASM_PFX_GVAR + SymTab[SI].Name + ']'
+  Else If SymTab[SI].Offset >= 0 Then
+    CgVarOperand := '[EBP+' + IntToStrSW(SymTab[SI].Offset) + ']'
+  Else
+    CgVarOperand := '[EBP-' + IntToStrSW(-SymTab[SI].Offset) + ']';
+End;
+
+{ CgCollectStrings : PRE-PASSE sur TOUT le programme (avant la moindre    }
+{ ligne .DATA) - necessaire car .DATA doit PHYSIQUEMENT preceder .CODE          }
+{ dans le fichier emis, alors que les litteraux ne sont "decouverts"                    }
+{ que bien plus tard par un parcours naif de CompileStmt/CompileExpr -             }
+{ meme technique EXACTE que GOCW32.PAS. }
+Procedure CgCollectStrings;
+Var E, J, Found : Integer;
+Begin
+  CgStrCount := 0;
+  For E := 0 To ExprCount - 1 Do
+    If ExprPool[E].Kind = EK_STRINGLIT Then
+    Begin
+      Found := -1;
+      For J := 0 To CgStrCount - 1 Do
+        If CgStrPool[J] = ExprPool[E].StrVal Then
+        Begin
+          Found := J;
+          Break;
+        End;
+      If Found < 0 Then
+      Begin
+        If CgStrCount < MAX_CG_STR Then
+        Begin
+          CgStrPool[CgStrCount] := ExprPool[E].StrVal;
+          Found := CgStrCount;
+          Inc(CgStrCount);
+        End
+        Else
+        Begin
+          WarnMsg('table du generateur de code pleine (chaines litterales, MAX_CG_STR)');
+          Found := 0;
+        End;
+      End;
+      CgStrPoolOfExpr[E] := Found;
+    End;
+End;
+
+{ EmitHeader : boilerplate Intel/MASM (.386, modele FLAT STDCALL,        }
+{ imports Win32 - E/S console et sortie de processus SEULEMENT, alloc              }
+{ tas necessaire a _SWRT_STRCONV_ITOA/ALLOC ; threads/etc. restent hors           }
+{ de portee, aucun closure/goroutine-like n existe dans ce langage a               }
+{ ce stade) - meme dialecte que GOCW32.PAS/DELPHI.PAS (memes projet). }
+Procedure EmitHeader;
+Begin
+  EmitComment('SWIFTW32 - code genere (TODO 21) - NE PAS EDITER A LA MAIN');
+  EmitRaw('.386');
+  EmitRaw('.MODEL FLAT, STDCALL');
+  EmitBlankLine;
+  EmitRaw('EXTRN _ExitProcess@4:NEAR');
+  EmitRaw('EXTRN _GetStdHandle@4:NEAR');
+  EmitRaw('EXTRN _WriteFile@20:NEAR');
+  EmitRaw('EXTRN _GetProcessHeap@0:NEAR');
+  EmitRaw('EXTRN _HeapAlloc@12:NEAR');
+  EmitBlankLine;
+End;
+
+{ EmitDataSeg : section .DATA COMPLETE en une fois - globaux (parcours   }
+{ de SymTab, IsGlobal) puis pool de chaines litterales (CgCollectStrings          }
+{ deja execute AVANT cet appel, voir CompileProgram). DIFFERENCE REELLE            }
+{ avec GOCW32.PAS (dont les globaux chaine restent un "DD 0" documente,          }
+{ jamais leur VRAI contenu) : un global String dont l initialiseur EST                  }
+{ un litteral repliable (ConstVal.Kind=CK_STRING, TODO 05/06) recoit               }
+{ ICI son VRAI contenu DIRECTEMENT ("DB "texte",0") plutot qu un simple             }
+{ zero - necessaire des hello.swift lui-meme ("let greeting: String =              }
+{ ..."), qui n a pas d equivalent GOCW32.PAS a imiter pour ce cas                            }
+{ precis. Tout AUTRE global (type non couvert, ou initialiseur NON               }
+{ repliable a la compilation, ex. "let sum = add(x,y)") recoit un simple            }
+{ "DD 0" - LIMITATION DOCUMENTEE plutot que devinee (aucune fonction               }
+{ n est encore compilee de toute facon pour calculer une VRAIE valeur              }
+{ d initialisation a l execution). }
+Procedure EmitDataSeg;
+Var I : Integer;
+Begin
+  EmitRaw('.DATA');
+  EmitRaw(ASM_PFX_RUNTIME + 'NEWLINE  DB 10');
+  For I := 0 To SymCount - 1 Do
+    If (SymTab[I].Kind = SK_VAR) And SymTab[I].IsGlobal Then
+    Begin
+      { TODO 25 (validation) : bogue REEL trouve par EXECUTION (jamais par     }
+      { relecture du .asm ni par un self-test structurel) - generics.swift/           }
+      { math.swift/optionals.swift COMPILAIENT et s EXECUTAIENT sans              }
+      { erreur (code de sortie 0) mais IMPRIMAIENT des valeurs FAUSSES              }
+      { (ex. "let sum = add(x, y)", ConstVal jamais REMPLI puisque              }
+      { IsConst=Faux ici, tombait silencieusement dans la branche DD 0                }
+      { ci-dessous, indiscernable d une VRAIE constante 0) : un initialiseur              }
+      { present mais NON repliable a la compilation (appel de fonction              }
+      { utilisateur, "??" sur une variable, etc. - CompileFuncDef n existe              }
+      { toujours pas) DOIT s arreter PROPREMENT ICI, jamais deviner 0 en              }
+      { silence - exactement la discipline appliquee partout ailleurs dans              }
+      { ce fichier. }
+      If SymTab[I].HasInit And Not ExprPool[SymTab[I].InitExprIdx].IsConst Then
+        FatalError('TODO 21 : generateur de code, initialiseur de global "' +
+          SymTab[I].Name + '" non repliable a la compilation (appel de ' +
+          'fonction utilisateur, expression Optional, etc.) - seuls les ' +
+          'globaux SANS initialiseur ou initialises par un LITTERAL/une ' +
+          'expression CONSTANTE sont couverts pour cette premiere passe ' +
+          '(une VRAIE evaluation a l''execution reste une extension future)')
+      Else If (SymTab[I].TypeIdx >= 0) And (SymTab[I].TypeIdx < TypeCount) And
+         (TypeTab[SymTab[I].TypeIdx].Kind = TYK_STRING) And
+         (SymTab[I].ConstVal.Kind = CK_STRING) Then
+        EmitRaw(ASM_PFX_GVAR + SymTab[I].Name + '  DB "' + SymTab[I].ConstVal.StrVal + '", 0')
+      Else If (SymTab[I].TypeIdx >= 0) And (SymTab[I].TypeIdx < TypeCount) And
+         (TypeTab[SymTab[I].TypeIdx].Kind In [TYK_INT, TYK_BOOL]) Then
+        EmitRaw(ASM_PFX_GVAR + SymTab[I].Name + '  DD ' + IntToStrSW(SymTab[I].ConstVal.IntVal))
+      Else
+        EmitRaw(ASM_PFX_GVAR + SymTab[I].Name + '  DD 0');
+    End;
+  For I := 0 To CgStrCount - 1 Do
+    EmitRaw(ASM_PFX_STRING + IntToStrSW(I) + '  DB "' + CgStrPool[I] + '", 0');
+  EmitBlankLine;
+End;
+
+Procedure EmitCodeSeg;
+Begin
+  EmitRaw('.CODE');
+  EmitBlankLine;
+End;
+
+{ EmitRuntimeLibrary : runtime minimal ecrit DIRECTEMENT dans le .asm    }
+{ emis (aucune bibliotheque externe liee) - QUATRE routines REPRISES             }
+{ fidelement de GOCW32.PAS (_GORT_STRLEN/PRINT_STR/PRINTLN_STR/ALLOC/                    }
+{ STRCONV_ITOA), simplement renommees _SWRT_ - voir la note d en-tete             }
+{ de section pour le detail des bogues REELS deja corriges dans leur              }
+{ fichier d origine et reproduits ICI deja corriges. }
+Procedure EmitRuntimeLibrary;
+Begin
+  EmitLabel(ASM_PFX_RUNTIME + 'STRLEN');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');
+  EmitInstr('XOR ECX,ECX');
+  EmitLabel(ASM_PFX_RUNTIME + 'STRLEN_LOOP');
+  EmitInstr('CMP BYTE PTR [ESI],0');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'STRLEN_DONE');
+  EmitInstr('INC ESI');
+  EmitInstr('INC ECX');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'STRLEN_LOOP');
+  EmitLabel(ASM_PFX_RUNTIME + 'STRLEN_DONE');
+  EmitInstr('MOV EAX,ECX');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _SWRT_PRINT_STR : imprime la chaine C pointee par [EBP+8] SANS         }
+  { saut de ligne, via GetStdHandle/WriteFile (PAS INT 21h) - recharge             }
+  { ESI depuis [EBP+8] APRES l appel a STRLEN (qui le laisse pointer sur           }
+  { le TERMINATEUR NUL, jamais restaure - bogue REEL deja trouve et                     }
+  { corrige dans GOCW32.PAS, reproduit ici deja corrige). }
+  EmitLabel(ASM_PFX_RUNTIME + 'PRINT_STR');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('SUB ESP,4');
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');
+  EmitInstr('PUSH ESI');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STRLEN');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');
+  EmitInstr('MOV EBX,EAX');
+  EmitInstr('PUSH -11');
+  EmitInstr('CALL _GetStdHandle@4');
+  EmitInstr('MOV EDI,EAX');
+  EmitInstr('PUSH 0');
+  EmitInstr('LEA EAX,[EBP-4]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH EDI');
+  EmitInstr('CALL _WriteFile@20');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _SWRT_PRINTLN_STR : _SWRT_PRINT_STR PUIS le saut de ligne unique       }
+  { constant _SWRT_NEWLINE (meme forme que print(_:), TOUJOURS un seul             }
+  { argument, roadmap d en-tete du TODO 20). }
+  EmitLabel(ASM_PFX_RUNTIME + 'PRINTLN_STR');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('SUB ESP,4');
+  EmitInstr('PUSH DWORD PTR [EBP+8]');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'PRINT_STR');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('PUSH -11');
+  EmitInstr('CALL _GetStdHandle@4');
+  EmitInstr('MOV EDI,EAX');
+  EmitInstr('PUSH 0');
+  EmitInstr('LEA EAX,[EBP-4]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH 1');
+  EmitInstr('LEA EAX,[' + ASM_PFX_RUNTIME + 'NEWLINE]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH EDI');
+  EmitInstr('CALL _WriteFile@20');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _SWRT_ALLOC : alloue [EBP+8] octets sur le tas du PROCESSUS                }
+  { (GetProcessHeap, un SEUL tas partage) via HeapAlloc(HEAP_ZERO_MEMORY,          }
+  { dwFlags=8 - SANS ce drapeau, memoire NON INITIALISEE, bogue REEL                 }
+  { deja trouve et corrige dans GOCW32.PAS), retourne le pointeur en                    }
+  { EAX - AUCUNE liberation (fuite assumee, meme decision que le TODO 18).           }
+  { PUSH/POP EBX autour de l appel (GetProcessHeap ecraserait sinon EBX               }
+  { de l APPELANT sans le restaurer - meme bogue REEL deja trouve et                    }
+  { corrige dans GOCW32.PAS). }
+  EmitLabel(ASM_PFX_RUNTIME + 'ALLOC');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
+  EmitInstr('CALL _GetProcessHeap@0');
+  EmitInstr('MOV EBX,EAX');
+  EmitInstr('PUSH DWORD PTR [EBP+8]');
+  EmitInstr('PUSH 8');
+  EmitInstr('PUSH EBX');
+  EmitInstr('CALL _HeapAlloc@12');
+  EmitInstr('POP EBX');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _SWRT_STRCONV_ITOA([EBP+8]=N) -> EAX = nouvelle chaine decimale         }
+  { ("-" en tete si negatif ; "0" pour zero, jamais une chaine vide) -              }
+  { chiffres generes A L ENVERS dans un tampon LOCAL FIXE ([EBP-36]..              }
+  { [EBP-5], 32 octets - largement suffisant pour un entier 32 bits),                    }
+  { PUIS copies a l endroit dans le tampon FINAL alloue ; [EBP-40] est               }
+  { un QUATRIEME emplacement DEDIE (jamais ecrase par le tampon de                       }
+  { chiffres) qui sauvegarde le pointeur A RENVOYER ; [EBP-24] sauvegarde           }
+  { ECX (nombre de chiffres) autour de l appel a _SWRT_ALLOC (STDCALL,                  }
+  { qui NE preserve PAS ECX) - repris fidelement de GOCW32.PAS, ou ces                     }
+  { TROIS points precis etaient chacun un VRAI bogue trouve par                                  }
+  { EXECUTION ou en relisant le code (corruption de pile, mauvaise                            }
+  { valeur de retour, ECX corrompu par l appel imbrique) : reproduits                    }
+  { ici DEJA CORRIGES. }
+  EmitLabel(ASM_PFX_RUNTIME + 'STRCONV_ITOA');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('SUB ESP,40');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('MOV EBX,0');
+  EmitInstr('CMP EAX,0');
+  EmitInstr('JGE ' + ASM_PFX_RUNTIME + 'ITOA_NONNEG');
+  EmitInstr('MOV EBX,1');
+  EmitInstr('NEG EAX');
+  EmitLabel(ASM_PFX_RUNTIME + 'ITOA_NONNEG');
+  EmitInstr('LEA EDI,[EBP-36]');
+  EmitInstr('MOV ECX,0');
+  EmitLabel(ASM_PFX_RUNTIME + 'ITOA_DIGLOOP');
+  EmitInstr('MOV ESI,10');
+  EmitInstr('CDQ');
+  EmitInstr('IDIV ESI');
+  EmitInstr('ADD EDX,48');
+  EmitInstr('MOV BYTE PTR [EDI],EDX');
+  EmitInstr('INC EDI');
+  EmitInstr('INC ECX');
+  EmitInstr('CMP EAX,0');
+  EmitInstr('JNE ' + ASM_PFX_RUNTIME + 'ITOA_DIGLOOP');
+  EmitInstr('MOV EAX,ECX');
+  EmitInstr('CMP EBX,0');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'ITOA_NOSIGN');
+  EmitInstr('INC EAX');
+  EmitLabel(ASM_PFX_RUNTIME + 'ITOA_NOSIGN');
+  EmitInstr('ADD EAX,1');
+  EmitInstr('MOV DWORD PTR [EBP-24],ECX');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('MOV ECX,DWORD PTR [EBP-24]');
+  EmitInstr('MOV EDI,EAX');
+  EmitInstr('MOV DWORD PTR [EBP-40],EDI');
+  EmitInstr('CMP EBX,0');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'ITOA_NOSIGN2');
+  EmitInstr('MOV EAX,45');
+  EmitInstr('MOV BYTE PTR [EDI],EAX');
+  EmitInstr('INC EDI');
+  EmitLabel(ASM_PFX_RUNTIME + 'ITOA_NOSIGN2');
+  EmitInstr('LEA ESI,[EBP-36]');
+  EmitInstr('ADD ESI,ECX');
+  EmitLabel(ASM_PFX_RUNTIME + 'ITOA_CPYTOP');
+  EmitInstr('CMP ECX,0');
+  EmitInstr('JLE ' + ASM_PFX_RUNTIME + 'ITOA_CPYDONE');
+  EmitInstr('DEC ESI');
+  EmitInstr('MOVZX EAX,BYTE PTR [ESI]');
+  EmitInstr('MOV BYTE PTR [EDI],EAX');
+  EmitInstr('INC EDI');
+  EmitInstr('DEC ECX');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'ITOA_CPYTOP');
+  EmitLabel(ASM_PFX_RUNTIME + 'ITOA_CPYDONE');
+  EmitInstr('MOV EAX,0');
+  EmitInstr('MOV BYTE PTR [EDI],EAX');
+  EmitInstr('MOV EAX,DWORD PTR [EBP-40]');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+End;
+
+{ CompileExpr : compile RECURSIVEMENT le noeud E de ExprPool - laisse    }
+{ TOUJOURS son resultat dans EAX (convention FIXE, AUCUN allocateur de              }
+{ registres - meme discipline que GOCW32.PAS). Toute forme hors de la                  }
+{ portee documentee en tete de section s arrete PROPREMENT (FatalError). }
+Procedure CompileExpr(E: Integer);
+Var SI, ArgE, ArgT : Integer;
+Begin
+  If E < 0 Then Exit;
+  Case ExprPool[E].Kind Of
+    EK_INTLIT, EK_BOOLLIT:
+      EmitInstr('MOV EAX,' + IntToStrSW(ExprPool[E].IntVal));
+    EK_NILLIT:
+      EmitInstr('MOV EAX,0');
+    EK_STRINGLIT:
+      EmitInstr('LEA EAX,[' + ASM_PFX_STRING + IntToStrSW(CgStrPoolOfExpr[E]) + ']');
+    EK_IDENT:
+      Begin
+        SI := SymFind(ExprPool[E].NameVal);
+        If SI < 0 Then
+          FatalError('TODO 21 : generateur de code, identificateur non resolu: ' +
+            ExprPool[E].NameVal)
+        Else If (SymTab[SI].TypeIdx >= 0) And (SymTab[SI].TypeIdx < TypeCount) And
+           (TypeTab[SymTab[SI].TypeIdx].Kind = TYK_STRING) Then
+          { un global String stocke ICI (EmitDataSeg) ses VRAIS octets, PAS   }
+          { un pointeur separe - lire sa "valeur" doit donc charger SON      }
+          { ADRESSE (LEA), exactement comme EK_STRINGLIT, jamais les 4       }
+          { premiers octets de son contenu comme un entier (MOV) : bogue     }
+          { REEL trouve uniquement a l execution (segfault), voir TODO 23.   }
+          EmitInstr('LEA EAX,' + CgVarOperand(SI))
+        Else
+          EmitInstr('MOV EAX,DWORD PTR ' + CgVarOperand(SI));
+      End;
+    EK_BINARY:
+      If (ExprPool[E].Op <> '+') And (ExprPool[E].Op <> '-') And (ExprPool[E].Op <> '*') Then
+        FatalError('TODO 21 : generateur de code, operateur binaire non couvert ' +
+          'pour cette premiere passe (seuls +/-/* le sont ; / et % attendent ' +
+          'le mecanisme panique/erreur, extension future) : ' + ExprPool[E].Op)
+      Else
+      Begin
+        CompileExpr(ExprPool[E].Left);
+        EmitInstr('PUSH EAX');
+        CompileExpr(ExprPool[E].Right);
+        EmitInstr('MOV EBX,EAX');
+        EmitInstr('POP EAX');
+        If ExprPool[E].Op = '+' Then EmitInstr('ADD EAX,EBX')
+        Else If ExprPool[E].Op = '-' Then EmitInstr('SUB EAX,EBX')
+        Else EmitInstr('IMUL EAX,EBX');
+      End;
+    EK_CALL:
+      { seul "print(_:)" (un seul argument, StdlibTab, TODO 20) est          }
+      { couvert pour cette premiere passe - AUCUN appel de fonction              }
+      { utilisateur (aucune n est encore compilee, CompileFuncDef              }
+      { n existe pas). }
+      If (ExprPool[ExprPool[E].Left].Kind = EK_IDENT) And
+         (ExprPool[ExprPool[E].Left].NameVal = 'print') And
+         (ExprPool[E].ArgCount = 1) Then
+      Begin
+        ArgE := ExprArgPool[ExprPool[E].ArgFirst];
+        ArgT := ExprPool[ArgE].TypeIdx;
+        CompileExpr(ArgE);
+        If (ArgT >= 0) And (ArgT < TypeCount) And (TypeTab[ArgT].Kind = TYK_STRING) Then
+        Begin
+          EmitInstr('PUSH EAX');
+          EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'PRINTLN_STR');
+          EmitInstr('ADD ESP,4');
+        End
+        Else If (ArgT >= 0) And (ArgT < TypeCount) And (TypeTab[ArgT].Kind = TYK_INT) Then
+        Begin
+          EmitInstr('PUSH EAX');
+          EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STRCONV_ITOA');
+          EmitInstr('ADD ESP,4');
+          EmitInstr('PUSH EAX');
+          EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'PRINTLN_STR');
+          EmitInstr('ADD ESP,4');
+        End
+        Else
+          FatalError('TODO 21 : generateur de code, print(_:) ne couvre que ' +
+            'String/Int pour cette premiere passe (Double/Bool/tableau restent ' +
+            'une extension future, roadmap d''en-tete du TODO 20)')
+      End
+      Else
+        FatalError('TODO 21 : generateur de code, appel non couvert pour cette ' +
+          'premiere passe (seul ''print(_:)'' l est - fonctions utilisateur/' +
+          'methodes/structs restent une extension future) : ' +
+          ExprPool[ExprPool[E].Left].NameVal);
+  Else
+    FatalError('TODO 21 : generateur de code, forme d''expression non couverte ' +
+      'pour cette premiere passe (portee volontairement reduite a hello.swift, ' +
+      'voir la note d''en-tete de section) : Kind=' + IntToStrSW(Ord(ExprPool[E].Kind)));
+  End;
+End;
+
+{ CompileStmt : compile RECURSIVEMENT le noeud S de StmtPool. }
+Procedure CompileStmt(S: Integer);
+Var I, TgtSI : Integer;
+Begin
+  If S < 0 Then Exit;
+  Case StmtPool[S].Kind Of
+    STK_BLOCK:
+      For I := StmtPool[S].ArgFirst To StmtPool[S].ArgFirst + StmtPool[S].ArgCount - 1 Do
+        CompileStmt(StmtArgPool[I]);
+    STK_EXPR:
+      CompileExpr(StmtPool[S].Left);
+    STK_DECL:
+      ;   { rien a generer ICI - reservation/initialisation CONSTANTE deja  }
+          { entierement geree par EmitDataSeg (niveau GLOBAL seulement,             }
+          { seul niveau couvert par cette premiere passe). }
+    STK_ASSIGN:
+      If StmtPool[S].Op <> '=' Then
+        FatalError('TODO 21 : generateur de code, operateur d''affectation ' +
+          'compose non couvert pour cette premiere passe (seul "=" simple ' +
+          'l''est) : ' + StmtPool[S].Op)
+      Else If ExprPool[StmtPool[S].Left].Kind <> EK_IDENT Then
+        FatalError('TODO 21 : generateur de code, cible d''affectation non ' +
+          'couverte pour cette premiere passe (seul un identificateur simple ' +
+          'l''est)')
+      Else
+      Begin
+        TgtSI := SymFind(ExprPool[StmtPool[S].Left].NameVal);
+        CompileExpr(StmtPool[S].Right);
+        If TgtSI >= 0 Then
+          EmitInstr('MOV DWORD PTR ' + CgVarOperand(TgtSI) + ',EAX')
+        Else
+          FatalError('TODO 21 : generateur de code, cible d''affectation non ' +
+            'resolue: ' + ExprPool[StmtPool[S].Left].NameVal);
+      End;
+  Else
+    FatalError('TODO 21 : generateur de code, forme d''instruction non couverte ' +
+      'pour cette premiere passe (if/while/for/switch/guard/func/struct/class/' +
+      'etc. restent une extension future, voir la note d''en-tete de section) : ' +
+      'Kind=' + IntToStrSW(Ord(StmtPool[S].Kind)));
+  End;
+End;
+
+{ ParseSwiftProgram : voir la note d en-tete de section - boucle sur      }
+{ TOUT le fichier, essayant ParseTopLevelDecl PUIS (seulement si Faux)             }
+{ ParseStatement, collectant les instructions EXECUTABLES dans                              }
+{ TopLevelStmts (les declarations n ont rien de plus a collecter, elles           }
+{ s auto-enregistrent deja par leurs propres SymAdd/FuncDefAdd/etc). }
+Procedure ParseSwiftProgram;
+Var N : Integer;
+Begin
+  TopLevelStmtCount := 0;
+  PPSkipSemis;
+  While Not PPAtEnd Do
+  Begin
+    If Not ParseTopLevelDecl Then
+    Begin
+      N := ParseStatement;
+      If TopLevelStmtCount < MAX_STMT Then
+      Begin
+        TopLevelStmts[TopLevelStmtCount] := N;
+        Inc(TopLevelStmtCount);
+      End
+      Else
+        WarnMsg('table des instructions de haut niveau pleine (MAX_STMT)');
+    End;
+    PPSkipSemis;
+  End;
+End;
+
+{ CompileProgram : point d entree du generateur de code - ordre           }
+{ d emission EXACT de GOCW32.PAS (en-tete -> donnees -> section code ->            }
+{ bibliotheque runtime -> corps) MOINS les fonctions utilisateur (AUCUNE           }
+{ n est encore compilee) : le corps EST directement la sequence des                     }
+{ instructions de haut niveau (TopLevelStmts, ParseSwiftProgram) sous           }
+{ l etiquette d entree "_SWSTART" (jamais "_SWF_main" - Swift n exige                }
+{ pas ce nom, contrairement a "func main()" en Go). }
+Procedure CompileProgram(Const AsmFileName: TString);
+Var I : Integer;
+Begin
+  CgLabelSeq := 0;
+  CgCollectStrings;
+
+  EmitOpen(AsmFileName);
+  EmitHeader;
+  EmitDataSeg;
+  EmitCodeSeg;
+  EmitRuntimeLibrary;
+
+  EmitLabel('_SWSTART');
+  For I := 0 To TopLevelStmtCount - 1 Do
+    CompileStmt(TopLevelStmts[I]);
+  EmitInstr('PUSH 0');
+  EmitInstr('CALL _ExitProcess@4');
+  EmitRaw('END _SWSTART');
+  EmitClose;
+End;
+
+{ CgFileHasSubstring : relit le .asm PRODUIT ligne par ligne et cherche   }
+{ une sous-chaine EXACTE - meme methode que CgFileHasSubstring de              }
+{ GOCW32.PAS (verification STRUCTURELLE du texte emis, PAS une VRAIE               }
+{ execution : aucun assembleur/lieur n existe encore, TODO 22/23, voir              }
+{ la note de CodegenSelfTest ci-dessous). }
+Function CgFileHasSubstring(Const FileName, Sub: TString): Boolean;
+Var F : Text; Line : TString; Found : Boolean;
+Begin
+  Found := False;
+  Assign(F, FileName);
+  Reset(F);
+  While Not EOF(F) Do
+  Begin
+    ReadLn(F, Line);
+    If Pos(Sub, Line) > 0 Then
+    Begin
+      Found := True;
+      Break;
+    End;
+  End;
+  Close(F);
+  CgFileHasSubstring := Found;
+End;
+
+{ ------------------------------------------------------------ }
+{ CodegenSelfTest : genere un VRAI fichier .asm a partir de hello.swift   }
+{ EN ENTIER (forme complete - PREMIERE fois qu un echantillon est                        }
+{ REELLEMENT COMPILE, pas seulement tokenise/parse) et verifie, PAR                       }
+{ SOUS-CHAINE, que les instructions/sections attendues apparaissent -                     }
+{ MEME LIMITATION que GOCW32.PAS/DELPHI.PAS a ce meme stade (ni                                 }
+{ assembleur ni lieur n existent encore, TODO 22/23 - une verification                       }
+{ REELLE par EXECUTION du .exe produit devra attendre ces deux TODO,                      }
+{ puis une compilation+execution MANUELLE de chaque SAMPLES\SWIFT\*.swift,               }
+{ discipline etablie par tous les compilateurs freres de ce projet et                      }
+{ documentee au TODO 25). }
+{ ------------------------------------------------------------ }
+
+Procedure CodegenAssert(Const Label_: TString; Cond: Boolean);
+Begin
+  If Not Cond Then
+    FatalError('CodegenSelfTest: ' + Label_ + ' a echoue');
+End;
+
+Procedure CodegenSelfTest;
+Const
+  TmpSrc = 'SWIFTW32CODEGENSELFTESTSRC.$$$';
+  TmpAsm = 'SWIFTW32CODEGENSELFTEST.$$$';
+Begin
+  StmtInit; ExprInit; SymInit; TypeInit; FuncDefInit; MethodPoolInit; EnumCaseInit;
+
+  { hello.swift EN ENTIER (forme complete, identique au fichier reel) }
+  Assign(LexSrcF, TmpSrc);
+  Rewrite(LexSrcF);
+  WriteLn(LexSrcF, 'let greeting: String = "Hello, 8086!"');
+  WriteLn(LexSrcF, 'let version: Int = 1');
+  WriteLn(LexSrcF, 'var counter: Int = 0');
+  WriteLn(LexSrcF, 'print(greeting)');
+  WriteLn(LexSrcF, 'print(version)');
+  WriteLn(LexSrcF, 'counter = counter + 1');
+  WriteLn(LexSrcF, 'print(counter)');
+  Close(LexSrcF);
+  Assign(LexSrcF, TmpSrc);
+  Reset(LexSrcF);
+  LexOpened := True;
+  LexInit;
+  LexAll;
+  LexClose;
+  Erase(LexSrcF);
+  ParserInit;
+  ParseSwiftProgram;
+
+  CompileProgram(TmpAsm);
+
+  CodegenAssert('.386 present', CgFileHasSubstring(TmpAsm, '.386'));
+  CodegenAssert('.MODEL FLAT, STDCALL present', CgFileHasSubstring(TmpAsm, '.MODEL FLAT, STDCALL'));
+  CodegenAssert('global "greeting" (String, contenu REEL) present',
+    CgFileHasSubstring(TmpAsm, ASM_PFX_GVAR + 'greeting  DB "Hello, 8086!", 0'));
+  CodegenAssert('global "version" (Int, valeur constante 1) present',
+    CgFileHasSubstring(TmpAsm, ASM_PFX_GVAR + 'version  DD 1'));
+  CodegenAssert('global "counter" (Int, valeur constante 0) present',
+    CgFileHasSubstring(TmpAsm, ASM_PFX_GVAR + 'counter  DD 0'));
+  CodegenAssert('etiquette d''entree _SWSTART presente', CgFileHasSubstring(TmpAsm, '_SWSTART:'));
+  CodegenAssert('print(String) -> CALL _SWRT_PRINTLN_STR present',
+    CgFileHasSubstring(TmpAsm, 'CALL ' + ASM_PFX_RUNTIME + 'PRINTLN_STR'));
+  CodegenAssert('print(Int) -> CALL _SWRT_STRCONV_ITOA present',
+    CgFileHasSubstring(TmpAsm, 'CALL ' + ASM_PFX_RUNTIME + 'STRCONV_ITOA'));
+  CodegenAssert('"counter = counter + 1" -> ADD EAX,EBX present',
+    CgFileHasSubstring(TmpAsm, 'ADD EAX,EBX'));
+  CodegenAssert('"counter = ..." -> affectation vers le global counter presente',
+    CgFileHasSubstring(TmpAsm, 'MOV DWORD PTR [' + ASM_PFX_GVAR + 'counter],EAX'));
+  CodegenAssert('sortie propre CALL _ExitProcess@4 present',
+    CgFileHasSubstring(TmpAsm, 'CALL _ExitProcess@4'));
+  CodegenAssert('point d''entree END _SWSTART present', CgFileHasSubstring(TmpAsm, 'END _SWSTART'));
+
+  Assign(CgOutF, TmpAsm);
+  Erase(CgOutF);
+
+  { re-initialise les tables globales pour ne pas polluer Run reel }
+  StmtInit;
+  ExprInit;
+  SymInit;
+  FuncDefInit;
+  MethodPoolInit;
+  EnumCaseInit;
+End;
+
+{ ============================================================ }
+{ TODO 22 - BACKEND BINAIRE .OBJ COFF WIN32                      }
+{ ============================================================ }
+{ Assembleur 80386 hand-roule + ecrivain COFF .OBJ minimal -                    }
+{ architecture ETUDIEE et REPRISE PRESQUE A L IDENTIQUE de GOCW32.PAS                    }
+{ (meme projet, meme discipline EXPLICITEMENT exigee par le roadmap                        }
+{ d en-tete de CE TODO) : cet assembleur RELIT le texte .asm ECRIT PAR           }
+{ LE TODO 21 (AUCUNE structure de representation intermediaire                                 }
+{ separee - le texte .asm LUI-MEME est deja l IR, exactement comme                          }
+{ documente au TODO 21) - une passe COMPLETEMENT SEPAREE de l emission               }
+{ textuelle. Ce code est PRESQUE ENTIEREMENT independant du langage                        }
+{ SOURCE (encodage 80386/format COFF, universel) : les noms de                                 }
+{ fonctions/records sont donc repris VERBATIM (Bin*/WriteCOFFObj) plutot                  }
+{ que renommes en _SW*, matching le meme choix DEJA fait par GOCW32.PAS                     }
+{ lui-meme (qui ne prefixe PAS non plus ses propres Bin* en _GO*).                                    }
+{                                                                       }
+{ PORTEE DELIBEREMENT REDUITE (meme discipline que le TODO 21) : SEUL             }
+{ le sous-ensemble de mnemoniques REELLEMENT emis par le generateur de            }
+{ code/la bibliotheque runtime actuels (TODO 21, hello.swift) est                             }
+{ couvert - MOV (3 formes + BYTE PTR), MOVZX, PUSH/POP, LEA, ADD/SUB/               }
+{ AND/OR/XOR/CMP (BinEncodeAlu, groupe complet repris SANS le trier -                     }
+{ ADD/SUB/XOR/CMP sont REELLEMENT emis, AND/OR/TEST/NOT ne coutent RIEN            }
+{ de plus a inclure dans le MEME encodeur partage), IMUL, IDIV, NEG,               }
+{ INC/DEC, JMP/Jcc (forme LONGUE uniquement), CALL (direct SEULEMENT -             }
+{ la forme INDIRECTE "CALL reg" de GOCW32.PAS sert aux goroutines,                          }
+{ INEXISTANTES en Swift), RET, CDQ - AUCUNE forme SHL/SAR/SHR ni x87              }
+{ FPU (aucune des deux n est encore emise ici, contrairement a                                    }
+{ GOCW32.PAS ou les flottants existent deja) : arret propre                                     }
+{ (FatalError explicite) pour tout le reste, EXACTEMENT le meme                                  }
+{ "arret propre, jamais un octet errone silencieux" que chaque section                     }
+{ precedente de ce fichier.                                                                     }
+{                                                                       }
+{ Deux tables paralleles remplies en UNE SEULE passe sur le texte .asm            }
+{ (BinAssembleFile) : BinLabels (chaque etiquette rencontree, avec sa            }
+{ POSITION dans .text ou .data) et BinFixups (chaque champ 32 bits DONT           }
+{ la VRAIE valeur n est pas encore connue au moment de l encoder - un              }
+{ saut/appel vers une etiquette pas ENCORE definie, OU une adresse                          }
+{ ABSOLUE, JAMAIS connue avant l edition de liens). BinResolveFixups                     }
+{ (une SECONDE passe, apres que TOUTES les etiquettes sont connues)                       }
+{ ne resout QUE les REL32 dont la cible est une etiquette LOCALE de la              }
+{ MEME section (deplacement invariant, quel que soit l endroit ou la                    }
+{ section finira par etre chargee) - TOUT le reste (REL32 vers un                            }
+{ import externe, ET tout ABS32 SANS exception, meme vers une etiquette            }
+{ locale) reste marque Resolved=Faux et devient une VRAIE relocation                     }
+{ COFF dans WriteCOFFObj, laissee au lieur externe (jamais resolue ici,            }
+{ roadmap d en-tete : "sortie .OBJ laissee au lieur externe pour les                    }
+{ adresses finales"). }
+
+Type
+  TBinOpKind = (BOK_REG, BOK_IMM, BOK_MEM, BOK_LABEL);
+  TBinOperand = Record
+    Kind      : TBinOpKind;
+    RegNum    : Integer;    { BOK_REG : 0..7 (EAX..EDI, numerotation ModRM/SIB) }
+    ImmVal    : LongInt;    { BOK_IMM }
+    BaseReg   : Integer;    { BOK_MEM avec base : 0..7 ; -1 si absolu (etiquette) }
+    Disp      : LongInt;    { BOK_MEM avec base : deplacement }
+    LabelName : TString;    { BOK_MEM absolu (etiquette entre crochets), OU        }
+                             { BOK_LABEL (cible de JMP/Jcc/CALL, ou LEA absolu)         }
+    IsByte    : Boolean;    { Vrai si prefixe par "BYTE PTR" (sinon DWORD implicite) }
+  End;
+
+  TBinLabel = Record
+    Name   : TString;
+    IsData : Boolean;   { Faux = .text (BinCode) ; Vrai = .data (BinData) }
+    Ofs    : LongInt;
+  End;
+
+  TBinFixup = Record
+    IsData     : Boolean;   { section CONTENANT le champ 32 bits a corriger }
+    Pos        : LongInt;   { position de ce champ DANS cette section }
+    Kind       : Integer;   { BIN_FIX_REL32 ou BIN_FIX_ABS32 (deja reservees, TODO 01) }
+    TargetName : TString;
+    Resolved   : Boolean;   { Vrai si deja corrige ICI (REL32 local) - EXCLU  }
+                             { de la table de relocations COFF ; Faux ->        }
+                             { devient une VRAIE relocation (WriteCOFFObj). }
+  End;
+
+Var
+  BinCode       : Array[0..MAX_BIN - 1] Of Byte;
+  BinCodeLen    : LongInt;
+  BinData       : Array[0..MAX_BIN - 1] Of Byte;
+  BinDataLen    : LongInt;
+  BinCurIsData  : Boolean;
+
+  BinLabels     : Array[0..MAX_BIN_LABEL - 1] Of TBinLabel;
+  BinLabelCount : Integer;
+
+  BinFixups     : Array[0..MAX_BIN_FIXUP - 1] Of TBinFixup;
+  BinFixupCount : Integer;
+
+  BinImports     : Array[0..MAX_BIN_IMPORT - 1] Of TString;
+  BinImportCount : Integer;
+
+Procedure BinInit;
+Begin
+  BinCodeLen     := 0;
+  BinDataLen     := 0;
+  BinCurIsData   := False;
+  BinLabelCount  := 0;
+  BinFixupCount  := 0;
+  BinImportCount := 0;
+End;
+
+Function BinCurOfs: LongInt;
+Begin
+  If BinCurIsData Then BinCurOfs := BinDataLen Else BinCurOfs := BinCodeLen;
+End;
+
+Procedure BinEmit8(B: Integer);
+Begin
+  If BinCurIsData Then
+  Begin
+    If BinDataLen >= MAX_BIN Then
+    Begin
+      FatalError('assembleur : tampon .data plein (MAX_BIN)');
+      Exit;
+    End;
+    BinData[BinDataLen] := B And $FF;
+    Inc(BinDataLen);
+  End
+  Else
+  Begin
+    If BinCodeLen >= MAX_BIN Then
+    Begin
+      FatalError('assembleur : tampon .text plein (MAX_BIN)');
+      Exit;
+    End;
+    BinCode[BinCodeLen] := B And $FF;
+    Inc(BinCodeLen);
+  End;
+End;
+
+Procedure BinEmit16(W: Integer);
+Begin
+  BinEmit8(W);
+  BinEmit8(W Shr 8);
+End;
+
+Procedure BinEmit32(D: LongInt);
+Begin
+  BinEmit8(D);
+  BinEmit8(D Shr 8);
+  BinEmit8(D Shr 16);
+  BinEmit8(D Shr 24);
+End;
+
+{ BinPatch32 : ecrase 4 octets DEJA emis (toujours un PLACEHOLDER 0,     }
+{ pose par un BinEmit32(0) anterieur) - utilise par BinAddFixup lui-meme          }
+{ pour retrouver leur position, et par BinResolveFixups pour les                     }
+{ corriger une fois la cible connue. }
+Procedure BinPatch32(IsData: Boolean; Pos: LongInt; D: LongInt);
+Begin
+  If IsData Then
+  Begin
+    BinData[Pos]     := D And $FF;
+    BinData[Pos + 1] := (D Shr 8) And $FF;
+    BinData[Pos + 2] := (D Shr 16) And $FF;
+    BinData[Pos + 3] := (D Shr 24) And $FF;
+  End
+  Else
+  Begin
+    BinCode[Pos]     := D And $FF;
+    BinCode[Pos + 1] := (D Shr 8) And $FF;
+    BinCode[Pos + 2] := (D Shr 16) And $FF;
+    BinCode[Pos + 3] := (D Shr 24) And $FF;
+  End;
+End;
+
+Procedure BinDefineLabel(Const Name: TString);
+Begin
+  If BinLabelCount >= MAX_BIN_LABEL Then
+  Begin
+    WarnMsg('assembleur : table des etiquettes pleine (MAX_BIN_LABEL)');
+    Exit;
+  End;
+  BinLabels[BinLabelCount].Name   := Name;
+  BinLabels[BinLabelCount].IsData := BinCurIsData;
+  BinLabels[BinLabelCount].Ofs    := BinCurOfs;
+  Inc(BinLabelCount);
+End;
+
+Function BinFindLabel(Const Name: TString): Integer;
+Var I: Integer;
+Begin
+  BinFindLabel := -1;
+  For I := 0 To BinLabelCount - 1 Do
+    If BinLabels[I].Name = Name Then
+    Begin
+      BinFindLabel := I;
+      Exit;
+    End;
+End;
+
+Function BinFindImport(Const Name: TString): Integer;
+Var I: Integer;
+Begin
+  BinFindImport := -1;
+  For I := 0 To BinImportCount - 1 Do
+    If BinImports[I] = Name Then
+    Begin
+      BinFindImport := I;
+      Exit;
+    End;
+End;
+
+Procedure BinDeclareImport(Const Name: TString);
+Begin
+  If BinFindImport(Name) >= 0 Then Exit;
+  If BinImportCount >= MAX_BIN_IMPORT Then
+  Begin
+    WarnMsg('assembleur : table des imports pleine (MAX_BIN_IMPORT)');
+    Exit;
+  End;
+  BinImports[BinImportCount] := Name;
+  Inc(BinImportCount);
+End;
+
+{ BinAddFixup : appelee IMMEDIATEMENT APRES avoir deja emis 4 octets      }
+{ PLACEHOLDER (BinEmit32(0)) pour le champ a corriger - calcule Pos            }
+{ (position de CES 4 octets) a partir de la position COURANTE. }
+Procedure BinAddFixup(Kind: Integer; Const TargetName: TString);
+Begin
+  If BinFixupCount >= MAX_BIN_FIXUP Then
+  Begin
+    WarnMsg('assembleur : table des correctifs pleine (MAX_BIN_FIXUP)');
+    Exit;
+  End;
+  BinFixups[BinFixupCount].IsData     := BinCurIsData;
+  BinFixups[BinFixupCount].Pos        := BinCurOfs - 4;
+  BinFixups[BinFixupCount].Kind       := Kind;
+  BinFixups[BinFixupCount].TargetName := TargetName;
+  BinFixups[BinFixupCount].Resolved   := False;
+  Inc(BinFixupCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ Analyse d operandes texte (BinParseOperand) - le texte relu est      }
+{ TOUJOURS celui que ce MEME fichier a lui-meme ecrit (EmitInstr,          }
+{ TODO 21), jamais une entree externe/arbitraire - l analyse peut donc         }
+{ rester SIMPLE (formes fixes et connues) plutot qu un vrai parseur                 }
+{ d assembleur general. }
+{ ------------------------------------------------------------ }
+
+Function BinTrim(Const S: TString): TString;
+Var I, J: Integer;
+Begin
+  I := 1;
+  While (I <= Length(S)) And (S[I] = ' ') Do Inc(I);
+  J := Length(S);
+  While (J >= I) And (S[J] = ' ') Do Dec(J);
+  If J < I Then BinTrim := '' Else BinTrim := Copy(S, I, J - I + 1);
+End;
+
+Function BinStrToInt(Const S: TString): LongInt;
+Var N: LongInt; Code: Integer;
+Begin
+  Val(S, N, Code);
+  BinStrToInt := N;
+End;
+
+{ BinReg32 : numerotation ModRM/SIB standard 80386 - EAX=0 ECX=1 EDX=2   }
+{ EBX=3 ESP=4 EBP=5 ESI=6 EDI=7 - -1 si ce n est pas un nom de registre           }
+{ 32 bits reconnu. }
+Function BinReg32(Const Name: TString): Integer;
+Begin
+  If      Name = 'EAX' Then BinReg32 := 0
+  Else If Name = 'ECX' Then BinReg32 := 1
+  Else If Name = 'EDX' Then BinReg32 := 2
+  Else If Name = 'EBX' Then BinReg32 := 3
+  Else If Name = 'ESP' Then BinReg32 := 4
+  Else If Name = 'EBP' Then BinReg32 := 5
+  Else If Name = 'ESI' Then BinReg32 := 6
+  Else If Name = 'EDI' Then BinReg32 := 7
+  Else BinReg32 := -1;
+End;
+
+Function BinParseOperand(S: TString): TBinOperand;
+Var Op: TBinOperand; Inner, NumPart: TString; SignPos, I: Integer; Neg: Boolean;
+Begin
+  Op.Kind      := BOK_REG;
+  Op.RegNum    := -1;
+  Op.ImmVal    := 0;
+  Op.BaseReg   := -1;
+  Op.Disp      := 0;
+  Op.LabelName := '';
+  Op.IsByte    := False;
+
+  S := BinTrim(S);
+  If Copy(S, 1, 9) = 'BYTE PTR ' Then
+  Begin
+    Op.IsByte := True;
+    S := BinTrim(Copy(S, 10, Length(S) - 9));
+  End
+  Else If Copy(S, 1, 10) = 'DWORD PTR ' Then
+    S := BinTrim(Copy(S, 11, Length(S) - 10));
+
+  If (Length(S) > 0) And (S[1] = '[') Then
+  Begin
+    Op.Kind := BOK_MEM;
+    Inner := Copy(S, 2, Length(S) - 2);   { retire "[" et "]" }
+    SignPos := 0;
+    For I := 2 To Length(Inner) Do   { position 1 ne peut pas etre un signe de deplacement }
+      If (Inner[I] = '+') Or (Inner[I] = '-') Then
+      Begin
+        SignPos := I;
+        Break;
+      End;
+    If SignPos > 0 Then
+    Begin
+      Op.BaseReg := BinReg32(Copy(Inner, 1, SignPos - 1));
+      Neg     := (Inner[SignPos] = '-');
+      NumPart := Copy(Inner, SignPos + 1, Length(Inner) - SignPos);
+      Op.Disp := BinStrToInt(NumPart);
+      If Neg Then Op.Disp := -Op.Disp;
+    End
+    Else
+    Begin
+      Op.BaseReg := BinReg32(Inner);
+      If Op.BaseReg < 0 Then
+        Op.LabelName := Inner;   { "[etiquette]" absolu, sans registre de base }
+    End;
+    BinParseOperand := Op;
+    Exit;
+  End;
+
+  Op.RegNum := BinReg32(S);
+  If Op.RegNum >= 0 Then
+  Begin
+    Op.Kind := BOK_REG;
+    BinParseOperand := Op;
+    Exit;
+  End;
+
+  If (Length(S) > 0) And ((S[1] = '-') Or ((S[1] >= '0') And (S[1] <= '9'))) Then
+  Begin
+    Op.Kind   := BOK_IMM;
+    Op.ImmVal := BinStrToInt(S);
+    BinParseOperand := Op;
+    Exit;
+  End;
+
+  Op.Kind      := BOK_LABEL;
+  Op.LabelName := S;
+  BinParseOperand := Op;
+End;
+
+{ BinEmitModRM : coeur PARTAGE ModRM(+disp32) de tous les encodeurs      }
+{ ci-dessous - TOUJOURS un deplacement complet sur 32 bits quand un                }
+{ registre de base est present (jamais Mod=01/disp8), ce qui evite                    }
+{ completement le cas particulier EBP/SIB=101 sans perdre de generalite                 }
+{ pour ce dont ce compilateur a reellement besoin. Aucun adressage                            }
+{ BASE+INDEX (SIB avec un second registre) n est gere - hors de portee                            }
+{ documentee ; Mem.Kind doit toujours etre BOK_REG (registre direct) ou           }
+{ BOK_MEM (base+disp32 ou absolu+etiquette). }
+Procedure BinEmitModRM(RegField: Integer; Const Mem: TBinOperand);
+Begin
+  If Mem.Kind = BOK_REG Then
+  Begin
+    BinEmit8($C0 Or (RegField Shl 3) Or Mem.RegNum);
+    Exit;
+  End;
+  If Mem.BaseReg >= 0 Then
+  Begin
+    { ESP (BaseReg=4) comme registre de base : RM=100 impose TOUJOURS un   }
+    { octet SIB, quel que soit Mod (00/01/10) - jamais exerce par le              }
+    { sous-ensemble actuel de ce compilateur, mais reproduit ici par                    }
+    { fidelite au comportement CORRECT de GOCW32.PAS (aucune raison de              }
+    { l omettre, meme cout d implementation). }
+    If Mem.BaseReg = 4 Then
+    Begin
+      BinEmit8($80 Or (RegField Shl 3) Or 4);
+      BinEmit8($24);   { SIB : scale=00, index=100 (aucun), base=100 (ESP) }
+      BinEmit32(Mem.Disp);
+      Exit;
+    End;
+    BinEmit8($80 Or (RegField Shl 3) Or Mem.BaseReg);
+    BinEmit32(Mem.Disp);
+    Exit;
+  End;
+  { absolu (etiquette, sans registre de base) : Mod=00/RM=101 - CAS       }
+  { PARTICULIER du 80386 signifiant "disp32 SEUL suit, aucun octet SIB"      }
+  { (uniquement quand Mod=00 - ne pas confondre avec RM=100, qui lui             }
+  { signifie TOUJOURS "un octet SIB suit", quel que soit Mod). }
+  BinEmit8((RegField Shl 3) Or 5);
+  BinEmit32(0);
+  BinAddFixup(BIN_FIX_ABS32, Mem.LabelName);
+End;
+
+{ ------------------------------------------------------------ }
+{ Encodeurs par mnemonique - un PAR forme reellement EMISE par le     }
+{ generateur de code (TODO 21) ou la bibliotheque runtime (TODO 21) -            }
+{ toute AUTRE forme est un arret propre (FatalError, jamais un octet             }
+{ errone silencieux). }
+{ ------------------------------------------------------------ }
+
+Procedure BinEncodeMov(Const Op1Text, Op2Text: TString);
+Var Op1, Op2: TBinOperand;
+Begin
+  Op1 := BinParseOperand(Op1Text);
+  Op2 := BinParseOperand(Op2Text);
+  If Op1.Kind = BOK_REG Then
+  Begin
+    If Op2.Kind = BOK_IMM Then
+    Begin
+      BinEmit8($B8 Or Op1.RegNum);
+      BinEmit32(Op2.ImmVal);
+      Exit;
+    End;
+    { "MOV reg,reg" OU "MOV reg,[mem]" - la meme forme ModRM couvre les    }
+    { deux (BinEmitModRM sait deja distinguer BOK_REG de BOK_MEM). }
+    BinEmit8($8B);
+    BinEmitModRM(Op1.RegNum, Op2);
+    Exit;
+  End;
+  { destination memoire OCTET ("MOV BYTE PTR [mem],reg" - _SWRT_STRCONV_ITOA,  }
+  { ecriture d un SEUL chiffre/caractere) : opcode $88 (MOV r/m8,r8) - le            }
+  { champ "reg" 8 bits partage la MEME numerotation 0..3 que EAX/ECX/EDX/            }
+  { EBX en 32 bits (AL/CL/DL/BL) SANS prefixe REX - restreint EXPLICITEMENT           }
+  { la source a ces quatre registres (ESP/EBP/ESI/EDI n ont pas d equivalent             }
+  { 8 bits bas sans REX, hors de portee). }
+  If Op1.IsByte Then
+  Begin
+    If Op2.RegNum > 3 Then
+    Begin
+      FatalError('assembleur : "MOV BYTE PTR [mem],reg" non couvert pour ' +
+        'ce registre (seuls EAX/ECX/EDX/EBX ont un equivalent 8 bits bas ' +
+        'sans prefixe REX) : ' + Op2Text);
+      Exit;
+    End;
+    BinEmit8($88);
+    BinEmitModRM(Op2.RegNum, Op1);
+    Exit;
+  End;
+  { destination memoire : "MOV [mem],reg" (jamais "MOV [mem],imm" dans   }
+  { ce que le TODO 21 emet - la valeur passe TOUJOURS par EAX d abord). }
+  BinEmit8($89);
+  BinEmitModRM(Op2.RegNum, Op1);
+End;
+
+{ BinEncodeMovzx : "MOVZX reg32, BYTE PTR [mem]" - lecture d un SEUL     }
+{ octet (_SWRT_STRCONV_ITOA), ETENDU PAR DES ZEROS dans un registre 32              }
+{ bits complet (aucun registre 8 bits n est par ailleurs modelise par                 }
+{ cet assembleur - voir la note de BinEncodeMov pour l ECRITURE, l inverse             }
+{ de cette lecture). }
+Procedure BinEncodeMovzx(Const Op1Text, Op2Text: TString);
+Var Op1, Op2: TBinOperand;
+Begin
+  Op1 := BinParseOperand(Op1Text);
+  Op2 := BinParseOperand(Op2Text);
+  If (Op1.Kind <> BOK_REG) Or (Op2.Kind <> BOK_MEM) Then
+  Begin
+    FatalError('assembleur : forme de MOVZX non couverte (registre 32 ' +
+      'bits, memoire octet attendus) : ' + Op1Text + ',' + Op2Text);
+    Exit;
+  End;
+  BinEmit8($0F);
+  BinEmit8($B6);
+  BinEmitModRM(Op1.RegNum, Op2);
+End;
+
+Procedure BinEncodePush(Const Op1Text: TString);
+Var Op1: TBinOperand;
+Begin
+  Op1 := BinParseOperand(Op1Text);
+  If Op1.Kind = BOK_REG Then
+  Begin
+    BinEmit8($50 Or Op1.RegNum);
+    Exit;
+  End;
+  If Op1.Kind = BOK_IMM Then
+  Begin
+    BinEmit8($68);
+    BinEmit32(Op1.ImmVal);
+    Exit;
+  End;
+  If Op1.Kind = BOK_MEM Then
+  Begin
+    BinEmit8($FF);
+    BinEmitModRM(6, Op1);   { groupe FF /6 = PUSH r/m32 }
+    Exit;
+  End;
+  FatalError('assembleur : forme de PUSH non couverte : ' + Op1Text);
+End;
+
+Procedure BinEncodePop(Const Op1Text: TString);
+Var Op1: TBinOperand;
+Begin
+  Op1 := BinParseOperand(Op1Text);
+  If Op1.Kind = BOK_REG Then
+  Begin
+    BinEmit8($58 Or Op1.RegNum);
+    Exit;
+  End;
+  FatalError('assembleur : forme de POP non couverte : ' + Op1Text);
+End;
+
+Procedure BinEncodeLea(Const Op1Text, Op2Text: TString);
+Var Op1, Op2: TBinOperand;
+Begin
+  Op1 := BinParseOperand(Op1Text);
+  Op2 := BinParseOperand(Op2Text);
+  If (Op1.Kind <> BOK_REG) Or (Op2.Kind <> BOK_MEM) Then
+  Begin
+    FatalError('assembleur : forme de LEA non couverte : ' + Op1Text + ',' + Op2Text);
+    Exit;
+  End;
+  BinEmit8($8D);
+  BinEmitModRM(Op1.RegNum, Op2);
+End;
+
+{ BinEncodeAlu : ADD/OR/AND/SUB/XOR/CMP - "reg,reg"/"reg,[mem]" (ModRM       }
+{ partagee) et "reg,imm32" (groupe 81, sous-opcode dans le champ reg de           }
+{ ModRM), PLUS le cas 8 bits (opcode 80, imm8) pour l UNIQUE forme "CMP           }
+{ BYTE PTR [...],imm" de _SWRT_STRLEN. }
+Procedure BinEncodeAlu(Const Mnemonic, Op1Text, Op2Text: TString);
+Var Op1, Op2: TBinOperand; SubOp, Opc: Integer;
+Begin
+  Op1 := BinParseOperand(Op1Text);
+  Op2 := BinParseOperand(Op2Text);
+
+  If      Mnemonic = 'ADD' Then Begin Opc := $03; SubOp := 0; End
+  Else If Mnemonic = 'OR'  Then Begin Opc := $0B; SubOp := 1; End
+  Else If Mnemonic = 'AND' Then Begin Opc := $23; SubOp := 4; End
+  Else If Mnemonic = 'SUB' Then Begin Opc := $2B; SubOp := 5; End
+  Else If Mnemonic = 'XOR' Then Begin Opc := $33; SubOp := 6; End
+  Else If Mnemonic = 'CMP' Then Begin Opc := $3B; SubOp := 7; End
+  Else
+  Begin
+    FatalError('assembleur : operateur arithmetique/logique non couvert : ' + Mnemonic);
+    Exit;
+  End;
+
+  If Op2.Kind = BOK_IMM Then
+  Begin
+    If Op1.IsByte Then
+    Begin
+      BinEmit8($80);
+      BinEmitModRM(SubOp, Op1);
+      BinEmit8(Op2.ImmVal);
+    End
+    Else
+    Begin
+      BinEmit8($81);
+      BinEmitModRM(SubOp, Op1);
+      BinEmit32(Op2.ImmVal);
+    End;
+    Exit;
+  End;
+
+  BinEmit8(Opc);
+  BinEmitModRM(Op1.RegNum, Op2);
+End;
+
+Procedure BinEncodeTest(Const Op1Text, Op2Text: TString);
+Var Op1, Op2: TBinOperand;
+Begin
+  Op1 := BinParseOperand(Op1Text);
+  Op2 := BinParseOperand(Op2Text);
+  BinEmit8($85);
+  BinEmitModRM(Op2.RegNum, Op1);
+End;
+
+Procedure BinEncodeImul(Const Op1Text, Op2Text: TString);
+Var Op1, Op2: TBinOperand;
+Begin
+  Op1 := BinParseOperand(Op1Text);
+  Op2 := BinParseOperand(Op2Text);
+  BinEmit8($0F);
+  BinEmit8($AF);
+  BinEmitModRM(Op1.RegNum, Op2);
+End;
+
+Procedure BinEncodeIdiv(Const Op1Text: TString);
+Var Op1: TBinOperand;
+Begin
+  Op1 := BinParseOperand(Op1Text);
+  BinEmit8($F7);
+  BinEmitModRM(7, Op1);
+End;
+
+Procedure BinEncodeNotNeg(Const Mnemonic, Op1Text: TString);
+Var Op1: TBinOperand;
+Begin
+  Op1 := BinParseOperand(Op1Text);
+  BinEmit8($F7);
+  If Mnemonic = 'NOT' Then BinEmitModRM(2, Op1) Else BinEmitModRM(3, Op1);
+End;
+
+Procedure BinEncodeIncDec(Const Mnemonic, Op1Text: TString);
+Var Op1: TBinOperand;
+Begin
+  Op1 := BinParseOperand(Op1Text);
+  If Op1.Kind <> BOK_REG Then
+  Begin
+    FatalError('assembleur : forme de INC/DEC non couverte : ' + Op1Text);
+    Exit;
+  End;
+  If Mnemonic = 'INC' Then BinEmit8($40 Or Op1.RegNum) Else BinEmit8($48 Or Op1.RegNum);
+End;
+
+Procedure BinEncodeJmp(Const Op1Text: TString);
+Begin
+  BinEmit8($E9);
+  BinEmit32(0);
+  BinAddFixup(BIN_FIX_REL32, BinTrim(Op1Text));
+End;
+
+{ BinEncodeJcc : forme LONGUE uniquement (0F 8x + disp32), jamais la     }
+{ forme courte (7x + disp8) - correcte dans TOUS les cas (une portee               }
+{ plus longue n est jamais un probleme), juste pas la plus compacte                        }
+{ possible. }
+Procedure BinEncodeJcc(Const Mnemonic, Op1Text: TString);
+Var Cond: Integer;
+Begin
+  If      (Mnemonic = 'JE')  Or (Mnemonic = 'JZ')  Then Cond := $84
+  Else If (Mnemonic = 'JNE') Or (Mnemonic = 'JNZ') Then Cond := $85
+  Else If Mnemonic = 'JL'  Then Cond := $8C
+  Else If Mnemonic = 'JLE' Then Cond := $8E
+  Else If Mnemonic = 'JG'  Then Cond := $8F
+  Else If Mnemonic = 'JGE' Then Cond := $8D
+  Else
+  Begin
+    FatalError('assembleur : branchement conditionnel non couvert : ' + Mnemonic);
+    Exit;
+  End;
+  BinEmit8($0F);
+  BinEmit8(Cond);
+  BinEmit32(0);
+  BinAddFixup(BIN_FIX_REL32, BinTrim(Op1Text));
+End;
+
+{ BinEncodeCall : E8+disp32 - IDENTIQUE que la cible soit une etiquette   }
+{ LOCALE (fonction utilisateur) ou un IMPORT externe decore stdcall                    }
+{ ("_WriteFile@20") - la DISTINCTION ne se fait qu a la resolution                            }
+{ (BinResolveFixups/WriteCOFFObj), PAR NOM, jamais ici. Forme INDIRECTE           }
+{ ("CALL reg", via un pointeur de fonction) HORS DE PORTEE (reservee                     }
+{ aux goroutines de GOCW32.PAS, INEXISTANTES en Swift - jamais emise                        }
+{ ici). }
+Procedure BinEncodeCall(Const Op1Text: TString);
+Begin
+  BinEmit8($E8);
+  BinEmit32(0);
+  BinAddFixup(BIN_FIX_REL32, BinTrim(Op1Text));
+End;
+
+Procedure BinSplitMnemonic(Const Line: TString; Var Mnemonic, Rest: TString);
+Var P: Integer;
+Begin
+  P := Pos(' ', Line);
+  If P = 0 Then
+  Begin
+    Mnemonic := Line;
+    Rest := '';
+  End
+  Else
+  Begin
+    Mnemonic := Copy(Line, 1, P - 1);
+    Rest := BinTrim(Copy(Line, P + 1, Length(Line) - P));
+  End;
+End;
+
+{ BinSplitOperands : coupe sur la PREMIERE virgule - sans risque ici    }
+{ puisqu aucune forme emise par le TODO 21 ne place jamais de virgule           }
+{ a l interieur de crochets (pas d adressage indexe/mis a l echelle). }
+Procedure BinSplitOperands(Const S: TString; Var Op1, Op2: TString);
+Var P: Integer;
+Begin
+  P := Pos(',', S);
+  If P = 0 Then
+  Begin
+    Op1 := S;
+    Op2 := '';
+  End
+  Else
+  Begin
+    Op1 := BinTrim(Copy(S, 1, P - 1));
+    Op2 := BinTrim(Copy(S, P + 1, Length(S) - P));
+  End;
+End;
+
+{ BinEmitInstr : point d entree UNIQUE (dispatch par mnemonique) pour    }
+{ encoder une ligne d instruction DEJA extraite (sans l indentation, voir            }
+{ BinAssembleFile plus bas, qui l isole des lignes d etiquette/directive). }
+Procedure BinEmitInstr(Const Line: TString);
+Var Mnemonic, Rest, Op1, Op2: TString;
+Begin
+  BinSplitMnemonic(BinTrim(Line), Mnemonic, Rest);
+  BinSplitOperands(Rest, Op1, Op2);
+
+  If Mnemonic = 'MOV' Then Begin BinEncodeMov(Op1, Op2); Exit; End;
+  If Mnemonic = 'MOVZX' Then Begin BinEncodeMovzx(Op1, Op2); Exit; End;
+  If Mnemonic = 'PUSH' Then Begin BinEncodePush(Op1); Exit; End;
+  If Mnemonic = 'POP' Then Begin BinEncodePop(Op1); Exit; End;
+  If Mnemonic = 'LEA' Then Begin BinEncodeLea(Op1, Op2); Exit; End;
+  If (Mnemonic = 'ADD') Or (Mnemonic = 'SUB') Or (Mnemonic = 'AND') Or
+     (Mnemonic = 'OR') Or (Mnemonic = 'XOR') Or (Mnemonic = 'CMP') Then
+  Begin
+    BinEncodeAlu(Mnemonic, Op1, Op2);
+    Exit;
+  End;
+  If Mnemonic = 'TEST' Then Begin BinEncodeTest(Op1, Op2); Exit; End;
+  If Mnemonic = 'IMUL' Then Begin BinEncodeImul(Op1, Op2); Exit; End;
+  If Mnemonic = 'IDIV' Then Begin BinEncodeIdiv(Op1); Exit; End;
+  If (Mnemonic = 'NOT') Or (Mnemonic = 'NEG') Then
+  Begin
+    BinEncodeNotNeg(Mnemonic, Op1);
+    Exit;
+  End;
+  If (Mnemonic = 'INC') Or (Mnemonic = 'DEC') Then
+  Begin
+    BinEncodeIncDec(Mnemonic, Op1);
+    Exit;
+  End;
+  If Mnemonic = 'JMP' Then Begin BinEncodeJmp(Op1); Exit; End;
+  If (Length(Mnemonic) >= 2) And (Mnemonic[1] = 'J') Then
+  Begin
+    BinEncodeJcc(Mnemonic, Op1);
+    Exit;
+  End;
+  If Mnemonic = 'CALL' Then Begin BinEncodeCall(Op1); Exit; End;
+  If Mnemonic = 'RET' Then Begin BinEmit8($C3); Exit; End;
+  If Mnemonic = 'CDQ' Then Begin BinEmit8($99); Exit; End;
+
+  FatalError('assembleur : mnemonique non geree (portee volontairement ' +
+    'restreinte a ce que le TODO 21 emet reellement) : ' + Mnemonic);
+End;
+
+{ BinAssembleDataLine : une ligne de .DATA est TOUJOURS de la forme      }
+{ "NOM  DD <entier>" ou "NOM  DB <entier>" ou "NOM  DB ""texte"", 0"                 }
+{ (EmitDataSeg, TODO 21 - jamais rien d autre) - deux espaces separent               }
+{ TOUJOURS le nom de la directive. }
+Procedure BinAssembleDataLine(Const Line: TString);
+Var P, Q: Integer; Name, Rest, ValuePart, TextPart: TString;
+Begin
+  P := Pos('  ', Line);
+  If P = 0 Then Exit;
+  Name := Copy(Line, 1, P - 1);
+  Rest := BinTrim(Copy(Line, P + 1, Length(Line) - P));
+  BinDefineLabel(Name);
+
+  If Copy(Rest, 1, 3) = 'DD ' Then
+  Begin
+    BinEmit32(BinStrToInt(BinTrim(Copy(Rest, 4, Length(Rest) - 3))));
+    Exit;
+  End;
+
+  If Copy(Rest, 1, 3) = 'DB ' Then
+  Begin
+    ValuePart := BinTrim(Copy(Rest, 4, Length(Rest) - 3));
+    If (Length(ValuePart) > 0) And (ValuePart[1] = '"') Then
+    Begin
+      { "texte", 0 - trouve la guillemet FERMANTE (le texte lui-meme ne     }
+      { contient jamais de guillemet) puis emet chaque octet suivi d un              }
+      { NUL terminal unique (le ", 0" final n a pas besoin d etre analyse            }
+      { separement : c est TOUJOURS exactement ce que EmitDataSeg ecrit). }
+      Q := 2;
+      While (Q <= Length(ValuePart)) And (ValuePart[Q] <> '"') Do Inc(Q);
+      TextPart := Copy(ValuePart, 2, Q - 2);
+      For P := 1 To Length(TextPart) Do
+        BinEmit8(Ord(TextPart[P]));
+      BinEmit8(0);
+    End
+    Else
+      BinEmit8(BinStrToInt(ValuePart));
+    Exit;
+  End;
+End;
+
+{ BinAssembleFile : RELIT le fichier .asm TEXTE (deja ecrit par le      }
+{ generateur de code, TODO 21) et encode chaque instruction/donnee en             }
+{ octets reels - passe COMPLETEMENT SEPAREE de l emission textuelle. }
+Procedure BinAssembleFile(Const AsmFileName: TString);
+Var F: Text; Line, ExternName: TString; P: Integer;
+Begin
+  BinInit;
+  Assign(F, AsmFileName);
+  Reset(F);
+  While Not Eof(F) Do
+  Begin
+    ReadLn(F, Line);
+    Line := BinTrim(Line);
+    If Length(Line) = 0 Then Continue;
+    If Line[1] = ';' Then Continue;
+
+    If Line = '.386' Then Continue;
+    If Copy(Line, 1, 6) = '.MODEL' Then Continue;
+    If Line = '.DATA' Then Begin BinCurIsData := True; Continue; End;
+    If Line = '.CODE' Then Begin BinCurIsData := False; Continue; End;
+
+    If Copy(Line, 1, 6) = 'EXTRN ' Then
+    Begin
+      ExternName := Copy(Line, 7, Length(Line) - 6);
+      P := Pos(':', ExternName);
+      If P > 0 Then ExternName := Copy(ExternName, 1, P - 1);
+      BinDeclareImport(ExternName);
+      Continue;
+    End;
+
+    If Copy(Line, 1, 4) = 'END ' Then Break;   { fin logique du fichier }
+
+    If Line[Length(Line)] = ':' Then
+    Begin
+      BinDefineLabel(Copy(Line, 1, Length(Line) - 1));
+      Continue;
+    End;
+
+    If BinCurIsData Then
+      BinAssembleDataLine(Line)
+    Else
+      BinEmitInstr(Line);
+  End;
+  Close(F);
+End;
+
+{ BinResolveFixups : SEULS les REL32 dont la cible est une ETIQUETTE     }
+{ LOCALE de la MEME section sont resolus ICI (deplacement invariant,           }
+{ quel que soit l endroit ou la section finira par etre chargee) - TOUT             }
+{ le reste (REL32 vers un import externe, ET tout ABS32 sans exception,                 }
+{ meme vers une etiquette locale - une adresse ABSOLUE ne peut JAMAIS               }
+{ etre connue avant l edition de liens) reste marque Resolved=Faux et                  }
+{ devient une VRAIE relocation COFF dans WriteCOFFObj. }
+Procedure BinResolveFixups;
+Var I, LI: Integer; Disp: LongInt;
+Begin
+  For I := 0 To BinFixupCount - 1 Do
+    If BinFixups[I].Kind = BIN_FIX_REL32 Then
+    Begin
+      LI := BinFindLabel(BinFixups[I].TargetName);
+      If (LI >= 0) And (BinLabels[LI].IsData = BinFixups[I].IsData) Then
+      Begin
+        Disp := BinLabels[LI].Ofs - (BinFixups[I].Pos + 4);
+        BinPatch32(BinFixups[I].IsData, BinFixups[I].Pos, Disp);
+        BinFixups[I].Resolved := True;
+      End;
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteCOFFObj : ecrit un vrai fichier .OBJ COFF Win32          }
+{ (IMAGE_FILE_HEADER, Machine=I386) - DEUX sections seulement, .text        }
+{ et .data (ni .rdata ni .bss : les litteraux chaine vont directement          }
+{ dans .data). Toute relocation restante APRES BinResolveFixups (REL32           }
+{ vers un import externe, ou N IMPORTE QUEL ABS32) devient une VRAIE                     }
+{ relocation COFF (IMAGE_REL_I386_REL32/DIR32) - au lieur externe de la              }
+{ resoudre. PE_MACHINE_I386/COFF_REL_I386_*/COFF_SYM_CLASS_*/PE_SCN_*                    }
+{ sont DEJA reservees depuis le TODO 01 - inutile de redefinir ces                            }
+{ valeurs. }
+{ ------------------------------------------------------------ }
+
+Procedure WriteCOFFObj(Const ObjFileName: TString);
+Var
+  ObjF : File;
+  StrTab : TString;
+  I, LI, TargetSymIdx : Integer;
+  TextRelocCount, DataRelocCount, SymCountTotal : Integer;
+  SecHdrOfs, TextDataOfs, DataDataOfs, TextRelocOfs, DataRelocOfs, SymTabOfs : LongInt;
+
+  Function StrTabAdd(Const Name: TString): LongInt;
+  Begin
+    StrTabAdd := Length(StrTab) + 4;
+    StrTab := StrTab + Name + Chr(0);
+  End;
+
+  Procedure OW8(B: Integer);
+  Var Buf: Byte;
+  Begin
+    Buf := B And $FF;
+    BlockWrite(ObjF, Buf, 1);
+  End;
+
+  Procedure OW16(W: Integer);
+  Begin
+    OW8(W);
+    OW8(W Shr 8);
+  End;
+
+  Procedure OW32(D: LongInt);
+  Begin
+    OW8(D);
+    OW8(D Shr 8);
+    OW8(D Shr 16);
+    OW8(D Shr 24);
+  End;
+
+  Procedure OWStr(Const S: TString);
+  Var K: Integer;
+  Begin
+    For K := 1 To Length(S) Do OW8(Ord(S[K]));
+  End;
+
+  Procedure OWZeros(N: Integer);
+  Var K: Integer;
+  Begin
+    For K := 1 To N Do OW8(0);
+  End;
+
+  { les noms de section (".text"/".data") sont TOUJOURS assez courts       }
+  { pour l inscription DIRECTE sur 8 octets - jamais besoin de la table          }
+  { des chaines pour eux (reservee aux SYMBOLES, plus bas). }
+  Procedure OWSecName(Const Name: TString);
+  Begin
+    OWStr(Name);
+    If Length(Name) < 8 Then OWZeros(8 - Length(Name));
+  End;
+
+Begin
+  TextRelocCount := 0;
+  DataRelocCount := 0;
+  For I := 0 To BinFixupCount - 1 Do
+    If Not BinFixups[I].Resolved Then
+    Begin
+      If BinFixups[I].IsData Then Inc(DataRelocCount) Else Inc(TextRelocCount);
+    End;
+
+  SecHdrOfs    := 20;                          { taille de IMAGE_FILE_HEADER }
+  TextDataOfs  := SecHdrOfs + 40 * 2;           { 2 en-tetes de section, 40 octets chacune }
+  DataDataOfs  := TextDataOfs + BinCodeLen;
+  TextRelocOfs := DataDataOfs + BinDataLen;
+  DataRelocOfs := TextRelocOfs + TextRelocCount * 10;
+  SymTabOfs    := DataRelocOfs + DataRelocCount * 10;
+  SymCountTotal:= 2 + BinLabelCount + BinImportCount;
+
+  StrTab := '';
+  Assign(ObjF, ObjFileName);
+  Rewrite(ObjF, 1);
+
+  { IMAGE_FILE_HEADER (20 octets) }
+  OW16(PE_MACHINE_I386);
+  OW16(2);                   { NumberOfSections : .text + .data uniquement }
+  OW32(0);                   { TimeDateStamp }
+  OW32(SymTabOfs);           { PointerToSymbolTable }
+  OW32(SymCountTotal);       { NumberOfSymbols }
+  OW16(0);                   { SizeOfOptionalHeader (aucun en .OBJ) }
+  OW16(0);                   { Characteristics }
+
+  { en-tetes de section (40 octets chacune) }
+  OWSecName('.text');
+  OW32(0); OW32(0);          { VirtualSize/VirtualAddress : sans objet en .OBJ }
+  OW32(BinCodeLen);
+  OW32(TextDataOfs);
+  OW32(TextRelocOfs);
+  OW32(0);
+  OW16(TextRelocCount);
+  OW16(0);
+  OW32(PE_SCN_CNT_CODE Or PE_SCN_MEM_EXECUTE Or PE_SCN_MEM_READ);
+
+  OWSecName('.data');
+  OW32(0); OW32(0);
+  OW32(BinDataLen);
+  OW32(DataDataOfs);
+  OW32(DataRelocOfs);
+  OW32(0);
+  OW16(DataRelocCount);
+  OW16(0);
+  OW32(PE_SCN_CNT_INIT_DATA Or PE_SCN_MEM_READ Or PE_SCN_MEM_WRITE);
+
+  { octets bruts des deux sections }
+  If BinCodeLen > 0 Then BlockWrite(ObjF, BinCode, BinCodeLen);
+  If BinDataLen > 0 Then BlockWrite(ObjF, BinData, BinDataLen);
+
+  { relocations .text (10 octets chacune), puis .data - un symbole cible   }
+  { est soit une ETIQUETTE locale (index 2+LI, voir la table des                    }
+  { symboles plus bas) soit un IMPORT externe (index 2+BinLabelCount+II). }
+  For I := 0 To BinFixupCount - 1 Do
+    If (Not BinFixups[I].Resolved) And (Not BinFixups[I].IsData) Then
+    Begin
+      LI := BinFindLabel(BinFixups[I].TargetName);
+      If LI >= 0 Then TargetSymIdx := 2 + LI
+      Else TargetSymIdx := 2 + BinLabelCount + BinFindImport(BinFixups[I].TargetName);
+      OW32(BinFixups[I].Pos);
+      OW32(TargetSymIdx);
+      If BinFixups[I].Kind = BIN_FIX_REL32 Then OW16(COFF_REL_I386_REL32) Else OW16(COFF_REL_I386_DIR32);
+    End;
+  For I := 0 To BinFixupCount - 1 Do
+    If (Not BinFixups[I].Resolved) And BinFixups[I].IsData Then
+    Begin
+      LI := BinFindLabel(BinFixups[I].TargetName);
+      If LI >= 0 Then TargetSymIdx := 2 + LI
+      Else TargetSymIdx := 2 + BinLabelCount + BinFindImport(BinFixups[I].TargetName);
+      OW32(BinFixups[I].Pos);
+      OW32(TargetSymIdx);
+      If BinFixups[I].Kind = BIN_FIX_REL32 Then OW16(COFF_REL_I386_REL32) Else OW16(COFF_REL_I386_DIR32);
+    End;
+
+  { table des symboles (18 octets chacun) : .text puis .data (les DEUX      }
+  { symboles de SECTION eux-memes, indices 0/1), puis un par etiquette             }
+  { (indices 2..2+BinLabelCount-1 - PUBLIC par simplification, aucun               }
+  { suivi STATIC/PUBLIC reel), puis un par import externe (section 0 =            }
+  { non defini ici, au lieur de le resoudre). Chaque nom passe TOUJOURS             }
+  { par la table des chaines (jamais la forme "inline sur 8 octets"). }
+  OW32(0); OW32(StrTabAdd('.text'));
+  OW32(0); OW16(1); OW16(0); OW8(COFF_SYM_CLASS_STATIC); OW8(0);
+
+  OW32(0); OW32(StrTabAdd('.data'));
+  OW32(0); OW16(2); OW16(0); OW8(COFF_SYM_CLASS_STATIC); OW8(0);
+
+  For I := 0 To BinLabelCount - 1 Do
+  Begin
+    OW32(0); OW32(StrTabAdd(BinLabels[I].Name));
+    OW32(BinLabels[I].Ofs);
+    If BinLabels[I].IsData Then OW16(2) Else OW16(1);
+    OW16(0);
+    OW8(COFF_SYM_CLASS_EXTERNAL);
+    OW8(0);
+  End;
+
+  For I := 0 To BinImportCount - 1 Do
+  Begin
+    OW32(0); OW32(StrTabAdd(BinImports[I]));
+    OW32(0); OW16(0);
+    OW16(0);
+    OW8(COFF_SYM_CLASS_EXTERNAL);
+    OW8(0);
+  End;
+
+  { table des chaines : prefixe de longueur sur 4 octets (SE COMPTANT      }
+  { LUI-MEME) puis les entrees "nom" + NUL concatenees. }
+  OW32(Length(StrTab) + 4);
+  OWStr(StrTab);
+
+  Close(ObjF);
+End;
+
+{ ------------------------------------------------------------ }
+{ BinEncoderSelfTest : encode CHAQUE forme d instruction couverte,        }
+{ isolement, et verifie l EXACTE sequence d octets produite - niveau de           }
+{ rigueur necessaire pour verifier qu un port est correct SANS jamais              }
+{ executer quoi que ce soit (aucun assembleur/lieur EXTERNE n existe,             }
+{ c est justement ce que CE code remplace). }
+{ ------------------------------------------------------------ }
+
+Procedure BinEncAssert(Const Label_: TString; Cond: Boolean);
+Begin
+  If Not Cond Then
+    FatalError('BinEncoderSelfTest: ' + Label_ + ' a echoue');
+End;
+
+Procedure BinEncoderSelfTest;
+Begin
+  BinInit;
+  BinEmitInstr('MOV EAX,EBX');
+  BinEncAssert('MOV EAX,EBX -> 8B C3',
+    (BinCodeLen = 2) And (BinCode[0] = $8B) And (BinCode[1] = $C3));
+
+  BinInit;
+  BinEmitInstr('MOV EAX,5');
+  BinEncAssert('MOV EAX,5 -> B8 05 00 00 00',
+    (BinCodeLen = 5) And (BinCode[0] = $B8) And (BinCode[1] = 5) And
+    (BinCode[2] = 0) And (BinCode[3] = 0) And (BinCode[4] = 0));
+
+  BinInit;
+  BinEmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  BinEncAssert('MOV EAX,[EBP+8] -> 8B 85 08 00 00 00 (base+disp32, jamais disp8)',
+    (BinCodeLen = 6) And (BinCode[0] = $8B) And (BinCode[1] = $85) And
+    (BinCode[2] = 8) And (BinCode[3] = 0) And (BinCode[4] = 0) And (BinCode[5] = 0));
+
+  BinInit;
+  BinEmitInstr('MOV DWORD PTR [' + ASM_PFX_GVAR + 'counter],EAX');
+  BinEncAssert('MOV [global],EAX -> 89 05 + correctif ABS32 en attente',
+    (BinCodeLen = 6) And (BinCode[0] = $89) And (BinCode[1] = 5) And
+    (BinFixupCount = 1) And (BinFixups[0].Kind = BIN_FIX_ABS32) And
+    (BinFixups[0].TargetName = ASM_PFX_GVAR + 'counter'));
+
+  BinInit;
+  BinEmitInstr('PUSH EAX');
+  BinEncAssert('PUSH EAX -> 50', (BinCodeLen = 1) And (BinCode[0] = $50));
+
+  BinInit;
+  BinEmitInstr('POP EBP');
+  BinEncAssert('POP EBP -> 5D', (BinCodeLen = 1) And (BinCode[0] = $5D));
+
+  BinInit;
+  BinEmitInstr('ADD EAX,EBX');
+  BinEncAssert('ADD EAX,EBX -> 03 C3',
+    (BinCodeLen = 2) And (BinCode[0] = $03) And (BinCode[1] = $C3));
+
+  BinInit;
+  BinEmitInstr('SUB ESP,16');
+  BinEncAssert('SUB ESP,16 -> 81 EC 10 00 00 00',
+    (BinCodeLen = 6) And (BinCode[0] = $81) And (BinCode[1] = $EC) And
+    (BinCode[2] = 16) And (BinCode[3] = 0) And (BinCode[4] = 0) And (BinCode[5] = 0));
+
+  BinInit;
+  BinEmitInstr('IMUL EAX,EBX');
+  BinEncAssert('IMUL EAX,EBX -> 0F AF C3',
+    (BinCodeLen = 3) And (BinCode[0] = $0F) And (BinCode[1] = $AF) And (BinCode[2] = $C3));
+
+  BinInit;
+  BinEmitInstr('CDQ');
+  BinEncAssert('CDQ -> 99', (BinCodeLen = 1) And (BinCode[0] = $99));
+
+  BinInit;
+  BinEmitInstr('IDIV ESI');
+  BinEncAssert('IDIV ESI -> F7 FE',
+    (BinCodeLen = 2) And (BinCode[0] = $F7) And (BinCode[1] = $FE));
+
+  BinInit;
+  BinEmitInstr('NEG EAX');
+  BinEncAssert('NEG EAX -> F7 D8',
+    (BinCodeLen = 2) And (BinCode[0] = $F7) And (BinCode[1] = $D8));
+
+  BinInit;
+  BinEmitInstr('MOVZX EAX,BYTE PTR [ESI]');
+  BinEncAssert('MOVZX EAX,BYTE PTR [ESI] -> 0F B6 86 + disp32=0 (BASE ' +
+    'present -> TOUJOURS disp32 complet, meme a 0 - BinEmitModRM ne ' +
+    'raccourcit JAMAIS en Mod=00 des qu un registre de base existe)',
+    (BinCodeLen = 7) And (BinCode[0] = $0F) And (BinCode[1] = $B6) And
+    (BinCode[2] = $86) And (BinCode[3] = 0) And (BinCode[4] = 0) And
+    (BinCode[5] = 0) And (BinCode[6] = 0));
+
+  BinInit;
+  BinEmitInstr('MOV BYTE PTR [EDI],EAX');
+  BinEncAssert('MOV BYTE PTR [EDI],EAX -> 88 87 + disp32=0 (meme raison)',
+    (BinCodeLen = 6) And (BinCode[0] = $88) And (BinCode[1] = $87) And
+    (BinCode[2] = 0) And (BinCode[3] = 0) And (BinCode[4] = 0) And (BinCode[5] = 0));
+
+  BinInit;
+  BinEmitInstr('RET');
+  BinEncAssert('RET -> C3', (BinCodeLen = 1) And (BinCode[0] = $C3));
+
+  { CALL/Jcc vers une etiquette encore INCONNUE (le cas normal - la     }
+  { cible n a pas forcement ete definie AVANT le point d appel/de saut          }
+  { dans le fichier .asm) : E8/0F-8x + placeholder 0, PLUS un correctif             }
+  { REL32 en attente portant le NOM exact de la cible - jamais resolu                    }
+  { ICI (BinResolveFixups s en charge plus tard, une fois TOUTES les                        }
+  { etiquettes connues). }
+  BinInit;
+  BinEmitInstr('CALL SOMELABEL');
+  BinEncAssert('CALL etiquette inconnue -> E8 + correctif REL32 en attente',
+    (BinCodeLen = 5) And (BinCode[0] = $E8) And (BinCode[1] = 0) And
+    (BinCode[2] = 0) And (BinCode[3] = 0) And (BinCode[4] = 0) And
+    (BinFixupCount = 1) And (BinFixups[0].Kind = BIN_FIX_REL32) And
+    (BinFixups[0].TargetName = 'SOMELABEL') And (Not BinFixups[0].Resolved));
+
+  BinInit;
+  BinEmitInstr('JE SOMELABEL');
+  BinEncAssert('JE etiquette -> 0F 84 + correctif REL32 en attente',
+    (BinCodeLen = 6) And (BinCode[0] = $0F) And (BinCode[1] = $84) And
+    (BinFixupCount = 1) And (BinFixups[0].Kind = BIN_FIX_REL32));
+
+  BinInit;
+  BinEmitInstr('LEA EAX,[SOMELABEL]');
+  BinEncAssert('LEA EAX,[etiquette] -> 8D 05 + correctif ABS32 en attente ' +
+    '(etiquette absolue, sans registre de base)',
+    (BinCodeLen = 6) And (BinCode[0] = $8D) And (BinCode[1] = 5) And
+    (BinFixupCount = 1) And (BinFixups[0].Kind = BIN_FIX_ABS32) And
+    (BinFixups[0].TargetName = 'SOMELABEL'));
+
+  { re-initialise pour ne pas polluer Run reel }
+  BinInit;
+End;
+
+{ ------------------------------------------------------------ }
+{ BinObjSelfTest : compile hello.swift EN ENTIER de bout en bout        }
+{ (parse -> .asm TODO 21 -> BinAssembleFile/BinResolveFixups/                        }
+{ WriteCOFFObj TODO 22), puis RELIT le fichier .obj produit en OCTETS                    }
+{ BRUTS et verifie sa signature/structure - PAS que le contenu soit                       }
+{ LOGIQUEMENT execute par quoi que ce soit (aucun lieur/chargeur                                  }
+{ n existe encore, TODO 23) : meme limite documentee que CodegenSelfTest              }
+{ pour le texte .asm lui-meme. }
+{ ------------------------------------------------------------ }
+
+Procedure BinObjAssert(Const Label_: TString; Cond: Boolean);
+Begin
+  If Not Cond Then
+    FatalError('BinObjSelfTest: ' + Label_ + ' a echoue');
+End;
+
+Procedure BinObjSelfTest;
+Const
+  TmpSrc = 'SWIFTW32BINOBJSELFTESTSRC.$$$';
+  TmpAsm = 'SWIFTW32BINOBJSELFTEST.$$$';
+  TmpObj = 'SWIFTW32BINOBJSELFTEST.OB$';
+Var
+  F : File;
+  B4 : Array[0..3] Of Byte;
+  ObjSize : LongInt;
+  I, ResolvedCount : Integer;
+Begin
+  StmtInit; ExprInit; SymInit; TypeInit; FuncDefInit; MethodPoolInit; EnumCaseInit;
+
+  Assign(LexSrcF, TmpSrc);
+  Rewrite(LexSrcF);
+  WriteLn(LexSrcF, 'let greeting: String = "Hello, 8086!"');
+  WriteLn(LexSrcF, 'let version: Int = 1');
+  WriteLn(LexSrcF, 'var counter: Int = 0');
+  WriteLn(LexSrcF, 'print(greeting)');
+  WriteLn(LexSrcF, 'print(version)');
+  WriteLn(LexSrcF, 'counter = counter + 1');
+  WriteLn(LexSrcF, 'print(counter)');
+  Close(LexSrcF);
+  Assign(LexSrcF, TmpSrc);
+  Reset(LexSrcF);
+  LexOpened := True;
+  LexInit;
+  LexAll;
+  LexClose;
+  Erase(LexSrcF);
+  ParserInit;
+  ParseSwiftProgram;
+
+  CompileProgram(TmpAsm);
+  BinAssembleFile(TmpAsm);
+  BinObjAssert('au moins une etiquette reconnue (BinAssembleFile a bien relu le .asm)',
+    BinLabelCount > 0);
+  BinObjAssert('au moins un import externe reconnu (EXTRN)', BinImportCount > 0);
+  BinObjAssert('des octets de code REELS ont ete encodes (.text non vide)', BinCodeLen > 0);
+  BinObjAssert('des octets de donnees REELS ont ete encodes (.data non vide, ' +
+    'chaine litterale + constante de fin de ligne)', BinDataLen > 0);
+
+  BinResolveFixups;
+  ResolvedCount := 0;
+  For I := 0 To BinFixupCount - 1 Do
+    If BinFixups[I].Resolved Then Inc(ResolvedCount);
+  BinObjAssert('au moins un correctif reste EN ATTENTE (import externe ou ' +
+    'ABS32 - devient une VRAIE relocation COFF)', ResolvedCount < BinFixupCount);
+
+  WriteCOFFObj(TmpObj);
+
+  Assign(F, TmpObj);
+  Reset(F, 1);
+  BlockRead(F, B4, 4);
+  ObjSize := FileSize(F);
+  Close(F);
+
+  BinObjAssert('signature Machine=I386 ($4C,$01) en tete du .obj',
+    (B4[0] = $4C) And (B4[1] = $01));
+  BinObjAssert('NumberOfSections=2 (.text+.data uniquement) en tete du .obj',
+    (B4[2] = 2) And (B4[3] = 0));
+  BinObjAssert('fichier .obj de taille plausible (au moins l en-tete + 2 ' +
+    'sections + du contenu reel)', ObjSize > 100);
+
+  Erase(F);
+  Assign(F, TmpAsm);
+  Erase(F);
+
+  { re-initialise les tables globales pour ne pas polluer Run reel }
+  StmtInit;
+  ExprInit;
+  SymInit;
+  FuncDefInit;
+  MethodPoolInit;
+  EnumCaseInit;
+End;
+
+{ ============================================================ }
+{ TODO 23 - BACKEND BINAIRE .EXE PE WIN32 ET RUNTIME EMBARQUE    }
+{ ============================================================ }
+{ Ecrit un fichier .EXE PE Win32 COMPLET, directement chargeable/                  }
+{ executable par Windows, SANS AUCUN lieur externe - architecture                          }
+{ ETUDIEE et REPRISE PRESQUE A L IDENTIQUE de GOCW32.PAS (meme projet,                    }
+{ meme discipline EXPLICITEMENT exigee par le roadmap d en-tete de CE               }
+{ TODO). REUTILISE TEL QUEL le meme BinCode/BinData/BinLabels/                                 }
+{ BinFixups/BinImports que le TODO 22 a deja rempli (BinAssembleFile             }
+{ tourne UNE SEULE fois, le CHOIX entre WriteCOFFObj et WritePEExe                          }
+{ n intervient QU APRES) - AUCUN nouveau passage sur le texte .asm.                          }
+{                                                                       }
+{ DIFFERENCE ARCHITECTURALE centrale avec le TODO 22 : un .OBJ laisse             }
+{ TOUTE resolution externe (imports Win32, ET tout ABS32 meme LOCAL) a           }
+{ un lieur EXTERNE (BinResolveFixups, TODO 22, ne resout QUE les REL32                   }
+{ locaux) - un .EXE n a AUCUN lieur en aval : TOUT doit etre resolu                        }
+{ ICI. Deux passes SEPAREES, dans cet ORDRE PRECIS :                                          }
+{   (1) BinResolveFixupsForExe (AVANT que la disposition finale du                          }
+{       fichier ne soit connue) - resout TOUS les REL32 (locaux ET                            }
+{       imports externes, ces derniers via un MINUSCULE "thunk" de 6                       }
+{       octets, BinCreateThunk, plutot que de reecrire le site d appel                    }
+{       lui-meme en forme indirecte "FF 15" - "CALL _SWRT_PRINTLN_STR"           }
+{       (E8+rel32) continue de cibler un simple deplacement RELATIF                       }
+{       ordinaire, MAIS vers ce thunk plutot que vers KERNEL32 - le                          }
+{       thunk LUI-MEME (JMP DWORD PTR [case IAT], une adresse ABSOLUE)              }
+{       porte TOUTE la complexite d indirection).                                                }
+{   (2) La resolution ABS32 (DANS WritePEExe, APRES le calcul complet             }
+{       de la disposition finale - RVA de chaque section, adresse de                     }
+{       base ImageBase) - une adresse ABSOLUE ne peut JAMAIS etre                           }
+{       connue avant que CETTE disposition ne soit fixee, contrairement             }
+{       aux REL32 (un deplacement RELATIF entre deux points de la MEME              }
+{       section .text reste invariant, peu importe OU cette section                        }
+{       finira par etre chargee).                                                               }
+{                                                                       }
+{ AUCUNE table de relocations (.reloc, DataDirectory[5]) n existe - ce              }
+{ fichier n est chargeable QU A l adresse FIXE PE_IMG_BASE=$00400000                     }
+{ (deja reservee, TODO 01) - AUCUNE prise en charge ASLR ("DllCharacteristics"           }
+{ ecrit 0). Un SEUL DLL importe (KERNEL32.DLL) - import PAR NOM                                  }
+{ uniquement, jamais par ordinal. Sous-systeme CONSOLE uniquement                              }
+{ (PE_SUBSYS_CUI) - aucun mode GUI. AUCUN VRAI stub DOS (juste "MZ" +               }
+{ bourrage + e_lfanew, memes 64 octets que GOCW32.PAS/DELPHI.PAS).                                }
+{                                                                       }
+{ Le runtime embarque (EmitRuntimeLibrary, TODO 21) reste EXACTEMENT le            }
+{ MEME texte .asm quel que soit le backend choisi (.OBJ ou .EXE) - SEULE           }
+{ la maniere dont l assembleur/ecrivain PE resout les appels "CALL                          }
+{ _SWRT_xxx"/"CALL _ExitProcess@4" etc. differe (TODO 22 vs TODO 23) ;              }
+{ l emission textuelle elle-meme (TODO 21) est totalement AVEUGLE a                       }
+{ cette distinction. }
+
+{ BinAlignUp : arrondit V au PROCHAIN multiple de Align (V lui-meme si   }
+{ deja un multiple exact) - utilisee pour a la fois l alignement de              }
+{ FICHIER (PE_FILE_ALIGN=512, deja reserve TODO 01) et l alignement de           }
+{ SECTION (PE_SEC_ALIGN=4096) : DEUX constantes DIFFERENTES appliquees            }
+{ a des totaux courants DIFFERENTS (taille de fichier vs RVA memoire) -             }
+{ la SEULE chose la plus facile a confondre en reimplementant ce           }
+{ calcul (voir la note de WritePEExe plus bas). }
+Function BinAlignUp(V, Align: LongInt): LongInt;
+Begin
+  If V Mod Align = 0 Then BinAlignUp := V
+  Else BinAlignUp := ((V Div Align) + 1) * Align;
+End;
+
+{ BinExportNameFor : "_ExitProcess@4" -> "ExitProcess" - retire le "_"   }
+{ prefixe et le "@N" suffixe (decoration STDCALL INTERNE a la convention           }
+{ de nommage de CE compilateur, EmitHeader/TODO 21) - KERNEL32.DLL                          }
+{ exporte ses fonctions par leur NOM NU, jamais decore ainsi ; la table          }
+{ des exports Windows que le CHARGEUR consulte au demarrage n a jamais              }
+{ entendu parler de cette decoration. }
+Function BinExportNameFor(Const Nm: TString): TString;
+Var S : TString; AtPos : Integer;
+Begin
+  S := Nm;
+  If (Length(S) > 0) And (S[1] = '_') Then
+    S := Copy(S, 2, Length(S) - 1);
+  AtPos := Pos('@', S);
+  If AtPos > 0 Then
+    S := Copy(S, 1, AtPos - 1);
+  BinExportNameFor := S;
+End;
+
+Var
+  BinThunkOfs    : Array[0..MAX_BIN_IMPORT - 1] Of LongInt;
+  BinThunkExists : Array[0..MAX_BIN_IMPORT - 1] Of Boolean;
+
+Procedure BinThunkInit;
+Var I : Integer;
+Begin
+  For I := 0 To MAX_BIN_IMPORT - 1 Do BinThunkExists[I] := False;
+End;
+
+{ BinCreateThunk : un SEUL "thunk" de 6 octets par import DISTINCT              }
+{ (idempotent, cree au PREMIER besoin), place dans .text - "FF 25 <ABS32>"           }
+{ (JMP DWORD PTR [case IAT]) : saute INDIRECTEMENT via la case de la                     }
+{ Table d Adresses d Import (IAT) que le CHARGEUR Windows remplit avec               }
+{ la VRAIE adresse de la fonction au demarrage du processus - TOUS les            }
+{ sites "CALL _ExitProcess@4" du programme entier PARTAGENT ce MEME              }
+{ thunk unique (BinThunkExists evite d en creer un second). L ABS32                       }
+{ genere ICI ("@IAT:" + nom) est resolu PLUS TARD, dans WritePEExe                        }
+{ (une fois IdataRva/IatOfs connus) - voir sa propre note. }
+Procedure BinCreateThunk(ExternIdx: Integer);
+Var SavedIsData : Boolean;
+Begin
+  If BinThunkExists[ExternIdx] Then Exit;
+  SavedIsData := BinCurIsData;
+  BinCurIsData := False;
+  BinThunkOfs[ExternIdx] := BinCodeLen;
+  BinThunkExists[ExternIdx] := True;
+  BinEmit8($FF);
+  BinEmit8($25);
+  BinEmit32(0);
+  BinAddFixup(BIN_FIX_ABS32, '@IAT:' + BinImports[ExternIdx]);
+  BinCurIsData := SavedIsData;
+End;
+
+{ BinResolveFixupsForExe : contrairement a BinResolveFixups (TODO 22,   }
+{ .OBJ - ne resout QUE les REL32 locaux DE LA MEME section, laisse TOUT           }
+{ le reste a un lieur externe), ICI TOUT REL32 doit disparaitre - AUCUN            }
+{ lieur n existe en aval pour un .EXE. Une cible qui n est PAS une                       }
+{ etiquette locale connue DOIT etre un import declare (EXTRN) : cree                    }
+{ son thunk (BinCreateThunk) et cible CELUI-CI a la place - le                                  }
+{ deplacement RELATIF (TargetOfs - (Pos+4)) reste une simple                                  }
+{ arithmetique INTERNE au tampon .text, AUCUNE connaissance de la                            }
+{ disposition finale du fichier n est necessaire a ce stade (contrairement           }
+{ a la resolution ABS32 plus bas, dans WritePEExe, qui ELLE en depend). }
+Procedure BinResolveFixupsForExe;
+Var I, LI, EI : Integer; TargetOfs, Disp : LongInt;
+Begin
+  BinThunkInit;
+  For I := 0 To BinFixupCount - 1 Do
+    If BinFixups[I].Kind = BIN_FIX_REL32 Then
+    Begin
+      LI := BinFindLabel(BinFixups[I].TargetName);
+      If LI >= 0 Then
+        TargetOfs := BinLabels[LI].Ofs
+      Else
+      Begin
+        EI := BinFindImport(BinFixups[I].TargetName);
+        If EI < 0 Then
+        Begin
+          FatalError('assembleur : cible REL32 introuvable (ni etiquette ' +
+            'locale, ni import declare) : ' + BinFixups[I].TargetName);
+          Continue;
+        End;
+        BinCreateThunk(EI);
+        TargetOfs := BinThunkOfs[EI];
+      End;
+      Disp := TargetOfs - (BinFixups[I].Pos + 4);
+      BinPatch32(BinFixups[I].IsData, BinFixups[I].Pos, Disp);
+      BinFixups[I].Resolved := True;
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ WritePEExe : ecrivain .EXE PE Win32 - ordre d ecriture : en-tete DOS          }
+{ minimal ("MZ" + bourrage + e_lfanew=64) -> signature PE -> en-tete             }
+{ IMAGE_FILE_HEADER -> IMAGE_OPTIONAL_HEADER32 (+ tableau                                     }
+{ DataDirectory, SEULS Import[1] et IAT[12] non nuls) -> TROIS en-tetes             }
+{ de section (.text/.data/.idata - un import NECESSITE cette troisieme                  }
+{ section, absente du .OBJ a deux sections du TODO 22) -> bourrage                        }
+{ jusqu a HdrSizeAligned -> octets bruts .text -> octets bruts .data ->                   }
+{ contenu .idata (descripteur d import, ILT, IAT, table hint/nom, nom              }
+{ du DLL). La disposition COMPLETE (RVA/deplacements de fichier de                         }
+{ CHAQUE section) est calculee en PRE-PASSE, AVANT toute ecriture -                        }
+{ meme discipline que WriteCOFFObj (TODO 22). REGLE PE reelle la PLUS               }
+{ facile a confondre (documentee explicitement ici pour ne PAS la                             }
+{ redecouvrir par execution) : le DEPLACEMENT DE FICHIER de la PROCHAINE           }
+{ section suit l alignement de FICHIER (512) applique a la taille REELLE          }
+{ du CONTENU, alors que son RVA MEMOIRE suit TOUJOURS l alignement de              }
+{ SECTION (4096) - JAMAIS le meme calcul, meme si les DEUX s appellent             }
+{ "BinAlignUp". }
+{ ------------------------------------------------------------ }
+
+Procedure WritePEExe(Const ExeFileName: TString);
+Const
+  PE_KERNEL32_DLL = 'KERNEL32.DLL';
+Var
+  ExeF : File;
+  I, EI, LI, EntryLI, NImp : Integer;
+  IltOfs, IatOfs, HintNameStart, Cur, EntrySize, DllNameOfs, IdataSize : LongInt;
+  HintNameOfs : Array[0..MAX_BIN_IMPORT - 1] Of LongInt;
+  ExpName : TString;
+  HdrSize, HdrSizeAligned : LongInt;
+  TextRva, DataRva, IdataRva : LongInt;
+  TextFileOfs, DataFileOfs, IdataFileOfs : LongInt;
+  TextRawSize, DataRawSize, IdataRawSize : LongInt;
+  ImageSize, EntryRva : LongInt;
+  V : LongInt;
+
+  Procedure OW8(B: Integer);
+  Var Buf: Byte;
+  Begin
+    Buf := B And $FF;
+    BlockWrite(ExeF, Buf, 1);
+  End;
+
+  Procedure OW16(W: Integer);
+  Begin
+    OW8(W);
+    OW8(W Shr 8);
+  End;
+
+  Procedure OW32(D: LongInt);
+  Begin
+    OW8(D);
+    OW8(D Shr 8);
+    OW8(D Shr 16);
+    OW8(D Shr 24);
+  End;
+
+  Procedure OWStr(Const S: TString);
+  Var K: Integer;
+  Begin
+    For K := 1 To Length(S) Do OW8(Ord(S[K]));
+  End;
+
+  Procedure OWZeros(N: Integer);
+  Var K: Integer;
+  Begin
+    For K := 1 To N Do OW8(0);
+  End;
+
+  Procedure OWSecName(Const Name: TString);
+  Begin
+    OWStr(Name);
+    If Length(Name) < 8 Then OWZeros(8 - Length(Name));
+  End;
+
+Begin
+  { (1) TOUS les REL32 d abord (imports -> thunk, voir BinCreateThunk) - }
+  { AUCUNE connaissance de la disposition finale requise ici. }
+  BinResolveFixupsForExe;
+
+  { disposition INTERNE de .idata (descripteurs -> ILT -> IAT -> table   }
+  { hint/nom -> nom du DLL) - deplacements RELATIFS AU DEBUT de .idata           }
+  { uniquement (convertis en RVA reelle plus bas, IdataRva + ...). }
+  NImp := BinImportCount;
+  IltOfs := 40;                        { apres les DEUX descripteurs (20 octets chacun) }
+  IatOfs := IltOfs + (NImp + 1) * 4;   { ILT : NImp entrees + UN terminateur nul }
+  HintNameStart := IatOfs + (NImp + 1) * 4;   { IAT : meme taille que l ILT }
+  Cur := HintNameStart;
+  For I := 0 To NImp - 1 Do
+  Begin
+    HintNameOfs[I] := Cur;
+    ExpName := BinExportNameFor(BinImports[I]);
+    EntrySize := 2 + Length(ExpName) + 1;   { Hint (2) + nom + NUL }
+    If (EntrySize Mod 2) <> 0 Then Inc(EntrySize);   { alignement PAIR }
+    Cur := Cur + EntrySize;
+  End;
+  DllNameOfs := Cur;
+  IdataSize  := DllNameOfs + Length(PE_KERNEL32_DLL) + 1;
+
+  { RVA/deplacements de FICHIER de chaque section - voir la note d      }
+  { en-tete de WritePEExe pour la regle FileAlign-vs-SectionAlign. }
+  HdrSize        := 64 + 4 + 20 + 224 + 3 * 40;
+  HdrSizeAligned := BinAlignUp(HdrSize, PE_FILE_ALIGN);
+
+  TextRva     := PE_SEC_ALIGN;
+  TextFileOfs := HdrSizeAligned;
+  TextRawSize := BinAlignUp(BinCodeLen, PE_FILE_ALIGN);
+
+  DataRva     := TextRva + BinAlignUp(BinCodeLen, PE_SEC_ALIGN);
+  DataFileOfs := TextFileOfs + TextRawSize;
+  DataRawSize := BinAlignUp(BinDataLen, PE_FILE_ALIGN);
+
+  IdataRva     := DataRva + BinAlignUp(BinDataLen, PE_SEC_ALIGN);
+  IdataFileOfs := DataFileOfs + DataRawSize;
+  IdataRawSize := BinAlignUp(IdataSize, PE_FILE_ALIGN);
+
+  ImageSize := BinAlignUp(IdataRva + IdataSize, PE_SEC_ALIGN);
+
+  { (2) TOUS les ABS32, MAINTENANT que TextRva/DataRva/IdataRva sont     }
+  { connus - une etiquette LOCALE (global .text/.data) recoit                       }
+  { ImageBase+RVA section+deplacement ; un thunk IAT ("@IAT:" + nom)                    }
+  { recoit ImageBase+IdataRva+IatOfs+index*4 (l adresse de LA CASE IAT                  }
+  { elle-meme, jamais celle de la fonction - le CHARGEUR remplit cette              }
+  { case au demarrage). }
+  For I := 0 To BinFixupCount - 1 Do
+    If (Not BinFixups[I].Resolved) And (BinFixups[I].Kind = BIN_FIX_ABS32) Then
+    Begin
+      If Copy(BinFixups[I].TargetName, 1, 5) = '@IAT:' Then
+      Begin
+        EI := BinFindImport(Copy(BinFixups[I].TargetName, 6, Length(BinFixups[I].TargetName) - 5));
+        If EI < 0 Then
+        Begin
+          FatalError('assembleur : cible IAT introuvable : ' + BinFixups[I].TargetName);
+          Continue;
+        End;
+        V := PE_IMG_BASE + IdataRva + IatOfs + EI * 4;
+      End
+      Else
+      Begin
+        LI := BinFindLabel(BinFixups[I].TargetName);
+        If LI < 0 Then
+        Begin
+          FatalError('assembleur : cible ABS32 introuvable : ' + BinFixups[I].TargetName);
+          Continue;
+        End;
+        If BinLabels[LI].IsData Then
+          V := PE_IMG_BASE + DataRva + BinLabels[LI].Ofs
+        Else
+          V := PE_IMG_BASE + TextRva + BinLabels[LI].Ofs;
+      End;
+      BinPatch32(BinFixups[I].IsData, BinFixups[I].Pos, V);
+      BinFixups[I].Resolved := True;
+    End;
+
+  { point d entree - "_SWSTART" (CompileProgram, TODO 21), TOUJOURS dans   }
+  { .text en pratique (repli defensif sur TextRva sinon, ne devrait               }
+  { jamais se produire). }
+  EntryLI := BinFindLabel('_SWSTART');
+  If EntryLI >= 0 Then
+  Begin
+    If BinLabels[EntryLI].IsData Then EntryRva := DataRva + BinLabels[EntryLI].Ofs
+    Else EntryRva := TextRva + BinLabels[EntryLI].Ofs;
+  End
+  Else
+    EntryRva := TextRva;
+
+  Assign(ExeF, ExeFileName);
+  Rewrite(ExeF, 1);
+
+  { en-tete DOS minimal (64 octets) - AUCUN vrai stub DOS. }
+  OW16(PE_DOS_MAGIC);
+  OWZeros(58);
+  OW32(64);   { e_lfanew }
+
+  { signature PE }
+  OW32(PE_PE_SIG);
+
+  { IMAGE_FILE_HEADER (20 octets) }
+  OW16(PE_MACHINE_I386);
+  OW16(3);              { NumberOfSections : .text + .data + .idata }
+  OW32(0);               { TimeDateStamp }
+  OW32(0);               { PointerToSymbolTable : aucune table COFF dans un .EXE }
+  OW32(0);               { NumberOfSymbols }
+  OW16(224);             { SizeOfOptionalHeader }
+  OW16($010F);           { Characteristics }
+
+  { IMAGE_OPTIONAL_HEADER32 (224 octets, DataDirectory inclus) }
+  OW16(PE_OPT_MAGIC_PE32);
+  OW8(1); OW8(0);                                        { version du "lieur" }
+  OW32(TextRawSize);                                     { SizeOfCode }
+  OW32(DataRawSize + IdataRawSize);                      { SizeOfInitializedData }
+  OW32(0);                                                { SizeOfUninitializedData }
+  OW32(EntryRva);                                        { AddressOfEntryPoint }
+  OW32(TextRva);                                         { BaseOfCode }
+  OW32(DataRva);                                         { BaseOfData }
+  OW32(PE_IMG_BASE);
+  OW32(PE_SEC_ALIGN);
+  OW32(PE_FILE_ALIGN);
+  OW16(4); OW16(0);                                      { version OS }
+  OW16(0); OW16(0);                                      { version image }
+  OW16(4); OW16(0);                                      { version sous-systeme }
+  OW32(0);                                                { Win32VersionValue }
+  OW32(ImageSize);                                       { SizeOfImage }
+  OW32(HdrSizeAligned);                                  { SizeOfHeaders }
+  OW32(0);                                                { CheckSum : jamais calcule }
+  OW16(PE_SUBSYS_CUI);
+  OW16(0);                                                { DllCharacteristics : AUCUNE ASLR }
+  OW32($100000); OW32($1000);                            { pile : reserve/engage }
+  OW32($100000); OW32($1000);                            { tas : reserve/engage }
+  OW32(0);                                                { LoaderFlags }
+  OW32(16);                                               { NumberOfRvaAndSizes }
+
+  { DataDirectory (16 * 8 octets = 128 octets) - SEULS Import[1] et      }
+  { IAT[12] sont non nuls. }
+  OW32(0); OW32(0);                                       { [0] Export }
+  OW32(IdataRva); OW32(40);                              { [1] Import : 2 descripteurs * 20 octets }
+  For I := 1 To 10 Do Begin OW32(0); OW32(0); End;        { [2..11], dont [5]=BASERELOC : jamais utilise }
+  OW32(IdataRva + IatOfs); OW32((NImp + 1) * 4);         { [12] IAT }
+  For I := 1 To 3 Do Begin OW32(0); OW32(0); End;         { [13..15] }
+
+  { TROIS en-tetes de section (40 octets chacune) }
+  OWSecName('.text');
+  OW32(BinCodeLen); OW32(TextRva);
+  OW32(TextRawSize); OW32(TextFileOfs);
+  OW32(0); OW32(0); OW16(0); OW16(0);
+  OW32(PE_SCN_CNT_CODE Or PE_SCN_MEM_EXECUTE Or PE_SCN_MEM_READ);
+
+  OWSecName('.data');
+  OW32(BinDataLen); OW32(DataRva);
+  OW32(DataRawSize); OW32(DataFileOfs);
+  OW32(0); OW32(0); OW16(0); OW16(0);
+  OW32(PE_SCN_CNT_INIT_DATA Or PE_SCN_MEM_READ Or PE_SCN_MEM_WRITE);
+
+  OWSecName('.idata');
+  OW32(IdataSize); OW32(IdataRva);
+  OW32(IdataRawSize); OW32(IdataFileOfs);
+  OW32(0); OW32(0); OW16(0); OW16(0);
+  OW32(PE_SCN_CNT_INIT_DATA Or PE_SCN_MEM_READ Or PE_SCN_MEM_WRITE);
+
+  { bourrage jusqu a HdrSizeAligned - BOGUE REEL trouve par EXECUTION      }
+  { (le tout premier .exe produit par ce TODO etait "n est pas une                 }
+  { application Win32 valide") si ce bourrage manque : chaque section                    }
+  { doit commencer EXACTEMENT au deplacement de fichier que son PROPRE               }
+  { en-tete promet (PointerToRawData), jamais un octet plus tot. }
+  OWZeros(HdrSizeAligned - HdrSize);
+
+  { octets bruts .text, puis bourrage jusqu a TextRawSize }
+  If BinCodeLen > 0 Then BlockWrite(ExeF, BinCode, BinCodeLen);
+  OWZeros(TextRawSize - BinCodeLen);
+
+  { octets bruts .data, puis bourrage jusqu a DataRawSize }
+  If BinDataLen > 0 Then BlockWrite(ExeF, BinData, BinDataLen);
+  OWZeros(DataRawSize - BinDataLen);
+
+  { .idata : descripteur KERNEL32.DLL, descripteur terminateur nul, ILT,  }
+  { IAT, table hint/nom, nom du DLL - puis bourrage jusqu a                             }
+  { IdataRawSize. }
+  OW32(IdataRva + IltOfs);         { OriginalFirstThunk }
+  OW32(0);                         { TimeDateStamp }
+  OW32(0);                         { ForwarderChain }
+  OW32(IdataRva + DllNameOfs);     { Name }
+  OW32(IdataRva + IatOfs);         { FirstThunk }
+  OWZeros(20);                     { descripteur terminateur nul }
+
+  For I := 0 To NImp - 1 Do OW32(IdataRva + HintNameOfs[I]);
+  OW32(0);
+  For I := 0 To NImp - 1 Do OW32(IdataRva + HintNameOfs[I]);
+  OW32(0);
+
+  For I := 0 To NImp - 1 Do
+  Begin
+    OW16(0);   { Hint : jamais recherche, toujours 0 }
+    ExpName := BinExportNameFor(BinImports[I]);
+    OWStr(ExpName);
+    OW8(0);
+    EntrySize := 2 + Length(ExpName) + 1;
+    If (EntrySize Mod 2) <> 0 Then OW8(0);
+  End;
+
+  OWStr(PE_KERNEL32_DLL);
+  OW8(0);
+
+  OWZeros(IdataRawSize - IdataSize);
+
+  Close(ExeF);
+End;
+
+{ ------------------------------------------------------------ }
+{ PEExeSelfTest : compile hello.swift EN ENTIER de bout en bout (parse            }
+{ -> .asm TODO 21 -> BinAssembleFile TODO 22 -> WritePEExe TODO 23),                    }
+{ puis RELIT le fichier .exe produit en OCTETS BRUTS et verifie sa                       }
+{ signature/structure (MZ, e_lfanew, PE, Machine, NumberOfSections,                        }
+{ Subsystem, taille multiple de PE_FILE_ALIGN) - PAS que Windows                              }
+{ l EXECUTE reellement ICI (meme methode/limite documentee que                                  }
+{ CodegenSelfTest/BinObjSelfTest) : une VRAIE execution manuelle du               }
+{ .exe produit (hors de ce self-test Pascal) reste la seule verification                   }
+{ de correction OBSERVABLE a ce stade, exactement comme documente au             }
+{ TODO 25. }
+{ ------------------------------------------------------------ }
+
+Procedure PEExeAssert(Const Label_: TString; Cond: Boolean);
+Begin
+  If Not Cond Then
+    FatalError('PEExeSelfTest: ' + Label_ + ' a echoue');
+End;
+
+Procedure PEExeSelfTest;
+Const
+  TmpSrc = 'SWIFTW32PEEXESELFTESTSRC.$$$';
+  TmpAsm = 'SWIFTW32PEEXESELFTEST.$$$';
+  TmpExe = 'SWIFTW32PEEXESELFTEST.EX$';
+Var
+  F : File;
+  B4 : Array[0..3] Of Byte;
+  Lfanew : LongInt;
+  ExeSize : LongInt;
+Begin
+  StmtInit; ExprInit; SymInit; TypeInit; FuncDefInit; MethodPoolInit; EnumCaseInit;
+
+  Assign(LexSrcF, TmpSrc);
+  Rewrite(LexSrcF);
+  WriteLn(LexSrcF, 'let greeting: String = "Hello, 8086!"');
+  WriteLn(LexSrcF, 'let version: Int = 1');
+  WriteLn(LexSrcF, 'var counter: Int = 0');
+  WriteLn(LexSrcF, 'print(greeting)');
+  WriteLn(LexSrcF, 'print(version)');
+  WriteLn(LexSrcF, 'counter = counter + 1');
+  WriteLn(LexSrcF, 'print(counter)');
+  Close(LexSrcF);
+  Assign(LexSrcF, TmpSrc);
+  Reset(LexSrcF);
+  LexOpened := True;
+  LexInit;
+  LexAll;
+  LexClose;
+  Erase(LexSrcF);
+  ParserInit;
+  ParseSwiftProgram;
+
+  CompileProgram(TmpAsm);
+  BinAssembleFile(TmpAsm);
+  WritePEExe(TmpExe);
+
+  Assign(F, TmpExe);
+  Reset(F, 1);
+
+  BlockRead(F, B4, 4);
+  PEExeAssert('signature MZ en tete du .exe', (B4[0] = Ord('M')) And (B4[1] = Ord('Z')));
+
+  Seek(F, 60);
+  BlockRead(F, Lfanew, 4);
+  PEExeAssert('e_lfanew=64 (en-tete DOS minimal, aucun VRAI stub)', Lfanew = 64);
+
+  Seek(F, 64);
+  BlockRead(F, B4, 4);
+  PEExeAssert('signature PE en Lfanew', (B4[0] = Ord('P')) And (B4[1] = Ord('E')) And
+    (B4[2] = 0) And (B4[3] = 0));
+
+  Seek(F, 68);
+  BlockRead(F, B4, 4);
+  PEExeAssert('Machine=I386 ($4C,$01) et NumberOfSections=3 (.text/.data/.idata)',
+    (B4[0] = $4C) And (B4[1] = $01) And (B4[2] = 3) And (B4[3] = 0));
+
+  { Subsystem : deplacement 64(en-tete DOS)+4(signature PE)+20(IMAGE_FILE_HEADER)     }
+  { +68 DANS IMAGE_OPTIONAL_HEADER32 (Magic(2)+Linker(2)+SizeOfCode(4)+                }
+  { SizeOfInitData(4)+SizeOfUninitData(4)+EntryPoint(4)+BaseOfCode(4)+                        }
+  { BaseOfData(4)+ImageBase(4)+SectionAlignment(4)+FileAlignment(4)+                          }
+  { OSVersion(4)+ImageVersion(4)+SubsystemVersion(4)+Win32Version(4)+                        }
+  { SizeOfImage(4)+SizeOfHeaders(4)+CheckSum(4) = 4+16*4 = 68 octets avant             }
+  { Subsystem) = 64+4+20+68 = 156. }
+  Seek(F, 156);
+  BlockRead(F, B4, 2);
+  PEExeAssert('Subsystem=3 (CUI, console)', (B4[0] = 3) And (B4[1] = 0));
+
+  ExeSize := FileSize(F);
+  Close(F);
+
+  PEExeAssert('taille de fichier multiple exact de PE_FILE_ALIGN (512)',
+    (ExeSize Mod PE_FILE_ALIGN) = 0);
+  PEExeAssert('fichier .exe de taille plausible (au moins 4 blocs alignes)',
+    ExeSize >= 4 * PE_FILE_ALIGN);
+
+  Assign(F, TmpExe);
+  Erase(F);
+  Assign(F, TmpAsm);
+  Erase(F);
+
+  { re-initialise les tables globales pour ne pas polluer Run reel }
+  StmtInit;
+  ExprInit;
+  SymInit;
+  FuncDefInit;
+  MethodPoolInit;
+  EnumCaseInit;
+End;
+
+{ ------------------------------------------------------------ }
+{ TODO 24 - AUTO-TESTS (SELF-TESTS INTERNES)                       }
+{ ------------------------------------------------------------ }
+{ Un SelfTest par sous-systeme majeur existe DEJA - un a chaque TODO           }
+{ depuis le TODO 02, jamais reporte a "plus tard" (chaque TODO de ce               }
+{ fichier a systematiquement ajoute le sien EN MEME TEMPS que la                       }
+{ fonctionnalite elle-meme, jamais apres coup, meme discipline que              }
+{ GOCW32.PAS/DELPHI.PAS/PERLCW32.PAS). Ce TODO ne les CREE donc pas, il             }
+{ les REGROUPE (RunAllSelfTests ci-dessous, plutot qu inlines dans Run             }
+{ lui-meme - separe clairement la responsabilite "auto-tests" de la                     }
+{ responsabilite "compiler le VRAI fichier .swift" de Run). L audit                     }
+{ confirme que la SEULE lacune reelle trouvee par le TODO 24 de                                }
+{ GOCW32.PAS (aucun auto-test ne verifiait l ENCODAGE 80386 lui-meme                    }
+{ OCTET PAR OCTET pour un mnemonique donne, BinObjSelfTest/PEExeSelfTest              }
+{ ne verifiant que la STRUCTURE d ensemble d un fichier compile) est                  }
+{ deja COMBLEE ICI : BinEncoderSelfTest (ecrit des le TODO 22, PAS                     }
+{ attendu jusqu ici) fait deja des assertions octet-exact par mnemonique.               }
+{ Noms REELS (colonne gauche) vs liste aspirationnelle du TODO 01                                }
+{ (colonne droite, ecrite avant que la moindre ligne de parseur n existe               }
+{ - de simples PREVISIONS, jamais un contrat a respecter a la lettre une             }
+{ fois l architecture reelle en place, meme discipline que pour les                       }
+{ noms Bin*/Asm* du TODO 22/23) : tous les 20 noms lites par le TODO 01              }
+{ (LexSelfTest a CodegenSelfTest, SemanticAssert~SemanticSelfTest) sont            }
+{ REELLEMENT presents ci-dessous, PLUS BinEncoderSelfTest/BinObjSelfTest/            }
+{ PEExeSelfTest (TODO 22/23), jamais anticipes du tout par cette liste             }
+{ (ecrite avant meme que l assembleur/l ecrivain PE ne soient concus). }
+{ ------------------------------------------------------------ }
+
+Procedure RunAllSelfTests;
+Begin
+  StdlibInit;   { TODO 20 : table STATIQUE, jamais mutee par un parseur -   }
+                { un SEUL appel suffit pour toute la duree du processus,           }
+                { contrairement a StmtInit/ExprInit/etc. re-appeles a           }
+                { chaque self-test pour eviter toute contamination croisee. }
   LexSelfTest;
   KeywordSelfTest;
   TypeSelfTest;
@@ -10493,6 +13896,44 @@ Begin
   ErrorSelfTest;
   CollectionSelfTest;
   StringSelfTest;
+  MemorySelfTest;
+  SemanticSelfTest;
+  StdlibSelfTest;
+  CodegenSelfTest;
+  BinEncoderSelfTest;
+  BinObjSelfTest;
+  PEExeSelfTest;
+End;
+
+{ ------------------------------------------------------------ }
+{ Run : point d entree - portee TODO 01-25. CHANGEMENT CENTRAL de ce     }
+{ TODO 25 (validation finale) : Run() BASCULE ENFIN, pour un VRAI            }
+{ fichier passe en argument, de "seulement tokeniser" (comportement            }
+{ provisoire depuis le TODO 01/02, garde tel quel par TODO 21/22/23         }
+{ pour eviter toute regression PENDANT que le codegen/assembleur/           }
+{ ecrivain PE grandissait par etapes) a une VRAIE tentative de              }
+{ compilation complete (ParseSwiftProgram -> CompileProgram -> .asm ->           }
+{ BinAssembleFile -> BinResolveFixups+WriteCOFFObj [-obj] OU                     }
+{ WritePEExe [par defaut]) - EXACTEMENT ce que ce TODO 25 doit VERIFIER           }
+{ (voir le rapport d en-tete de fichier, section TODO 25, mis a jour            }
+{ juste apres ce TODO) : "compile+EXECUTE reellement, pas seulement            }
+{ compile sans erreur". Sans ce basculement, -obj/-asm restaient des               }
+{ options mortes (reservees depuis le TODO 01) et aucune mesure               }
+{ honnete fichier par fichier n etait possible via l outil reel               }
+{ lui-meme. Pour un construct hors de la portee actuelle du codegen                }
+{ (fonctions/controle/structs/etc., voir TODO 21), FatalError s arrete           }
+{ PROPREMENT, EXACTEMENT comme le fait deja chaque XxxSelfTest -               }
+{ AUCUN comportement nouveau, seulement le meme arret propre applique             }
+{ maintenant a un VRAI fichier plutot qu a un auto-test synthetique. }
+{ ------------------------------------------------------------ }
+
+Procedure Run;
+Var
+  I : Integer;
+  AsmFileName : TString;
+  KeepAsm : Boolean;
+Begin
+  RunAllSelfTests;
 
   ParseArgs;
   ShowBanner;
@@ -10504,24 +13945,51 @@ Begin
   If IOResult <> 0 Then
     FatalError('impossible d''ouvrir le fichier source: ' + Opts.SrcFile);
   LexOpened := True;
+
+  StmtInit; ExprInit; SymInit; TypeInit; FuncDefInit; MethodPoolInit; EnumCaseInit;
+  ParserInit;
+
   LexInit;
-
-  Repeat
-    LexNextToken;
-    PrintToken(CurToken);
-    PrintIdentClass(CurToken);
-  Until CurToken.Kind = TOK_EOF;
-
+  LexAll;
   LexClose;
 
-  ShowStats;
+  If Opts.DebugMode Then
+    For I := 0 To TokenCount - 1 Do
+    Begin
+      PrintToken(TokenPool[I]);
+      PrintIdentClass(TokenPool[I]);
+    End;
+
   If Opts.Verbose Then
-    WriteLn('Tokens produits  : ', TokenCount);
-  WriteLn('SWIFTW32: lexeur+classification+types+declarations+expressions+',
-    'controle+fonctions+structs+classes+protocoles+enums+generiques+',
-    'optionnels+gestion d''erreurs+collections+chaines (TODO 01-17) en ',
-    'place - analyseur de haut niveau restant/generateur de code pas ',
-    'encore implementes (TODO 18+).');
+    WriteLn('Tokens produits  : ', TokenCount, ' (', TotalLines, ' lignes)');
+
+  ParseSwiftProgram;
+
+  KeepAsm := Opts.AsmOutput;
+  If KeepAsm Then
+    AsmFileName := ReplaceExt(Opts.OutFile, '.asm')
+  Else
+    AsmFileName := ReplaceExt(Opts.OutFile, '.$$$');
+
+  CompileProgram(AsmFileName);
+  BinAssembleFile(AsmFileName);
+
+  If Opts.ObjOnly Then
+  Begin
+    BinResolveFixups;
+    WriteCOFFObj(Opts.OutFile);
+  End
+  Else
+    WritePEExe(Opts.OutFile);
+
+  If Not KeepAsm Then
+  Begin
+    Assign(LexSrcF, AsmFileName);
+    Erase(LexSrcF);
+  End;
+
+  ShowStats;
+  WriteLn('SWIFTW32: ', Opts.OutFile, ' genere avec succes.');
 End;
 
 BEGIN
