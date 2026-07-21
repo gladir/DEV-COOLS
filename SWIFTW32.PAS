@@ -600,13 +600,13 @@ Program SWIFTW32;
   de "seulement tokeniser" a une VRAIE tentative de compilation complete
   - voir la note d en-tete de Run() plus bas), avec le resultat suivant :
 
-  REUSSITE COMPLETE, 9/12 FICHIERS (compile, produit un .EXE PE Win32 REEL,
+  REUSSITE COMPLETE, 10/12 FICHIERS (compile, produit un .EXE PE Win32 REEL,
   EXECUTE sur Windows reel - Git Bash ET PowerShell natif -, sortie
   EXACTEMENT conforme a ce qu un vrai compilateur Swift produirait, code
-  de sortie 0) - MIS A JOUR apres CINQ extensions post-TODO25 (controle
+  de sortie 0) - MIS A JOUR apres SIX extensions post-TODO25 (controle
   de flux, construction de classe, compilation de fonctions, defer au
-  niveau fichier, parametres "inout" - voir leurs propres blocs plus bas
-  pour le detail complet de chacune) :
+  niveau fichier, parametres "inout", "??"/deballage force - voir leurs
+  propres blocs plus bas pour le detail complet de chacune) :
     hello.swift    ("Hello, 8086!" / "1" / "1")
     arrays.swift   (10/20/30/40/50/5/0/1/2/3/4)
     classes.swift  (42)
@@ -623,13 +623,11 @@ Program SWIFTW32;
       factorial/swap) PARTAGEANT les MEMES noms de parametres, recursion
       (factorial) ET parametres "inout" (swap, jamais appelee mais
       compilee quand meme) EN UN SEUL fichier)
+    optionals.swift(42/42/99 - "??" (court-circuit REEL) ET deballage
+      force ("!"), sur un Optional AVEC valeur ET SANS valeur (nil))
 
-  ARRET PROPRE, 3/12 FICHIERS RESTANTS (FatalError EXACT et PRECIS,
+  ARRET PROPRE, 2/12 FICHIERS RESTANTS (FatalError EXACT et PRECIS,
   jamais un plantage, jamais une valeur devinee) :
-    - optionals.swift : "let result: Int = maybeValue ?? 0" -
-        initialiseur de global non repliable (nil-coalescing sur une
-        VARIABLE, jamais un simple litteral - "??" lui-meme reste non
-        couvert dans CompileExpr).
     - protos.swift    : "let c: Circle = Circle(radius: 5)" -
         initialiseur de global non repliable (construction de STRUCT,
         valeur MULTI-MOTS incompatible avec la convention EAX unique -
@@ -964,6 +962,60 @@ Program SWIFTW32;
   par adresse a un appel "inout" (call site, "&x") ; struct/tuple par
   valeur comme parametre/local (une seule case EAX/EBP+N par symbole)
   restent toutes hors de portee.
+  ============================================================ *)
+
+(* ============================================================
+  EXTENSION "??" (NIL-COALESCING) + DEBALLAGE FORCE (ajoutee APRES l
+  EXTENSION PARAMETRES INOUT ci-dessus, sur demande explicite de l
+  utilisateur suite au rapport "optionals.swift : initialiseur non
+  repliable" - meme discipline incrementale que toutes les extensions
+  post-TODO25 de ce fichier).
+  ============================================================
+  AJOUTE : "a ?? b" (EK_BINARY, Op='??') compile desormais en un VRAI
+  court-circuit (TEST EAX,EAX/JZ - le membre DROIT n est evalue QUE si
+  le GAUCHE est nil, jamais systematiquement, contrairement au +/-/*
+  generique) ; "a!" (EK_FORCEDUNWRAP) est un simple PASSTHROUGH
+  (CompileExpr(Left), rien de plus). Les DEUX reposent sur la
+  representation SIMPLIFIEE d Optional<T> DEJA implicite dans ce
+  generateur de code depuis que EK_NILLIT emet "MOV EAX,0" (TODO 21,
+  premiere passe) : Optional<T> N EST PAS un VRAI enum a deux cas
+  (present/absent) distinct de sa charge utile, c est directement T
+  lui-meme, "nil" etant simplement 0 - donc "a ?? b" devient "si a<>0
+  alors a sinon b" et "a!" n a litteralement RIEN a deballer. Ceci
+  signifie aussi qu un Optional<Int> contenant REELLEMENT 0 (une valeur
+  legitime, pas nil) serait a tort traite comme nil - une limitation
+  DEJA implicitement acceptee depuis le tout premier codegen de nil,
+  jamais introduite maintenant, et non exercee par aucun echantillon
+  (optionals.swift n utilise jamais 0 comme valeur presente).
+
+  CORRIGE EN MEME TEMPS : EmitDataSeg ne testait que TYK_STRING/
+  TYK_INT/TYK_BOOL pour le dispatch "DD <valeur reelle>" d un global -
+  un "var maybeValue: Int? = 42" (TypeIdx resolu a TYK_OPTIONAL, PAS
+  TYK_INT directement) tombait donc dans la branche generique "DD 0"
+  MEME SI son initialiseur (42) etait parfaitement repliable - un
+  DEUXIEME bogue latent (distinct du "??" lui-meme), trouve en ecrivant
+  le nouveau self-test (PAS par execution cette fois, la valeur "correcte
+  par coincidence" n aurait pu masquer ce defaut precis si l assertion
+  n avait pas verifie le CONTENU exact du .DATA emis). Corrige en
+  deballant (TypeResolveOptional, deja utilise partout ailleurs pour ce
+  meme but) avant de tester Int/Bool.
+
+  Egalement ajoute a EmitDataSeg/CompileGlobalRuntimeInits :
+  CgIsOptionalRuntimeInit (troisieme cas de "global non repliable
+  desormais initialisable A L EXECUTION", avec CgIsClassCtorCall/
+  CgIsUserFuncCall) - reconnait "a ?? b"/"a!" comme initialiseur de
+  global et laisse CompileGlobalRuntimeInits calculer sa VRAIE valeur au
+  demarrage, EXACTEMENT le meme mecanisme que les DEUX extensions
+  precedentes ayant ce besoin.
+
+  REUSSITE COMPLETE : optionals.swift (42/42/99, verifie par EXECUTION
+  reelle, Git Bash ET PowerShell natif - couvre "??" avec valeur presente
+  ET nil, PLUS le deballage force, EN UN SEUL fichier).
+
+  LIMITATIONS ASSUMEES : "if let"/"guard let" (liaison optionnelle,
+  deballage conditionnel) ; chaining optionnel (?.) ; Optional<String>/
+  Optional<classe> dans un "??"/deballage force (limite ici a Int/Bool,
+  seuls types exerces par optionals.swift) restent hors de portee.
   ============================================================ *)
 
 { ============================================================ }
@@ -12011,6 +12063,21 @@ Begin
     (FuncFind(ExprPool[ExprPool[E].Left].NameVal, ExprPool[E].ArgCount) >= 0);
 End;
 
+{ CgIsOptionalRuntimeInit : Vrai pour "a ?? b" (EK_BINARY, Op='??') OU   }
+{ "a!" (EK_FORCEDUNWRAP) - extension "??"/deballage force (TODO 21,               }
+{ suite au rapport "optionals.swift" - TODO 25) - TROISIEME (avec               }
+{ CgIsClassCtorCall/CgIsUserFuncCall) cas de "global non repliable"               }
+{ qu EmitDataSeg/CompileGlobalRuntimeInits savent desormais              }
+{ INITIALISER REELLEMENT A L EXECUTION plutot que de s arreter                          }
+{ proprement - CompileExpr sait deja compiler les DEUX (representation           }
+{ SIMPLIFIEE d Optional<T>, voir leur propre note d en-tete). }
+Function CgIsOptionalRuntimeInit(E: Integer): Boolean;
+Begin
+  CgIsOptionalRuntimeInit := (E >= 0) And (E < ExprCount) And
+    (((ExprPool[E].Kind = EK_BINARY) And (ExprPool[E].Op = '??')) Or
+     (ExprPool[E].Kind = EK_FORCEDUNWRAP));
+End;
+
 { EmitDataSeg : section .DATA COMPLETE en une fois - globaux (parcours   }
 { de SymTab, IsGlobal) puis pool de chaines litterales (CgCollectStrings          }
 { deja execute AVANT cet appel, voir CompileProgram). DIFFERENCE REELLE            }
@@ -12068,7 +12135,8 @@ Begin
       If SymTab[I].HasInit And (SymTab[I].InitExprIdx >= 0) And
          Not ExprPool[SymTab[I].InitExprIdx].IsConst And
          Not CgIsClassCtorCall(SymTab[I].InitExprIdx) And
-         Not CgIsUserFuncCall(SymTab[I].InitExprIdx) Then
+         Not CgIsUserFuncCall(SymTab[I].InitExprIdx) And
+         Not CgIsOptionalRuntimeInit(SymTab[I].InitExprIdx) Then
         FatalError('TODO 21 : generateur de code, initialiseur de global "' +
           SymTab[I].Name + '" non repliable a la compilation (appel de ' +
           'fonction utilisateur, expression Optional, etc.) - seuls les ' +
@@ -12079,8 +12147,17 @@ Begin
          (TypeTab[SymTab[I].TypeIdx].Kind = TYK_STRING) And
          (SymTab[I].ConstVal.Kind = CK_STRING) Then
         EmitRaw(CgVarLabel(I) + '  DB "' + SymTab[I].ConstVal.StrVal + '", 0')
+      { TYK_OPTIONAL (extension "??"/Optional, suite au rapport                  }
+      { "optionals.swift") : DEBALLE (TypeResolveOptional, deja utilise           }
+      { partout ailleurs pour ce meme but) AVANT de tester Int/Bool - un          }
+      { "var maybeValue: Int? = 42" reste un simple "DD 42" : la                            }
+      { representation runtime SIMPLIFIEE d Optional<T> dans ce                          }
+      { generateur de code EST directement celle de T (nil = 0, voir                    }
+      { EK_NILLIT/EK_FORCEDUNWRAP/le "??" de CompileExpr) - AUCUN               }
+      { present/absent distinct (pas de VRAI enum a deux cas), simplification            }
+      { deja implicite depuis que EK_NILLIT emet "MOV EAX,0". }
       Else If (SymTab[I].TypeIdx >= 0) And (SymTab[I].TypeIdx < TypeCount) And
-         (TypeTab[SymTab[I].TypeIdx].Kind In [TYK_INT, TYK_BOOL]) Then
+         (TypeTab[TypeResolveOptional(SymTab[I].TypeIdx)].Kind In [TYK_INT, TYK_BOOL]) Then
         EmitRaw(CgVarLabel(I) + '  DD ' + IntToStrSW(SymTab[I].ConstVal.IntVal))
       Else
         EmitRaw(CgVarLabel(I) + '  DD 0');
@@ -12349,6 +12426,7 @@ End;
 { portee documentee en tete de section s arrete PROPREMENT (FatalError). }
 Procedure CompileExpr(E: Integer);
 Var SI, ArgE, ArgT, FD, AI : Integer;
+    LblElse, LblEnd : TString;
 Begin
   If E < 0 Then Exit;
   Case ExprPool[E].Kind Of
@@ -12408,7 +12486,30 @@ Begin
       { HORS de portee (non exerces par aucun echantillon actuel - ni                    }
       { arrays.swift ni loops.swift ne les utilisent), tombent donc dans              }
       { le Else FatalError final comme tout autre operateur non couvert. }
-      If (ExprPool[E].Op <> '+') And (ExprPool[E].Op <> '-') And (ExprPool[E].Op <> '*') And
+      { "??" (nil-coalescing, extension suite au rapport "optionals.swift"       }
+      { - TODO 25) : CAS A PART, jamais le PUSH/POP EAX/EBX generique             }
+      { ci-dessous - le membre DROIT ne doit PAS toujours etre evalue                    }
+      { (court-circuit REEL, comme le "??" Swift authentique : le membre           }
+      { droit peut avoir des effets de bord, ex. un appel de fonction).          }
+      { Representation SIMPLIFIEE d Optional<T> dans ce generateur de              }
+      { code (deja implicite depuis EK_NILLIT emettant "MOV EAX,0") : PAS       }
+      { de VRAI enum a deux cas (present/absent) distinct de sa charge -                }
+      { nil EST 0, donc "a ?? b" devient simplement "si a<>0 alors a               }
+      { sinon b" (TEST+JNZ) - AUCUNE fonction "has-value" separee                       }
+      { n existe ni n est necessaire ici. }
+      If ExprPool[E].Op = '??' Then
+      Begin
+        CompileExpr(ExprPool[E].Left);
+        LblElse := CgLabelGen;
+        LblEnd  := CgLabelGen;
+        EmitInstr('TEST EAX,EAX');
+        EmitInstr('JZ ' + LblElse);
+        EmitInstr('JMP ' + LblEnd);
+        EmitLabel(LblElse);
+        CompileExpr(ExprPool[E].Right);
+        EmitLabel(LblEnd);
+      End
+      Else If (ExprPool[E].Op <> '+') And (ExprPool[E].Op <> '-') And (ExprPool[E].Op <> '*') And
          (ExprPool[E].Op <> '<') And (ExprPool[E].Op <> '<=') And
          (ExprPool[E].Op <> '>') And (ExprPool[E].Op <> '>=') And
          (ExprPool[E].Op <> '==') And (ExprPool[E].Op <> '!=') Then
@@ -12518,6 +12619,17 @@ Begin
           'argument/une fonction utilisateur SANS parametre "inout" le sont - ' +
           'methodes/structs restent une extension future) : ' +
           ExprPool[ExprPool[E].Left].NameVal);
+    EK_FORCEDUNWRAP:
+      { "Optionnel!" (deballage force, extension suite au rapport            }
+      { "optionals.swift" - TODO 25) - simple PASSTHROUGH : la                              }
+      { representation SIMPLIFIEE d Optional<T> ETANT deja directement              }
+      { celle de T (voir la note d en-tete du "??" ci-dessus), il n y a                 }
+      { RIEN de plus a "deballer" ICI - EAX contient deja la VALEUR              }
+      { apres CompileExpr(Left). AUCUNE panique reelle a l execution si            }
+      { la valeur "est" nil (0) - meme simplification "pas de mecanisme           }
+      { panique/erreur reel" que partout ailleurs dans ce generateur de           }
+      { code (TODO 21, roadmap d en-tete). }
+      CompileExpr(ExprPool[E].Left);
   Else
     FatalError('TODO 21 : generateur de code, forme d''expression non couverte ' +
       'pour cette premiere passe (portee volontairement reduite a hello.swift, ' +
@@ -12884,7 +12996,8 @@ Var I : Integer;
 Begin
   For I := 0 To SymCount - 1 Do
     If (SymTab[I].Kind = SK_VAR) And SymTab[I].IsGlobal And SymTab[I].HasInit And
-       (CgIsClassCtorCall(SymTab[I].InitExprIdx) Or CgIsUserFuncCall(SymTab[I].InitExprIdx)) Then
+       (CgIsClassCtorCall(SymTab[I].InitExprIdx) Or CgIsUserFuncCall(SymTab[I].InitExprIdx) Or
+        CgIsOptionalRuntimeInit(SymTab[I].InitExprIdx)) Then
     Begin
       CompileExpr(SymTab[I].InitExprIdx);
       EmitInstr('MOV DWORD PTR ' + CgVarOperand(I) + ',EAX');
@@ -13475,6 +13588,59 @@ Begin
   CodegenAssert('etiquette de fonction _SWF_swap presente (compilee ' +
     'sans arret, malgre ses parametres "inout")',
     CgFileHasSubstring(TmpAsm, ASM_PFX_FUNC + 'swap:'));
+
+  Assign(CgOutF, TmpAsm);
+  Erase(CgOutF);
+
+  { re-initialise les tables globales pour ne pas polluer Run reel }
+  StmtInit;
+  ExprInit;
+  SymInit;
+  FuncDefInit;
+  MethodPoolInit;
+  EnumCaseInit;
+
+  { optionals.swift EN ENTIER (extension "??"/deballage force, TODO 21,   }
+  { suite au rapport "optionals.swift : initialiseur non repliable" -               }
+  { TODO 25) - deja verifie par EXECUTION reelle (Git Bash ET PowerShell            }
+  { natif, sortie "42"/"42"/"99" EXACTEMENT conforme) AVANT d ecrire ces          }
+  { assertions structurelles. }
+  Assign(LexSrcF, TmpSrc);
+  Rewrite(LexSrcF);
+  WriteLn(LexSrcF, 'var maybeValue: Int? = 42');
+  WriteLn(LexSrcF, 'var noValue: Int? = nil');
+  WriteLn(LexSrcF, 'let result: Int = maybeValue ?? 0');
+  WriteLn(LexSrcF, 'print(result)');
+  WriteLn(LexSrcF, 'let forced: Int = maybeValue!');
+  WriteLn(LexSrcF, 'print(forced)');
+  WriteLn(LexSrcF, 'let defaulted: Int = noValue ?? 99');
+  WriteLn(LexSrcF, 'print(defaulted)');
+  Close(LexSrcF);
+  Assign(LexSrcF, TmpSrc);
+  Reset(LexSrcF);
+  LexOpened := True;
+  LexInit;
+  LexAll;
+  LexClose;
+  Erase(LexSrcF);
+  ParserInit;
+  ParseSwiftProgram;
+
+  CompileProgram(TmpAsm);
+
+  CodegenAssert('global Optional<Int> avec initialiseur LITTERAL foldable ' +
+    '("maybeValue") recoit son VRAI contenu (DD 42), PAS "DD 0" - ' +
+    'TypeResolveOptional (EmitDataSeg) present',
+    CgFileHasSubstring(TmpAsm, ASM_PFX_GVAR + 'maybeValue  DD 42'));
+  CodegenAssert('"noValue: Int? = nil" -> DD 0 (nil EST 0, representation ' +
+    'simplifiee) present',
+    CgFileHasSubstring(TmpAsm, ASM_PFX_GVAR + 'noValue  DD 0'));
+  CodegenAssert('"??" (court-circuit) : TEST EAX,EAX present',
+    CgFileHasSubstring(TmpAsm, 'TEST EAX,EAX'));
+  CodegenAssert('"result"/"forced"/"defaulted" (non repliables, "??"/"!") ' +
+    'recoivent un placeholder .DATA "DD 0" (valeur reelle ecrite A ' +
+    'L EXECUTION) present',
+    CgFileHasSubstring(TmpAsm, ASM_PFX_GVAR + 'result  DD 0'));
 
   Assign(CgOutF, TmpAsm);
   Erase(CgOutF);
