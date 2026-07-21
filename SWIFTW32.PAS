@@ -600,13 +600,13 @@ Program SWIFTW32;
   de "seulement tokeniser" a une VRAIE tentative de compilation complete
   - voir la note d en-tete de Run() plus bas), avec le resultat suivant :
 
-  REUSSITE COMPLETE, 8/12 FICHIERS (compile, produit un .EXE PE Win32 REEL,
+  REUSSITE COMPLETE, 9/12 FICHIERS (compile, produit un .EXE PE Win32 REEL,
   EXECUTE sur Windows reel - Git Bash ET PowerShell natif -, sortie
   EXACTEMENT conforme a ce qu un vrai compilateur Swift produirait, code
-  de sortie 0) - MIS A JOUR apres QUATRE extensions post-TODO25 (controle
+  de sortie 0) - MIS A JOUR apres CINQ extensions post-TODO25 (controle
   de flux, construction de classe, compilation de fonctions, defer au
-  niveau fichier - voir leurs propres blocs plus bas pour le detail
-  complet de chacune) :
+  niveau fichier, parametres "inout" - voir leurs propres blocs plus bas
+  pour le detail complet de chacune) :
     hello.swift    ("Hello, 8086!" / "1" / "1")
     arrays.swift   (10/20/30/40/50/5/0/1/2/3/4)
     classes.swift  (42)
@@ -619,15 +619,13 @@ Program SWIFTW32;
       passer par la convention EAX sans monomorphisation reelle)
     loops.swift    (0/1/2/3/4/10/9/8/0/1/2/3/4/0/1/2/0/1/3/4/5 - exerce
       while/repeat-while/for-in/break/continue EN UN SEUL fichier)
+    math.swift     (30/200/120 - QUATRE fonctions (add/multiply/
+      factorial/swap) PARTAGEANT les MEMES noms de parametres, recursion
+      (factorial) ET parametres "inout" (swap, jamais appelee mais
+      compilee quand meme) EN UN SEUL fichier)
 
-  ARRET PROPRE, 4/12 FICHIERS RESTANTS (FatalError EXACT et PRECIS,
+  ARRET PROPRE, 3/12 FICHIERS RESTANTS (FatalError EXACT et PRECIS,
   jamais un plantage, jamais une valeur devinee) :
-    - math.swift      : fonction "swap" avec DEUX parametres "inout" -
-        alias PAR ADRESSE non couvert (extension future) ; "add"/
-        "multiply"/"factorial" (recursion COMPRISE), eux, compilent et
-        s executeraient correctement (non exerce ici, "swap" arrete tout
-        le fichier AVANT que quoi que ce soit d autre ne soit atteint,
-        EmitUserFunctions compile TOUTE fonction sans condition).
     - optionals.swift : "let result: Int = maybeValue ?? 0" -
         initialiseur de global non repliable (nil-coalescing sur une
         VARIABLE, jamais un simple litteral - "??" lui-meme reste non
@@ -892,6 +890,80 @@ Program SWIFTW32;
   par aucun echantillon actuel ; "throw"/"do"/"catch"/"try" restent hors
   de portee (STK_THROW/STK_DO, jamais rencontres par errors.swift lui-
   meme puisqu aucune VRAIE erreur n y est jamais lancee).
+  ============================================================ *)
+
+(* ============================================================
+  EXTENSION PARAMETRES "INOUT" + CORRECTIF EK_IDENT/SymFind (ajoutee
+  APRES l EXTENSION DEFER ci-dessus, sur demande explicite de l
+  utilisateur suite au rapport "math.swift : fonction 'swap' avec
+  parametre(s) inout non couverte" - meme discipline incrementale que
+  toutes les extensions post-TODO25 de ce fichier).
+  ============================================================
+  AJOUTE : TSymRec.IsInoutAlias (Vrai UNIQUEMENT pour un parametre
+  "inout", RegisterFuncScopeSymbols) - son emplacement EBP-relatif
+  contient une ADRESSE (celle de l argument de l appelant), jamais la
+  valeur directement. CompileExpr (EK_IDENT, LECTURE) ajoute un NIVEAU
+  d indirection supplementaire (charge l adresse PUIS DEREFERENCE) ;
+  CompileStmt (STK_ASSIGN, ECRITURE d une cible "inout") ecrit A TRAVERS
+  l adresse (store-through-pointer) plutot que d ECRASER l adresse
+  elle-meme. Limite a Int/Bool (String, deja representee par une
+  adresse via LEA, combinee a un ALIAS par adresse donnerait un DOUBLE
+  niveau non couvert - non exerce, seul math.swift utilise "inout").
+  CompileFuncDef n a PLUS besoin d arreter une fonction entiere des
+  qu elle a un parametre "inout" (l ancien FatalError de l EXTENSION
+  COMPILATION DE FONCTIONS a ete retire) - le deplacement EBP d un
+  parametre "inout" reste EXACTEMENT +8/+12/... comme un parametre
+  ordinaire (une SEULE case de 4 octets, que ce soit une valeur ou une
+  adresse) ; seule la lecture/ecriture differe. Le CALL SITE (passer
+  "&argument" a un parametre "inout") reste HORS de portee - "swap"
+  n est jamais appelee par math.swift, seul son CORPS est compile.
+
+  BOGUE REEL trouve et corrige PENDANT cette extension (par EXECUTION
+  reelle du fichier PRODUIT, PAS un self-test ni une relecture du .asm) :
+  une fois "inout" lui-meme couvert, math.swift compilait et s executait
+  SANS ERREUR mais imprimait des valeurs ABERRANTES (proches de la
+  memoire non initialisee) pour "sum"/"product", SEUL "fact5" (120)
+  etant correct. Cause racine, bien PLUS profonde que "inout" : QUATRE
+  fonctions (add, multiply, factorial, swap) partagent des noms de
+  PARAMETRES identiques ("a"/"b" dans add, multiply, ET swap) - or
+  CompileExpr (EK_IDENT) et CompileStmt (STK_ASSIGN) resolvaient encore
+  un identificateur par SymFind(NameVal) AU MOMENT DU GENERATEUR DE
+  CODE, c est-a-dire bien APRES que TOUTES les fonctions du fichier
+  aient ete PARSEES (et leurs portees refermees) - SymFind fait un
+  balayage ARRIERE par NOM sur TOUT SymTab (voir sa propre note d
+  en-tete) et resolvait donc TOUJOURS au DERNIER "a"/"b" du FICHIER
+  ENTIER (ceux de "swap", un parametre "inout" !) plutot qu au PROPRE
+  parametre de la fonction REELLEMENT en cours de compilation - "add"
+  lisait par erreur l ADRESSE (inout) de "swap" comme si c etait sa
+  PROPRE valeur directe, dereferencait une adresse non definie a ce
+  moment-la (memoire de pile quelconque). C est le MEME defaut de
+  conception que celui deja corrige pour STK_FORRANGE (variable de
+  boucle) et TFuncDefRec (parametres/locales) - mais il avait echappe a
+  CES corrections precedentes car AUCUN echantillon avant math.swift ne
+  reutilisait un MEME nom de parametre a travers PLUSIEURS fonctions
+  COMPILEES (generics.swift a bien deux fonctions avec des parametres
+  nommes "a"/"b", mais JAMAIS toutes les deux invoquees de facon a
+  exposer la collision). CORRIGE a la racine, PAS par un nouveau champ
+  ad hoc sur StmtPool cette fois : TExprNode.Left (jamais utilise pour
+  EK_IDENT) stocke desormais l index SymTab DEJA RESOLU par
+  ExprAddIdent AU MOMENT DU PARSING (SANS AMBIGUITE, la bonne portee
+  etant encore ouverte a cet instant) - CompileExpr/CompileStmt lisent
+  CE champ au lieu de rappeler SymFind. Ce correctif est GENERAL (corrige
+  TOUTE reference EK_IDENT dans TOUT le generateur de code, pas
+  seulement le cas "inout") - la meme classe de bogue aurait pu, en
+  theorie, deja affecter silencieusement N IMPORTE QUELLE paire de
+  fonctions partageant un nom de parametre/variable locale, meme SANS
+  "inout" ; simplement jamais observee avant que math.swift ne
+  l exerce enfin.
+
+  REUSSITE COMPLETE : math.swift (30/200/120, verifie par EXECUTION
+  reelle, Git Bash ET PowerShell natif - "swap" compile mais n est
+  jamais appelee, sans consequence observable).
+
+  LIMITATIONS ASSUMEES : "inout" sur un type String ; passer un argument
+  par adresse a un appel "inout" (call site, "&x") ; struct/tuple par
+  valeur comme parametre/local (une seule case EAX/EBP+N par symbole)
+  restent toutes hors de portee.
   ============================================================ *)
 
 { ============================================================ }
@@ -3209,6 +3281,22 @@ Type
                               { filtre IsGlobal etait simplement retire)                        }
                               { rapportait a tort "temp"/"status" comme des               }
                               { "globaux" non repliables. }
+    IsInoutAlias : Boolean;  { TODO 21 (extension "parametres inout", suite   }
+                              { au rapport "math.swift") : Vrai UNIQUEMENT            }
+                              { pour un PARAMETRE "inout" (RegisterFuncScopeSymbols)         }
+                              { - son emplacement EBP-relatif contient une              }
+                              { ADRESSE (celle de l argument de l APPELANT),           }
+                              { jamais la valeur directement : CompileExpr             }
+                              { (EK_IDENT)/CompileStmt (STK_ASSIGN) ajoutent           }
+                              { UN NIVEAU d indirection supplementaire des             }
+                              { que ce champ est Vrai (dereferencement en                    }
+                              { LECTURE, ecriture PAR L ADRESSE), plutot                     }
+                              { qu utiliser directement CgVarOperand comme               }
+                              { pour tout autre symbole. Limite a Int/Bool -            }
+                              { un "inout String" resterait hors de portee              }
+                              { (FatalError explicite, non exerce par                       }
+                              { math.swift, seul echantillon a utiliser                     }
+                              { "inout"). }
   End;
 
 Var
@@ -3355,6 +3443,7 @@ Begin
   SymTab[SymCount].WasVarDecl  := False;
   SymTab[SymCount].Offset      := 0;
   SymTab[SymCount].IsTopLevelLocal := False;
+  SymTab[SymCount].IsInoutAlias    := False;
 
   SymAdd := SymCount;
   Inc(SymCount);
@@ -4183,7 +4272,22 @@ Type
   TExprNode = Record
     Kind    : TExprKind;
     Op      : TString;    { EK_UNARY/EK_BINARY/EK_ASCAST : texte de l operateur }
-    Left    : Integer;     { -1 si absent }
+    Left    : Integer;     { -1 si absent ; EK_IDENT (TODO 21, generateur     }
+                            { de code, correctif "math.swift") : index SymTab           }
+                            { DEJA RESOLU par ExprAddIdent AU MOMENT DU               }
+                            { PARSING (SymFind y est SANS AMBIGUITE, la           }
+                            { bonne portee etant encore ouverte) - CompileExpr           }
+                            { DOIT lire CE champ plutot que rappeler                       }
+                            { SymFind(NameVal) lui-meme (bien APRES que                     }
+                            { TOUTES les portees du fichier soient fermees) :             }
+                            { bogue REEL trouve par EXECUTION - deux                            }
+                            { PARAMETRES DE FONCTIONS DIFFERENTES portant le            }
+                            { MEME nom (ex. "a"/"b" dans add/multiply/swap,                }
+                            { math.swift) resolvaient tous au DERNIER "a"/"b"           }
+                            { du FICHIER ENTIER (SymFind fait un balayage             }
+                            { ARRIERE par nom, voir sa propre note d en-tete),               }
+                            { jamais au PROPRE parametre de la fonction en              }
+                            { cours de compilation. }
     Right   : Integer;     { -1 si absent }
     Extra   : Integer;     { TypeIdx (EK_ASCAST/EK_ISCHECK) ou -1 }
     NameVal : TString;     { EK_IDENT / EK_SELECTOR / EK_OPTIONALCHAIN }
@@ -4329,6 +4433,10 @@ Begin
   N := ExprNew(EK_IDENT);
   ExprPool[N].NameVal := Nam;
   SI := SymFind(Nam);
+  ExprPool[N].Left := SI;   { TODO 21 (generateur de code) : voir la note   }
+                            { d en-tete de TExprNode.Left - resolu ICI, SANS       }
+                            { AMBIGUITE, tant que la bonne portee est encore          }
+                            { ouverte. }
   If SI >= 0 Then
   Begin
     ExprPool[N].TypeIdx := SymTab[SI].TypeIdx;
@@ -6967,8 +7075,17 @@ Begin
     PIdx := TypeTab[FT].ParamFirst + I;
     SI := SymAdd(FieldPool[PIdx].Name, SK_VAR, FieldPool[PIdx].TypeIdx,
       Not FieldPool[PIdx].IsInout);
-    If (SI >= 0) And (Not FieldPool[PIdx].IsInout) Then
-      SymTab[SI].HasInit := True;
+    If SI >= 0 Then
+    Begin
+      If Not FieldPool[PIdx].IsInout Then
+        SymTab[SI].HasInit := True;
+      { TODO 21 (extension "parametres inout", suite au rapport                    }
+      { "math.swift") : voir la note d en-tete de TSymRec.IsInoutAlias -           }
+      { CompileExpr/CompileStmt en ont besoin pour ajouter le NIVEAU              }
+      { d indirection supplementaire (l emplacement EBP-relatif de ce              }
+      { parametre contient une ADRESSE, jamais la valeur directement). }
+      SymTab[SI].IsInoutAlias := FieldPool[PIdx].IsInout;
+    End;
   End;
 End;
 
@@ -12243,10 +12360,35 @@ Begin
       EmitInstr('LEA EAX,[' + ASM_PFX_STRING + IntToStrSW(CgStrPoolOfExpr[E]) + ']');
     EK_IDENT:
       Begin
-        SI := SymFind(ExprPool[E].NameVal);
+        SI := ExprPool[E].Left;   { DEJA resolu par ExprAddIdent au moment    }
+                                  { du PARSING (voir la note d en-tete de              }
+                                  { TExprNode.Left) - JAMAIS SymFind(NameVal)          }
+                                  { ici, ambigu bien APRES que toutes les              }
+                                  { portees du fichier soient fermees. }
         If SI < 0 Then
           FatalError('TODO 21 : generateur de code, identificateur non resolu: ' +
             ExprPool[E].NameVal)
+        { parametre "inout" (extension, suite au rapport "math.swift") :  }
+        { son emplacement EBP-relatif contient une ADRESSE (voir la note           }
+        { d en-tete de TSymRec.IsInoutAlias), jamais la valeur directement -           }
+        { UN NIVEAU d indirection supplementaire est donc necessaire : charge       }
+        { l ADRESSE puis DEREFERENCE. Limite a Int/Bool (String, valeur              }
+        { DEJA representee par une adresse - LEA - combinee a un ALIAS               }
+        { par adresse donnerait un DOUBLE niveau non couvert ici, non               }
+        { exerce par math.swift, seul echantillon utilisant "inout"). }
+        Else If SymTab[SI].IsInoutAlias Then
+        Begin
+          If (SymTab[SI].TypeIdx >= 0) And (SymTab[SI].TypeIdx < TypeCount) And
+             (TypeTab[SymTab[SI].TypeIdx].Kind = TYK_STRING) Then
+            FatalError('TODO 21 : generateur de code, parametre "inout" de ' +
+              'type String non couvert pour cette premiere passe (seuls ' +
+              'Int/Bool le sont)')
+          Else
+          Begin
+            EmitInstr('MOV EAX,DWORD PTR ' + CgVarOperand(SI));
+            EmitInstr('MOV EAX,DWORD PTR [EAX]');
+          End;
+        End
         Else If (SymTab[SI].TypeIdx >= 0) And (SymTab[SI].TypeIdx < TypeCount) And
            (TypeTab[SymTab[SI].TypeIdx].Kind = TYK_STRING) Then
           { un global String stocke ICI (EmitDataSeg) ses VRAIS octets, PAS   }
@@ -12448,10 +12590,29 @@ Begin
           'l''est)')
       Else
       Begin
-        TgtSI := SymFind(ExprPool[StmtPool[S].Left].NameVal);
+        { DEJA resolu par ExprAddIdent au moment du PARSING - voir la note   }
+        { d en-tete de TExprNode.Left/EK_IDENT ci-dessus (meme correctif           }
+        { "math.swift" que CompileExpr). }
+        TgtSI := ExprPool[StmtPool[S].Left].Left;
         CompileExpr(StmtPool[S].Right);
         If TgtSI >= 0 Then
-          EmitInstr('MOV DWORD PTR ' + CgVarOperand(TgtSI) + ',EAX')
+        Begin
+          { parametre "inout" cible (extension, suite au rapport            }
+          { "math.swift") : son emplacement EBP-relatif contient une              }
+          { ADRESSE - ECRIRE "a travers" cette adresse (store-through-               }
+          { pointer) plutot que d ECRASER l adresse elle-meme. EAX (la              }
+          { valeur a affecter) est sauvee (PUSH/POP) le temps de charger              }
+          { l adresse cible dans EBX. }
+          If SymTab[TgtSI].IsInoutAlias Then
+          Begin
+            EmitInstr('PUSH EAX');
+            EmitInstr('MOV EBX,DWORD PTR ' + CgVarOperand(TgtSI));
+            EmitInstr('POP EAX');
+            EmitInstr('MOV DWORD PTR [EBX],EAX');
+          End
+          Else
+            EmitInstr('MOV DWORD PTR ' + CgVarOperand(TgtSI) + ',EAX');
+        End
         Else
           FatalError('TODO 21 : generateur de code, cible d''affectation non ' +
             'resolue: ' + ExprPool[StmtPool[S].Left].NameVal);
@@ -12752,47 +12913,41 @@ End;
 { _SWRT_ALLOC/_SWRT_STRCONV_ITOA). }
 Procedure CompileFuncDef(FD: Integer);
 Var
-  FT, I, PIdx, ParamCnt, LocalCnt : Integer;
-  HasInoutParam : Boolean;
+  FT, I, ParamCnt, LocalCnt : Integer;
 Begin
+  { parametre(s) "inout" (extension, suite au rapport "math.swift") : PLUS  }
+  { d arret systematique ici - SymTab[...].IsInoutAlias (deja assigne par            }
+  { RegisterFuncScopeSymbols, au moment du PARSING) suffit desormais a               }
+  { CompileExpr/CompileStmt pour ajouter le niveau d indirection                       }
+  { necessaire (voir leur propre note d en-tete). Le deplacement EBP               }
+  { d un parametre "inout" reste EXACTEMENT le meme qu un parametre                      }
+  { ordinaire (+8/+12/... - il occupe TOUJOURS une seule case de 4                          }
+  { octets, qu il s agisse d une valeur directe ou d une ADRESSE) - SEULE            }
+  { la lecture/ecriture differe, jamais la disposition elle-meme. }
   FT := FuncDefPool[FD].TypeIdx;
   ParamCnt := TypeTab[FT].ParamCount;
 
-  HasInoutParam := False;
   For I := 0 To ParamCnt - 1 Do
-  Begin
-    PIdx := TypeTab[FT].ParamFirst + I;
-    If FieldPool[PIdx].IsInout Then HasInoutParam := True;
-  End;
+    SymTab[FuncDefPool[FD].ParamSymFirst + I].Offset := 8 + I * 4;
 
-  If HasInoutParam Then
-    FatalError('TODO 21 : generateur de code, fonction ''' + FuncDefPool[FD].Name +
-      ''' avec parametre(s) "inout" non couverte pour cette premiere passe ' +
-      '(alias par ADRESSE - extension future)')
-  Else
-  Begin
-    For I := 0 To ParamCnt - 1 Do
-      SymTab[FuncDefPool[FD].ParamSymFirst + I].Offset := 8 + I * 4;
+  LocalCnt := FuncDefPool[FD].LocalSymCount;
+  For I := 0 To LocalCnt - 1 Do
+    SymTab[FuncDefPool[FD].LocalSymFirst + I].Offset := -4 - I * 4;
 
-    LocalCnt := FuncDefPool[FD].LocalSymCount;
-    For I := 0 To LocalCnt - 1 Do
-      SymTab[FuncDefPool[FD].LocalSymFirst + I].Offset := -4 - I * 4;
+  EmitLabel(ASM_PFX_FUNC + FuncDefPool[FD].Name);
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  If LocalCnt > 0 Then
+    EmitInstr('SUB ESP,' + IntToStrSW(LocalCnt * 4));
 
-    EmitLabel(ASM_PFX_FUNC + FuncDefPool[FD].Name);
-    EmitInstr('PUSH EBP');
-    EmitInstr('MOV EBP,ESP');
-    If LocalCnt > 0 Then
-      EmitInstr('SUB ESP,' + IntToStrSW(LocalCnt * 4));
+  CgCurFuncEpilogueLbl := CgLabelGen;
+  CompileStmt(FuncDefPool[FD].BodyStmtIdx);
 
-    CgCurFuncEpilogueLbl := CgLabelGen;
-    CompileStmt(FuncDefPool[FD].BodyStmtIdx);
-
-    EmitLabel(CgCurFuncEpilogueLbl);
-    EmitInstr('MOV ESP,EBP');
-    EmitInstr('POP EBP');
-    EmitInstr('RET');
-    EmitBlankLine;
-  End;
+  EmitLabel(CgCurFuncEpilogueLbl);
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
 End;
 
 { EmitUserFunctions : compile TOUTES les fonctions de FuncDefPool, SANS  }
@@ -13244,6 +13399,82 @@ Begin
   CodegenAssert('sortie propre CALL _ExitProcess@4 toujours present ' +
     '(APRES le corps differe, jamais avant)',
     CgFileHasSubstring(TmpAsm, 'CALL _ExitProcess@4'));
+
+  Assign(CgOutF, TmpAsm);
+  Erase(CgOutF);
+
+  { re-initialise les tables globales pour ne pas polluer Run reel }
+  StmtInit;
+  ExprInit;
+  SymInit;
+  FuncDefInit;
+  MethodPoolInit;
+  EnumCaseInit;
+
+  { math.swift EN ENTIER (extension "parametres inout" + CORRECTIF        }
+  { EK_IDENT/TExprNode.Left, TODO 21, suite au rapport "math.swift" -               }
+  { TODO 25) - deja verifie par EXECUTION reelle (Git Bash ET PowerShell            }
+  { natif, sortie "30"/"200"/"120" EXACTEMENT conforme - PAS les valeurs            }
+  { ABERRANTES que le PREMIER essai, sans le correctif EK_IDENT,                        }
+  { produisait pour add/multiply) AVANT d ecrire ces assertions               }
+  { structurelles. QUATRE fonctions PARTAGENT ICI les MEMES noms de              }
+  { parametres ("a"/"b" dans add, multiply, ET swap) - EXACTEMENT le               }
+  { scenario qui revelait l ambiguite de SymFind. }
+  Assign(LexSrcF, TmpSrc);
+  Rewrite(LexSrcF);
+  WriteLn(LexSrcF, 'func add(_ a: Int, _ b: Int) -> Int {');
+  WriteLn(LexSrcF, 'return a + b');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, 'func multiply(_ a: Int, _ b: Int) -> Int {');
+  WriteLn(LexSrcF, 'return a * b');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, 'func factorial(_ n: Int) -> Int {');
+  WriteLn(LexSrcF, 'if n <= 1 {');
+  WriteLn(LexSrcF, 'return 1');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, 'return n * factorial(n - 1)');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, 'func swap(_ a: inout Int, _ b: inout Int) {');
+  WriteLn(LexSrcF, 'let temp: Int = a');
+  WriteLn(LexSrcF, 'a = b');
+  WriteLn(LexSrcF, 'b = temp');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, 'let x: Int = 10');
+  WriteLn(LexSrcF, 'let y: Int = 20');
+  WriteLn(LexSrcF, 'let sum: Int = add(x, y)');
+  WriteLn(LexSrcF, 'let product: Int = multiply(x, y)');
+  WriteLn(LexSrcF, 'let fact5: Int = factorial(5)');
+  WriteLn(LexSrcF, 'print(sum)');
+  WriteLn(LexSrcF, 'print(product)');
+  WriteLn(LexSrcF, 'print(fact5)');
+  Close(LexSrcF);
+  Assign(LexSrcF, TmpSrc);
+  Reset(LexSrcF);
+  LexOpened := True;
+  LexInit;
+  LexAll;
+  LexClose;
+  Erase(LexSrcF);
+  ParserInit;
+  ParseSwiftProgram;
+
+  CompileProgram(TmpAsm);
+
+  CodegenAssert('correctif EK_IDENT : lecture SIMPLE d''un parametre ' +
+    'ordinaire (MOV EAX,DWORD PTR [EBP+8]) present - "a" dans add/' +
+    'multiply/factorial NE doit PAS subir la double indirection "inout"',
+    CgFileHasSubstring(TmpAsm, 'MOV EAX,DWORD PTR [EBP+8]'));
+  CodegenAssert('parametre "inout" : dereferencement (MOV EAX,DWORD PTR ' +
+    '[EAX]) present dans "swap"',
+    CgFileHasSubstring(TmpAsm, 'MOV EAX,DWORD PTR [EAX]'));
+  CodegenAssert('parametre "inout" cible : ecriture par l''adresse ' +
+    '(MOV DWORD PTR [EBX],EAX) present dans "swap"',
+    CgFileHasSubstring(TmpAsm, 'MOV DWORD PTR [EBX],EAX'));
+  CodegenAssert('recursion : appel recursif CALL _SWF_factorial present',
+    CgFileHasSubstring(TmpAsm, 'CALL ' + ASM_PFX_FUNC + 'factorial'));
+  CodegenAssert('etiquette de fonction _SWF_swap presente (compilee ' +
+    'sans arret, malgre ses parametres "inout")',
+    CgFileHasSubstring(TmpAsm, ASM_PFX_FUNC + 'swap:'));
 
   Assign(CgOutF, TmpAsm);
   Erase(CgOutF);
@@ -15193,7 +15424,7 @@ Begin
   End;
 
   ShowStats;
-  WriteLn('SWIFTW32: ', Opts.OutFile, ' genere avec succes.');
+  WriteLn('SWIFTW32: ', Opts.OutFile, ' genere avec succes (TODO 01-25).');
 End;
 
 BEGIN
