@@ -600,49 +600,44 @@ Program SWIFTW32;
   de "seulement tokeniser" a une VRAIE tentative de compilation complete
   - voir la note d en-tete de Run() plus bas), avec le resultat suivant :
 
-  REUSSITE COMPLETE, 3/12 FICHIERS (compile, produit un .EXE PE Win32 REEL,
+  REUSSITE COMPLETE, 7/12 FICHIERS (compile, produit un .EXE PE Win32 REEL,
   EXECUTE sur Windows reel - Git Bash ET PowerShell natif -, sortie
   EXACTEMENT conforme a ce qu un vrai compilateur Swift produirait, code
-  de sortie 0) - MIS A JOUR apres l EXTENSION CONTROLE DE FLUX (if/while/
-  repeat-while/for-in sur intervalle/break/continue/comparaisons,
-  ajoutee APRES ce TODO 25 sur demande explicite de l utilisateur suite
-  au rapport "arrays.swift : boucle for-in non couverte" ci-dessous -
-  voir le bloc "EXTENSION CONTROLE DE FLUX" plus bas pour le detail
-  complet) :
-    hello.swift  ("Hello, 8086!" / "1" / "1")
-    arrays.swift (10/20/30/40/50/5/0/1/2/3/4)
-    loops.swift  (0/1/2/3/4/10/9/8/0/1/2/3/4/0/1/2/0/1/3/4/5 - exerce
+  de sortie 0) - MIS A JOUR apres TROIS extensions post-TODO25 (controle
+  de flux, construction de classe, compilation de fonctions - voir leurs
+  propres blocs plus bas pour le detail complet de chacune) :
+    hello.swift    ("Hello, 8086!" / "1" / "1")
+    arrays.swift   (10/20/30/40/50/5/0/1/2/3/4)
+    classes.swift  (42)
+    control.swift  (2/30/1 - if/else-if/else, switch, fonction avec guard/
+      return, appel depuis un initialiseur de global, EN UN SEUL fichier)
+    enums.swift    (1/3)
+    generics.swift (42/20 - fonctions GENERIQUES, "juste assez" pour
+      passer par la convention EAX sans monomorphisation reelle)
+    loops.swift    (0/1/2/3/4/10/9/8/0/1/2/3/4/0/1/2/0/1/3/4/5 - exerce
       while/repeat-while/for-in/break/continue EN UN SEUL fichier)
 
-  ARRET PROPRE, 9/12 FICHIERS RESTANTS (FatalError EXACT et PRECIS,
+  ARRET PROPRE, 5/12 FICHIERS RESTANTS (FatalError EXACT et PRECIS,
   jamais un plantage, jamais une valeur devinee) :
-    - classes.swift   : "let pet: Animal = Animal()" - initialiseur de
-        global non repliable a la compilation (instanciation de classe,
-        aucun codegen de constructeur n existe).
-    - control.swift   : "let valid: Int = checkAge(25)" - initialiseur de
-        global non repliable (appel de fonction utilisateur) ; if/else et
-        switch, plus loin dans le fichier (desormais REELLEMENT couverts
-        pour if/else depuis l EXTENSION CONTROLE DE FLUX), restent malgre
-        tout jamais atteints (ce premier arret, sur le global, survient
-        AVANT meme la premiere instruction executable).
-    - enums.swift     : "switch dir { ... }" - switch non couvert
-        (STK_SWITCH, toujours hors de portee) ; "let dir"/"let earth"
-        (litteraux), avant, auraient ete corrects.
-    - errors.swift    : "let ok: Int = process()" - initialiseur de
-        global non repliable (appel de fonction utilisateur).
-    - generics.swift  : "let x: Int = identity(42)" - initialiseur de
-        global non repliable (appel de fonction GENERIQUE utilisateur).
-    - math.swift      : "let sum: Int = add(x, y)" - initialiseur de
-        global non repliable (appel de fonction utilisateur).
+    - errors.swift    : "defer { print(99) }" (STK_DEFER, Kind=15) - AUCUN
+        mecanisme LIFO de defer n existe encore au niveau du generateur
+        de code (reserve pour une extension future, TODO 15/21).
+    - math.swift      : fonction "swap" avec DEUX parametres "inout" -
+        alias PAR ADRESSE non couvert (extension future) ; "add"/
+        "multiply"/"factorial" (recursion COMPRISE), eux, compilent et
+        s executeraient correctement (non exerce ici, "swap" arrete tout
+        le fichier AVANT que quoi que ce soit d autre ne soit atteint,
+        EmitUserFunctions compile TOUTE fonction sans condition).
     - optionals.swift : "let result: Int = maybeValue ?? 0" -
         initialiseur de global non repliable (nil-coalescing sur une
-        VARIABLE, jamais un simple litteral).
+        VARIABLE, jamais un simple litteral - "??" lui-meme reste non
+        couvert dans CompileExpr).
     - protos.swift    : "let c: Circle = Circle(radius: 5)" -
-        initialiseur de global non repliable (construction de struct via
-        appel).
+        initialiseur de global non repliable (construction de STRUCT,
+        valeur MULTI-MOTS incompatible avec la convention EAX unique -
+        contrairement a une classe, un pointeur UNIQUE ne suffit pas).
     - structs.swift   : "let origin: Point = Point(x: 0, y: 0)" -
-        initialiseur de global non repliable (construction de struct via
-        appel).
+        meme raison exacte que protos.swift (construction de struct).
 
   BOGUE REEL trouve et corrige PENDANT ce TODO 25 (par EXECUTION reelle,
   jamais par relecture du .asm ni par un self-test structurel) :
@@ -663,18 +658,20 @@ Program SWIFTW32;
   suivie d une VERIFICATION de la sortie, jamais par la seule absence
   d erreur de compilation : exactement la raison d etre de ce TODO 25.
 
-  LIMITATIONS ASSUMEES a l issue de ce TODO 25 (portee EXACTE du codegen/
-  assembleur/ecrivain PE de premiere passe, TODO 21-23, jamais devinee) :
-  aucune fonction utilisateur n est compilee (CompileFuncDef n existe
-  pas) ; aucun controle de flux (if/while/repeat-while/for-in/switch/
-  guard) n est couvert ; aucune instance de struct/class/enum/protocol/
-  generique/Optional/collection n est construite a l execution ; SEULS
-  les globaux SANS initialiseur ou initialises par un LITTERAL/une
-  expression CONSTANTE repliable, plus print(_:) (String/Int) et +/-/*
-  entre eux, sont couverts. Chacune de ces extensions restera un TODO 21
-  separe, futur, ajoute UNE A LA FOIS avec son propre self-test ET sa
-  propre verification par execution reelle - meme discipline multi-
-  session que GOCW32.PAS/DELPHI.PAS.
+  LIMITATIONS ASSUMEES a l issue de ce TODO 25 LUI-MEME (photo HISTORIQUE
+  au moment ou ce TODO 25 s est termine, PAS l etat courant - voir les
+  blocs "EXTENSION..." plus bas, qui les levent UNE A LA FOIS, pour ce
+  qui est REELLEMENT couvert aujourd hui) : aucune fonction
+  utilisateur n est compilee (CompileFuncDef n existe pas) ; aucun
+  controle de flux (if/while/repeat-while/for-in/switch/guard) n est
+  couvert ; aucune instance de struct/class/enum/protocol/generique/
+  Optional/collection n est construite a l execution ; SEULS les globaux
+  SANS initialiseur ou initialises par un LITTERAL/une expression
+  CONSTANTE repliable, plus print(_:) (String/Int) et +/-/* entre eux,
+  sont couverts. Chacune de ces extensions reste un TODO 21 separe,
+  ajoute UNE A LA FOIS avec son propre self-test ET sa propre
+  verification par execution reelle - meme discipline multi-session que
+  GOCW32.PAS/DELPHI.PAS.
   ============================================================ *)
 
 (* ============================================================
@@ -732,6 +729,113 @@ Program SWIFTW32;
   Set/String reste une extension future ; break/continue ETIQUETES
   restent hors de portee ; &&/|| (court-circuit) restent hors de portee
   (non exerces par aucun echantillon actuel).
+  ============================================================ *)
+
+(* ============================================================
+  EXTENSION CONSTRUCTION DE CLASSE (ajoutee APRES l EXTENSION CONTROLE DE
+  FLUX ci-dessus, sur demande explicite de l utilisateur suite au rapport
+  "classes.swift : initialiseur non repliable" - meme discipline
+  incrementale que toutes les extensions post-TODO25 de ce fichier).
+  ============================================================
+  AJOUTE : CgIsClassCtorCall (EmitDataSeg/CompileExpr/
+  CompileGlobalRuntimeInits) reconnait "NomDeClasse()" (appel constructeur
+  SANS argument vers une classe - le front-end, TODO 09/10, resolvait
+  DEJA son TypeIdx a la classe elle-meme, meme SANS aucun "init" ecrit -
+  voir ClassSelfTest) comme un SECOND cas de "global non repliable"
+  desormais INITIALISABLE REELLEMENT (allocation tas via _SWRT_ALLOC,
+  DEJA zero-rempli par HEAP_ZERO_MEMORY - pointeur laisse en EAX, une
+  classe etant un type REFERENCE) plutot que de s arreter proprement.
+  CompileGlobalRuntimeInits (NOUVELLE procedure, appelee en TOUT PREMIER
+  dans _SWSTART, avant TopLevelStmts) ecrit cette adresse dans le global
+  A L EXECUTION, ECRASANT le placeholder "DD 0" qu EmitDataSeg y avait
+  laisse a l assemblage (aucun tas n existe encore a ce moment-la).
+  TypeTab[Classe].Size ne couvre QUE les champs PROPRES de cette classe
+  (JAMAIS ceux d une eventuelle superclasse, simplification DEJA
+  documentee par ParseClassType depuis le TODO 10 - AUCUN echantillon
+  actuel n instancie de sous-classe, donc jamais exercee ici). Un
+  constructeur AVEC arguments ("Point(x: 0, y: 0)") ou une construction
+  de STRUCT (valeur MULTI-MOTS incompatible avec la convention EAX
+  unique) restent HORS de portee (FatalError explicite).
+
+  BOGUE d auto-test (PAS un bogue d execution) trouve et corrige PENDANT
+  cette extension : la premiere version du nouveau bloc CodegenSelfTest
+  affirmait "PUSH 8" (une classe Animal a 2 champs : String + Int,
+  suppose a tort 4+4 octets) - le self-test PASSAIT quand meme, mais par
+  COINCIDENCE : ce texte existe DEJA, SANS RAPPORT, dans _SWRT_ALLOC
+  lui-meme (HeapAlloc(dwFlags=HEAP_ZERO_MEMORY=8)) - un FAUX POSITIF.
+  TypeTab[PDT_STRING].Size vaut 8 (pas 4) DEPUIS le TODO 03/04 - jamais
+  reconcilie avec sa VRAIE representation codegen (un simple pointeur 4
+  octets, TODO 17/21/23) car rien avant cette extension n avait besoin de
+  calculer la taille d une classe/struct CONTENANT un champ String.
+  Corrige en verifiant la VRAIE valeur ("PUSH 12"), confirmee en
+  inspectant le .asm REEL via l option "-asm" - meme classe de bogue que
+  les erreurs de comptage d octets MOVZX/MOV BYTE PTR du TODO 22.
+
+  REUSSITE COMPLETE : classes.swift (42, verifie par EXECUTION reelle,
+  Git Bash ET PowerShell natif).
+  ============================================================ *)
+
+(* ============================================================
+  EXTENSION COMPILATION DE FONCTIONS (ajoutee APRES l EXTENSION
+  CONSTRUCTION DE CLASSE ci-dessus, sur demande explicite de l utilisateur
+  suite au rapport "control.swift : initialiseur non repliable" - meme
+  discipline incrementale que toutes les extensions post-TODO25 de ce
+  fichier). La PLUS GROSSE extension a ce jour : compilation REELLE de
+  fonctions utilisateur (CompileFuncDef, enfin ECRITE), if/else-if/else
+  ETAIT deja couvert (EXTENSION CONTROLE DE FLUX) mais "guard"/"switch"
+  et l appel de fonction lui-meme ne l etaient PAS - control.swift
+  exerce les TROIS a la fois.
+  ============================================================
+  AJOUTE : TFuncDefRec.ParamSymFirst/LocalSymFirst/LocalSymCount (capture,
+  au moment du PARSING - ParseFuncDecl -, les plages EXACTES de SymTab
+  occupees par les parametres et par le corps d une fonction, puisque
+  SymTab est APPEND-ONLY et que SymFind par NOM resterait AMBIGU une
+  fois toutes les portees refermees - meme technique EXACTE que
+  STK_FORRANGE.Extra de l EXTENSION CONTROLE DE FLUX). CompileFuncDef
+  assigne alors de VRAIS deplacements EBP (TSymRec.Offset, reserve depuis
+  le TODO 05/21, JAMAIS assigne avant cette extension) : parametres
+  POSITIFS a partir de +8, locales (ET tout symbole imbrique du CORPS -
+  meme une variable de boucle for-in interne) NEGATIFS a partir de -4 -
+  CgVarOperand route desormais TROIS cas (IsGlobal/IsTopLevelLocal ->
+  .DATA ; SINON -> EBP-relatif, un VRAI parametre/local ne pouvant
+  exister qu APRES cette extension). Prologue PUSH EBP/MOV EBP,ESP[/SUB
+  ESP,N] ; CgCurFuncEpilogueLbl (UNE SEULE etiquette PARTAGEE, jamais une
+  pile - les fonctions Swift ne s imbriquent pas ici) permet PLUSIEURS
+  "return" (STK_RETURN, un "guard" en introduit souvent plusieurs) sans
+  dupliquer l epilogue. "guard Condition else" (STK_GUARD) = INVERSE du
+  "if" ; "switch"/"case"/"default" (STK_SWITCH) limite a UNE SEULE valeur
+  ENTIERE litterale par case (jamais de liste/intervalle/fallthrough).
+  Appel utilisateur (CompileExpr, CgIsUserFuncCall/FuncFind) : arguments
+  pousses DE DROITE A GAUCHE, convention d appel UNIFORME avec le reste
+  de ce generateur de code ("RET" NU cote callee, nettoyage de pile cote
+  appelant - JAMAIS STDCALL, reserve aux VRAIES importations Win32).
+  EmitUserFunctions compile TOUTE fonction de FuncDefPool SANS CONDITION
+  (meme si jamais appelee, comme un VRAI compilateur) - un SEUL parametre
+  "inout" (alias par ADRESSE, non couvert) arrete cette fonction PRECISE
+  proprement, AVANT meme de toucher son corps, sans affecter les autres.
+
+  Portee ETROITE, VOLONTAIRE : seuls des parametres/locales SCALAIRES
+  (Int/Bool/String, jamais struct/class/tuple/tableau par VALEUR - une
+  seule case EAX/EBP+N par symbole) ; "inout" hors de portee ; recursion
+  (factorial dans math.swift compilerait/s executerait correctement,
+  simple consequence de CALL/RET standard, AUCUN mecanisme special
+  necessaire) ; surcharge best-effort DEJA geree par FuncFind (TODO 08),
+  jamais reverifiee ici.
+
+  REUSSITE COMPLETE : control.swift (2/30/1), enums.swift (1/3, switch
+  seul suffisait - aucune fonction), generics.swift (42/20 - fonctions
+  GENERIQUES, correctes "par accident" : la convention EAX ne distingue
+  jamais un type CONCRET d un parametre de type generique, aucune
+  monomorphisation reelle n est donc necessaire pour ce cas) - TOUS
+  verifies par EXECUTION reelle (Git Bash ET PowerShell natif), sortie
+  EXACTEMENT conforme.
+
+  LIMITATIONS ASSUMEES : "inout" (math.swift/"swap") ; construction de
+  struct (protos.swift/structs.swift - valeur multi-mots) ; "defer"
+  (errors.swift, STK_DEFER/Kind=15, AUCUN mecanisme LIFO) ; "??"
+  nil-coalescing sur une variable non-constante (optionals.swift) ;
+  "guard let"/"switch" avec motif complexe ; closures ; methodes
+  d instance (struct/class) restent toutes hors de portee.
   ============================================================ *)
 
 { ============================================================ }
@@ -6799,6 +6903,30 @@ Type
     Name        : TString;
     TypeIdx     : Integer;   { TYK_FUNC }
     BodyStmtIdx : Integer;   { STK_BLOCK dans StmtPool }
+    ParamSymFirst : Integer; { TODO 21 (generateur de code, extension     }
+                              { compilation de fonctions) : index SymTab            }
+                              { DU PREMIER parametre, DEJA RESOLU a l instant             }
+                              { ou RegisterFuncScopeSymbols vient de les              }
+                              { ajouter (SymAdd est APPEND-ONLY, dans le              }
+                              { MEME ordre que FieldPool[ParamFirst..]) -              }
+                              { evite SymFind (balayage par NOM sur TOUT              }
+                              { SymTab, ambigu si un AUTRE parametre/global              }
+                              { ailleurs dans le fichier partage le meme                    }
+                              { nom) - meme technique EXACTE que              }
+                              { STK_FORRANGE.Extra (ParseForInStmt). }
+    LocalSymFirst : Integer; { index SymTab du PREMIER symbole cree PENDANT   }
+                              { l analyse du CORPS (ParseBlock) - locales               }
+                              { "let"/"var" ET tout symbole de portee                       }
+                              { imbriquee interne (variable de boucle for-in,             }
+                              { liaison if-let, etc. - TOUS ont desormais                          }
+                              { besoin d un VRAI deplacement EBP-relatif,               }
+                              { CONTRAIREMENT au niveau fichier ou aucune              }
+                              { VRAIE pile n existe, voir IsTopLevelLocal). }
+    LocalSymCount : Integer; { nombre de symboles dans cette plage - determine   }
+                              { la taille du "SUB ESP,N" du prologue           }
+                              { (CompileFuncDef, N = 4*LocalSymCount, MEME             }
+                              { convention "tout scalaire fait 4 octets" que          }
+                              { partout ailleurs dans ce generateur de code). }
   End;
 
 Var
@@ -6916,7 +7044,7 @@ End;
 Function ParseFuncDecl: Integer;
 Var
   Nam : TString;
-  FT, Body, FD, ResultT : Integer;
+  FT, Body, FD, ResultT, ParamSymFirst, LocalSymFirst : Integer;
 Begin
   PPAdvance;   { func }
   If PPKind <> TOK_IDENT Then
@@ -6936,7 +7064,15 @@ Begin
   If (PPKind = TOK_IDENT) And (IsKeyword(PPVal) = KW_WHERE) Then
     ParseWhereClause;
 
+  { ParamSymFirst/LocalSymFirst (TODO 21, generateur de code) : SymTab      }
+  { est APPEND-ONLY (jamais purge, voir SymFind) - capturer SymCount ICI            }
+  { (juste avant/apres les deux SEULES sources de nouveaux symboles de              }
+  { cette fonction) donne un moyen FIABLE de retrouver PRECISEMENT les              }
+  { parametres/locales de CETTE fonction au moment du generateur de code,           }
+  { bien APRES que sa portee (SymLeaveScope, plus bas) ne soit refermee. }
+  ParamSymFirst := SymCount;
   RegisterFuncScopeSymbols(FT);
+  LocalSymFirst := SymCount;
   Body := ParseBlock;
   SymLeaveScope;
 
@@ -6949,6 +7085,12 @@ Begin
       'non-Void mais ne contient aucun ''return'' avec valeur');
 
   FD := FuncDefAdd(Nam, FT, Body);
+  If FD >= 0 Then
+  Begin
+    FuncDefPool[FD].ParamSymFirst := ParamSymFirst;
+    FuncDefPool[FD].LocalSymFirst := LocalSymFirst;
+    FuncDefPool[FD].LocalSymCount := SymCount - LocalSymFirst;
+  End;
   SymAdd(Nam, SK_FUNC, FT, False);
 
   ParseFuncDecl := FD;
@@ -11547,17 +11689,14 @@ End;
 { CgVarLabel : etiquette .DATA UNIQUE pour le symbole SI - un GLOBAL      }
 { (IsGlobal, portee fichier) est adresse par son NOM (deux globaux ne             }
 { peuvent jamais partager un nom, deja garanti par SymAdd). Un symbole           }
-{ IsGlobal=Faux (TODO 21, extension controle de flux : variable de               }
-{ boucle for-in, seul cas rencontre pour l instant - AUCUNE fonction              }
-{ n est encore compilee, CompileFuncDef n existe pas) recoit lui aussi            }
-{ un stockage .DATA (aucune VRAIE pile de fonction n existe encore a              }
-{ ce niveau), mais son etiquette inclut l index SymTab pour rester                       }
-{ UNIQUE meme si DEUX boucles for-in SIBLING reutilisent le MEME nom              }
-{ de variable (ex. deux "for i in ..." successifs) - l ancien branchement            }
-{ EBP-relatif (reserve depuis le TODO 05/21, TSymRec.Offset) attend                    }
-{ toujours la VRAIE compilation de fonctions, une extension future qui           }
-{ devra alors distinguer une portee de fonction REELLE d une simple                    }
-{ imbrication top-level comme celle-ci. }
+{ IsTopLevelLocal (variable de boucle for-in AU NIVEAU FICHIER, hors de           }
+{ toute fonction) recoit lui aussi un stockage .DATA (aucune VRAIE pile           }
+{ n existe a CE niveau), etiquette rendue UNIQUE par l index SymTab              }
+{ pour rester correcte meme si DEUX boucles for-in SIBLING reutilisent           }
+{ le MEME nom de variable. Un VRAI parametre/local de FONCTION (TODO 21,               }
+{ extension "compilation de fonctions") n appelle JAMAIS cette fonction-       }
+{ ci - voir CgVarOperand, qui route ce cas vers un deplacement EBP-relatif           }
+{ (TSymRec.Offset, desormais REELLEMENT assigne par CompileFuncDef). }
 Function CgVarLabel(SI: Integer): TString;
 Begin
   If SymTab[SI].IsGlobal Then
@@ -11566,9 +11705,23 @@ Begin
     CgVarLabel := ASM_PFX_GVAR + 'L' + IntToStrSW(SI) + '_' + SymTab[SI].Name;
 End;
 
+{ CgVarOperand : operande ASM pour LIRE/ECRIRE le symbole SI - TROIS      }
+{ cas, dans cet ordre : (1) IsGlobal OU IsTopLevelLocal -> stockage              }
+{ .DATA par etiquette (CgVarLabel) ; (2) SINON - UNIQUEMENT un VRAI               }
+{ parametre/local d une fonction REELLEMENT compilee (TODO 21, extension           }
+{ "compilation de fonctions" - CompileFuncDef assigne un VRAI                            }
+{ SymTab[SI].Offset a CHACUN, positif +8/+12/... pour les parametres,             }
+{ negatif -4/-8/... pour les locales, AVANT de compiler le corps) ->               }
+{ deplacement EBP-relatif, EXACTEMENT la convention deja documentee par           }
+{ TSymRec.Offset depuis le TODO 05/21 (meme convention que GOCW32.PAS). }
 Function CgVarOperand(SI: Integer): TString;
 Begin
-  CgVarOperand := '[' + CgVarLabel(SI) + ']';
+  If SymTab[SI].IsGlobal Or SymTab[SI].IsTopLevelLocal Then
+    CgVarOperand := '[' + CgVarLabel(SI) + ']'
+  Else If SymTab[SI].Offset >= 0 Then
+    CgVarOperand := '[EBP+' + IntToStrSW(SymTab[SI].Offset) + ']'
+  Else
+    CgVarOperand := '[EBP-' + IntToStrSW(-SymTab[SI].Offset) + ']';
 End;
 
 { CgCollectStrings : PRE-PASSE sur TOUT le programme (avant la moindre    }
@@ -11627,6 +11780,43 @@ Begin
   EmitBlankLine;
 End;
 
+{ CgIsClassCtorCall : Vrai SEULEMENT si E est un appel constructeur SANS  }
+{ argument vers une CLASSE connue ("NomDeClasse()", TypeIdx DEJA resolu           }
+{ a la classe elle-meme par le front-end - TODO 09/10, voir ClassSelfTest :               }
+{ "Animal() : TypeIdx = Animal (malgre l''absence de tout init)") - SEUL          }
+{ cas de "global non repliable a la compilation" que ce generateur de              }
+{ code sait desormais INITIALISER REELLEMENT A L EXECUTION (allocation           }
+{ tas, voir EmitDataSeg/CompileGlobalRuntimeInits/CompileExpr ci-dessous)             }
+{ plutot que de s arreter proprement - extension ajoutee suite au                       }
+{ rapport "classes.swift : initialiseur non repliable" (TODO 25). TOUT            }
+{ AUTRE appel (fonction utilisateur, construction de STRUCT - valeur                    }
+{ MULTI-MOTS incompatible avec la convention EAX unique, ou classe AVEC           }
+{ arguments d init) reste hors de portee (FatalError, message inchange). }
+Function CgIsClassCtorCall(E: Integer): Boolean;
+Begin
+  CgIsClassCtorCall := (E >= 0) And (E < ExprCount) And
+    (ExprPool[E].Kind = EK_CALL) And
+    (ExprPool[E].TypeIdx >= 0) And (ExprPool[E].TypeIdx < TypeCount) And
+    (TypeTab[ExprPool[E].TypeIdx].Kind = TYK_CLASS) And
+    (ExprPool[E].ArgCount = 0);
+End;
+
+{ CgIsUserFuncCall : Vrai SEULEMENT si E est un appel a une fonction      }
+{ UTILISATEUR de haut niveau REELLEMENT resolue (FuncFind, TODO 08) -             }
+{ extension "compilation de fonctions" (TODO 21) ajoutee suite au                     }
+{ rapport "control.swift : initialiseur non repliable" (TODO 25) - SEUL           }
+{ AUTRE cas (avec CgIsClassCtorCall) qu EmitDataSeg/                                    }
+{ CompileGlobalRuntimeInits savent desormais INITIALISER REELLEMENT A                    }
+{ L EXECUTION plutot que de s arreter proprement. }
+Function CgIsUserFuncCall(E: Integer): Boolean;
+Begin
+  CgIsUserFuncCall := (E >= 0) And (E < ExprCount) And
+    (ExprPool[E].Kind = EK_CALL) And
+    (ExprPool[E].Left >= 0) And (ExprPool[E].Left < ExprCount) And
+    (ExprPool[ExprPool[E].Left].Kind = EK_IDENT) And
+    (FuncFind(ExprPool[ExprPool[E].Left].NameVal, ExprPool[E].ArgCount) >= 0);
+End;
+
 { EmitDataSeg : section .DATA COMPLETE en une fois - globaux (parcours   }
 { de SymTab, IsGlobal) puis pool de chaines litterales (CgCollectStrings          }
 { deja execute AVANT cet appel, voir CompileProgram). DIFFERENCE REELLE            }
@@ -11636,11 +11826,15 @@ End;
 { ICI son VRAI contenu DIRECTEMENT ("DB "texte",0") plutot qu un simple             }
 { zero - necessaire des hello.swift lui-meme ("let greeting: String =              }
 { ..."), qui n a pas d equivalent GOCW32.PAS a imiter pour ce cas                            }
-{ precis. Tout AUTRE global (type non couvert, ou initialiseur NON               }
-{ repliable a la compilation, ex. "let sum = add(x,y)") recoit un simple            }
-{ "DD 0" - LIMITATION DOCUMENTEE plutot que devinee (aucune fonction               }
-{ n est encore compilee de toute facon pour calculer une VRAIE valeur              }
-{ d initialisation a l execution). }
+{ precis. Un global CLASSE dont l initialiseur est un appel constructeur           }
+{ SANS argument (CgIsClassCtorCall) recoit ICI un simple "DD 0" comme               }
+{ TOUT AUTRE pointeur - sa VRAIE valeur (adresse de l instance allouee)           }
+{ est ecrite A L EXECUTION par CompileGlobalRuntimeInits, PAS ici (aucun          }
+{ tas n existe encore a l assemblage). Tout AUTRE global (type non               }
+{ couvert, ou initialiseur NON repliable ET NON une construction de               }
+{ classe) recoit lui aussi un simple "DD 0" - LIMITATION DOCUMENTEE               }
+{ plutot que devinee (aucune fonction n est encore compilee de toute              }
+{ facon pour calculer une VRAIE valeur d initialisation a l execution). }
 Procedure EmitDataSeg;
 Var I : Integer;
 Begin
@@ -11678,7 +11872,9 @@ Begin
       { actuel, reste donc un stockage "DD 0" inerte plutot qu un acces               }
       { hors bornes de ExprPool. }
       If SymTab[I].HasInit And (SymTab[I].InitExprIdx >= 0) And
-         Not ExprPool[SymTab[I].InitExprIdx].IsConst Then
+         Not ExprPool[SymTab[I].InitExprIdx].IsConst And
+         Not CgIsClassCtorCall(SymTab[I].InitExprIdx) And
+         Not CgIsUserFuncCall(SymTab[I].InitExprIdx) Then
         FatalError('TODO 21 : generateur de code, initialiseur de global "' +
           SymTab[I].Name + '" non repliable a la compilation (appel de ' +
           'fonction utilisateur, expression Optional, etc.) - seuls les ' +
@@ -11924,6 +12120,17 @@ Var
   CgLoopContinueLbl : Array[0..MAX_CG_LOOP_DEPTH - 1] Of TString;
   CgLoopDepth       : Integer;
 
+  { CgCurFuncEpilogueLbl : etiquette de l EPILOGUE (MOV ESP,EBP/POP EBP/  }
+  { RET) de la fonction EN COURS DE COMPILATION (TODO 21, extension            }
+  { "compilation de fonctions") - un SEUL emplacement partage (jamais une           }
+  { pile, contrairement a CgLoopBreakLbl/CgLoopContinueLbl) car les                     }
+  { fonctions Swift ne s imbriquent JAMAIS ici (pas de fonction locale               }
+  { nommee a l interieur d une autre - seules les fermetures, EK_CLOSURE,           }
+  { existent, et restent hors de portee de cette extension). CompileStmt          }
+  { (STK_RETURN) y saute plutot que de dupliquer l epilogue a CHAQUE               }
+  { "return" - permet PLUSIEURS "return" (ex. guard) sans code duplique. }
+  CgCurFuncEpilogueLbl : TString;
+
 Procedure CgLoopPush(Const BreakLbl, ContinueLbl: TString);
 Begin
   If CgLoopDepth >= MAX_CG_LOOP_DEPTH Then
@@ -11947,7 +12154,7 @@ End;
 { registres - meme discipline que GOCW32.PAS). Toute forme hors de la                  }
 { portee documentee en tete de section s arrete PROPREMENT (FatalError). }
 Procedure CompileExpr(E: Integer);
-Var SI, ArgE, ArgT : Integer;
+Var SI, ArgE, ArgT, FD, AI : Integer;
 Begin
   If E < 0 Then Exit;
   Case ExprPool[E].Kind Of
@@ -12038,9 +12245,58 @@ Begin
             'String/Int pour cette premiere passe (Double/Bool/tableau restent ' +
             'une extension future, roadmap d''en-tete du TODO 20)')
       End
+      { construction de classe SANS argument ("NomDeClasse()", extension    }
+      { ajoutee suite au rapport "classes.swift" - TODO 25) : allocation             }
+      { tas de TypeTab[...].Size octets (deja calcule par ParseClassType,           }
+      { CHAMPS PROPRES SEULEMENT - une VRAIE sous-classe avec des champs                 }
+      { HERITES physiquement contigus reste une extension future, AUCUN                 }
+      { echantillon actuel n instancie de sous-classe) via _SWRT_ALLOC                  }
+      { (deja zero-rempli, HEAP_ZERO_MEMORY - voir EmitRuntimeLibrary),                  }
+      { pointeur laisse dans EAX (convention UNIQUE de ce generateur de              }
+      { code) - une classe EST un type REFERENCE, ce pointeur EST                          }
+      { directement sa "valeur". Une VRAIE evaluation d arguments d init             }
+      { ("Point(x: 0, y: 0)" par exemple) reste hors de portee ICI                              }
+      { (FatalError explicite juste en-dessous). }
+      Else If CgIsClassCtorCall(E) Then
+      Begin
+        EmitInstr('PUSH ' + IntToStrSW(TypeTab[ExprPool[E].TypeIdx].Size));
+        EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+        EmitInstr('ADD ESP,4');
+      End
+      Else If (ExprPool[E].TypeIdx >= 0) And (ExprPool[E].TypeIdx < TypeCount) And
+         (TypeTab[ExprPool[E].TypeIdx].Kind = TYK_CLASS) Then
+        FatalError('TODO 21 : generateur de code, constructeur de classe AVEC ' +
+          'argument(s) non couvert pour cette premiere passe (seul ' +
+          '"NomDeClasse()" SANS argument l''est - un VRAI "init" ecrit par ' +
+          'l''utilisateur reste une extension future)')
+      { appel a une fonction UTILISATEUR de haut niveau (extension           }
+      { "compilation de fonctions", TODO 21, suite au rapport                                }
+      { "control.swift") - CgIsUserFuncCall (ci-dessus) confirme deja que              }
+      { FuncFind resout un VRAI FuncDefPool. Arguments pousses DE DROITE               }
+      { A GAUCHE (le PREMIER argument textuel finit a l adresse la PLUS               }
+      { BASSE, EBP+8 vu du COTE callee - RegisterFuncScopeSymbols/                        }
+      { CompileFuncDef assignent les parametres dans l ORDRE textuel a               }
+      { partir de +8) ; convention d appel UNIFORME avec le reste de ce           }
+      { generateur de code (jamais STDCALL, SEULEMENT les VRAIES               }
+      { importations Win32 le sont) : "RET" nu cote callee (CompileFuncDef),             }
+      { nettoyage de la pile ICI, cote appelant, apres le CALL - MEME             }
+      { convention EXACTE que les appels a _SWRT_ALLOC/_SWRT_STRCONV_ITOA. }
+      Else If CgIsUserFuncCall(E) Then
+      Begin
+        FD := FuncFind(ExprPool[ExprPool[E].Left].NameVal, ExprPool[E].ArgCount);
+        For AI := ExprPool[E].ArgCount - 1 DownTo 0 Do
+        Begin
+          CompileExpr(ExprArgPool[ExprPool[E].ArgFirst + AI]);
+          EmitInstr('PUSH EAX');
+        End;
+        EmitInstr('CALL ' + ASM_PFX_FUNC + FuncDefPool[FD].Name);
+        If ExprPool[E].ArgCount > 0 Then
+          EmitInstr('ADD ESP,' + IntToStrSW(4 * ExprPool[E].ArgCount));
+      End
       Else
         FatalError('TODO 21 : generateur de code, appel non couvert pour cette ' +
-          'premiere passe (seul ''print(_:)'' l est - fonctions utilisateur/' +
+          'premiere passe (seul ''print(_:)''/un constructeur de classe SANS ' +
+          'argument/une fonction utilisateur SANS parametre "inout" le sont - ' +
           'methodes/structs restent une extension future) : ' +
           ExprPool[ExprPool[E].Left].NameVal);
   Else
@@ -12064,9 +12320,12 @@ End;
 { GOCW32.PAS ne les compile pas non plus a cette date), concus ICI a                    }
 { partir de zero (pile CgLoopBreakLbl/CgLoopContinueLbl ci-dessus). }
 Procedure CompileStmt(S: Integer);
+Const
+  MAX_CG_SWITCH_CASE = 64;
 Var
-  I, TgtSI, LoopVarSI, RangeE : Integer;
-  LblElse, LblEnd, LblTop, LblCont : TString;
+  I, TgtSI, LoopVarSI, RangeE, CI, BI, CaseValE : Integer;
+  LblElse, LblEnd, LblTop, LblCont, DefaultLbl : TString;
+  CaseLbl : Array[0..MAX_CG_SWITCH_CASE - 1] Of TString;
 Begin
   If S < 0 Then Exit;
   Case StmtPool[S].Kind Of
@@ -12214,10 +12473,109 @@ Begin
         FatalError('TODO 21 : generateur de code, "continue" hors de toute boucle')
       Else
         EmitInstr('JMP ' + CgLoopContinueLbl[CgLoopDepth - 1]);
+    STK_GUARD:
+      { "guard Condition else" suivi d un bloc-sinon (extension            }
+      { "compilation de fonctions", TODO 21, suite au rapport "control.swift")           }
+      { - INVERSE           }
+      { du "if" : le bloc SINON s execute quand la condition est FAUSSE,             }
+      { et DOIT sortir de la portee courante (return/break/continue,               }
+      { verifie best-effort par le front-end, TODO 19 - jamais reverifie            }
+      { ici, voir ParseGuardStmt). Si la condition est VRAIE, saute               }
+      { PAR-DESSUS le bloc SINON et continue normalement. "guard let"                    }
+      { (liaison optionnelle) reste HORS de portee (NameVal <> ''). }
+      If StmtPool[S].NameVal <> '' Then
+        FatalError('TODO 21 : generateur de code, "guard let"/"guard var" ' +
+          '(liaison optionnelle) non couvert pour cette premiere passe - ' +
+          'seule la forme "guard Condition else { }" SANS liaison l''est')
+      Else
+      Begin
+        CompileExpr(StmtPool[S].Extra);
+        LblEnd := CgLabelGen;
+        EmitInstr('TEST EAX,EAX');
+        EmitInstr('JNZ ' + LblEnd);
+        CompileStmt(StmtPool[S].Right);
+        EmitLabel(LblEnd);
+      End;
+    STK_SWITCH:
+      { "switch Tag" suivi de clauses "case Valeur:"/"default:" (extension     }
+      { "compilation de fonctions", TODO 21, suite au rapport                            }
+      { "control.swift") - PORTEE VOLONTAIREMENT ETROITE (seule ce que              }
+      { control.swift/enums.swift exercent REELLEMENT) : UNE SEULE                     }
+      { valeur ENTIERE litterale par "case" (jamais une liste "1, 2" ni               }
+      { un intervalle "1...3"), AUCUN "fallthrough". Tag evalue UNE            }
+      { SEULE fois (EBX, temoin de la convention EK_BINARY existante              }
+      { pour "l operande de droite") puis compare a CHAQUE valeur de              }
+      { case (CMP+JE) - PAS de table de sauts (nombre de cas trop petit           }
+      { pour en justifier une, meme choix de simplicite que le reste de              }
+      { ce generateur de code). }
+      If StmtPool[S].ArgCount > MAX_CG_SWITCH_CASE Then
+        FatalError('TODO 21 : generateur de code, "switch" avec plus de ' +
+          IntToStrSW(MAX_CG_SWITCH_CASE) + ' cas non couvert pour cette ' +
+          'premiere passe (MAX_CG_SWITCH_CASE)')
+      Else
+      Begin
+        CompileExpr(StmtPool[S].Extra);
+        EmitInstr('MOV EBX,EAX');
+        LblEnd := CgLabelGen;
+        DefaultLbl := '';
+        For CI := StmtPool[S].ArgFirst To StmtPool[S].ArgFirst + StmtPool[S].ArgCount - 1 Do
+          CaseLbl[CI - StmtPool[S].ArgFirst] := CgLabelGen;
+        For CI := StmtPool[S].ArgFirst To StmtPool[S].ArgFirst + StmtPool[S].ArgCount - 1 Do
+        Begin
+          If CaseClausePool[CI].Fallthrough Then
+            FatalError('TODO 21 : generateur de code, "fallthrough" non ' +
+              'couvert pour cette premiere passe')
+          Else If CaseClausePool[CI].IsDefault Then
+            DefaultLbl := CaseLbl[CI - StmtPool[S].ArgFirst]
+          Else If CaseClausePool[CI].ExprCount <> 1 Then
+            FatalError('TODO 21 : generateur de code, "case" avec plusieurs ' +
+              'valeurs ou un intervalle non couvert pour cette premiere ' +
+              'passe (seule UNE SEULE valeur entiere litterale par case l''est)')
+          Else
+          Begin
+            CaseValE := ExprArgPool[CaseClausePool[CI].ExprFirst];
+            If ExprPool[CaseValE].Kind <> EK_INTLIT Then
+              FatalError('TODO 21 : generateur de code, valeur de "case" non ' +
+                'litterale entiere non couverte pour cette premiere passe')
+            Else
+            Begin
+              EmitInstr('CMP EBX,' + IntToStrSW(ExprPool[CaseValE].IntVal));
+              EmitInstr('JE ' + CaseLbl[CI - StmtPool[S].ArgFirst]);
+            End;
+          End;
+        End;
+        If DefaultLbl <> '' Then
+          EmitInstr('JMP ' + DefaultLbl)
+        Else
+          EmitInstr('JMP ' + LblEnd);
+        For CI := StmtPool[S].ArgFirst To StmtPool[S].ArgFirst + StmtPool[S].ArgCount - 1 Do
+        Begin
+          EmitLabel(CaseLbl[CI - StmtPool[S].ArgFirst]);
+          For BI := CaseClausePool[CI].BodyFirst To CaseClausePool[CI].BodyFirst + CaseClausePool[CI].BodyCount - 1 Do
+            CompileStmt(StmtArgPool[BI]);
+          EmitInstr('JMP ' + LblEnd);
+        End;
+        EmitLabel(LblEnd);
+      End;
+    STK_RETURN:
+      { "return [Expression]" (extension "compilation de fonctions",     }
+      { TODO 21) - le resultat (s il y en a un) est DEJA dans EAX apres            }
+      { CompileExpr (convention UNIQUE de ce generateur de code) ; saute            }
+      { vers l EPILOGUE PARTAGE de la fonction en cours (CgCurFuncEpilogueLbl,          }
+      { CompileFuncDef) plutot que de dupliquer MOV ESP,EBP/POP EBP/RET a           }
+      { CHAQUE "return" (utile des qu un "guard" en introduit plusieurs). }
+      Begin
+        If StmtPool[S].Left >= 0 Then CompileExpr(StmtPool[S].Left);
+        If CgCurFuncEpilogueLbl = '' Then
+          FatalError('TODO 21 : generateur de code, "return" hors de toute ' +
+            'fonction non couvert pour cette premiere passe')
+        Else
+          EmitInstr('JMP ' + CgCurFuncEpilogueLbl);
+      End;
   Else
     FatalError('TODO 21 : generateur de code, forme d''instruction non couverte ' +
-      'pour cette premiere passe (guard/switch/func/struct/class/etc. restent ' +
-      'une extension future, voir la note d''en-tete de section) : ' +
+      'pour cette premiere passe (func/struct/class/etc. restent une ' +
+      'extension future, voir la note d''en-tete de section) : ' +
       'Kind=' + IntToStrSW(Ord(StmtPool[S].Kind)));
   End;
 End;
@@ -12249,13 +12607,117 @@ Begin
   End;
 End;
 
+{ CompileGlobalRuntimeInits : extension "construction de classe" (suite   }
+{ au rapport "classes.swift" - TODO 25) - parcourt SymTab UNE FOIS,               }
+{ EN ORDRE DE DECLARATION (memes garanties que l initialisation de              }
+{ globaux d un VRAI compilateur Swift), et emet le SEUL cas de global             }
+{ non repliable que ce generateur de code sait desormais INITIALISER              }
+{ REELLEMENT (CgIsClassCtorCall, voir EmitDataSeg) - EmitDataSeg a deja           }
+{ ecrit "DD 0" comme PLACEHOLDER pour son stockage, ECRASE ICI par                    }
+{ l ADRESSE reelle de l instance fraichement allouee. Doit s executer               }
+{ AVANT le corps (TopLevelStmts) - meme s il n y a, pour l instant,                     }
+{ aucun echantillon ou cela importe reellement (aucun ne LIT une classe           }
+{ globale avant de l ecrire), matcher l ordre reel d un compilateur                    }
+{ Swift reste la discipline honnete a suivre. }
+Procedure CompileGlobalRuntimeInits;
+Var I : Integer;
+Begin
+  For I := 0 To SymCount - 1 Do
+    If (SymTab[I].Kind = SK_VAR) And SymTab[I].IsGlobal And SymTab[I].HasInit And
+       (CgIsClassCtorCall(SymTab[I].InitExprIdx) Or CgIsUserFuncCall(SymTab[I].InitExprIdx)) Then
+    Begin
+      CompileExpr(SymTab[I].InitExprIdx);
+      EmitInstr('MOV DWORD PTR ' + CgVarOperand(I) + ',EAX');
+    End;
+End;
+
+{ CompileFuncDef : compile UNE fonction utilisateur de haut niveau        }
+{ (extension "compilation de fonctions", TODO 21, suite au rapport               }
+{ "control.swift : initialiseur non repliable" - TODO 25). Prologue            }
+{ standard (PUSH EBP/MOV EBP,ESP[/SUB ESP,N si des locales existent]) -           }
+{ assigne D ABORD de VRAIS deplacements EBP a CHAQUE parametre               }
+{ (ParamSymFirst..+ParamCount, +8/+12/...) ET a CHAQUE symbole du corps            }
+{ (LocalSymFirst..+LocalSymCount, -4/-8/... - couvre aussi bien un "let"           }
+{ local qu une variable de boucle for-in DECLAREE A L INTERIEUR de cette          }
+{ fonction, contrairement a IsTopLevelLocal qui ne concerne QUE le                    }
+{ niveau fichier) AVANT de compiler le corps, pour que CgVarOperand                     }
+{ route correctement chaque reference. Un SEUL parametre "inout" (alias           }
+{ par ADRESSE, jamais une vraie copie) arrete PROPREMENT cette fonction           }
+{ ENTIERE avant meme de toucher son corps - extension future documentee.           }
+{ CgCurFuncEpilogueLbl (une SEULE etiquette partagee par TOUS les              }
+{ "return" de CETTE fonction, y compris ceux introduits par un "guard")          }
+{ permet a STK_RETURN de sauter vers un epilogue UNIQUE plutot que de              }
+{ dupliquer MOV ESP,EBP/POP EBP/RET a chaque site de retour. Convention           }
+{ d appel UNIFORME avec le reste de ce generateur de code : "RET" NU (le          }
+{ CALLEUR nettoie la pile, jamais STDCALL - meme convention EXACTE que              }
+{ _SWRT_ALLOC/_SWRT_STRCONV_ITOA). }
+Procedure CompileFuncDef(FD: Integer);
+Var
+  FT, I, PIdx, ParamCnt, LocalCnt : Integer;
+  HasInoutParam : Boolean;
+Begin
+  FT := FuncDefPool[FD].TypeIdx;
+  ParamCnt := TypeTab[FT].ParamCount;
+
+  HasInoutParam := False;
+  For I := 0 To ParamCnt - 1 Do
+  Begin
+    PIdx := TypeTab[FT].ParamFirst + I;
+    If FieldPool[PIdx].IsInout Then HasInoutParam := True;
+  End;
+
+  If HasInoutParam Then
+    FatalError('TODO 21 : generateur de code, fonction ''' + FuncDefPool[FD].Name +
+      ''' avec parametre(s) "inout" non couverte pour cette premiere passe ' +
+      '(alias par ADRESSE - extension future)')
+  Else
+  Begin
+    For I := 0 To ParamCnt - 1 Do
+      SymTab[FuncDefPool[FD].ParamSymFirst + I].Offset := 8 + I * 4;
+
+    LocalCnt := FuncDefPool[FD].LocalSymCount;
+    For I := 0 To LocalCnt - 1 Do
+      SymTab[FuncDefPool[FD].LocalSymFirst + I].Offset := -4 - I * 4;
+
+    EmitLabel(ASM_PFX_FUNC + FuncDefPool[FD].Name);
+    EmitInstr('PUSH EBP');
+    EmitInstr('MOV EBP,ESP');
+    If LocalCnt > 0 Then
+      EmitInstr('SUB ESP,' + IntToStrSW(LocalCnt * 4));
+
+    CgCurFuncEpilogueLbl := CgLabelGen;
+    CompileStmt(FuncDefPool[FD].BodyStmtIdx);
+
+    EmitLabel(CgCurFuncEpilogueLbl);
+    EmitInstr('MOV ESP,EBP');
+    EmitInstr('POP EBP');
+    EmitInstr('RET');
+    EmitBlankLine;
+  End;
+End;
+
+{ EmitUserFunctions : compile TOUTES les fonctions de FuncDefPool, SANS  }
+{ CONDITION (meme discipline que le reste de ce compilateur - un VRAI            }
+{ compilateur compile TOUTE fonction declaree, appelee ou non) - une              }
+{ fonction jamais appelee mais utilisant un parametre "inout" (ex.               }
+{ "swap" dans math.swift) s arrete donc PROPREMENT ICI, AVANT meme               }
+{ qu aucun site d appel ne soit atteint. }
+Procedure EmitUserFunctions;
+Var I : Integer;
+Begin
+  For I := 0 To FuncDefCount - 1 Do
+    CompileFuncDef(I);
+End;
+
 { CompileProgram : point d entree du generateur de code - ordre           }
 { d emission EXACT de GOCW32.PAS (en-tete -> donnees -> section code ->            }
-{ bibliotheque runtime -> corps) MOINS les fonctions utilisateur (AUCUNE           }
-{ n est encore compilee) : le corps EST directement la sequence des                     }
-{ instructions de haut niveau (TopLevelStmts, ParseSwiftProgram) sous           }
-{ l etiquette d entree "_SWSTART" (jamais "_SWF_main" - Swift n exige                }
-{ pas ce nom, contrairement a "func main()" en Go). }
+{ bibliotheque runtime -> corps) PLUS desormais EmitUserFunctions               }
+{ (extension "compilation de fonctions") : le corps DU FICHIER est               }
+{ directement la sequence des instructions de haut niveau (TopLevelStmts,           }
+{ ParseSwiftProgram) sous l etiquette d entree "_SWSTART" (jamais               }
+{ "_SWF_main" - Swift n exige pas ce nom, contrairement a "func main()"            }
+{ en Go) - PRECEDE de CompileGlobalRuntimeInits (extension "construction           }
+{ de classe"/"compilation de fonctions"). }
 Procedure CompileProgram(Const AsmFileName: TString);
 Var I : Integer;
 Begin
@@ -12268,8 +12730,10 @@ Begin
   EmitDataSeg;
   EmitCodeSeg;
   EmitRuntimeLibrary;
+  EmitUserFunctions;
 
   EmitLabel('_SWSTART');
+  CompileGlobalRuntimeInits;
   For I := 0 To TopLevelStmtCount - 1 Do
     CompileStmt(TopLevelStmts[I]);
   EmitInstr('PUSH 0');
@@ -12445,6 +12909,149 @@ Begin
     CgFileHasSubstring(TmpAsm, ASM_PFX_GVAR + 'L'));
   CodegenAssert('for-in : incrementation de la variable de boucle (ADD EAX,1) present',
     CgFileHasSubstring(TmpAsm, 'ADD EAX,1'));
+
+  Assign(CgOutF, TmpAsm);
+  Erase(CgOutF);
+
+  { re-initialise les tables globales pour ne pas polluer Run reel }
+  StmtInit;
+  ExprInit;
+  SymInit;
+  FuncDefInit;
+  MethodPoolInit;
+  EnumCaseInit;
+
+  { classes.swift EN ENTIER (extension "construction de classe", TODO 21, }
+  { ajoutee suite au rapport "classes.swift : initialiseur non repliable"           }
+  { - TODO 25) - deja verifie par EXECUTION reelle (Git Bash ET PowerShell           }
+  { natif, sortie "42" EXACTEMENT conforme) AVANT d ecrire ces assertions              }
+  { structurelles. Taille attendue de Animal (2 champs) : String a un              }
+  { TypeTab[PDT_STRING].Size DEJA de 8 (pas 4 - reserve depuis le TODO           }
+  { 03/04, JAMAIS aligne sur le fait que la representation REELLE d une             }
+  { chaine ici est un simple pointeur 4 octets, TODO 17/21/23 - ecart            }
+  { pre-existant, HORS de portee de cette extension) + Int (4) = 12               }
+  { octets, PAS 8 - premiere version de ce self-test avait par erreur              }
+  { affirme "PUSH 8" et le test PASSAIT quand meme, par COINCIDENCE : ce           }
+  { texte existe DEJA, sans rapport, dans _SWRT_ALLOC lui-meme                             }
+  { (HeapAlloc(dwFlags=HEAP_ZERO_MEMORY=8)) - corrige en verifiant "PUSH           }
+  { 12" (la VRAIE valeur, confirmee en inspectant le .asm reel via "-asm"). }
+  Assign(LexSrcF, TmpSrc);
+  Rewrite(LexSrcF);
+  WriteLn(LexSrcF, 'class Animal {');
+  WriteLn(LexSrcF, 'var name: String');
+  WriteLn(LexSrcF, 'var legs: Int');
+  WriteLn(LexSrcF, 'func speak() -> Int {');
+  WriteLn(LexSrcF, 'return 0');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, 'let pet: Animal = Animal()');
+  WriteLn(LexSrcF, 'print(42)');
+  Close(LexSrcF);
+  Assign(LexSrcF, TmpSrc);
+  Reset(LexSrcF);
+  LexOpened := True;
+  LexInit;
+  LexAll;
+  LexClose;
+  Erase(LexSrcF);
+  ParserInit;
+  ParseSwiftProgram;
+
+  CompileProgram(TmpAsm);
+
+  CodegenAssert('"pet" (classe) recoit un placeholder .DATA "DD 0" (adresse ' +
+    'ecrite A L EXECUTION, pas a l assemblage) present',
+    CgFileHasSubstring(TmpAsm, ASM_PFX_GVAR + 'pet  DD 0'));
+  CodegenAssert('CompileGlobalRuntimeInits : allocation tas de la BONNE ' +
+    'taille (Animal = String[8]+Int[4] = 12 octets, PAS le "PUSH 8" ' +
+    'sans rapport deja present dans _SWRT_ALLOC lui-meme pour ' +
+    'HeapAlloc(HEAP_ZERO_MEMORY) - verifie par execution reelle, voir ' +
+    'la note d en-tete de ce bloc) present',
+    CgFileHasSubstring(TmpAsm, 'PUSH 12'));
+  CodegenAssert('CompileGlobalRuntimeInits : CALL _SWRT_ALLOC present',
+    CgFileHasSubstring(TmpAsm, 'CALL ' + ASM_PFX_RUNTIME + 'ALLOC'));
+  CodegenAssert('CompileGlobalRuntimeInits : adresse allouee ecrite dans "pet" present',
+    CgFileHasSubstring(TmpAsm, 'MOV DWORD PTR [' + ASM_PFX_GVAR + 'pet],EAX'));
+
+  Assign(CgOutF, TmpAsm);
+  Erase(CgOutF);
+
+  { re-initialise les tables globales pour ne pas polluer Run reel }
+  StmtInit;
+  ExprInit;
+  SymInit;
+  FuncDefInit;
+  MethodPoolInit;
+  EnumCaseInit;
+
+  { control.swift EN ENTIER (extension "compilation de fonctions", TODO   }
+  { 21, suite au rapport "control.swift : initialiseur non repliable" -           }
+  { TODO 25 - couvre EN UN SEUL fichier if/else-if/else, switch/case/             }
+  { default, une VRAIE fonction utilisateur avec parametre/return/guard,           }
+  { et l appel de cette fonction depuis un initialiseur de global) -                    }
+  { deja verifie par EXECUTION reelle (Git Bash ET PowerShell natif,               }
+  { sortie "2"/"30"/"1" EXACTEMENT conforme) AVANT d ecrire ces                        }
+  { assertions structurelles. }
+  Assign(LexSrcF, TmpSrc);
+  Rewrite(LexSrcF);
+  WriteLn(LexSrcF, 'let score: Int = 85');
+  WriteLn(LexSrcF, 'if score >= 90 {');
+  WriteLn(LexSrcF, 'print(1)');
+  WriteLn(LexSrcF, '} else if score >= 80 {');
+  WriteLn(LexSrcF, 'print(2)');
+  WriteLn(LexSrcF, '} else {');
+  WriteLn(LexSrcF, 'print(0)');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, 'let value: Int = 3');
+  WriteLn(LexSrcF, 'switch value {');
+  WriteLn(LexSrcF, 'case 1:');
+  WriteLn(LexSrcF, 'print(10)');
+  WriteLn(LexSrcF, 'case 3:');
+  WriteLn(LexSrcF, 'print(30)');
+  WriteLn(LexSrcF, 'default:');
+  WriteLn(LexSrcF, 'print(0)');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, 'func checkAge(_ age: Int) -> Int {');
+  WriteLn(LexSrcF, 'guard age >= 0 else {');
+  WriteLn(LexSrcF, 'return 0');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, 'guard age <= 150 else {');
+  WriteLn(LexSrcF, 'return 0');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, 'return 1');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, 'let valid: Int = checkAge(25)');
+  WriteLn(LexSrcF, 'print(valid)');
+  Close(LexSrcF);
+  Assign(LexSrcF, TmpSrc);
+  Reset(LexSrcF);
+  LexOpened := True;
+  LexInit;
+  LexAll;
+  LexClose;
+  Erase(LexSrcF);
+  ParserInit;
+  ParseSwiftProgram;
+
+  CompileProgram(TmpAsm);
+
+  CodegenAssert('CompileFuncDef : etiquette de fonction _SWF_checkAge present',
+    CgFileHasSubstring(TmpAsm, ASM_PFX_FUNC + 'checkAge:'));
+  CodegenAssert('CompileFuncDef : prologue MOV EBP,ESP present',
+    CgFileHasSubstring(TmpAsm, 'MOV EBP,ESP'));
+  CodegenAssert('CompileFuncDef : epilogue MOV ESP,EBP present',
+    CgFileHasSubstring(TmpAsm, 'MOV ESP,EBP'));
+  CodegenAssert('CompileFuncDef : "RET" NU (le CALLEUR nettoie la pile, ' +
+    'jamais STDCALL) present', CgFileHasSubstring(TmpAsm, 'RET'));
+  CodegenAssert('appel utilisateur : CALL _SWF_checkAge present',
+    CgFileHasSubstring(TmpAsm, 'CALL ' + ASM_PFX_FUNC + 'checkAge'));
+  CodegenAssert('appel utilisateur : nettoyage de pile ADD ESP,4 (1 argument) present',
+    CgFileHasSubstring(TmpAsm, 'ADD ESP,4'));
+  CodegenAssert('switch : comparaison de case CMP EBX present',
+    CgFileHasSubstring(TmpAsm, 'CMP EBX,'));
+  CodegenAssert('"valid" (appel de fonction) recoit un placeholder .DATA ' +
+    '"DD 0" present',
+    CgFileHasSubstring(TmpAsm, ASM_PFX_GVAR + 'valid  DD 0'));
 
   Assign(CgOutF, TmpAsm);
   Erase(CgOutF);
