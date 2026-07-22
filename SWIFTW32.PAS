@@ -1150,6 +1150,129 @@ Program SWIFTW32;
   mutation via "mutating func" ; methodes d instance restent toutes
   hors de portee - seule la CONSTRUCTION d un global a ete resolue ici,
   strictement ce qu exigeait le rapport "structs.swift".
+  ============================================================
+
+  ============================================================
+  PHASE 2 - "TERMINE LES PARTIES NON COUVERTES" (2026-07-21, MEME
+  JOUR que le MILESTONE 12/12 ci-dessus) - SEPT extensions traitees
+  d'affilee, sans s'arreter (instruction explicite de l'utilisateur :
+  "Tout traiter, un par un, sans t'arreter", en reponse a une question
+  de portee posee AVANT de commencer). Declencheur DIFFERENT de tout ce
+  qui precede : pas le FatalError d'un echantillon reel (les 12/12
+  compilent et s'executent DEJA) - un chantier ouvert, choisi et
+  ordonne ICI, chaque item verifie par un test SYNTHETIQUE (aucun des
+  12 SAMPLES\SWIFT ne les exerce, precisement pourquoi c'etaient encore
+  des trous) EXECUTE reellement (Git Bash ET PowerShell natif) avant
+  d'etre fige en self-test permanent (CodegenSelfTest), PUIS supprime.
+  Sweep complet des 12 echantillons re-execute apres CHAQUE extension :
+  zero regression du debut a la fin des six.
+  ============================================================
+
+  1) ACCES AUX CHAMPS de struct/classe (EK_SELECTOR en lecture,
+     STK_ASSIGN en ecriture) - StructFindField donne le deplacement ;
+     base CLASSE = pointeur DEJA en EAX (deref direct) ; base STRUCT =
+     LEA sur l identificateur GLOBAL simple sous-jacent (portee etroite,
+     meme base qu ailleurs). A REVELE, en l ecrivant, un VRAI bogue
+     PRE-EXISTANT et jusqu ici INVISIBLE dans l assembleur lui-meme :
+     BinAssembleDataLine (le parseur de ligne ".DATA") n emettait
+     qu UN SEUL dword pour une ligne "DD 0, 0" (stockage struct
+     multi-mots, extension precedente ci-dessus) - le deuxieme mot
+     n etait JAMAIS reserve, si bien que le PROCHAIN label declare dans
+     ".DATA" ALIASAIT sur ce deuxieme mot. Invisible jusqu ici car AUCUN
+     echantillon ne relisait jamais le second champ d une struct
+     multi-mots avant que l acces aux champs ne le rende possible pour
+     la premiere fois. CORRIGE en bouclant sur TOUTES les valeurs
+     separees par virgule d une ligne "DD" (au lieu d un unique
+     BinEmit32 suivi d un Exit immediat).
+  2) METHODES D INSTANCE (struct ET classe, mutantes et non-mutantes) -
+     nouveaux TSymRec.SelfFieldOffset/AliasOfSelfSI (alias de champ :
+     "radius" a l interieur d une methode n a AUCUN emplacement EBP
+     propre, charge "self" puis dereference a l offset du champ -
+     structurellement parallele a, mais distinct de, IsInoutAlias) et
+     TMethodRec.SelfSI/ParamSymFirst/LocalSymFirst/LocalSymCount (meme
+     capture de plage AU MOMENT DU PARSING que TFuncDefRec, necessaire
+     puisque SymTab est APPEND-ONLY). "self" est pousse EN DERNIER par
+     l appelant (EBP+8, premier parametre IMPLICITE ; les VRAIS
+     parametres commencent a EBP+12). CgIsCompilableMethod/EmitAllMethods
+     OMETTENT (jamais de FatalError) une methode HERITEE/de SOUS-CLASSE
+     (Dog.speak() de classes.swift) - aucun echantillon ne l appelle,
+     l enforcement reel se fait au site d appel (CgIsMethodCall).
+  3) SWITCH ETENDU : valeurs multiples ("case 0, 1:"), intervalles
+     litteraux entiers ("case 2...3:"/"case 4..<5:"), et "fallthrough"
+     (nouvelle pile CgFallthroughLbl/Depth/Push/Pop, MEME principe EXACT
+     que CgLoopBreakLbl/CgLoopContinueLbl). L ancien booleen
+     CaseClausePool[].Fallthrough (calcule par le parseur) n est plus
+     consulte - STK_FALLTHROUGH est desormais une VRAIE instruction.
+  4) INTERPOLATION DE CHAINE (EK_STRINGINTERP) - segments alternes
+     'T'(exte litteral)/'E'(xpression), toujours T,E,T,...,T. Nouvelle
+     routine runtime _SWRT_STRCAT2 ([EBP+12]=piece ACCUMULEE,
+     [EBP+8]=NOUVEAU segment - ordre choisi pour matcher l ordre NATUREL
+     des PUSH du site d appel) alloue un nouveau buffer et concatene.
+     Seuls des segments String/Int sont couverts (Double/Bool restent
+     une extension future).
+  5) "if let"/"if var"/"guard let"/"guard var" (liaisons optionnelles) -
+     nouveau booleen global ParsingFuncBody (bascule autour du parsing
+     de CHAQUE corps de fonction/methode) distingue "a l interieur d une
+     VRAIE fonction" (le symbole lie tombe NATURELLEMENT dans la plage
+     LocalSymFirst/LocalSymCount DEJA calculee par cette fonction, rien
+     de plus a faire) de "au niveau fichier" (necessite
+     IsTopLevelLocal:=Vrai, MEME mecanisme deja utilise par la variable
+     de boucle for-in - aucune VRAIE pile EBP n existe a ce niveau).
+     L index SymTab DEJA RESOLU de la liaison est stocke dans
+     StmtPool[N].ArgFirst (INUTILISE jusqu ici pour STK_IF/STK_GUARD -
+     champ REPURPOSE plutot qu un nouveau champ ajoute). Codegen reutilise
+     EXACTEMENT le TEST EAX,EAX/JZ deja utilise par "??" (nil reste
+     "0" dans la representation simplifiee de cet Optional). PORTEE
+     REDUITE : Int/Bool SEULEMENT - un Optional<String> arrete
+     PROPREMENT (FatalError explicite), puisque la lecture EK_IDENT
+     d un String fait TOUJOURS un LEA en supposant un stockage "octets
+     inline" qui serait FAUX pour un slot LOCAL/pointeur - bogue latent
+     PRE-EXISTANT, distinct, documente mais PAS corrige ici.
+  6) EK_UNARY dans CompileExpr - AUCUN cas n existait avant cette
+     extension (trouve en compilant "return -1" du test guard-let : un
+     litteral NEGATIF est TOUJOURS EK_UNARY "-" sur un EK_INTLIT
+     POSITIF, jamais un EK_INTLIT deja negatif). Ajoute NEG EAX ("-"),
+     XOR EAX,1 ("!" - Bool est DEJA exactement 0/1, voir EmitCompareJcc),
+     NOT EAX ("~"). Correction FONDAMENTALE (touche TOUTE expression de
+     TOUT echantillon) - sweep complet re-execute immediatement apres.
+  7) Array<Int> - LITTERAL (EK_ARRAYLIT) ET indexation (EK_INDEX, lecture
+     ET ecriture). Representation runtime CHOISIE ICI (aucune n existait
+     avant) : un SEUL buffer tas (_SWRT_ALLOC) de ArgCount*4 octets, la
+     "valeur" d un Array EST l ADRESSE de ce buffer (type REFERENCE,
+     meme convention qu une classe) - AUCUNE longueur runtime stockee
+     (".count"/verification de borne restent hors de portee). Adresse
+     d un element = buffer + indice*4, calculee via IMUL EAX,EBX (forme
+     REGISTRE-REGISTRE, DEJA prouvee par "*") PUIS ADD - JAMAIS un
+     adressage "[base+index*4]" en une seule instruction (SIB, forme
+     JAMAIS prouvee par BinEncodeModRM/BinParseOperand). Nouveau
+     CgIsArrayLitCall rejoint la meme liste "repliable a l execution"
+     qu CgIsClassCtorCall/CgIsUserFuncCall (donc "var arr: [Int] =
+     [1,2,3]" au niveau fichier fonctionne aussi). PORTEE : Array<Int>
+     SEULEMENT (ElemTypeIdx doit resoudre a TYK_INT) - Array<String>,
+     litteral vide/imbrique, Dictionary, Set restent hors de portee.
+
+  BOGUE LATENT CONNU, EXPLICITEMENT PAS CORRIGE DANS CETTE PHASE
+  (documente plutot que devine) : la lecture EK_IDENT d un symbole
+  TYK_STRING fait TOUJOURS "LEA" (correct SEULEMENT pour un GLOBAL dont
+  le stockage EmitDataSeg EST directement ses octets ASCII inline) -
+  FAUX pour une variable LOCALE de type String ou tout slot detenant un
+  POINTEUR String (resultat de "??"/d un appel de fonction/d une liaison
+  if-let), qui necessiterait un DEREFERENCEMENT, jamais l adresse du
+  slot lui-meme. JAMAIS declenche par les 12 echantillons reels ni par
+  rien construit dans cette phase (interpolation/if-let ont
+  deliberement des FatalError explicites la ou ce chemin aurait ete
+  silencieusement faux). A corriger PROPREMENT (probablement un nouveau
+  drapeau "comment ce String est stocke" sur TSymRec, distinct du
+  simple TypeIdx.Kind) avant toute extension future qui rendrait les
+  String locales/liees reelles.
+
+  VERIFIE : chacune des sept extensions ci-dessus a son propre bloc
+  CodegenSelfTest synthetique (assertions structurelles APRES
+  verification par EXECUTION reelle - Git Bash ET PowerShell natif,
+  sortie EXACTEMENT conforme a la semantique Swift reelle dans chaque
+  cas) ; sweep complet des 12 SAMPLES\SWIFT\*.swift re-execute apres
+  CHAQUE extension - zero regression, memes sorties exactes qu avant
+  cette phase.
   ============================================================ *)
 
 { ============================================================ }
@@ -3483,6 +3606,25 @@ Type
                               { (FatalError explicite, non exerce par                       }
                               { math.swift, seul echantillon a utiliser                     }
                               { "inout"). }
+    SelfFieldOffset : Integer; { TODO 21 (extension "methodes d instance",  }
+                              { suite a "termine les parties non couvertes")           }
+                              { : >=0 UNIQUEMENT pour un ALIAS DE CHAMP                       }
+                              { (RegisterFieldAliasesFromBuf - "radius" a l           }
+                              { interieur de "describe()", jamais un "self."              }
+                              { explicite) - -1 sinon (valeur par defaut,               }
+                              { TOUT AUTRE symbole). Contrairement a un champ           }
+                              { accede via EK_SELECTOR (base.champ EXTERNE),           }
+                              { cet alias N A PAS de stockage EBP-relatif                     }
+                              { PROPRE : CompileExpr (EK_IDENT)/CompileStmt              }
+                              { (STK_ASSIGN) doivent charger AliasOfSelfSI                   }
+                              { (le pointeur/l adresse "self" de la methode              }
+                              { EN COURS de compilation) PUIS dereferencer a                  }
+                              { CE deplacement - MEME technique EXACTE que              }
+                              { IsInoutAlias, juste UNE indirection de PLUS               }
+                              { dans la chaine (alias -> self -> champ). }
+    AliasOfSelfSI : Integer; { index SymTab du symbole "self" DE LA METHODE   }
+                              { qui a cree cet alias - UNIQUEMENT signifiant           }
+                              { si SelfFieldOffset>=0. }
   End;
 
 Var
@@ -3495,6 +3637,17 @@ Var
   CurScopeId    : Integer;
   ScopeIdSeq    : Integer;
 
+  { ParsingFuncBody (extension "guard let"/"if let", suite a "termine   }
+  { les parties non couvertes") - Vrai PENDANT le parsing du CORPS d une }
+  { fonction/methode (entre RegisterFuncScopeSymbols et ParseBlock, voir  }
+  { ParseFuncDecl/ParseStructMemberFunc/ParseClassMemberFunc), Faux au    }
+  { niveau FICHIER. Distingue les DEUX cas de stockage d une liaison      }
+  { "if let"/"guard let" (voir TSymRec.IsTopLevelLocal) : CurScopeLevel   }
+  { seul ne suffit PAS (un simple "if" au niveau fichier ouvre AUSSI une  }
+  { nouvelle portee, CurScopeLevel > 0, indistinguable d un corps de      }
+  { fonction sans ce booleen dedie). }
+  ParsingFuncBody : Boolean;
+
 Procedure SymInit;
 Begin
   SymCount      := 0;
@@ -3502,6 +3655,7 @@ Begin
   CurScopeLevel := 0;
   CurScopeId    := 0;
   ScopeIdSeq    := 0;
+  ParsingFuncBody := False;
 End;
 
 Procedure SymEnterScope;
@@ -3630,6 +3784,8 @@ Begin
   SymTab[SymCount].Offset      := 0;
   SymTab[SymCount].IsTopLevelLocal := False;
   SymTab[SymCount].IsInoutAlias    := False;
+  SymTab[SymCount].SelfFieldOffset := -1;
+  SymTab[SymCount].AliasOfSelfSI   := -1;
 
   SymAdd := SymCount;
   Inc(SymCount);
@@ -5924,9 +6080,19 @@ Type
   {                   CompileStmt/STK_DECL, section TODO 21)                                     }
   {   STK_IF          Extra=Condition ; Right=Bloc-Alors ;                            }
   {                   Left=Sinon (-1, ou STK_IF pour "else if", ou               }
-  {                   STK_BLOCK pour "else" final)                                   }
+  {                   STK_BLOCK pour "else" final) ; NameVal=nom de              }
+  {                   liaison "if let"/"if var" ('' si "if" ordinaire) ;         }
+  {                   ArgFirst=index SymTab DEJA RESOLU de cette liaison         }
+  {                   (-1 si NameVal='' - TODO 21, generateur de code,           }
+  {                   extension "if let"/"guard let" suite a "termine            }
+  {                   les parties non couvertes" : champ REPURPOSE,             }
+  {                   inutilise par ailleurs pour STK_IF)                                }
   {   STK_GUARD       Extra=Condition ; Right=Bloc-Sinon (doit sortir            }
-  {                   de la portee - verifie best-effort)                            }
+  {                   de la portee - verifie best-effort) ; NameVal=nom          }
+  {                   de liaison "guard let"/"guard var" ('' si "guard"          }
+  {                   ordinaire) ; ArgFirst=index SymTab DEJA RESOLU de          }
+  {                   cette liaison (-1 si NameVal='' - meme REPURPOSE            }
+  {                   EXACT que STK_IF ci-dessus)                                        }
   {   STK_SWITCH      Extra=Tag ; ArgFirst/Count -> plage dans                        }
   {                   CaseClausePool                                                     }
   {   STK_WHILE       Extra=Condition ; Right=Corps                                      }
@@ -6227,12 +6393,25 @@ Begin
   Cond := ParseExpr;
   NoTrailingClosure := SavedNTC;
 
+  SI := -1;
   If BindName <> '' Then
   Begin
     SymEnterScope;
     UnwrappedT := TypeResolveOptional(ExprPool[Cond].TypeIdx);
     SI := SymAdd(BindName, SK_VAR, UnwrappedT, Not IsBindVar);
     SymTab[SI].HasInit := True;   { deballee : deja une valeur, pas un "let" en attente }
+    { generateur de code (extension "if let"/"guard let", suite a         }
+    { "termine les parties non couvertes") : SANS fonction englobante en  }
+    { cours de parsing (ParsingFuncBody Faux), aucune VRAIE pile EBP      }
+    { n existera encore pour cette liaison au moment du generateur de     }
+    { code (meme raison EXACTE que le for-in au niveau fichier,           }
+    { ParseForInStmt) - stockage GLOBAL (.DATA) requis via                }
+    { IsTopLevelLocal. A L INTERIEUR d une fonction/methode, la plage      }
+    { LocalSymFirst..+LocalSymCount de la fonction ENGLOBANTE couvre déjà  }
+    { ce symbole (SymTab est APPEND-ONLY - "SI" tombe naturellement dans   }
+    { cette plage) : AUCUN marquage supplementaire n est necessaire ici.  }
+    If Not ParsingFuncBody Then
+      SymTab[SI].IsTopLevelLocal := True;
     ThenB := ParseBlock;
     SymLeaveScope;
   End
@@ -6240,9 +6419,11 @@ Begin
     ThenB := ParseBlock;
 
   N := StmtNew(STK_IF);
-  StmtPool[N].Extra   := Cond;
-  StmtPool[N].Right   := ThenB;
-  StmtPool[N].NameVal := BindName;
+  StmtPool[N].Extra    := Cond;
+  StmtPool[N].Right    := ThenB;
+  StmtPool[N].NameVal  := BindName;
+  StmtPool[N].ArgFirst := SI;   { -1 si pas de liaison - voir la note      }
+                                 { d en-tete de CompileStmt/STK_IF }
 
   If (PPKind = TOK_IDENT) And (IsKeyword(PPVal) = KW_ELSE) Then
   Begin
@@ -6323,15 +6504,26 @@ Begin
     WarnMsg('bloc ''else'' de ''guard'' vide (devrait sortir de la portee)');
 
   N := StmtNew(STK_GUARD);
-  StmtPool[N].Extra   := Cond;
-  StmtPool[N].Right   := ElseB;
-  StmtPool[N].NameVal := BindName;
+  StmtPool[N].Extra    := Cond;
+  StmtPool[N].Right    := ElseB;
+  StmtPool[N].NameVal  := BindName;
+  StmtPool[N].ArgFirst := -1;   { voir la note d en-tete de              }
+                                 { CompileStmt/STK_GUARD - reassigne      }
+                                 { ci-dessous si BindName <> '' }
 
   If BindName <> '' Then
   Begin
     UnwrappedT := TypeResolveOptional(ExprPool[Cond].TypeIdx);
     SI := SymAdd(BindName, SK_VAR, UnwrappedT, Not IsBindVar);
     SymTab[SI].HasInit := True;
+    { generateur de code (extension "if let"/"guard let", suite a         }
+    { "termine les parties non couvertes") : MEME raisonnement EXACT      }
+    { que ParseIfStmt ci-dessus (stockage GLOBAL requis SANS fonction     }
+    { englobante en cours de parsing, sinon la plage LocalSymFirst/       }
+    { LocalSymCount de la fonction suffit deja). }
+    If Not ParsingFuncBody Then
+      SymTab[SI].IsTopLevelLocal := True;
+    StmtPool[N].ArgFirst := SI;
   End;
 
   ParseGuardStmt := N;
@@ -7453,7 +7645,9 @@ Begin
   ParamSymFirst := SymCount;
   RegisterFuncScopeSymbols(FT);
   LocalSymFirst := SymCount;
+  ParsingFuncBody := True;
   Body := ParseBlock;
+  ParsingFuncBody := False;
   SymLeaveScope;
 
   { "chaque chemin d un func...->T non-Void doit renvoyer une valeur"    }
@@ -7897,6 +8091,17 @@ Type
                                    { VRAIE methode, accedee AVEC parentheses         }
                                    { ("v.nom(...)"), memes regles qu un SK_FUNC          }
                                    { ordinaire (TODO 06/08) une fois resolue.       }
+    SelfSI        : Integer;  { TODO 21 (extension "methodes d instance") -  }
+                               { index SymTab du symbole "self" DEJA RESOLU           }
+                               { au PARSING - meme technique EXACTE que                       }
+                               { TFuncDefRec.ParamSymFirst (SymTab est                        }
+                               { APPEND-ONLY, SymFind par NOM resterait                       }
+                               { ambigu au moment du generateur de code). }
+    ParamSymFirst : Integer;  { index du PREMIER VRAI parametre (APRES self,           }
+                               { RegisterFuncScopeSymbols) }
+    LocalSymFirst : Integer;  { index du PREMIER symbole cree PENDANT               }
+                               { l analyse du CORPS (ParseBlock) }
+    LocalSymCount : Integer;
   End;
 
 Var
@@ -8232,7 +8437,7 @@ Function ParseStructMemberFunc(FT: Integer; Const BufNames: TStructBufNames;
   Const BufTypes: TStructBufTypes; BufCnt: Integer; IsMutating, IsInit: Boolean): Integer;
 Var
   Nam : TString;
-  SigT, Body, SelfSI : Integer;
+  SigT, Body, SelfSI, ParamSymFirst, LocalSymFirst, MI : Integer;
 Begin
   If IsInit Then
   Begin
@@ -8267,11 +8472,26 @@ Begin
   RegisterFieldAliasesFromBuf(BufNames, BufTypes, BufCnt, Not (IsMutating Or IsInit));
   SelfSI := SymAdd('self', SK_VAR, FT, Not (IsMutating Or IsInit));
   SymTab[SelfSI].HasInit := True;   { l instance existe DEJA - jamais un "let" en attente d initialisation }
+  { ParamSymFirst/LocalSymFirst (TODO 21, extension "methodes d instance")   }
+  { : meme technique EXACTE que ParseFuncDecl (SymTab APPEND-ONLY, capture           }
+  { les plages ICI, pendant que la portee correcte est encore ouverte). }
+  ParamSymFirst := SymCount;
   RegisterFuncScopeSymbols(SigT);
+  LocalSymFirst := SymCount;
+  ParsingFuncBody := True;
   Body := ParseBlock;
+  ParsingFuncBody := False;
   SymLeaveScope;
 
-  ParseStructMemberFunc := MethodPoolAdd(Nam, SigT, Body, FT, IsMutating Or IsInit, False);
+  MI := MethodPoolAdd(Nam, SigT, Body, FT, IsMutating Or IsInit, False);
+  If MI >= 0 Then
+  Begin
+    MethodPool[MI].SelfSI        := SelfSI;
+    MethodPool[MI].ParamSymFirst := ParamSymFirst;
+    MethodPool[MI].LocalSymFirst := LocalSymFirst;
+    MethodPool[MI].LocalSymCount := SymCount - LocalSymFirst;
+  End;
+  ParseStructMemberFunc := MI;
 End;
 
 { SynthesizeMemberwiseInit : "init(champ1: Type1, champ2: Type2, ...)"  }
@@ -8850,7 +9070,7 @@ Function ParseClassMemberFunc(FT: Integer; Const BufNames: TStructBufNames;
   Const BufTypes: TStructBufTypes; BufCnt: Integer; IsOverride, IsInit: Boolean): Integer;
 Var
   Nam : TString;
-  SigT, Body, SelfSI : Integer;
+  SigT, Body, SelfSI, ParamSymFirst, LocalSymFirst, MI : Integer;
 Begin
   If IsInit Then
   Begin
@@ -8887,11 +9107,23 @@ Begin
   RegisterFieldAliasesFromBuf(BufNames, BufTypes, BufCnt, False);
   SelfSI := SymAdd('self', SK_VAR, FT, False);
   SymTab[SelfSI].HasInit := True;
+  ParamSymFirst := SymCount;
   RegisterFuncScopeSymbols(SigT);
+  LocalSymFirst := SymCount;
+  ParsingFuncBody := True;
   Body := ParseBlock;
+  ParsingFuncBody := False;
   SymLeaveScope;
 
-  ParseClassMemberFunc := MethodPoolAdd(Nam, SigT, Body, FT, False, False);
+  MI := MethodPoolAdd(Nam, SigT, Body, FT, False, False);
+  If MI >= 0 Then
+  Begin
+    MethodPool[MI].SelfSI        := SelfSI;
+    MethodPool[MI].ParamSymFirst := ParamSymFirst;
+    MethodPool[MI].LocalSymFirst := LocalSymFirst;
+    MethodPool[MI].LocalSymCount := SymCount - LocalSymFirst;
+  End;
+  ParseClassMemberFunc := MI;
 End;
 
 { ParseClassType : "class" DEJA CONSOMME par l appelant (ParseClassDecl,  }
@@ -12257,6 +12489,64 @@ Begin
     (ExprPool[E].ArgCount = TypeTab[ExprPool[E].TypeIdx].FieldCount);
 End;
 
+{ CgIsArrayLitCall : Vrai pour "[1, 2, 3]" (extension "Array<Int>",      }
+{ TODO 21, suite a "termine les parties non couvertes") - reconnaissance }
+{ STRUCTURELLE seule (Kind=EK_ARRAYLIT), MEME niveau de detail que               }
+{ CgIsClassCtorCall/CgIsSingleFieldStructCtorCall ci-dessus : la               }
+{ VALIDITE reelle (Array<Int> SEULEMENT, jamais Array<String>/vide/              }
+{ imbrique) est deja EXCLUSIVEMENT verifiee par CompileExpr lui-meme            }
+{ (EK_ARRAYLIT, sa propre note d en-tete) - un appelant (EmitDataSeg/    }
+{ CompileGlobalRuntimeInits) qui invoquerait CompileExpr sur un litteral         }
+{ NON couvert obtiendrait donc le MEME FatalError explicite, jamais un           }
+{ octet errone silencieux. }
+Function CgIsArrayLitCall(E: Integer): Boolean;
+Begin
+  CgIsArrayLitCall := (E >= 0) And (E < ExprCount) And (ExprPool[E].Kind = EK_ARRAYLIT);
+End;
+
+{ CgIsCompilableMethod : Vrai UNIQUEMENT pour une methode avec un VRAI    }
+{ corps (BodyStmtIdx>=0 - exclut un init MEMBERWISE synthetise ou une              }
+{ EXIGENCE de protocole, TOUS deux BodyStmtIdx=-1) SUR UN TYPE SANS               }
+{ SUPERCLASSE (TypeTab[OwnerTypeIdx].SuperTypeIdx<0) - extension                       }
+{ "methodes d instance" (TODO 21, suite a "termine les parties non               }
+{ couvertes") : une methode HERITEE/de SOUS-CLASSE (Dog.speak(),                       }
+{ classes.swift) exigerait une disposition memoire d instance                                }
+{ CONTIGUE (superclasse PUIS champs propres) qui n existe PAS encore -           }
+{ deja documente comme une extension future SEPAREE (voir ParseClassType,           }
+{ TODO 10). AUCUN echantillon actuel n APPELLE une telle methode                       }
+{ (classes.swift declare Dog/Cat.speak() mais ne les invoque JAMAIS) -            }
+{ EmitAllMethods (plus bas) les OMET simplement (jamais compilees, jamais           }
+{ d etiquette .CODE) plutot que d arreter tout le fichier - le VRAI              }
+{ garde-fou reste au POINT D APPEL (CgIsMethodCall, juste en-dessous) :           }
+{ SEULE une methode REELLEMENT compilee peut etre appelee, jamais une              }
+{ supposition. }
+Function CgIsCompilableMethod(MI: Integer): Boolean;
+Begin
+  CgIsCompilableMethod := (MI >= 0) And (MI < MethodPoolCount) And
+    (MethodPool[MI].BodyStmtIdx >= 0) And
+    (TypeTab[MethodPool[MI].OwnerTypeIdx].SuperTypeIdx < 0);
+End;
+
+{ CgIsMethodCall : Vrai pour "base.methode(args)" (EK_CALL, Left=          }
+{ EK_SELECTOR) qui resout, via MethodFind, a une methode REELLEMENT              }
+{ COMPILABLE (CgIsCompilableMethod) - JAMAIS une propriete calculee               }
+{ (IsComputedProperty, accedee SANS parentheses de toute facon - un cas           }
+{ EK_CALL ne la concerne meme pas) ni une methode HERITEE/de sous-classe. }
+Function CgIsMethodCall(E: Integer): Boolean;
+Var BaseT, MI : Integer;
+Begin
+  CgIsMethodCall := False;
+  If (E < 0) Or (E >= ExprCount) Or (ExprPool[E].Kind <> EK_CALL) Then Exit;
+  If (ExprPool[E].Left < 0) Or (ExprPool[E].Left >= ExprCount) Or
+     (ExprPool[ExprPool[E].Left].Kind <> EK_SELECTOR) Then Exit;
+  BaseT := TypeResolveOptional(ExprPool[ExprPool[ExprPool[E].Left].Left].TypeIdx);
+  If (BaseT < 0) Or (BaseT >= TypeCount) Or
+     (Not (TypeTab[BaseT].Kind In [TYK_STRUCT, TYK_CLASS])) Then Exit;
+  MI := MethodFind(BaseT, ExprPool[ExprPool[E].Left].NameVal);
+  CgIsMethodCall := CgIsCompilableMethod(MI) And (Not MethodPool[MI].IsComputedProperty) And
+    (ExprPool[E].ArgCount = TypeTab[MethodPool[MI].TypeIdx].ParamCount);
+End;
+
 { CgZeroDDList : "0, 0, ..., 0" (N fois, separes par virgule) - syntaxe   }
 { MASM standard pour reserver PLUSIEURS mots de 4 octets consecutifs sur          }
 { UNE SEULE ligne "DD" (extension "struct multi-mots", suite au rapport            }
@@ -12330,7 +12620,8 @@ Begin
          Not CgIsUserFuncCall(SymTab[I].InitExprIdx) And
          Not CgIsOptionalRuntimeInit(SymTab[I].InitExprIdx) And
          Not CgIsSingleFieldStructCtorCall(SymTab[I].InitExprIdx) And
-         Not CgIsMultiFieldStructCtorCall(SymTab[I].InitExprIdx) Then
+         Not CgIsMultiFieldStructCtorCall(SymTab[I].InitExprIdx) And
+         Not CgIsArrayLitCall(SymTab[I].InitExprIdx) Then
         FatalError('TODO 21 : generateur de code, initialiseur de global "' +
           SymTab[I].Name + '" non repliable a la compilation (appel de ' +
           'fonction utilisateur, expression Optional, etc.) - seuls les ' +
@@ -12560,6 +12851,80 @@ Begin
   EmitInstr('POP EBP');
   EmitInstr('RET');
   EmitBlankLine;
+
+  { _SWRT_STRCAT2 (extension "interpolation de chaine", TODO 21, suite    }
+  { a "termine les parties non couvertes") - CONCATENE deux chaines EN            }
+  { UNE NOUVELLE (allocation tas, AUCUNE liberation - meme decision                    }
+  { "fuite assumee" que _SWRT_ALLOC/le TODO 18) : [EBP+8]="piece la PLUS           }
+  { RECENTE" (poussee en DERNIER par l appelant, EK_STRINGINTERP -                     }
+  { CompileExpr), [EBP+12]="piece ACCUMULEE JUSQU ICI" (poussee en                     }
+  { PREMIER) - convention DELIBEREMENT choisie pour matcher l ORDRE               }
+  { NATUREL des PUSH du site d appel (accumule PUIS nouveau segment,               }
+  { SANS aucune permutation supplementaire) plutot que "a,b" dans l ordre           }
+  { textuel de la concatenation - le resultat COPIE quand meme                              }
+  { [EBP+12] (accumule, EN PREMIER dans la sortie) PUIS [EBP+8]                             }
+  { (nouveau, EN SECOND). Longueur totale = STRLEN(accumule)+                           }
+  { STRLEN(nouveau)+1 (terminateur NUL) - CALCULEE d abord (deux appels           }
+  { a _SWRT_STRLEN, DEJA CORRIGE - ne preserve PAS ESI/ECX, sans               }
+  { consequence ICI puisqu AUCUN des deux n est encore utilise a ce               }
+  { stade) AVANT toute allocation, MEME discipline "tailles connues              }
+  { avant d ecrire quoi que ce soit" que le reste de ce generateur de              }
+  { code (CgCollectStrings, le pre-calcul RVA/offset du PE TODO 23, etc).           }
+  { Copie OCTET PAR OCTET via MOVZX EAX,BYTE PTR [reg]/MOV BYTE PTR                    }
+  { [reg],EAX (JAMAIS "MOV AL,..." - un registre 8 bits EXPLICITE                        }
+  { qu AUCUN encodeur de ce fichier ne prend en charge, verifie AVANT               }
+  { d ecrire cette routine : seules MOVZX EAX,BYTE PTR [reg]/MOV BYTE               }
+  { PTR [reg],EAX sont DEJA prouvees, reprises telles quelles de                             }
+  { _SWRT_STRCONV_ITOA). }
+  EmitLabel(ASM_PFX_RUNTIME + 'STRCAT2');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('SUB ESP,12');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH EDI');
+  EmitInstr('PUSH DWORD PTR [EBP+12]');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STRLEN');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('MOV DWORD PTR [EBP-4],EAX');
+  EmitInstr('PUSH DWORD PTR [EBP+8]');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STRLEN');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('MOV DWORD PTR [EBP-8],EAX');
+  EmitInstr('MOV EAX,DWORD PTR [EBP-4]');
+  EmitInstr('ADD EAX,DWORD PTR [EBP-8]');
+  EmitInstr('ADD EAX,1');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('MOV DWORD PTR [EBP-12],EAX');
+  EmitInstr('MOV ESI,DWORD PTR [EBP+12]');
+  EmitInstr('MOV EDI,DWORD PTR [EBP-12]');
+  EmitLabel(ASM_PFX_RUNTIME + 'STRCAT2_COPY1');
+  EmitInstr('MOVZX EAX,BYTE PTR [ESI]');
+  EmitInstr('CMP EAX,0');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'STRCAT2_COPY1_DONE');
+  EmitInstr('MOV BYTE PTR [EDI],EAX');
+  EmitInstr('INC ESI');
+  EmitInstr('INC EDI');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'STRCAT2_COPY1');
+  EmitLabel(ASM_PFX_RUNTIME + 'STRCAT2_COPY1_DONE');
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');
+  EmitLabel(ASM_PFX_RUNTIME + 'STRCAT2_COPY2');
+  EmitInstr('MOVZX EAX,BYTE PTR [ESI]');
+  EmitInstr('MOV BYTE PTR [EDI],EAX');
+  EmitInstr('CMP EAX,0');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'STRCAT2_COPY2_DONE');
+  EmitInstr('INC ESI');
+  EmitInstr('INC EDI');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'STRCAT2_COPY2');
+  EmitLabel(ASM_PFX_RUNTIME + 'STRCAT2_COPY2_DONE');
+  EmitInstr('MOV EAX,DWORD PTR [EBP-12]');
+  EmitInstr('POP EDI');
+  EmitInstr('POP ESI');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
 End;
 
 { EmitCompareJcc : traduit une comparaison en une VRAIE valeur 0/1 dans  }
@@ -12627,12 +12992,47 @@ Begin
   If CgLoopDepth > 0 Then Dec(CgLoopDepth);
 End;
 
+{ Pile des etiquettes "fallthrough" (extension "switch etendu", suite a  }
+{ "termine les parties non couvertes") - MEME PRINCIPE EXACT que              }
+{ CgLoopBreakLbl/CgLoopContinueLbl (permet un "switch" imbrique DANS le           }
+{ corps d un case d un AUTRE switch, "fallthrough" cible TOUJOURS le              }
+{ switch le plus imbrique) - '' = case COURANT est le DERNIER de son              }
+{ switch (aucune cible, "fallthrough" y reste une erreur). }
+Var
+  CgFallthroughLbl   : Array[0..MAX_CG_LOOP_DEPTH - 1] Of TString;
+  CgFallthroughDepth : Integer;
+
+Procedure CgFallthroughPush(Const Lbl: TString);
+Begin
+  If CgFallthroughDepth >= MAX_CG_LOOP_DEPTH Then
+    FatalError('TODO 21 : generateur de code, "switch" imbriques trop ' +
+      'profondement (MAX_CG_LOOP_DEPTH)')
+  Else
+  Begin
+    CgFallthroughLbl[CgFallthroughDepth] := Lbl;
+    Inc(CgFallthroughDepth);
+  End;
+End;
+
+Procedure CgFallthroughPop;
+Begin
+  If CgFallthroughDepth > 0 Then Dec(CgFallthroughDepth);
+End;
+
+{ CgCompileInterpSegment (extension "interpolation de chaine", TODO 21, }
+{ suite a "termine les parties non couvertes") - declaration ANTICIPEE  }
+{ (Forward) puisque CompileExpr (EK_STRINGINTERP, ci-dessous) et cette  }
+{ procedure s appellent MUTUELLEMENT (elle-meme appelle CompileExpr sur }
+{ chaque segment) - corps REEL ecrit APRES CompileExpr, meme raison     }
+{ que tout Forward de ce fichier. }
+Procedure CgCompileInterpSegment(SegE: Integer; Const Key: TString); Forward;
+
 { CompileExpr : compile RECURSIVEMENT le noeud E de ExprPool - laisse    }
 { TOUJOURS son resultat dans EAX (convention FIXE, AUCUN allocateur de              }
 { registres - meme discipline que GOCW32.PAS). Toute forme hors de la                  }
 { portee documentee en tete de section s arrete PROPREMENT (FatalError). }
 Procedure CompileExpr(E: Integer);
-Var SI, ArgE, ArgT, FD, AI : Integer;
+Var SI, ArgE, ArgT, FD, AI, BaseT, FI, MI, ElemT : Integer;
     LblElse, LblEnd : TString;
 Begin
   If E < 0 Then Exit;
@@ -12653,6 +13053,22 @@ Begin
         If SI < 0 Then
           FatalError('TODO 21 : generateur de code, identificateur non resolu: ' +
             ExprPool[E].NameVal)
+        { ALIAS DE CHAMP (extension "methodes d instance", suite a          }
+        { "termine les parties non couvertes") : "radius" a l INTERIEUR              }
+        { d une methode ("return radius" dans describe()) au lieu de              }
+        { "self.radius" - voir la note d en-tete de TSymRec.SelfFieldOffset.        }
+        { Charge le pointeur/l adresse "self" DE LA METHODE en cours de              }
+        { compilation, PUIS dereference au deplacement du champ - JAMAIS               }
+        { CgVarOperand directement (cet alias n a AUCUN stockage EBP-               }
+        { relatif propre). }
+        Else If SymTab[SI].SelfFieldOffset >= 0 Then
+        Begin
+          EmitInstr('MOV EAX,DWORD PTR ' + CgVarOperand(SymTab[SI].AliasOfSelfSI));
+          If SymTab[SI].SelfFieldOffset = 0 Then
+            EmitInstr('MOV EAX,DWORD PTR [EAX]')
+          Else
+            EmitInstr('MOV EAX,DWORD PTR [EAX+' + IntToStrSW(SymTab[SI].SelfFieldOffset) + ']');
+        End
         { parametre "inout" (extension, suite au rapport "math.swift") :  }
         { son emplacement EBP-relatif contient une ADRESSE (voir la note           }
         { d en-tete de TSymRec.IsInoutAlias), jamais la valeur directement -           }
@@ -12684,6 +13100,26 @@ Begin
           EmitInstr('LEA EAX,' + CgVarOperand(SI))
         Else
           EmitInstr('MOV EAX,DWORD PTR ' + CgVarOperand(SI));
+      End;
+    EK_UNARY:
+      { "-x"/"!x"/"~x" (extension "if let"/"guard let", suite a            }
+      { "termine les parties non couvertes" - trouve en compilant          }
+      { "return -1"/"print(-99)", un litteral entier NEGATIF etant deja    }
+      { represente par EK_UNARY "-" sur un EK_INTLIT POSITIF, JAMAIS par   }
+      { un EK_INTLIT dont IntVal serait deja negatif - AUCUN cas EK_UNARY  }
+      { n etait couvert avant cette extension, meme un simple "-1" isole   }
+      { arretait donc le generateur de code) : NEG EAX pour "-" (entier),  }
+      { XOR EAX,1 pour "!" (Bool - la representation EST deja exactement   }
+      { 0/1, voir EmitCompareJcc/EK_BOOLLIT, un simple XOR suffit a         }
+      { l inverser), NOT EAX pour "~" (bitwise, Int). }
+      Begin
+        CompileExpr(ExprPool[E].Left);
+        If ExprPool[E].Op = '-' Then EmitInstr('NEG EAX')
+        Else If ExprPool[E].Op = '!' Then EmitInstr('XOR EAX,1')
+        Else If ExprPool[E].Op = '~' Then EmitInstr('NOT EAX')
+        Else
+          FatalError('TODO 21 : generateur de code, operateur unaire non ' +
+            'couvert pour cette premiere passe : ' + ExprPool[E].Op);
       End;
     EK_BINARY:
       { comparaisons (TODO 21, extension controle de flux) AJOUTEES au     }
@@ -12836,12 +13272,44 @@ Begin
         If ExprPool[E].ArgCount > 0 Then
           EmitInstr('ADD ESP,' + IntToStrSW(4 * ExprPool[E].ArgCount));
       End
+      { "base.methode(args)" (extension "methodes d instance", TODO 21,   }
+      { suite a "termine les parties non couvertes") - CgIsMethodCall               }
+      { (ci-dessus) confirme deja une methode REELLEMENT compilable.               }
+      { Arguments pousses DE DROITE A GAUCHE COMME pour une fonction                     }
+      { ordinaire, PUIS "self" en DERNIER (le PREMIER parametre IMPLICITE           }
+      { du point de vue du CALLEE, EBP+8 - voir CompileMethodDef) : pour           }
+      { une CLASSE, c EST DEJA un pointeur (CompileExpr(base) suffit) ;              }
+      { pour une STRUCT (type VALEUR), il faut l ADRESSE de son stockage           }
+      { (LEA sur l identificateur GLOBAL simple sous-jacent - MEME               }
+      { portee ETROITE que EK_SELECTOR en lecture/ecriture, base COMPLEXE           }
+      { non couverte). }
+      Else If CgIsMethodCall(E) Then
+      Begin
+        BaseT := TypeResolveOptional(ExprPool[ExprPool[ExprPool[E].Left].Left].TypeIdx);
+        MI := MethodFind(BaseT, ExprPool[ExprPool[E].Left].NameVal);
+        For AI := ExprPool[E].ArgCount - 1 DownTo 0 Do
+        Begin
+          CompileExpr(ExprArgPool[ExprPool[E].ArgFirst + AI]);
+          EmitInstr('PUSH EAX');
+        End;
+        If TypeTab[BaseT].Kind = TYK_CLASS Then
+          CompileExpr(ExprPool[ExprPool[E].Left].Left)
+        Else If ExprPool[ExprPool[ExprPool[E].Left].Left].Kind <> EK_IDENT Then
+          FatalError('TODO 21 : generateur de code, appel de methode sur une ' +
+            'struct via une expression COMPLEXE (pas un simple identificateur) ' +
+            'non couvert pour cette premiere passe')
+        Else
+          EmitInstr('LEA EAX,' + CgVarOperand(ExprPool[ExprPool[ExprPool[E].Left].Left].Left));
+        EmitInstr('PUSH EAX');
+        EmitInstr('CALL ' + ASM_PFX_METHOD + TypeTab[BaseT].Name + '_' + MethodPool[MI].Name);
+        EmitInstr('ADD ESP,' + IntToStrSW(4 * (ExprPool[E].ArgCount + 1)));
+      End
       Else
         FatalError('TODO 21 : generateur de code, appel non couvert pour cette ' +
           'premiere passe (seul ''print(_:)''/un constructeur de classe SANS ' +
-          'argument/une fonction utilisateur SANS parametre "inout" le sont - ' +
-          'methodes/structs restent une extension future) : ' +
-          ExprPool[ExprPool[E].Left].NameVal);
+          'argument/une fonction utilisateur SANS parametre "inout"/une ' +
+          'methode d instance SANS parametre "inout" le sont - structs restent ' +
+          'une extension future) : ' + ExprPool[ExprPool[E].Left].NameVal);
     EK_FORCEDUNWRAP:
       { "Optionnel!" (deballage force, extension suite au rapport            }
       { "optionals.swift" - TODO 25) - simple PASSTHROUGH : la                              }
@@ -12853,10 +13321,210 @@ Begin
       { panique/erreur reel" que partout ailleurs dans ce generateur de           }
       { code (TODO 21, roadmap d en-tete). }
       CompileExpr(ExprPool[E].Left);
+    EK_SELECTOR:
+      { "base.champ" (LECTURE, extension "acces aux champs", TODO 21,    }
+      { suite a "termine les parties non couvertes") - StructFindField           }
+      { (deja utilise par le front-end, ResolveSelectorType) donne le              }
+      { deplacement STOCKE du champ. DEUX cas selon que la base est une          }
+      { CLASSE (type REFERENCE - sa "valeur" EST DEJA un pointeur,               }
+      { CompileExpr(Left) suffit) ou une STRUCT (type VALEUR - il faut               }
+      { l ADRESSE de son stockage, pas sa "valeur" telle que CompileExpr           }
+      { la calculerait normalement, LEA sur l identificateur GLOBAL                    }
+      { SIMPLE sous-jacent - meme technique que CgIsMultiFieldStructCtorCall,           }
+      { EmitDataSeg/CompileGlobalRuntimeInits). Portee ETROITE,                                 }
+      { VOLONTAIRE : SEUL un champ STOCKE (jamais une propriete calculee,           }
+      { String.count, un cas d enum, un membre de collection) sur une              }
+      { base identificateur SIMPLE (jamais une expression complexe                       }
+      { imbriquee) est couvert. }
+      Begin
+        BaseT := TypeResolveOptional(ExprPool[ExprPool[E].Left].TypeIdx);
+        If (BaseT < 0) Or (BaseT >= TypeCount) Or
+           (Not (TypeTab[BaseT].Kind In [TYK_STRUCT, TYK_CLASS])) Then
+          FatalError('TODO 21 : generateur de code, acces "." non couvert pour ' +
+            'cette premiere passe (seul un champ STOCKE de struct/classe l''est - ' +
+            'propriete calculee/String.count/enum/collection restent une ' +
+            'extension future) : ' + ExprPool[E].NameVal)
+        Else
+        Begin
+          FI := StructFindField(BaseT, ExprPool[E].NameVal);
+          If FI < 0 Then
+            FatalError('TODO 21 : generateur de code, "."''' + ExprPool[E].NameVal +
+              '''" ne resout pas a un champ STOCKE (methode/propriete calculee - ' +
+              'voir EK_CALL pour un appel de methode - restent une extension future)')
+          Else If TypeTab[BaseT].Kind = TYK_CLASS Then
+          Begin
+            CompileExpr(ExprPool[E].Left);
+            If FieldPool[FI].Offset = 0 Then
+              EmitInstr('MOV EAX,DWORD PTR [EAX]')
+            Else
+              EmitInstr('MOV EAX,DWORD PTR [EAX+' + IntToStrSW(FieldPool[FI].Offset) + ']');
+          End
+          Else If ExprPool[ExprPool[E].Left].Kind <> EK_IDENT Then
+            FatalError('TODO 21 : generateur de code, acces a un champ de struct ' +
+              'via une expression COMPLEXE (pas un simple identificateur) non ' +
+              'couvert pour cette premiere passe')
+          Else
+          Begin
+            SI := ExprPool[ExprPool[E].Left].Left;
+            If SI < 0 Then
+              FatalError('TODO 21 : generateur de code, identificateur de base ' +
+                'non resolu pour l''acces "."')
+            Else
+            Begin
+              EmitInstr('LEA EAX,' + CgVarOperand(SI));
+              If FieldPool[FI].Offset = 0 Then
+                EmitInstr('MOV EAX,DWORD PTR [EAX]')
+              Else
+                EmitInstr('MOV EAX,DWORD PTR [EAX+' + IntToStrSW(FieldPool[FI].Offset) + ']');
+            End;
+          End;
+        End;
+      End;
+    EK_ARRAYLIT:
+      { "[1, 2, 3]" (extension "Array<Int>", TODO 21, suite a "termine     }
+      { les parties non couvertes") - PORTEE VOLONTAIREMENT reduite a       }
+      { Array<Int> (String/struct/Array imbrique restent une extension     }
+      { future - AUCUN echantillon actuel n en a besoin). Representation    }
+      { runtime CHOISIE ICI (aucune n existait avant cette extension) :     }
+      { EXACTEMENT comme une classe/un tableau Go - un SEUL buffer tas      }
+      { de ArgCount*4 octets (_SWRT_ALLOC, MEME "fuite assumee" que          }
+      { partout ailleurs), la "valeur" d un Array EST directement           }
+      { l ADRESSE de ce buffer (type REFERENCE, jamais copie) - AUCUNE      }
+      { longueur runtime stockee (".count" reste hors de portee, la         }
+      { verification de borne/panique restant, comme documente par          }
+      { ParsePostfix ci-dessus, un mecanisme d EXECUTION absent ici).        }
+      { Le pointeur de buffer est SAUVEGARDE sur la PILE machine (PUSH,     }
+      { jamais un registre - EBX/ESI/EDI ne sont PAS garantis survivre      }
+      { a un CompileExpr(element) imbrique, ex. un element lui-meme un      }
+      { appel de fonction/methode) : chaque CompileExpr laisse TOUJOURS     }
+      { la pile inchangee en NET (convention FIXE de ce generateur de       }
+      { code, MEME invariant que celui deja exploite par le "if let"/       }
+      { "guard let" ci-dessus) - "MOV EBX,[ESP]" relit ce pointeur SANS     }
+      { le depiler entre deux elements. }
+      Begin
+        ElemT := -1;
+        If (ExprPool[E].TypeIdx >= 0) And (ExprPool[E].TypeIdx < TypeCount) And
+           (TypeTab[ExprPool[E].TypeIdx].Kind = TYK_ARRAY) Then
+          ElemT := TypeTab[ExprPool[E].TypeIdx].ElemTypeIdx;
+        If (ElemT < 0) Or (ElemT >= TypeCount) Or (TypeTab[ElemT].Kind <> TYK_INT) Then
+          FatalError('TODO 21 : generateur de code, litteral de tableau non ' +
+            'couvert pour cette premiere passe (seul Array<Int> l''est - ' +
+            'Array<String>/Array<Struct>/tableau imbrique/vide restent une ' +
+            'extension future)')
+        Else
+        Begin
+          EmitInstr('PUSH ' + IntToStrSW(ExprPool[E].ArgCount * 4));
+          EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+          EmitInstr('ADD ESP,4');
+          EmitInstr('PUSH EAX');
+          For AI := 0 To ExprPool[E].ArgCount - 1 Do
+          Begin
+            CompileExpr(ExprArgPool[ExprPool[E].ArgFirst + AI]);
+            EmitInstr('MOV EBX,DWORD PTR [ESP]');
+            If AI = 0 Then
+              EmitInstr('MOV DWORD PTR [EBX],EAX')
+            Else
+              EmitInstr('MOV DWORD PTR [EBX+' + IntToStrSW(AI * 4) + '],EAX');
+          End;
+          EmitInstr('POP EAX');
+        End;
+      End;
+    EK_INDEX:
+      { "a[i]" EN LECTURE (extension "Array<Int>", suite a "termine les    }
+      { parties non couvertes") - MEME PORTEE ETROITE que EK_ARRAYLIT       }
+      { ci-dessus (Array<Int> SEULEMENT - Dictionary<K,V>/Set<T> restent     }
+      { hors de portee, roadmap TODO 16). Adresse de l element = buffer +   }
+      { indice*4 : JAMAIS un adressage "[base+index*4]" en UNE seule        }
+      { instruction (SIB, forme jamais prouvee par l encodeur de ce         }
+      { fichier - voir BinEncodeModRM/BinParseOperand, AUCUNE trace de       }
+      { scale/index) - calcule donc EXPLICITEMENT via IMUL EAX,EBX          }
+      { (forme REGISTRE-REGISTRE, DEJA prouvee par "*") PUIS ADD, MEME      }
+      { discipline "n inventer AUCUNE forme non deja exercee" que le reste  }
+      { de ce generateur de code. }
+      Begin
+        BaseT := TypeResolveOptional(ExprPool[ExprPool[E].Left].TypeIdx);
+        ElemT := -1;
+        If (BaseT >= 0) And (BaseT < TypeCount) And (TypeTab[BaseT].Kind = TYK_ARRAY) Then
+          ElemT := TypeTab[BaseT].ElemTypeIdx;
+        If (ElemT < 0) Or (ElemT >= TypeCount) Or (TypeTab[ElemT].Kind <> TYK_INT) Then
+          FatalError('TODO 21 : generateur de code, indexation "[...]" non ' +
+            'couverte pour cette premiere passe (seul Array<Int> l''est - ' +
+            'Dictionary/Set/String restent une extension future)')
+        Else
+        Begin
+          CompileExpr(ExprPool[E].Left);
+          EmitInstr('PUSH EAX');
+          CompileExpr(ExprPool[E].Right);
+          EmitInstr('MOV EBX,4');
+          EmitInstr('IMUL EAX,EBX');
+          EmitInstr('MOV EBX,EAX');
+          EmitInstr('POP EAX');
+          EmitInstr('ADD EAX,EBX');
+          EmitInstr('MOV EAX,DWORD PTR [EAX]');
+        End;
+      End;
+    EK_STRINGINTERP:
+      { "texte\(expr)texte" (extension "interpolation de chaine", TODO 21, }
+      { suite a "termine les parties non couvertes") - segments alternes  }
+      { T(exte litteral)/E(xpression), TOUJOURS T,E,T,...,T (voir la note }
+      { d en-tete d EK_STRINGINTERP, ExprPool). Le PREMIER segment est    }
+      { compile directement dans EAX ; chaque segment SUIVANT est        }
+      { concatene a l accumulateur via _SWRT_STRCAT2 (voir sa note d en- }
+      { tete, EmitRuntimeLibrary) : PUSH accumulateur (devient "earlier", }
+      { EBP+12 cote callee), calcule le nouveau segment, PUSH nouveau     }
+      { segment (devient "later", EBP+8), CALL, ADD ESP,8 - le resultat  }
+      { (nouveau buffer alloue) revient dans EAX, PRET pour la PROCHAINE  }
+      { iteration. }
+      Begin
+        CgCompileInterpSegment(ExprArgPool[ExprPool[E].ArgFirst],
+          ExprArgKey[ExprPool[E].ArgFirst]);
+        For AI := 1 To ExprPool[E].ArgCount - 1 Do
+        Begin
+          EmitInstr('PUSH EAX');
+          CgCompileInterpSegment(ExprArgPool[ExprPool[E].ArgFirst + AI],
+            ExprArgKey[ExprPool[E].ArgFirst + AI]);
+          EmitInstr('PUSH EAX');
+          EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STRCAT2');
+          EmitInstr('ADD ESP,8');
+        End;
+      End;
   Else
     FatalError('TODO 21 : generateur de code, forme d''expression non couverte ' +
       'pour cette premiere passe (portee volontairement reduite a hello.swift, ' +
       'voir la note d''en-tete de section) : Kind=' + IntToStrSW(Ord(ExprPool[E].Kind)));
+  End;
+End;
+
+{ CgCompileInterpSegment (corps REEL - voir la declaration Forward       }
+{ ci-dessus) : compile UN segment d interpolation dans EAX. 'T' = un     }
+{ EK_STRINGLIT REEL (litteral texte, TOUJOURS present meme vide) -       }
+{ CompileExpr le compile deja en une adresse (LEA, voir EK_STRINGLIT     }
+{ plus haut) telle quelle. 'E' = une expression ARBITRAIRE - seuls       }
+{ String (deja une adresse, RIEN a faire de plus) et Int (conversion via }
+{ _SWRT_STRCONV_ITOA, MEME sequence que EK_CALL/"print(_:)" ci-dessus)   }
+{ sont couverts pour cette premiere passe (Double/Bool/etc. restent une  }
+{ extension future, FatalError explicite). }
+Procedure CgCompileInterpSegment(SegE: Integer; Const Key: TString);
+Var SegT : Integer;
+Begin
+  If Key = 'T' Then
+    CompileExpr(SegE)
+  Else
+  Begin
+    SegT := ExprPool[SegE].TypeIdx;
+    CompileExpr(SegE);
+    If (SegT >= 0) And (SegT < TypeCount) And (TypeTab[SegT].Kind = TYK_STRING) Then
+      { EAX contient deja une adresse valide - rien de plus a faire }
+    Else If (SegT >= 0) And (SegT < TypeCount) And (TypeTab[SegT].Kind = TYK_INT) Then
+    Begin
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STRCONV_ITOA');
+      EmitInstr('ADD ESP,4');
+    End
+    Else
+      FatalError('TODO 21 : generateur de code, segment d''interpolation de ' +
+        'chaine non couvert pour cette premiere passe (seul String/Int le ' +
+        'sont - Double/Bool/etc. restent une extension future)');
   End;
 End;
 
@@ -12877,8 +13545,8 @@ Procedure CompileStmt(S: Integer);
 Const
   MAX_CG_SWITCH_CASE = 64;
 Var
-  I, TgtSI, LoopVarSI, RangeE, CI, BI, CaseValE : Integer;
-  LblElse, LblEnd, LblTop, LblCont, DefaultLbl : TString;
+  I, TgtSI, LoopVarSI, RangeE, CI, BI, VI, CaseValE, BaseT, FI, BindSI, ElemT : Integer;
+  LblElse, LblEnd, LblTop, LblCont, DefaultLbl, SkipLbl : TString;
   CaseLbl : Array[0..MAX_CG_SWITCH_CASE - 1] Of TString;
 Begin
   If S < 0 Then Exit;
@@ -12919,10 +13587,100 @@ Begin
         FatalError('TODO 21 : generateur de code, operateur d''affectation ' +
           'compose non couvert pour cette premiere passe (seul "=" simple ' +
           'l''est) : ' + StmtPool[S].Op)
+      { "base.champ = valeur" (ECRITURE, extension "acces aux champs",   }
+      { suite a "termine les parties non couvertes") - MEME distinction           }
+      { classe (pointeur DEJA en EAX apres CompileExpr(base), store-a-               }
+      { travers) vs struct (LEA sur l identificateur GLOBAL simple sous-           }
+      { jacent) que la LECTURE (EK_SELECTOR, CompileExpr) - la valeur A               }
+      { AFFECTER (EAX) est sauvee (PUSH/POP) le temps de calculer                       }
+      { l ADRESSE/le pointeur cible dans EBX, MEME technique EXACTE que              }
+      { le store-through-pointer "inout" deja existant juste au-dessus. }
+      Else If ExprPool[StmtPool[S].Left].Kind = EK_SELECTOR Then
+      Begin
+        BaseT := TypeResolveOptional(ExprPool[ExprPool[StmtPool[S].Left].Left].TypeIdx);
+        If (BaseT < 0) Or (BaseT >= TypeCount) Or
+           (Not (TypeTab[BaseT].Kind In [TYK_STRUCT, TYK_CLASS])) Then
+          FatalError('TODO 21 : generateur de code, cible d''affectation "." non ' +
+            'couverte pour cette premiere passe (seul un champ STOCKE de struct/' +
+            'classe l''est)')
+        Else
+        Begin
+          FI := StructFindField(BaseT, ExprPool[StmtPool[S].Left].NameVal);
+          If FI < 0 Then
+            FatalError('TODO 21 : generateur de code, cible d''affectation "." ' +
+              'ne resout pas a un champ STOCKE')
+          Else If TypeTab[BaseT].Kind = TYK_CLASS Then
+          Begin
+            CompileExpr(StmtPool[S].Right);
+            EmitInstr('PUSH EAX');
+            CompileExpr(ExprPool[StmtPool[S].Left].Left);
+            EmitInstr('MOV EBX,EAX');
+            EmitInstr('POP EAX');
+            If FieldPool[FI].Offset = 0 Then
+              EmitInstr('MOV DWORD PTR [EBX],EAX')
+            Else
+              EmitInstr('MOV DWORD PTR [EBX+' + IntToStrSW(FieldPool[FI].Offset) + '],EAX');
+          End
+          Else If ExprPool[ExprPool[StmtPool[S].Left].Left].Kind <> EK_IDENT Then
+            FatalError('TODO 21 : generateur de code, cible d''affectation "." sur ' +
+              'une struct via une expression COMPLEXE non couverte pour cette ' +
+              'premiere passe')
+          Else
+          Begin
+            TgtSI := ExprPool[ExprPool[StmtPool[S].Left].Left].Left;
+            If TgtSI < 0 Then
+              FatalError('TODO 21 : generateur de code, identificateur de base non ' +
+                'resolu pour la cible d''affectation "."')
+            Else
+            Begin
+              CompileExpr(StmtPool[S].Right);
+              EmitInstr('PUSH EAX');
+              EmitInstr('LEA EBX,' + CgVarOperand(TgtSI));
+              EmitInstr('POP EAX');
+              If FieldPool[FI].Offset = 0 Then
+                EmitInstr('MOV DWORD PTR [EBX],EAX')
+              Else
+                EmitInstr('MOV DWORD PTR [EBX+' + IntToStrSW(FieldPool[FI].Offset) + '],EAX');
+            End;
+          End;
+        End;
+      End
+      { "a[i] = valeur" (ECRITURE, extension "Array<Int>", suite a          }
+      { "termine les parties non couvertes") - MEME calcul d adresse        }
+      { EXACT que la LECTURE (EK_INDEX, CompileExpr ci-dessus : IMUL         }
+      { EAX,EBX puis ADD, jamais de SIB) - la valeur A AFFECTER est          }
+      { calculee EN PREMIER et SAUVEE (PUSH), MEME technique EXACTE que      }
+      { le store-through-pointer "inout"/EK_SELECTOR deja existant. }
+      Else If ExprPool[StmtPool[S].Left].Kind = EK_INDEX Then
+      Begin
+        BaseT := TypeResolveOptional(ExprPool[ExprPool[StmtPool[S].Left].Left].TypeIdx);
+        ElemT := -1;
+        If (BaseT >= 0) And (BaseT < TypeCount) And (TypeTab[BaseT].Kind = TYK_ARRAY) Then
+          ElemT := TypeTab[BaseT].ElemTypeIdx;
+        If (ElemT < 0) Or (ElemT >= TypeCount) Or (TypeTab[ElemT].Kind <> TYK_INT) Then
+          FatalError('TODO 21 : generateur de code, cible d''affectation "[...]" ' +
+            'non couverte pour cette premiere passe (seul Array<Int> l''est)')
+        Else
+        Begin
+          CompileExpr(StmtPool[S].Right);
+          EmitInstr('PUSH EAX');
+          CompileExpr(ExprPool[StmtPool[S].Left].Left);
+          EmitInstr('PUSH EAX');
+          CompileExpr(ExprPool[StmtPool[S].Left].Right);
+          EmitInstr('MOV EBX,4');
+          EmitInstr('IMUL EAX,EBX');
+          EmitInstr('MOV EBX,EAX');
+          EmitInstr('POP EAX');
+          EmitInstr('ADD EAX,EBX');
+          EmitInstr('MOV EBX,EAX');
+          EmitInstr('POP EAX');
+          EmitInstr('MOV DWORD PTR [EBX],EAX');
+        End;
+      End
       Else If ExprPool[StmtPool[S].Left].Kind <> EK_IDENT Then
         FatalError('TODO 21 : generateur de code, cible d''affectation non ' +
-          'couverte pour cette premiere passe (seul un identificateur simple ' +
-          'l''est)')
+          'couverte pour cette premiere passe (seul un identificateur simple/un ' +
+          'champ de struct-classe l''est)')
       Else
       Begin
         { DEJA resolu par ExprAddIdent au moment du PARSING - voir la note   }
@@ -12932,13 +13690,29 @@ Begin
         CompileExpr(StmtPool[S].Right);
         If TgtSI >= 0 Then
         Begin
+          { ALIAS DE CHAMP cible (extension "methodes d instance", suite  }
+          { a "termine les parties non couvertes") : "x = x + dx" a                    }
+          { l INTERIEUR de "moveBy" (mutating), au lieu de "self.x = ...".               }
+          { MEME technique EXACTE que la cible "inout" juste au-dessus                       }
+          { (store-through-pointer), UN NIVEAU d indirection de PLUS               }
+          { (alias -> self -> champ). }
+          If SymTab[TgtSI].SelfFieldOffset >= 0 Then
+          Begin
+            EmitInstr('PUSH EAX');
+            EmitInstr('MOV EBX,DWORD PTR ' + CgVarOperand(SymTab[TgtSI].AliasOfSelfSI));
+            EmitInstr('POP EAX');
+            If SymTab[TgtSI].SelfFieldOffset = 0 Then
+              EmitInstr('MOV DWORD PTR [EBX],EAX')
+            Else
+              EmitInstr('MOV DWORD PTR [EBX+' + IntToStrSW(SymTab[TgtSI].SelfFieldOffset) + '],EAX');
+          End
           { parametre "inout" cible (extension, suite au rapport            }
           { "math.swift") : son emplacement EBP-relatif contient une              }
           { ADRESSE - ECRIRE "a travers" cette adresse (store-through-               }
           { pointer) plutot que d ECRASER l adresse elle-meme. EAX (la              }
           { valeur a affecter) est sauvee (PUSH/POP) le temps de charger              }
           { l adresse cible dans EBX. }
-          If SymTab[TgtSI].IsInoutAlias Then
+          Else If SymTab[TgtSI].IsInoutAlias Then
           Begin
             EmitInstr('PUSH EAX');
             EmitInstr('MOV EBX,DWORD PTR ' + CgVarOperand(TgtSI));
@@ -12953,27 +13727,53 @@ Begin
             'resolue: ' + ExprPool[StmtPool[S].Left].NameVal);
       End;
     STK_IF:
-      If StmtPool[S].NameVal <> '' Then
-        FatalError('TODO 21 : generateur de code, "if let"/"if var" (liaison ' +
-          'optionnelle) non couvert pour cette premiere passe - seule la ' +
-          'forme "if Condition { }" SANS liaison l''est')
-      Else
+      { "if let Nom = Expr"/"if var Nom = Expr" suivi d un bloc ALORS       }
+      { (extension "if let"/"guard let", TODO 21, suite a "termine les    }
+      { parties non couvertes") - la representation runtime SIMPLIFIEE     }
+      { d Optional<T> ETANT deja directement celle de T (nil=0, voir la    }
+      { note d en-tete du "??"/EK_FORCEDUNWRAP de CompileExpr), la MEME    }
+      { sequence TEST EAX,EAX/JZ que le "if" ordinaire SUFFIT DEJA a       }
+      { detecter "nil" - AUCUNE forme d Optional distincte a decoder. La   }
+      { SEULE difference reelle : la valeur (deja en EAX) doit en plus     }
+      { etre ECRITE dans le stockage de la liaison (ArgFirst, deja resolu  }
+      { a l INDEX SymTab correct par ParseIfStmt - CgVarOperand route      }
+      { correctement selon que ce stockage est un local de fonction        }
+      { (LocalSymFirst/Count de la fonction ENGLOBANTE) ou un global        }
+      { (IsTopLevelLocal, voir ParseIfStmt) AVANT de compiler le bloc       }
+      { ALORS, ou toute reference a "Nom" a l INTERIEUR y lirait une        }
+      { valeur NON INITIALISEE. Portee VOLONTAIREMENT reduite a Int/Bool    }
+      { (String, valeur DEJA representee par une adresse - LEA, EK_IDENT   }
+      { ci-dessus - combinee a un stockage "generique" MOV/JAMAIS LEA      }
+      { pour lire une liaison locale donnerait un resultat FAUX, jamais    }
+      { exerce par aucun echantillon actuel, extension future documentee). }
       Begin
-        CompileExpr(StmtPool[S].Extra);
-        LblElse := CgLabelGen;
-        EmitInstr('TEST EAX,EAX');
-        EmitInstr('JZ ' + LblElse);
-        CompileStmt(StmtPool[S].Right);
-        If StmtPool[S].Left >= 0 Then
-        Begin
-          LblEnd := CgLabelGen;
-          EmitInstr('JMP ' + LblEnd);
-          EmitLabel(LblElse);
-          CompileStmt(StmtPool[S].Left);
-          EmitLabel(LblEnd);
-        End
+        BindSI := StmtPool[S].ArgFirst;
+        If (StmtPool[S].NameVal <> '') And (BindSI >= 0) And
+           (SymTab[BindSI].TypeIdx >= 0) And (SymTab[BindSI].TypeIdx < TypeCount) And
+           (TypeTab[SymTab[BindSI].TypeIdx].Kind = TYK_STRING) Then
+          FatalError('TODO 21 : generateur de code, "if let"/"if var" sur un ' +
+            'Optional<String> non couvert pour cette premiere passe (seuls ' +
+            'Int/Bool le sont)')
         Else
-          EmitLabel(LblElse);
+        Begin
+          CompileExpr(StmtPool[S].Extra);
+          LblElse := CgLabelGen;
+          EmitInstr('TEST EAX,EAX');
+          EmitInstr('JZ ' + LblElse);
+          If StmtPool[S].NameVal <> '' Then
+            EmitInstr('MOV DWORD PTR ' + CgVarOperand(BindSI) + ',EAX');
+          CompileStmt(StmtPool[S].Right);
+          If StmtPool[S].Left >= 0 Then
+          Begin
+            LblEnd := CgLabelGen;
+            EmitInstr('JMP ' + LblEnd);
+            EmitLabel(LblElse);
+            CompileStmt(StmtPool[S].Left);
+            EmitLabel(LblEnd);
+          End
+          Else
+            EmitLabel(LblElse);
+        End;
       End;
     STK_WHILE:
       Begin
@@ -13076,33 +13876,67 @@ Begin
       { et DOIT sortir de la portee courante (return/break/continue,               }
       { verifie best-effort par le front-end, TODO 19 - jamais reverifie            }
       { ici, voir ParseGuardStmt). Si la condition est VRAIE, saute               }
-      { PAR-DESSUS le bloc SINON et continue normalement. "guard let"                    }
-      { (liaison optionnelle) reste HORS de portee (NameVal <> ''). }
-      If StmtPool[S].NameVal <> '' Then
-        FatalError('TODO 21 : generateur de code, "guard let"/"guard var" ' +
-          '(liaison optionnelle) non couvert pour cette premiere passe - ' +
-          'seule la forme "guard Condition else { }" SANS liaison l''est')
-      Else
+      { PAR-DESSUS le bloc SINON et continue normalement.                                       }
+      { "guard let Nom = Expr else" suivi d un bloc SINON (extension        }
+      { "if let"/"guard let", suite a "termine les parties non couvertes")  }
+      { : MEME                                                                                     }
+      { detection de nil (TEST EAX,EAX, voir la note d en-tete de STK_IF     }
+      { ci-dessus) mais la BRANCHE DIAGRAMME differemment - la liaison        }
+      { "Nom" doit rester VISIBLE APRES le guard ENTIER (portee               }
+      { APPELANTE, ParseGuardStmt - contrairement a "if let"), donc ECRITE    }
+      { SEULEMENT quand la valeur est non-nil, PUIS saute PAR-DESSUS le       }
+      { bloc SINON (celui-ci n a JAMAIS besoin de lire "Nom" - il DOIT        }
+      { sortir de la portee avant de pouvoir l atteindre). Meme restriction   }
+      { Int/Bool SEULEMENT que "if let" ci-dessus (String non couvert). }
       Begin
-        CompileExpr(StmtPool[S].Extra);
-        LblEnd := CgLabelGen;
-        EmitInstr('TEST EAX,EAX');
-        EmitInstr('JNZ ' + LblEnd);
-        CompileStmt(StmtPool[S].Right);
-        EmitLabel(LblEnd);
+        BindSI := StmtPool[S].ArgFirst;
+        If (StmtPool[S].NameVal <> '') And (BindSI >= 0) And
+           (SymTab[BindSI].TypeIdx >= 0) And (SymTab[BindSI].TypeIdx < TypeCount) And
+           (TypeTab[SymTab[BindSI].TypeIdx].Kind = TYK_STRING) Then
+          FatalError('TODO 21 : generateur de code, "guard let"/"guard var" ' +
+            'sur un Optional<String> non couvert pour cette premiere passe ' +
+            '(seuls Int/Bool le sont)')
+        Else If StmtPool[S].NameVal <> '' Then
+        Begin
+          CompileExpr(StmtPool[S].Extra);
+          LblElse := CgLabelGen;
+          LblEnd  := CgLabelGen;
+          EmitInstr('TEST EAX,EAX');
+          EmitInstr('JZ ' + LblElse);
+          EmitInstr('MOV DWORD PTR ' + CgVarOperand(BindSI) + ',EAX');
+          EmitInstr('JMP ' + LblEnd);
+          EmitLabel(LblElse);
+          CompileStmt(StmtPool[S].Right);
+          EmitLabel(LblEnd);
+        End
+        Else
+        Begin
+          CompileExpr(StmtPool[S].Extra);
+          LblEnd := CgLabelGen;
+          EmitInstr('TEST EAX,EAX');
+          EmitInstr('JNZ ' + LblEnd);
+          CompileStmt(StmtPool[S].Right);
+          EmitLabel(LblEnd);
+        End;
       End;
     STK_SWITCH:
       { "switch Tag" suivi de clauses "case Valeur:"/"default:" (extension     }
-      { "compilation de fonctions", TODO 21, suite au rapport                            }
-      { "control.swift") - PORTEE VOLONTAIREMENT ETROITE (seule ce que              }
-      { control.swift/enums.swift exercent REELLEMENT) : UNE SEULE                     }
-      { valeur ENTIERE litterale par "case" (jamais une liste "1, 2" ni               }
-      { un intervalle "1...3"), AUCUN "fallthrough". Tag evalue UNE            }
-      { SEULE fois (EBX, temoin de la convention EK_BINARY existante              }
-      { pour "l operande de droite") puis compare a CHAQUE valeur de              }
-      { case (CMP+JE) - PAS de table de sauts (nombre de cas trop petit           }
-      { pour en justifier une, meme choix de simplicite que le reste de              }
-      { ce generateur de code). }
+      { "compilation de fonctions", TODO 21 - ETENDUE ensuite pour              }
+      { "case 1, 2:" - valeurs multiples -, "case 1...3:"/"case 1..<3:" -           }
+      { intervalles LITTERAUX ENTIERS - et "fallthrough", suite a               }
+      { "termine les parties non couvertes" - AUCUN des 12 SAMPLES\SWIFT               }
+      { n exerce ces TROIS formes, control.swift/enums.swift n utilisant           }
+      { que des cases a valeur UNIQUE litterale). Tag evalue UNE SEULE               }
+      { fois (EBX, temoin de la convention EK_BINARY existante pour              }
+      { "l operande de droite") puis compare a CHAQUE valeur/intervalle              }
+      { de CHAQUE case (CMP+JE, ou CMP+JL/JLE pour un intervalle) - PAS            }
+      { de table de sauts (nombre de cas trop petit pour en justifier               }
+      { une, meme choix de simplicite que le reste de ce generateur de              }
+      { code). "fallthrough" (STK_FALLTHROUGH, CompileStmt ci-dessous)             }
+      { saute vers le corps du case SUIVANT en ORDRE TEXTUEL (regle Swift            }
+      { REELLE - JAMAIS re-teste son propre motif) via CgFallthroughPush/          }
+      { Pop, MEME pile EXACTE que CgLoopPush/Pop (permet un "switch"                    }
+      { imbrique DANS le corps d un autre). }
       If StmtPool[S].ArgCount > MAX_CG_SWITCH_CASE Then
         FatalError('TODO 21 : generateur de code, "switch" avec plus de ' +
           IntToStrSW(MAX_CG_SWITCH_CASE) + ' cas non couvert pour cette ' +
@@ -13117,27 +13951,38 @@ Begin
           CaseLbl[CI - StmtPool[S].ArgFirst] := CgLabelGen;
         For CI := StmtPool[S].ArgFirst To StmtPool[S].ArgFirst + StmtPool[S].ArgCount - 1 Do
         Begin
-          If CaseClausePool[CI].Fallthrough Then
-            FatalError('TODO 21 : generateur de code, "fallthrough" non ' +
-              'couvert pour cette premiere passe')
-          Else If CaseClausePool[CI].IsDefault Then
+          If CaseClausePool[CI].IsDefault Then
             DefaultLbl := CaseLbl[CI - StmtPool[S].ArgFirst]
-          Else If CaseClausePool[CI].ExprCount <> 1 Then
-            FatalError('TODO 21 : generateur de code, "case" avec plusieurs ' +
-              'valeurs ou un intervalle non couvert pour cette premiere ' +
-              'passe (seule UNE SEULE valeur entiere litterale par case l''est)')
           Else
-          Begin
-            CaseValE := ExprArgPool[CaseClausePool[CI].ExprFirst];
-            If ExprPool[CaseValE].Kind <> EK_INTLIT Then
-              FatalError('TODO 21 : generateur de code, valeur de "case" non ' +
-                'litterale entiere non couverte pour cette premiere passe')
-            Else
+            For VI := 0 To CaseClausePool[CI].ExprCount - 1 Do
             Begin
-              EmitInstr('CMP EBX,' + IntToStrSW(ExprPool[CaseValE].IntVal));
-              EmitInstr('JE ' + CaseLbl[CI - StmtPool[S].ArgFirst]);
+              CaseValE := ExprArgPool[CaseClausePool[CI].ExprFirst + VI];
+              If ExprPool[CaseValE].Kind = EK_INTLIT Then
+              Begin
+                EmitInstr('CMP EBX,' + IntToStrSW(ExprPool[CaseValE].IntVal));
+                EmitInstr('JE ' + CaseLbl[CI - StmtPool[S].ArgFirst]);
+              End
+              Else If (ExprPool[CaseValE].Kind = EK_BINARY) And
+                 ((ExprPool[CaseValE].Op = '...') Or (ExprPool[CaseValE].Op = '..<')) And
+                 (ExprPool[ExprPool[CaseValE].Left].Kind = EK_INTLIT) And
+                 (ExprPool[ExprPool[CaseValE].Right].Kind = EK_INTLIT) Then
+              Begin
+                SkipLbl := CgLabelGen;
+                EmitInstr('CMP EBX,' + IntToStrSW(ExprPool[ExprPool[CaseValE].Left].IntVal));
+                EmitInstr('JL ' + SkipLbl);
+                EmitInstr('CMP EBX,' + IntToStrSW(ExprPool[ExprPool[CaseValE].Right].IntVal));
+                If ExprPool[CaseValE].Op = '...' Then
+                  EmitInstr('JLE ' + CaseLbl[CI - StmtPool[S].ArgFirst])
+                Else
+                  EmitInstr('JL ' + CaseLbl[CI - StmtPool[S].ArgFirst]);
+                EmitLabel(SkipLbl);
+              End
+              Else
+                FatalError('TODO 21 : generateur de code, valeur/motif de ' +
+                  '"case" non couvert pour cette premiere passe (seul un ' +
+                  'litteral entier ou un intervalle ENTIER LITTERAL, "..." ' +
+                  'ou "..<", l''est)');
             End;
-          End;
         End;
         If DefaultLbl <> '' Then
           EmitInstr('JMP ' + DefaultLbl)
@@ -13146,12 +13991,30 @@ Begin
         For CI := StmtPool[S].ArgFirst To StmtPool[S].ArgFirst + StmtPool[S].ArgCount - 1 Do
         Begin
           EmitLabel(CaseLbl[CI - StmtPool[S].ArgFirst]);
+          If CI < StmtPool[S].ArgFirst + StmtPool[S].ArgCount - 1 Then
+            CgFallthroughPush(CaseLbl[CI + 1 - StmtPool[S].ArgFirst])
+          Else
+            CgFallthroughPush('');
           For BI := CaseClausePool[CI].BodyFirst To CaseClausePool[CI].BodyFirst + CaseClausePool[CI].BodyCount - 1 Do
             CompileStmt(StmtArgPool[BI]);
+          CgFallthroughPop;
           EmitInstr('JMP ' + LblEnd);
         End;
         EmitLabel(LblEnd);
       End;
+    STK_FALLTHROUGH:
+      { "fallthrough" (extension, suite a "termine les parties non         }
+      { couvertes") - saute vers le corps du case SUIVANT (CgFallthroughLbl,           }
+      { empile par STK_SWITCH ci-dessus) - jamais re-teste son PROPRE               }
+      { motif, regle Swift REELLE. Chaine vide = DERNIER case du switch               }
+      { (aucune cible - Swift REJETTE deja "fallthrough" sur le dernier              }
+      { case a l analyse, mais ce generateur de code reste defensif). }
+      If (CgFallthroughDepth <= 0) Or (CgFallthroughLbl[CgFallthroughDepth - 1] = '') Then
+        FatalError('TODO 21 : generateur de code, "fallthrough" hors de tout ' +
+          '"switch" ou sur son DERNIER cas (aucune cible) non couvert pour ' +
+          'cette premiere passe')
+      Else
+        EmitInstr('JMP ' + CgFallthroughLbl[CgFallthroughDepth - 1]);
     STK_RETURN:
       { "return [Expression]" (extension "compilation de fonctions",     }
       { TODO 21) - le resultat (s il y en a un) est DEJA dans EAX apres            }
@@ -13222,7 +14085,8 @@ Begin
     Begin
       If CgIsClassCtorCall(SymTab[I].InitExprIdx) Or CgIsUserFuncCall(SymTab[I].InitExprIdx) Or
          CgIsOptionalRuntimeInit(SymTab[I].InitExprIdx) Or
-         CgIsSingleFieldStructCtorCall(SymTab[I].InitExprIdx) Then
+         CgIsSingleFieldStructCtorCall(SymTab[I].InitExprIdx) Or
+         CgIsArrayLitCall(SymTab[I].InitExprIdx) Then
       Begin
         CompileExpr(SymTab[I].InitExprIdx);
         EmitInstr('MOV DWORD PTR ' + CgVarOperand(I) + ',EAX');
@@ -13325,6 +14189,83 @@ Begin
     CompileFuncDef(I);
 End;
 
+{ CompileMethodDef : compile UNE methode d instance (struct/classe) -    }
+{ meme architecture EXACTE que CompileFuncDef (prologue/epilogue,               }
+{ deplacements EBP reels assignes ICI, JAMAIS avant), avec DEUX               }
+{ differences : (1) "self" occupe TOUJOURS EBP+8 (PREMIER parametre               }
+{ IMPLICITE, pousse EN DERNIER par l appelant - voir CgIsMethodCall) -           }
+{ les VRAIS parametres commencent donc a EBP+12, PAS +8 ; (2) chaque              }
+{ ALIAS DE CHAMP (RegisterFieldAliasesFromBuf - "radius" au lieu de              }
+{ "self.radius") recoit SelfFieldOffset/AliasOfSelfSI plutot qu un              }
+{ deplacement EBP-relatif PROPRE (il n a JAMAIS sa propre case - CgVarOperand          }
+{ ne le voit meme jamais, EK_IDENT/STK_ASSIGN interceptent le cas AVANT). }
+Procedure CompileMethodDef(MI: Integer);
+Var
+  FT, OwnerT, I, ParamCnt, LocalCnt, SelfSI, FieldAliasFirst, FieldCnt, PIdx : Integer;
+  HasInoutParam : Boolean;
+Begin
+  FT := MethodPool[MI].TypeIdx;
+  OwnerT := MethodPool[MI].OwnerTypeIdx;
+  SelfSI := MethodPool[MI].SelfSI;
+  ParamCnt := TypeTab[FT].ParamCount;
+
+  HasInoutParam := False;
+  For I := 0 To ParamCnt - 1 Do
+  Begin
+    PIdx := TypeTab[FT].ParamFirst + I;
+    If FieldPool[PIdx].IsInout Then HasInoutParam := True;
+  End;
+
+  If HasInoutParam Then
+    FatalError('TODO 21 : generateur de code, methode ''' + MethodPool[MI].Name +
+      ''' avec parametre(s) "inout" non couverte pour cette premiere passe')
+  Else
+  Begin
+    SymTab[SelfSI].Offset := 8;
+
+    FieldCnt := TypeTab[OwnerT].FieldCount;
+    FieldAliasFirst := SelfSI - FieldCnt;
+    For I := 0 To FieldCnt - 1 Do
+    Begin
+      SymTab[FieldAliasFirst + I].SelfFieldOffset := FieldPool[TypeTab[OwnerT].FieldFirst + I].Offset;
+      SymTab[FieldAliasFirst + I].AliasOfSelfSI   := SelfSI;
+    End;
+
+    For I := 0 To ParamCnt - 1 Do
+      SymTab[MethodPool[MI].ParamSymFirst + I].Offset := 12 + I * 4;
+
+    LocalCnt := MethodPool[MI].LocalSymCount;
+    For I := 0 To LocalCnt - 1 Do
+      SymTab[MethodPool[MI].LocalSymFirst + I].Offset := -4 - I * 4;
+
+    EmitLabel(ASM_PFX_METHOD + TypeTab[OwnerT].Name + '_' + MethodPool[MI].Name);
+    EmitInstr('PUSH EBP');
+    EmitInstr('MOV EBP,ESP');
+    If LocalCnt > 0 Then
+      EmitInstr('SUB ESP,' + IntToStrSW(LocalCnt * 4));
+
+    CgCurFuncEpilogueLbl := CgLabelGen;
+    CompileStmt(MethodPool[MI].BodyStmtIdx);
+
+    EmitLabel(CgCurFuncEpilogueLbl);
+    EmitInstr('MOV ESP,EBP');
+    EmitInstr('POP EBP');
+    EmitInstr('RET');
+    EmitBlankLine;
+  End;
+End;
+
+{ EmitAllMethods : compile TOUTE methode "compilable" (CgIsCompilableMethod  }
+{ ci-dessus) - meme discipline "SANS CONDITION, meme jamais appelee" que           }
+{ EmitUserFunctions, LIMITEE aux methodes sur un type SANS superclasse. }
+Procedure EmitAllMethods;
+Var I : Integer;
+Begin
+  For I := 0 To MethodPoolCount - 1 Do
+    If CgIsCompilableMethod(I) Then
+      CompileMethodDef(I);
+End;
+
 { CompileProgram : point d entree du generateur de code - ordre           }
 { d emission EXACT de GOCW32.PAS (en-tete -> donnees -> section code ->            }
 { bibliotheque runtime -> corps) PLUS desormais EmitUserFunctions               }
@@ -13364,6 +14305,7 @@ Begin
   EmitCodeSeg;
   EmitRuntimeLibrary;
   EmitUserFunctions;
+  EmitAllMethods;
 
   EmitLabel('_SWSTART');
   CompileGlobalRuntimeInits;
@@ -14005,6 +14947,376 @@ Begin
   CodegenAssert('CompileGlobalRuntimeInits : ecriture du SECOND champ ' +
     '(deplacement +4, MOV DWORD PTR [EBX+4],EAX) present',
     CgFileHasSubstring(TmpAsm, 'MOV DWORD PTR [EBX+4],EAX'));
+
+  Assign(CgOutF, TmpAsm);
+  Erase(CgOutF);
+
+  { re-initialise les tables globales pour ne pas polluer Run reel }
+  StmtInit;
+  ExprInit;
+  SymInit;
+  FuncDefInit;
+  MethodPoolInit;
+  EnumCaseInit;
+
+  { EXTENSION "ACCES AUX CHAMPS" (suite a "termine les parties non         }
+  { couvertes dans SWIFTW32.PAS") - AUCUN des 12 SAMPLES\SWIFT n exerce            }
+  { la LECTURE/ECRITURE d un champ apres construction (origin/rect/c/pet           }
+  { ne sont jamais RELUS), extrait donc ENTIEREMENT SYNTHETIQUE - deja               }
+  { verifie par EXECUTION reelle (Git Bash ET PowerShell natif, sortie              }
+  { "3"/"4"/"4"/"99"/"20" EXACTEMENT conforme) AVANT d ecrire ces                       }
+  { assertions structurelles. Ce test a REVELE un VRAI bogue PRE-EXISTANT           }
+  { (introduit par l EXTENSION CONSTRUCTION DE STRUCT MULTI-MOTS, jamais           }
+  { detecte a l epoque puisque structs.swift n y relit jamais rien) :               }
+  { BinAssembleDataLine n emettait qu UN SEUL mot pour une ligne "DD 0, 0"           }
+  { (voir sa propre note d en-tete pour le detail complet) - le LABEL              }
+  { SUIVANT ("a" ici) se retrouvait alors ALIASE sur la MOITIE du                       }
+  { stockage du PRECEDENT ("p.y" et "a" partageaient silencieusement la           }
+  { MEME adresse) - CORRIGE ici, PAS dans le bloc structs.swift plus haut            }
+  { (qui continue de "reussir" mais n aurait JAMAIS pu detecter ce bogue            }
+  { precis, puisqu il ne relit rien). }
+  Assign(LexSrcF, TmpSrc);
+  Rewrite(LexSrcF);
+  WriteLn(LexSrcF, 'struct Point {');
+  WriteLn(LexSrcF, 'var x: Int');
+  WriteLn(LexSrcF, 'var y: Int');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, 'class Animal {');
+  WriteLn(LexSrcF, 'var legs: Int');
+  WriteLn(LexSrcF, 'var name: String');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, 'let p: Point = Point(x: 3, y: 4)');
+  WriteLn(LexSrcF, 'print(p.x)');
+  WriteLn(LexSrcF, 'print(p.y)');
+  WriteLn(LexSrcF, 'let a: Animal = Animal()');
+  WriteLn(LexSrcF, 'a.legs = 4');
+  WriteLn(LexSrcF, 'print(a.legs)');
+  WriteLn(LexSrcF, 'var q: Point = Point(x: 10, y: 20)');
+  WriteLn(LexSrcF, 'q.x = 99');
+  WriteLn(LexSrcF, 'print(q.x)');
+  WriteLn(LexSrcF, 'print(q.y)');
+  Close(LexSrcF);
+  Assign(LexSrcF, TmpSrc);
+  Reset(LexSrcF);
+  LexOpened := True;
+  LexInit;
+  LexAll;
+  LexClose;
+  Erase(LexSrcF);
+  ParserInit;
+  ParseSwiftProgram;
+
+  CompileProgram(TmpAsm);
+
+  CodegenAssert('lecture d un champ de STRUCT (p.x, deplacement 0) : ' +
+    'LEA+MOV DWORD PTR [EAX] present',
+    CgFileHasSubstring(TmpAsm, 'MOV EAX,DWORD PTR [EAX]'));
+  CodegenAssert('lecture d un champ de STRUCT au deplacement +4 (p.y) : ' +
+    'MOV DWORD PTR [EAX+4] present',
+    CgFileHasSubstring(TmpAsm, 'MOV EAX,DWORD PTR [EAX+4]'));
+  CodegenAssert('ecriture d un champ de CLASSE (a.legs) : store-through-' +
+    'pointer MOV DWORD PTR [EBX],EAX present',
+    CgFileHasSubstring(TmpAsm, 'MOV DWORD PTR [EBX],EAX'));
+  CodegenAssert('ecriture d un champ de STRUCT (q.x) via LEA EBX present',
+    CgFileHasSubstring(TmpAsm, 'LEA EBX,'));
+
+  Assign(CgOutF, TmpAsm);
+  Erase(CgOutF);
+
+  { re-initialise les tables globales pour ne pas polluer Run reel }
+  StmtInit;
+  ExprInit;
+  SymInit;
+  FuncDefInit;
+  MethodPoolInit;
+  EnumCaseInit;
+
+  { EXTENSION "METHODES D INSTANCE" (suite a "termine les parties non     }
+  { couvertes dans SWIFTW32.PAS") - AUCUN des 12 SAMPLES\SWIFT n APPELLE            }
+  { de methode (protos.swift/structs.swift/classes.swift les DECLARENT             }
+  { mais ne les invoquent JAMAIS), extrait donc ENTIEREMENT SYNTHETIQUE -           }
+  { deja verifie par EXECUTION reelle (Git Bash ET PowerShell natif,               }
+  { sortie "7"/"4"/"6"/"10"/"4" EXACTEMENT conforme) AVANT d ecrire ces           }
+  { assertions structurelles - "sum()" (non-mutating, alias de champ EN            }
+  { LECTURE), "moveBy" (mutating, alias de champ EN ECRITURE), "speak()"           }
+  { (methode de CLASSE, alias de champ via pointeur) EN UN SEUL extrait. }
+  Assign(LexSrcF, TmpSrc);
+  Rewrite(LexSrcF);
+  WriteLn(LexSrcF, 'struct Point {');
+  WriteLn(LexSrcF, 'var x: Int');
+  WriteLn(LexSrcF, 'var y: Int');
+  WriteLn(LexSrcF, 'func sum() -> Int {');
+  WriteLn(LexSrcF, 'return x + y');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, 'mutating func moveBy(_ dx: Int, _ dy: Int) {');
+  WriteLn(LexSrcF, 'x = x + dx');
+  WriteLn(LexSrcF, 'y = y + dy');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, 'class Animal {');
+  WriteLn(LexSrcF, 'var legs: Int');
+  WriteLn(LexSrcF, 'var name: String');
+  WriteLn(LexSrcF, 'func speak() -> Int {');
+  WriteLn(LexSrcF, 'return legs');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, 'var p: Point = Point(x: 3, y: 4)');
+  WriteLn(LexSrcF, 'print(p.sum())');
+  WriteLn(LexSrcF, 'p.moveBy(1, 2)');
+  WriteLn(LexSrcF, 'print(p.x)');
+  WriteLn(LexSrcF, 'let a: Animal = Animal()');
+  WriteLn(LexSrcF, 'a.legs = 4');
+  WriteLn(LexSrcF, 'print(a.speak())');
+  Close(LexSrcF);
+  Assign(LexSrcF, TmpSrc);
+  Reset(LexSrcF);
+  LexOpened := True;
+  LexInit;
+  LexAll;
+  LexClose;
+  Erase(LexSrcF);
+  ParserInit;
+  ParseSwiftProgram;
+
+  CompileProgram(TmpAsm);
+
+  CodegenAssert('etiquette de methode STRUCT _SWM_Point_sum presente',
+    CgFileHasSubstring(TmpAsm, ASM_PFX_METHOD + 'Point_sum:'));
+  CodegenAssert('etiquette de methode STRUCT (mutating) _SWM_Point_moveBy presente',
+    CgFileHasSubstring(TmpAsm, ASM_PFX_METHOD + 'Point_moveBy:'));
+  CodegenAssert('etiquette de methode CLASSE _SWM_Animal_speak presente',
+    CgFileHasSubstring(TmpAsm, ASM_PFX_METHOD + 'Animal_speak:'));
+  CodegenAssert('appel de methode : CALL _SWM_Point_sum present',
+    CgFileHasSubstring(TmpAsm, 'CALL ' + ASM_PFX_METHOD + 'Point_sum'));
+  CodegenAssert('appel de methode sur struct : "self" pousse via LEA EAX present',
+    CgFileHasSubstring(TmpAsm, 'LEA EAX,'));
+  CodegenAssert('alias de champ EN LECTURE (sum: "x") : self charge puis ' +
+    'dereference (MOV EAX,DWORD PTR [EAX+8]) present - parametre a EBP+8',
+    CgFileHasSubstring(TmpAsm, 'MOV EAX,DWORD PTR [EBP+8]'));
+
+  Assign(CgOutF, TmpAsm);
+  Erase(CgOutF);
+
+  { re-initialise les tables globales pour ne pas polluer Run reel }
+  StmtInit;
+  ExprInit;
+  SymInit;
+  FuncDefInit;
+  MethodPoolInit;
+  EnumCaseInit;
+
+  { EXTENSION "SWITCH ETENDU" (suite a "termine les parties non           }
+  { couvertes dans SWIFTW32.PAS") - AUCUN des 12 SAMPLES\SWIFT n exerce            }
+  { les valeurs multiples ("case 0, 1:"), les intervalles ("case                            }
+  { 2...3:"/"case 4..<5:") ni "fallthrough" - extrait ENTIEREMENT               }
+  { SYNTHETIQUE, deja verifie par EXECUTION reelle (Git Bash ET               }
+  { PowerShell natif, sortie "100"/"100"/"200"/"200"/"300"/"400"/"2"/"3"           }
+  { EXACTEMENT conforme, six iterations d un "while" PUIS un second               }
+  { "switch" isole demontrant "fallthrough" EN CHAINE - deux niveaux). }
+  Assign(LexSrcF, TmpSrc);
+  Rewrite(LexSrcF);
+  WriteLn(LexSrcF, 'switch 2 {');
+  WriteLn(LexSrcF, 'case 0, 1:');
+  WriteLn(LexSrcF, 'print(100)');
+  WriteLn(LexSrcF, 'case 2...3:');
+  WriteLn(LexSrcF, 'print(200)');
+  WriteLn(LexSrcF, 'fallthrough');
+  WriteLn(LexSrcF, 'case 4..<5:');
+  WriteLn(LexSrcF, 'print(300)');
+  WriteLn(LexSrcF, 'default:');
+  WriteLn(LexSrcF, 'print(400)');
+  WriteLn(LexSrcF, '}');
+  Close(LexSrcF);
+  Assign(LexSrcF, TmpSrc);
+  Reset(LexSrcF);
+  LexOpened := True;
+  LexInit;
+  LexAll;
+  LexClose;
+  Erase(LexSrcF);
+  ParserInit;
+  ParseSwiftProgram;
+
+  CompileProgram(TmpAsm);
+
+  CodegenAssert('"case 0, 1" (valeurs multiples) : DEUX comparaisons ' +
+    '(CMP EBX,0 et CMP EBX,1) present',
+    CgFileHasSubstring(TmpAsm, 'CMP EBX,1'));
+  CodegenAssert('"case 2...3" (intervalle INCLUSIF) : borne haute JLE present',
+    CgFileHasSubstring(TmpAsm, 'JLE '));
+  CodegenAssert('"case 4..<5" (intervalle EXCLUSIF) : borne haute JL present',
+    CgFileHasSubstring(TmpAsm, 'JL '));
+  CodegenAssert('"fallthrough" : saut direct vers le corps du case ' +
+    'SUIVANT (JMP) present',
+    CgFileHasSubstring(TmpAsm, 'JMP '));
+
+  Assign(CgOutF, TmpAsm);
+  Erase(CgOutF);
+
+  { re-initialise les tables globales pour ne pas polluer Run reel }
+  StmtInit;
+  ExprInit;
+  SymInit;
+  FuncDefInit;
+  MethodPoolInit;
+  EnumCaseInit;
+
+  { EXTENSION "INTERPOLATION DE CHAINE" (suite a "termine les parties     }
+  { non couvertes dans SWIFTW32.PAS") - AUCUN des 12 SAMPLES\SWIFT             }
+  { n exerce "\(...)" - extrait ENTIEREMENT SYNTHETIQUE, deja verifie              }
+  { par EXECUTION reelle (Git Bash ET PowerShell natif, sortie EXACTE               }
+  { "value is 42 and hello world done" / "n=7" / "just text, no interp",           }
+  { conforme a la semantique Swift reelle) AVANT que ces assertions              }
+  { structurelles ne soient ecrites. Limite VOLONTAIRE, MEME portee que              }
+  { CgCompileInterpSegment (CompileExpr, EK_STRINGINTERP) : seuls des              }
+  { segments String/Int sont exerces ici, jamais assignes a un "let"              }
+  { global (limitation PREEXISTANTE, INDEPENDANTE de cette extension -           }
+  { voir EmitDataSeg, "global non repliable a la compilation"). }
+  Assign(LexSrcF, TmpSrc);
+  Rewrite(LexSrcF);
+  WriteLn(LexSrcF, 'let x: Int = 42');
+  WriteLn(LexSrcF, 'let name: String = "world"');
+  WriteLn(LexSrcF, 'print("value is \(x) and hello \(name) done")');
+  WriteLn(LexSrcF, 'print("n=\(7)")');
+  WriteLn(LexSrcF, 'print("just text, no interp")');
+  Close(LexSrcF);
+  Assign(LexSrcF, TmpSrc);
+  Reset(LexSrcF);
+  LexOpened := True;
+  LexInit;
+  LexAll;
+  LexClose;
+  Erase(LexSrcF);
+  ParserInit;
+  ParseSwiftProgram;
+
+  CompileProgram(TmpAsm);
+
+  CodegenAssert('nouvelle routine runtime _SWRT_STRCAT2 emise',
+    CgFileHasSubstring(TmpAsm, ASM_PFX_RUNTIME + 'STRCAT2:'));
+  CodegenAssert('segment Int interpole : CALL _SWRT_STRCONV_ITOA present',
+    CgFileHasSubstring(TmpAsm, 'CALL ' + ASM_PFX_RUNTIME + 'STRCONV_ITOA'));
+  CodegenAssert('concatenation de segments : CALL _SWRT_STRCAT2 present',
+    CgFileHasSubstring(TmpAsm, 'CALL ' + ASM_PFX_RUNTIME + 'STRCAT2'));
+  CodegenAssert('segment "texte, no interp" : print(String) direct ' +
+    '(CALL _SWRT_PRINTLN_STR, AUCUNE concatenation) present',
+    CgFileHasSubstring(TmpAsm, 'CALL ' + ASM_PFX_RUNTIME + 'PRINTLN_STR'));
+
+  Assign(CgOutF, TmpAsm);
+  Erase(CgOutF);
+
+  { re-initialise les tables globales pour ne pas polluer Run reel }
+  StmtInit;
+  ExprInit;
+  SymInit;
+  FuncDefInit;
+  MethodPoolInit;
+  EnumCaseInit;
+
+  { EXTENSION "IF LET"/"GUARD LET" (suite a "termine les parties non     }
+  { couvertes dans SWIFTW32.PAS") - AUCUN des 12 SAMPLES\SWIFT n exerce   }
+  { "guard let"/"if let" (optionals.swift n utilise que "??"/"!") -       }
+  { extrait ENTIEREMENT SYNTHETIQUE, deja verifie par EXECUTION reelle    }
+  { (Git Bash ET PowerShell natif, sortie EXACTE "42"/"-99"/"11"/"-1",    }
+  { conforme a la semantique Swift reelle - "opt1"=42 non-nil, "opt2"=    }
+  { nil, "check(v:10)" reussit le guard (10+1=11), "check(v:nil)" le      }
+  { rate (-1)) AVANT que ces assertions structurelles ne soient ecrites.  }
+  { A REVELE, EN LA COMPILANT, une DEUXIEME lacune PRE-EXISTANTE          }
+  { totalement indépendante (un simple litteral NEGATIF comme "-1" est    }
+  { toujours EK_UNARY "-" sur un EK_INTLIT positif, JAMAIS un EK_INTLIT   }
+  { deja negatif) : EK_UNARY n avait ENCORE AUCUN cas dans CompileExpr    }
+  { (NEG/XOR EAX,1/NOT ajoutes ci-dessus, voir sa propre note d en-tete). }
+  Assign(LexSrcF, TmpSrc);
+  Rewrite(LexSrcF);
+  WriteLn(LexSrcF, 'func check(v: Int?) -> Int {');
+  WriteLn(LexSrcF, '    guard let x = v else {');
+  WriteLn(LexSrcF, '        return -1');
+  WriteLn(LexSrcF, '    }');
+  WriteLn(LexSrcF, '    return x + 1');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, 'let opt1: Int? = 42');
+  WriteLn(LexSrcF, 'if let y = opt1 {');
+  WriteLn(LexSrcF, '    print(y)');
+  WriteLn(LexSrcF, '} else {');
+  WriteLn(LexSrcF, '    print(0)');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, 'print(check(v: 10))');
+  Close(LexSrcF);
+  Assign(LexSrcF, TmpSrc);
+  Reset(LexSrcF);
+  LexOpened := True;
+  LexInit;
+  LexAll;
+  LexClose;
+  Erase(LexSrcF);
+  ParserInit;
+  ParseSwiftProgram;
+
+  CompileProgram(TmpAsm);
+
+  CodegenAssert('etiquette de fonction _SWF_check presente',
+    CgFileHasSubstring(TmpAsm, ASM_PFX_FUNC + 'check:'));
+  CodegenAssert('litteral negatif "-1" (EK_UNARY) : NEG EAX present',
+    CgFileHasSubstring(TmpAsm, 'NEG EAX'));
+  CodegenAssert('test de nil "if let"/"guard let" (TEST EAX,EAX) present',
+    CgFileHasSubstring(TmpAsm, 'TEST EAX,EAX'));
+  CodegenAssert('appel de check(v:) : CALL _SWF_check present',
+    CgFileHasSubstring(TmpAsm, 'CALL ' + ASM_PFX_FUNC + 'check'));
+
+  Assign(CgOutF, TmpAsm);
+  Erase(CgOutF);
+
+  { re-initialise les tables globales pour ne pas polluer Run reel }
+  StmtInit;
+  ExprInit;
+  SymInit;
+  FuncDefInit;
+  MethodPoolInit;
+  EnumCaseInit;
+
+  { EXTENSION "ARRAY<INT>" (suite a "termine les parties non couvertes    }
+  { dans SWIFTW32.PAS") - AUCUN des 12 SAMPLES\SWIFT n exerce un VRAI      }
+  { Array (arrays.swift simule avec de simples variables scalaires a,b,   }
+  { c,d,e - contournement ECRIT avant que cette extension n existe) -     }
+  { extrait ENTIEREMENT SYNTHETIQUE, deja verifie par EXECUTION reelle    }
+  { (Git Bash ET PowerShell natif, sortie EXACTE "10"/"30"/"50"/"99"/"6", }
+  { conforme a la semantique Swift reelle - "nums[0]"=10 initial,          }
+  { "nums[2]"=30, "nums[4]"=50, ECRITURE "nums[1]=99" puis relecture,      }
+  { "sum"=a[0]+a[1]+a[2]=1+2+3=6 via un for-in) AVANT que ces assertions  }
+  { structurelles ne soient ecrites. }
+  Assign(LexSrcF, TmpSrc);
+  Rewrite(LexSrcF);
+  WriteLn(LexSrcF, 'var nums: [Int] = [10, 20, 30, 40, 50]');
+  WriteLn(LexSrcF, 'print(nums[0])');
+  WriteLn(LexSrcF, 'nums[1] = 99');
+  WriteLn(LexSrcF, 'print(nums[1])');
+  WriteLn(LexSrcF, 'let a: [Int] = [1, 2, 3]');
+  WriteLn(LexSrcF, 'var sum: Int = 0');
+  WriteLn(LexSrcF, 'for i in 0..<3 {');
+  WriteLn(LexSrcF, '    sum = sum + a[i]');
+  WriteLn(LexSrcF, '}');
+  WriteLn(LexSrcF, 'print(sum)');
+  Close(LexSrcF);
+  Assign(LexSrcF, TmpSrc);
+  Reset(LexSrcF);
+  LexOpened := True;
+  LexInit;
+  LexAll;
+  LexClose;
+  Erase(LexSrcF);
+  ParserInit;
+  ParseSwiftProgram;
+
+  CompileProgram(TmpAsm);
+
+  CodegenAssert('litteral de tableau "[10,20,30,40,50]" : CALL _SWRT_ALLOC present',
+    CgFileHasSubstring(TmpAsm, 'CALL ' + ASM_PFX_RUNTIME + 'ALLOC'));
+  CodegenAssert('indexation en LECTURE "nums[0]" : IMUL EAX,EBX present',
+    CgFileHasSubstring(TmpAsm, 'IMUL EAX,EBX'));
+  CodegenAssert('indexation en ECRITURE "nums[1] = 99" : MOV DWORD PTR [EBX],EAX present',
+    CgFileHasSubstring(TmpAsm, 'MOV DWORD PTR [EBX],EAX'));
+  CodegenAssert('dereferencement de l element (MOV EAX,DWORD PTR [EAX]) present',
+    CgFileHasSubstring(TmpAsm, 'MOV EAX,DWORD PTR [EAX]'));
 
   Assign(CgOutF, TmpAsm);
   Erase(CgOutF);
@@ -14758,9 +16070,36 @@ Begin
   Rest := BinTrim(Copy(Line, P + 1, Length(Line) - P));
   BinDefineLabel(Name);
 
+  { REEL bogue trouve par EXECUTION (extension "acces aux champs" -           }
+  { "termine les parties non couvertes" - une struct MULTI-MOTS,                        }
+  { TODO 25/21, ecrit "DD 0, 0" - PLUSIEURS valeurs separees par virgule           }
+  { sur UNE SEULE ligne, syntaxe MASM standard) : cette procedure               }
+  { n emettait JUSQU ICI qu UN SEUL mot de 4 octets par ligne "DD",              }
+  { IGNORANT tout ce qui suivait la PREMIERE virgule (BinStrToInt sur              }
+  { "0, 0" entier ne lisait QUE le "0" de tete) - le label SUIVANT               }
+  { (ex. "_SW_a" apres "_SW_p  DD 0, 0") se retrouvait alors alias SUR              }
+  { LA MOITIE du stockage multi-mots du PRECEDENT (p.y et a partageaient           }
+  { silencieusement la MEME adresse memoire, "p.y" lisait alors la               }
+  { valeur ECRASEE par "a") - EXACTEMENT la classe de bogue que la                     }
+  { discipline de ce fichier cherche a exclure : jamais un octet/mot               }
+  { manquant silencieux. Corrige en emettant CHAQUE valeur separee par            }
+  { une virgule, PAS seulement la premiere. }
   If Copy(Rest, 1, 3) = 'DD ' Then
   Begin
-    BinEmit32(BinStrToInt(BinTrim(Copy(Rest, 4, Length(Rest) - 3))));
+    ValuePart := BinTrim(Copy(Rest, 4, Length(Rest) - 3));
+    Repeat
+      Q := Pos(',', ValuePart);
+      If Q > 0 Then
+      Begin
+        BinEmit32(BinStrToInt(BinTrim(Copy(ValuePart, 1, Q - 1))));
+        ValuePart := BinTrim(Copy(ValuePart, Q + 1, Length(ValuePart) - Q));
+      End
+      Else
+      Begin
+        BinEmit32(BinStrToInt(ValuePart));
+        ValuePart := '';
+      End;
+    Until ValuePart = '';
     Exit;
   End;
 
@@ -15954,7 +17293,7 @@ Begin
   End;
 
   ShowStats;
-  WriteLn('SWIFTW32: ', Opts.OutFile, ' genere avec succes (TODO 01-25).');
+  WriteLn('SWIFTW32: ', Opts.OutFile, ' genere avec succes.');
 End;
 
 BEGIN
