@@ -757,6 +757,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td><b>SWIFT86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur Swift pour l'assembleur du microprocesseur 8086.</td>
 		</tr>
+		<tr>
+			<td><b>SWIFTW32.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur Swift pour l'assembleur du microprocesseur 80386 (en executable Windows 32 bits).</td>
+		</tr>
     	<tr>
 			<td><b>SYMDEB.PAS</b></td>
 			<td>Cette commande permet de lancer le débogueur DOS. Cette commande est inspiré du SYMDEB du MASM.</td>
