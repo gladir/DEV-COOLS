@@ -1,0 +1,1041 @@
+================================================================================
+                  SPECIFICATIONS DU LANGAGE DE PROGRAMMATION J++
+================================================================================
+
+Document de reference pour l'integration dans le systeme d'aide DEVENV.HLP.
+Dans ce document, J++ designe Microsoft Visual J++ 1.0/1.1 et 6.0, et non
+Java moderne, J#, C++/CLI, ni un langage nomme "Java++" par un autre editeur.
+
+Visual J++ est une implementation historique du langage Java accompagnee du
+compilateur JVC, de la Microsoft Virtual Machine for Java (MSJVM), de
+bibliotheques Microsoft et, dans Visual J++ 6.0, des Windows Foundation
+Classes (WFC). Son noyau syntaxique correspond essentiellement a Java 1.1.
+
+IMPORTANT : J++ est abandonne. La MSJVM, les WFC et les outils Visual J++ ne
+doivent pas servir a de nouveaux logiciels. Cette specification documente le
+langage pour la lecture, la maintenance et la migration de sources anciens.
+
+
+================================================================================
+1. PRESENTATION ET PERIMETRE
+================================================================================
+
+Visual J++ fut livre par Microsoft avec Visual Studio 97 puis Visual Studio
+6.0. Il permettait de produire du bytecode Java execute par la MSJVM, et de
+creer notamment des applications console, des applets, des applications
+Windows WFC et des composants interoperables avec COM/Win32.
+
+Le terme J++ recouvre trois couches qu'il faut distinguer :
+
+  1. le langage Java 1.1 : classes, interfaces, exceptions, threads, etc.;
+  2. les extensions du compilateur Microsoft : delegates, directives en
+     commentaire, compilation conditionnelle et services d'interoperabilite;
+  3. les bibliotheques Microsoft : com.ms.*, WFC, J/Direct et acces COM.
+
+Une classe WFC n'est donc pas une construction syntaxique du langage. De meme,
+un programme peut etre syntaxiquement Java tout en etant non portable parce
+qu'il importe com.ms.wfc.* ou appelle Win32.
+
+J++ reste anterieur a Java 2 et ne comprend pas les ajouts ulterieurs :
+assert, strictfp, generics, annotations, enum, foreach, varargs, autoboxing,
+imports statiques, lambdas, methodes default, modules, records, text blocks,
+classes sealed, pattern matching et expressions switch.
+
+
+================================================================================
+2. UNITES DE COMPILATION ET PROGRAMME MINIMAL
+================================================================================
+
+Un fichier source porte normalement l'extension .java. Une unite de
+compilation contient, dans cet ordre :
+
+  [ declaration de package ]
+  { declaration d'import }
+  { declaration de classe ou d'interface }
+
+Exemple console :
+
+  public class Bonjour {
+      public static void main(String[] args) {
+          System.out.println("Bonjour depuis J++");
+      }
+  }
+
+Le point d'entree est une methode public static void main(String[] args).
+Le nom du fichier d'une classe publique correspond normalement au nom de la
+classe : Bonjour.java.
+
+Exemple avec package :
+
+  package exemple.outils;
+  import java.util.Vector;
+
+  public class Demo {
+      public static void main(String[] args) {
+          Vector v = new Vector();
+          v.addElement("un");
+      }
+  }
+
+Syntaxe abstraite :
+
+  unite          ::= [ package nomQualifie ; ] { importDecl } { typeDecl }
+  importDecl     ::= import nomQualifie [ .* ] ;
+  typeDecl       ::= classDecl | interfaceDecl | ;
+  nomQualifie    ::= identificateur { . identificateur }
+
+
+================================================================================
+3. ELEMENTS LEXICAUX
+================================================================================
+
+3.1 Identificateurs
+
+Les identificateurs sont sensibles a la casse. Une lettre, '_' ou '$' peut
+commencer un identificateur; les positions suivantes acceptent aussi les
+chiffres. Les lettres Unicode reconnues dependent de la version de la MSJVM et
+du compilateur. Les noms commencant par '$' restent possibles mais sont a
+eviter dans le code applicatif.
+
+3.2 Mots reserves du noyau Java 1.1
+
+  abstract    boolean      break       byte        case
+  catch       char         class       const       continue
+  default     do           double      else        extends
+  final       finally      float       for         goto
+  if          implements   import      instanceof  int
+  interface   long         native      new         package
+  private     protected    public      return      short
+  static      super        switch      synchronized this
+  throw       throws       transient   try         void
+  volatile    while
+
+const et goto sont reserves mais n'ont pas d'instruction associee. true, false
+et null sont des litteraux et non des identificateurs.
+
+Les extensions Microsoft peuvent en outre reconnaitre des mots contextuels,
+notamment delegate et multicast, lorsque les extensions sont activees. Il est
+prudent de ne pas les employer comme identificateurs.
+
+3.3 Commentaires
+
+  // commentaire jusqu'a la fin de ligne
+  /* commentaire sur une ou plusieurs lignes */
+  /** commentaire de documentation */
+
+Les commentaires de bloc ne s'imbriquent pas. Certaines lignes commencant par
+/** @... */ ont un sens special pour les outils Microsoft; voir section 17.
+
+3.4 Litteraux
+
+  entiers decimaux       0  12  2147483647  12L
+  entiers octaux         077
+  entiers hexadecimaux   0xFF  0XCAFE
+  reels                  1.0  .5  6.02e23  3.14F  2.0D
+  caracteres             'A'  '\n'  '\u00e9'
+  chaines                "texte"  "ligne 1\nligne 2"
+  booleens               true  false
+  reference nulle        null
+
+Echappements : \b, \t, \n, \f, \r, \", \', \\, sequences octales et
+Unicode \uXXXX. Une chaine ne traverse pas directement une fin de ligne.
+
+
+================================================================================
+4. TYPES ET VALEURS
+================================================================================
+
+4.1 Types primitifs
+
+  boolean   true ou false
+  byte      entier signe sur 8 bits
+  short     entier signe sur 16 bits
+  int       entier signe sur 32 bits
+  long      entier signe sur 64 bits
+  char      entier non signe sur 16 bits, unite UTF-16
+  float     flottant IEEE 754 simple precision, 32 bits
+  double    flottant IEEE 754 double precision, 64 bits
+
+void indique l'absence de valeur retournee et n'est pas un type de variable.
+
+4.2 Types reference
+
+Les classes, interfaces et tableaux sont des types reference. Une variable de
+reference contient null ou une reference vers un objet. Object est la racine
+des classes. String represente une chaine immuable.
+
+  String s = "abc";
+  Object o = s;
+  int[] nombres = new int[10];
+  String[][] grille = new String[3][4];
+
+Les tableaux sont des objets, connaissent leur taille par le champ length et
+verifient leurs indices a l'execution. Les elements sont initialises a zero,
+false ou null selon leur type.
+
+4.3 Conversions
+
+Les conversions numeriques elargissantes sont implicites, par exemple byte
+vers int et int vers long. Une conversion reductrice exige un cast :
+
+  long grand = 100;
+  int petit = (int) grand;
+
+Une reference peut etre convertie implicitement vers un supertype. Le chemin
+inverse exige un cast et peut lever ClassCastException. instanceof teste la
+compatibilite avant conversion.
+
+J++ 6.0 ne fournit ni generics ni autoboxing : int et java.lang.Integer restent
+des types distincts et les collections contiennent des Object.
+
+
+================================================================================
+5. VARIABLES, CHAMPS ET CONSTANTES
+================================================================================
+
+  int compteur;                 // variable ou champ
+  int x = 1, y = 2;             // initialisation
+  final int MAX = 100;          // affectable une seule fois
+  static final double PI = 3.141592653589793;
+
+Un champ d'instance appartient a chaque objet. Un champ static appartient a la
+classe. Les champs recoivent une valeur par defaut; une variable locale doit
+etre definitivement affectee avant lecture.
+
+La portee d'une variable locale va de sa declaration a la fin du bloc. La
+portee d'un parametre est le corps de la methode ou du constructeur. this
+designe l'instance courante; super permet l'acces a la superclasse immediate.
+
+
+================================================================================
+6. OPERATEURS ET EXPRESSIONS
+================================================================================
+
+  postfixes       expr++ expr-- () [] .
+  unaires         ++expr --expr + - ~ ! (type)
+  multiplicatifs  * / %
+  additifs        + -                 (+ concatene aussi les String)
+  decalages       << >> >>>
+  relationnels    < <= > >= instanceof
+  egalite         == !=
+  bits/logique    & puis ^ puis |
+  conditionnels   && puis ||
+  ternaire        condition ? valeur1 : valeur2
+  affectations    = *= /= %= += -= <<= >>= >>>= &= ^= |=
+
+Les operateurs && et || sont a evaluation conditionnelle. == compare les
+valeurs primitives, mais l'identite des references; equals compare en general
+le contenu selon le contrat de la classe. La division entiere par zero leve
+ArithmeticException. Les calculs entiers debordent sans exception.
+
+L'evaluation des operandes se fait de gauche a droite. Les operateurs de meme
+niveau sont generalement associatifs a gauche; le ternaire et les affectations
+sont associatifs a droite.
+
+
+================================================================================
+7. INSTRUCTIONS
+================================================================================
+
+Bloc et instruction vide :
+
+  { instruction1; instruction2; }
+  ;
+
+Condition :
+
+  if (x >= 0) {
+      signe = 1;
+  } else {
+      signe = -1;
+  }
+
+Selection :
+
+  switch (code) {
+      case 1:
+          nom = "un";
+          break;
+      case 2:
+          nom = "deux";
+          break;
+      default:
+          nom = "autre";
+  }
+
+Les etiquettes case sont des constantes entieres compatibles avec char, byte,
+short ou int. J++ historique n'accepte pas String dans switch.
+
+Boucles :
+
+  while (condition) { ... }
+  do { ... } while (condition);
+  for (int i = 0; i < 10; i++) { ... }
+
+Il n'existe pas de boucle foreach dans le langage J++ historique.
+
+Transferts :
+
+  break;             break etiquette;
+  continue;          continue etiquette;
+  return;            return expression;
+  throw expression;
+
+Une etiquette precede une instruction :
+
+  externe:
+  for (int i = 0; i < n; i++) {
+      for (int j = 0; j < m; j++)
+          if (fini(i, j)) break externe;
+  }
+
+
+================================================================================
+8. CLASSES ET OBJETS
+================================================================================
+
+Forme generale :
+
+  [modificateurs] class Nom [extends SuperClasse]
+      [implements Interface1, Interface2] {
+      membres
+  }
+
+Exemple :
+
+  public class Point {
+      private int x;
+      private int y;
+
+      public Point(int x, int y) {
+          this.x = x;
+          this.y = y;
+      }
+
+      public int getX() { return x; }
+      public void deplacer(int dx, int dy) { x += dx; y += dy; }
+      public String toString() { return "(" + x + "," + y + ")"; }
+  }
+
+Une classe n'etend qu'une classe, mais peut implementer plusieurs interfaces.
+Sans extends explicite, elle derive de Object. Les constructeurs portent le
+nom de la classe et n'ont aucun type retour. La premiere instruction peut etre
+this(...) ou super(...); sinon super() est insere implicitement.
+
+Modificateurs principaux :
+
+  public       visible partout ou le type est accessible
+  protected    meme package et sous-classes
+  private      classe declarante seulement
+  static       membre de classe
+  final        non redefinissable; une classe final n'est pas derivable
+  abstract     implementation incomplete
+  synchronized verrouillage associe a l'appel d'une methode
+  native       implementation externe a la machine virtuelle
+  transient    champ ignore par la serialisation standard
+  volatile     acces direct partage entre threads selon le modele ancien
+
+Les methodes acceptent la surcharge par liste de parametres. Le type retour
+seul ne suffit pas a distinguer deux surcharges. Une methode d'instance peut
+etre redefinie dans une sous-classe; une methode static est masquee, non
+redefinie dynamiquement.
+
+Initialisation : les champs static et blocs static s'executent a
+l'initialisation de la classe. Les initialisateurs d'instance s'executent avec
+les initialisations de champs lors de la construction.
+
+  static { chargerConfiguration(); }
+  { compteurInstances++; }
+
+
+================================================================================
+9. INTERFACES ET CLASSES INTERNES
+================================================================================
+
+  public interface Dessinable {
+      void dessiner();
+  }
+
+Les methodes d'une interface sont implicitement public et abstract. Ses champs
+sont implicitement public static final. Une interface peut etendre plusieurs
+interfaces. Les methodes default et static d'interface n'existent pas encore.
+
+Java 1.1, donc J++ 6.0, prend en charge les classes membres, locales et
+anonymes :
+
+  bouton.addActionListener(new ActionListener() {
+      public void actionPerformed(ActionEvent e) {
+          executer();
+      }
+  });
+
+Une classe interne non static conserve une reference vers son instance
+englobante. Une classe imbriquee static n'en conserve pas.
+
+
+================================================================================
+10. TABLEAUX
+================================================================================
+
+  int[] a = new int[5];
+  int b[] = { 2, 3, 5, 7 };
+  int[][] matrice = new int[2][3];
+  int[][] irregulier = new int[2][];
+  irregulier[0] = new int[3];
+  irregulier[1] = new int[7];
+
+Les indices valides vont de 0 a length - 1. Un indice invalide leve
+ArrayIndexOutOfBoundsException. Les tableaux d'objets sont covariants : un
+String[] est un Object[], mais une affectation incompatible par cette vue leve
+ArrayStoreException.
+
+
+================================================================================
+11. EXCEPTIONS
+================================================================================
+
+  try {
+      lire();
+  } catch (IOException e) {
+      System.err.println(e.getMessage());
+  } finally {
+      fermer();
+  }
+
+  void lire() throws IOException {
+      if (erreur) throw new IOException("lecture impossible");
+  }
+
+Throwable est la racine. Error signale normalement une panne serieuse.
+Exception regroupe les exceptions applicatives. RuntimeException et ses
+sous-classes sont non verifiees; les autres exceptions doivent etre capturees
+ou declarees par throws.
+
+J++ ne possede ni multi-catch ni try-with-resources. Plusieurs catch sont
+ecrits separement, du type le plus precis au plus general.
+
+
+================================================================================
+12. PAQUETS, IMPORTS ET VISIBILITE
+================================================================================
+
+  package societe.produit;
+  import java.io.*;
+  import java.util.Vector;
+
+Un import n'inclut pas recursivement les sous-paquets. java.lang est importe
+implicitement. Deux types de meme nom doivent etre distingues par leur nom
+qualifie. Sans modificateur public/protected/private, un type ou membre a la
+visibilite de package, parfois appelee default access.
+
+Le CLASSPATH indique au compilateur et a la machine virtuelle ou chercher les
+classes. Visual J++ pouvait aussi gerer son propre depot de classes et les
+references du projet; un projet portable ne doit pas dependre implicitement de
+ce depot.
+
+
+================================================================================
+13. ENTREES/SORTIES ET BIBLIOTHEQUE JAVA 1.1
+================================================================================
+
+Classes courantes disponibles selon la MSJVM installee :
+
+  java.lang       Object, String, StringBuffer, Math, System, Thread
+  java.io         InputStream, OutputStream, Reader, Writer, File
+  java.util       Vector, Hashtable, Enumeration, Date, Random
+  java.net        URL, Socket, ServerSocket
+  java.awt        composants graphiques AWT et evenements
+  java.applet     Applet
+
+Exemple d'ecriture de fichier conforme a l'API de l'epoque :
+
+  FileOutputStream f = new FileOutputStream("sortie.txt");
+  PrintStream p = new PrintStream(f);
+  try {
+      p.println("Bonjour");
+  } finally {
+      p.close();
+  }
+
+Les collections historiques ne sont pas generiques. Iterator, ArrayList et le
+Collections Framework appartiennent a Java 1.2 et ne doivent pas etre supposes
+disponibles dans une cible J++ strictement Java 1.1.
+
+
+================================================================================
+14. THREADS ET SYNCHRONISATION
+================================================================================
+
+Un traitement concurrent derive de Thread ou implemente Runnable :
+
+  class Travail implements Runnable {
+      public void run() { effectuer(); }
+  }
+  new Thread(new Travail()).start();
+
+Une methode synchronized verrouille l'objet receveur; une methode static
+synchronized verrouille l'objet Class. Un bloc peut choisir son moniteur :
+
+  synchronized (verrou) {
+      compteur++;
+  }
+
+Object fournit wait(), notify() et notifyAll(). Ils doivent etre appeles par
+un thread possedant le moniteur. Le modele memoire de la JVM Microsoft est
+historique; le code nouveau ne doit pas lui attribuer retroactivement toutes
+les garanties formalisees par les specifications Java modernes.
+
+
+================================================================================
+15. APPLETS, AWT ET WFC
+================================================================================
+
+Une applet Java classique derive de java.applet.Applet et utilise notamment
+init(), start(), stop(), destroy() et paint(Graphics). Son execution depend
+d'un navigateur ou d'un applet viewer compatible, aujourd'hui obsolete.
+
+Visual J++ 6.0 introduisit les Windows Foundation Classes, bibliotheque
+Microsoft de classes Windows. Les espaces de noms typiques commencent par :
+
+  com.ms.wfc.app
+  com.ms.wfc.core
+  com.ms.wfc.ui
+  com.ms.wfc.data
+
+Une application WFC utilise en general une classe derivee de Form et appelle
+Application.run(...). Les formulaires, controles, proprietes exposees par les
+classes et le concepteur graphique relèvent de WFC, pas du noyau Java 1.1.
+Un source qui importe com.ms.wfc.* est lie a Windows et a l'environnement
+Microsoft.
+
+15.1 Le paquet com.ms.ui
+
+com.ms.ui appartient aux Application Foundation Classes (AFC), la bibliotheque
+graphique Microsoft qui preceda les WFC. Il fournit un modele de composants,
+de conteneurs et de gestionnaires de disposition comparable a AWT, avec des
+controles legers (sans fenetre native propre) et des controles familiers aux
+programmeurs Win32.
+
+Les classes rencontrees dans les anciens programmes portent frequemment le
+prefixe UI, par exemple UIPushButton ou UIRadioButton. Des sous-paquets
+completent le noyau :
+
+  com.ms.ui.event       gestion des evenements, notamment le modele Java 1.1
+  com.ms.ui.resource    acces aux ressources Windows
+
+Exemple schematique :
+
+  import com.ms.ui.*;
+  import com.ms.ui.event.*;
+
+  public class FenetreAFC extends UIFrame {
+      private UIPushButton bouton = new UIPushButton("Fermer");
+      // construction et raccordement des evenements selon la version AFC
+  }
+
+Le nom exact des classes et de leurs constructeurs varie avec la version du
+SDK. com.ms.ui est distinct de com.ms.wfc.ui : le premier designe les AFC des
+premieres versions, le second la couche interface utilisateur des WFC de
+Visual J++ 6.0. Une conversion ne doit pas remplacer aveuglement un import par
+l'autre.
+
+Une partie des AFC fut ecrite en Java, mais cela ne garantit pas la portabilite
+de l'application complete. Certaines versions dependent d'extensions de la
+MSJVM, de ressources Win32 ou de classes com.ms.* qu'une JVM standard ne
+fournit pas. Les archives AFC appropriees doivent aussi etre distribuees quand
+elles ne sont pas installees sur la machine cible.
+
+15.2 Le paquet com.ms.awt
+
+com.ms.awt contient l'implementation et les extensions Microsoft d'AWT. Il
+fait l'interface entre les classes publiques java.awt et leurs pairs natifs
+Windows. On y rencontre notamment des classes telles que WComponentPeer ainsi
+que des implementations Microsoft de Toolkit, de composants ou de mesures de
+polices, selon la version de la MSJVM.
+
+Exemple rencontre dans du code fortement lie a Windows :
+
+  import com.ms.awt.WComponentPeer;
+
+Un programme AWT portable doit declarer ses variables avec les types java.awt
+et ne jamais convertir un objet vers son implementation com.ms.awt. Ainsi, un
+objet retourne comme java.awt.FontMetrics peut etre implemente par une classe
+Microsoft interne, mais le programme ne doit pas dependre de cette classe.
+
+com.ms.awt doit etre considere comme un paquet d'implementation :
+
+  - il n'appartient pas a la specification Java 1.1;
+  - ses classes peuvent changer entre versions de la MSJVM;
+  - il n'est normalement pas present dans les JDK de Sun/Oracle ou OpenJDK;
+  - son utilisation directe signale une dependance Windows/MSJVM a migrer.
+
+Selon le besoin, une migration remplace cet acces par une API publique AWT,
+Swing ou JavaFX, ou isole l'operation native derriere une couche specifique a
+la plate-forme.
+
+15.3 Proprietes : J++, JavaBeans, WFC et comparaison avec C#
+
+Le mot "propriete" est frequent dans la documentation et dans l'interface de
+Visual J++, mais il faut distinguer le concept expose par les composants de la
+syntaxe effectivement acceptee par le langage.
+
+Visual J++ sait afficher et manipuler des proprietes de composants JavaBeans,
+AFC, WFC ou COM dans la fenetre Properties de l'IDE. Pour un JavaBean, une
+propriete Age est normalement reconnue par convention lorsque la classe offre
+les methodes publiques suivantes :
+
+  public class Personne {
+      private int age;
+
+      public int getAge() {
+          return age;
+      }
+
+      public void setAge(int valeur) {
+          age = valeur;
+      }
+  }
+
+Le code client Java ou J++ appelle ces methodes explicitement :
+
+  Personne p = new Personne();
+  p.setAge(42);
+  int n = p.getAge();
+
+Pour une propriete booleenne, le getter peut suivre la convention is... :
+
+  public boolean isActif() { return actif; }
+  public void setActif(boolean valeur) { actif = valeur; }
+
+Les outils d'introspection JavaBeans deduisent le nom et le type de la
+propriete a partir de getAge/setAge ou isActif/setActif. Une classe BeanInfo
+peut fournir explicitement les memes metadonnees. Le fait que l'IDE presente
+Age comme une propriete editable ne transforme pas ces methodes en une nouvelle
+construction syntaxique Java.
+
+Les classes WFC et les proxies COM presentent eux aussi des membres comme des
+proprietes. Suivant la bibliotheque ou le generateur de proxy, le source J++
+utilise des methodes get..., set..., get_..., set_... ou une methode de
+dispatch prenant un nom et un Variant. Cette apparence uniforme dans le
+concepteur ne signifie pas que J++ possede les accesseurs get/set de C#.
+
+La declaration suivante ressemble a C#, mais n'est pas une syntaxe valide de
+Visual J++ 6.0 :
+
+  public int Age
+  {
+      get;
+      set;
+  }
+
+Il s'agit plus precisement d'une propriete automatique de C# : le compilateur
+C# cree le stockage et les accesseurs. Cette forme abregee apparut apres
+Visual J++. Une propriete C# classique avec logique explicite s'ecrit par
+exemple :
+
+  private int age;
+
+  public int Age
+  {
+      get { return age; }
+      set { age = value; }
+  }
+
+Le code C# peut ensuite employer une syntaxe de champ tout en invoquant les
+accesseurs :
+
+  p.Age = 42;
+  int n = p.Age;
+
+Java ne possede toujours pas de declaration de propriete integree equivalente.
+Dans du Java standard, il faut conserver les methodes getAge() et setAge(), ou
+utiliser un outil externe qui genere ce code. Les records Java modernes
+fournissent des composants accessibles par des methodes telles que age(), mais
+ne creent pas une propriete mutable de style C#.
+
+On peut donc dire que l'environnement J++ avait un modele de proprietes tres
+visible et familier aux utilisateurs des outils Microsoft. Il serait toutefois
+incorrect d'attribuer au langage Visual J++ la grammaire get/set qui sera celle
+de C#. Les ressemblances conceptuelles viennent surtout du modele composant
+Microsoft, de WFC/COM et de l'outillage Visual Studio.
+
+
+================================================================================
+16. DELEGATES ET EVENEMENTS MICROSOFT
+================================================================================
+
+Visual J++ fournit une extension de langage pour representer un appel de
+methode type : le delegate. Un delegate associe une signature a une ou
+plusieurs methodes compatibles et sert principalement au modele evenementiel
+WFC. Sa forme usuelle est :
+
+  delegate void Gestionnaire(Object source, Event e);
+
+  Gestionnaire g = new Gestionnaire(objet.methode);
+  g.invoke(source, evenement);
+
+La declaration Microsoft "multicast delegate" cree une variante pouvant
+contenir plusieurs destinataires. L'ajout, le retrait et le declenchement
+precis dependent des classes et conventions du
+runtime Microsoft utilisees par le projet. Les outils de conception WFC
+generent normalement le raccordement des gestionnaires.
+
+Cette syntaxe n'appartient pas a Java 1.1 et n'est pas acceptee par javac. Lors
+d'une migration vers Java, on la remplace par les interfaces listener et les
+classes anonymes; vers .NET, par les delegates et events C# ou J#.
+
+ATTENTION : event, propriete graphique et delegate sont souvent presentes
+ensemble dans l'IDE, mais tous les membres affiches comme "properties" ou
+"events" par le concepteur ne correspondent pas necessairement a un nouveau
+mot-cle J++. Ils peuvent etre des conventions de bibliotheque WFC.
+
+
+================================================================================
+17. DIRECTIVES MICROSOFT ET COMPILATION CONDITIONNELLE
+================================================================================
+
+J++ emploie des commentaires de documentation speciaux compris par JVC. Leur
+aspect de commentaire permet a un compilateur Java standard de les ignorer,
+mais leur effet est propre aux outils Microsoft.
+
+Forme generale :
+
+  /** @directive(parametres) */
+
+La famille J/Direct permet de declarer l'import d'une fonction Win32 contenue
+dans une DLL. Exemple schematique (la signature exacte depend de l'API) :
+
+  /** @dll.import("USER32") */
+  static native int MessageBox(int hwnd, String texte,
+                               String titre, int type);
+
+Ces declarations sont native, liees a Windows et a la MSJVM. Les conventions
+d'appel, conversions de chaines, structures et pointeurs doivent etre verifiees
+dans la documentation J/Direct correspondant a la version du SDK.
+
+JVC prend egalement en charge des directives conditionnelles sous forme de
+commentaires, notamment les familles @if, @else et @end. Elles permettent au
+compilateur Microsoft d'inclure ou d'exclure du source selon des symboles de
+compilation. Ce mecanisme n'est pas le preprocesseur C et n'est pas portable.
+
+D'autres attributs en commentaire furent utilises pour COM, securite,
+marshalling ou generation de metadonnees. Une directive inconnue ne doit pas
+etre inventee : conserver son texte et consulter le SDK Microsoft d'origine.
+
+
+================================================================================
+18. INTEROPERABILITE COM ET WIN32
+================================================================================
+
+Visual J++ pouvait appeler :
+
+  - des fonctions de DLL Windows par J/Direct;
+  - des composants Automation/COM;
+  - des bibliotheques de types converties en classes Java;
+  - des objets ActiveX par les outils Java Type Library Wizard ou JActiveX.
+
+JActiveX genere des classes proxy a partir d'une bibliotheque de types. Le
+programme importe ensuite ces classes comme toute classe Java. Le code produit
+reste cependant dependant de COM, de Windows, des GUID et du runtime Microsoft.
+
+Le mot-cle native de Java indique seulement qu'une methode est implementee
+hors Java. Il ne definit ni J/Direct ni COM. Ceux-ci appartiennent a la couche
+Microsoft et doivent etre documentes separement dans une application.
+
+18.1 Le paquet com.ms.win32
+
+com.ms.win32 expose sous forme de classes Java une grande partie de l'API
+Win32 deja declaree pour J/Direct. Il evite de recopier une declaration
+@dll.import pour chaque fonction. Les classes principales correspondent aux
+DLL et familles d'API Windows, par exemple :
+
+  com.ms.win32.User32       fenetres, messages, clavier et interface utilisateur
+  com.ms.win32.Gdi32        dessin et objets GDI
+  com.ms.win32.Kernel32     processus, threads, fichiers et memoire
+  com.ms.win32.Ole32        initialisation et activation OLE/COM
+  com.ms.win32.Shell32      fonctions du shell Windows
+
+Le nom Kernel ou Kernel32 et la couverture exacte peuvent varier selon la
+version du SDK Microsoft. Toutes les fonctions Win32 ne sont pas necessairement
+declarees.
+
+Exemple :
+
+  import com.ms.win32.*;
+
+  public class MessageNatif {
+      public static void main(String[] args) {
+          User32.MessageBox(0, "Bonjour", "J++",
+                            winm.MB_OK | winm.MB_ICONINFORMATION);
+      }
+  }
+
+Les constantes Win32 sont regroupees dans des interfaces dont le nom commence
+par win et se termine souvent par la premiere lettre de la constante. Par
+exemple, plusieurs constantes MB_* se trouvent dans winm et SW_* dans wins.
+Les structures C sont representees par des classes Java du paquet.
+
+Le marshalling J/Direct convertit les types Java en representations natives.
+Les points suivants doivent etre controles avant tout appel :
+
+  - version ANSI ou Unicode de la fonction;
+  - taille 32 bits des handles et pointeurs dans la MSJVM historique;
+  - sens entree/sortie des tableaux utilises pour simuler un passage par
+    reference;
+  - duree de vie des buffers, structures et callbacks;
+  - valeur retournee et GetLastError quand l'API l'exige.
+
+Les callbacks Win32 peuvent utiliser les classes de rappel fournies par le SDK,
+souvent en relation avec com.ms.dll.Callback. La signature doit correspondre
+exactement au prototype natif. Une application utilisant com.ms.win32 ne peut
+pas s'executer telle quelle sur une JVM standard ou sur une autre plate-forme.
+
+18.2 Le paquet com.ms.com
+
+com.ms.com fournit l'infrastructure Java/COM de Microsoft. Il est utilise avec
+les classes proxy generees par JActiveX ou par le Java Type Library Wizard. Il
+contient notamment, selon le SDK :
+
+  IUnknown       representation de l'interface COM fondamentale
+  Variant        valeur Automation pouvant contenir plusieurs types
+  ComLib         operations utilitaires, dont la liberation explicite
+  GUID et types  identifiants, interfaces et structures necessaires a COM
+
+Exemple schematique avec un proxy genere :
+
+  import com.ms.com.*;
+  import excel8.*;                 // paquet produit depuis une type library
+
+  public class Automatisation {
+      public void executer() {
+          _Application app = null;
+          try {
+              app = (_Application)new Application();
+              app.setVisible(0, true);
+          } finally {
+              if (app != null)
+                  ComLib.release(app);
+          }
+      }
+  }
+
+Les signatures reelles dependent entierement du proxy genere et de la version
+de la bibliotheque de types. Les parametres optionnels sont souvent representes
+par Variant; les proprietes COM deviennent en general des methodes get... et
+set..., et les HRESULT sont convertis par la couche d'interoperabilite.
+
+La MSJVM gere une partie du comptage de references COM, mais le ramasse-miettes
+n'offre pas une liberation deterministe. ComLib.release permet de relacher un
+objet au moment voulu, ce qui est important pour les serveurs COM lies a un
+thread, les applications Office et les ressources natives couteuses. Il ne
+faut plus utiliser un proxy apres l'avoir libere.
+
+Les contraintes COM usuelles restent applicables : initialisation de
+l'appartement du thread, enregistrement des CLSID/ProgID, disponibilite de la
+bibliotheque de types, correspondance 32 bits et propagation des erreurs. Le
+paquet com.ms.com est propre au runtime Microsoft et n'est pas equivalent a
+une API Java standard.
+
+18.3 Relations entre les quatre paquets
+
+Ces paquets peuvent apparaitre ensemble mais remplissent des fonctions
+distinctes :
+
+  com.ms.win32   appels directs des fonctions et types de l'API Win32
+  com.ms.com     objets COM/Automation et classes proxy de type libraries
+  com.ms.ui      composants graphiques des anciennes AFC
+  com.ms.awt     implementation Microsoft et pairs Windows de java.awt
+
+Un formulaire com.ms.ui peut reposer indirectement sur com.ms.awt et Win32;
+un composant ActiveX place dans une interface peut combiner com.ms.com et
+com.ms.win32. Ces dependances indirectes expliquent pourquoi la simple
+suppression des quatre lignes import ne rend pas un programme portable.
+
+
+================================================================================
+19. COMPILATION ET EXECUTION
+================================================================================
+
+Outils historiques typiques :
+
+  jvc Bonjour.java             compilation avec le compilateur Microsoft
+  jview Bonjour                execution console sur la MSJVM
+
+Les options exactes varient selon Visual J++ 1.x, 6.0 et le SDK Microsoft Java.
+L'IDE stocke aussi des options dans les fichiers de projet. Un diagnostic de
+migration doit relever au minimum :
+
+  - version de JVC et de la MSJVM;
+  - options activant ou interdisant les extensions Microsoft;
+  - CLASSPATH et references du projet;
+  - imports com.ms.*;
+  - directives /** @... */;
+  - bibliotheques COM et DLL externes;
+  - utilisation de WFC, AWT ou applets.
+
+Un fichier .class produit pour la MSJVM n'est pas une preuve de portabilite :
+il peut referencer des classes Microsoft ou des mecanismes non disponibles sur
+une JVM standard.
+
+
+================================================================================
+20. GRAMMAIRE SYNTHETIQUE DU NOYAU
+================================================================================
+
+La notation suivante est volontairement resumee. [] signifie optionnel, {}
+zero ou plusieurs repetitions et | une alternative.
+
+  classDecl ::= { modClasse } class Ident [ extends type ]
+                [ implements type { , type } ] corpsClasse
+
+  interfaceDecl ::= { modInterface } interface Ident
+                    [ extends type { , type } ] corpsInterface
+
+  membre ::= champ | methode | constructeur | classeInterne |
+             interfaceInterne | initialisateur | ;
+
+  champ ::= { modChamp } type variables ;
+
+  methode ::= { modMethode } ( type | void ) Ident
+              ( [ parametres ] ) [ throws types ]
+              ( bloc | ; )
+
+  constructeur ::= { modConstructeur } Ident
+                   ( [ parametres ] ) [ throws types ] bloc
+
+  instruction ::= bloc | ; | expression ; | declarationLocale ; |
+                  if (...) instruction [ else instruction ] |
+                  switch (...) { ... } |
+                  while (...) instruction |
+                  do instruction while (...) ; |
+                  for ( ... ; ... ; ... ) instruction |
+                  break [ Ident ] ; | continue [ Ident ] ; |
+                  return [ expression ] ; | throw expression ; |
+                  synchronized ( expression ) bloc |
+                  try bloc ( catch... [ finally bloc ] | finally bloc )
+
+  primaire ::= litteral | this | super | Ident | ( expression ) |
+               new creation | primaire . Ident | primaire [ expression ] |
+               primaire ( [ arguments ] )
+
+La grammaire normative complete du noyau est celle de Java 1.1. Les sections
+16 et 17 ajoutent les extensions propres au compilateur Microsoft.
+
+
+================================================================================
+21. DIFFERENCES AVEC JAVA MODERNE
+================================================================================
+
+Construction moderne                 Equivalent ou solution J++ historique
+-----------------------------------  ------------------------------------------
+List<String>                         Vector contenant Object + casts
+for (Type x : collection)            Enumeration ou boucle indexee
+enum Couleur                         constantes int ou classe finale
+@Annotation                          conventions/directives propres aux outils
+lambda                               interface + classe anonyme, ou delegate MS
+try (Ressource r = ...)              try/finally et fermeture explicite
+String dans switch                   if/else ou comparaison equals
+var                                  type local explicite
+record                               classe avec champs, constructeur, methodes
+module                               package + CLASSPATH
+java.time                            Date/Calendar historiques ou bibliotheque
+
+Ne pas ajouter une fonctionnalite recente au seul motif que le fichier porte
+l'extension .java. Le niveau de langage est determine par JVC/MSJVM, non par
+le suffixe du fichier.
+
+
+================================================================================
+22. PORTABILITE ET MIGRATION
+================================================================================
+
+Trois categories facilitent l'audit d'un projet :
+
+  A. Java 1.1 portable
+     java.lang, java.io, java.util historique, AWT, syntaxe standard.
+
+  B. API Microsoft remplacable
+     com.ms.wfc.*, utilitaires com.ms.*, modele evenementiel WFC.
+
+  C. liaison native
+     @dll.import, COM/ActiveX, bibliotheques de types, appels Win32.
+
+Migration vers Java : conserver A, remplacer B par AWT/Swing/JavaFX ou une
+autre bibliotheque, et remplacer C par JNI/JNA/FFM ou un service externe. Les
+delegates deviennent en general des listener interfaces.
+
+Migration vers .NET : convertir la syntaxe vers C# (ou historiquement J#),
+remplacer WFC par Windows Forms/WPF et convertir J/Direct vers P/Invoke. Les
+details de marshalling doivent etre testes, surtout pour char, boolean, tableaux
+et chaines.
+
+La migration doit aussi traiter les ecarts d'encodage, le modele de securite
+des applets, les dependances 32 bits, l'enregistrement COM et les API Windows
+disparues. Une recompilation reussie ne suffit pas : des tests fonctionnels
+sont indispensables.
+
+
+================================================================================
+23. EXEMPLE RECAPITULATIF PORTABLE
+================================================================================
+
+  import java.util.Vector;
+  import java.util.Enumeration;
+
+  public class Catalogue {
+      private Vector articles = new Vector();
+
+      public synchronized void ajouter(String nom) {
+          if (nom == null)
+              throw new IllegalArgumentException("nom nul");
+          articles.addElement(nom);
+      }
+
+      public void afficher() {
+          Enumeration e = articles.elements();
+          while (e.hasMoreElements()) {
+              String nom = (String)e.nextElement();
+              System.out.println(nom);
+          }
+      }
+
+      public static void main(String[] args) {
+          Catalogue c = new Catalogue();
+          c.ajouter("clavier");
+          c.ajouter("souris");
+          c.afficher();
+      }
+  }
+
+Cet exemple evite les extensions Microsoft et respecte le style Java 1.1 :
+Vector sans generics, Enumeration sans foreach et casts explicites.
+
+
+================================================================================
+24. REFERENCES HISTORIQUES ET FICHIERS DU PROJET
+================================================================================
+
+References a consulter pour une verification normative ou une migration :
+
+  - The Java Language Specification, premiere edition (Java 1.0/1.1);
+  - documentation Microsoft Visual J++ 6.0;
+  - Microsoft SDK for Java et documentation J/Direct;
+  - documentation Windows Foundation Classes;
+  - documentation JActiveX et COM Automation.
+
+Dans DEV-COOLS :
+
+  DOC/JPP_SPEC_LANG.txt       le present document
+  DOC/JAVA_SPEC_LANG.txt      specification Java generale et moderne
+  JAVAC86.PAS                 compilateur Java cible 8086 du projet
+  JAVACW32.PAS                compilateur Java Win32 du projet
+  SAMPLES/JAVA/               exemples Java disponibles
+
+JAVAC86.PAS et JAVACW32.PAS sont des compilateurs du projet DEV-COOLS; ils ne
+sont pas le compilateur Microsoft JVC et ne doivent pas etre supposes accepter
+les extensions Visual J++ decrites aux sections 16 a 18.
+
+
+================================================================================
+Fin du document JPP_SPEC_LANG.txt
+================================================================================
