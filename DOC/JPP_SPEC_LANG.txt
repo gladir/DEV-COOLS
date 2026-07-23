@@ -180,6 +180,546 @@ Les commentaires de bloc ne s'imbriquent pas. Certaines lignes commencant par
 Echappements : \b, \t, \n, \f, \r, \", \', \\, sequences octales et
 Unicode \uXXXX. Une chaine ne traverse pas directement une fin de ligne.
 
+3.5 Formation des tokens et separateurs
+
+Avant l'analyse grammaticale, le compilateur transforme le flux de caracteres
+en tokens. Les espaces, tabulations, fins de ligne et commentaires separent les
+tokens mais n'ont autrement pas de signification. Une fin de ligne ne termine
+pas une instruction : le point-virgule ou la structure grammaticale le fait.
+
+Le compilateur choisit normalement le token valide le plus long. Ainsi, >>= est
+un seul operateur, tandis que > > = represente trois tokens. Deux mots doivent
+etre separes s'ils formeraient autrement un identificateur unique.
+
+  separateurs     (  )  {  }  [  ]  ;  ,  .
+  operateurs      =  >  <  !  ~  ?  :  ==  <=  >=  !=  &&  ||
+                   ++  --  +  -  *  /  &  |  ^  %  <<  >>  >>>
+                   +=  -=  *=  /=  &=  |=  ^=  %=  <<=  >>=  >>>=
+
+Le caractere '.' sert a la fois dans un reel, dans un nom qualifie et dans un
+acces a un membre. Le contexte permet par exemple de distinguer 1.0, java.io et
+objet.champ. Les caracteres # et ` n'ont aucun role lexical standard en J++.
+
+3.6 Identificateurs en detail
+
+Forme simplifiee :
+
+  identificateur ::= lettreJava { lettreJava | chiffreJava }
+
+Une lettreJava comprend les lettres Unicode reconnues, '_' et '$'. La valeur
+Unicode exacte acceptee depend des tables de caracteres du vieux compilateur
+JVC. Aucun mot reserve, ni true, false ou null, ne peut etre un identificateur.
+
+  age, Age, _age, $temp, nombre2     valides
+  2nombre, mon-nom, class, true      invalides
+
+Age et age sont deux noms differents. Les conventions, non imposees par la
+grammaire, emploient NomDeClasse pour les types, nomDeMethode pour les methodes
+et CHAMP_CONSTANT pour les constantes static final.
+
+3.7 Litteraux entiers en detail
+
+Forme simplifiee :
+
+  decimal     ::= 0 | chiffreNonNul { chiffre }
+  octal       ::= 0 chiffreOctal { chiffreOctal }
+  hexadecimal ::= 0x chiffreHexa { chiffreHexa }
+  entier      ::= ( decimal | octal | hexadecimal ) [ l | L ]
+
+Sans suffixe, le type est int si la valeur est representable; avec L ou l, le
+type est long. Le suffixe L majuscule est preferable car l minuscule ressemble
+au chiffre 1. Java 1.1/J++ n'accepte ni prefixe binaire 0b ni separateurs '_'.
+
+Un zero initial rend un entier octal : 010 vaut huit, et 08 est invalide. Le
+signe moins n'appartient pas au litteral; -1 est l'operateur unaire '-' suivi
+du litteral 1. Les cas limites -2147483648 et -9223372036854775808L suivent des
+regles speciales de compilation liees a cette representation.
+
+3.8 Litteraux flottants en detail
+
+Forme simplifiee :
+
+  flottant ::= chiffres . [ chiffres ] [ exposant ] [ suffixe ] |
+               . chiffres [ exposant ] [ suffixe ] |
+               chiffres exposant [ suffixe ] |
+               chiffres [ exposant ] suffixe
+  exposant ::= ( e | E ) [ + | - ] chiffres
+  suffixe  ::= f | F | d | D
+
+Sans F/f, un litteral flottant est de type double; D/d le confirme. F/f donne
+un float. Les formes hexadecimales flottantes et les separateurs '_' sont
+posterieurs a J++. Un litteral non nul trop petit ou trop grand pour son type
+est une erreur de compilation plutot qu'une conversion silencieuse en zero ou
+en infini.
+
+3.9 Caracteres, chaines et Unicode
+
+Un litteral char contient exactement un caractere ou une sequence
+d'echappement entre apostrophes. Un litteral String contient zero ou plusieurs
+caracteres/echappements entre guillemets. Les echappements octaux utilisent de
+un a trois chiffres avec les limites imposees par la premiere valeur octale.
+
+Les echappements Unicode \uXXXX sont traites tres tot, avant le decoupage des
+tokens. Ils peuvent donc introduire un caractere syntaxique, y compris une fin
+de ligne; cette particularite exige de la prudence dans les commentaires. Deux
+unites char peuvent etre necessaires pour representer un caractere Unicode hors
+du plan multilingue de base.
+
+Les litteraux String identiques sont internes par la JVM et peuvent partager
+la meme reference. Le programme doit cependant utiliser equals() pour comparer
+le contenu et non ==. Il n'existe ni chaine brute, ni interpolation, ni bloc de
+texte multilignes dans J++ 6.0.
+
+3.10 Reference de chacun des mots reserves
+
+Les formes ci-dessous utilisent les conventions suivantes :
+
+  [ element ]       element facultatif
+  { element }       zero ou plusieurs repetitions
+  A | B             choix entre A et B
+  expression        expression du type exige par le contexte
+  instruction       instruction simple ou bloc { ... }
+
+Un mot reserve n'a pas toujours des "parametres" au sens d'une methode. Les
+elements places apres le mot sont ses operandes, noms, types, expressions ou
+blocs grammaticaux. Leur role est precise pour chaque entree.
+
+abstract
+
+  abstract class Nom { ... }
+  [modificateurs] abstract Type methode(parametres) [throws types] ;
+
+Marque une classe incomplete ou une methode sans corps. Une classe abstract ne
+peut pas etre instanciee avec new. Une sous-classe concrete doit implementer
+les methodes abstraites accessibles. abstract est incompatible avec final et,
+pour une methode, avec private, static, native ou synchronized.
+
+boolean
+
+  boolean nom [= expressionBooleenne] ;
+  boolean methode(parametres) { ... }
+
+Declare le type primitif dont les seules valeurs sont true et false. Il n'est
+pas implicitement convertible en entier; une condition if/while/for exige une
+expression boolean.
+
+break
+
+  break ;
+  break etiquette ;
+
+Sans etiquette, termine le switch ou la boucle englobante la plus proche. Avec
+une etiquette, termine l'instruction etiquetee correspondante. Il ne prend pas
+de valeur et ne quitte pas une methode; return remplit ce role.
+
+byte
+
+  byte nom [= expressionEntiereCompatible] ;
+
+Type entier signe sur 8 bits (-128 a 127). Les calculs promeuvent normalement
+byte en int; un cast peut donc etre requis pour reutiliser le resultat comme
+byte. Une constante int representable peut etre affectee sans cast.
+
+case
+
+  case expressionConstante : instructions
+
+Introduit une branche de switch. L'operande doit etre une constante entiere
+compatible avec le type du selecteur et unique dans ce switch. L'execution
+continue dans le case suivant tant qu'un break, return ou throw ne l'arrete.
+
+catch
+
+  catch (TypeException nom) { instructions }
+
+Suit un bloc try et capture une exception assignable au type indique. Le
+parametre entre parentheses declare une variable locale contenant l'objet
+exception. Plusieurs catch sont permis, du type le plus specifique au plus
+general; un catch inaccessible est une erreur.
+
+char
+
+  char nom [= caractereOuEntierCompatible] ;
+
+Type primitif non signe sur 16 bits, representant une unite UTF-16. Ses valeurs
+vont de '\u0000' a '\uffff'. Les calculs promeuvent char en int.
+
+class
+
+  [modificateurs] class Nom [extends Super]
+      [implements Interface {, Interface}] { membres }
+
+Declare une classe. Nom cree le nouveau type; extends choisit au plus une
+superclasse; implements donne zero ou plusieurs contrats d'interface. Le corps
+contient champs, methodes, constructeurs, initialisateurs et types imbriques.
+
+const
+
+  aucune syntaxe executable
+
+Mot reserve inutilise. J++ le refuse comme identificateur mais ne permet pas de
+declarer une constante avec lui. Employer final, souvent static final.
+
+continue
+
+  continue ;
+  continue etiquette ;
+
+Passe a l'iteration suivante d'une boucle. Dans for, l'expression de mise a
+jour est executee avant le prochain test. L'etiquette doit designer une boucle
+englobante, contrairement a break qui peut viser une instruction etiquetee.
+
+default
+
+  default : instructions
+
+Introduit la branche d'un switch utilisee lorsqu'aucun case ne correspond. Un
+seul default est permis; sa position dans le bloc switch n'est pas imposee.
+J++ historique ne connait pas les methodes default des interfaces modernes.
+
+do
+
+  do instruction while (expressionBooleenne) ;
+
+Execute d'abord l'instruction, puis repete tant que la condition vaut true. Le
+corps s'execute donc au moins une fois. Le point-virgule final est obligatoire.
+
+double
+
+  double nom [= expressionNumerique] ;
+
+Type flottant IEEE 754 double precision sur 64 bits. C'est le type par defaut
+des litteraux reels. Il accepte NaN, les infinis et les zeros signes produits
+par les calculs, selon les regles flottantes de la JVM.
+
+else
+
+  if (condition) instruction else instruction
+
+Fournit la branche executee quand la condition if vaut false. Un else est
+associe au if sans else le plus proche, sauf regroupement explicite par blocs.
+
+extends
+
+  class Fille extends Mere { ... }
+  interface Fille extends I1, I2 { ... }
+
+Indique l'heritage. Une classe a une seule superclasse directe; une interface
+peut etendre plusieurs interfaces. Les types cites doivent etre accessibles et
+ne doivent pas produire un cycle d'heritage.
+
+final
+
+  final class Nom { ... }
+  final Type variable = valeur ;
+  final Type methode(parametres) { ... }
+
+Interdit respectivement la derivation d'une classe, une seconde affectation a
+une variable, ou la redefinition d'une methode. final sur une reference ne rend
+pas l'objet immuable. Une variable final doit etre definitivement affectee une
+fois avant utilisation.
+
+finally
+
+  try { ... } [catch (...) { ... }] finally { nettoyage }
+
+Declare le bloc execute lors de la sortie normale ou exceptionnelle du try et
+de ses catch, y compris apres return, break ou continue. Une sortie brutale de
+la JVM peut l'empecher. Un return/throw dans finally masque la sortie initiale
+et doit etre evite.
+
+float
+
+  float nom [= expressionCompatible] ;
+
+Type flottant IEEE 754 simple precision sur 32 bits. Un litteral reel doit en
+general porter F, par exemple 1.5F; 1.5 est un double et exige un cast.
+
+for
+
+  for ([initialisation] ; [condition] ; [miseAJour]) instruction
+
+initialisation est une declaration locale ou une liste d'expressions;
+condition doit etre boolean et vaut true si elle est omise; miseAJour est une
+liste d'expressions executees apres chaque iteration. Chacune des trois zones
+peut etre vide. Il n'existe pas de for-each en J++ 6.0.
+
+goto
+
+  aucune syntaxe executable
+
+Mot reserve inutilise. Aucune instruction goto n'existe. Les transferts
+structures disponibles sont break, continue, return et throw.
+
+if
+
+  if (expressionBooleenne) instruction [else instruction]
+
+Execute la premiere instruction si la condition vaut true, sinon la branche
+else eventuelle. La condition doit etre boolean : if (1) est invalide.
+
+implements
+
+  class Nom implements I1 [, I2 ...] { ... }
+
+Liste les interfaces promises par une classe. Une classe concrete doit fournir
+les methodes d'interface non deja implementees par une superclasse. implements
+n'accepte que des types interface.
+
+import
+
+  import paquet.Type ;
+  import paquet.* ;
+
+Rend un type utilisable par son nom simple dans l'unite de compilation. La
+forme * importe les types directs d'un paquet, pas ses sous-paquets. Elle ne
+charge pas la classe et n'importe ni membres ni paquet recursivement.
+
+instanceof
+
+  expressionReference instanceof TypeReference
+
+Produit true si la valeur non nulle peut etre convertie vers le type indique
+sans ClassCastException; null produit false. Les types des deux operandes
+doivent etre compatibles a la compilation.
+
+int
+
+  int nom [= expressionEntiere] ;
+
+Type entier signe sur 32 bits. C'est le type usuel des calculs entiers, indices
+de tableaux et selecteurs switch. Le debordement utilise les 32 bits de poids
+faible sans lever d'exception.
+
+interface
+
+  [public | protected | private | static | abstract]
+  interface Nom [extends I1, I2 ...] { membres }
+
+Declare un contrat. Les methodes sont implicitement public abstract et sans
+corps; les champs sont public static final et doivent etre initialises. Les
+modificateurs possibles dependent du fait que l'interface soit de premier
+niveau ou imbriquee.
+
+long
+
+  long nom [= expressionEntiereCompatible] ;
+
+Type entier signe sur 64 bits. Un litteral long utilise L, par exemple 10L.
+Les decalages d'un long n'emploient que les 6 bits faibles de leur distance.
+
+native
+
+  [modificateurs] native Type methode(parametres) [throws types] ;
+
+Declare une methode implementee hors du bytecode Java. Elle se termine par ';'
+et n'a pas de corps. Dans J++, J/Direct, RNI ou la MSJVM assurent la liaison;
+les parametres doivent pouvoir etre convertis selon les regles de marshalling.
+
+new
+
+  new TypeClasse(arguments)
+  new TypeElement[dimension] { [dimension] } [initialiseur]
+  new TypeInterface(arguments) { corpsClasseAnonyme }
+
+Cree un objet ou un tableau et retourne sa reference. Les arguments choisissent
+un constructeur compatible. Les dimensions de tableau sont des int non
+negatifs; une taille negative leve NegativeArraySizeException.
+
+package
+
+  package nom.qualifie ;
+
+Doit etre la premiere declaration non commentee de l'unite. Il place les types
+du fichier dans le paquet indique et influence leur nom complet et leur acces.
+En son absence, les types appartiennent au paquet sans nom.
+
+private
+
+  private declarationDeMembre
+
+Limite l'acces a la classe qui declare le membre. Il s'applique aux membres et
+types imbriques, pas a une classe de premier niveau Java 1.1. Une methode
+private n'est pas redefinie polymorphiquement dans une sous-classe.
+
+protected
+
+  protected declarationDeMembre
+
+Autorise l'acces depuis le meme paquet et, sous certaines regles de receveur,
+depuis les sous-classes situees ailleurs. Il s'applique aux membres et types
+imbriques, pas a un type de premier niveau.
+
+public
+
+  public declaration
+
+Rend la declaration accessible partout ou son type englobant est accessible.
+Une classe ou interface public de premier niveau reside normalement dans un
+fichier portant son nom. public ne contourne pas l'inaccessibilite du contenant.
+
+return
+
+  return ;
+  return expression ;
+
+Termine la methode ou le constructeur courant. Une methode void et un
+constructeur utilisent la forme sans valeur; une methode non void doit fournir
+une expression convertible vers son type retour. finally s'execute avant le
+transfert effectif.
+
+short
+
+  short nom [= expressionEntiereCompatible] ;
+
+Type entier signe sur 16 bits (-32768 a 32767). Comme byte et char, il est
+promu en int pour la plupart des operations arithmetiques.
+
+static
+
+  static Type champ ;
+  static Type methode(parametres) { ... }
+  static { initialisationDeClasse }
+  static class TypeImbrique { ... }
+
+Associe le membre a la classe et non a chaque objet. Une methode static n'a pas
+de this et ne peut acceder directement aux membres d'instance. Un bloc static
+s'execute une fois lors de l'initialisation de la classe.
+
+super
+
+  super(arguments)              // premier appel d'un constructeur
+  super.membre
+  super.methode(arguments)
+
+Designe la partie superclasse de l'objet courant. super(...) appelle un
+constructeur direct et doit etre la premiere instruction du constructeur.
+super.methode force l'implementation de la superclasse immediate.
+
+switch
+
+  switch (expressionEntiere) {
+      { case constante : instructions }
+      [ default : instructions ]
+  }
+
+Evalue une fois son selecteur char, byte, short ou int, puis saute vers le case
+correspondant. L'execution continue ensuite sequentiellement. Ni String, ni
+enum, ni expression switch moderne ne sont disponibles en J++ 6.0.
+
+synchronized
+
+  synchronized Type methode(parametres) { ... }
+  synchronized (expressionReferenceNonNulle) { instructions }
+
+Acquiert un moniteur avant d'executer le corps et le libere a la sortie. Une
+methode d'instance verrouille this; une methode static verrouille l'objet Class.
+Le bloc verrouille l'objet calcule et leve NullPointerException s'il vaut null.
+
+this
+
+  this
+  this.membre
+  this(arguments)
+
+Designe l'instance courante. this(...) appelle un autre constructeur de la
+meme classe et doit etre la premiere instruction. this est indisponible dans un
+contexte static. Il peut lever une ambiguite entre champ et parametre.
+
+throw
+
+  throw expressionThrowable ;
+
+Evalue puis lance un objet assignable a Throwable. Lancer null provoque
+NullPointerException. Une exception verifiee doit etre capturee ou annoncee
+par throws. L'instruction ne revient pas normalement.
+
+throws
+
+  Type methode(parametres) throws E1 [, E2 ...] { ... }
+
+Annonce les types d'exceptions verifiees qu'une methode ou un constructeur
+peut laisser sortir. La liste ne cree ni ne lance une exception et n'est pas
+une liste de parametres; throw effectue le lancement concret.
+
+transient
+
+  transient Type champ ;
+
+Indique au mecanisme standard de serialisation de ne pas sauvegarder ce champ.
+Il ne s'applique qu'aux champs. Apres deserialisation standard, le champ reprend
+sa valeur par defaut, sauf restauration explicite par la classe.
+
+try
+
+  try { instructions }
+      catch (Type nom) { instructions } { catch ... }
+      [finally { instructions }]
+  try { instructions } finally { instructions }
+
+Delimite une region dont les exceptions sont traitees par catch et/ou dont la
+sortie est protegee par finally. Au moins un catch ou un finally est requis.
+J++ ne connait ni try-with-resources ni multi-catch.
+
+void
+
+  void methode(parametres) { ... }
+
+Indique qu'une methode ne retourne aucune valeur. void n'est pas un type de
+variable, d'argument ou d'element de tableau. Une methode void peut employer
+return; mais pas return expression;.
+
+volatile
+
+  volatile Type champ ;
+
+Demande que les acces au champ partage respectent la semantique volatile de la
+JVM Microsoft de l'epoque. Le modificateur ne s'applique pas aux variables
+locales ni methodes. Il ne rend pas atomique une operation composee comme i++.
+
+while
+
+  while (expressionBooleenne) instruction
+
+Teste la condition avant chaque iteration et execute le corps tant qu'elle
+vaut true. Si elle est fausse au premier test, le corps ne s'execute jamais.
+
+3.11 Litteraux reserves true, false et null
+
+true et false sont les deux litteraux boolean. Ils s'emploient comme valeurs et
+conditions, sans guillemets ni majuscule : True et FALSE seraient de simples
+identificateurs. null est la reference nulle et peut etre converti vers tout
+type reference, mais vers aucun type primitif. Dereferencer null leve
+NullPointerException.
+
+  boolean termine = false;
+  String texte = null;
+  if (!termine && texte == null) { ... }
+
+3.12 Extensions lexicales Microsoft : delegate et multicast
+
+Lorsque les extensions J++ sont actives, delegate introduit un type d'appel
+fortement type. Sa liste entre parentheses decrit les parametres que la methode
+cible doit accepter; le type place avant son nom est le type retourne :
+
+  [modificateurs] delegate TypeRetour Nom(Type p1, Type p2) ;
+
+  delegate void Notification(Object source, int code);
+
+Une instance lie une methode de signature compatible :
+
+  Notification n = new Notification(objet.traiter);
+  n.invoke(source, 10);
+
+multicast modifie une declaration de delegate afin que l'instance puisse
+representer une chaine de plusieurs methodes compatibles :
+
+  [modificateurs] multicast delegate TypeRetour Nom(parametres) ;
+
+Ces deux mots et la syntaxe de reference liee objet.methode ne font pas partie
+de Java 1.1. Leur disponibilite depend des options de JVC et du runtime
+Microsoft. Les details du modele evenementiel figurent a la section 16.
+
 
 ================================================================================
 4. TYPES ET VALEURS
