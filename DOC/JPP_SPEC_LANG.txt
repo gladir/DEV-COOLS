@@ -41,6 +41,46 @@ assert, strictfp, generics, annotations, enum, foreach, varargs, autoboxing,
 imports statiques, lambdas, methodes default, modules, records, text blocks,
 classes sealed, pattern matching et expressions switch.
 
+1.1 Resume comparatif Java / J++
+
+Le tableau suivant compare Java standard a Microsoft Visual J++ dans son
+environnement historique. "Java" designe ici le langage et les API standard,
+sans bibliotheque native ajoutee par un fournisseur.
+
+  Fonctionnalite                    Java                  J++
+  --------------------------------  --------------------  ----------------------
+  Portable                          Oui                   Non
+  Conforme aux specifications Java Oui                   Partiellement
+  API Windows integree              Non                   Oui
+  COM / ActiveX integre             Non                   Oui
+  Registre Windows integre          Non                   Oui
+  Delegates                         Non (a l'epoque)      Oui
+  Events integres au modele MS      Non                   Oui
+  Proprietes de composants          Non (*)               Oui (*)
+  Plates-formes                     Toutes                Windows
+  Etat actuel                       Developpement actif    Abandonne
+
+(*) La ligne "Proprietes" demande une precision. Visual J++ et son IDE
+exposent les proprietes de JavaBeans, AFC, WFC et COM comme des membres de
+composants. J++ ne reconnait toutefois pas la declaration automatique C# :
+
+  public int Age { get; set; }      // C#, pas Visual J++ 6.0
+
+Dans une classe Java ou J++, une propriete JavaBean est implementee par des
+methodes telles que getAge() et setAge(). Voir la section 15.3. Ainsi, "Oui"
+dans la colonne J++ qualifie le modele composant et son integration aux outils,
+pas une grammaire get/set identique a celle de C#.
+
+Java peut appeler Windows, COM, ActiveX ou le registre par JNI, JNA ou une
+autre bibliotheque externe. La valeur "Non" signifie que ces services ne font
+pas partie du langage ni de l'API Java standard. A l'inverse, Visual J++ les
+integre directement par la MSJVM, J/Direct et les paquets com.ms.*.
+
+"Toutes" signifie que les implementations Java existent sur de nombreuses
+plates-formes et que le code respectant les API standard est concu pour etre
+portable. Cela ne garantit pas qu'un programme Java utilisant du code natif ou
+une API propre a un systeme fonctionne sans adaptation partout.
+
 
 ================================================================================
 2. UNITES DE COMPILATION ET PROGRAMME MINIMAL
