@@ -1393,18 +1393,842 @@ etre programmee explicitement lorsque ces cas sont interdits par l'application.
 5. VARIABLES, CHAMPS ET CONSTANTES
 ================================================================================
 
-  int compteur;                 // variable ou champ
-  int x = 1, y = 2;             // initialisation
-  final int MAX = 100;          // affectable une seule fois
-  static final double PI = 3.141592653589793;
+5.1 Categories de variables
 
-Un champ d'instance appartient a chaque objet. Un champ static appartient a la
-classe. Les champs recoivent une valeur par defaut; une variable locale doit
-etre definitivement affectee avant lecture.
+Le langage distingue sept emplacements contenant une valeur :
 
-La portee d'une variable locale va de sa declaration a la fin du bloc. La
-portee d'un parametre est le corps de la methode ou du constructeur. this
-designe l'instance courante; super permet l'acces a la superclasse immediate.
+  1. champs d'instance;
+  2. champs de classe, declares static;
+  3. variables locales;
+  4. parametres de methodes et de constructeurs;
+  5. parametres de gestionnaires catch;
+  6. composantes de tableaux;
+  7. variables cachees creees par le compilateur ou la machine virtuelle.
+
+Les six premieres categories sont visibles dans le langage source. La derniere
+comprend par exemple la reference vers l'instance englobante d'une classe
+interne ou des temporaires de compilation; leurs noms et leur representation ne
+font pas partie de la specification.
+
+Une variable possede :
+
+  - un type fixe a la compilation;
+  - un nom, sauf pour certaines variables cachees;
+  - une valeur courante;
+  - une portee lexicale, qui indique ou son nom est utilisable;
+  - une duree de vie, qui indique combien de temps son stockage existe;
+  - eventuellement des modificateurs tels que final, static ou volatile.
+
+Le contenu d'une variable primitive est une valeur primitive. Le contenu d'une
+variable reference est null ou une reference; l'objet vise reste distinct de la
+variable qui contient cette reference.
+
+5.2 Syntaxe generale des declarations
+
+Declaration simple :
+
+  [modificateurs] Type nom [= initialiseur] ;
+
+Declaration de plusieurs variables du meme type :
+
+  [modificateurs] Type nom1 [= init1], nom2 [= init2], nom3 ;
+
+Exemples :
+
+  int compteur;
+  int x = 1, y = 2;
+  String message = "Bonjour";
+  final int maximum = 100;
+
+La virgule separe des declarateurs, pas des instructions. Chaque initialiseur
+est evalue de gauche a droite :
+
+  int a = 1, b = a + 1, c = b + 1;
+
+Le type apparait une seule fois et s'applique a tous les declarateurs. J++ 6.0
+n'a ni inference locale var, ni declaration multiple de types differents, ni
+deconstruction.
+
+La notation de tableau peut suivre le type ou chaque nom :
+
+  int[] a, b;              // a et b sont int[]
+  int c[], d;              // c est int[], d est int
+  int[] e[];               // e est int[][]
+
+La premiere forme est recommandee, car elle rend le type commun plus visible.
+
+5.3 Champs d'instance
+
+Syntaxe :
+
+  [public | protected | private]
+  [final] [transient] [volatile] Type nom [= initialiseur] ;
+
+Un champ d'instance appartient a un objet. Chaque instance possede son propre
+emplacement :
+
+  class Compteur {
+      private int valeur;
+
+      public void incrementer() {
+          valeur++;
+      }
+  }
+
+  Compteur a = new Compteur();
+  Compteur b = new Compteur();
+  a.incrementer();         // ne modifie pas b.valeur
+
+Dans une methode d'instance, un champ peut etre nomme directement ou avec this :
+
+  valeur = 10;
+  this.valeur = 10;
+
+Depuis une autre classe, l'acces passe par une expression reference :
+
+  objet.champ
+
+L'expression est evaluee avant l'acces. Si elle vaut null, l'acces a un champ
+d'instance leve NullPointerException.
+
+Un champ est selectionne statiquement selon le type compile de la reference; il
+n'est pas polymorphe comme une methode redefinie :
+
+  class A { int valeur = 1; }
+  class B extends A { int valeur = 2; }
+
+  A objet = new B();
+  objet.valeur             // 1, champ declare par A
+
+Le champ de B masque celui de A mais ne le remplace pas. Dans B, super.valeur
+accede au champ de A.
+
+5.4 Champs de classe static
+
+Syntaxe :
+
+  [visibilite] static [final] [transient] [volatile]
+  Type nom [= initialiseur] ;
+
+Un champ static appartient a la classe. Il existe en un seul exemplaire par
+classe chargee, et non un exemplaire par objet :
+
+  class Compteur {
+      private static int nombreInstances;
+
+      Compteur() {
+          nombreInstances++;
+      }
+
+      public static int getNombreInstances() {
+          return nombreInstances;
+      }
+  }
+
+Acces recommande :
+
+  Compteur.getNombreInstances();
+  Compteur.nombreInstances;       // seulement si le champ est accessible
+
+Java 1.1 autorise egalement objet.champStatic, mais cette forme est trompeuse :
+le champ est choisi selon le type compile de l'expression, pas selon l'objet.
+Utiliser le nom de classe rend la liaison statique explicite.
+
+Une methode static peut acceder directement aux champs static de sa classe.
+Elle ne peut acceder a un champ d'instance sans posseder une reference vers un
+objet, car elle n'a pas de this.
+
+Chaque chargeur de classes peut charger sa propre copie d'une classe; chacune
+possede alors ses propres champs static. "Une seule copie" signifie donc une
+copie par classe telle que definie par la JVM, pas necessairement une copie pour
+tout le processus.
+
+5.5 Variables locales
+
+Syntaxe dans un bloc :
+
+  [final] Type nom [= initialiseur] ;
+
+Exemple :
+
+  void calculer() {
+      int total = 0;
+      final int facteur = 2;
+
+      for (int i = 0; i < 10; i++) {
+          int produit = i * facteur;
+          total += produit;
+      }
+  }
+
+Les modificateurs public, protected, private, static, transient et volatile ne
+s'appliquent pas aux variables locales. final est permis.
+
+Une variable locale est creee lorsque l'execution atteint son bloc ou son
+declarateur et cesse d'etre accessible a la sortie de sa portee. Son stockage
+peut etre place dans une pile, un registre ou optimise; cette representation
+n'est pas garantie par le langage.
+
+Contrairement aux champs, une locale n'a aucune valeur par defaut. Elle doit
+etre definitivement affectee avant toute lecture. Le ramasse-miettes peut
+recuperer un objet des qu'aucune reference encore utilisable ne le rend
+atteignable, meme si le bloc source n'est pas encore termine.
+
+5.6 Parametres
+
+Syntaxe d'une methode ou d'un constructeur :
+
+  TypeRetour methode([final] Type p1, [final] Type p2) { ... }
+  NomClasse([final] Type p1, [final] Type p2) { ... }
+
+Les parametres sont des variables locales initialisees avec les valeurs des
+arguments lors de l'appel :
+
+  int additionner(int gauche, int droite) {
+      return gauche + droite;
+  }
+
+J++ passe toujours les arguments par valeur. Affecter un parametre primitif ne
+modifie pas la variable de l'appelant. Pour un objet, la reference est copiee :
+la methode peut modifier l'objet vise, mais remplacer le parametre ne remplace
+pas la reference de l'appelant.
+
+  void changer(Point p) {
+      p.x = 10;                   // modifie l'objet de l'appelant
+      p = new Point(0, 0);        // modifie seulement le parametre local
+  }
+
+Un parametre final ne peut pas recevoir une nouvelle valeur dans la methode,
+mais l'objet qu'il designe peut rester mutable.
+
+Java 1.1/J++ ne possede pas de parametres optionnels, nommes, par defaut ou
+varargs. Une methode voulant accepter plusieurs combinaisons emploie des
+surcharges ou un tableau explicite.
+
+5.7 Parametre de catch
+
+Syntaxe :
+
+  catch ([final] TypeException nom) {
+      instructions
+  }
+
+La machine virtuelle initialise ce parametre avec l'objet Throwable capture.
+Sa portee est le bloc catch correspondant :
+
+  try {
+      lire();
+  } catch (IOException erreur) {
+      System.err.println(erreur.getMessage());
+  }
+
+Il ne peut etre lu hors de ce bloc. Son type determine les exceptions capturees
+et doit etre Throwable ou une sous-classe. Un parametre final ne peut etre
+remplace par une autre reference.
+
+5.8 Composantes de tableaux
+
+Chaque element d'un tableau se comporte comme une variable anonyme selectionnee
+par un indice :
+
+  int[] valeurs = new int[3];
+  valeurs[0] = 10;
+  valeurs[1] = valeurs[0] + 5;
+
+Le type de valeurs[i] est le type element du tableau. L'expression tableau puis
+l'indice sont evalues avant l'acces. Une reference null leve
+NullPointerException; un indice hors de 0..length-1 leve
+ArrayIndexOutOfBoundsException.
+
+Les composantes recoivent automatiquement leur valeur par defaut a la creation
+du tableau. Elles ne peuvent pas etre declarees individuellement final,
+volatile ou transient. Une variable final contenant un tableau empeche de
+remplacer la reference, mais pas de modifier ses elements :
+
+  final int[] nombres = new int[3];
+  nombres[0] = 42;              // valide
+  nombres = new int[4];         // invalide
+
+Pour un tableau covariant de references, une affectation incompatible leve
+ArrayStoreException a l'execution.
+
+5.9 Portee lexicale
+
+La portee indique la region du source dans laquelle un nom simple designe une
+variable.
+
+  Type de variable       Debut de la portee            Fin
+  ---------------------  -----------------------------  ------------------------
+  champ                  corps de la classe            corps de la classe
+  parametre de methode   declaration terminee          corps de la methode
+  parametre constructeur declaration terminee          corps du constructeur
+  parametre catch        apres sa declaration          fin du bloc catch
+  locale de bloc         apres son declarateur         fin du bloc
+  locale de for          apres son declarateur         instruction for incluse
+
+Exemple :
+
+  {
+      int a = 1;
+      {
+          int b = a + 1;         // a et b visibles
+      }
+      // b n'est plus visible
+  }
+
+La variable declaree dans l'initialisation d'un for est visible dans la
+condition, la mise a jour et le corps, mais pas apres la boucle :
+
+  for (int i = 0; i < 10; i++) {
+      System.out.println(i);
+  }
+  // i n'est pas visible ici
+
+La portee n'est pas la duree de vie. Un objet reference par une locale peut
+survivre au bloc s'il est stocke ailleurs; inversement, il peut devenir
+inatteignable avant la fin lexicale de la portee.
+
+5.10 Masquage et redeclaration des noms
+
+Un parametre ou une variable locale peut masquer un champ :
+
+  class Personne {
+      private int age;
+
+      Personne(int age) {
+          this.age = age;
+      }
+  }
+
+Dans le constructeur, age designe le parametre et this.age le champ.
+
+Une classe derivee peut masquer un champ herite; Classe.nom ou super.nom permet
+de preciser le champ souhaite selon le contexte. Un champ static peut aussi
+etre masque par un champ static d'une sous-classe.
+
+Le langage interdit de redeclarer une variable locale ou un parametre dans une
+portee locale englobante qui se chevauche :
+
+  void f(int x) {
+      int x = 1;                 // invalide : parametre deja nomme x
+      {
+          int x = 2;             // invalide dans la portee de ce x
+      }
+  }
+
+Deux blocs successifs sans chevauchement peuvent reutiliser un nom. Une locale
+peut aussi masquer un champ, puisque les espaces de declaration concernes sont
+differents.
+
+5.11 Affectation certaine des variables locales
+
+Le compilateur effectue une analyse de controle avant de permettre la lecture
+d'une locale. Il faut que toutes les routes pouvant atteindre la lecture aient
+affecte la variable :
+
+  int resultat;
+  if (condition)
+      resultat = 1;
+  else
+      resultat = 2;
+  System.out.println(resultat);  // valide
+
+Exemple invalide :
+
+  int resultat;
+  if (condition)
+      resultat = 1;
+  System.out.println(resultat);  // condition peut etre false
+
+Une boucle n'est generalement pas supposee s'executer au moins une fois, sauf
+si le compilateur peut l'etablir avec les regles formelles. Une affectation
+situee uniquement dans un while peut donc ne pas suffire apres la boucle.
+
+L'operateur += lit l'ancienne valeur avant d'ecrire la nouvelle; la variable
+doit deja etre initialisee :
+
+  int n;
+  n += 1;                        // invalide
+
+Les champs ne sont pas soumis a cette lecture certaine ordinaire, car ils ont
+une valeur par defaut. Les champs final suivent toutefois des regles
+d'affectation certaine particulieres.
+
+5.12 Modificateur final
+
+final signifie qu'une variable ne peut etre affectee qu'une fois :
+
+  final int maximum = 100;
+  final String nom = "J++";
+
+Une seconde affectation est une erreur de compilation :
+
+  maximum = 200;                 // invalide
+
+Pour une reference, final protege la variable et non l'objet :
+
+  final Vector liste = new Vector();
+  liste.addElement("A");         // valide : objet modifie
+  liste = new Vector();          // invalide : reference remplacee
+
+Une variable final peut etre initialisee dans son declarateur ou, dans certains
+cas, plus tard lorsqu'elle est definitivement non affectee. On parle alors de
+blank final.
+
+  class Connexion {
+      private final String serveur;
+
+      Connexion(String serveur) {
+          this.serveur = serveur;
+      }
+  }
+
+Chaque constructeur doit affecter exactement une fois tout champ final
+d'instance non initialise, directement ou par un autre constructeur. Un champ
+static final vide doit etre affecte dans un initialisateur static.
+
+  class Configuration {
+      static final String RACINE;
+
+      static {
+          RACINE = chargerRacine();
+      }
+  }
+
+final n'implique ni constante de compilation, ni immuabilite profonde, ni
+synchronisation entre threads.
+
+5.13 Constantes de compilation
+
+Une variable constante au sens de la grammaire Java est une variable final de
+type primitif ou String, initialisee par une expression constante :
+
+  static final int TAILLE = 80;
+  static final int DOUBLE = TAILLE * 2;
+  static final String VERSION = "6." + "0";
+
+Une expression constante n'utilise que des litteraux, certaines variables
+constantes, des operateurs autorises et des conversions primitives ne demandant
+aucun calcul a l'execution. Un appel de methode ou new exclut la constante :
+
+  static final int A = 1 + 2;           // constante de compilation
+  static final int B = Math.abs(-3);    // final, mais pas constante compilee
+  static final Integer C = new Integer(3); // final, pas type primitif/String
+
+Une constante de compilation peut etre utilisee dans case, dans certaines
+initialisations reductrices et par le compilateur pour simplifier des
+expressions.
+
+Les clients peuvent incorporer directement la valeur d'un champ public static
+final constant dans leur propre bytecode. Changer ensuite la constante sans
+recompiler les clients peut leur laisser l'ancienne valeur. Pour une valeur
+susceptible de changer entre versions, une methode d'acces peut etre preferable.
+
+5.14 const n'est pas le mot-cle des constantes
+
+const est reserve mais inutilise :
+
+  const int MAX = 100;            // invalide en J++/Java
+
+Il faut ecrire :
+
+  final int max = 100;
+  static final int MAX = 100;     // constante partagee par la classe
+
+static indique l'appartenance a la classe; final interdit la reaffectation. La
+combinaison static final est la forme habituelle d'une constante publique, mais
+elle n'est une constante de compilation que si les conditions exposees dans la
+section 5.13 sont satisfaites.
+
+Les symboles de compilation conditionnelle de JVC ne sont pas des variables
+const Java. Ils sont interpretes par les directives Microsoft avant ou pendant
+la compilation; voir section 17.
+
+5.15 Champs d'interface
+
+Tout champ declare dans une interface est implicitement :
+
+  public static final
+
+Il doit posseder un initialiseur :
+
+  interface Limites {
+      int MINIMUM = 0;
+      int MAXIMUM = 100;
+  }
+
+La declaration equivaut a :
+
+  public static final int MINIMUM = 0;
+
+Une classe qui implemente l'interface peut utiliser le nom si aucune ambiguite
+n'existe, mais Limites.MINIMUM est plus clair. Un champ d'interface ne constitue
+jamais un etat d'instance et ne peut etre modifie.
+
+Si deux interfaces heritees fournissent le meme nom, un acces simple peut etre
+ambigu; qualifier avec le nom de l'interface resout l'ambiguite.
+
+5.16 Valeurs par defaut des champs
+
+Avant tout initialiseur Java, la JVM attribue a chaque champ sa valeur par
+defaut :
+
+  boolean              false
+  byte, short, int     0
+  long                 0L
+  char                 '\u0000'
+  float                0.0F
+  double               0.0D
+  reference            null
+
+Exemple :
+
+  class Etat {
+      int nombre;                // 0
+      boolean actif;             // false
+      String texte;              // null
+  }
+
+L'initialiseur explicite remplace ensuite cette valeur :
+
+  int nombre = 10;
+  String texte = "pret";
+
+Il est legal mais rarement utile de recopier explicitement la valeur par
+defaut. La valeur par defaut existe avant l'execution des constructeurs et peut
+etre observee dans des situations d'initialisation mal concues; un constructeur
+ne doit pas publier this avant d'avoir etabli ses invariants.
+
+5.17 Ordre d'initialisation static
+
+Une classe est initialisee lors de sa premiere utilisation active, par exemple
+avant la creation de sa premiere instance, l'appel d'une methode static ou
+l'acces a un champ static non constant. Avant cela, ses champs static ont deja
+leur valeur par defaut.
+
+Les initialisateurs de champs static et blocs static s'executent dans l'ordre
+textuel :
+
+  class Exemple {
+      static int a = 1;
+
+      static {
+          a = a + 1;             // a vaut 2
+          b = 5;                 // ecriture permise
+      }
+
+      static int b = 3;          // remplace ensuite 5 par 3
+  }
+
+La superclasse est initialisee avant la sous-classe. Une classe n'est
+normalement initialisee qu'une fois par son chargeur de classes. Si
+l'initialisation echoue par exception, l'utilisation ulterieure peut produire
+ExceptionInInitializerError ou NoClassDefFoundError selon le moment.
+
+Les references simples illegales vers un champ declare plus bas sont soumises
+aux regles de reference avant declaration. Ecrire un champ peut etre permis la
+ou le lire directement ne l'est pas. Il est preferable de declarer les champs
+avant les blocs qui les utilisent.
+
+5.18 Ordre d'initialisation d'une instance
+
+Lors de new Classe(arguments), l'ordre conceptuel est :
+
+  1. allocation de l'objet;
+  2. mise a la valeur par defaut de tous ses champs;
+  3. appel du constructeur de la superclasse;
+  4. initialisateurs de champs d'instance, dans l'ordre textuel;
+  5. blocs d'initialisation d'instance, dans l'ordre textuel;
+  6. reste du corps du constructeur.
+
+Exemple :
+
+  class Exemple extends Base {
+      int a = calculerA();
+
+      {
+          preparer();
+      }
+
+      Exemple() {
+          terminer();
+      }
+  }
+
+La premiere instruction d'un constructeur peut etre this(...) ou super(...).
+Si elle est absente, super() est insere. Lorsqu'un constructeur appelle
+this(...), l'initialisation d'instance est effectuee une seule fois par le
+constructeur qui finit par appeler super(...), et non a chaque maillon.
+
+Pendant l'execution du constructeur de la superclasse, les champs propres a la
+sous-classe n'ont encore que leur valeur par defaut. Appeler une methode
+redefinissable depuis un constructeur est donc dangereux : l'implementation de
+la sous-classe peut observer un objet partiellement initialise.
+
+5.19 Initialiseur de champ
+
+Un initialiseur de champ est une expression :
+
+  private int largeur = 80;
+  private Vector elements = new Vector();
+  private static String version = calculerVersion();
+
+Un initialiseur d'instance peut utiliser this implicitement et appeler des
+methodes d'instance, sous reserve des regles de reference avant declaration. Un
+initialiseur static n'a pas de this et n'accede directement qu'au contexte
+static.
+
+L'expression doit etre compatible par affectation avec le type du champ. Elle
+peut lever une exception non verifiee. Une exception verifiee dans un
+initialiseur de champ est fortement contrainte : elle doit etre geree ou etre
+compatible avec les constructeurs selon les regles du langage.
+
+Creer un objet mutable dans un champ static le partage entre toutes les
+instances. Creer l'objet dans un champ d'instance donne normalement une
+instance distincte a chaque construction.
+
+5.20 Blocs d'initialisation
+
+Bloc d'instance :
+
+  {
+      instructions
+  }
+
+Bloc de classe :
+
+  static {
+      instructions
+  }
+
+Les blocs d'instance factorisent du code execute par tous les constructeurs.
+Ils peuvent completer l'affectation de champs final d'instance sous les regles
+d'affectation certaine. Ils ne peuvent contenir return.
+
+Les blocs static initialisent les ressources partagees et les champs static
+final vides. Ils ne peuvent utiliser this ou super comme reference d'instance.
+Une exception verifiee ne peut pas simplement en sortir; elle doit etre
+capturee. Une exception non verifiee rend l'initialisation de classe fautive.
+
+Un bloc d'initialisation n'est pas une methode : il n'a ni nom, ni parametres,
+ni type retour et ne peut etre appele explicitement.
+
+5.21 transient
+
+Syntaxe :
+
+  transient Type champ;
+
+transient ne s'applique qu'aux champs. Il indique au mecanisme standard de
+serialisation que le champ ne fait pas partie de l'etat persistant ordinaire :
+
+  class Session implements Serializable {
+      String utilisateur;
+      transient String motDePasse;
+  }
+
+Apres une deserialisation standard, motDePasse vaut null, sauf si la classe le
+restaure par un mecanisme personnalise. transient ne masque pas le champ,
+n'efface pas sa memoire et ne constitue pas une protection cryptographique.
+
+Les champs static ne sont pas l'etat d'une instance serialisee; transient y est
+donc sans utilite pratique meme si certaines grammaires anciennes acceptent la
+combinaison.
+
+5.22 volatile
+
+Syntaxe :
+
+  volatile Type champ;
+
+volatile ne s'applique qu'aux champs. Il demande que les lectures et ecritures
+passent par la semantique de memoire partagee de la JVM, au lieu de conserver
+indefiniment une copie invisible aux autres threads :
+
+  private volatile boolean arreter;
+
+  public void demanderArret() {
+      arreter = true;
+  }
+
+  public void executer() {
+      while (!arreter) {
+          travailler();
+      }
+  }
+
+volatile ne rend pas atomique une suite lecture-calcul-ecriture :
+
+  volatile int compteur;
+  compteur++;                     // operation composee, pas atomique
+
+Pour proteger un invariant ou une operation composee, utiliser synchronized.
+Le modele memoire de Java 1.1/MSJVM est historique et moins precis que celui
+formalise par Java 5; ne pas lui attribuer retroactivement toutes les garanties
+modernes. Les anciennes JVM peuvent aussi traiter long/double volatile selon
+leurs propres contraintes d'atomicite.
+
+5.23 Visibilite des champs
+
+  Modificateur  Acces principal
+  ------------  --------------------------------------------------------------
+  private       classe qui declare le champ
+  aucun         classes du meme package
+  protected     meme package et sous-classes selon les regles de receveur
+  public        partout ou la classe englobante est accessible
+
+La visibilite est controlee a la compilation. Elle ne change ni le type ni la
+duree de vie du champ. Un champ public d'une classe non publique reste limite
+par l'accessibilite de cette classe.
+
+Les champs publics mutables exposent directement la representation interne :
+
+  public int age;                 // possible, mais peu encapsule
+
+La forme habituelle emploie un champ private et des methodes :
+
+  private int age;
+  public int getAge() { return age; }
+  public void setAge(int valeur) { age = valeur; }
+
+Comme explique a la section 15.3, l'IDE J++ peut presenter ces methodes comme
+une propriete de composant; cela ne change pas les regles d'acces du langage.
+
+5.24 Variables locales et classes internes
+
+Java 1.1 autorise une classe locale ou anonyme a utiliser une variable locale
+englobante seulement si cette variable est final :
+
+  final String message = "Bonjour";
+
+  Runnable action = new Runnable() {
+      public void run() {
+          System.out.println(message);
+      }
+  };
+
+La variable capturee doit etre definitivement affectee avant la creation de
+l'objet interne. Le compilateur peut copier sa valeur dans un champ cache de
+la classe generee.
+
+La notion moderne de variable "effectivement finale" n'existe pas encore :
+omettre final rend la capture invalide en Java 1.1/J++ 6.0, meme si le source
+ne reaffecte jamais la variable.
+
+Les champs de l'instance englobante sont accessibles par la reference cachee et
+n'ont pas besoin d'etre final. Une classe imbriquee static ne possede pas cette
+reference d'instance englobante.
+
+5.25 Duree de vie et ramasse-miettes
+
+La duree de vie du stockage depend de la categorie :
+
+  champ d'instance   aussi longtemps que l'objet est atteignable
+  champ static       aussi longtemps que la classe reste chargee
+  variable locale    pendant l'activation utile de son bloc/methode
+  parametre          pendant l'appel
+  element tableau    aussi longtemps que le tableau est atteignable
+
+La fin de portee d'un nom ne detruit pas explicitement l'objet. Le
+ramasse-miettes recupere les objets devenus inatteignables a un moment non
+determine. Affecter null peut supprimer une reference, mais n'oblige pas une
+collecte immediate :
+
+  objet = null;
+  System.gc();                    // simple demande, aucune garantie
+
+Les ressources externes telles que fichiers, handles Win32 et objets COM ne
+doivent pas dependre seulement du ramasse-miettes. Il faut les fermer ou les
+liberer explicitement, notamment avec close() ou ComLib.release selon l'API.
+
+5.26 Variables et interoperabilite Microsoft
+
+Les paquets J/Direct et COM utilisent des variables Java pour representer des
+valeurs natives :
+
+  int hwnd;                       // handle Win32 dans la MSJVM 32 bits
+  int[] resultat = new int[1];    // parametre de sortie simule
+  Variant valeur;                 // valeur COM Automation
+  IUnknown objetCom;              // interface COM
+
+Un tableau a un element peut servir a simuler un pointeur de sortie, mais la
+variable Java contient toujours une reference vers le tableau; le langage
+n'acquiert pas un passage par reference.
+
+Les declarations J/Direct determinent le marshalling, le sens des parametres et
+la taille native. Un int convenable pour un handle dans Visual J++ 6.0/MSJVM
+32 bits ne doit pas etre suppose portable vers un processus 64 bits.
+
+Un objet COM stocke dans une variable reference peut demander une liberation
+deterministe. Affecter null ne garantit pas que les references COM soient
+relachees immediatement; voir com.ms.com.ComLib a la section 18.2.
+
+5.27 Conventions de nommage
+
+Les conventions n'ont aucun effet grammatical, mais ameliorent la lecture :
+
+  compteur, nombreElements       variables et champs
+  MAXIMUM, TAILLE_BLOC           constantes static final
+  nomDeClasse.compteurGlobal     acces explicite a un champ static
+  this.valeur                    distinction champ/parametre
+
+Le prefixe hongrois lie au type, courant dans certains programmes Windows
+anciens, est autorise mais non exige :
+
+  int nCompteur;
+  String strNom;
+
+Comme J++ est sensible a la casse, MAXIMUM, Maximum et maximum sont trois noms
+distincts. Eviter les noms commencant par $ destines aux outils et les noms qui
+ressemblent aux mots contextuels Microsoft delegate et multicast.
+
+5.28 Erreurs frequentes
+
+  Erreur                               Explication
+  -----------------------------------  -----------------------------------------
+  lire une locale non initialisee      affectation certaine absente
+  reaffecter une variable final        une seule affectation est permise
+  modifier l'objet d'une final         permis : final protege la reference
+  employer const                       mot reserve sans syntaxe executable
+  acceder a l'instance depuis static   aucune reference this disponible
+  croire un champ polymorphe           les champs sont resolus statiquement
+  capturer une locale non final        interdit aux classes internes Java 1.1
+  croire compteur++ atomique           volatile ne suffit pas
+  attendre la liberation par x=null    collecte et finalisation non garanties
+  confondre portee et duree de vie     notions distinctes
+
+Exemple recapitulatif :
+
+  public class Mesure {
+      public static final int LIMITE = 100;
+      private static int nombre;
+
+      private final int identifiant;
+      private volatile boolean active;
+      private transient String cache;
+      private int valeur;
+
+      public Mesure(int valeur) {
+          identifiant = ++nombre;
+          this.valeur = valeur;
+          active = true;
+      }
+
+      public int getValeur() {
+          return valeur;
+      }
+
+      public void setValeur(int valeur) {
+          if (valeur < 0 || valeur > LIMITE)
+              throw new IllegalArgumentException("hors limites");
+          this.valeur = valeur;
+      }
+  }
+
+LIMITE est une constante de compilation partagee; nombre est un etat de
+classe; identifiant est un blank final initialise par le constructeur; active
+est un indicateur volatile; cache est exclu de la serialisation ordinaire; et
+valeur est un champ d'instance encapsule par des methodes.
 
 
 ================================================================================
