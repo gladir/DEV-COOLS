@@ -86,8 +86,15 @@ une API propre a un systeme fonctionne sans adaptation partout.
 2. UNITES DE COMPILATION ET PROGRAMME MINIMAL
 ================================================================================
 
-Un fichier source porte normalement l'extension .java. Une unite de
-compilation contient, dans cet ordre :
+Avec Microsoft Visual J++, un fichier source porte normalement l'extension
+.java. Certains clones, dialectes ou outils tiers appeles J++ utilisent
+cependant l'extension .jpp afin de distinguer leurs sources du Java standard.
+Cette extension .jpp n'est pas celle du compilateur Microsoft JVC et son emploi
+ne garantit pas que le contenu respecte la syntaxe Visual J++ 6.0. Il faut donc
+identifier le compilateur vise avant de conclure qu'un fichier .jpp ou .java
+appartient au dialecte decrit dans ce document.
+
+Une unite de compilation contient, dans cet ordre :
 
   [ declaration de package ]
   { declaration d'import }
@@ -2244,7 +2251,7 @@ valeur est un champ d'instance encapsule par des methodes.
   egalite         == !=
   bits/logique    & puis ^ puis |
   conditionnels   && puis ||
-  ternaire        condition ? valeur1 : valeur2
+  ternaire        condition ? a : b
   affectations    = *= /= %= += -= <<= >>= >>>= &= ^= |=
 
 Les operateurs && et || sont a evaluation conditionnelle. == compare les
@@ -2256,25 +2263,836 @@ L'evaluation des operandes se fait de gauche a droite. Les operateurs de meme
 niveau sont generalement associatifs a gauche; le ternaire et les affectations
 sont associatifs a droite.
 
+6.1 Precedence complete
+
+Du plus prioritaire au moins prioritaire :
+
+  Niveau  Operateurs/constructions                 Associativite
+  ------  ---------------------------------------  -------------
+   1      nom, litteral, this, super, new           -
+          appel (), indice [], membre .
+          expr++, expr--
+   2      ++expr, --expr, +expr, -expr, ~, !        droite
+          cast (Type)expr
+   3      *, /, %                                   gauche
+   4      +, -                                      gauche
+   5      <<, >>, >>>                               gauche
+   6      <, <=, >, >=, instanceof                  gauche
+   7      ==, !=                                    gauche
+   8      &                                         gauche
+   9      ^                                         gauche
+  10      |                                         gauche
+  11      &&                                        gauche
+  12      ||                                        gauche
+  13      ?:                                        droite
+  14      =, +=, -=, *=, /=, %=                     droite
+          &=, ^=, |=, <<=, >>=, >>>=
+
+  a + b * c                  equivaut a a + (b * c)
+  (a + b) * c                parentheses prioritaires
+  a - b - c                  equivaut a (a - b) - c
+  a = b = 0                  equivaut a a = (b = 0)
+
+La precedence fixe le groupement syntaxique. Elle ne change pas l'ordre
+temporel : J++ evalue les operandes de gauche a droite.
+
+6.2 Ordre d'evaluation et effets de bord
+
+Dans f() + g(), f() se termine avant l'appel de g(). Dans :
+
+  receveur.methode(arg1, arg2, arg3)
+
+le receveur est evalue en premier, puis les arguments de gauche a droite. Dans
+tableau[index], la reference tableau est evaluee avant l'indice.
+
+Si un operande leve une exception, les operandes suivants ne sont pas evalues.
+Les effets deja produits ne sont pas annules. &&, || et ?: sont particuliers :
+ils choisissent conditionnellement les operandes a evaluer.
+
+  int i = 1;
+  int r = i++ + i++;          // r vaut 3, puis i vaut 3
+
+Ce comportement est defini, mais multiplier les modifications dans une seule
+expression nuit fortement a la lisibilite.
+
+6.3 Operateurs unaires +, -, ~ et !
+
+  +expressionNumerique
+  -expressionNumerique
+  ~expressionEntiere
+  !expressionBooleenne
+
++ et - appliquent la promotion unaire : byte, short et char deviennent int.
+
+  byte b = 10;
+  int n = -b;                 // -10, de type int
+
+La negation de MIN_VALUE int/long deborde et conserve cette valeur minimale.
+Sur float/double, - inverse aussi le signe de zero et de l'infini; NaN reste
+NaN.
+
+~ inverse tous les bits d'un int ou long promu :
+
+  ~0                          // -1
+  ~0x0F                       // 0xFFFFFFF0
+
+! inverse true et false. Il n'accepte ni entier ni reference; !0 et !null sont
+invalides.
+
+6.4 Increment et decrement
+
+Formes prefixees :
+
+  ++variable
+  --variable
+
+La variable est modifiee puis la nouvelle valeur est produite :
+
+  int i = 3;
+  int j = ++i;                // i = 4, j = 4
+
+Formes postfixees :
+
+  variable++
+  variable--
+
+L'ancienne valeur est produite, puis la variable est modifiee :
+
+  int i = 3;
+  int j = i++;                // i = 4, j = 3
+
+La variable doit etre numerique, modifiable et non final. Elle n'est evaluee
+qu'une fois. La conversion vers son propre type est implicite :
+
+  byte b = 127;
+  b++;                        // devient -128
+
+b = b + 1 serait invalide sans cast, puisque b + 1 est int.
+
+6.5 Promotions binaires
+
+Pour les calculs numeriques :
+
+  si un operande est double   les deux deviennent double
+  sinon si l'un est float     les deux deviennent float
+  sinon si l'un est long      les deux deviennent long
+  sinon                       les deux deviennent int
+
+  byte a = 1, b = 2;
+  int somme = a + b;
+  double total = 1 + 2.5;
+
+boolean ne participe a aucune promotion numerique.
+
+6.6 Multiplication, division et reste
+
+  gauche * droite
+  dividende / diviseur
+  dividende % diviseur
+
+* multiplie les valeurs promues. Un resultat entier peut deborder sans
+exception; un flottant peut devenir infini ou NaN.
+
+La division entiere tronque vers zero :
+
+  7 / 3                      // 2
+ -7 / 3                      // -2
+
+Un diviseur entier nul leve ArithmeticException. MIN_VALUE / -1 deborde et
+conserve MIN_VALUE.
+
+La division flottante suit IEEE 754 :
+
+  1.0 / 0.0                  // Infinity
+ -1.0 / 0.0                  // -Infinity
+  0.0 / 0.0                  // NaN
+
+Le reste entier porte le signe du dividende :
+
+  7 % 3                      // 1
+ -7 % 3                      // -1
+
+% accepte aussi float/double. Un diviseur flottant nul produit NaN.
+
+6.7 Addition, soustraction et String
+
+Avec des nombres, + et - appliquent les promotions :
+
+  int somme = 2 + 3;
+  double ecart = 10 - 0.5;
+
+Si au moins un operande de + est String, + concatene :
+
+  "age=" + 42                // "age=42"
+  "actif=" + true            // "actif=true"
+  "objet=" + (Object)null    // "objet=null"
+
+Une primitive est convertie en texte. Pour une reference non nulle,
+String.valueOf appelle normalement toString(); null devient "null".
+
++ est associatif a gauche :
+
+  "total=" + 1 + 2           // "total=12"
+  "total=" + (1 + 2)         // "total=3"
+
+String est immuable. Une concatenation produit une nouvelle valeur et peut etre
+traduite en operations StringBuffer.
+
+6.8 Decalages
+
+  valeur << distance          gauche, zeros a droite
+  valeur >> distance          droite, prolongement du signe
+  valeur >>> distance         droite, zeros a gauche
+
+Les operandes sont promus. Le resultat prend le type int ou long de l'operande
+gauche. Pour int, seuls les 5 bits faibles de la distance sont retenus; pour
+long, les 6 bits faibles :
+
+  1 << 3                      // 8
+  1 << 32                     // 1, car 32 & 31 == 0
+  1L << 32                    // 4294967296L
+ -8 >> 1                      // -4
+ -1 >>> 1                     // 2147483647
+
+Les bits sortants sont perdus. Une distance negative est elle aussi masquee.
+>>> ne cree pas un type unsigned; il effectue seulement un decalage logique.
+
+6.9 Comparaisons ordonnees
+
+  gauche < droite
+  gauche <= droite
+  gauche > droite
+  gauche >= droite
+
+Les operandes doivent etre numeriques et sont promus. Le resultat est boolean.
+Si un operande flottant est NaN, toutes ces comparaisons retournent false.
+
+  age >= 18
+  0 < x && x < 10            // valide
+  0 < x < 10                 // invalide
+
+La derniere forme est invalide car 0 < x produit boolean.
+
+6.10 instanceof
+
+  expressionReference instanceof TypeReference
+
+Retourne true si la valeur non nulle est compatible avec le type :
+
+  objet instanceof String
+  animal instanceof Chien
+  tableau instanceof Object
+
+null instanceof Type vaut false. Les types doivent etre plausiblement
+compatibles. Le test ne change pas le type de la variable :
+
+  if (animal instanceof Chien) {
+      Chien chien = (Chien)animal;
+  }
+
+Le pattern matching moderne n'existe pas en J++.
+
+6.11 Egalite et identite
+
+  gauche == droite
+  gauche != droite
+
+Pour les nombres, les operandes sont promus :
+
+  1 == 1L                    // true
+  1 == 1.0                   // true
+  0.0 == -0.0                // true
+  Double.NaN == Double.NaN   // false
+
+Deux boolean peuvent etre compares, sans conversion vers un entier.
+
+Pour les references, == compare l'identite :
+
+  Point p = new Point(1, 2);
+  Point q = p;
+  p == q                     // true
+
+  new String("a") == new String("a")       // false en general
+  new String("a").equals(new String("a"))  // true
+
+equals() peut comparer le contenu selon le contrat de la classe. Deux
+references sont identiques si elles visent le meme objet ou valent toutes deux
+null. Les tableaux ne comparent pas automatiquement leurs elements.
+
+6.12 Operateurs &, ^ et |
+
+Sur les entiers, ils travaillent bit par bit :
+
+  0x0F & 0x33                // 0x03
+  0x0F ^ 0x33                // 0x3C
+  0x0F | 0x30                // 0x3F
+
+| combine souvent des indicateurs Win32 :
+
+  winm.MB_OK | winm.MB_ICONINFORMATION
+
+Sur boolean :
+
+  a & b       true si les deux sont true
+  a ^ b       true si exactement un est true
+  a | b       true si au moins un est true
+
+Les deux operandes sont toujours evalues. Les operandes doivent etre tous deux
+entiers ou tous deux boolean.
+
+6.13 Court-circuit && et ||
+
+  conditionGauche && conditionDroite
+  conditionGauche || conditionDroite
+
+Les operandes doivent etre boolean. Pour &&, la droite n'est evaluee que si la
+gauche vaut true :
+
+  objet != null && objet.estValide()
+
+Pour ||, la droite n'est evaluee que si la gauche vaut false :
+
+  objet == null || objet.estVide()
+
+Remplacer &&/|| par &/| force l'evaluation des deux cotes et peut modifier les
+effets ou exceptions.
+
+6.14 Operateur conditionnel ?:
+
+  condition ? expressionSiVrai : expressionSiFaux
+
+La condition doit etre boolean. Une seule branche est evaluee :
+
+  int absolu = x >= 0 ? x : -x;
+  String nom = objet == null ? "aucun" : objet.toString();
+
+Le type resultat vient des deux branches :
+
+  - types identiques : ce type;
+  - nombres : promotions et regles de constantes representables;
+  - null et reference : le type reference;
+  - references : un type commun permis par les conversions;
+  - void n'est pas admis comme branche valeur.
+
+?: est associatif a droite.
+
+6.15 Affectation simple
+
+  variable = expression
+
+Le cote gauche doit designer une locale, un parametre, un champ ou un element
+de tableau modifiable. Une final deja affectee est interdite. La droite doit
+etre compatible par affectation.
+
+Ordre :
+
+  1. evaluation du receveur ou de l'indice gauche;
+  2. evaluation de la droite;
+  3. conversion autorisee;
+  4. stockage;
+  5. production de la valeur stockee.
+
+L'affectation est une expression et peut etre chainee :
+
+  a = b = c = 0;
+
+Le cote gauche peut lever NullPointerException,
+ArrayIndexOutOfBoundsException ou ArrayStoreException.
+
+6.16 Affectations composees
+
+  +=  -=  *=  /=  %=  &=  ^=  |=  <<=  >>=  >>>=
+
+  variable op= expression
+
+Cette forme equivaut approximativement a :
+
+  variable = (TypeVariable)(variable op expression)
+
+mais variable n'est evaluee qu'une fois. La conversion reductrice est
+implicite :
+
+  byte b = 100;
+  b += 30;                    // valide, devient -126
+  b = b + 30;                // invalide sans cast
+
+Une locale doit deja etre initialisee. += concatene aussi String :
+
+  String s = "a";
+  s += 1;                     // "a1"
+
+6.17 Acces aux champs
+
+  expressionReference.champ
+  NomClasse.champStatic
+  this.champ
+  super.champ
+
+Un champ est choisi selon le type compile et n'est pas virtuel. Une reference
+null leve NullPointerException pour un champ d'instance.
+
+Un champ static doit etre qualifie par le nom de classe. La forme
+objet.champStatic est acceptee historiquement mais trompeuse : le type compile,
+non l'objet reel, choisit le champ.
+
+Les controles public, protected, private et package sont effectues a la
+compilation.
+
+6.18 Tableaux et length
+
+  expressionTableau[expressionIndice]
+
+La reference est evaluee avant l'indice. L'indice doit etre convertible en int;
+long exige un cast. L'acces produit une variable et peut etre a gauche de =,
++= ou ++.
+
+  tableau.length
+
+length est un champ final int, non une methode :
+
+  tableau.length              // valide
+  tableau.length()            // invalide
+
+String utilise length(). Une reference null leve NullPointerException; un
+indice invalide leve ArrayIndexOutOfBoundsException.
+
+6.19 Invocation et surcharge
+
+  methode(arguments)
+  objet.methode(arguments)
+  NomClasse.methodeStatic(arguments)
+  super.methode(arguments)
+
+Le receveur puis les arguments sont evalues de gauche a droite. Il n'existe ni
+argument nomme, ni optionnel, ni varargs.
+
+Le compilateur garde les surcharges applicables et choisit la plus specifique :
+
+  void f(int x)  { ... }
+  void f(long x) { ... }
+
+  f(1);                       // f(int)
+  f(1L);                      // f(long)
+
+Le type retour ne participe pas au choix. L'implementation d'une methode
+d'instance redefinie est ensuite choisie dynamiquement.
+
+6.20 Creation d'objet
+
+  new TypeClasse(arguments)
+
+Les arguments sont evalues de gauche a droite. L'objet est alloue avec ses
+champs aux valeurs par defaut, puis les constructeurs et initialisateurs sont
+executes :
+
+  Point p = new Point(10, 20);
+
+Une classe abstract ou une interface ne peut etre instanciee directement. Une
+classe anonyme combine implementation et creation :
+
+  Runnable r = new Runnable() {
+      public void run() {
+          travailler();
+      }
+  };
+
+OutOfMemoryError peut signaler un echec d'allocation. Une exception du
+constructeur empeche le retour normal de la reference.
+
+6.21 Creation de tableau
+
+  new Type[dimension] { [dimension] }
+  new Type[] { initialisateurs }
+
+  new int[10]
+  new String[2][3]
+  new int[2][]
+  new int[] { 2, 3, 5, 7 }
+
+Les dimensions sont evaluees de gauche a droite et converties en int. Une
+dimension negative leve NegativeArraySizeException. Les dimensions vides
+suivent les dimensions renseignees :
+
+  new int[2][]                // valide
+  new int[][2]                // invalide
+
+Une taille et un initialiseur ne se combinent pas :
+
+  new int[] { 1, 2 }          // valide
+  new int[2] { 1, 2 }         // invalide
+
+6.22 Casts
+
+Cast primitif :
+
+  (TypePrimitif)expression
+
+  int n = (int)3.9;           // 3
+  byte b = (byte)300;         // 44
+  char c = (char)-1;          // '\uffff'
+
+Il peut perdre plage ou precision sans exception. boolean ne se caste pas vers
+ou depuis un nombre.
+
+Cast de reference :
+
+  (TypeReference)expressionReference
+
+  Animal animal = obtenirAnimal();
+  Chien chien = (Chien)animal;
+
+null reste null; un objet compatible conserve sa reference; un objet
+incompatible leve ClassCastException. Le cast ne transforme pas l'objet.
+
+6.23 this, super et Class
+
+this designe l'objet courant :
+
+  this.champ
+  this.methode()
+
+Il est interdit en contexte static. this(arguments); appelle un autre
+constructeur et doit etre la premiere instruction.
+
+super accede a la superclasse immediate :
+
+  super.champ
+  super.methode(arguments)
+
+super.methode force l'implementation heritee. super(arguments); appelle un
+constructeur parent et doit etre la premiere instruction si this(...) ne l'est
+pas. super seul n'est pas une valeur stockable.
+
+Obtention d'un objet java.lang.Class :
+
+  String.class
+  int.class
+  int[].class
+  objet.getClass()
+
+Type.class ne cree aucune instance. getClass() sur null leve
+NullPointerException.
+
+6.24 Expressions constantes
+
+Une expression constante peut employer :
+
+  - litteraux primitifs et String;
+  - variables constantes;
+  - parentheses et casts primitifs;
+  - +, -, ~ et ! unaires;
+  - calculs, decalages, comparaisons et egalite;
+  - &, ^, |, &&, || et ?:;
+  - concatenation de String constantes.
+
+  static final int A = 1 + 2 * 3;
+  static final String NOM = "J" + "++";
+  case 1 << 3:
+
+new, les appels et effets de bord ne sont pas constants. Une division entiere
+constante par zero est une erreur de compilation.
+
+6.25 Exceptions des expressions
+
+  Exception/erreur                    Cause
+  ----------------------------------  ------------------------------------------
+  ArithmeticException                 / ou % entier avec diviseur zero
+  NullPointerException                membre, appel ou tableau via null
+  ArrayIndexOutOfBoundsException      indice invalide
+  ArrayStoreException                 stockage incompatible dans tableau
+  NegativeArraySizeException          dimension negative
+  ClassCastException                  cast reference incompatible
+  OutOfMemoryError                    echec de new
+  ExceptionInInitializerError         initialisation de classe fautive
+
+Un debordement entier, un arrondi flottant ou un cast numerique reducteur ne
+leve normalement aucune exception.
+
+6.26 Absence de surcharge des operateurs
+
+Une classe utilisateur ne peut pas redefinir +, -, *, == ou un autre operateur.
+String beneficie d'un traitement integre pour + et +=, non reproductible.
+
+  montant.ajouter(autre)      // methode valide
+  montant + autre             // invalide pour une classe utilisateur
+
+Pour une egalite logique, une classe redefinit equals() et hashCode().
+
+6.27 Expressions propres aux delegates J++
+
+Les extensions Microsoft ajoutent une reference liee a une methode :
+
+  Notification n = new Notification(objet.traiter);
+  n.invoke(source, code);
+
+La signature de traiter doit correspondre au delegate. objet.traiter n'est pas
+une expression Java 1.1 standard et demande les extensions J++.
+
+Un multicast delegate peut contenir plusieurs cibles selon le runtime. Ne pas
+supposer que les operateurs + et - de C# sur les delegates ont la meme
+semantique en J++.
+
+6.28 Exemple recapitulatif
+
+  public int calculer(Object objet, int[] valeurs, boolean absolu) {
+      if (objet == null || !(objet instanceof Mesure))
+          throw new IllegalArgumentException("objet invalide");
+
+      Mesure mesure = (Mesure)objet;
+      int total = mesure.getValeur();
+
+      for (int i = 0; i < valeurs.length; i++)
+          total += valeurs[i] * (i + 1);
+
+      int resultat = absolu && total < 0 ? -total : total;
+      return resultat > Mesure.LIMITE ? Mesure.LIMITE : resultat;
+  }
+
+L'exemple combine identite, court-circuit, instanceof, cast, appel, tableau,
+increment, calculs, affectation composee, ?: et champ static.
+
 
 ================================================================================
 7. INSTRUCTIONS
 ================================================================================
 
-Bloc et instruction vide :
+7.1 Classification et grammaire generale
 
-  { instruction1; instruction2; }
-  ;
+Une instruction commande une action ou un transfert de controle. Elle ne
+produit pas une valeur directement utilisable par une expression englobante.
 
-Condition :
+Forme simplifiee :
 
-  if (x >= 0) {
-      signe = 1;
-  } else {
-      signe = -1;
+  instruction ::=
+      bloc
+    | ;
+    | expressionInstruction ;
+    | declarationLocale ;
+    | if (expression) instruction [else instruction]
+    | switch (expression) blocSwitch
+    | while (expression) instruction
+    | do instruction while (expression) ;
+    | for (initialisation ; condition ; miseAJour) instruction
+    | etiquette : instruction
+    | break [etiquette] ;
+    | continue [etiquette] ;
+    | return [expression] ;
+    | throw expression ;
+    | synchronized (expression) bloc
+    | try bloc catchEtOuFinally
+
+Une instruction peut se terminer normalement, continuer vers une autre
+instruction, ou se terminer brutalement par break, continue, return, throw ou
+une exception. Le mot goto est reserve mais ne possede aucune instruction.
+
+J++ historique ne comprend ni assert, ni foreach, ni try-with-resources, ni
+switch sur String, ni expressions switch.
+
+7.2 Bloc
+
+Syntaxe :
+
+  {
+      { declarationLocale | instruction }
   }
 
-Selection :
+Un bloc regroupe zero ou plusieurs declarations et instructions :
+
+  {
+      int total = 0;
+      total += calculer();
+      afficher(total);
+  }
+
+Il peut remplacer une instruction simple apres if, else, while, do, for,
+synchronized ou une etiquette. Il cree une portee locale. Une variable
+declaree dans le bloc n'est plus visible apres sa fermeture.
+
+Les instructions sont executees dans l'ordre textuel, sauf transfert de
+controle. Un bloc vide est valide :
+
+  { }
+
+Les accolades sont recommandees meme pour une seule instruction, afin d'eviter
+les erreurs lors d'une modification ulterieure.
+
+7.3 Instruction vide
+
+Syntaxe :
+
+  ;
+
+Elle ne fait rien et se termine normalement. Elle peut servir de corps a une
+boucle dont tout le travail est effectue dans la condition ou la mise a jour :
+
+  while (lireEncore())
+      ;
+
+Un point-virgule accidentel peut toutefois detacher un bloc :
+
+  if (condition);             // instruction if deja terminee
+  {
+      executer();             // bloc toujours execute
+  }
+
+Cette construction est valide mais souvent erronee.
+
+7.4 Instructions-expression
+
+Seules certaines expressions peuvent etre employees comme instructions :
+
+  - affectation;
+  - pre-increment et pre-decrement;
+  - post-increment et post-decrement;
+  - invocation de methode;
+  - creation d'une instance de classe.
+
+Exemples :
+
+  x = 10;
+  compteur++;
+  --reste;
+  objet.executer();
+  new Travail();
+
+Les expressions purement calculatoires ne sont pas des instructions :
+
+  x + y;                      // invalide
+  objet.champ;                // invalide
+  true;                       // invalide
+
+La valeur produite par une expression-instruction est ignoree. Les effets et
+exceptions restent applicables.
+
+7.5 Declaration locale
+
+Syntaxe :
+
+  [final] Type nom [= initialiseur]
+      {, nom [= initialiseur]} ;
+
+Exemples :
+
+  int total;
+  int x = 1, y = 2;
+  final String titre = "J++";
+  int[] valeurs = new int[10];
+
+Une declaration locale est permise dans un bloc et dans l'initialisation d'un
+for. La variable doit etre definitivement affectee avant lecture. Sa portee
+commence apres son declarateur et se termine avec le bloc applicable.
+
+Les modificateurs d'acces, static, transient et volatile ne sont pas permis sur
+une locale. J++ 6.0 n'accepte pas var.
+
+Une declaration n'est pas une instruction partout ou une instruction simple
+est attendue. Pour declarer apres if sans bloc, ajouter des accolades :
+
+  if (condition) {
+      int valeur = calculer();
+      utiliser(valeur);
+  }
+
+7.6 Declaration de classe locale
+
+Une classe peut etre declaree dans un bloc :
+
+  void construire() {
+      class Tache implements Runnable {
+          public void run() {
+              travailler();
+          }
+      }
+
+      new Thread(new Tache()).start();
+  }
+
+Son nom est visible de sa declaration a la fin du bloc. Elle n'est pas un
+membre de la classe englobante et ne peut etre public, protected, private ou
+static.
+
+Une classe locale Java 1.1 peut utiliser les variables locales englobantes
+seulement si elles sont final. Elle peut aussi acceder aux champs de l'instance
+englobante.
+
+7.7 if
+
+Syntaxe :
+
+  if (conditionBooleenne)
+      instruction
+
+  if (conditionBooleenne)
+      instructionSiVrai
+  else
+      instructionSiFaux
+
+La condition est evaluee une fois et doit etre boolean :
+
+  if (age >= 18) {
+      categorie = "adulte";
+  } else {
+      categorie = "mineur";
+  }
+
+Il n'existe aucune conversion implicite int vers boolean :
+
+  if (1) { ... }              // invalide
+
+Une seule branche est executee. Si la condition leve une exception, aucune
+branche ne commence.
+
+7.8 Association du else
+
+Sans accolades, else est associe au if sans else le plus proche :
+
+  if (a)
+      if (b)
+          f();
+      else
+          g();
+
+equivaut a :
+
+  if (a) {
+      if (b)
+          f();
+      else
+          g();
+  }
+
+Pour rattacher else au premier if, utiliser un bloc explicite. Cette regle est
+souvent appelee le probleme du dangling else.
+
+Une chaine else if n'est pas une instruction speciale : le else contient
+simplement un autre if :
+
+  if (x < 0) {
+      signe = -1;
+  } else if (x > 0) {
+      signe = 1;
+  } else {
+      signe = 0;
+  }
+
+7.9 switch
+
+Syntaxe :
+
+  switch (selecteur) {
+      case constante1:
+          instructions
+      case constante2:
+          instructions
+      default:
+          instructions
+  }
+
+Le selecteur est evalue une seule fois. Son type doit etre char, byte, short ou
+int, apres les conversions autorisees. long, boolean, float, double, String,
+enum et Object ne sont pas acceptes en J++ 6.0.
+
+Exemple :
 
   switch (code) {
       case 1:
@@ -2287,47 +3105,627 @@ Selection :
           nom = "autre";
   }
 
-Les etiquettes case sont des constantes entieres compatibles avec char, byte,
-short ou int. J++ historique n'accepte pas String dans switch.
+Si un case correspond, l'execution commence apres son etiquette. Sinon elle
+commence au default eventuel. En l'absence de correspondance et de default, le
+switch ne fait rien.
 
-Boucles :
+7.10 Etiquettes case et default
 
-  while (condition) { ... }
-  do { ... } while (condition);
-  for (int i = 0; i < 10; i++) { ... }
+Syntaxes :
 
-Il n'existe pas de boucle foreach dans le langage J++ historique.
+  case expressionConstante :
+  default :
 
-Transferts :
+Chaque case doit etre une expression constante representable dans le type du
+selecteur :
 
-  break;             break etiquette;
-  continue;          continue etiquette;
-  return;            return expression;
-  throw expression;
+  final int OUVRIR = 1;
 
-Une etiquette precede une instruction :
+  switch (commande) {
+      case OUVRIR:
+          ouvrir();
+          break;
+      case 2 + 3:
+          fermer();
+          break;
+  }
+
+Deux case ayant la meme valeur apres conversion sont interdits. Un seul default
+est permis. default peut apparaitre a n'importe quelle position dans le bloc;
+sa position n'affecte pas la recherche initiale mais affecte la poursuite
+sequentielle.
+
+case n'est pas une etiquette generale et ne peut apparaitre hors d'un switch.
+
+7.11 Poursuite entre case
+
+L'execution ne s'arrete pas automatiquement a la prochaine etiquette :
+
+  switch (jour) {
+      case 6:
+      case 7:
+          type = "week-end";
+          break;
+      default:
+          type = "semaine";
+  }
+
+Les case 6 et 7 partagent ici le meme traitement. Cette poursuite, appelee
+fall-through, peut aussi etre volontaire :
+
+  switch (niveau) {
+      case 3:
+          droits += ECRITURE;
+      case 2:
+          droits += LECTURE;
+      case 1:
+          droits += CONNEXION;
+  }
+
+Sans commentaire clair, un break oublie est une source frequente d'erreurs.
+return ou throw terminent egalement la branche.
+
+7.12 while
+
+Syntaxe :
+
+  while (conditionBooleenne)
+      instruction
+
+La condition est testee avant chaque iteration :
+
+  while (reste > 0) {
+      traiter();
+      reste--;
+  }
+
+Si elle vaut false au premier test, le corps ne s'execute jamais. Si elle vaut
+true, le corps s'execute puis la condition est reevaluee.
+
+continue passe directement au prochain test. break termine la boucle.
+
+  while (true) {
+      if (termine())
+          break;
+      travailler();
+  }
+
+Une boucle while(true) sans break atteignable ne peut pas se terminer
+normalement selon l'analyse de controle.
+
+7.13 do-while
+
+Syntaxe :
+
+  do
+      instruction
+  while (conditionBooleenne) ;
+
+Le corps est execute avant le premier test :
+
+  do {
+      ligne = lireLigne();
+      if (ligne != null)
+          traiter(ligne);
+  } while (ligne != null);
+
+Il s'execute donc au moins une fois. Le point-virgule apres la parenthese est
+obligatoire.
+
+continue transfere au test de la condition. Si elle vaut true, une nouvelle
+iteration commence; sinon la boucle se termine.
+
+7.14 for
+
+Syntaxe :
+
+  for ([initialisation] ; [condition] ; [miseAJour])
+      instruction
+
+Exemple :
+
+  for (int i = 0; i < 10; i++) {
+      System.out.println(i);
+  }
+
+Ordre d'execution :
+
+  1. initialisation, une seule fois;
+  2. test de condition, si elle existe;
+  3. corps si la condition vaut true;
+  4. mise a jour;
+  5. retour au test.
+
+Une condition omise equivaut a true :
+
+  for (;;) {
+      travailler();
+  }
+
+Les trois zones peuvent etre vides, mais les deux points-virgules sont
+obligatoires.
+
+7.15 Initialisation et mise a jour du for
+
+L'initialisation est soit une declaration locale, soit une liste
+d'expressions-instructions :
+
+  for (int i = 0; i < n; i++) { ... }
+  for (i = 0, j = n - 1; i < j; i++, j--) { ... }
+
+Une declaration ne peut melanger plusieurs types :
+
+  for (int i = 0, j = 0; ... )     // valide
+  for (int i = 0, long j = 0; ... ) // invalide
+
+La mise a jour accepte une liste d'expressions-instructions separees par des
+virgules. L'operateur virgule general n'existe pas :
+
+  i++, j--                    // valide dans la zone de mise a jour
+  x = (i++, j--);             // invalide comme expression Java
+
+La portee d'une variable declaree par for couvre la condition, la mise a jour
+et le corps, mais pas l'instruction suivant la boucle.
+
+continue execute la mise a jour avant de retester la condition.
+
+7.16 Absence de foreach
+
+La boucle amelioree introduite par Java 5 n'existe pas :
+
+  for (String s : tableau)    // invalide en J++ 6.0
+
+Pour un tableau, utiliser les indices :
+
+  for (int i = 0; i < tableau.length; i++) {
+      String s = tableau[i];
+      traiter(s);
+  }
+
+Pour Vector et les collections historiques, utiliser Enumeration :
+
+  for (Enumeration e = vecteur.elements(); e.hasMoreElements();) {
+      Object element = e.nextElement();
+      traiter(element);
+  }
+
+Iterator et le Collections Framework sont posterieurs a Java 1.1.
+
+7.17 Instruction etiquetee
+
+Syntaxe :
+
+  etiquette : instruction
+
+Exemple :
 
   externe:
   for (int i = 0; i < n; i++) {
-      for (int j = 0; j < m; j++)
-          if (fini(i, j)) break externe;
+      for (int j = 0; j < m; j++) {
+          if (fini(i, j))
+              break externe;
+      }
   }
+
+Une etiquette est un identificateur et possede son propre espace de noms. Elle
+peut donc porter le meme texte qu'une variable sans la designer.
+
+Sa portee est l'instruction qui la suit. Une etiquette peut viser un bloc, un
+if, un switch ou une boucle. Elle n'est pas une destination goto : on ne peut
+que sortir avec break, ou continuer si elle designe une boucle.
+
+7.18 break
+
+Syntaxes :
+
+  break ;
+  break etiquette ;
+
+Sans etiquette, break termine la boucle while, do, for ou le switch englobant
+le plus proche :
+
+  while (true) {
+      if (termine())
+          break;
+  }
+
+Avec etiquette, il termine l'instruction etiquetee correspondante :
+
+  recherche: {
+      if (erreur)
+          break recherche;
+      executer();
+  }
+
+L'etiquette doit etre dans une portee englobante. break ne peut entrer dans un
+bloc ni viser une methode. Les blocs finally rencontres sont executes avant le
+transfert effectif.
+
+7.19 continue
+
+Syntaxes :
+
+  continue ;
+  continue etiquette ;
+
+Sans etiquette, continue passe a l'iteration suivante de la boucle la plus
+proche. Avec etiquette, la cible doit etre une boucle englobante :
+
+  externe:
+  for (int i = 0; i < n; i++) {
+      for (int j = 0; j < m; j++) {
+          if (ignorer(i, j))
+              continue externe;
+          traiter(i, j);
+      }
+  }
+
+Dans while, le transfert va au test. Dans do, il va au test final. Dans for, il
+va d'abord a la mise a jour puis au test.
+
+continue ne peut cibler un simple bloc ou un switch. Les finally traverses sont
+executes.
+
+7.20 return
+
+Syntaxes :
+
+  return ;
+  return expression ;
+
+return; termine une methode void ou un constructeur. return expression;
+termine une methode non void et fournit une valeur compatible avec son type :
+
+  int carre(int x) {
+      return x * x;
+  }
+
+Une methode non void doit pouvoir retourner une valeur sur toute route qui se
+termine normalement. Le type retour seul n'autorise aucune conversion
+reductrice implicite non permise.
+
+Dans un constructeur, return; est possible mais aucune valeur ne peut etre
+retournee. La reference creee est produite par l'expression new, pas par une
+instruction return du constructeur.
+
+Avant le retour effectif, les blocs finally traverses sont executes. Si un
+finally effectue lui-meme return ou throw, il remplace le retour initial.
+
+7.21 throw
+
+Syntaxe :
+
+  throw expressionThrowable ;
+
+L'expression doit etre assignable a Throwable :
+
+  throw new IllegalArgumentException("age negatif");
+  throw erreur;
+
+L'objet est evalue puis l'execution cherche un gestionnaire catch compatible en
+remontant les appels. Les finally traverses s'executent. Si aucun gestionnaire
+n'existe, le thread se termine selon le mecanisme d'exception de la JVM.
+
+throw null; est compilable comme reference Throwable mais provoque
+NullPointerException a l'execution.
+
+Une exception verifiee doit etre capturee ou declaree dans throws. Error et
+RuntimeException, ainsi que leurs sous-classes, sont non verifiees.
+
+7.22 try et catch
+
+Syntaxe :
+
+  try {
+      instructionsProtegees
+  } catch (Type1 e) {
+      traitement1
+  } catch (Type2 e) {
+      traitement2
+  }
+
+Le bloc try s'execute d'abord. Si une exception en sort, les catch sont testes
+dans l'ordre textuel. Le premier dont le type accepte l'objet est execute.
+
+  try {
+      lire();
+  } catch (FileNotFoundException e) {
+      fichierAbsent(e);
+  } catch (IOException e) {
+      erreurLecture(e);
+  }
+
+Les types les plus precis doivent preceder les types generaux. Placer
+Exception avant IOException rendrait le second catch inaccessible.
+
+Le parametre catch est une variable locale dont la portee est son bloc. Il peut
+etre final. J++ ne permet ni multi-catch avec |, ni capture sans parametre.
+
+7.23 finally
+
+Syntaxe :
+
+  try {
+      instructions
+  } finally {
+      nettoyage
+  }
+
+ou :
+
+  try {
+      instructions
+  } catch (Exception e) {
+      traitement
+  } finally {
+      nettoyage
+  }
+
+finally s'execute lors d'une sortie normale ou brutale du try/catch :
+
+  - fin normale;
+  - exception;
+  - break;
+  - continue;
+  - return.
+
+Il sert au nettoyage :
+
+  FileInputStream f = new FileInputStream(nom);
+  try {
+      lire(f);
+  } finally {
+      f.close();
+  }
+
+Une fin brutale de la JVM peut empecher son execution. Un return, break,
+continue ou throw dans finally remplace le transfert deja en cours et peut
+masquer une exception; cette pratique est fortement deconseillee.
+
+J++ historique ne possede pas try-with-resources.
+
+7.24 Combinaisons valides de try
+
+Un try doit etre suivi :
+
+  - d'au moins un catch;
+  - d'un finally;
+  - ou de catch puis finally.
+
+Formes valides :
+
+  try { ... } catch (Exception e) { ... }
+  try { ... } finally { ... }
+  try { ... } catch (Exception e) { ... } finally { ... }
+
+Forme invalide :
+
+  try { ... }                 // ni catch ni finally
+
+Un catch appartient uniquement au try qui le precede. Pour proteger aussi le
+code d'un catch par un autre gestionnaire, imbriquer un nouveau try.
+
+Une exception levee dans finally ne peut pas etre capturee par les catch du
+meme try, car ceux-ci protegent seulement le bloc try initial.
+
+7.25 synchronized
+
+Bloc synchronise :
+
+  synchronized (expressionReference) {
+      instructions
+  }
+
+L'expression est evaluee une fois. Elle doit produire une reference non nulle.
+Le thread acquiert le moniteur de l'objet avant le bloc et le libere lors de
+toute sortie, normale ou brutale :
+
+  synchronized (verrou) {
+      compteur++;
+  }
+
+Une reference null leve NullPointerException avant l'entree. L'acquisition peut
+attendre qu'un autre thread libere le moniteur.
+
+Une methode synchronized est une declaration de methode, non une instruction :
+
+  public synchronized void incrementer() {
+      compteur++;
+  }
+
+Elle verrouille this; une methode static synchronized verrouille l'objet Class.
+synchronized est reentrant : un thread possedant deja le moniteur peut
+l'acquerir a nouveau.
+
+7.26 Attente et notification
+
+Object fournit wait(), notify() et notifyAll(). Le thread doit posseder le
+moniteur :
+
+  synchronized (file) {
+      while (file.estVide())
+          file.wait();
+      element = file.retirer();
+  }
+
+wait libere temporairement le moniteur et suspend le thread. Avant de revenir,
+le thread doit reacquerir ce moniteur. La condition est retestee dans une boucle
+afin de tenir compte des autres threads et des reveils.
+
+notify reveille un thread en attente choisi par la JVM; notifyAll les rend tous
+eligibles. Ces appels ne liberent pas immediatement le verrou : il l'est a la
+sortie du bloc synchronized.
+
+wait peut lever InterruptedException, exception verifiee a capturer ou
+declarer.
+
+7.27 Appels explicites de constructeurs
+
+Dans un constructeur seulement :
+
+  this(arguments);
+  super(arguments);
+
+L'une de ces instructions peut etre la premiere instruction du corps :
+
+  Point(int x, int y) {
+      this(x, y, 0);
+  }
+
+  Point3D(int x, int y, int z) {
+      super(x, y);
+      this.z = z;
+  }
+
+Si aucune n'est ecrite, super(); est insere implicitement. this(...) appelle un
+autre constructeur de la meme classe; super(...) un constructeur de la
+superclasse directe.
+
+Elles ne peuvent apparaitre ailleurs, ni etre precedees par une instruction.
+Une chaine this(...) doit finir par un super(...) explicite ou implicite et ne
+peut etre cyclique.
+
+7.28 Accessibilite des instructions
+
+Le compilateur rejette en general une instruction qu'aucun chemin d'execution
+ne peut atteindre :
+
+  return;
+  executer();                 // inaccessible
+
+De meme :
+
+  while (true) {
+  }
+  executer();                 // inaccessible sans sortie possible
+
+Les regles formelles ne constituent pas une preuve generale de toutes les
+conditions. Par exemple, if (false) peut etre traite selon les regles speciales
+permettant la compilation conditionnelle de code, alors qu'une instruction
+apres return reste interdite.
+
+L'accessibilite sert aussi a verifier qu'une methode non void ne peut atteindre
+la fin sans return et qu'un break est susceptible de permettre a une boucle de
+se terminer normalement.
+
+7.29 Affectation certaine et controle
+
+Une variable locale doit etre affectee sur tous les chemins avant sa lecture :
+
+  int valeur;
+  if (condition)
+      valeur = 1;
+  else
+      valeur = 2;
+  afficher(valeur);           // valide
+
+Sans else, la lecture pourrait etre invalide. Le compilateur combine les routes
+de if, switch, boucles, break, continue, return, throw et try/finally.
+
+Une variable final doit inversement etre definitivement non affectee avant son
+unique affectation. Les chemins de constructeurs sont analyses pour garantir
+l'initialisation des blank final.
+
+7.30 Imbrication et transfert
+
+Les instructions peuvent etre imbriquees librement :
+
+  for (int i = 0; i < lignes; i++) {
+      try {
+          if (ignorer(i))
+              continue;
+          traiter(i);
+      } catch (Exception e) {
+          journaliser(e);
+          break;
+      } finally {
+          nettoyer(i);
+      }
+  }
+
+Dans cet exemple :
+
+  - continue execute enfin nettoyer(i), puis passe a la mise a jour du for;
+  - une exception capturee execute le catch;
+  - break execute nettoyer(i), puis termine la boucle;
+  - une exception non capturee execute nettoyer(i), puis continue sa remontee.
+
+Un transfert ne peut pas entrer dans un bloc, un try ou une boucle depuis
+l'exterieur. Les etiquettes permettent seulement de sortir ou de continuer une
+boucle englobante.
+
+7.31 Instructions absentes de J++ historique
+
+Les constructions suivantes n'existent pas dans Visual J++ 6.0 :
+
+  assert expression;                  ajoute a Java 1.4
+  for (Type x : collection)           ajoute a Java 5
+  try (Ressource r = ...) { ... }     ajoute a Java 7
+  catch (E1 | E2 e) { ... }           ajoute a Java 7
+  switch (chaine)                     ajoute a Java 7
+  case valeur -> expression           switch moderne
+  yield expression                    switch expression moderne
+
+goto et const sont reserves mais sans instruction. Il n'existe pas non plus de
+defer, using, with, repeat-until ou instruction de propriete C#.
+
+Les memes resultats doivent etre obtenus avec les constructions Java 1.1 :
+try/finally, Enumeration, if/else, boucles classiques et methodes.
+
+7.32 Exemple recapitulatif
+
+  public int chercher(int[][] matrice, int cible)
+      throws InterruptedException {
+
+      int resultat = -1;
+
+      recherche:
+      for (int ligne = 0; ligne < matrice.length; ligne++) {
+          if (matrice[ligne] == null)
+              continue;
+
+          synchronized (matrice[ligne]) {
+              for (int colonne = 0;
+                   colonne < matrice[ligne].length;
+                   colonne++) {
+                  try {
+                      if (matrice[ligne][colonne] != cible)
+                          continue;
+
+                      resultat = ligne;
+                      break recherche;
+                  } finally {
+                      journaliser(ligne, colonne);
+                  }
+              }
+          }
+      }
+
+      return resultat;
+  }
+
+L'exemple montre une declaration locale, deux for, if, continue, une etiquette,
+break etiquete, synchronized, try/finally et return. Le finally est execute
+avant le break recherche.
 
 
 ================================================================================
 8. CLASSES ET OBJETS
 ================================================================================
 
-Forme generale :
+8.1 Declaration generale
 
-  [modificateurs] class Nom [extends SuperClasse]
-      [implements Interface1, Interface2] {
+Syntaxe :
+
+  [modificateurs] class Nom
+      [extends SuperClasse]
+      [implements Interface1 {, InterfaceN}] {
       membres
   }
 
 Exemple :
 
-  public class Point {
+  public class Point extends Object implements Dessinable {
       private int x;
       private int y;
 
@@ -2336,65 +3734,1964 @@ Exemple :
           this.y = y;
       }
 
-      public int getX() { return x; }
-      public void deplacer(int dx, int dy) { x += dx; y += dy; }
-      public String toString() { return "(" + x + "," + y + ")"; }
+      public int getX() {
+          return x;
+      }
+
+      public void dessiner() {
+          System.out.println("(" + x + "," + y + ")");
+      }
   }
 
-Une classe n'etend qu'une classe, mais peut implementer plusieurs interfaces.
-Sans extends explicite, elle derive de Object. Les constructeurs portent le
-nom de la classe et n'ont aucun type retour. La premiere instruction peut etre
-this(...) ou super(...); sinon super() est insere implicitement.
+Nom declare un nouveau type reference. Une classe etend au plus une classe et
+peut implementer plusieurs interfaces. Sans extends explicite, elle derive de
+java.lang.Object, sauf Object lui-meme.
 
-Modificateurs principaux :
+Une declaration peut etre de premier niveau, membre d'une autre classe, locale
+a un bloc ou anonyme dans une expression new. Les regles propres aux classes
+internes sont detaillees a la section 9.
 
-  public       visible partout ou le type est accessible
-  protected    meme package et sous-classes
-  private      classe declarante seulement
-  static       membre de classe
-  final        non redefinissable; une classe final n'est pas derivable
-  abstract     implementation incomplete
-  synchronized verrouillage associe a l'appel d'une methode
-  native       implementation externe a la machine virtuelle
-  transient    champ ignore par la serialisation standard
-  volatile     acces direct partage entre threads selon le modele ancien
+8.2 Modificateurs d'une classe de premier niveau
 
-Les methodes acceptent la surcharge par liste de parametres. Le type retour
-seul ne suffit pas a distinguer deux surcharges. Une methode d'instance peut
-etre redefinie dans une sous-classe; une methode static est masquee, non
-redefinie dynamiquement.
+Une classe de premier niveau Java 1.1 accepte principalement :
 
-Initialisation : les champs static et blocs static s'executent a
-l'initialisation de la classe. Les initialisateurs d'instance s'executent avec
-les initialisations de champs lors de la construction.
+  public       accessible depuis tout package autorise
+  abstract     classe incomplete, non instanciable directement
+  final        classe qui ne peut avoir de sous-classe
 
-  static { chargerConfiguration(); }
-  { compteurInstances++; }
+Sans public, la classe est accessible uniquement dans son package. private,
+protected et static sont interdits sur une classe de premier niveau, mais
+peuvent s'appliquer a certains types membres.
+
+abstract et final sont incompatibles : une classe abstract demande une
+sous-classe pour completer son implementation, alors qu'une classe final
+interdit toute sous-classe.
+
+J++ est anterieur a strictfp, aux annotations, aux classes sealed, aux records
+et aux enums.
+
+8.3 Corps et membres
+
+Le corps d'une classe peut contenir :
+
+  - champs d'instance;
+  - champs static;
+  - methodes d'instance;
+  - methodes static;
+  - constructeurs;
+  - blocs d'initialisation d'instance;
+  - blocs static;
+  - classes et interfaces membres;
+  - declarations vides ';'.
+
+Exemple :
+
+  class Exemple {
+      static int nombre;
+      int valeur;
+
+      static {
+          nombre = 0;
+      }
+
+      {
+          valeur = 1;
+      }
+
+      Exemple() {
+          nombre++;
+      }
+
+      void executer() {
+          valeur++;
+      }
+
+      class Interne { }
+  }
+
+L'ordre textuel influence l'initialisation des champs et des blocs, mais pas la
+possibilite generale d'appeler une methode declaree plus bas.
+
+8.4 Classes et objets
+
+Une classe est une description de structure et de comportement. Un objet est
+une instance creee a l'execution :
+
+  Point p;                    // variable reference, aucun objet
+  p = new Point(10, 20);      // creation et affectation
+
+La variable p contient une reference, non l'objet lui-meme. Plusieurs variables
+peuvent designer le meme objet :
+
+  Point q = p;
+  q.deplacer(1, 0);           // p observe aussi le Point modifie
+
+Affecter null ou une autre reference a q ne detruit pas l'objet tant que p ou
+une autre reference le rend atteignable.
+
+Chaque objet possede ses champs d'instance et un moniteur utilise par
+synchronized, wait, notify et notifyAll. Les champs static appartiennent a la
+classe chargee et sont partages.
+
+8.5 Creation avec new
+
+Syntaxe :
+
+  new NomClasse([arguments])
+
+Exemple :
+
+  Point p = new Point(10, 20);
+
+Le compilateur choisit un constructeur accessible dont les parametres sont
+compatibles avec les arguments. Ceux-ci sont evalues de gauche a droite.
+
+Etapes conceptuelles :
+
+  1. chargement, liaison et initialisation de la classe si necessaire;
+  2. evaluation des arguments;
+  3. allocation de l'objet;
+  4. initialisation de tous les champs a leur valeur par defaut;
+  5. execution du constructeur de superclasse;
+  6. initialisateurs de champs et blocs d'instance;
+  7. corps du constructeur;
+  8. production de la reference.
+
+Une classe abstract ne peut etre creee directement. Une allocation peut lever
+OutOfMemoryError. Une exception du constructeur empeche new de retourner
+normalement la reference.
+
+8.6 Constructeurs
+
+Syntaxe :
+
+  [public | protected | private] NomClasse([parametres])
+      [throws types] {
+      instructions
+  }
+
+Un constructeur porte exactement le nom simple de la classe et n'a aucun type
+retour, pas meme void :
+
+  class Point {
+      Point(int x, int y) {
+          ...
+      }
+  }
+
+Ecrire void Point(...) declare une methode ordinaire nommee Point, pas un
+constructeur.
+
+Les constructeurs ne sont ni herites, ni redefinis. Ils peuvent etre
+surcharges. Leur visibilite controle qui peut creer l'objet ou appeler le
+constructeur depuis une sous-classe.
+
+Un constructeur peut declarer throws. Il ne peut etre abstract, static, final,
+synchronized, native ou transient.
+
+8.7 Constructeur par defaut
+
+Si une classe ne declare aucun constructeur, le compilateur fournit un
+constructeur sans argument :
+
+  class Vide {
+  }
+
+equivaut approximativement a :
+
+  class Vide {
+      Vide() {
+          super();
+      }
+  }
+
+Sa visibilite est celle de la classe. Il appelle le constructeur sans argument
+de la superclasse. Si celui-ci n'existe pas ou n'est pas accessible, la classe
+ne compile pas.
+
+Des qu'un constructeur quelconque est declare, aucun constructeur par defaut
+n'est ajoute :
+
+  class A {
+      A(int valeur) { }
+  }
+
+  new A();                     // invalide
+
+Il faut declarer explicitement A() si cette creation est souhaitee.
+
+8.8 Appels this(...) et super(...)
+
+La premiere instruction d'un constructeur peut etre :
+
+  this(arguments);            // autre constructeur de la meme classe
+  super(arguments);           // constructeur de la superclasse directe
+
+Si aucune forme n'est presente, super(); est insere.
+
+  Point(int valeur) {
+      this(valeur, valeur);
+  }
+
+  Point(int x, int y) {
+      super();
+      this.x = x;
+      this.y = y;
+  }
+
+Une seule de ces formes peut apparaitre et elle doit etre la premiere
+instruction. Une chaine this(...) doit finir par un constructeur appelant
+super(...) explicitement ou implicitement. Un cycle entre constructeurs est
+interdit.
+
+Les arguments de super(...) ne peuvent employer l'objet avant l'initialisation
+de la superclasse selon les restrictions du langage.
+
+8.9 Initialisation d'une instance
+
+Avant le constructeur, les champs valent false, zero ou null. Apres le retour
+du constructeur de la superclasse, les initialisateurs de champs et blocs
+d'instance de la classe courante s'executent dans l'ordre textuel :
+
+  class Exemple extends Base {
+      int a = calculerA();
+
+      {
+          preparer();
+      }
+
+      int b = calculerB();
+
+      Exemple() {
+          terminer();
+      }
+  }
+
+Ordre dans Exemple :
+
+  1. constructeur Base;
+  2. calculerA();
+  3. preparer();
+  4. calculerB();
+  5. terminer().
+
+Lorsqu'un constructeur appelle this(...), ces initialisateurs ne sont executes
+qu'une fois par la chaine de construction.
+
+Appeler une methode redefinissable depuis un constructeur est dangereux :
+l'implementation d'une sous-classe peut s'executer avant l'initialisation de
+ses propres champs.
+
+8.10 Initialisation d'une classe
+
+Les champs static prennent d'abord leur valeur par defaut. La superclasse est
+initialisee, puis les initialisateurs static et blocs static de la classe
+s'executent dans l'ordre textuel :
+
+  class Configuration {
+      static String nom = chargerNom();
+
+      static {
+          verifier(nom);
+      }
+  }
+
+L'initialisation est normalement declenchee par une premiere utilisation
+active : new, appel static ou acces a un champ static non constant. La simple
+mention d'un type ou l'utilisation d'une constante incorporee peut ne pas la
+declencher.
+
+Une classe est initialisee au plus une fois pour un chargeur de classes. La JVM
+synchronise cette operation. Une panne peut produire
+ExceptionInInitializerError, puis rendre les utilisations ulterieures fautives.
+
+8.11 Champs
+
+Champ d'instance :
+
+  [visibilite] [final] [transient] [volatile]
+  Type nom [= initialiseur] ;
+
+Champ de classe :
+
+  [visibilite] static [final] [transient] [volatile]
+  Type nom [= initialiseur] ;
+
+Chaque objet possede ses champs d'instance. Un champ static existe une fois par
+classe chargee.
+
+  class Compteur {
+      private int valeur;
+      private static int nombreObjets;
+  }
+
+Les champs sont resolus statiquement et ne sont pas polymorphes :
+
+  class A { int n = 1; }
+  class B extends A { int n = 2; }
+
+  A a = new B();
+  a.n                          // 1
+
+Le champ B.n masque A.n mais ne le remplace pas. super.n permet l'acces au
+champ de la superclasse depuis B.
+
+Les declarations et modificateurs de champs sont detailles a la section 5.
+
+8.12 Methodes
+
+Syntaxe :
+
+  [modificateurs] TypeRetour nom([parametres])
+      [throws types] {
+      instructions
+  }
+
+ou, sans corps :
+
+  [modificateurs] abstract TypeRetour nom(parametres)
+      [throws types] ;
+
+  [modificateurs] native TypeRetour nom(parametres)
+      [throws types] ;
+
+Exemple :
+
+  public int distanceX(Point autre) {
+      return x - autre.x;
+  }
+
+Une methode void ne produit aucune valeur. Une methode non void doit retourner
+une valeur compatible sur toute route qui peut atteindre sa fin.
+
+Les parametres sont passes par valeur. La signature pertinente pour la
+surcharge comprend le nom et les types des parametres; le type retour n'est pas
+suffisant pour distinguer deux declarations.
+
+8.13 Modificateurs de methodes
+
+  public/protected/private  controle d'acces
+  aucun                     acces de package
+  static                    methode de classe
+  abstract                  aucune implementation dans cette classe
+  final                     interdiction de redefinition
+  synchronized              acquisition automatique d'un moniteur
+  native                    implementation externe
+
+Combinaisons incompatibles courantes :
+
+  abstract avec private     aucune sous-classe ne pourrait implementer
+  abstract avec static      pas de liaison dynamique d'instance
+  abstract avec final       redefinition interdite
+  abstract avec native      deux formes differentes d'absence de corps
+  abstract avec synchronized aucun corps a proteger
+
+Une methode static n'a ni this ni acces direct aux champs d'instance. Une
+methode synchronized d'instance verrouille this; si elle est static, elle
+verrouille l'objet Class.
+
+8.14 Surcharge
+
+Plusieurs methodes ou constructeurs peuvent porter le meme nom si leurs listes
+de parametres different :
+
+  void afficher(int valeur) { ... }
+  void afficher(long valeur) { ... }
+  void afficher(String valeur) { ... }
+
+  Point() { ... }
+  Point(int x, int y) { ... }
+
+Ne suffit pas :
+
+  int calculer() { ... }
+  long calculer() { ... }       // invalide : seul le retour differe
+
+Lors d'un appel, le compilateur :
+
+  1. rassemble les declarations accessibles;
+  2. conserve celles applicables aux arguments;
+  3. choisit la plus specifique;
+  4. signale une ambiguite si aucun meilleur choix unique n'existe.
+
+J++ historique n'utilise ni autoboxing ni varargs dans cette resolution.
+
+8.15 Heritage
+
+Syntaxe :
+
+  class Fille extends Mere {
+      ...
+  }
+
+Une classe n'a qu'une superclasse directe. L'heritage multiple de classes est
+interdit. Plusieurs interfaces permettent de combiner des contrats :
+
+  class Fenetre extends Composant
+      implements Dessinable, Serializable {
+      ...
+  }
+
+Une sous-classe herite des membres accessibles de sa superclasse, mais pas de
+ses constructeurs. Les membres private existent dans la partie superclasse de
+l'objet, sans etre directement accessibles par leur nom dans la sous-classe.
+
+Un cycle est interdit :
+
+  class A extends B { }
+  class B extends A { }          // invalide
+
+Object est la racine commune et n'a pas de superclasse.
+
+8.16 Redefinition de methodes
+
+Une methode d'instance d'une sous-classe redefinit une methode heritee de meme
+signature :
+
+  class Animal {
+      public void parler() {
+          System.out.println("...");
+      }
+  }
+
+  class Chien extends Animal {
+      public void parler() {
+          System.out.println("Ouaf");
+      }
+  }
+
+En Java 1.1, le type retour doit correspondre exactement; les retours covariants
+sont posterieurs. La redefinition ne peut pas reduire la visibilite :
+
+  public -> public
+  protected -> protected ou public
+  package -> package, protected ou public selon l'accessibilite
+
+Une methode redefinie ne peut declarer de nouvelles exceptions verifiees plus
+larges que celles de la methode parente. Elle peut en declarer moins ou des
+sous-types compatibles.
+
+Une methode final ou private n'est pas redefinissable. Une methode private de
+meme signature dans la sous-classe est une nouvelle methode sans relation de
+redefinition.
+
+8.17 Liaison dynamique
+
+Le type compile controle les membres visibles; le type reel choisit
+l'implementation d'une methode d'instance redefinie :
+
+  Animal animal = new Chien();
+  animal.parler();             // Chien.parler()
+
+Ce mecanisme est le polymorphisme dynamique. Il s'applique meme si la reference
+est de type interface.
+
+Il ne s'applique pas :
+
+  - aux champs;
+  - aux methodes static;
+  - aux methodes private;
+  - aux constructeurs;
+  - aux initialisateurs.
+
+La signature de la methode est d'abord resolue a la compilation. La JVM choisit
+ensuite l'implementation redefinie de cette signature; elle ne recommence pas
+la resolution des surcharges avec les types reels des arguments.
+
+8.18 Masquage des methodes static
+
+Une methode static de sous-classe masque une methode static de meme signature :
+
+  class A {
+      static void nom() { System.out.println("A"); }
+  }
+
+  class B extends A {
+      static void nom() { System.out.println("B"); }
+  }
+
+  A reference = new B();
+  reference.nom();             // A.nom(), selon le type compile
+  B.nom();                     // B.nom()
+
+Une methode static ne peut masquer une methode d'instance de meme signature, ni
+l'inverse. Il est recommande de qualifier toute methode static avec le nom de
+classe.
+
+8.19 super et acces au comportement herite
+
+Dans une methode d'instance :
+
+  super.champ
+  super.methode(arguments)
+
+super.methode appelle l'implementation selectionnee dans la superclasse
+immediate :
+
+  class Chien extends Animal {
+      public void parler() {
+          super.parler();
+          System.out.println("Ouaf");
+      }
+  }
+
+super n'est pas une reference ordinaire que l'on peut affecter ou transmettre.
+L'appel peut continuer plus haut dans la hierarchie si la superclasse emploie
+elle-meme super.
+
+Dans un constructeur, super(...) a le role distinct d'appel explicite au
+constructeur parent.
+
+8.20 this
+
+this est la reference vers l'instance courante :
+
+  this.x = x;
+  this.deplacer(1, 2);
+
+Il permet notamment de distinguer un champ d'un parametre de meme nom. Il peut
+etre retourne ou transmis :
+
+  Point identite() {
+      return this;
+  }
+
+this est interdit dans une methode ou un bloc static. Publier this depuis un
+constructeur peut exposer un objet partiellement initialise.
+
+Dans une classe interne, NomExterne.this peut designer l'instance englobante
+appropriee.
+
+8.21 Classes abstract
+
+Une classe abstract ne peut etre instanciee directement :
+
+  abstract class Forme {
+      public abstract double aire();
+
+      public void afficher() {
+          System.out.println(aire());
+      }
+  }
+
+Elle peut contenir champs, constructeurs, methodes concretes et methodes
+abstraites. Ses constructeurs sont appeles par les sous-classes.
+
+Une classe contenant une methode abstract doit etre abstract. Une sous-classe
+qui ne fournit pas toutes les implementations requises doit rester abstract.
+
+Une classe peut etre declaree abstract sans methode abstraite, par exemple pour
+interdire son instanciation et reserver son role a l'heritage.
+
+8.22 Classes et methodes final
+
+Classe final :
+
+  final class Utilitaire {
+      ...
+  }
+
+Aucune classe ne peut l'etendre. String est un exemple historique de classe
+final.
+
+Methode final :
+
+  public final void verifier() {
+      ...
+  }
+
+Une sous-classe ne peut la redefinir. final peut stabiliser un invariant ou
+permettre certaines optimisations, mais ne rend pas automatiquement les objets
+immuables.
+
+Un champ final est une variable affectable une fois; cette notion est distincte
+d'une classe ou methode final.
+
+8.23 Classes imbriquees et internes
+
+Une classe membre peut etre static :
+
+  class Externe {
+      static class Imbriquee {
+      }
+  }
+
+Elle n'a pas de reference implicite vers une instance Externe.
+
+Une classe membre non static est une classe interne :
+
+  class Externe {
+      class Interne {
+          void f() {
+              Externe.this.executer();
+          }
+      }
+  }
+
+Elle conserve une reference vers l'instance englobante. Java 1.1 permet aussi
+les classes locales et anonymes. Une variable locale capturee doit etre final;
+la notion moderne "effectivement finale" n'existe pas.
+
+La section 9 detaille les interfaces et toutes les formes de classes internes.
+
+8.24 Classes anonymes
+
+Syntaxe :
+
+  new SuperClasse(arguments) {
+      membres
+  }
+
+ou :
+
+  new Interface() {
+      implementations
+  }
+
+Exemple :
+
+  Runnable action = new Runnable() {
+      public void run() {
+          travailler();
+      }
+  };
+
+Une classe anonyme n'a pas de nom source et ne peut donc declarer un
+constructeur. Elle peut utiliser un initialisateur d'instance. Pour une
+interface, le constructeur Object sans argument est utilise implicitement.
+
+Elle peut capturer seulement des locales final et accede aux membres de son
+instance englobante selon les regles d'acces.
+
+8.25 Visibilite et encapsulation
+
+  Modificateur  Acces
+  ------------  --------------------------------------------------------------
+  private       classe declarante
+  aucun         meme package
+  protected     meme package et sous-classes, avec regles de receveur
+  public        partout si les types englobants sont accessibles
+
+L'encapsulation consiste a cacher l'etat et a exposer des operations :
+
+  class Personne {
+      private int age;
+
+      public int getAge() {
+          return age;
+      }
+
+      public void setAge(int valeur) {
+          if (valeur < 0)
+              throw new IllegalArgumentException();
+          age = valeur;
+      }
+  }
+
+Un champ public permet toute modification sans validation. Les conventions
+get/set peuvent etre presentees comme proprietes JavaBeans ou WFC par l'IDE,
+mais elles restent des methodes en Java/J++.
+
+8.26 Membres protected
+
+protected donne deux formes d'acces :
+
+  - tout code du meme package peut acceder au membre;
+  - une sous-classe d'un autre package peut y acceder dans le contexte de
+    l'objet en cours de derivation.
+
+Dans un autre package, une sous-classe ne peut pas utiliser librement une
+reference quelconque de la superclasse pour lire le membre protected. Le
+receveur doit respecter les regles liees au type de la sous-classe.
+
+Cette subtilite distingue protected de "public pour les sous-classes". Pour une
+API destinee a l'heritage, une methode protected est souvent preferable a un
+champ protected afin de conserver le controle de l'invariant.
+
+8.27 java.lang.Object
+
+Object est la racine des classes et fournit notamment :
+
+  public final Class getClass()
+  public boolean equals(Object obj)
+  public int hashCode()
+  public String toString()
+  protected Object clone() throws CloneNotSupportedException
+  protected void finalize() throws Throwable
+  public final void wait(...)
+  public final void notify()
+  public final void notifyAll()
+
+Les signatures exactes comportent plusieurs surcharges de wait. Les methodes
+de moniteur exigent que le thread possede le verrou.
+
+Une classe herite de ces methodes, sauf constructeurs. Elle peut redefinir
+equals, hashCode, toString et finalize selon leurs contrats; getClass, wait,
+notify et notifyAll sont final.
+
+8.28 Identite, equals et hashCode
+
+== compare l'identite des references. equals compare par defaut la meme
+identite dans Object, mais une classe peut definir une equivalence logique :
+
+  public boolean equals(Object objet) {
+      if (objet == this)
+          return true;
+      if (!(objet instanceof Point))
+          return false;
+      Point autre = (Point)objet;
+      return x == autre.x && y == autre.y;
+  }
+
+Le contrat usuel de equals est :
+
+  - reflexif;
+  - symetrique;
+  - transitif;
+  - coherent entre appels sans modification;
+  - toujours false face a null.
+
+Si equals est redefinie, hashCode doit l'etre : deux objets equals doivent
+produire le meme hashCode. La reciproque n'est pas exigee.
+
+Les champs utilises ne doivent pas rendre l'equivalence instable lorsque
+l'objet sert de cle dans Hashtable.
+
+8.29 toString
+
+Object.toString retourne une representation technique. Une classe peut la
+redefinir :
+
+  public String toString() {
+      return "Point(" + x + "," + y + ")";
+  }
+
+Elle est utilisee implicitement par la concatenation String et par
+PrintStream.println(Object) :
+
+  System.out.println(point);
+  String texte = "position=" + point;
+
+toString devrait retourner une information utile sans modifier l'objet ni
+lever d'exception en fonctionnement normal. Son format n'est pas
+necessairement un protocole stable sauf documentation explicite.
+
+8.30 Clonage
+
+Object.clone effectue une copie superficielle champ par champ. La classe doit
+normalement implementer java.lang.Cloneable :
+
+  class Point implements Cloneable {
+      public Object clone() {
+          try {
+              return super.clone();
+          } catch (CloneNotSupportedException e) {
+              throw new InternalError();
+          }
+      }
+  }
+
+Cloneable est une interface marqueur sans methode. Sans elle, Object.clone
+leve CloneNotSupportedException.
+
+Une copie superficielle duplique les champs primitifs et les references, mais
+pas les objets references. Les tableaux sont clonables et leur clone a la meme
+longueur; les elements reference restent partages.
+
+Pour une copie profonde, la classe doit copier explicitement ses objets
+mutables. Les constructeurs ne sont pas appeles par Object.clone.
+
+8.31 Finalisation
+
+Une classe peut redefinir :
+
+  protected void finalize() throws Throwable {
+      try {
+          libererRessource();
+      } finally {
+          super.finalize();
+      }
+  }
+
+La JVM peut appeler finalize avant de recuperer un objet devenu inatteignable,
+mais ni le moment ni l'appel lui-meme ne sont garantis. La finalisation peut
+retarder la collecte et meme ressusciter temporairement l'objet.
+
+Elle ne doit jamais etre le seul moyen de liberer un fichier, un handle Win32
+ou un objet COM. Utiliser close(), un bloc finally ou ComLib.release.
+
+System.gc() et System.runFinalization() ne sont que des demandes.
+
+8.32 Ramasse-miettes et atteignabilite
+
+Un objet devient candidat a la collecte lorsqu'il n'est plus atteignable depuis
+les racines de la JVM : piles actives, champs static, threads, references
+natives et autres racines du runtime.
+
+  objet = null;               // retire une reference, ne force pas la collecte
+
+Les cycles ne posent pas de probleme au ramasse-miettes par atteignabilite :
+deux objets se referencant mutuellement peuvent etre collectes si rien
+d'atteignable ne les vise.
+
+La portee lexicale n'impose pas exactement le moment de collecte. Une JVM peut
+constater qu'une reference ne sera plus utilisee avant la fin du bloc.
+
+Les ressources natives possedent un cycle de vie distinct de la memoire Java
+et demandent une gestion deterministe.
+
+8.33 Reflection et objet Class
+
+Chaque type charge possede un objet java.lang.Class :
+
+  Class c1 = Point.class;
+  Class c2 = point.getClass();
+  Class c3 = Class.forName("exemple.Point");
+
+getClass retourne le type reel. Class.forName peut charger et initialiser une
+classe par son nom et lever ClassNotFoundException.
+
+La reflection Java 1.1 permet d'examiner constructeurs, champs et methodes et
+d'effectuer certains appels dynamiques par java.lang.reflect. Les controles
+d'acces et exceptions de reflection restent applicables.
+
+Deux classes de meme nom chargees par des chargeurs differents peuvent etre des
+types distincts. Le nom seul ne definit donc pas toujours l'identite d'un type.
+
+8.34 Serialisation
+
+Une classe implemente java.io.Serializable pour participer au mecanisme
+standard de serialisation :
+
+  class Personne implements Serializable {
+      String nom;
+      transient String motDePasse;
+  }
+
+Serializable est une interface marqueur. Les champs d'instance non static et
+non transient sont normalement enregistres. Les objets references doivent eux
+aussi etre serialisables, sinon NotSerializableException peut survenir.
+
+Les constructeurs des classes serialisables ne sont pas tous executes lors de
+la restauration; le premier constructeur de superclasse non serialisable joue
+un role particulier.
+
+serialVersionUID, lorsqu'il est utilise par la version du runtime, stabilise
+l'identite de version. Le mecanisme n'est pas un format d'echange securise :
+des donnees provenant d'une source non fiable ne doivent pas etre acceptees
+sans controle supplementaire.
+
+8.35 Immutabilite
+
+Une classe immuable ne change pas d'etat observable apres sa construction.
+Technique courante :
+
+  - classe final ou controle strict des sous-classes;
+  - champs private final;
+  - aucune methode de modification;
+  - validation complete dans le constructeur;
+  - copies defensives des objets mutables entrants et sortants;
+  - ne pas publier this pendant la construction.
+
+Exemple :
+
+  final class Coordonnees {
+      private final int x;
+      private final int y;
+
+      Coordonnees(int x, int y) {
+          this.x = x;
+          this.y = y;
+      }
+
+      public int getX() { return x; }
+      public int getY() { return y; }
+  }
+
+final sur une reference seule ne rend pas l'objet vise immuable. String est
+immuable; StringBuffer ne l'est pas.
+
+8.36 Composition et heritage
+
+L'heritage exprime une relation "est un" :
+
+  class Chien extends Animal
+
+La composition exprime une relation "possede un" :
+
+  class Voiture {
+      private Moteur moteur;
+  }
+
+La composition permet souvent de changer l'implementation sans exposer une
+hierarchie et evite le couplage aux membres protected. L'heritage convient
+lorsque la sous-classe respecte le contrat substituable de la superclasse.
+
+Une classe ne peut etendre plusieurs implementations; elle peut composer
+plusieurs objets et implementer plusieurs interfaces.
+
+8.37 Objets, threads et moniteurs
+
+Tout objet peut servir de moniteur :
+
+  synchronized (verrou) {
+      etat++;
+  }
+
+Une methode synchronized d'instance verrouille this. Une methode static
+synchronized verrouille l'objet Class, pas chaque instance.
+
+Le verrou est reentrant. Il est libere lors de toute sortie du bloc ou de la
+methode, y compris par exception.
+
+wait, notify et notifyAll doivent etre appeles pendant que le thread possede le
+moniteur. equals et hashCode n'influencent pas l'identite du moniteur : deux
+objets egaux mais distincts ont deux verrous distincts.
+
+8.38 Classes WFC, COM et Win32
+
+Les classes Microsoft restent des classes ou interfaces reference selon le
+modele precedent :
+
+  - une fenetre WFC derive d'une classe com.ms.wfc.ui;
+  - un proxy COM implemente des interfaces generees par JActiveX;
+  - une structure Win32 est souvent representee par une classe com.ms.win32;
+  - un delegate est compile en type reference propre au runtime Microsoft.
+
+Exemple schematique WFC :
+
+  public class Fenetre extends Form {
+      public Fenetre() {
+          setText("Exemple");
+      }
+  }
+
+Exemple COM :
+
+  _Application application = new Application();
+
+La creation peut allouer des ressources natives en plus de l'objet Java. Leur
+liberation peut exiger dispose(), close() ou ComLib.release selon l'API.
+
+Les classes proxy generees ne doivent pas etre modifiees sans connaitre leur
+regeneration. Leur heritage apparent peut representer des interfaces COM et non
+une implementation Java ordinaire.
+
+8.39 Erreurs frequentes
+
+  Erreur                              Explication
+  ----------------------------------  ------------------------------------------
+  void NomClasse()                    methode, pas constructeur
+  new ClasseAbstracte()               classe non instanciable
+  oublier le constructeur sans arg.   aucun defaut si un autre est declare
+  croire les champs polymorphes       ils sont resolus statiquement
+  reduire l'acces d'une redefinition  interdit
+  elargir throws verifie              contrat parent viole
+  redefinir equals sans hashCode      collections incoherentes
+  croire final profond                objet reference encore mutable
+  appeler methode virtuelle du ctor   objet partiellement initialise
+  compter sur finalize                execution non garantie
+  croire x = null destructeur         collecte non immediate
+  confondre static et instance        absence de this en contexte static
+
+8.40 Exemple recapitulatif
+
+Les deux classes publiques suivantes resident dans des fichiers distincts.
+
+  public abstract class Forme implements Cloneable, Serializable {
+      private static int nombre;
+      private final int identifiant;
+      protected int x;
+      protected int y;
+
+      protected Forme(int x, int y) {
+          identifiant = ++nombre;
+          this.x = x;
+          this.y = y;
+      }
+
+      public final int getIdentifiant() {
+          return identifiant;
+      }
+
+      public abstract double aire();
+
+      public void deplacer(int dx, int dy) {
+          x += dx;
+          y += dy;
+      }
+
+      public Object clone() {
+          try {
+              return super.clone();
+          } catch (CloneNotSupportedException e) {
+              throw new InternalError();
+          }
+      }
+
+      public String toString() {
+          return "Forme#" + identifiant + "(" + x + "," + y + ")";
+      }
+  }
+
+  public final class Rectangle extends Forme {
+      private int largeur;
+      private int hauteur;
+
+      public Rectangle(int x, int y, int largeur, int hauteur) {
+          super(x, y);
+          this.largeur = largeur;
+          this.hauteur = hauteur;
+      }
+
+      public double aire() {
+          return largeur * hauteur;
+      }
+  }
+
+Forme est abstract, possede un etat static et un blank final, definit une
+methode concrete et une methode abstraite, expose le clonage et toString.
+Rectangle est final, appelle super(...) et fournit l'implementation dynamique
+de aire().
 
 
 ================================================================================
 9. INTERFACES ET CLASSES INTERNES
 ================================================================================
 
+9.1 Role d'une interface
+
+Une interface declare un contrat de types sans fournir d'etat d'instance ni
+d'implementation de methode dans Java 1.1 :
+
   public interface Dessinable {
       void dessiner();
   }
 
-Les methodes d'une interface sont implicitement public et abstract. Ses champs
-sont implicitement public static final. Une interface peut etendre plusieurs
-interfaces. Les methodes default et static d'interface n'existent pas encore.
+Une classe promet ce contrat avec implements :
 
-Java 1.1, donc J++ 6.0, prend en charge les classes membres, locales et
-anonymes :
+  public class Cercle implements Dessinable {
+      public void dessiner() {
+          System.out.println("cercle");
+      }
+  }
+
+Une variable de type interface peut contenir toute instance d'une classe qui
+implemente cette interface :
+
+  Dessinable objet = new Cercle();
+  objet.dessiner();
+
+Le type compile Dessinable limite les membres directement visibles. La classe
+reelle Cercle choisit dynamiquement l'implementation de dessiner().
+
+Une interface n'est ni une classe abstraite speciale, ni un objet instanciable.
+Elle peut participer a plusieurs hierarchies de contrats, contrairement a une
+classe qui n'a qu'une superclasse.
+
+9.2 Syntaxe d'une interface
+
+Interface de premier niveau :
+
+  [public] [abstract] interface Nom
+      [extends I1 {, IN}] {
+      membres
+  }
+
+Exemple :
+
+  public interface Transformable extends Dessinable, Cloneable {
+      int VERSION = 1;
+      void transformer(int x, int y);
+  }
+
+abstract est implicite et rarement ecrit. Sans public, une interface de premier
+niveau a l'acces de package. private, protected et static ne sont pas permis
+sur une interface de premier niveau.
+
+Le corps accepte des constantes, des declarations de methodes abstraites et des
+types membres. Il ne contient ni constructeur, ni initialisateur d'instance,
+ni bloc static ordinaire.
+
+9.3 Methodes d'interface
+
+Syntaxe source :
+
+  [public] [abstract] TypeRetour nom([parametres])
+      [throws types] ;
+
+public et abstract sont implicites :
+
+  void dessiner();
+
+equivaut a :
+
+  public abstract void dessiner();
+
+La declaration se termine par ';' et n'a aucun corps. Une methode ne peut etre
+private, protected, static, final, synchronized ou native dans une interface
+Java 1.1.
+
+Le type retour et les types de parametres doivent etre accessibles au moins
+autant que l'interface si celle-ci constitue une API publique, sinon les
+clients ne pourront pas employer utilement la signature.
+
+Les methodes default, static et private d'interface sont des ajouts Java
+ulterieurs et ne sont pas reconnues par J++ 6.0.
+
+9.4 Champs d'interface
+
+Tout champ d'interface est implicitement :
+
+  public static final
+
+Il doit etre initialise :
+
+  interface Limites {
+      int MINIMUM = 0;
+      int MAXIMUM = 100;
+      String NOM = "J++";
+  }
+
+Ces declarations equivalent a :
+
+  public static final int MINIMUM = 0;
+
+Il n'existe aucun champ d'instance d'interface. Les modificateurs private,
+protected, transient et volatile sont interdits. Le champ est accessible par :
+
+  Limites.MAXIMUM
+
+Une classe qui implemente l'interface peut parfois utiliser MAXIMUM sans
+qualification, mais qualifier evite les ambiguites.
+
+Si l'initialiseur est une expression constante primitive ou String, la valeur
+peut etre incorporee dans le bytecode des clients. Une recompilation des
+clients peut etre necessaire apres modification.
+
+9.5 Heritage multiple d'interfaces
+
+Une interface peut etendre plusieurs interfaces :
+
+  interface Imprimable {
+      void imprimer();
+  }
+
+  interface Archivable {
+      void archiver();
+  }
+
+  interface Document extends Imprimable, Archivable {
+      void fermer();
+  }
+
+Document herite des trois obligations. Une classe concrete qui l'implemente
+doit fournir imprimer(), archiver() et fermer(), directement ou par heritage.
+
+Un cycle est interdit :
+
+  interface A extends B { }
+  interface B extends A { }       // invalide
+
+Le graphe peut former un diamant sans dupliquer l'etat, car les interfaces ne
+possedent pas de champs d'instance.
+
+9.6 Conflits de methodes heritees
+
+Deux superinterfaces peuvent declarer la meme signature. Si le type retour et
+les clauses compatibles permettent une seule obligation, celle-ci est heritee
+une fois :
+
+  interface A {
+      void executer();
+  }
+
+  interface B {
+      void executer();
+  }
+
+  interface C extends A, B {
+  }
+
+Une classe CConcrete n'implemente executer() qu'une fois.
+
+En Java 1.1, des declarations de meme signature avec types retour differents
+sont incompatibles, meme si les types seraient covariants dans un Java plus
+recent :
+
+  interface A { Object obtenir(); }
+  interface B { String obtenir(); }
+  interface C extends A, B { }    // invalide en Java 1.1
+
+Les clauses throws doivent permettre a l'implementation de respecter tous les
+contrats herites.
+
+9.7 Conflits de constantes
+
+Deux interfaces peuvent fournir le meme nom de champ :
+
+  interface A { int VALEUR = 1; }
+  interface B { int VALEUR = 2; }
+
+  class C implements A, B {
+      int f() {
+          return VALEUR;           // ambigu
+      }
+  }
+
+Qualifier resout le conflit :
+
+  return A.VALEUR + B.VALEUR;
+
+Les champs ne sont pas fusionnes et ne sont pas polymorphes. Meme si les deux
+valeurs sont identiques, un nom simple herite de sources distinctes peut rester
+ambigu.
+
+9.8 implements
+
+Syntaxe :
+
+  class Nom [extends SuperClasse]
+      implements I1 {, IN} {
+      membres
+  }
+
+Exemple :
+
+  class Tache extends Object implements Runnable, Serializable {
+      public void run() {
+          travailler();
+      }
+  }
+
+La liste accepte seulement des interfaces accessibles. Une interface heritee
+par une autre n'a pas besoin d'etre repetee.
+
+Une classe concrete doit implementer toutes les methodes abstraites accessibles
+de ses interfaces et superclasses. Une classe abstract peut laisser certaines
+obligations a ses sous-classes.
+
+implements ne copie aucun code. Il etablit une relation de sous-typage verifiee
+par le compilateur et la JVM.
+
+9.9 Implementation d'une methode d'interface
+
+La methode d'implementation doit etre public, car la methode d'interface l'est
+implicitement :
+
+  interface Action {
+      void executer();
+  }
+
+  class ActionConcrete implements Action {
+      public void executer() {
+          ...
+      }
+  }
+
+Omettre public donne un acces de package et ne satisfait pas le contrat.
+
+En Java 1.1 :
+
+  - le nom et les parametres doivent correspondre;
+  - le type retour doit etre identique;
+  - aucune exception verifiee nouvelle ou plus large ne peut etre ajoutee;
+  - des exceptions verifiees plus precises peuvent etre declarees;
+  - les exceptions non verifiees ne sont pas limitees par throws.
+
+Une methode public heritee d'une superclasse peut satisfaire l'interface sans
+nouvelle declaration.
+
+9.10 Classe abstraite et implementation partielle
+
+Une classe abstract peut implementer une interface sans fournir toutes ses
+methodes :
+
+  abstract class Forme implements Dessinable {
+      protected int x;
+      protected int y;
+
+      public void deplacer(int dx, int dy) {
+          x += dx;
+          y += dy;
+      }
+  }
+
+Une sous-classe concrete doit finalement fournir dessiner().
+
+Une classe abstraite peut aussi declarer explicitement la methode :
+
+  public abstract void dessiner();
+
+Cette redeclaration peut documenter le contrat ou adapter la clause throws,
+mais reste sans corps.
+
+9.11 References d'interface
+
+Conversion elargissante implicite :
+
+  Cercle cercle = new Cercle();
+  Dessinable d = cercle;
+
+Conversion reductrice :
+
+  Cercle c = (Cercle)d;
+
+Le cast reussit si l'objet reel est compatible, sinon il leve
+ClassCastException. null reste null.
+
+Test :
+
+  if (d instanceof Cercle) {
+      Cercle c = (Cercle)d;
+  }
+
+Une reference interface donne acces aux methodes du contrat et de ses
+superinterfaces. Elle peut etre convertie vers Object, puisque toute instance
+qui l'implemente est un objet.
+
+9.12 Liaison dynamique par interface
+
+L'appel :
+
+  Dessinable d = obtenirDessinable();
+  d.dessiner();
+
+est resolu en deux etapes :
+
+  1. le compilateur verifie la signature dans Dessinable;
+  2. la JVM choisit l'implementation de la classe reelle.
+
+Deux objets de classes sans relation d'heritage peuvent donc etre utilises de
+la meme facon :
+
+  Dessinable a = new Cercle();
+  Dessinable b = new Rectangle();
+
+Cette separation constitue le principal moyen de polymorphisme multiple en
+Java/J++.
+
+Les champs d'interface sont static final et ne suivent aucune liaison
+dynamique.
+
+9.13 Interfaces marqueurs
+
+Une interface peut ne declarer aucune methode :
+
+  public interface Cloneable {
+  }
+
+  public interface Serializable {
+  }
+
+Elle marque une classe afin qu'une API ou la JVM lui applique un traitement.
+Par exemple, Object.clone verifie Cloneable et la serialisation verifie
+Serializable.
+
+Une interface marqueur reste un type : instanceof, casts, parametres et
+collections peuvent l'utiliser.
+
+Les annotations, parfois employees pour ce role dans Java moderne, n'existent
+pas en J++ 6.0.
+
+9.14 Interface membre
+
+Une interface peut etre membre d'une classe ou d'une autre interface :
+
+  class Protocole {
+      public interface Ecouteur {
+          void evenement();
+      }
+  }
+
+Utilisation :
+
+  class MonEcouteur implements Protocole.Ecouteur {
+      public void evenement() {
+          ...
+      }
+  }
+
+Une interface membre est implicitement static : elle ne conserve aucune
+reference vers une instance englobante. Dans une classe, elle peut etre public,
+protected, private ou d'acces package. Dans une interface, un type membre est
+implicitement public static.
+
+9.15 Types absents des interfaces J++ historiques
+
+Visual J++ 6.0 ne prend pas en charge :
+
+  default void methode() { ... }     methodes default Java 8
+  static void methode() { ... }      methodes static d'interface Java 8
+  private void methode() { ... }     methodes privees Java 9
+  interface I<T> { ... }             generics Java 5
+  @FunctionalInterface               annotations Java 5+
+  interface I permits A, B           interfaces sealed modernes
+
+Une interface a une seule methode peut servir de protocole de rappel, mais elle
+n'est pas une interface fonctionnelle utilisable par lambda, car les lambdas
+n'existent pas.
+
+9.16 Classification des classes imbriquees
+
+Une classe declaree dans le contexte d'une autre peut etre :
+
+  classe membre static        class Externe { static class N { } }
+  classe membre interne       class Externe { class I { } }
+  classe locale               void f() { class L { } }
+  classe anonyme              new Runnable() { ... }
+
+Le terme "classe imbriquee" couvre toutes ces formes. Le terme "classe interne"
+designe une classe imbriquee non static qui conserve un lien vers une instance
+englobante : membre interne, locale ou anonyme creee en contexte d'instance.
+
+Java 1.1 introduisit ces constructions. Visual J++ 6.0 les prend en charge dans
+la mesure de son niveau de compatibilite Java 1.1.
+
+9.17 Classe membre static
+
+Syntaxe :
+
+  class Externe {
+      static class Imbriquee {
+          ...
+      }
+  }
+
+Creation :
+
+  Externe.Imbriquee objet = new Externe.Imbriquee();
+
+Elle n'a pas besoin d'une instance Externe et ne possede pas de Externe.this.
+Elle peut acceder directement aux membres static de l'englobante, mais a besoin
+d'une reference explicite pour ses membres d'instance.
+
+Une classe membre static peut declarer champs static, blocs static et methodes
+static comme une classe de premier niveau. Elle peut etre public, protected,
+private ou d'acces package, ainsi que abstract ou final.
+
+Seuls les types membres peuvent porter static; une classe locale ou anonyme ne
+le peut pas.
+
+9.18 Classe membre interne
+
+Syntaxe :
+
+  class Externe {
+      private int valeur;
+
+      class Interne {
+          int lire() {
+              return valeur;
+          }
+      }
+  }
+
+Chaque objet Interne est associe a une instance Externe. L'acces non qualifie a
+valeur equivaut ici a Externe.this.valeur.
+
+Depuis une methode d'instance d'Externe :
+
+  Interne i = new Interne();
+
+Depuis l'exterieur :
+
+  Externe externe = new Externe();
+  Externe.Interne interne = externe.new Interne();
+
+La syntaxe externe.new Interne() fournit explicitement l'instance englobante.
+
+9.19 Reference englobante
+
+Dans une classe interne :
+
+  this                    objet interne courant
+  Externe.this            objet englobant de type Externe
+
+Exemple :
+
+  class Externe {
+      int valeur;
+
+      class Interne {
+          int valeur;
+
+          int somme() {
+              return this.valeur + Externe.this.valeur;
+          }
+      }
+  }
+
+Une classe peut etre imbriquee dans plusieurs niveaux :
+
+  TresExterne.this
+  Externe.this
+  this
+
+Le qualificateur doit nommer une classe lexicalement englobante dont une
+instance est disponible.
+
+Une classe membre static coupe la chaine d'instances englobantes.
+
+9.20 Constructeur d'une classe interne
+
+Le source declare un constructeur ordinaire :
+
+  class Externe {
+      class Interne {
+          Interne(int valeur) {
+              ...
+          }
+      }
+  }
+
+Le compilateur ajoute conceptuellement la reference englobante aux donnees de
+l'objet et a son mecanisme de construction. Ce parametre cache n'apparait pas
+dans la syntaxe source :
+
+  Externe e = new Externe();
+  Externe.Interne i = e.new Interne(10);
+
+Le constructeur ne peut choisir une autre instance englobante apres creation.
+La reference participe a l'atteignabilite : conserver longtemps l'objet interne
+peut aussi conserver l'objet externe.
+
+Les details du nom et du parametre synthetique ne constituent pas une API
+source stable.
+
+9.21 Membres static d'une classe interne
+
+Une classe interne non static ne peut normalement pas declarer de membre static
+ou de bloc static, car son existence depend d'une instance englobante.
+
+Exception historique : elle peut declarer une variable constante :
+
+  class Externe {
+      class Interne {
+          static final int MAXIMUM = 10;
+      }
+  }
+
+MAXIMUM doit etre une constante de compilation primitive ou String. Ceci serait
+invalide :
+
+  static int compteur;
+  static { compteur = 1; }
+
+Pour posseder un etat ou comportement static general, utiliser une classe
+membre static.
+
+9.22 Acces prive entre classes imbriquees
+
+Au niveau du langage source, une classe englobante et ses classes imbriquees
+peuvent acceder a leurs membres private respectifs :
+
+  class Externe {
+      private int secret;
+
+      class Interne {
+          private int valeurPrivee;
+
+          int lire() {
+              return secret;
+          }
+      }
+
+      int lireInterne(Interne i) {
+          return i.valeurPrivee;
+      }
+  }
+
+Pour les anciens formats de classes et JVM, le compilateur peut generer des
+methodes synthetiques d'acces afin de realiser cette permission. Ces methodes
+ne doivent pas etre appelees directement par le source applicatif.
+
+La reflection ou un desassembleur peut donc montrer des membres absents du
+fichier .java d'origine.
+
+9.23 Classe locale
+
+Syntaxe :
+
+  void methode() {
+      class Locale {
+          void executer() {
+              ...
+          }
+      }
+
+      Locale objet = new Locale();
+  }
+
+La portee du nom commence a la declaration et se termine a la fin du bloc. La
+classe ne peut etre utilisee avant sa declaration par son nom simple.
+
+Une classe locale ne peut etre public, protected, private ou static. Elle peut
+etre abstract ou final selon les regles applicables.
+
+Elle peut acceder aux membres de l'instance englobante. Elle peut capturer une
+variable locale ou un parametre uniquement si celui-ci est final.
+
+9.24 Capture des variables final
+
+Java 1.1 exige final :
+
+  final String message = "Bonjour";
+
+  class Tache implements Runnable {
+      public void run() {
+          System.out.println(message);
+      }
+  }
+
+La variable doit aussi etre definitivement affectee avant la creation de
+l'objet interne. Le compilateur copie conceptuellement sa valeur dans l'objet
+genere.
+
+Forme invalide en J++ 6.0 :
+
+  String message = "Bonjour";
+  Runnable r = new Runnable() {
+      public void run() {
+          System.out.println(message);
+      }
+  };
+
+Java moderne accepte une variable "effectivement finale", mais cette regle
+n'existait pas en Java 1.1 : le mot final doit etre ecrit.
+
+final protege la variable capturee, pas l'objet mutable qu'elle reference.
+
+9.25 Classe anonyme et superclasse
+
+Syntaxe :
+
+  new SuperClasse(arguments) {
+      declarationsDeMembres
+  }
+
+Exemple :
+
+  Thread thread = new Thread("travail") {
+      public void run() {
+          travailler();
+      }
+  };
+
+La classe anonyme etend exactement la superclasse indiquee. Les arguments sont
+passes a son constructeur accessible.
+
+Elle n'a aucun nom source et ne peut declarer de constructeur. Elle peut
+declarer champs, methodes et initialisateurs d'instance. Le type de l'expression
+new est compatible avec la superclasse.
+
+Elle ne peut contenir les membres static interdits aux classes internes, sauf
+constantes de compilation.
+
+9.26 Classe anonyme et interface
+
+Syntaxe :
+
+  new Interface() {
+      implementations
+  }
+
+Exemple de listener Java 1.1 :
 
   bouton.addActionListener(new ActionListener() {
-      public void actionPerformed(ActionEvent e) {
+      public void actionPerformed(ActionEvent evenement) {
           executer();
       }
   });
 
-Une classe interne non static conserve une reference vers son instance
-englobante. Une classe imbriquee static n'en conserve pas.
+La classe anonyme implemente l'interface et etend Object. Les parentheses sont
+obligatoires et restent vides, car une interface n'a pas de constructeur.
+
+Toutes les methodes requises doivent etre implementees public, sauf si une
+superclasse applicable les fournit; ici la classe anonyme est concrete.
+
+Une seule interface figure apres new. Pour plusieurs contrats, declarer une
+interface qui les etend ou une classe locale qui les implemente.
+
+9.27 this dans une classe anonyme
+
+Dans le corps anonyme, this designe l'objet anonyme, non l'objet englobant :
+
+  class Fenetre {
+      void installer() {
+          bouton.addActionListener(new ActionListener() {
+              public void actionPerformed(ActionEvent e) {
+                  this.toString();       // listener anonyme
+                  Fenetre.this.fermer(); // fenetre englobante
+              }
+          });
+      }
+  }
+
+Une classe anonyme n'a pas de nom permettant NomAnonyme.this. Le nom de la
+classe lexicale englobante permet d'atteindre celle-ci.
+
+super dans la classe anonyme designe sa superclasse directe, Object lorsque la
+forme new Interface() est utilisee.
+
+9.28 Masquage des noms
+
+Chaque niveau peut declarer un champ du meme nom :
+
+  class Externe {
+      int valeur;
+
+      class Interne {
+          int valeur;
+
+          void f(int valeur) {
+              utiliser(valeur);                // parametre
+              utiliser(this.valeur);           // champ Interne
+              utiliser(Externe.this.valeur);   // champ Externe
+          }
+      }
+  }
+
+Les qualifications rendent le choix explicite. Une classe locale peut aussi
+masquer un nom de type d'une portee externe.
+
+9.29 Heritage d'une classe interne
+
+Une classe interne peut etendre une autre classe et implementer des interfaces :
+
+  class Externe {
+      class Tache extends Base implements Runnable {
+          public void run() {
+              ...
+          }
+      }
+  }
+
+Une classe externe peut aussi etendre un type interne accessible, mais la
+construction doit fournir l'instance englobante requise. Ces formes avancees
+sont difficiles a maintenir et dependent de regles precises de constructeur
+qualifie.
+
+Il est souvent plus clair d'utiliser composition ou une classe membre static
+si l'objet n'a pas reellement besoin d'une instance englobante.
+
+Les membres herites et redefinis suivent les memes regles que pour toute autre
+classe.
+
+9.30 Initialisation des classes imbriquees
+
+Une classe membre static est initialisee comme toute classe lors de sa premiere
+utilisation active. Charger Externe n'initialise pas automatiquement toutes ses
+classes membres.
+
+Une classe interne est une classe distincte au niveau de la JVM. Son objet
+recoit d'abord ses valeurs par defaut, sa superclasse est construite, puis ses
+initialisateurs et son constructeur s'executent.
+
+La reference englobante est etablie dans le mecanisme de construction avant que
+le corps utilisateur en ait besoin.
+
+Les initialisateurs de la classe externe ne sont pas rejoues lors de chaque
+creation d'une classe interne; l'instance externe existe deja.
+
+9.31 Noms binaires et fichiers .class
+
+Le compilateur emet souvent des fichiers dont le nom contient '$' :
+
+  Externe.class
+  Externe$Interne.class
+  Externe$1.class
+
+Les classes anonymes ou locales peuvent recevoir des numeros ou noms
+synthetiques propres au compilateur.
+
+Ces conventions ne doivent pas etre utilisees comme API stable :
+
+  - la numerotation change si le source est reorganise;
+  - un autre compilateur peut choisir une forme differente;
+  - les membres synthetiques peuvent varier;
+  - le nom source d'une classe anonyme n'existe pas.
+
+Employer les noms et constructeurs du langage source plutot que de charger
+directement un nom binaire genere.
+
+9.32 Serialisation des classes internes
+
+Une classe interne serialisable peut capturer implicitement son instance
+englobante. La serialisation peut alors tenter d'enregistrer aussi cette
+instance et tout son graphe d'objets.
+
+Si l'englobante n'est pas Serializable, NotSerializableException peut survenir
+meme si la classe interne declare Serializable.
+
+Les champs synthetiques et noms generes peuvent aussi compliquer la
+compatibilite entre versions.
+
+Pour un objet serialisable independant, une classe membre static ou une classe
+de premier niveau est souvent preferable.
+
+9.33 Atteignabilite et fuites logiques
+
+Une classe interne conserve l'instance englobante :
+
+  Externe -> Interne
+  Interne -> Externe
+
+Le ramasse-miettes sait collecter les cycles devenus inatteignables. Le probleme
+survient lorsqu'un service vivant longtemps conserve l'objet interne : la
+reference retour peut garder toute l'instance externe en memoire.
+
+Exemple typique :
+
+  - une fenetre enregistre un listener anonyme dans un service global;
+  - le service conserve le listener;
+  - le listener conserve implicitement la fenetre.
+
+Il faut retirer les listeners lorsqu'ils ne servent plus, ou utiliser une
+classe membre static avec une reference geree explicitement.
+
+9.34 Interfaces et modele evenementiel Java
+
+Java 1.1 emploie des interfaces listener :
+
+  public interface ActionListener extends EventListener {
+      void actionPerformed(ActionEvent e);
+  }
+
+Une source d'evenements conserve les listeners et appelle leur methode :
+
+  bouton.addActionListener(listener);
+  bouton.removeActionListener(listener);
+
+Une classe anonyme evite de creer un nom de classe distinct pour un petit
+gestionnaire. Une classe nommee est preferable lorsque le comportement est
+reutilise, teste separement ou doit etre retire facilement.
+
+Les adapteurs, comme WindowAdapter, sont des classes abstraites fournissant des
+implementations vides de plusieurs methodes listener; une classe anonyme peut
+alors ne redefinir que la methode utile.
+
+9.35 Interfaces Java et delegates J++
+
+Le modele Java standard represente un rappel par une interface :
+
+  interface Rappel {
+      void appeler(int code);
+  }
+
+L'extension Microsoft peut representer une signature par un delegate :
+
+  delegate void Rappel(int code);
+  Rappel r = new Rappel(objet.traiter);
+
+Differences conceptuelles :
+
+  interface listener        objet avec une ou plusieurs methodes nommees
+  delegate J++              reference typee vers une methode compatible
+  multicast delegate        chaine possible de plusieurs methodes
+
+Les delegates ne remplacent pas les interfaces pour le sous-typage general.
+Ils sont surtout utiles aux rappels et au modele evenementiel Microsoft/WFC.
+Leur syntaxe n'est pas portable vers javac.
+
+9.36 Interfaces COM et classes generees
+
+JActiveX traduit souvent une interface COM en interface Java et produit une
+classe proxy :
+
+  import com.ms.com.*;
+  import paquet.genere.*;
+
+  IApplication application = new Application();
+
+L'interface Java decrite par le proxy sert au typage, tandis que l'objet reel
+transmet les appels a COM. La liaison dynamique visible dans le source peut
+donc franchir une frontiere native.
+
+Ces interfaces generees peuvent contenir :
+
+  - methodes get/set representant des proprietes COM;
+  - parametres Variant;
+  - interfaces derivant de IUnknown;
+  - methodes correspondant aux dispinterfaces;
+  - conventions de gestion d'erreurs et de references.
+
+Modifier manuellement un fichier genere est risque, car JActiveX peut
+l'ecraser. L'interface depend de la version de la bibliotheque de types.
+
+9.37 Erreurs frequentes avec les interfaces
+
+  Erreur                             Explication
+  ---------------------------------  -------------------------------------------
+  new MonInterface()                 interface non instanciable seule
+  methode sans public                n'implemente pas le contrat public
+  corps de methode dans interface    interdit en Java 1.1
+  champ non initialise              constante d'interface incomplete
+  champ mutable d'interface          tout champ est static final
+  implements UneClasse              implements exige une interface
+  extends I1, I2 sur une classe      une classe n'etend qu'une classe
+  types retour incompatibles         conflit entre methodes heritees
+  constante simple ambigue           qualifier avec le nom d'interface
+  lambda                             absente de J++ historique
+
+9.38 Erreurs frequentes avec les classes internes
+
+  Erreur                             Explication
+  ---------------------------------  -------------------------------------------
+  new Externe.Interne()              instance englobante manquante
+  capture d'une locale non final     interdit en Java 1.1
+  static ordinaire dans Interne      seuls constants compilees sont permis
+  constructeur de classe anonyme     impossible, aucun nom source
+  this pris pour l'englobante        this designe l'objet interne
+  oubli d'un listener enregistre     peut retenir l'objet englobant
+  serialiser sans l'englobante       reference synthetique egalement capturee
+  dependre de Externe$1              nom binaire instable
+
+9.39 Exemple recapitulatif
+
+  public interface SelectionListener {
+      void selectionChangee(int index);
+  }
+
+  public class Liste {
+      private SelectionListener listener;
+
+      public void setSelectionListener(SelectionListener valeur) {
+          listener = valeur;
+      }
+
+      public void selectionner(int index) {
+          if (listener != null)
+              listener.selectionChangee(index);
+      }
+
+      public static class Position {
+          public int ligne;
+          public int colonne;
+      }
+
+      public class Curseur {
+          private int index;
+
+          public void avancer() {
+              index++;
+              selectionner(index);
+          }
+      }
+
+      public Runnable creerAction(final int index) {
+          class ActionLocale implements Runnable {
+              public void run() {
+                  selectionner(index);
+              }
+          }
+          return new ActionLocale();
+      }
+  }
+
+Cet exemple comprend une interface, une classe membre static, une classe
+interne associee a Liste, une classe locale, une capture final et une liaison
+dynamique vers SelectionListener.
 
 
 ================================================================================
