@@ -25,23 +25,649 @@ Visual J++ fut livre par Microsoft avec Visual Studio 97 puis Visual Studio
 creer notamment des applications console, des applets, des applications
 Windows WFC et des composants interoperables avec COM/Win32.
 
-Le terme J++ recouvre trois couches qu'il faut distinguer :
+Cette description generale doit etre precisee. Visual J++ n'est pas un langage
+entierement independant de Java : il s'agit d'un environnement Microsoft fonde
+sur le langage Java de son epoque, auquel Microsoft ajouta un compilateur, une
+machine virtuelle, des extensions de langage, des bibliotheques Windows et des
+outils graphiques.
 
-  1. le langage Java 1.1 : classes, interfaces, exceptions, threads, etc.;
-  2. les extensions du compilateur Microsoft : delegates, directives en
-     commentaire, compilation conditionnelle et services d'interoperabilite;
-  3. les bibliotheques Microsoft : com.ms.*, WFC, J/Direct et acces COM.
 
-Une classe WFC n'est donc pas une construction syntaxique du langage. De meme,
-un programme peut etre syntaxiquement Java tout en etant non portable parce
-qu'il importe com.ms.wfc.* ou appelle Win32.
+1.1 Definition de Visual J++
+-----------------------------
 
-J++ reste anterieur a Java 2 et ne comprend pas les ajouts ulterieurs :
-assert, strictfp, generics, annotations, enum, foreach, varargs, autoboxing,
-imports statiques, lambdas, methodes default, modules, records, text blocks,
-classes sealed, pattern matching et expressions switch.
+Visual J++ est un environnement de developpement historique destine surtout a
+Windows. Il comprend selon la version :
 
-1.1 Resume comparatif Java / J++
+  - un editeur et un gestionnaire de projets integres a Visual Studio;
+  - le compilateur Microsoft JVC;
+  - la Microsoft Virtual Machine for Java, ou MSJVM;
+  - les outils d'execution JVIEW ou WJVIEW;
+  - des bibliotheques Java compatibles avec le niveau JDK 1.1 vise;
+  - des paquets propres a Microsoft sous com.ms.*;
+  - J/Direct pour appeler des DLL et des API Windows;
+  - Java/COM et JActiveX pour utiliser ou produire des composants COM;
+  - les Application Foundation Classes, ou AFC;
+  - les Windows Foundation Classes, ou WFC, dans Visual J++ 6.0;
+  - des concepteurs de formulaires, assistants et outils de deploiement.
+
+Le nom "Visual" designe donc l'environnement et ses outils. Il ne constitue
+pas un mot-cle du langage.
+
+
+1.2 Origine Java du langage
+----------------------------
+
+Le noyau de J++ reprend la syntaxe Java disponible dans les annees 1990 :
+
+  - types primitifs et types reference;
+  - classes, interfaces et heritage simple de classes;
+  - surcharge et remplacement de methodes;
+  - tableaux;
+  - exceptions controlees et non controlees;
+  - paquets et imports;
+  - classes internes;
+  - threads, synchronized, wait() et notify();
+  - ramasse-miettes et execution sur une machine virtuelle.
+
+Un source limite a ce noyau et aux API Java communes peut etre proche d'un
+source Java 1.1 portable. Cette proximite ne prouve cependant pas sa
+portabilite : les options de compilation, les bibliotheques, les classes
+chargees et les hypotheses sur la MSJVM doivent aussi etre controlees.
+
+
+1.3 Les trois couches de J++
+-----------------------------
+
+Le terme J++ recouvre trois couches qu'il faut toujours distinguer :
+
+  1. langage Java historique
+     Classes, interfaces, expressions, instructions, exceptions et threads.
+
+  2. extensions du compilateur Microsoft
+     Delegates, multicast delegates, compilation conditionnelle et directives
+     speciales pour J/Direct, COM ou la securite de la MSJVM.
+
+  3. environnement et bibliotheques Microsoft
+     com.ms.*, AFC, WFC, JActiveX, Java/COM, J/Direct, outils Visual Studio et
+     services de la MSJVM.
+
+Une classe WFC n'est pas une construction grammaticale. Inversement, delegate
+est une extension de la grammaire. Un import com.ms.win32.* est une dependance
+de bibliotheque, tandis qu'une directive @dll.import ajoute des metadonnees
+interpretees par le compilateur et la MSJVM.
+
+
+1.4 Versions principales
+-------------------------
+
+Les versions les plus importantes pour la lecture d'un projet sont :
+
+  Visual J++ 1.0
+      Premiere generation commerciale Microsoft. Elle vise le Java ancien,
+      les applets, les applications et l'integration Windows.
+
+  Visual J++ 1.1
+      Generation associee a Visual Studio 97. Elle suit le niveau Java 1.1
+      tout en conservant les extensions et bibliotheques Microsoft.
+
+  Visual J++ 6.0
+      Version livree avec Visual Studio 6.0. Elle introduit notamment WFC,
+      approfondit l'integration COM/Windows et reste la version historique
+      la plus frequemment rencontree.
+
+Le numero 6.0 aligne le produit sur Visual Studio 6.0. Il ne signifie pas que
+J++ avait suivi six revisions completes du langage Java ni qu'il correspond a
+Java SE 6, publie bien plus tard.
+
+
+1.5 Relation avec le JDK 1.1
+-----------------------------
+
+Visual J++ 6.0 est generalement associe a un niveau de bibliotheque proche du
+JDK 1.1.4. Il faut comprendre cette indication comme un niveau historique,
+pas comme une garantie que chaque classe, methode, comportement ou outil est
+identique a une distribution Sun.
+
+Un audit doit separer :
+
+  langage source
+      Constructions reconnues par JVC.
+
+  bibliotheque de classes
+      java.lang, java.io, java.util, java.awt et autres paquets disponibles.
+
+  machine virtuelle
+      Chargement, bytecode, securite, threads et integration native.
+
+  extensions Microsoft
+      com.ms.*, WFC, COM, J/Direct et directives.
+
+Une compatibilite syntaxique ne garantit pas une compatibilite binaire ou
+comportementale.
+
+
+1.6 Ce que J++ n'est pas
+-------------------------
+
+J++ ne doit pas etre confondu avec :
+
+  Java moderne
+      Langage et plateforme poursuivis apres Java 1.1.
+
+  Visual J#
+      Langage Microsoft ulterieur compilant vers MSIL et .NET, pas vers une
+      machine virtuelle Java.
+
+  C#
+      Langage .NET distinct, malgre des ressemblances conceptuelles.
+
+  C++/CLI
+      Extension de C++ pour .NET.
+
+  JavaScript ou JScript
+      Langages de script sans relation grammaticale directe avec Java.
+
+  JSP
+      Technologie JavaServer Pages de generation de contenu Web.
+
+  clones utilisant .jpp
+      Outils tiers qui peuvent reprendre seulement une partie de J++ ou
+      employer le nom pour un autre dialecte.
+
+Le contenu et le compilateur cible doivent etre identifies avant d'interpreter
+un fichier .java ou .jpp comme du Visual J++.
+
+
+1.7 Compilateur JVC
+--------------------
+
+JVC traduit le source en fichiers .class destines a la MSJVM. Il effectue :
+
+  - l'analyse lexicale et syntaxique;
+  - la resolution des types, methodes et champs;
+  - les controles d'acces et d'exceptions;
+  - la production du bytecode;
+  - le traitement des extensions de langage Microsoft;
+  - l'interpretation de certaines directives placees dans des commentaires;
+  - la compilation conditionnelle selon les symboles du projet.
+
+Les options exactes varient avec la version. Dans Visual J++ 6.0, le projet
+permet notamment de desactiver les extensions de langage Microsoft. Sur
+certaines installations, l'option de ligne de commande /x- les active. Il faut
+consulter l'aide du JVC reel avant d'automatiser une construction.
+
+
+1.8 MSJVM
+----------
+
+La Microsoft Virtual Machine for Java charge et execute les classes compilees.
+Elle fournit aussi des services propres a Windows :
+
+  - integration au systeme et a Internet Explorer;
+  - chargement des paquets Microsoft;
+  - prise en charge de J/Direct;
+  - pont Java/COM;
+  - securite et permissions propres a la MSJVM;
+  - execution des applications et applets de l'epoque.
+
+Une JVM standard ne reproduit pas automatiquement ces services. Copier un
+.class utilisant com.ms.* sur une autre JVM peut produire ClassNotFoundException,
+NoClassDefFoundError, UnsatisfiedLinkError ou un comportement incomplet.
+
+
+1.9 Outils d'execution
+-----------------------
+
+JVIEW est l'outil historique en mode console servant a lancer une classe :
+
+  jview NomClasse
+
+WJVIEW execute une application sans fenetre de console visible selon le type
+de programme et la configuration. Les applets etaient lancees par un navigateur
+ou un visualiseur compatible avec la MSJVM.
+
+Le point d'entree d'une application reste normalement :
+
+  public static void main(String[] args)
+
+Le nom de classe est qualifie par son paquet lorsque celui-ci est declare.
+
+
+1.10 Formats produits
+-----------------------
+
+Le produit principal de JVC est un ou plusieurs fichiers .class contenant du
+bytecode et, pour certaines extensions, des attributs ou metadonnees attendus
+par la MSJVM.
+
+Un projet pouvait ensuite etre conditionne sous plusieurs formes :
+
+  - arborescence de fichiers .class;
+  - archive ou paquet de deploiement;
+  - fichier CAB pour un telechargement historique;
+  - applet integree a une page HTML;
+  - application lancee par JVIEW/WJVIEW;
+  - composant expose par Java/COM;
+  - DLL ou composant construit avec les outils Visual J++ 6.0;
+  - ressources associees a une interface WFC.
+
+Un .exe ou une DLL de projet ne signifie pas que le source a ete compile
+directement en code machine autonome. Il peut rester dependant de la MSJVM,
+des classes Microsoft et de composants natifs enregistres.
+
+
+1.11 Categories de programmes
+-------------------------------
+
+Visual J++ pouvait servir a produire :
+
+  application console
+      Entree main(), lecture/ecriture standard et classes Java.
+
+  application AWT
+      Interface fondee sur java.awt et le modele d'evenements Java 1.1.
+
+  applet
+      Classe chargee dans un navigateur ou visualiseur historique.
+
+  application AFC
+      Interface utilisant notamment com.ms.ui.
+
+  application WFC
+      Interface Windows utilisant com.ms.wfc.*.
+
+  composant COM
+      Classe Java exposee a Automation ou utilisee par un client COM.
+
+  client COM/ActiveX
+      Programme utilisant des wrappers generes par JActiveX.
+
+  composant serveur
+      Classe chargee dans IIS, ASP ou un environnement transactionnel
+      Microsoft selon les bibliotheques installees.
+
+  utilitaire Win32
+      Programme appelant des DLL et API Windows par J/Direct ou com.ms.win32.
+
+Chaque categorie possede un modele de deploiement et de securite distinct.
+
+
+1.12 Paquet com.ms.win32
+-------------------------
+
+com.ms.win32 fournit des declarations Java de fonctions, constantes, structures
+et types Win32. Des classes correspondent notamment aux familles USER32, GDI32,
+KERNEL32, OLE32 ou SHELL32 selon le SDK.
+
+Ce paquet permet par exemple :
+
+  - d'afficher une boite de dialogue native;
+  - de manipuler une fenetre ou un message Windows;
+  - d'utiliser GDI;
+  - d'appeler des fonctions de fichiers ou de processus;
+  - d'acceder au shell et a OLE.
+
+Il ne fait pas partie de Java. Ses handles et pointeurs refletent normalement
+le modele Windows 32 bits de l'epoque.
+
+
+1.13 Paquet com.ms.com
+-----------------------
+
+com.ms.com fournit l'infrastructure d'interoperabilite avec COM et Automation :
+
+  - representations d'IUnknown et d'identifiants COM;
+  - Variant et conversions Automation;
+  - outils de liberation explicite comme ComLib;
+  - integration avec les proxies produits depuis une bibliotheque de types;
+  - prise en charge des methodes, proprietes et evenements COM.
+
+Le programme reste soumis a l'enregistrement des composants, a leur
+architecture binaire, au modele d'appartement et au comptage de references.
+
+
+1.14 Paquet com.ms.ui
+----------------------
+
+com.ms.ui appartient aux Application Foundation Classes. Il fournit des
+composants d'interface Microsoft anterieurs ou paralleles a WFC :
+
+  - fenetres et conteneurs;
+  - controles;
+  - menus;
+  - ressources;
+  - evenements;
+  - integration a l'environnement Windows.
+
+com.ms.ui ne doit pas etre confondu avec com.ms.wfc.ui. Les deux familles ont
+des architectures et des versions differentes.
+
+
+1.15 Paquet com.ms.awt
+-----------------------
+
+com.ms.awt contient l'implementation et des extensions Microsoft d'AWT. Il peut
+exposer des pairs natifs et des details propres a Windows.
+
+Une classe qui importe seulement java.awt.* peut rester portable. Une classe
+qui convertit un composant vers une implementation com.ms.awt ou appelle un
+pair Microsoft devient dependante de la MSJVM et de Windows.
+
+
+1.16 Windows Foundation Classes
+--------------------------------
+
+WFC est la bibliotheque de developpement Windows mise en avant avec Visual
+J++ 6.0. Ses paquets comprennent notamment :
+
+  com.ms.wfc.app
+  com.ms.wfc.core
+  com.ms.wfc.ui
+  com.ms.wfc.data
+
+WFC fournit :
+
+  - formulaires et controles Windows;
+  - proprietes et evenements integres au concepteur;
+  - ressources et dispositions;
+  - services d'application;
+  - integration COM et acces aux donnees selon les composants installes.
+
+WFC n'est ni AWT ni Swing. Une application WFC doit etre migree vers une autre
+bibliotheque d'interface; changer uniquement ses imports ne suffit pas.
+
+
+1.17 J/Direct
+--------------
+
+J/Direct est le mecanisme Microsoft permettant d'appeler une fonction exportee
+par une DLL directement depuis du code Java destine a la MSJVM.
+
+Il decrit notamment :
+
+  - nom de DLL;
+  - point d'entree;
+  - signature Java/native;
+  - convention d'appel;
+  - conversion ANSI ou Unicode;
+  - structures, tableaux et callbacks.
+
+Une declaration peut utiliser une directive @dll.import ou une declaration
+predefinie de com.ms.win32. J/Direct n'est pas JNI et ne fonctionne pas sur
+une JVM standard.
+
+
+1.18 Java/COM et JActiveX
+--------------------------
+
+Java/COM relie les classes Java de la MSJVM au Component Object Model.
+JActiveX et les assistants de bibliotheques de types pouvaient generer :
+
+  - classes proxy;
+  - interfaces Java;
+  - constantes;
+  - types Variant;
+  - declarations d'evenements;
+  - directives @com et metadonnees.
+
+La signature obtenue depend de la bibliotheque de types et de sa version. Le
+wrapper genere fait partie du contrat et ne doit pas etre regenere sans
+verification.
+
+
+1.19 Extensions de langage
+---------------------------
+
+Les extensions les plus visibles de Visual J++ 6.0 comprennent :
+
+  delegate
+      Declare un type representant une methode compatible.
+
+  multicast delegate
+      Declare un delegate pouvant enchainer plusieurs destinataires.
+
+  #if, #elif, #else, #endif
+      Selectionnent des parties du source selon les symboles de compilation.
+
+  directives en commentaire
+      Ajoutent des informations J/Direct, COM ou MSJVM a une declaration.
+
+Ces extensions ne sont pas reconnues par javac. Certaines peuvent aussi
+produire un .class que seule la MSJVM interprete completement.
+
+
+1.20 Delegates et evenements
+-----------------------------
+
+Un delegate est une reference de methode typee :
+
+  public delegate void Message(String texte);
+
+  Message sortie = new Message(this.afficher);
+  sortie.invoke("Bonjour");
+
+Il annonce plusieurs concepts rendus plus tard familiers par C#, mais la
+syntaxe et le runtime ne sont pas ceux de .NET. Le modele Java portable de
+l'epoque utilise plutot une interface listener :
+
+  interface MessageListener {
+      void messageRecu(String texte);
+  }
+
+Les bibliotheques Microsoft pouvaient raccorder des delegates a des evenements
+WFC, COM ou natifs.
+
+
+1.21 Proprietes : precision essentielle
+-----------------------------------------
+
+Visual J++ et son IDE presentent des proprietes de JavaBeans, AFC, WFC et COM
+dans les concepteurs. Cette integration ressemble a celle qui deviendra
+familiere dans Visual Studio avec C#.
+
+La declaration C# suivante n'est cependant pas valide en Visual J++ 6.0 :
+
+  public int Age
+  {
+      get;
+      set;
+  }
+
+Une classe Java ou J++ historique doit ecrire :
+
+  private int age;
+
+  public int getAge() {
+      return age;
+  }
+
+  public void setAge(int valeur) {
+      age = valeur;
+  }
+
+Le mot "propriete" peut donc designer :
+
+  - une convention JavaBean get/set;
+  - une propriete affichee par le concepteur WFC ou AFC;
+  - une propriete COM traduite par un proxy;
+  - une valeur de ressource ou de configuration.
+
+Il ne designe pas une grammaire generale identique a C#. Voir les sections
+15.48 et 15.49.
+
+
+1.22 Conformite Java et controverse
+------------------------------------
+
+Visual J++ pouvait compiler une grande quantite de source Java standard, mais
+son environnement introduisait aussi des incompatibilites :
+
+  - mots-cles et directives propres a Microsoft;
+  - bibliotheques com.ms.*;
+  - appels natifs J/Direct;
+  - differences de bibliotheque et de machine virtuelle;
+  - dependances a COM, ActiveX et au registre;
+  - absence ou difference de certaines API Java attendues.
+
+Ces divergences furent au centre de litiges entre Sun et Microsoft et de
+debats sur la promesse de portabilite de Java. Pour une specification de
+maintenance, le point pratique est simple : tester chaque source avec les
+outils et runtimes cibles au lieu de conclure a partir de l'extension .java.
+
+
+1.23 Portabilite par niveaux
+-----------------------------
+
+La portabilite doit etre evaluee par niveaux :
+
+  Niveau 1 : syntaxe
+      Le source est-il accepte par javac sans extensions Microsoft?
+
+  Niveau 2 : API
+      Toutes les classes utilisees appartiennent-elles au Java standard vise?
+
+  Niveau 3 : bytecode
+      Le .class respecte-t-il les attentes d'une autre JVM?
+
+  Niveau 4 : comportement
+      Encodage, threads, securite et interface se comportent-ils de meme?
+
+  Niveau 5 : deploiement
+      Le programme depend-il d'une DLL, de COM, du registre ou de la MSJVM?
+
+Un programme peut reussir les deux premiers niveaux et echouer ensuite.
+
+
+1.24 Fonctionnalites Java ulterieures absentes
+-----------------------------------------------
+
+J++ reste anterieur a Java 2 et a presque toute l'evolution moderne du langage.
+Visual J++ 6.0 ne comprend pas nativement :
+
+  - strictfp et assert;
+  - generics;
+  - annotations;
+  - enum;
+  - boucle foreach;
+  - varargs;
+  - autoboxing et unboxing;
+  - imports statiques;
+  - types covariants de retour modernes;
+  - lambdas et references de methodes Java;
+  - methodes default et static d'interface;
+  - try-with-resources;
+  - multi-catch;
+  - operateur diamant;
+  - modules;
+  - var local;
+  - records;
+  - text blocks;
+  - classes sealed;
+  - pattern matching;
+  - expressions switch.
+
+Certains noms, comme enum ou assert, pouvaient encore etre traites differemment
+dans les anciens niveaux Java. Un source J++ ancien peut donc devoir renommer
+des identificateurs avant une compilation moderne.
+
+
+1.25 Bibliotheques Java modernes absentes
+------------------------------------------
+
+Le niveau historique n'offre pas nativement les API introduites plus tard,
+notamment :
+
+  - Swing stabilise de Java 2;
+  - Collections Framework moderne complet;
+  - java.nio et NIO.2;
+  - java.util.regex;
+  - java.time;
+  - java.util.concurrent;
+  - streams et Optional;
+  - modules et clients HTTP modernes;
+  - JDBC, XML et securite dans leurs versions actuelles.
+
+Vector, Hashtable, Enumeration, AWT 1.1, java.io et les threads de base sont
+donc frequents dans un projet J++.
+
+
+1.26 Modele de securite historique
+-----------------------------------
+
+Les applets et la MSJVM utilisaient un modele de zones, signatures et
+permissions lie notamment a Internet Explorer et a Windows. Des directives
+Microsoft pouvaient influencer certains controles.
+
+Ce modele est obsolete. Il ne doit pas etre reproduit pour un nouveau projet.
+Une ancienne applet signee ou une directive @security doit etre consideree
+comme une information d'audit sensible, pas comme une solution de securite
+actuelle.
+
+
+1.27 Environnement 32 bits
+---------------------------
+
+Visual J++, la MSJVM et une grande partie de l'integration native furent concus
+pour Windows 32 bits. Plusieurs hypotheses en decoulent :
+
+  - handles et pointeurs representes par int;
+  - DLL 32 bits;
+  - encodages ANSI Windows;
+  - registre et chemins de l'epoque;
+  - conventions d'appel x86;
+  - composants COM enregistres pour la bonne architecture.
+
+Une recompilation ou migration 64 bits exige de revalider chaque signature
+native. Remplacer int par long sans verifier le prototype n'est pas suffisant.
+
+
+1.28 Etat actuel et fin de vie
+-------------------------------
+
+Visual J++ et la MSJVM sont abandonnes. Microsoft recommanda historiquement
+plusieurs chemins de migration, dont Visual J#, la conversion vers C# ou le
+passage a une autre implementation Java. Visual J# est lui-meme une technologie
+ancienne et ne constitue plus une cible recommandee pour un nouveau projet.
+
+Aujourd'hui :
+
+  - ne pas installer la MSJVM comme fondation d'un nouveau systeme;
+  - isoler les machines historiques si elles restent necessaires;
+  - inventorier les dependances com.ms.*, COM et DLL;
+  - conserver le compilateur et les SDK seulement pour l'archeologie;
+  - migrer la logique portable vers un Java pris en charge ou une autre cible;
+  - remplacer WFC/AFC, applets et ActiveX;
+  - ajouter des tests avant toute transformation automatique.
+
+
+1.29 Perimetre de ce document
+------------------------------
+
+Cette specification documente :
+
+  - le noyau Java historique compris par Visual J++;
+  - les extensions syntaxiques Microsoft connues;
+  - les directives et la compilation conditionnelle;
+  - les paquets com.ms.win32, com.ms.com, com.ms.ui et com.ms.awt;
+  - WFC, AWT, applets, threads et entrees/sorties;
+  - l'interoperabilite COM et Win32;
+  - la compilation, l'execution, la portabilite et la migration.
+
+Elle ne pretend pas remplacer :
+
+  - les manuels exacts de chaque revision de JVC;
+  - les en-tetes Win32 du SDK employe;
+  - la bibliotheque de types d'un composant COM;
+  - la documentation d'une version precise de WFC;
+  - une analyse de securite ou de licence;
+  - la specification Java moderne.
+
+Lorsqu'une signature depend d'un SDK ou d'un wrapper genere, ce document donne
+un modele et demande de verifier l'artefact historique reel.
+
+
+1.30 Resume comparatif Java / J++
+----------------------------------
 
 Le tableau suivant compare Java standard a Microsoft Visual J++ dans son
 environnement historique. "Java" designe ici le langage et les API standard,
@@ -67,9 +693,9 @@ composants. J++ ne reconnait toutefois pas la declaration automatique C# :
   public int Age { get; set; }      // C#, pas Visual J++ 6.0
 
 Dans une classe Java ou J++, une propriete JavaBean est implementee par des
-methodes telles que getAge() et setAge(). Voir la section 15.3. Ainsi, "Oui"
-dans la colonne J++ qualifie le modele composant et son integration aux outils,
-pas une grammaire get/set identique a celle de C#.
+methodes telles que getAge() et setAge(). Ainsi, "Oui" dans la colonne J++
+qualifie le modele composant et son integration aux outils, pas une grammaire
+get/set identique a celle de C#.
 
 Java peut appeler Windows, COM, ActiveX ou le registre par JNI, JNA ou une
 autre bibliotheque externe. La valeur "Non" signifie que ces services ne font
@@ -80,6 +706,25 @@ integre directement par la MSJVM, J/Direct et les paquets com.ms.*.
 plates-formes et que le code respectant les API standard est concu pour etre
 portable. Cela ne garantit pas qu'un programme Java utilisant du code natif ou
 une API propre a un systeme fonctionne sans adaptation partout.
+
+
+1.31 Comment lire la suite
+---------------------------
+
+Les sections 2 a 14 decrivent principalement le noyau Java historique. Les
+sections 15 a 18 se concentrent sur les interfaces, delegates, directives,
+COM et Win32. Les sections 19 a 23 traitent la construction, la comparaison
+avec Java moderne, la migration et un exemple portable complet.
+
+Pour analyser un source :
+
+  1. identifier sa version de Visual J++;
+  2. relever les options JVC;
+  3. chercher les imports com.ms.*;
+  4. chercher delegate, multicast et les directives;
+  5. inventorier DLL, COM, registre et ressources;
+  6. separer logique portable et integration Windows;
+  7. compiler et tester dans un environnement isole.
 
 
 ================================================================================
@@ -94,13 +739,377 @@ ne garantit pas que le contenu respecte la syntaxe Visual J++ 6.0. Il faut donc
 identifier le compilateur vise avant de conclure qu'un fichier .jpp ou .java
 appartient au dialecte decrit dans ce document.
 
-Une unite de compilation contient, dans cet ordre :
+La presente section explique la constitution d'une unite, sa relation avec le
+systeme de fichiers, les points d'entree possibles et la construction d'un
+programme minimal. Les regles completes des paquets, imports et classes sont
+developpees aux sections 8 et 12.
 
-  [ declaration de package ]
-  { declaration d'import }
-  { declaration de classe ou d'interface }
 
-Exemple console :
+2.1 Notion d'unite de compilation
+----------------------------------
+
+Une unite de compilation est le contenu logique d'un fichier source transmis
+au compilateur. Elle peut contenir :
+
+  1. une declaration de paquet facultative;
+  2. zero ou plusieurs declarations d'import;
+  3. zero ou plusieurs declarations de classe ou d'interface.
+
+L'ordre est impose :
+
+  package, puis import, puis types.
+
+Les commentaires et espaces peuvent apparaitre entre ces elements. Un import
+place apres une classe est invalide.
+
+
+2.2 Grammaire generale
+-----------------------
+
+  unite
+      ::= [ declarationPaquet ]
+          { declarationImport }
+          { declarationType }
+
+  declarationPaquet
+      ::= package nomQualifie ;
+
+  declarationImport
+      ::= import nomQualifie ;
+        | import nomQualifie . * ;
+
+  declarationType
+      ::= declarationClasse
+        | declarationInterface
+        | ;
+
+  nomQualifie
+      ::= identificateur { . identificateur }
+
+Le point-virgule seul est une declaration de type vide. Il n'ajoute aucune
+classe au programme.
+
+
+2.3 Extension .java de Visual J++
+----------------------------------
+
+Le compilateur Microsoft JVC attend normalement des sources .java :
+
+  Bonjour.java
+  Catalogue.java
+  exemple\outils\Texte.java
+
+L'extension ne modifie pas la grammaire. Un fichier .java peut contenir du
+Java portable ou des extensions Microsoft.
+
+
+2.4 Extension .jpp de certains clones
+--------------------------------------
+
+Certains clones, compilateurs experimentaux ou outils tiers emploient .jpp :
+
+  Bonjour.jpp
+
+Cette convention permet de signaler un dialecte J++, mais elle n'appartient
+pas au Visual J++ historique. Un clone peut :
+
+  - accepter directement .jpp;
+  - accepter .java et .jpp;
+  - demander de renommer .jpp en .java;
+  - reconnaitre un sous-ensemble different;
+  - produire du code natif plutot que du bytecode.
+
+Le manuel du clone determine le comportement reel.
+
+
+2.5 Encodage du fichier source
+-------------------------------
+
+Les outils des annees 1990 utilisent souvent l'encodage Windows du poste.
+Un source peut donc etre en Windows-1252 plutot qu'en UTF-8.
+
+Avant de convertir :
+
+  1. identifier l'encodage reel;
+  2. conserver une copie originale;
+  3. verifier commentaires, chaines et caracteres;
+  4. choisir une option JVC si la version en fournit une;
+  5. tester les ressources externes separement.
+
+Une conversion incorrecte peut modifier un litteral char ou String et donc le
+comportement du programme.
+
+
+2.6 Marque d'ordre des octets
+------------------------------
+
+Un outil historique peut ne pas reconnaitre une marque UTF-8 ou UTF-16 au
+debut du fichier. Le premier caractere peut alors etre interprete comme un
+jeton invalide.
+
+Pour un projet original, conserver l'encodage attendu par JVC. Pour une
+migration, convertir les sources de facon controlee et compiler tous les
+fichiers apres conversion.
+
+
+2.7 Declaration de paquet
+---------------------------
+
+Syntaxe :
+
+  package nomQualifie;
+
+Exemple :
+
+  package exemple.catalogue;
+
+Une seule declaration package est autorisee et elle doit preceder les imports
+et types. Le nom est une suite d'identificateurs separes par des points.
+
+
+2.8 Paquet sans nom
+--------------------
+
+En l'absence de declaration package, les types appartiennent au paquet sans
+nom :
+
+  public class Bonjour {
+  }
+
+Ce choix convient a un exemple minimal. Il est deconseille pour une grande
+application, car il complique l'organisation, les imports et la reutilisation.
+
+Une classe d'un paquet nomme ne peut pas importer proprement une classe du
+paquet sans nom selon le modele Java.
+
+
+2.9 Correspondance paquet/repertoire
+-------------------------------------
+
+Le nom :
+
+  package exemple.catalogue;
+
+correspond normalement a :
+
+  exemple\catalogue\Nom.java
+
+et produit :
+
+  exemple\catalogue\Nom.class
+
+La racine placee avant exemple doit appartenir au chemin de sources pendant la
+compilation et au chemin de classes pendant l'execution.
+
+
+2.10 Noms de paquet
+--------------------
+
+Chaque composant est un identificateur :
+
+  exemple.catalogue        valide
+  com.societe.produit      valide
+  exemple.2outils          invalide
+  exemple.outils-test      invalide
+
+Les conventions Java emploient des minuscules et un nom de domaine inverse :
+
+  com.exemple.catalogue
+
+Les paquets Microsoft reserves commencent notamment par com.ms.
+
+
+2.11 Declaration d'import simple
+---------------------------------
+
+Syntaxe :
+
+  import nomPaquet.NomType;
+
+Exemple :
+
+  import java.util.Vector;
+
+Le type peut ensuite etre designe par Vector au lieu de java.util.Vector.
+L'import ne charge pas la classe et ne cree pas d'objet.
+
+
+2.12 Import a la demande
+-------------------------
+
+Syntaxe :
+
+  import java.util.*;
+
+Il rend disponibles par nom simple les types publics directement declares
+dans java.util. Il n'importe pas les sous-paquets.
+
+  import com.ms.*;           // N'importe pas com.ms.win32.User32.
+  import com.ms.win32.*;     // Importe les types directs de ce paquet.
+
+L'asterisque ne signifie pas une inclusion textuelle des sources.
+
+
+2.13 Absence d'import static
+-----------------------------
+
+Visual J++ est anterieur aux imports statiques de Java 5. Cette syntaxe est
+invalide :
+
+  import static java.lang.Math.PI;
+
+Il faut qualifier le membre :
+
+  double cercle = Math.PI * rayon * rayon;
+
+
+2.14 Import implicite de java.lang
+-----------------------------------
+
+Les types publics de java.lang sont disponibles sans import explicite :
+
+  Object
+  String
+  System
+  Math
+  Thread
+  Exception
+
+Les sous-paquets eventuels ne sont pas importes. java.util.Vector exige donc
+un import ou un nom qualifie.
+
+
+2.15 Type du paquet courant
+----------------------------
+
+Les types d'une meme unite et du meme paquet sont utilisables sans import :
+
+  package exemple;
+
+  class Service {
+  }
+
+  public class Principal {
+      private Service service;
+  }
+
+Un import du paquet courant est inutile.
+
+
+2.16 Ambiguite d'import
+------------------------
+
+Si deux types importes a la demande portent le meme nom, le nom simple devient
+ambigu :
+
+  import paquet.un.*;
+  import paquet.deux.*;
+
+  Date valeur;               // Ambigu si les deux paquets ont Date.
+
+Employer un import simple ou un nom qualifie :
+
+  paquet.un.Date valeur;
+
+
+2.17 Types de niveau superieur
+-------------------------------
+
+Une unite peut declarer plusieurs classes ou interfaces :
+
+  interface Action {
+      void executer();
+  }
+
+  class ActionSimple implements Action {
+      public void executer() {
+      }
+  }
+
+  public class Principal {
+  }
+
+Ces types sont dits de niveau superieur. Une classe interne est declaree dans
+un autre type et suit les regles de la section 9.
+
+
+2.18 Un seul type public
+-------------------------
+
+Une unite Java historique ne doit normalement contenir qu'un type public de
+niveau superieur. Son nom correspond au nom de base du fichier :
+
+  public class Principal { }
+
+doit etre enregistre dans :
+
+  Principal.java
+
+Pour un clone acceptant .jpp :
+
+  Principal.jpp
+
+Le clone doit conserver la meme correspondance logique s'il applique les
+regles Java.
+
+
+2.19 Sensibilite a la casse
+----------------------------
+
+Java et J++ distinguent majuscules et minuscules :
+
+  Principal
+  principal
+  PRINCIPAL
+
+sont trois identificateurs differents. Meme sur un systeme de fichiers Windows
+peu sensible a la casse, employer exactement le nom du type dans :
+
+  - le fichier;
+  - la declaration;
+  - les imports;
+  - la commande JVIEW;
+  - les references de projet.
+
+Cela evite un echec lors d'une migration vers un systeme sensible a la casse.
+
+
+2.20 Types non publics dans le meme fichier
+--------------------------------------------
+
+Les classes auxiliaires sans modificateur public peuvent rester dans le meme
+fichier :
+
+  class Configuration {
+  }
+
+  class Service {
+  }
+
+  public class Principal {
+  }
+
+Le compilateur peut produire Configuration.class, Service.class et
+Principal.class. Une unite source n'implique donc pas un seul fichier binaire.
+
+
+2.21 Unite sans type
+---------------------
+
+La grammaire permet conceptuellement une unite ne contenant que des espaces,
+commentaires ou points-virgules :
+
+  /* Aucun type. */
+  ;
+
+Elle ne produit aucune classe utile. Son acceptation exacte et les diagnostics
+dependent de JVC.
+
+
+2.22 Programme console minimal
+-------------------------------
+
+Fichier Bonjour.java :
 
   public class Bonjour {
       public static void main(String[] args) {
@@ -108,28 +1117,593 @@ Exemple console :
       }
   }
 
-Le point d'entree est une methode public static void main(String[] args).
-Le nom du fichier d'une classe publique correspond normalement au nom de la
-classe : Bonjour.java.
+Compilation :
 
-Exemple avec package :
+  jvc Bonjour.java
 
-  package exemple.outils;
-  import java.util.Vector;
+Execution :
 
-  public class Demo {
-      public static void main(String[] args) {
-          Vector v = new Vector();
-          v.addElement("un");
+  jview Bonjour
+
+La commande est lancee depuis un repertoire permettant a JVIEW de trouver
+Bonjour.class.
+
+
+2.23 Signature du point d'entree
+---------------------------------
+
+La forme usuelle reconnue est :
+
+  public static void main(String[] args)
+
+ou la forme de tableau equivalente :
+
+  public static void main(String args[])
+
+Signification :
+
+  public
+      La methode est accessible au lanceur.
+
+  static
+      Aucun objet Principal n'est requis avant l'appel.
+
+  void
+      La methode ne renvoie pas une valeur Java au lanceur.
+
+  main
+      Nom conventionnel du point d'entree.
+
+  String[] args
+      Tableau des arguments de la ligne de commande.
+
+
+2.24 Signatures qui ne sont pas des points d'entree
+----------------------------------------------------
+
+Ces methodes peuvent compiler, mais ne constituent pas le main attendu :
+
+  public void main(String[] args)              // Non static.
+  static void main(String[] args)              // Non public.
+  public static int main(String[] args)         // Retour int.
+  public static void main()                     // Aucun tableau.
+  public static void main(Object[] args)        // Mauvais type.
+  public static void Main(String[] args)        // Mauvaise casse.
+
+JVC ou JVIEW peut produire un diagnostic dependant de sa version.
+
+
+2.25 Surcharge de main
+-----------------------
+
+Une classe peut surcharger main :
+
+  public static void main() {
+  }
+
+  public static void main(String[] args) {
+      main();
+  }
+
+Le lanceur choisit la signature String[]. Les autres surcharges sont des
+methodes ordinaires.
+
+
+2.26 Arguments
+---------------
+
+Commande :
+
+  jview Bonjour Ada 42
+
+Produit conceptuellement :
+
+  args.length == 2
+  args[0].equals("Ada")
+  args[1].equals("42")
+
+Le nom de la classe n'appartient pas au tableau. Les regles de guillemets,
+espaces et caracteres speciaux proviennent de la ligne de commande Windows et
+du lanceur.
+
+
+2.27 Validation des arguments
+------------------------------
+
+  public static void main(String[] args) {
+      if (args.length != 1) {
+          System.err.println("Usage : jview Carre nombre");
+          return;
+      }
+
+      try {
+          int valeur = Integer.parseInt(args[0]);
+          System.out.println(valeur * valeur);
+      } catch (NumberFormatException e) {
+          System.err.println("Un entier est attendu.");
       }
   }
 
-Syntaxe abstraite :
+Ne jamais lire args[0] sans verifier args.length.
 
-  unite          ::= [ package nomQualifie ; ] { importDecl } { typeDecl }
-  importDecl     ::= import nomQualifie [ .* ] ;
-  typeDecl       ::= classDecl | interfaceDecl | ;
-  nomQualifie    ::= identificateur { . identificateur }
+
+2.28 Sorties standard
+----------------------
+
+  System.out     sortie normale
+  System.err     diagnostics et erreurs
+  System.in      entree standard
+
+Exemple :
+
+  System.out.println("Operation terminee");
+  System.err.println("Fichier introuvable");
+
+println ajoute une fin de ligne. print n'en ajoute pas.
+
+
+2.29 Code de sortie
+--------------------
+
+Un retour normal de main indique normalement une fin sans erreur au processus.
+Pour signaler explicitement un code :
+
+  System.exit(0);    // Succes.
+  System.exit(1);    // Echec choisi par l'application.
+
+System.exit termine la machine virtuelle et peut interrompre d'autres threads.
+Ne pas l'appeler depuis une bibliotheque reutilisable.
+
+
+2.30 Exceptions de main
+------------------------
+
+main peut declarer une exception :
+
+  public static void main(String[] args)
+      throws java.io.IOException {
+      // ...
+  }
+
+Une exception non interceptee termine normalement le programme et produit un
+diagnostic. Une application utilisateur devrait intercepter les erreurs
+previsibles, afficher un message utile et choisir un code de sortie.
+
+
+2.31 Creation de l'objet principal
+-----------------------------------
+
+main etant static, il cree souvent une instance :
+
+  public class Application {
+      public void executer(String[] args) {
+          System.out.println("Execution");
+      }
+
+      public static void main(String[] args) {
+          Application application = new Application();
+          application.executer(args);
+      }
+  }
+
+Cette organisation limite la logique static et facilite les tests.
+
+
+2.32 Initialisation de classe
+------------------------------
+
+Avant main, la machine virtuelle initialise la classe :
+
+  public class Ordre {
+      static int valeur = initialiser();
+
+      static int initialiser() {
+          System.out.println("Initialisation");
+          return 42;
+      }
+
+      public static void main(String[] args) {
+          System.out.println(valeur);
+      }
+  }
+
+Les champs static et blocs static sont executes dans l'ordre defini par Java.
+Une erreur d'initialisation peut empecher main de commencer.
+
+
+2.33 Constructeur et main
+--------------------------
+
+Le lanceur n'appelle pas automatiquement le constructeur de la classe
+principale :
+
+  public class Demo {
+      public Demo() {
+          System.out.println("Construit");
+      }
+
+      public static void main(String[] args) {
+          System.out.println("main");
+      }
+  }
+
+Ici, seul "main" est affiche. Il faut ecrire new Demo() pour construire un
+objet.
+
+
+2.34 Programme avec paquet
+----------------------------
+
+Fichier SRC\exemple\Bonjour.java :
+
+  package exemple;
+
+  public class Bonjour {
+      public static void main(String[] args) {
+          String nom =
+              args.length == 0 ? "visiteur" : args[0];
+          System.out.println("Bonjour " + nom);
+      }
+  }
+
+Le nom binaire est exemple.Bonjour. L'execution utilise ce nom qualifie :
+
+  jview exemple.Bonjour Ada
+
+Il ne faut pas ecrire jview exemple\Bonjour.class.
+
+
+2.35 Racine de classes
+-----------------------
+
+Pour charger :
+
+  exemple.Bonjour
+
+le chemin de classes doit contenir le repertoire parent de exemple :
+
+  CLASSES\
+    exemple\
+      Bonjour.class
+
+Exemple conceptuel :
+
+  jview /cp:p CLASSES exemple.Bonjour
+
+Verifier la syntaxe de /cp:p avec l'aide de la version de JVIEW installee.
+
+
+2.36 Programme multifichier
+----------------------------
+
+Service.java :
+
+  package exemple;
+
+  public class Service {
+      public String saluer(String nom) {
+          return "Bonjour " + nom;
+      }
+  }
+
+Principal.java :
+
+  package exemple;
+
+  public class Principal {
+      public static void main(String[] args) {
+          Service service = new Service();
+          System.out.println(service.saluer("Ada"));
+      }
+  }
+
+Compilation conceptuelle depuis la racine de sources :
+
+  jvc exemple\Service.java exemple\Principal.java
+
+Le compilateur peut aussi trouver une source dependante selon son chemin de
+recherche. Une construction reproductible enumere ou gere explicitement tous
+les fichiers necessaires.
+
+
+2.37 Dependances de compilation
+--------------------------------
+
+JVC doit trouver :
+
+  - les types de la meme unite;
+  - les .class ou sources du meme paquet;
+  - les bibliotheques Java de la MSJVM;
+  - les paquets com.ms.* eventuellement utilises;
+  - les JAR, ZIP ou repertoires du projet;
+  - les proxies COM generes;
+  - les ressources exigees par les outils.
+
+Une dependance trouvee dans l'IDE mais absente de la construction en ligne de
+commande indique souvent un chemin configure uniquement dans le projet.
+
+
+2.38 Ordre de compilation
+--------------------------
+
+Pour deux classes qui se referencent, le compilateur peut les analyser dans la
+meme invocation :
+
+  jvc A.java B.java
+
+Lorsque seules des classes deja compilees sont disponibles, elles doivent etre
+dans le chemin de classes. Eviter de dependre de vieux .class restes dans un
+repertoire : une construction propre doit pouvoir repartir des sources.
+
+
+2.39 Classe principale dans Visual Studio
+------------------------------------------
+
+Un projet Visual J++ peut contenir plusieurs classes ayant chacune main().
+Les proprietes du projet choisissent la classe lancee par la commande Run ou
+Debug.
+
+Cette selection IDE ne modifie pas les sources. En ligne de commande, le nom
+passe a JVIEW choisit la classe :
+
+  jview exemple.OutilImport
+  jview exemple.Application
+
+
+2.40 Fichier de projet
+-----------------------
+
+Visual J++ conserve des informations hors des .java :
+
+  - liste des fichiers;
+  - chemins de classes;
+  - classe de demarrage;
+  - symboles de compilation;
+  - activation des extensions Microsoft;
+  - type de sortie;
+  - ressources;
+  - options de debogage et de deploiement.
+
+Un fichier .vjp est un projet Visual J++. Copier uniquement les sources peut
+faire perdre des options essentielles.
+
+
+2.41 Application graphique AWT
+--------------------------------
+
+Une application AWT possede encore un main :
+
+  import java.awt.Frame;
+
+  public class Fenetre {
+      public static void main(String[] args) {
+          Frame cadre = new Frame("J++");
+          cadre.setSize(320, 200);
+          cadre.setVisible(true);
+      }
+  }
+
+Un programme reel doit aussi gerer la fermeture et les evenements. La presence
+d'une fenetre ne change pas la signature du point d'entree.
+
+
+2.42 Application WFC
+---------------------
+
+Une application WFC utilise normalement un type de com.ms.wfc.ui et demarre la
+boucle de messages avec les services WFC. Sa structure exacte depend de la
+version et du code produit par le concepteur.
+
+Elle reste une application J++ compilee, mais :
+
+  - elle exige les classes WFC;
+  - elle depend de Windows et de la MSJVM;
+  - son point d'entree et son formulaire peuvent etre repartis entre classes;
+  - ses ressources doivent accompagner les .class.
+
+Voir la section 15 avant d'ecrire une structure WFC complete.
+
+
+2.43 Applet minimale
+---------------------
+
+  import java.applet.Applet;
+  import java.awt.Graphics;
+
+  public class BonjourApplet extends Applet {
+      public void paint(Graphics g) {
+          g.drawString("Bonjour", 20, 30);
+      }
+  }
+
+Une applet ne requiert pas main(). Son cycle de vie utilise init(), start(),
+stop() et destroy(), et son affichage paint().
+
+Les applets et la MSJVM dans les navigateurs sont obsoletes et ne doivent pas
+etre utilises pour un nouveau deploiement.
+
+
+2.44 Classe bibliotheque sans main
+-----------------------------------
+
+Toutes les classes n'ont pas besoin d'un point d'entree :
+
+  package exemple.math;
+
+  public class Entiers {
+      private Entiers() {
+      }
+
+      public static int maximum(int a, int b) {
+          return a > b ? a : b;
+      }
+  }
+
+Cette classe est appelee par une autre classe. JVIEW ne peut pas la lancer
+directement en l'absence d'un main compatible.
+
+
+2.45 Interface sans main
+-------------------------
+
+  package exemple;
+
+  public interface Journal {
+      void ecrire(String message);
+  }
+
+Une interface de J++ historique decrit des constantes et methodes abstraites.
+Elle n'est pas un programme autonome.
+
+
+2.46 Initialisation des bibliotheques natives
+----------------------------------------------
+
+Un programme J/Direct ou COM peut avoir besoin avant main ou pendant main :
+
+  - d'une DLL visible;
+  - d'un composant COM enregistre;
+  - d'un proxy genere;
+  - d'une architecture 32 bits compatible;
+  - d'une initialisation de thread ou d'appartement;
+  - d'autorisations MSJVM.
+
+Le fait que la classe principale soit trouvee ne prouve pas que ses dependances
+natives pourront etre chargees.
+
+
+2.47 Ressources
+----------------
+
+Un source peut charger une ressource relativement a une classe :
+
+  java.io.InputStream entree =
+      Principal.class.getResourceAsStream("messages.txt");
+
+Le chemin sans / est relatif au paquet. Avec /, il part de la racine logique
+du chemin de classes.
+
+Un fichier du repertoire courant du processus suit d'autres regles. Ne pas
+confondre ressource de classe et fichier de travail.
+
+
+2.48 Programme minimal portable
+--------------------------------
+
+Cet exemple evite toute extension Microsoft :
+
+  public class Portable {
+      public static void main(String[] args) {
+          String texte = "Bonjour";
+
+          for (int i = 0; i < args.length; i++) {
+              texte += " " + args[i];
+          }
+
+          System.out.println(texte);
+      }
+  }
+
+Il emploie seulement :
+
+  - une classe publique;
+  - main(String[]);
+  - String;
+  - une boucle for;
+  - System.out.
+
+Il doit rester compilable par JVC et par un compilateur Java compatible avec
+ce niveau de syntaxe.
+
+
+2.49 Programme minimal propre a J++
+------------------------------------
+
+Un seul import suffit a rendre un source non portable :
+
+  import com.ms.win32.User32;
+  import com.ms.win32.winm;
+
+  public class MessageWindows {
+      public static void main(String[] args) {
+          User32.MessageBox(
+              0,
+              "Bonjour",
+              "Visual J++",
+              winm.MB_OK);
+      }
+  }
+
+La structure de l'unite est Java, mais ses types et son execution dependent du
+SDK Microsoft, de Windows et de la MSJVM.
+
+
+2.50 Diagnostics frequents
+---------------------------
+
+  Diagnostic ou symptome            Cause possible
+  --------------------------------  ------------------------------------------
+  classe publique mal nommee        fichier different du type public
+  type introuvable                   import ou chemin de classes absent
+  paquet incorrect                   repertoire et declaration incoherents
+  main introuvable                   signature ou casse incorrecte
+  classe principale introuvable      mauvaise racine ou mauvais nom qualifie
+  extension .jpp refusee             JVC attend .java
+  caractere illegal au debut         encodage ou marque d'ordre des octets
+  ClassNotFoundException com.ms...   classes Microsoft absentes
+  UnsatisfiedLinkError               DLL/J/Direct indisponible
+  symbole ambigu                     deux imports fournissent le meme nom
+  acces refuse                       type ou membre non visible
+  ancienne classe executee           .class obsolete dans le chemin
+
+
+2.51 Liste de controle d'une unite
+-----------------------------------
+
+Avant de compiler :
+
+  [ ] L'extension correspond au compilateur.
+  [ ] L'encodage est connu.
+  [ ] package precede tous les imports et types.
+  [ ] Le repertoire correspond au paquet.
+  [ ] Chaque import designe un type ou paquet disponible.
+  [ ] Il n'existe pas d'import static moderne.
+  [ ] Le fichier contient au plus un type public de niveau superieur.
+  [ ] Le nom du type public correspond au fichier.
+  [ ] La casse est identique partout.
+  [ ] Le main possede la signature attendue si le type est executable.
+  [ ] Les arguments sont valides avant utilisation.
+  [ ] Les classes et ressources sont dans les chemins corrects.
+  [ ] Les dependances Microsoft sont identifiees.
+  [ ] Les options du projet .vjp sont conservees.
+
+
+2.52 Resume grammatical
+-------------------------
+
+  unite
+      ::= [ package nomQualifie ; ]
+          { import nomImport ; }
+          { declarationType | ; }
+
+  nomImport
+      ::= nomQualifie
+        | nomQualifie . *
+
+  nomQualifie
+      ::= identificateur { . identificateur }
+
+  pointEntreeApplication
+      ::= public static void main ( String [ ] identificateur )
+
+  fichierMicrosoft
+      ::= nomTypePublic . java
+
+  fichierClone
+      ::= nomTypePublic . jpp
+
+La derniere production est une convention de clones et non une production du
+compilateur Microsoft historique.
 
 
 ================================================================================
