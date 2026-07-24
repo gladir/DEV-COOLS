@@ -1,0 +1,2080 @@
+================================================================================
+             SPECIFICATIONS DU LANGAGE JSP / JAKARTA SERVER PAGES
+================================================================================
+
+Document de reference pour l'integration dans le systeme d'aide DEVENV.HLP.
+
+Dans ce document, JSP designe :
+
+  - JavaServer Pages, nom historique de la technologie;
+  - Jakarta Server Pages, son nom actuel dans Jakarta EE;
+  - les pages .jsp classiques et leur forme XML .jspx;
+  - le langage d'expressions EL et les bibliotheques de balises utilisees
+    par les pages.
+
+Ce texte est un guide technique original et non normatif. En cas de difference,
+la specification officielle correspondant a la version du conteneur fait foi.
+Les adresses officielles sont donnees a la section 34.
+
+
+================================================================================
+1. PRESENTATION ET PERIMETRE
+================================================================================
+
+JSP est une technologie de vues Web cote serveur. Une page melange du contenu
+textuel, souvent HTML, avec des directives, actions, expressions et balises.
+Le conteneur traduit la page en une classe servlet, compile cette classe, puis
+l'execute pour produire la reponse HTTP.
+
+JSP n'est donc :
+
+  - ni Java execute directement par le navigateur;
+  - ni JavaScript;
+  - ni un serveur HTTP autonome;
+  - ni un remplacement du protocole Servlet;
+  - ni une obligation d'ecrire du Java dans les pages.
+
+Une application moderne place normalement la logique dans des controleurs et
+services Java. La page JSP recoit un modele, puis le presente avec EL et des
+balises. Les scriptlets restent documentes pour lire et maintenir les sources
+anciens, mais sont deconseilles pour un nouveau projet.
+
+
+1.1 Noms historiques
+---------------------
+
+Les grandes familles de noms sont :
+
+  JavaServer Pages / JSP       technologie historique Java EE
+  Jakarta Server Pages         nom adopte dans Jakarta EE
+  Jakarta Pages                nom court employe par le projet recent
+
+L'acronyme JSP reste couramment utilise. Le changement de nom accompagne le
+passage des API Java EE de javax.* vers jakarta.*.
+
+
+1.2 Couches a distinguer
+-------------------------
+
+Une page depend de plusieurs specifications :
+
+  Pages       syntaxe JSP, traduction, actions et API des pages
+  Servlet     requetes, reponses, sessions et application Web
+  EL          langage d'expressions ${...} et #{...}
+  Tags/JSTL   bibliotheque standard de balises
+  Java SE     classes, beans et code Java eventuellement embarque
+
+JSTL n'est pas la syntaxe de base de JSP. Une page qui utilise c:forEach doit
+disposer de la bibliotheque de balises correspondante.
+
+
+1.3 Evolution resumee
+----------------------
+
+  Version/famille       Evolution marquante
+  --------------------  ------------------------------------------------------
+  JSP 1.0/1.1           pages, scriptlets, actions et bibliotheques de balises
+  JSP 1.2               modele de balises et integration Java EE consolides
+  JSP 2.0               EL integre, fichiers de balises, SimpleTag
+  JSP 2.1               EL unifie avec les autres technologies Web
+  JSP 2.2/2.3           alignements Servlet et EL modernes
+  Jakarta Pages 2.3     premiere publication sous gouvernance Jakarta EE
+  Jakarta Pages 3.0     noms de paquets jakarta.*, Servlet 5
+  Jakarta Pages 3.1     alignements Jakarta EE 10
+  Jakarta Pages 4.0     Jakarta EE 11, Java 17 minimum, retraits d'API
+
+Jakarta Pages 4.1 est en developpement au moment de la redaction. Ce document
+prend Pages 4.0 comme version finale recente et signale les differences
+historiques utiles.
+
+
+1.4 Resume JSP classique / Jakarta moderne
+-------------------------------------------
+
+  Caracteristique       JSP Java EE              Jakarta Pages
+  --------------------  ------------------------  ---------------------------
+  Paquets API           javax.servlet.jsp.*       jakarta.servlet.jsp.*
+  Servlet               javax.servlet.*           jakarta.servlet.*
+  Extension principale  .jsp                     .jsp
+  Forme XML             .jspx                     .jspx
+  EL                     javax.el.*                jakarta.el.*
+  URI JSTL classique    java.sun.com/...          encore reconnue selon JSTL
+  URI Tags moderne      non                       jakarta.tags.*
+  Scriptlets            pris en charge            pris en charge
+  Usage conseille       maintenance               EL, balises et MVC
+
+
+================================================================================
+2. MODELE D'EXECUTION
+================================================================================
+
+2.1 Chaine de traitement
+-------------------------
+
+Pour une requete visant une page :
+
+  navigateur
+      -> serveur HTTP / conteneur Servlet
+      -> moteur JSP
+      -> servlet generee
+      -> modele et services Java
+      -> flux de reponse
+      -> navigateur
+
+Le navigateur ne recoit normalement que le resultat : HTML, XML, JSON, texte
+ou autre type MIME. Il ne recoit pas le code JSP source.
+
+
+2.2 Traduction et compilation
+------------------------------
+
+Le conteneur effectue conceptuellement :
+
+  1. lecture de la page et de ses inclusions statiques;
+  2. validation de la syntaxe et des bibliotheques de balises;
+  3. traduction vers une classe implementant l'API JSP/Servlet;
+  4. compilation Java;
+  5. chargement et initialisation de la classe;
+  6. execution pour chaque requete.
+
+Une erreur de traduction est differente d'une exception pendant une requete.
+Le conteneur peut traduire au premier acces ou precompiler au deploiement.
+
+
+2.3 Cycle de vie
+-----------------
+
+La classe generee suit le cycle de vie Servlet. Les points JSP visibles sont :
+
+  jspInit()       initialisation unique de l'instance
+  _jspService()   traitement genere de chaque requete
+  jspDestroy()    destruction de l'instance
+
+Une page peut declarer jspInit() ou jspDestroy() dans un element de declaration.
+Elle ne doit pas redefinir _jspService(), produit par le conteneur.
+
+
+2.4 Requetes simultanees
+-------------------------
+
+Une meme instance de servlet JSP peut traiter plusieurs requetes en parallele.
+Les variables locales d'un scriptlet dans le corps de la page appartiennent a
+une requete. Les champs declares avec <%! ... %> sont partages et doivent etre
+immuables ou correctement synchronises.
+
+  <%! private int compteur; %>     // Partage et sujet aux courses.
+
+Preferer un service thread-safe, un attribut atomique ou une base de donnees.
+
+
+================================================================================
+3. FICHIERS ET ORGANISATION D'UNE APPLICATION
+================================================================================
+
+3.1 Extensions
+---------------
+
+  .jsp    page en syntaxe classique
+  .jspx   document JSP en syntaxe XML
+  .jspf   fragment JSP, convention courante
+  .tag    fichier de balise en syntaxe classique
+  .tagx   fichier de balise en syntaxe XML
+  .tld    descripteur XML d'une bibliotheque de balises
+
+.jspf n'est pas une ressource a appeler directement. Un fragment place sous
+WEB-INF ne peut pas etre demande directement par un client.
+
+
+3.2 Structure Web traditionnelle
+----------------------------------
+
+  application/
+    index.jsp
+    vues/
+      catalogue.jsp
+    WEB-INF/
+      web.xml
+      jsp/
+        privee.jsp
+      tags/
+        panneau.tag
+      classes/
+        ...
+      lib/
+        bibliotheque.jar
+
+WEB-INF et META-INF ne sont pas servis directement au client. Placer les vues
+sous WEB-INF permet de forcer le passage par un controleur.
+
+
+3.3 Page minimale
+------------------
+
+  <%@ page contentType="text/html; charset=UTF-8"
+           pageEncoding="UTF-8" %>
+  <!DOCTYPE html>
+  <html lang="fr">
+  <head>
+    <meta charset="UTF-8">
+    <title>Bonjour</title>
+  </head>
+  <body>
+    <h1>Bonjour JSP</h1>
+  </body>
+  </html>
+
+
+================================================================================
+4. ELEMENTS LEXICAUX ET SYNTAXE CLASSIQUE
+================================================================================
+
+4.1 Donnees de gabarit
+-----------------------
+
+Tout texte qui n'appartient pas a un element JSP est une donnee de gabarit.
+Il est copie vers la sortie :
+
+  <p>Ce texte est envoye au client.</p>
+
+JSP ne valide pas automatiquement le HTML. Une page peut produire n'importe
+quel texte autorise par son type de contenu.
+
+
+4.2 Delimiteurs
+----------------
+
+  <%@ ... %>    directive
+  <%! ... %>    declaration Java
+  <%  ... %>    scriptlet Java
+  <%= ... %>    expression de script
+  <%-- ... --%> commentaire JSP
+  ${ ... }      expression EL immediate
+  #{ ... }      expression EL differee, seulement dans les contextes admis
+
+Une expression <%= ... %> ne porte pas de point-virgule terminal :
+
+  <%= utilisateur.getNom() %>
+
+
+4.3 Commentaires
+-----------------
+
+  <%-- commentaire JSP --%>
+
+est retire pendant la traduction.
+
+  <!-- commentaire HTML -->
+
+est envoye au client et reste visible dans le source HTML.
+
+Un commentaire Java // ou /* ... */ n'est valable qu'a l'interieur d'un
+element Java.
+
+
+4.4 Espaces et sauts de ligne
+------------------------------
+
+Les espaces des donnees de gabarit font partie de la sortie. Les espaces dans
+une directive ou un element Java suivent la grammaire correspondante.
+
+L'attribut trimDirectiveWhitespaces et les groupes de proprietes JSP peuvent
+demander la suppression de certains espaces de gabarit dus aux directives.
+
+
+4.5 Echappement des sequences speciales
+----------------------------------------
+
+Dans la syntaxe classique, une sequence ayant une signification JSP doit etre
+ecrite selon les regles de la version et du contexte. Pour produire un dollar
+avant une accolade sans lancer EL, une forme courante est :
+
+  $${expression}
+
+Le premier dollar est du texte, le second peut encore commencer EL selon la
+forme exacte. La solution robuste consiste a produire le texte avec c:out,
+jsp:text en syntaxe XML, ou a configurer EL seulement si toute la page
+l'exige. Toujours tester le resultat sur le conteneur cible.
+
+
+4.6 Sensibilite a la casse
+---------------------------
+
+Les noms JSP, Java, XML et EL sont sensibles a la casse :
+
+  pageContext != pagecontext
+  jsp:include != jsp:Include
+  getNom() != getnom()
+
+Les noms d'en-tetes HTTP sont geres sans sensibilite a la casse par HTTP, mais
+cela ne modifie pas les regles du langage de la page.
+
+
+================================================================================
+5. DIRECTIVES
+================================================================================
+
+Une directive fournit des informations de traduction au conteneur. Elle ne
+produit pas directement de contenu.
+
+
+5.1 Directive page
+-------------------
+
+Forme :
+
+  <%@ page attribut="valeur" ... %>
+
+Attributs usuels :
+
+  language
+      Langage de script. La valeur portable usuelle est java.
+
+  extends
+      Superclasse imposee a la servlet generee. Usage specialise et fragile.
+
+  import
+      Types ou paquets Java importes dans les elements de script.
+
+  session
+      true rend l'objet implicite session disponible; false le desactive.
+
+  buffer
+      Taille du tampon de sortie, par exemple 8kb, ou none.
+
+  autoFlush
+      Si true, vide un tampon plein; sinon son debordement est une erreur.
+
+  isErrorPage
+      Rend l'objet implicite exception disponible sur la page d'erreur.
+
+  errorPage
+      URI relative de la page qui traitera une exception non interceptee.
+
+  contentType
+      Type MIME et eventuellement encodage de la reponse.
+
+  pageEncoding
+      Encodage du fichier source JSP.
+
+  isELIgnored
+      Demande si ${...} doit etre traite comme texte.
+
+  deferredSyntaxAllowedAsLiteral
+      Autorise selon le contexte la syntaxe #{...} comme texte litteral.
+
+  trimDirectiveWhitespaces
+      Supprime certains blancs laisses par les directives.
+
+  info
+      Texte descriptif accessible par l'information de servlet.
+
+Exemple :
+
+  <%@ page contentType="text/html; charset=UTF-8"
+           pageEncoding="UTF-8"
+           session="false"
+           import="java.time.LocalDate" %>
+
+Plusieurs directives page peuvent etre presentes. Un attribut qui ne peut
+apparaitre qu'une fois ne doit pas recevoir des valeurs contradictoires.
+
+
+5.2 isThreadSafe historique
+----------------------------
+
+isThreadSafe etait lie a l'ancien modele SingleThreadModel. Il ne doit pas
+servir de mecanisme de synchronisation. Jakarta Pages 4.0 a retire cet attribut
+apres le retrait de l'interface associee de Servlet.
+
+
+5.3 Directive include
+----------------------
+
+Forme :
+
+  <%@ include file="fragment.jspf" %>
+
+Le fichier est inclus pendant la traduction. Le resultat forme une seule unite
+JSP. Les declarations et directives du fragment influencent donc la page.
+
+Le chemin est relatif a la page, ou relatif au contexte s'il commence par /.
+Une modification du fragment doit provoquer une retraduction des pages qui
+l'incluent; la detection depend du conteneur et de sa configuration.
+
+
+5.4 Directive taglib
+---------------------
+
+Forme avec URI :
+
+  <%@ taglib prefix="c" uri="jakarta.tags.core" %>
+
+Forme avec repertoire de fichiers de balises :
+
+  <%@ taglib prefix="site" tagdir="/WEB-INF/tags" %>
+
+prefix choisit le prefixe XML utilise dans la page. uri identifie une
+bibliotheque dont le TLD doit etre localisable. tagdir expose les fichiers
+.tag ou .tagx d'un repertoire.
+
+La directive doit preceder l'emploi du prefixe.
+
+
+================================================================================
+6. ELEMENTS DE SCRIPT JAVA
+================================================================================
+
+6.1 Declaration
+----------------
+
+Forme :
+
+  <%! declaration Java %>
+
+La declaration devient un membre de la classe generee :
+
+  <%!
+    private String titre() {
+      return "Catalogue";
+    }
+  %>
+
+Les champs sont partages entre requetes. Ne pas y placer un utilisateur, une
+requete ou un objet mutable non protege.
+
+
+6.2 Scriptlet
+--------------
+
+Forme :
+
+  <% instructions Java %>
+
+Exemple :
+
+  <%
+    String nom = request.getParameter("nom");
+    if (nom == null) {
+      nom = "visiteur";
+    }
+  %>
+
+Le code est insere dans la methode de service generee. Les variables locales
+sont accessibles aux elements de script suivants selon leur portee Java.
+
+
+6.3 Expression de script
+-------------------------
+
+Forme :
+
+  <%= expression Java %>
+
+Le resultat est converti en texte et ecrit dans out :
+
+  <p>Date : <%= new java.util.Date() %></p>
+
+Cette ecriture n'echappe pas automatiquement HTML. Afficher directement un
+parametre de requete cree une vulnerabilite XSS.
+
+
+6.4 Imbrication avec le gabarit
+--------------------------------
+
+Une construction historique peut ouvrir un bloc Java, produire du gabarit,
+puis fermer le bloc :
+
+  <% if (produit != null) { %>
+    <p>Produit present</p>
+  <% } else { %>
+    <p>Produit absent</p>
+  <% } %>
+
+Cette forme fonctionne, mais disperse la structure du programme. Preferer
+c:if, c:choose et c:forEach.
+
+
+6.5 Pourquoi eviter les scriptlets
+-----------------------------------
+
+Les scriptlets :
+
+  - melangent presentation et logique;
+  - compliquent les tests;
+  - facilitent les failles XSS et les erreurs de fermeture;
+  - rendent la page difficile a lire pour un outil HTML;
+  - lient la vue au langage Java;
+  - encouragent l'acces direct a la base de donnees.
+
+Une architecture MVC prepare le modele dans un controleur et emploie EL/JSTL
+pour la vue.
+
+
+================================================================================
+7. OBJETS IMPLICITES DES ELEMENTS DE SCRIPT
+================================================================================
+
+Le conteneur declare automatiquement :
+
+  request
+      Requete Servlet, souvent HttpServletRequest.
+
+  response
+      Reponse Servlet, souvent HttpServletResponse.
+
+  pageContext
+      Contexte JSP reunissant les portees et services de la page.
+
+  session
+      HttpSession, sauf si session="false".
+
+  application
+      ServletContext partage par l'application Web.
+
+  out
+      JspWriter utilise pour la sortie de la page.
+
+  config
+      ServletConfig de la servlet generee.
+
+  page
+      Reference this vers l'instance de page.
+
+  exception
+      Throwable disponible seulement avec isErrorPage="true".
+
+Exemple :
+
+  <p>Methode : <%= request.getMethod() %></p>
+  <p>Serveur : <%= application.getServerInfo() %></p>
+
+page est rarement utile. pageContext est l'objet central pour une balise ou un
+code qui doit manipuler les attributs sans connaitre directement chaque objet.
+
+
+================================================================================
+8. PORTEES ET ATTRIBUTS
+================================================================================
+
+8.1 Les quatre portees
+-----------------------
+
+  Portee       Duree conceptuelle             Objet
+  -----------  ------------------------------  -------------------
+  page         evaluation de la page           pageContext
+  request      requete et transferts internes  request
+  session      session d'un client             session
+  application  vie du contexte Web             application
+
+
+8.2 Operations
+---------------
+
+  pageContext.setAttribute("nom", valeur);
+  request.setAttribute("nom", valeur);
+  session.setAttribute("nom", valeur);
+  application.setAttribute("nom", valeur);
+
+  Object valeur = request.getAttribute("nom");
+  request.removeAttribute("nom");
+
+Un parametre HTTP n'est pas un attribut :
+
+  request.getParameter("nom")    saisie du client
+  request.getAttribute("nom")    objet place par le serveur
+
+
+8.3 Recherche sans portee explicite
+------------------------------------
+
+Dans EL, ${produit} recherche typiquement un attribut par ordre :
+
+  page -> request -> session -> application
+
+Un nom identique dans une portee plus courte masque les suivantes. Ecrire
+${requestScope.produit} rend l'intention explicite.
+
+
+8.4 Choix de la portee
+-----------------------
+
+Utiliser la portee la plus courte qui satisfait le besoin :
+
+  message de validation     request
+  resultat d'une recherche  request
+  panier utilisateur        session, si reellement necessaire
+  configuration partagee    application ou service
+
+Une session trop volumineuse consomme de la memoire et complique la
+replication d'un groupe de serveurs.
+
+
+================================================================================
+9. ACTIONS STANDARD JSP
+================================================================================
+
+Les actions standard utilisent le prefixe reserve jsp.
+
+
+9.1 jsp:include
+----------------
+
+  <jsp:include page="/WEB-INF/jsp/menu.jsp" flush="true" />
+
+La ressource est executee au moment de la requete et sa sortie est inseree.
+Elle dispose de son propre contexte d'execution, contrairement a l'inclusion
+statique qui fusionne les sources.
+
+
+9.2 jsp:forward
+----------------
+
+  <jsp:forward page="/WEB-INF/jsp/connexion.jsp" />
+
+Le traitement est transfere a une ressource du serveur. La reponse ne doit pas
+avoir ete validee. Un controleur Servlet est generalement mieux place pour
+decider d'un transfert.
+
+
+9.3 jsp:param
+--------------
+
+jsp:param ajoute un parametre a include, forward ou une action compatible :
+
+  <jsp:include page="fiche.jsp">
+    <jsp:param name="id" value="${produit.id}" />
+  </jsp:include>
+
+Les valeurs deviennent des parametres de requete de la ressource cible.
+
+
+9.4 jsp:useBean
+----------------
+
+  <jsp:useBean id="client"
+               class="exemple.Client"
+               scope="request" />
+
+L'action recherche un attribut nomme client dans la portee. S'il est absent et
+si class autorise la creation, elle instancie le bean avec un constructeur sans
+argument accessible.
+
+Attributs principaux :
+
+  id       nom de la variable et de l'attribut
+  scope    page, request, session ou application
+  class    classe concrete a instancier
+  type     type visible de la reference
+  beanName nom transmis au mecanisme historique de creation de beans
+
+
+9.5 jsp:setProperty
+--------------------
+
+  <jsp:setProperty name="client"
+                   property="nom"
+                   value="Ada" />
+
+appelle conceptuellement client.setNom(...).
+
+Forme provenant d'un parametre :
+
+  <jsp:setProperty name="client"
+                   property="nom"
+                   param="nom" />
+
+La forme property="*" copie plusieurs parametres correspondants vers les
+setters. Elle est dangereuse pour les objets metier : un client peut tenter de
+modifier une propriete qui ne devait pas etre exposee. Preferer une validation
+et une liste explicites dans le controleur.
+
+
+9.6 jsp:getProperty
+--------------------
+
+  <jsp:getProperty name="client" property="nom" />
+
+appelle le getter JavaBean et ecrit sa valeur. Cette action n'est pas un
+mecanisme general d'echappement HTML.
+
+
+9.7 Actions de document
+------------------------
+
+  jsp:element
+  jsp:attribute
+  jsp:body
+  jsp:text
+
+Elles construisent dynamiquement des elements ou delimitent du texte et des
+corps, particulierement dans la syntaxe XML ou les fichiers de balises.
+
+
+9.8 Actions de fichiers de balises
+-----------------------------------
+
+  jsp:invoke    invoque un fragment fourni comme attribut
+  jsp:doBody    evalue le corps de la balise
+
+Ces actions sont valables dans le contexte des fichiers de balises, pas comme
+outils generaux d'une page ordinaire.
+
+
+9.9 jsp:plugin historique
+--------------------------
+
+jsp:plugin, jsp:fallback et les actions associees servaient au chargement
+d'applets ou de composants dans le navigateur. Les navigateurs modernes ne
+prennent plus ce modele en charge. Jakarta Pages 4.0 a retire ces actions.
+
+
+================================================================================
+10. JAVABEANS DANS JSP
+================================================================================
+
+10.1 Convention de propriete
+------------------------------
+
+Un bean classique possede :
+
+  public class Client {
+      private String nom;
+
+      public Client() {
+      }
+
+      public String getNom() {
+          return nom;
+      }
+
+      public void setNom(String valeur) {
+          nom = valeur;
+      }
+  }
+
+EL peut lire ${client.nom}. Cela correspond a une resolution de propriete et
+non a un acces obligatoire au champ.
+
+
+10.2 Proprietes booleennes et indexees
+---------------------------------------
+
+Un boolean peut utiliser isActif(). Une propriete indexee historique peut
+fournir des getters et setters avec indice. La resolution exacte depend de
+l'introspection JavaBeans et du type de l'objet.
+
+
+10.3 Ne pas confondre bean et entite
+-------------------------------------
+
+Exposer directement une entite persistante a jsp:setProperty property="*"
+facilite l'affectation massive non autorisee. Utiliser un objet de formulaire
+ou valider chaque champ dans un controleur.
+
+
+================================================================================
+11. INCLUSIONS, TRANSFERTS ET REDIRECTIONS
+================================================================================
+
+11.1 Comparaison
+-----------------
+
+  Mecanisme             Moment            URL navigateur  Source fusionne
+  --------------------  ----------------  ---------------  --------------
+  directive include     traduction        non              oui
+  jsp:include           requete           non              non
+  forward interne       requete           non              non
+  sendRedirect          nouvelle requete  oui              non
+
+
+11.2 Redirection HTTP
+----------------------
+
+  response.sendRedirect(
+      response.encodeRedirectURL("connexion"));
+
+Une redirection demande au navigateur d'effectuer une nouvelle requete. Les
+attributs request precedents sont perdus. Le code doit terminer le traitement
+apres la redirection pour ne pas continuer a produire une page.
+
+
+11.3 Encodage des URL de session
+---------------------------------
+
+Lorsque le suivi de session par cookie n'est pas possible, encodeURL peut
+ajouter un identifiant de session :
+
+  response.encodeURL("panier")
+
+Ne jamais construire manuellement un identifiant de session dans une URL.
+
+
+================================================================================
+12. EXPRESSION LANGUAGE : SYNTAXE
+================================================================================
+
+12.1 Formes
+------------
+
+  ${expression}    evaluation immediate
+  #{expression}    evaluation differee dans un attribut qui l'autorise
+
+Dans une page JSP ordinaire, ${...} est la forme principale. #{...} n'est pas
+un moyen general de retarder arbitrairement une expression; le contexte de la
+balise doit accepter une expression differee.
+
+
+12.2 Identificateurs et proprietes
+-----------------------------------
+
+  ${client}
+  ${client.nom}
+  ${client["nom"]}
+  ${commande.client.adresse.ville}
+  ${articles[0]}
+  ${prixParCode["A-42"]}
+
+objet.propriete est une forme commode d'objet["propriete"]. Les crochets
+permettent un nom calcule ou un nom qui n'est pas un identificateur simple.
+
+
+12.3 Literaux
+--------------
+
+  true  false
+  null
+  0  42  -7
+  3.14  1.0e3
+  'texte'
+  "texte"
+
+Les regles de nombres et d'echappement appartiennent a EL, pas exactement a la
+grammaire Java.
+
+
+12.4 Operateurs arithmetiques
+------------------------------
+
+  +  -  *  /  div  %  mod
+
+  ${prix * quantite}
+  ${total div nombre}
+  ${index mod 2}
+
+Les conversions EL sont plus permissives que les conversions Java. Une valeur
+vide ou une chaine numerique peut etre convertie selon l'operateur.
+
+
+12.5 Operateurs relationnels
+-----------------------------
+
+  ==  eq
+  !=  ne
+  <   lt
+  >   gt
+  <=  le
+  >=  ge
+
+Les formes alphabetiques evitent les conflits avec la syntaxe XML :
+
+  ${age ge 18}
+
+
+12.6 Operateurs logiques
+-------------------------
+
+  &&  and
+  ||  or
+  !   not
+
+  ${actif and not bloque}
+
+
+12.7 Operateur empty
+---------------------
+
+  ${empty param.nom}
+  ${not empty requestScope.articles}
+
+empty teste notamment null, chaine vide et collections/tableaux vides selon
+les regles EL. Il ne remplace pas toutes les validations metier.
+
+
+12.8 Operateur conditionnel
+----------------------------
+
+  ${condition ? valeurVraie : valeurFausse}
+
+Exemple :
+
+  ${empty utilisateur ? 'Anonyme' : utilisateur.nom}
+
+
+12.9 Methodes, fonctions et versions
+-------------------------------------
+
+Selon la version EL et le contexte :
+
+  ${panier.calculerTotal()}
+  ${fn:length(titre)}
+  ${Math:max(a, b)}
+
+Les appels de methodes, imports statiques, lambdas et operations de collections
+ont ete enrichis au fil des versions EL. Une page visant un ancien serveur ne
+doit pas supposer que toute syntaxe EL moderne est disponible.
+
+
+12.10 Precedence simplifiee
+----------------------------
+
+De la liaison forte vers la liaison faible, on rencontre notamment :
+
+  [] et .
+  appel ()
+  unaire - ! not empty
+  * / div % mod
+  + -
+  comparaisons
+  egalite
+  && and
+  || or
+  ? :
+  affectations et point-virgule dans les versions EL qui les prennent en charge
+
+Utiliser des parentheses lorsque l'intention n'est pas evidente.
+
+
+================================================================================
+13. EL : RESOLUTION, OBJETS IMPLICITES ET SECURITE
+================================================================================
+
+13.1 Objets implicites EL
+--------------------------
+
+  pageContext       contexte de page
+  pageScope         attributs de page
+  requestScope      attributs de requete
+  sessionScope      attributs de session
+  applicationScope  attributs d'application
+  param             premiere valeur d'un parametre
+  paramValues       tableau de toutes les valeurs
+  header            premiere valeur d'un en-tete
+  headerValues      toutes les valeurs d'un en-tete
+  cookie            cookies indexes par nom
+  initParam         parametres d'initialisation du contexte
+
+Exemples :
+
+  ${param.id}
+  ${paramValues.categorie[0]}
+  ${header['User-Agent']}
+  ${cookie.theme.value}
+  ${initParam.nomApplication}
+
+
+13.2 Resolution d'un nom
+-------------------------
+
+Un nom sans portee est transmis aux resolvers EL. Dans le contexte JSP, les
+attributs sont recherches dans les portees de la plus courte a la plus longue.
+Des resolvers supplementaires peuvent modifier le modele.
+
+
+13.3 Maps, listes, tableaux et beans
+-------------------------------------
+
+  ${carte['cle']}       Map
+  ${liste[2]}           List
+  ${tableau[2]}         tableau Java
+  ${bean.nom}           propriete JavaBean
+
+La notation ressemble, mais chaque type est traite par un ELResolver adapte.
+
+
+13.4 Valeurs nulles
+--------------------
+
+EL est concu pour la presentation et applique des valeurs par defaut dans
+plusieurs situations. Cela ne signifie pas que toute dereference ou conversion
+invalide est silencieuse. Une erreur de propriete, de methode ou de type peut
+produire une exception EL selon l'operation.
+
+
+13.5 Echappement
+-----------------
+
+EL n'echappe pas automatiquement HTML :
+
+  ${param.nom}                 // Sortie brute, dangereuse.
+  <c:out value="${param.nom}"/> // Echappement XML/HTML de base.
+
+L'encodage depend du contexte :
+
+  texte HTML        echappement HTML
+  attribut HTML     echappement d'attribut et guillemets
+  URL               construction et encodage d'URL
+  JavaScript        serialisation JavaScript sure
+  CSS               regles propres au CSS
+
+c:out ne rend pas automatiquement une valeur sure pour JavaScript ou CSS.
+
+
+13.6 Methodes dangereuses
+--------------------------
+
+Ne pas exposer a une saisie non fiable un graphe d'objets permettant des
+operations sensibles. La vue doit recevoir un modele limite. Les versions
+recentes de conteneurs et d'EL corrigent aussi des problemes de securite :
+maintenir le serveur a jour reste indispensable.
+
+
+================================================================================
+14. BIBLIOTHEQUES DE BALISES
+================================================================================
+
+14.1 But
+---------
+
+Une bibliotheque de balises encapsule une operation reutilisable derriere une
+syntaxe de type XML :
+
+  <app:prix valeur="${produit.prix}" devise="CAD" />
+
+Elle se compose selon le cas de :
+
+  - descripteurs TLD;
+  - gestionnaires Java;
+  - fichiers .tag/.tagx;
+  - fonctions EL;
+  - classes et ressources dans un JAR.
+
+
+14.2 Association du prefixe
+----------------------------
+
+  <%@ taglib prefix="app" uri="https://exemple.test/tags/app" %>
+
+L'URI est un identifiant logique. Elle n'est pas necessairement telechargee
+par HTTP. Le conteneur l'associe a un TLD trouve dans WEB-INF, WEB-INF/lib ou
+la configuration.
+
+
+14.3 Prefixes
+--------------
+
+Le prefixe :
+
+  - doit etre distinct dans la page;
+  - ne doit pas etre jsp, reserve aux actions standard;
+  - devrait etre court et stable;
+  - n'est pas obligatoirement le meme dans toutes les pages.
+
+
+14.4 Corps vide ou non vide
+----------------------------
+
+  <app:message texte="Bonjour" />
+
+  <app:panneau titre="Informations">
+    <p>Corps de la balise.</p>
+  </app:panneau>
+
+Le TLD ou le fichier de balise declare le type de corps admis.
+
+
+14.5 Attributs
+---------------
+
+Un attribut peut etre :
+
+  - litteral;
+  - expression immediate;
+  - expression differee si elle est autorisee;
+  - obligatoire ou facultatif;
+  - d'un type declare;
+  - dynamique si le gestionnaire l'accepte.
+
+Le conteneur convertit la valeur vers le type attendu selon les regles JSP/EL.
+
+
+================================================================================
+15. FICHIERS DE BALISES ET GESTIONNAIRES
+================================================================================
+
+15.1 Fichier .tag
+------------------
+
+Exemple /WEB-INF/tags/panneau.tag :
+
+  <%@ tag body-content="scriptless" %>
+  <%@ attribute name="titre"
+                 required="true"
+                 type="java.lang.String" %>
+  <section class="panneau">
+    <h2>${titre}</h2>
+    <jsp:doBody />
+  </section>
+
+Utilisation :
+
+  <%@ taglib prefix="site" tagdir="/WEB-INF/tags" %>
+  <site:panneau titre="Aide">
+    <p>Contenu.</p>
+  </site:panneau>
+
+
+15.2 Directives d'un fichier de balise
+---------------------------------------
+
+  tag        proprietes generales du fichier
+  attribute  declaration d'un attribut
+  variable   declaration d'une variable de script
+  include    inclusion statique
+  taglib     bibliotheque utilisee
+
+Attributs utiles de attribute :
+
+  name           nom
+  required       presence obligatoire
+  type           type Java
+  rtexprvalue    expression a l'execution autorisee
+  fragment       valeur fournie comme fragment JSP
+  deferredValue  expression de valeur differee
+  deferredMethod expression de methode differee
+
+Les options exactes dependent de la version Pages.
+
+
+15.3 SimpleTag
+---------------
+
+Un gestionnaire Java moderne peut implementer SimpleTag. Le conteneur :
+
+  1. cree ou obtient l'instance;
+  2. fournit le JspContext;
+  3. affecte le parent et les attributs;
+  4. fournit le corps sous forme de JspFragment;
+  5. appelle doTag().
+
+Le gestionnaire ne doit pas conserver des donnees d'une requete apres son
+utilisation.
+
+
+15.4 Gestionnaires classiques
+------------------------------
+
+Les API Tag, BodyTag, IterationTag et leurs classes de support appartiennent au
+modele historique. Elles emploient notamment doStartTag(), doAfterBody() et
+doEndTag(). Elles restent importantes pour maintenir d'anciennes bibliotheques.
+
+
+15.5 TLD
+---------
+
+Un Tag Library Descriptor decrit :
+
+  - l'URI et la version;
+  - les balises;
+  - les classes gestionnaires;
+  - les attributs;
+  - les variables de script;
+  - les fonctions EL;
+  - eventuellement des validateurs et ecouteurs.
+
+Un TLD dans un JAR est normalement place sous META-INF ou un sous-repertoire
+admis. Le conteneur recherche les descripteurs selon les conventions Servlet
+et Pages.
+
+
+================================================================================
+16. JSTL / JAKARTA STANDARD TAG LIBRARY
+================================================================================
+
+16.1 Bibliotheques
+-------------------
+
+JSTL fournit plusieurs familles :
+
+  core           conditions, boucles, URL, import et variables
+  formatting     messages, nombres, dates et localisation
+  functions      fonctions EL sur les chaines et collections
+  xml            traitement XML historique
+  sql            acces SQL de demonstration ou usages limites
+
+La logique SQL ne devrait pas etre placee dans une vue de production.
+
+
+16.2 URI historiques
+---------------------
+
+  http://java.sun.com/jsp/jstl/core
+  http://java.sun.com/jsp/jstl/fmt
+  http://java.sun.com/jsp/jstl/functions
+  http://java.sun.com/jsp/jstl/xml
+  http://java.sun.com/jsp/jstl/sql
+
+
+16.3 URI Jakarta Tags 3.0
+--------------------------
+
+  jakarta.tags.core
+  jakarta.tags.fmt
+  jakarta.tags.functions
+  jakarta.tags.xml
+  jakarta.tags.sql
+
+Jakarta Tags 3.0 a introduit ces nouveaux identifiants tout en demandant encore
+la reconnaissance des anciennes URI java.sun.com. Verifier cependant la
+version reelle de la bibliotheque installee.
+
+
+16.4 Balises core principales
+------------------------------
+
+  c:out        sortie avec echappement XML configurable
+  c:set        creation ou affectation
+  c:remove     suppression d'une variable
+  c:if         condition simple
+  c:choose     choix multiple
+  c:when       branche conditionnelle
+  c:otherwise  branche par defaut
+  c:forEach    iteration
+  c:forTokens  decoupage et iteration
+  c:url        construction d'URL
+  c:param      parametre d'URL ou d'import
+  c:redirect   redirection
+  c:import     inclusion d'une ressource
+  c:catch      capture limitee d'exception
+
+
+16.5 Exemple conditionnel
+--------------------------
+
+  <c:choose>
+    <c:when test="${empty requestScope.articles}">
+      <p>Aucun article.</p>
+    </c:when>
+    <c:otherwise>
+      <ul>
+        <c:forEach var="article"
+                   items="${requestScope.articles}">
+          <li><c:out value="${article.nom}" /></li>
+        </c:forEach>
+      </ul>
+    </c:otherwise>
+  </c:choose>
+
+
+16.6 forEach
+-------------
+
+Attributs courants :
+
+  items      collection, tableau, Map ou autre source admise
+  var        nom de l'element
+  varStatus  informations d'iteration
+  begin      premier indice
+  end        dernier indice inclus
+  step       increment
+
+varStatus expose notamment index, count, first et last.
+
+
+16.7 Internationalisation
+--------------------------
+
+La famille fmt fournit :
+
+  fmt:setLocale
+  fmt:setBundle
+  fmt:bundle
+  fmt:message
+  fmt:param
+  fmt:formatNumber
+  fmt:parseNumber
+  fmt:formatDate
+  fmt:parseDate
+  fmt:setTimeZone
+  fmt:timeZone
+
+Les messages doivent etre extraits dans des ResourceBundle. Le choix de locale
+doit etre controle et ne pas etre confondu avec l'encodage UTF-8.
+
+
+================================================================================
+17. SYNTAXE XML JSPX
+================================================================================
+
+17.1 Document JSP
+------------------
+
+Une page .jspx est un document XML bien forme. Elle emploie des espaces de
+noms :
+
+  <?xml version="1.0" encoding="UTF-8"?>
+  <jsp:root xmlns:jsp="http://java.sun.com/JSP/Page"
+            version="2.3">
+    <jsp:directive.page
+        contentType="text/html; charset=UTF-8" />
+    <jsp:text><![CDATA[<!DOCTYPE html>]]></jsp:text>
+    <html xmlns="http://www.w3.org/1999/xhtml">
+      <body>
+        <p>${message}</p>
+      </body>
+    </html>
+  </jsp:root>
+
+Le nom d'espace JSP historique demeure celui defini par la syntaxe XML de la
+version visee; ne pas le remplacer arbitrairement par un nom de paquet Jakarta.
+
+
+17.2 Correspondances
+---------------------
+
+  Syntaxe classique             Syntaxe XML
+  ----------------------------  ------------------------------
+  <%@ page ... %>               jsp:directive.page
+  <%@ include ... %>            jsp:directive.include
+  <%@ taglib ... %>             declaration d'espace de noms
+  <%! ... %>                    jsp:declaration
+  <% ... %>                     jsp:scriptlet
+  <%= ... %>                    jsp:expression
+  texte                         jsp:text ou texte XML
+
+
+17.3 Bien-formation
+--------------------
+
+Tous les elements doivent etre fermes, les attributs doivent etre cites et les
+caracteres XML reserves doivent etre echappes. Une page HTML5 valide n'est pas
+necessairement un document XML valide.
+
+
+================================================================================
+18. ERREURS ET EXCEPTIONS
+================================================================================
+
+18.1 Page locale d'erreur
+--------------------------
+
+Page appelante :
+
+  <%@ page errorPage="/WEB-INF/jsp/erreur.jsp" %>
+
+Page d'erreur :
+
+  <%@ page isErrorPage="true" %>
+  <p>Une erreur interne est survenue.</p>
+
+L'objet exception n'est disponible que sur une page declaree comme page
+d'erreur.
+
+
+18.2 Configuration globale
+---------------------------
+
+web.xml peut associer :
+
+  - un code HTTP a une page;
+  - un type d'exception a une page.
+
+La configuration globale evite de repeter errorPage dans chaque vue.
+
+
+18.3 Informations exposees
+---------------------------
+
+Ne pas envoyer au client :
+
+  - trace de pile;
+  - requete SQL;
+  - chemin physique;
+  - secret ou jeton;
+  - classe interne inutile;
+  - contenu complet d'une exception.
+
+Consigner un identifiant de correlation cote serveur et montrer un message
+generique a l'utilisateur.
+
+
+18.4 Erreurs de traduction
+---------------------------
+
+Une directive inconnue, un prefixe non declare, un Java invalide ou une
+bibliotheque absente provoque une erreur avant l'execution normale. errorPage
+ne peut pas toujours traiter une erreur qui empeche la page elle-meme d'etre
+traduite ou chargee.
+
+
+================================================================================
+19. SESSIONS
+================================================================================
+
+19.1 Activation
+----------------
+
+  <%@ page session="true" %>
+
+est la valeur historique usuelle. Avec session="false", l'objet implicite
+session n'est pas disponible dans les elements de script.
+
+
+19.2 Attributs
+---------------
+
+  session.setAttribute("panier", panier);
+  Object panier = session.getAttribute("panier");
+  session.removeAttribute("panier");
+  session.invalidate();
+
+EL :
+
+  ${sessionScope.panier}
+
+
+19.3 Securite de session
+-------------------------
+
+  - regenerer l'identifiant apres authentification;
+  - employer des cookies Secure et HttpOnly;
+  - choisir SameSite selon le flux applicatif;
+  - fixer un delai d'expiration;
+  - ne jamais placer un mot de passe en session;
+  - proteger les actions contre CSRF;
+  - invalider la session a la deconnexion.
+
+
+19.4 Concurrence
+-----------------
+
+Deux requetes du meme navigateur peuvent utiliser simultanement la meme
+session. Un objet mutable stocke en session n'est pas automatiquement
+thread-safe.
+
+
+================================================================================
+20. REQUETE, REPONSE ET HTTP
+================================================================================
+
+20.1 Parametres
+----------------
+
+  request.getParameter("nom")
+  request.getParameterValues("categorie")
+  request.getParameterMap()
+
+Toute valeur est non fiable. Valider type, longueur, format, plage et droit
+d'utilisation.
+
+
+20.2 Encodage de la requete
+----------------------------
+
+Pour un corps de formulaire, l'encodage doit etre fixe avant la premiere
+lecture des parametres :
+
+  request.setCharacterEncoding("UTF-8");
+
+Un filtre Servlet central est preferable a la repetition dans les pages.
+
+
+20.3 En-tetes et statut
+------------------------
+
+  response.setStatus(404);
+  response.setHeader("Cache-Control", "no-store");
+  response.setContentType("text/html");
+  response.setCharacterEncoding("UTF-8");
+
+Ces operations doivent avoir lieu avant la validation de la reponse.
+
+
+20.4 Tampon et validation
+--------------------------
+
+out ecrit dans un tampon JspWriter. Lorsque la reponse est validee, le statut
+et plusieurs en-tetes ne peuvent plus etre modifies. Une inclusion, un flush
+ou une sortie volumineuse peut provoquer cette validation.
+
+
+================================================================================
+21. CONFIGURATION JSP DANS WEB.XML
+================================================================================
+
+21.1 jsp-config et jsp-property-group
+--------------------------------------
+
+Un groupe peut viser des motifs d'URL et configurer notamment :
+
+  - pageEncoding;
+  - contentType;
+  - elIgnored;
+  - scriptingInvalid;
+  - isXml;
+  - trimDirectiveWhitespaces;
+  - deferredSyntaxAllowedAsLiteral;
+  - include-prelude;
+  - include-coda.
+
+Exemple conceptuel :
+
+  <jsp-config>
+    <jsp-property-group>
+      <url-pattern>/WEB-INF/jsp/*.jsp</url-pattern>
+      <page-encoding>UTF-8</page-encoding>
+      <scripting-invalid>true</scripting-invalid>
+      <trim-directive-whitespaces>true</trim-directive-whitespaces>
+    </jsp-property-group>
+  </jsp-config>
+
+Le namespace et la version de web.xml doivent correspondre a Servlet/Jakarta
+EE cible.
+
+
+21.2 scripting-invalid
+-----------------------
+
+Cette option interdit les declarations, scriptlets et expressions de script
+dans le groupe. Elle aide a faire respecter des vues EL/JSTL.
+
+
+21.3 Preludes et codas
+-----------------------
+
+include-prelude et include-coda ajoutent automatiquement des fragments avant
+ou apres les pages du groupe. Un layout par composition explicite est souvent
+plus lisible, mais ces options restent utiles dans les applications anciennes.
+
+
+================================================================================
+22. ENCODAGE ET INTERNATIONALISATION
+================================================================================
+
+Trois encodages doivent rester coherents :
+
+  fichier source JSP      pageEncoding
+  reponse HTTP            charset de contentType
+  document HTML           meta charset
+
+Exemple :
+
+  <%@ page pageEncoding="UTF-8"
+           contentType="text/html; charset=UTF-8" %>
+  <meta charset="UTF-8">
+
+L'encodage de la requete est un quatrieme point distinct.
+
+Les sources devraient etre en UTF-8 sans dependance a l'encodage par defaut de
+la machine. Tester les accents, caracteres non latins et symboles supplementaires.
+
+
+================================================================================
+23. CONCURRENCE ET RESSOURCES
+================================================================================
+
+23.1 Etat partage
+------------------
+
+Ne pas placer dans un champ JSP :
+
+  - connexion JDBC;
+  - formatteur non thread-safe;
+  - utilisateur courant;
+  - requete ou reponse;
+  - collection mutable sans protection.
+
+
+23.2 Fermeture de ressources
+-----------------------------
+
+Une JSP ne devrait pas ouvrir directement une connexion, un fichier ou un flux
+reseau. Un service gere les ressources avec try-with-resources et retourne un
+modele deja prepare.
+
+
+23.3 Sortie et exceptions
+--------------------------
+
+Une exception apres l'envoi partiel de la reponse peut laisser un document
+tronque. Construire et valider les donnees avant de commencer une sortie
+importante.
+
+
+================================================================================
+24. SECURITE
+================================================================================
+
+24.1 XSS
+---------
+
+Ne jamais faire :
+
+  <%= request.getParameter("nom") %>
+  ${param.nom}
+
+sans encodage adapte. Pour du texte HTML :
+
+  <c:out value="${param.nom}" />
+
+Une politique CSP complete les protections mais ne remplace pas l'encodage.
+
+
+24.2 Injection SQL
+-------------------
+
+Ne pas construire de SQL dans une JSP. Le service utilise PreparedStatement
+avec parametres et controle les autorisations.
+
+
+24.3 CSRF
+----------
+
+Toute operation modifiant l'etat doit :
+
+  - utiliser une methode HTTP appropriee;
+  - verifier un jeton CSRF ou une protection equivalente;
+  - controler l'origine selon la politique;
+  - ne pas reposer uniquement sur un champ masque non secret.
+
+
+24.4 Controle d'acces
+----------------------
+
+Masquer un bouton ne protege pas l'operation. Le controleur ou service doit
+verifier l'identite et le droit pour chaque requete.
+
+
+24.5 Inclusion et chemins
+--------------------------
+
+Ne pas fournir directement une saisie a jsp:include, forward ou un chargeur de
+fichier. Utiliser une table de routes autorisees. Sinon, une inclusion locale
+ou un parcours de repertoire peut devenir possible.
+
+
+24.6 Expression Language
+-------------------------
+
+Ne pas evaluer dynamiquement une chaine EL provenant du client. Une expression
+peut atteindre des proprietes ou methodes au-dela de ce qu'un auteur de vue
+avait prevu.
+
+
+24.7 Secrets et diagnostics
+----------------------------
+
+Les identifiants, mots de passe et cles ne doivent pas se trouver dans le
+source JSP. Employer la configuration protegee du serveur et limiter les
+messages d'erreur.
+
+
+================================================================================
+25. ARCHITECTURE MVC RECOMMANDEE
+================================================================================
+
+Flux :
+
+  requete
+    -> filtre de securite/encodage
+    -> servlet ou controleur
+    -> service
+    -> depot/base
+    -> modele place dans request
+    -> forward vers JSP sous WEB-INF
+    -> EL/JSTL produit la vue
+
+Controleur :
+
+  List articles = service.rechercher(texte);
+  request.setAttribute("articles", articles);
+  request.getRequestDispatcher(
+      "/WEB-INF/jsp/catalogue.jsp").forward(request, response);
+
+Vue :
+
+  <c:forEach var="article" items="${requestScope.articles}">
+    <c:out value="${article.nom}" />
+  </c:forEach>
+
+La JSP ne choisit pas la transaction, n'execute pas de SQL et ne prend pas une
+decision d'autorisation.
+
+
+================================================================================
+26. COMPILATION, DEPLOIEMENT ET CACHE
+================================================================================
+
+26.1 Deploiement
+-----------------
+
+Une application peut etre deployee comme :
+
+  - repertoire developpe;
+  - archive WAR;
+  - module incorpore a une application plus grande.
+
+Les classes vont sous WEB-INF/classes et les JAR sous WEB-INF/lib dans le
+modele traditionnel.
+
+
+26.2 Precompilation
+--------------------
+
+Certains conteneurs fournissent un outil de precompilation JSP. Avantages :
+
+  - erreurs detectees pendant la construction;
+  - absence du cout de premiere traduction;
+  - controle des bibliotheques et imports;
+  - possibilite de ne pas livrer certains sources.
+
+La commande et les classes generees ne sont pas portables entre conteneurs.
+
+
+26.3 Rechargement
+------------------
+
+En developpement, le conteneur peut surveiller les dates de modification. En
+production, cette surveillance peut etre desactivee. Ne pas modifier des JSP
+directement dans un deploiement immuable.
+
+
+26.4 Dependances
+-----------------
+
+L'API Pages est normalement fournie par le conteneur et ne doit pas etre
+embarquee comme une implementation concurrente. JSTL/Jakarta Tags peut devoir
+etre ajoutee a WEB-INF/lib selon le serveur.
+
+
+================================================================================
+27. MIGRATION JAVAX VERS JAKARTA
+================================================================================
+
+27.1 Changement principal
+--------------------------
+
+  javax.servlet.*            -> jakarta.servlet.*
+  javax.servlet.http.*       -> jakarta.servlet.http.*
+  javax.servlet.jsp.*        -> jakarta.servlet.jsp.*
+  javax.servlet.jsp.tagext.* -> jakarta.servlet.jsp.tagext.*
+  javax.el.*                 -> jakarta.el.*
+
+Le changement est binaire et source. Un JAR compile contre javax n'est pas
+automatiquement compatible avec un serveur jakarta.
+
+
+27.2 Ce qui ne change pas automatiquement
+------------------------------------------
+
+L'extension .jsp et les principaux delimiteurs restent. Les noms des objets
+implicites restent. En revanche, il faut verifier :
+
+  - imports dans les pages et classes;
+  - TLD et gestionnaires de balises;
+  - web.xml;
+  - bibliotheques tierces;
+  - JSTL;
+  - tests et outils de precompilation;
+  - version minimale de Java.
+
+
+27.3 URI de balises
+--------------------
+
+Jakarta Tags 3.0 fournit les URI jakarta.tags.* et conserve la reconnaissance
+des URI java.sun.com historiques. Utiliser les URI modernes dans un projet
+Jakarta neuf, mais ne pas les introduire dans une application dont la
+bibliotheque JSTL est ancienne.
+
+
+27.4 Strategie
+---------------
+
+  1. inventorier serveur, Java, Servlet, Pages, EL et JSTL;
+  2. mettre a jour les dependances;
+  3. transformer javax vers jakarta dans le code controle;
+  4. mettre a jour descripteurs et TLD;
+  5. compiler toutes les JSP;
+  6. tester sessions, erreurs, inclusions et encodage;
+  7. verifier les bibliotheques tierces;
+  8. analyser securite et performances.
+
+
+================================================================================
+28. ELEMENTS HISTORIQUES, DECONSEILLES OU RETIRES
+================================================================================
+
+  Element                     Statut/conseil
+  --------------------------  -----------------------------------------------
+  scriptlets                  pris en charge, deconseilles
+  declarations mutables       dangereuses avec la concurrence
+  jsp:plugin                  retire de Pages 4.0
+  isThreadSafe                retire de Pages 4.0
+  SingleThreadModel           retire de Servlet moderne
+  javax.*                     historique, incompatible binaire avec jakarta
+  SQL JSTL dans une vue       eviter en production
+  jsp:setProperty "*"         eviter sur objets metier
+  anciennes API JSP EL        depreciees/remplacees par jakarta.el
+  applets navigateur          obsoletes et non prises en charge
+
+Pages 4.0 retire aussi du code qui etait deja deprecie dans Pages 3.1. Une
+migration doit compiler contre la nouvelle API pour trouver chaque emploi.
+
+
+================================================================================
+29. PORTABILITE
+================================================================================
+
+Une page portable :
+
+  - respecte la version Pages declaree;
+  - n'importe pas une classe interne du conteneur;
+  - n'appelle pas une API propre au serveur;
+  - utilise des URI et TLD pris en charge;
+  - ne depend pas du nom de la servlet generee;
+  - ne suppose pas son chemin de fichier temporaire;
+  - ne conserve pas une reference au gestionnaire de balise;
+  - teste les differences de version EL.
+
+Les noms et emplacements des sources Java generes ne font pas partie du contrat
+portable.
+
+
+================================================================================
+30. GRAMMAIRE SYNTHETIQUE
+================================================================================
+
+Cette grammaire est pedagogique. Elle ne remplace pas la grammaire normative.
+
+  page
+      ::= { element }
+
+  element
+      ::= donneeGabarit
+        | directive
+        | declaration
+        | scriptlet
+        | expressionScript
+        | commentaireJsp
+        | expressionEl
+        | actionStandard
+        | actionPersonnalisee
+
+  directive
+      ::= "<%@" nomDirective { attribut } "%>"
+
+  declaration
+      ::= "<%!" codeJavaDeclaration "%>"
+
+  scriptlet
+      ::= "<%" codeJavaInstruction "%>"
+
+  expressionScript
+      ::= "<%=" expressionJava "%>"
+
+  commentaireJsp
+      ::= "<%--" texte "--%>"
+
+  expressionEl
+      ::= "${" expression "}"
+        | "#{" expression "}"
+
+  actionStandard
+      ::= "<jsp:" nom { attribut } "/>"
+        | "<jsp:" nom { attribut } ">"
+             { element }
+          "</jsp:" nom ">"
+
+  actionPersonnalisee
+      ::= "<" prefixe ":" nom { attribut } "/>"
+        | "<" prefixe ":" nom { attribut } ">"
+             { element }
+          "</" prefixe ":" nom ">"
+
+  attribut
+      ::= nom "=" valeurCitee
+
+  directivePage
+      ::= "<%@ page" { attributPage } "%>"
+
+  directiveInclude
+      ::= "<%@ include file=" valeurCitee "%>"
+
+  directiveTaglib
+      ::= "<%@ taglib prefix=" valeurCitee
+          ( "uri=" valeurCitee | "tagdir=" valeurCitee ) "%>"
+
+Une valeur d'attribut peut etre litterale ou contenir une expression selon la
+declaration de l'attribut et la version du langage.
+
+
+================================================================================
+31. EXEMPLE RECAPITULATIF
+================================================================================
+
+Controleur conceptuel :
+
+  protected void doGet(
+      HttpServletRequest request,
+      HttpServletResponse response)
+      throws ServletException, IOException {
+
+      request.setAttribute(
+          "articles",
+          catalogue.rechercher(request.getParameter("q")));
+
+      request.getRequestDispatcher(
+          "/WEB-INF/jsp/articles.jsp")
+          .forward(request, response);
+  }
+
+Vue /WEB-INF/jsp/articles.jsp :
+
+  <%@ page contentType="text/html; charset=UTF-8"
+           pageEncoding="UTF-8"
+           session="false" %>
+  <%@ taglib prefix="c" uri="jakarta.tags.core" %>
+  <!DOCTYPE html>
+  <html lang="fr">
+  <head>
+    <meta charset="UTF-8">
+    <title>Articles</title>
+  </head>
+  <body>
+    <h1>Articles</h1>
+
+    <c:choose>
+      <c:when test="${empty requestScope.articles}">
+        <p>Aucun resultat.</p>
+      </c:when>
+      <c:otherwise>
+        <ul>
+          <c:forEach var="article"
+                     items="${requestScope.articles}">
+            <li>
+              <c:out value="${article.nom}" />
+              -
+              <c:out value="${article.prix}" />
+            </li>
+          </c:forEach>
+        </ul>
+      </c:otherwise>
+    </c:choose>
+  </body>
+  </html>
+
+Proprietes :
+
+  - aucun scriptlet;
+  - modele place en portee request;
+  - vue protegee sous WEB-INF;
+  - sortie utilisateur echappee;
+  - UTF-8 coherent;
+  - session desactivee car inutile;
+  - logique metier hors de la page.
+
+
+================================================================================
+32. ERREURS FREQUENTES
+================================================================================
+
+  Probleme                              Cause probable
+  ------------------------------------  --------------------------------------
+  ${...} apparait litteralement         EL desactivee ou ancienne version
+  Prefixe c inconnu                     JSTL absente ou taglib incorrecte
+  ClassNotFoundException javax.*        application ancienne sur Jakarta
+  ClassNotFoundException jakarta.*      application Jakarta sur Java EE
+  Caracteres corrompus                  encodages source/requete/reponse
+  Cannot forward after response commit  sortie deja validee
+  session is undefined                  session="false"
+  exception is undefined                isErrorPage absent
+  Propriete bean introuvable             getter/setter non conforme
+  Page compile au premier acces         precompilation non activee
+  Valeurs d'un autre utilisateur        champ JSP partage ou mauvaise portee
+  XSS                                   sortie non encodee
+  Balise inconnue apres migration       URI ou version JSTL incompatible
+  jsp:plugin refuse                     action retiree en Pages 4.0
+  isThreadSafe refuse                   attribut retire en Pages 4.0
+
+
+================================================================================
+33. LISTE DE CONTROLE
+================================================================================
+
+Avant livraison :
+
+  [ ] La version Java correspond au conteneur.
+  [ ] Les familles javax et jakarta ne sont pas melangees.
+  [ ] Toutes les JSP sont precompilees ou testees.
+  [ ] pageEncoding et charset sont UTF-8 et coherents.
+  [ ] Un filtre fixe l'encodage des requetes.
+  [ ] Les vues applicatives sont sous WEB-INF.
+  [ ] La logique metier ne se trouve pas dans les JSP.
+  [ ] Les scriptlets sont absents des nouvelles vues.
+  [ ] Toute sortie non fiable est encodee selon son contexte.
+  [ ] Les formulaires mutables sont proteges contre CSRF.
+  [ ] Les autorisations sont verifiees cote serveur.
+  [ ] Les erreurs ne revelent pas de details internes.
+  [ ] Les objets session/application sont thread-safe.
+  [ ] JSTL/Jakarta Tags correspond au serveur.
+  [ ] Les URI de taglib sont resolues sans acces Internet.
+  [ ] Les bibliotheques de balises personnalisees sont testees.
+  [ ] Les ressources sont fermees dans les services.
+  [ ] Aucun secret ne se trouve dans une page.
+  [ ] Les en-tetes de securite HTTP sont configures.
+  [ ] Les dependances et le conteneur sont maintenus a jour.
+
+
+================================================================================
+34. REFERENCES OFFICIELLES ET EXEMPLES DU PROJET
+================================================================================
+
+Specifications officielles :
+
+  Jakarta Pages :
+  https://jakarta.ee/specifications/pages/
+
+  Jakarta Pages 4.0 :
+  https://jakarta.ee/specifications/pages/4.0/
+
+  API Jakarta Pages 4.0 :
+  https://jakarta.ee/specifications/pages/4.0/apidocs/
+
+  Jakarta Expression Language :
+  https://jakarta.ee/specifications/expression-language/
+
+  Jakarta Expression Language 6.0 :
+  https://jakarta.ee/specifications/expression-language/6.0/
+
+  Jakarta Standard Tag Library :
+  https://jakarta.ee/specifications/tags/
+
+  Jakarta Standard Tag Library 3.0 :
+  https://jakarta.ee/specifications/tags/3.0/
+
+  Jakarta Servlet :
+  https://jakarta.ee/specifications/servlet/
+
+Exemples locaux :
+
+  SAMPLES/JSP/README.txt
+  SAMPLES/JSP/Test01Bonjour.jsp
+  SAMPLES/JSP/Test02Directives.jsp
+  SAMPLES/JSP/Test03Declarations.jsp
+  SAMPLES/JSP/Test04Scriptlets.jsp
+  SAMPLES/JSP/Test05Parametres.jsp
+  SAMPLES/JSP/Test06Formulaire.jsp
+  SAMPLES/JSP/Test07ObjetsImplicites.jsp
+  SAMPLES/JSP/Test08Session.jsp
+  SAMPLES/JSP/Test09Application.jsp
+  SAMPLES/JSP/Test10Include.jsp
+  SAMPLES/JSP/Test11IncludeAction.jsp
+  SAMPLES/JSP/Test12Erreur.jsp
+  SAMPLES/JSP/Test12GestionErreur.jsp
+  SAMPLES/JSP/Test13Actions.jsp
+  SAMPLES/JSP/Test14ExpressionLanguage.jsp
+  SAMPLES/JSP/Test15JstlJavaEE.jsp
+  SAMPLES/JSP/Test16JstlJakarta.jsp
+  SAMPLES/JSP/Test17JstlXml.jsp
+
+Fin du document.
