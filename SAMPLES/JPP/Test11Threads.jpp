@@ -1,0 +1,54 @@
+/*
+ * Thread, Runnable, synchronized, wait() et notifyAll().
+ */
+class FileEntiers {
+    private int valeur;
+    private boolean disponible;
+
+    public synchronized void deposer(int nouvelleValeur)
+        throws InterruptedException {
+        while (disponible) {
+            wait();
+        }
+        valeur = nouvelleValeur;
+        disponible = true;
+        notifyAll();
+    }
+
+    public synchronized int retirer()
+        throws InterruptedException {
+        while (!disponible) {
+            wait();
+        }
+        int resultat = valeur;
+        disponible = false;
+        notifyAll();
+        return resultat;
+    }
+}
+
+public class Test11Threads {
+    public static void main(String[] args)
+        throws InterruptedException {
+        final FileEntiers file = new FileEntiers();
+
+        Thread producteur = new Thread(new Runnable() {
+            public void run() {
+                try {
+                    for (int i = 1; i <= 3; i++) {
+                        file.deposer(i);
+                    }
+                } catch (InterruptedException e) {
+                    return;
+                }
+            }
+        }, "producteur");
+
+        producteur.start();
+        for (int i = 1; i <= 3; i++) {
+            System.out.println("Recu : " + file.retirer());
+        }
+        producteur.join();
+    }
+}
+

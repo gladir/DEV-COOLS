@@ -1,0 +1,39 @@
+/*
+ * Interfaces, classes internes et modele listener portable.
+ */
+interface CompteurListener {
+    void valeurChangee(int ancienneValeur, int nouvelleValeur);
+}
+
+class Compteur {
+    private int valeur;
+    private CompteurListener listener;
+
+    public void setListener(CompteurListener valeur) {
+        listener = valeur;
+    }
+
+    public void incrementer() {
+        int ancienneValeur = valeur;
+        valeur++;
+        if (listener != null) {
+            listener.valeurChangee(ancienneValeur, valeur);
+        }
+    }
+}
+
+public class Test08Interfaces {
+    private static class JournalListener implements CompteurListener {
+        public void valeurChangee(int ancienneValeur, int nouvelleValeur) {
+            System.out.println(ancienneValeur + " -> " + nouvelleValeur);
+        }
+    }
+
+    public static void main(String[] args) {
+        Compteur compteur = new Compteur();
+        compteur.setListener(new JournalListener());
+        compteur.incrementer();
+        compteur.incrementer();
+    }
+}
+

@@ -1,0 +1,46 @@
+/*
+ * J++ historique n'accepte pas la syntaxe de propriete get/set de C#.
+ * Une propriete JavaBean est representee par getAge() et setAge().
+ */
+class Personne {
+    private String nom;
+    private int age;
+
+    public Personne(String nom, int age) {
+        setNom(nom);
+        setAge(age);
+    }
+
+    public String getNom() {
+        return nom;
+    }
+
+    public void setNom(String valeur) {
+        if (valeur == null || valeur.length() == 0) {
+            throw new IllegalArgumentException("nom vide");
+        }
+        nom = valeur;
+    }
+
+    public int getAge() {
+        return age;
+    }
+
+    public void setAge(int valeur) {
+        if (valeur < 0 || valeur > 150) {
+            throw new IllegalArgumentException("age invalide");
+        }
+        age = valeur;
+    }
+}
+
+public class Test06ProprietesBean {
+    public static void main(String[] args) {
+        Personne personne = new Personne("Ada", 36);
+        personne.setAge(personne.getAge() + 1);
+
+        System.out.println(personne.getNom());
+        System.out.println(personne.getAge());
+    }
+}
+

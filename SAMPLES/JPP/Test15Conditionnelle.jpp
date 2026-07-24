@@ -1,0 +1,33 @@
+/*
+ * Compilation conditionnelle propre au compilateur JVC.
+ * Definir DEBUG ou LANG_FR dans les options du projet.
+ */
+public class Test15Conditionnelle {
+    static String configuration() {
+        #if DEBUG
+            return "Debug";
+        #else
+            return "Release";
+        #endif
+    }
+
+    static String salutation() {
+        #if LANG_FR
+            return "Bonjour";
+        #elif LANG_EN
+            return "Hello";
+        #else
+            return "Bonjour / Hello";
+        #endif
+    }
+
+    public static void main(String[] args) {
+        System.out.println(salutation());
+        System.out.println("Configuration : " + configuration());
+
+        #if DEBUG
+            System.out.println("Trace de diagnostic active.");
+        #endif
+    }
+}
+

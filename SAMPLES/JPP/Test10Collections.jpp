@@ -1,0 +1,30 @@
+import java.util.Enumeration;
+import java.util.Hashtable;
+import java.util.Vector;
+
+/*
+ * Collections disponibles dans Java 1.1 et Visual J++.
+ */
+public class Test10Collections {
+    public static void main(String[] args) {
+        Vector langages = new Vector();
+        langages.addElement("Java");
+        langages.addElement("J++");
+        langages.addElement("C#");
+
+        Hashtable annees = new Hashtable();
+        annees.put("Java", new Integer(1995));
+        annees.put("J++", new Integer(1996));
+        annees.put("C#", new Integer(2000));
+
+        Enumeration elements = langages.elements();
+        while (elements.hasMoreElements()) {
+            String nom = (String)elements.nextElement();
+            System.out.println(nom + " : " + annees.get(nom));
+        }
+
+        langages.removeElement("C#");
+        System.out.println("Taille finale : " + langages.size());
+    }
+}
+

@@ -1,0 +1,36 @@
+/*
+ * Exceptions controlees, catch multiples et finally.
+ */
+class DonneeException extends Exception {
+    public DonneeException(String message) {
+        super(message);
+    }
+}
+
+public class Test09Exceptions {
+    static int convertirPositif(String texte)
+        throws DonneeException {
+        try {
+            int valeur = Integer.parseInt(texte);
+            if (valeur < 0) {
+                throw new DonneeException("nombre negatif");
+            }
+            return valeur;
+        } catch (NumberFormatException e) {
+            throw new DonneeException("entier attendu : " + texte);
+        }
+    }
+
+    public static void main(String[] args) {
+        String texte = args.length == 0 ? "42" : args[0];
+
+        try {
+            System.out.println(convertirPositif(texte));
+        } catch (DonneeException e) {
+            System.err.println("Erreur : " + e.getMessage());
+        } finally {
+            System.out.println("Traitement termine.");
+        }
+    }
+}
+

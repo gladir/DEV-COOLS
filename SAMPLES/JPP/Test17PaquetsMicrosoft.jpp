@@ -1,0 +1,26 @@
+import com.ms.awt.*;
+import com.ms.com.*;
+import com.ms.ui.*;
+import com.ms.win32.*;
+
+/*
+ * Inventaire compilable seulement avec le SDK Microsoft approprie.
+ *
+ * com.ms.win32 : API et structures Win32 pour J/Direct.
+ * com.ms.com   : COM, Automation, Variant et proxies JActiveX.
+ * com.ms.ui    : Application Foundation Classes (AFC).
+ * com.ms.awt   : implementation et extensions AWT Microsoft.
+ *
+ * Les imports avec * ne rendent pas visibles les sous-paquets.
+ */
+public class Test17PaquetsMicrosoft {
+    public static void main(String[] args) {
+        System.out.println("Paquets Microsoft charges par le projet :");
+        System.out.println("  com.ms.win32");
+        System.out.println("  com.ms.com");
+        System.out.println("  com.ms.ui");
+        System.out.println("  com.ms.awt");
+        System.out.println("Ce programme est lie a Windows et a la MSJVM.");
+    }
+}
+

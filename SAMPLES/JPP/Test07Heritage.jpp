@@ -1,0 +1,62 @@
+/*
+ * Classe abstraite, heritage, super, final et polymorphisme.
+ */
+abstract class Forme {
+    private String nom;
+
+    protected Forme(String nom) {
+        this.nom = nom;
+    }
+
+    public final String getNom() {
+        return nom;
+    }
+
+    public abstract double aire();
+
+    public String toString() {
+        return getNom() + ", aire=" + aire();
+    }
+}
+
+class Rectangle extends Forme {
+    private double largeur;
+    private double hauteur;
+
+    public Rectangle(double largeur, double hauteur) {
+        super("rectangle");
+        this.largeur = largeur;
+        this.hauteur = hauteur;
+    }
+
+    public double aire() {
+        return largeur * hauteur;
+    }
+}
+
+class Cercle extends Forme {
+    private double rayon;
+
+    public Cercle(double rayon) {
+        super("cercle");
+        this.rayon = rayon;
+    }
+
+    public double aire() {
+        return Math.PI * rayon * rayon;
+    }
+}
+
+public class Test07Heritage {
+    public static void main(String[] args) {
+        Forme[] formes = {
+            new Rectangle(4.0, 3.0),
+            new Cercle(2.0)
+        };
+
+        for (int i = 0; i < formes.length; i++) {
+            System.out.println(formes[i]);
+        }
+    }
+}
+

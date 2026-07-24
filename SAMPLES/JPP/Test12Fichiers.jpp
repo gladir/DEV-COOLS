@@ -1,0 +1,54 @@
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
+import java.io.FileReader;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.io.PrintWriter;
+
+/*
+ * Ecriture et lecture d'un fichier texte avec fermeture explicite.
+ */
+public class Test12Fichiers {
+    static void ecrire(String nom) throws IOException {
+        PrintWriter sortie = null;
+        try {
+            sortie = new PrintWriter(
+                new BufferedWriter(new FileWriter(nom)));
+            sortie.println("Premiere ligne");
+            sortie.println("Deuxieme ligne");
+            if (sortie.checkError()) {
+                throw new IOException("erreur d'ecriture");
+            }
+        } finally {
+            if (sortie != null) {
+                sortie.close();
+            }
+        }
+    }
+
+    static void lire(String nom) throws IOException {
+        BufferedReader entree = null;
+        try {
+            entree = new BufferedReader(new FileReader(nom));
+            String ligne;
+            while ((ligne = entree.readLine()) != null) {
+                System.out.println(ligne);
+            }
+        } finally {
+            if (entree != null) {
+                entree.close();
+            }
+        }
+    }
+
+    public static void main(String[] args) {
+        String nom = args.length == 0 ? "jpp_exemple.txt" : args[0];
+        try {
+            ecrire(nom);
+            lire(nom);
+        } catch (IOException e) {
+            System.err.println(e.getMessage());
+        }
+    }
+}
+

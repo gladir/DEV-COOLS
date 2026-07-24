@@ -1,0 +1,39 @@
+/*
+ * Methodes static, surcharge, passage des arguments et recursivite.
+ */
+public class Test04Methodes {
+    static int maximum(int gauche, int droite) {
+        return gauche > droite ? gauche : droite;
+    }
+
+    static double maximum(double gauche, double droite) {
+        return gauche > droite ? gauche : droite;
+    }
+
+    static int factorielle(int valeur) {
+        if (valeur < 0) {
+            throw new IllegalArgumentException("valeur negative");
+        }
+        if (valeur < 2) {
+            return 1;
+        }
+        return valeur * factorielle(valeur - 1);
+    }
+
+    static void incrementerPremier(int[] valeurs) {
+        if (valeurs != null && valeurs.length != 0) {
+            valeurs[0]++;
+        }
+    }
+
+    public static void main(String[] args) {
+        int[] nombres = { 10, 20, 30 };
+        incrementerPremier(nombres);
+
+        System.out.println(maximum(4, 9));
+        System.out.println(maximum(4.5, 2.5));
+        System.out.println(factorielle(5));
+        System.out.println(nombres[0]);
+    }
+}
+

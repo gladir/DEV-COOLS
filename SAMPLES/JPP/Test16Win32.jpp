@@ -1,0 +1,21 @@
+import com.ms.win32.User32;
+import com.ms.win32.winm;
+
+/*
+ * Appel Win32 par les declarations fournies avec Visual J++.
+ * Necessite Windows, la MSJVM et le paquet com.ms.win32.
+ */
+public class Test16Win32 {
+    public static void main(String[] args) {
+        int type = winm.MB_OK | winm.MB_ICONINFORMATION;
+
+        int resultat = User32.MessageBox(
+            0,
+            "Bonjour depuis com.ms.win32",
+            "Exemple J++",
+            type);
+
+        System.out.println("MessageBox a retourne : " + resultat);
+    }
+}
+

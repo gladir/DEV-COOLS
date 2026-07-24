@@ -1,0 +1,38 @@
+/*
+ * Tableaux rectangulaires et tableaux de tableaux.
+ */
+public class Test05Tableaux {
+    static int somme(int[] valeurs) {
+        int resultat = 0;
+        for (int i = 0; i < valeurs.length; i++) {
+            resultat += valeurs[i];
+        }
+        return resultat;
+    }
+
+    public static void main(String[] args) {
+        int[] notes = { 12, 15, 18, 14 };
+        int[][] matrice = new int[2][3];
+        int[][] triangle = new int[3][];
+
+        matrice[0][1] = 42;
+
+        for (int ligne = 0; ligne < triangle.length; ligne++) {
+            triangle[ligne] = new int[ligne + 1];
+            for (int colonne = 0;
+                 colonne < triangle[ligne].length;
+                 colonne++) {
+                triangle[ligne][colonne] = ligne + colonne;
+            }
+        }
+
+        int[] copie = (int[])notes.clone();
+        copie[0] = 20;
+
+        System.out.println("Somme originale : " + somme(notes));
+        System.out.println("Premiere copie   : " + copie[0]);
+        System.out.println("Matrice          : " + matrice[0][1]);
+        System.out.println("Triangle         : " + triangle[2][1]);
+    }
+}
+

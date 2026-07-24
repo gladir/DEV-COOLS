@@ -1,0 +1,32 @@
+/*
+ * Types primitifs, constantes, conversions et chaines.
+ */
+public class Test02Variables {
+    private static final int ARTICLES_MAXIMUM = 100;
+
+    public static void main(String[] args) {
+        byte petit = 12;
+        short court = 1200;
+        int entier = 42000;
+        long grand = 9000000000L;
+        float reelSimple = 3.5F;
+        double reelDouble = 2.718281828;
+        char lettre = 'J';
+        boolean actif = true;
+        String langage = "J++";
+
+        int somme = petit + court + entier;
+        int partieEntiere = (int)reelDouble;
+
+        System.out.println("Langage       : " + langage);
+        System.out.println("Lettre        : " + lettre);
+        System.out.println("Actif         : " + actif);
+        System.out.println("Somme         : " + somme);
+        System.out.println("Long          : " + grand);
+        System.out.println("Float         : " + reelSimple);
+        System.out.println("Conversion    : " + partieEntiere);
+        System.out.println("Limite        : " + ARTICLES_MAXIMUM);
+        System.out.println("Valeur int    : " + entier);
+    }
+}
+

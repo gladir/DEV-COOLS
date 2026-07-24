@@ -1,0 +1,18 @@
+/*
+ * Declaration J/Direct. Le commentaire @dll.import est interprete par JVC.
+ * La signature vise la fonction MessageBeep de USER32.DLL.
+ */
+public class Test18JDirect {
+    /** @dll.import("USER32", auto) */
+    private static native boolean MessageBeep(int type);
+
+    public static void main(String[] args) {
+        try {
+            boolean resultat = MessageBeep(0);
+            System.out.println("MessageBeep : " + resultat);
+        } catch (UnsatisfiedLinkError e) {
+            System.err.println("J/Direct indisponible : " + e);
+        }
+    }
+}
+

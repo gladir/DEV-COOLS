@@ -1,0 +1,49 @@
+/*
+ * Conditions, switch et boucles du noyau Java 1.1.
+ */
+public class Test03Instructions {
+    public static void main(String[] args) {
+        int valeur = 7;
+
+        if (valeur < 0) {
+            System.out.println("negative");
+        } else if (valeur == 0) {
+            System.out.println("nulle");
+        } else {
+            System.out.println("positive");
+        }
+
+        switch (valeur % 3) {
+        case 0:
+            System.out.println("multiple de trois");
+            break;
+        case 1:
+            System.out.println("reste un");
+            break;
+        default:
+            System.out.println("reste deux");
+            break;
+        }
+
+        int total = 0;
+        for (int i = 1; i <= valeur; i++) {
+            if (i == 4) {
+                continue;
+            }
+            total += i;
+        }
+
+        int compte = 3;
+        while (compte > 0) {
+            System.out.println("while : " + compte);
+            compte--;
+        }
+
+        do {
+            compte++;
+        } while (compte < 2);
+
+        System.out.println("total : " + total);
+    }
+}
+

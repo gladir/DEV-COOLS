@@ -1,0 +1,29 @@
+/*
+ * Extension Microsoft Visual J++ 6.0.
+ * Ce source n'est pas accepte par javac.
+ */
+public class Test14Delegates {
+    public delegate int Operation(int gauche, int droite);
+    public multicast delegate void Notification(String message);
+
+    public int additionner(int gauche, int droite) {
+        return gauche + droite;
+    }
+
+    public void afficher(String message) {
+        System.out.println("Message : " + message);
+    }
+
+    public void executer() {
+        Operation operation = new Operation(this.additionner);
+        Notification notification = new Notification(this.afficher);
+
+        int resultat = operation.invoke(20, 22);
+        notification.invoke("Resultat = " + resultat);
+    }
+
+    public static void main(String[] args) {
+        new Test14Delegates().executer();
+    }
+}
+

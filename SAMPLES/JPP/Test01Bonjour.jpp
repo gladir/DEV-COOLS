@@ -1,0 +1,15 @@
+/*
+ * Premier programme J++ portable.
+ */
+public class Test01Bonjour {
+    public static void main(String[] args) {
+        System.out.println("Bonjour depuis J++ !");
+
+        if (args.length == 0) {
+            System.out.println("Aucun argument.");
+        } else {
+            System.out.println("Premier argument : " + args[0]);
+        }
+    }
+}
+
