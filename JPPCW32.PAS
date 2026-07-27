@@ -3350,6 +3350,18 @@ Type
                                      { la note d en-tete de ParseDelegateDecl          }
                                      { pour la decision de representation                    }
                                      { future, deferree). }
+    NextFieldOfs         : Integer; { extension post-TODO25, HUITIEME        }
+                                     { tranche (double/float) : TYK_CLASS                  }
+                                     { seulement - deplacement PROPRE (octets)        }
+                                     { du PROCHAIN champ a ajouter, MIS A JOUR         }
+                                     { par FieldPoolAdd APRES chaque champ - un              }
+                                     { double/float occupe 8 octets, TOUT LE                  }
+                                     { RESTE (int/boolean/char/reference)                     }
+                                     { continue d en occuper 4 - remplace                        }
+                                     { "FieldCount * 4" (qui SUPPOSAIT une                    }
+                                     { taille UNIFORME de 4 octets, fausse                     }
+                                     { des qu un SEUL champ double/float                        }
+                                     { existe). }
   End;
 
 Type
@@ -3616,6 +3628,9 @@ Begin
   TypeTab[TypeCount].InterfaceCount := 0;
   TypeTab[TypeCount].FieldFirst     := -1;
   TypeTab[TypeCount].FieldCount     := 0;
+  TypeTab[TypeCount].NextFieldOfs   := 0;   { extension post-TODO25, HUITIEME }
+                                            { tranche - voir la note d en-tete       }
+                                            { de TTypeRec.NextFieldOfs }
   TypeTab[TypeCount].MethodFirst    := -1;
   TypeTab[TypeCount].MethodCount    := 0;
   TypeTab[TypeCount].IsAbstractClass      := False;
@@ -3965,8 +3980,10 @@ Begin
   { mise a jour EXPLICITE requise ICI a chaque fois (meme discipline                 }
   { que le TODO 11 l a deja fait passer de 17 a 21, puis le TODO 13 de           }
   { 21 a 35, puis le TODO 14 de 35 a 37). }
-  TypeAssert('21 + 14 (TODO 13) + 2 (TODO 14) + 2 (TODO 18) = 39 entrees',
-    TypeCount = 39);
+  { extension post-TODO25, HUITIEME tranche : +1 ("Math", double/float,   }
+  { Test07Heritage.jpp) = 40 entrees TOTAL. }
+  TypeAssert('21 + 14 (TODO 13) + 2 (TODO 14) + 2 (TODO 18) + 1 (post-25) = 40 entrees',
+    TypeCount = 40);
 
   TypeAssert('String trouve == PDT_STRING', TypeFindByName('String') = PDT_STRING);
   TypeAssert('Object trouve == PDT_OBJECT', TypeFindByName('Object') = PDT_OBJECT);
@@ -4843,8 +4860,15 @@ Begin
     { REELLE de cette variable locale - voir la note d en-tete de              }
     { CurLocalOffset. ParseVarDecl n est JAMAIS appelee pour un champ           }
     { (ParseFieldDeclRest s en charge separement, TODO 08) - TOUJOURS une              }
-    { vraie locale, meme dans l initialisation d un "for". }
-    CurLocalOffset := CurLocalOffset - 4;
+    { vraie locale, meme dans l initialisation d un "for". Extension                     }
+    { post-TODO25, HUITIEME tranche (double/float) : 8 octets PLUTOT              }
+    { QUE 4 pour ces DEUX types SEULS (MEME regle que CgSlotSize, defini              }
+    { plus bas dans le fichier - pas encore visible ICI, valeur EN DUR                  }
+    { plutot qu un appel avant sa propre declaration). }
+    If (ElemT = PRIMTYPE_DOUBLE) Or (ElemT = PRIMTYPE_FLOAT) Or (ElemT = PRIMTYPE_LONG) Then
+      CurLocalOffset := CurLocalOffset - 8
+    Else
+      CurLocalOffset := CurLocalOffset - 4;
     SymTab[SI].Offset := CurLocalOffset;
 
     If PPMatch('=') Then
@@ -7906,14 +7930,20 @@ End;
 
 { ------------------------------------------------------------ }
 { FieldPoolAdd / MethodPoolAdd / ClassAdd : les TROIS constructeurs   }
-{ "bas niveau" du TODO 08 - Offset (FieldPoolAdd) reste la meme                  }
-{ simplification "4 octets par champ, champs PROPRES seulement" DEJA         }
-{ documentee sur TFieldRec. }
+{ "bas niveau" du TODO 08 - Offset (FieldPoolAdd) utilisait a l origine     }
+{ la simplification "4 octets par champ, champs PROPRES seulement" -              }
+{ extension post-TODO25, HUITIEME tranche (double/float) : GENERALISE            }
+{ via TTypeRec.NextFieldOfs (deplacement CUMULE REEL, voir sa propre              }
+{ note d en-tete) plutot que "FieldCount * 4" (qui SUPPOSAIT que CHAQUE           }
+{ champ occupe EXACTEMENT 4 octets - vrai pour TOUT sauf double/float,           }
+{ qui en occupent 8) - REDUIT EXACTEMENT a l ancienne formule tant                    }
+{ qu AUCUN champ double/float n existe (le cas de TOUTE classe qui                    }
+{ passait deja). }
 { ------------------------------------------------------------ }
 
 Function FieldPoolAdd(Owner, FTypeIdx: Integer; Const Nam: TString;
   IsStatic, IsFinal: Boolean; Vis: TVisibility): Integer;
-Var R : Integer;
+Var R, FSize : Integer;
 Begin
   If FieldPoolCount >= MAX_FIELD_POOL Then
   Begin
@@ -7921,11 +7951,16 @@ Begin
     FieldPoolAdd := -1;
     Exit;
   End;
+  If (FTypeIdx = PRIMTYPE_DOUBLE) Or (FTypeIdx = PRIMTYPE_FLOAT) Or
+     (FTypeIdx = PRIMTYPE_LONG) Then
+    FSize := 8
+  Else
+    FSize := 4;
   R := FieldPoolCount;
   FieldPool[R].Name         := Nam;
   FieldPool[R].TypeIdx      := FTypeIdx;
   FieldPool[R].OwnerTypeIdx := Owner;
-  FieldPool[R].Offset       := TypeTab[Owner].FieldCount * 4;
+  FieldPool[R].Offset       := TypeTab[Owner].NextFieldOfs;
   FieldPool[R].IsStatic     := IsStatic;
   FieldPool[R].IsFinal      := IsFinal;
   FieldPool[R].HasInit      := False;
@@ -7933,6 +7968,7 @@ Begin
   Inc(FieldPoolCount);
   If TypeTab[Owner].FieldFirst < 0 Then TypeTab[Owner].FieldFirst := R;
   Inc(TypeTab[Owner].FieldCount);
+  Inc(TypeTab[Owner].NextFieldOfs, FSize);
   FieldPoolAdd := R;
 End;
 
@@ -8327,9 +8363,17 @@ Begin
   ParamPool[ParamPoolCount].IsFinal := SymTab[SI].IsFinal;
   Inc(ParamPoolCount);
   { extension post-TODO25 (generateur de code) : position EBP-relative   }
-  { REELLE de ce parametre - voir la note d en-tete de CurParamOffset. }
+  { REELLE de ce parametre - voir la note d en-tete de CurParamOffset.               }
+  { Extension post-TODO25, HUITIEME tranche (double/float) : 8 octets                  }
+  { PLUTOT QUE 4 pour ces DEUX types SEULS (MEME regle EN DUR que                       }
+  { ParseVarDecl ci-dessus, CgSlotSize pas encore visible a ce point du            }
+  { fichier). }
   SymTab[SI].Offset := CurParamOffset;
-  CurParamOffset := CurParamOffset + 4;
+  If (SymTab[SI].TypeIdx = PRIMTYPE_DOUBLE) Or (SymTab[SI].TypeIdx = PRIMTYPE_FLOAT) Or
+     (SymTab[SI].TypeIdx = PRIMTYPE_LONG) Then
+    CurParamOffset := CurParamOffset + 8
+  Else
+    CurParamOffset := CurParamOffset + 4;
   ParseOneParamIntoPool := True;
 End;
 
@@ -10905,7 +10949,7 @@ Var
   PrintStreamT, SystemT, IntegerT, EnumerationT, VectorT, HashtableT,
   WriterT, ReaderT, FileWriterT, BufferedWriterT, PrintWriterT,
   FileReaderT, BufferedReaderT, IOExceptionT, RunnableT, ThreadT,
-  User32T, WinmT, MBMI, PFirst, FI : Integer;
+  User32T, WinmT, MBMI, PFirst, FI, MathT : Integer;
 Begin
   { extension post-TODO25, DEUXIEME tranche - voir la note d en-tete de   }
   { TTypeRec.IsStdlib : CHAQUE ClassAdd APPELE pendant l execution de               }
@@ -11138,6 +11182,26 @@ Begin
     FieldPool[FI].HasInit := True;
     FieldPool[FI].ConstVal.Kind   := CK_INT;
     FieldPool[FI].ConstVal.IntVal := $40;
+  End;
+
+  { extension post-TODO25, HUITIEME tranche (double/float) : "Math.PI"  }
+  { (Test07Heritage.jpp, "Math.PI * rayon * rayon") - MEME technique                  }
+  { EXACTE que "winm" juste au-dessus (FieldPoolAdd PUIS HasInit/                        }
+  { ConstVal poses DIRECTEMENT, puisqu AUCUN texte source reel n existe            }
+  { a faire passer par ConstEvalExpr) - "Math" est une VRAIE TYK_CLASS           }
+  { (jamais instanciee, section AUCUNE constructeur necessaire tant                    }
+  { qu aucun "new Math()" n existe dans les 18 echantillons), PAS une             }
+  { TYK_INTERFACE (contrairement a "winm" - Java modelise REELLEMENT                 }
+  { java.lang.Math comme une classe finale, jamais une interface). }
+  MathT := TypeAdd(TYK_CLASS, 'Math', 4, 4, -1);
+  TypeTab[MathT].SuperTypeIdx := PDT_OBJECT;
+  TypeTab[MathT].Visibility   := VIS_PUBLIC;
+  FI := FieldPoolAdd(MathT, PRIMTYPE_DOUBLE, 'PI', True, True, VIS_PUBLIC);
+  If FI >= 0 Then
+  Begin
+    FieldPool[FI].HasInit := True;
+    FieldPool[FI].ConstVal.Kind    := CK_DOUBLE;
+    FieldPool[FI].ConstVal.RealVal := 3.14159265358979323846;
   End;
 
   StdlibInitActive := False;
@@ -12929,11 +12993,14 @@ Begin
   { Hashtable x3, FileWriter ctor, BufferedWriter ctor, PrintWriter                       }
   { x4, FileReader ctor, BufferedReader x3, IOException ctor, Object              }
   { wait/notify/notifyAll x3, Runnable.run, Thread x6, User32.MessageBox) - }
-  { 4 champs (System.out/err, winm.MB_OK/MB_ICONINFORMATION). }
+  { 4 champs (System.out/err, winm.MB_OK/MB_ICONINFORMATION), PLUS 1              }
+  { (Math.PI, extension post-TODO25, HUITIEME tranche) = 5 champs                     }
+  { TOTAL - AUCUNE methode/constructeur supplementaire (Math n a ni                    }
+  { l un ni l autre). }
   TypeAssert('StdlibInit : MethodPoolCount = 40 (inventaire consolide, ' +
     'TODO 20)', MethodPoolCount = 40);
-  TypeAssert('StdlibInit : FieldPoolCount = 4 (inventaire consolide, TODO 20)',
-    FieldPoolCount = 4);
+  TypeAssert('StdlibInit : FieldPoolCount = 5 (inventaire consolide, TODO 20 ' +
+    '+ Math.PI post-25)', FieldPoolCount = 5);
 
   TypeInit;
   SymInit;
@@ -13039,6 +13106,10 @@ Const
   MAX_CG_LOOP    = 64;   { extension post-TODO25 - profondeur d imbrication }
                           { boucle/switch, tres genereuse (aucun echantillon }
                           { reel n approche cette profondeur). }
+  MAX_CG_DOUBLES = 64;   { extension post-TODO25, HUITIEME tranche      }
+                          { (double/float) - MEME esprit que MAX_CG_STRINGS,   }
+                          { tres genereux (Test04/Test07 n en utilisent            }
+                          { chacun qu une poignee, PI inclus). }
 
 Var
   CgOutF      : Text;
@@ -13047,6 +13118,19 @@ Var
   CgStrPool       : Array[0..MAX_CG_STRINGS - 1] Of TString;
   CgStrPoolOfExpr : Array[0..MAX_EXPR - 1] Of Integer;
   CgStrCount      : Integer;
+
+  { extension post-TODO25, HUITIEME tranche (double/float) : CgDoublePool  }
+  { est au double ce que CgStrPool est deja a la chaine (dedupliqué PAR         }
+  { VALEUR, un SEUL mot .DATA partage par plusieurs litteraux IDENTIQUES,        }
+  { MEME idiome que CgCollectStrings) - CgDoublePoolOfExpr retrouve                  }
+  { l entree pour un EK_DOUBLELIT/EK_FLOATLIT donne ; CgDoublePoolOfField           }
+  { fait de meme pour un champ STATIQUE constant (ex. "Math.PI") DONT              }
+  { la valeur ne provient PAS d un noeud ExprPool mais de                                }
+  { FieldPool[FI].ConstVal - voir CgCollectDoubles. }
+  CgDoublePool        : Array[0..MAX_CG_DOUBLES - 1] Of Double;
+  CgDoublePoolOfExpr  : Array[0..MAX_EXPR - 1] Of Integer;
+  CgDoublePoolOfField : Array[0..MAX_FIELD_POOL - 1] Of Integer;
+  CgDoubleCount       : Integer;
 
   { extension post-TODO25 (generateur de code) : etiquette d epilogue   }
   { de la methode EN COURS de compilation (STK_RETURN y saute TOUJOURS,           }
@@ -13060,6 +13144,13 @@ Var
   { a l interieur d un switch cible TOUJOURS la boucle qui l englobe,                     }
   { section 7.19, jamais le switch lui-meme). }
   CurMethodEpilogueLabel : TString;
+  CurMethodRetTypeIdx : Integer;   { extension post-TODO25, HUITIEME       }
+                                   { tranche (double/float) - RetTypeIdx           }
+                                   { de la methode EN COURS de compilation,          }
+                                   { pose par CompileMethodBody - STK_RETURN         }
+                                   { l utilise pour choisir CompileExpr (EAX)         }
+                                   { ou CompileExprF (ST(0), convention x87           }
+                                   { REELLE de retour). }
   CgLoopTop      : Integer;
   CgBreakLbl     : Array[0..MAX_CG_LOOP - 1] Of TString;
   CgContinueLbl  : Array[0..MAX_CG_LOOP - 1] Of TString;
@@ -13204,6 +13295,51 @@ Begin
     End;
 End;
 
+{ CgInternDouble : dedup PAR VALEUR (MEME idiome que CgCollectStrings)  }
+{ - retourne l INDEX de pool a utiliser (ASM_PFX_DOUBLE+index). }
+Function CgInternDouble(Value: Double): Integer;
+Var J, Found : Integer;
+Begin
+  Found := -1;
+  For J := 0 To CgDoubleCount - 1 Do
+    If CgDoublePool[J] = Value Then Found := J;
+  If Found < 0 Then
+  Begin
+    If CgDoubleCount < MAX_CG_DOUBLES Then
+    Begin
+      CgDoublePool[CgDoubleCount] := Value;
+      Found := CgDoubleCount;
+      Inc(CgDoubleCount);
+    End
+    Else
+    Begin
+      WarnMsg('table des doubles du generateur de code pleine (MAX_CG_DOUBLES)');
+      Found := 0;
+    End;
+  End;
+  CgInternDouble := Found;
+End;
+
+{ CgCollectDoubles : extension post-TODO25, HUITIEME tranche - MEME     }
+{ esprit que CgCollectStrings, mais DEUX sources (une String n en a               }
+{ qu une) : (a) CHAQUE EK_DOUBLELIT/EK_FLOATLIT de ExprPool (litteraux           }
+{ "4.5"/"2.5" de Test04Methodes.jpp) ; (b) CHAQUE champ STATIQUE                       }
+{ constant de type double/float dans FieldPool (ex. "Math.PI", ajoute            }
+{ ci-dessous a StdlibInit - AUCUNE valeur ExprPool n existe pour LUI,             }
+{ seulement FieldPool[FI].ConstVal.RealVal). }
+Procedure CgCollectDoubles;
+Var E, FI : Integer;
+Begin
+  CgDoubleCount := 0;
+  For E := 0 To ExprCount - 1 Do
+    If (ExprPool[E].Kind = EK_DOUBLELIT) Or (ExprPool[E].Kind = EK_FLOATLIT) Then
+      CgDoublePoolOfExpr[E] := CgInternDouble(ExprPool[E].RealVal);
+  For FI := 0 To FieldPoolCount - 1 Do
+    If FieldPool[FI].IsStatic And FieldPool[FI].HasInit And
+       ((FieldPool[FI].ConstVal.Kind = CK_DOUBLE) Or (FieldPool[FI].ConstVal.Kind = CK_FLOAT)) Then
+      CgDoublePoolOfField[FI] := CgInternDouble(FieldPool[FI].ConstVal.RealVal);
+End;
+
 { EmitHeader : boilerplate MASM minimal - imports Win32 SEULEMENT pour   }
 { l E/S console et la sortie de processus (alloc memoire/vtable/                     }
 { threads/exceptions restent pour les extensions FUTURES sous ce                    }
@@ -13253,6 +13389,34 @@ End;
 { fait deja lui-meme ("_GORT_NEWLINE  DB 10", premiere ligne de SA               }
 { PROPRE EmitDataSeg) - une ligne PERDUE en portant TODO 21 ici,                       }
 { jamais un DEFAUT de l architecture source. }
+{ CgDoubleToDataBytes : extension post-TODO25, HUITIEME tranche        }
+{ (double/float) - EXTRAIT les 8 octets IEEE754 BRUTS (ordre memoire            }
+{ LITTLE-ENDIAN x86 REEL, celui qu attend FLD m64real) d une valeur              }
+{ Double via un "record variant" (union Pascal classique - D et B                    }
+{ PARTAGENT le MEME emplacement memoire, FPC range un Double comme                    }
+{ IEEE754 64 bits standard sur x86, AUCUNE conversion necessaire) -              }
+{ retourne une liste "b0,b1,...,b7" PRETE pour la forme "DB liste"                    }
+{ desormais reconnue par BinAssembleDataLine (voir sa propre note                     }
+{ d en-tete). }
+Function CgDoubleToDataBytes(Value: Double): TString;
+Type
+  TDoubleOverlay = Record
+    Case Boolean Of
+      True:  (D: Double);
+      False: (B: Array[0..7] Of Byte);
+  End;
+Var Ov: TDoubleOverlay; K: Integer; S: TString;
+Begin
+  Ov.D := Value;
+  S := '';
+  For K := 0 To 7 Do
+  Begin
+    If K > 0 Then S := S + ',';
+    S := S + IntToStrG(Ov.B[K]);
+  End;
+  CgDoubleToDataBytes := S;
+End;
+
 Procedure EmitDataSeg;
 Var I : Integer;
 Begin
@@ -13267,6 +13431,11 @@ Begin
   EmitRaw(ASM_PFX_RUNTIME + 'FALSE_STR DB "false",0');
   For I := 0 To CgStrCount - 1 Do
     EmitRaw(ASM_PFX_STRING + IntToStrG(I) + ' DB "' + CgStrPool[I] + '",0');
+  { extension post-TODO25, HUITIEME tranche (double/float) - ASM_PFX_FLOAT  }
+  { reserve DEPUIS le TODO 01 ("constante flottante (double, 8 octets)"),          }
+  { JAMAIS consomme avant cette tranche. }
+  For I := 0 To CgDoubleCount - 1 Do
+    EmitRaw(ASM_PFX_FLOAT + IntToStrG(I) + ' DB ' + CgDoubleToDataBytes(CgDoublePool[I]));
   EmitBlankLine;
 End;
 
@@ -13560,6 +13729,199 @@ Begin
   EmitInstr('RET');
   EmitBlankLine;
 
+  { _JPPRT_DOUBLE_TO_STR : extension post-TODO25, HUITIEME tranche       }
+  { (double/float, Test04Methodes.jpp/Test07Heritage.jpp) - convertit le           }
+  { double 8 octets recu par la PILE ([EBP+8..+15], MEME convention                    }
+  { d appel que tout argument double de ce compilateur - voir                            }
+  { CompileCall/CompileToStringValue) en une chaine ALLOUEE. SIMPLIFICATION      }
+  { EXPLICITEMENT ASSUMEE (documentee, PAS devinee) : virgule FIXE a SIX           }
+  { decimales (le nombre est MULTIPLIE par 1 000 000, ARRONDI au plus              }
+  { proche via FISTP en mode d arrondi PAR DEFAUT - "round to nearest",          }
+  { EXACTEMENT ce qu il faut pour LE DERNIER chiffre affiche), PUIS les           }
+  { zeros de fin de partie FRACTIONNAIRE sont retires (AU MOINS UN                     }
+  { chiffre apres la virgule TOUJOURS conserve, MEME regle Java que "12.0",          }
+  { jamais "12") - CECI N EST PAS la representation "la plus courte qui           }
+  { round-trip" REELLE de Java (un algorithme de type Grisu/Ryu, hors                  }
+  { de portee d une seule tranche) : "Math.PI * rayon * rayon" pour                    }
+  { rayon=2.0 affiche donc "12.566371" (arrondi a 6 decimales) plutot                  }
+  { que la valeur EXACTE Java "12.566370614359172" - DOCUMENTE comme                  }
+  { limitation de PRECISION D AFFICHAGE, jamais cache. Portee de valeur          }
+  { ASSUMEE (comme INT_MIN pour _JPPRT_INT_TO_STR ci-dessus) : la valeur          }
+  { mise a l echelle (|valeur|*1000000) DOIT tenir dans un entier 32                   }
+  { bits signe, soit |valeur| < ~2147 - LARGEMENT suffisant pour les               }
+  { aires de Test07Heritage.jpp (12.0/12.57) et Test04Methodes.jpp                     }
+  { (4.5/2.5), documente plutot que devine pour toute valeur PLUS                       }
+  { grande. }
+  EmitLabel(ASM_PFX_RUNTIME + 'DOUBLE_TO_STR');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('SUB ESP,48');
+
+  { signe : bit de poids fort du mot HAUT (EBP+12) du double - MEME       }
+  { position que le SDK Win32/x86 REEL (little-endian, le mot HAUT             }
+  { contient toujours le signe/l exposant IEEE754). "MOV [mem],imm"               }
+  { n est jamais emis par cet assembleur (TODO 22) - le drapeau transite         }
+  { donc par ECX avant d etre stocke, MEME discipline que partout                        }
+  { ailleurs. }
+  EmitInstr('MOV EAX,DWORD PTR [EBP+12]');
+  EmitInstr('AND EAX,-2147483648');
+  EmitInstr('MOV ECX,0');
+  EmitInstr('CMP EAX,0');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'DTS_POS');
+  EmitInstr('MOV ECX,1');
+  EmitLabel(ASM_PFX_RUNTIME + 'DTS_POS');
+  EmitInstr('MOV DWORD PTR [EBP-8],ECX');
+
+  { valeur absolue, mise a l echelle par 1 000 000 (SIX decimales),      }
+  { arrondie au plus proche (FISTP, mode d arrondi PAR DEFAUT - AUCUNE            }
+  { manipulation du mot de controle FPU necessaire ICI, contrairement a           }
+  { une VRAIE troncature - voir la note d en-tete de CompileExprF pour             }
+  { la raison de son absence). }
+  EmitInstr('FLD QWORD PTR [EBP+8]');
+  EmitInstr('FABS');
+  EmitInstr('MOV ECX,1000000');
+  EmitInstr('MOV DWORD PTR [EBP-4],ECX');
+  EmitInstr('FILD DWORD PTR [EBP-4]');
+  EmitInstr('FMULP');
+  EmitInstr('FISTP DWORD PTR [EBP-4]');
+  EmitInstr('MOV EAX,DWORD PTR [EBP-4]');
+
+  { extraction des chiffres (MEME idiome EXACT que _JPPRT_INT_TO_STR      }
+  { ci-dessus, division/reste par 10 repetee, buffer REMPLI A L ENVERS -          }
+  { EBX pointeur DECROISSANT depuis [EBP-13]) - PUIS complete a AU MOINS         }
+  { SEPT chiffres par des '0' de tete si nEcessaire (garantit qu il                    }
+  { existe TOUJOURS au moins UN chiffre avant la virgule, meme pour                   }
+  { "0.5") - ESI compte le TOTAL de chiffres produits (jamais ECX/EDX,             }
+  { detruits par IDIV a CHAQUE iteration). }
+  EmitInstr('LEA EBX,[EBP-13]');
+  EmitInstr('MOV ESI,0');
+  EmitLabel(ASM_PFX_RUNTIME + 'DTS_DIGLOOP');
+  EmitInstr('CMP EAX,0');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'DTS_PAD');
+  EmitInstr('MOV ECX,10');
+  EmitInstr('CDQ');
+  EmitInstr('IDIV ECX');
+  EmitInstr('ADD EDX,48');
+  EmitInstr('MOV BYTE PTR [EBX],DL');
+  EmitInstr('DEC EBX');
+  EmitInstr('ADD ESI,1');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'DTS_DIGLOOP');
+  EmitLabel(ASM_PFX_RUNTIME + 'DTS_PAD');
+  EmitInstr('CMP ESI,7');
+  EmitInstr('JGE ' + ASM_PFX_RUNTIME + 'DTS_DONEDIGITS');
+  EmitInstr('MOV EDX,48');
+  EmitInstr('MOV BYTE PTR [EBX],DL');
+  EmitInstr('DEC EBX');
+  EmitInstr('ADD ESI,1');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'DTS_PAD');
+  EmitLabel(ASM_PFX_RUNTIME + 'DTS_DONEDIGITS');
+
+  { les SIX derniers chiffres produits (adresses FIXES [EBP-18]..            }
+  { [EBP-13], puisque le tampon commence TOUJOURS a [EBP-13] quel que              }
+  { soit le nombre TOTAL de chiffres) forment la partie FRACTIONNAIRE -           }
+  { EDI compte combien EN GARDER en partant de la DROITE ([EBP-13]) et            }
+  { en retirant chaque '0' de fin rencontre, JAMAIS en-dessous de 1                     }
+  { (regle Java "toujours au moins un chiffre apres la virgule"). }
+  EmitInstr('MOV EDI,6');
+  EmitInstr('LEA ECX,[EBP-13]');
+  EmitLabel(ASM_PFX_RUNTIME + 'DTS_TRIM');
+  EmitInstr('CMP EDI,1');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'DTS_TRIMDONE');
+  EmitInstr('MOV DL,BYTE PTR [ECX]');
+  EmitInstr('CMP DL,48');
+  EmitInstr('JNE ' + ASM_PFX_RUNTIME + 'DTS_TRIMDONE');
+  EmitInstr('DEC ECX');
+  EmitInstr('SUB EDI,1');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'DTS_TRIM');
+  EmitLabel(ASM_PFX_RUNTIME + 'DTS_TRIMDONE');
+
+  { longueur de la partie ENTIERE = ESI (total) - 6 (fraction, TOUJOURS   }
+  { SIX chiffres bruts avant troncature) - stockee en memoire ([EBP-12],         }
+  { PAS un registre, doit survivre a l appel CALL ALLOC plus bas, dont              }
+  { les VRAIES fonctions Win32 internes ne preservent NI ECX NI EDX). }
+  EmitInstr('MOV EAX,ESI');
+  EmitInstr('SUB EAX,6');
+  EmitInstr('MOV DWORD PTR [EBP-12],EAX');
+
+  { taille totale ALLOUEE = signe(0/1) + partie entiere + 1 (virgule) +   }
+  { EDI (partie fractionnaire APRES troncature) + 1 (terminateur NUL -           }
+  { MEME discipline que _JPPRT_INT_TO_STR : HEAP_ZERO_MEMORY fournit le            }
+  { octet NUL gratuitement, mais le BLOC alloue doit reserver sa PROPRE           }
+  { place pour lui). }
+  EmitInstr('MOV EAX,DWORD PTR [EBP-8]');
+  EmitInstr('ADD EAX,DWORD PTR [EBP-12]');
+  EmitInstr('ADD EAX,1');
+  EmitInstr('ADD EAX,EDI');
+  EmitInstr('ADD EAX,1');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+  EmitInstr('ADD ESP,4');
+
+  { copie : signe (si negatif) PUIS partie entiere (EBX+1, apres          }
+  { l INC ci-dessous, jusqu a IntPartLen caracteres) PUIS "." PUIS la               }
+  { partie fractionnaire (adresse FIXE [EBP-18], EDI caracteres SEULEMENT,        }
+  { les zeros de fin d ja retires par DTS_TRIM). ESI devient le                          }
+  { pointeur d ECRITURE courant qui AVANCE - le pointeur de RETOUR                     }
+  { (le DEBUT du bloc, PAS sa fin) doit donc etre SAUVEGARDE a part                     }
+  { ([EBP-4], LIBRE a ce point - la constante d echelle/l entier arrondi           }
+  { qui l occupaient sont DEJA entierement consommes) et RECHARGE dans           }
+  { EAX juste avant l epilogue - BOGUE REEL trouve PAR EXECUTION                          }
+  { (segfault, PAS un des 18 echantillons - la toute PREMIERE synthese            }
+  { double, "double x=3.5;println(x);") : la note d en-tete PRECEDENTE               }
+  { affirmait a tort "EAX reste INTACT du debut a la fin", alors que la           }
+  { verification IMMEDIATE du signe ci-dessous ("MOV EAX,[EBP-8]")                    }
+  { l ecrasait AUSSITOT avec 0/1 - PRINTLN_STR recevait donc l ADRESSE           }
+  { 0 ou 1 au lieu du VRAI pointeur alloue, deferencee par _JPPRT_STRLEN         }
+  { avec un acces memoire invalide. Trouve par bissection SYSTEMATIQUE           }
+  { (points de controle "PUSH N ; CALL _ExitProcess@4" deplaces                          }
+  { progressivement le long de la routine jusqu a isoler EXACTEMENT le           }
+  { dernier endroit ou l execution restait correcte), PAS par relecture. }
+  EmitInstr('MOV DWORD PTR [EBP-4],EAX');
+  EmitInstr('MOV ESI,EAX');
+
+  EmitInstr('MOV EAX,DWORD PTR [EBP-8]');
+  EmitInstr('CMP EAX,0');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'DTS_NOSIGN');
+  EmitInstr('MOV EDX,45');
+  EmitInstr('MOV BYTE PTR [ESI],DL');
+  EmitInstr('INC ESI');
+  EmitLabel(ASM_PFX_RUNTIME + 'DTS_NOSIGN');
+
+  EmitInstr('INC EBX');
+  EmitInstr('MOV ECX,DWORD PTR [EBP-12]');
+  EmitLabel(ASM_PFX_RUNTIME + 'DTS_INTCOPY');
+  EmitInstr('CMP ECX,0');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'DTS_INTCOPYDONE');
+  EmitInstr('MOV DL,BYTE PTR [EBX]');
+  EmitInstr('MOV BYTE PTR [ESI],DL');
+  EmitInstr('INC EBX');
+  EmitInstr('INC ESI');
+  EmitInstr('SUB ECX,1');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'DTS_INTCOPY');
+  EmitLabel(ASM_PFX_RUNTIME + 'DTS_INTCOPYDONE');
+
+  EmitInstr('MOV EDX,46');
+  EmitInstr('MOV BYTE PTR [ESI],DL');
+  EmitInstr('INC ESI');
+
+  EmitInstr('LEA EBX,[EBP-18]');
+  EmitLabel(ASM_PFX_RUNTIME + 'DTS_FRACCOPY');
+  EmitInstr('CMP EDI,0');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'DTS_FRACCOPYDONE');
+  EmitInstr('MOV DL,BYTE PTR [EBX]');
+  EmitInstr('MOV BYTE PTR [ESI],DL');
+  EmitInstr('INC EBX');
+  EmitInstr('INC ESI');
+  EmitInstr('SUB EDI,1');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'DTS_FRACCOPY');
+  EmitLabel(ASM_PFX_RUNTIME + 'DTS_FRACCOPYDONE');
+  EmitInstr('MOV EAX,DWORD PTR [EBP-4]');
+
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
   { _JPPRT_CHAR_TO_STR : un SEUL caractere [EBP+8] -> chaine ALLOUEE      }
   { d 1 octet utile (+1 NUL gratuit via HEAP_ZERO_MEMORY, voir plus haut). }
   EmitLabel(ASM_PFX_RUNTIME + 'CHAR_TO_STR');
@@ -13723,15 +14085,41 @@ Begin
     CgAddrOperand := 'DWORD PTR [' + BaseRegName + IntToStrG(Offset) + ']';
 End;
 
+{ CgLocalOperandQ/CgAddrOperandQ : extension post-TODO25, HUITIEME      }
+{ tranche (double/float) - MEMES DEUX fonctions que ci-dessus, mais              }
+{ "QWORD PTR" plutot que "DWORD PTR" (les SEULS consommateurs sont               }
+{ FLD/FSTP m64real dans CompileExprF/STK_ASSIGN/STK_DECL/STK_RETURN,             }
+{ jamais MOV) - EVITE de dupliquer l arithmetique de deplacement                    }
+{ EBP-relatif (SIGNE, "+"/"-" selon Offset) une SECONDE fois. }
+Function CgLocalOperandQ(Offset: LongInt): TString;
+Begin
+  If Offset >= 0 Then
+    CgLocalOperandQ := 'QWORD PTR [EBP+' + IntToStrG(Offset) + ']'
+  Else
+    CgLocalOperandQ := 'QWORD PTR [EBP' + IntToStrG(Offset) + ']';
+End;
+
+Function CgAddrOperandQ(Const BaseRegName: TString; Offset: LongInt): TString;
+Begin
+  If Offset = 0 Then
+    CgAddrOperandQ := 'QWORD PTR [' + BaseRegName + ']'
+  Else If Offset > 0 Then
+    CgAddrOperandQ := 'QWORD PTR [' + BaseRegName + '+' + IntToStrG(Offset) + ']'
+  Else
+    CgAddrOperandQ := 'QWORD PTR [' + BaseRegName + IntToStrG(Offset) + ']';
+End;
+
 { Modele memoire d instance - extension post-TODO25 : un OBJET est un   }
 { bloc alloue sur le tas (_JPPRT_ALLOC, zero-rempli), UN SEUL mot de 4          }
-{ octets par CHAMP D INSTANCE (meme simplification "tout tient dans              }
-{ EAX" que le reste de ce generateur - AUCUN champ long/double/float                }
-{ n est correctement modelise, ils occupent quand meme UN SEUL mot,               }
-{ documente comme FAUX si jamais utilise). Les champs HERITES d une             }
-{ superclasse occupent TOUJOURS les premiers mots (deplacement le PLUS          }
-{ petit), ceux de la classe elle-meme suivent - TFieldRec.Offset (deja           }
-{ existant depuis le TODO 08, "deplacement... CHAMPS PROPRES SEULEMENT")        }
+{ octets par CHAMP D INSTANCE SCALAIRE (meme simplification "tout tient          }
+{ dans EAX" que le reste de ce generateur) - EXCEPTION, extension               }
+{ post-TODO25 HUITIEME tranche : un champ double/float occupe REELLEMENT      }
+{ 8 octets (voir CgSlotSize/FieldPoolAdd/TTypeRec.NextFieldOfs), charge/         }
+{ stocke via FLD/FSTP QWORD PTR plutot que MOV DWORD PTR. Les champs             }
+{ HERITES d une superclasse occupent TOUJOURS les premiers mots                     }
+{ (deplacement le PLUS petit), ceux de la classe elle-meme suivent -             }
+{ TFieldRec.Offset (deja existant depuis le TODO 08, "deplacement...   }
+{ CHAMPS PROPRES SEULEMENT")        }
 { reste relatif au DEBUT des champs PROPRES de son OwnerTypeIdx ;                    }
 { CgFieldOffsetInObject y ajoute la taille de TOUTE la chaine de                        }
 { superclasses AU-DESSUS de cet OwnerTypeIdx. SIMPLIFICATION ASSUMEE :                 }
@@ -13751,9 +14139,16 @@ End;
 Const
   CG_OBJ_HEADER = 4;
 
+{ CgClassOwnFieldBytes : extension post-TODO25, HUITIEME tranche       }
+{ (double/float) - lit DESORMAIS TypeTab[T].NextFieldOfs (deplacement                }
+{ CUMULE REEL, tenu a jour par FieldPoolAdd - voir sa propre note                     }
+{ d en-tete) plutot que "FieldCount * 4" (qui SUPPOSAIT 4 octets PAR             }
+{ champ, faux des qu un SEUL champ double/float existe, 8 octets) -                    }
+{ REDUIT EXACTEMENT a l ancienne formule pour toute classe SANS champ           }
+{ double/float (TOUJOURS le cas avant cette tranche). }
 Function CgClassOwnFieldBytes(T: Integer): LongInt;
 Begin
-  CgClassOwnFieldBytes := TypeTab[T].FieldCount * 4;
+  CgClassOwnFieldBytes := TypeTab[T].NextFieldOfs;
 End;
 
 Function CgAncestorFieldBytes(T: Integer): LongInt;
@@ -13776,7 +14171,41 @@ Begin
     CgAncestorFieldBytes(FieldPool[FI].OwnerTypeIdx) + FieldPool[FI].Offset;
 End;
 
+{ CgSlotSize : extension post-TODO25, HUITIEME tranche (double/float) - }
+{ taille (octets) reservee pour UNE locale/UN parametre SCALAIRE de ce           }
+{ type sur la PILE (EBP-relatif, CurParamOffset/CurLocalOffset) - 8              }
+{ pour double/float/long (MEME taille de MOT que leur TypeTab[T].Size            }
+{ REEL, jamais devine, voir TODO03/04), 4 pour TOUT LE RESTE (int/               }
+{ boolean/char/short/byte/reference - MEME simplification "un SEUL                    }
+{ mot" que partout ailleurs dans ce generateur de code). "float" est               }
+{ traite ICI EXACTEMENT comme "double" (calcule/stocke a PRECISION                    }
+{ DOUBLE en interne - simplification EXPLICITE, documentee a la note              }
+{ d en-tete de CompileExprF plus bas : AUCUN des 18 echantillons n a               }
+{ besoin de la troncature 32 bits REELLE d un "float" Java, seulement            }
+{ de sa DECLARATION/IMPRESSION). }
+Function CgSlotSize(T: Integer): Integer;
+Begin
+  If (T = PRIMTYPE_DOUBLE) Or (T = PRIMTYPE_FLOAT) Or (T = PRIMTYPE_LONG) Then
+    CgSlotSize := 8
+  Else
+    CgSlotSize := 4;
+End;
+
+{ CgIsFpuType : "T doit transiter par la pile FPU (ST(0)), JAMAIS EAX"  }
+{ - EXACTEMENT double/float (voir CgSlotSize ci-dessus pour la raison             }
+{ du traitement identique) - "long" reste HORS de portee (SEUL un                     }
+{ emplacement de 8 octets est reserve pour lui, AUCUNE arithmetique/                  }
+{ affichage reel, voir la note d en-tete de section plus bas). }
+Function CgIsFpuType(T: Integer): Boolean;
+Begin
+  CgIsFpuType := (T = PRIMTYPE_DOUBLE) Or (T = PRIMTYPE_FLOAT);
+End;
+
 Procedure CompileExpr(E: Integer); Forward;
+Procedure CompileExprF(E: Integer); Forward;   { extension post-TODO25,  }
+                                                { HUITIEME tranche - voir sa           }
+                                                { propre note d en-tete, juste           }
+                                                { avant CompileCall plus bas. }
 Procedure CompileCall(E: Integer); Forward;
 
 { CompileToStringValue : compile OperandE (CompileExpr) PUIS convertit   }
@@ -13790,6 +14219,24 @@ Procedure CompileToStringValue(OperandE: Integer);
 Var T : Integer; LblFalse, LblDone : TString;
 Begin
   T := ExprPool[OperandE].TypeIdx;
+
+  { extension post-TODO25, HUITIEME tranche (double/float) : DOIT etre    }
+  { verifiee AVANT le CompileExpr(OperandE) generique juste en dessous -          }
+  { un double/float ne transite JAMAIS par EAX (CompileExpr s arreterait         }
+  { PROPREMENT sur un noeud EK_DOUBLELIT/EK_IDENT-double via son propre           }
+  { catchall) - CompileExprF (FPU, ST(0)) est la SEULE voie valide, le          }
+  { resultat est ensuite pousse tel quel (8 octets) vers la nouvelle              }
+  { routine runtime _JPPRT_DOUBLE_TO_STR (voir sa propre note d en-tete). }
+  If CgIsFpuType(T) Then
+  Begin
+    CompileExprF(OperandE);
+    EmitInstr('SUB ESP,8');
+    EmitInstr('FSTP QWORD PTR [ESP]');
+    EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'DOUBLE_TO_STR');
+    EmitInstr('ADD ESP,8');
+    Exit;
+  End;
+
   CompileExpr(OperandE);
   If T = PDT_STRING Then Exit;
   If T = PRIMTYPE_BOOLEAN Then
@@ -13820,8 +14267,9 @@ Begin
     Exit;
   End;
   FatalError('generateur de code : conversion en chaine non couverte par ' +
-    'cette extension pour la concatenation "+" (long/double/float restent ' +
-    'hors de portee, voir la note d''en-tete de section) : type #' + IntToStrG(T));
+    'cette extension pour la concatenation "+" ("long" reste hors de ' +
+    'portee - double/float sont, EUX, couverts depuis la HUITIEME tranche, ' +
+    'voir la note d''en-tete de section) : type #' + IntToStrG(T));
 End;
 
 { CompileConcat : "+" dont le TYPE RESULTAT est PDT_STRING (regle EXACTE  }
@@ -13837,6 +14285,156 @@ Begin
   EmitInstr('PUSH EAX');
   EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'CONCAT');
   EmitInstr('ADD ESP,8');
+End;
+
+{ CompileExprF : extension post-TODO25, HUITIEME tranche (double/       }
+{ float, Test04Methodes.jpp/Test07Heritage.jpp) - JUMELLE de CompileExpr      }
+{ mais pour un noeud dont le TYPE STATIQUE (ExprPool[E].TypeIdx) est               }
+{ double OU float, laisse son resultat sur LA PILE FPU (ST(0)), JAMAIS           }
+{ dans EAX (contrainte x87 REELLE, pas un choix arbitraire) - "float"             }
+{ est traite EXACTEMENT comme "double" partout ICI (PRECISION double                  }
+{ interne, voir CgSlotSize/CgIsFpuType) : AUCUN des 18 echantillons               }
+{ n exploite la troncature 32 bits REELLE d un "float" Java (seulement           }
+{ sa DECLARATION/IMPRESSION, jamais une comparaison de PRECISION),                    }
+{ simplification EXPLICITEMENT choisie plutot que devinee. AUCUN                       }
+{ APPELANT ne doit JAMAIS appeler CompileExpr (la voie EAX) sur un                    }
+{ noeud double/float, ni CompileExprF sur un noeud SCALAIRE ordinaire -           }
+{ le TYPE STATIQUE decide TOUJOURS laquelle des deux voies emprunter,             }
+{ jamais le noeud lui-meme. Portee DELIBEREMENT etroite (litteraux,               }
+{ locale/parametre/champ scalaire, +/-/*//, ternaire, appel de                       }
+{ methode) - EXACTEMENT ce que Test04/Test07 exercent, PAS de cast               }
+{ int<->double (Test02Variables.jpp en aurait besoin, mais reste                       }
+{ bloque par ailleurs par un litteral "long" hors de portee 32 bits,             }
+{ voir la note d en-tete de section - AUCUNE raison de construire la              }
+{ machinerie FISTP/FLDCW de troncature pour un SEUL echantillon deja                 }
+{ bloque pour une AUTRE raison). }
+Procedure CompileExprF(E: Integer);
+Var
+  LblFalse, LblDone : TString;
+  BaseT, FI : Integer;
+Begin
+  If E < 0 Then
+  Begin
+    FatalError('generateur de code : expression flottante manquante ' +
+      '(extension post-TODO25, HUITIEME tranche)');
+    Exit;
+  End;
+  Case ExprPool[E].Kind Of
+    EK_DOUBLELIT, EK_FLOATLIT:
+      EmitInstr('FLD QWORD PTR [' + ASM_PFX_FLOAT + IntToStrG(CgDoublePoolOfExpr[E]) + ']');
+
+    { EK_IDENT : locale/parametre double/float SCALAIRE (MEME restriction  }
+    { "jamais un champ/'this'" que CompileExpr - un champ arrive TOUJOURS         }
+    { ICI sous forme EK_SELECTOR, voir ExprAddIdent). }
+    EK_IDENT:
+    Begin
+      If (ExprPool[E].Left < 0) Or (SymTab[ExprPool[E].Left].Kind <> SK_VAR) Then
+      Begin
+        FatalError('generateur de code : identificateur flottant non ' +
+          'couvert par cette extension : ' + ExprPool[E].NameVal);
+        Exit;
+      End;
+      EmitInstr('FLD ' + CgLocalOperandQ(SymTab[ExprPool[E].Left].Offset));
+    End;
+
+    { EK_SELECTOR : champ double/float - static CONSTANT (ex. "Math.PI",  }
+    { AUCUNE base necessaire, MEME cas que "winm.MB_OK" en EK_SELECTOR                 }
+    { ordinaire, extension post-TODO25 SEPTIEME tranche) OU champ                            }
+    { D INSTANCE reel (largeur/hauteur/rayon, Test07Heritage.jpp - la                    }
+    { BASE, ELLE, est TOUJOURS une reference/un objet, JAMAIS un                            }
+    { double/float elle-meme, donc compilee via CompileExpr ordinaire,               }
+    { PAS CompileExprF). }
+    EK_SELECTOR:
+    Begin
+      BaseT := ExprPool[ExprPool[E].Left].TypeIdx;
+      FI := ClassFindField(BaseT, ExprPool[E].NameVal);
+      If FI < 0 Then
+      Begin
+        FatalError('generateur de code : selecteur flottant "' +
+          ExprPool[E].NameVal + '" non couvert par cette extension ' +
+          '(champ introuvable)');
+        Exit;
+      End;
+      If FieldPool[FI].IsStatic And FieldPool[FI].HasInit Then
+      Begin
+        EmitInstr('FLD QWORD PTR [' + ASM_PFX_FLOAT +
+          IntToStrG(CgDoublePoolOfField[FI]) + ']');
+        Exit;
+      End;
+      CompileExpr(ExprPool[E].Left);
+      EmitInstr('MOV EBX,EAX');
+      EmitInstr('FLD ' + CgAddrOperandQ('EBX', CgFieldOffsetInObject(FI)));
+    End;
+
+    EK_UNARY:
+    Begin
+      If ExprPool[E].Op = '-' Then
+      Begin
+        CompileExprF(ExprPool[E].Left);
+        EmitInstr('FCHS');
+      End
+      Else If ExprPool[E].Op = '+' Then
+        CompileExprF(ExprPool[E].Left)
+      Else
+        FatalError('generateur de code : operateur unaire flottant non ' +
+          'couvert par cette extension : ' + ExprPool[E].Op);
+    End;
+
+    { EK_BINARY : +/-/*// double/float SEULEMENT (comparaisons - a        }
+    { RESULTAT boolean/EAX, jamais double - restent dans CompileBinary,           }
+    { voir sa propre note d en-tete pour le cas symetrique). Charge                     }
+    { TOUJOURS GAUCHE PUIS DROIT (ST(0)=droit, ST(1)=gauche APRES les              }
+    { deux FLD, puisque chaque FLD POUSSE sur le SOMMET) - "FSUBP"/                   }
+    { "FDIVP" (ST(1),ST(0)) calculent ST(1)-ST(0)/ST(1)/ST(0), donc                     }
+    { GAUCHE-DROIT/GAUCHE/DROIT avec CET ORDRE DE CHARGEMENT precisement -        }
+    { BOGUE REEL trouve PAR EXECUTION (PAS un des 18 echantillons, une            }
+    { synthese dediee "a-b"/"a/b") : l ordre INVERSE (DROIT PUIS                        }
+    { GAUCHE) utilise a l origine calculait SILENCIEUSEMENT DROIT-GAUCHE/         }
+    { DROIT/GAUCHE (l oppose exact) pour CES DEUX operateurs NON-                       }
+    { commutatifs SEULEMENT - "+"/"*" restaient CORRECTS par pure                       }
+    { coincidence (commutatifs, l ordre des operandes ne change JAMAIS               }
+    { le resultat), ce qui a retarde la decouverte jusqu a un test                     }
+    { EXPLICITE de la soustraction/division. }
+    EK_BINARY:
+    Begin
+      CompileExprF(ExprPool[E].Left);
+      CompileExprF(ExprPool[E].Right);
+      If ExprPool[E].Op = '+' Then EmitInstr('FADDP')
+      Else If ExprPool[E].Op = '-' Then EmitInstr('FSUBP')
+      Else If ExprPool[E].Op = '*' Then EmitInstr('FMULP')
+      Else If ExprPool[E].Op = '/' Then EmitInstr('FDIVP')
+      Else
+        FatalError('generateur de code : operateur binaire flottant non ' +
+          'couvert par cette extension : ' + ExprPool[E].Op);
+    End;
+
+    EK_TERNARY:
+    Begin
+      CompileExpr(ExprPool[E].Left);
+      EmitInstr('CMP EAX,0');
+      LblFalse := CgLabelGen;
+      LblDone  := CgLabelGen;
+      EmitInstr('JE ' + LblFalse);
+      CompileExprF(ExprPool[E].Right);
+      EmitInstr('JMP ' + LblDone);
+      EmitLabel(LblFalse);
+      CompileExprF(ExprPool[E].Extra);
+      EmitLabel(LblDone);
+    End;
+
+    { EK_CALL : appel dont le RETOUR est double/float (Test04Methodes.jpp,  }
+    { "maximum(double,double)") - CompileCall laisse DEJA le resultat               }
+    { sur ST(0) pour une methode dont le RetTypeIdx est double/float                 }
+    { (MEME convention REELLE x87, voir sa propre note d en-tete) - AUCUNE       }
+    { transformation supplementaire n est necessaire ICI. }
+    EK_CALL:
+      CompileCall(E);
+
+  Else
+    FatalError('generateur de code : forme d''expression flottante non ' +
+      'couverte par cette extension (genre #' + IntToStrG(Ord(ExprPool[E].Kind)) +
+      ') - portee deliberement etroite (voir la note d''en-tete de section)');
+  End;
 End;
 
 { CompileArithBinary : ECX=GAUCHE, EAX=DROIT DEJA en place (voir          }
@@ -13920,9 +14518,47 @@ End;
 { CompileArithBinary/CompileComparisonBinary trouvent alors TOUJOURS                    }
 { ECX=GAUCHE/EAX=DROIT. }
 Procedure CompileBinary(E: Integer);
-Var Op : TString; LblShort, LblDone : TString;
+Var Op : TString; LblShort, LblDone, LblTrue : TString;
 Begin
   Op := ExprPool[E].Op;
+
+  { extension post-TODO25, HUITIEME tranche (double/float) : comparaison  }
+  { dont les OPERANDES (le RESULTAT reste TOUJOURS boolean/EAX, JAMAIS               }
+  { double - CompileBinary elle-meme n est JAMAIS appelee pour un                     }
+  { noeud dont le TYPE PROPRE est double/float, voir CompileExprF) sont             }
+  { double/float - Test04Methodes.jpp, "gauche > droite" a l interieur           }
+  { du ternaire de "maximum(double,double)". DOIT etre verifiee AVANT               }
+  { TOUT le reste de cette fonction (qui appelle CompileExpr, la voie              }
+  { EAX, sur GAUCHE/DROIT sans discrimination - s arreterait                             }
+  { PROPREMENT sur un operande double/float). Charge DROIT PUIS GAUCHE            }
+  { (ST(0)=gauche APRES les deux FLD, MEME raisonnement que                             }
+  { CompileExprF/EK_BINARY), FCOMIP compare ST(0) contre ST(1) - flags            }
+  { de STYLE NON-SIGNE (CF/ZF, comme CMP entre entiers non-signes,                    }
+  { JAMAIS SF/OF) puisque c est ainsi que x87 encode un resultat de                    }
+  { comparaison flottante - JB/JBE/JA/JAE plutot que JL/JLE/JG/JGE. }
+  If ((Op = '==') Or (Op = '!=') Or (Op = '<') Or (Op = '<=') Or
+      (Op = '>') Or (Op = '>=')) And
+     CgIsFpuType(ExprPool[ExprPool[E].Left].TypeIdx) Then
+  Begin
+    CompileExprF(ExprPool[E].Right);
+    CompileExprF(ExprPool[E].Left);
+    EmitInstr('FCOMIP');
+    EmitInstr('FSTP ST(0)');   { depile ce qui reste (n affecte PAS EFLAGS) }
+    LblTrue := CgLabelGen;
+    LblDone := CgLabelGen;
+    If      Op = '==' Then EmitInstr('JE '  + LblTrue)
+    Else If Op = '!=' Then EmitInstr('JNE ' + LblTrue)
+    Else If Op = '<'  Then EmitInstr('JB '  + LblTrue)
+    Else If Op = '<=' Then EmitInstr('JBE ' + LblTrue)
+    Else If Op = '>'  Then EmitInstr('JA '  + LblTrue)
+    Else                   EmitInstr('JAE ' + LblTrue);
+    EmitInstr('MOV EAX,0');
+    EmitInstr('JMP ' + LblDone);
+    EmitLabel(LblTrue);
+    EmitInstr('MOV EAX,1');
+    EmitLabel(LblDone);
+    Exit;
+  End;
 
   If (Op = '+') And (ExprPool[E].TypeIdx = PDT_STRING) Then
   Begin
@@ -14006,7 +14642,7 @@ Procedure CompileExpr(E: Integer);
 Var
   LblFalse, LblDone, LblLoop, LblEnd : TString;
   Off : LongInt;
-  FI, BaseT, MI, ClassT, I, ArgN : Integer;
+  FI, BaseT, MI, ClassT, I, ArgN, ArgBytes : Integer;
 Begin
   If E < 0 Then
   Begin
@@ -14455,10 +15091,31 @@ Begin
           'section)');
         Exit;
       End;
+      { extension post-TODO25, HUITIEME tranche (double/float) : un                }
+      { argument de CONSTRUCTEUR double/float (ex. "new Cercle(2.0)")             }
+      { DOIT etre POUSSE sur 8 octets REELS (CompileExprF + FSTP QWORD           }
+      { PTR [ESP], JAMAIS "PUSH EAX") - BOGUE REEL trouve PAR EXECUTION           }
+      { (avant meme d atteindre le corps du constructeur - "genre d              }
+      { expression non couverte" generique de CompileExpr, la valeur              }
+      { double 2.0 tentant a tort de transiter par EAX) - ArgBytes                    }
+      { (SOMME REELLE des tailles) remplace "(ArgCount+1)*4", qui                     }
+      { SUPPOSAIT 4 octets PAR argument. }
+      ArgBytes := 0;
       For I := ExprPool[E].ArgCount - 1 DownTo 0 Do
       Begin
-        CompileExpr(ExprArgPool[ExprPool[E].ArgFirst + I]);
-        EmitInstr('PUSH EAX');
+        If (MI >= 0) And CgIsFpuType(ParamPool[MethodPool[MI].ParamFirst + I].TypeIdx) Then
+        Begin
+          CompileExprF(ExprArgPool[ExprPool[E].ArgFirst + I]);
+          EmitInstr('SUB ESP,8');
+          EmitInstr('FSTP QWORD PTR [ESP]');
+          Inc(ArgBytes, 8);
+        End
+        Else
+        Begin
+          CompileExpr(ExprArgPool[ExprPool[E].ArgFirst + I]);
+          EmitInstr('PUSH EAX');
+          Inc(ArgBytes, 4);
+        End;
       End;
       EmitInstr('PUSH ' + IntToStrG(CgObjectSize(ClassT)));
       EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
@@ -14475,7 +15132,7 @@ Begin
         EmitInstr('PUSH EAX');
         EmitInstr('CALL ' + MethodAsmLabelG(MI));
         EmitInstr('MOV EAX,' + CgAddrOperand('ESP', 0));
-        EmitInstr('ADD ESP,' + IntToStrG((ExprPool[E].ArgCount + 1) * 4));
+        EmitInstr('ADD ESP,' + IntToStrG(ArgBytes + 4));
       End;
       { sinon : constructeur PAR DEFAUT synthetise, EFFECTIVEMENT vide -   }
       { EAX contient DEJA le pointeur d objet (ecrit par ALLOC, jamais           }
@@ -14619,6 +15276,22 @@ Begin
       End
       Else
       Begin
+        { BOGUE REEL trouve PAR EXECUTION (segfault, "new Rectangle(...),  }
+        { new Cercle(...)" a l interieur d un LITTERAL de tableau,                     }
+        { Test07Heritage.jpp - PAS specifique a double/float, latent               }
+        { depuis TOUJOURS mais jamais declenche avant cette tranche,                    }
+        { AUCUN echantillon anterieur ne combinant "tableau litteral                     }
+        { d objets" ET "constructeur qui affecte un champ") : garder le           }
+        { pointeur de BASE du tableau dans EBX pendant que CompileExpr                 }
+        { compile CHAQUE ELEMENT est UNIQUEMENT sur SI cet element est                   }
+        { un LITTERAL simple - "new Rectangle(...)" invoque un VRAI                      }
+        { constructeur UTILISATEUR, dont le CORPS peut librement utiliser         }
+        { EBX pour SES PROPRES affectations de champ (STK_ASSIGN,                          }
+        { EK_SELECTOR) et l ECRASE donc SILENCIEUSEMENT. Corrige en                    }
+        { conservant le pointeur de base SUR LA PILE (survit a N IMPORTE           }
+        { QUEL appel imbrique, MEME discipline que le compteur de boucle           }
+        { de _JPPRT_ALLOC_NDARRAY/".clone()" ci-dessus) plutot que dans           }
+        { un registre. }
         ArgN := ExprPool[E].ArgCount;
         EmitInstr('PUSH ' + IntToStrG(ArgN * 4 + 4));
         EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
@@ -14626,13 +15299,14 @@ Begin
         EmitInstr('MOV ECX,' + IntToStrG(ArgN));
         EmitInstr('MOV ' + CgAddrOperand('EAX', 0) + ',ECX');
         EmitInstr('ADD EAX,4');
-        EmitInstr('MOV EBX,EAX');
+        EmitInstr('PUSH EAX');
         For I := 0 To ArgN - 1 Do
         Begin
           CompileExpr(ExprArgPool[ExprPool[E].ArgFirst + I]);
-          EmitInstr('MOV ' + CgAddrOperand('EBX', I * 4) + ',EAX');
+          EmitInstr('MOV ECX,' + CgAddrOperand('ESP', 0));
+          EmitInstr('MOV ' + CgAddrOperand('ECX', I * 4) + ',EAX');
         End;
-        EmitInstr('MOV EAX,EBX');
+        EmitInstr('POP EAX');
       End;
     End;
   Else
@@ -14687,7 +15361,7 @@ Const
 
 Procedure CompileCall(E: Integer);
 Var
-  MI, ArgE, I, T, BaseT, CandCount, CandMI : Integer;
+  MI, ArgE, I, T, BaseT, CandCount, CandMI, ArgBytes : Integer;
   ParamsOK : Boolean;
   CandType, CandMIArr : Array[0..MAX_CG_DISPATCH - 1] Of Integer;
   CandLbl : Array[0..MAX_CG_DISPATCH - 1] Of TString;
@@ -14797,9 +15471,10 @@ Begin
   { encore tout ce qui n etait pas "String" ICI. CompileToStringValue                 }
   { (deja ecrite pour la concatenation "+") convertit DEJA int/boolean/           }
   { char en pointeur de chaine ALLOUEE - la REUTILISER ICI evite toute           }
-  { duplication, PRINTLN_STR ne voit alors JAMAIS la difference. "double"       }
-  { reste HORS de portee (CompileToStringValue s arrete PROPREMENT elle-              }
-  { meme dans ce cas, MEME limitation que partout ailleurs). }
+  { duplication, PRINTLN_STR ne voit alors JAMAIS la difference.                       }
+  { EXTENSION, HUITIEME tranche : "double" est desormais LUI AUSSI                    }
+  { couvert (CompileToStringValue route DEJA vers CompileExprF/                          }
+  { _JPPRT_DOUBLE_TO_STR pour ce cas, voir sa propre note d en-tete). }
   If (MethodPool[MI].OwnerTypeIdx = TypeFindByName('PrintStream')) And
      (MethodPool[MI].Name = 'println') And (MethodPool[MI].ParamCount = 1) And
      ((ParamPool[MethodPool[MI].ParamFirst].TypeIdx = PDT_STRING) Or
@@ -14807,10 +15482,99 @@ Begin
       (ParamPool[MethodPool[MI].ParamFirst].TypeIdx = PRIMTYPE_BOOLEAN) Or
       (ParamPool[MethodPool[MI].ParamFirst].TypeIdx = PRIMTYPE_CHAR) Or
       (ParamPool[MethodPool[MI].ParamFirst].TypeIdx = PRIMTYPE_SHORT) Or
-      (ParamPool[MethodPool[MI].ParamFirst].TypeIdx = PRIMTYPE_BYTE)) Then
+      (ParamPool[MethodPool[MI].ParamFirst].TypeIdx = PRIMTYPE_BYTE) Or
+      CgIsFpuType(ParamPool[MethodPool[MI].ParamFirst].TypeIdx)) Then
   Begin
     ArgE := ExprArgPool[ExprPool[E].ArgFirst];
     CompileToStringValue(ArgE);
+    EmitInstr('PUSH EAX');
+    EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'PRINTLN_STR');
+    EmitInstr('ADD ESP,4');
+    Exit;
+  End;
+
+  { extension post-TODO25, HUITIEME tranche : "println(Object)" avec un   }
+  { argument REELLEMENT un objet (TYK_CLASS/INTERFACE, ex.                              }
+  { "System.out.println(formes[i])", Test07Heritage.jpp) - Java appelle           }
+  { REELLEMENT "toString()" sur l argument (section 15.18.1, "un objet                }
+  { est converti en String via toString()") - AUCUN VRAI noeud EK_CALL                 }
+  { "formes[i].toString()" n existe dans le code source (entierement                     }
+  { IMPLICITE) : resolu et appele ICI via la MEME technique de dispatch           }
+  { polymorphique que tout appel d instance ordinaire (enumeration des            }
+  { classes CONCRETES de BaseT, CMP/JE sur l etiquette de type                            }
+  { dynamique - voir la note d en-tete de la branche d appel D INSTANCE          }
+  { generale, plus bas, pour la justification complete de cette                          }
+  { technique). }
+  If (MethodPool[MI].OwnerTypeIdx = TypeFindByName('PrintStream')) And
+     (MethodPool[MI].Name = 'println') And (MethodPool[MI].ParamCount = 1) And
+     (ParamPool[MethodPool[MI].ParamFirst].TypeIdx = PDT_OBJECT) Then
+  Begin
+    ArgE := ExprArgPool[ExprPool[E].ArgFirst];
+    BaseT := ExprPool[ArgE].TypeIdx;
+    If (BaseT < 0) Or (BaseT >= TypeCount) Or
+       (Not (TypeTab[BaseT].Kind In [TYK_CLASS, TYK_INTERFACE])) Then
+    Begin
+      FatalError('generateur de code : "println(Object)" non couvert par ' +
+        'cette extension pour ce type statique (seule une reference de ' +
+        'classe/interface UTILISATEUR avec "toString()" est geree) : type #' +
+        IntToStrG(BaseT));
+      Exit;
+    End;
+
+    CandCount := 0;
+    For T := 0 To TypeCount - 1 Do
+      If (TypeTab[T].Kind = TYK_CLASS) And (Not TypeTab[T].IsAbstractClass) And
+         TypeIsSubclassOf(T, BaseT) And (CandCount < MAX_CG_DISPATCH) Then
+      Begin
+        CandMI := ClassResolveMethodCall(T, 'toString', 0, 0);
+        If (CandMI >= 0) And (MethodPool[CandMI].BodyStmtIdx >= 0) Then
+        Begin
+          CandType[CandCount]  := T;
+          CandMIArr[CandCount] := CandMI;
+          Inc(CandCount);
+        End;
+      End;
+
+    If CandCount = 0 Then
+    Begin
+      FatalError('generateur de code : "println(Object)" non couvert par ' +
+        'cette extension (aucune classe concrete de "' + TypeTab[BaseT].Name +
+        '" ne fournit de "toString()" reel, voir la note d''en-tete de section)');
+      Exit;
+    End;
+
+    CompileExpr(ArgE);
+    EmitInstr('MOV EBX,EAX');
+
+    If CandCount = 1 Then
+    Begin
+      EmitInstr('PUSH EBX');
+      EmitInstr('CALL ' + MethodAsmLabelG(CandMIArr[0]));
+      EmitInstr('ADD ESP,4');
+    End
+    Else
+    Begin
+      EmitInstr('MOV EAX,' + CgAddrOperand('EBX', 0));
+      LblDone := CgLabelGen;
+      For I := 0 To CandCount - 1 Do
+      Begin
+        CandLbl[I] := CgLabelGen;
+        EmitInstr('CMP EAX,' + IntToStrG(CandType[I]));
+        EmitInstr('JE ' + CandLbl[I]);
+      End;
+      EmitInstr('PUSH 5');
+      EmitInstr('CALL _ExitProcess@4');
+      For I := 0 To CandCount - 1 Do
+      Begin
+        EmitLabel(CandLbl[I]);
+        EmitInstr('PUSH EBX');
+        EmitInstr('CALL ' + MethodAsmLabelG(CandMIArr[I]));
+        EmitInstr('JMP ' + LblDone);
+      End;
+      EmitLabel(LblDone);
+      EmitInstr('ADD ESP,4');
+    End;
+
     EmitInstr('PUSH EAX');
     EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'PRINTLN_STR');
     EmitInstr('ADD ESP,4');
@@ -14850,27 +15614,55 @@ Begin
     Exit;
   End;
 
+  { extension post-TODO25, HUITIEME tranche (double/float) : accepte      }
+  { AUSSI un retour/des parametres double/float (CgIsFpuType, EN PLUS de       }
+  { CgIsScalarCallType qui, LUI, reste EAX-SEUL - Test04Methodes.jpp,             }
+  { "static double maximum(double,double)") - chaque ARGUMENT double/                  }
+  { float est POUSSE sur 8 octets REELS (CompileExprF + FSTP QWORD PTR                }
+  { [ESP], JAMAIS "PUSH EAX") plutot que 4, d ou ArgBytes (SOMME REELLE          }
+  { des tailles, remplace l ancien "ArgCount * 4" qui SUPPOSAIT 4 octets          }
+  { PAR argument, faux des qu un SEUL argument double/float existe) pour         }
+  { le nettoyage final de pile. Le RETOUR, lui, n a besoin d AUCUNE               }
+  { transformation ICI : un double/float est DEJA sur ST(0) au retour             }
+  { de MethodAsmLabelG(MI) (STK_RETURN l y place directement, voir sa            }
+  { propre note d en-tete), EXACTEMENT la ou CompileExprF (l APPELANT               }
+  { de CompileCall pour un appel dont le RESULTAT est lui-meme double/            }
+  { float) l attend. }
   If MethodPool[MI].IsStatic And
      (TypeTab[MethodPool[MI].OwnerTypeIdx].Kind = TYK_CLASS) And
      (MethodPool[MI].BodyStmtIdx >= 0) And
      (CgIsScalarCallType(MethodPool[MI].RetTypeIdx) Or
+      CgIsFpuType(MethodPool[MI].RetTypeIdx) Or
       (MethodPool[MI].RetTypeIdx = PRIMTYPE_VOID)) Then
   Begin
     ParamsOK := True;
     For I := 0 To MethodPool[MI].ParamCount - 1 Do
-      If Not CgIsScalarCallType(ParamPool[MethodPool[MI].ParamFirst + I].TypeIdx) Then
+      If Not (CgIsScalarCallType(ParamPool[MethodPool[MI].ParamFirst + I].TypeIdx) Or
+              CgIsFpuType(ParamPool[MethodPool[MI].ParamFirst + I].TypeIdx)) Then
         ParamsOK := False;
     If ParamsOK Then
     Begin
+      ArgBytes := 0;
       For I := ExprPool[E].ArgCount - 1 DownTo 0 Do
       Begin
         ArgE := ExprArgPool[ExprPool[E].ArgFirst + I];
-        CompileExpr(ArgE);
-        EmitInstr('PUSH EAX');
+        If CgIsFpuType(ParamPool[MethodPool[MI].ParamFirst + I].TypeIdx) Then
+        Begin
+          CompileExprF(ArgE);
+          EmitInstr('SUB ESP,8');
+          EmitInstr('FSTP QWORD PTR [ESP]');
+          Inc(ArgBytes, 8);
+        End
+        Else
+        Begin
+          CompileExpr(ArgE);
+          EmitInstr('PUSH EAX');
+          Inc(ArgBytes, 4);
+        End;
       End;
       EmitInstr('CALL ' + MethodAsmLabelG(MI));
-      If ExprPool[E].ArgCount > 0 Then
-        EmitInstr('ADD ESP,' + IntToStrG(ExprPool[E].ArgCount * 4));
+      If ArgBytes > 0 Then
+        EmitInstr('ADD ESP,' + IntToStrG(ArgBytes));
       Exit;
     End;
   End;
@@ -14899,15 +15691,21 @@ Begin
   { nouvelle de l assembleur du TODO 22 (CMP/JE/CALL directs uniquement,          }
   { deja pleinement supportes) - largement suffisant pour le nombre DE            }
   { CLASSES en jeu dans SAMPLES\JPP\*.jpp. }
+  { extension post-TODO25, HUITIEME tranche (double/float) : MEME          }
+  { extension que la branche STATIQUE ci-dessus (CgIsFpuType, EN PLUS de       }
+  { CgIsScalarCallType) - Test07Heritage.jpp, "aire()" (methode                          }
+  { D INSTANCE polymorphique retournant double). }
   If ((TypeTab[MethodPool[MI].OwnerTypeIdx].Kind = TYK_CLASS) Or
       (TypeTab[MethodPool[MI].OwnerTypeIdx].Kind = TYK_INTERFACE)) And
      (Not MethodPool[MI].IsStatic) And
      (CgIsScalarCallType(MethodPool[MI].RetTypeIdx) Or
+      CgIsFpuType(MethodPool[MI].RetTypeIdx) Or
       (MethodPool[MI].RetTypeIdx = PRIMTYPE_VOID)) Then
   Begin
     ParamsOK := True;
     For I := 0 To MethodPool[MI].ParamCount - 1 Do
-      If Not CgIsScalarCallType(ParamPool[MethodPool[MI].ParamFirst + I].TypeIdx) Then
+      If Not (CgIsScalarCallType(ParamPool[MethodPool[MI].ParamFirst + I].TypeIdx) Or
+              CgIsFpuType(ParamPool[MethodPool[MI].ParamFirst + I].TypeIdx)) Then
         ParamsOK := False;
     If ParamsOK Then
     Begin
@@ -14950,11 +15748,23 @@ Begin
         Exit;
       End;
 
+      ArgBytes := 0;
       For I := ExprPool[E].ArgCount - 1 DownTo 0 Do
       Begin
         ArgE := ExprArgPool[ExprPool[E].ArgFirst + I];
-        CompileExpr(ArgE);
-        EmitInstr('PUSH EAX');
+        If CgIsFpuType(ParamPool[MethodPool[MI].ParamFirst + I].TypeIdx) Then
+        Begin
+          CompileExprF(ArgE);
+          EmitInstr('SUB ESP,8');
+          EmitInstr('FSTP QWORD PTR [ESP]');
+          Inc(ArgBytes, 8);
+        End
+        Else
+        Begin
+          CompileExpr(ArgE);
+          EmitInstr('PUSH EAX');
+          Inc(ArgBytes, 4);
+        End;
       End;
       If ExprPool[ExprPool[E].Left].Kind = EK_SELECTOR Then
         CompileExpr(ExprPool[ExprPool[E].Left].Left)
@@ -14965,7 +15775,7 @@ Begin
       Begin
         EmitInstr('PUSH EAX');
         EmitInstr('CALL ' + MethodAsmLabelG(CandMIArr[0]));
-        EmitInstr('ADD ESP,' + IntToStrG((ExprPool[E].ArgCount + 1) * 4));
+        EmitInstr('ADD ESP,' + IntToStrG(ArgBytes + 4));
       End
       Else
       Begin
@@ -14994,7 +15804,7 @@ Begin
           EmitInstr('JMP ' + LblDone);
         End;
         EmitLabel(LblDone);
-        EmitInstr('ADD ESP,' + IntToStrG((ExprPool[E].ArgCount + 1) * 4));
+        EmitInstr('ADD ESP,' + IntToStrG(ArgBytes + 4));
       End;
       Exit;
     End;
@@ -15084,12 +15894,25 @@ Begin
         FatalError('generateur de code : forme d''instruction-expression ' +
           'non couverte par cette extension (section 7.4)');
 
+    { extension post-TODO25, HUITIEME tranche (double/float) : SI le      }
+    { TYPE PROPRE de la locale est double/float ("double reelDouble =              }
+    { 2.5;"), l initialiseur DOIT passer par CompileExprF (ST(0)) PUIS               }
+    { FSTP - CompileExpr (EAX) s arreterait PROPREMENT sur l initialiseur          }
+    { lui-meme (EK_DOUBLELIT). }
     STK_DECL:
       For I := StmtPool[S].Left To StmtPool[S].Left + StmtPool[S].Extra - 1 Do
         If SymTab[I].HasInit Then
         Begin
-          CompileExpr(SymTab[I].InitExprIdx);
-          EmitInstr('MOV ' + CgLocalOperand(SymTab[I].Offset) + ',EAX');
+          If CgIsFpuType(SymTab[I].TypeIdx) Then
+          Begin
+            CompileExprF(SymTab[I].InitExprIdx);
+            EmitInstr('FSTP ' + CgLocalOperandQ(SymTab[I].Offset));
+          End
+          Else
+          Begin
+            CompileExpr(SymTab[I].InitExprIdx);
+            EmitInstr('MOV ' + CgLocalOperand(SymTab[I].Offset) + ',EAX');
+          End;
         End;
 
     { STK_ASSIGN : trois cibles couvertes - locale/parametre (EK_IDENT,     }
@@ -15107,6 +15930,18 @@ Begin
          (SymTab[ExprPool[TargetE].Left].Kind = SK_VAR) Then
       Begin
         Off := SymTab[ExprPool[TargetE].Left].Offset;
+        { extension post-TODO25, HUITIEME tranche (double/float) : cible   }
+        { locale/parametre double/float - "=" SEULEMENT (AUCUN            }
+        { echantillon reel n a besoin d une affectation COMPOSEE, "+=",           }
+        { sur un double - CompileCompoundOp reste int-SEUL, documente               }
+        { ailleurs). }
+        If CgIsFpuType(SymTab[ExprPool[TargetE].Left].TypeIdx) And
+           (StmtPool[S].Op = '=') Then
+        Begin
+          CompileExprF(StmtPool[S].Right);
+          EmitInstr('FSTP ' + CgLocalOperandQ(Off));
+          Exit;
+        End;
         If StmtPool[S].Op = '=' Then
         Begin
           CompileExpr(StmtPool[S].Right);
@@ -15134,6 +15969,20 @@ Begin
           Exit;
         End;
         Off := CgFieldOffsetInObject(FI);
+        { extension post-TODO25, HUITIEME tranche (double/float) : cible   }
+        { CHAMP double/float (Test07Heritage.jpp, "this.largeur =                     }
+        { largeur;" dans le constructeur de Rectangle) - la BASE (objet)          }
+        { est TOUJOURS compilee via CompileExpr ordinaire (JAMAIS un                    }
+        { double elle-meme), SEULE la VALEUR affectee passe par                              }
+        { CompileExprF/FSTP. }
+        If CgIsFpuType(FieldPool[FI].TypeIdx) And (StmtPool[S].Op = '=') Then
+        Begin
+          CompileExpr(ExprPool[TargetE].Left);
+          EmitInstr('MOV EBX,EAX');
+          CompileExprF(StmtPool[S].Right);
+          EmitInstr('FSTP ' + CgAddrOperandQ('EBX', Off));
+          Exit;
+        End;
         CompileExpr(ExprPool[TargetE].Left);
         EmitInstr('MOV EBX,EAX');
         If StmtPool[S].Op = '=' Then
@@ -15188,9 +16037,23 @@ Begin
       End;
     End;
 
+    { STK_RETURN : extension post-TODO25, HUITIEME tranche (double/       }
+    { float) - "return largeur * hauteur;" (Test07Heritage.jpp) DOIT               }
+    { laisser son resultat sur ST(0), JAMAIS EAX, quand                                    }
+    { CurMethodRetTypeIdx (pose par CompileMethodBody) est double/float           }
+    { - CONVENTION x87 REELLE de retour (compatible avec un FUTUR appel            }
+    { externe qui l attendrait ainsi), AUCUNE transformation                              }
+    { supplementaire requise a l epilogue (EAX ne joue simplement AUCUN            }
+    { role pour un retour double/float). }
     STK_RETURN:
     Begin
-      If StmtPool[S].Left >= 0 Then CompileExpr(StmtPool[S].Left);
+      If StmtPool[S].Left >= 0 Then
+      Begin
+        If CgIsFpuType(CurMethodRetTypeIdx) Then
+          CompileExprF(StmtPool[S].Left)
+        Else
+          CompileExpr(StmtPool[S].Left);
+      End;
       EmitInstr('JMP ' + CurMethodEpilogueLabel);
     End;
 
@@ -15453,6 +16316,7 @@ Begin
   If MethodPool[MI].FrameSize > 0 Then
     EmitInstr('SUB ESP,' + IntToStrG(MethodPool[MI].FrameSize));
   CurMethodEpilogueLabel := CgLabelGen;
+  CurMethodRetTypeIdx := MethodPool[MI].RetTypeIdx;
   CompileStmt(MethodPool[MI].BodyStmtIdx);
   EmitLabel(CurMethodEpilogueLabel);
   EmitInstr('MOV ESP,EBP');
@@ -15481,6 +16345,8 @@ Begin
   CgPendingLabel := '';   { extension post-TODO25, SIXIEME tranche - voir la note   }
                           { d en-tete de CgFrameLabelName/CgPendingLabel }
   CgCollectStrings;
+  CgCollectDoubles;   { extension post-TODO25, HUITIEME tranche - voir sa propre  }
+                       { note d en-tete (litteraux double/float + Math.PI). }
 
   EmitOpen(AsmFileName);
   EmitHeader;
@@ -15849,7 +16715,18 @@ Begin
     S := BinTrim(Copy(S, 10, Length(S) - 9));
   End
   Else If Copy(S, 1, 10) = 'DWORD PTR ' Then
-    S := BinTrim(Copy(S, 11, Length(S) - 10));
+    S := BinTrim(Copy(S, 11, Length(S) - 10))
+  { extension post-TODO25, HUITIEME tranche (FPU double/float) -         }
+  { "QWORD PTR "/"WORD PTR " (m64real des FLD/FSTP, m16 du mot de                     }
+  { controle FNSTCW/FLDCW) - la TAILLE de l operande MEMOIRE est DEJA           }
+  { fixee par l OPCODE FPU lui-meme, ce prefixe textuel n a donc RIEN a          }
+  { signaler ICI (a la difference de "BYTE PTR " ci-dessus qui, lui,               }
+  { positionne IsByte) - juste a etre retire avant l analyse des                       }
+  { crochets. }
+  Else If Copy(S, 1, 10) = 'QWORD PTR ' Then
+    S := BinTrim(Copy(S, 11, Length(S) - 10))
+  Else If Copy(S, 1, 9) = 'WORD PTR ' Then
+    S := BinTrim(Copy(S, 10, Length(S) - 9));
 
   If (Length(S) > 0) And (S[1] = '[') Then
   Begin
@@ -16222,6 +17099,15 @@ Begin
   Else If Mnemonic = 'JLE' Then Cond := $8E
   Else If Mnemonic = 'JG'  Then Cond := $8F
   Else If Mnemonic = 'JGE' Then Cond := $8D
+  { extension post-TODO25, HUITIEME tranche (double/float) : formes       }
+  { NON-SIGNEES (CF/ZF plutot que SF/OF) - FCOMIP (CompileBinary,                    }
+  { comparaison flottante) positionne les indicateurs EXACTEMENT comme            }
+  { un CMP entre entiers NON-SIGNES, JAMAIS JL/JLE/JG/JGE (qui liraient           }
+  { SF/OF, DENUES de sens apres FCOMIP). }
+  Else If Mnemonic = 'JB'  Then Cond := $82
+  Else If Mnemonic = 'JAE' Then Cond := $83
+  Else If Mnemonic = 'JBE' Then Cond := $86
+  Else If Mnemonic = 'JA'  Then Cond := $87
   Else
   Begin
     FatalError('assembleur : branchement conditionnel non couvert : ' + Mnemonic);
@@ -16272,6 +17158,106 @@ Begin
   End;
 End;
 
+{ Encodeurs FPU (x87) - extension post-TODO25, HUITIEME tranche         }
+{ (double/float) : UNIQUEMENT les formes que CompileExprF/                            }
+{ CompileBinaryF/_JPPRT_DOUBLE_TO_STR emettent REELLEMENT (MEME                       }
+{ discipline "aucune forme speculative" que le reste de cet                                }
+{ assembleur, TODO 22) - "ST(0)" est le SEUL registre FPU EXPLICITE                    }
+{ jamais nomme (dupliquer/depiler le SOMMET de la pile, JAMAIS ST(1)                     }
+{ ou plus profond directement par NOM - FADDP/FSUBP/FMULP/FDIVP/                        }
+{ FCOMIP ci-dessous visent TOUJOURS ST(1),ST(0) de facon IMPLICITE,                     }
+{ AUCUN texte d operande a analyser, ce sont des mnemoniques a                            }
+{ FORME UNIQUE). Memoire TOUJOURS m64real (DD/DB selon l opcode) -                      }
+{ ce compilateur traite "float" a PRECISION DOUBLE en interne (voir                     }
+{ CgSlotSize/CgIsFpuType), AUCUN m32real n est donc jamais necessaire. }
+Procedure BinEncodeFld(Const Op1Text: TString);
+Var Op1: TBinOperand;
+Begin
+  If Op1Text = 'ST(0)' Then
+  Begin
+    BinEmit8($D9); BinEmit8($C0);   { duplique le sommet de la pile FPU }
+    Exit;
+  End;
+  Op1 := BinParseOperand(Op1Text);
+  If Op1.Kind <> BOK_MEM Then
+  Begin
+    FatalError('assembleur : forme de FLD non couverte : ' + Op1Text);
+    Exit;
+  End;
+  BinEmit8($DD);           { FLD m64real (DD /0) }
+  BinEmitModRM(0, Op1);
+End;
+
+Procedure BinEncodeFstp(Const Op1Text: TString);
+Var Op1: TBinOperand;
+Begin
+  If Op1Text = 'ST(0)' Then
+  Begin
+    BinEmit8($DD); BinEmit8($D8);   { depile le sommet SANS l ecrire nulle part }
+    Exit;
+  End;
+  Op1 := BinParseOperand(Op1Text);
+  If Op1.Kind <> BOK_MEM Then
+  Begin
+    FatalError('assembleur : forme de FSTP non couverte : ' + Op1Text);
+    Exit;
+  End;
+  BinEmit8($DD);           { FSTP m64real (DD /3) }
+  BinEmitModRM(3, Op1);
+End;
+
+Procedure BinEncodeFild(Const Op1Text: TString);
+Var Op1: TBinOperand;
+Begin
+  Op1 := BinParseOperand(Op1Text);
+  If Op1.Kind <> BOK_MEM Then
+  Begin
+    FatalError('assembleur : forme de FILD non couverte : ' + Op1Text);
+    Exit;
+  End;
+  BinEmit8($DB);           { FILD m32int (DB /0) }
+  BinEmitModRM(0, Op1);
+End;
+
+Procedure BinEncodeFistp(Const Op1Text: TString);
+Var Op1: TBinOperand;
+Begin
+  Op1 := BinParseOperand(Op1Text);
+  If Op1.Kind <> BOK_MEM Then
+  Begin
+    FatalError('assembleur : forme de FISTP non couverte : ' + Op1Text);
+    Exit;
+  End;
+  BinEmit8($DB);           { FISTP m32int (DB /3) }
+  BinEmitModRM(3, Op1);
+End;
+
+Procedure BinEncodeFnstcw(Const Op1Text: TString);
+Var Op1: TBinOperand;
+Begin
+  Op1 := BinParseOperand(Op1Text);
+  If Op1.Kind <> BOK_MEM Then
+  Begin
+    FatalError('assembleur : forme de FNSTCW non couverte : ' + Op1Text);
+    Exit;
+  End;
+  BinEmit8($D9);           { FNSTCW m16 (D9 /7) }
+  BinEmitModRM(7, Op1);
+End;
+
+Procedure BinEncodeFldcw(Const Op1Text: TString);
+Var Op1: TBinOperand;
+Begin
+  Op1 := BinParseOperand(Op1Text);
+  If Op1.Kind <> BOK_MEM Then
+  Begin
+    FatalError('assembleur : forme de FLDCW non couverte : ' + Op1Text);
+    Exit;
+  End;
+  BinEmit8($D9);           { FLDCW m16 (D9 /5) }
+  BinEmitModRM(5, Op1);
+End;
+
 Procedure BinEmitInstr(Const Line: TString);
 Var Mnemonic, Rest, Op1, Op2: TString;
 Begin
@@ -16302,6 +17288,24 @@ Begin
   If Mnemonic = 'IMUL' Then Begin BinEncodeImul(Op1, Op2); Exit; End;
   If Mnemonic = 'IDIV' Then Begin BinEncodeIdiv(Op1); Exit; End;
   If Mnemonic = 'CDQ' Then Begin BinEmit8($99); Exit; End;
+
+  { extension post-TODO25, HUITIEME tranche (double/float, FPU x87) -   }
+  { voir la note d en-tete des encodeurs BinEncodeFxxx ci-dessus pour            }
+  { la portee EXACTE (m64real uniquement, "float" traite a precision              }
+  { double). }
+  If Mnemonic = 'FLD' Then Begin BinEncodeFld(Op1); Exit; End;
+  If Mnemonic = 'FSTP' Then Begin BinEncodeFstp(Op1); Exit; End;
+  If Mnemonic = 'FILD' Then Begin BinEncodeFild(Op1); Exit; End;
+  If Mnemonic = 'FISTP' Then Begin BinEncodeFistp(Op1); Exit; End;
+  If Mnemonic = 'FNSTCW' Then Begin BinEncodeFnstcw(Op1); Exit; End;
+  If Mnemonic = 'FLDCW' Then Begin BinEncodeFldcw(Op1); Exit; End;
+  If Mnemonic = 'FADDP' Then Begin BinEmit8($DE); BinEmit8($C1); Exit; End;
+  If Mnemonic = 'FSUBP' Then Begin BinEmit8($DE); BinEmit8($E9); Exit; End;
+  If Mnemonic = 'FMULP' Then Begin BinEmit8($DE); BinEmit8($C9); Exit; End;
+  If Mnemonic = 'FDIVP' Then Begin BinEmit8($DE); BinEmit8($F9); Exit; End;
+  If Mnemonic = 'FCOMIP' Then Begin BinEmit8($DF); BinEmit8($F1); Exit; End;
+  If Mnemonic = 'FABS' Then Begin BinEmit8($D9); BinEmit8($E1); Exit; End;
+  If Mnemonic = 'FCHS' Then Begin BinEmit8($D9); BinEmit8($E0); Exit; End;
   If Mnemonic = 'JMP' Then Begin BinEncodeJmp(Op1); Exit; End;
   If (Length(Mnemonic) >= 2) And (Mnemonic[1] = 'J') Then
   Begin
@@ -16316,12 +17320,17 @@ Begin
 End;
 
 { BinAssembleDataLine : une ligne de .DATA est TOUJOURS "NOM DB           }
-{ ""texte"",0" (EmitDataSeg, TODO 21 - JPPCW32 n emet ENCORE aucune            }
-{ variable DD, contrairement a GOCW32.PAS - la disposition des champs            }
-{ static/globaux reste une extension FUTURE, voir la note d en-tete             }
-{ du TODO 21) - UN espace separe TOUJOURS le nom de la directive. }
+{ ""texte"",0" (EmitDataSeg, TODO 21) OU, extension post-TODO25,                       }
+{ HUITIEME tranche (double/float), "NOM DB b0,b1,...,b7" (une liste            }
+{ d octets SEPARES par des virgules - CgCollectDoubles/EmitDataSeg               }
+{ ecrivent ainsi le PATTERN BINAIRE IEEE754 brut de chaque constante            }
+{ double, 8 octets, PLUTOT qu une nouvelle directive "DQ" DEDIEE - une           }
+{ liste d octets reutilise l ANALYSE existante SANS AUCUN nouveau                    }
+{ format de ligne a reconnaitre ICI, seulement une boucle "split par            }
+{ virgule" supplementaire) - UN espace separe TOUJOURS le nom de la              }
+{ directive. }
 Procedure BinAssembleDataLine(Const Line: TString);
-Var P, Q: Integer; Name, Rest, ValuePart, TextPart: TString;
+Var P, Q: Integer; Name, Rest, ValuePart, TextPart, OneByte: TString;
 Begin
   P := Pos(' ', Line);
   If P = 0 Then Exit;
@@ -16340,6 +17349,17 @@ Begin
       For P := 1 To Length(TextPart) Do
         BinEmit8(Ord(TextPart[P]));
       BinEmit8(0);
+    End
+    Else If Pos(',', ValuePart) > 0 Then
+    Begin
+      While Pos(',', ValuePart) > 0 Do
+      Begin
+        Q := Pos(',', ValuePart);
+        OneByte := BinTrim(Copy(ValuePart, 1, Q - 1));
+        BinEmit8(BinStrToInt(OneByte));
+        ValuePart := BinTrim(Copy(ValuePart, Q + 1, Length(ValuePart) - Q));
+      End;
+      BinEmit8(BinStrToInt(ValuePart));
     End
     Else
       BinEmit8(BinStrToInt(ValuePart));
