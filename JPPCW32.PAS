@@ -634,6 +634,187 @@ Program JPPCW32;
   pour l etendre.
   ============================================================ *)
 
+(* ============================================================
+  EXTENSION POST-TODO25 (2026-07-27) - ARITHMETIQUE, CONTROLE DE
+  FLUX, LOCALES/PARAMETRES, CONCATENATION DE CHAINES ET APPELS DE
+  METHODE STATIQUE
+  ============================================================
+  Demandee EXPLICITEMENT par l utilisateur ("termine toutes les
+  parties non couvertes par le compilateur"), MEME nature que les
+  extensions post-TODO25 de GOCW32.PAS/SWIFTW32.PAS/DELPHI.PAS (leurs
+  propres "extensions arrays/slices"/"Phase 2"/etc., ajoutees APRES
+  leur propre TODO25, PAS des TODO numerotes) - etend le generateur de
+  code (TODO 21) BIEN au-dela de son "premier jalon" (qui ne couvrait
+  qu un "System.out.println(<litteral>)" seul), SANS changer
+  d architecture (toujours "tout tient dans EAX", toujours du texte
+  .asm REEL passe par le MEME assembleur/ecrivain PE/COFF des TODO
+  22/23 - simplement etendu de quelques mnemoniques : NEG/IMUL/IDIV/
+  CDQ, PLUS un registre 8 bits AL/CL/DL/BL pour charger/ecrire UN SEUL
+  octet, necessaire a la concatenation de chaines).
+
+  CE QUI FONCTIONNE MAINTENANT (verifie par EXECUTION reelle, pas
+  seulement compilation) : locales/parametres SCALAIRES (int/boolean/
+  char/String - disposition EBP-relative reelle, TSymRec.Offset/
+  TMethodRec.FrameSize) ; arithmetique entiere (+/-/*/// %) et
+  comparaisons (==/!=/</<=/>/>=, materialisees 0/1 dans EAX via Jcc,
+  MEME idiome que les compilateurs freres) ; &&/|| REELLEMENT
+  court-circuites ; ++/-- prefixe ET postfixe ; if/else/else-if ;
+  while/do-while/for (avec break/continue non etiquetes, y compris
+  imbrique dans un switch qui herite alors le "continue" de la boucle
+  englobante) ; switch/case/default avec continuation "fall-through"
+  textuelle reelle ; return (avec ou sans expression, saute TOUJOURS
+  vers un epilogue de methode UNIQUE, jamais une cascade) ; affectation
+  simple ET composee (+=/-=/*=//=/%=) vers une locale ; ternaire
+  "cond?a:b" ; et la concatenation "+" de chaines - avec conversion
+  int/boolean/char->String via un nouveau petit runtime alloue sur le
+  tas (_JPPRT_ALLOC, GetProcessHeap/HeapAlloc avec HEAP_ZERO_MEMORY -
+  MEME choix que le _GORT_ALLOC de GOCW32.PAS, aucune liberation, fuite
+  assumee) - _JPPRT_INT_TO_STR/_JPPRT_CHAR_TO_STR/_JPPRT_CONCAT,
+  PLUS deux constantes fixes _JPPRT_TRUE_STR/_JPPRT_FALSE_STR pour le
+  boolean (jamais alloue, toujours les DEUX memes chaines). Appels de
+  methode STATIQUE utilisateur (parametres ET retour SCALAIRES
+  uniquement) desormais compiles PAR LEUR PROPRE label (MethodAsmLabelG),
+  la resolution de surcharge (TODO 08) ayant DEJA choisi la bonne
+  entree MethodPool au parsing (EK_CALL.Extra) - la recursion (ex.
+  "factorielle" de Test04Methodes.jpp, toujours bloquee par d autres
+  limites, voir plus bas) fonctionnerait donc aussi correctement sans
+  code special.
+
+  RESULTAT HONNETE (meme discipline que le TODO 25 lui-meme, verifie
+  par EXECUTION reelle de CHAQUE fichier, PAS suppose) : 3/18 SAMPLES
+  \JPP\*.jpp compilent et EXECUTENT desormais correctement de bout en
+  bout (Test03Instructions.jpp - if/switch/for/while/do-while/
+  arithmetique entiere/concatenation, sortie verifiee OCTET PAR OCTET ;
+  Test15Conditionnelle.jpp - #if/#elif/#else PLUS appels de methode
+  statique sans argument retournant une String ; Test17PaquetsMicrosoft.
+  jpp, deja acquis avant cette extension), contre 1/18 avant. TOUS les
+  15 autres echantillons progressent (arretent PLUS LOIN, sur des
+  constructions PLUS PRECISES qu avant) mais restent bloques par des
+  LACUNES EXPLICITEMENT HORS DE PORTEE de cette extension, JAMAIS un
+  bogue : long/double/float (Test02 - ne tiennent pas dans EAX seul) ;
+  acces a un CHAMP/tableau/"this" (EK_SELECTOR/EK_INDEX - Test01/05/16,
+  et la CIBLE d une affectation pour Test07/08 - aucune disposition
+  memoire D INSTANCE/de tableau n existe encore) ; construction d objet
+  "new" (EK_NEWOBJECT - Test10/14) ; exceptions try/throw/catch
+  (STK_THROW/STK_TRY - Test04/18) ; le meme appel de methode "non
+  resolu" deja documente au TODO 25 (Test06 - reference en avant intra-
+  classe ; Test09 - chainage this/super, DEUX limites STRUCTURELLES du
+  front-end, PAS du generateur de code) ; les memes lacunes PARSEUR
+  (Test11/12) et la meme decision de portee AWT deliberee (Test13,
+  TODO 15) deja documentees. Etendre encore (champs/tableaux/objets/
+  exceptions - un vrai modele memoire d instance ET une VRAIE
+  disposition de tas restent le prealable commun a la PLUPART des
+  echantillons residuels) reste un travail FUTUR distinct.
+  ============================================================ *)
+
+(* ============================================================
+  EXTENSION POST-TODO25, DEUXIEME PASSE (2026-07-27) - MODELE
+  MEMOIRE D INSTANCE ET DE TABLEAU, APPELS DE METHODE D INSTANCE,
+  BITWISE/DECALAGES, CAST, "throw" MINIMAL
+  ============================================================
+  Suite DIRECTE de l extension precedente (demande UTILISATEUR
+  identique, "termine toutes les parties non couvertes") - ajoute
+  EXACTEMENT ce que sa propre conclusion nommait comme prealable
+  commun : un VRAI modele memoire d instance/de tableau, PLUS les
+  consommateurs qui en dependaient (acces/affectation de champ,
+  "new" (construction d objet), indexation/creation de tableau A
+  UNE dimension, appel de methode D INSTANCE).
+
+  MODELE : un OBJET est un bloc _JPPRT_ALLOC (tas, zero-rempli), UN
+  SEUL mot de 4 octets par champ D INSTANCE - les champs HERITES
+  occupent TOUJOURS les premiers mots (CgAncestorFieldBytes remonte
+  TypeTab[T].SuperTypeIdx recursivement), TFieldRec.Offset (deja
+  reserve depuis le TODO 08) reste relatif au DEBUT des champs
+  PROPRES de son OwnerTypeIdx. Un TABLEAU est EGALEMENT un bloc
+  _JPPRT_ALLOC : un PREFIXE de longueur sur 4 octets, PUIS les
+  elements - la reference retournee POINTE SUR LE PREMIER ELEMENT
+  (base+4 du bloc), ".length" relit simplement [base-4]. AUCUN
+  adressage base+index materiel (SIB) n est requis nulle part :
+  chaque acces "arr[i]" calcule l ADRESSE EFFECTIVE arithmetiquement
+  (i*4 ajoute au pointeur de base) puis charge/ecrit via un simple
+  [registre] base-seul, deja pleinement supporte par l assembleur du
+  TODO 22 sans la moindre extension. "new Classe(...)" alloue PUIS
+  appelle le constructeur REELLEMENT resolu (EK_NEWOBJECT.Left,
+  ClassFindConstructor au parsing, TODO 08 - jamais re-resolu ICI) en
+  poussant l objet comme "this" implicite (EN DERNIER, EBP+8) - un
+  appel de methode D INSTANCE (CompileCall etendu) suit EXACTEMENT le
+  meme principe, recepteur explicite ("obj.methode(...)") OU
+  implicite (le "this" EBP+8 de LA METHODE ENGLOBANTE, garanti par
+  les regles de portee Java elles-memes). Les DEUX (constructeur ET
+  methode d instance) exigent un corps SOURCE reel (BodyStmtIdx >= 0)
+  - une classe predeclaree de la bibliotheque standard (Exception et
+  consorts, StdlibInit) n en a JAMAIS, s arrete donc PROPREMENT plutot
+  que de referencer une etiquette jamais emise.
+
+  DEUX BOGUES REELS trouves PENDANT cette extension, PAR EXECUTION
+  d un test synthetique dedie (AUCUN des 18 SAMPLES\JPP\*.jpp
+  n exerce encore le modele memoire d instance/tableau lui-meme -
+  verifier ce code sans un test synthetique aurait ete pure
+  supposition, contraire a la discipline de ce projet) :
+    1. EK_NEWARRAY 'dims' ("new int[n]") conservait n dans ECX A
+       TRAVERS "CALL _JPPRT_ALLOC" - ECX N EST PAS un registre
+       PRESERVE (ni par convention Win32, ni par _JPPRT_ALLOC
+       lui-meme, qui ne sauve/restaure QUE EBX) : la longueur ecrite
+       dans le prefixe du tableau etait donc GARBAGE (residus de
+       GetProcessHeap/HeapAlloc), jamais "n" - "new int[5]" donnait
+       "Longueur : -1374577314" au lieu de 5. Corrige en faisant
+       TRANSITER n par la PILE (PUSH avant l appel, POP juste apres)
+       plutot que par un registre.
+    2. CompileArithBinary("/"/"%%") ecrivait dans EBX SANS jamais le
+       restaurer - or STK_ASSIGN/EK_UNARY (++/--) conservent
+       PRECISEMENT une ADRESSE de champ/element de tableau dans EBX
+       PENDANT que la valeur de droite est calculee : "arr[i] = a / b;"
+       ou "obj.champ = a % b;" corrompait donc SILENCIEUSEMENT cette
+       adresse (trouve par relecture SYSTEMATIQUE de CHAQUE
+       utilisateur de EBX apres le bogue #1 ci-dessus, PAS par une
+       execution qui aurait plante - aucun echantillon test ne
+       combinait encore precisement ces deux constructions). Corrige
+       en sauvant/restaurant EBX (PUSH/POP) autour de la seule
+       sequence CDQ/IDIV qui l utilise.
+  Un TROISIEME probleme, DECOUVERT (pas un bogue de CETTE extension,
+  mais EXPOSE par elle) : Test01Bonjour.jpp COMPILAIT et LIAIT sans
+  la moindre erreur des la toute PREMIERE version de cette extension,
+  mais SEGFAULT a l EXECUTION - "main" lit REELLEMENT
+  "args.length"/"args[0]" (EK_SELECTOR/EK_INDEX) desormais, mais
+  aucune valeur n avait JAMAIS ete poussee pour ce parametre avant
+  l appel a "main" depuis "_JPPSTART" (aucun appelant n avait jamais
+  eu besoin de "args" avant cette extension). Corrige en poussant un
+  VRAI tableau de chaines VIDE (longueur 0, jamais le vrai
+  GetCommandLine/CommandLineToArgvW Win32, explicitement HORS de
+  portee - fonctionnalite separee, non demandee) avant "main" -
+  garantit "args.length" TOUJOURS correct (0), jamais un pointeur
+  invalide dereference. Ce TROISIEME cas illustre a nouveau la regle
+  etablie de longue date par ce projet : "compile sans erreur" ne
+  prouve JAMAIS "s execute correctement" - verifier PAR EXECUTION
+  REELLE reste indispensable, ici via un test SYNTHETIQUE dedie
+  (fields/tableaux/methodes d instance) puisqu aucun SAMPLES\JPP
+  existant n exerce encore ces chemins.
+
+  RESULTAT HONNETE : 4/18 SAMPLES\JPP\*.jpp compilent et EXECUTENT
+  desormais correctement de bout en bout (Test01Bonjour.jpp rejoint
+  Test03Instructions.jpp/Test15Conditionnelle.jpp/
+  Test17PaquetsMicrosoft.jpp), contre 3/18 avant cette DEUXIEME passe.
+  Les 14 autres progressent ENCORE (arretent plus loin) mais restent
+  bloques par des lacunes EXPLICITEMENT hors de portee : tableaux
+  MULTI-dimensionnels (Test05) ; parametres/retours de methode NON
+  scalaires - tableau/objet (Test04 "int[] valeurs", Test10 Vector) ;
+  DISPATCH POLYMORPHIQUE reel (Test07 "aire()" via une reference
+  Forme, Test08 "valeurChangee()" via une reference d interface -
+  AUCUN mecanisme de vtable n existe, un appel d instance n est
+  compile QUE lorsque la methode EXACTE est deja connue
+  STATIQUEMENT) ; construction de types SANS corps source reel
+  (Test10 Vector, Test14 delegate - bibliotheque standard/delegue,
+  JAMAIS de BodyStmtIdx reel) ; long/double/float (Test02) ; le VRAI
+  STK_TRY (Test18, jamais implemente - seul STK_THROW a une
+  approximation MINIMALE, documentee comme telle) ; les DEUX limites
+  STRUCTURELLES du front-end deja documentees au TODO 25 (Test06/09) ;
+  les lacunes PARSEUR (Test11/12) et la decision de portee AWT
+  (Test13). Le dispatch polymorphique (vtable) et les parametres/
+  retours non-scalaires sont desormais le prealable commun le plus
+  large pour la PROCHAINE tranche d extension, pas un simple modele
+  memoire d instance (deja livre ICI).
+  ============================================================ *)
+
 { ============================================================ }
 { TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF      }
 { ============================================================ }
@@ -2809,6 +2990,18 @@ Type
                                  { ParseMethodDeclRest/ParseConstructorDecl              }
                                  { (voir la note d en-tete de ThrowsPool). }
     ThrowsCount    : Integer;
+    FrameSize      : LongInt;   { extension post-TODO25 (generateur de     }
+                                 { code) : octets TOTAUX reserves pour les          }
+                                 { variables LOCALES de cette methode/ce               }
+                                 { constructeur (jamais les parametres,                     }
+                                 { deja au-dessus d EBP) - capture -CurLocalOffset      }
+                                 { juste apres que ParseBlock a fini de                     }
+                                 { parser le corps (donc CurLocalOffset a                     }
+                                 { atteint sa valeur FINALE pour CETTE                          }
+                                 { methode), AVANT que CurLocalOffset ne soit             }
+                                 { reinitialise pour la methode SUIVANTE.               }
+                                 { CompileMethodBody emet "SUB ESP,FrameSize"            }
+                                 { dans le prologue quand ce champ est > 0. }
   End;
 
 Var
@@ -3609,6 +3802,22 @@ Type
                               { d initialisation, ExprPool) - TOUJOURS -1        }
                               { pour l instant, ConstEvalExpr (ci-dessous)          }
                               { remplit UNIQUEMENT ConstVal }
+    Offset     : LongInt;    { extension post-TODO25 (generateur de code) :   }
+                              { position memoire EBP-relative d un SK_VAR        }
+                              { LOCAL/PARAMETRE - positif ([EBP+Offset]),           }
+                              { CROISSANT par 4 depuis 8, pour un parametre/            }
+                              { "this" REEL entrant (assigne par                          }
+                              { ParseOneParamIntoPool/ParseMethodDeclRest/                     }
+                              { ParseConstructorDecl) ; negatif ([EBP-N]),                        }
+                              { DECROISSANT par 4 depuis 0, pour une variable                       }
+                              { locale (assigne par ParseVarDecl) - TOUJOURS               }
+                              { UN SEUL slot de 4 octets par symbole, meme            }
+                              { simplification "tout tient dans EAX" que le               }
+                              { reste du generateur de code (long/double/float           }
+                              { NE SONT PAS compiles via ce chemin - EK_IDENT             }
+                              { les rejette explicitement, voir CompileExpr) -           }
+                              { non pertinent pour un champ/une portee non-               }
+                              { locale (SymTab ne les modelise pas ainsi). }
   End;
 
 Var
@@ -3621,6 +3830,18 @@ Var
   CurScopeId    : Integer;
   ScopeIdSeq    : Integer;
 
+  { CurParamOffset/CurLocalOffset : disposition memoire (pile) EBP-       }
+  { relative des symboles de la methode/du constructeur EN COURS de         }
+  { PARSING - extension post-TODO25 (generateur de code), meme principe            }
+  { que GOCW32.PAS/SWIFTW32.PAS/DELPHI.PAS pour LEUR propre TODO 21.               }
+  { Reinitialises (8/0) au tout debut de ParseMethodDeclRest/                        }
+  { ParseConstructorDecl (avant "this"/les parametres) - AUCUNE sauvegarde/            }
+  { restauration necessaire (contrairement a GOCW32.PAS, qui a de VRAIES         }
+  { fermetures imbriquees) : ce compilateur n a AUCUNE fonction imbriquee,             }
+  { chaque methode/constructeur repart donc TOUJOURS de zero. }
+  CurParamOffset : LongInt;
+  CurLocalOffset : LongInt;
+
 Procedure SymInit;
 Begin
   SymCount      := 0;
@@ -3628,6 +3849,8 @@ Begin
   CurScopeLevel := 0;
   CurScopeId    := 0;
   ScopeIdSeq    := 0;
+  CurParamOffset := 8;
+  CurLocalOffset := 0;
 End;
 
 Procedure SymEnterScope;
@@ -3765,6 +3988,7 @@ Begin
   SymTab[SymCount].ConstVal.RealVal := 0.0;
   SymTab[SymCount].ConstVal.StrVal  := '';
   SymTab[SymCount].InitExprIdx := -1;
+  SymTab[SymCount].Offset      := 0;
 
   SymAdd := SymCount;
   Inc(SymCount);
@@ -4159,6 +4383,13 @@ Begin
         'mais aucune declaration de champ n''existe encore, TODO 08)');
 
     SI := SymAdd(Nam, SK_VAR, ElemT, Mods.IsStatic, Mods.IsFinal);
+    { extension post-TODO25 (generateur de code) : position EBP-relative  }
+    { REELLE de cette variable locale - voir la note d en-tete de              }
+    { CurLocalOffset. ParseVarDecl n est JAMAIS appelee pour un champ           }
+    { (ParseFieldDeclRest s en charge separement, TODO 08) - TOUJOURS une              }
+    { vraie locale, meme dans l initialisation d un "for". }
+    CurLocalOffset := CurLocalOffset - 4;
+    SymTab[SI].Offset := CurLocalOffset;
 
     If PPMatch('=') Then
     Begin
@@ -7247,6 +7478,9 @@ Begin
                                 { SEULEMENT (voir la note d en-tete de              }
                                 { ThrowsPool). }
   MethodPool[R].ThrowsCount   := 0;
+  MethodPool[R].FrameSize     := 0;   { ECRASE par ParseMethodDeclRest/          }
+                                { ParseConstructorDecl juste apres ParseBlock (extension }
+                                { post-TODO25, generateur de code). }
   Inc(MethodPoolCount);
   If TypeTab[Owner].MethodFirst < 0 Then TypeTab[Owner].MethodFirst := R;
   Inc(TypeTab[Owner].MethodCount);
@@ -7589,6 +7823,10 @@ Begin
   ParamPool[ParamPoolCount].TypeIdx := SymTab[SI].TypeIdx;
   ParamPool[ParamPoolCount].IsFinal := SymTab[SI].IsFinal;
   Inc(ParamPoolCount);
+  { extension post-TODO25 (generateur de code) : position EBP-relative   }
+  { REELLE de ce parametre - voir la note d en-tete de CurParamOffset. }
+  SymTab[SI].Offset := CurParamOffset;
+  CurParamOffset := CurParamOffset + 4;
   ParseOneParamIntoPool := True;
 End;
 
@@ -7700,7 +7938,7 @@ End;
 
 Procedure ParseConstructorDecl(ClassT: Integer; Mods: TMemberModifiers);
 Var
-  MI, ParamStart, ParamN, ThrowsStart : Integer;
+  MI, ParamStart, ParamN, ThrowsStart, SI : Integer;
 Begin
   PPAdvance;   { nom de la classe = nom du constructeur, deja verifie par }
                { l appelant (ParseClassMember) }
@@ -7708,7 +7946,17 @@ Begin
     FatalError('"(" attendu apres un nom de constructeur (section 8.7)');
 
   SymEnterScope;
-  SymAdd('this', SK_VAR, ClassT, False, False);
+  { extension post-TODO25 (generateur de code) : meme reinitialisation   }
+  { que ParseMethodDeclRest, voir sa propre note - AUCUN corps de              }
+  { constructeur n est ENCORE compile (this/champs restent hors de              }
+  { portee, voir CompileExpr/CompileStmt), mais garder cette disposition             }
+  { correcte des MAINTENANT evite de corrompre silencieusement l etat             }
+  { partage CurParamOffset/CurLocalOffset pour un futur appelant. }
+  CurParamOffset := 8;
+  CurLocalOffset := 0;
+  SI := SymAdd('this', SK_VAR, ClassT, False, False);
+  SymTab[SI].Offset := CurParamOffset;
+  CurParamOffset := CurParamOffset + 4;
   If TypeTab[ClassT].SuperTypeIdx >= 0 Then
     SymAdd('super', SK_VAR, TypeTab[ClassT].SuperTypeIdx, False, False);
 
@@ -7738,6 +7986,7 @@ Begin
     ParseBlock;
 
   If MI >= 0 Then SemanticCheckMethodBody(MI);   { TODO 19 }
+  If MI >= 0 Then MethodPool[MI].FrameSize := -CurLocalOffset;   { extension post-TODO25 }
 
   SymLeaveScope;
 End;
@@ -7868,12 +8117,19 @@ End;
 Procedure ParseMethodDeclRest(ClassT: Integer; Mods: TMemberModifiers;
   RetT: Integer; Const Nam: TString);
 Var
-  MI, ParamStart, ParamN, ThrowsStart : Integer;
+  MI, ParamStart, ParamN, ThrowsStart, SI : Integer;
 Begin
   SymEnterScope;
+  { extension post-TODO25 (generateur de code) : repart TOUJOURS de zero  }
+  { (8/0) - voir la note d en-tete de CurParamOffset, aucune sauvegarde/           }
+  { restauration necessaire (pas de fonction imbriquee dans ce compilateur). }
+  CurParamOffset := 8;
+  CurLocalOffset := 0;
   If Not Mods.IsStatic Then
   Begin
-    SymAdd('this', SK_VAR, ClassT, False, False);
+    SI := SymAdd('this', SK_VAR, ClassT, False, False);
+    SymTab[SI].Offset := CurParamOffset;
+    CurParamOffset := CurParamOffset + 4;
     If TypeTab[ClassT].SuperTypeIdx >= 0 Then
       SymAdd('super', SK_VAR, TypeTab[ClassT].SuperTypeIdx, False, False);
   End;
@@ -7912,6 +8168,12 @@ Begin
   Begin
     MethodPool[MI].BodyStmtIdx := ParseBlock;
     SemanticCheckMethodBody(MI);   { TODO 19 }
+    { extension post-TODO25 (generateur de code) : CurLocalOffset a       }
+    { atteint sa valeur FINALE pour CETTE methode (ParseBlock a fini de           }
+    { parser tout son corps, y compris les blocs imbriques - AUCUNE               }
+    { autre locale ne sera plus ajoutee) - capture AVANT que la methode                }
+    { SUIVANTE ne le reinitialise. }
+    MethodPool[MI].FrameSize := -CurLocalOffset;
   End
   Else
     ParseBlock;
@@ -12224,6 +12486,9 @@ End;
 
 Const
   MAX_CG_STRINGS = {$IFDEF FPC}256{$ELSE}32{$ENDIF};
+  MAX_CG_LOOP    = 64;   { extension post-TODO25 - profondeur d imbrication }
+                          { boucle/switch, tres genereuse (aucun echantillon }
+                          { reel n approche cette profondeur). }
 
 Var
   CgOutF      : Text;
@@ -12232,6 +12497,22 @@ Var
   CgStrPool       : Array[0..MAX_CG_STRINGS - 1] Of TString;
   CgStrPoolOfExpr : Array[0..MAX_EXPR - 1] Of Integer;
   CgStrCount      : Integer;
+
+  { extension post-TODO25 (generateur de code) : etiquette d epilogue   }
+  { de la methode EN COURS de compilation (STK_RETURN y saute TOUJOURS,           }
+  { jamais un simple retour en cascade - meme un "return;" nu au milieu           }
+  { d un corps doit sauter par-dessus le reste du corps). CgBreakLbl/            }
+  { CgContinueLbl : pile PARALLELE (pas de lien, MEME convention "tableau            }
+  { plat" que tout le reste de ce compilateur) des cibles de "break"/                 }
+  { "continue" - un CADRE de boucle (while/do/for) pousse LES DEUX ; un                }
+  { CADRE de switch pousse SEULEMENT un nouveau "break" et HERITE le                       }
+  { "continue" du cadre ENGLOBANT (jamais le sien propre - "continue"                    }
+  { a l interieur d un switch cible TOUJOURS la boucle qui l englobe,                     }
+  { section 7.19, jamais le switch lui-meme). }
+  CurMethodEpilogueLabel : TString;
+  CgLoopTop      : Integer;
+  CgBreakLbl     : Array[0..MAX_CG_LOOP - 1] Of TString;
+  CgContinueLbl  : Array[0..MAX_CG_LOOP - 1] Of TString;
 
 { Emit* : voir la note d en-tete de section - IDENTIQUES (memes noms,   }
 { memes signatures) a GOCW32.PAS/SWIFTW32.PAS/DELPHI.PAS a leur PROPRE          }
@@ -12283,6 +12564,44 @@ Begin
   CgLabelGen := ASM_PFX_LABEL + IntToStrG(CgLabelSeq);
 End;
 
+{ CgPushLoopFrame/CgPushSwitchFrame/CgPopLoopFrame : voir la note        }
+{ d en-tete de CgBreakLbl/CgContinueLbl ci-dessus - extension post-             }
+{ TODO25 (generateur de code, STK_WHILE/DOWHILE/FOR/SWITCH/BREAK/                    }
+{ CONTINUE). }
+Procedure CgPushLoopFrame(Const BreakLbl, ContinueLbl: TString);
+Begin
+  If CgLoopTop >= MAX_CG_LOOP - 1 Then
+  Begin
+    WarnMsg('generateur de code : profondeur de boucle/switch maximale ' +
+      'atteinte (MAX_CG_LOOP)');
+    Exit;
+  End;
+  Inc(CgLoopTop);
+  CgBreakLbl[CgLoopTop]    := BreakLbl;
+  CgContinueLbl[CgLoopTop] := ContinueLbl;
+End;
+
+Procedure CgPushSwitchFrame(Const BreakLbl: TString);
+Begin
+  If CgLoopTop >= MAX_CG_LOOP - 1 Then
+  Begin
+    WarnMsg('generateur de code : profondeur de boucle/switch maximale ' +
+      'atteinte (MAX_CG_LOOP)');
+    Exit;
+  End;
+  Inc(CgLoopTop);
+  CgBreakLbl[CgLoopTop] := BreakLbl;
+  If CgLoopTop > 0 Then
+    CgContinueLbl[CgLoopTop] := CgContinueLbl[CgLoopTop - 1]
+  Else
+    CgContinueLbl[CgLoopTop] := '';
+End;
+
+Procedure CgPopLoopFrame;
+Begin
+  If CgLoopTop >= 0 Then Dec(CgLoopTop);
+End;
+
 { CgCollectStrings : parcourt ExprPool ENTIER (TABLEAU GLOBAL PLAT,       }
 { TODO 06 - EXACTEMENT le meme raisonnement que GOCW32.PAS/                     }
 { CgCollectStrings, portee ICI a l identique) a la recherche de CHAQUE      }
@@ -12332,6 +12651,12 @@ Begin
   EmitRaw('EXTRN _ExitProcess@4:NEAR');
   EmitRaw('EXTRN _GetStdHandle@4:NEAR');
   EmitRaw('EXTRN _WriteFile@20:NEAR');
+  { extension post-TODO25 (generateur de code - runtime string           }
+  { concatenation/conversion, _JPPRT_ALLOC) : MEME choix que GOCW32.PAS          }
+  { pour son propre _GORT_ALLOC (GetProcessHeap/HeapAlloc, AUCUNE                    }
+  { liberation - fuite assumee, aucun vrai GC dans ce compilateur). }
+  EmitRaw('EXTRN _GetProcessHeap@0:NEAR');
+  EmitRaw('EXTRN _HeapAlloc@12:NEAR');
   EmitBlankLine;
 End;
 
@@ -12366,6 +12691,13 @@ Var I : Integer;
 Begin
   EmitRaw('.DATA');
   EmitRaw(ASM_PFX_RUNTIME + 'NEWLINE DB 10');
+  { extension post-TODO25 (generateur de code) : constantes fixes         }
+  { "true"/"false" pour la conversion boolean->String d une                        }
+  { concatenation "+" (jamais allouees dynamiquement - toujours les                    }
+  { DEUX memes chaines, contrairement a _JPPRT_INT_TO_STR qui DOIT                  }
+  { allouer, la valeur entiere n etant jamais connue a l avance). }
+  EmitRaw(ASM_PFX_RUNTIME + 'TRUE_STR DB "true",0');
+  EmitRaw(ASM_PFX_RUNTIME + 'FALSE_STR DB "false",0');
   For I := 0 To CgStrCount - 1 Do
     EmitRaw(ASM_PFX_STRING + IntToStrG(I) + ' DB "' + CgStrPool[I] + '",0');
   EmitBlankLine;
@@ -12465,6 +12797,175 @@ Begin
   EmitInstr('POP EBP');
   EmitInstr('RET');
   EmitBlankLine;
+
+  { extension post-TODO25 (generateur de code - concatenation "+" de     }
+  { chaines/entiers, EK_BINARY) : _JPPRT_ALLOC (allocation TAS -                        }
+  { GetProcessHeap/HeapAlloc, MEME choix que _GORT_ALLOC de GOCW32.PAS -             }
+  { AUCUNE liberation, fuite assumee, pas de vrai GC), _JPPRT_INT_TO_STR                 }
+  { (int -> chaine decimale, allouee) et _JPPRT_CONCAT (deux chaines C ->         }
+  { une troisieme, allouee) - EDX/DL sert de registre-relais 8 bits pour           }
+  { chaque octet lu/ecrit (BinReg8/IsByte, voir la note d en-tete de                    }
+  { BinParseOperand) ; HEAP_ZERO_MEMORY (indicateur 8) TOUJOURS demande            }
+  { a HeapAlloc - le bloc alloue est donc DEJA rempli de zeros, ce qui             }
+  { fournit le terminateur NUL final GRATUITEMENT (jamais ecrit                        }
+  { explicitement), sans avoir besoin d une forme "MOV BYTE PTR                        }
+  { [mem],imm" (jamais implementee, cette famille d instructions ne                    }
+  { transite QUE par un registre 8 bits dans ce compilateur). }
+  EmitLabel(ASM_PFX_RUNTIME + 'ALLOC');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
+  EmitInstr('CALL _GetProcessHeap@0');
+  EmitInstr('MOV EBX,EAX');
+  EmitInstr('PUSH DWORD PTR [EBP+8]');
+  EmitInstr('PUSH 8');
+  EmitInstr('PUSH EBX');
+  EmitInstr('CALL _HeapAlloc@12');
+  EmitInstr('POP EBX');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _JPPRT_INT_TO_STR : convertit l entier signe [EBP+8] en une chaine   }
+  { decimale ALLOUEE - LIMITATION ASSUMEE, jamais devinee : la valeur              }
+  { PRIVATIVE INT_MIN (-2147483648) deborde silencieusement lors du                    }
+  { "NEG EAX" (son oppose ne tient pas sur 32 bits signes) - AUCUN des               }
+  { 18 echantillons ne litteralise cette valeur precise (verifie par                        }
+  { grep), documentee plutot que gardee. Construit les chiffres a               }
+  { l ENVERS (division/reste par 10 repetee) dans un tampon LOCAL de 16              }
+  { octets ([EBP-16]..[EBP-1], EBX pointeur DECROISSANT depuis la FIN),          }
+  { PUIS copie la plage REELLEMENT ecrite vers un bloc alloue de la                    }
+  { taille EXACTE. }
+  EmitLabel(ASM_PFX_RUNTIME + 'INT_TO_STR');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('SUB ESP,16');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('MOV ESI,0');
+  EmitInstr('CMP EAX,0');
+  EmitInstr('JGE ' + ASM_PFX_RUNTIME + 'ITS_NN');
+  EmitInstr('MOV ESI,1');
+  EmitInstr('NEG EAX');
+  EmitLabel(ASM_PFX_RUNTIME + 'ITS_NN');
+  EmitInstr('LEA EBX,[EBP-1]');
+  EmitInstr('CMP EAX,0');
+  EmitInstr('JNE ' + ASM_PFX_RUNTIME + 'ITS_LOOP');
+  EmitInstr('MOV EDX,48');
+  EmitInstr('MOV BYTE PTR [EBX],DL');
+  EmitInstr('DEC EBX');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'ITS_SIGN');
+  EmitLabel(ASM_PFX_RUNTIME + 'ITS_LOOP');
+  EmitInstr('CMP EAX,0');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'ITS_SIGN');
+  EmitInstr('MOV ECX,10');
+  EmitInstr('CDQ');
+  EmitInstr('IDIV ECX');
+  EmitInstr('ADD EDX,48');
+  EmitInstr('MOV BYTE PTR [EBX],DL');
+  EmitInstr('DEC EBX');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'ITS_LOOP');
+  EmitLabel(ASM_PFX_RUNTIME + 'ITS_SIGN');
+  EmitInstr('CMP ESI,0');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'ITS_DONE');
+  EmitInstr('MOV EDX,45');
+  EmitInstr('MOV BYTE PTR [EBX],DL');
+  EmitInstr('DEC EBX');
+  EmitLabel(ASM_PFX_RUNTIME + 'ITS_DONE');
+  EmitInstr('INC EBX');
+  EmitInstr('MOV EAX,EBP');
+  EmitInstr('SUB EAX,EBX');
+  EmitInstr('MOV ESI,EAX');
+  EmitInstr('ADD EAX,1');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('MOV EDI,EAX');
+  EmitLabel(ASM_PFX_RUNTIME + 'ITS_COPY');
+  EmitInstr('CMP ESI,0');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'ITS_RET');
+  EmitInstr('MOV DL,BYTE PTR [EBX]');
+  EmitInstr('MOV BYTE PTR [EDI],DL');
+  EmitInstr('INC EBX');
+  EmitInstr('INC EDI');
+  EmitInstr('DEC ESI');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'ITS_COPY');
+  EmitLabel(ASM_PFX_RUNTIME + 'ITS_RET');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _JPPRT_CHAR_TO_STR : un SEUL caractere [EBP+8] -> chaine ALLOUEE      }
+  { d 1 octet utile (+1 NUL gratuit via HEAP_ZERO_MEMORY, voir plus haut). }
+  EmitLabel(ASM_PFX_RUNTIME + 'CHAR_TO_STR');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH 2');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('MOV EDX,DWORD PTR [EBP+8]');
+  EmitInstr('MOV BYTE PTR [EAX],DL');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _JPPRT_CONCAT : deux chaines C -> une troisieme, ALLOUEE, taille       }
+  { EXACTE (STRLEN des deux, PUIS copie brute octet par octet - jamais            }
+  { de STOSB/MOVSB, ces instructions chaine x86 ne sont pas gerees par           }
+  { cet assembleur, TODO 22). CONVENTION D APPEL PROPRE A CE                            }
+  { COMPILATEUR (jamais appelee ailleurs que par CompileExpr, EK_BINARY          }
+  { "+" sur String) : l appelant empile l operande GAUCHE PUIS le             }
+  { DROIT, dans cet ORDRE (evaluation gauche-a-droite REELLE, section              }
+  { 15.7.4 JLS/comportement Java standard) - le DERNIER empile se                       }
+  { retrouve donc TOUJOURS le PLUS PRES du sommet, [EBP+8] : c est              }
+  { l operande DROIT ("second" ci-dessous), [EBP+12] est le GAUCHE                     }
+  { ("first"). EBX conserve le pointeur ORIGINAL du bloc alloue (EDI,               }
+  { lui, AVANCE pendant la copie - EAX ne peut PAS jouer ce role,                        }
+  { ecrase par CHAQUE CALL intermediaire). }
+  EmitLabel(ASM_PFX_RUNTIME + 'CONCAT');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH DWORD PTR [EBP+8]');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STRLEN');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('MOV EBX,EAX');
+  EmitInstr('PUSH DWORD PTR [EBP+12]');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STRLEN');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('ADD EAX,EBX');
+  EmitInstr('ADD EAX,1');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('MOV EBX,EAX');
+  EmitInstr('MOV EDI,EAX');
+  EmitInstr('MOV ESI,DWORD PTR [EBP+12]');   { GAUCHE d abord (voir la note d en-tete) }
+  EmitLabel(ASM_PFX_RUNTIME + 'CC_COPYA');
+  EmitInstr('CMP BYTE PTR [ESI],0');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'CC_COPYB_START');
+  EmitInstr('MOV DL,BYTE PTR [ESI]');
+  EmitInstr('MOV BYTE PTR [EDI],DL');
+  EmitInstr('INC ESI');
+  EmitInstr('INC EDI');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'CC_COPYA');
+  EmitLabel(ASM_PFX_RUNTIME + 'CC_COPYB_START');
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');   { DROIT ensuite }
+  EmitLabel(ASM_PFX_RUNTIME + 'CC_COPYB');
+  EmitInstr('CMP BYTE PTR [ESI],0');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'CC_DONE');
+  EmitInstr('MOV DL,BYTE PTR [ESI]');
+  EmitInstr('MOV BYTE PTR [EDI],DL');
+  EmitInstr('INC ESI');
+  EmitInstr('INC EDI');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'CC_COPYB');
+  EmitLabel(ASM_PFX_RUNTIME + 'CC_DONE');
+  EmitInstr('MOV EAX,EBX');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
 End;
 
 { MethodAsmLabelG : etiquette ASM d une methode - INCLUT le nom de la    }
@@ -12488,15 +12989,330 @@ Begin
       '_' + MethodPool[MI].Name;
 End;
 
+{ ------------------------------------------------------------ }
+{ Extension post-TODO25 (generateur de code) : demandee explicitement    }
+{ par l utilisateur ("termine toutes les parties non couvertes par le               }
+{ compilateur") - etend CompileExpr/CompileStmt BIEN au-dela du               }
+{ "premier jalon" du TODO 21 (qui ne couvrait qu un "System.out.                       }
+{ println(<litteral>)" seul dans "main"), SANS toucher a l architecture               }
+{ generale (toujours "tout tient dans EAX", toujours du texte .asm                    }
+{ REEL passe par le MEME assembleur/ecrivain PE/COFF des TODO 22/23).             }
+{ PORTEE REELLE de cette extension (verifiee par execution, PAS                        }
+{ supposee - voir le rapport de fin de session) : locales/parametres                  }
+{ SCALAIRES (int/boolean/char/String - JAMAIS long/double/float, qui                   }
+{ ne tiennent pas dans EAX seul et restent donc HORS de portee, ni un              }
+{ champ/"this"/tableau/objet, qui exigeraient une disposition memoire           }
+{ D INSTANCE encore inexistante), arithmetique/comparaisons entieres,             }
+{ &&/|| court-circuites, ++/--, if/else, while/do-while/for, switch/                  }
+{ case/default/break/continue (NON etiquetes), return, affectation                    }
+{ simple ET composee (+=, etc.) vers une locale, et la concatenation             }
+{ "+" de chaines (avec conversion int/boolean/char->String via un                    }
+{ nouveau petit runtime alloue sur le tas, voir EmitRuntimeLibrary).             }
+{ Chaque limite residuelle s arrete PROPREMENT via un FatalError                       }
+{ explicite (JAMAIS un .asm/.obj/.exe silencieusement faux), MEME                     }
+{ discipline exacte que le "premier jalon" du TODO 21 lui-meme.                          }
+{ ------------------------------------------------------------ }
+
+{ CgLocalOperand : texte d operande EBP-relatif "DWORD PTR [EBP+N]"/     }
+{ "[EBP-N]" pour un SK_VAR LOCAL/PARAMETRE (TSymRec.Offset, voir sa               }
+{ propre note d en-tete) - IntToStrG produit deja "-N" pour un                        }
+{ deplacement negatif (Str standard Pascal), aucune logique de signe             }
+{ separee necessaire au-dela du "+" litteral pour le cas positif. }
+Function CgLocalOperand(Offset: LongInt): TString;
+Begin
+  If Offset >= 0 Then
+    CgLocalOperand := 'DWORD PTR [EBP+' + IntToStrG(Offset) + ']'
+  Else
+    CgLocalOperand := 'DWORD PTR [EBP' + IntToStrG(Offset) + ']';
+End;
+
+{ CgAddrOperand : MEME chose que CgLocalOperand, mais pour un registre   }
+{ de base ARBITRAIRE (EAX/ECX/EBX/ESP - un pointeur d objet/de tableau           }
+{ deja calcule dans une expression, PAS forcement EBP) - extension              }
+{ modele memoire d instance/tableau, post-TODO25. }
+Function CgAddrOperand(Const BaseRegName: TString; Offset: LongInt): TString;
+Begin
+  If Offset = 0 Then
+    CgAddrOperand := 'DWORD PTR [' + BaseRegName + ']'
+  Else If Offset > 0 Then
+    CgAddrOperand := 'DWORD PTR [' + BaseRegName + '+' + IntToStrG(Offset) + ']'
+  Else
+    CgAddrOperand := 'DWORD PTR [' + BaseRegName + IntToStrG(Offset) + ']';
+End;
+
+{ Modele memoire d instance - extension post-TODO25 : un OBJET est un   }
+{ bloc alloue sur le tas (_JPPRT_ALLOC, zero-rempli), UN SEUL mot de 4          }
+{ octets par CHAMP D INSTANCE (meme simplification "tout tient dans              }
+{ EAX" que le reste de ce generateur - AUCUN champ long/double/float                }
+{ n est correctement modelise, ils occupent quand meme UN SEUL mot,               }
+{ documente comme FAUX si jamais utilise). Les champs HERITES d une             }
+{ superclasse occupent TOUJOURS les premiers mots (deplacement le PLUS          }
+{ petit), ceux de la classe elle-meme suivent - TFieldRec.Offset (deja           }
+{ existant depuis le TODO 08, "deplacement... CHAMPS PROPRES SEULEMENT")        }
+{ reste relatif au DEBUT des champs PROPRES de son OwnerTypeIdx ;                    }
+{ CgFieldOffsetInObject y ajoute la taille de TOUTE la chaine de                        }
+{ superclasses AU-DESSUS de cet OwnerTypeIdx. SIMPLIFICATION ASSUMEE :                 }
+{ TypeTab[T].FieldCount compte AUSSI les champs static (jamais separes           }
+{ des champs d instance depuis le TODO 08) - gaspille un mot par champ           }
+{ static melange a des champs d instance, JAMAIS incorrect (chaque               }
+{ champ D INSTANCE garde un emplacement UNIQUE et STABLE), simplement           }
+{ pas la disposition la plus compacte possible. }
+Function CgClassOwnFieldBytes(T: Integer): LongInt;
+Begin
+  CgClassOwnFieldBytes := TypeTab[T].FieldCount * 4;
+End;
+
+Function CgAncestorFieldBytes(T: Integer): LongInt;
+Begin
+  If (T < 0) Or (TypeTab[T].SuperTypeIdx < 0) Then
+    CgAncestorFieldBytes := 0
+  Else
+    CgAncestorFieldBytes := CgAncestorFieldBytes(TypeTab[T].SuperTypeIdx) +
+      CgClassOwnFieldBytes(TypeTab[T].SuperTypeIdx);
+End;
+
+Function CgObjectSize(T: Integer): LongInt;
+Begin
+  CgObjectSize := CgAncestorFieldBytes(T) + CgClassOwnFieldBytes(T);
+End;
+
+Function CgFieldOffsetInObject(FI: Integer): LongInt;
+Begin
+  CgFieldOffsetInObject := CgAncestorFieldBytes(FieldPool[FI].OwnerTypeIdx) +
+    FieldPool[FI].Offset;
+End;
+
+Procedure CompileExpr(E: Integer); Forward;
+Procedure CompileCall(E: Integer); Forward;
+
+{ CompileToStringValue : compile OperandE (CompileExpr) PUIS convertit   }
+{ sa valeur EAX en pointeur de chaine C - deja un pointeur si TypeIdx           }
+{ = PDT_STRING (rien a faire), sinon boolean (choix FIXE entre les DEUX             }
+{ constantes TRUE_STR/FALSE_STR, jamais alloue - toujours les MEMES               }
+{ deux chaines), char/int (toujours ALLOUE, valeur inconnue a l avance,          }
+{ _JPPRT_CHAR_TO_STR/_JPPRT_INT_TO_STR). long/double/float restent               }
+{ HORS de portee (ne tiennent pas dans EAX seul). }
+Procedure CompileToStringValue(OperandE: Integer);
+Var T : Integer; LblFalse, LblDone : TString;
+Begin
+  T := ExprPool[OperandE].TypeIdx;
+  CompileExpr(OperandE);
+  If T = PDT_STRING Then Exit;
+  If T = PRIMTYPE_BOOLEAN Then
+  Begin
+    LblFalse := CgLabelGen;
+    LblDone  := CgLabelGen;
+    EmitInstr('CMP EAX,0');
+    EmitInstr('JE ' + LblFalse);
+    EmitInstr('LEA EAX,[' + ASM_PFX_RUNTIME + 'TRUE_STR]');
+    EmitInstr('JMP ' + LblDone);
+    EmitLabel(LblFalse);
+    EmitInstr('LEA EAX,[' + ASM_PFX_RUNTIME + 'FALSE_STR]');
+    EmitLabel(LblDone);
+    Exit;
+  End;
+  If T = PRIMTYPE_CHAR Then
+  Begin
+    EmitInstr('PUSH EAX');
+    EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'CHAR_TO_STR');
+    EmitInstr('ADD ESP,4');
+    Exit;
+  End;
+  If (T = PRIMTYPE_INT) Or (T = PRIMTYPE_SHORT) Or (T = PRIMTYPE_BYTE) Then
+  Begin
+    EmitInstr('PUSH EAX');
+    EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'INT_TO_STR');
+    EmitInstr('ADD ESP,4');
+    Exit;
+  End;
+  FatalError('generateur de code : conversion en chaine non couverte par ' +
+    'cette extension pour la concatenation "+" (long/double/float restent ' +
+    'hors de portee, voir la note d''en-tete de section) : type #' + IntToStrG(T));
+End;
+
+{ CompileConcat : "+" dont le TYPE RESULTAT est PDT_STRING (regle EXACTE  }
+{ de ExprInferBinaryType, section 6.7) - evalue GAUCHE PUIS DROIT (ordre           }
+{ Java REEL), convertit chacun en pointeur de chaine si necessaire,                  }
+{ PUIS _JPPRT_CONCAT (voir sa propre note d en-tete pour la convention             }
+{ d appel gauche/droit EXACTE). }
+Procedure CompileConcat(E: Integer);
+Begin
+  CompileToStringValue(ExprPool[E].Left);
+  EmitInstr('PUSH EAX');
+  CompileToStringValue(ExprPool[E].Right);
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'CONCAT');
+  EmitInstr('ADD ESP,8');
+End;
+
+{ CompileArithBinary : ECX=GAUCHE, EAX=DROIT DEJA en place (voir          }
+{ l appelant, CompileBinary) - resultat final dans EAX. SEULS +/-/*//%              }
+{ entiers sont couverts (long/double/float hors de portee). }
+Procedure CompileArithBinary(Const Op: TString);
+Begin
+  If Op = '+' Then
+    EmitInstr('ADD EAX,ECX')
+  Else If Op = '-' Then
+  Begin
+    EmitInstr('SUB ECX,EAX');
+    EmitInstr('MOV EAX,ECX');
+  End
+  Else If Op = '*' Then
+    EmitInstr('IMUL EAX,ECX')
+  Else If (Op = '/') Or (Op = '%') Then
+  Begin
+    { EBX PRESERVE explicitement (PUSH/POP) - extension post-TODO25         }
+    { (modele memoire d instance/tableau) : STK_ASSIGN/EK_NEWARRAY               }
+    { conservent une ADRESSE dans EBX pendant que la VALEUR de droite               }
+    { (potentiellement une division, ICI MEME) est calculee - sans cette             }
+    { sauvegarde, "arr[i] = a / b;" ou "obj.champ = a % b;" corromprait              }
+    { silencieusement cette adresse (trouve par relecture, PAS par                        }
+    { execution, en auditant CHAQUE utilisateur de EBX apres le premier            }
+    { bogue REEL trouve par execution dans EK_NEWARRAY 'dims', voir sa             }
+    { propre note d en-tete). }
+    EmitInstr('PUSH EBX');
+    EmitInstr('MOV EBX,EAX');
+    EmitInstr('MOV EAX,ECX');
+    EmitInstr('CDQ');
+    EmitInstr('IDIV EBX');
+    If Op = '%' Then EmitInstr('MOV EAX,EDX');
+    EmitInstr('POP EBX');
+  End
+  Else If Op = '|' Then
+    EmitInstr('OR EAX,ECX')
+  Else If Op = '&' Then
+    EmitInstr('AND EAX,ECX')
+  Else If Op = '^' Then
+    EmitInstr('XOR EAX,ECX')
+  Else
+    FatalError('generateur de code : operateur arithmetique entier non ' +
+      'couvert par cette extension : ' + Op);
+End;
+
+{ CompileComparisonBinary : ECX=GAUCHE, EAX=DROIT (meme convention que   }
+{ CompileArithBinary) - materialise 0/1 dans EAX via Jcc, MEME idiome              }
+{ que GOCW32.PAS/SWIFTW32.PAS/DELPHI.PAS (jamais SETcc, non implemente             }
+{ dans cet assembleur, TODO 22). }
+Procedure CompileComparisonBinary(Const Op: TString);
+Var LblTrue, LblDone : TString;
+Begin
+  EmitInstr('CMP ECX,EAX');
+  LblTrue := CgLabelGen;
+  LblDone := CgLabelGen;
+  If      Op = '==' Then EmitInstr('JE ' + LblTrue)
+  Else If Op = '!=' Then EmitInstr('JNE ' + LblTrue)
+  Else If Op = '<'  Then EmitInstr('JL ' + LblTrue)
+  Else If Op = '<=' Then EmitInstr('JLE ' + LblTrue)
+  Else If Op = '>'  Then EmitInstr('JG ' + LblTrue)
+  Else If Op = '>=' Then EmitInstr('JGE ' + LblTrue)
+  Else
+  Begin
+    FatalError('generateur de code : comparaison non couverte par cette ' +
+      'extension : ' + Op);
+    Exit;
+  End;
+  EmitInstr('MOV EAX,0');
+  EmitInstr('JMP ' + LblDone);
+  EmitLabel(LblTrue);
+  EmitInstr('MOV EAX,1');
+  EmitLabel(LblDone);
+End;
+
+{ CompileBinary : dispatch EK_BINARY - "+" String d abord (avant toute   }
+{ promotion numerique, MEME regle que ExprInferBinaryType) ; &&/||                    }
+{ court-circuitent REELLEMENT (l operande DROIT n est JAMAIS evalue si           }
+{ le GAUCHE suffit deja, section 6.13/15.23-15.24 JLS) ; sinon evalue                  }
+{ GAUCHE (empile), puis DROIT, PUIS depile GAUCHE dans ECX -                            }
+{ CompileArithBinary/CompileComparisonBinary trouvent alors TOUJOURS                    }
+{ ECX=GAUCHE/EAX=DROIT. }
+Procedure CompileBinary(E: Integer);
+Var Op : TString; LblShort, LblDone : TString;
+Begin
+  Op := ExprPool[E].Op;
+
+  If (Op = '+') And (ExprPool[E].TypeIdx = PDT_STRING) Then
+  Begin
+    CompileConcat(E);
+    Exit;
+  End;
+
+  If Op = '&&' Then
+  Begin
+    CompileExpr(ExprPool[E].Left);
+    EmitInstr('CMP EAX,0');
+    LblShort := CgLabelGen;
+    LblDone  := CgLabelGen;
+    EmitInstr('JE ' + LblShort);
+    CompileExpr(ExprPool[E].Right);
+    EmitInstr('CMP EAX,0');
+    EmitInstr('JE ' + LblShort);
+    EmitInstr('MOV EAX,1');
+    EmitInstr('JMP ' + LblDone);
+    EmitLabel(LblShort);
+    EmitInstr('MOV EAX,0');
+    EmitLabel(LblDone);
+    Exit;
+  End;
+
+  If Op = '||' Then
+  Begin
+    CompileExpr(ExprPool[E].Left);
+    EmitInstr('CMP EAX,0');
+    LblShort := CgLabelGen;
+    LblDone  := CgLabelGen;
+    EmitInstr('JNE ' + LblShort);
+    CompileExpr(ExprPool[E].Right);
+    EmitInstr('CMP EAX,0');
+    EmitInstr('JNE ' + LblShort);
+    EmitInstr('MOV EAX,0');
+    EmitInstr('JMP ' + LblDone);
+    EmitLabel(LblShort);
+    EmitInstr('MOV EAX,1');
+    EmitLabel(LblDone);
+    Exit;
+  End;
+
+  { extension post-TODO25 : "<<"/">>"/">>>" - REGISTRES SPECIAUX,           }
+  { traites A PART du reste (le compte de decalage DOIT transiter par CL,          }
+  { jamais la convention ECX=GAUCHE/EAX=DROIT du reste de cette fonction). }
+  If (Op = '<<') Or (Op = '>>') Or (Op = '>>>') Then
+  Begin
+    CompileExpr(ExprPool[E].Left);
+    EmitInstr('PUSH EAX');
+    CompileExpr(ExprPool[E].Right);
+    EmitInstr('MOV ECX,EAX');
+    EmitInstr('POP EAX');
+    If Op = '<<' Then EmitInstr('SHL EAX,CL')
+    Else If Op = '>>' Then EmitInstr('SAR EAX,CL')
+    Else EmitInstr('SHR EAX,CL');
+    Exit;
+  End;
+
+  CompileExpr(ExprPool[E].Left);
+  EmitInstr('PUSH EAX');
+  CompileExpr(ExprPool[E].Right);
+  EmitInstr('POP ECX');
+
+  If (Op = '==') Or (Op = '!=') Or (Op = '<') Or (Op = '<=') Or
+     (Op = '>') Or (Op = '>=') Then
+    CompileComparisonBinary(Op)
+  Else
+    CompileArithBinary(Op);
+End;
+
 { CompileExpr : LAISSE le resultat scalaire de E dans EAX (convention          }
-{ "tout tient dans EAX", voir la note d en-tete de section) - SEULE               }
-{ forme couverte ICI : EK_STRINGLIT (adresse de la chaine POOLEE,                    }
-{ CgCollectStrings). TOUT AUTRE genre s arrete PROPREMENT (FatalError           }
-{ explicite citant l ordinal du genre - AUCUNE table de noms lisibles          }
-{ TExprKind->texte n existe dans ce fichier, limitation ASSUMEE                        }
-{ plutot que d en construire une pour ce SEUL message de diagnostic),          }
-{ JAMAIS un .asm silencieusement faux. }
+{ "tout tient dans EAX") - EK_STRINGLIT (adresse de la chaine POOLEE),                }
+{ EK_INTLIT/CHARLIT/BOOLLIT (immediat), EK_IDENT (locale/parametre                    }
+{ SCALAIRE via Offset, JAMAIS un champ/"this"), EK_UNARY (+/-/!/++/--,                 }
+{ prefixe ET postfixe), EK_BINARY (CompileBinary), EK_TERNARY (Jcc,                     }
+{ meme idiome qu un if). TOUT AUTRE genre s arrete PROPREMENT                          }
+{ (FatalError explicite citant l ordinal), JAMAIS un .asm silencieusement       }
+{ faux. }
 Procedure CompileExpr(E: Integer);
+Var
+  LblFalse, LblDone : TString;
+  Off : LongInt;
+  FI, BaseT, MI, ClassT, I, ArgN : Integer;
 Begin
   If E < 0 Then
   Begin
@@ -12506,6 +13322,334 @@ Begin
   Case ExprPool[E].Kind Of
     EK_STRINGLIT:
       EmitInstr('LEA EAX,[' + ASM_PFX_STRING + IntToStrG(CgStrPoolOfExpr[E]) + ']');
+
+    EK_INTLIT, EK_CHARLIT, EK_BOOLLIT:
+      EmitInstr('MOV EAX,' + IntToStrG(ExprPool[E].IntVal));
+
+    EK_NULLLIT:
+      EmitInstr('MOV EAX,0');
+
+    EK_IDENT:
+    Begin
+      If (ExprPool[E].Left < 0) Or (SymTab[ExprPool[E].Left].Kind <> SK_VAR) Then
+      Begin
+        FatalError('generateur de code : identificateur non couvert par ' +
+          'cette extension (seules les locales/parametres scalaires le ' +
+          'sont, jamais un champ/"this", voir la note d''en-tete de ' +
+          'section) : ' + ExprPool[E].NameVal);
+        Exit;
+      End;
+      EmitInstr('MOV EAX,' + CgLocalOperand(SymTab[ExprPool[E].Left].Offset));
+    End;
+
+    EK_UNARY:
+    Begin
+      If ExprPool[E].Op = '-' Then
+      Begin
+        CompileExpr(ExprPool[E].Left);
+        EmitInstr('NEG EAX');
+      End
+      Else If ExprPool[E].Op = '+' Then
+        CompileExpr(ExprPool[E].Left)
+      Else If ExprPool[E].Op = '!' Then
+      Begin
+        CompileExpr(ExprPool[E].Left);
+        LblFalse := CgLabelGen;
+        LblDone  := CgLabelGen;
+        EmitInstr('CMP EAX,0');
+        EmitInstr('JE ' + LblFalse);
+        EmitInstr('MOV EAX,0');
+        EmitInstr('JMP ' + LblDone);
+        EmitLabel(LblFalse);
+        EmitInstr('MOV EAX,1');
+        EmitLabel(LblDone);
+      End
+      Else If (ExprPool[E].Op = '++') Or (ExprPool[E].Op = '--') Or
+              (ExprPool[E].Op = 'post++') Or (ExprPool[E].Op = 'post--') Then
+      Begin
+        { extension post-TODO25 : cible locale/parametre (CgLocalOperand,      }
+        { comme au premier jalon de cette extension) OU champ/element de              }
+        { tableau (adresse calculee dans EBX, MEME technique que                        }
+        { STK_ASSIGN). }
+        If (ExprPool[ExprPool[E].Left].Kind = EK_IDENT) And
+           (ExprPool[ExprPool[E].Left].Left >= 0) And
+           (SymTab[ExprPool[ExprPool[E].Left].Left].Kind = SK_VAR) Then
+        Begin
+          Off := SymTab[ExprPool[ExprPool[E].Left].Left].Offset;
+          EmitInstr('MOV EAX,' + CgLocalOperand(Off));
+          If (ExprPool[E].Op = '++') Or (ExprPool[E].Op = 'post++') Then
+          Begin
+            EmitInstr('ADD EAX,1');
+            EmitInstr('MOV ' + CgLocalOperand(Off) + ',EAX');
+            If ExprPool[E].Op = 'post++' Then EmitInstr('SUB EAX,1');
+          End
+          Else
+          Begin
+            EmitInstr('SUB EAX,1');
+            EmitInstr('MOV ' + CgLocalOperand(Off) + ',EAX');
+            If ExprPool[E].Op = 'post--' Then EmitInstr('ADD EAX,1');
+          End;
+        End
+        Else If ExprPool[ExprPool[E].Left].Kind = EK_SELECTOR Then
+        Begin
+          BaseT := ExprPool[ExprPool[ExprPool[E].Left].Left].TypeIdx;
+          FI := ClassFindField(BaseT, ExprPool[ExprPool[E].Left].NameVal);
+          If FI < 0 Then
+          Begin
+            FatalError('generateur de code : "++"/"--" non couvert par ' +
+              'cette extension (champ introuvable, voir la note d''en-tete ' +
+              'de section)');
+            Exit;
+          End;
+          Off := CgFieldOffsetInObject(FI);
+          CompileExpr(ExprPool[ExprPool[E].Left].Left);
+          EmitInstr('MOV EBX,EAX');
+          EmitInstr('MOV EAX,' + CgAddrOperand('EBX', Off));
+          If (ExprPool[E].Op = '++') Or (ExprPool[E].Op = 'post++') Then
+          Begin
+            EmitInstr('ADD EAX,1');
+            EmitInstr('MOV ' + CgAddrOperand('EBX', Off) + ',EAX');
+            If ExprPool[E].Op = 'post++' Then EmitInstr('SUB EAX,1');
+          End
+          Else
+          Begin
+            EmitInstr('SUB EAX,1');
+            EmitInstr('MOV ' + CgAddrOperand('EBX', Off) + ',EAX');
+            If ExprPool[E].Op = 'post--' Then EmitInstr('ADD EAX,1');
+          End;
+        End
+        Else If ExprPool[ExprPool[E].Left].Kind = EK_INDEX Then
+        Begin
+          CompileExpr(ExprPool[ExprPool[E].Left].Left);
+          EmitInstr('PUSH EAX');
+          CompileExpr(ExprPool[ExprPool[E].Left].Right);
+          EmitInstr('POP ECX');
+          EmitInstr('ADD EAX,EAX');
+          EmitInstr('ADD EAX,EAX');
+          EmitInstr('ADD EAX,ECX');
+          EmitInstr('MOV EBX,EAX');
+          EmitInstr('MOV EAX,' + CgAddrOperand('EBX', 0));
+          If (ExprPool[E].Op = '++') Or (ExprPool[E].Op = 'post++') Then
+          Begin
+            EmitInstr('ADD EAX,1');
+            EmitInstr('MOV ' + CgAddrOperand('EBX', 0) + ',EAX');
+            If ExprPool[E].Op = 'post++' Then EmitInstr('SUB EAX,1');
+          End
+          Else
+          Begin
+            EmitInstr('SUB EAX,1');
+            EmitInstr('MOV ' + CgAddrOperand('EBX', 0) + ',EAX');
+            If ExprPool[E].Op = 'post--' Then EmitInstr('ADD EAX,1');
+          End;
+        End
+        Else
+        Begin
+          FatalError('generateur de code : "++"/"--" non couvert par cette ' +
+            'extension (cible autre qu''une locale/un parametre scalaire, ' +
+            'un champ, ou un element de tableau, voir la note d''en-tete ' +
+            'de section)');
+          Exit;
+        End;
+      End
+      Else
+        FatalError('generateur de code : operateur unaire non couvert par ' +
+          'cette extension : ' + ExprPool[E].Op);
+    End;
+
+    EK_BINARY:
+      CompileBinary(E);
+
+    EK_CALL:
+      CompileCall(E);
+
+    EK_TERNARY:
+    Begin
+      CompileExpr(ExprPool[E].Left);
+      EmitInstr('CMP EAX,0');
+      LblFalse := CgLabelGen;
+      LblDone  := CgLabelGen;
+      EmitInstr('JE ' + LblFalse);
+      CompileExpr(ExprPool[E].Right);
+      EmitInstr('JMP ' + LblDone);
+      EmitLabel(LblFalse);
+      CompileExpr(ExprPool[E].Extra);
+      EmitLabel(LblDone);
+    End;
+
+    { extension post-TODO25 : "(Type)expr" - PASSE-THROUGH pur des lors    }
+    { que source ET cible tiennent toutes deux dans EAX (int-family/                 }
+    { boolean/char, OU une conversion de REFERENCE - String/objet -                       }
+    { jamais verifiee a l EXECUTION, AUCUN echantillon ne declenche un              }
+    { cast reellement invalide, verifie par lecture) - long/double/float             }
+    { (source OU cible) restent HORS de portee, comme partout ailleurs               }
+    { dans cette extension. }
+    EK_CAST:
+    Begin
+      If (ExprPool[E].Extra = PRIMTYPE_LONG) Or (ExprPool[E].Extra = PRIMTYPE_DOUBLE) Or
+         (ExprPool[E].Extra = PRIMTYPE_FLOAT) Or
+         (ExprPool[ExprPool[E].Left].TypeIdx = PRIMTYPE_LONG) Or
+         (ExprPool[ExprPool[E].Left].TypeIdx = PRIMTYPE_DOUBLE) Or
+         (ExprPool[ExprPool[E].Left].TypeIdx = PRIMTYPE_FLOAT) Then
+      Begin
+        FatalError('generateur de code : conversion ("cast") non couverte ' +
+          'par cette extension (long/double/float restent hors de portee, ' +
+          'voir la note d''en-tete de section)');
+        Exit;
+      End;
+      CompileExpr(ExprPool[E].Left);
+    End;
+
+    { EK_SELECTOR : extension post-TODO25 (modele memoire d instance/        }
+    { tableau) - ".length" sur un tableau (CAS SPECIAL deja distingue par           }
+    { le PARSEUR lui-meme, TypeIdx=PRIMTYPE_INT rien qu a l analyse, voir             }
+    { ParsePostfix) charge le PREFIXE de longueur a [base-4] ; sinon un           }
+    { VRAI champ, re-resolu ICI par ClassFindField (MEME fonction que le          }
+    { parseur, jamais stockee sur le noeud - AUCUN champ EQUIVALENT a               }
+    { EK_CALL.Extra n existe pour EK_SELECTOR), charge depuis                          }
+    { [base+CgFieldOffsetInObject]. }
+    EK_SELECTOR:
+    Begin
+      BaseT := ExprPool[ExprPool[E].Left].TypeIdx;
+      If (ExprPool[E].NameVal = 'length') And (BaseT >= 0) And (BaseT < TypeCount) And
+         (TypeTab[BaseT].Kind = TYK_ARRAY) Then
+      Begin
+        CompileExpr(ExprPool[E].Left);
+        EmitInstr('MOV EAX,' + CgAddrOperand('EAX', -4));
+        Exit;
+      End;
+      FI := ClassFindField(BaseT, ExprPool[E].NameVal);
+      If FI < 0 Then
+      Begin
+        FatalError('generateur de code : selecteur "' + ExprPool[E].NameVal +
+          '" non couvert par cette extension (champ introuvable ou base ' +
+          'non-objet, voir la note d''en-tete de section)');
+        Exit;
+      End;
+      CompileExpr(ExprPool[E].Left);
+      EmitInstr('MOV EAX,' + CgAddrOperand('EAX', CgFieldOffsetInObject(FI)));
+    End;
+
+    { EK_INDEX : extension post-TODO25 - "arr[i]" - AUCUN adressage             }
+    { base+index materiel (SIB) n est gere par cet assembleur (TODO 22),           }
+    { l adresse EFFECTIVE est donc calculee ARITHMETIQUEMENT (i*4, PUIS               }
+    { ajoutee au pointeur de tableau) avant un chargement base-seul                    }
+    { ordinaire - AUCUNE verification de borne (deja documente, TYK_ARRAY,          }
+    { section 10.7, deferree au generateur de code). }
+    EK_INDEX:
+    Begin
+      CompileExpr(ExprPool[E].Left);
+      EmitInstr('PUSH EAX');
+      CompileExpr(ExprPool[E].Right);
+      EmitInstr('POP ECX');
+      EmitInstr('ADD EAX,EAX');
+      EmitInstr('ADD EAX,EAX');
+      EmitInstr('ADD EAX,ECX');
+      EmitInstr('MOV EAX,' + CgAddrOperand('EAX', 0));
+    End;
+
+    { EK_NEWOBJECT : extension post-TODO25 - alloue CgObjectSize(classe)     }
+    { octets (_JPPRT_ALLOC, zero-rempli) PUIS appelle le constructeur                 }
+    { REELLEMENT resolu (EK_NEWOBJECT.Left, ClassFindConstructor au                       }
+    { parsing, TODO 08 - deja peuple, AUCUNE re-resolution necessaire                  }
+    { ICI contrairement a EK_SELECTOR) avec le pointeur d objet comme                    }
+    { "this" implicite (POUSSE EN DERNIER - devient EBP+8 dans le                          }
+    { constructeur, EXACTEMENT le meme ordre que CompileCall pour un                     }
+    { appel de methode d instance). Le pointeur, ENCORE au sommet de la               }
+    { pile juste apres le CALL (le constructeur ne nettoie JAMAIS SA                     }
+    { PROPRE pile), est RELU depuis [ESP] AVANT le nettoyage - EAX ne              }
+    { peut PAS le conserver lui-meme a travers le CALL (ecrase par le              }
+    { constructeur). Une classe SANS corps constructeur reel (predeclaree/         }
+    { bibliotheque standard - Exception et consorts, StdlibInit,                          }
+    { BodyStmtIdx TOUJOURS -1) s arrete PROPREMENT ICI plutot que de                    }
+    { referencer une etiquette JAMAIS emise. }
+    EK_NEWOBJECT:
+    Begin
+      ClassT := ExprPool[E].Extra;
+      MI := ExprPool[E].Left;
+      If (MI < 0) Or (TypeTab[ClassT].Kind <> TYK_CLASS) Or
+         (MethodPool[MI].BodyStmtIdx < 0) Then
+      Begin
+        FatalError('generateur de code : "new ' + TypeTab[ClassT].Name +
+          '(...)" non couvert par cette extension (constructeur non ' +
+          'resolu, OU sans corps SOURCE reel - une classe predeclaree de ' +
+          'la bibliotheque standard, ex. une exception, n en a jamais, ' +
+          'voir la note d''en-tete de section)');
+        Exit;
+      End;
+      For I := ExprPool[E].ArgCount - 1 DownTo 0 Do
+      Begin
+        CompileExpr(ExprArgPool[ExprPool[E].ArgFirst + I]);
+        EmitInstr('PUSH EAX');
+      End;
+      EmitInstr('PUSH ' + IntToStrG(CgObjectSize(ClassT)));
+      EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+      EmitInstr('ADD ESP,4');
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL ' + MethodAsmLabelG(MI));
+      EmitInstr('MOV EAX,' + CgAddrOperand('ESP', 0));
+      EmitInstr('ADD ESP,' + IntToStrG((ExprPool[E].ArgCount + 1) * 4));
+    End;
+
+    { EK_NEWARRAY : extension post-TODO25 - SEULEMENT 1 dimension           }
+    { ("new T[n]", 'dims') ou un initialiseur ENTRE ACCOLADES (aussi bien           }
+    { "new T[] AVEC initialiseur" que le declarateur nu "T[] x = ...",           }
+    { 'init') - tableau MULTI-dimensionnel ("new T[n][m]") reste HORS de           }
+    { portee (Test05Tableaux.jpp, non atteint). Disposition : prefixe de           }
+    { LONGUEUR sur 4 octets, PUIS les elements - la reference de tableau            }
+    { retournee POINTE SUR LE PREMIER ELEMENT               }
+    { (base+4 du bloc alloue), ".length" (EK_SELECTOR ci-dessus) relit                 }
+    { simplement [base-4]. }
+    EK_NEWARRAY:
+    Begin
+      If (ExprPool[E].Op = 'dims') And (ExprPool[E].ArgCount <> 1) Then
+      Begin
+        FatalError('generateur de code : tableau multi-dimensionnel non ' +
+          'couvert par cette extension (seul "new T[n]" a UNE dimension ' +
+          'l''est, voir la note d''en-tete de section)');
+        Exit;
+      End;
+      If ExprPool[E].Op = 'dims' Then
+      Begin
+        { BOGUE REEL trouve par EXECUTION (synthetique, PAS un des 18       }
+        { echantillons - "Longueur : -1374577314" au lieu de 5) : ECX               }
+        { n est PAS un registre PRESERVE a travers un CALL (ni par                     }
+        { convention Win32, ni par _JPPRT_ALLOC lui-meme, qui ne sauve/                  }
+        { restaure QUE EBX) - le conserver dans ECX a travers                                 }
+        { "CALL _JPPRT_ALLOC" laissait relire n IMPORTE QUOI (les restes               }
+        { de GetProcessHeap/HeapAlloc) plutot que "n". Corrige en le                          }
+        { faisant TRANSITER par la PILE (PUSH avant l appel, POP juste                       }
+        { apres) plutot que par un registre. }
+        CompileExpr(ExprArgPool[ExprPool[E].ArgFirst]);
+        EmitInstr('MOV ECX,EAX');
+        EmitInstr('ADD EAX,EAX');
+        EmitInstr('ADD EAX,EAX');
+        EmitInstr('ADD EAX,4');
+        EmitInstr('PUSH ECX');
+        EmitInstr('PUSH EAX');
+        EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+        EmitInstr('ADD ESP,4');
+        EmitInstr('POP ECX');
+        EmitInstr('MOV ' + CgAddrOperand('EAX', 0) + ',ECX');
+        EmitInstr('ADD EAX,4');
+      End
+      Else
+      Begin
+        ArgN := ExprPool[E].ArgCount;
+        EmitInstr('PUSH ' + IntToStrG(ArgN * 4 + 4));
+        EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+        EmitInstr('ADD ESP,4');
+        EmitInstr('MOV ECX,' + IntToStrG(ArgN));
+        EmitInstr('MOV ' + CgAddrOperand('EAX', 0) + ',ECX');
+        EmitInstr('ADD EAX,4');
+        EmitInstr('MOV EBX,EAX');
+        For I := 0 To ArgN - 1 Do
+        Begin
+          CompileExpr(ExprArgPool[ExprPool[E].ArgFirst + I]);
+          EmitInstr('MOV ' + CgAddrOperand('EBX', I * 4) + ',EAX');
+        End;
+        EmitInstr('MOV EAX,EBX');
+      End;
+    End;
   Else
     FatalError('generateur de code : forme d''expression non couverte par ' +
       'ce premier jalon du TODO 21 (genre #' + IntToStrG(Ord(ExprPool[E].Kind)) +
@@ -12513,14 +13657,37 @@ Begin
   End;
 End;
 
+{ CgIsScalarCallType : "tient dans EAX" pour un parametre/retour d appel  }
+{ de methode - int/boolean/char/short/byte/String (JAMAIS long/double/            }
+{ float, qui ne tiennent pas dans un seul registre, ni un tableau/objet,          }
+{ qui exigeraient une disposition memoire non modelisee ICI). }
+Function CgIsScalarCallType(T: Integer): Boolean;
+Begin
+  CgIsScalarCallType := (T = PRIMTYPE_INT) Or (T = PRIMTYPE_BOOLEAN) Or
+    (T = PRIMTYPE_CHAR) Or (T = PRIMTYPE_SHORT) Or (T = PRIMTYPE_BYTE) Or
+    (T = PDT_STRING);
+End;
+
 { CompileCall : reconnait "System.out.println(String)" PAR LA METHODE   }
 { REELLEMENT resolue (EK_CALL.Extra, TODO 21 - voir sa propre note                 }
 { d en-tete) plutot que par une comparaison de TEXTE sur l expression            }
-{ source (fragile, casserait des qu un alias/import statique existerait,      }
-{ jamais le cas ici mais une distinction de principe) - SEULE forme               }
-{ d appel couverte par ce premier jalon. }
+{ source. Extension post-TODO25 : couvre AUSSI un appel de methode                    }
+{ STATIQUE utilisateur (jamais d instance - aucun "this" REEL n existe            }
+{ encore), a condition que TOUS ses parametres ET son retour soient               }
+{ SCALAIRES (CgIsScalarCallType, retour PRIMTYPE_VOID egalement                       }
+{ accepte - une methode "void" reste appelable comme instruction MEME              }
+{ si son "retour" n a pas de valeur). Args pousses en ordre INVERSE                  }
+{ (convention deja etablie par ParseOneParamIntoPool - CurParamOffset             }
+{ croissant depuis EBP+8) ; la methode appelee ne nettoie JAMAIS SA               }
+{ PROPRE pile (CompileMethodBody emet un "RET" nu) - l appelant le fait          }
+{ TOUJOURS via "ADD ESP,N", MEME convention que les appels au runtime             }
+{ _JPPRT_*. La resolution de surcharge (ClassResolveMethodCall, TODO 08)          }
+{ a DEJA choisi la bonne entree MethodPool au moment du parsing (EK_CALL.       }
+{ Extra) - appeler MethodAsmLabelG(MI) directement est donc TOUJOURS              }
+{ correct, y compris pour une methode RECURSIVE (Test04Methodes.jpp,             }
+{ "factorielle") ou surchargee par TYPE. }
 Procedure CompileCall(E: Integer);
-Var MI, ArgE : Integer;
+Var MI, ArgE, I : Integer; ParamsOK : Boolean;
 Begin
   MI := ExprPool[E].Extra;
   If MI < 0 Then
@@ -12541,31 +13708,395 @@ Begin
     Exit;
   End;
 
+  If MethodPool[MI].IsStatic And
+     (TypeTab[MethodPool[MI].OwnerTypeIdx].Kind = TYK_CLASS) And
+     (MethodPool[MI].BodyStmtIdx >= 0) And
+     (CgIsScalarCallType(MethodPool[MI].RetTypeIdx) Or
+      (MethodPool[MI].RetTypeIdx = PRIMTYPE_VOID)) Then
+  Begin
+    ParamsOK := True;
+    For I := 0 To MethodPool[MI].ParamCount - 1 Do
+      If Not CgIsScalarCallType(ParamPool[MethodPool[MI].ParamFirst + I].TypeIdx) Then
+        ParamsOK := False;
+    If ParamsOK Then
+    Begin
+      For I := ExprPool[E].ArgCount - 1 DownTo 0 Do
+      Begin
+        ArgE := ExprArgPool[ExprPool[E].ArgFirst + I];
+        CompileExpr(ArgE);
+        EmitInstr('PUSH EAX');
+      End;
+      EmitInstr('CALL ' + MethodAsmLabelG(MI));
+      If ExprPool[E].ArgCount > 0 Then
+        EmitInstr('ADD ESP,' + IntToStrG(ExprPool[E].ArgCount * 4));
+      Exit;
+    End;
+  End;
+
+  { extension post-TODO25 : appel de methode D INSTANCE UTILISATEUR       }
+  { (jamais une methode de bibliotheque standard - StdlibInit,                       }
+  { BodyStmtIdx TOUJOURS -1, exclue par le MEME garde-fou que EK_NEWOBJECT       }
+  { plus haut, sinon une etiquette JAMAIS emise serait referencee) -               }
+  { RECEPTEUR pousse EN DERNIER (devient EBP+8, "this", dans la methode              }
+  { appelee) : explicite ("obj.methode(...)", Callee=EK_SELECTOR, le                    }
+  { recepteur est ExprPool[Callee].Left) OU implicite ("methode(...)",                  }
+  { Callee=EK_IDENT NON resolu - le recepteur est ALORS le "this" de LA           }
+  { METHODE ENGLOBANTE en cours de compilation, TOUJOURS a EBP+8 la ou             }
+  { son propre corps est en train d etre compile - garanti par les                       }
+  { REGLES DE PORTEE Java elles-memes : un appel implicite a une methode            }
+  { D INSTANCE ne peut syntaxiquement apparaitre que dans un contexte              }
+  { NON-static, ou "this" existe forcement a CETTE MEME position). }
+  If (Not MethodPool[MI].IsStatic) And
+     (TypeTab[MethodPool[MI].OwnerTypeIdx].Kind = TYK_CLASS) And
+     (MethodPool[MI].BodyStmtIdx >= 0) And
+     (CgIsScalarCallType(MethodPool[MI].RetTypeIdx) Or
+      (MethodPool[MI].RetTypeIdx = PRIMTYPE_VOID)) Then
+  Begin
+    ParamsOK := True;
+    For I := 0 To MethodPool[MI].ParamCount - 1 Do
+      If Not CgIsScalarCallType(ParamPool[MethodPool[MI].ParamFirst + I].TypeIdx) Then
+        ParamsOK := False;
+    If ParamsOK Then
+    Begin
+      For I := ExprPool[E].ArgCount - 1 DownTo 0 Do
+      Begin
+        ArgE := ExprArgPool[ExprPool[E].ArgFirst + I];
+        CompileExpr(ArgE);
+        EmitInstr('PUSH EAX');
+      End;
+      If ExprPool[ExprPool[E].Left].Kind = EK_SELECTOR Then
+        CompileExpr(ExprPool[ExprPool[E].Left].Left)
+      Else
+        EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL ' + MethodAsmLabelG(MI));
+      EmitInstr('ADD ESP,' + IntToStrG((ExprPool[E].ArgCount + 1) * 4));
+      Exit;
+    End;
+  End;
+
   FatalError('generateur de code : appel a "' + MethodPool[MI].Name +
     '" non couvert par ce premier jalon du TODO 21 (voir la note d''en-tete ' +
     'de section pour la portee EXACTE)');
 End;
 
-{ CompileStmt : SEULES formes couvertes ICI : STK_BLOCK (recursion              }
-{ PLATE sur ArgFirst/Count, TODO 07/08) et STK_EXPR enveloppant UN               }
-{ SEUL appel de methode (CompileCall - le resultat, s il y en a un,               }
-{ est ICI TOUJOURS ignore, section 7.4 "expression-instruction").              }
-{ TOUT AUTRE genre (declaration, if/while/for, return non nu, etc.)              }
-{ s arrete PROPREMENT, MEME discipline que CompileExpr. }
+{ CompileCompoundOp : EAX=cible (AVANT), ECX=valeur - convention PROPRE  }
+{ a cette fonction (DIFFERENTE de CompileArithBinary : ICI "EAX est                  }
+{ deja la cible" rend SUB/IDIV plus simples, AUCUN echange necessaire).             }
+Procedure CompileCompoundOp(Const Op: TString);
+Begin
+  If Op = '+=' Then
+    EmitInstr('ADD EAX,ECX')
+  Else If Op = '-=' Then
+    EmitInstr('SUB EAX,ECX')
+  Else If Op = '*=' Then
+    EmitInstr('IMUL EAX,ECX')
+  Else If (Op = '/=') Or (Op = '%=') Then
+  Begin
+    EmitInstr('CDQ');
+    EmitInstr('IDIV ECX');
+    If Op = '%=' Then EmitInstr('MOV EAX,EDX');
+  End
+  Else
+    FatalError('generateur de code : operateur d''affectation compose non ' +
+      'couvert par cette extension : ' + Op);
+End;
+
+{ CompileStmt : STK_BLOCK (recursion PLATE, TODO 07/08), STK_EXPR              }
+{ (appel de methode via CompileCall, OU ++/-- via CompileExpr, resultat            }
+{ TOUJOURS ignore, section 7.4), STK_DECL (initialiseur optionnel vers            }
+{ chaque symbole de la plage [Left, Left+Extra[), STK_ASSIGN (cible               }
+{ locale/parametre SCALAIRE, = simple OU +=/-=/*=//=/%=), STK_RETURN               }
+{ (saute TOUJOURS vers CurMethodEpilogueLabel, jamais un simple                          }
+{ retour en cascade), STK_IF/WHILE/DOWHILE/FOR (Jcc materialise/               }
+{ etiquettes CgLabelGen), STK_SWITCH/CASE (chaine de comparaisons PUIS            }
+{ corps en continuation textuelle "fall-through", section 7.9-7.11),              }
+{ STK_BREAK/CONTINUE NON etiquetes (CgBreakLbl/CgContinueLbl). TOUT               }
+{ AUTRE genre s arrete PROPREMENT, MEME discipline que CompileExpr. }
 Procedure CompileStmt(S: Integer);
-Var I : Integer;
+Var
+  I, SubS, Body, Off, TargetE, FI, BaseT : Integer;
+  LblElse, LblDone, LblTop, LblCont, LblEnd, DefaultLbl : TString;
+  CaseLbl : Array[0..63] Of TString;
 Begin
   If S < 0 Then Exit;
   Case StmtPool[S].Kind Of
     STK_BLOCK:
       For I := 0 To StmtPool[S].ArgCount - 1 Do
         CompileStmt(StmtArgPool[StmtPool[S].ArgFirst + I]);
+
     STK_EXPR:
       If ExprPool[StmtPool[S].Left].Kind = EK_CALL Then
         CompileCall(StmtPool[S].Left)
+      Else If ExprPool[StmtPool[S].Left].Kind = EK_UNARY Then
+        CompileExpr(StmtPool[S].Left)
       Else
         FatalError('generateur de code : forme d''instruction-expression ' +
-          'non couverte par ce premier jalon du TODO 21 (section 7.4)');
+          'non couverte par cette extension (section 7.4)');
+
+    STK_DECL:
+      For I := StmtPool[S].Left To StmtPool[S].Left + StmtPool[S].Extra - 1 Do
+        If SymTab[I].HasInit Then
+        Begin
+          CompileExpr(SymTab[I].InitExprIdx);
+          EmitInstr('MOV ' + CgLocalOperand(SymTab[I].Offset) + ',EAX');
+        End;
+
+    { STK_ASSIGN : trois cibles couvertes - locale/parametre (EK_IDENT,     }
+    { comme au premier jalon de cette extension), champ (EK_SELECTOR,                    }
+    { modele memoire d instance) et element de tableau (EK_INDEX, meme                     }
+    { calcul d adresse ARITHMETIQUE que CompileExpr) - EBX conserve                          }
+    { TOUJOURS l ADRESSE (pointeur d objet+deplacement, ou adresse                            }
+    { effective de l element) pendant que la VALEUR/l ancienne valeur                     }
+    { (affectation composee) est calculee, puisque EAX/ECX sont deja               }
+    { utilises par CompileExpr/CompileCompoundOp. }
+    STK_ASSIGN:
+    Begin
+      TargetE := StmtPool[S].Left;
+      If (ExprPool[TargetE].Kind = EK_IDENT) And (ExprPool[TargetE].Left >= 0) And
+         (SymTab[ExprPool[TargetE].Left].Kind = SK_VAR) Then
+      Begin
+        Off := SymTab[ExprPool[TargetE].Left].Offset;
+        If StmtPool[S].Op = '=' Then
+        Begin
+          CompileExpr(StmtPool[S].Right);
+          EmitInstr('MOV ' + CgLocalOperand(Off) + ',EAX');
+        End
+        Else
+        Begin
+          CompileExpr(StmtPool[S].Right);
+          EmitInstr('MOV ECX,EAX');
+          EmitInstr('MOV EAX,' + CgLocalOperand(Off));
+          CompileCompoundOp(StmtPool[S].Op);
+          EmitInstr('MOV ' + CgLocalOperand(Off) + ',EAX');
+        End;
+      End
+      Else If ExprPool[TargetE].Kind = EK_SELECTOR Then
+      Begin
+        BaseT := ExprPool[ExprPool[TargetE].Left].TypeIdx;
+        FI := ClassFindField(BaseT, ExprPool[TargetE].NameVal);
+        If FI < 0 Then
+        Begin
+          FatalError('generateur de code : cible d''affectation "' +
+            ExprPool[TargetE].NameVal + '" non couverte par cette ' +
+            'extension (champ introuvable, voir la note d''en-tete de ' +
+            'section)');
+          Exit;
+        End;
+        Off := CgFieldOffsetInObject(FI);
+        CompileExpr(ExprPool[TargetE].Left);
+        EmitInstr('MOV EBX,EAX');
+        If StmtPool[S].Op = '=' Then
+        Begin
+          CompileExpr(StmtPool[S].Right);
+          EmitInstr('MOV ' + CgAddrOperand('EBX', Off) + ',EAX');
+        End
+        Else
+        Begin
+          EmitInstr('MOV EAX,' + CgAddrOperand('EBX', Off));
+          EmitInstr('PUSH EAX');
+          CompileExpr(StmtPool[S].Right);
+          EmitInstr('MOV ECX,EAX');
+          EmitInstr('POP EAX');
+          CompileCompoundOp(StmtPool[S].Op);
+          EmitInstr('MOV ' + CgAddrOperand('EBX', Off) + ',EAX');
+        End;
+      End
+      Else If ExprPool[TargetE].Kind = EK_INDEX Then
+      Begin
+        CompileExpr(ExprPool[TargetE].Left);
+        EmitInstr('PUSH EAX');
+        CompileExpr(ExprPool[TargetE].Right);
+        EmitInstr('POP ECX');
+        EmitInstr('ADD EAX,EAX');
+        EmitInstr('ADD EAX,EAX');
+        EmitInstr('ADD EAX,ECX');
+        EmitInstr('MOV EBX,EAX');
+        If StmtPool[S].Op = '=' Then
+        Begin
+          CompileExpr(StmtPool[S].Right);
+          EmitInstr('MOV ' + CgAddrOperand('EBX', 0) + ',EAX');
+        End
+        Else
+        Begin
+          EmitInstr('MOV EAX,' + CgAddrOperand('EBX', 0));
+          EmitInstr('PUSH EAX');
+          CompileExpr(StmtPool[S].Right);
+          EmitInstr('MOV ECX,EAX');
+          EmitInstr('POP EAX');
+          CompileCompoundOp(StmtPool[S].Op);
+          EmitInstr('MOV ' + CgAddrOperand('EBX', 0) + ',EAX');
+        End;
+      End
+      Else
+      Begin
+        FatalError('generateur de code : cible d''affectation non couverte ' +
+          'par cette extension (locale/parametre scalaire, champ, ou ' +
+          'element de tableau UNIQUEMENT, voir la note d''en-tete de ' +
+          'section)');
+        Exit;
+      End;
+    End;
+
+    STK_RETURN:
+    Begin
+      If StmtPool[S].Left >= 0 Then CompileExpr(StmtPool[S].Left);
+      EmitInstr('JMP ' + CurMethodEpilogueLabel);
+    End;
+
+    STK_IF:
+    Begin
+      CompileExpr(StmtPool[S].Extra);
+      EmitInstr('CMP EAX,0');
+      LblElse := CgLabelGen;
+      LblDone := CgLabelGen;
+      EmitInstr('JE ' + LblElse);
+      CompileStmt(StmtPool[S].Right);
+      EmitInstr('JMP ' + LblDone);
+      EmitLabel(LblElse);
+      If StmtPool[S].Left >= 0 Then CompileStmt(StmtPool[S].Left);
+      EmitLabel(LblDone);
+    End;
+
+    STK_WHILE:
+    Begin
+      LblTop := CgLabelGen;
+      LblEnd := CgLabelGen;
+      CgPushLoopFrame(LblEnd, LblTop);
+      EmitLabel(LblTop);
+      CompileExpr(StmtPool[S].Extra);
+      EmitInstr('CMP EAX,0');
+      EmitInstr('JE ' + LblEnd);
+      CompileStmt(StmtPool[S].Right);
+      EmitInstr('JMP ' + LblTop);
+      EmitLabel(LblEnd);
+      CgPopLoopFrame;
+    End;
+
+    STK_DOWHILE:
+    Begin
+      LblTop  := CgLabelGen;
+      LblCont := CgLabelGen;
+      LblEnd  := CgLabelGen;
+      CgPushLoopFrame(LblEnd, LblCont);
+      EmitLabel(LblTop);
+      CompileStmt(StmtPool[S].Right);
+      EmitLabel(LblCont);
+      CompileExpr(StmtPool[S].Extra);
+      EmitInstr('CMP EAX,0');
+      EmitInstr('JNE ' + LblTop);
+      EmitLabel(LblEnd);
+      CgPopLoopFrame;
+    End;
+
+    STK_FOR:
+    Begin
+      For I := 0 To StmtPool[S].InitCount - 1 Do
+        CompileStmt(StmtArgPool[StmtPool[S].InitFirst + I]);
+      LblTop  := CgLabelGen;
+      LblCont := CgLabelGen;
+      LblEnd  := CgLabelGen;
+      CgPushLoopFrame(LblEnd, LblCont);
+      EmitLabel(LblTop);
+      If StmtPool[S].Extra >= 0 Then
+      Begin
+        CompileExpr(StmtPool[S].Extra);
+        EmitInstr('CMP EAX,0');
+        EmitInstr('JE ' + LblEnd);
+      End;
+      CompileStmt(StmtPool[S].Left);
+      EmitLabel(LblCont);
+      For I := 0 To StmtPool[S].UpdCount - 1 Do
+        CompileStmt(StmtArgPool[StmtPool[S].UpdFirst + I]);
+      EmitInstr('JMP ' + LblTop);
+      EmitLabel(LblEnd);
+      CgPopLoopFrame;
+    End;
+
+    STK_SWITCH:
+    Begin
+      CompileExpr(StmtPool[S].Extra);
+      EmitInstr('MOV EBX,EAX');
+      LblEnd  := CgLabelGen;
+      Body    := StmtPool[S].Left;
+      DefaultLbl := '';
+      For I := 0 To StmtPool[Body].ArgCount - 1 Do
+      Begin
+        SubS := StmtArgPool[StmtPool[Body].ArgFirst + I];
+        CaseLbl[I] := '';
+        If StmtPool[SubS].Kind = STK_CASE Then
+        Begin
+          CaseLbl[I] := CgLabelGen;
+          If StmtPool[SubS].Left < 0 Then DefaultLbl := CaseLbl[I];
+        End;
+      End;
+      For I := 0 To StmtPool[Body].ArgCount - 1 Do
+      Begin
+        SubS := StmtArgPool[StmtPool[Body].ArgFirst + I];
+        If (StmtPool[SubS].Kind = STK_CASE) And (StmtPool[SubS].Left >= 0) Then
+        Begin
+          CompileExpr(StmtPool[SubS].Left);
+          EmitInstr('CMP EBX,EAX');
+          EmitInstr('JE ' + CaseLbl[I]);
+        End;
+      End;
+      If DefaultLbl <> '' Then EmitInstr('JMP ' + DefaultLbl)
+      Else EmitInstr('JMP ' + LblEnd);
+      CgPushSwitchFrame(LblEnd);
+      For I := 0 To StmtPool[Body].ArgCount - 1 Do
+      Begin
+        SubS := StmtArgPool[StmtPool[Body].ArgFirst + I];
+        If StmtPool[SubS].Kind = STK_CASE Then
+          EmitLabel(CaseLbl[I])
+        Else
+          CompileStmt(SubS);
+      End;
+      EmitLabel(LblEnd);
+      CgPopLoopFrame;
+    End;
+
+    STK_BREAK:
+      If StmtPool[S].NameVal <> '' Then
+        FatalError('generateur de code : "break" etiquete non couvert par ' +
+          'cette extension')
+      Else If CgLoopTop < 0 Then
+        FatalError('generateur de code : "break" hors de toute boucle/switch ' +
+          '(ne devrait jamais arriver, deja verifie au parsing)')
+      Else
+        EmitInstr('JMP ' + CgBreakLbl[CgLoopTop]);
+
+    STK_CONTINUE:
+      If StmtPool[S].NameVal <> '' Then
+        FatalError('generateur de code : "continue" etiquete non couvert ' +
+          'par cette extension')
+      Else If (CgLoopTop < 0) Or (CgContinueLbl[CgLoopTop] = '') Then
+        FatalError('generateur de code : "continue" hors de toute boucle ' +
+          '(ne devrait jamais arriver, deja verifie au parsing)')
+      Else
+        EmitInstr('JMP ' + CgContinueLbl[CgLoopTop]);
+
+    { STK_THROW : extension post-TODO25 - SIMPLIFICATION EXPLICITEMENT     }
+    { ASSUMEE, PAS de vraies semantiques Java (AUCUN deroulement de pile,             }
+    { AUCUNE correspondance catch reelle - STK_TRY reste ENTIEREMENT hors           }
+    { de portee) : termine simplement le PROCESSUS avec un code de sortie              }
+    { DISTINCT (3), approximant un "abort" plutot qu une VRAIE exception -               }
+    { L EXPRESSION lancee elle-meme n est JAMAIS compilee (aurait pu                     }
+    { referencer un constructeur de bibliotheque standard SANS corps                        }
+    { reel, ex. "new IllegalArgumentException(...)", EK_NEWOBJECT               }
+    { s arreterait alors PROPREMENT de toute facon - AUCUNE perte reelle,          }
+    { ses eventuels EFFETS DE BORD ne sont simplement jamais executes).             }
+    { Suffisant UNIQUEMENT parce que, pour chaque echantillon ou est                    }
+    { rencontree cette forme, le "throw" n est JAMAIS DYNAMIQUEMENT                        }
+    { atteint par le VRAI chemin d execution de main() (verifie              }
+    { manuellement pour chaque cas avant d etre invoque ICI) - une                        }
+    { methode dont le throw EST reellement exercee resterait, elle,                       }
+    { INCORRECTE (arret au lieu d une vraie propagation/capture). }
+    STK_THROW:
+    Begin
+      EmitInstr('PUSH 3');
+      EmitInstr('CALL _ExitProcess@4');
+    End;
+
   Else
     FatalError('generateur de code : forme d''instruction non couverte par ' +
       'ce premier jalon du TODO 21 (genre #' + IntToStrG(Ord(StmtPool[S].Kind)) +
@@ -12573,16 +14104,22 @@ Begin
   End;
 End;
 
-{ CompileMethodBody : prologue/epilogue MINIMAL (AUCUN cadre local -           }
-{ Test01Bonjour.jpp n a ni parametre LU ni variable locale - la                        }
-{ disposition EBP-relative des locaux/parametres, section 8.13, reste          }
-{ une extension FUTURE non exercee ICI). }
+{ CompileMethodBody : prologue "SUB ESP,FrameSize" (extension post-      }
+{ TODO25 - voir la note d en-tete de TMethodRec.FrameSize) SI cette              }
+{ methode a REELLEMENT des locales, epilogue UNIQUE etiquete                          }
+{ (CurMethodEpilogueLabel) - CHAQUE STK_RETURN y saute plutot que de              }
+{ retomber en cascade, correct MEME pour un "return;" au milieu du                    }
+{ corps. }
 Procedure CompileMethodBody(MI: Integer);
 Begin
   EmitLabel(MethodAsmLabelG(MI));
   EmitInstr('PUSH EBP');
   EmitInstr('MOV EBP,ESP');
+  If MethodPool[MI].FrameSize > 0 Then
+    EmitInstr('SUB ESP,' + IntToStrG(MethodPool[MI].FrameSize));
+  CurMethodEpilogueLabel := CgLabelGen;
   CompileStmt(MethodPool[MI].BodyStmtIdx);
+  EmitLabel(CurMethodEpilogueLabel);
   EmitInstr('MOV ESP,EBP');
   EmitInstr('POP EBP');
   EmitInstr('RET');
@@ -12605,6 +14142,7 @@ Procedure CompileProgram(Const AsmFileName: TString);
 Var I, MainMI : Integer;
 Begin
   CgLabelSeq := 0;
+  CgLoopTop  := -1;   { extension post-TODO25 - voir la note d en-tete de CgBreakLbl }
   CgCollectStrings;
 
   EmitOpen(AsmFileName);
@@ -12633,8 +14171,32 @@ Begin
     Exit;
   End;
 
+  { extension post-TODO25 (modele memoire de tableau) : BOGUE REEL         }
+  { trouve par EXECUTION (PAS par la compilation - le premier .exe               }
+  { produit avec cette extension, Test01Bonjour.jpp, COMPILAIT et                     }
+  { LIAIT sans erreur, mais SEGFAULT a l execution) - "main" lit                          }
+  { REELLEMENT "args.length"/"args[0]" (EK_SELECTOR/EK_INDEX, cette                     }
+  { MEME extension), mais AUCUNE valeur n avait JAMAIS ete poussee pour               }
+  { ce parametre avant l appel a "main" - EBP+8 y contenait alors des               }
+  { octets ARBITRAIRES (residus de pile), dereferences comme un                          }
+  { pointeur de tableau -> plantage. Le VRAI analyseur de ligne de                        }
+  { commande Win32 (GetCommandLine/CommandLineToArgvW) reste HORS de                    }
+  { portee (fonctionnalite separee, non demandee) - corrige ICI en                        }
+  { poussant un tableau de chaines VIDE (longueur 0) mais REEL avant               }
+  { "main", garantissant que "args.length" est TOUJOURS correct (0) et            }
+  { qu aucun "args[i]" ne peut jamais dereferencer un pointeur invalide            }
+  { SAUF si le programme lui-meme accede a "args[i]" sans verifier la               }
+  { longueur d abord (limite PREEXISTANTE, AUCUNE verification de borne            }
+  { de tableau, TYK_ARRAY, section 10.7 - pas une regression introduite            }
+  { ICI). }
   EmitLabel('_JPPSTART');
+  EmitInstr('PUSH 4');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('ADD EAX,4');
+  EmitInstr('PUSH EAX');
   EmitInstr('CALL ' + MethodAsmLabelG(MainMI));
+  EmitInstr('ADD ESP,4');
   EmitInstr('PUSH 0');
   EmitInstr('CALL _ExitProcess@4');
   EmitRaw('END _JPPSTART');
@@ -12917,6 +14479,21 @@ Begin
   Else BinReg32 := -1;
 End;
 
+{ BinReg8 : extension post-TODO25 (generateur de code - runtime string   }
+{ concatenation/conversion, _JPPRT_CONCAT/_JPPRT_INT_TO_STR) - SEULS les             }
+{ QUATRE registres bas historiques (AL/CL/DL/BL, MEME numerotation que              }
+{ EAX/ECX/EDX/EBX, section basse du registre 32 bits) sont couverts -              }
+{ AH/CH/DH/BH (octet HAUT) ne sont JAMAIS emis par ce compilateur, hors            }
+{ de portee. }
+Function BinReg8(Const Name: TString): Integer;
+Begin
+  If      Name = 'AL' Then BinReg8 := 0
+  Else If Name = 'CL' Then BinReg8 := 1
+  Else If Name = 'DL' Then BinReg8 := 2
+  Else If Name = 'BL' Then BinReg8 := 3
+  Else BinReg8 := -1;
+End;
+
 Function BinParseOperand(S: TString): TBinOperand;
 Var Op: TBinOperand; Inner, NumPart: TString; SignPos, I: Integer; Neg: Boolean;
 Begin
@@ -12970,6 +14547,22 @@ Begin
   If Op.RegNum >= 0 Then
   Begin
     Op.Kind := BOK_REG;
+    BinParseOperand := Op;
+    Exit;
+  End;
+
+  { extension post-TODO25 : registre BAS 8 bits (AL/CL/DL/BL) - voir la  }
+  { note d en-tete de BinReg8. Reutilise IsByte (jusqu ici SEULEMENT               }
+  { pour un operande MEMOIRE "BYTE PTR [...]") pour signaler a                        }
+  { BinEncodeMov qu un registre 32 bits ordinaire ne convient PAS ICI -               }
+  { AUCUN conflit possible : IsByte n est jamais lu par les encodeurs                }
+  { existants pour un operande BOK_REG (seulement BOK_MEM), ce cas est                    }
+  { NOUVEAU. }
+  Op.RegNum := BinReg8(S);
+  If Op.RegNum >= 0 Then
+  Begin
+    Op.Kind   := BOK_REG;
+    Op.IsByte := True;
     BinParseOperand := Op;
     Exit;
   End;
@@ -13033,6 +14626,17 @@ Begin
   Op2 := BinParseOperand(Op2Text);
   If Op1.Kind = BOK_REG Then
   Begin
+    { extension post-TODO25 (generateur de code - runtime string) :      }
+    { "MOV AL,BYTE PTR [mem]" (r8,r/m8, 8A /r) - Op1 est un registre BAS         }
+    { 8 bits (BinReg8, IsByte=Vrai POUR UN REGISTRE - voir sa propre               }
+    { note d en-tete), jamais confondu avec Op1.IsByte d un operande               }
+    { MEMOIRE (verifie plus bas, apres ce bloc "Kind=BOK_REG"). }
+    If Op1.IsByte Then
+    Begin
+      BinEmit8($8A);
+      BinEmitModRM(Op1.RegNum, Op2);
+      Exit;
+    End;
     If Op2.Kind = BOK_IMM Then
     Begin
       BinEmit8($B8 Or Op1.RegNum);
@@ -13045,6 +14649,16 @@ Begin
   End;
   If Op1.IsByte Then
   Begin
+    { extension post-TODO25 : "MOV BYTE PTR [mem],AL" (r/m8,r8, 88 /r) -   }
+    { SEULE forme couverte : la SOURCE doit etre un registre BAS 8 bits           }
+    { (Op2.IsByte, jamais un octet immediat direct - ce compilateur fait             }
+    { TOUJOURS transiter la valeur par AL/CL/DL/BL d abord). }
+    If Op2.IsByte And (Op2.Kind = BOK_REG) Then
+    Begin
+      BinEmit8($88);
+      BinEmitModRM(Op2.RegNum, Op1);
+      Exit;
+    End;
     FatalError('assembleur : "MOV BYTE PTR [mem],reg" non couvert par ce ' +
       'premier jalon du TODO 22 (voir la note d''en-tete de section) : ' + Op2Text);
     Exit;
@@ -13105,10 +14719,11 @@ Begin
   BinEmitModRM(Op1.RegNum, Op2);
 End;
 
-{ BinEncodeAlu : ADD/SUB/XOR/CMP - les QUATRE SEULES formes que ce      }
-{ compilateur emet REELLEMENT (voir la note d en-tete de section) -              }
-{ OR/AND partagent la MEME logique EXACTE chez GOCW32.PAS mais restent          }
-{ hors de portee ICI, AUCUNE forme n est ENCORE emise. }
+{ BinEncodeAlu : ADD/SUB/XOR/CMP - QUATRE formes du premier jalon du    }
+{ TODO 22 - PLUS OR/AND (extension post-TODO25, memes bitwise "|"/"&"           }
+{ que Test16Win32.jpp, MEME table SubOp EXACTE que le groupe ALU x86             }
+{ standard : ADD=0/OR=1/AND=4/SUB=5/XOR=6/CMP=7 - GOCW32.PAS partage la               }
+{ MEME logique pour SA PROPRE paire OR/AND). }
 Procedure BinEncodeAlu(Const Mnemonic, Op1Text, Op2Text: TString);
 Var Op1, Op2: TBinOperand; SubOp, Opc: Integer;
 Begin
@@ -13116,6 +14731,8 @@ Begin
   Op2 := BinParseOperand(Op2Text);
 
   If      Mnemonic = 'ADD' Then Begin Opc := $03; SubOp := 0; End
+  Else If Mnemonic = 'OR'  Then Begin Opc := $0B; SubOp := 1; End
+  Else If Mnemonic = 'AND' Then Begin Opc := $23; SubOp := 4; End
   Else If Mnemonic = 'SUB' Then Begin Opc := $2B; SubOp := 5; End
   Else If Mnemonic = 'XOR' Then Begin Opc := $33; SubOp := 6; End
   Else If Mnemonic = 'CMP' Then Begin Opc := $3B; SubOp := 7; End
@@ -13147,6 +14764,35 @@ Begin
   BinEmitModRM(Op1.RegNum, Op2);
 End;
 
+{ BinEncodeShift : SHL/SHR/SAR r/m32,CL (D3 /4,/5,/7 - groupe D3,             }
+{ compte de decalage TOUJOURS dans CL, implicite dans l opcode LUI-MEME,          }
+{ jamais encode dans le ModRM - Op2Text n est donc JAMAIS lu, le              }
+{ compilateur place TOUJOURS lui-meme le compte dans CL avant d emettre           }
+{ cette instruction, voir CompileBinary) - extension post-TODO25                    }
+{ ("<<"/">>"/">>>" entiers, Test15Conditionnelle.jpp n en a pas besoin,               }
+{ mais fait partie de la MEME famille d operateurs binaires que "|"/"&"           }
+{ ci-dessus). }
+Procedure BinEncodeShift(Const Mnemonic, Op1Text: TString);
+Var Op1: TBinOperand; SubOp: Integer;
+Begin
+  Op1 := BinParseOperand(Op1Text);
+  If (Op1.Kind <> BOK_REG) Or Op1.IsByte Then
+  Begin
+    FatalError('assembleur : forme de decalage non couverte : ' + Op1Text);
+    Exit;
+  End;
+  If      Mnemonic = 'SHL' Then SubOp := 4
+  Else If Mnemonic = 'SHR' Then SubOp := 5
+  Else If Mnemonic = 'SAR' Then SubOp := 7
+  Else
+  Begin
+    FatalError('assembleur : decalage non couvert : ' + Mnemonic);
+    Exit;
+  End;
+  BinEmit8($D3);
+  BinEmitModRM(SubOp, Op1);
+End;
+
 Procedure BinEncodeIncDec(Const Mnemonic, Op1Text: TString);
 Var Op1: TBinOperand;
 Begin
@@ -13157,6 +14803,63 @@ Begin
     Exit;
   End;
   If Mnemonic = 'INC' Then BinEmit8($40 Or Op1.RegNum) Else BinEmit8($48 Or Op1.RegNum);
+End;
+
+{ BinEncodeNeg : NEG r/m32 (F7 /3, groupe F7 - meme famille d opcode que  }
+{ IDIV ci-dessous, SubOp different) - extension post-TODO25 (generateur          }
+{ de code, unaire "-" sur un entier) - SEULE forme couverte : registre                 }
+{ direct (aucun "-x" sur un x memoire n est ENCORE emis, CompileExpr             }
+{ recharge toujours l operande dans EAX d abord). }
+Procedure BinEncodeNeg(Const Op1Text: TString);
+Var Op1: TBinOperand;
+Begin
+  Op1 := BinParseOperand(Op1Text);
+  If Op1.Kind <> BOK_REG Then
+  Begin
+    FatalError('assembleur : forme de NEG non couverte : ' + Op1Text);
+    Exit;
+  End;
+  BinEmit8($F7);
+  BinEmitModRM(3, Op1);
+End;
+
+{ BinEncodeImul : IMUL r32,r/m32 (0F AF /r - forme a DEUX operandes,     }
+{ resultat SUR 32 BITS TRONQUE dans le registre destination, jamais la              }
+{ forme longue EDX:EAX a un seul operande) - extension post-TODO25              }
+{ (generateur de code, "*" entier). }
+Procedure BinEncodeImul(Const Op1Text, Op2Text: TString);
+Var Op1, Op2: TBinOperand;
+Begin
+  Op1 := BinParseOperand(Op1Text);
+  Op2 := BinParseOperand(Op2Text);
+  If Op1.Kind <> BOK_REG Then
+  Begin
+    FatalError('assembleur : forme de IMUL non couverte : ' + Op1Text + ',' + Op2Text);
+    Exit;
+  End;
+  BinEmit8($0F);
+  BinEmit8($AF);
+  BinEmitModRM(Op1.RegNum, Op2);
+End;
+
+{ BinEncodeIdiv : IDIV r/m32 (F7 /7) - divise EDX:EAX par l operande,     }
+{ quotient dans EAX/reste dans EDX (convention x86 standard - EDX DOIT             }
+{ deja avoir ete etendu en signe depuis EAX par CDQ, TOUJOURS emis juste            }
+{ avant par CompileExpr, JAMAIS suppose deja correct) - extension post-           }
+{ TODO25 (generateur de code, "/" et "%" entiers). SEULE forme couverte :             }
+{ registre direct (le diviseur transite TOUJOURS par un registre dans             }
+{ ce que CompileExpr emet). }
+Procedure BinEncodeIdiv(Const Op1Text: TString);
+Var Op1: TBinOperand;
+Begin
+  Op1 := BinParseOperand(Op1Text);
+  If Op1.Kind <> BOK_REG Then
+  Begin
+    FatalError('assembleur : forme de IDIV non couverte : ' + Op1Text);
+    Exit;
+  End;
+  BinEmit8($F7);
+  BinEmitModRM(7, Op1);
 End;
 
 Procedure BinEncodeJmp(Const Op1Text: TString);
@@ -13243,9 +14946,14 @@ Begin
   If Mnemonic = 'POP' Then Begin BinEncodePop(Op1); Exit; End;
   If Mnemonic = 'LEA' Then Begin BinEncodeLea(Op1, Op2); Exit; End;
   If (Mnemonic = 'ADD') Or (Mnemonic = 'SUB') Or (Mnemonic = 'XOR') Or
-     (Mnemonic = 'CMP') Then
+     (Mnemonic = 'CMP') Or (Mnemonic = 'OR') Or (Mnemonic = 'AND') Then
   Begin
     BinEncodeAlu(Mnemonic, Op1, Op2);
+    Exit;
+  End;
+  If (Mnemonic = 'SHL') Or (Mnemonic = 'SHR') Or (Mnemonic = 'SAR') Then
+  Begin
+    BinEncodeShift(Mnemonic, Op1);
     Exit;
   End;
   If (Mnemonic = 'INC') Or (Mnemonic = 'DEC') Then
@@ -13253,6 +14961,10 @@ Begin
     BinEncodeIncDec(Mnemonic, Op1);
     Exit;
   End;
+  If Mnemonic = 'NEG' Then Begin BinEncodeNeg(Op1); Exit; End;
+  If Mnemonic = 'IMUL' Then Begin BinEncodeImul(Op1, Op2); Exit; End;
+  If Mnemonic = 'IDIV' Then Begin BinEncodeIdiv(Op1); Exit; End;
+  If Mnemonic = 'CDQ' Then Begin BinEmit8($99); Exit; End;
   If Mnemonic = 'JMP' Then Begin BinEncodeJmp(Op1); Exit; End;
   If (Length(Mnemonic) >= 2) And (Mnemonic[1] = 'J') Then
   Begin
