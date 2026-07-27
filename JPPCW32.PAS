@@ -10905,7 +10905,7 @@ Var
   PrintStreamT, SystemT, IntegerT, EnumerationT, VectorT, HashtableT,
   WriterT, ReaderT, FileWriterT, BufferedWriterT, PrintWriterT,
   FileReaderT, BufferedReaderT, IOExceptionT, RunnableT, ThreadT,
-  User32T, WinmT, MBMI, PFirst : Integer;
+  User32T, WinmT, MBMI, PFirst, FI : Integer;
 Begin
   { extension post-TODO25, DEUXIEME tranche - voir la note d en-tete de   }
   { TTypeRec.IsStdlib : CHAQUE ClassAdd APPELE pendant l execution de               }
@@ -11111,8 +11111,34 @@ Begin
 
   WinmT := TypeAdd(TYK_INTERFACE, 'winm', 4, 4, -1);
   TypeTab[WinmT].Visibility := VIS_PUBLIC;
-  FieldPoolAdd(WinmT, PRIMTYPE_INT, 'MB_OK', True, True, VIS_PUBLIC);
-  FieldPoolAdd(WinmT, PRIMTYPE_INT, 'MB_ICONINFORMATION', True, True, VIS_PUBLIC);
+  { extension post-TODO25, SEPTIEME tranche : contrairement a un champ  }
+  { d interface REELLEMENT ANALYSE par ParseInterfaceMember (qui peuple            }
+  { TOUJOURS HasInit/ConstVal via ConstEvalExpr, section 9.4 - "valeur              }
+  { REELLEMENT obligatoire"), FieldPoolAdd lui-meme laisse HasInit=False           }
+  { PAR DEFAUT - ces DEUX appels-ci (winm n etant PAS parse depuis un              }
+  { fichier source mais construit DIRECTEMENT par cette fonction) n              }
+  { avaient donc JAMAIS stocke la VRAIE valeur Win32 nulle part,                      }
+  { seulement le NOM/TYPE du champ - un generateur de code qui              }
+  { chargerait cette "constante" n aurait EU AUCUNE valeur a lire (bogue         }
+  { latent trouve par lecture en corrigeant "winm.MB_OK" au generateur           }
+  { de code, EK_SELECTOR ci-dessus, JAMAIS par execution - Test16Win32.jpp        }
+  { n avait encore jamais atteint ce point). Valeurs REELLES (Win32           }
+  { MessageBox, section 18.1) : MB_OK=0, MB_ICONINFORMATION=0x40 -                    }
+  { MEME chiffres que le SDK Win32 reel, jamais devines. }
+  FI := FieldPoolAdd(WinmT, PRIMTYPE_INT, 'MB_OK', True, True, VIS_PUBLIC);
+  If FI >= 0 Then
+  Begin
+    FieldPool[FI].HasInit := True;
+    FieldPool[FI].ConstVal.Kind   := CK_INT;
+    FieldPool[FI].ConstVal.IntVal := 0;
+  End;
+  FI := FieldPoolAdd(WinmT, PRIMTYPE_INT, 'MB_ICONINFORMATION', True, True, VIS_PUBLIC);
+  If FI >= 0 Then
+  Begin
+    FieldPool[FI].HasInit := True;
+    FieldPool[FI].ConstVal.Kind   := CK_INT;
+    FieldPool[FI].ConstVal.IntVal := $40;
+  End;
 
   StdlibInitActive := False;
 End;
@@ -14339,6 +14365,35 @@ Begin
           'non-objet, voir la note d''en-tete de section)');
         Exit;
       End;
+
+      { extension post-TODO25, SEPTIEME tranche : champ STATIQUE avec une  }
+      { valeur CONSTANTE connue a la compilation (ex. "winm.MB_OK" -              }
+      { Test16Win32.jpp - un champ d interface est TOUJOURS "public                  }
+      { static final" avec un initialiseur MANDATORY, section 9.4/TODO09)         }
+      { - AUCUNE instance/base n est necessaire (un champ STATIQUE                    }
+      { n appartient a AUCUN objet particulier), charge directement la            }
+      { CONSTANTE plutot que de tenter de compiler ExprPool[E].Left (qui           }
+      { pour "winm.MB_OK" est un EK_TYPEREF - le NOM DU TYPE lui-meme,               }
+      { JAMAIS une valeur reelle - CompileExpr s y arreterait PROPREMENT            }
+      { via son propre catchall generique, genre BOGUE REEL trouve PAR              }
+      { EXECUTION avec Test16Win32.jpp). Un champ static SANS initialiseur       }
+      { (un compteur MUTABLE, ex. "private static int n;") reste HORS de           }
+      { portee - AUCUN emplacement memoire STATIQUE (.DATA) n est encore              }
+      { modelise pour un champ de classe, distinct du probleme resolu ICI. }
+      If FieldPool[FI].IsStatic And FieldPool[FI].HasInit Then
+      Begin
+        Case FieldPool[FI].ConstVal.Kind Of
+          CK_INT, CK_LONG, CK_CHAR, CK_BOOL:
+            EmitInstr('MOV EAX,' + IntToStrG(FieldPool[FI].ConstVal.IntVal));
+        Else
+          FatalError('generateur de code : champ statique "' +
+            ExprPool[E].NameVal + '" non couvert par cette extension ' +
+            '(constante d''un type non-entier - chaine/reel, voir la ' +
+            'note d''en-tete de section)');
+        End;
+        Exit;
+      End;
+
       CompileExpr(ExprPool[E].Left);
       EmitInstr('MOV EAX,' + CgAddrOperand('EAX', CgFieldOffsetInObject(FI)));
     End;
@@ -14759,6 +14814,39 @@ Begin
     EmitInstr('PUSH EAX');
     EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'PRINTLN_STR');
     EmitInstr('ADD ESP,4');
+    Exit;
+  End;
+
+  { extension post-TODO25, SEPTIEME tranche : appel VERS UNE VRAIE       }
+  { fonction DLL externe (IsDllImport, TODO 17/18 - ex.                          }
+  { "User32.MessageBox(...)", Test16Win32.jpp) - convention REELLE               }
+  { stdcall Win32 (le CALLEE nettoie SA PROPRE pile via "RET n", jamais            }
+  { l appelant - AUCUN "ADD ESP,N" ici, a la DIFFERENCE de tout appel             }
+  { interne _JPPRT_*/utilisateur de ce compilateur, qui nettoie              }
+  { TOUJOURS cote appelant) : arguments POUSSES EN ORDRE INVERSE (MEME           }
+  { convention que partout ailleurs - stdcall pousse aussi DROITE-A-               }
+  { GAUCHE), "CALL <nom decore>" ("_" + DllEntrypoint + "@" + N*4 octets,         }
+  { EXACTEMENT la MEME convention EXTRN/decoree que les fonctions                     }
+  { KERNEL32 codees en dur du runtime) resout AUTOMATIQUEMENT via le               }
+  { mecanisme de relais/IAT DEJA existant (BinResolveFixupsForExe/                    }
+  { BinCreateThunk, TODO 23 - AUCUN nouveau code d appel n est requis,           }
+  { un "CALL nom" externe est deja transparent pour LUI, seule sa                     }
+  { table d import (WritePEExe/BinImportDllFor) devait apprendre a                   }
+  { NOMMER un DEUXIEME DLL - USER32.DLL - plutot que de supposer                        }
+  { KERNEL32.DLL PARTOUT). La valeur de retour (EAX) EST DEJA la ou               }
+  { CompileExpr l attend, aucune conversion necessaire. }
+  If MethodPool[MI].IsDllImport Then
+  Begin
+    EmitRaw('EXTRN _' + MethodPool[MI].DllEntrypoint + '@' +
+      IntToStrG(MethodPool[MI].ParamCount * 4) + ':NEAR');
+    For I := ExprPool[E].ArgCount - 1 DownTo 0 Do
+    Begin
+      ArgE := ExprArgPool[ExprPool[E].ArgFirst + I];
+      CompileExpr(ArgE);
+      EmitInstr('PUSH EAX');
+    End;
+    EmitInstr('CALL _' + MethodPool[MI].DllEntrypoint + '@' +
+      IntToStrG(MethodPool[MI].ParamCount * 4));
     Exit;
   End;
 
@@ -15318,6 +15406,30 @@ Begin
     Begin
       EmitInstr('PUSH 3');
       EmitInstr('CALL _ExitProcess@4');
+    End;
+
+    { STK_SYNCHRONIZED : extension post-TODO25, SEPTIEME tranche - le       }
+    { verrou (Extra) est compile pour ETRE EVALUE (section 14.19 exige              }
+    { une reference non-nulle) puis sa VALEUR simplement ignoree - AUCUNE       }
+    { VRAIE section critique (CRITICAL_SECTION par objet) n est acquise/          }
+    { relachee, malgre la decision DOCUMENTEE au TODO 14 ("un VRAI                     }
+    { CRITICAL_SECTION par objet, JAMAIS un verrou global"). CECI N EST         }
+    { PAS une simplification RISQUEE comme celle de STK_THROW ci-dessus :       }
+    { "Thread.start()" (StdlibInit, BodyStmtIdx=-1, SANS corps SOURCE                  }
+    { reel) ne recoit ENCORE aucun generateur de code REEL (documente au        }
+    { TODO 14 - prerequis un dispatch virtuel sur "run()" qui n existait                }
+    { pas alors) - tout appel vers lui s arrete donc PROPREMENT AVANT               }
+    { meme d atteindre un "synchronized". AUCUN programme compilable                  }
+    { par cette extension ne peut, EN PRATIQUE, faire tourner un SECOND           }
+    { thread reel : l exclusion mutuelle entre exactement UN thread est,        }
+    { PAR CONSTRUCTION (pas par chance), TOUJOURS respectee sans avoir             }
+    { besoin d aucun verrou reel - contrairement a STK_THROW (qui                        }
+    { s ecarte d une VRAIE semantique meme dans un programme mono-                    }
+    { thread), ce cas-ci reste donc un CHOIX SANS PERTE DE CORRECTION. }
+    STK_SYNCHRONIZED:
+    Begin
+      CompileExpr(StmtPool[S].Extra);
+      CompileStmt(StmtPool[S].Right);
     End;
 
   Else
@@ -16543,6 +16655,22 @@ Begin
   BinExportNameFor := S;
 End;
 
+{ BinImportDllFor : extension post-TODO25, SEPTIEME tranche - WritePEExe }
+{ (TODO 23) supposait a l origine UN SEUL DLL importe (KERNEL32.DLL,             }
+{ toujours vrai pour les 5 fonctions codees en dur du runtime,                          }
+{ EmitRuntimeLibrary) ; "User32.MessageBox" (TODO 17/18,                                    }
+{ Test16Win32.jpp) est le PREMIER import qui casse cette hypothese -              }
+{ PORTEE DELIBEREMENT ETROITE (UN SEUL nom reconnu explicitement,                     }
+{ jamais devine a l avance) : etendre cette fonction quand un                              }
+{ TROISIEME DLL devient REELLEMENT necessaire, jamais avant. }
+Function BinImportDllFor(Const Name: TString): TString;
+Begin
+  If Name = '_MessageBoxA@16' Then
+    BinImportDllFor := 'USER32.DLL'
+  Else
+    BinImportDllFor := PE_KERNEL32;
+End;
+
 { BinCreateThunk : petit relais de 6 octets ("FF 25 <disp32>" = JMP      }
 { DWORD PTR [case-IAT]) place dans .text, UN SEUL PAR IMPORT (idempotent           }
 { - plusieurs CALL au meme import partagent le MEME relais) - c est LA                 }
@@ -16618,23 +16746,47 @@ End;
 { voir la note d en-tete de section ci-dessus) : peut etre appelee                     }
 { directement, sans preparation prealable par l appelant. }
 Procedure WritePEExe(Const ExeFileName: TString);
+Const
+  MAX_BIN_DLL = 4;   { extension post-TODO25, SEPTIEME tranche - voir la  }
+                     { note d en-tete de BinImportDllFor : tres genereux            }
+                     { (KERNEL32+USER32 seuls existent a ce jour). }
 Var
   ObjF : File;
   NImp : Integer;
   HdrSize, HdrSizeAligned : LongInt;
   TextRva, TextFileOfs, TextRawSize : LongInt;
   DataRva, DataFileOfs, DataRawSize : LongInt;
-  IltOfs, IatOfs, DllNameOfs, IdataSizeRaw, IdataSize, IdataRawSize : LongInt;
+  IdataSizeRaw, IdataSize, IdataRawSize : LongInt;
   IdataRva, IdataFileOfs : LongInt;
   ImageSize : LongInt;
   HintNameOfs : Array[0..MAX_BIN_IMPORT - 1] Of LongInt;
   I, HnLen : Integer;
-  HintNameTotal : LongInt;
   EntryLI : Integer;
   EntryRva : LongInt;
   TargetName, ExpName : TString;
   V : LongInt;
   LI, EI : Integer;
+
+  { extension post-TODO25, SEPTIEME tranche : chaque import (BinImports,   }
+  { table PLATE et NON groupee) est classe dans le groupe DLL auquel il         }
+  { appartient reellement (BinImportDllFor) - DllCount/DllNames enumerent      }
+  { les DLL DISTINCTS reellement utilises (UN SEUL, KERNEL32.DLL, pour           }
+  { TOUS les echantillons SAUF Test16Win32.jpp) ; ImportGroup/ImportPos             }
+  { retrouvent, pour CHAQUE import GLOBAL (index dans BinImports), son            }
+  { groupe et sa position DANS ce groupe - necessaire pour recalculer               }
+  { l adresse IAT exacte d un import (voir plus bas, "@IAT:") puisque               }
+  { l IAT n est plus UN SEUL bloc contigu correspondant a l ordre BRUT             }
+  { de BinImports, mais K blocs CONTIGUS, un par DLL. }
+  DllNames         : Array[0..MAX_BIN_DLL - 1] Of TString;
+  DllCount         : Integer;
+  GroupImportCount : Array[0..MAX_BIN_DLL - 1] Of Integer;
+  GroupIltOfs      : Array[0..MAX_BIN_DLL - 1] Of LongInt;
+  GroupIatOfs      : Array[0..MAX_BIN_DLL - 1] Of LongInt;
+  GroupDllNameOfs  : Array[0..MAX_BIN_DLL - 1] Of LongInt;
+  ImportGroup      : Array[0..MAX_BIN_IMPORT - 1] Of Integer;
+  ImportPos        : Array[0..MAX_BIN_IMPORT - 1] Of Integer;
+  G, J, Running    : LongInt;
+  DName            : TString;
 
   Procedure OW8(B: Integer);
   Var Buf: Byte;
@@ -16683,25 +16835,64 @@ Begin
 
   NImp := BinImportCount;
 
-  { disposition de la table d import (.idata) - UN SEUL DLL suppose      }
-  { (KERNEL32.DLL, simplification documentee, meme choix que GOCW32.PAS/          }
-  { DELPHI.PAS, memes projet) : 1 descripteur reel + 1 descripteur NUL terminal (20              }
-  { octets chacun), puis ILT, puis IAT (identiques au depart - le                        }
-  { chargeur Windows ecrase l IAT avec les VRAIES adresses au                                 }
-  { chargement), puis les entrees Hint/Nom (alignees sur 2 octets), puis                          }
-  { le nom de la DLL elle-meme. }
-  IltOfs := 40;
-  IatOfs := IltOfs + (NImp + 1) * 4;
-  HintNameTotal := 0;
+  { disposition de la table d import (.idata) - extension post-TODO25,   }
+  { SEPTIEME tranche : GENERALISE de UN SEUL DLL suppose (KERNEL32.DLL,           }
+  { hypothese d origine, TODO23) a K DLL DISTINCTS (BinImportDllFor) -            }
+  { K descripteurs REELS + 1 descripteur NUL terminal (20 octets                        }
+  { chacun), PUIS les K blocs ILT CONTIGUS (un par groupe, chacun                       }
+  { termine par son PROPRE DWORD nul), PUIS les K blocs IAT CONTIGUS                  }
+  { (MEME disposition, le chargeur Windows les ecrase avec les VRAIES               }
+  { adresses au chargement), PUIS les entrees Hint/Nom de TOUS les                      }
+  { imports (regroupees par DLL, MEME ordre que les blocs ILT/IAT ci-              }
+  { dessus), PUIS les K noms de DLL eux-memes - REDUIT EXACTEMENT a               }
+  { l ancien algorithme a UN DLL quand K=1 (TOUJOURS le cas pour les               }
+  { 17 echantillons qui n appellent aucune fonction Win32 hors                            }
+  { KERNEL32), AUCUN changement de FOND pour eux. }
+  DllCount := 0;
   For I := 0 To NImp - 1 Do
   Begin
-    HintNameOfs[I] := IatOfs + (NImp + 1) * 4 + HintNameTotal;
-    HnLen := 2 + Length(BinExportNameFor(BinImports[I])) + 1;
-    If HnLen Mod 2 <> 0 Then Inc(HnLen);
-    HintNameTotal := HintNameTotal + HnLen;
+    DName := BinImportDllFor(BinImports[I]);
+    G := -1;
+    For J := 0 To DllCount - 1 Do
+      If DllNames[J] = DName Then G := J;
+    If G < 0 Then
+    Begin
+      G := DllCount;
+      DllNames[DllCount] := DName;
+      GroupImportCount[DllCount] := 0;
+      Inc(DllCount);
+    End;
+    ImportGroup[I] := G;
+    ImportPos[I]   := GroupImportCount[G];
+    Inc(GroupImportCount[G]);
   End;
-  DllNameOfs  := IatOfs + (NImp + 1) * 4 + HintNameTotal;
-  IdataSizeRaw := DllNameOfs + Length(PE_KERNEL32) + 1;
+
+  Running := (DllCount + 1) * 20;   { table des descripteurs }
+  For G := 0 To DllCount - 1 Do
+  Begin
+    GroupIltOfs[G] := Running;
+    Running := Running + (GroupImportCount[G] + 1) * 4;
+  End;
+  For G := 0 To DllCount - 1 Do
+  Begin
+    GroupIatOfs[G] := Running;
+    Running := Running + (GroupImportCount[G] + 1) * 4;
+  End;
+  For G := 0 To DllCount - 1 Do
+    For I := 0 To NImp - 1 Do
+      If ImportGroup[I] = G Then
+      Begin
+        HintNameOfs[I] := Running;
+        HnLen := 2 + Length(BinExportNameFor(BinImports[I])) + 1;
+        If HnLen Mod 2 <> 0 Then Inc(HnLen);
+        Running := Running + HnLen;
+      End;
+  For G := 0 To DllCount - 1 Do
+  Begin
+    GroupDllNameOfs[G] := Running;
+    Running := Running + Length(DllNames[G]) + 1;
+  End;
+  IdataSizeRaw := Running;
   IdataSize    := IdataSizeRaw;
   If IdataSize Mod 2 <> 0 Then Inc(IdataSize);
 
@@ -16739,7 +16930,12 @@ Begin
       If Copy(TargetName, 1, 5) = '@IAT:' Then
       Begin
         EI := BinFindImport(Copy(TargetName, 6, Length(TargetName) - 5));
-        V := PE_IMG_BASE + IdataRva + IatOfs + EI * 4;
+        { extension post-TODO25, SEPTIEME tranche : l IAT n est plus UN         }
+        { SEUL bloc contigu dans l ordre BRUT de BinImports - chaque             }
+        { import vit desormais dans le bloc IAT DE SON PROPRE GROUPE            }
+        { (GroupIatOfs), a sa position RELATIVE dans CE groupe                          }
+        { (ImportPos), voir le calcul de disposition plus haut. }
+        V := PE_IMG_BASE + IdataRva + GroupIatOfs[ImportGroup[EI]] + ImportPos[EI] * 4;
       End
       Else
       Begin
@@ -16824,9 +17020,13 @@ Begin
   { [12]=IAT sont renseignees (aucune export/ressource/relocations/etc            }
   { dans ce backend minimal). }
   OW32(0); OW32(0);                              { [0] Export }
-  OW32(IdataRva); OW32(40);                      { [1] Import }
+  OW32(IdataRva); OW32((DllCount + 1) * 20);     { [1] Import }
   For I := 1 To 10 Do Begin OW32(0); OW32(0); End; { [2..11] }
-  OW32(IdataRva + IatOfs); OW32((NImp + 1) * 4); { [12] IAT }
+  { extension post-TODO25, SEPTIEME tranche : l IAT couvre desormais TOUS  }
+  { les groupes DLL, contigus (GroupIatOfs[0] = DEBUT du bloc IAT           }
+  { COMBINE, puisque les groupes sont ecrits dans l ordre 0..DllCount-1),          }
+  { taille = TOUS les imports + UN terminateur nul PAR groupe. }
+  OW32(IdataRva + GroupIatOfs[0]); OW32((NImp + DllCount) * 4); { [12] IAT }
   For I := 1 To 3 Do Begin OW32(0); OW32(0); End;  { [13..15] }
 
   { en-tetes de section (40 octets chacune) : .text/.data/.idata }
@@ -16869,33 +17069,56 @@ Begin
   If BinDataLen > 0 Then BlockWrite(ObjF, BinData, BinDataLen);
   OWZeros(DataRawSize - BinDataLen);
 
-  { .idata : Table des Import (1 descripteur KERNEL32.DLL + 1 nul), ILT,  }
-  { IAT, entrees Hint/Nom, nom de la DLL. }
-  OW32(IdataRva + IltOfs);        { OriginalFirstThunk }
-  OW32(0);                        { TimeDateStamp }
-  OW32(0);                        { ForwarderChain }
-  OW32(IdataRva + DllNameOfs);    { Name }
-  OW32(IdataRva + IatOfs);        { FirstThunk }
+  { .idata : extension post-TODO25, SEPTIEME tranche - K descripteurs    }
+  { (un par DLL DISTINCT reellement importe) + 1 nul, PUIS les K blocs           }
+  { ILT CONTIGUS, PUIS les K blocs IAT CONTIGUS (MEME contenu que leur           }
+  { ILT respectif au depart), PUIS les entrees Hint/Nom de TOUS les                    }
+  { imports (regroupees par DLL, EXACTEMENT le meme ordre que celui                    }
+  { utilise pour calculer HintNameOfs plus haut), PUIS les K noms de              }
+  { DLL. Quand DllCount=1 (TOUJOURS le cas hors Test16Win32.jpp), ceci                }
+  { ecrit EXACTEMENT les memes octets que l ancien algorithme a un                     }
+  { seul DLL. }
+  For G := 0 To DllCount - 1 Do
+  Begin
+    OW32(IdataRva + GroupIltOfs[G]);        { OriginalFirstThunk }
+    OW32(0);                                { TimeDateStamp }
+    OW32(0);                                { ForwarderChain }
+    OW32(IdataRva + GroupDllNameOfs[G]);    { Name }
+    OW32(IdataRva + GroupIatOfs[G]);        { FirstThunk }
+  End;
   OWZeros(20);                    { descripteur NUL terminal }
 
-  For I := 0 To NImp - 1 Do OW32(IdataRva + HintNameOfs[I]);
-  OW32(0);
-
-  For I := 0 To NImp - 1 Do OW32(IdataRva + HintNameOfs[I]);
-  OW32(0);
-
-  For I := 0 To NImp - 1 Do
+  For G := 0 To DllCount - 1 Do
   Begin
-    OW16(0);   { Hint }
-    ExpName := BinExportNameFor(BinImports[I]);
-    OWStr(ExpName);
-    OW8(0);
-    HnLen := 2 + Length(ExpName) + 1;
-    If HnLen Mod 2 <> 0 Then OW8(0);
+    For I := 0 To NImp - 1 Do
+      If ImportGroup[I] = G Then OW32(IdataRva + HintNameOfs[I]);
+    OW32(0);
   End;
 
-  OWStr(PE_KERNEL32);
-  OW8(0);
+  For G := 0 To DllCount - 1 Do
+  Begin
+    For I := 0 To NImp - 1 Do
+      If ImportGroup[I] = G Then OW32(IdataRva + HintNameOfs[I]);
+    OW32(0);
+  End;
+
+  For G := 0 To DllCount - 1 Do
+    For I := 0 To NImp - 1 Do
+      If ImportGroup[I] = G Then
+      Begin
+        OW16(0);   { Hint }
+        ExpName := BinExportNameFor(BinImports[I]);
+        OWStr(ExpName);
+        OW8(0);
+        HnLen := 2 + Length(ExpName) + 1;
+        If HnLen Mod 2 <> 0 Then OW8(0);
+      End;
+
+  For G := 0 To DllCount - 1 Do
+  Begin
+    OWStr(DllNames[G]);
+    OW8(0);
+  End;
   If IdataSizeRaw Mod 2 <> 0 Then OW8(0);
 
   OWZeros(IdataRawSize - IdataSize);
