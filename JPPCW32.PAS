@@ -815,6 +815,210 @@ Program JPPCW32;
   memoire d instance (deja livre ICI).
   ============================================================ *)
 
+(* ============================================================
+  EXTENSION POST-TODO25, TROISIEME PASSE (2026-07-27) - DISPATCH
+  POLYMORPHIQUE (classe ET interface)
+  ============================================================
+  Suite DIRECTE (meme demande utilisateur, meme session) - la
+  DEUXIEME passe avait nomme EXPLICITEMENT le dispatch polymorphique
+  comme "prealable commun le plus large" restant ; cette TROISIEME
+  passe le livre.
+
+  CONCEPTION : PAS une VRAIE vtable indexee (aurait exige un
+  NOUVEAU mecanisme d appel INDIRECT, "CALL registre", et une
+  NOUVELLE forme d emission .DATA pour des tableaux de pointeurs de
+  methode avec correctifs ABS32 - aucun des deux n existe dans
+  l assembleur du TODO 22) - a la place, CHAQUE objet recoit un
+  MOT D EN-TETE supplementaire (CG_OBJ_HEADER, 4 octets AVANT ses
+  champs, qui se decalent d autant) contenant une simple ETIQUETTE
+  DE TYPE DYNAMIQUE (le TypeIdx REEL, ecrit par EK_NEWOBJECT au
+  moment de la construction - "new Rectangle(...)" construit
+  TOUJOURS un VRAI Rectangle, une constante connue a la
+  compilation). Un appel d instance dont la methode resolue
+  (EK_CALL.Extra) appartient a une CLASSE OU UNE INTERFACE enumere
+  ENSUITE, a la COMPILATION, TOUTES les classes CONCRETES qui en
+  heritent/l implementent (TypeIsSubclassOf, deja etendu au TODO 09
+  pour "classe implements interface") et qui fournissent REELLEMENT
+  une implementation (ClassResolveMethodCall rejouee pour CHAQUE
+  candidat, MEME resolution EXACTE que le parseur) : UN SEUL
+  candidat -> appel DIRECT (la cible est FIGEE, aucun dispatch
+  necessaire) ; PLUSIEURS -> une chaine CMP/JE sur l etiquette de
+  type dynamique - une forme "pauvre" mais REELLE de dispatch
+  polymorphique, ENTIEREMENT construite avec des instructions DEJA
+  supportees (CMP/JE/CALL directs), AUCUNE extension d assembleur.
+  Largement suffisant pour le nombre de classes en jeu dans
+  SAMPLES\JPP\*.jpp (2-3 par hierarchie).
+
+  DEUX PROBLEMES REELS trouves EN CONSTRUISANT cette passe (par
+  relecture ATTENTIVE avant execution, pas par un plantage) :
+    1. Une methode resolue a travers une reference D INTERFACE (ex.
+       "listener.valeurChangee(...)", Test08Interfaces.jpp) a
+       TOUJOURS MethodPool[MI].OwnerTypeIdx=L INTERFACE elle-meme
+       (TYK_INTERFACE), JAMAIS TYK_CLASS - le garde-fou de la
+       DEUXIEME passe (qui n acceptait que TYK_CLASS) rejetait donc
+       SILENCIEUSEMENT TOUT appel a travers une interface avant
+       meme d atteindre le nouveau dispatch. Corrige en acceptant
+       les DEUX natures pour OwnerTypeIdx.
+    2. "new Compteur()" (Test08Interfaces.jpp - AUCUN constructeur
+       DECLARE) restait rejete par l ancien garde-fou "BodyStmtIdx
+       >= 0 obligatoire" - or le constructeur PAR DEFAUT synthetise
+       (TODO 08, ZERO parametre) a TOUJOURS BodyStmtIdx=-1 (aucun
+       "ParseBlock" n est jamais appele pour lui), mais c est
+       TOTALEMENT SUR de le traiter comme un corps VIDE (rien a
+       initialiser) - contrairement a "new Vector()", QUI a
+       EGALEMENT BodyStmtIdx=-1 mais dont le "corps" reel,
+       JAMAIS ecrit ICI, initialiserait en verite un etat interne
+       (tableau arriere-plan, compteur) qu un no-op laisserait
+       INVALIDE. Distingue les deux via un NOUVEAU
+       TTypeRec.IsStdlib (Vrai UNIQUEMENT pour un type ajoute
+       PENDANT StdlibInit, jamais pour une classe REELLEMENT
+       declaree dans le fichier .jpp compile - nouveau
+       StdlibInitActive, bascule au debut/a la fin de StdlibInit,
+       lu par ClassAdd) : "new Compteur()" (IsStdlib=Faux,
+       BodyStmtIdx=-1) compile desormais vers RIEN d autre que
+       l allocation+etiquetage deja necessaires de toute facon ;
+       "new Vector()" (IsStdlib=Vrai, BodyStmtIdx=-1) s arrete
+       PROPREMENT, EXACTEMENT comme avant.
+  Un TROISIEME defaut, de CLARTE plutot que de CORRECTION (Test04
+  Methodes.jpp arretait sur un message confus, "aucune classe
+  concrete ne fournit d''implementation", pour "System.out.println
+  (int)" - un membre de bibliotheque standard, PAS un appel
+  polymorphique manque) : CgIsScalarCallType etendu pour accepter
+  TOUTE reference (objet/interface/tableau, un simple pointeur,
+  tient tout aussi bien dans EAX qu un "int" - necessaire de toute
+  facon pour "setListener(CompteurListener valeur)"), et le message
+  "aucun candidat concret" desormais distingue explicitement le cas
+  "methode de bibliotheque standard" (StdlibInit, IsStdlib) du cas
+  "aucune classe utilisateur ne l''implemente reellement".
+
+  RESULTAT HONNETE, verifie par EXECUTION REELLE (un test
+  synthetique dedie D ABORD - interface a deux implementations
+  CONCRETES, sortie polymorphique correcte confirmee - PUIS
+  Test08Interfaces.jpp lui-meme) : 5/18 SAMPLES\JPP\*.jpp compilent
+  et EXECUTENT desormais correctement de bout en bout -
+  Test08Interfaces.jpp (interface CompteurListener, classe membre
+  STATIQUE imbriquee JournalListener, constructeur PAR DEFAUT
+  synthetise, dispatch polymorphique a travers une reference
+  d interface, sortie "0 -> 1"/"1 -> 2" verifiee EXACTE) rejoint
+  Test01/03/15/17, contre 4/18 avant cette TROISIEME passe. Les 13
+  autres progressent ENCORE ou restent identiques : Test07Heritage.
+  jpp (le SEUL autre candidat "vtable"), lui, reste bloque - PAS par
+  le dispatch (desormais REEL), mais par long/double/float
+  (largeur*hauteur, Math.PI, hors de portee) - preuve que "livrer le
+  prealable nomme" ne suffit pas TOUJOURS a lui seul, chaque
+  echantillon peut cumuler PLUSIEURS limites INDEPENDANTES.
+  long/double/float, tableaux multi-dimensionnels, construction de
+  types SANS corps source reel (Vector/delegue), le VRAI STK_TRY,
+  les DEUX limites structurelles du front-end (Test06/09), les
+  lacunes PARSEUR (Test11/12) et la decision de portee AWT (Test13)
+  restent EXACTEMENT comme documentes precedemment.
+  ============================================================ *)
+
+(* ============================================================
+  EXTENSION POST-TODO25, QUATRIEME ET CINQUIEME PASSES (2026-07-27) -
+  CHAINAGE DE CONSTRUCTEUR, TABLEAUX RECTANGULAIRES/JAGGED, "clone()"
+  ============================================================
+  Suite DIRECTE (meme demande utilisateur, meme session, citant
+  desormais "46 places... 4000 lignes") - deux tranches supplementaires
+  livrees ENSEMBLE dans cette meme note.
+
+  QUATRIEME TRANCHE - CHAINAGE DE CONSTRUCTEUR ("this(...)"/"super(...)") :
+  "this"/"super" sont DEJA enregistres comme de VRAIS symboles SK_VAR
+  (ParseConstructorDecl/ParseMethodDeclRest) - "this(...)"/"super(...)"
+  n atteignaient donc JAMAIS la resolution de methode existante
+  (ClassResolveMethodCall exige un IDENT NON resolu, Left<0 ; "this"/
+  "super" ont TOUJOURS Left>=0, deja resolus comme variables) : EK_CALL.
+  Extra restait -1 pour CETTE forme precise, quel que soit le contenu
+  du fichier. Corrige en ajoutant, dans ParsePostfix, un troisieme cas
+  DEDIE : "this(...)" resout via ClassFindConstructor(CurrentClassTypeIdx,
+  ...), "super(...)" via ClassFindConstructor(SuperTypeIdx, ...) - MEME
+  fonction DEJA utilisee par "new Classe(...)", jamais
+  ClassResolveMethodCall (qui chercherait une METHODE nommee "this"/
+  "super", inexistante). CompileCall reconnait ensuite
+  MethodPool[MI].Kind=MK_CONSTRUCTOR : AUCUNE allocation nouvelle (l objet
+  EST DEJA celui du constructeur ENGLOBANT, "this" TOUJOURS a EBP+8),
+  pousse les arguments PUIS ce MEME "this" EN DERNIER, appelle
+  DIRECTEMENT (jamais de dispatch, un constructeur n est jamais virtuel).
+
+  BOGUE REEL CRITIQUE trouve EN VERIFIANT cette tranche par un test
+  SYNTHETIQUE dedie (constructeurs SURCHARGES, PAS un des 18
+  echantillons - "d2.y" attendu 99, obtenu 4) : MethodAsmLabelG
+  n incluait QUE le nom de la methode/"" pour un constructeur - DEUX
+  constructeurs (ou DEUX methodes REGULIERES surchargees, ex.
+  "maximum(int,int)"/"maximum(double,double)" de Test04Methodes.jpp,
+  jamais encore exercees simultanement avant cette session) produisaient
+  ainsi l EXACTE MEME etiquette .asm, la SECONDE ecrasant silencieusement
+  la PREMIERE dans BinLabels - tout appel vers L UN OU L AUTRE sautait
+  alors au MEME endroit, celui EMIS EN DERNIER, jamais necessairement
+  celui REELLEMENT resolu. Corrige en ajoutant TOUJOURS l index
+  MethodPool (MI, unique par construction) au texte de l etiquette -
+  AUCUN autre code ne depend de son format exact, changement SANS
+  RISQUE. Ce bogue est plus grave que les precedents : il pouvait
+  affecter SILENCIEUSEMENT n importe quelle surcharge, PAS seulement
+  le chainage de constructeur qui l a revele.
+
+  CINQUIEME TRANCHE - TABLEAUX RECTANGULAIRES/JAGGED ET "clone()"
+  (Test05Tableaux.jpp) : "new T[n][m]" (RECTANGULAIRE, DEUX dimensions
+  CHIFFREES) alloue le tableau EXTERIEUR PUIS remplit CHAQUE emplacement
+  par une VRAIE BOUCLE D EXECUTION (n ET m peuvent tous deux etre des
+  expressions RUNTIME, jamais deroulable a la compilation) - ESI=n/
+  EDI=m/EBX=reference exterieure (callee-saved, survivent a CHAQUE CALL
+  _JPPRT_ALLOC, EXACTEMENT la discipline de registre motivee par le
+  bogue ECX du "new T[n]" simple, TODO 25+ CINQUIEME tranche
+  precedente), le compteur de boucle transitant par une case DEDIEE de
+  la PILE (aucun quatrieme registre callee-saved disponible). "new
+  T[n][]" (JAGGED, une SEULE dimension CHIFFREE) s est revele deja
+  couvert PAR CONSTRUCTION par le cas 1-dimension EXISTANT, SANS
+  CHANGEMENT : l allocation EXTERIEURE (n references, zero-remplies =
+  null, EXACTEMENT la semantique Java) ne depend QUE du NOMBRE
+  d elements, jamais de leur TYPE ELEMENT - remplie plus tard par des
+  "triangle[i] = new int[...]" separes, deja couverts par STK_ASSIGN/
+  EK_INDEX. ".clone()" sur un tableau n a AUCUNE VRAIE entree MethodPool
+  (contrairement a une classe/interface/String/delegue) : special-case
+  DIRECTEMENT dans ParsePostfix (Extra=-2, sentinelle DISTINCTE de
+  -1="jamais resolu" et >=0="index MethodPool REEL", consommee
+  UNIQUEMENT par CompileCall) - alloue un nouveau bloc de la MEME
+  taille (relue depuis [source-4], JAMAIS supposee constante) et copie
+  CHAQUE element par une boucle similaire.
+
+  Cette resolution DELIBEREMENT NOUVELLE de ".clone()" INVERSE une
+  decision explicite du TODO 10 ("Object.clone non synthetise, meme
+  decision que le TODO 08 pour les methodes d Object" - ArraySelfTest
+  affirmait alors "TypeIdx=-1, appel NON RESOLU") : l assertion
+  correspondante a ete mise a jour pour refleter le nouveau
+  comportement INTENTIONNEL plutot que de laisser un self-test
+  verifier un comportement desormais FAUX.
+
+  RESULTAT HONNETE, verifie par EXECUTION REELLE (tests synthetiques
+  dedies D ABORD - chainage this()/super() sur une hierarchie a DEUX
+  niveaux avec surcharge, PUIS tableaux 2D rectangulaires+jagged -
+  CHAQUE fois avant de toucher un echantillon reel) : 6/18
+  SAMPLES\JPP\*.jpp compilent et EXECUTENT desormais correctement de
+  bout en bout - Test05Tableaux.jpp (tableau litteral, rectangulaire,
+  jagged, indexation chainee sur DEUX niveaux, "clone()", sortie
+  "59"/"20"/"42"/"3" verifiee EXACTE) rejoint Test01/03/08/15/17,
+  contre 5/18 avant ces deux tranches. Test07Heritage.jpp beneficie
+  AUSSI du chainage de constructeur (son "super("rectangle")"/
+  "super("cercle")" compilent desormais) mais reste bloque par
+  long/double/float (largeur*hauteur, Math.PI) - toujours PAS un bogue,
+  simplement une AUTRE limite independante du meme echantillon.
+  Test09Exceptions.jpp, lui, reste identiquement bloque : son
+  "super(message)" cible le constructeur de la classe PREDECLAREE
+  Exception, qui n a JAMAIS de constructeur ENREGISTRE du tout (ajoutee
+  directement par TypeInit via TypeAdd, PAS ClassAdd - AUCUN
+  constructeur n existe a trouver, avec OU sans le chainage desormais
+  fonctionnel) - une limite DISTINCTE, plus profonde (integration REELLE
+  de la hierarchie d exception standard), non traitee ici. Test04
+  Methodes.jpp reste bloque par son parametre "int[] valeurs" (non
+  scalaire pour un appel STATIQUE - deja documente) puis par
+  "System.out.println(int)" (bibliotheque standard). long/double/float,
+  construction de types SANS corps source reel (Vector/delegue), le
+  VRAI STK_TRY, la limite structurelle residuelle de Test06 (reference
+  en avant intra-classe, DISTINCTE du chainage de constructeur), les
+  lacunes PARSEUR (Test11/12) et la decision de portee AWT (Test13)
+  restent EXACTEMENT comme documentes precedemment.
+  ============================================================ *)
+
 { ============================================================ }
 { TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF      }
 { ============================================================ }
@@ -2879,6 +3083,24 @@ Type
                                      { instanciee directement (verifie par        }
                                      { ParseNewExpr) }
     IsFinalClass         : Boolean; { TODO 08 (section 8.22) }
+    IsStdlib             : Boolean; { extension post-TODO25, DEUXIEME         }
+                                     { tranche (dispatch polymorphique) - Vrai        }
+                                     { UNIQUEMENT pour un TYK_CLASS/TYK_INTERFACE     }
+                                     { ajoute PENDANT StdlibInit (TODO 13/14/16/18,         }
+                                     { StdlibInitActive) - PAS une classe          }
+                                     { REELLEMENT declaree dans le fichier .jpp           }
+                                     { en cours de compilation. Distingue "new             }
+                                     { Compteur()" (constructeur PAR DEFAUT                  }
+                                     { synthetise, TODO 08, BodyStmtIdx=-1 mais           }
+                                     { corps EFFECTIVEMENT vide - SANS RISQUE de           }
+                                     { compiler comme un simple no-op) de "new             }
+                                     { Vector()" (BodyStmtIdx=-1 AUSSI, mais SON            }
+                                     { "corps" reel, jamais ecrit ICI, initialise           }
+                                     { en verite un etat interne - tableau                          }
+                                     { arriere-plan, compteur de taille - qu un              }
+                                     { no-op laisserait dans un etat INVALIDE,               }
+                                     { silencieusement, voir EK_NEWOBJECT/                        }
+                                     { CompileCall). }
     InstanceInitBlockIdx : Integer; { TYK_CLASS seulement (TODO 08, section  }
                                      { 8.9) - UN SEUL bloc d initialisation       }
                                      { D INSTANCE par classe couvert                 }
@@ -3007,6 +3229,8 @@ Type
 Var
   TypeTab        : Array[0..MAX_TYPE - 1] Of TTypeRec;
   TypeCount      : Integer;
+  StdlibInitActive : Boolean;   { extension post-TODO25, DEUXIEME tranche - }
+                                 { voir la note d en-tete de TTypeRec.IsStdlib. }
   FieldPool      : Array[0..MAX_FIELD_POOL - 1] Of TFieldRec;
   FieldPoolCount : Integer;
   ParamPool       : Array[0..MAX_PARAM_POOL - 1] Of TParamRec;
@@ -3166,6 +3390,7 @@ Begin
   TypeTab[TypeCount].MethodCount    := 0;
   TypeTab[TypeCount].IsAbstractClass      := False;
   TypeTab[TypeCount].IsFinalClass         := False;
+  TypeTab[TypeCount].IsStdlib             := False;
   TypeTab[TypeCount].InstanceInitBlockIdx := -1;
   TypeTab[TypeCount].StaticInitBlockIdx   := -1;
   TypeTab[TypeCount].Visibility           := VIS_PACKAGE;   { TODO 12 - }
@@ -3426,6 +3651,7 @@ Begin
   InterfacePoolCount  := 0;
   ThrowsPoolCount     := 0;
   CurrentClassTypeIdx := -1;
+  StdlibInitActive    := False;
 
   TypeAdd(TYK_INVALID, '', 0, 0, -1);                                 { 0 }
 
@@ -5545,6 +5771,21 @@ Begin
             ExprPool[N].TypeIdx := MethodPool[MI].RetTypeIdx;
             ExprPool[N].Extra   := MI;   { TODO 21 - voir la note d en-tete d EK_CALL }
           End;
+        End
+        { extension post-TODO25, CINQUIEME tranche : ".clone()" sur un        }
+        { tableau (Test05Tableaux.jpp, "(int[])notes.clone()") - AUCUNE                 }
+        { VRAIE entree MethodPool n existe pour un TYK_ARRAY (contrairement         }
+        { a TYK_CLASS/TYK_INTERFACE/TYK_STRING/TYK_DELEGATE ci-dessus),                    }
+        { special-case DIRECTEMENT ICI, MEME esprit que ".length" (TODO 10)             }
+        { plus haut dans cette fonction - Extra=-2 (sentinelle DISTINCTE                    }
+        { de -1="jamais resolu" et >=0="index MethodPool REEL"), consommee            }
+        { UNIQUEMENT par CompileCall (extension post-TODO25). }
+        Else If (BaseT >= 0) And (BaseT < TypeCount) And
+                (TypeTab[BaseT].Kind = TYK_ARRAY) And
+                (ExprPool[Cur].NameVal = 'clone') Then
+        Begin
+          ExprPool[N].TypeIdx := BaseT;
+          ExprPool[N].Extra   := -2;
         End;
       End
       Else If (ExprPool[Cur].Kind = EK_IDENT) And (ExprPool[Cur].Left < 0) And
@@ -5556,6 +5797,35 @@ Begin
         Begin
           ExprPool[N].TypeIdx := MethodPool[MI].RetTypeIdx;
           ExprPool[N].Extra   := MI;   { TODO 21 - voir la note d en-tete d EK_CALL }
+        End;
+      End
+      { extension post-TODO25, QUATRIEME tranche (chainage de                }
+      { constructeur) : "this(...)"/"super(...)" en premiere ligne d un              }
+      { corps de constructeur (section 8.8) - "this"/"super" sont DEJA                  }
+      { enregistres comme de VRAIS symboles SK_VAR (ParseConstructorDecl/            }
+      { ParseMethodDeclRest) DONC Cur.Left EST DEJA >= 0 ICI (contrairement        }
+      { a un appel implicite ordinaire, Left < 0 ci-dessus) - ce n est               }
+      { JAMAIS une METHODE nommee "this"/"super" (qui n existe pas),                     }
+      { TOUJOURS un VRAI constructeur : this(...) celui de LA MEME classe          }
+      { (CurrentClassTypeIdx), super(...) celui de la SUPERCLASSE directe               }
+      { - ClassFindConstructor (TODO 08, DEJA utilisee par "new                          }
+      { Classe(...)"), JAMAIS ClassResolveMethodCall. }
+      Else If (ExprPool[Cur].Kind = EK_IDENT) And
+              ((ExprPool[Cur].NameVal = 'this') Or (ExprPool[Cur].NameVal = 'super')) And
+              (CurrentClassTypeIdx >= 0) Then
+      Begin
+        If ExprPool[Cur].NameVal = 'this' Then
+          MI := ClassFindConstructor(CurrentClassTypeIdx, ExprPool[N].ArgFirst,
+            ExprPool[N].ArgCount)
+        Else If TypeTab[CurrentClassTypeIdx].SuperTypeIdx >= 0 Then
+          MI := ClassFindConstructor(TypeTab[CurrentClassTypeIdx].SuperTypeIdx,
+            ExprPool[N].ArgFirst, ExprPool[N].ArgCount)
+        Else
+          MI := -1;
+        If MI >= 0 Then
+        Begin
+          ExprPool[N].TypeIdx := PRIMTYPE_VOID;
+          ExprPool[N].Extra   := MI;
         End;
       End;
 
@@ -7498,6 +7768,9 @@ Begin
     TypeTab[T].IsAbstractClass := IsAbstract;
     TypeTab[T].IsFinalClass    := IsFinal;
     TypeTab[T].Visibility      := Vis;
+    { extension post-TODO25, DEUXIEME tranche - voir la note d en-tete de  }
+    { TTypeRec.IsStdlib. }
+    TypeTab[T].IsStdlib        := StdlibInitActive;
   End;
   ClassAdd := T;
 End;
@@ -9510,10 +9783,21 @@ Begin
     (TypeTab[ElemT].Kind = TYK_ARRAY) And (TypeTab[ElemT].ElemTypeIdx = PRIMTYPE_INT) And
     (ExprPool[InitE].Kind = EK_CAST) And
     (TypeTab[ExprPool[InitE].Extra].Kind = TYK_ARRAY));
-  ArrayAssert('notes.clone() : appel NON RESOLU (Object.clone non ' +
-    'synthetise, best-effort - MEME decision que le TODO 08 pour les ' +
-    'methodes d''Object) - AUCUN FatalError, simplement TypeIdx=-1',
-    ExprPool[ExprPool[InitE].Left].TypeIdx = -1);
+  { extension post-TODO25, CINQUIEME tranche : cette assertion verifiait   }
+  { a l origine (TODO 10) que "notes.clone()" restait NON RESOLU               }
+  { (TypeIdx=-1, Object.clone jamais synthetise) - decision DELIBEREMENT           }
+  { RENVERSEE ICI (voir ParsePostfix, ".clone() sur un tableau") : le              }
+  { generateur de code sait desormais REELLEMENT compiler ".clone()"                  }
+  { sur un tableau (allocation+copie element par element), donc le                     }
+  { resoudre au parsing (TypeIdx=le type du tableau lui-meme,                              }
+  { Extra=-2, sentinelle consommee par CompileCall) est desormais                        }
+  { CORRECT plutot qu une lacune assumee. }
+  ArrayAssert('notes.clone() : RESOLU (extension post-TODO25) - TypeIdx = ' +
+    'un TYK_ARRAY de int (celui du tableau source), Extra=-2 (sentinelle ' +
+    '".clone()")',
+    (TypeTab[ExprPool[ExprPool[InitE].Left].TypeIdx].Kind = TYK_ARRAY) And
+    (TypeTab[ExprPool[ExprPool[InitE].Left].TypeIdx].ElemTypeIdx = PRIMTYPE_INT) And
+    (ExprPool[ExprPool[InitE].Left].Extra = -2));
 
   TypeInit;
   SymInit;
@@ -10393,6 +10677,12 @@ Var
   FileReaderT, BufferedReaderT, IOExceptionT, RunnableT, ThreadT,
   User32T, WinmT, MBMI, PFirst : Integer;
 Begin
+  { extension post-TODO25, DEUXIEME tranche - voir la note d en-tete de   }
+  { TTypeRec.IsStdlib : CHAQUE ClassAdd APPELE pendant l execution de               }
+  { CETTE PROCEDURE (jamais depuis la vraie analyse d un fichier .jpp)                }
+  { marque le type resultant comme "bibliotheque standard". }
+  StdlibInitActive := True;
+
   { String.length() - section 13, EXACTEMENT "valeur.length()" de       }
   { Test06ProprietesBean.jpp (TODO 08). AUCUN autre membre de String              }
   { (charAt/equals/toString) n est REELLEMENT exerce par un echantillon,          }
@@ -10593,6 +10883,8 @@ Begin
   TypeTab[WinmT].Visibility := VIS_PUBLIC;
   FieldPoolAdd(WinmT, PRIMTYPE_INT, 'MB_OK', True, True, VIS_PUBLIC);
   FieldPoolAdd(WinmT, PRIMTYPE_INT, 'MB_ICONINFORMATION', True, True, VIS_PUBLIC);
+
+  StdlibInitActive := False;
 End;
 
 { ------------------------------------------------------------ }
@@ -12979,14 +13271,33 @@ End;
 { methode compilee par ce premier jalon n est surchargee - Test01Bonjour  }
 { n en a qu une, "main") - une VRAIE strategie de nom mangle PAR                      }
 { SIGNATURE reste une extension FUTURE, non devinee. }
+{ BOGUE REEL trouve par EXECUTION (extension post-TODO25, QUATRIEME     }
+{ tranche - test synthetique de chainage de constructeur, PAS un des             }
+{ 18 echantillons) : cette etiquette ne comportait JAMAIS que le NOM             }
+{ de la methode/du "constructeur" (TOUJOURS '' pour un constructeur,             }
+{ QUEL QUE SOIT le NOMBRE de constructeurs surcharges de la classe) -           }
+{ DEUX constructeurs (ou DEUX methodes REGULIERES surchargees, ex.                    }
+{ "maximum(int,int)"/"maximum(double,double)" de Test04Methodes.jpp)               }
+{ produisaient donc l EXACTE MEME etiquette .asm, la SECONDE ecrasant             }
+{ silencieusement la PREMIERE dans BinLabels (BinDefineLabel, TODO 22) -          }
+{ TOUT appel vers L UN OU L AUTRE finissait alors par sauter au MEME                }
+{ endroit - un constructeur "Derived(int x)" qui delegue via                            }
+{ "this(x, 99)" appelait ainsi, en                                                      }
+{ pratique, N IMPORTE LEQUEL des deux constructeurs de Derived selon              }
+{ l ORDRE d emission, jamais celui REELLEMENT resolu. Corrige en                      }
+{ ajoutant TOUJOURS l INDEX MethodPool (MI) - UNIQUE par construction,           }
+{ quel que soit le nombre de surcharges - au texte de l etiquette :               }
+{ AUCUN autre code ne depend du FORMAT exact de cette chaine (utilisee            }
+{ UNIQUEMENT via CET APPEL, jamais reconstruite ailleurs par                              }
+{ concatenation manuelle), le changement est donc SANS RISQUE. }
 Function MethodAsmLabelG(MI: Integer): TString;
 Begin
   If MethodPool[MI].IsStatic Then
     MethodAsmLabelG := ASM_PFX_FUNC + TypeTab[MethodPool[MI].OwnerTypeIdx].Name +
-      '_' + MethodPool[MI].Name
+      '_' + MethodPool[MI].Name + '_' + IntToStrG(MI)
   Else
     MethodAsmLabelG := ASM_PFX_METHOD + TypeTab[MethodPool[MI].OwnerTypeIdx].Name +
-      '_' + MethodPool[MI].Name;
+      '_' + MethodPool[MI].Name + '_' + IntToStrG(MI);
 End;
 
 { ------------------------------------------------------------ }
@@ -13057,6 +13368,17 @@ End;
 { static melange a des champs d instance, JAMAIS incorrect (chaque               }
 { champ D INSTANCE garde un emplacement UNIQUE et STABLE), simplement           }
 { pas la disposition la plus compacte possible. }
+{ CG_OBJ_HEADER : extension post-TODO25, DEUXIEME tranche (dispatch     }
+{ polymorphique) - CHAQUE objet reserve MAINTENANT un mot de 4 octets            }
+{ SUPPLEMENTAIRE au tout DEBUT, AVANT ses champs, contenant une                        }
+{ "etiquette de type" DYNAMIQUE (le TypeIdx REEL, CONCRET, de la               }
+{ classe REELLEMENT construite par "new" - jamais celui, STATIQUE, de              }
+{ la variable/du parametre qui le reference) - voir CompileCall,                       }
+{ "dispatch polymorphique", pour son unique consommateur. Champs                       }
+{ DECALES de +4 en consequence (CgFieldOffsetInObject). }
+Const
+  CG_OBJ_HEADER = 4;
+
 Function CgClassOwnFieldBytes(T: Integer): LongInt;
 Begin
   CgClassOwnFieldBytes := TypeTab[T].FieldCount * 4;
@@ -13073,13 +13395,13 @@ End;
 
 Function CgObjectSize(T: Integer): LongInt;
 Begin
-  CgObjectSize := CgAncestorFieldBytes(T) + CgClassOwnFieldBytes(T);
+  CgObjectSize := CG_OBJ_HEADER + CgAncestorFieldBytes(T) + CgClassOwnFieldBytes(T);
 End;
 
 Function CgFieldOffsetInObject(FI: Integer): LongInt;
 Begin
-  CgFieldOffsetInObject := CgAncestorFieldBytes(FieldPool[FI].OwnerTypeIdx) +
-    FieldPool[FI].Offset;
+  CgFieldOffsetInObject := CG_OBJ_HEADER +
+    CgAncestorFieldBytes(FieldPool[FI].OwnerTypeIdx) + FieldPool[FI].Offset;
 End;
 
 Procedure CompileExpr(E: Integer); Forward;
@@ -13310,7 +13632,7 @@ End;
 { faux. }
 Procedure CompileExpr(E: Integer);
 Var
-  LblFalse, LblDone : TString;
+  LblFalse, LblDone, LblLoop, LblEnd : TString;
   Off : LongInt;
   FI, BaseT, MI, ClassT, I, ArgN : Integer;
 Begin
@@ -13562,18 +13884,28 @@ Begin
     { bibliotheque standard - Exception et consorts, StdlibInit,                          }
     { BodyStmtIdx TOUJOURS -1) s arrete PROPREMENT ICI plutot que de                    }
     { referencer une etiquette JAMAIS emise. }
+    { EK_NEWOBJECT : voir aussi TTypeRec.IsStdlib - un constructeur SANS    }
+    { corps reel (BodyStmtIdx=-1) est soit (a) le constructeur PAR DEFAUT           }
+    { SYNTHETISE par ParseClassDecl (TODO 08) pour une classe UTILISATEUR             }
+    { sans constructeur ECRIT - EFFECTIVEMENT vide (ZERO parametre,                       }
+    { RIEN a executer), l objet deja alloue/etiquete SUFFIT, RIEN a                       }
+    { appeler ; soit (b) une classe de la bibliotheque standard                              }
+    { (Vector et consorts, StdlibInit, IsStdlib=Vrai) dont le "corps"                    }
+    { reel, JAMAIS ecrit ICI, initialiserait en verite un etat interne              }
+    { (tableau arriere-plan, compteur...) qu un no-op laisserait                           }
+    { silencieusement INVALIDE - CE cas SEUL reste hors de portee. }
     EK_NEWOBJECT:
     Begin
       ClassT := ExprPool[E].Extra;
       MI := ExprPool[E].Left;
       If (MI < 0) Or (TypeTab[ClassT].Kind <> TYK_CLASS) Or
-         (MethodPool[MI].BodyStmtIdx < 0) Then
+         (TypeTab[ClassT].IsStdlib And (MethodPool[MI].BodyStmtIdx < 0)) Then
       Begin
         FatalError('generateur de code : "new ' + TypeTab[ClassT].Name +
           '(...)" non couvert par cette extension (constructeur non ' +
-          'resolu, OU sans corps SOURCE reel - une classe predeclaree de ' +
-          'la bibliotheque standard, ex. une exception, n en a jamais, ' +
-          'voir la note d''en-tete de section)');
+          'resolu, OU classe de bibliotheque standard sans corps SOURCE ' +
+          'reel, ex. une exception/Vector, voir la note d''en-tete de ' +
+          'section)');
         Exit;
       End;
       For I := ExprPool[E].ArgCount - 1 DownTo 0 Do
@@ -13584,28 +13916,111 @@ Begin
       EmitInstr('PUSH ' + IntToStrG(CgObjectSize(ClassT)));
       EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
       EmitInstr('ADD ESP,4');
-      EmitInstr('PUSH EAX');
-      EmitInstr('CALL ' + MethodAsmLabelG(MI));
-      EmitInstr('MOV EAX,' + CgAddrOperand('ESP', 0));
-      EmitInstr('ADD ESP,' + IntToStrG((ExprPool[E].ArgCount + 1) * 4));
+      { extension post-TODO25, dispatch polymorphique : ecrit l etiquette   }
+      { de type DYNAMIQUE (ClassT, un TypeIdx CONSTANT connu a la                    }
+      { compilation - "new Rectangle(...)" construit TOUJOURS un VRAI                     }
+      { Rectangle, jamais un autre type) dans l en-tete de l objet - voir           }
+      { CG_OBJ_HEADER/CompileCall pour son unique consommateur. }
+      EmitInstr('MOV ECX,' + IntToStrG(ClassT));
+      EmitInstr('MOV ' + CgAddrOperand('EAX', 0) + ',ECX');
+      If MethodPool[MI].BodyStmtIdx >= 0 Then
+      Begin
+        EmitInstr('PUSH EAX');
+        EmitInstr('CALL ' + MethodAsmLabelG(MI));
+        EmitInstr('MOV EAX,' + CgAddrOperand('ESP', 0));
+        EmitInstr('ADD ESP,' + IntToStrG((ExprPool[E].ArgCount + 1) * 4));
+      End;
+      { sinon : constructeur PAR DEFAUT synthetise, EFFECTIVEMENT vide -   }
+      { EAX contient DEJA le pointeur d objet (ecrit par ALLOC, jamais           }
+      { modifie depuis), RIEN a appeler ni a nettoyer (ArgCount=0                        }
+      { GARANTI pour ce cas precis, TODO 08). }
     End;
 
-    { EK_NEWARRAY : extension post-TODO25 - SEULEMENT 1 dimension           }
-    { ("new T[n]", 'dims') ou un initialiseur ENTRE ACCOLADES (aussi bien           }
-    { "new T[] AVEC initialiseur" que le declarateur nu "T[] x = ...",           }
-    { 'init') - tableau MULTI-dimensionnel ("new T[n][m]") reste HORS de           }
-    { portee (Test05Tableaux.jpp, non atteint). Disposition : prefixe de           }
-    { LONGUEUR sur 4 octets, PUIS les elements - la reference de tableau            }
-    { retournee POINTE SUR LE PREMIER ELEMENT               }
-    { (base+4 du bloc alloue), ".length" (EK_SELECTOR ci-dessus) relit                 }
-    { simplement [base-4]. }
+    { EK_NEWARRAY : "new T[n]" ('dims', 1 dimension), un initialiseur     }
+    { ENTRE ACCOLADES ('init'), OU "new T[n][m]" RECTANGULAIRE ('dims', 2            }
+    { dimensions - extension post-TODO25, CINQUIEME tranche) - AU-DELA de           }
+    { DEUX dimensions reste HORS de portee (AUCUN echantillon n en a                    }
+    { besoin). "new T[n][]" (jagged, une SEULE dimension CHIFFREE, la                  }
+    { seconde paire de crochets VIDE) est DEJA couvert par le cas 1               }
+    { dimension existant SANS AUCUN changement : ElemT est simplement                    }
+    { lui-meme un TYK_ARRAY, mais l ALLOCATION EXTERIEURE (n references,               }
+    { zero-remplies = null, EXACTEMENT la semantique Java reelle d un                     }
+    { tableau de tableaux pas encore rempli) est IDENTIQUE, remplie PLUS               }
+    { TARD par des affectations "triangle[i] = new int[...]" separees,                    }
+    { deja couvertes par STK_ASSIGN/EK_INDEX. Disposition (les DEUX cas) :          }
+    { prefixe de LONGUEUR sur 4 octets, PUIS les elements - la reference             }
+    { de tableau retournee POINTE SUR LE PREMIER ELEMENT (base+4 du bloc             }
+    { alloue), ".length" (EK_SELECTOR ci-dessus) relit simplement                          }
+    { [base-4]. }
     EK_NEWARRAY:
     Begin
-      If (ExprPool[E].Op = 'dims') And (ExprPool[E].ArgCount <> 1) Then
+      If (ExprPool[E].Op = 'dims') And (ExprPool[E].ArgCount > 2) Then
       Begin
-        FatalError('generateur de code : tableau multi-dimensionnel non ' +
-          'couvert par cette extension (seul "new T[n]" a UNE dimension ' +
-          'l''est, voir la note d''en-tete de section)');
+        FatalError('generateur de code : tableau a plus de DEUX dimensions ' +
+          'non couvert par cette extension (voir la note d''en-tete de ' +
+          'section)');
+        Exit;
+      End;
+      If (ExprPool[E].Op = 'dims') And (ExprPool[E].ArgCount = 2) Then
+      Begin
+        { "new T[n][m]" RECTANGULAIRE - n ET m peuvent TOUS DEUX etre des     }
+        { expressions RUNTIME (jamais deroulable a la compilation) : une            }
+        { VRAIE boucle d execution alloue CHAQUE tableau INTERIEUR                            }
+        { separement. ESI=n/EDI=m survivent a TRAVERS chaque CALL                             }
+        { _JPPRT_ALLOC (callee-saved, MEME garantie que EBX - voir la note           }
+        { d en-tete de CG_OBJ_HEADER/l ancien bogue ECX ci-dessus, qui a               }
+        { motive ce choix DELIBERE de registre des le depart plutot que                    }
+        { d en re-decouvrir un autre) ; EBX=reference EXTERIEURE ; le               }
+        { compteur de boucle "i" transite par la PILE (une VRAIE case                          }
+        { scratch, poussee avant la boucle/depilee apres - AUCUN registre               }
+        { callee-saved supplementaire disponible pour lui). }
+        LblLoop := CgLabelGen;
+        LblEnd  := CgLabelGen;
+        CompileExpr(ExprArgPool[ExprPool[E].ArgFirst]);
+        EmitInstr('MOV ESI,EAX');
+        CompileExpr(ExprArgPool[ExprPool[E].ArgFirst + 1]);
+        EmitInstr('MOV EDI,EAX');
+        EmitInstr('MOV EAX,ESI');
+        EmitInstr('ADD EAX,EAX');
+        EmitInstr('ADD EAX,EAX');
+        EmitInstr('ADD EAX,4');
+        EmitInstr('PUSH EAX');
+        EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+        EmitInstr('ADD ESP,4');
+        EmitInstr('MOV ECX,ESI');
+        EmitInstr('MOV ' + CgAddrOperand('EAX', 0) + ',ECX');
+        EmitInstr('ADD EAX,4');
+        EmitInstr('MOV EBX,EAX');
+        EmitInstr('PUSH 0');
+        EmitLabel(LblLoop);
+        EmitInstr('MOV EAX,' + CgAddrOperand('ESP', 0));
+        EmitInstr('CMP EAX,ESI');
+        EmitInstr('JGE ' + LblEnd);
+        EmitInstr('MOV EAX,EDI');
+        EmitInstr('ADD EAX,EAX');
+        EmitInstr('ADD EAX,EAX');
+        EmitInstr('ADD EAX,4');
+        EmitInstr('PUSH EAX');
+        EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+        EmitInstr('ADD ESP,4');
+        EmitInstr('MOV ECX,EDI');
+        EmitInstr('MOV ' + CgAddrOperand('EAX', 0) + ',ECX');
+        EmitInstr('ADD EAX,4');
+        EmitInstr('MOV ECX,' + CgAddrOperand('ESP', 0));
+        EmitInstr('PUSH EAX');
+        EmitInstr('MOV EAX,ECX');
+        EmitInstr('ADD EAX,EAX');
+        EmitInstr('ADD EAX,EAX');
+        EmitInstr('ADD EAX,EBX');
+        EmitInstr('POP ECX');
+        EmitInstr('MOV ' + CgAddrOperand('EAX', 0) + ',ECX');
+        EmitInstr('MOV EAX,' + CgAddrOperand('ESP', 0));
+        EmitInstr('ADD EAX,1');
+        EmitInstr('MOV ' + CgAddrOperand('ESP', 0) + ',EAX');
+        EmitInstr('JMP ' + LblLoop);
+        EmitLabel(LblEnd);
+        EmitInstr('ADD ESP,4');
+        EmitInstr('MOV EAX,EBX');
         Exit;
       End;
       If ExprPool[E].Op = 'dims' Then
@@ -13666,6 +14081,14 @@ Begin
   CgIsScalarCallType := (T = PRIMTYPE_INT) Or (T = PRIMTYPE_BOOLEAN) Or
     (T = PRIMTYPE_CHAR) Or (T = PRIMTYPE_SHORT) Or (T = PRIMTYPE_BYTE) Or
     (T = PDT_STRING);
+  { extension post-TODO25, DEUXIEME tranche (dispatch polymorphique) :   }
+  { TOUTE reference (objet/interface/tableau - JAMAIS un delegue, hors            }
+  { de portee de cette extension) est un SIMPLE pointeur, tient donc               }
+  { TOUT AUSSI BIEN dans EAX qu un "int"/une String - ex.                                }
+  { "setListener(CompteurListener valeur)" (Test08Interfaces.jpp). }
+  If (T >= 0) And (T < TypeCount) And
+     (TypeTab[T].Kind In [TYK_CLASS, TYK_INTERFACE, TYK_ARRAY]) Then
+    CgIsScalarCallType := True;
 End;
 
 { CompileCall : reconnait "System.out.println(String)" PAR LA METHODE   }
@@ -13686,13 +14109,112 @@ End;
 { Extra) - appeler MethodAsmLabelG(MI) directement est donc TOUJOURS              }
 { correct, y compris pour une methode RECURSIVE (Test04Methodes.jpp,             }
 { "factorielle") ou surchargee par TYPE. }
+Const
+  MAX_CG_DISPATCH = 16;   { extension post-TODO25, dispatch polymorphique - }
+                          { nombre MAXIMAL de classes CONCRETES candidates          }
+                          { pour un seul appel virtuel, tres genereux (aucun          }
+                          { echantillon reel n approche cette profondeur). }
+
 Procedure CompileCall(E: Integer);
-Var MI, ArgE, I : Integer; ParamsOK : Boolean;
+Var
+  MI, ArgE, I, T, BaseT, CandCount, CandMI : Integer;
+  ParamsOK : Boolean;
+  CandType, CandMIArr : Array[0..MAX_CG_DISPATCH - 1] Of Integer;
+  CandLbl : Array[0..MAX_CG_DISPATCH - 1] Of TString;
+  LblDone, LblLoop, LblEnd : TString;
 Begin
   MI := ExprPool[E].Extra;
+
+  { extension post-TODO25, CINQUIEME tranche : ".clone()" sur un tableau  }
+  { (Extra=-2, sentinelle - voir ParsePostfix) - alloue un NOUVEAU              }
+  { tableau de la MEME taille (relue depuis [source-4], JAMAIS supposee              }
+  { connue a la compilation) et copie CHAQUE element par une VRAIE                     }
+  { boucle d execution (ESI=source/EDI=longueur/EBX=destination,                        }
+  { callee-saved, survivent a travers CALL _JPPRT_ALLOC - MEME discipline           }
+  { de registre EXACTE que le "new T[n][m]" rectangulaire ci-dessus, MEME          }
+  { raison : ECX N EST PAS preserve a travers un CALL, voir le bogue                     }
+  { REEL documente a la note d en-tete de EK_NEWARRAY). }
+  If MI = -2 Then
+  Begin
+    CompileExpr(ExprPool[ExprPool[E].Left].Left);
+    EmitInstr('MOV ESI,EAX');
+    EmitInstr('MOV EAX,' + CgAddrOperand('ESI', -4));
+    EmitInstr('MOV EDI,EAX');
+    EmitInstr('MOV EAX,EDI');
+    EmitInstr('ADD EAX,EAX');
+    EmitInstr('ADD EAX,EAX');
+    EmitInstr('ADD EAX,4');
+    EmitInstr('PUSH EAX');
+    EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+    EmitInstr('ADD ESP,4');
+    EmitInstr('MOV ECX,EDI');
+    EmitInstr('MOV ' + CgAddrOperand('EAX', 0) + ',ECX');
+    EmitInstr('ADD EAX,4');
+    EmitInstr('MOV EBX,EAX');
+    EmitInstr('PUSH 0');
+    LblLoop := CgLabelGen;
+    LblEnd  := CgLabelGen;
+    EmitLabel(LblLoop);
+    EmitInstr('MOV EAX,' + CgAddrOperand('ESP', 0));
+    EmitInstr('CMP EAX,EDI');
+    EmitInstr('JGE ' + LblEnd);
+    EmitInstr('MOV ECX,EAX');
+    EmitInstr('ADD ECX,ECX');
+    EmitInstr('ADD ECX,ECX');
+    EmitInstr('MOV EAX,ESI');
+    EmitInstr('ADD EAX,ECX');
+    EmitInstr('MOV EAX,' + CgAddrOperand('EAX', 0));
+    EmitInstr('MOV EDX,EAX');
+    EmitInstr('MOV EAX,EBX');
+    EmitInstr('ADD EAX,ECX');
+    EmitInstr('MOV ' + CgAddrOperand('EAX', 0) + ',EDX');
+    EmitInstr('MOV EAX,' + CgAddrOperand('ESP', 0));
+    EmitInstr('ADD EAX,1');
+    EmitInstr('MOV ' + CgAddrOperand('ESP', 0) + ',EAX');
+    EmitInstr('JMP ' + LblLoop);
+    EmitLabel(LblEnd);
+    EmitInstr('ADD ESP,4');
+    EmitInstr('MOV EAX,EBX');
+    Exit;
+  End;
+
   If MI < 0 Then
   Begin
     FatalError('generateur de code : appel de methode non resolu (TODO 21)');
+    Exit;
+  End;
+
+  { extension post-TODO25, QUATRIEME tranche (chainage de constructeur) :  }
+  { "this(...)"/"super(...)" resolu (voir ParsePostfix, meme extension) -            }
+  { AUCUNE allocation nouvelle (l objet EST DEJA celui du constructeur              }
+  { ENGLOBANT, son "this" est TOUJOURS a EBP+8 - meme garantie EXACTE               }
+  { que pour un appel de methode d instance IMPLICITE) - pousse les                     }
+  { arguments PUIS ce MEME "this" EN DERNIER, appelle DIRECTEMENT (un              }
+  { constructeur n est JAMAIS virtuel en Java, aucun dispatch possible                  }
+  { ni necessaire). Un constructeur CIBLE sans corps reel est soit le               }
+  { constructeur PAR DEFAUT synthetise (TODO 08, EFFECTIVEMENT vide -               }
+  { RIEN a appeler, MEME raisonnement que EK_NEWOBJECT) soit une classe            }
+  { de bibliotheque standard (IsStdlib, reste HORS de portee). }
+  If MethodPool[MI].Kind = MK_CONSTRUCTOR Then
+  Begin
+    If MethodPool[MI].BodyStmtIdx < 0 Then
+    Begin
+      If TypeTab[MethodPool[MI].OwnerTypeIdx].IsStdlib Then
+        FatalError('generateur de code : chainage de constructeur non ' +
+          'couvert par cette extension (classe de bibliotheque standard ' +
+          'sans corps SOURCE reel, voir la note d''en-tete de section)');
+      Exit;
+    End;
+    For I := ExprPool[E].ArgCount - 1 DownTo 0 Do
+    Begin
+      ArgE := ExprArgPool[ExprPool[E].ArgFirst + I];
+      CompileExpr(ArgE);
+      EmitInstr('PUSH EAX');
+    End;
+    EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+    EmitInstr('PUSH EAX');
+    EmitInstr('CALL ' + MethodAsmLabelG(MI));
+    EmitInstr('ADD ESP,' + IntToStrG((ExprPool[E].ArgCount + 1) * 4));
     Exit;
   End;
 
@@ -13733,22 +14255,33 @@ Begin
     End;
   End;
 
-  { extension post-TODO25 : appel de methode D INSTANCE UTILISATEUR       }
-  { (jamais une methode de bibliotheque standard - StdlibInit,                       }
-  { BodyStmtIdx TOUJOURS -1, exclue par le MEME garde-fou que EK_NEWOBJECT       }
-  { plus haut, sinon une etiquette JAMAIS emise serait referencee) -               }
-  { RECEPTEUR pousse EN DERNIER (devient EBP+8, "this", dans la methode              }
-  { appelee) : explicite ("obj.methode(...)", Callee=EK_SELECTOR, le                    }
-  { recepteur est ExprPool[Callee].Left) OU implicite ("methode(...)",                  }
-  { Callee=EK_IDENT NON resolu - le recepteur est ALORS le "this" de LA           }
-  { METHODE ENGLOBANTE en cours de compilation, TOUJOURS a EBP+8 la ou             }
-  { son propre corps est en train d etre compile - garanti par les                       }
-  { REGLES DE PORTEE Java elles-memes : un appel implicite a une methode            }
-  { D INSTANCE ne peut syntaxiquement apparaitre que dans un contexte              }
-  { NON-static, ou "this" existe forcement a CETTE MEME position). }
-  If (Not MethodPool[MI].IsStatic) And
-     (TypeTab[MethodPool[MI].OwnerTypeIdx].Kind = TYK_CLASS) And
-     (MethodPool[MI].BodyStmtIdx >= 0) And
+  { extension post-TODO25, DEUXIEME tranche (dispatch polymorphique) :   }
+  { methode D INSTANCE UTILISATEUR - CLASSE OU INTERFACE comme                        }
+  { OwnerTypeIdx (une methode resolue a travers une reference                              }
+  { d interface, ex. "listener.valeurChangee(...)", a TOUJOURS                          }
+  { OwnerTypeIdx=l INTERFACE elle-meme, JAMAIS TYK_CLASS - PREMIER                       }
+  { correctif REEL de cette DEUXIEME tranche, trouve par relecture                       }
+  { AVANT execution : la version precedente rejetait silencieusement                      }
+  { TOUT appel a travers une interface). BaseT = la classe/interface a                 }
+  { travers laquelle l appel a ete resolu (PAS necessairement le type              }
+  { STATIQUE exact du recepteur, mais TOUJOURS un ancetre valide) -                    }
+  { enumere TOUTES les classes CONCRETES qui en heritent/l implementent            }
+  { (TypeIsSubclassOf, deja etendu au TODO 09 pour "classe implements                 }
+  { interface") et fournissent REELLEMENT une implementation                                }
+  { (ClassResolveMethodCall rejouee ICI pour CHAQUE candidat, MEME                     }
+  { resolution EXACTE que le parseur - jamais MI lui-meme, qui reste le           }
+  { contrat ABSTRAIT/D INTERFACE SANS corps pour ce genre d appel). UN            }
+  { SEUL candidat -> appel DIRECT (aucun dispatch necessaire, la cible             }
+  { est FIGEE) ; PLUSIEURS -> chaine CMP/JE sur l ETIQUETTE DE TYPE                     }
+  { DYNAMIQUE (CG_OBJ_HEADER, ecrite par EK_NEWOBJECT) - une forme                    }
+  { "pauvre" mais REELLE de dispatch polymorphique, choisie plutot                       }
+  { qu une VRAIE vtable indexee car elle ne demande AUCUNE extension                  }
+  { nouvelle de l assembleur du TODO 22 (CMP/JE/CALL directs uniquement,          }
+  { deja pleinement supportes) - largement suffisant pour le nombre DE            }
+  { CLASSES en jeu dans SAMPLES\JPP\*.jpp. }
+  If ((TypeTab[MethodPool[MI].OwnerTypeIdx].Kind = TYK_CLASS) Or
+      (TypeTab[MethodPool[MI].OwnerTypeIdx].Kind = TYK_INTERFACE)) And
+     (Not MethodPool[MI].IsStatic) And
      (CgIsScalarCallType(MethodPool[MI].RetTypeIdx) Or
       (MethodPool[MI].RetTypeIdx = PRIMTYPE_VOID)) Then
   Begin
@@ -13758,6 +14291,45 @@ Begin
         ParamsOK := False;
     If ParamsOK Then
     Begin
+      BaseT := MethodPool[MI].OwnerTypeIdx;
+      CandCount := 0;
+      For T := 0 To TypeCount - 1 Do
+        If (TypeTab[T].Kind = TYK_CLASS) And (Not TypeTab[T].IsAbstractClass) And
+           TypeIsSubclassOf(T, BaseT) And (CandCount < MAX_CG_DISPATCH) Then
+        Begin
+          CandMI := ClassResolveMethodCall(T, MethodPool[MI].Name,
+            ExprPool[E].ArgFirst, ExprPool[E].ArgCount);
+          If (CandMI >= 0) And (MethodPool[CandMI].BodyStmtIdx >= 0) Then
+          Begin
+            CandType[CandCount]   := T;
+            CandMIArr[CandCount]  := CandMI;
+            Inc(CandCount);
+          End;
+        End;
+
+      If CandCount = 0 Then
+      Begin
+        { deux causes DISTINCTES pour le meme "aucun candidat" - message      }
+        { adapte pour chacune plutot qu un seul texte generique trompeur           }
+        { (trouve par relecture : "System.out.println(int)", jamais un                 }
+        { SEUL candidat "concret" puisque PrintStream, StdlibInit, n a                     }
+        { JAMAIS de VRAIE sous-classe utilisateur dans ce modele - ce                        }
+        { N EST PAS un appel polymorphique manque, c est un membre de                     }
+        { bibliotheque standard jamais code-genere, MEME nature que                            }
+        { l ancien message "premier jalon du TODO 21"). }
+        If TypeTab[MethodPool[MI].OwnerTypeIdx].IsStdlib Then
+          FatalError('generateur de code : appel a "' + MethodPool[MI].Name +
+            '" non couvert par cette extension (methode de bibliotheque ' +
+            'standard - StdlibInit - sans corps SOURCE reel, voir la note ' +
+            'd''en-tete de section)')
+        Else
+          FatalError('generateur de code : appel a "' + MethodPool[MI].Name +
+            '" non couvert par cette extension (aucune classe concrete ' +
+            'CONNUE ne fournit d''implementation reelle, voir la note ' +
+            'd''en-tete de section)');
+        Exit;
+      End;
+
       For I := ExprPool[E].ArgCount - 1 DownTo 0 Do
       Begin
         ArgE := ExprArgPool[ExprPool[E].ArgFirst + I];
@@ -13768,9 +14340,42 @@ Begin
         CompileExpr(ExprPool[ExprPool[E].Left].Left)
       Else
         EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
-      EmitInstr('PUSH EAX');
-      EmitInstr('CALL ' + MethodAsmLabelG(MI));
-      EmitInstr('ADD ESP,' + IntToStrG((ExprPool[E].ArgCount + 1) * 4));
+
+      If CandCount = 1 Then
+      Begin
+        EmitInstr('PUSH EAX');
+        EmitInstr('CALL ' + MethodAsmLabelG(CandMIArr[0]));
+        EmitInstr('ADD ESP,' + IntToStrG((ExprPool[E].ArgCount + 1) * 4));
+      End
+      Else
+      Begin
+        EmitInstr('MOV EBX,EAX');
+        EmitInstr('MOV EAX,' + CgAddrOperand('EBX', 0));
+        LblDone := CgLabelGen;
+        For I := 0 To CandCount - 1 Do
+        Begin
+          CandLbl[I] := CgLabelGen;
+          EmitInstr('CMP EAX,' + IntToStrG(CandType[I]));
+          EmitInstr('JE ' + CandLbl[I]);
+        End;
+        { type dynamique inconnu - ne devrait JAMAIS arriver si l analyse   }
+        { est correcte (chaque instance REELLE a ete etiquetee par                 }
+        { EK_NEWOBJECT avec un TypeIdx figurant FORCEMENT dans cette                    }
+        { meme liste, puisqu elle a ete construite en enumerant TOUTES               }
+        { les classes concretes compatibles) - arret PROPRE plutot qu une              }
+        { chute silencieuse dans la premiere branche. }
+        EmitInstr('PUSH 5');
+        EmitInstr('CALL _ExitProcess@4');
+        For I := 0 To CandCount - 1 Do
+        Begin
+          EmitLabel(CandLbl[I]);
+          EmitInstr('PUSH EBX');
+          EmitInstr('CALL ' + MethodAsmLabelG(CandMIArr[I]));
+          EmitInstr('JMP ' + LblDone);
+        End;
+        EmitLabel(LblDone);
+        EmitInstr('ADD ESP,' + IntToStrG((ExprPool[E].ArgCount + 1) * 4));
+      End;
       Exit;
     End;
   End;
