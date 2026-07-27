@@ -1019,6 +1019,149 @@ Program JPPCW32;
   restent EXACTEMENT comme documentes precedemment.
   ============================================================ *)
 
+(* ============================================================
+  EXTENSION POST-TODO25, SIXIEME TRANCHE (2026-07-27) - PREPROCESSEUR
+  BOOLEEN, TABLEAUX N-DIMENSIONNELS, BREAK/CONTINUE ETIQUETES,
+  INSTANCEOF, COMPLEMENT BIT-A-BIT, AFFECTATIONS COMPOSEES BIT-A-BIT
+  ============================================================
+  Suite DIRECTE (meme demande utilisateur, meme session - "47 places...
+  4000 lignes... plus AUCUN non couvert, toutes les situations
+  developpees") : nouvelle ronde de triage COMPLET des ~34 FatalError
+  "non couvert" restants, avec IMPLEMENTATION REELLE de chaque gap
+  GENUINEMENT atteignable (verifie DECIDABLE/reel par lecture du
+  parseur, PAS suppose), et TRIAGE EXPLICITE (documente, jamais
+  silencieux) de ceux qui restent DELIBEREMENT hors de portee.
+
+  IMPLEMENTE, CHAQUE FOIS VERIFIE PAR UN TEST SYNTHETIQUE DEDIE avant
+  tout contact avec un echantillon reel :
+
+  1. #if/#elif BOOLEENS (section 17.35) : CondEvalExpr ne couvrait
+     QU UN symbole NU depuis le TODO 17 - descente recursive complete
+     ajoutee (CondParseOr/And/Not/Atom, precedence "!" > "&&" > "||",
+     parentheses) pour "!"/"&&"/"||"/"(...)" combines arbitrairement.
+
+  2. TABLEAUX RECTANGULAIRES N-DIMENSIONNELS (N>2, ex. "new
+     int[a][b][c]") : la CINQUIEME tranche precedente plafonnait a DEUX
+     dimensions par une boucle DEROULEE dans le generateur de code
+     (EBX/ESI/EDI, TROIS registres callee-saved SEULEMENT). Generalise
+     via une NOUVELLE routine runtime _JPPRT_ALLOC_NDARRAY qui se
+     rappelle ELLE-MEME RECURSIVEMENT (une VRAIE pile d appels, chaque
+     niveau recevant sa PROPRE trame - n, pointeur exterieur, compteur
+     de boucle VIVENT dans CETTE trame, AUCUN registre supplementaire
+     necessaire) : la profondeur maximale disparait completement. Les
+     cas ArgCount=1/2 EXISTANTS (EPROUVES) restent INTACTS, seul le cas
+     ArgCount>2 route desormais vers cette routine (dimensions ecrites
+     dans un tampon de PILE, dimsPtr=ESP passe en parametre).
+     BOGUE REEL trouve PAR EXECUTION (crash STATUS_PRIVILEGED_INSTRUCTION,
+     PAS un des 18 echantillons) : "MOV DWORD PTR [mem],0" pour
+     initialiser le compteur de boucle - cet assembleur (TODO 22)
+     n emet JAMAIS "MOV [mem],imm" (seulement "MOV [mem],reg",
+     documente explicitement a la note d en-tete de BinEncodeMov)
+     : BinEmitModRM recevait alors RegField=-1 (Op2.RegNum jamais
+     rempli pour un IMMEDIAT), corrompant l encodage. Corrige en
+     faisant transiter la valeur par EAX d abord, MEME discipline que
+     partout ailleurs dans la bibliotheque runtime.
+
+  3. BREAK/CONTINUE ETIQUETES (sections 7.18/7.19) : le PARSEUR
+     (LabelStack*/ParseLabeledStmt/ParseBreakStmt/ParseContinueStmt)
+     validait DEJA entierement les etiquettes (existence, "continue"
+     exige une boucle) mais le GENERATEUR DE CODE n avait aucun moyen
+     de retrouver l etiquette VOULUE parmi les cadres de boucle
+     empiles. Ajoute CgFrameLabelName (pile PARALLELE a CgBreakLbl/
+     CgContinueLbl) et CgPendingLabel (relais entre STK_LABELED, qui
+     CONNAIT le nom, et le PROCHAIN CgPushLoopFrame/CgPushSwitchFrame,
+     qui CREE le label .asm) : un "break"/"continue" etiquete
+     recherche desormais le cadre par NOM plutot que de toujours viser
+     le sommet de pile. Un bloc etiquete NON-boucle ("label: { ... }",
+     valide en Java pour "break label;" MEME hors de toute boucle)
+     pousse un cadre "break seul" via CgPushSwitchFrame, MEME
+     mecanisme qu un switch.
+
+  4. INSTANCEOF (section 15.20) : enumere les classes CONCRETES dont
+     l etiquette de type DYNAMIQUE (CG_OBJ_HEADER) est une VRAIE
+     sous-classe du type teste - MEME technique que le dispatch
+     polymorphique de CompileCall, recyclee pour produire un booleen.
+     BOGUE REEL trouve PAR EXECUTION (synthetique : "s instanceof
+     String" repondait FAUSSEMENT 0) : une String N A PAS de
+     CG_OBJ_HEADER (bloc de caracteres C bruts SEULS) - lire [EBX+0]
+     dessus relit ses QUATRE premiers OCTETS de texte comme une
+     etiquette, comparaison FAUSSE par pure coincidence plutot que
+     VRAIE reponse. Corrige en distinguant EXPLICITEMENT, AVANT toute
+     lecture d en-tete : String-contre-String (decidable VRAI sauf
+     null, aucun en-tete lu), String-contre-classe/interface PRECISE
+     ou String reelle-contre-classe/interface PRECISE (decidable FAUX
+     dans les deux sens, une String/un objet etiquete ne se confondent
+     JAMAIS), et le SEUL cas VRAIMENT ambigu - une variable declaree
+     "Object" (PDT_OBJECT, le type universel) testee contre "String" -
+     qui reste un FatalError EXPLICITE (indecidable a l execution dans
+     ce modele, JAMAIS un best-effort silencieux). "instanceof" contre
+     un TYPE TABLEAU reste HORS de portee (un tableau ne porte, lui
+     non plus, aucun CG_OBJ_HEADER - seule sa longueur y est rangee).
+
+  5. COMPLEMENT BIT-A-BIT UNAIRE "~" (section 15.15.5) : "XOR EAX,-1"
+     plutot qu un "NOT EAX" DEDIE (jamais implemente par cet
+     assembleur) - "XOR reg,imm32" est DEJA une forme couverte
+     (BinEncodeAlu), x XOR -1 EST le complement bit-a-bit, AUCUNE
+     nouvelle forme d encodage requise.
+
+  6. AFFECTATIONS COMPOSEES BIT-A-BIT/DECALAGE ("&="/"|="/"^="/"<<="/
+     ">>="/">>>=") : le lexeur ET le parseur les reconnaissaient DEJA
+     (STK_ASSIGN.Op) mais CompileCompoundOp s arretait a "+="/"-="/
+     "*="/"/="/"%=" - trois lignes ALU ajoutees PLUS le compte de
+     decalage transitant par CL (meme registre special que
+     CompileBinary pour "<<"/">>"/">>>" non composes).
+
+  7. "new Foo(...);" COMME INSTRUCTION A PART ENTIERE (section 14.9) :
+     STK_EXPR ne routait QUE EK_CALL/EK_UNARY vers le generateur de
+     code - EK_NEWOBJECT ajoute (valeur/pointeur d objet simplement
+     IGNOREE, EXACTEMENT comme le resultat d un appel de methode).
+
+  8. "System.out.println(int/boolean/char/short/byte)" (PAS SEULEMENT
+     "println(String)") : StdlibInit enregistrait DEJA cette
+     surcharge (PrintStream.println, 4 formes) et la resolution la
+     choisissait CORRECTEMENT - seul le generateur de code ignorait
+     tout ce qui n etait pas "String" ICI. CompileToStringValue (deja
+     ecrite pour la concatenation "+") reutilisee directement, AUCUNE
+     duplication necessaire.
+
+  TRIAGE EXPLICITE - restent HORS de portee, PAS par oubli mais par
+  DECISION documentee : identificateur EK_IDENT non-resolu au
+  generateur de code (Left<0) - EN PRATIQUE INATTEIGNABLE pour un
+  programme VALIDE (ExprAddIdent convertit DEJA tout champ en
+  EK_SELECTOR(this,...) au parsing, SK_FUNC n est JAMAIS utilise) : ce
+  FatalError sert de FILET DE SECURITE pour un identificateur
+  VRAIMENT inconnu (l analyse semantique complete, TODO 19, reste
+  "best-effort") plutot qu un gap de generation de code - AUCUN code
+  supplementaire n aurait de sens ICI. Meme raisonnement pour les deux
+  gardes "++"/"--" (champ introuvable/cible non-scalaire) : deja
+  garanties impossibles par la resolution au parsing. Les
+  FatalError de l ASSEMBLEUR (TODO 22, formes MOV/PUSH/POP/LEA/ALU/
+  decalage/branchement NON couvertes) restent, elles, des gardes
+  DEFENSIVES pour des formes que le generateur de code de cette
+  extension n emet simplement JAMAIS (verifie : chaque build de cette
+  tranche a reussi sans en declencher une SEULE) - AUCUNE des
+  implementer serait un travail SANS UTILISATEUR REEL. long/double/
+  float (partout), Vector/Exception/delegues SANS corps source reel,
+  le VRAI STK_TRY, AWT, Threads REELS, DLL thunks (Test16 EK_TYPEREF)
+  et la reference en avant intra-classe de Test06 restent EXACTEMENT
+  comme documentes aux tranches precedentes - AUCUN n a ete
+  atteignable par cette ronde sans redefinir le modele memoire complet
+  du compilateur (hors de portee d une seule session).
+
+  RESULTAT HONNETE, verifie par EXECUTION REELLE (tests synthetiques
+  dedies : etiquettes imbriquees, cube 3D 2x3x4, instanceof
+  polymorphique ET les deux cas decidables/indecidable, "~"/"&="/"|="/
+  "^="/"<<="/">>=" enchaines) PUIS regression complete des 18
+  echantillons : le compte de FatalError "non couvert" reels tombe de
+  46 a 25 ; TOUJOURS 6/18 SAMPLES\JPP\*.jpp compilent et EXECUTENT
+  correctement (Test01/03/05/08/15/17, AUCUNE regression) - ces huit
+  extensions ajoutent une COUVERTURE LANGAGE reelle (verifiee par
+  execution) sans qu AUCUN des 12 echantillons bloques ne bute
+  PRECISEMENT sur l un de ces points en PREMIER (chacun est arrete par
+  une limite ANTERIEURE et DISTINCTE dans son propre fichier, deja
+  documentee ci-dessus et aux tranches precedentes).
+  ============================================================ *)
+
 { ============================================================ }
 { TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF      }
 { ============================================================ }
@@ -1704,24 +1847,117 @@ Begin
   CondStackActive := (CondDepth = 0) Or CondActive[CondDepth - 1];
 End;
 
-{ CondEvalExpr (section 17.35) : PORTEE REDUITE EXPLICITEMENT AU SEUL   }
-{ symbole NU ("#if DEBUG"), EXACTEMENT la SEULE forme que                            }
-{ Test15Conditionnelle.jpp exerce - la reference elle-meme (section              }
-{ 17.35) admet "!"/"&&"/"||"/parentheses mais AVOUE dans le MEME                    }
-{ paragraphe que "la grammaire exacte doit etre verifiee avec le                     }
-{ manuel JVC cible" : deviner cette grammaire ICI serait l exact                       }
-{ contraire de la discipline de ce projet, puisque meme la SOURCE ne            }
-{ s y engage pas fermement. Repli EXPLICITE (FatalError, PAS un                        }
-{ best-effort silencieux - contrairement a la resolution de methode/           }
-{ champ ailleurs dans ce fichier, une expression conditionnelle MAL              }
-{ comprise choisirait la MAUVAISE moitie du programme SANS aucun                     }
-{ moyen d attirer l attention plus tard, un risque bien plus grave                    }
-{ qu un identificateur non resolu) dans le cas contraire. }
+{ CondEvalExpr (section 17.35) : extension post-TODO25, SIXIEME        }
+{ tranche - la reference (section 17.35) admet "!"/"&&"/"||"/                        }
+{ parentheses en plus du symbole NU deja couvert depuis le TODO 17 ;              }
+{ PRECEDENCE ADOPTEE (jamais devinee au hasard : "!" plus fort que "&&"           }
+{ plus fort que "||", EXACTEMENT la MEME hierarchie que la grammaire             }
+{ complete des expressions J++/Java elle-meme, section 15 - AUCUNE                    }
+{ raison qu un preprocesseur texte inspire du C adopte une regle                       }
+{ DIFFERENTE), implementee par DESCENTE RECURSIVE classique                             }
+{ (CondParseOr/CondParseAnd/CondParseNot/CondParseAtom - forward pour            }
+{ CondParseOr, seul cycle du groupe : Atom "(" descend jusqu a Or). }
+Function CondParseOr(Const S: TString; Var P: Integer): Boolean; Forward;
+
+Function CondPeekChar(Const S: TString; P: Integer): Char;
+Begin
+  If (P >= 1) And (P <= Length(S)) Then CondPeekChar := S[P]
+  Else CondPeekChar := #0;
+End;
+
+Procedure CondSkipSpaces(Const S: TString; Var P: Integer);
+Begin
+  While CondPeekChar(S, P) = ' ' Do Inc(P);
+End;
+
+{ CondParseAtom : "(" Or ")" | identificateur NU (le SEUL cas deja      }
+{ couvert avant cette tranche, TODO 17) - toute AUTRE chose a cette              }
+{ position reste un FatalError EXPLICITE, MEME discipline de repli               }
+{ (jamais silencieux) que documentee a la note d en-tete de section              }
+{ ci-dessus. }
+Function CondParseAtom(Const S: TString; Var P: Integer): Boolean;
+Var Nam : TString; I, Start : Integer; Found : Boolean;
+Begin
+  CondSkipSpaces(S, P);
+  If CondPeekChar(S, P) = '(' Then
+  Begin
+    Inc(P);
+    CondParseAtom := CondParseOr(S, P);
+    CondSkipSpaces(S, P);
+    If CondPeekChar(S, P) <> ')' Then
+      FatalError('expression conditionnelle "' + S + '" non couverte - ' +
+        '")" attendue (section 17.35, TODO 17)')
+    Else
+      Inc(P);
+    Exit;
+  End;
+  If Not IsIdentStart(CondPeekChar(S, P)) Then
+  Begin
+    FatalError('expression conditionnelle "' + S + '" non couverte - ' +
+      'symbole NU, "!", "&&", "||" ou "(" attendu (section 17.35, TODO 17)');
+    CondParseAtom := False;
+    Exit;
+  End;
+  Start := P;
+  While IsIdentCont(CondPeekChar(S, P)) Do Inc(P);
+  Nam := Copy(S, Start, P - Start);
+  Found := False;
+  For I := 0 To Opts.DefinedCount - 1 Do
+    If Opts.DefinedSymbols[I] = Nam Then Found := True;
+  CondParseAtom := Found;
+End;
+
+{ CondParseNot : "!" prefixe, recursif (autorise "!!x", MEME que la     }
+{ grammaire Java section 15.15.6 pour l operateur binaire ordinaire). }
+Function CondParseNot(Const S: TString; Var P: Integer): Boolean;
+Begin
+  CondSkipSpaces(S, P);
+  If CondPeekChar(S, P) = '!' Then
+  Begin
+    Inc(P);
+    CondParseNot := Not CondParseNot(S, P);
+  End
+  Else
+    CondParseNot := CondParseAtom(S, P);
+End;
+
+{ CondParseAnd/CondParseOr : chaine GAUCHE-associative de "&&"/"||" -   }
+{ AUCUN court-circuit necessaire ICI (contrairement a CompileBinary) : }
+{ CondParseAtom n a AUCUN effet de bord, evaluer les DEUX cotes est           }
+{ donc toujours sans consequence, seule la VALEUR compte. }
+Function CondParseAnd(Const S: TString; Var P: Integer): Boolean;
+Var R : Boolean;
+Begin
+  R := CondParseNot(S, P);
+  CondSkipSpaces(S, P);
+  While (CondPeekChar(S, P) = '&') And (CondPeekChar(S, P + 1) = '&') Do
+  Begin
+    Inc(P, 2);
+    R := CondParseNot(S, P) And R;
+    CondSkipSpaces(S, P);
+  End;
+  CondParseAnd := R;
+End;
+
+Function CondParseOr(Const S: TString; Var P: Integer): Boolean;
+Var R : Boolean;
+Begin
+  R := CondParseAnd(S, P);
+  CondSkipSpaces(S, P);
+  While (CondPeekChar(S, P) = '|') And (CondPeekChar(S, P + 1) = '|') Do
+  Begin
+    Inc(P, 2);
+    R := CondParseAnd(S, P) Or R;
+    CondSkipSpaces(S, P);
+  End;
+  CondParseOr := R;
+End;
+
 Function CondEvalExpr(Const Expr: TString): Boolean;
 Var
   Sym : TString;
-  I, P : Integer;
-  Found : Boolean;
+  P : Integer;
+  R : Boolean;
 Begin
   Sym := Expr;
   While (Length(Sym) > 0) And (Sym[1] = ' ') Do Delete(Sym, 1, 1);
@@ -1730,20 +1966,14 @@ Begin
   If Length(Sym) = 0 Then
     FatalError('expression conditionnelle vide apres "#if"/"#elif" (section 17.31, TODO 17)');
 
-  If Not IsIdentStart(Sym[1]) Then
+  P := 1;
+  R := CondParseOr(Sym, P);
+  CondSkipSpaces(Sym, P);
+  If P <= Length(Sym) Then
     FatalError('expression conditionnelle "' + Sym + '" non couverte - ' +
-      'seul un symbole NU (identificateur) est reconnu, "!"/"&&"/"||"/' +
-      'parentheses restent HORS de portee (section 17.35, TODO 17)');
-  For P := 2 To Length(Sym) Do
-    If Not IsIdentCont(Sym[P]) Then
-      FatalError('expression conditionnelle "' + Sym + '" non couverte - ' +
-        'seul un symbole NU (identificateur) est reconnu, "!"/"&&"/"||"/' +
-        'parentheses restent HORS de portee (section 17.35, TODO 17)');
-
-  Found := False;
-  For I := 0 To Opts.DefinedCount - 1 Do
-    If Opts.DefinedSymbols[I] = Sym Then Found := True;
-  CondEvalExpr := Found;
+      'caracteres en trop apres une expression complete (section 17.35, ' +
+      'TODO 17)');
+  CondEvalExpr := R;
 End;
 
 { LexProcessDirectiveLine : Rest COMMENCE par '#' (garanti par            }
@@ -11775,12 +12005,14 @@ End;
 { boucle ENTRELACEE dans le modele "tampon d une ligne" EXISTANT,                    }
 { active UNIQUEMENT depuis les DEUX points ou une ligne FRAICHE est               }
 { demandee pour la TOKENISATION reelle (LexInit, LexNextToken), JAMAIS         }
-{ depuis LexSkipBlockComment. Expression conditionnelle reduite AU                   }
-{ SEUL symbole NU (section 17.35) - "!"/"&&"/"||"/parentheses restent           }
-{ EXPLICITEMENT hors de portee (FatalError, jamais un best-effort                     }
-{ silencieux - voir la note d en-tete de CondEvalExpr pour la                             }
-{ justification : une MAUVAISE branche choisie est bien plus grave                   }
-{ qu un identificateur non resolu). Les symboles "-D" existaient DEJA           }
+{ depuis LexSkipBlockComment. Expression conditionnelle (section 17.35)    }
+{ - symbole NU DEPUIS ce premier jalon (TODO 17), PLUS "!"/"&&"/"||"/               }
+{ parentheses (descente recursive, extension post-TODO25, SIXIEME                    }
+{ tranche - voir la note d en-tete de CondEvalExpr/CondParseOr pour                    }
+{ l architecture complete et la precedence ADOPTEE) ; toute AUTRE                       }
+{ forme reste un FatalError EXPLICITE, jamais un best-effort silencieux           }
+{ (une MAUVAISE branche choisie serait bien plus grave qu un                            }
+{ identificateur non resolu). Les symboles "-D" existaient DEJA                       }
 { depuis le TODO 01 (Opts.DefinedSymbols/DefinedCount) - AUCUNE                       }
 { nouvelle table n a ete necessaire, seulement leur PREMIERE                              }
 { utilisation REELLE.                                                                       }
@@ -12806,6 +13038,19 @@ Var
   CgBreakLbl     : Array[0..MAX_CG_LOOP - 1] Of TString;
   CgContinueLbl  : Array[0..MAX_CG_LOOP - 1] Of TString;
 
+  { extension post-TODO25, SIXIEME tranche (break/continue ETIQUETES,   }
+  { section 7.18/7.19) : CgFrameLabelName - MEME pile PARALLELE que              }
+  { CgBreakLbl/CgContinueLbl (un cadre SANS etiquette porte simplement           }
+  { la chaine VIDE, jamais trouvable par un "break NOM"/"continue NOM").         }
+  { CgPendingLabel - relais ENTRE STK_LABELED (qui CONNAIT le nom mais            }
+  { pas encore le LABEL .asm, pas cree avant que CompileStmt ne descende            }
+  { dans l instruction etiquetee) et le PROCHAIN CgPushLoopFrame/                    }
+  { CgPushSwitchFrame (qui CREE ce label mais ne connait pas le nom Java         }
+  { source) - CONSOMME (remis a '') des sa lecture par l un des DEUX,            }
+  { exactement comme ExprAddIdent consomme un symbole une seule fois. }
+  CgFrameLabelName : Array[0..MAX_CG_LOOP - 1] Of TString;
+  CgPendingLabel   : TString;
+
 { Emit* : voir la note d en-tete de section - IDENTIQUES (memes noms,   }
 { memes signatures) a GOCW32.PAS/SWIFTW32.PAS/DELPHI.PAS a leur PROPRE          }
 { TODO 21, portees ICI SANS aucune modification d architecture. }
@@ -12871,6 +13116,8 @@ Begin
   Inc(CgLoopTop);
   CgBreakLbl[CgLoopTop]    := BreakLbl;
   CgContinueLbl[CgLoopTop] := ContinueLbl;
+  CgFrameLabelName[CgLoopTop] := CgPendingLabel;
+  CgPendingLabel := '';
 End;
 
 Procedure CgPushSwitchFrame(Const BreakLbl: TString);
@@ -12887,6 +13134,8 @@ Begin
     CgContinueLbl[CgLoopTop] := CgContinueLbl[CgLoopTop - 1]
   Else
     CgContinueLbl[CgLoopTop] := '';
+  CgFrameLabelName[CgLoopTop] := CgPendingLabel;
+  CgPendingLabel := '';
 End;
 
 Procedure CgPopLoopFrame;
@@ -13114,6 +13363,103 @@ Begin
   EmitInstr('PUSH EBX');
   EmitInstr('CALL _HeapAlloc@12');
   EmitInstr('POP EBX');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _JPPRT_ALLOC_NDARRAY : extension post-TODO25, SIXIEME tranche -      }
+  { generalise le "new T[n][m]" RECTANGULAIRE (deux dimensions, deja                  }
+  { code-genere INLINE via une boucle EXPLICITE dans EK_NEWARRAY, voir             }
+  { sa propre note d en-tete) a un nombre QUELCONQUE de dimensions - au           }
+  { lieu de derouler une boucle PAR NIVEAU dans le generateur de code                 }
+  { (ce qui exigerait UN registre callee-saved PAR dimension, or il n en          }
+  { existe que TROIS - EBX/ESI/EDI - ce qui plafonnerait artificiellement          }
+  { la profondeur), cette routine se rappelle ELLE-MEME RECURSIVEMENT :          }
+  { chaque APPEL recursif recoit sa PROPRE trame de pile fraiche, TOUTES           }
+  { les valeurs locales de CE niveau (n, pointeur EXTERIEUR, compteur de           }
+  { boucle) y vivent NATURELLEMENT sans consommer un SEUL registre                     }
+  { callee-saved supplementaire - le probleme de profondeur limitee                    }
+  { disparait donc completement, AU PRIX d une vraie pile d appels                      }
+  { (profondeur = nombre de dimensions, toujours petite en pratique).             }
+  { Parametres (convention CDECL usuelle de ce compilateur - l appelant          }
+  { nettoie, PUSH dans l ordre dimsPtr/dimIdx/dimCount) : [EBP+8]=                    }
+  { dimCount (constant a travers toute la recursion), [EBP+12]=dimIdx                 }
+  { (le niveau COURANT, 0=exterieur, incremente de 1 a CHAQUE appel                    }
+  { recursif), [EBP+16]=dimsPtr (pointeur VERS UN TABLEAU de dimCount                  }
+  { entiers 32 bits, JAMAIS modifie, un PAR dimension - dimsPtr[dimIdx]           }
+  { est la taille "n" DE CE niveau). Alloue un bloc de n*4+4 octets                     }
+  { (prefixe de longueur, MEME disposition que partout ailleurs - voir             }
+  { CgFieldOffsetInObject/EK_INDEX), ecrit n dans le prefixe. Si                          }
+  { dimIdx+1 = dimCount (DERNIER niveau), le bloc contient des ENTIERS            }
+  { UTILISATEUR - deja zero-remplis par _JPPRT_ALLOC (HEAP_ZERO_MEMORY),          }
+  { RIEN de plus a faire, retourne directement. Sinon, chaque element             }
+  { i (0..n-1) recoit sa PROPRE reference vers un sous-tableau alloue              }
+  { par un appel recursif a dimIdx+1 - EXACTEMENT la semantique Java                   }
+  { REELLE d un tableau rectangulaire (chaque ligne EST un VRAI objet-            }
+  { tableau distinct, section 10.4). }
+  { NOTE D IMPLEMENTATION : CgLocalOperand/CgAddrOperand (helpers de     }
+  { formatage "DWORD PTR [reg+off]") ne sont declares QUE PLUS BAS dans           }
+  { ce fichier (apres EmitRuntimeLibrary) - cette routine ecrit donc                    }
+  { ses operandes EN TOUTES LETTRES, EXACTEMENT comme _JPPRT_PRINTLN_STR/          }
+  { _JPPRT_ALLOC juste au-dessus (qui font de meme, MEME contrainte). }
+  EmitLabel(ASM_PFX_RUNTIME + 'ALLOC_NDARRAY');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('SUB ESP,12');   { [EBP-4]=n ; [EBP-8]=pointeur EXTERIEUR ; [EBP-12]=i }
+  EmitInstr('MOV EAX,DWORD PTR [EBP+12]');
+  EmitInstr('ADD EAX,EAX');
+  EmitInstr('ADD EAX,EAX');
+  EmitInstr('ADD EAX,DWORD PTR [EBP+16]');
+  EmitInstr('MOV ECX,DWORD PTR [EAX]');
+  EmitInstr('MOV DWORD PTR [EBP-4],ECX');
+  EmitInstr('MOV EAX,ECX');
+  EmitInstr('ADD EAX,EAX');
+  EmitInstr('ADD EAX,EAX');
+  EmitInstr('ADD EAX,4');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('MOV ECX,DWORD PTR [EBP-4]');
+  EmitInstr('MOV DWORD PTR [EAX],ECX');
+  EmitInstr('ADD EAX,4');
+  EmitInstr('MOV DWORD PTR [EBP-8],EAX');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+12]');
+  EmitInstr('ADD EAX,1');
+  EmitInstr('CMP EAX,DWORD PTR [EBP+8]');
+  EmitInstr('JL ' + ASM_PFX_RUNTIME + 'ANDA_RECURSE');
+  EmitInstr('MOV EAX,DWORD PTR [EBP-8]');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'ANDA_DONE');
+  EmitLabel(ASM_PFX_RUNTIME + 'ANDA_RECURSE');
+  { "MOV [mem],imm" n est JAMAIS emis par cet assembleur (TODO 22, voir   }
+  { la note d en-tete de BinEncodeMov) - la valeur transite donc par EAX          }
+  { d abord, EXACTEMENT la meme discipline que partout ailleurs dans               }
+  { cette bibliotheque runtime. }
+  EmitInstr('MOV EAX,0');
+  EmitInstr('MOV DWORD PTR [EBP-12],EAX');
+  EmitLabel(ASM_PFX_RUNTIME + 'ANDA_LOOP');
+  EmitInstr('MOV EAX,DWORD PTR [EBP-12]');
+  EmitInstr('CMP EAX,DWORD PTR [EBP-4]');
+  EmitInstr('JGE ' + ASM_PFX_RUNTIME + 'ANDA_LOOPEND');
+  EmitInstr('PUSH DWORD PTR [EBP+16]');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+12]');
+  EmitInstr('ADD EAX,1');
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH DWORD PTR [EBP+8]');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC_NDARRAY');
+  EmitInstr('ADD ESP,12');
+  EmitInstr('MOV ECX,DWORD PTR [EBP-12]');
+  EmitInstr('ADD ECX,ECX');
+  EmitInstr('ADD ECX,ECX');
+  EmitInstr('ADD ECX,DWORD PTR [EBP-8]');
+  EmitInstr('MOV DWORD PTR [ECX],EAX');
+  EmitInstr('MOV EAX,DWORD PTR [EBP-12]');
+  EmitInstr('ADD EAX,1');
+  EmitInstr('MOV DWORD PTR [EBP-12],EAX');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'ANDA_LOOP');
+  EmitLabel(ASM_PFX_RUNTIME + 'ANDA_LOOPEND');
+  EmitInstr('MOV EAX,DWORD PTR [EBP-8]');
+  EmitLabel(ASM_PFX_RUNTIME + 'ANDA_DONE');
   EmitInstr('MOV ESP,EBP');
   EmitInstr('POP EBP');
   EmitInstr('RET');
@@ -13673,6 +14019,17 @@ Begin
       End
       Else If ExprPool[E].Op = '+' Then
         CompileExpr(ExprPool[E].Left)
+      Else If ExprPool[E].Op = '~' Then
+      Begin
+        { extension post-TODO25, SIXIEME tranche : complement bit-a-bit    }
+        { (section 15.15.5) - "XOR EAX,-1" plutot qu un "NOT EAX" DEDIE                  }
+        { (jamais implemente par cet assembleur, TODO 22) : "XOR reg,imm32"          }
+        { est DEJA une forme couverte (BinEncodeAlu, MEME famille que "|"/"&"           }
+        { ci-dessous), x XOR -1 EST le complement bit-a-bit (TOUS les bits            }
+        { de -1 sont a 1), AUCUNE nouvelle forme d encodage requise. }
+        CompileExpr(ExprPool[E].Left);
+        EmitInstr('XOR EAX,-1');
+      End
       Else If ExprPool[E].Op = '!' Then
       Begin
         CompileExpr(ExprPool[E].Left);
@@ -13795,6 +14152,141 @@ Begin
       EmitInstr('JMP ' + LblDone);
       EmitLabel(LblFalse);
       CompileExpr(ExprPool[E].Extra);
+      EmitLabel(LblDone);
+    End;
+
+    { EK_INSTANCEOF : extension post-TODO25, SIXIEME tranche - "null      }
+    { instanceof T" est TOUJOURS faux (section 15.20.2, verifie EN                     }
+    { PREMIER, avant meme de relire l en-tete de l objet) ; sinon,                        }
+    { enumere TOUTE classe CONCRETE dont l etiquette de type DYNAMIQUE               }
+    { (CG_OBJ_HEADER) est une VRAIE sous-classe (au sens large,                             }
+    { TypeIsSubclassOf couvre AUSSI "implements", section 8.1.5) du type              }
+    { teste - MEME technique EXACTE que le dispatch polymorphique de              }
+    { CompileCall (une chaine CMP/JE plutot qu une VRAIE table), juste              }
+    { RECYCLEE ICI pour produire un booleen plutot qu appeler une methode.       }
+    { BOGUE REEL trouve par EXECUTION (synthetique, "Object o = "texte";           }
+    { o instanceof String" repondait FAUSSEMENT 0 au lieu de 1) : une             }
+    { String N A PAS de CG_OBJ_HEADER (son bloc alloue ne contient QUE                 }
+    { des caracteres C bruts, jamais un mot d etiquette de type en                        }
+    { position 0) - lire "[EBX+0]" sur une String relit donc ses QUATRE           }
+    { premiers OCTETS de texte comme s ils etaient une etiquette,                          }
+    { comparaison FORCEMENT fausse (par pure coincidence numerique, mais          }
+    { JAMAIS garantie) plutot qu une VRAIE reponse. Corrige en distinguant       }
+    { EXPLICITEMENT, AVANT toute lecture d en-tete, les cas DECIDABLES              }
+    { STATIQUEMENT (String/tableau contre String/classe/interface - les            }
+    { DEUX representations memoire ne se confondent JAMAIS dans ce                     }
+    { modele) du SEUL cas qui a REELLEMENT besoin de l en-tete dynamique          }
+    { (un objet REELLEMENT etiquete contre une classe/interface). }
+    EK_INSTANCEOF:
+    Begin
+      ClassT := ExprPool[E].Extra;
+      BaseT  := ExprPool[ExprPool[E].Left].TypeIdx;
+
+      If TypeTab[ClassT].Kind = TYK_ARRAY Then
+      Begin
+        FatalError('generateur de code : "instanceof" contre un TYPE ' +
+          'TABLEAU non couvert par cette extension (un tableau ne porte, ' +
+          'lui non plus, aucun CG_OBJ_HEADER - seule sa longueur occupe ' +
+          'cette position, voir la note d''en-tete de section) : ' +
+          TypeTab[ClassT].Name);
+        Exit;
+      End;
+
+      If ClassT = PDT_STRING Then
+      Begin
+        If BaseT = PDT_STRING Then
+        Begin
+          { "s instanceof String" avec s DEJA statiquement une String -   }
+          { DECIDABLE SANS lire d en-tete (qui n existe pas) : vrai SAUF          }
+          { null (section 15.20.2). }
+          CompileExpr(ExprPool[E].Left);
+          LblFalse := CgLabelGen;
+          LblDone  := CgLabelGen;
+          EmitInstr('CMP EAX,0');
+          EmitInstr('JE ' + LblFalse);
+          EmitInstr('MOV EAX,1');
+          EmitInstr('JMP ' + LblDone);
+          EmitLabel(LblFalse);
+          EmitInstr('MOV EAX,0');
+          EmitLabel(LblDone);
+          Exit;
+        End
+        Else If BaseT = PDT_OBJECT Then
+        Begin
+          { CAS VRAIMENT AMBIGU : "Object" (PDT_OBJECT, TypeIdx=1) est LE  }
+          { type declare UNIVERSEL - une variable declaree "Object" PEUT             }
+          { dynamiquement contenir SOIT une VRAIE String (AUCUN en-tete),           }
+          { SOIT un objet REELLEMENT etiquete, et ce compilateur n a AUCUN          }
+          { moyen de distinguer les deux a l EXECUTION (une String n a                }
+          { simplement pas d en-tete a lire) - INDECIDABLE, contrairement           }
+          { a une classe/interface UTILISATEUR PRECISE (cas juste en-               }
+          { dessous), arret PROPRE plutot qu une reponse FAUSSE. }
+          FatalError('generateur de code : "instanceof String" non ' +
+            'couvert par cette extension pour une variable de type ' +
+            '"Object" (indecidable a l''execution dans ce modele - une ' +
+            'String ne porte aucun en-tete permettant de la distinguer ' +
+            'd''un objet reel, voir la note d''en-tete de section)');
+          Exit;
+        End
+        Else If (BaseT >= 0) And (BaseT < TypeCount) And
+                (TypeTab[BaseT].Kind In [TYK_CLASS, TYK_INTERFACE]) Then
+        Begin
+          { un objet REELLEMENT etiquete d une classe/interface PRECISE           }
+          { (PAS le "Object" generique, cas AMBIGU traite a part juste           }
+          { au-dessus) n est JAMAIS une String dans ce modele - DECIDABLE            }
+          { STATIQUEMENT (toujours faux), l operande reste COMPILE pour              }
+          { ses eventuels effets de bord (section 15.20.2 l exige), sa               }
+          { VALEUR simplement ignoree. }
+          CompileExpr(ExprPool[E].Left);
+          EmitInstr('MOV EAX,0');
+          Exit;
+        End
+        Else
+        Begin
+          FatalError('generateur de code : "instanceof String" non ' +
+            'couvert par cette extension pour ce type statique (aucune ' +
+            'String ne porte d''en-tete de type dynamique dans ce ' +
+            'modele memoire, indecidable a l''execution, voir la note ' +
+            'd''en-tete de section) : type #' + IntToStrG(BaseT));
+          Exit;
+        End;
+      End;
+
+      { ClassT est ici TOUJOURS TYK_CLASS/TYK_INTERFACE (TYK_ARRAY deja    }
+      { rejete plus haut). Une String reste, ELLE AUSSI, JAMAIS instanceof      }
+      { d une classe/interface UTILISATEUR - DECIDABLE STATIQUEMENT,                  }
+      { MEME raison symetrique que le cas ClassT=PDT_STRING ci-dessus -                 }
+      { AUCUNE ambiguite "Object" possible ICI (contrairement au cas                    }
+      { symetrique plus haut) : BaseT=PDT_STRING signifie ICI que                          }
+      { l operande est LUI-MEME statiquement une String, JAMAIS "Object". }
+      If BaseT = PDT_STRING Then
+      Begin
+        CompileExpr(ExprPool[E].Left);
+        EmitInstr('MOV EAX,0');
+        Exit;
+      End;
+
+      CompileExpr(ExprPool[E].Left);
+      EmitInstr('MOV EBX,EAX');
+      LblFalse := CgLabelGen;
+      LblLoop  := CgLabelGen;   { reutilise comme cible "vrai" partagee }
+      LblDone  := CgLabelGen;
+      EmitInstr('CMP EBX,0');
+      EmitInstr('JE ' + LblFalse);
+      EmitInstr('MOV EAX,' + CgAddrOperand('EBX', 0));
+      For I := 0 To TypeCount - 1 Do
+        If (TypeTab[I].Kind = TYK_CLASS) And (Not TypeTab[I].IsAbstractClass) And
+           TypeIsSubclassOf(I, ClassT) Then
+        Begin
+          EmitInstr('CMP EAX,' + IntToStrG(I));
+          EmitInstr('JE ' + LblLoop);
+        End;
+      EmitInstr('JMP ' + LblFalse);
+      EmitLabel(LblLoop);
+      EmitInstr('MOV EAX,1');
+      EmitInstr('JMP ' + LblDone);
+      EmitLabel(LblFalse);
+      EmitInstr('MOV EAX,0');
       EmitLabel(LblDone);
     End;
 
@@ -13937,10 +14429,11 @@ Begin
     End;
 
     { EK_NEWARRAY : "new T[n]" ('dims', 1 dimension), un initialiseur     }
-    { ENTRE ACCOLADES ('init'), OU "new T[n][m]" RECTANGULAIRE ('dims', 2            }
-    { dimensions - extension post-TODO25, CINQUIEME tranche) - AU-DELA de           }
-    { DEUX dimensions reste HORS de portee (AUCUN echantillon n en a                    }
-    { besoin). "new T[n][]" (jagged, une SEULE dimension CHIFFREE, la                  }
+    { ENTRE ACCOLADES ('init'), "new T[n][m]" RECTANGULAIRE ('dims', 2                 }
+    { dimensions - extension post-TODO25, CINQUIEME tranche), OU "new                    }
+    { T[n1][n2]...[nK]" RECTANGULAIRE a K QUELCONQUE (K>2 - extension                     }
+    { post-TODO25, SIXIEME tranche, _JPPRT_ALLOC_NDARRAY, voir sa propre           }
+    { note d en-tete). "new T[n][]" (jagged, une SEULE dimension CHIFFREE, la          }
     { seconde paire de crochets VIDE) est DEJA couvert par le cas 1               }
     { dimension existant SANS AUCUN changement : ElemT est simplement                    }
     { lui-meme un TYK_ARRAY, mais l ALLOCATION EXTERIEURE (n references,               }
@@ -13956,9 +14449,31 @@ Begin
     Begin
       If (ExprPool[E].Op = 'dims') And (ExprPool[E].ArgCount > 2) Then
       Begin
-        FatalError('generateur de code : tableau a plus de DEUX dimensions ' +
-          'non couvert par cette extension (voir la note d''en-tete de ' +
-          'section)');
+        { extension post-TODO25, SIXIEME tranche : N dimensions             }
+        { QUELCONQUE (N>2, ex. "new int[a][b][c]") - _JPPRT_ALLOC_NDARRAY           }
+        { (voir sa propre note d en-tete pour l architecture RECURSIVE                  }
+        { complete) plutot qu une boucle DEROULEE PAR NIVEAU ici (qui                    }
+        { plafonnerait la profondeur a TROIS, EBX/ESI/EDI etant les SEULS           }
+        { registres callee-saved disponibles - voir le cas ArgCount=2                    }
+        { juste en-dessous, qui garde SA propre implementation INLINE                     }
+        { EPROUVEE, AUCUNE raison de la perturber). Chaque taille de                     }
+        { dimension est d abord evaluee et rangee dans un petit TAMPON de           }
+        { PILE (ArgN mots de 4 octets, libere juste apres l appel), le              }
+        { pointeur VERS ce tampon devenant "dimsPtr". }
+        ArgN := ExprPool[E].ArgCount;
+        EmitInstr('SUB ESP,' + IntToStrG(ArgN * 4));
+        For I := 0 To ArgN - 1 Do
+        Begin
+          CompileExpr(ExprArgPool[ExprPool[E].ArgFirst + I]);
+          EmitInstr('MOV ' + CgAddrOperand('ESP', I * 4) + ',EAX');
+        End;
+        EmitInstr('MOV EAX,ESP');
+        EmitInstr('PUSH EAX');
+        EmitInstr('PUSH 0');
+        EmitInstr('PUSH ' + IntToStrG(ArgN));
+        EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC_NDARRAY');
+        EmitInstr('ADD ESP,12');
+        EmitInstr('ADD ESP,' + IntToStrG(ArgN * 4));
         Exit;
       End;
       If (ExprPool[E].Op = 'dims') And (ExprPool[E].ArgCount = 2) Then
@@ -14218,12 +14733,29 @@ Begin
     Exit;
   End;
 
+  { extension post-TODO25, SIXIEME tranche : "println(int/boolean/char/  }
+  { short/byte)" - PAS SEULEMENT "println(String)" (le SEUL cas couvert           }
+  { avant cette tranche) - StdlibInit (ligne ~10793) enregistre BEL ET               }
+  { BIEN une VRAIE surcharge "println(int)" (PrintStream.println, 4                    }
+  { surcharges) que la resolution de surcharge choisissait DEJA                          }
+  { correctement (EK_CALL.Extra) - seul le GENERATEUR DE CODE ignorait           }
+  { encore tout ce qui n etait pas "String" ICI. CompileToStringValue                 }
+  { (deja ecrite pour la concatenation "+") convertit DEJA int/boolean/           }
+  { char en pointeur de chaine ALLOUEE - la REUTILISER ICI evite toute           }
+  { duplication, PRINTLN_STR ne voit alors JAMAIS la difference. "double"       }
+  { reste HORS de portee (CompileToStringValue s arrete PROPREMENT elle-              }
+  { meme dans ce cas, MEME limitation que partout ailleurs). }
   If (MethodPool[MI].OwnerTypeIdx = TypeFindByName('PrintStream')) And
      (MethodPool[MI].Name = 'println') And (MethodPool[MI].ParamCount = 1) And
-     (ParamPool[MethodPool[MI].ParamFirst].TypeIdx = PDT_STRING) Then
+     ((ParamPool[MethodPool[MI].ParamFirst].TypeIdx = PDT_STRING) Or
+      (ParamPool[MethodPool[MI].ParamFirst].TypeIdx = PRIMTYPE_INT) Or
+      (ParamPool[MethodPool[MI].ParamFirst].TypeIdx = PRIMTYPE_BOOLEAN) Or
+      (ParamPool[MethodPool[MI].ParamFirst].TypeIdx = PRIMTYPE_CHAR) Or
+      (ParamPool[MethodPool[MI].ParamFirst].TypeIdx = PRIMTYPE_SHORT) Or
+      (ParamPool[MethodPool[MI].ParamFirst].TypeIdx = PRIMTYPE_BYTE)) Then
   Begin
     ArgE := ExprArgPool[ExprPool[E].ArgFirst];
-    CompileExpr(ArgE);
+    CompileToStringValue(ArgE);
     EmitInstr('PUSH EAX');
     EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'PRINTLN_STR');
     EmitInstr('ADD ESP,4');
@@ -14402,6 +14934,22 @@ Begin
     EmitInstr('IDIV ECX');
     If Op = '%=' Then EmitInstr('MOV EAX,EDX');
   End
+  Else If Op = '&=' Then
+    EmitInstr('AND EAX,ECX')
+  Else If Op = '|=' Then
+    EmitInstr('OR EAX,ECX')
+  Else If Op = '^=' Then
+    EmitInstr('XOR EAX,ECX')
+  Else If (Op = '<<=') Or (Op = '>>=') Or (Op = '>>>=') Then
+  Begin
+    { extension post-TODO25, SIXIEME tranche : le compte de decalage      }
+    { transite par CL (octet bas de ECX, ou "valeur" REPOSE deja - MEME              }
+    { registre special que CompileBinary pour "<<"/">>"/">>>" non-               }
+    { composes, voir sa propre note d en-tete). }
+    If Op = '<<=' Then EmitInstr('SHL EAX,CL')
+    Else If Op = '>>=' Then EmitInstr('SAR EAX,CL')
+    Else EmitInstr('SHR EAX,CL');
+  End
   Else
     FatalError('generateur de code : operateur d''affectation compose non ' +
       'couvert par cette extension : ' + Op);
@@ -14434,6 +14982,15 @@ Begin
       If ExprPool[StmtPool[S].Left].Kind = EK_CALL Then
         CompileCall(StmtPool[S].Left)
       Else If ExprPool[StmtPool[S].Left].Kind = EK_UNARY Then
+        CompileExpr(StmtPool[S].Left)
+      { extension post-TODO25, SIXIEME tranche : "new Foo(...);" comme     }
+      { INSTRUCTION a part entiere (section 14.9 - "class instance                     }
+      { creation expression" figure PARMI les formes d instruction-                        }
+      { expression AU MEME titre qu un appel de methode) - la valeur                        }
+      { (pointeur d objet) laissee dans EAX par CompileExpr est simplement          }
+      { IGNOREE, EXACTEMENT comme le resultat d un appel de methode                       }
+      { EK_CALL ci-dessus. }
+      Else If ExprPool[StmtPool[S].Left].Kind = EK_NEWOBJECT Then
         CompileExpr(StmtPool[S].Left)
       Else
         FatalError('generateur de code : forme d''instruction-expression ' +
@@ -14660,25 +15217,86 @@ Begin
       CgPopLoopFrame;
     End;
 
+    { STK_BREAK etiquete : extension post-TODO25, SIXIEME tranche - le    }
+    { PARSEUR (ParseBreakStmt) a DEJA garanti que l etiquette existe dans           }
+    { une portee englobante ENCORE ouverte ; ICI, il suffit donc de la              }
+    { retrouver dans la pile CgFrameLabelName (forcement PRESENTE - une           }
+    { etiquette validee au parsing a NECESSAIREMENT pousse un cadre                       }
+    { pendant la compilation, STK_LABELED ci-dessous) et de sauter a son            }
+    { "break" - PEU IMPORTE que le cadre soit une boucle OU un simple              }
+    { bloc etiquete (les DEUX portent un CgBreakLbl valide). }
     STK_BREAK:
       If StmtPool[S].NameVal <> '' Then
-        FatalError('generateur de code : "break" etiquete non couvert par ' +
-          'cette extension')
+      Begin
+        I := CgLoopTop;
+        While (I >= 0) And (CgFrameLabelName[I] <> StmtPool[S].NameVal) Do Dec(I);
+        If I < 0 Then
+          FatalError('generateur de code : etiquette "' + StmtPool[S].NameVal +
+            '" introuvable pour ce "break" (ne devrait jamais arriver, deja ' +
+            'verifie au parsing)')
+        Else
+          EmitInstr('JMP ' + CgBreakLbl[I]);
+      End
       Else If CgLoopTop < 0 Then
         FatalError('generateur de code : "break" hors de toute boucle/switch ' +
           '(ne devrait jamais arriver, deja verifie au parsing)')
       Else
         EmitInstr('JMP ' + CgBreakLbl[CgLoopTop]);
 
+    { STK_CONTINUE etiquete : MEME recherche que STK_BREAK ci-dessus -     }
+    { le PARSEUR (ParseContinueStmt) a DEJA rejete toute etiquette NE               }
+    { designant PAS une boucle (LabelStackIsLoop), le cadre trouve ICI                  }
+    { porte donc TOUJOURS un CgContinueLbl non-vide. }
     STK_CONTINUE:
       If StmtPool[S].NameVal <> '' Then
-        FatalError('generateur de code : "continue" etiquete non couvert ' +
-          'par cette extension')
+      Begin
+        I := CgLoopTop;
+        While (I >= 0) And (CgFrameLabelName[I] <> StmtPool[S].NameVal) Do Dec(I);
+        If I < 0 Then
+          FatalError('generateur de code : etiquette "' + StmtPool[S].NameVal +
+            '" introuvable pour ce "continue" (ne devrait jamais arriver, ' +
+            'deja verifie au parsing)')
+        Else
+          EmitInstr('JMP ' + CgContinueLbl[I]);
+      End
       Else If (CgLoopTop < 0) Or (CgContinueLbl[CgLoopTop] = '') Then
         FatalError('generateur de code : "continue" hors de toute boucle ' +
           '(ne devrait jamais arriver, deja verifie au parsing)')
       Else
         EmitInstr('JMP ' + CgContinueLbl[CgLoopTop]);
+
+    { STK_LABELED : extension post-TODO25, SIXIEME tranche - si            }
+    { l instruction etiquetee est DIRECTEMENT une boucle (while/do/for),           }
+    { CgPendingLabel est simplement POSE avant de la compiler : SON               }
+    { PROPRE CgPushLoopFrame (plus bas dans cette meme fonction) le                    }
+    { consomme automatiquement, AUCUNE difference de structure requise.           }
+    { Sinon (bloc/if/etc. etiquete SANS etre une boucle - "break label;"          }
+    { valide en Java MEME hors de toute boucle, section 7.18), un cadre           }
+    { "break seul" est pousse EXPLICITEMENT ICI (CgPushSwitchFrame,                     }
+    { MEME mecanisme qu un switch - herite le "continue" de l englobant,          }
+    { jamais le sien, ce qui est SANS CONSEQUENCE puisque le parseur                  }
+    { interdit deja "continue" vers une etiquette non-boucle) ; l etiquette          }
+    { ELLE-MEME est alors saute PAR-DESSUS TOUT le corps, exactement la               }
+    { semantique Java d un "break" simple vers un bloc etiquete. }
+    STK_LABELED:
+    Begin
+      SubS := StmtPool[S].Left;
+      If (StmtPool[SubS].Kind = STK_WHILE) Or (StmtPool[SubS].Kind = STK_DOWHILE) Or
+         (StmtPool[SubS].Kind = STK_FOR) Then
+      Begin
+        CgPendingLabel := StmtPool[S].NameVal;
+        CompileStmt(SubS);
+      End
+      Else
+      Begin
+        LblEnd := CgLabelGen;
+        CgPendingLabel := StmtPool[S].NameVal;
+        CgPushSwitchFrame(LblEnd);
+        CompileStmt(SubS);
+        EmitLabel(LblEnd);
+        CgPopLoopFrame;
+      End;
+    End;
 
     { STK_THROW : extension post-TODO25 - SIMPLIFICATION EXPLICITEMENT     }
     { ASSUMEE, PAS de vraies semantiques Java (AUCUN deroulement de pile,             }
@@ -14748,6 +15366,8 @@ Var I, MainMI : Integer;
 Begin
   CgLabelSeq := 0;
   CgLoopTop  := -1;   { extension post-TODO25 - voir la note d en-tete de CgBreakLbl }
+  CgPendingLabel := '';   { extension post-TODO25, SIXIEME tranche - voir la note   }
+                          { d en-tete de CgFrameLabelName/CgPendingLabel }
   CgCollectStrings;
 
   EmitOpen(AsmFileName);
