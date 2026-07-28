@@ -4915,6 +4915,15 @@ Function ParseExpr: Integer; Forward;
 Function ExprLiteralToConstVal(E: Integer; Var CV: TConstVal): Boolean; Forward;
 Function ParseArrayInitializer(ElemT: Integer): Integer; Forward;
 
+{ Forward EXCEPTIONNEL (ParsePrimary, extension post-TODO25 EK_ASSIGN,      }
+{ Test12Fichiers.jpp) : "(ligne = entree.readLine())" doit pouvoir                }
+{ appliquer les MEMES verifications semantiques best-effort (TODO 19)            }
+{ que ParseExprStmt pour une affectation ORDINAIRE, mais leurs corps                }
+{ REELS (plus bas) n ont besoin que d ExprPool/SymTab/FieldPool, DEJA          }
+{ disponibles ICI - MEME technique que les deux forwards juste au-dessus. }
+Procedure SemanticCheckFinalTarget(E: Integer); Forward;
+Procedure SemanticCheckAssignTypes(Const Op: TString; L, R: Integer); Forward;
+
 { Forward EXCEPTIONNEL (ParseArgListInto, TODO 13) : ParseArrayInitializer  }
 { (plus bas) a besoin de ce correctif anti-entrelacement (voir sa                    }
 { propre note d en-tete, section TODO 06/13) DES MAINTENANT, alors que          }
@@ -5420,13 +5429,29 @@ Type
                         { resolu du premier coup, cas OVERWHELMING majoritaire). }
     EK_NEWOBJECT,      { Extra = TypeIdx de la classe ; ArgFirst/Count =        }
                         { arguments du constructeur (section 6.20) }
-    EK_NEWARRAY        { Op = 'dims' (ArgFirst/Count = expressions de              }
+    EK_NEWARRAY,       { Op = 'dims' (ArgFirst/Count = expressions de              }
                         { DIMENSION, une par paire "[N]" rencontree, VIDES           }
                         { EXCLUES) ou 'init' (ArgFirst/Count = ELEMENTS de          }
                         { l initialiseur accolade (section 6.21) ; TypeIdx =            }
                         { type ELEMENT final (deja enveloppe de TYK_ARRAY               }
                         { autant de fois que de paires "[]" rencontrees,                    }
                         { chiffrees OU vides) }
+    EK_ASSIGN          { extension post-TODO25 (Test12Fichiers.jpp,                    }
+                        { "while ((ligne = entree.readLine()) != null)") -        }
+                        { l affectation comme VRAIE expression PRODUISANT           }
+                        { une valeur (section 15.26), PAS seulement comme                 }
+                        { instruction (STK_ASSIGN, ParseExprStmt) - portee              }
+                        { DELIBEREMENT ETROITE : reconnue UNIQUEMENT entre               }
+                        { parentheses explicites dans ParsePrimary (le SEUL           }
+                        { contexte ou un vrai echantillon en a besoin,                        }
+                        { l idiome classique "while ((x = f()) != null)" -             }
+                        { une affectation-expression SANS parentheses, ex.               }
+                        { "foo(x = 5)", resterait NON couverte, aucun                        }
+                        { echantillon ne l exige). Op = meme jeu que                        }
+                        { STK_ASSIGN ('='/'+='/...) ; Left = cible ; Right =           }
+                        { valeur - codegen PARTAGE avec STK_ASSIGN via                       }
+                        { CompileAssignCore (TODO 21+, voir sa propre note              }
+                        { d en-tete). }
   );
 
   TExprNode = Record
@@ -6109,7 +6134,7 @@ End;
 { sens : arret PROPRE (FatalError) plutot que de deviner une instance             }
 { implicite. }
 Function ParsePrimary: Integer;
-Var N, KW, PL : Integer; Nam : TString;
+Var N, KW, PL, AN : Integer; Nam, AssignOp : TString;
 Begin
   Case PPKind Of
     TOK_INT:
@@ -6183,6 +6208,26 @@ Begin
   Begin
     PPAdvance;
     N := ParseExpr;
+    { extension post-TODO25 (Test12Fichiers.jpp) : affectation comme         }
+    { VRAIE expression, mais UNIQUEMENT reconnue ICI entre parentheses          }
+    { explicites - "while ((ligne = entree.readLine()) != null)" est               }
+    { le SEUL idiome reel qui en a besoin (voir la note d en-tete de              }
+    { EK_ASSIGN). }
+    If PPIsOp('=') Or PPIsOp('+=') Or PPIsOp('-=') Or PPIsOp('*=') Or
+       PPIsOp('/=') Or PPIsOp('%=') Or PPIsOp('&=') Or PPIsOp('^=') Or
+       PPIsOp('|=') Or PPIsOp('<<=') Or PPIsOp('>>=') Or PPIsOp('>>>=') Then
+    Begin
+      AssignOp := PPVal;
+      PPAdvance;
+      AN := ExprNew(EK_ASSIGN);
+      ExprPool[AN].Op      := AssignOp;
+      ExprPool[AN].Left    := N;
+      ExprPool[AN].Right   := ParseExpr;
+      ExprPool[AN].TypeIdx := ExprPool[N].TypeIdx;
+      SemanticCheckFinalTarget(N);                              { TODO 19 }
+      SemanticCheckAssignTypes(AssignOp, N, ExprPool[AN].Right); { TODO 19 }
+      N := AN;
+    End;
     If Not PPMatch(')') Then
       FatalError('")" attendu');
     ParsePrimary := N;
@@ -11742,6 +11787,7 @@ Var
   User32T, WinmT, MBMI, PFirst, FI, MathT,
   MI_ThrowableCtor, MI_ExceptionCtor, MI_RuntimeExcCtor, MI_ErrorCtor,
   MI_IllegalArgCtor, MI_NumberFormatCtor, MI_InterruptedCtor, MI_UnsatisfiedLinkCtor,
+  MI_IOExceptionCtor,
   MI_GetMessage : Integer;
 Begin
   { extension post-TODO25, DEUXIEME tranche - voir la note d en-tete de   }
@@ -11884,32 +11930,55 @@ Begin
   { qui existent UNIQUEMENT pour que TypeIsSubclassOf verifie la                        }
   { compatibilite des parametres de constructeur (TODO 08/09,                             }
   { MethodParamsCompatible). IOException herite getMessage() via                       }
-  { Exception/Throwable, AUCUN cablage special. }
+  { Exception/Throwable, AUCUN cablage special.                                             }
+  { extension post-TODO25 (generateur de code, Test12Fichiers.jpp) :   }
+  { CHACUNE des CINQ classes CONCRETES ci-dessous recoit maintenant UN      }
+  { SEUL champ propre 'handle' (le HANDLE Win32 reel, CreateFileA),               }
+  { TOUJOURS au MEME deplacement dans l objet (CG_OBJ_HEADER+0 - AUCUN            }
+  { des CINQ n herite de champ, Writer/Reader n en declarant aucun) -             }
+  { _JPPRT_STREAM_WRAP_INIT (BufferedWriter/PrintWriter/BufferedReader,             }
+  { EmitRuntimeLibrary) EXPLOITE directement cette IDENTITE d octet             }
+  { plutot que de re-router par ClassFindField pour la SOURCE copiee,          }
+  { documente PLUTOT QUE suppose implicitement. }
   WriterT := ClassAdd('Writer', PDT_OBJECT, False, False, VIS_PUBLIC);
   ReaderT := ClassAdd('Reader', PDT_OBJECT, False, False, VIS_PUBLIC);
 
   FileWriterT := ClassAdd('FileWriter', WriterT, False, False, VIS_PUBLIC);
   StdMethod1(FileWriterT, '', MK_CONSTRUCTOR, False, PRIMTYPE_VOID, PDT_STRING);
+  FieldPoolAdd(FileWriterT, PRIMTYPE_INT, 'handle', False, False, VIS_PRIVATE);
 
   BufferedWriterT := ClassAdd('BufferedWriter', WriterT, False, False, VIS_PUBLIC);
   StdMethod1(BufferedWriterT, '', MK_CONSTRUCTOR, False, PRIMTYPE_VOID, WriterT);
+  FieldPoolAdd(BufferedWriterT, PRIMTYPE_INT, 'handle', False, False, VIS_PRIVATE);
 
   PrintWriterT := ClassAdd('PrintWriter', WriterT, False, False, VIS_PUBLIC);
   StdMethod1(PrintWriterT, '', MK_CONSTRUCTOR, False, PRIMTYPE_VOID, WriterT);
   StdMethod1(PrintWriterT, 'println', MK_METHOD, False, PRIMTYPE_VOID, PDT_STRING);
   StdMethod0(PrintWriterT, 'checkError', MK_METHOD, False, PRIMTYPE_BOOLEAN);
   StdMethod0(PrintWriterT, 'close', MK_METHOD, False, PRIMTYPE_VOID);
+  FieldPoolAdd(PrintWriterT, PRIMTYPE_INT, 'handle', False, False, VIS_PRIVATE);
 
   FileReaderT := ClassAdd('FileReader', ReaderT, False, False, VIS_PUBLIC);
   StdMethod1(FileReaderT, '', MK_CONSTRUCTOR, False, PRIMTYPE_VOID, PDT_STRING);
+  FieldPoolAdd(FileReaderT, PRIMTYPE_INT, 'handle', False, False, VIS_PRIVATE);
 
   BufferedReaderT := ClassAdd('BufferedReader', ReaderT, False, False, VIS_PUBLIC);
   StdMethod1(BufferedReaderT, '', MK_CONSTRUCTOR, False, PRIMTYPE_VOID, ReaderT);
   StdMethod0(BufferedReaderT, 'readLine', MK_METHOD, False, PDT_STRING);
   StdMethod0(BufferedReaderT, 'close', MK_METHOD, False, PRIMTYPE_VOID);
+  FieldPoolAdd(BufferedReaderT, PRIMTYPE_INT, 'handle', False, False, VIS_PRIVATE);
 
+  { extension post-TODO25 (Test12Fichiers.jpp) : AUCUN StdMethod1 ici    }
+  { pour le constructeur (contrairement a FileWriter/BufferedReader/...            }
+  { plus haut) - IOExceptionT recoit son SEUL constructeur PLUS BAS, via      }
+  { StdlibAddThrowableCtor (MEME technique EXACTE que                                     }
+  { IllegalArgumentException/NumberFormatException/InterruptedException/      }
+  { UnsatisfiedLinkError, aucune de ces quatre classes n a NON PLUS de          }
+  { StdMethod1 pour son constructeur) - un DOUBLE enregistrement                     }
+  { produirait DEUX MethodPool entrees "(String)" ambigues, dont                     }
+  { ClassFindConstructor resoudrait la PREMIERE (celle-ci, SANS corps            }
+  { reel), rendant le VRAI corps AJOUTE plus bas totalement INUTILE. }
   IOExceptionT := ClassAdd('IOException', PDT_EXCEPTION, False, False, VIS_PUBLIC);
-  StdMethod1(IOExceptionT, '', MK_CONSTRUCTOR, False, PRIMTYPE_VOID, PDT_STRING);
 
   { java.lang.Object.wait()/notify()/notifyAll() (section 14.27/14.28) -  }
   { AJOUTES sur PDT_OBJECT lui-meme, EXACTEMENT le meme precedent que              }
@@ -12115,6 +12184,15 @@ Begin
   MI_NumberFormatCtor    := StdlibAddThrowableCtor(PDT_NUMBERFORMATEXCEPTION, MI_IllegalArgCtor);
   MI_InterruptedCtor     := StdlibAddThrowableCtor(PDT_INTERRUPTEDEXCEPTION, MI_ExceptionCtor);
   MI_UnsatisfiedLinkCtor := StdlibAddThrowableCtor(PDT_UNSATISFIEDLINKERROR, MI_ErrorCtor);
+
+  { extension post-TODO25 (Test12Fichiers.jpp, "throw new                      }
+  { IOException(...)") : IOExceptionT (declaree plus haut, java.io) avait      }
+  { jusqu ici EXACTEMENT le meme trou que les quatre classes FEUILLES          }
+  { juste au-dessus AVANT leur propre correctif - un constructeur              }
+  { RESOLU au parsing (StdMethod1) mais SANS aucun corps SOURCE reel,               }
+  { jamais chaine via StdlibAddThrowableCtor. MEME chainage EXACT              }
+  { (vers Exception, son parent DIRECT, section 8). }
+  MI_IOExceptionCtor := StdlibAddThrowableCtor(IOExceptionT, MI_ExceptionCtor);
 
   StdlibInitActive := False;
 End;
@@ -13925,12 +14003,18 @@ Begin
   { MethodPool normal). PLUS 1 (TREIZIEME tranche, Thread REEL -                    }
   { BuildThreadProcMethod/"__threadproc", le SEUL point d entree de              }
   { thread synthetique, voir sa propre note d en-tete) = 49 methodes             }
-  { TOTAL. PLUS 2 champs (MEME TREIZIEME tranche - Thread.target/                    }
-  { handle) = 16 champs TOTAL. }
+  { TOTAL (extension post-TODO25 java.io, Test12Fichiers.jpp : IOException      }
+  { perd son ancien StdMethod1 mais GAGNE un vrai constructeur via              }
+  { StdlibAddThrowableCtor - UN retire, UN ajoute, compte INCHANGE, voir           }
+  { la note d en-tete de StdlibInit/IOExceptionT). PLUS 2 champs (MEME              }
+  { TREIZIEME tranche - Thread.target/handle) = 16 champs, PLUS 5 (java.io   }
+  { REEL - un SEUL champ 'handle' par classe CONCRETE, FileWriter/                       }
+  { BufferedWriter/PrintWriter/FileReader/BufferedReader) = 21 champs             }
+  { TOTAL. }
   TypeAssert('StdlibInit : MethodPoolCount = 49 (inventaire consolide, ' +
     'TODO 20 + TREIZIEME tranche post-25)', MethodPoolCount = 49);
-  TypeAssert('StdlibInit : FieldPoolCount = 16 (inventaire consolide, TODO 20 ' +
-    '+ Math.PI/message/TREIZIEME tranche post-25)', FieldPoolCount = 16);
+  TypeAssert('StdlibInit : FieldPoolCount = 21 (inventaire consolide, TODO 20 ' +
+    '+ Math.PI/message/TREIZIEME tranche + java.io REEL post-25)', FieldPoolCount = 21);
 
   TypeInit;
   SymInit;
@@ -14303,6 +14387,20 @@ Begin
   EmitRaw('EXTRN _EnterCriticalSection@4:NEAR');
   EmitRaw('EXTRN _LeaveCriticalSection@4:NEAR');
   EmitRaw('EXTRN _Sleep@4:NEAR');
+  { extension post-TODO25 (java.io REEL, Test12Fichiers.jpp) - QUATRE   }
+  { de PLUS dans KERNEL32.DLL (MEME discipline "emises SANS condition"           }
+  { que les CINQ ci-dessus). _CreateFileA@28 (7 parametres stdcall = 28          }
+  { octets) ouvre/cree un fichier reel (FileWriter/FileReader,                              }
+  { _JPPRT_FILEWRITER_INIT/_JPPRT_FILEREADER_INIT) ; _ReadFile@20/                     }
+  { _WriteFile@20 (le SECOND deja importe plus haut pour                                  }
+  { System.out.println depuis le TODO 21, reutilise TEL QUEL - AUCUN              }
+  { doublon, "_WriteFile@20" designe TOUJOURS la MEME entree IAT) lisent/         }
+  { ecrivent reellement le contenu (_JPPRT_BUFFEREDREADER_READLINE/                  }
+  { _JPPRT_PRINTWRITER_PRINTLN) ; _CloseHandle@4 libere le HANDLE Win32          }
+  { (_JPPRT_STREAM_CLOSE, "sortie.close()"/"entree.close()"). }
+  EmitRaw('EXTRN _CreateFileA@28:NEAR');
+  EmitRaw('EXTRN _ReadFile@20:NEAR');
+  EmitRaw('EXTRN _CloseHandle@4:NEAR');
   EmitBlankLine;
 End;
 
@@ -14604,6 +14702,21 @@ Begin
   EmitRaw(ASM_PFX_RUNTIME + 'EXC_EBPARR DB ' + BinZeroList(MAX_EXC_FRAMES * 4));
   EmitRaw(ASM_PFX_RUNTIME + 'EXC_ESPARR DB ' + BinZeroList(MAX_EXC_FRAMES * 4));
   EmitRaw(ASM_PFX_RUNTIME + 'EXC_TGTARR DB ' + BinZeroList(MAX_EXC_FRAMES * 4));
+  { extension post-TODO25 (java.io REEL, Test12Fichiers.jpp) -           }
+  { _JPPRT_BUFFEREDREADER_READLINE (EmitRuntimeLibrary, voir sa propre           }
+  { note d en-tete) accumule OCTET PAR OCTET (ReadFile, un seul a la               }
+  { fois) la ligne COURANTE dans ce tampon STATIQUE PARTAGE avant de la          }
+  { copier vers une VRAIE String allouee de la longueur EXACTE - jamais          }
+  { reentrant (un SEUL readLine() "en vol" a la fois, Test12Fichiers.jpp          }
+  { n a AUCUNE boucle imbriquee sur DEUX BufferedReader), MEME classe de         }
+  { simplification que EXC_EBPARR/etc. ci-dessus (etat GLOBAL borne              }
+  { plutot qu une pile/un tas dynamique). 1024 octets = limite de                    }
+  { longueur de ligne DISCLOSED (une ligne plus longue est                                }
+  { silencieusement tronquee, JAMAIS un depassement memoire - voir la               }
+  { verification ESI>=1023 dans la boucle) ; aucun echantillon reel                   }
+  { n approche cette longueur (grep confirme, les plus longues lignes             }
+  { ecrites par Test12Fichiers.jpp font moins de 20 caracteres). }
+  EmitRaw(ASM_PFX_RUNTIME + 'LINEBUF DB ' + BinZeroList(1024));
   EmitSyncLockData;
   EmitBlankLine;
 End;
@@ -16109,6 +16222,266 @@ Begin
   EmitInstr('POP EBP');
   EmitInstr('RET');
   EmitBlankLine;
+
+  { extension post-TODO25 (java.io REEL, Test12Fichiers.jpp) - CINQ      }
+  { classes concretes (FileWriter/BufferedWriter/PrintWriter/FileReader/         }
+  { BufferedReader, StdlibInit) PARTAGENT TOUTES un SEUL champ 'handle'         }
+  { (un HANDLE Win32 brut) au MEME deplacement CG_OBJ_HEADER+0 - AUCUNE           }
+  { bufferisation REELLE n est tentee (chaque "println"/octet lu de              }
+  { "readLine" declenche son PROPRE appel WriteFile/ReadFile) : plus                 }
+  { simple qu une VRAIE classe BufferedWriter/BufferedReader avec son            }
+  { propre tampon INTERNE, mais fonctionnellement CORRECT pour ce que           }
+  { Test12Fichiers.jpp exerce (quelques lignes courtes) - performance                }
+  { volontairement sacrifiee, MEME arbitrage que Hashtable.get (O(n),           }
+  { ONZIEME tranche) plutot qu une VRAIE table de hachage. Terminateur           }
+  { de ligne : LF SEUL (_JPPRT_NEWLINE, deja existant depuis le TODO 21)         }
+  { plutot que CRLF - ce compilateur ECRIT puis RELIT ses PROPRES                     }
+  { fichiers (Test12Fichiers.jpp fait les deux dans le MEME programme),         }
+  { AUCUNE compatibilite avec un fichier externe n est requise, donc                }
+  { AUCUNE complication "\r\n" (ou la gestion d un eventuel \r isole)             }
+  { n est necessaire - simplification DISCLOSED, pas une omission.                    }
+
+  { _JPPRT_FILEWRITER_INIT(objPtr, pathPtr) : "new FileWriter(nom)" -    }
+  { CreateFileA(pathPtr, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,                       }
+  { FILE_ATTRIBUTE_NORMAL, NULL) - GENERIC_WRITE=0x40000000 tient dans           }
+  { un LongInt POSITIF (1073741824), AUCUN probleme de signe.                                }
+  { BOGUE REEL trouve PAR EXECUTION (segfault, FileIoTest2.jpp                        }
+  { synthetique - "new BufferedWriter(new FileWriter(nom))" a l                       }
+  { interieur d un "new PrintWriter(...)" ) : CreateFileA ecrase EAX             }
+  { (son propre HANDLE de retour) - contrairement a                                          }
+  { _JPPRT_INTEGER_INIT/_JPPRT_THREAD_INIT (qui chargent objPtr DANS                  }
+  { EAX et n appellent plus RIEN ensuite), cette routine-ci appelle                    }
+  { CreateFileA APRES avoir eu besoin d EAX pour objPtr, et le                              }
+  { CALLEUR (EK_NEWOBJECT) suppose TOUJOURS "EAX = pointeur d objet                    }
+  { REELLEMENT alloue" en sortie (postcondition partagee par les TROIS         }
+  { branches special-case) - sans ce correctif, "new                                        }
+  { BufferedWriter(new FileWriter(...))" recevait silencieusement le            }
+  { HANDLE Win32 brut a la place du pointeur FileWriter, et                                }
+  { _JPPRT_STREAM_WRAP_INIT deref actait ensuite cette PETITE VALEUR                }
+  { ENTIERE comme une adresse memoire, segfault GARANTI. Fixe en                       }
+  { rechargeant EXPLICITEMENT EAX=objPtr juste avant l epilogue. }
+  EmitLabel(ASM_PFX_RUNTIME + 'FILEWRITER_INIT');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH 128');
+  EmitInstr('PUSH 2');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH 1073741824');
+  EmitInstr('PUSH DWORD PTR [EBP+12]');
+  EmitInstr('CALL _CreateFileA@28');
+  EmitInstr('MOV ECX,DWORD PTR [EBP+8]');
+  EmitInstr('MOV ' + CgAddrOperand('ECX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('FileWriter'), 'handle'))) + ',EAX');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _JPPRT_FILEREADER_INIT(objPtr, pathPtr) : "new FileReader(nom)" -    }
+  { CreateFileA(pathPtr, GENERIC_READ, FILE_SHARE_READ, NULL,                          }
+  { OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL) - GENERIC_READ=                             }
+  { 0x80000000 DEPASSE le plus grand LongInt POSITIF (2^31-1) : passe               }
+  { comme -2147483648 (MEME MOTIF DE BITS EXACT en complement a deux,             }
+  { -2147483648 = 0x80000000 - AUCUN PUSH d immediat n interprete jamais          }
+  { sa valeur ARITHMETIQUEMENT, seul le motif de bits compte pour                     }
+  { Win32). }
+  EmitLabel(ASM_PFX_RUNTIME + 'FILEREADER_INIT');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH 128');
+  EmitInstr('PUSH 3');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH 1');
+  EmitInstr('PUSH -2147483648');
+  EmitInstr('PUSH DWORD PTR [EBP+12]');
+  EmitInstr('CALL _CreateFileA@28');
+  EmitInstr('MOV ECX,DWORD PTR [EBP+8]');
+  EmitInstr('MOV ' + CgAddrOperand('ECX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('FileReader'), 'handle'))) + ',EAX');
+  { MEME correctif EXACT que _JPPRT_FILEWRITER_INIT ci-dessus (CreateFileA  }
+  { ecrase EAX) - voir sa propre note d en-tete. }
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _JPPRT_STREAM_WRAP_INIT(objPtr, srcPtr) : "new BufferedWriter(w)"/   }
+  { "new PrintWriter(w)"/"new BufferedReader(r)" - copie simplement le           }
+  { champ 'handle' de l argument (srcPtr) vers le NOUVEL objet (objPtr) -         }
+  { VALIDE seulement parce que les CINQ classes de ce groupe placent               }
+  { TOUTES 'handle' au MEME deplacement (voir la note d en-tete de              }
+  { StdlibInit/java.io) - le type CONCRET REEL de srcPtr n a donc jamais       }
+  { besoin d etre connu ICI. }
+  EmitLabel(ASM_PFX_RUNTIME + 'STREAM_WRAP_INIT');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('MOV ECX,DWORD PTR [EBP+12]');
+  EmitInstr('MOV EDX,' + CgAddrOperand('ECX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('FileWriter'), 'handle'))));
+  EmitInstr('MOV ' + CgAddrOperand('EAX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('FileWriter'), 'handle'))) + ',EDX');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _JPPRT_PRINTWRITER_PRINTLN(objPtr, strPtr) : "sortie.println(...)" - }
+  { WriteFile(handle, strPtr, strlen(strPtr), &scratch, NULL) PUIS                  }
+  { WriteFile(handle, &_JPPRT_NEWLINE, 1, &scratch, NULL) - DEUX appels          }
+  { separes (jamais une concatenation prealable) : le PLUS simple, le              }
+  { contenu ecrit n a AUCUNE contrainte de longueur maximale contrairement       }
+  { a readLine (aucun tampon INTERMEDIAIRE requis en ECRITURE). "&scratch"     }
+  { (lpNumberOfBytesWritten, un OUT parametre Win32 OBLIGATOIRE meme quand      }
+  { sa valeur n est jamais relue - CreateFileA/ReadFile/WriteFile l              }
+  { EXIGENT tous, jamais optionnel meme avec NULL contrairement a                     }
+  { certaines API Win32) est un simple emplacement LOCAL EBP-4, jamais            }
+  { relu ensuite. }
+  EmitLabel(ASM_PFX_RUNTIME + 'PRINTWRITER_PRINTLN');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('SUB ESP,4');
+  EmitInstr('PUSH EBX');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+12]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STRLEN');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('PUSH 0');
+  EmitInstr('LEA ECX,' + CgLocalOperand(-4));
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH DWORD PTR [EBP+12]');
+  EmitInstr('PUSH ' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('PrintWriter'), 'handle'))));
+  EmitInstr('CALL _WriteFile@20');
+  EmitInstr('PUSH 0');
+  EmitInstr('LEA ECX,' + CgLocalOperand(-4));
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH 1');
+  EmitInstr('LEA EAX,[' + ASM_PFX_RUNTIME + 'NEWLINE]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH ' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('PrintWriter'), 'handle'))));
+  EmitInstr('CALL _WriteFile@20');
+  EmitInstr('POP EBX');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _JPPRT_STREAM_CLOSE(objPtr) : "sortie.close()"/"entree.close()" -    }
+  { CloseHandle(objPtr.handle) - PARTAGEE par les CINQ classes (MEME               }
+  { deplacement de champ, voir _JPPRT_STREAM_WRAP_INIT ci-dessus). }
+  EmitLabel(ASM_PFX_RUNTIME + 'STREAM_CLOSE');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('PUSH ' + CgAddrOperand('EAX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('FileWriter'), 'handle'))));
+  EmitInstr('CALL _CloseHandle@4');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _JPPRT_BUFFEREDREADER_READLINE(objPtr) -> EAX = String allouee ou 0   }
+  { (null a EOF immediat, section 4.3.14 "BufferedReader.readLine()               }
+  { retourne null en fin de flux") : ReadFile UN SEUL OCTET a la fois              }
+  { (voir la note d en-tete de _JPPRT_LINEBUF/EmitDataSeg pour l                       }
+  { arbitrage performance) dans le tampon PARTAGE, jusqu au premier LF            }
+  { (10, JAMAIS de gestion CRLF - voir la note d en-tete du groupe                     }
+  { java.io ci-dessus) ou EOF (bytesRead=0) ; SI EOF survient alors que           }
+  { ZERO octet a ete accumule pour cette ligne, retourne null (0) -                    }
+  { SINON (au moins un octet lu avant l EOF, derniere ligne SANS saut de       }
+  { ligne final) retourne quand meme cette derniere ligne, EXACTEMENT              }
+  { la semantique reelle de BufferedReader.readLine(). ESI=EBX EBP+8               }
+  { (handle) et EDI=curseur d ecriture SURVIVENT a travers CHAQUE                       }
+  { ReadFile (callee-saved GARANTI par la convention stdcall Win32 ELLE-           }
+  { MEME pour EBX/ESI/EDI/EBP, AUCUN rapport avec le bogue ESI/EDI de              }
+  { _JPPRT_STREQ - CELUI-LA concernait une routine de CE COMPILATEUR                }
+  { n ayant jamais PROMIS cette garantie, pas l API Win32 qui la                        }
+  { GARANTIT par CONTRAT). }
+  EmitLabel(ASM_PFX_RUNTIME + 'BUFFEREDREADER_READLINE');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('SUB ESP,8');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH EDI');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('MOV EBX,' + CgAddrOperand('EAX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('BufferedReader'), 'handle'))));
+  EmitInstr('MOV ESI,0');
+  EmitInstr('LEA EDI,[' + ASM_PFX_RUNTIME + 'LINEBUF]');
+  EmitLabel(ASM_PFX_RUNTIME + 'RL_LOOP');
+  EmitInstr('PUSH 0');
+  EmitInstr('LEA ECX,' + CgLocalOperand(-8));
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH 1');
+  EmitInstr('LEA EDX,' + CgLocalOperand(-4));
+  EmitInstr('PUSH EDX');
+  EmitInstr('PUSH EBX');
+  EmitInstr('CALL _ReadFile@20');
+  EmitInstr('MOV ECX,' + CgLocalOperand(-8));
+  EmitInstr('CMP ECX,0');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'RL_EOF');
+  EmitInstr('MOV AL,BYTE PTR [EBP-4]');
+  EmitInstr('CMP AL,10');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'RL_DONE');
+  EmitInstr('MOV BYTE PTR [EDI],AL');
+  EmitInstr('INC EDI');
+  EmitInstr('INC ESI');
+  EmitInstr('CMP ESI,1023');
+  EmitInstr('JGE ' + ASM_PFX_RUNTIME + 'RL_DONE');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'RL_LOOP');
+  EmitLabel(ASM_PFX_RUNTIME + 'RL_EOF');
+  EmitInstr('CMP ESI,0');
+  EmitInstr('JNE ' + ASM_PFX_RUNTIME + 'RL_DONE');
+  EmitInstr('MOV EAX,0');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'RL_RET');
+  EmitLabel(ASM_PFX_RUNTIME + 'RL_DONE');
+  { "MOV BYTE PTR [mem],imm" n est PAS une forme couverte par cet         }
+  { assembleur (BinEncodeMov, TODO 22 - SEUL "MOV BYTE PTR [mem],reg8"          }
+  { l est, voir sa propre note d en-tete) - le terminateur NUL doit                }
+  { donc transiter par un registre, EXACTEMENT comme partout ailleurs             }
+  { dans ce fichier (ex. _JPPRT_INT_TO_STR). }
+  EmitInstr('MOV EAX,0');
+  EmitInstr('MOV BYTE PTR [EDI],AL');
+  EmitInstr('MOV EAX,ESI');
+  EmitInstr('ADD EAX,1');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('MOV EBX,EAX');
+  EmitInstr('LEA EDI,[' + ASM_PFX_RUNTIME + 'LINEBUF]');
+  EmitInstr('MOV ECX,0');
+  EmitLabel(ASM_PFX_RUNTIME + 'RL_COPY');
+  EmitInstr('CMP ECX,ESI');
+  EmitInstr('JG ' + ASM_PFX_RUNTIME + 'RL_COPYDONE');
+  EmitInstr('MOV EAX,EDI');
+  EmitInstr('ADD EAX,ECX');
+  EmitInstr('MOV DL,BYTE PTR [EAX]');
+  EmitInstr('MOV EAX,EBX');
+  EmitInstr('ADD EAX,ECX');
+  EmitInstr('MOV BYTE PTR [EAX],DL');
+  EmitInstr('INC ECX');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'RL_COPY');
+  EmitLabel(ASM_PFX_RUNTIME + 'RL_COPYDONE');
+  EmitInstr('MOV EAX,EBX');
+  EmitLabel(ASM_PFX_RUNTIME + 'RL_RET');
+  EmitInstr('POP EDI');
+  EmitInstr('POP ESI');
+  EmitInstr('POP EBX');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
 End;
 
 { MethodAsmLabelG : etiquette ASM d une methode - INCLUT le nom de la    }
@@ -16225,6 +16598,12 @@ Procedure CompileExprL(E: Integer); Forward;   { extension post-TODO25,  }
                                                 { note d en-tete, juste apres                 }
                                                 { CompileExprF. }
 Procedure CompileCall(E: Integer); Forward;
+Procedure CompileAssignCore(TargetE: Integer; Const Op: TString;
+  RHS: Integer); Forward;   { extension post-TODO25 (Test12Fichiers.jpp,      }
+                             { EK_ASSIGN) - codegen PARTAGE entre STK_ASSIGN            }
+                             { (instruction) et EK_ASSIGN (expression) - voir            }
+                             { sa propre note d en-tete, juste avant                          }
+                             { CompileStmt plus bas. }
 
 { CompileToStringValue : compile OperandE (CompileExpr) PUIS convertit   }
 { sa valeur EAX en pointeur de chaine C - deja un pointeur si TypeIdx           }
@@ -16919,6 +17298,18 @@ Begin
       EmitLabel(LblDone);
     End;
 
+    { EK_ASSIGN : extension post-TODO25 (Test12Fichiers.jpp) - affectation }
+    { comme EXPRESSION ("(ligne = entree.readLine()) != null"), portee            }
+    { deliberement etroite a la cible locale/parametre SCALAIRE (voir la           }
+    { note d en-tete d EK_ASSIGN/ParsePrimary) - CompileAssignCore                       }
+    { (PARTAGEE avec STK_ASSIGN, voir sa propre note d en-tete juste                     }
+    { avant CompileStmt) laisse DEJA la valeur affectee dans EAX pour                }
+    { CHACUNE de ses trois cibles (locale/champ/element de tableau),                  }
+    { EXACTEMENT la postcondition normale de CompileExpr - AUCUNE                       }
+    { transformation supplementaire requise ICI. }
+    EK_ASSIGN:
+      CompileAssignCore(ExprPool[E].Left, ExprPool[E].Op, ExprPool[E].Right);
+
     { EK_INSTANCEOF : extension post-TODO25, SIXIEME tranche - "null      }
     { instanceof T" est TOUJOURS faux (section 15.20.2, verifie EN                     }
     { PREMIER, avant meme de relire l en-tete de l objet) ; sinon,                        }
@@ -17219,10 +17610,18 @@ Begin
       { traitement special JUSTE APRES (voir _JPPRT_VECTOR_INIT/                       }
       { _JPPRT_HASHTABLE_INIT/_JPPRT_INTEGER_INIT plus bas), donc                      }
       { EXCLUES ICI du rejet generique. }
+      { extension post-TODO25 (Test12Fichiers.jpp) : FileWriter/                  }
+      { BufferedWriter/PrintWriter/FileReader/BufferedReader rejoignent           }
+      { la MEME liste - MEME raison EXACTE (IsStdlib, BodyStmtIdx<0),                }
+      { traitement special JUSTE APRES (voir _JPPRT_FILEWRITER_INIT/                }
+      { _JPPRT_FILEREADER_INIT/_JPPRT_STREAM_WRAP_INIT plus bas). }
       If (MI < 0) Or (TypeTab[ClassT].Kind <> TYK_CLASS) Or
          (TypeTab[ClassT].IsStdlib And (MethodPool[MI].BodyStmtIdx < 0) And
           (TypeTab[ClassT].Name <> 'Vector') And (TypeTab[ClassT].Name <> 'Hashtable') And
-          (TypeTab[ClassT].Name <> 'Integer') And (TypeTab[ClassT].Name <> 'Thread')) Then
+          (TypeTab[ClassT].Name <> 'Integer') And (TypeTab[ClassT].Name <> 'Thread') And
+          (TypeTab[ClassT].Name <> 'FileWriter') And (TypeTab[ClassT].Name <> 'BufferedWriter') And
+          (TypeTab[ClassT].Name <> 'PrintWriter') And (TypeTab[ClassT].Name <> 'FileReader') And
+          (TypeTab[ClassT].Name <> 'BufferedReader')) Then
       Begin
         FatalError('generateur de code : "new ' + TypeTab[ClassT].Name +
           '(...)" non couvert par cette extension (constructeur non ' +
@@ -17314,6 +17713,60 @@ Begin
         EmitInstr('PUSH ECX');
         EmitInstr('PUSH EAX');
         EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'THREAD_INIT');
+        EmitInstr('ADD ESP,8');
+        EmitInstr('ADD ESP,' + IntToStrG(ArgBytes));
+        Exit;
+      End;
+
+      { extension post-TODO25 (Test12Fichiers.jpp) : "new FileWriter(nom)"/  }
+      { "new FileReader(nom)" - MEME technique EXACTE que Integer/Thread              }
+      { ci-dessus (constructeur a UN SEUL argument, relu SUR LA PILE apres           }
+      { ALLOC) - _JPPRT_FILEWRITER_INIT/_JPPRT_FILEREADER_INIT (voir leur           }
+      { propre note d en-tete, EmitRuntimeLibrary) ouvrent REELLEMENT le            }
+      { fichier (CreateFileA) et stockent le HANDLE Win32 dans le SEUL              }
+      { champ 'handle'. }
+      If TypeTab[ClassT].Name = 'FileWriter' Then
+      Begin
+        EmitInstr('MOV ECX,DWORD PTR [ESP+0]');
+        EmitInstr('PUSH ECX');
+        EmitInstr('PUSH EAX');
+        EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'FILEWRITER_INIT');
+        EmitInstr('ADD ESP,8');
+        EmitInstr('ADD ESP,' + IntToStrG(ArgBytes));
+        Exit;
+      End;
+      If TypeTab[ClassT].Name = 'FileReader' Then
+      Begin
+        EmitInstr('MOV ECX,DWORD PTR [ESP+0]');
+        EmitInstr('PUSH ECX');
+        EmitInstr('PUSH EAX');
+        EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'FILEREADER_INIT');
+        EmitInstr('ADD ESP,8');
+        EmitInstr('ADD ESP,' + IntToStrG(ArgBytes));
+        Exit;
+      End;
+
+      { extension post-TODO25 (Test12Fichiers.jpp) : "new                     }
+      { BufferedWriter(writer)"/"new PrintWriter(writer)"/"new                       }
+      { BufferedReader(reader)" - LES TROIS wrappent un Writer/Reader                }
+      { DEJA construit (l argument, un pointeur d objet) plutot que                    }
+      { d ouvrir quoi que ce soit eux-memes : _JPPRT_STREAM_WRAP_INIT                }
+      { (PARTAGEE par les trois, voir sa propre note d en-tete) copie                  }
+      { simplement le champ 'handle' de l argument vers le NOUVEL objet -         }
+      { VALIDE seulement parce que les CINQ classes concretes de ce                    }
+      { groupe (FileWriter/BufferedWriter/PrintWriter/FileReader/                       }
+      { BufferedReader) placent TOUTES leur 'handle' au MEME deplacement            }
+      { (CG_OBJ_HEADER+0, voir la note d en-tete de StdlibInit/java.io)               }
+      { - AUCUNE des trois n a donc besoin de savoir le TYPE CONCRET reel            }
+      { de son argument. }
+      If (TypeTab[ClassT].Name = 'BufferedWriter') Or
+         (TypeTab[ClassT].Name = 'PrintWriter') Or
+         (TypeTab[ClassT].Name = 'BufferedReader') Then
+      Begin
+        EmitInstr('MOV ECX,DWORD PTR [ESP+0]');
+        EmitInstr('PUSH ECX');
+        EmitInstr('PUSH EAX');
+        EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STREAM_WRAP_INIT');
         EmitInstr('ADD ESP,8');
         EmitInstr('ADD ESP,' + IntToStrG(ArgBytes));
         Exit;
@@ -17838,6 +18291,66 @@ Begin
      (MethodPool[MI].OwnerTypeIdx = PDT_OBJECT) Then
     Exit;
 
+  { extension post-TODO25 (java.io REEL, Test12Fichiers.jpp) -           }
+  { "sortie.println(texte)" - MEME technique PAR NOM que Vector/                       }
+  { Hashtable (ONZIEME tranche) : argument PUIS receveur (voir                            }
+  { _JPPRT_PRINTWRITER_PRINTLN, EmitRuntimeLibrary, objPtr@[EBP+8]/                    }
+  { strPtr@[EBP+12]). }
+  If (MethodPool[MI].Name = 'println') And
+     (TypeTab[MethodPool[MI].OwnerTypeIdx].Name = 'PrintWriter') Then
+  Begin
+    CompileExpr(ExprArgPool[ExprPool[E].ArgFirst]);
+    EmitInstr('PUSH EAX');
+    CompileExpr(ExprPool[ExprPool[E].Left].Left);
+    EmitInstr('PUSH EAX');
+    EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'PRINTWRITER_PRINTLN');
+    EmitInstr('ADD ESP,8');
+    Exit;
+  End;
+
+  { "sortie.checkError()" - TOUJOURS faux (0) : ce Writer minimal n a    }
+  { AUCUN mecanisme de suivi d erreur reel (aucune ecriture n est                     }
+  { JAMAIS verifiee), simplification DISCLOSED plutot qu une omission -           }
+  { le receveur est neanmoins compile (effets de bord eventuels                          }
+  { preserves, MEME discipline d evaluation que partout ailleurs dans             }
+  { ce generateur) meme si sa valeur n est jamais utilisee. }
+  If (MethodPool[MI].Name = 'checkError') And
+     (TypeTab[MethodPool[MI].OwnerTypeIdx].Name = 'PrintWriter') Then
+  Begin
+    CompileExpr(ExprPool[ExprPool[E].Left].Left);
+    EmitInstr('MOV EAX,0');
+    Exit;
+  End;
+
+  { "sortie.close()"/"entree.close()" - PARTAGE par les CINQ classes     }
+  { concretes java.io (_JPPRT_STREAM_CLOSE, EmitRuntimeLibrary). }
+  If (MethodPool[MI].Name = 'close') And
+     ((TypeTab[MethodPool[MI].OwnerTypeIdx].Name = 'FileWriter') Or
+      (TypeTab[MethodPool[MI].OwnerTypeIdx].Name = 'BufferedWriter') Or
+      (TypeTab[MethodPool[MI].OwnerTypeIdx].Name = 'PrintWriter') Or
+      (TypeTab[MethodPool[MI].OwnerTypeIdx].Name = 'FileReader') Or
+      (TypeTab[MethodPool[MI].OwnerTypeIdx].Name = 'BufferedReader')) Then
+  Begin
+    CompileExpr(ExprPool[ExprPool[E].Left].Left);
+    EmitInstr('PUSH EAX');
+    EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STREAM_CLOSE');
+    EmitInstr('ADD ESP,4');
+    Exit;
+  End;
+
+  { "entree.readLine()" - _JPPRT_BUFFEREDREADER_READLINE (EmitRuntimeLibrary,  }
+  { voir sa propre note d en-tete) retourne un pointeur de String ALLOUEE           }
+  { ou 0 (null) a EOF. }
+  If (MethodPool[MI].Name = 'readLine') And
+     (TypeTab[MethodPool[MI].OwnerTypeIdx].Name = 'BufferedReader') Then
+  Begin
+    CompileExpr(ExprPool[ExprPool[E].Left].Left);
+    EmitInstr('PUSH EAX');
+    EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'BUFFEREDREADER_READLINE');
+    EmitInstr('ADD ESP,4');
+    Exit;
+  End;
+
   { extension post-TODO25, QUATRIEME tranche (chainage de constructeur) :  }
   { "this(...)"/"super(...)" resolu (voir ParsePostfix, meme extension) -            }
   { AUCUNE allocation nouvelle (l objet EST DEJA celui du constructeur              }
@@ -18263,6 +18776,119 @@ Begin
       'couvert par cette extension : ' + Op);
 End;
 
+{ CompileAssignCore : extension post-TODO25 (Test12Fichiers.jpp) -     }
+{ EXTRACTION du corps de STK_ASSIGN (inchange, voir sa propre note              }
+{ d en-tete ci-dessous) dans une procedure PARTAGEE, pour que EK_ASSIGN         }
+{ (affectation comme EXPRESSION, "(ligne = entree.readLine()) != null",         }
+{ ParsePrimary/CompileExpr) reutilise EXACTEMENT le meme codegen SANS               }
+{ dupliquer les trois cibles (locale/champ/element de tableau) - MEME           }
+{ discipline "reutiliser la machinerie existante" que le dispatch                    }
+{ polymorphique du Thread/Runnable (TREIZIEME tranche). Chaque cible,            }
+{ pour "=" simple, laisse DEJA la valeur affectee dans EAX (postcondition   }
+{ dont EK_ASSIGN/CompileExpr depend directement) - SEULE exception :             }
+{ une cible double/float sort via "Exit" avec la valeur sur ST(0), JAMAIS       }
+{ EAX (voir la note d en-tete d EK_ASSIGN : aucun echantillon reel                  }
+{ n affecte un double/float comme EXPRESSION, cette combinaison reste           }
+{ non exercee, documentee plutot que silencieusement bancale). }
+Procedure CompileAssignCore(TargetE: Integer; Const Op: TString; RHS: Integer);
+Var Off, FI, BaseT : Integer;
+Begin
+  If (ExprPool[TargetE].Kind = EK_IDENT) And (ExprPool[TargetE].Left >= 0) And
+     (SymTab[ExprPool[TargetE].Left].Kind = SK_VAR) Then
+  Begin
+    Off := SymTab[ExprPool[TargetE].Left].Offset;
+    If CgIsFpuType(SymTab[ExprPool[TargetE].Left].TypeIdx) And (Op = '=') Then
+    Begin
+      CompileExprF(RHS);
+      EmitInstr('FSTP ' + CgLocalOperandQ(Off));
+      Exit;
+    End;
+    If Op = '=' Then
+    Begin
+      CompileExpr(RHS);
+      EmitInstr('MOV ' + CgLocalOperand(Off) + ',EAX');
+    End
+    Else
+    Begin
+      CompileExpr(RHS);
+      EmitInstr('MOV ECX,EAX');
+      EmitInstr('MOV EAX,' + CgLocalOperand(Off));
+      CompileCompoundOp(Op);
+      EmitInstr('MOV ' + CgLocalOperand(Off) + ',EAX');
+    End;
+  End
+  Else If ExprPool[TargetE].Kind = EK_SELECTOR Then
+  Begin
+    BaseT := ExprPool[ExprPool[TargetE].Left].TypeIdx;
+    FI := ClassFindField(BaseT, ExprPool[TargetE].NameVal);
+    If FI < 0 Then
+    Begin
+      FatalError('generateur de code : cible d''affectation "' +
+        ExprPool[TargetE].NameVal + '" non couverte par cette ' +
+        'extension (champ introuvable, voir la note d''en-tete de ' +
+        'section)');
+      Exit;
+    End;
+    Off := CgFieldOffsetInObject(FI);
+    If CgIsFpuType(FieldPool[FI].TypeIdx) And (Op = '=') Then
+    Begin
+      CompileExpr(ExprPool[TargetE].Left);
+      EmitInstr('MOV EBX,EAX');
+      CompileExprF(RHS);
+      EmitInstr('FSTP ' + CgAddrOperandQ('EBX', Off));
+      Exit;
+    End;
+    CompileExpr(ExprPool[TargetE].Left);
+    EmitInstr('MOV EBX,EAX');
+    If Op = '=' Then
+    Begin
+      CompileExpr(RHS);
+      EmitInstr('MOV ' + CgAddrOperand('EBX', Off) + ',EAX');
+    End
+    Else
+    Begin
+      EmitInstr('MOV EAX,' + CgAddrOperand('EBX', Off));
+      EmitInstr('PUSH EAX');
+      CompileExpr(RHS);
+      EmitInstr('MOV ECX,EAX');
+      EmitInstr('POP EAX');
+      CompileCompoundOp(Op);
+      EmitInstr('MOV ' + CgAddrOperand('EBX', Off) + ',EAX');
+    End;
+  End
+  Else If ExprPool[TargetE].Kind = EK_INDEX Then
+  Begin
+    CompileExpr(ExprPool[TargetE].Left);
+    EmitInstr('PUSH EAX');
+    CompileExpr(ExprPool[TargetE].Right);
+    EmitInstr('POP ECX');
+    EmitInstr('ADD EAX,EAX');
+    EmitInstr('ADD EAX,EAX');
+    EmitInstr('ADD EAX,ECX');
+    EmitInstr('MOV EBX,EAX');
+    If Op = '=' Then
+    Begin
+      CompileExpr(RHS);
+      EmitInstr('MOV ' + CgAddrOperand('EBX', 0) + ',EAX');
+    End
+    Else
+    Begin
+      EmitInstr('MOV EAX,' + CgAddrOperand('EBX', 0));
+      EmitInstr('PUSH EAX');
+      CompileExpr(RHS);
+      EmitInstr('MOV ECX,EAX');
+      EmitInstr('POP EAX');
+      CompileCompoundOp(Op);
+      EmitInstr('MOV ' + CgAddrOperand('EBX', 0) + ',EAX');
+    End;
+  End
+  Else
+    FatalError('generateur de code : cible d''affectation non couverte ' +
+      'par cette extension (locale/parametre scalaire, champ, ou ' +
+      'element de tableau UNIQUEMENT, voir la note d''en-tete de ' +
+      'section)');
+End;
+
 { CompileStmt : STK_BLOCK (recursion PLATE, TODO 07/08), STK_EXPR              }
 { (appel de methode via CompileCall, OU ++/-- via CompileExpr, resultat            }
 { TOUJOURS ignore, section 7.4), STK_DECL (initialiseur optionnel vers            }
@@ -18276,7 +18902,7 @@ End;
 { AUTRE genre s arrete PROPREMENT, MEME discipline que CompileExpr. }
 Procedure CompileStmt(S: Integer);
 Var
-  I, SubS, Body, Off, TargetE, FI, BaseT, CatchN, TI : Integer;
+  I, SubS, Body, CatchN, TI : Integer;
   LblElse, LblDone, LblTop, LblCont, LblEnd, DefaultLbl : TString;
   LblDispatch, LblNextCatch, LblMatch : TString;
   CaseLbl : Array[0..63] Of TString;
@@ -18340,124 +18966,11 @@ Begin
     { STK_ASSIGN : trois cibles couvertes - locale/parametre (EK_IDENT,     }
     { comme au premier jalon de cette extension), champ (EK_SELECTOR,                    }
     { modele memoire d instance) et element de tableau (EK_INDEX, meme                     }
-    { calcul d adresse ARITHMETIQUE que CompileExpr) - EBX conserve                          }
-    { TOUJOURS l ADRESSE (pointeur d objet+deplacement, ou adresse                            }
-    { effective de l element) pendant que la VALEUR/l ancienne valeur                     }
-    { (affectation composee) est calculee, puisque EAX/ECX sont deja               }
-    { utilises par CompileExpr/CompileCompoundOp. }
+    { calcul d adresse ARITHMETIQUE que CompileExpr) - corps REEL                              }
+    { EXTRAIT dans CompileAssignCore (extension post-TODO25, PARTAGEE                }
+    { avec EK_ASSIGN, voir sa propre note d en-tete juste avant ce point). }
     STK_ASSIGN:
-    Begin
-      TargetE := StmtPool[S].Left;
-      If (ExprPool[TargetE].Kind = EK_IDENT) And (ExprPool[TargetE].Left >= 0) And
-         (SymTab[ExprPool[TargetE].Left].Kind = SK_VAR) Then
-      Begin
-        Off := SymTab[ExprPool[TargetE].Left].Offset;
-        { extension post-TODO25, HUITIEME tranche (double/float) : cible   }
-        { locale/parametre double/float - "=" SEULEMENT (AUCUN            }
-        { echantillon reel n a besoin d une affectation COMPOSEE, "+=",           }
-        { sur un double - CompileCompoundOp reste int-SEUL, documente               }
-        { ailleurs). }
-        If CgIsFpuType(SymTab[ExprPool[TargetE].Left].TypeIdx) And
-           (StmtPool[S].Op = '=') Then
-        Begin
-          CompileExprF(StmtPool[S].Right);
-          EmitInstr('FSTP ' + CgLocalOperandQ(Off));
-          Exit;
-        End;
-        If StmtPool[S].Op = '=' Then
-        Begin
-          CompileExpr(StmtPool[S].Right);
-          EmitInstr('MOV ' + CgLocalOperand(Off) + ',EAX');
-        End
-        Else
-        Begin
-          CompileExpr(StmtPool[S].Right);
-          EmitInstr('MOV ECX,EAX');
-          EmitInstr('MOV EAX,' + CgLocalOperand(Off));
-          CompileCompoundOp(StmtPool[S].Op);
-          EmitInstr('MOV ' + CgLocalOperand(Off) + ',EAX');
-        End;
-      End
-      Else If ExprPool[TargetE].Kind = EK_SELECTOR Then
-      Begin
-        BaseT := ExprPool[ExprPool[TargetE].Left].TypeIdx;
-        FI := ClassFindField(BaseT, ExprPool[TargetE].NameVal);
-        If FI < 0 Then
-        Begin
-          FatalError('generateur de code : cible d''affectation "' +
-            ExprPool[TargetE].NameVal + '" non couverte par cette ' +
-            'extension (champ introuvable, voir la note d''en-tete de ' +
-            'section)');
-          Exit;
-        End;
-        Off := CgFieldOffsetInObject(FI);
-        { extension post-TODO25, HUITIEME tranche (double/float) : cible   }
-        { CHAMP double/float (Test07Heritage.jpp, "this.largeur =                     }
-        { largeur;" dans le constructeur de Rectangle) - la BASE (objet)          }
-        { est TOUJOURS compilee via CompileExpr ordinaire (JAMAIS un                    }
-        { double elle-meme), SEULE la VALEUR affectee passe par                              }
-        { CompileExprF/FSTP. }
-        If CgIsFpuType(FieldPool[FI].TypeIdx) And (StmtPool[S].Op = '=') Then
-        Begin
-          CompileExpr(ExprPool[TargetE].Left);
-          EmitInstr('MOV EBX,EAX');
-          CompileExprF(StmtPool[S].Right);
-          EmitInstr('FSTP ' + CgAddrOperandQ('EBX', Off));
-          Exit;
-        End;
-        CompileExpr(ExprPool[TargetE].Left);
-        EmitInstr('MOV EBX,EAX');
-        If StmtPool[S].Op = '=' Then
-        Begin
-          CompileExpr(StmtPool[S].Right);
-          EmitInstr('MOV ' + CgAddrOperand('EBX', Off) + ',EAX');
-        End
-        Else
-        Begin
-          EmitInstr('MOV EAX,' + CgAddrOperand('EBX', Off));
-          EmitInstr('PUSH EAX');
-          CompileExpr(StmtPool[S].Right);
-          EmitInstr('MOV ECX,EAX');
-          EmitInstr('POP EAX');
-          CompileCompoundOp(StmtPool[S].Op);
-          EmitInstr('MOV ' + CgAddrOperand('EBX', Off) + ',EAX');
-        End;
-      End
-      Else If ExprPool[TargetE].Kind = EK_INDEX Then
-      Begin
-        CompileExpr(ExprPool[TargetE].Left);
-        EmitInstr('PUSH EAX');
-        CompileExpr(ExprPool[TargetE].Right);
-        EmitInstr('POP ECX');
-        EmitInstr('ADD EAX,EAX');
-        EmitInstr('ADD EAX,EAX');
-        EmitInstr('ADD EAX,ECX');
-        EmitInstr('MOV EBX,EAX');
-        If StmtPool[S].Op = '=' Then
-        Begin
-          CompileExpr(StmtPool[S].Right);
-          EmitInstr('MOV ' + CgAddrOperand('EBX', 0) + ',EAX');
-        End
-        Else
-        Begin
-          EmitInstr('MOV EAX,' + CgAddrOperand('EBX', 0));
-          EmitInstr('PUSH EAX');
-          CompileExpr(StmtPool[S].Right);
-          EmitInstr('MOV ECX,EAX');
-          EmitInstr('POP EAX');
-          CompileCompoundOp(StmtPool[S].Op);
-          EmitInstr('MOV ' + CgAddrOperand('EBX', 0) + ',EAX');
-        End;
-      End
-      Else
-      Begin
-        FatalError('generateur de code : cible d''affectation non couverte ' +
-          'par cette extension (locale/parametre scalaire, champ, ou ' +
-          'element de tableau UNIQUEMENT, voir la note d''en-tete de ' +
-          'section)');
-        Exit;
-      End;
-    End;
+      CompileAssignCore(StmtPool[S].Left, StmtPool[S].Op, StmtPool[S].Right);
 
     { STK_RETURN : extension post-TODO25, HUITIEME tranche (double/       }
     { float) - "return largeur * hauteur;" (Test07Heritage.jpp) DOIT               }
