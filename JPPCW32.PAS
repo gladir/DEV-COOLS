@@ -5316,7 +5316,16 @@ Type
                         { (le generateur de code a besoin de savoir EXACTEMENT           }
                         { quelle methode appeler, pas seulement son TYPE de                    }
                         { retour DEJA stocke dans TypeIdx depuis le TODO 08) -            }
-                        { champ INUTILISE pour EK_CALL jusqu ICI. }
+                        { champ INUTILISE pour EK_CALL jusqu ICI. IntVal              }
+                        { (extension post-TODO25, BOGUE REEL signale par                    }
+                        { l utilisateur - Test06ProprietesBean.jpp) : SI un              }
+                        { appel IMPLICITE "methode(...)" ne resout PAS (Extra          }
+                        { reste -1, reference AVANT declaration DANS LA MEME           }
+                        { classe - ce parseur est a UNE SEULE passe), stashe             }
+                        { CurrentClassTypeIdx pour une SECONDE tentative apres            }
+                        { que le fichier ENTIER soit parse (voir                                    }
+                        { FixupUnresolvedCalls) - INUTILISE si Extra >= 0 (deja       }
+                        { resolu du premier coup, cas OVERWHELMING majoritaire). }
     EK_NEWOBJECT,      { Extra = TypeIdx de la classe ; ArgFirst/Count =        }
                         { arguments du constructeur (section 6.20) }
     EK_NEWARRAY        { Op = 'dims' (ArgFirst/Count = expressions de              }
@@ -6146,7 +6155,31 @@ Begin
         Begin
           ExprPool[N].TypeIdx := MethodPool[MI].RetTypeIdx;
           ExprPool[N].Extra   := MI;   { TODO 21 - voir la note d en-tete d EK_CALL }
-        End;
+        End
+        Else
+          { BOGUE REEL signale par l utilisateur (Test06ProprietesBean.jpp,   }
+          { "setNom(nom);"/"setAge(age);" appeles DEPUIS le CONSTRUCTEUR,          }
+          { alors que setNom/setAge sont DECLARES PLUS LOIN dans le MEME               }
+          { corps de classe - reference AVANT declaration) : ce parseur                 }
+          { est a UNE SEULE passe (chaque membre de classe est enregistre                }
+          { dans MethodPool AU FUR ET A MESURE qu il est rencontre), donc               }
+          { CurrentClassTypeIdx ne contient PAS ENCORE setNom/setAge quand              }
+          { le CONSTRUCTEUR (premier membre du fichier) est parse - MI<0                  }
+          { ICI n est pas une VRAIE erreur, juste "pas encore visible".                     }
+          { IntVal (INUTILISE par EK_CALL jusqu ici, voir sa propre note                  }
+          { d en-tete) stashe la classe englobante pour permettre une                        }
+          { SECONDE tentative de resolution une fois le FICHIER ENTIER                        }
+          { parse (FixupUnresolvedCalls, appelee depuis Run juste apres                    }
+          { ParseCompilationUnit) - a ce moment-la, TokenPool a deja ete             }
+          { integralement lexe (LexAll, TODO 21) et TOUTES les classes du            }
+          { fichier ont fini d etre parsees, donc MethodPool contient ENFIN           }
+          { setNom/setAge - AUCUNE re-lecture du fichier source ni second               }
+          { passage du LEXEUR n est necessaire, uniquement un second                          }
+          { parcours (PUREMENT ADDITIF, zero risque de regression : si la              }
+          { seconde tentative echoue ELLE AUSSI, Extra reste -1 et le                       }
+          { generateur de code s arrete EXACTEMENT comme avant, MEME                       }
+          { message FatalError). }
+          ExprPool[N].IntVal := CurrentClassTypeIdx;
       End
       { extension post-TODO25, QUATRIEME tranche (chainage de                }
       { constructeur) : "this(...)"/"super(...)" en premiere ligne d un              }
@@ -16162,6 +16195,32 @@ Begin
     Exit;
   End;
 
+  { BOGUE REEL signale par l utilisateur (Test06ProprietesBean.jpp,       }
+  { "valeur.length() == 0" dans setNom) : "String.length()" (StdMethod0,        }
+  { StdlibInit) etait resolu SEMANTIQUEMENT depuis le TODO 08/13 (une             }
+  { VRAIE entree MethodPool existe, EK_CALL.Extra pointe bien dessus)             }
+  { mais n avait JAMAIS recu de generation de code - contrairement a               }
+  { ".length" sur un TABLEAU (EK_SELECTOR, PROPRIETE sans parentheses,            }
+  { deja couvert plus bas) une String expose "length()" comme une VRAIE           }
+  { METHODE (avec parentheses, section 13) - tombait donc dans le                     }
+  { catchall generique d appel d instance en fin de fonction, JAMAIS                  }
+  { dans le cas special ".length" de tableau. Reconnue PAR NOM (MEME                 }
+  { technique que "parseInt" juste au-dessus) : compile le RECEVEUR                    }
+  { (ExprPool[E].Left est le SELECTEUR "valeur.length", SON PROPRE Left            }
+  { est "valeur" - jamais le "this" implicite d une methode utilisateur,       }
+  { une String n a pas de MethodPool "recu" a pousser en dernier) et                  }
+  { appelle DIRECTEMENT _JPPRT_STRLEN (deja ecrite depuis le tout                     }
+  { premier jalon du TODO 21, PRINT_STR/PRINTLN_STR la consomment deja). }
+  If (MethodPool[MI].Name = 'length') And
+     (MethodPool[MI].OwnerTypeIdx = PDT_STRING) Then
+  Begin
+    CompileExpr(ExprPool[ExprPool[E].Left].Left);
+    EmitInstr('PUSH EAX');
+    EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STRLEN');
+    EmitInstr('ADD ESP,4');
+    Exit;
+  End;
+
   { extension post-TODO25, QUATRIEME tranche (chainage de constructeur) :  }
   { "this(...)"/"super(...)" resolu (voir ParsePostfix, meme extension) -            }
   { AUCUNE allocation nouvelle (l objet EST DEJA celui du constructeur              }
@@ -19321,6 +19380,75 @@ Begin
   BinEncoderSelfTest;
 End;
 
+{ FixupUnresolvedCalls : extension post-TODO25 - BOGUE REEL signale par }
+{ l utilisateur (Test06ProprietesBean.jpp compile mais s arrete avec           }
+{ "generateur de code : appel de methode non resolu" - "Personne(...)"          }
+{ appelle "setNom(nom);"/"setAge(age);" AVANT que ces deux methodes                 }
+{ soient DECLAREES plus loin dans le MEME corps de classe, section 8.2         }
+{ n exige PAS un ordre particulier). Ce parseur (comme chaque compilateur       }
+{ de ce projet) est a UNE SEULE passe : ParseClassBody enregistre CHAQUE      }
+{ methode dans MethodPool AU FUR ET A MESURE qu elle est rencontree, DONC      }
+{ quand le CONSTRUCTEUR (premier membre du fichier) est parse, setNom/               }
+{ setAge n existent pas ENCORE - ClassResolveMethodCall (ParsePostfix)          }
+{ echoue honnetement et laisse EK_CALL.Extra a -1 (voir sa propre note           }
+{ d en-tete), stashant CurrentClassTypeIdx dans IntVal pour cette                    }
+{ FONCTION-CI. Plutot que de restructurer le parseur en deux passes                }
+{ (reecrire ParseClassBody/ParseClassMember pour un pre-scan de                        }
+{ signatures serait BEAUCOUP plus risque - toucherait l enregistrement          }
+{ de CHAQUE methode/constructeur/champ) : Run appelle CETTE fonction               }
+{ JUSTE APRES ParseCompilationUnit, quand TOUT le fichier (donc TOUTES          }
+{ les classes, TOUS les membres) a deja ete parse une premiere fois -            }
+{ MethodPool est alors COMPLET. Balayage PUREMENT ADDITIF et SANS RISQUE      }
+{ de regression : parcourt ExprPool a PLAT (aucun arbre a re-visiter,                }
+{ un noeud EK_CALL existe QUELLE QUE SOIT sa profondeur d imbrication              }
+{ d origine), ne touche QUE les noeuds dont Extra est ENCORE -1 - un              }
+{ appel deja resolu la premiere fois (l ecrasante majorite) n est JAMAIS       }
+{ ré-examine. Si la SECONDE tentative echoue elle aussi (vraie erreur          }
+{ utilisateur, methode reellement inexistante), Extra reste -1 et le             }
+{ generateur de code s arrete EXACTEMENT comme avant (MEME FatalError,           }
+{ TODO 21) - aucun message d erreur n est perdu ni retarde silencieusement.  }
+Procedure FixupUnresolvedCalls;
+Var E, Cur, MI, OwnerT, BaseT : Integer;
+Begin
+  For E := 0 To ExprCount - 1 Do
+  Begin
+    If (ExprPool[E].Kind <> EK_CALL) Or (ExprPool[E].Extra >= 0) Then Continue;
+    Cur := ExprPool[E].Left;
+    If Cur < 0 Then Continue;
+
+    If (ExprPool[Cur].Kind = EK_IDENT) And (ExprPool[Cur].Left < 0) Then
+    Begin
+      OwnerT := ExprPool[E].IntVal;
+      If (OwnerT >= 0) And (OwnerT < TypeCount) Then
+      Begin
+        MI := ClassResolveMethodCall(OwnerT, ExprPool[Cur].NameVal,
+          ExprPool[E].ArgFirst, ExprPool[E].ArgCount);
+        If MI >= 0 Then
+        Begin
+          ExprPool[E].TypeIdx := MethodPool[MI].RetTypeIdx;
+          ExprPool[E].Extra   := MI;
+        End;
+      End;
+    End
+    Else If (ExprPool[Cur].Kind = EK_SELECTOR) And (ExprPool[Cur].TypeIdx < 0) And
+            (ExprPool[Cur].Left >= 0) Then
+    Begin
+      BaseT := ExprPool[ExprPool[Cur].Left].TypeIdx;
+      If (BaseT >= 0) And (BaseT < TypeCount) And
+         (TypeTab[BaseT].Kind In [TYK_CLASS, TYK_INTERFACE, TYK_STRING, TYK_DELEGATE]) Then
+      Begin
+        MI := ClassResolveMethodCall(BaseT, ExprPool[Cur].NameVal,
+          ExprPool[E].ArgFirst, ExprPool[E].ArgCount);
+        If MI >= 0 Then
+        Begin
+          ExprPool[E].TypeIdx := MethodPool[MI].RetTypeIdx;
+          ExprPool[E].Extra   := MI;
+        End;
+      End;
+    End;
+  End;
+End;
+
 { ------------------------------------------------------------ }
 { Run : point d entree - portee TODO 01-24 (options + lexeur +      }
 { classification mots-cles/predeclares + systeme de types +               }
@@ -19394,6 +19522,7 @@ Begin
 
   ParserInit;
   ParseCompilationUnit;
+  FixupUnresolvedCalls;
 
   WriteLn('JPPCW32: ', TokenCount, ' tokens produits (', TotalLines, ' lignes).');
 
