@@ -1652,6 +1652,15 @@ Type
                           { contenu DECODE (chaine/caractere)               }
     IntVal  : LongInt;    { valeur entiere (TOK_INT/TOK_LONG) ou code de   }
                           { caractere (TOK_CHAR)                              }
+    Int64Val: Int64;      { extension post-TODO25, NEUVIEME tranche (long    }
+                          { 64 bits REEL) - MEME valeur que IntVal pour          }
+                          { TOK_INT (qui tient TOUJOURS en 32 bits, Java              }
+                          { l EXIGE), mais SEULE representation FIDELE pour        }
+                          { TOK_LONG (dont "IntVal" tronquerait/deborderait          }
+                          { silencieusement une valeur comme                              }
+                          { "9000000000L", Test02Variables.jpp - AUCUN                     }
+                          { code EXISTANT ne lit ce nouveau champ, zero               }
+                          { risque de regression). }
     RealVal : Real;       { valeur flottante (TOK_FLOAT/TOK_DOUBLE)          }
     Line    : Integer;    { ligne source (1-base)                            }
     Col     : Integer;    { colonne source (1-base)                          }
@@ -2148,6 +2157,8 @@ Var
   IsExplicitFloat : Boolean;
   IsLong          : Boolean;
   N               : LongInt;
+  N64             : Int64;   { extension post-TODO25, NEUVIEME tranche - }
+                              { voir la note d en-tete plus bas }
   K               : Integer;
 Begin
   S := '';
@@ -2162,11 +2173,14 @@ Begin
     If Not IsHexDigit(LexPeekChar) Then
       FatalError('litteral hexadecimal attend au moins un chiffre apres "0x"');
     N := 0;
+    N64 := 0;
     While IsHexDigit(LexPeekChar) Do
     Begin
       N := N * 16 + HexVal(LexPeekChar);
+      N64 := N64 * 16 + HexVal(LexPeekChar);
       LexNextChar;
     End;
+    CurToken.Int64Val := N64;
     If (LexPeekChar = 'L') Or (LexPeekChar = 'l') Then
     Begin
       LexNextChar;
@@ -2260,8 +2274,18 @@ Begin
     { valeur entiere - decimale, OU octal ANCIEN STYLE si le texte     }
     { commence par '0' suivi d au moins un autre chiffre (heritage C,    }
     { CONSERVE par Java depuis sa toute premiere version - jamais        }
-    { retire, contrairement a d autres langages plus recents). }
+    { retire, contrairement a d autres langages plus recents).                    }
+    { extension post-TODO25, NEUVIEME tranche (long 64 bits REEL) :               }
+    { accumule DESORMAIS dans N64 (Int64, natif FPC) plutot que N                     }
+    { (LongInt, 32 bits) - "9000000000L" (Test02Variables.jpp) DEBORDAIT           }
+    { silencieusement N*10+chiffre AVANT cette tranche (LongInt                          }
+    { deborde/s enroule sans avertissement en Pascal), produisant une             }
+    { valeur FAUSSE jamais detectee - N (LongInt, INCHANGE) reste                     }
+    { rempli EN PARALLELE pour CurToken.IntVal (compatibilite avec TOUT           }
+    { code existant qui le lit encore, JAMAIS invalide pour TOK_INT -                }
+    { Java EXIGE qu un litteral "int" SANS "L" tienne en 32 bits). }
     N := 0;
+    N64 := 0;
     If (Length(S) > 1) And (S[1] = '0') Then
     Begin
       For K := 2 To Length(S) Do
@@ -2269,13 +2293,18 @@ Begin
         If (S[K] < '0') Or (S[K] > '7') Then
           FatalError('chiffre octal invalide dans le litteral ''' + S + '''');
         N := N * 8 + (Ord(S[K]) - Ord('0'));
+        N64 := N64 * 8 + (Ord(S[K]) - Ord('0'));
       End;
     End
     Else
       For K := 1 To Length(S) Do
+      Begin
         N := N * 10 + (Ord(S[K]) - Ord('0'));
+        N64 := N64 * 10 + (Ord(S[K]) - Ord('0'));
+      End;
     If IsLong Then CurToken.Kind := TOK_LONG Else CurToken.Kind := TOK_INT;
-    CurToken.IntVal := N;
+    CurToken.IntVal   := N;
+    CurToken.Int64Val := N64;
     CurToken.Val := S;
   End;
 End;
@@ -3238,6 +3267,9 @@ Type
   TConstVal = Record
     Kind    : TConstKind;
     IntVal  : LongInt;   { CK_INT/CK_LONG/CK_CHAR/CK_BOOL (0/1) }
+    Int64Val: Int64;     { extension post-TODO25, NEUVIEME tranche - voir  }
+                          { la note d en-tete de TToken.Int64Val - SEUL          }
+                          { CK_LONG le peuple REELLEMENT. }
     RealVal : Real;      { CK_FLOAT/CK_DOUBLE }
     StrVal  : TString;   { CK_STRING }
   End;
@@ -4674,6 +4706,7 @@ Begin
   ConstEvalExpr := True;
   CV.Kind    := CK_INT;
   CV.IntVal  := 0;
+  CV.Int64Val:= 0;
   CV.RealVal := 0.0;
   CV.StrVal  := '';
 
@@ -4694,7 +4727,20 @@ Begin
     TOK_LONG:
     Begin
       CV.Kind := CK_LONG;
-      If Neg Then CV.IntVal := -TokenPool[PP].IntVal Else CV.IntVal := TokenPool[PP].IntVal;
+      { extension post-TODO25, NEUVIEME tranche : Int64Val PORTE la VRAIE  }
+      { valeur 64 bits (TokenPool[PP].IntVal, LongInt 32 bits, resterait                 }
+      { tronque/deborde pour "9000000000L") - voir la note d en-tete de                    }
+      { TToken.Int64Val. }
+      If Neg Then
+      Begin
+        CV.IntVal   := -TokenPool[PP].IntVal;
+        CV.Int64Val := -TokenPool[PP].Int64Val;
+      End
+      Else
+      Begin
+        CV.IntVal   := TokenPool[PP].IntVal;
+        CV.Int64Val := TokenPool[PP].Int64Val;
+      End;
       PPAdvance;
     End;
     TOK_FLOAT:
@@ -4942,6 +4988,7 @@ Var
   Mods : TModifiers;
   T    : Integer;
   Nam  : TString;
+  SI   : Integer;
 Begin
   Mods := ParseModifiers;
   T    := ParseTypeRef;
@@ -4959,7 +5006,25 @@ Begin
   If SymFindEnclosing(Nam) >= 0 Then
     FatalError('"' + Nam + '" est deja declare dans une portee locale ' +
       'englobante (section 5.10)');
-  ParseCatchParam := SymAdd(Nam, SK_VAR, T, False, Mods.IsFinal);
+  SI := SymAdd(Nam, SK_VAR, T, False, Mods.IsFinal);
+  { extension post-TODO25, exceptions reelles : contrairement a           }
+  { ParseSingleParam (un VRAI parametre, deja place par                              }
+  { CompileMethodBody/CurParamOffset) ce parametre catch n avait JAMAIS      }
+  { recu de VRAI emplacement (SymTab[SI].Offset restait a 0, la valeur          }
+  { par defaut de SymAdd - section 4496) : STK_TRY/STK_CATCH n existant           }
+  { pas encore, personne n avait jamais eu besoin de LIRE cet                          }
+  { emplacement. [EBP+0] est en realite l ancien EBP sauvegarde par le             }
+  { prologue (PUSH EBP) - y ecrire l aurait SILENCIEUSEMENT corrompu la          }
+  { chaine des cadres. Reserve maintenant un VRAI emplacement LOCAL,                }
+  { EXACTEMENT comme ParseVarDecl (meme compteur CurLocalOffset partage,          }
+  { section 4907/4917 - un parametre catch est TOUJOURS une reference,             }
+  { 4 octets, JAMAIS un long/double). }
+  If SI >= 0 Then
+  Begin
+    CurLocalOffset := CurLocalOffset - 4;
+    SymTab[SI].Offset := CurLocalOffset;
+  End;
+  ParseCatchParam := SI;
 End;
 
 { ------------------------------------------------------------ }
@@ -5272,6 +5337,9 @@ Type
                            { les commentaires de TExprKind ci-dessus }
     NameVal : TString;    { EK_IDENT / EK_SELECTOR }
     IntVal  : LongInt;    { EK_INTLIT/LONGLIT/CHARLIT/BOOLLIT }
+    Int64Val: Int64;      { extension post-TODO25, NEUVIEME tranche - voir  }
+                          { la note d en-tete de TToken.Int64Val - SEUL          }
+                          { EK_LONGLIT le peuple REELLEMENT. }
     RealVal : Real;       { EK_FLOATLIT/DOUBLELIT }
     StrVal  : TString;    { EK_STRINGLIT }
     TypeIdx : Integer;    { inference AU MIEUX, -1 si inconnu (best-effort, }
@@ -5379,7 +5447,29 @@ Begin
     Begin
       N := ExprNew(EK_SELECTOR);
       ExprPool[N].NameVal := Nam;
-      ExprPool[N].Left    := ExprAddIdent('this');   { recursif UNE SEULE   }
+      { extension post-TODO25, NEUVIEME tranche (long/double/float,       }
+      { Test02Variables.jpp) : un champ STATIQUE accede PAR NOM SIMPLE            }
+      { depuis "main" (UNE METHODE STATIQUE, "ARTICLES_MAXIMUM" SANS                 }
+      { qualificatif) N A PAS DE "this" a resoudre - ExprAddIdent('this')         }
+      { echouerait (AUCUN symbole "this" n existe dans un contexte                     }
+      { STATIQUE, TODO08) et laisserait un noeud CASSE. Construit ICI un           }
+      { EK_TYPEREF SYNTHETIQUE representant la CLASSE ELLE-MEME a la               }
+      { place - EXACTEMENT la MEME forme que "winm.MB_OK" (extension                  }
+      { SEPTIEME tranche : un champ static n a JAMAIS besoin d une                     }
+      { instance reelle), ce qui permet au generateur de code de                          }
+      { retrouver le CHAMP via ClassFindField(CurrentClassTypeIdx, ...)          }
+      { SANS jamais tenter de compiler "this". Un champ D INSTANCE                    }
+      { garde EXACTEMENT le comportement PRECEDENT (ExprAddIdent('this'),         }
+      { valide UNIQUEMENT dans un contexte NON-static, deja garanti par            }
+      { construction). }
+      If FieldPool[FI].IsStatic Then
+      Begin
+        ExprPool[N].Left := ExprNew(EK_TYPEREF);
+        ExprPool[ExprPool[N].Left].NameVal := TypeTab[CurrentClassTypeIdx].Name;
+        ExprPool[ExprPool[N].Left].TypeIdx := CurrentClassTypeIdx;
+      End
+      Else
+        ExprPool[N].Left := ExprAddIdent('this');   { recursif UNE SEULE   }
                                                        { fois - "this" est       }
                                                        { TOUJOURS resolu par     }
                                                        { SymFind ci-dessus dans      }
@@ -5786,7 +5876,12 @@ Begin
     TOK_LONG:
     Begin
       N := ExprNew(EK_LONGLIT);
-      ExprPool[N].IntVal  := TokenPool[PP].IntVal;
+      ExprPool[N].IntVal   := TokenPool[PP].IntVal;
+      ExprPool[N].Int64Val := TokenPool[PP].Int64Val;   { extension post-    }
+                                                          { TODO25, NEUVIEME       }
+                                                          { tranche - voir la           }
+                                                          { note d en-tete de           }
+                                                          { TToken.Int64Val. }
       ExprPool[N].TypeIdx := PRIMTYPE_LONG;
       ExprPool[N].IsConst := True;
       PPAdvance;
@@ -6294,11 +6389,13 @@ Function ExprLiteralToConstVal(E: Integer; Var CV: TConstVal): Boolean;
 Begin
   ExprLiteralToConstVal := True;
   CV.IntVal  := 0;
+  CV.Int64Val:= 0;
   CV.RealVal := 0.0;
   CV.StrVal  := '';
   Case ExprPool[E].Kind Of
     EK_INTLIT:    Begin CV.Kind := CK_INT;    CV.IntVal  := ExprPool[E].IntVal;  End;
-    EK_LONGLIT:   Begin CV.Kind := CK_LONG;   CV.IntVal  := ExprPool[E].IntVal;  End;
+    EK_LONGLIT:   Begin CV.Kind := CK_LONG;   CV.IntVal  := ExprPool[E].IntVal;
+                        CV.Int64Val := ExprPool[E].Int64Val; End;
     EK_FLOATLIT:  Begin CV.Kind := CK_FLOAT;  CV.RealVal := ExprPool[E].RealVal; End;
     EK_DOUBLELIT: Begin CV.Kind := CK_DOUBLE; CV.RealVal := ExprPool[E].RealVal; End;
     EK_CHARLIT:   Begin CV.Kind := CK_CHAR;   CV.IntVal  := ExprPool[E].IntVal;  End;
@@ -6308,8 +6405,9 @@ Begin
     EK_UNARY:
       If (ExprPool[E].Op = '-') And ExprLiteralToConstVal(ExprPool[E].Left, CV) Then
       Begin
-        CV.IntVal  := -CV.IntVal;
-        CV.RealVal := -CV.RealVal;
+        CV.IntVal   := -CV.IntVal;
+        CV.Int64Val := -CV.Int64Val;
+        CV.RealVal  := -CV.RealVal;
       End
       Else
         ExprLiteralToConstVal := False;
@@ -6725,7 +6823,16 @@ Type
                        { (contrairement a STK_CASE, un CATCH porte TOUJOURS          }
                        { son propre corps - pas de "poursuite" entre                          }
                        { catch, section 11.9/11.12, un SEUL bloc s execute            }
-                       { par try) }
+                       { par try) ; Right = index SymTab du parametre               }
+                       { (extension post-TODO25, exceptions REELLES -                       }
+                       { AJOUTE a ce moment-la, jamais lu par le parseur/                    }
+                       { l analyse semantique - SEUL le generateur de code            }
+                       { (STK_TRY, TODO 21+) en a besoin pour retrouver                    }
+                       { l emplacement PILE ou stocker l objet exception              }
+                       { rattrape - NameVal/Extra suffisaient jusqu ici                    }
+                       { puisque SEULE l analyse semantique consommait ce             }
+                       { noeud, JAMAIS un generateur de code, ParseTryStmt          }
+                       { ne l ecrivait donc simplement pas) }
   );
 
   TStmtNode = Record
@@ -7526,6 +7633,7 @@ Begin
     Begin
       StmtPool[CatchN].Extra   := SymTab[ParamSI].TypeIdx;
       StmtPool[CatchN].NameVal := SymTab[ParamSI].Name;
+      StmtPool[CatchN].Right   := ParamSI;
     End;
     StmtPool[CatchN].Left := ParseBlock;
     SymLeaveScope;
@@ -10944,12 +11052,149 @@ End;
 { direct, section 9.11-style assignabilite reutilisee par                              }
 { MethodParamsCompatible/TypeIsSubclassOf, TODO 08/09, pour que "new             }
 { BufferedWriter(new FileWriter(nom))" type-verifie correctement). }
+{ StdlibAddThrowableCtor : extension post-TODO25, DIXIEME tranche      }
+{ (exceptions REELLES, Test09Exceptions.jpp) - construit un VRAI              }
+{ constructeur "(String message)" pour ClassT SANS passer par le                     }
+{ VRAI parseur (Throwable/Exception/RuntimeException/Error sont AJOUTES         }
+{ via TypeAdd DIRECTEMENT depuis TypeInit, JAMAIS textuellement                       }
+{ declares - AUCUN fichier source n existe a faire passer par                            }
+{ ParseConstructorDecl) - REPLIQUE A LA MAIN la sequence EXACTE de                    }
+{ ParseConstructorDecl (SymEnterScope/CurParamOffset=8/"this" a                       }
+{ l offset 8/"message" a l offset 12/SymLeaveScope) puis construit                    }
+{ DIRECTEMENT les noeuds ExprPool/StmtPool necessaires plutot que de              }
+{ les faire sortir d un texte source. SuperCtorMI<0 : ClassT EST                        }
+{ Throwable lui-meme (RACINE de la chaine), corps "this.message =                    }
+{ message;" (le champ, AJOUTE par l APPELANT AVANT ce premier appel,             }
+{ existe deja) ; SuperCtorMI>=0 : corps "super(message);" qui appelle             }
+{ DIRECTEMENT ce MI DEJA CONNU (AUCUNE resolution ClassFindConstructor         }
+{ necessaire, contrairement a "super(...)" ECRIT par un VRAI                              }
+{ utilisateur, TODO 25 QUATRIEME tranche) - EK_CALL.Left reste -1                      }
+{ (JAMAIS lu par CompileCall pour un MK_CONSTRUCTOR, verifie par                       }
+{ lecture avant d ecrire cette fonction). }
+Function StdlibAddThrowableCtor(ClassT, SuperCtorMI: Integer): Integer;
+Var
+  SI_This, SI_Msg, ParamStart, MI, TargetExpr, ThisIdentExpr,
+  MsgIdentExpr, InnerStmt, CallExpr, BlockStmt : Integer;
+Begin
+  SymEnterScope;
+  CurParamOffset := 8;
+  CurLocalOffset := 0;
+  SI_This := SymAdd('this', SK_VAR, ClassT, False, False);
+  SymTab[SI_This].Offset := CurParamOffset;
+  CurParamOffset := CurParamOffset + 4;
+  If TypeTab[ClassT].SuperTypeIdx >= 0 Then
+    SymAdd('super', SK_VAR, TypeTab[ClassT].SuperTypeIdx, False, False);
+
+  ParamStart := ParamPoolCount;
+  SI_Msg := SymAdd('message', SK_VAR, PDT_STRING, False, False);
+  SymTab[SI_Msg].Offset := CurParamOffset;
+  CurParamOffset := CurParamOffset + 4;
+  ParamPool[ParamPoolCount].Name    := 'message';
+  ParamPool[ParamPoolCount].TypeIdx := PDT_STRING;
+  ParamPool[ParamPoolCount].IsFinal := False;
+  Inc(ParamPoolCount);
+
+  MI := MethodPoolAdd(ClassT, '', MK_CONSTRUCTOR, False, False, False,
+    PRIMTYPE_VOID, ParamStart, 1, VIS_PUBLIC);
+
+  MsgIdentExpr := ExprNew(EK_IDENT);
+  ExprPool[MsgIdentExpr].Left    := SI_Msg;
+  ExprPool[MsgIdentExpr].NameVal := 'message';
+  ExprPool[MsgIdentExpr].TypeIdx := PDT_STRING;
+
+  If SuperCtorMI < 0 Then
+  Begin
+    ThisIdentExpr := ExprNew(EK_IDENT);
+    ExprPool[ThisIdentExpr].Left    := SI_This;
+    ExprPool[ThisIdentExpr].NameVal := 'this';
+    ExprPool[ThisIdentExpr].TypeIdx := ClassT;
+
+    TargetExpr := ExprNew(EK_SELECTOR);
+    ExprPool[TargetExpr].Left    := ThisIdentExpr;
+    ExprPool[TargetExpr].NameVal := 'message';
+    ExprPool[TargetExpr].TypeIdx := PDT_STRING;
+
+    InnerStmt := StmtNew(STK_ASSIGN);
+    StmtPool[InnerStmt].Left  := TargetExpr;
+    StmtPool[InnerStmt].Op    := '=';
+    StmtPool[InnerStmt].Right := MsgIdentExpr;
+  End
+  Else
+  Begin
+    CallExpr := ExprNew(EK_CALL);
+    ExprPool[CallExpr].Left     := -1;
+    ExprPool[CallExpr].Extra    := SuperCtorMI;
+    ExprPool[CallExpr].ArgFirst := ExprArgCount;
+    ExprArgPush(MsgIdentExpr);
+    ExprPool[CallExpr].ArgCount := 1;
+
+    InnerStmt := StmtNew(STK_EXPR);
+    StmtPool[InnerStmt].Left := CallExpr;
+  End;
+
+  BlockStmt := StmtNew(STK_BLOCK);
+  StmtPool[BlockStmt].ArgFirst := StmtArgCount;
+  StmtArgPush(InnerStmt);
+  StmtPool[BlockStmt].ArgCount := 1;
+
+  If MI >= 0 Then
+  Begin
+    MethodPool[MI].BodyStmtIdx := BlockStmt;
+    MethodPool[MI].FrameSize   := 0;
+  End;
+
+  SymLeaveScope;
+  StdlibAddThrowableCtor := MI;
+End;
+
+{ StdlibAddThrowableGetMessageBody : extension post-TODO25, DIXIEME    }
+{ tranche - donne a "Throwable.getMessage()" (deja enregistre PLUS               }
+{ HAUT, StdMethod0, SANS corps) un VRAI corps "return this.message;" -           }
+{ MEME technique de construction MANUELLE de noeuds que                                 }
+{ StdlibAddThrowableCtor ci-dessus. }
+Procedure StdlibAddThrowableGetMessageBody(MI: Integer);
+Var SI_This, ThisIdentExpr, SelExpr, RetStmt, BlockStmt : Integer;
+Begin
+  If MI < 0 Then Exit;
+  SymEnterScope;
+  CurParamOffset := 8;
+  CurLocalOffset := 0;
+  SI_This := SymAdd('this', SK_VAR, PDT_THROWABLE, False, False);
+  SymTab[SI_This].Offset := CurParamOffset;
+  CurParamOffset := CurParamOffset + 4;
+
+  ThisIdentExpr := ExprNew(EK_IDENT);
+  ExprPool[ThisIdentExpr].Left    := SI_This;
+  ExprPool[ThisIdentExpr].NameVal := 'this';
+  ExprPool[ThisIdentExpr].TypeIdx := PDT_THROWABLE;
+
+  SelExpr := ExprNew(EK_SELECTOR);
+  ExprPool[SelExpr].Left    := ThisIdentExpr;
+  ExprPool[SelExpr].NameVal := 'message';
+  ExprPool[SelExpr].TypeIdx := PDT_STRING;
+
+  RetStmt := StmtNew(STK_RETURN);
+  StmtPool[RetStmt].Left := SelExpr;
+
+  BlockStmt := StmtNew(STK_BLOCK);
+  StmtPool[BlockStmt].ArgFirst := StmtArgCount;
+  StmtArgPush(RetStmt);
+  StmtPool[BlockStmt].ArgCount := 1;
+
+  MethodPool[MI].BodyStmtIdx := BlockStmt;
+  MethodPool[MI].FrameSize   := 0;
+  SymLeaveScope;
+End;
+
 Procedure StdlibInit;
 Var
   PrintStreamT, SystemT, IntegerT, EnumerationT, VectorT, HashtableT,
   WriterT, ReaderT, FileWriterT, BufferedWriterT, PrintWriterT,
   FileReaderT, BufferedReaderT, IOExceptionT, RunnableT, ThreadT,
-  User32T, WinmT, MBMI, PFirst, FI, MathT : Integer;
+  User32T, WinmT, MBMI, PFirst, FI, MathT,
+  MI_ThrowableCtor, MI_ExceptionCtor, MI_RuntimeExcCtor, MI_ErrorCtor,
+  MI_IllegalArgCtor, MI_NumberFormatCtor, MI_InterruptedCtor, MI_UnsatisfiedLinkCtor,
+  MI_GetMessage : Integer;
 Begin
   { extension post-TODO25, DEUXIEME tranche - voir la note d en-tete de   }
   { TTypeRec.IsStdlib : CHAQUE ClassAdd APPELE pendant l execution de               }
@@ -10968,7 +11213,7 @@ Begin
   { exception, UTILISATEUR ou PREDECLAREE (DonneeException/IOException           }
   { plus bas) - EXACTEMENT "e.getMessage()" de Test09Exceptions.jpp/                 }
   { Test12Fichiers.jpp. }
-  StdMethod0(PDT_THROWABLE, 'getMessage', MK_METHOD, False, PDT_STRING);
+  MI_GetMessage := StdMethod0(PDT_THROWABLE, 'getMessage', MK_METHOD, False, PDT_STRING);
 
   { System.out/System.err.println - QUATRE surcharges, EXACTEMENT les   }
   { types REELLEMENT passes par les 18 echantillons (String/int/double/       }
@@ -11203,6 +11448,44 @@ Begin
     FieldPool[FI].ConstVal.Kind    := CK_DOUBLE;
     FieldPool[FI].ConstVal.RealVal := 3.14159265358979323846;
   End;
+
+  { extension post-TODO25, DIXIEME tranche (exceptions REELLES,         }
+  { Test09Exceptions.jpp) : "message" est un VRAI champ D INSTANCE                    }
+  { prive sur Throwable (HERITE par TOUTE exception, EXACTEMENT comme               }
+  { getNom()/aire() de Test07Heritage.jpp sont herites via Forme) - la           }
+  { chaine de constructeurs (String) est construite DANS L ORDRE DE LA          }
+  { HIERARCHIE (Throwable D ABORD, chacun des suivants REFERENCE le               }
+  { MI DEJA CONNU du precedent - AUCUNE resolution ClassFindConstructor          }
+  { necessaire, ce compilateur les CONSTRUIT lui-meme, il les CONNAIT              }
+  { deja) : Throwable(String) [corps REEL, stocke le champ] <-                            }
+  { Exception(String) [corps REEL, "super(message);"] <-                                    }
+  { RuntimeException(String)/Error(String) [MEME chose, chacun vers                    }
+  { SON PROPRE parent DIRECT]. Seul "Exception(String)" est REELLEMENT           }
+  { exerce (DonneeException extends Exception, Test09Exceptions.jpp) -            }
+  { RuntimeException/Error sont ajoutes par SYMETRIE/robustesse (MEME             }
+  { cout marginal, meme technique) plutot que par necessite stricte. }
+  FieldPoolAdd(PDT_THROWABLE, PDT_STRING, 'message', False, False, VIS_PRIVATE);
+  MI_ThrowableCtor  := StdlibAddThrowableCtor(PDT_THROWABLE, -1);
+  MI_ExceptionCtor  := StdlibAddThrowableCtor(PDT_EXCEPTION, MI_ThrowableCtor);
+  MI_RuntimeExcCtor := StdlibAddThrowableCtor(PDT_RUNTIMEEXCEPTION, MI_ExceptionCtor);
+  MI_ErrorCtor      := StdlibAddThrowableCtor(PDT_ERROR, MI_ThrowableCtor);
+  StdlibAddThrowableGetMessageBody(MI_GetMessage);
+
+  { BOGUE REEL trouve par EXECUTION (regression, balayage complet des 18   }
+  { echantillons APRES avoir REECRIT STK_THROW plus bas pour REELLEMENT           }
+  { compiler l expression levee - Test04Methodes.jpp, "throw new                     }
+  { IllegalArgumentException(...)" dans factorielle(), un chemin JAMAIS          }
+  { dynamiquement atteint par main() mais desormais REELLEMENT COMPILE          }
+  { quand meme, section 15.20.2 l exige) : l ANCIEN STK_THROW ne                       }
+  { compilait JAMAIS l expression levee, masquant que CES QUATRE                      }
+  { classes FEUILLES n avaient ENCORE aucun constructeur reel (SEULES          }
+  { les QUATRE classes RACINES ci-dessus en recevaient un) - memes             }
+  { chainages EXACTS que ci-dessus, vers leur PROPRE parent DIRECT               }
+  { (section 8, hierarchie deja fixee au TODO 04/9903/etc.). }
+  MI_IllegalArgCtor      := StdlibAddThrowableCtor(PDT_ILLEGALARGUMENTEXCEPTION, MI_RuntimeExcCtor);
+  MI_NumberFormatCtor    := StdlibAddThrowableCtor(PDT_NUMBERFORMATEXCEPTION, MI_IllegalArgCtor);
+  MI_InterruptedCtor     := StdlibAddThrowableCtor(PDT_INTERRUPTEDEXCEPTION, MI_ExceptionCtor);
+  MI_UnsatisfiedLinkCtor := StdlibAddThrowableCtor(PDT_UNSATISFIEDLINKERROR, MI_ErrorCtor);
 
   StdlibInitActive := False;
 End;
@@ -12992,15 +13275,21 @@ Begin
   { println x4, Integer ctor+parseInt, Enumeration x2, Vector x5,                       }
   { Hashtable x3, FileWriter ctor, BufferedWriter ctor, PrintWriter                       }
   { x4, FileReader ctor, BufferedReader x3, IOException ctor, Object              }
-  { wait/notify/notifyAll x3, Runnable.run, Thread x6, User32.MessageBox) - }
-  { 4 champs (System.out/err, winm.MB_OK/MB_ICONINFORMATION), PLUS 1              }
-  { (Math.PI, extension post-TODO25, HUITIEME tranche) = 5 champs                     }
-  { TOTAL - AUCUNE methode/constructeur supplementaire (Math n a ni                    }
-  { l un ni l autre). }
-  TypeAssert('StdlibInit : MethodPoolCount = 40 (inventaire consolide, ' +
-    'TODO 20)', MethodPoolCount = 40);
-  TypeAssert('StdlibInit : FieldPoolCount = 5 (inventaire consolide, TODO 20 ' +
-    '+ Math.PI post-25)', FieldPoolCount = 5);
+  { wait/notify/notifyAll x3, Runnable.run, Thread x6, User32.MessageBox), }
+  { PLUS 4 (extension post-TODO25, DIXIEME tranche - Throwable/                          }
+  { Exception/RuntimeException/Error(String), constructeurs REELS de la          }
+  { chaine d exceptions), PLUS 4 (MEME tranche, ajoutes APRES avoir                 }
+  { REECRIT STK_THROW pour REELLEMENT compiler l expression levee -                    }
+  { BOGUE REEL trouve par EXECUTION, Test04Methodes.jpp - IllegalArgument-       }
+  { Exception/NumberFormatException/InterruptedException/                                    }
+  { UnsatisfiedLinkError(String), les QUATRE classes FEUILLES restantes          }
+  { de la hierarchie Throwable) = 48 TOTAL. 4 champs (System.out/err,             }
+  { winm.MB_OK/MB_ICONINFORMATION), PLUS 1 (Math.PI, HUITIEME tranche),           }
+  { PLUS 1 (Throwable.message, DIXIEME tranche) = 6 champs TOTAL. }
+  TypeAssert('StdlibInit : MethodPoolCount = 48 (inventaire consolide, ' +
+    'TODO 20 + DIXIEME tranche post-25)', MethodPoolCount = 48);
+  TypeAssert('StdlibInit : FieldPoolCount = 6 (inventaire consolide, TODO 20 ' +
+    '+ Math.PI/message post-25)', FieldPoolCount = 6);
 
   TypeInit;
   SymInit;
@@ -13417,6 +13706,82 @@ Begin
   CgDoubleToDataBytes := S;
 End;
 
+{ MAX_EXC_FRAMES : extension post-TODO25, exceptions reelles - profondeur }
+{ maximale d imbrication try/catch/finally SIMULTANEMENT active (voir            }
+{ EmitDataSeg/_JPPRT_THROW plus bas) ; 8 est largement suffisant                     }
+{ (AUCUN sample n imbrique au-dela de 2 niveaux), un DEPASSEMENT REEL           }
+{ ecraserait silencieusement _JPPRT_EXC_COUNT/etc. - RISQUE ASSUME,                  }
+{ documente plutot que garde dynamiquement (MEME discipline que                       }
+{ MAX_CG_DISPATCH plus bas). }
+Const
+  MAX_EXC_FRAMES = 8;
+
+{ CG_OBJ_HEADER : extension post-TODO25, DEUXIEME tranche (dispatch     }
+{ polymorphique) - CHAQUE objet reserve MAINTENANT un mot de 4 octets            }
+{ SUPPLEMENTAIRE au tout DEBUT, AVANT ses champs, contenant une                        }
+{ "etiquette de type" DYNAMIQUE (le TypeIdx REEL, CONCRET, de la               }
+{ classe REELLEMENT construite par "new" - jamais celui, STATIQUE, de              }
+{ la variable/du parametre qui le reference) - voir CompileCall,                       }
+{ "dispatch polymorphique", pour son unique consommateur. Champs                       }
+{ DECALES de +4 en consequence (CgFieldOffsetInObject). DEPLACE ICI             }
+{ (avant EmitDataSeg/EmitRuntimeLibrary, initialement plus bas dans ce            }
+{ fichier) par l extension post-TODO25 exceptions REELLES :                             }
+{ _JPPRT_STR_TO_INT (EmitRuntimeLibrary, plus bas) a besoin de                          }
+{ CgObjectSize AVANT ce point pour dimensionner un                                        }
+{ "new NumberFormatException" construit DIRECTEMENT en assembleur                     }
+{ runtime plutot que via une AST J++ compilee. }
+Const
+  CG_OBJ_HEADER = 4;
+
+{ CgClassOwnFieldBytes : extension post-TODO25, HUITIEME tranche       }
+{ (double/float) - lit DESORMAIS TypeTab[T].NextFieldOfs (deplacement                }
+{ CUMULE REEL, tenu a jour par FieldPoolAdd - voir sa propre note                     }
+{ d en-tete) plutot que "FieldCount * 4" (qui SUPPOSAIT 4 octets PAR             }
+{ champ, faux des qu un SEUL champ double/float existe, 8 octets) -                    }
+{ REDUIT EXACTEMENT a l ancienne formule pour toute classe SANS champ           }
+{ double/float (TOUJOURS le cas avant cette tranche). }
+Function CgClassOwnFieldBytes(T: Integer): LongInt;
+Begin
+  CgClassOwnFieldBytes := TypeTab[T].NextFieldOfs;
+End;
+
+Function CgAncestorFieldBytes(T: Integer): LongInt;
+Begin
+  If (T < 0) Or (TypeTab[T].SuperTypeIdx < 0) Then
+    CgAncestorFieldBytes := 0
+  Else
+    CgAncestorFieldBytes := CgAncestorFieldBytes(TypeTab[T].SuperTypeIdx) +
+      CgClassOwnFieldBytes(TypeTab[T].SuperTypeIdx);
+End;
+
+Function CgObjectSize(T: Integer): LongInt;
+Begin
+  CgObjectSize := CG_OBJ_HEADER + CgAncestorFieldBytes(T) + CgClassOwnFieldBytes(T);
+End;
+
+Function CgFieldOffsetInObject(FI: Integer): LongInt;
+Begin
+  CgFieldOffsetInObject := CG_OBJ_HEADER +
+    CgAncestorFieldBytes(FieldPool[FI].OwnerTypeIdx) + FieldPool[FI].Offset;
+End;
+
+{ BinZeroList : retourne "0,0,...,0" (N fois) - forme "DB liste"        }
+{ reutilisee par EmitDataSeg pour reserver, en .DATA, les tableaux              }
+{ paralleles de la pile de frames d exception (AUCUNE directive "DUP()"        }
+{ n existe dans cet assembleur, seulement une liste EXPLICITE d octets,          }
+{ MEME technique que CgDoubleToDataBytes juste au-dessus). }
+Function BinZeroList(N: Integer): TString;
+Var K : Integer; S : TString;
+Begin
+  S := '';
+  For K := 1 To N Do
+  Begin
+    If K > 1 Then S := S + ',';
+    S := S + '0';
+  End;
+  BinZeroList := S;
+End;
+
 Procedure EmitDataSeg;
 Var I : Integer;
 Begin
@@ -13436,6 +13801,21 @@ Begin
   { JAMAIS consomme avant cette tranche. }
   For I := 0 To CgDoubleCount - 1 Do
     EmitRaw(ASM_PFX_FLOAT + IntToStrG(I) + ' DB ' + CgDoubleToDataBytes(CgDoublePool[I]));
+  { extension post-TODO25, exceptions reelles : pile de "frames" pour le    }
+  { mecanisme try/catch/finally (setjmp/longjmp emule, voir la note              }
+  { d en-tete de _JPPRT_THROW) - MAX_EXC_FRAMES niveaux d imbrication              }
+  { max (aucun sample n imbrique au-dela de 2 niveaux), TROIS tableaux           }
+  { PARALLELES (pas un tableau de records - cet assembleur n a AUCUN               }
+  { adressage base+index materiel, voir la note d en-tete de la section          }
+  { EK_INDEX/EK_INSTANCEOF, chaque tableau est donc indexe                                 }
+  { SEPAREMENT via son PROPRE "LEA label ; ADD reg,index*4"). "DD" n     }
+  { est PAS une directive reconnue par BinAssembleDataLine (seulement           }
+  { "DB", voir sa propre note d en-tete) - EXC_COUNT reste donc, LUI              }
+  { AUSSI, une liste de 4 octets plutot qu un vrai mot. }
+  EmitRaw(ASM_PFX_RUNTIME + 'EXC_COUNT DB 0,0,0,0');
+  EmitRaw(ASM_PFX_RUNTIME + 'EXC_EBPARR DB ' + BinZeroList(MAX_EXC_FRAMES * 4));
+  EmitRaw(ASM_PFX_RUNTIME + 'EXC_ESPARR DB ' + BinZeroList(MAX_EXC_FRAMES * 4));
+  EmitRaw(ASM_PFX_RUNTIME + 'EXC_TGTARR DB ' + BinZeroList(MAX_EXC_FRAMES * 4));
   EmitBlankLine;
 End;
 
@@ -13922,6 +14302,126 @@ Begin
   EmitInstr('RET');
   EmitBlankLine;
 
+  { _JPPRT_LONG_TO_STR : extension post-TODO25, NEUVIEME tranche (long   }
+  { 64 bits REEL, Test02Variables.jpp, "long grand = 9000000000L;")               }
+  { convertit le long 8 octets recu par la PILE ([EBP+8]=mot FAIBLE,             }
+  { [EBP+12]=mot FORT - MEME convention d appel que le double, voir              }
+  { CompileToStringValue) en une chaine DECIMALE EXACTE ALLOUEE (PAS               }
+  { une approximation - contrairement au double, un entier 64 bits SE           }
+  { REPRESENTE EXACTEMENT en decimal, aucun compromis de precision              }
+  { necessaire). Signe : bit de poids fort du mot FORT (MEME position                 }
+  { que pour le double), negation 64 bits PAR BRANCHEMENT plutot que              }
+  { par ADC/SBB (AUCUN encodeur pour ces mnemoniques n existe encore -           }
+  { AUCUN autre appelant n en a besoin) : si le mot FAIBLE est nul,                    }
+  { seul le mot FORT est neglige ; SINON, le mot FAIBLE est neglige ET          }
+  { le mot FORT recoit UN DE PLUS (l emprunt algebrique standard d une           }
+  { negation 64 bits en deux moities 32 bits). Extraction des chiffres            }
+  { par division REPETEE par 10 - la technique "DEUX DIV 32 bits"                     }
+  { permet de diviser un dividende 64 bits par un diviseur qui TIENT              }
+  { en 32 bits SANS aucune routine 64/64 complete : diviser d abord LE           }
+  { MOT FORT par 10 (quotient haut, reste r, TOUJOURS r<10<2^32) PUIS             }
+  { diviser (r:mot_FAIBLE) par 10 (une SEULE DIV suffit, puisque r<10               }
+  { garantit qu AUCUN debordement ne peut survenir) - le quotient BAS               }
+  { de cette SECONDE division EST le quotient bas du nombre COMPLET,             }
+  { son reste EST le VRAI chiffre decimal cherche. Necessite une VRAIE           }
+  { DIV NON-SIGNEE (BinEncodeDiv, nouvelle) plutot que IDIV (deja                       }
+  { utilisee PARTOUT ailleurs) : le mot FORT intermediaire peut                          }
+  { legitimement avoir son bit 31 pose SANS etre negatif, qu IDIV                     }
+  { interpreterait A TORT comme tel. }
+  EmitLabel(ASM_PFX_RUNTIME + 'LONG_TO_STR');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('SUB ESP,48');
+
+  EmitInstr('MOV EAX,DWORD PTR [EBP+12]');
+  EmitInstr('AND EAX,-2147483648');
+  EmitInstr('MOV ECX,0');
+  EmitInstr('CMP EAX,0');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'LTS_POS');
+  EmitInstr('MOV ECX,1');
+  EmitLabel(ASM_PFX_RUNTIME + 'LTS_POS');
+  EmitInstr('MOV DWORD PTR [EBP-4],ECX');
+
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('MOV EDX,DWORD PTR [EBP+12]');
+
+  EmitInstr('MOV ECX,DWORD PTR [EBP-4]');
+  EmitInstr('CMP ECX,0');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'LTS_NONEG');
+  EmitInstr('CMP EAX,0');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'LTS_ZEROLOW');
+  EmitInstr('NEG EAX');
+  EmitInstr('NEG EDX');
+  EmitInstr('SUB EDX,1');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'LTS_NONEG');
+  EmitLabel(ASM_PFX_RUNTIME + 'LTS_ZEROLOW');
+  EmitInstr('NEG EDX');
+  EmitLabel(ASM_PFX_RUNTIME + 'LTS_NONEG');
+
+  EmitInstr('LEA EBX,[EBP-5]');
+  EmitInstr('MOV ESI,0');
+  EmitLabel(ASM_PFX_RUNTIME + 'LTS_DIGLOOP');
+  EmitInstr('MOV ECX,EAX');
+  EmitInstr('OR ECX,EDX');
+  EmitInstr('CMP ECX,0');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'LTS_PAD');
+  EmitInstr('PUSH EAX');
+  EmitInstr('MOV EAX,EDX');
+  EmitInstr('MOV EDX,0');
+  EmitInstr('MOV ECX,10');
+  EmitInstr('DIV ECX');
+  EmitInstr('MOV EDI,EAX');
+  EmitInstr('POP EAX');
+  EmitInstr('DIV ECX');
+  EmitInstr('ADD EDX,48');
+  EmitInstr('MOV BYTE PTR [EBX],DL');
+  EmitInstr('DEC EBX');
+  EmitInstr('ADD ESI,1');
+  EmitInstr('MOV EDX,EDI');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'LTS_DIGLOOP');
+  EmitLabel(ASM_PFX_RUNTIME + 'LTS_PAD');
+  EmitInstr('CMP ESI,0');
+  EmitInstr('JNE ' + ASM_PFX_RUNTIME + 'LTS_HASDIGITS');
+  EmitInstr('MOV EDX,48');
+  EmitInstr('MOV BYTE PTR [EBX],DL');
+  EmitInstr('DEC EBX');
+  EmitInstr('ADD ESI,1');
+  EmitLabel(ASM_PFX_RUNTIME + 'LTS_HASDIGITS');
+
+  EmitInstr('MOV ECX,DWORD PTR [EBP-4]');
+  EmitInstr('CMP ECX,0');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'LTS_NOSIGN');
+  EmitInstr('MOV EDX,45');
+  EmitInstr('MOV BYTE PTR [EBX],DL');
+  EmitInstr('DEC EBX');
+  EmitLabel(ASM_PFX_RUNTIME + 'LTS_NOSIGN');
+  EmitInstr('INC EBX');
+  EmitInstr('ADD ESI,DWORD PTR [EBP-4]');
+
+  EmitInstr('MOV EAX,ESI');
+  EmitInstr('ADD EAX,1');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('MOV DWORD PTR [EBP-4],EAX');
+  EmitInstr('MOV EDI,EAX');
+  EmitLabel(ASM_PFX_RUNTIME + 'LTS_COPY');
+  EmitInstr('CMP ESI,0');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'LTS_COPYDONE');
+  EmitInstr('MOV DL,BYTE PTR [EBX]');
+  EmitInstr('MOV BYTE PTR [EDI],DL');
+  EmitInstr('INC EBX');
+  EmitInstr('INC EDI');
+  EmitInstr('DEC ESI');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'LTS_COPY');
+  EmitLabel(ASM_PFX_RUNTIME + 'LTS_COPYDONE');
+  EmitInstr('MOV EAX,DWORD PTR [EBP-4]');
+
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
   { _JPPRT_CHAR_TO_STR : un SEUL caractere [EBP+8] -> chaine ALLOUEE      }
   { d 1 octet utile (+1 NUL gratuit via HEAP_ZERO_MEMORY, voir plus haut). }
   EmitLabel(ASM_PFX_RUNTIME + 'CHAR_TO_STR');
@@ -13991,6 +14491,154 @@ Begin
   EmitInstr('MOV ESP,EBP');
   EmitInstr('POP EBP');
   EmitInstr('RET');
+  EmitBlankLine;
+
+  { _JPPRT_THROW : extension post-TODO25, exceptions REELLES - coeur du    }
+  { mecanisme de propagation (setjmp/longjmp emule, voir la longue note           }
+  { d en-tete de ParseTryStmt qui en fixait deja la STRATEGIE sans                    }
+  { l ecrire). Un SEUL parametre ([EBP+8], objet exception, DEJA                        }
+  { alloue/etiquete par "new"). Si _JPPRT_EXC_COUNT est a zero, AUCUN            }
+  { "try" n est actif nulle part dans le programme : exception NON                  }
+  { rattrapee, le processus s arrete (code de sortie 3, MEME convention           }
+  { que l ancien STK_THROW "abort" qu il remplace). Sinon, DEPILE le              }
+  { cadre le plus RECENT (EXC_COUNT decremente AVANT toute lecture -                }
+  { EXACTEMENT ce qui permet a un "catch" qui ne correspond PAS de              }
+  { simplement RAPPELER cette MEME routine, JAMAIS une routine "rethrow"         }
+  { distincte, pour continuer a propager vers le PROCHAIN cadre englobant       }
+  { - le compteur reduit EST DEJA la nouvelle realite), restaure EBP/ESP           }
+  { de ce cadre (le SEUL etat necessaire, ce compilateur ne gardant JAMAIS      }
+  { de valeur vivante dans EBX/ESI/EDI a travers une frontiere                          }
+  { d instruction - voir la discipline "tout tient dans EAX" - AUCUNE               }
+  { sauvegarde/restauration de ces registres n est donc necessaire) puis           }
+  { saute (JMP indirect, BinEncodeJmp) a l etiquette de dispatch DE CE           }
+  { "try" precis (calculee et sauvegardee par STK_TRY a son ENTREE),                }
+  { l objet exception REVENANT dans EAX - LA MEME convention par laquelle          }
+  { CompileExpr transmet deja TOUTE reference. AUCUN adressage base+index          }
+  { materiel n existe dans cet assembleur (voir la note d en-tete de              }
+  { EK_INDEX/BinEmitModRM) : chaque tableau EXC_*ARR est donc indexe                }
+  { SEPAREMENT via "LEA reg,[tableau] ; ADD reg,decalage" plutot qu une            }
+  { seule adresse SIB. }
+  EmitLabel(ASM_PFX_RUNTIME + 'THROW');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
+  EmitInstr('MOV EAX,DWORD PTR [' + ASM_PFX_RUNTIME + 'EXC_COUNT]');
+  EmitInstr('CMP EAX,0');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'THROW_UNCAUGHT');
+  EmitInstr('DEC EAX');
+  EmitInstr('MOV DWORD PTR [' + ASM_PFX_RUNTIME + 'EXC_COUNT],EAX');
+  { BOGUE REEL trouve par EXECUTION (synthetique, ParseIntTest.jpp -      }
+  { "42"/"​-17" donnaient a tort 70/-13) : BinEncodeShift (assembleur,          }
+  { TODO 22) IGNORE COMPLETEMENT tout second operande textuel - SEULE            }
+  { forme REELLEMENT encodee, "D3 /4" (decalage PAR CL, JAMAIS un                     }
+  { immediat direct malgre ce que le texte ASM affiche) - EXACTEMENT               }
+  { la MEME convention DEJA etablie par CompileBinary pour "<<"/">>"/                }
+  { ">>>" (section 15238 et suivantes, "le compte de decalage DOIT                    }
+  { transiter par CL") : "MOV ECX,2" PUIS "SHL EAX,CL" plutot que                      }
+  { l ancien "SHL EAX,2" (accepte SANS erreur par l assembleur mais                    }
+  { SILENCIEUSEMENT mal execute, decalage par le CL du moment - JAMAIS            }
+  { par la valeur 2). }
+  EmitInstr('MOV ECX,2');
+  EmitInstr('SHL EAX,CL');
+  EmitInstr('LEA ECX,[' + ASM_PFX_RUNTIME + 'EXC_TGTARR]');
+  EmitInstr('ADD ECX,EAX');
+  EmitInstr('MOV EDX,DWORD PTR [ECX]');
+  EmitInstr('LEA ECX,[' + ASM_PFX_RUNTIME + 'EXC_ESPARR]');
+  EmitInstr('ADD ECX,EAX');
+  EmitInstr('MOV ESP,DWORD PTR [ECX]');
+  EmitInstr('LEA ECX,[' + ASM_PFX_RUNTIME + 'EXC_EBPARR]');
+  EmitInstr('ADD ECX,EAX');
+  EmitInstr('MOV EBP,DWORD PTR [ECX]');
+  EmitInstr('MOV EAX,EBX');
+  EmitInstr('JMP EDX');
+  EmitLabel(ASM_PFX_RUNTIME + 'THROW_UNCAUGHT');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('PUSH 3');
+  EmitInstr('CALL _ExitProcess@4');
+  EmitBlankLine;
+
+  { _JPPRT_STR_TO_INT : extension post-TODO25, exceptions REELLES -       }
+  { "Integer.parseInt(String)" (Test09Exceptions.jpp) n avait ENCORE                }
+  { AUCUNE generation de code (verifie par LECTURE : aucun "parseInt" ne          }
+  { figure nulle part avant cette tranche dans CompileCall - SEULE sa               }
+  { RESOLUTION, section StdlibInit/ExprAddIdent, existait deja) - un                 }
+  { appel aurait donc PRODUIT un symbole ASM jamais defini (BodyStmtIdx           }
+  { = -1, RIEN n emet jamais l etiquette correspondante), erreur de                    }
+  { LIEN plutot qu un FatalError PROPRE du compilateur, BOGUE REEL a               }
+  { EVITER PAR CONSTRUCTION (jamais rencontre a l EXECUTION, corrige                }
+  { avant meme d essayer). Signe optionnel ('-'), AU MOINS un chiffre               }
+  { obligatoire, AUCUN espace/signe '+' (hors de portee, AUCUN                          }
+  { echantillon n en a besoin) - "x*10" calcule par decalages (x*8+x*2)           }
+  { plutot qu IMUL (BinEncodeImul ne couvre QUE "reg,reg/mem", jamais              }
+  { "reg,immediat" - voir sa propre note d en-tete). Chaine VIDE ou                    }
+  { caractere non-decimal : construit un VRAI NumberFormatException                }
+  { (CgObjectSize/PDT_NUMBERFORMATEXCEPTION, CONSTANTES connues a la              }
+  { compilation de CETTE MEME routine - directement EMBARQUEES, aucun            }
+  { "corps" J++ synthetique n est necessaire ICI, contrairement a                       }
+  { StdlibAddThrowableCtor : le champ "message" heritee reste a zero              }
+  { HEAP_ZERO_MEMORY, JAMAIS lu par le catch de Test09Exceptions.jpp)             }
+  { et le leve reellement via _JPPRT_THROW ci-dessus. }
+  EmitLabel(ASM_PFX_RUNTIME + 'STR_TO_INT');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH ESI');
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');
+  EmitInstr('MOV EBX,0');
+  EmitInstr('MOV EDX,0');
+  EmitInstr('CMP BYTE PTR [ESI],45');
+  EmitInstr('JNE ' + ASM_PFX_RUNTIME + 'STI_CHECK');
+  EmitInstr('MOV EDX,1');
+  EmitInstr('INC ESI');
+  EmitLabel(ASM_PFX_RUNTIME + 'STI_CHECK');
+  EmitInstr('CMP BYTE PTR [ESI],0');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'STI_INVALID');
+  EmitLabel(ASM_PFX_RUNTIME + 'STI_LOOP');
+  EmitInstr('CMP BYTE PTR [ESI],0');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'STI_DONE');
+  EmitInstr('CMP BYTE PTR [ESI],48');
+  EmitInstr('JL ' + ASM_PFX_RUNTIME + 'STI_INVALID');
+  EmitInstr('CMP BYTE PTR [ESI],57');
+  EmitInstr('JG ' + ASM_PFX_RUNTIME + 'STI_INVALID');
+  EmitInstr('MOV EAX,0');
+  EmitInstr('MOV AL,BYTE PTR [ESI]');
+  EmitInstr('SUB EAX,48');
+  { EBX*10 = EBX*8 + EBX*2 (BinEncodeImul ne couvre que "reg,reg/mem",      }
+  { jamais "reg,immediat" - voir sa propre note d en-tete) - EDI (JAMAIS         }
+  { ECX) recoit la copie a decaler de 3 : le compte "3"/"1" DOIT              }
+  { transiter par CL (voir la note d en-tete de _JPPRT_THROW plus haut,          }
+  { MEME bogue REEL EVITE ICI PAR CONSTRUCTION), et CL EST l octet bas          }
+  { de ECX - decaler ECX LUI-MEME avec un compte QUI VIENT de ECX                    }
+  { l ecraserait AVANT le decalage. }
+  EmitInstr('MOV EDI,EBX');
+  EmitInstr('MOV ECX,3');
+  EmitInstr('SHL EDI,CL');
+  EmitInstr('MOV ECX,1');
+  EmitInstr('SHL EBX,CL');
+  EmitInstr('ADD EBX,EDI');
+  EmitInstr('ADD EBX,EAX');
+  EmitInstr('INC ESI');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'STI_LOOP');
+  EmitLabel(ASM_PFX_RUNTIME + 'STI_DONE');
+  EmitInstr('CMP EDX,0');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'STI_POS');
+  EmitInstr('NEG EBX');
+  EmitLabel(ASM_PFX_RUNTIME + 'STI_POS');
+  EmitInstr('MOV EAX,EBX');
+  EmitInstr('POP ESI');
+  EmitInstr('POP EBX');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitLabel(ASM_PFX_RUNTIME + 'STI_INVALID');
+  EmitInstr('PUSH ' + IntToStrG(CgObjectSize(PDT_NUMBERFORMATEXCEPTION)));
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('MOV ECX,' + IntToStrG(PDT_NUMBERFORMATEXCEPTION));
+  EmitInstr('MOV DWORD PTR [EAX],ECX');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'THROW');
   EmitBlankLine;
 End;
 
@@ -14128,49 +14776,12 @@ End;
 { static melange a des champs d instance, JAMAIS incorrect (chaque               }
 { champ D INSTANCE garde un emplacement UNIQUE et STABLE), simplement           }
 { pas la disposition la plus compacte possible. }
-{ CG_OBJ_HEADER : extension post-TODO25, DEUXIEME tranche (dispatch     }
-{ polymorphique) - CHAQUE objet reserve MAINTENANT un mot de 4 octets            }
-{ SUPPLEMENTAIRE au tout DEBUT, AVANT ses champs, contenant une                        }
-{ "etiquette de type" DYNAMIQUE (le TypeIdx REEL, CONCRET, de la               }
-{ classe REELLEMENT construite par "new" - jamais celui, STATIQUE, de              }
-{ la variable/du parametre qui le reference) - voir CompileCall,                       }
-{ "dispatch polymorphique", pour son unique consommateur. Champs                       }
-{ DECALES de +4 en consequence (CgFieldOffsetInObject). }
-Const
-  CG_OBJ_HEADER = 4;
-
-{ CgClassOwnFieldBytes : extension post-TODO25, HUITIEME tranche       }
-{ (double/float) - lit DESORMAIS TypeTab[T].NextFieldOfs (deplacement                }
-{ CUMULE REEL, tenu a jour par FieldPoolAdd - voir sa propre note                     }
-{ d en-tete) plutot que "FieldCount * 4" (qui SUPPOSAIT 4 octets PAR             }
-{ champ, faux des qu un SEUL champ double/float existe, 8 octets) -                    }
-{ REDUIT EXACTEMENT a l ancienne formule pour toute classe SANS champ           }
-{ double/float (TOUJOURS le cas avant cette tranche). }
-Function CgClassOwnFieldBytes(T: Integer): LongInt;
-Begin
-  CgClassOwnFieldBytes := TypeTab[T].NextFieldOfs;
-End;
-
-Function CgAncestorFieldBytes(T: Integer): LongInt;
-Begin
-  If (T < 0) Or (TypeTab[T].SuperTypeIdx < 0) Then
-    CgAncestorFieldBytes := 0
-  Else
-    CgAncestorFieldBytes := CgAncestorFieldBytes(TypeTab[T].SuperTypeIdx) +
-      CgClassOwnFieldBytes(TypeTab[T].SuperTypeIdx);
-End;
-
-Function CgObjectSize(T: Integer): LongInt;
-Begin
-  CgObjectSize := CG_OBJ_HEADER + CgAncestorFieldBytes(T) + CgClassOwnFieldBytes(T);
-End;
-
-Function CgFieldOffsetInObject(FI: Integer): LongInt;
-Begin
-  CgFieldOffsetInObject := CG_OBJ_HEADER +
-    CgAncestorFieldBytes(FieldPool[FI].OwnerTypeIdx) + FieldPool[FI].Offset;
-End;
-
+{ CG_OBJ_HEADER/CgObjectSize/CgFieldOffsetInObject : voir leur propre   }
+{ note d en-tete, deplacee plus haut (avant EmitDataSeg/EmitRuntimeLibrary,        }
+{ extension post-TODO25 exceptions REELLES - _JPPRT_STR_TO_INT en a                }
+{ desormais besoin, AVANT ce point du fichier, pour la taille REELLE            }
+{ d un "new NumberFormatException" construit directement en assembleur          }
+{ runtime plutot que via une AST J++ compilee). }
 { CgSlotSize : extension post-TODO25, HUITIEME tranche (double/float) - }
 { taille (octets) reservee pour UNE locale/UN parametre SCALAIRE de ce           }
 { type sur la PILE (EBP-relatif, CurParamOffset/CurLocalOffset) - 8              }
@@ -14206,6 +14817,11 @@ Procedure CompileExprF(E: Integer); Forward;   { extension post-TODO25,  }
                                                 { HUITIEME tranche - voir sa           }
                                                 { propre note d en-tete, juste           }
                                                 { avant CompileCall plus bas. }
+Procedure CompileExprL(E: Integer); Forward;   { extension post-TODO25,  }
+                                                { NEUVIEME tranche (long 64                }
+                                                { bits REEL) - voir sa propre                 }
+                                                { note d en-tete, juste apres                 }
+                                                { CompileExprF. }
 Procedure CompileCall(E: Integer); Forward;
 
 { CompileToStringValue : compile OperandE (CompileExpr) PUIS convertit   }
@@ -14233,6 +14849,20 @@ Begin
     EmitInstr('SUB ESP,8');
     EmitInstr('FSTP QWORD PTR [ESP]');
     EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'DOUBLE_TO_STR');
+    EmitInstr('ADD ESP,8');
+    Exit;
+  End;
+
+  { extension post-TODO25, NEUVIEME tranche (long 64 bits REEL,          }
+  { Test02Variables.jpp, "grand") : MEME raisonnement que double/float             }
+  { ci-dessus - un long ne tient PAS dans EAX seul, CompileExprL (EDX:EAX,       }
+  { convention x86 REELLE de retour 64 bits) est la SEULE voie valide.               }
+  If T = PRIMTYPE_LONG Then
+  Begin
+    CompileExprL(OperandE);
+    EmitInstr('PUSH EDX');
+    EmitInstr('PUSH EAX');
+    EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'LONG_TO_STR');
     EmitInstr('ADD ESP,8');
     Exit;
   End;
@@ -14267,9 +14897,10 @@ Begin
     Exit;
   End;
   FatalError('generateur de code : conversion en chaine non couverte par ' +
-    'cette extension pour la concatenation "+" ("long" reste hors de ' +
-    'portee - double/float sont, EUX, couverts depuis la HUITIEME tranche, ' +
-    'voir la note d''en-tete de section) : type #' + IntToStrG(T));
+    'cette extension pour la concatenation "+" (double/float/long sont ' +
+    'TOUS couverts depuis les HUITIEME/NEUVIEME tranches - un type NON ' +
+    'PREVU a atteint ce point, voir la note d''en-tete de section) : type #' +
+    IntToStrG(T));
 End;
 
 { CompileConcat : "+" dont le TYPE RESULTAT est PDT_STRING (regle EXACTE  }
@@ -14433,6 +15064,61 @@ Begin
   Else
     FatalError('generateur de code : forme d''expression flottante non ' +
       'couverte par cette extension (genre #' + IntToStrG(Ord(ExprPool[E].Kind)) +
+      ') - portee deliberement etroite (voir la note d''en-tete de section)');
+  End;
+End;
+
+{ CompileExprL : extension post-TODO25, NEUVIEME tranche (long 64 bits  }
+{ REEL, Test02Variables.jpp) - TROISIEME jumelle de CompileExpr/                       }
+{ CompileExprF, pour un noeud dont le TYPE STATIQUE est PRIMTYPE_LONG -           }
+{ laisse son resultat dans EDX:EAX (EDX=mot de poids FORT, EAX=mot de            }
+{ poids FAIBLE - convention x86 REELLE de retour 64 bits, PAS un choix           }
+{ arbitraire, la MEME que gcc/MSVC en mode 32 bits pour "long long").              }
+{ Portee DELIBEREMENT LA PLUS ETROITE des trois voies : SEUL                            }
+{ Test02Variables.jpp utilise "long" (grep confirme, AUCUN AUTRE des             }
+{ 18 echantillons), et UNIQUEMENT pour DECLARER un litteral PUIS                       }
+{ l IMPRIMER (concatenation "+") - JAMAIS d arithmetique/comparaison             }
+{ entre longs nulle part - donc SEULS EK_LONGLIT et EK_IDENT (lecture             }
+{ d une locale) sont couverts ICI, PAS EK_BINARY (+/-/*// 64 bits                      }
+{ exigeraient ADC/SBB pour la retenue - AUCUN encodeur n existe encore           }
+{ pour ces mnemoniques - et une VRAIE division 64/64 exigerait une                     }
+{ routine logicielle bien plus lourde qu un simple ADC), PAS EK_CAST                  }
+{ (int<->long), PAS EK_UNARY '-' (negation 64 bits, NEG EAX/ADC EDX,0/           }
+{ NEG EDX - AUCUN echantillon n a de litteral long NEGATIF). Chacun de           }
+{ ces gaps reste un FatalError EXPLICITE (jamais silencieux) plutot                  }
+{ qu une implementation SPECULATIVE sans appelant reel. }
+Procedure CompileExprL(E: Integer);
+Var Lo, Hi : LongInt;
+Begin
+  Case ExprPool[E].Kind Of
+    EK_LONGLIT:
+    Begin
+      Lo := LongInt(ExprPool[E].Int64Val And $FFFFFFFF);
+      Hi := LongInt(ExprPool[E].Int64Val Shr 32);
+      EmitInstr('MOV EAX,' + IntToStrG(Lo));
+      EmitInstr('MOV EDX,' + IntToStrG(Hi));
+    End;
+
+    { EK_IDENT : locale/parametre long SCALAIRE (MEME restriction "jamais  }
+    { un champ/'this'" que CompileExpr/CompileExprF) - occupe 8 octets              }
+    { REELS (CgSlotSize, extension post-TODO25 HUITIEME tranche deja               }
+    { generalisee a "double/float/long" ensemble) : mot de poids FAIBLE           }
+    { a [EBP+off], FORT a [EBP+off+4] (MEME ordre little-endian que le              }
+    { double, CompileExprF). }
+    EK_IDENT:
+    Begin
+      If (ExprPool[E].Left < 0) Or (SymTab[ExprPool[E].Left].Kind <> SK_VAR) Then
+      Begin
+        FatalError('generateur de code : identificateur long non couvert ' +
+          'par cette extension : ' + ExprPool[E].NameVal);
+        Exit;
+      End;
+      EmitInstr('MOV EAX,' + CgLocalOperand(SymTab[ExprPool[E].Left].Offset));
+      EmitInstr('MOV EDX,' + CgLocalOperand(SymTab[ExprPool[E].Left].Offset + 4));
+    End;
+  Else
+    FatalError('generateur de code : forme d''expression long non couverte ' +
+      'par cette extension (genre #' + IntToStrG(Ord(ExprPool[E].Kind)) +
       ') - portee deliberement etroite (voir la note d''en-tete de section)');
   End;
 End;
@@ -14956,11 +15642,39 @@ Begin
     { que source ET cible tiennent toutes deux dans EAX (int-family/                 }
     { boolean/char, OU une conversion de REFERENCE - String/objet -                       }
     { jamais verifiee a l EXECUTION, AUCUN echantillon ne declenche un              }
-    { cast reellement invalide, verifie par lecture) - long/double/float             }
-    { (source OU cible) restent HORS de portee, comme partout ailleurs               }
-    { dans cette extension. }
+    { cast reellement invalide, verifie par lecture).                                              }
+    { extension post-TODO25, NEUVIEME tranche : "(int)doubleExpr"                     }
+    { (Test02Variables.jpp, "(int)reelDouble") - LA SEULE direction              }
+    { double/float<->int REELLEMENT exercee par un echantillon - TRONQUE           }
+    { VERS ZERO (section 5.1.3, "narrowing" - PAS le mode PAR DEFAUT du           }
+    { FPU, "round to nearest" : "(int)2.9" DOIT donner 2, jamais 3) via           }
+    { la manipulation TEMPORAIRE du mot de controle FPU (RC=11b force                 }
+    { la troncature le temps d UNE SEULE conversion, restaure                                }
+    { IMMEDIATEMENT apres - AUCUN autre code de cette extension n a besoin        }
+    { d un mode d arrondi different de celui par defaut). "long" et                     }
+    { toute AUTRE direction (int->double/float, promotion IMPLICITE                    }
+    { plutot qu un cast EXPLICITE - AUCUN echantillon n en a besoin)                   }
+    { restent HORS de portee, documentees plutot que devinees. }
     EK_CAST:
     Begin
+      If (ExprPool[E].Extra = PRIMTYPE_INT) And
+         CgIsFpuType(ExprPool[ExprPool[E].Left].TypeIdx) Then
+      Begin
+        CompileExprF(ExprPool[E].Left);
+        EmitInstr('SUB ESP,12');
+        EmitInstr('FNSTCW WORD PTR [ESP+8]');
+        EmitInstr('MOV AL,BYTE PTR [ESP+8]');
+        EmitInstr('MOV BYTE PTR [ESP+4],AL');
+        EmitInstr('MOV AL,BYTE PTR [ESP+9]');
+        EmitInstr('OR AL,12');
+        EmitInstr('MOV BYTE PTR [ESP+5],AL');
+        EmitInstr('FLDCW WORD PTR [ESP+4]');
+        EmitInstr('FISTP DWORD PTR [ESP+0]');
+        EmitInstr('FLDCW WORD PTR [ESP+8]');
+        EmitInstr('MOV EAX,DWORD PTR [ESP+0]');
+        EmitInstr('ADD ESP,12');
+        Exit;
+      End;
       If (ExprPool[E].Extra = PRIMTYPE_LONG) Or (ExprPool[E].Extra = PRIMTYPE_DOUBLE) Or
          (ExprPool[E].Extra = PRIMTYPE_FLOAT) Or
          (ExprPool[ExprPool[E].Left].TypeIdx = PRIMTYPE_LONG) Or
@@ -14968,8 +15682,9 @@ Begin
          (ExprPool[ExprPool[E].Left].TypeIdx = PRIMTYPE_FLOAT) Then
       Begin
         FatalError('generateur de code : conversion ("cast") non couverte ' +
-          'par cette extension (long/double/float restent hors de portee, ' +
-          'voir la note d''en-tete de section)');
+          'par cette extension pour cette direction precise (SEUL "(int)' +
+          'doubleExpr"/"(int)floatExpr" est couvert, voir la note d''en-' +
+          'tete de section) : type #' + IntToStrG(ExprPool[E].Extra));
         Exit;
       End;
       CompileExpr(ExprPool[E].Left);
@@ -15428,6 +16143,25 @@ Begin
     Exit;
   End;
 
+  { extension post-TODO25, exceptions REELLES : "Integer.parseInt(texte)" }
+  { (Test09Exceptions.jpp/Test10Collections.jpp) - reconnue PAR NOM (MEME          }
+  { technique que "println" plus bas, StdMethod1 lui donne un BodyStmtIdx        }
+  { = -1 PERMANENT, une classe de bibliotheque standard n a JAMAIS de              }
+  { corps SOURCE reel) PLUTOT que par comparaison de TypeIdx contre une            }
+  { variable globale IntegerT (qui n existe qu a l INTERIEUR de                        }
+  { StdlibInit, jamais ICI) - voir _JPPRT_STR_TO_INT (EmitRuntimeLibrary)         }
+  { pour l ALGORITHME REEL (signe, chiffres, NumberFormatException sur              }
+  { entree invalide). }
+  If (MethodPool[MI].Name = 'parseInt') And
+     (TypeTab[MethodPool[MI].OwnerTypeIdx].Name = 'Integer') Then
+  Begin
+    CompileExpr(ExprArgPool[ExprPool[E].ArgFirst]);
+    EmitInstr('PUSH EAX');
+    EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STR_TO_INT');
+    EmitInstr('ADD ESP,4');
+    Exit;
+  End;
+
   { extension post-TODO25, QUATRIEME tranche (chainage de constructeur) :  }
   { "this(...)"/"super(...)" resolu (voir ParsePostfix, meme extension) -            }
   { AUCUNE allocation nouvelle (l objet EST DEJA celui du constructeur              }
@@ -15866,8 +16600,9 @@ End;
 { AUTRE genre s arrete PROPREMENT, MEME discipline que CompileExpr. }
 Procedure CompileStmt(S: Integer);
 Var
-  I, SubS, Body, Off, TargetE, FI, BaseT : Integer;
+  I, SubS, Body, Off, TargetE, FI, BaseT, CatchN, TI : Integer;
   LblElse, LblDone, LblTop, LblCont, LblEnd, DefaultLbl : TString;
+  LblDispatch, LblNextCatch, LblMatch : TString;
   CaseLbl : Array[0..63] Of TString;
 Begin
   If S < 0 Then Exit;
@@ -15907,6 +16642,17 @@ Begin
           Begin
             CompileExprF(SymTab[I].InitExprIdx);
             EmitInstr('FSTP ' + CgLocalOperandQ(SymTab[I].Offset));
+          End
+          Else If SymTab[I].TypeIdx = PRIMTYPE_LONG Then
+          Begin
+            { extension post-TODO25, NEUVIEME tranche (long 64 bits REEL) - }
+            { "long grand = 9000000000L;" (Test02Variables.jpp) : STOCKE            }
+            { les DEUX mots (EDX:EAX, voir CompileExprL) dans les 8 octets            }
+            { REELS de la locale (CgSlotSize la sait deja longue de 8                     }
+            { octets, extension HUITIEME tranche generalisee). }
+            CompileExprL(SymTab[I].InitExprIdx);
+            EmitInstr('MOV ' + CgLocalOperand(SymTab[I].Offset) + ',EAX');
+            EmitInstr('MOV ' + CgLocalOperand(SymTab[I].Offset + 4) + ',EDX');
           End
           Else
           Begin
@@ -16249,26 +16995,113 @@ Begin
       End;
     End;
 
-    { STK_THROW : extension post-TODO25 - SIMPLIFICATION EXPLICITEMENT     }
-    { ASSUMEE, PAS de vraies semantiques Java (AUCUN deroulement de pile,             }
-    { AUCUNE correspondance catch reelle - STK_TRY reste ENTIEREMENT hors           }
-    { de portee) : termine simplement le PROCESSUS avec un code de sortie              }
-    { DISTINCT (3), approximant un "abort" plutot qu une VRAIE exception -               }
-    { L EXPRESSION lancee elle-meme n est JAMAIS compilee (aurait pu                     }
-    { referencer un constructeur de bibliotheque standard SANS corps                        }
-    { reel, ex. "new IllegalArgumentException(...)", EK_NEWOBJECT               }
-    { s arreterait alors PROPREMENT de toute facon - AUCUNE perte reelle,          }
-    { ses eventuels EFFETS DE BORD ne sont simplement jamais executes).             }
-    { Suffisant UNIQUEMENT parce que, pour chaque echantillon ou est                    }
-    { rencontree cette forme, le "throw" n est JAMAIS DYNAMIQUEMENT                        }
-    { atteint par le VRAI chemin d execution de main() (verifie              }
-    { manuellement pour chaque cas avant d etre invoque ICI) - une                        }
-    { methode dont le throw EST reellement exercee resterait, elle,                       }
-    { INCORRECTE (arret au lieu d une vraie propagation/capture). }
+    { STK_TRY : extension post-TODO25, exceptions REELLES - voir la       }
+    { longue note d en-tete de ParseTryStmt (section 11.7) qui fixait               }
+    { deja la STRATEGIE (setjmp/longjmp emule) sans l ecrire, et celle           }
+    { de _JPPRT_THROW (EmitRuntimeLibrary) pour le MECANISME de                          }
+    { propagation lui-meme. ICI : (a) empile un cadre (EBP/ESP courants          }
+    { + adresse de l etiquette de dispatch CI-DESSOUS) dans les tableaux         }
+    { paralleles _JPPRT_EXC_*ARR (INDEXES par _JPPRT_EXC_COUNT, jamais          }
+    { d adressage base+index materiel - voir la note d en-tete de                    }
+    { BinEmitModRM/EK_INDEX) ; (b) compile le bloc "try" ; (c) a la              }
+    { sortie NORMALE (aucune exception), depile le cadre AVANT le                     }
+    { "finally" eventuel et saute par-dessus le dispatch ; (d) le                       }
+    { dispatch LUI-MEME (EAX = objet exception, convention posee par              }
+    { _JPPRT_THROW juste avant son JMP indirect) enumere chaque catch               }
+    { DANS L ORDRE TEXTUEL, pour chacun la MEME technique EXACTE que              }
+    { EK_INSTANCEOF/le dispatch polymorphique de CompileCall (chaine               }
+    { CMP/JE contre CHAQUE sous-classe CONCRETE du type declare) ;                    }
+    { AUCUN catch ne correspond -> RAPPELLE _JPPRT_THROW avec le MEME             }
+    { objet (le compteur, DEJA decremente par le _JPPRT_THROW qui a               }
+    { saute ICI, pointe DEJA vers le PROCHAIN cadre englobant - AUCUNE           }
+    { routine "rethrow" distincte n est necessaire, RECURSION naturelle           }
+    { du MEME mecanisme). LIMITE ASSUMEE, jamais rencontree par un                   }
+    { echantillon reel (verifie par lecture des 4 fichiers qui utilisent            }
+    { try/catch/finally) : SI un catch ne correspond dans un "try" qui           }
+    { a SON PROPRE "finally", ce "finally" n est PAS execute pendant                }
+    { cette propagation (seul le "try" qui ATTRAPE finalement                          }
+    { l exception execute un "finally", section 11.7, pas chaque "try"           }
+    { simplement TRAVERSE) - documentee plutot que devinee, comme                    }
+    { partout ailleurs dans ce compilateur. }
+    STK_TRY:
+    Begin
+      LblDispatch := CgLabelGen;
+      LblEnd      := CgLabelGen;
+
+      EmitInstr('MOV EBX,DWORD PTR [' + ASM_PFX_RUNTIME + 'EXC_COUNT]');
+      EmitInstr('MOV EAX,EBX');
+      EmitInstr('MOV ECX,4');
+      EmitInstr('IMUL EAX,ECX');
+      EmitInstr('LEA ECX,[' + ASM_PFX_RUNTIME + 'EXC_EBPARR]');
+      EmitInstr('ADD ECX,EAX');
+      EmitInstr('MOV DWORD PTR [ECX],EBP');
+      EmitInstr('LEA ECX,[' + ASM_PFX_RUNTIME + 'EXC_ESPARR]');
+      EmitInstr('ADD ECX,EAX');
+      EmitInstr('MOV DWORD PTR [ECX],ESP');
+      EmitInstr('LEA ECX,[' + ASM_PFX_RUNTIME + 'EXC_TGTARR]');
+      EmitInstr('ADD ECX,EAX');
+      EmitInstr('LEA EDX,[' + LblDispatch + ']');
+      EmitInstr('MOV DWORD PTR [ECX],EDX');
+      EmitInstr('INC EBX');
+      EmitInstr('MOV DWORD PTR [' + ASM_PFX_RUNTIME + 'EXC_COUNT],EBX');
+
+      CompileStmt(StmtPool[S].Left);
+
+      EmitInstr('MOV EAX,DWORD PTR [' + ASM_PFX_RUNTIME + 'EXC_COUNT]');
+      EmitInstr('DEC EAX');
+      EmitInstr('MOV DWORD PTR [' + ASM_PFX_RUNTIME + 'EXC_COUNT],EAX');
+      If StmtPool[S].Right >= 0 Then CompileStmt(StmtPool[S].Right);
+      EmitInstr('JMP ' + LblEnd);
+
+      EmitLabel(LblDispatch);
+      EmitInstr('MOV EBX,EAX');
+      For I := 0 To StmtPool[S].ArgCount - 1 Do
+      Begin
+        CatchN := StmtArgPool[StmtPool[S].ArgFirst + I];
+        LblNextCatch := CgLabelGen;
+        LblMatch := CgLabelGen;
+        EmitInstr('MOV EAX,' + CgAddrOperand('EBX', 0));
+        For TI := 0 To TypeCount - 1 Do
+          If (TypeTab[TI].Kind = TYK_CLASS) And (Not TypeTab[TI].IsAbstractClass) And
+             TypeIsSubclassOf(TI, StmtPool[CatchN].Extra) Then
+          Begin
+            EmitInstr('CMP EAX,' + IntToStrG(TI));
+            EmitInstr('JE ' + LblMatch);
+          End;
+        EmitInstr('JMP ' + LblNextCatch);
+        EmitLabel(LblMatch);
+        If StmtPool[CatchN].Right >= 0 Then
+          EmitInstr('MOV ' + CgLocalOperand(SymTab[StmtPool[CatchN].Right].Offset) + ',EBX');
+        CompileStmt(StmtPool[CatchN].Left);
+        If StmtPool[S].Right >= 0 Then CompileStmt(StmtPool[S].Right);
+        EmitInstr('JMP ' + LblEnd);
+        EmitLabel(LblNextCatch);
+      End;
+      EmitInstr('MOV EAX,EBX');
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'THROW');
+
+      EmitLabel(LblEnd);
+    End;
+
+    { STK_THROW : extension post-TODO25, exceptions REELLES - "throw       }
+    { expr;" (section 11.5) REMPLACE ICI l ancien "abort" (code de              }
+    { sortie 3 fixe, AUCUNE expression meme compilee) : compile               }
+    { desormais REELLEMENT l expression (objet exception, TOUJOURS une            }
+    { reference - "tout tient dans EAX", MEME convention que le reste            }
+    { de ce generateur de code) et la transmet a _JPPRT_THROW, qui                    }
+    { retrouve LUI-MEME le "try" englobant ACTIF le plus proche (ou                  }
+    { termine le processus si aucun ne l est - MEME code de sortie 3            }
+    { qu avant, seulement dans ce cas desormais GENUINEMENT non               }
+    { rattrape plutot que TOUJOURS). AUCUN "ADD ESP,4" apres l appel :               }
+    { _JPPRT_THROW ne RETOURNE JAMAIS ICI (JMP indirect vers un                       }
+    { dispatch, OU _ExitProcess) - improductif mais JAMAIS incorrect                  }
+    { de l omettre. }
     STK_THROW:
     Begin
-      EmitInstr('PUSH 3');
-      EmitInstr('CALL _ExitProcess@4');
+      CompileExpr(StmtPool[S].Left);
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'THROW');
     End;
 
     { STK_SYNCHRONIZED : extension post-TODO25, SEPTIEME tranche - le       }
@@ -17076,8 +17909,47 @@ Begin
   BinEmitModRM(7, Op1);
 End;
 
-Procedure BinEncodeJmp(Const Op1Text: TString);
+{ BinEncodeDiv : extension post-TODO25, NEUVIEME tranche (long 64 bits  }
+{ REEL) - DIV r/m32 NON-SIGNE (F7 /6, MEME groupe d opcode que IDIV                }
+{ juste au-dessus, /7) - necessaire pour _JPPRT_LONG_TO_STR (division            }
+{ 64/32 par la technique "deux DIV 32 bits", section EN-TETE de la               }
+{ routine elle-meme) : contrairement a IDIV (deja utilise PARTOUT                    }
+{ ailleurs pour l arithmetique entiere SIGNEE ordinaire), un mot de                    }
+{ poids FORT intermediaire peut legitimement avoir son bit 31 pose                     }
+{ SANS etre negatif (ex. high=2 pour "9000000000L", ou n importe quelle          }
+{ valeur PLUS grande) - IDIV l interpreterait A TORT comme negatif. }
+Procedure BinEncodeDiv(Const Op1Text: TString);
+Var Op1: TBinOperand;
 Begin
+  Op1 := BinParseOperand(Op1Text);
+  If Op1.Kind <> BOK_REG Then
+  Begin
+    FatalError('assembleur : forme de DIV non couverte : ' + Op1Text);
+    Exit;
+  End;
+  BinEmit8($F7);
+  BinEmitModRM(6, Op1);
+End;
+
+{ BinEncodeJmp : forme DIRECTE (E9+rel32, vers une etiquette SYMBOLIQUE  }
+{ FIXE - la SEULE forme necessaire jusqu ICI) - extension post-TODO25,           }
+{ DIXIEME tranche (exceptions REELLES) : AUSSI la forme INDIRECTE "JMP           }
+{ reg" (FF /4, ModRM registre-direct) - _JPPRT_THROW calcule sa CIBLE            }
+{ a l EXECUTION (le catch-dispatch d un "try" ARBITRAIRE, JAMAIS connu           }
+{ a la compilation de CETTE routine runtime - un SEUL "_JPPRT_THROW"             }
+{ dessert TOUS les "try" du programme) et y saute - distinguee de la              }
+{ forme directe en verifiant SI Op1Text nomme un REGISTRE CONNU               }
+{ (BinReg32) avant de le traiter comme une etiquette. }
+Procedure BinEncodeJmp(Const Op1Text: TString);
+Var RegNum: Integer;
+Begin
+  RegNum := BinReg32(BinTrim(Op1Text));
+  If RegNum >= 0 Then
+  Begin
+    BinEmit8($FF);
+    BinEmit8($E0 Or RegNum);
+    Exit;
+  End;
   BinEmit8($E9);
   BinEmit32(0);
   BinAddFixup(BFX_REL32, BinTrim(Op1Text));
@@ -17287,6 +18159,7 @@ Begin
   If Mnemonic = 'NEG' Then Begin BinEncodeNeg(Op1); Exit; End;
   If Mnemonic = 'IMUL' Then Begin BinEncodeImul(Op1, Op2); Exit; End;
   If Mnemonic = 'IDIV' Then Begin BinEncodeIdiv(Op1); Exit; End;
+  If Mnemonic = 'DIV' Then Begin BinEncodeDiv(Op1); Exit; End;
   If Mnemonic = 'CDQ' Then Begin BinEmit8($99); Exit; End;
 
   { extension post-TODO25, HUITIEME tranche (double/float, FPU x87) -   }
