@@ -3551,6 +3551,73 @@ Var
   { explicite supplementaire n est necessaire. }
   CurrentClassTypeIdx : Integer;
 
+  { CurAnonClassT/CurAnonBoundaryLevel/AnonCapture* : extension post-     }
+  { TODO25, TREIZIEME tranche (classes anonymes + capture de fermeture,          }
+  { Test11Threads.jpp, "new Runnable() suivi d''un corps" referencant           }
+  { "file", une                                                                                    }
+  { locale de "main") - TODO09 avait explicitement differe ce cas                     }
+  { ("classe anonyme... hors de portee"), re-tente ICI car le reste de           }
+  { l infrastructure necessaire (dispatch polymorphique, exceptions                  }
+  { reelles) existe DESORMAIS. CurAnonClassT = TypeIdx de la classe                  }
+  { anonyme EN COURS DE PARSING (-1 si aucune, MEME discipline "simple           }
+  { variable + sauvegarde/restauration par l appelant recursif" que                  }
+  { CurrentClassTypeIdx ci-dessus - AUCUNE classe anonyme IMBRIQUEE               }
+  { dans une AUTRE n est exercee, donc AUCUNE pile explicite n est                    }
+  { necessaire, la PILE D APPELS Pascal de ParseNewExpr suffit). }
+  { CurAnonBoundaryLevel = ScopeLevel de la portee ENGLOBANTE juste AVANT         }
+  { d entrer dans le corps de la classe anonyme - ExprAddIdent                          }
+  { (plus haut dans ce fichier) compare CE niveau contre                                  }
+  { SymTab[SI].ScopeLevel pour distinguer "declare A L INTERIEUR de la           }
+  { classe anonyme elle-meme" (ex. le "i" d un for-loop DANS "run()") de          }
+  { "capture DEPUIS l exterieur" (ex. "file"). AnonCaptureOrigSI/                       }
+  { AnonCaptureFieldIdx/AnonCaptureCount : liste PLATE (tableau, MEME                }
+  { convention que partout ailleurs dans ce projet) des captures                        }
+  { DEJA materialisees pour la classe anonyme COURANTE - evite de                     }
+  { creer DEUX champs distincts si la MEME locale est referencee              }
+  { plusieurs fois dans "run()". }
+  CurAnonClassT        : Integer;
+  CurAnonBoundaryLevel : Integer;
+  AnonCaptureCount     : Integer;
+  AnonCaptureOrigSI    : Array[0..31] Of Integer;
+  AnonCaptureFieldIdx  : Array[0..31] Of Integer;
+  AnonSeq              : Integer;   { compteur GLOBAL - un nom UNIQUE par     }
+                                     { classe anonyme rencontree, jamais           }
+                                     { reinitialise (chaque classe anonyme            }
+                                     { du fichier ENTIER doit rester distincte). }
+
+  { MI_ThreadProc : extension post-TODO25, TREIZIEME tranche (Thread     }
+  { REEL) - index MethodPool du point d entree de thread SYNTHETIQUE               }
+  { ("t.target.run();", voir BuildThreadProcMethod) construit UNE SEULE          }
+  { fois par StdlibInit - _JPPRT_THREAD_START (EmitRuntimeLibrary,                    }
+  { PROCEDURE COMPLETEMENT SEPAREE) en a besoin pour recuperer                          }
+  { MethodAsmLabelG(MI_ThreadProc), l ADRESSE REELLE passee a                           }
+  { CreateThread - DOIT donc etre une variable GLOBALE (jamais une                    }
+  { simple locale de StdlibInit, MEME raison que ExceptionSelfTest a                  }
+  { deja motivee pour MI_ThrowableCtor et consorts, TODO25 DIXIEME              }
+  { tranche). }
+  MI_ThreadProc : Integer;
+
+  { HasRunnableImpl : extension post-TODO25, TREIZIEME tranche (Thread    }
+  { REEL) - VRAIE au moins UNE classe CONCRETE du fichier REELLEMENT               }
+  { compile implemente Runnable AVEC UN VRAI CORPS "run()" (BodyStmtIdx>=0,     }
+  { EXACTEMENT la condition que le VRAI dispatch polymorphique de                     }
+  { CompileCall exige LUI-MEME - "TypeIsSubclassOf" SEUL ne suffit PAS,           }
+  { ThreadT lui-meme "implements Runnable" sans jamais fournir de VRAI              }
+  { corps a SON PROPRE "run()", voir la note d en-tete de son calcul                 }
+  { REEL dans CompileProgram). GLOBALE (jamais une simple locale de                 }
+  { CompileProgram) car EmitRuntimeLibrary (PROCEDURE SEPAREE, appelee             }
+  { AVANT la boucle de compilation des methodes) en a EGALEMENT besoin           }
+  { : _JPPRT_THREAD_START reference l ETIQUETTE de MI_ThreadProc via                 }
+  { MethodAsmLabelG - SI son corps n est PAS compile (AUCUN Runnable                  }
+  { concret), cette etiquette ne serait JAMAIS emise et le CORRECTIF                  }
+  { (BinAddFixup/ABS32) echouerait a la resolution ("etiquette                             }
+  { introuvable") - BOGUE REEL trouve par EXECUTION (PEExeSelfTest,                   }
+  { "Test23PEExe", AUCUN rapport avec Thread) - _JPPRT_THREAD_INIT/                    }
+  { START/JOIN (EmitRuntimeLibrary) doivent donc, EUX AUSSI, rester                  }
+  { NON EMIS quand HasRunnableImpl est FAUX, EXACTEMENT la MEME                        }
+  { condition QUE celle qui decide de compiler MI_ThreadProc LUI-MEME. }
+  HasRunnableImpl : Boolean;
+
   { NativeJavadocText/Line (TODO 17, section 17.5 "portee d une                 }
   { directive... a la methode qui la suit") : instantane de                             }
   { LexLastJavadocText/Line CAPTURE au TOUT DEBUT de ParseClassMember,             }
@@ -3588,6 +3655,25 @@ Function DelegateResolveTarget(DelT, ArgFirst, ArgCount: Integer): Integer; Forw
   { TODO 16 - ParseNewExpr (plus bas) en a besoin AVANT sa definition          }
   { REELLE (section TODO 16 dediee, bien plus loin) ; MEME technique             }
   { EXACTE que les trois Forward juste au-dessus. }
+Function BuildAnonConstructor(AnonT: Integer): Integer; Forward;
+  { extension post-TODO25, TREIZIEME tranche (classes anonymes + capture         }
+  { de fermeture) - MEME raison EXACTE que DelegateResolveTarget ci-             }
+  { dessus : ParseNewExpr en a besoin AVANT sa definition reelle (juste            }
+  { apres StdlibAddThrowableCtor, qui founit le MODELE de construction              }
+  { MANUELLE de noeuds ExprPool/StmtPool que BuildAnonConstructor                    }
+  { reutilise pour N parametres au lieu d un seul). }
+Function BuildAnonClassType(BaseT: Integer): Integer; Forward;
+  { extension post-TODO25, TREIZIEME tranche - MEME raison que les            }
+  { Forward juste au-dessus : ClassAdd/InterfacePoolAdd (TODO 08/09) ne          }
+  { sont eux-memes definis que BIEN plus bas, ParseNewExpr en a besoin              }
+  { MAINTENANT. }
+Procedure ParseClassBody(ClassT: Integer); Forward;
+  { extension post-TODO25, TREIZIEME tranche - ParseNewExpr reutilise            }
+  { TEL QUEL le parseur de corps de classe EXISTANT (TODO 08) pour le             }
+  { corps entre accolades d une classe anonyme (AUCUN nouveau parseur            }
+  { n est necessaire, ParseClassMember gere deja generiquement une                    }
+  { methode ordinaire comme "run()") - defini bien plus bas, MEME                     }
+  { raison que les Forward juste au-dessus. }
 
 Procedure SemanticCheckMethodBody(MI: Integer); Forward;
 Procedure SemanticCheckOverrides(ClassT: Integer); Forward;
@@ -3928,6 +4014,9 @@ Begin
   InterfacePoolCount  := 0;
   ThrowsPoolCount     := 0;
   CurrentClassTypeIdx := -1;
+  CurAnonClassT       := -1;
+  AnonCaptureCount    := 0;
+  AnonSeq             := 0;
   StdlibInitActive    := False;
 
   TypeAdd(TYK_INVALID, '', 0, 0, -1);                                 { 0 }
@@ -4014,8 +4103,11 @@ Begin
   { 21 a 35, puis le TODO 14 de 35 a 37). }
   { extension post-TODO25, HUITIEME tranche : +1 ("Math", double/float,   }
   { Test07Heritage.jpp) = 40 entrees TOTAL. }
-  TypeAssert('21 + 14 (TODO 13) + 2 (TODO 14) + 2 (TODO 18) + 1 (post-25) = 40 entrees',
-    TypeCount = 40);
+  { extension post-TODO25, ONZIEME tranche : +1 ("VectorEnumerator",          }
+  { implementation CONCRETE interne d Enumeration pour Vector.elements(),          }
+  { Test10Collections.jpp) = 41 entrees TOTAL. }
+  TypeAssert('21 + 14 (TODO 13) + 2 (TODO 14) + 2 (TODO 18) + 1 (post-25) + ' +
+    '1 (ONZIEME tranche) = 41 entrees', TypeCount = 41);
 
   TypeAssert('String trouve == PDT_STRING', TypeFindByName('String') = PDT_STRING);
   TypeAssert('Object trouve == PDT_OBJECT', TypeFindByName('Object') = PDT_OBJECT);
@@ -5434,12 +5526,75 @@ End;
 { dependre de l ancien comportement (les CHAMPS ne sont JAMAIS dans                  }
 { SymTab, uniquement locales/parametres/this/super - tous correctement            }
 { empiles/depiles par SymEnterScope/SymLeaveScope). }
+{ FieldPoolAdd : Forward (definition reelle bien plus bas, TODO 08) -    }
+{ AnonCaptureFieldFor (extension post-TODO25, TREIZIEME tranche, juste          }
+{ en-dessous) en a besoin ICI, AVANT son propre point de definition. }
+Function FieldPoolAdd(Owner, FTypeIdx: Integer; Const Nam: TString;
+  IsStatic, IsFinal: Boolean; Vis: TVisibility): Integer; Forward;
+
+{ AnonCaptureFieldFor : extension post-TODO25, TREIZIEME tranche          }
+{ (classes anonymes + capture de fermeture) - retrouve (ou CREE, la              }
+{ PREMIERE fois) le champ synthetique de CurAnonClassT correspondant a la    }
+{ locale ENGLOBANTE OrigSI ("file" par exemple) - reutilise l entree               }
+{ EXISTANTE si "file" a deja ete captures plus tot dans LE MEME corps            }
+{ "run()" (ex. referencee deux fois), evitant deux champs DIFFERENTS               }
+{ pour la MEME valeur. Le nom du champ est prefixe "__cap_" (jamais un          }
+{ identificateur J++ valide en tete de nom - AUCUNE collision possible          }
+{ avec un VRAI membre ecrit par l utilisateur, MEME discipline que "$"          }
+{ pour un identificateur commencant par un chiffre ailleurs dans ce               }
+{ projet). }
+Function AnonCaptureFieldFor(OrigSI: Integer): Integer;
+Var I, FI : Integer;
+Begin
+  For I := 0 To AnonCaptureCount - 1 Do
+    If AnonCaptureOrigSI[I] = OrigSI Then
+    Begin
+      AnonCaptureFieldFor := AnonCaptureFieldIdx[I];
+      Exit;
+    End;
+  FI := FieldPoolAdd(CurAnonClassT, SymTab[OrigSI].TypeIdx,
+    '__cap_' + SymTab[OrigSI].Name, False, False, VIS_PRIVATE);
+  If AnonCaptureCount < 32 Then
+  Begin
+    AnonCaptureOrigSI[AnonCaptureCount]   := OrigSI;
+    AnonCaptureFieldIdx[AnonCaptureCount] := FI;
+    Inc(AnonCaptureCount);
+  End
+  Else
+    WarnMsg('trop de variables capturees par une classe anonyme (32 max)');
+  AnonCaptureFieldFor := FI;
+End;
+
 Function ExprAddIdent(Const Nam: TString): Integer;
-Var N, SI, FI, TI : Integer;
+Var N, SI, FI, TI, CapFI : Integer;
 Begin
   SI := SymFindEnclosing(Nam);
   If SI >= 0 Then
   Begin
+    { extension post-TODO25, TREIZIEME tranche : SI resout ICI a une      }
+    { locale/un parametre d une portee ENGLOBANTE la classe anonyme EN            }
+    { COURS DE PARSING (SymTab[SI].ScopeLevel <= CurAnonBoundaryLevel -           }
+    { STRICTEMENT plus PETIT/EGAL, jamais l inverse : une locale DECLAREE          }
+    { A L INTERIEUR de "run()" elle-meme, ex. le "i" d un for-loop, a un            }
+    { ScopeLevel PLUS GRAND que la limite et n a JAMAIS besoin d etre               }
+    { capturee) - CECI EST une capture de fermeture ("file" dans                       }
+    { Test11Threads.jpp) : la VRAIE valeur n est PAS accessible               }
+    { directement depuis le corps compile de "run()" (une fonction                    }
+    { SEPAREE, sur une PILE differente au moment de l execution reelle,           }
+    { via CreateThread) - redirige vers "this.<champ synthetique>"                  }
+    { (AnonCaptureFieldFor) plutot que vers un noeud EK_IDENT brut qui                 }
+    { referencerait a tort l EBP de la methode ENGLOBANTE. }
+    If (CurAnonClassT >= 0) And (SymTab[SI].Kind = SK_VAR) And
+       (SymTab[SI].ScopeLevel <= CurAnonBoundaryLevel) Then
+    Begin
+      CapFI := AnonCaptureFieldFor(SI);
+      N := ExprNew(EK_SELECTOR);
+      ExprPool[N].NameVal := FieldPool[CapFI].Name;
+      ExprPool[N].Left    := ExprAddIdent('this');
+      ExprPool[N].TypeIdx := FieldPool[CapFI].TypeIdx;
+      ExprAddIdent := N;
+      Exit;
+    End;
     N := ExprNew(EK_IDENT);
     ExprPool[N].NameVal := Nam;
     ExprPool[N].Left    := SI;
@@ -5769,6 +5924,9 @@ End;
 Function ParseNewExpr: Integer;
 Var
   BaseT, ElemT, N, DimE : Integer;
+  AnonT, CtorMI, SavedClassT, SavedAnonClassT, SavedAnonBoundaryLevel,
+  SavedAnonCaptureCount, CapI, OrigSI, ArgExpr : Integer;
+  SavedCurParamOffset, SavedCurLocalOffset : LongInt;
 Begin
   PPAdvance;   { 'new' }
   BaseT := ParseBaseTypeNoBrackets;
@@ -5787,6 +5945,88 @@ Begin
     Else
       FatalError('"(" attendu apres un type dans une creation d''objet ' +
         '(section 6.20)');
+
+    { extension post-TODO25, TREIZIEME tranche : "new BaseT(args) suivi    }
+    { d''un corps entre accolades" (section 15.9.5, classe anonyme,               }
+    { Test11Threads.jpp, "new Runnable()" suivi d''un corps) - TODO 09 avait      }
+    { explicitement differe ce cas ("classe anonyme... hors de portee").          }
+    { PORTEE REDUITE documentee (voir BuildAnonClassType/                                }
+    { BuildAnonConstructor) : SEUL "implements" SANS arguments explicites             }
+    { est exerce - "args" (ArgCount>0) ne serait alors PAS chaine, mais              }
+    { AUCUN echantillon ne le fait. }
+    If PPIsOp('{') Then
+    Begin
+      AnonT := BuildAnonClassType(BaseT);
+
+      SavedClassT            := CurrentClassTypeIdx;
+      SavedAnonClassT         := CurAnonClassT;
+      SavedAnonBoundaryLevel  := CurAnonBoundaryLevel;
+      SavedAnonCaptureCount   := AnonCaptureCount;
+      CurrentClassTypeIdx     := AnonT;
+      CurAnonClassT           := AnonT;
+      CurAnonBoundaryLevel    := CurScopeLevel;
+      AnonCaptureCount        := 0;
+
+      { BOGUE REEL trouve PAR EXECUTION (segfault/valeurs GARBAGE,             }
+      { SyncTest8-14.jpp synthetiques - "buf.get()" corrompu des qu une             }
+      { classe anonyme est parsee PLUS LOIN dans la MEME methode                       }
+      { englobante) : ParseClassBody(AnonT), PUIS CHAQUE methode qu elle          }
+      { parse (ici "run()"/"go()"), ET BuildAnonConstructor REMETTENT               }
+      { TOUS "CurParamOffset:=8"/"CurLocalOffset:=0" (EXACTEMENT comme            }
+      { N IMPORTE QUELLE methode ordinaire, TODO 08) - correct pour LEUR          }
+      { PROPRE portee, mais ces DEUX compteurs sont des VARIABLES                        }
+      { GLOBALES PARTAGEES : la methode ENGLOBANTE (ici "main", DONT              }
+      { l analyse de "new Runnable()" suivi d''un corps n est qu une                 }
+      { EXPRESSION AU                                                                                     }
+      { MILIEU de son PROPRE corps, jamais encore termine) comptait                  }
+      { DESSUS pour continuer a placer SES PROPRES locales SUIVANTES -            }
+      { et, PLUS GRAVE, pour son PROPRE calcul final de FrameSize                       }
+      { ("MethodPool[MI].FrameSize:=-CurLocalOffset", APRES la fin                    }
+      { complete du corps) : SANS cette sauvegarde/restauration, "main"          }
+      { terminait avec un FrameSize ERRONE (celui, minuscule, laisse                }
+      { par la DERNIERE methode de la classe anonyme) - "SUB ESP,N" TROP          }
+      { PETIT en prologue, ses locales anterieures (ex. "buf") pointant              }
+      { alors vers une case de PILE NON RESERVEE, ECRASEE par le premier          }
+      { PUSH/CALL suivant. }
+      SavedCurParamOffset := CurParamOffset;
+      SavedCurLocalOffset := CurLocalOffset;
+
+      ParseClassBody(AnonT);
+      CtorMI := BuildAnonConstructor(AnonT);
+
+      CurParamOffset := SavedCurParamOffset;
+      CurLocalOffset := SavedCurLocalOffset;
+
+      { les valeurs CAPTUREES doivent etre poussees comme arguments AVANT   }
+      { que AnonCaptureCount ne soit restaure (portee de la classe               }
+      { anonyme ENGLOBANTE, non exercee mais protegee par prudence, MEME          }
+      { discipline que CurrentClassTypeIdx/ParseClassDecl) - chaque                  }
+      { capture reste un IDENT ordinaire vers la locale ORIGINALE           }
+      { (OrigSI), VALIDE ICI puisque "new" est encore lexicalement DANS            }
+      { la portee englobante ou cette locale existe REELLEMENT. }
+      ExprPool[N].Extra    := AnonT;
+      ExprPool[N].TypeIdx  := AnonT;
+      ExprPool[N].Left     := CtorMI;
+      ExprPool[N].ArgFirst := ExprArgCount;
+      ExprPool[N].ArgCount := AnonCaptureCount;
+      For CapI := 0 To AnonCaptureCount - 1 Do
+      Begin
+        OrigSI := AnonCaptureOrigSI[CapI];
+        ArgExpr := ExprNew(EK_IDENT);
+        ExprPool[ArgExpr].Left    := OrigSI;
+        ExprPool[ArgExpr].NameVal := SymTab[OrigSI].Name;
+        ExprPool[ArgExpr].TypeIdx := SymTab[OrigSI].TypeIdx;
+        ExprArgPush(ArgExpr);
+      End;
+
+      CurrentClassTypeIdx    := SavedClassT;
+      CurAnonClassT          := SavedAnonClassT;
+      CurAnonBoundaryLevel   := SavedAnonBoundaryLevel;
+      AnonCaptureCount       := SavedAnonCaptureCount;
+
+      ParseNewExpr := N;
+      Exit;
+    End;
 
     { TODO 08 : "new Classe(...)" contre une VRAIE classe utilisateur -    }
     { classe abstraite = erreur (section 8.21) ; sinon resolution           }
@@ -6155,6 +6395,22 @@ Begin
         Begin
           ExprPool[N].TypeIdx := MethodPool[MI].RetTypeIdx;
           ExprPool[N].Extra   := MI;   { TODO 21 - voir la note d en-tete d EK_CALL }
+          { extension post-TODO25, TREIZIEME tranche (synchronized/wait     }
+          { REELS, Test11Threads.jpp) - "wait();"/"notifyAll();" (appel            }
+          { IMPLICITE, resolu contre PDT_OBJECT qui les porte TOUS TROIS,          }
+          { section 14.19/14.22) reutilisent ICI le MEME champ IntVal QUE          }
+          { le "BOGUE REEL" juste en-dessous (jamais en CONFLIT : celui-ci        }
+          { n est stashe QUE quand MI>=0, l autre QUE quand MI<0) - PAS               }
+          { pour une seconde RESOLUTION, mais pour retrouver, au moment                }
+          { du GENERATEUR DE CODE (bien plus tard, une PROCEDURE                          }
+          { COMPLETEMENT separee), QUELLE classe/verrou "this.wait()"                    }
+          { concerne (CurrentClassTypeIdx, ICI et MAINTENANT, EST cette              }
+          { classe - CompileCall n a AUCUN autre moyen de le savoir, un              }
+          { appel IMPLICITE ne porte AUCUNE reference explicite a "this"          }
+          { dans l AST). }
+          If (ExprPool[Cur].NameVal = 'wait') Or (ExprPool[Cur].NameVal = 'notify') Or
+             (ExprPool[Cur].NameVal = 'notifyAll') Then
+            ExprPool[N].IntVal := CurrentClassTypeIdx;
         End
         Else
           { BOGUE REEL signale par l utilisateur (Test06ProprietesBean.jpp,   }
@@ -7034,12 +7290,52 @@ End;
 { ";" separateur du for et celui de la declaration sont LE MEME              }
 { caractere source, JAMAIS consomme deux fois. }
 Function ParseDeclAsStmt: Integer;
-Var N : Integer;
+Var N, I, Cnt, SavedScopeId : Integer;
 Begin
   N := StmtNew(STK_DECL);
   StmtPool[N].Left := SymCount;
+  SavedScopeId := CurScopeId;
   ParseVarDecl;
-  StmtPool[N].Extra := SymCount - StmtPool[N].Left;
+  { BOGUE REEL trouve PAR EXECUTION (extension post-TODO25, TREIZIEME    }
+  { tranche - classes anonymes - segfault a l EXECUTION D UN THREAD                 }
+  { REEL, SyncTest24/25.jpp synthetiques) : "SymCount - Left" SUPPOSAIT           }
+  { que TOUS les symboles ajoutes PENDANT ParseVarDecl appartiennent A            }
+  { CETTE declaration - VRAI TANT QU AUCUN initialiseur ne pouvait                    }
+  { lui-meme declencher SymAdd (avant les classes anonymes, section              }
+  { 15.9.5) - FAUX des que l initialiseur contient une classe anonyme            }
+  { (ParseNewExpr/ParseClassBody) : le corps de CETTE classe (ex.                     }
+  { "run()") declare SES PROPRES locales (ex. "int i"), qui recoivent             }
+  { ELLES AUSSI un SymTab INDEX (SymAdd est GLOBAL, jamais scinde par             }
+  { classe) - "Thread t = new Thread(...)" avec un "run()" imbrique             }
+  { qui declare "int i" comptait ALORS "i" comme si "t" ET "i" avaient          }
+  { TOUS DEUX ete                                                                                       }
+  { declares PAR CETTE MEME instruction "Thread t = ..." (Extra=2 au                }
+  { lieu de 1) - le generateur de code (STK_DECL, CompileStmt) compilait      }
+  { alors "i" (une locale de RUN(), Offset relatif a SA PROPRE pile)              }
+  { comme si elle appartenait a "main" en train d etre compile,                          }
+  { ECRASANT la variable "t" fraichement stockee ("MOV EAX,5;                          }
+  { MOV[EBP-4],EAX" ou EBP-4 est PAR COINCIDENCE le MEME emplacement               }
+  { relatif que "t", chaque methode reinitialisant CurLocalOffset a 0           }
+  { independamment) - "t" valait alors 5 au lieu d un VRAI pointeur                  }
+  { Thread, "start()" dereferencait ensuite [5+8]=[13], STATUS_ACCESS_          }
+  { VIOLATION en ecriture (confirme via minidump WER : Info0=1/                        }
+  { Info1=0xD). Corrige en ne comptant QUE les symboles de LA MEME                    }
+  { PORTEE que CETTE declaration (SavedScopeId, capture AVANT                            }
+  { ParseVarDecl) - un symbole ajoute par une classe/methode anonyme                 }
+  { NICHEE recoit TOUJOURS un ScopeId DIFFERENT (SON PROPRE                              }
+  { SymEnterScope, ParseClassBody/ParseMethodDeclRest), jamais celui de          }
+  { l instruction englobante. PORTEE ASSUMEE (documentee plutot que                 }
+  { devinee) : suppose UN SEUL declarateur PAR instruction QUAND une              }
+  { classe anonyme apparait dans l initialiseur (VRAI pour                                }
+  { "Thread producteur = new Thread(new Runnable(), ...)" suivi d''un              }
+  { corps, Test11Threads.jpp, JAMAIS "Type a, b = ...;" a plusieurs                  }
+  { declarateurs avec une classe anonyme - non exerce, la contiguite               }
+  { [Left..Left+Extra-1] supposerait alors a tort que "a"/"b" restent            }
+  { ADJACENTS malgre les symboles NICHES intercales). }
+  Cnt := 0;
+  For I := StmtPool[N].Left To SymCount - 1 Do
+    If SymTab[I].ScopeId = SavedScopeId Then Inc(Cnt);
+  StmtPool[N].Extra := Cnt;
   ParseDeclAsStmt := N;
 End;
 
@@ -11180,6 +11476,136 @@ Begin
   StdlibAddThrowableCtor := MI;
 End;
 
+{ BuildAnonClassType : extension post-TODO25, TREIZIEME tranche        }
+{ (classes anonymes, Test11Threads.jpp) - enregistre la classe                        }
+{ CONCRETE synthetique derriere "new BaseT() suivi d''un corps"                          }
+{ (section 15.9.5) : nom INTERNE unique (jamais un identificateur J++          }
+{ VALIDE en tete, "$" - AUCUNE collision possible avec un VRAI nom                  }
+{ ecrit par l utilisateur, section 3.8 n autorise "$" QUE comme                        }
+{ caractere de tete d identificateur J++ reel, ce qui rendrait "Foo$1"        }
+{ ambigu SI un utilisateur ecrivait litteralement ce nom - risque                     }
+{ THEORIQUE, jamais rencontre, documente plutot qu ignore). BaseT               }
+{ INTERFACE (Runnable, section 15.9.5 "classe anonyme implementant une      }
+{ interface") : etend Object, implements BaseT (InterfacePoolAdd,                    }
+{ TODO 09) - EXACTEMENT le cas exerce. BaseT CLASSE REELLE (extends,           }
+{ section 15.9.5 "classe anonyme etendant une classe") : etend BaseT           }
+{ directement - branche INCLUSE par symetrie/robustesse (MEME cout                  }
+{ marginal que RuntimeException/Error au TODO25 DIXIEME tranche) mais         }
+{ AUCUN echantillon actuel ne l exerce (le seul cas reel est                             }
+{ "implements Runnable"). }
+Function BuildAnonClassType(BaseT: Integer): Integer;
+Var AnonName : TString; AnonT : Integer;
+Begin
+  AnonName := TypeTab[BaseT].Name + '$' + IntToStrG(AnonSeq);
+  Inc(AnonSeq);
+  If TypeTab[BaseT].Kind = TYK_INTERFACE Then
+  Begin
+    AnonT := ClassAdd(AnonName, PDT_OBJECT, False, False, VIS_PACKAGE);
+    InterfacePoolAdd(AnonT, BaseT);
+  End
+  Else
+    AnonT := ClassAdd(AnonName, BaseT, False, False, VIS_PACKAGE);
+  BuildAnonClassType := AnonT;
+End;
+
+{ BuildAnonConstructor : extension post-TODO25, TREIZIEME tranche      }
+{ (classes anonymes + capture de fermeture, Test11Threads.jpp) - MEME      }
+{ technique de construction MANUELLE de noeuds que                                    }
+{ StdlibAddThrowableCtor ci-dessus (SymEnterScope/CurParamOffset=8/                }
+{ "this" a l offset 8/SymLeaveScope), mais UN PARAMETRE PAR VALEUR              }
+{ capturee (AnonCaptureOrigSI/FieldIdx/Count, deja remplis par                          }
+{ AnonCaptureFieldFor pendant le parsing du corps de la classe anonyme,      }
+{ voir ExprAddIdent) plutot qu un seul "message" fixe - le corps est UNE      }
+{ affectation "this.__cap_xxx = capN;" PAR capture, ZERO si la classe             }
+{ anonyme n en a captures AUCUNE (corps vide, EXACTEMENT le                            }
+{ constructeur par defaut synthetise que ParseClassDecl produirait de           }
+{ toute facon pour une classe SANS capture). Appelee UNE SEULE fois,              }
+{ APRES que ParseNewExpr ait fini de parser tout le corps de la classe          }
+{ anonyme (donc APRES que CHAQUE capture possible ait deja ete                          }
+{ decouverte) - AUCUN argument utilisateur explicite a chainer                          }
+{ (une classe anonyme implementant une INTERFACE, section 15.9.5, n a         }
+{ JAMAIS d arguments de constructeur ECRITS - "new Runnable()" suivi           }
+{ d''un corps                                                                                       }
+{ a des parentheses TOUJOURS vides ; le cas "extends CLASSE" avec                   }
+{ arguments reels resterait, LUI, hors de portee - documente plutot                }
+{ que devine, AUCUN echantillon ne l exerce). }
+Function BuildAnonConstructor(AnonT: Integer): Integer;
+Var
+  SI_This, ParamStart, MI, BlockStmt, I, FI, SI_Param, PSize : Integer;
+  ThisIdentExpr, TargetExpr, ParamIdentExpr, AssignStmt : Integer;
+  ArgFirstSaved : Integer;
+  ParamName : TString;
+Begin
+  ParamName := '';
+  SymEnterScope;
+  CurParamOffset := 8;
+  CurLocalOffset := 0;
+  SI_This := SymAdd('this', SK_VAR, AnonT, False, False);
+  SymTab[SI_This].Offset := CurParamOffset;
+  CurParamOffset := CurParamOffset + 4;
+  If TypeTab[AnonT].SuperTypeIdx >= 0 Then
+    SymAdd('super', SK_VAR, TypeTab[AnonT].SuperTypeIdx, False, False);
+
+  ParamStart := ParamPoolCount;
+  ArgFirstSaved := StmtArgCount;
+
+  For I := 0 To AnonCaptureCount - 1 Do
+  Begin
+    FI := AnonCaptureFieldIdx[I];
+    ParamName := 'cap' + IntToStrG(I);
+    If (FieldPool[FI].TypeIdx = PRIMTYPE_LONG) Or (FieldPool[FI].TypeIdx = PRIMTYPE_DOUBLE) Or
+       (FieldPool[FI].TypeIdx = PRIMTYPE_FLOAT) Then
+      PSize := 8
+    Else
+      PSize := 4;
+
+    SI_Param := SymAdd(ParamName, SK_VAR, FieldPool[FI].TypeIdx, False, False);
+    SymTab[SI_Param].Offset := CurParamOffset;
+    CurParamOffset := CurParamOffset + PSize;
+    ParamPool[ParamPoolCount].Name    := ParamName;
+    ParamPool[ParamPoolCount].TypeIdx := FieldPool[FI].TypeIdx;
+    ParamPool[ParamPoolCount].IsFinal := False;
+    Inc(ParamPoolCount);
+
+    ThisIdentExpr := ExprNew(EK_IDENT);
+    ExprPool[ThisIdentExpr].Left    := SI_This;
+    ExprPool[ThisIdentExpr].NameVal := 'this';
+    ExprPool[ThisIdentExpr].TypeIdx := AnonT;
+
+    TargetExpr := ExprNew(EK_SELECTOR);
+    ExprPool[TargetExpr].Left    := ThisIdentExpr;
+    ExprPool[TargetExpr].NameVal := FieldPool[FI].Name;
+    ExprPool[TargetExpr].TypeIdx := FieldPool[FI].TypeIdx;
+
+    ParamIdentExpr := ExprNew(EK_IDENT);
+    ExprPool[ParamIdentExpr].Left    := SI_Param;
+    ExprPool[ParamIdentExpr].NameVal := ParamName;
+    ExprPool[ParamIdentExpr].TypeIdx := FieldPool[FI].TypeIdx;
+
+    AssignStmt := StmtNew(STK_ASSIGN);
+    StmtPool[AssignStmt].Left  := TargetExpr;
+    StmtPool[AssignStmt].Op    := '=';
+    StmtPool[AssignStmt].Right := ParamIdentExpr;
+    StmtArgPush(AssignStmt);
+  End;
+
+  MI := MethodPoolAdd(AnonT, '', MK_CONSTRUCTOR, False, False, False,
+    PRIMTYPE_VOID, ParamStart, AnonCaptureCount, VIS_PUBLIC);
+
+  BlockStmt := StmtNew(STK_BLOCK);
+  StmtPool[BlockStmt].ArgFirst := ArgFirstSaved;
+  StmtPool[BlockStmt].ArgCount := AnonCaptureCount;
+
+  If MI >= 0 Then
+  Begin
+    MethodPool[MI].BodyStmtIdx := BlockStmt;
+    MethodPool[MI].FrameSize   := 0;
+  End;
+
+  SymLeaveScope;
+  BuildAnonConstructor := MI;
+End;
+
 { StdlibAddThrowableGetMessageBody : extension post-TODO25, DIXIEME    }
 { tranche - donne a "Throwable.getMessage()" (deja enregistre PLUS               }
 { HAUT, StdMethod0, SANS corps) un VRAI corps "return this.message;" -           }
@@ -11219,9 +11645,98 @@ Begin
   SymLeaveScope;
 End;
 
+{ BuildThreadProcMethod : extension post-TODO25, TREIZIEME tranche     }
+{ (Thread REEL, Test11Threads.jpp) - MEME technique de construction              }
+{ MANUELLE de noeuds que StdlibAddThrowableCtor/StdlibAddThrowableGetMessageBody }
+{ ci-dessus, mais pour un point d ENTREE DE THREAD synthetique                        }
+{ ("static __threadproc(Thread t)", corps "t.target.run();") plutot                }
+{ qu un VRAI membre de classe - Win32 CreateThread exige un pointeur              }
+{ de FONCTION avec la signature stdcall "DWORD WINAPI                                  }
+{ ThreadProc(LPVOID)" : un parametre STATIQUE UNIQUE arrive EXACTEMENT           }
+{ a [EBP+8] apres le prologue standard "PUSH EBP;MOV EBP,ESP" de CE                  }
+{ compilateur - LA MEME convention EXACTE qu une methode STATIQUE                     }
+{ ordinaire a un seul parametre, AUCUNE adaptation necessaire. "RET"           }
+{ nu (jamais "RET 4") reste SANS CONSEQUENCE ICI : le fil d execution           }
+{ Windows se termine juste apres (sa PILE ENTIERE est alors abandonnee,        }
+{ AUCUN appelant ne relit jamais un ESP "desequilibre" de 4 octets).            }
+{ "t.target.run()" est un appel D INSTANCE ORDINAIRE a travers une              }
+{ reference dont le TYPE STATIQUE est l INTERFACE Runnable - resolu                }
+{ (RunMI) contre Runnable elle-meme (ClassResolveMethodCall), EXACTEMENT       }
+{ comme le ferait le VRAI parseur pour "obj.methode()" a travers une             }
+{ variable d interface (ParsePostfix, TODO 09) - CompileCall (TODO 21)      }
+{ reconnait alors ce MI comme un appel POLYMORPHIQUE et enumere LUI-             }
+{ MEME toute classe CONCRETE implementant Runnable (ICI, la classe                   }
+{ anonyme de Test11Threads.jpp) - AUCUN dispatch n est ecrit A LA MAIN          }
+{ ICI, contrairement a VectorEnumerator (ONZIEME tranche) qui n avait            }
+{ qu UNE SEULE implementation possible dans TOUT ce compilateur : un              }
+{ Runnable, LUI, peut avoir PLUSIEURS implementations reelles                          }
+{ (n importe quelle classe anonyme "new Runnable()" suivi d''un corps), le  }
+{ VRAI                                                                                                  }
+{ dispatch generique reste donc necessaire et est REUTILISE tel quel. }
+Function BuildThreadProcMethod(ThreadT, RunnableT: Integer): Integer;
+Var
+  SI_Param, MI, RunMI, ParamStart : Integer;
+  ThreadIdentExpr, TargetFieldExpr, SelExpr, CallExpr, InnerStmt, BlockStmt : Integer;
+Begin
+  SymEnterScope;
+  CurParamOffset := 8;
+  CurLocalOffset := 0;
+  ParamStart := ParamPoolCount;
+  SI_Param := SymAdd('t', SK_VAR, ThreadT, False, False);
+  SymTab[SI_Param].Offset := CurParamOffset;
+  CurParamOffset := CurParamOffset + 4;
+  ParamPool[ParamPoolCount].Name    := 't';
+  ParamPool[ParamPoolCount].TypeIdx := ThreadT;
+  ParamPool[ParamPoolCount].IsFinal := False;
+  Inc(ParamPoolCount);
+
+  ThreadIdentExpr := ExprNew(EK_IDENT);
+  ExprPool[ThreadIdentExpr].Left    := SI_Param;
+  ExprPool[ThreadIdentExpr].NameVal := 't';
+  ExprPool[ThreadIdentExpr].TypeIdx := ThreadT;
+
+  TargetFieldExpr := ExprNew(EK_SELECTOR);
+  ExprPool[TargetFieldExpr].Left    := ThreadIdentExpr;
+  ExprPool[TargetFieldExpr].NameVal := 'target';
+  ExprPool[TargetFieldExpr].TypeIdx := RunnableT;
+
+  SelExpr := ExprNew(EK_SELECTOR);
+  ExprPool[SelExpr].Left    := TargetFieldExpr;
+  ExprPool[SelExpr].NameVal := 'run';
+  ExprPool[SelExpr].TypeIdx := -1;
+
+  RunMI := ClassResolveMethodCall(RunnableT, 'run', ExprArgCount, 0);
+
+  CallExpr := ExprNew(EK_CALL);
+  ExprPool[CallExpr].Left     := SelExpr;
+  ExprPool[CallExpr].Extra    := RunMI;
+  ExprPool[CallExpr].TypeIdx  := PRIMTYPE_VOID;
+  ExprPool[CallExpr].ArgFirst := ExprArgCount;
+  ExprPool[CallExpr].ArgCount := 0;
+
+  InnerStmt := StmtNew(STK_EXPR);
+  StmtPool[InnerStmt].Left := CallExpr;
+
+  BlockStmt := StmtNew(STK_BLOCK);
+  StmtPool[BlockStmt].ArgFirst := StmtArgCount;
+  StmtArgPush(InnerStmt);
+  StmtPool[BlockStmt].ArgCount := 1;
+
+  MI := MethodPoolAdd(ThreadT, '__threadproc', MK_METHOD, True, False, False,
+    PRIMTYPE_INT, ParamStart, 1, VIS_PUBLIC);
+  If MI >= 0 Then
+  Begin
+    MethodPool[MI].BodyStmtIdx := BlockStmt;
+    MethodPool[MI].FrameSize   := 0;
+  End;
+
+  SymLeaveScope;
+  BuildThreadProcMethod := MI;
+End;
+
 Procedure StdlibInit;
 Var
-  PrintStreamT, SystemT, IntegerT, EnumerationT, VectorT, HashtableT,
+  PrintStreamT, SystemT, IntegerT, EnumerationT, VectorT, HashtableT, VectorEnumT,
   WriterT, ReaderT, FileWriterT, BufferedWriterT, PrintWriterT,
   FileReaderT, BufferedReaderT, IOExceptionT, RunnableT, ThreadT,
   User32T, WinmT, MBMI, PFirst, FI, MathT,
@@ -11290,11 +11805,77 @@ Begin
   StdMethod1(VectorT, 'removeElement', MK_METHOD, False, PRIMTYPE_BOOLEAN, PDT_OBJECT);
   StdMethod0(VectorT, 'size', MK_METHOD, False, PRIMTYPE_INT);
 
+  { extension post-TODO25, ONZIEME tranche (Vector/Hashtable/Integer          }
+  { REELS, Test10Collections.jpp - demandee explicitement par l utilisateur    }
+  { apres avoir signale que ce chantier restait incomplet) : DEUX champs           }
+  { D INSTANCE prives (PRIMTYPE_INT sert ICI de "simple mot de 4 octets",        }
+  { JAMAIS un VRAI entier Java - AUCUN code J++ SOURCE n accede JAMAIS a           }
+  { ces deux champs, seul EmitRuntimeLibrary les lit/ecrit en assembleur          }
+  { BRUT via CgFieldOffsetInObject, EXACTEMENT comme Throwable.message)             }
+  { modelisent l etat interne : "data" pointe vers le tableau de                        }
+  { references BACKING (MEME representation qu un VRAI tableau J++,                }
+  { prefixe de longueur a [data-4], voir EK_NEWARRAY - la CAPACITE               }
+  { n a donc PAS besoin de son PROPRE champ, elle EST ce prefixe),                    }
+  { "count" est le nombre d elements REELLEMENT utilises (count<=                     }
+  { capacite=[data-4]). Voir _JPPRT_VECTOR_INIT/_JPPRT_VECTOR_ADD/                     }
+  { _JPPRT_ARRAY_GROW (EmitRuntimeLibrary) pour l ALGORITHME REEL                    }
+  { (croissance x2 quand plein, MEME idiome de copie ELEMENT PAR                        }
+  { ELEMENT que ".clone()" - voir sa propre note d en-tete - PLUTOT               }
+  { qu un noeud EK_NEWOBJECT/StdlibAddThrowableCtor-style : une boucle             }
+  { avec croissance DYNAMIQUE est BEAUCOUP plus simple a ecrire                          }
+  { DIRECTEMENT en assembleur runtime qu a SYNTHETISER comme arbre                    }
+  { ExprPool/StmtPool a la main). }
+  FieldPoolAdd(VectorT, PRIMTYPE_INT, 'data', False, False, VIS_PRIVATE);
+  FieldPoolAdd(VectorT, PRIMTYPE_INT, 'count', False, False, VIS_PRIVATE);
+
   { Hashtable - sous-ensemble EXACT exerce par Test10Collections.jpp. }
   HashtableT := ClassAdd('Hashtable', PDT_OBJECT, False, False, VIS_PUBLIC);
   StdMethod0(HashtableT, '', MK_CONSTRUCTOR, False, PRIMTYPE_VOID);
   StdMethod2(HashtableT, 'put', MK_METHOD, False, PDT_OBJECT, PDT_OBJECT, PDT_OBJECT);
   StdMethod1(HashtableT, 'get', MK_METHOD, False, PDT_OBJECT, PDT_OBJECT);
+
+  { MEME esprit que Vector.data/count ci-dessus, mais DEUX tableaux            }
+  { PARALLELES ("keys"/"values", MEME index i => paire cle/valeur i) -              }
+  { JAMAIS de VRAIE table de hachage (aucune fonction de hachage,                     }
+  { recherche LINEAIRE dans _JPPRT_HASHTABLE_GET/PUT via _JPPRT_STREQ,           }
+  { comparaison de CONTENU - une String est un pointeur C brut, "=="                }
+  { comparerait des ADRESSES, FAUX des qu une des deux chaines ne                     }
+  { provient PAS de l interning PAR VALEUR de CgCollectStrings) - O(n)            }
+  { au lieu de O(1), SANS CONSEQUENCE pour les TROIS entrees de                          }
+  { Test10Collections.jpp, jamais devine comme "assez rapide en                       }
+  { general". }
+  FieldPoolAdd(HashtableT, PRIMTYPE_INT, 'keys', False, False, VIS_PRIVATE);
+  FieldPoolAdd(HashtableT, PRIMTYPE_INT, 'values', False, False, VIS_PRIVATE);
+  FieldPoolAdd(HashtableT, PRIMTYPE_INT, 'count', False, False, VIS_PRIVATE);
+
+  { Integer - "new Integer(1995)" (Test10Collections.jpp) : la valeur      }
+  { encapsulee, un SEUL champ, offset CG_OBJ_HEADER+0. Deja une VRAIE         }
+  { TYK_CLASS (ligne ~11271 plus haut, pour parseInt) - CE champ EST                }
+  { nouveau, "value" n existait pas encore (parseInt n en avait pas                  }
+  { besoin, lui, un int PRIMITIF suffisait). }
+  FieldPoolAdd(IntegerT, PRIMTYPE_INT, 'value', False, False, VIS_PRIVATE);
+
+  { VectorEnumeratorT : implementation CONCRETE (interne, JAMAIS nommee     }
+  { dans une source J++ - AUCUN "new VectorEnumerator()" n est jamais                }
+  { ecrit par un utilisateur, seul _JPPRT_VECTOR_ELEMENTS la construit           }
+  { EN ASSEMBLEUR, exactement comme StdlibAddThrowableCtor construit                }
+  { un noeud SANS jamais passer par le vrai parseur) de "Enumeration"            }
+  { pour "Vector.elements()" - DEUX champs, "vec" (le Vector source) et         }
+  { "idx" (position courante). Une SEULE implementation existe dans TOUT      }
+  { ce compilateur : "elements.hasMoreElements()"/"elements.nextElement()"          }
+  { (appeles a travers la variable EnumerationT, TYPE INTERFACE) sont                }
+  { donc reconnus PAR NOM directement dans CompileCall (OwnerTypeIdx =            }
+  { EnumerationT LUI-MEME, jamais une classe CONCRETE) - AUCUN dispatch            }
+  { polymorphique CMP/JE n est necessaire ICI (ce serait le cas SI                    }
+  { plusieurs classes concretes implementaient un jour Enumeration,                  }
+  { hors de portee - documente plutot que devine). AUCUNE methode                       }
+  { n est enregistree sur CETTE classe (MethodPoolCount inchange) -               }
+  { seuls ses DEUX champs comptent, pour que CgObjectSize/                             }
+  { CgFieldOffsetInObject calculent SA disposition memoire, jamais un              }
+  { nombre magique code en dur. }
+  VectorEnumT := ClassAdd('VectorEnumerator', PDT_OBJECT, False, False, VIS_PACKAGE);
+  FieldPoolAdd(VectorEnumT, PRIMTYPE_INT, 'vec', False, False, VIS_PRIVATE);
+  FieldPoolAdd(VectorEnumT, PRIMTYPE_INT, 'idx', False, False, VIS_PRIVATE);
 
   { java.io - EXACTEMENT la chaine de constructeurs imbriques de           }
   { Test12Fichiers.jpp ("new PrintWriter(new BufferedWriter(new                     }
@@ -11382,6 +11963,21 @@ Begin
   StdMethod0(ThreadT, 'join', MK_METHOD, False, PRIMTYPE_VOID);
   StdMethod0(ThreadT, 'getName', MK_METHOD, False, PDT_STRING);
   StdMethod0(ThreadT, 'currentThread', MK_METHOD, True, ThreadT);
+
+  { extension post-TODO25, TREIZIEME tranche (Thread REEL,                    }
+  { Test11Threads.jpp) - DEUX champs prives (MEME discipline "champ            }
+  { interne JAMAIS accede par du J++ SOURCE" que Vector.data/count) :               }
+  { "target" (le Runnable passe au constructeur - "run()" en aurait                  }
+  { besoin, JAMAIS appele par ce sample, mais range PAR SYMETRIE                       }
+  { puisque le constructeur le recoit deja), "handle" (le HANDLE Win32           }
+  { REEL retourne par CreateThread - PRIMTYPE_INT sert ICI de "simple            }
+  { mot de 4 octets opaque", JAMAIS un entier Java signifiant quelque           }
+  { chose, EXACTEMENT le meme choix que Vector.data pour un pointeur            }
+  { brut). Voir _JPPRT_THREAD_START/_JPPRT_THREAD_JOIN (EmitRuntimeLibrary)     }
+  { pour l ALGORITHME REEL (CreateThread/WaitForSingleObject). }
+  FieldPoolAdd(ThreadT, RunnableT, 'target', False, False, VIS_PRIVATE);
+  FieldPoolAdd(ThreadT, PRIMTYPE_INT, 'handle', False, False, VIS_PRIVATE);
+  MI_ThreadProc := BuildThreadProcMethod(ThreadT, RunnableT);
 
   { com.ms.win32 (TODO 18, section 18.1) - portee groundee EXACTEMENT     }
   { sur Test16Win32.jpp : "User32.MessageBox(0, texte, titre, type)"           }
@@ -13318,11 +13914,23 @@ Begin
   { UnsatisfiedLinkError(String), les QUATRE classes FEUILLES restantes          }
   { de la hierarchie Throwable) = 48 TOTAL. 4 champs (System.out/err,             }
   { winm.MB_OK/MB_ICONINFORMATION), PLUS 1 (Math.PI, HUITIEME tranche),           }
-  { PLUS 1 (Throwable.message, DIXIEME tranche) = 6 champs TOTAL. }
-  TypeAssert('StdlibInit : MethodPoolCount = 48 (inventaire consolide, ' +
-    'TODO 20 + DIXIEME tranche post-25)', MethodPoolCount = 48);
-  TypeAssert('StdlibInit : FieldPoolCount = 6 (inventaire consolide, TODO 20 ' +
-    '+ Math.PI/message post-25)', FieldPoolCount = 6);
+  { PLUS 1 (Throwable.message, DIXIEME tranche) = 6, PLUS 8 (ONZIEME     }
+  { tranche - Vector.data/count [2], Hashtable.keys/values/count [3],           }
+  { Integer.value [1], VectorEnumerator.vec/idx [2] -                                    }
+  { Test10Collections.jpp) = 14 champs TOTAL. MethodPoolCount, LUI,                }
+  { reste INCHANGE par cette ONZIEME tranche - Vector/Hashtable/                       }
+  { Integer/VectorEnumerator n ajoutent AUCUNE methode a MethodPool,             }
+  { seulement des champs (toutes leurs "methodes" sont reconnues PAR             }
+  { NOM directement dans CompileCall/EK_NEWOBJECT, jamais par dispatch          }
+  { MethodPool normal). PLUS 1 (TREIZIEME tranche, Thread REEL -                    }
+  { BuildThreadProcMethod/"__threadproc", le SEUL point d entree de              }
+  { thread synthetique, voir sa propre note d en-tete) = 49 methodes             }
+  { TOTAL. PLUS 2 champs (MEME TREIZIEME tranche - Thread.target/                    }
+  { handle) = 16 champs TOTAL. }
+  TypeAssert('StdlibInit : MethodPoolCount = 49 (inventaire consolide, ' +
+    'TODO 20 + TREIZIEME tranche post-25)', MethodPoolCount = 49);
+  TypeAssert('StdlibInit : FieldPoolCount = 16 (inventaire consolide, TODO 20 ' +
+    '+ Math.PI/message/TREIZIEME tranche post-25)', FieldPoolCount = 16);
 
   TypeInit;
   SymInit;
@@ -13682,6 +14290,19 @@ Begin
   { liberation - fuite assumee, aucun vrai GC dans ce compilateur). }
   EmitRaw('EXTRN _GetProcessHeap@0:NEAR');
   EmitRaw('EXTRN _HeapAlloc@12:NEAR');
+  { extension post-TODO25, TREIZIEME tranche (Thread/synchronized/wait     }
+  { REELS, Test11Threads.jpp) - TOUTES les CINQ dans KERNEL32.DLL                    }
+  { (BinImportDllFor route TOUT ce qui n est PAS "_MessageBoxA@16" vers          }
+  { KERNEL32 par defaut, AUCUN changement necessaire LA), EMISES SANS            }
+  { CONDITION (MEME discipline que _GetProcessHeap@0/_HeapAlloc@12                  }
+  { ci-dessus - un programme qui n utilise JAMAIS de thread importe                  }
+  { simplement, sans consequence, cinq entrees IAT inutilisees). }
+  EmitRaw('EXTRN _CreateThread@24:NEAR');
+  EmitRaw('EXTRN _WaitForSingleObject@8:NEAR');
+  EmitRaw('EXTRN _InitializeCriticalSection@4:NEAR');
+  EmitRaw('EXTRN _EnterCriticalSection@4:NEAR');
+  EmitRaw('EXTRN _LeaveCriticalSection@4:NEAR');
+  EmitRaw('EXTRN _Sleep@4:NEAR');
   EmitBlankLine;
 End;
 
@@ -13798,6 +14419,94 @@ Begin
     CgAncestorFieldBytes(FieldPool[FI].OwnerTypeIdx) + FieldPool[FI].Offset;
 End;
 
+{ CgLocalOperand : texte d operande EBP-relatif "DWORD PTR [EBP+N]"/     }
+{ "[EBP-N]" pour un SK_VAR LOCAL/PARAMETRE (TSymRec.Offset, voir sa               }
+{ propre note d en-tete) - IntToStrG produit deja "-N" pour un                        }
+{ deplacement negatif (Str standard Pascal), aucune logique de signe             }
+{ separee necessaire au-dela du "+" litteral pour le cas positif.               }
+{ DEPLACEE ICI (avant EmitDataSeg/EmitRuntimeLibrary, initialement plus          }
+{ bas dans ce fichier) par l extension post-TODO25, ONZIEME tranche             }
+{ (Vector/Hashtable/Integer REELS) - les nouvelles routines                            }
+{ _JPPRT_VECTOR_*/_JPPRT_HASHTABLE_*/_JPPRT_INTEGER_INIT en ont besoin,          }
+{ AVANT ce point du fichier, pour construire leurs operandes memoire             }
+{ (CgFieldOffsetInObject retourne un DEPLACEMENT, CgAddrOperand le                  }
+{ transforme en texte d operande ASM). }
+Function CgLocalOperand(Offset: LongInt): TString;
+Begin
+  If Offset >= 0 Then
+    CgLocalOperand := 'DWORD PTR [EBP+' + IntToStrG(Offset) + ']'
+  Else
+    CgLocalOperand := 'DWORD PTR [EBP' + IntToStrG(Offset) + ']';
+End;
+
+{ CgAddrOperand : MEME chose que CgLocalOperand, mais pour un registre   }
+{ de base ARBITRAIRE (EAX/ECX/EBX/ESP - un pointeur d objet/de tableau           }
+{ deja calcule dans une expression, PAS forcement EBP) - extension              }
+{ modele memoire d instance/tableau, post-TODO25. }
+Function CgAddrOperand(Const BaseRegName: TString; Offset: LongInt): TString;
+Begin
+  If Offset = 0 Then
+    CgAddrOperand := 'DWORD PTR [' + BaseRegName + ']'
+  Else If Offset > 0 Then
+    CgAddrOperand := 'DWORD PTR [' + BaseRegName + '+' + IntToStrG(Offset) + ']'
+  Else
+    CgAddrOperand := 'DWORD PTR [' + BaseRegName + IntToStrG(Offset) + ']';
+End;
+
+{ MethodAsmLabelG : etiquette ASM d une methode - INCLUT le nom de la    }
+{ classe proprietaire (contrairement a GOCW32.PAS, ou une fonction              }
+{ top-level Go est deja unique par construction) : Java n a AUCUNE               }
+{ fonction hors classe, et deux classes DIFFERENTES peuvent parfaitement     }
+{ declarer une methode DE MEME NOM ("main", par exemple, EXACTEMENT               }
+{ ce que fait chacun des 18 echantillons) - une collision serait                       }
+{ sinon certaine. Surcharge (plusieurs methodes MEME nom, TYPES DE               }
+{ parametres differents, section 8.13) NON DESAMBIGUISEE ICI (aucune              }
+{ methode compilee par ce premier jalon n est surchargee) - une VRAIE                 }
+{ strategie de nom mangle PAR SIGNATURE reste une extension FUTURE, non       }
+{ devinee. L INDEX MethodPool (MI) - UNIQUE par construction, quel que          }
+{ soit le nombre de surcharges - fait PARTIE du texte de l etiquette :          }
+{ AUCUN autre code ne depend du FORMAT exact de cette chaine, utilisee            }
+{ UNIQUEMENT via CET APPEL, jamais reconstruite ailleurs par                              }
+{ concatenation manuelle. DEPLACEE ICI (avant EmitDataSeg/                             }
+{ EmitRuntimeLibrary, initialement bien plus bas dans ce fichier) par            }
+{ l extension post-TODO25, TREIZIEME tranche (Thread REEL,                            }
+{ Test11Threads.jpp) - _JPPRT_THREAD_START en a besoin pour recuperer           }
+{ l ADRESSE REELLE du point d entree de thread synthetique                             }
+{ (BuildThreadProcMethod/MI_ThreadProc), a passer a CreateThread. }
+Function MethodAsmLabelG(MI: Integer): TString;
+Begin
+  If MethodPool[MI].IsStatic Then
+    MethodAsmLabelG := ASM_PFX_FUNC + TypeTab[MethodPool[MI].OwnerTypeIdx].Name +
+      '_' + MethodPool[MI].Name + '_' + IntToStrG(MI)
+  Else
+    MethodAsmLabelG := ASM_PFX_METHOD + TypeTab[MethodPool[MI].OwnerTypeIdx].Name +
+      '_' + MethodPool[MI].Name + '_' + IntToStrG(MI);
+End;
+
+{ CgLocalOperandQ/CgAddrOperandQ : extension post-TODO25, HUITIEME      }
+{ tranche (double/float) - MEMES DEUX fonctions que ci-dessus, mais              }
+{ "QWORD PTR" plutot que "DWORD PTR" (les SEULS consommateurs sont               }
+{ FLD/FSTP m64real dans CompileExprF/STK_ASSIGN/STK_DECL/STK_RETURN,             }
+{ jamais MOV) - EVITE de dupliquer l arithmetique de deplacement                    }
+{ EBP-relatif (SIGNE, "+"/"-" selon Offset) une SECONDE fois. }
+Function CgLocalOperandQ(Offset: LongInt): TString;
+Begin
+  If Offset >= 0 Then
+    CgLocalOperandQ := 'QWORD PTR [EBP+' + IntToStrG(Offset) + ']'
+  Else
+    CgLocalOperandQ := 'QWORD PTR [EBP' + IntToStrG(Offset) + ']';
+End;
+
+Function CgAddrOperandQ(Const BaseRegName: TString; Offset: LongInt): TString;
+Begin
+  If Offset = 0 Then
+    CgAddrOperandQ := 'QWORD PTR [' + BaseRegName + ']'
+  Else If Offset > 0 Then
+    CgAddrOperandQ := 'QWORD PTR [' + BaseRegName + '+' + IntToStrG(Offset) + ']'
+  Else
+    CgAddrOperandQ := 'QWORD PTR [' + BaseRegName + IntToStrG(Offset) + ']';
+End;
+
 { BinZeroList : retourne "0,0,...,0" (N fois) - forme "DB liste"        }
 { reutilisee par EmitDataSeg pour reserver, en .DATA, les tableaux              }
 { paralleles de la pile de frames d exception (AUCUNE directive "DUP()"        }
@@ -13813,6 +14522,52 @@ Begin
     S := S + '0';
   End;
   BinZeroList := S;
+End;
+
+{ SyncLockLabel : etiquette ASM du VERROU (CRITICAL_SECTION Win32, 24   }
+{ octets) associe a UNE CLASSE - extension post-TODO25, TREIZIEME              }
+{ tranche (synchronized REEL, Test11Threads.jpp). PARTAGEE par                          }
+{ EmitDataSeg (reservation + EmitSyncLockInits) et CompileMethodBody              }
+{ (Enter/LeaveCriticalSection) - UNE SEULE fonction produisant TOUJOURS     }
+{ le MEME nom pour la MEME classe, jamais reconstruite differemment                 }
+{ aux DEUX endroits. }
+Function SyncLockLabel(ClassT: Integer): TString;
+Begin
+  SyncLockLabel := ASM_PFX_RUNTIME + 'LOCK_' + TypeTab[ClassT].Name;
+End;
+
+{ EmitSyncLockData : reserve, en .DATA, UN verrou (24 octets - taille    }
+{ REELLE de CRITICAL_SECTION sur Win32 32 bits : DebugInfo/LockCount/           }
+{ RecursionCount/OwningThread/LockSemaphore/SpinCount, six mots de 4                }
+{ octets) PAR CLASSE ayant AU MOINS UNE methode "synchronized"                        }
+{ (IsSynchronized, TODO 14) - DEDUPLIQUE (une classe avec DEUX                          }
+{ methodes synchronized, FileEntiers/deposer+retirer, ne recoit                       }
+{ QU UN SEUL verrou, JAMAIS un par methode - section 14.19, "chaque                  }
+{ objet a EXACTEMENT un moniteur"). Decision de conception DOCUMENTEE            }
+{ (voir la note d en-tete de la section TODO 14, "REEL per-object               }
+{ CRITICAL_SECTION, jamais un verrou global") : ICI, le verrou est                    }
+{ PARTAGE par TOUTES les instances d une MEME classe plutot que VRAIMENT       }
+{ un par OBJET - simplification ASSUMEE (aucune classe synchronized                 }
+{ n a plus d une instance VIVANTE simultanement dans les 18                              }
+{ echantillons, verifie par lecture - FileEntiers n a qu une SEULE                  }
+{ instance, "file", dans Test11Threads.jpp) plutot qu une VRAIE                        }
+{ discipline per-instance (qui exigerait un champ CACHE de taille                    }
+{ VARIABLE par objet, hors de portee de FieldPoolAdd/CgSlotSize                        }
+{ actuels, voir la note d en-tete de Vector.data/count). }
+Procedure EmitSyncLockData;
+Var I, J : Integer; AlreadyDone : Boolean;
+Begin
+  For I := 0 To MethodPoolCount - 1 Do
+    If MethodPool[I].IsSynchronized Then
+    Begin
+      AlreadyDone := False;
+      For J := 0 To I - 1 Do
+        If MethodPool[J].IsSynchronized And
+           (MethodPool[J].OwnerTypeIdx = MethodPool[I].OwnerTypeIdx) Then
+          AlreadyDone := True;
+      If Not AlreadyDone Then
+        EmitRaw(SyncLockLabel(MethodPool[I].OwnerTypeIdx) + ' DB ' + BinZeroList(24));
+    End;
 End;
 
 Procedure EmitDataSeg;
@@ -13849,6 +14604,7 @@ Begin
   EmitRaw(ASM_PFX_RUNTIME + 'EXC_EBPARR DB ' + BinZeroList(MAX_EXC_FRAMES * 4));
   EmitRaw(ASM_PFX_RUNTIME + 'EXC_ESPARR DB ' + BinZeroList(MAX_EXC_FRAMES * 4));
   EmitRaw(ASM_PFX_RUNTIME + 'EXC_TGTARR DB ' + BinZeroList(MAX_EXC_FRAMES * 4));
+  EmitSyncLockData;
   EmitBlankLine;
 End;
 
@@ -14673,6 +15429,686 @@ Begin
   EmitInstr('PUSH EAX');
   EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'THROW');
   EmitBlankLine;
+
+  { extension post-TODO25, ONZIEME tranche (Vector/Hashtable/Integer      }
+  { REELS, Test10Collections.jpp) - voir la longue note d en-tete de              }
+  { Vector.data/count (StdlibInit) pour la CONCEPTION generale : chaque         }
+  { "methode" de ces classes est REECRITE ICI en assembleur BRUT               }
+  { (jamais un noeud J++ synthetise via StdlibAddThrowableCtor - une                 }
+  { boucle avec croissance dynamique est BEAUCOUP plus simple a ecrire            }
+  { DIRECTEMENT qu a construire comme arbre ExprPool/StmtPool a la main),         }
+  { et reconnue PAR NOM dans CompileCall/EK_NEWOBJECT plutot que par                }
+  { dispatch MethodPool normal - AUCUN "BodyStmtIdx" n existe pour ELLES.       }
+  { _JPPRT_STREQ : comparaison de CONTENU de DEUX chaines C (jamais       }
+  { d adresse, EXACTEMENT String.equals() en Java - "==" comparerait                }
+  { des POINTEURS, une String etant un pointeur C brut SANS en-tete,                 }
+  { voir la note d en-tete de EK_INSTANCEOF) - octet par octet jusqu au           }
+  { premier NUL ou la premiere DIFFERENCE. Necessaire pour                                }
+  { _JPPRT_HASHTABLE_GET/PUT (cles) et _JPPRT_VECTOR_REMOVE (element a         }
+  { retirer) - AUCUNE fonction .equals() generique n existe (portee                  }
+  { reduite aux SEULES chaines, jamais un Object arbitraire).                              }
+  { BOGUE REEL trouve PAR EXECUTION (segfault, HashTest3.jpp synthetique,       }
+  { "h.get(\"Java\")" APRES un "put" reussi) : ESI/EDI ne survivaient           }
+  { PAS a travers "CALL _JPPRT_STREQ" (AUCUN PUSH/POP ICI) alors que               }
+  { TOUS ses appelants (_JPPRT_HASHTABLE_GET/PUT, _JPPRT_VECTOR_REMOVE)        }
+  { gardent PRECISEMENT ESI/EDI vivants (base du tableau des cles/                    }
+  { count de la boucle de recherche) A TRAVERS cet appel - MEME                          }
+  { discipline "callee-saved" EXACTE que celle deja documentee pour                   }
+  { EBX partout ailleurs dans ce fichier (_JPPRT_ALLOC la respecte,                    }
+  { _JPPRT_STREQ ne la respectait PAS pour ESI/EDI) - corrige en les                }
+  { sauvegardant/restaurant EXPLICITEMENT, EXACTEMENT comme _JPPRT_ALLOC       }
+  { le fait deja pour EBX. }
+  EmitLabel(ASM_PFX_RUNTIME + 'STREQ');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH EDI');
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');
+  EmitInstr('MOV EDI,DWORD PTR [EBP+12]');
+  EmitLabel(ASM_PFX_RUNTIME + 'SEQ_LOOP');
+  EmitInstr('MOV AL,BYTE PTR [ESI]');
+  EmitInstr('MOV DL,BYTE PTR [EDI]');
+  EmitInstr('CMP AL,DL');
+  EmitInstr('JNE ' + ASM_PFX_RUNTIME + 'SEQ_FALSE');
+  EmitInstr('CMP AL,0');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'SEQ_TRUE');
+  EmitInstr('INC ESI');
+  EmitInstr('INC EDI');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'SEQ_LOOP');
+  EmitLabel(ASM_PFX_RUNTIME + 'SEQ_TRUE');
+  EmitInstr('MOV EAX,1');
+  EmitInstr('POP EDI');
+  EmitInstr('POP ESI');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitLabel(ASM_PFX_RUNTIME + 'SEQ_FALSE');
+  EmitInstr('MOV EAX,0');
+  EmitInstr('POP EDI');
+  EmitInstr('POP ESI');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _JPPRT_ARRAY_GROW(oldData, count) -> EAX = newData : double la       }
+  { CAPACITE (relue a [oldData-4], MEME prefixe de longueur que tout             }
+  { VRAI tableau J++, voir EK_NEWARRAY) et copie les "count" PREMIERS             }
+  { elements - PARTAGEE par _JPPRT_VECTOR_ADD et _JPPRT_HASHTABLE_PUT           }
+  { (appelee DEUX fois par ce dernier, une fois par tableau parallele            }
+  { "keys"/"values", TOUJOURS en LOCKSTEP). Boucle de copie : MEME                  }
+  { idiome EXACT que ".clone()" (CompileCall, EK_CALL.Extra=-2) -                     }
+  { compteur de boucle sur la PILE (JAMAIS un registre, survit a                       }
+  { N IMPORTE QUOI), ESI/EBX = base source/destination (callee-saved,             }
+  { EAX/ECX/EDX libres pour l arithmetique de decalage a CHAQUE                        }
+  { iteration). }
+  EmitLabel(ASM_PFX_RUNTIME + 'ARRAY_GROW');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH EDI');
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');
+  EmitInstr('MOV EDI,DWORD PTR [EBP+12]');
+  EmitInstr('MOV EAX,DWORD PTR [ESI-4]');
+  EmitInstr('MOV ECX,2');
+  EmitInstr('IMUL EAX,ECX');
+  EmitInstr('PUSH EAX');
+  EmitInstr('MOV ECX,4');
+  EmitInstr('IMUL EAX,ECX');
+  EmitInstr('ADD EAX,4');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('POP ECX');
+  EmitInstr('MOV DWORD PTR [EAX],ECX');
+  EmitInstr('ADD EAX,4');
+  EmitInstr('MOV EBX,EAX');
+  EmitInstr('PUSH 0');
+  EmitLabel(ASM_PFX_RUNTIME + 'AG_LOOP');
+  EmitInstr('MOV EAX,DWORD PTR [ESP+0]');
+  EmitInstr('CMP EAX,EDI');
+  EmitInstr('JGE ' + ASM_PFX_RUNTIME + 'AG_DONE');
+  EmitInstr('MOV ECX,EAX');
+  EmitInstr('ADD ECX,ECX');
+  EmitInstr('ADD ECX,ECX');
+  EmitInstr('MOV EAX,ESI');
+  EmitInstr('ADD EAX,ECX');
+  EmitInstr('MOV EAX,DWORD PTR [EAX+0]');
+  EmitInstr('MOV EDX,EAX');
+  EmitInstr('MOV EAX,EBX');
+  EmitInstr('ADD EAX,ECX');
+  EmitInstr('MOV DWORD PTR [EAX+0],EDX');
+  EmitInstr('MOV EAX,DWORD PTR [ESP+0]');
+  EmitInstr('ADD EAX,1');
+  EmitInstr('MOV DWORD PTR [ESP+0],EAX');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'AG_LOOP');
+  EmitLabel(ASM_PFX_RUNTIME + 'AG_DONE');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('MOV EAX,EBX');
+  EmitInstr('POP EDI');
+  EmitInstr('POP ESI');
+  EmitInstr('POP EBX');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _JPPRT_VECTOR_INIT(vecPtr) : "new Vector()" - alloue une CAPACITE      }
+  { initiale de 4 (MEME choix ARBITRAIRE que n importe quelle             }
+  { impl. Java reelle, jamais devine "juste assez pour ce test" - une            }
+  { croissance x2 EST DEJA testee des le 4e "addElement", voir                        }
+  { Test10Collections.jpp qui en ajoute exactement 3, donc CETTE               }
+  { croissance n est PAS exercee par le sample - couverte par                            }
+  { CONCEPTION, jamais laissee non testee EN PRINCIPE puisque l                    }
+  { algorithme est IDENTIQUE a celui de _JPPRT_ARRAY_GROW ci-dessus,               }
+  { deja verifie par lecture attentive). }
+  EmitLabel(ASM_PFX_RUNTIME + 'VECTOR_INIT');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
+  EmitInstr('PUSH 20');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('MOV ECX,4');
+  EmitInstr('MOV DWORD PTR [EAX],ECX');
+  EmitInstr('ADD EAX,4');
+  EmitInstr('MOV ' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Vector'), 'data'))) + ',EAX');
+  EmitInstr('MOV ECX,0');
+  EmitInstr('MOV ' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Vector'), 'count'))) + ',ECX');
+  EmitInstr('MOV EAX,EBX');
+  EmitInstr('POP EBX');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _JPPRT_VECTOR_ADD(vecPtr, obj) : "addElement" - grandit (via           }
+  { _JPPRT_ARRAY_GROW) SI count a atteint la capacite ([data-4], JAMAIS          }
+  { un champ separe - voir la note d en-tete de Vector.data/count),                  }
+  { PUIS stocke obj a data[count] et incremente count. }
+  EmitLabel(ASM_PFX_RUNTIME + 'VECTOR_ADD');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
+  EmitInstr('MOV EAX,' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Vector'), 'data'))));
+  EmitInstr('MOV ECX,' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Vector'), 'count'))));
+  EmitInstr('MOV EDX,DWORD PTR [EAX-4]');
+  EmitInstr('CMP ECX,EDX');
+  EmitInstr('JL ' + ASM_PFX_RUNTIME + 'VA_STORE');
+  EmitInstr('PUSH ' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Vector'), 'count'))));
+  EmitInstr('PUSH ' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Vector'), 'data'))));
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ARRAY_GROW');
+  EmitInstr('ADD ESP,8');
+  EmitInstr('MOV ' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Vector'), 'data'))) + ',EAX');
+  EmitLabel(ASM_PFX_RUNTIME + 'VA_STORE');
+  EmitInstr('MOV EAX,' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Vector'), 'data'))));
+  EmitInstr('MOV ECX,' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Vector'), 'count'))));
+  EmitInstr('MOV EDX,ECX');
+  EmitInstr('ADD EDX,EDX');
+  EmitInstr('ADD EDX,EDX');
+  EmitInstr('ADD EAX,EDX');
+  EmitInstr('MOV EDX,DWORD PTR [EBP+12]');
+  EmitInstr('MOV DWORD PTR [EAX],EDX');
+  EmitInstr('MOV EAX,' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Vector'), 'count'))));
+  EmitInstr('ADD EAX,1');
+  EmitInstr('MOV ' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Vector'), 'count'))) + ',EAX');
+  EmitInstr('POP EBX');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _JPPRT_VECTOR_SIZE(vecPtr) -> EAX = count. }
+  EmitLabel(ASM_PFX_RUNTIME + 'VECTOR_SIZE');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
+  EmitInstr('MOV EAX,' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Vector'), 'count'))));
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _JPPRT_VECTOR_REMOVE(vecPtr, obj) -> EAX = 1/0 (trouve/pas trouve) -  }
+  { recherche LINEAIRE par CONTENU (_JPPRT_STREQ - "obj" est TOUJOURS               }
+  { une String dans Test10Collections.jpp, seul usage exerce, voir la              }
+  { note d en-tete de Hashtable.keys/values ci-dessus pour la MEME                    }
+  { justification), PUIS decale tous les elements SUIVANTS d une                       }
+  { position (compteur de boucle sur la PILE, MEME idiome que                            }
+  { _JPPRT_ARRAY_GROW). }
+  EmitLabel(ASM_PFX_RUNTIME + 'VECTOR_REMOVE');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH EDI');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
+  EmitInstr('MOV ESI,' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Vector'), 'data'))));
+  EmitInstr('MOV EDI,' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Vector'), 'count'))));
+  EmitInstr('PUSH 0');
+  EmitLabel(ASM_PFX_RUNTIME + 'VR_FIND');
+  EmitInstr('MOV EAX,DWORD PTR [ESP+0]');
+  EmitInstr('CMP EAX,EDI');
+  EmitInstr('JGE ' + ASM_PFX_RUNTIME + 'VR_NOTFOUND');
+  EmitInstr('MOV ECX,EAX');
+  EmitInstr('ADD ECX,ECX');
+  EmitInstr('ADD ECX,ECX');
+  EmitInstr('MOV EAX,ESI');
+  EmitInstr('ADD EAX,ECX');
+  EmitInstr('MOV EAX,DWORD PTR [EAX+0]');
+  EmitInstr('PUSH DWORD PTR [EBP+12]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STREQ');
+  EmitInstr('ADD ESP,8');
+  EmitInstr('CMP EAX,0');
+  EmitInstr('JNE ' + ASM_PFX_RUNTIME + 'VR_FOUND');
+  EmitInstr('MOV EAX,DWORD PTR [ESP+0]');
+  EmitInstr('ADD EAX,1');
+  EmitInstr('MOV DWORD PTR [ESP+0],EAX');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'VR_FIND');
+  EmitLabel(ASM_PFX_RUNTIME + 'VR_FOUND');
+  { decale data[i+1..count-1] vers data[i..count-2] }
+  EmitLabel(ASM_PFX_RUNTIME + 'VR_SHIFT');
+  EmitInstr('MOV EAX,DWORD PTR [ESP+0]');
+  EmitInstr('MOV ECX,EAX');
+  EmitInstr('ADD ECX,1');
+  EmitInstr('CMP ECX,EDI');
+  EmitInstr('JGE ' + ASM_PFX_RUNTIME + 'VR_SHIFTDONE');
+  EmitInstr('MOV EDX,ECX');
+  EmitInstr('ADD EDX,EDX');
+  EmitInstr('ADD EDX,EDX');
+  EmitInstr('MOV EAX,ESI');
+  EmitInstr('ADD EAX,EDX');
+  EmitInstr('MOV EAX,DWORD PTR [EAX+0]');
+  EmitInstr('MOV EDX,EAX');
+  EmitInstr('MOV EAX,DWORD PTR [ESP+0]');
+  EmitInstr('ADD EAX,EAX');
+  EmitInstr('ADD EAX,EAX');
+  EmitInstr('MOV ECX,ESI');
+  EmitInstr('ADD ECX,EAX');
+  EmitInstr('MOV DWORD PTR [ECX+0],EDX');
+  EmitInstr('MOV EAX,DWORD PTR [ESP+0]');
+  EmitInstr('ADD EAX,1');
+  EmitInstr('MOV DWORD PTR [ESP+0],EAX');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'VR_SHIFT');
+  EmitLabel(ASM_PFX_RUNTIME + 'VR_SHIFTDONE');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('MOV EAX,EDI');
+  EmitInstr('SUB EAX,1');
+  EmitInstr('MOV ' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Vector'), 'count'))) + ',EAX');
+  EmitInstr('MOV EAX,1');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'VR_END');
+  EmitLabel(ASM_PFX_RUNTIME + 'VR_NOTFOUND');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('MOV EAX,0');
+  EmitLabel(ASM_PFX_RUNTIME + 'VR_END');
+  EmitInstr('POP EDI');
+  EmitInstr('POP ESI');
+  EmitInstr('POP EBX');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _JPPRT_VECTOR_ELEMENTS(vecPtr) -> EAX = nouvel objet                  }
+  { VectorEnumerator (vec=vecPtr, idx=0) - "elements()". }
+  EmitLabel(ASM_PFX_RUNTIME + 'VECTOR_ELEMENTS');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
+  EmitInstr('PUSH ' + IntToStrG(CgObjectSize(TypeFindByName('VectorEnumerator'))));
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('MOV ECX,' + IntToStrG(TypeFindByName('VectorEnumerator')));
+  EmitInstr('MOV DWORD PTR [EAX],ECX');
+  EmitInstr('MOV ' + CgAddrOperand('EAX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('VectorEnumerator'), 'vec'))) + ',EBX');
+  EmitInstr('MOV ECX,0');
+  EmitInstr('MOV ' + CgAddrOperand('EAX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('VectorEnumerator'), 'idx'))) + ',ECX');
+  EmitInstr('POP EBX');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _JPPRT_VECTORENUM_HASMORE(enumPtr) -> EAX = 1/0 : idx < vec.count.  }
+  EmitLabel(ASM_PFX_RUNTIME + 'VECTORENUM_HASMORE');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
+  EmitInstr('MOV EAX,' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('VectorEnumerator'), 'idx'))));
+  EmitInstr('MOV ECX,' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('VectorEnumerator'), 'vec'))));
+  EmitInstr('MOV EDX,' + CgAddrOperand('ECX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Vector'), 'count'))));
+  EmitInstr('CMP EAX,EDX');
+  EmitInstr('JL ' + ASM_PFX_RUNTIME + 'VEH_TRUE');
+  EmitInstr('MOV EAX,0');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'VEH_DONE');
+  EmitLabel(ASM_PFX_RUNTIME + 'VEH_TRUE');
+  EmitInstr('MOV EAX,1');
+  EmitLabel(ASM_PFX_RUNTIME + 'VEH_DONE');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _JPPRT_VECTORENUM_NEXT(enumPtr) -> EAX = vec.data[idx], idx++. }
+  EmitLabel(ASM_PFX_RUNTIME + 'VECTORENUM_NEXT');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
+  EmitInstr('MOV EAX,' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('VectorEnumerator'), 'vec'))));
+  EmitInstr('MOV EAX,' + CgAddrOperand('EAX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Vector'), 'data'))));
+  EmitInstr('MOV ECX,' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('VectorEnumerator'), 'idx'))));
+  EmitInstr('MOV EDX,ECX');
+  EmitInstr('ADD EDX,EDX');
+  EmitInstr('ADD EDX,EDX');
+  EmitInstr('ADD EAX,EDX');
+  EmitInstr('MOV EAX,DWORD PTR [EAX]');
+  EmitInstr('MOV EDX,' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('VectorEnumerator'), 'idx'))));
+  EmitInstr('PUSH EAX');
+  EmitInstr('MOV EAX,EDX');
+  EmitInstr('ADD EAX,1');
+  EmitInstr('MOV ' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('VectorEnumerator'), 'idx'))) + ',EAX');
+  EmitInstr('POP EAX');
+  EmitInstr('POP EBX');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _JPPRT_HASHTABLE_INIT(htPtr) : MEME capacite initiale (4) que          }
+  { Vector, DEUX tableaux PARALLELES ("keys"/"values") crees ENSEMBLE. }
+  EmitLabel(ASM_PFX_RUNTIME + 'HASHTABLE_INIT');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
+  EmitInstr('PUSH 20');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('MOV ECX,4');
+  EmitInstr('MOV DWORD PTR [EAX],ECX');
+  EmitInstr('ADD EAX,4');
+  EmitInstr('MOV ' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Hashtable'), 'keys'))) + ',EAX');
+  EmitInstr('PUSH 20');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('MOV ECX,4');
+  EmitInstr('MOV DWORD PTR [EAX],ECX');
+  EmitInstr('ADD EAX,4');
+  EmitInstr('MOV ' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Hashtable'), 'values'))) + ',EAX');
+  EmitInstr('MOV ECX,0');
+  EmitInstr('MOV ' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Hashtable'), 'count'))) + ',ECX');
+  EmitInstr('MOV EAX,EBX');
+  EmitInstr('POP EBX');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _JPPRT_HASHTABLE_PUT(htPtr, key, value) : recherche LINEAIRE          }
+  { (_JPPRT_STREQ) - cle deja presente => MET A JOUR values[i] ; sinon           }
+  { grandit (_JPPRT_ARRAY_GROW, keys ET values EN LOCKSTEP - MEME                    }
+  { capacite/compteur pour les DEUX, jamais desynchronises) puis ajoute            }
+  { une PAIRE. }
+  EmitLabel(ASM_PFX_RUNTIME + 'HASHTABLE_PUT');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH EDI');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
+  EmitInstr('MOV ESI,' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Hashtable'), 'keys'))));
+  EmitInstr('MOV EDI,' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Hashtable'), 'count'))));
+  EmitInstr('PUSH 0');
+  EmitLabel(ASM_PFX_RUNTIME + 'HP_FIND');
+  EmitInstr('MOV EAX,DWORD PTR [ESP+0]');
+  EmitInstr('CMP EAX,EDI');
+  EmitInstr('JGE ' + ASM_PFX_RUNTIME + 'HP_NOTFOUND');
+  EmitInstr('MOV ECX,EAX');
+  EmitInstr('ADD ECX,ECX');
+  EmitInstr('ADD ECX,ECX');
+  EmitInstr('MOV EAX,ESI');
+  EmitInstr('ADD EAX,ECX');
+  EmitInstr('MOV EAX,DWORD PTR [EAX+0]');
+  EmitInstr('PUSH DWORD PTR [EBP+12]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STREQ');
+  EmitInstr('ADD ESP,8');
+  EmitInstr('CMP EAX,0');
+  EmitInstr('JNE ' + ASM_PFX_RUNTIME + 'HP_UPDATE');
+  EmitInstr('MOV EAX,DWORD PTR [ESP+0]');
+  EmitInstr('ADD EAX,1');
+  EmitInstr('MOV DWORD PTR [ESP+0],EAX');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'HP_FIND');
+  EmitLabel(ASM_PFX_RUNTIME + 'HP_UPDATE');
+  EmitInstr('MOV EAX,DWORD PTR [ESP+0]');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('MOV ECX,EAX');
+  EmitInstr('ADD ECX,ECX');
+  EmitInstr('ADD ECX,ECX');
+  EmitInstr('MOV EAX,' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Hashtable'), 'values'))));
+  EmitInstr('ADD EAX,ECX');
+  EmitInstr('MOV EDX,DWORD PTR [EBP+16]');
+  EmitInstr('MOV DWORD PTR [EAX+0],EDX');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'HP_DONE');
+  EmitLabel(ASM_PFX_RUNTIME + 'HP_NOTFOUND');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('MOV EAX,' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Hashtable'), 'keys'))));
+  EmitInstr('MOV EDX,DWORD PTR [EAX-4]');
+  EmitInstr('CMP EDI,EDX');
+  EmitInstr('JL ' + ASM_PFX_RUNTIME + 'HP_STORE');
+  EmitInstr('PUSH EDI');
+  EmitInstr('PUSH ' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Hashtable'), 'keys'))));
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ARRAY_GROW');
+  EmitInstr('ADD ESP,8');
+  EmitInstr('MOV ' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Hashtable'), 'keys'))) + ',EAX');
+  EmitInstr('PUSH EDI');
+  EmitInstr('PUSH ' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Hashtable'), 'values'))));
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ARRAY_GROW');
+  EmitInstr('ADD ESP,8');
+  EmitInstr('MOV ' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Hashtable'), 'values'))) + ',EAX');
+  EmitLabel(ASM_PFX_RUNTIME + 'HP_STORE');
+  EmitInstr('MOV ECX,EDI');
+  EmitInstr('ADD ECX,ECX');
+  EmitInstr('ADD ECX,ECX');
+  EmitInstr('MOV EAX,' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Hashtable'), 'keys'))));
+  EmitInstr('ADD EAX,ECX');
+  EmitInstr('MOV EDX,DWORD PTR [EBP+12]');
+  EmitInstr('MOV DWORD PTR [EAX+0],EDX');
+  EmitInstr('MOV EAX,' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Hashtable'), 'values'))));
+  EmitInstr('ADD EAX,ECX');
+  EmitInstr('MOV EDX,DWORD PTR [EBP+16]');
+  EmitInstr('MOV DWORD PTR [EAX+0],EDX');
+  EmitInstr('MOV EAX,EDI');
+  EmitInstr('ADD EAX,1');
+  EmitInstr('MOV ' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Hashtable'), 'count'))) + ',EAX');
+  EmitLabel(ASM_PFX_RUNTIME + 'HP_DONE');
+  EmitInstr('POP EDI');
+  EmitInstr('POP ESI');
+  EmitInstr('POP EBX');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _JPPRT_HASHTABLE_GET(htPtr, key) -> EAX = values[i] si trouve, sinon  }
+  { 0 (null - Java retourne "null" pour une cle absente, "annees.get"                }
+  { n est JAMAIS appele avec une cle absente par Test10Collections.jpp,       }
+  { ce chemin reste NEANMOINS correct, jamais devine). }
+  EmitLabel(ASM_PFX_RUNTIME + 'HASHTABLE_GET');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH EDI');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
+  EmitInstr('MOV ESI,' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Hashtable'), 'keys'))));
+  EmitInstr('MOV EDI,' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Hashtable'), 'count'))));
+  EmitInstr('PUSH 0');
+  EmitLabel(ASM_PFX_RUNTIME + 'HG_FIND');
+  EmitInstr('MOV EAX,DWORD PTR [ESP+0]');
+  EmitInstr('CMP EAX,EDI');
+  EmitInstr('JGE ' + ASM_PFX_RUNTIME + 'HG_NOTFOUND');
+  EmitInstr('MOV ECX,EAX');
+  EmitInstr('ADD ECX,ECX');
+  EmitInstr('ADD ECX,ECX');
+  EmitInstr('MOV EAX,ESI');
+  EmitInstr('ADD EAX,ECX');
+  EmitInstr('MOV EAX,DWORD PTR [EAX+0]');
+  EmitInstr('PUSH DWORD PTR [EBP+12]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STREQ');
+  EmitInstr('ADD ESP,8');
+  EmitInstr('CMP EAX,0');
+  EmitInstr('JNE ' + ASM_PFX_RUNTIME + 'HG_FOUND');
+  EmitInstr('MOV EAX,DWORD PTR [ESP+0]');
+  EmitInstr('ADD EAX,1');
+  EmitInstr('MOV DWORD PTR [ESP+0],EAX');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'HG_FIND');
+  EmitLabel(ASM_PFX_RUNTIME + 'HG_FOUND');
+  EmitInstr('MOV EAX,DWORD PTR [ESP+0]');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('MOV ECX,EAX');
+  EmitInstr('ADD ECX,ECX');
+  EmitInstr('ADD ECX,ECX');
+  EmitInstr('MOV EAX,' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Hashtable'), 'values'))));
+  EmitInstr('ADD EAX,ECX');
+  EmitInstr('MOV EAX,DWORD PTR [EAX+0]');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'HG_DONE');
+  EmitLabel(ASM_PFX_RUNTIME + 'HG_NOTFOUND');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('MOV EAX,0');
+  EmitLabel(ASM_PFX_RUNTIME + 'HG_DONE');
+  EmitInstr('POP EDI');
+  EmitInstr('POP ESI');
+  EmitInstr('POP EBX');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _JPPRT_INTEGER_INIT(objPtr, val) : "new Integer(1995)" - stocke la   }
+  { valeur ENCAPSULEE dans son SEUL champ. }
+  EmitLabel(ASM_PFX_RUNTIME + 'INTEGER_INIT');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('MOV ECX,DWORD PTR [EBP+12]');
+  EmitInstr('MOV ' + CgAddrOperand('EAX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Integer'), 'value'))) + ',ECX');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _JPPRT_OBJECT_TO_STR(objPtr) -> EAX = pointeur de chaine ALLOUEE :   }
+  { conversion Object->String pour la concatenation "+" (CompileToStringValue,   }
+  { "annees.get(nom)" - Test10Collections.jpp, retourne un Object                     }
+  { STATIQUEMENT, un Integer DYNAMIQUEMENT) - PORTEE REDUITE, documentee            }
+  { plutot que devinee : une SEULE etiquette de type DYNAMIQUE est                   }
+  { REELLEMENT geree (Integer, deballe puis _JPPRT_INT_TO_STR) - un                  }
+  { VRAI dispatch polymorphique sur toString() a travers CHAQUE classe             }
+  { CONCRETE (comme "println(Object)", HUITIEME tranche) resterait la              }
+  { generalisation CORRECTE, mais AUCUN echantillon actuel n a besoin              }
+  { d un DEUXIEME type encapsule ici - code de sortie DISTINCT (6) si               }
+  { jamais un AUTRE type dynamique atteint ce point, JAMAIS une chute              }
+  { silencieuse. }
+  EmitLabel(ASM_PFX_RUNTIME + 'OBJECT_TO_STR');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('MOV ECX,DWORD PTR [EAX]');
+  EmitInstr('CMP ECX,' + IntToStrG(TypeFindByName('Integer')));
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'OTS_INT');
+  EmitInstr('PUSH 6');
+  EmitInstr('CALL _ExitProcess@4');
+  EmitLabel(ASM_PFX_RUNTIME + 'OTS_INT');
+  EmitInstr('MOV EAX,' + CgAddrOperand('EAX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Integer'), 'value'))));
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'INT_TO_STR');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { extension post-TODO25, TREIZIEME tranche (Thread REEL,                    }
+  { Test11Threads.jpp) - _JPPRT_THREAD_INIT("new Thread(r,nom)", stocke          }
+  { UNIQUEMENT "r" - "nom" n est LU par AUCUN echantillon, "getName()"           }
+  { reste donc HORS de portee, documente plutot que devine, MEME                     }
+  { discipline que Vector.data/count) ; _JPPRT_THREAD_START ("start()")      }
+  { demarre un VRAI thread Win32 (CreateThread) dont le point d entree             }
+  { est BuildThreadProcMethod/MI_ThreadProc (synthetise PENDANT                        }
+  { StdlibInit, "t.target.run();" - dispatch POLYMORPHIQUE reel a                    }
+  { travers Runnable, voir sa propre note d en-tete) ; _JPPRT_THREAD_JOIN       }
+  { ("join()") attend REELLEMENT sa fin (WaitForSingleObject, INFINITE           }
+  { = 0xFFFFFFFF). }
+  EmitLabel(ASM_PFX_RUNTIME + 'THREAD_INIT');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('MOV ECX,DWORD PTR [EBP+12]');
+  EmitInstr('MOV ' + CgAddrOperand('EAX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Thread'), 'target'))) + ',ECX');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _JPPRT_THREAD_START (LUI SEUL, contrairement a INIT/JOIN juste       }
+  { au-dessus/en-dessous, AUTO-SUFFISANTS) reference l ETIQUETTE de                }
+  { MI_ThreadProc (LEA, ci-dessous) - SI son CORPS n a pas ete compile             }
+  { (HasRunnableImpl FAUX, voir la note d en-tete GLOBALE), cette                       }
+  { etiquette n existe simplement PAS et le CORRECTIF echouerait a la              }
+  { resolution (BOGUE REEL trouve par EXECUTION, PEExeSelfTest -                        }
+  { "Test23PEExe", "Hello World" SANS AUCUN rapport avec Thread) - CE               }
+  { SEUL routine reste donc EMISE CONDITIONNELLEMENT (un programme qui             }
+  { n a AUCUNE classe concrete implementant Runnable ne pourrait de                    }
+  { toute facon jamais appeler "start()" utilement). }
+  If HasRunnableImpl Then
+  Begin
+    EmitLabel(ASM_PFX_RUNTIME + 'THREAD_START');
+    EmitInstr('PUSH EBP');
+    EmitInstr('MOV EBP,ESP');
+    EmitInstr('PUSH EBX');
+    EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
+    EmitInstr('PUSH 0');
+    EmitInstr('PUSH 0');
+    EmitInstr('PUSH EBX');
+    EmitInstr('LEA EAX,[' + MethodAsmLabelG(MI_ThreadProc) + ']');
+    EmitInstr('PUSH EAX');
+    EmitInstr('PUSH 0');
+    EmitInstr('PUSH 0');
+    EmitInstr('CALL _CreateThread@24');
+    EmitInstr('MOV ' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+      ClassFindField(TypeFindByName('Thread'), 'handle'))) + ',EAX');
+    EmitInstr('POP EBX');
+    EmitInstr('MOV ESP,EBP');
+    EmitInstr('POP EBP');
+    EmitInstr('RET');
+    EmitBlankLine;
+  End;
+
+  EmitLabel(ASM_PFX_RUNTIME + 'THREAD_JOIN');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('PUSH -1');
+  EmitInstr('PUSH ' + CgAddrOperand('EAX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Thread'), 'handle'))));
+  EmitInstr('CALL _WaitForSingleObject@8');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
 End;
 
 { MethodAsmLabelG : etiquette ASM d une methode - INCLUT le nom de la    }
@@ -14700,21 +16136,6 @@ End;
 { "this(x, 99)" appelait ainsi, en                                                      }
 { pratique, N IMPORTE LEQUEL des deux constructeurs de Derived selon              }
 { l ORDRE d emission, jamais celui REELLEMENT resolu. Corrige en                      }
-{ ajoutant TOUJOURS l INDEX MethodPool (MI) - UNIQUE par construction,           }
-{ quel que soit le nombre de surcharges - au texte de l etiquette :               }
-{ AUCUN autre code ne depend du FORMAT exact de cette chaine (utilisee            }
-{ UNIQUEMENT via CET APPEL, jamais reconstruite ailleurs par                              }
-{ concatenation manuelle), le changement est donc SANS RISQUE. }
-Function MethodAsmLabelG(MI: Integer): TString;
-Begin
-  If MethodPool[MI].IsStatic Then
-    MethodAsmLabelG := ASM_PFX_FUNC + TypeTab[MethodPool[MI].OwnerTypeIdx].Name +
-      '_' + MethodPool[MI].Name + '_' + IntToStrG(MI)
-  Else
-    MethodAsmLabelG := ASM_PFX_METHOD + TypeTab[MethodPool[MI].OwnerTypeIdx].Name +
-      '_' + MethodPool[MI].Name + '_' + IntToStrG(MI);
-End;
-
 { ------------------------------------------------------------ }
 { Extension post-TODO25 (generateur de code) : demandee explicitement    }
 { par l utilisateur ("termine toutes les parties non couvertes par le               }
@@ -14739,57 +16160,6 @@ End;
 { discipline exacte que le "premier jalon" du TODO 21 lui-meme.                          }
 { ------------------------------------------------------------ }
 
-{ CgLocalOperand : texte d operande EBP-relatif "DWORD PTR [EBP+N]"/     }
-{ "[EBP-N]" pour un SK_VAR LOCAL/PARAMETRE (TSymRec.Offset, voir sa               }
-{ propre note d en-tete) - IntToStrG produit deja "-N" pour un                        }
-{ deplacement negatif (Str standard Pascal), aucune logique de signe             }
-{ separee necessaire au-dela du "+" litteral pour le cas positif. }
-Function CgLocalOperand(Offset: LongInt): TString;
-Begin
-  If Offset >= 0 Then
-    CgLocalOperand := 'DWORD PTR [EBP+' + IntToStrG(Offset) + ']'
-  Else
-    CgLocalOperand := 'DWORD PTR [EBP' + IntToStrG(Offset) + ']';
-End;
-
-{ CgAddrOperand : MEME chose que CgLocalOperand, mais pour un registre   }
-{ de base ARBITRAIRE (EAX/ECX/EBX/ESP - un pointeur d objet/de tableau           }
-{ deja calcule dans une expression, PAS forcement EBP) - extension              }
-{ modele memoire d instance/tableau, post-TODO25. }
-Function CgAddrOperand(Const BaseRegName: TString; Offset: LongInt): TString;
-Begin
-  If Offset = 0 Then
-    CgAddrOperand := 'DWORD PTR [' + BaseRegName + ']'
-  Else If Offset > 0 Then
-    CgAddrOperand := 'DWORD PTR [' + BaseRegName + '+' + IntToStrG(Offset) + ']'
-  Else
-    CgAddrOperand := 'DWORD PTR [' + BaseRegName + IntToStrG(Offset) + ']';
-End;
-
-{ CgLocalOperandQ/CgAddrOperandQ : extension post-TODO25, HUITIEME      }
-{ tranche (double/float) - MEMES DEUX fonctions que ci-dessus, mais              }
-{ "QWORD PTR" plutot que "DWORD PTR" (les SEULS consommateurs sont               }
-{ FLD/FSTP m64real dans CompileExprF/STK_ASSIGN/STK_DECL/STK_RETURN,             }
-{ jamais MOV) - EVITE de dupliquer l arithmetique de deplacement                    }
-{ EBP-relatif (SIGNE, "+"/"-" selon Offset) une SECONDE fois. }
-Function CgLocalOperandQ(Offset: LongInt): TString;
-Begin
-  If Offset >= 0 Then
-    CgLocalOperandQ := 'QWORD PTR [EBP+' + IntToStrG(Offset) + ']'
-  Else
-    CgLocalOperandQ := 'QWORD PTR [EBP' + IntToStrG(Offset) + ']';
-End;
-
-Function CgAddrOperandQ(Const BaseRegName: TString; Offset: LongInt): TString;
-Begin
-  If Offset = 0 Then
-    CgAddrOperandQ := 'QWORD PTR [' + BaseRegName + ']'
-  Else If Offset > 0 Then
-    CgAddrOperandQ := 'QWORD PTR [' + BaseRegName + '+' + IntToStrG(Offset) + ']'
-  Else
-    CgAddrOperandQ := 'QWORD PTR [' + BaseRegName + IntToStrG(Offset) + ']';
-End;
-
 { Modele memoire d instance - extension post-TODO25 : un OBJET est un   }
 { bloc alloue sur le tas (_JPPRT_ALLOC, zero-rempli), UN SEUL mot de 4          }
 { octets par CHAMP D INSTANCE SCALAIRE (meme simplification "tout tient          }
@@ -14809,12 +16179,11 @@ End;
 { static melange a des champs d instance, JAMAIS incorrect (chaque               }
 { champ D INSTANCE garde un emplacement UNIQUE et STABLE), simplement           }
 { pas la disposition la plus compacte possible. }
-{ CG_OBJ_HEADER/CgObjectSize/CgFieldOffsetInObject : voir leur propre   }
-{ note d en-tete, deplacee plus haut (avant EmitDataSeg/EmitRuntimeLibrary,        }
-{ extension post-TODO25 exceptions REELLES - _JPPRT_STR_TO_INT en a                }
-{ desormais besoin, AVANT ce point du fichier, pour la taille REELLE            }
-{ d un "new NumberFormatException" construit directement en assembleur          }
-{ runtime plutot que via une AST J++ compilee). }
+{ CG_OBJ_HEADER/CgObjectSize/CgFieldOffsetInObject/MethodAsmLabelG :    }
+{ voir leur propre note d en-tete, deplacees plus haut (avant                          }
+{ EmitDataSeg/EmitRuntimeLibrary, extension post-TODO25 exceptions             }
+{ REELLES puis TREIZIEME tranche Thread REEL - _JPPRT_STR_TO_INT PUIS          }
+{ _JPPRT_THREAD_START en ont besoin, AVANT ce point du fichier). }
 { CgSlotSize : extension post-TODO25, HUITIEME tranche (double/float) - }
 { taille (octets) reservee pour UNE locale/UN parametre SCALAIRE de ce           }
 { type sur la PILE (EBP-relatif, CurParamOffset/CurLocalOffset) - 8              }
@@ -14926,6 +16295,20 @@ Begin
   Begin
     EmitInstr('PUSH EAX');
     EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'INT_TO_STR');
+    EmitInstr('ADD ESP,4');
+    Exit;
+  End;
+  { extension post-TODO25, ONZIEME tranche : "annees.get(nom)"              }
+  { (Test10Collections.jpp, "nom + \" : \" + annees.get(nom)") - le TYPE    }
+  { STATIQUE de "Hashtable.get(...)" est PDT_OBJECT (StdMethod1, section          }
+  { StdlibInit) - voir _JPPRT_OBJECT_TO_STR (EmitRuntimeLibrary) pour la          }
+  { PORTEE EXACTE (une SEULE etiquette dynamique geree, Integer - PAS un        }
+  { VRAI dispatch polymorphique toString() a travers TOUTE classe                     }
+  { CONCRETE, documente plutot que devine). }
+  If T = PDT_OBJECT Then
+  Begin
+    EmitInstr('PUSH EAX');
+    EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'OBJECT_TO_STR');
     EmitInstr('ADD ESP,4');
     Exit;
   End;
@@ -15829,8 +17212,17 @@ Begin
     Begin
       ClassT := ExprPool[E].Extra;
       MI := ExprPool[E].Left;
+      { extension post-TODO25, ONZIEME tranche : Vector/Hashtable/Integer   }
+      { (Test10Collections.jpp) sont IsStdlib avec un constructeur SANS            }
+      { corps SOURCE reel (BodyStmtIdx<0, EXACTEMENT le cas que ce garde-           }
+      { fou rejetait jusqu ici) - mais recoivent MAINTENANT un                             }
+      { traitement special JUSTE APRES (voir _JPPRT_VECTOR_INIT/                       }
+      { _JPPRT_HASHTABLE_INIT/_JPPRT_INTEGER_INIT plus bas), donc                      }
+      { EXCLUES ICI du rejet generique. }
       If (MI < 0) Or (TypeTab[ClassT].Kind <> TYK_CLASS) Or
-         (TypeTab[ClassT].IsStdlib And (MethodPool[MI].BodyStmtIdx < 0)) Then
+         (TypeTab[ClassT].IsStdlib And (MethodPool[MI].BodyStmtIdx < 0) And
+          (TypeTab[ClassT].Name <> 'Vector') And (TypeTab[ClassT].Name <> 'Hashtable') And
+          (TypeTab[ClassT].Name <> 'Integer') And (TypeTab[ClassT].Name <> 'Thread')) Then
       Begin
         FatalError('generateur de code : "new ' + TypeTab[ClassT].Name +
           '(...)" non couvert par cette extension (constructeur non ' +
@@ -15875,6 +17267,58 @@ Begin
       { CG_OBJ_HEADER/CompileCall pour son unique consommateur. }
       EmitInstr('MOV ECX,' + IntToStrG(ClassT));
       EmitInstr('MOV ' + CgAddrOperand('EAX', 0) + ',ECX');
+
+      { extension post-TODO25, ONZIEME tranche : "new Vector()"/"new       }
+      { Hashtable()"/"new Integer(n)" - AUCUN corps SOURCE reel                          }
+      { (BodyStmtIdx<0, voir le garde-fou modifie plus haut), initialise             }
+      { directement l etat interne via une routine runtime DEDIEE               }
+      { plutot qu un appel a MethodAsmLabelG(MI) (qui n existe pas,                  }
+      { AUCUNE etiquette n a jamais ete emise pour ce MI). "new Integer(n)"       }
+      { doit relire son argument SUR LA PILE (DEJA pousse par la boucle             }
+      { ArgCount ci-dessus, AVANT ALLOC - EAX/ECX/EDX ont ete recycles                }
+      { plusieurs fois depuis, l argument ORIGINAL ne survit QUE sur la             }
+      { pile) et nettoyer LUI-MEME ArgBytes (l ancien chemin "BodyStmtIdx<0"      }
+      { suppose TOUJOURS ArgCount=0, jamais vrai ICI). }
+      If TypeTab[ClassT].Name = 'Vector' Then
+      Begin
+        EmitInstr('PUSH EAX');
+        EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'VECTOR_INIT');
+        EmitInstr('ADD ESP,4');
+        Exit;
+      End;
+      If TypeTab[ClassT].Name = 'Hashtable' Then
+      Begin
+        EmitInstr('PUSH EAX');
+        EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'HASHTABLE_INIT');
+        EmitInstr('ADD ESP,4');
+        Exit;
+      End;
+      If TypeTab[ClassT].Name = 'Integer' Then
+      Begin
+        EmitInstr('MOV ECX,DWORD PTR [ESP+0]');
+        EmitInstr('PUSH ECX');
+        EmitInstr('PUSH EAX');
+        EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'INTEGER_INIT');
+        EmitInstr('ADD ESP,8');
+        EmitInstr('ADD ESP,' + IntToStrG(ArgBytes));
+        Exit;
+      End;
+      { "new Thread(runnable, nom)" - MEME technique, mais DEUX arguments   }
+      { pousses (voir la boucle ArgCount ci-dessus) : "nom" (arg 1, pousse           }
+      { EN PREMIER/le plus profond) N EST PAS lu (getName() reste hors de           }
+      { portee, documente a la note d en-tete de Thread.target/handle) -              }
+      { seul "runnable" (arg 0, pousse EN DERNIER, [ESP+0]) est stocke. }
+      If TypeTab[ClassT].Name = 'Thread' Then
+      Begin
+        EmitInstr('MOV ECX,DWORD PTR [ESP+0]');
+        EmitInstr('PUSH ECX');
+        EmitInstr('PUSH EAX');
+        EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'THREAD_INIT');
+        EmitInstr('ADD ESP,8');
+        EmitInstr('ADD ESP,' + IntToStrG(ArgBytes));
+        Exit;
+      End;
+
       If MethodPool[MI].BodyStmtIdx >= 0 Then
       Begin
         EmitInstr('PUSH EAX');
@@ -16220,6 +17664,179 @@ Begin
     EmitInstr('ADD ESP,4');
     Exit;
   End;
+
+  { extension post-TODO25, ONZIEME tranche (Vector/Hashtable/Enumeration  }
+  { REELS, Test10Collections.jpp) - voir la note d en-tete de                          }
+  { Vector.data/count (StdlibInit) et des routines _JPPRT_VECTOR_*/                    }
+  { _JPPRT_HASHTABLE_* (EmitRuntimeLibrary) pour la conception COMPLETE.        }
+  { Chaque methode est reconnue PAR NOM (MEME technique EXACTE que                    }
+  { "parseInt"/"length" juste au-dessus) - AUCUNE de ces classes n a               }
+  { de "BodyStmtIdx" reel, dispatch MethodPool normal impossible de                   }
+  { toute facon. Args EVALUES en ORDRE INVERSE PUIS le RECEVEUR EN                    }
+  { DERNIER - EXACTEMENT la MEME convention que TOUT appel d instance                }
+  { multi-arguments ailleurs dans cette fonction (voir "this(...)"/                        }
+  { "super(...)" juste en-dessous, ou le dispatch polymorphique plus                   }
+  { bas), jamais une convention INVENTEE ICI. }
+  If (MethodPool[MI].Name = 'addElement') And
+     (TypeTab[MethodPool[MI].OwnerTypeIdx].Name = 'Vector') Then
+  Begin
+    CompileExpr(ExprArgPool[ExprPool[E].ArgFirst]);
+    EmitInstr('PUSH EAX');
+    CompileExpr(ExprPool[ExprPool[E].Left].Left);
+    EmitInstr('PUSH EAX');
+    EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'VECTOR_ADD');
+    EmitInstr('ADD ESP,8');
+    Exit;
+  End;
+
+  If (MethodPool[MI].Name = 'removeElement') And
+     (TypeTab[MethodPool[MI].OwnerTypeIdx].Name = 'Vector') Then
+  Begin
+    CompileExpr(ExprArgPool[ExprPool[E].ArgFirst]);
+    EmitInstr('PUSH EAX');
+    CompileExpr(ExprPool[ExprPool[E].Left].Left);
+    EmitInstr('PUSH EAX');
+    EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'VECTOR_REMOVE');
+    EmitInstr('ADD ESP,8');
+    Exit;
+  End;
+
+  If (MethodPool[MI].Name = 'elements') And
+     (TypeTab[MethodPool[MI].OwnerTypeIdx].Name = 'Vector') Then
+  Begin
+    CompileExpr(ExprPool[ExprPool[E].Left].Left);
+    EmitInstr('PUSH EAX');
+    EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'VECTOR_ELEMENTS');
+    EmitInstr('ADD ESP,4');
+    Exit;
+  End;
+
+  If (MethodPool[MI].Name = 'size') And
+     (TypeTab[MethodPool[MI].OwnerTypeIdx].Name = 'Vector') Then
+  Begin
+    CompileExpr(ExprPool[ExprPool[E].Left].Left);
+    EmitInstr('PUSH EAX');
+    EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'VECTOR_SIZE');
+    EmitInstr('ADD ESP,4');
+    Exit;
+  End;
+
+  { "annees.put(cle, valeur)" - args en ordre INVERSE (valeur PUIS cle,   }
+  { voir _JPPRT_HASHTABLE_PUT/EBP+12=cle/EBP+16=valeur) PUIS le                       }
+  { RECEVEUR en dernier. }
+  If (MethodPool[MI].Name = 'put') And
+     (TypeTab[MethodPool[MI].OwnerTypeIdx].Name = 'Hashtable') Then
+  Begin
+    CompileExpr(ExprArgPool[ExprPool[E].ArgFirst + 1]);
+    EmitInstr('PUSH EAX');
+    CompileExpr(ExprArgPool[ExprPool[E].ArgFirst]);
+    EmitInstr('PUSH EAX');
+    CompileExpr(ExprPool[ExprPool[E].Left].Left);
+    EmitInstr('PUSH EAX');
+    EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'HASHTABLE_PUT');
+    EmitInstr('ADD ESP,12');
+    Exit;
+  End;
+
+  If (MethodPool[MI].Name = 'get') And
+     (TypeTab[MethodPool[MI].OwnerTypeIdx].Name = 'Hashtable') Then
+  Begin
+    CompileExpr(ExprArgPool[ExprPool[E].ArgFirst]);
+    EmitInstr('PUSH EAX');
+    CompileExpr(ExprPool[ExprPool[E].Left].Left);
+    EmitInstr('PUSH EAX');
+    EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'HASHTABLE_GET');
+    EmitInstr('ADD ESP,8');
+    Exit;
+  End;
+
+  { "elements.hasMoreElements()"/"elements.nextElement()" - MI resout ICI  }
+  { contre EnumerationT (l INTERFACE elle-meme, TYPE STATIQUE de           }
+  { "elements") : PAS un dispatch polymorphique (voir la note d en-tete           }
+  { de VectorEnumeratorT, StdlibInit - UNE SEULE implementation CONCRETE           }
+  { existe dans TOUT ce compilateur, un VRAI dispatch multi-implementeur         }
+  { serait hors de portee/jamais exerce). }
+  If (MethodPool[MI].Name = 'hasMoreElements') And
+     (TypeTab[MethodPool[MI].OwnerTypeIdx].Name = 'Enumeration') Then
+  Begin
+    CompileExpr(ExprPool[ExprPool[E].Left].Left);
+    EmitInstr('PUSH EAX');
+    EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'VECTORENUM_HASMORE');
+    EmitInstr('ADD ESP,4');
+    Exit;
+  End;
+
+  If (MethodPool[MI].Name = 'nextElement') And
+     (TypeTab[MethodPool[MI].OwnerTypeIdx].Name = 'Enumeration') Then
+  Begin
+    CompileExpr(ExprPool[ExprPool[E].Left].Left);
+    EmitInstr('PUSH EAX');
+    EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'VECTORENUM_NEXT');
+    EmitInstr('ADD ESP,4');
+    Exit;
+  End;
+
+  { extension post-TODO25, TREIZIEME tranche (Thread REEL,                    }
+  { Test11Threads.jpp) - "producteur.start()"/"producteur.join()",                    }
+  { reconnus PAR NOM (MEME technique que Vector/Hashtable, ONZIEME               }
+  { tranche) : AUCUN "BodyStmtIdx" reel n existe pour ces deux                          }
+  { methodes (StdlibInit), EXACTEMENT le meme genre de bibliotheque              }
+  { standard "sans corps SOURCE" que Vector.addElement. }
+  If (MethodPool[MI].Name = 'start') And
+     (TypeTab[MethodPool[MI].OwnerTypeIdx].Name = 'Thread') Then
+  Begin
+    CompileExpr(ExprPool[ExprPool[E].Left].Left);
+    EmitInstr('PUSH EAX');
+    EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'THREAD_START');
+    EmitInstr('ADD ESP,4');
+    Exit;
+  End;
+
+  If (MethodPool[MI].Name = 'join') And
+     (TypeTab[MethodPool[MI].OwnerTypeIdx].Name = 'Thread') Then
+  Begin
+    CompileExpr(ExprPool[ExprPool[E].Left].Left);
+    EmitInstr('PUSH EAX');
+    EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'THREAD_JOIN');
+    EmitInstr('ADD ESP,4');
+    Exit;
+  End;
+
+  { extension post-TODO25, TREIZIEME tranche (synchronized/wait REELS,   }
+  { Test11Threads.jpp) - "wait();" (appel IMPLICITE, "this" jamais                }
+  { compile - AUCUN Win32 API concerne n a besoin de l objet lui-meme,            }
+  { seulement du verrou DE SA CLASSE, deja stashe dans IntVal au                       }
+  { parsing, voir la note d en-tete de ParsePostfix/EK_CALL.IntVal) :             }
+  { RELACHE le verrou (l appelant le detenait DEJA - "wait()" n a de                }
+  { sens QUE depuis une methode synchronized, section 14.19/14.22 -               }
+  { JAMAIS verifie ICI, best-effort comme le reste de ce compilateur),        }
+  { CEDE brievement le processeur (Sleep(0), MEME motif "spin-wait"                }
+  { deja documente/decide pour ce mecanisme - decision C, note d en-tete          }
+  { de ThreadSelfTest, TODO 14), PUIS le RE-ACQUIERT avant de rendre la           }
+  { main a l appelant - qui reboucle NATURELLEMENT sur SA PROPRE                     }
+  { condition "while" (deposer/retirer, Test11Threads.jpp). }
+  If (MethodPool[MI].Name = 'wait') And (MethodPool[MI].OwnerTypeIdx = PDT_OBJECT) Then
+  Begin
+    EmitInstr('LEA EAX,[' + SyncLockLabel(ExprPool[E].IntVal) + ']');
+    EmitInstr('PUSH EAX');
+    EmitInstr('CALL _LeaveCriticalSection@4');
+    EmitInstr('PUSH 0');
+    EmitInstr('CALL _Sleep@4');
+    EmitInstr('LEA EAX,[' + SyncLockLabel(ExprPool[E].IntVal) + ']');
+    EmitInstr('PUSH EAX');
+    EmitInstr('CALL _EnterCriticalSection@4');
+    Exit;
+  End;
+
+  { "notify()"/"notifyAll()" : NO-OP volontaire - "wait()" ci-dessus            }
+  { RE-VERIFIE LUI-MEME sa condition (boucle "while" appelante) apres            }
+  { chaque reveil PERIODIQUE (Sleep(0)+reacquisition), AUCUNE                            }
+  { notification EXPLICITE n est donc necessaire pour la CORRECTION -             }
+  { seulement pour la LATENCE (non observable dans Test11Threads.jpp,               }
+  { Sleep(0) cede le processeur assez souvent). }
+  If ((MethodPool[MI].Name = 'notify') Or (MethodPool[MI].Name = 'notifyAll')) And
+     (MethodPool[MI].OwnerTypeIdx = PDT_OBJECT) Then
+    Exit;
 
   { extension post-TODO25, QUATRIEME tranche (chainage de constructeur) :  }
   { "this(...)"/"super(...)" resolu (voir ParsePostfix, meme extension) -            }
@@ -17207,13 +18824,63 @@ Begin
   EmitInstr('MOV EBP,ESP');
   If MethodPool[MI].FrameSize > 0 Then
     EmitInstr('SUB ESP,' + IntToStrG(MethodPool[MI].FrameSize));
+  { extension post-TODO25, TREIZIEME tranche (synchronized REEL,        }
+  { Test11Threads.jpp) - REMPLACE la SIMPLIFICATION "aucun verrou reel"       }
+  { documentee plus haut (STK_SYNCHRONIZED, "AUCUN programme compilable          }
+  { par cette extension ne peut faire tourner un SECOND thread reel") :          }
+  { CETTE affirmation N EST PLUS VRAIE depuis Thread.start() REEL (MEME              }
+  { tranche, _JPPRT_THREAD_START) - un VRAI second thread Win32 PEUT                 }
+  { desormais executer "deposer()"/"retirer()" CONCURREMMENT. Acquiert           }
+  { le verrou DE LA CLASSE (SyncLockLabel, EmitDataSeg/EmitSyncLockData)           }
+  { EN ENTRANT toute methode "synchronized" (section 14.19-14.20),                   }
+  { le relache JUSTE AVANT l epilogue PARTAGE (CurMethodEpilogueLabel,           }
+  { CHAQUE "return" y saute deja - UN SEUL point d injection suffit                  }
+  { donc, MEME raisonnement que l epilogue lui-meme). }
+  If MethodPool[MI].IsSynchronized Then
+  Begin
+    EmitInstr('LEA EAX,[' + SyncLockLabel(MethodPool[MI].OwnerTypeIdx) + ']');
+    EmitInstr('PUSH EAX');
+    EmitInstr('CALL _EnterCriticalSection@4');
+  End;
   CurMethodEpilogueLabel := CgLabelGen;
   CurMethodRetTypeIdx := MethodPool[MI].RetTypeIdx;
   CompileStmt(MethodPool[MI].BodyStmtIdx);
   EmitLabel(CurMethodEpilogueLabel);
+  If MethodPool[MI].IsSynchronized Then
+  Begin
+    { BOGUE REEL trouve PAR EXECUTION (SyncTest4.jpp synthetique,          }
+    { "return 42;" dans une methode synchronized imprimait 0) : "LEA           }
+    { EAX,[verrou]" A L EPILOGUE ECRASAIT SANS LE SAVOIR la VALEUR DE               }
+    { RETOUR QUE CompileStmt/STK_RETURN venait de placer dans EAX (MEME          }
+    { convention "tout tient dans EAX" que partout ailleurs) - PUSH/POP          }
+    { EAX autour de l appel LeaveCriticalSection (qui, LUI, peut EN               }
+    { PLUS librement ecraser EAX/ECX/EDX, registres VOLATILS par                        }
+    { convention stdcall standard) preserve desormais la valeur de                   }
+    { retour EXACTEMENT comme un VRAI callee-saved le ferait. }
+    EmitInstr('PUSH EAX');
+    EmitInstr('LEA EAX,[' + SyncLockLabel(MethodPool[MI].OwnerTypeIdx) + ']');
+    EmitInstr('PUSH EAX');
+    EmitInstr('CALL _LeaveCriticalSection@4');
+    EmitInstr('POP EAX');
+  End;
   EmitInstr('MOV ESP,EBP');
   EmitInstr('POP EBP');
-  EmitInstr('RET');
+  { extension post-TODO25, TREIZIEME tranche (Thread REEL) - BOGUE REEL   }
+  { trouve PAR EXECUTION (STATUS_ACCESS_VIOLATION, SyncTest24/25.jpp                }
+  { synthetiques) : _JPPF_Thread___threadproc (BuildThreadProcMethod,               }
+  { MI_ThreadProc) est le SEUL "MethodPool" jamais appele par du code             }
+  { SYSTEME externe plutot que par CE compilateur lui-meme - Windows                 }
+  { l invoque comme un VRAI point d entree de thread stdcall                             }
+  { ("DWORD WINAPI ThreadProc(LPVOID)"), qui exige que le CALLEE                        }
+  { depile SON PROPRE argument ("RET 4"), CONTRAIREMENT a la convention          }
+  { "RET nu, l APPELANT nettoie TOUJOURS" que ce generateur utilise                  }
+  { partout ailleurs pour du VRAI code J++ (jamais appele par un                        }
+  { thunk SYSTEME) - voir la note d en-tete de "RET N" dans                                }
+  { BinEmitInstr (TODO 22) pour le detail COMPLET du bogue. }
+  If MI = MI_ThreadProc Then
+    EmitInstr('RET 4')
+  Else
+    EmitInstr('RET');
   EmitBlankLine;
 End;
 
@@ -17230,7 +18897,9 @@ End;
 { (FatalError) exactement au point ou elle est rencontree, jamais                    }
 { silencieusement ignoree. }
 Procedure CompileProgram(Const AsmFileName: TString);
-Var I, MainMI : Integer;
+Var
+  I, MainMI, SyncI, SyncJ, RunnableTLookup : Integer;
+  SyncAlreadyDone : Boolean;
 Begin
   CgLabelSeq := 0;
   CgLoopTop  := -1;   { extension post-TODO25 - voir la note d en-tete de CgBreakLbl }
@@ -17240,6 +18909,21 @@ Begin
   CgCollectDoubles;   { extension post-TODO25, HUITIEME tranche - voir sa propre  }
                        { note d en-tete (litteraux double/float + Math.PI). }
 
+  { extension post-TODO25, TREIZIEME tranche - voir la note d en-tete    }
+  { GLOBALE de HasRunnableImpl (juste apres MI_ThreadProc, TOUT en haut          }
+  { de ce fichier) : DOIT etre calculee AVANT "EmitRuntimeLibrary" ci-             }
+  { dessous, qui en a EGALEMENT besoin (guard autour de                                   }
+  { _JPPRT_THREAD_INIT/START/JOIN). }
+  HasRunnableImpl := False;
+  RunnableTLookup := TypeFindByName('Runnable');
+  If RunnableTLookup >= 0 Then
+    For I := 0 To TypeCount - 1 Do
+      If (TypeTab[I].Kind = TYK_CLASS) And (Not TypeTab[I].IsAbstractClass) And
+         TypeIsSubclassOf(I, RunnableTLookup) And
+         (ClassResolveMethodCall(I, 'run', 0, 0) >= 0) And
+         (MethodPool[ClassResolveMethodCall(I, 'run', 0, 0)].BodyStmtIdx >= 0) Then
+        HasRunnableImpl := True;
+
   EmitOpen(AsmFileName);
   EmitHeader;
   EmitDataSeg;
@@ -17247,10 +18931,32 @@ Begin
   EmitBlankLine;
   EmitRuntimeLibrary;
 
+  { BOGUE REEL trouve par EXECUTION (PEExeSelfTest, "Test23PEExe" -       }
+  { AUCUN rapport avec les threads, mais StdlibInit enregistre                        }
+  { MI_ThreadProc/"__threadproc" INCONDITIONNELLEMENT, POUR TOUT             }
+  { programme, avec un BodyStmtIdx>=0 DEJA renseigne - la boucle ci-             }
+  { dessous le compilerait donc TOUJOURS, MEME quand AUCUNE classe                  }
+  { CONCRETE n implemente Runnable nulle part dans le fichier reellement      }
+  { compile) : "t.target.run();" (BuildThreadProcMethod) est un VRAI               }
+  { appel POLYMORPHIQUE - le dispatch generique de CompileCall s arrete            }
+  { PROPREMENT (FatalError "aucune classe concrete... run") des qu il                 }
+  { n en trouve AUCUNE, exactement ce qui se produit pour un programme          }
+  { qui n utilise JAMAIS Thread/Runnable. Corrige en ne compilant                      }
+  { MI_ThreadProc QUE SI le fichier reellement compile fournit AU MOINS         }
+  { une classe CONCRETE implementant Runnable (EXACTEMENT le prealable          }
+  { dont Thread.start() a besoin de toute facon pour avoir un sens). }
+  { NB : "TypeIsSubclassOf" SEUL ne suffirait PAS - ThreadT lui-meme      }
+  { "implements Runnable" (14.2) mais SON PROPRE "run()" n a JAMAIS de           }
+  { corps REEL (StdMethod0, BodyStmtIdx<0) ; HasRunnableImpl (calculee            }
+  { plus haut, AVANT EmitRuntimeLibrary) filtre DEJA EXACTEMENT sur                  }
+  { BodyStmtIdx>=0, MEME condition QUE le VRAI dispatch polymorphique           }
+  { de CompileCall - voir sa propre note d en-tete GLOBALE. }
+
   MainMI := -1;
   For I := 0 To MethodPoolCount - 1 Do
     If (TypeTab[MethodPool[I].OwnerTypeIdx].Kind = TYK_CLASS) And
-       (MethodPool[I].BodyStmtIdx >= 0) Then
+       (MethodPool[I].BodyStmtIdx >= 0) And
+       ((I <> MI_ThreadProc) Or HasRunnableImpl) Then
     Begin
       CompileMethodBody(I);
       If MethodPool[I].IsStatic And (MethodPool[I].Name = 'main') And
@@ -17285,6 +18991,28 @@ Begin
   { de tableau, TYK_ARRAY, section 10.7 - pas une regression introduite            }
   { ICI). }
   EmitLabel('_JPPSTART');
+  { extension post-TODO25, TREIZIEME tranche (synchronized REEL,        }
+  { Test11Threads.jpp) - CHAQUE verrou de classe (EmitSyncLockData,               }
+  { EmitDataSeg) DOIT etre initialise (InitializeCriticalSection) UNE            }
+  { SEULE fois AVANT que quiconque (y compris un thread demarre PLUS               }
+  { TARD par Thread.start()) ne tente de l acquerir - ICI, tout AU               }
+  { DEBUT de "_JPPSTART", AVANT MEME "main" (qui pourrait construire                 }
+  { l objet synchronized et demarrer un thread des sa PREMIERE ligne). }
+  For SyncI := 0 To MethodPoolCount - 1 Do
+    If MethodPool[SyncI].IsSynchronized Then
+    Begin
+      SyncAlreadyDone := False;
+      For SyncJ := 0 To SyncI - 1 Do
+        If MethodPool[SyncJ].IsSynchronized And
+           (MethodPool[SyncJ].OwnerTypeIdx = MethodPool[SyncI].OwnerTypeIdx) Then
+          SyncAlreadyDone := True;
+      If Not SyncAlreadyDone Then
+      Begin
+        EmitInstr('LEA EAX,[' + SyncLockLabel(MethodPool[SyncI].OwnerTypeIdx) + ']');
+        EmitInstr('PUSH EAX');
+        EmitInstr('CALL _InitializeCriticalSection@4');
+      End;
+    End;
   EmitInstr('PUSH 4');
   EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
   EmitInstr('ADD ESP,4');
@@ -17866,7 +19594,28 @@ Begin
     Exit;
   End;
 
-  BinEmit8(Opc);
+  { BOGUE REEL trouve PAR EXECUTION (_JPPRT_STREQ, ONZIEME tranche -      }
+  { "CMP AL,DL" repondait TOUJOURS faux meme pour deux chaines            }
+  { IDENTIQUES - Hashtable.get() ne trouvait JAMAIS aucune cle,                     }
+  { silencieusement) : cette branche (Op2 PAS un immediat - registre OU          }
+  { memoire) ignorait COMPLETEMENT Op1.IsByte, emettant TOUJOURS                     }
+  { l opcode "large" (Gv,Ev/Ev,Gv, ex. $3B pour CMP) MEME pour DEUX               }
+  { registres BAS 8 bits (AL/DL partagent leur NUMERO 0/2 avec EAX/EDX,          }
+  { RegNum seul ne les distingue jamais) - "CMP AL,DL" comparait ainsi              }
+  { EAX ENTIER contre EDX ENTIER (32 bits, avec les 24 bits de POIDS               }
+  { FORT jamais initialises par le seul "MOV AL,[mem]" precedent, PURE          }
+  { COINCIDENCE si jamais egal) au lieu des DEUX octets voulus - AUCUN            }
+  { site d appel anterieur (STRLEN/CONCAT/INT_TO_STR etc.) n avait                    }
+  { JAMAIS exerce "CMP reg8,reg8", uniquement "CMP BYTE PTR [mem],imm"            }
+  { (deja correctement couvert PAR LE CAS Op2.Kind=BOK_IMM ci-dessus).           }
+  { Corrige : l opcode "octet" (Eb,Gv/Gb,Ev) est TOUJOURS l opcode "large"          }
+  { MOINS UN dans cette famille x86 (bit 0 = largeur : 0=octet,                        }
+  { 1=taille pleine - $03->$02, $0B->$0A, $23->$22, $2B->$2A, $33->$32,           }
+  { $3B->$3A, MEME REGLE pour LES SIX operateurs geres ICI). }
+  If Op1.IsByte Then
+    BinEmit8(Opc - 1)
+  Else
+    BinEmit8(Opc);
   BinEmitModRM(Op1.RegNum, Op2);
 End;
 
@@ -18245,7 +19994,33 @@ Begin
     Exit;
   End;
   If Mnemonic = 'CALL' Then Begin BinEncodeCall(Op1); Exit; End;
-  If Mnemonic = 'RET' Then Begin BinEmit8($C3); Exit; End;
+  { extension post-TODO25, TREIZIEME tranche (Thread REEL) - "RET N"     }
+  { (C2 /iw, RET NEAR + depiler N octets d ARGUMENTS APRES l adresse de           }
+  { retour) EST DESORMAIS necessaire pour _JPPF_Thread___threadproc                     }
+  { (BuildThreadProcMethod) SPECIFIQUEMENT : Windows appelle un point                 }
+  { d entree de thread ("DWORD WINAPI ThreadProc(LPVOID)") en VRAI                      }
+  { stdcall - LE CALLEE doit depiler SON PROPRE argument, jamais                          }
+  { l appelant (BaseThreadInitThunk, code SYSTEME, PAS le notre) -                       }
+  { CONTRAIREMENT a la convention "RET nu, l appelant nettoie TOUJOURS"           }
+  { que CompileMethodBody utilise partout ailleurs pour du VRAI code                  }
+  { J++ (BOGUE REEL trouve par EXECUTION, SyncTest24/25.jpp synthetiques,        }
+  { STATUS_ACCESS_VIOLATION 0xC0000005 - UN SEUL "RET" nu ICI                              }
+  { desequilibrait la pile de CE thunk SYSTEME de 4 octets a chaque                   }
+  { retour, corrompant SA PROPRE suite - JAMAIS visible pour un simple           }
+  { "run()" a CORPS VIDE, ecrasant AUTRE CHOSE des qu un VRAI local                   }
+  { existe). }
+  If Mnemonic = 'RET' Then
+  Begin
+    If Length(BinTrim(Op1)) > 0 Then
+    Begin
+      BinEmit8($C2);
+      BinEmit8(BinStrToInt(BinTrim(Op1)) And $FF);
+      BinEmit8((BinStrToInt(BinTrim(Op1)) Shr 8) And $FF);
+    End
+    Else
+      BinEmit8($C3);
+    Exit;
+  End;
 
   FatalError('assembleur : mnemonique non geree (portee volontairement ' +
     'restreinte a ce que le TODO 21 emet reellement) : ' + Mnemonic);
