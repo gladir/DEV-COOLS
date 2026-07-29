@@ -3577,6 +3577,19 @@ Var
   { plusieurs fois dans "run()". }
   CurAnonClassT        : Integer;
   CurAnonBoundaryLevel : Integer;
+  { CurAnonOuterClassT : extension post-TODO25 (Test13Awt.jpp) -          }
+  { TypeIdx de la classe ENGLOBANTE au moment ou la classe anonyme                    }
+  { COURANTE a ete ouverte (-1 si aucune, MEME discipline que                            }
+  { CurAnonClassT - simple variable sauvegardee/restauree par la PILE            }
+  { D APPELS Pascal de ParseNewExpr) - necessaire pour "dispose()" a               }
+  { l interieur de "new WindowAdapter()" suivi d''un corps                                }
+  { (Test13Awt.jpp) : ce nom ne resout PAS contre WindowAdapter (qui             }
+  { n a pas de tel membre) mais DOIT resoudre contre la classe                          }
+  { ENGLOBANTE (Test13Awt, qui HERITE dispose() de Frame) - EXACTEMENT           }
+  { la reference implicite "Englobante.this" de la section 15.9.6 de              }
+  { Java reel. Voir ParsePostfix (fallback de resolution d appel                        }
+  { IMPLICITE) pour son UNIQUE consommateur. }
+  CurAnonOuterClassT   : Integer;
   AnonCaptureCount     : Integer;
   AnonCaptureOrigSI    : Array[0..31] Of Integer;
   AnonCaptureFieldIdx  : Array[0..31] Of Integer;
@@ -3617,6 +3630,26 @@ Var
   { NON EMIS quand HasRunnableImpl est FAUX, EXACTEMENT la MEME                        }
   { condition QUE celle qui decide de compiler MI_ThreadProc LUI-MEME. }
   HasRunnableImpl : Boolean;
+
+  { MI_ActionDispatch/MI_WindowClosingDispatch/HasActionListenerImpl/     }
+  { HasWindowAdapterImpl : extension post-TODO25 (AWT REEL, Test13Awt.jpp) -  }
+  { MEME technique EXACTE que MI_ThreadProc/HasRunnableImpl ci-dessus,               }
+  { appliquee DEUX FOIS de plus : le WNDPROC assembleur main-ecrit                    }
+  { (_JPPRT_WNDPROC, EmitRuntimeLibrary) doit CALL directement un point         }
+  { d entree SYNTHETIQUE ("l.actionPerformed(null);"/                                    }
+  { "w.windowClosing(null);", BuildAwtDispatchMethod) pour dispatcher                  }
+  { WM_COMMAND/WM_CLOSE a travers le VRAI dispatch polymorphique de                   }
+  { CompileCall (ActionListener/WindowAdapter peuvent avoir PLUSIEURS                  }
+  { implementations concretes, EXACTEMENT comme Runnable) - GLOBALES                    }
+  { pour la MEME raison (EmitRuntimeLibrary s execute AVANT la boucle              }
+  { de compilation des methodes) et GARDEES par la MEME condition                        }
+  { "au moins une classe CONCRETE avec un VRAI corps" (sinon le                            }
+  { PEExeSelfTest "Hello World" echouerait EXACTEMENT comme documente             }
+  { pour Thread). }
+  MI_ActionDispatch        : Integer;
+  MI_WindowClosingDispatch : Integer;
+  HasActionListenerImpl    : Boolean;
+  HasWindowAdapterImpl     : Boolean;
 
   { NativeJavadocText/Line (TODO 17, section 17.5 "portee d une                 }
   { directive... a la methode qui la suit") : instantane de                             }
@@ -4015,6 +4048,7 @@ Begin
   ThrowsPoolCount     := 0;
   CurrentClassTypeIdx := -1;
   CurAnonClassT       := -1;
+  CurAnonOuterClassT  := -1;
   AnonCaptureCount    := 0;
   AnonSeq             := 0;
   StdlibInitActive    := False;
@@ -4106,8 +4140,11 @@ Begin
   { extension post-TODO25, ONZIEME tranche : +1 ("VectorEnumerator",          }
   { implementation CONCRETE interne d Enumeration pour Vector.elements(),          }
   { Test10Collections.jpp) = 41 entrees TOTAL. }
+  { extension post-TODO25 (AWT REEL, Test13Awt.jpp) : +8 (ActionEvent/                }
+  { WindowEvent/ActionListener/WindowAdapter/Label/Button/BorderLayout/               }
+  { Frame, StdlibInit/java.awt) = 49 entrees TOTAL. }
   TypeAssert('21 + 14 (TODO 13) + 2 (TODO 14) + 2 (TODO 18) + 1 (post-25) + ' +
-    '1 (ONZIEME tranche) = 41 entrees', TypeCount = 41);
+    '1 (ONZIEME tranche) + 8 (AWT REEL) = 49 entrees', TypeCount = 49);
 
   TypeAssert('String trouve == PDT_STRING', TypeFindByName('String') = PDT_STRING);
   TypeAssert('Object trouve == PDT_OBJECT', TypeFindByName('Object') = PDT_OBJECT);
@@ -5590,6 +5627,38 @@ Begin
   AnonCaptureFieldFor := FI;
 End;
 
+{ FindOuterThisSI : extension post-TODO25 (Test13Awt.jpp) - trouve      }
+{ l entree SymTab "this" de la classe ENGLOBANTE (Test13Awt) plutot que        }
+{ celle, PLUS PROCHE, de la classe anonyme ELLE-MEME (WindowAdapter$N,          }
+{ ajoutee par ParseMethodDeclRest quand elle parse "windowClosing") -                }
+{ SymFindEnclosing seul ne suffit PAS ICI : il retournerait TOUJOURS               }
+{ l entree la PLUS PROCHE (la PLUS PROFONDE encore active sur                            }
+{ ScopeStack), or LES DEUX "this" (englobant ET anonyme) sont                            }
+{ SIMULTANEMENT actifs sur ScopeStack au moment ou "dispose()" est                    }
+{ parse (aucun SymLeaveScope n a encore eu lieu, le parsing est ENCORE          }
+{ en train de descendre). MEME technique EXACTE que SymFindEnclosing                }
+{ (parcours DECROISSANT de ScopeStack, SymFindInScope portee par                        }
+{ portee), mais BORNEE a Depth < CurAnonBoundaryLevel (ScopeLevel =                  }
+{ Depth+1 - voir SymEnterScope - donc Depth va de                                             }
+{ CurAnonBoundaryLevel-1 DownTo 0) pour sauter DELIBEREMENT toute                       }
+{ portee plus PROFONDE que celle active au moment ou la classe                          }
+{ anonyme a ete ouverte (EXACTEMENT le meme seuil que ExprAddIdent                    }
+{ utilise deja pour distinguer capture/declaration LOCALE). }
+Function FindOuterThisSI: Integer;
+Var Depth, I : Integer;
+Begin
+  FindOuterThisSI := -1;
+  For Depth := CurAnonBoundaryLevel - 1 DownTo 0 Do
+  Begin
+    I := SymFindInScope('this', ScopeStack[Depth]);
+    If I >= 0 Then
+    Begin
+      FindOuterThisSI := I;
+      Exit;
+    End;
+  End;
+End;
+
 Function ExprAddIdent(Const Nam: TString): Integer;
 Var N, SI, FI, TI, CapFI : Integer;
 Begin
@@ -5950,7 +6019,7 @@ Function ParseNewExpr: Integer;
 Var
   BaseT, ElemT, N, DimE : Integer;
   AnonT, CtorMI, SavedClassT, SavedAnonClassT, SavedAnonBoundaryLevel,
-  SavedAnonCaptureCount, CapI, OrigSI, ArgExpr : Integer;
+  SavedAnonOuterClassT, SavedAnonCaptureCount, CapI, OrigSI, ArgExpr : Integer;
   SavedCurParamOffset, SavedCurLocalOffset : LongInt;
 Begin
   PPAdvance;   { 'new' }
@@ -5986,10 +6055,15 @@ Begin
       SavedClassT            := CurrentClassTypeIdx;
       SavedAnonClassT         := CurAnonClassT;
       SavedAnonBoundaryLevel  := CurAnonBoundaryLevel;
+      SavedAnonOuterClassT    := CurAnonOuterClassT;
       SavedAnonCaptureCount   := AnonCaptureCount;
       CurrentClassTypeIdx     := AnonT;
       CurAnonClassT           := AnonT;
       CurAnonBoundaryLevel    := CurScopeLevel;
+      { extension post-TODO25 (Test13Awt.jpp) : la classe ENGLOBANTE       }
+      { est SavedClassT (CurrentClassTypeIdx juste AVANT d entrer ICI) -               }
+      { voir la note d en-tete de CurAnonOuterClassT/ParsePostfix. }
+      CurAnonOuterClassT      := SavedClassT;
       AnonCaptureCount        := 0;
 
       { BOGUE REEL trouve PAR EXECUTION (segfault/valeurs GARBAGE,             }
@@ -6047,6 +6121,7 @@ Begin
       CurrentClassTypeIdx    := SavedClassT;
       CurAnonClassT          := SavedAnonClassT;
       CurAnonBoundaryLevel   := SavedAnonBoundaryLevel;
+      CurAnonOuterClassT     := SavedAnonOuterClassT;
       AnonCaptureCount       := SavedAnonCaptureCount;
 
       ParseNewExpr := N;
@@ -6324,6 +6399,8 @@ Function ParsePostfix: Integer;
 Var
   Cur, N, BaseT, MI : Integer;
   Nam, Op : TString;
+  OuterThisSI, OuterFI, OuterSel, NewCallee : Integer;
+  OuterHandled : Boolean;
 Begin
   Cur := ParsePrimary;
   While True Do
@@ -6458,29 +6535,77 @@ Begin
             ExprPool[N].IntVal := CurrentClassTypeIdx;
         End
         Else
-          { BOGUE REEL signale par l utilisateur (Test06ProprietesBean.jpp,   }
-          { "setNom(nom);"/"setAge(age);" appeles DEPUIS le CONSTRUCTEUR,          }
-          { alors que setNom/setAge sont DECLARES PLUS LOIN dans le MEME               }
-          { corps de classe - reference AVANT declaration) : ce parseur                 }
-          { est a UNE SEULE passe (chaque membre de classe est enregistre                }
-          { dans MethodPool AU FUR ET A MESURE qu il est rencontre), donc               }
-          { CurrentClassTypeIdx ne contient PAS ENCORE setNom/setAge quand              }
-          { le CONSTRUCTEUR (premier membre du fichier) est parse - MI<0                  }
-          { ICI n est pas une VRAIE erreur, juste "pas encore visible".                     }
-          { IntVal (INUTILISE par EK_CALL jusqu ici, voir sa propre note                  }
-          { d en-tete) stashe la classe englobante pour permettre une                        }
-          { SECONDE tentative de resolution une fois le FICHIER ENTIER                        }
-          { parse (FixupUnresolvedCalls, appelee depuis Run juste apres                    }
-          { ParseCompilationUnit) - a ce moment-la, TokenPool a deja ete             }
-          { integralement lexe (LexAll, TODO 21) et TOUTES les classes du            }
-          { fichier ont fini d etre parsees, donc MethodPool contient ENFIN           }
-          { setNom/setAge - AUCUNE re-lecture du fichier source ni second               }
-          { passage du LEXEUR n est necessaire, uniquement un second                          }
-          { parcours (PUREMENT ADDITIF, zero risque de regression : si la              }
-          { seconde tentative echoue ELLE AUSSI, Extra reste -1 et le                       }
-          { generateur de code s arrete EXACTEMENT comme avant, MEME                       }
-          { message FatalError). }
-          ExprPool[N].IntVal := CurrentClassTypeIdx;
+        Begin
+          { extension post-TODO25 (Test13Awt.jpp) : appel IMPLICITE non     }
+          { resolu contre la classe ANONYME elle-meme MAIS DISPONIBLE via              }
+          { la classe ENGLOBANTE - "dispose()" a l interieur de "new                     }
+          { WindowAdapter()" suivi d''un corps designe EN REALITE                                }
+          { "Test13Awt.this.dispose()" (herite de Frame), la reference                     }
+          { implicite "Englobante.this" de la section 15.9.6 de Java                        }
+          { reel - UNIQUEMENT tente quand on est REELLEMENT a l interieur              }
+          { du corps d une classe anonyme (CurAnonClassT=CurrentClassTypeIdx,   }
+          { voir sa propre note d en-tete) ET qu une classe ENGLOBANTE                    }
+          { existe (CurAnonOuterClassT>=0). Reroute l APPEL a travers UN               }
+          { NOUVEAU EK_SELECTOR (this.__cap_this.methode(...)) plutot que              }
+          { d inventer un troisieme genre de noeud - "this" (l instance de           }
+          { la classe anonyme ELLE-MEME) capture "this" de l instance                        }
+          { ENGLOBANTE via EXACTEMENT le MEME mecanisme QUE toute AUTRE                 }
+          { variable LOCALE capturee (AnonCaptureFieldFor - "this" etant                    }
+          { lui-meme une entree SymTab SK_VAR ordinaire, AUCUNE                              }
+          { infrastructure de capture NOUVELLE n est necessaire) - SEULE                  }
+          { difference : FindOuterThisSI (et non SymFindEnclosing, qui                     }
+          { retournerait a tort le "this" de la classe anonyme ELLE-MEME,               }
+          { plus PROCHE) trouve l entree SymTab CORRECTE. }
+          OuterHandled := False;
+          If (CurAnonClassT = CurrentClassTypeIdx) And (CurAnonOuterClassT >= 0) Then
+          Begin
+            MI := ClassResolveMethodCall(CurAnonOuterClassT, ExprPool[Cur].NameVal,
+              ExprPool[N].ArgFirst, ExprPool[N].ArgCount);
+            If MI >= 0 Then
+            Begin
+              OuterThisSI := FindOuterThisSI;
+              If OuterThisSI >= 0 Then
+              Begin
+                OuterFI  := AnonCaptureFieldFor(OuterThisSI);
+                OuterSel := ExprNew(EK_SELECTOR);
+                ExprPool[OuterSel].Left    := ExprAddIdent('this');
+                ExprPool[OuterSel].NameVal := FieldPool[OuterFI].Name;
+                ExprPool[OuterSel].TypeIdx := CurAnonOuterClassT;
+                NewCallee := ExprNew(EK_SELECTOR);
+                ExprPool[NewCallee].Left    := OuterSel;
+                ExprPool[NewCallee].NameVal := ExprPool[Cur].NameVal;
+                ExprPool[N].Left    := NewCallee;
+                ExprPool[N].TypeIdx := MethodPool[MI].RetTypeIdx;
+                ExprPool[N].Extra   := MI;
+                OuterHandled := True;
+              End;
+            End;
+          End;
+          If Not OuterHandled Then
+            { BOGUE REEL signale par l utilisateur (Test06ProprietesBean.jpp,   }
+            { "setNom(nom);"/"setAge(age);" appeles DEPUIS le CONSTRUCTEUR,          }
+            { alors que setNom/setAge sont DECLARES PLUS LOIN dans le MEME               }
+            { corps de classe - reference AVANT declaration) : ce parseur                 }
+            { est a UNE SEULE passe (chaque membre de classe est enregistre                }
+            { dans MethodPool AU FUR ET A MESURE qu il est rencontre), donc               }
+            { CurrentClassTypeIdx ne contient PAS ENCORE setNom/setAge quand              }
+            { le CONSTRUCTEUR (premier membre du fichier) est parse - MI<0                  }
+            { ICI n est pas une VRAIE erreur, juste "pas encore visible".                     }
+            { IntVal (INUTILISE par EK_CALL jusqu ici, voir sa propre note                  }
+            { d en-tete) stashe la classe englobante pour permettre une                        }
+            { SECONDE tentative de resolution une fois le FICHIER ENTIER                        }
+            { parse (FixupUnresolvedCalls, appelee depuis Run juste apres                    }
+            { ParseCompilationUnit) - a ce moment-la, TokenPool a deja ete             }
+            { integralement lexe (LexAll, TODO 21) et TOUTES les classes du            }
+            { fichier ont fini d etre parsees, donc MethodPool contient ENFIN           }
+            { setNom/setAge - AUCUNE re-lecture du fichier source ni second               }
+            { passage du LEXEUR n est necessaire, uniquement un second                          }
+            { parcours (PUREMENT ADDITIF, zero risque de regression : si la              }
+            { seconde tentative echoue ELLE AUSSI, Extra reste -1 et le                       }
+            { generateur de code s arrete EXACTEMENT comme avant, MEME                       }
+            { message FatalError). }
+            ExprPool[N].IntVal := CurrentClassTypeIdx;
+        End;
       End
       { extension post-TODO25, QUATRIEME tranche (chainage de                }
       { constructeur) : "this(...)"/"super(...)" en premiere ligne d un              }
@@ -11779,12 +11904,96 @@ Begin
   BuildThreadProcMethod := MI;
 End;
 
+{ BuildAwtDispatchMethod : extension post-TODO25 (AWT REEL,             }
+{ Test13Awt.jpp) - MEME technique EXACTE que BuildThreadProcMethod                  }
+{ ci-dessus ("static void __xxx(ListenerT l)" suivi d''un corps                          }
+{ "l.methode(null);"), REUTILISEE deux fois (WM_COMMAND ->                                 }
+{ ActionListener.actionPerformed,                                                                    }
+{ WM_CLOSE -> WindowAdapter.windowClosing) plutot que dupliquee : le                    }
+{ WNDPROC assembleur main-ecrit (_JPPRT_WNDPROC, EmitRuntimeLibrary)               }
+{ CALL directement l etiquette de ce point d entree synthetique avec               }
+{ le pointeur d objet ecouteur EN ARGUMENT, laissant le VRAI dispatch          }
+{ polymorphique de CompileCall (enumeration des classes CONCRETES,               }
+{ CMP/JE sur l etiquette de type dynamique) choisir la BONNE               }
+{ implementation (ex. la classe anonyme "new WindowAdapter()" de                       }
+{ Test13Awt.jpp) - AUCUN dispatch n est ecrit A LA MAIN ici, EXACTEMENT           }
+{ le meme raisonnement que "t.target.run()". L argument ActionEvent/            }
+{ WindowEvent est TOUJOURS "null" (EK_NULLLIT) : AUCUN echantillon ne             }
+{ lit jamais un champ/appelle une methode sur l objet evenement recu           }
+{ (Test13Awt.jpp ignore le parametre dans actionPerformed/                                }
+{ windowClosing) - construire un VRAI objet ActionEvent/WindowEvent               }
+{ (avec getSource(), etc.) resterait donc une extension FUTURE, non              }
+{ devinee, hors de portee tant qu aucun echantillon ne l exerce. }
+Function BuildAwtDispatchMethod(OwnerT, ListenerT: Integer;
+  Const MethodName, TrampolineName: TString): Integer;
+Var
+  SI_Param, MI, TargetMI, ParamStart, ArgFirst : Integer;
+  ListenerIdentExpr, SelExpr, NullExpr, CallExpr, InnerStmt, BlockStmt : Integer;
+Begin
+  SymEnterScope;
+  CurParamOffset := 8;
+  CurLocalOffset := 0;
+  ParamStart := ParamPoolCount;
+  SI_Param := SymAdd('l', SK_VAR, ListenerT, False, False);
+  SymTab[SI_Param].Offset := CurParamOffset;
+  CurParamOffset := CurParamOffset + 4;
+  ParamPool[ParamPoolCount].Name    := 'l';
+  ParamPool[ParamPoolCount].TypeIdx := ListenerT;
+  ParamPool[ParamPoolCount].IsFinal := False;
+  Inc(ParamPoolCount);
+
+  ListenerIdentExpr := ExprNew(EK_IDENT);
+  ExprPool[ListenerIdentExpr].Left    := SI_Param;
+  ExprPool[ListenerIdentExpr].NameVal := 'l';
+  ExprPool[ListenerIdentExpr].TypeIdx := ListenerT;
+
+  SelExpr := ExprNew(EK_SELECTOR);
+  ExprPool[SelExpr].Left    := ListenerIdentExpr;
+  ExprPool[SelExpr].NameVal := MethodName;
+  ExprPool[SelExpr].TypeIdx := -1;
+
+  ArgFirst := ExprArgCount;
+  NullExpr := ExprNew(EK_NULLLIT);
+  ExprPool[NullExpr].TypeIdx := PRIMTYPE_NULL;
+  ExprArgPush(NullExpr);
+
+  TargetMI := ClassResolveMethodCall(ListenerT, MethodName, ArgFirst, 1);
+
+  CallExpr := ExprNew(EK_CALL);
+  ExprPool[CallExpr].Left     := SelExpr;
+  ExprPool[CallExpr].Extra    := TargetMI;
+  ExprPool[CallExpr].TypeIdx  := PRIMTYPE_VOID;
+  ExprPool[CallExpr].ArgFirst := ArgFirst;
+  ExprPool[CallExpr].ArgCount := 1;
+
+  InnerStmt := StmtNew(STK_EXPR);
+  StmtPool[InnerStmt].Left := CallExpr;
+
+  BlockStmt := StmtNew(STK_BLOCK);
+  StmtPool[BlockStmt].ArgFirst := StmtArgCount;
+  StmtArgPush(InnerStmt);
+  StmtPool[BlockStmt].ArgCount := 1;
+
+  MI := MethodPoolAdd(OwnerT, TrampolineName, MK_METHOD, True, False, False,
+    PRIMTYPE_VOID, ParamStart, 1, VIS_PUBLIC);
+  If MI >= 0 Then
+  Begin
+    MethodPool[MI].BodyStmtIdx := BlockStmt;
+    MethodPool[MI].FrameSize   := 0;
+  End;
+
+  SymLeaveScope;
+  BuildAwtDispatchMethod := MI;
+End;
+
 Procedure StdlibInit;
 Var
   PrintStreamT, SystemT, IntegerT, EnumerationT, VectorT, HashtableT, VectorEnumT,
   WriterT, ReaderT, FileWriterT, BufferedWriterT, PrintWriterT,
   FileReaderT, BufferedReaderT, IOExceptionT, RunnableT, ThreadT,
   User32T, WinmT, MBMI, PFirst, FI, MathT,
+  ActionEventT, WindowEventT, ActionListenerT, WindowAdapterT,
+  LabelT, ButtonT, BorderLayoutT, FrameT,
   MI_ThrowableCtor, MI_ExceptionCtor, MI_RuntimeExcCtor, MI_ErrorCtor,
   MI_IllegalArgCtor, MI_NumberFormatCtor, MI_InterruptedCtor, MI_UnsatisfiedLinkCtor,
   MI_IOExceptionCtor,
@@ -11823,6 +12032,16 @@ Begin
   SystemT := ClassAdd('System', PDT_OBJECT, False, False, VIS_PUBLIC);
   FieldPoolAdd(SystemT, PrintStreamT, 'out', True, True, VIS_PUBLIC);
   FieldPoolAdd(SystemT, PrintStreamT, 'err', True, True, VIS_PUBLIC);
+  { extension post-TODO25 (AWT REEL, Test13Awt.jpp - "dispose();               }
+  { System.exit(0);" dans windowClosing) : "System.exit(int)" n avait                }
+  { JAMAIS ete enregistre du tout (NI front-end NI codegen) - AUCUN                    }
+  { echantillon anterieur ne l ecrivait litteralement (verifie par grep),        }
+  { GENUINE lacune plutot qu une SIMPLIFICATION deliberee. Codegen               }
+  { direct dans CompileCall (voir sa propre note d en-tete) via                        }
+  { _ExitProcess@4, DEJA importe depuis le TODO 21 (utilise partout                    }
+  { ailleurs pour les arrets "ne devrait jamais arriver" du dispatch                  }
+  { polymorphique) - AUCUN nouvel import necessaire. }
+  StdMethod1(SystemT, 'exit', MK_METHOD, True, PRIMTYPE_VOID, PRIMTYPE_INT);
 
   { Integer(int) et Integer.parseInt(String) : int, throws                }
   { NumberFormatException (syntaxe seule - aucune clause throws n est            }
@@ -11979,6 +12198,130 @@ Begin
   { ClassFindConstructor resoudrait la PREMIERE (celle-ci, SANS corps            }
   { reel), rendant le VRAI corps AJOUTE plus bas totalement INUTILE. }
   IOExceptionT := ClassAdd('IOException', PDT_EXCEPTION, False, False, VIS_PUBLIC);
+
+  { java.awt/java.awt.event - extension post-TODO25 (AWT REEL,          }
+  { Test13Awt.jpp) : AwtSelfTest (plus bas) verifiait JUSQU ICI que ces          }
+  { NEUF noms restaient des types INCONNUS - une decision EXPLICITE                    }
+  { documentee au TODO 13 ("le jour ou une VRAIE compilation de fichier          }
+  { existera... AWT ou non... reste HORS de portee"). Ce jour est                          }
+  { arrive : PORTEE REDUITE au SEUL sous-ensemble REELLEMENT exerce par          }
+  { Test13Awt.jpp (Applet/Panel/Graphics restent, EUX, encore HORS de              }
+  { portee - AUCUN echantillon ne les exerce). ActionEvent/WindowEvent            }
+  { n ont AUCUN champ/methode (jamais LUS par Test13Awt.jpp - "null" est         }
+  { TOUJOURS passe a la place d un VRAI objet evenement, voir la note              }
+  { d en-tete de BuildAwtDispatchMethod). }
+  ActionEventT := ClassAdd('ActionEvent', PDT_OBJECT, False, False, VIS_PUBLIC);
+  WindowEventT := ClassAdd('WindowEvent', PDT_OBJECT, False, False, VIS_PUBLIC);
+
+  { ActionListener (section 15.28) - VRAIE interface a UNE seule methode,     }
+  { MEME discipline EXACTE que Runnable/Enumeration plus haut - "new           }
+  { Runnable()" suivi d''un corps donnait DEJA la PREUVE que le dispatch                }
+  { polymorphique generique de CompileCall couvre CE cas, "l.actionPerformed(...)"  }
+  { (BuildAwtDispatchMethod) le REUTILISE tel quel. }
+  ActionListenerT := TypeAdd(TYK_INTERFACE, 'ActionListener', 4, 4, -1);
+  TypeTab[ActionListenerT].Visibility := VIS_PUBLIC;
+  MethodPoolAdd(ActionListenerT, 'actionPerformed', MK_METHOD, False, False, True,
+    PRIMTYPE_VOID, ParamPoolCount, 0, VIS_PUBLIC);
+  ParamPoolAddRaw('e', ActionEventT);
+  MethodPool[MethodPoolCount - 1].ParamCount := 1;
+
+  { WindowAdapter (section 15.29) - VRAIE classe CONCRETE (PAS une             }
+  { interface - contrairement a ActionListener/Runnable, "implements                 }
+  { WindowListener" avec sept methodes NO-OP dans le J++ reel) : ce               }
+  { compilateur ne modelise PAS WindowListener du tout (AUCUN                            }
+  { echantillon ne reference une variable de CE type - seul                                }
+  { WindowAdapter, TOUJOURS via une sous-classe ANONYME, l est) -                     }
+  { windowClosing(WindowEvent) est enregistree SANS corps reel                          }
+  { (BodyStmtIdx<0, EXACTEMENT comme Runnable.run() - jamais dispatchee          }
+  { directement, uniquement via une VRAIE sous-classe ANONYME dont le            }
+  { OVERRIDE fournit un corps reel, section 15.9.5 "classe anonyme                   }
+  { ETENDANT une classe" - la branche de BuildAnonClassType "incluse                  }
+  { par symetrie, aucun echantillon ne l exerce" jusqu ici, EXERCEE               }
+  { REELLEMENT pour la premiere fois ICI). }
+  WindowAdapterT := ClassAdd('WindowAdapter', PDT_OBJECT, False, False, VIS_PUBLIC);
+  StdMethod1(WindowAdapterT, 'windowClosing', MK_METHOD, False, PRIMTYPE_VOID, WindowEventT);
+
+  { Label/Button (section 15.21) - CHACUN un SEUL champ 'text' (contenu)   }
+  { et, pour Label, un 'hwnd' (le controle STATIC Win32 REEL, cree PAR            }
+  { Frame.setVisible - voir sa propre note d en-tete/_JPPRT_FRAME_SETVISIBLE,   }
+  { EmitRuntimeLibrary) - Button n a PAS besoin de son propre 'hwnd'               }
+  { (AUCUNE methode de ce compilateur n en a besoin, portee REDUITE a           }
+  { EXACTEMENT ce qu exerce Test13Awt.jpp - setText() existe SEULEMENT              }
+  { sur Label). 'listener' (Button SEULEMENT) stocke le AWT                            }
+  { ActionListener enregistre par addActionListener - LU par                              }
+  { _JPPRT_WNDPROC au moment de WM_COMMAND (voir sa propre note                        }
+  { d en-tete) via Frame.southComponent (SIMPLIFICATION : ce compilateur      }
+  { ne construit JAMAIS de VRAI registre HWND->objet, un SEUL bouton                }
+  { "actif" (le composant SOUTH du SEUL Frame) est suppose - documente             }
+  { plutot que devine, AUCUN echantillon n a JAMAIS plus d un bouton). }
+  LabelT := ClassAdd('Label', PDT_OBJECT, False, False, VIS_PUBLIC);
+  StdMethod1(LabelT, '', MK_CONSTRUCTOR, False, PRIMTYPE_VOID, PDT_STRING);
+  StdMethod1(LabelT, 'setText', MK_METHOD, False, PRIMTYPE_VOID, PDT_STRING);
+  FieldPoolAdd(LabelT, PDT_STRING, 'text', False, False, VIS_PRIVATE);
+  FieldPoolAdd(LabelT, PRIMTYPE_INT, 'hwnd', False, False, VIS_PRIVATE);
+
+  ButtonT := ClassAdd('Button', PDT_OBJECT, False, False, VIS_PUBLIC);
+  StdMethod1(ButtonT, '', MK_CONSTRUCTOR, False, PRIMTYPE_VOID, PDT_STRING);
+  StdMethod1(ButtonT, 'addActionListener', MK_METHOD, False, PRIMTYPE_VOID, ActionListenerT);
+  FieldPoolAdd(ButtonT, PDT_STRING, 'text', False, False, VIS_PRIVATE);
+  FieldPoolAdd(ButtonT, ActionListenerT, 'listener', False, False, VIS_PRIVATE);
+
+  { BorderLayout (section 15.24) - VRAIE classe CONCRETE, mais AUCUN            }
+  { moteur de disposition REEL n est modelise (setLayout() est                           }
+  { effectivement IGNOREE - voir Frame.setLayout ci-dessous) : SEULES               }
+  { les DEUX constantes REELLEMENT ecrites dans Test13Awt.jpp (CENTER/           }
+  { SOUTH, PAS NORTH/EAST/WEST) existent, chacune une VRAIE chaine                     }
+  { STATIQUE FINALE ("Center"/"South", section 15.24 - Frame.add les                  }
+  { compare par CONTENU via _JPPRT_STREQ, deja existant depuis le                     }
+  { ONZIEME tranche, EmitRuntimeLibrary). }
+  BorderLayoutT := ClassAdd('BorderLayout', PDT_OBJECT, False, False, VIS_PUBLIC);
+  StdMethod0(BorderLayoutT, '', MK_CONSTRUCTOR, False, PRIMTYPE_VOID);
+  FI := FieldPoolAdd(BorderLayoutT, PDT_STRING, 'CENTER', True, True, VIS_PUBLIC);
+  FieldPool[FI].HasInit := True;
+  FieldPool[FI].ConstVal.Kind   := CK_STRING;
+  FieldPool[FI].ConstVal.StrVal := 'Center';
+  FI := FieldPoolAdd(BorderLayoutT, PDT_STRING, 'SOUTH', True, True, VIS_PUBLIC);
+  FieldPool[FI].HasInit := True;
+  FieldPool[FI].ConstVal.Kind   := CK_STRING;
+  FieldPool[FI].ConstVal.StrVal := 'South';
+
+  { Frame (section 15.19) - EXACTEMENT les MEMBRES ECRITS par                    }
+  { Test13Awt.jpp (portee DECIDEE PAR GREP, MEME discipline que TOUT               }
+  { TODO precedent) : constructeur(String titre, chaine via "super(...)",       }
+  { voir _JPPRT_FRAME_INIT/CompileCall), setLayout (IGNOREE - AUCUN                  }
+  { moteur BorderLayout reel, voir plus haut), add(Object,Object)                     }
+  { (stocke le composant dans centerComponent/southComponent SELON le               }
+  { CONTENU de la contrainte - typee Object/Object, PAS Component/String,      }
+  { EXACTEMENT le meme choix que Vector.addElement/Hashtable.put pour               }
+  { eviter d avoir a modeliser une hierarchie Component/Container),                   }
+  { setSize/setVisible/addWindowListener/dispose - le VRAI travail Win32       }
+  { (RegisterClassA/CreateWindowExA/boucle de messages) a lieu ENTIEREMENT     }
+  { dans _JPPRT_FRAME_SETVISIBLE (EmitRuntimeLibrary, voir sa propre                }
+  { note d en-tete) au moment de "setVisible(true)". }
+  FrameT := ClassAdd('Frame', PDT_OBJECT, False, False, VIS_PUBLIC);
+  StdMethod1(FrameT, '', MK_CONSTRUCTOR, False, PRIMTYPE_VOID, PDT_STRING);
+  StdMethod1(FrameT, 'setLayout', MK_METHOD, False, PRIMTYPE_VOID, BorderLayoutT);
+  StdMethod2(FrameT, 'add', MK_METHOD, False, PRIMTYPE_VOID, PDT_OBJECT, PDT_OBJECT);
+  StdMethod2(FrameT, 'setSize', MK_METHOD, False, PRIMTYPE_VOID, PRIMTYPE_INT, PRIMTYPE_INT);
+  StdMethod1(FrameT, 'setVisible', MK_METHOD, False, PRIMTYPE_VOID, PRIMTYPE_BOOLEAN);
+  StdMethod1(FrameT, 'addWindowListener', MK_METHOD, False, PRIMTYPE_VOID, WindowAdapterT);
+  StdMethod0(FrameT, 'dispose', MK_METHOD, False, PRIMTYPE_VOID);
+  FieldPoolAdd(FrameT, PDT_STRING, 'title', False, False, VIS_PRIVATE);
+  FieldPoolAdd(FrameT, PRIMTYPE_INT, 'hwnd', False, False, VIS_PRIVATE);
+  FieldPoolAdd(FrameT, PDT_OBJECT, 'centerComponent', False, False, VIS_PRIVATE);
+  FieldPoolAdd(FrameT, PDT_OBJECT, 'southComponent', False, False, VIS_PRIVATE);
+  FieldPoolAdd(FrameT, WindowAdapterT, 'windowListener', False, False, VIS_PRIVATE);
+  FieldPoolAdd(FrameT, PRIMTYPE_INT, 'frameWidth', False, False, VIS_PRIVATE);
+  FieldPoolAdd(FrameT, PRIMTYPE_INT, 'frameHeight', False, False, VIS_PRIVATE);
+
+  { extension post-TODO25 (AWT REEL) : les DEUX points d entree                 }
+  { synthetiques dont _JPPRT_WNDPROC a besoin (voir la note d en-tete             }
+  { de MI_ActionDispatch/HasActionListenerImpl, TOUT en haut de ce               }
+  { fichier) - construits ICI, comme MI_ThreadProc, une seule fois. }
+  MI_ActionDispatch        := BuildAwtDispatchMethod(ButtonT, ActionListenerT,
+    'actionPerformed', '__actionDispatch');
+  MI_WindowClosingDispatch := BuildAwtDispatchMethod(FrameT, WindowAdapterT,
+    'windowClosing', '__windowClosingDispatch');
 
   { java.lang.Object.wait()/notify()/notifyAll() (section 14.27/14.28) -  }
   { AJOUTES sur PDT_OBJECT lui-meme, EXACTEMENT le meme precedent que              }
@@ -12806,25 +13149,24 @@ Begin
     'SEGMENTS, section 12.4)',
     (ImportTab[7].PackageName = 'java.awt.event') And (ImportTab[7].SimpleName = 'WindowEvent'));
 
-  { --- AUCUNE des classes/interfaces AWT de Test13Awt.jpp n est un       }
-  { type CONNU de ce compilateur (ni primitif, ni predeclare, ni                     }
-  { classe utilisateur deja declaree) - PREUVE INDIRECTE que le                          }
-  { garde-fou GENERIQUE de ParseBaseTypeNoBrackets (TODO 08) heurterait          }
-  { REELLEMENT "class Test13Awt extends Frame" le jour ou une VRAIE               }
-  { compilation de fichier existera (TODO 21+) - jamais exerce ICI en            }
-  { DECLENCHANT le VRAI FatalError (celui-ci appelle Halt), meme                        }
-  { discipline que ExceptionSelfTest/try-sans-catch-ni-finally (TODO 11). ---- }
-  AwtAssert('"Frame" (section 15.19) : type INCONNU', TypeFindByName('Frame') < 0);
-  AwtAssert('"Button" (section 15.21) : type INCONNU', TypeFindByName('Button') < 0);
-  AwtAssert('"Label" (section 15.21) : type INCONNU', TypeFindByName('Label') < 0);
-  AwtAssert('"BorderLayout" (section 15.24) : type INCONNU', TypeFindByName('BorderLayout') < 0);
-  AwtAssert('"ActionListener" (section 15.28) : type INCONNU', TypeFindByName('ActionListener') < 0);
-  AwtAssert('"ActionEvent" (section 15.28) : type INCONNU', TypeFindByName('ActionEvent') < 0);
-  AwtAssert('"WindowAdapter" (section 15.29) : type INCONNU', TypeFindByName('WindowAdapter') < 0);
-  AwtAssert('"WindowEvent" (section 15.27) : type INCONNU', TypeFindByName('WindowEvent') < 0);
-  AwtAssert('"Applet" (section 15.5) : type INCONNU', TypeFindByName('Applet') < 0);
-  AwtAssert('"Graphics" (section 15.31) : type INCONNU', TypeFindByName('Graphics') < 0);
-  AwtAssert('"Panel" (section 15.5, superclasse d''Applet) : type INCONNU', TypeFindByName('Panel') < 0);
+  { --- extension post-TODO25 (AWT REEL, Test13Awt.jpp) : les HUIT        }
+  { classes/interfaces REELLEMENT ecrites par Test13Awt.jpp sont            }
+  { DESORMAIS des types CONNUS (StdlibInit, voir sa propre note d en-tete   }
+  { java.awt) - CETTE assertion, VRAIE depuis le TODO 13 jusqu ici,               }
+  { s inverse maintenant DELIBEREMENT (une VRAIE compilation de fichier          }
+  { existe enfin, TODO 21+). Applet/Panel/Graphics restent, EUX,                       }
+  { INCONNUS - AUCUN echantillon ne les exerce, portee INCHANGEE. ---- }
+  AwtAssert('"Frame" (section 15.19) : type CONNU', TypeFindByName('Frame') >= 0);
+  AwtAssert('"Button" (section 15.21) : type CONNU', TypeFindByName('Button') >= 0);
+  AwtAssert('"Label" (section 15.21) : type CONNU', TypeFindByName('Label') >= 0);
+  AwtAssert('"BorderLayout" (section 15.24) : type CONNU', TypeFindByName('BorderLayout') >= 0);
+  AwtAssert('"ActionListener" (section 15.28) : type CONNU', TypeFindByName('ActionListener') >= 0);
+  AwtAssert('"ActionEvent" (section 15.28) : type CONNU', TypeFindByName('ActionEvent') >= 0);
+  AwtAssert('"WindowAdapter" (section 15.29) : type CONNU', TypeFindByName('WindowAdapter') >= 0);
+  AwtAssert('"WindowEvent" (section 15.27) : type CONNU', TypeFindByName('WindowEvent') >= 0);
+  AwtAssert('"Applet" (section 15.5) : type INCONNU (hors de portee)', TypeFindByName('Applet') < 0);
+  AwtAssert('"Graphics" (section 15.31) : type INCONNU (hors de portee)', TypeFindByName('Graphics') < 0);
+  AwtAssert('"Panel" (section 15.5, superclasse d''Applet) : type INCONNU (hors de portee)', TypeFindByName('Panel') < 0);
 
   TypeInit;
   SymInit;
@@ -14010,11 +14352,22 @@ Begin
   { TREIZIEME tranche - Thread.target/handle) = 16 champs, PLUS 5 (java.io   }
   { REEL - un SEUL champ 'handle' par classe CONCRETE, FileWriter/                       }
   { BufferedWriter/PrintWriter/FileReader/BufferedReader) = 21 champs             }
-  { TOTAL. }
-  TypeAssert('StdlibInit : MethodPoolCount = 49 (inventaire consolide, ' +
-    'TODO 20 + TREIZIEME tranche post-25)', MethodPoolCount = 49);
-  TypeAssert('StdlibInit : FieldPoolCount = 21 (inventaire consolide, TODO 20 ' +
-    '+ Math.PI/message/TREIZIEME tranche + java.io REEL post-25)', FieldPoolCount = 21);
+  { TOTAL. PLUS 16 (AWT REEL, Test13Awt.jpp - ActionListener.actionPerformed  }
+  { [1], WindowAdapter.windowClosing [1], Label ctor+setText [2], Button           }
+  { ctor+addActionListener [2], BorderLayout ctor [1], Frame ctor+                        }
+  { setLayout+add+setSize+setVisible+addWindowListener+dispose [7],                  }
+  { PLUS __actionDispatch/__windowClosingDispatch [2] = 16) = 65, PLUS UN     }
+  { (System.exit(int) - lacune GENUINE decouverte en compilant                      }
+  { Test13Awt.jpp, "dispose(); System.exit(0);" dans windowClosing,                  }
+  { jamais ecrite par AUCUN echantillon anterieur) = 66 methodes TOTAL.      }
+  { PLUS 13 champs (AWT REEL - Label.text/hwnd [2], Button.text/                          }
+  { listener [2], BorderLayout.CENTER/SOUTH [2], Frame.title/hwnd/                       }
+  { centerComponent/southComponent/windowListener/frameWidth/                             }
+  { frameHeight [7]) = 34 champs TOTAL. }
+  TypeAssert('StdlibInit : MethodPoolCount = 66 (inventaire consolide, ' +
+    'TODO 20 + TREIZIEME tranche + AWT REEL post-25)', MethodPoolCount = 66);
+  TypeAssert('StdlibInit : FieldPoolCount = 34 (inventaire consolide, TODO 20 ' +
+    '+ Math.PI/message/TREIZIEME tranche + java.io + AWT REEL post-25)', FieldPoolCount = 34);
 
   TypeInit;
   SymInit;
@@ -14401,6 +14754,33 @@ Begin
   EmitRaw('EXTRN _CreateFileA@28:NEAR');
   EmitRaw('EXTRN _ReadFile@20:NEAR');
   EmitRaw('EXTRN _CloseHandle@4:NEAR');
+  { extension post-TODO25 (AWT REEL, Test13Awt.jpp) - fenetre/controles         }
+  { Win32 REELS (_JPPRT_FRAME_SETVISIBLE/_JPPRT_WNDPROC, EmitRuntimeLibrary,       }
+  { voir leur propre note d en-tete) : _GetModuleHandleA@4 (KERNEL32.DLL,     }
+  { hInstance) ; le reste - USER32.DLL, voir BinImportDllFor - cree/                  }
+  { affiche la fenetre (RegisterClassA/CreateWindowExA/ShowWindow/                    }
+  { UpdateWindow/LoadCursorA), fait tourner la VRAIE boucle de messages            }
+  { (GetMessageA/TranslateMessage/DispatchMessageA), gere le texte/la            }
+  { fermeture (SetWindowTextA/DestroyWindow), et le comportement PAR                  }
+  { DEFAUT de tout message NON intercepte (DefWindowProcA). }
+  EmitRaw('EXTRN _GetModuleHandleA@4:NEAR');
+  EmitRaw('EXTRN _RegisterClassA@4:NEAR');
+  EmitRaw('EXTRN _CreateWindowExA@48:NEAR');
+  EmitRaw('EXTRN _DefWindowProcA@16:NEAR');
+  EmitRaw('EXTRN _ShowWindow@8:NEAR');
+  EmitRaw('EXTRN _UpdateWindow@4:NEAR');
+  EmitRaw('EXTRN _GetMessageA@16:NEAR');
+  EmitRaw('EXTRN _TranslateMessage@4:NEAR');
+  EmitRaw('EXTRN _DispatchMessageA@4:NEAR');
+  EmitRaw('EXTRN _SetWindowTextA@8:NEAR');
+  EmitRaw('EXTRN _DestroyWindow@4:NEAR');
+  EmitRaw('EXTRN _LoadCursorA@8:NEAR');
+  { extension post-TODO25 (AWT REEL, correctif de disposition           }
+  { signale par l utilisateur - "je ne vois pas le bouton") :                          }
+  { _GetClientRect@8 lit la VRAIE taille de la zone CLIENTE (SANS la                }
+  { barre de titre/les bordures) pour positionner CENTER/SOUTH                          }
+  { CORRECTEMENT, voir _JPPRT_FRAME_SETVISIBLE. }
+  EmitRaw('EXTRN _GetClientRect@8:NEAR');
   EmitBlankLine;
 End;
 
@@ -14717,6 +15097,44 @@ Begin
   { n approche cette longueur (grep confirme, les plus longues lignes             }
   { ecrites par Test12Fichiers.jpp font moins de 20 caracteres). }
   EmitRaw(ASM_PFX_RUNTIME + 'LINEBUF DB ' + BinZeroList(1024));
+  { extension post-TODO25 (AWT REEL, Test13Awt.jpp) - etat GLOBAL de la  }
+  { fenetre UNIQUE (MEME classe de simplification que _JPPRT_LINEBUF/                }
+  { EXC_EBPARR ci-dessus : AUCUN echantillon ne cree jamais DEUX Frame              }
+  { simultanement, un SEUL jeu de cases suffit, documente plutot que                  }
+  { devine) : _JPPRT_AWT_FRAME (pointeur d objet J++ du SEUL Frame,                    }
+  { LU par _JPPRT_WNDPROC pour retrouver southComponent/windowListener       }
+  { sans VRAI registre HWND->objet) ; _JPPRT_AWT_WNDCLASS (40 octets,              }
+  { WNDCLASSA - disposition EXACTE, voir _JPPRT_FRAME_SETVISIBLE) ;                    }
+  { _JPPRT_AWT_MSG (28 octets, MSG - HWND/UINT/WPARAM/LPARAM/DWORD/                    }
+  { POINT[2] = 4*5+8) ; TROIS chaines de nom de classe Win32 (le nom de           }
+  { classe de fenetre CHOISI par ce compilateur/"STATIC"/"BUTTON", les              }
+  { DEUX derniers etant des noms de classe PREDEFINIS Windows, jamais              }
+  { INVENTES). }
+  EmitRaw(ASM_PFX_RUNTIME + 'AWT_FRAME DB 0,0,0,0');
+  EmitRaw(ASM_PFX_RUNTIME + 'AWT_WNDCLASS DB ' + BinZeroList(40));
+  EmitRaw(ASM_PFX_RUNTIME + 'AWT_MSG DB ' + BinZeroList(28));
+  { extension post-TODO25 (AWT REEL, correctif de disposition signale    }
+  { par l utilisateur) : RECT (left/top/right/bottom, 4*4=16 octets) -              }
+  { GetClientRect y ecrit la VRAIE zone CLIENTE (SANS barre de titre/               }
+  { bordures) du Frame, lue par _JPPRT_FRAME_SETVISIBLE pour positionner          }
+  { CENTER/SOUTH PROPORTIONNELLEMENT a la fenetre REELLEMENT creee                    }
+  { plutot qu a des coordonnees FIXES qui ne collaient qu a UNE SEULE                }
+  { taille de fenetre par coincidence. }
+  EmitRaw(ASM_PFX_RUNTIME + 'AWT_RECT DB ' + BinZeroList(16));
+  EmitRaw(ASM_PFX_RUNTIME + 'AWT_CLASSNAME DB "JPPFrame",0');
+  EmitRaw(ASM_PFX_RUNTIME + 'AWT_STATICCLASS DB "STATIC",0');
+  EmitRaw(ASM_PFX_RUNTIME + 'AWT_BUTTONCLASS DB "BUTTON",0');
+  { extension post-TODO25 (AWT REEL) : les DEUX VRAIES chaines           }
+  { constantes BorderLayout.CENTER/SOUTH (section 15.24) - EMISES ICI                }
+  { (jamais via CgCollectStrings/CgStrPool, reserve aux litteraux                     }
+  { EK_STRINGLIT REELLEMENT ecrits dans le source) car ce sont des                    }
+  { CONSTANTES INTERNES du compilateur (StdlibInit/FieldPool[FI].ConstVal),  }
+  { MEME technique que _JPPRT_TRUE_STR/_JPPRT_FALSE_STR plus haut -                  }
+  { consommees a la fois par la lecture de "BorderLayout.CENTER" LUI-             }
+  { MEME (CompileExpr, EK_SELECTOR statique) et par _JPPRT_FRAME_ADD                 }
+  { (comparaison de CONTENU, _JPPRT_STREQ). }
+  EmitRaw(ASM_PFX_RUNTIME + 'BORDERLAYOUT_CENTER DB "Center",0');
+  EmitRaw(ASM_PFX_RUNTIME + 'BORDERLAYOUT_SOUTH DB "South",0');
   EmitSyncLockData;
   EmitBlankLine;
 End;
@@ -16482,6 +16900,411 @@ Begin
   EmitInstr('POP EBP');
   EmitInstr('RET');
   EmitBlankLine;
+
+  { extension post-TODO25 (AWT REEL, Test13Awt.jpp) - runtime GUI Win32   }
+  { minimal : _JPPRT_LABEL_INIT/_JPPRT_BUTTON_INIT/_JPPRT_FRAME_INIT                  }
+  { (constructeurs - stockent SEULEMENT du texte, AUCUNE fenetre Win32           }
+  { n existe encore a cet instant) ; _JPPRT_LABEL_SETTEXT/_JPPRT_FRAME_ADD/    }
+  { _JPPRT_FRAME_DISPOSE (methodes) ; _JPPRT_WNDPROC (le VRAI point                  }
+  { d entree WNDPROC, callback Win32 - PAS une methode Java compilee,               }
+  { RET 16 stdcall REEL) ; _JPPRT_FRAME_SETVISIBLE (le GROS morceau -                  }
+  { RegisterClassA/CreateWindowExA x3/boucle de messages REELLE,                      }
+  { EXACTEMENT au moment de "setVisible(true)", JAMAIS avant - Java              }
+  { differe REELLEMENT la creation des peers AWT jusqu a ce moment,                  }
+  { cette simplification COLLE donc au comportement reel plutot que de           }
+  { le trahir). setLayout()/addWindowListener()/setSize()/                                 }
+  { addActionListener() sont, EUX, de SIMPLES stockages de champ                          }
+  { (setLayout : NO-OP total, AUCUN moteur BorderLayout n existe -                      }
+  { Frame.add lit directement le CONTENU de la contrainte) inlines DANS         }
+  { CompileCall, AUCUNE routine dediee necessaire pour ceux-la. }
+
+  { _JPPRT_LABEL_INIT(objPtr, textPtr) : "new Label(texte)". }
+  EmitLabel(ASM_PFX_RUNTIME + 'LABEL_INIT');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('MOV ECX,DWORD PTR [EBP+12]');
+  EmitInstr('MOV ' + CgAddrOperand('EAX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Label'), 'text'))) + ',ECX');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _JPPRT_BUTTON_INIT(objPtr, textPtr) : "new Button(texte)". }
+  EmitLabel(ASM_PFX_RUNTIME + 'BUTTON_INIT');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('MOV ECX,DWORD PTR [EBP+12]');
+  EmitInstr('MOV ' + CgAddrOperand('EAX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Button'), 'text'))) + ',ECX');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _JPPRT_FRAME_INIT(objPtr, titlePtr) : "super(titre);" (chainage de   }
+  { constructeur, Test13Awt() -> Frame(String), voir CompileCall). }
+  EmitLabel(ASM_PFX_RUNTIME + 'FRAME_INIT');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('MOV ECX,DWORD PTR [EBP+12]');
+  EmitInstr('MOV ' + CgAddrOperand('EAX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Frame'), 'title'))) + ',ECX');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _JPPRT_LABEL_SETTEXT(objPtr, textPtr) : "message.setText(...)" -     }
+  { met a jour LE CHAMP (coherence interne) ET, SI le controle Win32               }
+  { REEL existe deja (hwnd<>0 - TOUJOURS le cas dans Test13Awt.jpp,                    }
+  { setText() n est appelee QU APRES setVisible(true)), le texte AFFICHE         }
+  { via SetWindowTextA. }
+  EmitLabel(ASM_PFX_RUNTIME + 'LABEL_SETTEXT');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
+  EmitInstr('MOV ECX,DWORD PTR [EBP+12]');
+  EmitInstr('MOV ' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Label'), 'text'))) + ',ECX');
+  EmitInstr('MOV EAX,' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Label'), 'hwnd'))));
+  EmitInstr('CMP EAX,0');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'LST_DONE');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL _SetWindowTextA@8');
+  EmitLabel(ASM_PFX_RUNTIME + 'LST_DONE');
+  EmitInstr('POP EBX');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _JPPRT_FRAME_ADD(framePtr, compPtr, constraintPtr) : "add(comp,      }
+  { BorderLayout.CENTER/SOUTH)" - AUCUN moteur de disposition REEL                     }
+  { (setLayout est une NO-OP totale, voir la note d en-tete de section)          }
+  { : compare directement le CONTENU de la contrainte (_JPPRT_STREQ,               }
+  { deja existant depuis le ONZIEME tranche) contre "Center"/"South" et         }
+  { stocke compPtr dans le champ Frame correspondant - les VRAIS                       }
+  { controles Win32 (CreateWindowExA) ne sont crees que PLUS TARD, au             }
+  { moment de setVisible(true) (voir _JPPRT_FRAME_SETVISIBLE). }
+  EmitLabel(ASM_PFX_RUNTIME + 'FRAME_ADD');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
+  EmitInstr('MOV ECX,DWORD PTR [EBP+12]');
+  EmitInstr('MOV EDX,DWORD PTR [EBP+16]');
+  EmitInstr('PUSH EDX');
+  EmitInstr('LEA EAX,[' + ASM_PFX_RUNTIME + 'BORDERLAYOUT_CENTER]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'STREQ');
+  EmitInstr('ADD ESP,8');
+  EmitInstr('CMP EAX,0');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'FA_NOTCENTER');
+  EmitInstr('MOV ' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Frame'), 'centerComponent'))) + ',ECX');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'FA_DONE');
+  EmitLabel(ASM_PFX_RUNTIME + 'FA_NOTCENTER');
+  EmitInstr('MOV ' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Frame'), 'southComponent'))) + ',ECX');
+  EmitLabel(ASM_PFX_RUNTIME + 'FA_DONE');
+  EmitInstr('POP EBX');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _JPPRT_FRAME_DISPOSE(framePtr) : "dispose()" - DestroyWindow REEL.   }
+  EmitLabel(ASM_PFX_RUNTIME + 'FRAME_DISPOSE');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('PUSH ' + CgAddrOperand('EAX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Frame'), 'hwnd'))));
+  EmitInstr('CALL _DestroyWindow@4');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _JPPRT_WNDPROC(hWnd, uMsg, wParam, lParam) -> LRESULT : le VRAI       }
+  { callback Win32 (jamais une methode Java compilee - "RET 16" stdcall          }
+  { REEL, EXACTEMENT le motif "callee nettoie sa PROPRE pile" deja                    }
+  { documente pour MI_ThreadProc, ici ECRIT A LA MAIN puisqu aucun               }
+  { MethodPool MI ne correspond a ce point d entree). WM_COMMAND (273)           }
+  { -> dispatch VERS l ActionListener stocke sur Frame.southComponent            }
+  { (SIMPLIFICATION documentee - un SEUL bouton "actif" par Frame,                     }
+  { AUCUN VRAI registre HWND->objet, voir la note d en-tete de                          }
+  { ButtonT.listener/StdlibInit) ; WM_CLOSE (16) -> dispatch VERS le               }
+  { WindowAdapter stocke sur Frame.windowListener - LES DEUX branches            }
+  { restent NON EMISES quand AUCUNE classe concrete ne fournit                          }
+  { l implementation correspondante (HasActionListenerImpl/                                }
+  { HasWindowAdapterImpl, MEME garde EXACTE que _JPPRT_THREAD_START pour          }
+  { HasRunnableImpl - sinon "CALL <etiquette JAMAIS emise>" echouerait            }
+  { a la resolution). Tout AUTRE message (ou une branche NON emise)                  }
+  { retombe sur DefWindowProcA, le comportement PAR DEFAUT Windows. }
+  EmitLabel(ASM_PFX_RUNTIME + 'WNDPROC');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+12]');
+  If HasActionListenerImpl Then
+  Begin
+    EmitInstr('CMP EAX,273');
+    EmitInstr('JE ' + ASM_PFX_RUNTIME + 'WP_COMMAND');
+  End;
+  If HasWindowAdapterImpl Then
+  Begin
+    EmitInstr('CMP EAX,16');
+    EmitInstr('JE ' + ASM_PFX_RUNTIME + 'WP_CLOSE');
+  End;
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'WP_DEFAULT');
+
+  If HasActionListenerImpl Then
+  Begin
+    EmitLabel(ASM_PFX_RUNTIME + 'WP_COMMAND');
+    EmitInstr('MOV EAX,DWORD PTR [' + ASM_PFX_RUNTIME + 'AWT_FRAME]');
+    EmitInstr('CMP EAX,0');
+    EmitInstr('JE ' + ASM_PFX_RUNTIME + 'WP_DEFAULT');
+    EmitInstr('MOV EAX,' + CgAddrOperand('EAX', CgFieldOffsetInObject(
+      ClassFindField(TypeFindByName('Frame'), 'southComponent'))));
+    EmitInstr('CMP EAX,0');
+    EmitInstr('JE ' + ASM_PFX_RUNTIME + 'WP_DEFAULT');
+    EmitInstr('MOV EAX,' + CgAddrOperand('EAX', CgFieldOffsetInObject(
+      ClassFindField(TypeFindByName('Button'), 'listener'))));
+    EmitInstr('CMP EAX,0');
+    EmitInstr('JE ' + ASM_PFX_RUNTIME + 'WP_DEFAULT');
+    EmitInstr('PUSH EAX');
+    EmitInstr('CALL ' + MethodAsmLabelG(MI_ActionDispatch));
+    EmitInstr('ADD ESP,4');
+    EmitInstr('MOV EAX,0');
+    EmitInstr('MOV ESP,EBP');
+    EmitInstr('POP EBP');
+    EmitInstr('RET 16');
+  End;
+
+  If HasWindowAdapterImpl Then
+  Begin
+    EmitLabel(ASM_PFX_RUNTIME + 'WP_CLOSE');
+    EmitInstr('MOV EAX,DWORD PTR [' + ASM_PFX_RUNTIME + 'AWT_FRAME]');
+    EmitInstr('CMP EAX,0');
+    EmitInstr('JE ' + ASM_PFX_RUNTIME + 'WP_DEFAULT');
+    EmitInstr('MOV EAX,' + CgAddrOperand('EAX', CgFieldOffsetInObject(
+      ClassFindField(TypeFindByName('Frame'), 'windowListener'))));
+    EmitInstr('CMP EAX,0');
+    EmitInstr('JE ' + ASM_PFX_RUNTIME + 'WP_DEFAULT');
+    EmitInstr('PUSH EAX');
+    EmitInstr('CALL ' + MethodAsmLabelG(MI_WindowClosingDispatch));
+    EmitInstr('ADD ESP,4');
+    EmitInstr('MOV EAX,0');
+    EmitInstr('MOV ESP,EBP');
+    EmitInstr('POP EBP');
+    EmitInstr('RET 16');
+  End;
+
+  EmitLabel(ASM_PFX_RUNTIME + 'WP_DEFAULT');
+  EmitInstr('PUSH DWORD PTR [EBP+20]');
+  EmitInstr('PUSH DWORD PTR [EBP+16]');
+  EmitInstr('PUSH DWORD PTR [EBP+12]');
+  EmitInstr('PUSH DWORD PTR [EBP+8]');
+  EmitInstr('CALL _DefWindowProcA@16');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET 16');
+  EmitBlankLine;
+
+  { _JPPRT_FRAME_SETVISIBLE(framePtr) : "setVisible(true)" - le VALEUR    }
+  { booleenne elle-meme n est jamais relue (AUCUN echantillon n appelle          }
+  { jamais setVisible(false), documente plutot que devine - CompileCall           }
+  { compile neanmoins l argument pour ses eventuels effets de bord,                    }
+  { MEME discipline partout ailleurs). EBX=framePtr/ESI=hInstance/                    }
+  { EDI=hFrameWnd SURVIVENT a travers CHAQUE appel Win32 (callee-saved             }
+  { GARANTI par la convention stdcall Win32 elle-meme, MEME raisonnement          }
+  { deja documente pour _JPPRT_BUFFEREDREADER_READLINE). Positions des           }
+  { DEUX enfants (Label CENTER/Button SOUTH) : valeurs FIXES (10,10,                    }
+  { 280,200 et 10,220,280,30) - AUCUN moteur BorderLayout REEL (setLayout          }
+  { est une NO-OP), simplification DISCLOSED qui suffit EXACTEMENT a ce           }
+  { que Test13Awt.jpp exerce (setSize(320,120)... les dimensions FIXES            }
+  { collent a peu pres a la fenetre demandee, AUCUN redimensionnement                }
+  { dynamique - WM_SIZE n est PAS gere). }
+  EmitLabel(ASM_PFX_RUNTIME + 'FRAME_SETVISIBLE');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH EDI');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
+  EmitInstr('MOV DWORD PTR [' + ASM_PFX_RUNTIME + 'AWT_FRAME],EBX');
+
+  EmitInstr('PUSH 0');
+  EmitInstr('CALL _GetModuleHandleA@4');
+  EmitInstr('MOV ESI,EAX');
+
+  EmitInstr('LEA EDI,[' + ASM_PFX_RUNTIME + 'AWT_WNDCLASS]');
+  EmitInstr('MOV EAX,0');
+  EmitInstr('MOV ' + CgAddrOperand('EDI', 0) + ',EAX');
+  EmitInstr('LEA EAX,[' + ASM_PFX_RUNTIME + 'WNDPROC]');
+  EmitInstr('MOV ' + CgAddrOperand('EDI', 4) + ',EAX');
+  EmitInstr('MOV EAX,0');
+  EmitInstr('MOV ' + CgAddrOperand('EDI', 8) + ',EAX');
+  EmitInstr('MOV ' + CgAddrOperand('EDI', 12) + ',EAX');
+  EmitInstr('MOV ' + CgAddrOperand('EDI', 16) + ',ESI');
+  EmitInstr('MOV ' + CgAddrOperand('EDI', 20) + ',EAX');
+  EmitInstr('PUSH 32512');
+  EmitInstr('PUSH 0');
+  EmitInstr('CALL _LoadCursorA@8');
+  EmitInstr('MOV ' + CgAddrOperand('EDI', 24) + ',EAX');
+  EmitInstr('MOV EAX,16');
+  EmitInstr('MOV ' + CgAddrOperand('EDI', 28) + ',EAX');
+  EmitInstr('MOV EAX,0');
+  EmitInstr('MOV ' + CgAddrOperand('EDI', 32) + ',EAX');
+  EmitInstr('LEA EAX,[' + ASM_PFX_RUNTIME + 'AWT_CLASSNAME]');
+  EmitInstr('MOV ' + CgAddrOperand('EDI', 36) + ',EAX');
+
+  EmitInstr('PUSH EDI');
+  EmitInstr('CALL _RegisterClassA@4');
+
+  { correctif (signale par l utilisateur, "je ne vois pas le bouton") : }
+  { la taille de fenetre passee a CreateWindowExA DOIT venir des CHAMPS         }
+  { frameWidth/frameHeight (remplis par setSize(), voir CompileCall) -              }
+  { la toute PREMIERE version codait EN DUR "320"/"120" (coincidence               }
+  { avec les valeurs LITTERALES de Test13Awt.jpp, jamais lues du VRAI               }
+  { champ) - un AUTRE appel setSize() aurait toujours produit une                       }
+  { fenetre 320x120, silencieusement FAUSSE. }
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH 0');
+  EmitInstr('MOV EAX,' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Frame'), 'frameHeight'))));
+  EmitInstr('PUSH EAX');
+  EmitInstr('MOV EAX,' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Frame'), 'frameWidth'))));
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH -2147483648');
+  EmitInstr('PUSH -2147483648');
+  EmitInstr('PUSH 13565952');
+  EmitInstr('MOV EAX,' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Frame'), 'title'))));
+  EmitInstr('PUSH EAX');
+  EmitInstr('LEA EAX,[' + ASM_PFX_RUNTIME + 'AWT_CLASSNAME]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH 0');
+  EmitInstr('CALL _CreateWindowExA@48');
+  EmitInstr('MOV EDI,EAX');
+  EmitInstr('MOV ' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Frame'), 'hwnd'))) + ',EDI');
+
+  { correctif (MEME signalement utilisateur) : les positions/tailles     }
+  { de CENTER/SOUTH DOIVENT etre calculees a partir de la VRAIE zone                }
+  { CLIENTE (GetClientRect - SANS la barre de titre/les bordures, DONC             }
+  { plus PETITE que frameWidth/frameHeight), PAS des coordonnees FIXES           }
+  { ("170"/"280"/"190" codees en dur) qui supposaient a tort une SEULE            }
+  { taille de fenetre precise - avec setSize(320,120) (Test13Awt.jpp),            }
+  { la zone cliente ne fait qu environ 90 pixels de haut : un bouton                }
+  { positionne a Y=190 tombe alors ENTIEREMENT hors de la fenetre                       }
+  { visible, EXACTEMENT le bogue signale ("je ne vois pas le bouton"). }
+  EmitInstr('LEA EAX,[' + ASM_PFX_RUNTIME + 'AWT_RECT]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH EDI');
+  EmitInstr('CALL _GetClientRect@8');
+
+  EmitInstr('MOV EAX,' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Frame'), 'centerComponent'))));
+  EmitInstr('CMP EAX,0');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'FSV_NOCENTER');
+  EmitInstr('PUSH EAX');
+  EmitInstr('MOV ECX,' + CgAddrOperand('EAX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Label'), 'text'))));
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH EDI');
+  EmitInstr('LEA EDX,[' + ASM_PFX_RUNTIME + 'AWT_RECT]');
+  EmitInstr('MOV EAX,' + CgAddrOperand('EDX', 12));
+  EmitInstr('SUB EAX,60');
+  EmitInstr('PUSH EAX');
+  EmitInstr('LEA EDX,[' + ASM_PFX_RUNTIME + 'AWT_RECT]');
+  EmitInstr('MOV EAX,' + CgAddrOperand('EDX', 8));
+  EmitInstr('SUB EAX,20');
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH 10');
+  EmitInstr('PUSH 10');
+  EmitInstr('PUSH 1342177280');
+  EmitInstr('PUSH ECX');
+  EmitInstr('LEA EAX,[' + ASM_PFX_RUNTIME + 'AWT_STATICCLASS]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH 0');
+  EmitInstr('CALL _CreateWindowExA@48');
+  EmitInstr('POP ECX');
+  EmitInstr('MOV ' + CgAddrOperand('ECX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Label'), 'hwnd'))) + ',EAX');
+  EmitLabel(ASM_PFX_RUNTIME + 'FSV_NOCENTER');
+
+  EmitInstr('MOV EAX,' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Frame'), 'southComponent'))));
+  EmitInstr('CMP EAX,0');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'FSV_NOSOUTH');
+  EmitInstr('MOV ECX,' + CgAddrOperand('EAX', CgFieldOffsetInObject(
+    ClassFindField(TypeFindByName('Button'), 'text'))));
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH EDI');
+  EmitInstr('PUSH 30');
+  EmitInstr('LEA EDX,[' + ASM_PFX_RUNTIME + 'AWT_RECT]');
+  EmitInstr('MOV EAX,' + CgAddrOperand('EDX', 8));
+  EmitInstr('SUB EAX,20');
+  EmitInstr('PUSH EAX');
+  EmitInstr('LEA EDX,[' + ASM_PFX_RUNTIME + 'AWT_RECT]');
+  EmitInstr('MOV EAX,' + CgAddrOperand('EDX', 12));
+  EmitInstr('SUB EAX,40');
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH 10');
+  EmitInstr('PUSH 1342177280');
+  EmitInstr('PUSH ECX');
+  EmitInstr('LEA EAX,[' + ASM_PFX_RUNTIME + 'AWT_BUTTONCLASS]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH 0');
+  EmitInstr('CALL _CreateWindowExA@48');
+  EmitLabel(ASM_PFX_RUNTIME + 'FSV_NOSOUTH');
+
+  EmitInstr('PUSH 5');
+  EmitInstr('PUSH EDI');
+  EmitInstr('CALL _ShowWindow@8');
+  EmitInstr('PUSH EDI');
+  EmitInstr('CALL _UpdateWindow@4');
+
+  EmitLabel(ASM_PFX_RUNTIME + 'FSV_MSGLOOP');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH 0');
+  EmitInstr('LEA EAX,[' + ASM_PFX_RUNTIME + 'AWT_MSG]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL _GetMessageA@16');
+  EmitInstr('CMP EAX,0');
+  EmitInstr('JLE ' + ASM_PFX_RUNTIME + 'FSV_MSGDONE');
+  EmitInstr('LEA EAX,[' + ASM_PFX_RUNTIME + 'AWT_MSG]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL _TranslateMessage@4');
+  EmitInstr('LEA EAX,[' + ASM_PFX_RUNTIME + 'AWT_MSG]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL _DispatchMessageA@4');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'FSV_MSGLOOP');
+  EmitLabel(ASM_PFX_RUNTIME + 'FSV_MSGDONE');
+
+  EmitInstr('POP EDI');
+  EmitInstr('POP ESI');
+  EmitInstr('POP EBX');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
 End;
 
 { MethodAsmLabelG : etiquette ASM d une methode - INCLUT le nom de la    }
@@ -17543,6 +18366,25 @@ Begin
         Case FieldPool[FI].ConstVal.Kind Of
           CK_INT, CK_LONG, CK_CHAR, CK_BOOL:
             EmitInstr('MOV EAX,' + IntToStrG(FieldPool[FI].ConstVal.IntVal));
+          { extension post-TODO25 (AWT REEL, Test13Awt.jpp) :             }
+          { "BorderLayout.CENTER"/"BorderLayout.SOUTH" (section 15.24) -           }
+          { LES DEUX SEULES constantes STATIQUES de type CK_STRING dans             }
+          { toute cette bibliotheque standard (StdlibInit) - PORTEE                    }
+          { REDUITE a CES DEUX NOMS PRECIS (chaine emise EN DUR dans                   }
+          { EmitDataSeg, JAMAIS via CgCollectStrings - voir sa propre                    }
+          { note d en-tete) plutot qu un mecanisme GENERAL "toute chaine                }
+          { statique constante quelconque", qu aucun AUTRE echantillon                 }
+          { n exige. }
+          CK_STRING:
+            If FieldPool[FI].Name = 'CENTER' Then
+              EmitInstr('LEA EAX,[' + ASM_PFX_RUNTIME + 'BORDERLAYOUT_CENTER]')
+            Else If FieldPool[FI].Name = 'SOUTH' Then
+              EmitInstr('LEA EAX,[' + ASM_PFX_RUNTIME + 'BORDERLAYOUT_SOUTH]')
+            Else
+              FatalError('generateur de code : champ statique chaine "' +
+                ExprPool[E].NameVal + '" non couvert par cette extension ' +
+                '(seuls BorderLayout.CENTER/SOUTH le sont, voir la note ' +
+                'd''en-tete de section)');
         Else
           FatalError('generateur de code : champ statique "' +
             ExprPool[E].NameVal + '" non couvert par cette extension ' +
@@ -17621,7 +18463,9 @@ Begin
           (TypeTab[ClassT].Name <> 'Integer') And (TypeTab[ClassT].Name <> 'Thread') And
           (TypeTab[ClassT].Name <> 'FileWriter') And (TypeTab[ClassT].Name <> 'BufferedWriter') And
           (TypeTab[ClassT].Name <> 'PrintWriter') And (TypeTab[ClassT].Name <> 'FileReader') And
-          (TypeTab[ClassT].Name <> 'BufferedReader')) Then
+          (TypeTab[ClassT].Name <> 'BufferedReader') And
+          (TypeTab[ClassT].Name <> 'Label') And (TypeTab[ClassT].Name <> 'Button') And
+          (TypeTab[ClassT].Name <> 'BorderLayout')) Then
       Begin
         FatalError('generateur de code : "new ' + TypeTab[ClassT].Name +
           '(...)" non couvert par cette extension (constructeur non ' +
@@ -17771,6 +18615,36 @@ Begin
         EmitInstr('ADD ESP,' + IntToStrG(ArgBytes));
         Exit;
       End;
+
+      { extension post-TODO25 (AWT REEL, Test13Awt.jpp) : "new                }
+      { Label(texte)"/"new Button(texte)" - MEME technique EXACTE que              }
+      { Integer/FileWriter (constructeur a UN SEUL argument, relu SUR LA          }
+      { PILE apres ALLOC). "new BorderLayout()" n a AUCUN argument et                }
+      { AUCUN etat interne (setLayout est une NO-OP totale, voir la note          }
+      { d en-tete de EmitRuntimeLibrary/java.awt) - EAX (deja le pointeur          }
+      { d objet ALLOUE) suffit TEL QUEL, RIEN a appeler. }
+      If TypeTab[ClassT].Name = 'Label' Then
+      Begin
+        EmitInstr('MOV ECX,DWORD PTR [ESP+0]');
+        EmitInstr('PUSH ECX');
+        EmitInstr('PUSH EAX');
+        EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'LABEL_INIT');
+        EmitInstr('ADD ESP,8');
+        EmitInstr('ADD ESP,' + IntToStrG(ArgBytes));
+        Exit;
+      End;
+      If TypeTab[ClassT].Name = 'Button' Then
+      Begin
+        EmitInstr('MOV ECX,DWORD PTR [ESP+0]');
+        EmitInstr('PUSH ECX');
+        EmitInstr('PUSH EAX');
+        EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'BUTTON_INIT');
+        EmitInstr('ADD ESP,8');
+        EmitInstr('ADD ESP,' + IntToStrG(ArgBytes));
+        Exit;
+      End;
+      If TypeTab[ClassT].Name = 'BorderLayout' Then
+        Exit;
 
       If MethodPool[MI].BodyStmtIdx >= 0 Then
       Begin
@@ -18092,6 +18966,21 @@ Begin
     Exit;
   End;
 
+  { extension post-TODO25 (AWT REEL, Test13Awt.jpp) : "System.exit(0)" - }
+  { AUCUNE routine runtime dediee necessaire, "_ExitProcess@4" est DEJA         }
+  { importe depuis le TODO 21 (utilise PARTOUT ailleurs pour les arrets            }
+  { "ne devrait jamais arriver" du dispatch polymorphique) - AUCUN                     }
+  { retour n est possible APRES ce point, "ADD ESP" serait du code MORT           }
+  { (le processus ENTIER se termine), omis DELIBEREMENT. }
+  If (MethodPool[MI].Name = 'exit') And
+     (TypeTab[MethodPool[MI].OwnerTypeIdx].Name = 'System') Then
+  Begin
+    CompileExpr(ExprArgPool[ExprPool[E].ArgFirst]);
+    EmitInstr('PUSH EAX');
+    EmitInstr('CALL _ExitProcess@4');
+    Exit;
+  End;
+
   { BOGUE REEL signale par l utilisateur (Test06ProprietesBean.jpp,       }
   { "valeur.length() == 0" dans setNom) : "String.length()" (StdMethod0,        }
   { StdlibInit) etait resolu SEMANTIQUEMENT depuis le TODO 08/13 (une             }
@@ -18351,6 +19240,168 @@ Begin
     Exit;
   End;
 
+  { extension post-TODO25 (AWT REEL, Test13Awt.jpp) - HUIT methodes      }
+  { Frame/Label/Button ci-dessous partagent une meme particularite : la           }
+  { PLUPART sont appelees IMPLICITEMENT dans Test13Awt.jpp (SANS                       }
+  { receveur explicite - "setLayout(...)"/"add(...)"/                                        }
+  { "addWindowListener(...)"/"setSize(...)" sont TOUTES ecrites SANS               }
+  { "this." dans le constructeur, seule "bouton.addActionListener(this)"          }
+  { a un receveur EXPLICITE) - "ExprPool[ExprPool[E].Left].Left" (utilise      }
+  { PARTOUT ailleurs dans ce fichier pour un appel EXPLICITE, "obj.methode()")  }
+  { N EST VALIDE QUE SI le callee est un EK_SELECTOR ; pour un appel                 }
+  { IMPLICITE (callee EK_IDENT, Left = index SymTab ou -1, JAMAIS une              }
+  { sous-expression), le receveur est TOUJOURS "this" a [EBP+8] - EXACTEMENT     }
+  { la MEME distinction que le dispatch polymorphique GENERIQUE plus                }
+  { bas (voir sa propre logique "If ExprPool[ExprPool[E].Left].Kind =            }
+  { EK_SELECTOR..."). BOGUE REEL trouve PAR EXECUTION (Test13Awt.jpp,             }
+  { "generateur de code : expression manquante" - la toute PREMIERE                  }
+  { version de ce bloc appelait CompileExpr sur Cur.Left EN CROYANT que          }
+  { c etait TOUJOURS une sous-expression, alors que pour un appel                     }
+  { IMPLICITE Cur.Left est un INDEX SymTab (ou -1), jamais un noeud                  }
+  { ExprPool valide) - corrige en testant EK_SELECTOR AVANT de decider              }
+  { comment compiler le receveur, PARTOUT ci-dessous. }
+  If (MethodPool[MI].Name = 'setText') And
+     (TypeTab[MethodPool[MI].OwnerTypeIdx].Name = 'Label') Then
+  Begin
+    CompileExpr(ExprArgPool[ExprPool[E].ArgFirst]);
+    EmitInstr('PUSH EAX');
+    If ExprPool[ExprPool[E].Left].Kind = EK_SELECTOR Then
+      CompileExpr(ExprPool[ExprPool[E].Left].Left)
+    Else
+      EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+    EmitInstr('PUSH EAX');
+    EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'LABEL_SETTEXT');
+    EmitInstr('ADD ESP,8');
+    Exit;
+  End;
+
+  { "bouton.addActionListener(this)"/"addWindowListener(...)" - SIMPLE   }
+  { stockage de champ (SANS aucun controle Win32 REEL a mettre a jour                }
+  { ICI - AUCUN des deux ne cree/modifie une fenetre, voir la note                     }
+  { d en-tete d EmitRuntimeLibrary/java.awt) : INLINE, AUCUNE routine              }
+  { runtime dediee necessaire (MEME technique que STK_ASSIGN/EK_SELECTOR,    }
+  { EBX = adresse, valeur DEJA en EAX quand EBX se calcule). }
+  If (MethodPool[MI].Name = 'addActionListener') And
+     (TypeTab[MethodPool[MI].OwnerTypeIdx].Name = 'Button') Then
+  Begin
+    CompileExpr(ExprArgPool[ExprPool[E].ArgFirst]);
+    EmitInstr('PUSH EAX');
+    If ExprPool[ExprPool[E].Left].Kind = EK_SELECTOR Then
+      CompileExpr(ExprPool[ExprPool[E].Left].Left)
+    Else
+      EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+    EmitInstr('MOV EBX,EAX');
+    EmitInstr('POP EAX');
+    EmitInstr('MOV ' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+      ClassFindField(TypeFindByName('Button'), 'listener'))) + ',EAX');
+    Exit;
+  End;
+  If (MethodPool[MI].Name = 'addWindowListener') And
+     (TypeTab[MethodPool[MI].OwnerTypeIdx].Name = 'Frame') Then
+  Begin
+    CompileExpr(ExprArgPool[ExprPool[E].ArgFirst]);
+    EmitInstr('PUSH EAX');
+    If ExprPool[ExprPool[E].Left].Kind = EK_SELECTOR Then
+      CompileExpr(ExprPool[ExprPool[E].Left].Left)
+    Else
+      EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+    EmitInstr('MOV EBX,EAX');
+    EmitInstr('POP EAX');
+    EmitInstr('MOV ' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+      ClassFindField(TypeFindByName('Frame'), 'windowListener'))) + ',EAX');
+    Exit;
+  End;
+
+  { "setLayout(new BorderLayout())" - NO-OP TOTALE (compile le receveur/     }
+  { l argument pour d eventuels effets de bord, MEME discipline qu ailleurs      }
+  { dans ce generateur, mais AUCUN moteur de disposition n existe - voir            }
+  { la note d en-tete d EmitRuntimeLibrary/java.awt pour la justification            }
+  { complete : Frame.add lit directement le CONTENU de la contrainte). }
+  If (MethodPool[MI].Name = 'setLayout') And
+     (TypeTab[MethodPool[MI].OwnerTypeIdx].Name = 'Frame') Then
+  Begin
+    CompileExpr(ExprArgPool[ExprPool[E].ArgFirst]);
+    If ExprPool[ExprPool[E].Left].Kind = EK_SELECTOR Then
+      CompileExpr(ExprPool[ExprPool[E].Left].Left);
+    Exit;
+  End;
+
+  { "setSize(320, 120)" - DEUX champs entiers SIMPLES, AUCUNE routine    }
+  { runtime necessaire (comme addActionListener ci-dessus) - LUS PLUS               }
+  { TARD par _JPPRT_FRAME_SETVISIBLE au moment de creer la VRAIE fenetre           }
+  { Win32. }
+  If (MethodPool[MI].Name = 'setSize') And
+     (TypeTab[MethodPool[MI].OwnerTypeIdx].Name = 'Frame') Then
+  Begin
+    CompileExpr(ExprArgPool[ExprPool[E].ArgFirst + 1]);
+    EmitInstr('PUSH EAX');
+    CompileExpr(ExprArgPool[ExprPool[E].ArgFirst]);
+    EmitInstr('PUSH EAX');
+    If ExprPool[ExprPool[E].Left].Kind = EK_SELECTOR Then
+      CompileExpr(ExprPool[ExprPool[E].Left].Left)
+    Else
+      EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+    EmitInstr('MOV EBX,EAX');
+    EmitInstr('POP EAX');
+    EmitInstr('MOV ' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+      ClassFindField(TypeFindByName('Frame'), 'frameWidth'))) + ',EAX');
+    EmitInstr('POP EAX');
+    EmitInstr('MOV ' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+      ClassFindField(TypeFindByName('Frame'), 'frameHeight'))) + ',EAX');
+    Exit;
+  End;
+
+  { "add(message, BorderLayout.CENTER)" - _JPPRT_FRAME_ADD (compare le   }
+  { CONTENU de la contrainte, EmitRuntimeLibrary) - ordre des arguments           }
+  { INVERSE (contrainte PUIS composant PUIS receveur), MEME convention             }
+  { EXACTE que "annees.put(cle, valeur)" (ONZIEME tranche). }
+  If (MethodPool[MI].Name = 'add') And
+     (TypeTab[MethodPool[MI].OwnerTypeIdx].Name = 'Frame') Then
+  Begin
+    CompileExpr(ExprArgPool[ExprPool[E].ArgFirst + 1]);
+    EmitInstr('PUSH EAX');
+    CompileExpr(ExprArgPool[ExprPool[E].ArgFirst]);
+    EmitInstr('PUSH EAX');
+    If ExprPool[ExprPool[E].Left].Kind = EK_SELECTOR Then
+      CompileExpr(ExprPool[ExprPool[E].Left].Left)
+    Else
+      EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+    EmitInstr('PUSH EAX');
+    EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'FRAME_ADD');
+    EmitInstr('ADD ESP,12');
+    Exit;
+  End;
+
+  { "setVisible(true)"/"dispose()" - le GROS morceau (RegisterClassA/    }
+  { CreateWindowExA/boucle de messages REELLE) et la fermeture,                        }
+  { respectivement _JPPRT_FRAME_SETVISIBLE/_JPPRT_FRAME_DISPOSE                             }
+  { (EmitRuntimeLibrary, voir leur propre note d en-tete). }
+  If (MethodPool[MI].Name = 'setVisible') And
+     (TypeTab[MethodPool[MI].OwnerTypeIdx].Name = 'Frame') Then
+  Begin
+    CompileExpr(ExprArgPool[ExprPool[E].ArgFirst]);
+    If ExprPool[ExprPool[E].Left].Kind = EK_SELECTOR Then
+      CompileExpr(ExprPool[ExprPool[E].Left].Left)
+    Else
+      EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+    EmitInstr('PUSH EAX');
+    EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'FRAME_SETVISIBLE');
+    EmitInstr('ADD ESP,4');
+    Exit;
+  End;
+  If (MethodPool[MI].Name = 'dispose') And
+     (TypeTab[MethodPool[MI].OwnerTypeIdx].Name = 'Frame') Then
+  Begin
+    If ExprPool[ExprPool[E].Left].Kind = EK_SELECTOR Then
+      CompileExpr(ExprPool[ExprPool[E].Left].Left)
+    Else
+      EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+    EmitInstr('PUSH EAX');
+    EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'FRAME_DISPOSE');
+    EmitInstr('ADD ESP,4');
+    Exit;
+  End;
+
   { extension post-TODO25, QUATRIEME tranche (chainage de constructeur) :  }
   { "this(...)"/"super(...)" resolu (voir ParsePostfix, meme extension) -            }
   { AUCUNE allocation nouvelle (l objet EST DEJA celui du constructeur              }
@@ -18366,6 +19417,24 @@ Begin
   Begin
     If MethodPool[MI].BodyStmtIdx < 0 Then
     Begin
+      { extension post-TODO25 (AWT REEL, Test13Awt.jpp) : "super(titre);" }
+      { (Test13Awt() -> Frame(String)) - LA SEULE classe de bibliotheque             }
+      { standard dont un VRAI echantillon chaine le constructeur (AUCUN               }
+      { autre "super(...)" de ce projet ne vise une classe IsStdlib) -             }
+      { _JPPRT_FRAME_INIT stocke le titre dans le CHAMP, "this" (DEJA                  }
+      { ALLOUE par le constructeur ENGLOBANT, JAMAIS re-alloue ICI) reste          }
+      { a EBP+8 EXACTEMENT comme documente ci-dessus. }
+      If TypeTab[MethodPool[MI].OwnerTypeIdx].Name = 'Frame' Then
+      Begin
+        ArgE := ExprArgPool[ExprPool[E].ArgFirst];
+        CompileExpr(ArgE);
+        EmitInstr('PUSH EAX');
+        EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+        EmitInstr('PUSH EAX');
+        EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'FRAME_INIT');
+        EmitInstr('ADD ESP,8');
+        Exit;
+      End;
       If TypeTab[MethodPool[MI].OwnerTypeIdx].IsStdlib Then
         FatalError('generateur de code : chainage de constructeur non ' +
           'couvert par cette extension (classe de bibliotheque standard ' +
@@ -19411,7 +20480,8 @@ End;
 { silencieusement ignoree. }
 Procedure CompileProgram(Const AsmFileName: TString);
 Var
-  I, MainMI, SyncI, SyncJ, RunnableTLookup : Integer;
+  I, MainMI, SyncI, SyncJ, RunnableTLookup, ActionListenerTLookup,
+  WindowAdapterTLookup : Integer;
   SyncAlreadyDone : Boolean;
 Begin
   CgLabelSeq := 0;
@@ -19436,6 +20506,35 @@ Begin
          (ClassResolveMethodCall(I, 'run', 0, 0) >= 0) And
          (MethodPool[ClassResolveMethodCall(I, 'run', 0, 0)].BodyStmtIdx >= 0) Then
         HasRunnableImpl := True;
+
+  { extension post-TODO25 (AWT REEL, Test13Awt.jpp) - MEME technique     }
+  { EXACTE et MEME raison EXACTE que HasRunnableImpl ci-dessus,                        }
+  { appliquee a __actionDispatch/__windowClosingDispatch (voir leur                    }
+  { propre note d en-tete GLOBALE) : sans cette garde, le PEExeSelfTest         }
+  { "Hello World" (AUCUN rapport avec AWT) tenterait de compiler                       }
+  { "l.actionPerformed(null);"/"w.windowClosing(null);" - un VRAI appel      }
+  { POLYMORPHIQUE qui echoue PROPREMENT des qu AUCUNE classe concrete             }
+  { n implemente ActionListener/WindowAdapter nulle part dans le                      }
+  { fichier REELLEMENT compile. }
+  HasActionListenerImpl := False;
+  ActionListenerTLookup := TypeFindByName('ActionListener');
+  If ActionListenerTLookup >= 0 Then
+    For I := 0 To TypeCount - 1 Do
+      If (TypeTab[I].Kind = TYK_CLASS) And (Not TypeTab[I].IsAbstractClass) And
+         TypeIsSubclassOf(I, ActionListenerTLookup) And
+         (ClassResolveMethodCall(I, 'actionPerformed', 0, 1) >= 0) And
+         (MethodPool[ClassResolveMethodCall(I, 'actionPerformed', 0, 1)].BodyStmtIdx >= 0) Then
+        HasActionListenerImpl := True;
+
+  HasWindowAdapterImpl := False;
+  WindowAdapterTLookup := TypeFindByName('WindowAdapter');
+  If WindowAdapterTLookup >= 0 Then
+    For I := 0 To TypeCount - 1 Do
+      If (TypeTab[I].Kind = TYK_CLASS) And (Not TypeTab[I].IsAbstractClass) And
+         TypeIsSubclassOf(I, WindowAdapterTLookup) And
+         (ClassResolveMethodCall(I, 'windowClosing', 0, 1) >= 0) And
+         (MethodPool[ClassResolveMethodCall(I, 'windowClosing', 0, 1)].BodyStmtIdx >= 0) Then
+        HasWindowAdapterImpl := True;
 
   EmitOpen(AsmFileName);
   EmitHeader;
@@ -19469,7 +20568,9 @@ Begin
   For I := 0 To MethodPoolCount - 1 Do
     If (TypeTab[MethodPool[I].OwnerTypeIdx].Kind = TYK_CLASS) And
        (MethodPool[I].BodyStmtIdx >= 0) And
-       ((I <> MI_ThreadProc) Or HasRunnableImpl) Then
+       ((I <> MI_ThreadProc) Or HasRunnableImpl) And
+       ((I <> MI_ActionDispatch) Or HasActionListenerImpl) And
+       ((I <> MI_WindowClosingDispatch) Or HasWindowAdapterImpl) Then
     Begin
       CompileMethodBody(I);
       If MethodPool[I].IsStatic And (MethodPool[I].Name = 'main') And
@@ -20903,9 +22004,23 @@ End;
 { PORTEE DELIBEREMENT ETROITE (UN SEUL nom reconnu explicitement,                     }
 { jamais devine a l avance) : etendre cette fonction quand un                              }
 { TROISIEME DLL devient REELLEMENT necessaire, jamais avant. }
+{ extension post-TODO25 (AWT REEL, Test13Awt.jpp) : ONZE fonctions      }
+{ USER32.DLL de PLUS (RegisterClassA/CreateWindowExA/DefWindowProcA/               }
+{ ShowWindow/UpdateWindow/GetMessageA/TranslateMessage/                                    }
+{ DispatchMessageA/SetWindowTextA/DestroyWindow/LoadCursorA) rejoignent          }
+{ "_MessageBoxA@16" - MEME mecanisme EXACT, juste une liste PLUS                    }
+{ LONGUE plutot qu une deuxieme comparaison speciale (GetModuleHandleA          }
+{ reste, LUI, KERNEL32.DLL - le cas PAR DEFAUT ci-dessous, AUCUN                      }
+{ changement necessaire). }
 Function BinImportDllFor(Const Name: TString): TString;
 Begin
-  If Name = '_MessageBoxA@16' Then
+  If (Name = '_MessageBoxA@16') Or (Name = '_RegisterClassA@4') Or
+     (Name = '_CreateWindowExA@48') Or (Name = '_DefWindowProcA@16') Or
+     (Name = '_ShowWindow@8') Or (Name = '_UpdateWindow@4') Or
+     (Name = '_GetMessageA@16') Or (Name = '_TranslateMessage@4') Or
+     (Name = '_DispatchMessageA@4') Or (Name = '_SetWindowTextA@8') Or
+     (Name = '_DestroyWindow@4') Or (Name = '_LoadCursorA@8') Or
+     (Name = '_GetClientRect@8') Then
     BinImportDllFor := 'USER32.DLL'
   Else
     BinImportDllFor := PE_KERNEL32;
