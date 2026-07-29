@@ -504,6 +504,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer le compilateur Jovial 73 pour l'assembleur du microprocesseur 8086.</td>
 		</tr>
 		<tr>
+			<td><b>JPPCW32.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur J++ (Microsoft Visual J++, noyau Java 1.1 + extensions Microsoft) pour l'assembleur du microprocesseur 80386 (en executable Windows 32 bits).</td>
+		</tr>
+		<tr>
 			<td><b>JS86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur JavaScript pour l'assembleur du microprocesseur 8086.</td>
 		</tr>
