@@ -6140,6 +6140,26 @@ Begin
           TypeTab[BaseT].Name + '" (section 8.21)');
       ExprPool[N].Left := ClassFindConstructor(BaseT, ExprPool[N].ArgFirst,
         ExprPool[N].ArgCount);
+      { extension post-TODO25 (Test14Delegates.jpp, "new                     }
+      { Test14Delegates().executer();" a l interieur de main(), un MEMBRE       }
+      { de Test14Delegates LUI-MEME) : BOGUE REEL du MEME GENRE EXACT             }
+      { que celui deja corrige par FixupUnresolvedCalls pour un appel                }
+      { IMPLICITE (Test06ProprietesBean.jpp) - le constructeur PAR                       }
+      { DEFAUT (section 8.6) n est synthetise par ParseClassDecl QU APRES      }
+      { que ParseClassBody ait ENTIEREMENT fini de parser TOUS ses                    }
+      { membres (voir sa propre note d en-tete) ; "main()" est LUI-MEME           }
+      { un de ces membres, DONC encore en train d etre parse a cet                       }
+      { instant precis - AUCUN constructeur, meme le DEFAUT, n existe                }
+      { ENCORE dans MethodPool pour Test14Delegates quand "new                            }
+      { Test14Delegates()" est rencontre. IntVal (INUTILISE par                          }
+      { EK_NEWOBJECT jusqu ici, EXACTEMENT le meme etat que EK_CALL.IntVal      }
+      { avant le correctif Test06) stashe BaseT pour une SECONDE tentative        }
+      { via FixupUnresolvedCalls (etendu ci-dessous) une fois le FICHIER         }
+      { ENTIER parse - a ce moment-la, CHAQUE classe (Test14Delegates                }
+      { incluse) a fini de recevoir son constructeur (explicite OU PAR              }
+      { DEFAUT). }
+      If ExprPool[N].Left < 0 Then
+        ExprPool[N].IntVal := BaseT;
     End
     Else If (BaseT >= 0) And (BaseT < TypeCount) And (TypeTab[BaseT].Kind = TYK_DELEGATE) Then
       { TODO 16 (section 16.5/16.6) : "new NomDelegate(cible.methode)" -   }
@@ -9478,6 +9498,21 @@ Begin
     TypeTab[DelT].IsMulticast := IsMulticast;
     MethodPoolAdd(DelT, 'invoke', MK_METHOD, False, False, False,
       RetT, ParamStart, ParamN, VIS_PUBLIC);
+    { extension post-TODO25 (delegates REELS, Test14Delegates.jpp) -     }
+    { DEUX champs synthetiques SUR CHAQUE type delegate REELLEMENT                    }
+    { declare (jamais ecrits par l utilisateur - "__" est un prefixe                    }
+    { deja etabli pour cet usage, ex. __threadproc/__cap_xxx) : "__target"      }
+    { (le RECEVEUR - "this" dans "new Operation(this.additionner)",                  }
+    { l objet sur lequel la methode CIBLE doit etre appelee) et                             }
+    { "__methodPtr" (l ADRESSE REELLE de la methode CIBLE - un delegate           }
+    { est une "reference de methode LIEE", section 16.5) - voir                           }
+    { EK_NEWOBJECT/CompileCall (TODO 21+) pour leurs UNIQUES                                }
+    { consommateurs. FieldPoolAdd/CgObjectSize/CgFieldOffsetInObject                    }
+    { sont DEJA GENERIQUES (bases sur TypeTab[T].SuperTypeIdx/                              }
+    { NextFieldOfs, AUCUNE verification de Kind=TYK_CLASS) - fonctionnent           }
+    { donc CORRECTEMENT pour TYK_DELEGATE SANS AUCUN changement. }
+    FieldPoolAdd(DelT, PRIMTYPE_INT, '__target', False, False, VIS_PRIVATE);
+    FieldPoolAdd(DelT, PRIMTYPE_INT, '__methodPtr', False, False, VIS_PRIVATE);
   End;
 
   If Not PPMatch(';') Then
@@ -18445,6 +18480,51 @@ Begin
     Begin
       ClassT := ExprPool[E].Extra;
       MI := ExprPool[E].Left;
+
+      { extension post-TODO25 (delegates REELS, Test14Delegates.jpp) -    }
+      { "new Operation(this.additionner)" - MI est ICI l index MethodPool          }
+      { de la methode CIBLE deja resolue par DelegateResolveTarget                        }
+      { (ParsePostfix), PAS un constructeur (les delegates n en ont                    }
+      { JAMAIS, section 16.5) - retour ANTICIPE, AVANT le garde-fou                     }
+      { generique juste en-dessous (qui rejetterait TOUT TYK_DELEGATE                }
+      { avec "Kind <> TYK_CLASS") : alloue un OBJET de DEUX champs                       }
+      { synthetiques (__target/__methodPtr, voir ParseDelegateDecl) -               }
+      { __target = l expression RECEVEUR de la reference "cible.methode"        }
+      { (ExprPool[ArgE].Left, ex. "this" - compilee NORMALEMENT, EAX)             }
+      { ; __methodPtr = l ADRESSE REELLE de la methode CIBLE                                }
+      { (MethodAsmLabelG(MI) - une VRAIE methode utilisateur, TOUJOURS                }
+      { compilee par ailleurs puisqu elle appartient a une classe                          }
+      { CONCRETE ordinaire, AUCUNE garde HasXImpl necessaire ICI                          }
+      { contrairement aux trampolines Thread/AWT). L ARGUMENT ECRIT LUI-        }
+      { MEME (l EK_SELECTOR "cible.methode" tout entier) n est JAMAIS                }
+      { compile comme une VALEUR - ce serait tenter de LIRE un CHAMP                  }
+      { nomme "additionner", qui n existe pas (c est une METHODE) : SEUL              }
+      { son RECEVEUR (.Left) est une expression REELLE. }
+      If TypeTab[ClassT].Kind = TYK_DELEGATE Then
+      Begin
+        If MI < 0 Then
+        Begin
+          FatalError('generateur de code : construction de delegate non ' +
+            'resolue (reference "cible.methode" introuvable ou incompatible ' +
+            'avec la signature du delegate, section 16.5-16.8)');
+          Exit;
+        End;
+        EmitInstr('PUSH ' + IntToStrG(CgObjectSize(ClassT)));
+        EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'ALLOC');
+        EmitInstr('ADD ESP,4');
+        EmitInstr('MOV EBX,EAX');
+        EmitInstr('MOV ECX,' + IntToStrG(ClassT));
+        EmitInstr('MOV ' + CgAddrOperand('EBX', 0) + ',ECX');
+        CompileExpr(ExprPool[ExprArgPool[ExprPool[E].ArgFirst]].Left);
+        EmitInstr('MOV ' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+          ClassFindField(ClassT, '__target'))) + ',EAX');
+        EmitInstr('LEA EAX,[' + MethodAsmLabelG(MI) + ']');
+        EmitInstr('MOV ' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+          ClassFindField(ClassT, '__methodPtr'))) + ',EAX');
+        EmitInstr('MOV EAX,EBX');
+        Exit;
+      End;
+
       { extension post-TODO25, ONZIEME tranche : Vector/Hashtable/Integer   }
       { (Test10Collections.jpp) sont IsStdlib avec un constructeur SANS            }
       { corps SOURCE reel (BodyStmtIdx<0, EXACTEMENT le cas que ce garde-           }
@@ -18978,6 +19058,48 @@ Begin
     CompileExpr(ExprArgPool[ExprPool[E].ArgFirst]);
     EmitInstr('PUSH EAX');
     EmitInstr('CALL _ExitProcess@4');
+    Exit;
+  End;
+
+  { extension post-TODO25 (delegates REELS, Test14Delegates.jpp) -       }
+  { "operation.invoke(20, 22)"/"notification.invoke(\"...\")" - MI est     }
+  { l entree "invoke" SYNTHETISEE du type delegate LUI-MEME                              }
+  { (TypeTab[DelT].MethodFirst, ParseDelegateDecl), JAMAIS un VRAI                   }
+  { corps SOURCE (BodyStmtIdx reste TOUJOURS -1) - reconnue PAR NOM/PAR          }
+  { GENRE (TYK_DELEGATE), MEME technique que Vector/Hashtable. Pousse           }
+  { les arguments NORMALEMENT (int/String ici, AUCUN besoin de la                     }
+  { variante double/float - AUCUN echantillon de delegate n en a),                    }
+  { PUIS lit __target/__methodPtr sur l instance DELEGATE (le receveur,          }
+  { ex. "operation") et appelle __methodPtr INDIRECTEMENT (CALL EAX,               }
+  { nouvelle forme de BinEncodeCall) avec __target POUSSE EN DERNIER              }
+  { comme "this" - EXACTEMENT le MEME protocole d appel qu un CALL                    }
+  { DIRECT ordinaire vers cette meme methode, seule l ADRESSE differe             }
+  { (indirecte, LUE a l EXECUTION, plutot qu une etiquette FIXE connue            }
+  { a la compilation) - "AUCUNE chaine multicast REELLE" (TODO 16, "+="        }
+  { hors de portee) : un SEUL __target/__methodPtr par instance,                        }
+  { EXACTEMENT ce que Test14Delegates.jpp construit et invoque. }
+  If (MethodPool[MI].Name = 'invoke') And
+     (TypeTab[MethodPool[MI].OwnerTypeIdx].Kind = TYK_DELEGATE) Then
+  Begin
+    ArgBytes := 0;
+    For I := ExprPool[E].ArgCount - 1 DownTo 0 Do
+    Begin
+      CompileExpr(ExprArgPool[ExprPool[E].ArgFirst + I]);
+      EmitInstr('PUSH EAX');
+      Inc(ArgBytes, 4);
+    End;
+    If ExprPool[ExprPool[E].Left].Kind = EK_SELECTOR Then
+      CompileExpr(ExprPool[ExprPool[E].Left].Left)
+    Else
+      EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+    EmitInstr('MOV EBX,EAX');
+    EmitInstr('MOV ECX,' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+      ClassFindField(MethodPool[MI].OwnerTypeIdx, '__target'))));
+    EmitInstr('PUSH ECX');
+    EmitInstr('MOV EAX,' + CgAddrOperand('EBX', CgFieldOffsetInObject(
+      ClassFindField(MethodPool[MI].OwnerTypeIdx, '__methodPtr'))));
+    EmitInstr('CALL EAX');
+    EmitInstr('ADD ESP,' + IntToStrG(ArgBytes + 4));
     Exit;
   End;
 
@@ -21413,8 +21535,24 @@ Begin
   BinAddFixup(BFX_REL32, BinTrim(Op1Text));
 End;
 
+{ extension post-TODO25 (delegates REELS, Test14Delegates.jpp) - forme  }
+{ INDIRECTE ("CALL EAX", FF /2, ModRM registre-direct) - MEME technique         }
+{ EXACTE que la forme indirecte deja existante de BinEncodeJmp (FF /4,           }
+{ _JPPRT_THROW) - un delegate.invoke(...) appelle une adresse de                       }
+{ methode STOCKEE dans un CHAMP a l EXECUTION (des delegates DIFFERENTS      }
+{ ciblent des methodes DIFFERENTES), jamais connue a la compilation             }
+{ COMME UNE ETIQUETTE fixe - "CALL <label>" (E8, forme relative                        }
+{ EXISTANTE) ne convient donc pas ICI. }
 Procedure BinEncodeCall(Const Op1Text: TString);
+Var RegNum: Integer;
 Begin
+  RegNum := BinReg32(BinTrim(Op1Text));
+  If RegNum >= 0 Then
+  Begin
+    BinEmit8($FF);
+    BinEmit8($D0 Or RegNum);
+    Exit;
+  End;
   BinEmit8($E8);
   BinEmit32(0);
   BinAddFixup(BFX_REL32, BinTrim(Op1Text));
@@ -22815,6 +22953,23 @@ Var E, Cur, MI, OwnerT, BaseT : Integer;
 Begin
   For E := 0 To ExprCount - 1 Do
   Begin
+    { extension post-TODO25 (Test14Delegates.jpp) : "new X()" ou X n a    }
+    { AUCUN constructeur EXPLICITE et n en avait donc ENCORE aucun,                  }
+    { PAS MEME le DEFAUT, au moment ou "new X(...)" a ete PARSE (voir la          }
+    { note d en-tete de ParseNewExpr/EK_NEWOBJECT.IntVal) - MEME                            }
+    { discipline PUREMENT ADDITIVE que le cas EK_CALL ci-dessous : si la          }
+    { seconde tentative echoue ELLE AUSSI, Left reste -1 et le                                }
+    { generateur de code s arrete EXACTEMENT comme avant, MEME message           }
+    { FatalError. }
+    If (ExprPool[E].Kind = EK_NEWOBJECT) And (ExprPool[E].Left < 0) Then
+    Begin
+      BaseT := ExprPool[E].IntVal;
+      If (BaseT >= 0) And (BaseT < TypeCount) Then
+        ExprPool[E].Left := ClassFindConstructor(BaseT, ExprPool[E].ArgFirst,
+          ExprPool[E].ArgCount);
+      Continue;
+    End;
+
     If (ExprPool[E].Kind <> EK_CALL) Or (ExprPool[E].Extra >= 0) Then Continue;
     Cur := ExprPool[E].Left;
     If Cur < 0 Then Continue;
