@@ -15095,6 +15095,26 @@ Begin
   { allouer, la valeur entiere n etant jamais connue a l avance). }
   EmitRaw(ASM_PFX_RUNTIME + 'TRUE_STR DB "true",0');
   EmitRaw(ASM_PFX_RUNTIME + 'FALSE_STR DB "false",0');
+  { extension post-TODO25 (Test18JDirect.jpp, "e" concatene dans          }
+  { "\"J/Direct indisponible : \" + e" a l interieur d un "catch                    }
+  { (UnsatisfiedLinkError e)") : "_JPPRT_COLON_SPACE" separe le NOM DE          }
+  { CLASSE du message dans _JPPRT_THROWABLE_TO_STR (EmitRuntimeLibrary,           }
+  { voir sa propre note d en-tete) - MEME esprit EXACT que TRUE_STR/               }
+  { FALSE_STR (constante FIXE, jamais allouee). "_JPPRT_CLASSNAME_<I>"          }
+  { (une PAR classe TYK_CLASS DERIVANT de Throwable, jamais PAR                        }
+  { echantillon - la liste COMPLETE des exceptions preexiste TOUJOURS             }
+  { dans TypeTab au moment ou EmitDataSeg s execute, AUCUNE ne peut               }
+  { etre ajoutee PLUS TARD par le fichier COMPILE) fournit le nom de              }
+  { classe COMPILE-TIME pour CHAQUE type Throwable REELLEMENT connu -             }
+  { quelques octets GASPILLES pour les exceptions jamais concatenees,            }
+  { MEME tolerance EXACTE que documentee ailleurs (ex. VectorEnumeratorT,   }
+  { champs static "melanges" - JAMAIS incorrect, simplement pas la               }
+  { disposition la plus compacte possible). }
+  EmitRaw(ASM_PFX_RUNTIME + 'COLON_SPACE DB ": ",0');
+  For I := 0 To TypeCount - 1 Do
+    If (TypeTab[I].Kind = TYK_CLASS) And TypeIsSubclassOf(I, PDT_THROWABLE) Then
+      EmitRaw(ASM_PFX_RUNTIME + 'CLASSNAME_' + IntToStrG(I) + ' DB "' +
+        TypeTab[I].Name + '",0');
   For I := 0 To CgStrCount - 1 Do
     EmitRaw(ASM_PFX_STRING + IntToStrG(I) + ' DB "' + CgStrPool[I] + '",0');
   { extension post-TODO25, HUITIEME tranche (double/float) - ASM_PFX_FLOAT  }
@@ -16606,6 +16626,51 @@ Begin
   EmitInstr('RET');
   EmitBlankLine;
 
+  { _JPPRT_THROWABLE_TO_STR(objPtr, classNameStrPtr) -> EAX = pointeur   }
+  { de chaine : conversion Throwable->String pour la concatenation "+"          }
+  { (CompileToStringValue, "\"...\" + e" - Test18JDirect.jpp, "e" dans un       }
+  { "catch (UnsatisfiedLinkError e)") - REPRODUIT la VRAIE regle de              }
+  { Throwable.toString() (section 11.2/API Java standard) :                                }
+  { "className" SEUL si getMessage() est null, SINON "className: message"     }
+  { - classNameStrPtr est un pointeur COMPILE-TIME CONNU                                    }
+  { (_JPPRT_CLASSNAME_<TypeIdx>, EmitDataSeg - le TYPE STATIQUE de                     }
+  { l expression, JAMAIS un dispatch polymorphique sur le type                             }
+  { DYNAMIQUE reel - documente PLUTOT que devine : suffit EXACTEMENT a           }
+  { Test18JDirect.jpp, ou "e" n a AUCUNE sous-classe possible). "message"    }
+  { est LU directement au deplacement FIXE de Throwable.message                       }
+  { (SymTab/FieldPool GENERIQUE, IDENTIQUE quelle que soit la sous-classe        }
+  { CONCRETE, voir CgFieldOffsetInObject) - REUTILISE _JPPRT_CONCAT                    }
+  { (ONZIEME tranche) deux fois plutot que d ecrire un troisieme                       }
+  { algorithme de copie de chaines. }
+  EmitLabel(ASM_PFX_RUNTIME + 'THROWABLE_TO_STR');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('MOV EAX,' + CgAddrOperand('EAX', CgFieldOffsetInObject(
+    ClassFindField(PDT_THROWABLE, 'message'))));
+  EmitInstr('CMP EAX,0');
+  EmitInstr('JE ' + ASM_PFX_RUNTIME + 'TTS_NOMSG');
+  EmitInstr('PUSH DWORD PTR [EBP+12]');
+  EmitInstr('LEA EAX,[' + ASM_PFX_RUNTIME + 'COLON_SPACE]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'CONCAT');
+  EmitInstr('ADD ESP,8');
+  EmitInstr('PUSH EAX');
+  EmitInstr('MOV ECX,DWORD PTR [EBP+8]');
+  EmitInstr('MOV ECX,' + CgAddrOperand('ECX', CgFieldOffsetInObject(
+    ClassFindField(PDT_THROWABLE, 'message'))));
+  EmitInstr('PUSH ECX');
+  EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'CONCAT');
+  EmitInstr('ADD ESP,8');
+  EmitInstr('JMP ' + ASM_PFX_RUNTIME + 'TTS_DONE');
+  EmitLabel(ASM_PFX_RUNTIME + 'TTS_NOMSG');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+12]');
+  EmitLabel(ASM_PFX_RUNTIME + 'TTS_DONE');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
   { extension post-TODO25, TREIZIEME tranche (Thread REEL,                    }
   { Test11Threads.jpp) - _JPPRT_THREAD_INIT("new Thread(r,nom)", stocke          }
   { UNIQUEMENT "r" - "nom" n est LU par AUCUN echantillon, "getName()"           }
@@ -17549,11 +17614,31 @@ Begin
     EmitInstr('ADD ESP,4');
     Exit;
   End;
+  { extension post-TODO25 (Test18JDirect.jpp, "\"J/Direct indisponible : \" +   }
+  { e" a l interieur d un "catch (UnsatisfiedLinkError e)") - toute            }
+  { expression dont le TYPE STATIQUE est une VRAIE classe D EXCEPTION            }
+  { (TypeIsSubclassOf(T, PDT_THROWABLE) - Throwable/Exception/Error et                }
+  { CHACUNE de leurs sous-classes, predeclarees OU utilisateur) obtient           }
+  { desormais une conversion REELLE (_JPPRT_THROWABLE_TO_STR, voir sa              }
+  { propre note d en-tete) reproduisant Throwable.toString() : le NOM DE          }
+  { CLASSE COMPILE-TIME (_JPPRT_CLASSNAME_<T>, EmitDataSeg - le type                  }
+  { STATIQUE, jamais un VRAI dispatch polymorphique sur le type                          }
+  { DYNAMIQUE - documente PLUTOT que devine, suffit EXACTEMENT a "e" qui        }
+  { n a AUCUNE sous-classe possible ICI) suivi de ": message" SI                       }
+  { getMessage() n est pas null. }
+  If (T >= 0) And (T < TypeCount) And (TypeTab[T].Kind = TYK_CLASS) And
+     TypeIsSubclassOf(T, PDT_THROWABLE) Then
+  Begin
+    EmitInstr('MOV ECX,EAX');
+    EmitInstr('LEA EAX,[' + ASM_PFX_RUNTIME + 'CLASSNAME_' + IntToStrG(T) + ']');
+    EmitInstr('PUSH EAX');
+    EmitInstr('PUSH ECX');
+    EmitInstr('CALL ' + ASM_PFX_RUNTIME + 'THROWABLE_TO_STR');
+    EmitInstr('ADD ESP,8');
+    Exit;
+  End;
   FatalError('generateur de code : conversion en chaine non couverte par ' +
-    'cette extension pour la concatenation "+" (double/float/long sont ' +
-    'TOUS couverts depuis les HUITIEME/NEUVIEME tranches - un type NON ' +
-    'PREVU a atteint ce point, voir la note d''en-tete de section) : type #' +
-    IntToStrG(T));
+    'cette extension pour la concatenation "+" - type #' + IntToStrG(T));
 End;
 
 { CompileConcat : "+" dont le TYPE RESULTAT est PDT_STRING (regle EXACTE  }
@@ -18964,7 +19049,7 @@ Var
   ParamsOK : Boolean;
   CandType, CandMIArr : Array[0..MAX_CG_DISPATCH - 1] Of Integer;
   CandLbl : Array[0..MAX_CG_DISPATCH - 1] Of TString;
-  LblDone, LblLoop, LblEnd : TString;
+  LblDone, LblLoop, LblEnd, DllEntry : TString;
 Begin
   MI := ExprPool[E].Extra;
 
@@ -19715,7 +19800,30 @@ Begin
   { CompileExpr l attend, aucune conversion necessaire. }
   If MethodPool[MI].IsDllImport Then
   Begin
-    EmitRaw('EXTRN _' + MethodPool[MI].DllEntrypoint + '@' +
+    { extension post-TODO25 (Test18JDirect.jpp, "@dll.import(\"USER32\",     }
+    { auto)" SANS entrypoint EXPLICITE) : DllEntrypoint reste VOLONTAIREMENT  }
+    { '' au PARSING quand aucun nom d export EXPLICITE n est ecrit                   }
+    { (section 17.9, deja verifie par DirectiveSelfTest - "AUCUN                     }
+    { entrypoint... NON exerce par cet echantillon" a l epoque, avant             }
+    { que ce TODO 21+ n existe) - "" n est PAS un nom d export Win32                }
+    { valide (produirait "EXTRN _@4:NEAR"/"CALL _@4", un symbole VIDE,             }
+    { BOGUE REEL trouve PAR EXECUTION - STATUS_DLL_NOT_FOUND au                          }
+    { lancement, table d import PE corrompue) : la VRAIE regle J/Direct             }
+    { (section 17.9) est que le nom EXPORTE par DEFAUT, en l absence               }
+    { d un entrypoint EXPLICITE, est le nom de la METHODE JAVA elle-meme          }
+    { - EXACTEMENT ce que MessageBeep() exerce ("MessageBeep" cote                     }
+    { Win32 EST litteralement "MessageBeep" cote Java, AUCUNE suffixe               }
+    { A/W puisque MessageBeep n a AUCUNE variante ANSI/Unicode - une                   }
+    { VRAIE resolution "auto" A/W generale resterait une extension                     }
+    { FUTURE, non devinee, AUCUN echantillon n exerce une fonction avec            }
+    { de VRAIES variantes A/W). Calcule ICI (codegen), JAMAIS ecrit                    }
+    { dans MethodPool - ne perturbe PAS DirectiveSelfTest, qui verifie                }
+    { l etat du PARSING, PAS celui-ci. }
+    If MethodPool[MI].DllEntrypoint <> '' Then
+      DllEntry := MethodPool[MI].DllEntrypoint
+    Else
+      DllEntry := MethodPool[MI].Name;
+    EmitRaw('EXTRN _' + DllEntry + '@' +
       IntToStrG(MethodPool[MI].ParamCount * 4) + ':NEAR');
     For I := ExprPool[E].ArgCount - 1 DownTo 0 Do
     Begin
@@ -19723,7 +19831,7 @@ Begin
       CompileExpr(ArgE);
       EmitInstr('PUSH EAX');
     End;
-    EmitInstr('CALL _' + MethodPool[MI].DllEntrypoint + '@' +
+    EmitInstr('CALL _' + DllEntry + '@' +
       IntToStrG(MethodPool[MI].ParamCount * 4));
     Exit;
   End;
@@ -22150,6 +22258,16 @@ End;
 { LONGUE plutot qu une deuxieme comparaison speciale (GetModuleHandleA          }
 { reste, LUI, KERNEL32.DLL - le cas PAR DEFAUT ci-dessous, AUCUN                      }
 { changement necessaire). }
+{ extension post-TODO25 (Test18JDirect.jpp, "@dll.import(\"USER32\",  }
+{ auto)" - "MessageBeep") : REJOINT la liste - MEME mecanisme EXACT             }
+{ (nom decore code en dur -> DLL), portee ETROITE deja etablie et                    }
+{ documentee ("extendre SEULEMENT quand un TROISIEME DLL est                              }
+{ REELLEMENT necessaire") - AUCUNE tentative de generaliser vers une             }
+{ VRAIE consultation de MethodPool[MI].DllLibName ICI (cette fonction          }
+{ ne recoit qu un NOM decore, jamais un index MethodPool - la                          }
+{ generaliser exigerait un mecanisme de correspondance INVERSE                          }
+{ nom->MI, hors de portee tant qu un SEUL echantillon a la fois                          }
+{ n exerce jamais plus d une poignee de fonctions USER32.DLL). }
 Function BinImportDllFor(Const Name: TString): TString;
 Begin
   If (Name = '_MessageBoxA@16') Or (Name = '_RegisterClassA@4') Or
@@ -22158,7 +22276,7 @@ Begin
      (Name = '_GetMessageA@16') Or (Name = '_TranslateMessage@4') Or
      (Name = '_DispatchMessageA@4') Or (Name = '_SetWindowTextA@8') Or
      (Name = '_DestroyWindow@4') Or (Name = '_LoadCursorA@8') Or
-     (Name = '_GetClientRect@8') Then
+     (Name = '_GetClientRect@8') Or (Name = '_MessageBeep@4') Then
     BinImportDllFor := 'USER32.DLL'
   Else
     BinImportDllFor := PE_KERNEL32;
@@ -23043,12 +23161,39 @@ End;
 { note d en-tete) plutot qu inlines ICI - separation de responsabilite,               }
 { AUCUN changement de comportement (meme sequence exacte qu avant). }
 Procedure Run;
-Var AsmFile : TString; AsmFileDbgI : Integer;
+Var AsmFile : TString; AsmFileDbgI : Integer; HelpArgI : Integer;
 Begin
   ErrorCount := 0;
   WarnCount  := 0;
   TotalLines := 0;
   OutFOpen   := False;
+
+  { BOGUE REEL signale par l utilisateur ("jppcw32 /?" affiche TOUS les }
+  { avertissements de SemanticSelfTest AVANT l aide") : RunAllSelfTests           }
+  { s execute INCONDITIONNELLEMENT, MEME pour "-h"/"--help"/"/?" ou                  }
+  { AUCUN argument - SemanticSelfTest (voir sa propre note d en-tete)             }
+  { force REELLEMENT Opts.Warnings a Vrai le temps de PROUVER que                       }
+  { WarnMsg incremente WarnCount, donc CES avertissements de test                       }
+  { s affichent VRAIMENT sur la console, avant meme que ParseArgs (qui         }
+  { detecte "-h" etc.) n ait la moindre chance de s executer. Corrige EN         }
+  { VERIFIANT ICI, AVANT RunAllSelfTests, EXACTEMENT la MEME condition           }
+  { que ParseArgs plus bas (ParamCount=0 OU un argument d aide) - PUREMENT   }
+  { ADDITIF, ParseArgs elle-meme reste INCHANGEE (toujours appelee APRES         }
+  { RunAllSelfTests dans le cas NORMAL, pour ne PAS perturber la danse               }
+  { Opts.Warnings toggle/restore documentee par SemanticSelfTest - SI            }
+  { ParseArgs elle-meme etait deplacee AVANT RunAllSelfTests, un VRAI              }
+  { "-w" utilisateur serait EFFACE par le "Opts.Warnings := False" final           }
+  { de SemanticSelfTest, UNE VRAIE regression, EVITEE en ne touchant                }
+  { QUE le cas d aide ICI). "ShowHelp" appelle deja "Halt" LUI-MEME,                   }
+  { AUCUN "Exit" supplementaire n est necessaire apres. }
+  If ParamCount = 0 Then
+    ShowHelp
+  Else
+    For HelpArgI := 1 To ParamCount Do
+      If (ParamStr(HelpArgI) = '-h') Or (ParamStr(HelpArgI) = '--help') Or
+         (ParamStr(HelpArgI) = '/?') Or (ParamStr(HelpArgI) = '/h') Or
+         (ParamStr(HelpArgI) = '/H') Then
+        ShowHelp;
 
   RunAllSelfTests;
 
