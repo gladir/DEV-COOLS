@@ -735,6 +735,41 @@ Program JSPCW32;
               appels de methode/exception - AUCUNE de ces cinq pages
               n a jamais ete debloquee, seul le DIAGNOSTIC affiche a
               change).
+
+  EXTENSION 2 (post-TODO25) - DateFormat.getDateTimeInstance().
+  format(new Date()) IMMEDIAT
+            DEMANDEE EXPLICITEMENT par l utilisateur (2026-08-02, echec
+              observe de Test02Directives.jsp APRES l extension 1 -
+              CORRIGE ICI : cette page ne reste PAS bloquee "pour
+              toujours" comme l extension 1 le supposait, contrairement a
+              Test03Declarations.jsp/Test07ObjetsImplicites.jsp/Test12
+              Erreur.jsp/Test12GestionErreur.jsp qui restent, EUX,
+              reellement bloques par une AUTRE construction - correction
+              honnete d une supposition prealable, pas une erreur
+              cachee).
+            PORTEE ENCORE PLUS ETROITE que l extension 1 : la CHAINE
+              EXACTE "DateFormat.getDateTimeInstance().format(new
+              Date())" (selecteur par selecteur, argument par argument -
+              CgIsImmediateDatePrint, PARTAGEE par les TROIS backends,
+              AUCUNE duplication de la logique de reconnaissance) est
+              routee vers le MEME _JSPRT_PrintDate deja construit par
+              l extension 1 - AUCUN nouveau runtime, puisque "formater
+              la date/l heure COURANTE" est deja EXACTEMENT ce que fait
+              cet appel Java (une bibliotheque de formatage DateFormat
+              complete, avec des styles/locales reels, resterait hors de
+              portee - roadmap d en-tete, "erreur honnete plutot qu
+              invention").
+            RESULTAT HONNETE (verifie par EXECUTION REELLE le
+              2026-08-02) : 3/17 echantillons compilent ET s executent
+              desormais de bout en bout (Test02Directives.jsp rejoint
+              Test01Bonjour.jsp/Test10Include.jsp). AUCUNE regression :
+              les 14 autres restent inchanges (MEME repartition), avec
+              MISE A JOUR du message pour Test03Declarations.jsp/Test07
+              ObjetsImplicites.jsp/Test12Erreur.jsp/Test12
+              GestionErreur.jsp (le TEXTE du diagnostic mentionne
+              desormais les DEUX formes reconnues, MEME arret PROPRE,
+              MEME construction bloquante reelle - appels de methode
+              utilisateur/objets implicites/exception, respectivement).
 ============================================================ *)
 
 { ============================================================ }
@@ -10405,17 +10440,66 @@ End;
 { decisions TODO 18) - TOUT AUTRE SK_ arrete la compilation PROPREMENT               }
 { (FatalError, JAMAIS un .asm silencieusement incomplet), voir la note                 }
 { d en-tete de section pour la justification de cette limite. }
-{ SK_PRINT_EXPR (EXTENSION post-TODO25) : MEME portee etroite/MEME         }
-{ special-case documente que PeCodeGenStmt (voir sa note d en-tete           }
-{ complete) - SEULE "new java.util.Date()"/"new Date()" SANS argument            }
-{ est reconnue. }
+{ SK_PRINT_EXPR (EXTENSION post-TODO25, ETENDUE - extension 2) : MEME     }
+{ portee etroite/MEME special-case documente que PeCodeGenStmt/                  }
+{ BinCodeGenStmt (voir leur note d en-tete complete) - PARTAGEE par les              }
+{ TROIS backends (MEME fonction, aucune duplication de la logique de                    }
+{ reconnaissance). DEUX formes reconnues, TOUTES DEUX traduites vers le                    }
+{ MEME appel runtime _JSPRT_PrintDate (date/heure locale REELLE, section                     }
+{ 18/21) puisque "DateFormat.getDateTimeInstance().format(new Date())"                          }
+{ formate deja "la date/l heure courante" - EXACTEMENT ce que                                    }
+{ _JSPRT_PrintDate calcule, aucune DUPLICATION de runtime necessaire :               }
+{   1. "new java.util.Date()"/"new Date()" SANS argument, DIRECTEMENT           }
+{      dans <%= %> (Test01Bonjour.jsp reel, extension 1).                             }
+{   2. "DateFormat.getDateTimeInstance().format(new Date())" (Test02                     }
+{      Directives.jsp reel, extension 2) - la CHAINE EXACTE est verifiee,                  }
+{      argument par argument/selecteur par selecteur, JAMAIS une                              }
+{      approximation ("n importe quel .format(...)" ne serait PAS reconnu). }
 Function CgIsImmediateDatePrint(ExprIdx: Integer): Boolean;
+Var FormatCallL, FormatArg0, GetInstL, GetInstSelL, DateFormatIdentL: Integer;
 Begin
-  CgIsImmediateDatePrint :=
-    (ExprPool[ExprIdx].Kind = EK_NEWOBJECT) And
-    ((ExprPool[ExprIdx].NameVal = 'java.util.Date') Or
-     (ExprPool[ExprIdx].NameVal = 'Date')) And
-    (ExprPool[ExprIdx].ArgCount = 0);
+  CgIsImmediateDatePrint := False;
+  If ExprIdx < 0 Then Exit;
+
+  { --- forme 1 : new java.util.Date() / new Date() --- }
+  If (ExprPool[ExprIdx].Kind = EK_NEWOBJECT) And
+     ((ExprPool[ExprIdx].NameVal = 'java.util.Date') Or
+      (ExprPool[ExprIdx].NameVal = 'Date')) And
+     (ExprPool[ExprIdx].ArgCount = 0) Then
+  Begin
+    CgIsImmediateDatePrint := True;
+    Exit;
+  End;
+
+  { --- forme 2 : DateFormat.getDateTimeInstance().format(new Date()) --- }
+  If (ExprPool[ExprIdx].Kind <> EK_CALL) Or (ExprPool[ExprIdx].ArgCount <> 1) Then
+    Exit;
+  FormatCallL := ExprPool[ExprIdx].Left; { doit etre EK_SELECTOR "format" }
+  FormatArg0  := ExprArgPool[ExprPool[ExprIdx].ArgFirst];
+  If (FormatCallL < 0) Or (FormatArg0 < 0) Then Exit;
+  If (ExprPool[FormatCallL].Kind <> EK_SELECTOR) Or
+     (ExprPool[FormatCallL].NameVal <> 'format') Then Exit;
+  If (ExprPool[FormatArg0].Kind <> EK_NEWOBJECT) Or
+     ((ExprPool[FormatArg0].NameVal <> 'java.util.Date') And
+      (ExprPool[FormatArg0].NameVal <> 'Date')) Or
+     (ExprPool[FormatArg0].ArgCount <> 0) Then Exit;
+
+  GetInstL := ExprPool[FormatCallL].Left; { doit etre EK_CALL "getDateTimeInstance()" }
+  If GetInstL < 0 Then Exit;
+  If (ExprPool[GetInstL].Kind <> EK_CALL) Or (ExprPool[GetInstL].ArgCount <> 0) Then Exit;
+
+  GetInstSelL := ExprPool[GetInstL].Left; { doit etre EK_SELECTOR "getDateTimeInstance" }
+  If GetInstSelL < 0 Then Exit;
+  If (ExprPool[GetInstSelL].Kind <> EK_SELECTOR) Or
+     (ExprPool[GetInstSelL].NameVal <> 'getDateTimeInstance') Then Exit;
+
+  DateFormatIdentL := ExprPool[GetInstSelL].Left; { doit etre EK_IDENT "DateFormat" }
+  If DateFormatIdentL < 0 Then Exit;
+  If (ExprPool[DateFormatIdentL].Kind <> EK_IDENT) Or
+     ((ExprPool[DateFormatIdentL].NameVal <> 'DateFormat') And
+      (ExprPool[DateFormatIdentL].NameVal <> 'java.text.DateFormat')) Then Exit;
+
+  CgIsImmediateDatePrint := True;
 End;
 
 Procedure CodeGenStmt(Idx: Integer);
@@ -10442,8 +10526,9 @@ Begin
         WriteLn(OutF, '    call _JSPRT_PrintDate')
       Else
         FatalError('generation de code (extension post-TODO25) : seule ' +
-                   '"new java.util.Date()" est geree pour <%= %> - ' +
-                   'construction non encore geree');
+                   '"new java.util.Date()"/"DateFormat.getDateTimeInstance().' +
+                   'format(new Date())" est geree pour <%= %> - construction ' +
+                   'non encore geree');
   Else
     FatalError('generation de code (TODO 21) : construction non encore ' +
                'geree - ' + StmtKindName(StmtPool[Idx].Kind));
@@ -11296,19 +11381,18 @@ Begin
         BinEmitCallInternal(PrintProcOffset);
       End;
 
-    { SK_PRINT_EXPR (EXTENSION post-TODO25) : MEME special-case etroit que    }
-    { PeCodeGenStmt/CodeGenStmt (voir leur note d en-tete complete) - SEULE       }
-    { "new java.util.Date()"/"new Date()" SANS argument est reconnue. }
+    { SK_PRINT_EXPR (EXTENSION post-TODO25, ETENDUE - extension 2) : MEME    }
+    { special-case PARTAGE (CgIsImmediateDatePrint, TODO 21) que PeCodeGenStmt/    }
+    { CodeGenStmt - voir sa note d en-tete complete pour les DEUX formes                }
+    { reconnues. }
     SK_PRINT_EXPR :
-      If (ExprPool[StmtPool[Idx].ExprIdx].Kind = EK_NEWOBJECT) And
-         ((ExprPool[StmtPool[Idx].ExprIdx].NameVal = 'java.util.Date') Or
-          (ExprPool[StmtPool[Idx].ExprIdx].NameVal = 'Date')) And
-         (ExprPool[StmtPool[Idx].ExprIdx].ArgCount = 0) Then
+      If CgIsImmediateDatePrint(StmtPool[Idx].ExprIdx) Then
         BinEmitCallInternal(PrintDateOffset)
       Else
         FatalError('generation de code (extension post-TODO25) : seule ' +
-                   '"new java.util.Date()" est geree pour <%= %> - ' +
-                   'construction non encore geree');
+                   '"new java.util.Date()"/"DateFormat.getDateTimeInstance().' +
+                   'format(new Date())" est geree pour <%= %> - construction ' +
+                   'non encore geree');
   Else
     FatalError('generation de code (TODO 23) : construction non encore ' +
                'geree - ' + StmtKindName(StmtPool[Idx].Kind));
@@ -12118,18 +12202,20 @@ Begin
         PeEmitCallInternal(PePrintOffset);
       End;
 
+    { SK_PRINT_EXPR (EXTENSION post-TODO25, ETENDUE - extension 2) : MEME    }
+    { special-case PARTAGE (CgIsImmediateDatePrint, TODO 21) que                 }
+    { BinCodeGenStmt/CodeGenStmt - voir sa note d en-tete complete pour les            }
+    { DEUX formes reconnues (Test01Bonjour.jsp/Test02Directives.jsp reels). }
     SK_PRINT_EXPR :
       Begin
         EIdx := StmtPool[Idx].ExprIdx;
-        If (ExprPool[EIdx].Kind = EK_NEWOBJECT) And
-           ((ExprPool[EIdx].NameVal = 'java.util.Date') Or
-            (ExprPool[EIdx].NameVal = 'Date')) And
-           (ExprPool[EIdx].ArgCount = 0) Then
+        If CgIsImmediateDatePrint(EIdx) Then
           PeEmitCallInternal(PePrintDateOffset)
         Else
           FatalError('generation de code (extension post-TODO25) : seule ' +
-                     '"new java.util.Date()" est geree pour <%= %> - ' +
-                     'construction non encore geree');
+                     '"new java.util.Date()"/"DateFormat.getDateTimeInstance().' +
+                     'format(new Date())" est geree pour <%= %> - construction ' +
+                     'non encore geree');
       End;
   Else
     FatalError('generation de code (TODO 24) : construction non encore ' +
