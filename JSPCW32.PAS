@@ -695,6 +695,46 @@ Program JSPCW32;
               travail FUTUR possible, hors de la portee de CE TODO 25
               precisement PARCE QUE cette portee est de rapporter
               l etat REEL plutot que de l etendre sans demande explicite.
+
+  EXTENSION 1 (post-TODO25) - "new java.util.Date()" IMMEDIAT
+            DEMANDEE EXPLICITEMENT par l utilisateur (2026-08-02, "etendre
+              le generateur de code" en reponse a l echec observe de
+              Test01Bonjour.jsp) - PORTEE DELIBEREMENT ETROITE, MEME
+              discipline "extensions incrementales separement verifiees"
+              que le roadmap d en-tete du TODO 21 : SEULE l expression
+              EXACTE "new java.util.Date()" (ou "new Date()" apres import)
+              SANS receveur ni argument, comme unique contenu d un
+              <%= %>, est reconnue - un cas SPECIAL-CASE assume, PAS une
+              VRAIE coercition-String generale (qui exigerait un modele
+              d objet/tas complet, hors de portee ICI). Format retenu :
+              "AAAA-MM-JJ HH:MM:SS" (heure locale REELLE, GetLocalTime -
+              PAS le format exact de java.util.Date.toString(), documente
+              honnetement comme une simplification DELIBEREE plutot qu une
+              reproduction fidele).
+            ETENDUE AUX TROIS backends (CodeGenPage/BinAssemblePage/
+              PeAssemblePage) - DECOUVERT PAR EXECUTION que les TROIS
+              sont necessaires : Run() les enchaine SEQUENTIELLEMENT
+              (.asm puis .obj puis .exe) et un FatalError dans le
+              PREMIER (CodeGenPage, jamais etendu au debut) empechait
+              d atteindre PeAssemblePage meme apres l avoir etendu SEUL -
+              lecon retenue et documentee plutot que masquee.
+            RESULTAT HONNETE (meme discipline que le TODO 25 lui-meme,
+              verifie par EXECUTION REELLE le 2026-08-02) : 2/17
+              echantillons compilent ET s executent desormais de bout en
+              bout (Test01Bonjour.jsp rejoint Test10Include.jsp - sortie
+              verifiee, une VRAIE date/heure du systeme apparait dans le
+              HTML produit, code de sortie 0). Les 15 autres restent
+              inchanges (MEME repartition que le rapport TODO 25 ci-
+              dessus) SAUF Test02Directives.jsp/Test03Declarations.jsp/
+              Test07ObjetsImplicites.jsp/Test12Erreur.jsp/Test12
+              GestionErreur.jsp, qui affichent maintenant le message
+              PLUS PRECIS de cette extension ("seule new java.util.
+              Date() est geree") plutot que le message generique
+              SK_PRINT_EXPR du TODO 21 - MEME arret PROPRE, MEME
+              construction bloquante reelle (DateFormat.format(...)/
+              appels de methode/exception - AUCUNE de ces cinq pages
+              n a jamais ete debloquee, seul le DIAGNOSTIC affiche a
+              change).
 ============================================================ *)
 
 { ============================================================ }
@@ -10365,6 +10405,19 @@ End;
 { decisions TODO 18) - TOUT AUTRE SK_ arrete la compilation PROPREMENT               }
 { (FatalError, JAMAIS un .asm silencieusement incomplet), voir la note                 }
 { d en-tete de section pour la justification de cette limite. }
+{ SK_PRINT_EXPR (EXTENSION post-TODO25) : MEME portee etroite/MEME         }
+{ special-case documente que PeCodeGenStmt (voir sa note d en-tete           }
+{ complete) - SEULE "new java.util.Date()"/"new Date()" SANS argument            }
+{ est reconnue. }
+Function CgIsImmediateDatePrint(ExprIdx: Integer): Boolean;
+Begin
+  CgIsImmediateDatePrint :=
+    (ExprPool[ExprIdx].Kind = EK_NEWOBJECT) And
+    ((ExprPool[ExprIdx].NameVal = 'java.util.Date') Or
+     (ExprPool[ExprIdx].NameVal = 'Date')) And
+    (ExprPool[ExprIdx].ArgCount = 0);
+End;
+
 Procedure CodeGenStmt(Idx: Integer);
 Var I, SIdx: Integer;
 Begin
@@ -10383,6 +10436,14 @@ Begin
         WriteLn(OutF, '    push OFFSET _JSPK', SIdx);
         WriteLn(OutF, '    call _JSPRT_Print');
       End;
+
+    SK_PRINT_EXPR :
+      If CgIsImmediateDatePrint(StmtPool[Idx].ExprIdx) Then
+        WriteLn(OutF, '    call _JSPRT_PrintDate')
+      Else
+        FatalError('generation de code (extension post-TODO25) : seule ' +
+                   '"new java.util.Date()" est geree pour <%= %> - ' +
+                   'construction non encore geree');
   Else
     FatalError('generation de code (TODO 21) : construction non encore ' +
                'geree - ' + StmtKindName(StmtPool[Idx].Kind));
@@ -10413,6 +10474,7 @@ Begin
   WriteLn(OutF);
   WriteLn(OutF, 'EXTERN GetStdHandle@4:NEAR');
   WriteLn(OutF, 'EXTERN WriteFile@20:NEAR');
+  WriteLn(OutF, 'EXTERN GetLocalTime@4:NEAR'); { EXTENSION post-TODO25 }
   WriteLn(OutF);
   WriteLn(OutF, 'STD_OUTPUT_HANDLE EQU -11');
   WriteLn(OutF);
@@ -10421,6 +10483,11 @@ Begin
   For I := 0 To CgStrCount - 1 Do
     WriteLn(OutF, '_JSPK', I, ' db ', AsmStringLiteral(CgStrPool[I]));
   WriteLn(OutF, '_JSPRT_BytesWritten dd 0');
+  { EXTENSION post-TODO25 : tampons de "new java.util.Date()" imprime      }
+  { immediatement (voir la note d en-tete complete pres de PeEmitPrintDate,    }
+  { TODO 24 - MEME format "AAAA-MM-JJ HH:MM:SS", MEME limite documentee). }
+  WriteLn(OutF, '_JSPRT_SysTime db 16 dup(0)');
+  WriteLn(OutF, '_JSPRT_DateStr db 19 dup ('' '')');
   WriteLn(OutF);
 
   WriteLn(OutF, '.CODE');
@@ -10441,6 +10508,93 @@ Begin
   WriteLn(OutF, '    pop ebp');
   WriteLn(OutF, '    ret 8');
   WriteLn(OutF, '_JSPRT_Print ENDP');
+  WriteLn(OutF);
+
+  { EXTENSION post-TODO25 : _JSPRT_PrintDate - MEME algorithme/MEME        }
+  { limite documentee que l encodeur PE (TODO 24, voir sa note d en-tete       }
+  { complete) - le MASM du lieur externe gere LUI-MEME les etiquettes/         }
+  { sauts si jamais on en ajoutait, mais cette sequence reste ENTIEREMENT           }
+  { LINEAIRE (aucun saut) ICI aussi, par coherence avec la version encodee            }
+  { a la main. }
+  WriteLn(OutF, '_JSPRT_PrintDate PROC');
+  WriteLn(OutF, '    push ebp');
+  WriteLn(OutF, '    mov ebp, esp');
+  WriteLn(OutF, '    push OFFSET _JSPRT_SysTime');
+  WriteLn(OutF, '    call GetLocalTime@4');
+  WriteLn(OutF, '    movzx eax, word ptr [_JSPRT_SysTime]');
+  WriteLn(OutF, '    xor edx, edx');
+  WriteLn(OutF, '    mov ecx, 100');
+  WriteLn(OutF, '    div ecx');
+  WriteLn(OutF, '    xor edx, edx');
+  WriteLn(OutF, '    mov ecx, 10');
+  WriteLn(OutF, '    div ecx');
+  WriteLn(OutF, '    add al, ''0''');
+  WriteLn(OutF, '    add dl, ''0''');
+  WriteLn(OutF, '    mov [_JSPRT_DateStr+0], al');
+  WriteLn(OutF, '    mov [_JSPRT_DateStr+1], dl');
+  WriteLn(OutF, '    movzx eax, word ptr [_JSPRT_SysTime]');
+  WriteLn(OutF, '    xor edx, edx');
+  WriteLn(OutF, '    mov ecx, 100');
+  WriteLn(OutF, '    div ecx');
+  WriteLn(OutF, '    mov eax, edx');
+  WriteLn(OutF, '    xor edx, edx');
+  WriteLn(OutF, '    mov ecx, 10');
+  WriteLn(OutF, '    div ecx');
+  WriteLn(OutF, '    add al, ''0''');
+  WriteLn(OutF, '    add dl, ''0''');
+  WriteLn(OutF, '    mov [_JSPRT_DateStr+2], al');
+  WriteLn(OutF, '    mov [_JSPRT_DateStr+3], dl');
+  WriteLn(OutF, '    mov byte ptr [_JSPRT_DateStr+4], ''-''');
+  WriteLn(OutF, '    movzx eax, word ptr [_JSPRT_SysTime+2]');
+  WriteLn(OutF, '    xor edx, edx');
+  WriteLn(OutF, '    mov ecx, 10');
+  WriteLn(OutF, '    div ecx');
+  WriteLn(OutF, '    add al, ''0''');
+  WriteLn(OutF, '    add dl, ''0''');
+  WriteLn(OutF, '    mov [_JSPRT_DateStr+5], al');
+  WriteLn(OutF, '    mov [_JSPRT_DateStr+6], dl');
+  WriteLn(OutF, '    mov byte ptr [_JSPRT_DateStr+7], ''-''');
+  WriteLn(OutF, '    movzx eax, word ptr [_JSPRT_SysTime+6]');
+  WriteLn(OutF, '    xor edx, edx');
+  WriteLn(OutF, '    mov ecx, 10');
+  WriteLn(OutF, '    div ecx');
+  WriteLn(OutF, '    add al, ''0''');
+  WriteLn(OutF, '    add dl, ''0''');
+  WriteLn(OutF, '    mov [_JSPRT_DateStr+8], al');
+  WriteLn(OutF, '    mov [_JSPRT_DateStr+9], dl');
+  WriteLn(OutF, '    mov byte ptr [_JSPRT_DateStr+10], '' ''');
+  WriteLn(OutF, '    movzx eax, word ptr [_JSPRT_SysTime+8]');
+  WriteLn(OutF, '    xor edx, edx');
+  WriteLn(OutF, '    mov ecx, 10');
+  WriteLn(OutF, '    div ecx');
+  WriteLn(OutF, '    add al, ''0''');
+  WriteLn(OutF, '    add dl, ''0''');
+  WriteLn(OutF, '    mov [_JSPRT_DateStr+11], al');
+  WriteLn(OutF, '    mov [_JSPRT_DateStr+12], dl');
+  WriteLn(OutF, '    mov byte ptr [_JSPRT_DateStr+13], '':''');
+  WriteLn(OutF, '    movzx eax, word ptr [_JSPRT_SysTime+10]');
+  WriteLn(OutF, '    xor edx, edx');
+  WriteLn(OutF, '    mov ecx, 10');
+  WriteLn(OutF, '    div ecx');
+  WriteLn(OutF, '    add al, ''0''');
+  WriteLn(OutF, '    add dl, ''0''');
+  WriteLn(OutF, '    mov [_JSPRT_DateStr+14], al');
+  WriteLn(OutF, '    mov [_JSPRT_DateStr+15], dl');
+  WriteLn(OutF, '    mov byte ptr [_JSPRT_DateStr+16], '':''');
+  WriteLn(OutF, '    movzx eax, word ptr [_JSPRT_SysTime+12]');
+  WriteLn(OutF, '    xor edx, edx');
+  WriteLn(OutF, '    mov ecx, 10');
+  WriteLn(OutF, '    div ecx');
+  WriteLn(OutF, '    add al, ''0''');
+  WriteLn(OutF, '    add dl, ''0''');
+  WriteLn(OutF, '    mov [_JSPRT_DateStr+17], al');
+  WriteLn(OutF, '    mov [_JSPRT_DateStr+18], dl');
+  WriteLn(OutF, '    push 19');
+  WriteLn(OutF, '    push OFFSET _JSPRT_DateStr');
+  WriteLn(OutF, '    call _JSPRT_Print');
+  WriteLn(OutF, '    pop ebp');
+  WriteLn(OutF, '    ret');
+  WriteLn(OutF, '_JSPRT_PrintDate ENDP');
   WriteLn(OutF);
 
   WriteLn(OutF, '_jspService PROC');
@@ -10996,6 +11150,76 @@ Begin
   BinTextByte($C0 Or (DstReg Shl 3) Or SrcReg); { ModRM : mod=11, reg=dst, rm=src }
 End;
 
+{ ------------------------------------------------------------ }
+{ EXTENSION post-TODO25 : MEME encodeur supplementaire que le          }
+{ backend PE (voir la note d en-tete complete pres des primitives          }
+{ PeEmit* equivalentes, TODO 24) mais avec des RELOCATIONS DIR32              }
+{ (BinFixupAdd, MEME mecanisme que BinEmitPushOffsetFixup) au lieu             }
+{ d une adresse absolue codee en dur - un .obj COFF n a PAS d ImageBase              }
+{ fixe avant l edition de liens (contrairement au .exe PE, deja chargé                 }
+{ a une adresse CONNUE). Chaque "symbole+decalage" (ex. "_JSPRT_DateStr+5")               }
+{ est encode en ecrivant le DECALAGE comme valeur PRE-relocation (le                        }
+{ lieur AJOUTE l adresse finale du symbole a cette valeur existante,                           }
+{ IMAGE_REL_I386_DIR32 - MEME semantique que documentee au TODO 23).                              }
+{ ------------------------------------------------------------ }
+
+Procedure BinEmitMovRegImm32(Reg: Byte; V: LongInt);
+Begin
+  BinTextByte($B8 + Reg);
+  BinTextDword(V);
+End;
+
+Procedure BinEmitXorRegReg(DstReg, SrcReg: Byte);
+Begin
+  BinTextByte($33);
+  BinTextByte($C0 Or (DstReg Shl 3) Or SrcReg);
+End;
+
+Procedure BinEmitDivReg(Reg: Byte);
+Begin
+  BinTextByte($F7);
+  BinTextByte($F0 Or Reg);
+End;
+
+Procedure BinEmitAddAlImm8(V: Byte);
+Begin
+  BinTextByte($04);
+  BinTextByte(V);
+End;
+
+Procedure BinEmitAddR8Imm8(Reg8: Byte; V: Byte);
+Begin
+  BinTextByte($80);
+  BinTextByte($C0 Or Reg8);
+  BinTextByte(V);
+End;
+
+Procedure BinEmitMovzxEaxAbsFixup(Const SymbolName: TString; AddOffset: LongInt);
+Begin
+  BinTextByte($0F);
+  BinTextByte($B7);
+  BinTextByte($05);
+  BinFixupAdd(BinTextLen, SymbolName, BFK_DIR32_DATA);
+  BinTextDword(AddOffset);
+End;
+
+Procedure BinEmitMovAbsFromReg8Fixup(Const SymbolName: TString; AddOffset: LongInt; Reg8: Byte);
+Begin
+  BinTextByte($88);
+  BinTextByte($05 Or (Reg8 Shl 3));
+  BinFixupAdd(BinTextLen, SymbolName, BFK_DIR32_DATA);
+  BinTextDword(AddOffset);
+End;
+
+Procedure BinEmitMovByteAbsImm8Fixup(Const SymbolName: TString; AddOffset: LongInt; V: Byte);
+Begin
+  BinTextByte($C6);
+  BinTextByte($05);
+  BinFixupAdd(BinTextLen, SymbolName, BFK_DIR32_DATA);
+  BinTextDword(AddOffset);
+  BinTextByte(V);
+End;
+
 { call REL32 vers un symbole EXTERNE (GetStdHandle@4/WriteFile@20) - le    }
 { PLACEHOLDER reste 0 (IMAGE_REL_I386_REL32, l addend est TOUJOURS nul       }
 { ici, aucun decalage supplementaire n est jamais necessaire). }
@@ -11054,14 +11278,15 @@ End;
 { TODO 21 - pool REUTILISE tel quel, aucune duplication), "call                        }
 { _JSPRT_Print" devient BinEmitCallInternal (cible CONNUE, PrintProcOffset,               }
 { argument de BinAssemblePage). }
-Procedure BinCodeGenStmt(Idx: Integer; PrintProcOffset: Integer);
+Procedure BinCodeGenStmt(Idx: Integer; PrintProcOffset, PrintDateOffset: Integer);
 Var I, SIdx: Integer;
 Begin
   If Idx < 0 Then Exit;
   Case StmtPool[Idx].Kind Of
     SK_BLOCK :
       For I := 0 To StmtPool[Idx].ChildCount - 1 Do
-        BinCodeGenStmt(StmtChildPool[StmtPool[Idx].ChildFirst + I], PrintProcOffset);
+        BinCodeGenStmt(StmtChildPool[StmtPool[Idx].ChildFirst + I],
+                       PrintProcOffset, PrintDateOffset);
 
     SK_PRINT_TEMPLATE :
       Begin
@@ -11070,6 +11295,20 @@ Begin
         BinEmitPushOffsetFixup('_JSPK' + BinIntToStr(SIdx));
         BinEmitCallInternal(PrintProcOffset);
       End;
+
+    { SK_PRINT_EXPR (EXTENSION post-TODO25) : MEME special-case etroit que    }
+    { PeCodeGenStmt/CodeGenStmt (voir leur note d en-tete complete) - SEULE       }
+    { "new java.util.Date()"/"new Date()" SANS argument est reconnue. }
+    SK_PRINT_EXPR :
+      If (ExprPool[StmtPool[Idx].ExprIdx].Kind = EK_NEWOBJECT) And
+         ((ExprPool[StmtPool[Idx].ExprIdx].NameVal = 'java.util.Date') Or
+          (ExprPool[StmtPool[Idx].ExprIdx].NameVal = 'Date')) And
+         (ExprPool[StmtPool[Idx].ExprIdx].ArgCount = 0) Then
+        BinEmitCallInternal(PrintDateOffset)
+      Else
+        FatalError('generation de code (extension post-TODO25) : seule ' +
+                   '"new java.util.Date()" est geree pour <%= %> - ' +
+                   'construction non encore geree');
   Else
     FatalError('generation de code (TODO 23) : construction non encore ' +
                'geree - ' + StmtKindName(StmtPool[Idx].Kind));
@@ -11087,7 +11326,7 @@ End;
 { _jspService. }
 Procedure BinAssemblePage(RootIdx: Integer);
 Var
-  I, PrintProcOffset : Integer;
+  I, PrintProcOffset, PrintDateOffset : Integer;
   DataOff            : LongInt;
 Begin
   BinAsmInit;
@@ -11109,10 +11348,19 @@ Begin
   BinSymAdd('_JSPRT_BytesWritten', 2, BinDataLen);
   BinDataDword(0);
 
+  { --- .data : EXTENSION post-TODO25 - tampons de "new java.util.Date()"  }
+  { imprime immediatement (MEME format/MEME limite documentee que le           }
+  { backend PE, TODO 24 - voir sa note d en-tete complete). --- }
+  BinSymAdd('_JSPRT_SysTime', 2, BinDataLen);
+  For I := 1 To 16 Do BinDataByte(0);
+  BinSymAdd('_JSPRT_DateStr', 2, BinDataLen);
+  For I := 1 To 19 Do BinDataByte(Ord(' '));
+
   { --- symboles EXTERNES (section 0, non definis ICI - roadmap d en-tete, }
   { "exploitable par un linker externe standard") --- }
   BinSymAdd('GetStdHandle@4', 0, 0);
   BinSymAdd('WriteFile@20', 0, 0);
+  BinSymAdd('GetLocalTime@4', 0, 0); { EXTENSION post-TODO25 }
 
   { --- .text : _JSPRT_Print (runtime minimal, TODO 18/21) --- }
   PrintProcOffset := BinTextLen;
@@ -11130,11 +11378,111 @@ Begin
   BinEmitPopReg(REG_EBP);
   BinEmitRetImm16(8);
 
+  { --- .text : _JSPRT_PrintDate (EXTENSION post-TODO25) - MEME algorithme    }
+  { LINEAIRE (aucun saut) que le backend PE, MEME format/MEME limite               }
+  { documentee (voir la note d en-tete complete pres de PeEmitPrintDate,               }
+  { TODO 24) - SEULE difference reelle : chaque reference .data utilise une              }
+  { VRAIE relocation DIR32 (BinEmitMov*Fixup) plutot qu une adresse absolue                 }
+  { codee en dur (aucun ImageBase fixe avant l edition de liens, TODO 23). }
+  PrintDateOffset := BinTextLen;
+  BinSymAdd('_JSPRT_PrintDate', 1, PrintDateOffset);
+  BinEmitPushReg(REG_EBP);
+  BinEmitMovRegReg(REG_EBP, REG_ESP);
+  BinEmitPushOffsetFixup('_JSPRT_SysTime');
+  BinEmitCallExternFixup('GetLocalTime@4');
+
+  BinEmitMovzxEaxAbsFixup('_JSPRT_SysTime', 0);
+  BinEmitXorRegReg(REG_EDX, REG_EDX);
+  BinEmitMovRegImm32(REG_ECX, 100);
+  BinEmitDivReg(REG_ECX);
+  BinEmitXorRegReg(REG_EDX, REG_EDX);
+  BinEmitMovRegImm32(REG_ECX, 10);
+  BinEmitDivReg(REG_ECX);
+  BinEmitAddAlImm8(Ord('0'));
+  BinEmitAddR8Imm8(REG_EDX, Ord('0'));
+  BinEmitMovAbsFromReg8Fixup('_JSPRT_DateStr', 0, REG_EAX);
+  BinEmitMovAbsFromReg8Fixup('_JSPRT_DateStr', 1, REG_EDX);
+
+  BinEmitMovzxEaxAbsFixup('_JSPRT_SysTime', 0);
+  BinEmitXorRegReg(REG_EDX, REG_EDX);
+  BinEmitMovRegImm32(REG_ECX, 100);
+  BinEmitDivReg(REG_ECX);
+  BinEmitMovRegReg(REG_EAX, REG_EDX);
+  BinEmitXorRegReg(REG_EDX, REG_EDX);
+  BinEmitMovRegImm32(REG_ECX, 10);
+  BinEmitDivReg(REG_ECX);
+  BinEmitAddAlImm8(Ord('0'));
+  BinEmitAddR8Imm8(REG_EDX, Ord('0'));
+  BinEmitMovAbsFromReg8Fixup('_JSPRT_DateStr', 2, REG_EAX);
+  BinEmitMovAbsFromReg8Fixup('_JSPRT_DateStr', 3, REG_EDX);
+
+  BinEmitMovByteAbsImm8Fixup('_JSPRT_DateStr', 4, Ord('-'));
+
+  BinEmitMovzxEaxAbsFixup('_JSPRT_SysTime', 2);
+  BinEmitXorRegReg(REG_EDX, REG_EDX);
+  BinEmitMovRegImm32(REG_ECX, 10);
+  BinEmitDivReg(REG_ECX);
+  BinEmitAddAlImm8(Ord('0'));
+  BinEmitAddR8Imm8(REG_EDX, Ord('0'));
+  BinEmitMovAbsFromReg8Fixup('_JSPRT_DateStr', 5, REG_EAX);
+  BinEmitMovAbsFromReg8Fixup('_JSPRT_DateStr', 6, REG_EDX);
+
+  BinEmitMovByteAbsImm8Fixup('_JSPRT_DateStr', 7, Ord('-'));
+
+  BinEmitMovzxEaxAbsFixup('_JSPRT_SysTime', 6);
+  BinEmitXorRegReg(REG_EDX, REG_EDX);
+  BinEmitMovRegImm32(REG_ECX, 10);
+  BinEmitDivReg(REG_ECX);
+  BinEmitAddAlImm8(Ord('0'));
+  BinEmitAddR8Imm8(REG_EDX, Ord('0'));
+  BinEmitMovAbsFromReg8Fixup('_JSPRT_DateStr', 8, REG_EAX);
+  BinEmitMovAbsFromReg8Fixup('_JSPRT_DateStr', 9, REG_EDX);
+
+  BinEmitMovByteAbsImm8Fixup('_JSPRT_DateStr', 10, Ord(' '));
+
+  BinEmitMovzxEaxAbsFixup('_JSPRT_SysTime', 8);
+  BinEmitXorRegReg(REG_EDX, REG_EDX);
+  BinEmitMovRegImm32(REG_ECX, 10);
+  BinEmitDivReg(REG_ECX);
+  BinEmitAddAlImm8(Ord('0'));
+  BinEmitAddR8Imm8(REG_EDX, Ord('0'));
+  BinEmitMovAbsFromReg8Fixup('_JSPRT_DateStr', 11, REG_EAX);
+  BinEmitMovAbsFromReg8Fixup('_JSPRT_DateStr', 12, REG_EDX);
+
+  BinEmitMovByteAbsImm8Fixup('_JSPRT_DateStr', 13, Ord(':'));
+
+  BinEmitMovzxEaxAbsFixup('_JSPRT_SysTime', 10);
+  BinEmitXorRegReg(REG_EDX, REG_EDX);
+  BinEmitMovRegImm32(REG_ECX, 10);
+  BinEmitDivReg(REG_ECX);
+  BinEmitAddAlImm8(Ord('0'));
+  BinEmitAddR8Imm8(REG_EDX, Ord('0'));
+  BinEmitMovAbsFromReg8Fixup('_JSPRT_DateStr', 14, REG_EAX);
+  BinEmitMovAbsFromReg8Fixup('_JSPRT_DateStr', 15, REG_EDX);
+
+  BinEmitMovByteAbsImm8Fixup('_JSPRT_DateStr', 16, Ord(':'));
+
+  BinEmitMovzxEaxAbsFixup('_JSPRT_SysTime', 12);
+  BinEmitXorRegReg(REG_EDX, REG_EDX);
+  BinEmitMovRegImm32(REG_ECX, 10);
+  BinEmitDivReg(REG_ECX);
+  BinEmitAddAlImm8(Ord('0'));
+  BinEmitAddR8Imm8(REG_EDX, Ord('0'));
+  BinEmitMovAbsFromReg8Fixup('_JSPRT_DateStr', 17, REG_EAX);
+  BinEmitMovAbsFromReg8Fixup('_JSPRT_DateStr', 18, REG_EDX);
+
+  BinEmitPushImm32(19);
+  BinEmitPushOffsetFixup('_JSPRT_DateStr');
+  BinEmitCallInternal(PrintProcOffset);
+
+  BinEmitPopReg(REG_EBP);
+  BinEmitRet;
+
   { --- .text : _jspService (point d entree synthetique de la page, TODO 09) --- }
   BinSymAdd('_jspService', 1, BinTextLen);
   BinEmitPushReg(REG_EBP);
   BinEmitMovRegReg(REG_EBP, REG_ESP);
-  BinCodeGenStmt(RootIdx, PrintProcOffset);
+  BinCodeGenStmt(RootIdx, PrintProcOffset, PrintDateOffset);
   BinEmitMovRegReg(REG_ESP, REG_EBP);
   BinEmitPopReg(REG_EBP);
   BinEmitRet;
@@ -11473,13 +11821,16 @@ Type
   TPeFixup = Record
     TextOffset  : Integer; { position du PLACEHOLDER 4 octets dans PeTextBuf }
     ImportIndex : Integer; { index dans PeImportNames (0=GetStdHandle,          }
-                           { 1=WriteFile, 2=ExitProcess) }
+                           { 1=WriteFile, 2=ExitProcess, 3=GetLocalTime -         }
+                           { EXTENSION post-TODO25, "new java.util.Date()"        }
+                           { imprime immediatement, voir PeCodeGenStmt/               }
+                           { PeEmitPrintDate plus bas) }
   End;
 
 Const
-  PE_IMPORT_COUNT = 3;
+  PE_IMPORT_COUNT = 4;
   PeImportNames : Array[0..PE_IMPORT_COUNT - 1] Of TString =
-    ('GetStdHandle', 'WriteFile', 'ExitProcess');
+    ('GetStdHandle', 'WriteFile', 'ExitProcess', 'GetLocalTime');
 
 Var
   PeTextBuf   : Array[0..MAX_PE_CODE - 1] Of Byte;
@@ -11582,6 +11933,104 @@ Begin
   PeTextByte($C0 Or (DstReg Shl 3) Or SrcReg);
 End;
 
+{ ------------------------------------------------------------ }
+{ EXTENSION post-TODO25 : encodeur 80386 supplementaire pour       }
+{ "new java.util.Date()" imprime immediatement (voir la note        }
+{ d en-tete de PeEmitPrintDate plus bas pour la justification          }
+{ complete de cette portee) - SEULEMENT le backend PE (.exe) est          }
+{ etendu ICI, DECISION A DOCUMENTER : le .asm (CodeGenPage, TODO 21)         }
+{ et le .obj COFF (BinAssemblePage, TODO 23) restent a leur portee              }
+{ EXACTE du TODO 21/23 (gabarit litteral SEULEMENT) - etendre LES TROIS            }
+{ backends en parallele pour CETTE extension precise aurait triple le              }
+{ risque d erreur d encodage manuel SANS benefice verifiable (SEUL le .exe             }
+{ peut etre EXECUTE reellement pour confirmer chaque octet, section 21/23/24              }
+{ du roadmap d en-tete) - parite .asm/.obj explicitement reportee a un                    }
+{ travail FUTUR, jamais masquee. Toutes les formes ci-dessous utilisent                      }
+{ l ADRESSAGE ABSOLU direct32 (ModRM mod=00, rm=101, MEME forme que                            }
+{ PeEmitPushOffsetData deja utilisee depuis le TODO 24) plutot qu un                             }
+{ cadre de pile [ebp+disp8] : AUCUN nouveau prologue/epilogue de pile                              }
+{ n est necessaire, chaque valeur intermediaire vit a une adresse .data                              }
+{ FIXE connue au moment de l encodage.                                                                 }
+{ ------------------------------------------------------------ }
+
+{ mov reg32, imm32 (opcode B8+reg, AUCUN ModRM - forme "immediate to     }
+{ register", MEME famille que PeEmitPushImm32 mais sans le push). }
+Procedure PeEmitMovRegImm32(Reg: Byte; V: LongInt);
+Begin
+  PeTextByte($B8 + Reg);
+  PeTextDword(V);
+End;
+
+{ xor reg32, reg32 (opcode 33 /r, ModRM mod=11) - MEME famille que        }
+{ PeEmitMovRegReg (opcode 8B) mais pour XOR ; utilise ICI pour mettre a       }
+{ zero EDX avant DIV (le dividende 64 bits EDX:EAX doit avoir EDX=0 pour        }
+{ une division NON signee valeur/diviseur). }
+Procedure PeEmitXorRegReg(DstReg, SrcReg: Byte);
+Begin
+  PeTextByte($33);
+  PeTextByte($C0 Or (DstReg Shl 3) Or SrcReg);
+End;
+
+{ div reg32 (DIV r/m32, opcode F7 /6, ModRM mod=11) - division NON        }
+{ signee EDX:EAX / reg -> EAX=quotient, EDX=reste (MEME semantique que          }
+{ le "div ebx"/"div ecx" DEJA hand-verifie pour _JSPRT_Print au TODO 21/23/       }
+{ 24, ICI generalise a un registre PARAMETRABLE). }
+Procedure PeEmitDivReg(Reg: Byte);
+Begin
+  PeTextByte($F7);
+  PeTextByte($F0 Or Reg);
+End;
+
+{ add al, imm8 (opcode 04 imm8 - forme COURTE specifique a AL, PAS de     }
+{ ModRM) et add r8, imm8 (opcode 80 /0, ModRM mod=11) pour tout AUTRE          }
+{ registre 8 bits (ICI, DL SEULEMENT est reellement utilise). }
+Procedure PeEmitAddAlImm8(V: Byte);
+Begin
+  PeTextByte($04);
+  PeTextByte(V);
+End;
+
+Procedure PeEmitAddR8Imm8(Reg8: Byte; V: Byte);
+Begin
+  PeTextByte($80);
+  PeTextByte($C0 Or Reg8);
+  PeTextByte(V);
+End;
+
+{ movzx eax, word ptr [ABSOLU] (opcode 0F B7 /r, adressage direct32 -    }
+{ MEME forme ModRM que PeEmitPushOffsetData, prefixee de l opcode deux         }
+{ octets 0F B7 propre a MOVZX r32,r/m16) - lit un champ WORD de SYSTEMTIME        }
+{ (GetLocalTime, note d en-tete de PeEmitPrintDate) en l etendant par                }
+{ ZEROS sur 32 bits (les 16 bits superieurs d un champ SYSTEMTIME sont                  }
+{ TOUJOURS zero de toute facon, mais MOVZX reste la forme CORRECTE plutot                 }
+{ qu une simple MOV 32 bits qui lirait 2 octets AU-DELA du champ voulu). }
+Procedure PeEmitMovzxEaxAbsWord(DataRva: LongInt);
+Begin
+  PeTextByte($0F);
+  PeTextByte($B7);
+  PeTextByte($05);
+  PeTextDword(PE_IMG_BASE + DataRva);
+End;
+
+{ mov byte ptr [ABSOLU], reg8 (opcode 88 /r, adressage direct32) et       }
+{ mov byte ptr [ABSOLU], imm8 (opcode C6 /0, adressage direct32) - ecrit      }
+{ un OCTET (chiffre ASCII ou separateur litteral) a une adresse .data              }
+{ FIXE (le tampon de date formatee, PeDateStrRva plus bas). }
+Procedure PeEmitMovAbsFromReg8(DataRva: LongInt; Reg8: Byte);
+Begin
+  PeTextByte($88);
+  PeTextByte($05 Or (Reg8 Shl 3));
+  PeTextDword(PE_IMG_BASE + DataRva);
+End;
+
+Procedure PeEmitMovByteAbsImm8(DataRva: LongInt; V: Byte);
+Begin
+  PeTextByte($C6);
+  PeTextByte($05);
+  PeTextDword(PE_IMG_BASE + DataRva);
+  PeTextByte(V);
+End;
+
 { call INTERNE (MEME section .text, cible DEJA connue - note 3 ci-dessus). }
 Procedure PeEmitCallInternal(TargetOffset: Integer);
 Begin
@@ -11628,15 +12077,32 @@ Var
   PeStrRva            : Array[0..MAX_CG_STRINGS - 1] Of LongInt;
   PeBytesWrittenRva    : LongInt;
 
+  { EXTENSION post-TODO25 ("new java.util.Date()" imprime immediatement,   }
+  { voir la note d en-tete de PeEmitPrintDate plus bas) : PeSysTimeRva            }
+  { pointe vers 16 octets .data reserves pour la structure Win32                    }
+  { SYSTEMTIME (GetLocalTime) ; PeDateStrRva pointe vers 19 octets .data              }
+  { reserves pour la chaine formatee "AAAA-MM-JJ HH:MM:SS" ; PePrintDateOffset          }
+  { est l offset .text de _JSPRT_PrintDate (MEME convention que PePrintOffset,             }
+  { TODO 21/23/24, pour un appel INTERNE sans fixup). }
+  PeSysTimeRva, PeDateStrRva : LongInt;
+  PePrintDateOffset          : Integer;
+
 { PeCodeGenStmt : MIROIR de BinCodeGenStmt (TODO 23) - MEME portee        }
 { EXACTE, MEME pool _JSPK REUTILISE (CgStrPool/CgStrFindOrAdd, TODO 21)      }
 { mais "push OFFSET _JSPKn" devient PeEmitPushOffsetData (ADRESSE                }
 { ABSOLUE PE_IMG_BASE+RVA, jamais un placeholder - la RVA de .data EST          }
 { DEJA connue au moment ou .text est encode : .data est encode EN                  }
 { PREMIER, contrairement au TODO 23 ou l ordre .text/.data importait peu,             }
-{ voir PeAssemblePage). }
+{ voir PeAssemblePage). SK_PRINT_EXPR (EXTENSION post-TODO25) : PORTEE               }
+{ DELIBEREMENT ETROITE - SEULE l expression EXACTE "new java.util.Date()"                }
+{ (ou son nom court "Date", apres un import) SANS receveur ni argument est                 }
+{ reconnue, un cas SPECIAL-CASE assume et documente plutot qu une VRAIE                       }
+{ coercition-String generale de n importe quelle expression typee (qui                          }
+{ demanderait un modele d objet/tas complet, hors de portee ICI - TOUTE                            }
+{ autre forme de <%= %> continue d arreter la compilation PROPREMENT,                                }
+{ MEME StmtKindName qu avant). }
 Procedure PeCodeGenStmt(Idx: Integer);
-Var I, SIdx: Integer;
+Var I, SIdx, EIdx: Integer;
 Begin
   If Idx < 0 Then Exit;
   Case StmtPool[Idx].Kind Of
@@ -11650,6 +12116,20 @@ Begin
         PeEmitPushImm32(Length(StmtPool[Idx].BigVal));
         PeEmitPushOffsetData(PeStrRva[SIdx]);
         PeEmitCallInternal(PePrintOffset);
+      End;
+
+    SK_PRINT_EXPR :
+      Begin
+        EIdx := StmtPool[Idx].ExprIdx;
+        If (ExprPool[EIdx].Kind = EK_NEWOBJECT) And
+           ((ExprPool[EIdx].NameVal = 'java.util.Date') Or
+            (ExprPool[EIdx].NameVal = 'Date')) And
+           (ExprPool[EIdx].ArgCount = 0) Then
+          PeEmitCallInternal(PePrintDateOffset)
+        Else
+          FatalError('generation de code (extension post-TODO25) : seule ' +
+                     '"new java.util.Date()" est geree pour <%= %> - ' +
+                     'construction non encore geree');
       End;
   Else
     FatalError('generation de code (TODO 24) : construction non encore ' +
@@ -11693,6 +12173,14 @@ Begin
   PeBytesWrittenRva := DataRva + PeDataLen;
   PeDataByte(0); PeDataByte(0); PeDataByte(0); PeDataByte(0);
 
+  { --- .data : EXTENSION post-TODO25 - tampon SYSTEMTIME (16 octets,      }
+  { GetLocalTime) + tampon chaine formatee (19 octets, "AAAA-MM-JJ            }
+  { HH:MM:SS") pour "new java.util.Date()" imprime immediatement. --- }
+  PeSysTimeRva := DataRva + PeDataLen;
+  For I := 1 To 16 Do PeDataByte(0);
+  PeDateStrRva := DataRva + PeDataLen;
+  For I := 1 To 19 Do PeDataByte(Ord(' '));
+
   { --- .text : _JSPRT_Print (runtime minimal, TODO 18/21/23) --- }
   PePrintOffset := PeTextLen;
   PeEmitPushReg(REG_EBP);
@@ -11707,6 +12195,119 @@ Begin
   PeEmitCallImport('WriteFile');
   PeEmitPopReg(REG_EBP);
   PeEmitRetImm16(8);
+
+  { --- .text : _JSPRT_PrintDate (EXTENSION post-TODO25) - voir la note    }
+  { d en-tete complete de PeCodeGenStmt/du bloc d encodeurs ci-dessus. Le      }
+  { format retenu ("AAAA-MM-JJ HH:MM:SS", heure locale) est un choix                }
+  { DELIBERE et DOCUMENTE - il ne reproduit PAS le format EXACT de                     }
+  { java.util.Date.toString() (section 4.6/TODO 04, "Object jusqu a                       }
+  { coercition" - AUCUNE bibliotheque de formatage de date complete n existe                  }
+  { ici), simplement une representation LISIBLE et REELLE de l heure                            }
+  { courante (GetLocalTime, PAS un placeholder invente). Chaque champ            }
+  { SYSTEMTIME (WORD) est ecrit en EXACTEMENT 2 chiffres decimaux (l annee            }
+  { en DEUX ecritures de 2 chiffres, siecle PUIS annee-dans-le-siecle) - la          }
+  { sequence est ENTIEREMENT LINEAIRE (aucun saut/etiquette), MEME               }
+  { discipline "aucun risque de deplacement mal calcule" que le reste de              }
+  { l encodeur PE. }
+  PePrintDateOffset := PeTextLen;
+  PeEmitPushReg(REG_EBP);
+  PeEmitMovRegReg(REG_EBP, REG_ESP);
+  PeEmitPushOffsetData(PeSysTimeRva);
+  PeEmitCallImport('GetLocalTime');
+
+  { siecle = annee div 100 -> PeDateStrRva+0..1 }
+  PeEmitMovzxEaxAbsWord(PeSysTimeRva);       { wYear, offset 0 }
+  PeEmitXorRegReg(REG_EDX, REG_EDX);
+  PeEmitMovRegImm32(REG_ECX, 100);
+  PeEmitDivReg(REG_ECX);                      { eax = siecle }
+  PeEmitXorRegReg(REG_EDX, REG_EDX);
+  PeEmitMovRegImm32(REG_ECX, 10);
+  PeEmitDivReg(REG_ECX);                      { eax = dizaine, edx = unite }
+  PeEmitAddAlImm8(Ord('0'));
+  PeEmitAddR8Imm8(REG_EDX, Ord('0'));
+  PeEmitMovAbsFromReg8(PeDateStrRva + 0, REG_EAX);
+  PeEmitMovAbsFromReg8(PeDateStrRva + 1, REG_EDX);
+
+  { annee-dans-le-siecle = annee mod 100 -> PeDateStrRva+2..3 }
+  PeEmitMovzxEaxAbsWord(PeSysTimeRva);       { wYear }
+  PeEmitXorRegReg(REG_EDX, REG_EDX);
+  PeEmitMovRegImm32(REG_ECX, 100);
+  PeEmitDivReg(REG_ECX);
+  PeEmitMovRegReg(REG_EAX, REG_EDX);          { eax = annee mod 100 }
+  PeEmitXorRegReg(REG_EDX, REG_EDX);
+  PeEmitMovRegImm32(REG_ECX, 10);
+  PeEmitDivReg(REG_ECX);
+  PeEmitAddAlImm8(Ord('0'));
+  PeEmitAddR8Imm8(REG_EDX, Ord('0'));
+  PeEmitMovAbsFromReg8(PeDateStrRva + 2, REG_EAX);
+  PeEmitMovAbsFromReg8(PeDateStrRva + 3, REG_EDX);
+
+  PeEmitMovByteAbsImm8(PeDateStrRva + 4, Ord('-'));
+
+  { wMonth (SYSTEMTIME offset 2) -> PeDateStrRva+5..6 }
+  PeEmitMovzxEaxAbsWord(PeSysTimeRva + 2);
+  PeEmitXorRegReg(REG_EDX, REG_EDX);
+  PeEmitMovRegImm32(REG_ECX, 10);
+  PeEmitDivReg(REG_ECX);
+  PeEmitAddAlImm8(Ord('0'));
+  PeEmitAddR8Imm8(REG_EDX, Ord('0'));
+  PeEmitMovAbsFromReg8(PeDateStrRva + 5, REG_EAX);
+  PeEmitMovAbsFromReg8(PeDateStrRva + 6, REG_EDX);
+
+  PeEmitMovByteAbsImm8(PeDateStrRva + 7, Ord('-'));
+
+  { wDay (SYSTEMTIME offset 6) -> PeDateStrRva+8..9 }
+  PeEmitMovzxEaxAbsWord(PeSysTimeRva + 6);
+  PeEmitXorRegReg(REG_EDX, REG_EDX);
+  PeEmitMovRegImm32(REG_ECX, 10);
+  PeEmitDivReg(REG_ECX);
+  PeEmitAddAlImm8(Ord('0'));
+  PeEmitAddR8Imm8(REG_EDX, Ord('0'));
+  PeEmitMovAbsFromReg8(PeDateStrRva + 8, REG_EAX);
+  PeEmitMovAbsFromReg8(PeDateStrRva + 9, REG_EDX);
+
+  PeEmitMovByteAbsImm8(PeDateStrRva + 10, Ord(' '));
+
+  { wHour (SYSTEMTIME offset 8) -> PeDateStrRva+11..12 }
+  PeEmitMovzxEaxAbsWord(PeSysTimeRva + 8);
+  PeEmitXorRegReg(REG_EDX, REG_EDX);
+  PeEmitMovRegImm32(REG_ECX, 10);
+  PeEmitDivReg(REG_ECX);
+  PeEmitAddAlImm8(Ord('0'));
+  PeEmitAddR8Imm8(REG_EDX, Ord('0'));
+  PeEmitMovAbsFromReg8(PeDateStrRva + 11, REG_EAX);
+  PeEmitMovAbsFromReg8(PeDateStrRva + 12, REG_EDX);
+
+  PeEmitMovByteAbsImm8(PeDateStrRva + 13, Ord(':'));
+
+  { wMinute (SYSTEMTIME offset 10) -> PeDateStrRva+14..15 }
+  PeEmitMovzxEaxAbsWord(PeSysTimeRva + 10);
+  PeEmitXorRegReg(REG_EDX, REG_EDX);
+  PeEmitMovRegImm32(REG_ECX, 10);
+  PeEmitDivReg(REG_ECX);
+  PeEmitAddAlImm8(Ord('0'));
+  PeEmitAddR8Imm8(REG_EDX, Ord('0'));
+  PeEmitMovAbsFromReg8(PeDateStrRva + 14, REG_EAX);
+  PeEmitMovAbsFromReg8(PeDateStrRva + 15, REG_EDX);
+
+  PeEmitMovByteAbsImm8(PeDateStrRva + 16, Ord(':'));
+
+  { wSecond (SYSTEMTIME offset 12) -> PeDateStrRva+17..18 }
+  PeEmitMovzxEaxAbsWord(PeSysTimeRva + 12);
+  PeEmitXorRegReg(REG_EDX, REG_EDX);
+  PeEmitMovRegImm32(REG_ECX, 10);
+  PeEmitDivReg(REG_ECX);
+  PeEmitAddAlImm8(Ord('0'));
+  PeEmitAddR8Imm8(REG_EDX, Ord('0'));
+  PeEmitMovAbsFromReg8(PeDateStrRva + 17, REG_EAX);
+  PeEmitMovAbsFromReg8(PeDateStrRva + 18, REG_EDX);
+
+  PeEmitPushImm32(19);
+  PeEmitPushOffsetData(PeDateStrRva);
+  PeEmitCallInternal(PePrintOffset);
+
+  PeEmitPopReg(REG_EBP);
+  PeEmitRet;
 
   { --- .text : _jspService (point d entree synthetique de la page, TODO 09) --- }
   PeServiceOffset := PeTextLen;
@@ -12054,13 +12655,18 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
-{ Run : point d entree - portee TODO 01-25 (roadmap COMPLET). }
+{ Run : point d entree - portee TODO 01-25 (roadmap COMPLET) +   }
+{ EXTENSION 1 (post-TODO25, "new java.util.Date()" immediat). }
 { TODO 25 : AUCUN nouveau code de production - validation finale               }
 { HONNETEMENT documentee (voir le rapport complet en tete de fichier,             }
 { section "TODO 25 - VALIDATION FINALE : ETAT REEL") : 1/17 echantillons             }
 { REELLEMENT compiles ET executes de bout en bout (Test10Include.jsp),                 }
 { 16/17 arrets PROPRES et EXPLIQUES a un endroit precis - JAMAIS un                       }
-{ plantage, JAMAIS une sortie faussee. }
+{ plantage, JAMAIS une sortie faussee. EXTENSION 1 (voir sa propre                          }
+{ section en tete de fichier) : Test01Bonjour.jsp rejoint Test10                              }
+{ Include.jsp (2/17), etendue aux TROIS backends CodeGenPage/                                   }
+{ BinAssemblePage/PeAssemblePage (necessaire : Run() les enchaine                                  }
+{ SEQUENTIELLEMENT, un FatalError dans le PREMIER bloquait les autres). }
 { (voir la note d en-tete de la section TODO 21 plus haut) : depuis    }
 { le TODO 01, Run() ne faisait QUE tokeniser le fichier source REEL       }
 { (chaque TODO 09-20 construisait/auto-testait sa piece SANS jamais la     }
@@ -12332,21 +12938,21 @@ Begin
   ExePath := ReplaceExt(Opts.SrcFile, '.exe');
   WritePEExe(PageIdx, ExePath);
 
-  WriteLn('JSPCW32: ', AsmPath, ', ', ObjPath, ' et ', ExePath, ' generes ',
-          '(roadmap TODO 01-25 COMPLET) - lexeur/parseur Java/parseur de ',
-          'directives + arbre "page" entrelace gabarit<->Java + objets ',
-          'implicites + portees/attributs + inclusion statique fusionnee + ',
-          'toutes les actions JSP standard + lexer/parseur EL complet + ',
-          'evaluateur EL + JSTL core + JSTL functions + modele de requete ',
-          'GET simulee + bibliotheque runtime minimale + analyse semantique ',
-          'best-effort + generation de code textuelle/COFF/PE reelle ',
-          '(gabarit litteral SEULEMENT) + verification d encodage. Etat ',
-          'REEL honnetement documente (roadmap d en-tete, TODO 25) : 1/17 ',
-          'echantillons compilent ET s executent de bout en bout, 16/17 ',
-          'arretent proprement a un endroit precis et explique - la ',
-          'couverture du reste de l arbre (Java/EL/JSTL) reste un travail ',
-          'futur possible (extensions post-TODO25 ; fmt/xml/sql JSTL hors ',
-          'de portee).');
+  { Message de reussite : COURT et PROFESSIONNEL par defaut (convention          }
+  { habituelle d un compilateur - gcc/javac/tsc ne racontent PAS leur                }
+  { propre historique de developpement a chaque execution reussie). Le              }
+  { recit "roadmap TODO NN/etat des echantillons" n a JAMAIS sa place ICI -            }
+  { il reste documente dans les commentaires du code source, jamais                     }
+  { affiche a l utilisateur qui compile son propre fichier. }
+  WriteLn('JSPCW32: ', ExePath, ' genere avec succes.');
+  If Opts.Verbose Then
+  Begin
+    WriteLn;
+    WriteLn('Fichiers generes :');
+    WriteLn('  .asm : ', AsmPath);
+    WriteLn('  .obj : ', ObjPath);
+    WriteLn('  .exe : ', ExePath);
+  End;
   ShowStats;
   Halt(EXIT_OK);
 End;
