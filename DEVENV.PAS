@@ -3628,6 +3628,16 @@ Var
  { l explorateur (Actualiser/Tout replier/Proprietes), voir                    }
  { EXPLORER_TOOLBAR_BTNCOUNT et InitExplorerIcons. }
  ExplorerToolbarIcons : Array[0..EXPLORER_TOOLBAR_BTNCOUNT - 1] Of TIcon16;
+ { EXTENSION (2026-08-08) : infobulles de la mini barre d outils de       }
+ { l explorateur - tableau parallele a ExplorerToolbarIcons (qui est un      }
+ { simple TIcon16, sans champ Tooltip comme TToolButton). Etat de survol       }
+ { (meme principe que TooltipTimer/TooltipBtnIdx/TooltipVisible pour la          }
+ { barre d outils principale, voir HandleToolBarEvent/DrawTooltip). }
+ ExplorerToolbarTooltips : Array[0..EXPLORER_TOOLBAR_BTNCOUNT - 1]
+  Of String[63];
+ ExplorerTooltipTimer   : LongInt;
+ ExplorerTooltipBtnIdx  : Integer;
+ ExplorerTooltipVisible : Boolean;
  { EXTENSION (2026-08-02) : largeur effective/maximale du panneau,           }
  { calculee au demarrage par UpdateExplorerWidthForScreen selon la              }
  { largeur d ecran (EXPLORER_WIDTH_DEFAULT/EXPLORER_MAX_WIDTH_DEFAULT           }
@@ -7528,6 +7538,12 @@ Begin
  MakeIconExplorerRefresh(ExplorerToolbarIcons[0]);
  MakeIconExplorerCollapseAll(ExplorerToolbarIcons[1]);
  MakeIconExplorerProperties(ExplorerToolbarIcons[2]);
+ ExplorerToolbarTooltips[0] := 'Actualiser';
+ ExplorerToolbarTooltips[1] := 'Tout replier';
+ ExplorerToolbarTooltips[2] := 'Proprietes';
+ ExplorerTooltipTimer := 0;
+ ExplorerTooltipBtnIdx := -1;
+ ExplorerTooltipVisible := False;
  MakeIconSolution(ExplorerIcons[EIK_SOLUTION]);
  MakeIconProjectBox(ExplorerIcons[EIK_PROJECT]);
  MakeIconKey(ExplorerIcons[EIK_PROPERTIES]);
@@ -22423,6 +22439,16 @@ Begin
   NodeShownExpanded := Exp.Nodes[NodeIdx].Expanded;
 End;
 
+{ --- Curseur clignotant du champ de recherche live - EXTENSION           }
+{ (2026-08-08), meme principe (et meme cycle de 500ms) que                   }
+{ ProjPropCursorVisible pour le dialogue Proprietes du projet, afin de           }
+{ que l utilisateur comprenne qu il peut saisir du texte des qu il clique. --- }
+
+Function ExplorerSearchCursorVisible: Boolean;
+Begin
+ ExplorerSearchCursorVisible := (GetTimestamp Div 500) Mod 2 = 0;
+End;
+
 { --- Rafraichir la visibilite des noeuds --- }
 
 Procedure RefreshExplorer(Var Exp: TSolutionExplorer);
@@ -22714,22 +22740,29 @@ Begin
  Rectangle(Exp.X + 6, SearchY + 5, Exp.X + 11, SearchY + 10);
  Line(Exp.X + 11, SearchY + 10, Exp.X + 13, SearchY + 12);
  If Exp.SearchBuf = '' Then Begin
-  SetColor(CLR_GRAYTEXT);
-  OutTextXY(Exp.X + 18, SearchY + 4, 'Rechercher');
+  If Not Exp.SearchFocused Then Begin
+   SetColor(CLR_GRAYTEXT);
+   OutTextXY(Exp.X + 18, SearchY + 4, 'Rechercher');
+  End;
  End Else Begin
   SetColor(CLR_WINDOWTEXT);
   OutTextXY(Exp.X + 18, SearchY + 4, Exp.SearchBuf);
-  If Exp.SearchFocused Then Begin
-   CurX := Exp.X + 18 +
-    TextWidth(Copy(Exp.SearchBuf, 1, Exp.SearchCPos));
-   Line(CurX, SearchY + 3, CurX, SearchY + EXPLORER_SEARCH_HEIGHT - 5);
-  End;
   { Bouton effacer ("x") a droite du champ }
   SetColor(CLR_GRAYTEXT);
   Line(Exp.X + Exp.Width - 16, SearchY + 5,
    Exp.X + Exp.Width - 11, SearchY + 10);
   Line(Exp.X + Exp.Width - 16, SearchY + 10,
    Exp.X + Exp.Width - 11, SearchY + 5);
+ End;
+ { EXTENSION (2026-08-08) : curseur clignotant tant que le champ a le    }
+ { focus, meme si aucun texte n a encore ete saisi (comme un vrai champ      }
+ { de texte) - demande explicite de l utilisateur. Dessine APRES le              }
+ { texte/placeholder, que SearchBuf soit vide ou non. }
+ If Exp.SearchFocused And ExplorerSearchCursorVisible Then Begin
+  SetColor(CLR_WINDOWTEXT);
+  CurX := Exp.X + 18 +
+   TextWidth(Copy(Exp.SearchBuf, 1, Exp.SearchCPos));
+  Line(CurX, SearchY + 3, CurX, SearchY + EXPLORER_SEARCH_HEIGHT - 5);
  End;
  { Splitter }
  SetFillStyle(SolidFill, CLR_BORDER);
@@ -22901,6 +22934,28 @@ Begin
  ExplorerSearchBoxHitTest :=
   (MX >= Exp.X + 2) And (MX <= Exp.X + Exp.Width - 3) And
   (MY >= SearchY + 2) And (MY <= SearchY + EXPLORER_SEARCH_HEIGHT - 3);
+End;
+
+{ --- Dessiner l infobulle d un bouton de la mini barre d outils de       }
+{ l explorateur - EXTENSION (2026-08-08), meme presentation que                }
+{ DrawTooltip (barre d outils principale). --- }
+
+Procedure DrawExplorerTooltip(Var Exp: TSolutionExplorer; BtnIdx: Integer);
+Var
+ TX, TY, TW: Integer;
+ Tip: String;
+Begin
+ If (BtnIdx < 0) Or (BtnIdx >= EXPLORER_TOOLBAR_BTNCOUNT) Then Exit;
+ Tip := ExplorerToolbarTooltips[BtnIdx];
+ If Length(Tip) = 0 Then Exit;
+ TX := Exp.X + 2 + BtnIdx * 22;
+ TY := Exp.Y + EXPLORER_NODE_HEIGHT + EXPLORER_TOOLBAR_HEIGHT + 2;
+ TW := Length(Tip) * 8 + 8;
+ SetColor(14);  { jaune clair }
+ Bar(TX, TY, TX + TW, TY + 16);
+ SetColor(CLR_BORDER);
+ Rectangle(TX, TY, TX + TW, TY + 16);
+ OutTextXY(TX + 4, TY + 3, Tip);
 End;
 
 { --- Executer l action d un bouton de la mini barre d outils de          }
@@ -23192,6 +23247,7 @@ Procedure HandleExplorerEvent(Var Exp: TSolutionExplorer;
 Var
  HitIdx: Integer;
  MaxScroll: Integer;
+ Now: LongInt;
 Begin
  { Mode renommage : intercepter les evenements clavier }
  If Exp.Renaming Then Begin
@@ -23427,6 +23483,29 @@ Begin
     Exp.X := Ev.MouseX;
     Exp.SplitterX := Exp.X - SPLITTER_WIDTH;
     Exp.NeedRepaint := True;
+   End;
+  End Else Begin
+   { EXTENSION (2026-08-08) : infobulles de la mini barre d outils de     }
+   { l explorateur, meme principe (delai TOOLTIP_DELAY) que                    }
+   { HandleToolBarEvent pour la barre d outils principale. }
+   HitIdx := ExplorerToolbarHitTest(Exp, Ev.MouseX, Ev.MouseY);
+   Now := GetTimestamp;
+   If HitIdx >= 0 Then Begin
+    If HitIdx <> ExplorerTooltipBtnIdx Then Begin
+     ExplorerTooltipBtnIdx := HitIdx;
+     ExplorerTooltipTimer := Now;
+     ExplorerTooltipVisible := False;
+     DrawExplorer(Exp);
+    End Else If (Not ExplorerTooltipVisible) And
+       (Now - ExplorerTooltipTimer >= TOOLTIP_DELAY) Then Begin
+     ExplorerTooltipVisible := True;
+     DrawExplorer(Exp);
+     DrawExplorerTooltip(Exp, HitIdx);
+    End;
+   End Else If ExplorerTooltipVisible Or (ExplorerTooltipBtnIdx >= 0) Then Begin
+    ExplorerTooltipVisible := False;
+    ExplorerTooltipBtnIdx := -1;
+    DrawExplorer(Exp);
    End;
   End;
  End
@@ -61841,6 +61920,39 @@ Begin
  HandleToolBarEvent(Ev);
  { Evenements pour les onglets d editeurs }
  HandleTabEvent(Ev);
+ { BOGUE REEL (2026-08-08) : ExplorerHasFocus n etait mis a jour (True     }
+ { dans l explorateur, False sinon) que par le bloc plus bas, APRES la          }
+ { gestion du Terminal/panneau de sortie ci-dessous - qui fait TOUJOURS          }
+ { Exit avant d y arriver des qu on clique sur le Terminal ou la Sortie.            }
+ { Resultat : ExplorerHasFocus restait bloque a True des qu on avait                }
+ { clique une fois dans l explorateur (ex. le champ de recherche live),            }
+ { et TOUTE frappe clavier ulterieure - meme destinee au Terminal -                    }
+ { etait alors detournee vers HandleExplorerEvent (voir plus bas, "Si               }
+ { l explorateur a le focus") au lieu d atteindre le Terminal (symptome              }
+ { signale par l utilisateur : "plus moyen d ecrire de commandes dans le            }
+ { Terminal"). Deplace ICI, AVANT les Exit du bloc Terminal/Sortie, pour              }
+ { que le focus de l explorateur soit correctement retire DES qu on                    }
+ { clique ailleurs, quel que soit le panneau qui traite finalement le              }
+ { clic. Nettoie aussi le renommage/la recherche live en cours des que le           }
+ { focus quitte l explorateur, pour la meme raison (Renaming et                          }
+ { SearchFocused ne pouvaient eux non plus se terminer que par un clic                }
+ { DANS l explorateur - meme bogue latent, juste jamais remarque avant                }
+ { l ajout de la recherche live, un champ que l on quitte typiquement                     }
+ { sans appuyer sur Entree/Echap). }
+ If Ev.Kind = EV_MOUSE_DOWN Then Begin
+  If (Ev.MouseX >= SolExplorer.X) And
+     (Ev.MouseX < SolExplorer.X + SolExplorer.Width) And
+     (Ev.MouseY >= SolExplorer.Y) And
+     (Ev.MouseY < SolExplorer.Y + SolExplorer.Height) Then
+   ExplorerHasFocus := True
+  Else Begin
+   If ExplorerHasFocus Then Begin
+    If SolExplorer.Renaming Then ConfirmExplorerRename(SolExplorer);
+    SolExplorer.SearchFocused := False;
+   End;
+   ExplorerHasFocus := False;
+  End;
+ End;
  { Evenements pour l editeur de texte actif }
  { Gestion du focus : clic souris determine qui recoit le clavier }
  If (Ev.Kind = EV_MOUSE_DOWN) Then Begin
@@ -61916,18 +62028,6 @@ Begin
      normale pour reveler l editeur. }
    If TermVisible And (TermZoomLvl > 0) Then TermZoomReset;
   End;
- End;
- { Suivi du focus de l explorateur de solutions : un clic dans son
-   panneau lui donne le focus clavier (fleches, PgUp/PgDn, Entree).
-   Tout autre clic le retire. }
- If Ev.Kind = EV_MOUSE_DOWN Then Begin
-  If (Ev.MouseX >= SolExplorer.X) And
-     (Ev.MouseX < SolExplorer.X + SolExplorer.Width) And
-     (Ev.MouseY >= SolExplorer.Y) And
-     (Ev.MouseY < SolExplorer.Y + SolExplorer.Height) Then
-   ExplorerHasFocus := True
-  Else
-   ExplorerHasFocus := False;
  End;
  { Si l explorateur a le focus, lui envoyer les touches de navigation. }
  If ExplorerHasFocus And
@@ -62064,6 +62164,18 @@ Begin
     CurBlinkState := ProjPropCursorVisible;
     If CurBlinkState <> LastBlinkState Then Begin
      UpdateProjPropCursor(ProjPropDlg);
+     LastBlinkState := CurBlinkState;
+    End;
+   End;
+   { EXTENSION (2026-08-08) : meme mecanisme de clignotement pour le      }
+   { curseur du champ de recherche live de l explorateur de solutions -       }
+   { ExplorerSearchCursorVisible suit EXACTEMENT le meme cycle de 500ms        }
+   { (base uniquement sur l horloge) que ProjPropCursorVisible, donc               }
+   { CurBlinkState/LastBlinkState ci-dessus restent valables tels quels. }
+   If SolExplorer.SearchFocused Then Begin
+    CurBlinkState := ExplorerSearchCursorVisible;
+    If CurBlinkState <> LastBlinkState Then Begin
+     DrawExplorer(SolExplorer);
      LastBlinkState := CurBlinkState;
     End;
    End;
