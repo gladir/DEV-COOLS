@@ -56983,6 +56983,35 @@ Begin
  GetStartPageSelectedItem := SP.SelectedItem;
 End;
 
+{ --- Detecter une directive Delphi APPTYPE dans un fichier .pas ---      }
+{ EXTENSION (2026-08-08) : demande explicite de l utilisateur - un .pas     }
+{ contenant la directive Delphi dollar-APPTYPE CONSOLE ou dollar-APPTYPE      }
+{ GUI (jamais reconnue par TPCW32/fpc, syntaxe Turbo Pascal/FreePascal)         }
+{ doit etre compile par DELPHI.PAS (DELPHI.exe) plutot que le compilateur          }
+{ Pascal habituel - recherche SIMPLE, LIGNE PAR LIGNE, insensible a la               }
+{ casse, EXACTEMENT comme la directive apparaitrait dans le source                     }
+{ (typiquement dans un commentaire directive, jamais ailleurs en pratique). }
+Function FileContainsAppType(Const FileName: String): Boolean;
+Var
+ F: Text;
+ Line: String;
+Begin
+ FileContainsAppType := False;
+ {$I-}
+ Assign(F, FileName);
+ Reset(F);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ While Not Eof(F) Do Begin
+  ReadLn(F, Line);
+  If Pos('$APPTYPE', UpCaseStr(Line)) > 0 Then Begin
+   FileContainsAppType := True;
+   Break;
+  End;
+ End;
+ Close(F);
+End;
+
 { --- Demarrer la compilation et l execution --- }
 
 Procedure HandleStartDebugging;
@@ -57042,6 +57071,29 @@ Begin
  {$ENDIF}
  If (Ext = '.pas') Or (Ext = '.pp') Or (Ext = '.lpr')
     Or (Ext = '.dpr') Then Begin
+  { EXTENSION (2026-08-08) : un .pas contenant la directive Delphi         }
+  { $APPTYPE (voir la note d en-tete complete de FileContainsAppType) est       }
+  { compile par DELPHI.PAS plutot que TPCW32/fpc - demande explicite de           }
+  { l utilisateur. SEUL .pas est concerne : .pp/.lpr/.dpr (syntaxe                  }
+  { FreePascal/Lazarus) continuent d utiliser TPCW32/fpc sans exception. }
+  If (Ext = '.pas') And FileContainsAppType(SourceFile) Then Begin
+   { Compilation Delphi (directive $APPTYPE detectee) -> DELPHI.exe }
+   CmdLine := FindCompiler('DELPHI');
+   If CmdLine = '' Then Begin
+    AppendOutput(OutputPanel,
+     'Erreur : compilateur Delphi non trouve (DELPHI.exe).',
+     Ord(OTK_BUILD));
+    Exit;
+   End;
+   CmdLine := CmdLine + ' ' + SourceFile;
+   AppendOutput(OutputPanel,
+    '------ Build started: ' + SourceFile + ' ------',
+    Ord(OTK_BUILD));
+   AppendOutput(OutputPanel, '> ' + CmdLine, Ord(OTK_BUILD));
+   ExitCode := ExecuteCompiler(CmdLine, TempFile);
+   ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
+   CleanupTempFile(TempFile);
+  End Else Begin
   { Compilation Pascal avec Free Pascal }
   DetectTPCCompiler(TPCContext);
   If TPCContext.CompilerFound Then Begin
@@ -57069,6 +57121,7 @@ Begin
    ExitCode := ExecuteCompiler(CmdLine, TempFile);
    ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
    CleanupTempFile(TempFile);
+  End;
   End;
   { Pour toute cible non-Windows, lancer le panneau emulateur :
     pour 8086 (-CD/-CP) il execute reellement le binaire,
