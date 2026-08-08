@@ -7024,7 +7024,7 @@ Begin
   IconDrawChar(Icon, 6, Y, C1, C)
  Else Begin
   IconDrawChar(Icon, 3, Y, C1, C);
-  IconDrawChar(Icon, 9, Y, C2, C);
+  IconDrawChar(Icon, 8, Y, C2, C);
  End;
 End;
 
@@ -7430,7 +7430,7 @@ Begin
  ClearIcon(Icon, 255);
  IconFillRect(Icon, 1, 1, 14, 4, 1);    { barre de titre bleue }
  IconFillRect(Icon, 1, 5, 14, 14, 15);  { corps blanc }
- IconRect(Icon, 1, 1, 14, 14, 0);
+ IconRect(Icon, 1, 1, 14, 14, 7);       { contour gris clair, pas noir }
  IconFillRect(Icon, 4, 7, 11, 9, 7);    { zone de texte grise }
  IconFillRect(Icon, 4, 11, 8, 13, 9);   { bouton }
 End;
@@ -7439,13 +7439,24 @@ End;
 { monogramme de 1 ou 2 lettres (meme principe que les badges de              }
 { fichiers des IDE modernes pour les langages moins courants) --- }
 
-Procedure MakeIconLangFile(Var Icon: TIcon16; BgColor: Byte;
- C1, C2: Char; FgColor: Byte);
+Procedure MakeIconLangFile(Var Icon: TIcon16; C1, C2: Char; Color: Byte);
 Begin
  ClearIcon(Icon, 255);
- IconFillRect(Icon, 1, 1, 14, 14, BgColor);
- IconRect(Icon, 1, 1, 14, 14, 0);
- IconDrawMonogram(Icon, C1, C2, 6, FgColor);
+ { EXTENSION (2026-08-08) : fond BLANC + monogramme colore, demande        }
+ { explicitement par l utilisateur ("fond blanc et l ecriture ayant une        }
+ { couleur differente"). CORRECTIF (2026-08-08) : Visual Studio n entoure       }
+ { pas ses icones de fichier d un rectangle - remplace le carre borde par         }
+ { la MEME silhouette "page avec coin plie" que MakeIconNewFile/                     }
+ { MakeIconGenericFile (contour gris CLAIR, pas noir), pour se rapprocher              }
+ { le plus possible de l apparence reelle de Visual Studio. }
+ IconFillRect(Icon, 3, 1, 11, 14, 15);   { fond blanc de la page }
+ IconRect(Icon, 3, 1, 11, 14, 7);        { contour gris clair }
+ IconHLine(Icon, 9, 11, 1, 255);         { coin plie (decoupe) }
+ IconVLine(Icon, 11, 1, 3, 255);
+ IconPutPixel(Icon, 9, 1, 7);
+ IconPutPixel(Icon, 10, 2, 7);
+ IconPutPixel(Icon, 11, 3, 7);
+ IconDrawMonogram(Icon, C1, C2, 7, Color);
 End;
 
 { --- Initialiser toutes les icones de l explorateur de solutions --- }
@@ -7461,50 +7472,50 @@ Begin
  MakeIconGenericFile(ExplorerIcons[EIK_FILE_GENERIC]);
  MakeIconVbForm(ExplorerIcons[EIK_FRM]);
  { C# demande explicitement en vert par l utilisateur }
- MakeIconLangFile(ExplorerIcons[EIK_CS],       2, 'C', '#', 15);
- MakeIconLangFile(ExplorerIcons[EIK_VBNET],    1, 'V', 'B', 15);
- MakeIconLangFile(ExplorerIcons[EIK_VB6BASIC], 9, 'V', 'B', 0);
- MakeIconLangFile(ExplorerIcons[EIK_PAS],      1, 'P', 'A', 15);
- MakeIconLangFile(ExplorerIcons[EIK_C],        1, 'C', ' ', 15);
- MakeIconLangFile(ExplorerIcons[EIK_CPP],      1, 'C', '+', 14);
- MakeIconLangFile(ExplorerIcons[EIK_JAVA],     4, 'J', 'V', 14);
- MakeIconLangFile(ExplorerIcons[EIK_GO],       11, 'G', 'O', 0);
- MakeIconLangFile(ExplorerIcons[EIK_RUST],     6, 'R', 'S', 15);
- MakeIconLangFile(ExplorerIcons[EIK_SWIFT],    12, 'S', 'W', 15);
- MakeIconLangFile(ExplorerIcons[EIK_PYTHON],   9, 'P', 'Y', 14);
- MakeIconLangFile(ExplorerIcons[EIK_RUBY],     4, 'R', 'B', 15);
- MakeIconLangFile(ExplorerIcons[EIK_PHP],      5, 'P', 'H', 15);
- MakeIconLangFile(ExplorerIcons[EIK_PERL],     1, 'P', 'L', 14);
- MakeIconLangFile(ExplorerIcons[EIK_LUA],      1, 'L', 'U', 15);
- MakeIconLangFile(ExplorerIcons[EIK_JS],       14, 'J', 'S', 0);
- MakeIconLangFile(ExplorerIcons[EIK_KOTLIN],   13, 'K', 'T', 15);
- MakeIconLangFile(ExplorerIcons[EIK_CLOJURE],  10, 'C', 'J', 0);
- MakeIconLangFile(ExplorerIcons[EIK_COBOL],    8, 'C', 'B', 15);
- MakeIconLangFile(ExplorerIcons[EIK_ADA],      1, 'A', 'D', 10);
- MakeIconLangFile(ExplorerIcons[EIK_MODULA2],  3, 'M', '2', 0);
- MakeIconLangFile(ExplorerIcons[EIK_MODULA3],  3, 'M', '3', 15);
- MakeIconLangFile(ExplorerIcons[EIK_OBERON],   3, 'O', 'B', 0);
- MakeIconLangFile(ExplorerIcons[EIK_JOVIAL],   6, 'J', 'O', 15);
- MakeIconLangFile(ExplorerIcons[EIK_JSP],      4, 'J', 'P', 14);
- MakeIconLangFile(ExplorerIcons[EIK_JPP],      1, 'J', '+', 14);
- MakeIconLangFile(ExplorerIcons[EIK_POWERFX],  5, 'F', 'X', 15);
- MakeIconLangFile(ExplorerIcons[EIK_SAS],      1, 'S', 'A', 15);
- MakeIconLangFile(ExplorerIcons[EIK_SNOBOL],   6, 'S', 'N', 14);
- MakeIconLangFile(ExplorerIcons[EIK_PL1],      1, 'P', '1', 15);
- MakeIconLangFile(ExplorerIcons[EIK_XPP],      8, 'X', 'P', 14);
- MakeIconLangFile(ExplorerIcons[EIK_REXX],     2, 'R', 'X', 15);
- MakeIconLangFile(ExplorerIcons[EIK_RAKU],     5, 'R', 'K', 14);
- MakeIconLangFile(ExplorerIcons[EIK_LISP],     4, 'L', 'S', 15);
- MakeIconLangFile(ExplorerIcons[EIK_JASMIN],   8, 'J', 'A', 14);
- MakeIconLangFile(ExplorerIcons[EIK_CLIPPER],  6, 'C', 'L', 15);
- MakeIconLangFile(ExplorerIcons[EIK_ALGOL],    7, 'A', 'L', 0);
- MakeIconLangFile(ExplorerIcons[EIK_ABAP],     1, 'A', 'B', 14);
- MakeIconLangFile(ExplorerIcons[EIK_COLDFUSION], 5, 'C', 'F', 15);
- MakeIconLangFile(ExplorerIcons[EIK_FORTRAN],  4, 'F', 'O', 15);
- MakeIconLangFile(ExplorerIcons[EIK_BCPL],     8, 'B', 'C', 15);
- MakeIconLangFile(ExplorerIcons[EIK_AWK],      2, 'A', 'W', 15);
- MakeIconLangFile(ExplorerIcons[EIK_SQL],      8, 'D', 'B', 11);
- MakeIconLangFile(ExplorerIcons[EIK_ASM],      8, 'A', 'S', 7);
+ MakeIconLangFile(ExplorerIcons[EIK_CS],       'C', '#', 2);
+ MakeIconLangFile(ExplorerIcons[EIK_VBNET],    'V', 'B', 1);
+ MakeIconLangFile(ExplorerIcons[EIK_VB6BASIC], 'V', 'B', 9);
+ MakeIconLangFile(ExplorerIcons[EIK_PAS],      'P', 'A', 1);
+ MakeIconLangFile(ExplorerIcons[EIK_C],        'C', ' ', 1);
+ MakeIconLangFile(ExplorerIcons[EIK_CPP],      'C', '+', 1);
+ MakeIconLangFile(ExplorerIcons[EIK_JAVA],     'J', 'V', 4);
+ MakeIconLangFile(ExplorerIcons[EIK_GO],       'G', 'O', 3);
+ MakeIconLangFile(ExplorerIcons[EIK_RUST],     'R', 'S', 6);
+ MakeIconLangFile(ExplorerIcons[EIK_SWIFT],    'S', 'W', 6);
+ MakeIconLangFile(ExplorerIcons[EIK_PYTHON],   'P', 'Y', 9);
+ MakeIconLangFile(ExplorerIcons[EIK_RUBY],     'R', 'B', 4);
+ MakeIconLangFile(ExplorerIcons[EIK_PHP],      'P', 'H', 5);
+ MakeIconLangFile(ExplorerIcons[EIK_PERL],     'P', 'L', 1);
+ MakeIconLangFile(ExplorerIcons[EIK_LUA],      'L', 'U', 1);
+ MakeIconLangFile(ExplorerIcons[EIK_JS],       'J', 'S', 6);
+ MakeIconLangFile(ExplorerIcons[EIK_KOTLIN],   'K', 'T', 5);
+ MakeIconLangFile(ExplorerIcons[EIK_CLOJURE],  'C', 'J', 10);
+ MakeIconLangFile(ExplorerIcons[EIK_COBOL],    'C', 'B', 8);
+ MakeIconLangFile(ExplorerIcons[EIK_ADA],      'A', 'D', 1);
+ MakeIconLangFile(ExplorerIcons[EIK_MODULA2],  'M', '2', 3);
+ MakeIconLangFile(ExplorerIcons[EIK_MODULA3],  'M', '3', 3);
+ MakeIconLangFile(ExplorerIcons[EIK_OBERON],   'O', 'B', 3);
+ MakeIconLangFile(ExplorerIcons[EIK_JOVIAL],   'J', 'O', 6);
+ MakeIconLangFile(ExplorerIcons[EIK_JSP],      'J', 'P', 4);
+ MakeIconLangFile(ExplorerIcons[EIK_JPP],      'J', '+', 1);
+ MakeIconLangFile(ExplorerIcons[EIK_POWERFX],  'F', 'X', 5);
+ MakeIconLangFile(ExplorerIcons[EIK_SAS],      'S', 'A', 1);
+ MakeIconLangFile(ExplorerIcons[EIK_SNOBOL],   'S', 'N', 6);
+ MakeIconLangFile(ExplorerIcons[EIK_PL1],      'P', '1', 1);
+ MakeIconLangFile(ExplorerIcons[EIK_XPP],      'X', 'P', 8);
+ MakeIconLangFile(ExplorerIcons[EIK_REXX],     'R', 'X', 2);
+ MakeIconLangFile(ExplorerIcons[EIK_RAKU],     'R', 'K', 5);
+ MakeIconLangFile(ExplorerIcons[EIK_LISP],     'L', 'S', 4);
+ MakeIconLangFile(ExplorerIcons[EIK_JASMIN],   'J', 'A', 8);
+ MakeIconLangFile(ExplorerIcons[EIK_CLIPPER],  'C', 'L', 6);
+ MakeIconLangFile(ExplorerIcons[EIK_ALGOL],    'A', 'L', 8);
+ MakeIconLangFile(ExplorerIcons[EIK_ABAP],     'A', 'B', 1);
+ MakeIconLangFile(ExplorerIcons[EIK_COLDFUSION], 'C', 'F', 5);
+ MakeIconLangFile(ExplorerIcons[EIK_FORTRAN],  'F', 'O', 4);
+ MakeIconLangFile(ExplorerIcons[EIK_BCPL],     'B', 'C', 8);
+ MakeIconLangFile(ExplorerIcons[EIK_AWK],      'A', 'W', 2);
+ MakeIconLangFile(ExplorerIcons[EIK_SQL],      'D', 'B', 8);
+ MakeIconLangFile(ExplorerIcons[EIK_ASM],      'A', 'S', 8);
 End;
 
 { --- Determiner l icone (TExplorerIconKind) d un noeud de l          }
