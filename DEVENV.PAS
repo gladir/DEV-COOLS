@@ -2146,6 +2146,18 @@ Type
   PasHL  : TPascalHighlighter;  { sous-highlighter Pascal        }
  End;
 
+ { EXTENSION (2026-08-02) : Coloration syntaxique specialisee JSP           }
+ { (JavaServer Pages) - demande utilisateur ("les fichiers .jsp ne             }
+ { supportent pas la coloration syntaxique"). MEME structure HYBRIDE           }
+ { EXACTE que TPSPHighlighter ci-dessus (gabarit HTML/XML + code embarque      }
+ { entre <% %>) - seul le sous-highlighter du CODE change (Java plutot           }
+ { que Pascal, voir JSPCW32.PAS), la reconnaissance des delimiteurs <%/%>       }
+ { (HighlightJSPLine) reste IDENTIQUE, octet pour octet, a HighlightPSPLine. }
+ TJSPHighlighter = Record
+  XMLHL  : TXMLHighlighter;    { sous-highlighter HTML/XML      }
+  JavaHL : TJavaHighlighter;   { sous-highlighter Java           }
+ End;
+
  { Pointeur vers un editeur }
  PEditor = ^TEditor;
 
@@ -3554,6 +3566,8 @@ Var
  XMLHL        : TXMLHighlighter;
  { Coloration syntaxique PSP }
  PSPHL        : TPSPHighlighter;
+ { Coloration syntaxique JSP (EXTENSION 2026-08-02) }
+ JSPHL        : TJSPHighlighter;
  { Explorateur de solution }
  SolExplorer  : TSolutionExplorer;
  { EXTENSION (2026-08-02) : largeur effective/maximale du panneau,           }
@@ -10327,6 +10341,12 @@ Procedure HighlightJavaLine(Var HL: TJavaHighlighter;
                             Line: String;
                             Var Colors: Array Of Byte); Forward;
 
+{ --- Declaration anticipee de HighlightJSPLine (EXTENSION 2026-08-02) --- }
+
+Procedure HighlightJSPLine(Var HL: TJSPHighlighter;
+                           Line: String;
+                           Var Colors: Array Of Byte); Forward;
+
 { --- Declaration anticipee de HighlightPythonLine --- }
 
 Procedure HighlightPythonLine(Var HL: TPythonHighlighter;
@@ -10395,6 +10415,7 @@ Var
  IsAbap: Boolean;
  IsAWK: Boolean;
  IsPSP: Boolean;
+ IsJSP: Boolean;
  IsJava: Boolean;
  IsPython: Boolean;
  IsXML: Boolean;
@@ -10440,6 +10461,7 @@ Begin
  IsYAML := (Ext = '.YML') Or (Ext = '.YAML');
  IsSQL := (Ext = '.SQL') Or (Ext = '.DDL') Or (Ext = '.DML');
  IsPSP := (Ext = '.PSP');
+ IsJSP := (Ext = '.JSP');
  { EXTENSION (2026-08-02) : .JPP (MS J++, tres proche syntaxiquement de     }
  { Java - memes mots-cles/chaines/commentaires, voir JPPCW32.PAS) reutilise  }
  { le highlighter Java plutot que de dupliquer une table de mots-cles       }
@@ -10535,6 +10557,9 @@ Begin
    Else If IsPSP And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
     HighlightPSPLine(PSPHL, FullLine, Colors)
+   Else If IsJSP And (Length(FullLine) > 0) And
+      (Length(FullLine) <= 255) Then
+    HighlightJSPLine(JSPHL, FullLine, Colors)
    Else If IsJava And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
     HighlightJavaLine(JavaHL, FullLine, Colors)
@@ -20328,6 +20353,80 @@ Begin
   Start := Pos;
   If InCode Then
    TC := GetPascalTokenClass(HL.PasHL, Line, Pos)
+  Else
+   TC := GetXMLTokenClass(HL.XMLHL, Line, Pos);
+  { Ne pas depasser un delimiteur <% ou %> }
+  Clr := Byte(TokenClassToColor(TC));
+  For I := Start To Pos - 1 Do
+  Begin
+   If (I >= 1) And (I <= Len) Then
+    Colors[I - 1] := Clr;
+  End;
+ End;
+End;
+
+{ ============================================================
+  COLORATION SYNTAXIQUE JSP (JAVASERVER PAGES) - EXTENSION 2026-08-02
+  ============================================================ }
+
+{ --- Initialiser le moteur de coloration JSP --- }
+
+Procedure InitJSPHighlighter(Var HL: TJSPHighlighter);
+Begin
+ InitXMLHighlighter(HL.XMLHL);
+ InitJavaHighlighter(HL.JavaHL);
+End;
+
+{ --- Colorier une ligne JSP (hybride HTML + Java) - IDENTIQUE, octet     }
+{ pour octet, a HighlightPSPLine ci-dessus (MEMES delimiteurs <% %>,        }
+{ TOUTES formes <%=/<%@/<%! confondues comme "code", MEME simplification     }
+{ deja assumee par PSP) - seul le tokenizer du CODE change (Java plutot       }
+{ que Pascal). --- }
+Procedure HighlightJSPLine(Var HL: TJSPHighlighter;
+                           Line: String;
+                           Var Colors: Array Of Byte);
+Var
+ Pos, Start, I, Len: Integer;
+ TC: TTokenClass;
+ Clr: Byte;
+ InCode: Boolean;
+Begin
+ Len := Length(Line);
+ For I := 0 To Len - 1 Do
+  Colors[I] := Byte(TokenClassToColor(TC_NORMAL));
+
+ Pos := 1;
+ InCode := False;
+ While Pos <= Len Do
+ Begin
+  { Detecter debut de bloc Java <% }
+  If Not InCode And (Pos < Len) And
+     (Line[Pos] = '<') And (Line[Pos + 1] = '%') Then
+  Begin
+   { Colorier <% en gris fonce (directive) }
+   Clr := Byte(TokenClassToColor(TC_PREPROCESSOR));
+   Colors[Pos - 1] := Clr;
+   Colors[Pos] := Clr;
+   Inc(Pos, 2);
+   InCode := True;
+   Continue;
+  End;
+  { Detecter fin de bloc Java %> }
+  If InCode And (Pos < Len) And
+     (Line[Pos] = '%') And (Line[Pos + 1] = '>') Then
+  Begin
+   { Colorier %> en gris fonce (directive) }
+   Clr := Byte(TokenClassToColor(TC_PREPROCESSOR));
+   Colors[Pos - 1] := Clr;
+   Colors[Pos] := Clr;
+   Inc(Pos, 2);
+   InCode := False;
+   Continue;
+  End;
+  { Selon le mode, utiliser le tokenizer Java ou XML }
+  Start := Pos;
+  If InCode Then
+   TC := GetJavaTokenClass(HL.JavaHL, Line, Pos)
   Else
    TC := GetXMLTokenClass(HL.XMLHL, Line, Pos);
   { Ne pas depasser un delimiteur <% ou %> }
@@ -57690,6 +57789,31 @@ Begin
   ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
   CleanupTempFile(TempFile);
  End
+ Else If (Ext = '.jsp') Then Begin
+  { EXTENSION (2026-08-02) : Compilation JSP -> JSPCW32.exe, demande        }
+  { explicite de l utilisateur ("quand F5 est utilise sur un .jsp, il          }
+  { devrait lancer JSPCW32"). Un SEUL compilateur existe pour JSP (Win32       }
+  { PE, aucun equivalent DOS 8086) - MEME pattern simple que .jpp/.bas/.vb        }
+  { (FindCompiler direct). L execution du .exe produit est geree par le          }
+  { bloc COMMUN en fin de fonction (ExitCode=0 -> "Execution de                     }
+  { ExeName..."), MEME discipline que .jpp/.java/.psp/.c - PAS de                    }
+  { duplication de cette logique ICI. }
+  CmdLine := FindCompiler('JSPCW32');
+  If CmdLine = '' Then Begin
+   AppendOutput(OutputPanel,
+    'Erreur : compilateur JSP non trouve (JSPCW32.exe).',
+    Ord(OTK_BUILD));
+   Exit;
+  End;
+  CmdLine := CmdLine + ' ' + SourceFile;
+  AppendOutput(OutputPanel,
+   '------ Build started: ' + SourceFile + ' ------',
+   Ord(OTK_BUILD));
+  AppendOutput(OutputPanel, '> ' + CmdLine, Ord(OTK_BUILD));
+  ExitCode := ExecuteCompiler(CmdLine, TempFile);
+  ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
+  CleanupTempFile(TempFile);
+ End
  Else If (Ext = '.py') Then Begin
   { Compilation Python }
   DetectPythonCompiler(PythonContext);
@@ -61276,6 +61400,7 @@ BEGIN
  InitPythonHighlighter(PythonHL);
  InitXMLHighlighter(XMLHL);
  InitPSPHighlighter(PSPHL);
+ InitJSPHighlighter(JSPHL);
  InitExplorer(SolExplorer);
  InitContextMenu(CtxMenu);
  InitSolution(CurrentSolution);
