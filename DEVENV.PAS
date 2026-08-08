@@ -1470,7 +1470,16 @@ Const
  TOOLBAR_HEIGHT        = 28;
  MENUBAR_HEIGHT        = 20;
  STATUSBAR_HEIGHT      = 20;
- OUTPUT_HEIGHT         = 150;
+ { EXTENSION (2026-08-02) : OUTPUT_HEIGHT est devenue une VARIABLE (voir     }
+ { plus bas, section Var) calculee au demarrage par                              }
+ { UpdateOutputHeightForScreen - demande explicite de l utilisateur : sur       }
+ { un ecran de plus de 800 pixels de haut, la hauteur du terminal/panneau       }
+ { de sortie (onglets Build/Debug/Resultats de recherche, TOUS partagent        }
+ { CETTE MEME valeur - un SEUL OutputPanel) doit doubler. }
+ OUTPUT_HEIGHT_DEFAULT      = 150; { hauteur par defaut (ecrans <= 800px) }
+ OUTPUT_TALL_SCREEN_LIMIT   = 800; { seuil (pixels) au-dela duquel la      }
+                                   { hauteur est doublee }
+ OUTPUT_TALL_SCREEN_SCALE   = 2;   { facteur applique au-dela du seuil }
 
  { Bouton de zoom ecran (plein ecran / VGA 640x480) }
  SCRZOOM_BTN_SIZE      = 16;      { taille de l icone (16x16)      }
@@ -3580,6 +3589,14 @@ Var
  { ete conserve. }
  EXPLORER_WIDTH     : Integer;
  EXPLORER_MAX_WIDTH : Integer;
+ { EXTENSION (2026-08-02) : hauteur effective du terminal/panneau de        }
+ { sortie (Build/Debug/Resultats de recherche - un SEUL OutputPanel a          }
+ { onglets, MEME valeur partagee par les trois), calculee au demarrage         }
+ { par UpdateOutputHeightForScreen selon la hauteur d ecran                       }
+ { (OUTPUT_HEIGHT_DEFAULT reste la valeur de base, section Const).             }
+ { ANCIENNEMENT une constante OUTPUT_HEIGHT - tous les sites d                    }
+ { utilisation existants restent inchanges, le NOM ayant ete conserve. }
+ OUTPUT_HEIGHT : Integer;
  { Menu contextuel de l explorateur }
  CtxMenu      : TContextMenu;
  { Panneau de proprietes }
@@ -4714,6 +4731,26 @@ Begin
   EXPLORER_WIDTH     := EXPLORER_WIDTH_DEFAULT;
   EXPLORER_MAX_WIDTH := EXPLORER_MAX_WIDTH_DEFAULT;
  End;
+End;
+
+{ --- Hauteur du terminal/panneau de sortie adaptee a l ecran ---          }
+{ EXTENSION (2026-08-02) : demande explicite de l utilisateur - sur un      }
+{ ecran de plus de OUTPUT_TALL_SCREEN_LIMIT (800) pixels de haut, la           }
+{ hauteur du terminal ET du panneau de sortie (Build/Debug/Resultats de         }
+{ recherche - un SEUL OutputPanel a onglets, TOUS lisent la MEME valeur          }
+{ OUTPUT_HEIGHT) doit doubler (OUTPUT_TALL_SCREEN_SCALE) par rapport a sa         }
+{ valeur de base (OUTPUT_HEIGHT_DEFAULT, section Const). Reste SOUS               }
+{ OUTPUT_MAX_HEIGHT (400, la limite de redimensionnement par glisser)              }
+{ meme doublee (150*2=300) - AUCUN besoin de faire evoluer cette limite,             }
+{ contrairement a EXPLORER_MAX_WIDTH plus haut. DOIT etre appelee APRES            }
+{ InitializeGraphics (GetScreenHeight n est significative qu une fois le           }
+{ mode graphique reel etabli) et AVANT InitOutputPanel/InitTerminals. }
+Procedure UpdateOutputHeightForScreen;
+Begin
+ If GetScreenHeight > OUTPUT_TALL_SCREEN_LIMIT Then
+  OUTPUT_HEIGHT := OUTPUT_HEIGHT_DEFAULT * OUTPUT_TALL_SCREEN_SCALE
+ Else
+  OUTPUT_HEIGHT := OUTPUT_HEIGHT_DEFAULT;
 End;
 
 { --- Nombre maximal de couleurs --- }
@@ -61362,6 +61399,7 @@ BEGIN
   ShowVersion;
  InitializeGraphics;
  UpdateExplorerWidthForScreen;
+ UpdateOutputHeightForScreen;
  ClearScreen(CLR_BACKGROUND);
  InitEventQueue;
  InitMouse;
