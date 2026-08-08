@@ -57012,6 +57012,44 @@ Begin
  Close(F);
 End;
 
+{ --- Detecter une syntaxe VAX Pascal (DEC) dans un fichier .pas ---      }
+{ EXTENSION (2026-08-08) : demande explicite de l utilisateur - un .pas     }
+{ employant des extensions VAX Pascal historiques (DEC/VMS) jamais               }
+{ reconnues par TPCW32/fpc NI par DELPHI.PAS doit etre compile par                  }
+{ VAXPCW32.PAS (VAXPCW32.exe) plutot que l un ou l autre. TROIS marqueurs           }
+{ INDEPENDANTS suffisent chacun a eux seuls (recherche SIMPLE, LIGNE PAR         }
+{ LIGNE, insensible a la casse pour VARYING/SYS-dollar - MEME discipline           }
+{ que FileContainsAppType ci-dessus) : le mot-cle VARYING (type chaine             }
+{ VMS a longueur variable, ex. "s1 : varying [80] of char"), l operateur            }
+{ de concatenation "||" (distinct du "+" standard) et le prefixe des                    }
+{ appels aux services systeme VMS "SYS$" (ex. SYS$CREMBX - N IMPORTE                }
+{ QUEL appel SYS$..., pas seulement celui-la). PRIORITE sur $APPTYPE :          }
+{ verifiee EN PREMIER par l appelant, un .pas VAX Pascal reel n a de toute            }
+{ facon aucune raison de contenir AUSSI une directive Delphi. }
+Function FileContainsVaxPascal(Const FileName: String): Boolean;
+Var
+ F: Text;
+ Line, UpLine: String;
+Begin
+ FileContainsVaxPascal := False;
+ {$I-}
+ Assign(F, FileName);
+ Reset(F);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ While Not Eof(F) Do Begin
+  ReadLn(F, Line);
+  UpLine := UpCaseStr(Line);
+  If (Pos('VARYING', UpLine) > 0) Or
+     (Pos('||', Line) > 0) Or
+     (Pos('SYS$', UpLine) > 0) Then Begin
+   FileContainsVaxPascal := True;
+   Break;
+  End;
+ End;
+ Close(F);
+End;
+
 { --- Demarrer la compilation et l execution --- }
 
 Procedure HandleStartDebugging;
@@ -57071,6 +57109,30 @@ Begin
  {$ENDIF}
  If (Ext = '.pas') Or (Ext = '.pp') Or (Ext = '.lpr')
     Or (Ext = '.dpr') Then Begin
+  { EXTENSION (2026-08-08) : un .pas employant une syntaxe VAX Pascal          }
+  { (voir la note d en-tete complete de FileContainsVaxPascal) est                }
+  { compile par VAXPCW32.PAS plutot que TPCW32/fpc OU DELPHI.PAS - demande        }
+  { explicite de l utilisateur, VERIFIEE EN PREMIER (avant $APPTYPE) pour           }
+  { que la priorite reste sans ambiguite. SEUL .pas est concerne, MEME                }
+  { discipline que $APPTYPE ci-dessous. }
+  If (Ext = '.pas') And FileContainsVaxPascal(SourceFile) Then Begin
+   { Compilation VAX Pascal (VARYING/||/SYS$ detectes) -> VAXPCW32.exe }
+   CmdLine := FindCompiler('VAXPCW32');
+   If CmdLine = '' Then Begin
+    AppendOutput(OutputPanel,
+     'Erreur : compilateur VAX Pascal non trouve (VAXPCW32.exe).',
+     Ord(OTK_BUILD));
+    Exit;
+   End;
+   CmdLine := CmdLine + ' ' + SourceFile;
+   AppendOutput(OutputPanel,
+    '------ Build started: ' + SourceFile + ' ------',
+    Ord(OTK_BUILD));
+   AppendOutput(OutputPanel, '> ' + CmdLine, Ord(OTK_BUILD));
+   ExitCode := ExecuteCompiler(CmdLine, TempFile);
+   ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
+   CleanupTempFile(TempFile);
+  End Else
   { EXTENSION (2026-08-08) : un .pas contenant la directive Delphi         }
   { $APPTYPE (voir la note d en-tete complete de FileContainsAppType) est       }
   { compile par DELPHI.PAS plutot que TPCW32/fpc - demande explicite de           }
