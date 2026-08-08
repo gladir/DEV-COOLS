@@ -2274,9 +2274,38 @@ Type
   ENK_FILE_OTHER       { autre type de fichier                   }
  );
 
+ { EXTENSION (2026-08-08) : icones de l explorateur de solutions -    }
+ { distinctes de TExplorerNodeKind (qui pilote le COMPORTEMENT :       }
+ { ouverture au clic, suppression, etc. et ne doit pas etre touchee)     }
+ { pour eviter tout risque de casser la logique existante - ceci ne         }
+ { pilote QUE l icone 16x16 dessinee (voir ExplorerIconKindForNode/          }
+ { InitExplorerIcons plus bas). Couvre les noeuds speciaux (cle pour             }
+ { Properties, References,...) et un langage distinct par extension                }
+ { reconnue parmi tous les langages supportes par cet IDE (voir le                    }
+ { contenu de SAMPLES\). }
+ TExplorerIconKind = (
+  EIK_SOLUTION, EIK_PROJECT, EIK_PROPERTIES, EIK_REFERENCES,
+  EIK_REFERENCE, EIK_FOLDER, EIK_FILE_GENERIC,
+  EIK_CS, EIK_VBNET, EIK_PAS, EIK_FRM,
+  EIK_C, EIK_CPP, EIK_JAVA, EIK_GO, EIK_RUST, EIK_SWIFT, EIK_PYTHON,
+  EIK_RUBY, EIK_PHP, EIK_PERL, EIK_LUA, EIK_JS, EIK_KOTLIN, EIK_CLOJURE,
+  EIK_COBOL, EIK_ADA, EIK_MODULA2, EIK_MODULA3, EIK_OBERON, EIK_JOVIAL,
+  EIK_JSP, EIK_JPP, EIK_POWERFX, EIK_SAS, EIK_SNOBOL, EIK_PL1, EIK_XPP,
+  EIK_REXX, EIK_RAKU, EIK_LISP, EIK_JASMIN, EIK_CLIPPER, EIK_ALGOL,
+  EIK_ABAP, EIK_COLDFUSION, EIK_FORTRAN, EIK_BCPL, EIK_AWK, EIK_SQL,
+  EIK_ASM, EIK_VB6BASIC
+ );
+
  { Noeud dans l arbre de l explorateur }
  TExplorerNode = Record
   Caption    : String[127];         { texte affiche                  }
+  { RelPath (2026-08-08) : chemin relatif REEL du fichier par rapport   }
+  { au dossier du projet, utilise pour reconstruire le chemin complet     }
+  { (voir OpenExplorerFileNode/Hex/Form, RunTranspilerOnFile) - distinct    }
+  { de Caption depuis que les fichiers sous "Properties" affichent un        }
+  { Caption ABREGE (ex. "AssemblyInfo.cs") different du chemin reel             }
+  { ("Properties\AssemblyInfo.cs"). Pour tout AUTRE noeud, RelPath = Caption. }
+  RelPath    : String[255];
   Kind       : TExplorerNodeKind;   { type de noeud                  }
   ParentIdx  : Integer;             { index du parent (-1 = racine)  }
   Level      : Integer;             { profondeur dans l arbre        }
@@ -3579,6 +3608,11 @@ Var
  JSPHL        : TJSPHighlighter;
  { Explorateur de solution }
  SolExplorer  : TSolutionExplorer;
+ { EXTENSION (2026-08-08) : icones 16x16 de l explorateur de solutions, }
+ { une par TExplorerIconKind, construites une seule fois au demarrage      }
+ { (InitExplorerIcons) puis dessinees telles quelles a chaque repaint          }
+ { (voir DrawExplorerNode) - meme convention que MainToolBar.Buttons[].Icon. }
+ ExplorerIcons : Array[TExplorerIconKind] Of TIcon16;
  { EXTENSION (2026-08-02) : largeur effective/maximale du panneau,           }
  { calculee au demarrage par UpdateExplorerWidthForScreen selon la              }
  { largeur d ecran (EXPLORER_WIDTH_DEFAULT/EXPLORER_MAX_WIDTH_DEFAULT           }
@@ -6912,6 +6946,88 @@ Begin
   IconHLine(Icon, X1, X2, Y, C);
 End;
 
+{ ============================================================
+  EXTENSION (2026-08-08) - MINUSCULE POLICE 4x5 POUR MONOGRAMMES
+  D ICONES DE LANGAGE (icones de l explorateur de solutions)
+  ============================================================
+  Chaque glyphe est encode sur 5 lignes, chacune un nibble (4 bits,
+  poids fort = pixel le plus a gauche) - meme esprit que les icones
+  a la main ci-dessous (rien qu une matrice de pixels 16x16), mais
+  genere par une police au lieu d etre dessine pixel par pixel pour
+  chacun des tres nombreux langages a couvrir. }
+
+{ --- Recuperer les 5 lignes du glyphe d un caractere --- }
+
+Procedure GetGlyphRows(Ch: Char; Var R0, R1, R2, R3, R4: Byte);
+Begin
+ Case UpCase(Ch) Of
+  'A': Begin R0:=$6; R1:=$9; R2:=$F; R3:=$9; R4:=$9; End;
+  'B': Begin R0:=$E; R1:=$9; R2:=$E; R3:=$9; R4:=$E; End;
+  'C': Begin R0:=$7; R1:=$8; R2:=$8; R3:=$8; R4:=$7; End;
+  'D': Begin R0:=$E; R1:=$9; R2:=$9; R3:=$9; R4:=$E; End;
+  'E': Begin R0:=$F; R1:=$8; R2:=$E; R3:=$8; R4:=$F; End;
+  'F': Begin R0:=$F; R1:=$8; R2:=$E; R3:=$8; R4:=$8; End;
+  'G': Begin R0:=$7; R1:=$8; R2:=$B; R3:=$9; R4:=$7; End;
+  'H': Begin R0:=$9; R1:=$9; R2:=$F; R3:=$9; R4:=$9; End;
+  'I': Begin R0:=$F; R1:=$4; R2:=$4; R3:=$4; R4:=$F; End;
+  'J': Begin R0:=$3; R1:=$1; R2:=$1; R3:=$9; R4:=$6; End;
+  'K': Begin R0:=$9; R1:=$A; R2:=$C; R3:=$A; R4:=$9; End;
+  'L': Begin R0:=$8; R1:=$8; R2:=$8; R3:=$8; R4:=$F; End;
+  'M': Begin R0:=$9; R1:=$F; R2:=$9; R3:=$9; R4:=$9; End;
+  'N': Begin R0:=$9; R1:=$D; R2:=$B; R3:=$9; R4:=$9; End;
+  'O': Begin R0:=$6; R1:=$9; R2:=$9; R3:=$9; R4:=$6; End;
+  'P': Begin R0:=$E; R1:=$9; R2:=$E; R3:=$8; R4:=$8; End;
+  'Q': Begin R0:=$6; R1:=$9; R2:=$9; R3:=$A; R4:=$5; End;
+  'R': Begin R0:=$E; R1:=$9; R2:=$E; R3:=$A; R4:=$9; End;
+  'S': Begin R0:=$7; R1:=$8; R2:=$6; R3:=$1; R4:=$E; End;
+  'T': Begin R0:=$F; R1:=$4; R2:=$4; R3:=$4; R4:=$4; End;
+  'U': Begin R0:=$9; R1:=$9; R2:=$9; R3:=$9; R4:=$6; End;
+  'V': Begin R0:=$9; R1:=$9; R2:=$9; R3:=$6; R4:=$4; End;
+  'W': Begin R0:=$9; R1:=$9; R2:=$9; R3:=$F; R4:=$9; End;
+  'X': Begin R0:=$9; R1:=$6; R2:=$6; R3:=$6; R4:=$9; End;
+  'Y': Begin R0:=$9; R1:=$9; R2:=$6; R3:=$4; R4:=$4; End;
+  'Z': Begin R0:=$F; R1:=$1; R2:=$6; R3:=$8; R4:=$F; End;
+  '0': Begin R0:=$6; R1:=$9; R2:=$9; R3:=$9; R4:=$6; End;
+  '1': Begin R0:=$4; R1:=$C; R2:=$4; R3:=$4; R4:=$E; End;
+  '2': Begin R0:=$6; R1:=$9; R2:=$2; R3:=$4; R4:=$F; End;
+  '3': Begin R0:=$E; R1:=$1; R2:=$6; R3:=$1; R4:=$E; End;
+  '+': Begin R0:=$4; R1:=$4; R2:=$F; R3:=$4; R4:=$4; End;
+  '#': Begin R0:=$5; R1:=$F; R2:=$5; R3:=$F; R4:=$5; End;
+ Else Begin R0:=$0; R1:=$0; R2:=$0; R3:=$0; R4:=$0; End;
+ End;
+End;
+
+{ --- Dessiner un caractere (4x5) dans une icone --- }
+
+Procedure IconDrawChar(Var Icon: TIcon16; X, Y: Integer; Ch: Char;
+ C: Byte);
+Var
+ Rows: Array[0..4] Of Byte;
+ Row, Col: Integer;
+Begin
+ GetGlyphRows(Ch, Rows[0], Rows[1], Rows[2], Rows[3], Rows[4]);
+ For Row := 0 To 4 Do
+  For Col := 0 To 3 Do
+   If (Rows[Row] And ($8 Shr Col)) <> 0 Then
+    IconPutPixel(Icon, X + Col, Y + Row, C);
+End;
+
+{ --- Dessiner un monogramme (1 ou 2 caracteres) centre dans une      }
+{ icone - utilise pour les icones de fichier par langage (voir            }
+{ MakeIconLangFile ci-dessous). Si C2 = ' ', le caractere unique C1        }
+{ est centre ; sinon les deux caracteres sont disposes symetriquement. }
+
+Procedure IconDrawMonogram(Var Icon: TIcon16; C1, C2: Char; Y: Integer;
+ C: Byte);
+Begin
+ If C2 = ' ' Then
+  IconDrawChar(Icon, 6, Y, C1, C)
+ Else Begin
+  IconDrawChar(Icon, 3, Y, C1, C);
+  IconDrawChar(Icon, 9, Y, C2, C);
+ End;
+End;
+
 { --- Icone : Nouveau fichier --- }
 
 Procedure MakeIconNewFile(Var Icon: TIcon16);
@@ -7208,6 +7324,268 @@ Begin
  IconPutPixel(Icon, 10, 7, 1);
  IconPutPixel(Icon, 11, 6, 1);
  IconPutPixel(Icon, 9, 5, 1);
+End;
+
+{ ============================================================
+  EXTENSION (2026-08-08) - ICONES DE L EXPLORATEUR DE SOLUTIONS
+  ============================================================
+  Demande utilisateur : une cle pour "Properties", une icone pour
+  "References", et une icone distincte par langage supporte (au lieu
+  du simple carre de couleur unie dessine jusqu ici - voir
+  NodeKindColor/DrawExplorerNode, remplaces plus bas). Tout est
+  construit en pixels ici, comme les icones de la barre d outils
+  ci-dessus - aucune ressource externe. }
+
+{ --- Icone : cle (noeud special "Properties") --- }
+
+Procedure MakeIconKey(Var Icon: TIcon16);
+Begin
+ ClearIcon(Icon, 255);
+ { Tete annulaire de la cle (or) }
+ IconFillRect(Icon, 1, 2, 7, 8, 14);
+ IconFillRect(Icon, 3, 4, 5, 6, 255);
+ IconRect(Icon, 1, 2, 7, 8, 6);
+ { Tige }
+ IconFillRect(Icon, 7, 4, 13, 5, 14);
+ IconRect(Icon, 7, 4, 13, 5, 6);
+ { Dents }
+ IconFillRect(Icon, 10, 6, 11, 8, 14);
+ IconRect(Icon, 10, 6, 11, 8, 6);
+ IconFillRect(Icon, 13, 6, 14, 9, 14);
+ IconRect(Icon, 13, 6, 14, 9, 6);
+End;
+
+{ --- Icone : solution (noeud racine) --- }
+
+Procedure MakeIconSolution(Var Icon: TIcon16);
+Begin
+ ClearIcon(Icon, 255);
+ IconFillRect(Icon, 1, 6, 7, 12, 9);
+ IconRect(Icon, 1, 6, 7, 12, 1);
+ IconFillRect(Icon, 5, 3, 11, 9, 11);
+ IconRect(Icon, 5, 3, 11, 9, 1);
+ IconFillRect(Icon, 9, 1, 14, 6, 15);
+ IconRect(Icon, 9, 1, 14, 6, 1);
+End;
+
+{ --- Icone : projet --- }
+
+Procedure MakeIconProjectBox(Var Icon: TIcon16);
+Begin
+ ClearIcon(Icon, 255);
+ IconFillRect(Icon, 1, 4, 14, 14, 9);
+ IconRect(Icon, 1, 4, 14, 14, 1);
+ IconHLine(Icon, 1, 14, 8, 1);
+ IconFillRect(Icon, 6, 1, 9, 4, 1);
+End;
+
+{ --- Icone : noeud "References" (deux anneaux entrelaces) --- }
+
+Procedure MakeIconReferences(Var Icon: TIcon16);
+Begin
+ ClearIcon(Icon, 255);
+ IconRect(Icon, 1, 4, 8, 11, 1);
+ IconRect(Icon, 2, 5, 7, 10, 1);
+ IconRect(Icon, 7, 4, 14, 11, 9);
+ IconRect(Icon, 8, 5, 13, 10, 9);
+End;
+
+{ --- Icone : une reference individuelle (assembly/.dll) --- }
+
+Procedure MakeIconReferenceItem(Var Icon: TIcon16);
+Begin
+ ClearIcon(Icon, 255);
+ IconFillRect(Icon, 3, 3, 12, 12, 14);
+ IconRect(Icon, 3, 3, 12, 12, 6);
+ IconFillRect(Icon, 5, 5, 10, 10, 6);
+End;
+
+{ --- Icone : dossier (noeud generique ENK_FOLDER) --- }
+
+Procedure MakeIconFolderNode(Var Icon: TIcon16);
+Begin
+ ClearIcon(Icon, 255);
+ IconFillRect(Icon, 1, 5, 14, 13, 14);
+ IconRect(Icon, 1, 5, 14, 13, 6);
+ IconFillRect(Icon, 1, 3, 7, 5, 14);
+ IconRect(Icon, 1, 3, 7, 5, 6);
+End;
+
+{ --- Icone : fichier generique (extension non reconnue) --- }
+
+Procedure MakeIconGenericFile(Var Icon: TIcon16);
+Begin
+ ClearIcon(Icon, 255);
+ IconFillRect(Icon, 3, 1, 11, 14, 15);
+ IconRect(Icon, 3, 1, 11, 14, 8);
+ IconHLine(Icon, 5, 9, 6, 7);
+ IconHLine(Icon, 5, 9, 8, 7);
+ IconHLine(Icon, 5, 8, 10, 7);
+End;
+
+{ --- Icone : formulaire Visual Basic 6 (.frm) --- }
+
+Procedure MakeIconVbForm(Var Icon: TIcon16);
+Begin
+ ClearIcon(Icon, 255);
+ IconFillRect(Icon, 1, 1, 14, 4, 1);    { barre de titre bleue }
+ IconFillRect(Icon, 1, 5, 14, 14, 15);  { corps blanc }
+ IconRect(Icon, 1, 1, 14, 14, 0);
+ IconFillRect(Icon, 4, 7, 11, 9, 7);    { zone de texte grise }
+ IconFillRect(Icon, 4, 11, 8, 13, 9);   { bouton }
+End;
+
+{ --- Icone generique de fichier par langage : fond colore uni +      }
+{ monogramme de 1 ou 2 lettres (meme principe que les badges de              }
+{ fichiers des IDE modernes pour les langages moins courants) --- }
+
+Procedure MakeIconLangFile(Var Icon: TIcon16; BgColor: Byte;
+ C1, C2: Char; FgColor: Byte);
+Begin
+ ClearIcon(Icon, 255);
+ IconFillRect(Icon, 1, 1, 14, 14, BgColor);
+ IconRect(Icon, 1, 1, 14, 14, 0);
+ IconDrawMonogram(Icon, C1, C2, 6, FgColor);
+End;
+
+{ --- Initialiser toutes les icones de l explorateur de solutions --- }
+
+Procedure InitExplorerIcons;
+Begin
+ MakeIconSolution(ExplorerIcons[EIK_SOLUTION]);
+ MakeIconProjectBox(ExplorerIcons[EIK_PROJECT]);
+ MakeIconKey(ExplorerIcons[EIK_PROPERTIES]);
+ MakeIconReferences(ExplorerIcons[EIK_REFERENCES]);
+ MakeIconReferenceItem(ExplorerIcons[EIK_REFERENCE]);
+ MakeIconFolderNode(ExplorerIcons[EIK_FOLDER]);
+ MakeIconGenericFile(ExplorerIcons[EIK_FILE_GENERIC]);
+ MakeIconVbForm(ExplorerIcons[EIK_FRM]);
+ { C# demande explicitement en vert par l utilisateur }
+ MakeIconLangFile(ExplorerIcons[EIK_CS],       2, 'C', '#', 15);
+ MakeIconLangFile(ExplorerIcons[EIK_VBNET],    1, 'V', 'B', 15);
+ MakeIconLangFile(ExplorerIcons[EIK_VB6BASIC], 9, 'V', 'B', 0);
+ MakeIconLangFile(ExplorerIcons[EIK_PAS],      1, 'P', 'A', 15);
+ MakeIconLangFile(ExplorerIcons[EIK_C],        1, 'C', ' ', 15);
+ MakeIconLangFile(ExplorerIcons[EIK_CPP],      1, 'C', '+', 14);
+ MakeIconLangFile(ExplorerIcons[EIK_JAVA],     4, 'J', 'V', 14);
+ MakeIconLangFile(ExplorerIcons[EIK_GO],       11, 'G', 'O', 0);
+ MakeIconLangFile(ExplorerIcons[EIK_RUST],     6, 'R', 'S', 15);
+ MakeIconLangFile(ExplorerIcons[EIK_SWIFT],    12, 'S', 'W', 15);
+ MakeIconLangFile(ExplorerIcons[EIK_PYTHON],   9, 'P', 'Y', 14);
+ MakeIconLangFile(ExplorerIcons[EIK_RUBY],     4, 'R', 'B', 15);
+ MakeIconLangFile(ExplorerIcons[EIK_PHP],      5, 'P', 'H', 15);
+ MakeIconLangFile(ExplorerIcons[EIK_PERL],     1, 'P', 'L', 14);
+ MakeIconLangFile(ExplorerIcons[EIK_LUA],      1, 'L', 'U', 15);
+ MakeIconLangFile(ExplorerIcons[EIK_JS],       14, 'J', 'S', 0);
+ MakeIconLangFile(ExplorerIcons[EIK_KOTLIN],   13, 'K', 'T', 15);
+ MakeIconLangFile(ExplorerIcons[EIK_CLOJURE],  10, 'C', 'J', 0);
+ MakeIconLangFile(ExplorerIcons[EIK_COBOL],    8, 'C', 'B', 15);
+ MakeIconLangFile(ExplorerIcons[EIK_ADA],      1, 'A', 'D', 10);
+ MakeIconLangFile(ExplorerIcons[EIK_MODULA2],  3, 'M', '2', 0);
+ MakeIconLangFile(ExplorerIcons[EIK_MODULA3],  3, 'M', '3', 15);
+ MakeIconLangFile(ExplorerIcons[EIK_OBERON],   3, 'O', 'B', 0);
+ MakeIconLangFile(ExplorerIcons[EIK_JOVIAL],   6, 'J', 'O', 15);
+ MakeIconLangFile(ExplorerIcons[EIK_JSP],      4, 'J', 'P', 14);
+ MakeIconLangFile(ExplorerIcons[EIK_JPP],      1, 'J', '+', 14);
+ MakeIconLangFile(ExplorerIcons[EIK_POWERFX],  5, 'F', 'X', 15);
+ MakeIconLangFile(ExplorerIcons[EIK_SAS],      1, 'S', 'A', 15);
+ MakeIconLangFile(ExplorerIcons[EIK_SNOBOL],   6, 'S', 'N', 14);
+ MakeIconLangFile(ExplorerIcons[EIK_PL1],      1, 'P', '1', 15);
+ MakeIconLangFile(ExplorerIcons[EIK_XPP],      8, 'X', 'P', 14);
+ MakeIconLangFile(ExplorerIcons[EIK_REXX],     2, 'R', 'X', 15);
+ MakeIconLangFile(ExplorerIcons[EIK_RAKU],     5, 'R', 'K', 14);
+ MakeIconLangFile(ExplorerIcons[EIK_LISP],     4, 'L', 'S', 15);
+ MakeIconLangFile(ExplorerIcons[EIK_JASMIN],   8, 'J', 'A', 14);
+ MakeIconLangFile(ExplorerIcons[EIK_CLIPPER],  6, 'C', 'L', 15);
+ MakeIconLangFile(ExplorerIcons[EIK_ALGOL],    7, 'A', 'L', 0);
+ MakeIconLangFile(ExplorerIcons[EIK_ABAP],     1, 'A', 'B', 14);
+ MakeIconLangFile(ExplorerIcons[EIK_COLDFUSION], 5, 'C', 'F', 15);
+ MakeIconLangFile(ExplorerIcons[EIK_FORTRAN],  4, 'F', 'O', 15);
+ MakeIconLangFile(ExplorerIcons[EIK_BCPL],     8, 'B', 'C', 15);
+ MakeIconLangFile(ExplorerIcons[EIK_AWK],      2, 'A', 'W', 15);
+ MakeIconLangFile(ExplorerIcons[EIK_SQL],      8, 'D', 'B', 11);
+ MakeIconLangFile(ExplorerIcons[EIK_ASM],      8, 'A', 'S', 7);
+End;
+
+{ --- Determiner l icone (TExplorerIconKind) d un noeud de l          }
+{ explorateur - separe de TExplorerNodeKind (comportement) : pour les   }
+{ noeuds speciaux, correspondance directe ; pour un fichier, le noeud       }
+{ ne porte que ENK_FILE_CS/VB/PAS/FRM/OTHER (voir NodeKindFromExtension,      }
+{ inchangee pour ne rien casser du clic/suppression existants) - on             }
+{ affine donc ici via l extension REELLE (RelPath) pour choisir parmi              }
+{ tous les langages supportes. --- }
+
+Function ExplorerIconKindForNode(Var Node: TExplorerNode): TExplorerIconKind;
+Var
+ Ext: String;
+Begin
+ Case Node.Kind Of
+  ENK_SOLUTION:   ExplorerIconKindForNode := EIK_SOLUTION;
+  ENK_PROJECT:    ExplorerIconKindForNode := EIK_PROJECT;
+  ENK_PROPERTIES: ExplorerIconKindForNode := EIK_PROPERTIES;
+  ENK_REFERENCES: ExplorerIconKindForNode := EIK_REFERENCES;
+  ENK_REFERENCE:  ExplorerIconKindForNode := EIK_REFERENCE;
+  ENK_FOLDER:     ExplorerIconKindForNode := EIK_FOLDER;
+  ENK_FILE_CS:    ExplorerIconKindForNode := EIK_CS;
+  ENK_FILE_VB:    ExplorerIconKindForNode := EIK_VBNET;
+  ENK_FILE_PAS:   ExplorerIconKindForNode := EIK_PAS;
+  ENK_FILE_FRM:   ExplorerIconKindForNode := EIK_FRM;
+ Else Begin
+  Ext := LowerCaseStr(ExtractFileExt(Node.RelPath));
+  If Ext = '.c' Then ExplorerIconKindForNode := EIK_C
+  Else If (Ext = '.h') Then ExplorerIconKindForNode := EIK_C
+  Else If Ext = '.cpp' Then ExplorerIconKindForNode := EIK_CPP
+  Else If Ext = '.java' Then ExplorerIconKindForNode := EIK_JAVA
+  Else If Ext = '.go' Then ExplorerIconKindForNode := EIK_GO
+  Else If Ext = '.rs' Then ExplorerIconKindForNode := EIK_RUST
+  Else If Ext = '.swift' Then ExplorerIconKindForNode := EIK_SWIFT
+  Else If Ext = '.py' Then ExplorerIconKindForNode := EIK_PYTHON
+  Else If Ext = '.rb' Then ExplorerIconKindForNode := EIK_RUBY
+  Else If Ext = '.php' Then ExplorerIconKindForNode := EIK_PHP
+  Else If Ext = '.pl' Then ExplorerIconKindForNode := EIK_PERL
+  Else If Ext = '.lua' Then ExplorerIconKindForNode := EIK_LUA
+  Else If Ext = '.js' Then ExplorerIconKindForNode := EIK_JS
+  Else If Ext = '.kt' Then ExplorerIconKindForNode := EIK_KOTLIN
+  Else If Ext = '.clj' Then ExplorerIconKindForNode := EIK_CLOJURE
+  Else If (Ext = '.cbl') Or (Ext = '.cob') Then
+   ExplorerIconKindForNode := EIK_COBOL
+  Else If (Ext = '.ada') Or (Ext = '.adb') Then
+   ExplorerIconKindForNode := EIK_ADA
+  Else If Ext = '.mod' Then ExplorerIconKindForNode := EIK_MODULA2
+  Else If (Ext = '.m3') Or (Ext = '.i3') Then
+   ExplorerIconKindForNode := EIK_MODULA3
+  Else If Ext = '.obn' Then ExplorerIconKindForNode := EIK_OBERON
+  Else If Ext = '.jov' Then ExplorerIconKindForNode := EIK_JOVIAL
+  Else If Ext = '.jsp' Then ExplorerIconKindForNode := EIK_JSP
+  Else If Ext = '.jpp' Then ExplorerIconKindForNode := EIK_JPP
+  Else If Ext = '.pfx' Then ExplorerIconKindForNode := EIK_POWERFX
+  Else If Ext = '.sas' Then ExplorerIconKindForNode := EIK_SAS
+  Else If Ext = '.sbl' Then ExplorerIconKindForNode := EIK_SNOBOL
+  Else If Ext = '.pli' Then ExplorerIconKindForNode := EIK_PL1
+  Else If Ext = '.xpp' Then ExplorerIconKindForNode := EIK_XPP
+  Else If (Ext = '.rex') Or (Ext = '.rexx') Then
+   ExplorerIconKindForNode := EIK_REXX
+  Else If Ext = '.raku' Then ExplorerIconKindForNode := EIK_RAKU
+  Else If Ext = '.lsp' Then ExplorerIconKindForNode := EIK_LISP
+  Else If Ext = '.j' Then ExplorerIconKindForNode := EIK_JASMIN
+  Else If Ext = '.prg' Then ExplorerIconKindForNode := EIK_CLIPPER
+  Else If (Ext = '.a58') Or (Ext = '.a60') Or (Ext = '.a68') Then
+   ExplorerIconKindForNode := EIK_ALGOL
+  Else If Ext = '.abap' Then ExplorerIconKindForNode := EIK_ABAP
+  Else If (Ext = '.cfm') Or (Ext = '.cfc') Then
+   ExplorerIconKindForNode := EIK_COLDFUSION
+  Else If (Ext = '.f') Or (Ext = '.f77') Then
+   ExplorerIconKindForNode := EIK_FORTRAN
+  Else If Ext = '.b' Then ExplorerIconKindForNode := EIK_BCPL
+  Else If Ext = '.awk' Then ExplorerIconKindForNode := EIK_AWK
+  Else If Ext = '.sql' Then ExplorerIconKindForNode := EIK_SQL
+  Else If (Ext = '.asm') Or (Ext = '.s68') Then
+   ExplorerIconKindForNode := EIK_ASM
+  Else If Ext = '.bas' Then ExplorerIconKindForNode := EIK_VB6BASIC
+  Else
+   ExplorerIconKindForNode := EIK_FILE_GENERIC;
+ End;
+ End;
 End;
 
 { --- Initialiser toutes les icones de la barre d outils --- }
@@ -21751,6 +22129,7 @@ End;
 Procedure InitExplorerNode(Var Node: TExplorerNode);
 Begin
  Node.Caption := '';
+ Node.RelPath := '';
  Node.Kind := ENK_FILE_OTHER;
  Node.ParentIdx := -1;
  Node.Level := 0;
@@ -21872,6 +22251,7 @@ Begin
  InsertExplorerNodeSlot(Exp, Pos);
  InitExplorerNode(Exp.Nodes[Pos]);
  Exp.Nodes[Pos].Caption := ACaption;
+ Exp.Nodes[Pos].RelPath := ACaption;
  Exp.Nodes[Pos].Kind := Kind;
  Exp.Nodes[Pos].ParentIdx := ParentIdx;
  If ParentIdx >= 0 Then
@@ -22075,27 +22455,6 @@ Begin
  ExplorerVisibleRowCount := N;
 End;
 
-{ --- Couleur du noeud selon son type --- }
-
-Function NodeKindColor(Kind: TExplorerNodeKind): Integer;
-Begin
- Case Kind Of
-  ENK_SOLUTION:    NodeKindColor := CLR_TITLEBAR_ACTIVE;
-  ENK_PROJECT:     NodeKindColor := CLR_TITLEBAR_ACTIVE;
-  ENK_PROPERTIES:  NodeKindColor := 8;
-  ENK_REFERENCES:  NodeKindColor := 8;
-  ENK_REFERENCE:   NodeKindColor := CLR_LINE_HIGHLIGHT;
-  ENK_FOLDER:      NodeKindColor := CLR_LINE_HIGHLIGHT;
-  ENK_FILE_CS:     NodeKindColor := CLR_TITLEBAR_ACTIVE;
-  ENK_FILE_VB:     NodeKindColor := CLR_TITLEBAR_ACTIVE;
-  ENK_FILE_PAS:    NodeKindColor := CLR_LINE_HIGHLIGHT;
-  ENK_FILE_FRM:    NodeKindColor := CLR_TITLEBAR_ACTIVE;
-  ENK_FILE_OTHER:  NodeKindColor := CLR_MENU_TEXT;
- Else
-  NodeKindColor := CLR_MENU_TEXT;
- End;
-End;
-
 { --- Dessiner un noeud de l explorateur --- }
 
 Procedure DrawExplorerNode(Var Exp: TSolutionExplorer;
@@ -22130,11 +22489,9 @@ Begin
   DrawX := DrawX + 10;
  End Else
   DrawX := DrawX + 10;
- { Petit carre d icone }
- SetFillStyle(SolidFill,
-  NodeKindColor(Exp.Nodes[NodeIdx].Kind));
- Bar(DrawX, DrawY + 2, DrawX + EXPLORER_ICON_SIZE - 4,
-  DrawY + EXPLORER_NODE_HEIGHT - 4);
+ { Icone 16x16 selon le type/langage du noeud (2026-08-08) }
+ DrawIcon16x16(DrawX, DrawY + 1,
+  ExplorerIcons[ExplorerIconKindForNode(Exp.Nodes[NodeIdx])]);
  DrawX := DrawX + EXPLORER_ICON_SIZE;
  { Texte du noeud ou champ de renommage }
  If Exp.Renaming And (NodeIdx = Exp.RenameIdx) Then Begin
@@ -22391,7 +22748,7 @@ Var
  I: Integer;
 Begin
  If (NodeIdx < 0) Or (NodeIdx >= Exp.NodeCount) Then Exit;
- FN := Exp.Nodes[NodeIdx].Caption;
+ FN := Exp.Nodes[NodeIdx].RelPath;
  If FN = '' Then Exit;
  { Construire le chemin complet du fichier }
  If SolutionLoaded And (CurrentSolution.ProjectCount > 0) Then
@@ -22453,7 +22810,7 @@ Var
  I: Integer;
 Begin
  If (NodeIdx < 0) Or (NodeIdx >= Exp.NodeCount) Then Exit;
- FN := Exp.Nodes[NodeIdx].Caption;
+ FN := Exp.Nodes[NodeIdx].RelPath;
  If FN = '' Then Exit;
  { Construire le chemin complet du fichier }
  If SolutionLoaded And (CurrentSolution.ProjectCount > 0) Then
@@ -22509,7 +22866,7 @@ Var
  I: Integer;
 Begin
  If (NodeIdx < 0) Or (NodeIdx >= Exp.NodeCount) Then Exit;
- FN := Exp.Nodes[NodeIdx].Caption;
+ FN := Exp.Nodes[NodeIdx].RelPath;
  If FN = '' Then Exit;
  { Construire le chemin complet du fichier }
  If SolutionLoaded And (CurrentSolution.ProjectCount > 0) Then
@@ -23513,7 +23870,7 @@ Begin
     ClearPropertiesPanel(PropsPanel);
   ENK_FILE_CS, ENK_FILE_VB, ENK_FILE_PAS, ENK_FILE_FRM, ENK_FILE_OTHER: Begin
    If SolutionLoaded Then Begin
-    Idx := FindFileInProject(CurrentProject, Exp.Nodes[NodeIdx].Caption);
+    Idx := FindFileInProject(CurrentProject, Exp.Nodes[NodeIdx].RelPath);
     If Idx >= 0 Then
      SetPropertySourceFile(PropsPanel, CurrentProject.Files[Idx])
     Else
@@ -58317,12 +58674,47 @@ End;
 { TEMPORAIRE local (deuxieme projet et suivants, dont le contenu n a pas          }
 { besoin de survivre au-dela de cette seule fonction). ---                        }
 Procedure AddProjectFilesAndRefsToExplorer(Var Proj: TProject;
- ProjIdx, RefsIdx: Integer);
-Var J: Integer;
+ ProjIdx, PropsIdx, RefsIdx: Integer);
+Var
+ J, NewIdx: Integer;
+ FName, DisplayName: String;
+ ParentForFile: Integer;
 Begin
- For J := 0 To Proj.FileCount - 1 Do
-  AddExplorerNode(SolExplorer, Proj.Files[J].FileName,
-   NodeKindFromExtension(Proj.Files[J].FileName), ProjIdx);
+ { RefsIdx est passe par VALEUR (copie locale) : chaque insertion sous     }
+ { PropsIdx decale physiquement tous les noeuds a partir de cette              }
+ { position (voir InsertExplorerNodeSlot) - "References" est TOUJOURS le          }
+ { frere suivant de "Properties", donc systematiquement decale d un rang           }
+ { par CHAQUE fichier imbriquer sous Properties. Sans ce recalage,                    }
+ { RefsIdx pointait vers le mauvais noeud (BOGUE REEL observe en test :               }
+ { les references .dll apparaissaient imbriquees sous AssemblyInfo.cs). }
+ For J := 0 To Proj.FileCount - 1 Do Begin
+  FName := Proj.Files[J].FileName;
+  { EXTENSION (2026-08-08) : Visual Studio imbrique les fichiers dont le    }
+  { chemin commence par "Properties\" (ex. AssemblyInfo.cs, toujours          }
+  { genere par le modele de projet .NET classique) SOUS le noeud                  }
+  { "Properties" plutot que de les montrer a plat au niveau du projet -            }
+  { l utilisateur a fourni une capture d ecran de Visual Studio le                     }
+  { confirmant. Le prefixe est retire de la legende affichee puisque le             }
+  { noeud parent EST deja "Properties". }
+  If (PropsIdx >= 0) And
+     ((Pos('PROPERTIES\', UpCaseStr(FName)) = 1) Or
+      (Pos('PROPERTIES/', UpCaseStr(FName)) = 1)) Then Begin
+   ParentForFile := PropsIdx;
+   DisplayName := Copy(FName, Length('Properties') + 2,
+    Length(FName) - Length('Properties') - 1);
+   SolExplorer.Nodes[PropsIdx].HasChildren := True;
+  End Else Begin
+   ParentForFile := ProjIdx;
+   DisplayName := FName;
+  End;
+  NewIdx := AddExplorerNode(SolExplorer, DisplayName,
+   NodeKindFromExtension(FName), ParentForFile);
+  { RelPath (voir sa note dans TExplorerNode) doit rester le chemin REEL }
+  { ("Properties\AssemblyInfo.cs"), meme quand Caption est abrege pour     }
+  { l affichage - sinon l ouverture du fichier cherche au mauvais endroit. }
+  If NewIdx >= 0 Then SolExplorer.Nodes[NewIdx].RelPath := FName;
+  If (NewIdx >= 0) And (NewIdx <= RefsIdx) Then Inc(RefsIdx);
+ End;
  If RefsIdx >= 0 Then Begin
   For J := 0 To Proj.RefCount - 1 Do
    AddExplorerNode(SolExplorer, Proj.Refs[J].ReferenceName,
@@ -58336,7 +58728,7 @@ End;
 Procedure OpenSolutionFile(FileName: String);
 Var
  I: Integer;
- SolIdx, ProjIdx, RefsIdx: Integer;
+ SolIdx, ProjIdx, PropsIdx, RefsIdx: Integer;
  SolDir: String;
  ProjFile: String;
  TempProj: TProject;
@@ -58367,8 +58759,10 @@ Begin
    If ProjIdx >= 0 Then Begin
     SolExplorer.Nodes[ProjIdx].Expanded := True;
     SolExplorer.Nodes[ProjIdx].HasChildren := True;
-    AddExplorerNode(SolExplorer, 'Properties',
+    PropsIdx := AddExplorerNode(SolExplorer, 'Properties',
      ENK_PROPERTIES, ProjIdx);
+    If PropsIdx >= 0 Then
+     SolExplorer.Nodes[PropsIdx].Expanded := True;
     RefsIdx := AddExplorerNode(SolExplorer, 'References',
      ENK_REFERENCES, ProjIdx);
     { Parser le fichier projet pour charger les fichiers - BOGUE REEL       }
@@ -58388,10 +58782,11 @@ Begin
       + CurrentSolution.Projects[I].ProjectPath;
      If I = 0 Then Begin
       ParseProjectFile(ProjFile, CurrentProject);
-      AddProjectFilesAndRefsToExplorer(CurrentProject, ProjIdx, RefsIdx);
+      AddProjectFilesAndRefsToExplorer(CurrentProject, ProjIdx, PropsIdx,
+       RefsIdx);
      End Else Begin
       ParseProjectFile(ProjFile, TempProj);
-      AddProjectFilesAndRefsToExplorer(TempProj, ProjIdx, RefsIdx);
+      AddProjectFilesAndRefsToExplorer(TempProj, ProjIdx, PropsIdx, RefsIdx);
      End;
     End;
    End;
@@ -58401,7 +58796,14 @@ Begin
   SolExplorer.SelectedIdx := 0;
   SolExplorer.Nodes[0].Selected := True;
  End;
- SolExplorer.NeedRepaint := True;
+ { BOGUE REEL (2026-08-08) : AddExplorerNode met TOUJOURS Visible := True }
+ { sur un noeud tout juste cree, sans tenir compte de l etat Expanded de   }
+ { ses ancetres - jamais corrige ici car "Properties"/"References"                }
+ { n avaient jamais de VRAIS enfants avant (voir AddProjectFilesAndRefsToExplorer)  }
+ { donc le symptome (enfants d un noeud REPLIE visibles quand meme) restait          }
+ { invisible. RefreshExplorer recalcule Visible pour TOUS les noeuds selon             }
+ { la chaine complete de parents (meme logique que ExpandNode/CollapseNode). }
+ RefreshExplorer(SolExplorer);
  AddMRUEntry(MRUList, FileName);
  AppendOutput(OutputPanel,
   'Solution ouverte : ' + FileName, Ord(OTK_BUILD));
@@ -60491,7 +60893,7 @@ Var
 Begin
  NodeIdx := CtxMenu.NodeIdx;
  If (NodeIdx < 0) Or (NodeIdx >= SolExplorer.NodeCount) Then Exit;
- NodeCap := SolExplorer.Nodes[NodeIdx].Caption;
+ NodeCap := SolExplorer.Nodes[NodeIdx].RelPath;
  If NodeCap = '' Then Exit;
  { Construire le chemin source (meme logique que OpenExplorerFileNode) }
  If SolutionLoaded And (CurrentSolution.ProjectCount > 0) Then Begin
@@ -60765,7 +61167,7 @@ Begin
         { Retirer du projet }
         If SolutionLoaded Then Begin
          I := FindFileInProject(CurrentProject,
-          SolExplorer.Nodes[CtxMenu.NodeIdx].Caption);
+          SolExplorer.Nodes[CtxMenu.NodeIdx].RelPath);
          If I >= 0 Then
           RemoveFileFromProject(CurrentProject, I);
          SolutionModified := True;
@@ -61630,6 +62032,7 @@ BEGIN
  ScrZoomHover := False;
  DrawMenuBar;
  InitToolBar;
+ InitExplorerIcons;
  DrawToolBar;
  InitWindowManager;
  DrawWindowTabs;
