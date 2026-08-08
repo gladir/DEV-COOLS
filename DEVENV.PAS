@@ -22048,6 +22048,33 @@ Begin
  GetVisibleNodeCount := Cnt;
 End;
 
+{ --- Nombre de rangees REELLEMENT affichables dans l explorateur ---     }
+{ BOGUE REEL (2026-08-08) : la formule PRECEDEMMENT dupliquee a SIX          }
+{ endroits differents - (Exp.Height - EXPLORER_NODE_HEIGHT) Div                }
+{ EXPLORER_NODE_HEIGHT - ne tenait PAS compte des 2 pixels d espacement        }
+{ APRES le titre (DrawExplorer : "DrawY := Exp.Y + EXPLORER_NODE_HEIGHT +      }
+{ 2"), SURESTIMANT donc de 1 le nombre reel de rangees dessinees. Le clic         }
+{ sur la fleche BAS de la barre de defilement calcule le defilement               }
+{ maximal autorise comme "GetVisibleNodeCount - MaxScroll" : un MaxScroll             }
+{ surestime de 1 rend ce plafond SOUS-estime de 1, empechant de JAMAIS               }
+{ atteindre le vrai bas de l arbre a la souris des que celui-ci depasse                 }
+{ l espace visible de peu (symptome signale par l utilisateur : "jamais                  }
+{ capable de descendre en bas... avec la souris"). La navigation clavier                   }
+{ (fleches) n etait JAMAIS affectee car elle positionne le defilement                        }
+{ directement depuis l index du noeud SELECTIONNE (voir la note d en-tete                      }
+{ de HandleExplorerEvent, section "Ajuster le defilement") plutot que de                         }
+{ s appuyer sur ce plafond generique. MAINTENANT UNE SEULE fonction,                               }
+{ reutilisee PARTOUT ou ce calcul intervenait (DrawExplorer, la barre de                             }
+{ defilement ET son curseur, le clic sur les fleches, PgUp/PgDn, la                                    }
+{ verification finale de securite) - plus aucune divergence possible. }
+Function ExplorerVisibleRowCount(Var Exp: TSolutionExplorer): Integer;
+Var N: Integer;
+Begin
+ N := (Exp.Height - EXPLORER_NODE_HEIGHT - 2) Div EXPLORER_NODE_HEIGHT;
+ If N < 1 Then N := 1;
+ ExplorerVisibleRowCount := N;
+End;
+
 { --- Couleur du noeud selon son type --- }
 
 Function NodeKindColor(Kind: TExplorerNodeKind): Integer;
@@ -22179,9 +22206,7 @@ Begin
    Si l'arbre tient en entier dans la zone visible, le thumb prend
    toute la hauteur du couloir. }
  VisTot := GetVisibleNodeCount(Exp);
- MaxVis := (Exp.Height - EXPLORER_NODE_HEIGHT) Div
-  EXPLORER_NODE_HEIGHT;
- If MaxVis < 1 Then MaxVis := 1;
+ MaxVis := ExplorerVisibleRowCount(Exp);
  Begin
    { Couloir de la scrollbar (14 px de large). }
    SetFillStyle(SolidFill, CLR_SCROLLBAR);
@@ -22237,12 +22262,10 @@ Begin
     If MaxVis < 12 Then MaxVis := 12;
     If MaxVis > I Then MaxVis := I;
     { Position du thumb. }
-    If VisTot - ((Exp.Height - EXPLORER_NODE_HEIGHT) Div
-                  EXPLORER_NODE_HEIGHT) > 0 Then
+    If VisTot - ExplorerVisibleRowCount(Exp) > 0 Then
      DrawY := VisCount +
       (Exp.ScrollTop * (I - MaxVis)) Div
-      (VisTot - ((Exp.Height - EXPLORER_NODE_HEIGHT) Div
-                 EXPLORER_NODE_HEIGHT))
+      (VisTot - ExplorerVisibleRowCount(Exp))
     Else
      DrawY := VisCount;
     SetFillStyle(SolidFill, CLR_BORDER);
@@ -22591,9 +22614,7 @@ Begin
      (Ev.MouseX < Exp.X + Exp.Width) And
      (Ev.MouseY >= Exp.Y + EXPLORER_NODE_HEIGHT) And
      (Ev.MouseY < Exp.Y + Exp.Height) Then Begin
-   MaxScroll := (Exp.Height - EXPLORER_NODE_HEIGHT) Div
-    EXPLORER_NODE_HEIGHT;
-   If MaxScroll < 1 Then MaxScroll := 1;
+   MaxScroll := ExplorerVisibleRowCount(Exp);
    { Bouton haut. }
    If Ev.MouseY < Exp.Y + EXPLORER_NODE_HEIGHT + 14 Then
     Dec(Exp.ScrollTop)
@@ -22728,9 +22749,7 @@ Begin
     Begin
      If Exp.SelectedIdx >= 0 Then
       Exp.Nodes[Exp.SelectedIdx].Selected := False;
-     MaxScroll := (Exp.Height - EXPLORER_NODE_HEIGHT) Div
-      EXPLORER_NODE_HEIGHT;
-     If MaxScroll < 1 Then MaxScroll := 1;
+     MaxScroll := ExplorerVisibleRowCount(Exp);
      If Ev.KeyCode = 73 Then Begin
       Dec(Exp.SelectedIdx, MaxScroll);
       If Exp.SelectedIdx < 0 Then Exp.SelectedIdx := 0;
@@ -22801,15 +22820,35 @@ Begin
    Exp.NeedRepaint := True;
   End;
  End;
- { Ajuster le defilement pour garder le noeud selectionne visible. }
- If (Exp.SelectedIdx >= 0) And (Exp.SelectedIdx < Exp.NodeCount) And
+ { Ajuster le defilement pour garder le noeud selectionne visible.       }
+ { BOGUE REEL (2026-08-08) : ce bloc s executait AVANT pour N IMPORTE       }
+ { QUEL evenement (aucune garde sur Ev.Kind) - un clic sur la fleche BAS      }
+ { de la barre de defilement (EV_MOUSE_DOWN, deja traite plus haut AVEC        }
+ { Exit) laisse ScrollTop correctement incremente, mais l evenement                }
+ { EV_MOUSE_UP qui suit IMMEDIATEMENT ce meme clic physique n a AUCUN               }
+ { Exit anticipe et retombe donc JUSQU ICI - si le noeud SELECTIONNE (le            }
+ { noeud racine par defaut, tant qu aucun autre n a ete choisi) se trouve            }
+ { AU-DESSUS du nouveau defilement, "HitIdx < Exp.ScrollTop" est VRAI et            }
+ { ce bloc REMET ScrollTop A ZERO IMMEDIATEMENT apres chaque clic sur la              }
+ { fleche bas - rendant le defilement a la souris impossible tant que la              }
+ { selection courante n a pas ete deplacee par ailleurs (EXACTEMENT le                  }
+ { symptome signale : "incapable de scroller par en bas avec la souris",              }
+ { confirme par une trace de _scrolldebug.log montrant ScrollTop=1 apres          }
+ { EV_MOUSE_DOWN puis ScrollTop=0 des l entree du EV_MOUSE_UP suivant).            }
+ { La navigation clavier (EV_KEY_DOWN : fleches/Home/End/PgUp/PgDn)                 }
+ { n etait JAMAIS affectee car elle deplace TOUJOURS Exp.SelectedIdx EN           }
+ { MEME temps, donc ce bloc travaille AVEC elle plutot que contre elle -            }
+ { c est d ailleurs SA RAISON D ETRE (le commentaire d origine, "garder le          }
+ { noeud selectionne visible", ne s applique QUE lorsque la SELECTION            }
+ { vient de changer au clavier). Corrige en limitant ce bloc a           }
+ { EV_KEY_DOWN, sa SEULE raison d etre reelle. }
+ If (Ev.Kind = EV_KEY_DOWN) And (Exp.SelectedIdx >= 0) And
+    (Exp.SelectedIdx < Exp.NodeCount) And
     Exp.Nodes[Exp.SelectedIdx].Visible Then Begin
   HitIdx := 0;  { reutilise comme compteur d'index visible }
   For MaxScroll := 0 To Exp.SelectedIdx - 1 Do
    If Exp.Nodes[MaxScroll].Visible Then Inc(HitIdx);
-  MaxScroll := (Exp.Height - EXPLORER_NODE_HEIGHT) Div
-   EXPLORER_NODE_HEIGHT;
-  If MaxScroll < 1 Then MaxScroll := 1;
+  MaxScroll := ExplorerVisibleRowCount(Exp);
   If HitIdx < Exp.ScrollTop Then Begin
    Exp.ScrollTop := HitIdx;
    Exp.NeedRepaint := True;
@@ -22820,8 +22859,7 @@ Begin
   End;
  End;
  { Ajuster le defilement }
- MaxScroll := GetVisibleNodeCount(Exp) -
-  ((Exp.Height - EXPLORER_NODE_HEIGHT) Div EXPLORER_NODE_HEIGHT);
+ MaxScroll := GetVisibleNodeCount(Exp) - ExplorerVisibleRowCount(Exp);
  If MaxScroll < 0 Then MaxScroll := 0;
  If Exp.ScrollTop > MaxScroll Then Begin
   Exp.ScrollTop := MaxScroll;
