@@ -22345,6 +22345,39 @@ Begin
  Exp.NeedRepaint := True;
 End;
 
+{ --- Trouver l index (dans CurrentSolution.Projects[]) du PROJET auquel   }
+{ appartient un noeud de l explorateur - BOGUE REEL (2026-08-08) corrige :  }
+{ OpenExplorerFileNode/OpenExplorerFileNodeHex/OpenExplorerFileNodeForm      }
+{ utilisaient TOUJOURS CurrentSolution.Projects[0] (le PREMIER projet)          }
+{ pour construire le chemin complet d un fichier, quel que soit le PROJET       }
+{ REEL auquel ce fichier appartient - une solution a PLUSIEURS projets           }
+{ (le cas normal en pratique, cf. la note d en-tete de OpenSolutionFile)            }
+{ ouvrait donc TOUJOURS les fichiers du deuxieme projet et suivants depuis           }
+{ le REPERTOIRE du PREMIER, produisant un chemin INEXISTANT et un tampon              }
+{ VIDE au lieu du contenu reel (symptome signale par l utilisateur : "il                }
+{ ne trouve pas... bien qu il est present dans le projet"). Remonte l arbre              }
+{ depuis le noeud fichier jusqu au noeud ENK_PROJECT englobant, puis                        }
+{ retrouve son index par correspondance de nom - repli sur le premier                        }
+{ projet (comportement historique, solution a un seul projet) si la                            }
+{ remontee echoue pour une raison quelconque. }
+Function FindProjectIndexForExplorerNode(Var Exp: TSolutionExplorer;
+ NodeIdx: Integer): Integer;
+Var
+ Idx, I: Integer;
+Begin
+ FindProjectIndexForExplorerNode := 0;
+ Idx := NodeIdx;
+ While (Idx >= 0) And (Exp.Nodes[Idx].Kind <> ENK_PROJECT) Do
+  Idx := Exp.Nodes[Idx].ParentIdx;
+ If Idx >= 0 Then Begin
+  For I := 0 To CurrentSolution.ProjectCount - 1 Do
+   If CurrentSolution.Projects[I].ProjectName = Exp.Nodes[Idx].Caption Then Begin
+    FindProjectIndexForExplorerNode := I;
+    Exit;
+   End;
+ End;
+End;
+
 { --- Ouvrir un fichier source depuis l explorateur --- }
 
 Procedure OpenExplorerFileNode(Var Exp: TSolutionExplorer;
@@ -22369,8 +22402,11 @@ Begin
       (SolDir[Length(SolDir)] <> '/') Then
     SolDir := SolDir + '\';
   End;
+  { BOGUE REEL (2026-08-08) : voir la note d en-tete complete de              }
+  { FindProjectIndexForExplorerNode - utilisait TOUJOURS Projects[0]. }
   ProjDir := ExtractFilePath(
-   CurrentSolution.Projects[0].ProjectPath);
+   CurrentSolution.Projects[
+    FindProjectIndexForExplorerNode(Exp, NodeIdx)].ProjectPath);
   FullPath := SolDir + ProjDir + FN;
   { Normaliser les separateurs }
   For I := 1 To Length(FullPath) Do
@@ -22428,8 +22464,11 @@ Begin
       (SolDir[Length(SolDir)] <> '/') Then
     SolDir := SolDir + '\';
   End;
+  { BOGUE REEL (2026-08-08) : voir la note d en-tete complete de              }
+  { FindProjectIndexForExplorerNode - utilisait TOUJOURS Projects[0]. }
   ProjDir := ExtractFilePath(
-   CurrentSolution.Projects[0].ProjectPath);
+   CurrentSolution.Projects[
+    FindProjectIndexForExplorerNode(Exp, NodeIdx)].ProjectPath);
   FullPath := SolDir + ProjDir + FN;
   For I := 1 To Length(FullPath) Do
    If FullPath[I] = '/' Then FullPath[I] := '\';
@@ -22481,8 +22520,11 @@ Begin
       (SolDir[Length(SolDir)] <> '/') Then
     SolDir := SolDir + '\';
   End;
+  { BOGUE REEL (2026-08-08) : voir la note d en-tete complete de              }
+  { FindProjectIndexForExplorerNode - utilisait TOUJOURS Projects[0]. }
   ProjDir := ExtractFilePath(
-   CurrentSolution.Projects[0].ProjectPath);
+   CurrentSolution.Projects[
+    FindProjectIndexForExplorerNode(Exp, NodeIdx)].ProjectPath);
   FullPath := SolDir + ProjDir + FN;
   For I := 1 To Length(FullPath) Do
    If FullPath[I] = '/' Then FullPath[I] := '\';
@@ -58267,14 +58309,37 @@ Begin
  End;
 End;
 
+{ --- Ajouter les fichiers/references d un projet DEJA analyse           }
+{ (ParseProjectFile) dans l explorateur de solutions - factorise HORS de     }
+{ OpenSolutionFile (voir sa note d en-tete complete) pour etre appelable         }
+{ TANT avec CurrentProject (premier projet, MEME convention "projet actif"        }
+{ que le reste de l IDE pour Build/Deboguer) QU AVEC un TProject                    }
+{ TEMPORAIRE local (deuxieme projet et suivants, dont le contenu n a pas          }
+{ besoin de survivre au-dela de cette seule fonction). ---                        }
+Procedure AddProjectFilesAndRefsToExplorer(Var Proj: TProject;
+ ProjIdx, RefsIdx: Integer);
+Var J: Integer;
+Begin
+ For J := 0 To Proj.FileCount - 1 Do
+  AddExplorerNode(SolExplorer, Proj.Files[J].FileName,
+   NodeKindFromExtension(Proj.Files[J].FileName), ProjIdx);
+ If RefsIdx >= 0 Then Begin
+  For J := 0 To Proj.RefCount - 1 Do
+   AddExplorerNode(SolExplorer, Proj.Refs[J].ReferenceName,
+    ENK_REFERENCE, RefsIdx);
+  SolExplorer.Nodes[RefsIdx].HasChildren := Proj.RefCount > 0;
+ End;
+End;
+
 { --- Ouvrir un fichier solution .sln --- }
 
 Procedure OpenSolutionFile(FileName: String);
 Var
- I, J: Integer;
+ I: Integer;
  SolIdx, ProjIdx, RefsIdx: Integer;
  SolDir: String;
  ProjFile: String;
+ TempProj: TProject;
 Begin
  { Convertir en chemin absolu pour que ExtractFilePath ne soit pas vide }
  FileName := FExpand(FileName);
@@ -58306,28 +58371,27 @@ Begin
      ENK_PROPERTIES, ProjIdx);
     RefsIdx := AddExplorerNode(SolExplorer, 'References',
      ENK_REFERENCES, ProjIdx);
-    { Parser le fichier projet pour charger les fichiers }
-    If (I = 0) And (SolDir <> '') Then Begin
+    { Parser le fichier projet pour charger les fichiers - BOGUE REEL       }
+    { (2026-08-08) : "If (I = 0)" limitait CECI au PREMIER projet             }
+    { seulement - toute solution a PLUSIEURS projets (le cas normal en             }
+    { pratique, ex. une vraie solution Visual Studio) montrait donc un                }
+    { arbre "incomplet" pour le deuxieme projet et les suivants                       }
+    { (Properties/References vides, AUCUN fichier reel) - symptome                     }
+    { signale par l utilisateur. Corrige : TOUS les projets sont analyses,               }
+    { celui d indice 0 dans CurrentProject (MEME convention "projet actif"               }
+    { pour Build/Deboguer qu ailleurs dans l IDE), les suivants dans un                    }
+    { TProject TEMPORAIRE local (TempProj) dont le contenu ne sert qu a                     }
+    { peupler l explorateur - voir AddProjectFilesAndRefsToExplorer                          }
+    { ci-dessus, factorisee pour ne pas dupliquer cette logique deux fois. }
+    If SolDir <> '' Then Begin
      ProjFile := SolDir
       + CurrentSolution.Projects[I].ProjectPath;
-     ParseProjectFile(ProjFile, CurrentProject);
-     { Ajouter les fichiers du projet dans l explorateur }
-     For J := 0 To CurrentProject.FileCount - 1 Do Begin
-      AddExplorerNode(SolExplorer,
-       CurrentProject.Files[J].FileName,
-       NodeKindFromExtension(
-        CurrentProject.Files[J].FileName),
-       ProjIdx);
-     End;
-     { Ajouter les references du projet }
-     If RefsIdx >= 0 Then Begin
-      For J := 0 To CurrentProject.RefCount - 1 Do Begin
-       AddExplorerNode(SolExplorer,
-        CurrentProject.Refs[J].ReferenceName,
-        ENK_REFERENCE, RefsIdx);
-      End;
-      SolExplorer.Nodes[RefsIdx].HasChildren :=
-       CurrentProject.RefCount > 0;
+     If I = 0 Then Begin
+      ParseProjectFile(ProjFile, CurrentProject);
+      AddProjectFilesAndRefsToExplorer(CurrentProject, ProjIdx, RefsIdx);
+     End Else Begin
+      ParseProjectFile(ProjFile, TempProj);
+      AddProjectFilesAndRefsToExplorer(TempProj, ProjIdx, RefsIdx);
      End;
     End;
    End;
@@ -60437,7 +60501,10 @@ Begin
       (SolDir[Length(SolDir)] <> '/') Then
     SolDir := SolDir + '\';
   End;
-  ProjDir := ExtractFilePath(CurrentSolution.Projects[0].ProjectPath);
+  { BOGUE REEL (2026-08-08) : voir la note d en-tete complete de           }
+  { FindProjectIndexForExplorerNode - utilisait TOUJOURS Projects[0]. }
+  ProjDir := ExtractFilePath(CurrentSolution.Projects[
+   FindProjectIndexForExplorerNode(SolExplorer, NodeIdx)].ProjectPath);
   SrcPath := SolDir + ProjDir + NodeCap;
   For I := 1 To Length(SrcPath) Do
    If SrcPath[I] = '/' Then SrcPath[I] := '\';
