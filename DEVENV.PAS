@@ -53544,6 +53544,21 @@ End;
 
 { --- Chercher un compilateur dans le PATH ou repertoire courant --- }
 
+{ BOGUE REEL (2026-08-08) : retourner un NOM NU (ex. "PL1CW32.exe", sans     }
+{ chemin) faisait echouer l execution avec "n est pas reconnu en tant que      }
+{ commande..." des que le compilateur trouve ICI etait invoque via                }
+{ ExecuteCompiler -> Exec(COMSPEC, '/C ...') - le shell ENFANT ainsi               }
+{ lance ne resout pas fiablement un nom nu par rapport au MEME repertoire          }
+{ courant que le processus PARENT. Reproduit et verifie en executant               }
+{ REELLEMENT DEVENV.exe (F5 sur un fichier PL/1 ou J++, symptome signale           }
+{ par l utilisateur pour un .FRM : "il indique... rien" - en pratique le          }
+{ message d erreur reel etait la, juste jamais visible/compris comme tel).       }
+{ FSearch (DANS LES DEUX branches - PATH ET repertoire courant) peut               }
+{ retourner un chemin INCOMPLET (nom nu) lorsque le fichier est trouve VIA           }
+{ une entree PATH "." ou le repertoire courant lui-meme - FExpand (MEME             }
+{ fonction deja utilisee par OpenSolutionFile) resout donc TOUJOURS le               }
+{ resultat en un CHEMIN ABSOLU avant de le retourner, quelle que soit la               }
+{ branche qui a trouve le fichier. }
 Function FindCompiler(Name: String): String;
 Var
  FullPath: String;
@@ -53555,7 +53570,7 @@ Begin
  FullPath := FSearch(Name, GetEnv('PATH'));
  {$ENDIF}
  If FullPath <> '' Then Begin
-  FindCompiler := FullPath;
+  FindCompiler := FExpand(FullPath);
   Exit;
  End;
  { Chercher dans le repertoire courant }
@@ -53564,9 +53579,8 @@ Begin
  {$ELSE}
  FullPath := Name;
  {$ENDIF}
- { Verifier si le fichier existe }
  If FSearch(FullPath, '.') <> '' Then
-  FindCompiler := FullPath;
+  FindCompiler := FExpand(FullPath);
 End;
 
 { --- Detecter le compilateur C# disponible --- }
@@ -57139,27 +57153,22 @@ Begin
    '------ Build started: ' + SourceFile + ' ------',
    Ord(OTK_BUILD));
   AppendOutput(OutputPanel, '> ' + CmdLine, Ord(OTK_BUILD));
+  { BOGUE REEL (2026-08-08) : ce bloc executait ICI son PROPRE           }
+  { "Execution de ExeName..." (If ExitCode=0 Then ...) EN PLUS de celui         }
+  { du bloc COMMUN en fin de fonction (qui s applique a TOUTES les             }
+  { extensions, MEME apres compilation reussie) - une compilation reussie        }
+  { lancait donc le programme compile DEUX FOIS (une ici, une dans le bloc         }
+  { commun, puisque ExitCode redevient celui, generalement 0, du PROGRAMME          }
+  { EXECUTE ICI plutot que celui du COMPILATEUR). Supprime, MEME discipline         }
+  { que .java/.psp/.c/.ada/.abap/.awk/.py/.pas/.pli (aucune duplication). }
   ExitCode := ExecuteCompiler(CmdLine, TempFile);
   ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
   CleanupTempFile(TempFile);
-  If ExitCode = 0 Then Begin
-   AppendOutput(OutputPanel,
-    '========== Build: 1 succeeded, 0 failed ==========',
-    Ord(OTK_BUILD));
-   AppendOutput(OutputPanel,
-    'Execution de ' + ExeName + '...', Ord(OTK_BUILD));
-   ClearOutput(OutputPanel, Ord(OTK_DEBUG));
-   ExitCode := ExecuteCompiler(ExeName, TempFile);
-   ReadOutputFile(TempFile, OutputPanel, Ord(OTK_DEBUG));
-   CleanupTempFile(TempFile);
-   SetActiveOutputTab(OutputPanel, OTK_DEBUG);
-  End Else
-   AppendOutput(OutputPanel,
-    '========== Build: 0 succeeded, 1 failed ==========',
-    Ord(OTK_BUILD));
  End
- Else If (Ext = '.bas') Then Begin
-  { Compilation Visual Basic 6 -> VBCW32.exe }
+ Else If (Ext = '.bas') Or (Ext = '.frm') Then Begin
+  { Compilation Visual Basic 6 (.bas/.frm, EXTENSION 2026-08-08 pour        }
+  { .frm - meme compilateur, demande explicite de l utilisateur : "F5 sur    }
+  { .frm devrait utiliser le compilateur Visual Basic") -> VBCW32.exe }
   CmdLine := FindCompiler('VBCW32');
   If CmdLine = '' Then Begin
    AppendOutput(OutputPanel,
@@ -57172,24 +57181,16 @@ Begin
    '------ Build started: ' + SourceFile + ' ------',
    Ord(OTK_BUILD));
   AppendOutput(OutputPanel, '> ' + CmdLine, Ord(OTK_BUILD));
+  { BOGUE REEL (2026-08-08) : MEME duplication que .vb ci-dessus (voir sa   }
+  { note d en-tete complete) - "Execution de ExeName..." EN PLUS du bloc        }
+  { COMMUN en fin de fonction lancait CALCULATOR.exe DEUX FOIS (symptome         }
+  { signale par l utilisateur : "il ouvre une deuxieme fois... apres que        }
+  { j ai ferme la premiere calculatrice" - le ExitCode de la PREMIERE               }
+  { execution, 0 a la fermeture normale, faisait croire au bloc commun a          }
+  { une COMPILATION reussie qu il fallait ENCORE executer). Supprime. }
   ExitCode := ExecuteCompiler(CmdLine, TempFile);
   ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
   CleanupTempFile(TempFile);
-  If ExitCode = 0 Then Begin
-   AppendOutput(OutputPanel,
-    '========== Build: 1 succeeded, 0 failed ==========',
-    Ord(OTK_BUILD));
-   AppendOutput(OutputPanel,
-    'Execution de ' + ExeName + '...', Ord(OTK_BUILD));
-   ClearOutput(OutputPanel, Ord(OTK_DEBUG));
-   ExitCode := ExecuteCompiler(ExeName, TempFile);
-   ReadOutputFile(TempFile, OutputPanel, Ord(OTK_DEBUG));
-   CleanupTempFile(TempFile);
-   SetActiveOutputTab(OutputPanel, OTK_DEBUG);
-  End Else
-   AppendOutput(OutputPanel,
-    '========== Build: 0 succeeded, 1 failed ==========',
-    Ord(OTK_BUILD));
  End
  Else If (Ext = '.adb') Or (Ext = '.ads') Or (Ext = '.ada') Then Begin
   { Compilation Ada }
