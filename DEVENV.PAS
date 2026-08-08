@@ -1181,6 +1181,12 @@ Const
  EXPLORER_SCROLL_STEP  = 3;        { pas de defilement              }
  SPLITTER_WIDTH        = 4;        { largeur du splitter vertical   }
  MAX_EXPLORER_NODES    = 512;      { nombre max de noeuds           }
+ { EXTENSION (2026-08-08) : barre d outils + champ de recherche live,   }
+ { comme dans Visual Studio (sous le titre "Explorateur de solutions",     }
+ { avant l arbre). }
+ EXPLORER_TOOLBAR_HEIGHT = 24;     { hauteur de la mini barre d outils }
+ EXPLORER_SEARCH_HEIGHT  = 20;     { hauteur du champ de recherche  }
+ EXPLORER_TOOLBAR_BTNCOUNT = 3;    { Actualiser/Tout replier/Proprietes }
 
  { Panneau de proprietes }
  PROPS_PANEL_HEIGHT    = 200;      { hauteur par defaut (repli)     }
@@ -2333,6 +2339,11 @@ Type
   RenameIdx  : Integer;             { index du noeud en renommage    }
   RenameBuf  : String[127];         { tampon de saisie renommage     }
   RenameCPos : Integer;             { position curseur renommage     }
+  { EXTENSION (2026-08-08) : champ de recherche live, comme Visual       }
+  { Studio - filtre l arbre pendant la frappe (voir RefreshExplorer). }
+  SearchBuf     : String[63];       { texte de recherche courant     }
+  SearchCPos    : Integer;          { position curseur recherche     }
+  SearchFocused : Boolean;          { champ de recherche actif       }
  End;
 
  { Type de source pour le panneau de proprietes }
@@ -3613,6 +3624,10 @@ Var
  { (InitExplorerIcons) puis dessinees telles quelles a chaque repaint          }
  { (voir DrawExplorerNode) - meme convention que MainToolBar.Buttons[].Icon. }
  ExplorerIcons : Array[TExplorerIconKind] Of TIcon16;
+ { EXTENSION (2026-08-08) : icones de la mini barre d outils de           }
+ { l explorateur (Actualiser/Tout replier/Proprietes), voir                    }
+ { EXPLORER_TOOLBAR_BTNCOUNT et InitExplorerIcons. }
+ ExplorerToolbarIcons : Array[0..EXPLORER_TOOLBAR_BTNCOUNT - 1] Of TIcon16;
  { EXTENSION (2026-08-02) : largeur effective/maximale du panneau,           }
  { calculee au demarrage par UpdateExplorerWidthForScreen selon la              }
  { largeur d ecran (EXPLORER_WIDTH_DEFAULT/EXPLORER_MAX_WIDTH_DEFAULT           }
@@ -4176,6 +4191,12 @@ Var
  CurrentProject  : TProject;
  SolutionLoaded  : Boolean;
  SolutionModified: Boolean;
+ { EXTENSION (2026-08-08) : chemin ABSOLU du .sln actuellement charge,  }
+ { utilise par le bouton "Actualiser" de l explorateur (le re-analyse       }
+ { entierement depuis le disque, comme le vrai rafraichissement de           }
+ { Visual Studio) - TSolutionInfo ne conserve que le REPERTOIRE              }
+ { (SolutionPath), pas le fichier .sln lui-meme. }
+ CurrentSolutionFilePath : String;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE, CONSTANTES ET OPTIONS [IMPLEMENTE]
@@ -7459,10 +7480,54 @@ Begin
  IconDrawMonogram(Icon, C1, C2, 7, Color);
 End;
 
+{ --- Icones de la mini barre d outils de l explorateur (2026-08-08),   }
+{ comme la barre d outils de l explorateur de solutions de Visual         }
+{ Studio (Actualiser/Tout replier/Proprietes). --- }
+
+Procedure MakeIconExplorerRefresh(Var Icon: TIcon16);
+Begin
+ ClearIcon(Icon, 255);
+ { Anneau presque complet (ouverture en haut a droite) + pointe de      }
+ { fleche, pour suggerer une fleche circulaire de rafraichissement. }
+ IconRect(Icon, 2, 2, 13, 13, 1);
+ IconPutPixel(Icon, 12, 2, 255);
+ IconPutPixel(Icon, 13, 2, 255);
+ IconPutPixel(Icon, 13, 3, 255);
+ IconFillRect(Icon, 9, 1, 13, 4, 1);
+End;
+
+Procedure MakeIconExplorerCollapseAll(Var Icon: TIcon16);
+Begin
+ ClearIcon(Icon, 255);
+ { Deux petits carres (noeuds) chacun marque d un signe moins, pour     }
+ { suggerer "replier tous les noeuds". }
+ IconRect(Icon, 1, 1, 8, 8, 1);
+ IconHLine(Icon, 3, 6, 4, 1);
+ IconRect(Icon, 7, 7, 14, 14, 6);
+ IconHLine(Icon, 9, 12, 10, 6);
+End;
+
+Procedure MakeIconExplorerProperties(Var Icon: TIcon16);
+Begin
+ ClearIcon(Icon, 255);
+ { Petite grille (grille de proprietes), distincte de la cle du noeud   }
+ { "Properties" de l arbre. }
+ IconRect(Icon, 1, 1, 14, 14, 1);
+ IconHLine(Icon, 1, 14, 5, 1);
+ IconVLine(Icon, 7, 1, 14, 1);
+ IconHLine(Icon, 2, 5, 3, 8);
+ IconHLine(Icon, 9, 12, 3, 8);
+ IconHLine(Icon, 2, 5, 9, 8);
+ IconHLine(Icon, 9, 12, 9, 8);
+End;
+
 { --- Initialiser toutes les icones de l explorateur de solutions --- }
 
 Procedure InitExplorerIcons;
 Begin
+ MakeIconExplorerRefresh(ExplorerToolbarIcons[0]);
+ MakeIconExplorerCollapseAll(ExplorerToolbarIcons[1]);
+ MakeIconExplorerProperties(ExplorerToolbarIcons[2]);
  MakeIconSolution(ExplorerIcons[EIK_SOLUTION]);
  MakeIconProjectBox(ExplorerIcons[EIK_PROJECT]);
  MakeIconKey(ExplorerIcons[EIK_PROPERTIES]);
@@ -22173,6 +22238,9 @@ Begin
  Exp.RenameIdx := -1;
  Exp.RenameBuf := '';
  Exp.RenameCPos := 0;
+ Exp.SearchBuf := '';
+ Exp.SearchCPos := 0;
+ Exp.SearchFocused := False;
  For I := 0 To MAX_EXPLORER_NODES - 1 Do
   InitExplorerNode(Exp.Nodes[I]);
 End;
@@ -22330,22 +22398,70 @@ Begin
   NodeKindFromExtension := ENK_FILE_OTHER;
 End;
 
+{ --- Un noeud correspond-il au texte de recherche courant ? (comparaison }
+{ insensible a la casse sur le libelle affiche) - EXTENSION (2026-08-08),   }
+{ recherche live comme Visual Studio. --- }
+
+Function NodeMatchesSearch(Var Node: TExplorerNode;
+ Const Query: String): Boolean;
+Begin
+ NodeMatchesSearch := Pos(UpCaseStr(Query), UpCaseStr(Node.Caption)) > 0;
+End;
+
+{ --- Le noeud doit-il etre dessine "deplie" (triangle vers le bas) ?     }
+{ Pendant une recherche live, tous les noeuds visibles ayant des enfants   }
+{ sont affiches deplies (puisque Visible ne conserve alors que les             }
+{ chemins menant a un resultat) - le champ Expanded reel n est PAS               }
+{ modifie, pour retrouver l etat d origine une fois la recherche effacee. }
+
+Function NodeShownExpanded(Var Exp: TSolutionExplorer;
+ NodeIdx: Integer): Boolean;
+Begin
+ If Exp.SearchBuf <> '' Then
+  NodeShownExpanded := True
+ Else
+  NodeShownExpanded := Exp.Nodes[NodeIdx].Expanded;
+End;
+
 { --- Rafraichir la visibilite des noeuds --- }
 
 Procedure RefreshExplorer(Var Exp: TSolutionExplorer);
 Var
  I, Parent: Integer;
+ Keep: Array[0..MAX_EXPLORER_NODES - 1] Of Boolean;
 Begin
- For I := 0 To Exp.NodeCount - 1 Do Begin
-  Exp.Nodes[I].Visible := True;
-  Parent := Exp.Nodes[I].ParentIdx;
-  While Parent >= 0 Do Begin
-   If Not Exp.Nodes[Parent].Expanded Then Begin
-    Exp.Nodes[I].Visible := False;
-    Break;
+ If Exp.SearchBuf = '' Then Begin
+  { Comportement d origine : visibilite pilotee par Expanded des ancetres. }
+  For I := 0 To Exp.NodeCount - 1 Do Begin
+   Exp.Nodes[I].Visible := True;
+   Parent := Exp.Nodes[I].ParentIdx;
+   While Parent >= 0 Do Begin
+    If Not Exp.Nodes[Parent].Expanded Then Begin
+     Exp.Nodes[I].Visible := False;
+     Break;
+    End;
+    Parent := Exp.Nodes[Parent].ParentIdx;
    End;
-   Parent := Exp.Nodes[Parent].ParentIdx;
   End;
+ End Else Begin
+  { EXTENSION (2026-08-08) : filtrage live - un noeud reste visible s il   }
+  { correspond LUI-MEME a la recherche, ou s il est un ANCETRE d un            }
+  { noeud qui y correspond (les chemins menant a un resultat restent            }
+  { visibles et "deplies", exactement comme la recherche live de                  }
+  { Visual Studio dans l explorateur de solutions) - independant de           }
+  { Expanded, qui reste intact pour l etat post-recherche. }
+  For I := 0 To Exp.NodeCount - 1 Do Keep[I] := False;
+  For I := 0 To Exp.NodeCount - 1 Do
+   If NodeMatchesSearch(Exp.Nodes[I], Exp.SearchBuf) Then Begin
+    Keep[I] := True;
+    Parent := Exp.Nodes[I].ParentIdx;
+    While Parent >= 0 Do Begin
+     Keep[Parent] := True;
+     Parent := Exp.Nodes[Parent].ParentIdx;
+    End;
+   End;
+  For I := 0 To Exp.NodeCount - 1 Do
+   Exp.Nodes[I].Visible := Keep[I];
  End;
  Exp.NeedRepaint := True;
 End;
@@ -22458,10 +22574,24 @@ End;
 { reutilisee PARTOUT ou ce calcul intervenait (DrawExplorer, la barre de                             }
 { defilement ET son curseur, le clic sur les fleches, PgUp/PgDn, la                                    }
 { verification finale de securite) - plus aucune divergence possible. }
+{ --- Coordonnee Y ou commence le CONTENU (l arbre) du panneau, sous le  }
+{ titre + la barre d outils + le champ de recherche (EXTENSION            }
+{ 2026-08-08, comme Visual Studio) - fonction unique reutilisee PARTOUT     }
+{ ou "juste sous le titre" etait auparavant suppose etre "juste sous          }
+{ l arbre commence" (DrawExplorer, ExplorerNodeHitTest, la barre de              }
+{ defilement) - evite de repeter le calcul (et de le desynchroniser)             }
+{ a plusieurs endroits, meme esprit que ExplorerVisibleRowCount ci-dessous. }
+Function ExplorerContentTop(Var Exp: TSolutionExplorer): Integer;
+Begin
+ ExplorerContentTop := Exp.Y + EXPLORER_NODE_HEIGHT +
+  EXPLORER_TOOLBAR_HEIGHT + EXPLORER_SEARCH_HEIGHT;
+End;
+
 Function ExplorerVisibleRowCount(Var Exp: TSolutionExplorer): Integer;
 Var N: Integer;
 Begin
- N := (Exp.Height - EXPLORER_NODE_HEIGHT - 2) Div EXPLORER_NODE_HEIGHT;
+ N := (Exp.Y + Exp.Height - ExplorerContentTop(Exp) - 2)
+  Div EXPLORER_NODE_HEIGHT;
  If N < 1 Then N := 1;
  ExplorerVisibleRowCount := N;
 End;
@@ -22486,7 +22616,7 @@ Begin
  If Exp.Nodes[NodeIdx].HasChildren Then Begin
   TriX := DrawX;
   TriY := DrawY + EXPLORER_NODE_HEIGHT Div 2;
-  If Exp.Nodes[NodeIdx].Expanded Then Begin
+  If NodeShownExpanded(Exp, NodeIdx) Then Begin
    SetColor(CLR_MENU_TEXT);
    Line(TriX, TriY - 3, TriX + 6, TriY - 3);
    Line(TriX, TriY - 3, TriX + 3, TriY + 3);
@@ -22535,6 +22665,7 @@ End;
 Procedure DrawExplorer(Var Exp: TSolutionExplorer);
 Var
  I, DrawY, VisCount, VisTot, MaxVis: Integer;
+ BtnX, BtnY, SearchY, CTop, CurX: Integer;
 Begin
  { Fond du panneau }
  SetFillStyle(SolidFill, CLR_EXPLORER_BG);
@@ -22549,13 +22680,65 @@ Begin
   Exp.Y + EXPLORER_NODE_HEIGHT - 1);
  SetColor(CLR_EDITOR_BG);
  OutTextXY(Exp.X + 4, Exp.Y + 3, 'Explorateur de solutions');
+ { EXTENSION (2026-08-08) : mini barre d outils (Actualiser/Tout             }
+ { replier/Proprietes) sous le titre, comme Visual Studio. }
+ SetFillStyle(SolidFill, CLR_TOOLBAR);
+ Bar(Exp.X, Exp.Y + EXPLORER_NODE_HEIGHT, Exp.X + Exp.Width - 1,
+  Exp.Y + EXPLORER_NODE_HEIGHT + EXPLORER_TOOLBAR_HEIGHT - 1);
+ For I := 0 To EXPLORER_TOOLBAR_BTNCOUNT - 1 Do Begin
+  BtnX := Exp.X + 2 + I * 22;
+  BtnY := Exp.Y + EXPLORER_NODE_HEIGHT + 2;
+  SetColor(CLR_BORDER);
+  Rectangle(BtnX, BtnY, BtnX + 19, BtnY + 19);
+  DrawIcon16x16(BtnX + 2, BtnY + 2, ExplorerToolbarIcons[I]);
+ End;
+ { EXTENSION (2026-08-08) : champ de recherche live sous la barre           }
+ { d outils - filtre l arbre pendant la frappe (voir RefreshExplorer/           }
+ { NodeMatchesSearch), exactement comme la recherche live de Visual                 }
+ { Studio dans l explorateur de solutions. }
+ SearchY := Exp.Y + EXPLORER_NODE_HEIGHT + EXPLORER_TOOLBAR_HEIGHT;
+ SetFillStyle(SolidFill, CLR_TOOLBAR);
+ Bar(Exp.X, SearchY, Exp.X + Exp.Width - 1,
+  SearchY + EXPLORER_SEARCH_HEIGHT - 1);
+ SetFillStyle(SolidFill, CLR_EDITOR_BG);
+ Bar(Exp.X + 2, SearchY + 2, Exp.X + Exp.Width - 3,
+  SearchY + EXPLORER_SEARCH_HEIGHT - 3);
+ If Exp.SearchFocused Then
+  SetColor(CLR_TITLEBAR_ACTIVE)
+ Else
+  SetColor(CLR_BORDER);
+ Rectangle(Exp.X + 2, SearchY + 2, Exp.X + Exp.Width - 3,
+  SearchY + EXPLORER_SEARCH_HEIGHT - 3);
+ { Icone loupe simplifiee (cercle + manche) }
+ SetColor(CLR_GRAYTEXT);
+ Rectangle(Exp.X + 6, SearchY + 5, Exp.X + 11, SearchY + 10);
+ Line(Exp.X + 11, SearchY + 10, Exp.X + 13, SearchY + 12);
+ If Exp.SearchBuf = '' Then Begin
+  SetColor(CLR_GRAYTEXT);
+  OutTextXY(Exp.X + 18, SearchY + 4, 'Rechercher');
+ End Else Begin
+  SetColor(CLR_WINDOWTEXT);
+  OutTextXY(Exp.X + 18, SearchY + 4, Exp.SearchBuf);
+  If Exp.SearchFocused Then Begin
+   CurX := Exp.X + 18 +
+    TextWidth(Copy(Exp.SearchBuf, 1, Exp.SearchCPos));
+   Line(CurX, SearchY + 3, CurX, SearchY + EXPLORER_SEARCH_HEIGHT - 5);
+  End;
+  { Bouton effacer ("x") a droite du champ }
+  SetColor(CLR_GRAYTEXT);
+  Line(Exp.X + Exp.Width - 16, SearchY + 5,
+   Exp.X + Exp.Width - 11, SearchY + 10);
+  Line(Exp.X + Exp.Width - 16, SearchY + 10,
+   Exp.X + Exp.Width - 11, SearchY + 5);
+ End;
  { Splitter }
  SetFillStyle(SolidFill, CLR_BORDER);
  Bar(Exp.SplitterX, Exp.Y,
   Exp.SplitterX + SPLITTER_WIDTH - 1,
   Exp.Y + Exp.Height - 1);
  { Dessiner les noeuds visibles }
- DrawY := Exp.Y + EXPLORER_NODE_HEIGHT + 2;
+ CTop := ExplorerContentTop(Exp);
+ DrawY := CTop + 2;
  VisCount := 0;
  For I := 0 To Exp.NodeCount - 1 Do Begin
   If Not Exp.Nodes[I].Visible Then Continue;
@@ -22578,27 +22761,27 @@ Begin
  Begin
    { Couloir de la scrollbar (14 px de large). }
    SetFillStyle(SolidFill, CLR_SCROLLBAR);
-   Bar(Exp.X + Exp.Width - 14, Exp.Y + EXPLORER_NODE_HEIGHT,
+   Bar(Exp.X + Exp.Width - 14, CTop,
     Exp.X + Exp.Width - 1, Exp.Y + Exp.Height - 1);
-   { Bouton fleche haut (14x14 sous le titre). }
+   { Bouton fleche haut (14x14 sous la recherche). }
    SetFillStyle(SolidFill, CLR_BORDER);
-   Bar(Exp.X + Exp.Width - 14, Exp.Y + EXPLORER_NODE_HEIGHT,
+   Bar(Exp.X + Exp.Width - 14, CTop,
     Exp.X + Exp.Width - 1,
-    Exp.Y + EXPLORER_NODE_HEIGHT + 13);
+    CTop + 13);
    SetColor(CLR_EDITOR_BG);
-   Rectangle(Exp.X + Exp.Width - 14, Exp.Y + EXPLORER_NODE_HEIGHT,
+   Rectangle(Exp.X + Exp.Width - 14, CTop,
     Exp.X + Exp.Width - 1,
-    Exp.Y + EXPLORER_NODE_HEIGHT + 13);
+    CTop + 13);
    { Triangle haut. }
    SetFillStyle(SolidFill, CLR_EDITOR_BG);
-   Bar(Exp.X + Exp.Width - 8, Exp.Y + EXPLORER_NODE_HEIGHT + 4,
-    Exp.X + Exp.Width - 7, Exp.Y + EXPLORER_NODE_HEIGHT + 4);
-   Bar(Exp.X + Exp.Width - 9, Exp.Y + EXPLORER_NODE_HEIGHT + 5,
-    Exp.X + Exp.Width - 6, Exp.Y + EXPLORER_NODE_HEIGHT + 5);
-   Bar(Exp.X + Exp.Width - 10, Exp.Y + EXPLORER_NODE_HEIGHT + 6,
-    Exp.X + Exp.Width - 5, Exp.Y + EXPLORER_NODE_HEIGHT + 6);
-   Bar(Exp.X + Exp.Width - 11, Exp.Y + EXPLORER_NODE_HEIGHT + 7,
-    Exp.X + Exp.Width - 4, Exp.Y + EXPLORER_NODE_HEIGHT + 7);
+   Bar(Exp.X + Exp.Width - 8, CTop + 4,
+    Exp.X + Exp.Width - 7, CTop + 4);
+   Bar(Exp.X + Exp.Width - 9, CTop + 5,
+    Exp.X + Exp.Width - 6, CTop + 5);
+   Bar(Exp.X + Exp.Width - 10, CTop + 6,
+    Exp.X + Exp.Width - 5, CTop + 6);
+   Bar(Exp.X + Exp.Width - 11, CTop + 7,
+    Exp.X + Exp.Width - 4, CTop + 7);
    { Bouton fleche bas (14x14 en bas). }
    SetFillStyle(SolidFill, CLR_BORDER);
    Bar(Exp.X + Exp.Width - 14, Exp.Y + Exp.Height - 14,
@@ -22618,7 +22801,7 @@ Begin
     Exp.X + Exp.Width - 7, Exp.Y + Exp.Height - 8);
    { Curseur (thumb) proportionnel a la taille visible. }
    Begin
-    VisCount := Exp.Y + EXPLORER_NODE_HEIGHT + 14;  { y debut couloir }
+    VisCount := CTop + 14;                          { y debut couloir }
     DrawY := Exp.Y + Exp.Height - 14;               { y fin couloir   }
     I := DrawY - VisCount;                          { hauteur couloir }
     If I < 12 Then I := 12;
@@ -22662,9 +22845,12 @@ Begin
  If (MX < Exp.X) Or (MX >= Exp.X + Exp.Width) Then Exit;
  { Exclure la zone de la barre de defilement (14 px a droite). }
  If MX >= Exp.X + Exp.Width - 14 Then Exit;
- If (MY < Exp.Y + EXPLORER_NODE_HEIGHT) Or
+ { EXTENSION (2026-08-08) : l arbre commence maintenant sous la barre     }
+ { d outils ET le champ de recherche (voir ExplorerContentTop), pas          }
+ { directement sous le titre. }
+ If (MY < ExplorerContentTop(Exp)) Or
     (MY >= Exp.Y + Exp.Height) Then Exit;
- DrawY := Exp.Y + EXPLORER_NODE_HEIGHT + 2;
+ DrawY := ExplorerContentTop(Exp) + 2;
  VisCount := 0;
  For I := 0 To Exp.NodeCount - 1 Do Begin
   If Not Exp.Nodes[I].Visible Then Continue;
@@ -22683,6 +22869,87 @@ Begin
  End;
 End;
 
+{ --- Trouver le bouton de la mini barre d outils de l explorateur sous  }
+{ la souris (-1 si aucun) - EXTENSION (2026-08-08). --- }
+
+Function ExplorerToolbarHitTest(Var Exp: TSolutionExplorer;
+ MX, MY: Integer): Integer;
+Var
+ I, BtnX, BtnY: Integer;
+Begin
+ ExplorerToolbarHitTest := -1;
+ BtnY := Exp.Y + EXPLORER_NODE_HEIGHT + 2;
+ If (MY < BtnY) Or (MY > BtnY + 19) Then Exit;
+ For I := 0 To EXPLORER_TOOLBAR_BTNCOUNT - 1 Do Begin
+  BtnX := Exp.X + 2 + I * 22;
+  If (MX >= BtnX) And (MX <= BtnX + 19) Then Begin
+   ExplorerToolbarHitTest := I;
+   Exit;
+  End;
+ End;
+End;
+
+{ --- Verifier si un point tombe dans le champ de recherche live -       }
+{ EXTENSION (2026-08-08). --- }
+
+Function ExplorerSearchBoxHitTest(Var Exp: TSolutionExplorer;
+ MX, MY: Integer): Boolean;
+Var
+ SearchY: Integer;
+Begin
+ SearchY := Exp.Y + EXPLORER_NODE_HEIGHT + EXPLORER_TOOLBAR_HEIGHT;
+ ExplorerSearchBoxHitTest :=
+  (MX >= Exp.X + 2) And (MX <= Exp.X + Exp.Width - 3) And
+  (MY >= SearchY + 2) And (MY <= SearchY + EXPLORER_SEARCH_HEIGHT - 3);
+End;
+
+{ --- Executer l action d un bouton de la mini barre d outils de          }
+{ l explorateur (0=Actualiser, 1=Tout replier, 2=Proprietes) - EXTENSION    }
+{ (2026-08-08), comme la barre d outils reelle de Visual Studio. --- }
+
+Procedure ExecuteExplorerToolbarButton(Var Exp: TSolutionExplorer;
+ BtnIdx: Integer);
+Var
+ I: Integer;
+Begin
+ Case BtnIdx Of
+  0: Begin
+   { Actualiser : re-analyser entierement la solution depuis le disque      }
+   { (fichiers ajoutes/retires/modifies) - vrai rafraichissement, pas       }
+   { juste un repaint. Sans solution chargee, se contente de reappliquer    }
+   { le filtre courant (Expanded/recherche). }
+   If SolutionLoaded And (CurrentSolutionFilePath <> '') Then
+    OpenSolutionFile(CurrentSolutionFilePath)
+   Else
+    RefreshExplorer(Exp);
+  End;
+  1: Begin
+   { Tout replier : comme Visual Studio, le noeud solution racine reste    }
+   { deplie (sinon la vue redevient vide), tout le reste se replie. }
+   For I := 0 To Exp.NodeCount - 1 Do
+    If Exp.Nodes[I].Kind <> ENK_SOLUTION Then
+     Exp.Nodes[I].Expanded := False;
+   RefreshExplorer(Exp);
+  End;
+  2: Begin
+   { Proprietes : pour un projet, ouvre la boite de dialogue complete       }
+   { (meme comportement que cliquer sur le noeud "Properties" de l          }
+   { arbre) ; sinon, re-synchronise simplement le panneau Proprietes         }
+   { avec la selection courante. }
+   If (Exp.SelectedIdx >= 0) And (Exp.SelectedIdx < Exp.NodeCount) Then Begin
+    If Exp.Nodes[Exp.SelectedIdx].Kind In
+     [ENK_PROJECT, ENK_PROPERTIES] Then Begin
+     InitProjectPropertiesDialog(ProjPropDlg);
+     LoadProjectProperties(ProjPropDlg, CurrentProject);
+     ShowProjectPropertiesDialog(ProjPropDlg);
+    End Else
+     UpdatePropsPanelForExplorerNode(Exp, Exp.SelectedIdx);
+   End;
+  End;
+ End;
+ Exp.NeedRepaint := True;
+End;
+
 { --- Gerer les evenements de l explorateur --- }
 
 Procedure StartExplorerRename(Var Exp: TSolutionExplorer;
@@ -22690,6 +22957,7 @@ Procedure StartExplorerRename(Var Exp: TSolutionExplorer;
 Begin
  If (NodeIdx < 0) Or (NodeIdx >= Exp.NodeCount) Then Exit;
  Exp.Renaming := True;
+ Exp.SearchFocused := False;
  Exp.RenameIdx := NodeIdx;
  Exp.RenameBuf := Exp.Nodes[NodeIdx].Caption;
  Exp.RenameCPos := Length(Exp.RenameBuf);
@@ -22992,7 +23260,84 @@ Begin
    { Ne pas sortir, laisser le clic etre traite normalement }
   End;
  End;
+ { EXTENSION (2026-08-08) : champ de recherche live - intercepter les     }
+ { evenements clavier pendant que le champ a le focus, meme principe        }
+ { que le renommage ci-dessus (voir aussi ExplorerSearchBoxHitTest/            }
+ { RefreshExplorer pour le filtrage). }
+ If Exp.SearchFocused And (Not Exp.Renaming) Then Begin
+  If Ev.Kind = EV_KEY_CHAR Then Begin
+   If Ev.KeyChar = #27 Then Begin { Escape : effacer et quitter le champ }
+    Exp.SearchBuf := '';
+    Exp.SearchCPos := 0;
+    Exp.SearchFocused := False;
+    RefreshExplorer(Exp);
+   End
+   Else If Ev.KeyChar = #13 Then { Entree : garder le filtre, quitter le champ }
+    Exp.SearchFocused := False
+   Else If Ev.KeyChar = #8 Then Begin { Backspace }
+    If Exp.SearchCPos > 0 Then Begin
+     Delete(Exp.SearchBuf, Exp.SearchCPos, 1);
+     Dec(Exp.SearchCPos);
+     RefreshExplorer(Exp);
+    End;
+   End
+   Else If (Ev.KeyChar >= #32) And (Ev.KeyChar <= #126) Then Begin
+    If Length(Exp.SearchBuf) < 63 Then Begin
+     Insert(Ev.KeyChar, Exp.SearchBuf, Exp.SearchCPos + 1);
+     Inc(Exp.SearchCPos);
+     RefreshExplorer(Exp);
+    End;
+   End;
+   Exp.NeedRepaint := True;
+   DrawExplorer(Exp);
+   Exit;
+  End
+  Else If Ev.Kind = EV_KEY_DOWN Then Begin
+   { Fleche gauche/droite : deplacer le curseur de saisie ; toute autre    }
+   { touche speciale (fleches haut/bas, PgUp/PgDn,...) est ignoree tant     }
+   { que la recherche a le focus, pour ne pas deplacer la selection de       }
+   { l arbre en meme temps que l on tape. }
+   If Ev.KeyCode = $4B Then Begin { Fleche gauche }
+    If Exp.SearchCPos > 0 Then Dec(Exp.SearchCPos);
+    Exp.NeedRepaint := True;
+    DrawExplorer(Exp);
+   End
+   Else If Ev.KeyCode = $4D Then Begin { Fleche droite }
+    If Exp.SearchCPos < Length(Exp.SearchBuf) Then Inc(Exp.SearchCPos);
+    Exp.NeedRepaint := True;
+    DrawExplorer(Exp);
+   End;
+   Exit;
+  End;
+ End;
  If Ev.Kind = EV_MOUSE_DOWN Then Begin
+  If Ev.MouseBtn = MB_LEFT Then Begin
+   { EXTENSION (2026-08-08) : mini barre d outils de l explorateur          }
+   { (Actualiser/Tout replier/Proprietes). }
+   HitIdx := ExplorerToolbarHitTest(Exp, Ev.MouseX, Ev.MouseY);
+   If HitIdx >= 0 Then Begin
+    ExecuteExplorerToolbarButton(Exp, HitIdx);
+    DrawExplorer(Exp);
+    Exit;
+   End;
+   { EXTENSION (2026-08-08) : champ de recherche live. }
+   If ExplorerSearchBoxHitTest(Exp, Ev.MouseX, Ev.MouseY) Then Begin
+    Exp.SearchFocused := True;
+    Exp.SearchCPos := Length(Exp.SearchBuf);
+    { Clic sur le bouton "effacer" (x), affiche seulement si du texte      }
+    { est deja present - voir DrawExplorer. }
+    If (Exp.SearchBuf <> '') And
+       (Ev.MouseX >= Exp.X + Exp.Width - 20) Then Begin
+     Exp.SearchBuf := '';
+     Exp.SearchCPos := 0;
+     RefreshExplorer(Exp);
+    End;
+    Exp.NeedRepaint := True;
+    DrawExplorer(Exp);
+    Exit;
+   End Else
+    Exp.SearchFocused := False;
+  End;
   { Clic droit : menu contextuel }
   If Ev.MouseBtn = MB_RIGHT Then Begin
    HitIdx := ExplorerNodeHitTest(Exp, Ev.MouseX, Ev.MouseY);
@@ -23022,18 +23367,19 @@ Begin
     couloir entre les deux : page-scroll. }
   If (Ev.MouseX >= Exp.X + Exp.Width - 14) And
      (Ev.MouseX < Exp.X + Exp.Width) And
-     (Ev.MouseY >= Exp.Y + EXPLORER_NODE_HEIGHT) And
+     (Ev.MouseY >= ExplorerContentTop(Exp)) And
      (Ev.MouseY < Exp.Y + Exp.Height) Then Begin
    MaxScroll := ExplorerVisibleRowCount(Exp);
    { Bouton haut. }
-   If Ev.MouseY < Exp.Y + EXPLORER_NODE_HEIGHT + 14 Then
+   If Ev.MouseY < ExplorerContentTop(Exp) + 14 Then
     Dec(Exp.ScrollTop)
    { Bouton bas. }
    Else If Ev.MouseY >= Exp.Y + Exp.Height - 14 Then
     Inc(Exp.ScrollTop)
    { Page haut/bas selon position dans le couloir. }
-   Else If Ev.MouseY < Exp.Y + EXPLORER_NODE_HEIGHT + 14 +
-                       ((Exp.Height - EXPLORER_NODE_HEIGHT - 28) Div 2) Then
+   Else If Ev.MouseY < ExplorerContentTop(Exp) + 14 +
+                       ((Exp.Y + Exp.Height - ExplorerContentTop(Exp) - 28)
+                        Div 2) Then
     Dec(Exp.ScrollTop, MaxScroll)
    Else
     Inc(Exp.ScrollTop, MaxScroll);
@@ -58746,6 +59092,7 @@ Var
 Begin
  { Convertir en chemin absolu pour que ExtractFilePath ne soit pas vide }
  FileName := FExpand(FileName);
+ CurrentSolutionFilePath := FileName;
  ParseSolutionFile(FileName, CurrentSolution);
  SolutionLoaded := True;
  SolutionModified := False;
