@@ -10440,7 +10440,12 @@ Begin
  IsYAML := (Ext = '.YML') Or (Ext = '.YAML');
  IsSQL := (Ext = '.SQL') Or (Ext = '.DDL') Or (Ext = '.DML');
  IsPSP := (Ext = '.PSP');
- IsJava := (Ext = '.JAVA');
+ { EXTENSION (2026-08-02) : .JPP (MS J++, tres proche syntaxiquement de     }
+ { Java - memes mots-cles/chaines/commentaires, voir JPPCW32.PAS) reutilise  }
+ { le highlighter Java plutot que de dupliquer une table de mots-cles       }
+ { quasi identique - demande utilisateur, "les fichiers .jpp ne             }
+ { supportent pas la coloration syntaxique". }
+ IsJava := (Ext = '.JAVA') Or (Ext = '.JPP');
  IsPython := (Ext = '.PY');
  IsAsm := (Ext = '.ASM') Or (Ext = '.S');
  { Mettre a jour la gouttiere }
@@ -57658,6 +57663,32 @@ Begin
     Ord(OTK_BUILD));
    Exit;
   End;
+ End
+ Else If (Ext = '.jpp') Then Begin
+  { EXTENSION (2026-08-02) : Compilation MS J++ -> JPPCW32.exe, demande     }
+  { explicite de l utilisateur ("quand F5 est utilise sur un .jpp, il         }
+  { devrait lancer JPPCW32"). Un SEUL compilateur existe pour J++ (Win32       }
+  { PE, aucun equivalent DOS 8086) - MEME pattern simple que .bas/.vb           }
+  { (FindCompiler direct) plutot que le pattern Contexte a deux variantes         }
+  { de .java/.c/.ada/.abap/.awk/.psp/.python. L execution du .exe produit        }
+  { est geree par le bloc COMMUN en fin de fonction (ExitCode=0 ->                }
+  { "Execution de ExeName..."), MEME discipline que .java/.psp/.c - PAS          }
+  { de duplication de cette logique ICI. }
+  CmdLine := FindCompiler('JPPCW32');
+  If CmdLine = '' Then Begin
+   AppendOutput(OutputPanel,
+    'Erreur : compilateur J++ non trouve (JPPCW32.exe).',
+    Ord(OTK_BUILD));
+   Exit;
+  End;
+  CmdLine := CmdLine + ' ' + SourceFile;
+  AppendOutput(OutputPanel,
+   '------ Build started: ' + SourceFile + ' ------',
+   Ord(OTK_BUILD));
+  AppendOutput(OutputPanel, '> ' + CmdLine, Ord(OTK_BUILD));
+  ExitCode := ExecuteCompiler(CmdLine, TempFile);
+  ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
+  CleanupTempFile(TempFile);
  End
  Else If (Ext = '.py') Then Begin
   { Compilation Python }
