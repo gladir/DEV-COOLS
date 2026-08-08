@@ -1161,9 +1161,20 @@ Const
  MAX_BUILD_CONFIGS     = 10;       { nombre max de configs build    }
 
  { Explorateur de solution }
- EXPLORER_WIDTH        = 220;      { largeur du panneau en pixels   }
- EXPLORER_MIN_WIDTH    = 100;      { largeur minimale en pixels     }
- EXPLORER_MAX_WIDTH    = 400;      { largeur maximale en pixels     }
+ { EXTENSION (2026-08-02) : EXPLORER_WIDTH/EXPLORER_MAX_WIDTH sont            }
+ { devenues des VARIABLES (voir plus bas, section Var) calculees au            }
+ { demarrage par UpdateExplorerWidthForScreen - demande explicite de           }
+ { l utilisateur : sur un ecran de plus de 1024 pixels de large, le              }
+ { panneau doit etre 2,5 fois plus large par defaut. Ces DEUX constantes         }
+ { restent les valeurs de base (ecrans <= 1024px de large). }
+ EXPLORER_WIDTH_DEFAULT     = 220; { largeur par defaut (ecrans <= 1024px) }
+ EXPLORER_MIN_WIDTH         = 100; { largeur minimale en pixels, INCHANGEE    }
+                                   { quelle que soit la largeur d ecran }
+ EXPLORER_MAX_WIDTH_DEFAULT = 400; { largeur maximale par defaut (ecrans      }
+                                   { <= 1024px) }
+ EXPLORER_WIDE_SCREEN_LIMIT = 1024; { seuil (pixels) au-dela duquel le      }
+                                    { panneau est elargi }
+ EXPLORER_WIDE_SCREEN_SCALE = 2.5;  { facteur applique au-dela du seuil }
  EXPLORER_NODE_HEIGHT  = 20;       { hauteur d un noeud en pixels   }
  EXPLORER_INDENT       = 16;       { indentation par niveau         }
  EXPLORER_ICON_SIZE    = 16;       { taille des icones              }
@@ -3545,6 +3556,16 @@ Var
  PSPHL        : TPSPHighlighter;
  { Explorateur de solution }
  SolExplorer  : TSolutionExplorer;
+ { EXTENSION (2026-08-02) : largeur effective/maximale du panneau,           }
+ { calculee au demarrage par UpdateExplorerWidthForScreen selon la              }
+ { largeur d ecran (EXPLORER_WIDTH_DEFAULT/EXPLORER_MAX_WIDTH_DEFAULT           }
+ { restent les valeurs de base, section Const). ANCIENNEMENT des                 }
+ { constantes EXPLORER_WIDTH/EXPLORER_MAX_WIDTH - tous les sites d              }
+ { utilisation existants (InitExplorer, la zone de detection du                    }
+ { redimensionnement par glisser, etc.) restent inchanges, le NOM ayant          }
+ { ete conserve. }
+ EXPLORER_WIDTH     : Integer;
+ EXPLORER_MAX_WIDTH : Integer;
  { Menu contextuel de l explorateur }
  CtxMenu      : TContextMenu;
  { Panneau de proprietes }
@@ -4659,6 +4680,26 @@ End;
 Function GetScreenHeight: Integer;
 Begin
  GetScreenHeight := GetMaxY + 1;
+End;
+
+{ --- Largeur de l explorateur de solution adaptee a l ecran ---           }
+{ EXTENSION (2026-08-02) : demande explicite de l utilisateur - sur un     }
+{ ecran de plus de EXPLORER_WIDE_SCREEN_LIMIT (1024) pixels de large, le    }
+{ panneau de l explorateur doit etre EXPLORER_WIDE_SCREEN_SCALE (2,5) fois    }
+{ plus large que sa valeur de base (EXPLORER_WIDTH_DEFAULT/EXPLORER_MAX_       }
+{ WIDTH_DEFAULT, section Const). DOIT etre appelee APRES InitializeGraphics  }
+{ (GetScreenWidth n est significative qu une fois le mode graphique reel      }
+{ etabli) et AVANT InitExplorer (qui lit EXPLORER_WIDTH pour positionner       }
+{ le panneau au demarrage). }
+Procedure UpdateExplorerWidthForScreen;
+Begin
+ If GetScreenWidth > EXPLORER_WIDE_SCREEN_LIMIT Then Begin
+  EXPLORER_WIDTH     := Round(EXPLORER_WIDTH_DEFAULT * EXPLORER_WIDE_SCREEN_SCALE);
+  EXPLORER_MAX_WIDTH := Round(EXPLORER_MAX_WIDTH_DEFAULT * EXPLORER_WIDE_SCREEN_SCALE);
+ End Else Begin
+  EXPLORER_WIDTH     := EXPLORER_WIDTH_DEFAULT;
+  EXPLORER_MAX_WIDTH := EXPLORER_MAX_WIDTH_DEFAULT;
+ End;
 End;
 
 { --- Nombre maximal de couleurs --- }
@@ -61165,6 +61206,7 @@ BEGIN
  If Opts.Verbose Then
   ShowVersion;
  InitializeGraphics;
+ UpdateExplorerWidthForScreen;
  ClearScreen(CLR_BACKGROUND);
  InitEventQueue;
  InitMouse;
