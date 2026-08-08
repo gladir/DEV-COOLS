@@ -56764,6 +56764,16 @@ Var
  I: Integer;
  EffectiveCPU: String;
 Begin
+ { BOGUE REEL signale par l utilisateur (2026-08-02) : F5 recompilait      }
+ { TOUJOURS le contenu SUR DISQUE du fichier actif, jamais le tampon         }
+ { EN MEMOIRE de l editeur - modifier le source puis F5 sans avoir fait       }
+ { Ctrl+S auparavant produisait donc TOUJOURS l ancien resultat (le            }
+ { compilateur externe, invoque plus bas via ExecuteCompiler, lit le             }
+ { fichier depuis le disque, jamais le tampon de l editeur). Corrige en           }
+ { sauvegardant TOUTES les fenetres modifiees ICI, EXACTEMENT comme               }
+ { Visual Studio le fait par defaut avant une compilation (MEME fonction          }
+ { SaveAllWindows deja utilisee par "Enregistrer tout", Ctrl+Maj+S). }
+ SaveAllWindows;
  { Determiner le fichier source a compiler }
  SourceFile := '';
  If Opts.SourceFile <> '' Then
