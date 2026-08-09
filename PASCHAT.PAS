@@ -997,6 +997,7 @@ Type
     IK_PROCEDURE,  { Demande de procedure }
     IK_FUNCTION,   { Demande de fonction }
     IK_EXPLAIN,    { Demande d'explication }
+    IK_CAPITAL,    { Demande de capitale (pays/province) }
     IK_HELP,       { Demande d'aide }
     IK_SAVE,       { Commande de sauvegarde }
     IK_LIST,       { Demande de liste }
@@ -1194,6 +1195,7 @@ Var
   IntProcCount   : Integer;
   IntFuncCount   : Integer;
   IntExplainCount: Integer;
+  IntCapitalCount: Integer;
   IntHelpCount   : Integer;
   IntQuitCount   : Integer;
   IntKeywordCount: Integer;
@@ -2531,6 +2533,10 @@ Begin
     DetectIntent := IK_LIST
   Else If (Pos('/CLEAR', UI) = 1) or (Pos('/EFF', UI) = 1) Then
     DetectIntent := IK_CLEAR
+  { Demandes de capitale (pays/province) - AVANT le reste pour eviter que }
+  { "quelle est..." tombe dans IK_UNKNOWN faute de mot-cle de programme. }
+  Else If (Pos('CAPITALE', UI) > 0) Then
+    DetectIntent := IK_CAPITAL
   { Demandes de programme - AVANT salutations pour eviter "programme bonjour" }
   Else If (Pos('PROGRAMME', UI) > 0) or (Pos('PROGRAM', UI) > 0) or
           (Pos('CODE', UI) > 0) or (Pos('ECRIS', UI) > 0) or
@@ -2578,6 +2584,7 @@ Begin
     IK_PROCEDURE : Inc(IntProcCount);
     IK_FUNCTION  : Inc(IntFuncCount);
     IK_EXPLAIN   : Inc(IntExplainCount);
+    IK_CAPITAL   : Inc(IntCapitalCount);
     IK_HELP      : Inc(IntHelpCount);
     IK_QUIT      : Inc(IntQuitCount);
   End;
@@ -2603,6 +2610,7 @@ Begin
   IntProcCount   := 0;
   IntFuncCount   := 0;
   IntExplainCount := 0;
+  IntCapitalCount := 0;
   IntHelpCount   := 0;
   IntQuitCount   := 0;
   IntKeywordCount := 0;
@@ -8476,6 +8484,148 @@ Begin
 End;
 
 { ============================================================
+  EXTENSION - Petite base de connaissances geographiques (capitales)
+  et liste de pays reutilisable pour la generation de code.
+  ============================================================ }
+
+Const
+  NB_CAPITALS = 67;
+  CapPlace: Array[1..NB_CAPITALS] of String[30] = (
+    'Canada', 'Quebec', 'Ontario', 'Colombie-Britannique', 'Alberta',
+    'Manitoba', 'Saskatchewan', 'Nouvelle-Ecosse', 'Nouveau-Brunswick',
+    'Terre-Neuve-et-Labrador', 'Ile-du-Prince-Edouard', 'Yukon',
+    'Territoires du Nord-Ouest', 'Nunavut',
+    'France', 'Belgique', 'Suisse', 'Italie', 'Espagne', 'Portugal',
+    'Allemagne', 'Royaume-Uni', 'Angleterre', 'Etats-Unis', 'Mexique',
+    'Bresil', 'Argentine', 'Chili', 'Perou', 'Colombie', 'Venezuela',
+    'Cuba', 'Haiti', 'Japon', 'Chine', 'Inde', 'Russie', 'Australie',
+    'Nouvelle-Zelande', 'Egypte', 'Maroc', 'Algerie', 'Tunisie',
+    'Senegal', 'Cote d Ivoire', 'Cameroun', 'Nigeria', 'Kenya',
+    'Afrique du Sud', 'Grece', 'Turquie', 'Pologne', 'Pays-Bas',
+    'Hollande', 'Suede', 'Norvege', 'Danemark', 'Finlande', 'Irlande',
+    'Autriche', 'Ukraine', 'Roumanie', 'Hongrie', 'Republique Tcheque',
+    'Israel', 'Coree du Sud', 'Coree du Nord'
+  );
+  CapName: Array[1..NB_CAPITALS] of String[30] = (
+    'Ottawa', 'Quebec', 'Toronto', 'Victoria', 'Edmonton',
+    'Winnipeg', 'Regina', 'Halifax', 'Fredericton',
+    'St. John''s', 'Charlottetown', 'Whitehorse',
+    'Yellowknife', 'Iqaluit',
+    'Paris', 'Bruxelles', 'Berne', 'Rome', 'Madrid', 'Lisbonne',
+    'Berlin', 'Londres', 'Londres', 'Washington', 'Mexico',
+    'Brasilia', 'Buenos Aires', 'Santiago', 'Lima', 'Bogota', 'Caracas',
+    'La Havane', 'Port-au-Prince', 'Tokyo', 'Pekin', 'New Delhi', 'Moscou', 'Canberra',
+    'Wellington', 'Le Caire', 'Rabat', 'Alger', 'Tunis',
+    'Dakar', 'Yamoussoukro', 'Yaounde', 'Abuja', 'Nairobi',
+    'Pretoria', 'Athenes', 'Ankara', 'Varsovie', 'Amsterdam',
+    'Amsterdam', 'Stockholm', 'Oslo', 'Copenhague', 'Helsinki', 'Dublin',
+    'Vienne', 'Kiev', 'Bucarest', 'Budapest', 'Prague',
+    'Jerusalem', 'Seoul', 'Pyongyang'
+  );
+
+  NB_COUNTRIES = 45;
+  Countries: Array[1..NB_COUNTRIES] of String[30] = (
+    'Canada', 'France', 'Belgique', 'Suisse', 'Italie', 'Espagne',
+    'Portugal', 'Allemagne', 'Royaume-Uni', 'Etats-Unis', 'Mexique',
+    'Bresil', 'Argentine', 'Chili', 'Perou', 'Colombie', 'Venezuela',
+    'Cuba', 'Haiti', 'Japon', 'Chine', 'Inde', 'Russie', 'Australie',
+    'Nouvelle-Zelande', 'Egypte', 'Maroc', 'Algerie', 'Tunisie',
+    'Senegal', 'Cameroun', 'Nigeria', 'Kenya', 'Afrique du Sud',
+    'Grece', 'Turquie', 'Pologne', 'Pays-Bas', 'Suede', 'Norvege',
+    'Danemark', 'Finlande', 'Irlande', 'Autriche', 'Ukraine'
+  );
+
+{ Retire un article/preposition francais courant en tete de S }
+{ (ex: "du Quebec" -> "Quebec", "de la France" -> "France"). }
+Function StripPlacePrefix(S: String): String;
+Var
+  UP: String;
+Begin
+  UP := UpCaseStr(S);
+  If Copy(UP, 1, 6) = 'DE LA ' Then StripPlacePrefix := Copy(S, 7, Length(S) - 6)
+  Else If Copy(UP, 1, 5) = 'DE L''' Then StripPlacePrefix := Copy(S, 6, Length(S) - 5)
+  Else If Copy(UP, 1, 4) = 'DES ' Then StripPlacePrefix := Copy(S, 5, Length(S) - 4)
+  Else If Copy(UP, 1, 3) = 'DU ' Then StripPlacePrefix := Copy(S, 4, Length(S) - 3)
+  Else If Copy(UP, 1, 3) = 'DE ' Then StripPlacePrefix := Copy(S, 4, Length(S) - 3)
+  Else If Copy(UP, 1, 2) = 'D''' Then StripPlacePrefix := Copy(S, 3, Length(S) - 2)
+  Else StripPlacePrefix := S;
+End;
+
+{ Recherche la capitale d'un pays ou d'une province par son nom }
+{ (comparaison insensible a la casse). Retourne '' si inconnu. }
+Function GetCapital(PlaceName: String): String;
+Var
+  I: Integer;
+  UP: String;
+Begin
+  UP := UpCaseStr(Trim(PlaceName));
+  GetCapital := '';
+  For I := 1 To NB_CAPITALS Do
+    If UpCaseStr(CapPlace[I]) = UP Then Begin
+      GetCapital := CapName[I];
+      Exit;
+    End;
+End;
+
+{ Repond a une question du type "Quelle est la capitale du Quebec ?" }
+Function AnswerCapitalQuestion(Const Question: String): String;
+Var
+  UI, Place, Cap: String;
+  P: Integer;
+Begin
+  UI := UpCaseStr(Question);
+  P := Pos('CAPITALE', UI);
+  If P = 0 Then Begin
+    AnswerCapitalQuestion := 'Je ne sais pas de quel endroit vous parlez.';
+    Exit;
+  End;
+  Place := Trim(Copy(Question, P + 8, Length(Question) - P - 7));
+  Place := Trim(StripPlacePrefix(Place));
+  While (Length(Place) > 0) And (Place[Length(Place)] in ['?', '.', '!']) Do
+    Delete(Place, Length(Place), 1);
+  Place := Trim(Place);
+
+  If Place = '' Then Begin
+    AnswerCapitalQuestion := 'De quel pays ou de quelle province voulez-vous connaitre la capitale?';
+    Exit;
+  End;
+
+  Cap := GetCapital(Place);
+  If Cap <> '' Then
+    AnswerCapitalQuestion := 'La capitale de ' + Place + ' est ' + Cap + '.'
+  Else
+    AnswerCapitalQuestion := 'Je ne connais pas la capitale de "' + Place +
+      '". Essayez avec un pays ou une province plus courante.';
+End;
+
+{ Programme complet : constante Pascal contenant la liste des pays }
+Procedure GenCountryListConst;
+Var
+  I: Integer;
+  Line: String;
+Begin
+  InitGeneratedCode;
+  GenProgramHeader('ListePays');
+  AddCodeLine('Const');
+  AddCodeLine('  NB_PAYS = ' + IntToStr(NB_COUNTRIES) + ';');
+  AddCodeLine('  Pays: Array[1..NB_PAYS] of String = (');
+  For I := 1 To NB_COUNTRIES Do Begin
+    Line := '    ''' + Countries[I] + '''';
+    If I < NB_COUNTRIES Then Line := Line + ',';
+    AddCodeLine(Line);
+  End;
+  AddCodeLine('  );');
+  AddCodeLine('');
+  AddCodeLine('Var');
+  AddCodeLine('  I: Integer;');
+  AddCodeLine('');
+  GenBeginEnd;
+  AddCodeLine('  For I := 1 to NB_PAYS do');
+  AddCodeLine('    WriteLn(Pays[I]);');
+  GenEnd;
+End;
+
+{ ============================================================
   EXTENSION - Generateurs supplementaires pour ProcessProgramRequest
   (boucles, tri, recherche, recursivite) et extraction de bornes
   numeriques depuis la question en langage naturel.
@@ -8758,6 +8908,12 @@ Begin
   Else If (Pos('CALENDRIER', UI) > 0) or (Pos('CALENDAR', UI) > 0) Then Begin
     GenCalendar;
     WriteLn('Voici un programme generant un calendrier:');
+  End
+  Else If (Pos('PAYS', UI) > 0) and ((Pos('CONSTANTE', UI) > 0) or
+          (Pos('LISTE', UI) > 0) or (Pos('TABLEAU', UI) > 0) or
+          (Pos('ARRAY', UI) > 0)) Then Begin
+    GenCountryListConst;
+    WriteLn('Voici une constante Pascal avec une liste de pays:');
   End
   Else Begin
     { Programme generique }
@@ -11163,6 +11319,11 @@ Begin
       WriteLn('PASCHAT> ', Response);
     End;
 
+    IK_CAPITAL: Begin
+      Response := AnswerCapitalQuestion(Input);
+      WriteLn('PASCHAT> ', Response);
+    End;
+
   Else
     Response := GenerateTextResponse(IK_UNKNOWN);
     WriteLn('PASCHAT> ', Response);
@@ -11301,6 +11462,67 @@ Begin
   BatchCaptureEnd := R;
 End;
 
+{ --- Detecter "... dans le fichier X.pas" (ou variantes) dans une          }
+{ question, retirer cette clause de Question et retourner le nom de       }
+{ fichier demande ('' si absent). Permet a DEVENV.PAS (onglet PasChat)      }
+{ de creer directement le fichier genere et de l'ouvrir dans un onglet          }
+{ d'editeur, plutot que de forcer l'utilisateur a copier/coller. --- }
+Function ExtractOutputFileName(Var Question: AnsiString): String;
+Var
+  UI: String;
+  P, Q, I: Integer;
+  FileTok: String;
+Begin
+  ExtractOutputFileName := '';
+  UI := UpCaseStr(Question);
+  P := Pos('DANS LE FICHIER', UI);
+  If P = 0 Then P := Pos('DANS UN FICHIER', UI);
+  If P = 0 Then P := Pos('DANS FICHIER', UI);
+  If P = 0 Then P := Pos('DANS', UI);
+  If P = 0 Then Exit;
+
+  { Sauter le mot-cle trouve puis chercher, mot par mot, le premier    }
+  { jeton contenant un point (ex: TEST.PAS) - c'est le nom de fichier. }
+  Q := P;
+  While (Q <= Length(UI)) And (UI[Q] <> ' ') Do Inc(Q);
+  While Q <= Length(Question) Do Begin
+    While (Q <= Length(Question)) And (Question[Q] = ' ') Do Inc(Q);
+    I := Q;
+    While (I <= Length(Question)) And (Question[I] <> ' ') Do Inc(I);
+    FileTok := Copy(Question, Q, I - Q);
+    If Pos('.', FileTok) > 0 Then Begin
+      While (Length(FileTok) > 0) And
+            (FileTok[Length(FileTok)] in ['?', ',', '!']) Do
+        Delete(FileTok, Length(FileTok), 1);
+      Question := Trim(Copy(Question, 1, P - 1));
+      ExtractOutputFileName := FileTok;
+      Exit;
+    End;
+    Q := I;
+  End;
+End;
+
+{ --- Ecrire GeneratedCode directement dans FileName (sans confirmation :   }
+{ le nom a ete explicitement demande par l'utilisateur dans sa question),      }
+{ pour le mode batch (aucun ReadLn interactif possible). --- }
+Function SaveGeneratedCodeToFile(FileName: String): Boolean;
+Var
+  F: Text;
+  I: Integer;
+Begin
+  SaveGeneratedCodeToFile := False;
+  If GeneratedCount = 0 Then Exit;
+  Assign(F, FileName);
+  {$I-}
+  Rewrite(F);
+  {$I+}
+  If IOResult <> 0 Then Exit;
+  For I := 1 To GeneratedCount Do
+    WriteLn(F, GeneratedCode[I]);
+  Close(F);
+  SaveGeneratedCodeToFile := True;
+End;
+
 { --- Repondre a UNE question lue dans Options.InFile, ecrire la          }
 { reponse dans Options.OutFile, puis terminer immediatement - un              }
 { sous-ensemble DELIBEREMENT restreint des intentions de ProcessCommand         }
@@ -11311,7 +11533,7 @@ End;
 
 Procedure RunBatchMode;
 Var
-  Question, Response: AnsiString;
+  Question, Response, OutputFileName: AnsiString;
   I: Integer;
 Begin
   LoadAllLearnFiles;
@@ -11324,6 +11546,7 @@ Begin
     Halt(EXIT_OK);
   End;
 
+  OutputFileName := ExtractOutputFileName(Question);
   ParseUserInput(Question);
   Case CurrentIntent.Kind Of
     IK_HELLO:
@@ -11336,6 +11559,14 @@ Begin
         Response := 'Voici le code Pascal genere :' + #10;
         For I := 1 To GeneratedCount Do
           Response := Response + GeneratedCode[I] + #10;
+        If OutputFileName <> '' Then Begin
+          If SaveGeneratedCodeToFile(OutputFileName) Then
+            Response := '@OPENFILE:' + OutputFileName + #10 +
+              'Fichier "' + OutputFileName + '" cree. ' + Response
+          Else
+            Response := Response + #10 + 'Erreur : impossible de creer "' +
+              OutputFileName + '".';
+        End;
       End Else
         Response := 'Je n''ai pas pu generer de code pour cette demande.';
     End;
@@ -11347,6 +11578,14 @@ Begin
         Response := 'Voici l''unite Pascal generee :' + #10;
         For I := 1 To GeneratedCount Do
           Response := Response + GeneratedCode[I] + #10;
+        If OutputFileName <> '' Then Begin
+          If SaveGeneratedCodeToFile(OutputFileName) Then
+            Response := '@OPENFILE:' + OutputFileName + #10 +
+              'Fichier "' + OutputFileName + '" cree. ' + Response
+          Else
+            Response := Response + #10 + 'Erreur : impossible de creer "' +
+              OutputFileName + '".';
+        End;
       End Else
         Response := 'Je n''ai pas pu generer d''unite pour cette demande.';
     End;
@@ -11355,6 +11594,8 @@ Begin
       If Response = '' Then
         Response := 'Je n''ai pas trouve d''information sur ce sujet.';
     End;
+    IK_CAPITAL:
+      Response := AnswerCapitalQuestion(Question);
     IK_HELP: Begin
       BatchCaptureBegin;
       ShowHelpCommand;

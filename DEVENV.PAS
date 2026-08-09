@@ -24339,10 +24339,43 @@ End;
 { --- Envoyer le contenu du champ de saisie et ajouter la reponse de     }
 { PasChat comme nouvelle bulle. --- }
 
+{ --- Ouvrir dans un nouvel onglet d editeur un fichier que PASCHAT.exe    }
+{ vient de creer sur disque (reponse a "... dans le fichier X.pas") -           }
+{ reprend exactement l idiome utilise par OpenExplorerFileNode pour les          }
+{ fichiers hors solution (FullPath := FN), y compris la sauvegarde de            }
+{ l editeur actif avant de basculer. --- }
+Procedure PasChatOpenGeneratedFile(FullPath: String);
+Var
+ WIdx, I: Integer;
+Begin
+ For I := 1 To Length(FullPath) Do
+  If FullPath[I] = '/' Then FullPath[I] := '\';
+ If EditorReady Then SyncActiveWindowOut;
+ If StartPage.Visible Then Begin
+  StartPage.Visible := False;
+  FullRepaintNeeded := True;
+ End;
+ WIdx := FindEditorByFileName(FullPath);
+ If WIdx >= 0 Then Begin
+  ActivateWindow(WIdx);
+  FullRepaintNeeded := True;
+  Exit;
+ End;
+ CreateEditorWindow(FullPath);
+ WIdx := WinMgr.ActiveIdx;
+ LoadFile(Editors[WIdx]^.Buffer, FullPath);
+ ActiveEditor := Editors[WIdx]^;
+ Opts.SourceFile := FullPath;
+ EditorReady := True;
+ FullRepaintNeeded := True;
+End;
+
 Procedure PasChatSendMessage(Var Exp: TSolutionExplorer);
 Var
  Response: AnsiString;
  Question: AnsiString;
+ OpenFileName: String;
+ NLPos: Integer;
 Begin
  If TrimStr(ChatInputBuf) = '' Then Exit;
  Question := ChatInputBuf;
@@ -24362,6 +24395,18 @@ Begin
  { comme partout ailleurs (seul Exp.NeedRepaint est positionne ici, le            }
  { dessin reel se fait normalement au retour de HandlePasChatEvent). }
  Response := PasChatAskExternal(Question);
+ { PASCHAT.exe prefixe sa reponse par "@OPENFILE:chemin" (une ligne)      }
+ { quand la question demandait explicitement d ecrire le code dans un            }
+ { fichier ("... dans le fichier X.pas") - le fichier est deja cree sur          }
+ { disque a ce stade, il ne reste qu a l ouvrir dans un onglet d editeur. }
+ If Copy(Response, 1, 10) = '@OPENFILE:' Then Begin
+  NLPos := Pos(#10, Response);
+  If NLPos = 0 Then NLPos := Length(Response) + 1;
+  OpenFileName := Copy(Response, 11, NLPos - 11);
+  Response := Copy(Response, NLPos + 1, Length(Response) - NLPos);
+  If OpenFileName <> '' Then
+   PasChatOpenGeneratedFile(OpenFileName);
+ End;
  If (Response <> '') And (ChatMsgCount < MAX_CHAT_MESSAGES) Then Begin
   ChatMessages[ChatMsgCount].Sender := CHS_BOT;
   ChatMessages[ChatMsgCount].Text := Response;
