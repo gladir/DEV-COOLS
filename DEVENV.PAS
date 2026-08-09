@@ -31109,15 +31109,19 @@ Begin
  SetFillStyle(SolidFill, 1);
  Bar(PX, PY + TERM_TAB_HEIGHT, PX + PW - 1, PY + PH - 1);
 
+ { NOTE : l index de couleur 0 est globalement remappe par SetBkColor       }
+ { (voir EmuColor, DEVENV.PAS ~38541) - il n affiche pas un noir fixe    }
+ { mais LA couleur passee au dernier SetBkColor (7=CLR_BACKGROUND,             }
+ { gris clair, ailleurs dans l appli - BOGUE REEL 2026-08-09 : les             }
+ { fonds "noirs" 0 de la barre F-touches/ligne de commande/entete de           }
+ { colonnes rendaient donc ce gris). Palette 0 redefinie en noir reel      }
+ { pour toute la duree du rendu de ce panneau, puis restauree a la fin. }
+ SetBkColor(0);
+
  { Barre de touches de fonction F1..F10 - fond noir, numeros gris,      }
  { libelles noirs sur fond cyan, exactement comme l original (ShowKeyFunc). }
- { NOTE : l index de couleur 0 est globalement remappe par SetBkColor       }
- { vers le gris du bureau (voir EmuColor, DEVENV.PAS ~38541) - utiliser  }
- { 8 (gris fonce) partout ou un "noir" est voulu ici, jamais 0 (BOGUE    }
- { REEL 2026-08-09 : fonds "noirs" de la barre F-touches/de la ligne          }
- { de commande/de l entete de colonnes rendaient un gris clair). }
  FKeyY := PY + PH - RH;
- SetFillStyle(SolidFill, 8);
+ SetFillStyle(SolidFill, 0);
  Bar(PX, FKeyY, PX + PW - 1, PY + PH - 1);
  FKeyColW := (PW - 2 * CW) Div 10;
  If FKeyColW < 8 * CW Then FKeyColW := 8 * CW;
@@ -31125,7 +31129,7 @@ Begin
  For I := 1 To 10 Do Begin
   { Case du chiffre : fond explicitement noir (ne pas se fier au fond   }
   { deja peint plus haut - BOGUE REEL 2026-08-09 : apparaissait gris). }
-  SetFillStyle(SolidFill, 8);
+  SetFillStyle(SolidFill, 0);
   Bar(X0, FKeyY, X0 + 2 * CW - 1, FKeyY + RH - 1);
   SetColor(7);
   OutTextXY(X0, FKeyY + 1, IntToStr(I));
@@ -31138,7 +31142,7 @@ Begin
 
  { Ligne de commande - gris sur fond noir, comme une vraie invite DOS. }
  PromptY := FKeyY - RH;
- SetFillStyle(SolidFill, 8);
+ SetFillStyle(SolidFill, 0);
  Bar(PX, PromptY, PX + PW - 1, PromptY + RH - 1);
  SetColor(7);
  S := NCState.Panes[NCState.Active].Path + '>' + TP.InputLine;
@@ -31179,8 +31183,8 @@ Begin
   OutTextXY(CenterX, HeaderY - 2, S);
 
   { Entete de colonnes (Nom / Taille / Date Heure) - fond noir, texte    }
-  { jaune (fond 8 et non 0 - voir la note sur SetBkColor plus haut). }
-  SetFillStyle(SolidFill, 8);
+  { jaune (palette 0 redefinie en noir reel, voir SetBkColor plus haut). }
+  SetFillStyle(SolidFill, 0);
   Bar(X0 + 1, ColHeadY - 1, PaneRight - 1, ColHeadY + RH - 2);
   SetColor(14);
   S := PadRight('Nom', NameCols, ' ') + ' ' + PadLeft('Taille', 9, ' ') +
@@ -31298,7 +31302,7 @@ Begin
    For I := 0 To NC_MENU_TOP_COUNT - 1 Do Begin
     S := ' ' + NC_MENU_TOP[I] + ' ';
     If I = NCState.MenuTop Then Begin
-     SetFillStyle(SolidFill, 8);
+     SetFillStyle(SolidFill, 0);
      Bar(X0 - 2, Y, X0 + TextWidth(S) + 1, Y + RH - 1);
      SetColor(11);
     End Else
@@ -31331,7 +31335,7 @@ Begin
    Rectangle(X0, ListTop, PaneRight, ListBot + 1);
    For I := 0 To CurX - 1 Do Begin
     If I = NCState.MenuItem Then Begin
-     SetFillStyle(SolidFill, 8);
+     SetFillStyle(SolidFill, 0);
      Bar(X0 + 1, ListTop + I * RH, PaneRight - 1, ListTop + (I + 1) * RH - 1);
      SetColor(11);
     End Else Begin
@@ -32130,6 +32134,14 @@ Begin
     plus bas, commune aux 5 shells) reste partagee. }
   DrawNCommanderPanel(TP, PX, PY, PW, PH);
  End Else Begin
+  { DrawNCommanderPanel redefinit la palette 0 en noir reel pour toute  }
+  { la duree ou Norton Commander est affiche (necessaire pour un fond   }
+  { vraiment noir - voir la note dans DrawNCommanderPanel) et ne la          }
+  { restaure pas elle-meme (un SetBkColor de restauration en fin de           }
+  { fonction s est revele sans effet, probablement resolu au moment de   }
+  { l affichage de l image plutot qu au moment du tracer). On la               }
+  { restaure donc ici, cote "on quitte Norton Commander". }
+  SetBkColor(CLR_BACKGROUND);
   { Zone de texte (reserver TERM_SCROLLBAR_WIDTH a droite) }
   TextRight := SBarX - 1;
   VisLines := (PH - TERM_TAB_HEIGHT - TERM_LINE_HEIGHT - 4)
