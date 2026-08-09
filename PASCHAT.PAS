@@ -2536,7 +2536,9 @@ Begin
           (Pos('CODE', UI) > 0) or (Pos('ECRIS', UI) > 0) or
           (Pos('GENERE', UI) > 0) or (Pos('CREE', UI) > 0) or
           (Pos('FAIS', UI) > 0) or (Pos('SORS', UI) > 0) or
-          (Pos('AFFICHE', UI) > 0) Then Begin
+          (Pos('AFFICHE', UI) > 0) or (Pos('VERIFIE', UI) > 0) or
+          (Pos('CALCULE', UI) > 0) or (Pos('TRIE', UI) > 0) or
+          (Pos('BOUCLE', UI) > 0) Then Begin
     If (Pos('UNITE', UI) > 0) or (Pos('UNIT', UI) > 0) Then
       DetectIntent := IK_UNIT
     Else If (Pos('PROCEDURE', UI) > 0) Then
@@ -8473,10 +8475,177 @@ Begin
   GetFmtUpperCount := FmtUpperCount;
 End;
 
+{ ============================================================
+  EXTENSION - Generateurs supplementaires pour ProcessProgramRequest
+  (boucles, tri, recherche, recursivite) et extraction de bornes
+  numeriques depuis la question en langage naturel.
+  ============================================================ }
+
+{ Extrait les deux premiers nombres entiers trouves dans S (ex: }
+{ "de 1 a 10" -> A=1, B=10). Retourne False si moins de deux    }
+{ nombres n'ont ete trouves. }
+Function ExtractFirstTwoInts(S: String; Var A, B: Integer): Boolean;
+Var
+  I, Len, Found: Integer;
+  NumStr: String;
+Begin
+  Found := 0;
+  NumStr := '';
+  Len := Length(S);
+  For I := 1 to Len do Begin
+    If S[I] in ['0'..'9'] Then
+      NumStr := NumStr + S[I]
+    Else Begin
+      If NumStr <> '' Then Begin
+        Inc(Found);
+        If Found = 1 Then A := StrToInt(NumStr)
+        Else If Found = 2 Then B := StrToInt(NumStr);
+        NumStr := '';
+      End;
+    End;
+  End;
+  If NumStr <> '' Then Begin
+    Inc(Found);
+    If Found = 1 Then A := StrToInt(NumStr)
+    Else If Found = 2 Then B := StrToInt(NumStr);
+  End;
+  ExtractFirstTwoInts := (Found >= 2);
+End;
+
+{ Generer une boucle FOR qui affiche les valeurs de StartVal a EndVal }
+Procedure GenForLoopCount(StartVal, EndVal: Integer);
+Begin
+  InitGeneratedCode;
+  GenProgramHeader('BoucleFor');
+  AddCodeLine('Var');
+  AddCodeLine('  I: Integer;');
+  AddCodeLine('');
+  GenBeginEnd;
+  AddCodeLine('  For I := ' + IntToStr(StartVal) + ' to ' + IntToStr(EndVal) + ' do');
+  AddCodeLine('    WriteLn(I);');
+  GenEnd;
+End;
+
+{ Generer une boucle WHILE equivalente }
+Procedure GenWhileLoopCount(StartVal, EndVal: Integer);
+Begin
+  InitGeneratedCode;
+  GenProgramHeader('BoucleWhile');
+  AddCodeLine('Var');
+  AddCodeLine('  I: Integer;');
+  AddCodeLine('');
+  GenBeginEnd;
+  AddCodeLine('  I := ' + IntToStr(StartVal) + ';');
+  AddCodeLine('  While I <= ' + IntToStr(EndVal) + ' do Begin');
+  AddCodeLine('    WriteLn(I);');
+  AddCodeLine('    Inc(I);');
+  AddCodeLine('  End;');
+  GenEnd;
+End;
+
+{ Generer une boucle REPEAT..UNTIL equivalente }
+Procedure GenRepeatLoopCount(StartVal, EndVal: Integer);
+Begin
+  InitGeneratedCode;
+  GenProgramHeader('BoucleRepeat');
+  AddCodeLine('Var');
+  AddCodeLine('  I: Integer;');
+  AddCodeLine('');
+  GenBeginEnd;
+  AddCodeLine('  I := ' + IntToStr(StartVal) + ';');
+  AddCodeLine('  Repeat');
+  AddCodeLine('    WriteLn(I);');
+  AddCodeLine('    Inc(I);');
+  AddCodeLine('  Until I > ' + IntToStr(EndVal) + ';');
+  GenEnd;
+End;
+
+{ Programme complet demontrant une fonction recursive (factorielle) }
+Procedure GenRecursiveFactorialProgram;
+Begin
+  InitGeneratedCode;
+  GenProgramHeader('FactorielleRecursive');
+  AddCodeLine('Var');
+  AddCodeLine('  N: Integer;');
+  AddCodeLine('');
+  GenRecursiveFactorial;
+  GenBeginEnd;
+  AddCodeLine('  Write(''Entrez un nombre: ''); ReadLn(N);');
+  AddCodeLine('  WriteLn(N, ''! = '', Factorial(N));');
+  GenEnd;
+End;
+
+{ Programme complet demontrant une fonction recursive (Fibonacci) }
+Procedure GenRecursiveFibonacciProgram;
+Begin
+  InitGeneratedCode;
+  GenProgramHeader('FibonacciRecursif');
+  AddCodeLine('Var');
+  AddCodeLine('  N, I: Integer;');
+  AddCodeLine('');
+  GenRecursiveFibonacci;
+  GenBeginEnd;
+  AddCodeLine('  Write(''Combien de termes? ''); ReadLn(N);');
+  AddCodeLine('  For I := 0 to N - 1 do');
+  AddCodeLine('    Write(Fibonacci(I), '' '');');
+  AddCodeLine('  WriteLn;');
+  GenEnd;
+End;
+
+{ Programme complet demontrant un tri a bulles }
+Procedure GenBubbleSortProgram;
+Begin
+  InitGeneratedCode;
+  GenProgramHeader('TriBulles');
+  AddCodeLine('Const');
+  AddCodeLine('  MAX = 10;');
+  AddCodeLine('Var');
+  AddCodeLine('  Tab: Array[0..MAX - 1] of Integer;');
+  AddCodeLine('  I: Integer;');
+  AddCodeLine('');
+  GenBubbleSortProcedure;
+  GenBeginEnd;
+  AddCodeLine('  Randomize;');
+  AddCodeLine('  For I := 0 to MAX - 1 do');
+  AddCodeLine('    Tab[I] := Random(100);');
+  AddCodeLine('  Write(''Avant tri: '');');
+  AddCodeLine('  For I := 0 to MAX - 1 do Write(Tab[I], '' '');');
+  AddCodeLine('  WriteLn;');
+  AddCodeLine('  BubbleSort(Tab, MAX);');
+  AddCodeLine('  Write(''Apres tri: '');');
+  AddCodeLine('  For I := 0 to MAX - 1 do Write(Tab[I], '' '');');
+  AddCodeLine('  WriteLn;');
+  GenEnd;
+End;
+
+{ Programme complet demontrant une recherche lineaire }
+Procedure GenLinearSearchProgram;
+Begin
+  InitGeneratedCode;
+  GenProgramHeader('RechercheLineaire');
+  AddCodeLine('Const');
+  AddCodeLine('  MAX = 5;');
+  AddCodeLine('Var');
+  AddCodeLine('  Tab: Array[0..MAX - 1] of Integer;');
+  AddCodeLine('  Cle, Position: Integer;');
+  AddCodeLine('');
+  GenLinearSearchFunction;
+  GenBeginEnd;
+  AddCodeLine('  Tab[0] := 12; Tab[1] := 45; Tab[2] := 7; Tab[3] := 23; Tab[4] := 56;');
+  AddCodeLine('  Write(''Valeur a rechercher: ''); ReadLn(Cle);');
+  AddCodeLine('  Position := LinearSearch(Tab, MAX, Cle);');
+  AddCodeLine('  If Position >= 0 Then');
+  AddCodeLine('    WriteLn(''Trouve a l''''index '', Position)');
+  AddCodeLine('  Else');
+  AddCodeLine('    WriteLn(''Valeur non trouvee'');');
+  GenEnd;
+End;
+
 Procedure ProcessProgramRequest;
 Var
   UI: String;
   N: Integer;
+  BStart, BEnd: Integer;
 Begin
   UI := UpCaseStr(CurrentIntent.Subject);
 
@@ -8488,31 +8657,98 @@ Begin
       GenHelloWorld;
     WriteLn('Voici un programme "Bonjour" en Pascal:');
   End
-  Else If (Pos('PREMIER', UI) > 0) or (Pos('PRIME', UI) > 0) Then Begin
-    { Extraire le nombre si present }
-    N := 10; { Par defaut }
-    If Pos('10', UI) > 0 Then N := 10
-    Else If Pos('20', UI) > 0 Then N := 20
-    Else If Pos('5', UI) > 0 Then N := 5
-    Else If Pos('100', UI) > 0 Then N := 100;
-    GenPrimeNumbers(N);
-    WriteLn('Voici un programme affichant les ', N, ' premiers nombres premiers:');
+  Else If (Pos('CHRONOMETRE', UI) > 0) or (Pos('STOPWATCH', UI) > 0) Then Begin
+    GenStopwatch;
+    WriteLn('Voici un chronometre simple:');
   End
-  Else If (Pos('FIBONACCI', UI) > 0) Then Begin
-    N := 10;
-    If Pos('20', UI) > 0 Then N := 20
-    Else If Pos('15', UI) > 0 Then N := 15;
-    GenFibonacci(N);
-    WriteLn('Voici un programme affichant la suite de Fibonacci:');
+  Else If (Pos('COMPTE A REBOURS', UI) > 0) or (Pos('COMPTE-A-REBOURS', UI) > 0) or
+          (Pos('COUNTDOWN', UI) > 0) Then Begin
+    GenCountdown;
+    WriteLn('Voici un compte a rebours:');
+  End
+  Else If (Pos('PGCD', UI) > 0) or (Pos('GCD', UI) > 0) or
+          (Pos('DIVISEUR COMMUN', UI) > 0) Then Begin
+    GenGCD;
+    WriteLn('Voici un programme calculant le PGCD:');
   End
   Else If (Pos('FACTORIELLE', UI) > 0) or (Pos('FACTORIAL', UI) > 0) Then Begin
-    GenFactorial;
-    WriteLn('Voici un programme calculant une factorielle:');
+    If (Pos('RECURSI', UI) > 0) Then Begin
+      GenRecursiveFactorialProgram;
+      WriteLn('Voici une factorielle calculee de maniere recursive:');
+    End Else Begin
+      GenFactorial;
+      WriteLn('Voici un programme calculant une factorielle:');
+    End;
+  End
+  Else If (Pos('FIBONACCI', UI) > 0) Then Begin
+    If (Pos('RECURSI', UI) > 0) Then Begin
+      GenRecursiveFibonacciProgram;
+      WriteLn('Voici Fibonacci calcule de maniere recursive:');
+    End Else Begin
+      N := 10;
+      If Pos('20', UI) > 0 Then N := 20
+      Else If Pos('15', UI) > 0 Then N := 15;
+      GenFibonacci(N);
+      WriteLn('Voici un programme affichant la suite de Fibonacci:');
+    End;
+  End
+  Else If (Pos('TRI ', UI) > 0) or (Pos('TRIE', UI) > 0) or (Pos('TRI A BULLES', UI) > 0) or
+          (Pos('SORT', UI) > 0) Then Begin
+    GenBubbleSortProgram;
+    WriteLn('Voici un programme de tri a bulles (Bubble Sort):');
+  End
+  Else If (Pos('RECHERCHE', UI) > 0) or (Pos('CHERCHER', UI) > 0) or
+          (Pos('SEARCH', UI) > 0) Then Begin
+    GenLinearSearchProgram;
+    WriteLn('Voici un programme de recherche lineaire dans un tableau:');
+  End
+  Else If (Pos('BOUCLE', UI) > 0) or (Pos('LOOP', UI) > 0) Then Begin
+    If Not ExtractFirstTwoInts(UI, BStart, BEnd) Then Begin
+      BStart := 1;
+      BEnd := 10;
+    End;
+    If (Pos('TANT QUE', UI) > 0) or (Pos('WHILE', UI) > 0) Then Begin
+      GenWhileLoopCount(BStart, BEnd);
+      WriteLn('Voici une boucle WHILE affichant les valeurs de ', BStart, ' a ', BEnd, ':');
+    End
+    Else If (Pos('REPETE', UI) > 0) or (Pos('REPEAT', UI) > 0) or
+            (Pos('JUSQU''A', UI) > 0) Then Begin
+      GenRepeatLoopCount(BStart, BEnd);
+      WriteLn('Voici une boucle REPEAT..UNTIL affichant les valeurs de ', BStart, ' a ', BEnd, ':');
+    End
+    Else Begin
+      GenForLoopCount(BStart, BEnd);
+      WriteLn('Voici une boucle FOR affichant les valeurs de ', BStart, ' a ', BEnd, ':');
+    End;
+  End
+  Else If (Pos('PREMIER', UI) > 0) or (Pos('PRIME', UI) > 0) Then Begin
+    If (Pos('EST-IL', UI) > 0) or (Pos('EST-CE', UI) > 0) or
+       (Pos('VERIFI', UI) > 0) or (Pos('TESTER', UI) > 0) Then Begin
+      GenPrimeCheck;
+      WriteLn('Voici un programme qui verifie si un nombre est premier:');
+    End Else Begin
+      { Extraire le nombre si present }
+      N := 10; { Par defaut }
+      If Pos('10', UI) > 0 Then N := 10
+      Else If Pos('20', UI) > 0 Then N := 20
+      Else If Pos('5', UI) > 0 Then N := 5
+      Else If Pos('100', UI) > 0 Then N := 100;
+      GenPrimeNumbers(N);
+      WriteLn('Voici un programme affichant les ', N, ' premiers nombres premiers:');
+    End;
   End
   Else If (Pos('CALCULATRICE', UI) > 0) or (Pos('CALCULATOR', UI) > 0) or
           (Pos('CALCULER', UI) > 0) Then Begin
     GenCalculator;
     WriteLn('Voici une calculatrice simple:');
+  End
+  Else If (Pos('FORMATER', UI) > 0) and (Pos('DATE', UI) > 0) Then Begin
+    GenDateFormat;
+    WriteLn('Voici un programme formatant la date:');
+  End
+  Else If (Pos('DUREE', UI) > 0) or (Pos('DIFFERENCE', UI) > 0) Then Begin
+    GenTimeCalc;
+    WriteLn('Voici un programme calculant une duree entre deux heures:');
   End
   Else If (Pos('DATE', UI) > 0) or (Pos('HEURE', UI) > 0) or
           (Pos('TIME', UI) > 0) Then Begin
