@@ -24457,6 +24457,8 @@ Var
  BgColor, FgColor: Byte;
  CurX: Integer;
  BarTop, BarBot: Integer;
+ VisStart, VisEnd, InputBoxTextW: Integer;
+ VisText: String;
 Begin
  PasChatEnsureInit;
  CTop := ExplorerTabContentTop(Exp);
@@ -24515,11 +24517,29 @@ Begin
   SetColor(CLR_GRAYTEXT);
   OutTextXY(Exp.X + 5, InputTop + 5, 'Posez une question...');
  End Else Begin
+  { Faire defiler horizontalement le texte affiche pour que le curseur    }
+  { reste toujours visible, meme quand la question depasse la largeur           }
+  { du champ (BOGUE REEL 2026-08-09 : le texte etait toujours dessine            }
+  { depuis son debut sans jamais tenir compte de sa longueur, donc la             }
+  { fin d une question longue restait invisible, hors du champ). }
+  InputBoxTextW := Exp.Width - 11;
+  If InputBoxTextW < 10 Then InputBoxTextW := 10;
+  VisStart := 1;
+  While (VisStart <= ChatInputCPos) And
+        (TextWidth(Copy(ChatInputBuf, VisStart, ChatInputCPos - VisStart + 1)) >
+         InputBoxTextW) Do
+   Inc(VisStart);
+  VisEnd := VisStart - 1;
+  While (VisEnd < Length(ChatInputBuf)) And
+        (TextWidth(Copy(ChatInputBuf, VisStart, VisEnd - VisStart + 2)) <=
+         InputBoxTextW) Do
+   Inc(VisEnd);
+  VisText := Copy(ChatInputBuf, VisStart, VisEnd - VisStart + 1);
   SetColor(CLR_WINDOWTEXT);
-  OutTextXY(Exp.X + 5, InputTop + 5, ChatInputBuf);
+  OutTextXY(Exp.X + 5, InputTop + 5, VisText);
  End;
  If ChatInputFocused And ExplorerSearchCursorVisible Then Begin
-  CurX := Exp.X + 5 + TextWidth(Copy(ChatInputBuf, 1, ChatInputCPos));
+  CurX := Exp.X + 5 + TextWidth(Copy(ChatInputBuf, VisStart, ChatInputCPos - VisStart + 1));
   Line(CurX, InputTop + 4, CurX, InputTop + 18);
  End;
 End;
