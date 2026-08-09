@@ -31195,14 +31195,17 @@ Begin
   If Side = NCState.Active Then SetColor(15) Else SetColor(7);
   Rectangle(X0, HeaderY - 3, PaneRight, InfoY + RH);
 
-  { Repertoire courant, centre en haut du panneau. }
-  SetFillStyle(SolidFill, 1);
-  Bar(X0 + 1, HeaderY - 2, PaneRight - 1, HeaderY + RH - 3);
-  If Side = NCState.Active Then SetColor(11) Else SetColor(9);
+  { Repertoire courant, centre en haut du panneau, dans une pastille    }
+  { cyan (seulement autour du texte, pas toute la largeur de la barre - }
+  { le reste de la barre de titre reste bleu, comme dans l original). }
   S := NCState.Panes[Side].Path;
   If Length(S) > (PaneRight - X0) Div CW - 1 Then
    S := Copy(S, 1, (PaneRight - X0) Div CW - 1);
   CenterX := X0 + ((PaneRight - X0) - TextWidth(S)) Div 2;
+  SetFillStyle(SolidFill, 3);
+  Bar(CenterX - CW Div 2, HeaderY - 2, CenterX + TextWidth(S) + CW Div 2,
+   HeaderY + RH - 3);
+  SetColor(0);
   OutTextXY(CenterX, HeaderY - 2, S);
 
   { Entete de colonnes (Nom / Taille / Date Heure) - fond noir, texte    }
